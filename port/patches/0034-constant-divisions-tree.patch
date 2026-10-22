@@ -1,0 +1,11 @@
+--- a/tree.cpp
++++ b/tree.cpp
+@@ -316,7 +316,7 @@
+ 		float	t = mFalling->mStartTime + 5.0f - EVENT_MANAGER.GetTime();
+ 		if (t < 0)
+ 			t = 0;
+-		MESH_ALPHA = SINT((t / 5.0f) * 255.0f);
++		MESH_ALPHA = SINT((t * 0.2f /* retail 005d8c68: / 5.0f */) * 255.0f);
+ 		CThing::Render(flags);
+ 		MESH_ALPHA = 0xff;
+ 		return true;

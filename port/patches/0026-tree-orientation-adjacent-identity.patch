@@ -1,0 +1,36 @@
+--- a/tree.cpp
++++ b/tree.cpp
+@@ -29,6 +29,15 @@
+ static FMatrix	sOrientations[32];			// 008406b8: yaws of i * PI/16 (Init)	// FUNCTION: 0x004f5f30 init:sOrientations
+ static BOOL		sOrientationsReady = FALSE;	// 00840cf8
+ 
++// Port (patch 0026): Init's /QIfist selection can round to 32 (004f61d2).
++// Retail's sOrientations + 32 * 0x30 is 00840cb8, the adjacent ID_FMATRIX
++// initialized at 004f5e60. Preserve that identity result explicitly instead of
++// reading unrelated data past the port's array; this is not a clamp to entry 31.
++static const FMatrix &TreeOrientation(SINT variation)
++{
++	return variation == 32 ? ID_FMATRIX : sOrientations[variation];
++}
++
+ //******************************************************************************************
+ CFallingTree::CFallingTree(const FMatrix &ori, float height, const FVector &dir)	// FUNCTION: 0x004f5f60
+ {
+@@ -146,7 +155,7 @@
+ 		ori.Normalise();
+ 		return ori;
+ 	}
+-	return sOrientations[mVariation];
++	return TreeOrientation(mVariation);
+ }
+ 
+ //******************************************************************************************
+@@ -171,7 +180,7 @@
+ 	if (mFalling)
+ 		return;
+ 
+-	FMatrix	ori = sOrientations[mVariation];
++	FMatrix	ori = TreeOrientation(mVariation);
+ #line 240
+ 	mFalling = new(MT_TREE_THING) CFallingTree(ori, GetRadius() * 2, dir);
+ 	mFalling->mStartTime = -1.0f;

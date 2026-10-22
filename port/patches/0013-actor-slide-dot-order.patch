@@ -1,0 +1,13 @@
+--- a/actor.cpp
++++ b/actor.cpp
+@@ -132,7 +132,9 @@
+ 			{		
+ 				// slide like you did in moho
+ 				FVector slidePlaneNormal = MAP.Normal(mPos) ;
+-				float backoff = (mVelocity * slidePlaneNormal);
++				// Port (patch 0013): retail sums the dot product (Z + Y) + X (004017eb..00401808); clang keeps the
++				// operator's X + Y + Z, a different rounding (port/PARITY.md, "Float sum order").
++				float backoff = ((mVelocity.Z * slidePlaneNormal.Z) + (mVelocity.Y * slidePlaneNormal.Y)) + (mVelocity.X * slidePlaneNormal.X);
+ 				mVelocity -=slidePlaneNormal*backoff;
+ 				// not on ground !
+ 			}

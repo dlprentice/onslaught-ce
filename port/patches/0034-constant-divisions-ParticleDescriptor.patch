@@ -1,0 +1,20 @@
+--- a/ParticleDescriptor.cpp
++++ b/ParticleDescriptor.cpp
+@@ -520,7 +520,7 @@
+ 		if (p->mUnknown7E < 0)
+ 		{
+ 			p->mUnknown7E += 20;
+-			float	d = ((float)sqrt(PARTICLE_MANAGER.GetDistanceSq(p)) - 30.f) * (1.f / 120.f);
++			float	d = ((float)sqrt(PARTICLE_MANAGER.GetDistanceSq(p)) - 30.f) * (1.f * 0.008333334f /* retail 005ddacc: / 120.f */);
+ 			if (d < 0.f)
+ 				d = 0.f;
+ 			else if (d > 1.f)
+@@ -1598,7 +1598,7 @@
+ 			pos += p->mFoR->mPos;
+ 		}
+ 
+-		if (PARTICLE_MANAGER.OnGround(pos, p->mRadius / 10.0f, ground))
++		if (PARTICLE_MANAGER.OnGround(pos, p->mRadius * 0.1f /* retail 005d8c1c: / 10.0f */, ground))
+ 		{
+ 			if (p->mFoR)
+ 			{

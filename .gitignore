@@ -1,0 +1,4 @@
+# Build output, downloaded dependencies and the game data the build reads stay out of the repository.
+/local-data/
+__pycache__/
+*.pyc

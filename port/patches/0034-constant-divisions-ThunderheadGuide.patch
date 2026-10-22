@@ -1,0 +1,11 @@
+--- a/ThunderheadGuide.cpp
++++ b/ThunderheadGuide.cpp
+@@ -62,7 +62,7 @@
+ 
+ 		float	speed = GetUnit()->Unknown111();
+ 		FMatrix	&ori = GetUnit()->GetOrientation();
+-		velocity = ori * (FVector(0, speed, 0) / 5.0f);
++		velocity = ori * (FVector(0, speed, 0) * 0.2f /* retail 005d8c68: / 5.0f */);
+ 		FVector	next = velocity + GetUnit()->GetPos();
+ 		float	nextDistance = (next - mHome).Magnitude();
+ 		if (((GetUnit()->GetPos() - mHome).Magnitude() > nextDistance) || (nextDistance < 70.0f))

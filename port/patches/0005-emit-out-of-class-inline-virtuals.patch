@@ -1,0 +1,357 @@
+--- a/ParticleSet.cpp
++++ b/ParticleSet.cpp
+@@ -340,83 +340,83 @@
+ // the witness's real header context is known.
+ 
+ // FUNCTION: 0x004014f0 ?Unknown17@CPDShape@@UAEHXZ
+-inline SINT CPDShape::Unknown17()
++PORT_EMIT SINT CPDShape::Unknown17()
+ {
+ 	return mNumParticles;
+ }
+ 
+ // FUNCTION: 0x004014c0 ?Unknown9@CPDColourRange@@UAEXPAVCParticle@@@Z
+-inline void CPDColourRange::Unknown9(CParticle *p)
++PORT_EMIT void CPDColourRange::Unknown9(CParticle *p)
+ {
+ }
+ 
+ // FUNCTION: 0x004014c0 ?Unknown9@CPDFunction@@UAEXPAVCParticle@@@Z
+-inline void CPDFunction::Unknown9(CParticle *p)
++PORT_EMIT void CPDFunction::Unknown9(CParticle *p)
+ {
+ }
+ 
+ // FUNCTION: 0x004014c0 ?Unknown9@CPDModifier@@UAEXPAVCParticle@@@Z
+-inline void CPDModifier::Unknown9(CParticle *p)
++PORT_EMIT void CPDModifier::Unknown9(CParticle *p)
+ {
+ }
+ 
+ // FUNCTION: 0x004014c0 ?Unknown9@CPDMover@@UAEXPAVCParticle@@@Z
+-inline void CPDMover::Unknown9(CParticle *p)
++PORT_EMIT void CPDMover::Unknown9(CParticle *p)
+ {
+ }
+ 
+ // FUNCTION: 0x004014c0 ?Unknown9@CPDSelector@@UAEXPAVCParticle@@@Z
+-inline void CPDSelector::Unknown9(CParticle *p)
++PORT_EMIT void CPDSelector::Unknown9(CParticle *p)
+ {
+ }
+ 
+ // FUNCTION: 0x004014c0 ?Unknown9@CPDShape@@UAEXPAVCParticle@@@Z
+-inline void CPDShape::Unknown9(CParticle *p)
++PORT_EMIT void CPDShape::Unknown9(CParticle *p)
+ {
+ }
+ 
+ // FUNCTION: 0x004014c0 ?Unknown11@CPDColourRange@@UAEXPAVCParticle@@@Z
+-inline void CPDColourRange::Unknown11(CParticle *p)
++PORT_EMIT void CPDColourRange::Unknown11(CParticle *p)
+ {
+ }
+ 
+ // FUNCTION: 0x004014c0 ?Unknown11@CPDEmitter@@UAEXPAVCParticle@@@Z
+-inline void CPDEmitter::Unknown11(CParticle *p)
++PORT_EMIT void CPDEmitter::Unknown11(CParticle *p)
+ {
+ }
+ 
+ // FUNCTION: 0x004014c0 ?Unknown11@CPDFoR@@UAEXPAVCParticle@@@Z
+-inline void CPDFoR::Unknown11(CParticle *p)
++PORT_EMIT void CPDFoR::Unknown11(CParticle *p)
+ {
+ }
+ 
+ // FUNCTION: 0x004014c0 ?Unknown11@CPDFunction@@UAEXPAVCParticle@@@Z
+-inline void CPDFunction::Unknown11(CParticle *p)
++PORT_EMIT void CPDFunction::Unknown11(CParticle *p)
+ {
+ }
+ 
+ // FUNCTION: 0x004014c0 ?Unknown11@CPDModifier@@UAEXPAVCParticle@@@Z
+-inline void CPDModifier::Unknown11(CParticle *p)
++PORT_EMIT void CPDModifier::Unknown11(CParticle *p)
+ {
+ }
+ 
+ // FUNCTION: 0x004014c0 ?Unknown11@CPDMover@@UAEXPAVCParticle@@@Z
+-inline void CPDMover::Unknown11(CParticle *p)
++PORT_EMIT void CPDMover::Unknown11(CParticle *p)
+ {
+ }
+ 
+ // FUNCTION: 0x004014c0 ?Unknown11@CPDSelector@@UAEXPAVCParticle@@@Z
+-inline void CPDSelector::Unknown11(CParticle *p)
++PORT_EMIT void CPDSelector::Unknown11(CParticle *p)
+ {
+ }
+ 
+ // FUNCTION: 0x004014c0 ?Unknown11@CPDShape@@UAEXPAVCParticle@@@Z
+-inline void CPDShape::Unknown11(CParticle *p)
++PORT_EMIT void CPDShape::Unknown11(CParticle *p)
+ {
+ }
+ 
+ // FUNCTION: 0x004014c0 ?Unknown11@CPDTimeline@@UAEXPAVCParticle@@@Z
+-inline void CPDTimeline::Unknown11(CParticle *p)
++PORT_EMIT void CPDTimeline::Unknown11(CParticle *p)
+ {
+ }
+ 
+--- a/rtmesh.cpp
++++ b/rtmesh.cpp
+@@ -15,13 +15,13 @@
+ #include "renderinfo.h"
+ // CRenderThing's inline members, emitted where the table is: retail folds them with the inline CThing members.
+ // FUNCTION: 0x0050e890
+-inline float CRenderThing::GetRTRadius()
++PORT_EMIT float CRenderThing::GetRTRadius()
+ {
+ 	return 0.5f;
+ }
+ 
+ // FUNCTION: 0x00459990
+-inline void CRenderThing::CreatePolyBuckets()
++PORT_EMIT void CRenderThing::CreatePolyBuckets()
+ {
+ }
+ 
+--- a/WorldPhysicsManager.cpp
++++ b/WorldPhysicsManager.cpp
+@@ -781,200 +781,200 @@
+ // classes once the witnesses' real header context is known.
+ 
+ // FUNCTION: 0x00405930 ?ClipToGround@CSubmarine@@UAEHXZ
+-inline BOOL CSubmarine::ClipToGround()
++PORT_EMIT BOOL CSubmarine::ClipToGround()
+ {
+ 	return FALSE;
+ }
+ 
+ // FUNCTION: 0x004014a0 ?CanGoUnderWater@CSubmarine@@UAEHXZ
+-inline BOOL CSubmarine::CanGoUnderWater()
++PORT_EMIT BOOL CSubmarine::CanGoUnderWater()
+ {
+ 	return TRUE;
+ }
+ 
+ // FUNCTION: 0x004014a0 ?GetCanBeStaticallyShadowed@CSimpleBuilding@@UAEHXZ
+-inline BOOL CSimpleBuilding::GetCanBeStaticallyShadowed()
++PORT_EMIT BOOL CSimpleBuilding::GetCanBeStaticallyShadowed()
+ {
+ 	return TRUE;
+ }
+ 
+ // FUNCTION: 0x004bfc60 ?GetMaxVelocity@CSimpleBuilding@@UAEMXZ
+-inline float CSimpleBuilding::GetMaxVelocity()
++PORT_EMIT float CSimpleBuilding::GetMaxVelocity()
+ {
+ 	return 0;
+ }
+ 
+ // FUNCTION: 0x004014a0 ?GetImposterAnimMode@CInfantryUnit@@UAE?AW4EAnimMode@@XZ
+-inline EAnimMode CInfantryUnit::GetImposterAnimMode()
++PORT_EMIT EAnimMode CInfantryUnit::GetImposterAnimMode()
+ {
+ 	return AM_WALK;
+ }
+ 
+ // FUNCTION: 0x00405930 ?GetRequiresPolyBucket@CInfantryUnit@@UAEHXZ
+-inline BOOL CInfantryUnit::GetRequiresPolyBucket()
++PORT_EMIT BOOL CInfantryUnit::GetRequiresPolyBucket()
+ {
+ 	return FALSE;
+ }
+ 
+ // FUNCTION: 0x004bfc60 ?GetMaxVelocity@CCannon@@UAEMXZ
+-inline float CCannon::GetMaxVelocity()
++PORT_EMIT float CCannon::GetMaxVelocity()
+ {
+ 	return 0;
+ }
+ 
+ // FUNCTION: 0x004bfc60 ?Gravity@CCannon@@UAEMXZ
+-inline float CCannon::Gravity()
++PORT_EMIT float CCannon::Gravity()
+ {
+ 	return 0;
+ }
+ 
+ // FUNCTION: 0x004de700 ?Unknown72@CPod@@UAEMXZ
+-inline float CPod::Unknown72()
++PORT_EMIT float CPod::Unknown72()
+ {
+ 	return 1;
+ }
+ 
+ // FUNCTION: 0x004de700 ?Unknown73@CPod@@UAEMXZ
+-inline float CPod::Unknown73()
++PORT_EMIT float CPod::Unknown73()
+ {
+ 	return 1;
+ }
+ 
+ // FUNCTION: 0x004bfc60 ?GetThreat@CPod@@UAEMXZ
+-inline float CPod::GetThreat()
++PORT_EMIT float CPod::GetThreat()
+ {
+ 	return 0;
+ }
+ 
+ // FUNCTION: 0x004bfc60 ?GetImportance@CPod@@UAEMXZ
+-inline float CPod::GetImportance()
++PORT_EMIT float CPod::GetImportance()
+ {
+ 	return 0;
+ }
+ 
+ // FUNCTION: 0x004bfc60 ?GetMaxVelocity@CSentinel@@UAEMXZ
+-inline float CSentinel::GetMaxVelocity()
++PORT_EMIT float CSentinel::GetMaxVelocity()
+ {
+ 	return 0;
+ }
+ 
+ // FUNCTION: 0x004bfc60 ?Gravity@CSentinel@@UAEMXZ
+-inline float CSentinel::Gravity()
++PORT_EMIT float CSentinel::Gravity()
+ {
+ 	return 0;
+ }
+ 
+ // FUNCTION: 0x004bfc60 ?GetMaxVelocity@CWarspiteDome@@UAEMXZ
+-inline float CWarspiteDome::GetMaxVelocity()
++PORT_EMIT float CWarspiteDome::GetMaxVelocity()
+ {
+ 	return 0;
+ }
+ 
+ // FUNCTION: 0x004bfc60 ?Gravity@CWarspiteDome@@UAEMXZ
+-inline float CWarspiteDome::Gravity()
++PORT_EMIT float CWarspiteDome::Gravity()
+ {
+ 	return 0;
+ }
+ 
+ // FUNCTION: 0x004014c0 ?Unknown68@CRelaxedSquad@@UAEXPAVCUnit@@@Z
+-inline void CRelaxedSquad::Unknown68(CUnit *unit)
++PORT_EMIT void CRelaxedSquad::Unknown68(CUnit *unit)
+ {
+ }
+ 
+ // FUNCTION: 0x00405930 ?Unknown69@CRelaxedSquad@@UAEHXZ
+-inline BOOL CRelaxedSquad::Unknown69()
++PORT_EMIT BOOL CRelaxedSquad::Unknown69()
+ {
+ 	return FALSE;
+ }
+ 
+ // FUNCTION: 0x00405930 ?Unknown76@CRelaxedSquad@@UAEHXZ
+-inline SINT CRelaxedSquad::Unknown76()
++PORT_EMIT SINT CRelaxedSquad::Unknown76()
+ {
+ 	return 0;
+ }
+ 
+ // FUNCTION: 0x00405930 ?Unknown77@CRelaxedSquad@@UAEPAVCThing@@XZ
+-inline CThing *CRelaxedSquad::Unknown77()
++PORT_EMIT CThing *CRelaxedSquad::Unknown77()
+ {
+ 	return NULL;
+ }
+ 
+ // FUNCTION: 0x004bfc60 ?Unknown78@CRelaxedSquad@@UAEMXZ
+-inline float CRelaxedSquad::Unknown78()
++PORT_EMIT float CRelaxedSquad::Unknown78()
+ {
+ 	return 0;
+ }
+ 
+ // FUNCTION: 0x004bfc60 ?Unknown79@CRelaxedSquad@@UAEMXZ
+-inline float CRelaxedSquad::Unknown79()
++PORT_EMIT float CRelaxedSquad::Unknown79()
+ {
+ 	return 0;
+ }
+ 
+ // FUNCTION: 0x004bfc60 ?Unknown80@CRelaxedSquad@@UAEMXZ
+-inline float CRelaxedSquad::Unknown80()
++PORT_EMIT float CRelaxedSquad::Unknown80()
+ {
+ 	return 0;
+ }
+ 
+ // FUNCTION: 0x00405930 ?Unknown82@CRelaxedSquad@@UAEHXZ
+-inline BOOL CRelaxedSquad::Unknown82()
++PORT_EMIT BOOL CRelaxedSquad::Unknown82()
+ {
+ 	return FALSE;
+ }
+ 
+ // FUNCTION: 0x004059c0 ?Unknown83@CRelaxedSquad@@UAEHXZ
+-inline SINT CRelaxedSquad::Unknown83()
++PORT_EMIT SINT CRelaxedSquad::Unknown83()
+ {
+ 	return 2;
+ }
+ 
+ // FUNCTION: 0x004de700 ?Unknown84@CRelaxedSquad@@UAEMXZ
+-inline float CRelaxedSquad::Unknown84()
++PORT_EMIT float CRelaxedSquad::Unknown84()
+ {
+ 	return 1;
+ }
+ 
+ // FUNCTION: 0x00405930 ?OnScanner@CMine@@UAEHXZ
+-inline BOOL CMine::OnScanner()
++PORT_EMIT BOOL CMine::OnScanner()
+ {
+ 	return FALSE;
+ }
+ 
+ // FUNCTION: 0x00405930 ?Unknown108@CCarver@@UAEHXZ
+-inline BOOL CCarver::Unknown108()
++PORT_EMIT BOOL CCarver::Unknown108()
+ {
+ 	return FALSE;
+ }
+ 
+ // FUNCTION: 0x00405e60 ?GetMaxVelocity@CInfantryUnit@@UAEMXZ
+-inline float CInfantryUnit::GetMaxVelocity()
++PORT_EMIT float CInfantryUnit::GetMaxVelocity()
+ {
+ 	return 2;
+ }
+ 
+ // FUNCTION: 0x004bfc50 ?GetMaxVelocity@CPod@@UAEMXZ
+-inline float CPod::GetMaxVelocity()
++PORT_EMIT float CPod::GetMaxVelocity()
+ {
+ 	return 10;
+ }
+ 
+ // FUNCTION: 0x00459990
+-inline void CBomber::Stop()
++PORT_EMIT void CBomber::Stop()
+ {
+ }
+ 
+ // FUNCTION: 0x00459990
+-inline void CDropship::Stop()
++PORT_EMIT void CDropship::Stop()
+ {
+ }
+ 
+ // FUNCTION: 0x00459990
+-inline void CSimpleBuilding::Stop()
++PORT_EMIT void CSimpleBuilding::Stop()
+ {
+ }
+ 
+ // FUNCTION: 0x004014c0 ?Unknown85@CRelaxedSquad@@UAEXH@Z
+-inline void CRelaxedSquad::Unknown85(SINT a)
++PORT_EMIT void CRelaxedSquad::Unknown85(SINT a)
+ {
+ }

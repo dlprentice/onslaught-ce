@@ -1,0 +1,20 @@
+--- a/Round.cpp
++++ b/Round.cpp
+@@ -917,7 +917,7 @@
+ 		if (round->mData->mBeam)
+ 			vel.Y = (pos - mPos).Magnitude();
+ 		else
+-			vel.Y = round->mData->mSpeed / 20.0f;
++			vel.Y = round->mData->mSpeed * 0.05f /* retail 005d8584: / 20.0f */;
+ 
+ 		init.mPos = mPos;
+ 		float	ground = MAP.Collide(mPos) - 1.f;
+@@ -941,7 +941,7 @@
+ 			float	distance = sqrtf(distanceSq);
+ 			float	percent = GAME.FloatRandom() * 100.0f;
+ 			float	error = (round->mData->mFlakInaccuracy) * distance;
+-			init.mLifeSpan = (((percent / 100.0f) * error) * 2 - error + distance) / vel.Y;
++			init.mLifeSpan = (((percent * 0.01f /* retail 005d85fc: / 100.0f */) * error) * 2 - error + distance) / vel.Y;
+ 		}
+ 		round->Init(&init);
+ 	}

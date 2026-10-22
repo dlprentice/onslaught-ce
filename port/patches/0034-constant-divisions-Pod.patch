@@ -1,0 +1,11 @@
+--- a/Pod.cpp
++++ b/Pod.cpp
+@@ -60,7 +60,7 @@
+ {
+ 	float	yaw = (mTarget - mPos).Azimuth();
+ 	float	dz = mTarget.Z - mPos.Z;
+-	float	v = mUnitData->mUnknownB4 / 20.0f;
++	float	v = mUnitData->mUnknownB4 * 0.05f /* retail 005d8584: / 20.0f */;
+ 	float	g = Gravity();
+ 	float	dist = (mTarget - mPos).MagnitudeXY();
+ 	float	best = 99999.0f;

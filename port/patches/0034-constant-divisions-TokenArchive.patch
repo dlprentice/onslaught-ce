@@ -1,0 +1,11 @@
+--- a/TokenArchive.cpp
++++ b/TokenArchive.cpp
+@@ -349,7 +349,7 @@
+ 		{
+ 			mNames[mNumFixups][0] = 0;
+ 			if (*token >= PST_START_RED && *token <= PST_TRANSITION_BLUE)
+-				*fval /= 255.0f;		// a colour without a reference is read as 0..255
++				*fval *= 0.003921569f /* retail 005df8fc: / 255.0f */;		// a colour without a reference is read as 0..255
+ 		}
+ 		else
+ 			strcpy(mNames[mNumFixups], sLine + strlen(sToken) + strlen(sValue) + 2);

@@ -1,0 +1,26 @@
+--- a/DXTexture.cpp
++++ b/DXTexture.cpp
+@@ -545,7 +545,7 @@
+ {
+ 	if (mNumFrames == 1)
+ 		return mTextures[0];
+-	return mTextures[int(ENGINE.GetRenderTime() / 0.05f) % mNumFrames];
++	return mTextures[int(ENGINE.GetRenderTime() * 20.0f /* retail 005d8ba8: / 0.05f */) % mNumFrames];
+ }
+ 
+ // Pixel layouts, all read through DWORD bitfields: retail loads a whole dword even for a 16-bit pixel
+@@ -725,10 +725,10 @@
+ 			// projected from the camera position
+ 			D3DMATRIX	m;
+ 			RENDERINFO.GetProjection(&m);
+-			m._11 *= 1.0f / 3.28f;
+-			m._12 *= 1.0f / 3.28f;
+-			m._13 *= 1.0f / 3.28f;
+-			m._14 *= 1.0f / 3.28f;
++			m._11 *= 1.0f * 0.30487806f /* retail 005e59d0: / 3.28f */;
++			m._12 *= 1.0f * 0.30487806f /* retail 005e59d0: / 3.28f */;
++			m._13 *= 1.0f * 0.30487806f /* retail 005e59d0: / 3.28f */;
++			m._14 *= 1.0f * 0.30487806f /* retail 005e59d0: / 3.28f */;
+ 			m._21 *= -1.0f / 2.25f;
+ 			m._22 *= -1.0f / 2.25f;
+ 			m._23 *= -1.0f / 2.25f;

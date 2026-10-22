@@ -1,0 +1,135 @@
+--- a/PCMusicStream.cpp
++++ b/PCMusicStream.cpp
+@@ -36,16 +36,15 @@
+ 
+ void	PlayMusicStream(char *filename);
+ void	StopMusicStream();
++bool	PortClockVirtual();				// Port (patch 0035): port/platform/common/clock.cpp
++static int	MusicStreamHandle(DWORD result);
++void	PumpMusicStream();
+ 
+ // Tests HasFormat's result as a bool (test al,al, 00528007) though both readers return BOOL: this file saw a bool
+ // declaration (the PCMUSICSTREAM_CPP views in WavRead.h and OggFileRead.h).
+ DWORD	MusicStreamThread(LPVOID)	// FUNCTION: 0x00527f50
+ {
+ 	HANDLE	events[4] = { sPlayEvent, sFirstHalfEvent, sSecondHalfEvent, sQuitEvent };
+-	DWORD	offset;
+-	void	*data1, *data2;
+-	DWORD	size1, size2;
+-	UINT	got;
+ 
+ 	while (1)
+ 	{
+@@ -60,6 +59,22 @@
+ 
+ 		sWaitResult = result;
+ 		sThreadAwake = TRUE;
++		if (MusicStreamHandle(result))
++			return 0;
++	}
++}
++
++// Port (patch 0035): the thread's handling of one wake, unchanged; returns 1 on the quit event. Under the virtual clocks
++// no thread runs it: PumpMusicStream does, on the main thread, so the track's end is seen at the same Present every
++// run (with a thread it depended on when the thread ran: level 221's music changed track at Present 9098 or 9099).
++static int	MusicStreamHandle(DWORD result)
++{
++	DWORD	offset;
++	void	*data1, *data2;
++	DWORD	size1, size2;
++	UINT	got;
++
++	{
+ 		switch (result)
+ 		{
+ 		case 0:		// a new track
+@@ -129,9 +144,10 @@
+ 
+ 		case 3:		// shut down
+ 			sThreadAwake = FALSE;
+-			return 0;
++			return 1;
+ 		}
+ 	}
++	return 0;
+ }
+ 
+ //******************************************************************************************
+@@ -165,7 +181,8 @@
+ 		sSecondHalfEvent = CreateEvent(NULL, FALSE, FALSE, NULL);
+ 		sQuitEvent = CreateEvent(NULL, FALSE, FALSE, NULL);
+ 		sPlayEvent = CreateEvent(NULL, FALSE, FALSE, NULL);
+-		sThread = CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE)MusicStreamThread, NULL, 0, &id);
++		if (!PortClockVirtual())		// Port (patch 0035): the pump handles the stream instead
++			sThread = CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE)MusicStreamThread, NULL, 0, &id);
+ 
+ 		notify = NULL;
+ 		HRESULT	hr = sBuffer->QueryInterface(IID_IDirectSoundNotify, (void **)&notify);
+@@ -194,12 +211,13 @@
+ 		DWORD	code;
+ 
+ 		SetEvent(sQuitEvent);
+-		do
+-		{
+-			Sleep(10);
+-			GetExitCodeThread(sThread, &code);
+-		}
+-		while (code == STILL_ACTIVE);
++		if (sThread)			// Port (patch 0035): no thread ran under the virtual clocks
++			do
++			{
++				Sleep(10);
++				GetExitCodeThread(sThread, &code);
++			}
++			while (code == STILL_ACTIVE);
+ 		sThread = NULL;
+ 
+ 		sBuffer->Stop();
+@@ -237,6 +255,33 @@
+ 		_tcsncpy(sTrackName, filename, 255);
+ 		MUSIC_STREAM_FINISHED = false;
+ 		SetEvent(sPlayEvent);
++		PumpMusicStream();		// Port (patch 0035): under the virtual clocks, start it now
++	}
++}
++
++//******************************************************************************************
++// Port (patch 0035): under the virtual clocks, handle every wake the stream thread would have had by now, on the calling
++// (main) thread. GetStatus first brings the mix to the virtual time now, so the position notifications due by then are
++// set whichever thread mixed; each event is then taken without waiting and handled as the thread would. Real time:
++// nothing (the thread runs).
++void	PumpMusicStream()
++{
++	if (!sBuffer || !PortClockVirtual())
++		return;
++	DWORD	status;
++	sBuffer->GetStatus(&status);
++	HANDLE	events[4] = { sPlayEvent, sFirstHalfEvent, sSecondHalfEvent, sQuitEvent };
++	for (;;)
++	{
++		DWORD	result = WaitForMultipleObjects(4, events, FALSE, 0);
++		if (result > 3)
++			break;
++		sWaitResult = result;
++		sThreadAwake = TRUE;
++		int	quit = MusicStreamHandle(result);
++		sThreadAwake = FALSE;
++		if (quit)
++			break;
+ 	}
+ }
+ 
+--- a/PCMusic.cpp
++++ b/PCMusic.cpp
+@@ -43,8 +43,11 @@
+ 	SetMusicStreamVolume(vol * (1.0f * 0.007874016f /* retail 005e4978: / 127.0f */));	// spelling chosen to give retail's own float-folded 1/127 (Music.obj's is the division in music.h): placement evidence; Stuart's release has no such line
+ }
+ 
++void PumpMusicStream();		// Port (patch 0035): PCMusicStream.cpp
++
+ BOOL CPCMusic::DeviceGetTrackFinished()	// FUNCTION: 0x00515390
+ {
++	PumpMusicStream();		// Port (patch 0035): under the virtual clocks, the stream's wakes are handled before the poll
+ 	return MUSIC_STREAM_FINISHED;
+ }
+ 

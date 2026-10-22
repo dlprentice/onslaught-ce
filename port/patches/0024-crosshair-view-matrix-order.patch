@@ -1,0 +1,22 @@
+--- a/BattleEngine.cpp
++++ b/BattleEngine.cpp
+@@ -2401,7 +2401,18 @@
+ 			range=1000.0f;
+ 
+ 		FVector		pos = mPlayer->GetCurrentViewPoint() ;
+-		FMatrix		ori = mPlayer->GetCurrentViewOrientation()*autoAimMatrix;
++		// Port (patch 0024): retail inlines this product with each element's three terms in VC6's ranked order: rows 1 and 2
++		// sum (k0 + k2) + k1, row 0 sums (k2 + k1) + k0 (0040ada5..0040aec7); maths.h sums k0 + k1 + k2. The aim line's end
++		// (its Y column times 1000) then matched retail's (a recorded win tape, Present 4387: Y 4447e6c2, the port 4447e6c1).
++		FMatrix		view = mPlayer->GetCurrentViewOrientation();
++		FMatrix		ori;
++		for (int c = 0; c < 3; c++)
++		{
++			float	*o = &view.Row[0].X, *m = &autoAimMatrix.Row[0].X, *r = &ori.Row[0].X;
++			r[c] = ((o[2] * m[8 + c]) + (o[1] * m[4 + c])) + (o[0] * m[c]);
++			r[4 + c] = ((o[4] * m[c]) + (o[6] * m[8 + c])) + (o[5] * m[4 + c]);
++			r[8 + c] = ((o[8] * m[c]) + (o[10] * m[8 + c])) + (o[9] * m[4 + c]);
++		}
+ 
+ //		CLine ray(pos, pos + (ori * FVector(0.0f,range,0.0f))) ;
+ 		CLine ray(pos, pos + (ori * FVector(0.0f,1000.f,0.0f))) ;

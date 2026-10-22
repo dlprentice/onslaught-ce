@@ -1,0 +1,33 @@
+--- a/FEPGoodies.cpp
++++ b/FEPGoodies.cpp
+@@ -1471,7 +1471,7 @@
+ 				if ((dx!=0) || (dy!=0))
+ 				{
+ 					FMatrix delta;
+-					delta.MakeRotationF(dx/10.0f,dy/10.0f,0);
++					delta.MakeRotationF(dx*0.1f /* retail 005d85c0: / 10.0f */,dy*0.1f /* retail 005d85c0: / 10.0f */,0);
+ 					mMeshOri=delta * mMeshOri;
+ 				}
+ 
+@@ -1557,10 +1557,10 @@
+ 				mCurrentRoll+=mRollDelta*timed;
+ 				mCurrentPitch+=mPitchDelta*timed;
+ 
+-				mMeshOri.MakeRotationF(((mCurrentYaw*3.14f)/180.0f),((mCurrentPitch*3.14f)/180.0f),((mCurrentRoll*3.14f)/180.0f));
++				mMeshOri.MakeRotationF(((mCurrentYaw*3.14f)*0.0055555557f /* retail 005db54c: / 180.0f */),((mCurrentPitch*3.14f)*0.0055555557f /* retail 005db54c: / 180.0f */),((mCurrentRoll*3.14f)*0.0055555557f /* retail 005db54c: / 180.0f */));
+ 			}
+ 
+-			mTextScrollOffset+=gFrontEndFrameStep/0.1f;
++			mTextScrollOffset+=gFrontEndFrameStep*10.0f /* retail 005db548: / 0.1f */;
+ 
+ 			if (mTextScrollOffset>mTextHeight+10.0f)
+ 				mTextScrollOffset=-100.0f;
+@@ -2170,7 +2170,7 @@
+ 					}
+ 					FRONTEND.UpdateCamera();
+ 
+-					float r=PLATFORM.GetSysTimeFloat()/10.0f;
++					float r=PLATFORM.GetSysTimeFloat()*0.1f /* retail 005d85c0: / 10.0f */;
+ 
+ 					FVector pos=ZERO_FVECTOR;
+ 					pos.X=-mCurrentGoodyMesh->mBoundingBox->mOrigin.X;

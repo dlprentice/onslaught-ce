@@ -1,0 +1,7 @@
+# Link aliases for the port: linklib/aliases.tsv's second names (one retail object or function, two spellings in the
+# source) in the Itanium ABI both targets use; build.py passes each as --defsym alias=target. alias<TAB>target<TAB>why
+GAME_RENDER_MODE	_ZN13CMeshRenderer11mRenderModeE	linklib/aliases.tsv: 00704e48
+_Z22RenderMeshPart0054b800P9CMeshPartP16IRenderableThingi	_Z12RenderPart2DP9CMeshPartP16IRenderableThing	linklib/aliases.tsv: 0054b800, cdecl, third argument unused
+_ZN15CXBOXAsyncCache4BusyEv	_ZN14CWaitingThread6IsBusyEv	linklib/aliases.tsv: 00528d90
+_ZN15CXBOXAsyncCache9GrabMutexEv	_ZN14CWaitingThread4LockEv	linklib/aliases.tsv: 00528da0
+_ZN15CXBOXAsyncCache12ReleaseMutexEv	_ZN14CWaitingThread6UnlockEv	linklib/aliases.tsv: 00528dc0

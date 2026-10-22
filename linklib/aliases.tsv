@@ -1,0 +1,8 @@
+# PROVISIONAL link-only aliases: alias<TAB>target<TAB>why. tools/link.py writes each as a weak external of the target,
+# so references to the alias resolve to the target's definition. Each is a second name the source still uses where
+# retail has one object or function; the open question for each is in the link plan's stage-5 notes.
+?GAME_RENDER_MODE@@3HA	?mRenderMode@CMeshRenderer@@2W4ERenderMode@@A	00704e48; DXMeshRenderer.cpp's extern waits for its rows
+?RenderMeshPart0054b800@@YAXPAVCMeshPart@@PAVIRenderableThing@@H@Z	?RenderPart2D@@YAXPAVCMeshPart@@PAVIRenderableThing@@@Z	0054b800, cdecl; ScreenOverlay's third argument is open
+?Busy@CXBOXAsyncCache@@QAEHXZ	?IsBusy@CWaitingThread@@QAEHXZ	00528d90; the asynccache.h view (C2011 with WaitingThread.h)
+?GrabMutex@CXBOXAsyncCache@@QAEXXZ	?Lock@CWaitingThread@@QAEXXZ	00528da0; same view
+?ReleaseMutex@CXBOXAsyncCache@@QAEXXZ	?Unlock@CWaitingThread@@QAEXXZ	00528dc0; same view

@@ -1,0 +1,13 @@
+--- a/CollisionSeekingRound.cpp
++++ b/CollisionSeekingRound.cpp
+@@ -48,7 +48,9 @@
+ 				float fraction = (delta * start) / delta.MagnitudeSq();
+ 				FVector closest = start + (end - start) * fraction;
+ 				float distanceSquared = closest.MagnitudeSq();
+-				if (distanceSquared > radius * radius)
++				// Port (patch 0019): a still round makes fraction 0/0; retail's fcompp + test ah,1 (00425e01..00425e0c) then
++				// takes the unordered NaN as greater and returns FALSE, where clang's > is false.
++				if (!(distanceSquared <= radius * radius))
+ 					return FALSE;
+ 			}
+ 		}

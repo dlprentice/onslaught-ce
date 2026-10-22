@@ -1,0 +1,33 @@
+--- a/BattleEngine.cpp
++++ b/BattleEngine.cpp
+@@ -1760,10 +1760,28 @@
+ 		if (old_ori != new_ori)
+ 		{
+ 			old_ori.TransposeInPlace() ;
+-			new_ori = new_ori * old_ori ;
++			// Port (patch 0028): this standing-object delta has VC6's own reduction order
++			// at 0040913b..004092e7: columns X/Z sum (Z+Y)+X, Y sums (Y+X)+Z.
++			// Keep both input matrices intact until all nine delta cells are ready.
++			FMatrix standingDelta;
++			standingDelta.Row[0].X = ((new_ori.Row[0].Z * old_ori.Row[2].X) + (new_ori.Row[0].Y * old_ori.Row[1].X)) + (new_ori.Row[0].X * old_ori.Row[0].X);
++			standingDelta.Row[0].Y = ((new_ori.Row[0].Y * old_ori.Row[1].Y) + (new_ori.Row[0].X * old_ori.Row[0].Y)) + (new_ori.Row[0].Z * old_ori.Row[2].Y);
++			standingDelta.Row[0].Z = ((new_ori.Row[0].Z * old_ori.Row[2].Z) + (new_ori.Row[0].Y * old_ori.Row[1].Z)) + (new_ori.Row[0].X * old_ori.Row[0].Z);
++			standingDelta.Row[1].X = ((new_ori.Row[1].Z * old_ori.Row[2].X) + (new_ori.Row[1].Y * old_ori.Row[1].X)) + (new_ori.Row[1].X * old_ori.Row[0].X);
++			standingDelta.Row[1].Y = ((new_ori.Row[1].Y * old_ori.Row[1].Y) + (new_ori.Row[1].X * old_ori.Row[0].Y)) + (new_ori.Row[1].Z * old_ori.Row[2].Y);
++			standingDelta.Row[1].Z = ((new_ori.Row[1].Z * old_ori.Row[2].Z) + (new_ori.Row[1].Y * old_ori.Row[1].Z)) + (new_ori.Row[1].X * old_ori.Row[0].Z);
++			standingDelta.Row[2].X = ((new_ori.Row[2].Z * old_ori.Row[2].X) + (new_ori.Row[2].Y * old_ori.Row[1].X)) + (new_ori.Row[2].X * old_ori.Row[0].X);
++			standingDelta.Row[2].Y = ((new_ori.Row[2].Y * old_ori.Row[1].Y) + (new_ori.Row[2].X * old_ori.Row[0].Y)) + (new_ori.Row[2].Z * old_ori.Row[2].Y);
++			standingDelta.Row[2].Z = ((new_ori.Row[2].Z * old_ori.Row[2].Z) + (new_ori.Row[2].Y * old_ori.Row[1].Z)) + (new_ori.Row[2].X * old_ori.Row[0].Z);
++			new_ori = standingDelta;
+ 	
+ 			FVector them_to_us = mPos - mStandingOnThing->GetPos() ;
+-			them_to_us = new_ori * them_to_us ;
++			// The following retail vector product (00409315..0040937d) sums X/Z as
++			// (X+Y)+Z and Y as (Y+Z)+X; do not use the shared ZYX helper here.
++			them_to_us = FVector(
++				((new_ori.Row[0].X * them_to_us.X) + (new_ori.Row[0].Y * them_to_us.Y)) + (new_ori.Row[0].Z * them_to_us.Z),
++				((new_ori.Row[1].Y * them_to_us.Y) + (new_ori.Row[1].Z * them_to_us.Z)) + (new_ori.Row[1].X * them_to_us.X),
++				((new_ori.Row[2].X * them_to_us.X) + (new_ori.Row[2].Y * them_to_us.Y)) + (new_ori.Row[2].Z * them_to_us.Z));
+ 			mPos = mStandingOnThing->GetPos() +them_to_us ;
+ 
+ 			// rotate us aswell

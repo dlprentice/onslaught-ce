@@ -1,0 +1,13 @@
+--- a/Unit.cpp
++++ b/Unit.cpp
+@@ -1464,7 +1464,9 @@
+ 		return 2;
+ 
+ 	FVector	offset = target->GetPos() - mPos;
+-	float	dist = offset.Magnitude();
++	// Port (patch 0014): retail sums the squares (Y + Z) + X (004fb6a2..004fb6b4); clang keeps Magnitude's X + Y + Z,
++	// and at a target on the edge of the weapon's range the ulp decides between in range and out (level 400).
++	float	dist = sqrtf(((offset.Y * offset.Y) + (offset.Z * offset.Z)) + (offset.X * offset.X));
+ 	if (mCurrentWeapon)
+ 	{
+ 		if (mCurrentWeapon->GetMinRange(target->GetPos()) > dist)

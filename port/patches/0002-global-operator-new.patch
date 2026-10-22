@@ -1,0 +1,50 @@
+--- a/MemoryManager.h
++++ b/MemoryManager.h
+@@ -381,7 +381,7 @@
+ #ifdef COLLISIONSEEKINGTHING_CPP
+ inline void *operator new(size_t size)
+ #else
+-static inline void *operator new(size_t size)
++PORT_GLOBAL_NEW inline void *operator new(size_t size)
+ #endif
+ {
+ 	return MEM_MANAGER.Alloc(size, MEMTYPE_GENERIC, "", 0);
+@@ -393,11 +393,11 @@
+ #if defined(ENGINE_CPP) || defined(SOUNDMANAGER_CPP) || defined(PCPLATFORM_CPP) || defined(PCMUSICSTREAM_CPP) || defined(ISCRIPT_CPP)
+ inline void operator delete(void *p)
+ #else
+-static inline void operator delete(void *p)
++PORT_GLOBAL_NEW inline void operator delete(void *p)
+ #endif
+ {
+ 	MEM_MANAGER.Free(p);
+-}
++} PORT_ARRAY_FORMS
+ #define new(type) new(type, __FILE__, __LINE__)
+ 
+ #define SAFE_DELETE(p) { if (p) { delete (p); (p) = NULL; } }
+--- a/MemoryManagerMesh.h
++++ b/MemoryManagerMesh.h
+@@ -398,7 +398,7 @@
+ #ifdef COLLISIONSEEKINGTHING_CPP
+ inline void *operator new(size_t size)
+ #else
+-static inline void *operator new(size_t size)
++PORT_GLOBAL_NEW inline void *operator new(size_t size)
+ #endif
+ {
+ 	return MEM_MANAGER.Alloc(size, MEMTYPE_GENERIC, "", 0);
+@@ -410,11 +410,11 @@
+ #if defined(ENGINE_CPP) || defined(SOUNDMANAGER_CPP) || defined(PCPLATFORM_CPP) || defined(PCMUSICSTREAM_CPP) || defined(ISCRIPT_CPP)
+ inline void operator delete(void *p)
+ #else
+-static inline void operator delete(void *p)
++PORT_GLOBAL_NEW inline void operator delete(void *p)
+ #endif
+ {
+ 	MEM_MANAGER.Free(p);
+-}
++} PORT_ARRAY_FORMS
+ #define new(type) new(type, __FILE__, __LINE__)
+ 
+ #define SAFE_DELETE(p) { if (p) { delete (p); (p) = NULL; } }

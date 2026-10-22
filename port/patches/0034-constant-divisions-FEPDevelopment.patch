@@ -1,0 +1,16 @@
+--- a/FEPDevelopment.cpp
++++ b/FEPDevelopment.cpp
+@@ -134,11 +134,11 @@
+ 
+ 		if (c0 == mSelected)
+ 		{
+-			SINT c = SINT(sinf(float(mLastFirework) / 10.0f) * 63.f + 192.f);
++			SINT c = SINT(sinf(float(mLastFirework) * 0.1f /* retail 005d8c1c: / 10.0f */) * 63.f + 192.f);
+ 			col = c * 0x010101 + 0xff000000;
+ 		}
+ 
+-		PLATFORM.Font(FONT_DEBUG)->DrawTextDynamic(x, y, 0.f, 1.f, 1.f, col, ToWCHAR(mWorlds[c0]), float(mLastFirework - c0 * 2) / 20.0f, 0, 0);
++		PLATFORM.Font(FONT_DEBUG)->DrawTextDynamic(x, y, 0.f, 1.f, 1.f, col, ToWCHAR(mWorlds[c0]), float(mLastFirework - c0 * 2) * 0.05f /* retail 005d8584: / 20.0f */, 0, 0);
+ 
+ 		if (++ row == 15)
+ 		{

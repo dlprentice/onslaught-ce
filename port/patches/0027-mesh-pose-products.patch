@@ -1,0 +1,118 @@
+--- a/MeshPart.cpp
++++ b/MeshPart.cpp
+@@ -1122,7 +1122,21 @@
+ 			if (thing)
+ 			{
+ 				FMatrix	m = thing->GetRenderOrientation();
+-				*ori = m * *ori;
++				// Port (patch 0027): this cached-frame world transform has its own VC6 sum order
++				// (004b1402..004b153a), distinct from the other cached transform and maths.h.
++				// Preserve the complete input until all nine outputs have been evaluated.
++				FMatrix localPose = *ori;
++				FMatrix world;
++				world.Row[0].X = ((m.Row[0].Z * localPose.Row[2].X) + (m.Row[0].Y * localPose.Row[1].X)) + (m.Row[0].X * localPose.Row[0].X);
++				world.Row[0].Y = ((m.Row[0].Y * localPose.Row[1].Y) + (m.Row[0].Z * localPose.Row[2].Y)) + (m.Row[0].X * localPose.Row[0].Y);
++				world.Row[0].Z = ((m.Row[0].X * localPose.Row[0].Z) + (m.Row[0].Z * localPose.Row[2].Z)) + (m.Row[0].Y * localPose.Row[1].Z);
++				world.Row[1].X = ((m.Row[1].X * localPose.Row[0].X) + (m.Row[1].Z * localPose.Row[2].X)) + (m.Row[1].Y * localPose.Row[1].X);
++				world.Row[1].Y = ((m.Row[1].X * localPose.Row[0].Y) + (m.Row[1].Y * localPose.Row[1].Y)) + (m.Row[1].Z * localPose.Row[2].Y);
++				world.Row[1].Z = ((m.Row[1].Z * localPose.Row[2].Z) + (m.Row[1].X * localPose.Row[0].Z)) + (m.Row[1].Y * localPose.Row[1].Z);
++				world.Row[2].X = ((m.Row[2].X * localPose.Row[0].X) + (m.Row[2].Z * localPose.Row[2].X)) + (m.Row[2].Y * localPose.Row[1].X);
++				world.Row[2].Y = ((m.Row[2].X * localPose.Row[0].Y) + (m.Row[2].Y * localPose.Row[1].Y)) + (m.Row[2].Z * localPose.Row[2].Y);
++				world.Row[2].Z = ((m.Row[2].Z * localPose.Row[2].Z) + (m.Row[2].X * localPose.Row[0].Z)) + (m.Row[2].Y * localPose.Row[1].Z);
++				*ori = world;
+ 				*pos = m * *pos + thing->GetRenderPos();
+ 			}
+ 			sWorldCacheOri = *ori;
+--- a/MeshPose.cpp
++++ b/MeshPose.cpp
+@@ -65,40 +65,55 @@
+ // and his default GetWorldTransforms argument is written explicitly. The source's separate guards,
+ // direct frame read, product-first position sum and else-scoped fallback reproduce all retail bytes
+ // and references without the former pose self-copy branch or named-position-reference stand-ins.
+-void CMeshPart::EvaluatePose(CRenderThing *rt, IRenderableThing *thing, CMeshPart *part, FVector *pos, FMatrix *ori, BOOL local, BOOL force) // FUNCTION: 0x004b4de0
++// Port (patch 0027): retain the previously validated Clang control flow and operand order.
++// The byte-matching VC6 source uses Stuart's newly supplied form; that alone does not prove
++// Clang floating-point parity. The two historical no-code stand-ins remain in this port mirror.
++void CMeshPart::EvaluatePose(CRenderThing *rt, IRenderableThing *thing, CMeshPart *part, FVector *pos, FMatrix *ori, BOOL local, BOOL force)	// FUNCTION: 0x004b4de0
+ {
+-    *pos = ZERO_FVECTOR;
+-    *ori = ID_FMATRIX;
+-    CMeshPose *pose = rt->mPose;
+-    CMesh *mesh = rt->GetRTMesh();
+-    if (!mesh)
+-        return;
+-    if (!part)
+-        return;
+-    if ((pose) && (GAME.mRenderFrameNumber > 1))
+-    {
+-        pose->Update(mesh, thing, rt, force);
+-        *pos = pose->mPositions[part->mPartNumber];
+-        *ori = pose->mOrientations[part->mPartNumber];
+-        if (!local)
+-        {
+-            FVector tpos = thing->GetRenderPos();
+-            FMatrix tori = thing->GetRenderOrientation();
+-            *pos = (tori * *pos) + tpos;
+-            *ori = tori * *ori;
+-        }
+-    }
+-    else
+-    {
+-        if (part)
+-        {
+-            SINT frame;
+-            float fraction;
+-            if (thing->GetRealAnimIndex() >= 0)
+-                frame = part->ResolveFrameNumber(thing->GetRenderFrame(), thing->GetRealAnimIndex(), &fraction, thing->GetMotionController());
+-            else
+-                frame = 0;
+-            part->GetWorldTransforms(frame, frame, 0.0f, thing, ori, pos, local ? true : false, true, 0);
+-        }
+-    }
++	*pos = ZERO_FVECTOR;
++	*ori = ID_FMATRIX;
++	CMeshPose	*pose = rt->mPose;
++	CMesh		*mesh = rt->GetRTMesh();
++	if ((!mesh) || (!part))
++		return;
++
++	if ((pose) && (GAME.GetRenderFrameNumber() > 1))
++	{
++		pose->Update(mesh, thing, rt, force);
++		*pos = pose->mPositions[part->mPartNumber];
++		if (!pose)
++			pose = rt->mPose;	// STAND-IN (a): the same pointer again (see above)
++		*ori = pose->mOrientations[part->mPartNumber];
++		if (!local)
++		{
++			FVector	tpos = thing->GetRenderPos();
++			FMatrix	tori = thing->GetRenderOrientation();
++			FVector	&p = *pos;	// STAND-IN (b): see above
++			*pos = tpos + tori * p;
++			// Port (patch 0027): this cached-pose world transform has its own VC6 sum order
++			// (004b4f7b..004b50b9), distinct from the other cached transform and maths.h.
++			// Preserve the complete input until all nine outputs have been evaluated.
++			FMatrix localPose = *ori;
++			FMatrix world;
++			world.Row[0].X = ((tori.Row[0].X * localPose.Row[0].X) + (tori.Row[0].Y * localPose.Row[1].X)) + (tori.Row[0].Z * localPose.Row[2].X);
++			world.Row[0].Y = ((tori.Row[0].Y * localPose.Row[1].Y) + (tori.Row[0].X * localPose.Row[0].Y)) + (tori.Row[0].Z * localPose.Row[2].Y);
++			world.Row[0].Z = ((tori.Row[0].Z * localPose.Row[2].Z) + (tori.Row[0].Y * localPose.Row[1].Z)) + (tori.Row[0].X * localPose.Row[0].Z);
++			world.Row[1].X = ((tori.Row[1].X * localPose.Row[0].X) + (tori.Row[1].Y * localPose.Row[1].X)) + (tori.Row[1].Z * localPose.Row[2].X);
++			world.Row[1].Y = ((tori.Row[1].X * localPose.Row[0].Y) + (tori.Row[1].Y * localPose.Row[1].Y)) + (tori.Row[1].Z * localPose.Row[2].Y);
++			world.Row[1].Z = ((tori.Row[1].Z * localPose.Row[2].Z) + (tori.Row[1].X * localPose.Row[0].Z)) + (tori.Row[1].Y * localPose.Row[1].Z);
++			world.Row[2].X = ((tori.Row[2].X * localPose.Row[0].X) + (tori.Row[2].Y * localPose.Row[1].X)) + (tori.Row[2].Z * localPose.Row[2].X);
++			world.Row[2].Y = ((tori.Row[2].X * localPose.Row[0].Y) + (tori.Row[2].Y * localPose.Row[1].Y)) + (tori.Row[2].Z * localPose.Row[2].Y);
++			world.Row[2].Z = ((tori.Row[2].Z * localPose.Row[2].Z) + (tori.Row[2].X * localPose.Row[0].Z)) + (tori.Row[2].Y * localPose.Row[1].Z);
++			*ori = world;
++		}
++		return;
++	}
++
++	SINT	frame;
++	float	fraction;
++	if (thing->GetRealAnimIndex() >= 0)
++		frame = part->ResolveFrameNumber(thing->GetRenderFrame(), thing->GetRealAnimIndex(), &fraction, thing->GetMotionController());
++	else
++		frame = 0;
++	part->GetWorldTransforms(frame, frame, 0, thing, ori, pos, local != 0, TRUE, 0);
+ }

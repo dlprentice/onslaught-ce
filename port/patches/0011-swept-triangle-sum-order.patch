@@ -1,0 +1,196 @@
+--- a/Geometry.cpp
++++ b/Geometry.cpp
+@@ -143,61 +143,157 @@
+ // distance is copied into contactDistance, so retail keeps it on the FPU through the snap (00478894..004788c1);
+ // one valid flag sends both failed edge-hit tests and the farther-contact test to the shared return (00478ba3).
+ // FUNCTION: 0x00478510
+-BOOL TestSweptSphereAgainstTriangle(const FVector *a, const FVector *b, const FVector *c,
+-								   const FVector *pos, const FVector *move, float radius,
++// Port (patch 0011): TestSweptSphereAgainstTriangle (00478510) with every float sum in retail's order; equal to retail's
++// own 00478510 (run natively at control word 0x7F) on 20,050 cases, 1,039 of them hits (port/PARITY.md). VC6 ranks the
++// commutative operands of each sum, so its order is not the source text's; clang keeps the text's. Orders read from
++// retail's code and the rebuild's parity core, which matches retail here (rebuild Parity/Collision/Geometry.cs). Helpers
++// are file-local copies for this function only; the other callers keep their own code.
++namespace PortSweptOrder
++{
++	static inline FVector Sub(const FVector &a, const FVector &b) { return FVector(a.X - b.X, a.Y - b.Y, a.Z - b.Z); }
++	static inline FVector Add(const FVector &a, const FVector &b) { return FVector(a.X + b.X, a.Y + b.Y, a.Z + b.Z); }
++	static inline FVector Scale(const FVector &v, float s) { return FVector(v.X * s, v.Y * s, v.Z * s); }
++	static inline FVector Cross(const FVector &v, const FVector &a)
++	{
++		return FVector((v.Y * a.Z) - (v.Z * a.Y), (v.Z * a.X) - (a.Z * v.X), (a.Y * v.X) - (v.Y * a.X));
++	}
++	static inline float DotYZX(const FVector &n, const FVector &v) { return ((n.Y * v.Y) + (n.Z * v.Z)) + (n.X * v.X); }
++	static inline float DotOutOfLine(const FVector &a, const FVector &b) { return ((a.Z * b.Z) + (a.Y * b.Y)) + (a.X * b.X); }	// 0040d180
++	static inline float MagnitudeSqOutOfLine(const FVector &v) { return ((v.X * v.X) + (v.Y * v.Y)) + (v.Z * v.Z); }	// 00477ba0
++	static inline float MagnitudeOutOfLine(const FVector &v) { return sqrtf(((v.X * v.X) + (v.Y * v.Y)) + (v.Z * v.Z)); }	// 004026b0
++	static inline FVector NormaliseOutOfLine(const FVector &v)
++	{
++		float m = MagnitudeOutOfLine(v);
++		if (m == 0.0f)
++			return v;
++		float r = 1.0f / m;
++		return FVector(v.X * r, v.Y * r, v.Z * r);
++	}
++	static inline float PlaneDistance(const FVector &normal, const FVector &point, const FVector &start, const FVector &direction)
++	{
++		float distance = DotOutOfLine(FVector(-normal.X, -normal.Y, -normal.Z), point);
++		distance = DotOutOfLine(normal, start) + distance;
++		float denominator = DotOutOfLine(normal, direction);
++		if (denominator == 0)
++			return -1;
++		return -(distance / denominator);
++	}
++	static inline BOOL InsidePrism(const FVector &point, const FVector &a, const FVector &b, const FVector &c, const FVector &normal)
++	{
++		FVector ca = Cross(Sub(a, point), Sub(b, a));
++		if (((normal.Y * ca.Y) + (normal.Z * ca.Z)) + (normal.X * ca.X) < 0.0)
++			return FALSE;
++		FVector cb = Cross(Sub(b, point), Sub(c, b));
++		if (((normal.Y * cb.Y) + (normal.Z * cb.Z)) + (normal.X * cb.X) < 0.0)
++			return FALSE;
++		FVector cc = Cross(Sub(c, point), Sub(a, c));
++		return !(DotOutOfLine(normal, cc) < 0.0);
++	}
++	static inline FVector ClosestOnSegment(const FVector &start, const FVector &end, const FVector &point)
++	{
++		FVector offset = Sub(point, start);
++		FVector direction = Sub(end, start);
++		float lengthSq = MagnitudeSqOutOfLine(direction);
++		direction = NormaliseOutOfLine(direction);
++		float projection = DotOutOfLine(direction, offset);
++		if (projection < 0)
++			return start;
++		if (projection * projection > lengthSq)
++			return end;
++		return Add(start, Scale(direction, projection));
++	}
++	static inline FVector ClosestOnEdges(const FVector &a, const FVector &b, const FVector &c, const FVector &point)
++	{
++		FVector first = ClosestOnSegment(b, a, point);
++		FVector second = ClosestOnSegment(a, c, point);
++		FVector third = ClosestOnSegment(c, b, point);
++		FVector delta = Sub(point, first);
++		FVector toSecond = Sub(point, second);
++		float secondSq = ((toSecond.Z * toSecond.Z) + (toSecond.Y * toSecond.Y)) + (toSecond.X * toSecond.X);
++		float thirdSq = MagnitudeSqOutOfLine(Sub(point, third));
++		float bestSq = ((delta.Z * delta.Z) + (delta.Y * delta.Y)) + (delta.X * delta.X);
++		FVector result = first;
++		if (secondSq < bestSq) { result = second; bestSq = secondSq; }
++		if (thirdSq < bestSq) result = third;
++		return result;
++	}
++	static inline float RayEntry(const FVector &start, const FVector &end, float radius)
++	{
++		FVector direction = Sub(end, start);
++		float m = sqrtf(((direction.Y * direction.Y) + (direction.Z * direction.Z)) + (direction.X * direction.X));
++		if (m != 0.0f) { float r = 1.0f / m; direction = FVector(direction.X * r, direction.Y * r, direction.Z * r); }
++		FVector toCentre(-start.X, -start.Y, -start.Z);
++		float projection = ((toCentre.Z * direction.Z) + (toCentre.Y * direction.Y)) + (toCentre.X * direction.X);
++		float centreSq = ((toCentre.Z * toCentre.Z) + (toCentre.Y * toCentre.Y)) + (toCentre.X * toCentre.X);
++		float discriminant = (radius * radius) - (centreSq - (projection * projection));
++		if (discriminant < 0)
++			return -1;
++		float root = sqrtf(discriminant);
++		float distance = projection - root;
++		if (distance < 0)
++		{
++			if (root + projection > 0)
++				return radius - sqrtf(((start.Z * start.Z) + (start.Y * start.Y)) + (start.X * start.X));
++			return -1;
++		}
++		return distance;
++	}
++}
++
++BOOL TestSweptSphereAgainstTriangle(const FVector *pa, const FVector *pb, const FVector *pc,
++								   const FVector *ppos, const FVector *pmove, float radius,
+ 								   CCollisionReport *report)
+ {
++	using namespace PortSweptOrder;
++	const FVector a = *pa, b = *pb, c = *pc, pos = *ppos, move = *pmove;
+ 	BOOL overlapping = FALSE;
+ 	BOOL valid = TRUE;
+-	FVector firstEdge = *b - *a;
+-	FVector secondEdge = *c - *a;
+-	FVector normal = firstEdge ^ secondEdge;
+-	normal.Normalise();
+-	if ((normal * *move) >= 0.01f)
+-		return FALSE;
+-	FVector fromStart = *a - *pos;
+-	if (static_cast<const FDotVector &>(normal).Dot(fromStart) >= 0.01f)	// STAND-IN for normal * fromStart
+-		return FALSE;
+-	FVector front = *pos - normal * radius;
+-	FVector fromFront = *a - front;
++	FVector normal = Cross(Sub(b, a), Sub(c, a));
++	{
++		float m = sqrtf(((normal.Z * normal.Z) + (normal.Y * normal.Y)) + (normal.X * normal.X));
++		if (m != 0.0f) { float r = 1.0f / m; normal = FVector(normal.X * r, normal.Y * r, normal.Z * r); }
++	}
++	if (DotYZX(normal, move) >= 0.01f)
++		return FALSE;
++	FVector fromStart = Sub(a, pos);
++	if (DotYZX(normal, fromStart) >= 0.01f)
++		return FALSE;
++	FVector front = Sub(pos, Scale(normal, radius));
++	FVector fromFront = Sub(a, front);
+ 	float distance;
+ 	FVector projected;
+-	if (static_cast<const FDotVector &>(normal).Dot(fromFront) > 0.0001f)	// STAND-IN for normal * fromFront
+-	{
+-		distance = TrianglePlaneDistance(normal, *a, front, normal);
+-		FVector offset = normal * distance;
+-		projected = front + offset;
++	if (DotYZX(normal, fromFront) > 0.0001f)
++	{
++		distance = PlaneDistance(normal, a, front, normal);
++		projected = Add(front, Scale(normal, distance));
+ 	}
+ 	else
+ 	{
+-		FVector direction = *move;
+-		direction.Normalise();
+-		distance = TrianglePlaneDistance(normal, *a, front, direction);
+-		FVector offset = direction * distance;
+-		projected = front + offset;
+-		// The square is spilled to float32 across the out-of-line MagnitudeSq call (00478b21).
+-		if (distance * distance > move->MagnitudeSq())
++		FVector direction = move;
++		float dm = sqrtf(((direction.X * direction.X) + (direction.Z * direction.Z)) + (direction.Y * direction.Y));
++		if (dm != 0.0f) { float r = 1.0f / dm; direction = FVector(direction.X * r, direction.Y * r, direction.Z * r); }
++		distance = PlaneDistance(normal, a, front, direction);
++		projected = Add(front, Scale(direction, distance));
++		if (distance * distance > MagnitudeSqOutOfLine(move))
+ 			return FALSE;
+ 	}
+-	// Snapping is after the point calculation and is not repeated after the edge fallback.
+ 	if (fabsf(distance) < 0.0001)
+ 		distance = 0;
+ 	float contactDistance = distance;
+ 	FVector contact = projected;
+-	if (!PointInsideTrianglePrism(&projected, a, b, c, &normal))
+-	{
+-		contact = SelectClosestPointOnTriangleEdges(a, b, c, &projected);
+-		FVector rawMove = *move;
+-		FVector rayStart = contact - *pos;
+-		FVector rayEnd = (contact - rawMove) - *pos;
+-		contactDistance = RaySphereEntryDistance(&rayStart, &rayEnd, radius);
+-	}
+-	if ((contact - *pos).Magnitude() - radius < -0.0001f)
++	if (!InsidePrism(projected, a, b, c, normal))
++	{
++		contact = ClosestOnEdges(a, b, c, projected);
++		FVector rayStart = Sub(contact, pos);
++		FVector rayEnd = Sub(Sub(contact, move), pos);
++		contactDistance = RayEntry(rayStart, rayEnd, radius);
++	}
++	if (MagnitudeOutOfLine(Sub(contact, pos)) - radius < -0.0001f)
+ 	{
+ 		report->mStuck = TRUE;
+ 		overlapping = TRUE;
+ 	}
+-	else if ((contactDistance < -0.0001) || (move->Magnitude() < contactDistance))
++	else if ((contactDistance < -0.0001) || (MagnitudeOutOfLine(move) < contactDistance))
+ 		valid = FALSE;
+ 	if (valid && report->mUnknownA8 && contactDistance >= report->mDistance && overlapping != TRUE)
+ 		valid = FALSE;

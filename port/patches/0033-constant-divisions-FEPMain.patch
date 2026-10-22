@@ -1,0 +1,11 @@
+--- a/FEPMain.cpp
++++ b/FEPMain.cpp
+@@ -738,7 +738,7 @@
+ 	if ((d < 0.15f) && (dest != FEP_INTRO))
+ 	{
+ 		scale = PLATFORM.GetWindowWidth() * (1.f / 32.f);
+-		CSPRITERENDERER::DrawColouredSprite(0.f, 0.f, 0.001f, FED.GetTexture(FET2_WHITE), BlendAlpha2(0xffffffff, SINT((1.f - d * (1.f / 0.15f)) * 128.f)), scale, scale);
++		CSPRITERENDERER::DrawColouredSprite(0.f, 0.f, 0.001f, FED.GetTexture(FET2_WHITE), BlendAlpha2(0xffffffff, SINT((1.f - d * (1.f * 6.6666665f /* retail 005db5c0: / 0.15f */)) * 128.f)), scale, scale);
+ 	}
+ }
+ 

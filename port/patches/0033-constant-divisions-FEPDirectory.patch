@@ -1,0 +1,11 @@
+--- a/FEPDirectory.cpp
++++ b/FEPDirectory.cpp
+@@ -203,7 +203,7 @@
+ 		DWORD	col;
+ 		if (i == mCursor)
+ 		{
+-			SINT	pulse = SINT((float)cos((FRONTEND.GetCounter() * 3.14f) * (1.f / 30.f)) * -100.f);
++			SINT	pulse = SINT((float)cos((FRONTEND.GetCounter() * 3.14f) * (1.f * 0.033333335f /* retail 005db4f0: / 30.f */)) * -100.f);
+ 			col = 0xff969696 - pulse * 0x010101;
+ 		}
+ 		else

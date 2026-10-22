@@ -1,0 +1,29 @@
+# The licence of every path in this repository (https://reuse.software, REUSE.toml version 1). A file's own SPDX header
+# takes precedence over these entries; where several entries match a file, the last one applies. src/ carries no
+# per-file headers because its line numbers are part of the game's build (__LINE__); this file covers it.
+version = 1
+
+[[annotations]]
+path = "**"
+SPDX-FileCopyrightText = "the Onslaught CE contributors"
+SPDX-License-Identifier = "GPL-3.0-only"
+
+[[annotations]]
+path = ["src/**", "linklib/**"]
+SPDX-FileCopyrightText = ["Stuart Gillam (the game's source release)", "the Onslaught CE contributors"]
+SPDX-License-Identifier = "GPL-3.0-only"
+
+[[annotations]]
+path = ["src/d3dapp.cpp", "src/d3dapp.h"]
+SPDX-FileCopyrightText = ["Microsoft Corporation (DirectX sample framework)", "Stuart Gillam (the game's source release, GPL-3.0)"]
+SPDX-License-Identifier = "GPL-3.0-only"
+
+[[annotations]]
+path = "src/oggvorbis.h"
+SPDX-FileCopyrightText = ["Xiph.Org Foundation (libogg and libvorbis declarations)", "the Onslaught CE contributors"]
+SPDX-License-Identifier = "GPL-3.0-only AND BSD-3-Clause"
+
+[[annotations]]
+path = "port/patches/**"
+SPDX-FileCopyrightText = "the Onslaught CE contributors"
+SPDX-License-Identifier = "GPL-3.0-only"

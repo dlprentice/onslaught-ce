@@ -1,0 +1,15 @@
+--- a/Round.cpp
++++ b/Round.cpp
+@@ -375,7 +375,11 @@
+ 		float	yaw = (GAME.FloatRandom() * 2 - 1) * mData->mWiggle;
+ 		wiggle = FMatrix(yaw, pitch, 0);
+ 		unwiggle = FMatrix(-yaw, -pitch, 0);
+-		mVelocity = wiggle * mVelocity;
++		// Port (patch 0030): retail's inline wiggle product (004d90d6..004d916a) sums each component (X+Y)+Z;
++		// FMatrix * FVector sums (Z+Y)+X. The unwiggle product (004d921e..) is (Y+Z)+X, the port's value already.
++		mVelocity = FVector(((wiggle.Row[0].X * mVelocity.X) + (wiggle.Row[0].Y * mVelocity.Y)) + (wiggle.Row[0].Z * mVelocity.Z),
++			((wiggle.Row[1].X * mVelocity.X) + (wiggle.Row[1].Y * mVelocity.Y)) + (wiggle.Row[1].Z * mVelocity.Z),
++			((wiggle.Row[2].X * mVelocity.X) + (wiggle.Row[2].Y * mVelocity.Y)) + (wiggle.Row[2].Z * mVelocity.Z));
+ 	}
+ 
+ 	mVelocity.Z += Gravity();

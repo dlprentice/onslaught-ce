@@ -1,0 +1,33 @@
+--- a/DXBattleLine.cpp
++++ b/DXBattleLine.cpp
+@@ -46,7 +46,7 @@
+ 		p.Y *= k;
+ 	}
+ 	return FVector2(dx + 44.f, p.Y + 44.f);
+-}
++} static inline FVector2 RadarClamp(FVector2 &&p) { return RadarClamp(p); }
+ 
+ //******************************************************************************************
+ CDXBattleLine::CDXBattleLine()	// FUNCTION: 0x00539f00
+--- a/DXEngine.cpp
++++ b/DXEngine.cpp
+@@ -224,7 +224,7 @@
+ }
+ 
+ //******************************************************************************************
+-void	CDXEngine::DrawDebugCuboid(DWORD col, FVector &axes, FVector &pos, FMatrix ori, CTEXTURE *for_texture)	// FUNCTION: 0x0053d760
++void	CDXEngine::DrawDebugCuboid(DWORD col, const FVector &axes, const FVector &pos, FMatrix ori, CTEXTURE *for_texture)	// FUNCTION: 0x0053d760
+ {
+ 	// Draw polys representing cuboid.
+ 	// ** ASSUMES local orientation already set up...
+--- a/DXEngine.h
++++ b/DXEngine.h
+@@ -55,7 +55,7 @@
+ 	class CTEXTURE		*GetScreenTexture() { return mScreenTexture; };
+ 	void				SetBlurAlpha(int a,bool thisframe);	// 0053f010
+ 
+-	void				DrawDebugCuboid(DWORD col, FVector &axes, FVector &pos, FMatrix ori, CTEXTURE* for_texture) ;
++	void				DrawDebugCuboid(DWORD col, const FVector &axes, const FVector &pos, FMatrix ori, CTEXTURE* for_texture) ;
+ 	void				DrawDebugLine(DWORD col, FVector &start, FVector &end);
+ 	void				RenderArrow(FVector v1, FVector v2, DWORD col);	// 0053df40
+ 

@@ -1,0 +1,2 @@
+# The patches reproduce the upstream sources' own whitespace in their context lines.
+*.patch -whitespace

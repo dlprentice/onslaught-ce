@@ -1,0 +1,20 @@
+--- a/Submarine.cpp
++++ b/Submarine.cpp
+@@ -29,7 +29,7 @@
+ 	init->mInitCST.mNotSeekCollisionWithBF |= THING_TYPE_BUILDING | THING_TYPE_TREE;
+ 
+ 	float	turn = ((CUnitInitThing *)init)->mStats->mTurnRate;
+-	mUnknown12C = CEulerAngles(turn, turn / 3.0f, 0);
++	mUnknown12C = CEulerAngles(turn, turn * 0.33333334f /* retail 005d8608: / 3.0f */, 0);
+ 
+ 	SUPERTYPE::Init(init);
+ 
+@@ -54,7 +54,7 @@
+ 	// no faster than its top speed across the water
+ 	FVector	v = mVelocity;
+ 	float	speed = v.MagnitudeXY();
+-	float	max = Unknown111() / 20.0f;
++	float	max = Unknown111() * 0.05f /* retail 005d8584: / 20.0f */;
+ 	if (speed > max)
+ 	{
+ 		v *= max / speed;

@@ -1,0 +1,20 @@
+--- a/DXMeshVB.cpp
++++ b/DXMeshVB.cpp
+@@ -791,7 +791,7 @@
+ 			ENGINE.GetCloakTexture()->Activate();
+ 			ENGINE.GetCloakTexture()->Select();
+ 			LT.SRS(D3DRS_LIGHTING, FALSE);
+-			float	t = ENGINE.GetRenderTime() / 10.0f;
++			float	t = ENGINE.GetRenderTime() * 0.1f /* retail 005d8c1c: / 10.0f */;
+ 			D3DXMATRIX	m(0.5f, 0, 0, 0,
+ 						  0, -0.5f, 0, 0,
+ 						  0, 0, 1.0f, 0,
+@@ -816,7 +816,7 @@
+ 			ENGINE.GetHitEffectTexture()->Activate();
+ 			ENGINE.GetHitEffectTexture()->Select();
+ 			LT.SRS(D3DRS_LIGHTING, FALSE);
+-			float	t = ENGINE.GetRenderTime() / 5.0f;
++			float	t = ENGINE.GetRenderTime() * 0.2f /* retail 005d8c68: / 5.0f */;
+ 			D3DXMATRIX	m(0.5f, 0, 0, 0,
+ 						  0, -0.5f, 0, 0,
+ 						  0, 0, 1.0f, 0,

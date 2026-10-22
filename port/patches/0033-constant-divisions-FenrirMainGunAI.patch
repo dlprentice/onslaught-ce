@@ -1,0 +1,11 @@
+--- a/FenrirMainGunAI.cpp
++++ b/FenrirMainGunAI.cpp
+@@ -49,7 +49,7 @@
+ 		if ((!unit) || (!mForUnit->IsTargetAlligence(unit->GetAllegiance())) || (!mForUnit->Unknown4fb3d0(unit)))
+ 			continue;
+ 		CUnitData	*data = mForUnit->mUnitData;
+-		if (!((1.0f - unit->GetStealth() / 100.0f) * data->mMaxTargetRange > distance))
++		if (!((1.0f - unit->GetStealth() * 0.01f /* retail 005d85fc: / 100.0f */) * data->mMaxTargetRange > distance))
+ 			continue;
+ 
+ 		float	p = 0;

@@ -1,0 +1,20 @@
+--- a/BattleEngineWalkerPart.cpp
++++ b/BattleEngineWalkerPart.cpp
+@@ -371,7 +371,7 @@
+ 		mult = 1.0f;
+ 
+ 	float	yawvel = mMainPart->mYawvel;		// STAND-IN (order): read before the zoom modifier's call (00413694); Stuart's `-=` is 107 bytes off
+-	mMainPart->mYawvel = yawvel - mMainPart->ZoomModifier(mMainPart->mZoom) * ((mult * vx) * mMainPart->mConfiguration->mGroundTurnRate/75.0f);
++	mMainPart->mYawvel = yawvel - mMainPart->ZoomModifier(mMainPart->mZoom) * ((mult * vx) * mMainPart->mConfiguration->mGroundTurnRate*0.013333334f /* retail 005d8cd8: / 75.0f */);
+ }
+ 
+ //******************************************************************************************
+@@ -388,7 +388,7 @@
+ 		mult = 1.0f;
+ 
+ 	float	pitchvel = mMainPart->mPitchvel;	// STAND-IN (order), see Rotate
+-	mMainPart->mPitchvel = pitchvel - (mult*vy/117.0f) * mMainPart->ZoomModifier(mMainPart->mZoom);
++	mMainPart->mPitchvel = pitchvel - (mult*vy*0.008547009f /* retail 005d8c90: / 117.0f */) * mMainPart->ZoomModifier(mMainPart->mZoom);
+ }
+ 
+ #include "DebugLog.h"

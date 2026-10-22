@@ -1,0 +1,29 @@
+--- a/maths.h
++++ b/maths.h
+@@ -275,7 +275,10 @@
+ 	FMatrix	operator-(const FMatrix &m) const { return FMatrix(Row[0] - m.Row[0], Row[1] - m.Row[1], Row[2] - m.Row[2]); }
+ 	// Before the matrix product, as in Stuart's ancestor (DCMoHo fcoords.h; retail emits it first, 0040d2c0). Written out in full: built from FVector's dot product, the constructor is not inlined (CThing::GetCentrePos 004f3ac0).
+ 	// Each product bracketed (from CSquadNormal::BuildColumnFormation 004e8730; fourteen functions match so).
+-	FVector	operator*(const FVector &v) const { return FVector((Row[0].X * v.X) + (Row[0].Y * v.Y) + (Row[0].Z * v.Z), (Row[1].X * v.X) + (Row[1].Y * v.Y) + (Row[1].Z * v.Z), (Row[2].X * v.X) + (Row[2].Y * v.Y) + (Row[2].Z * v.Z)); }
++	// Port (patch 0010): each row summed (Z + Y) + X, as retail computes it (out of line at 0040d2c0, and inline at
++	// CThing::GetCentrePos 004f3b9c and CUnit::GetEmitter 004fc60f): VC6 ranks the products, clang keeps the
++	// source order, and the two round differently at 24 bits.
++	FVector	operator*(const FVector &v) const { return FVector(((Row[0].Z * v.Z) + (Row[0].Y * v.Y)) + (Row[0].X * v.X), ((Row[1].Z * v.Z) + (Row[1].Y * v.Y)) + (Row[1].X * v.X), ((Row[2].Z * v.Z) + (Row[2].Y * v.Y)) + (Row[2].X * v.X)); }
+ 	FMatrix	operator*(const FMatrix &m) const	// CFEPGoodies::ButtonPressed (0045d44a..0045d5ad)
+ 	{
+ 		return FMatrix(
+--- a/MeshCollisionVolume.cpp
++++ b/MeshCollisionVolume.cpp
+@@ -310,7 +310,11 @@
+ 			CMeshCollisionPartTransform	*t = PartTransform(this, mesh, report->mPart->mPartNumber);
+ 			FMatrix	&o = t->mOrientation;
+ 			FVector	&c = report->mContactPos;
+-			report->mContactPos = o * c + t->mPos;
++			// Port (patch 0010): retail's own sum order at this product (004acbeb..004acc4b): row 0 (Z + Y) + X, rows 1
++			// and 2 (X + Z) + Y.
++			report->mContactPos = FVector(((o.Row[0].Z * c.Z) + (o.Row[0].Y * c.Y)) + (o.Row[0].X * c.X),
++				((o.Row[1].X * c.X) + (o.Row[1].Z * c.Z)) + (o.Row[1].Y * c.Y),
++				((o.Row[2].X * c.X) + (o.Row[2].Z * c.Z)) + (o.Row[2].Y * c.Y)) + t->mPos;
+ 			if (!ResolveContact(report, start, travel, sphere->mRadius, &start, &travel))
+ 			{
+ 				move->mPos = pos;

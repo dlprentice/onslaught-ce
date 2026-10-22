@@ -1,0 +1,54 @@
+--- a/MessageBox.cpp
++++ b/MessageBox.cpp
+@@ -82,7 +82,7 @@
+ 		mSpeaker.SetReader(speaker);
+ 		mHasSpeaker = TRUE;
+ 	}
+-	mDuration = wcslen(text) / 22.f + 0.2f;
++	mDuration = wcslen(text) * 0.045454547f /* retail 005dc6ac: / 22.f */ + 0.2f;
+ 	mRevealed = 0;
+ 	mDots = 0;
+ }
+@@ -654,7 +654,7 @@
+ 		RENDERINFO.Apply();
+ 
+ 		float	level = mUnknown020;
+-		if ((mRandom.Next() % 200) / 100.0f < mUnknown020)
++		if ((mRandom.Next() % 200) * 0.01f /* retail 005d85fc: / 100.0f */ < mUnknown020)
+ 		{
+ 			level = mUnknown020 + 0.2f;
+ 			if (level < 1.0f)
+@@ -713,11 +713,11 @@
+ 
+ 			float	v = 0;
+ 			if (level > 0.1f)
+-				v = level * ((mRandom.Next() % 100) / 300.0f);
++				v = level * ((mRandom.Next() % 100) * 0.0033333334f /* retail 005d8c98: / 300.0f */);
+ 			float	v1 = v + 1.0f;
+ 			float	u = 0;
+ 			if (level > 0.1f)
+-				u = level * ((mRandom.Next() % 100) / 500.0f);
++				u = level * ((mRandom.Next() % 100) * 0.002f /* retail 005dc6f8: / 500.0f */);
+ 			float	u1 = u + 1.0f;
+ 
+ 			DWORD	col = (alpha << 24) + 0xffffff;
+@@ -741,15 +741,15 @@
+ 					}
+ 				}
+ 				if (mPortraitTexture)
+-					CDXSpriteRenderer::DrawSprite(x + 16.0f, y - 16.0f, a / 1000.0f, mPortraitTexture, (ESpriteAlignment)2, SPT_NONE, 1.0f, 0,
++					CDXSpriteRenderer::DrawSprite(x + 16.0f, y - 16.0f, a * 0.001f /* retail 005dc6e4: / 1000.0f */, mPortraitTexture, (ESpriteAlignment)2, SPT_NONE, 1.0f, 0,
+ 												  col, 0.75f, 0.75f, su0, su1, v, v1);
+ 			}
+ 		}
+ 
+-		float	u = (mRandom.Next() % 100) / 100.0f;
+-		float	v = (mRandom.Next() % 100) / 100.0f;
++		float	u = (mRandom.Next() % 100) * 0.01f /* retail 005d85fc: / 100.0f */;
++		float	v = (mRandom.Next() % 100) * 0.01f /* retail 005d85fc: / 100.0f */;
+ 		SINT	alpha = SINT(((mRandom.Next() % 10) + 40) * (level + 1.5f));
+-		CDXSpriteRenderer::DrawSprite(x, y, a / 1000.0f, mUnknown1a4, (ESpriteAlignment)2, SPT_NONE, 1.0f, 0,
++		CDXSpriteRenderer::DrawSprite(x, y, a * 0.001f /* retail 005dc6e4: / 1000.0f */, mUnknown1a4, (ESpriteAlignment)2, SPT_NONE, 1.0f, 0,
+ 									  (alpha << 24) + 0xffffff, 1.0f, 1.0f, u, u + 1.0f, v, v + 1.0f);
+ 
+ 		float	target = mCurrent->mDelay;

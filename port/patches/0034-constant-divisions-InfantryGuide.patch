@@ -1,0 +1,11 @@
+--- a/InfantryGuide.cpp
++++ b/InfantryGuide.cpp
+@@ -140,7 +140,7 @@
+ 			return;
+ 		}
+ 
+-		float	speed = mUnit->Unknown111() / 5.0f;
++		float	speed = mUnit->Unknown111() * 0.2f /* retail 005d8c68: / 5.0f */;
+ 		FVector	forward(0, speed, 0);
+ 		FMatrix	&ori = GetUnit()->GetOrientation();
+ 		GetUnit()->mUnknown14C = ori * forward;

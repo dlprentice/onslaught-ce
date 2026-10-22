@@ -1,0 +1,57 @@
+--- a/BattleEngineJetPart.cpp
++++ b/BattleEngineJetPart.cpp
+@@ -113,8 +113,8 @@
+ 
+ 	if (mMainPart->GetVelocity().MagnitudeSq()>0.01f*0.01f)
+ 	{
+-		float	yawRate=(vx*mMainPart->mConfiguration->mAirTurnRate/94.0f) *mMainPart->ZoomModifier(mMainPart->mZoom);
+-		float	rollRate=(vx/117.0f)  *mMainPart->ZoomModifier(mMainPart->mZoom);
++		float	yawRate=(vx*mMainPart->mConfiguration->mAirTurnRate*0.010638298f /* retail 005d8c94: / 94.0f */) *mMainPart->ZoomModifier(mMainPart->mZoom);
++		float	rollRate=(vx*0.008547009f /* retail 005d8c90: / 117.0f */)  *mMainPart->ZoomModifier(mMainPart->mZoom);
+ 
+ 		if ((mMainPart->GetVelocity().MagnitudeSq()<1.0f*1.0f) && (mMainPart->IsOnGround()))
+ 		{
+@@ -135,7 +135,7 @@
+ 
+ 		if (mMainPart->mTransformStartTime+1.5f>EVENT_MANAGER.GetTime())
+ 		{
+-			float	mix=(EVENT_MANAGER.GetTime()-mMainPart->mTransformStartTime)/1.5f;
++			float	mix=(EVENT_MANAGER.GetTime()-mMainPart->mTransformStartTime)*0.6666667f /* retail 005d8c64: / 1.5f */;
+ 
+ 			yawRate*=mix;
+ 			rollRate*=mix;
+@@ -154,14 +154,14 @@
+ 
+ 	if (mMainPart->GetVelocity().MagnitudeSq()>0.01f*0.01f)
+ 	{
+-		float	value=(vy/117.0f) *mMainPart->ZoomModifier(mMainPart->mZoom);
++		float	value=(vy*0.008547009f /* retail 005d8c90: / 117.0f */) *mMainPart->ZoomModifier(mMainPart->mZoom);
+ 
+ 		if (mMainPart->mSlowMovement)
+ 			value/=BATTLE_ENGINE_SLOW_MOVEMENT_FACTOR;
+ 
+ 		if (mMainPart->mTransformStartTime+1.5f>EVENT_MANAGER.GetTime())
+ 		{
+-			float	mix=(EVENT_MANAGER.GetTime()-mMainPart->mTransformStartTime)/1.5f;
++			float	mix=(EVENT_MANAGER.GetTime()-mMainPart->mTransformStartTime)*0.6666667f /* retail 005d8c64: / 1.5f */;
+ 
+ 			value*=mix;
+ 		}
+@@ -382,7 +382,7 @@
+ 
+ 			float	velocity=mMainPart->GetVelocity().Magnitude();
+ 			
+-			FVector move=mMainPart->mOrientation*FVector(0.0f,(finalVel-velocity)/25.0f,0.0f);
++			FVector move=mMainPart->mOrientation*FVector(0.0f,(finalVel-velocity)*0.04f /* retail 005d8ca8: / 25.0f */,0.0f);
+ 		
+ 			mMainPart->AddVelocity(move);
+ 		}
+@@ -397,7 +397,7 @@
+ 			
+ 			if (mMainPart->mTransformStartTime+2.5f>EVENT_MANAGER.GetTime())
+ 			{
+-				float	mix=(EVENT_MANAGER.GetTime()-mMainPart->mTransformStartTime)/2.5f;
++				float	mix=(EVENT_MANAGER.GetTime()-mMainPart->mTransformStartTime)*0.4f /* retail 005d8ca4: / 2.5f */;
+ 
+ 				new_vel_o=vel*(1-mix)+new_vel_o*mix;
+ 			}

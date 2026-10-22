@@ -1,0 +1,29 @@
+--- a/Sphere.cpp
++++ b/Sphere.cpp
+@@ -81,19 +81,22 @@
+ 	CCollisionMove *ownMove = (CCollisionMove *)a;
+ 	FVector separation = move->mPos - ownMove->mPos;
+ 	float combinedRadius = mRadius + other->mRadius;
+-	BOOL result = separation.Magnitude() - combinedRadius <= 0;
++	// Port (patch 0018): VC6 ranks these four sums away from the text; retail's orders are (X + Z) + Y here (004e4e64), (X + Y) + Z
++	// for distanceSquared (004e4f2d), (X + Z) + Y for speed (004e4fab) and (Z + Y) + X for distance (004e4fc5). Checked
++	// against retail 004e4e00 run natively on 50,001 calls (cws-oracle); clang keeps the text, which differed on 10.
++	BOOL result = sqrtf(((separation.X * separation.X) + (separation.Z * separation.Z)) + (separation.Y * separation.Y)) - combinedRadius <= 0;
+ 	if (report->mTestTriangles && result)
+ 	{
+ 		FVector initialSeparation = (move->mPos - move->mMove) - (ownMove->mPos - ownMove->mMove);
+-		float distanceSquared = (initialSeparation.Z * initialSeparation.Z) + (initialSeparation.Y * initialSeparation.Y) + (initialSeparation.X * initialSeparation.X);
++		float distanceSquared = ((initialSeparation.X * initialSeparation.X) + (initialSeparation.Y * initialSeparation.Y)) + (initialSeparation.Z * initialSeparation.Z);
+ 		float radius = mRadius;
+ 		radius += other->mRadius;
+ 		FVector relativeMove = move->mMove - ownMove->mMove;
+ 		float initialDistance = sqrtf(distanceSquared);
+ 		if (initialDistance - radius >= -0.0001f)
+ 		{
+-			float speed = static_cast<const FOrderVector &>(relativeMove).Mag();	// STAND-IN, see above
+-			float distance = -initialSeparation.Magnitude();
++			float speed = sqrtf(((relativeMove.X * relativeMove.X) + (relativeMove.Z * relativeMove.Z)) + (relativeMove.Y * relativeMove.Y));
++			float distance = -sqrtf(((initialSeparation.Z * initialSeparation.Z) + (initialSeparation.Y * initialSeparation.Y)) + (initialSeparation.X * initialSeparation.X));
+ 			float aa = speed * speed;
+ 			float bb = 2 * (speed * distance);
+ 			float fraction;

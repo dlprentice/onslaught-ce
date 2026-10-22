@@ -1,0 +1,11 @@
+--- a/SquadNormal.cpp
++++ b/SquadNormal.cpp
+@@ -1062,7 +1062,7 @@
+ 			radius = distance;
+ 		member = it.Next();
+ 	}
+-	return radius + mUnknown104 / 2.5f;
++	return radius + mUnknown104 * 0.4f /* retail 005d8ca4: / 2.5f */;
+ }
+ 
+ SPtrSet<CUnit> *CNormalSquad::GetUnits()	// FUNCTION: 0x004e8ed0

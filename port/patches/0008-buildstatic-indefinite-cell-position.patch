@@ -1,0 +1,30 @@
+--- a/NavigationMap.cpp
++++ b/NavigationMap.cpp
+@@ -356,6 +356,18 @@
+ 				lineMove.mStopped = FALSE;
+ 				FVector	pos(x + 0.5f, y + 0.5f, 0);
+ 				pos.Z = MAP.GetHeight(SINT(pos.X), SINT(pos.Y));
++				// Port (patch 0008): retail's pos.X and pos.Y here are the x87 indefinite NaN (ffc00000). VC6 /QIfist
++				// converts y + 0.5f with a popping fistp (004bceaf) and then stores the float with fst (004bcf0a) from
++				// the register the fistp emptied: a masked stack underflow, which loads the indefinite value (x: 004bcfd4
++				// fadd, 004bcff7 fistp, 004bd003 fst). GetHeight's integer arguments are right. With a NaN line and
++				// sphere every shadow test misses: in level 521's load all 18,446 tests ran (part transforms cached
++				// first) and none hit, StartLineSearch leaving at its first check (004d51d5) on all 518,089 searches.
++				// So the tests still run here, for their side effects, and a hit never clears a cell (port/PARITY.md).
++				{
++					static const unsigned int indefinite = 0xffc00000u;
++					memcpy(&pos.X, &indefinite, 4);
++					memcpy(&pos.Y, &indefinite, 4);
++				}
+ 
+ 				SetShadowMove(lineMove, FVector(0, 0, 0), pos);
+ 				SetShadowMove(sphereMove, FVector(0, 0, 0), pos);
+@@ -366,7 +378,7 @@
+ 					CGeneralVolume	*shape = unit->GetCST()->GetCollisionMeshVolume();
+ 					CCollisionReport	report;
+ 					ResetShadowReport(report);
+-					if (ShadowHits(shape, unitMove, lineMove, line, sphereMove, sphere, report))	// STAND-IN (see above)
++					if (ShadowHits(shape, unitMove, lineMove, line, sphereMove, sphere, report) && FALSE)	// port: patch 0008
+ 					{
+ 						STATIC_OCCUPANCY.ClearCross(x, y);
+ 						GetGrid(0)->ClearCross(x, y);

@@ -1,0 +1,11 @@
+--- a/FEPGoodies.cpp
++++ b/FEPGoodies.cpp
+@@ -2292,7 +2292,7 @@
+ 
+ 				if ((mImageZoom>=0.8f) && (mImageZoom<1.0f))
+ 				{
+-					int alpha=(int) (255-((mImageZoom-0.8f)*255)/0.2f);
++					int alpha=(int) (255-((mImageZoom-0.8f)*255)*5.0f /* retail 005db564: / 0.2f */);
+ 					col=(alpha<<24) | 0x00FFFFFF;
+ 				}
+ 				else

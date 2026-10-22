@@ -1,0 +1,11 @@
+--- a/DXSnow.cpp
++++ b/DXSnow.cpp
+@@ -373,7 +373,7 @@
+ 	LT.GetDevice()->SetVertexShaderConstantF(95, (float *)&one, 1);
+ 
+ 	D3DXVECTOR4	c;
+-	c.x = (GAME.GetFrameRenderFraction() / 20.0f + ENGINE.GetRenderTime());	// STAND-IN (spelling, no code), see above
++	c.x = (GAME.GetFrameRenderFraction() * 0.05f /* retail 005d8584: / 20.0f */ + ENGINE.GetRenderTime());	// STAND-IN (spelling, no code), see above
+ 	LT.GetDevice()->SetVertexShaderConstantF(10, (float *)&c, 1);
+ 	c.x = mFallVector.X;
+ 	c.y = mFallVector.Y;

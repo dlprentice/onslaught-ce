@@ -1,0 +1,29 @@
+--- a/PCController.cpp
++++ b/PCController.cpp
+@@ -86,7 +86,7 @@
+ {
+ 	if (LT.mJoypads <= pad_number) return 0.0f;
+ 	float lx = (float)(LT.JoyState(pad_number)->lX);
+-	lx = lx /1000.0f ;
++	lx = lx *0.001f /* retail 005dc6e4: / 1000.0f */ ;
+ 	return lx;
+ }
+ 
+@@ -98,7 +98,7 @@
+ 	if (LT.mJoypads <= pad_number) return 0.0f;
+ 
+ 	float ly = (float)(LT.JoyState(pad_number)->lY);
+-	ly = ly /1000.0f ;
++	ly = ly *0.001f /* retail 005dc6e4: / 1000.0f */ ;
+ 	return ly;
+ }
+ 
+@@ -110,7 +110,7 @@
+ {
+ 	if (LT.mJoypads <= pad_number) return 0.0f;
+ 	float vx = (float)(LT.JoyState(pad_number)->lZ);
+-	vx = vx / 1000.0f;
++	vx = vx * 0.001f /* retail 005dc6e4: / 1000.0f */;
+ 	return vx ;
+ }
+ 

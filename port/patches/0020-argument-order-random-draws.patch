@@ -1,0 +1,66 @@
+--- a/ParticleDescriptor.cpp
++++ b/ParticleDescriptor.cpp
+@@ -570,7 +570,9 @@
+ 			velocity.Y = mInitialVelocityY.GetValueByAge(p->mLife, (float)mLife, p);
+ 			velocity.Z = mInitialVelocityZ.GetValueByAge(p->mLife, (float)mLife, p);
+ 			float	r = mVelocityRandomness.GetValueByAge(p->mLife, (float)mLife, p);
+-			np->mVelocity += FVector(RandomScaled(r), RandomScaled(r), RandomScaled(r)) + velocity;
++			// Port (patch 0020): VC6 evaluates arguments right to left, clang left to right; the draws are hoisted in retail's order.
++			float	rz = RandomScaled(r), ry = RandomScaled(r), rx = RandomScaled(r);
++			np->mVelocity += FVector(rx, ry, rz) + velocity;
+ 
+ 			if (mTransmitLife)
+ 			{
+@@ -1253,7 +1255,11 @@
+ 				else if ((i == 1) || (i == p->mUnknown80 - 1))
+ 					wiggle = ZERO_FVECTOR;
+ 				else
+-					wiggle = FVector(RandomScaled(mWiggleFactor), RandomScaled(mWiggleFactor), RandomScaled(mWiggleFactor));
++				{
++					// Port (patch 0020): VC6 evaluates arguments right to left, clang left to right; the draws are hoisted in retail's order.
++					float	wz = RandomScaled(mWiggleFactor), wy = RandomScaled(mWiggleFactor), wx = RandomScaled(mWiggleFactor);
++					wiggle = FVector(wx, wy, wz);
++				}
+ 
+ 				points[i].mUnknown24 = 1;
+ 				points[i].mPos = wiggle + at;
+@@ -1304,7 +1310,11 @@
+ 
+ 	FVector	wiggle;
+ 	if (last)
+-		wiggle = FVector(RandomScaled(mWiggleFactor), RandomScaled(mWiggleFactor), RandomScaled(mWiggleFactor));	// retail draws all three first
++	{
++		// Port (patch 0020): VC6 evaluates arguments right to left, clang left to right; the draws are hoisted in retail's order.
++		float	wz = RandomScaled(mWiggleFactor), wy = RandomScaled(mWiggleFactor), wx = RandomScaled(mWiggleFactor);
++		wiggle = FVector(wx, wy, wz);	// retail draws all three first
++	}
+ 	else
+ 		wiggle = ZERO_FVECTOR;
+ 
+@@ -1547,7 +1557,9 @@
+ 	p->mLife = (float)mLife;
+ 	// retail draws all three randoms (each with its own copy of Angular_Momentum) before the products, and copies
+ 	// the radius through the FPU (004c4d01..004c4dae)
+-	FVector	spin(RandomScaled(mAngularMomentum), RandomScaled(mAngularMomentum), RandomScaled(mAngularMomentum));
++	// Port (patch 0020): VC6 evaluates arguments right to left, clang left to right; the draws are hoisted in retail's order.
++	float	sz = RandomScaled(mAngularMomentum), sy = RandomScaled(mAngularMomentum), sx = RandomScaled(mAngularMomentum);
++	FVector	spin(sx, sy, sz);
+ 	p->mU0 = spin.X;
+ 	p->mU1 = spin.Y;
+ 	p->mV0 = spin.Z;
+--- a/world.cpp
++++ b/world.cpp
+@@ -802,7 +802,12 @@
+ 			{
+ 				FVector	pos = init->mPos;
+ 				for (SINT c = 0; c < 10; c++)
+-					ENGINE.AddDamage(pos.X + (GAME.FloatRandom() - 0.5f) * 5.0f, pos.Y + (GAME.FloatRandom() - 0.5f) * 5.0f, 6);
++				{
++					// Port (patch 0020): retail draws the Y offset first (arguments right to left, 0050d0a2..0050d11e).
++					float	y = pos.Y + (GAME.FloatRandom() - 0.5f) * 5.0f;
++					float	x = pos.X + (GAME.FloatRandom() - 0.5f) * 5.0f;
++					ENGINE.AddDamage(x, y, 6);
++				}
+ 			}
+ 			things[i]->IncreaseThingCounter(init);
+ 			delete things[i];

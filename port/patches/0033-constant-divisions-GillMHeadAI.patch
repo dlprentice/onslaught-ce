@@ -1,0 +1,11 @@
+--- a/GillMHeadAI.cpp
++++ b/GillMHeadAI.cpp
+@@ -160,7 +160,7 @@
+ 		if ((!unit) || (!mForUnit->IsTargetAlligence(unit->GetAllegiance())) || (!mForUnit->Unknown4fb3d0(unit)))
+ 			continue;
+ 		CUnitData	*data = mForUnit->mUnitData;
+-		float	range = (1.0f - unit->GetStealth() / 100.0f) * data->mMaxTargetRange;
++		float	range = (1.0f - unit->GetStealth() * 0.01f /* retail 005d85fc: / 100.0f */) * data->mMaxTargetRange;
+ 		if (!(distanceSq < range * range))
+ 			continue;
+ 

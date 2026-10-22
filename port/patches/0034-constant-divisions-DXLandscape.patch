@@ -1,0 +1,19 @@
+--- a/DXLandscape.cpp
++++ b/DXLandscape.cpp
+@@ -427,14 +427,14 @@
+ 			}
+ 
+ 			float	f = hi * 127.0f;
+-			SINT	v = (SINT)(f * (1.0f / 60.0f));
++			SINT	v = (SINT)(f * (1.0f * 0.016666668f /* retail 005dbc48: / 60.0f */));
+ 			if (v < -127)
+ 				v = -127;
+ 			else if (v > 127)
+ 				v = 127;
+ 			cell->mMaxHeight = v;
+ 			f = lo * 127.0f;
+-			v = (SINT)(f * (1.0f / 60.0f));
++			v = (SINT)(f * (1.0f * 0.016666668f /* retail 005dbc48: / 60.0f */));
+ 			if (v < -127)
+ 				v = -127;
+ 			else if (v > 127)

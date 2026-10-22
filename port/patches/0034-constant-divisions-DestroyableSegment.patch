@@ -1,0 +1,11 @@
+--- a/DestroyableSegment.cpp
++++ b/DestroyableSegment.cpp
+@@ -142,7 +142,7 @@
+ 		}
+ 		else
+ 		{
+-			time = EVENT_MANAGER.GetTime() + (0.1f + float((rand() & 0xff) - 128) * (1.0f / 1280.0f));
++			time = EVENT_MANAGER.GetTime() + (0.1f + float((rand() & 0xff) - 128) * (1.0f * 0.00078125f /* retail 005db05c: / 1280.0f */));
+ 			EVENT_MANAGER.AddEvent(SEGMENT_BREAK, child, time);
+ 		}
+ 	}

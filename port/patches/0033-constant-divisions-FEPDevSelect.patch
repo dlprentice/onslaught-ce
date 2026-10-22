@@ -1,0 +1,11 @@
+--- a/FEPDevSelect.cpp
++++ b/FEPDevSelect.cpp
+@@ -590,7 +590,7 @@
+ 	DWORD	col;
+ 	if (selected)
+ 	{
+-		DWORD	v = 0xbf - SINT(sinf((FRONTEND.GetCounter() * 3.14f) * (1.f / 30.f)) * -64.f);
++		DWORD	v = 0xbf - SINT(sinf((FRONTEND.GetCounter() * 3.14f) * (1.f * 0.033333335f /* retail 005db4f0: / 30.f */)) * -64.f);
+ 		col = 0x6f000000 + ((v & ~1) * 128) + v;
+ 		col = (((((SINT)col < 0 ? (col >> 24) : (col >> 24)) * alpha) & 0xffffff00) * 0x10000) | (col & 0x00ffffff);
+ 	}

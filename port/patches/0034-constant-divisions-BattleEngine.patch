@@ -1,0 +1,65 @@
+--- a/BattleEngine.cpp
++++ b/BattleEngine.cpp
+@@ -1683,7 +1683,7 @@
+ 	{
+ 		if (mVelocity.X<0.0f)
+ 		{
+-			float	fraction=(20.0f+mPos.X)/20.0f;
++			float	fraction=(20.0f+mPos.X)*0.05f /* retail 005d8584: / 20.0f */;
+ 
+ 			if (fraction<0.0f)
+ 				fraction=0.0f;
+@@ -1695,7 +1695,7 @@
+ 	{
+ 		if (mVelocity.X>0.0f)
+ 		{
+-			float	fraction=1.0f-(mPos.X-512.f)/20.0f;
++			float	fraction=1.0f-(mPos.X-512.f)*0.05f /* retail 005d8584: / 20.0f */;
+ 
+ 			if (fraction<0.0f)
+ 				fraction=0.0f;
+@@ -1708,7 +1708,7 @@
+ 	{
+ 		if (mVelocity.Y<0.0f)
+ 		{
+-			float	fraction=(20.0f+mPos.Y)/20.0f;
++			float	fraction=(20.0f+mPos.Y)*0.05f /* retail 005d8584: / 20.0f */;
+ 
+ 			if (fraction<0.0f)
+ 				fraction=0.0f;
+@@ -1720,7 +1720,7 @@
+ 	{
+ 		if (mVelocity.Y>0.0f)
+ 		{
+-			float	fraction=1.0f-(mPos.Y-512.f)/20.0f;
++			float	fraction=1.0f-(mPos.Y-512.f)*0.05f /* retail 005d8584: / 20.0f */;
+ 
+ 			if (fraction<0.0f)
+ 				fraction=0.0f;
+@@ -1733,7 +1733,7 @@
+ 	{
+ 		if (mVelocity.Z<0.0f)
+ 		{
+-			float	fraction=(140.0f+mPos.Z)/10.0f;
++			float	fraction=(140.0f+mPos.Z)*0.1f /* retail 005d8c1c: / 10.0f */;
+ 			
+ 			if (fraction<0.0f)
+ 				fraction=0.0f;
+@@ -2915,7 +2915,7 @@
+ {
+ 	if (stricmp(mConfiguration->mConfigurationName,"Racer")==0)
+ 	{
+-		float v=GetVelocity().Magnitude()/1.5f;
++		float v=GetVelocity().Magnitude()*0.6666667f /* retail 005d8c64: / 1.5f */;
+ 		if (v>1.0f)
+ 			v=1.0f;
+ 		return(v);
+@@ -2956,7 +2956,7 @@
+ 		float tfr=MAP.Collide(pos);
+ 		if (MAP.GetWaterLevel()<tfr)
+ 			tfr=MAP.GetWaterLevel();
+-		float v=fabsf(tfr-pos.Z)/5.0f;
++		float v=fabsf(tfr-pos.Z)*0.2f /* retail 005d8c68: / 5.0f */;
+ 		
+ 		if (v>1.0f)
+ 			v=1.0f;

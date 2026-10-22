@@ -1,0 +1,11 @@
+--- a/weapon.cpp
++++ b/weapon.cpp
+@@ -448,7 +448,7 @@
+ 			init.mPos = pos + GetAttachedTo()->GetVelocity();
+ 			init.mDest = mUnknown84;
+ 			// STAND-IN (product rank keys): orientation * launchAngle * inaccuracy through FSpawnOri and FSpawnTurn.
+-			init.mOrientation = static_cast<const FSpawnTurn &>(static_cast<const FSpawnOri &>(orientation) * launchAngle) * inaccuracy;
++			init.mOrientation = static_cast<const FSpawnTurn &>(static_cast<const FMatrix &>(static_cast<const FSpawnOri &>(orientation) * launchAngle)) * inaccuracy;
+ 			init.mVelocity = init.mOrientation * launchVelocity;
+ 			init.mOrientationType = DIRECTION_COSINE_MATRIX;
+ 			init.mAllegiance = (EAllegiance)GetAttachedTo()->GetAllegiance();

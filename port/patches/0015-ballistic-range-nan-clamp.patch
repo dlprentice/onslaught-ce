@@ -1,0 +1,55 @@
+--- a/weapon.cpp
++++ b/weapon.cpp
+@@ -1181,6 +1181,10 @@
+ }
+ 
+ //******************************************************************************************
++// Port (patch 0015): a ballistic range is NaN when the target is out of the arc (sqrt of a negative). Retail tests
++// `range < 0` with fcom and `test ah, 1` (005098xx/00509bxx), which takes an unordered result as less, so the NaN
++// becomes 0; clang's `<` is false for a NaN and kept it. The clamps are written as !(range >= 0) to keep retail's
++// outcome (level 400: a turret then chose another target than retail at Present 33).
+ float CWeapon::GetMinRange(FVector target)	// FUNCTION: 0x005096a0
+ {
+ 	if (mMode && mMode->mRound)
+@@ -1212,17 +1216,17 @@
+ 			float vertical = (float)sin(angleA) * speed;
+ 			float rangeA = ((float)sqrt(vertical * vertical + 2 * gravity * height) - vertical) / gravity
+ 				* ((float)cos(angleA) * speed);
+-			if (rangeA < 0)
++			if (!(rangeA >= 0))	// port: patch 0015 (a NaN range clamps to 0, as in retail)
+ 				rangeA = 0;
+ 			vertical = (float)sin(angleB) * speed;
+ 			float rangeB = ((float)sqrt(vertical * vertical + 2 * gravity * height) - vertical) / gravity
+ 				* ((float)cos(angleB) * speed);
+-			if (rangeB < 0)
++			if (!(rangeB >= 0))	// port: patch 0015 (a NaN range clamps to 0, as in retail)
+ 				rangeB = 0;
+ 			vertical = (float)sin(-PI / 4) * speed;
+ 			float rangeC = ((float)sqrt(vertical * vertical + 2 * gravity * height) - vertical) / gravity
+ 				* ((float)cos(-PI / 4) * speed);
+-			if (rangeC < 0)
++			if (!(rangeC >= 0))	// port: patch 0015 (a NaN range clamps to 0, as in retail)
+ 				rangeC = 0;
+ 			if (rangeA == 0)
+ 				rangeA = rangeC;
+@@ -1269,17 +1273,17 @@
+ 			float vertical = (float)sin(angleA) * speed;
+ 			float rangeA = ((float)sqrt(vertical * vertical + 2 * gravity * height) - vertical) / gravity
+ 				* ((float)cos(angleA) * speed);
+-			if (rangeA < 0)
++			if (!(rangeA >= 0))	// port: patch 0015 (a NaN range clamps to 0, as in retail)
+ 				rangeA = 0;
+ 			vertical = (float)sin(angleB) * speed;
+ 			float rangeB = ((float)sqrt(vertical * vertical + 2 * gravity * height) - vertical) / gravity
+ 				* ((float)cos(angleB) * speed);
+-			if (rangeB < 0)
++			if (!(rangeB >= 0))	// port: patch 0015 (a NaN range clamps to 0, as in retail)
+ 				rangeB = 0;
+ 			vertical = (float)sin(-PI / 4) * speed;
+ 			float rangeC = ((float)sqrt(vertical * vertical + 2 * gravity * height) - vertical) / gravity
+ 				* ((float)cos(-PI / 4) * speed);
+-			if (rangeC < 0)
++			if (!(rangeC >= 0))	// port: patch 0015 (a NaN range clamps to 0, as in retail)
+ 				rangeC = 0;
+ 			float result = rangeA;
+ 			if (rangeB > result)

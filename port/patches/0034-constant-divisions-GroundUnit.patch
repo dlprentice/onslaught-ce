@@ -1,0 +1,11 @@
+--- a/GroundUnit.cpp
++++ b/GroundUnit.cpp
+@@ -129,7 +129,7 @@
+ 
+ 	// its top speed along the ground
+ 	FVector	v = mVelocity;
+-	float	top = Unknown111() / 20.0f;
++	float	top = Unknown111() * 0.05f /* retail 005d8578: / 20.0f */;
+ 	float	speed = v.MagnitudeXY();
+ 	if (speed > top)
+ 	{

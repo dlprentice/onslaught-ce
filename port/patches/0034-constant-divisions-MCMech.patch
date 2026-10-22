@@ -1,0 +1,41 @@
+--- a/MCMech.cpp
++++ b/MCMech.cpp
+@@ -908,7 +908,7 @@
+ 				footbase->GetWorldTransforms(0, 0, 0, mThing, &o, &p, false, false, false);
+ 				FVector	d = p - foot;
+ 
+-				d *= (float)sin((mLegC[i] * 3.14f) / 180.0f);
++				d *= (float)sin((mLegC[i] * 3.14f) * 0.0055555557f /* retail 005db54c: / 180.0f */);
+ 				if (d.X > 5.0f)
+ 					d.X = 5.0f;
+ 				if (d.Y > 5.0f)
+@@ -919,14 +919,14 @@
+ 					d.Y = -5.0f;
+ 				pitch += d.Y * 2;
+ 				roll += d.X * 2;
+-				lift -= (float)sin((mLegC[i] * 3.14f) / 180.0f) * 0.1f;
++				lift -= (float)sin((mLegC[i] * 3.14f) * 0.0055555557f /* retail 005db54c: / 180.0f */) * 0.1f;
+ 			}
+ 		}
+ 		pitch *= mParamA;
+ 		roll *= mParamA;
+ 		FMatrix	pm, rm;
+-		pm.MakeRotationPitchF((pitch * 3.14f) / 180.0f);
+-		MakeMechRollRows(rm, (roll * 3.14f) / 180.0f);
++		pm.MakeRotationPitchF((pitch * 3.14f) * 0.0055555557f /* retail 005db54c: / 180.0f */);
++		MakeMechRollRows(rm, (roll * 3.14f) * 0.0055555557f /* retail 005db54c: / 180.0f */);
+ 
+ 		if (((CUnit *)thing)->IsDying())
+ 		{
+@@ -964,9 +964,9 @@
+ 				mLegC[*leg - 1] = 0;
+ 			else
+ 			{
+-				mLegPos[*leg - 1] += v * (float)mLegC[*leg - 1] / 180.0f;
++				mLegPos[*leg - 1] += v * (float)mLegC[*leg - 1] * 0.0055555557f /* retail 005db54c: / 180.0f */;
+ 				mLegA[*leg - 1] = 0;
+-				mLegB[*leg - 1] = -(float)sin((mLegC[*leg - 1] * 3.14f) / 180.0f) * mParamD;
++				mLegB[*leg - 1] = -(float)sin((mLegC[*leg - 1] * 3.14f) * 0.0055555557f /* retail 005db54c: / 180.0f */) * mParamD;
+ 			}
+ 		}
+ 		else

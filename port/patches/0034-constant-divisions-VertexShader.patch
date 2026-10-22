@@ -1,0 +1,33 @@
+--- a/VertexShader.cpp
++++ b/VertexShader.cpp
+@@ -770,12 +770,12 @@
+ 		}
+ 		if (*d == FRAGMENT(F_DIFFUSE_BLEND))
+ 		{
+-			float	blend = RENDERINFO.GetDiffuseBlend() / 255.0f;
++			float	blend = RENDERINFO.GetDiffuseBlend() * 0.003921569f /* retail 005df8fc: / 255.0f */;
+ 			DWORD	col = RENDERINFO.GetDiffuseBlendColour();
+-			c.x = ((col >> 16) & 0xff) / 255.0f;
+-			c.y = ((col >> 8) & 0xff) / 255.0f;
+-			c.z = (col & 0xff) / 255.0f;
+-			c.w = (col >> 24) / 255.0f;
++			c.x = ((col >> 16) & 0xff) * 0.003921569f /* retail 005df8fc: / 255.0f */;
++			c.y = ((col >> 8) & 0xff) * 0.003921569f /* retail 005df8fc: / 255.0f */;
++			c.z = (col & 0xff) * 0.003921569f /* retail 005df8fc: / 255.0f */;
++			c.w = (col >> 24) * 0.003921569f /* retail 005df8fc: / 255.0f */;
+ 			c *= blend;
+ 			LT.GetDevice()->SetVertexShaderConstantF(CONSTANT(C_DIFFUSE_BLEND_COLOUR_PREMULTIPLIED, 0), c, 1);
+ 			c.x = 1.0f - blend;
+@@ -816,9 +816,9 @@
+ 		if ((*d == FRAGMENT(F_WRITE_DEFAULT_DIFFUSE)) || (*d == FRAGMENT(F_SET_AMBIENT)))
+ 		{
+ 			DWORD	col = RENDERINFO.GetAmbient();
+-			c.x = ((col >> 16) & 0xff) / 255.0f;
+-			c.y = ((col >> 8) & 0xff) / 255.0f;
+-			c.z = (col & 0xff) / 255.0f;
++			c.x = ((col >> 16) & 0xff) * 0.003921569f /* retail 005df8fc: / 255.0f */;
++			c.y = ((col >> 8) & 0xff) * 0.003921569f /* retail 005df8fc: / 255.0f */;
++			c.z = (col & 0xff) * 0.003921569f /* retail 005df8fc: / 255.0f */;
+ 			c.w = 1.0f;
+ 			LT.GetDevice()->SetVertexShaderConstantF(CONSTANT(C_AMBIENT_LIGHT, 0), c, 1);
+ 		}

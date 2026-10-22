@@ -1,0 +1,11 @@
+--- a/SoundManager.cpp
++++ b/SoundManager.cpp
+@@ -1215,7 +1215,7 @@
+ 
+ 	if ((current->mPitchVariance!=0) && (CPCSoundManager::GetPitchVarianceEnabled()))	// PC (004e19bb)
+ 	{
+-		float rpitch=((float) (rand() % current->mPitchVariance))/100.0f;
++		float rpitch=((float) (rand() % current->mPitchVariance))*0.01f /* retail 005d85fc: / 100.0f */;
+ 		
+ 		pitch=pitch+rpitch;
+ 		

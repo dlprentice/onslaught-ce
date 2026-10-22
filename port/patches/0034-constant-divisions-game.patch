@@ -1,0 +1,11 @@
+--- a/game.cpp
++++ b/game.cpp
+@@ -3837,7 +3837,7 @@
+ 
+ 			if (delta < 5.f)
+ 			{
+-				int	frames = (int)(delta / 0.05f);
++				int	frames = (int)(delta * 20.0f /* retail 005d8ba8: / 0.05f */);
+ 
+ 				if (frames > 1)
+ 					step *= frames;

@@ -1,0 +1,13 @@
+--- a/DXBattleLine.cpp
++++ b/DXBattleLine.cpp
+@@ -305,6 +305,10 @@
+ 	for (int n = mNumPoints; n; n--)
+ 		*dst++ = *src++;
+ 
++	// Port (patch 0021): retail leaks the previous index buffer when a level restart builds the mesh again; it stays on
++	// LT's device list and quitting walks it after the heap is freed (retail: access violation at 00512d7d). Deleting
++	// it here takes it off the list; it is graphics only.
++	SAFE_DELETE(mIB);
+ #line 368
+ 	mIB = new(MEMTYPE_IBUFFER) CIBuffer;
+ 	mIB->Create(mNumTriangles * 3);

@@ -1,0 +1,47 @@
+--- a/Hud.cpp
++++ b/Hud.cpp
+@@ -621,7 +621,7 @@
+ 		pos.Y = -mesh->mBoundingBox->mOrigin.Y;
+ 		pos.Z = -mesh->mBoundingBox->mOrigin.Z;
+ 		FMatrix	turn = ID_FMATRIX;
+-		MakeRotF(turn, ENGINE.GetRenderTime() / 10.0f, 0.f, 0.f);
++		MakeRotF(turn, ENGINE.GetRenderTime() * 0.1f /* retail 005d8c1c: / 10.0f */, 0.f, 0.f);
+ 		RENDERINFO.SRS(D3DRS_ALPHABLENDENABLE, TRUE);
+ 		MESH_SURFACE_DETAIL = 0;
+ 		CMeshRenderer::SetRenderMode(R_Normal);
+@@ -796,7 +796,7 @@
+ 		for (i = 0; i < MAX_WORLD_TEXT_SLOTS; i++)
+ 			if ((!((FHudWorld &)WORLD).GetTextState(i)) && (mUnknown064[i].mFadeIn != 0))
+ 			{
+-				mUnknown064[i].mFadeIn -= GAME.GetRenderFrameLength() / 5.0f;
++				mUnknown064[i].mFadeIn -= GAME.GetRenderFrameLength() * 0.2f /* retail 005d8c68: / 5.0f */;
+ 				if (mUnknown064[i].mFadeIn < 0)
+ 					mUnknown064[i].mFadeIn = 0;
+ 				done = TRUE;
+@@ -807,7 +807,7 @@
+ 			for (i = 0; i < MAX_WORLD_TEXT_SLOTS; i++)
+ 				if ((((FHudWorld &)WORLD).GetTextState(i)) && (mUnknown064[i].mFadeIn < 1.f))
+ 				{
+-					mUnknown064[i].mFadeIn += GAME.GetRenderFrameLength() / 5.0f;
++					mUnknown064[i].mFadeIn += GAME.GetRenderFrameLength() * 0.2f /* retail 005d8c68: / 5.0f */;
+ 					if (mUnknown064[i].mFadeIn > 1.f)
+ 					{
+ 						mUnknown064[i].mFadeIn = 1.f;
+@@ -917,7 +917,7 @@
+ 							sprintf(count, "%d ", (SINT)WORLD.GetTextTime(i));
+ 							sprintf(goal, "(%d)", (SINT)((FHudWorld &)WORLD).GetTextDuration(i));
+ 							float	time = WORLD.GetTextTime(i);
+-							if (fabsf(time - (((FHudWorld &)WORLD).GetTextDuration(i) + zero)) <= (((FHudWorld &)WORLD).GetTextDuration(i) + zero) / 10.0f)	// STAND-IN (see above)
++							if (fabsf(time - (((FHudWorld &)WORLD).GetTextDuration(i) + zero)) <= (((FHudWorld &)WORLD).GetTextDuration(i) + zero) * 0.1f /* retail 005d85c0: / 10.0f */)	// STAND-IN (see above)
+ 								flash = TRUE;
+ 							break;
+ 						}
+@@ -1126,7 +1126,7 @@
+ 	if (mUnknown0d4[mViewpoint] < 1.f)
+ 		col = LerpColour(0xafff7f7f, 0xafffffff, mUnknown0d4[mViewpoint]);
+ 	else
+-		col = LerpColour(0xaf9fff9f, 0xafffffff, (4.f - mUnknown0d4[mViewpoint]) / 3.f);
++		col = LerpColour(0xaf9fff9f, 0xafffffff, (4.f - mUnknown0d4[mViewpoint]) * 0.33333334f /* retail 005d8608: / 3.f */);
+ 	float	scale = (mUnknown0d4[mViewpoint] * 0.5f) + 0.5f;
+ 	DWORD	col2 = col;
+ 	if (mUnknown0d4[mViewpoint] > 1.f)

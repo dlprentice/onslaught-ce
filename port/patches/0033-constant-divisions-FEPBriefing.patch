@@ -1,0 +1,17 @@
+--- a/FEPBriefing.cpp
++++ b/FEPBriefing.cpp
+@@ -132,10 +132,10 @@
+ 		float	sx = gBriefingVideoScaleX;
+ 		float	sy = gBriefingVideoScaleY;
+ 		SINT	a = MakeAlpha(mTextFade);
+-		float	cx = float(PLATFORM.GetWindowWidth()) * (x - 103.f + 3.f) / 640.f;
+-		float	cy = float(PLATFORM.GetWindowHeight()) * (y - 77.f + 2.f) / 480.f;
+-		sx = float(PLATFORM.GetWindowWidth()) * sx / 640.f;
+-		sy = float(PLATFORM.GetWindowHeight()) * sy / 480.f;
++		float	cx = float(PLATFORM.GetWindowWidth()) * (x - 103.f + 3.f) * 0.0015625f /* retail 005db3a4: / 640.f */;
++		float	cy = float(PLATFORM.GetWindowHeight()) * (y - 77.f + 2.f) * 0.0020833334f /* retail 005db39c: / 480.f */;
++		sx = float(PLATFORM.GetWindowWidth()) * sx * 0.0015625f /* retail 005db3a4: / 640.f */;
++		sy = float(PLATFORM.GetWindowHeight()) * sy * 0.0020833334f /* retail 005db39c: / 480.f */;
+ 		FEV.Render(cx, cy, 0.1f, sx, sy, BlendAlpha2(0xffffffff, a), FALSE);
+ 	}
+ 

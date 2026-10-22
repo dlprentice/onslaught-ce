@@ -1,0 +1,29 @@
+--- a/Hud.cpp
++++ b/Hud.cpp
+@@ -1281,7 +1281,7 @@
+ 				{
+ 					turned.X *= k;
+ 					turned.Y *= k;
+-					SINT	a = (SINT)((1.f - (d - 46.f) * (1.f / 46.f)) * 255.f);
++					SINT	a = (SINT)((1.f - (d - 46.f) * (1.f * 0.02173913f /* retail 005dbe68: / 46.f */)) * 255.f);
+ 					alpha = a << 24;
+ 				}
+ 				float	bx = (HUD.mViewportX + HUD_OFFSET_X + 69.f) + turned.X - 1.f;
+@@ -1310,7 +1310,7 @@
+ 			{
+ 				turned.X *= k;
+ 				turned.Y *= k;
+-				SINT	a = (SINT)((1.f - (d - 46.f) * (1.f / 46.f)) * 255.f);
++				SINT	a = (SINT)((1.f - (d - 46.f) * (1.f * 0.02173913f /* retail 005dbe68: / 46.f */)) * 255.f);
+ 				alpha = a << 24;
+ 			}
+ 			float	bx = (HUD.mViewportX + HUD_OFFSET_X + 69.f) + turned.X - 1.f;
+@@ -1338,7 +1338,7 @@
+ 			{
+ 				turned.X *= k;
+ 				turned.Y *= k;
+-				SINT	a = (SINT)((1.f - (d - 46.f) * (1.f / 46.f)) * 255.f);
++				SINT	a = (SINT)((1.f - (d - 46.f) * (1.f * 0.02173913f /* retail 005dbe68: / 46.f */)) * 255.f);
+ 				alpha = a << 24;
+ 			}
+ 			float	bx = (HUD.mViewportX + HUD_OFFSET_X + 69.f) + turned.X - 1.f;

@@ -1,0 +1,27 @@
+--- a/MessageBox.cpp
++++ b/MessageBox.cpp
+@@ -62,6 +62,7 @@
+ // FUNCTION: 0x004b6d30 ??0COggLoader@@QAE@XZ
+ // FUNCTION: 0x004b6df0 ??_GCOggLoader@@UAEPAXI@Z
+ COggLoader				gVoiceLoader;			// 00704f78
++bool	PortClockVirtual();				// Port (patch 0022): port/platform/common/clock.cpp
+ char					gVoiceName[260];		// 00704e74: the voice being loaded, empty for none
+ // FUNCTION: 0x004b6e20 init:gVoiceMessage
+ // FUNCTION: 0x004b6e40 exit:gVoiceMessage
+@@ -533,6 +534,16 @@
+ 			strcpy(gVoiceLoader.mFileName, path);
+ 			gVoiceLoader.mSize = 0;
+ 			gVoiceLoader.StartAsync();
++			// Port (patch 0022): the voice is read on the loader thread and played by the first PlayPendingSamples (CGame::Render)
++			// after the read has finished, so a read that took longer than the rest of the frame moved the voice, the message's
++			// reveal events and the CRT draws of its decode (an LD_PRELOAD delaying the voice read: a 150 ms delay moved EVN at Present 346
++			// and CRT at 1226). Under the virtual clocks (replays and recordings) the message box waits for the read here,
++			// which is retail's usual case: the read finishes before the frame renders.
++			if (PortClockVirtual())
++			{
++				gVoiceLoader.Acquire();
++				gVoiceLoader.Unlock();
++			}
+ 		}
+ 	}
+ 	else

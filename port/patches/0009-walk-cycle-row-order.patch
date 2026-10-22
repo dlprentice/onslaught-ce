@@ -1,0 +1,15 @@
+--- a/BattleEngineWalkerPart.cpp
++++ b/BattleEngineWalkerPart.cpp
+@@ -43,7 +43,11 @@
+ 	ori.TransposeInPlace() ;
+ 		
+ 	FVector vel = mMainPart->GetVelocity();
+-	FVector rel_vel = ori * vel ;
++	// PORT: retail sums each row Z first at this site (00412ad0..00412bc0: fmul/fmul/faddp/fmul/faddp);
++	// maths.h's operator* sums X first, which clang keeps.
++	FVector rel_vel((ori.Row[0].Z * vel.Z + ori.Row[0].Y * vel.Y) + ori.Row[0].X * vel.X,
++					(ori.Row[1].Z * vel.Z + ori.Row[1].Y * vel.Y) + ori.Row[1].X * vel.X,
++					(ori.Row[2].Z * vel.Z + ori.Row[2].Y * vel.Y) + ori.Row[2].X * vel.X);
+ 
+ 	if (fabsf(rel_vel.X) > fabsf(rel_vel.Y)) 
+ 	{	

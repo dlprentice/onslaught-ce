@@ -1,0 +1,11 @@
+--- a/Font.cpp
++++ b/Font.cpp
+@@ -92,7 +92,7 @@
+ 		else if (fade_out)
+ 		{
+ 			if (reveal < 15.f)
+-				col = (SINT((1.f - (reveal - 0.5f) * (1.f / 14.5f)) * alpha) << 24) + (colour & 0xffffff);
++				col = (SINT((1.f - (reveal - 0.5f) * (1.f * 0.06896552f /* retail 005db754: / 14.5f */)) * alpha) << 24) + (colour & 0xffffff);
+ 			else
+ 				col = 0;
+ 		}

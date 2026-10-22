@@ -1,0 +1,11 @@
+--- a/TerrainGuide.cpp
++++ b/TerrainGuide.cpp
+@@ -62,7 +62,7 @@
+ 		if (mMode == 3)
+ 			return;
+ 
+-		float	speed = mUnit->Unknown111() / 5.0f;
++		float	speed = mUnit->Unknown111() * 0.2f /* retail 005d8c68: / 5.0f */;
+ 		FVector	forward(0, speed, 0);
+ 		FMatrix	&ori = mUnit->GetOrientation();
+ 		mUnit->mUnknown14C = ori * forward;

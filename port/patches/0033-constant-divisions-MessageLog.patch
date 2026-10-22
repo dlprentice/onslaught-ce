@@ -1,0 +1,20 @@
+--- a/MessageLog.cpp
++++ b/MessageLog.cpp
+@@ -211,7 +211,7 @@
+ 			float	alpha = 1.f;
+ 			if (y < 120)
+ 			{
+-				alpha = 1.f - (120 - y) * (1.f / 70.f);
++				alpha = 1.f - (120 - y) * (1.f * 0.014285714f /* retail 005dc75c: / 70.f */);
+ 				if (alpha > 1.f)
+ 					alpha = 1.f;
+ 				else if (alpha < 0.f)
+@@ -219,7 +219,7 @@
+ 			}
+ 			if (y > 280)
+ 			{
+-				alpha = 1.f - (y - 280) * (1.f / 70.f);
++				alpha = 1.f - (y - 280) * (1.f * 0.014285714f /* retail 005dc75c: / 70.f */);
+ 				if (alpha > 1.f)
+ 					alpha = 1.f;
+ 				else if (alpha < 0.f)

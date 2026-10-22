@@ -1,0 +1,11 @@
+--- a/radar.cpp
++++ b/radar.cpp
+@@ -32,7 +32,7 @@
+ 	SUPERTYPE::Init(init);
+ 
+ 	mDish = ID_FMATRIX;
+-	mAngle = (rand() % 6283) / 1000.0f - PI;
++	mAngle = (rand() % 6283) * 0.001f /* retail 005dc6e4: / 1000.0f */ - PI;
+ }
+ 
+ //*********************************************************************************

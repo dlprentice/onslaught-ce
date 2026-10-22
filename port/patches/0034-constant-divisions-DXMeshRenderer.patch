@@ -1,0 +1,20 @@
+--- a/DXMeshRenderer.cpp
++++ b/DXMeshRenderer.cpp
+@@ -774,7 +774,7 @@
+ 			for (i = 0; i < part->mNumBones; i++)
+ 			{
+ 				D3DXMATRIX	m = bones[i];
+-				RENDERINFO.SetMatrix(i, m / 3.0f);
++				RENDERINFO.SetMatrix(i, m * 0.33333334f /* retail 005d8608: / 3.0f */);
+ 			}
+ 			RENDERINFO.SetUnknowne18(1);
+ 			RENDERINFO.mUnknown308 = true;
+@@ -836,7 +836,7 @@
+ 							vert.mNY += n.y;
+ 							vert.mNZ += n.z;
+ 						}
+-						*(D3DXVECTOR3 *)&vert.mPos = D3DXVECTOR3(&vert.mPos.X) / 3.0f;
++						*(D3DXVECTOR3 *)&vert.mPos = D3DXVECTOR3(&vert.mPos.X) * 0.33333334f /* retail 005d8608: / 3.0f */;
+ 						((FVector *)&vert.mNX)->NormaliseXYZ(); // STAND-IN: explicit-double XYZ normalization retains retail operand order; original spelling unknown.
+ 					}
+ 					else

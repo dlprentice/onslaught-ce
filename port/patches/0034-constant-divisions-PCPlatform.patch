@@ -1,0 +1,11 @@
+--- a/PCPlatform.cpp
++++ b/PCPlatform.cpp
+@@ -237,7 +237,7 @@
+ 		return float(ts.QuadPart- first_seen.QuadPart) / (float(mFrequency.QuadPart)*mClockDivisor);
+ 	}
+ 
+-	return float(timeGetTime()) / 1000.0f;	
++	return float(timeGetTime()) * 0.001f /* retail 005dc6e4: / 1000.0f */;	
+ }
+ 
+ //*********************************************************************************

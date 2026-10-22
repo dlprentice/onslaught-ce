@@ -1,0 +1,19 @@
+--- a/BomberGuide.cpp
++++ b/BomberGuide.cpp
+@@ -70,14 +70,14 @@
+ 		else
+ 			unit->SetUnknown174(0);
+ 		GetUnit()->SetUnknown120(CEulerAngles(yaw, pitch, roll));
+-		float	speed = (GetUnit()->GetMaxVelocity() / 20.0f) * 4.0f;
++		float	speed = (GetUnit()->GetMaxVelocity() * 0.05f /* retail 005d8584: / 20.0f */) * 4.0f;
+ 		FMatrix	&ori = GetUnit()->GetOrientation();
+ 		GetUnit()->SetUnknown14C(FVector(speed * ori.Row[0].Y, speed * ori.Row[1].Y, speed * ori.Row[2].Y));
+ 	}
+ 	else
+ 	{
+ 		GetUnit()->SetUnknown174(0);
+-		float	speed = (GetUnit()->GetMaxVelocity() / 20.0f) * 4.0f;
++		float	speed = (GetUnit()->GetMaxVelocity() * 0.05f /* retail 005d8584: / 20.0f */) * 4.0f;
+ 		FMatrix	&ori = GetUnit()->GetOrientation();
+ 		GetUnit()->SetUnknown14C(FVector(speed * ori.Row[0].Y, speed * ori.Row[1].Y, speed * ori.Row[2].Y));
+ 	}

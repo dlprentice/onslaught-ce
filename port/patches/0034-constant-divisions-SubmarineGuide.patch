@@ -1,0 +1,11 @@
+--- a/SubmarineGuide.cpp
++++ b/SubmarineGuide.cpp
+@@ -74,7 +74,7 @@
+ 				if ((float)fabs(AngleDifference(current, yaw)) < 0.1f)
+ 				{
+ 					{
+-						float	speed = (mUnit->GetMaxVelocity() / 20.0f) * 2.0f;
++						float	speed = (mUnit->GetMaxVelocity() * 0.05f /* retail 005d8584: / 20.0f */) * 2.0f;
+ 						FVector	forward(0, speed, 0);
+ 						FMatrix	ori(yaw, 0, 0);
+ 						velocity += ori * forward;

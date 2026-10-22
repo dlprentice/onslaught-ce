@@ -1,0 +1,2 @@
+# The patches reproduce the game sources' own whitespace in their context lines.
+*.patch -whitespace

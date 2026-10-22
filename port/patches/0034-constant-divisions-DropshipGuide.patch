@@ -1,0 +1,11 @@
+--- a/DropshipGuide.cpp
++++ b/DropshipGuide.cpp
+@@ -153,7 +153,7 @@
+ 					vx = v.X * -0.05f;
+ 					vy = v.Y * -0.05f;
+ 				}
+-				if ((dropship->GetVelocity().Z > height * (1.0f / 45.0f)) && (height > 0.075f))
++				if ((dropship->GetVelocity().Z > height * (1.0f * 0.022222223f /* retail 005db264: / 45.0f */)) && (height > 0.075f))
+ 					velocity = FVector(vx, vy, height * -0.0005f);
+ 				else if (height <= 0.075f)
+ 					velocity = FVector(vx, vy, 0.002f);

@@ -1,0 +1,13 @@
+--- a/GroundVehicle.cpp
++++ b/GroundVehicle.cpp
+@@ -68,7 +68,9 @@
+ 		FVector	normal = MAP.Normal(mPos);
+ 		forward = forward ^ normal;
+ 		FVector	up = forward ^ normal;
+-		up.Normalise();
++		// Port (patch 0017): retail inlines this Normalise with the squares summed (Z + Y) + X (0047d300..0047d31c); the
++		// out-of-line copy (00406d50) and maths.h keep X + Y + Z.
++		{ float m = sqrtf(((up.Z * up.Z) + (up.Y * up.Y)) + (up.X * up.X)); if (m) { m = 1.0f / m; up.X *= m; up.Y *= m; up.Z *= m; } }
+ 		mUnknown120.mPitch = -up.Z;
+ 		FVector	side;
+ 		side = forward;

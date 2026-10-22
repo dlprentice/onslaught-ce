@@ -1,0 +1,12 @@
+--- a/BattleEngineJetPart.cpp
++++ b/BattleEngineJetPart.cpp
+@@ -419,7 +419,8 @@
+ 		FVector	vel = mMainPart->GetVelocity()*0.95f;
+ 		mMainPart->SetVelocity(vel);
+ 
+-		FVector		new_vel=FVector(0.0f, vel.Magnitude(), 0.0f);
++		// Port (patch 0016): retail sums the squares (Z + X) + Y here (004110e2..00411104); clang keeps Magnitude's X + Y + Z.
++		FVector		new_vel=FVector(0.0f, sqrtf(((vel.Z * vel.Z) + (vel.X * vel.X)) + (vel.Y * vel.Y)), 0.0f);
+ 		FVector		new_vel_o=mMainPart->mOrientation * new_vel;
+ 
+ 		mMainPart->AddVelocity(new_vel_o*0.05f);

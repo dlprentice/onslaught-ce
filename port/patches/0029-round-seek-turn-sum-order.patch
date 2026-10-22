@@ -1,0 +1,36 @@
+--- a/Round.cpp
++++ b/Round.cpp
+@@ -417,7 +417,12 @@
+ 			((CUnit *)mUnknownE8.ToRead())->GetTargetablePos(&pos);
+ 			if (Data_mUnknown6C(this))
+ 				pos.Z = MAP.GetWaterLevel();
+-			FVector	d = ori * (pos - mPos);
++			// Port (patch 0029): retail's inline seek product (004d94ab..004d9513) sums d.X and d.Y as (Z+Y)+X
++			// and d.Z as (Z+X)+Y; the shared FMatrix * FVector order changed d.Z (Level 221 P790).
++			FVector	e = pos - mPos;
++			FVector	d(((ori.Row[0].Z * e.Z) + (ori.Row[0].Y * e.Y)) + (ori.Row[0].X * e.X),
++				((ori.Row[1].Z * e.Z) + (ori.Row[1].Y * e.Y)) + (ori.Row[1].X * e.X),
++				((ori.Row[2].Z * e.Z) + (ori.Row[2].X * e.X)) + (ori.Row[2].Y * e.Y));
+ 			static_cast<FSeekVector &>(d).Normalise();	// STAND-IN (ids): FSeekVector
+ 
+ 			if ((!Data_mWeirdoSeek(this)) && ((float)cos(Data_mSeekAngle(this)) > d.Y) && (!mData->mUnknown6C))
+@@ -428,7 +433,18 @@
+ 				float	pitch = (float)atan2(d.Z, d.MagnitudeXY());
+ 				float	y = ((float)fabs(yaw) < mData->mUnknown28) ? yaw : ((yaw > 0) ? mData->mUnknown28 : -mData->mUnknown28);
+ 				float	p = ((float)fabs(pitch) < mData->mUnknown28) ? pitch : ((pitch > 0) ? mData->mUnknown28 : -mData->mUnknown28);
+-				mOrientation = mOrientation * FMatrix(y, p, 0);
++				// Port (patch 0029): retail's inline turn product (004d967f..004d97b4) sums every cell as
++				// (Z+Y)+X; the out-of-line FMatrix * FMatrix sums (X+Y)+Z (Level 221 P790 row 0 Z).
++				FMatrix	turn(y, p, 0);
++				FMatrix	turned;
++				for (int r = 0; r < 3; r++)
++				{
++					const FVector &o = mOrientation.Row[r];
++					turned.Row[r].X = ((o.Z * turn.Row[2].X) + (o.Y * turn.Row[1].X)) + (o.X * turn.Row[0].X);
++					turned.Row[r].Y = ((o.Z * turn.Row[2].Y) + (o.Y * turn.Row[1].Y)) + (o.X * turn.Row[0].Y);
++					turned.Row[r].Z = ((o.Z * turn.Row[2].Z) + (o.Y * turn.Row[1].Z)) + (o.X * turn.Row[0].Z);
++				}
++				mOrientation = turned;
+ 				d.Set(0, GetVelocity().Magnitude(), 0);
+ 				mVelocity = mOrientation * d;
+ 			}

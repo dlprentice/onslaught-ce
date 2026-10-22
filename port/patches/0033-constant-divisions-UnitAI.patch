@@ -1,0 +1,20 @@
+--- a/UnitAI.cpp
++++ b/UnitAI.cpp
+@@ -337,7 +337,7 @@
+ 				continue;
+ 			FVector	d = s->Unknown72() - mForUnit->GetPos();
+ 			CUnitData	*data = mForUnit->mUnitData;
+-			float	range = (1.0f - s->Unknown84() / 100.0f) * data->mMaxTargetRange;
++			float	range = (1.0f - s->Unknown84() * 0.01f /* retail 005d85fc: / 100.0f */) * data->mMaxTargetRange;
+ 			float	dsq = d.MagnitudeSq();
+ 			if (dsq < range * range)
+ 				mForUnit->Unknown4fdad0(s->Unknown73());
+@@ -398,7 +398,7 @@
+ 		FVector	d = thing->GetPos() - mForUnit->GetPos();
+ 		float	distanceSq = d.MagnitudeSq();
+ 		CUnitData	*data = mForUnit->mUnitData;
+-		float	range = (1.0f - unit->GetStealth() / 100.0f) * data->mMaxTargetRange;
++		float	range = (1.0f - unit->GetStealth() * 0.01f /* retail 005d85fc: / 100.0f */) * data->mMaxTargetRange;
+ 		if (!(distanceSq < range * range))
+ 			continue;
+ 

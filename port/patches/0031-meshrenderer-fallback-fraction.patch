@@ -1,0 +1,14 @@
+--- a/DXMeshRenderer.cpp
++++ b/DXMeshRenderer.cpp
+@@ -690,6 +690,11 @@
+ 			f0 = 0;
+ 			f1 = 0;
+ 			time = 0; // Nativefallback owner; fraction remains indeterminate, no runtimeclaim.
++			// Port (patch 0031): the fraction is left unset on this path (frame 0 to frame 0) and is read by every
++			// GetWorldTransforms below; reading it is undefined behaviour, and clang 23 deleted the guard above as a result,
++			// loading mAnimModes[anim] with anim -1 (level 800 crashed at load). Each use is a + (b - a) * t with a == b,
++			// so any finite fraction gives retail's result; 0 is used (a -0.0 cell comes out +0.0, as from any retail value >= 0).
++			t = 0;
+ 			s0 = SINT(floor(0.0));
+ 			st = 1.0f;
+ 		}

@@ -1,0 +1,13 @@
+--- a/DXMeshRenderer.cpp
++++ b/DXMeshRenderer.cpp
+@@ -541,8 +541,8 @@
+ 						}
+ 						else
+ 							vert.mDiffuse = 0xff000000;
+-						vert.mU = vert.mPos.X / 10.0f;
+-						vert.mV = vert.mPos.Y / 10.0f;
++						vert.mU = vert.mPos.X * 0.1f /* retail 005d8c1c: / 10.0f */;
++						vert.mV = vert.mPos.Y * 0.1f /* retail 005d8c1c: / 10.0f */;
+ 					}
+ 
+ 					// STAND-IN (symbol position): one initialised dead local, no code, where our `DWORD col` stood before

@@ -1,0 +1,11 @@
+--- a/MCDestructableSegments.cpp
++++ b/MCDestructableSegments.cpp
+@@ -44,7 +44,7 @@
+ 		float	lean = fall;
+ 		if (lean > 2.f)
+ 			lean = 2.f;
+-		FMatrix	tilt(0, lean / 25.0f, lean / 14.f);
++		FMatrix	tilt(0, lean * 0.04f /* retail 005d8ca8: / 25.0f */, lean * 0.071428575f /* retail 005dc2a4: / 14.f */);
+ 		*ori = *ori * tilt;
+ 	}
+ 

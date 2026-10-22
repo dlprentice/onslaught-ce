@@ -1,0 +1,17 @@
+--- a/DXFont.cpp
++++ b/DXFont.cpp
+@@ -369,10 +369,10 @@
+ 	// the front end works in 640 x 480
+ 	if (FRONTEND.IsRunning())
+ 	{
+-		x = PLATFORM.GetWindowWidth() * x / 640.f;
+-		y = PLATFORM.GetWindowHeight() * y / 480.f;
+-		scalex = PLATFORM.GetWindowWidth() * scalex / 640.f;
+-		scaley = PLATFORM.GetWindowHeight() * scaley / 480.f;
++		x = PLATFORM.GetWindowWidth() * x * 0.0015625f /* retail 005db3a4: / 640.f */;
++		y = PLATFORM.GetWindowHeight() * y * 0.0020833334f /* retail 005db39c: / 480.f */;
++		scalex = PLATFORM.GetWindowWidth() * scalex * 0.0015625f /* retail 005db3a4: / 640.f */;
++		scaley = PLATFORM.GetWindowHeight() * scaley * 0.0020833334f /* retail 005db39c: / 480.f */;
+ 	}
+ 
+ 	if (!mTexture)

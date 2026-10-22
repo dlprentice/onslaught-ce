@@ -1,0 +1,421 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// port/platform/linux/files.cpp: the game's file calls on Linux (CreateFile/ReadFile/..., FindFirstFile, the CRT's
+// fopen/_access/_findfirst/_mkdir) through the path layer (paths.cpp).
+#include "handles.h"
+#include <io.h>
+
+#include <dirent.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <fnmatch.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+int PortCopyOnWrite(const char *game_path, char *out, size_t n);
+
+static DWORD ErrnoToWin32(int e)
+{
+	switch (e)
+	{
+	case ENOENT: return ERROR_FILE_NOT_FOUND;
+	case ENOTDIR: return ERROR_PATH_NOT_FOUND;
+	case EACCES:
+	case EPERM: return ERROR_ACCESS_DENIED;
+	case EEXIST: return ERROR_ALREADY_EXISTS;
+	default: return ERROR_GEN_FAILURE;
+	}
+}
+
+// ---- CRT ------------------------------------------------------------------------------------------------------------
+extern "C" FILE *port_fopen(const char *name, const char *mode)
+{
+	char path[4096];
+	bool writes = strpbrk(mode, "wa+") != NULL;
+	bool update = strchr(mode, 'r') && strchr(mode, '+');
+	int rc = writes ? (update || strchr(mode, 'a') ? PortCopyOnWrite(name, path, sizeof(path))
+												  : PortResolvePath(name, PORT_PATH_WRITE, path, sizeof(path)))
+					: PortResolvePath(name, PORT_PATH_READ, path, sizeof(path));
+	if (rc != 0)
+	{
+		errno = ENOENT;
+		return NULL;
+	}
+	return fopen(path, mode);
+}
+
+extern "C" int port_access(const char *name, int mode)
+{
+	char path[4096];
+	if (PortResolvePath(name, PORT_PATH_READ, path, sizeof(path)) != 0)
+		return -1;
+	// MSVC's modes: 0 exists, 2 write, 4 read, 6 both. Anything readable here is writable through the overlay.
+	return access(path, F_OK);
+}
+
+
+
+extern "C" int _mkdir(const char *name)
+{
+	char path[4096];
+	if (PortResolvePath(name, PORT_PATH_WRITE, path, sizeof(path)) != 0)
+		return -1;
+	return mkdir(path, 0755);
+}
+
+extern "C" int _chdir(const char *) { return 0; }
+extern "C" char *_getcwd(char *buf, int n)
+{
+	if (buf && n > 1)
+		snprintf(buf, n, ".");
+	return buf;
+}
+
+// ---- searches -------------------------------------------------------------------------------------------------------
+// A search merges the writable folder and the game folder (writable copies first, names unique ignoring case).
+struct PortFind
+{
+	PortHandle h;
+	char **names;
+	unsigned char *isdir;
+	unsigned *sizes;
+	int count;
+	int next;
+};
+
+static void FindAdd(PortFind *f, const char *name, bool dir, unsigned size)
+{
+	for (int i = 0; i < f->count; i++)
+		if (strcasecmp(f->names[i], name) == 0)
+			return;
+	f->names = (char **)realloc(f->names, sizeof(char *) * (f->count + 1));
+	f->isdir = (unsigned char *)realloc(f->isdir, f->count + 1);
+	f->sizes = (unsigned *)realloc(f->sizes, sizeof(unsigned) * (f->count + 1));
+	f->names[f->count] = strdup(name);
+	f->isdir[f->count] = dir;
+	f->sizes[f->count] = size;
+	f->count++;
+}
+
+static void FindScan(PortFind *f, const char *dir, const char *pattern)
+{
+	DIR *d = opendir(dir);
+	if (!d)
+		return;
+	while (dirent *e = readdir(d))
+	{
+		if (fnmatch(pattern, e->d_name, FNM_CASEFOLD) != 0)
+			continue;
+		char full[4096];
+		struct stat st;
+		snprintf(full, sizeof(full), "%s/%s", dir, e->d_name);
+		if (stat(full, &st) == 0)
+			FindAdd(f, e->d_name, S_ISDIR(st.st_mode), (unsigned)st.st_size);
+	}
+	closedir(d);
+}
+
+static PortFind *FindStart(const char *spec)
+{
+	char dirpart[4096], pattern[256];
+	snprintf(dirpart, sizeof(dirpart), "%s", spec);
+	char *cut = NULL;
+	for (char *p = dirpart; *p; p++)
+		if (*p == '\\' || *p == '/')
+			cut = p;
+	if (cut)
+	{
+		snprintf(pattern, sizeof(pattern), "%s", cut + 1);
+		*cut = 0;
+	}
+	else
+	{
+		snprintf(pattern, sizeof(pattern), "%s", dirpart);
+		snprintf(dirpart, sizeof(dirpart), ".");
+	}
+	if (strcmp(pattern, "*.*") == 0)
+		snprintf(pattern, sizeof(pattern), "*");
+	PortFind *f = (PortFind *)PortHandleNew(PORT_FIND, sizeof(PortFind));
+	char user[4096], game[4096];
+	PortResolvePath(dirpart, PORT_PATH_SHADOW, user, sizeof(user));
+	FindScan(f, user, pattern);
+	PortResolvePath(dirpart, PORT_PATH_READ, game, sizeof(game));
+	if (strcmp(game, user) != 0)
+		FindScan(f, game, pattern);
+	return f;
+}
+
+static void FindFree(PortFind *f)
+{
+	for (int i = 0; i < f->count; i++)
+		free(f->names[i]);
+	free(f->names);
+	free(f->isdir);
+	free(f->sizes);
+}
+
+static void FillFindData(PortFind *f, int i, LPWIN32_FIND_DATAA data)
+{
+	memset(data, 0, sizeof(*data));
+	data->dwFileAttributes = f->isdir[i] ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_NORMAL;
+	data->nFileSizeLow = f->sizes[i];
+	snprintf(data->cFileName, sizeof(data->cFileName), "%s", f->names[i]);
+}
+
+extern "C" HANDLE WINAPI FindFirstFileA(LPCSTR spec, LPWIN32_FIND_DATAA data)
+{
+	PortFind *f = FindStart(spec);
+	if (f->count == 0)
+	{
+		FindFree(f);
+		PortHandleFree(&f->h);
+		PortSetLastError(ERROR_FILE_NOT_FOUND);
+		return INVALID_HANDLE_VALUE;
+	}
+	FillFindData(f, f->next++, data);
+	return f;
+}
+
+extern "C" BOOL WINAPI FindNextFileA(HANDLE h, LPWIN32_FIND_DATAA data)
+{
+	PortFind *f = (PortFind *)PortCheck(h, PORT_FIND);
+	if (!f)
+		return FALSE;
+	if (f->next >= f->count)
+	{
+		PortSetLastError(ERROR_NO_MORE_FILES);
+		return FALSE;
+	}
+	FillFindData(f, f->next++, data);
+	return TRUE;
+}
+
+extern "C" BOOL WINAPI FindClose(HANDLE h)
+{
+	PortFind *f = (PortFind *)PortCheck(h, PORT_FIND);
+	if (!f)
+		return FALSE;
+	FindFree(f);
+	PortHandleFree(&f->h);
+	return TRUE;
+}
+
+static void FillFindT(PortFind *f, int i, struct _finddata_t *d)
+{
+	memset(d, 0, sizeof(*d));
+	d->attrib = f->isdir[i] ? _A_SUBDIR : _A_NORMAL;
+	d->size = f->sizes[i];
+	snprintf(d->name, sizeof(d->name), "%s", f->names[i]);
+}
+
+extern "C" long _findfirst(const char *spec, struct _finddata_t *d)
+{
+	PortFind *f = FindStart(spec);
+	if (f->count == 0)
+	{
+		FindFree(f);
+		PortHandleFree(&f->h);
+		errno = ENOENT;
+		return -1;
+	}
+	FillFindT(f, f->next++, d);
+	return (long)(intptr_t)f;
+}
+
+extern "C" int _findnext(long h, struct _finddata_t *d)
+{
+	PortFind *f = (PortFind *)PortCheck((HANDLE)(intptr_t)h, PORT_FIND);
+	if (!f || f->next >= f->count)
+	{
+		errno = ENOENT;
+		return -1;
+	}
+	FillFindT(f, f->next++, d);
+	return 0;
+}
+
+extern "C" int _findclose(long h)
+{
+	FindClose((HANDLE)(intptr_t)h);
+	return 0;
+}
+
+// ---- Win32 files ----------------------------------------------------------------------------------------------------
+void PortFileClose(PortHandle *h)
+{
+	PortFile *f = (PortFile *)h;
+	if (f->fd >= 0)
+		close(f->fd);
+}
+
+extern "C" HANDLE WINAPI CreateFileA(LPCSTR name, DWORD access, DWORD, LPSECURITY_ATTRIBUTES, DWORD disposition, DWORD,
+									 HANDLE)
+{
+	char path[4096];
+	bool write = (access & GENERIC_WRITE) != 0;
+	int rc;
+	if (!write)
+		rc = PortResolvePath(name, PORT_PATH_READ, path, sizeof(path));
+	else if (disposition == OPEN_EXISTING || disposition == OPEN_ALWAYS)
+		rc = PortCopyOnWrite(name, path, sizeof(path));
+	else
+		rc = PortResolvePath(name, PORT_PATH_WRITE, path, sizeof(path));
+	if (rc != 0)
+	{
+		PortSetLastError(ERROR_PATH_NOT_FOUND);
+		return INVALID_HANDLE_VALUE;
+	}
+	int flags = write ? ((access & GENERIC_READ) ? O_RDWR : O_WRONLY) : O_RDONLY;
+	switch (disposition)
+	{
+	case CREATE_NEW: flags |= O_CREAT | O_EXCL; break;
+	case CREATE_ALWAYS: flags |= O_CREAT | O_TRUNC; break;
+	case OPEN_ALWAYS: flags |= O_CREAT; break;
+	case TRUNCATE_EXISTING: flags |= O_TRUNC; break;
+	default: break;
+	}
+	int fd = open(path, flags, 0644);
+	if (fd < 0)
+	{
+		PortSetLastError(ErrnoToWin32(errno));
+		return INVALID_HANDLE_VALUE;
+	}
+	PortFile *f = (PortFile *)PortHandleNew(PORT_FILE, sizeof(PortFile));
+	f->fd = fd;
+	return f;
+}
+
+extern "C" HANDLE WINAPI CreateFileW(LPCWSTR name, DWORD access, DWORD share, LPSECURITY_ATTRIBUTES sa, DWORD disposition,
+									 DWORD flags, HANDLE templ)
+{
+	char narrow[4096];
+	WideCharToMultiByte(CP_ACP, 0, name, -1, narrow, sizeof(narrow), NULL, NULL);
+	return CreateFileA(narrow, access, share, sa, disposition, flags, templ);
+}
+
+extern "C" BOOL WINAPI ReadFile(HANDLE h, LPVOID buf, DWORD n, LPDWORD got, LPOVERLAPPED)
+{
+	PortFile *f = (PortFile *)PortCheck(h, PORT_FILE);
+	if (!f)
+		return FALSE;
+	ssize_t total = 0;
+	while ((DWORD)total < n)
+	{
+		ssize_t r = read(f->fd, (char *)buf + total, n - total);
+		if (r < 0 && errno == EINTR)
+			continue;
+		if (r < 0)
+		{
+			PortSetLastError(ErrnoToWin32(errno));
+			if (got)
+				*got = (DWORD)total;
+			return FALSE;
+		}
+		if (r == 0)
+			break;
+		total += r;
+	}
+	if (got)
+		*got = (DWORD)total;
+	return TRUE;
+}
+
+extern "C" BOOL WINAPI WriteFile(HANDLE h, LPCVOID buf, DWORD n, LPDWORD put, LPOVERLAPPED)
+{
+	PortFile *f = (PortFile *)PortCheck(h, PORT_FILE);
+	if (!f)
+		return FALSE;
+	ssize_t total = 0;
+	while ((DWORD)total < n)
+	{
+		ssize_t r = write(f->fd, (const char *)buf + total, n - total);
+		if (r < 0 && errno == EINTR)
+			continue;
+		if (r <= 0)
+		{
+			PortSetLastError(ErrnoToWin32(errno));
+			if (put)
+				*put = (DWORD)total;
+			return FALSE;
+		}
+		total += r;
+	}
+	if (put)
+		*put = (DWORD)total;
+	return TRUE;
+}
+
+extern "C" DWORD WINAPI GetFileSize(HANDLE h, LPDWORD high)
+{
+	PortFile *f = (PortFile *)PortCheck(h, PORT_FILE);
+	if (!f)
+		return INVALID_FILE_SIZE;
+	struct stat st;
+	if (fstat(f->fd, &st) != 0)
+		return INVALID_FILE_SIZE;
+	if (high)
+		*high = 0;
+	return (DWORD)st.st_size;
+}
+
+extern "C" DWORD WINAPI SetFilePointer(HANDLE h, LONG distance, PLONG high, DWORD method)
+{
+	PortFile *f = (PortFile *)PortCheck(h, PORT_FILE);
+	if (!f)
+		return INVALID_SET_FILE_POINTER;
+	int whence = method == FILE_BEGIN ? SEEK_SET : method == FILE_CURRENT ? SEEK_CUR : SEEK_END;
+	off_t r = lseek(f->fd, (off_t)distance, whence);
+	if (high)
+		*high = 0;
+	return r < 0 ? INVALID_SET_FILE_POINTER : (DWORD)r;
+}
+
+extern "C" BOOL WINAPI GetOverlappedResult(HANDLE, LPOVERLAPPED, LPDWORD n, BOOL)
+{
+	if (n)
+		*n = 0;
+	return TRUE;
+}
+
+extern "C" BOOL WINAPI DeleteFileA(LPCSTR name)
+{
+	// Only the port's writable copy can go; a file that exists only in the game folder stays.
+	char path[4096];
+	if (PortResolvePath(name, PORT_PATH_WRITE, path, sizeof(path)) != 0 || unlink(path) != 0)
+	{
+		PortSetLastError(ERROR_FILE_NOT_FOUND);
+		return FALSE;
+	}
+	return TRUE;
+}
+
+extern "C" BOOL WINAPI CreateDirectoryA(LPCSTR name, LPSECURITY_ATTRIBUTES)
+{
+	char path[4096];
+	if (PortResolvePath(name, PORT_PATH_WRITE, path, sizeof(path)) != 0)
+		return FALSE;
+	if (mkdir(path, 0755) != 0)
+	{
+		PortSetLastError(ErrnoToWin32(errno));
+		return FALSE;
+	}
+	return TRUE;
+}
+
+extern "C" DWORD WINAPI GetFileAttributesA(LPCSTR name)
+{
+	char path[4096];
+	struct stat st;
+	if (PortResolvePath(name, PORT_PATH_READ, path, sizeof(path)) != 0 || stat(path, &st) != 0)
+		return INVALID_FILE_ATTRIBUTES;
+	return S_ISDIR(st.st_mode) ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_NORMAL;
+}
+
+extern "C" DWORD WINAPI GetCurrentDirectoryA(DWORD n, LPSTR buf)
+{
+	if (buf && n > 1)
+		snprintf(buf, n, ".");
+	return 1;
+}
+extern "C" BOOL WINAPI SetCurrentDirectoryA(LPCSTR) { return TRUE; }

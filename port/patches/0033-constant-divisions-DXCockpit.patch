@@ -1,0 +1,11 @@
+--- a/DXCockpit.cpp
++++ b/DXCockpit.cpp
+@@ -31,7 +31,7 @@
+ 			DWORD	flags = 0;
+ 			if (mBattleEngine->GetStealth() > 5.f)
+ 			{
+-				MESH_ALPHA = SINT(255.f-(mBattleEngine->GetStealth()/100.0f*255.0f));	// Stuart's spelling (BattleEngine.cpp): one shared COMDAT constant in retail
++				MESH_ALPHA = SINT(255.f-(mBattleEngine->GetStealth()*2.55f /* retail 005d8c74: mBattleEngine->GetStealth()/100.0f*255.0f */));	// Stuart's spelling (BattleEngine.cpp): one shared COMDAT constant in retail
+ 				flags = 0x40;
+ 			}
+ 			mRenderThing->Render(flags);

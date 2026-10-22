@@ -1,0 +1,11 @@
+--- a/Rocket.cpp
++++ b/Rocket.cpp
+@@ -51,7 +51,7 @@
+ {
+ 	if (mActive)
+ 	{
+-		if (mVelocity.Z <= GetMaxVelocity() / 20.0f - 0.001f)
++		if (mVelocity.Z <= GetMaxVelocity() * 0.05f /* retail 005d8584: / 20.0f */ - 0.001f)
+ 			mVelocity.Z -= 0.001f;
+ 
+ 		for (SINT i = 0; i < 4; i++)

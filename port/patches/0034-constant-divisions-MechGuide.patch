@@ -1,0 +1,11 @@
+--- a/MechGuide.cpp
++++ b/MechGuide.cpp
+@@ -135,7 +135,7 @@
+ 			return;
+ 		if ((mMode != 3) || pushed)
+ 		{
+-			float	speed = GetUnit()->Unknown111() / 5.0f;
++			float	speed = GetUnit()->Unknown111() * 0.2f /* retail 005d8c68: / 5.0f */;
+ 			FVector	forward(0, speed, 0);
+ 			FMatrix	&ori = GetUnit()->GetOrientation();
+ 			GetUnit()->mUnknown14C = ori * forward;

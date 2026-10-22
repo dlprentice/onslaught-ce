@@ -1,0 +1,32 @@
+--- a/src/video/offscreen/SDL_offscreenvideo.c
++++ b/src/video/offscreen/SDL_offscreenvideo.c
+@@ -129,10 +129,28 @@
+     mode.format = SDL_PIXELFORMAT_XRGB8888;
+     mode.w = 1024;
+     mode.h = 768;
+-    if (SDL_AddBasicVideoDisplay(&mode) == 0) {
++    SDL_DisplayID id = SDL_AddBasicVideoDisplay(&mode);
++    if (id == 0) {
+         return false;
+     }
+ 
++    /* Battle Engine Aquila port (bea-decomp port/deps-patches): list the usual fullscreen modes, as a real display
++       does, so Direct3D 9 over dxvk-native enumerates adapter modes when the game runs off the desktop. */
++    {
++        static const int sizes[][2] = { { 640, 480 }, { 800, 600 }, { 1024, 768 }, { 1280, 720 }, { 1280, 1024 },
++                                        { 1600, 900 }, { 1920, 1080 } };
++        SDL_VideoDisplay *display = SDL_GetVideoDisplay(id);
++        for (int i = 0; display && i < (int)SDL_arraysize(sizes); i++) {
++            SDL_DisplayMode m;
++            SDL_zero(m);
++            m.format = SDL_PIXELFORMAT_XRGB8888;
++            m.w = sizes[i][0];
++            m.h = sizes[i][1];
++            m.refresh_rate = 60.0f;
++            SDL_AddFullscreenDisplayMode(display, &m);
++        }
++    }
++
+     // We're done!
+     return true;
+ }

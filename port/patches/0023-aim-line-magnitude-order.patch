@@ -1,0 +1,39 @@
+--- a/world.cpp
++++ b/world.cpp
+@@ -244,6 +244,9 @@
+ // the six position sums. own and incoming live in their own block: C2's alias analysis keeps a pointer obtained outside
+ // a local's scope (volume) from aliasing it, so the stores into them are scheduled among the position sums, as retail's
+ // are (0050b380, 0050b395). The report's constructor already zeroes mUnknown00, so it is not stored again here.
++// Port (patch 0023): VC6 ranks the three squares of every magnitude here as (Z*Z + Y*Y) + X*X (0050b0fa..0050b111,
++// 0050b2c7..0050b2db, 0050b455..0050b46b); clang keeps Magnitude's (X*X + Y*Y) + Z*Z.
++static inline float PortAimMagnitude(const FVector &v) { return sqrtf(((v.Z * v.Z) + (v.Y * v.Y)) + (v.X * v.X)); }
+ // FUNCTION: 0x0050b030
+ ECollisionType CWorld::FindFirstThingToHitLine(CLine line, CThing *ignore,
+ 		CWorldLineColReport *out, BOOL firstOnly, BOOL meshCollision, int level,
+@@ -262,7 +265,7 @@
+ 	BOOL hitGround = MAP.Unknown490a40(&line, &ground, mapFlag);
+ 	if (hitGround)
+ 	{
+-		groundDistance = (LineStart(line) - ground).Magnitude();
++		groundDistance = PortAimMagnitude(LineStart(line) - ground);
+ 		out->mHitType = kCollideGround;
+ 		out->mDistToImpact = groundDistance;
+ 	}
+@@ -288,7 +291,7 @@
+ 				FVector position = seeker->Unknown7()->mPos + pos0;
+ 				if (seeker->Unknown7()->TestAtOffset(&line, -position, &report))
+ 				{
+-					float distance = (position - LineStart(line)).Magnitude() - (thing->GetBoundingRadius());
++					float distance = PortAimMagnitude(position - LineStart(line)) - (thing->GetBoundingRadius());
+ 					if ((!hitGround || distance < groundDistance) && (!hit || distance < nearest))
+ 					{
+ 						report.mContactParts[0] = -1;
+@@ -310,7 +313,7 @@
+ 								accept = FALSE;
+ 								if (volume->CollideWithLine(&own, &incoming, &line, &report))
+ 								{
+-									distance = (report.mContactPos - LineStart(line)).Magnitude();
++									distance = PortAimMagnitude(report.mContactPos - LineStart(line));
+ 									if ((!hitGround || groundDistance >= distance) && distance <= nearest)
+ 										accept = TRUE;
+ 								}

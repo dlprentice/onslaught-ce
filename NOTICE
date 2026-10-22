@@ -1,0 +1,18 @@
+Onslaught CE
+Copyright the Onslaught CE contributors.
+
+This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
+License, version 3 only (SPDX: GPL-3.0-only), as published by the Free Software Foundation (COPYING).
+
+Battle Engine Aquila was made by Lost Toys (2003). Its C++ source was released under the GNU General Public License,
+version 3, by Stuart Gillam (https://github.com/stuart73/Onslaught). The files under src/ derive from that release,
+completed where it lacks code; port/ and linklib/ are this project's own work unless a file says otherwise.
+REUSE.toml records each path's licence.
+
+The game's data (levels, textures, sounds, films, text) is not part of this program and not covered by its licence;
+players supply it from their own copy of the game.
+
+Third-party components built into or shipped with the program, and their licences, are listed in THIRD-PARTY.md.
+
+Battle Engine Aquila is a trademark of its owners. Onslaught CE is an unofficial project, not affiliated with or
+endorsed by the game's developer, publisher or rights holders.

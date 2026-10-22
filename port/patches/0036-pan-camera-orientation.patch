@@ -1,0 +1,44 @@
+--- a/Camera.cpp
++++ b/Camera.cpp
+@@ -342,6 +342,9 @@
+ //******************************************************************************************
+ 
+ 
++// Port (patch 0036): port/platform/common/x87math.cpp
++extern "C" long double bea_x87_asin_l(double), bea_x87_atan2f_l(float, float), bea_x87_fsin_x(long double), bea_x87_fcos_x(long double);
++
+ //******************************************************************************************
+ CPanCamera::CPanCamera(CThing* for_thing, CBSpline* curve, float length) :	// FUNCTION: 0x004198d0
+  mForThing(for_thing),
+@@ -383,9 +386,29 @@
+ 		mPos = thing->GetPos() + pos;
+ 
+ 		FVector us_to_them = thing->GetPos() - mPos ;
+-		if (us_to_them.Magnitude() != 0.0f)
++		// Port (patch 0036): retail inlines Magnitude, Elevation, Azimuth and FMatrix(yaw, pitch, roll) here
++		// (00419bb0..00419d01) with a block of its own: the magnitude summed (Y*Y + Z*Z) + X*X, the elevation
++		// (__CIasin of Z / m) and the azimuth (-fpatan(X, Y)) kept on the x87 stack at full precision into fsin and fcos,
++		// cos(yaw), sin(yaw), cos and sin of the roll constant 0.0 and cos(pitch) stored as floats, sin(pitch) kept, and the
++		// nine elements in 004062d0's operation order. The out-of-line MakeRotationF rounds both angles to float first,
++		// which moved the aim line's end by an ulp at level start (port/PARITY.md). Proved equal to retail's block run
++		// natively at control word 0x7F on 20,006 position pairs (an oracle running that block).
++		float X = us_to_them.X, Y = us_to_them.Y, Z = us_to_them.Z;
++		volatile float m = sqrtf((Y * Y + Z * Z) + X * X);
++		if (m != 0.0f)
+ 		{
+-			mOrientation = FMatrix(us_to_them.Azimuth(), us_to_them.Elevation(), 0.0f) ;
++			long double pitch = m > 0.0f ? bea_x87_asin_l((float)(Z / m)) : 0.0L;
++			long double yaw = -bea_x87_atan2f_l(X, Y);
++			volatile float cy = (float)bea_x87_fcos_x(yaw), sy = (float)bea_x87_fsin_x(yaw);
++			volatile float cr = (float)bea_x87_fcos_x(0.0L), sr = (float)bea_x87_fsin_x(0.0L);
++			volatile float cp = (float)bea_x87_fcos_x(pitch);
++			long double sp = bea_x87_fsin_x(pitch);
++			long double spsr = sp * sr;
++			volatile float spcr = (float)(sp * cr);
++			FMatrix &o = mOrientation;
++			o.Row[0].X = (float)((long double)cr * cy - spsr * sy);	o.Row[0].Y = (float)(-((long double)cp * sy));	o.Row[0].Z = (float)((long double)spcr * sy + (long double)sr * cy);
++			o.Row[1].X = (float)(spsr * cy + (long double)cr * sy);	o.Row[1].Y = (float)((long double)cp * cy);	o.Row[1].Z = (float)((long double)sr * sy - (long double)spcr * cy);
++			o.Row[2].X = (float)(-((long double)cp * sr));		o.Row[2].Y = (float)sp;			o.Row[2].Z = (float)((long double)cp * cr);
+ 		}
+ 	}
+ 

@@ -1,0 +1,23 @@
+--- a/MessageLog.cpp
++++ b/MessageLog.cpp
+@@ -232,7 +232,7 @@
+ 	}
+ 
+ 	float	ft = 60.f / PLATFORM.GetFPS();
+-	mScroll += ((mScrollTarget - mScroll) * (1.f / 6.f)) * ft;
++	mScroll += ((mScrollTarget - mScroll) * (1.f * 0.16666667f /* retail 005dc758: / 6.f */)) * ft;
+ 	if (fabs(mScroll - mScrollTarget) < 1.0)
+ 	{
+ 		mScroll = 0;
+@@ -331,9 +331,9 @@
+ 	CSPRITERENDERER::DrawSprite(px, py, 0.001f, mHeadFrame, SA_TOP_LEFT, SPT_NONE, 1.f, 0.f, col, 1.f, 1.f, 0.f, 1.f, 0.f, 1.f);
+ 
+ 	// the time it was shown
+-	int		hours = SINT(floor(message->mEndTime * (1.f / 3600.f)));
++	int		hours = SINT(floor(message->mEndTime * (1.f * 0.00027777778f /* retail 005dc770: / 3600.f */)));
+ 	float	t = message->mEndTime;
+-	int		minutes = SINT(floor((t - hours * 3600.f) * (1.f / 60.f)));
++	int		minutes = SINT(floor((t - hours * 3600.f) * (1.f * 0.016666668f /* retail 005dbc48: / 60.f */)));
+ 	char	text[20];
+ 	sprintf(text, "%02d:%02d:%02d", hours, minutes, SINT(message->mEndTime) % 60);
+ 	PLATFORM.Font(FONT_SMALL)->DrawTextWithShadow(x + 75.f, y + 30.f, (a << 24) + 0x606060, ToWCHAR(text), 8, 0.002f, 1.f, 1.f);

@@ -1,0 +1,11 @@
+--- a/DiveBomberGuide.cpp
++++ b/DiveBomberGuide.cpp
+@@ -113,7 +113,7 @@
+ 	else
+ 	{
+ 		GetUnit()->SetUnknown174(0);
+-		float	speed = (GetUnit()->GetMaxVelocity() / 20.0f) * 4.0f;
++		float	speed = (GetUnit()->GetMaxVelocity() * 0.05f /* retail 005d8584: / 20.0f */) * 4.0f;
+ 		FMatrix	&ori = GetUnit()->GetOrientation();
+ 		GetUnit()->SetUnknown14C(FVector(speed * ori.Row[0].Y, speed * ori.Row[1].Y, speed * ori.Row[2].Y));
+ 	}

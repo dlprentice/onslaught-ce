@@ -1,0 +1,14 @@
+--- a/GroundVehicleGuide.cpp
++++ b/GroundVehicleGuide.cpp
+@@ -198,9 +198,9 @@
+ 
+ 	FVector	v;
+ 	if (GetMode() == 1)
+-		v = FVector(0, (GetUnit()->Unknown111() / 20.0f) * 4.0f, 0);
++		v = FVector(0, (GetUnit()->Unknown111() * 0.05f /* retail 005d8584: / 20.0f */) * 4.0f, 0);
+ 	else
+-		v = FVector(0, (GetUnit()->Unknown111() / 20.0f) * -4.0f, 0);
++		v = FVector(0, (GetUnit()->Unknown111() * 0.05f /* retail 005d8584: / 20.0f */) * -4.0f, 0);
+ 	GetUnit()->SetUnknown14C(GetUnit()->GetOrientation() * v);
+ }
+ 

@@ -1,0 +1,11 @@
+--- a/game.cpp
++++ b/game.cpp
+@@ -1834,7 +1834,7 @@
+ 
+ 
+ void CGame::Update()	// FUNCTION: 0x0046e910
+-{
++{ PORT_UPDATE_HOOK();
+ /*#if TARGET == PS2
+ #ifndef _DEBUG
+ 	extern UINT g_OldSP;

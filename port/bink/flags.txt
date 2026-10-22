@@ -1,0 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
+# FFmpeg's structures must keep their own (GCC) layout: with -mms-bitfields AVPacket is 76 bytes on Linux, not 80,
+# and no frame decodes (measured).
+bink.cpp: -mno-ms-bitfields

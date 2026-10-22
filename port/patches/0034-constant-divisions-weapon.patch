@@ -1,0 +1,87 @@
+--- a/weapon.cpp
++++ b/weapon.cpp
+@@ -440,7 +440,7 @@
+ 			if (angle)
+ 				launchAngle = FMatrix(angle->mA, angle->mB, 0);
+ 			FVector launchVelocity(0, 0, 0);
+-			launchVelocity.Y = round->mData->mBeam ? GetMaxRange(FVector(0, 0, 0)) : round->mData->mSpeed / 20.0f;
++			launchVelocity.Y = round->mData->mBeam ? GetMaxRange(FVector(0, 0, 0)) : round->mData->mSpeed * 0.05f /* retail 005d8584: / 20.0f */;
+ 			float pitchError = (GAME.FloatRandom() * 2 - 1) * mode->mInaccuracy;
+ 			float yawError = (GAME.FloatRandom() * 2 - 1) * mode->mInaccuracy;
+ 			FMatrix inaccuracy(yawError, pitchError, 0);
+@@ -469,7 +469,7 @@
+ 					float percent = GAME.FloatRandom() * 100.0f;
+ 					float error = round->mData->mFlakInaccuracy;
+ 					error *= distance;
+-					float fraction = percent / 100.0f;
++					float fraction = percent * 0.01f /* retail 005d85fc: / 100.0f */;
+ 					init.mLifeSpan = ((fraction * error) * 2 - error + distance) / roundSpeed;
+ 				}
+ 			}
+@@ -538,9 +538,9 @@
+ 					SINT randomY = GAME.Random();
+ 					SINT randomZ = GAME.Random();
+ 					SINT mask = 400;
+-					FVector velocity((randomX & mask) / 10000.0f - 0.02f + 0.05f,
+-						(randomY & mask) / 10000.0f - 0.02f + 0.05f,
+-						(randomZ & mask) / 10000.0f - 0.02f - 0.1f);
++					FVector velocity((randomX & mask) * 0.0001f /* retail 005dfca4: / 10000.0f */ - 0.02f + 0.05f,
++						(randomY & mask) * 0.0001f /* retail 005dfca4: / 10000.0f */ - 0.02f + 0.05f,
++						(randomZ & mask) * 0.0001f /* retail 005dfca4: / 10000.0f */ - 0.02f - 0.1f);
+ 					velocity = GetPrimaryOrientation() * velocity;
+ 					CUnit *unit = GetAttachedTo();
+ 					FVector unitVelocity = unit->GetVelocity();
+@@ -737,7 +737,7 @@
+ 	if (mMode->mRound->IsBallistic())
+ 	{
+ 		float height = targetPos.Z - mAttachedTo->GetPos().Z;
+-		float launchSpeed = mMode->mRound->mSpeed / 20.0f;
++		float launchSpeed = mMode->mRound->mSpeed * 0.05f /* retail 005d8584: / 20.0f */;
+ 		float gravity = WeaponRound_mGravity(RoundOf(WeaponModeOf(this))) * 0.025f;	// STAND-IN (readers)
+ 		float distance = delta.MagnitudeXY();
+ 		if (mUnknown98)
+@@ -932,7 +932,7 @@
+ 	if (Gravity())
+ 	{
+ 		float height = mAttachedTo->GetPos().Z - target->GetPos().Z;
+-		float launchSpeed = mMode->mRound->mSpeed / 20.0f;
++		float launchSpeed = mMode->mRound->mSpeed * 0.05f /* retail 005d8584: / 20.0f */;
+ 		float gravity = mMode->mRound->mGravity * 0.025f;
+ 		float distance = delta.MagnitudeXY();
+ 		float angleA = basePitch + mMode->mMinDeflection;
+@@ -1083,7 +1083,7 @@
+ 			FVector	vel = GetPrimaryOrientation() * FVector(0, speed, 0);
+ 			float	dz = pos.Z - GetPrimaryPosition().Z;
+ 			float	pitch; // Pinned VC6 slot-reuse concession; see the function comment above.
+-			float	v = WeaponRound_mSpeed(RoundOf(WeaponModeOf(this))) / 20.0f;
++			float	v = WeaponRound_mSpeed(RoundOf(WeaponModeOf(this))) * 0.05f /* retail 005d8584: / 20.0f */;
+ 			float	g = WeaponRound_mGravity(RoundOf(WeaponModeOf(this))) * 0.025f;
+ 			float	dist = d.MagnitudeXY();
+ 			float	lo, hi;
+@@ -1153,7 +1153,7 @@
+ 	{
+ 		float bestError = 99999.0f;
+ 		float height = target.Z - mAttachedTo->GetPos().Z;
+-		float speed = mMode->mRound->mSpeed / 20.0f;
++		float speed = mMode->mRound->mSpeed * 0.05f /* retail 005d8584: / 20.0f */;
+ 		float gravity = mMode->mRound->mGravity * 0.025f;
+ 		float distance = delta.MagnitudeXY();
+ 		for (float angle = angleB; angle < angleA; angle += 0.02f)
+@@ -1196,7 +1196,7 @@
+ 				height = 0;
+ 			else
+ 				height = target.Z - GetPrimaryPosition().Z;
+-			float speed = mMode->mRound->mSpeed / 20.0f;
++			float speed = mMode->mRound->mSpeed * 0.05f /* retail 005d8584: / 20.0f */;
+ 			float gravity = mMode->mRound->mGravity * 0.025f;
+ 			float angleA = mMode->mMinDeflection;
+ 			float angleB = mMode->mMaxDeflection;
+@@ -1253,7 +1253,7 @@
+ 				height = 0;
+ 			else
+ 				height = target.Z - GetPrimaryPosition().Z;
+-			float speed = mMode->mRound->mSpeed / 20.0f;
++			float speed = mMode->mRound->mSpeed * 0.05f /* retail 005d8584: / 20.0f */;
+ 			float gravity = mMode->mRound->mGravity * 0.025f;
+ 			float angleA = mMode->mMinDeflection;
+ 			float angleB = mMode->mMaxDeflection;

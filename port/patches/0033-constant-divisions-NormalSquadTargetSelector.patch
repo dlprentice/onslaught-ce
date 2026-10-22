@@ -1,0 +1,11 @@
+--- a/NormalSquadTargetSelector.cpp
++++ b/NormalSquadTargetSelector.cpp
+@@ -45,7 +45,7 @@
+ 			CUnitData *data = squad->mUnknownA0;
+ 			if (unit->GetStealth() != 0)
+ 			{
+-				float range = (1.0f - unit->GetStealth() / 100.0f) * data->mMaxTargetRange;
++				float range = (1.0f - unit->GetStealth() * 0.01f /* retail 005d85fc: / 100.0f */) * data->mMaxTargetRange;
+ 				if (distanceSq > range * range)
+ 					visible = FALSE;
+ 			}

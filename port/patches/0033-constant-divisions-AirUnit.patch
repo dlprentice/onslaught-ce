@@ -1,0 +1,11 @@
+--- a/AirUnit.cpp
++++ b/AirUnit.cpp
+@@ -176,7 +176,7 @@
+ 		mUnknown170 -= 0.1f;
+ 	else
+ 		mUnknown170 = mUnknown174;
+-	mUnknown170 *= 1.0f - GetStealth() / 100.0f;
++	mUnknown170 *= 1.0f - GetStealth() * 0.01f /* retail 005d85fc: / 100.0f */;
+ 
+ 	// the trails
+ 	SINT				n = 1;

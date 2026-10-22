@@ -1,0 +1,11 @@
+--- a/CarrierGuide.cpp
++++ b/CarrierGuide.cpp
+@@ -129,7 +129,7 @@
+ 	else
+ 		GetUnit()->SetUnknown174(0);
+ 
+-	FVector	forward(0, (GetUnit()->GetMaxVelocity() / 20.0f) * 4.0f, 0);
++	FVector	forward(0, (GetUnit()->GetMaxVelocity() * 0.05f /* retail 005d8584: / 20.0f */) * 4.0f, 0);
+ 	FMatrix	ori(d.Azimuth(), d.Elevation(), 0);
+ 	forward = ori * forward;
+ 	GetUnit()->SetUnknown14C(forward);

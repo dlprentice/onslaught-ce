@@ -1,0 +1,13 @@
+--- a/Cutscene.cpp
++++ b/Cutscene.cpp
+@@ -474,8 +474,8 @@
+ 				if (snode)
+ 				{
+ 					float	offset = float(snode->mOffset);
+-					float	from = (float(time) - snode->mStart + offset) / 20.0f;
+-					float	to = (offset + snode->mLength) / 20.0f;
++					float	from = (float(time) - snode->mStart + offset) * 0.05f /* retail 005d8584: / 20.0f */;
++					float	to = (offset + snode->mLength) * 0.05f /* retail 005d8584: / 20.0f */;
+ 					if (to > from)
+ 						SOUND.PlaySample(snode->mSample, NULL, 0.7f, ST_NOTRACKING, true, 0, from, to, false, 1.0f, false, false, ST_GAME_SOUND);
+ 				}

@@ -1,0 +1,11 @@
+--- a/PCMusic.cpp
++++ b/PCMusic.cpp
+@@ -40,7 +40,7 @@
+ 
+ void CPCMusic::DeviceSetVolume(int vol)	// FUNCTION: 0x00515370
+ {
+-	SetMusicStreamVolume(vol * (1.0f / 127.0f));	// spelling chosen to give retail's own float-folded 1/127 (Music.obj's is the division in music.h): placement evidence; Stuart's release has no such line
++	SetMusicStreamVolume(vol * (1.0f * 0.007874016f /* retail 005e4978: / 127.0f */));	// spelling chosen to give retail's own float-folded 1/127 (Music.obj's is the division in music.h): placement evidence; Stuart's release has no such line
+ }
+ 
+ BOOL CPCMusic::DeviceGetTrackFinished()	// FUNCTION: 0x00515390

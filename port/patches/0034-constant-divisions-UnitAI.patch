@@ -1,0 +1,14 @@
+--- a/UnitAI.cpp
++++ b/UnitAI.cpp
+@@ -179,9 +179,9 @@
+ 	if ((mForUnit->mUnitData->mSweeping) && (mForUnit->AnyWeaponUnknown50a290()))
+ 	{
+ 		if (fabsf(mSweepYaw - mSweepYawEnd) > 0.001f)
+-			mSweepYaw += (mSweepYawEnd - mSweepYawStart) * (1.0f / 35.0f);
++			mSweepYaw += (mSweepYawEnd - mSweepYawStart) * (1.0f * 0.028571429f /* retail 005dbfa0: / 35.0f */);
+ 		if (fabsf(mSweepPitch - mSweepPitchEnd) > 0.001f)
+-			mSweepPitch += (mSweepPitchEnd - mSweepPitchStart) * (1.0f / 35.0f);
++			mSweepPitch += (mSweepPitchEnd - mSweepPitchStart) * (1.0f * 0.028571429f /* retail 005dbfa0: / 35.0f */);
+ 
+ 		FVector	d = mAimPos - mForUnit->GetPos();
+ 		FMatrix	ori(mSweepYaw, mSweepPitch, 0);

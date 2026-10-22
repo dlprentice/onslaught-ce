@@ -1,0 +1,20 @@
+# Pinned inputs for the native port (port/README.md). Fetched into the ignored local-data/port/downloads by
+# port/tools/deps.py, which refuses a file whose SHA-256 differs. Columns: name, version, licence, sha256, url.
+dxvk-native	3.1.1	zlib	506fa1ea5bb6ce9a89e11436f7ab5191bc0196e8a577e0cf0b16a45bbc9991b7	https://github.com/doitsujin/dxvk/releases/download/v3.1.1/dxvk-native-3.1.1-steamrt-sniper.tar.gz
+SDL3	3.4.16	zlib	7322236cd12090c3eb40b9728be4d49c76f66ad17d04369584d4ecad5cf77c68	https://github.com/libsdl-org/SDL/releases/download/release-3.4.16/SDL3-3.4.16.tar.gz
+libogg	1.3.6	BSD-3-Clause (dependency prefix only; the game links libvorbis/libogg 1.0, libvorbis_vc6 below)	5c8253428e181840cd20d41f3ca16557a9cc04bad4a3d04cce84808677fa1061	https://downloads.xiph.org/releases/ogg/libogg-1.3.6.tar.xz
+libvorbis	1.3.7	BSD-3-Clause (dependency prefix only; the game links libvorbis/libogg 1.0, libvorbis_vc6 below)	b33cc4934322bcbf6efcbacf49e3ca01aadbea4114ec9589d1b1e9d20f72954b	https://downloads.xiph.org/releases/vorbis/libvorbis-1.3.7.tar.xz
+meson	1.12.1	Apache-2.0	ab0a6ca09f8ef70c564c8241fb5a23957886a0b53fb58412b5e07eaf07dba743	https://github.com/mesonbuild/meson/releases/download/1.12.1/meson-1.12.1.tar.gz
+cmake	4.4.4	BSD-3-Clause	e5bb807f7728cb60cd8b27ebc97a2edb469b68655f21e844a600c3575b76f5bb	https://github.com/Kitware/CMake/releases/download/v4.4.4/cmake-4.4.4-linux-x86_64.tar.gz
+libxkbcommon	1.13.2	MIT	acc4d5f7c3cbba5f9f8d08d8bdbeede84ecede46792f47929aa9321873385528	https://github.com/xkbcommon/libxkbcommon/archive/refs/tags/xkbcommon-1.13.2.tar.gz
+llvm	22.1.8	Apache-2.0 WITH LLVM-exception	df0e1ecf16caf3489a272a5eea4eec9b0d82878f6477fa309504f918a0006384	https://github.com/llvm/llvm-project/releases/download/llvmorg-22.1.8/LLVM-22.1.8-Linux-X64.tar.xz
+llvm-mingw	20260922	Apache-2.0 WITH LLVM-exception (toolchain), ZPL/public domain (MinGW-w64 headers, CRT)	bb7bb7654b33d5aa8712acb837c963b2e0c56352560c76105270a3268c665c21	https://github.com/mstorsjo/llvm-mingw/releases/download/20260922/llvm-mingw-20260922-ucrt-ubuntu-22.04-x86_64.tar.xz
+NvTriStrip	c40ad04c7fec77be6af9d4ebc0c64da80241984f	NONE STATED (private builds only: public builds compile it out, build.py --public, port/platform/public)	9b18049b52fa50f80d3883f2bcd77afd949da672dbae9bc522a2aa08fe8a3b81	https://github.com/turbulenz/NvTriStrip/archive/c40ad04c7fec77be6af9d4ebc0c64da80241984f.tar.gz
+zlib	1.3.2	Zlib	bb329a0a2cd0274d05519d61c667c062e06990d72e125ee2dfa8de64f0119d16	https://github.com/madler/zlib/releases/download/v1.3.2/zlib-1.3.2.tar.gz
+libvorbis_vc6-linux	1.0-vc6sp5-1	BSD-3-Clause (libvorbis 1.0 and libogg 1.0, compiled by port/vorbis/build.py)	4b7e36120a1e5d43a9076674706fcfcf5e20a3325ab2b18a6457b379ca2d13ba	https://github.com/dlprentice/onslaught-ce/releases/download/vorbis-vc6-1/libvorbis_vc6-linux-i686.a
+libvorbis_vc6-windows	1.0-vc6sp5-1	BSD-3-Clause (libvorbis 1.0 and libogg 1.0, compiled by port/vorbis/build.py)	9cb3053da45e8a5342aab8d3484f702175a2e7b1f5ac5138e715c41e2c1d1e3d	https://github.com/dlprentice/onslaught-ce/releases/download/vorbis-vc6-1/libvorbis_vc6-windows-i686.a
+monocypher	4.0.2	BSD-2-Clause OR CC0-1.0	38d07179738c0c90677dba3ceb7a7b8496bcfea758ba1a53e803fed30ae0879c	https://monocypher.org/download/monocypher-4.0.2.tar.gz
+FFmpeg	7.1.1	LGPL-2.1-or-later (decoders and demuxer only; no --enable-gpl or --enable-nonfree)	733984395e0dbbe5c046abda2dc49a5544e7e0e1e2366bba849222ae9e3a03b1	https://ffmpeg.org/releases/ffmpeg-7.1.1.tar.xz
+# Patches applied to an input when deps.py unpacks it (port/deps-patches/<name>-*.patch); deps.py refuses a patch whose
+# SHA-256 differs from its line here. Columns: patch, sha256.
+patch:SDL3-offscreen-fullscreen-modes.patch	14b745b3e41ad7889c22a028339368bf69a19bea2c80b1677862a8b8cf552f96

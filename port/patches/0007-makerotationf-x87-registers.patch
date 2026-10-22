@@ -1,0 +1,93 @@
+--- a/maths.h
++++ b/maths.h
+@@ -135,6 +135,7 @@
+ 	return a - b;
+ }
+ 
++extern "C" long double bea_x87_fsinl(float), bea_x87_fcosl(float);	// port/platform/common/x87math.cpp (patch 0007)
+ class FMatrix
+ {
+ public:
+@@ -171,13 +172,42 @@
+ 	// tuple-count stand-in").
+ 	void	MakeRotationF(float yaw, float pitch, float roll)
+ 	{
+-		float cy = cosf(yaw), sy = sinf(yaw);
+-		float cr = cosf(roll), sr = sinf(roll);
+-		float cp = cosf(pitch), sp = sinf(pitch);
+-		Row[0].X = (((cr * cy - sp * sr * sy)));	Row[0].Y = (((-cp * sy)));	Row[0].Z = ((sp * cr * sy + sr * cy));
+-		Row[1].X = ((sp * sr * cy + cr * sy));	Row[1].Y = (((cp * cy)));		Row[1].Z = (sr * sy - sp * cr * cy);
+-		Row[2].X = (-cp * sr);				Row[2].Y = sp;			Row[2].Z = (cp * cr);
+-	}
++		// Port (patch 0007): retail's out-of-line FMatrix(yaw, pitch, roll) at 004062d0, which 96 calls in 58 functions
++		// use, keeps fcos(yaw) and fsin(pitch) on the x87 stack at full precision (the transcendentals ignore the
++		// precision control) and stores sin(yaw), cos(roll), sin(roll) and cos(pitch) as floats; every product and sum
++		// rounds to 24 bits under the game's control word. volatile makes the stores: the port's x87 sinf/cosf return
++		// an unrounded st(0) that clang otherwise treats as an already rounded float. Proved equal to retail 004062d0
++		// run natively at control word 0x7F on 4,502 angle triples (port/PARITY.md).
++		long double cy = bea_x87_fcosl(yaw);
++		volatile float sy = sinf(yaw);
++		volatile float cr = cosf(roll), sr = sinf(roll);
++		volatile float cp = cosf(pitch);
++		long double sp = bea_x87_fsinl(pitch);
++		long double spsr = sp * sr;
++		volatile float spcr = (float)(sp * cr);
++		Row[0].X = (float)((long double)cr * cy - spsr * sy);	Row[0].Y = (float)(-((long double)cp * sy));	Row[0].Z = (float)((long double)spcr * sy + (long double)sr * cy);
++		Row[1].X = (float)(spsr * cy + (long double)cr * sy);	Row[1].Y = (float)((long double)cp * cy);		Row[1].Z = (float)((long double)sr * sy - (long double)spcr * cy);
++		Row[2].X = (float)(-((long double)cp * sr));		Row[2].Y = (float)sp;			Row[2].Z = (float)((long double)cp * cr);
++	}
++
++	// Port (patch 0007): the inline copy VC6 made in CUnit::Unknown77 (004fa724..004fa7f5), CActor::Init (004011e0) and
++	// CComplexThing::Init (004f3fd0), the same x87 instructions in all three: fsin(roll) and fsin(pitch) stay on the
++	// stack, and the cosines and sin(yaw) are stored as floats. Proved equal to retail 004fa4b0 (the
++	// retail-oracle u77) on 4,002 angle triples. Name ours.
++	void	MakeRotationFInlineCopy(float yaw, float pitch, float roll)
++	{
++		volatile float cy = cosf(yaw), sy = sinf(yaw);
++		volatile float cr = cosf(roll);
++		long double sr = bea_x87_fsinl(roll);
++		volatile float cp = cosf(pitch);
++		long double sp = bea_x87_fsinl(pitch);
++		long double spsr = sp * sr;
++		volatile float spcr = (float)(sp * cr);
++		Row[0].X = (float)((long double)cr * cy - spsr * sy);	Row[0].Y = (float)(-((long double)cp * sy));	Row[0].Z = (float)((long double)spcr * sy + sr * cy);
++		Row[1].X = (float)(spsr * cy + (long double)cr * sy);	Row[1].Y = (float)((long double)cp * cy);		Row[1].Z = (float)(sr * sy - (long double)spcr * cy);
++		Row[2].X = (float)(-((long double)cp * sr));		Row[2].Y = (float)sp;			Row[2].Z = (float)((long double)cp * cr);
++	}
++	static FMatrix	RotationInlineCopy(float yaw, float pitch, float roll) { FMatrix m; m.MakeRotationFInlineCopy(yaw, pitch, roll); return m; }
+ 
+ 	// A rotation about Z only (Stuart's callers: ori.MakeRotationYawF(yaw); CFrontEndThing::Process 0046baf0).
+ 	// The float trig carries retail's extra tuples and inline cost (see MakeRotationF): CTree::Init 004f6080.
+--- a/Unit.cpp
++++ b/Unit.cpp
+@@ -1066,7 +1066,7 @@
+ 			cur->mRoll += PI_M2;
+ 	}
+ 
+-	out = FMatrix(cur->mYaw, curPitch, cur->mRoll);
++	out = FMatrix::RotationInlineCopy(cur->mYaw, curPitch, cur->mRoll);	// port: patch 0007
+ }
+ 
+ //******************************************************************************************
+--- a/actor.cpp
++++ b/actor.cpp
+@@ -27,7 +27,7 @@
+ 	mOldPos			= init->mPos;
+ 
+ 	if (init->mOrientationType == EULER_ANGLES)
+-		mOldOrientation = FMatrix(init->mYaw, init->mPitch, init->mRoll);
++		mOldOrientation = FMatrix::RotationInlineCopy(init->mYaw, init->mPitch, init->mRoll);	// port: patch 0007
+ 	else if (init->mOrientationType == DIRECTION_COSINE_MATRIX)
+ 		mOldOrientation = init->mOrientation; 
+ 
+--- a/thing.cpp
++++ b/thing.cpp
+@@ -598,7 +598,7 @@
+ 
+ 	if (init->mOrientationType == EULER_ANGLES)
+ 	{
+-		mOrientation = FMatrix(init->mYaw, init->mPitch, init->mRoll) ;
++		mOrientation = FMatrix::RotationInlineCopy(init->mYaw, init->mPitch, init->mRoll) ;	// port: patch 0007
+ 	}
+ 	else if (init->mOrientationType == DIRECTION_COSINE_MATRIX)
+ 	{

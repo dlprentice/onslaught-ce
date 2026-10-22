@@ -1,0 +1,120 @@
+--- a/MeshCollisionVolume.cpp
++++ b/MeshCollisionVolume.cpp
+@@ -408,34 +408,43 @@
+ // orders the X sum of the start (AddZ) and the triangle block's dot product (DotZ) and emits nothing.
+ BOOL CMeshCollisionVolume::ResolveContact(CCollisionReport *report, FVector pos, FVector travel, float radius, FVector *start, FVector *move)	// FUNCTION: 0x004acf30
+ {
++	// Port (patch 0012): every sum in retail's order (VC6 ranks commutative float operands, so its order is not the
++	// source's; clang keeps the source's). Orders from the rebuild's parity core, which matches retail here; equal to
++	// retail's own 004acf30 (run natively at control word 0x7F) on 20,006 calls over every path (port/PARITY.md).
+ 	FVector correction(0, 0, 0);
+ 	FVector direction = travel;
+ 	FVector normal;
+ 	FVector advance;
+ 	BOOL stuck = FALSE;
+-	float zero = 0;
+-	float length = sqrtf(static_cast<const FContactVector &>(travel).Dot(travel));
++	float length = sqrtf(((travel.Y * travel.Y) + (travel.Z * travel.Z)) + (travel.X * travel.X));
+ 	if (length)
+ 	{
+ 		length = 1.0f / length;
+-		direction *= length;
++		direction.X *= length; direction.Y *= length; direction.Z *= length;
+ 	}
+ 	if (report->mStuck == TRUE)
+ 	{
+ 		normal = pos - report->mContactPos;
+-		normal.Normalise();
++		{
++			float m = sqrtf(((normal.Z * normal.Z) + (normal.Y * normal.Y)) + (normal.X * normal.X));
++			if (m) { m = 1.0f / m; normal.X *= m; normal.Y *= m; normal.Z *= m; }
++		}
+ 		stuck = TRUE;
+-		correction = normal * report->mContactDistances[report->mNumContacts];
++		float d = report->mContactDistances[report->mNumContacts];
++		correction = FVector(normal.X * d, normal.Y * d, normal.Z * d);
+ 		advance = correction;
+ 	}
+ 	else
+ 	{
+-		float distance;
+-		advance = static_cast<const FContactVector &>(direction) * (distance = report->mContactDistances[report->mNumContacts]);
++		float distance = report->mContactDistances[report->mNumContacts];
++		advance = FVector(direction.X * distance, direction.Y * distance, direction.Z * distance);
+ 		if (report->mContactDistances[report->mNumContacts] > 0.01)
+-			correction = direction * (distance * 0.9f);
+-	}
+-	*start = static_cast<const FContactVector &>(pos).AddZ(correction, zero);
++		{
++			float s = distance * 0.9f;
++			correction = FVector(direction.X * s, direction.Y * s, direction.Z * s);
++		}
++	}
++	*start = FVector(pos.X + correction.X, pos.Y + correction.Y, pos.Z + correction.Z);
+ 	if (report->mTestTriangles == 1)
+ 	{
+ 		*move = ZERO_FVECTOR;
+@@ -443,29 +452,37 @@
+ 	}
+ 	if (!stuck)
+ 		normal = (pos + advance) - report->mContactPos;
+-	normal.Normalise();
++	{
++		float m = sqrtf(((normal.X * normal.X) + (normal.Z * normal.Z)) + (normal.Y * normal.Y));
++		if (m) { m = 1.0f / m; normal.X *= m; normal.Y *= m; normal.Z *= m; }
++	}
+ 	FVector slide;
+ 	if (report->mTriangleNormal.Z > -0.89f && report->mTriangleNormal.Z < -0.01f)
+ 	{
+-		float dot = DotZ(normal, travel, zero);
+-		slide = travel - normal * dot;
++		float dot = ((normal.Y * travel.Y) + (normal.X * travel.X)) + (normal.Z * travel.Z);
++		slide = FVector(travel.X - normal.X * dot, travel.Y - normal.Y * dot, travel.Z - normal.Z * dot);
+ 		if (slide.Z <= 0)
+ 		{
+ 			normal.Z = 0;
+-			normal.Normalise();
+-		}
+-	}
+-	AddContactNormal(report, normal);
++			float m = sqrtf(((normal.X * normal.X) + (normal.Z * normal.Z)) + (normal.Y * normal.Y));
++			if (m) { m = 1.0f / m; normal.X *= m; normal.Y *= m; normal.Z *= m; }
++		}
++	}
++	report->mNormals[report->mNumContacts] = normal;
+ 	SINT numPlanes = report->mNumContacts + 1;
+ 	SINT i;
+ 	for (i = 0; i < numPlanes; i++)
+ 	{
+ 		const FVector &n = report->mNormals[i];
+-		slide = travel - n * (n * travel);
++		float d = ((n.Y * travel.Y) + (n.X * travel.X)) + (n.Z * travel.Z);
++		slide = FVector(travel.X - n.X * d, travel.Y - n.Y * d, travel.Z - n.Z * d);
+ 		SINT j;
+ 		for (j = 0; j < numPlanes; j++)
+-			if (j != i && report->mNormals[i] != NormalOf(report, j) && slide * NormalOf(report, j) < 0)
++		{
++			const FVector &o = report->mNormals[j];
++			if (j != i && report->mNormals[i] != o && ((slide.Z * o.Z) + (slide.Y * o.Y)) + (slide.X * o.X) < 0)
+ 				break;
++		}
+ 		if (j == numPlanes)
+ 			break;
+ 	}
+@@ -477,10 +494,12 @@
+ 	if (numPlanes != 2)
+ 		return FALSE;
+ 	{
+-		FVector dir = report->mNormals[0] ^ report->mNormals[1];
+-		dir.Normalise();
+-		float distance = dir * travel;
+-		*move = dir * distance;
++		const FVector &a = report->mNormals[0], &b = report->mNormals[1];
++		FVector dir((a.Y * b.Z) - (a.Z * b.Y), (a.Z * b.X) - (b.Z * a.X), (b.Y * a.X) - (a.Y * b.X));
++		float m = sqrtf(((dir.X * dir.X) + (dir.Y * dir.Y)) + (dir.Z * dir.Z));
++		if (m) { float r = 1.0f / m; dir = FVector(dir.X * r, dir.Y * r, dir.Z * r); }
++		float distance = ((dir.Z * travel.Z) + (dir.Y * travel.Y)) + (dir.X * travel.X);
++		*move = FVector(dir.X * distance, dir.Y * distance, dir.Z * distance);
+ 	}
+ 	return TRUE;
+ }
