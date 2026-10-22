@@ -34,15 +34,15 @@ DOWNLOADS, SRC, BUILD, TOOLS, PREFIX, PREFIX_WIN = (DATA / n for n in (
     "downloads", "src", "build", "tools", "prefix", "prefix-win32"))
 
 CROSS = """[binaries]
-c = 'clang'
-cpp = 'clang++'
-ar = 'llvm-ar'
-strip = 'llvm-strip'
+c = '{llvm}/clang'
+cpp = '{llvm}/clang++'
+ar = '{llvm}/llvm-ar'
+strip = '{llvm}/llvm-strip'
 pkg-config = 'pkgconf'
 
 [built-in options]
-c_args = ['-m32']
-cpp_args = ['-m32']
+c_args = ['-m32', '-ffile-prefix-map={data}=deps']
+cpp_args = ['-m32', '-ffile-prefix-map={data}=deps']
 c_link_args = ['-m32']
 cpp_link_args = ['-m32']
 
@@ -129,9 +129,15 @@ XIPH = (("libogg", []), ("libvorbis", ["-DCMAKE_POLICY_VERSION_MINIMUM=3.5"]))
 
 def build_linux(rows, cmake, meson):
     unpack(rows["dxvk-native"], DATA / "dxvk-native")
+    # The pinned LLVM (deps.lock "llvm"), not the system's clang: the bundled libraries must not change when the
+    # system compiler does (SDL3 built by the system's 22.1.8 and later its 23.1.3 differed), and the source and build
+    # folders are mapped out so a rebuild elsewhere gives the same bytes.
+    llvm = DATA / "llvm/bin"
     cross = DATA / "i686-linux.ini"
-    cross.write_text(CROSS)
-    env = dict(os.environ, CC="clang", CXX="clang++", CFLAGS="-m32", CXXFLAGS="-m32", LDFLAGS="-m32",
+    cross.write_text(CROSS.replace("{llvm}", str(llvm)).replace("{data}", str(DATA)))
+    maps = f"-ffile-prefix-map={SRC}=src -ffile-prefix-map={BUILD}=build -ffile-prefix-map={DATA}=deps"
+    env = dict(os.environ, CC=str(llvm / "clang"), CXX=str(llvm / "clang++"), AR=str(llvm / "llvm-ar"), RANLIB=str(llvm / "llvm-ranlib"),
+               CFLAGS=f"-m32 {maps}", CXXFLAGS=f"-m32 {maps}", LDFLAGS="-m32",
                PKG_CONFIG_LIBDIR=f"{PREFIX}/lib/pkgconfig:/usr/lib32/pkgconfig:/usr/share/pkgconfig")
     cm = [cmake, "-G", "Ninja", "-DCMAKE_BUILD_TYPE=Release", f"-DCMAKE_INSTALL_PREFIX={PREFIX}",
           "-DCMAKE_INSTALL_LIBDIR=lib", f"-DCMAKE_PREFIX_PATH={PREFIX}", "-DBUILD_SHARED_LIBS=ON"]
@@ -177,7 +183,10 @@ def build_windows(rows, cmake):
           f"-DCMAKE_CXX_COMPILER={bin_}/i686-w64-mingw32-clang++", f"-DCMAKE_RC_COMPILER={bin_}/i686-w64-mingw32-windres",
           f"-DCMAKE_FIND_ROOT_PATH={PREFIX_WIN}", "-DCMAKE_FIND_ROOT_PATH_MODE_PROGRAM=NEVER",
           "-DCMAKE_FIND_ROOT_PATH_MODE_LIBRARY=ONLY", "-DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=ONLY",
-          f"-DCMAKE_INSTALL_PREFIX={PREFIX_WIN}", "-DCMAKE_INSTALL_LIBDIR=lib", "-DBUILD_SHARED_LIBS=ON"]
+          f"-DCMAKE_INSTALL_PREFIX={PREFIX_WIN}", "-DCMAKE_INSTALL_LIBDIR=lib", "-DBUILD_SHARED_LIBS=ON",
+          # deterministic PE files: no link time in the headers, and source and build folders mapped out
+          "-DCMAKE_SHARED_LINKER_FLAGS=-Wl,--no-insert-timestamp", "-DCMAKE_EXE_LINKER_FLAGS=-Wl,--no-insert-timestamp",
+          f"-DCMAKE_C_FLAGS=-ffile-prefix-map={SRC}=src -ffile-prefix-map={BUILD}=build -ffile-prefix-map={DATA}=deps"]
     cmake_project(cm, cmake, "win32-sdl3", unpack(rows["SDL3"], SRC),
                   ["-DSDL_TESTS=OFF", "-DSDL_EXAMPLES=OFF", "-DSDL_STATIC=OFF"], env)
     for name, opts in XIPH:
@@ -236,8 +245,11 @@ def build_ffmpeg_shared(rows, target):
     wrap.mkdir(exist_ok=True)
     real = DATA / ("llvm/bin/clang" if target == "linux" else "llvm-mingw/bin/i686-w64-mingw32-clang")
     tgt = " --target=i686-pc-linux-gnu" if target == "linux" else ""
+    # Windows: no link time in the PE headers (deterministic DLLs); ffcc also links.
+    # (lld also writes a per-link GUID into a CodeView record for these DLLs, which differed between two clean builds)
+    det = " -Wl,--no-insert-timestamp -Wl,--build-id=none" if target == "windows" else ""
     (wrap / "ffcc").write_text(f'#!/bin/sh\nexec {real}{tgt} -ffile-prefix-map={src}=ffmpeg-{rows["FFmpeg"]["version"]} '
-                               f'-ffile-prefix-map={out}=build "$@"\n')
+                               f'-ffile-prefix-map={out}=build{det} "$@"\n')
     (wrap / "ffcc").chmod(0o755)
     tools = DATA / ("llvm/bin" if target == "linux" else "llvm-mingw/bin")
     env = dict(os.environ, PWD=str(out), PATH=f"{wrap}:{tools}:{os.environ['PATH']}")

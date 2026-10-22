@@ -130,6 +130,13 @@ def build_mirror():
     SYSTEM_NAMES.update(system_header_names())
     files = tracked_sources()
     rel = [f.relative_to(ROOT) for f in files]            # src/... and linklib/...
+    if PUBLIC:
+        # A checkout without the replaced files (the public export leaves them out) still gets the replacements, under
+        # the same src/ names, so includes and the object list resolve.
+        for name in PUBLIC_REPLACEMENTS:
+            if Path("src") / name not in rel and (PORT / "platform/public" / name).exists():
+                files.append(PORT / "platform/public" / name)
+                rel.append(Path("src") / name)
     data_rows = [l.split(maxsplit=1) for l in (ROOT / "config/game-data.sha256").read_text().splitlines() if l.strip()]
     targets = [MIRROR_ROOT / r for r in rel] + [MIRROR / r for _, r in data_rows] + [MIRROR / "data/NVShaderFragments.inc"]
     index = CaseIndex(targets)
@@ -252,7 +259,7 @@ def link_flags(target):
                 f"{ffmpeg} -lpthread -ldl -lm")
     lib = deps.PREFIX_WIN / "lib"
     shared = f"-L{deps.FFMPEG_SHARED / 'windows/usr/lib'} " if PUBLIC else ""
-    return (f"-mwindows {defsyms} {shared}-L{lib} -lSDL3 {vorbis_lib(target)} -lz {ffmpeg} {'-lbcrypt' if ffmpeg else ''} -ld3d9 -ldxguid -luuid -lwinmm -lgdi32 -luser32 "
+    return (f"-mwindows -Wl,--no-insert-timestamp {defsyms} {shared}-L{lib} -lSDL3 {vorbis_lib(target)} -lz {ffmpeg} {'-lbcrypt' if ffmpeg else ''} -ld3d9 -ldxguid -luuid -lwinmm -lgdi32 -luser32 "
             "-ladvapi32 -lversion -lcomdlg32 -lvfw32 -lole32 -static-libstdc++ -static-libgcc")
 
 
@@ -461,7 +468,8 @@ def build_launcher(target, version):
               [f"-L{deps.PREFIX / 'lib'}", "-lSDL3", "-Wl,-rpath,$ORIGIN/lib", "-o", str(BUILD / "linux/onslaught-ce-launch")]
     else:
         cmd = TARGETS["windows"]["cc"] + ["-mwindows"] + flags + [f"-I{deps.PREFIX_WIN / 'include'}"] + [str(s) for s in src] + \
-              [f"-L{deps.PREFIX_WIN / 'lib'}", "-lSDL3", "-ladvapi32", "-lshell32", "-static-libgcc", "-o", str(BUILD / "windows/onslaught-ce.exe")]
+              [f"-L{deps.PREFIX_WIN / 'lib'}", "-lSDL3", "-ladvapi32", "-lshell32", "-static-libgcc", "-Wl,--no-insert-timestamp",
+               "-o", str(BUILD / "windows/onslaught-ce.exe")]
     r = subprocess.run(cmd)
     print(f"{target}: launcher {'built' if r.returncode == 0 else 'FAILED'}")
     return r.returncode
