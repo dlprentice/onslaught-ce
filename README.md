@@ -76,9 +76,11 @@ clock.
 **60-level sweep.** This sweep played the first ~3,000 frames (about 1 min 40 s) of 60 levels with one generic input
 recording. 30 of those levels have original-game recordings to compare against:
 
-- 18 match exactly.
+- 17 match exactly.
 - 5 have known small differences that are being fixed: levels 110, 322, 431, 500 and 511.
-- The other levels have inconsistent original-game recordings, or none yet.
+- 8 have original-game recordings that disagree with each other, so they can't decide a match.
+
+The sweep ran on the build just before patch 0036, the 0.1 build's last gameplay change.
 
 **Played through on the port:** the full front end, creating, loading and saving careers, options and videos, and most
 of the tutorial (through its third zone; the final drone fight is still being completed).
