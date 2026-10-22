@@ -1,0 +1,18 @@
+--- a/DXFont.cpp
++++ b/DXFont.cpp
+@@ -367,6 +367,15 @@
+ 	FASTVB.Create();
+ 
+ 	// the front end works in 640 x 480
++	if (FRONTEND.IsRunning() && PortWideActive())
++	{
++		// Port (patch 0042, widescreen; the public build's DXFont.cpp does the same): the centred 4:3 box, unstretched.
++		x = x * PortUiScale() + PortUiLeft();
++		y = y * PortUiScale() + PortUiTop();
++		scalex *= PortUiScale();
++		scaley *= PortUiScale();
++	}
++	else
+ 	if (FRONTEND.IsRunning())
+ 	{
+ 		x = PLATFORM.GetWindowWidth() * x * 0.0015625f /* retail 005db3a4: / 640.f */;

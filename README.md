@@ -1,5 +1,16 @@
 # Onslaught CE
 
+## Quick start
+
+1. Extract the download into any folder, for example your Downloads folder, not your game folder. You can move the
+   folder anywhere later.
+2. Run `onslaught-ce` (Linux) or `onslaught-ce.exe` (Windows).
+3. It finds your Steam copy of *Battle Engine Aquila* by itself, or asks once where it is.
+
+Don't copy or replace anything in your game folder: Onslaught CE only reads it, and the original game keeps working as
+before. Your careers and settings are kept in `~/.local/share/onslaught-ce` (Linux) or `%APPDATA%\Onslaught CE`
+(Windows); delete the program folder to uninstall.
+
 Onslaught CE is a native port of *Battle Engine Aquila* (Lost Toys, 2003) for Linux (i686) and Windows (i686), built
 from the game's source code.
 
@@ -11,7 +22,26 @@ The source has three parts:
 - **A platform layer**: SDL3, with dxvk-native on Linux and the system's Direct3D 9 on Windows.
 
 This is **version 0.1, a preview** (tag `v0.1.0`). In the main menu, the version text in the bottom-left corner
-(originally "V1.00") reads "Onslaught CE v0.1".
+(originally "V1.00") reads "Onslaught CE v0.1 (preview)".
+
+## In the game
+
+- **Main menu > Onslaught CE:** About (version, licence and links), Check for updates (explains the check the launcher
+  makes at every start, and how to turn it back on), Record sessions (see below) and Report a problem.
+- **Options > Cheats:** the game's own cheats as switches, kept in `ce.ini` so they apply to every career:
+  - **All levels open (TURKEY)**
+  - **All goodies open (MALLOY)**
+  - **Goodie hints (latête)**
+  - **God mode in Controls (Maladim):** adds a God mode item to Controller Options, in the pause menu (applies at once)
+    and in Options (applies from the next level); turning the switch off ends god mode. God mode set this way is kept
+    in `ce.ini`, not in your careers, so a recorded session never carries it.
+  - **Free camera, F key (Aurore)**
+
+  Typing a code into a career's name still works as in the original.
+- **Keyboard:** no key release is lost, typed characters come from the key presses themselves (no desktop input method
+  in the way), and the letter and digit keys work by their position on any keyboard layout.
+- **A quiet console:** the developers' messages are hidden unless `BEA_PORT_VERBOSE=1` is set.
+- **A log file** for reports, `onslaught-ce.log` in your user folder, and **session recording** (both below).
 
 Onslaught CE is an unofficial fan project. It is not affiliated with or endorsed by the game's developer, publisher or
 rights holders; *Battle Engine Aquila* is a trademark of its owners.
@@ -38,7 +68,8 @@ Download a build from this repository's [Releases](https://github.com/dlprentice
 1. Extract the tarball and run the `onslaught-ce` launcher.
 2. The tarball bundles dxvk-native, SDL3, libxkbcommon and the FFmpeg shared libraries.
 3. Your system must provide these 32-bit libraries:
-   - glibc and libstdc++
+   - glibc, libgcc and libstdc++
+   - zlib
    - the Vulkan loader and a 32-bit Vulkan driver
    - the X11 or Wayland client libraries
 4. A preflight check lists any missing 32-bit system libraries, with their pacman and apt package names.
@@ -55,18 +86,64 @@ report any problems.
 
 ## Updates and privacy
 
-- **No telemetry:** nothing about you or your machine is sent. The only network requests are the launcher's update
-  check, which reads this repository's public, signed release feed, and the update download if you agree to it.
+- **No telemetry:** nothing about you or your machine is sent. The only network requests the program makes by itself
+  are the launcher's update check, which reads this repository's public, signed release feed, and the update download
+  if you agree to it.
+- **Report a problem** is the one network action you start yourself: it opens a GitHub page in your browser with your
+  version and OS in its address; nothing is posted until you submit it.
 - **Update check:** each time it starts, the launcher checks the release feed (a signed `latest.json` on this
   repository's Releases). If a newer version exists, it asks **Update / Later / Skip this version**.
 - **Verification:** each update is checked against its Ed25519 signature and its SHA-256 hash before anything is
   written, and is downloaded only from this repository's releases. A failed or tampered update changes nothing.
 - **Opting out:** set `BEA_NO_UPDATE_CHECK=1`, or put `update_check=0` in `ce.ini`.
 
+## Screen modes and widescreen
+
+Onslaught CE starts at your desktop's resolution, and Video Options lists your monitor's sizes, widescreen ones
+included. On a widescreen monitor the 3D view shows more to the sides (the original's vertical view is kept); the menus,
+loading pictures and films keep their original 4:3 shape, centred with black bars, and the in-game HUD sits where it
+would on a 4:3 screen. To get the original's 4:3-only list and 640 x 480 start back, set `BEA_PORT_WIDESCREEN=0`.
+
+Replays and recordings always use the original 4:3 behaviour. The original game shares one random number source
+between visual effects and play, so a wider view can change the details of a fight; that is expected.
+
+## Report a problem
+
+1. Choose **Onslaught CE > Report a problem** in the main menu, or run `onslaught-ce --report` (Windows: `onslaught-ce.exe --report`, from a Command Prompt in the program folder or
+   a shortcut with `--report` added). It opens a new issue on this repository in your browser, already filled in with
+   your version and system (which GitHub sees in the page's address), and prints the folder that holds your log.
+   Nothing is posted until you submit the issue.
+   You can also open an issue on the [Issues](https://github.com/dlprentice/onslaught-ce/issues) page yourself.
+2. Say what happened and how to make it happen again.
+3. Attach `onslaught-ce.log` from your user folder (`~/.local/share/onslaught-ce` on Linux, `%APPDATA%\Onslaught CE`
+   on Windows). It holds the version, your OS and GPU, and the game's messages from the last run;
+   `onslaught-ce.old.log` is the run before. Each stops at 4 MB. It writes your home folder as `~` (Windows
+   `%APPDATA%`) and never your account name, but look it over before you attach it.
+4. If you recorded the session (below), attach its tape too: it lets us replay exactly what happened.
+
+## Help make Onslaught CE more faithful
+
+The goal is a game that behaves exactly like the original. We check that by replaying recorded input
+in both and comparing them, and recordings of real play find differences our own test runs miss.
+
+- Record one session with `onslaught-ce --record`, or every session with **Onslaught CE > Record sessions** in the main
+  menu (from the next start; it puts `record_sessions=1` in `ce.ini` in your user folder). While it is on, each start
+  asks whether to record: **Stop recording** there (or starting with `onslaught-ce --no-record`) turns it off again.
+- While recording, the game runs at 30 frames a second (the timing replays use), its menus take the keyboard only (the
+  mouse still works in battle), the screen is the original 4:3 (no widescreen), and the menus are the original's: the
+  version text, no Onslaught CE menu and no Cheats page, and only cheats typed into a career's name work.
+- Each session is saved in the `tapes` folder of your user folder as `YYYYMMDD-HHMMSS.tape` and a `.tape.json` beside
+  it. The tape holds only your key presses and mouse movement, frame by frame. The `.json` names the version, your OS,
+  the date and the game's arguments, and holds a copy of your options and saved careers as the session started, so a
+  replay starts where you did. Nothing else is recorded: no screen, no sound, nothing about your machine.
+- To share a session, put the `.tape` and its `.tape.json` in a zip and attach it to an issue, saying what to look at
+  (what differed from the original, and roughly when). Sessions where something looked or behaved
+  differently from the original help most.
+
 ## How faithful is it?
 
-The port is compared with the original game frame by frame, at every Present, using recorded replays under a virtual
-clock.
+The port is compared with the original game using recorded replays under a virtual clock: the game's state is checked
+every 50 frames on the standard levels, and on every frame for the recorded play sessions.
 
 **Standard test levels.** All six standard test levels were compared with the original for their recorded length:
 
@@ -76,11 +153,12 @@ clock.
 **60-level sweep.** This sweep played the first ~3,000 frames (about 1 min 40 s) of 60 levels with one generic input
 recording. 30 of those levels have original-game recordings to compare against:
 
-- 17 match exactly.
-- 5 have known small differences that are being fixed: levels 110, 322, 431, 500 and 511.
+- 20 match exactly.
+- 2 have known small differences that are being fixed: levels 322 and 431.
 - 8 have original-game recordings that disagree with each other, so they can't decide a match.
 
-The sweep ran on the build just before patch 0036, the 0.1 build's last gameplay change.
+Those 30 levels were replayed again on the 0.1 build itself. Replays run in faithful mode (4:3, no CE menus or cheat
+switches).
 
 **Played through on the port:** the full front end, creating, loading and saving careers, options and videos, and most
 of the tutorial (through its third zone; the final drone fight is still being completed).
@@ -94,8 +172,10 @@ of the tutorial (through its third zone; the final drone fight is still being co
 - With NVIDIA's driver on Linux the program can occasionally crash while closing, after the game has ended; your saves
   are already written by then.
 - The tutorial is playable through its third zone; its final drone fight is still being completed.
-- Joystick and controller support is limited to what the original game supported.
-- Planned but not in 0.1: multiplayer, mods, widescreen and HUD options, and the in-game "check for updates" menu item.
+- Joystick and controller support is limited to what the original game supported, and controllers were not tested for
+  0.1.
+- Widescreen play is not compared with the original (the original has no widescreen); replays and recordings use 4:3.
+- Planned but not in 0.1: multiplayer, mods and HUD options.
 
 ## Building from source
 
@@ -105,9 +185,12 @@ their hashes, `config/game-data.sha256`; set `BEA_GAME_DIR` if the game is not i
 
 ```sh
 python3 port/tools/deps.py build                   # the pinned toolchains and libraries, checked by SHA-256
-python3 port/build.py --public --target linux
-python3 port/build.py --public --target windows
+python3 port/build.py --public --target linux --ce-version 0.1
+python3 port/build.py --public --target windows --ce-version 0.1
 ```
+
+`--ce-version` sets the version the menu, `--version` and the update check show; without it the build calls itself
+"vdev".
 
 - `port/deps.lock` pins every downloaded input by URL and SHA-256.
 - One input comes prebuilt: libvorbis, built with the game's original compiler. It is fetched from this repository's

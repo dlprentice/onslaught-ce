@@ -176,7 +176,12 @@ def build_mirror():
     for patch in sorted((PORT / "patches").glob("*.patch")):
         if PUBLIC and PUBLIC_SKIPPED_PATCHES.get(patch.name) not in (None, *unreplaced):
             continue
-        subprocess.run(["patch", "-s", "-p1", "-d", str(MIRROR), "-i", str(patch), "--forward", "-r", "-"], check=True)
+        r = subprocess.run(["patch", "-p1", "-d", str(MIRROR), "-i", str(patch), "--forward", "-r", "-"],
+                           capture_output=True, text=True)
+        fuzz = [line for line in r.stdout.splitlines() if "fuzz" in line]
+        if r.returncode or fuzz:
+            # A hunk applied with fuzz may have landed beside its intended lines: refresh the patch's context.
+            raise SystemExit(f"build: {patch.name} does not apply cleanly:\n{r.stdout}{r.stderr}")
     return [MIRROR_ROOT / r for r in rel if r.suffix.lower() in (".c", ".cpp")]
 
 
@@ -289,7 +294,8 @@ CE_DEFINES = []   # the public build's CE_VERSION (game files: the CE layer of p
 # port's own versions in port/platform/public/, same names and interfaces, compiled as game files; the patches below
 # touch only a replaced file, whose replacement carries the change itself.
 PUBLIC_REPLACEMENTS = ("wavread.cpp", "WavRead.h", "dxutil.cpp", "d3dutil.cpp", "DXFont.cpp")
-PUBLIC_SKIPPED_PATCHES = {"0034-constant-divisions-DXFont.patch": "DXFont.cpp"}
+PUBLIC_SKIPPED_PATCHES = {"0034-constant-divisions-DXFont.patch": "DXFont.cpp",
+                          "0042-widescreen-virtual-ui-DXFont.patch": "DXFont.cpp"}
 
 
 def use_system_clang():
@@ -455,6 +461,17 @@ def main():
     return rc
 
 
+def source_commit():
+    """The launcher's build name for logs, session tapes and problem reports: this checkout's commit (12 digits), with
+    +dirty when tracked files differ from it; "unknown" outside a Git checkout."""
+    r = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "--short=12", "HEAD"], capture_output=True, text=True)
+    if r.returncode or not r.stdout.strip():
+        return "unknown"
+    dirty = subprocess.run(["git", "-C", str(ROOT), "status", "--porcelain", "--untracked-files=no"],
+                           capture_output=True, text=True).stdout.strip()
+    return r.stdout.strip() + ("+dirty" if dirty else "")
+
+
 def build_launcher(target, version):
     """The public build's launcher (port/updater): game-folder discovery and the signed update check, linked with SDL3
     (its dialogs) and Monocypher (Ed25519). Linux: build/linux/onslaught-ce-launch; Windows: build/windows/onslaught-ce.exe."""
@@ -462,7 +479,7 @@ def build_launcher(target, version):
     if not mc.is_dir():
         deps.unpack(deps.lock()["monocypher"], deps.SRC)
     src = [PORT / "updater/ce_launch.c", PORT / "updater/sha256.c", mc / "monocypher.c", mc / "optional/monocypher-ed25519.c"]
-    flags = ["-std=gnu11", "-O2", "-Wall", f'-DCE_VERSION="{version}"', f"-I{mc}", f"-I{mc / 'optional'}", f"-I{PORT / 'updater'}"]
+    flags = ["-std=gnu11", "-O2", "-Wall", f'-DCE_VERSION="{version}"', f'-DCE_COMMIT="{source_commit()}"', f"-I{mc}", f"-I{mc / 'optional'}", f"-I{PORT / 'updater'}"]
     if target == "linux":
         cmd = TARGETS["linux"]["cc"] + ["-m32"] + flags + [f"-I{deps.PREFIX / 'include'}"] + [str(s) for s in src] + \
               [f"-L{deps.PREFIX / 'lib'}", "-lSDL3", "-Wl,-rpath,$ORIGIN/lib", "-o", str(BUILD / "linux/onslaught-ce-launch")]

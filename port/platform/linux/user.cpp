@@ -8,6 +8,7 @@
 #include <SDL3/SDL.h>
 #include <stdlib.h>
 #include <string.h>
+#include "../common/portlog.h"
 
 extern "C" BOOL WINAPI SetRect(LPRECT r, int l, int t, int rt, int b)
 {
@@ -112,7 +113,7 @@ extern "C" BOOL WINAPI GetIconInfo(HICON, PICONINFO) { return FALSE; }
 extern "C" int WINAPI MessageBoxA(HWND, LPCSTR text, LPCSTR caption, UINT)
 {
 	// No dialog on the desktop: the text goes to the log, and the answer is OK.
-	fprintf(stderr, "bea-port: message box: %s: %s\n", caption ? caption : "", text ? text : "");
+	fprintf(stderr, PORT_LOG_PREFIX "message box: %s: %s\n", caption ? caption : "", text ? text : "");
 	return IDOK;
 }
 

@@ -11,15 +11,16 @@
  void	CFEPMain::Render(float transition, EFrontEndPage dest)	// FUNCTION: 0x00462d40
  {
  	RENDERINFO.SetFogEnabled(false);
-@@ -707,6 +711,12 @@
+@@ -707,6 +711,13 @@
  	float	v = RangeTransition(transition, 0.75f, 1.f);
  	char	version[100];
  	sprintf(version, "V%1d.%02d", VERSION_MAJOR, VERSION_MINOR);
 +#ifdef CE_VERSION
 +	// Port (patch 0037, the CE layer): public builds show their own version here, in the game's place, font and colour.
 +	// Replays (BEA_PORT_CLOCK, BEA_PORT_TAPE, ...) keep the game's text (PortCeLayer), so faithful runs are unchanged.
++	// "(preview)" as port/updater/ce_report.h's CE_VERSION_NOTE; fits FONT_SMALL at 640x480 (measured in a capture).
 +	if (PortCeLayer())
-+		sprintf(version, "Onslaught CE v%s", CE_VERSION);
++		sprintf(version, "Onslaught CE v%s (preview)", CE_VERSION);
 +#endif
  	gInFrontEnd = false;
  	PLATFORM.Font(FONT_SMALL)->DrawTextDynamic(0.f, float(PLATFORM.GetWindowHeight() - 16), 0.01f, 1.f, 1.f, (SINT(v * 255.f) << 24) | 0x102025, ToWCHAR(version), 1000.f, 0, 0);

@@ -277,7 +277,15 @@ HRESULT	CDXBitmapFont::DrawTextScaled(float x, float y, float z, float scalex, f
 		return S_OK;
 
 	FASTVB.Create();
-	if (FRONTEND.IsRunning())
+	if (FRONTEND.IsRunning() && PortWideActive())
+	{
+		// Widescreen (patch 0042's DXFont part): the virtual screen in its centred 4:3 box, unstretched.
+		x = x * PortUiScale() + PortUiLeft();
+		y = y * PortUiScale() + PortUiTop();
+		scalex *= PortUiScale();
+		scaley *= PortUiScale();
+	}
+	else if (FRONTEND.IsRunning())
 	{
 		x = PLATFORM.GetWindowWidth() * x * 0.0015625f;
 		y = PLATFORM.GetWindowHeight() * y * 0.0020833334f;

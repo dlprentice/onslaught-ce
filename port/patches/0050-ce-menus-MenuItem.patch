@@ -1,0 +1,24 @@
+--- a/MenuItem.cpp
++++ b/MenuItem.cpp
+@@ -22,6 +22,9 @@
+ // the items come from the memory type 0x80, beyond Stuart's list (004a314a)
+ #define MEMTYPE_MENUITEM	((EMemoryType)0x80)
+ 
++#ifdef CE_VERSION
++EFrontEndPage	PortCeAsOptions(EFrontEndPage page);	// Port (patch 0050): port/game/ce_frontend.cpp
++#endif
+ static WCHAR	gMenuItemText[200];				// 00704878: 0x190 bytes, bounded by this object's own ID_FMATRIX at 00704a08
+ float			CMenuMenuItem::mRenderOnTopX;
+ float			CMenuMenuItem::mRenderOnTopY;
+@@ -342,7 +345,11 @@
+ 		}
+ 
+ 		DWORD	back;
++#ifdef CE_VERSION
++		if (PortCeAsOptions(FRONTEND.GetCurrentPage()) == FEP_OPTIONS)	// Port (patch 0050): the CE page's lists too
++#else
+ 		if (FRONTEND.GetCurrentPage() == FEP_OPTIONS)
++#endif
+ 			back = 0xff283969;
+ 		else
+ 			back = 0xff404040;

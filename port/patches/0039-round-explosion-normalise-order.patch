@@ -1,0 +1,26 @@
+--- a/Round.cpp
++++ b/Round.cpp
+@@ -692,7 +692,10 @@
+ 			if (explosion)
+ 			{
+ 				FVector	vel = GetVelocity();
+-				vel.Normalise();
++				// Port (patch 0039): retail's inline Normalise here sums (Z*Z + Y*Y) + X*X (004da540..004da55c and
++				// 004da709..004da725); maths.h's sums (X*X + Y*Y) + Z*Z, which rounds differently at 24 bits.
++				float	m = sqrtf(((vel.Z * vel.Z) + (vel.Y * vel.Y)) + (vel.X * vel.X));
++				if (m) { m = 1.0f / m; vel.X *= m; vel.Y *= m; vel.Z *= m; }
+ 				init.mPos = GetPos() - vel * 0.1f;
+ 				init.mColType = (ECollisionType)mode;
+ 				if (mUnknownEC.ToRead())
+@@ -716,7 +719,10 @@
+ 			if (explosion)
+ 			{
+ 				FVector	vel = GetVelocity();
+-				vel.Normalise();
++				// Port (patch 0039): retail's inline Normalise here sums (Z*Z + Y*Y) + X*X (004da540..004da55c and
++				// 004da709..004da725); maths.h's sums (X*X + Y*Y) + Z*Z, which rounds differently at 24 bits.
++				float	m = sqrtf(((vel.Z * vel.Z) + (vel.Y * vel.Y)) + (vel.X * vel.X));
++				if (m) { m = 1.0f / m; vel.X *= m; vel.Y *= m; vel.Z *= m; }
+ 				init.mPos = GetPos() - vel * 0.1f;
+ 				init.mColType = kCollideNothing;
+ 				if (mUnknownEC.ToRead())

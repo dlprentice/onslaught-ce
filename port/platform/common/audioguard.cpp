@@ -27,7 +27,7 @@ struct AudioGuard
 			return;
 		if (want && *want && strcmp(want, "dummy") != 0)
 		{
-			fprintf(stderr, "bea-port: refusing audio: BEA_PORT_REQUIRE_DUMMY_AUDIO with SDL_AUDIO_DRIVER=%s\n", want);
+			fprintf(stderr, PORT_LOG_PREFIX "refusing audio: BEA_PORT_REQUIRE_DUMMY_AUDIO with SDL_AUDIO_DRIVER=%s\n", want);
 			exit(3);
 		}
 	}
@@ -44,10 +44,10 @@ void PortAudioGuardCheck()
 	SDL_SetHintWithPriority(SDL_HINT_AUDIO_DRIVER, "dummy", SDL_HINT_OVERRIDE);
 	// Held for the whole run: port/dsound's own SDL_InitSubSystem then shares this driver.
 	const char *driver = SDL_InitSubSystem(SDL_INIT_AUDIO) ? SDL_GetCurrentAudioDriver() : NULL;
-	fprintf(stderr, "bea-port: SDL audio driver %s\n", driver ? driver : "(none)");
+	fprintf(stderr, PORT_LOG_PREFIX "SDL audio driver %s\n", driver ? driver : "(none)");
 	if (!driver || strcmp(driver, "dummy") != 0)
 	{
-		fprintf(stderr, "bea-port: refusing audio driver %s (dummy required)\n", driver ? driver : "(none)");
+		fprintf(stderr, PORT_LOG_PREFIX "refusing audio driver %s (dummy required)\n", driver ? driver : "(none)");
 		exit(3);
 	}
 }

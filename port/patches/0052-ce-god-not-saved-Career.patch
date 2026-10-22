@@ -1,0 +1,46 @@
+--- a/Career.cpp
++++ b/Career.cpp
+@@ -62,6 +62,10 @@
+ extern CTweakSLONG	USER_TEXTURE_ALLOW_32_BIT;	// 009cc0d8
+ 
+ extern char		gDisplayResetState;			// 0082b5b0: 2 asks for the display to be reset
++#ifdef CE_VERSION
++void	PortCeCareerLoaded(CCareer *career);				// Port (patch 0052): port/game/ce_frontend.cpp
++bool	PortCeCareerSaving(CCareer *career);
++#endif
+ void	ApplyControlPreset(int preset);		// 00453780
+ void	ReinitialiseSound(bool restore_music);	// 004cddf0
+ void	SetSetupMessage(int text);			// 004d1710: stores its argument at 0082b494 and 0xff at 0082b4ec
+@@ -1428,6 +1432,10 @@
+ 		}
+ 		ReadOptions(source);
+ 	}
++#ifdef CE_VERSION
++	// Port (patch 0052, the CE layer): god mode set through Options > Cheats is kept in ce.ini, never in the file
++	PortCeCareerLoaded(this);
++#endif
+ 
+ 	return TRUE;
+ }
+@@ -1449,7 +1457,21 @@
+ 	dest += sizeof(SWORD);
+ 
+ 	// and then just dump the career structure in.
++#ifdef CE_VERSION
++	// Port (patch 0052, the CE layer): god mode that only the Cheats page's Maladim switch allowed is written as off (and
++	// kept in ce.ini), so a recording or a replay (the CE layer off) and retail, given the same files, play without it
++	BOOL	portGod0 = GetIsGod(0), portGod1 = GetIsGod(1);
++	if (PortCeCareerSaving(this))
++	{
++		SetIsGod(0, FALSE);
++		SetIsGod(1, FALSE);
++	}
++#endif
+ 	memcpy(dest, this, sizeof(CCareer));
++#ifdef CE_VERSION
++	SetIsGod(0, portGod0);
++	SetIsGod(1, portGod1);
++#endif
+ 	dest += sizeof(CCareer);
+ 
+ 	// the key bindings, then the PC options

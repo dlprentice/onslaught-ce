@@ -1,0 +1,27 @@
+--- a/BattleEngineJetPart.cpp
++++ b/BattleEngineJetPart.cpp
+@@ -569,7 +569,7 @@
+ 			if (altitude<0)
+ 				altitude=0;
+ 
+-			FVector		acceleration=mMainPart->mOrientation*FVector(0,(5-altitude)/400,0);
++			FVector		acceleration=mMainPart->mOrientation*FVector(0,(5-altitude)*0.0025f /* retail 005d8cbc: / 400 */,0);
+ 
+ 			mMainPart->AddVelocity(acceleration);
+ 
+@@ -600,13 +600,13 @@
+ 				p.Normalise();  // not needed 
+ 				pitch=-p.Z;
+ 
+-				mMainPart->mPitchvel+=(pitch-mMainPart->GetCurrentEulerOrientation().mPitch)*0.02f*(1-altitude/5);
++				mMainPart->mPitchvel+=(pitch-mMainPart->GetCurrentEulerOrientation().mPitch)*(1-altitude*0.2f /* retail 005d8c68: / 5 */)*0.02f;	// Port (patch 0038): retail multiplies by 0.02 last (004119e5)
+ 
+ 				FVector		r=cross_yaw_and_normal ;
+ 				r.Normalise();  // not needed 
+ 				roll=r.Z*0.5f;
+ 
+-				mMainPart->mRollvel+=(roll-mMainPart->GetCurrentEulerOrientation().mRoll)*0.02f*(1-altitude/5);
++				mMainPart->mRollvel+=(roll-mMainPart->GetCurrentEulerOrientation().mRoll)*(1-altitude*0.2f /* retail 005d8c68: / 5 */)*0.02f;	// Port (patch 0038): retail multiplies by 0.02 last (00411a37)
+ 			}
+ 		}
+ 	}

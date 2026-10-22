@@ -10,6 +10,7 @@
 // table and every game fclose returned EOF without closing, so a save's writes reached the file only at process exit,
 // after (and over) any later save to the same file.
 #include <stdio.h>
+#include "portlog.h"
 
 extern "C" FILE *port_fopen(const char *name, const char *mode);	// port/platform/<target>/files.cpp
 
@@ -29,7 +30,7 @@ FILE *Register(FILE *f)
 			}
 		static bool warned;	// a full table leaves the stream unregistered: its fclose would return EOF and leak it
 		if (!warned)
-			fprintf(stderr, "bea-port: crtfile: more than 64 game streams open; a stream will not be closed\n");
+			fprintf(stderr, PORT_LOG_PREFIX "crtfile: more than 64 game streams open; a stream will not be closed\n");
 		warned = true;
 	}
 	return f;

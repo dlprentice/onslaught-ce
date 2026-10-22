@@ -1,0 +1,17 @@
+--- a/d3dapp.cpp
++++ b/d3dapp.cpp
+@@ -2028,6 +2028,14 @@
+ //-----------------------------------------------------------------------------
+ void CD3DApplication::UpdateScreenShape()	// FUNCTION: 0x0052c780
+ {
++	// Port (patch 0041, widescreen): with the port's widescreen modes the view is widened instead of stretched
++	// (patch 0040), so pixels are square: projected markers, the crosshair, the compass and films keep their shape.
++	// Read from the parameters about to be used (this runs before CreateDevice and Reset); 4:3 takes the game's code.
++	if (PortWideModes() && m_d3dpp.BackBufferWidth * 3 != m_d3dpp.BackBufferHeight * 4)
++	{
++		mScreenShapeScale = 1.f;
++		return;
++	}
+ 	float	aspect;
+ 	switch (SCREEN_SHAPE.mValue)
+ 	{

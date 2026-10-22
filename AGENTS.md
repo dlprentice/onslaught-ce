@@ -7,5 +7,7 @@ the maintainers (`CONTRIBUTING.md`).
 - Licence: GPL-3.0-only (`COPYING`, `REUSE.toml`); third-party components keep their own licences (`THIRD-PARTY.md`).
 - Never add the game's files or anything derived from them (executables, data, saves, captures, byte dumps).
 - `src/` files keep their line counts: the game's build depends on them.
-- The program sends nothing about its users; the launcher reads only this repository's signed release feed.
+- The program sends nothing about its users; the launcher reads only this repository's signed release feed. Report a
+  problem opens a GitHub page in the user's browser with their version and OS in its address; nothing is posted until
+  they submit it.
 - Build: `README.md`, "Building from source".

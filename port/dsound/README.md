@@ -3,7 +3,7 @@
 # port/dsound: DirectSound 8 over SDL3 audio
 
 Status: active (mixing, notifications and DirectSound 3D in place; nobody has listened to the result yet)
-Last updated: 2026-10-15
+Last updated: 2026-10-22
 Summary: what the game's sound code needs from DirectSound, how this module provides it, and how it is checked.
 
 Replaces port/platform/common/dsound.cpp (the platform's silent form; `build.py` drops it when this directory
@@ -70,7 +70,8 @@ Under `BEA_PORT_CLOCK` (`run.py --virtual`, `--twice`), no device opens and the 
 Every call that reads or changes playback first mixes whole 10 ms blocks up to the virtual time now, read through
 `PortClockPeekNs` (which does not count as a clock read). So play and write cursors, `GetStatus`, notifications, and
 every volume, position or 3D change fall on the same block in every run. The 10 ms timer only keeps notifications
-coming while the game makes no call. The log says `bea-port: audio virtual clock, no device`.
+coming while the game makes no call. The log says `onslaught-ce: audio virtual clock, no device` (`bea-port:` in a
+non-public build).
 
 `run.py vclock --twice --shot 1500 -- -level 100 -skipfmv` gives identical frames, with the tutorial's eighth subtitle
 and its portrait on screen (2026-10-15).

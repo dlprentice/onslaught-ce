@@ -4,6 +4,8 @@
 #define PORT_PLATFORM_H
 #include <windows.h>
 
+#include "portlog.h"
+
 struct SDL_Window;
 
 // The SDL window behind one of the game's HWNDs (window.cpp): on Linux the HWND is the SDL_Window (dxvk-native's
@@ -12,6 +14,18 @@ SDL_Window *PortSdlWindow(HWND hwnd);
 void PortMouseKeepRelative();	// dinput.cpp: re-assert relative mode for the acquired mouse each frame
 // Posts to the game's message queue (window.cpp; d3d9hooks' BEA_PORT_QUIT).
 extern "C" BOOL WINAPI PortPostMessageA(HWND h, UINT m, WPARAM w, LPARAM l);
+SDL_Window *PortMainSdlWindow();	// window.cpp: the game's first window (NULL before it exists)
+// Widescreen and native resolutions (widescreen.cpp; the game's side is declared in port.h).
+void PortVideoInit();				// SDL video with the port's hints, once
+void PortWideBackBuffer(unsigned w, unsigned h);	// d3d9hooks.cpp: the device's back buffer at CreateDevice and Reset
+int PortWideModes();
+int PortWideDesktopSize(unsigned *w, unsigned *h);
+int PortWideDisplaySizes(unsigned (*out)[2], int max);
+int PortWideActive();
+float PortUiScale();
+float PortUiLeft();
+float PortUiTop();
+void PortWideViewport(int box);	// d3d9hooks.cpp
 // Lets SDL refresh keyboard, mouse and controller state between the game's message pumps.
 void PortPumpInput();
 // With a test run's dummy-audio requirement: start SDL audio on the dummy driver, log it, exit if it is another

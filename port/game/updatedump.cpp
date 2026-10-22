@@ -23,6 +23,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <typeinfo>
+#include "../platform/common/portlog.h"
 
 // The dump is the port's own output, written where the caller asks: the C library's fopen, not the game's (port.h
 // sends game files' fopen through the path layer, which refuses absolute paths).
@@ -76,7 +77,7 @@ void PortUpdateHook()
 		gInit = true;
 		const char *path = getenv("BEA_PORT_UPDATE_DUMP");
 		if (path && *path && !(gDump = fopen(path, "w")))
-			fprintf(stderr, "bea-port: update dump: cannot write %s\n", path);
+			fprintf(stderr, PORT_LOG_PREFIX "update dump: cannot write %s\n", path);
 		if (const char *v = getenv("BEA_PORT_UPDATE_DUMP_FROM"))
 			gFrom = strtoul(v, NULL, 10);
 		if (const char *v = getenv("BEA_PORT_UPDATE_DUMP_TO"))

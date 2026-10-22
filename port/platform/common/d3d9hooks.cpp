@@ -3,7 +3,8 @@
 // Direct3DCreate9 to PortDirect3DCreate9, which returns the real object (dxvk-native on Linux, the system's d3d9 on
 // Windows) with two calls observed through a copied vtable (the object keeps its own implementation; RTTI slots are
 // copied too):
-// - IDirect3D9::GetAdapterModeCount/EnumAdapterModes: the standard 4:3 modes where the desktop offers none (below).
+// - IDirect3D9::GetAdapterModeCount/EnumAdapterModes: the standard 4:3 modes where the desktop offers none, or with
+//   widescreen modes on, the desktop's sizes (below).
 // - IDirect3D9::CreateDevice: retail creates its device without D3DCREATE_FPU_PRESERVE, so Direct3D leaves the
 //   creating thread's x87 unit at single precision, round to nearest, and the whole simulation runs that way. The
 //   port sets the same control word itself (dxvk-native may not), and logs the word before and after the real call.
@@ -89,7 +90,7 @@ void DesktopFullscreen(HWND focus, D3DPRESENT_PARAMETERS *pp)
 		SDL_SyncWindow(w);
 		SDL_HideCursor();			// the game draws its own cursor (retail hides Windows')
 	}
-	fprintf(stderr, "bea-port: fullscreen %ux%u shown in a desktop-fullscreen window\n", pp->BackBufferWidth,
+	fprintf(stderr, PORT_LOG_PREFIX "fullscreen %ux%u shown in a desktop-fullscreen window\n", pp->BackBufferWidth,
 			pp->BackBufferHeight);
 }
 
@@ -115,6 +116,8 @@ bool DesktopBox(int &left, int &top, int &width, int &height)
 	return true;
 }
 
+IDirect3DDevice9 *gDevice;		// the game's device (PortWideViewport)
+
 HRESULT STDMETHODCALLTYPE Reset(IDirect3DDevice9 *device, D3DPRESENT_PARAMETERS *pp)
 {
 	HWND focus = NULL;
@@ -122,7 +125,10 @@ HRESULT STDMETHODCALLTYPE Reset(IDirect3DDevice9 *device, D3DPRESENT_PARAMETERS 
 	if (SUCCEEDED(device->GetCreationParameters(&cp)))
 		focus = cp.hFocusWindow;
 	DesktopFullscreen(focus, pp);
-	return gReset(device, pp);
+	HRESULT hr = gReset(device, pp);
+	if (SUCCEEDED(hr) && pp)
+		PortWideBackBuffer(pp->BackBufferWidth, pp->BackBufferHeight);
+	return hr;
 }
 
 CreateDeviceFn gCreateDevice;
@@ -184,14 +190,118 @@ UINT Extra(IDirect3D9 *d3d, UINT adapter, D3DFORMAT format, UINT real, D3DDISPLA
 	return n;
 }
 
+// With widescreen modes on (widescreen.cpp), the 32-bit formats list one set of sizes instead, which the game no longer
+// limits to 4:3 (patch 0045): on Windows the driver's own sizes (refresh rates folded, as the game folds them); on Linux,
+// where dxvk shows any back buffer through the desktop-fullscreen window, the display's sizes, the desktop's own, and
+// the common 4:3, 16:9 and 16:10 sizes, none larger than the desktop. At most kWideMax: BuildDeviceList collects modes
+// in a fixed array of 100 without a bounds check. R8G8B8 lists nothing then (no display offers it; listed first, it
+// would take the sizes from X8R8G8B8 and leave the device without a confirmed format).
+const int kWideMax = 64;
+UINT gWide[kWideMax][2];
+int gWideCount = -1;
+UINT gWideRefresh = 60;
+
+void AddWide(UINT w, UINT h, UINT maxW, UINT maxH)
+{
+	if (w < 640 || h < 480 || (maxW && (w > maxW || h > maxH)))
+		return;
+	for (int i = 0; i < gWideCount; i++)
+		if (gWide[i][0] == w && gWide[i][1] == h)
+			return;
+	if (gWideCount < kWideMax)
+	{
+		gWide[gWideCount][0] = w;
+		gWide[gWideCount][1] = h;
+		gWideCount++;
+	}
+}
+
+void BuildWide(IDirect3D9 *d3d, UINT adapter)
+{
+	if (gWideCount >= 0)
+		return;
+	gWideCount = 0;
+	D3DDISPLAYMODE desktop;
+	bool haveDesktop = SUCCEEDED(d3d->GetAdapterDisplayMode(adapter, &desktop));
+	gWideRefresh = haveDesktop && desktop.RefreshRate ? desktop.RefreshRate : 60;
+	UINT nativeW = 0, nativeH = 0;
+	if (!PortWideDesktopSize(&nativeW, &nativeH) && haveDesktop)
+	{
+		nativeW = desktop.Width;
+		nativeH = desktop.Height;
+	}
+	// The desktop's size first, so a long list never loses it.
+	if (nativeW)
+		AddWide(nativeW, nativeH, 0, 0);
+	AddWide(640, 480, 0, 0);
+	UINT real = gModeCount(d3d, adapter, D3DFMT_X8R8G8B8);
+	D3DDISPLAYMODE m;
+#ifdef _WIN32
+	for (UINT i = 0; i < real; i++)
+		if (SUCCEEDED(gEnumModes(d3d, adapter, D3DFMT_X8R8G8B8, i, &m)))
+			AddWide(m.Width, m.Height, nativeW, nativeH);
+#else
+	for (UINT i = 0; i < real; i++)
+		if (SUCCEEDED(gEnumModes(d3d, adapter, D3DFMT_X8R8G8B8, i, &m)))
+			AddWide(m.Width, m.Height, nativeW, nativeH);
+	unsigned sizes[kWideMax][2];
+	int n = PortWideDisplaySizes(sizes, kWideMax);
+	for (int i = 0; i < n; i++)
+		AddWide(sizes[i][0], sizes[i][1], nativeW, nativeH);
+	static const UINT common[][2] = { { 1280, 720 }, { 1366, 768 }, { 1600, 900 }, { 1920, 1080 }, { 2560, 1440 },
+									  { 3840, 2160 }, { 1280, 800 }, { 1440, 900 }, { 1680, 1050 }, { 1920, 1200 },
+									  { 2560, 1600 }, { 2560, 1080 }, { 3440, 1440 } };
+	for (const auto &s : kStandard)
+		AddWide(s[0], s[1], nativeW, nativeH);
+	for (const auto &s : common)
+		AddWide(s[0], s[1], nativeW, nativeH);
+#endif
+	// Ascending by width, then height (the options list reads in that order).
+	for (int i = 1; i < gWideCount; i++)
+		for (int j = i; j > 0 && (gWide[j - 1][0] > gWide[j][0] ||
+								  (gWide[j - 1][0] == gWide[j][0] && gWide[j - 1][1] > gWide[j][1])); j--)
+		{
+			UINT t0 = gWide[j][0], t1 = gWide[j][1];
+			gWide[j][0] = gWide[j - 1][0];
+			gWide[j][1] = gWide[j - 1][1];
+			gWide[j - 1][0] = t0;
+			gWide[j - 1][1] = t1;
+		}
+	fprintf(stderr, PORT_LOG_PREFIX "display modes (desktop %ux%u):", nativeW, nativeH);
+	for (int i = 0; i < gWideCount; i++)
+		fprintf(stderr, " %ux%u", gWide[i][0], gWide[i][1]);
+	fprintf(stderr, "\n");
+}
+
+bool WideFormat(D3DFORMAT format)
+{
+	return format == D3DFMT_X8R8G8B8 || format == D3DFMT_A8R8G8B8 || format == D3DFMT_R8G8B8;
+}
+
 UINT STDMETHODCALLTYPE ModeCount(IDirect3D9 *d3d, UINT adapter, D3DFORMAT format)
 {
+	if (WideFormat(format) && PortWideModes())
+	{
+		BuildWide(d3d, adapter);
+		return format == D3DFMT_R8G8B8 ? 0 : (UINT)gWideCount;
+	}
 	UINT real = gModeCount(d3d, adapter, format);
 	return real + Extra(d3d, adapter, format, real, NULL, 0);
 }
 
 HRESULT STDMETHODCALLTYPE EnumModes(IDirect3D9 *d3d, UINT adapter, D3DFORMAT format, UINT index, D3DDISPLAYMODE *mode)
 {
+	if (WideFormat(format) && PortWideModes())
+	{
+		BuildWide(d3d, adapter);
+		if (!mode || format == D3DFMT_R8G8B8 || index >= (UINT)gWideCount)
+			return D3DERR_INVALIDCALL;
+		mode->Width = gWide[index][0];
+		mode->Height = gWide[index][1];
+		mode->RefreshRate = gWideRefresh;
+		mode->Format = format;
+		return D3D_OK;
+	}
 	UINT real = gModeCount(d3d, adapter, format);
 	if (index < real)
 		return gEnumModes(d3d, adapter, format, index, mode);
@@ -247,13 +357,13 @@ void WriteShot(IDirect3DDevice9 *dev)
 				}
 			}
 			fclose(f);
-			fprintf(stderr, "bea-port: frame %u written to %s (%ux%u, format %d)\n", gFrames, gShotPath, d.Width, d.Height,
+			fprintf(stderr, PORT_LOG_PREFIX "frame %u written to %s (%ux%u, format %d)\n", gFrames, gShotPath, d.Width, d.Height,
 					(int)d.Format);
 		}
 		copy->UnlockRect();
 	}
 	else
-		fprintf(stderr, "bea-port: frame %u: back buffer read-back failed (format %d)\n", gFrames, (int)d.Format);
+		fprintf(stderr, PORT_LOG_PREFIX "frame %u: back buffer read-back failed (format %d)\n", gFrames, (int)d.Format);
 	if (copy)
 		copy->Release();
 	back->Release();
@@ -611,8 +721,8 @@ HRESULT STDMETHODCALLTYPE Present(IDirect3DDevice9 *dev, const RECT *src, const 
 	if (gLog && (int)gFrames == gLogFrame)
 		fflush(gLog);
 	gFrames++;
-	if (gFrames % 300 == 0)
-		fprintf(stderr, "bea-port: frame %u (x87 control word %04x)\n", gFrames, ControlWord());
+	if (gFrames % 300 == 0 && PortDevLog())
+		fprintf(stderr, PORT_LOG_PREFIX "frame %u (x87 control word %04x)\n", gFrames, ControlWord());
 	if (gShotFrame && gFrames == gShotFrame)
 		WriteShot(dev);
 	if (gShotEvery && gFrames % gShotEvery == 0)
@@ -626,7 +736,7 @@ HRESULT STDMETHODCALLTYPE Present(IDirect3DDevice9 *dev, const RECT *src, const 
 		D3DDEVICE_CREATION_PARAMETERS cp;
 		if (SUCCEEDED(dev->GetCreationParameters(&cp)))
 			PortPostMessageA(cp.hFocusWindow, WM_CLOSE, 0, 0);
-		fprintf(stderr, "bea-port: frame %u: WM_CLOSE posted (BEA_PORT_QUIT)\n", gFrames);
+		fprintf(stderr, PORT_LOG_PREFIX "frame %u: WM_CLOSE posted (BEA_PORT_QUIT)\n", gFrames);
 	}
 	// Desktop fullscreen keeps the game's aspect: the picture goes to the largest centred rectangle of its shape
 	// (pillarboxed on a widescreen desktop) instead of stretching across the window.
@@ -651,17 +761,33 @@ HRESULT STDMETHODCALLTYPE Present(IDirect3DDevice9 *dev, const RECT *src, const 
 HRESULT STDMETHODCALLTYPE CreateDevice(IDirect3D9 *d3d, UINT adapter, D3DDEVTYPE type, HWND focus, DWORD flags,
 									   D3DPRESENT_PARAMETERS *pp, IDirect3DDevice9 **out)
 {
+	{
+		// The GPU, for the player's log (the launcher copies this line to the top of onslaught-ce.log); a query only,
+		// made before the control word is read so the checks below see whatever it leaves.
+		D3DADAPTER_IDENTIFIER9 id;
+		memset(&id, 0, sizeof(id));
+		if (SUCCEEDED(d3d->GetAdapterIdentifier(adapter, 0, &id)))
+			fprintf(stderr, PORT_LOG_PREFIX "adapter %.512s (vendor %04lx, device %04lx, driver %u.%u.%u.%u)\n", id.Description,
+					(unsigned long)id.VendorId, (unsigned long)id.DeviceId, (unsigned)HIWORD(id.DriverVersion.HighPart),
+					(unsigned)LOWORD(id.DriverVersion.HighPart), (unsigned)HIWORD(id.DriverVersion.LowPart),
+					(unsigned)LOWORD(id.DriverVersion.LowPart));
+	}
 	unsigned short before = ControlWord();
 	DesktopFullscreen(focus, pp);
 	if (pp)
-		fprintf(stderr, "bea-port: CreateDevice asks %ux%u format %d windowed %d refresh %u\n", pp->BackBufferWidth,
+		fprintf(stderr, PORT_LOG_PREFIX "CreateDevice asks %ux%u format %d windowed %d refresh %u\n", pp->BackBufferWidth,
 				pp->BackBufferHeight, (int)pp->BackBufferFormat, (int)pp->Windowed, pp->FullScreen_RefreshRateInHz);
 	HRESULT hr = gCreateDevice(d3d, adapter, type, focus, flags, pp, out);
 	unsigned short after = ControlWord();
+	if (SUCCEEDED(hr) && pp)
+	{
+		gDevice = *out;
+		PortWideBackBuffer(pp->BackBufferWidth, pp->BackBufferHeight);
+	}
 	if (SUCCEEDED(hr) && !(flags & D3DCREATE_FPU_PRESERVE))
 		// Precision control 00 (24-bit) and rounding control 00 (nearest); the exception masks stay as they are.
 		SetControlWord((unsigned short)(after & ~0x0F00));
-	fprintf(stderr, "bea-port: CreateDevice %08lx flags %08lx; x87 control word %04x before, %04x after the runtime, %04x now\n",
+	fprintf(stderr, PORT_LOG_PREFIX "CreateDevice %08lx flags %08lx; x87 control word %04x before, %04x after the runtime, %04x now\n",
 			(unsigned long)hr, (unsigned long)flags, before, after, ControlWord());
 	if (SUCCEEDED(hr) && *out)
 	{
@@ -746,17 +872,46 @@ extern "C" IDirect3D9 *__stdcall PortDirect3DCreate9(UINT sdk)
 // A mouse position in the SDL window (points) as the game's client coordinates: while the picture is shown
 // desktop-fullscreen, the pillarbox is taken out and the picture's rectangle scaled to the back buffer, so the game
 // sees the coordinates its own window would have given. Otherwise unchanged.
-extern "C" void PortMapMouse(float *x, float *y)
+extern "C" int PortMapMouse(float *x, float *y)
 {
 	int bl, bt, bw, bh;
 	if (!DesktopBox(bl, bt, bw, bh))
-		return;
+		return 0;
 	float density = SDL_GetWindowPixelDensity(gBoxWindow);
 	if (density <= 0)
 		density = 1;
 	float px = *x * density - bl, py = *y * density - bt;
 	*x = px * (float)gBoxW / (float)bw;
 	*y = py * (float)gBoxH / (float)bh;
+	return 1;
+}
+
+// The game's viewport over the whole back buffer (0) or the centred 4:3 box of the virtual screen (1), for the wide
+// front end (patch 0042) and the screens drawn after it (0044).
+void PortWideViewport(int box)
+{
+	if (!gDevice)
+		return;
+	D3DSURFACE_DESC d;
+	IDirect3DSurface9 *back = NULL;
+	if (FAILED(gDevice->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &back)))
+		return;
+	back->GetDesc(&d);
+	back->Release();
+	D3DVIEWPORT9 vp = { 0, 0, d.Width, d.Height, 0.f, 1.f };
+	if (box && PortWideActive())
+	{
+		float s = PortUiScale();
+		vp.X = (DWORD)(PortUiLeft() + 0.5f);
+		vp.Y = (DWORD)(PortUiTop() + 0.5f);
+		vp.Width = (DWORD)(640.f * s + 0.5f);
+		vp.Height = (DWORD)(480.f * s + 0.5f);
+		if (vp.X + vp.Width > d.Width)
+			vp.Width = d.Width - vp.X;
+		if (vp.Y + vp.Height > d.Height)
+			vp.Height = d.Height - vp.Y;
+	}
+	gDevice->SetViewport(&vp);
 }
 
 extern "C" unsigned PortPresentCount(void) { return gFrames; }

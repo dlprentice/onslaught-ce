@@ -1,0 +1,26 @@
+--- a/FEPSaveGame.cpp
++++ b/FEPSaveGame.cpp
+@@ -586,6 +586,10 @@
+ char cheatkey[] = "HELP ME!!";									// 00629a64
+ 
+ extern char gAllCheatsEnabled;									// 00679ec1 (CGame::Update sets it)
++#ifdef CE_VERSION
++extern "C" int	CE_CheatOn(int cheat);		// Port (patch 0051): port/platform/common/ce.cpp; 0 wherever the CE layer is off
++bool	gPortCheatNameOnly = false;				// set while ce_frontend.cpp asks about the career's name alone
++#endif
+ 
+ BOOL CFEPSaveGame::IsCheatActive(int cheatno) 	// FUNCTION: 0x00465490
+ {
+@@ -593,6 +597,12 @@
+ 
+ 	if (CLIPARAMS.mAutoConfigTest || gAllCheatsEnabled)
+ 		return(TRUE);
++#ifdef CE_VERSION
++	// Port (patch 0051, the CE layer): a cheat switched on in Options > Cheats (ce.ini, every career) counts as its code
++	// in the career's name. Off in replays, recordings and the harness, so their careers decide alone, as in retail.
++	if (!gPortCheatNameOnly && CE_CheatOn(cheatno))
++		return(TRUE);
++#endif
+ 
+ 	for (unsigned int i = 0; i < strlen(cheatkey); i++)
+ 		mungedname[i] = cheatname[cheatno][i] ^ cheatkey[i];

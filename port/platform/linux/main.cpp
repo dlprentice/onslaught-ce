@@ -27,7 +27,7 @@ int main(int argc, char **argv)
 	// SDL for Vulkan's instance extensions at that point.
 	if (!SDL_Init(SDL_INIT_EVENTS | SDL_INIT_VIDEO))
 	{
-		fprintf(stderr, "bea-port: SDL_Init: %s\n", SDL_GetError());
+		fprintf(stderr, PORT_LOG_PREFIX "SDL_Init: %s\n", SDL_GetError());
 		return 1;
 	}
 	size_t len = 1;
@@ -40,7 +40,7 @@ int main(int argc, char **argv)
 			strcat(cmdline, " ");
 		strcat(cmdline, argv[i]);
 	}
-	fprintf(stderr, "bea-port: game folder %s, writable folder %s\n", PortGameDir(), PortUserDir());
+	fprintf(stderr, PORT_LOG_PREFIX "game folder %s, writable folder %s\n", PortGameDir(), PortUserDir());
 	int rc = WinMain(GetModuleHandleA(NULL), NULL, cmdline, SW_SHOWNORMAL);
 	SDL_Quit();
 	return rc;

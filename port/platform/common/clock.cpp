@@ -128,7 +128,7 @@ long ShimN()
 		if (getenv("BEA_PORT_CLOCK_LOG"))
 		{
 			ClaimMain();
-			fprintf(stderr, "bea-port: clock: spin escape %ld after Present %ld (%s thread)\n", gSpinEsc.load(), gShimFrames.load(), tIsMain == 1 ? "main" : "other");
+			fprintf(stderr, PORT_LOG_PREFIX "clock: spin escape %ld after Present %ld (%s thread)\n", gSpinEsc.load(), gShimFrames.load(), tIsMain == 1 ? "main" : "other");
 		}
 	}
 	return gShimFrames.load() + gSpinEsc.load();

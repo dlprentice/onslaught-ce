@@ -3,7 +3,19 @@
  * install, checks the signed release feed for an update, and starts the game from this folder with the game folder and
  * a per-user writable folder. It never writes into the game folder.
  *
- *   onslaught-ce [--version] [--no-update-check] [--update-only] [-- GAME ARGUMENTS]
+ *   onslaught-ce [--version] [--no-update-check] [--update-only] [--record] [--no-record] [--report] [-- GAME ARGUMENTS]
+ *
+ * The log: the game's output and the launcher's own messages go to <user folder>/onslaught-ce.log (the run before is
+ * onslaught-ce.old.log; each stops at 4 MB) and still to the terminal. Its first lines name the version, the build, the
+ * OS and the GPU (the game's "onslaught-ce: adapter" line). It never names the player's account: home is written ~ (Windows
+ * %APPDATA% and the like) and the account name <user>. An update's restart continues the same log. A replay
+ * (BEA_PORT_TAPE) or a harness recording (BEA_PORT_RECORD) gets no log, no update check and nothing else of the launcher's.
+ * Session recording (--record, or record_sessions=1 in ce.ini): the game records its input to <user folder>/tapes/
+ * YYYYMMDD-HHMMSS.tape (port/platform/common/replay.cpp's record mode, on the shim clock at 30 Presents a second) with a
+ * .json beside it naming the version, build, OS, date and game arguments; never when a tape is being replayed. While
+ * record_sessions=1, each start asks first (Record, Not this time, Stop recording), because a recorded session hides the
+ * game's CE page where the setting was switched on; --no-record also sets record_sessions=0 and starts unrecorded.
+ * --report opens the pre-filled "Report a problem" page (ce_report.h) and prints the log folder.
  *
  * Update rule: the feed (latest.json and its Ed25519 signature) is verified against the public key below before
  * anything is read from it; the archive's SHA-256 from the verified feed is checked before anything is unpacked; the
@@ -15,11 +27,17 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdarg.h>
+#include <time.h>
 #include "monocypher-ed25519.h"
 #include "sha256.h"
+#include "ce_report.h"
 
 #ifndef CE_VERSION
 #define CE_VERSION "dev"
+#endif
+#ifndef CE_COMMIT
+#define CE_COMMIT "unknown"		/* build.py: the source commit (+dirty when the tree had changes) */
 #endif
 #define FEED "https://github.com/dlprentice/onslaught-ce/releases/latest/download/latest.json"
 /* The only place an update archive may come from, even under a valid signature (a leaked key or a mistaken feed cannot
@@ -38,6 +56,9 @@ static const char PUBLIC_KEY_HEX[] = "b6cf39b727c92cd8a1682c31f315a5d38427dce912
 #else
 #include <dirent.h>
 #include <errno.h>
+#include <fcntl.h>
+#include <poll.h>
+#include <signal.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -48,8 +69,290 @@ static const char PUBLIC_KEY_HEX[] = "b6cf39b727c92cd8a1682c31f315a5d38427dce912
 
 #define PATHN 4096
 static char sHere[PATHN], sUser[PATHN], sIni[PATHN], sCache[PATHN];
+/* A replay (BEA_PORT_TAPE) or a recording someone else set up (BEA_PORT_RECORD, the test harness) as the launcher
+ * started: the launcher then adds nothing of its own (no log, no update check, no build name for the CE layer). */
+static int sReplay;
+
+/* ---- the log ---------------------------------------------------------------------------------------------------- */
+
+#define LOG_CAP (4u << 20)		/* each log file stops at 4 MB */
+#define HOLD_CAP (1u << 20)
+static FILE *sLog;
+static size_t sLogBytes;
+static int sLogFull, sHolding;
+static char *sHold;				/* what arrives before the GPU is known, so the GPU line stays near the top */
+static size_t sHoldLen, sHoldCap;
+static char sScan[1024];		/* the game's current output line, for the adapter line */
+static size_t sScanLen;
+
+static void log_file(const char *p, size_t n)
+{
+	static const char note[] = "\n[onslaught-ce: this log reached 4 MB; later output went to the terminal only]\n";
+	if (!sLog || sLogFull) return;
+	if (sLogBytes + n + sizeof note > LOG_CAP)
+	{
+		size_t room = LOG_CAP - sizeof note > sLogBytes ? LOG_CAP - sizeof note - sLogBytes : 0;
+		fwrite(p, 1, room < n ? room : n, sLog);
+		fwrite(note, 1, sizeof note - 1, sLog);
+		sLogFull = 1;
+	}
+	else
+	{
+		fwrite(p, 1, n, sLog);
+		sLogBytes += n;
+	}
+	fflush(sLog);
+}
+
+#ifndef _WIN32
+/* This machine's GPUs from sysfs ("NVIDIA 10de:28a0 (nvidia), Intel 8086:4688 (i915)"): on Linux, dxvk may report a
+ * stand-in name to the game (its d3d9.hide*Gpu defaults), so the log names the real devices too. */
+static void linux_gpus(char *out, size_t n)
+{
+	out[0] = 0;
+	DIR *d = opendir("/sys/class/drm");
+	if (!d) return;
+	struct dirent *e;
+	while ((e = readdir(d)))
+	{
+		if (strncmp(e->d_name, "card", 4) || strchr(e->d_name, '-')) continue;
+		char p[PATHN], v[16] = "", dev[16] = "", drv[PATHN] = "";
+		FILE *f;
+		snprintf(p, sizeof p, "/sys/class/drm/%s/device/vendor", e->d_name);
+		if ((f = fopen(p, "r"))) { if (!fgets(v, sizeof v, f)) v[0] = 0; fclose(f); }
+		snprintf(p, sizeof p, "/sys/class/drm/%s/device/device", e->d_name);
+		if ((f = fopen(p, "r"))) { if (!fgets(dev, sizeof dev, f)) dev[0] = 0; fclose(f); }
+		snprintf(p, sizeof p, "/sys/class/drm/%s/device/driver", e->d_name);
+		ssize_t l = readlink(p, drv, sizeof drv - 1);
+		drv[l > 0 ? l : 0] = 0;
+		unsigned vid = (unsigned)strtoul(v, NULL, 16), did = (unsigned)strtoul(dev, NULL, 16);
+		if (!vid) continue;
+		const char *name = vid == 0x10de ? "NVIDIA " : vid == 0x8086 ? "Intel " : vid == 0x1002 ? "AMD " : "";
+		const char *base = strrchr(drv, '/');
+		size_t at = strlen(out);
+		snprintf(out + at, n - at, "%s%s%04x:%04x (%s)", at ? ", " : "", name, vid, did, base ? base + 1 : "no driver");
+	}
+	closedir(d);
+}
+#endif
+
+/* The GPU line, then everything held until it was known. */
+static void log_release(const char *gpu)
+{
+	if (!sHolding) return;
+	sHolding = 0;
+	char line[1600];
+	int k = snprintf(line, sizeof line, "GPU (as Direct3D reports it): %s\n", gpu);
+#ifndef _WIN32
+	char all[512];
+	linux_gpus(all, sizeof all);
+	const char *filter = getenv("DXVK_FILTER_DEVICE_NAME");
+	if (*all && k > 0 && (size_t)k < sizeof line)
+		k += snprintf(line + k, sizeof line - (size_t)k, "GPUs in this machine: %s%s%s\n", all,
+					  filter && *filter ? "; DXVK_FILTER_DEVICE_NAME=" : "", filter && *filter ? filter : "");
+#endif
+	if (k > 0 && (size_t)k < sizeof line) k += snprintf(line + k, sizeof line - (size_t)k, "\n");
+	log_file(line, k > 0 && (size_t)k < sizeof line ? (size_t)k : strlen(line));
+	if (sHold) log_file(sHold, sHoldLen);
+	free(sHold);
+	sHold = NULL;
+	sHoldLen = sHoldCap = 0;
+}
+
+static void log_bytes(const char *p, size_t n)
+{
+	if (!sHolding) { log_file(p, n); return; }
+	if (sHoldLen + n > HOLD_CAP)
+	{
+		log_release("not reported yet (see below)");
+		log_file(p, n);
+		return;
+	}
+	if (sHoldLen + n > sHoldCap)
+	{
+		size_t cap = sHoldCap ? sHoldCap : 16384;
+		while (cap < sHoldLen + n) cap *= 2;
+		char *b = realloc(sHold, cap);
+		if (!b) { log_release("not reported yet (see below)"); log_file(p, n); return; }
+		sHold = b;
+		sHoldCap = cap;
+	}
+	memcpy(sHold + sHoldLen, p, n);
+	sHoldLen += n;
+}
+
+static int name_char(char c)
+{
+	return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' || c == '-' || c == '.';
+}
+
+/* The log is meant to be attached to a public issue, so it never names the player's account: their home (Windows
+ * %USERPROFILE%, %APPDATA%, %LOCALAPPDATA%) is written as ~ (or that variable), and the account name as a whole path
+ * component anywhere else (/run/media/NAME/..., D:\Users\NAME\...) as <user>. */
+static void scrub(const char *in, char *out, size_t n)
+{
+	struct { const char *value, *name; } base[3] = {{0, 0}, {0, 0}, {0, 0}};
+#ifdef _WIN32
+	base[0].value = getenv("LOCALAPPDATA"), base[0].name = "%LOCALAPPDATA%";
+	base[1].value = getenv("APPDATA"), base[1].name = "%APPDATA%";
+	base[2].value = getenv("USERPROFILE"), base[2].name = "%USERPROFILE%";
+	const char *account = getenv("USERNAME");
+#define PREFIX_EQ(a, b, l) (_strnicmp((a), (b), (l)) == 0)
+#else
+	base[0].value = getenv("HOME"), base[0].name = "~";
+	const char *account = getenv("USER");
+	if (!account || !*account) account = getenv("LOGNAME");
+#define PREFIX_EQ(a, b, l) (strncmp((a), (b), (l)) == 0)
+#endif
+	size_t al = account ? strlen(account) : 0, o = 0;
+	for (const char *p = in; *p && o + 1 < n;)
+	{
+		int done = 0;
+		for (int b = 0; b < 3 && !done; b++)
+		{
+			const char *v = base[b].value;
+			size_t l = v ? strlen(v) : 0;
+			while (l > 1 && (v[l - 1] == '/' || v[l - 1] == '\\')) l--;
+			if (l > 1 && (p == in || !name_char(p[-1])) && PREFIX_EQ(p, v, l) && !name_char(p[l]))
+			{
+				o += (size_t)snprintf(out + o, n - o, "%s", base[b].name);
+				p += l;
+				done = 1;
+			}
+		}
+		if (!done && al > 1 && p > in && (p[-1] == '/' || p[-1] == '\\') && PREFIX_EQ(p, account, al) && !name_char(p[al]))
+		{
+			o += (size_t)snprintf(out + o, n - o, "<user>");
+			p += al;
+			done = 1;
+		}
+		if (o >= n) { o = n - 1; break; }
+		if (!done) out[o++] = *p++;
+	}
+	out[o] = 0;
+#undef PREFIX_EQ
+}
+
+/* One line of the game's output (without its newline) to the log, scrubbed; its adapter line names the GPU. */
+static void game_line(int newline)
+{
+	static const char tag[] = "onslaught-ce: adapter ";
+	char clean[4 * sizeof sScan + 2];
+	sScan[sScanLen] = 0;
+	scrub(sScan, clean, sizeof clean - 1);
+	size_t l = strlen(clean);
+	if (newline) clean[l++] = '\n';
+	log_bytes(clean, l);
+	if (newline && sScanLen && sScan[sScanLen - 1] == '\r') sScan[--sScanLen] = 0;
+	if (newline && sHolding && !strncmp(sScan, tag, sizeof tag - 1)) log_release(sScan + sizeof tag - 1);
+	sScanLen = 0;
+}
+
+/* The game's output: to the terminal as it comes, and to the log a line at a time. */
+static void game_output(const char *p, size_t n)
+{
+	fwrite(p, 1, n, stderr);
+	fflush(stderr);
+	for (size_t i = 0; i < n; i++)
+	{
+		if (p[i] == '\n') { game_line(1); continue; }
+		if (sScanLen + 1 >= sizeof sScan) game_line(0);	/* a very long line goes to the log in pieces */
+		sScan[sScanLen++] = p[i];
+	}
+}
+
+/* The launcher's own messages: "onslaught-ce: ..." to the terminal and the log, scrubbed in both. */
+static void say(const char *fmt, ...)
+{
+	char text[2048], clean[2048];
+	int k = snprintf(text, sizeof text, "onslaught-ce: ");
+	va_list ap;
+	va_start(ap, fmt);
+	vsnprintf(text + k, sizeof text - (size_t)k - 1, fmt, ap);
+	va_end(ap);
+	scrub(text, clean, sizeof clean - 1);
+	strcat(clean, "\n");
+	fputs(clean, stderr);
+	fflush(stderr);
+	log_bytes(clean, strlen(clean));
+}
+
+static void utc_now(char *out, size_t n, const char *format)
+{
+	time_t now = time(NULL);
+	struct tm t;
+#ifdef _WIN32
+	gmtime_s(&t, &now);
+#else
+	gmtime_r(&now, &t);
+#endif
+	strftime(out, n, format, &t);
+}
+
+/* Starts this run's log: the last run's becomes onslaught-ce.old.log. `cont`: the launcher was restarted by an update
+ * (BEA_CE_LOG_CONTINUE), so the log goes on in the same file and the run before it (perhaps the one being reported)
+ * stays as onslaught-ce.old.log. */
+static void log_open(int cont)
+{
+	char log[PATHN], old[PATHN], os[256], date[64], head[1024];
+	snprintf(log, sizeof log, "%s" SEP "onslaught-ce.log", sUser);
+	snprintf(old, sizeof old, "%s" SEP "onslaught-ce.old.log", sUser);
+	if (cont && (sLog = fopen(log, "ab")))
+	{
+		fseek(sLog, 0, SEEK_END);
+		long at = ftell(sLog);
+		sLogBytes = at > 0 ? (size_t)at : 0;
+		sLogFull = sLogBytes >= LOG_CAP;
+		log_file("\n", 1);
+	}
+	else
+	{
+		remove(old);
+		rename(log, old);
+		sLogBytes = 0;
+		sLogFull = 0;
+		if (!(sLog = fopen(log, "wb"))) return;
+	}
+	ce_os_name(os, sizeof os);
+	utc_now(date, sizeof date, "%Y-%m-%d %H:%M:%S UTC");
+	int k = snprintf(head, sizeof head, "Onslaught CE v%s" CE_VERSION_NOTE ", build %s (" PLATFORM ")\nOS: %s\n%s: %s\n", CE_VERSION,
+					 CE_COMMIT, os, cont ? "Restarted after an update" : "Started", date);
+	log_file(head, (size_t)k < sizeof head ? (size_t)k : sizeof head - 1);
+	sHolding = 1;
+}
+
+static void log_close(void)
+{
+	if (!sLog) return;
+	log_release("not reported (the game did not reach its Direct3D device)");
+	fclose(sLog);
+	sLog = NULL;
+}
 
 /* ---- small helpers ---------------------------------------------------------------------------------------------- */
+
+static void set_env(const char *name, const char *value)
+{
+#ifdef _WIN32
+	SetEnvironmentVariableA(name, value);
+	_putenv_s(name, value);
+#else
+	setenv(name, value, 1);
+#endif
+}
+
+static void unset_env(const char *name)
+{
+#ifdef _WIN32
+	SetEnvironmentVariableA(name, NULL);
+	_putenv_s(name, "");
+#else
+	unsetenv(name);
+#endif
+}
+
+/* Set while an update restarts the launcher: the new launcher continues this log instead of rotating it away. */
+#define LOG_CONTINUE "BEA_CE_LOG_CONTINUE"
 
 static int is_file(const char *p)
 {
@@ -140,22 +443,12 @@ static int ini_get(const char *key, char *out, size_t n)
 	return found;
 }
 
-static void ini_set(const char *key, const char *value)
+/* ce_ini_write (ce_report.h): written whole beside ce.ini and renamed over it, so a failed write leaves it as it was. */
+static int ini_set(const char *key, const char *value)
 {
-	char *t = read_all(sIni, NULL);
-	FILE *f = fopen(sIni, "wb");
-	if (!f) { free(t); return; }
-	size_t k = strlen(key);
-	for (char *l = t; l && *l;)
-	{
-		char *nl = strchr(l, '\n');
-		size_t len = nl ? (size_t)(nl - l + 1) : strlen(l);
-		if (!(strncmp(l, key, k) == 0 && l[k] == '=')) fwrite(l, 1, len, f);
-		l += len;
-	}
-	fprintf(f, "%s=%s\n", key, value);
-	fclose(f);
-	free(t);
+	if (ce_ini_write(sIni, key, value)) return 1;
+	say("could not write %s to ce.ini; it is unchanged", key);
+	return 0;
 }
 
 /* Runs a program (no shell) and waits; returns its exit status, -1 when it could not start. */
@@ -332,6 +625,14 @@ static int find_steam_install(char *found, size_t n)
 #endif
 }
 
+#ifndef _WIN32
+static volatile pid_t sChild;
+static void forward_signal(int sig)
+{
+	if (sChild > 0) kill(sChild, sig);
+}
+#endif
+
 static char sPicked[PATHN];
 static volatile int sPickDone;
 
@@ -473,9 +774,12 @@ static int apply_update(const char *version, const char *url, const char *sha_he
 	snprintf(cmd, sizeof cmd, "\"%s\" --apply \"%s\" \"%s\" %lu", copy, fresh, sHere, (unsigned long)GetCurrentProcessId());
 	STARTUPINFOA si = {sizeof si};
 	PROCESS_INFORMATION pi;
-	if (!CreateProcessA(copy, cmd, NULL, NULL, FALSE, 0, NULL, temp, &si, &pi)) { remove_tree(unpack); return 0; }
+	set_env(LOG_CONTINUE, "1");	/* through the copy to the new launcher: it continues this log */
+	if (!CreateProcessA(copy, cmd, NULL, NULL, FALSE, 0, NULL, temp, &si, &pi)) { unset_env(LOG_CONTINUE); remove_tree(unpack); return 0; }
 	CloseHandle(pi.hProcess);
 	CloseHandle(pi.hThread);
+	say("updating to v%s: the update finishes after this launcher exits", version);
+	log_close();
 	exit(0);
 #else
 	if (!swap_in(fresh))
@@ -631,6 +935,9 @@ static void init_paths(void)
 
 static void relaunch(int argc, char **argv)
 {
+	say("updated: starting the new version");
+	log_close();
+	set_env(LOG_CONTINUE, "1");
 	char self[PATHN];
 	snprintf(self, sizeof self, "%s" SEP "onslaught-ce-launch", sHere);
 #ifdef _WIN32
@@ -646,48 +953,334 @@ static void relaunch(int argc, char **argv)
 	argv[0] = self;
 	execv(self, argv);
 #endif
+	/* The new version did not start: this launcher carries on, in the same log. */
+	unset_env(LOG_CONTINUE);
+	if (sUser[0])
+	{
+		log_open(1);
+		say("the new version could not be started");
+	}
+}
+
+static void json_string(FILE *f, const char *v)
+{
+	fputc('"', f);
+	for (const unsigned char *p = (const unsigned char *)v; *p; p++)
+		if (*p == '"' || *p == '\\') fprintf(f, "\\%c", *p);
+		else if (*p < 0x20) fprintf(f, "\\u%04x", *p);
+		else fputc(*p, f);
+	fputc('"', f);
+}
+
+static void json_base64(FILE *f, const unsigned char *p, size_t n)
+{
+	static const char b64[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+	fputc('"', f);
+	for (size_t i = 0; i < n; i += 3)
+	{
+		unsigned v = (unsigned)p[i] << 16 | (i + 1 < n ? (unsigned)p[i + 1] << 8 : 0) | (i + 2 < n ? p[i + 2] : 0);
+		fputc(b64[v >> 18 & 63], f);
+		fputc(b64[v >> 12 & 63], f);
+		fputc(i + 1 < n ? b64[v >> 6 & 63] : '=', f);
+		fputc(i + 2 < n ? b64[v & 63] : '=', f);
+	}
+	fputc('"', f);
+}
+
+/* The user folder's game files as the session starts (options, careers, the game's own text files), so a replay can
+ * start from the same state: "relative/path": base64, in the .json. The launcher's files (ce.ini, the logs, update/,
+ * tapes/) stay out, and so does any file over 1 MB. */
+#define START_CAP (4u << 20)
+static void json_start_files(FILE *f, const char *dir, const char *rel, int *first, size_t *total)
+{
+	char names[256][256];
+	int count = 0;
+#ifdef _WIN32
+	char pattern[PATHN];
+	snprintf(pattern, sizeof pattern, "%s\\*", dir);
+	WIN32_FIND_DATAA fd;
+	HANDLE h = FindFirstFileA(pattern, &fd);
+	if (h == INVALID_HANDLE_VALUE) return;
+	do
+		if (count < 256 && strlen(fd.cFileName) < 256) snprintf(names[count++], 256, "%s", fd.cFileName);
+	while (FindNextFileA(h, &fd));
+	FindClose(h);
+#else
+	DIR *d = opendir(dir);
+	if (!d) return;
+	struct dirent *e;
+	while ((e = readdir(d)))
+		if (count < 256 && strlen(e->d_name) < 256) snprintf(names[count++], 256, "%s", e->d_name);
+	closedir(d);
+#endif
+	qsort(names, (size_t)count, sizeof names[0], (int (*)(const void *, const void *))strcmp);
+	for (int i = 0; i < count; i++)
+	{
+		const char *nm = names[i];
+		if (!strcmp(nm, ".") || !strcmp(nm, "..")) continue;
+		if (!*rel && (!strcmp(nm, "ce.ini") || !strcmp(nm, "onslaught-ce.log") || !strcmp(nm, "onslaught-ce.old.log") ||
+					  !strcmp(nm, "update") || !strcmp(nm, "tapes")))
+			continue;
+		char path[PATHN], sub[PATHN];
+		snprintf(path, sizeof path, "%s" SEP "%s", dir, nm);
+		snprintf(sub, sizeof sub, "%s%s%s", rel, *rel ? "/" : "", nm);
+#ifdef _WIN32
+		DWORD attr = GetFileAttributesA(path);
+		int isdir = attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY);
+#else
+		struct stat st;
+		int isdir = !lstat(path, &st) && S_ISDIR(st.st_mode);
+		if (!isdir && (lstat(path, &st) || !S_ISREG(st.st_mode))) continue;
+#endif
+		if (isdir)
+		{
+			if (strchr(rel, '/') == NULL) json_start_files(f, path, sub, first, total);	/* two levels at most */
+			continue;
+		}
+		size_t n = 0;
+		char *data = read_all(path, &n);
+		if (!data) continue;
+		if (n <= (1u << 20) && *total + n <= START_CAP)
+		{
+			fprintf(f, "%s\n    ", *first ? "" : ",");
+			json_string(f, sub);
+			fprintf(f, ": ");
+			json_base64(f, (const unsigned char *)data, n);
+			*first = 0;
+			*total += n;
+		}
+		free(data);
+	}
+}
+
+/* Session recording: the game's record mode writes the tape (replay.cpp); the .json beside it says what made it. */
+static void start_recording(char **args, int nargs)
+{
+	const char *tape = getenv("BEA_PORT_TAPE"), *rec = getenv("BEA_PORT_RECORD");
+	if ((tape && *tape) || (rec && *rec))
+	{
+		say("not recording this session: %s is set", tape && *tape ? "BEA_PORT_TAPE (a replay)" : "BEA_PORT_RECORD");
+		return;
+	}
+	char dir[PATHN], stamp[32], path[PATHN], json[PATHN + 8], os[256], date[64];
+	time_t now = time(NULL);
+	struct tm t;
+#ifdef _WIN32
+	localtime_s(&t, &now);
+#else
+	localtime_r(&now, &t);
+#endif
+	strftime(stamp, sizeof stamp, "%Y%m%d-%H%M%S", &t);
+	snprintf(dir, sizeof dir, "%s" SEP "tapes", sUser);
+	make_dirs(dir);
+	snprintf(path, sizeof path, "%s" SEP "%s.tape", dir, stamp);
+	snprintf(json, sizeof json, "%s.json", path);
+	const char *clock = getenv("BEA_PORT_CLOCK");
+	if (!clock || !*clock) set_env("BEA_PORT_CLOCK", "shim");	/* record mode's clock: 1/30 s a Present, paced to real time */
+	set_env("BEA_PORT_RECORD", path);
+	ce_os_name(os, sizeof os);
+	utc_now(date, sizeof date, "%Y-%m-%dT%H:%M:%SZ");
+	FILE *f = fopen(json, "wb");
+	if (f)
+	{
+		fprintf(f, "{\n  \"format\": \"onslaught-ce session tape 1\",\n  \"tape\": ");
+		json_string(f, strrchr(path, SEP[0]) + 1);
+		fprintf(f, ",\n  \"ce_version\": \"%s\",\n  \"build\": \"%s\",\n  \"platform\": \"%s\",\n  \"os\": ", CE_VERSION, CE_COMMIT, PLATFORM);
+		json_string(f, os);
+		fprintf(f, ",\n  \"date_utc\": \"%s\",\n  \"clock\": ", date);
+		json_string(f, getenv("BEA_PORT_CLOCK"));
+		fprintf(f, ",\n  \"presents_per_second\": 30,\n  \"game_args\": [");
+		for (int i = 0; i < nargs; i++)
+		{
+			fprintf(f, i ? ", " : "");
+			json_string(f, args[i]);
+		}
+		fprintf(f, "],\n  \"start_files\": {");
+		int first = 1;
+		size_t total = 0;
+		json_start_files(f, sUser, "", &first, &total);
+		fprintf(f, "\n  }\n}\n");
+		fclose(f);
+	}
+	char shortpath[PATHN];
+	ce_short_path(path, shortpath, sizeof shortpath);
+	say("recording this session to %s: while recording the game runs at 30 frames a second, and its menus take the "
+		"keyboard only", shortpath);
+}
+
+/* record_sessions=1: whether to record this start. The game's CE page, where the player switched recording on, is hidden
+ * in a recorded session (its menus are the original game's, so the tape replays exactly), so the way to switch it off is
+ * here. Returns 1 to record; "Stop recording" also sets record_sessions=0. No dialog (no display): record, as set. */
+static int ask_record(void)
+{
+	const SDL_MessageBoxButtonData buttons[] = {{SDL_MESSAGEBOX_BUTTON_RETURNKEY_DEFAULT, 1, "Record"},
+												{SDL_MESSAGEBOX_BUTTON_ESCAPEKEY_DEFAULT, 0, "Not this time"},
+												{0, 2, "Stop recording"}};
+	const SDL_MessageBoxData box = {SDL_MESSAGEBOX_INFORMATION, NULL, "Onslaught CE",
+		"Session recording is on: this session's input will be recorded, so a problem you report can be replayed "
+		"exactly.\n\nWhile recording, the game runs at 30 frames a second and its Onslaught CE page and cheats are "
+		"hidden.\n\nRecord this session?", 3, buttons, NULL};
+	int which = 1;
+	const char *answer = getenv("BEA_RECORD_ANSWER");   /* tests: record, once or stop, without a dialog */
+	if (answer && *answer) which = !strcmp(answer, "stop") ? 2 : !strcmp(answer, "once") ? 0 : 1;
+	else if (!SDL_ShowMessageBox(&box, &which)) which = 1;
+	if (which == 2)
+	{
+		if (ini_set("record_sessions", "0")) say("session recording switched off (record_sessions=0 in ce.ini)");
+		return 0;
+	}
+	if (which == 0) say("not recording this session (chosen at start)");
+	return which == 1;
 }
 
 static int start_game(char **args, int nargs, const char *game)
 {
 	char exe[PATHN];
 	snprintf(exe, sizeof exe, "%s" SEP GAME_EXE, sHere);
+	set_env("BEA_GAME_DIR", game);
+	set_env("BEA_USER_DIR", sUser);
+	if (!sReplay) set_env("BEA_CE_BUILD", CE_COMMIT);	/* the game's "Report a problem" page names it (ce.cpp) */
+	char shortgame[PATHN];
+	ce_short_path(game, shortgame, sizeof shortgame);
+	say("game folder %s", shortgame);
 #ifdef _WIN32
-	SetEnvironmentVariableA("BEA_GAME_DIR", game);
-	SetEnvironmentVariableA("BEA_USER_DIR", sUser);
 	char cmd[8192];
 	snprintf(cmd, sizeof cmd, "\"%s\"", exe);
 	for (int i = 0; i < nargs; i++) { strcat(cmd, " "); strcat(cmd, args[i]); }
+	/* The game's stdout and stderr come through a pipe, to the log and (from a console) the terminal. */
+	SECURITY_ATTRIBUTES sa = {sizeof sa, NULL, TRUE};
+	HANDLE rd = NULL, wr = NULL;
+	int piped = CreatePipe(&rd, &wr, &sa, 0) && SetHandleInformation(rd, HANDLE_FLAG_INHERIT, 0);
 	STARTUPINFOA si = {sizeof si};
+	if (piped)
+	{
+		si.dwFlags = STARTF_USESTDHANDLES;
+		si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+		si.hStdOutput = si.hStdError = wr;
+	}
 	PROCESS_INFORMATION pi;
-	if (!CreateProcessA(exe, cmd, NULL, NULL, FALSE, 0, NULL, sUser, &si, &pi)) return 1;
+	if (!CreateProcessA(exe, cmd, NULL, NULL, piped, 0, NULL, sUser, &si, &pi))
+	{
+		say("could not start %s (error %lu)", exe, (unsigned long)GetLastError());
+		return 1;
+	}
+	if (piped)
+	{
+		/* Read while the game runs, then whatever is still waiting, and stop: a program the game started (a browser
+		 * opened for "Report a problem") may hold the pipe open long after the game has exited. */
+		CloseHandle(wr);
+		char buf[8192];
+		int exited = 0;
+		for (;;)
+		{
+			DWORD avail = 0, got = 0;
+			if (!PeekNamedPipe(rd, NULL, 0, NULL, &avail, NULL)) break;	/* every writer has closed it */
+			if (avail)
+			{
+				if (!ReadFile(rd, buf, avail < sizeof buf ? avail : (DWORD)sizeof buf, &got, NULL) || !got) break;
+				game_output(buf, got);
+				continue;
+			}
+			if (exited) break;
+			if (WaitForSingleObject(pi.hProcess, 50) == WAIT_OBJECT_0) exited = 1;	/* one more look for its last output */
+		}
+		CloseHandle(rd);
+		if (sScanLen) game_output("\n", 1);
+	}
 	/* Wait for the game, so whatever started the launcher (Steam, a shortcut, a script) sees the game's run and exit code. */
 	WaitForSingleObject(pi.hProcess, INFINITE);
 	DWORD rc = 1;
 	GetExitCodeProcess(pi.hProcess, &rc);
 	CloseHandle(pi.hProcess);
 	CloseHandle(pi.hThread);
+	if (rc >= 0xC0000000u) say("the game stopped with exception %08lx", (unsigned long)rc);
+	else say("the game exited with status %lu", (unsigned long)rc);
 	return (int)rc;
 #else
-	setenv("BEA_GAME_DIR", game, 1);
-	setenv("BEA_USER_DIR", sUser, 1);
 	if (chdir(sUser) != 0) return 1;
 	char **argv = calloc((size_t)nargs + 2, sizeof *argv);
 	argv[0] = exe;
 	for (int i = 0; i < nargs; i++) argv[i + 1] = args[i];
-	execv(exe, argv);
-	return 1;
+	/* The game's stdout and stderr come through one pipe (their order kept), to the terminal and the log. */
+	int fd[2];
+	if (pipe(fd) != 0)
+	{
+		log_close();
+		execv(exe, argv);
+		return 1;
+	}
+	fcntl(fd[0], F_SETFD, FD_CLOEXEC);
+	fflush(NULL);
+	pid_t pid = fork();
+	if (pid < 0) { say("could not start %s", exe); return 1; }
+	if (pid == 0)
+	{
+		dup2(fd[1], 1);
+		dup2(fd[1], 2);
+		close(fd[0]);
+		close(fd[1]);
+		execv(exe, argv);
+		_exit(127);
+	}
+	close(fd[1]);
+	sChild = pid;
+	/* Ctrl+C reaches the game as well (the terminal's whole process group): the launcher outlives it to finish the log.
+	 * A SIGTERM or SIGHUP sent to the launcher alone goes on to the game. */
+	signal(SIGINT, SIG_IGN);
+	signal(SIGPIPE, SIG_IGN);
+	signal(SIGTERM, forward_signal);
+	signal(SIGHUP, forward_signal);
+	char buf[8192];
+	int st = 0, exited = 0;
+	for (;;)
+	{
+		struct pollfd pf = {fd[0], POLLIN, 0};
+		int r = poll(&pf, 1, exited ? 0 : 250);
+		if (r > 0)
+		{
+			ssize_t k = read(fd[0], buf, sizeof buf);
+			if (k > 0) { game_output(buf, (size_t)k); continue; }
+			if (k < 0 && errno == EINTR) continue;
+			break;	/* end of output */
+		}
+		if (r < 0 && errno == EINTR) continue;
+		if (exited) break;	/* the game has gone and nothing more is waiting (a child it left may hold the pipe) */
+		if (waitpid(pid, &st, WNOHANG) == pid) exited = 1;
+	}
+	close(fd[0]);
+	if (!exited)
+		while (waitpid(pid, &st, 0) < 0 && errno == EINTR) {}
+	if (sScanLen) game_output("\n", 1);
+	if (WIFSIGNALED(st))
+	{
+		say("the game stopped on signal %d (%s)", WTERMSIG(st), strsignal(WTERMSIG(st)));
+		return 128 + WTERMSIG(st);
+	}
+	say("the game exited with status %d", WEXITSTATUS(st));
+	return WEXITSTATUS(st);
 #endif
 }
 
 int main(int argc, char **argv)
 {
-	int nocheck = 0, updateonly = 0, first = argc;
+	int nocheck = 0, updateonly = 0, record = 0, norecord = 0, report = 0, first = argc;
+#ifdef _WIN32
+	/* A windowed program has no terminal: started from one, write to it (the log is written either way). */
+	int console = AttachConsole(ATTACH_PARENT_PROCESS);
+	if (console)
+	{
+		freopen("CONOUT$", "w", stdout);
+		freopen("CONOUT$", "w", stderr);
+	}
+#endif
 	for (int i = 1; i < argc; i++)
 	{
-		if (!strcmp(argv[i], "--version")) { printf("Onslaught CE v%s\n", CE_VERSION); return 0; }
+		if (!strcmp(argv[i], "--version")) { printf("Onslaught CE v%s" CE_VERSION_NOTE ", build %s\n", CE_VERSION, CE_COMMIT); return 0; }
 		else if (!strcmp(argv[i], "--no-update-check")) nocheck = 1;
 		else if (!strcmp(argv[i], "--update-only")) updateonly = 1;   /* check (and update), then exit: no game */
+		else if (!strcmp(argv[i], "--record")) record = 1;
+		else if (!strcmp(argv[i], "--no-record")) norecord = 1;   /* sets record_sessions=0 and starts unrecorded */
+		else if (!strcmp(argv[i], "--report")) report = 1;
 		else if (!strcmp(argv[i], "--")) { first = i + 1; break; }
 #ifdef _WIN32
 		else if (!strcmp(argv[i], "--apply") && i + 3 < argc)
@@ -711,10 +1304,44 @@ int main(int argc, char **argv)
 		else { first = i; break; }
 	}
 	init_paths();
+	if (report)
+	{
+		/* "Report a problem": the pre-filled issue page in the browser, and where the files to attach are. */
+		static char url[32768];
+		int opened = ce_open_report(CE_VERSION, CE_COMMIT, sUser, url, sizeof url);
+		printf("Onslaught CE's log and session tapes are in %s\n"
+			   "%s\n%s\n", sUser, opened ? "Opened the problem report page in your browser:" :
+			   "Open this page in your browser to report a problem:", url);
+#ifdef _WIN32
+		if (!console)
+		{
+			char text[PATHN + 256];
+			snprintf(text, sizeof text, "%s\n\nPlease attach onslaught-ce.log from this folder:\n%s",
+					 opened ? "The problem report page is open in your browser." : "Your browser could not be opened.", sUser);
+			SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_INFORMATION, "Onslaught CE", text, NULL);
+		}
+#endif
+		return 0;
+	}
+	const char *tape = getenv("BEA_PORT_TAPE"), *rec = getenv("BEA_PORT_RECORD"), *cont = getenv(LOG_CONTINUE);
+	sReplay = (tape && *tape) || (rec && *rec);
+	int continuing = cont && *cont;
+	unset_env(LOG_CONTINUE);
+	if (!sReplay) log_open(continuing);
 	tidy_old();
-	if (!nocheck) check_for_update(argc, argv);
-	if (updateonly) return 0;
+	if (!nocheck && !sReplay) check_for_update(argc, argv);
+	if (updateonly) { log_close(); return 0; }
 	char game[PATHN];
-	if (!find_game(game, sizeof game)) return 1;
-	return start_game(argv + first, argc - first, game);
+	if (!find_game(game, sizeof game)) { say("no supported Battle Engine Aquila install was chosen"); log_close(); return 1; }
+	char opt[16];
+	int ini_record = ini_get("record_sessions", opt, sizeof opt) && !strcmp(opt, "1");
+	if (norecord)
+	{
+		if (ini_record && ini_set("record_sessions", "0")) say("session recording switched off (record_sessions=0 in ce.ini)");
+	}
+	else if (record || (ini_record && (sReplay || ask_record())))	/* a replay: start_recording says why not */
+		start_recording(argv + first, argc - first);
+	int rc = start_game(argv + first, argc - first, game);
+	log_close();
+	return rc;
 }

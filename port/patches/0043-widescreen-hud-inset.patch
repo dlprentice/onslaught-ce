@@ -1,0 +1,125 @@
+--- a/DXEngine.cpp
++++ b/DXEngine.cpp
+@@ -1107,6 +1107,13 @@
+ 
+ 	// Render HUD
+ 
++	// Port (patch 0043, widescreen): the HUD is laid out for 4:3; on a wider back buffer its left and right parts move
++	// into the columns a 4:3 picture would have (HUD_OFFSET_X offsets all of them), while world-anchored markers stay
++	// where their targets are. Restored afterwards; 4:3 never changes it.
++	float	portHudOffset = HUD_OFFSET_X;
++	if (PortWideActive())
++		HUD_OFFSET_X = PortHudBegin(portHudOffset, float(GetViewportForViewpoint(0)->Width));
++
+ 	if (!gMirrorPass)	// retail PC: no HUD in a mirrored pass (0053ecee)
+ 	{
+ 		HUD.Render();
+@@ -1131,6 +1138,8 @@
+ 
+ 		if (render)
+ 			HUD.RenderBattleline(viewport);
++		if (PortWideActive())
++			HUD_OFFSET_X = portHudOffset;	// Port (patch 0043): the menus below are the virtual screen's
+ 
+ 		// retail PC: no point filtering here (0053ed7e)
+ 		RENDERINFO.SetFogEnabled(false);
+@@ -1170,6 +1179,13 @@
+ 	
+ 	// Render screen overlays/blur
+ 	
++	if (PortWideActive())
++	{
++		HUD_OFFSET_X = PortHudBegin(portHudOffset, float(GetViewportForViewpoint(0)->Width));	// Port (patch 0043)
++		HUD.RenderOverlay();
++		HUD_OFFSET_X = portHudOffset;
++	}
++	else
+ 	HUD.RenderOverlay();
+ 	
+ 	if (mBlurAlpha>0)
+--- a/Hud.cpp
++++ b/Hud.cpp
+@@ -820,7 +820,13 @@
+ 	if (mObjectivePanelOpening != 0)
+ 	{
+ 		if (mObjectivePanelOpening < 1.f)
++		{
++			// Port (patch 0043, widescreen): the objective panel keeps to the 4:3 columns, as the rest of the HUD does
++			if (PortWideActive())
++				RenderObjectiveBar((float)(PLATFORM.GetWindowWidth() - 90) - PortHudInset(float(PLATFORM.GetWindowWidth())), 40.f, 0, 0, mObjectivePanelOpening);
++			else
+ 			RenderObjectiveBar((float)(PLATFORM.GetWindowWidth() - 90), 40.f, 0, 0, mObjectivePanelOpening);
++		}
+ 		else
+ 		{
+ 			float	y = 43.f;
+@@ -845,7 +851,11 @@
+ 					mObjectivePanelWidth = target;
+ 			}
+ 			float	width = mObjectivePanelWidth;
+-			float	x = (float)(PLATFORM.GetWindowWidth() - 90) - width * 0.5f;
++			float	x;
++			if (PortWideActive())	// Port (patch 0043)
++				x = ((float)(PLATFORM.GetWindowWidth() - 90) - PortHudInset(float(PLATFORM.GetWindowWidth()))) - width * 0.5f;
++			else
++			x = (float)(PLATFORM.GetWindowWidth() - 90) - width * 0.5f;
+ 			total += 5.f;
+ 			RenderObjectiveBar(x, total * 0.6f + 40.f, width, total, mObjectivePanelOpening);
+ 
+@@ -943,6 +953,9 @@
+ 							col = (((a + r) << 8) + gg) << 8;
+ 							col += (SINT)(t * 48.f + f);
+ 						}
++						if (PortWideActive())	// Port (patch 0043)
++							PLATFORM.Font(FONT_SMALL)->DrawTextDynamic(((float)(PLATFORM.GetWindowWidth() - 165) - PortHudInset(float(PLATFORM.GetWindowWidth()))) - (size.cx + zero), y, 0.008f, 1.f, 1.f, col, ((FHudWorld &)WORLD).GetText(i), 1.f, 1, 0);
++						else
+ 						PLATFORM.Font(FONT_SMALL)->DrawTextDynamic((float)(PLATFORM.GetWindowWidth() - 165) - (size.cx + zero), y, 0.008f, 1.f, 1.f, col, ((FHudWorld &)WORLD).GetText(i), 1.f, 1, 0);	// STAND-IN (see above)
+ 
+ 						if ((((FHudWorld &)WORLD).GetTextState(i) == 2) || (((FHudWorld &)WORLD).GetTextState(i) == 5))
+@@ -959,6 +972,9 @@
+ 							else
+ 								col2 = ((((a + gg) << 8) + r) << 8) + (SINT)(t * 32.f + f);
+ 							PLATFORM.Font(FONT_SMALL)->GetTextExtent(ToWCHAR(value), &size);
++							if (PortWideActive())	// Port (patch 0043)
++								PLATFORM.Font(FONT_SMALL)->DrawTextDynamic(((float)(PLATFORM.GetWindowWidth() - 85) - PortHudInset(float(PLATFORM.GetWindowWidth()))) - (size.cx + zero), y, 0.008f, 1.f, 1.f, col2, ToWCHAR(count), 1.f, 1, 0);
++							else
+ 							PLATFORM.Font(FONT_SMALL)->DrawTextDynamic((float)(PLATFORM.GetWindowWidth() - 85) - (size.cx + zero), y, 0.008f, 1.f, 1.f, col2, ToWCHAR(count), 1.f, 1, 0);	// STAND-IN (see above)
+ 							DWORD	col3;
+ 							if (flash)
+@@ -970,6 +986,9 @@
+ 							else
+ 								col3 = (((((SINT)(t * 111.f + f) + a) << 8) + gg) << 8) + (SINT)(t * 32.f + f);
+ 							PLATFORM.Font(FONT_SMALL)->GetTextExtent(ToWCHAR(goal), &size);
++							if (PortWideActive())	// Port (patch 0043)
++								PLATFORM.Font(FONT_SMALL)->DrawTextDynamic(((float)(PLATFORM.GetWindowWidth() - 85) - PortHudInset(float(PLATFORM.GetWindowWidth()))) - (size.cx + zero), y, 0.008f, 1.f, 1.f, col3, ToWCHAR(goal), 1.f, 1, 0);
++							else
+ 							PLATFORM.Font(FONT_SMALL)->DrawTextDynamic((float)(PLATFORM.GetWindowWidth() - 85) - (size.cx + zero), y, 0.008f, 1.f, 1.f, col3, ToWCHAR(goal), 1.f, 1, 0);	// STAND-IN (see above)
+ 						}
+ 						else
+@@ -986,6 +1005,9 @@
+ 							else
+ 								col2 = ((((a + gg) << 8) + r) << 8) + (SINT)(t * 32.f + f);
+ 							PLATFORM.Font(FONT_SMALL)->GetTextExtent(ToWCHAR(value), &size);
++							if (PortWideActive())	// Port (patch 0043)
++								PLATFORM.Font(FONT_SMALL)->DrawTextDynamic(((float)(PLATFORM.GetWindowWidth() - 85) - PortHudInset(float(PLATFORM.GetWindowWidth()))) - (size.cx + zero), y, 0.008f, 1.f, 1.f, col2, ToWCHAR(value), 1.f, 1, 0);
++							else
+ 							PLATFORM.Font(FONT_SMALL)->DrawTextDynamic((float)(PLATFORM.GetWindowWidth() - 85) - (size.cx + zero), y, 0.008f, 1.f, 1.f, col2, ToWCHAR(value), 1.f, 1, 0);	// STAND-IN (see above)
+ 						}
+ 					}
+@@ -2119,6 +2141,16 @@
+ 
+ 	RENDERINFO.SetFogEnabled(false);
+ 	RENDERINFO.SetLightingEnabled(false);
++	if (PortWideActive())
++	{
++		// Port (patch 0043, widescreen): the message box is centred and narrows itself by HUD_OFFSET_X on both sides,
++		// so it reads the game's own offset, not the HUD's shifted one
++		float	portShifted = HUD_OFFSET_X;
++		HUD_OFFSET_X = PortHudOriginal();
++		GAME.GetMessageBox()->RenderOverlay(7);
++		HUD_OFFSET_X = portShifted;
++	}
++	else
+ 	GAME.GetMessageBox()->RenderOverlay(7);
+ 
+ 	SetOverlayRenderStates();

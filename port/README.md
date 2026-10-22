@@ -1,7 +1,7 @@
-# Native Linux port
+# Native port (Linux and Windows)
 
 Status: active (both targets build, link and run the game; Linux replays are compared with retail Present by Present, see PARITY.md; Windows has run only under Wine)
-Last updated: 2026-10-21 (public release section)
+Last updated: 2026-10-22 (public release commands: the CE version and the private-path scan)
 Summary: a second build of the decompilation's sources as native i686 Linux and Windows programs; layout, ownership,
 commands and rules.
 
@@ -20,12 +20,17 @@ grant). Third-party inputs keep their own licences (`deps.lock`).
 
 ## Public release
 
-The port is released as Onslaught CE, from an export of this source (link added at release). Its licence text is
-[COPYING](../COPYING) (GPL version 3).
+The port is released as [Onslaught CE](https://github.com/dlprentice/onslaught-ce), from an export of this source. Its
+licence text is [COPYING](../COPYING) (GPL version 3).
 
-    python3 port/build.py --public [--target linux|windows|all]   # the shippable build: no NvTriStrip, bundled libraries
-    python3 port/tools/package.py VERSION                         # Linux tarball and Windows zip, with licences and notices
-    python3 port/tools/sign_release.py VERSION                    # latest.json and its Ed25519 signature, the update feed
+    python3 port/build.py --target all --public --ce-version X.Y   # the shippable build: no NvTriStrip, bundled libraries
+    BEA_PRIVATE_PATHS=<scratch:archive folders> python3 port/tools/package.py X.Y   # Linux tarball and Windows zip
+    python3 port/tools/sign_release.py X.Y                         # latest.json and its Ed25519 signature, the update feed
+
+`--ce-version` names the version the game and launcher show ("Onslaught CE vX.Y (preview)"); without it the build is
+"vdev". `package.py` scans every packaged binary for this machine's paths: the home folder, the repository and the
+account name always, and the colon-separated folders in `BEA_PRIVATE_PATHS` too. Left unset, folders outside the home
+and the repository (scratch space, archive drives) are not scanned, so set it to them when building a release.
 
 `--public` compiles `platform/public/`'s replacements in place of the files the public build must not ship and reports
 "not shippable" for any still missing; `package.py` refuses such a build and any binary that still names a private

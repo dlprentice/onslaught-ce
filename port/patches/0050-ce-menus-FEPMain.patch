@@ -1,0 +1,84 @@
+--- a/FEPMain.cpp
++++ b/FEPMain.cpp
+@@ -16,6 +16,19 @@
+ #include	"renderinfo.h"
+ #include	"TransitionHelpers.h"
+ #include	"SpriteRenderer.h"
++#ifdef CE_VERSION
++// Port (patch 0050, the CE layer): an "Onslaught CE" action before Quit (port/game/ce_frontend.cpp). The actions keep
++// their numbers; a row's action is PortCeMainAction(row), which is the row itself wherever the CE menus are off
++// (replays, recordings, the test harness, private builds), so those runs see the original seven rows.
++int		PortCeMainAction(int row);
++int		PortCeMainRows(int rows);
++WCHAR	*PortCeMainText();
++void	PortCeOpenPage();
++#define	PORT_CE_ACTION	9
++#else
++#define	PortCeMainAction(row)	(row)
++#define	PortCeMainRows(rows)	(rows)
++#endif
+ int VERSION_MINOR = 0; int VERSION_BUILD = 0;	// 00679980, 00679984: initialized and defined before Process, so they precede its local `started` (placement evidence)
+ //*********************************************************************************
+ void	CFEPMain::Shutdown()	// FUNCTION: 0x0040c640
+@@ -34,14 +47,18 @@
+ //*********************************************************************************
+ int		CFEPMain::GetNumActions()	// FUNCTION: 0x004621d0
+ {
+-	return 7;
++	return PortCeMainRows(7);
+ }
+ 
+ //*********************************************************************************
+ BOOL	CFEPMain::IsActionAvailable(int action)	// FUNCTION: 0x004621e0
+ {
+-	switch (action)
++	switch (PortCeMainAction(action))
+ 	{
++#ifdef CE_VERSION
++	case PORT_CE_ACTION:
++		return TRUE;
++#endif
+ 	case -1:
+ 	case 0:
+ 	case 2:
+@@ -162,8 +179,13 @@
+ //*********************************************************************************
+ void	CFEPMain::DoAction()	// FUNCTION: 0x004623e0
+ {
+-	switch (mSelected)
++	switch (PortCeMainAction(mSelected))
+ 	{
++#ifdef CE_VERSION
++	case PORT_CE_ACTION:
++		PortCeOpenPage();
++		break;
++#endif
+ 	case 0:
+ 		if (CAREER.InProgress())
+ 			FEMESSBOX.Create(320.0f, 240.0f, 300.0f, FO(100), FET.GetText(FEX_ABANDONCG), PLATFORM.Font(FONT_SMALL), 0, 10, FALSE, FEMB_OPTION_YESNO, FEMB_Q_NEW_CAREER);
+@@ -408,8 +430,11 @@
+ //*********************************************************************************
+ WCHAR	*CFEPMain::GetActionText(int action)	// FUNCTION: 0x00462c90
+ {
+-	switch (action)
++	switch (PortCeMainAction(action))
+ 	{
++#ifdef CE_VERSION
++	case PORT_CE_ACTION:	return PortCeMainText();
++#endif
+ 	case 0:		return FET.GetText(FEX_NEW_GAME);
+ 	case 1:		return FET.GetText(FEX_CONTINUE_GAME);
+ 	case 2:		return FET.GetText(FEX_LOAD_GAME);
+@@ -687,8 +712,11 @@
+ 	// the selected action's symbol
+ 	{
+ 		int		tex = -1;
+-		switch (mSelected)
++		switch (PortCeMainAction(mSelected))
+ 		{
++#ifdef CE_VERSION
++		case PORT_CE_ACTION:	tex = FET_BEA_TITLE_NAV_SYMBOL_OPTIONS01;		break;
++#endif
+ 		case -1:	tex = FET_BEA_TITLE_NAV_SYMBOL_LANGUAGE01;		break;
+ 		case 0:		tex = FET_BEA_TITLE_NAV_SYMBOL_NEWGAME01;		break;
+ 		case 1:		tex = FET_BEA_TITLE_NAV_SYMBOL_CONTINUEGAME01;	break;

@@ -1,0 +1,127 @@
+--- a/console.cpp
++++ b/console.cpp
+@@ -1315,6 +1315,8 @@
+ 
+ 	if (PLATFORM.BeginScene())
+ 	{
++		if (PortWideActive())
++			PortWideViewport(0);	// Port (patch 0044, widescreen): the whole window (the front end leaves its 4:3 box)
+ 		PLATFORM.ClearScreen(0);
+ 		LT.SRS(D3DRS_ALPHABLENDENABLE, FALSE);
+ 		LT.SRS(D3DRS_ALPHATESTENABLE, FALSE);
+@@ -1330,7 +1332,29 @@
+ 		float top = (float)(PLATFORM.GetWindowHeight() - 55);
+ 		float bottom = (float)(PLATFORM.GetWindowHeight() - 35);
+ 		float right = (float)(PLATFORM.GetWindowWidth() - 80);
+-
++		float portLeft = 80.f;	// Port (patch 0044): the bar's left end
++
++		if (PortWideActive())
++		{
++			// Port (patch 0044, widescreen): the loading picture fits the height, centred with black bars, and its bar
++			// spans the picture as at 4:3.
++			float s = PortUiScale(), ox = PortUiLeft(), oy = PortUiTop();
++			top = oy + 480.f * s - 55.f;
++			bottom = oy + 480.f * s - 35.f;
++			right = ox + 640.f * s - 80.f;
++			portLeft = ox + 80.f;
++			if (mLoadingScreen)
++			{
++				int th = ShiftedHeight(mLoadingScreen);
++				int tw = ShiftedWidth(mLoadingScreen);
++				CSPRITERENDERER::DrawColouredSprite(ox, oy, 0.01f, mLoadingScreen, 0xffffffff, 640.f * s / tw, 480.f * s / th);
++				// the bar's dark backing, cut from the picture where it lies under the bar
++				CSPRITERENDERER::DrawSprite(portLeft - 2.f, top - 2.f, 0.009f, mLoadingScreen, SA_TOP_LEFT, SPT_NONE, 0, 0, 0xff000000,
++					(right + 4.f - portLeft) / tw, (bottom + 4.f - top) / th,
++					(portLeft - ox) / (640.f * s), (right - ox) / (640.f * s), (top - oy) / (480.f * s), (bottom - oy) / (480.f * s));
++			}
++		}
++		else
+ 		if (mLoadingScreen)
+ 		{
+ 			int th = ShiftedHeight(mLoadingScreen);
+@@ -1356,12 +1380,33 @@
+ 		{
+ 			SLoadingVertex *v = verts;
+ 			float width = right - 80.f;
++			if (PortWideActive())
++				width = right - portLeft;	// Port (patch 0044)
+ 			for (float f = 0; f <= 1.001f; f += 0.05f)
+ 			{
+ 				int alpha = (int)((((float)sin(t - f * (PI * 2)) + 1.f) * 0.2f) * -255.f);
+ 				DWORD col = 0xff000000 - alpha * 0x10101;
+ 				// STAND-IN (see the comment above the function): one px, set to the same value before each call.
+ 				float px = f * width + 80.f;
++				if (PortWideActive())
++				{
++					// Port (patch 0044): the bar's strip in the boxed picture, its texture read from the picture under it
++					float	s = PortUiScale();
++					px = f * width + portLeft;
++					SetLoadingVertex(v, px, bottom, col);
++					v->u = (px - PortUiLeft()) / (640.f * s);
++					v->v = (bottom - PortUiTop()) / (480.f * s);
++					v++;
++					if (bottom != top)
++					{
++						SetLoadingVertex(v, px, top, col);
++						v->u = (px - PortUiLeft()) / (640.f * s);
++						v->v = (top - PortUiTop()) / (480.f * s);
++						v++;
++					}
++				}
++				else
++				{
+ 				SetLoadingVertex(v, px, bottom, col);
+ 				v++;
+ 				if (bottom != top)
+@@ -1369,6 +1414,7 @@
+ 					px = f * width + 80.f;	// STAND-IN: the same value again
+ 					SetLoadingVertex(v, px, top, col);
+ 					v++;
++				}
+ 				}
+ 			}
+ 			if (mLoadingScreen)
+--- a/DXFMV.cpp
++++ b/DXFMV.cpp
+@@ -114,19 +114,39 @@
+ 		if (CLIPARAMS.mAutoConfigTest && frames >= 150)
+ 			ReceiveButtonAction(controller, 7, 1.f);
+ 
++		if (PortWideActive())
++			PortWideViewport(0);	// Port (patch 0044, widescreen): the whole window (the front end leaves its 4:3 box)
+ 		PLATFORM.ClearScreen(0);
+ 		if (PLATFORM.BeginScene())
+ 		{
++			bool	drawn;
++			if (PortWideActive())
++			{
++				// Port (patch 0044, widescreen): the film fits the window's height (or width), centred, unstretched
++				float	xscale = (float)LT.GetWindowHeight() / (float)mVideo.GetHeight();
++				if ((float)mVideo.GetWidth() * xscale > (float)LT.GetWindowWidth())
++					xscale = (float)LT.GetWindowWidth() / (float)mVideo.GetWidth();
++				float	xpos = ((float)LT.GetWindowWidth() - (float)mVideo.GetWidth() * xscale) * 0.5f;
++				float	ypos = ((float)LT.GetWindowHeight() - (float)mVideo.GetHeight() * xscale) * 0.5f;
++				drawn = mVideo.Render(xpos, ypos, 0, xscale, xscale, 0xffffffff, FALSE);
++			}
++			else
++			{
+ 			float	xscale = (float)LT.GetWindowWidth() / (float)mVideo.GetWidth();
+ 			float	yscale = LT.mScreenShapeScale * xscale;
+ 			float	height = (float)LT.GetWindowHeight();
+ 			float	ypos = (height - (float)mVideo.GetHeight() * yscale) * 0.5f;
+-			bool	drawn = mVideo.Render(0, ypos, 0, xscale, yscale, 0xffffffff, FALSE);
++			drawn = mVideo.Render(0, ypos, 0, xscale, yscale, 0xffffffff, FALSE);
++			}
+ 
+ 			if (frames >= FMV_SKIP_FRAMES && gFMVSplash)
+ 			{
+ 				SINT	h = gFMVSplash->mHeight;
+ 				SINT	w = gFMVSplash->mWidth;
++				if (PortWideActive())	// Port (patch 0044): the splash in the 4:3 box
++					CDXSpriteRenderer::DrawColouredSprite(PortUiLeft(), PortUiTop(), 0.5f, gFMVSplash, 0xff000000 + alpha * 0x10101,
++						640.f * PortUiScale() / w, 480.f * PortUiScale() / h, SA_TOP_LEFT, SPT_NONE, 1.f, 0);
++				else
+ 				CDXSpriteRenderer::DrawColouredSprite(0, 0, 0.5f, gFMVSplash, 0xff000000 + alpha * 0x10101,
+ 					(float)PLATFORM.GetWindowWidth() / w, (float)PLATFORM.GetWindowHeight() / h, SA_TOP_LEFT, SPT_NONE, 1.f, 0);
+ 				alpha += 7;

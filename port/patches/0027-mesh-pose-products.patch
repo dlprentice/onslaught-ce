@@ -25,7 +25,7 @@
  			sWorldCacheOri = *ori;
 --- a/MeshPose.cpp
 +++ b/MeshPose.cpp
-@@ -65,40 +65,55 @@
+@@ -65,40 +65,60 @@
  // and his default GetWorldTransforms argument is written explicitly. The source's separate guards,
  // direct frame read, product-first position sum and else-scoped fallback reproduce all retail bytes
  // and references without the former pose self-copy branch or named-position-reference stand-ins.
@@ -88,7 +88,12 @@
 +			FVector	tpos = thing->GetRenderPos();
 +			FMatrix	tori = thing->GetRenderOrientation();
 +			FVector	&p = *pos;	// STAND-IN (b): see above
-+			*pos = tpos + tori * p;
++			// Port (patch 0027): the position's rows have their own VC6 sum orders too (004b4e94..004b4ee8):
++			// X sums (Y + X) + Z, Y and Z sum (X + Y) + Z; maths.h's operator (patch 0010) sums (Z + Y) + X.
++			FVector	rotated(((tori.Row[0].Y * p.Y) + (tori.Row[0].X * p.X)) + (tori.Row[0].Z * p.Z),
++							((tori.Row[1].X * p.X) + (tori.Row[1].Y * p.Y)) + (tori.Row[1].Z * p.Z),
++							((tori.Row[2].X * p.X) + (tori.Row[2].Y * p.Y)) + (tori.Row[2].Z * p.Z));
++			*pos = tpos + rotated;
 +			// Port (patch 0027): this cached-pose world transform has its own VC6 sum order
 +			// (004b4f7b..004b50b9), distinct from the other cached transform and maths.h.
 +			// Preserve the complete input until all nine outputs have been evaluated.

@@ -16,6 +16,7 @@ this machine's paths: strings of each stripped file matched against the user's h
 locations listed in BEA_PRIVATE_PATHS (colon-separated; set it to this machine's scratch and archive folders).
 """
 import argparse
+import gzip
 import hashlib
 import io
 import os
@@ -24,6 +25,7 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import time
 import zipfile
 from pathlib import Path
 
@@ -166,22 +168,126 @@ def notices(version: str, windows: bool) -> bytes:
     return "\n".join(text).encode()
 
 
+# Report a problem's one network action, in the same words as public/README.md and SECURITY.md.
+REPORT_PRIVACY = ["Report a problem opens a GitHub page in your browser with your version and OS in its address;",
+                  "nothing is posted until you submit it."]
+
+
 def readme(version: str, windows: bool) -> bytes:
+    launcher = "onslaught-ce.exe" if windows else "onslaught-ce"
     common = ["It finds your Battle Engine Aquila install in Steam's libraries, or asks you once for its folder and",
               "remembers it (BEA_GAME_DIR overrides). Your game folder is only read: careers and settings go to " +
               ("%APPDATA%\\Onslaught CE." if windows else "~/.local/share/onslaught-ce."),
               "On start it checks this project's GitHub releases for a newer signed version and asks before updating",
-              "(nothing else is sent; turn it off with update_check=0 in ce.ini or BEA_NO_UPDATE_CHECK=1)."]
+              "(turn it off with update_check=0 in ce.ini or BEA_NO_UPDATE_CHECK=1). There is no telemetry: the update",
+              "check and a download you agree to are the only network requests it makes by itself.", *REPORT_PRIVACY]
     run = (["Start onslaught-ce.exe. (bea.exe also runs directly, without the install search and update check.)"] + common +
-           ["This Windows build was tested under Wine on Linux only; it has not been run on Windows itself."] if windows else
+           ["This Windows build was tested under Wine on Linux only (see Known limitations in 0.1)."] if windows else
            ["Run ./onslaught-ce [game arguments]. It first checks for the 32-bit system libraries it needs and names the",
             "packages to install when one is missing."] + common)
     exe = "bea.exe" if windows else "bea"
-    return "\n".join([f"Onslaught CE {version}", "",
+    return "\n".join([f"Onslaught CE {version} (preview)", ""] + QUICK_START + ["",
                       "A native source port of Battle Engine Aquila (2003). It contains no game files: you need your own",
-                      "copy of the game (Steam or disc).", ""] + run +
-                     ["", f"{exe} is Onslaught CE's game program; onslaught-ce is the program to start.", ""] + NOTICE_LINES +
+                      "copy of the game (for example from Steam).", ""] + run +
+                     ["", f"{exe} is Onslaught CE's game program; {launcher} is the program to start.", ""] +
+                     IN_THE_GAME + help_lines(windows) + LIMITATIONS + NOTICE_LINES +
                      ["", "Licence: GPL-3.0-only (COPYING). Third-party components: THIRD-PARTY-NOTICES.txt and licenses/.", ""]).encode()
+
+
+# README.txt's "In the game" and "Screen modes and widescreen" (public/README.md says the same).
+IN_THE_GAME = [
+    "In the game",
+    "- Main menu > Onslaught CE: About (version, licence and links), Check for updates (explains the check the",
+    "  launcher makes at every start, and how to turn it back on), Record sessions and Report a problem (below).",
+    "- Options > Cheats: the game's own cheats as switches, kept in ce.ini so they apply to every career:",
+    "  - All levels open (TURKEY)",
+    "  - All goodies open (MALLOY)",
+    "  - Goodie hints (lat\u00eate)",
+    "  - God mode in Controls (Maladim): adds a God mode item to Controller Options, in the pause menu (applies at",
+    "    once) and in Options (applies from the next level); turning the switch off ends god mode. God mode set this",
+    "    way is kept in ce.ini, not in your careers, so a recorded session never carries it.",
+    "  - Free camera, F key (Aurore)",
+    "  Typing a code into a career's name still works as in the original.",
+    "- Keyboard: no key release is lost, typed characters come from the key presses themselves (no desktop input",
+    "  method in the way), and the letter and digit keys work by their position on any keyboard layout.",
+    "- A quiet console: the developers' messages are hidden unless BEA_PORT_VERBOSE=1 is set.",
+    "- A log file for reports, onslaught-ce.log in your user folder, and session recording (both below).",
+    "",
+    "Screen modes and widescreen",
+    "Onslaught CE starts at your desktop's resolution, and Video Options lists your monitor's sizes, widescreen ones",
+    "included. On a widescreen monitor the 3D view shows more to the sides (the original's vertical view is kept); the",
+    "menus, loading pictures and films keep their original 4:3 shape, centred with black bars, and the in-game HUD sits",
+    "where it would on a 4:3 screen. To get the original's 4:3-only list and 640 x 480 start back, set",
+    "BEA_PORT_WIDESCREEN=0. Replays and recordings always use the original 4:3 behaviour. The original game shares one",
+    "random number source between visual effects and play, so a wider view can change the details of a fight.",
+    "",
+]
+
+
+def help_lines(windows: bool) -> list:
+    """README.txt's "Report a problem" and "Help make Onslaught CE more faithful" (public/README.md says the same)."""
+    launcher = "onslaught-ce.exe" if windows else "./onslaught-ce"
+    user = "%APPDATA%\\Onslaught CE" if windows else "~/.local/share/onslaught-ce"
+    ini = user + ("\\" if windows else "/") + "ce.ini"
+    where = (" (from a Command Prompt in this folder, or a shortcut with --report added)" if windows else "")
+    return ["Report a problem",
+            f"Choose Onslaught CE > Report a problem in the main menu, or run {launcher} --report{where}.",
+            "It opens a new issue on the project's GitHub page in your browser, filled in with your version and",
+            "system, and shows the folder that holds your log. Nothing is posted until you submit the issue. Say what",
+            "happened and how to make it happen again, and attach onslaught-ce.log from that folder",
+            f"({user}; onslaught-ce.old.log is the run before, and each stops at 4 MB). The log holds",
+            "the version, your OS and GPU and the game's messages. It writes your home folder as ~ (Windows",
+            "%APPDATA%) and never your account name, but look it over before you attach it. If you recorded the",
+            "session (below), attach its tape too.",
+            "",
+            "Help make Onslaught CE more faithful",
+            "The goal is a game that behaves exactly like the original, frame by frame; recordings of real play find",
+            f"differences our own tests miss. Record one session with {launcher} --record, or every session",
+            f"with Onslaught CE > Record sessions in the main menu (from the next start; it puts record_sessions=1 in",
+            f"{ini}). While it is on, each start asks whether to record: Stop recording there, or",
+            f"starting with {launcher} --no-record, turns it off again.",
+            "While recording the game runs at 30 frames a second (the timing replays use), its menus take the keyboard",
+            "only (the mouse still works in battle), the screen is the original 4:3 (no widescreen), and the menus are",
+            "the original's: the version text, no Onslaught CE menu and no Cheats page, and only cheats typed into a",
+            "career's name work.",
+            "Each session is saved in the tapes folder beside ce.ini as a .tape (your key presses and mouse movement",
+            "only) and a .tape.json (version, OS, date, game arguments, and a copy of your options and saved careers as",
+            "the session started). To share one, zip the two files and attach them to an issue, saying what differed",
+            "from the original and roughly when.",
+            ""]
+
+
+# README.txt's "Known limitations in 0.1" (public/README.md and the release notes list the same).
+LIMITATIONS = [
+    "Known limitations in 0.1",
+    "- The Windows build has been tested only under Wine on Linux, not on real Windows. The Windows self-update path",
+    "  in particular is untested on real Windows. Please report any problems.",
+    "- The Windows executable is unsigned, so SmartScreen may warn you (choose More info, then Run anyway).",
+    "- On Linux you need 32-bit graphics drivers (Vulkan).",
+    "- With NVIDIA's driver on Linux the program can occasionally crash while closing, after the game has ended; your",
+    "  saves are already written by then.",
+    "- The tutorial is playable through its third zone; its final drone fight is still being completed.",
+    "- Joystick and controller support is limited to what the original game supported, and controllers were not",
+    "  tested for 0.1.",
+    "- Widescreen play is not compared with the original (the original has no widescreen); replays and recordings",
+    "  use 4:3.",
+    "- Planned but not in 0.1: multiplayer, mods and HUD options.",
+    "",
+]
+
+
+# The same block opens the repository README (public/README.md) and the release notes.
+QUICK_START = [
+    "Quick start",
+    "1. Extract the download into any folder, for example your Downloads folder, not your game folder. You can move",
+    "   the folder anywhere later.",
+    "2. Run onslaught-ce (Linux) or onslaught-ce.exe (Windows).",
+    "3. It finds your Steam copy of Battle Engine Aquila by itself, or asks once where it is.",
+    "",
+    "Don't copy or replace anything in your game folder: Onslaught CE only reads it, and the original game keeps",
+    "working as before. Your careers and settings are kept in ~/.local/share/onslaught-ce (Linux) or",
+    "%APPDATA%\\Onslaught CE (Windows); delete the program folder to uninstall.",
+]
 
 
 NOTICE_LINES = [
@@ -301,9 +407,21 @@ def check_public(binary: Path, windows: bool):
             sys.exit(f"{binary}: RUNPATH is not $ORIGIN/lib; build with build.py --public")
 
 
-def add_bytes(tar: tarfile.TarFile, name: str, data: bytes, mode=0o644):
+def source_epoch() -> int:
+    """Every archive member's date: SOURCE_DATE_EPOCH when set, otherwise this checkout's last commit date (an export
+    of the public repository carries its source commit's date, tools/export_public.py --init). Fixed per release, so
+    the packages stay reproducible, and a real date where 0 showed as 1970."""
+    if os.environ.get("SOURCE_DATE_EPOCH"):
+        return int(os.environ["SOURCE_DATE_EPOCH"])
+    r = subprocess.run(["git", "-C", str(ROOT), "log", "-1", "--format=%ct"], capture_output=True, text=True)
+    if r.returncode or not r.stdout.strip():
+        sys.exit("no SOURCE_DATE_EPOCH and no git commit to date the packages by")
+    return int(r.stdout.strip())
+
+
+def add_bytes(tar: tarfile.TarFile, name: str, data: bytes, mode=0o644, mtime=0):
     info = tarfile.TarInfo(name)
-    info.size, info.mode, info.mtime, info.uname, info.gname = len(data), mode, 0, "root", "root"
+    info.size, info.mode, info.mtime, info.uname, info.gname = len(data), mode, mtime, "root", "root"
     tar.addfile(info, io.BytesIO(data))
 
 
@@ -321,6 +439,7 @@ def main():
     (out / "symbols").mkdir(parents=True, exist_ok=True)
     build = a.build or WORK / "build"
     made = []
+    epoch = source_epoch()
     for windows in (False, True):
         src = build / ("windows/bea.exe" if windows else "linux/bea")
         check_public(src, windows)
@@ -357,7 +476,7 @@ def main():
             pkg = out / f"{top}.zip"
             with zipfile.ZipFile(pkg, "w", zipfile.ZIP_DEFLATED) as z:
                 for name, (data, mode) in sorted(files.items()):
-                    info = zipfile.ZipInfo(name, (1980, 1, 1, 0, 0, 0))
+                    info = zipfile.ZipInfo(name, time.gmtime(epoch)[:6])
                     info.external_attr = mode << 16
                     info.compress_type = zipfile.ZIP_DEFLATED
                     z.writestr(info, data)
@@ -367,9 +486,11 @@ def main():
             files[f"{top}/onslaught-ce"] = (LAUNCHER.encode(), 0o755)
             files[f"{top}/preflight.sh"] = (PREFLIGHT.encode(), 0o755)
             pkg = out / f"{top}.tar.gz"
-            with tarfile.open(pkg, "w:gz", format=tarfile.GNU_FORMAT) as t:
+            # gzip's header carries a time too: the same fixed epoch, so the archive's bytes are reproducible
+            with open(pkg, "wb") as raw, gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=epoch) as gz, \
+                    tarfile.open(fileobj=gz, mode="w", format=tarfile.GNU_FORMAT) as t:
                 for name, (data, mode) in sorted(files.items()):
-                    add_bytes(t, name, data, mode)
+                    add_bytes(t, name, data, mode, epoch)
         stripped.unlink()
         made.append(pkg)
     # The release's copyleft source asset: FFmpeg's exact pinned tarball ships beside the packages.

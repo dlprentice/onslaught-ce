@@ -1,0 +1,642 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// port/game/ce_frontend.cpp: the CE layer's front-end additions (patch 0050): an "Onslaught CE" action on the main menu
+// opening a page of the game's own options-style list (About, Check for updates, Record sessions, Report a problem,
+// Back), and a Cheats page in Options whose switches (ce.ini, patch 0051 at IsCheatActive) work as the cheat codes do in
+// a career's name. Built as a game file (port/build.py) so it uses the game's menu classes; public builds only.
+//
+// None of it exists while the CE menus are off: in replays, recordings and the test harness (PortCeLayer, ce.cpp), under
+// -autoconfigtest and in the playable demo, the main menu has its seven rows, the language-test page keeps its slot and
+// the options page its four lists, so a tape navigates exactly the menus retail had.
+#ifdef CE_VERSION
+
+#include "common.h"
+#include "frontend.h"
+#include "FEPOptions.h"
+#include "PauseMenu.h"
+#include "MenuItem.h"
+#include "MenuOptionsList.h"
+#include "FEMessBox.h"
+#include "Career.h"
+#include "CLIParams.h"
+#include "ltshell.h"
+#include "renderinfo.h"
+#include "text.h"
+#include "TransitionHelpers.h"
+#include "data/MissionScripts/text/text.stf"
+
+#include <stdio.h>
+#include <string.h>
+
+#define MEMTYPE_MENUITEM	((EMemoryType)0x80)		// the menu items' memory type (MenuItem.cpp, PauseMenu.cpp)
+#define PORT_CE_CHEATS_PCTEXT	0x4345				// the options list's Cheats item (patch 0050, PauseMenu.cpp)
+#define PORT_CE_ACTION		9						// the main menu's CE action (patch 0050, FEPMain.cpp)
+#define FEP_CE				FEP_LANGUAGE_TEST		// the CE page's slot
+
+bool			PortCeLayer();						// port/platform/common/ce.cpp
+extern "C" int	CE_OpenReportPage(void);
+extern "C" int	CE_SettingGet(const char *key, int def);
+extern "C" int	CE_SettingSet(const char *key, int value);
+extern "C" int	CE_CheatOn(int n);
+extern "C" int	CE_CheatSet(int n, int on);
+extern "C" void	CE_UserDirShort(char *out, int n);
+extern "C" const char *CE_BuildName(void);
+
+#define CE_LINKS	"github.com/dlprentice/onslaught-ce"
+
+//*********************************************************************************
+bool	PortCeMenus()
+{
+	static int on = -1;
+	if (on < 0)
+		on = (PortCeLayer() && !CLIPARAMS.mAutoConfigTest && !PLAYABLE_DEMO) ? 1 : 0;
+	return on == 1;
+}
+
+EFrontEndPage	PortCeAsOptions(EFrontEndPage page)
+{
+	return ((page == FEP_CE) && PortCeMenus()) ? FEP_OPTIONS : page;
+}
+
+// The main menu's rows: Onslaught CE goes before Quit (row 6), Quit moves to row 7; other rows are their actions.
+int		PortCeMainAction(int row)
+{
+	if (!PortCeMenus())
+		return row;
+	if (row == 6)
+		return PORT_CE_ACTION;
+	if (row == 7)
+		return 6;
+	return row;
+}
+
+int		PortCeMainRows(int rows)
+{
+	return PortCeMenus() ? rows + 1 : rows;
+}
+
+WCHAR	*PortCeMainText()
+{
+	static WCHAR text[] = L"Onslaught CE";
+	return text;
+}
+
+//*********************************************************************************
+// Text: Latin-1 to the game's 2-byte characters (the fonts have Latin-1's letters).
+static void	Widen(WCHAR *out, int n, const char *in)
+{
+	int i = 0;
+	for (; in[i] && i < n - 1; i++)
+		out[i] = (WCHAR)(unsigned char)in[i];
+	out[i] = 0;
+}
+
+// Lays text out in the message box's lines (FEMessBox's 40 of 100 characters) as CDXBitmapFont::WordWrap would, but with
+// '\n' starting a new line and a word wider than the box (a long folder path) broken after a '/' or '\', or wherever it
+// must, instead of WordWrap's one character a line. Returns the number of lines.
+static int	WrapLines(SWordWrapFill *fill, const WCHAR *text, CDXBitmapFont *font, float width)
+{
+	const int	kMaxLines = 40, kMaxChars = 99;
+	WCHAR	cur[100], tryline[100];
+	int		lines = 0, len = 0;
+	SIZE	size;
+	cur[0] = 0;
+	const WCHAR *p = text;
+	while (*p && (lines < kMaxLines))
+	{
+		if (*p == '\n')
+		{
+			wcscpy(fill->c[lines++], cur);
+			cur[0] = 0;
+			len = 0;
+			p++;
+			continue;
+		}
+		if (*p == ' ')
+		{
+			p++;
+			continue;
+		}
+		int	w = 0;
+		while (p[w] && (p[w] != ' ') && (p[w] != '\n'))
+			w++;
+		// the word on this line, after a space
+		int	sep = len ? 1 : 0;
+		if (len + sep + w <= kMaxChars)
+		{
+			wcscpy(tryline, cur);
+			if (sep)
+				tryline[len] = ' ';
+			for (int i = 0; i < w; i++)
+				tryline[len + sep + i] = p[i];
+			tryline[len + sep + w] = 0;
+			font->GetTextExtent(tryline, &size);
+			if (size.cx < width)
+			{
+				wcscpy(cur, tryline);
+				len += sep + w;
+				p += w;
+				continue;
+			}
+		}
+		if (len)
+		{
+			// the word starts the next line
+			wcscpy(fill->c[lines++], cur);
+			cur[0] = 0;
+			len = 0;
+			continue;
+		}
+		// the word alone is too wide: the longest part that fits, ending after a separator where one does
+		int	fit = 0, cut = 0;
+		for (int n = 1; (n <= w) && (n <= kMaxChars); n++)
+		{
+			wcsncpy(tryline, p, n);
+			tryline[n] = 0;
+			font->GetTextExtent(tryline, &size);
+			if (size.cx >= width)
+				break;
+			fit = n;
+			if ((p[n - 1] == '/') || (p[n - 1] == '\\'))
+				cut = n;
+		}
+		int	n = cut ? cut : (fit ? fit : 1);
+		wcsncpy(fill->c[lines], p, n);
+		fill->c[lines++][n] = 0;
+		p += n;
+	}
+	if (len && (lines < kMaxLines))
+		wcscpy(fill->c[lines++], cur);
+	return lines ? lines : 1;
+}
+
+// The game's message box with a Continue button, as the save page uses for its errors; '\n' starts a line.
+static void	ShowMessage(const char *text)
+{
+	static WCHAR msg[2048];
+	static WCHAR blank[] = L" ";
+	Widen(msg, 2048, text);
+	CDXBitmapFont *font = PLATFORM.Font(FONT_SMALL);
+	// the game's fonts have no '\': a Windows folder is shown with '/' (which Explorer's address bar also takes)
+	if (!font->CanDisplay('\\'))
+		for (WCHAR *c = msg; *c; c++)
+			if (*c == '\\')
+				*c = '/';
+	FEMESSBOX.Kill();
+	FEMESSBOX.Create(320.f, 240.f, 440.f, FO(100), blank, font, 0, 10, FALSE, FEMB_OPTION_A_CONTINUE, 0);
+	// Create's own layout (CFEMessBox::Create): the lines, then a line of the normal font for the button
+	for (int l = 0; l < 40; l++)
+		FEMESSBOX.mLines.c[l][0] = 0;
+	FEMESSBOX.mNumLines = WrapLines(&FEMESSBOX.mLines, msg, font, 440.f - 16.f);
+	FEMESSBOX.mHeight = float(FEMESSBOX.mLineHeight) * FEMESSBOX.mNumLines + 16.f + float(PLATFORM.Font(FONT_NORMAL)->GetHeight());
+	FEMESSBOX.SetOnDismiss(FEP_NONE, 0);
+}
+
+//*********************************************************************************
+// An item with its own text that does one thing when chosen.
+class CCeMenuItem : public CMenuItem
+{
+public:
+	enum { ID = 0x4345 };				// its mId, which no item of the game's uses
+
+	CCeMenuItem(const WCHAR *text, int action) : CMenuItem((EPCText)0, ID), mAction(action) { mCeText = text; }
+
+	virtual WCHAR	*GetText() { return (WCHAR *)mCeText; }
+
+	const WCHAR	*mCeText;
+	int			mAction;
+};
+
+// The options list's Cheats item: chosen, CPauseMenu::ButtonPressed opens page 4 by its PC text (patch 0050).
+class CCeCheatsItem : public CMenuItem
+{
+public:
+	CCeCheatsItem() : CMenuItem((EPCText)PORT_CE_CHEATS_PCTEXT, 3) {}
+
+	virtual WCHAR	*GetText() { static WCHAR text[] = L"Cheats"; return text; }
+};
+
+// A Yes/No switch with its own label (the game's Yes and No, as its other switches).
+class CCeSwitch : public CBOOLMenuItem
+{
+public:
+	CCeSwitch(const WCHAR *label) : CBOOLMenuItem((EPCText)0, 3, false) { mCeLabel = label; }
+
+	virtual WCHAR	*GetText() { return (WCHAR *)mCeLabel; }
+
+	const WCHAR	*mCeLabel;
+};
+
+//*********************************************************************************
+// The God item. Retail builds it only when a pause or options menu is made, so the options menu (made once, kept until
+// the front end shuts down) would show a Maladim switched on here only after a restart, and switching it off would
+// leave the career's god flag set with no item to clear it. The options menu registers itself (patch 0050), and the
+// Maladim switch adds or removes the item on its controls list (page 1, after the configuration name) at once.
+#define PORT_CE_CONFIG_NAME	((EPCText)0xef)		// CConfigName's text, the item before God (PauseMenu.cpp)
+#define PORT_CE_GOD_CHEAT	3					// Maladim
+
+static CPauseMenu	*sOptionsMenu = NULL;
+
+// God mode the Cheats page allowed (Maladim on there, but not in the career's name and not every cheat through HELP ME!!)
+// stays out of the career and options files (patch 0052, Career.cpp): CCareer::Save writes it as off and ce.ini's
+// god_mode keeps it (bit 0 player 1, bit 1 player 2) for the next CE session. A recording or a replay (the CE layer off)
+// then starts from files that hold only what the career's name allowed, as retail would, and never turns it on.
+extern bool	gPortCheatNameOnly;					// patch 0051, FEPSaveGame.cpp
+#define PORT_CE_GOD_KEY	"god_mode"
+
+static bool	GodFromSwitchOnly()
+{
+	if (!PortCeLayer() || !CE_CheatOn(PORT_CE_GOD_CHEAT))
+		return false;
+	gPortCheatNameOnly = true;
+	bool byName = FRONTEND.mFEPSaveGame.IsCheatActive(PORT_CE_GOD_CHEAT) != FALSE;
+	gPortCheatNameOnly = false;
+	return !byName;
+}
+
+static int	GodMask(CCareer *career)
+{
+	return (career->GetIsGod(0) ? 1 : 0) | (career->GetIsGod(1) ? 2 : 0);
+}
+
+// CCareer::Save is about to copy the career: true when its god flags must be written as off.
+bool	PortCeCareerSaving(CCareer *career)
+{
+	if (!GodFromSwitchOnly())
+		return false;
+	int mask = GodMask(career);
+	if (CE_SettingGet(PORT_CE_GOD_KEY, 0) != mask)
+		CE_SettingSet(PORT_CE_GOD_KEY, mask);
+	return true;
+}
+
+// CCareer::Load has read a file: god mode the Cheats page set comes back from ce.ini.
+void	PortCeCareerLoaded(CCareer *career)
+{
+	if (!GodFromSwitchOnly())
+		return;
+	int mask = CE_SettingGet(PORT_CE_GOD_KEY, 0);
+	if (mask & 1)
+		career->SetIsGod(0, TRUE);
+	if (mask & 2)
+		career->SetIsGod(1, TRUE);
+}
+
+void	PortCeOptionsMenu(CPauseMenu *menu, bool alive)
+{
+	if (alive)
+		sOptionsMenu = menu;
+	else if (sOptionsMenu == menu)
+		sOptionsMenu = NULL;
+}
+
+static void	SyncGodItem()
+{
+	if (!sOptionsMenu || (sOptionsMenu->mLists.Size() < 2))
+		return;
+	CMenuOptionsList *list = sOptionsMenu->mLists.At(1);
+	bool want = FRONTEND.mFEPSaveGame.IsCheatActive(PORT_CE_GOD_CHEAT) != FALSE;
+	CMenuItem *god = NULL;
+	int n = list->mItems.Size();
+	for (int i = 0; i < n; i++)
+	{
+		CMenuItem *item = list->mItems.At(i);
+		if ((item->mText == GI_GOD_ON) || (item->mText == GI_GOD_OFF))
+			god = item;
+	}
+	if (want && !god)
+	{
+		const int kMax = 64;
+		CMenuItem *items[kMax];
+		if (n > kMax)
+			return;
+		for (int i = 0; i < n; i++)
+			items[i] = list->mItems.At(i);
+		list->mItems.RemoveAll();
+		for (int i = 0; i < n; i++)
+		{
+			list->mItems.Append(items[i]);
+			if ((items[i]->mText == 0) && (items[i]->mPCText == PORT_CE_CONFIG_NAME))
+				list->mItems.Append(new (MEMTYPE_MENUITEM) CMenuItem((DWORD)((CAREER.GetIsGod(0) == 1) ? GI_GOD_ON : GI_GOD_OFF), 3));
+		}
+	}
+	else if (!want && god)
+	{
+		list->mItems.Remove(god);
+		delete god;
+	}
+	list->Reset();
+}
+
+// A cheat's switch: IsCheatActive's number, kept in ce.ini.
+class CCeCheatSwitch : public CCeSwitch
+{
+public:
+	CCeCheatSwitch(const WCHAR *label, int cheat) : CCeSwitch(label), mCheat(cheat) {}
+
+	virtual void	SetValue(int value)
+	{
+		if (!CE_CheatSet(mCheat, value))
+		{
+			ShowMessage("Could not write ce.ini, so this cheat is unchanged.");
+			return;
+		}
+		if (mCheat == PORT_CE_GOD_CHEAT)
+		{
+			// Maladim off (and not in the career's name): god mode ends with it, for both players
+			if (!FRONTEND.mFEPSaveGame.IsCheatActive(PORT_CE_GOD_CHEAT))
+			{
+				CAREER.SetIsGod(0, FALSE);
+				CAREER.SetIsGod(1, FALSE);
+			}
+			if (!value && CE_SettingGet(PORT_CE_GOD_KEY, 0))
+				CE_SettingSet(PORT_CE_GOD_KEY, 0);
+			SyncGodItem();
+		}
+	}
+	virtual int		GetValue() { return CE_CheatOn(mCheat) ? 1 : 0; }
+
+	int		mCheat;
+};
+
+// Record sessions: the launcher reads record_sessions from ce.ini as it starts the game. The list asks for the value
+// every frame (CMenuMenuItem::RenderList), so it is read from ce.ini once and kept, as the cheats are.
+class CCeRecordSwitch : public CCeSwitch
+{
+public:
+	CCeRecordSwitch() : CCeSwitch(L"Record sessions: ") {}
+
+	static int	sValue;
+
+	virtual void	SetValue(int value)
+	{
+		value = value ? 1 : 0;
+		if (!CE_SettingSet("record_sessions", value))
+		{
+			ShowMessage("Could not write ce.ini, so the setting is unchanged.");
+			return;
+		}
+		sValue = value;
+		char user[1024], text[1536];
+		CE_UserDirShort(user, sizeof(user));
+		if (value)
+			snprintf(text, sizeof(text), "From the next start, each session's input is recorded, so a problem you report "
+					 "can be replayed exactly. The tapes go in this folder:\n%s%ctapes\n\nRecorded sessions use the "
+					 "original menus, so this page and the cheats are hidden while recording. Each start asks whether to "
+					 "record; choose Stop recording there to switch it off.", user,
+#ifdef _WIN32
+					 '\\'
+#else
+					 '/'
+#endif
+					 );
+		else
+			snprintf(text, sizeof(text), "Sessions are no longer recorded, from the next start.");
+		ShowMessage(text);
+	}
+	virtual int		GetValue()
+	{
+		if (sValue < 0)
+			sValue = CE_SettingGet("record_sessions", 0) ? 1 : 0;
+		return sValue;
+	}
+};
+
+int	CCeRecordSwitch::sValue = -1;
+
+//*********************************************************************************
+// The cheats the game checks (IsCheatActive's numbers; V3R5IOF, number 2, has no effect in the PC game and is left out).
+CMenuItem	*PortCeCheatsItem()
+{
+	return new (MEMTYPE_MENUITEM) CCeCheatsItem();
+}
+
+CMenuOptionsList	*PortCeCheatsList(float y)
+{
+	static WCHAR title[] = L"Cheats";
+	CMenuOptionsList *list = new (MEMTYPE_MENUITEM) CMenuOptionsList(title, 320.f, y, FALSE, 0xb0000000);
+	list->AddItem(new (MEMTYPE_MENUITEM) CCeCheatSwitch(L"All levels open (TURKEY): ", 1));
+	list->AddItem(new (MEMTYPE_MENUITEM) CCeCheatSwitch(L"All goodies open (MALLOY): ", 0));
+	list->AddItem(new (MEMTYPE_MENUITEM) CCeCheatSwitch(L"Goodie hints (lat\u00eate): ", 5));
+	list->AddItem(new (MEMTYPE_MENUITEM) CCeCheatSwitch(L"God mode in Controls (Maladim): ", PORT_CE_GOD_CHEAT));
+	list->AddItem(new (MEMTYPE_MENUITEM) CCeCheatSwitch(L"Free camera, F key (Aurore): ", 4));
+	CMenuItem *note = new (MEMTYPE_MENUITEM) CCeMenuItem(L"For every career; off in recorded sessions", 0);
+	note->mEnabled = FALSE;
+	list->AddItem(note);
+	list->AddItem(new (MEMTYPE_MENUITEM) CMenuItem((DWORD)GI_BACK, 3));
+	return list;
+}
+
+//*********************************************************************************
+// The CE page's menu: a CPauseMenu without the pause menu's lists (patch 0050's constructor), so the list draws and
+// takes input exactly as the options page's do.
+enum ECeAction
+{
+	CEA_NONE = 0,
+	CEA_ABOUT,
+	CEA_UPDATES,
+	CEA_REPORT
+};
+
+CPauseMenu::CPauseMenu(EPortCeNoLists) : mActive(FALSE), mPage(0), mCloseTime(-1.f)
+{
+	mOptionsPage = true;
+	mResult = 0;
+	mCircle1 = NULL;
+	mCircle2 = NULL;
+	mChosen = 0;
+	mConfirm = NULL;
+	mQuitConfirm = NULL;
+	mNoFade = FALSE;
+	mFirstRenderTime = 0;
+}
+
+class CCeMenu : public CPauseMenu
+{
+public:
+	CCeMenu() : CPauseMenu(PORT_CE_NO_LISTS)
+	{
+		static WCHAR title[] = L"Onslaught CE";
+		CMenuOptionsList *list = new (MEMTYPE_MENUITEM) CMenuOptionsList(title, 320.f, 300.f, FALSE, 0xb0000000);
+		list->AddItem(new (MEMTYPE_MENUITEM) CCeMenuItem(L"About Onslaught CE", CEA_ABOUT));
+		list->AddItem(new (MEMTYPE_MENUITEM) CCeMenuItem(L"Check for updates", CEA_UPDATES));
+		list->AddItem(new (MEMTYPE_MENUITEM) CCeRecordSwitch());
+		list->AddItem(new (MEMTYPE_MENUITEM) CCeMenuItem(L"Report a problem", CEA_REPORT));
+		list->AddItem(new (MEMTYPE_MENUITEM) CMenuItem((DWORD)GI_BACK, 3));
+		mLists.Append(list);
+	}
+
+	virtual void	ReceiveButtonAction(CController *from_controller, int button, float val)
+	{
+		if (PLATFORM.GetSysTimeFloat() - mOpenTime < 0.4f)
+			return;
+		CMenuOptionsList *list = mLists.At(mPage);
+		if (list->PassToSelected(from_controller, button, val))
+			return;
+		switch (button)
+		{
+		default:
+			list->ReceiveButtonAction(from_controller, button, val);
+			break;
+		case BUTTON_PAUSE_MENU_SELECT:
+			Choose(list->mItems.At(list->mSelected));
+			break;
+		case BUTTON_FRONTEND_MENU_BACK:
+			Leave();
+			break;
+		}
+	}
+
+	void	Leave()
+	{
+		DeActivate(FALSE);
+		CFrontEnd::PlaySound(FES_BACK);
+	}
+
+	void	Choose(CMenuItem *item)
+	{
+		if (item->mText == GI_BACK)
+		{
+			Leave();
+			return;
+		}
+		if ((item->mId != CCeMenuItem::ID) || !item->IsEnabled())
+			return;
+		char text[1536];
+		switch (((CCeMenuItem *)item)->mAction)
+		{
+		case CEA_ABOUT:
+		{
+			const char *build = CE_BuildName();
+			snprintf(text, sizeof(text), "Onslaught CE v%s (preview)%s%s. A native port of Battle Engine Aquila (Lost Toys, "
+					 "2003), built from the game's source code, that plays your own copy of the game. An unofficial fan "
+					 "project. Free software under the GNU General Public License, version 3, with no warranty. Source, "
+					 "releases and problem reports: " CE_LINKS, CE_VERSION, *build ? ", build " : "", build);
+			ShowMessage(text);
+			break;
+		}
+		case CEA_UPDATES:
+			if (CE_SettingGet("update_check", 1))
+				snprintf(text, sizeof(text), "Onslaught CE checks for a new version each time it starts, and asks before "
+						 "updating. To check now, quit and start it again. Releases: " CE_LINKS "/releases");
+			else
+				snprintf(text, sizeof(text), "Update checks are off (update_check=0 in ce.ini). Set update_check=1 and "
+						 "start Onslaught CE again to check, or see " CE_LINKS "/releases");
+			ShowMessage(text);
+			break;
+		case CEA_REPORT:
+		{
+			char user[1024];
+			CE_UserDirShort(user, sizeof(user));
+			if (CE_OpenReportPage())
+				snprintf(text, sizeof(text), "A pre-filled problem report has opened in your web browser; nothing is sent "
+						 "until you submit it. Please attach onslaught-ce.log from this folder:\n%s", user);
+			else
+				snprintf(text, sizeof(text), "Could not open your web browser. Please report the problem at " CE_LINKS
+						 "/issues and attach onslaught-ce.log from this folder:\n%s", user);
+			ShowMessage(text);
+			break;
+		}
+		}
+		CFrontEnd::PlaySound(FES_SELECT);
+	}
+
+	// CPauseMenu::Render for an options-style page: the render states, the 0.4 s before the list appears, the list.
+	WCHAR	*Draw()
+	{
+		if (!mActive)
+		{
+			mFirstRenderTime = 0;
+			if ((mCloseTime < 0.f) || (PLATFORM.GetSysTimeFloat() - mCloseTime > 0.4f))
+				return NULL;
+		}
+		LT.SRS(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
+		LT.SRS(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
+		RENDERINFO.SetFogEnabled(false);
+		RENDERINFO.SetUnknown2ed(false);
+		RENDERINFO.STS(0, TSS_ADDRESSU, TADDRESS_CLAMP);
+		RENDERINFO.STS(0, TSS_ADDRESSV, TADDRESS_CLAMP);
+		LT.SRS(D3DRS_ZFUNC, D3DCMP_LESSEQUAL);
+		LT.STS(0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
+		LT.STS(0, D3DTSS_COLORARG2, D3DTA_DIFFUSE);
+		LT.STS(0, D3DTSS_COLOROP, D3DTOP_MODULATE);
+		LT.SRS(D3DRS_ALPHATESTENABLE, TRUE);
+		LT.SRS(D3DRS_ALPHAREF, 8);
+		LT.SRS(D3DRS_ALPHABLENDENABLE, TRUE);
+		LT.SRS(D3DRS_ZWRITEENABLE, FALSE);
+		LT.SRS(D3DRS_ZENABLE, FALSE);
+		RENDERINFO.Apply();
+		if (mFirstRenderTime == 0.f)
+			mFirstRenderTime = PLATFORM.GetSysTimeFloat();
+		float fade = mActive ? PLATFORM.GetSysTimeFloat() - mOpenTime : (mCloseTime + 0.4f) - PLATFORM.GetSysTimeFloat();
+		WCHAR *title = NULL;
+		if (fade > 0.4f)
+			title = mLists.At(mPage)->Render(this);
+		LT.SRS(D3DRS_ZWRITEENABLE, TRUE);
+		LT.SRS(D3DRS_ZENABLE, TRUE);
+		return title;
+	}
+};
+
+//*********************************************************************************
+// The page, made as the options page is: the video background, the sliding borders, the menu, the title bar, the help
+// line and the small logo.
+class CFEPCe : public CFrontEndPage
+{
+public:
+	CFEPCe() : mMenu(NULL) {}
+
+	void	Shutdown() { SAFE_DELETE(mMenu); }
+
+	void	ButtonPressed(SINT button, float val)
+	{
+		if (mMenu)
+			mMenu->ReceiveButtonAction(NULL, button, val);
+	}
+
+	void	Process(EFEPState state)
+	{
+		if ((state == FEPS_ACTIVE) && mMenu && (!mMenu->mActive))
+			FRONTEND.SetPage(FEP_MAIN, 70);
+	}
+
+	void	RenderPreCommon(float transition, EFrontEndPage dest)
+	{
+		FRONTEND.DrawStandardVideoBackground(transition, 0x3fffffff, dest);
+	}
+
+	void	Render(float transition, EFrontEndPage dest)
+	{
+		static WCHAR title[] = L"Onslaught CE";
+		FRONTEND.DrawSlidingTextBordersAndMask(transition, dest);
+		// the message box is translucent: the list is not drawn behind it
+		if (mMenu && !FEMESSBOX.BeingDisplayed())
+			mMenu->Draw();
+		FRONTEND.DrawTitleBar(title, transition, dest);
+		FRONTEND.GetCommonPage()->RenderHelpText(1, transition);
+		FRONTEND.GetCommonPage()->RenderSmallBEALogo(RangeTransition(transition, 0.75f, 1.f));
+	}
+
+	void	TransitionNotification(EFrontEndPage from)
+	{
+		if (!mMenu)
+			mMenu = new (MEMTYPE_MENUITEM) CCeMenu();
+		CPauseMenu::mOptionsPage = true;
+		mMenu->Activate(0);
+	}
+
+	CCeMenu	*mMenu;
+};
+
+static CFEPCe	sCePage;
+
+CFrontEndPage	*PortCePage()
+{
+	return &sCePage;
+}
+
+void	PortCeOpenPage()
+{
+	FRONTEND.SetPage(FEP_CE, 70);
+}
+
+#endif

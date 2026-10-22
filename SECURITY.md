@@ -17,8 +17,11 @@ Problems that matter most here:
 
 The launcher makes two HTTPS requests when it starts (the signed release feed, `latest.json` and its signature, from
 this repository's releases), and downloads an update archive from this repository's releases only if you agree to an
-update. Nothing else leaves your machine: no identifiers, no telemetry. The update check can be turned off
-(`update_check=0` in `ce.ini`, or `BEA_NO_UPDATE_CHECK=1`).
+update. The update check can be turned off (`update_check=0` in `ce.ini`, or `BEA_NO_UPDATE_CHECK=1`).
+
+Report a problem (the main menu's Onslaught CE page, or `--report`) is the one network action you start yourself: it
+opens a GitHub page in your browser with your version and OS in its address; nothing is posted until you submit it.
+Nothing else leaves your machine: no identifiers, no telemetry.
 
 ## Supported versions
 

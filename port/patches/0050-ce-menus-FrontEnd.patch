@@ -1,0 +1,52 @@
+--- a/FrontEnd.cpp
++++ b/FrontEnd.cpp
+@@ -27,6 +27,12 @@
+ 
+ #include	"game.h"
+ 
++#ifdef CE_VERSION
++bool			PortCeMenus();				// Port (patch 0050): port/game/ce_frontend.cpp
++CFrontEndPage	*PortCePage();
++EFrontEndPage	PortCeAsOptions(EFrontEndPage page);	// the CE page's slot reads as FEP_OPTIONS while the CE menus are on
++#endif
++
+ //*********************************************************************************
+ extern SINT performing_stress_test;				// 0083d454
+ extern char	gAllCheatsEnabled;					// 00679ec1
+@@ -160,6 +166,12 @@
+ 
+ 	mPages[FEP_E3_LEVEL_SELECT]		= &mFEPE3LevelSelect;
+ 	mPages[FEP_LANGUAGE_TEST]		= &mFEPLanguageTest;
++#ifdef CE_VERSION
++	// Port (patch 0050, the CE layer): the Onslaught CE page takes the developers' language-test page's slot, which
++	// nothing in the PC game opens; with the CE menus off (replays, recordings, the harness) the slot is unchanged.
++	if (PortCeMenus())
++		mPages[FEP_LANGUAGE_TEST] = PortCePage();
++#endif
+ 	
+ 	mPages[FEP_DEMOMAIN]			= &mFEPDemoMain;
+ 
+@@ -694,6 +706,11 @@
+ 		if (check_draw_twice(from, dest))
+ 			return;
+ 	}
++#ifdef CE_VERSION
++	// Port (patch 0050): the CE page's list is framed as the options page's is (the larger bracket, the same masks).
++	from = PortCeAsOptions(from);
++	dest = PortCeAsOptions(dest);
++#endif
+ 
+ 	float tr, scale, yaw;
+ 	SINT alpha;
+@@ -721,7 +738,11 @@
+ 	// Draw inside bracket
+ 	col = 0xffffffff;
+ 	alpha = 0xff;
++#ifdef CE_VERSION
++	scale = (((from == FEP_VIRTUAL_KEYBOARD) || (from == FEP_OPTIONS) || (dest == FEP_VIRTUAL_KEYBOARD) || (dest == FEP_OPTIONS) || (GetCurrentPage() == FEP_VIRTUAL_KEYBOARD) || (PortCeAsOptions(GetCurrentPage()) == FEP_OPTIONS)) ? SELECT_BRACKET_SCALE2 : SELECT_BRACKET_SCALE);
++#else
+ 	scale = (((from == FEP_VIRTUAL_KEYBOARD) || (from == FEP_OPTIONS) || (dest == FEP_VIRTUAL_KEYBOARD) || (dest == FEP_OPTIONS) || (GetCurrentPage() == FEP_VIRTUAL_KEYBOARD) || (GetCurrentPage() == FEP_OPTIONS)) ? SELECT_BRACKET_SCALE2 : SELECT_BRACKET_SCALE);
++#endif
+ 	yaw = 0.f;
+ 	if ((transition < 1.f) && (dest == FEP_MAIN))
+ 	{

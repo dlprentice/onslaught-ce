@@ -36,6 +36,29 @@ void PortUpdateHook();
 #endif
 #define PORT_UPDATE_HOOK() PortUpdateHook()
 
+// Widescreen and native resolutions (patches 0040-0046; port/platform/common/widescreen.cpp and d3d9hooks.cpp). Every
+// patched site is `if (PortWideActive()) { new } else { the game's statements }`; PortWideActive is false in replays,
+// recordings, offscreen runs and whenever the back buffer is 4:3, so those runs keep the game's arithmetic exactly.
+#ifdef __cplusplus
+int PortWideModes();				// the mode list and the default mode may offer the desktop's sizes
+int PortWideActive();				// this back buffer takes the wide paths
+float PortWideX();					// the 3D view's horizontal widening (Hor+), 1 when narrower than 4:3
+float PortWideY();					// its vertical extension (Vert+, narrower than 4:3), else 1
+float PortUiScale();				// the 640 x 480 virtual screen's scale into its centred 4:3 box
+float PortUiLeft();					// that box's left edge in back buffer pixels
+float PortUiTop();					// and its top edge
+float PortHudInset(float viewportWidth);	// the HUD's shift into a viewport's 4:3 columns
+float PortHudBegin(float offset, float viewportWidth);	// HUD_OFFSET_X with that shift (the game's value kept)
+float PortHudOriginal();			// the game's HUD_OFFSET_X while the shifted one is in place
+void PortUiMouse(int *x, int *y);	// back buffer pixels to the virtual screen's, clamped to 640 x 480
+int PortWideDefaultSize(unsigned *w, unsigned *h);	// the default mode's size (the desktop's), when PortWideModes
+// The size to start at instead of a saved mode that is no choice (none, or a 640 x 480 the size ce.ini keeps from the
+// last save with widescreen modes on does not confirm); 0 keeps the saved mode
+int PortWideStartSize(unsigned savedW, unsigned savedH, int saved32, unsigned *w, unsigned *h);
+void PortWideOptionsSaved(unsigned w, unsigned h);	// CCareer::Save's mode: kept in ce.ini when widescreen modes are on
+void PortWideViewport(int box);		// the device's viewport: the whole back buffer (0) or the 4:3 box (1)
+#endif
+
 // The game's Direct3D object comes through the port (port/platform/common/d3d9hooks.cpp: retail's x87 precision after
 // CreateDevice, frame count and screenshots at Present).
 struct IDirect3D9;
@@ -238,6 +261,14 @@ unsigned int _controlfp(unsigned int newval, unsigned int mask);
 #ifdef __cplusplus
 }
 #endif
+#endif
+
+// Public builds (CE_VERSION): the game's own printf lines go through the port, which keeps its debugging chatter
+// ("Pause() called" at every pause) off the player's console; retail, a program without a console, showed none of them.
+// Private builds print them as before. (port/platform/common/ce.cpp)
+#if defined(CE_VERSION) && defined(__cplusplus)
+int PortGamePrintf(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+#define printf PortGamePrintf
 #endif
 
 #endif

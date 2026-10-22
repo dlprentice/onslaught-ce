@@ -8,6 +8,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include "../common/portlog.h"
 
 typedef uint16_t wc16;
 
@@ -160,7 +161,7 @@ intptr_t _spawnl(int, const char *cmd, const char *arg0, ...)
 {
 	va_list ap;
 	va_start(ap, arg0);
-	fprintf(stderr, "bea-port: %s", cmd);
+	fprintf(stderr, PORT_LOG_PREFIX "%s", cmd);
 	if (arg0)
 		fprintf(stderr, " %s", arg0);
 	for (const char *a = va_arg(ap, const char *); a; a = va_arg(ap, const char *))

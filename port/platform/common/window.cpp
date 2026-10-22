@@ -67,12 +67,32 @@ SDL_Window *Sdl(HWND h)
 // Messages posted for the game (SDL events translated, PostMessage, WM_QUIT).
 MSG gQueue[256];
 int gHead, gTail;
+bool gReleasePending;	// a message was dropped: release every key the port holds down once the game has drained the ring
+
+// BEA_PORT_INPUT_LOG: keys down and up (scan code, keycode, virtual key), drops, synthetic releases, focus.
+bool InputLog()
+{
+	static int on = -1;
+	if (on < 0)
+		on = getenv("BEA_PORT_INPUT_LOG") ? 1 : 0;
+	return on == 1;
+}
+
+int Free() { return 255 - (gTail - gHead + 256) % 256; }
 
 void Post(HWND h, UINT msg, WPARAM w, LPARAM l)
 {
 	int next = (gTail + 1) % 256;
 	if (next == gHead)
-		return;	// full: drop, as a saturated Windows queue would
+	{
+		// full: drop, as a saturated Windows queue would; a dropped key-up must not leave a key held (gReleasePending)
+		static unsigned drops;
+		if (InputLog() || drops < 8)
+			fprintf(stderr, PORT_LOG_PREFIX "input: queue full, message %04x (%08lx, %08lx) dropped\n", msg, (unsigned long)w, (unsigned long)l);
+		drops++;
+		gReleasePending = true;
+		return;
+	}
 	MSG &m = gQueue[gTail];
 	m.hwnd = h;
 	m.message = msg;
@@ -81,6 +101,23 @@ void Post(HWND h, UINT msg, WPARAM w, LPARAM l)
 	m.time = (DWORD)SDL_GetTicks();
 	m.pt.x = m.pt.y = 0;
 	gTail = next;
+}
+
+// The player's mouse movement, coalesced as Windows does (WM_MOUSEMOVE is made from the latest position when the queue
+// is read, never one per hardware report): a move that follows an unread move replaces it.
+void PostMouseMove(HWND h, WPARAM w, LPARAM l)
+{
+	if (gHead != gTail)
+	{
+		MSG &last = gQueue[(gTail + 255) % 256];
+		if (last.message == WM_MOUSEMOVE && last.hwnd == h && last.wParam == w)
+		{
+			last.lParam = l;
+			last.time = (DWORD)SDL_GetTicks();
+			return;
+		}
+	}
+	Post(h, WM_MOUSEMOVE, w, l);
 }
 
 bool Pop(MSG *out, bool remove)
@@ -178,6 +215,14 @@ UINT VirtualKey(SDL_Keycode k, SDL_Scancode s)
 		return (UINT)(k - 'a' + 'A');
 	if (k >= '0' && k <= '9')
 		return (UINT)k;
+	// A layout (or a keymap change between a press and its release) whose keycode is not a letter or digit: the key's
+	// position decides, so a letter key always has a virtual key and its release is never lost.
+	if (s >= SDL_SCANCODE_A && s <= SDL_SCANCODE_Z)
+		return (UINT)('A' + (s - SDL_SCANCODE_A));
+	if (s >= SDL_SCANCODE_1 && s <= SDL_SCANCODE_9)
+		return (UINT)('1' + (s - SDL_SCANCODE_1));
+	if (s == SDL_SCANCODE_0)
+		return (UINT)'0';
 	switch (s)
 	{
 	case SDL_SCANCODE_RETURN: return VK_RETURN;
@@ -211,6 +256,22 @@ UINT VirtualKey(SDL_Keycode k, SDL_Scancode s)
 	case SDL_SCANCODE_KP_DIVIDE: return VK_DIVIDE;
 	case SDL_SCANCODE_KP_PERIOD: return VK_DECIMAL;
 	case SDL_SCANCODE_GRAVE: return 0xC0;		// VK_OEM_3
+	// The punctuation keys (US positions), which WM_CHAR now comes from (KeyChar), as on Windows
+	case SDL_SCANCODE_MINUS: return 0xBD;		// VK_OEM_MINUS
+	case SDL_SCANCODE_EQUALS: return 0xBB;		// VK_OEM_PLUS
+	case SDL_SCANCODE_LEFTBRACKET: return 0xDB;	// VK_OEM_4
+	case SDL_SCANCODE_RIGHTBRACKET: return 0xDD;	// VK_OEM_6
+	case SDL_SCANCODE_BACKSLASH: return 0xDC;	// VK_OEM_5
+	case SDL_SCANCODE_SEMICOLON: return 0xBA;	// VK_OEM_1
+	case SDL_SCANCODE_APOSTROPHE: return 0xDE;	// VK_OEM_7
+	case SDL_SCANCODE_COMMA: return 0xBC;		// VK_OEM_COMMA
+	case SDL_SCANCODE_PERIOD: return 0xBE;		// VK_OEM_PERIOD
+	case SDL_SCANCODE_SLASH: return 0xBF;		// VK_OEM_2
+	case SDL_SCANCODE_NONUSBACKSLASH: return 0xE2;	// VK_OEM_102
+	case SDL_SCANCODE_KP_ENTER: return VK_RETURN;
+	case SDL_SCANCODE_LGUI: return 0x5B;		// VK_LWIN
+	case SDL_SCANCODE_RGUI: return 0x5C;		// VK_RWIN
+	case SDL_SCANCODE_APPLICATION: return 0x5D;	// VK_APPS
 	default: break;
 	}
 	if (s >= SDL_SCANCODE_F1 && s <= SDL_SCANCODE_F12)
@@ -222,11 +283,21 @@ UINT VirtualKey(SDL_Keycode k, SDL_Scancode s)
 	return 0;
 }
 
-extern "C" void PortMapMouse(float *x, float *y);	// d3d9hooks.cpp: window to game coordinates in desktop fullscreen
+extern "C" int PortMapMouse(float *x, float *y);	// d3d9hooks.cpp: window to game coordinates in desktop fullscreen
 
+// SDL's mouse positions are in points; the client rectangle (PortGetClientRect) is in pixels. With widescreen modes on,
+// the window has pixel density (HiDPI), so outside desktop fullscreen a position is scaled by the window's density.
 LPARAM MouseLParam(float x, float y)
 {
-	PortMapMouse(&x, &y);
+	if (!PortMapMouse(&x, &y) && PortWideModes() && gNumWindows)
+	{
+		float density = SDL_GetWindowPixelDensity(gWindows[0].sdl);
+		if (density > 0 && density != 1.f)
+		{
+			x *= density;
+			y *= density;
+		}
+	}
 	if (x < 0) x = 0;
 	if (y < 0) y = 0;
 	return MAKELPARAM((int)x, (int)y);
@@ -241,6 +312,150 @@ WPARAM MouseButtons()
 	if (b & SDL_BUTTON_MMASK) w |= MK_MBUTTON;
 	return w;
 }
+
+// ---- the player's keys ----------------------------------------------------------------------------------------------
+// The game's only key state is LT.KeyDown[scan], set by WM_KEYDOWN and cleared only by WM_KEYUP (ltshell.cpp MsgProc),
+// so a lost key-up leaves a key held until it is pressed again. The port remembers every key it posted down (by the PC
+// scan code the message carries) and makes sure each gets its key-up: the real one, or a synthetic one when SDL reports
+// the key up without an event the port saw (Reconcile), when the window loses focus, or after a dropped message.
+// Only the player's keys are tracked: a tape's keys are posted by replay.cpp, and record mode sends keys to the tape.
+struct HeldKey
+{
+	bool down;
+	bool released;		// released by the port (synthetic key-up): the real key-up that may still come is not posted again
+	UINT vk;
+	SDL_Scancode sdl;
+};
+HeldKey gKeys[0x200];	// by PC scan code, 0x100 = extended
+int gHeld;
+
+// The test switch's own key state (BEA_PORT_FAKE_KEYS): pushed events do not change SDL's keyboard state, so
+// Reconcile treats a fake key as down from its 'd' to its 'u' or 'x' (x: the state goes up but the event is lost).
+bool gFakeHeld[SDL_SCANCODE_COUNT];
+
+LPARAM KeyLParam(unsigned scan, bool up, bool repeat)
+{
+	LPARAM l = 1 | ((LPARAM)(scan & 0x1ff) << 16);	// 0x100 lands on bit 24, Windows' extended flag
+	if (up)
+		l |= (LPARAM)3 << 30;
+	else if (repeat)
+		l |= (LPARAM)1 << 30;
+	return l;
+}
+
+HWND MainWindow() { return gNumWindows ? gWindows[0].handle : NULL; }
+
+void SyntheticKeyUp(unsigned scan, const char *why)
+{
+	HeldKey &k = gKeys[scan];
+	if (!k.down)
+		return;
+	if (InputLog())
+		fprintf(stderr, PORT_LOG_PREFIX "input: synthetic key up scan %03x vk %02x (%s) (%s)\n", scan, k.vk,
+				SDL_GetScancodeName(k.sdl), why);
+	Post(MainWindow(), WM_KEYUP, k.vk, KeyLParam(scan, true, false));
+	k.down = false;
+	k.released = true;
+	gHeld--;
+}
+
+void ReleaseAll(const char *why)
+{
+	for (unsigned s = 1; s < 0x200 && gHeld > 0; s++)
+		SyntheticKeyUp(s, why);
+}
+
+// Every key the port holds down that SDL reports up gets its key-up now.
+void Reconcile()
+{
+	if (gHeld <= 0)
+		return;
+	int n = 0;
+	const bool *state = SDL_GetKeyboardState(&n);
+	for (unsigned s = 1; s < 0x200 && gHeld > 0; s++)
+	{
+		HeldKey &k = gKeys[s];
+		if (k.down && !(state && (int)k.sdl < n && state[k.sdl]) && !gFakeHeld[k.sdl])
+			SyntheticKeyUp(s, "SDL reports it up");
+	}
+}
+
+// The character a key-down makes, as TranslateMessage would: control characters for return, backspace, escape and tab,
+// and printable ASCII from the key's position, the layout and Shift/Caps Lock (no text input, no input method: game keys
+// never go through one). 0 for none.
+unsigned KeyChar(UINT vk, SDL_Scancode sc, SDL_Keymod mod)
+{
+	if (vk == VK_RETURN) return '\r';
+	if (vk == VK_BACK) return '\b';
+	if (vk == VK_ESCAPE) return 27;
+	if (vk == VK_TAB) return '\t';
+	if (mod & (SDL_KMOD_CTRL | SDL_KMOD_LALT | SDL_KMOD_GUI))
+		return 0;
+	SDL_Keycode c = SDL_GetKeyFromScancode(sc, mod, false);
+	return c >= 0x20 && c < 0x7f ? (unsigned)c : 0;
+}
+
+void KeyEvent(const SDL_KeyboardEvent &e, HWND h)
+{
+	bool down = e.type == SDL_EVENT_KEY_DOWN;
+	UINT vk = VirtualKey(e.key, e.scancode);
+	unsigned scan = PcScan(e.scancode) & 0x1ff;
+	if (InputLog())
+		fprintf(stderr, PORT_LOG_PREFIX "input: SDL key %s%s %s scancode %d keycode %08x mod %04x -> vk %02x scan %03x\n",
+				down ? "down" : "up", e.repeat ? " (repeat)" : "", SDL_GetScancodeName(e.scancode), (int)e.scancode,
+				(unsigned)e.key, (unsigned)e.mod, vk, scan);
+	if (PortRecording())
+	{
+		// record mode: keys go to the tape and arrive at the next Present, as a tape's (no repeats, no WM_CHAR)
+		if (vk && !e.repeat)
+			PortRecordKey(down, vk, scan);
+		return;
+	}
+	HeldKey *k = scan ? &gKeys[scan] : NULL;
+	if (down)
+	{
+		if (!vk)
+		{
+			if (InputLog())
+				fprintf(stderr, PORT_LOG_PREFIX "input: key down %s dropped (no virtual key)\n", SDL_GetScancodeName(e.scancode));
+			return;
+		}
+		LPARAM l = KeyLParam(scan, false, e.repeat);
+		Post(h, WM_KEYDOWN, vk, l);
+		if (k)
+		{
+			if (!k->down)
+				gHeld++;
+			k->down = true;
+			k->released = false;
+			k->vk = vk;
+			k->sdl = e.scancode;
+		}
+		if (unsigned c = KeyChar(vk, e.scancode, e.mod))
+			Post(h, WM_CHAR, c, l);
+		return;
+	}
+	// A key-up: always for a key the port posted down (with the virtual key it went down with), never twice.
+	if (k && k->down)
+	{
+		Post(h, WM_KEYUP, k->vk, KeyLParam(scan, true, false));
+		k->down = false;
+		gHeld--;
+	}
+	else if (k && k->released)
+	{
+		if (InputLog())
+			fprintf(stderr, PORT_LOG_PREFIX "input: key up %s not posted (already released)\n", SDL_GetScancodeName(e.scancode));
+	}
+	else if (vk)
+		Post(h, WM_KEYUP, vk, KeyLParam(scan, true, false));	// a key that went down before the port saw it
+	else if (InputLog())
+		fprintf(stderr, PORT_LOG_PREFIX "input: key up %s dropped (no virtual key, not held)\n", SDL_GetScancodeName(e.scancode));
+	if (k)
+		k->released = false;
+}
+
+extern "C" char LT[];	// PCLTShell (ltshell.cpp): KeyDown[256] at +0x330e4, as retail's (gdb on the Linux build)
 
 // Turns pending SDL events into messages.
 void Pump()
@@ -261,19 +476,24 @@ void Pump()
 			f.button.x = fx; f.button.y = fy; SDL_PushEvent(&f);
 			f = SDL_Event{}; f.type = SDL_EVENT_MOUSE_BUTTON_UP; f.button.button = SDL_BUTTON_LEFT; f.button.x = fx; f.button.y = fy;
 			SDL_PushEvent(&f);
-			fprintf(stderr, "bea-port: test click at %.0f,%.0f\n", fx, fy);
+			fprintf(stderr, PORT_LOG_PREFIX "test click at %.0f,%.0f\n", fx, fy);
 			fakeState = 2;
 		}
 	}
-	// BEA_PORT_FAKE_KEYS=PRESENT:SDLSCAN:RAWSCAN:d|u[,...] (a test switch, for record mode's checks): once PRESENT
-	// Presents have completed, an SDL key event through the same path as the player's keyboard; mPRESENT:DX:DY a relative
-	// mouse movement, bPRESENT:BUTTON:d|u a mouse button.
+	// BEA_PORT_FAKE_KEYS=PRESENT:SDLSCAN:RAWSCAN:d|u|x[,...] (a test switch, for record mode's and the input path's
+	// checks): once PRESENT Presents have completed, an SDL key event through the same path as the player's keyboard
+	// (x: the key goes up in SDL's state but its event is lost); kPRESENT:SDLSCAN:MOD a key-down with modifier state MOD
+	// (hex SDL_Keymod) and its key-up; mPRESENT:DX:DY a relative mouse movement; bPRESENT:BUTTON:d|u a mouse button;
+	// sPRESENT:N:SDLSCAN a key-down, N mouse movements and the key-up, all queued before one pump (a backlog; wPRESENT:N:SDLSCAN
+	// the same with N zero wheel steps, which are not coalesced);
+	// cPRESENT:SCAN logs the game's KeyDown[SCAN] (hex PC scan code).
 	static const char *fakeKeys = getenv("BEA_PORT_FAKE_KEYS");
 	if (fakeKeys && *fakeKeys)
 	{
-		unsigned present = 0, sc = 0, raw = 0;
+		unsigned present = 0, sc = 0, raw = 0, n = 0;
 		char ud = 0;
 		int mdx = 0, mdy = 0;
+		bool used = false;
 		if (sscanf(fakeKeys, "m%u:%d:%d", &present, &mdx, &mdy) == 3 && PortPresentCount() >= present)
 		{
 			SDL_Event f{};	// a relative mouse movement (record mode's checks)
@@ -281,8 +501,7 @@ void Pump()
 			f.motion.xrel = (float)mdx;
 			f.motion.yrel = (float)mdy;
 			SDL_PushEvent(&f);
-			const char *next = strchr(fakeKeys, ',');
-			fakeKeys = next ? next + 1 : "";
+			used = true;
 		}
 		else if (sscanf(fakeKeys, "b%u:%u:%c", &present, &sc, &ud) == 3 && PortPresentCount() >= present)
 		{
@@ -291,27 +510,93 @@ void Pump()
 			f.button.button = (Uint8)sc;
 			f.button.down = ud == 'd';
 			SDL_PushEvent(&f);
-			const char *next = strchr(fakeKeys, ',');
-			fakeKeys = next ? next + 1 : "";
+			used = true;
+		}
+		else if (sscanf(fakeKeys, "k%u:%u:%x", &present, &sc, &raw) == 3 && PortPresentCount() >= present)
+		{
+			for (int i = 0; i < 2; i++)
+			{
+				SDL_Event f{};	// a typed key with modifiers (Shift: 3, Caps Lock: 2000)
+				f.type = i == 0 ? SDL_EVENT_KEY_DOWN : SDL_EVENT_KEY_UP;
+				f.key.scancode = (SDL_Scancode)sc;
+				f.key.key = SDL_GetKeyFromScancode((SDL_Scancode)sc, SDL_KMOD_NONE, false);
+				f.key.mod = (SDL_Keymod)raw;
+				f.key.down = i == 0;
+				SDL_PushEvent(&f);
+			}
+			used = true;
+		}
+		else if ((sscanf(fakeKeys, "s%u:%u:%u", &present, &n, &sc) == 3 || sscanf(fakeKeys, "w%u:%u:%u", &present, &n, &sc) == 3)
+				 && PortPresentCount() >= present)
+		{
+			bool wheel = fakeKeys[0] == 'w';	// zero wheel steps: one message each, never coalesced (fills the ring)
+			SDL_Event f{};
+			f.type = SDL_EVENT_KEY_DOWN;
+			f.key.scancode = (SDL_Scancode)sc;
+			f.key.key = SDL_GetKeyFromScancode((SDL_Scancode)sc, SDL_KMOD_NONE, false);
+			f.key.down = true;
+			SDL_PushEvent(&f);
+			for (unsigned i = 0; i < n; i++)
+			{
+				SDL_Event m{};
+				if (wheel)
+					m.type = SDL_EVENT_MOUSE_WHEEL;
+				else
+				{
+					m.type = SDL_EVENT_MOUSE_MOTION;
+					m.motion.x = (float)(i % 640);
+					m.motion.y = (float)(i % 480);
+					m.motion.xrel = 1;
+				}
+				SDL_PushEvent(&m);
+			}
+			f.type = SDL_EVENT_KEY_UP;
+			f.key.down = false;
+			SDL_PushEvent(&f);
+			fprintf(stderr, PORT_LOG_PREFIX "test: backlog of a key-down, %u mouse %s and the key-up\n", n, wheel ? "wheel events" : "movements");
+			used = true;
+		}
+		else if (sscanf(fakeKeys, "c%u:%x", &present, &sc) == 2 && PortPresentCount() >= present)
+		{
+			fprintf(stderr, PORT_LOG_PREFIX "test: at Present %u KeyDown[%02x] = %d\n", PortPresentCount(), sc & 0xff,
+					(int)(unsigned char)LT[0x330e4 + (sc & 0xff)]);
+			used = true;
 		}
 		else if (sscanf(fakeKeys, "%u:%u:%x:%c", &present, &sc, &raw, &ud) == 4 && PortPresentCount() >= present)
 		{
-			SDL_Event f{};
-			f.type = ud == 'd' ? SDL_EVENT_KEY_DOWN : SDL_EVENT_KEY_UP;
-			f.key.scancode = (SDL_Scancode)sc;
-			f.key.key = SDL_GetKeyFromScancode((SDL_Scancode)sc, SDL_KMOD_NONE, false);
-			f.key.raw = (Uint16)raw;
-			f.key.down = ud == 'd';
-			SDL_PushEvent(&f);
+			if (sc < SDL_SCANCODE_COUNT)
+				gFakeHeld[sc] = ud == 'd';
+			if (ud != 'x')
+			{
+				SDL_Event f{};
+				f.type = ud == 'd' ? SDL_EVENT_KEY_DOWN : SDL_EVENT_KEY_UP;
+				f.key.scancode = (SDL_Scancode)sc;
+				f.key.key = SDL_GetKeyFromScancode((SDL_Scancode)sc, SDL_KMOD_NONE, false);
+				f.key.raw = (Uint16)raw;
+				f.key.down = ud == 'd';
+				SDL_PushEvent(&f);
+			}
+			used = true;
+		}
+		if (used)
+		{
 			const char *next = strchr(fakeKeys, ',');
 			fakeKeys = next ? next + 1 : "";
 		}
 	}
 	PortMouseKeepRelative();
-	SDL_Event e;
-	while (SDL_PollEvent(&e))
+	// Keys left held by a dropped message go up once the game has read the ring.
+	if (gReleasePending && Free() > 64)
 	{
-		HWND h = gNumWindows ? gWindows[0].handle : NULL;
+		gReleasePending = false;
+		ReleaseAll("after a dropped message");
+	}
+	SDL_Event e;
+	// SDL's own queue holds the rest of a backlog (tens of thousands of events): stop short of filling the ring, so the
+	// player's events are delayed to the next pump, never dropped.
+	while (Free() > 16 && SDL_PollEvent(&e))
+	{
+		HWND h = MainWindow();
 		switch (e.type)
 		{
 		case SDL_EVENT_QUIT:
@@ -319,55 +604,32 @@ void Pump()
 			Post(h, WM_CLOSE, 0, 0);
 			break;
 		case SDL_EVENT_WINDOW_FOCUS_GAINED:
-			if (getenv("BEA_PORT_INPUT_LOG")) fprintf(stderr, "bea-port: input: focus gained\n");
+			if (InputLog()) fprintf(stderr, PORT_LOG_PREFIX "input: focus gained\n");
 			Post(h, WM_ACTIVATEAPP, TRUE, 0);
 			Post(h, WM_ACTIVATE, 1, 0);
 			break;
 		case SDL_EVENT_WINDOW_FOCUS_LOST:
-			if (getenv("BEA_PORT_INPUT_LOG")) fprintf(stderr, "bea-port: input: focus lost\n");
+			if (InputLog()) fprintf(stderr, PORT_LOG_PREFIX "input: focus lost\n");
 			if (PortRecording())
 				break;	// a tape has no focus changes
+			ReleaseAll("focus lost");
 			Post(h, WM_ACTIVATEAPP, FALSE, 0);
 			Post(h, WM_ACTIVATE, 0, 0);
 			break;
 		case SDL_EVENT_WINDOW_RESIZED:
-			Post(h, WM_SIZE, SIZE_RESTORED, MAKELPARAM(e.window.data1, e.window.data2));
+			if (!PortWideModes())	// HiDPI windows report their size in pixels below, as the client rectangle is
+				Post(h, WM_SIZE, SIZE_RESTORED, MAKELPARAM(e.window.data1, e.window.data2));
+			break;
+		case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
+			if (PortWideModes())
+				Post(h, WM_SIZE, SIZE_RESTORED, MAKELPARAM(e.window.data1, e.window.data2));
 			break;
 		case SDL_EVENT_WINDOW_MINIMIZED:
 			Post(h, WM_SIZE, SIZE_MINIMIZED, 0);
 			break;
 		case SDL_EVENT_KEY_DOWN:
 		case SDL_EVENT_KEY_UP:
-		{
-			if (getenv("BEA_PORT_INPUT_LOG") && e.type == SDL_EVENT_KEY_DOWN) fprintf(stderr, "bea-port: input: SDL key down %s\n", SDL_GetScancodeName(e.key.scancode));
-			UINT vk = VirtualKey(e.key.key, e.key.scancode);
-			if (!vk)
-				break;
-			if (PortRecording())
-			{
-				// record mode: keys go to the tape and arrive at the next Present, as a tape's (no repeats, no WM_CHAR)
-				if (!e.key.repeat)
-					PortRecordKey(e.type == SDL_EVENT_KEY_DOWN, vk, PcScan(e.key.scancode));
-				break;
-			}
-			unsigned scan = PcScan(e.key.scancode);
-			LPARAM l = 1 | ((LPARAM)(scan & 0x1ff) << 16);	// 0x100 lands on bit 24, Windows' extended flag
-			if (e.type == SDL_EVENT_KEY_UP)
-				l |= (LPARAM)3 << 30;
-			else if (e.key.repeat)
-				l |= (LPARAM)1 << 30;
-			Post(h, e.type == SDL_EVENT_KEY_DOWN ? WM_KEYDOWN : WM_KEYUP, vk, l);
-			// Control characters reach WM_CHAR as on Windows (TranslateMessage); text arrives as SDL text events.
-			if (e.type == SDL_EVENT_KEY_DOWN && (vk == VK_RETURN || vk == VK_BACK || vk == VK_ESCAPE || vk == VK_TAB))
-				Post(h, WM_CHAR, vk == VK_RETURN ? '\r' : vk == VK_BACK ? '\b' : vk == VK_ESCAPE ? 27 : '\t', l);
-			break;
-		}
-		case SDL_EVENT_TEXT_INPUT:
-			if (PortRecording())
-				break;
-			for (const unsigned char *p = (const unsigned char *)e.text.text; *p; p++)
-				if (*p < 0x80)
-					Post(h, WM_CHAR, *p, 1);
+			KeyEvent(e.key, h);
 			break;
 		case SDL_EVENT_MOUSE_MOTION:
 			if (PortRecording())
@@ -375,7 +637,7 @@ void Pump()
 				PortRecordMotion(e.motion.xrel, e.motion.yrel);	// record mode: DirectInput-style movement for the tape
 				break;
 			}
-			Post(h, WM_MOUSEMOVE, MouseButtons(), MouseLParam(e.motion.x, e.motion.y));
+			PostMouseMove(h, MouseButtons(), MouseLParam(e.motion.x, e.motion.y));
 			break;
 		case SDL_EVENT_MOUSE_BUTTON_DOWN:
 		case SDL_EVENT_MOUSE_BUTTON_UP:
@@ -408,6 +670,7 @@ void Pump()
 			break;
 		}
 	}
+	Reconcile();
 }
 }
 
@@ -429,18 +692,16 @@ extern "C" HWND WINAPI PortCreateWindowExA(DWORD exstyle, LPCSTR cls, LPCSTR tit
 {
 	if (gNumWindows >= 8)
 		return NULL;
-	if (!SDL_WasInit(SDL_INIT_VIDEO) && !SDL_InitSubSystem(SDL_INIT_VIDEO))
-	{
-		fprintf(stderr, "bea-port: SDL video: %s\n", SDL_GetError());
+	PortVideoInit();
+	if (!SDL_WasInit(SDL_INIT_VIDEO))
 		return NULL;
-	}
 	// Test runs set BEA_PORT_REQUIRE_OFFSCREEN so the game can never open a window on the desktop (port/tools/run.py).
 	const char *driver = SDL_GetCurrentVideoDriver();
-	fprintf(stderr, "bea-port: SDL video driver %s\n", driver ? driver : "(none)");
+	fprintf(stderr, PORT_LOG_PREFIX "SDL video driver %s\n", driver ? driver : "(none)");
 	const char *require = getenv("BEA_PORT_REQUIRE_OFFSCREEN");
 	if (require && *require && *require != '0' && (!driver || strcmp(driver, "offscreen") != 0))
 	{
-		fprintf(stderr, "bea-port: refusing a window on video driver %s (BEA_PORT_REQUIRE_OFFSCREEN)\n", driver ? driver : "(none)");
+		fprintf(stderr, PORT_LOG_PREFIX "refusing a window on video driver %s (BEA_PORT_REQUIRE_OFFSCREEN)\n", driver ? driver : "(none)");
 		exit(3);
 	}
 	WNDPROC proc = NULL;
@@ -458,13 +719,16 @@ extern "C" HWND WINAPI PortCreateWindowExA(DWORD exstyle, LPCSTR cls, LPCSTR tit
 #endif
 	if (!(style & WS_VISIBLE))
 		flags |= SDL_WINDOW_HIDDEN;
+	if (PortWideModes())
+		flags |= SDL_WINDOW_HIGH_PIXEL_DENSITY;	// a HiDPI desktop's real pixels (never offscreen, in replays or recordings)
 	SDL_Window *sdl = SDL_CreateWindow(title ? title : "Battle Engine Aquila", w, h, flags);
 	if (!sdl)
 	{
-		fprintf(stderr, "bea-port: SDL_CreateWindow: %s\n", SDL_GetError());
+		fprintf(stderr, PORT_LOG_PREFIX "SDL_CreateWindow: %s\n", SDL_GetError());
 		return NULL;
 	}
-	SDL_StartTextInput(sdl);
+	// No SDL text input: it would route every game key through the desktop's input method (an IME's keyboard grab can
+	// lose or delay key-ups); WM_CHAR is made from key-downs instead (KeyChar), as TranslateMessage does.
 	Window &win = gWindows[gNumWindows++];
 	memset(&win, 0, sizeof(win));
 	win.sdl = sdl;
@@ -741,4 +1005,5 @@ extern "C" BOOL WINAPI PortClientToScreen(HWND h, LPPOINT p)
 
 // ---- the platform layer's view of the windows ---------------------------------------------------------------------------
 SDL_Window *PortSdlWindow(HWND hwnd) { return Sdl(hwnd); }
+SDL_Window *PortMainSdlWindow() { return gNumWindows ? gWindows[0].sdl : NULL; }
 void PortPumpInput() { SDL_PumpEvents(); }

@@ -225,7 +225,7 @@ struct Device : public IDirectInputDevice8A
 			return S_FALSE;
 		acquired = true;
 		if (getenv("BEA_PORT_INPUT_LOG"))
-			fprintf(stderr, "bea-port: input: DirectInput %s acquired (cooperative %08lx)\n",
+			fprintf(stderr, PORT_LOG_PREFIX "input: DirectInput %s acquired (cooperative %08lx)\n",
 					kind == MOUSE ? "mouse" : kind == KEYBOARD ? "keyboard" : "pad", (unsigned long)cooperative);
 		// DirectInput reports a mouse's own movement (mickeys) whether acquired exclusive or not, so turning never stops
 		// at the screen's edge. SDL gives that only in relative mode, so an acquired mouse is always relative (-forcewindowed
@@ -235,7 +235,7 @@ struct Device : public IDirectInputDevice8A
 			gMouseWindow = window;
 			if (SDL_Window *w = PortSdlWindow(window))
 				if (!SDL_SetWindowRelativeMouseMode(w, true))
-					fprintf(stderr, "bea-port: input: relative mouse mode refused at acquire: %s\n", SDL_GetError());
+					fprintf(stderr, PORT_LOG_PREFIX "input: relative mouse mode refused at acquire: %s\n", SDL_GetError());
 		}
 		if (kind == MOUSE)
 			SDL_GetRelativeMouseState(NULL, NULL);
@@ -282,7 +282,7 @@ struct Device : public IDirectInputDevice8A
 				for (int s = 0; s < n; s++)
 					down += keys[s] ? 1 : 0;
 				if (down != last)
-					fprintf(stderr, "bea-port: input: keyboard poll sees %d keys down\n", down);
+					fprintf(stderr, PORT_LOG_PREFIX "input: keyboard poll sees %d keys down\n", down);
 				last = down;
 			}
 		}
@@ -314,7 +314,7 @@ struct Device : public IDirectInputDevice8A
 			{
 				static SDL_MouseButtonFlags lastb = 0xffffffff;
 				if (b != lastb || dx || dy)
-					fprintf(stderr, "bea-port: input: mouse poll buttons %x move %.0f,%.0f\n", (unsigned)b, dx, dy);
+					fprintf(stderr, PORT_LOG_PREFIX "input: mouse poll buttons %x move %.0f,%.0f\n", (unsigned)b, dx, dy);
 				lastb = b;
 			}
 			if (size >= sizeof(DIMOUSESTATE2))
@@ -504,6 +504,6 @@ void PortMouseKeepRelative()
 		return;	// at most one attempt a second (a driver without relative mode, such as offscreen, refuses every time)
 	lastTry = now;
 	bool ok = SDL_SetWindowRelativeMouseMode(w, true);
-	if (logged++ < 5)
-		fprintf(stderr, "bea-port: input: relative mouse mode was off; re-enabled: %s\n", ok ? "yes" : SDL_GetError());
+	if (logged++ < 5 && PortDevLog())
+		fprintf(stderr, PORT_LOG_PREFIX "input: relative mouse mode was off; re-enabled: %s\n", ok ? "yes" : SDL_GetError());
 }

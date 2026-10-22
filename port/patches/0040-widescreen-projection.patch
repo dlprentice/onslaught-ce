@@ -1,0 +1,36 @@
+--- a/DXEngine.cpp
++++ b/DXEngine.cpp
+@@ -682,6 +682,13 @@
+ 		gamutview = matview;
+ 	}
+ 
++	// Port (patch 0040, widescreen): a back buffer wider than 4:3 widens the view horizontally (Hor+) and a narrower one
++	// extends it vertically (Vert+); the gamut takes the same extents as the projections below, so nothing is culled
++	// inside the picture. zoom itself is unchanged (mesh LOD, imposter fades and marker sizes read it). 4:3, replays
++	// and offscreen runs take the game's statement (port/include/port.h).
++	if (PortWideActive())
++		mGamut->MakeIt(&gamutview,2048,zoom*PortWideX(),zoom*mCamera[mCurrentViewpoint]->GetAspectRatio()*PortWideY(),&campos,false);
++	else
+ 	mGamut->MakeIt(&gamutview,2048,zoom*1.0f,zoom*mCamera[mCurrentViewpoint]->GetAspectRatio(),&campos,false);
+ 
+ // Calculate LODs as early as possible to 'avoid stalls'
+@@ -747,6 +754,9 @@
+ 		//** SKY
+ 		{
+ 			float vfar = 1*(float)sqrt((SKY_HEIGHT*SKY_HEIGHT)+((SKY_CELL_SIZE*SKY_RAD)*(SKY_CELL_SIZE*SKY_RAD)));
++			if (PortWideActive())	// Port (patch 0040): the sky widens with the view
++				RENDERINFO.SetProjection(1.0f,vfar, zoom*PortWideX() ,zoom*mCamera[mCurrentViewpoint]->GetAspectRatio()*PortWideY());
++			else
+ 			RENDERINFO.SetProjection(1.0f,vfar, zoom ,zoom*mCamera[mCurrentViewpoint]->GetAspectRatio());
+ 
+ 			mKempyCube->Render();
+@@ -755,6 +765,9 @@
+ 		//********************************************************
+ 		//** LANDSCAPE
+ 		float howfar = 700;
++		if (PortWideActive())	// Port (patch 0040): the landscape, water and world (the mirror pass widens alike)
++			RENDERINFO.SetProjection(mNearZ,howfar,mNearZ*zoom*PortWideX(),mNearZ*zoom*mCamera[mCurrentViewpoint]->GetAspectRatio()*PortWideY());
++		else
+ 		RENDERINFO.SetProjection(mNearZ,howfar,mNearZ*zoom,mNearZ*zoom*mCamera[mCurrentViewpoint]->GetAspectRatio());
+ 
+ 		if (mRenderLandscape)

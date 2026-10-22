@@ -1,0 +1,14 @@
+--- a/d3dapp.cpp
++++ b/d3dapp.cpp
+@@ -383,6 +383,11 @@
+ 					continue;
+ 
+ 				// and, unless asked, modes that are not 4:3
++				if( PortWideModes() )
++				{
++					// Port (patch 0045, widescreen): every size the port lists (port/platform/common/d3d9hooks.cpp)
++				}
++				else
+ 				if( !ALLOW_WIDESCREEN_MODES.mValue && ( DisplayMode.Width * 3 != DisplayMode.Height * 4 ) )
+ 					continue;
+ 

@@ -84,7 +84,7 @@ void Load(const char *path)
 	FILE *f = fopen(path, "r");
 	if (!f)
 	{
-		fprintf(stderr, "bea-port: replay: cannot open tape %s\n", path);
+		fprintf(stderr, PORT_LOG_PREFIX "replay: cannot open tape %s\n", path);
 		exit(3);
 	}
 	size_t cap = 0;
@@ -107,7 +107,7 @@ void Load(const char *path)
 		gEvents[gCount++] = e;
 	}
 	fclose(f);
-	fprintf(stderr, "bea-port: replay: %zu tape events from %s\n", gCount, path);
+	fprintf(stderr, PORT_LOG_PREFIX "replay: %zu tape events from %s\n", gCount, path);
 }
 
 void Init()
@@ -130,18 +130,18 @@ void Init()
 	{
 		if (gActive)
 		{
-			fprintf(stderr, "bea-port: replay: BEA_PORT_RECORD and BEA_PORT_TAPE are exclusive\n");
+			fprintf(stderr, PORT_LOG_PREFIX "replay: BEA_PORT_RECORD and BEA_PORT_TAPE are exclusive\n");
 			exit(3);
 		}
 		if (!(gRecord = fopen(rec, "w")))
 		{
-			fprintf(stderr, "bea-port: replay: cannot write tape %s\n", rec);
+			fprintf(stderr, PORT_LOG_PREFIX "replay: cannot write tape %s\n", rec);
 			exit(3);
 		}
 		if (const char *fps = getenv("BEA_PORT_RECORD_FPS"))
 			gRecFps = atof(fps) > 0 ? atof(fps) : 30;
 		gActive = true;
-		fprintf(stderr, "bea-port: replay: recording a tape to %s at %g Presents a second\n", rec, gRecFps);
+		fprintf(stderr, PORT_LOG_PREFIX "replay: recording a tape to %s at %g Presents a second\n", rec, gRecFps);
 		if (const char *pilot = getenv("BEA_PORT_AUTOPILOT"); pilot && *pilot)
 		{
 			gPilot = pilot;
@@ -151,7 +151,7 @@ void Init()
 	}
 	if (probes && *probes && !(gProbes = fopen(probes, "w")))
 	{
-		fprintf(stderr, "bea-port: replay: cannot write probes %s\n", probes);
+		fprintf(stderr, PORT_LOG_PREFIX "replay: cannot write probes %s\n", probes);
 		exit(3);
 	}
 	if (gProbes)
@@ -257,7 +257,7 @@ static void Pilot(unsigned frame, int *dx, int *buttons)
 			float tx = a - x, ty = b - y, d = sqrtf(tx * tx + ty * ty);
 			if (d < 1.5f || !be)
 			{
-				fprintf(stderr, "bea-port: autopilot: P%u reached %.1f,%.1f (at %.2f,%.2f)\n", frame, a, b, x, y);
+				fprintf(stderr, PORT_LOG_PREFIX "autopilot: P%u reached %.1f,%.1f (at %.2f,%.2f)\n", frame, a, b, x, y);
 				PilotKey(false);
 				gPilot = next ? next + 1 : NULL;
 				continue;
@@ -309,7 +309,7 @@ static void Pilot(unsigned frame, int *dx, int *buttons)
 				*dx = turn > 6 ? 6 : turn < -6 ? -6 : turn;
 				return;
 			}
-			fprintf(stderr, "bea-port: autopilot: P%u faces %.1f,%.1f (error %.2f deg)\n", frame, a, b, err);
+			fprintf(stderr, PORT_LOG_PREFIX "autopilot: P%u faces %.1f,%.1f (error %.2f deg)\n", frame, a, b, err);
 			gPilotUntil = 0;
 			gPilot = next ? next + 1 : NULL;
 			continue;
@@ -333,7 +333,7 @@ static void Pilot(unsigned frame, int *dx, int *buttons)
 			gPilot = next ? next + 1 : NULL;
 			return;
 		}
-		fprintf(stderr, "bea-port: autopilot: cannot read '%s'\n", gPilot);
+		fprintf(stderr, PORT_LOG_PREFIX "autopilot: cannot read '%s'\n", gPilot);
 		gPilot = NULL;
 	}
 	PilotKey(false);
@@ -455,7 +455,7 @@ void PortReplayFrame(unsigned frame, HWND window)
 	}
 	if (gMax && frame == gMax)
 	{
-		fprintf(stderr, "bea-port: replay: frame %u reached, WM_CLOSE posted\n", frame);
+		fprintf(stderr, PORT_LOG_PREFIX "replay: frame %u reached, WM_CLOSE posted\n", frame);
 		PortPostMessageA(window, WM_CLOSE, 0, 0);
 	}
 }
