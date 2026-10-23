@@ -406,9 +406,15 @@ void KeyEvent(const SDL_KeyboardEvent &e, HWND h)
 				(unsigned)e.key, (unsigned)e.mod, vk, scan);
 	if (PortRecording())
 	{
-		// record mode: keys go to the tape and arrive at the next Present, as a tape's (no repeats, no WM_CHAR)
+		// record mode: keys go to the tape and arrive at the next Present, as a tape's (no repeats); a key-down's
+		// character, the WM_CHAR posted below in live play, follows its key as a C line
 		if (vk && !e.repeat)
+		{
 			PortRecordKey(down, vk, scan);
+			if (down)
+				if (unsigned c = KeyChar(vk, e.scancode, e.mod))
+					PortRecordChar(c, scan);
+		}
 		return;
 	}
 	HeldKey *k = scan ? &gKeys[scan] : NULL;
@@ -482,8 +488,9 @@ void Pump()
 	}
 	// BEA_PORT_FAKE_KEYS=PRESENT:SDLSCAN:RAWSCAN:d|u|x[,...] (a test switch, for record mode's and the input path's
 	// checks): once PRESENT Presents have completed, an SDL key event through the same path as the player's keyboard
-	// (x: the key goes up in SDL's state but its event is lost); kPRESENT:SDLSCAN:MOD a key-down with modifier state MOD
-	// (hex SDL_Keymod) and its key-up; mPRESENT:DX:DY a relative mouse movement; bPRESENT:BUTTON:d|u a mouse button;
+		// (x: the key goes up in SDL's state but its event is lost); kPRESENT:SDLSCAN:MOD a key-down with modifier state MOD
+	// (hex SDL_Keymod) and its key-up; mPRESENT:DX:DY a relative mouse movement; aPRESENT:X:Y a mouse movement to window
+	// point X,Y; bPRESENT:BUTTON:d|u[:X:Y] a mouse button (at window point X,Y);
 	// sPRESENT:N:SDLSCAN a key-down, N mouse movements and the key-up, all queued before one pump (a backlog; wPRESENT:N:SDLSCAN
 	// the same with N zero wheel steps, which are not coalesced);
 	// cPRESENT:SCAN logs the game's KeyDown[SCAN] (hex PC scan code).
@@ -494,7 +501,17 @@ void Pump()
 		char ud = 0;
 		int mdx = 0, mdy = 0;
 		bool used = false;
-		if (sscanf(fakeKeys, "m%u:%d:%d", &present, &mdx, &mdy) == 3 && PortPresentCount() >= present)
+		float ax = 0, ay = 0;
+		if (sscanf(fakeKeys, "a%u:%f:%f", &present, &ax, &ay) == 3 && PortPresentCount() >= present)
+		{
+			SDL_Event f{};	// an absolute mouse movement (the window mouse: menus)
+			f.type = SDL_EVENT_MOUSE_MOTION;
+			f.motion.x = ax;
+			f.motion.y = ay;
+			SDL_PushEvent(&f);
+			used = true;
+		}
+		else if (sscanf(fakeKeys, "m%u:%d:%d", &present, &mdx, &mdy) == 3 && PortPresentCount() >= present)
 		{
 			SDL_Event f{};	// a relative mouse movement (record mode's checks)
 			f.type = SDL_EVENT_MOUSE_MOTION;
@@ -509,6 +526,13 @@ void Pump()
 			f.type = ud == 'd' ? SDL_EVENT_MOUSE_BUTTON_DOWN : SDL_EVENT_MOUSE_BUTTON_UP;
 			f.button.button = (Uint8)sc;
 			f.button.down = ud == 'd';
+			unsigned p2 = 0, s2 = 0;
+			char u2 = 0;
+			if (sscanf(fakeKeys, "b%u:%u:%c:%f:%f", &p2, &s2, &u2, &ax, &ay) == 5)
+			{
+				f.button.x = ax;
+				f.button.y = ay;
+			}
 			SDL_PushEvent(&f);
 			used = true;
 		}
@@ -634,7 +658,9 @@ void Pump()
 		case SDL_EVENT_MOUSE_MOTION:
 			if (PortRecording())
 			{
-				PortRecordMotion(e.motion.xrel, e.motion.yrel);	// record mode: DirectInput-style movement for the tape
+				// record mode: DirectInput-style movement and the window message, one of which the tape keeps
+				PortRecordMotion(e.motion.xrel, e.motion.yrel);
+				PortRecordWindowMouse(WM_MOUSEMOVE, MouseLParam(e.motion.x, e.motion.y), 0);
 				break;
 			}
 			PostMouseMove(h, MouseButtons(), MouseLParam(e.motion.x, e.motion.y));
@@ -645,8 +671,13 @@ void Pump()
 			if (PortRecording())
 			{
 				int bit = e.button.button == SDL_BUTTON_LEFT ? 0 : e.button.button == SDL_BUTTON_RIGHT ? 1 : e.button.button == SDL_BUTTON_MIDDLE ? 2 : -1;
+				bool dn = e.type == SDL_EVENT_MOUSE_BUTTON_DOWN;
 				if (bit >= 0)
-					PortRecordButton(bit, e.type == SDL_EVENT_MOUSE_BUTTON_DOWN);
+				{
+					static const UINT msgs[3][2] = {{WM_LBUTTONUP, WM_LBUTTONDOWN}, {WM_RBUTTONUP, WM_RBUTTONDOWN}, {WM_MBUTTONUP, WM_MBUTTONDOWN}};
+					PortRecordButton(bit, dn);
+					PortRecordWindowMouse(msgs[bit][dn], MouseLParam(e.button.x, e.button.y), 0);
+				}
 				break;
 			}
 			bool down = e.type == SDL_EVENT_MOUSE_BUTTON_DOWN;
@@ -662,6 +693,7 @@ void Pump()
 			if (PortRecording())
 			{
 				PortRecordWheel(e.wheel.y);
+				PortRecordWindowMouse(WM_MOUSEWHEEL, MouseLParam(e.wheel.mouse_x, e.wheel.mouse_y), (short)(e.wheel.y * WHEEL_DELTA));
 				break;
 			}
 			Post(h, WM_MOUSEWHEEL, MAKEWPARAM(MouseButtons(), (short)(e.wheel.y * WHEEL_DELTA)), 0);
@@ -964,6 +996,8 @@ extern "C" int WINAPI PortShowCursor(BOOL show)
 
 extern "C" BOOL WINAPI PortGetCursorPos(LPPOINT p)
 {
+	if (PortTapeCursor(p))
+		return TRUE;	// a tape-2 replay or a recording: the tape's cursor, never the desktop's
 	float x = 0, y = 0;
 	if (SDL_WasInit(SDL_INIT_VIDEO))
 		SDL_GetGlobalMouseState(&x, &y);
@@ -985,7 +1019,7 @@ extern "C" BOOL WINAPI PortScreenToClient(HWND h, LPPOINT p)
 {
 	WIN32_PASSTHROUGH(ScreenToClient(h, p))
 	int x = 0, y = 0;
-	if (Find(h))
+	if (Find(h) && !PortTapeCursor(NULL))
 		SDL_GetWindowPosition(Sdl(h), &x, &y);
 	p->x -= x;
 	p->y -= y;
@@ -996,7 +1030,7 @@ extern "C" BOOL WINAPI PortClientToScreen(HWND h, LPPOINT p)
 {
 	WIN32_PASSTHROUGH(ClientToScreen(h, p))
 	int x = 0, y = 0;
-	if (Find(h))
+	if (Find(h) && !PortTapeCursor(NULL))
 		SDL_GetWindowPosition(Sdl(h), &x, &y);
 	p->x += x;
 	p->y += y;

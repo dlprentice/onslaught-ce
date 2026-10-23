@@ -43,6 +43,15 @@ void PortRecordKey(bool down, unsigned vk, unsigned scan);
 void PortRecordWheel(float steps);
 void PortRecordMotion(float dx, float dy);
 void PortRecordButton(int bit, bool down);
+// Record mode's window mouse: WM_MOUSEMOVE, a button message or WM_MOUSEWHEEL (wheelDelta in WHEEL_DELTA units), with
+// the lParam the live port would post; written as W lines while the game does not hold the DirectInput mouse.
+void PortRecordWindowMouse(UINT msg, LPARAM l, int wheelDelta);
+// Record mode's typed text: the character a key-down makes (window.cpp KeyChar), written as a C line after the key.
+void PortRecordChar(unsigned c, unsigned scan);
+// A tape-2 replay or a recording: the cursor is the last W position delivered (client pixels), else false.
+bool PortTapeCursor(POINT *p);
+// dinput.cpp: whether the game holds (has acquired) the DirectInput mouse.
+bool PortDinputMouseAcquired();
 // The player's game folder (read only) and the port's writable folder (port/platform/<target>/...paths).
 const char *PortGameDir();
 const char *PortUserDir();

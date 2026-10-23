@@ -169,7 +169,9 @@ int CopyOnWrite(const char *game_path, char *out, size_t n)
 	return 0;
 }
 
-// A merged search: the writable folder's entries first, names unique ignoring case.
+// A merged search: the writable folder's entries first, names unique ignoring case, the whole list in NTFS name order
+// (each folder alone already comes back in it on NTFS; the merge must keep it, as the Linux build's searches do):
+// "." and ".." first, then ASCII letters upper-cased and every other byte compared as itself.
 struct Find
 {
 	WIN32_FIND_DATAA *entries;
@@ -198,6 +200,34 @@ void FindScan(Find *f, const char *spec)
 	FindClose(h);
 }
 
+int FindNameOrder(const char *a, const char *b)
+{
+	int dots_a = !strcmp(a, ".") ? 1 : !strcmp(a, "..") ? 2 : 3, dots_b = !strcmp(b, ".") ? 1 : !strcmp(b, "..") ? 2 : 3;
+	if (dots_a != 3 || dots_b != 3)
+		return dots_a - dots_b;
+	for (;; a++, b++)
+	{
+		unsigned ca = (unsigned char)*a, cb = (unsigned char)*b;
+		if (ca >= 'a' && ca <= 'z')
+			ca -= 'a' - 'A';
+		if (cb >= 'a' && cb <= 'z')
+			cb -= 'a' - 'A';
+		if (ca != cb || !ca)
+			return (int)ca - (int)cb;
+	}
+}
+
+void FindSort(Find *f)
+{
+	for (int i = 1; i < f->count; i++)
+		for (int j = i; j > 0 && FindNameOrder(f->entries[j - 1].cFileName, f->entries[j].cFileName) > 0; j--)
+		{
+			WIN32_FIND_DATAA e = f->entries[j];
+			f->entries[j] = f->entries[j - 1];
+			f->entries[j - 1] = e;
+		}
+}
+
 Find *FindStart(const char *spec)
 {
 	Find *f = (Find *)calloc(1, sizeof(Find));
@@ -207,6 +237,7 @@ Find *FindStart(const char *spec)
 	Resolve(spec, READ, game, sizeof(game));
 	if (_stricmp(game, user) != 0)
 		FindScan(f, game);
+	FindSort(f);
 	return f;
 }
 

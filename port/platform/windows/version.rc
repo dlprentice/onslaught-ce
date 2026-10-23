@@ -1,0 +1,21 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// port/platform/windows/version.rc: bea.exe's version resource. WinMain (src/ltshell.cpp) reads the game's version from
+// its own executable's VS_FIXEDFILEINFO and uses the result without checking it; without this resource the lookup fails
+// and WinMain reads through an uninitialised pointer. Retail's resource says 1.0.0.0 (BEA.exe 74154bfa...), as the Linux
+// build's version calls answer (port/platform/linux/user.cpp): the front end shows "V1.00" and -getversion exits 10000.
+#include <winver.h>
+
+1 VERSIONINFO
+FILEVERSION 1,0,0,0
+PRODUCTVERSION 1,0,0,0
+FILEFLAGSMASK 0x3fL
+FILEFLAGS 0x0L
+FILEOS VOS_NT_WINDOWS32
+FILETYPE VFT_APP
+FILESUBTYPE VFT2_UNKNOWN
+BEGIN
+	BLOCK "VarFileInfo"
+	BEGIN
+		VALUE "Translation", 0x409, 1252
+	END
+END

@@ -1132,18 +1132,23 @@ static void start_recording(char **args, int nargs)
 	const char *clock = getenv("BEA_PORT_CLOCK");
 	if (!clock || !*clock) set_env("BEA_PORT_CLOCK", "shim");	/* record mode's clock: 1/30 s a Present, paced to real time */
 	set_env("BEA_PORT_RECORD", path);
+	/* the virtual clock's mix, written only, to the sound device (dsound.cpp): the game never reads it back */
+	const char *monitor = getenv("BEA_AUDIO_MONITOR");
+	if (!monitor || !*monitor) set_env("BEA_AUDIO_MONITOR", "1");
+	int monitor_on = !monitor || !*monitor || strcmp(monitor, "0") != 0;
 	ce_os_name(os, sizeof os);
 	utc_now(date, sizeof date, "%Y-%m-%dT%H:%M:%SZ");
 	FILE *f = fopen(json, "wb");
 	if (f)
 	{
-		fprintf(f, "{\n  \"format\": \"onslaught-ce session tape 1\",\n  \"tape\": ");
+		fprintf(f, "{\n  \"format\": \"onslaught-ce session tape 2\",\n  \"tape_lines\": [\"K\", \"M\", \"W\", \"W_CLIENT\", \"C\"],\n  \"tape\": ");
 		json_string(f, strrchr(path, SEP[0]) + 1);
 		fprintf(f, ",\n  \"ce_version\": \"%s\",\n  \"build\": \"%s\",\n  \"platform\": \"%s\",\n  \"os\": ", CE_VERSION, CE_COMMIT, PLATFORM);
 		json_string(f, os);
 		fprintf(f, ",\n  \"date_utc\": \"%s\",\n  \"clock\": ", date);
 		json_string(f, getenv("BEA_PORT_CLOCK"));
-		fprintf(f, ",\n  \"presents_per_second\": 30,\n  \"game_args\": [");
+		fprintf(f, ",\n  \"presents_per_second\": 30,\n  \"audio_monitor\": %s,\n  \"game_args\": [",
+				monitor_on ? "true" : "false");
 		for (int i = 0; i < nargs; i++)
 		{
 			fprintf(f, i ? ", " : "");
@@ -1158,8 +1163,8 @@ static void start_recording(char **args, int nargs)
 	}
 	char shortpath[PATHN];
 	ce_short_path(path, shortpath, sizeof shortpath);
-	say("recording this session to %s: while recording the game runs at 30 frames a second, and its menus take the "
-		"keyboard only", shortpath);
+	say("recording this session to %s: while recording the game runs at 30 frames a second; its menus take the "
+		"keyboard and mouse", shortpath);
 }
 
 /* record_sessions=1: whether to record this start. The game's CE page, where the player switched recording on, is hidden
@@ -1173,7 +1178,7 @@ static int ask_record(void)
 	const SDL_MessageBoxData box = {SDL_MESSAGEBOX_INFORMATION, NULL, "Onslaught CE",
 		"Session recording is on. A recording keeps your keyboard and mouse input, and a copy of your careers and "
 		"settings as they were at the start, so a problem you report can be replayed exactly.\n\n"
-		"While recording, the game runs at 30 frames a second with the original menus (use the keyboard in them), so "
+		"While recording, the game runs at 30 frames a second with the original menus (keyboard and mouse), so "
 		"the Onslaught CE menu and cheats are hidden.\n\n"
 		"Record: record this session.\n"
 		"Not this time: play without recording; you will be asked again next time.\n"

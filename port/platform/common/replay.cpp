@@ -1,7 +1,16 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // port/platform/common/replay.cpp: the input tapes and probe readout (REPORT-6), so a port run compares with the
 // retail goldens (golden-640/levelN.retail.probes) Present by Present. Off unless BEA_PORT_TAPE or BEA_PORT_PROBES is set.
-//   BEA_PORT_TAPE=PATH      the tape: `K <frame> <down|up> <vk hex> <scan hex> <name>`, `M <frame> <dx> <dy> <wheel> <buttons>`
+//   BEA_PORT_TAPE=PATH      the tape: `K <frame> <down|up> <vk hex> <scan hex> <name>`, `M <frame> <dx> <dy> <wheel> <buttons>`,
+//                           and (tape 2, `# onslaught tape 2`) the window mouse, in the retail replay harness's format:
+//                           `W_CLIENT <w> <h>` (the game's back buffer, the size the front end divides the window mouse
+//                           by, when the W lines after it were made) and
+//                           `W <frame> <move|ldown|lup|rdown|rup|mdown|mup|wheel> <x> <y> <wparam hex>`, posted as the window
+//                           messages with the recorded lParam unchanged (x, y; wheel: wparam's high word is the delta); a
+//                           replay whose back buffer is not W_CLIENT's stops with a message (replay it with the recorded
+//                           -res). Typed text: `C <frame> <char hex> <scan hex>`, a WM_CHAR after its key's K line, as
+//                           the live port makes one from a key-down (port only: retail's harness has no C lines). Other
+//                           lines are counted and ignored.
 //   BEA_PORT_PROBES=PATH    probe lines `P <frame> <NAME> <hex>`, every BEA_PORT_PROBE_EVERY (50) Presents
 //   BEA_PORT_REPLAY_MAX=N   after frame N's probes, post WM_CLOSE (the game's own shutdown)
 //   (with BEA_PORT_PROBES) FE: in the front end, its frame step, page, transition and counter (28 bytes) each probe
@@ -11,7 +20,11 @@
 //   BEA_PORT_RECORD=PATH    record a tape from live play: keys (no repeats) and the mouse are queued and delivered at
 //                           the Present hook exactly as a tape's, and written to PATH in the tape format, so replaying
 //                           PATH reproduces the run. Presents are paced to BEA_PORT_RECORD_FPS (30) real time, for play
-//                           on the shim clock. Window mouse, text and focus messages are not delivered (a tape has none).
+//                           on the shim clock. While the game holds the DirectInput mouse (play) the mouse is written as
+//                           M lines; otherwise (menus, pause menu) as W lines, the window messages the front end reads,
+//                           each button preceded by a move to its position. A key-down's character (the live port's
+//                           WM_CHAR, window.cpp KeyChar) is a C line, so a career can be named; focus messages are not
+//                           delivered (a tape has none).
 //   BEA_PORT_AUTOPILOT=CMDS   record mode only: from Present BEA_PORT_AUTOPILOT_START (3300) the input is made, not
 //                           read: `wp:X,Y` walks the battle engine to within 1.5 of map point X,Y (mouse X turns it,
 //                           W walks when it faces the point), `wait:N` waits N Presents, `fire:N` holds the left mouse
@@ -22,6 +35,8 @@
 // events delivered, so the game sees them first while making Present F+1. Keys are WM_KEYDOWN/WM_KEYUP messages to the
 // device window (retail reads the keyboard only through messages); mouse movement is summed and returned by the first
 // DirectInput mouse GetDeviceState after the frame's events (later reads in that frame see none), buttons as a level.
+// W lines are posted in tape order with the K lines. In a tape-2 replay or a recording, GetCursorPos answers the last W
+// position and the window sits at the screen's origin, so the game's cursor never depends on the desktop.
 // The probes read the game's objects at retail's offsets; the port's class layouts match them (gdb, ptype /o on CGame,
 // CPlayer, CBattleEngine and CEventManager of the Linux build).
 #include <windows.h>
@@ -35,6 +50,7 @@
 
 #include "platform.h"
 extern "C" void PortCrtRandState(unsigned int *calls, unsigned int *hold);	// crtrand.cpp
+extern "C" int PortBackBuffer(unsigned *w, unsigned *h);	// d3d9hooks.cpp: the game's back buffer (0 before the device)
 
 extern "C" char GAME[];
 extern "C" char EVENT_MANAGER[];
@@ -48,11 +64,30 @@ namespace
 struct Event
 {
 	unsigned frame;
-	char kind;			// 'K' or 'M'
+	char kind;			// 'K', 'M', 'W' or 'C' (0: dropped); C: vk is the character, scan its key's
 	bool down;
 	unsigned vk, scan;
 	int dx, dy, wheel, buttons;
+	UINT msg;			// W: the window message, its lParam's point and wParam, and the client size it was made in
+	int x, y;
+	unsigned wparam;
+	unsigned cw, ch;	// W: the W_CLIENT before it (0: none)
 };
+
+const struct
+{
+	const char *name;
+	UINT msg;
+} kWin[] = {{"move", WM_MOUSEMOVE}, {"ldown", WM_LBUTTONDOWN}, {"lup", WM_LBUTTONUP}, {"rdown", WM_RBUTTONDOWN},
+			{"rup", WM_RBUTTONUP}, {"mdown", WM_MBUTTONDOWN}, {"mup", WM_MBUTTONUP}, {"wheel", WM_MOUSEWHEEL}};
+
+const char *WinName(UINT msg)
+{
+	for (const auto &k : kWin)
+		if (k.msg == msg)
+			return k.name;
+	return NULL;
+}
 
 Event *gEvents;
 size_t gCount, gNext;
@@ -62,8 +97,13 @@ bool gActive, gInit, gObjects;
 long gMouseX, gMouseY, gMouseZ;
 int gButtons;
 FILE *gRecord;
-Event gPending[256];
+Event gPending[1024];		// record mode: keys and window-mouse events in SDL's order, until the next Present
 size_t gPendingCount;
+unsigned gRecMk;			// record mode: the window mouse's button level (MK_ bits), the recorder's own
+unsigned gRecCw, gRecCh;	// the last W_CLIENT written
+unsigned gRecMoveDrops;
+bool gTapeCursor;			// a tape-2 replay or a recording: GetCursorPos answers gCurX, gCurY
+int gCurX, gCurY;			// the last W position delivered
 float gRecFracX, gRecFracY;
 long gRecWheel;
 int gRecButtons;			// the last written button level (a tape starts with none down)
@@ -87,13 +127,45 @@ void Load(const char *path)
 		fprintf(stderr, PORT_LOG_PREFIX "replay: cannot open tape %s\n", path);
 		exit(3);
 	}
-	size_t cap = 0;
+	size_t cap = 0, unknown = 0;
+	unsigned version = 1, cw = 0, ch = 0;
 	char line[256];
 	while (fgets(line, sizeof(line), f))
 	{
 		Event e = {};
 		char dir[8] = "";
-		if (line[0] == 'K' && sscanf(line, "K %u %7s %x %x", &e.frame, dir, &e.vk, &e.scan) == 4)
+		char kind[16] = "";
+		if (line[0] == '#')
+		{
+			sscanf(line, "# onslaught tape %u", &version);
+			continue;
+		}
+		if (line[0] == '\n' || line[0] == '\r' || line[0] == 0)
+			continue;
+		if (strncmp(line, "W_CLIENT ", 9) == 0)
+		{
+			if (sscanf(line, "W_CLIENT %u %u", &cw, &ch) != 2)
+				unknown++;
+			continue;
+		}
+		if (line[0] == 'W' && sscanf(line, "W %u %15s %d %d %x", &e.frame, kind, &e.x, &e.y, &e.wparam) == 5)
+		{
+			for (const auto &k : kWin)
+				if (strcmp(k.name, kind) == 0)
+					e.msg = k.msg;
+			if (!e.msg)
+			{
+				unknown++;
+				continue;
+			}
+			e.kind = 'W';
+			e.cw = cw;
+			e.ch = ch;
+			gTapeCursor = true;
+		}
+		else if (line[0] == 'C' && sscanf(line, "C %u %x %x", &e.frame, &e.vk, &e.scan) == 3)
+			e.kind = 'C';
+		else if (line[0] == 'K' && sscanf(line, "K %u %7s %x %x", &e.frame, dir, &e.vk, &e.scan) == 4)
 		{
 			e.kind = 'K';
 			e.down = strcmp(dir, "down") == 0;
@@ -101,13 +173,20 @@ void Load(const char *path)
 		else if (line[0] == 'M' && sscanf(line, "M %u %d %d %d %d", &e.frame, &e.dx, &e.dy, &e.wheel, &e.buttons) == 5)
 			e.kind = 'M';
 		else
+		{
+			unknown++;
 			continue;
+		}
 		if (gCount == cap)
 			gEvents = (Event *)realloc(gEvents, (cap = cap ? cap * 2 : 4096) * sizeof(Event));
 		gEvents[gCount++] = e;
 	}
 	fclose(f);
-	fprintf(stderr, PORT_LOG_PREFIX "replay: %zu tape events from %s\n", gCount, path);
+	if (version >= 2)
+		gTapeCursor = true;
+	fprintf(stderr, PORT_LOG_PREFIX "replay: %zu tape events from %s (tape %u)\n", gCount, path, version);
+	if (unknown)
+		fprintf(stderr, PORT_LOG_PREFIX "replay: %zu tape lines not understood, ignored\n", unknown);
 }
 
 void Init()
@@ -138,6 +217,8 @@ void Init()
 			fprintf(stderr, PORT_LOG_PREFIX "replay: cannot write tape %s\n", rec);
 			exit(3);
 		}
+		fprintf(gRecord, "# onslaught tape 2\n");
+		gTapeCursor = true;
 		if (const char *fps = getenv("BEA_PORT_RECORD_FPS"))
 			gRecFps = atof(fps) > 0 ? atof(fps) : 30;
 		gActive = true;
@@ -339,21 +420,109 @@ static void Pilot(unsigned frame, int *dx, int *buttons)
 	PilotKey(false);
 }
 
+// The size the front end divides the window mouse by: the game's back buffer (0 x 0 before the device exists).
+static void MouseSpace(unsigned *w, unsigned *h)
+{
+	if (!PortBackBuffer(w, h))
+		*w = *h = 0;
+}
+
+// One tape event to the game: a key or window-mouse message, posted (never merged with another) as retail's shim does.
+static void Deliver(HWND window, const Event &e)
+{
+	if (e.kind == 'K')
+	{
+		LPARAM l = 1 | ((LPARAM)(e.scan & 0x1ff) << 16);	// as retail's shim: scan 0x1xx sets the extended flag (bit 24)
+		if (!e.down)
+			l |= (LPARAM)0xC0000000;
+		PortPostMessageA(window, e.down ? WM_KEYDOWN : WM_KEYUP, e.vk, l);
+		return;
+	}
+	if (e.kind == 'C')
+	{
+		// as window.cpp posts a key-down's character: the key-down's lParam
+		PortPostMessageA(window, WM_CHAR, e.vk, 1 | ((LPARAM)(e.scan & 0x1ff) << 16));
+		return;
+	}
+	if (e.kind != 'W')
+		return;
+	// The recorded lParam, unchanged: the front end reads x * 640 / back buffer width (and the pause menu raw pixels),
+	// so the point means the same only at the recorded back buffer. A replay at another size would put the clicks
+	// elsewhere and go its own way, so it stops instead (the session's .json pins the recorded -res in game_args).
+	unsigned w = 0, h = 0;
+	MouseSpace(&w, &h);
+	if (e.cw && e.ch && (e.cw != w || e.ch != h))
+	{
+		fprintf(stderr, PORT_LOG_PREFIX "replay: this tape's window mouse was recorded with the game drawing at %ux%u, "
+				"but it draws at %ux%u now; replay it at the recorded size (-res %u %u, as the session's .json game_args "
+				"say). Replay stopped.\n", e.cw, e.ch, w, h, e.cw, e.ch);
+		fflush(NULL);
+		_Exit(3);	// not exit(): dxvk's threads are running (main.cpp: its statics must not be destroyed under them)
+	}
+	if (e.msg != WM_MOUSEWHEEL)
+	{
+		gCurX = e.x;
+		gCurY = e.y;
+	}
+	PortPostMessageA(window, e.msg, (WPARAM)e.wparam, MAKELPARAM(e.x, e.y));
+}
+
 // Record mode: the frame's live input becomes tape events (written, then delivered by the loop below as a tape's).
 static void RecordFrame(unsigned frame)
 {
-	// pace: Present F completes no earlier than F / fps seconds after the first
+	// pace: Present F completes no earlier than F / fps seconds after the first. A Present more than a few frames late
+	// (a level load, a film opening) starts the schedule again from itself: otherwise the Presents after a stall run
+	// unpaced until they catch up with it, and films and the game play fast for that long. Only wall time changes; the
+	// tape's lines are written by Present, so the same input gives the same tape.
 	unsigned long long now = SDL_GetTicksNS();
+	unsigned long long period = (unsigned long long)(1e9 / gRecFps);
 	if (!gRecStart)
 		gRecStart = now - (unsigned long long)(frame * 1e9 / gRecFps);
 	unsigned long long due = gRecStart + (unsigned long long)(frame * 1e9 / gRecFps);
+	if (now > due + 4 * period)
+	{
+		gRecStart = now - (unsigned long long)(frame * 1e9 / gRecFps);
+		due = now;
+	}
 	if (due > now)
 		SDL_DelayNS(due - now);
+	// The window mouse reaches the game only while DirectInput does not hold the mouse (exclusive DirectInput on Windows
+	// takes the window's mouse messages); while it does, the movement goes to M lines below and the window events are
+	// dropped. Decided here, at the Present, from the state the game's next frame reads.
+	bool held = PortDinputMouseAcquired();
 	for (size_t i = 0; i < gPendingCount; i++)
 	{
 		Event &e = gPending[i];
 		e.frame = frame;
-		fprintf(gRecord, "K %u %s %02x %02x vk%02x\n", frame, e.down ? "down" : "up", e.vk, e.scan, e.vk);
+		if (e.kind == 'K')
+			fprintf(gRecord, "K %u %s %02x %02x vk%02x\n", frame, e.down ? "down" : "up", e.vk, e.scan, e.vk);
+		else if (e.kind == 'C')
+			fprintf(gRecord, "C %u %02x %02x\n", frame, e.vk, e.scan);
+		else if (e.kind == 'W')
+		{
+			if (held)
+			{
+				e.kind = 0;
+				continue;
+			}
+			unsigned w = 0, h = 0;
+			MouseSpace(&w, &h);
+			if (w != gRecCw || h != gRecCh)
+			{
+				fprintf(gRecord, "W_CLIENT %u %u\n", w, h);
+				gRecCw = w;
+				gRecCh = h;
+			}
+			e.cw = w;
+			e.ch = h;
+			fprintf(gRecord, "W %u %s %d %d %x\n", frame, WinName(e.msg), e.x, e.y, e.wparam);
+		}
+	}
+	if (!held)
+	{
+		// the menus' movement is in the W lines: none of it piles up for the first in-game GetDeviceState
+		gRecFracX = gRecFracY = 0;
+		gRecWheel = 0;
 	}
 	// the mouse: motion events' relative movement and button events since the last Present (window.cpp)
 	int dx = (int)gRecFracX, dy = (int)gRecFracY;
@@ -370,7 +539,7 @@ static void RecordFrame(unsigned frame)
 	}
 	int wheel = (int)gRecWheel;
 	gRecWheel = 0;
-	if (dx || dy || wheel || buttons != gRecButtons)
+	if (held && (dx || dy || wheel || buttons != gRecButtons))
 	{
 		fprintf(gRecord, "M %u %d %d %d %d\n", frame, dx, dy, wheel, buttons);
 		gMouseX += dx;
@@ -429,13 +598,7 @@ void PortReplayFrame(unsigned frame, HWND window)
 	{
 		RecordFrame(frame);
 		for (size_t i = 0; i < gPendingCount; i++)
-		{
-			const Event &e = gPending[i];
-			LPARAM l = 1 | ((LPARAM)(e.scan & 0x1ff) << 16);	// as retail's shim: scan 0x1xx sets the extended flag (bit 24)
-			if (!e.down)
-				l |= (LPARAM)0xC0000000;
-			PortPostMessageA(window, e.down ? WM_KEYDOWN : WM_KEYUP, e.vk, l);
-		}
+			Deliver(window, gPending[i]);
 		gPendingCount = 0;
 	}
 	if (gProbes && gEvery && frame % gEvery == 0 && (!gMax || frame <= gMax))
@@ -447,13 +610,8 @@ void PortReplayFrame(unsigned frame, HWND window)
 		const Event &e = gEvents[gNext];
 		if (e.frame < frame)
 			continue;	// before the first Present the hook saw: not deliverable
-		if (e.kind == 'K')
-		{
-			LPARAM l = 1 | ((LPARAM)(e.scan & 0x1ff) << 16);	// as retail's shim: scan 0x1xx sets the extended flag (bit 24)
-			if (!e.down)
-				l |= (LPARAM)0xC0000000;
-			PortPostMessageA(window, e.down ? WM_KEYDOWN : WM_KEYUP, e.vk, l);
-		}
+		if (e.kind != 'M')
+			Deliver(window, e);
 		else
 		{
 			gMouseX += e.dx;
@@ -502,6 +660,93 @@ void PortRecordKey(bool down, unsigned vk, unsigned scan)
 		e.scan = scan;
 		gPending[gPendingCount++] = e;
 	}
+}
+
+// Record mode's typed text (window.cpp): the character a key-down makes (KeyChar), queued right after the key's K event.
+void PortRecordChar(unsigned c, unsigned scan)
+{
+	if (gPendingCount < sizeof(gPending) / sizeof(gPending[0]))
+	{
+		Event e = {};
+		e.kind = 'C';
+		e.vk = c;
+		e.scan = scan;
+		gPending[gPendingCount++] = e;
+	}
+}
+
+// Record mode's window mouse (window.cpp): msg is WM_MOUSEMOVE, a button message or WM_MOUSEWHEEL (delta in wheel
+// units), l the lParam the live port would post. Moves merge into a move just before them; each button gets a move to
+// its position first, so the cursor is where the click is even when no move came between.
+void PortRecordWindowMouse(UINT msg, LPARAM l, int wheelDelta)
+{
+	const size_t cap = sizeof(gPending) / sizeof(gPending[0]);
+	int x = LOWORD(l), y = HIWORD(l);
+	auto move = [&]() -> bool
+	{
+		if (gPendingCount && gPending[gPendingCount - 1].kind == 'W' && gPending[gPendingCount - 1].msg == WM_MOUSEMOVE)
+		{
+			gPending[gPendingCount - 1].x = x;
+			gPending[gPendingCount - 1].y = y;
+			return true;
+		}
+		if (gPendingCount >= cap)
+			return false;
+		Event e = {};
+		e.kind = 'W';
+		e.msg = WM_MOUSEMOVE;
+		e.x = x;
+		e.y = y;
+		e.wparam = gRecMk;
+		gPending[gPendingCount++] = e;
+		return true;
+	};
+	if (msg == WM_MOUSEMOVE)
+	{
+		if (!move() && gRecMoveDrops++ < 8)
+			fprintf(stderr, PORT_LOG_PREFIX "replay: record queue full, a mouse move dropped\n");
+		return;
+	}
+	if (msg == WM_MOUSEWHEEL && (short)wheelDelta == 0)
+		return;
+	if (msg != WM_MOUSEWHEEL)
+		move();
+	switch (msg)
+	{
+	case WM_LBUTTONDOWN: gRecMk |= MK_LBUTTON; break;
+	case WM_LBUTTONUP: gRecMk &= ~MK_LBUTTON; break;
+	case WM_RBUTTONDOWN: gRecMk |= MK_RBUTTON; break;
+	case WM_RBUTTONUP: gRecMk &= ~MK_RBUTTON; break;
+	case WM_MBUTTONDOWN: gRecMk |= MK_MBUTTON; break;
+	case WM_MBUTTONUP: gRecMk &= ~MK_MBUTTON; break;
+	}
+	if (gPendingCount >= cap)
+	{
+		fprintf(stderr, PORT_LOG_PREFIX "replay: record queue full, mouse message %04x dropped\n", msg);
+		return;
+	}
+	Event e = {};
+	e.kind = 'W';
+	e.msg = msg;
+	e.x = x;
+	e.y = y;
+	e.wparam = msg == WM_MOUSEWHEEL ? (unsigned)MAKEWPARAM(gRecMk, (short)wheelDelta) : gRecMk;
+	gPending[gPendingCount++] = e;
+}
+
+// A tape-2 replay or a recording: the cursor is the last W position, in client pixels (the window at the screen's origin).
+bool PortTapeCursor(POINT *p)
+{
+	if (!gInit)
+		Init();
+	if (!gTapeCursor)
+		return false;
+	if (p)
+	{
+		p->x = gCurX;
+		p->y = gCurY;
+	}
+	return true;
 }
 
 void PortRecordWheel(float steps) { gRecWheel += (long)(steps * WHEEL_DELTA); }

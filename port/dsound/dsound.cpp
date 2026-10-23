@@ -15,7 +15,9 @@
 // Environment: BEA_AUDIO_RECORD=file.wav writes the final mix (44.1 kHz 16-bit stereo); BEA_AUDIO_TRACE=file.txt logs
 // every Play (mix time, buffer, format, rate, volume, 3D state, the data's peak and RMS); BEA_AUDIO_CLOCK=timer mixes on
 // a 10 ms timer without opening a device (cursors and notifications still advance in real time), which is also the
-// fallback when no audio device opens.
+// fallback when no audio device opens. BEA_AUDIO_MONITOR=1 (record mode, set by the launcher) plays the virtual clock's
+// mix on SDL's default device as a write-only monitor: the mix is pushed into a device stream that has no callback and
+// is never read back, so nothing the game sees (cursors, GetStatus, notifications, the Bink clock) depends on it.
 #include <windows.h>
 #include <mmsystem.h>
 #include <dsound.h>
@@ -86,8 +88,12 @@ struct Mixer
 	bool virt = false;				// BEA_PORT_CLOCK: the mix follows the port's virtual clock (CatchUp)
 	Uint64 virtBase = 0;			// the virtual time the mix started at
 	FILE *trace = NULL;				// BEA_AUDIO_TRACE: one line per Play, for diagnosing a mix
+	SDL_AudioStream *monitor = NULL;	// BEA_AUDIO_MONITOR with the virtual clock: the mix, written only, to the device
+	bool monitorAudioInit = false;
+	bool monitorPlaying = false;
 
 	void Start();
+	void Monitor(const Sint16 *pcm, int frames);
 	void Stop();
 	void Mix(Sint16 *out, int frames);		// called with lock held
 	void CatchUp();
@@ -979,7 +985,26 @@ void Mixer::Mix(Sint16 *out, int frames)
 		out[i] = (Sint16)lrintf(s * 32767.0f);
 	}
 	Record(out, frames);
+	Monitor(out, frames);
 	mixed += frames;
+}
+
+// The monitor: what was mixed goes to the device, one way. The device starts once about 60 ms is queued; a queue over
+// about 200 ms (the virtual clock catching up after a stall, or a replay running faster than real time) is dropped first,
+// and a queue that runs dry plays silence. Return values are ignored: the game's state never depends on the monitor.
+void Mixer::Monitor(const Sint16 *pcm, int frames)
+{
+	if (!monitor)
+		return;
+	const int bytesPerMs = kRate * 4 / 1000;
+	if (SDL_GetAudioStreamQueued(monitor) > 200 * bytesPerMs)
+		SDL_ClearAudioStream(monitor);
+	SDL_PutAudioStreamData(monitor, pcm, frames * 4);
+	if (!monitorPlaying && SDL_GetAudioStreamQueued(monitor) >= 60 * bytesPerMs)
+	{
+		SDL_ResumeAudioStreamDevice(monitor);
+		monitorPlaying = true;
+	}
 }
 
 void Mixer::Record(const Sint16 *pcm, int frames)
@@ -1109,6 +1134,23 @@ void Mixer::Start()
 		else
 			SDL_QuitSubSystem(SDL_INIT_AUDIO);
 	}
+	const char *mon = SDL_getenv("BEA_AUDIO_MONITOR");
+	if (virt && mon && mon[0] && mon[0] != '0' && !monitor)
+	{
+		// no callback: the device can never pull a mix, it only plays what Mix pushed
+		monitorAudioInit = SDL_InitSubSystem(SDL_INIT_AUDIO);
+		SDL_AudioSpec spec = {SDL_AUDIO_S16LE, 2, kRate};
+		if (monitorAudioInit)
+			monitor = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, NULL, NULL);
+		monitorPlaying = false;
+		if (!monitor)
+		{
+			fprintf(stderr, PORT_LOG_PREFIX "audio monitor not opened: %s\n", SDL_GetError());
+			if (monitorAudioInit)
+				SDL_QuitSubSystem(SDL_INIT_AUDIO);
+			monitorAudioInit = false;
+		}
+	}
 	if (!stream)
 	{
 		timerLast = SDL_GetTicksNS();
@@ -1117,7 +1159,13 @@ void Mixer::Start()
 	}
 	// so a run's log shows where the sound went (SDL's "dummy" driver and the timer clock are silent)
 	static const char *sLogged;
+	static char sMonitor[96];
 	const char *where = stream ? SDL_GetCurrentAudioDriver() : virt ? "virtual clock, no device" : "timer clock, no device";
+	if (monitor)
+	{
+		snprintf(sMonitor, sizeof(sMonitor), "virtual clock, monitor %s", SDL_GetCurrentAudioDriver());
+		where = sMonitor;
+	}
 	if (!sLogged || strcmp(sLogged, where))
 		fprintf(stderr, PORT_LOG_PREFIX "audio %s\n", sLogged = where);
 }
@@ -1138,6 +1186,14 @@ void Mixer::Stop()
 		timer = 0;
 	}
 	SDL_LockMutex(lock);
+	if (monitor)
+	{
+		SDL_DestroyAudioStream(monitor);
+		monitor = NULL;
+		if (monitorAudioInit)
+			SDL_QuitSubSystem(SDL_INIT_AUDIO);
+		monitorAudioInit = false;
+	}
 	FinishWav();
 	if (trace)
 	{

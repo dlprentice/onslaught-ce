@@ -175,6 +175,8 @@ static inline void ce_report_url(const char *version, const char *build, const c
 	snprintf(body, sizeof body,
 			 "**What happened**\n\n\n\n"
 			 "**Steps to reproduce**\n\n1. \n\n"
+			 "**Does the original game do the same?**\n\nYes, no, or not checked.\n\n"
+			 "**How did you run it?**\n\nNative Linux, native Windows, or under Wine or Proton (which version?).\n\n"
 			 "**Files**\n\n"
 			 "Please attach the log: drag `%s` into this box (`onslaught-ce.old.log` beside it is the run before).\n"
 			 "%s%s%s\n"

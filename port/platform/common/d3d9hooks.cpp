@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // port/platform/common/d3d9hooks.cpp: the game's Direct3D 9 entry, on both targets. port.h renames the game's
 // Direct3DCreate9 to PortDirect3DCreate9, which returns the real object (dxvk-native on Linux, the system's d3d9 on
-// Windows) with two calls observed through a copied vtable (the object keeps its own implementation; RTTI slots are
-// copied too):
+// Windows) with these calls observed through its vtable (HookTable: a private copy on Linux, the object's own table on
+// Windows; the object keeps its own implementation):
 // - IDirect3D9::GetAdapterModeCount/EnumAdapterModes: the standard 4:3 modes where the desktop offers none, or with
 //   widescreen modes on, the desktop's sizes (below).
 // - IDirect3D9::CreateDevice: retail creates its device without D3DCREATE_FPU_PRESERVE, so Direct3D leaves the
@@ -36,16 +36,47 @@ unsigned short ControlWord()
 
 void SetControlWord(unsigned short cw) { __asm__ volatile("fldcw %0" : : "m"(cw)); }
 
-// Points the object at a private copy of its vtable (two slots before it included: offset-to-top and RTTI) and returns
-// the copy, whose entries the caller then replaces.
-void **CopyVtable(void *object, int slots)
+// The vtable whose entries the caller replaces (with SetSlot), after reading the originals from it.
+// Linux: the object is pointed at a private copy of its vtable (two slots before it included: offset-to-top and RTTI).
+// Windows: the object's own vtable, changed in place. Windows' compatibility layer (apphelp.dll) hooks Direct3D 9
+// methods (IDirect3D9::CreateDevice, IDirect3DDevice9::Reset and others) by writing its own entries into the real
+// vtable, and each of its hooks finds the method it replaced by the object's current vtable pointer: an object pointed at
+// a copy makes the lookup fail and the hook call address 0 (the 0.1.1 and 0.1.2 startup crash). Direct3D's own code also
+// calls internal entries past the public interface through the object's vtable pointer, which a copy of the public
+// entries does not hold. Keeping the pointer, and changing only the entries the port observes, leaves both working; the
+// table is shared by every object of the class, which the guards below (the first original kept) already allow for.
+void **HookTable(void *object, int slots)
 {
 	void ***vptr = (void ***)object;
 	void **original = *vptr;
+#ifdef _WIN32
+	(void)slots;
+	return original;
+#else
 	void **copy = (void **)malloc(sizeof(void *) * (slots + 2));
 	memcpy(copy, original - 2, sizeof(void *) * (slots + 2));
 	*vptr = copy + 2;
 	return copy + 2;
+#endif
+}
+
+// Replaces one entry of a HookTable (on Windows, a read-only page of d3d9.dll made writable for the one write).
+void SetSlot(void **table, int slot, void *fn)
+{
+#ifdef _WIN32
+	if (table[slot] == fn)
+		return;
+	DWORD old;
+	if (!VirtualProtect(&table[slot], sizeof(void *), PAGE_READWRITE, &old))
+	{
+		fprintf(stderr, PORT_LOG_PREFIX "could not hook Direct3D entry %d (error %lu)\n", slot, (unsigned long)GetLastError());
+		return;
+	}
+	table[slot] = fn;
+	VirtualProtect(&table[slot], sizeof(void *), old, &old);
+#else
+	table[slot] = fn;
+#endif
 }
 
 typedef HRESULT (STDMETHODCALLTYPE *CreateDeviceFn)(IDirect3D9 *, UINT, D3DDEVTYPE, HWND, DWORD, D3DPRESENT_PARAMETERS *,
@@ -54,6 +85,7 @@ typedef HRESULT (STDMETHODCALLTYPE *PresentFn)(IDirect3DDevice9 *, const RECT *,
 typedef HRESULT (STDMETHODCALLTYPE *ResetFn)(IDirect3DDevice9 *, D3DPRESENT_PARAMETERS *);
 ResetFn gReset;
 UINT gBoxW, gBoxH;			// the game's back buffer while it is shown desktop-fullscreen (0: not)
+UINT gBackW, gBackH;		// the game's back buffer (its drawing size, LTShell::GetWindowWidth), from CreateDevice and Reset
 SDL_Window *gBoxWindow;
 
 // Fullscreen on a modern desktop: the game asks for an exclusive 4:3 mode (640x480 and up), which dxvk on Linux cannot
@@ -94,6 +126,31 @@ void DesktopFullscreen(HWND focus, D3DPRESENT_PARAMETERS *pp)
 			pp->BackBufferHeight);
 }
 
+}
+
+// The back buffer's size while it is shown desktop-fullscreen (the space PortMapMouse maps into), else 0.
+extern "C" int PortMouseBox(unsigned *w, unsigned *h)
+{
+	if (!gBoxW || !gBoxH || !gBoxWindow)
+		return 0;
+	*w = gBoxW;
+	*h = gBoxH;
+	return 1;
+}
+
+// The game's back buffer: the size the front end divides the window mouse by (LTShell::GetWindowWidth and Height read
+// the present parameters the game passed to CreateDevice and Reset), 0 before the device exists.
+extern "C" int PortBackBuffer(unsigned *w, unsigned *h)
+{
+	if (!gBackW || !gBackH)
+		return 0;
+	*w = gBackW;
+	*h = gBackH;
+	return 1;
+}
+
+namespace
+{
 // The picture's rectangle in the window, in window pixels (the same box Present draws into).
 bool DesktopBox(int &left, int &top, int &width, int &height)
 {
@@ -127,7 +184,11 @@ HRESULT STDMETHODCALLTYPE Reset(IDirect3DDevice9 *device, D3DPRESENT_PARAMETERS 
 	DesktopFullscreen(focus, pp);
 	HRESULT hr = gReset(device, pp);
 	if (SUCCEEDED(hr) && pp)
+	{
+		gBackW = pp->BackBufferWidth;
+		gBackH = pp->BackBufferHeight;
 		PortWideBackBuffer(pp->BackBufferWidth, pp->BackBufferHeight);
+	}
 	return hr;
 }
 
@@ -782,6 +843,8 @@ HRESULT STDMETHODCALLTYPE CreateDevice(IDirect3D9 *d3d, UINT adapter, D3DDEVTYPE
 	if (SUCCEEDED(hr) && pp)
 	{
 		gDevice = *out;
+		gBackW = pp->BackBufferWidth;
+		gBackH = pp->BackBufferHeight;
 		PortWideBackBuffer(pp->BackBufferWidth, pp->BackBufferHeight);
 	}
 	if (SUCCEEDED(hr) && !(flags & D3DCREATE_FPU_PRESERVE))
@@ -791,13 +854,13 @@ HRESULT STDMETHODCALLTYPE CreateDevice(IDirect3D9 *d3d, UINT adapter, D3DDEVTYPE
 			(unsigned long)hr, (unsigned long)flags, before, after, ControlWord());
 	if (SUCCEEDED(hr) && *out)
 	{
-		void **table = CopyVtable(*out, kDeviceSlots);
+		void **table = HookTable(*out, kDeviceSlots);
 		if (!gPresent)
 			gPresent = (PresentFn)table[17];
-		table[17] = (void *)&Present;
+		SetSlot(table, 17, (void *)&Present);
 		if (!gReset)
 			gReset = (ResetFn)table[16];
-		table[16] = (void *)&Reset;
+		SetSlot(table, 16, (void *)&Reset);
 		if (const char *spec = getenv("BEA_PORT_D3DLOG"))
 		{
 			const char *colon = strchr(spec, ':');
@@ -819,12 +882,13 @@ HRESULT STDMETHODCALLTYPE CreateDevice(IDirect3D9 *d3d, UINT adapter, D3DDEVTYPE
 				gSetPS = (SetPSFn)table[107]; gSetPSC = (SetPSCFn)table[109]; gSetRT = (SetRTFn)table[37]; gSetDS = (SetDSFn)table[39];
 				gSetMat = (SetMatFn)table[49]; gSetLight = (SetLightFn)table[51]; gLightEnable = (LightEnableFn)table[53];
 			}
-			table[57] = (void *)&SetRS; table[65] = (void *)&SetTex; table[67] = (void *)&SetTSS; table[81] = (void *)&Draw;
-			table[82] = (void *)&DrawIdx; table[92] = (void *)&SetVS; table[94] = (void *)&SetVSC;
-			table[100] = (void *)&SetStream;
-			table[44] = (void *)&SetTransform;
-			table[107] = (void *)&SetPS; table[109] = (void *)&SetPSC; table[37] = (void *)&SetRT; table[39] = (void *)&SetDS;
-			table[49] = (void *)&SetMat; table[51] = (void *)&SetLight; table[53] = (void *)&LightEnable;
+			const struct { int slot; void *fn; } logged[] = {
+				{57, (void *)&SetRS}, {65, (void *)&SetTex}, {67, (void *)&SetTSS}, {81, (void *)&Draw},
+				{82, (void *)&DrawIdx}, {92, (void *)&SetVS}, {94, (void *)&SetVSC}, {100, (void *)&SetStream},
+				{44, (void *)&SetTransform}, {107, (void *)&SetPS}, {109, (void *)&SetPSC}, {37, (void *)&SetRT},
+				{39, (void *)&SetDS}, {49, (void *)&SetMat}, {51, (void *)&SetLight}, {53, (void *)&LightEnable}};
+			for (const auto &l : logged)
+				SetSlot(table, l.slot, l.fn);
 		}
 	}
 	return hr;
@@ -854,17 +918,17 @@ extern "C" IDirect3D9 *__stdcall PortDirect3DCreate9(UINT sdk)
 	IDirect3D9 *d3d = Direct3DCreate9(sdk);
 	if (d3d)
 	{
-		void **table = CopyVtable(d3d, kSlots);
+		void **table = HookTable(d3d, kSlots);
 		if (!gCreateDevice)
 			gCreateDevice = (CreateDeviceFn)table[16];
-		table[16] = (void *)&CreateDevice;
+		SetSlot(table, 16, (void *)&CreateDevice);
 		if (!gModeCount)
 		{
 			gModeCount = (ModeCountFn)table[6];
 			gEnumModes = (EnumModesFn)table[7];
 		}
-		table[6] = (void *)&ModeCount;
-		table[7] = (void *)&EnumModes;
+		SetSlot(table, 6, (void *)&ModeCount);
+		SetSlot(table, 7, (void *)&EnumModes);
 	}
 	return d3d;
 }

@@ -27,3 +27,21 @@ licence:dxbc-spirv	bf14419e	MIT	0f8a5e687bea942a30a8e39b9915294fbe44eca866e71307
 licence:libdisplay-info	275e6459	MIT	15b396244e58830c5614b9394f4deccfe684970cd507f299383ab57ad339eedd	https://raw.githubusercontent.com/doitsujin/libdisplay-info/275e6459c7ab1ddd4b125f28d0440716e4888078/LICENSE
 licence:hwdata	816a9490	GPL-2.0-or-later OR XFree86-1.0 (statement)	21d0406f93e884a050426ebc21931839a45d56bfcbcbfdda7686d583f36f107f	https://raw.githubusercontent.com/vcrhonek/hwdata/816a9490ffcdad1929e0e53f79c500e1aeadd492/LICENSE
 licence:XFree86-1.0	2005-01-01	XFree86 1.0 (the licence page, version 1.0 section)	e54490e79f02dce1d4b3546c00c91cb475e02d5a30d787b8ab6441291a0c0849	https://www.xfree86.org/legal/licenses.html
+# The Linux build's sysroot (port/PLAN.md "Old glibc"; BEA_PORT_SYSROOT=host builds against this machine instead): the
+# Steam Runtime 3 "sniper" SDK sysroot (Debian 11: glibc 2.31, GCC 10 libstdc++, wayland 1.18). Snapshot
+# 3.0.20261021.266025, hashes as Valve's SHA256SUMS for it lists them.
+sysroot-sniper	3.0.20261021.266025	Debian 11 packages' own licences (GPL, LGPL, MIT and others; headers, crt files and libraries for linking only)	8f71947035f97925a311b2ed753f22efcf2f13d6f1631945b8e537f8903ce2cf	https://repo.steampowered.com/steamrt-images-sniper/snapshots/3.0.20261021.266025/com.valvesoftware.SteamRuntime.Sdk-amd64,i386-sniper-sysroot.tar.gz
+# Root file systems for old-glibc tests only (port/tools/oldroot.py); nothing from them is built in or shipped.
+testroot:sniper-platform	3.0.20261021.266025	Debian 11 packages' own licences	2d58ab610d29e47d0ba0ff4666acb39c73c358087adf589e55c2499c3237ab30	https://repo.steampowered.com/steamrt-images-sniper/snapshots/3.0.20261021.266025/com.valvesoftware.SteamRuntime.Platform-amd64,i386-sniper-sysroot.tar.gz
+# Distributions' official base images for the old-glibc test runs (port/tools/distro_root.py adds the game's 32-bit
+# libraries with the distribution's own package manager from a pinned snapshot): Ubuntu's ubuntu-base (SHA256SUMS on
+# cdimage.ubuntu.com), Debian's official Docker image layer (debuerreotype's docker-debian-artifacts at commit cee78df5,
+# 2026-10-20; the digest its image manifest names) and Fedora's container image (its CHECKSUM file).
+testroot:ubuntu-base-22.04	22.04.5	Ubuntu packages' own licences	242cd8898b33ea806ef5f13b1076ed7c76f9f989d18384452f7166692438ff1a	https://cdimage.ubuntu.com/ubuntu-base/releases/22.04/release/ubuntu-base-22.04.5-base-amd64.tar.gz
+testroot:ubuntu-base-24.04	24.04.5	Ubuntu packages' own licences	e77b6f10c2590cef872b33ee9f635a0e3fd1f57fb074c0e52b5c7f56147a0c86	https://cdimage.ubuntu.com/ubuntu-base/releases/24.04/release/ubuntu-base-24.04.5-base-amd64.tar.gz
+testroot:debian-bookworm	12 (20261020)	Debian packages' own licences	8a051559ff62acdfa1af9916c3c67673d946bb71f81cb8f30c565fa647cb6a77	https://raw.githubusercontent.com/debuerreotype/docker-debian-artifacts/cee78df586385250331cacba8fd1140133c054e5/bookworm/oci/blobs/rootfs.tar.gz
+testroot:fedora-40	40-1.14	Fedora packages' own licences	c5c9dc3320ca474ff40b5a378b443a2b290f258a08e909a43fe81ca7a9bbe966	https://archives.fedoraproject.org/pub/archive/fedora/linux/releases/40/Container/x86_64/images/Fedora-Container-Base-Generic.x86_64-40-1.14.oci.tar.xz
+# The Steam Linux Runtime 3 (sniper) container, as Steam runs a game with the "Steam Linux Runtime 3.0 (sniper)"
+# compatibility tool (pressure-vessel; the host's GPU driver is imported): the Steam Deck route.
+testroot:steamlinuxruntime-sniper	3.0.20261021.266025	Steam Linux Runtime (Valve's terms; its Debian 11 packages' own licences)	86956ad0ee62e89134f5e30359cd1019d1ecb614c7b677dad82d4d00f51a2696	https://repo.steampowered.com/steamrt-images-sniper/snapshots/3.0.20261021.266025/SteamLinuxRuntime_sniper.tar.xz
+testroot:ubuntu-base-18.04	18.04.5	Ubuntu packages' own licences	8ff20b47bb123e4271da81b77ee56e6b5aeb85eaf7d9b1b5f6f3fbc7f11d07ea	https://cdimage.ubuntu.com/ubuntu-base/releases/18.04/release/ubuntu-base-18.04.5-base-amd64.tar.gz

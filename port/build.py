@@ -40,6 +40,11 @@ NV_FRAGMENTS_SIZE = 0x63C108 - 0x634550   # tools/decomp.py SPECIMEN_DATA
 # only) keep plain C, where -fms-compatibility would also drop __STDC__.
 MSCXX = ["-fms-compatibility", "-fms-compatibility-version=19.20",
          "-D__GNUC__=4", "-D__GNUC_MINOR__=2", "-D__GNUC_PATCHLEVEL__=1", "-D__GNUC_STDC_INLINE__=1"]
+# glibc 2.31's sys/cdefs.h (the old-glibc sysroot, deps.py SYSROOT) refuses __GNUC__ without __STDC__ ("You need a ISO C
+# conforming compiler"), a check later glibc dropped; no other header the build reads tests __STDC__ (only zconf.h, which
+# also accepts __cplusplus), so defining it changes nothing else.
+if deps.SYSROOT:
+    MSCXX.append("-D__STDC__=1")
 # -fno-autolink: the sources' #pragma comment(lib, ...) (d3dx8, nvtristrip, imagehlp) name libraries the port replaces.
 # -fno-sized-deallocation: VC6's delete is operator delete(void *), the game's own (port.h, PORT_ARRAY_FORMS).
 COMMON = ["-fms-extensions", "-fno-autolink", "-fno-sized-deallocation", "-fno-strict-aliasing", "-fwrapv", "-malign-double", "-mms-bitfields", "-fshort-wchar",
@@ -62,8 +67,9 @@ NO_MATH_BUILTINS = ["-fno-builtin-" + f for f in GAME_MATH]
 LINUX_LLVM = deps.DATA / "llvm/bin"
 LINUX_CLANG_VERSION = "clang version 22.1.8"
 TARGETS = {
-    "linux": dict(cxx=[str(LINUX_LLVM / "clang++"), "--target=i686-pc-linux-gnu"] + NO_WIDE_LIBCALLS,
-                  cc=[str(LINUX_LLVM / "clang"), "--target=i686-pc-linux-gnu"] + NO_WIDE_LIBCALLS,
+    # BEA_PORT_SYSROOT=sniper adds the old-glibc sysroot (deps.py, SYSROOT) to every compile and link.
+    "linux": dict(cxx=[str(LINUX_LLVM / "clang++"), "--target=i686-pc-linux-gnu"] + deps.sysroot_flags() + NO_WIDE_LIBCALLS,
+                  cc=[str(LINUX_LLVM / "clang"), "--target=i686-pc-linux-gnu"] + deps.sysroot_flags() + NO_WIDE_LIBCALLS,
                   includes=[PORT / "include/linux", deps.DATA / "dxvk-native/usr/include/dxvk"]),
     "windows": dict(cxx=[str(deps.DATA / "llvm-mingw/bin/i686-w64-mingw32-clang++")],
                     cc=[str(deps.DATA / "llvm-mingw/bin/i686-w64-mingw32-clang")],
@@ -260,7 +266,8 @@ def link_flags(target):
         rpath = "'$$ORIGIN/lib'" if PUBLIC else f"{lib}:{dxvk}"
         # The public build links FFmpeg's shared libraries (deps.py build_ffmpeg_shared), searched first.
         shared = f"-L{deps.FFMPEG_SHARED / 'linux/usr/lib'} " if PUBLIC else ""
-        return (f"-m32 {defsyms} {shared}-L{lib} -L{dxvk} -Wl,-rpath,{rpath} -no-pie -ldxvk_d3d9 -lSDL3 {vorbis_lib(target)} -lz "
+        lld = "".join(f + " " for f in deps.sysroot_link_flags())
+        return (f"-m32 {lld}{defsyms} {shared}-L{lib} -L{dxvk} -Wl,-rpath,{rpath} -no-pie -ldxvk_d3d9 -lSDL3 {vorbis_lib(target)} -lz "
                 f"{ffmpeg} -lpthread -ldl -lm")
     lib = deps.PREFIX_WIN / "lib"
     shared = f"-L{deps.FFMPEG_SHARED / 'windows/usr/lib'} " if PUBLIC else ""
@@ -367,6 +374,10 @@ def ninja_file(target, sources, syntax, link):
              "  depfile = $out.d\n  deps = gcc\n  description = PORT $in",
              f"rule link\n  command = $cxx -o $out @$out.rsp {link_flags(target)}\n  rspfile = $out.rsp\n"
              "  rspfile_content = $in\n  description = LINK $out"]
+    if target == "windows":
+        # the application manifest (UTF-8 active code page) as a resource object: RESOURCE below
+        lines.append(f"rule res\n  command = {WINDRES} --target=pe-i386 -I {PORT / 'platform/windows'} -O coff $in -o $out\n"
+                     "  description = RC $in")
     suffix = ".chk" if syntax else ".o"
     objs = []
     for s in sources:
@@ -386,6 +397,14 @@ def ninja_file(target, sources, syntax, link):
             obj = out / "port" / (str(where) + ".o")
             objs.append(obj)
             lines.append(f"build {obj}: {rule} {s}" + (f"\n  extra = {extra}" if extra else ""))
+        if target == "windows":
+            res = out / "port/platform/windows/utf8.rc.o"
+            objs.append(res)
+            lines.append(f"build {res}: res {RESOURCE} | {RESOURCE.with_name('utf8.manifest')}")
+            # bea.exe's version resource (WinMain reads it; platform/windows/version.rc), not the launcher's.
+            ver = out / "port/platform/windows/version.rc.o"
+            objs.append(ver)
+            lines.append(f"build {ver}: res {RESOURCE.with_name('version.rc')}")
         exe = out / ("bea" if target == "linux" else "bea.exe")
         lines.append(f"build {exe}: link {' '.join(str(o) for o in objs)}")
     out.mkdir(parents=True, exist_ok=True)
@@ -472,6 +491,21 @@ def source_commit():
     return r.stdout.strip() + ("+dirty" if dirty else "")
 
 
+# Both Windows programs embed one application manifest (port/platform/windows/utf8.manifest): activeCodePage UTF-8,
+# so the A functions (the game's file and folder calls, the launcher's environment and paths) take UTF-8 and any
+# user or game folder name works, as on Linux. windres writes no time stamp (deterministic).
+RESOURCE = PORT / "platform/windows/utf8.rc"
+WINDRES = deps.DATA / "llvm-mingw/bin/i686-w64-mingw32-windres"
+
+
+def manifest_object(out: Path) -> Path:
+    """utf8.rc compiled to out (for the launcher; bea.exe's comes from its ninja file)."""
+    out.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run([str(WINDRES), "--target=pe-i386", "-I", str(PORT / "platform/windows"), "-O", "coff", str(RESOURCE),
+                    "-o", str(out)], check=True)
+    return out
+
+
 def build_launcher(target, version):
     """The public build's launcher (port/updater): game-folder discovery and the signed update check, linked with SDL3
     (its dialogs) and Monocypher (Ed25519). Linux: build/linux/onslaught-ce-launch; Windows: build/windows/onslaught-ce.exe."""
@@ -482,9 +516,11 @@ def build_launcher(target, version):
     flags = ["-std=gnu11", "-O2", "-Wall", f'-DCE_VERSION="{version}"', f'-DCE_COMMIT="{source_commit()}"', f"-I{mc}", f"-I{mc / 'optional'}", f"-I{PORT / 'updater'}"]
     if target == "linux":
         cmd = TARGETS["linux"]["cc"] + ["-m32"] + flags + [f"-I{deps.PREFIX / 'include'}"] + [str(s) for s in src] + \
-              [f"-L{deps.PREFIX / 'lib'}", "-lSDL3", "-Wl,-rpath,$ORIGIN/lib", "-o", str(BUILD / "linux/onslaught-ce-launch")]
+              [f"-L{deps.PREFIX / 'lib'}", "-lSDL3", "-Wl,-rpath,$ORIGIN/lib", "-o", str(BUILD / "linux/onslaught-ce-launch")] + \
+              deps.sysroot_link_flags()
     else:
-        cmd = TARGETS["windows"]["cc"] + ["-mwindows"] + flags + [f"-I{deps.PREFIX_WIN / 'include'}"] + [str(s) for s in src] + \
+        res = manifest_object(BUILD / "windows/launcher-utf8.rc.o")
+        cmd = TARGETS["windows"]["cc"] + ["-mwindows"] + flags + [f"-I{deps.PREFIX_WIN / 'include'}"] + [str(s) for s in src] + [str(res)] + \
               [f"-L{deps.PREFIX_WIN / 'lib'}", "-lSDL3", "-ladvapi32", "-lshell32", "-static-libgcc", "-Wl,--no-insert-timestamp",
                "-o", str(BUILD / "windows/onslaught-ce.exe")]
     r = subprocess.run(cmd)

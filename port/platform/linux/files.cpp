@@ -73,7 +73,11 @@ extern "C" char *_getcwd(char *buf, int n)
 }
 
 // ---- searches -------------------------------------------------------------------------------------------------------
-// A search merges the writable folder and the game folder (writable copies first, names unique ignoring case).
+// A search merges the writable folder and the game folder (writable copies first, names unique ignoring case) and lists
+// the result in name order, as FindFirstFile does on NTFS, where the original ran: names compared code unit by code unit
+// after upper-casing (FindNameOrder). readdir's order is the filesystem's (on btrfs, creation order),
+// and the game shows what it finds in the order it finds it: the career list (CPCMemoryCard::GetSaveName counts entries
+// from _findfirst), so the same keys picked a different career on a folder whose saves were made in another order.
 struct PortFind
 {
 	PortHandle h;
@@ -96,6 +100,42 @@ static void FindAdd(PortFind *f, const char *name, bool dir, unsigned size)
 	f->isdir[f->count] = dir;
 	f->sizes[f->count] = size;
 	f->count++;
+}
+
+// NTFS order for the names the game uses: "." and ".." first, then ASCII letters upper-cased and every other byte
+// compared as itself.
+static int FindNameOrder(const char *a, const char *b)
+{
+	int dots_a = !strcmp(a, ".") ? 1 : !strcmp(a, "..") ? 2 : 3, dots_b = !strcmp(b, ".") ? 1 : !strcmp(b, "..") ? 2 : 3;
+	if (dots_a != 3 || dots_b != 3)
+		return dots_a - dots_b;
+	for (;; a++, b++)
+	{
+		unsigned ca = (unsigned char)*a, cb = (unsigned char)*b;
+		if (ca >= 'a' && ca <= 'z')
+			ca -= 'a' - 'A';
+		if (cb >= 'a' && cb <= 'z')
+			cb -= 'a' - 'A';
+		if (ca != cb || !ca)
+			return (int)ca - (int)cb;
+	}
+}
+
+static void FindSort(PortFind *f)
+{
+	for (int i = 1; i < f->count; i++)
+		for (int j = i; j > 0 && FindNameOrder(f->names[j - 1], f->names[j]) > 0; j--)
+		{
+			char *n = f->names[j];
+			f->names[j] = f->names[j - 1];
+			f->names[j - 1] = n;
+			unsigned char d = f->isdir[j];
+			f->isdir[j] = f->isdir[j - 1];
+			f->isdir[j - 1] = d;
+			unsigned z = f->sizes[j];
+			f->sizes[j] = f->sizes[j - 1];
+			f->sizes[j - 1] = z;
+		}
 }
 
 static void FindScan(PortFind *f, const char *dir, const char *pattern)
@@ -143,6 +183,7 @@ static PortFind *FindStart(const char *spec)
 	PortResolvePath(dirpart, PORT_PATH_READ, game, sizeof(game));
 	if (strcmp(game, user) != 0)
 		FindScan(f, game, pattern);
+	FindSort(f);
 	return f;
 }
 

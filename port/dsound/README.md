@@ -3,7 +3,7 @@
 # port/dsound: DirectSound 8 over SDL3 audio
 
 Status: active (mixing, notifications and DirectSound 3D in place; nobody has listened to the result yet)
-Last updated: 2026-10-22
+Last updated: 2026-10-23 (the record-mode audio monitor)
 Summary: what the game's sound code needs from DirectSound, how this module provides it, and how it is checked.
 
 Replaces port/platform/common/dsound.cpp (the platform's silent form; `build.py` drops it when this directory
@@ -72,6 +72,16 @@ Every call that reads or changes playback first mixes whole 10 ms blocks up to t
 every volume, position or 3D change fall on the same block in every run. The 10 ms timer only keeps notifications
 coming while the game makes no call. The log says `onslaught-ce: audio virtual clock, no device` (`bea-port:` in a
 non-public build).
+
+**The record-mode monitor.** With `BEA_AUDIO_MONITOR=1` (the launcher sets it for a recorded session), the virtual
+clock's mix is also played: `Mixer::Start` opens SDL's default device as a stream with no callback, and `Mix` pushes
+each block it made into it (`SDL_PutAudioStreamData`, return ignored). Data only flows from the mix to the device:
+no cursor, status, notification or film clock reads the monitor, it never reads the game's clock, and the device list
+and caps the game sees are the same constants. The device starts once about 60 ms is queued; a queue over about
+200 ms is dropped (the virtual clock catching up after a stall), and an empty one plays silence. Virtual time stands
+still while a level loads, so music gaps there, and films that run one frame per Present can drift from real time.
+The log says `audio virtual clock, monitor <driver>`. Tests play it on SDL's `disk` driver (`run.py --audio-monitor
+OUT.raw`, with `BEA_PORT_REQUIRE_DUMMY_AUDIO=silent`), so nothing reaches the desktop.
 
 `run.py vclock --twice --shot 1500 -- -level 100 -skipfmv` gives identical frames, with the tutorial's eighth subtitle
 and its portrait on screen (2026-10-15).

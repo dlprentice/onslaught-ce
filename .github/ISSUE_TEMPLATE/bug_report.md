@@ -15,6 +15,14 @@ labels: bug
 
 1. 
 
+**Does the original game do the same?**
+
+Yes, no, or not checked. If the original behaves differently, say how.
+
+**How did you run it?**
+
+Native Linux, native Windows, or the Windows package under Wine or Proton (which version?).
+
 **Files**
 
 - Please attach `onslaught-ce.log` from your user folder: `~/.local/share/onslaught-ce` (Linux) or

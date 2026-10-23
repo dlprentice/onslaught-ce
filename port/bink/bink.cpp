@@ -35,6 +35,11 @@ extern "C"
 #include <string.h>
 #include <vector>
 
+#ifdef _WIN32
+extern "C" HANDLE WINAPI PortCreateFileA(LPCSTR name, DWORD access, DWORD share, LPSECURITY_ATTRIBUTES sa,
+										 DWORD disposition, DWORD flags, HANDLE templ);	// port/platform/windows/files.cpp
+#endif
+
 typedef unsigned long U32;
 typedef long S32;
 
@@ -158,7 +163,14 @@ double Clock(Video *v)
 
 bool ReadFileAll(const char *name, std::vector<unsigned char> &out)
 {
+	// The game's relative name (data\video\...) through the port's file layer, as the game's own CreateFileA calls go
+	// (port.h): on Windows the process runs in the player's user folder, not the game folder, and kernel32's CreateFileA
+	// would look for the video there. (On Linux the port's CreateFileA is the file layer itself.)
+#ifdef _WIN32
+	HANDLE h = PortCreateFileA(name, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+#else
 	HANDLE h = CreateFileA(name, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+#endif
 	if (h == INVALID_HANDLE_VALUE)
 		return false;
 	DWORD size = GetFileSize(h, NULL), got = 0;

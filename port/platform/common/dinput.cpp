@@ -487,6 +487,8 @@ extern "C" HRESULT WINAPI DirectInput8Create(HINSTANCE, DWORD, REFIID, LPVOID *o
 	return DI_OK;
 }
 
+bool PortDinputMouseAcquired() { return gMouseWindow != NULL; }
+
 // Each frame (window.cpp's pump): while the game holds the mouse and its window has keyboard focus, relative mode must be on.
 // A compositor can refuse it (the window not yet focused at acquire) or drop it (a focus change); without it the pointer
 // stops at the screen's edges and the battle engine stops turning or pitching (recorded play, 2026-10-16).

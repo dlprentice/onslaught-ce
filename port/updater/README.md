@@ -1,7 +1,7 @@
 # Onslaught CE launcher and updater
 
 Status: active (public builds only)
-Last updated: 2026-10-22
+Last updated: 2026-10-23 (session tape 2: the menus' mouse, typed text; the audio monitor)
 Summary: how the public build's launcher finds the game, checks the signed release feed and updates itself.
 
 `ce_launch.c` builds as `onslaught-ce-launch` (Linux, started by the `onslaught-ce` script after `preflight.sh`) and
@@ -58,7 +58,9 @@ holds the pipe.
 `BEA_PORT_RECORD=<user folder>/tapes/YYYYMMDD-HHMMSS.tape` and, unless set, `BEA_PORT_CLOCK=shim`, so the game runs
 at 30 Presents a second and its tape replays exactly. The launcher prints one line saying so. Never while a tape is
 replayed (`BEA_PORT_TAPE`) or another recording is set (`BEA_PORT_RECORD`). In record mode the CE layer is off, the
-front end gets keys only (no window mouse, text or focus messages) and the battle gets the DirectInput mouse.
+front end and pause menu get keys, typed text (tape 2's `C` lines) and the window mouse (`W` lines; no focus messages) and the battle
+gets the DirectInput mouse. The launcher also sets `BEA_AUDIO_MONITOR=1` unless it is set, so the session is heard
+(port/dsound/README.md: a write-only monitor of the virtual clock's mix).
 
 Because the CE layer is off while recording, the Onslaught CE page that switched `record_sessions=1` on is hidden in
 every recorded session. So while it is set, each start asks first (an SDL message box): **Record** (Enter), **Not this
@@ -68,9 +70,12 @@ set. Tests answer with `BEA_RECORD_ANSWER=record|once|stop`. The launcher and th
 (`ce_ini_write`, ce_report.h): the whole file is written to `ce.ini.tmp`, every write and the close are checked, and it
 is renamed over `ce.ini`, so a failed write leaves the old file whole.
 
-The tape stays in replay.cpp's format: the port's parser skips lines it does not know, but the rebuild's
-(Onslaught-Career-Editor `rebuild/OnslaughtRebuild.Parity/RetailTape.cs`) rejects them, so the session's details go in
-a sidecar `<name>.tape.json`: format, tape name, CE version, build, platform, OS, UTC date, clock, Presents a second,
+The tape is replay.cpp's format 2 (`# onslaught tape 2`, then `K`, `M`, `C`, `W_CLIENT` and `W` lines). The port's
+parser counts and skips lines it does not know; the rebuild's ([onslaught-godot](https://github.com/dlprentice/onslaught-godot)
+`rebuild/OnslaughtRebuild.Parity/RetailTape.cs`) rejects the header and the `C` and `W` lines until it learns them, and
+a build that reads format 1 drops them and drifts, so `run.py`, `check_tape.sh` and `replay_session.py` refuse a newer
+format. The session's details go in a sidecar `<name>.tape.json`: format (`onslaught-ce session tape 2`), the tape line
+kinds, `audio_monitor`, tape name, CE version, build, platform, OS, UTC date, clock, Presents a second,
 the game arguments, and `start_files`, the user folder's game files as the session started (options, careers, the
 game's own text files; base64; the launcher's files and anything over 1 MB left out; 4 MB in all). Replay a player's
 session from a fresh writable folder with its start files:
@@ -85,7 +90,8 @@ version, build and OS, and the paths of the log and the newest tape (home or `%A
 `%APPDATA%`). It prints the user folder and the address; on Windows without a console a message box names the folder.
 The main menu's Onslaught CE page (port/game/ce_frontend.cpp) calls the same page through `extern "C" int CE_OpenReportPage(void)` (port/platform/common/ce.cpp,
 public builds only; it does nothing where the CE layer is off). Nothing is sent: the player submits the issue or not.
-The issue template is `public/.github/ISSUE_TEMPLATE/bug_report.md`, exported to the repository's `.github/`.
+The issue template is `public/.github/ISSUE_TEMPLATE/bug_report.md`, exported to the repository's `.github/` with
+`config.yml` beside it (a link to the security advisory form); the body above repeats the template's sections.
 
 ## Releasing
 

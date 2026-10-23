@@ -24,7 +24,7 @@ LAUNCHER = deps.WORK / "build/linux/onslaught-ce-launch"
 GAME = r'''#!/bin/sh
 echo "out: args $*"
 echo "onslaught-ce: adapter Stand-in GPU (vendor 8086, device 1234, driver 1.2.3.4)" >&2
-echo "env: rec=${BEA_PORT_RECORD:-} clock=${BEA_PORT_CLOCK:-} build=${BEA_CE_BUILD:-}"
+echo "env: rec=${BEA_PORT_RECORD:-} clock=${BEA_PORT_CLOCK:-} build=${BEA_CE_BUILD:-} monitor=${BEA_AUDIO_MONITOR:-}"
 echo "onslaught-ce: game folder $BEA_GAME_DIR, writable folder $BEA_USER_DIR" >&2
 echo "a mounted drive: /run/media/${USER:-}/Games and $HOME/x but not ${HOME}y"
 case "${FAKE:-}" in
@@ -109,6 +109,11 @@ class Launcher(unittest.TestCase):
         self.assertIn(f"env: rec={tape} clock=shim", r.stderr)
         self.assertEqual(meta["game_args"], ["-level", "100"])
         self.assertEqual(meta["clock"], "shim")
+        # session tape 2, its line kinds, and the write-only audio monitor switched on for the recorded game
+        self.assertEqual(meta["format"], "onslaught-ce session tape 2")
+        self.assertEqual(meta["tape_lines"], ["K", "M", "W", "W_CLIENT", "C"])
+        self.assertIs(meta["audio_monitor"], True)
+        self.assertIn("monitor=1", r.stderr)
         self.assertEqual(sorted(meta["start_files"]), ["defaultoptions.bea", "savegames/Career 1.bes"])
         self.assertIn("recording this session to", self.log())
         # ce.ini turns it on for every session; a replay never records
@@ -116,7 +121,15 @@ class Launcher(unittest.TestCase):
         self.assertIn("clock=shim", self.run_launcher().stderr)
         r = self.run_launcher(BEA_PORT_TAPE="/nonexistent.tape")
         self.assertIn("env: rec= clock=", r.stderr)
+        self.assertIn("monitor=\n", r.stderr + "\n")       # no recording, no monitor
         self.assertIn("not recording this session", r.stderr)
+
+    def test_record_monitor_off(self):
+        # BEA_AUDIO_MONITOR=0 set by the player is kept, and the session's .json says the monitor was off
+        r = self.run_launcher("--record", BEA_AUDIO_MONITOR="0")
+        meta = json.loads(sorted((self.user / "tapes").glob("*.tape.json"))[0].read_text())
+        self.assertIs(meta["audio_monitor"], False)
+        self.assertIn("monitor=0", r.stderr)
 
     def test_record_prompt_and_no_record(self):
         # record_sessions=1 asks each start: Not this time records nothing and keeps the setting; Stop recording and
@@ -170,7 +183,7 @@ class Launcher(unittest.TestCase):
         for env in ({"BEA_PORT_TAPE": "/nonexistent.tape"}, {"BEA_PORT_RECORD": str(self.tmp / "harness.tape")}):
             r = self.run_launcher(**env)
             self.assertEqual(r.returncode, 0)
-            self.assertIn("build=\n", r.stdout + r.stderr)	# BEA_CE_BUILD not set for the CE layer
+            self.assertIn("build= monitor=", r.stdout + r.stderr)	# BEA_CE_BUILD not set for the CE layer
             self.assertFalse((self.user / "onslaught-ce.log").exists())
             self.assertFalse((self.user / "onslaught-ce.old.log").exists())
 

@@ -48,6 +48,19 @@ WINDOWS_DLLS = [deps.PREFIX_WIN / "bin/SDL3.dll", deps.PREFIX_WIN / "bin/libz.dl
 GLIBC = "2.44"
 GLIBC_TEXT = (f"glibc {GLIBC} or newer, which for now means Arch and other rolling-release distributions (Debian 13 "
               "and Ubuntu 26.04 and older have an older glibc; ldd --version shows yours)")
+if deps.SYSROOT:
+    # The Steam Runtime 3 sysroot build (the default, port/PLAN.md "Old glibc"): measured 2.29 (pow, exp and log in bea,
+    # SDL3 and libavutil); the sysroot's own glibc is 2.31.
+    GLIBC = "2.29"
+    GLIBC_TEXT = f"glibc {GLIBC} or newer (ldd --version shows yours)"
+# The graphics floor, which on older distributions is what stops the game (port/PLAN.md "Old glibc"): dxvk 3.1.1
+# (dxvk_instance.h, dxvk_device_info.cpp checkDeviceCompatibility) takes a device with Vulkan 1.3, its required
+# extensions and 256 bytes of push constants. Seen refused: Intel's Mesa 24.1 driver (128 bytes, Fedora 40).
+VULKAN_TEXT = ("a 32-bit Vulkan 1.3 graphics driver that offers what the game's graphics layer (dxvk 3.1) requires, "
+               "among them VK_KHR_load_store_op_none, VK_KHR_maintenance5 and VK_KHR_maintenance6, and 256 bytes of push "
+               "constants. The Mesa drivers of Ubuntu 22.04 (23.2) and Debian 12 (22.3) lack those extensions (Debian 12 "
+               "has a newer Mesa in bookworm-backports), and Intel's Mesa 24.1 driver (Fedora 40) offers only 128 bytes "
+               "of push constants")
 # dxvk's licence is not in the dxvk-native tarball; fetched from the release tag and checked.
 DXVK_LICENSE = ("https://raw.githubusercontent.com/doitsujin/dxvk/v3.1.1/LICENSE",
                 "a5cb1a6ded7d2d7e92d550ba28edd21be2d1d4044662b399887351023e30ce64")
@@ -337,22 +350,32 @@ REPORT_PRIVACY = ["Report a problem opens a GitHub page in your browser with you
                   "nothing is posted until you submit it."]
 
 
+# README.txt's line width (the hand-wrapped lines below stay within it; generated ones wrap at it).
+README_WIDTH = 114
+
+
 def readme(version: str, windows: bool) -> bytes:
     launcher = "onslaught-ce.exe" if windows else "onslaught-ce"
     common = ["It finds your Battle Engine Aquila install in Steam's libraries, or asks you once for its folder and",
-              "remembers it (BEA_GAME_DIR overrides). Your game folder is only read: careers and settings go to " +
+              "remembers it (BEA_GAME_DIR overrides). Your game folder is only read: careers and settings go to",
               ("%APPDATA%\\Onslaught CE." if windows else "~/.local/share/onslaught-ce."),
               "On start it checks this project's GitHub releases for a newer signed version and asks before updating",
               "(turn it off with update_check=0 in ce.ini or BEA_NO_UPDATE_CHECK=1). There is no telemetry: the update",
               "check and a download you agree to are the only network requests it makes by itself.", *REPORT_PRIVACY]
-    run = (["Start onslaught-ce.exe. (bea.exe also runs directly, without the install search and update check.)"] + common +
-           ["This Windows build was tested under Wine on Linux only (see Known limitations)."] if windows else
-           ["Run ./onslaught-ce [game arguments]. It first checks for the 32-bit system libraries it needs and names the",
-            "packages to install when one is missing. It needs " + GLIBC_TEXT + "."] + common)
+    run = (["Start onslaught-ce.exe. (bea.exe also runs directly, without the install search and update check.)",
+            "It needs Windows 10 or newer, for its built-in UCRT, curl and tar, and Windows 10 version 1903 or newer",
+            "for user or game folder names with characters outside your Windows language's character set (earlier",
+            "versions ignore the UTF-8 setting the programs ask for)."] + common +
+           ["This Windows build was tested under Wine on Linux and on one Windows 11 virtual machine without a graphics",
+            "card (see Known limitations)."] if windows else
+           textwrap.wrap("Run ./onslaught-ce [game arguments]. It first checks for the 32-bit system libraries it needs "
+                         "and names the packages to install when one is missing. It needs " + GLIBC_TEXT + ".",
+                         README_WIDTH, break_on_hyphens=False) + common)
     exe = "bea.exe" if windows else "bea"
     return "\n".join([f"Onslaught CE {version} (preview)", ""] + quick_start(windows) + ["",
                       "A native source port of Battle Engine Aquila (2003). It contains no game files: you need your own",
-                      "copy of the game (for example from Steam).", ""] + run +
+                      "copy of the game (for example from Steam).", f"Project page, source and releases: {PUBLIC_REPO}",
+                      ""] + run +
                      ["", f"{exe} is Onslaught CE's game program; {launcher} is the program to start.", ""] +
                      IN_THE_GAME + help_lines(windows) + limitations(windows) + NOTICE_LINES +
                      ["", "Licence: GPL-3.0-only (COPYING). Third-party components: THIRD-PARTY-NOTICES.txt and licenses/.", ""]).encode()
@@ -400,14 +423,16 @@ def help_lines(windows: bool) -> list:
     ini = user + ("\\" if windows else "/") + "ce.ini"
     where = (" (from a Command Prompt in this folder, or a shortcut with --report added)" if windows else "")
     return ["Report a problem",
-            f"Choose Onslaught CE > Report a problem in the main menu, or run {launcher} --report{where}.",
+            *textwrap.wrap(f"Choose Onslaught CE > Report a problem in the main menu, or run {launcher} --report{where}.",
+                           README_WIDTH),
             "It opens a new issue on the project's GitHub page in your browser, filled in with your version and",
             "system, and shows the folder that holds your log. Nothing is posted until you submit the issue. Say what",
             "happened and how to make it happen again, and attach onslaught-ce.log from that folder",
             f"({user}; onslaught-ce.old.log is the run before, and each stops at 4 MB). The log holds",
             "the version, your OS and GPU and the game's messages. It writes your " +
-            ("user folders as %APPDATA%" if windows else "home folder as ~") + " and never your account name,",
-            "but look it over before you attach it. If you recorded the session (below), attach its tape too.",
+            ("user folders as %APPDATA%" if windows else "home folder as ~"),
+            "and never your account name, but look it over before you attach it.",
+            "If you recorded the session (below), attach its tape too.",
             "",
             "Help make Onslaught CE more faithful",
             "The goal is a game that behaves exactly like the original, frame by frame; recordings of real play find",
@@ -417,11 +442,11 @@ def help_lines(windows: bool) -> list:
             f"While it is on, each start asks whether to record: Stop recording there, or starting with",
             f"{launcher} --no-record, turns it off again.",
             "While recording the game runs at 30 frames a second (the timing replays use), its menus take the keyboard",
-            "only (the mouse still works in battle), the screen is the original 4:3 (no widescreen), and the menus are",
-            "the original's: the version text, no Onslaught CE menu and no Cheats page, and only cheats typed into a",
-            "career's name work.",
-            "Each session is saved in the tapes folder beside ce.ini as a .tape (your key presses and mouse movement",
-            "only) and a .tape.json (version, OS, date, game arguments, and a copy of your options and saved careers as",
+            "and the mouse, and you can type a career's name, the screen is the original 4:3 (no widescreen), and the",
+            "menus are the original's: the version text, no Onslaught CE menu and no Cheats page, and only cheats typed",
+            "into a career's name work. The game's sound plays while recording.",
+            "Each session is saved in the tapes folder beside ce.ini as a .tape (your key presses, typed characters and",
+            "mouse only) and a .tape.json (version, OS, date, game arguments, and a copy of your options and saved careers as",
             "the session started). To share one, zip the two files and attach them to an issue, saying what differed",
             "from the original and roughly when.",
             ""]
@@ -430,11 +455,12 @@ def help_lines(windows: bool) -> list:
 def limitations(windows: bool) -> list:
     """README.txt's "Known limitations", this platform's lines only (public/README.md and the release notes list
     both platforms')."""
-    platform = (["- This Windows build has been tested only under Wine on Linux, not on real Windows. Its self-update path",
-                 "  in particular is untested on real Windows. Please report any problems.",
+    platform = (["- This Windows build has been tested under Wine on Linux and on one Windows 11 virtual machine without a",
+                 "  graphics card (Microsoft's software renderer), not on a PC with a real graphics card or its drivers.",
+                 "  Its self-update path is untested on Windows. Please report any problems.",
                  "- The executables are unsigned, so SmartScreen may warn you (choose More info, then Run anyway)."] if windows else
-                ["- You need " + GLIBC_TEXT + ".",
-                 "- You need 32-bit graphics drivers (Vulkan)."])
+                [*textwrap.wrap("- You need " + GLIBC_TEXT + ".", README_WIDTH, subsequent_indent="  ", break_on_hyphens=False),
+                 *textwrap.wrap("- You need " + VULKAN_TEXT + ".", README_WIDTH, subsequent_indent="  ", break_on_hyphens=False)])
     return ["Known limitations", *platform,
             "- The tutorial is playable through its third zone; its final drone fight is still being completed.",
             "- Joystick and controller support is limited to what the original game supported, and controllers have not",
@@ -508,8 +534,12 @@ else
 	exit 1
 fi
 missing=()
+# Inside the Steam Linux Runtime's container (pressure-vessel: Steam's "Steam Linux Runtime 3.0 (sniper)" compatibility
+# tool) the host's newer glibc and GPU driver libraries are imported under its overrides folder.
+LIBDIRS="/usr/lib32 /usr/lib/i386-linux-gnu /lib/i386-linux-gnu /usr/lib/i686-linux-gnu /usr/lib"
+[ -d /run/pressure-vessel ] && LIBDIRS="/usr/lib/pressure-vessel/overrides/lib/i386-linux-gnu $LIBDIRS"
 where32() { # $1 = soname: the 32-bit copy's path
-	for d in /usr/lib32 /usr/lib/i386-linux-gnu /lib/i386-linux-gnu /usr/lib/i686-linux-gnu /usr/lib; do
+	for d in $LIBDIRS; do
 		[ -e "$d/$1" ] && is32 "$d/$1" && { echo "$d/$1"; return 0; }
 	done
 	return 1
@@ -537,14 +567,41 @@ fi
 command -v curl >/dev/null 2>&1 || echo "onslaught-ce: note: curl is not installed; the update check needs curl" >&2
 # A 32-bit Vulkan driver: an ICD manifest whose library resolves to a 32-bit ELF (Arch names the library without a
 # path, shared by both architectures; Debian installs per-architecture manifests with absolute paths).
-icd=0
-for f in /usr/share/vulkan/icd.d/*.json /etc/vulkan/icd.d/*.json; do
+# The Vulkan loader's own override (VK_DRIVER_FILES, or the older VK_ICD_FILENAMES: what the Steam Linux Runtime's
+# container sets for the drivers it imports) is used instead of the system folders when set.
+icd=0 good=0
+files=()
+if [ -n "${VK_DRIVER_FILES:-${VK_ICD_FILENAMES:-}}" ]; then
+	IFS=: read -r -a files <<<"${VK_DRIVER_FILES:-$VK_ICD_FILENAMES}"
+else
+	files=(/usr/share/vulkan/icd.d/*.json /etc/vulkan/icd.d/*.json)
+fi
+for f in "${files[@]}"; do
 	[ -e "$f" ] || continue
 	lib=$(sed -n 's/.*"library_path"[^"]*"\([^"]*\)".*/\1/p' "$f")
+	ok=0
 	case "$lib" in
-		/*) [ -e "$lib" ] && is32 "$lib" && icd=1 ;;
-		?*) have "$lib" && icd=1 ;;
+		/*) [ -e "$lib" ] && is32 "$lib" && ok=1 ;;
+		?*) have "$lib" && ok=1 ;;
 	esac
+	[ $ok = 1 ] || continue
+	icd=1
+	# dxvk 3.1 (Direct3D 9 over Vulkan; dxvk_device_info.cpp) takes only a device with Vulkan 1.3, the extensions it
+	# requires (among them VK_KHR_load_store_op_none, VK_KHR_maintenance5 and VK_KHR_maintenance6) and 256 bytes of push
+	# constants. The manifest states the version (as 1.N); a Mesa driver (libvulkan_*.so) whose file lacks one of those
+	# extension names cannot offer it (Ubuntu 22.04's Mesa 23.2, Debian 12's 22.3). The push-constant size cannot be seen
+	# here (Fedora 40's Intel driver, Mesa 24.1, offers 128 bytes and is refused).
+	usable=1
+	v=$(sed -n 's/.*"api_version"[^"]*"1\.\([0-9]*\)\..*/\1/p' "$f")
+	[ -n "$v" ] && [ "$v" -lt 3 ] && usable=0
+	case "$lib" in /*) path=$lib ;; *) path=$(where32 "$lib") ;; esac
+	case "${path##*/}" in
+		libvulkan_*)
+			for e in VK_KHR_load_store_op_none VK_KHR_maintenance5 VK_KHR_maintenance6; do
+				grep -aqF "$e" "$path" || usable=0
+			done ;;
+	esac
+	[ $usable = 1 ] && good=1
 done
 if [ ${#missing[@]} -gt 0 ]; then
 	echo "onslaught-ce: missing 32-bit system libraries:" >&2
@@ -567,9 +624,8 @@ libc=$(where32 libc.so.6) || libc=
 if [ -n "$libc" ]; then
 	got=$(grep -ao 'GLIBC_2\.[0-9]*' "$libc" | sed 's/^GLIBC_2\.//' | sort -n | tail -1)
 	if [ -n "$got" ] && [ "$got" -lt "${need#2.}" ]; then
-		echo "onslaught-ce: this build needs glibc $need or newer, and your 32-bit glibc is 2.$got. For now that means" \
-		     "Arch or another rolling-release distribution; a build for older distributions is not available yet." >&2
-		echo "  $SKIP" >&2
+		echo "onslaught-ce: this build needs glibc $need or newer, and your 32-bit glibc is 2.$got." \
+		     "Update your distribution (ldd --version shows its glibc)." >&2
 		exit 1
 	fi
 fi
@@ -579,6 +635,12 @@ if [ $icd = 0 ]; then
 	     "Debian/Ubuntu: mesa-vulkan-drivers:i386 or the NVIDIA i386 libraries" >&2
 	echo "  $SKIP" >&2
 	exit 1
+fi
+if [ $good = 0 ]; then
+	echo "onslaught-ce: note: your 32-bit Vulkan driver seems to lack what the game's graphics layer (dxvk 3.1) requires:" \
+	     "Vulkan 1.3 with VK_KHR_load_store_op_none, VK_KHR_maintenance5 and VK_KHR_maintenance6. The game may stop at" \
+	     "its start; a newer 32-bit driver can help (Mesa 24.1 has these extensions; Debian 12 has a newer Mesa in" \
+	     "bookworm-backports)." >&2
 fi
 exit 0
 '''
@@ -612,6 +674,51 @@ def check_public(binary: Path, windows: bool):
         dyn = subprocess.run(["readelf", "-d", str(binary)], capture_output=True, text=True).stdout
         if "[$ORIGIN/lib]" not in dyn:
             sys.exit(f"{binary}: RUNPATH is not $ORIGIN/lib; build with build.py --public")
+
+
+# The system libraries the Linux package links against: every symbol version the bundled programs and libraries need
+# from these (GLIBC_, GLIBCXX_, CXXABI_, GCC_) must be one the old-glibc sysroot's own copy defines, so the package loads
+# with the Steam Runtime 3 libraries (Debian 11: glibc 2.31, GCC 10's libstdc++ and libgcc_s) and everything newer.
+SYSTEM_LIBS = ("libc.so.6", "libm.so.6", "libpthread.so.0", "libdl.so.2", "librt.so.1", "libstdc++.so.6", "libgcc_s.so.1")
+
+
+def version_needs(f):
+    """{library soname: {version names}} that ELF f needs (readelf's .gnu.version_r)."""
+    out = subprocess.run(["readelf", "-V", "-W", str(f)], capture_output=True, text=True, check=True).stdout
+    needs, lib = {}, None
+    for line in out.split("Version needs section", 1)[-1].splitlines() if "Version needs section" in out else []:
+        m = re.search(r"File: (\S+)", line)
+        if m:
+            lib = m.group(1)
+            continue
+        m = re.search(r"Name: (\S+)", line)
+        if m and lib:
+            needs.setdefault(lib, set()).add(m.group(1))
+    return needs
+
+
+def version_defs(f):
+    """The version names ELF f defines (readelf's .gnu.version_d)."""
+    out = subprocess.run(["readelf", "-V", "-W", str(f)], capture_output=True, text=True, check=True).stdout
+    if "Version definition section" not in out:
+        return set()
+    part = out.split("Version definition section", 1)[1].split("Version needs section", 1)[0]
+    return set(re.findall(r"Name: (\S+)", part))
+
+
+def sysroot_gaps(elfs):
+    """Needed system-library versions the sysroot's libraries do not define ([] when every one is there)."""
+    defs, gaps = {}, []
+    for f in elfs:
+        for lib, names in version_needs(f).items():
+            if lib not in SYSTEM_LIBS:
+                continue
+            if lib not in defs:
+                where = [d / lib for d in (deps.SYSROOT / "lib/i386-linux-gnu", deps.SYSROOT / "usr/lib/i386-linux-gnu")]
+                found = next((w for w in where if w.exists()), None)
+                defs[lib] = version_defs(found.resolve()) if found else set()
+            gaps += [f"{Path(f).name}: {lib} {n}" for n in sorted(names - defs[lib])]
+    return gaps
 
 
 def glibc_needed(elfs) -> str:
@@ -706,6 +813,10 @@ def main():
             if needed != GLIBC:
                 sys.exit(f"{top}: the programs and libraries need glibc {needed}, but package.py's GLIBC (README.txt, "
                          f"preflight.sh, public/README.md and the release notes) says {GLIBC}")
+            if deps.SYSROOT:
+                gaps = sysroot_gaps([src, launcher] + [(d / so).resolve() for d, so in LINUX_LIBS])
+                if gaps:
+                    sys.exit(f"{top}: needs system library versions the Steam Runtime 3 sysroot does not have:\n  " + "\n  ".join(gaps))
             pkg = out / f"{top}.tar.gz"
             # gzip's header carries a time too: the same fixed epoch, so the archive's bytes are reproducible
             with open(pkg, "wb") as raw, gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=epoch) as gz, \

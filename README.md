@@ -19,19 +19,20 @@ from the game's source code.
 
 The source has three parts:
 
-- **Stuart Gillam's GPL-3.0-only source release** of the game ([stuart73/Onslaught](https://github.com/stuart73/Onslaught)).
+- **Stuart Gillam's GPL source release** of the game ([stuart73/Onslaught](https://github.com/stuart73/Onslaught)).
 - **A byte-matching decompilation** that completes that release
   ([onslaught-decomp](https://github.com/dlprentice/onslaught-decomp)). All 5,482 game functions compile to the retail
   executable's bytes when built with the original compiler.
 - **A platform layer**: SDL3, with dxvk-native on Linux and the system's Direct3D 9 on Windows.
 
-This is **version 0.1.2, a preview** (tag `v0.1.2`). In the main menu, the version text in the bottom-left corner
-(originally "V1.00") reads "Onslaught CE v0.1.2 (preview)". 0.1.2 redesigns the Cheats page (On/Off switches with a
-line saying what the highlighted cheat does), fixes a crash when quitting on Linux, makes skipping a film match the
-original game's timing, and adds licence notices for three more components compiled into the libraries it ships.
-Otherwise the game plays the same as 0.1.1: the level replays used to check it give byte-identical results on both
-versions. The film-skip change does affect recorded sessions and their playback: a recording made with 0.1 or 0.1.1
-that skips a film is one frame out of step after the skip on 0.1.2.
+This is **version 0.1.3, a preview** (tag `v0.1.3`). In the main menu, the version text in the bottom-left corner
+(originally "V1.00") reads "Onslaught CE v0.1.3 (preview)". The Linux build now starts on older distributions (it
+needs glibc 2.29 instead of 2.44; the graphics driver is now the limit, see Linux below), session recordings take the
+menus' mouse and typed career names and play the game's sound, and on Windows 10 version 1903 or newer the Windows
+build works from user and game folders whose names have characters outside your Windows language's character set
+(tested under Wine). Otherwise the game plays as 0.1.2 did: the level replays used to check it give the same results
+on both versions, except that in level 521 one more game event is counted from the start of the level (one stomp
+explosion is shut down; see Known limitations).
 
 ## In the game
 
@@ -84,13 +85,19 @@ Download a build from this repository's [Releases](https://github.com/dlprentice
 
 1. Extract the tarball and run the `onslaught-ce` launcher.
 2. The tarball bundles dxvk-native, SDL3, libxkbcommon and the FFmpeg shared libraries.
-3. It needs **glibc 2.44 or newer**, which for now means Arch and other rolling-release distributions: Debian 13 and
-   Ubuntu 26.04 and older have an older glibc and cannot start it (`ldd --version` shows yours). The preflight check
-   below says so when yours is older.
+3. It needs **glibc 2.29 or newer** (`ldd --version` shows yours) and a **32-bit Vulkan 1.3 driver** that offers what
+   its graphics layer (dxvk 3.1) requires: among other extensions `VK_KHR_load_store_op_none`, `VK_KHR_maintenance5`
+   and `VK_KHR_maintenance6`, and 256 bytes of push constants. On older distributions the graphics driver, not glibc,
+   is what stops it. Found on test systems: the Mesa drivers of Ubuntu 22.04 (23.2) and Debian 12 (22.3) do not have
+   those extensions (Debian 12 has Mesa 25.0 in `bookworm-backports`), and Fedora 40's Intel driver (Mesa 24.1) offers
+   only 128 bytes of push constants and is refused, while its software driver (lavapipe, the same Mesa) is accepted.
+   AMD (RADV) and NVIDIA drivers have not been tried on those distributions. The preflight check below says when your
+   glibc is too old or your 32-bit driver lacks the Vulkan version or those extensions (it cannot see the push-constant
+   size).
 4. Your system must provide these 32-bit libraries:
    - glibc, libgcc and libstdc++
    - zlib
-   - the Vulkan loader and a 32-bit Vulkan driver
+   - the Vulkan loader and a 32-bit Vulkan driver (above)
    - the X11 or Wayland client libraries
 5. A preflight check lists any missing 32-bit system libraries, with their pacman and apt package names. Set
    `BEA_SKIP_PREFLIGHT=1` to start without it.
@@ -104,8 +111,9 @@ The 32-bit libraries by distribution family (plus your GPU's 32-bit Vulkan drive
   sudo pacman -S --needed lib32-vulkan-radeon     # or lib32-vulkan-intel, or lib32-nvidia-utils
   ```
 
-- **Debian and Ubuntu** (untested; only a release with glibc 2.44 or newer can start it, so not Debian 13 or Ubuntu
-  26.04 and older):
+- **Debian and Ubuntu** (Ubuntu 24.04, or Debian 12 with Mesa from backports:
+  `sudo apt install -t bookworm-backports mesa-vulkan-drivers:i386`; the Mesa of Ubuntu 22.04 and stock Debian 12 is
+  too old):
 
   ```sh
   sudo dpkg --add-architecture i386 && sudo apt update
@@ -113,12 +121,18 @@ The 32-bit libraries by distribution family (plus your GPU's 32-bit Vulkan drive
       libwayland-client0:i386 libwayland-cursor0:i386 mesa-vulkan-drivers:i386   # NVIDIA: the driver's i386 libraries
   ```
 
-- **Fedora** (untested; needs glibc 2.44 or newer):
+- **Fedora** (Fedora 40's Intel driver, Mesa 24.1, is refused for its push-constant size; other Fedora releases and
+  drivers have not been tried):
 
   ```sh
   sudo dnf install glibc.i686 libstdc++.i686 libgcc.i686 zlib-ng-compat.i686 vulkan-loader.i686 libX11.i686 libXext.i686 \
       libwayland-client.i686 libwayland-cursor.i686 mesa-vulkan-drivers.i686     # NVIDIA: the driver's i686 libraries
   ```
+
+- **Steam Deck and SteamOS** (untested): add `onslaught-ce` to Steam as a non-Steam game and set its compatibility tool
+  to "Steam Linux Runtime 3.0 (sniper)"; that container supplies the 32-bit libraries and the Deck's driver. The game
+  ran in that container on a desktop PC, started directly from the container's own launch script. Starting it as a
+  Steam shortcut with that compatibility tool has not been tried, on a Deck or anywhere else.
 
 ### Windows
 
@@ -127,7 +141,9 @@ report any problems.
 
 1. Extract the zip and run the `onslaught-ce.exe` launcher. The zip also contains `bea.exe` and the SDL3, FFmpeg and
    zlib DLLs.
-2. You need Windows 10 or newer, for its built-in UCRT, curl and tar.
+2. You need Windows 10 or newer, for its built-in UCRT, curl and tar. User and game folders whose names have
+   characters outside your Windows language's character set work from Windows 10 version 1903 on (the UTF-8 setting
+   the programs use is ignored by earlier versions).
 3. The executable is unsigned, so SmartScreen may show a warning. Choose **More info**, then **Run anyway**.
 
 ## Update, move and uninstall
@@ -186,11 +202,12 @@ in both and comparing them, and recordings of real play find differences our own
   menu. That starts the next time you launch Onslaught CE (quit the game, then start it again); it puts
   `record_sessions=1` in `ce.ini` in your user folder. While it is on, each start asks whether to record: **Stop
   recording** there (or starting with `onslaught-ce --no-record`) turns it off again.
-- While recording, the game runs at 30 frames a second (the timing replays use), its menus take the keyboard only (the
-  mouse still works in battle), the screen is the original 4:3 (no widescreen), and the menus are the original's: the
-  version text, no Onslaught CE menu and no Cheats page, and only cheats typed into a career's name work.
+- While recording, the game runs at 30 frames a second (the timing replays use), its menus take the keyboard and the
+  mouse, and you can type a career's name, the screen is the original 4:3 (no widescreen), and the menus are the
+  original's: the version text, no Onslaught CE menu and no Cheats page, and only cheats typed into a career's name
+  work. The game's sound plays while recording.
 - Each session is saved in the `tapes` folder of your user folder as `YYYYMMDD-HHMMSS.tape` and a `.tape.json` beside
-  it. The tape holds only your key presses and mouse movement, frame by frame. The `.json` names the version, your OS,
+  it. The tape holds only your key presses, typed characters and mouse movement and clicks, frame by frame. The `.json` names the version, your OS,
   the date and the game's arguments, and holds a copy of your options and saved careers as the session started, so a
   replay starts where you did. Nothing else is recorded: no screen, no sound, nothing about your machine.
 - To share a session, put the `.tape` and its `.tape.json` in a zip and attach it to an issue, saying what to look at
@@ -225,7 +242,22 @@ of the tutorial (through its third zone; the final drone fight is still being co
 - The Windows build has been tested only under Wine on Linux, not on real Windows. The Windows self-update path in
   particular is untested on real Windows. Please report any problems.
 - The Windows executable is unsigned, so SmartScreen may warn you (see above).
-- On Linux you need glibc 2.44 or newer (see Linux above) and 32-bit graphics drivers (Vulkan).
+- On Linux you need glibc 2.29 or newer and a 32-bit Vulkan 1.3 graphics driver with dxvk's required extensions (see
+  Linux above). It was run in Ubuntu 24.04 and Debian 12 (with backported Mesa) file systems and in the Steam Linux
+  Runtime 3.0 container, all with test drivers and no window; nobody has played it on those systems or on a Steam
+  Deck, and the Steam shortcut route for the Deck (above) has not been tried. Those runs used a 0.1.3 candidate build,
+  not the released packages. In a Fedora 40 file system with the software driver (lavapipe) the front end matched
+  0.1.2, then the game crashed in its memory manager's cleanup as the level started (and at once when level 100 was
+  started directly; not yet investigated).
+- One effect depends on leftover memory rather than on the game: a walking unit's foot-landing flags are never given
+  a starting value by the original game's code, so whether its first landing makes a stomp explosion depends on what
+  that memory held before. This can differ between builds and between machines: level 521's replay shuts down one
+  more explosion on 0.1.3 than on 0.1.2, and nothing else the replay compares (positions, health, random numbers,
+  scores) differs. A recording that reaches such a landing may play back slightly differently on another version or
+  machine.
+- The game's sound while recording was checked by machine only with SDL's file-output audio driver (it gave the same
+  recording and the same game state as silent audio). A recording made through a real PipeWire or PulseAudio device
+  has not been compared with a silent replay, and nobody has listened to the sound while recording.
 - The tutorial is playable through its third zone; its final drone fight is still being completed.
 - Joystick and controller support is limited to what the original game supported, and controllers have not been tested
   yet.
@@ -239,9 +271,9 @@ Git, Ninja and the usual build tools, and your installed game (the build checks 
 their hashes, `config/game-data.sha256`; set `BEA_GAME_DIR` if the game is not in Steam's default folder).
 
 ```sh
-python3 port/tools/deps.py build                   # the pinned toolchains and libraries, checked by SHA-256
-python3 port/build.py --public --target linux --ce-version 0.1.2
-python3 port/build.py --public --target windows --ce-version 0.1.2
+python3 port/tools/deps.py build                   # the pinned toolchains, libraries and Linux sysroot, checked by SHA-256
+python3 port/build.py --public --target linux --ce-version 0.1.3
+python3 port/build.py --public --target windows --ce-version 0.1.3
 ```
 
 `--ce-version` sets the version the menu, `--version` and the update check show; without it the build calls itself
@@ -256,7 +288,8 @@ python3 port/build.py --public --target windows --ce-version 0.1.2
 ## Licence
 
 Onslaught CE is licensed under **GPL-3.0-only** (see [COPYING](COPYING), [NOTICE](NOTICE) and
-[REUSE.toml](REUSE.toml)). Third-party components keep their own licences; see [THIRD-PARTY.md](THIRD-PARTY.md). The
+[REUSE.toml](REUSE.toml)). Stuart's release ships the GPLv3 text without a version statement; we treat it, and license
+our work, as GPL-3.0-only. Third-party components keep their own licences; see [THIRD-PARTY.md](THIRD-PARTY.md). The
 FFmpeg libraries ship as replaceable shared libraries, and their source tarball is attached to each release.
 
 `src/d3dapp.cpp` and `src/d3dapp.h` are Microsoft's DirectX SDK sample application framework, (c) Microsoft

@@ -1,0 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// The application manifest (RT_MANIFEST 24, CREATEPROCESS_MANIFEST_RESOURCE_ID 1) of bea.exe and onslaught-ce.exe:
+// activeCodePage UTF-8 (utf8.manifest). Compiled by build.py with llvm-mingw's windres.
+1 24 "utf8.manifest"
