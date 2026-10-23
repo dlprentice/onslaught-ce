@@ -33,6 +33,10 @@
 #include "sha256.h"
 #include "ce_report.h"
 
+/* Quitting from the game's main menu ends WinMain with the WM_QUIT message's wParam, which the game posts as 13: an
+ * ordinary close, not an error, so the launcher reports it as one and exits 0. */
+#define GAME_QUIT_STATUS 13
+
 #ifndef CE_VERSION
 #define CE_VERSION "dev"
 #endif
@@ -1248,6 +1252,7 @@ static int start_game(char **args, int nargs, const char *game)
 	CloseHandle(pi.hProcess);
 	CloseHandle(pi.hThread);
 	if (rc >= 0xC0000000u) say("the game stopped with exception %08lx", (unsigned long)rc);
+	else if (rc == 0 || rc == GAME_QUIT_STATUS) { say("the game closed"); rc = 0; }
 	else say("the game exited with status %lu", (unsigned long)rc);
 	return (int)rc;
 #else
@@ -1309,6 +1314,11 @@ static int start_game(char **args, int nargs, const char *game)
 	{
 		say("the game stopped on signal %d (%s)", WTERMSIG(st), strsignal(WTERMSIG(st)));
 		return 128 + WTERMSIG(st);
+	}
+	if (WEXITSTATUS(st) == 0 || WEXITSTATUS(st) == GAME_QUIT_STATUS)
+	{
+		say("the game closed");
+		return 0;
 	}
 	say("the game exited with status %d", WEXITSTATUS(st));
 	return WEXITSTATUS(st);

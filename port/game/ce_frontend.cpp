@@ -419,6 +419,12 @@ public:
 		}
 	}
 	virtual int		GetValue() { return CE_CheatOn(mCheat) ? 1 : 0; }
+	// On and Off, as the page's help line says what each cheat turns on
+	virtual WCHAR	*GetChoiceText(int n)
+	{
+		static WCHAR off[] = L"Off", on[] = L"On";
+		return n ? on : off;
+	}
 
 	int		mCheat;
 };
@@ -464,7 +470,85 @@ public:
 int	CCeRecordSwitch::sValue = -1;
 
 //*********************************************************************************
-// The cheats the game checks (IsCheatActive's numbers; V3R5IOF, number 2, has no effect in the PC game and is left out).
+// The cheats the game checks (IsCheatActive's numbers; V3R5IOF, number 2, has no effect in the PC game and is left out),
+// each with the line the page shows while it is highlighted: what it does (src/FEPLevelSelect.cpp IsWorldUnlocked,
+// FEPGoodies.cpp get_goodie_state, PauseMenu.cpp's controls list and Player.cpp SetIsGod, game.cpp's
+// BUTTON_TOGGLE_FREE_CAMERA on F in PCController.cpp) and the code a career's name held to turn it on.
+struct SCeCheat
+{
+	const WCHAR	*mLabel;
+	int			mCheat;
+	const WCHAR	*mHelp;
+	const WCHAR	*mCode;
+};
+
+static const SCeCheat	kCheats[] = {
+	{L"Unlock all levels: ", 1, L"Opens every level in the level select.", L"Original code: TURKEY"},
+	{L"Unlock all goodies: ", 0, L"Opens every goodie on the Goodies page.", L"Original code: MALLOY"},
+	{L"Goodie hints: ", 5, L"The Goodies page shows how to unlock each goodie, but none can be opened while this is on.",
+	 L"Original code: lat\u00eate"},
+	{L"God mode option: ", PORT_CE_GOD_CHEAT, L"Adds a God switch to Controller Options; turn it on there for no damage "
+											   L"and endless energy.", L"Original code: Maladim"},
+	{L"Free camera (F key): ", 4, L"In a level, F lets you fly the camera around; F again returns it to your Battle Engine.",
+	 L"Original code: Aurore"},
+};
+#define CE_NUM_CHEATS	int(sizeof(kCheats) / sizeof(kCheats[0]))
+
+// The page's Back item, the list's last: after drawing itself (the list draws its items in order, so this comes after
+// the others) it draws, below the list, the highlighted cheat's help line and the page's standing note, in the small
+// font's normal text with its shadow as the options pages draw their rows (the list's disabled grey is for what cannot
+// be chosen). Nothing is drawn while a message box is shown over the list.
+class CCeCheatsBack : public CMenuItem
+{
+public:
+	CCeCheatsBack(CMenuOptionsList *list) : CMenuItem((DWORD)GI_BACK, 3), mList(list) {}
+
+	virtual void	Render(float x, float y, BOOL selected)
+	{
+		CMenuItem::Render(x, y, selected);
+		if (FEMESSBOX.BeingDisplayed())
+			return;
+		static WCHAR note[] = L"Cheats apply to every career and are off while a session is being recorded.";
+		CDXBitmapFont *font = PLATFORM.Font(FONT_SMALL);
+		float line = float(font->GetHeight());
+		// what the highlighted cheat does, in white, then its original code, as trivia, in the note's grey
+		if ((mList->mSelected >= 0) && (mList->mSelected < CE_NUM_CHEATS))
+		{
+			const SCeCheat &cheat = kCheats[mList->mSelected];
+			float ty = y + 20.f + line * 0.5f;
+			ty += line * Lines(font, cheat.mHelp, ty, 0xffffffff);
+			Lines(font, cheat.mCode, ty, kGrey);
+		}
+		// the note ends a little above the page's help bar (CFEPCommon::RenderHelpText draws it at y 455)
+		Lines(font, note, 449.f, kGrey, true);
+	}
+
+	static const DWORD	kGrey = 0xffa8a8a8;
+
+	// The text in lines wrapped to the space between the page's side borders, each centred on the page, from y down (or
+	// ending at y, when up); returns the number of lines.
+	static int	Lines(CDXBitmapFont *font, const WCHAR *text, float y, DWORD colour, bool up = false)
+	{
+		static SWordWrapFill fill;
+		static WCHAR buf[400];
+		wcsncpy(buf, text, 399);
+		buf[399] = 0;
+		int n = font->WordWrap(&fill, buf, 420.f);
+		float line = float(font->GetHeight());
+		if (up)
+			y -= line * n;
+		for (int l = 0; l < n; l++)
+		{
+			SIZE size;
+			font->GetTextExtent(fill.c[l], &size);
+			font->DrawTextWithShadow(320.f - float(size.cx / 2), y + line * l, colour, fill.c[l], 0, 0, 1.f, 1.f);
+		}
+		return n;
+	}
+
+	CMenuOptionsList	*mList;
+};
+
 CMenuItem	*PortCeCheatsItem()
 {
 	return new (MEMTYPE_MENUITEM) CCeCheatsItem();
@@ -474,21 +558,9 @@ CMenuOptionsList	*PortCeCheatsList(float y)
 {
 	static WCHAR title[] = L"Cheats";
 	CMenuOptionsList *list = new (MEMTYPE_MENUITEM) CMenuOptionsList(title, 320.f, y, FALSE, 0xb0000000);
-	list->AddItem(new (MEMTYPE_MENUITEM) CCeCheatSwitch(L"All levels open (TURKEY): ", 1));
-	list->AddItem(new (MEMTYPE_MENUITEM) CCeCheatSwitch(L"All goodies open (MALLOY): ", 0));
-	list->AddItem(new (MEMTYPE_MENUITEM) CCeCheatSwitch(L"Goodie hints (lat\u00eate): ", 5));
-	list->AddItem(new (MEMTYPE_MENUITEM) CCeCheatSwitch(L"God mode option (Maladim): ", PORT_CE_GOD_CHEAT));
-	list->AddItem(new (MEMTYPE_MENUITEM) CCeCheatSwitch(L"Free camera, F key (Aurore): ", 4));
-	// notes (disabled items), a line each: the list is as wide as the options page's
-	static const WCHAR *const notes[] = {L"Maladim: turn God on in Controller Options.", L"These apply to every career. They are off",
-										 L"while a session is being recorded."};
-	for (const WCHAR *line : notes)
-	{
-		CMenuItem *note = new (MEMTYPE_MENUITEM) CCeMenuItem(line, 0);
-		note->mEnabled = FALSE;
-		list->AddItem(note);
-	}
-	list->AddItem(new (MEMTYPE_MENUITEM) CMenuItem((DWORD)GI_BACK, 3));
+	for (const SCeCheat &cheat : kCheats)
+		list->AddItem(new (MEMTYPE_MENUITEM) CCeCheatSwitch(cheat.mLabel, cheat.mCheat));
+	list->AddItem(new (MEMTYPE_MENUITEM) CCeCheatsBack(list));
 	return list;
 }
 

@@ -1116,7 +1116,10 @@ void Mixer::Start()
 		timer = SDL_AddTimer(10, TimerTick, NULL);
 	}
 	// so a run's log shows where the sound went (SDL's "dummy" driver and the timer clock are silent)
-	fprintf(stderr, PORT_LOG_PREFIX "audio %s\n", stream ? SDL_GetCurrentAudioDriver() : virt ? "virtual clock, no device" : "timer clock, no device");
+	static const char *sLogged;
+	const char *where = stream ? SDL_GetCurrentAudioDriver() : virt ? "virtual clock, no device" : "timer clock, no device";
+	if (!sLogged || strcmp(sLogged, where))
+		fprintf(stderr, PORT_LOG_PREFIX "audio %s\n", sLogged = where);
 }
 
 void Mixer::Stop()

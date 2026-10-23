@@ -133,7 +133,7 @@ def run(cmd, env=None, cwd=None):
 def cmake_project(cm, cmake, name, src, opts, env):
     # CMake keeps the compiler a build folder was first configured with (CMakeCache.txt), whatever CC says now: a
     # folder configured with another compiler is configured again from scratch.
-    want = next((o.split("=", 1)[1] for o in cm if o.startswith("-DCMAKE_C_COMPILER=")), env.get("CC"))
+    want = next((str(o).split("=", 1)[1] for o in cm if str(o).startswith("-DCMAKE_C_COMPILER=")), env.get("CC"))
     cache = BUILD / name / "CMakeCache.txt"
     if want and cache.exists():
         cc = re.search(r"^CMAKE_C_COMPILER:[A-Z]+=(.*)$", cache.read_text(errors="replace"), re.M)

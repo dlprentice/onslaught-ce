@@ -25,6 +25,7 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import textwrap
 import time
 import zipfile
 from pathlib import Path
@@ -118,6 +119,37 @@ def leading_comment(tar: Path, member_suffix: str) -> bytes:
     return data[start:data.index(b"*/", start) + 2] + b"\n"
 
 
+def comment_with(tar: Path, member_suffix: str, text: bytes, last: bool = False) -> bytes:
+    """The /* ... */ comment of a source file in the archive that holds text (the last such comment when last), as the
+    file has it: a licence notice that is not the file's first comment."""
+    data = from_tarball(tar, member_suffix)
+    at = data.rindex(text) if last else data.index(text)
+    start = data.rindex(b"/*", 0, at)
+    return data[start:data.index(b"*/", at) + 2] + b"\n"
+
+
+def hwdata_notice() -> bytes:
+    """hwdata's pnp.ids, which libdisplay-info 275e6459 carries as its PNP ID table (compiled into libdxvk_d3d9.so.0):
+    hwdata's licence statement and the text of the XFree86 1.0 licence it offers, as The XFree86 Project publishes it
+    (both pinned on deps.lock's "licence:" lines)."""
+    import html
+    import re
+    statement = pinned_licence("hwdata")
+    page = pinned_licence("XFree86-1.0").decode("latin-1")
+    m = re.search(r"<h2>(Version 1\.0 of XFree86.*?)</h2>\s*<blockquote>(.*?)</blockquote>", page, re.S)
+    if not m:
+        sys.exit("XFree86-1.0: the licence page has no version 1.0 section")
+    def plain(fragment: str) -> str:   # the words of an HTML fragment, without its tags and the registered-mark sign
+        return " ".join(html.unescape(re.sub(r"<[^>]+>", " ", fragment)).replace("\u00ae", "").split())
+    paras = ["\n".join(textwrap.fill(plain(line), 76) for line in re.split(r"<br\s*/>", p) if plain(line))
+             for p in m.group(2).split("</p>")]
+    text = [plain(m.group(1)), ""] + [p + "\n" for p in paras if p]
+    return (b"The PNP ID table in lib/libdxvk_d3d9.so.0 comes from hwdata's pnp.ids, as libdisplay-info (commit\n"
+            b"275e6459, dxvk 3.1.1's submodule) carries it. hwdata's licence statement:\n\n" + statement +
+            b"\nThis program takes the XFree86 1.0 option. Its text, from " + deps.licence_pins()["XFree86-1.0"]["url"].encode() +
+            b":\n\n" + "\n".join(text).encode())
+
+
 def wayland_notices(tar: Path) -> bytes:
     """The copyright blocks of the Wayland protocol files SDL3 generates its Wayland code from (wayland-scanner copies
     each into its generated *-protocol.c, which libSDL3.so.0 compiles in), in file-name order."""
@@ -169,6 +201,10 @@ def licences(windows: bool) -> dict:
         # and its copy of fdlibm (src/libm, Sun Microsystems: "provided that this notice is preserved"); the notice
         # as e_pow.c has it (every Sun file in src/libm carries the same one)
         "licenses/fdlibm-NOTICE": leading_comment(dl / Path(lock["SDL3"]["url"]).name, "/src/libm/e_pow.c"),
+        # and stb_image (its image loader, src/video/stb_image.h), which offers MIT or public domain: the file's closing
+        # licence comment, both options as it has them
+        "licenses/stb_image-LICENSE": comment_with(dl / Path(lock["SDL3"]["url"]).name, "/src/video/stb_image.h",
+                                                   b"This software is available under 2 licenses", last=True),
     }
     if windows:
         out["licenses/zlib-LICENSE"] = from_tarball(dl / Path(lock["zlib"]["url"]).name, "/LICENSE")
@@ -186,6 +222,10 @@ def licences(windows: bool) -> dict:
         out["licenses/xsettings-client-NOTICE"] = leading_comment(sdl, "/src/video/x11/xsettings-client.c")
         out["licenses/imKStoUCS-NOTICE"] = leading_comment(sdl, "/src/events/imKStoUCS.c")
         out["licenses/wayland-protocols-NOTICES"] = wayland_notices(sdl)
+        # xdg-user-dirs' lookup functions, copied into SDL3's Unix filesystem code (MIT, (c) 2007 Red Hat)
+        out["licenses/xdg-user-dir-lookup-NOTICE"] = comment_with(sdl, "/src/filesystem/unix/SDL_sysfilesystem.c",
+                                                                  b"Copyright (c) 2007 Red Hat")
+        out["licenses/hwdata-pnp.ids-LICENSE"] = hwdata_notice()
         out["licenses/libxkbcommon-LICENSE"] = from_tarball(dl / Path(lock["libxkbcommon"]["url"]).name, "/LICENSE")
     return out
 
@@ -209,7 +249,10 @@ def third_party(windows: bool) -> list:
             ("  yuv2rgb", "(SDL3 " + lock["SDL3"]["version"] + "'s copy)", "BSD-3-Clause, (c) 2016 Adrien Descamps",
              "compiled into " + ("SDL3.dll" if windows else "lib/libSDL3.so.0") + " (YUV to RGB conversion)", ["licenses/yuv2rgb-LICENSE"]),
             ("  fdlibm", "(SDL3 " + lock["SDL3"]["version"] + "'s copy, src/libm)", "Sun Microsystems' fdlibm notice, (c) 1993",
-             "compiled into " + ("SDL3.dll" if windows else "lib/libSDL3.so.0") + " (maths functions)", ["licenses/fdlibm-NOTICE"])]
+             "compiled into " + ("SDL3.dll" if windows else "lib/libSDL3.so.0") + " (maths functions)", ["licenses/fdlibm-NOTICE"]),
+            ("  stb_image", "(SDL3 " + lock["SDL3"]["version"] + "'s copy, src/video/stb_image.h)",
+             "MIT OR Unlicense (public domain), (c) 2017 Sean Barrett",
+             "compiled into " + ("SDL3.dll" if windows else "lib/libSDL3.so.0") + " (image loading)", ["licenses/stb_image-LICENSE"])]
     if not windows:
         sdl_copy = "(SDL3 " + lock["SDL3"]["version"] + "'s copy)"
         rows += [("  edid-parse", sdl_copy, "MIT, (c) 2007 Red Hat", "compiled into lib/libSDL3.so.0 (X11 monitor EDID parsing)",
@@ -219,7 +262,9 @@ def third_party(windows: bool) -> list:
                  ("  imKStoUCS", sdl_copy, "MIT, (c) Jamey Sharp, Josh Triplett, Red Hat, Oracle",
                   "compiled into lib/libSDL3.so.0 (X11 and Wayland keysym to Unicode)", ["licenses/imKStoUCS-NOTICE"]),
                  ("  Wayland protocols", sdl_copy.replace("copy", "wayland-protocols"), "MIT, many holders",
-                  "code generated from them is compiled into lib/libSDL3.so.0", ["licenses/wayland-protocols-NOTICES"])]
+                  "code generated from them is compiled into lib/libSDL3.so.0", ["licenses/wayland-protocols-NOTICES"]),
+                 ("  xdg-user-dir-lookup", sdl_copy, "MIT, (c) 2007 Red Hat",
+                  "compiled into lib/libSDL3.so.0 (XDG user folders)", ["licenses/xdg-user-dir-lookup-NOTICE"])]
     rows += ([("zlib", lock["zlib"]["version"], "Zlib", "libz.dll", ["licenses/zlib-LICENSE"]),
               ("MinGW-w64 runtime", "15.0 (llvm-mingw " + lock["llvm-mingw"]["version"] + ")", "ZPL-2.1 and others", "statically linked",
                ["licenses/MinGW-w64-runtime-COPYING.txt"]),
@@ -230,6 +275,8 @@ def third_party(windows: bool) -> list:
                [f"licenses/{n}-LICENSE"]) for n, who in (("dxbc-spirv", "2025 Philip Rebohle"),
                                                          ("libdisplay-info", "2022 The libdisplay-info Contributors"))
               for p in (deps.licence_pins()[n],)] +
+             [("  hwdata pnp.ids", "(libdisplay-info 275e6459's copy, in dxvk-native)", "GPL-2.0-or-later OR XFree86 1.0, the XFree86 1.0 option",
+               "its PNP ID table is compiled into lib/libdxvk_d3d9.so.0 (monitor maker names)", ["licenses/hwdata-pnp.ids-LICENSE"])] +
              [("libxkbcommon", lock["libxkbcommon"]["version"], "MIT", "lib/libxkbcommon.so.0", ["licenses/libxkbcommon-LICENSE"])])
     return rows
 
@@ -317,16 +364,19 @@ IN_THE_GAME = [
     "- Main menu > Onslaught CE: About (version, licence and links), Check for updates (explains the check the",
     "  launcher makes at every start, how to be asked again about a skipped version, and how to turn checks back",
     "  on), Record sessions and Report a problem (below).",
-    "- Options > Cheats: the game's own cheats as switches, kept in ce.ini so they apply to every career:",
-    "  - All levels open (TURKEY)",
-    "  - All goodies open (MALLOY)",
-    "  - Goodie hints (lat\u00eate)",
-    "  - God mode option (Maladim): adds a God mode item to Controller Options, in the pause menu",
-    "    (applies at once) and in Options (applies from the next level); turning the switch off ends god mode. God",
-    "    mode set this way is kept in ce.ini, not in your careers, so a recorded session never carries it.",
-    "  - Free camera, F key (Aurore)",
-    "  These apply to every career. They are off while a session is being recorded. Typing a code into a career's",
-    "  name still works as in the original.",
+    "- Options > Cheats: the game's own cheats as On/Off switches, kept in ce.ini so they apply to every career;",
+    "  the line under the list says what the highlighted one does:",
+    "  - Unlock all levels (original code TURKEY): every level opens in the level select",
+    "  - Unlock all goodies (MALLOY): every goodie opens on the Goodies page",
+    "  - Goodie hints (lat\u00eate): the Goodies page shows how to unlock each goodie; while it is on, goodies",
+    "    cannot be opened",
+    "  - God mode option (Maladim): adds a God switch to Controller Options, in the pause menu (applies at once)",
+    "    and in Options (applies from the next level), for no damage and endless energy; turning the cheat off",
+    "    ends god mode. God mode set this way is kept in ce.ini, not in your careers, so a recorded session never",
+    "    carries it.",
+    "  - Free camera (F key, Aurore): in a level, F lets you fly the camera; F again returns it",
+    "  They are off while a session is being recorded. Typing a code into a career's name still works as in the",
+    "  original.",
     "- Keyboard: no key release is lost, typed characters come from the key presses themselves (no desktop input",
     "  method in the way), and the letter and digit keys work by their position on any keyboard layout.",
     "- A quiet console: the developers' messages are hidden unless BEA_PORT_VERBOSE=1 is set.",

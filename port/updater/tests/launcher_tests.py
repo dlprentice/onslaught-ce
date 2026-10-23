@@ -75,7 +75,7 @@ class Launcher(unittest.TestCase):
         self.assertTrue(lines[2].startswith("Started: "))
         self.assertEqual(lines[3], "GPU (as Direct3D reports it): Stand-in GPU (vendor 8086, device 1234, driver 1.2.3.4)")
         self.assertIn("out: args -level 100", lines)
-        self.assertEqual(lines[-1], "onslaught-ce: the game exited with status 0")
+        self.assertEqual(lines[-1], "onslaught-ce: the game closed")
         # the terminal gets the same output
         self.assertIn("out: args -level 100", r.stderr)
 

@@ -25,24 +25,26 @@ The source has three parts:
   executable's bytes when built with the original compiler.
 - **A platform layer**: SDL3, with dxvk-native on Linux and the system's Direct3D 9 on Windows.
 
-This is **version 0.1.1, a preview** (tag `v0.1.1`). In the main menu, the version text in the bottom-left corner
-(originally "V1.00") reads "Onslaught CE v0.1.1 (preview)". 0.1.1 changes the packages' licence notices, the Linux
-preflight, the launcher's messages and the wording of the Onslaught CE menu's messages; the game itself plays the
-same as 0.1's.
+This is **version 0.1.2, a preview** (tag `v0.1.2`). In the main menu, the version text in the bottom-left corner
+(originally "V1.00") reads "Onslaught CE v0.1.2 (preview)". 0.1.2 redesigns the Cheats page (On/Off switches with a
+line saying what the highlighted cheat does) and adds licence notices for three more components compiled into the
+libraries it ships; the game itself plays the same as 0.1's.
 
 ## In the game
 
 - **Main menu > Onslaught CE:** About (version, licence and links), Check for updates (explains the check the launcher
   makes at every start, how to be asked again about a skipped version, and how to turn checks back on), Record sessions
   (see below) and Report a problem.
-- **Options > Cheats:** the game's own cheats as switches, kept in `ce.ini` so they apply to every career:
-  - **All levels open (TURKEY)**
-  - **All goodies open (MALLOY)**
-  - **Goodie hints (latête)**
-  - **God mode option (Maladim):** adds a God mode item to Controller Options, in the pause menu (applies at once)
-    and in Options (applies from the next level); turning the switch off ends god mode. God mode set this way is kept
-    in `ce.ini`, not in your careers, so a recorded session never carries it.
-  - **Free camera, F key (Aurore)**
+- **Options > Cheats:** the game's own cheats as On/Off switches, kept in `ce.ini` so they apply to every career; the
+  line under the list says what the highlighted one does:
+  - **Unlock all levels** (original code TURKEY): every level opens in the level select.
+  - **Unlock all goodies** (MALLOY): every goodie opens on the Goodies page.
+  - **Goodie hints** (latête): the Goodies page shows how to unlock each goodie; while it is on, goodies cannot be
+    opened.
+  - **God mode option** (Maladim): adds a God switch to Controller Options, in the pause menu (applies at once) and in
+    Options (applies from the next level), for no damage and endless energy; turning the cheat off ends god mode. God
+    mode set this way is kept in `ce.ini`, not in your careers, so a recorded session never carries it.
+  - **Free camera** (F key, Aurore): in a level, F lets you fly the camera; F again returns it.
 
   They are off while a session is being recorded. Typing a code into a career's name still works as in the original.
 - **Keyboard:** no key release is lost, typed characters come from the key presses themselves (no desktop input method
@@ -237,8 +239,8 @@ their hashes, `config/game-data.sha256`; set `BEA_GAME_DIR` if the game is not i
 
 ```sh
 python3 port/tools/deps.py build                   # the pinned toolchains and libraries, checked by SHA-256
-python3 port/build.py --public --target linux --ce-version 0.1.1
-python3 port/build.py --public --target windows --ce-version 0.1.1
+python3 port/build.py --public --target linux --ce-version 0.1.2
+python3 port/build.py --public --target windows --ce-version 0.1.2
 ```
 
 `--ce-version` sets the version the menu, `--version` and the update check show; without it the build calls itself

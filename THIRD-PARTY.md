@@ -12,13 +12,16 @@ so. Release packages carry each shipped component's licence text in `licenses/`.
 | hidapi | SDL3 3.4.16's copy (`src/hidapi`) | BSD-3-Clause (the BSD option of its three licences) | game controllers; compiled into the SDL3 library on both platforms |
 | yuv2rgb | SDL3 3.4.16's copy (`src/video/yuv2rgb`) | BSD-3-Clause, (c) 2016 Adrien Descamps | YUV to RGB conversion; compiled into the SDL3 library on both platforms |
 | fdlibm | SDL3 3.4.16's copy (`src/libm`) | Sun Microsystems' fdlibm notice, (c) 1993 ("provided that this notice is preserved") | maths functions; compiled into the SDL3 library on both platforms |
+| stb_image | SDL3 3.4.16's copy (`src/video/stb_image.h`) | MIT OR Unlicense (public domain), (c) 2017 Sean Barrett: either, as the file offers | image loading; compiled into the SDL3 library on both platforms |
 | edid-parse | SDL3 3.4.16's copy (`src/video/x11/edid-parse.c`) | MIT, (c) 2007 Red Hat | X11 monitor EDID parsing; compiled into the Linux SDL3 library |
 | xsettings-client | SDL3 3.4.16's copy (`src/video/x11/xsettings-client.c`) | HPND-style, (c) 2001, 2007 Red Hat and 2024 Igalia | X11 XSETTINGS; compiled into the Linux SDL3 library |
 | imKStoUCS | SDL3 3.4.16's copy (`src/events/imKStoUCS.c`) | MIT, (c) Jamey Sharp, Josh Triplett, Red Hat, Oracle | X11 and Wayland keysym to Unicode; compiled into the Linux SDL3 library |
 | Wayland protocols | SDL3 3.4.16's `wayland-protocols/*.xml` (wayland, wayland-protocols and others) | MIT, many holders (each file's notice) | code generated from them by wayland-scanner is compiled into the Linux SDL3 library |
+| xdg-user-dir-lookup | SDL3 3.4.16's copy (`src/filesystem/unix/SDL_sysfilesystem.c`, from xdg-user-dirs' `xdg-user-dir-lookup.c`) | MIT, (c) 2007 Red Hat | XDG user folders; compiled into the Linux SDL3 library |
 | DXVK (dxvk-native) | 3.1.1 | zlib | Direct3D 9 over Vulkan on Linux; a shared library beside the program |
 | dxbc-spirv | `bf14419e` (dxvk 3.1.1's submodule) | MIT, (c) 2025 Philip Rebohle | compiled into dxvk-native's Direct3D 9 library |
 | libdisplay-info | `275e6459` (dxvk 3.1.1's submodule) | MIT, (c) 2022 The libdisplay-info Contributors | compiled into dxvk-native's Direct3D 9 library |
+| hwdata `pnp.ids` | libdisplay-info `275e6459`'s copy | GPL-2.0-or-later OR XFree86 1.0 (the XFree86 1.0 option; `licenses/hwdata-pnp.ids-LICENSE` carries hwdata's statement and the licence text, both pinned in `port/deps.lock`) | monitor maker names (PNP IDs); its table is compiled into dxvk-native's Direct3D 9 library |
 | libxkbcommon | 1.13.2 | MIT | keyboard layouts for SDL3 on Linux; a shared library beside the program |
 | FFmpeg | 7.1.1 (decoders and demuxer only; no GPL or non-free parts) | LGPL-2.1-or-later | the game's films; shared libraries beside the program, which you may replace with your own build. Each release also offers the exact FFmpeg source it was built from. |
 | Monocypher | 4.0.2 | BSD-2-Clause OR CC0-1.0 | the launcher's Ed25519 check of the signed release feed; compiled into the launcher |
