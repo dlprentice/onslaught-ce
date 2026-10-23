@@ -16,7 +16,9 @@ whose usr/lib32 holds the i686 libraries), prefix/ (Linux i686: lib, include, li
 llvm-mingw's i686-w64-mingw32-clang. Nothing here touches the system.
 """
 import hashlib
+import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -64,10 +66,21 @@ def patch_pins():
     return pins
 
 
+def licence_pins():
+    """Licence texts the release packages carry that no pinned input contains ("licence:NAME<TAB>version<TAB>licence
+    <TAB>sha256<TAB>url" lines in deps.lock): package.py fetches and checks them; the build never reads them."""
+    pins = {}
+    for line in (PORT / "deps.lock").read_text().splitlines():
+        if line.startswith("licence:"):
+            name, version, licence, sha, url = line[len("licence:"):].split("\t")
+            pins[name] = dict(name=name, version=version, licence=licence, sha=sha, url=url)
+    return pins
+
+
 def lock():
     rows = {}
     for line in (PORT / "deps.lock").read_text().splitlines():
-        if line.strip() and not line.startswith("#") and not line.startswith("patch:"):
+        if line.strip() and not line.startswith("#") and not line.startswith(("patch:", "licence:")):
             name, version, licence, sha, url = line.split("\t")
             rows[name] = dict(name=name, version=version, licence=licence, sha=sha, url=url,
                               file=DOWNLOADS / url.rsplit("/", 1)[1])
@@ -118,6 +131,14 @@ def run(cmd, env=None, cwd=None):
 
 
 def cmake_project(cm, cmake, name, src, opts, env):
+    # CMake keeps the compiler a build folder was first configured with (CMakeCache.txt), whatever CC says now: a
+    # folder configured with another compiler is configured again from scratch.
+    want = next((o.split("=", 1)[1] for o in cm if o.startswith("-DCMAKE_C_COMPILER=")), env.get("CC"))
+    cache = BUILD / name / "CMakeCache.txt"
+    if want and cache.exists():
+        cc = re.search(r"^CMAKE_C_COMPILER:[A-Z]+=(.*)$", cache.read_text(errors="replace"), re.M)
+        if cc and cc.group(1) != want:
+            shutil.rmtree(BUILD / name)
     run(cm + ["-S", src, "-B", BUILD / name] + opts, env)
     run([cmake, "--build", BUILD / name], env)
     run([cmake, "--install", BUILD / name], env)
@@ -144,6 +165,12 @@ def build_linux(rows, cmake, meson):
 
     # libxkbcommon: SDL3's Wayland backend needs it, and multilib's 32-bit copy is not installed.
     xkb = unpack(rows["libxkbcommon"], SRC)
+    # meson --reconfigure keeps the compiler a folder was first set up with (one set up before the cross file named
+    # the pinned clang shipped a library built by the system's): such a folder is set up again from scratch.
+    info = BUILD / "xkbcommon/meson-info/intro-compilers.json"
+    if (BUILD / "xkbcommon").exists() and (not info.exists() or
+                                           json.loads(info.read_text())["host"]["c"]["exelist"][:1] != [str(llvm / "clang")]):
+        shutil.rmtree(BUILD / "xkbcommon")
     run(meson + ["setup", "--reconfigure" if (BUILD / "xkbcommon/build.ninja").exists() else "--wipe",
                  BUILD / "xkbcommon", xkb, "--cross-file", cross, f"--prefix={PREFIX}", "--libdir=lib",
                  "--buildtype=release", "-Denable-x11=false", "-Denable-wayland=false", "-Denable-xkbregistry=false",
@@ -199,8 +226,9 @@ def build_windows(rows, cmake):
     print(f"deps: Windows i686 installed into {PREFIX_WIN}; toolchain {link}")
 
 
-# FFmpeg for port/bink (the recipe in port/bink/build_ffmpeg.sh): the Bink demuxer and its video and audio decoders
-# only, static, LGPL (no --enable-gpl, no --enable-nonfree).
+# FFmpeg for port/bink: the Bink demuxer and its video and audio decoders only, LGPL (no --enable-gpl, no
+# --enable-nonfree); static here for private builds, shared libraries for public builds (build_ffmpeg_shared below,
+# the configuration the release packages ship).
 FFMPEG_COMMON = ["--enable-static", "--disable-shared", "--disable-autodetect", "--disable-everything", "--disable-programs",
                  "--disable-doc", "--disable-network", "--disable-avdevice", "--disable-avfilter", "--disable-swscale",
                  "--disable-swresample", "--disable-x86asm", "--enable-decoder=bink,binkaudio_dct,binkaudio_rdft",

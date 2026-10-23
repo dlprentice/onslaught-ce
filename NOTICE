@@ -9,6 +9,10 @@ version 3, by Stuart Gillam (https://github.com/stuart73/Onslaught). The files u
 completed where it lacks code; port/ and linklib/ are this project's own work unless a file says otherwise.
 REUSE.toml records each path's licence.
 
+src/d3dapp.cpp and src/d3dapp.h are Microsoft's DirectX SDK sample application framework, (c) Microsoft Corporation,
+carried because Stuart Gillam's GPL release of the game's source includes them; Microsoft has not licensed them
+under the GPL.
+
 The game's data (levels, textures, sounds, films, text) is not part of this program and not covered by its licence;
 players supply it from their own copy of the game.
 

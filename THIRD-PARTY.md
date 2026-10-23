@@ -9,12 +9,21 @@ so. Release packages carry each shipped component's licence text in `licenses/`.
 | Component | Version | Licence | How it is used |
 | --- | --- | --- | --- |
 | SDL3 | 3.4.16, with `port/deps-patches/SDL3-offscreen-fullscreen-modes.patch` | zlib | window, input and sound; a shared library beside the program (patched, as the patch file records) |
+| hidapi | SDL3 3.4.16's copy (`src/hidapi`) | BSD-3-Clause (the BSD option of its three licences) | game controllers; compiled into the SDL3 library on both platforms |
+| yuv2rgb | SDL3 3.4.16's copy (`src/video/yuv2rgb`) | BSD-3-Clause, (c) 2016 Adrien Descamps | YUV to RGB conversion; compiled into the SDL3 library on both platforms |
+| fdlibm | SDL3 3.4.16's copy (`src/libm`) | Sun Microsystems' fdlibm notice, (c) 1993 ("provided that this notice is preserved") | maths functions; compiled into the SDL3 library on both platforms |
+| edid-parse | SDL3 3.4.16's copy (`src/video/x11/edid-parse.c`) | MIT, (c) 2007 Red Hat | X11 monitor EDID parsing; compiled into the Linux SDL3 library |
+| xsettings-client | SDL3 3.4.16's copy (`src/video/x11/xsettings-client.c`) | HPND-style, (c) 2001, 2007 Red Hat and 2024 Igalia | X11 XSETTINGS; compiled into the Linux SDL3 library |
+| imKStoUCS | SDL3 3.4.16's copy (`src/events/imKStoUCS.c`) | MIT, (c) Jamey Sharp, Josh Triplett, Red Hat, Oracle | X11 and Wayland keysym to Unicode; compiled into the Linux SDL3 library |
+| Wayland protocols | SDL3 3.4.16's `wayland-protocols/*.xml` (wayland, wayland-protocols and others) | MIT, many holders (each file's notice) | code generated from them by wayland-scanner is compiled into the Linux SDL3 library |
 | DXVK (dxvk-native) | 3.1.1 | zlib | Direct3D 9 over Vulkan on Linux; a shared library beside the program |
+| dxbc-spirv | `bf14419e` (dxvk 3.1.1's submodule) | MIT, (c) 2025 Philip Rebohle | compiled into dxvk-native's Direct3D 9 library |
+| libdisplay-info | `275e6459` (dxvk 3.1.1's submodule) | MIT, (c) 2022 The libdisplay-info Contributors | compiled into dxvk-native's Direct3D 9 library |
 | libxkbcommon | 1.13.2 | MIT | keyboard layouts for SDL3 on Linux; a shared library beside the program |
 | FFmpeg | 7.1.1 (decoders and demuxer only; no GPL or non-free parts) | LGPL-2.1-or-later | the game's films; shared libraries beside the program, which you may replace with your own build. Each release also offers the exact FFmpeg source it was built from. |
 | Monocypher | 4.0.2 | BSD-2-Clause OR CC0-1.0 | the launcher's Ed25519 check of the signed release feed; compiled into the launcher |
 | zlib | 1.3.2 | Zlib | compressed game files on Windows (a DLL beside the program); Linux uses the system's |
-| libogg, libvorbis | 1.0 | BSD-3-Clause | the game's music and voices, built with the game's original compiler into `libvorbis_vc6.a`, which each release attaches with its source and build script (pinned by SHA-256 in `port/deps.lock`) |
+| libogg, libvorbis | 1.0 | BSD-3-Clause | the game's music and voices, built with the game's original compiler into `libvorbis_vc6.a` (attached to the `vorbis-vc6-1` release and pinned by SHA-256 in `port/deps.lock`) by `port/vorbis/build.py`, from Xiph.Org's 1.0 source fetched from downloads.xiph.org by the SHA-256 pins in that script |
 | MinGW-w64 runtime | from llvm-mingw 20260922 | ZPL-2.1 and public domain | the Windows C runtime start-up, linked into `bea.exe` |
 | libc++, libc++abi, libunwind | from llvm-mingw 20260922 | Apache-2.0 WITH LLVM-exception | the Windows C++ runtime, linked into `bea.exe` |
 
@@ -22,10 +31,15 @@ so. Release packages carry each shipped component's licence text in `licenses/`.
 
 | File | From | Licence |
 | --- | --- | --- |
-| `port/d3dx/src/bc.cpp` | adapted from Microsoft's DirectXTex (block compression decoders) | MIT, with the original notice in the file; the file is GPL-3.0-only AND MIT |
-| `src/oggvorbis.h` | declarations from the Xiph.Org libogg and libvorbis headers | BSD-3-Clause (Xiph.Org Foundation) |
-| `src/d3dapp.cpp`, `src/d3dapp.h` | Microsoft's DirectX sample application framework, as Stuart Gillam's GPL release of the game's source includes it | as released by Stuart Gillam under GPL-3.0 |
+| `port/d3dx/src/bc.cpp` | adapted from Microsoft's DirectXTex (its DXT block encoder) | MIT, with the original notice in the file; the file is GPL-3.0-only AND MIT |
+| `src/oggvorbis.h` | declarations from the Xiph.Org libogg and libvorbis headers | BSD-3-Clause (Xiph.Org Foundation; `LICENSES/BSD-3-Clause.txt`), with this project's GPL-3.0-only |
+| `src/OggFileRead.cpp` | its decode loop follows Xiph.Org's `decoder_example.c` (libvorbis 1.0), turned into a class | BSD-3-Clause (Xiph.Org Foundation), with this project's GPL-3.0-only |
+| `src/d3dapp.cpp`, `src/d3dapp.h` | src/d3dapp.cpp and src/d3dapp.h are Microsoft's DirectX SDK sample application framework, (c) Microsoft Corporation, carried because Stuart Gillam's GPL release of the game's source includes them; Microsoft has not licensed them under the GPL. | `LicenseRef-Microsoft-DirectX-SDK-Sample` (`LICENSES/LicenseRef-Microsoft-DirectX-SDK-Sample.txt`); Stuart Gillam's and this project's changes GPL-3.0-only |
 | `src/adpcm.c` | the IMA ADPCM step tables (Jack Jansen's public reference implementation) | public reference tables |
+
+Header-only inputs are not listed: dxvk-native compiles against Khronos's SPIRV-Headers and Vulkan-Headers (its
+submodules), which supply declarations and constants only, so no copy or substantial portion of those headers is in
+the shipped library, and their notices (which cover copies of the headers) are not carried.
 
 ## Tools only (not shipped)
 

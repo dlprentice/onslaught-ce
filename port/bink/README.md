@@ -31,9 +31,10 @@ All 66 retail videos are Bink 1 revision i (`BIKi`), from 128x128 to 640x480.
 
 FFmpeg 7.1.1, `https://ffmpeg.org/releases/ffmpeg-7.1.1.tar.xz`, SHA-256
 `733984395e0dbbe5c046abda2dc49a5544e7e0e1e2366bba849222ae9e3a03b1`, licence LGPL 2.1 or later (no GPL or non-free
-parts enabled), linked statically, which the port's GPL-3.0 allows. `build_ffmpeg.sh` is the recipe: the Bink demuxer,
-the three Bink decoders and the file protocol only, no assembly, no autodetected libraries; Windows with its native
-threads. bink.cpp is compiled with `-mno-ms-bitfields` after the port's layout flags: with `-mms-bitfields` FFmpeg's
+parts enabled). Public builds link it as shared libraries beside the program, which the player may replace; private
+builds link it statically. `port/tools/deps.py`'s `build_ffmpeg_shared` (public) and `build_ffmpeg` (private) are the
+recipe: the Bink demuxer, the three Bink decoders and the file protocol only, no assembly, no autodetected libraries;
+Windows with its native threads. bink.cpp is compiled with `-mno-ms-bitfields` after the port's layout flags: with `-mms-bitfields` FFmpeg's
 structures lay out differently on Linux (AVPacket 80 bytes instead of 76) and decoding fails. `BINK`, the only structure
 shared with the game, holds 32-bit fields and lays out the same either way. Link: `-lavformat -lavcodec -lavutil`, plus
 `-lm -lpthread` on Linux and `-lbcrypt` on Windows.

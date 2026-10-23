@@ -13,14 +13,19 @@ path = ["src/**", "linklib/**"]
 SPDX-FileCopyrightText = ["Stuart Gillam (the game's source release)", "the Onslaught CE contributors"]
 SPDX-License-Identifier = "GPL-3.0-only"
 
+# src/d3dapp.cpp and src/d3dapp.h are Microsoft's DirectX SDK sample application framework, (c) Microsoft Corporation,
+# carried because Stuart Gillam's GPL release of the game's source includes them; Microsoft has not licensed them under
+# the GPL. Their code keeps Microsoft's own terms (LicenseRef-Microsoft-DirectX-SDK-Sample); Stuart Gillam's and this
+# project's changes are GPL-3.0-only (THIRD-PARTY.md).
 [[annotations]]
 path = ["src/d3dapp.cpp", "src/d3dapp.h"]
-SPDX-FileCopyrightText = ["Microsoft Corporation (DirectX sample framework)", "Stuart Gillam (the game's source release, GPL-3.0)"]
-SPDX-License-Identifier = "GPL-3.0-only"
+SPDX-FileCopyrightText = ["Microsoft Corporation (DirectX SDK sample application framework)", "Stuart Gillam (the game's source release, GPL-3.0)"]
+SPDX-License-Identifier = "LicenseRef-Microsoft-DirectX-SDK-Sample AND GPL-3.0-only"
 
+# Xiph.Org's libogg and libvorbis 1.0: the header declarations, and the decode loop of decoder_example.c (THIRD-PARTY.md).
 [[annotations]]
-path = "src/oggvorbis.h"
-SPDX-FileCopyrightText = ["Xiph.Org Foundation (libogg and libvorbis declarations)", "the Onslaught CE contributors"]
+path = ["src/oggvorbis.h", "src/OggFileRead.cpp"]
+SPDX-FileCopyrightText = ["Xiph.Org Foundation (libogg and libvorbis 1.0)", "the Onslaught CE contributors"]
 SPDX-License-Identifier = "GPL-3.0-only AND BSD-3-Clause"
 
 [[annotations]]

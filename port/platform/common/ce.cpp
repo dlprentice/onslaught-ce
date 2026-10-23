@@ -218,12 +218,69 @@ extern "C" int CE_CheatSet(int n, int on)
 #endif
 }
 
-// The per-user folder as the player would type it (~/.local/share/onslaught-ce, %APPDATA%\Onslaught CE).
-extern "C" void CE_UserDirShort(char *out, int n)
+// The per-user folder for an in-game message, in characters the game's font has (shown(c) is CDXBitmapFont::CanDisplay;
+// bytes above 0x7f count as missing, since the message turns bytes into Latin-1 characters). The font has no "~", "\\",
+// "_", "$", "@", "[", "]", "^", "{", "|" or "}" (src/Font.cpp, FONT_UNMAPPED_CHARACTERS): the full path, with "/" for
+// Windows' "\\"; else the home part in words (Linux "your home folder/...") or %APPDATA% (Windows); else the folder in
+// words a player can follow without a command line (ce_user_dir, port/updater/ce_report.h, says which folder it is).
+// Returns 1 when out is a folder that "/tapes" can follow, 0 when it is a description.
+static int ce_all_shown(const char *s, int (*shown)(int))
 {
-	char user[4096];
+	for (const unsigned char *c = (const unsigned char *)s; *c; c++)
+		if (*c > 0x7f || !shown(*c))
+			return 0;
+	return 1;
+}
+
+static void ce_forward_slashes(char *s)
+{
+	for (; *s; s++)
+		if (*s == '\\')
+			*s = '/';
+}
+
+extern "C" int CE_UserDirForDialog(char *out, int n, int (*shown)(int))
+{
+	char user[4096], base[4096];
 	ce_user_dir(user, sizeof(user));
-	ce_short_path(user, out, (size_t)n);
+	ce_forward_slashes(user);
+	if (ce_all_shown(user, shown))
+	{
+		snprintf(out, (size_t)n, "%s", user);
+		return 1;
+	}
+#ifdef _WIN32
+	const char *env = getenv("APPDATA"), *name = "%APPDATA%";
+#else
+	const char *env = getenv("HOME"), *name = "your home folder";
+#endif
+	snprintf(base, sizeof(base), "%s", env ? env : "");
+	ce_forward_slashes(base);
+	size_t l = strlen(base);
+	while (l > 1 && base[l - 1] == '/')
+		base[--l] = 0;
+	const char *custom = getenv("BEA_USER_DIR");
+	if (l && !(custom && *custom) && !strncmp(user, base, l) && user[l] == '/' && ce_all_shown(user + l, shown))
+	{
+		snprintf(out, (size_t)n, "%s%s", name, user + l);
+		return 1;
+	}
+	const char *xdg = getenv("XDG_DATA_HOME");
+	if (custom && *custom)
+		snprintf(out, (size_t)n, "the folder that was chosen for Onslaught CE's careers and settings");
+#ifdef _WIN32
+	else
+		snprintf(out, (size_t)n, "the Onslaught CE folder in your AppData Roaming folder (to open it, type %%APPDATA%% "
+				 "into File Explorer's address bar)");
+#else
+	else if (xdg && *xdg)
+		snprintf(out, (size_t)n, "the onslaught-ce folder in your data folder (the folder your XDG data home setting "
+				 "names)");
+	else
+		snprintf(out, (size_t)n, "the onslaught-ce folder in .local/share in your home folder (.local is a hidden folder: in "
+				 "your file manager, press Ctrl+H to show it)");
+#endif
+	return 0;
 }
 
 // The build commit the launcher passed (BEA_CE_BUILD), or "".

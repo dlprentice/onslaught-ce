@@ -10,7 +10,7 @@
          return false;
      }
  
-+    /* Battle Engine Aquila port (bea-decomp port/deps-patches): list the usual fullscreen modes, as a real display
++    /* Battle Engine Aquila port (Onslaught CE port): list the usual fullscreen modes, as a real display
 +       does, so Direct3D 9 over dxvk-native enumerates adapter modes when the game runs off the desktop. */
 +    {
 +        static const int sizes[][2] = { { 640, 480 }, { 800, 600 }, { 1024, 768 }, { 1280, 720 }, { 1280, 1024 },

@@ -208,6 +208,58 @@ class Launcher(unittest.TestCase):
         self.assertIn("- Linux", body)
         self.assertNotIn(str(self.home), body)
 
+    def fake_install(self, name, msl=True, stf=b"real"):
+        """A folder under the private HOME with the install's data/MissionScripts files: onsldef.msl copied (or absent),
+        text.stf copied (stf "real"), absent (None) or these bytes."""
+        d = self.home / name / "data/MissionScripts/text"
+        d.mkdir(parents=True)
+        real = Path(INSTALL, "data/MissionScripts")
+        if msl:
+            shutil.copy2(real / "onsldef.msl", d.parent / "onsldef.msl")
+        if stf == b"real":
+            shutil.copy2(real / "text/text.stf", d / "text.stf")
+        elif stf is not None:
+            (d / "text.stf").write_bytes(stf)
+        return self.home / name
+
+    def test_rejected_game_dir_says_why(self):
+        # No Steam library in the private HOME and no display for the folder picker: every reason is said, then the
+        # no-dialog message, and nothing starts.
+        cases = [(self.fake_install("empty", msl=False, stf=None), "it has no data/MissionScripts/onsldef.msl"),
+                 (self.fake_install("nostf", stf=None), "it has no data/MissionScripts/text/text.stf"),
+                 (self.fake_install("other", stf=b"another edition"),
+                  "its data/MissionScripts/text/text.stf differs from the supported edition's (hash mismatch)")]
+        unreadable = self.fake_install("unreadable")
+        stf = next(unreadable.rglob("text.stf"))
+        stf.chmod(0)
+        if not os.access(stf, os.R_OK):  # (root reads it anyway)
+            cases.append((unreadable, "its data/MissionScripts/text/text.stf could not be read"))
+        for folder, why in cases:
+            with self.subTest(why=why):
+                r = self.run_launcher(BEA_GAME_DIR=str(folder))
+                self.assertEqual(r.returncode, 1)
+                # the home folder is written as ~
+                self.assertIn(f"onslaught-ce: BEA_GAME_DIR ~/{folder.name} is not a supported Battle Engine Aquila "
+                              f"install: {why}", r.stderr)
+                self.assertIn("onslaught-ce: could not find Battle Engine Aquila in Steam's libraries; set BEA_GAME_DIR "
+                              "to its folder", r.stderr)
+                self.assertNotIn("out: args", r.stderr + r.stdout)
+                self.assertNotIn(str(self.home), r.stderr)
+
+    def test_rejected_ini_game_dir_says_why(self):
+        folder = self.fake_install("moved", stf=None)
+        self.user.mkdir()
+        (self.user / "ce.ini").write_text(f"gamedir={folder}\n")
+        r = self.run_launcher(BEA_GAME_DIR="")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("onslaught-ce: ce.ini's gamedir ~/moved is not a supported Battle Engine Aquila install: it has no "
+                      "data/MissionScripts/text/text.stf", r.stderr)
+        self.assertIn("set BEA_GAME_DIR to its folder", r.stderr)
+        # a good BEA_GAME_DIR is used without a word about ce.ini
+        r = self.run_launcher()
+        self.assertEqual(r.returncode, 0)
+        self.assertNotIn("not a supported", r.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

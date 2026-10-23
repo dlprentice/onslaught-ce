@@ -17,4 +17,9 @@ monocypher	4.0.2	BSD-2-Clause OR CC0-1.0	38d07179738c0c90677dba3ceb7a7b8496bcfea
 FFmpeg	7.1.1	LGPL-2.1-or-later (decoders and demuxer only; no --enable-gpl or --enable-nonfree)	733984395e0dbbe5c046abda2dc49a5544e7e0e1e2366bba849222ae9e3a03b1	https://ffmpeg.org/releases/ffmpeg-7.1.1.tar.xz
 # Patches applied to an input when deps.py unpacks it (port/deps-patches/<name>-*.patch); deps.py refuses a patch whose
 # SHA-256 differs from its line here. Columns: patch, sha256.
-patch:SDL3-offscreen-fullscreen-modes.patch	14b745b3e41ad7889c22a028339368bf69a19bea2c80b1677862a8b8cf552f96
+patch:SDL3-offscreen-fullscreen-modes.patch	1050bc13b622f4c92cee926552b42a66c93009c21d19c1271b27d6b832225cc0
+# Licence texts the release packages carry for code compiled into a prebuilt input (dxvk-native's libdxvk_d3d9.so.0
+# holds two MIT-licensed submodules of dxvk v3.1.1, at the commits that tag records); package.py fetches and checks
+# them. Columns: licence:name, version (the submodule commit), licence, sha256, url.
+licence:dxbc-spirv	bf14419e	MIT	0f8a5e687bea942a30a8e39b9915294fbe44eca866e71307a9b7083ee0e69ad8	https://raw.githubusercontent.com/doitsujin/dxbc-spirv/bf14419e5fa7eacb817b7b632f03cb61d61bbad7/LICENSE
+licence:libdisplay-info	275e6459	MIT	15b396244e58830c5614b9394f4deccfe684970cd507f299383ab57ad339eedd	https://raw.githubusercontent.com/doitsujin/libdisplay-info/275e6459c7ab1ddd4b125f28d0440716e4888078/LICENSE

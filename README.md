@@ -1,9 +1,12 @@
 # Onslaught CE
 
+A native port of *Battle Engine Aquila*; you need your own copy.
+
 ## Quick start
 
-1. Extract the download into any folder, for example your Downloads folder, not your game folder. You can move the
-   folder anywhere later.
+1. Download the package for your system from the [latest release](https://github.com/dlprentice/onslaught-ce/releases/latest)
+   and extract it into any folder, for example your Downloads folder, not your game folder. You can move the folder
+   anywhere later.
 2. Run `onslaught-ce` (Linux) or `onslaught-ce.exe` (Windows).
 3. It finds your Steam copy of *Battle Engine Aquila* by itself, or asks once where it is.
 
@@ -17,27 +20,31 @@ from the game's source code.
 The source has three parts:
 
 - **Stuart Gillam's GPL-3.0-only source release** of the game ([stuart73/Onslaught](https://github.com/stuart73/Onslaught)).
-- **A byte-matching decompilation** that completes that release. All 5,482 game functions compile to the retail
+- **A byte-matching decompilation** that completes that release
+  ([onslaught-decomp](https://github.com/dlprentice/onslaught-decomp)). All 5,482 game functions compile to the retail
   executable's bytes when built with the original compiler.
 - **A platform layer**: SDL3, with dxvk-native on Linux and the system's Direct3D 9 on Windows.
 
-This is **version 0.1, a preview** (tag `v0.1.0`). In the main menu, the version text in the bottom-left corner
-(originally "V1.00") reads "Onslaught CE v0.1 (preview)".
+This is **version 0.1.1, a preview** (tag `v0.1.1`). In the main menu, the version text in the bottom-left corner
+(originally "V1.00") reads "Onslaught CE v0.1.1 (preview)". 0.1.1 changes the packages' licence notices, the Linux
+preflight, the launcher's messages and the wording of the Onslaught CE menu's messages; the game itself plays the
+same as 0.1's.
 
 ## In the game
 
 - **Main menu > Onslaught CE:** About (version, licence and links), Check for updates (explains the check the launcher
-  makes at every start, and how to turn it back on), Record sessions (see below) and Report a problem.
+  makes at every start, how to be asked again about a skipped version, and how to turn checks back on), Record sessions
+  (see below) and Report a problem.
 - **Options > Cheats:** the game's own cheats as switches, kept in `ce.ini` so they apply to every career:
   - **All levels open (TURKEY)**
   - **All goodies open (MALLOY)**
   - **Goodie hints (latête)**
-  - **God mode in Controls (Maladim):** adds a God mode item to Controller Options, in the pause menu (applies at once)
+  - **God mode option (Maladim):** adds a God mode item to Controller Options, in the pause menu (applies at once)
     and in Options (applies from the next level); turning the switch off ends god mode. God mode set this way is kept
     in `ce.ini`, not in your careers, so a recorded session never carries it.
   - **Free camera, F key (Aurore)**
 
-  Typing a code into a career's name still works as in the original.
+  They are off while a session is being recorded. Typing a code into a career's name still works as in the original.
 - **Keyboard:** no key release is lost, typed characters come from the key presses themselves (no desktop input method
   in the way), and the letter and digit keys work by their position on any keyboard layout.
 - **A quiet console:** the developers' messages are hidden unless `BEA_PORT_VERBOSE=1` is set.
@@ -59,6 +66,11 @@ No game files are included. You need your own copy of *Battle Engine Aquila* for
   - Linux: `~/.local/share/onslaught-ce`
   - Windows: `%APPDATA%\Onslaught CE`
 
+**Supported edition.** The launcher accepts an install whose two mission data files match the SHA-256 hashes in
+`config/game-data.sha256`, which come from the Steam edition. Other editions can have different files and may be
+refused with "not a supported Battle Engine Aquila install" (the launcher says which file and why). If yours is
+refused, please [open an issue](https://github.com/dlprentice/onslaught-ce/issues) naming the edition and that message.
+
 ## Download and install
 
 Download a build from this repository's [Releases](https://github.com/dlprentice/onslaught-ce/releases) page.
@@ -67,12 +79,41 @@ Download a build from this repository's [Releases](https://github.com/dlprentice
 
 1. Extract the tarball and run the `onslaught-ce` launcher.
 2. The tarball bundles dxvk-native, SDL3, libxkbcommon and the FFmpeg shared libraries.
-3. Your system must provide these 32-bit libraries:
+3. It needs **glibc 2.44 or newer**, which for now means Arch and other rolling-release distributions: Debian 13 and
+   Ubuntu 26.04 and older have an older glibc and cannot start it (`ldd --version` shows yours). The preflight check
+   below says so when yours is older.
+4. Your system must provide these 32-bit libraries:
    - glibc, libgcc and libstdc++
    - zlib
    - the Vulkan loader and a 32-bit Vulkan driver
    - the X11 or Wayland client libraries
-4. A preflight check lists any missing 32-bit system libraries, with their pacman and apt package names.
+5. A preflight check lists any missing 32-bit system libraries, with their pacman and apt package names. Set
+   `BEA_SKIP_PREFLIGHT=1` to start without it.
+
+The 32-bit libraries by distribution family (plus your GPU's 32-bit Vulkan driver):
+
+- **Arch and derivatives** (enable the `multilib` repository in `/etc/pacman.conf` first; tested):
+
+  ```sh
+  sudo pacman -S --needed lib32-glibc lib32-gcc-libs lib32-zlib lib32-vulkan-icd-loader lib32-libx11 lib32-libxext lib32-wayland
+  sudo pacman -S --needed lib32-vulkan-radeon     # or lib32-vulkan-intel, or lib32-nvidia-utils
+  ```
+
+- **Debian and Ubuntu** (untested; only a release with glibc 2.44 or newer can start it, so not Debian 13 or Ubuntu
+  26.04 and older):
+
+  ```sh
+  sudo dpkg --add-architecture i386 && sudo apt update
+  sudo apt install libc6:i386 libstdc++6:i386 libgcc-s1:i386 zlib1g:i386 libvulkan1:i386 libx11-6:i386 libxext6:i386 \
+      libwayland-client0:i386 libwayland-cursor0:i386 mesa-vulkan-drivers:i386   # NVIDIA: the driver's i386 libraries
+  ```
+
+- **Fedora** (untested; needs glibc 2.44 or newer):
+
+  ```sh
+  sudo dnf install glibc.i686 libstdc++.i686 libgcc.i686 zlib-ng-compat.i686 vulkan-loader.i686 libX11.i686 libXext.i686 \
+      libwayland-client.i686 libwayland-cursor.i686 mesa-vulkan-drivers.i686     # NVIDIA: the driver's i686 libraries
+  ```
 
 ### Windows
 
@@ -83,6 +124,16 @@ report any problems.
    zlib DLLs.
 2. You need Windows 10 or newer, for its built-in UCRT, curl and tar.
 3. The executable is unsigned, so SmartScreen may show a warning. Choose **More info**, then **Run anyway**.
+
+## Update, move and uninstall
+
+- **Update:** the launcher offers each new release when it starts (below). You can also download a new package and
+  extract it in place of the old folder: your careers and settings are in your user folder, not the program folder.
+- **Move:** the program folder can live anywhere; move it as a whole. The launcher remembers your game folder in
+  `ce.ini` (`gamedir`); if the game moves, it logs why the remembered folder no longer works and searches again, or
+  set `BEA_GAME_DIR` to the new folder.
+- **Uninstall:** delete the program folder. To remove your careers and settings too, delete your user folder
+  (`~/.local/share/onslaught-ce` or `%APPDATA%\Onslaught CE`). Your game folder was never changed.
 
 ## Updates and privacy
 
@@ -127,8 +178,9 @@ The goal is a game that behaves exactly like the original. We check that by repl
 in both and comparing them, and recordings of real play find differences our own test runs miss.
 
 - Record one session with `onslaught-ce --record`, or every session with **Onslaught CE > Record sessions** in the main
-  menu (from the next start; it puts `record_sessions=1` in `ce.ini` in your user folder). While it is on, each start
-  asks whether to record: **Stop recording** there (or starting with `onslaught-ce --no-record`) turns it off again.
+  menu. That starts the next time you launch Onslaught CE (quit the game, then start it again); it puts
+  `record_sessions=1` in `ce.ini` in your user folder. While it is on, each start asks whether to record: **Stop
+  recording** there (or starting with `onslaught-ce --no-record`) turns it off again.
 - While recording, the game runs at 30 frames a second (the timing replays use), its menus take the keyboard only (the
   mouse still works in battle), the screen is the original 4:3 (no widescreen), and the menus are the original's: the
   version text, no Onslaught CE menu and no Cheats page, and only cheats typed into a career's name work.
@@ -163,19 +215,19 @@ switches).
 **Played through on the port:** the full front end, creating, loading and saving careers, options and videos, and most
 of the tutorial (through its third zone; the final drone fight is still being completed).
 
-## Known limitations in 0.1
+## Known limitations
 
 - The Windows build has been tested only under Wine on Linux, not on real Windows. The Windows self-update path in
   particular is untested on real Windows. Please report any problems.
 - The Windows executable is unsigned, so SmartScreen may warn you (see above).
-- On Linux you need 32-bit graphics drivers (Vulkan).
+- On Linux you need glibc 2.44 or newer (see Linux above) and 32-bit graphics drivers (Vulkan).
 - With NVIDIA's driver on Linux the program can occasionally crash while closing, after the game has ended; your saves
   are already written by then.
 - The tutorial is playable through its third zone; its final drone fight is still being completed.
-- Joystick and controller support is limited to what the original game supported, and controllers were not tested for
-  0.1.
+- Joystick and controller support is limited to what the original game supported, and controllers have not been tested
+  yet.
 - Widescreen play is not compared with the original (the original has no widescreen); replays and recordings use 4:3.
-- Planned but not in 0.1: multiplayer, mods and HUD options.
+- Planned, not in this version yet: multiplayer, mods and HUD options.
 
 ## Building from source
 
@@ -185,8 +237,8 @@ their hashes, `config/game-data.sha256`; set `BEA_GAME_DIR` if the game is not i
 
 ```sh
 python3 port/tools/deps.py build                   # the pinned toolchains and libraries, checked by SHA-256
-python3 port/build.py --public --target linux --ce-version 0.1
-python3 port/build.py --public --target windows --ce-version 0.1
+python3 port/build.py --public --target linux --ce-version 0.1.1
+python3 port/build.py --public --target windows --ce-version 0.1.1
 ```
 
 `--ce-version` sets the version the menu, `--version` and the update check show; without it the build calls itself
@@ -204,6 +256,10 @@ Onslaught CE is licensed under **GPL-3.0-only** (see [COPYING](COPYING), [NOTICE
 [REUSE.toml](REUSE.toml)). Third-party components keep their own licences; see [THIRD-PARTY.md](THIRD-PARTY.md). The
 FFmpeg libraries ship as replaceable shared libraries, and their source tarball is attached to each release.
 
+`src/d3dapp.cpp` and `src/d3dapp.h` are Microsoft's DirectX SDK sample application framework, (c) Microsoft
+Corporation, carried because Stuart Gillam's GPL release of the game's source includes them; Microsoft has not
+licensed them under the GPL.
+
 The game's data is not part of this project and is not covered by its licence.
 
 ## Contributing and security
@@ -219,6 +275,11 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) (contributions are GPL-3.0-only; never in
 
 ## Related projects
 
+- [onslaught-decomp](https://github.com/dlprentice/onslaught-decomp): the byte-matching decompilation of the game's PC
+  code, and the tools that judge the match.
+- [onslaught-godot](https://github.com/dlprentice/onslaught-godot): a rebuild of the game in Godot (a proof of concept).
+- [onslaught-preservation](https://github.com/dlprentice/onslaught-preservation): documentation of the game, its
+  formats, behaviours and history.
+- [Onslaught-Career-Editor](https://github.com/dlprentice/Onslaught-Career-Editor): companion app for saves, settings
+  and lore; to be renamed onslaught-companion.
 - [stuart73/Onslaught](https://github.com/stuart73/Onslaught): Stuart Gillam's release of the game's source.
-- [Onslaught-Career-Editor](https://github.com/dlprentice/Onslaught-Career-Editor): a companion app, with lore and
-  documentation about the game.

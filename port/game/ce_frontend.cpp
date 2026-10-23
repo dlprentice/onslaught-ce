@@ -23,6 +23,7 @@
 #include "text.h"
 #include "TransitionHelpers.h"
 #include "data/MissionScripts/text/text.stf"
+#include "../platform/common/portlog.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -38,7 +39,7 @@ extern "C" int	CE_SettingGet(const char *key, int def);
 extern "C" int	CE_SettingSet(const char *key, int value);
 extern "C" int	CE_CheatOn(int n);
 extern "C" int	CE_CheatSet(int n, int on);
-extern "C" void	CE_UserDirShort(char *out, int n);
+extern "C" int	CE_UserDirForDialog(char *out, int n, int (*shown)(int));
 extern "C" const char *CE_BuildName(void);
 
 #define CE_LINKS	"github.com/dlprentice/onslaught-ce"
@@ -90,9 +91,62 @@ static void	Widen(WCHAR *out, int n, const char *in)
 	out[i] = 0;
 }
 
+// Whether the message box's font has character c (src/Font.cpp: no "~", "\\", "_", "$", "@", "[", "]", "^", "{", "|", "}").
+static int	Shown(int c)
+{
+	return PLATFORM.Font(FONT_SMALL)->CanDisplay((WCHAR)c) ? 1 : 0;
+}
+
+// The CE folder in the font's characters (CE_UserDirForDialog, ce.cpp), with sub ("/tapes") after it, or "the sub
+// folder in" before a folder given in words; then how to open it: on Linux, a note naming the first hidden folder on the
+// way (a name that starts with a dot), on Windows, Explorer's address bar (AppData is hidden there). A path's spaces are
+// kNoBreak, so WrapLines never breaks "Onslaught CE" at its space. Returns out.
+#define kNoBreak	'\xa0'
+
+static char	*FolderText(char *out, int n, const char *sub)
+{
+	char dir[1024];
+	int path = CE_UserDirForDialog(dir, sizeof(dir), Shown);
+	if (path)
+		for (char *c = dir; *c; c++)
+			if (*c == ' ')
+				*c = kNoBreak;
+	if (!*sub)
+		snprintf(out, n, "%s", dir);
+	else if (path)
+		snprintf(out, n, "%s/%s", dir, sub);
+	else
+		snprintf(out, n, "the %s folder in %s", sub, dir);
+	size_t l = strlen(out);
+#ifndef _WIN32
+	const char *dot = path ? strstr(dir, "/.") : NULL;
+	if (dot)
+	{
+		int len = (int)strcspn(dot + 1, "/");
+		snprintf(out + l, n - l, "\n(%.*s is a hidden folder: in your file manager, press Ctrl+H to show it.)", len, dot + 1);
+	}
+#else
+	if (path)
+		snprintf(out + l, n - l, "\n(To open it, paste this into File Explorer's address bar: AppData is a hidden folder.)");
+#endif
+	return out;
+}
+
+// The width of a line as it will be shown, kNoBreak as a space.
+static void	Extent(CDXBitmapFont *font, const WCHAR *line, SIZE *size)
+{
+	WCHAR shown[100];
+	int i = 0;
+	for (; line[i] && i < 99; i++)
+		shown[i] = (line[i] == (WCHAR)(unsigned char)kNoBreak) ? ' ' : line[i];
+	shown[i] = 0;
+	font->GetTextExtent(shown, size);
+}
+
 // Lays text out in the message box's lines (FEMessBox's 40 of 100 characters) as CDXBitmapFont::WordWrap would, but with
 // '\n' starting a new line and a word wider than the box (a long folder path) broken after a '/' or '\', or wherever it
-// must, instead of WordWrap's one character a line. Returns the number of lines.
+// must, instead of WordWrap's one character a line; kNoBreak (FolderText) joins a word and is shown as a space. Returns
+// the number of lines.
 static int	WrapLines(SWordWrapFill *fill, const WCHAR *text, CDXBitmapFont *font, float width)
 {
 	const int	kMaxLines = 40, kMaxChars = 99;
@@ -129,7 +183,7 @@ static int	WrapLines(SWordWrapFill *fill, const WCHAR *text, CDXBitmapFont *font
 			for (int i = 0; i < w; i++)
 				tryline[len + sep + i] = p[i];
 			tryline[len + sep + w] = 0;
-			font->GetTextExtent(tryline, &size);
+			Extent(font, tryline, &size);
 			if (size.cx < width)
 			{
 				wcscpy(cur, tryline);
@@ -152,7 +206,7 @@ static int	WrapLines(SWordWrapFill *fill, const WCHAR *text, CDXBitmapFont *font
 		{
 			wcsncpy(tryline, p, n);
 			tryline[n] = 0;
-			font->GetTextExtent(tryline, &size);
+			Extent(font, tryline, &size);
 			if (size.cx >= width)
 				break;
 			fit = n;
@@ -166,28 +220,39 @@ static int	WrapLines(SWordWrapFill *fill, const WCHAR *text, CDXBitmapFont *font
 	}
 	if (len && (lines < kMaxLines))
 		wcscpy(fill->c[lines++], cur);
+	for (int l = 0; l < lines; l++)
+		for (WCHAR *c = fill->c[l]; *c; c++)
+			if (*c == (WCHAR)(unsigned char)kNoBreak)
+				*c = ' ';
 	return lines ? lines : 1;
 }
 
-// The game's message box with a Continue button, as the save page uses for its errors; '\n' starts a line.
-static void	ShowMessage(const char *text)
+// The game's message box with a Continue button, as the save page uses for its errors; '\n' starts a line. y is its
+// centre: the Cheats page's list stays drawn behind the box, so its message goes below the list.
+static void	ShowMessage(const char *text, float y = 240.f)
 {
 	static WCHAR msg[2048];
 	static WCHAR blank[] = L" ";
 	Widen(msg, 2048, text);
 	CDXBitmapFont *font = PLATFORM.Font(FONT_SMALL);
-	// the game's fonts have no '\': a Windows folder is shown with '/' (which Explorer's address bar also takes)
-	if (!font->CanDisplay('\\'))
-		for (WCHAR *c = msg; *c; c++)
-			if (*c == '\\')
-				*c = '/';
+	// every CE message is written in the font's characters (FolderText); one that is not would show a box for it
+	for (WCHAR *c = msg; *c; c++)
+		if ((*c != '\n') && (*c != (WCHAR)(unsigned char)kNoBreak) && !font->CanDisplay(*c))
+		{
+			fprintf(stderr, PORT_LOG_PREFIX "message character 0x%02x is not in the game's font\n", (unsigned)*c);
+			break;
+		}
 	FEMESSBOX.Kill();
-	FEMESSBOX.Create(320.f, 240.f, 440.f, FO(100), blank, font, 0, 10, FALSE, FEMB_OPTION_A_CONTINUE, 0);
+	FEMESSBOX.Create(320.f, y, 440.f, FO(100), blank, font, 0, 10, FALSE, FEMB_OPTION_A_CONTINUE, 0);
 	// Create's own layout (CFEMessBox::Create): the lines, then a line of the normal font for the button
 	for (int l = 0; l < 40; l++)
 		FEMESSBOX.mLines.c[l][0] = 0;
 	FEMESSBOX.mNumLines = WrapLines(&FEMESSBOX.mLines, msg, font, 440.f - 16.f);
 	FEMESSBOX.mHeight = float(FEMESSBOX.mLineHeight) * FEMESSBOX.mNumLines + 16.f + float(PLATFORM.Font(FONT_NORMAL)->GetHeight());
+	// centred on the screen, or lower for a tall message so it starts below the page's title bar (it ends above y 104)
+	float top = y - FEMESSBOX.mHeight * 0.5f;
+	if (top < 104.f)
+		FEMESSBOX.mY = 104.f + FEMESSBOX.mHeight * 0.5f;
 	FEMESSBOX.SetOnDismiss(FEP_NONE, 0);
 }
 
@@ -337,7 +402,7 @@ public:
 	{
 		if (!CE_CheatSet(mCheat, value))
 		{
-			ShowMessage("Could not write ce.ini, so this cheat is unchanged.");
+			ShowMessage("Your settings could not be saved, so this was not changed.", 415.f);
 			return;
 		}
 		if (mCheat == PORT_CE_GOD_CHEAT)
@@ -372,25 +437,20 @@ public:
 		value = value ? 1 : 0;
 		if (!CE_SettingSet("record_sessions", value))
 		{
-			ShowMessage("Could not write ce.ini, so the setting is unchanged.");
+			ShowMessage("Your settings could not be saved, so this was not changed.");
 			return;
 		}
 		sValue = value;
-		char user[1024], text[1536];
-		CE_UserDirShort(user, sizeof(user));
+		char folder[1024], text[1536];
 		if (value)
-			snprintf(text, sizeof(text), "From the next start, each session's input is recorded, so a problem you report "
-					 "can be replayed exactly. The tapes go in this folder:\n%s%ctapes\n\nRecorded sessions use the "
-					 "original menus, so this page and the cheats are hidden while recording. Each start asks whether to "
-					 "record; choose Stop recording there to switch it off.", user,
-#ifdef _WIN32
-					 '\\'
-#else
-					 '/'
-#endif
-					 );
+			snprintf(text, sizeof(text), "Session recording is now on. It starts the next time you launch Onslaught CE: quit "
+					 "the game, then start it again. Each start then asks whether to record; choose Stop recording there to "
+					 "turn it off.\n\nA recording keeps your keyboard and mouse input and a copy of your careers and "
+					 "settings, so a problem you report can be replayed exactly. Recordings are saved in:\n%s\n\nWhile "
+					 "recording, the game runs at 30 frames a second with the original menus, so the Onslaught CE menu and "
+					 "cheats are hidden.", FolderText(folder, sizeof(folder), "tapes"));
 		else
-			snprintf(text, sizeof(text), "Sessions are no longer recorded, from the next start.");
+			snprintf(text, sizeof(text), "Session recording is now off, from the next time you launch Onslaught CE.");
 		ShowMessage(text);
 	}
 	virtual int		GetValue()
@@ -417,11 +477,17 @@ CMenuOptionsList	*PortCeCheatsList(float y)
 	list->AddItem(new (MEMTYPE_MENUITEM) CCeCheatSwitch(L"All levels open (TURKEY): ", 1));
 	list->AddItem(new (MEMTYPE_MENUITEM) CCeCheatSwitch(L"All goodies open (MALLOY): ", 0));
 	list->AddItem(new (MEMTYPE_MENUITEM) CCeCheatSwitch(L"Goodie hints (lat\u00eate): ", 5));
-	list->AddItem(new (MEMTYPE_MENUITEM) CCeCheatSwitch(L"God mode in Controls (Maladim): ", PORT_CE_GOD_CHEAT));
+	list->AddItem(new (MEMTYPE_MENUITEM) CCeCheatSwitch(L"God mode option (Maladim): ", PORT_CE_GOD_CHEAT));
 	list->AddItem(new (MEMTYPE_MENUITEM) CCeCheatSwitch(L"Free camera, F key (Aurore): ", 4));
-	CMenuItem *note = new (MEMTYPE_MENUITEM) CCeMenuItem(L"For every career; off in recorded sessions", 0);
-	note->mEnabled = FALSE;
-	list->AddItem(note);
+	// notes (disabled items), a line each: the list is as wide as the options page's
+	static const WCHAR *const notes[] = {L"Maladim: turn God on in Controller Options.", L"These apply to every career. They are off",
+										 L"while a session is being recorded."};
+	for (const WCHAR *line : notes)
+	{
+		CMenuItem *note = new (MEMTYPE_MENUITEM) CCeMenuItem(line, 0);
+		note->mEnabled = FALSE;
+		list->AddItem(note);
+	}
 	list->AddItem(new (MEMTYPE_MENUITEM) CMenuItem((DWORD)GI_BACK, 3));
 	return list;
 }
@@ -507,32 +573,48 @@ public:
 		case CEA_ABOUT:
 		{
 			const char *build = CE_BuildName();
-			snprintf(text, sizeof(text), "Onslaught CE v%s (preview)%s%s. A native port of Battle Engine Aquila (Lost Toys, "
-					 "2003), built from the game's source code, that plays your own copy of the game. An unofficial fan "
-					 "project. Free software under the GNU General Public License, version 3, with no warranty. Source, "
-					 "releases and problem reports: " CE_LINKS, CE_VERSION, *build ? ", build " : "", build);
+			snprintf(text, sizeof(text), "Onslaught CE v%s (preview)%s%s\n\nBattle Engine Aquila (Lost Toys, 2003), rebuilt "
+					 "from the game's source code to run natively on today's computers. It plays the game files of your "
+					 "own copy of the game.\n\nAn unofficial fan project, not affiliated with or endorsed by the game's "
+					 "developer, publisher or rights holders. Free software under the GNU General Public License, version 3, with no "
+					 "warranty.\n\nSource code, new versions and problem reports:\n" CE_LINKS, CE_VERSION,
+					 *build ? ", build " : "", build);
 			ShowMessage(text);
 			break;
 		}
 		case CEA_UPDATES:
 			if (CE_SettingGet("update_check", 1))
-				snprintf(text, sizeof(text), "Onslaught CE checks for a new version each time it starts, and asks before "
-						 "updating. To check now, quit and start it again. Releases: " CE_LINKS "/releases");
+			{
+				char folder[1024];
+				snprintf(text, sizeof(text), "Onslaught CE looks for a new version each time you start it, and asks you "
+						 "before updating. To check now, quit the game and start it again.\n\nA version you chose Skip "
+						 "this version for is not offered again. To be asked about it again, quit the game, open the file "
+						 "ce.ini in a text editor, delete the line that starts with \"skip\", and start Onslaught CE again. "
+						 "ce.ini is in:\n%s\n\nNew versions are also listed at:\n" CE_LINKS "/releases",
+						 FolderText(folder, sizeof(folder), ""));
+			}
 			else
-				snprintf(text, sizeof(text), "Update checks are off (update_check=0 in ce.ini). Set update_check=1 and "
-						 "start Onslaught CE again to check, or see " CE_LINKS "/releases");
+			{
+				char folder[1024];
+				snprintf(text, sizeof(text), "Update checks are turned off. To turn them back on, quit the game, open the "
+						 "file ce.ini in a text editor, delete the line that starts with \"update\", and start Onslaught "
+						 "CE again. ce.ini is in:\n%s\n\nNew versions are also listed at:\n" CE_LINKS "/releases",
+						 FolderText(folder, sizeof(folder), ""));
+			}
 			ShowMessage(text);
 			break;
 		case CEA_REPORT:
 		{
-			char user[1024];
-			CE_UserDirShort(user, sizeof(user));
+			char folder[1024];
+			FolderText(folder, sizeof(folder), "");
 			if (CE_OpenReportPage())
-				snprintf(text, sizeof(text), "A pre-filled problem report has opened in your web browser; nothing is sent "
-						 "until you submit it. Please attach onslaught-ce.log from this folder:\n%s", user);
+				snprintf(text, sizeof(text), "A problem report page has opened in your web browser (it may be behind the "
+						 "game). It already names your version and system; nothing is sent until you submit it.\n\nPlease "
+						 "describe what happened, and attach the file onslaught-ce.log from this folder:\n%s", folder);
 			else
-				snprintf(text, sizeof(text), "Could not open your web browser. Please report the problem at " CE_LINKS
-						 "/issues and attach onslaught-ce.log from this folder:\n%s", user);
+				snprintf(text, sizeof(text), "Your web browser could not be opened. To report a problem, go to:\n" CE_LINKS
+						 "/issues\n\nPlease describe what happened, and attach the file onslaught-ce.log from this "
+						 "folder:\n%s", folder);
 			ShowMessage(text);
 			break;
 		}

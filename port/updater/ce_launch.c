@@ -361,6 +361,18 @@ static int is_file(const char *p)
 	return f != NULL;
 }
 
+/* p names a regular file, whether or not it can be read (is_file opens it, so an unreadable file fails there). */
+static int file_exists(const char *p)
+{
+#ifdef _WIN32
+	DWORD attr = GetFileAttributesA(p);
+	return attr != INVALID_FILE_ATTRIBUTES && !(attr & FILE_ATTRIBUTE_DIRECTORY);
+#else
+	struct stat st;
+	return !stat(p, &st) && S_ISREG(st.st_mode);
+#endif
+}
+
 static void make_dirs(const char *path)
 {
 	char t[PATHN];
@@ -520,17 +532,20 @@ static int fetch(const char *url, const char *to, int seconds)
 /* ---- finding the game ----------------------------------------------------------------------------------------- */
 
 /* A supported install: its two hash-pinned data files (config/game-data.sha256) match. */
-static const struct { const char *path, *sha256; } GAME_FILES[] = {
-	{"data" SEP "MissionScripts" SEP "onsldef.msl", "a1c9b9383ea7f9255de207a86c0e6c1885465309d50334344fd82696a1cf36c6"},
-	{"data" SEP "MissionScripts" SEP "text" SEP "text.stf", "fd318d6c2304eb8ffcfa718357c1715aadad69915f39851b19f442d8263b56ae"},
+static const struct { const char *path, *name, *sha256; } GAME_FILES[] = {
+	{"data" SEP "MissionScripts" SEP "onsldef.msl", "data/MissionScripts/onsldef.msl",
+	 "a1c9b9383ea7f9255de207a86c0e6c1885465309d50334344fd82696a1cf36c6"},
+	{"data" SEP "MissionScripts" SEP "text" SEP "text.stf", "data/MissionScripts/text/text.stf",
+	 "fd318d6c2304eb8ffcfa718357c1715aadad69915f39851b19f442d8263b56ae"},
 };
 
-/* Case-insensitive path lookup on Linux (the game's own folders vary in case); Windows is already case-insensitive. */
+/* Case-insensitive path lookup on Linux (the game's own folders vary in case); Windows is already case-insensitive.
+   Finds the file whether or not it can be read, so install_problem can say which of the two it is. */
 static int find_ci(const char *dir, const char *rel, char *out, size_t n)
 {
 #ifdef _WIN32
 	snprintf(out, n, "%s\\%s", dir, rel);
-	return is_file(out);
+	return file_exists(out);
 #else
 	char cur[PATHN], part[PATHN];
 	snprintf(cur, sizeof cur, "%s", dir);
@@ -555,21 +570,31 @@ static int find_ci(const char *dir, const char *rel, char *out, size_t n)
 		p += len + (p[len] == '/');
 	}
 	snprintf(out, n, "%s", cur);
-	return is_file(out);
+	return file_exists(out);
 #endif
 }
 
-static int supported_install(const char *dir)
+/* Why dir is not a supported install (into why), or 0 when it is one. */
+static int install_problem(const char *dir, char *why, size_t n)
 {
 	char p[PATHN];
 	for (size_t i = 0; i < sizeof GAME_FILES / sizeof *GAME_FILES; i++)
 	{
 		uint8_t got[32], want[32];
-		if (!find_ci(dir, GAME_FILES[i].path, p, sizeof p) || !sha256_file(p, got) || !hex_to(GAME_FILES[i].sha256, want, 32) ||
-			memcmp(got, want, 32))
-			return 0;
+		if (!find_ci(dir, GAME_FILES[i].path, p, sizeof p))
+			return snprintf(why, n, "it has no %s", GAME_FILES[i].name), 1;
+		if (!sha256_file(p, got))
+			return snprintf(why, n, "its %s could not be read", GAME_FILES[i].name), 1;
+		if (!hex_to(GAME_FILES[i].sha256, want, 32) || memcmp(got, want, 32))
+			return snprintf(why, n, "its %s differs from the supported edition's (hash mismatch)", GAME_FILES[i].name), 1;
 	}
-	return 1;
+	return 0;
+}
+
+static int supported_install(const char *dir)
+{
+	char why[256];
+	return !install_problem(dir, why, sizeof why);
 }
 
 /* Every Steam library listed in <steam>/steamapps/libraryfolders.vdf (and <steam> itself). */
@@ -643,17 +668,25 @@ static void SDLCALL picked(void *userdata, const char *const *files, int filter)
 	sPickDone = 1;
 }
 
+/* 1: a supported folder was chosen; 0: none was; -1: no message box could be shown (no display). */
 static int ask_for_install(char *found, size_t n)
 {
+#ifndef _WIN32
+	/* No desktop to ask on. (SDL's zenity fallback then fails like a dismissed box, exit 1, so ask first.) */
+	const char *x11 = getenv("DISPLAY"), *wayland = getenv("WAYLAND_DISPLAY");
+	if (!(x11 && *x11) && !(wayland && *wayland)) return -1;
+#endif
 	const SDL_MessageBoxButtonData buttons[] = {{SDL_MESSAGEBOX_BUTTON_RETURNKEY_DEFAULT, 1, "Choose folder..."},
 												{SDL_MESSAGEBOX_BUTTON_ESCAPEKEY_DEFAULT, 0, "Quit"}};
 	for (;;)
 	{
 		const SDL_MessageBoxData box = {SDL_MESSAGEBOX_INFORMATION, NULL, "Onslaught CE",
-			"Onslaught CE needs your own copy of Battle Engine Aquila and could not find it in Steam's libraries.\n\n"
-			"Choose the folder that holds BEA.exe (your Steam or disc install). Onslaught CE only reads it.", 2, buttons, NULL};
+			"Onslaught CE plays the game files of your own copy of Battle Engine Aquila, and could not find it in your "
+			"Steam libraries.\n\nChoose the folder that contains BEA.exe (the game's Steam or disc install folder). "
+			"Onslaught CE only reads from it.", 2, buttons, NULL};
 		int which = 0;
-		if (!SDL_ShowMessageBox(&box, &which) || which != 1) return 0;
+		if (!SDL_ShowMessageBox(&box, &which)) return -1;
+		if (which != 1) return 0;
 		sPickDone = 0;
 		sPicked[0] = 0;
 		SDL_ShowOpenFolderDialog(picked, NULL, NULL, NULL, false);
@@ -663,24 +696,36 @@ static int ask_for_install(char *found, size_t n)
 			SDL_Delay(20);
 		}
 		if (!sPicked[0]) return 0;
-		if (supported_install(sPicked)) { snprintf(found, n, "%s", sPicked); return 1; }
-		SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_WARNING, "Onslaught CE",
-								 "That folder is not a supported Battle Engine Aquila install (its mission data did not match).", NULL);
+		char why[256], text[512];
+		if (!install_problem(sPicked, why, sizeof why)) { snprintf(found, n, "%s", sPicked); return 1; }
+		say("the chosen folder is not a supported Battle Engine Aquila install: %s", why);
+		snprintf(text, sizeof text, "That folder is not a supported Battle Engine Aquila install: %s.\n\n"
+				 "Choose the folder that contains BEA.exe. If it is a copy of the game that should work, please report it "
+				 "as a problem.", why);
+		SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_WARNING, "Onslaught CE", text, NULL);
 	}
 }
 
+/* 1: found (dir); 0: none chosen; -1: none found and no message box could be shown to ask for one. A folder named by
+ * BEA_GAME_DIR or ce.ini's gamedir that is rejected is said, with the reason. */
 static int find_game(char *dir, size_t n)
 {
 	const char *env = getenv("BEA_GAME_DIR");
-	if (env && *env && supported_install(env)) { snprintf(dir, n, "%s", env); return 1; }
-	char ini[PATHN];
-	if (ini_get("gamedir", ini, sizeof ini) && supported_install(ini)) { snprintf(dir, n, "%s", ini); return 1; }
-	if (find_steam_install(dir, n) || ask_for_install(dir, n))
+	char why[256];
+	if (env && *env)
 	{
-		ini_set("gamedir", dir);
-		return 1;
+		if (!install_problem(env, why, sizeof why)) { snprintf(dir, n, "%s", env); return 1; }
+		say("BEA_GAME_DIR %s is not a supported Battle Engine Aquila install: %s", env, why);
 	}
-	return 0;
+	char ini[PATHN];
+	if (ini_get("gamedir", ini, sizeof ini) && *ini)
+	{
+		if (!install_problem(ini, why, sizeof why)) { snprintf(dir, n, "%s", ini); return 1; }
+		say("ce.ini's gamedir %s is not a supported Battle Engine Aquila install: %s", ini, why);
+	}
+	int found = find_steam_install(dir, n) ? 1 : ask_for_install(dir, n);
+	if (found > 0) ini_set("gamedir", dir);
+	return found;
 }
 
 /* ---- updates -------------------------------------------------------------------------------------------------- */
@@ -742,7 +787,8 @@ static int apply_update(const char *version, const char *url, const char *sha_he
 	{
 		remove(archive);
 		SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Onslaught CE",
-			"The update could not be downloaded or did not match the signed release. Nothing was changed.", NULL);
+			"The update could not be downloaded, or the download did not match the signed release. Nothing was changed: "
+			"this version starts now, and you will be asked again next time.", NULL);
 		return 0;
 	}
 	remove_tree(unpack);
@@ -757,7 +803,7 @@ static int apply_update(const char *version, const char *url, const char *sha_he
 	if (!ok || !is_file(probe))
 	{
 		remove_tree(unpack);
-		SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Onslaught CE", "The update could not be unpacked. Nothing was changed.", NULL);
+		SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Onslaught CE", "The update could not be unpacked. Nothing was changed: this version starts now, and you will be asked again next time.", NULL);
 		return 0;
 	}
 #ifdef _WIN32
@@ -785,7 +831,8 @@ static int apply_update(const char *version, const char *url, const char *sha_he
 	if (!swap_in(fresh))
 	{
 		remove_tree(unpack);
-		SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Onslaught CE", "The update could not be installed. Nothing was changed.", NULL);
+		SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Onslaught CE", "The update could not be installed. Nothing was changed: "
+								 "this version starts now, and you will be asked again next time.", NULL);
 		return 0;
 	}
 	remove_tree(unpack);
@@ -818,8 +865,11 @@ static void check_for_update(int argc, char **argv)
 		json_str(json, "url", plat, url, sizeof url) && json_str(json, "sha256", plat, sha, sizeof sha) && strlen(sha) == 64 &&
 		(!strncmp(url, ASSETS, strlen(ASSETS)) || getenv("BEA_UPDATE_FEED")))   /* tests' feeds may name file:// archives */
 	{
-		char text[512];
-		snprintf(text, sizeof text, "Onslaught CE v%s is available (you have v%s).\n\nUpdate now?", version, CE_VERSION);
+		char text[1024];
+		snprintf(text, sizeof text, "Onslaught CE v%s is available (you have v%s).\n\n"
+				 "Update: download it, check its signature, replace this copy and start the new version. Your careers and "
+				 "settings are kept.\nLater: start this version; you will be asked again next time.\n"
+				 "Skip this version: start this version and do not ask about v%s again.", version, CE_VERSION, version);
 		const SDL_MessageBoxButtonData buttons[] = {{SDL_MESSAGEBOX_BUTTON_RETURNKEY_DEFAULT, 1, "Update"},
 													{SDL_MESSAGEBOX_BUTTON_ESCAPEKEY_DEFAULT, 0, "Later"}, {0, 2, "Skip this version"}};
 		const SDL_MessageBoxData box = {SDL_MESSAGEBOX_INFORMATION, NULL, "Onslaught CE", text, 3, buttons, NULL};
@@ -1117,9 +1167,13 @@ static int ask_record(void)
 												{SDL_MESSAGEBOX_BUTTON_ESCAPEKEY_DEFAULT, 0, "Not this time"},
 												{0, 2, "Stop recording"}};
 	const SDL_MessageBoxData box = {SDL_MESSAGEBOX_INFORMATION, NULL, "Onslaught CE",
-		"Session recording is on: this session's input will be recorded, so a problem you report can be replayed "
-		"exactly.\n\nWhile recording, the game runs at 30 frames a second and its Onslaught CE page and cheats are "
-		"hidden.\n\nRecord this session?", 3, buttons, NULL};
+		"Session recording is on. A recording keeps your keyboard and mouse input, and a copy of your careers and "
+		"settings as they were at the start, so a problem you report can be replayed exactly.\n\n"
+		"While recording, the game runs at 30 frames a second with the original menus (use the keyboard in them), so "
+		"the Onslaught CE menu and cheats are hidden.\n\n"
+		"Record: record this session.\n"
+		"Not this time: play without recording; you will be asked again next time.\n"
+		"Stop recording: play without recording, and turn session recording off.", 3, buttons, NULL};
 	int which = 1;
 	const char *answer = getenv("BEA_RECORD_ANSWER");   /* tests: record, once or stop, without a dialog */
 	if (answer && *answer) which = !strcmp(answer, "stop") ? 2 : !strcmp(answer, "once") ? 0 : 1;
@@ -1295,7 +1349,8 @@ int main(int argc, char **argv)
 			int ok = swap_in(argv[i + 1]);
 			if (s) { *s = 0; remove_tree(unpack); }
 			if (!ok)
-				SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Onslaught CE", "The update could not be installed. Nothing was changed.", NULL);
+				SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Onslaught CE", "The update could not be installed. Nothing was "
+										 "changed: Onslaught CE starts as it was.", NULL);
 			char *none[] = {argv[0], NULL};
 			relaunch(1, none);
 			return ok ? 0 : 1;
@@ -1332,7 +1387,14 @@ int main(int argc, char **argv)
 	if (!nocheck && !sReplay) check_for_update(argc, argv);
 	if (updateonly) { log_close(); return 0; }
 	char game[PATHN];
-	if (!find_game(game, sizeof game)) { say("no supported Battle Engine Aquila install was chosen"); log_close(); return 1; }
+	int found = find_game(game, sizeof game);
+	if (found <= 0)
+	{
+		say(found < 0 ? "could not find Battle Engine Aquila in Steam's libraries; set BEA_GAME_DIR to its folder" :
+			"no supported Battle Engine Aquila install was chosen");
+		log_close();
+		return 1;
+	}
 	char opt[16];
 	int ini_record = ini_get("record_sessions", opt, sizeof opt) && !strcmp(opt, "1");
 	if (norecord)
