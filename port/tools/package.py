@@ -434,9 +434,7 @@ def limitations(windows: bool) -> list:
                  "  in particular is untested on real Windows. Please report any problems.",
                  "- The executables are unsigned, so SmartScreen may warn you (choose More info, then Run anyway)."] if windows else
                 ["- You need " + GLIBC_TEXT + ".",
-                 "- You need 32-bit graphics drivers (Vulkan).",
-                 "- With NVIDIA's driver the program can occasionally crash while closing, after the game has ended; your",
-                 "  saves are already written by then."])
+                 "- You need 32-bit graphics drivers (Vulkan)."])
     return ["Known limitations", *platform,
             "- The tutorial is playable through its third zone; its final drone fight is still being completed.",
             "- Joystick and controller support is limited to what the original game supported, and controllers have not",

@@ -33,6 +33,8 @@ void PortPumpInput();
 void PortAudioGuardCheck();
 // Input tapes and probes (replay.cpp): called after each Present returns, then the frame's probes and events.
 void PortReplayFrame(unsigned frame, HWND window);
+// The end-level probes written at exit (replay.cpp; Linux's main calls it before _exit, exit() otherwise).
+void PortReplayAtExit();
 // The tape's mouse since the last call (movement consumed, buttons as a level), or false without a tape.
 bool PortReplayMouse(long *dx, long *dy, long *dz, int *buttons);
 // Record mode (BEA_PORT_RECORD, replay.cpp): live input queued for the next Present and written as a tape.
@@ -48,6 +50,7 @@ const char *PortUserDir();
 // The clocks (clock.cpp): BEA_PORT_CLOCK = present (deterministic) or shim (the retail replay shim's clock), else real.
 bool PortClockVirtual();
 bool PortClockStandsBetweenPresents();		// shim clock without BEA_SLEEP_VIRTUAL: films play one frame per Present
+bool PortClockFilmFrameWaits();				// patch 0053: the film player's first look after each Present waits (shim)
 void PortClockFrame();							// d3d9hooks.cpp, after each Present returns
 unsigned long long PortClockFrames();
 unsigned long long PortClockPeekNs();				// virtual ns now, not counted as a read (0: real, or shim before its first Present)

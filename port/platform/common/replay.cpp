@@ -402,11 +402,20 @@ static void EldProbe(unsigned frame)
 
 static void EldAtExit()
 {
+	static bool done;	// once: from PortReplayAtExit (Linux's main) or from exit()'s handlers
+	if (done)
+		return;
+	done = true;
 	if (gProbes && gEldSeen && memcmp(gEldLast, END_LEVEL_DATA, sizeof(gEldLast)))
 	{
 		Hex(gEldFrame, "ELDEXIT", END_LEVEL_DATA, sizeof(gEldLast));
 		fflush(gProbes);
 	}
+}
+
+void PortReplayAtExit()
+{
+	EldAtExit();
 }
 
 void PortReplayFrame(unsigned frame, HWND window)

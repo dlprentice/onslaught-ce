@@ -5,8 +5,10 @@
 #include "../common/platform.h"
 
 #include <SDL3/SDL.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow);
 
@@ -43,5 +45,17 @@ int main(int argc, char **argv)
 	fprintf(stderr, PORT_LOG_PREFIX "game folder %s, writable folder %s\n", PortGameDir(), PortUserDir());
 	int rc = WinMain(GetModuleHandleA(NULL), NULL, cmdline, SW_SHOWNORMAL);
 	SDL_Quit();
-	return rc;
+	// The process ends as on Windows, where ExitProcess stops every other thread before a DLL's detach code runs:
+	// glibc's exit() runs each shared library's destructors with its threads still running. The game creates vertex
+	// shaders just before it quits and dxvk-native converts them on its own worker threads, so a worker could meet
+	// dxvk's destroyed static tables (its constant-layout set) and abort on lowerLegacyConstInput's dstIndex assertion
+	// (the 0.1.2 release candidate's full-boot run). The port's own exit work (the end-level probes) runs here, every
+	// stream is flushed (the game's save writes may still be buffered), and _exit skips the library destructors.
+	// _exit also skips the game's own atexit(ExitCode) (src/ltshell.cpp), deliberately: on Linux it has nothing to
+	// do that outlives the process. It restores the accessibility keys, which the SystemParametersInfoA stub
+	// (port/platform/linux/user.cpp) reports as off, so there is nothing to restore; the rest frees PATCHMANAGER data
+	// and shuts down RECONNECT_INTERFACE and the memory manager, all in memory with no file writes.
+	PortReplayAtExit();
+	fflush(NULL);
+	_exit(rc);
 }

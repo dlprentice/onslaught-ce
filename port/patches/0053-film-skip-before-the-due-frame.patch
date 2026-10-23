@@ -1,0 +1,21 @@
+--- a/DXFrontEndVideo.cpp
++++ b/DXFrontEndVideo.cpp
+@@ -458,6 +458,7 @@
+ }
+ 
+ //******************************************************************************************
++bool	PortClockFilmFrameWaits();		// Port (patch 0053): port/platform/common/clock.cpp
+ int		CDXFrontEndVideo::NextFrame(bool wait)	// FUNCTION: 0x00541d30
+ {
+ 	if (mBink)
+@@ -467,7 +468,9 @@
+ 		{
+ 			if (wait)
+ 			{
+-				if (BinkWait(mBink))
++				// Port (patch 0053): under the shim clock the first look after each Present finds the frame not yet due, as
++				// retail's wall-clock binkw32 does, so a skip seen in the poll that follows a Present ends the film unpresented.
++				if (BinkWait(mBink) || PortClockFilmFrameWaits())
+ 				{
+ 					sBinkOpenThread.Unlock();
+ 					return -1;

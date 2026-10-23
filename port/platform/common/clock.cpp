@@ -153,6 +153,24 @@ bool PortClockStandsBetweenPresents()
 	return !gSleepVirtual;
 }
 
+// Patch 0053 (CDXFrontEndVideo::NextFrame's waiting form, the film player's loop): retail's binkw32 times a film by the
+// wall clock even under the shim, and a frame takes far less than the 40 ms a 25 fps frame lasts, so the player's first
+// look after each Present finds the next frame not yet due: NextFrame returns -1, CDXFMV::Play sleeps and polls again,
+// and a skip seen in that poll ends the film without presenting another frame (the shim's breakpoints, 2026-10-23).
+// While the shim clock stands still, the first look after each Present waits once, as retail's does; later looks find
+// the frame due (BinkWait), so films still show one frame per Present.
+bool PortClockFilmFrameWaits()
+{
+	static long sLastFrames = -1;
+	if (!PortClockStandsBetweenPresents())
+		return false;
+	long frames = gShimFrames.load();
+	if (frames == sLastFrames)
+		return false;
+	sLastFrames = frames;
+	return true;
+}
+
 void PortClockFrame()
 {
 	switch (Mode())

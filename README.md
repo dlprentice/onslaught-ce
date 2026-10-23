@@ -27,8 +27,11 @@ The source has three parts:
 
 This is **version 0.1.2, a preview** (tag `v0.1.2`). In the main menu, the version text in the bottom-left corner
 (originally "V1.00") reads "Onslaught CE v0.1.2 (preview)". 0.1.2 redesigns the Cheats page (On/Off switches with a
-line saying what the highlighted cheat does) and adds licence notices for three more components compiled into the
-libraries it ships; the game itself plays the same as 0.1's.
+line saying what the highlighted cheat does), fixes a crash when quitting on Linux, makes skipping a film match the
+original game's timing, and adds licence notices for three more components compiled into the libraries it ships.
+Otherwise the game plays the same as 0.1.1: the level replays used to check it give byte-identical results on both
+versions. The film-skip change does affect recorded sessions and their playback: a recording made with 0.1 or 0.1.1
+that skips a film is one frame out of step after the skip on 0.1.2.
 
 ## In the game
 
@@ -223,8 +226,6 @@ of the tutorial (through its third zone; the final drone fight is still being co
   particular is untested on real Windows. Please report any problems.
 - The Windows executable is unsigned, so SmartScreen may warn you (see above).
 - On Linux you need glibc 2.44 or newer (see Linux above) and 32-bit graphics drivers (Vulkan).
-- With NVIDIA's driver on Linux the program can occasionally crash while closing, after the game has ended; your saves
-  are already written by then.
 - The tutorial is playable through its third zone; its final drone fight is still being completed.
 - Joystick and controller support is limited to what the original game supported, and controllers have not been tested
   yet.
