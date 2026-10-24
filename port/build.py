@@ -445,6 +445,11 @@ def main():
         PUBLIC = True
         if not re.fullmatch(r"[0-9A-Za-z.+-]+", a.ce_version):
             raise SystemExit(f"--ce-version {a.ce_version!r}: letters, digits and . + - only")
+        if a.target in ("windows", "all"):
+            try:
+                launcher_version_words(a.ce_version)
+            except ValueError as error:
+                raise SystemExit(f"--ce-version {a.ce_version!r}: {error}") from error
         CE_DEFINES.append(f"'-DCE_VERSION=\"{a.ce_version}\"'")
         # No machine paths in the shipped binary (__FILE__ in assertions and logs, debug information): this checkout,
         # its mirror and build, and the shared dependency directory become relative names.
@@ -506,6 +511,34 @@ def manifest_object(out: Path) -> Path:
     return out
 
 
+def launcher_version_words(version: str) -> tuple[int, int, int, int]:
+    """Windows fixed file version: the numeric release core, zero-padded; named development builds use zero.
+    The full label, including prerelease/build suffixes, remains in the resource's FileVersion/ProductVersion strings.
+    Reject numeric versions that cannot fit four WORDs instead of truncating or wrapping them."""
+    if re.fullmatch(r"[A-Za-z][0-9A-Za-z.+-]*", version):
+        return (0, 0, 0, 0)
+    match = re.fullmatch(r"([0-9]+(?:\.[0-9]+){0,3})(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
+                         r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?", version)
+    if not match:
+        raise ValueError("use a named development build or one to four numeric parts with an optional -prerelease/+build")
+    parts = [part.lstrip("0") or "0" for part in match[1].split(".")]
+    if any(len(part) > 5 or int(part) > 65535 for part in parts):
+        raise ValueError("Windows file-version parts must be between 0 and 65535")
+    return tuple([int(part) for part in parts] + [0] * (4 - len(parts)))
+
+
+def launcher_version_object(out: Path, version: str) -> Path:
+    """The launcher's own CE version resource; bea.exe keeps its separate retail 1.0.0.0 resource."""
+    words = ",".join(map(str, launcher_version_words(version)))
+    out.parent.mkdir(parents=True, exist_ok=True)
+    # A generated header preserves the quoted label through windres's preprocessor invocation.
+    (out.parent / "launcher-version.h").write_text(f'#define CE_VERSION_WORDS {words}\n#define CE_VERSION_TEXT "{version}"\n')
+    subprocess.run([str(WINDRES), "--target=pe-i386", "-O", "coff", "-I", str(out.parent),
+                    str(RESOURCE.with_name("launcher-version.rc")),
+                    "-o", str(out)], check=True)
+    return out
+
+
 def build_launcher(target, version):
     """The public build's launcher (port/updater): game-folder discovery and the signed update check, linked with SDL3
     (its dialogs) and Monocypher (Ed25519). Linux: build/linux/onslaught-ce-launch; Windows: build/windows/onslaught-ce.exe."""
@@ -520,7 +553,8 @@ def build_launcher(target, version):
               deps.sysroot_link_flags()
     else:
         res = manifest_object(BUILD / "windows/launcher-utf8.rc.o")
-        cmd = TARGETS["windows"]["cc"] + ["-mwindows"] + flags + [f"-I{deps.PREFIX_WIN / 'include'}"] + [str(s) for s in src] + [str(res)] + \
+        ver = launcher_version_object(BUILD / "windows/launcher-version.rc.o", version)
+        cmd = TARGETS["windows"]["cc"] + ["-mwindows"] + flags + [f"-I{deps.PREFIX_WIN / 'include'}"] + [str(s) for s in src] + [str(res), str(ver)] + \
               [f"-L{deps.PREFIX_WIN / 'lib'}", "-lSDL3", "-ladvapi32", "-lshell32", "-static-libgcc", "-Wl,--no-insert-timestamp",
                "-o", str(BUILD / "windows/onslaught-ce.exe")]
     r = subprocess.run(cmd)

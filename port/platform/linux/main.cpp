@@ -42,7 +42,13 @@ int main(int argc, char **argv)
 			strcat(cmdline, " ");
 		strcat(cmdline, argv[i]);
 	}
-	fprintf(stderr, PORT_LOG_PREFIX "game folder %s, writable folder %s\n", PortGameDir(), PortUserDir());
+	// The launcher already printed the game folder with the account name shortened. Direct launches keep both paths.
+	const char *folderLogged = getenv("BEA_CE_GAME_FOLDER_LOGGED");
+	if (folderLogged && !strcmp(folderLogged, "1"))
+		fprintf(stderr, PORT_LOG_PREFIX "writable folder %s\n", PortUserDir());
+	else
+		fprintf(stderr, PORT_LOG_PREFIX "game folder %s, writable folder %s\n", PortGameDir(), PortUserDir());
+	unsetenv("BEA_CE_GAME_FOLDER_LOGGED");
 	int rc = WinMain(GetModuleHandleA(NULL), NULL, cmdline, SW_SHOWNORMAL);
 	SDL_Quit();
 	// The process ends as on Windows, where ExitProcess stops every other thread before a DLL's detach code runs:

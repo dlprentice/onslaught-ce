@@ -25,7 +25,13 @@ GAME = r'''#!/bin/sh
 echo "out: args $*"
 echo "onslaught-ce: adapter Stand-in GPU (vendor 8086, device 1234, driver 1.2.3.4)" >&2
 echo "env: rec=${BEA_PORT_RECORD:-} clock=${BEA_PORT_CLOCK:-} build=${BEA_CE_BUILD:-} monitor=${BEA_AUDIO_MONITOR:-}"
-echo "onslaught-ce: game folder $BEA_GAME_DIR, writable folder $BEA_USER_DIR" >&2
+echo "folder_logged=${BEA_CE_GAME_FOLDER_LOGGED:-}"
+# The Linux entry point receives the launcher's marker; a direct launch still reports both paths.
+if [ "${BEA_CE_GAME_FOLDER_LOGGED:-}" = 1 ]; then
+  echo "onslaught-ce: writable folder $BEA_USER_DIR" >&2
+else
+  echo "onslaught-ce: game folder $BEA_GAME_DIR, writable folder $BEA_USER_DIR" >&2
+fi
 echo "a mounted drive: /run/media/${USER:-}/Games and $HOME/x but not ${HOME}y"
 case "${FAKE:-}" in
   big) yes 'a line of game output, sixty-four bytes long, to fill the log up' | head -c 5000000 >&2 ;;
@@ -78,6 +84,10 @@ class Launcher(unittest.TestCase):
         self.assertEqual(lines[-1], "onslaught-ce: the game closed")
         # the terminal gets the same output
         self.assertIn("out: args -level 100", r.stderr)
+        self.assertIn("folder_logged=1", r.stderr)
+        self.assertEqual(r.stderr.count("onslaught-ce: game folder "), 1)
+        self.assertEqual(self.log().count("onslaught-ce: game folder "), 1)
+        self.assertNotIn("run 'cd .'", r.stderr)
 
     def test_old_log_and_cap(self):
         self.run_launcher()
@@ -165,12 +175,15 @@ class Launcher(unittest.TestCase):
     def test_log_names_no_account(self):
         # the user folder and the game folder under the private home, an account name in another path
         user = self.home / ".local/share/onslaught-ce"
-        r = self.run_launcher("--record", BEA_USER_DIR=str(user), USER="ceplayer")
+        game = self.fake_install("game")
+        r = self.run_launcher("--record", BEA_USER_DIR=str(user), BEA_GAME_DIR=str(game), USER="ceplayer")
         self.assertEqual(r.returncode, 0)
         text = (user / "onslaught-ce.log").read_text()
         self.assertNotIn(str(self.home), text.replace(f"{self.home}y", ""))
         self.assertNotIn("ceplayer", text)
-        self.assertIn("onslaught-ce: game folder ", text)
+        self.assertEqual(text.count("onslaught-ce: game folder "), 1)
+        self.assertEqual(r.stderr.count("onslaught-ce: game folder "), 1)
+        self.assertIn("onslaught-ce: game folder ~/game\n", r.stderr)
         self.assertIn("writable folder ~/.local/share/onslaught-ce\n", text)
         self.assertIn("a mounted drive: /run/media/<user>/Games and ~/x but not ", text)
         self.assertIn(f"{self.home}y", text)	# only a whole home folder is shortened
@@ -181,11 +194,12 @@ class Launcher(unittest.TestCase):
 
     def test_replay_has_no_log(self):
         for env in ({"BEA_PORT_TAPE": "/nonexistent.tape"}, {"BEA_PORT_RECORD": str(self.tmp / "harness.tape")}):
-            r = self.run_launcher(**env)
+            r = self.run_launcher(BEA_CE_LOG_CONTINUE="1", **env)
             self.assertEqual(r.returncode, 0)
             self.assertIn("build= monitor=", r.stdout + r.stderr)	# BEA_CE_BUILD not set for the CE layer
             self.assertFalse((self.user / "onslaught-ce.log").exists())
             self.assertFalse((self.user / "onslaught-ce.old.log").exists())
+            self.assertNotIn("run 'cd .'", r.stderr)
 
     def test_update_restart_continues_log(self):
         self.run_launcher(CODE="5")	# the run the player wants to report
@@ -199,8 +213,12 @@ class Launcher(unittest.TestCase):
         after = self.log()
         self.assertTrue(after.startswith(before))
         self.assertIn("\nRestarted after an update: ", after[len(before):])
+        hint = "the update replaced the install folder; if this terminal was open there, run 'cd .' before starting again"
+        self.assertEqual(r.stderr.count(hint), 1)
+        self.assertEqual(after.count(hint), 1)
         self.run_launcher()	# and the next ordinary start rotates as usual
         self.assertEqual(self.log("onslaught-ce.old.log"), after)
+        self.assertNotIn(hint, self.log())
 
     def test_report_url(self):
         user = self.home / ".local/share/onslaught-ce"
@@ -220,6 +238,33 @@ class Launcher(unittest.TestCase):
         self.assertIn("(preview), build ", body)
         self.assertIn("- Linux", body)
         self.assertNotIn(str(self.home), body)
+
+    def test_linked_user_folder_refused_before_launcher_writes(self):
+        outside = self.home / "outside"
+        outside.mkdir()
+        (outside / "sentinel").write_bytes(b"keep sentinel")
+        linked = self.home / "linked"
+        linked.symlink_to(outside, target_is_directory=True)
+        for user in (linked, linked / "new" / "nested"):
+            with self.subTest(user=user):
+                r = self.run_launcher("--update-only", BEA_USER_DIR=str(user))
+                self.assertEqual(r.returncode, 1)
+                self.assertIn("could not prepare the settings folder", r.stderr)
+                self.assertEqual(sorted(p.name for p in outside.iterdir()), ["sentinel"])
+
+    def test_temp_symlink_does_not_overwrite_target(self):
+        self.user.mkdir()
+        ini = self.user / "ce.ini"
+        ini.write_bytes(b"record_sessions=1\nunknown=retain\n")
+        sentinel = self.home / "sentinel"
+        sentinel.write_bytes(b"keep sentinel")
+        (self.user / "ce.ini.tmp").symlink_to(sentinel)
+        r = self.run_launcher("--no-record")
+        self.assertEqual(r.returncode, 0)
+        self.assertEqual(ini.read_bytes(), b"record_sessions=0\nunknown=retain\n")
+        self.assertFalse(ini.is_symlink())
+        self.assertEqual(sentinel.read_bytes(), b"keep sentinel")
+        self.assertTrue((self.user / "ce.ini.tmp").is_symlink())
 
     def fake_install(self, name, msl=True, stf=b"real"):
         """A folder under the private HOME with the install's data/MissionScripts files: onsldef.msl copied (or absent),

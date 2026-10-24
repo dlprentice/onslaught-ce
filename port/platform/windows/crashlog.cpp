@@ -11,7 +11,8 @@
 // UTF-16, cut anywhere), which the launcher's line scrub cannot reliably find; only addresses, module names and code
 // bytes are written. It returns EXCEPTION_CONTINUE_SEARCH, so the exception goes on exactly as before: a first-chance
 // exception a frame handler takes (Direct3D and drivers may probe memory that way) is reported too and marked as
-// first-chance; the last report before the process ends is the fatal one. At most kMaxReports are written.
+// first-chance; a report does not establish that the exception was fatal. At most kMaxReports are written, followed by
+// one notice if more arrive. A later fatal exception can therefore be absent from this log.
 #include <windows.h>
 
 #include <stdarg.h>
@@ -132,7 +133,7 @@ void Report(EXCEPTION_POINTERS *info, LONG k)
 	const CONTEXT *c = info->ContextRecord;
 	char where[256];
 	Describe((DWORD)(UINT_PTR)r->ExceptionAddress, where, sizeof where);
-	Out("onslaught-ce: crash report %ld (first-chance; the last one before the exit is the fatal one): exception "
+	Out("onslaught-ce: crash report %ld (first-chance; may be handled): exception "
 		"%08lx thread %lu flags %lx\n", k, (unsigned long)r->ExceptionCode, (unsigned long)GetCurrentThreadId(),
 		(unsigned long)r->ExceptionFlags);
 	Out("onslaught-ce:   at %s\n", where);
@@ -207,7 +208,12 @@ LONG CALLBACK Handler(EXCEPTION_POINTERS *info)
 		return EXCEPTION_CONTINUE_SEARCH;		// informational, warning and C++ (0xE06D7363) exceptions pass silently
 	LONG k = InterlockedIncrement(&gReports);
 	if (k > kMaxReports)
+	{
+		if (k == kMaxReports + 1)
+			Out("onslaught-ce: further first-chance exception reports suppressed after %d; a later fatal exception may not "
+				"be reported\n", kMaxReports);
 		return EXCEPTION_CONTINUE_SEARCH;
+	}
 	Report(info, k);
 	return EXCEPTION_CONTINUE_SEARCH;
 }

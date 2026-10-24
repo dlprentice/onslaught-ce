@@ -12,6 +12,12 @@
 #endif
 
 #include "platform.h"
+#if !defined(_WIN32)
+#include "../linux/handles.h"
+#include <errno.h>
+#include <fcntl.h>
+#include <unistd.h>
+#endif
 
 namespace
 {
@@ -22,6 +28,25 @@ struct RegKey
 }
 
 static void RegFile(char *out, size_t n) { snprintf(out, n, "%s/registry.ini", PortUserDir()); }
+
+static FILE *RegOpen(const char *mode)
+{
+#if defined(_WIN32)
+	char file[4096];
+	RegFile(file, sizeof(file));
+	return fopen(file, mode);
+#else
+	// Both operations use the same user-only identity, including its spelling. Reading must not fall back to the game.
+	int flags = mode[0] == 'r' ? O_RDONLY : O_WRONLY | O_CREAT | O_TRUNC;
+	int fd = PortOpenUserFile("registry.ini", flags, false);
+	if (fd < 0)
+		return NULL;
+	FILE *f = fdopen(fd, mode);
+	if (!f)
+		close(fd);
+	return f;
+#endif
+}
 
 extern "C" LONG WINAPI PortRegCreateKeyExA(HKEY, LPCSTR sub, DWORD, LPSTR, DWORD, REGSAM, LPSECURITY_ATTRIBUTES, PHKEY result,
 									   LPDWORD disposition)
@@ -51,12 +76,11 @@ extern "C" LONG WINAPI PortRegCloseKey(HKEY k)
 extern "C" LONG WINAPI PortRegSetValueExA(HKEY key, LPCSTR name, DWORD, DWORD type, const BYTE *data, DWORD size)
 {
 	RegKey *k = (RegKey *)key;
-	char file[4096], prefix[512];
-	RegFile(file, sizeof(file));
+	char prefix[512];
 	snprintf(prefix, sizeof(prefix), "%s\\%s=", k->path, name ? name : "");
 	char *kept = NULL;
 	size_t kept_len = 0;
-	if (FILE *f = fopen(file, "r"))
+	if (FILE *f = RegOpen("r"))
 	{
 		char line[8192];
 		while (fgets(line, sizeof(line), f))
@@ -67,9 +91,18 @@ extern "C" LONG WINAPI PortRegSetValueExA(HKEY key, LPCSTR name, DWORD, DWORD ty
 				memcpy(kept + kept_len, line, l + 1);
 				kept_len += l;
 			}
-		fclose(f);
+		bool failed = ferror(f) != 0;
+		if (fclose(f) != 0 || failed)
+		{
+			free(kept);
+			return ERROR_ACCESS_DENIED;
+		}
 	}
-	FILE *f = fopen(file, "w");
+#if !defined(_WIN32)
+	else if (errno != ENOENT)
+		return ERROR_ACCESS_DENIED;
+#endif
+	FILE *f = RegOpen("w");
 	if (!f)
 	{
 		free(kept);
@@ -89,10 +122,9 @@ extern "C" LONG WINAPI PortRegSetValueExA(HKEY key, LPCSTR name, DWORD, DWORD ty
 extern "C" LONG WINAPI PortRegQueryValueExA(HKEY key, LPCSTR name, LPDWORD, LPDWORD type, LPBYTE data, LPDWORD size)
 {
 	RegKey *k = (RegKey *)key;
-	char file[4096], prefix[512];
-	RegFile(file, sizeof(file));
+	char prefix[512];
 	snprintf(prefix, sizeof(prefix), "%s\\%s=", k->path, name ? name : "");
-	FILE *f = fopen(file, "r");
+	FILE *f = RegOpen("r");
 	if (!f)
 		return ERROR_FILE_NOT_FOUND;
 	char line[8192];

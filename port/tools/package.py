@@ -357,8 +357,9 @@ README_WIDTH = 114
 def readme(version: str, windows: bool) -> bytes:
     launcher = "onslaught-ce.exe" if windows else "onslaught-ce"
     common = ["It finds your Battle Engine Aquila install in Steam's libraries, or asks you once for its folder and",
-              "remembers it (BEA_GAME_DIR overrides). Your game folder is only read: careers and settings go to",
-              ("%APPDATA%\\Onslaught CE." if windows else "~/.local/share/onslaught-ce."),
+              "remembers it (BEA_GAME_DIR overrides). By default, careers and settings go to a separate user folder:",
+              ("%APPDATA%\\Onslaught CE." if windows else "$XDG_DATA_HOME/onslaught-ce, or ~/.local/share/onslaught-ce when unset."),
+              "BEA_USER_DIR overrides that location. Keep it separate from the game folder and avoid linked paths.",
               "On start it checks this project's GitHub releases for a newer signed version and asks before updating",
               "(turn it off with update_check=0 in ce.ini or BEA_NO_UPDATE_CHECK=1). There is no telemetry: the update",
               "check and a download you agree to are the only network requests it makes by itself.", *REPORT_PRIVACY]
@@ -457,7 +458,9 @@ def limitations(windows: bool) -> list:
     both platforms')."""
     platform = (["- This Windows build has been tested under Wine on Linux and on one Windows 11 virtual machine without a",
                  "  graphics card (Microsoft's software renderer), not on a PC with a real graphics card or its drivers.",
-                 "  Its self-update path is untested on Windows. Please report any problems.",
+                 "  During the 0.1.3 release checks, that VM updated from 0.1.2 to 0.1.3, restarted, and its installed",
+                 "  files matched the published package. An earlier attempt fetched no update feed; a later retry in",
+                 "  the same VM session succeeded. Updating on a PC with a real graphics card remains untested.",
                  "- The executables are unsigned, so SmartScreen may warn you (choose More info, then Run anyway)."] if windows else
                 [*textwrap.wrap("- You need " + GLIBC_TEXT + ".", README_WIDTH, subsequent_indent="  ", break_on_hyphens=False),
                  *textwrap.wrap("- You need " + VULKAN_TEXT + ".", README_WIDTH, subsequent_indent="  ", break_on_hyphens=False)])
@@ -473,16 +476,16 @@ def limitations(windows: bool) -> list:
 
 def quick_start(windows: bool) -> list:
     """The quick start for this platform's package (the repository README, public/README.md, gives both)."""
-    exe, user = ("onslaught-ce.exe", "%APPDATA%\\Onslaught CE") if windows else ("./onslaught-ce", "~/.local/share/onslaught-ce")
+    exe, user = ("onslaught-ce.exe", "%APPDATA%\\Onslaught CE") if windows else ("./onslaught-ce", "$XDG_DATA_HOME/onslaught-ce (or ~/.local/share/onslaught-ce when unset)")
     return ["Quick start",
             "1. Extract the download into any folder, for example your Downloads folder, not your game folder. You can move",
             "   the folder anywhere later.",
             f"2. Run {exe}.",
             "3. It finds your Steam copy of Battle Engine Aquila by itself, or asks once where it is.",
             "",
-            "Don't copy or replace anything in your game folder: Onslaught CE only reads it, and the original game keeps",
-            f"working as before. Your careers and settings are kept in {user}; delete the program folder to",
-            "uninstall."]
+            "Keep the program and its user folder separate from the original game. By default, careers and settings go to",
+            f"{user}. Keep recovery copies before changing save locations; do not point BEA_USER_DIR into the game folder.",
+            "Delete the program folder to uninstall; keep any careers you want before deleting the user folder."]
 
 
 NOTICE_LINES = [
@@ -506,7 +509,7 @@ def notice(version: str, windows: bool) -> bytes:
 LAUNCHER = r'''#!/usr/bin/env bash
 # Onslaught CE: checks the 32-bit system libraries, then hands over to onslaught-ce-launch, which finds your Battle
 # Engine Aquila install (BEA_GAME_DIR, ce.ini, Steam's libraries, or asks once), checks for a signed update and starts
-# the game from this folder. Your game folder is only read.
+# the game from this folder; saves and settings use a separate user folder by default.
 set -euo pipefail
 HERE=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
 case "${1:-}" in

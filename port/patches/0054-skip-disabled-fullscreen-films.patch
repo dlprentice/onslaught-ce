@@ -1,0 +1,22 @@
+--- a/DXFMV.cpp
++++ b/DXFMV.cpp
+@@ -64,8 +64,19 @@
+ // stores before the loop and frames is then also alpha (esi), because `alpha = 0` is the last use of that zero and the
+ // copy coalesces (declared earlier, the zero and alpha were two registers and this and the controller swapped
+ // ebp/edi). The placement new names its file the way retail does, with an upper-case .CPP, through #line.
++#ifdef CE_VERSION
++bool	PortCeLayer();		// Port (patch 0054): port/platform/common/ce.cpp
++#endif
++
+ BOOL	CDXFMV::Play(char *name, int language, int b, int c, int d, int e)	// FUNCTION: 0x0053f190
+ {
++#ifdef CE_VERSION
++	// Port (patch 0054): the video worker opens nothing under -skipfmv, so an attract film would loop forever.
++	// Skip before clearing the screen in normal CE play; faithful replays and recordings retain retail behavior.
++	if (CLIPARAMS.mSkipFMV && PortCeLayer())
++		return FALSE;
++#endif
++
+ 	char	path[128];
+ 	sprintf(path, "data\\video\\%s.vid", name);
+ 	FILE	*f = fopen(path, "rb");

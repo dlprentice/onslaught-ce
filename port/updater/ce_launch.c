@@ -962,7 +962,7 @@ static void tidy_old(void)
 #endif
 }
 
-static void init_paths(void)
+static int init_paths(void)
 {
 #ifdef _WIN32
 	GetModuleFileNameA(NULL, sHere, sizeof sHere);
@@ -983,8 +983,7 @@ static void init_paths(void)
 	if (user && *user) snprintf(sUser, sizeof sUser, "%s", user);
 	snprintf(sIni, sizeof sIni, "%s" SEP "ce.ini", sUser);
 	snprintf(sCache, sizeof sCache, "%s" SEP "update", sUser);
-	make_dirs(sUser);
-	make_dirs(sCache);
+	return ce_make_settings_dirs(sUser) && ce_make_settings_dirs(sCache);
 }
 
 static void relaunch(int argc, char **argv)
@@ -1206,6 +1205,10 @@ static int start_game(char **args, int nargs, const char *game)
 	char shortgame[PATHN];
 	ce_short_path(game, shortgame, sizeof shortgame);
 	say("game folder %s", shortgame);
+#ifndef _WIN32
+	/* The Linux entry point keeps this diagnostic for direct launches, but need not repeat our line. */
+	set_env("BEA_CE_GAME_FOLDER_LOGGED", "1");
+#endif
 #ifdef _WIN32
 	char cmd[8192];
 	snprintf(cmd, sizeof cmd, "\"%s\"", exe);
@@ -1373,7 +1376,11 @@ int main(int argc, char **argv)
 #endif
 		else { first = i; break; }
 	}
-	init_paths();
+	if (!init_paths())
+	{
+		say("could not prepare the settings folder; check its permissions and that no path component is a link");
+		return 1;
+	}
 	if (report)
 	{
 		/* "Report a problem": the pre-filled issue page in the browser, and where the files to attach are. */
@@ -1398,6 +1405,10 @@ int main(int argc, char **argv)
 	int continuing = cont && *cont;
 	unset_env(LOG_CONTINUE);
 	if (!sReplay) log_open(continuing);
+#ifndef _WIN32
+	if (continuing && !sReplay)
+		say("the update replaced the install folder; if this terminal was open there, run 'cd .' before starting again");
+#endif
 	tidy_old();
 	if (!nocheck && !sReplay) check_for_update(argc, argv);
 	if (updateonly) { log_close(); return 0; }

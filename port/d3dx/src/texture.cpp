@@ -11,6 +11,10 @@
 #include <string.h>
 #include <vector>
 
+#ifndef _WIN32
+extern "C" FILE *port_fopen(const char *name, const char *mode); // platform/linux/files.cpp
+#endif
+
 namespace {
 
 // ---- formats
@@ -668,7 +672,12 @@ extern "C" HRESULT WINAPI D3DXCreateTextureFromFileExA(LPDIRECT3DDEVICE9 pDevice
 {
     if (!pSrcFile)
         return D3DERR_INVALIDCALL;
+#ifndef _WIN32
+    // Loose textures use the same game/user roots, separators and case matching as the game's other reads.
+    FILE *f = port_fopen(pSrcFile, "rb");
+#else
     FILE *f = fopen(pSrcFile, "rb");
+#endif
     if (!f)
         return D3DXERR_INVALIDDATA;
     std::vector<unsigned char> data;

@@ -13,7 +13,8 @@ What helps most:
 
 - bug reports with what you did, what you expected and what happened, your system (distribution or Windows version,
   graphics card and driver), and the program's log if there is one;
-- testing on real Windows, which the maintainers cannot do;
+- testing on Windows PCs with real graphics cards and their drivers; current Windows checks use Wine and a
+  Windows 11 virtual machine with software rendering;
 - fixes in the port's platform layer (`port/`).
 
 Changes to `src/` are held to a stricter rule: its files keep their line counts and the game's original build output,

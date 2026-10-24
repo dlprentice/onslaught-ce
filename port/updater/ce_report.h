@@ -12,10 +12,15 @@
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
+#include <stddef.h>
+#include <stdint.h>
+#include <fcntl.h>
 #ifdef _WIN32
 #include <windows.h>
+#include <io.h>
 #else
 #include <dirent.h>
+#include <sys/stat.h>
 #include <sys/utsname.h>
 #include <unistd.h>
 #endif
@@ -201,16 +206,185 @@ static inline int ce_open_report(const char *version, const char *build, const c
 	return SDL_OpenURL(url) ? 1 : 0;
 }
 
-/* Sets key=value in the key=value file ini (ce.ini), replacing the key's line or adding one and keeping every other line
- * as it is. The whole file is written to ini.tmp, every write and the close are checked (and on Linux it is synced),
- * and only then is it renamed over ini, so a crash, a power cut or a full disk leaves the old ce.ini whole. A ce.ini
- * that exists but cannot be read is left alone. Returns 1 when ini now holds the line, 0 when nothing was changed. */
+/* The settings directory: no symlink/reparse-point component is followed. Linux keeps the final directory fd for
+ * openat/renameat; Windows keeps each ancestor open without delete sharing while using the checked absolute path. */
+typedef struct CeSettingsDir
+{
+#ifdef _WIN32
+	HANDLE handles[128];
+	int count;
+	char path[4200];
+#else
+	int fd;
+#endif
+} CeSettingsDir;
+
+static inline void ce_settings_dir_close(CeSettingsDir *dir)
+{
+#ifdef _WIN32
+	while (dir->count) CloseHandle(dir->handles[--dir->count]);
+#else
+	if (dir->fd >= 0) close(dir->fd);
+	dir->fd = -1;
+#endif
+}
+
+static inline int ce_settings_dir_open(const char *path, int create, CeSettingsDir *dir)
+{
+#ifdef _WIN32
+	dir->count = 0;
+	DWORD n = GetFullPathNameA(path, sizeof dir->path, dir->path, NULL);
+	if (!n || n >= sizeof dir->path) return 0;
+	for (char *p = dir->path; *p; p++) if (*p == '/') *p = '\\';
+	size_t root = 0;
+	if (n >= 3 && dir->path[1] == ':' && dir->path[2] == '\\') root = 3;
+	else if (n > 2 && dir->path[0] == '\\' && dir->path[1] == '\\' && dir->path[2] != '?' && dir->path[2] != '.')
+	{
+		char *server = strchr(dir->path + 2, '\\');
+		char *share = server ? strchr(server + 1, '\\') : NULL;
+		if (server && server[1]) root = share ? (size_t)(share - dir->path) : n;
+	}
+	if (!root) return 0; /* Device namespaces are not settings directories. */
+	for (size_t end = root;;)
+	{
+		char saved = dir->path[end];
+		dir->path[end] = 0;
+		HANDLE h = CreateFileA(dir->path, FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING,
+			FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, NULL);
+		DWORD error = h == INVALID_HANDLE_VALUE ? GetLastError() : 0;
+		if (h == INVALID_HANDLE_VALUE && create && (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND))
+		{
+			if (CreateDirectoryA(dir->path, NULL) || GetLastError() == ERROR_ALREADY_EXISTS)
+				h = CreateFileA(dir->path, FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING,
+					FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, NULL);
+		}
+		dir->path[end] = saved;
+		BY_HANDLE_FILE_INFORMATION info;
+		if (h == INVALID_HANDLE_VALUE || !GetFileInformationByHandle(h, &info) ||
+			!(info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || (info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) ||
+			dir->count == (int)(sizeof dir->handles / sizeof dir->handles[0]))
+		{
+			if (h != INVALID_HANDLE_VALUE) CloseHandle(h);
+			ce_settings_dir_close(dir);
+			return 0;
+		}
+		dir->handles[dir->count++] = h;
+		while (dir->path[end] == '\\') end++;
+		if (!dir->path[end]) return 1;
+		while (dir->path[end] && dir->path[end] != '\\') end++;
+	}
+#else
+	dir->fd = -1;
+	char copy[4200];
+	if (!path || !*path || (size_t)snprintf(copy, sizeof copy, "%s", path) >= sizeof copy) return 0;
+	/* Traversal needs search permission, not directory-list permission. O_PATH is Linux's stable 010000000 flag;
+	 * some C feature profiles hide its spelling, while the kernel and the glibc-2.29-compatible *at calls support it. */
+	int flags = O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC;
+#ifdef O_PATH
+	flags |= O_PATH;
+#else
+	flags |= 010000000;
+#endif
+	int fd = open(path[0] == '/' ? "/" : ".", flags);
+	if (fd < 0) return 0;
+	for (char *part = copy; *part;)
+	{
+		while (*part == '/') part++;
+		if (!*part) break;
+		char *end = strchr(part, '/');
+		if (end) *end = 0;
+		if (!strcmp(part, "..")) { close(fd); return 0; }
+		if (strcmp(part, "."))
+		{
+			int next = openat(fd, part, flags);
+			if (next < 0 && errno == ENOENT && create && (mkdirat(fd, part, 0700) == 0 || errno == EEXIST))
+				next = openat(fd, part, flags);
+			close(fd);
+			if (next < 0) return 0;
+			fd = next;
+		}
+		if (!end) break;
+		part = end + 1;
+	}
+	dir->fd = fd;
+	return 1;
+#endif
+}
+
+static inline int ce_make_settings_dirs(const char *path)
+{
+	CeSettingsDir dir;
+	if (!ce_settings_dir_open(path, 1, &dir)) return 0;
+	ce_settings_dir_close(&dir);
+	return 1;
+}
+
+/* Sets key=value, keeping unrelated bytes (including non-text bytes) with the baseline's final-newline normalization.
+ * A new, exclusive temporary file is flushed and closed before same-directory replacement. Existing unreadable,
+ * non-regular or symlink/reparse-point settings files are refused. Failed reads/writes leave the original intact.
+ * The caller owns admission of the selected user directory; this helper does not know the game's install directory. */
 static inline int ce_ini_write(const char *ini, const char *key, const char *value)
 {
+	char parent[4200], name[256];
+	if (!ini || !key || !*key || !value || (size_t)snprintf(parent, sizeof parent, "%s", ini) >= sizeof parent) return 0;
+	char *slash = strrchr(parent, '/');
+#ifdef _WIN32
+	char *backslash = strrchr(parent, '\\');
+	if (backslash && (!slash || backslash > slash)) slash = backslash;
+#endif
+	const char *base = slash ? slash + 1 : parent;
+	if (!*base || !strcmp(base, ".") || !strcmp(base, "..") ||
+		(size_t)snprintf(name, sizeof name, "%s", base) >= sizeof name) return 0;
+#ifdef _WIN32
+	if (strchr(name, ':')) return 0;
+#endif
+	if (!slash) strcpy(parent, ".");
+	else if (slash == parent) slash[1] = 0;
+#ifdef _WIN32
+	else if (slash == parent + 2 && parent[1] == ':') slash[1] = 0;
+#endif
+	else *slash = 0;
+	CeSettingsDir dir;
+	if (!ce_settings_dir_open(parent, 1, &dir)) return 0;
 	char *t = NULL;
 	size_t len = 0;
-	FILE *f = fopen(ini, "rb");
-	if (!f && errno != ENOENT) return 0;
+	FILE *f = NULL;
+	int input = -1, absent = 0;
+#ifdef _WIN32
+	char full[4500];
+	snprintf(full, sizeof full, "%s\\%s", dir.path, name);
+	HANDLE in = CreateFileA(full, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, NULL);
+	if (in == INVALID_HANDLE_VALUE) absent = GetLastError() == ERROR_FILE_NOT_FOUND;
+	else
+	{
+		BY_HANDLE_FILE_INFORMATION info;
+		if (GetFileType(in) == FILE_TYPE_DISK && GetFileInformationByHandle(in, &info) &&
+			!(info.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)))
+			input = _open_osfhandle((intptr_t)in, _O_RDONLY | _O_BINARY);
+		if (input < 0) CloseHandle(in);
+	}
+	if (input >= 0) f = _fdopen(input, "rb");
+#else
+	input = openat(dir.fd, name, O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC);
+	if (input < 0) absent = errno == ENOENT;
+	else
+	{
+		struct stat st;
+		if (fstat(input, &st) != 0 || !S_ISREG(st.st_mode)) { close(input); input = -1; }
+	}
+	if (input >= 0) f = fdopen(input, "rb");
+#endif
+	if (!f && !absent)
+	{
+		if (input >= 0)
+#ifdef _WIN32
+			_close(input);
+#else
+			close(input);
+#endif
+		ce_settings_dir_close(&dir);
+		return 0;
+	}
 	if (f)
 	{
 		size_t cap = 0, got;
@@ -230,41 +404,103 @@ static inline int ce_ini_write(const char *ini, const char *key, const char *val
 			if (len > (1u << 20)) { bad = 1; break; }	/* not a ce.ini */
 		}
 		if (ferror(f)) bad = 1;
-		fclose(f);
-		if (bad) { free(t); return 0; }
+		if (fclose(f) != 0) bad = 1;
+		if (bad) { free(t); ce_settings_dir_close(&dir); return 0; }
 	}
-	char tmp[4200];
-	if ((size_t)snprintf(tmp, sizeof tmp, "%s.tmp", ini) >= sizeof tmp) { free(t); return 0; }
-	FILE *o = fopen(tmp, "wb");
-	if (!o) { free(t); return 0; }
-	size_t k = strlen(key);
-	int ok = 1, written = 0;
-	for (char *l = t; l && *l;)
+	char tmp[320];
+	FILE *o = NULL;
+#ifdef _WIN32
+	HANDLE output = INVALID_HANDLE_VALUE;
+	for (unsigned i = 0; i < 64; i++)
 	{
-		char *nl = strchr(l, '\n');
-		size_t n = nl ? (size_t)(nl - l + 1) : strlen(l);
-		if (!strncmp(l, key, k) && l[k] == '=')
+		snprintf(tmp, sizeof tmp, "%s.tmp-%lu-%u", name, (unsigned long)GetCurrentProcessId(), i);
+		snprintf(full, sizeof full, "%s\\%s", dir.path, tmp);
+		output = CreateFileA(full, GENERIC_WRITE | DELETE, FILE_SHARE_READ, NULL, CREATE_NEW,
+			FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, NULL);
+		if (output != INVALID_HANDLE_VALUE || GetLastError() != ERROR_FILE_EXISTS) break;
+	}
+	if (output != INVALID_HANDLE_VALUE)
+	{
+		HANDLE stream;
+		if (DuplicateHandle(GetCurrentProcess(), output, GetCurrentProcess(), &stream, 0, FALSE, DUPLICATE_SAME_ACCESS))
+		{
+			int fd = _open_osfhandle((intptr_t)stream, _O_WRONLY | _O_BINARY);
+			if (fd < 0) CloseHandle(stream);
+			else if (!(o = _fdopen(fd, "wb"))) _close(fd);
+		}
+	}
+#else
+	int output = -1;
+	for (unsigned i = 0; i < 64; i++)
+	{
+		snprintf(tmp, sizeof tmp, "%s.tmp-%lu-%u", name, (unsigned long)getpid(), i);
+		output = openat(dir.fd, tmp, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
+		if (output >= 0 || errno != EEXIST) break;
+	}
+	if (output >= 0)
+	{
+		int stream = dup(output);
+		if (stream >= 0 && !(o = fdopen(stream, "wb"))) close(stream);
+	}
+#endif
+	size_t k = strlen(key);
+	int ok = o != NULL, written = 0;
+	for (size_t at = 0; ok && at < len;)
+	{
+		char *l = t + at;
+		char *nl = (char *)memchr(l, '\n', len - at);
+		size_t n = nl ? (size_t)(nl - l + 1) : len - at;
+		if (n > k && !memcmp(l, key, k) && l[k] == '=')
 		{
 			if (!written && fprintf(o, "%s=%s\n", key, value) < 0) ok = 0;
 			written = 1;
 		}
 		else if (fwrite(l, 1, n, o) != n || (!nl && fputc('\n', o) == EOF))
 			ok = 0;
-		l += n;
+		at += n;
 	}
-	if (!written && fprintf(o, "%s=%s\n", key, value) < 0) ok = 0;
-	if (fflush(o) != 0 || ferror(o)) ok = 0;
+	if (ok && !written && fprintf(o, "%s=%s\n", key, value) < 0) ok = 0;
+	if (o && (fflush(o) != 0 || ferror(o))) ok = 0;
 #ifndef _WIN32
-	if (ok && fsync(fileno(o)) != 0) ok = 0;
+	if (ok && fsync(output) != 0) ok = 0;
+#else
+	if (ok && !FlushFileBuffers(output)) ok = 0;
 #endif
-	if (fclose(o) != 0) ok = 0;
+	if (o && fclose(o) != 0) ok = 0;
 	free(t);
 #ifdef _WIN32
-	if (ok && !MoveFileExA(tmp, ini, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) ok = 0;
+	if (ok)
+	{
+		WCHAR wide[4500];
+		snprintf(full, sizeof full, "%s\\%s", dir.path, name);
+		int n = MultiByteToWideChar(CP_ACP, 0, full, -1, wide, sizeof wide / sizeof wide[0]);
+		size_t size = offsetof(FILE_RENAME_INFO, FileName) + (n > 0 ? (size_t)n * sizeof(WCHAR) : 0);
+		FILE_RENAME_INFO *rename = n > 0 ? (FILE_RENAME_INFO *)calloc(1, size) : NULL;
+		if (!rename) ok = 0;
+		else
+		{
+			rename->ReplaceIfExists = TRUE;
+			rename->RootDirectory = NULL;
+			rename->FileNameLength = (DWORD)((n - 1) * sizeof(WCHAR));
+			memcpy(rename->FileName, wide, (size_t)n * sizeof(WCHAR));
+			if (!SetFileInformationByHandle(output, FileRenameInfo, rename, (DWORD)size)) ok = 0;
+			free(rename);
+		}
+	}
+	if (output != INVALID_HANDLE_VALUE)
+	{
+		if (!ok) { FILE_DISPOSITION_INFO remove = {TRUE}; SetFileInformationByHandle(output, FileDispositionInfo, &remove, sizeof remove); }
+		CloseHandle(output);
+	}
 #else
-	if (ok && rename(tmp, ini) != 0) ok = 0;
+	struct stat held, named;
+	int same = output >= 0 && fstat(output, &held) == 0 && fstatat(dir.fd, tmp, &named, AT_SYMLINK_NOFOLLOW) == 0 &&
+		held.st_dev == named.st_dev && held.st_ino == named.st_ino;
+	if (ok && (!same || renameat(dir.fd, tmp, dir.fd, name) != 0)) ok = 0;
+	if (!ok && same) unlinkat(dir.fd, tmp, 0);
+	if (output >= 0) close(output);
 #endif
-	if (!ok) remove(tmp);
+	ce_settings_dir_close(&dir);
 	return ok;
 }
 

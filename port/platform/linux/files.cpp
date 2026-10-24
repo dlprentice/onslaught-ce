@@ -13,8 +13,6 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-int PortCopyOnWrite(const char *game_path, char *out, size_t n);
-
 static DWORD ErrnoToWin32(int e)
 {
 	switch (e)
@@ -32,12 +30,23 @@ static DWORD ErrnoToWin32(int e)
 extern "C" FILE *port_fopen(const char *name, const char *mode)
 {
 	char path[4096];
-	bool writes = strpbrk(mode, "wa+") != NULL;
-	bool update = strchr(mode, 'r') && strchr(mode, '+');
-	int rc = writes ? (update || strchr(mode, 'a') ? PortCopyOnWrite(name, path, sizeof(path))
-												  : PortResolvePath(name, PORT_PATH_WRITE, path, sizeof(path)))
-					: PortResolvePath(name, PORT_PATH_READ, path, sizeof(path));
-	if (rc != 0)
+	// The first character selects the operation. LoadCardId uses "ra", which the CRT accepts as a read mode.
+	bool writes = mode[0] == 'w' || mode[0] == 'a' || strchr(mode, '+');
+	if (writes)
+	{
+		int flags = strchr(mode, '+') ? O_RDWR : O_WRONLY;
+		if (mode[0] == 'w') flags |= O_CREAT | O_TRUNC;
+		if (mode[0] == 'a') flags |= O_CREAT | O_APPEND;
+		if (strchr(mode, 'x')) flags |= O_EXCL;
+		int fd = PortOpenUserFile(name, flags, mode[0] == 'r' || mode[0] == 'a');
+		if (fd < 0)
+			return NULL;
+		FILE *f = fdopen(fd, mode);
+		if (!f)
+			close(fd);
+		return f;
+	}
+	if (PortResolvePath(name, PORT_PATH_READ, path, sizeof(path)) != 0)
 	{
 		errno = ENOENT;
 		return NULL;
@@ -58,10 +67,7 @@ extern "C" int port_access(const char *name, int mode)
 
 extern "C" int _mkdir(const char *name)
 {
-	char path[4096];
-	if (PortResolvePath(name, PORT_PATH_WRITE, path, sizeof(path)) != 0)
-		return -1;
-	return mkdir(path, 0755);
+	return PortMakeUserDirectory(name);
 }
 
 extern "C" int _chdir(const char *) { return 0; }
@@ -138,7 +144,7 @@ static void FindSort(PortFind *f)
 		}
 }
 
-static void FindScan(PortFind *f, const char *dir, const char *pattern)
+static void FindScan(PortFind *f, const char *dir, const char *pattern, const char *game_dir)
 {
 	DIR *d = opendir(dir);
 	if (!d)
@@ -150,6 +156,15 @@ static void FindScan(PortFind *f, const char *dir, const char *pattern)
 		char full[4096];
 		struct stat st;
 		snprintf(full, sizeof(full), "%s/%s", dir, e->d_name);
+		if (strcmp(e->d_name, ".") != 0 && strcmp(e->d_name, "..") != 0)
+		{
+			char logical[4096], selected[4096];
+			snprintf(logical, sizeof(logical), "%s/%s", game_dir, e->d_name);
+			// Use the load/save identity when listing too. In particular, two case-equivalent career files in one root
+			// are both refused; an ambiguous writable identity must not uncover a different original career.
+			if (PortResolvePath(logical, PORT_PATH_READ, selected, sizeof(selected)) != 0 || strcmp(selected, full) != 0)
+				continue;
+		}
 		if (stat(full, &st) == 0)
 			FindAdd(f, e->d_name, S_ISDIR(st.st_mode), (unsigned)st.st_size);
 	}
@@ -178,11 +193,15 @@ static PortFind *FindStart(const char *spec)
 		snprintf(pattern, sizeof(pattern), "*");
 	PortFind *f = (PortFind *)PortHandleNew(PORT_FIND, sizeof(PortFind));
 	char user[4096], game[4096];
-	PortResolvePath(dirpart, PORT_PATH_SHADOW, user, sizeof(user));
-	FindScan(f, user, pattern);
-	PortResolvePath(dirpart, PORT_PATH_READ, game, sizeof(game));
-	if (strcmp(game, user) != 0)
-		FindScan(f, game, pattern);
+	// An ambiguous writable directory (savegames and SAVEGAMES) blocks the logical search, including its fallback.
+	if (PortResolvePath(dirpart, PORT_PATH_READ, game, sizeof(game)) != 0)
+		return f;
+	bool have_user = PortResolvePath(dirpart, PORT_PATH_SHADOW, user, sizeof(user)) == 0;
+	if (have_user)
+		FindScan(f, user, pattern, dirpart);
+	// A normal read of the directory picks the writable directory when it exists, hiding the game folder's entries.
+	if (PortResolvePath(dirpart, PORT_PATH_GAME, game, sizeof(game)) == 0 && (!have_user || strcmp(game, user) != 0))
+		FindScan(f, game, pattern, dirpart);
 	FindSort(f);
 	return f;
 }
@@ -295,16 +314,10 @@ extern "C" HANDLE WINAPI CreateFileA(LPCSTR name, DWORD access, DWORD, LPSECURIT
 {
 	char path[4096];
 	bool write = (access & GENERIC_WRITE) != 0;
-	int rc;
-	if (!write)
-		rc = PortResolvePath(name, PORT_PATH_READ, path, sizeof(path));
-	else if (disposition == OPEN_EXISTING || disposition == OPEN_ALWAYS)
-		rc = PortCopyOnWrite(name, path, sizeof(path));
-	else
-		rc = PortResolvePath(name, PORT_PATH_WRITE, path, sizeof(path));
-	if (rc != 0)
+	// Creation and truncation cannot use a read-only path into the original folder.
+	if (!write && disposition != OPEN_EXISTING)
 	{
-		PortSetLastError(ERROR_PATH_NOT_FOUND);
+		PortSetLastError(ERROR_ACCESS_DENIED);
 		return INVALID_HANDLE_VALUE;
 	}
 	int flags = write ? ((access & GENERIC_READ) ? O_RDWR : O_WRONLY) : O_RDONLY;
@@ -316,7 +329,11 @@ extern "C" HANDLE WINAPI CreateFileA(LPCSTR name, DWORD access, DWORD, LPSECURIT
 	case TRUNCATE_EXISTING: flags |= O_TRUNC; break;
 	default: break;
 	}
-	int fd = open(path, flags, 0644);
+	int fd = -1;
+	if (write)
+		fd = PortOpenUserFile(name, flags, disposition == OPEN_EXISTING || disposition == OPEN_ALWAYS);
+	else if (PortResolvePath(name, PORT_PATH_READ, path, sizeof(path)) == 0)
+		fd = open(path, flags, 0644);
 	if (fd < 0)
 	{
 		PortSetLastError(ErrnoToWin32(errno));
@@ -422,8 +439,7 @@ extern "C" BOOL WINAPI GetOverlappedResult(HANDLE, LPOVERLAPPED, LPDWORD n, BOOL
 extern "C" BOOL WINAPI DeleteFileA(LPCSTR name)
 {
 	// Only the port's writable copy can go; a file that exists only in the game folder stays.
-	char path[4096];
-	if (PortResolvePath(name, PORT_PATH_WRITE, path, sizeof(path)) != 0 || unlink(path) != 0)
+	if (PortDeleteUserFile(name) != 0)
 	{
 		PortSetLastError(ERROR_FILE_NOT_FOUND);
 		return FALSE;
@@ -433,10 +449,7 @@ extern "C" BOOL WINAPI DeleteFileA(LPCSTR name)
 
 extern "C" BOOL WINAPI CreateDirectoryA(LPCSTR name, LPSECURITY_ATTRIBUTES)
 {
-	char path[4096];
-	if (PortResolvePath(name, PORT_PATH_WRITE, path, sizeof(path)) != 0)
-		return FALSE;
-	if (mkdir(path, 0755) != 0)
+	if (PortMakeUserDirectory(name) != 0)
 	{
 		PortSetLastError(ErrnoToWin32(errno));
 		return FALSE;

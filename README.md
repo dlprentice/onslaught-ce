@@ -1,5 +1,9 @@
 # Onslaught CE
 
+Status: active preview
+Last updated: 2026-10-24
+Summary: the native Battle Engine Aquila port, its installation requirements, download verification and source build.
+
 A native port of *Battle Engine Aquila*; you need your own copy.
 
 ## Quick start
@@ -10,9 +14,9 @@ A native port of *Battle Engine Aquila*; you need your own copy.
 2. Run `onslaught-ce` (Linux) or `onslaught-ce.exe` (Windows).
 3. It finds your Steam copy of *Battle Engine Aquila* by itself, or asks once where it is.
 
-Don't copy or replace anything in your game folder: Onslaught CE only reads it, and the original game keeps working as
-before. Your careers and settings are kept in `~/.local/share/onslaught-ce` (Linux) or `%APPDATA%\Onslaught CE`
-(Windows); delete the program folder to uninstall.
+Keep the program and its user folder separate from the original game. Careers and settings go to
+`$XDG_DATA_HOME/onslaught-ce` (Linux, or `~/.local/share/onslaught-ce` when unset) or
+`%APPDATA%\Onslaught CE` (Windows) by default; delete the program folder to uninstall. Keep recovery copies of your careers before changing save locations.
 
 Onslaught CE is a native port of *Battle Engine Aquila* (Lost Toys, 2003) for Linux (i686) and Windows (i686), built
 from the game's source code.
@@ -25,14 +29,12 @@ The source has three parts:
   executable's bytes when built with the original compiler.
 - **A platform layer**: SDL3, with dxvk-native on Linux and the system's Direct3D 9 on Windows.
 
-This is **version 0.1.3, a preview** (tag `v0.1.3`). In the main menu, the version text in the bottom-left corner
-(originally "V1.00") reads "Onslaught CE v0.1.3 (preview)". The Linux build now starts on older distributions (it
-needs glibc 2.29 instead of 2.44; the graphics driver is now the limit, see Linux below), session recordings take the
-menus' mouse and typed career names and play the game's sound, and on Windows 10 version 1903 or newer the Windows
-build works from user and game folders whose names have characters outside your Windows language's character set
-(tested under Wine). Otherwise the game plays as 0.1.2 did: the level replays used to check it give the same results
-on both versions, except that in level 521 one more game event is counted from the start of the level (one stomp
-explosion is shut down; see Known limitations).
+This is **version 0.1.4, a preview** (tag `v0.1.4`). The main menu shows "Onslaught CE v0.1.4 (preview)".
+This update combines original and CE careers in the Linux load menu, refuses ambiguous career names and unsafe
+linked write paths on Linux, and replaces CE settings through a checked temporary file on both platforms. With films
+disabled, ordinary CE play stays responsive at the idle title screen; faithful recording/replay keeps the original
+behavior. It also clarifies crash reports and the terminal hint after an update. See the release notes for the
+checks performed and remaining limits.
 
 ## In the game
 
@@ -63,14 +65,19 @@ rights holders; *Battle Engine Aquila* is a trademark of its owners.
 
 No game files are included. You need your own copy of *Battle Engine Aquila* for PC, for example from Steam.
 
-- Onslaught CE runs from its own folder and reads the game's data from your installation. It writes nothing into your
-  installation.
+- Onslaught CE runs from its own folder and reads the game's data from your installation. Its default user folder
+  keeps careers and settings separate from that installation.
 - The `onslaught-ce` launcher finds Steam installs automatically. On Linux it looks in Steam library folders and in
   native, `~/.steam` and Flatpak Steam installs. On Windows it uses Steam's library folders and the registry. If it
   can't find an install, it asks you once to pick the game folder. To choose the folder yourself, set `BEA_GAME_DIR`.
 - Saves and settings are stored in:
-  - Linux: `~/.local/share/onslaught-ce`
+  - Linux: `$XDG_DATA_HOME/onslaught-ce`, or `~/.local/share/onslaught-ce` when unset
   - Windows: `%APPDATA%\Onslaught CE`
+
+`BEA_USER_DIR` overrides that location. Use a separate ordinary directory, not the game folder or a link into it.
+The settings writer refuses linked parent paths; the Linux save writer also refuses linked and hard-linked write
+targets. These checks do not make arbitrary redirected folders safe on every platform. Original-install careers
+remain available in the load menu, with a same-named CE career taking precedence.
 
 **Supported edition.** The launcher accepts an install whose two mission data files match the SHA-256 hashes in
 `config/game-data.sha256`, which come from the Steam edition. Other editions can have different files and may be
@@ -80,6 +87,29 @@ refused, please [open an issue](https://github.com/dlprentice/onslaught-ce/issue
 ## Download and install
 
 Download a build from this repository's [Releases](https://github.com/dlprentice/onslaught-ce/releases) page.
+
+### Verify a download (optional)
+
+Download `ASSETS.txt` from the same release into the folder containing your package. It lists each file's SHA-256,
+byte size and name; releases before 0.1.2 omit the size. It is not directly a `sha256sum --check` file.
+In Bash on Linux, this command handles either form and checks just the package you name (change `package` to your
+download's filename). A successful check prints that filename followed by `OK` and exits zero. A missing entry,
+missing file, malformed list or changed download fails the check.
+
+```bash
+package=onslaught-ce-0.1.4-linux-i686.tar.gz
+set -o pipefail
+awk -v package="$package" '
+  /^[[:space:]]*$/ || /^Onslaught CE / || /^Source: / { next }
+  length($1) == 64 && $1 ~ /^[0-9a-f]+$/ && (NF == 2 || (NF == 3 && $2 ~ /^[0-9]+$/)) {
+    if (seen[$NF]++) exit 1
+    if ($NF == package) { found++; print $1 "  " $NF }
+    next
+  }
+  { exit 1 }
+  END { if (found != 1) exit 1 }
+' ASSETS.txt | sha256sum --check --strict -
+```
 
 ### Linux
 
@@ -136,8 +166,9 @@ The 32-bit libraries by distribution family (plus your GPU's 32-bit Vulkan drive
 
 ### Windows
 
-So far the Windows build has been tested only under Wine on Linux, not on real Windows (see Known limitations). Please
-report any problems.
+The Windows build has been checked under Wine on Linux and on a Windows 11 virtual machine using Microsoft's
+software renderer. It has not yet been tested on a Windows PC with a real graphics card and its driver. Please
+report any problems; see Known limitations and the release notes for the routes checked.
 
 1. Extract the zip and run the `onslaught-ce.exe` launcher. The zip also contains `bea.exe` and the SDL3, FFmpeg and
    zlib DLLs.
@@ -154,7 +185,7 @@ report any problems.
   `ce.ini` (`gamedir`); if the game moves, it logs why the remembered folder no longer works and searches again, or
   set `BEA_GAME_DIR` to the new folder.
 - **Uninstall:** delete the program folder. To remove your careers and settings too, delete your user folder
-  (`~/.local/share/onslaught-ce` or `%APPDATA%\Onslaught CE`). Your game folder was never changed.
+  (`~/.local/share/onslaught-ce` or `%APPDATA%\Onslaught CE`). Keep any careers you want before deleting that folder.
 
 ## Updates and privacy
 
@@ -239,8 +270,12 @@ of the tutorial (through its third zone; the final drone fight is still being co
 
 ## Known limitations
 
-- The Windows build has been tested only under Wine on Linux, not on real Windows. The Windows self-update path in
-  particular is untested on real Windows. Please report any problems.
+- Windows checks cover Wine and one Windows 11 virtual machine using Microsoft's software renderer, not a PC with
+  a real graphics card. During the 0.1.3 release checks, that VM updated 0.1.2 to 0.1.3, restarted, and the installed
+  files matched the published package. An earlier attempt fetched no feed; a later retry succeeded. The
+  [release notes](https://github.com/dlprentice/onslaught-ce/releases/latest) describe the tested routes and known
+  limitations. The ordinary-play idle-title hang with disabled films is fixed in 0.1.4; faithful replay retains
+  retail behavior. Please report problems with the log.
 - The Windows executable is unsigned, so SmartScreen may warn you (see above).
 - On Linux you need glibc 2.29 or newer and a 32-bit Vulkan 1.3 graphics driver with dxvk's required extensions (see
   Linux above). It was run in Ubuntu 24.04 and Debian 12 (with backported Mesa) file systems and in the Steam Linux
@@ -272,12 +307,16 @@ their hashes, `config/game-data.sha256`; set `BEA_GAME_DIR` if the game is not i
 
 ```sh
 python3 port/tools/deps.py build                   # the pinned toolchains, libraries and Linux sysroot, checked by SHA-256
-python3 port/build.py --public --target linux --ce-version 0.1.3
-python3 port/build.py --public --target windows --ce-version 0.1.3
+python3 port/build.py --public --target linux --ce-version 0.1.4
+python3 port/build.py --public --target windows --ce-version 0.1.4
 ```
 
 `--ce-version` sets the version the menu, `--version` and the update check show; without it the build calls itself
-"vdev".
+"vdev". It also sets the Windows launcher's file and product version strings. Their numeric fields use one to four
+release-number parts, each from 0 to 65535; `-prerelease` and `+build` suffixes stay in the strings. Named development
+builds such as `dev` use numeric 0.0.0.0. The game's `bea.exe` keeps its separate retail 1.0.0.0 resource.
+
+`python3 port/tools/build_tests.py` checks launcher version parsing and resource linking without building the game.
 
 - `port/deps.lock` pins every downloaded input by URL and SHA-256.
 - One input comes prebuilt: libvorbis, built with the game's original compiler. It is fetched from this repository's

@@ -60,10 +60,15 @@ void PortSetLastError(DWORD e);
 // Reads look in the port's writable folder first, then the player's game folder; writes always go to the writable
 // folder, so the player's install is never modified. Resolve returns 0 and fills out (a host path) or -1.
 // PORT_PATH_SHADOW: where a write would go, without creating anything (searches use it).
-enum PortPathMode { PORT_PATH_READ, PORT_PATH_WRITE, PORT_PATH_SHADOW };
+// PORT_PATH_GAME: the game-folder copy only, without creating anything (the other half of a merged search).
+enum PortPathMode { PORT_PATH_READ, PORT_PATH_WRITE, PORT_PATH_SHADOW, PORT_PATH_GAME };
 int PortResolvePath(const char *game_path, PortPathMode mode, char *out, size_t n);
 void PortPathsInit();
 const char *PortGameDir();
 const char *PortUserDir();
+// Writable operations return/retain descriptors beneath the user root; no caller reopens a checked host path.
+int PortOpenUserFile(const char *game_path, int flags, bool copy_original);
+int PortDeleteUserFile(const char *game_path);
+int PortMakeUserDirectory(const char *game_path);
 
 #endif

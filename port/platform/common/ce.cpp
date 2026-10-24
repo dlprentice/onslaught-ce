@@ -157,22 +157,6 @@ extern "C" int CE_SettingSet(const char *key, int value)
 {
 	char path[4200];
 	ce_ini_path(path, sizeof(path));
-	char user[4096];
-	ce_user_dir(user, sizeof(user));
-#ifdef _WIN32
-	CreateDirectoryA(user, NULL);
-#else
-	char mk[4200];
-	snprintf(mk, sizeof(mk), "%s", user);
-	for (char *p = mk + 1; *p; p++)		// the folder and its parents, as the launcher makes them
-		if (*p == '/')
-		{
-			*p = 0;
-			mkdir(mk, 0755);
-			*p = '/';
-		}
-	mkdir(mk, 0755);
-#endif
 	char v[16];
 	snprintf(v, sizeof(v), "%d", value);
 	if (!ce_ini_write(path, key, v))
