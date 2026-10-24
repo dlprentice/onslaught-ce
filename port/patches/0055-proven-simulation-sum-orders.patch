@@ -1,0 +1,56 @@
+--- a/maths.h
++++ b/maths.h
+@@ -106,6 +106,11 @@
+ 	// terms cost inline budget, and the cheaper test keeps CDXFrontEnd::RenderParticles (00540c30) inlining
+ 	// SetLightEnable(2) as retail does.
+ 	void	Normalise() { float m = sqrtf((X * X) + (Y * Y) + (Z * Z)); if (m) { m = 1.0f / m; X *= m; Y *= m; Z *= m; } }
++	// Port (patch 0055): selected retail inline sites group Y/Z before X at x87 precision 24.
++	// Use these only at individually traced sites; other callers keep their original grouping.
++	float	MagnitudeYZX() const { return sqrtf(((Y * Y) + (Z * Z)) + (X * X)); }
++	void	NormaliseYZX() { float m = sqrtf(((Y * Y) + (Z * Z)) + (X * X)); if (m) { m = 1.0f / m; X *= m; Y *= m; Z *= m; } }
++	float	DotYZX(const FVector &a) const { return ((Y * a.Y) + (Z * a.Z)) + (X * a.X); }
+ 	// Stuart's names; decoded from the inline copies in CGame::ToggleFreeCameraOn (0047046d..004704d8).
+ 	// VC6's float wrapper preserves the operand setup in CInfantryUnit::Init (00488c3d..00488c43) and
+ 	// the scheduling boundary before CPanCamera::Update's final matrix copy (00419ce5..00419d03).
+--- a/BattleEngine.cpp
++++ b/BattleEngine.cpp
+@@ -3106,10 +3106,11 @@
+ 			FVector		mapNormal=MAP.Normal(mPos);
+ 			FVector		velocity=mVelocity;
+ 
+-			mapNormal.Normalise();
+-			velocity.Normalise();
+-
+-			float		cosSurface=mapNormal*velocity;
++			// Retail 0040c80a..0040c898 normalises Y/Z first; 0040c8cd..0040c8ee uses the same dot grouping.
++			mapNormal.NormaliseYZX();
++			velocity.NormaliseYZX();
++
++			float		cosSurface=mapNormal.DotYZX(velocity);
+ 			cosSurface*=cosSurface;
+ 
+ 			Damage(sqrtf(velocitySq)*16*cosSurface,NULL,FALSE);
+--- a/explosion.cpp
++++ b/explosion.cpp
+@@ -191,7 +191,8 @@
+ 
+ 	SINT	n = 0;
+ 	BOOL	parts = FALSE;
+-	float	dist = (mPos - other_thing->GetPos()).Magnitude() - other_thing->GetRadius();
++	// Retail 0044bf77..0044bf93: square Z/Y, add them, then add X squared before sqrt.
++	float	dist = (mPos - other_thing->GetPos()).MagnitudeYZX() - other_thing->GetRadius();
+ 
+ 	if ((other_thing->IsA(THING_TYPE_UNIT)) && (((CUnit *)other_thing)->mSegments) && (report->mUnknown00) && (report->mNumContacts > 0))
+ 		parts = TRUE;
+--- a/Round.cpp
++++ b/Round.cpp
+@@ -170,7 +170,8 @@
+ 			FVector	start = GetPos();
+ 			float	speed = GetVelocity().Magnitude() * GAME_FR;
+ 			FVector	dir = GetVelocity();
+-			dir.Normalise();
++			// Retail 004d8848..004d8864: (Y squared + Z squared) + X squared.
++			dir.NormaliseYZX();
+ 			CLine	line(start, start + dir * (speed * rinit->mLifeSpan));
+ 			FVector	hit;
+ 			if (MAP.Unknown490a40(&line, &hit, 1))

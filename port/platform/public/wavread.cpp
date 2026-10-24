@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // port/platform/public/wavread.cpp: the RIFF/WAVE reader (WavRead.h), written for the public build in place of
-// src/wavread.cpp. It behaves as the game's reader does: the same multimedia I/O calls in the same order, the format
-// allocated from the game's sound memory (a PCM format as a bare WAVEFORMATEX, any other with its extra bytes), and
-// samples copied from the "data" chunk through the file's I/O buffer.
+// src/wavread.cpp. It reads RIFF chunks through multimedia I/O, allocates the format from the game's sound memory
+// (a PCM format as a bare WAVEFORMATEX, any other with its extra bytes), and copies samples from the "data" chunk
+// through the file's I/O buffer.
+// The public reader owns only a successfully opened handle: unopened destruction, repeated Close and failed/repeated
+// Open are safe. This corrects the inherited lifetime bug without changing the byte-matching reader in src/.
 #include "common.h"
 #include "Platform.h"
 #include "WavRead.h"
@@ -72,6 +74,7 @@ HRESULT LoadFormat(HMMIO file, MMCKINFO *riff, WAVEFORMATEX **format)
 CWaveSoundRead::CWaveSoundRead()
 {
 	m_pwfx = NULL;
+	m_hmmioIn = NULL;
 }
 
 CWaveSoundRead::~CWaveSoundRead()
@@ -82,6 +85,7 @@ CWaveSoundRead::~CWaveSoundRead()
 
 HRESULT CWaveSoundRead::Open(CHAR *name)
 {
+	Close();
 	SAFE_DELETE(m_pwfx);
 
 	HMMIO	file = mmioOpen(ToTCHAR(name), NULL, MMIO_ALLOCBUF | MMIO_READ);
@@ -94,12 +98,20 @@ HRESULT CWaveSoundRead::Open(CHAR *name)
 		return hr;
 	}
 	m_hmmioIn = file;
-	return Reset();
+	hr = Reset();
+	if (FAILED(hr))
+	{
+		Close();
+		SAFE_DELETE(m_pwfx);
+	}
+	return hr;
 }
 
 // Back to the first sample: seek past the RIFF chunk's form type and find the "data" chunk.
 HRESULT CWaveSoundRead::Reset()
 {
+	if (!m_hmmioIn)
+		return E_FAIL;
 	if (mmioSeek(m_hmmioIn, m_ckInRiff.dwDataOffset + sizeof(FOURCC), SEEK_SET) == -1)
 		return E_FAIL;
 	m_ckIn.ckid = mmioFOURCC('d', 'a', 't', 'a');
@@ -112,6 +124,8 @@ HRESULT CWaveSoundRead::Reset()
 HRESULT CWaveSoundRead::Read(UINT bytes, BYTE *out, UINT *got)
 {
 	*got = 0;
+	if (!m_hmmioIn)
+		return E_FAIL;
 	MMIOINFO	io;
 	if (mmioGetInfo(m_hmmioIn, &io, 0) != 0)
 		return E_FAIL;
@@ -136,6 +150,11 @@ HRESULT CWaveSoundRead::Read(UINT bytes, BYTE *out, UINT *got)
 
 HRESULT CWaveSoundRead::Close()
 {
-	mmioClose(m_hmmioIn, 0);
+	if (m_hmmioIn)
+	{
+		HMMIO file = m_hmmioIn;
+		m_hmmioIn = NULL;
+		mmioClose(file, 0);
+	}
 	return S_OK;
 }

@@ -1,7 +1,7 @@
 # Onslaught CE launcher and updater
 
 Status: active (public builds only)
-Last updated: 2026-10-23 (session tape 2: the menus' mouse, typed text; the audio monitor)
+Last updated: 2026-10-24 (preserve redirected Windows launcher output)
 Summary: how the public build's launcher finds the game, checks the signed release feed and updates itself.
 
 `ce_launch.c` builds as `onslaught-ce-launch` (Linux, started by the `onslaught-ce` script after `preflight.sh`) and
@@ -48,7 +48,9 @@ name, as a path component anywhere else, `<user>`; the launcher's own lines say 
 restarts the launcher (`BEA_CE_LOG_CONTINUE`, set only for that restart), the new launcher continues the same log, so the
 run before it stays in `onslaught-ce.old.log`. While `BEA_PORT_TAPE` or `BEA_PORT_RECORD` is set as the launcher starts
 (a replay, or the test harness's recording), it writes no log, checks for no update and sets nothing for the CE layer. A Ctrl+C reaches the game; SIGTERM and SIGHUP sent to the launcher are passed on.
-On Windows the launcher attaches to the console it was started from, if any, for the terminal copy. On both, the launcher
+On Windows the launcher attaches to the console it was started from, if any, for the terminal copy. Inherited output
+pipes, files and `NUL` keep their destinations: attaching must not redirect a tool's `--version` response or errors
+to the console instead. On both, the launcher
 stops reading once the game has exited and its last output is read, even if a program the game started (a browser) still
 holds the pipe.
 
@@ -92,6 +94,19 @@ The main menu's Onslaught CE page (port/game/ce_frontend.cpp) calls the same pag
 public builds only; it does nothing where the CE layer is off). Nothing is sent: the player submits the issue or not.
 The issue template is `public/.github/ISSUE_TEMPLATE/bug_report.md`, exported to the repository's `.github/` with
 `config.yml` beside it (a link to the security advisory form); the body above repeats the template's sections.
+
+## Windows output regression check
+
+`tests/launcher_stdio_driver.c` exercises the actual Windows launcher with redirected pipes, files and a mixed
+console/pipe setup, both with and without a parent console. It checks `--version` and a deliberately invalid private
+settings path, so no game, network request or player profile is needed. Build the driver with the pinned Windows
+toolchain and run it beside the candidate's dependencies:
+
+    i686-w64-mingw32-clang -std=c11 -Wall -Wextra -Werror port/updater/tests/launcher_stdio_driver.c -o launcher_stdio_driver.exe
+    launcher_stdio_driver.exe path\to\onslaught-ce.exe
+
+Native Windows validation is required; running the same check under Wine is a separate result. The driver briefly
+allocates its own console, so automated checks belong in an isolated test desktop or VM.
 
 ## Releasing
 

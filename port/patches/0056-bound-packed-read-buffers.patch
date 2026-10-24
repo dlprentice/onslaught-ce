@@ -1,0 +1,54 @@
+--- a/DXMemBuffer.cpp
++++ b/DXMemBuffer.cpp
+@@ -146,17 +146,28 @@
+ 		DWORD got, packed;
+ 		while (ReadFile(file, &packed, 4, &got, NULL) && got == 4)
+ 		{
++			// The compressed scratch buffer and caller-owned output have different capacities.
++			if (!packed || packed > sizeof gPackBuffer || *read >= size)
++			{
++				SetLastError(ERROR_INVALID_DATA);
++				return FALSE;
++			}
+ 			if (!ReadFile(file, gPackBuffer, packed, &got, NULL) || got != packed)
+ 				return ok;
+ 
+-			DWORD len = PACK_BUFFER_SIZE;
++			// Optimized zlib stores may use all of destLen, including slack after logical output.
++			// Advertise only the remaining allocation, not the compressed scratch capacity.
++			DWORD len = size - *read;
+ 			if (uncompress((unsigned char *)dest, &len, gPackBuffer, packed) != 0)
++			{
++				SetLastError(ERROR_INVALID_DATA);
+ 				return FALSE;
++			}
+ 
+ 			*read += len;
+ 			dest += len;
+ 			ok = TRUE;
+-			if (*read >= mNextReadBufferSize)
++			if (*read >= size)
+ 				return ok;
+ 		}
+ 		return ok;
+@@ -188,6 +199,11 @@
+ 			DWORD packed, got;
+ 			if (!ReadFile(file, &packed, 4, &got, NULL) || got != 4)
+ 				return 0;
++			if (!packed || packed > sizeof gPackBuffer)
++			{
++				SetLastError(ERROR_INVALID_DATA);
++				return 0;
++			}
+ 			if (!ReadFile(file, gPackBuffer, packed, &got, NULL) || got != packed)
+ 				return 0;
+ 			pos -= READ_MEM_BUFFER_SIZE;
+@@ -324,7 +340,7 @@
+ //******************************************************************************************
+ void	CDXMemBuffer::LoadNextBlock()
+ {
+-	if (!ReadBlock(mFileName, mFile, mData, mNextReadBufferSize, (DWORD *)&mDataSize))
++	if (!ReadBlock(mFileName, mFile, mData, mSize, (DWORD *)&mDataSize))
+ 	{
+ 		// failed.
+ 		how_bad_is_that(mFileName);

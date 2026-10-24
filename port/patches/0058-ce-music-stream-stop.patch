@@ -1,0 +1,167 @@
+--- a/PCMusicStream.cpp
++++ b/PCMusicStream.cpp
+@@ -38,6 +38,24 @@
+ void	StopMusicStream();
+ bool	PortClockVirtual();				// Port (patch 0035): port/platform/common/clock.cpp
+ static int	MusicStreamHandle(DWORD result);
++#ifdef CE_VERSION
++bool PortCeLayer();
++static bool sCeStreamAdmission, sCeStreamLockReady;
++static bool sCeStreamPending, sCeStreamStopped;
++static CRITICAL_SECTION sCeStreamLock;
++
++// Port (patch 0058): requests and the whole worker operation share one recursive lock. Stop waits for an in-flight
++// open/fill, then returns with no start left to run. The worker itself calls Stop on EOF/error, hence recursion.
++class CPortMusicStreamGuard
++{
++	bool mLocked;
++public:
++	CPortMusicStreamGuard() : mLocked(sCeStreamLockReady)
++	{ if (mLocked) EnterCriticalSection(&sCeStreamLock); }
++	~CPortMusicStreamGuard()
++	{ if (mLocked) LeaveCriticalSection(&sCeStreamLock); }
++};
++#endif
+ void	PumpMusicStream();
+ 
+ // Tests HasFormat's result as a bool (test al,al, 00528007) though both readers return BOOL: this file saw a bool
+@@ -69,6 +87,23 @@
+ // run (with a thread it depended on when the thread ran: level 221's music changed track at Present 9098 or 9099).
+ static int	MusicStreamHandle(DWORD result)
+ {
++#ifdef CE_VERSION
++	CPortMusicStreamGuard guard;
++	if (sCeStreamLockReady)
++	{
++		if (result == 0)
++		{
++			// A wake may have consumed its auto-reset event before Stop acquired the lock. Only a pending request
++			// authorizes a start; a later request may be served by this wake, and its event must then be cleared too.
++			if (!sCeStreamPending) return 0;
++			sCeStreamPending = false;
++			sCeStreamStopped = false;
++			ResetEvent(sPlayEvent);
++		}
++		else if ((result == 1 || result == 2) && (sCeStreamStopped || sCeStreamPending))
++			return 0; // a consumed refill from the stopped/replaced track cannot cancel the new request
++	}
++#endif
+ 	DWORD	offset;
+ 	void	*data1, *data2;
+ 	DWORD	size1, size2;
+@@ -154,6 +189,10 @@
+ // Near miss: statement and local-layout order of the buffer description not yet reproduced.
+ void	InitMusicStream()	// FUNCTION: 0x005282b0
+ {
++#ifdef CE_VERSION
++	// Cache admission on the main thread before creating a worker. Faithful/private paths retain their behavior.
++	sCeStreamAdmission = PortCeLayer();
++#endif
+ 	WAVEFORMATEX		wfx;
+ 	DSBUFFERDESC		desc;
+ 	IDirectSoundNotify	*notify;
+@@ -177,6 +216,16 @@
+ 		DWORD	id;
+ 
+ 		SOUND.GetDirectSound()->CreateSoundBuffer(&desc, &sBuffer, NULL);
++#ifdef CE_VERSION
++		if (sCeStreamAdmission)
++		{
++			if (!sBuffer) return;
++			InitializeCriticalSection(&sCeStreamLock);
++			sCeStreamPending = false;
++			sCeStreamStopped = true;
++			sCeStreamLockReady = true;
++		}
++#endif
+ 		sFirstHalfEvent = CreateEvent(NULL, FALSE, FALSE, NULL);
+ 		sSecondHalfEvent = CreateEvent(NULL, FALSE, FALSE, NULL);
+ 		sQuitEvent = CreateEvent(NULL, FALSE, FALSE, NULL);
+@@ -210,6 +259,9 @@
+ 	{
+ 		DWORD	code;
+ 
++#ifdef CE_VERSION
++		if (sCeStreamLockReady) StopMusicStream(); // releases its guard before the worker is joined below
++#endif
+ 		SetEvent(sQuitEvent);
+ 		if (sThread)			// Port (patch 0035): no thread ran under the virtual clocks
+ 			do
+@@ -236,6 +288,13 @@
+ 		memset(sTrackName, 0, sizeof(sTrackName));
+ 		sSilentHalves = 0;
+ 	}
++#ifdef CE_VERSION
++	if (sCeStreamLockReady)
++	{
++		sCeStreamLockReady = false;
++		DeleteCriticalSection(&sCeStreamLock);
++	}
++#endif
+ }
+ 
+ //******************************************************************************************
+@@ -243,17 +302,29 @@
+ // _mbsnbcpy 0055f807).
+ void	PlayMusicStream(char *filename)	// FUNCTION: 0x00528540
+ {
++#ifdef CE_VERSION
++	CPortMusicStreamGuard guard;
++#endif
+ 	if (sBuffer)
+ 	{
+ 		DWORD	status;
+ 		sBuffer->GetStatus(&status);
++#ifdef CE_VERSION
++		// A stale consumed wake can leave sThreadAwake set after Stop. It must not suppress a legitimate restart.
++		bool requested = sCeStreamLockReady ? sCeStreamPending : (sThreadAwake && (sWaitResult == 0));
++		if ((status & (DSBSTATUS_PLAYING | DSBSTATUS_LOOPING)) || requested)
++#else
+ 		if ((status & (DSBSTATUS_PLAYING | DSBSTATUS_LOOPING)) || (sThreadAwake && (sWaitResult == 0)))
++#endif
+ 		{
+ 			if (!_tcsicmp(filename, sTrackName))
+ 				return;
+ 		}
+ 		_tcsncpy(sTrackName, filename, 255);
+ 		MUSIC_STREAM_FINISHED = false;
++#ifdef CE_VERSION
++		if (sCeStreamLockReady) sCeStreamPending = true;
++#endif
+ 		SetEvent(sPlayEvent);
+ 		PumpMusicStream();		// Port (patch 0035): under the virtual clocks, start it now
+ 	}
+@@ -288,11 +359,23 @@
+ //******************************************************************************************
+ void	StopMusicStream()	// FUNCTION: 0x005285b0
+ {
++#ifdef CE_VERSION
++	CPortMusicStreamGuard guard;
++	if (sCeStreamLockReady)
++	{
++		sCeStreamPending = false;
++		sCeStreamStopped = true;
++	}
++#endif
+ 	if (sBuffer)
+ 	{
+ 		sBuffer->Stop();
+ 		ResetEvent(sFirstHalfEvent);
+ 		ResetEvent(sSecondHalfEvent);
++#ifdef CE_VERSION
++		if (sCeStreamLockReady) ResetEvent(sPlayEvent);
++		else
++#endif
+ 		ResetEvent((HANDLE)PlayMusicStream);		// sic: retail resets the function's address (005285d7)
+ 	}
+ }
+@@ -300,6 +383,9 @@
+ //******************************************************************************************
+ void	SetMusicStreamVolume(float volume)	// FUNCTION: 0x005285e0
+ {
++#ifdef CE_VERSION
++	CPortMusicStreamGuard guard;
++#endif
+ 	if (sBuffer)
+ 	{
+ 		if (volume < 0.f)

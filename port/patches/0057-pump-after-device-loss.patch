@@ -1,0 +1,35 @@
+--- a/ltshell.cpp
++++ b/ltshell.cpp
+@@ -766,7 +766,10 @@
+ 		{
+ 			// If the device was lost, do not render until we get it back
+ 			if( D3DERR_DEVICELOST == hr )
++			{
+ 				cant_proc = TRUE;
++				Sleep(10); // Port: yield while unavailable; the next iteration still pumps window events.
++			}
+ 
+ 			// Check if the device needs to be resized.
+ 			if( D3DERR_DEVICENOTRESET == hr )
+@@ -903,18 +906,9 @@
+     }
+ 	*/
+     // Show the frame on the primary surface.
+-    if (m_pd3dDevice->Present( NULL, NULL, NULL, NULL ) == D3DERR_DEVICELOST)
+-	{
+-		// retail: wait for the device to come back, then ask for a display reset
+-		while (TRUE)
+-		{
+-			HRESULT hr = LT.m_pd3dDevice->TestCooperativeLevel();
+-			if (SUCCEEDED(hr))
+-				break;
+-			Sleep(100);
+-		}
+-		gDisplayResetState = 1;
+-	}
++    // Port: fullscreen focus loss needs messages pumped and then Reset on DEVICENOTRESET. Waiting here for
++    // success prevents both. HandlingSystemStuff owns recovery, without loading-screen Presents during teardown.
++    m_pd3dDevice->Present( NULL, NULL, NULL, NULL );
+ }
+ 
+ //-----------------------------------------------------------------------------

@@ -318,7 +318,8 @@ WPARAM MouseButtons()
 // so a lost key-up leaves a key held until it is pressed again. The port remembers every key it posted down (by the PC
 // scan code the message carries) and makes sure each gets its key-up: the real one, or a synthetic one when SDL reports
 // the key up without an event the port saw (Reconcile), when the window loses focus, or after a dropped message.
-// Only the player's keys are tracked: a tape's keys are posted by replay.cpp, and record mode sends keys to the tape.
+// Only the player's keys are tracked: a replay's keys are posted by replay.cpp. In record mode both real and synthetic
+// releases go through the recorder, so the captured tape and the game receive the same release at the next Present.
 struct HeldKey
 {
 	bool down;
@@ -353,7 +354,10 @@ void SyntheticKeyUp(unsigned scan, const char *why)
 	if (InputLog())
 		fprintf(stderr, PORT_LOG_PREFIX "input: synthetic key up scan %03x vk %02x (%s) (%s)\n", scan, k.vk,
 				SDL_GetScancodeName(k.sdl), why);
-	Post(MainWindow(), WM_KEYUP, k.vk, KeyLParam(scan, true, false));
+	if (PortRecording())
+		PortRecordKey(false, k.vk, scan);
+	else
+		Post(MainWindow(), WM_KEYUP, k.vk, KeyLParam(scan, true, false));
 	k.down = false;
 	k.released = true;
 	gHeld--;
@@ -404,19 +408,9 @@ void KeyEvent(const SDL_KeyboardEvent &e, HWND h)
 		fprintf(stderr, PORT_LOG_PREFIX "input: SDL key %s%s %s scancode %d keycode %08x mod %04x -> vk %02x scan %03x\n",
 				down ? "down" : "up", e.repeat ? " (repeat)" : "", SDL_GetScancodeName(e.scancode), (int)e.scancode,
 				(unsigned)e.key, (unsigned)e.mod, vk, scan);
-	if (PortRecording())
-	{
-		// record mode: keys go to the tape and arrive at the next Present, as a tape's (no repeats); a key-down's
-		// character, the WM_CHAR posted below in live play, follows its key as a C line
-		if (vk && !e.repeat)
-		{
-			PortRecordKey(down, vk, scan);
-			if (down)
-				if (unsigned c = KeyChar(vk, e.scancode, e.mod))
-					PortRecordChar(c, scan);
-		}
-		return;
-	}
+	bool recording = PortRecording();
+	if (recording && e.repeat)
+		return; // Tapes contain transitions, not the operating system's key repeat.
 	HeldKey *k = scan ? &gKeys[scan] : NULL;
 	if (down)
 	{
@@ -427,7 +421,10 @@ void KeyEvent(const SDL_KeyboardEvent &e, HWND h)
 			return;
 		}
 		LPARAM l = KeyLParam(scan, false, e.repeat);
-		Post(h, WM_KEYDOWN, vk, l);
+		if (recording)
+			PortRecordKey(true, vk, scan);
+		else
+			Post(h, WM_KEYDOWN, vk, l);
 		if (k)
 		{
 			if (!k->down)
@@ -438,13 +435,21 @@ void KeyEvent(const SDL_KeyboardEvent &e, HWND h)
 			k->sdl = e.scancode;
 		}
 		if (unsigned c = KeyChar(vk, e.scancode, e.mod))
-			Post(h, WM_CHAR, c, l);
+		{
+			if (recording)
+				PortRecordChar(c, scan);
+			else
+				Post(h, WM_CHAR, c, l);
+		}
 		return;
 	}
 	// A key-up: always for a key the port posted down (with the virtual key it went down with), never twice.
 	if (k && k->down)
 	{
-		Post(h, WM_KEYUP, k->vk, KeyLParam(scan, true, false));
+		if (recording)
+			PortRecordKey(false, k->vk, scan);
+		else
+			Post(h, WM_KEYUP, k->vk, KeyLParam(scan, true, false));
 		k->down = false;
 		gHeld--;
 	}
@@ -454,7 +459,13 @@ void KeyEvent(const SDL_KeyboardEvent &e, HWND h)
 			fprintf(stderr, PORT_LOG_PREFIX "input: key up %s not posted (already released)\n", SDL_GetScancodeName(e.scancode));
 	}
 	else if (vk)
-		Post(h, WM_KEYUP, vk, KeyLParam(scan, true, false));	// a key that went down before the port saw it
+	{
+		// A key that went down before the port saw it.
+		if (recording)
+			PortRecordKey(false, vk, scan);
+		else
+			Post(h, WM_KEYUP, vk, KeyLParam(scan, true, false));
+	}
 	else if (InputLog())
 		fprintf(stderr, PORT_LOG_PREFIX "input: key up %s dropped (no virtual key, not held)\n", SDL_GetScancodeName(e.scancode));
 	if (k)
@@ -634,9 +645,9 @@ void Pump()
 			break;
 		case SDL_EVENT_WINDOW_FOCUS_LOST:
 			if (InputLog()) fprintf(stderr, PORT_LOG_PREFIX "input: focus lost\n");
+			ReleaseAll("focus lost");
 			if (PortRecording())
 				break;	// a tape has no focus changes
-			ReleaseAll("focus lost");
 			Post(h, WM_ACTIVATEAPP, FALSE, 0);
 			Post(h, WM_ACTIVATE, 0, 0);
 			break;
@@ -651,6 +662,18 @@ void Pump()
 		case SDL_EVENT_WINDOW_MINIMIZED:
 			Post(h, WM_SIZE, SIZE_MINIMIZED, 0);
 			break;
+		case SDL_EVENT_WINDOW_RESTORED:
+		case SDL_EVENT_WINDOW_MAXIMIZED:
+		{
+			// A same-size restore need not produce a resize event. The game's WM_SIZE handler is what makes it
+			// active again after minimization; focus messages alone leave its message loop waiting forever.
+			int width = 0, height = 0;
+			if (SDL_Window *w = Sdl(h))
+				SDL_GetWindowSizeInPixels(w, &width, &height);
+			Post(h, WM_SIZE, e.type == SDL_EVENT_WINDOW_MAXIMIZED ? SIZE_MAXIMIZED : SIZE_RESTORED,
+				 MAKELPARAM(width, height));
+			break;
+		}
 		case SDL_EVENT_KEY_DOWN:
 		case SDL_EVENT_KEY_UP:
 			KeyEvent(e.key, h);

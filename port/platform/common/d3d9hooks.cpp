@@ -101,7 +101,23 @@ void DesktopFullscreen(HWND focus, D3DPRESENT_PARAMETERS *pp)
 		return;
 	}
 #ifdef _WIN32
-	return;						// Windows' own Direct3D 9 switches modes, as for retail
+	// Direct3D switches the display mode and expands the native window, but SDL still owns its client rectangle.
+	// A borderless, nonresizable SDL window constrains that rectangle to its last SDL size (WM_NCCALCSIZE). The
+	// default native mode can be larger than the initial 640x480 window, leaving visible menu buttons outside the
+	// client area. Resize through SDL first so its size and the exclusive back buffer agree, on creation and reset.
+	SDL_Window *native = PortSdlWindow(pp->hDeviceWindow ? pp->hDeviceWindow : focus);
+	if (native && pp->BackBufferWidth && pp->BackBufferHeight)
+	{
+		int width = 0, height = 0;
+		SDL_GetWindowSizeInPixels(native, &width, &height);
+		if ((UINT)width != pp->BackBufferWidth || (UINT)height != pp->BackBufferHeight)
+		{
+			if (!SDL_SetWindowSize(native, (int)pp->BackBufferWidth, (int)pp->BackBufferHeight) || !SDL_SyncWindow(native))
+				fprintf(stderr, PORT_LOG_PREFIX "exclusive window resize to %ux%u failed: %s\n",
+						pp->BackBufferWidth, pp->BackBufferHeight, SDL_GetError());
+		}
+	}
+	return;						// Windows' own Direct3D 9 still owns the exclusive mode switch
 #endif
 	const char *driver = SDL_GetCurrentVideoDriver();
 	if (!driver || !strcmp(driver, "offscreen"))

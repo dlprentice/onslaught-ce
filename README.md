@@ -250,10 +250,11 @@ in both and comparing them, and recordings of real play find differences our own
 The port is compared with the original game using recorded replays under a virtual clock: the game's state is checked
 every 50 frames on the standard levels, and on every frame for the recorded play sessions.
 
-**Standard test levels.** All six standard test levels were compared with the original for their recorded length:
-
-- Levels 100, 400, 521 and 611 match exactly for 10,000 frames.
-- Levels 200 and 860 each have one known tiny difference in a health value.
+**Standard test levels.** The available sampled state agrees with the retained original-game references for
+levels 100, 200, 400, 521 and 611 through 10,000 frames, and level 860 through 3,250 frames. Missing player
+state after death is unavailable evidence, not a match. Beyond frame 3,250, level 860's original-game recordings
+disagree with each other. The earlier level-200 health and level-860 energy differences are corrected in the
+0.1.5 candidate; this does not prove all gameplay, pictures or sound are identical.
 
 **60-level sweep.** This sweep played the first ~3,000 frames (about 1 min 40 s) of 60 levels with one generic input
 recording. 30 of those levels have original-game recordings to compare against:
@@ -275,24 +276,28 @@ of the tutorial (through its third zone; the final drone fight is still being co
   files matched the published package. An earlier attempt fetched no feed; a later retry succeeded. The
   [release notes](https://github.com/dlprentice/onslaught-ce/releases/latest) describe the tested routes and known
   limitations. The ordinary-play idle-title hang with disabled films is fixed in 0.1.4; faithful replay retains
-  retail behavior. Please report problems with the log.
+  retail behavior. The 0.1.5 candidate also corrects a default-fullscreen mouse hit-area mismatch and recovery
+  after minimize/focus changes, reproduced in that VM. The player's AMD graphics setup remains untested.
+  Please report problems with the log.
 - The Windows executable is unsigned, so SmartScreen may warn you (see above).
 - On Linux you need glibc 2.29 or newer and a 32-bit Vulkan 1.3 graphics driver with dxvk's required extensions (see
   Linux above). It was run in Ubuntu 24.04 and Debian 12 (with backported Mesa) file systems and in the Steam Linux
   Runtime 3.0 container, all with test drivers and no window; nobody has played it on those systems or on a Steam
   Deck, and the Steam shortcut route for the Deck (above) has not been tried. Those runs used a 0.1.3 candidate build,
-  not the released packages. In a Fedora 40 file system with the software driver (lavapipe) the front end matched
-  0.1.2, then the game crashed in its memory manager's cleanup as the level started (and at once when level 100 was
-  started directly; not yet investigated).
+  not the released packages. The 0.1.5 candidate corrects an asset-decompression buffer overrun and an audio-file
+  cleanup defect reproduced in a Fedora 40 file system with the software driver (lavapipe). Bounded level-entry
+  and shutdown checks pass there; this is not a full-playthrough or hardware-driver validation.
 - One effect depends on leftover memory rather than on the game: a walking unit's foot-landing flags are never given
   a starting value by the original game's code, so whether its first landing makes a stomp explosion depends on what
   that memory held before. This can differ between builds and between machines: level 521's replay shuts down one
   more explosion on 0.1.3 than on 0.1.2, and nothing else the replay compares (positions, health, random numbers,
   scores) differs. A recording that reaches such a landing may play back slightly differently on another version or
   machine.
-- The game's sound while recording was checked by machine only with SDL's file-output audio driver (it gave the same
-  recording and the same game state as silent audio). A recording made through a real PipeWire or PulseAudio device
-  has not been compared with a silent replay, and nobody has listened to the sound while recording.
+- Recording and replay were compared using an isolated native PipeWire null sink as well as silent audio;
+  the tested tape, mixed audio and saved bytes agree. Ordinary-clock music transitions and clean shutdown were
+  also exercised. These checks do not validate a physical audio device, listening quality or every race schedule.
+  The 0.1.5 candidate corrects music starts that could survive a stop request; the reported Windows overlapping
+  music has not yet been reproduced and attributed to this defect.
 - The tutorial is playable through its third zone; its final drone fight is still being completed.
 - Joystick and controller support is limited to what the original game supported, and controllers have not been tested
   yet.
@@ -307,8 +312,8 @@ their hashes, `config/game-data.sha256`; set `BEA_GAME_DIR` if the game is not i
 
 ```sh
 python3 port/tools/deps.py build                   # the pinned toolchains, libraries and Linux sysroot, checked by SHA-256
-python3 port/build.py --public --target linux --ce-version 0.1.4
-python3 port/build.py --public --target windows --ce-version 0.1.4
+python3 port/build.py --public --target linux --ce-version 0.1.5
+python3 port/build.py --public --target windows --ce-version 0.1.5
 ```
 
 `--ce-version` sets the version the menu, `--version` and the update check show; without it the build calls itself

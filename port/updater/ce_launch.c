@@ -1333,16 +1333,30 @@ static int start_game(char **args, int nargs, const char *game)
 #endif
 }
 
+#ifdef _WIN32
+static int redirected_output(DWORD stream)
+{
+	HANDLE handle = GetStdHandle(stream);
+	DWORD mode;
+	/* Keep a caller's pipe, file or recognized device (including NUL). Console handles are reopened below, but replacing a
+	 * redirected stream with CONOUT$ makes --version invisible to tools reading the launcher's output. */
+	return handle && handle != INVALID_HANDLE_VALUE && GetFileType(handle) != FILE_TYPE_UNKNOWN &&
+		!GetConsoleMode(handle, &mode);
+}
+#endif
+
 int main(int argc, char **argv)
 {
 	int nocheck = 0, updateonly = 0, record = 0, norecord = 0, report = 0, first = argc;
 #ifdef _WIN32
-	/* A windowed program has no terminal: started from one, write to it (the log is written either way). */
+	/* Capture redirection before attaching: attachment can supply previously absent standard handles. */
+	int out_redirected = redirected_output(STD_OUTPUT_HANDLE);
+	int err_redirected = redirected_output(STD_ERROR_HANDLE);
 	int console = AttachConsole(ATTACH_PARENT_PROCESS);
 	if (console)
 	{
-		freopen("CONOUT$", "w", stdout);
-		freopen("CONOUT$", "w", stderr);
+		if (!out_redirected) freopen("CONOUT$", "w", stdout);
+		if (!err_redirected) freopen("CONOUT$", "w", stderr);
 	}
 #endif
 	for (int i = 1; i < argc; i++)
