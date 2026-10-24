@@ -1,0 +1,36 @@
+--- a/ltshell.cpp
++++ b/ltshell.cpp
+@@ -31,6 +31,11 @@
+ #include	"tweak.h"
+ #include	"DebugLog.h"
+ #include	"DXMemoryManager.h"
++
++#if defined(CE_VERSION)
++bool PortCeLayer();
++static bool sPortQuitRequested;
++#endif
+ 
+ #pragma comment(lib, "imagehlp.lib")
+ #pragma comment(lib, "d3dx8.lib")
+@@ -729,6 +734,11 @@
+ //-----------------------------------------------------------------------------
+ BOOL PCLTShell::HandlingSystemStuff(bool first)	// FUNCTION: 0x00512490
+ {
++#if defined(CE_VERSION)
++	// TriggerQuit has already set the normal game/frontend flags. Let their caller consume them even if this
++	// window is inactive or its device is lost; another blocking GetMessage would otherwise strand shutdown.
++	if (sPortQuitRequested) return FALSE;
++#endif
+     BOOL bGotMsg;
+ 	BOOL cant_proc=TRUE;
+     // Use PeekMessage() if the app is active, so we can use idle time to
+@@ -2055,6 +2065,9 @@
+ {
+ 	GAME.SetQuit(QT_QUIT_TO_FRONTEND);
+ 	FRONTEND.SetQuit(-1);
++#if defined(CE_VERSION)
++	if (PortCeLayer()) sPortQuitRequested = true;
++#endif
+ #ifdef DEV_VERSION
+ 	MODELVIEWER.SetQuit(-1);
+ 	CUTSCENEEDITOR.SetQuit(-1);
