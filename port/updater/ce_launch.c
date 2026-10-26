@@ -6,7 +6,8 @@
  *   onslaught-ce [--version] [--no-update-check] [--update-only] [--record] [--no-record] [--report] [-- GAME ARGUMENTS]
  *
  * The log: the game's output and the launcher's own messages go to <user folder>/onslaught-ce.log (the run before is
- * onslaught-ce.old.log; each stops at 4 MB) and still to the terminal. Its first lines name the version, the build, the
+ * onslaught-ce.old.log; each stops at 4 MiB) and still to the terminal. Two fixed leased fallback logs admit concurrent
+ * runs without rotating an active log; all four data files together are bounded to 16 MiB. Its first lines name the version, the build, the
  * OS and the GPU (the game's "onslaught-ce: adapter" line). It never names the player's account: home is written ~ (Windows
  * %APPDATA% and the like) and the account name <user>. An update's restart continues the same log. A replay
  * (BEA_PORT_TAPE) or a harness recording (BEA_PORT_RECORD) gets no log, no update check and nothing else of the launcher's.
@@ -29,6 +30,7 @@
 #include <string.h>
 #include <stdarg.h>
 #include <time.h>
+#include <errno.h>
 #include "monocypher-ed25519.h"
 #include "sha256.h"
 #include "ce_report.h"
@@ -63,6 +65,7 @@ static const char PUBLIC_KEY_HEX[] = "b6cf39b727c92cd8a1682c31f315a5d38427dce912
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
+#include <sys/file.h>
 #include <signal.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
@@ -87,6 +90,29 @@ static int sRecordingScanOverflow;
 
 #define LOG_CAP (4u << 20)		/* each log file stops at 4 MB */
 #define HOLD_CAP (1u << 20)
+#define CE_LOG_SLOT_COUNT 3
+static const char *const sLogNames[CE_LOG_SLOT_COUNT] = {
+	"onslaught-ce.log", "onslaught-ce.concurrent-1.log", "onslaught-ce.concurrent-2.log"
+};
+static int sLogSlot = -1;
+static int log_artifact_name(const char *name)
+{
+	if (!strcmp(name, "onslaught-ce.old.log")) return 1;
+	for (int slot = 0; slot < CE_LOG_SLOT_COUNT; ++slot)
+	{
+		char lease[128];
+		snprintf(lease, sizeof lease, "%s.lock", sLogNames[slot]);
+		if (!strcmp(name, sLogNames[slot]) || !strcmp(name, lease)) return 1;
+	}
+	return 0;
+}
+#ifdef _WIN32
+static HANDLE sLogLease = INVALID_HANDLE_VALUE;
+#else
+static int sLogLease = -1;
+#endif
+static unsigned long log_native_error(void);
+static void log_release_lease(void);
 static FILE *sLog;
 static size_t sLogBytes;
 static int sLogFull, sHolding;
@@ -98,20 +124,32 @@ static size_t sScanLen;
 static void log_file(const char *p, size_t n)
 {
 	static const char note[] = "\n[onslaught-ce: this log reached 4 MB; later output went to the terminal only]\n";
+	int failed = 0;
 	if (!sLog || sLogFull) return;
 	if (sLogBytes + n + sizeof note > LOG_CAP)
 	{
-		size_t room = LOG_CAP - sizeof note > sLogBytes ? LOG_CAP - sizeof note - sLogBytes : 0;
-		fwrite(p, 1, room < n ? room : n, sLog);
-		fwrite(note, 1, sizeof note - 1, sLog);
+		size_t remaining = sLogBytes < LOG_CAP ? LOG_CAP - sLogBytes : 0;
+		if (remaining < sizeof note - 1) { sLogFull = 1; return; }
+		size_t room = remaining - (sizeof note - 1);
+		size_t amount = room < n ? room : n;
+		failed = fwrite(p, 1, amount, sLog) != amount;
+		if (!failed) failed = fwrite(note, 1, sizeof note - 1, sLog) != sizeof note - 1;
 		sLogFull = 1;
 	}
 	else
 	{
-		fwrite(p, 1, n, sLog);
+		failed = fwrite(p, 1, n, sLog) != n;
 		sLogBytes += n;
 	}
-	fflush(sLog);
+	if (fflush(sLog)) failed = 1;
+	if (failed)
+	{
+		unsigned long error = log_native_error();
+		FILE *file = sLog; sLog = NULL;
+		fclose(file); log_release_lease();
+		free(sHold); sHold = NULL; sHoldLen = sHoldCap = 0; sHolding = 0;
+		fprintf(stderr, "onslaught-ce: log write/flush failed error=%lu; output continues on the terminal only\n", error);
+	}
 }
 
 #ifndef _WIN32
@@ -335,36 +373,216 @@ static void utc_now(char *out, size_t n, const char *format)
 	strftime(out, n, format, &t);
 }
 
+static unsigned long log_native_error(void)
+{
+#ifdef _WIN32
+	DWORD error = GetLastError(); return error ? error : ERROR_GEN_FAILURE;
+#else
+	return errno ? (unsigned long)errno : EIO;
+#endif
+}
+
+static unsigned long log_invalid_file(void)
+{
+#ifdef _WIN32
+	return ERROR_INVALID_NAME;
+#else
+	return EINVAL;
+#endif
+}
+
+static int log_missing(unsigned long error)
+{
+#ifdef _WIN32
+	return error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND;
+#else
+	return error == ENOENT;
+#endif
+}
+
+static int log_path(char *out, size_t n, const char *name)
+{
+	int length = snprintf(out, n, "%s" SEP "%s", sUser, name);
+	return length > 0 && (size_t)length < n;
+}
+
+static void log_release_lease(void)
+{
+#ifdef _WIN32
+	if (sLogLease != INVALID_HANDLE_VALUE)
+	{
+		OVERLAPPED offset = {0};
+		UnlockFileEx(sLogLease, 0, 1, 0, &offset);
+		CloseHandle(sLogLease); sLogLease = INVALID_HANDLE_VALUE;
+	}
+#else
+	if (sLogLease != -1) { flock(sLogLease, LOCK_UN); close(sLogLease); sLogLease = -1; }
+#endif
+	sLogSlot = -1;
+}
+
+/* 1 owns a lifetime lease, 0 is ordinary contention, -1 is an error. Lease files are never unlinked: replacing a
+ * locked inode would create two independent owners. No lease/data handle is inherited by the game or updater. */
+static int log_acquire_lease(int slot, unsigned long *error)
+{
+	char name[128], path[PATHN];
+	snprintf(name, sizeof name, "%s.lock", sLogNames[slot]);
+	if (!log_path(path, sizeof path, name)) { *error = log_invalid_file(); return -1; }
+#ifdef _WIN32
+	HANDLE h = CreateFileA(path, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
+		OPEN_ALWAYS, FILE_FLAG_OPEN_REPARSE_POINT, NULL);
+	if (h == INVALID_HANDLE_VALUE) { *error = log_native_error(); return -1; }
+	BY_HANDLE_FILE_INFORMATION info;
+	if (!GetFileInformationByHandle(h, &info)) { *error = log_native_error(); CloseHandle(h); return -1; }
+	if (GetFileType(h) != FILE_TYPE_DISK || info.nNumberOfLinks != 1 ||
+		(info.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)))
+	{ *error = log_invalid_file(); CloseHandle(h); return -1; }
+	if (!SetHandleInformation(h, HANDLE_FLAG_INHERIT, 0)) { *error = log_native_error(); CloseHandle(h); return -1; }
+	OVERLAPPED offset = {0};
+	if (!LockFileEx(h, LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, &offset))
+	{
+		*error = log_native_error(); CloseHandle(h);
+		return *error == ERROR_LOCK_VIOLATION ? 0 : -1;
+	}
+	sLogLease = h;
+#else
+	struct stat before, info;
+	if (!lstat(path, &before) && (!S_ISREG(before.st_mode) || before.st_nlink != 1)) { *error = log_invalid_file(); return -1; }
+	int fd = open(path, O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0600);
+	if (fd < 0) { *error = log_native_error(); return -1; }
+	if (fstat(fd, &info)) { *error = log_native_error(); close(fd); return -1; }
+	if (!S_ISREG(info.st_mode) || info.st_nlink != 1) { *error = log_invalid_file(); close(fd); return -1; }
+	if (flock(fd, LOCK_EX | LOCK_NB))
+	{
+		*error = log_native_error(); close(fd);
+		return *error == EWOULDBLOCK || *error == EAGAIN ? 0 : -1;
+	}
+	sLogLease = fd;
+#endif
+	sLogSlot = slot;
+	return 1;
+}
+
+enum LogOpen { LOG_INSPECT, LOG_APPEND, LOG_CREATE };
+
+/* Existing data paths must be regular nonlinks and carry the app header; only CREATE_NEW/O_EXCL creates output.
+ * A lease authorizes retirement of a previous closed app log, never truncation of an existing pathname. */
+static FILE *log_open_file(const char *path, enum LogOpen mode, unsigned long *error)
+{
+	int fd;
+#ifdef _WIN32
+	DWORD access = mode == LOG_INSPECT ? GENERIC_READ : GENERIC_READ | GENERIC_WRITE;
+	HANDLE h = CreateFileA(path, access, FILE_SHARE_READ, NULL, mode == LOG_CREATE ? CREATE_NEW : OPEN_EXISTING,
+		FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, NULL);
+	if (h == INVALID_HANDLE_VALUE) { *error = log_native_error(); return NULL; }
+	BY_HANDLE_FILE_INFORMATION info;
+	if (!GetFileInformationByHandle(h, &info)) { *error = log_native_error(); CloseHandle(h); return NULL; }
+	if (GetFileType(h) != FILE_TYPE_DISK || info.nNumberOfLinks != 1 ||
+		(info.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) ||
+		info.nFileSizeHigh || info.nFileSizeLow > LOG_CAP)
+	{ *error = log_invalid_file(); CloseHandle(h); return NULL; }
+	if (!SetHandleInformation(h, HANDLE_FLAG_INHERIT, 0)) { *error = log_native_error(); CloseHandle(h); return NULL; }
+	fd = _open_osfhandle((intptr_t)h, _O_BINARY | (mode == LOG_INSPECT ? _O_RDONLY : _O_RDWR) | (mode == LOG_APPEND ? _O_APPEND : 0));
+	if (fd < 0) { *error = log_native_error(); CloseHandle(h); return NULL; }
+	FILE *file = _fdopen(fd, mode == LOG_INSPECT ? "rb" : mode == LOG_APPEND ? "a+b" : "wb");
+	if (!file) { *error = log_native_error(); _close(fd); return NULL; }
+#else
+	int flags = mode == LOG_INSPECT ? O_RDONLY : mode == LOG_APPEND ? O_RDWR | O_APPEND : O_RDWR | O_CREAT | O_EXCL;
+	fd = open(path, flags | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK, 0600);
+	if (fd < 0) { *error = log_native_error(); return NULL; }
+	struct stat info;
+	if (fstat(fd, &info)) { *error = log_native_error(); close(fd); return NULL; }
+	if (!S_ISREG(info.st_mode) || info.st_nlink != 1 || info.st_size < 0 || (unsigned long long)info.st_size > LOG_CAP)
+	{ *error = log_invalid_file(); close(fd); return NULL; }
+	FILE *file = fdopen(fd, mode == LOG_INSPECT ? "rb" : mode == LOG_APPEND ? "a+b" : "wb");
+	if (!file) { *error = log_native_error(); close(fd); return NULL; }
+#endif
+	if (mode != LOG_CREATE)
+	{
+		static const char magic[] = "Onslaught CE v";
+		char head[sizeof magic - 1];
+		if (fseek(file, 0, SEEK_SET) || fread(head, 1, sizeof head, file) != sizeof head || memcmp(head, magic, sizeof head))
+		{ *error = log_invalid_file(); fclose(file); return NULL; }
+		if (mode == LOG_APPEND && fseek(file, 0, SEEK_END)) { *error = log_native_error(); fclose(file); return NULL; }
+	}
+	return file;
+}
+
+/* -1 refuses a foreign/failed path, 0 is absent, 1 is an app-generated regular file. */
+static int log_check_file(const char *path, unsigned long *error)
+{
+	FILE *file = log_open_file(path, LOG_INSPECT, error);
+	if (!file) return log_missing(*error) ? 0 : -1;
+	if (fclose(file)) { *error = log_native_error(); return -1; }
+	return 1;
+}
+
+static int log_remove_closed(const char *path, unsigned long *error)
+{
+	int present = log_check_file(path, error);
+	if (present < 0) return 0;
+	if (present && remove(path)) { *error = log_native_error(); return 0; }
+	return 1;
+}
+
+static int log_prepare_primary(const char *path, unsigned long *error)
+{
+	int present = log_check_file(path, error);
+	if (present <= 0) return present == 0;
+	char old[PATHN];
+	if (!log_path(old, sizeof old, "onslaught-ce.old.log")) { *error = log_invalid_file(); return 0; }
+	if (!log_remove_closed(old, error)) return 0;
+#ifdef _WIN32
+	if (!MoveFileA(path, old)) { *error = log_native_error(); return 0; }
+#else
+	/* No replacement of a surprising destination: hard-link rotation is available for these regular same-dir files. */
+	if (link(path, old) || remove(path)) { *error = log_native_error(); return 0; }
+#endif
+	return 1;
+}
+
 /* Starts this run's log: the last run's becomes onslaught-ce.old.log. `cont`: the launcher was restarted by an update
  * (BEA_CE_LOG_CONTINUE), so the log goes on in the same file and the run before it (perhaps the one being reported)
  * stays as onslaught-ce.old.log. */
 static void log_open(int cont)
 {
-	char log[PATHN], old[PATHN], os[256], date[64], head[1024];
-	snprintf(log, sizeof log, "%s" SEP "onslaught-ce.log", sUser);
-	snprintf(old, sizeof old, "%s" SEP "onslaught-ce.old.log", sUser);
-	if (cont && (sLog = fopen(log, "ab")))
+	char log[PATHN], os[256], date[64], head[1024];
+	sLogBytes = 0; sLogFull = 0;
+	int appended = 0;
+	for (int slot = 0; slot < CE_LOG_SLOT_COUNT; ++slot)
 	{
-		fseek(sLog, 0, SEEK_END);
-		long at = ftell(sLog);
-		sLogBytes = at > 0 ? (size_t)at : 0;
-		sLogFull = sLogBytes >= LOG_CAP;
-		log_file("\n", 1);
+		unsigned long error = 0;
+		int owned = log_acquire_lease(slot, &error);
+		if (!owned) continue;
+		if (owned < 0) { say("log lease failed slot=%s error=%lu; output continues on the terminal only", sLogNames[slot], error); return; }
+		if (!log_path(log, sizeof log, sLogNames[slot])) { error = log_invalid_file(); }
+		else if (cont && slot == 0)
+		{
+			sLog = log_open_file(log, LOG_APPEND, &error);
+			if (sLog)
+			{
+				long at = ftell(sLog);
+				if (at < 0) { error = log_native_error(); fclose(sLog); sLog = NULL; }
+				else { sLogBytes = (size_t)at; sLogFull = sLogBytes >= LOG_CAP; appended = 1; }
+			}
+			else if (log_missing(error)) sLog = log_open_file(log, LOG_CREATE, &error);
+		}
+		else if (slot == 0 ? log_prepare_primary(log, &error) : log_remove_closed(log, &error))
+			sLog = log_open_file(log, LOG_CREATE, &error);
+		if (sLog) break;
+		say("log open/rotation refused slot=%s error=%lu; existing files were not truncated", sLogNames[slot], error);
+		log_release_lease();
 	}
-	else
-	{
-		remove(old);
-		rename(log, old);
-		sLogBytes = 0;
-		sLogFull = 0;
-		if (!(sLog = fopen(log, "wb"))) return;
-	}
+	if (!sLog) { say("no safe log slot available; output continues on the terminal only"); return; }
+	if (appended) log_file("\n", 1);
 	ce_os_name(os, sizeof os);
 	utc_now(date, sizeof date, "%Y-%m-%d %H:%M:%S UTC");
 	int k = snprintf(head, sizeof head, "Onslaught CE v%s" CE_VERSION_NOTE ", build %s (" PLATFORM ")\nOS: %s\n%s: %s\n", CE_VERSION,
 					 CE_COMMIT, os, cont ? "Restarted after an update" : "Started", date);
 	log_file(head, (size_t)k < sizeof head ? (size_t)k : sizeof head - 1);
+	if (!sLog) return; /* A failed header write already closed the file and released its lease. */
 	sHolding = 1;
+	if (sLogSlot > 0) say("concurrent/fallback log=%s (4 MiB limit; primary log belongs to another run or could not rotate)", sLogNames[sLogSlot]);
 	say("launcher process pid=%lu SDL=%d", (unsigned long)
 #ifdef _WIN32
 		GetCurrentProcessId(),
@@ -376,10 +594,16 @@ static void log_open(int cont)
 
 static void log_close(void)
 {
-	if (!sLog) return;
-	log_release("not reported (the game did not reach its Direct3D device)");
-	fclose(sLog);
-	sLog = NULL;
+	if (sLog)
+	{
+		log_release("not reported (the game did not reach its Direct3D device)");
+		if (sLog)
+		{
+			FILE *file = sLog; sLog = NULL;
+			if (fclose(file)) fprintf(stderr, "onslaught-ce: log close failed error=%lu\n", log_native_error());
+		}
+	}
+	log_release_lease();
 }
 
 /* ---- small helpers ---------------------------------------------------------------------------------------------- */
@@ -1157,7 +1381,7 @@ static void json_start_files(FILE *f, const char *dir, const char *rel, int *fir
 	{
 		const char *nm = names[i];
 		if (!strcmp(nm, ".") || !strcmp(nm, "..")) continue;
-		if (!*rel && (!strcmp(nm, "ce.ini") || !strcmp(nm, "onslaught-ce.log") || !strcmp(nm, "onslaught-ce.old.log") ||
+		if (!*rel && (!strcmp(nm, "ce.ini") || log_artifact_name(nm) ||
 					  !strcmp(nm, "update") || !strcmp(nm, "tapes")))
 			continue;
 		char path[PATHN], sub[PATHN];
@@ -1611,14 +1835,15 @@ int main(int argc, char **argv)
 		/* "Report a problem": the pre-filled issue page in the browser, and where the files to attach are. */
 		static char url[32768];
 		int opened = ce_open_report(CE_VERSION, CE_COMMIT, sUser, url, sizeof url);
-		printf("Onslaught CE's log and session tapes are in %s\n"
+		printf("Onslaught CE's logs and session tapes are in %s\n"
 			   "%s\n%s\n", sUser, opened ? "Opened the problem report page in your browser:" :
 			   "Open this page in your browser to report a problem:", url);
 #ifdef _WIN32
 		if (!console)
 		{
 			char text[PATHN + 256];
-			snprintf(text, sizeof text, "%s\n\nPlease attach onslaught-ce.log from this folder:\n%s",
+			snprintf(text, sizeof text, "%s\n\nPlease attach the logs that exist: onslaught-ce.log, onslaught-ce.old.log, "
+				"onslaught-ce.concurrent-1.log and onslaught-ce.concurrent-2.log from this folder:\n%s",
 					 opened ? "The problem report page is open in your browser." : "Your browser could not be opened.", sUser);
 			SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_INFORMATION, "Onslaught CE", text, NULL);
 		}

@@ -1,8 +1,8 @@
 # Onslaught CE launcher and updater
 
 Status: active (public builds only)
-Last updated: 2026-10-24 (preserve redirected Windows launcher output)
-Summary: how the public build's launcher finds the game, checks the signed release feed and updates itself.
+Last updated: 2026-10-26
+Summary: how the public build's launcher finds the game, owns bounded session logs and checks signed updates.
 
 `ce_launch.c` builds as `onslaught-ce-launch` (Linux, started by the `onslaught-ce` script after `preflight.sh`) and
 `onslaught-ce.exe` (Windows), from `build.py --public`. It links SDL3 (its dialogs) and Monocypher (Ed25519, pinned in
@@ -37,7 +37,18 @@ skip, instead of the dialog); the signature and hash rules are unchanged.
 
 The launcher starts the game with its stdout and stderr on one pipe and copies them, with its own `onslaught-ce: ...`
 messages, to the terminal and to `<user folder>/onslaught-ce.log`. At start the previous log becomes
-`onslaught-ce.old.log`; each file stops at 4 MB (a closing line says so; the terminal still gets everything). The first
+`onslaught-ce.old.log`; each file stops at 4 MiB (a closing line says so; the terminal still gets everything).
+A nonblocking kernel lease belongs to the logging launcher until its file is closed. Concurrent launches in the same
+user folder use `onslaught-ce.concurrent-1.log` and `onslaught-ce.concurrent-2.log`, each with its own lease and 4 MiB
+limit. Launcher-generated log content in these four files has a combined 16 MiB budget. A fourth simultaneous logger, or a failed/unsupported
+lease, keeps terminal output and reports that no persistent log is available; the game still starts. Separate user
+folders have independent leases. Only a leased slot may retire a previous closed, regular app-format log, and every
+new output file is created exclusively. Links and foreign files are left alone; rotation/open failures use another
+safe slot or terminal output. Data and lease handles must each have exactly one hard link. Foreign, linked or
+oversized preexisting collision paths are preserved and refused, not retroactively bounded by the log budget.
+Lease files remain in the folder and are never deleted; the kernel releases ownership
+on process exit. This coordinates cooperating launcher versions on filesystems supporting these locks, without a
+game single-instance rule or an updater lock. The first
 lines are the version and build (`build.py` passes the source commit, `+dirty` for a changed tree), the OS, the start
 time and the GPU: the game's `onslaught-ce: adapter` line (port/platform/common/d3d9hooks.cpp, printed at CreateDevice),
 and on Linux the machine's GPUs from sysfs, since dxvk reports a stand-in name to Direct3D 9 by default. Output that
@@ -45,8 +56,11 @@ arrives before the adapter line is held (up to 1 MB) so the GPU stays at the top
 status or the signal that ended it. The log is written to be attached to a public issue, so it never names the
 player's account: the home folder is written `~` (Windows `%USERPROFILE%`, `%APPDATA%`, `%LOCALAPPDATA%`) and the account
 name, as a path component anywhere else, `<user>`; the launcher's own lines say the same on the terminal. When an update
-restarts the launcher (`BEA_CE_LOG_CONTINUE`, set only for that restart), the new launcher continues the same log, so the
-run before it stays in `onslaught-ce.old.log`. While `BEA_PORT_TAPE` or `BEA_PORT_RECORD` is set as the launcher starts
+restarts the launcher (`BEA_CE_LOG_CONTINUE`, set only for that restart), the new launcher appends to the primary log
+only after acquiring its lease and validating the file. If the primary is busy or unsafe, it starts a fresh fallback
+slot instead; it does not append to a previous unrelated fallback session. The report page asks for current, old and
+both concurrent logs from the same folder, when present. Logging artifacts are excluded from recording start files.
+While `BEA_PORT_TAPE` or `BEA_PORT_RECORD` is set as the launcher starts
 (a replay, or the test harness's recording), it writes no log, checks for no update and sets nothing for the CE layer. A Ctrl+C reaches the game; SIGTERM and SIGHUP sent to the launcher are passed on.
 On Windows the launcher attaches to the console it was started from, if any, for the terminal copy. Inherited output
 pipes, files and `NUL` keep their destinations: attaching must not redirect a tool's `--version` response or errors
