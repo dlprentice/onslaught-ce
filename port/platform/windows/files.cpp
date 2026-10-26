@@ -252,8 +252,12 @@ void FindAdd(Find *f, const WIN32_FIND_DATAA *d)
 	f->entries[f->count++] = *d;
 }
 
-DWORD SaveDirectoryCasePolicy(const WCHAR *spec)
+enum SaveDirectoryCase { SAVE_CASE_QUERY_UNKNOWN, SAVE_CASE_KNOWN_INSENSITIVE };
+
+DWORD SaveDirectoryCasePolicy(const WCHAR *spec, SaveDirectoryCase *policy)
 {
+	*policy = SAVE_CASE_QUERY_UNKNOWN;
+	const auto lastError = []() { DWORD error = GetLastError(); return error ? error : DWORD(ERROR_GEN_FAILURE); };
 	WCHAR directory[MAX_PATH * 2];
 	size_t length = wcslen(spec);
 	if (length >= sizeof(directory) / sizeof(directory[0])) return ERROR_FILENAME_EXCED_RANGE;
@@ -265,18 +269,21 @@ DWORD SaveDirectoryCasePolicy(const WCHAR *spec)
 		NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
 	if (h == INVALID_HANDLE_VALUE)
 	{
-		DWORD error = GetLastError();
+		DWORD error = lastError();
 		return error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND ? 0 : error;
 	}
 	FILE_CASE_SENSITIVE_INFO info = {};
 	// FILE_INFO_BY_HANDLE_CLASS::FileCaseSensitiveInfo is 23; older SDK target macros hide its name.
-	// The query itself uses the existing Vista API and returns INVALID_PARAMETER on pre-feature Windows.
+	// Unsupported queries do not establish the directory's case behavior. Admit UNKNOWN only through the complete
+	// save-name scan and native identity/absence checks below; never interpret a query failure as a clear flag.
 	const FILE_INFO_BY_HANDLE_CLASS caseSensitiveInfo = static_cast<FILE_INFO_BY_HANDLE_CLASS>(23);
 	BOOL ok = GetFileInformationByHandleEx(h, caseSensitiveInfo, &info, sizeof(info));
-	DWORD error = ok ? (info.Flags & FILE_CS_FLAG_CASE_SENSITIVE_DIR ? ERROR_NOT_SUPPORTED : 0) : GetLastError();
-	CloseHandle(h);
-	// Older Windows versions predate per-directory case sensitivity and reject this information class.
-	return !ok && error == ERROR_INVALID_PARAMETER ? 0 : error;
+	DWORD error = ok ? (info.Flags ? ERROR_NOT_SUPPORTED : 0) : lastError();
+	bool unknown = !ok && (error == ERROR_INVALID_PARAMETER || error == ERROR_CALL_NOT_IMPLEMENTED);
+	if (unknown) error = 0;
+	if (!CloseHandle(h) && !error) error = lastError();
+	if (!error && ok) *policy = SAVE_CASE_KNOWN_INSENSITIVE;
+	return error;
 }
 
 void FindScan(Find *f, const char *spec)
@@ -284,22 +291,30 @@ void FindScan(Find *f, const char *spec)
 	f->sourceFirst = f->count;
 	if (f->saveNames)
 	{
+		const auto lastError = []() { DWORD error = GetLastError(); return error ? error : DWORD(ERROR_GEN_FAILURE); };
 		// Savecard names are UTF-8 after patch 0066. Enumerate UTF-16 first so an invalid native surrogate cannot
 		// be replaced by an A API and exposed as a different, valid career name. Other searches keep their A path.
 		WCHAR wideSpec[MAX_PATH * 2];
 		int needed = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, spec, -1, NULL, 0);
-		if (!needed) { f->error = GetLastError(); f->count = 0; return; }
+		if (!needed) { f->error = lastError(); f->count = 0; return; }
 		if (needed > (int)(sizeof(wideSpec) / sizeof(wideSpec[0]))) { f->error = ERROR_FILENAME_EXCED_RANGE; f->count = 0; return; }
 		if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, spec, -1, wideSpec, needed) != needed)
 		{
-			f->error = GetLastError(); f->count = 0; return;
+			f->error = lastError(); f->count = 0; return;
 		}
-		if (DWORD error = SaveDirectoryCasePolicy(wideSpec)) { f->error = error; f->count = 0; return; }
+		SaveDirectoryCase policy;
+		if (DWORD error = SaveDirectoryCasePolicy(wideSpec, &policy)) { f->error = error; f->count = 0; return; }
+		// Both known-insensitive and query-unknown directories use the same full scan. A native *.bes wildcard can
+		// miss upper-case extensions or match a short-name alias; only the strict long-name codec admits savecards.
+		WCHAR *slash = wcsrchr(wideSpec, L'\\');
+		if (!slash || slash + 2 >= wideSpec + sizeof(wideSpec) / sizeof(wideSpec[0]))
+		{ f->error = ERROR_INVALID_NAME; f->count = 0; return; }
+		slash[1] = L'*'; slash[2] = 0;
 		WIN32_FIND_DATAW wide;
 		HANDLE h = FindFirstFileW(wideSpec, &wide);
 		if (h == INVALID_HANDLE_VALUE)
 		{
-			DWORD error = GetLastError();
+			DWORD error = lastError();
 			if (error != ERROR_FILE_NOT_FOUND && error != ERROR_PATH_NOT_FOUND && error != ERROR_NO_MORE_FILES)
 			{
 				f->error = error; f->count = 0;
@@ -310,9 +325,15 @@ void FindScan(Find *f, const char *spec)
 		{
 			WIN32_FIND_DATAA entry = {};
 			int bytes = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, wide.cFileName, -1, NULL, 0, NULL, NULL);
-			if (bytes <= 0 || bytes > (int)sizeof(entry.cFileName)) continue;
+			if (bytes <= 0)
+			{
+				DWORD error = lastError();
+				if (error == ERROR_NO_UNICODE_TRANSLATION) continue; // an invalid native surrogate is not a save name
+				f->error = error; f->count = 0; break;
+			}
+			if (bytes > (int)sizeof(entry.cFileName)) continue;
 			if (WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, wide.cFileName, -1, entry.cFileName, bytes, NULL, NULL) != bytes)
-				continue;
+			{ f->error = lastError(); f->count = 0; break; }
 			if (PortSaveNameUtf16(entry.cFileName, NULL, 0)) continue;
 			entry.dwFileAttributes = wide.dwFileAttributes;
 			entry.ftCreationTime = wide.ftCreationTime;
@@ -325,8 +346,8 @@ void FindScan(Find *f, const char *spec)
 			FindAdd(f, &entry);
 			if (f->error) break;
 		} while (FindNextFileW(h, &wide));
-		if (!f->error && GetLastError() != ERROR_NO_MORE_FILES) { f->error = GetLastError(); f->count = 0; }
-		FindClose(h);
+		if (!f->error && GetLastError() != ERROR_NO_MORE_FILES) { f->error = lastError(); f->count = 0; }
+		if (!FindClose(h) && !f->error) { f->error = lastError(); f->count = 0; }
 		return;
 	}
 	WIN32_FIND_DATAA d;
@@ -386,6 +407,23 @@ void FindFree(Find *f)
 {
 	free(f->entries);
 	free(f);
+}
+
+DWORD SaveFoldedNameAbsent(const void *name)
+{
+	Find *f = FindStart("savegames\\*.bes");
+	DWORD error = f->error;
+	for (int i = 0; !error && i < f->count; i++)
+	{
+		// Hidden/system/directory aliases also block a reservation, even though the savecard UI does not list them.
+		WCHAR listed[32];
+		error = PortSaveNameUtf16(f->entries[i].cFileName, listed, 32);
+		int equal = error ? -1 : PortSaveNamesEqual(name, listed);
+		if (equal < 0) { if (!error) { error = GetLastError(); if (!error) error = ERROR_GEN_FAILURE; } }
+		else if (equal) error = ERROR_FILE_EXISTS;
+	}
+	FindFree(f);
+	return error;
 }
 }
 
@@ -449,11 +487,17 @@ unsigned PortSaveReserveUtf8(const char *path)
 	if (error) return error;
 	if (strcmp(path, checked) || Resolve(path, WRITE, native, sizeof(native))) return ERROR_INVALID_NAME;
 	WCHAR wide[MAX_PATH * 2];
-	if (!MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, native, -1, wide, sizeof(wide) / sizeof(wide[0]))) return GetLastError();
-	if ((error = SaveDirectoryCasePolicy(wide))) return error;
+	if (!MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, native, -1, wide, sizeof(wide) / sizeof(wide[0])))
+	{ error = GetLastError(); return error ? error : DWORD(ERROR_GEN_FAILURE); }
+	SaveDirectoryCase policy;
+	if ((error = SaveDirectoryCasePolicy(wide, &policy))) return error;
+	// CREATE_NEW protects only the literal native path. Re-prove folded absence in both roots immediately before
+	// reserving, even for a valid canonical spelling and even when the case query succeeded.
+	if ((error = SaveFoldedNameAbsent(name))) return error;
 	HANDLE h = CreateFileW(wide, GENERIC_WRITE, 0, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
-	if (h == INVALID_HANDLE_VALUE) return GetLastError();
-	if (!CloseHandle(h)) return GetLastError();
+	if (h == INVALID_HANDLE_VALUE || !CloseHandle(h)) { error = GetLastError(); return error ? error : DWORD(ERROR_GEN_FAILURE); }
+	// Patch0066 rechecks the namespace before WriteSave. A later different-case alias fails closed there, possibly
+	// leaving this owned empty reservation. The subsequent pathname reopen is not an atomic save transaction.
 	return 0;
 }
 

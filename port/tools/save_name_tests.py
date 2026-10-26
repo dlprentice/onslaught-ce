@@ -56,6 +56,7 @@ def main():
     parser.add_argument("--blocked-patch", type=Path, help="optional frozen 0066 candidate for the destructive case-alias negative")
     parser.add_argument("--identity-baseline", type=Path, help="optional frozen files.cpp for 64-bit file-ID negative controls")
     parser.add_argument("--zero-error-baseline", type=Path, help="optional frozen files.cpp for native-FALSE/last-error-zero negatives")
+    parser.add_argument("--query-baseline", type=Path, help="optional frozen files.cpp to reproduce unsupported-case-query caller refusal")
     args = parser.parse_args()
     resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
     parent = ROOT / "local-data/port/save-name-tests"
@@ -73,7 +74,7 @@ def main():
                    "port/patches/0066-save-name-utf8.patch", "port/tools/tests/save_names_driver.cpp",
                    "port/platform/windows/files.cpp", "port/platform/windows/save_namespace.cpp",
                    "port/tools/tests/save_find_driver.cpp", "port/tools/tests/save_namespace_boundary.h",
-                   "port/tools/tests/save_namespace_driver.cpp", "port/tools/tests/save_overwrite_driver.cpp", "port/build.py")
+                   "port/tools/tests/save_namespace_driver.cpp", "port/tools/tests/save_query_fixture.h", "port/tools/tests/save_overwrite_driver.cpp", "port/build.py")
         for name in sources:
             dest = out / name
             dest.parent.mkdir(parents=True, exist_ok=True)
@@ -217,11 +218,13 @@ int CompareStringOrdinal(const WCHAR *, int, const WCHAR *, int, BOOL);
         for case in ("valid", "resource", "invalid-spec", "long-spec", "decode-query", "decode-copy", "encode-query", "encode-copy", "native-open", "native-next", "case-sensitive"):
             scan_run(scan, case)
         production = (out / "port/platform/windows/files.cpp").read_text()
-        def build_namespace(label, identity_source=None):
+        def build_namespace(label, identity_source=None, namespace_source=None):
             definitions = []
-            for name in ("SaveNativeSameFile", "FindAdd", "SaveDirectoryCasePolicy", "FindScan", "FindNameOrder", "FindSort", "FindStart", "FindFree", "PortSaveLookupUtf16", "PortSaveReserveUtf8"):
-                source = identity_source if name == "SaveNativeSameFile" and identity_source else production
+            namespace_source = namespace_source or production
+            for name in ("SaveNativeSameFile", "FindAdd", "SaveDirectoryCasePolicy", "FindScan", "FindNameOrder", "FindSort", "FindStart", "FindFree", "SaveFoldedNameAbsent", "PortSaveLookupUtf16", "PortSaveReserveUtf8"):
+                source = identity_source if name == "SaveNativeSameFile" and identity_source else namespace_source
                 found = re.findall(r"^[^\n]*\b" + re.escape(name) + r"\([^\n]*\)\n\{\n.*?^\}", source, re.M | re.S)
+                if name=="SaveFoldedNameAbsent" and not found:continue
                 if len(found) != 1: raise RuntimeError(f"expected complete production function: {name}")
                 definitions.append(found[0])
             definition = out / (label+".inc")
@@ -229,8 +232,10 @@ int CompareStringOrdinal(const WCHAR *, int, const WCHAR *, int, BOOL);
             receipt["inputs"][definition.name] = sha(definition)
             binary = out / label
             command = [*shlex.split(args.cxx), "-std=c++17", "-O1", "-g", "-fsanitize=address", "-fno-omit-frame-pointer",
-                       "-Wall", "-Wextra", "-Werror", "-Wno-unused-function", "-I"+str(out), "-I"+str(out / "port/platform/common"),
+                       "-Wall", "-Wextra", "-Werror", "-Wno-unused-function", "-Wno-unused-parameter", "-I"+str(out), "-I"+str(out / "port/platform/common"),
                        "-DSAVE_NAMESPACE_SOURCE=1", '-DSAVE_NAMESPACE_BOUNDARY="'+str(out / "port/tools/tests/save_namespace_boundary.h")+'"',
+                       '-DSAVE_CARD_CREATE_SOURCE="'+str(out / "create-save.inc")+'"',
+                       '-DCASE_QUERY_OUTPUT='+str(int('SaveDirectoryCase *policy' in namespace_source)),
                        '-DFIND_SCAN_SOURCE="'+str(definition)+'"', str(out / "port/platform/common/save_names.cpp"),
                        str(out / "port/platform/windows/save_namespace.cpp"), str(out / "port/tools/tests/save_namespace_driver.cpp"),
                        "-o",str(binary)]
@@ -239,12 +244,29 @@ int CompareStringOrdinal(const WCHAR *, int, const WCHAR *, int, BOOL);
                 compiled = subprocess.run(command,stdout=log,stderr=subprocess.STDOUT,env=env,timeout=90)
             if compiled.returncode: raise RuntimeError("compile failed: "+label+".build.log")
             return binary
+        create = re.findall(r'^int CPCMemoryCard::CreateSave\([^\n]*\)[^\n]*\n\{\n.*?^\}',(out/'PCMemoryCard.cpp').read_text(),re.M|re.S)
+        if len(create)!=1:raise RuntimeError('expected complete patched CreateSave caller')
+        (out/'create-save.inc').write_text(create[0]+'\n');receipt['inputs']['create-save.inc']=sha(out/'create-save.inc')
         namespace_binary = build_namespace("namespace")
         for case in ("overlay","overlay-disagreement","same-root","distinct","ascii-overlay","resource-overlay","lookup","case-disagreement","lookup-error","identity-disagreement","identity-denied",
                      "reserve","already-exists","reserve-invalid","case-sensitive","directory-missing","directory-denied","query-denied","old-windows",
                      "fileid-same","fileid-upper64","fileid-volume-upper","fileid-unsupported","fileid-bytes",
                      "fileid-failure-zero","fileid-query-error-preserved","fileid-both-queries-zero"):
             scan_run(namespace_binary,case)
+        for case in ('query-known','query120','case-flags2','query-zero','directory-open-zero','directory-close-zero','directory-close-denied','query-denied-close-zero'):
+            scan_run(namespace_binary,case)
+        coupled_cases=('unknown-valid','unknown-uppercase','unknown-same-root','unknown-cross-root','unknown-short-alias',
+                       'unknown-partial-enum','unknown-enum-open-zero','unknown-enum-next-zero','unknown-enum-close-zero','unknown-enum-close-denied',
+                       'unknown-hidden-alias','unknown-system-alias','unknown-directory-alias',
+                       'unknown-between-prelookup-reserve','unknown-between-absence-create','unknown-after-reserve',
+                       'unknown-query-denied','unknown-known-sensitive')
+        for case in coupled_cases:run(namespace_binary,case)
+        if args.query_baseline:
+            copied=out/'query-baseline.cpp';shutil.copyfile(args.query_baseline,copied);receipt['inputs'][copied.name]=sha(copied)
+            old_query=build_namespace('query-baseline',namespace_source=copied.read_text())
+            run(old_query,'unknown-valid',1)
+            stdout=(out/'query-baseline-unknown-valid/stdout.txt').read_text()
+            if 'result=1 error=120' not in stdout:raise RuntimeError('old query caller failed without reproducing120')
         if args.identity_baseline:
             copied=out/"identity-baseline.cpp"
             shutil.copyfile(args.identity_baseline,copied)

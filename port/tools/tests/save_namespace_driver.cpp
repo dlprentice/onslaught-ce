@@ -3,15 +3,27 @@
 #define main UnusedFindScanHarnessMain
 #include "save_find_driver.cpp"
 #undef main
+#ifdef SAVE_CARD_CREATE_SOURCE
+#include "save_query_fixture.h"
+#endif
 static WIN32_FIND_DATAA Entry(const char *name)
 {
 	WIN32_FIND_DATAA entry = {}; strcpy(entry.cFileName,name); return entry;
 }
 int main(int argc, char **argv)
 {
-	if (argc != 2) return 2;
+	if (argc != 2 && argc != 3) return 2;
 	std::string test = argv[1];
-	if (test == "overlay" || test == "overlay-disagreement" || test == "same-root" || test == "distinct" || test == "ascii-overlay" || test == "resource-overlay")
+	if(test.compare(0,8,"unknown-")==0)
+	{
+#ifdef SAVE_CARD_CREATE_SOURCE
+		if(argc!=3)return 2;
+		CoupledCreate(test,argv[2]);
+#else
+		return 2;
+#endif
+	}
+	else if (test == "overlay" || test == "overlay-disagreement" || test == "same-root" || test == "distinct" || test == "ascii-overlay" || test == "resource-overlay")
 	{
 		if(test=="overlay-disagreement") nativeFault="identity-disagreement";
 		Find f = {}; f.saveNames = test != "resource-overlay";
@@ -42,12 +54,21 @@ int main(int argc, char **argv)
 		Check(result==(test=="already-exists"?80u:test=="reserve-invalid"?123u:0u),"reservation result");
 		Check(creates==(test=="reserve-invalid"?0u:1u) && reservations==(test=="reserve"?1u:0u),"invalid/existing reservation changed file");
 	}
-	else if (test == "case-sensitive" || test == "directory-missing" || test == "directory-denied" || test == "query-denied" || test == "old-windows")
+	else if (test == "case-sensitive" || test == "directory-missing" || test == "directory-denied" || test == "query-denied" || test == "old-windows" ||
+		test=="query-known" || test=="query120" || test=="case-flags2" || test=="query-zero" || test=="directory-open-zero" ||
+		test=="directory-close-zero" || test=="directory-close-denied" || test=="query-denied-close-zero")
 	{
 		nativeFault=test; WCHAR path[]={'C',':','\\','s','a','v','e','g','a','m','e','s','\\','*',0};
+		if(test=="query120")caseQueryError=120;
+#if CASE_QUERY_OUTPUT
+		SaveDirectoryCase policy=SAVE_CASE_KNOWN_INSENSITIVE;
+		unsigned result=SaveDirectoryCasePolicy(path,&policy);
+		Check(policy==(test=="query-known"?SAVE_CASE_KNOWN_INSENSITIVE:SAVE_CASE_QUERY_UNKNOWN),"failed/unsupported policy claimed known-insensitive");
+#else
 		unsigned result=SaveDirectoryCasePolicy(path);
-		Check(result==(test=="case-sensitive"?50u:test=="directory-denied"||test=="query-denied"?5u:0u),"directory policy admitted unsupported/denied state or rejected ordinary old OS");
-		Check(!creates && directoryOpens==1 && closesNative==(test=="directory-missing"||test=="directory-denied"?0u:1u),"directory policy ownership/write");
+#endif
+		Check(result==(test=="case-sensitive"||test=="case-flags2"?50u:test=="query-zero"||test=="directory-close-zero"||test=="directory-open-zero"?31u:test=="directory-denied"||test=="query-denied"||test=="directory-close-denied"||test=="query-denied-close-zero"?5u:0u),"directory policy admitted unsupported/denied state or rejected ordinary old OS");
+		Check(!creates && directoryOpens==1 && closesNative==(test=="directory-missing"||test=="directory-denied"||test=="directory-open-zero"?0u:1u),"directory policy ownership/write");
 	}
 	else if(test=="fileid-same" || test=="fileid-upper64" || test=="fileid-volume-upper" || test=="fileid-unsupported" || test=="fileid-bytes")
 	{

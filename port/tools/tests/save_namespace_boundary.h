@@ -7,6 +7,9 @@
 #define ERROR_NOT_SUPPORTED 50
 #define ERROR_NOT_ENOUGH_MEMORY 8
 #define ERROR_INVALID_PARAMETER 87
+#define ERROR_CALL_NOT_IMPLEMENTED 120
+#define ERROR_NO_UNICODE_TRANSLATION 1113
+#define ERROR_FILE_EXISTS 80
 #define ERROR_GEN_FAILURE 31
 #define FILE_READ_ATTRIBUTES 128
 #define FILE_SHARE_READ 1
@@ -28,6 +31,7 @@ struct BY_HANDLE_FILE_INFORMATION { DWORD dwVolumeSerialNumber, nFileIndexHigh, 
 struct FILE_ID_128 { unsigned char Identifier[16]; };
 struct FILE_ID_INFO { uint64_t VolumeSerialNumber; FILE_ID_128 FileId; };
 enum { FileIdInfo = 18, FileCaseSensitiveInfo = 23 };
+enum SaveDirectoryCase { SAVE_CASE_QUERY_UNKNOWN, SAVE_CASE_KNOWN_INSENSITIVE };
 enum Mode { READ, WRITE, SHADOW };
 static unsigned creates, directoryOpens, closesNative, reservations;
 static unsigned identityReads, identityOpens;
@@ -35,6 +39,9 @@ static unsigned identityHandles, identityCloses;
 static char gUserDir[] = "user";
 static bool nativeExists = true;
 static std::string nativeFault;
+static DWORD caseQueryError;
+static void (*beforeReserve)();
+static HANDLE (*reserveFixture)(const WCHAR *);
 void SetLastError(DWORD value) { error = value; }
 static WCHAR NativeFold(WCHAR c) { return c >= 'A' && c <= 'Z' ? WCHAR(c + 32) : c == 0xc9 ? WCHAR(0xe9) : c; }
 int CompareStringOrdinal(const WCHAR *a, int alen, const WCHAR *b, int blen, BOOL ignoreCase)
@@ -59,7 +66,7 @@ static int Resolve(const char *path, Mode mode, char *out, size_t size)
 	snprintf(out,size,"%s\\%s", mode == READ ? "game" : "user",path); return 0;
 }
 static bool Exists(const char *) { return nativeExists; }
-static HANDLE CreateFileW(const WCHAR *, DWORD access, DWORD share, void *, DWORD disposition, DWORD flags, void *)
+static HANDLE CreateFileW(const WCHAR *path, DWORD access, DWORD share, void *, DWORD disposition, DWORD flags, void *)
 {
 	if (disposition == OPEN_EXISTING)
 	{
@@ -75,10 +82,13 @@ static HANDLE CreateFileW(const WCHAR *, DWORD access, DWORD share, void *, DWOR
 		Check(access == FILE_READ_ATTRIBUTES && share == 7 && flags == FILE_FLAG_BACKUP_SEMANTICS,"directory policy handle flags");
 		if (nativeFault == "directory-missing") { error = ERROR_PATH_NOT_FOUND; return INVALID_HANDLE_VALUE; }
 		if (nativeFault == "directory-denied") { error = 5; return INVALID_HANDLE_VALUE; }
+		if (nativeFault == "directory-open-zero") { error=0;return INVALID_HANDLE_VALUE; }
 		return (HANDLE)2;
 	}
 	creates++;
+	if (beforeReserve) beforeReserve();
 	Check(disposition == CREATE_NEW && access == GENERIC_WRITE && !share && flags == FILE_ATTRIBUTE_NORMAL,"reservation was not exclusive CREATE_NEW");
+	if (reserveFixture) return reserveFixture(path);
 	if (nativeFault == "already-exists") { error = 80; return INVALID_HANDLE_VALUE; }
 	reservations++; return (HANDLE)3;
 }
@@ -122,13 +132,17 @@ static BOOL GetFileInformationByHandleEx(HANDLE, int infoClass, void *output, un
 	}
 	Check(infoClass == FileCaseSensitiveInfo && size == sizeof(FILE_CASE_SENSITIVE_INFO),"case policy query changed");
 	if (nativeFault == "old-windows") { error = ERROR_INVALID_PARAMETER; return false; }
-	if (nativeFault == "query-denied") { error = 5; return false; }
-	static_cast<FILE_CASE_SENSITIVE_INFO *>(output)->Flags = nativeFault == "case-sensitive" ? 1 : 0;
+	if (caseQueryError) {error=caseQueryError;return false;}
+	if (nativeFault == "query-denied" || nativeFault=="query-denied-close-zero") { error = 5; return false; }
+	if (nativeFault == "query-zero") { error = 0; return false; }
+	static_cast<FILE_CASE_SENSITIVE_INFO *>(output)->Flags = nativeFault == "case-sensitive" ? 1 : nativeFault=="case-flags2"?2:0;
 	return true;
 }
 static BOOL CloseHandle(HANDLE handle)
 {
 	closesNative++;
+	if(handle==(HANDLE)2 && (nativeFault=="directory-close-zero" || nativeFault=="directory-close-denied" || nativeFault=="query-denied-close-zero"))
+	{error=nativeFault=="directory-close-denied"?5:0;return false;}
 	if(uintptr_t(handle)>=5)
 	{
 		identityCloses++;unsigned position=unsigned(uintptr_t(handle)-4);
