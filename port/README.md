@@ -1,7 +1,7 @@
 # Native port (Linux and Windows)
 
 Status: active (both targets build, link and run the game; Linux replays are compared with retail Present by Present, see PARITY.md; native Windows acceptance uses a software-rendered VM, not physical-GPU validation)
-Last updated: 2026-10-25 (native Windows validation scope; public release commands and private-path scan)
+Last updated: 2026-10-26 (Windows 0.1.5 updater migration and native validation scope)
 Summary: a second build of the decompilation's sources as native i686 Linux and Windows programs; layout, ownership,
 commands and rules.
 
@@ -36,6 +36,23 @@ and the repository (scratch space, archive drives) are not scanned, so set it to
 "not shippable" for any still missing; `package.py` refuses such a build and any binary that still names a private
 path. The launcher and updater, and what the signed feed holds, are in [updater/README.md](updater/README.md). No game
 files are packaged: the launcher reads the player's own install. There is no telemetry.
+
+### Windows 0.1.5 manual upgrade
+
+The published 0.1.5 launcher has a UTF-8 manifest without a requested execution level. Its update helper is a copy
+of that old executable named `onslaught-ce-update.exe`. In an ordinary Windows 11 session, identical packaged bytes
+run successfully as `neutral.exe` but fail to create with error 740 under the helper name. Published 0.1.6 already
+embeds `asInvoker`; both names print its version and exit normally in the same controlled route.
+
+Affected Windows users need a one-time manual ZIP upgrade: close CE, back up the existing user folder, extract
+0.1.6 or later into a new empty writable folder, then run that folder's launcher with the same Windows account and
+`BEA_USER_DIR` setting, if any. Keep the old program folder and user-data backup until the version, careers and
+settings are checked. Do not merge old executables/DLLs into the new folder or overwrite the original game.
+Administrator execution and disabled UAC are not required workarounds.
+
+The complete player steps live in the [player README](https://github.com/dlprentice/onslaught-ce#windows-upgrading-from-015).
+This filename contrast is a bounded startup finding, not a production-feed takeover result. Ordinary Windows
+automatic updating from the manifested 0.1.6 launcher to a legitimate higher version remains to be validated.
 
 ## Layout and owners
 

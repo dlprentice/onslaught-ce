@@ -26,9 +26,30 @@ into the launcher before anything in the file is used; a feed that fails is igno
 newer version (and it was not skipped), the launcher asks: Update, Later, or Skip this version. On Update it downloads the
 platform's archive (only from this project's GitHub release downloads, whatever the feed says) beside the install, checks its SHA-256 from the verified feed, unpacks it with the system `tar`, and
 renames the install to `<folder>.old-<version>` and the new folder into its place (on Windows a copy of the launcher in
-`%TEMP%` does the renames after the launcher exits). Any failure leaves the installed version as it was. The old folder
-is removed on the next start. Nothing else is sent: no identifiers, no telemetry. Off: `update_check=0` in `ce.ini` or
+`%TEMP%` does the renames after the launcher exits). Check the installed version and actual process outcome before
+assuming a failed or interrupted attempt completed; cached downloads, unpacked files or temporary helpers can remain.
+Nothing else is sent: no identifiers, no telemetry. Off: `update_check=0` in `ce.ini` or
 `BEA_NO_UPDATE_CHECK=1`. `--update-only` checks (and updates) without starting the game; `--version` prints the version.
+
+### Windows 0.1.5 startup boundary
+
+The published 0.1.5 executable lacks `requestedExecutionLevel` in its otherwise present UTF-8 manifest. Because
+the Windows updater runs a copy of its **current** launcher under the name `onslaught-ce-update.exe`, a new package
+cannot supply the missing declaration before that old helper starts. In the tested ordinary Windows 11 session,
+the byte-identical 0.1.5 executable prints its version under a neutral name but CreateProcess refuses the helper
+name with `ERROR_ELEVATION_REQUIRED` (740). The full update attempt separately observed its old helper terminate with
+`STATUS_ELEVATION_REQUIRED` (`0xC000042C`) before command parameters were readable. Those are different observed failure
+forms; neither is proof that the command arguments were wrong.
+
+Published 0.1.6 already includes `asInvoker`/`uiAccess="false"` in the embedded manifest. Its packaged executable
+prints its version and exits 0 under both names with the same ordinary token and SDL dependency. This fits
+[Windows' documented installer detection](https://learn.microsoft.com/en-us/windows/security/application-security/application-control/user-account-control/architecture)
+for 32-bit applications without a requested execution level. It is not a complete update/takeover test.
+
+Use the [manual ZIP migration](https://github.com/dlprentice/onslaught-ce#windows-upgrading-from-015) for affected 0.1.5 installs,
+preserving the existing user folder and a verified recovery copy. Do not request administrator rights, disable UAC,
+alter compatibility policy or weaken critical-process/argv checks to certify the old path. A production-feed update
+from the manifested 0.1.6 launcher to a legitimate higher release remains pending.
 
 Tests use `BEA_UPDATE_FEED` (another feed, which may then be a `file://` URL) and `BEA_UPDATE_ANSWER` (update, later or
 skip, instead of the dialog); the signature and hash rules are unchanged.

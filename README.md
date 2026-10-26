@@ -177,13 +177,35 @@ report any problems; see Known limitations and the release notes for the routes 
 
 ## Update, move and uninstall
 
-- **Update:** the launcher offers each new release when it starts (below). You can also download a new package and
-  extract it in place of the old folder: your careers and settings are in your user folder, not the program folder.
+- **Update:** the launcher offers each new release when it starts (below). For a manual update, close CE and extract
+  the new package into a new, empty folder. Keep your existing user folder and point your shortcut at the new launcher.
+  Windows 0.1.5 users should follow the [one-time upgrade steps](#windows-upgrading-from-015) below.
 - **Move:** the program folder can live anywhere; move it as a whole. The launcher remembers your game folder in
   `ce.ini` (`gamedir`); if the game moves, it logs why the remembered folder no longer works and searches again, or
   set `BEA_GAME_DIR` to the new folder.
 - **Uninstall:** delete the program folder. To remove your careers and settings too, delete your user folder
   (`~/.local/share/onslaught-ce` or `%APPDATA%\Onslaught CE`). Keep any careers you want before deleting that folder.
+
+### Windows: upgrading from 0.1.5
+
+Windows can mistake 0.1.5's update helper for an installer and refuse to start it with ordinary permissions.
+The fix is already in 0.1.6, but the old launcher can fail before installing it. Use the Windows ZIP once:
+
+1. Close CE and its launcher. Copy your existing `%APPDATA%\Onslaught CE` folder to a separate backup location.
+   If you use `BEA_USER_DIR`, back up that folder instead and keep using the same setting. Check that the recovery
+   copy contains your careers and `ce.ini` before continuing.
+2. Download the Windows ZIP from [release 0.1.6](https://github.com/dlprentice/onslaught-ce/releases/tag/v0.1.6)
+   or a newer release. Extract it into a **new, empty folder writable by your Windows account**, separate from your
+   original Battle Engine Aquila installation. Keep the old CE folder; do not merge its executable or DLLs into the new one.
+3. Run the new folder's `onslaught-ce.exe` normally, using the same Windows account and user-folder setting.
+   It uses your existing careers, settings and remembered game location. Do not copy them into the program folder.
+   This workaround does not require **Run as administrator** or disabling Windows' User Account Control.
+4. Check the version in **Onslaught CE > About**, and check your careers and settings before retiring the old folder.
+   Update any shortcut to the new launcher. Keep your recovery copy.
+
+The packaged 0.1.6 launcher prints its version with ordinary permissions under a neutral filename and the update-helper
+name in the tested Windows 11 session. A complete automatic upgrade **from 0.1.6 to a newer release** still needs
+end-to-end validation; this startup check is not that result.
 
 ## Updates and privacy
 
@@ -194,8 +216,9 @@ report any problems; see Known limitations and the release notes for the routes 
   version and OS in its address; nothing is posted until you submit it.
 - **Update check:** each time it starts, the launcher checks the release feed (a signed `latest.json` on this
   repository's Releases). If a newer version exists, it asks **Update / Later / Skip this version**.
-- **Verification:** each update is checked against its Ed25519 signature and its SHA-256 hash before anything is
-  written, and is downloaded only from this repository's releases. A failed or tampered update changes nothing.
+- **Verification:** the launcher verifies the feed's Ed25519 signature and the downloaded package's SHA-256 before
+  installing that package, and downloads it only from this repository's releases. Verification failure refuses the
+  package. A failed attempt can leave downloaded or temporary files; check the installed version before assuming an update completed.
 - **Opting out:** set `BEA_NO_UPDATE_CHECK=1`, or put `update_check=0` in `ce.ini`.
 
 ## Screen modes and widescreen
@@ -278,6 +301,8 @@ of the tutorial (through its third zone; the final drone fight is still being co
 
 ## Known limitations
 
+- The Windows 0.1.5 updater can fail before starting its helper. Use the [one-time manual upgrade](#windows-upgrading-from-015)
+  to 0.1.6. Automatic takeover from 0.1.6 to a later release is not yet validated.
 - Windows checks cover Wine and one Windows 11 virtual machine using Microsoft's software renderer, not a PC with
   a real graphics card. During the 0.1.3 release checks, that VM updated 0.1.2 to 0.1.3, restarted, and the installed
   files matched the published package. An earlier attempt fetched no feed; a later retry succeeded. The
