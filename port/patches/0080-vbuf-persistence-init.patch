@@ -1,0 +1,11 @@
+--- a/vbuftexture.cpp
++++ b/vbuftexture.cpp
+@@ -43,6 +43,8 @@
+ //******************************************************************************************
+ CVBufTexture::CVBufTexture(CDXTexture *texture)	// FUNCTION: 0x005003f0
+ {
++	// Port (0080): a reused allocation must not inherit another owner's persistent batch.
++	mPersist = false;
+ 	mFVF = 0;
+ 	mVUsage = 0;
+ 	mVB[0] = NULL;

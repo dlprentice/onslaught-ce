@@ -1,0 +1,39 @@
+--- a/OggFileRead.cpp
++++ b/OggFileRead.cpp
+@@ -274,8 +274,15 @@
+ 	ogg_sync_clear(&mSync);
+ 
+ 	TRACE("Done.\n");
++#ifdef CE_VERSION
++	// Keep actual FILE errors distinct from normal completion without changing the reader's layout or PCM count.
++	int portReadError = ferror(mFile);
++	int portCloseResult = fclose(mFile);
++	mState = portReadError || portCloseResult ? 0 : 3;
++#else
+ 	mState = 0;
+ 	fclose(mFile);
++#endif
+ 	mFile = NULL;
+ 	return total;
+ }
+@@ -333,6 +340,10 @@
+ //******************************************************************************************
+ HRESULT	COggFileRead::Read(UINT size, BYTE *data, UINT *size_read)	// FUNCTION: 0x00524710
+ {
++#ifdef CE_VERSION
++	// The music worker deliberately requests two more silent halves while draining a completed stream.
++	if (mState == 3) { *size_read = 0; return S_FALSE; }
++#endif
+ 	if (!mFile && !mMemSize)
+ 	{
+ 		*size_read = 0;
+@@ -351,6 +362,9 @@
+ //******************************************************************************************
+ HRESULT	COggFileRead::Close()	// FUNCTION: 0x00524770
+ {
++#ifdef CE_VERSION
++	mState = 0; // Close/Open must not retain a previous stream's EOF status after its file was closed by Decode.
++#endif
+ 	if (mFile)
+ 	{
+ 		ogg_stream_clear(&mStream);

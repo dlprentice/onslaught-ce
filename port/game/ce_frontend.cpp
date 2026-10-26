@@ -569,11 +569,14 @@ CMenuOptionsList	*PortCeCheatsList(float y)
 // takes input exactly as the options page's do.
 static const char kSpecialThanks[] =
 	"Special Thanks\n\n"
-	"Lost Toys - Battle Engine Aquila.\n"
-	"Stuart Gillam - source release.\n"
-	"The Onslaught CE contributors.\n\n"
-	"BEA community testers and\npreservation projects.\n"
-	"People sharing fixes and\nworking with coding agents.\n\n"
+	"Lost Toys - original game.\n"
+	"Stuart Gillam (Discord: desimbr)\n"
+	"Help, insight, guidance.\n\n"
+	"Early Discord testers:\n"
+	"Jeppi, BermudaMaster.\n\n"
+	"Onslaught CE contributors.\n"
+	"BEA community and\npreservation projects.\n"
+	"Everyone sharing fixes\nand guiding coding agents.\n\n"
 	"Original game credits: Credits.";
 
 enum ECeAction

@@ -1,7 +1,7 @@
 # Onslaught CE
 
 Status: active preview
-Last updated: 2026-10-25
+Last updated: 2026-10-26
 Summary: the native Battle Engine Aquila port, its installation requirements, download verification and source build.
 
 A native port of *Battle Engine Aquila*; you need your own copy.
@@ -114,8 +114,9 @@ awk -v package="$package" '
 2. The tarball bundles dxvk-native, SDL3, libxkbcommon and the FFmpeg shared libraries.
 3. It needs **glibc 2.29 or newer** (`ldd --version` shows yours) and a **32-bit Vulkan 1.3 driver** that offers what
    its graphics layer (dxvk 3.1) requires: among other extensions `VK_KHR_load_store_op_none`, `VK_KHR_maintenance5`
-   and `VK_KHR_maintenance6`, and 256 bytes of push constants. On older distributions the graphics driver, not glibc,
-   is what stops it. Found on test systems: the Mesa drivers of Ubuntu 22.04 (23.2) and Debian 12 (22.3) do not have
+   and `VK_KHR_maintenance6`. It also requires 256 bytes of push constants when DXVK's descriptor-heap path is not
+   enabled; extension presence alone does not establish that path is usable. On older distributions the graphics
+   driver, not glibc, is what stops it. Found on test systems: the Mesa drivers of Ubuntu 22.04 (23.2) and Debian 12 (22.3) do not have
    those extensions (Debian 12 has Mesa 25.0 in `bookworm-backports`), and Fedora 40's Intel driver (Mesa 24.1) offers
    only 128 bytes of push constants and is refused, while its software driver (lavapipe, the same Mesa) is accepted.
    AMD (RADV) and NVIDIA drivers have not been tried on those distributions. The preflight check below says when your
@@ -329,6 +330,11 @@ builds such as `dev` use numeric 0.0.0.0. The game's `bea.exe` keeps its separat
 
 `python3 port/tools/build_tests.py` checks launcher version parsing and resource linking without building the game.
 
+After completing the Linux build, `python3 port/tools/audio_eof_tests.py` checks the actual Ogg reader and music
+worker with generated audio and controlled buffer endpoints. It also needs a host `ffmpeg` command with the
+`libvorbis` encoder; the pinned decoder-only FFmpeg libraries do not provide that command. This check does not
+launch the game or open an audio device.
+
 - `port/deps.lock` pins every downloaded input by URL and SHA-256.
 - One input comes prebuilt: libvorbis, built with the game's original compiler. It is fetched from this repository's
   release assets, with its source and build script.
@@ -355,7 +361,8 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) (contributions are GPL-3.0-only; never in
 ## Credits and special thanks
 
 - **Lost Toys**, for the original game
-- **Stuart Gillam**, for the source release
+- **Stuart Gillam** (**desimbr** on Discord), for his help, insight and guidance
+- **Jeppi** and **BermudaMaster** on Discord, for early testing and helpful reports
 - **The Onslaught CE contributors**
 - **The Battle Engine Aquila community and preservation projects**, including everyone testing, reporting issues
   and sharing fixes, and the people guiding and reviewing work with coding agents
