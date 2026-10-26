@@ -421,17 +421,42 @@ def build_ffmpeg(rows, target):
 
 
 # The public build links FFmpeg dynamically (the player can replace the LGPL libraries): the same configuration as shared
-# libraries, installed under FFMPEG_SHARED/<target>. Configured with neutral names (--prefix=/usr through DESTDIR, the
+# libraries, installed under ffmpeg_shared_prefix(target). Configured with neutral names (--prefix=/usr through DESTDIR, the
 # compilers by name from PATH) because libavutil exports its configure line (avutil_configuration).
-FFMPEG_SHARED = DATA / (f"ffmpeg-shared-{SYSROOT_NAME}" if SYSROOT else "ffmpeg-shared")
+FFMPEG_ABI = (("avformat", 61), ("avcodec", 61), ("avutil", 59))
+
+
+def ffmpeg_shared_prefix(target):
+    """Installed shared FFmpeg for this target. Linux sysroots never rename the Windows dependency tree."""
+    if target not in ("linux", "windows"):
+        raise ValueError(f"unknown FFmpeg target: {target}")
+    suffix = f"-{SYSROOT_NAME}" if target == "linux" and SYSROOT else ""
+    return DATA / f"ffmpeg-shared{suffix}" / target
+
+
+def ffmpeg_shared_files(target, runtime=False):
+    """The three pinned link inputs or runtime files; one naming contract for build and package consumers."""
+    prefix = ffmpeg_shared_prefix(target) / "usr"
+    if target == "windows":
+        return tuple(prefix / ("bin" if runtime else "lib") / (f"{name}-{abi}.dll" if runtime else f"lib{name}.dll.a")
+                     for name, abi in FFMPEG_ABI)
+    return tuple(prefix / "lib" / (f"lib{name}.so.{abi}" if runtime else f"lib{name}.so") for name, abi in FFMPEG_ABI)
+
+
+def require_ffmpeg_shared(target):
+    """Refuse an incomplete public dependency tree before a linker can fall through to private static archives."""
+    inputs = ffmpeg_shared_files(target)
+    missing = [path for path in (*inputs, *ffmpeg_shared_files(target, runtime=True)) if not path.is_file()]
+    if missing:
+        raise SystemExit(f"public {target} FFmpeg shared inputs missing:\n  " + "\n  ".join(map(str, missing)))
+    return inputs
 
 
 def build_ffmpeg_shared(rows, target):
     src = unpack(rows["FFmpeg"], SRC)
     out = (BUILD if target == "linux" else BUILD_WIN) / f"ffmpeg-shared-{target}"
-    dest = FFMPEG_SHARED / target
-    marker = dest / ("usr/lib/libavcodec.so" if target == "linux" else "usr/lib/libavcodec.dll.a")
-    if marker.exists():
+    dest = ffmpeg_shared_prefix(target)
+    if all(path.is_file() for path in (*ffmpeg_shared_files(target), *ffmpeg_shared_files(target, runtime=True))):
         return
     out.mkdir(parents=True, exist_ok=True)
     # The compiler as a wrapper on PATH (ffcc) that maps the source and build directories in __FILE__ and debug
@@ -458,6 +483,7 @@ def build_ffmpeg_shared(rows, target):
     run([src / "configure", "--prefix=/usr", "--enable-shared", "--disable-static"] + common + extra, env, cwd=out)
     run(["make", f"-j{min(8, os.cpu_count())}"], env, cwd=out)
     run(["make", "install", f"DESTDIR={dest}"], env, cwd=out)
+    require_ffmpeg_shared(target)
 
 
 def build(rows, targets):

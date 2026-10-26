@@ -15,6 +15,8 @@
 
 #include "platform.h"
 extern "C" unsigned PortPresentCount(void);	// d3d9hooks.cpp
+bool PortDinputOwnsMouseEvent(Uint64 timestamp);	// dinput.cpp: current capture and queued events from completed captures
+bool PortRecordInputSpace(unsigned slots);	// replay.cpp: fail capture before deferring an unrepresentable input
 
 #if defined(_WIN32)
 #define WIN32_PASSTHROUGH(call) if (!Find(h)) return call;
@@ -67,7 +69,7 @@ SDL_Window *Sdl(HWND h)
 // Messages posted for the game (SDL events translated, PostMessage, WM_QUIT).
 MSG gQueue[256];
 int gHead, gTail;
-bool gReleasePending;	// a message was dropped: release every key the port holds down once the game has drained the ring
+bool gReleasePending;	// release repair or a focus-loss release batch is waiting for space in the ring
 
 // BEA_PORT_INPUT_LOG: keys down and up (scan code, keycode, virtual key), drops, synthetic releases, focus.
 bool InputLog()
@@ -80,7 +82,7 @@ bool InputLog()
 
 int Free() { return 255 - (gTail - gHead + 256) % 256; }
 
-void Post(HWND h, UINT msg, WPARAM w, LPARAM l)
+bool Post(HWND h, UINT msg, WPARAM w, LPARAM l)
 {
 	int next = (gTail + 1) % 256;
 	if (next == gHead)
@@ -91,7 +93,7 @@ void Post(HWND h, UINT msg, WPARAM w, LPARAM l)
 			fprintf(stderr, PORT_LOG_PREFIX "input: queue full, message %04x (%08lx, %08lx) dropped\n", msg, (unsigned long)w, (unsigned long)l);
 		drops++;
 		gReleasePending = true;
-		return;
+		return false;
 	}
 	MSG &m = gQueue[gTail];
 	m.hwnd = h;
@@ -101,6 +103,7 @@ void Post(HWND h, UINT msg, WPARAM w, LPARAM l)
 	m.time = (DWORD)SDL_GetTicks();
 	m.pt.x = m.pt.y = 0;
 	gTail = next;
+	return true;
 }
 
 // The player's mouse movement, coalesced as Windows does (WM_MOUSEMOVE is made from the latest position when the queue
@@ -355,9 +358,16 @@ void SyntheticKeyUp(unsigned scan, const char *why)
 		fprintf(stderr, PORT_LOG_PREFIX "input: synthetic key up scan %03x vk %02x (%s) (%s)\n", scan, k.vk,
 				SDL_GetScancodeName(k.sdl), why);
 	if (PortRecording())
+	{
+		if (!PortRecordInputSpace(1))
+		{
+			gReleasePending = true;
+			return;	// the recorder has not accepted this release; retain physical-key ownership for the next Present
+		}
 		PortRecordKey(false, k.vk, scan);
-	else
-		Post(MainWindow(), WM_KEYUP, k.vk, KeyLParam(scan, true, false));
+	}
+	else if (!Post(MainWindow(), WM_KEYUP, k.vk, KeyLParam(scan, true, false)))
+		return;	// keep ownership until a later pump can enqueue this release; Post requested that retry
 	k.down = false;
 	k.released = true;
 	gHeld--;
@@ -366,7 +376,16 @@ void SyntheticKeyUp(unsigned scan, const char *why)
 void ReleaseAll(const char *why)
 {
 	for (unsigned s = 1; s < 0x200 && gHeld > 0; s++)
-		SyntheticKeyUp(s, why);
+		if (gKeys[s].down)
+		{
+			// Leave room for the focus notifications after these releases. A later pump drains the rest.
+			if (!PortRecording() && Free() <= 2)
+			{
+				gReleasePending = true;
+				break;
+			}
+			SyntheticKeyUp(s, why);
+		}
 }
 
 // Every key the port holds down that SDL reports up gets its key-up now.
@@ -626,24 +645,48 @@ void Pump()
 		gReleasePending = false;
 		ReleaseAll("after a dropped message");
 	}
+	if (gReleasePending)
+		return;	// finish the older key lifetimes before admitting a new press after focus recovery
 	SDL_Event e;
+	static SDL_Event deferred;
+	static bool haveDeferred;
 	// SDL's own queue holds the rest of a backlog (tens of thousands of events): stop short of filling the ring, so the
 	// player's events are delayed to the next pump, never dropped.
-	while (Free() > 16 && SDL_PollEvent(&e))
+	while (Free() > 16)
 	{
+		if (haveDeferred)
+			e = deferred;
+		else if (!SDL_PollEvent(&e))
+			break;
+		// Hold at most one dequeued event and leave the SDL tail untouched. Normal input keeps the existing pump;
+		// after capture failure, the same bounded record-mode delivery resumes when the next Present frees space.
+		unsigned slots = e.type == SDL_EVENT_KEY_UP ? 1 :
+			e.type == SDL_EVENT_KEY_DOWN || e.type == SDL_EVENT_MOUSE_MOTION ||
+			e.type == SDL_EVENT_MOUSE_BUTTON_DOWN || e.type == SDL_EVENT_MOUSE_BUTTON_UP ||
+			e.type == SDL_EVENT_MOUSE_WHEEL ? 2 : 0;
+		if (slots && PortRecording() && !PortRecordInputSpace(slots))
+		{
+			deferred = e;
+			haveDeferred = true;
+			break;
+		}
+		haveDeferred = false;
 		HWND h = MainWindow();
 		switch (e.type)
 		{
 		case SDL_EVENT_QUIT:
 		case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
+			PortSessionLog(PORT_SESSION_WINDOW, false, "close requested event=%u", (unsigned)e.type);
 			Post(h, WM_CLOSE, 0, 0);
 			break;
 		case SDL_EVENT_WINDOW_FOCUS_GAINED:
+			PortSessionLog(PORT_SESSION_WINDOW, false, "focus gained");
 			if (InputLog()) fprintf(stderr, PORT_LOG_PREFIX "input: focus gained\n");
 			Post(h, WM_ACTIVATEAPP, TRUE, 0);
 			Post(h, WM_ACTIVATE, 1, 0);
 			break;
 		case SDL_EVENT_WINDOW_FOCUS_LOST:
+			PortSessionLog(PORT_SESSION_WINDOW, false, "focus lost");
 			if (InputLog()) fprintf(stderr, PORT_LOG_PREFIX "input: focus lost\n");
 			ReleaseAll("focus lost");
 			if (PortRecording())
@@ -652,14 +695,17 @@ void Pump()
 			Post(h, WM_ACTIVATE, 0, 0);
 			break;
 		case SDL_EVENT_WINDOW_RESIZED:
+			PortSessionLog(PORT_SESSION_WINDOW, false, "logical size=%dx%d", e.window.data1, e.window.data2);
 			if (!PortWideModes())	// HiDPI windows report their size in pixels below, as the client rectangle is
 				Post(h, WM_SIZE, SIZE_RESTORED, MAKELPARAM(e.window.data1, e.window.data2));
 			break;
 		case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
+			PortSessionLog(PORT_SESSION_WINDOW, false, "pixel size=%dx%d", e.window.data1, e.window.data2);
 			if (PortWideModes())
 				Post(h, WM_SIZE, SIZE_RESTORED, MAKELPARAM(e.window.data1, e.window.data2));
 			break;
 		case SDL_EVENT_WINDOW_MINIMIZED:
+			PortSessionLog(PORT_SESSION_WINDOW, false, "minimized");
 			Post(h, WM_SIZE, SIZE_MINIMIZED, 0);
 			break;
 		case SDL_EVENT_WINDOW_RESTORED:
@@ -670,6 +716,8 @@ void Pump()
 			int width = 0, height = 0;
 			if (SDL_Window *w = Sdl(h))
 				SDL_GetWindowSizeInPixels(w, &width, &height);
+			PortSessionLog(PORT_SESSION_WINDOW, false, "%s pixel size=%dx%d",
+				e.type == SDL_EVENT_WINDOW_MAXIMIZED ? "maximized" : "restored", width, height);
 			Post(h, WM_SIZE, e.type == SDL_EVENT_WINDOW_MAXIMIZED ? SIZE_MAXIMIZED : SIZE_RESTORED,
 				 MAKELPARAM(width, height));
 			break;
@@ -686,6 +734,8 @@ void Pump()
 				PortRecordWindowMouse(WM_MOUSEMOVE, MouseLParam(e.motion.x, e.motion.y), 0);
 				break;
 			}
+			if (PortDinputOwnsMouseEvent(e.common.timestamp))
+				break;	// exclusive DirectInput owns game mouse input; recording makes the same choice at Present
 			PostMouseMove(h, MouseButtons(), MouseLParam(e.motion.x, e.motion.y));
 			break;
 		case SDL_EVENT_MOUSE_BUTTON_DOWN:
@@ -703,6 +753,8 @@ void Pump()
 				}
 				break;
 			}
+			if (PortDinputOwnsMouseEvent(e.common.timestamp))
+				break;
 			bool down = e.type == SDL_EVENT_MOUSE_BUTTON_DOWN;
 			UINT msg = 0;
 			if (e.button.button == SDL_BUTTON_LEFT) msg = down ? WM_LBUTTONDOWN : WM_LBUTTONUP;
@@ -719,6 +771,8 @@ void Pump()
 				PortRecordWindowMouse(WM_MOUSEWHEEL, MouseLParam(e.wheel.mouse_x, e.wheel.mouse_y), (short)(e.wheel.y * WHEEL_DELTA));
 				break;
 			}
+			if (PortDinputOwnsMouseEvent(e.common.timestamp))
+				break;	// otherwise the window message and DirectInput both add this wheel delta
 			Post(h, WM_MOUSEWHEEL, MAKEWPARAM(MouseButtons(), (short)(e.wheel.y * WHEEL_DELTA)), 0);
 			break;
 		default:
@@ -795,6 +849,25 @@ extern "C" HWND WINAPI PortCreateWindowExA(DWORD exstyle, LPCSTR cls, LPCSTR tit
 	win.proc = proc;
 	win.style = (LONG)style;
 	win.exstyle = (LONG)exstyle;
+	if (PortSessionEnabled())
+	{
+		int count = 0, logicalW = 0, logicalH = 0, pixelW = 0, pixelH = 0;
+		SDL_DisplayID *displays = SDL_GetDisplays(&count);
+		SDL_free(displays);
+		SDL_DisplayID display = SDL_GetDisplayForWindow(sdl);
+		SDL_Rect bounds{};
+		bool haveBounds = SDL_GetDisplayBounds(display, &bounds);
+		bool haveLogical = SDL_GetWindowSize(sdl, &logicalW, &logicalH);
+		bool havePixels = SDL_GetWindowSizeInPixels(sdl, &pixelW, &pixelH);
+		float scale = SDL_GetWindowDisplayScale(sdl);
+		unsigned scaleBits;
+		memcpy(&scaleBits, &scale, sizeof scaleBits);
+		PortSessionLog(PORT_SESSION_WINDOW, false,
+			"displays=%d selected_display=%u bounds_available=%d bounds=%d,%d,%d,%d "
+			"logical_available=%d logical_size=%dx%d pixels_available=%d pixel_size=%dx%d display_scale_ieee754=%08x",
+			count, (unsigned)display, haveBounds, bounds.x, bounds.y, bounds.w, bounds.h,
+			haveLogical, logicalW, logicalH, havePixels, pixelW, pixelH, scaleBits);
+	}
 	return win.handle;
 }
 
@@ -888,6 +961,12 @@ extern "C" BOOL WINAPI PortPostMessageA(HWND h, UINT m, WPARAM w, LPARAM l)
 {
 	Post(h, m, w, l);
 	return TRUE;
+}
+
+extern "C" BOOL WINAPI PortTryPostMessageA(HWND h, UINT m, WPARAM w, LPARAM l)
+{
+	// Recorder FIFO admission must not drop a message or request physical-key repair when the ring is full.
+	return Free() > 0 && Post(h, m, w, l) ? TRUE : FALSE;
 }
 
 extern "C" LRESULT WINAPI PortSendMessageA(HWND h, UINT m, WPARAM w, LPARAM l)
@@ -1026,6 +1105,22 @@ extern "C" BOOL WINAPI PortGetCursorPos(LPPOINT p)
 		SDL_GetGlobalMouseState(&x, &y);
 	p->x = (LONG)x;
 	p->y = (LONG)y;
+	return TRUE;
+}
+
+// ShutdownMouse needs the cursor in the game's space after releasing relative mode, not a desktop position whose
+// origin can be another monitor. Use the same mapping as mouse messages; a tape already supplies game coordinates.
+extern "C" BOOL PortGetMouseClientPosition(LPPOINT p)
+{
+	if (PortTapeCursor(p))
+		return TRUE;
+	if (!gNumWindows || SDL_GetMouseFocus() != gWindows[0].sdl)
+		return FALSE;
+	float x = 0, y = 0;
+	SDL_GetMouseState(&x, &y);
+	LPARAM mapped = MouseLParam(x, y);
+	p->x = LOWORD(mapped);
+	p->y = HIWORD(mapped);
 	return TRUE;
 }
 

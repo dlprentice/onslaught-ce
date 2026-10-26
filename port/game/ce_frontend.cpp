@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // port/game/ce_frontend.cpp: the CE layer's front-end additions (patch 0050): an "Onslaught CE" action on the main menu
-// opening a page of the game's own options-style list (About, Check for updates, Record sessions, Report a problem,
+// opening a page of the game's own options-style list (About, Special Thanks, Check for updates, Record sessions, Report a problem,
 // Back), and a Cheats page in Options whose switches (ce.ini, patch 0051 at IsCheatActive) work as the cheat codes do in
 // a career's name. Built as a game file (port/build.py) so it uses the game's menu classes; public builds only.
 //
@@ -567,12 +567,22 @@ CMenuOptionsList	*PortCeCheatsList(float y)
 //*********************************************************************************
 // The CE page's menu: a CPauseMenu without the pause menu's lists (patch 0050's constructor), so the list draws and
 // takes input exactly as the options page's do.
+static const char kSpecialThanks[] =
+	"Special Thanks\n\n"
+	"Lost Toys - Battle Engine Aquila.\n"
+	"Stuart Gillam - source release.\n"
+	"The Onslaught CE contributors.\n\n"
+	"BEA community testers and\npreservation projects.\n"
+	"People sharing fixes and\nworking with coding agents.\n\n"
+	"Original game credits: Credits.";
+
 enum ECeAction
 {
 	CEA_NONE = 0,
 	CEA_ABOUT,
 	CEA_UPDATES,
-	CEA_REPORT
+	CEA_REPORT,
+	CEA_THANKS
 };
 
 CPauseMenu::CPauseMenu(EPortCeNoLists) : mActive(FALSE), mPage(0), mCloseTime(-1.f)
@@ -596,6 +606,7 @@ public:
 		static WCHAR title[] = L"Onslaught CE";
 		CMenuOptionsList *list = new (MEMTYPE_MENUITEM) CMenuOptionsList(title, 320.f, 300.f, FALSE, 0xb0000000);
 		list->AddItem(new (MEMTYPE_MENUITEM) CCeMenuItem(L"About Onslaught CE", CEA_ABOUT));
+		list->AddItem(new (MEMTYPE_MENUITEM) CCeMenuItem(L"Special Thanks", CEA_THANKS));
 		list->AddItem(new (MEMTYPE_MENUITEM) CCeMenuItem(L"Check for updates", CEA_UPDATES));
 		list->AddItem(new (MEMTYPE_MENUITEM) CCeRecordSwitch());
 		list->AddItem(new (MEMTYPE_MENUITEM) CCeMenuItem(L"Report a problem", CEA_REPORT));
@@ -674,6 +685,9 @@ public:
 						 FolderText(folder, sizeof(folder), ""));
 			}
 			ShowMessage(text);
+			break;
+		case CEA_THANKS:
+			ShowMessage(kSpecialThanks);
 			break;
 		case CEA_REPORT:
 		{

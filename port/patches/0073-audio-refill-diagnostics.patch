@@ -1,0 +1,91 @@
+--- a/PCMusicStream.cpp
++++ b/PCMusicStream.cpp
+@@ -70,6 +70,50 @@
+ #endif
+ void	PumpMusicStream();
+ 
++#ifdef CE_VERSION
++// A bounded read-only witness of refill timing. Admission is cached before starting the worker; excluded routes
++// never read the observation clock, cursor, voice list or diagnostic sequence. This is underrun risk, not audibility.
++bool PortAudioStreamSnapshot(IDirectSoundBuffer *, unsigned long long *, unsigned long long *, unsigned *, unsigned *);
++static bool sPortRefillDiagnostics;
++static unsigned sPortRefillSequence, sPortRefillNormalLines, sPortRefillRiskLines;
++static unsigned long long sPortRefillLastNs;
++struct CPortRefillObservation
++{
++    unsigned long long ns=0, mixed=0;
++    unsigned voices=0, play=0;
++    bool playing=false;
++};
++static CPortRefillObservation PortRefillObservation()
++{
++    CPortRefillObservation out;
++    if (sPortRefillDiagnostics)
++        out.playing=PortAudioStreamSnapshot(sBuffer,&out.ns,&out.mixed,&out.voices,&out.play);
++    return out;
++}
++static void PortRefillReport(DWORD offset,const CPortRefillObservation &before)
++{
++    if (!sPortRefillDiagnostics) return;
++    CPortRefillObservation after=PortRefillObservation();
++    unsigned long long since=sPortRefillLastNs&&before.ns>=sPortRefillLastNs?before.ns-sPortRefillLastNs:0;
++    unsigned long long elapsed=after.ns>=before.ns?after.ns-before.ns:0;
++    unsigned long long consumed=after.mixed>=before.mixed?after.mixed-before.mixed:0;
++    unsigned requested=offset/STREAM_HALF;
++    bool risk=(before.playing&&before.play/STREAM_HALF==requested)||
++              (after.playing&&after.play/STREAM_HALF==requested)||consumed>=STREAM_HALF/4;
++    ++sPortRefillSequence; sPortRefillLastNs=after.ns;
++    unsigned &lines=risk?sPortRefillRiskLines:sPortRefillNormalLines;
++    if (lines>=(risk?16u:128u)) return;
++    ++lines;
++    PortSessionLog(PORT_SESSION_MUSIC,risk,
++        "refill seq=%u requested_half=%u begin_play_half=%u end_play_half=%u playing=%u/%u "
++        "since_previous_ns=%llu refill_ns=%llu mixer_frames=%llu/%llu total_active_voices=%u/%u "
++        "underrun_risk=%u (own process mixer; not audible-output or second-process proof)",
++        sPortRefillSequence,requested,before.play/STREAM_HALF,after.play/STREAM_HALF,
++        (unsigned)before.playing,(unsigned)after.playing,since,elapsed,before.mixed,after.mixed,
++        before.voices,after.voices,(unsigned)risk);
++}
++#endif
++
+ // Tests HasFormat's result as a bool (test al,al, 00528007) though both readers return BOOL: this file saw a bool
+ // declaration (the PCMUSICSTREAM_CPP views in WavRead.h and OggFileRead.h).
+ DWORD	MusicStreamThread(LPVOID)	// FUNCTION: 0x00527f50
+@@ -131,6 +175,9 @@
+ 		{
+ 		case 0:		// a new track
+ 			sReader->Close();
++#ifdef CE_VERSION
++			if (sPortRefillDiagnostics) { sPortRefillSequence=0; sPortRefillLastNs=0; }
++#endif
+ 			sSilentHalves = 0;
+ 			sBytesStreamed = 0;
+ 			sReader->Open(sTrackName);
+@@ -205,6 +252,9 @@
+ 			case 1:	offset = 0;				break;
+ 			case 2:	offset = STREAM_HALF;	break;
+ 			}
++#ifdef CE_VERSION
++			CPortRefillObservation portRefillBefore=PortRefillObservation();
++#endif
+ 			sBuffer->Lock(offset, STREAM_HALF, &data1, &size1, &data2, &size2, 0);
+ 			HRESULT portRead = sReader->Read(size1, (BYTE *)data1, &got);
+ #ifdef CE_VERSION
+@@ -218,6 +268,9 @@
+ 				sSilentHalves++;
+ 			}
+ 			sBuffer->Unlock(data1, size1, data2, size2);
++#ifdef CE_VERSION
++			PortRefillReport(offset,portRefillBefore);
++#endif
+ 			sBytesStreamed += size1;
+ 			break;
+ 
+@@ -237,6 +290,7 @@
+ #ifdef CE_VERSION
+ 	// Cache admission on the main thread before creating a worker. Faithful/private paths retain their behavior.
+ 	sCeStreamAdmission = PortCeLayer();
++	sPortRefillDiagnostics = PortSessionEnabled();
+ #endif
+ 	WAVEFORMATEX		wfx;
+ 	DSBUFFERDESC		desc;

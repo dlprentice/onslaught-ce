@@ -57,6 +57,22 @@ def main():
     fixed = re.sub(r"^#include[^\n]*\n", "", actual.read_text(), flags=re.M)
     variants = {"released": (code, True, False), "event-only": (code.replace(typo, "ResetEvent(sPlayEvent);"), True, False),
                 "fixed-ce": (fixed, True, True), "fixed-faithful": (fixed, True, False), "fixed-private": (fixed, False, False)}
+    diagnostics = ROOT / "port/patches/0061-session-diagnostics.patch"
+    sections = [part for part in re.split(r"(?=^--- a/)", diagnostics.read_text(), flags=re.M)
+                if part.startswith("--- a/PCMusicStream.cpp\n+++ b/PCMusicStream.cpp\n")]
+    if len(sections) != 1:
+        raise SystemExit("expected one complete diagnostics section for the music worker")
+    applied = subprocess.run(["patch", "--batch", "--fuzz=0", "-p1", "-d", str(source_dir), "-r", "-"],
+                             input=sections[0], capture_output=True, text=True, timeout=10)
+    if applied.returncode:
+        raise SystemExit(applied.stdout + applied.stderr)
+    logged = re.sub(r"^#include[^\n]*\n", "", actual.read_text(), flags=re.M)
+    variants.update({"diagnostic-ce": (logged, True, True), "diagnostic-faithful": (logged, True, False),
+                     "diagnostic-private": (logged, False, False)})
+    (out / "SDL3").mkdir()
+    (out / "SDL3/SDL.h").write_text("#include <cstdint>\nuint64_t SDL_GetTicks();\n")
+    clock = out / "log-clock.cpp"
+    clock.write_text("#include <cstdint>\nuint64_t SDL_GetTicks() { return 0; }\n")
     cases = ("normal", "queued-stop", "consumed-stop", "inflight-stop", "stop-then-play", "restart-same",
              "restart-different", "replace-inflight", "stopped-refill", "refill-new-track", "shutdown-fill",
              "virtual-normal", "empty-start", "no-sound", "reinit", "no-sound-recover")
@@ -69,6 +85,7 @@ def main():
     receipt = {"source_sha256": sha(ROOT / "src/PCMusicStream.cpp"), "patch_sha256": sha(patch),
                "corrected_sha256": sha(actual), "correction_sha256": sha(correction),
                "driver_sha256": sha(ROOT / "port/tools/tests/music_stream_stop_driver.cpp"),
+               "diagnostics_patch_sha256": sha(diagnostics),
                "ce_source_sha256": sha(ce_path), "ce_admission_sha256": sha(admission),
                "compiler": subprocess.run([args.compiler, "--version"], capture_output=True, text=True, check=True).stdout,
                "cases": [], "commands": []}
@@ -81,6 +98,9 @@ def main():
                    '-DMUSIC_SOURCE="' + str(included) + '"',
                    '-DCE_ADMISSION_SOURCE="' + str(admission) + '"',
                    str(ROOT / "port/tools/tests/music_stream_stop_driver.cpp"), "-o", str(binary)]
+        if variant.startswith("diagnostic-"):
+            command += ["-I" + str(out), "-include", str(ROOT / "port/platform/common/portlog.h"),
+                        str(ROOT / "port/platform/common/portlog.cpp"), str(clock)]
         receipt[variant + "_sha256"] = sha(included)
         receipt[variant + "_binary_sha256"] = None
         receipt["commands"].append(command)
@@ -92,7 +112,8 @@ def main():
         env = dict(os.environ)
         for name in ("BEA_PORT_CLOCK", "BEA_PORT_TAPE", "BEA_PORT_PROBES", "BEA_PORT_RECORD", "BEA_PORT_CE_LAYER"):
             env.pop(name, None)
-        for case in (*cases, *(("failed-buffer", "failed-buffer-recover") if serialized else ())):
+        extra = ("read-failed", "format-failed") if variant.startswith("diagnostic-") else ()
+        for case in (*cases, *(("failed-buffer", "failed-buffer-recover") if serialized else ()), *extra):
             proc = subprocess.run([str(binary), case, "ce" if serialized else "faithful"], capture_output=True, text=True, timeout=10, env=env)
             try:
                 observed = json.loads(proc.stdout)
@@ -102,15 +123,31 @@ def main():
             expect = not serialized and (case in ("inflight-stop", "consumed-stop") or
                                          (variant != "event-only" and case == "queued-stop"))
             passed = proc.returncode == 0 and observed.get("after_stop_playing") == expect and observed.get("checks", 0) > 0
+            if variant == "diagnostic-ce" and case in ("read-failed", "format-failed"):
+                passed = passed and ("initial read failed" if case == "read-failed" else "missing or unsupported format") in proc.stderr
+            if variant in ("diagnostic-faithful", "diagnostic-private"):
+                passed = passed and "session pid=" not in proc.stderr
             receipt["cases"].append(dict(variant=variant, case=case, exit=proc.returncode,
                                          expected_after_stop_playing=expect, observed=observed, passed=passed, stderr=proc.stderr))
             if not passed:
                 print(f"FAIL {variant}: {case} {observed} {proc.stderr}", flush=True)
         selected = [case for case in receipt["cases"] if case["variant"] == variant]
         print(f"{variant}: {sum(case['passed'] for case in selected)}/{len(selected)} expected outcomes", flush=True)
+    indexed = {(case["variant"], case["case"]): case["observed"] for case in receipt["cases"]}
+    receipt["unchanged_controls"] = []
+    for newer, older in (("diagnostic-ce", "fixed-ce"), ("diagnostic-faithful", "fixed-faithful"),
+                         ("diagnostic-private", "fixed-private")):
+        for variant, case in indexed:
+            if variant != newer or (older, case) not in indexed:
+                continue
+            same = indexed[newer, case] == indexed[older, case]
+            receipt["unchanged_controls"].append({"variant": newer, "case": case, "passed": same})
+            if not same:
+                print(f"FAIL changed complete worker result: {newer} {case}")
+    print(f"{sum(c['passed'] for c in receipt['unchanged_controls'])}/{len(receipt['unchanged_controls'])} complete unchanged worker controls")
     (out / "result.json").write_text(json.dumps(receipt, indent=2) + "\n")
     print(out / "result.json")
-    return 0 if all(case["passed"] for case in receipt["cases"]) else 1
+    return 0 if all(case["passed"] for case in [*receipt["cases"], *receipt["unchanged_controls"]]) else 1
 
 
 if __name__ == "__main__":

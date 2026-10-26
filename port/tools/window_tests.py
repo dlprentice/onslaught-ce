@@ -11,6 +11,7 @@ import deps
 
 DRIVER = r'''
 #include "WINDOW_CPP"
+#include "PORTLOG_CPP"
 extern "C" { char LT[0x331e4]; unsigned PortPresentCount(void) { return 0; }
 int PortMapMouse(float *, float *) { return 0; } }
 bool recording;
@@ -18,7 +19,9 @@ struct RecordedKey { bool down; unsigned vk, scan; } recorded[16];
 unsigned recordedCount, directDown, directUp, sizes;
 bool active = true;
 void PortMouseKeepRelative() {}
+bool PortDinputOwnsMouseEvent(Uint64) { return false; }
 bool PortRecording() { return recording; }
+bool PortRecordInputSpace(unsigned) { return true; }
 void PortRecordKey(bool down, unsigned vk, unsigned scan) {
     if (recordedCount >= 16) exit(10);
     recorded[recordedCount++] = {down, vk, scan};
@@ -104,7 +107,8 @@ class MessagePump(unittest.TestCase):
         cls.addClassCleanup(cls.temp.cleanup)
         build = Path(cls.temp.name)
         source = build / "driver.cpp"
-        source.write_text(DRIVER.replace("WINDOW_CPP", str(deps.PORT / "platform/common/window.cpp")))
+        source.write_text(DRIVER.replace("WINDOW_CPP", str(deps.PORT / "platform/common/window.cpp"))
+                          .replace("PORTLOG_CPP", str(deps.PORT / "platform/common/portlog.cpp")))
         cls.driver = build / "driver"
         subprocess.run([
             str(deps.DATA / "llvm/bin/clang++"), "--target=i686-pc-linux-gnu", "-m32", "-std=c++17",

@@ -1,0 +1,75 @@
+--- a/landscape.h
++++ b/landscape.h
+@@ -137,7 +137,7 @@
+ // A level of detail's cell list entry (0xc bytes): a 2-byte-per-cell map of the sub-tiles.
+ struct SLandscapeLOD
+ {
+-	SLandscapeLOD() { mData = NULL; }
++	SLandscapeLOD() { mData = NULL; mUnknown08 = 0; }
+ 	~SLandscapeLOD() { delete mData; }
+ 	void				Init(SINT count);			// inline in DXLandscape.h (its line 170)
+ 
+@@ -193,6 +193,7 @@
+ 						CDXLandscape();				// 00544a00
+ 	virtual				~CDXLandscape();			// 00544a60
+ 	virtual HRESULT		InitDeviceObjects();		// 1 (00544cc0)
++	virtual HRESULT		InvalidateDeviceObjects();	// Port (0068): revoke counts on device loss.
+ 	virtual HRESULT		DeleteDeviceObjects();		// 4 (00544eb0)
+ 	BOOL				Init(CMapTex *maptexs);		// 00544af0
+ 	void				InitResources();			// 005453d0
+--- a/DXLandscape.h
++++ b/DXLandscape.h
+@@ -9,6 +9,7 @@
+ #line 167
+ inline void SLandscapeLOD::Init(SINT count)
+ {
++	mUnknown08 = 0;
+ 	mSize = count;
+ 	mData = new(MEMTYPE_LANDSCAPE) UWORD[count];
+ }
+--- a/DXLandscape.cpp
++++ b/DXLandscape.cpp
+@@ -163,6 +163,8 @@
+ //******************************************************************************************
+ CDXLandscape::CDXLandscape()	// FUNCTION: 0x00544a00
+ {
++	mUnknown34 = 0;
++	mNumViews = 0;
+ 	mVB = NULL;
+ 	mIB = NULL;
+ 	mTexture = NULL;
+@@ -291,6 +293,19 @@
+ 				SETUP_HISTORY.AddMessage("FakeZBuffer disallowed for %s", DXGetErrorString9(hr));
+ 		}
+ 	}
++	return S_OK;
++}
++
++// Port (0068): the shell invalidates terrain before restoring the shared dynamic index buffer.
++// A view may skip CalcLODs on its next multiplayer render, so revoke all old draw authorization here.
++HRESULT CDXLandscape::InvalidateDeviceObjects()
++{
++	mUnknown34 = 0;
++	if (mViews)
++		for (SINT v = 0; v < mNumViews; v++)
++			if (mViews[v].mLODs)
++				for (SINT l = 0; l < mViews[v].mNumLevels; l++)
++					mViews[v].mLODs[l].mUnknown08 = 0;
+ 	return S_OK;
+ }
+ 
+@@ -1448,6 +1463,14 @@
+ 		mUnknown34 = idx - start;
+ 		mIB->Unlock();
+ 	}
++	else
++	{
++		// Port (0068): a failed rebuild cannot authorize draws from old or unwritten indices.
++		mUnknown34 = 0;
++		for (SINT v = 0; v < mNumViews; v++)
++			for (SINT l = 0; l < mViews[v].mNumLevels; l++)
++				mViews[v].mLODs[l].mUnknown08 = 0;
++	}
+ 	CLandscapeTexture::FlushUpdateQueue();
+ }
+ 

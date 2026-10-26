@@ -1,0 +1,55 @@
+--- a/ltshell.cpp
++++ b/ltshell.cpp
+@@ -1387,6 +1387,11 @@
+ //-----------------------------------------------------------------------------
+ BOOL CALLBACK PCLTShell::EnumJoysticksCallback( const DIDEVICEINSTANCE* pdidInstance, VOID* pContext )	// FUNCTION: 0x00512ff0
+ {
++#if defined(CE_VERSION)
++    // The callback writes a fixed shell array; clamping after enumeration is too late.
++    if (((PCLTShell *)pContext)->mJoypads >= MAX_JOYPADS)
++        return DIENUM_STOP;
++#endif
+     HRESULT		hr;
+ 	PCLTShell*	sneaky_this = (PCLTShell*) pContext;
+ 	ASSERT(sneaky_this);
+--- a/PCController.cpp
++++ b/PCController.cpp
+@@ -123,8 +123,13 @@
+ 	if (LT.mJoypads <= pad_number) return 0.0f;
+ 	float vy = (float)(LT.JoyState(pad_number)->lRz);
+ //	LOG.AddMessage("ray vy = %2.8f", vy) ;
++#if defined(CE_VERSION)
++	// InitDirectInput requests -1000..1000 for every enumerated axis, including Rz.
++	vy = vy / 1000.0f;
++#else
+ 	vy = vy - 32768.0f ;
+ 	vy = vy / 32768.0f ;
++#endif
+ 	return vy ;
+ }
+ 
+--- a/Controller.cpp
++++ b/Controller.cpp
+@@ -10,6 +10,10 @@
+ #include "Platform.h"
+ #include "mouse.h"
+ #include "DX.h"
++
++#if defined(CE_VERSION)
++extern "C" BOOL PortGetMouseClientPosition(POINT *position);
++#endif
+ 
+ // retail: the PC build's controls. The bindings the player can remap (CONTROL_BINDINGS, PCController.cpp)
+ // replace Stuart's fixed mapping table, and the mouse is read here through DirectInput.
+@@ -100,7 +104,11 @@
+ 	}
+ 	if (!CLIPARAMS.mAutoConfigTest)
+ 	{
++#if defined(CE_VERSION)
++		if (PortGetMouseClientPosition(&pt))
++#else
+ 		if (GetCursorPos(&pt))
++#endif
+ 		{
+ 			MOUSE_X = pt.x;
+ 			MOUSE_Y = pt.y;

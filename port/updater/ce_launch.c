@@ -11,8 +11,8 @@
  * %APPDATA% and the like) and the account name <user>. An update's restart continues the same log. A replay
  * (BEA_PORT_TAPE) or a harness recording (BEA_PORT_RECORD) gets no log, no update check and nothing else of the launcher's.
  * Session recording (--record, or record_sessions=1 in ce.ini): the game records its input to <user folder>/tapes/
- * YYYYMMDD-HHMMSS.tape (port/platform/common/replay.cpp's record mode, on the shim clock at 30 Presents a second) with a
- * .json beside it naming the version, build, OS, date and game arguments; never when a tape is being replayed. While
+ * YYYYMMDD-HHMMSS-PID-SERIAL.tape (port/platform/common/replay.cpp's record mode, on the shim clock at 30 Presents a
+ * second) with a .json beside it naming the version, build, OS, date and game arguments; never during replay. While
  * record_sessions=1, each start asks first (Record, Not this time, Stop recording), because a recorded session hides the
  * game's CE page where the setting was switched on; --no-record also sets record_sessions=0 and starts unrecorded.
  * --report opens the pre-filled "Report a problem" page (ce_report.h) and prints the log folder.
@@ -32,6 +32,7 @@
 #include "monocypher-ed25519.h"
 #include "sha256.h"
 #include "ce_report.h"
+#include "ce_launch_rules.h"
 
 /* Quitting from the game's main menu ends WinMain with the WM_QUIT message's wParam, which the game posts as 13: an
  * ordinary close, not an error, so the launcher reports it as one and exits 0. */
@@ -44,9 +45,8 @@
 #define CE_COMMIT "unknown"		/* build.py: the source commit (+dirty when the tree had changes) */
 #endif
 #define FEED "https://github.com/dlprentice/onslaught-ce/releases/latest/download/latest.json"
-/* The only place an update archive may come from, even under a valid signature (a leaked key or a mistaken feed cannot
- * send launchers elsewhere); curl -L still follows GitHub's redirect to its download host. */
-#define ASSETS "https://github.com/dlprentice/onslaught-ce/releases/download/"
+/* ce_update_url_allowed admits only this repository's exact version/platform asset form, even under a valid
+ * signature. curl -L still follows GitHub's redirect to its download host. */
 /* The release key's public half (the private half never leaves the release machine). */
 static const char PUBLIC_KEY_HEX[] = "b6cf39b727c92cd8a1682c31f315a5d38427dce912e406ccbd4802f0f7634510";
 
@@ -54,6 +54,7 @@ static const char PUBLIC_KEY_HEX[] = "b6cf39b727c92cd8a1682c31f315a5d38427dce912
 #include <windows.h>
 #include <shlobj.h>
 #include <direct.h>
+#include <sys/stat.h>
 #define PLATFORM "windows-i686"
 #define SEP "\\"
 #define GAME_EXE "bea.exe"
@@ -76,6 +77,11 @@ static char sHere[PATHN], sUser[PATHN], sIni[PATHN], sCache[PATHN];
 /* A replay (BEA_PORT_TAPE) or a recording someone else set up (BEA_PORT_RECORD, the test harness) as the launcher
  * started: the launcher then adds nothing of its own (no log, no update check, no build name for the CE layer). */
 static int sReplay;
+/* Only this launcher's recording, never an inherited harness recording or an earlier log's status. */
+static int sRecordingRequested, sRecordingPublished, sRecordingFailed;
+static char sRecordingPath[PATHN], sRecordingScan[PATHN + 96];
+static size_t sRecordingScanLen;
+static int sRecordingScanOverflow;
 
 /* ---- the log ---------------------------------------------------------------------------------------------------- */
 
@@ -252,9 +258,45 @@ static void game_line(int newline)
 	sScanLen = 0;
 }
 
+/* A bounded, whole-line acknowledgement of this exact recording's no-replace publication. The ordinary log scanner
+ * splits long lines, so it cannot be used to recognize status: a fragment must never become a new status line. */
+static void recording_output(const char *p, size_t n)
+{
+	if (!sRecordingRequested) return;
+	for (size_t i = 0; i < n; ++i)
+	{
+		if (p[i] != '\n')
+		{
+			if (sRecordingScanLen < sizeof sRecordingScan) sRecordingScan[sRecordingScanLen++] = p[i];
+			else sRecordingScanOverflow = 1;
+			continue;
+		}
+		if (sRecordingScanLen && sRecordingScan[sRecordingScanLen - 1] == '\r') --sRecordingScanLen;
+		const char *prefixes[] = {"bea-port: ", "onslaught-ce: "};
+		for (size_t k = 0; k < sizeof prefixes / sizeof prefixes[0]; ++k)
+		{
+			char expected[PATHN + 96];
+			/* The fixed failure prefix is retained even when the diagnostic's tail was discarded. */
+			int length = snprintf(expected, sizeof expected, "%srecording failed:", prefixes[k]);
+			if (length > 0 && (size_t)length <= sRecordingScanLen &&
+				!memcmp(sRecordingScan, expected, (size_t)length)) sRecordingFailed = 1;
+			if (!sRecordingScanOverflow)
+			{
+				length = snprintf(expected, sizeof expected, "%srecording finalized: final tape published %s",
+					prefixes[k], sRecordingPath);
+				if (*sRecordingPath && length > 0 && (size_t)length == sRecordingScanLen &&
+					!memcmp(sRecordingScan, expected, sRecordingScanLen)) sRecordingPublished = 1;
+			}
+		}
+		sRecordingScanLen = 0;
+		sRecordingScanOverflow = 0;
+	}
+}
+
 /* The game's output: to the terminal as it comes, and to the log a line at a time. */
 static void game_output(const char *p, size_t n)
 {
+	recording_output(p, n);
 	fwrite(p, 1, n, stderr);
 	fflush(stderr);
 	for (size_t i = 0; i < n; i++)
@@ -323,6 +365,13 @@ static void log_open(int cont)
 					 CE_COMMIT, os, cont ? "Restarted after an update" : "Started", date);
 	log_file(head, (size_t)k < sizeof head ? (size_t)k : sizeof head - 1);
 	sHolding = 1;
+	say("launcher process pid=%lu SDL=%d", (unsigned long)
+#ifdef _WIN32
+		GetCurrentProcessId(),
+#else
+		getpid(),
+#endif
+		SDL_GetVersion());
 }
 
 static void log_close(void)
@@ -423,7 +472,9 @@ static int sha256_file(const char *p, uint8_t out[32])
 	sha256_init(&c);
 	uint8_t buf[65536];
 	for (size_t r; (r = fread(buf, 1, sizeof buf, f)) > 0;) sha256_update(&c, buf, r);
+	int ok = !ferror(f);
 	fclose(f);
+	if (!ok) return 0;
 	sha256_final(&c, out);
 	return 1;
 }
@@ -471,13 +522,10 @@ static int ini_set(const char *key, const char *value)
 static int run(char *const argv[])
 {
 #ifdef _WIN32
-	char cmd[8192] = "";
-	for (int i = 0; argv[i]; i++)
-	{
-		strcat(cmd, i ? " \"" : "\"");
-		strcat(cmd, argv[i]);
-		strcat(cmd, "\"");
-	}
+	char cmd[8192];
+	int count = 0;
+	while (argv[count]) ++count;
+	if (!count || !ce_windows_command(cmd, sizeof cmd, argv[0], argv + 1, count - 1, 0)) return -1;
 	STARTUPINFOA si = {sizeof si};
 	PROCESS_INFORMATION pi;
 	if (!CreateProcessA(argv[0], cmd, NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) return -1;
@@ -779,6 +827,36 @@ static int swap_in(const char *fresh)
 
 static void relaunch(int argc, char **argv);
 
+#ifdef _WIN32
+/* Own a fresh directory before copying the helper and its SDL dependency. Never replace an unrelated file in TMP. */
+static int prepare_update_helper(char *folder, size_t folder_size, char *copy, size_t copy_size)
+{
+	char temp[MAX_PATH], self[MAX_PATH], sdl[PATHN], sdlcopy[MAX_PATH];
+	DWORD n = GetTempPathA(sizeof temp, temp), own = GetModuleFileNameA(NULL, self, sizeof self);
+	if (!n || n >= sizeof temp || !own || own >= sizeof self) return 0;
+	for (unsigned attempt = 0; attempt < 64; ++attempt)
+	{
+		int length = snprintf(folder, folder_size, "%sonslaught-ce-update-%lu-%lu-%u", temp,
+			(unsigned long)GetCurrentProcessId(), (unsigned long)GetTickCount(), attempt);
+		if (length < 0 || (size_t)length >= folder_size) return 0;
+		if (!CreateDirectoryA(folder, NULL))
+		{
+			if (GetLastError() == ERROR_ALREADY_EXISTS) continue;
+			return 0;
+		}
+		int a = snprintf(copy, copy_size, "%s\\onslaught-ce-update.exe", folder);
+		int b = snprintf(sdlcopy, sizeof sdlcopy, "%s\\SDL3.dll", folder);
+		int c = snprintf(sdl, sizeof sdl, "%s\\SDL3.dll", sHere);
+		if (a > 0 && (size_t)a < copy_size && b > 0 && (size_t)b < sizeof sdlcopy &&
+			c > 0 && (size_t)c < sizeof sdl && CopyFileA(self, copy, TRUE) && CopyFileA(sdl, sdlcopy, TRUE)) return 1;
+		/* Only this successfully-created directory is ours. Collisions above are left untouched. */
+		remove_tree(folder);
+		return 0;
+	}
+	return 0;
+}
+#endif
+
 static int apply_update(const char *version, const char *url, const char *sha_hex, int argc, char **argv)
 {
 	char archive[PATHN], fresh[PATHN], unpack[PATHN];
@@ -813,19 +891,21 @@ static int apply_update(const char *version, const char *url, const char *sha_he
 #ifdef _WIN32
 	/* Windows cannot rename a folder holding a running program: a copy of this launcher in %TEMP% does the swap after
 	 * this process exits (--apply FRESH HERE PID). */
-	char temp[MAX_PATH], self[MAX_PATH], copy[MAX_PATH], cmd[8192];
-	GetTempPathA(sizeof temp, temp);
-	GetModuleFileNameA(NULL, self, sizeof self);
-	snprintf(copy, sizeof copy, "%sonslaught-ce-update.exe", temp);
-	char sdl[MAX_PATH], sdlcopy[MAX_PATH];
-	snprintf(sdl, sizeof sdl, "%s\\SDL3.dll", sHere);
-	snprintf(sdlcopy, sizeof sdlcopy, "%sSDL3.dll", temp);
-	if (!CopyFileA(self, copy, FALSE) || !CopyFileA(sdl, sdlcopy, FALSE)) { remove_tree(unpack); return 0; }
-	snprintf(cmd, sizeof cmd, "\"%s\" --apply \"%s\" \"%s\" %lu", copy, fresh, sHere, (unsigned long)GetCurrentProcessId());
+	char helperdir[MAX_PATH], copy[MAX_PATH], cmd[8192], pid[32];
+	if (!prepare_update_helper(helperdir, sizeof helperdir, copy, sizeof copy)) { remove_tree(unpack); return 0; }
+	snprintf(pid, sizeof pid, "%lu", (unsigned long)GetCurrentProcessId());
+	char *helper_args[] = {"--apply", fresh, sHere, pid};
+	if (!ce_windows_command(cmd, sizeof cmd, copy, helper_args, 4, 0))
+	{
+		remove_tree(helperdir); remove_tree(unpack); return 0;
+	}
 	STARTUPINFOA si = {sizeof si};
 	PROCESS_INFORMATION pi;
 	set_env(LOG_CONTINUE, "1");	/* through the copy to the new launcher: it continues this log */
-	if (!CreateProcessA(copy, cmd, NULL, NULL, FALSE, 0, NULL, temp, &si, &pi)) { unset_env(LOG_CONTINUE); remove_tree(unpack); return 0; }
+	if (!CreateProcessA(copy, cmd, NULL, NULL, FALSE, 0, NULL, helperdir, &si, &pi))
+	{
+		unset_env(LOG_CONTINUE); remove_tree(helperdir); remove_tree(unpack); return 0;
+	}
 	CloseHandle(pi.hProcess);
 	CloseHandle(pi.hThread);
 	say("updating to v%s: the update finishes after this launcher exits", version);
@@ -867,7 +947,14 @@ static void check_for_update(int argc, char **argv)
 	if (plat && json_str(json, "version", NULL, version, sizeof version) && version_cmp(version, CE_VERSION) > 0 &&
 		!(ini_get("skip_version", skip, sizeof skip) && !strcmp(skip, version)) &&
 		json_str(json, "url", plat, url, sizeof url) && json_str(json, "sha256", plat, sha, sizeof sha) && strlen(sha) == 64 &&
-		(!strncmp(url, ASSETS, strlen(ASSETS)) || getenv("BEA_UPDATE_FEED")))   /* tests' feeds may name file:// archives */
+		ce_release_component(version, strlen(version)) &&
+		(ce_update_url_allowed(url, version, PLATFORM,
+#ifdef _WIN32
+			"zip"
+#else
+			"tar.gz"
+#endif
+		) || getenv("BEA_UPDATE_FEED")))   /* tests' feeds may name file:// archives */
 	{
 		char text[1024];
 		snprintf(text, sizeof text, "Onslaught CE v%s is available (you have v%s).\n\n"
@@ -998,9 +1085,8 @@ static void relaunch(int argc, char **argv)
 	STARTUPINFOA si = {sizeof si};
 	PROCESS_INFORMATION pi;
 	char cmd[8192];
-	snprintf(cmd, sizeof cmd, "\"%s\"", self);
-	for (int i = 1; i < argc; i++) { strcat(cmd, " \""); strcat(cmd, argv[i]); strcat(cmd, "\""); }
-	if (CreateProcessA(self, cmd, NULL, NULL, FALSE, 0, NULL, sHere, &si, &pi)) exit(0);
+	if (ce_windows_command(cmd, sizeof cmd, self, argv + 1, argc - 1, 0) &&
+		CreateProcessA(self, cmd, NULL, NULL, FALSE, 0, NULL, sHere, &si, &pi)) exit(0);
 #else
 	(void)argc;
 	argv[0] = self;
@@ -1106,6 +1192,55 @@ static void json_start_files(FILE *f, const char *dir, const char *rel, int *fir
 	}
 }
 
+/* Any directory entry, including a dangling link, occupies a recording name. An inspection error is also occupied. */
+static int recording_path_occupied(const char *path)
+{
+#ifdef _WIN32
+	if (GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES) return 1;
+	DWORD error = GetLastError();
+	return error != ERROR_FILE_NOT_FOUND && error != ERROR_PATH_NOT_FOUND;
+#else
+	struct stat st;
+	return !lstat(path, &st) || errno != ENOENT;
+#endif
+}
+
+/* The JSON name reserves the whole pair. A collision is never opened for writing; retries also avoid an existing tape.
+ * The recorder owns its separate incomplete stage and will refuse a final tape that appears after this reservation. */
+static FILE *reserve_recording(const char *dir, const char *stamp, char *path, size_t n, char *json, size_t jn)
+{
+	static unsigned serial;
+#ifdef _WIN32
+	unsigned pid = (unsigned)GetCurrentProcessId();
+#else
+	unsigned pid = (unsigned)getpid();
+#endif
+	for (unsigned attempt = 0; attempt < 256; ++attempt)
+	{
+		int length = snprintf(path, n, "%s" SEP "%s-%08x-%08x.tape", dir, stamp, pid, serial++);
+		if (length < 0 || (size_t)length >= n) return NULL;
+		length = snprintf(json, jn, "%s.json", path);
+		if (length < 0 || (size_t)length >= jn) return NULL;
+		if (recording_path_occupied(path)) continue;
+#ifdef _WIN32
+		int fd = _open(json, _O_WRONLY | _O_CREAT | _O_EXCL | _O_BINARY | _O_NOINHERIT, _S_IREAD | _S_IWRITE);
+#else
+		int fd = open(json, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+#endif
+		if (fd < 0) { if (errno == EEXIST) continue; return NULL; }
+#ifdef _WIN32
+		FILE *f = _fdopen(fd, "wb");
+		if (!f) _close(fd);
+#else
+		FILE *f = fdopen(fd, "wb");
+		if (!f) close(fd);
+#endif
+		if (!f) remove(json); /* only the metadata name we exclusively created */
+		return f;
+	}
+	return NULL;
+}
+
 /* Session recording: the game's record mode writes the tape (replay.cpp); the .json beside it says what made it. */
 static void start_recording(char **args, int nargs)
 {
@@ -1115,6 +1250,11 @@ static void start_recording(char **args, int nargs)
 		say("not recording this session: %s is set", tape && *tape ? "BEA_PORT_TAPE (a replay)" : "BEA_PORT_RECORD");
 		return;
 	}
+	sRecordingRequested = 1;
+	sRecordingPublished = sRecordingFailed = 0;
+	sRecordingPath[0] = 0;
+	sRecordingScanLen = 0;
+	sRecordingScanOverflow = 0;
 	char dir[PATHN], stamp[32], path[PATHN], json[PATHN + 8], os[256], date[64];
 	time_t now = time(NULL);
 	struct tm t;
@@ -1124,20 +1264,23 @@ static void start_recording(char **args, int nargs)
 	localtime_r(&now, &t);
 #endif
 	strftime(stamp, sizeof stamp, "%Y%m%d-%H%M%S", &t);
-	snprintf(dir, sizeof dir, "%s" SEP "tapes", sUser);
+	int length = snprintf(dir, sizeof dir, "%s" SEP "tapes", sUser);
+	if (length < 0 || (size_t)length >= sizeof dir)
+	{
+		say("recording failed: the tapes folder path is too long; starting without recording");
+		return;
+	}
 	make_dirs(dir);
-	snprintf(path, sizeof path, "%s" SEP "%s.tape", dir, stamp);
-	snprintf(json, sizeof json, "%s.json", path);
 	const char *clock = getenv("BEA_PORT_CLOCK");
-	if (!clock || !*clock) set_env("BEA_PORT_CLOCK", "shim");	/* record mode's clock: 1/30 s a Present, paced to real time */
-	set_env("BEA_PORT_RECORD", path);
+	int default_clock = !clock || !*clock;
+	if (default_clock) clock = "shim";
 	/* the virtual clock's mix, written only, to the sound device (dsound.cpp): the game never reads it back */
 	const char *monitor = getenv("BEA_AUDIO_MONITOR");
-	if (!monitor || !*monitor) set_env("BEA_AUDIO_MONITOR", "1");
+	int default_monitor = !monitor || !*monitor;
 	int monitor_on = !monitor || !*monitor || strcmp(monitor, "0") != 0;
 	ce_os_name(os, sizeof os);
 	utc_now(date, sizeof date, "%Y-%m-%dT%H:%M:%SZ");
-	FILE *f = fopen(json, "wb");
+	FILE *f = reserve_recording(dir, stamp, path, sizeof path, json, sizeof json);
 	if (f)
 	{
 		fprintf(f, "{\n  \"format\": \"onslaught-ce session tape 2\",\n  \"tape_lines\": [\"K\", \"M\", \"W\", \"W_CLIENT\", \"C\"],\n  \"tape\": ");
@@ -1145,7 +1288,7 @@ static void start_recording(char **args, int nargs)
 		fprintf(f, ",\n  \"ce_version\": \"%s\",\n  \"build\": \"%s\",\n  \"platform\": \"%s\",\n  \"os\": ", CE_VERSION, CE_COMMIT, PLATFORM);
 		json_string(f, os);
 		fprintf(f, ",\n  \"date_utc\": \"%s\",\n  \"clock\": ", date);
-		json_string(f, getenv("BEA_PORT_CLOCK"));
+		json_string(f, clock);
 		fprintf(f, ",\n  \"presents_per_second\": 30,\n  \"audio_monitor\": %s,\n  \"game_args\": [",
 				monitor_on ? "true" : "false");
 		for (int i = 0; i < nargs; i++)
@@ -1158,12 +1301,55 @@ static void start_recording(char **args, int nargs)
 		size_t total = 0;
 		json_start_files(f, sUser, "", &first, &total);
 		fprintf(f, "\n  }\n}\n");
-		fclose(f);
+		int ok = !ferror(f);
+		if (fflush(f)) ok = 0;
+		if (fclose(f)) ok = 0;
+		if (!ok)
+		{
+			remove(json); /* a failed owned reservation is not a completed session description */
+			say("recording failed: could not finish session metadata; starting without recording");
+			return;
+		}
 	}
+	else
+	{
+		say("recording failed: could not reserve session metadata; starting without recording");
+		return;
+	}
+	/* No record-mode side effects until the complete metadata has been checked and closed. */
+	if (default_clock) set_env("BEA_PORT_CLOCK", "shim"); /* 1/30 s a Present, paced to real time */
+	if (default_monitor) set_env("BEA_AUDIO_MONITOR", "1");
+	set_env("BEA_PORT_RECORD", path);
+	snprintf(sRecordingPath, sizeof sRecordingPath, "%s", path);
 	char shortpath[PATHN];
 	ce_short_path(path, shortpath, sizeof shortpath);
 	say("recording this session to %s: while recording the game runs at 30 frames a second; its menus take the "
 		"keyboard and mouse", shortpath);
+}
+
+/* A normal game exit alone does not prove a capture. The exact child's acknowledgement and a nonlink regular final
+ * tape are both required; a foreign final or the recorder's retained incomplete stage cannot count as success. */
+static int finish_recording(int game_status)
+{
+	if (!sRecordingRequested) return game_status;
+	int regular = 0;
+#ifdef _WIN32
+	DWORD attr = GetFileAttributesA(sRecordingPath);
+	regular = attr != INVALID_FILE_ATTRIBUTES && !(attr & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT));
+#else
+	struct stat st;
+	regular = !lstat(sRecordingPath, &st) && S_ISREG(st.st_mode);
+#endif
+	if (sRecordingPublished && !sRecordingFailed && regular)
+	{
+		char shortpath[PATHN];
+		ce_short_path(sRecordingPath, shortpath, sizeof shortpath);
+		say("recording saved to %s", shortpath);
+		return game_status;
+	}
+	say(game_status ? "recording failed or interrupted: no completed session tape was confirmed" :
+		"game closed, recording failed: no completed session tape was confirmed");
+	return game_status ? game_status : 3;
 }
 
 /* record_sessions=1: whether to record this start. The game's CE page, where the player switched recording on, is hidden
@@ -1199,6 +1385,19 @@ static int start_game(char **args, int nargs, const char *game)
 {
 	char exe[PATHN];
 	snprintf(exe, sizeof exe, "%s" SEP GAME_EXE, sHere);
+	if (!sReplay)
+	{
+		/* Identifies a mixed manual install without scanning game data. A diagnostic only: unreadable executables
+		 * can still be executable, so failure to hash must never prevent the ordinary spawn below. */
+		uint8_t digest[32];
+		if (sha256_file(exe, digest))
+		{
+			char hex[65];
+			for (int i = 0; i < 32; ++i) snprintf(hex + 2 * i, 3, "%02x", digest[i]);
+			say("prelaunch game executable sha256=%s", hex);
+		}
+		else say("prelaunch game executable sha256=unavailable (launch will still be attempted)");
+	}
 	set_env("BEA_GAME_DIR", game);
 	set_env("BEA_USER_DIR", sUser);
 	if (!sReplay) set_env("BEA_CE_BUILD", CE_COMMIT);	/* the game's "Report a problem" page names it (ce.cpp) */
@@ -1211,8 +1410,12 @@ static int start_game(char **args, int nargs, const char *game)
 #endif
 #ifdef _WIN32
 	char cmd[8192];
-	snprintf(cmd, sizeof cmd, "\"%s\"", exe);
-	for (int i = 0; i < nargs; i++) { strcat(cmd, " "); strcat(cmd, args[i]); }
+	/* The game's legacy parser receives the same raw argument joining as before, now with a checked bound. */
+	if (!ce_windows_command(cmd, sizeof cmd, exe, args, nargs, 1))
+	{
+		say("could not start the game: command line is too long");
+		return 1;
+	}
 	/* The game's stdout and stderr come through a pipe, to the log and (from a console) the terminal. */
 	SECURITY_ATTRIBUTES sa = {sizeof sa, NULL, TRUE};
 	HANDLE rd = NULL, wr = NULL;
@@ -1230,6 +1433,8 @@ static int start_game(char **args, int nargs, const char *game)
 		say("could not start %s (error %lu)", exe, (unsigned long)GetLastError());
 		return 1;
 	}
+	say("game process pid=%lu launcher_pid=%lu output_capture=%s", (unsigned long)pi.dwProcessId,
+		(unsigned long)GetCurrentProcessId(), piped ? "pipe" : "unavailable");
 	if (piped)
 	{
 		/* Read while the game runs, then whatever is still waiting, and stop: a program the game started (a browser
@@ -1272,6 +1477,11 @@ static int start_game(char **args, int nargs, const char *game)
 	int fd[2];
 	if (pipe(fd) != 0)
 	{
+		if (sRecordingRequested)
+		{
+			say("could not start the recorded game: output capture is unavailable");
+			return 3;
+		}
 		log_close();
 		execv(exe, argv);
 		return 1;
@@ -1291,6 +1501,7 @@ static int start_game(char **args, int nargs, const char *game)
 	}
 	close(fd[1]);
 	sChild = pid;
+	say("game process pid=%lu launcher_pid=%lu output_capture=pipe", (unsigned long)pid, (unsigned long)getpid());
 	/* Ctrl+C reaches the game as well (the terminal's whole process group): the launcher outlives it to finish the log.
 	 * A SIGTERM or SIGHUP sent to the launcher alone goes on to the game. */
 	signal(SIGINT, SIG_IGN);
@@ -1443,7 +1654,7 @@ int main(int argc, char **argv)
 	}
 	else if (record || (ini_record && (sReplay || ask_record())))	/* a replay: start_recording says why not */
 		start_recording(argv + first, argc - first);
-	int rc = start_game(argv + first, argc - first, game);
+	int rc = finish_recording(start_game(argv + first, argc - first, game));
 	log_close();
 	return rc;
 }

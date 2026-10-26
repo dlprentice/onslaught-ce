@@ -50,6 +50,7 @@ int main(int argc, char **argv)
 		fprintf(stderr, PORT_LOG_PREFIX "game folder %s, writable folder %s\n", PortGameDir(), PortUserDir());
 	unsetenv("BEA_CE_GAME_FOLDER_LOGGED");
 	int rc = WinMain(GetModuleHandleA(NULL), NULL, cmdline, SW_SHOWNORMAL);
+	PortSessionSummary();
 	SDL_Quit();
 	// The process ends as on Windows, where ExitProcess stops every other thread before a DLL's detach code runs:
 	// glibc's exit() runs each shared library's destructors with its threads still running. The game creates vertex

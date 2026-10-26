@@ -10,6 +10,7 @@
 // table and every game fclose returned EOF without closing, so a save's writes reached the file only at process exit,
 // after (and over) any later save to the same file.
 #include <stdio.h>
+#include <mutex>
 #include "portlog.h"
 
 extern "C" FILE *port_fopen(const char *name, const char *mode);	// port/platform/<target>/files.cpp
@@ -17,11 +18,13 @@ extern "C" FILE *port_fopen(const char *name, const char *mode);	// port/platfor
 namespace
 {
 FILE *gOpen[64];	// the game's open streams (retail's table has 20 + more on demand; the game opens few at once)
+std::mutex gOpenMutex;	// music/voice workers and the main thread share the table
 
 FILE *Register(FILE *f)
 {
 	if (f)
 	{
+		std::lock_guard<std::mutex> lock(gOpenMutex);
 		for (FILE *&slot : gOpen)
 			if (!slot)
 			{
@@ -49,6 +52,9 @@ extern "C" FILE *bea_crt_port_fopen(const char *path, const char *mode)
 
 extern "C" int bea_crt_fclose(FILE *f)
 {
+	// Keep the slot and the host close under one lock: exactly one caller owns flushing/closing this stream.
+	// Register cannot publish a reused FILE address while an earlier close is still in progress.
+	std::lock_guard<std::mutex> lock(gOpenMutex);
 	for (FILE *&slot : gOpen)
 		if (slot && slot == f)
 		{

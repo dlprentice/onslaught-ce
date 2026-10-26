@@ -26,6 +26,7 @@ const DIDATAFORMAT c_dfDIJoystick2 = { sizeof(DIDATAFORMAT), sizeof(DIOBJECTDATA
 namespace
 {
 HWND gMouseWindow;	// the window of the game's acquired mouse (relative mode is re-asserted for it each frame)
+Uint64 gMouseReleasedAt;	// SDL event timestamp cutoff: queued captured events must not become menu input on release
 
 template <class T, class... A> T *Make(A... a) { return new (malloc(sizeof(T))) T(a...); }
 template <class T> void Destroy(T *p)
@@ -111,12 +112,54 @@ unsigned char DikFor(SDL_Scancode s)
 	}
 }
 
-// Mouse wheel motion arrives only as events; an event watch accumulates it for the next GetDeviceState.
+// Mouse wheel motion arrives only as events; an event watch accumulates it for the next GetDeviceState. Watches can
+// run off the main thread: keep their tiny state protected, and query SDL windows only on acquire (the main thread).
+SDL_SpinLock gWheelLock;
 float gWheel;
+SDL_WindowID gWheelWindow;
+Uint64 gWheelAcquiredAt;
+bool gWheelFocused;
+unsigned gWheelFocusVersion;
+
+void ResetWheel(SDL_Window *w)
+{
+	Uint64 acquiredAt = w ? SDL_GetTicksNS() : 0;
+	SDL_WindowID id = w ? SDL_GetWindowID(w) : 0;
+	SDL_LockSpinlock(&gWheelLock);
+	gWheel = 0;
+	gWheelWindow = id;
+	gWheelAcquiredAt = acquiredAt;
+	gWheelFocused = false;
+	unsigned version = gWheelFocusVersion;
+	SDL_UnlockSpinlock(&gWheelLock);
+	if (w)
+	{
+		bool focused = (SDL_GetWindowFlags(w) & SDL_WINDOW_INPUT_FOCUS) != 0;
+		SDL_LockSpinlock(&gWheelLock);
+		// A watch can report a newer focus event while the main thread queries SDL. Never overwrite that event.
+		if (gWheelWindow == id && gWheelFocusVersion == version)
+			gWheelFocused = focused;
+		SDL_UnlockSpinlock(&gWheelLock);
+	}
+}
+
 bool SDLCALL WheelWatch(void *, SDL_Event *e)
 {
-	if (e->type == SDL_EVENT_MOUSE_WHEEL)
-		gWheel += e->wheel.y;
+	SDL_LockSpinlock(&gWheelLock);
+	if (gWheelWindow)
+	{
+		if ((e->type == SDL_EVENT_WINDOW_FOCUS_LOST || e->type == SDL_EVENT_WINDOW_FOCUS_GAINED) &&
+			(!e->window.windowID || e->window.windowID == gWheelWindow))
+		{
+			gWheelFocusVersion++;
+			gWheelFocused = e->type == SDL_EVENT_WINDOW_FOCUS_GAINED;
+			if (!gWheelFocused) gWheel = 0;
+		}
+		if (e->type == SDL_EVENT_MOUSE_WHEEL && gWheelFocused && e->wheel.timestamp >= gWheelAcquiredAt &&
+			(!e->wheel.windowID || e->wheel.windowID == gWheelWindow))
+			gWheel += e->wheel.y;
+	}
+	SDL_UnlockSpinlock(&gWheelLock);
 	return true;
 }
 
@@ -170,7 +213,7 @@ struct Device : public IDirectInputDevice8A
 	{
 		if (kind != JOYSTICK || !(flags & DIDFT_AXIS))
 			return DI_OK;
-		// The pad's axes, in DIJOYSTATE2 order: X, Y (left stick), Z (triggers), Rx, Ry (right stick), Rz.
+		// The game's PCController reads the right stick from Z and Rz, not Rx/Ry. The latter carry the triggers.
 		static const GUID *const types[6] = { &GUID_XAxis, &GUID_YAxis, &GUID_ZAxis, &GUID_RxAxis, &GUID_RyAxis, &GUID_RzAxis };
 		static const char *const names[6] = { "X Axis", "Y Axis", "Z Axis", "X Rotation", "Y Rotation", "Z Rotation" };
 		for (int i = 0; i < 6; i++)
@@ -232,10 +275,19 @@ struct Device : public IDirectInputDevice8A
 		// runs acquire it non-exclusive: the cursor used to stop at the edge and with it the battle engine's turning).
 		if (kind == MOUSE)
 		{
+			ResetWheel(PortSdlWindow(window));	// do not inherit menu or previous-acquisition wheel input
+			PortSessionLog(PORT_SESSION_WINDOW, false, "mouse acquired cooperative=%08lx relative_mode=requested", (unsigned long)cooperative);
 			gMouseWindow = window;
 			if (SDL_Window *w = PortSdlWindow(window))
+			{
 				if (!SDL_SetWindowRelativeMouseMode(w, true))
+				{
+					PortSessionLog(PORT_SESSION_WINDOW, true, "relative mouse acquire refused: %.200s", SDL_GetError());
 					fprintf(stderr, PORT_LOG_PREFIX "input: relative mouse mode refused at acquire: %s\n", SDL_GetError());
+				}
+				if (PortSessionEnabled()) PortSessionLog(PORT_SESSION_WINDOW, false, "mouse relative_mode=%d input_focus=%d",
+					SDL_GetWindowRelativeMouseMode(w) ? 1 : 0, (SDL_GetWindowFlags(w) & SDL_WINDOW_INPUT_FOCUS) ? 1 : 0);
+			}
 		}
 		if (kind == MOUSE)
 			SDL_GetRelativeMouseState(NULL, NULL);
@@ -248,6 +300,9 @@ struct Device : public IDirectInputDevice8A
 		acquired = false;
 		if (kind == MOUSE)
 		{
+			gMouseReleasedAt = SDL_GetTicksNS();
+			ResetWheel(NULL);
+			PortSessionLog(PORT_SESSION_WINDOW, false, "mouse unacquired");
 			gMouseWindow = NULL;
 			if (SDL_Window *w = PortSdlWindow(window))
 				SDL_SetWindowRelativeMouseMode(w, false);
@@ -305,8 +360,10 @@ struct Device : public IDirectInputDevice8A
 			SDL_MouseButtonFlags b = SDL_GetRelativeMouseState(&dx, &dy);
 			m->lX = (LONG)dx;
 			m->lY = (LONG)dy;
+			SDL_LockSpinlock(&gWheelLock);
 			m->lZ = (LONG)(gWheel * WHEEL_DELTA);
 			gWheel = 0;
+			SDL_UnlockSpinlock(&gWheelLock);
 			m->rgbButtons[0] = (b & SDL_BUTTON_LMASK) ? 0x80 : 0;
 			m->rgbButtons[1] = (b & SDL_BUTTON_RMASK) ? 0x80 : 0;
 			m->rgbButtons[2] = (b & SDL_BUTTON_MMASK) ? 0x80 : 0;
@@ -328,10 +385,10 @@ struct Device : public IDirectInputDevice8A
 			DIJOYSTATE2 *j = (DIJOYSTATE2 *)data;
 			j->lX = Axis(SDL_GAMEPAD_AXIS_LEFTX);
 			j->lY = Axis(SDL_GAMEPAD_AXIS_LEFTY);
-			j->lZ = Axis(SDL_GAMEPAD_AXIS_RIGHT_TRIGGER);
-			j->lRx = Axis(SDL_GAMEPAD_AXIS_RIGHTX);
-			j->lRy = Axis(SDL_GAMEPAD_AXIS_RIGHTY);
-			j->lRz = Axis(SDL_GAMEPAD_AXIS_LEFT_TRIGGER);
+			j->lZ = Axis(SDL_GAMEPAD_AXIS_RIGHTX);
+			j->lRx = Axis(SDL_GAMEPAD_AXIS_RIGHT_TRIGGER);
+			j->lRy = Axis(SDL_GAMEPAD_AXIS_LEFT_TRIGGER);
+			j->lRz = Axis(SDL_GAMEPAD_AXIS_RIGHTY);
 			for (int i = 0; i < 4; i++)
 				j->rgdwPOV[i] = 0xFFFFFFFF;
 			bool up = SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_DPAD_UP), down = SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_DPAD_DOWN);
@@ -376,7 +433,8 @@ struct Device : public IDirectInputDevice8A
 	HRESULT STDMETHODCALLTYPE SendForceFeedbackCommand(DWORD) override { return DIERR_UNSUPPORTED; }
 	HRESULT STDMETHODCALLTYPE EnumCreatedEffectObjects(LPDIENUMCREATEDEFFECTOBJECTSCALLBACK, LPVOID, DWORD) override { return DI_OK; }
 	HRESULT STDMETHODCALLTYPE Escape(LPDIEFFESCAPE) override { return DIERR_UNSUPPORTED; }
-	HRESULT STDMETHODCALLTYPE Poll() override { return DI_NOEFFECT_OR_OK; }
+	// UpdateJoystick acquires only after Poll fails. Reporting success before acquisition leaves every pad inert.
+	HRESULT STDMETHODCALLTYPE Poll() override { return acquired ? DI_NOEFFECT_OR_OK : DIERR_NOTACQUIRED; }
 	HRESULT STDMETHODCALLTYPE SendDeviceData(DWORD, LPCDIDEVICEOBJECTDATA, LPDWORD, DWORD) override { return DIERR_UNSUPPORTED; }
 	HRESULT STDMETHODCALLTYPE EnumEffectsInFile(LPCSTR, LPDIENUMEFFECTSINFILECALLBACK, LPVOID, DWORD) override { return DI_OK; }
 	HRESULT STDMETHODCALLTYPE WriteEffectToFile(LPCSTR, DWORD, LPDIFILEEFFECT, DWORD) override { return DIERR_UNSUPPORTED; }
@@ -489,6 +547,13 @@ extern "C" HRESULT WINAPI DirectInput8Create(HINSTANCE, DWORD, REFIID, LPVOID *o
 
 bool PortDinputMouseAcquired() { return gMouseWindow != NULL; }
 
+// SDL timestamps events before queueing them. Keep input from a completed capture epoch out of later menu messages;
+// checking only current acquisition would deliver an unread gameplay wheel/button after ShutdownMouse releases it.
+bool PortDinputOwnsMouseEvent(Uint64 timestamp)
+{
+	return gMouseWindow != NULL || (timestamp && timestamp <= gMouseReleasedAt);
+}
+
 // Each frame (window.cpp's pump): while the game holds the mouse and its window has keyboard focus, relative mode must be on.
 // A compositor can refuse it (the window not yet focused at acquire) or drop it (a focus change); without it the pointer
 // stops at the screen's edges and the battle engine stops turning or pitching (recorded play, 2026-10-16).
@@ -506,6 +571,8 @@ void PortMouseKeepRelative()
 		return;	// at most one attempt a second (a driver without relative mode, such as offscreen, refuses every time)
 	lastTry = now;
 	bool ok = SDL_SetWindowRelativeMouseMode(w, true);
+	if (logged < 5)
+		PortSessionLog(PORT_SESSION_WINDOW, !ok, "relative mouse was off; recovery=%s detail=%.200s", ok ? "success" : "failed", ok ? "none" : SDL_GetError());
 	if (logged++ < 5 && PortDevLog())
 		fprintf(stderr, PORT_LOG_PREFIX "input: relative mouse mode was off; re-enabled: %s\n", ok ? "yes" : SDL_GetError());
 }

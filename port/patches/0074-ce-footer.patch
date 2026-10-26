@@ -1,0 +1,39 @@
+--- a/FEPMain.cpp
++++ b/FEPMain.cpp
+@@ -457,6 +457,7 @@
+ // the version, the title and its passing shine, and a white flash as the page arrives.
+ #ifdef CE_VERSION
+ bool	PortCeLayer();		// Port (patch 0037): port/platform/common/ce.cpp
++bool	PortCeMenus();		// Port (patch 0074): subdued CE-only footer colour
+ #endif
+ 
+ void	CFEPMain::Render(float transition, EFrontEndPage dest)	// FUNCTION: 0x00462d40
+@@ -740,17 +741,23 @@
+ 	char	version[100];
+ 	sprintf(version, "V%1d.%02d", VERSION_MAJOR, VERSION_MINOR);
+ #ifdef CE_VERSION
+-	// Port (patch 0037, the CE layer): public builds show their own version here, in the game's place, font and colour.
++	// Port (patch 0074, the CE layer): keep the original place, font and intro fade.
+ 	// Replays (BEA_PORT_CLOCK, BEA_PORT_TAPE, ...) keep the game's text (PortCeLayer), so faithful runs are unchanged.
+-	// "(preview)" as port/updater/ce_report.h's CE_VERSION_NOTE; fits FONT_SMALL at 640x480 (measured in a capture).
++	// The installed version includes its development suffix; this footer does not alter updater or release status.
+ 	if (PortCeLayer())
+-		sprintf(version, "Onslaught CE v%s (preview)", CE_VERSION);
++		snprintf(version, sizeof(version), "Onslaught CE V%s", CE_VERSION);
++#endif
++	DWORD versionColour = 0x102025;
++#ifdef CE_VERSION
++	if (PortCeMenus())
++		// The native font doubles RGB in its colour stage; author half the intended subdued teal.
++		versionColour = 0x3c4b4f;
+ #endif
+ 	gInFrontEnd = false;
+ 	if (PortWideActive())	// Port (patch 0042, widescreen): the version at the 4:3 box's corner, scaled with the box as the menu is
+-		PLATFORM.Font(FONT_SMALL)->DrawTextDynamic(PortUiLeft(), PortUiTop() + (480.f - 16.f) * PortUiScale(), 0.01f, PortUiScale(), PortUiScale(), (SINT(v * 255.f) << 24) | 0x102025, ToWCHAR(version), 1000.f, 0, 0);
++		PLATFORM.Font(FONT_SMALL)->DrawTextDynamic(PortUiLeft(), PortUiTop() + (480.f - 16.f) * PortUiScale(), 0.01f, PortUiScale(), PortUiScale(), (SINT(v * 255.f) << 24) | versionColour, ToWCHAR(version), 1000.f, 0, 0);
+ 	else
+-	PLATFORM.Font(FONT_SMALL)->DrawTextDynamic(0.f, float(PLATFORM.GetWindowHeight() - 16), 0.01f, 1.f, 1.f, (SINT(v * 255.f) << 24) | 0x102025, ToWCHAR(version), 1000.f, 0, 0);
++	PLATFORM.Font(FONT_SMALL)->DrawTextDynamic(0.f, float(PLATFORM.GetWindowHeight() - 16), 0.01f, 1.f, 1.f, (SINT(v * 255.f) << 24) | versionColour, ToWCHAR(version), 1000.f, 0, 0);
+ 	gInFrontEnd = true;
+ 	RENDERINFO.SetFogEnabled(false);
+ 

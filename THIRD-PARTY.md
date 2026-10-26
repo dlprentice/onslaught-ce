@@ -1,5 +1,9 @@
 # Third-party components
 
+Status: active
+Last updated: 2026-10-25
+Summary: the licences and purposes of components built into or shipped with Onslaught CE.
+
 Onslaught CE's own code is GPL-3.0-only (`COPYING`). The build fetches the components below at the versions
 `port/deps.lock` pins, each checked by SHA-256; none of their source is in this repository except where a file says
 so. Release packages carry each shipped component's licence text in `licenses/`.
@@ -37,7 +41,6 @@ so. Release packages carry each shipped component's licence text in `licenses/`.
 | `port/d3dx/src/bc.cpp` | adapted from Microsoft's DirectXTex (its DXT block encoder) | MIT, with the original notice in the file; the file is GPL-3.0-only AND MIT |
 | `src/oggvorbis.h` | declarations from the Xiph.Org libogg and libvorbis headers | BSD-3-Clause (Xiph.Org Foundation; `LICENSES/BSD-3-Clause.txt`), with this project's GPL-3.0-only |
 | `src/OggFileRead.cpp` | its decode loop follows Xiph.Org's `decoder_example.c` (libvorbis 1.0), turned into a class | BSD-3-Clause (Xiph.Org Foundation), with this project's GPL-3.0-only |
-| `src/d3dapp.cpp`, `src/d3dapp.h` | src/d3dapp.cpp and src/d3dapp.h are Microsoft's DirectX SDK sample application framework, (c) Microsoft Corporation, carried because Stuart Gillam's GPL release of the game's source includes them; Microsoft has not licensed them under the GPL. | `LicenseRef-Microsoft-DirectX-SDK-Sample` (`LICENSES/LicenseRef-Microsoft-DirectX-SDK-Sample.txt`); Stuart Gillam's and this project's changes GPL-3.0-only |
 | `src/adpcm.c` | the IMA ADPCM step tables (Jack Jansen's public reference implementation) | public reference tables |
 
 Header-only inputs are not listed: dxvk-native compiles against Khronos's SPIRV-Headers and Vulkan-Headers (its

@@ -1,7 +1,7 @@
 # Native port (Linux and Windows)
 
-Status: active (both targets build, link and run the game; Linux replays are compared with retail Present by Present, see PARITY.md; Windows has run only under Wine)
-Last updated: 2026-10-22 (public release commands: the CE version and the private-path scan)
+Status: active (both targets build, link and run the game; Linux replays are compared with retail Present by Present, see PARITY.md; native Windows acceptance uses a software-rendered VM, not physical-GPU validation)
+Last updated: 2026-10-25 (native Windows validation scope; public release commands and private-path scan)
 Summary: a second build of the decompilation's sources as native i686 Linux and Windows programs; layout, ownership,
 commands and rules.
 

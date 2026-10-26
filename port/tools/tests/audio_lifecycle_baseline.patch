@@ -1,0 +1,90 @@
+# SPDX-License-Identifier: GPL-3.0-only
+# Frozen production negative control: undo only the audio lifecycle fix.
+--- a/dsound.cpp
++++ b/dsound.cpp
+@@ -90 +89,0 @@
+-	Uint64 virtMixedBase = 0;		// cumulative frames already mixed when this device lifetime began
+@@ -101 +99,0 @@
+-	void CatchUpLocked();		// lock held; sample the clock after acquiring it
+@@ -1083,7 +1080,0 @@
+-	SDL_LockMutex(lock);
+-	CatchUpLocked();
+-	SDL_UnlockMutex(lock);
+-}
+-
+-void Mixer::CatchUpLocked()
+-{
+@@ -1092,0 +1084 @@
++	SDL_LockMutex(lock);
+@@ -1095,3 +1087 @@
+-	if (now < virtBase)
+-		return;
+-	Uint64 target = virtMixedBase + (now - virtBase) * kRate / 1000000000ull;
++	Uint64 target = (now - virtBase) * kRate / 1000000000ull;
+@@ -1101,13 +1091,5 @@
+-}
+-
+-Uint32 SDLCALL TimerTick(void *, SDL_TimerID timerId, Uint32 interval)
+-{
+-	// SDL_RemoveTimer cancels future dispatch; it does not join an already-dispatched callback. The timer's immutable
+-	// SDL ID is its generation. This permanent mutex and the process-lifetime mixer outlive every callback: no callback
+-	// userdata is allocated or freed. A retired callback must not read a reopened device's clock or other state.
+-	SDL_LockMutex(gMixer.lock);
+-	if (timerId != gMixer.timer || !timerId)
+-	{
+-		SDL_UnlockMutex(gMixer.lock);
+-		return 0;
+-	}
++	SDL_UnlockMutex(lock);
++}
++
++Uint32 SDLCALL TimerTick(void *, SDL_TimerID, Uint32 interval)
++{
+@@ -1116,2 +1098 @@
+-		gMixer.CatchUpLocked();
+-		SDL_UnlockMutex(gMixer.lock);
++		gMixer.CatchUp();
+@@ -1128,4 +1109,3 @@
+-		if (buf)
+-			gMixer.Mix(buf, n);
+-		else if (gSessionAudio)
+-			PortSessionCount(PORT_COUNT_AUDIO_ALLOC_FAILED);
++		SDL_LockMutex(gMixer.lock);
++		gMixer.Mix(buf, n);
++		SDL_UnlockMutex(gMixer.lock);
+@@ -1134 +1113,0 @@
+-	SDL_UnlockMutex(gMixer.lock);
+@@ -1163 +1141,0 @@
+-	{
+@@ -1165,2 +1142,0 @@
+-		virtMixedBase = mixed;
+-	}
+@@ -1177,6 +1153 @@
+-				{
+-					PortSessionLog(PORT_SESSION_AUDIO, true, "device resume failed; timer fallback: %.200s", SDL_GetError());
+-					SDL_DestroyAudioStream(stream);
+-					stream = NULL;
+-					SDL_QuitSubSystem(SDL_INIT_AUDIO);
+-				}
++					PortSessionLog(PORT_SESSION_AUDIO, true, "device resume failed: %.200s", SDL_GetError());
+@@ -1212,3 +1182,0 @@
+-		// Publish the ID while holding the same lock the callback takes. Even dispatch during SDL_AddTimer cannot see
+-		// an unpublished generation and accidentally cancel the newly created timer.
+-		SDL_LockMutex(lock);
+@@ -1218 +1185,0 @@
+-		SDL_UnlockMutex(lock);
+@@ -1259,8 +1225,0 @@
+-	// Retire before cancellation and teardown. An in-flight callback either completed while holding this mutex, or
+-	// will observe its old ID and return without touching device-lifetime state. Never wait for it with the mutex held.
+-	SDL_LockMutex(lock);
+-	SDL_TimerID retiredTimer = timer;
+-	timer = 0;
+-	SDL_UnlockMutex(lock);
+-	if (retiredTimer)
+-		SDL_RemoveTimer(retiredTimer);
+@@ -1271,0 +1231,5 @@
++	}
++	if (timer)
++	{
++		SDL_RemoveTimer(timer);
++		timer = 0;

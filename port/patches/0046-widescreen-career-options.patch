@@ -1,0 +1,31 @@
+--- a/Career.cpp
++++ b/Career.cpp
+@@ -1092,6 +1092,7 @@
+ 	D3DAdapterInfo	*adapter = &LT.m_Adapters[LT.m_dwAdapter];
+ 	D3DDeviceInfo	*device = &adapter->devices[LT.GetAdapterInfo(-1)->dwCurrentDevice];
+ 	gDisplayModeKey.Set(&device->modes[device->dwCurrentMode]);
++	PortWideOptionsSaved(gDisplayModeKey.mWidth, gDisplayModeKey.mHeight);	// Port (patch 0046): ce.ini keeps a wide session's size
+ 
+ 	memcpy(dest, &gUnknownOption6254f0, sizeof(float));				dest += sizeof(float);
+ 	memcpy(dest, &gMouseSensitivity, sizeof(float));				dest += sizeof(float);
+@@ -1210,6 +1211,20 @@
+ 	RENDERSTATE_DISALLOW_MIPMAPPING.Set((float)value);
+ 
+ 	memcpy(&gDisplayModeKey, source, sizeof(CDisplayModeKey));		source += sizeof(CDisplayModeKey);
++	{
++		// Port (patch 0046, widescreen): every career and options file carries a mode. A 640 x 480 (what all of them held
++		// before the port listed other sizes, and what a session with widescreen modes off writes when the file's size is
++		// not in its 4:3 list) is the player's choice only when ce.ini's size from the last save with widescreen modes on
++		// is 640 x 480 too; otherwise that size, or the desktop's, takes its place (widescreen.cpp, as d3dapp.cpp does).
++		// BEA_PORT_WIDESCREEN=0 keeps 640 x 480.
++		unsigned	wideW, wideH;
++		if (gDisplayModeKey.mWidth && !CLIPARAMS.mResWidth &&
++			PortWideStartSize(gDisplayModeKey.mWidth, gDisplayModeKey.mHeight, gDisplayModeKey.m32Bit, &wideW, &wideH))
++		{
++			gDisplayModeKey.mWidth = wideW;
++			gDisplayModeKey.mHeight = wideH;
++		}
++	}
+ 
+ 	int		old = CLIPARAMS.mVSync;
+ 	memcpy(&CLIPARAMS.mVSync, source, sizeof(int));					source += sizeof(int);

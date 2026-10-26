@@ -1,0 +1,131 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-only
+"""Check production input shims and extracted game callers without a game, window or GPU.
+
+Uses the pinned SDL library's virtual gamepads; only owned virtual IDs are exposed to enumeration. Mouse focus,
+relative counts and window geometry are bounded API fakes. Complete InitDirectInput, UpdateJoystick, enumeration,
+PCController axis, mouse poll/message and ShutdownMouse bodies come from source after the port patch queue.
+Receipts retain source/function hashes, compiler output and every case under ignored local-data/port/.
+--source-root can select an unchanged checkout to reproduce the defects. This is caller-level evidence, not a
+physical controller/mouse, compositor, native display or player-feel test. No retail inputs are read.
+"""
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import subprocess
+import tempfile
+
+import deps
+
+
+ROOT = Path(__file__).resolve().parents[2]
+SOURCES = ("ltshell.cpp", "PCController.cpp", "Controller.cpp", "mouse.cpp")
+FUNCTIONS = {
+    "INIT": ("ltshell.cpp", r"HRESULT PCLTShell::InitDirectInput\( HWND hDlg \)"),
+    "ENUM": ("ltshell.cpp", r"BOOL CALLBACK PCLTShell::EnumJoysticksCallback\([^\n]*"),
+    "AXES": ("ltshell.cpp", r"BOOL CALLBACK PCLTShell::EnumAxesCallback\([^\n]*"),
+    "UPDATE": ("ltshell.cpp", r"HRESULT PCLTShell::UpdateJoystick\(int joypad, bool first\)"),
+    **{f"JOY_{axis}": ("PCController.cpp", rf"float\s+CPCController::GetJoyAnalogue{axis}\(int pad_number\)")
+       for axis in ("LeftX", "LeftY", "RightX", "RightY")},
+    "POLL_MOUSE": ("Controller.cpp", r"HRESULT PollMouseState\(\)"),
+    "SHUTDOWN_MOUSE": ("Controller.cpp", r"HRESULT ShutdownMouse\(\)"),
+    "MOUSE_MESSAGE": ("mouse.cpp", r"LRESULT __stdcall\s+HandleMouseMessage\([^\n]*"),
+}
+CASES = ("pad-acquire", "pad-reacquire", "pad-axes", "pad-limit", "mouse-exclusive", "relative-focus", "wheel-stale", "wheel-focus",
+         "wheel-race", "wheel-menu", "wheel-before-acquire",
+         "wheel-once", "wheel-focus-pending", "wheel-window", "release-overflow", "release-repress", "record-release-overflow",
+         "record-mouse", "replay-key", "replay-mouse", "pause-cursor", "pause-tape", "pause-no-focus")
+
+
+def sha(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+def definition(source, signature):
+    found = re.findall(r"^" + signature + r"[^\n]*\n\{\n.*?^\}[ \t]*", source, re.MULTILINE | re.DOTALL)
+    if len(found) != 1:
+        raise RuntimeError(f"expected one complete function: {signature}")
+    return found[0] + "\n"
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--source-root", type=Path, default=ROOT)
+    parser.add_argument("--case", choices=CASES, action="append")
+    args = parser.parse_args()
+    parent = ROOT / "local-data/port/input-lifetime-tests"
+    parent.mkdir(parents=True, exist_ok=True)
+    out = Path(tempfile.mkdtemp(prefix="run-", dir=parent))
+    receipt = {"source_root": str(args.source_root.resolve()), "patches": [], "cases": [],
+               "limits": ["Actual production shims and extracted game callers; SDL virtual gamepads.",
+                          "Mouse/focus/geometry are API fakes; no native window, GPU or physical-device evidence."]}
+    passed = False
+    try:
+        sources = {name: (args.source_root / "src" / name).read_bytes() for name in SOURCES}
+        receipt["source_sha256"] = {name: sha(data) for name, data in sources.items()}
+        for name, data in sources.items():
+            (out / name).write_bytes(data)
+        for path in sorted((args.source_root / "port/patches").glob("*.patch")):
+            data = path.read_bytes()
+            sections = [section for section in re.split(br"(?=^--- a/)", data, flags=re.MULTILINE)
+                        if any(section.startswith(f"--- a/{name}\n+++ b/{name}\n".encode()) for name in SOURCES)]
+            if sections:
+                result = subprocess.run(["patch", "--batch", "--forward", "--fuzz=0", "-p1", "-d", str(out), "-r", "-"],
+                                        input=b"".join(sections), capture_output=True, timeout=10)
+                receipt["patches"].append({"name": path.name, "sha256": sha(data), "exit": result.returncode,
+                                           "output": (result.stdout + result.stderr).decode(errors="replace")})
+                if result.returncode:
+                    raise RuntimeError(f"patch failed: {path.name}")
+        bodies = {name: definition((out / file).read_text(encoding="latin-1"), signature)
+                  for name, (file, signature) in FUNCTIONS.items()}
+        receipt["functions_sha256"] = {name: sha(body.encode()) for name, body in bodies.items()}
+        calls = out / "callers.inc"
+        calls.write_text("\n".join(bodies.values()))
+        shims = {}
+        for name in ("window.cpp", "dinput.cpp", "portlog.cpp"):
+            data = (args.source_root / "port/platform/common" / name).read_bytes()
+            (out / name).write_bytes(data)
+            shims[name] = sha(data)
+        receipt["shims_sha256"] = shims
+        driver = (ROOT / "port/tools/tests/input_lifetime_driver.cpp").read_text()
+        for name, path in {"WINDOW_CPP": out / "window.cpp", "DINPUT_CPP": out / "dinput.cpp",
+                           "PORTLOG_CPP": out / "portlog.cpp", "CALLERS_INC": calls}.items():
+            driver = driver.replace(name, str(path))
+        cpp = out / "driver.cpp"
+        cpp.write_text(driver)
+        receipt["driver_sha256"] = sha(cpp.read_bytes())
+        binary = out / "driver"
+        command = [str(deps.DATA / "llvm/bin/clang++"), "--target=i686-pc-linux-gnu", "-m32", "-std=c++17",
+                   "-ffunction-sections", "-fdata-sections", "-Wl,--gc-sections", "-fshort-wchar",
+                   "-fms-extensions", "-fno-autolink", "-w", "-O0", '-DCE_VERSION="input-test"',
+                   f"-I{deps.PORT / 'include/linux'}", f"-I{deps.DATA / 'dxvk-native/usr/include/dxvk'}",
+                   f"-I{deps.PREFIX / 'include'}", f"-I{args.source_root / 'port/platform/common'}",
+                   str(cpp), f"-L{deps.PREFIX / 'lib'}", "-lSDL3", f"-Wl,-rpath,{deps.PREFIX / 'lib'}", "-o", str(binary)]
+        result = subprocess.run(command, capture_output=True, text=True, timeout=60,
+                                env=dict(os.environ, TMPDIR=str(out)))
+        receipt["compile"] = {"command": command, "exit": result.returncode, "output": result.stdout + result.stderr}
+        if result.returncode:
+            raise RuntimeError("input driver did not compile")
+        env = {key: value for key, value in os.environ.items() if not key.startswith(("BEA_PORT_", "SDL_"))}
+        env.update(SDL_VIDEO_DRIVER="dummy", SDL_AUDIO_DRIVER="dummy", SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS="1")
+        for case in args.case or CASES:
+            result = subprocess.run([str(binary), case], env=env, capture_output=True, text=True, timeout=10)
+            observation = {"case": case, "exit": result.returncode, "stdout": result.stdout,
+                           "stderr": result.stderr, "pass": result.returncode == 0}
+            receipt["cases"].append(observation)
+            print(f"{'PASS' if observation['pass'] else 'FAIL'} {case}")
+        passed = all(case["pass"] for case in receipt["cases"])
+    except (OSError, RuntimeError, subprocess.TimeoutExpired) as error:
+        receipt["error"] = str(error)
+        print(f"FAIL {error}")
+    receipt["pass"] = passed
+    (out / "result.json").write_text(json.dumps(receipt, indent=2) + "\n")
+    print(out / "result.json")
+    return 0 if passed else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

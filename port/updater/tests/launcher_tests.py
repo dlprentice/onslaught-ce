@@ -8,6 +8,8 @@ bea beside a copy of the launcher), with no display, no network and a private HO
 import json
 import os
 import resource
+import re
+import hashlib
 import shutil
 import subprocess
 import sys
@@ -22,6 +24,7 @@ import deps  # noqa: E402
 
 LAUNCHER = deps.WORK / "build/linux/onslaught-ce-launch"
 GAME = r'''#!/bin/sh
+echo "game_pid=$$"
 echo "out: args $*"
 echo "onslaught-ce: adapter Stand-in GPU (vendor 8086, device 1234, driver 1.2.3.4)" >&2
 echo "env: rec=${BEA_PORT_RECORD:-} clock=${BEA_PORT_CLOCK:-} build=${BEA_CE_BUILD:-} monitor=${BEA_AUDIO_MONITOR:-}"
@@ -37,6 +40,22 @@ case "${FAKE:-}" in
   big) yes 'a line of game output, sixty-four bytes long, to fill the log up' | head -c 5000000 >&2 ;;
   segv) kill -SEGV $$ ;;
 esac
+# A fixture tape and the recorder's exact publication acknowledgement, not evidence of gameplay recording.
+if [ -n "${BEA_PORT_RECORD:-}" ] && [ -z "${BEA_PORT_TAPE:-}" ]; then
+  stage="$BEA_PORT_RECORD.recording-$$-0.incomplete"
+  if (set -C; printf '# onslaught tape 2\nK 0 down 1b 01 escape\nK 1 up 1b 01 escape\n' > "$stage"); then
+    if [ "${FAKE:-}" = record-fail ]; then
+      echo 'onslaught-ce: recording failed: stand-in finalization failure' >&2
+    elif ln -T "$stage" "$BEA_PORT_RECORD"; then
+      rm "$stage"
+      printf 'onslaught-ce: recording finalized: final tape published %s\n' "$BEA_PORT_RECORD" >&2
+    else
+      echo 'onslaught-ce: recording failed: stand-in publication collision' >&2
+    fi
+  else
+    echo 'onslaught-ce: recording failed: stand-in stage creation failed' >&2
+  fi
+fi
 exit ${CODE:-0}
 '''
 # The launcher checks the game folder's two hash-pinned files; the stand-in folder is the player's install if present.
@@ -106,16 +125,49 @@ class Launcher(unittest.TestCase):
         self.assertEqual(r.returncode, 128 + 11)
         self.assertIn("the game stopped on signal 11", self.log())
 
+    def test_log_identifies_only_own_launcher_and_child(self):
+        result = self.run_launcher()
+        self.assertEqual(result.returncode, 0)
+        text = self.log()
+        launcher = re.search(r"onslaught-ce: launcher process pid=(\d+) SDL=(\d+)", text)
+        child = re.search(r"onslaught-ce: game process pid=(\d+) launcher_pid=(\d+) output_capture=pipe", text)
+        actual = re.search(r"game_pid=(\d+)", text)
+        self.assertIsNotNone(launcher, text)
+        self.assertIsNotNone(child, text)
+        self.assertIsNotNone(actual, text)
+        self.assertEqual(launcher[1], child[2])
+        self.assertEqual(child[1], actual[1])
+        self.assertNotEqual(child[1], child[2])
+        self.assertGreater(int(launcher[2]), 0)
+        digest = hashlib.sha256((self.tmp / "bin/bea").read_bytes()).hexdigest()
+        self.assertIn("prelaunch game executable sha256=" + digest, text)
+
+    def test_executable_digest_failure_does_not_block_execute_only_game(self):
+        game = self.tmp / "bin/bea"
+        shutil.copyfile(shutil.which("true"), game)
+        game.chmod(0o111)
+        try:
+            self.assertFalse(os.access(game, os.R_OK), "execute-only test requires an unprivileged account")
+            result = self.run_launcher()
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("sha256=unavailable (launch will still be attempted)", self.log())
+            self.assertIn("the game closed", self.log())
+        finally:
+            game.chmod(0o755)
+
     def test_record_flag_and_ini(self):
         (self.user).mkdir()
         (self.user / "defaultoptions.bea").write_bytes(b"\x01\x02\x03")
         (self.user / "savegames").mkdir()
         (self.user / "savegames/Career 1.bes").write_bytes(b"career")
         r = self.run_launcher("--record", "-level", "100")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         tapes = sorted((self.user / "tapes").glob("*.tape.json"))
         self.assertEqual(len(tapes), 1)
         meta = json.loads(tapes[0].read_text())
         tape = self.user / "tapes" / meta["tape"]
+        self.assertTrue(tape.read_text().startswith("# onslaught tape 2\n"))
+        self.assertIn("recording saved to", r.stderr)
         self.assertIn(f"env: rec={tape} clock=shim", r.stderr)
         self.assertEqual(meta["game_args"], ["-level", "100"])
         self.assertEqual(meta["clock"], "shim")
@@ -140,6 +192,15 @@ class Launcher(unittest.TestCase):
         meta = json.loads(sorted((self.user / "tapes").glob("*.tape.json"))[0].read_text())
         self.assertIs(meta["audio_monitor"], False)
         self.assertIn("monitor=0", r.stderr)
+
+    def test_normal_game_exit_does_not_hide_recording_failure(self):
+        result = self.run_launcher("--record", FAKE="record-fail")
+        self.assertEqual(result.returncode, 3, result.stdout + result.stderr)
+        self.assertIn("the game closed", result.stderr)
+        self.assertIn("game closed, recording failed", result.stderr)
+        self.assertNotIn("recording saved to", result.stderr)
+        self.assertEqual(list((self.user / "tapes").glob("*.tape")), [])
+        self.assertEqual(len(list((self.user / "tapes").glob("*.incomplete"))), 1)
 
     def test_record_prompt_and_no_record(self):
         # record_sessions=1 asks each start: Not this time records nothing and keeps the setting; Stop recording and

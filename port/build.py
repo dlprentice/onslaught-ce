@@ -17,6 +17,7 @@ import argparse
 import hashlib
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -252,8 +253,11 @@ def vorbis_lib(target):
 def link_flags(target):
     aliases = [l.split("\t")[:2] for l in (PORT / "aliases.tsv").read_text().splitlines()
                if l.strip() and not l.startswith("#")]
-    # FFmpeg's static libraries, for the Bink backend (port/bink).
-    ffmpeg = "-lavformat -lavcodec -lavutil" if any((PORT / "bink").glob("*.cpp")) else ""
+    # Private builds may use static archives. Public links name the validated shared inputs explicitly, so a missing
+    # import library/shared object cannot silently select a static archive from a later -L directory.
+    ffmpeg = ""
+    if any((PORT / "bink").glob("*.cpp")):
+        ffmpeg = " ".join(shlex.quote(str(path)) for path in deps.require_ffmpeg_shared(target)) if PUBLIC else "-lavformat -lavcodec -lavutil"
     if target == "windows":
         # COFF's weak alias (/alternatename); i686 MinGW symbols carry a leading underscore.
         defsyms = " ".join(f"-Wl,-Xlink=-alternatename:_{a}=_{b}" for a, b in aliases)
@@ -264,14 +268,11 @@ def link_flags(target):
         lib = deps.PREFIX / "lib"
         # The public build finds its bundled libraries beside it ($ORIGIN/lib; ninja's $$ and the shell's quotes keep it).
         rpath = "'$$ORIGIN/lib'" if PUBLIC else f"{lib}:{dxvk}"
-        # The public build links FFmpeg's shared libraries (deps.py build_ffmpeg_shared), searched first.
-        shared = f"-L{deps.FFMPEG_SHARED / 'linux/usr/lib'} " if PUBLIC else ""
         lld = "".join(f + " " for f in deps.sysroot_link_flags())
-        return (f"-m32 {lld}{defsyms} {shared}-L{lib} -L{dxvk} -Wl,-rpath,{rpath} -no-pie -ldxvk_d3d9 -lSDL3 {vorbis_lib(target)} -lz "
+        return (f"-m32 {lld}{defsyms} -L{lib} -L{dxvk} -Wl,-rpath,{rpath} -no-pie -ldxvk_d3d9 -lSDL3 {vorbis_lib(target)} -lz "
                 f"{ffmpeg} -lpthread -ldl -lm")
     lib = deps.PREFIX_WIN / "lib"
-    shared = f"-L{deps.FFMPEG_SHARED / 'windows/usr/lib'} " if PUBLIC else ""
-    return (f"-mwindows -Wl,--no-insert-timestamp {defsyms} {shared}-L{lib} -lSDL3 {vorbis_lib(target)} -lz {ffmpeg} {'-lbcrypt' if ffmpeg else ''} -ld3d9 -ldxguid -luuid -lwinmm -lgdi32 -luser32 "
+    return (f"-mwindows -Wl,--no-insert-timestamp {defsyms} -L{lib} -lSDL3 {vorbis_lib(target)} -lz {ffmpeg} {'-lbcrypt' if ffmpeg else ''} -ld3d9 -ldxguid -luuid -lwinmm -lgdi32 -luser32 "
             "-ladvapi32 -lversion -lcomdlg32 -lvfw32 -lole32 -static-libstdc++ -static-libgcc")
 
 
@@ -300,9 +301,12 @@ CE_DEFINES = []   # the public build's CE_VERSION (game files: the CE layer of p
 # The public build replaces these src/ files (derived from Microsoft's DirectX SDK samples, which cannot ship) with the
 # port's own versions in port/platform/public/, same names and interfaces, compiled as game files; the patches below
 # touch only a replaced file, whose replacement carries the change itself.
-PUBLIC_REPLACEMENTS = ("wavread.cpp", "WavRead.h", "dxutil.cpp", "d3dutil.cpp", "DXFont.cpp")
+PUBLIC_REPLACEMENTS = ("wavread.cpp", "WavRead.h", "dxutil.cpp", "d3dutil.cpp", "DXFont.cpp", "d3dapp.cpp", "d3dapp.h")
 PUBLIC_SKIPPED_PATCHES = {"0034-constant-divisions-DXFont.patch": "DXFont.cpp",
-                          "0042-widescreen-virtual-ui-DXFont.patch": "DXFont.cpp"}
+                          "0042-widescreen-virtual-ui-DXFont.patch": "DXFont.cpp",
+                          "0041-widescreen-screen-shape.patch": "d3dapp.cpp",
+                          "0045-widescreen-mode-gate.patch": "d3dapp.cpp",
+                          "0046-widescreen-native-default.patch": "d3dapp.cpp"}
 
 
 def use_system_clang():
@@ -451,6 +455,7 @@ def main():
             except ValueError as error:
                 raise SystemExit(f"--ce-version {a.ce_version!r}: {error}") from error
         CE_DEFINES.append(f"'-DCE_VERSION=\"{a.ce_version}\"'")
+        CE_DEFINES.append("-DBEA_PUBLIC_GRAPHICS_HOST=1")
         # No machine paths in the shipped binary (__FILE__ in assertions and logs, debug information): this checkout,
         # its mirror and build, and the shared dependency directory become relative names.
         maps = [f"-ffile-prefix-map={p}={n}" for p, n in ((MIRROR_ROOT, "mirror"), (BUILD, "build"), (deps.DATA, "deps"),

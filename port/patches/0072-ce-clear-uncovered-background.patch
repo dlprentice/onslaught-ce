@@ -1,0 +1,30 @@
+--- a/DXEngine.cpp
++++ b/DXEngine.cpp
+@@ -383,6 +383,10 @@
+ #endif
+ 
+ //=============================================-===--==---=---- ---  --   -
++#ifdef CE_VERSION
++bool PortCeLayer();
++#endif
++
+ HRESULT CDXEngine::PreRender(CViewport *viewport)	// FUNCTION: 0x0053e220
+ {
+ #if TARGET == XBOX
+@@ -421,7 +425,15 @@
+ 
+ #if TARGET == PC
+ 	// retail PC: the target too in a mirrored pass (0053e287)
+-	LT.D3D_Clear( 0, NULL, gMirrorPass ? D3DCLEAR_ZBUFFER | D3DCLEAR_TARGET : D3DCLEAR_ZBUFFER, 0x00607080, 1.0f, 0L );	
++	DWORD clearFlags = gMirrorPass ? D3DCLEAR_ZBUFFER | D3DCLEAR_TARGET : D3DCLEAR_ZBUFFER;
++#ifdef CE_VERSION
++	// A discarded backbuffer has undefined contents. The five-face sky has no floor;
++	// uncovered pixels must not expose old surface data when terrain/water leaves a gap.
++	// Keep the faithful recording/replay path and the existing mirror clear unchanged.
++	if (PortCeLayer())
++		clearFlags |= D3DCLEAR_TARGET;
++#endif
++	LT.D3D_Clear( 0, NULL, clearFlags, 0x00607080, 1.0f, 0L );
+ #else 
+ 	LT.D3D_Clear( 0, NULL, D3DCLEAR_ZBUFFER | D3DCLEAR_STENCIL , 0x00607080, 1.0f, 0L );	
+ //	LT.D3D_Clear( 0, NULL, D3DCLEAR_ZBUFFER | D3DCLEAR_STENCIL | D3DCLEAR_TARGET, 0x00607080, 1.0f, 0L );	

@@ -24,7 +24,9 @@
 //                           M lines; otherwise (menus, pause menu) as W lines, the window messages the front end reads,
 //                           each button preceded by a move to its position. A key-down's character (the live port's
 //                           WM_CHAR, window.cpp KeyChar) is a C line, so a career can be named; focus messages are not
-//                           delivered (a tape has none).
+//                           delivered (a tape has none). Input is written to an exclusive sibling .incomplete stage;
+//                           only successful normal finalization publishes PATH, without replacing an existing file.
+//                           Queue or I/O failure leaves the stage for diagnosis and keeps paced runtime input active.
 //   BEA_PORT_AUTOPILOT=CMDS   record mode only: from Present BEA_PORT_AUTOPILOT_START (3300) the input is made, not
 //                           read: `wp:X,Y` walks the battle engine to within 1.5 of map point X,Y (mouse X turns it,
 //                           W walks when it faces the point), `wait:N` waits N Presents, `fire:N` holds the left mouse
@@ -42,15 +44,25 @@
 #include <windows.h>
 
 #include <math.h>
+#include <errno.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#if defined(_WIN32)
+#include <process.h>
+#else
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
 
 #include <SDL3/SDL.h>
 
 #include "platform.h"
 extern "C" void PortCrtRandState(unsigned int *calls, unsigned int *hold);	// crtrand.cpp
 extern "C" int PortBackBuffer(unsigned *w, unsigned *h);	// d3d9hooks.cpp: the game's back buffer (0 before the device)
+extern "C" BOOL WINAPI PortTryPostMessageA(HWND, UINT, WPARAM, LPARAM);	// window.cpp: bounded recorder delivery
 
 extern "C" char GAME[];
 extern "C" char EVENT_MANAGER[];
@@ -64,6 +76,7 @@ namespace
 struct Event
 {
 	unsigned frame;
+	bool prepared;		// recording delivery deferred by a full window queue; do not rewrite its ownership/coordinates
 	char kind;			// 'K', 'M', 'W' or 'C' (0: dropped); C: vk is the character, scan its key's
 	bool down;
 	unsigned vk, scan;
@@ -97,11 +110,14 @@ bool gActive, gInit, gObjects;
 long gMouseX, gMouseY, gMouseZ;
 int gButtons;
 FILE *gRecord;
+bool gRecording, gRecordFailed, gRecordFinalized;
+const char *gRecordDest;
+char *gRecordStage;
+bool gRecordStageOwned;
 Event gPending[1024];		// record mode: keys and window-mouse events in SDL's order, until the next Present
 size_t gPendingCount;
 unsigned gRecMk;			// record mode: the window mouse's button level (MK_ bits), the recorder's own
 unsigned gRecCw, gRecCh;	// the last W_CLIENT written
-unsigned gRecMoveDrops;
 bool gTapeCursor;			// a tape-2 replay or a recording: GetCursorPos answers gCurX, gCurY
 int gCurX, gCurY;			// the last W position delivered
 float gRecFracX, gRecFracY;
@@ -119,6 +135,109 @@ int gPilotButtons;
 static void EldAtExit();	// below: the end-level data at exit
 namespace
 {
+// Failure disables publication, never the record-mode input path or its pacing. A failed stage stays non-tape.
+void RecordFailure(const char *why)
+{
+	if (gRecordFailed)
+		return;
+	gRecordFailed = true;
+	fprintf(stderr, PORT_LOG_PREFIX "recording failed: %s; no final tape will be published%s%s\n", why,
+		gRecordStageOwned ? "; incomplete stage: " : "", gRecordStageOwned ? gRecordStage : "");
+}
+
+void RecordWrite(const char *format, ...)
+{
+	if (gRecordFailed || !gRecord)
+		return;
+	va_list args;
+	va_start(args, format);
+	int result = vfprintf(gRecord, format, args);
+	va_end(args);
+	if (result < 0 || ferror(gRecord))
+		RecordFailure("writing the input stream failed");
+}
+
+void RecordFlush()
+{
+	if (gRecord && !gRecordFailed && (fflush(gRecord) != 0 || ferror(gRecord)))
+		RecordFailure("flushing the input stream failed");
+}
+
+bool RecordSpace(size_t slots)
+{
+	const size_t capacity = sizeof(gPending) / sizeof(gPending[0]);
+	if (gPendingCount <= capacity && slots <= capacity - gPendingCount)
+		return true;
+	RecordFailure("input queue capacity exceeded");
+	return false;
+}
+
+void FinalizeRecord()
+{
+	if (!gRecording || gRecordFinalized)
+		return;
+	gRecordFinalized = true;
+	RecordFlush();
+	if (gRecord)
+	{
+		FILE *stream = gRecord;
+		gRecord = NULL;
+		if (fclose(stream) != 0)
+			RecordFailure("closing the input stream failed");
+	}
+	if (gRecordFailed)
+		return;
+	// Both operations are one no-replace rename in the stage's own directory. An older destination always wins.
+#if defined(_WIN32)
+	if (!MoveFileA(gRecordStage, gRecordDest))
+#else
+	if (renameat2(AT_FDCWD, gRecordStage, AT_FDCWD, gRecordDest, RENAME_NOREPLACE) != 0)
+#endif
+		RecordFailure("publishing the final tape failed (an existing destination is never replaced)");
+	else
+		fprintf(stderr, PORT_LOG_PREFIX "recording finalized: final tape published %s\n", gRecordDest);
+}
+
+void OpenRecord(const char *path)
+{
+	gRecording = true;
+	if (atexit(FinalizeRecord) != 0)
+		RecordFailure("cannot register recording finalization");
+	size_t length = strlen(path);
+	char *names = NULL;
+	if (length > ((size_t)-1 - 81) / 2 || !(names = (char *)malloc(2 * length + 81)))
+	{
+		RecordFailure("cannot allocate the recording stage name");
+		return;
+	}
+	memcpy(names, path, length + 1);
+	gRecordDest = names;	// own the original destination even if another subsystem changes the environment later
+	gRecordStage = names + length + 1;
+#if defined(_WIN32)
+	unsigned long pid = (unsigned long)_getpid();
+#else
+	unsigned long pid = (unsigned long)getpid();
+#endif
+	for (unsigned attempt = 0; attempt < 256; attempt++)
+	{
+		snprintf(gRecordStage, length + 80, "%s.recording-%lu-%u.incomplete", gRecordDest, pid, attempt);
+		gRecord = fopen(gRecordStage, "wx");	// exclusive on both CRTs; retain the original text-mode tape bytes
+		if (gRecord)
+		{
+			gRecordStageOwned = true;
+#if !defined(_WIN32)
+			if (fchmod(fileno(gRecord), S_IRUSR | S_IWUSR) != 0)
+				RecordFailure("cannot make the recording stage private");
+#endif
+			RecordWrite("# onslaught tape 2\n");
+			return;
+		}
+		if (errno != EEXIST)
+			break;
+	}
+	RecordFailure("cannot create an exclusive recording stage");
+}
+
 void Load(const char *path)
 {
 	FILE *f = fopen(path, "r");
@@ -212,17 +331,14 @@ void Init()
 			fprintf(stderr, PORT_LOG_PREFIX "replay: BEA_PORT_RECORD and BEA_PORT_TAPE are exclusive\n");
 			exit(3);
 		}
-		if (!(gRecord = fopen(rec, "w")))
-		{
-			fprintf(stderr, PORT_LOG_PREFIX "replay: cannot write tape %s\n", rec);
-			exit(3);
-		}
-		fprintf(gRecord, "# onslaught tape 2\n");
+		OpenRecord(rec);
 		gTapeCursor = true;
 		if (const char *fps = getenv("BEA_PORT_RECORD_FPS"))
 			gRecFps = atof(fps) > 0 ? atof(fps) : 30;
 		gActive = true;
-		fprintf(stderr, PORT_LOG_PREFIX "replay: recording a tape to %s at %g Presents a second\n", rec, gRecFps);
+		if (!gRecordFailed)
+			fprintf(stderr, PORT_LOG_PREFIX "replay: recording to an incomplete stage for %s at %g Presents a second; "
+				"the final tape is published only on successful exit\n", rec, gRecFps);
 		if (const char *pilot = getenv("BEA_PORT_AUTOPILOT"); pilot && *pilot)
 		{
 			gPilot = pilot;
@@ -232,11 +348,13 @@ void Init()
 	}
 	if (probes && *probes && !(gProbes = fopen(probes, "w")))
 	{
+		if (gRecording) RecordFailure("probe output initialization failed");
 		fprintf(stderr, PORT_LOG_PREFIX "replay: cannot write probes %s\n", probes);
 		exit(3);
 	}
 	if (gProbes)
-		atexit(EldAtExit);
+		if (atexit(EldAtExit) != 0 && gRecording)
+			RecordFailure("cannot register probe finalization");
 }
 
 void Hex(unsigned frame, const char *name, const void *p, size_t n)
@@ -298,10 +416,12 @@ void Probe(unsigned frame)
 }
 
 // The autopilot (BEA_PORT_AUTOPILOT): this Present's input from the battle engine's position and heading.
-static void PilotKey(bool down)
+static bool PilotKey(bool down)
 {
-	if (gPilotW == down || gPendingCount >= sizeof(gPending) / sizeof(gPending[0]))
-		return;
+	if (gPilotW == down)
+		return true;
+	if (!RecordSpace(1))
+		return false;
 	gPilotW = down;
 	Event e = {};
 	e.kind = 'K';
@@ -309,6 +429,7 @@ static void PilotKey(bool down)
 	e.vk = 0x57;	// W
 	e.scan = 0x11;
 	gPending[gPendingCount++] = e;
+	return true;
 }
 
 static int gPilotDy;	// look: this Present's vertical mouse
@@ -339,22 +460,22 @@ static void Pilot(unsigned frame, int *dx, int *buttons)
 			if (d < 1.5f || !be)
 			{
 				fprintf(stderr, PORT_LOG_PREFIX "autopilot: P%u reached %.1f,%.1f (at %.2f,%.2f)\n", frame, a, b, x, y);
-				PilotKey(false);
+				if (!PilotKey(false)) return;
 				gPilot = next ? next + 1 : NULL;
 				continue;
 			}
 			float err = atan2f(fx * ty - fy * tx, fx * tx + fy * ty) * 57.29578f;	// + = the point is to the left
 			int turn = (int)(-err * 0.15f);
 			*dx = turn > 6 ? 6 : turn < -6 ? -6 : turn;
-			PilotKey(fabsf(err) < 25.f);
+			if (!PilotKey(fabsf(err) < 25.f)) return;
 			return;
 		}
 		unsigned kv = 0, ks = 0;
 		if (sscanf(gPilot, "key:%x,%x", &kv, &ks) == 2)
 		{
 			// a key press: down this Present, up the next
-			PilotKey(false);
-			if (gPendingCount + 1 < sizeof(gPending) / sizeof(gPending[0]))
+			if (!PilotKey(false)) return;
+			if (RecordSpace(1))
 			{
 				Event e = {};
 				e.kind = 'K';
@@ -363,6 +484,7 @@ static void Pilot(unsigned frame, int *dx, int *buttons)
 				e.scan = ks;
 				gPending[gPendingCount++] = e;
 			}
+			else return;
 			if (!gPilotUntil)
 			{
 				gPilotUntil = frame + 1;
@@ -376,7 +498,7 @@ static void Pilot(unsigned frame, int *dx, int *buttons)
 		{
 			float tx = a - x, ty = b - y;
 			float err = atan2f(fx * ty - fy * tx, fx * tx + fy * ty) * 57.29578f;
-			PilotKey(false);
+			if (!PilotKey(false)) return;
 			if (!gPilotUntil)
 				gPilotUntil = frame;
 			// turn until it faces the point and has settled (the turn eases in over ~20 Presents)
@@ -398,7 +520,7 @@ static void Pilot(unsigned frame, int *dx, int *buttons)
 		if (sscanf(gPilot, "wait:%d", &n) == 1 || sscanf(gPilot, "fire:%d", &n) == 1 || sscanf(gPilot, "turn:%f,%d", &a, &n) == 2 ||
 			sscanf(gPilot, "look:%f,%d", &a, &n) == 2)
 		{
-			PilotKey(false);
+			if (!PilotKey(false)) return;
 			if (!gPilotUntil)
 				gPilotUntil = frame + (unsigned)n;
 			bool fire = gPilot[0] == 'f', turn = gPilot[0] == 't';
@@ -428,24 +550,25 @@ static void MouseSpace(unsigned *w, unsigned *h)
 }
 
 // One tape event to the game: a key or window-mouse message, posted (never merged with another) as retail's shim does.
-static void Deliver(HWND window, const Event &e)
+static bool Deliver(HWND window, const Event &e, bool recording = false)
 {
 	if (e.kind == 'K')
 	{
 		LPARAM l = 1 | ((LPARAM)(e.scan & 0x1ff) << 16);	// as retail's shim: scan 0x1xx sets the extended flag (bit 24)
 		if (!e.down)
 			l |= (LPARAM)0xC0000000;
-		PortPostMessageA(window, e.down ? WM_KEYDOWN : WM_KEYUP, e.vk, l);
-		return;
+		return recording ? PortTryPostMessageA(window, e.down ? WM_KEYDOWN : WM_KEYUP, e.vk, l) != FALSE
+			: PortPostMessageA(window, e.down ? WM_KEYDOWN : WM_KEYUP, e.vk, l) != FALSE;
 	}
 	if (e.kind == 'C')
 	{
 		// as window.cpp posts a key-down's character: the key-down's lParam
-		PortPostMessageA(window, WM_CHAR, e.vk, 1 | ((LPARAM)(e.scan & 0x1ff) << 16));
-		return;
+		LPARAM l = 1 | ((LPARAM)(e.scan & 0x1ff) << 16);
+		return recording ? PortTryPostMessageA(window, WM_CHAR, e.vk, l) != FALSE
+			: PortPostMessageA(window, WM_CHAR, e.vk, l) != FALSE;
 	}
 	if (e.kind != 'W')
-		return;
+		return true;
 	// The recorded lParam, unchanged: the front end reads x * 640 / back buffer width (and the pause menu raw pixels),
 	// so the point means the same only at the recorded back buffer. A replay at another size would put the clicks
 	// elsewhere and go its own way, so it stops instead (the session's .json pins the recorded -res in game_args).
@@ -453,18 +576,25 @@ static void Deliver(HWND window, const Event &e)
 	MouseSpace(&w, &h);
 	if (e.cw && e.ch && (e.cw != w || e.ch != h))
 	{
-		fprintf(stderr, PORT_LOG_PREFIX "replay: this tape's window mouse was recorded with the game drawing at %ux%u, "
-				"but it draws at %ux%u now; replay it at the recorded size (-res %u %u, as the session's .json game_args "
-				"say). Replay stopped.\n", e.cw, e.ch, w, h, e.cw, e.ch);
-		fflush(NULL);
-		_Exit(3);	// not exit(): dxvk's threads are running (main.cpp: its statics must not be destroyed under them)
+		if (recording)
+			RecordFailure("pending window input changed client size");	// retain the live edge; a failed capture is not replay
+		else
+		{
+			fprintf(stderr, PORT_LOG_PREFIX "replay: this tape's window mouse was recorded with the game drawing at %ux%u, "
+					"but it draws at %ux%u now; replay it at the recorded size (-res %u %u, as the session's .json game_args "
+					"say). Replay stopped.\n", e.cw, e.ch, w, h, e.cw, e.ch);
+			fflush(NULL);
+			_Exit(3);	// not exit(): dxvk's threads are running (main.cpp: its statics must not be destroyed under them)
+		}
 	}
-	if (e.msg != WM_MOUSEWHEEL)
+	bool posted = recording ? PortTryPostMessageA(window, e.msg, (WPARAM)e.wparam, MAKELPARAM(e.x, e.y)) != FALSE
+		: PortPostMessageA(window, e.msg, (WPARAM)e.wparam, MAKELPARAM(e.x, e.y)) != FALSE;
+	if (posted && e.msg != WM_MOUSEWHEEL)
 	{
 		gCurX = e.x;
 		gCurY = e.y;
 	}
-	PortPostMessageA(window, e.msg, (WPARAM)e.wparam, MAKELPARAM(e.x, e.y));
+	return posted;
 }
 
 // Record mode: the frame's live input becomes tape events (written, then delivered by the loop below as a tape's).
@@ -493,11 +623,13 @@ static void RecordFrame(unsigned frame)
 	for (size_t i = 0; i < gPendingCount; i++)
 	{
 		Event &e = gPending[i];
+		if (e.prepared) continue;
+		e.prepared = true;
 		e.frame = frame;
 		if (e.kind == 'K')
-			fprintf(gRecord, "K %u %s %02x %02x vk%02x\n", frame, e.down ? "down" : "up", e.vk, e.scan, e.vk);
+			RecordWrite("K %u %s %02x %02x vk%02x\n", frame, e.down ? "down" : "up", e.vk, e.scan, e.vk);
 		else if (e.kind == 'C')
-			fprintf(gRecord, "C %u %02x %02x\n", frame, e.vk, e.scan);
+			RecordWrite("C %u %02x %02x\n", frame, e.vk, e.scan);
 		else if (e.kind == 'W')
 		{
 			if (held)
@@ -509,13 +641,13 @@ static void RecordFrame(unsigned frame)
 			MouseSpace(&w, &h);
 			if (w != gRecCw || h != gRecCh)
 			{
-				fprintf(gRecord, "W_CLIENT %u %u\n", w, h);
+				RecordWrite("W_CLIENT %u %u\n", w, h);
 				gRecCw = w;
 				gRecCh = h;
 			}
 			e.cw = w;
 			e.ch = h;
-			fprintf(gRecord, "W %u %s %d %d %x\n", frame, WinName(e.msg), e.x, e.y, e.wparam);
+			RecordWrite("W %u %s %d %d %x\n", frame, WinName(e.msg), e.x, e.y, e.wparam);
 		}
 	}
 	if (!held)
@@ -529,26 +661,30 @@ static void RecordFrame(unsigned frame)
 	gRecFracX -= dx;
 	gRecFracY -= dy;
 	int buttons = gRecLive;
-	if (gPilot && frame >= gPilotStart)
+	if ((gPilot || gPilotW) && frame >= gPilotStart)
 	{
 		size_t before = gPendingCount;
 		Pilot(frame, &dx, &buttons);
 		dy = gPilotDy;
-		for (size_t i = before; i < gPendingCount; i++)	// the autopilot's keys, made after the loop above wrote the live ones
-			fprintf(gRecord, "K %u %s %02x %02x vk%02x\n", frame, gPending[i].down ? "down" : "up", gPending[i].vk, gPending[i].scan, gPending[i].vk);
+		for (size_t i = before; i < gPendingCount; i++) // the autopilot's keys, made after the live-input loop
+		{
+			gPending[i].frame = frame;
+			gPending[i].prepared = true;
+			RecordWrite("K %u %s %02x %02x vk%02x\n", frame, gPending[i].down ? "down" : "up", gPending[i].vk, gPending[i].scan, gPending[i].vk);
+		}
 	}
 	int wheel = (int)gRecWheel;
 	gRecWheel = 0;
 	if (held && (dx || dy || wheel || buttons != gRecButtons))
 	{
-		fprintf(gRecord, "M %u %d %d %d %d\n", frame, dx, dy, wheel, buttons);
+		RecordWrite("M %u %d %d %d %d\n", frame, dx, dy, wheel, buttons);
 		gMouseX += dx;
 		gMouseY += dy;
 		gMouseZ += wheel;
 		gButtons = buttons;
 		gRecButtons = buttons;
 	}
-	fflush(gRecord);
+	RecordFlush();
 }
 
 // ELD: the end-level data (what RunLevel's close fills for the debriefing and the career), whenever it changes; at exit
@@ -585,6 +721,7 @@ static void EldAtExit()
 void PortReplayAtExit()
 {
 	EldAtExit();
+	FinalizeRecord();
 }
 
 void PortReplayFrame(unsigned frame, HWND window)
@@ -594,12 +731,21 @@ void PortReplayFrame(unsigned frame, HWND window)
 	static long sleepUs = getenv("BEA_PORT_REPLAY_SLEEP_US") ? atol(getenv("BEA_PORT_REPLAY_SLEEP_US")) : 0;
 	if (sleepUs > 0)
 		SDL_DelayNS((Uint64)sleepUs * 1000);	// a test switch: the main thread sleeps at each Present, as record mode's pacing does
-	if (gRecord)
+	if (gRecording)
 	{
 		RecordFrame(frame);
-		for (size_t i = 0; i < gPendingCount; i++)
-			Deliver(window, gPending[i]);
-		gPendingCount = 0;
+		size_t posted = 0;
+		for (; posted < gPendingCount; posted++)
+			if (!Deliver(window, gPending[posted], true))
+			{
+				RecordFailure("window input queue capacity exceeded");
+				break;
+			}
+		if (posted)
+		{
+			memmove(gPending, gPending + posted, (gPendingCount - posted) * sizeof(gPending[0]));
+			gPendingCount -= posted;
+		}
 	}
 	if (gProbes && gEvery && frame % gEvery == 0 && (!gMax || frame <= gMax))
 		Probe(frame);
@@ -645,13 +791,13 @@ bool PortRecording()
 {
 	if (!gInit)
 		Init();
-	return gRecord != NULL;
+	return gRecording;
 }
 
 // Record mode's live input (window.cpp): a key change or wheel step, held until the next Present.
 void PortRecordKey(bool down, unsigned vk, unsigned scan)
 {
-	if (gPendingCount < sizeof(gPending) / sizeof(gPending[0]))
+	if (RecordSpace(1))
 	{
 		Event e = {};
 		e.kind = 'K';
@@ -665,7 +811,7 @@ void PortRecordKey(bool down, unsigned vk, unsigned scan)
 // Record mode's typed text (window.cpp): the character a key-down makes (KeyChar), queued right after the key's K event.
 void PortRecordChar(unsigned c, unsigned scan)
 {
-	if (gPendingCount < sizeof(gPending) / sizeof(gPending[0]))
+	if (RecordSpace(1))
 	{
 		Event e = {};
 		e.kind = 'C';
@@ -680,17 +826,17 @@ void PortRecordChar(unsigned c, unsigned scan)
 // its position first, so the cursor is where the click is even when no move came between.
 void PortRecordWindowMouse(UINT msg, LPARAM l, int wheelDelta)
 {
-	const size_t cap = sizeof(gPending) / sizeof(gPending[0]);
 	int x = LOWORD(l), y = HIWORD(l);
 	auto move = [&]() -> bool
 	{
-		if (gPendingCount && gPending[gPendingCount - 1].kind == 'W' && gPending[gPendingCount - 1].msg == WM_MOUSEMOVE)
+		if (gPendingCount && !gPending[gPendingCount - 1].prepared && gPending[gPendingCount - 1].kind == 'W' &&
+			gPending[gPendingCount - 1].msg == WM_MOUSEMOVE)
 		{
 			gPending[gPendingCount - 1].x = x;
 			gPending[gPendingCount - 1].y = y;
 			return true;
 		}
-		if (gPendingCount >= cap)
+		if (!RecordSpace(1))
 			return false;
 		Event e = {};
 		e.kind = 'W';
@@ -703,12 +849,14 @@ void PortRecordWindowMouse(UINT msg, LPARAM l, int wheelDelta)
 	};
 	if (msg == WM_MOUSEMOVE)
 	{
-		if (!move() && gRecMoveDrops++ < 8)
-			fprintf(stderr, PORT_LOG_PREFIX "replay: record queue full, a mouse move dropped\n");
+		move();
 		return;
 	}
 	if (msg == WM_MOUSEWHEEL && (short)wheelDelta == 0)
 		return;
+	bool coalesces = gPendingCount && !gPending[gPendingCount - 1].prepared && gPending[gPendingCount - 1].kind == 'W' &&
+		gPending[gPendingCount - 1].msg == WM_MOUSEMOVE;
+	if (!RecordSpace(msg == WM_MOUSEWHEEL || coalesces ? 1 : 2)) return;
 	if (msg != WM_MOUSEWHEEL)
 		move();
 	switch (msg)
@@ -719,11 +867,6 @@ void PortRecordWindowMouse(UINT msg, LPARAM l, int wheelDelta)
 	case WM_RBUTTONUP: gRecMk &= ~MK_RBUTTON; break;
 	case WM_MBUTTONDOWN: gRecMk |= MK_MBUTTON; break;
 	case WM_MBUTTONUP: gRecMk &= ~MK_MBUTTON; break;
-	}
-	if (gPendingCount >= cap)
-	{
-		fprintf(stderr, PORT_LOG_PREFIX "replay: record queue full, mouse message %04x dropped\n", msg);
-		return;
 	}
 	Event e = {};
 	e.kind = 'W';
@@ -764,3 +907,6 @@ void PortRecordButton(int bit, bool down)
 	else
 		gRecLive &= ~(1 << bit);
 }
+
+// window.cpp uses this before consuming a deferred SDL event or clearing a synthetic held-key lifetime.
+bool PortRecordInputSpace(unsigned slots) { return RecordSpace(slots); }

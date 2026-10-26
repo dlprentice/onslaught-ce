@@ -1,0 +1,70 @@
+--- a/ltshell.cpp
++++ b/ltshell.cpp
+@@ -35,6 +35,11 @@
+ #if defined(CE_VERSION)
+ bool PortCeLayer();
+ static bool sPortQuitRequested;
++bool PortCeQuitRequested()
++{
++	return sPortQuitRequested;
++}
++
+ #endif
+ 
+ #pragma comment(lib, "imagehlp.lib")
+--- a/DXFMV.cpp
++++ b/DXFMV.cpp
+@@ -66,11 +66,14 @@
+ // ebp/edi). The placement new names its file the way retail does, with an upper-case .CPP, through #line.
+ #ifdef CE_VERSION
+ bool	PortCeLayer();		// Port (patch 0054): port/platform/common/ce.cpp
++bool	PortCeQuitRequested();	// Port (patch 0060): ltshell.cpp
+ #endif
+ 
+ BOOL	CDXFMV::Play(char *name, int language, int b, int c, int d, int e)	// FUNCTION: 0x0053f190
+ {
+ #ifdef CE_VERSION
++	// A prior close can be followed by another startup film; leave before opening it.
++	if (PortCeQuitRequested()) return TRUE;
+ 	// Port (patch 0054): the video worker opens nothing under -skipfmv, so an attract film would loop forever.
+ 	// Skip before clearing the screen in normal CE play; faithful replays and recordings retain retail behavior.
+ 	if (CLIPARAMS.mSkipFMV && PortCeLayer())
+@@ -107,6 +110,10 @@
+ 	{
+ 		ResetMouseTransientState();
+ 		PLATFORM.Process();
++#ifdef CE_VERSION
++		// The shell quit flags belong to the game/frontend, not this film's separate skip predicate.
++		if (PortCeQuitRequested()) { mQuit = TRUE; break; }
++#endif
+ 		if (MOUSE_BUTTONS[0].mDown || MOUSE_BUTTONS[1].mDown || MOUSE_BUTTONS[2].mDown)
+ 		{
+ 			ResetMouseTransientState();
+--- a/game.cpp
++++ b/game.cpp
+@@ -4291,8 +4291,15 @@
+ 
+ };
+ 
++// Port (patch 0060): the credits own a local quit predicate, separate from GAME/FRONTEND.
++#ifdef CE_VERSION
++bool PortCeQuitRequested();
++#endif
+ void	CGame::RollCredits()	// FUNCTION: 0x004726b0
+ {
++#ifdef CE_VERSION
++	if (PortCeQuitRequested()) return;
++#endif
+ 	float	start_time = PLATFORM.GetSysTimeFloat();
+ 	
+ 	CGameCreditControlHandler gcch;
+@@ -4315,6 +4322,9 @@
+ 	while (!mQuit)
+ 	{
+ 		PLATFORM.Process();
++#ifdef CE_VERSION
++		if (PortCeQuitRequested()) break; // leave through the existing controller/music cleanup
++#endif
+ 
+ 		pController0->Flush();
+ 		pController1->Flush();

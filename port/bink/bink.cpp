@@ -34,6 +34,7 @@ extern "C"
 #include <stdlib.h>
 #include <string.h>
 #include <vector>
+#include "../platform/common/portlog.h"
 
 #ifdef _WIN32
 extern "C" HANDLE WINAPI PortCreateFileA(LPCSTR name, DWORD access, DWORD share, LPSECURITY_ATTRIBUTES sa,
@@ -75,6 +76,7 @@ const U32 kSurface565 = 10;		// BinkCopyToBuffer's formats: 565, or else 32-bit 
 IDirectSound8 *gSound = NULL;		// BinkSetSoundSystem's parameter: the game's IDirectSound
 U32 gTrack = 0;						// BinkSetSoundTrack's choice; 0 = the first audio stream
 bool gTrackSet = false;
+unsigned gFilmSerial;
 
 struct Memory
 {
@@ -110,6 +112,8 @@ int64_t SeekMem(void *opaque, int64_t off, int whence)
 struct Video
 {
 	BINK pub;						// first: the game reads it through HBINK
+	unsigned sessionId = 0;
+	char sessionAsset[121] = {};
 	std::vector<unsigned char> file;
 	Memory mem;
 	AVFormatContext *fmt = NULL;
@@ -241,7 +245,10 @@ bool DecodeAudio(Video *v, int stream, std::vector<short> &pcm, int *rate, int *
 void MakeSound(Video *v)
 {
 	if (!gSound)
+	{
+		PortSessionLog(PORT_SESSION_FILM, false, "film=%u no DirectSound device (sound disabled or unavailable)", v->sessionId);
 		return;
+	}
 	int audioStreams = 0, stream = -1;
 	for (unsigned i = 0; i < v->fmt->nb_streams; i++)
 		if (v->fmt->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_AUDIO)
@@ -251,11 +258,17 @@ void MakeSound(Video *v)
 			audioStreams++;
 		}
 	if (stream < 0)
+	{
+		PortSessionLog(PORT_SESSION_FILM, false, "film=%u asset=%s has no audio track", v->sessionId, v->sessionAsset);
 		return;
+	}
 	std::vector<short> pcm;
 	int rate = 0, channels = 0;
 	if (!DecodeAudio(v, stream, pcm, &rate, &channels) || channels < 1 || channels > 2)
+	{
+		PortSessionLog(PORT_SESSION_FILM, true, "film=%u sound decode/format failed rate=%d channels=%d", v->sessionId, rate, channels);
 		return;
+	}
 	WAVEFORMATEX wfx;
 	memset(&wfx, 0, sizeof(wfx));
 	wfx.wFormatTag = WAVE_FORMAT_PCM;
@@ -271,11 +284,16 @@ void MakeSound(Video *v)
 	d.dwBufferBytes = (DWORD)(pcm.size() * 2);
 	d.lpwfxFormat = &wfx;
 	IDirectSoundBuffer *b = NULL;
-	if (FAILED(gSound->CreateSoundBuffer(&d, &b, NULL)) || !b)
+	HRESULT create = gSound->CreateSoundBuffer(&d, &b, NULL);
+	if (FAILED(create) || !b)
+	{
+		PortSessionLog(PORT_SESSION_FILM, true, "film=%u sound buffer failed result=%08lx", v->sessionId, (unsigned long)create);
 		return;
+	}
 	void *p1, *p2;
 	DWORD n1, n2;
-	if (SUCCEEDED(b->Lock(0, 0, &p1, &n1, &p2, &n2, DSBLOCK_ENTIREBUFFER)))
+	HRESULT fill = b->Lock(0, 0, &p1, &n1, &p2, &n2, DSBLOCK_ENTIREBUFFER);
+	if (SUCCEEDED(fill))
 	{
 		memcpy(p1, pcm.data(), n1);
 		b->Unlock(p1, n1, p2, n2);
@@ -283,14 +301,19 @@ void MakeSound(Video *v)
 	v->sound = b;
 	v->soundRate = rate;
 	v->soundBlock = wfx.nBlockAlign;
+	PortSessionLog(PORT_SESSION_FILM, FAILED(fill), "film=%u sound buffer created fill_result=%08lx rate=%d channels=%d bits=16 decoded_bytes=%lu",
+		v->sessionId, (unsigned long)fill, rate, channels, (unsigned long)d.dwBufferBytes);
 }
 
 void Free(Video *v)
 {
 	if (v->sound)
 	{
-		v->sound->Stop();
-		v->sound->Release();
+		HRESULT stopped = v->sound->Stop();
+		ULONG remaining = v->sound->Release();
+		PortSessionLog(PORT_SESSION_FILM, FAILED(stopped), "film=%u sound stop=%08lx release_remaining=%lu",
+			v->sessionId, (unsigned long)stopped, (unsigned long)remaining);
+		if (SUCCEEDED(stopped) || !remaining) PortSessionMediaActive(PORT_SESSION_FILM, v, false);
 	}
 	for (AVPacket *p : v->packets)
 		av_packet_free(&p);
@@ -411,8 +434,17 @@ HBINK __stdcall BinkOpen(const char *name, U32 flags)
 {
 	(void)flags;	// every file is read whole (BINKPRELOADALL's effect) and the sound track is always taken
 	Video *v = new (malloc(sizeof(Video))) Video;
+	if (PortSessionEnabled())
+	{
+		v->sessionId = __atomic_add_fetch(&gFilmSerial, 1u, __ATOMIC_RELAXED);
+		const char *base = name;
+		for (const char *p = name; *p; ++p) if (*p == '/' || *p == '\\') base = p + 1;
+		snprintf(v->sessionAsset, sizeof v->sessionAsset, "%.120s", base);
+	}
+	PortSessionLog(PORT_SESSION_FILM, false, "film=%u open requested asset=%s", v->sessionId, v->sessionAsset);
 	if (!ReadFileAll(name, v->file))
 	{
+		PortSessionLog(PORT_SESSION_FILM, true, "film=%u open failed: file unavailable", v->sessionId);
 		v->~Video();
 		free(v);
 		return NULL;
@@ -428,6 +460,7 @@ HBINK __stdcall BinkOpen(const char *name, U32 flags)
 	if (avformat_open_input(&v->fmt, NULL, av_find_input_format("bink"), NULL) < 0 ||
 		avformat_find_stream_info(v->fmt, NULL) < 0)
 	{
+		PortSessionLog(PORT_SESSION_FILM, true, "film=%u container open failed", v->sessionId);
 		if (!v->fmt)
 		{
 			av_freep(&io->buffer);
@@ -439,6 +472,7 @@ HBINK __stdcall BinkOpen(const char *name, U32 flags)
 	v->videoStream = av_find_best_stream(v->fmt, AVMEDIA_TYPE_VIDEO, -1, -1, NULL, 0);
 	if (v->videoStream < 0)
 	{
+		PortSessionLog(PORT_SESSION_FILM, true, "film=%u no video stream", v->sessionId);
 		Free(v);
 		return NULL;
 	}
@@ -447,6 +481,7 @@ HBINK __stdcall BinkOpen(const char *name, U32 flags)
 	v->dec = codec ? avcodec_alloc_context3(codec) : NULL;
 	if (!v->dec || avcodec_parameters_to_context(v->dec, st->codecpar) < 0 || avcodec_open2(v->dec, codec, NULL) < 0)
 	{
+		PortSessionLog(PORT_SESSION_FILM, true, "film=%u video decoder open failed", v->sessionId);
 		Free(v);
 		return NULL;
 	}
@@ -471,6 +506,8 @@ HBINK __stdcall BinkOpen(const char *name, U32 flags)
 	v->pub.Height = st->codecpar->height;
 	v->pub.Frames = (U32)v->packets.size();
 	v->pub.FrameNum = 1;
+	PortSessionLog(PORT_SESSION_FILM, false, "film=%u opened size=%lux%lu frames=%lu sound=%d", v->sessionId,
+		(unsigned long)v->pub.Width, (unsigned long)v->pub.Height, (unsigned long)v->pub.Frames, v->sound ? 1 : 0);
 	BinkLog("Bink.Open bink=%08lX frames=%lu size=%lux%lu fps=%d sound=%d name=%s", (unsigned long)(uintptr_t)&v->pub,
 			(unsigned long)v->pub.Frames, (unsigned long)v->pub.Width, (unsigned long)v->pub.Height, (int)(v->fps * 1000 + 0.5),
 			v->sound ? 1 : 0, name);
@@ -501,7 +538,9 @@ S32 __stdcall BinkDoFrame(HBINK bink)
 		if (v->sound)
 		{
 			v->sound->SetCurrentPosition(0);
-			v->sound->Play(0, 0, 0);
+			HRESULT played = v->sound->Play(0, 0, 0);
+			PortSessionLog(PORT_SESSION_FILM, FAILED(played), "film=%u first audio play result=%08lx", v->sessionId, (unsigned long)played);
+			if (SUCCEEDED(played)) PortSessionMediaActive(PORT_SESSION_FILM, v, true);
 		}
 	}
 	if (DecodeFrame(v, v->pub.FrameNum))
@@ -597,6 +636,11 @@ void __stdcall BinkClose(HBINK bink)
 {
 	BinkLog("Bink.Close bink=%08lX", (unsigned long)(uintptr_t)bink);
 	if (bink)
+	{
+		Video *v = (Video *)bink;
+		PortSessionLog(PORT_SESSION_FILM, false, "film=%u close asset=%s frame=%lu/%lu played=%lu", v->sessionId,
+			v->sessionAsset, (unsigned long)v->pub.FrameNum, (unsigned long)v->pub.Frames, (unsigned long)v->played);
 		Free((Video *)bink);
+	}
 }
 }

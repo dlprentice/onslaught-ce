@@ -1,0 +1,76 @@
+--- a/PCMusicStream.cpp
++++ b/PCMusicStream.cpp
+@@ -23,6 +23,17 @@
+ 
+ static DWORD				sWaitResult;			// 0089bea8: the event the thread last woke for
+ bool						MUSIC_STREAM_FINISHED;	// 0089beac: the track ran out (CPCMusic::DeviceGetTrackFinished)
++
++// Port: publish worker completion to the main-thread playlist poll without changing the matching source layout.
++// Every port write and poll, including faithful/private paths, uses the same atomic access.
++static void SetMusicStreamFinished(bool finished)
++{
++	__atomic_store_n(&MUSIC_STREAM_FINISHED, finished, __ATOMIC_RELEASE);
++}
++bool GetMusicStreamFinished()
++{
++	return __atomic_load_n(&MUSIC_STREAM_FINISHED, __ATOMIC_ACQUIRE);
++}
+ static BOOL					sThreadAwake;			// 0089beb0
+ static HANDLE				sThread;				// 0089beb4
+ static HANDLE				sPlayEvent;				// 0089beb8: a new track
+@@ -126,7 +137,7 @@
+ #ifdef CE_VERSION
+ 			PortSessionAsset(PORT_SESSION_MUSIC, "worker open attempted", sTrackName);
+ #endif
+-			MUSIC_STREAM_FINISHED = false;
++			SetMusicStreamFinished(false);
+ 			if (sReader->HasFormat() && (sReader->GetChannels() == 2) && (sReader->GetSampleRate() == 44100))
+ 			{
+ 				if (sBuffer)
+@@ -146,7 +157,7 @@
+ #ifdef CE_VERSION
+ 					PortSessionAsset(PORT_SESSION_MUSIC, "empty initial read", sTrackName);
+ #endif
+-					MUSIC_STREAM_FINISHED = true;
++					SetMusicStreamFinished(true);
+ 					StopMusicStream();
+ 					sBuffer->Unlock(data1, size1, data2, size2);
+ 					break;
+@@ -186,7 +197,7 @@
+ 				sReader->Close();
+ 				sSilentHalves = 0;
+ 				sBytesStreamed = 0;
+-				MUSIC_STREAM_FINISHED = true;
++				SetMusicStreamFinished(true);
+ 				break;
+ 			}
+ 			switch (result)
+@@ -363,7 +374,7 @@
+ 				return;
+ 		}
+ 		_tcsncpy(sTrackName, filename, 255);
+-		MUSIC_STREAM_FINISHED = false;
++		SetMusicStreamFinished(false);
+ #ifdef CE_VERSION
+ 		if (sCeStreamLockReady) sCeStreamPending = true;
+ #endif
+--- a/PCMusic.cpp
++++ b/PCMusic.cpp
+@@ -13,7 +13,7 @@
+ void	PlayMusicStream(char *filename);			// 00528540
+ void	StopMusicStream();							// 005285b0
+ void	SetMusicStreamVolume(float volume);			// 005285e0
+-extern bool	MUSIC_STREAM_FINISHED;				// 0089beac
++bool GetMusicStreamFinished(); // port-only atomic completion poll
+ 
+ // FUNCTION: 0x005152c0 init:MUSIC
+ CPCMusic	MUSIC;										// 00889a48
+@@ -62,7 +62,7 @@
+ BOOL CPCMusic::DeviceGetTrackFinished()	// FUNCTION: 0x00515390
+ {
+ 	PumpMusicStream();		// Port (patch 0035): under the virtual clocks, the stream's wakes are handled before the poll
+-	return MUSIC_STREAM_FINISHED;
++	return GetMusicStreamFinished();
+ }
+ 
+ void CPCMusic::DeviceAddDirectoryExtsToPlaylist(char *dir,char *ext)	// FUNCTION: 0x005153a0

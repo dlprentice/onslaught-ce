@@ -199,6 +199,9 @@ HRESULT STDMETHODCALLTYPE Reset(IDirect3DDevice9 *device, D3DPRESENT_PARAMETERS 
 		focus = cp.hFocusWindow;
 	DesktopFullscreen(focus, pp);
 	HRESULT hr = gReset(device, pp);
+	PortSessionLog(PORT_SESSION_VIDEO, FAILED(hr), "device reset result=%08lx size=%ux%u windowed=%d format=%d",
+		(unsigned long)hr, pp ? pp->BackBufferWidth : 0, pp ? pp->BackBufferHeight : 0,
+		pp ? (int)pp->Windowed : -1, pp ? (int)pp->BackBufferFormat : -1);
 	if (SUCCEEDED(hr) && pp)
 	{
 		gBackW = pp->BackBufferWidth;
@@ -220,6 +223,8 @@ typedef UINT (STDMETHODCALLTYPE *ModeCountFn)(IDirect3D9 *, UINT, D3DFORMAT);
 typedef HRESULT (STDMETHODCALLTYPE *EnumModesFn)(IDirect3D9 *, UINT, D3DFORMAT, UINT, D3DDISPLAYMODE *);
 ModeCountFn gModeCount;
 EnumModesFn gEnumModes;
+#ifndef _WIN32
+// Compatibility back buffers for Linux's desktop-fullscreen presentation, never native exclusive display modes.
 const UINT kStandard[][2] = { { 640, 480 }, { 800, 600 }, { 1024, 768 }, { 1152, 864 }, { 1280, 960 }, { 1400, 1050 },
 							  { 1600, 1200 } };
 
@@ -266,6 +271,7 @@ UINT Extra(IDirect3D9 *d3d, UINT adapter, D3DFORMAT format, UINT real, D3DDISPLA
 		}
 	return n;
 }
+#endif
 
 // With widescreen modes on (widescreen.cpp), the 32-bit formats list one set of sizes instead, which the game no longer
 // limits to 4:3 (patch 0045): on Windows the driver's own sizes (refresh rates folded, as the game folds them); on Linux,
@@ -274,80 +280,161 @@ UINT Extra(IDirect3D9 *d3d, UINT adapter, D3DFORMAT format, UINT real, D3DDISPLA
 // in a fixed array of 100 without a bounds check. R8G8B8 lists nothing then (no display offers it; listed first, it
 // would take the sizes from X8R8G8B8 and leave the device without a confirmed format).
 const int kWideMax = 64;
-UINT gWide[kWideMax][2];
-int gWideCount = -1;
-UINT gWideRefresh = 60;
-
-void AddWide(UINT w, UINT h, UINT maxW, UINT maxH)
+// The game folds the two 32-bit formats by size into a fixed 100-mode array. Keep at most 64 distinct
+// sizes across those formats, but never substitute one format's or adapter's supported list for another's.
+struct WideModes
 {
-	if (w < 640 || h < 480 || (maxW && (w > maxW || h > maxH)))
-		return;
-	for (int i = 0; i < gWideCount; i++)
-		if (gWide[i][0] == w && gWide[i][1] == h)
-			return;
-	if (gWideCount < kWideMax)
+	D3DDISPLAYMODE modes[kWideMax];
+	UINT count;
+	bool built;
+};
+WideModes gWide[2];
+IDirect3D9 *gWideOwner;
+UINT gWideAdapter;
+UINT gWideSizes[kWideMax][2];
+UINT gWideSizeCount;
+
+// A new COM object's storage can reuse an old address. The factory, not pointer equality, marks its lifetime.
+void ResetWideModes() { gWideOwner = NULL; }
+
+WideModes &WideList(IDirect3D9 *d3d, UINT adapter, D3DFORMAT format)
+{
+	if (gWideOwner != d3d || gWideAdapter != adapter)
 	{
-		gWide[gWideCount][0] = w;
-		gWide[gWideCount][1] = h;
-		gWideCount++;
+		gWideOwner = d3d;
+		gWideAdapter = adapter;
+		gWideSizeCount = 0;
+		for (auto &list : gWide)
+		{
+			list.count = 0;
+			list.built = false;
+		}
 	}
+	return gWide[format == D3DFMT_A8R8G8B8 ? 1 : 0];
 }
 
-void BuildWide(IDirect3D9 *d3d, UINT adapter)
+void AddWideMode(WideModes &list, const D3DDISPLAYMODE &mode, UINT maxW, UINT maxH)
 {
-	if (gWideCount >= 0)
+	if (mode.Width < 640 || mode.Height < 480 || (maxW && (mode.Width > maxW || mode.Height > maxH)))
 		return;
-	gWideCount = 0;
-	D3DDISPLAYMODE desktop;
+	for (UINT i = 0; i < list.count; i++)
+		if (list.modes[i].Width == mode.Width && list.modes[i].Height == mode.Height)
+			return;
+	if (list.count >= kWideMax)
+		return;
+	UINT size = 0;
+	for (; size < gWideSizeCount; size++)
+		if (gWideSizes[size][0] == mode.Width && gWideSizes[size][1] == mode.Height)
+			break;
+	if (size == gWideSizeCount)
+	{
+		if (gWideSizeCount >= kWideMax)
+			return;
+		gWideSizes[gWideSizeCount][0] = mode.Width;
+		gWideSizes[gWideSizeCount++][1] = mode.Height;
+	}
+	list.modes[list.count++] = mode;
+}
+
+#ifndef _WIN32
+void AddWide(WideModes &list, UINT w, UINT h, UINT maxW, UINT maxH, UINT refresh, D3DFORMAT format)
+{
+	D3DDISPLAYMODE mode = {w, h, refresh, format};
+	AddWideMode(list, mode, maxW, maxH);
+}
+#endif
+
+void SortWideModes(WideModes &list, UINT adapter, D3DFORMAT format, UINT nativeW, UINT nativeH)
+{
+	// Ascending by width, then height (the options list reads in that order).
+	for (UINT i = 1; i < list.count; i++)
+		for (UINT j = i; j > 0 && (list.modes[j - 1].Width > list.modes[j].Width ||
+			(list.modes[j - 1].Width == list.modes[j].Width && list.modes[j - 1].Height > list.modes[j].Height)); j--)
+		{
+			D3DDISPLAYMODE t = list.modes[j];
+			list.modes[j] = list.modes[j - 1];
+			list.modes[j - 1] = t;
+		}
+	fprintf(stderr, PORT_LOG_PREFIX "display modes (adapter %u format %d desktop %ux%u):", adapter, (int)format, nativeW, nativeH);
+	for (UINT i = 0; i < list.count; i++)
+		fprintf(stderr, " %ux%u", list.modes[i].Width, list.modes[i].Height);
+	fprintf(stderr, "\n");
+}
+
+WideModes &BuildWide(IDirect3D9 *d3d, UINT adapter, D3DFORMAT format)
+{
+	WideModes &list = WideList(d3d, adapter, format);
+	if (list.built)
+		return list;
+	list.built = true;
+	D3DDISPLAYMODE desktop{};
 	bool haveDesktop = SUCCEEDED(d3d->GetAdapterDisplayMode(adapter, &desktop));
-	gWideRefresh = haveDesktop && desktop.RefreshRate ? desktop.RefreshRate : 60;
+	D3DDISPLAYMODE m;
+#ifdef _WIN32
+	// Reserve one real usable mode in each format before spending the shared size budget. Prefer its actual
+	// desktop mode; a long first-format list must not remove the second format's sole usable desktop.
+	const D3DFORMAT formats[] = {D3DFMT_X8R8G8B8, D3DFMT_A8R8G8B8};
+	UINT counts[2];
+	for (UINT f = 0; f < 2; f++)
+	{
+		gWide[f].built = true;
+		counts[f] = gModeCount(d3d, adapter, formats[f]);
+		D3DDISPLAYMODE first{};
+		bool haveFirst = false, havePreferred = false;
+		for (UINT i = 0; i < counts[f]; i++)
+			if (SUCCEEDED(gEnumModes(d3d, adapter, formats[f], i, &m)) && m.Width >= 640 && m.Height >= 480)
+			{
+				if (!haveFirst) { first = m; haveFirst = true; }
+				if (haveDesktop && m.Width == desktop.Width && m.Height == desktop.Height)
+				{
+					AddWideMode(gWide[f], m, 0, 0);
+					havePreferred = true;
+					break;
+				}
+			}
+		if (!havePreferred && haveFirst)
+			AddWideMode(gWide[f], first, 0, 0);
+	}
+	for (UINT f = 0; f < 2; f++)
+		for (UINT i = 0; i < counts[f]; i++)
+			if (SUCCEEDED(gEnumModes(d3d, adapter, formats[f], i, &m)))
+				AddWideMode(gWide[f], m, 0, 0);
+	UINT nativeW = haveDesktop ? desktop.Width : 0, nativeH = haveDesktop ? desktop.Height : 0;
+#else
+	UINT real = gModeCount(d3d, adapter, format);
+	// Linux presents these back buffers through a desktop-fullscreen window; its compatibility sizes are intentional.
+	UINT refresh = haveDesktop && desktop.RefreshRate ? desktop.RefreshRate : 60;
 	UINT nativeW = 0, nativeH = 0;
 	if (!PortWideDesktopSize(&nativeW, &nativeH) && haveDesktop)
 	{
 		nativeW = desktop.Width;
 		nativeH = desktop.Height;
 	}
-	// The desktop's size first, so a long list never loses it.
 	if (nativeW)
-		AddWide(nativeW, nativeH, 0, 0);
-	AddWide(640, 480, 0, 0);
-	UINT real = gModeCount(d3d, adapter, D3DFMT_X8R8G8B8);
-	D3DDISPLAYMODE m;
-#ifdef _WIN32
+		AddWide(list, nativeW, nativeH, 0, 0, refresh, format);
+	AddWide(list, 640, 480, 0, 0, refresh, format);
 	for (UINT i = 0; i < real; i++)
-		if (SUCCEEDED(gEnumModes(d3d, adapter, D3DFMT_X8R8G8B8, i, &m)))
-			AddWide(m.Width, m.Height, nativeW, nativeH);
-#else
-	for (UINT i = 0; i < real; i++)
-		if (SUCCEEDED(gEnumModes(d3d, adapter, D3DFMT_X8R8G8B8, i, &m)))
-			AddWide(m.Width, m.Height, nativeW, nativeH);
+		if (SUCCEEDED(gEnumModes(d3d, adapter, format, i, &m)))
+			AddWide(list, m.Width, m.Height, nativeW, nativeH, refresh, format);
 	unsigned sizes[kWideMax][2];
 	int n = PortWideDisplaySizes(sizes, kWideMax);
 	for (int i = 0; i < n; i++)
-		AddWide(sizes[i][0], sizes[i][1], nativeW, nativeH);
+		AddWide(list, sizes[i][0], sizes[i][1], nativeW, nativeH, refresh, format);
 	static const UINT common[][2] = { { 1280, 720 }, { 1366, 768 }, { 1600, 900 }, { 1920, 1080 }, { 2560, 1440 },
 									  { 3840, 2160 }, { 1280, 800 }, { 1440, 900 }, { 1680, 1050 }, { 1920, 1200 },
 									  { 2560, 1600 }, { 2560, 1080 }, { 3440, 1440 } };
 	for (const auto &s : kStandard)
-		AddWide(s[0], s[1], nativeW, nativeH);
+		AddWide(list, s[0], s[1], nativeW, nativeH, refresh, format);
 	for (const auto &s : common)
-		AddWide(s[0], s[1], nativeW, nativeH);
+		AddWide(list, s[0], s[1], nativeW, nativeH, refresh, format);
 #endif
-	// Ascending by width, then height (the options list reads in that order).
-	for (int i = 1; i < gWideCount; i++)
-		for (int j = i; j > 0 && (gWide[j - 1][0] > gWide[j][0] ||
-								  (gWide[j - 1][0] == gWide[j][0] && gWide[j - 1][1] > gWide[j][1])); j--)
-		{
-			UINT t0 = gWide[j][0], t1 = gWide[j][1];
-			gWide[j][0] = gWide[j - 1][0];
-			gWide[j][1] = gWide[j - 1][1];
-			gWide[j - 1][0] = t0;
-			gWide[j - 1][1] = t1;
-		}
-	fprintf(stderr, PORT_LOG_PREFIX "display modes (desktop %ux%u):", nativeW, nativeH);
-	for (int i = 0; i < gWideCount; i++)
-		fprintf(stderr, " %ux%u", gWide[i][0], gWide[i][1]);
-	fprintf(stderr, "\n");
+#ifdef _WIN32
+	for (UINT f = 0; f < 2; f++)
+		SortWideModes(gWide[f], adapter, formats[f], nativeW, nativeH);
+#else
+	SortWideModes(list, adapter, format, nativeW, nativeH);
+#endif
+	return list;
 }
 
 bool WideFormat(D3DFORMAT format)
@@ -355,30 +442,53 @@ bool WideFormat(D3DFORMAT format)
 	return format == D3DFMT_X8R8G8B8 || format == D3DFMT_A8R8G8B8 || format == D3DFMT_R8G8B8;
 }
 
+#ifdef _WIN32
+void CheckNative43Admission(IDirect3D9 *d3d, UINT adapter)
+{
+	const D3DFORMAT formats[] = {D3DFMT_X8R8G8B8, D3DFMT_A8R8G8B8};
+	for (D3DFORMAT format : formats)
+		for (UINT i = 0, count = gModeCount(d3d, adapter, format); i < count; i++)
+		{
+			D3DDISPLAYMODE mode;
+			if (SUCCEEDED(gEnumModes(d3d, adapter, format, i, &mode)) && mode.Width >= 640 && mode.Height >= 480 &&
+				mode.Width * 3 == mode.Height * 4)
+				return;
+		}
+	fprintf(stderr, PORT_LOG_PREFIX "Windows adapter %u has no native 4:3 fullscreen display modes. "
+		"Fullscreen 4:3 is unavailable; windowed clients require separate desktop-format validation.\n", adapter);
+}
+#endif
+
 UINT STDMETHODCALLTYPE ModeCount(IDirect3D9 *d3d, UINT adapter, D3DFORMAT format)
 {
 	if (WideFormat(format) && PortWideModes())
 	{
-		BuildWide(d3d, adapter);
-		return format == D3DFMT_R8G8B8 ? 0 : (UINT)gWideCount;
+		return format == D3DFMT_R8G8B8 ? 0 : BuildWide(d3d, adapter, format).count;
 	}
 	UINT real = gModeCount(d3d, adapter, format);
+#ifdef _WIN32
+	if (format == D3DFMT_X8R8G8B8) CheckNative43Admission(d3d, adapter);
+	return real;
+#else
 	return real + Extra(d3d, adapter, format, real, NULL, 0);
+#endif
 }
 
 HRESULT STDMETHODCALLTYPE EnumModes(IDirect3D9 *d3d, UINT adapter, D3DFORMAT format, UINT index, D3DDISPLAYMODE *mode)
 {
 	if (WideFormat(format) && PortWideModes())
 	{
-		BuildWide(d3d, adapter);
-		if (!mode || format == D3DFMT_R8G8B8 || index >= (UINT)gWideCount)
+		if (!mode || format == D3DFMT_R8G8B8)
 			return D3DERR_INVALIDCALL;
-		mode->Width = gWide[index][0];
-		mode->Height = gWide[index][1];
-		mode->RefreshRate = gWideRefresh;
-		mode->Format = format;
+		WideModes &list = BuildWide(d3d, adapter, format);
+		if (index >= list.count)
+			return D3DERR_INVALIDCALL;
+		*mode = list.modes[index];
 		return D3D_OK;
 	}
+#ifdef _WIN32
+	return gEnumModes(d3d, adapter, format, index, mode);
+#else
 	UINT real = gModeCount(d3d, adapter, format);
 	if (index < real)
 		return gEnumModes(d3d, adapter, format, index, mode);
@@ -386,6 +496,7 @@ HRESULT STDMETHODCALLTYPE EnumModes(IDirect3D9 *d3d, UINT adapter, D3DFORMAT for
 		return D3DERR_INVALIDCALL;
 	Extra(d3d, adapter, format, real, mode, index - real);
 	return D3D_OK;
+#endif
 }
 unsigned gFrames;
 unsigned gShotFrame;
@@ -828,6 +939,14 @@ HRESULT STDMETHODCALLTYPE Present(IDirect3DDevice9 *dev, const RECT *src, const 
 		dst = &box;
 	}
 	HRESULT hr = gPresent(dev, src, dst, w, dirty);
+	static HRESULT lastResult = D3D_OK;
+	if (hr != lastResult)
+	{
+		PortSessionLog(PORT_SESSION_VIDEO, FAILED(hr), "Present result=%08lx previous=%08lx", (unsigned long)hr,
+			(unsigned long)lastResult);
+		lastResult = hr;
+	}
+	PortSessionPulse(gFrames);
 	PortClockFrame();		// after the Present returns, as the retail replay shim counts it
 	// Then the tape's probes and events for this frame (replay.cpp; off unless BEA_PORT_TAPE or BEA_PORT_PROBES).
 	D3DDEVICE_CREATION_PARAMETERS cp;
@@ -838,6 +957,23 @@ HRESULT STDMETHODCALLTYPE Present(IDirect3DDevice9 *dev, const RECT *src, const 
 HRESULT STDMETHODCALLTYPE CreateDevice(IDirect3D9 *d3d, UINT adapter, D3DDEVTYPE type, HWND focus, DWORD flags,
 									   D3DPRESENT_PARAMETERS *pp, IDirect3DDevice9 **out)
 {
+#ifdef CE_VERSION
+	static bool identityLogged;
+	if (!identityLogged && PortSessionEnabled())
+	{
+		const char *build = getenv("BEA_CE_BUILD");
+		PortSessionLog(PORT_SESSION_GAME, false, "compiled_game_version=%s launcher_supplied_build=%.64s",
+			CE_VERSION, build && *build ? build : "unavailable");
+		identityLogged = true;
+	}
+#endif
+	PortSessionLog(PORT_SESSION_VIDEO, false, "backend=%s SDL=%d adapter=%u device_type=%d widescreen_modes=%d",
+#ifdef _WIN32
+		"native_direct3d9",
+#else
+		"dxvk_native",
+#endif
+		SDL_GetVersion(), adapter, (int)type, PortWideModes());
 	{
 		// The GPU, for the player's log (the launcher copies this line to the top of onslaught-ce.log); a query only,
 		// made before the control word is read so the checks below see whatever it leaves.
@@ -868,6 +1004,11 @@ HRESULT STDMETHODCALLTYPE CreateDevice(IDirect3D9 *d3d, UINT adapter, D3DDEVTYPE
 		SetControlWord((unsigned short)(after & ~0x0F00));
 	fprintf(stderr, PORT_LOG_PREFIX "CreateDevice %08lx flags %08lx; x87 control word %04x before, %04x after the runtime, %04x now\n",
 			(unsigned long)hr, (unsigned long)flags, before, after, ControlWord());
+	PortSessionLog(PORT_SESSION_VIDEO, FAILED(hr), "device create result=%08lx actual_size=%ux%u windowed=%d "
+		"format=%d multisample=%d quality=%lu interval=%08lx", (unsigned long)hr,
+		pp ? pp->BackBufferWidth : 0, pp ? pp->BackBufferHeight : 0, pp ? (int)pp->Windowed : -1,
+		pp ? (int)pp->BackBufferFormat : -1, pp ? (int)pp->MultiSampleType : -1,
+		pp ? (unsigned long)pp->MultiSampleQuality : 0, pp ? (unsigned long)pp->PresentationInterval : 0);
 	if (SUCCEEDED(hr) && *out)
 	{
 		void **table = HookTable(*out, kDeviceSlots);
@@ -934,6 +1075,7 @@ extern "C" IDirect3D9 *__stdcall PortDirect3DCreate9(UINT sdk)
 	IDirect3D9 *d3d = Direct3DCreate9(sdk);
 	if (d3d)
 	{
+		ResetWideModes();
 		void **table = HookTable(d3d, kSlots);
 		if (!gCreateDevice)
 			gCreateDevice = (CreateDeviceFn)table[16];

@@ -1,0 +1,16 @@
+--- a/ltshell.cpp
++++ b/ltshell.cpp
+@@ -776,7 +776,12 @@
+ 				if( m_bWindowed )
+ 				{
+ 					D3DAdapterInfo* pAdapterInfo = &m_Adapters[m_dwAdapter];
++#if defined(BEA_PUBLIC_GRAPHICS_HOST)
++					UINT adapterOrdinal = PortPublicAdapterOrdinal(m_dwAdapter);
++#else
++					UINT adapterOrdinal = m_dwAdapter;
++#endif
+-					m_pD3D->GetAdapterDisplayMode( m_dwAdapter, &pAdapterInfo->d3ddmDesktop );
++					m_pD3D->GetAdapterDisplayMode( adapterOrdinal, &pAdapterInfo->d3ddmDesktop );
+ 					m_d3dpp.BackBufferFormat = pAdapterInfo->d3ddmDesktop.Format;
+ 				}
+ 

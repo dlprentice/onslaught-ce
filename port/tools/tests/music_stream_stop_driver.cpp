@@ -28,6 +28,7 @@ constexpr DWORD DSBCAPS_LOCSOFTWARE = 8, DSBCAPS_CTRLPOSITIONNOTIFY = 256, DSBCA
 constexpr WORD WAVE_FORMAT_PCM = 1;
 constexpr int IID_IDirectSoundNotify = 0;
 #define SUCCEEDED(x) ((x) >= 0)
+#define FAILED(x) ((x) < 0)
 #define ZeroMemory(p, n) memset((p), 0, (n))
 #define _tcsicmp strcasecmp
 #define _tcsncpy strncpy
@@ -37,6 +38,7 @@ static std::mutex event_mutex;
 static std::condition_variable event_cv;
 static std::vector<Event *> events;
 static bool hold_dispatch, waiting, hold_read, reading, empty_read, hold_wake, wake_consumed;
+static bool failed_read, invalid_format;
 static int wake_index;
 static unsigned handled, invalid_resets, checks, wait_entries, reads, releases, reader_deletes, joins_polled;
 static std::atomic<unsigned> plays{0}, stops{0};
@@ -174,10 +176,10 @@ struct CBaseWaveFileRead
     ~CBaseWaveFileRead() { ++reader_deletes; }
     void Close() {}
     void Open(char *name) { strncpy(filename, name, sizeof filename - 1); }
-    bool HasFormat() { return true; }
+    bool HasFormat() { return !invalid_format; }
     unsigned GetChannels() { return 2; }
     unsigned GetSampleRate() { return 44100; }
-    void Read(UINT size, BYTE *data, UINT *got)
+    HRESULT Read(UINT size, BYTE *data, UINT *got)
     {
         std::unique_lock<std::mutex> lock(event_mutex);
         ++reads;
@@ -186,12 +188,13 @@ struct CBaseWaveFileRead
         event_cv.wait(lock, [] { return !hold_read; });
         *got = empty_read ? 0 : size;
         memset(data, strstr(filename, "-b.") ? 0x46 : 0x25, *got);
+        return failed_read ? -1 : 0;
     }
 };
 using COggFileRead = CBaseWaveFileRead;
 struct DirectSound
 {
-    void CreateSoundBuffer(DSBUFFERDESC *, IDirectSoundBuffer **buffer, void *) { static IDirectSoundBuffer b; *buffer = fail_buffer ? nullptr : &b; }
+    HRESULT CreateSoundBuffer(DSBUFFERDESC *, IDirectSoundBuffer **buffer, void *) { static IDirectSoundBuffer b; *buffer = fail_buffer ? nullptr : &b; return fail_buffer ? -1 : 0; }
 };
 struct Sound { DirectSound *GetDirectSound() { static DirectSound ds; return no_sound ? nullptr : &ds; } } SOUND;
 
@@ -220,7 +223,9 @@ int main(int argc, char **argv)
     const char *scenario = argv[1];
     ce_layer = !strcmp(argv[2], "ce");
     virtual_clock = !strcmp(scenario, "virtual-normal");
-    empty_read = !strcmp(scenario, "empty-start");
+    failed_read = !strcmp(scenario, "read-failed");
+    invalid_format = !strcmp(scenario, "format-failed");
+    empty_read = !strcmp(scenario, "empty-start") || failed_read || invalid_format;
     no_sound = !strncmp(scenario, "no-sound", 8);
     fail_buffer = !strncmp(scenario, "failed-buffer", 13);
     if (!ce_layer) setenv("BEA_PORT_TAPE", "synthetic-admission-control", 1);

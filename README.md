@@ -1,7 +1,7 @@
 # Onslaught CE
 
 Status: active preview
-Last updated: 2026-10-24
+Last updated: 2026-10-25
 Summary: the native Battle Engine Aquila port, its installation requirements, download verification and source build.
 
 A native port of *Battle Engine Aquila*; you need your own copy.
@@ -25,20 +25,17 @@ The source has three parts:
 
 - **Stuart Gillam's GPL source release** of the game ([stuart73/Onslaught](https://github.com/stuart73/Onslaught)).
 - **A byte-matching decompilation** that completes that release
-  ([onslaught-decomp](https://github.com/dlprentice/onslaught-decomp)). All 5,482 game functions compile to the retail
-  executable's bytes when built with the original compiler.
+  ([onslaught-decomp](https://github.com/dlprentice/onslaught-decomp)), which records its measured matching coverage
+  and reconstruction concessions. The native port uses a different compiler and replacement platform code.
 - **A platform layer**: SDL3, with dxvk-native on Linux and the system's Direct3D 9 on Windows.
 
-This is **version 0.1.4, a preview** (tag `v0.1.4`). The main menu shows "Onslaught CE v0.1.4 (preview)".
-This update combines original and CE careers in the Linux load menu, refuses ambiguous career names and unsafe
-linked write paths on Linux, and replaces CE settings through a checked temporary file on both platforms. With films
-disabled, ordinary CE play stays responsive at the idle title screen; faithful recording/replay keeps the original
-behavior. It also clarifies crash reports and the terminal hint after an update. See the release notes for the
-checks performed and remaining limits.
+This is an early preview. The main menu and `onslaught-ce --version` show the installed version and build.
+See the [latest release notes](https://github.com/dlprentice/onslaught-ce/releases/latest) for the checks performed
+and remaining limits; development source may include changes beyond that published package.
 
 ## In the game
 
-- **Main menu > Onslaught CE:** About (version, licence and links), Check for updates (explains the check the launcher
+- **Main menu > Onslaught CE:** About (version, licence and links), Special Thanks, Check for updates (explains the check the launcher
   makes at every start, how to be asked again about a skipped version, and how to turn checks back on), Record sessions
   (see below) and Report a problem.
 - **Options > Cheats:** the game's own cheats as On/Off switches, kept in `ce.ini` so they apply to every career; the
@@ -219,9 +216,15 @@ between visual effects and play, so a wider view can change the details of a fig
    You can also open an issue on the [Issues](https://github.com/dlprentice/onslaught-ce/issues) page yourself.
 2. Say what happened and how to make it happen again.
 3. Attach `onslaught-ce.log` from your user folder (`~/.local/share/onslaught-ce` on Linux, `%APPDATA%\Onslaught CE`
-   on Windows). It holds the version, your OS and GPU, and the game's messages from the last run;
-   `onslaught-ce.old.log` is the run before. Each stops at 4 MB. It writes your home folder as `~` (Windows
-   `%APPDATA%`) and never your account name, but look it over before you attach it.
+   on Windows). In ordinary, unrecorded play it includes the launcher and game identities, the game executable's
+   SHA-256, graphics and audio configuration, level and player-mode changes, window focus changes, music/film
+   requests and results, and counted audio submission errors. Events carry elapsed milliseconds and a Present
+   number. These details help distinguish a mixed installation, a device failure and the order of playback requests;
+   successful requests do not prove what reached your speakers. Screenshots and recordings are still useful.
+   `onslaught-ce.old.log` is the run before. Each stops at 4 MB, and repeated diagnostic events have their own limits.
+   Home paths and account-name path components are shortened; look the file over before sharing it. It needs no
+   administrator access, records no microphone audio and is never uploaded automatically. You can also share the
+   file directly with someone helping you. Replays and session recordings omit the detailed ordinary-play events.
 4. If you recorded the session (below), attach its tape too: it lets us replay exactly what happened.
 
 ## Help make Onslaught CE more faithful
@@ -237,10 +240,13 @@ in both and comparing them, and recordings of real play find differences our own
   mouse, and you can type a career's name, the screen is the original 4:3 (no widescreen), and the menus are the
   original's: the version text, no Onslaught CE menu and no Cheats page, and only cheats typed into a career's name
   work. The game's sound plays while recording.
-- Each session is saved in the `tapes` folder of your user folder as `YYYYMMDD-HHMMSS.tape` and a `.tape.json` beside
-  it. The tape holds only your key presses, typed characters and mouse movement and clicks, frame by frame. The `.json` names the version, your OS,
+- Each completed session is saved in the `tapes` folder of your user folder as
+  `YYYYMMDD-HHMMSS-PID-SERIAL.tape` and a `.tape.json` beside it. The final tape appears when the recording closes
+  successfully. A failed or interrupted capture may leave an `.incomplete` file; that is not a replayable tape, and
+  the launcher reports that the recording failed. Earlier recordings are never replaced.
+  The tape holds only your key presses, typed characters and mouse movement and clicks, frame by frame. The `.json` names the version, your OS,
   the date and the game's arguments, and holds a copy of your options and saved careers as the session started, so a
-  replay starts where you did. Nothing else is recorded: no screen, no sound, nothing about your machine.
+  replay starts where you did. No screen capture, sound recording or microphone audio is included.
 - To share a session, put the `.tape` and its `.tape.json` in a zip and attach it to an issue, saying what to look at
   (what differed from the original, and roughly when). Sessions where something looked or behaved
   differently from the original help most.
@@ -312,8 +318,8 @@ their hashes, `config/game-data.sha256`; set `BEA_GAME_DIR` if the game is not i
 
 ```sh
 python3 port/tools/deps.py build                   # the pinned toolchains, libraries and Linux sysroot, checked by SHA-256
-python3 port/build.py --public --target linux --ce-version 0.1.5
-python3 port/build.py --public --target windows --ce-version 0.1.5
+python3 port/build.py --public --target linux --ce-version dev
+python3 port/build.py --public --target windows --ce-version dev
 ```
 
 `--ce-version` sets the version the menu, `--version` and the update check show; without it the build calls itself
@@ -336,9 +342,8 @@ Onslaught CE is licensed under **GPL-3.0-only** (see [COPYING](COPYING), [NOTICE
 our work, as GPL-3.0-only. Third-party components keep their own licences; see [THIRD-PARTY.md](THIRD-PARTY.md). The
 FFmpeg libraries ship as replaceable shared libraries, and their source tarball is attached to each release.
 
-`src/d3dapp.cpp` and `src/d3dapp.h` are Microsoft's DirectX SDK sample application framework, (c) Microsoft
-Corporation, carried because Stuart Gillam's GPL release of the game's source includes them; Microsoft has not
-licensed them under the GPL.
+The public graphics host is the GPL-3.0-only implementation in `port/platform/public/d3dapp.cpp` and `.h`.
+The inherited SDK sample framework is excluded from this source tree and from the public build.
 
 The game's data is not part of this project and is not covered by its licence.
 
@@ -347,11 +352,16 @@ The game's data is not part of this project and is not covered by its licence.
 See [CONTRIBUTING.md](CONTRIBUTING.md) (contributions are GPL-3.0-only; never include game files) and
 [SECURITY.md](SECURITY.md) (report problems privately).
 
-## Credits
+## Credits and special thanks
 
 - **Lost Toys**, for the original game
 - **Stuart Gillam**, for the source release
-- **The Battle Engine Aquila community**
+- **The Onslaught CE contributors**
+- **The Battle Engine Aquila community and preservation projects**, including everyone testing, reporting issues
+  and sharing fixes, and the people guiding and reviewing work with coding agents
+
+The **Onslaught CE → Special Thanks** menu carries these acknowledgements in the game. The original game's
+**Credits** remain separate.
 
 ## Related projects
 

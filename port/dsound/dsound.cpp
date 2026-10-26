@@ -30,6 +30,7 @@
 #include <stdarg.h>
 #include <stdint.h>
 #include <string.h>
+#include <errno.h>
 #include "../platform/common/portlog.h"
 
 unsigned long long PortClockFrames();		// port/platform/common/clock.cpp
@@ -87,6 +88,7 @@ struct Mixer
 	Uint64 mixed = 0;				// frames mixed since the first device opened
 	bool virt = false;				// BEA_PORT_CLOCK: the mix follows the port's virtual clock (CatchUp)
 	Uint64 virtBase = 0;			// the virtual time the mix started at
+	Uint64 virtMixedBase = 0;		// cumulative frames already mixed when this device lifetime began
 	FILE *trace = NULL;				// BEA_AUDIO_TRACE: one line per Play, for diagnosing a mix
 	SDL_AudioStream *monitor = NULL;	// BEA_AUDIO_MONITOR with the virtual clock: the mix, written only, to the device
 	bool monitorAudioInit = false;
@@ -97,10 +99,12 @@ struct Mixer
 	void Stop();
 	void Mix(Sint16 *out, int frames);		// called with lock held
 	void CatchUp();
+	void CatchUpLocked();		// lock held; sample the clock after acquiring it
 	void Record(const Sint16 *pcm, int frames);
 	void FinishWav();
 };
 Mixer gMixer;
+bool gSessionAudio;
 
 // ---- BEA_AUDIO_CALLLOG: every call in the retail replay shim's DirectSound log format (the shim's log:
 // "D <frame> <seconds> <Call> ..." with 8-hex pointers and 3D values in thousandths), so the port's log and retail's
@@ -998,8 +1002,12 @@ void Mixer::Monitor(const Sint16 *pcm, int frames)
 		return;
 	const int bytesPerMs = kRate * 4 / 1000;
 	if (SDL_GetAudioStreamQueued(monitor) > 200 * bytesPerMs)
+	{
+		if (gSessionAudio) PortSessionCount(PORT_COUNT_MONITOR_DROPS);
 		SDL_ClearAudioStream(monitor);
-	SDL_PutAudioStreamData(monitor, pcm, frames * 4);
+	}
+	if (!SDL_PutAudioStreamData(monitor, pcm, frames * 4) && gSessionAudio)
+		PortSessionCount(PORT_COUNT_MONITOR_PUT_FAILED);
 	if (!monitorPlaying && SDL_GetAudioStreamQueued(monitor) >= 60 * bytesPerMs)
 	{
 		SDL_ResumeAudioStreamDevice(monitor);
@@ -1047,10 +1055,20 @@ void SDLCALL Feed(void *, SDL_AudioStream *stream, int additional, int)
 	if (frames <= 0)
 		return;
 	Sint16 *buf = (Sint16 *)SDL_malloc(frames * 4);
+	if (gSessionAudio) PortSessionCount(PORT_COUNT_AUDIO_CALLBACKS);
+	if (!buf)
+	{
+		if (gSessionAudio) PortSessionCount(PORT_COUNT_AUDIO_ALLOC_FAILED);
+		return;
+	}
 	SDL_LockMutex(gMixer.lock);
 	gMixer.Mix(buf, frames);
 	SDL_UnlockMutex(gMixer.lock);
-	SDL_PutAudioStreamData(stream, buf, frames * 4);
+	if (!SDL_PutAudioStreamData(stream, buf, frames * 4) && gSessionAudio)
+	{
+		PortSessionCount(PORT_COUNT_AUDIO_PUT_FAILED);
+		PortSessionAudioError(SDL_GetError());
+	}
 	SDL_free(buf);
 }
 
@@ -1063,24 +1081,41 @@ void Mixer::CatchUp()
 {
 	if (!virt)
 		return;
-	Uint64 now = PortClockPeekNs();
-	if (!now)
-		return;
 	SDL_LockMutex(lock);
-	if (!virtBase)
-		virtBase = now;
-	Uint64 target = (now - virtBase) * kRate / 1000000000ull;
-	Sint16 block[kVirtualBlock * 2];
-	while (mixed + kVirtualBlock <= target)
-		Mix(block, kVirtualBlock);
+	CatchUpLocked();
 	SDL_UnlockMutex(lock);
 }
 
-Uint32 SDLCALL TimerTick(void *, SDL_TimerID, Uint32 interval)
+void Mixer::CatchUpLocked()
 {
+	Uint64 now = PortClockPeekNs();
+	if (!now)
+		return;
+	if (!virtBase)
+		virtBase = now;
+	if (now < virtBase)
+		return;
+	Uint64 target = virtMixedBase + (now - virtBase) * kRate / 1000000000ull;
+	Sint16 block[kVirtualBlock * 2];
+	while (mixed + kVirtualBlock <= target)
+		Mix(block, kVirtualBlock);
+}
+
+Uint32 SDLCALL TimerTick(void *, SDL_TimerID timerId, Uint32 interval)
+{
+	// SDL_RemoveTimer cancels future dispatch; it does not join an already-dispatched callback. The timer's immutable
+	// SDL ID is its generation. This permanent mutex and the process-lifetime mixer outlive every callback: no callback
+	// userdata is allocated or freed. A retired callback must not read a reopened device's clock or other state.
+	SDL_LockMutex(gMixer.lock);
+	if (timerId != gMixer.timer || !timerId)
+	{
+		SDL_UnlockMutex(gMixer.lock);
+		return 0;
+	}
 	if (gMixer.virt)
 	{
-		gMixer.CatchUp();
+		gMixer.CatchUpLocked();
+		SDL_UnlockMutex(gMixer.lock);
 		return interval;
 	}
 	Uint64 now = SDL_GetTicksNS();
@@ -1091,11 +1126,13 @@ Uint32 SDLCALL TimerTick(void *, SDL_TimerID, Uint32 interval)
 	if (n > 0)
 	{
 		Sint16 *buf = (Sint16 *)SDL_malloc(n * 4);
-		SDL_LockMutex(gMixer.lock);
-		gMixer.Mix(buf, n);
-		SDL_UnlockMutex(gMixer.lock);
+		if (buf)
+			gMixer.Mix(buf, n);
+		else if (gSessionAudio)
+			PortSessionCount(PORT_COUNT_AUDIO_ALLOC_FAILED);
 		SDL_free(buf);
 	}
+	SDL_UnlockMutex(gMixer.lock);
 	return interval;
 }
 
@@ -1103,6 +1140,7 @@ void Mixer::Start()
 {
 	if (users++)
 		return;
+	gSessionAudio = PortSessionEnabled();
 	PortAudioGuardCheck();		// a run that requires SDL's dummy driver gets it before any device can open
 	if (!lock)
 	{
@@ -1123,16 +1161,35 @@ void Mixer::Start()
 	const char *clock = SDL_getenv("BEA_AUDIO_CLOCK");
 	virt = PortClockVirtual();
 	if (virt)
-		virtBase = PortClockPeekNs();
-	bool timerOnly = virt || (clock && SDL_strcmp(clock, "timer") == 0);
-	if (!timerOnly && SDL_InitSubSystem(SDL_INIT_AUDIO))
 	{
-		SDL_AudioSpec spec = {SDL_AUDIO_S16LE, 2, kRate};
-		stream = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, Feed, NULL);
-		if (stream)
-			SDL_ResumeAudioStreamDevice(stream);
+		virtBase = PortClockPeekNs();
+		virtMixedBase = mixed;
+	}
+	bool timerOnly = virt || (clock && SDL_strcmp(clock, "timer") == 0);
+	if (!timerOnly)
+	{
+		if (SDL_InitSubSystem(SDL_INIT_AUDIO))
+		{
+			SDL_AudioSpec spec = {SDL_AUDIO_S16LE, 2, kRate};
+			stream = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, Feed, NULL);
+			if (stream)
+			{
+				if (!SDL_ResumeAudioStreamDevice(stream))
+				{
+					PortSessionLog(PORT_SESSION_AUDIO, true, "device resume failed; timer fallback: %.200s", SDL_GetError());
+					SDL_DestroyAudioStream(stream);
+					stream = NULL;
+					SDL_QuitSubSystem(SDL_INIT_AUDIO);
+				}
+			}
+			else
+			{
+				PortSessionLog(PORT_SESSION_AUDIO, true, "device stream open failed; timer fallback: %.200s", SDL_GetError());
+				SDL_QuitSubSystem(SDL_INIT_AUDIO);
+			}
+		}
 		else
-			SDL_QuitSubSystem(SDL_INIT_AUDIO);
+			PortSessionLog(PORT_SESSION_AUDIO, true, "audio subsystem init failed; timer fallback: %.200s", SDL_GetError());
 	}
 	const char *mon = SDL_getenv("BEA_AUDIO_MONITOR");
 	if (virt && mon && mon[0] && mon[0] != '0' && !monitor)
@@ -1153,9 +1210,14 @@ void Mixer::Start()
 	}
 	if (!stream)
 	{
+		// Publish the ID while holding the same lock the callback takes. Even dispatch during SDL_AddTimer cannot see
+		// an unpublished generation and accidentally cancel the newly created timer.
+		SDL_LockMutex(lock);
 		timerLast = SDL_GetTicksNS();
 		timerFrac = 0;
 		timer = SDL_AddTimer(10, TimerTick, NULL);
+		SDL_UnlockMutex(lock);
+		if (!timer) PortSessionLog(PORT_SESSION_AUDIO, true, "audio timer start failed: %.200s", SDL_GetError());
 	}
 	// so a run's log shows where the sound went (SDL's "dummy" driver and the timer clock are silent)
 	static const char *sLogged;
@@ -1168,22 +1230,46 @@ void Mixer::Start()
 	}
 	if (!sLogged || strcmp(sLogged, where))
 		fprintf(stderr, PORT_LOG_PREFIX "audio %s\n", sLogged = where);
+	if (gSessionAudio)
+	{
+		PortSessionLog(PORT_SESSION_AUDIO, false, "mode=%s driver=%s mix_rate=%d mix_channels=2 mix_format=S16LE "
+			"monitor=%d", stream ? "device_callback" : virt ? "virtual" : timerOnly ? "requested_timer" : "timer_fallback",
+			SDL_GetCurrentAudioDriver() ? SDL_GetCurrentAudioDriver() : "none", kRate, monitor ? 1 : 0);
+		SDL_AudioStream *output = stream ? stream : monitor;
+		if (output)
+		{
+			SDL_AudioDeviceID id = SDL_GetAudioStreamDevice(output);
+			const char *name = SDL_GetAudioDeviceName(id);
+			PortSessionLog(PORT_SESSION_AUDIO, false, "playback_device=%u name=%.160s", (unsigned)id,
+				name ? name : "unavailable");
+			SDL_AudioSpec actual{};
+			int quantum = 0;
+			if (SDL_GetAudioDeviceFormat(id, &actual, &quantum))
+				PortSessionLog(PORT_SESSION_AUDIO, false, "playback_device=%u output_rate=%d output_channels=%d "
+					"output_format=%04x quantum_frames=%d (physical playback not observed)", (unsigned)id,
+					actual.freq, actual.channels, (unsigned)actual.format, quantum);
+			else PortSessionLog(PORT_SESSION_AUDIO, true, "playback device format unavailable: %.200s", SDL_GetError());
+		}
+	}
 }
 
 void Mixer::Stop()
 {
 	if (--users)
 		return;
+	// Retire before cancellation and teardown. An in-flight callback either completed while holding this mutex, or
+	// will observe its old ID and return without touching device-lifetime state. Never wait for it with the mutex held.
+	SDL_LockMutex(lock);
+	SDL_TimerID retiredTimer = timer;
+	timer = 0;
+	SDL_UnlockMutex(lock);
+	if (retiredTimer)
+		SDL_RemoveTimer(retiredTimer);
 	if (stream)
 	{
 		SDL_DestroyAudioStream(stream);
 		stream = NULL;
 		SDL_QuitSubSystem(SDL_INIT_AUDIO);
-	}
-	if (timer)
-	{
-		SDL_RemoveTimer(timer);
-		timer = 0;
 	}
 	SDL_LockMutex(lock);
 	if (monitor)
@@ -1201,6 +1287,7 @@ void Mixer::Stop()
 		trace = NULL;
 	}
 	SDL_UnlockMutex(lock);
+	PortSessionSummary();
 }
 
 // ---- the device
@@ -1280,6 +1367,39 @@ struct Sound final : public IDirectSound8
 	HRESULT STDMETHODCALLTYPE VerifyCertification(LPDWORD c) override { *c = 0; return DS_OK; }
 };
 } // namespace
+
+// Ordinary-session observation only. This never advances the mixer or calls a buffer method: the music worker
+// already owns its buffer lifetime, while the mixer mutex protects the cursor and voice list. No addresses or PCM.
+bool PortAudioStreamSnapshot(IDirectSoundBuffer *target, unsigned long long *ns, unsigned long long *mixed,
+							 unsigned *voices, unsigned *playBytes)
+{
+	if (!gSessionAudio) return false;
+	int savedError = errno;
+#ifdef _WIN32
+	DWORD savedLastError = GetLastError();
+#endif
+	bool found = false;
+	SDL_LockMutex(gMixer.lock);
+	*ns = SDL_GetTicksNS();
+	*mixed = gMixer.mixed;
+	*voices = (unsigned)gMixer.numVoices;
+	for (int i = 0; i < gMixer.numVoices; ++i)
+	{
+		Buffer *b = gMixer.voices[i];
+		if (reinterpret_cast<IDirectSoundBuffer *>(static_cast<IDirectSoundBuffer8 *>(b)) == target)
+		{
+			*playBytes = (unsigned)b->cursor * b->format.nBlockAlign;
+			found = true;
+			break;
+		}
+	}
+	SDL_UnlockMutex(gMixer.lock);
+	errno = savedError;
+#ifdef _WIN32
+	SetLastError(savedLastError);
+#endif
+	return found;
+}
 
 extern "C" HRESULT WINAPI DirectSoundEnumerateA(LPDSENUMCALLBACKA cb, LPVOID ctx)
 {

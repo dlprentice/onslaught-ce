@@ -71,12 +71,18 @@ int port_wcsicmp(const wc16 *a, const wc16 *b)
 
 wc16 *port_wcsstr(const wc16 *h, const wc16 *n)
 {
-	size_t nl = port_wcslen(n);
-	if (!nl)
+	if (!*n)
 		return (wc16 *)h;
 	for (; *h; h++)
-		if (memcmp(h, n, nl * sizeof(wc16)) == 0)
+	{
+		const wc16 *a = h, *b = n;
+		// Stop at the haystack's terminator before reading another unit. A full-needle memcmp at a short suffix
+		// can cross the end of an otherwise valid string (portrait names are one caller).
+		while (*a && *a == *b)
+			a++, b++;
+		if (!*b)
 			return (wc16 *)h;
+	}
 	return NULL;
 }
 

@@ -6,6 +6,11 @@
 // the player's install is never modified. A write to an absolute path (a drive letter, \ or /) is refused. port.h
 // renames the game's calls (fopen, _access, _mkdir, _findfirst/_findnext/_findclose, CreateFileA,
 // FindFirstFileA/FindNextFileA/FindClose, DeleteFileA, CreateDirectoryA, GetFileAttributesA, mmioOpenA) to these.
+// FileIdInfo is a Windows8+ query. Expose its SDK types locally; failed queries still refuse the operation.
+#if !defined(_WIN32_WINNT) || _WIN32_WINNT < 0x0602
+#undef _WIN32_WINNT
+#define _WIN32_WINNT 0x0602
+#endif
 #include <windows.h>
 #include <mmsystem.h>
 #include <direct.h>
@@ -16,6 +21,7 @@
 #include <string.h>
 
 #include "../common/platform.h"
+#include "../common/save_names.h"
 
 namespace
 {
@@ -177,19 +183,152 @@ struct Find
 	WIN32_FIND_DATAA *entries;
 	int count;
 	int next;
+	bool saveNames;
+	DWORD error;
+	int sourceFirst;
 };
+
+DWORD SaveNativeSameFile(const char *a, const char *b)
+{
+	const char *paths[] = {a, b};
+	const auto lastError = []() { DWORD error = GetLastError(); return error ? error : DWORD(ERROR_GEN_FAILURE); };
+	// ReFS does not promise unique 64-bit IDs; compare the documented volume + full 128-bit identity.
+	// https://learn.microsoft.com/windows/win32/api/fileapi/ns-fileapi-by_handle_file_information
+	// https://learn.microsoft.com/windows/win32/api/winbase/ns-winbase-file_id_info
+	FILE_ID_INFO info[2] = {};
+	for (int i = 0; i < 2; i++)
+	{
+		WCHAR wide[MAX_PATH * 2];
+		if (!MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, paths[i], -1, wide, sizeof(wide) / sizeof(wide[0]))) return lastError();
+		HANDLE h = CreateFileW(wide, FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+			NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+		if (h == INVALID_HANDLE_VALUE)
+		{
+			DWORD error = lastError();
+			return error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND ? ERROR_NOT_SUPPORTED : error;
+		}
+		// FileIdInfo requires Windows 8+. Unsupported filesystem/OS queries refuse this save operation.
+		BOOL ok = GetFileInformationByHandleEx(h, FileIdInfo, &info[i], sizeof(info[i]));
+		DWORD error = ok ? 0 : lastError();
+		if (!CloseHandle(h) && !error) error = lastError();
+		if (error) return error;
+	}
+	return info[0].VolumeSerialNumber == info[1].VolumeSerialNumber &&
+		!memcmp(info[0].FileId.Identifier, info[1].FileId.Identifier, sizeof(info[0].FileId.Identifier)) ? 0 : ERROR_NOT_SUPPORTED;
+}
 
 void FindAdd(Find *f, const WIN32_FIND_DATAA *d)
 {
 	for (int i = 0; i < f->count; i++)
-		if (_stricmp(f->entries[i].cFileName, d->cFileName) == 0)
-			return;
-	f->entries = (WIN32_FIND_DATAA *)realloc(f->entries, sizeof(WIN32_FIND_DATAA) * (f->count + 1));
+	{
+		if (f->saveNames)
+		{
+			WCHAR a[32], b[32];
+			DWORD error = PortSaveNameUtf16(f->entries[i].cFileName, a, 32);
+			if (!error) error = PortSaveNameUtf16(d->cFileName, b, 32);
+			int equal = error ? -1 : PortSaveNamesEqual(a, b);
+			if (equal < 0) { f->error = error ? error : GetLastError(); f->count = 0; return; }
+			if (equal)
+			{
+				// User entries shadow the game root. Two native entries in one root with the same save identity
+				// are unsupported: selecting either would silently alias a distinct file.
+				DWORD error = ERROR_DUP_NAME;
+				if (i < f->sourceFirst)
+				{
+					char canonical[MAX_PATH * 2], alias[MAX_PATH * 2];
+					snprintf(canonical, sizeof(canonical), "%s\\savegames\\%s", gUserDir, f->entries[i].cFileName);
+					snprintf(alias, sizeof(alias), "%s\\savegames\\%s", gUserDir, d->cFileName);
+					error = SaveNativeSameFile(canonical, alias);
+				}
+				if (error) { f->error = error; f->count = 0; }
+				return;
+			}
+		}
+		else if (_stricmp(f->entries[i].cFileName, d->cFileName) == 0) return;
+	}
+	void *grown = realloc(f->entries, sizeof(WIN32_FIND_DATAA) * (f->count + 1));
+	if (!grown) { f->error = ERROR_NOT_ENOUGH_MEMORY; f->count = 0; return; }
+	f->entries = (WIN32_FIND_DATAA *)grown;
 	f->entries[f->count++] = *d;
+}
+
+DWORD SaveDirectoryCasePolicy(const WCHAR *spec)
+{
+	WCHAR directory[MAX_PATH * 2];
+	size_t length = wcslen(spec);
+	if (length >= sizeof(directory) / sizeof(directory[0])) return ERROR_FILENAME_EXCED_RANGE;
+	memcpy(directory, spec, (length + 1) * sizeof(WCHAR));
+	WCHAR *slash = wcsrchr(directory, L'\\');
+	if (!slash) return ERROR_INVALID_NAME;
+	*slash = 0;
+	HANDLE h = CreateFileW(directory, FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+		NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+	if (h == INVALID_HANDLE_VALUE)
+	{
+		DWORD error = GetLastError();
+		return error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND ? 0 : error;
+	}
+	FILE_CASE_SENSITIVE_INFO info = {};
+	// FILE_INFO_BY_HANDLE_CLASS::FileCaseSensitiveInfo is 23; older SDK target macros hide its name.
+	// The query itself uses the existing Vista API and returns INVALID_PARAMETER on pre-feature Windows.
+	const FILE_INFO_BY_HANDLE_CLASS caseSensitiveInfo = static_cast<FILE_INFO_BY_HANDLE_CLASS>(23);
+	BOOL ok = GetFileInformationByHandleEx(h, caseSensitiveInfo, &info, sizeof(info));
+	DWORD error = ok ? (info.Flags & FILE_CS_FLAG_CASE_SENSITIVE_DIR ? ERROR_NOT_SUPPORTED : 0) : GetLastError();
+	CloseHandle(h);
+	// Older Windows versions predate per-directory case sensitivity and reject this information class.
+	return !ok && error == ERROR_INVALID_PARAMETER ? 0 : error;
 }
 
 void FindScan(Find *f, const char *spec)
 {
+	f->sourceFirst = f->count;
+	if (f->saveNames)
+	{
+		// Savecard names are UTF-8 after patch 0066. Enumerate UTF-16 first so an invalid native surrogate cannot
+		// be replaced by an A API and exposed as a different, valid career name. Other searches keep their A path.
+		WCHAR wideSpec[MAX_PATH * 2];
+		int needed = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, spec, -1, NULL, 0);
+		if (!needed) { f->error = GetLastError(); f->count = 0; return; }
+		if (needed > (int)(sizeof(wideSpec) / sizeof(wideSpec[0]))) { f->error = ERROR_FILENAME_EXCED_RANGE; f->count = 0; return; }
+		if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, spec, -1, wideSpec, needed) != needed)
+		{
+			f->error = GetLastError(); f->count = 0; return;
+		}
+		if (DWORD error = SaveDirectoryCasePolicy(wideSpec)) { f->error = error; f->count = 0; return; }
+		WIN32_FIND_DATAW wide;
+		HANDLE h = FindFirstFileW(wideSpec, &wide);
+		if (h == INVALID_HANDLE_VALUE)
+		{
+			DWORD error = GetLastError();
+			if (error != ERROR_FILE_NOT_FOUND && error != ERROR_PATH_NOT_FOUND && error != ERROR_NO_MORE_FILES)
+			{
+				f->error = error; f->count = 0;
+			}
+			return;
+		}
+		do
+		{
+			WIN32_FIND_DATAA entry = {};
+			int bytes = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, wide.cFileName, -1, NULL, 0, NULL, NULL);
+			if (bytes <= 0 || bytes > (int)sizeof(entry.cFileName)) continue;
+			if (WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, wide.cFileName, -1, entry.cFileName, bytes, NULL, NULL) != bytes)
+				continue;
+			if (PortSaveNameUtf16(entry.cFileName, NULL, 0)) continue;
+			entry.dwFileAttributes = wide.dwFileAttributes;
+			entry.ftCreationTime = wide.ftCreationTime;
+			entry.ftLastAccessTime = wide.ftLastAccessTime;
+			entry.ftLastWriteTime = wide.ftLastWriteTime;
+			entry.nFileSizeHigh = wide.nFileSizeHigh;
+			entry.nFileSizeLow = wide.nFileSizeLow;
+			entry.dwReserved0 = wide.dwReserved0;
+			entry.dwReserved1 = wide.dwReserved1;
+			FindAdd(f, &entry);
+			if (f->error) break;
+		} while (FindNextFileW(h, &wide));
+		if (!f->error && GetLastError() != ERROR_NO_MORE_FILES) { f->error = GetLastError(); f->count = 0; }
+		FindClose(h);
+		return;
+	}
 	WIN32_FIND_DATAA d;
 	HANDLE h = FindFirstFileA(spec, &d);
 	if (h == INVALID_HANDLE_VALUE)
@@ -231,9 +370,11 @@ void FindSort(Find *f)
 Find *FindStart(const char *spec)
 {
 	Find *f = (Find *)calloc(1, sizeof(Find));
+	f->saveNames = spec && (!_stricmp(spec, "savegames\\*.bes") || !_stricmp(spec, "savegames/*.bes"));
 	char user[MAX_PATH * 2], game[MAX_PATH * 2];
 	if (Resolve(spec, SHADOW, user, sizeof(user)) == 0)
 		FindScan(f, user);
+	if (f->error) return f;
 	Resolve(spec, READ, game, sizeof(game));
 	if (_stricmp(game, user) != 0)
 		FindScan(f, game);
@@ -261,6 +402,60 @@ const char *PortUserDir()
 }
 
 extern "C" {
+
+unsigned PortSaveLookupUtf16(const void *name, int *index)
+{
+	*index = -1;
+	char path[MAX_PATH];
+	DWORD error = PortSavePathUtf8(name, path, sizeof(path));
+	if (error) return error;
+	Find *f = FindStart("savegames\\*.bes");
+	error = f->error;
+	int admitted = 0;
+	char canonicalPath[MAX_PATH] = {};
+	for (int i = 0; !error && i < f->count; i++)
+	{
+		if (f->entries[i].dwFileAttributes & (FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM | FILE_ATTRIBUTE_DIRECTORY)) continue;
+		WCHAR listed[32];
+		error = PortSaveNameUtf16(f->entries[i].cFileName, listed, 32);
+		int equal = error ? -1 : PortSaveNamesEqual(name, listed);
+		if (equal < 0) { if (!error) error = GetLastError(); break; }
+		if (equal)
+		{
+			*index = admitted;
+			snprintf(canonicalPath, sizeof(canonicalPath), "savegames\\%s", f->entries[i].cFileName);
+		}
+		admitted++;
+	}
+	FindFree(f);
+	if (!error && *index != -1)
+	{
+		char native[MAX_PATH * 2], canonicalNative[MAX_PATH * 2];
+		// Bind the requested spelling to the admitted entry, even across volumes with differing case tables.
+		if (Resolve(path, READ, native, sizeof(native)) || Resolve(canonicalPath, READ, canonicalNative, sizeof(canonicalNative)))
+			error = ERROR_NOT_SUPPORTED;
+		else error = SaveNativeSameFile(native, canonicalNative);
+	}
+	if (error) { *index = -1; SetLastError(error); }
+	return error;
+}
+
+unsigned PortSaveReserveUtf8(const char *path)
+{
+	WCHAR name[32]; char checked[MAX_PATH], native[MAX_PATH * 2];
+	if (!path || strncmp(path, "savegames\\", 10)) return ERROR_INVALID_NAME;
+	DWORD error = PortSaveNameUtf16(path + 10, name, 32);
+	if (!error) error = PortSavePathUtf8(name, checked, sizeof(checked));
+	if (error) return error;
+	if (strcmp(path, checked) || Resolve(path, WRITE, native, sizeof(native))) return ERROR_INVALID_NAME;
+	WCHAR wide[MAX_PATH * 2];
+	if (!MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, native, -1, wide, sizeof(wide) / sizeof(wide[0]))) return GetLastError();
+	if ((error = SaveDirectoryCasePolicy(wide))) return error;
+	HANDLE h = CreateFileW(wide, GENERIC_WRITE, 0, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
+	if (h == INVALID_HANDLE_VALUE) return GetLastError();
+	if (!CloseHandle(h)) return GetLastError();
+	return 0;
+}
 
 int port_findnext(intptr_t h, struct _finddata_t *d);
 
@@ -293,7 +488,9 @@ intptr_t port_findfirst(const char *spec, struct _finddata_t *d)
 	Find *f = FindStart(spec);
 	if (!f->count)
 	{
+		DWORD error = f->error;
 		FindFree(f);
+		if (error) SetLastError(error);
 		return -1;
 	}
 	if (port_findnext((intptr_t)f, d) != 0)
@@ -344,8 +541,9 @@ HANDLE WINAPI PortFindFirstFileA(LPCSTR spec, LPWIN32_FIND_DATAA data)
 	Find *f = FindStart(spec);
 	if (!f->count)
 	{
+		DWORD error = f->error ? f->error : ERROR_FILE_NOT_FOUND;
 		FindFree(f);
-		SetLastError(ERROR_FILE_NOT_FOUND);
+		SetLastError(error);
 		return INVALID_HANDLE_VALUE;
 	}
 	*data = f->entries[f->next++];

@@ -1,0 +1,248 @@
+--- a/game.cpp
++++ b/game.cpp
+@@ -0,0 +1 @@
++#include "../platform/common/portlog.h"
+@@ -530,6 +531,9 @@
+ //******************************************************************************************
+ void	CGame::ShutdownRestartLoop()	// FUNCTION: 0x0046ca70
+ {	
++#ifdef CE_VERSION
++	PortSessionLog(PORT_SESSION_GAME, false, "leave level=%d phase=%d quit=%d", mCurrentLevel, (int)mGameState, (int)mQuit);
++#endif
+ 	extern bool pause_for_showing_controls;
+ 	if (mQuit == QT_RESTART_LEVEL && PLAYABLE_DEMO)
+ 		pause_for_showing_controls = true;
+@@ -683,6 +687,9 @@
+ //******************************************************************************************
+ BOOL CGame::LoadLevel( SINT aLevel )	// FUNCTION: 0x0046cdf0
+ {
++#ifdef CE_VERSION
++	PortSessionLog(PORT_SESSION_GAME, false, "load level=%d begin", aLevel);
++#endif
+ 	SETUP_HISTORY.AddMessage("Game::LoadLevel %d", aLevel);	mCurrentLevel = aLevel;	// retail: logged
+ 	mScorePercentage=0.5f;
+ 	mScore=0;
+@@ -698,6 +705,9 @@
+ 
+ 	if( !WORLD.Load( aLevel ) )
+ 	{
++#ifdef CE_VERSION
++		PortSessionLog(PORT_SESSION_GAME, true, "load level=%d failed in WORLD.Load", aLevel);
++#endif
+ 		return FALSE;
+ 	}
+ 
+@@ -844,7 +854,9 @@
+ 	MAP.InitQuickCollisionMap();
+ 
+ 	CONSOLE.SetLoadingFraction(1.0f);
+-
++#ifdef CE_VERSION
++	PortSessionLog(PORT_SESSION_GAME, false, "post-load level=%d ready players=%d", mCurrentLevel, mPlayers);
++#endif
+ 	return TRUE;
+ }
+ 
+--- a/FrontEnd.cpp
++++ b/FrontEnd.cpp
+@@ -0,0 +1 @@
++#include "../platform/common/portlog.h"
+@@ -475,6 +476,9 @@
+ //*********************************************************************************
+ void	CFrontEnd::SetPage(EFrontEndPage page, SINT time)	// FUNCTION: 0x00466ae0
+ {
++#ifdef CE_VERSION
++	PortSessionLog(PORT_SESSION_GAME, false, "frontend page=%d requested=%d transition_ticks=%d", (int)mActivePage, (int)page, time);
++#endif
+ 	// Shouldn't happen...
+ 	if (mActivePage == FEP_TRANSITION)
+ 		mActivePage = mTransitionFrom;
+--- a/PCMusicStream.cpp
++++ b/PCMusicStream.cpp
+@@ -0,0 +1 @@
++#include "../platform/common/portlog.h"
+@@ -70,6 +71,11 @@
+ 		DWORD result = WaitForMultipleObjects(4, events, FALSE, INFINITE);
+ 		if (result == WAIT_FAILED)
+ 		{
++#ifdef CE_VERSION
++			DWORD portError = GetLastError();
++			PortSessionCount(PORT_COUNT_MUSIC_WAIT_FAILED);
++			PortSessionLog(PORT_SESSION_MUSIC, true, "worker wait failed error=%lu", (unsigned long)portError);
++#endif
+ 			GetLastError();
+ 			Sleep(100);
+ 			continue;
+@@ -117,6 +123,9 @@
+ 			sSilentHalves = 0;
+ 			sBytesStreamed = 0;
+ 			sReader->Open(sTrackName);
++#ifdef CE_VERSION
++			PortSessionAsset(PORT_SESSION_MUSIC, "worker open attempted", sTrackName);
++#endif
+ 			MUSIC_STREAM_FINISHED = false;
+ 			if (sReader->HasFormat() && (sReader->GetChannels() == 2) && (sReader->GetSampleRate() == 44100))
+ 			{
+@@ -128,9 +137,15 @@
+ 						break;
+ 				}
+ 				sBuffer->Lock(0, 0, &data1, &size1, &data2, &size2, DSBLOCK_ENTIREBUFFER);
+-				sReader->Read(size1, (BYTE *)data1, &got);
++				HRESULT portRead = sReader->Read(size1, (BYTE *)data1, &got);
++#ifdef CE_VERSION
++				if (FAILED(portRead)) { PortSessionCount(PORT_COUNT_MUSIC_READ_FAILED); PortSessionAsset(PORT_SESSION_MUSIC, "initial read failed", sTrackName, portRead); }
++#endif
+ 				if (got == 0)
+ 				{
++#ifdef CE_VERSION
++					PortSessionAsset(PORT_SESSION_MUSIC, "empty initial read", sTrackName);
++#endif
+ 					MUSIC_STREAM_FINISHED = true;
+ 					StopMusicStream();
+ 					sBuffer->Unlock(data1, size1, data2, size2);
+@@ -143,17 +158,30 @@
+ 				}
+ 				sBuffer->Unlock(data1, size1, data2, size2);
+ 				sBuffer->SetCurrentPosition(0);
+-				sBuffer->Play(0, 0, DSBPLAY_LOOPING);
++				HRESULT portPlay = sBuffer->Play(0, 0, DSBPLAY_LOOPING);
++#ifdef CE_VERSION
++				PortSessionAsset(PORT_SESSION_MUSIC, "buffer start", sTrackName, portPlay);
++				if (SUCCEEDED(portPlay)) PortSessionMediaActive(PORT_SESSION_MUSIC, sBuffer, true);
++#endif
+ 				sBytesStreamed += size1;
+ 			}
+ 			else
++			{
++#ifdef CE_VERSION
++				PortSessionAsset(PORT_SESSION_MUSIC, "missing or unsupported format", sTrackName, -1);
++#endif
+ 				StopMusicStream();
++			}
+ 			break;
+ 
+ 		case 1:		// a half has played: refill it
+ 		case 2:
++		{
+ 			if (sSilentHalves > 2)
+ 			{
++#ifdef CE_VERSION
++				PortSessionAsset(PORT_SESSION_MUSIC, "EOF drained", sTrackName);
++#endif
+ 				StopMusicStream();
+ 				sReader->Close();
+ 				sSilentHalves = 0;
+@@ -167,7 +195,12 @@
+ 			case 2:	offset = STREAM_HALF;	break;
+ 			}
+ 			sBuffer->Lock(offset, STREAM_HALF, &data1, &size1, &data2, &size2, 0);
+-			sReader->Read(size1, (BYTE *)data1, &got);
++			HRESULT portRead = sReader->Read(size1, (BYTE *)data1, &got);
++#ifdef CE_VERSION
++			PortSessionCount(PORT_COUNT_MUSIC_REFILLS);
++			if (got < size1) PortSessionCount(PORT_COUNT_MUSIC_SHORT_READS);
++			if (FAILED(portRead)) { PortSessionCount(PORT_COUNT_MUSIC_READ_FAILED); PortSessionAsset(PORT_SESSION_MUSIC, "refill read failed", sTrackName, portRead); }
++#endif
+ 			if (got < size1)
+ 			{
+ 				memset((BYTE *)data1 + got, 0, size1 - got);
+@@ -177,6 +210,7 @@
+ 			sBytesStreamed += size1;
+ 			break;
+ 
++		}
+ 		case 3:		// shut down
+ 			sThreadAwake = FALSE;
+ 			return 1;
+@@ -215,7 +249,10 @@
+ 	{
+ 		DWORD	id;
+ 
+-		SOUND.GetDirectSound()->CreateSoundBuffer(&desc, &sBuffer, NULL);
++		HRESULT portCreate = SOUND.GetDirectSound()->CreateSoundBuffer(&desc, &sBuffer, NULL);
++#ifdef CE_VERSION
++		PortSessionLog(PORT_SESSION_MUSIC, FAILED(portCreate) || !sBuffer, "stream buffer init result=%08lx available=%d bytes=%u", (unsigned long)portCreate, sBuffer ? 1 : 0, STREAM_BUFFER_SIZE);
++#endif
+ #ifdef CE_VERSION
+ 		if (sCeStreamAdmission)
+ 		{
+@@ -272,7 +309,11 @@
+ 			while (code == STILL_ACTIVE);
+ 		sThread = NULL;
+ 
+-		sBuffer->Stop();
++		HRESULT portStop = sBuffer->Stop();
++#ifdef CE_VERSION
++		PortSessionAsset(PORT_SESSION_MUSIC, "stop complete", sTrackName, portStop);
++		if (SUCCEEDED(portStop)) PortSessionMediaActive(PORT_SESSION_MUSIC, sBuffer, false);
++#endif
+ 		sBuffer->Release();
+ 		sBuffer = NULL;
+ 		CloseHandle(sFirstHalfEvent);
+@@ -304,6 +345,7 @@
+ {
+ #ifdef CE_VERSION
+ 	CPortMusicStreamGuard guard;
++	PortSessionAsset(PORT_SESSION_MUSIC, sBuffer ? "play requested" : "play refused: no buffer", filename, sBuffer ? 0 : -1);
+ #endif
+ 	if (sBuffer)
+ 	{
+@@ -369,7 +411,11 @@
+ #endif
+ 	if (sBuffer)
+ 	{
+-		sBuffer->Stop();
++		HRESULT portStop = sBuffer->Stop();
++#ifdef CE_VERSION
++		PortSessionAsset(PORT_SESSION_MUSIC, "stop complete", sTrackName, portStop);
++		if (SUCCEEDED(portStop)) PortSessionMediaActive(PORT_SESSION_MUSIC, sBuffer, false);
++#endif
+ 		ResetEvent(sFirstHalfEvent);
+ 		ResetEvent(sSecondHalfEvent);
+ #ifdef CE_VERSION
+--- a/ltshell.cpp
++++ b/ltshell.cpp
+@@ -0,0 +1 @@
++#include "../platform/common/portlog.h"
+@@ -680,6 +681,9 @@
+ //-----------------------------------------------------------------------------
+ int PCLTShell::MainLoop()
+ {
++#ifdef CE_VERSION
++	PortSessionLog(PORT_SESSION_GAME, false, "configuration sound=%d music=%d skip_films=%d force_windowed=%d sound_rate=%d sound_device=%d", (int)CLIPARAMS.mSound, (int)CLIPARAMS.mMusic, (int)CLIPARAMS.mSkipFMV, (int)CLIPARAMS.mForceWindowed, CLIPARAMS.mSoundRate, CLIPARAMS.mSoundDevice);
++#endif
+ 	// JCL - new main loop - bit simpler!
+ 
+ 	if (SYSTEM.Init())
+@@ -712,6 +716,7 @@
+ //		::MessageBox( NULL , "Memory leaks detected on exit!\nCheck debugging traces for details." ,
+ //						  "Onslaught" , MB_ICONEXCLAMATION|MB_OK );
+ 
++	PortSessionSummary();
+ 	return LT.MsgInfo();
+ }
+ 
+--- a/PCMusic.cpp
++++ b/PCMusic.cpp
+@@ -0,0 +1 @@
++#include "../platform/common/portlog.h"
+@@ -40,6 +41,19 @@
+ 
+ void CPCMusic::DeviceSetVolume(int vol)	// FUNCTION: 0x00515370
+ {
++#ifdef CE_VERSION
++	if (PortSessionEnabled())
++	{
++		static bool portVolumeSeen;
++		static int portLastVolume;
++		if (!portVolumeSeen || portLastVolume != vol)
++		{
++			PortSessionLog(PORT_SESSION_MUSIC, false, "requested volume_0_127=%d", vol);
++			portVolumeSeen = true;
++			portLastVolume = vol;
++		}
++	}
++#endif
+ 	SetMusicStreamVolume(vol * (1.0f * 0.007874016f /* retail 005e4978: / 127.0f */));	// spelling chosen to give retail's own float-folded 1/127 (Music.obj's is the division in music.h): placement evidence; Stuart's release has no such line
+ }
+ 

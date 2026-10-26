@@ -1,0 +1,83 @@
+--- a/DXSnow.cpp
++++ b/DXSnow.cpp
+@@ -223,12 +223,13 @@
+ 		CONSOLE.RegisterVariable("cg_snow_fadedistance", "Snow flake fade distance", CVar_float, &mFadeDistance);
+ 		CONSOLE.RegisterVariable("cg_snow", "Snow enable/disable", CVar_bool, &mEnabled);
+ 
++		// Port (0064): rand is the game's 15-bit CRT generator on both targets.
+ 		for (SINT i = 0; i < 1000; i++)
+ 		{
+-			float	x = (float)(rand() * 5.f) / RAND_MAX;
+-			float	y = (float)(rand() * 5.f) / RAND_MAX;
+-			float	z = (float)(rand() * 5.f) / RAND_MAX;
+-			float	t = (float)(rand() * 200.f) / -RAND_MAX;
++			float	x = (float)(rand() * 5.f) / 32767;
++			float	y = (float)(rand() * 5.f) / 32767;
++			float	z = (float)(rand() * 5.f) / 32767;
++			float	t = (float)(rand() * 200.f) / -32767;
+ 
+ 			SSnowVertex	v[4];
+ 			v[0].mX = x;
+@@ -264,8 +265,8 @@
+ 
+ 		for (SINT n = 0; n < 50; n++)
+ 		{
+-			mOffsets[n].x = (float)(rand() * 15.f) / RAND_MAX - 7.5f;
+-			mOffsets[n].y = (float)(rand() * 15.f) / RAND_MAX - 7.5f;
++			mOffsets[n].x = (float)(rand() * 15.f) / 32767 - 7.5f;
++			mOffsets[n].y = (float)(rand() * 15.f) / 32767 - 7.5f;
+ 			mOffsets[n].z = -7.5f;
+ 			mOffsets[n].w = 0;
+ 		}
+--- a/animal.cpp
++++ b/animal.cpp
+@@ -41,7 +41,8 @@
+ 	else if (mType == 1)
+ 	{
+ 		strcpy(data.mInit[0].mName, "bird.msh");
+-		mHeight = -((float)(rand() * 20.f) / RAND_MAX + 40.f);
++		// Port (0064): normalize the game CRT range, independent of the host's RAND_MAX.
++		mHeight = -((float)(rand() * 20.f) / 32767 + 40.f);
+ 	}
+ 	else
+ 		CONSOLE.Print("Warning! Unknown animal type %d generated!\n", mType);
+@@ -192,7 +193,7 @@
+ 		}
+ 
+ 		if (rand() % 100 == 0)
+-			mClimb = (float)(rand() * 0.5f) / RAND_MAX - 0.25f;
++			mClimb = (float)(rand() * 0.5f) / 32767 - 0.25f;
+ 		if (mPos.Z > -30.f)
+ 			mClimb = -0.25f;
+ 		if (mPos.Z < -60.f)
+--- a/DXLandscape.cpp
++++ b/DXLandscape.cpp
+@@ -847,6 +847,8 @@
+ 	}
+ 
+ 	HRESULT	hr = LT.m_pd3dDevice->SetRenderTarget(0, surface);
++	// Port (0064): SetRenderTarget retains its own reference on success.
++	surface->Release();
+ 	if (FAILED(hr))
+ 	{
+ 		SETUP_HISTORY.AddMessage("Failed SRT in for %s", DXGetErrorString9(hr));
+@@ -863,7 +865,6 @@
+ 		return false;
+ 	}
+ 
+-	surface->Release();
+ 	return true;
+ }
+ 
+@@ -938,7 +939,11 @@
+ 
+ 	CRenderTargetSwap	swap;
+ 	if (!swap.Begin(mUnknown08))
++	{
++		// Port (0064): leave the fixed-function caller as the successful pass does.
++		LT.GetDevice()->SetPixelShader(NULL);
+ 		return false;
++	}
+ 
+ 	LT.GetDevice()->Clear(0, NULL, D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER, 0xffffffff, 1.f, 0);
+ 	DWORD	dither = LT.mRenderStates[D3DRS_DITHERENABLE];

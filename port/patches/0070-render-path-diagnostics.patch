@@ -1,0 +1,159 @@
+--- a/DXWater.cpp
++++ b/DXWater.cpp
+@@ -1,5 +1,6 @@
+ // DXWater.cpp: reconstructed from DXWater.obj (0055af90..0055d5dd); Stuart's release has no copy. The water's
+ // textures and, on cards with pixel shader 2.0, its shaders, and the render pass.
++#include "../platform/common/portlog.h"
+ #include "common.h"
+ #define DXWATER_CPP
+ #include "ltshell.h"
+@@ -243,6 +244,24 @@
+ 
+ bool		WATER_USE_SHADER;				// 009cc1a0 (DXSurf's object reads it too)
+ 
++#ifdef CE_VERSION
++// Branch entered, not a validation result or proof that a shader/API succeeded.
++static void PortWaterRenderPath(int method)
++{
++	if (!PortSessionEnabled()) return;
++	static unsigned events = 0;
++	static int last = -1;
++	if (events >= 32) return;
++	int shader = method == 2 && WATER_USE_SHADER ? 1 : 0;
++	int accepted = WATER_METHOD.mAccepted ? 1 : 0;
++	int key = method * 4 + shader * 2 + accepted;
++	if (key == last) return;
++	last = key;
++	++events;
++	PortSessionLog(PORT_SESSION_VIDEO, false, "water branch_entered=%d shader_selected=%d accepted_before=%d context_event=%u context_limit=32", method, shader, accepted, events);
++}
++#endif
++
+ #define WATER_GRID_START	(-768.0f)			// 005e5a8c: literals, so retail keeps them with the code's constants after
+ #define WATER_GRID_FADE		(1.0f / 736.0f)		// 005e5a88  the vtable (the product below is grouped, so the fade's
+ #define WATER_GRID_SIZE		(1600.0f)			// 005e5a84  constant and the 500.0f stay two multiplies, as retail's)
+@@ -440,6 +459,9 @@
+ 
+ 	if (WATER_METHOD.Try(2))
+ 	{
++#ifdef CE_VERSION
++		PortWaterRenderPath(2);
++#endif
+ 		LT.SRS(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
+ 		WATER_ADVANCE(scroll2, angle2)
+ 
+@@ -780,6 +802,9 @@
+ 
+ 	if (WATER_METHOD.Try(1))
+ 	{
++#ifdef CE_VERSION
++		PortWaterRenderPath(1);
++#endif
+ 		FVector cam = ENGINE.GetCamera()->GetPos();
+ 		WATER_ADVANCE(scroll1, angle1)
+ 		LT.D3D_SetTexture(0, mCaustic->GetTexture());
+@@ -840,6 +865,9 @@
+ 
+ 	if (WATER_METHOD.Try(0))
+ 	{
++#ifdef CE_VERSION
++		PortWaterRenderPath(0);
++#endif
+ 		FVector cam = ENGINE.GetCamera()->GetPos();
+ 		BuildGrid(wlevel, MAP.GetWaterColour() & 0xffffff);
+ 		WATER_ADVANCE(scroll0, angle0)
+--- a/DXEngine.cpp
++++ b/DXEngine.cpp
+@@ -2,6 +2,7 @@
+ //
+ //////////////////////////////////////////////////////////////////////
+ 
++#include "../platform/common/portlog.h"
+ #include "common.h"
+ 
+ #ifdef _DIRECTX
+@@ -648,6 +649,29 @@
+ 	return density;
+ }
+ 
++#ifdef CE_VERSION
++static void PortRenderContext(const FVector &campos, float wlevel, int viewpoint)
++{
++	if (!PortSessionEnabled()) return;
++	if (gMirrorPass || viewpoint != 0) return;
++	static unsigned events = 0;
++	static int lastBand = -9, lastInside = -9, lastWidth = -1, lastHeight = -1, lastMap = -1;
++	if (events >= 32) return;
++	// These are diagnostic game-unit bands, not flight limits. Z increases downwards.
++	float above = wlevel - campos.Z;
++	const float finiteMax = 3.402823466e+38F;
++	int band = !(above >= -finiteMax && above <= finiteMax) ? -1 :
++		above <= 0 ? 0 : above <= 32 ? 1 : above <= 128 ? 2 : above <= 512 ? 3 : 4;
++	int width = MAP.mGridWidth, height = MAP.mGridHeight, map = MAP.mMapNumber;
++	int inside = width <= 0 || height <= 0 || !(campos.X >= -finiteMax && campos.X <= finiteMax && campos.Y >= -finiteMax && campos.Y <= finiteMax) ? -1 :
++		campos.X >= 0 && campos.Y >= 0 && campos.X < width && campos.Y < height ? 1 : 0;
++	if (band == lastBand && inside == lastInside && width == lastWidth && height == lastHeight && map == lastMap) return;
++	lastBand = band; lastInside = inside; lastWidth = width; lastHeight = height; lastMap = map;
++	++events;
++	PortSessionLog(PORT_SESSION_VIDEO, false, "render_context viewpoint=%d water_height_band=%d inside_grid=%d grid_w=%d grid_h=%d map=%d context_event=%u context_limit=32", viewpoint, band, inside, width, height, map, events);
++}
++#endif
++
+ static FMatrix prev_vmatrix;
+ 
+ HRESULT CDXEngine::Render(int viewpoint)	// FUNCTION: 0x0053e2e0
+@@ -729,6 +753,9 @@
+ 
+ 	float wlevel;
+ 	wlevel = MAP.GetWaterLevel();
++#ifdef CE_VERSION
++	PortRenderContext(campos, wlevel, viewpoint);
++#endif
+ 
+ 		FMatrix bbori = mCamera[mCurrentViewpoint]->GetOrientation();
+ 
+--- a/DXKempyCube.cpp
++++ b/DXKempyCube.cpp
+@@ -1,6 +1,7 @@
+ // DXKempyCube.cpp: reconstructed from DXKempyCube.obj (00544040..005443ff); Stuart's release has no copy. The sky
+ // cube: five textured faces (no floor) drawn around the camera without depth, fog or lighting. Render's identity matrix
+ // is DXLandscape.obj's (008aa8d8): this object has no maths constants or initializers of its own (mathsconst.h).
++#include "../platform/common/portlog.h"
+ #include "common.h"
+ #define DXKEMPYCUBE_CPP
+ #include "ltshell.h"
+@@ -21,6 +22,24 @@
+ #define KC_U0	0.001953125f		// half a texel in from each edge
+ #define KC_U1	0.998046875f
+ #define KC_V1	0.749023438f
++
++#ifdef CE_VERSION
++static void PortSkyCubeLoad(unsigned number)
++{
++	if (!PortSessionEnabled()) return;
++	static unsigned events = 0;
++	static int last = -1;
++	if (events >= 32 || last == (int)number) return;
++	last = (int)number;
++	++events;
++	float half = KC_S, top = KC_TOP;
++	unsigned halfBits, topBits;
++	static_assert(sizeof(halfBits) == sizeof(half), "32-bit cube constants");
++	memcpy(&halfBits, &half, sizeof(halfBits));
++	memcpy(&topBits, &top, sizeof(topBits));
++	PortSessionLog(PORT_SESSION_VIDEO, false, "sky cube_load=%u half_bits=%08x top_bits=%08x context_event=%u context_limit=32", number, halfBits, topBits, events);
++}
++#endif
+ 
+ // The five faces as triangle strips of XYZ|TEX1 vertices (006508f0).
+ static float	sVerts[20][5] =
+@@ -63,6 +82,9 @@
+ //******************************************************************************************
+ void CDXKempyCube::Load(UBYTE number)	// FUNCTION: 0x005440a0
+ {
++#ifdef CE_VERSION
++	PortSkyCubeLoad(number);
++#endif
+ 	for (int i = 0; i < 5; i++)
+ 	{
+ 		GetCubeTextureName(mNames[i], number, i);

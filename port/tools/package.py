@@ -36,13 +36,10 @@ import deps  # noqa: E402
 PORT = deps.PORT
 ROOT = PORT.parent
 WORK = deps.WORK
-FFMPEG_LINUX = deps.FFMPEG_SHARED / "linux/usr/lib"
-FFMPEG_WINDOWS = deps.FFMPEG_SHARED / "windows/usr/bin"
 LINUX_LIBS = [(deps.DATA / "dxvk-native/usr/lib32", "libdxvk_d3d9.so.0"), (deps.PREFIX / "lib", "libSDL3.so.0"),
-              (deps.PREFIX / "lib", "libxkbcommon.so.0"), (FFMPEG_LINUX, "libavformat.so.61"),
-              (FFMPEG_LINUX, "libavcodec.so.61"), (FFMPEG_LINUX, "libavutil.so.59")]
-WINDOWS_DLLS = [deps.PREFIX_WIN / "bin/SDL3.dll", deps.PREFIX_WIN / "bin/libz.dll", FFMPEG_WINDOWS / "avformat-61.dll",
-                FFMPEG_WINDOWS / "avcodec-61.dll", FFMPEG_WINDOWS / "avutil-59.dll"]
+              (deps.PREFIX / "lib", "libxkbcommon.so.0")]
+LINUX_LIBS += [(path.parent, path.name) for path in deps.ffmpeg_shared_files("linux", runtime=True)]
+WINDOWS_DLLS = [deps.PREFIX_WIN / "bin/SDL3.dll", deps.PREFIX_WIN / "bin/libz.dll", *deps.ffmpeg_shared_files("windows", runtime=True)]
 # The newest glibc symbol version the Linux package's programs and libraries need (their .gnu.version_r, checked by
 # glibc_needed when packaging): README.txt, preflight.sh, public/README.md and the release notes state it.
 GLIBC = "2.44"
@@ -318,10 +315,9 @@ def source_url(version: str) -> str:
     return f"{PUBLIC_REPO}/tree/{release_tag(version)} (commit {source_commit()})"
 
 
-# The Microsoft sample framework the game's source release carries (compiled into both programs).
-D3DAPP = ["src/d3dapp.cpp and src/d3dapp.h are Microsoft's DirectX SDK sample application framework, (c) Microsoft Corporation,",
-          "carried because Stuart Gillam's GPL release of the game's source includes them; Microsoft has not licensed them",
-          "under the GPL."]
+# The public build compiles the authored graphics host, not the inherited SDK framework.
+D3DAPP = ["The public graphics host (port/platform/public/d3dapp.cpp and d3dapp.h) is GPL-3.0-only code by",
+          "the Onslaught CE contributors. The inherited SDK sample framework is not included in this package."]
 
 
 def notices(version: str, windows: bool) -> bytes:
@@ -664,6 +660,8 @@ def machine_paths(path: Path) -> list:
 
 
 def check_public(binary: Path, windows: bool):
+    target = "windows" if windows else "linux"
+    deps.require_ffmpeg_shared(target)
     marker = WORK / "mirror/public-unreplaced.txt"
     if not marker.exists():
         sys.exit(f"{marker}: missing; build with build.py --public")
@@ -673,10 +671,19 @@ def check_public(binary: Path, windows: bool):
                           capture_output=True, text=True).stdout
     if re.search(r"NvStripifier|NvStripInfo|VertexCache", syms):
         sys.exit(f"{binary}: contains NvTriStrip; build with build.py --public")
-    if not windows:
-        dyn = subprocess.run(["readelf", "-d", str(binary)], capture_output=True, text=True).stdout
+    expected = {path.name for path in deps.ffmpeg_shared_files(target, runtime=True)}
+    if windows:
+        expected = {name.lower() for name in expected}
+        tool = deps.DATA / "llvm-mingw/bin/llvm-readobj"
+        imports = subprocess.run([str(tool), "--coff-imports", str(binary)], capture_output=True, text=True, check=True).stdout
+        needed = {name.lower() for name in re.findall(r"^\s+Name: (\S+)\s*$", imports, re.M)}
+    else:
+        dyn = subprocess.run(["readelf", "-d", str(binary)], capture_output=True, text=True, check=True).stdout
+        needed = set(re.findall(r"\(NEEDED\).*Shared library: \[([^]]+)\]", dyn))
         if "[$ORIGIN/lib]" not in dyn:
             sys.exit(f"{binary}: RUNPATH is not $ORIGIN/lib; build with build.py --public")
+    if missing := expected - needed:
+        sys.exit(f"{binary}: missing public FFmpeg shared dependencies: {', '.join(sorted(missing))}; rebuild with build.py --public")
 
 
 # The system libraries the Linux package links against: every symbol version the bundled programs and libraries need
@@ -762,14 +769,16 @@ def main():
     a = ap.parse_args()
     global ALLOW_UNREPLACED
     ALLOW_UNREPLACED = a.test
+    build = a.build or WORK / "build"
+    # Validate both candidates and their selected shared inputs before creating any package or copying symbols.
+    for windows in (False, True):
+        check_public(build / ("windows/bea.exe" if windows else "linux/bea"), windows)
     out = a.out or WORK / "release" / a.version
     (out / "symbols").mkdir(parents=True, exist_ok=True)
-    build = a.build or WORK / "build"
     made = []
     epoch = source_epoch()
     for windows in (False, True):
         src = build / ("windows/bea.exe" if windows else "linux/bea")
-        check_public(src, windows)
         exe = "bea.exe" if windows else "bea"
         shutil.copy2(src, out / "symbols" / (f"bea-{a.version}.exe" if windows else f"bea-{a.version}"))
         stripped = out / ("stage-" + exe)

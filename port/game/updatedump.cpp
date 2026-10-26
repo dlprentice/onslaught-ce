@@ -70,8 +70,57 @@ unsigned Bits(float f)
 }
 }
 
+static void SessionGameUpdate()
+{
+	// Update owns live players; no inspection while loading, drawing the frontend, or tearing a level down.
+	// The getters below only read fields (including monitored references), never RNG, input or a game clock.
+	if (PortSessionEnabled())
+	{
+		static int level = -1, state = -1, pause = -1;
+		static int form[MAX_PLAYERS] = {-1, -1, -1, -1}, view[MAX_PLAYERS] = {-1, -1, -1, -1};
+		static int edge[MAX_PLAYERS] = {-1, -1, -1, -1};
+		int nextLevel = GAME.GetCurrentLevel(), nextState = GAME.GetGameState(), nextPause = GAME.IsPaused();
+		if (nextLevel != level || nextState != state || nextPause != pause)
+		{
+			PortSessionLog(PORT_SESSION_GAME, false, "level=%d phase=%d paused=%d", nextLevel, nextState, nextPause);
+			if (nextLevel != level || (nextState != state && nextState == GAME_STATE_PRE_RUNNING))
+				for (int i = 0; i < MAX_PLAYERS; ++i) form[i] = view[i] = edge[i] = -1;
+			level = nextLevel; state = nextState; pause = nextPause;
+		}
+		int players = GAME.GetNPlayers();
+		if (nextState >= GAME_STATE_PRE_RUNNING && nextState <= GAME_STATE_LEVEL_WON && players > 0 && players <= MAX_PLAYERS)
+			for (int i = 0; i < players; ++i)
+			{
+				CPlayer *player = GAME.GetPlayer(i);
+				CBattleEngine *engine = player ? player->GetBattleEngine() : NULL;
+				if (!engine) { form[i] = view[i] = edge[i] = -1; continue; }
+				int nextForm = engine->GetState(), nextView = player->GetIsInFPV();
+				const FVector &pos = engine->GetPos();
+				unsigned xyz[3];
+				memcpy(&xyz[0], &pos.X, 4); memcpy(&xyz[1], &pos.Y, 4); memcpy(&xyz[2], &pos.Z, 4);
+				// Positive IEEE754 encodings are ordered. Test the documented 0..512 XY region without any FP work;
+				// nonfinite positions are a separate flag, not mistaken for an ordinary boundary crossing.
+				int nextEdge = 0;
+				for (int axis = 0; axis < 2; ++axis)
+				{
+					unsigned magnitude = xyz[axis] & 0x7fffffffu;
+					if (magnitude >= 0x7f800000u) nextEdge |= 16;
+					else if ((xyz[axis] >> 31) && magnitude) nextEdge |= 1 << (axis * 2);
+					else if (magnitude > 0x44000000u) nextEdge |= 2 << (axis * 2);
+				}
+				if (nextForm != form[i] || nextView != view[i] || nextEdge != edge[i])
+					PortSessionLog(PORT_SESSION_GAME, false,
+						"level=%d player=%d form=%d (0=to_walker 1=to_aircraft 2=walker 3=aircraft) first_person=%d "
+						"xy_outside_0_512=%d position_ieee754=%08x,%08x,%08x",
+						level, i + 1, nextForm, nextView, nextEdge, xyz[0], xyz[1], xyz[2]);
+				form[i] = nextForm; view[i] = nextView; edge[i] = nextEdge;
+			}
+	}
+}
+
 void PortUpdateHook()
 {
+	SessionGameUpdate();
 	if (!gInit)
 	{
 		gInit = true;

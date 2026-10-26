@@ -1,0 +1,18 @@
+--- a/CLIParams.cpp
++++ b/CLIParams.cpp
+@@ -312,11 +312,10 @@
+ 		if (!(stricmp(parms[current_parm], "-skipfmv")))
+ 			mSkipFMV=TRUE;
+ 
+-		if (CLIPARAMS.mTestEur)
+-		{
+-			if (!(stricmp(parms[current_parm], "-forcewindowed")))
+-				mForceWindowed=TRUE;
+-		}
++		// An explicit port window request must not require the separate screenshot-testing option.
++		// Recording tools and ordinary launcher arguments use this option without enabling -testeur.
++		if (!(stricmp(parms[current_parm], "-forcewindowed")))
++			mForceWindowed=TRUE;
+ 
+ 		current_parm++;
+ 	};

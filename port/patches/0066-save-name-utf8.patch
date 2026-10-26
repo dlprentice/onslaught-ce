@@ -1,0 +1,272 @@
+--- a/PCMemoryCard.cpp
++++ b/PCMemoryCard.cpp
+@@ -17,6 +17,22 @@
+ #define SAVE_PATTERN		"savegames\\*.bes"
+ #define SKIP_ATTRIBUTES		(_A_HIDDEN | _A_SYSTEM | _A_SUBDIR)
+ 
++// Port 0066: Windows filenames are UTF-8 at the native API boundary. Linux keeps its legacy byte namespace.
++#ifdef _WIN32
++extern "C" unsigned PortSavePathUtf8(const void *, char *, unsigned);
++extern "C" unsigned PortSaveNameUtf16(const char *, void *, unsigned);
++extern "C" unsigned PortSaveLookupUtf16(const void *, int *);
++extern "C" unsigned PortSaveReserveUtf8(const char *);
++#endif
++static inline BOOL PortSaveEntryOK(const char *filename)
++{
++#ifdef _WIN32
++	return PortSaveNameUtf16(filename, NULL, 0) == 0;
++#else
++	return TRUE;
++#endif
++}
++
+ static long					sFindHandle;			// 008898d8
+ static struct _finddata_t	sFindData;				// 008898e0
+ 
+@@ -30,7 +46,7 @@
+ 			_findclose(sFindHandle);
+ 			return FALSE;
+ 		}
+-	} while (sFindData.attrib & SKIP_ATTRIBUTES);
++	} while ((sFindData.attrib & SKIP_ATTRIBUTES) || !PortSaveEntryOK(sFindData.name));
+ 	return TRUE;
+ }
+ 
+@@ -39,7 +55,7 @@
+ 	sFindHandle = _findfirst(SAVE_PATTERN, &sFindData);
+ 	if (sFindHandle == -1)
+ 		return FALSE;
+-	if (sFindData.attrib & SKIP_ATTRIBUTES)
++	if ((sFindData.attrib & SKIP_ATTRIBUTES) || !PortSaveEntryOK(sFindData.name))
+ 		return NextSave();
+ 	return TRUE;
+ }
+@@ -84,7 +100,9 @@
+ 
+ int CPCMemoryCard::GetSaveName(int card,int save,WCHAR *name)	// FUNCTION: 0x00514a80
+ {
++#ifndef _WIN32
+ 	char	buffer[256];
++#endif
+ 
+ 	if (FirstSave())
+ 	{
+@@ -95,9 +113,20 @@
+ 				return 1;
+ 		}
+ 
++#ifdef _WIN32
++		// Every load also copies this name into the virtual keyboard's 32-unit buffer (FEPLoadGame.cpp).
++		if (DWORD error = PortSaveNameUtf16(sFindData.name, name, 32))
++		{
++			SetLastError(error);
++			_findclose(sFindHandle);
++			sFindHandle = -1;
++			return MCE_FAILURE;
++		}
++#else
+ 		strcpy(buffer, sFindData.name);
+ 		buffer[strlen(buffer) - 4] = 0;			// drop the extension
+ 		wcscpy(name, ToWCHAR(buffer));
++#endif
+ 
+ 		if (sFindHandle != -1)
+ 		{
+@@ -111,6 +140,37 @@
+ 
+ int CPCMemoryCard::CreateSave(int card,WCHAR *name,int *save,BOOL allowed_overwrite)	// FUNCTION: 0x00514be0
+ {
++#ifdef _WIN32
++	if (save) *save = -1;
++	char path[MAX_PATH];
++	DWORD error = PortSavePathUtf8(name, path, sizeof(path));
++	int index = -1;
++	if (!error) error = PortSaveLookupUtf16(name, &index);
++	if (error) { SetLastError(error); return MCE_FAILURE; }
++	if (index != -1)
++	{
++		if (save) *save = index;
++		// Admission reserves the existing slot, without opening or truncating its file. WriteSave owns writing.
++		return allowed_overwrite ? MCE_SUCCESS : MCE_FILEEXISTS;
++	}
++	_mkdir(SAVE_DIRECTORY);
++	error = PortSaveReserveUtf8(path); // CREATE_NEW: a file appearing after lookup is never overwritten here.
++	if (error)
++	{
++		if (error == 80 || error == 183) // ERROR_FILE_EXISTS / ERROR_ALREADY_EXISTS
++		{
++			DWORD lookupError = PortSaveLookupUtf16(name, &index);
++			if (!lookupError && index != -1) { if (save) *save = index; return MCE_FILEEXISTS; }
++			if (lookupError) error = lookupError;
++		}
++		SetLastError(error); return MCE_FAILURE;
++	}
++	error = PortSaveLookupUtf16(name, &index);
++	if (error || index == -1) { SetLastError(error ? error : 2); return MCE_FAILURE; }
++	if (save) *save = index;
++	return MCE_SUCCESS;
++#else
++
+ 	char	buffer[256];
+ 	char	path[MAX_PATH];
+ 	FILE	*f;
+@@ -165,15 +225,24 @@
+ 		}
+ 	}
+ 	return 1;
+-}
++#endif
++}
++
+ 
+ int CPCMemoryCard::DeleteSave(int card,int save,WCHAR *name)	// FUNCTION: 0x00514ec0
+ {
+ 	char	path[MAX_PATH];
+ 
++#ifdef _WIN32
++	if (DWORD error = PortSavePathUtf8(name, path, sizeof(path))) { SetLastError(error); return MCE_FAILURE; }
++	int admitted = -1;
++	DWORD lookupError = PortSaveLookupUtf16(name, &admitted);
++	if (lookupError || admitted == -1) { SetLastError(lookupError ? lookupError : 2); return MCE_FAILURE; }
++#else
+ 	strcpy(path, SAVE_DIRECTORY);
+ 	strcat(path, FromWCHAR(name));
+ 	strcat(path, SAVE_EXTENSION);
++#endif
+ 	return DeleteFile(path) ? MCE_SUCCESS : 1;
+ }
+ 
+@@ -181,9 +250,16 @@
+ {
+ 	char	path[MAX_PATH];
+ 
++#ifdef _WIN32
++	if (DWORD error = PortSavePathUtf8(name, path, sizeof(path))) { SetLastError(error); return MCE_FAILURE; }
++	int admitted = -1;
++	DWORD lookupError = PortSaveLookupUtf16(name, &admitted);
++	if (lookupError || admitted == -1) { SetLastError(lookupError ? lookupError : 2); return MCE_FAILURE; }
++#else
+ 	strcpy(path, SAVE_DIRECTORY);
+ 	strcat(path, FromWCHAR(name));
+ 	strcat(path, SAVE_EXTENSION);
++#endif
+ 	FILE *f = fopen(path, "wb");
+ 	if (f)
+ 	{
+@@ -201,9 +277,16 @@
+ {
+ 	char	path[MAX_PATH];
+ 
++#ifdef _WIN32
++	if (DWORD error = PortSavePathUtf8(name, path, sizeof(path))) { SetLastError(error); return MCE_FAILURE; }
++	int admitted = -1;
++	DWORD lookupError = PortSaveLookupUtf16(name, &admitted);
++	if (lookupError || admitted == -1) { SetLastError(lookupError ? lookupError : 2); return MCE_FAILURE; }
++#else
+ 	strcpy(path, SAVE_DIRECTORY);
+ 	strcat(path, FromWCHAR(name));
+ 	strcat(path, SAVE_EXTENSION);
++#endif
+ 	FILE *f = fopen(path, "rb");
+ 	if (f)
+ 	{
+--- a/FEPSaveGame.cpp
++++ b/FEPSaveGame.cpp
+@@ -11,3 +11,9 @@
++#if defined(_WIN32) && TARGET == PC
++extern "C" int PortSaveNamesEqual(const void *, const void *);
++extern "C" unsigned PortSaveApproveOverwrite(const void *, const void *);
++extern "C" int PortSaveConsumeOverwrite(const void *);
++extern "C" void PortSaveClearOverwrite();
++#endif
+ char			gSaveFromOptions = 0;			// 006799d0: set by CFEPOptions::SaveDefaultOptions; CreateSave shows text 0xd6
+ //*********************************************************************************
+ 
+@@ -62,6 +68,9 @@
+ 		break;
+ 
+ 	case BUTTON_FRONTEND_MENU_BACK:
++#if defined(_WIN32) && TARGET == PC
++		PortSaveClearOverwrite();
++#endif
+ 		FRONTEND.PlaySound(FES_BACK);
+ 		FRONTEND.SetPage(FEP_MAIN, 0);
+ 		break;
+@@ -94,6 +103,24 @@
+ 			switch (FEMESSBOX.GetFinalChoice())
+ 			{
+ 			case FEMB_YES:
++#if defined(_WIN32) && TARGET == PC
++				// The explicit overwrite approval belongs only to this immediate retry and name.
++				// Do not delete the old career: subsequent admission can still fail before WriteSave starts.
++				if (mExistingSave == -1 || PortSaveApproveOverwrite(mSaveGameName, mExistingSaveName))
++				{
++					PortSaveClearOverwrite();
++					mExistingSave = -1; mExistingSaveName[0] = 0;
++					FRONTEND.SetSaveMode(TRUE);
++					FRONTEND.SetPage(FEP_VIRTUAL_KEYBOARD, 20);
++					FEMESSBOX.Kill();
++					FEMESSBOX.Create(320.f, 240.f, 400, FO(100), Localization_GetStringById(0x76), PLATFORM.Font(FONT_SMALL), 0, 10, FALSE, FEMB_OPTION_A_CONTINUE, FALSE);
++					FEMESSBOX.SetOnDismiss(FEP_VIRTUAL_KEYBOARD, 0);
++					break;
++				}
++				mExistingSave = -1; mExistingSaveName[0] = 0;
++				CreateSave();
++				break;
++#else
+ 				// Well, so much for that savegame! Delete it and try saving again.
+ 
+ 				if (mExistingSave!=-1)
+@@ -128,7 +155,12 @@
+ 				CreateSave();
+ 				break;
+ 
++#endif
++
+ 			case FEMB_NO:
++#if defined(_WIN32) && TARGET == PC
++				PortSaveClearOverwrite();
++#endif
+ 				// Go back to choosing a save game name.
+ 				mExistingSave=-1;
+ 				mExistingSaveName[0] = 0;
+@@ -326,6 +358,10 @@
+ 
+ void	CFEPSaveGame::CreateSave()	// FUNCTION: 0x00464c50
+ {
++#if defined(_WIN32) && TARGET == PC
++	// Consume before any early return, including card/format/space failures.
++	bool approved_overwrite = PortSaveConsumeOverwrite(mSaveGameName) != 0;
++#endif
+ 	ASSERT(mSaveGameName[0]);
+ 
+ 	BOOL present,formatted;
+@@ -384,6 +420,10 @@
+ 		allowed_overwrite = FALSE;
+ 	}
+ 
++#if defined(_WIN32) && TARGET == PC
++	allowed_overwrite = allowed_overwrite || approved_overwrite;
++#endif
++
+ 	// Check for available space (again)
+ 
+ 	int savesize;
+@@ -413,9 +453,17 @@
+ 	{
+ 		WCHAR savename[256];
+ 
++#if defined(_WIN32) && TARGET == PC
++		if (MEMORYCARD.GetSaveName(FRONTEND.GetMemoryCardNumber(),i,savename) != MCE_SUCCESS) continue;
++#else
+ 		MEMORYCARD.GetSaveName(FRONTEND.GetMemoryCardNumber(),i,savename);
++#endif
+ 			
++#if defined(_WIN32) && TARGET == PC
++		if (PortSaveNamesEqual(mSaveGameName, savename) == 1)
++#else
+ 		if (_wcsicmp(mSaveGameName,savename)==0)	// retail: 00464ee6 calls _wcsicmp (005d04ec)
++#endif
+ 		{
+ 			savenumber=i;
+ 		}
