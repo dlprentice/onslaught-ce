@@ -1,6 +1,6 @@
 # Onslaught CE
 
-Status: preview — released launcher safety warning
+Status: preview — 0.1.7 corrective release; launchers 0.1.0–0.1.6 must not be run
 Last updated: 2026-10-27
 Summary: the native Battle Engine Aquila port, the affected-launcher safety hold, manual migration and source build.
 
@@ -16,15 +16,15 @@ directory link can also lead cleanup into its target. Windows link behavior has 
 **Disabling update checks does not disable this cleanup.** Do not start an affected launcher to update it,
 check its version, or try different update flags. Keep the old program folder, user data and all neighboring
 backup/staging paths untouched. Read the [manual migration steps](#manual-migration-from-affected-launchers)
-before installing a replacement. Use only a published successor whose release notes explicitly address this
-cleanup hazard; development changes and a higher version number alone do not establish that result.
+before installing a replacement. **0.1.7 is the corrected release:** its launcher removes no neighboring paths and
+its automatic updating is suspended. Install it by hand into a new empty folder, as the migration steps describe.
 
 ## Quick start
 
-These steps apply only to a published successor that addresses the safety warning above. Existing users should
+These steps apply to 0.1.7 or a later release whose notes address the safety warning above. Existing users should
 follow the manual migration first.
 
-1. Choose that release's package for your system from the [Releases page](https://github.com/dlprentice/onslaught-ce/releases).
+1. Choose the package for your system from the [Releases page](https://github.com/dlprentice/onslaught-ce/releases).
    Extract it into a **new, empty, ordinary folder**, separate from the original game and every old CE folder.
 2. Run `onslaught-ce` (Linux) or `onslaught-ce.exe` (Windows).
 3. It finds your Steam copy of *Battle Engine Aquila* by itself, or asks once where it is.
@@ -99,8 +99,8 @@ refused, please [open an issue](https://github.com/dlprentice/onslaught-ce/issue
 
 ## Download and install
 
-Read the [launcher safety warning](#launcher-safety-warning) first. Download only a published successor whose
-release notes explicitly address it, from this repository's [Releases](https://github.com/dlprentice/onslaught-ce/releases) page.
+Read the [launcher safety warning](#launcher-safety-warning) first. Download 0.1.7 or a later release whose notes
+address it, from this repository's [Releases](https://github.com/dlprentice/onslaught-ce/releases) page.
 
 ### Verify a download (optional)
 
@@ -227,8 +227,7 @@ report any problems; see Known limitations and the release notes for the routes 
    program and staging folders, and set `BEA_USER_DIR` to its absolute path for the successor. Preserve any separately
    located launcher settings and logs as well; do not assume copying the game folder restores them. Do not put saves
    into the new program folder.
-5. **Wait for a published successor whose release notes explicitly address this cleanup hazard.** Download its
-   platform package and `ASSETS.txt` from that specific release, and [verify the package](#verify-a-download-optional).
+5. Download the **0.1.7** (or later corrected) platform package and `ASSETS.txt` from that specific release, and [verify the package](#verify-a-download-optional).
    Do not use 0.1.6 as an intermediate upgrade, and do not use an old launcher's automatic update path.
 6. Extract the successor into a **new, empty folder writable by your account**, with no directory links/junctions
    in its path, separate from the original game and all old CE folders. Do not merge old executables or DLLs into it.
@@ -245,7 +244,7 @@ Automatic update checks and installation are temporarily disabled in this source
 update requests or downloads, and the Manual updates menu gives guidance instead of checking for a release.
 `--update-only` prints guidance and exits with status 2 without starting the game or checking whether the version is
 current. The legacy `--apply` command is refused. Keep affected released launchers closed; use the
-[manual migration](#manual-migration-from-affected-launchers) when a corrected successor is published.
+[manual migration](#manual-migration-from-affected-launchers) to move to 0.1.7.
 
 There is no telemetry. **Report a problem** is a user-initiated action: it opens a GitHub page in your browser with
 your version and OS in its address; nothing is posted until you submit it.
@@ -331,7 +330,7 @@ of the tutorial (through its third zone; the final drone fight is still being co
 ## Known limitations
 
 - Released launchers 0.1.0–0.1.6 contain the [startup cleanup hazard](#launcher-safety-warning); do not run them.
-  Follow the [manual migration](#manual-migration-from-affected-launchers) when a corrected successor is published.
+  Follow the [manual migration](#manual-migration-from-affected-launchers) to install 0.1.7, the corrected release.
   Windows 0.1.5 also has an update-helper startup failure. Neither disabling updates nor installing 0.1.6 solves the cleanup risk.
 - Windows checks cover Wine and one Windows 11 virtual machine using Microsoft's software renderer, not a PC with
   a real graphics card. During the 0.1.3 release checks, that VM updated 0.1.2 to 0.1.3, restarted, and the installed

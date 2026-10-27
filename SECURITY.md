@@ -24,5 +24,5 @@ Nothing else leaves your machine: no identifiers, no telemetry.
 
 ## Supported versions
 
-Fixes target the latest release. Await a published successor whose release notes explicitly address the launcher
-cleanup hazard before migrating from an affected version.
+Fixes target the latest release. 0.1.7 addresses the launcher cleanup hazard; migrate to it by hand from an affected
+version, following the [manual migration](README.md#manual-migration-from-affected-launchers).
