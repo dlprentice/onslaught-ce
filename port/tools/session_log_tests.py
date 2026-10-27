@@ -57,7 +57,18 @@ void SDL_LockMutex(void *) { ++mixer_locks; }
 void SDL_UnlockMutex(void *) { ++mixer_unlocks; }
 bool SDL_PutAudioStreamData(SDL_AudioStream *, const void *, int) { ++submitted; return !submission_failed; }
 const char *SDL_GetError() { ++error_reads; return "submission failure\nline must stay whole"; }
-struct Mixer { void *lock; void Mix(Sint16 *, int frames) { mixed += frames; } } gMixer;
+struct Mixer {
+    void *lock;
+    void Mix(Sint16 *, int frames) { ::mixed += frames; }   // the test's counter, not the member below
+    // dsound.cpp's media-mix counters (patch 0087) that Feed reads; media observation stays off here.
+    Uint64 mixed = 0, streamGeneration = 0, callbackFrames = 0, queueSamples = 0, queueFailures = 0, queueAtMixed = 0;
+    Uint64 queueGeneration = 0, retiredQueueObservations = 0;
+    unsigned callbackMaxFrames = 0;
+    int queueLastBytes = -1, queueMaxBytes = -1;
+    bool mediaStreamActive = false, generationExhausted = false;
+    SDL_AudioStream *stream = nullptr;
+} gMixer;
+int SDL_GetAudioStreamQueued(SDL_AudioStream *) { return 0; }
 @FEED@
 const int MAX_PLAYERS = 4, GAME_STATE_PRE_RUNNING = 1, GAME_STATE_LEVEL_WON = 5;
 struct FVector { float X, Y, Z; };

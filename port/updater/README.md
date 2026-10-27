@@ -2,11 +2,11 @@
 
 Status: active (public builds only)
 Last updated: 2026-10-27
-Summary: game discovery and bounded logs, with automatic updating suspended and manual migration guidance.
+Summary: game discovery and bounded logs, and the signed v2 updater (UPDATER-V2.md) that replaces the suspended one.
 
 `ce_launch.c` builds as `onslaught-ce-launch` (Linux, started by the `onslaught-ce` script after game preflight when needed) and
-`onslaught-ce.exe` (Windows), from `build.py --public`. It links SDL3 (its dialogs) and Monocypher (Ed25519, pinned in
-`deps.lock`, unused while automatic updating is suspended); `sha256.c` is its SHA-256. `ce_report.h` (header only, C
+`onslaught-ce.exe` (Windows), from `build.py --public`. It links SDL3 (its dialogs), Monocypher (Ed25519, pinned in
+`deps.lock`), zlib (unpacking) and on Windows WinHTTP; `sha256.c` is its SHA-256. `ce_report.h` (header only, C
 and C++) is what the launcher and the game share for "Report a problem".
 
 ## Finding the game
@@ -18,25 +18,20 @@ picker. A folder counts as a supported install when the game data hashed in `con
 answer is kept in `ce.ini`. The game folder is only read: the writable folder is per user (Linux
 `~/.local/share/onslaught-ce`, Windows `%APPDATA%\Onslaught CE`; `BEA_USER_DIR` overrides) and holds `ce.ini`.
 
-## Manual updates
+## Updates
 
-Automatic update checking and installation are temporarily disabled. The launcher does not fetch `latest.json` or
-its signature, create an update cache, download/unpack an archive, rename an installation or clean neighboring
-folders. `update_check`, `BEA_NO_UPDATE_CHECK`, `BEA_UPDATE_FEED` and `BEA_UPDATE_ANSWER` do not enable those operations.
-`--no-update-check` remains accepted for command-line compatibility.
+The launcher checks a signed `ce-update-v2.json` feed (never the old `latest.json`), asks before installing, unpacks
+a new version into `versions/` inside its own folder and switches to it with one atomic state-file replacement; the
+folder's own files and everything beside it are never touched, and nothing is deleted by name pattern. `--update-only`
+checks now without starting the game, `--rollback` returns to the previous version, `BEA_NO_UPDATE_CHECK=1`,
+`update_check=0` in `ce.ini` or `--no-update-check` turn checking off, and `--apply` is refused with 2. The design,
+exit statuses and tests are in [UPDATER-V2.md](UPDATER-V2.md); no v2 feed is published yet.
 
-`--update-only` prints manual-download guidance and exits **2**, before opening settings, logs or caches. That status
-means updating is disabled; it does **not** mean the installed version is current. The historical `--apply` entry
-point also refuses with exit 2 before accessing installation, user or update paths. `--version` still prints the version and exits 0 without
-initializing a user folder. None of these commands starts a game or opens a browser.
-
-Download an explicitly corrected release from <https://github.com/dlprentice/onslaught-ce/releases> and extract it
-into a **new empty folder**. Preserve the whole previous installation, its neighboring backup/staging folders and
-its user data. A relative `BEA_USER_DIR` can put launcher files and game user data in different locations. Identify and
-preserve both complete folders and verify independent backups, including careers. Use a separate working copy of the
-identified game user-data folder outside the original game and old CE program/staging folders; set `BEA_USER_DIR` to
-its absolute path, check careers after migration and keep the originals and backups. Do not merge unclear or conflicting files. See
-[the port guide](../README.md) and its linked player steps for the migration warning.
+Moving from 0.1.0–0.1.6 stays manual: download a corrected release and extract it into a **new empty folder**.
+Preserve the whole previous installation, its neighboring backup/staging folders and its user data. A relative
+`BEA_USER_DIR` can put launcher files and game user data in different locations. Identify and preserve both complete
+folders and verify independent backups, including careers. See [the port guide](../README.md) and its linked player
+steps for the migration warning.
 
 ### Older launchers are not repaired by a new download
 
@@ -131,9 +126,8 @@ paths for `--update-only` and `--apply`, side-effect-free `--version`, and ordin
 calls. It neither starts a game nor establishes native Windows behavior.
 
 `tests/launcher_stdio_driver.c` exercises the actual Windows launcher with redirected pipes, files and a mixed
-console/pipe setup, both with and without a parent console. It checks `--version` and the disabled `--update-only`
-response while an invalid private settings path remains unopened, so no game, network request or player profile is
-needed. Build the driver with the pinned Windows
+console/pipe setup, both with and without a parent console. It checks `--version` and the `--apply` refusal on stderr
+while an invalid private settings path remains unopened, so no game, network request or player profile is needed. Build the driver with the pinned Windows
 toolchain and run it beside the candidate's dependencies:
 
     i686-w64-mingw32-clang -std=c11 -Wall -Wextra -Werror port/updater/tests/launcher_stdio_driver.c -o launcher_stdio_driver.exe
@@ -144,12 +138,10 @@ allocates its own console, so automated checks belong in an isolated test deskto
 
 ## Releasing
 
-While automatic updating is suspended, a release is **manual-only**: `build.py --target all --public --ce-version
-X.Y`, then `tools/package.py X.Y`. Upload the two packages, their stable-name copies, the FFmpeg source tarball,
-`ASSETS.txt` and `RC-REPORT.txt`. **Do not upload `latest.json` or `latest.json.sig`, and do not run
-`tools/sign_release.py` for a release:** launchers 0.1.0–0.1.6 fetch `releases/latest/download/latest.json` and would
-offer an installable signed feed through their unsafe in-place route. The private key stays outside every
-repository; only its public half is in `ce_launch.c`.
-
-These packaging/signing tools remain available, but this launcher does not consume the feed. Release and migration
-validation must use the manual route above; a historic automatic-update receipt does not validate this suspended updater.
+`build.py --target all --public --ce-version X.Y`, then `tools/package.py X.Y` (it refuses an updater test build).
+Upload the two packages, their stable-name copies, the FFmpeg source tarball, `ASSETS.txt` and `RC-REPORT.txt`.
+**Never upload `latest.json` or `latest.json.sig`:** launchers 0.1.0–0.1.6 fetch
+`releases/latest/download/latest.json` and would offer it through their unsafe in-place route; `tools/sign_release.py`
+is retired. The v2 feed (`tools/sign_update_v2.py`, attached as `ce-update-v2.json` and `.sig`) turns updating on
+for 0.1.8+ players and is published only on the maintainer's explicit decision (UPDATER-V2.md, "Publishing"). The private key
+stays outside every repository; only its public half is in `ce_launch.c`.

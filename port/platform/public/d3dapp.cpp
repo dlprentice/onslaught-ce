@@ -19,6 +19,10 @@
 extern CTweakSLONG SCREEN_SHAPE, TEXTURE_RES_LOSS_SHIFT, TEXTURE_ALLOW_32_BIT;
 void LoadCardId(char *filename);
 HRESULT D3DUtil_SetDeviceCursor(LPDIRECT3DDEVICE9 device, HCURSOR cursor);
+#ifdef CE_VERSION
+extern "C" int CE_DisplayModeUseSavedSize();
+int PortWideStartSizeOnDesktop(unsigned, unsigned, int, unsigned, unsigned, unsigned *, unsigned *);
+#endif
 
 CTweakSLONG ALLOW_WIDESCREEN_MODES("ALLOW_WIDESCREEN_MODES", 0);
 CTweakSLONG COPY_NOT_FLIP("COPY_NOT_FLIP", 0);
@@ -276,7 +280,43 @@ HRESULT CD3DApplication::Create(HINSTANCE instance)
         wc.lpszClassName = TEXT("BEA");
         RegisterClass(&wc);
         m_dwWindowStyle = WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME | WS_MINIMIZEBOX | WS_VISIBLE;
-        RECT size = {0, 0, static_cast<LONG>(m_dwCreationWidth), static_cast<LONG>(m_dwCreationHeight)};
+        DWORD width = m_dwCreationWidth, height = m_dwCreationHeight;
+#ifdef CE_VERSION
+        if (m_bWindowed && !CLIPARAMS.mResWidth && CE_DisplayModeUseSavedSize())
+        {
+            // Use this adapter's desktop for a missing/unavailable saved mode: before window creation, the SDL
+            // primary display queried by the ordinary wide default can be a different monitor.
+            D3DDeviceInfo *device = GetCurrentDevice();
+            if (device && device->dwCurrentMode < device->dwNumModes)
+            {
+                const D3DModeInfo &mode = device->modes[device->dwCurrentMode];
+                if (ClientSize(mode.Width, mode.Height)) { width = mode.Width; height = mode.Height; }
+                WindowModeState *state = CurrentWindowState(*this);
+                if (state)
+                {
+                    const D3DDISPLAYMODE &desktop = m_Adapters[m_dwAdapter].d3ddmDesktop;
+                    unsigned w = gDisplayModeKey.mWidth, h = gDisplayModeKey.mHeight, wideW = 0, wideH = 0;
+                    bool wideChoice = PortWideStartSizeOnDesktop(w, h, gDisplayModeKey.m32Bit, desktop.Width,
+                                                                desktop.Height, &wideW, &wideH) != 0;
+                    if (wideChoice) { w = wideW; h = wideH; }
+                    if (wideChoice || w)
+                    {
+                        // Window-only devices can use any in-bounds client size. Otherwise a saved size must be
+                        // listed, while the validated desktop format permits its own client even if it is not listed.
+                        bool listed = state->only || (w == desktop.Width && h == desktop.Height);
+                        for (DWORD i = 0; !listed && i < device->dwNumModes; ++i)
+                            if (device->modes[i].Width == w && device->modes[i].Height == h &&
+                                (wideChoice || Colour32(device->modes[i].Format) == (gDisplayModeKey.m32Bit != 0)))
+                                listed = true;
+                        if (!listed || !ClientSize(w, h) || w > desktop.Width || h > desktop.Height)
+                        { w = desktop.Width; h = desktop.Height; }
+                        if (ClientSize(w, h)) { width = w; height = h; }
+                    }
+                }
+            }
+        }
+#endif
+        RECT size = {0, 0, static_cast<LONG>(width), static_cast<LONG>(height)};
         AdjustWindowRect(&size, m_dwWindowStyle, TRUE);
         m_hWnd = CreateWindow(wc.lpszClassName, m_strWindowTitle, m_dwWindowStyle, CW_USEDEFAULT, CW_USEDEFAULT,
                              size.right - size.left, size.bottom - size.top, NULL,

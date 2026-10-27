@@ -3,7 +3,7 @@
 # port/dsound: DirectSound 8 over SDL3 audio
 
 Status: active (mixing, notifications and DirectSound 3D in place; nobody has listened to the result yet)
-Last updated: 2026-10-23 (the record-mode audio monitor)
+Last updated: 2026-10-27 (bounded ordinary media-mix observations)
 Summary: what the game's sound code needs from DirectSound, how this module provides it, and how it is checked.
 
 Replaces port/platform/common/dsound.cpp (the platform's silent form; `build.py` drops it when this directory
@@ -40,6 +40,34 @@ over each mix to avoid clicks.
 the port's calls and retail's can be compared after both pass through C's dsnorm.py. `BEA_AUDIO_RECORD=file.wav` writes the final mix (the header is kept valid about once a second, so an interrupted run
 leaves a playable file). `BEA_AUDIO_CLOCK=timer` mixes on a 10 ms timer without opening a device, which is also the
 fallback when no device opens; offscreen and test runs use it so nothing plays through the desktop's speakers.
+
+## Ordinary session observations
+
+Ordinary CE logs distinguish outstanding media requests from frames actually mixed from explicitly tagged music
+and film buffers. A stopped or naturally ended film no longer contributes active-role frames even if its handle
+has not closed. These counters include silent or muted buffers: they do not establish audible two-track content.
+The shared-role frame count is music plus film; it does not count two music voices separately or observe other
+processes. A voice-count snapshot describes only the instant at which it was taken.
+Each buffer has a process-local serial; no audio payload, media name, microphone input or user identifier is added.
+
+The callback updates fixed counters for requested mix frames and samples its own SDL input queue outside the mixer
+mutex. A stream-lifetime join rejects an observation from a retired or reused stream. Negative queue results stay
+unknown. Queue bytes use the 44.1 kHz, stereo S16 input format; converted audio, Windows/device buffering and physical
+playback remain unobserved. Play, Stop and device teardown report snapshots through the existing bounded session-log
+budget. Once that ordinary budget is exhausted, even the device-stop media snapshot may be absent; the final
+session summary does not contain these frame counters, so an absent snapshot cannot establish that overlap did not
+occur. These observations add no callback allocation, formatting or file I/O. The existing callback does allocate
+its PCM buffer and can grow mixer scratch storage. Faithful, replay, recording and private routes keep these
+observations disabled.
+
+`python3 port/tools/audio_media_tests.py` couples the complete mixer and music worker with the actual Bink
+buffer-creation, first-play and cleanup bodies. Authored PCM and controlled SDL/decoder boundaries distinguish
+real active-role overlap, an ended-but-unclosed film, a sequential queued tail, mute, stream reuse and failed queue
+queries. Before/after PCM equality and causal mutations check the observation layer. This is not a decoder-fidelity,
+Windows runtime, device-quality or reporter-reproduction result.
+
+`python3 port/tools/audio_media_race_tests.py` uses ThreadSanitizer and controlled SDL boundaries to interleave a
+snapshot with stream teardown. It also checks a mutant that restores the unlocked stream-pointer read.
 
 ## Checks
 

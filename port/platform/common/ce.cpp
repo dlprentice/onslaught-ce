@@ -105,13 +105,49 @@ static void ce_ini_path(char *out, size_t n)
 #endif
 }
 
+// Open only an ordinary settings file under a checked directory. In particular, a FIFO must not block startup, and
+// neither a final link nor a linked parent may redirect reads. Keep Windows parent handles until the read is finished.
+static FILE *ce_ini_open_regular(CeSettingsDir *dir)
+{
+	char user[4096];
+	ce_user_dir(user, sizeof(user));
+	if (!ce_settings_dir_open(user, 0, dir)) return NULL;
+	int input = -1;
+#ifdef _WIN32
+	char path[4500];
+	int path_len = snprintf(path, sizeof(path), "%s\\ce.ini", dir->path);
+	HANDLE in = path_len >= 0 && (size_t)path_len < sizeof(path) ?
+		CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, NULL) :
+		INVALID_HANDLE_VALUE;
+	if (in != INVALID_HANDLE_VALUE)
+	{
+		BY_HANDLE_FILE_INFORMATION info;
+		if (GetFileType(in) == FILE_TYPE_DISK && GetFileInformationByHandle(in, &info) &&
+			!(info.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)))
+			input = _open_osfhandle((intptr_t)in, _O_RDONLY | _O_BINARY);
+		if (input < 0) CloseHandle(in);
+	}
+	FILE *f = input >= 0 ? _fdopen(input, "rb") : NULL;
+	if (!f && input >= 0) _close(input);
+#else
+	input = openat(dir->fd, "ce.ini", O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC);
+	if (input >= 0)
+	{
+		struct stat st;
+		if (fstat(input, &st) != 0 || !S_ISREG(st.st_mode)) { close(input); input = -1; }
+	}
+	FILE *f = input >= 0 ? fdopen(input, "rb") : NULL;
+	if (!f && input >= 0) close(input);
+#endif
+	if (!f) ce_settings_dir_close(dir);
+	return f;
+}
+
 static char *ce_ini_read()
 {
-	char path[4200];
-	ce_ini_path(path, sizeof(path));
-	FILE *f = fopen(path, "rb");
-	if (!f)
-		return NULL;
+	CeSettingsDir dir;
+	FILE *f = ce_ini_open_regular(&dir);
+	if (!f) return NULL;
 	char *t = NULL;
 	size_t len = 0, cap = 0, got;
 	char buf[4096];
@@ -130,6 +166,7 @@ static char *ce_ini_read()
 		t[len] = 0;
 	}
 	fclose(f);
+	ce_settings_dir_close(&dir);
 	return t;
 }
 
@@ -149,6 +186,47 @@ extern "C" int CE_SettingGet(const char *key, int def)
 		}
 	free(t);
 	return v;
+}
+
+// A boolean preference must be the complete value 0 or 1. Scan by length, not as a C string: unrelated lines may
+// contain arbitrary bytes, including NUL. Ambiguous duplicates or an incomplete read keep the caller's default.
+extern "C" int CE_SettingGetBool(const char *key, int def)
+{
+	if (!key || !*key) return def;
+	CeSettingsDir dir;
+	FILE *f = ce_ini_open_regular(&dir);
+	if (!f) return def;
+	const size_t limit = 1u << 20;
+	char *text = (char *)malloc(limit + 1);
+	if (!text) { fclose(f); ce_settings_dir_close(&dir); return def; }
+	size_t len = 0, got;
+	while (len < limit + 1 && (got = fread(text + len, 1, limit + 1 - len, f)) > 0) len += got;
+	bool bad = ferror(f) || !feof(f) || len > limit;
+	if (fclose(f) != 0) bad = true;
+	ce_settings_dir_close(&dir);
+	if (bad) { free(text); return def; }
+	size_t size = strlen(key);
+	int value = def;
+	bool seen = false;
+	for (size_t at = 0; at < len;)
+	{
+		const char *line = text + at;
+		const char *nl = (const char *)memchr(line, '\n', len - at);
+		size_t n = nl ? (size_t)(nl - line) : len - at;
+		at += n + (nl ? 1 : 0);
+		if (n <= size || memcmp(line, key, size) || line[size] != '=') continue;
+		if (seen) { value = def; break; }
+		seen = true;
+		size_t pos = size + 1;
+		while (pos < n && (line[pos] == ' ' || line[pos] == '\t')) ++pos;
+		if (pos == n || (line[pos] != '0' && line[pos] != '1')) { value = def; continue; }
+		int parsed = line[pos++] - '0';
+		while (pos < n && (line[pos] == ' ' || line[pos] == '\t')) ++pos;
+		if (pos < n && line[pos] == '\r') ++pos;
+		value = pos == n ? parsed : def;
+	}
+	free(text);
+	return value;
 }
 
 // Sets key=value in ce.ini (replacing its line, or adding one) through ce_ini_write's write-and-rename, so a failed write

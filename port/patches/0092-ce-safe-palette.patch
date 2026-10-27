@@ -1,0 +1,111 @@
+--- a/ltshell.cpp
++++ b/ltshell.cpp
+@@ -31,6 +31,15 @@
+ #include	"tweak.h"
+ #include	"DebugLog.h"
+ #include	"DXMemoryManager.h"
++
++#ifdef CE_VERSION
++void PortCePaletteCheck();
++void PortCePaletteClose();
++bool PortCePaletteOpen(unsigned key, bool repeat);
++bool PortCePaletteSuppressDown(unsigned key);
++bool PortCePaletteRelease(unsigned key);
++bool PortCePaletteSuppressChar(unsigned key);
++#endif
+ 
+ #if defined(CE_VERSION)
+ bool PortCeLayer();
+@@ -1294,6 +1303,11 @@
+     if( WM_COMMAND == uMsg && LOWORD(wParam) == IDM_ABOUT )
+         return 0;
+ 
++#ifdef CE_VERSION
++	if (uMsg == WM_ACTIVATEAPP && !wParam) PortCePaletteClose();
++	else PortCePaletteCheck();
++#endif
++
+ 	// retail: keys are recorded by scan code, extended keys above 0x80
+ 	BYTE	key = (BYTE)(lParam >> 16);
+ 	if (lParam & 0x1000000)
+@@ -1305,6 +1319,11 @@
+ 		if (!CLIPARAMS.mAutoConfigTest)
+ 		{
+ 			gKeyPressed = true;
++#ifdef CE_VERSION
++			if (PortCePaletteSuppressDown(key)) {}
++			else if (PortCePaletteOpen(key, (lParam & 0x40000000) != 0)) {}
++			else
++#endif
+ 			if (mCurrentKeytrap)
+ 			{
+ 				mCurrentKeytrap(key,KEY_EVENT_DOWN);
+@@ -1323,6 +1342,10 @@
+     {
+ 		if (!CLIPARAMS.mAutoConfigTest)
+ 		{
++#ifdef CE_VERSION
++			if (PortCePaletteRelease(key)) {}
++			else
++#endif
+ 			if (mCurrentKeytrap)
+ 			{
+ 				mCurrentKeytrap(key,KEY_EVENT_UP);
+@@ -1346,6 +1369,10 @@
+     {
+ 		if (!CLIPARAMS.mAutoConfigTest)
+ 		{
++#ifdef CE_VERSION
++			if (PortCePaletteSuppressChar(key)) {}
++			else
++#endif
+ 			if (mCurrentKeytrap)
+ 			{
+ 				gCharScanCode = key;
+--- a/game.cpp
++++ b/game.cpp
+@@ -76,6 +76,9 @@
+ #define GAME_COUNT_WHEN_WON 5.0f ;
+ 
+ extern SINT	performing_stress_test;
++#ifdef CE_VERSION
++void PortCePaletteClose();
++#endif
+ 
+ //******************************************************************************************
+ // Console commands
+@@ -532,6 +535,9 @@
+ {	
+ #ifdef CE_VERSION
+ 	PortSessionLog(PORT_SESSION_GAME, false, "leave level=%d phase=%d quit=%d", mCurrentLevel, (int)mGameState, (int)mQuit);
++#endif
++#ifdef CE_VERSION
++	PortCePaletteClose();
+ #endif
+ 	extern bool pause_for_showing_controls;
+ 	if (mQuit == QT_RESTART_LEVEL && PLAYABLE_DEMO)
+--- a/DXEngine.cpp
++++ b/DXEngine.cpp
+@@ -1084,6 +1084,9 @@
+ bool crazy = false;		// 0089d688
+ 
+ extern bool	gInFrontEnd;			// 00679b40, defined in FrontEnd.cpp
++#ifdef CE_VERSION
++void PortCePaletteRender();
++#endif
+ 
+ HRESULT	CDXEngine::PostRender(CViewport *viewport)	// FUNCTION: 0x0053ecc0
+ {
+@@ -1208,7 +1211,12 @@
+ 
+ 	// Draw the interface (help, pause menu, etc)
+ 	if (!gMirrorPass)		// retail PC (0053efc4)
++	{
+ 		GAMEINTERFACE.Render();
++#ifdef CE_VERSION
++		PortCePaletteRender();
++#endif
++	}
+ 
+ 	PLATFORM.EndScene();
+ 

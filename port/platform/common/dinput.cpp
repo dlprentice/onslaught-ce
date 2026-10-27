@@ -576,3 +576,17 @@ void PortMouseKeepRelative()
 	if (logged++ < 5 && PortDevLog())
 		fprintf(stderr, PORT_LOG_PREFIX "input: relative mouse mode was off; re-enabled: %s\n", ok ? "yes" : SDL_GetError());
 }
+
+#ifdef CE_VERSION
+// The physical key whose state the game reads as DirectInput key code dik (the first scancode DikFor maps to it), or
+// SDL_SCANCODE_UNKNOWN. CE help uses it to name a key binding in the current keyboard layout (ce_tutorial_keys.cpp).
+SDL_Scancode PortScancodeForDik(int dik)
+{
+	if (dik <= 0 || dik > 0xff)
+		return SDL_SCANCODE_UNKNOWN;
+	for (int s = 1; s < SDL_SCANCODE_COUNT; ++s)
+		if (DikFor((SDL_Scancode)s) == dik)
+			return (SDL_Scancode)s;
+	return SDL_SCANCODE_UNKNOWN;
+}
+#endif

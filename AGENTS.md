@@ -7,7 +7,8 @@ the maintainers (`CONTRIBUTING.md`).
 - Licence: GPL-3.0-only (`COPYING`, `REUSE.toml`); third-party components keep their own licences (`THIRD-PARTY.md`).
 - Never add the game's files or anything derived from them (executables, data, saves, captures, byte dumps).
 - `src/` files keep their line counts: the game's build depends on them.
-- Automatic update checks and installation are temporarily disabled; the launcher makes no automatic update requests.
+- The launcher checks a signed `ce-update-v2.json` feed at start (unless turned off) and asks before installing
+  (`port/updater/UPDATER-V2.md`); never publish a `latest.json` feed.
   Report a problem opens a GitHub page in the user's browser with their version and OS in its address; nothing is
   posted until they submit it. The program has no telemetry.
 - Build: `README.md`, "Building from source".

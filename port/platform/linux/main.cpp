@@ -17,7 +17,7 @@ int main(int argc, char **argv)
 #ifdef CE_VERSION
 	if (argc > 1 && !strcmp(argv[1], "--version"))	// public builds (build.py --public --ce-version)
 	{
-		printf("Onslaught CE v%s\n", CE_VERSION);
+		printf("Onslaught CE V%s\n", CE_VERSION);
 		return 0;
 	}
 #endif

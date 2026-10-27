@@ -1,0 +1,11 @@
+--- a/PCMusicStream.cpp
++++ b/PCMusicStream.cpp
+@@ -316,6 +316,8 @@
+ 
+ 		HRESULT portCreate = SOUND.GetDirectSound()->CreateSoundBuffer(&desc, &sBuffer, NULL);
+ #ifdef CE_VERSION
++		if (sBuffer && PortSessionEnabled() && !PortAudioMediaRole(sBuffer, PORT_SESSION_MUSIC))
++			PortSessionLog(PORT_SESSION_MUSIC, true, "stream media role assignment refused");
+ 		PortSessionLog(PORT_SESSION_MUSIC, FAILED(portCreate) || !sBuffer, "stream buffer init result=%08lx available=%d bytes=%u", (unsigned long)portCreate, sBuffer ? 1 : 0, STREAM_BUFFER_SIZE);
+ #endif
+ #ifdef CE_VERSION

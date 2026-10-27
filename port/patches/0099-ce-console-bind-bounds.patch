@@ -1,0 +1,49 @@
+--- a/console.cpp
++++ b/console.cpp
+@@ -390,6 +390,28 @@
+ 	Print("\n");
+ }
+ 
++#ifdef CE_VERSION
++// CE player input uses the full virtual-key byte; the faithful path below keeps retail's signed index. Like the CE
++// command palette, the full byte never applies to a tape, recording, probe, virtual-clock, pilot or network run, even
++// when BEA_PORT_CE_LAYER forces the CE layer on for screenshots.
++bool PortCeLayer();
++bool PortRecording();
++static bool PortCeConsoleBindKeys()
++{
++	const char *blocked[] = {"BEA_PORT_CLOCK", "BEA_PORT_TAPE", "BEA_PORT_PROBES", "BEA_PORT_RECORD",
++		"BEA_PORT_PILOT", "BEA_PORT_AUTOPILOT", "BEA_NET_HOST", "BEA_NET_JOIN"};
++	if (!PortCeLayer() || PortRecording())
++		return false;
++	for (const char *name : blocked)
++	{
++		const char *value = getenv(name);
++		if (value && *value)
++			return false;
++	}
++	return true;
++}
++#endif
++
+ // FUNCTION: 0x0042a4f0
+ void CConsole::HandleBind(int key, int event)
+ {
+@@ -399,7 +421,16 @@
+ 	else if (event == KEY_EVENT_UP)
+ 		n = 1;
+ 
+-	char *bind = mBinds[(char)key][n];
++	int bindKey = (char)key;
++#ifdef CE_VERSION
++	if (PortCeConsoleBindKeys())
++	{
++		if (key < 0 || key >= CONSOLE_KEYS)
++			return;
++		bindKey = key;
++	}
++#endif
++	char *bind = mBinds[bindKey][n];
+ 	if (strlen(bind))
+ 		ExecuteCommand(bind);
+ }

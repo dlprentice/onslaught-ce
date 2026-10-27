@@ -95,7 +95,7 @@ class Launcher(unittest.TestCase):
         r = self.run_launcher("--", "-level", "100")
         self.assertEqual(r.returncode, 0)
         lines = self.log().splitlines()
-        self.assertRegex(lines[0], r"^Onslaught CE v\S+ \(preview\), build \S+ \(linux-i686\)$")
+        self.assertRegex(lines[0], r"^Onslaught CE v\S+, build \S+ \(linux-i686\)$")
         self.assertTrue(lines[1].startswith("OS: Linux"))
         self.assertTrue(lines[2].startswith("Started: "))
         self.assertEqual(lines[3], "GPU (as Direct3D reports it): Stand-in GPU (vendor 8086, device 1234, driver 1.2.3.4)")
@@ -281,10 +281,12 @@ class Launcher(unittest.TestCase):
         self.assertEqual(self.log("onslaught-ce.old.log"), after)
         self.assertNotIn(hint, self.log())
 
-    def test_disabled_update_commands_do_not_initialize_or_modify_user_paths(self):
+    def test_update_commands_do_not_modify_a_blocked_user_path(self):
+        # --apply and --version touch no user path; --update-only (UPDATER-V2.md) needs the user folder and refuses
+        # this one (a file) with 1 before any update step.
         blocked = self.home / "not-a-directory"
         blocked.write_bytes(b"preserve this unrelated file")
-        for args, code in ((("--update-only",), 2), (("--apply", "fresh", "install", "42"), 2), (("--version",), 0)):
+        for args, code in ((("--update-only",), 1), (("--apply", "fresh", "install", "42"), 2), (("--version",), 0)):
             with self.subTest(args=args):
                 r = self.run_launcher(*args, BEA_USER_DIR=str(blocked), BEA_UPDATE_ANSWER="update",
                                       BEA_UPDATE_FEED="file:///unread-sentinel")
@@ -293,7 +295,8 @@ class Launcher(unittest.TestCase):
                 self.assertFalse(self.user.exists())
                 self.assertNotIn("game_pid=", r.stdout + r.stderr)
                 if args == ("--update-only",):
-                    self.assertIn("did not check whether your version is current", r.stderr)
+                    self.assertIn("could not prepare the settings folder", r.stderr)
+                    self.assertNotIn("update:", r.stderr)
 
     def test_normal_launcher_preserves_unknown_update_neighbors_and_in_install_userdata(self):
         install = self.tmp / "bin"
@@ -350,7 +353,7 @@ class Launcher(unittest.TestCase):
         body = q["body"][0]
         self.assertIn("`~/.local/share/onslaught-ce/onslaught-ce.log`", body)
         self.assertIn("`~/.local/share/onslaught-ce/tapes/20260102-000000.tape`", body)
-        self.assertIn("(preview), build ", body)
+        self.assertIn("- Onslaught CE V", body)
         self.assertIn("- Linux", body)
         self.assertNotIn(str(self.home), body)
 

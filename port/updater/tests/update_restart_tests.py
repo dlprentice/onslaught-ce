@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-only
-"""Run the actual suspended-updater entry points against authored host boundaries for both platform branches.
+"""Run the launcher's actual entry point (main) against authored host boundaries for both platform branches: which
+commands reach the v2 updater (ce_update_v2.h, counted stubs here), which reach the game, and that --apply is refused
+before anything. The updater itself is tested end to end by updater_v2_tests.py.
 
-No game, browser, Windows process, network or player file is opened. Historical automatic-update controls live in
-Git with their retired implementation; these controls require the conservative manual-only safety behavior.
+No game, browser, Windows process, network or player file is opened.
 """
 import json
 import os
@@ -21,7 +22,7 @@ SEAMS = r'''
 #include <stdlib.h>
 #include <string.h>
 #define PATHN 4096
-#define CE_VERSION "0.1.7"
+#define CE_VERSION "0.1.8"
 #define CE_VERSION_NOTE ""
 #define CE_COMMIT "authored-test"
 #define LOG_CONTINUE "test-continue"
@@ -31,7 +32,7 @@ SEAMS = r'''
 #define SDL_MESSAGEBOX_INFORMATION 1
 static const char PUBLIC_KEY_HEX[]="retained-source-key";
 static char sHere[PATHN],sUser[PATHN];
-static int sReplay,paths,logs,finds,games,records,reports,dialogs,forbidden;
+static int sReplay,paths,logs,finds,games,records,reports,dialogs,forbidden,handoffs,checks,rollbacks;
 static char **game_args;
 static int game_argc;
 static int init_paths(void) { ++paths; strcpy(sHere,"authored install");strcpy(sUser,"authored user");return 1; }
@@ -40,6 +41,16 @@ static int AttachConsole(int parent) { (void)parent;return 0; }
 static void log_open(int continuation) { (void)continuation;++logs; }
 static void log_close(void) {}
 static void unset_env(const char *name) { (void)name; }
+static void set_env(const char *name,const char *value) { (void)name;(void)value; }
+#define UPD_TEST_NOTE ""
+#define UPD_UPDATED 0
+#define UPD_DISABLED 12
+static void init_here(void) {}
+static void upd_find_root(void) {}
+static int upd_start_active(int argc,char **argv,int after,int *status)
+{ (void)argc;(void)argv;(void)after;(void)status;++handoffs;return 0; }
+static int upd_check(int explicit_cmd) { ++checks;return explicit_cmd ? 13 : 13; }
+static int upd_rollback(void) { ++rollbacks;return 10; }
 static int ini_get(const char *key,char *out,size_t n) { (void)key;(void)out;(void)n;return 0; }
 static int ini_set(const char *key,const char *value) { (void)key;(void)value;++forbidden;return 0; }
 static int find_game(char *out,size_t n) { ++finds;snprintf(out,n,"authored game folder");return 1; }
@@ -53,17 +64,14 @@ static int ce_open_report(const char *v,const char *c,const char *u,char *out,si
 static int SDL_ShowSimpleMessageBox(int flags,const char *title,const char *text,void *window)
 { (void)flags;(void)title;(void)text;(void)window;++dialogs;return 1; }
 static void say(const char *text,...) { (void)text; }
-/* Causal mutants reintroduce these calls into the actual entry point. None performs its named side effect. */
-static void tidy_old(void) { ++forbidden; }
-static void check_for_update(void) { ++forbidden; }
 @FUNCTIONS@
 static void string_out(const char *s)
 { putchar('"');for(;*s;s++){if(*s=='"'||*s=='\\')putchar('\\');putchar(*s);}putchar('"'); }
 int main(int argc,char **argv)
 {
  int rc=ce_test_main(argc,argv);
- printf("RESULT {\"return\":%d,\"paths\":%d,\"logs\":%d,\"finds\":%d,\"games\":%d,\"records\":%d,\"reports\":%d,\"dialogs\":%d,\"forbidden\":%d,\"game_args\":[",
- rc,paths,logs,finds,games,records,reports,dialogs,forbidden);
+ printf("RESULT {\"return\":%d,\"paths\":%d,\"logs\":%d,\"finds\":%d,\"games\":%d,\"records\":%d,\"reports\":%d,\"dialogs\":%d,\"forbidden\":%d,\"handoffs\":%d,\"checks\":%d,\"rollbacks\":%d,\"game_args\":[",
+ rc,paths,logs,finds,games,records,reports,dialogs,forbidden,handoffs,checks,rollbacks);
  for(int i=0;i<game_argc;i++){if(i)putchar(',');string_out(game_args[i]);}puts("]}");return 0;
 }
 '''
@@ -71,7 +79,7 @@ int main(int argc,char **argv)
 
 def production_functions(source):
     functions = []
-    for name in ("manual_update_help", "main"):
+    for name in ("main",):
         matches = re.findall(r"^(?:static )?(?:int|void) " + name + r"\([^\n]*\)\n\{\n.*?^\}", source, re.M | re.S)
         if len(matches) != 1:
             raise RuntimeError(f"expected one complete production {name}")
@@ -79,7 +87,7 @@ def production_functions(source):
     return "\n".join(functions)
 
 
-class SuspendedUpdater(unittest.TestCase):
+class EntryPoint(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         owner = HERE.parents[2] / "local-data/port/manual-update-tests"
@@ -118,34 +126,29 @@ class SuspendedUpdater(unittest.TestCase):
     def assert_no_paths(self, row):
         self.assertEqual([row[k] for k in ("paths", "logs", "finds", "games", "records", "reports", "dialogs", "forbidden")], [0]*8)
 
-    def test_update_only_is_explicitly_disabled_before_any_path_or_browser(self):
+    def test_update_only_and_rollback_reach_the_updater_and_never_the_game(self):
         for platform in self.drivers:
-            for args in (("--update-only",), ("--no-update-check", "--update-only"),
-                         ("--record", "--update-only"), ("--update-only", "--report")):
+            for args, field, rc in ((("--update-only",), "checks", 13),
+                                    (("--record", "--update-only"), "checks", 13), (("--rollback",), "rollbacks", 10),
+                                    (("--update-only", "-level", "100"), "checks", 13)):
                 with self.subTest(platform=platform, args=args):
-                    row, result = self.invoke(platform, *args, BEA_UPDATE_FEED="file:///unread-sentinel", BEA_UPDATE_ANSWER="update")
-                    self.assertEqual(row["return"], 2)
-                    self.assert_no_paths(row)
-                    self.assertIn("checking and installation are temporarily disabled", result.stderr)
-                    self.assertIn("did not check whether your version is current", result.stderr)
-                    self.assertIn("https://github.com/dlprentice/onslaught-ce/releases", result.stderr)
-                    self.assertIn("new empty folder", result.stderr)
-                    self.assertIn("Relative BEA_USER_DIR may place launcher files and game", result.stderr)
-                    self.assertIn("careers in different folders. Identify and back up both", result.stderr)
-                    self.assertIn("check careers after migration", result.stderr)
-                    self.assertIn("BEA_USER_DIR to an absolute path", result.stderr)
-                    self.assertIn("game's user-data folder", result.stderr)
-                    self.assertIn("outside the original game and old CE folders", result.stderr)
-                    self.assertNotIn("already current", result.stderr)
+                    row, _ = self.invoke(platform, *args)
+                    self.assertEqual(row["return"], rc)
+                    self.assertEqual(row[field], 1)
+                    self.assertEqual((row["games"], row["finds"], row["records"], row["handoffs"]), (0, 0, 0, 1))
+            with self.subTest(platform=platform, args="--no-update-check --update-only"):
+                row, _ = self.invoke(platform, "--no-update-check", "--update-only")
+                self.assertEqual((row["return"], row["checks"], row["games"]), (12, 0, 0))  # no request at all
 
     def test_historical_apply_refuses_even_malformed_or_complete_arguments(self):
         for platform in self.drivers:
             for args in (("--apply",), ("--apply", "fresh", "install", "42"),
-                         ("--update-only", "--apply", "fresh", "install", "42")):
+                         ("--update-only", "--apply", "fresh", "install", "42"), ("--version", "--apply")):
                 with self.subTest(platform=platform, args=args):
                     row, result = self.invoke(platform, *args)
                     self.assertEqual(row["return"], 2)
                     self.assert_no_paths(row)
+                    self.assertEqual((row["handoffs"], row["checks"]), (0, 0))
                     self.assertIn("--apply was refused before accessing installation, user or update paths", result.stderr)
 
     def test_version_is_successful_and_side_effect_free(self):
@@ -153,31 +156,39 @@ class SuspendedUpdater(unittest.TestCase):
             row, result = self.invoke(platform, "--version")
             self.assertEqual(row["return"], 0)
             self.assert_no_paths(row)
-            self.assertTrue(result.stdout.startswith("Onslaught CE v0.1.7, build authored-test\n"))
+            self.assertEqual(row["checks"], 0)
+            self.assertTrue(result.stdout.startswith("Onslaught CE V0.1.8, build authored-test\n"))
             self.assertEqual(result.stderr, "")
 
-    def test_ordinary_launch_has_no_updater_and_preserves_game_arguments(self):
+    def test_ordinary_launch_checks_once_and_preserves_game_arguments(self):
         for platform in self.drivers:
-            for args, game_args in (((), []), (("--", "-level", "100", "a b"), ["-level", "100", "a b"]),
-                                    (("--no-update-check", "--", "-skipfmv"), ["-skipfmv"]),
-                                    (("--", "--update-only", "--apply"), ["--update-only", "--apply"])):
+            for args, game_args, checks in (((), [], 1), (("--", "-level", "100", "a b"), ["-level", "100", "a b"], 1),
+                                            (("--no-update-check", "--", "-skipfmv"), ["-skipfmv"], 0),
+                                            (("--", "--update-only", "--apply"), ["--update-only", "--apply"], 1),
+                                            (("-level", "--apply"), ["-level", "--apply"], 1)):
                 with self.subTest(platform=platform, args=args):
-                    row, result = self.invoke(platform, *args, BEA_UPDATE_FEED="file:///unread-sentinel", BEA_UPDATE_ANSWER="update")
+                    row, result = self.invoke(platform, *args)
                     self.assertEqual((row["return"], row["paths"], row["logs"], row["finds"], row["games"]), (0,1,1,1,1))
-                    self.assertEqual((row["forbidden"], row["dialogs"]), (0,0))
+                    self.assertEqual((row["checks"], row["forbidden"], row["dialogs"]), (checks, 0, 0))
                     self.assertEqual(row["game_args"], game_args)
-                    self.assertEqual(result.stderr, "")
 
-    def test_replay_does_not_reintroduce_updater_or_logging(self):
+    def test_just_updated_and_replay_do_not_check(self):
         for platform in self.drivers:
             row, _ = self.invoke(platform, "--", "-level", "100", BEA_PORT_TAPE="authored.tape")
-            self.assertEqual((row["return"], row["games"], row["logs"], row["forbidden"]), (0,1,0,0))
+            self.assertEqual((row["return"], row["games"], row["logs"], row["checks"]), (0,1,0,0))
+            row, _ = self.invoke(platform, BEA_CE_JUST_UPDATED="1")
+            self.assertEqual((row["games"], row["checks"]), (1, 0))
 
-    def test_install_swap_cleanup_and_feed_implementations_are_absent(self):
-        for name in ("swap_in", "remove_tree", "tidy_old", "apply_update", "check_for_update", "prepare_update_helper", "fetch"):
-            self.assertIsNone(re.search(r"\b" + name + r"\s*\(", self.source), name)
-        self.assertNotIn("sCache", self.source)
-        # The existing signing tools still bind the source's public key, even though this launcher reads no feed.
+    def test_v1_feed_swap_and_pattern_cleanup_are_absent(self):
+        updater = (SOURCE.parent / "ce_update_v2.h").read_text()
+        for text in (self.source, updater):
+            for name in ("swap_in", "remove_tree", "tidy_old", "apply_update", "check_for_update", "prepare_update_helper"):
+                self.assertIsNone(re.search(r"\b" + name + r"\s*\(", text), name)
+            self.assertNotIn("sCache", text)
+            self.assertIsNone(re.search(r'"[^"\n]*latest\.json[^"\n]*"', text), "a latest.json string literal")
+            self.assertNotIn('".old-', text)
+            self.assertNotIn("SHFileOperation", text)
+        self.assertIn('#define UPD_FEED_NAME "ce-update-v2.json"', updater)
         self.assertRegex(self.source, r'static const char PUBLIC_KEY_HEX\[\] = "[0-9a-f]{64}";')
 
 

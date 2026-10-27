@@ -11,6 +11,8 @@
 #include <mutex>
 #include <thread>
 #include <vector>
+#include <string>
+#include <cstdarg>
 #include MIXER_SOURCE
 
 struct SDL_Mutex { std::recursive_mutex value; };
@@ -25,6 +27,11 @@ static unsigned opens, destroys, audioInits, audioQuits, checks, notifications, 
 static std::vector<Sint16> submitted;
 static int putLimit;
 static bool hitLimit;
+static bool mediaQueueModel, mediaQueueError, mediaInCallback;
+static unsigned mediaQueueCalls, mediaCallbackLogCalls;
+static std::vector<Sint16> mediaPending;
+static std::vector<std::string> mediaLines;
+static void (*mediaQueueHook)() = nullptr;
 struct MixLimit {};
 static thread_local int role, lockDepth;
 static std::mutex gateMutex;
@@ -101,20 +108,24 @@ extern "C" bool SDLCALL SDL_ResumeAudioStreamDevice(SDL_AudioStream *stream)
 	if (resumeFails) return false;
 	stream->resumed = true; return true;
 }
-extern "C" void SDLCALL SDL_DestroyAudioStream(SDL_AudioStream *stream) { ++destroys; delete stream; }
+extern "C" void SDLCALL SDL_DestroyAudioStream(SDL_AudioStream *stream) { ++destroys; if(mediaQueueModel)mediaPending.clear(); delete stream; }
 extern "C" SDL_AudioDeviceID SDLCALL SDL_GetAudioStreamDevice(SDL_AudioStream *) { return 7; }
 extern "C" bool SDLCALL SDL_GetAudioDeviceFormat(SDL_AudioDeviceID, SDL_AudioSpec *spec, int *frames)
 {
 	*spec = {SDL_AUDIO_S16LE, 2, 44100}; *frames = 441; return true;
 }
 extern "C" const char *SDLCALL SDL_GetAudioDeviceName(SDL_AudioDeviceID) { return "controlled device"; }
-extern "C" int SDLCALL SDL_GetAudioStreamQueued(SDL_AudioStream *) { return 12000; }
+extern "C" int SDLCALL SDL_GetAudioStreamQueued(SDL_AudioStream *) {
+ ++mediaQueueCalls;if(mediaQueueHook)mediaQueueHook();
+ return mediaQueueError ? -1 : mediaQueueModel ? (int)mediaPending.size()*2 : 12000;
+}
 extern "C" bool SDLCALL SDL_ClearAudioStream(SDL_AudioStream *) { return true; }
 extern "C" bool SDLCALL SDL_PutAudioStreamData(SDL_AudioStream *, const void *pcm, int bytes)
 {
 	++submissions;
 	if (putLimit && submissions >= (unsigned)putLimit) throw MixLimit{};
 	submitted.assign((const Sint16 *)pcm, (const Sint16 *)pcm + bytes / 2);
+ if(mediaQueueModel)mediaPending.insert(mediaPending.end(),submitted.begin(),submitted.end());
 	return true;
 }
 extern "C" SDL_TimerID SDLCALL SDL_AddTimer(Uint32 interval, SDL_TimerCallback callback, void *data)
@@ -155,6 +166,7 @@ static int gEnabled=-1;bool PortCeLayer();
 bool PortDevLog() { return false; }
 void PortSessionLog(PortSessionCategory category, bool error, const char *format, ...) {
  if(!diagnosticsEnabled)return;char line[1024];va_list args;va_start(args,format);vsnprintf(line,sizeof line,format,args);va_end(args);
+ if(category==PORT_SESSION_AUDIO&&!strncmp(line,"media ",6)){mediaLines.emplace_back(line);if(mediaInCallback)++mediaCallbackLogCalls;}
  if(category==PORT_SESSION_MUSIC&&!strncmp(line,"refill seq=",11)) {++refillLines;if(error){++riskLines;if(!firstRiskSeq)sscanf(line,"refill seq=%u",&firstRiskSeq);}fprintf(stderr,"%s\n",line);}
 }
 void PortSessionAsset(PortSessionCategory, const char *, const char *, long) {}

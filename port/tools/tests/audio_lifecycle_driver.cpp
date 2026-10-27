@@ -2,6 +2,7 @@
 // The complete production DirectSound mixer with controlled SDL boundaries. No device, game data or real timer.
 #include <atomic>
 #include <chrono>
+#include <cstdarg>
 #include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
@@ -29,6 +30,10 @@ static std::condition_variable gateCv;
 static bool holdBeforeLock, atLock, releaseLock;
 static bool dispatchDuringAdd;
 static bool holdAllocate, atAllocate, releaseAllocate, stopAtLock;
+#ifdef AUDIO_MEDIA_CONCURRENCY
+// Relaxed stages schedule an overlap without creating a happens-before edge for the accesses under test.
+static std::atomic<int> mediaRaceStage{0};
+#endif
 static std::thread earlyDispatch;
 static Uint32 earlyResult;
 static bool earlyDone;
@@ -68,7 +73,18 @@ extern "C" void SDLCALL SDL_LockMutex(SDL_Mutex *mutex)
 		atLock = true; gateCv.notify_all();
 		gateCv.wait(lock, [] { return releaseLock; });
 	}
+#ifdef AUDIO_MEDIA_CONCURRENCY
+	if (role == 43 && mediaRaceStage.load(std::memory_order_relaxed) == 2)
+		mediaRaceStage.store(3, std::memory_order_relaxed);
+#endif
 	mutex->value.lock(); ++lockDepth;
+#ifdef AUDIO_MEDIA_CONCURRENCY
+	if (role == 42)
+	{
+		mediaRaceStage.store(2, std::memory_order_relaxed);
+		while (mediaRaceStage.load(std::memory_order_relaxed) < 3) std::this_thread::yield();
+	}
+#endif
 }
 extern "C" void SDLCALL SDL_UnlockMutex(SDL_Mutex *mutex) { --lockDepth; mutex->value.unlock(); }
 extern "C" Uint64 SDLCALL SDL_GetTicksNS() { return realNow.load(); }
@@ -98,7 +114,17 @@ extern "C" bool SDLCALL SDL_ResumeAudioStreamDevice(SDL_AudioStream *stream)
 	if (resumeFails) return false;
 	stream->resumed = true; return true;
 }
-extern "C" void SDLCALL SDL_DestroyAudioStream(SDL_AudioStream *stream) { ++destroys; delete stream; }
+extern "C" void SDLCALL SDL_DestroyAudioStream(SDL_AudioStream *stream)
+{
+#ifdef AUDIO_MEDIA_CONCURRENCY
+	if (role == 43)
+	{
+		mediaRaceStage.store(1, std::memory_order_relaxed);
+		while (mediaRaceStage.load(std::memory_order_relaxed) < 2) std::this_thread::yield();
+	}
+#endif
+	++destroys; delete stream;
+}
 extern "C" SDL_AudioDeviceID SDLCALL SDL_GetAudioStreamDevice(SDL_AudioStream *) { return 7; }
 extern "C" bool SDLCALL SDL_GetAudioDeviceFormat(SDL_AudioDeviceID, SDL_AudioSpec *spec, int *frames)
 {
@@ -148,7 +174,16 @@ unsigned long long PortClockPeekNs() { return virtualNow.load(); }
 void PortAudioGuardCheck() {}
 bool PortSessionEnabled() { return true; }
 bool PortDevLog() { return false; }
+#ifdef AUDIO_MEDIA_CONCURRENCY
+// Consume the actual arguments; an empty stub lets the optimizer remove the snapshot reads being checked.
+__attribute__((noinline)) void PortSessionLog(PortSessionCategory, bool, const char *format, ...)
+{
+	char text[1024]; va_list args; va_start(args, format); vsnprintf(text, sizeof text, format, args); va_end(args);
+	__asm__ __volatile__("" : : "r"(text[0]) : "memory");
+}
+#else
 void PortSessionLog(PortSessionCategory, bool, const char *, ...) {}
+#endif
 void PortSessionAsset(PortSessionCategory, const char *, const char *, long) {}
 void PortSessionMediaActive(PortSessionCategory, const void *, bool) {}
 void PortSessionCount(PortSessionCounter) {}
@@ -197,6 +232,19 @@ int main(int argc, char **argv)
 	initFails = !std::strcmp(mode, "init-failed"); openFails = !std::strcmp(mode, "open-failed");
 	if (!std::strcmp(mode, "publish")) dispatchDuringAdd = true;
 	gMixer.Start();
+#ifdef AUDIO_MEDIA_CONCURRENCY
+	if (!std::strcmp(mode, "media-stop-snapshot"))
+	{
+		Buffer *b = Voice();
+		Check(PortAudioMediaRole(static_cast<IDirectSoundBuffer8 *>(b), PORT_SESSION_MUSIC), "music buffer registered");
+		std::thread stopper([&] { role = 43; gMixer.Stop(); });
+		while (mediaRaceStage.load(std::memory_order_relaxed) < 1) std::this_thread::yield();
+		std::thread snapshot([&] { role = 42; MediaSnapshot(b, "test"); });
+		snapshot.join(); stopper.join();
+		b->Stop(); b->Release();
+	}
+	else
+#endif
 	if (!std::strcmp(mode, "publish"))
 	{
 		earlyDispatch.join(); Check(earlyResult == 10, "new timer survives dispatch during publication");

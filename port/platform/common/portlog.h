@@ -22,6 +22,8 @@ bool PortSessionEnabled();
 void PortSessionLog(PortSessionCategory category, bool error, const char *format, ...);
 void PortSessionAsset(PortSessionCategory category, const char *action, const char *path, long result = 0);
 void PortSessionMediaActive(PortSessionCategory category, const void *token, bool playing);
+// Internal replacement-buffer identity only. Tags never imply nonzero samples or physical playback.
+bool PortAudioMediaRole(const void *buffer, PortSessionCategory category);
 void PortSessionSummary();
 // Cheap counters only: safe on the audio callback; the main thread/teardown formats their bounded summaries.
 enum PortSessionCounter { PORT_COUNT_AUDIO_CALLBACKS, PORT_COUNT_AUDIO_PUT_FAILED, PORT_COUNT_AUDIO_ALLOC_FAILED,
@@ -30,5 +32,12 @@ enum PortSessionCounter { PORT_COUNT_AUDIO_CALLBACKS, PORT_COUNT_AUDIO_PUT_FAILE
 void PortSessionCount(PortSessionCounter counter);
 void PortSessionAudioError(const char *error);
 void PortSessionPulse(unsigned frame);
+// One-off inventories for problem reports (inventory.cpp): every display, input and audio playback device, and the
+// CE settings that change how the game runs. Each writes once and inherits the session log's limits and fences.
+struct SDL_Window;
+void PortSessionDisplayInventory(SDL_Window *window);
+void PortSessionInputInventory();
+void PortSessionAudioInventory();
+void PortSessionSettingsInventory();
 
 #endif

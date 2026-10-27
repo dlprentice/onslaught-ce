@@ -1,0 +1,78 @@
+--- a/MissionScript/IScript.cpp
++++ b/MissionScript/IScript.cpp
+@@ -40,6 +40,11 @@
+ #include "../RenderThing.h"
+ #include "../EscapePod.h"
+ #include "../DebugLog.h"
++
++#ifdef CE_VERSION
++void PortCeTutorialHelpCue(int id);
++void PortCeTutorialYield(CHelpTextDisplay *help);
++#endif
+ 
+ // the maths constants' initializers come first (mathsconst.h)
+ // FUNCTION: 0x0052fe30 init:ZERO_FVECTOR
+@@ -421,7 +426,16 @@
+ {
+ 	CHelpTextDisplay	*help = GAME.GetHelpTextDisplay();
+ 	if (help && args[0]->GetInt() == 2302408)
++	{
++#ifdef CE_VERSION
++		PortCeTutorialYield(help);
++#endif
+ 		help->AddMessage(Localization_GetStringById(0xdd));
++	}
++#ifdef CE_VERSION
++	if (help)
++		PortCeTutorialHelpCue(args[0]->GetInt());
++#endif
+ }
+ 
+ //******************************************************************************************
+--- a/HelpText.cpp
++++ b/HelpText.cpp
+@@ -11,6 +11,10 @@
+ #include	"renderinfo.h"
+ #include	"Career.h"
+ #include	"Hud.h"
++
++#ifdef CE_VERSION
++void PortCeTutorialRefresh(CHelpTextDisplay *help);
++#endif
+ 
+ // FUNCTION: 0x0047f9c0 init:ZERO_FVECTOR
+ // FUNCTION: 0x0047f9e0 init:ID_FMATRIX
+@@ -42,6 +46,9 @@
+ //*********************************************************************************
+ void	CHelpTextDisplay::Render()	// FUNCTION: 0x0047fb50
+ {
++#ifdef CE_VERSION
++	PortCeTutorialRefresh(this);
++#endif
+ 	LT.SSS_NoCache(0, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
+ 	LT.SSS_NoCache(0, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR);
+ 	LT.STS(0, D3DTSS_COLOROP, D3DTOP_MODULATE);
+--- a/MessageBox.cpp
++++ b/MessageBox.cpp
+@@ -22,6 +22,10 @@
+ #include	"text.h"
+ #include	"Hud.h"
+ #include	"game.h"
++
++#ifdef CE_VERSION
++void PortCeTutorialRadioStart(int id);
++#endif
+ 
+ // FUNCTION: 0x004b6bb0 init:ZERO_FVECTOR
+ // FUNCTION: 0x004b6bd0 init:ID_FMATRIX
+@@ -518,6 +522,10 @@
+ 		return;
+ 	}
+ 
++#ifdef CE_VERSION
++	PortCeTutorialRadioStart(mCurrent->mStringId);
++#endif
++
+ 	SINT id = mCurrent->mStringId; char *sound = TEXT.GetSoundName(id);	// the id is read into a local first (a value copy: retail's registers)
+ 	if (sound)
+ 	{

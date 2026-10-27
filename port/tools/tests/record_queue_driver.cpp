@@ -109,6 +109,11 @@ void PortVideoInit() {}
 bool PortDevLog() { return false; }
 bool PortSessionEnabled() { return false; }
 void PortSessionLog(PortSessionCategory, bool, const char *, ...) {}
+// The session inventories (inventory.cpp) write only through the session log, which is off here.
+void PortSessionDisplayInventory(SDL_Window *) {}
+void PortSessionInputInventory() {}
+void PortSessionAudioInventory() {}
+void PortSessionSettingsInventory() {}
 struct Message { UINT type; WPARAM w; LPARAM l; };
 static std::vector<Message> messages;
 static unsigned keyDown, keyUp, chars, buttons, moves, wUp;

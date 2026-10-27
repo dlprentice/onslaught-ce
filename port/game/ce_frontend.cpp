@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // port/game/ce_frontend.cpp: the CE layer's front-end additions (patch 0050): an "Onslaught CE" action on the main menu
-// opening a page of the game's own options-style list (About, Special Thanks, Manual updates, Record sessions, Report a problem,
+// opening a page of the game's own options-style list (About, Special Thanks, Updates, Record sessions, Report a problem,
 // Back), and a Cheats page in Options whose switches (ce.ini, patch 0051 at IsCheatActive) work as the cheat codes do in
 // a career's name. Built as a game file (port/build.py) so it uses the game's menu classes; public builds only.
 //
@@ -473,7 +473,8 @@ int	CCeRecordSwitch::sValue = -1;
 // The cheats the game checks (IsCheatActive's numbers; V3R5IOF, number 2, has no effect in the PC game and is left out),
 // each with the line the page shows while it is highlighted: what it does (src/FEPLevelSelect.cpp IsWorldUnlocked,
 // FEPGoodies.cpp get_goodie_state, PauseMenu.cpp's controls list and Player.cpp SetIsGod, game.cpp's
-// BUTTON_TOGGLE_FREE_CAMERA on F in PCController.cpp) and the code a career's name held to turn it on.
+// BUTTON_TOGGLE_FREE_CAMERA and camera keys in PCController.cpp, CControllableCamera::ReceiveButtonAction in Camera.cpp)
+// and the code a career's name held to turn it on.
 struct SCeCheat
 {
 	const WCHAR	*mLabel;
@@ -485,11 +486,11 @@ struct SCeCheat
 static const SCeCheat	kCheats[] = {
 	{L"Unlock all levels: ", 1, L"Opens every level in the level select.", L"Original code: TURKEY"},
 	{L"Unlock all goodies: ", 0, L"Opens every goodie on the Goodies page.", L"Original code: MALLOY"},
-	{L"Goodie hints: ", 5, L"The Goodies page shows how to unlock each goodie, but none can be opened while this is on.",
+	{L"Goodie hints: ", 5, L"Shows available unlock hints. Goodies cannot be opened, even if Unlock all goodies is on.",
 	 L"Original code: lat\u00eate"},
 	{L"God mode option: ", PORT_CE_GOD_CHEAT, L"Adds a God switch to Controller Options; turn it on there for no damage "
 											   L"and endless energy.", L"Original code: Maladim"},
-	{L"Free camera (F key): ", 4, L"In a level, F lets you fly the camera around; F again returns it to your Battle Engine.",
+	{L"Free camera (F key): ", 4, L"F toggles camera. WASD move; arrows look; Esc pauses. The grave key (left of 1, below Esc) opens CE commands.",
 	 L"Original code: Aurore"},
 };
 #define CE_NUM_CHEATS	int(sizeof(kCheats) / sizeof(kCheats[0]))
@@ -572,11 +573,11 @@ static const char kSpecialThanks[] =
 	"Lost Toys - original game.\n"
 	"Stuart Gillam (Discord: desimbr)\n"
 	"Help, insight, guidance.\n\n"
-	"Early Discord testers:\n"
-	"Jeppi, BermudaMaster.\n\n"
-	"Onslaught CE contributors.\n"
-	"BEA community and\npreservation projects.\n"
-	"Everyone sharing fixes\nand guiding coding agents.\n\n"
+	"Early testers: Jeppi,\n"
+	"BermudaMaster and others.\n\n"
+	"Onslaught CE contributors,\n"
+	"including work made with\ntheir own coding agents.\n"
+	"BEA community and\npreservation projects.\n\n"
 	"Original game credits: Credits.";
 
 enum ECeAction
@@ -608,11 +609,12 @@ public:
 	{
 		static WCHAR title[] = L"Onslaught CE";
 		CMenuOptionsList *list = new (MEMTYPE_MENUITEM) CMenuOptionsList(title, 320.f, 300.f, FALSE, 0xb0000000);
+		// What a player came to do first; the acknowledgements last, before Back, as credits are.
 		list->AddItem(new (MEMTYPE_MENUITEM) CCeMenuItem(L"About Onslaught CE", CEA_ABOUT));
-		list->AddItem(new (MEMTYPE_MENUITEM) CCeMenuItem(L"Special Thanks", CEA_THANKS));
-		list->AddItem(new (MEMTYPE_MENUITEM) CCeMenuItem(L"Manual updates", CEA_UPDATES));
-		list->AddItem(new (MEMTYPE_MENUITEM) CCeRecordSwitch());
 		list->AddItem(new (MEMTYPE_MENUITEM) CCeMenuItem(L"Report a problem", CEA_REPORT));
+		list->AddItem(new (MEMTYPE_MENUITEM) CCeRecordSwitch());
+		list->AddItem(new (MEMTYPE_MENUITEM) CCeMenuItem(L"Updates", CEA_UPDATES));
+		list->AddItem(new (MEMTYPE_MENUITEM) CCeMenuItem(L"Special Thanks", CEA_THANKS));
 		list->AddItem(new (MEMTYPE_MENUITEM) CMenuItem((DWORD)GI_BACK, 3));
 		mLists.Append(list);
 	}
@@ -659,21 +661,31 @@ public:
 		case CEA_ABOUT:
 		{
 			const char *build = CE_BuildName();
-			snprintf(text, sizeof(text), "Onslaught CE v%s (preview)%s%s\n\nBattle Engine Aquila (Lost Toys, 2003), rebuilt "
+			snprintf(text, sizeof(text), "Onslaught CE V%s%s%s\n\nBattle Engine Aquila (Lost Toys, 2003), rebuilt "
 					 "from the game's source code to run natively on today's computers. It plays the game files of your "
 					 "own copy of the game.\n\nAn unofficial fan project, not affiliated with or endorsed by the game's "
 					 "developer, publisher or rights holders. Free software under the GNU General Public License, version 3, with no "
-					 "warranty.\n\nSource code, new versions and problem reports:\n" CE_LINKS, CE_VERSION,
+					 "warranty.\n\nCommands: press the grave key (left of 1, below Esc) during play.\n\nSource code, new versions and problem reports:\n"
+					 CE_LINKS, CE_VERSION,
 					 *build ? ", build " : "", build);
 			ShowMessage(text);
 			break;
 		}
 		case CEA_UPDATES:
-			ShowMessage("Automatic update checks and installation are disabled.\n\n"
-				"Download a corrected release and extract it into a new empty folder. Keep the old installation, user folder "
-				"and all backup/staging folders. Do not run an older launcher to update. Read README.txt for custom user "
-				"folder migration.\n\n" CE_LINKS "/releases");
+		{
+			char folder[1024];
+			FolderText(folder, sizeof(folder), "");
+			snprintf(text, sizeof(text), "%s\n\nAn update goes into the versions folder inside this Onslaught CE folder; "
+					 "careers and settings are not changed. To go back to the version before it, run the launcher with "
+					 "--rollback (see Updates in the README).\n\n%s ce.ini is in:\n%s\n\nNever start a 0.1.0-0.1.6 launcher.",
+					 CE_SettingGet("update_check", 1) ? "Update checks are on: Onslaught CE looks for a signed update when it "
+					 "starts and asks before installing it." : "Update checks are off (a line in ce.ini turns them off).",
+					 // The game font has no underscore, so the setting's name is left to the README.
+					 CE_SettingGet("update_check", 1) ? "To turn them off, add the line given under Updates in the README to "
+					 "ce.ini." : "To turn them on, delete that line from ce.ini.", folder);
+			ShowMessage(text);
 			break;
+		}
 		case CEA_THANKS:
 			ShowMessage(kSpecialThanks);
 			break;

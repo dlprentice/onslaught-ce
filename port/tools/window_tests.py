@@ -12,6 +12,7 @@ import deps
 DRIVER = r'''
 #include "WINDOW_CPP"
 #include "PORTLOG_CPP"
+#include "INVENTORY_CPP"
 extern "C" { char LT[0x331e4]; unsigned PortPresentCount(void) { return 0; }
 int PortMapMouse(float *, float *) { return 0; } }
 bool recording;
@@ -108,7 +109,8 @@ class MessagePump(unittest.TestCase):
         build = Path(cls.temp.name)
         source = build / "driver.cpp"
         source.write_text(DRIVER.replace("WINDOW_CPP", str(deps.PORT / "platform/common/window.cpp"))
-                          .replace("PORTLOG_CPP", str(deps.PORT / "platform/common/portlog.cpp")))
+                          .replace("PORTLOG_CPP", str(deps.PORT / "platform/common/portlog.cpp"))
+                          .replace("INVENTORY_CPP", str(deps.PORT / "platform/common/inventory.cpp")))
         cls.driver = build / "driver"
         subprocess.run([
             str(deps.DATA / "llvm/bin/clang++"), "--target=i686-pc-linux-gnu", "-m32", "-std=c++17",

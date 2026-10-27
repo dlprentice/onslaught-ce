@@ -246,7 +246,7 @@ def third_party(windows: bool) -> list:
     lock = deps.lock()
     ffl = "avformat-61.dll, avcodec-61.dll, avutil-59.dll" if windows else "lib/libavformat.so.61, libavcodec.so.61, libavutil.so.59"
     rows = [("DirectXTex", "1acf4ebe", "MIT", "the DXT block encoder (port/d3dx/src/bc.cpp) is adapted from it", ["licenses/DirectXTex-LICENSE"]),
-            ("Monocypher", lock["monocypher"]["version"], "BSD-2-Clause OR CC0-1.0", "compiled into the launcher; unused while automatic updating is suspended",
+            ("Monocypher", lock["monocypher"]["version"], "BSD-2-Clause OR CC0-1.0", "compiled into the launcher: the v2 update feed's signature check",
              ["licenses/Monocypher-LICENCE.md"]),
             ("FFmpeg", lock["FFmpeg"]["version"], "LGPL-2.1-or-later", f"{ffl}: shared libraries, decoders and demuxer only (Bink video and audio)",
              ["licenses/FFmpeg-COPYING.LGPLv2.1", "licenses/FFmpeg-LICENSE.md"]),
@@ -356,8 +356,10 @@ def readme(version: str, windows: bool) -> bytes:
               "remembers it (BEA_GAME_DIR overrides). By default, careers and settings go to a separate user folder:",
               ("%APPDATA%\\Onslaught CE." if windows else "$XDG_DATA_HOME/onslaught-ce, or ~/.local/share/onslaught-ce when unset."),
               "BEA_USER_DIR overrides that location. Keep it separate from the game folder and avoid linked paths.",
-              "Automatic update checking and installation are temporarily disabled. --update-only prints manual",
-              "guidance and exits 2 without checking whether this version is current; --apply is refused.",
+              "Updates: at start it checks a signed feed (ce-update-v2.json) and asks before installing. A new version",
+              "goes into versions/ inside this folder; this folder's own files and everything beside it are left alone.",
+              "--update-only checks now, --rollback returns to the previous version, BEA_NO_UPDATE_CHECK=1 or",
+              "update_check=0 in ce.ini turns checking off. --apply is refused.",
               "Do not start an Onslaught CE 0.1.0-0.1.6 launcher at all, not even to check its version or update it: its",
               "startup cleanup can delete neighbouring <program folder>.old-* paths and follow a matching directory link",
               "into its target. Keep the old installation and every .old-*, .download-* and .unpack-* path untouched.",
@@ -368,7 +370,8 @@ def readme(version: str, windows: bool) -> bytes:
               "program/staging folders; set BEA_USER_DIR to its absolute path. Check careers; keep originals and backups.",
               "If the locations or conflicting files are unclear, do not merge or overwrite them; seek help first.",
               "This release's launcher removes no neighbouring paths: verify its package and extract it into a new empty",
-              "folder. See the project README for full migration steps. No telemetry or automatic update request.",
+              "folder. See the project README for full migration steps. No telemetry; the update check sends nothing",
+              "but the request for the public feed.",
               *REPORT_PRIVACY]
     run = (["Start onslaught-ce.exe. (bea.exe also runs directly, without the install search.)",
             "It needs Windows 10 or newer, for its built-in UCRT, and Windows 10 version 1903 or newer",
@@ -380,7 +383,7 @@ def readme(version: str, windows: bool) -> bytes:
                          "and names the packages to install when one is missing. It needs " + GLIBC_TEXT + ".",
                          README_WIDTH, break_on_hyphens=False) + common)
     exe = "bea.exe" if windows else "bea"
-    return "\n".join([f"Onslaught CE {version} (preview)", ""] + quick_start(windows) + ["",
+    return "\n".join([f"Onslaught CE V{version}", ""] + quick_start(windows) + ["",
                       "A native source port of Battle Engine Aquila (2003). It contains no game files: you need your own",
                       "copy of the game (for example from Steam).", f"Project page, source and releases: {PUBLIC_REPO}",
                       ""] + run +
@@ -392,8 +395,8 @@ def readme(version: str, windows: bool) -> bytes:
 # README.txt's "In the game" and "Screen modes and widescreen" (public/README.md says the same).
 IN_THE_GAME = [
     "In the game",
-    "- Main menu > Onslaught CE: About (version, licence and links), Manual updates (download and preservation",
-    "  guidance; no automatic checks or installation), Record sessions and Report a problem (below).",
+    "- Main menu > Onslaught CE: About (version, licence and links), Updates (how updating works and how to turn",
+    "  the checks off), Record sessions and Report a problem (below).",
     "- Options > Cheats: the game's own cheats as On/Off switches, kept in ce.ini so they apply to every career;",
     "  the line under the list says what the highlighted one does:",
     "  - Unlock all levels (original code TURKEY): every level opens in the level select",
@@ -466,7 +469,7 @@ def limitations(windows: bool) -> list:
                  "  graphics card (Microsoft's software renderer), not on a PC with a real graphics card or its drivers.",
                  "  During the 0.1.3 release checks, that VM updated from 0.1.2 to 0.1.3, restarted, and its installed",
                  "  files matched the published package. An earlier attempt fetched no update feed; a later retry in",
-                 "  the same VM session succeeded. These are historical observations; automatic updating is now suspended.",
+                 "  the same VM session succeeded. These are historical observations of the retired 0.1.0-0.1.6 updater.",
                  "- The executables are unsigned, so SmartScreen may warn you (choose More info, then Run anyway)."] if windows else
                 [*textwrap.wrap("- You need " + GLIBC_TEXT + ".", README_WIDTH, subsequent_indent="  ", break_on_hyphens=False),
                  *textwrap.wrap("- You need " + VULKAN_TEXT + ".", README_WIDTH, subsequent_indent="  ", break_on_hyphens=False)])
@@ -516,7 +519,7 @@ def notice(version: str, windows: bool) -> bytes:
 LAUNCHER = r'''#!/usr/bin/env bash
 # Onslaught CE: checks the 32-bit system libraries, then hands over to onslaught-ce-launch, which finds your Battle
 # Engine Aquila install (BEA_GAME_DIR, ce.ini, Steam's libraries, or asks once), starts
-# the game from this folder (automatic updates are suspended); saves and settings use a separate user folder by default.
+# the game from this folder (or the updated version in versions/); saves and settings use a separate user folder.
 set -euo pipefail
 HERE=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
 # Mirror the launcher's option prefix: -- or the first unrecognized argument begins game arguments.
@@ -525,7 +528,7 @@ preflight=1
 for arg in "$@"; do
 	case "$arg" in
 		--version|--apply) preflight=0; break ;;
-		--update-only|--report) preflight=0 ;;
+		--update-only|--rollback|--report) preflight=0 ;;
 		--no-update-check|--record|--no-record) ;;
 		*) break ;;
 	esac
@@ -807,6 +810,8 @@ def main():
         top = f"onslaught-ce-{a.version}-{'windows' if windows else 'linux'}-i686"
         files = {f"{top}/{exe}": (stripped.read_bytes(), 0o755)}
         launcher = build / ("windows/onslaught-ce.exe" if windows else "linux/onslaught-ce-launch")
+        if b"CE-UPDATER-TEST-BUILD" in launcher.read_bytes():
+            sys.exit(f"{launcher}: an updater test build (test key, test hooks); build the release launcher")
         lstripped = out / ("stage-" + launcher.name)
         strip(launcher, lstripped, windows)
         if machine_paths(lstripped):

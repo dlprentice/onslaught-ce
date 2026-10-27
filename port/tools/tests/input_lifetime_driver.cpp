@@ -56,6 +56,7 @@ static SDL_JoystickID *TestGamepads(int *count) {
 #undef LT
 #include "DINPUT_CPP"
 #include "PORTLOG_CPP"
+#include "INVENTORY_CPP"
 static int SDLCALL FocusLossProducer(void *) {
     focused = false;
     SDL_Event event{}; event.type = SDL_EVENT_WINDOW_FOCUS_LOST; event.window.windowID = 17;

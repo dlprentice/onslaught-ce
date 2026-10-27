@@ -299,6 +299,8 @@ void MakeSound(Video *v)
 		b->Unlock(p1, n1, p2, n2);
 	}
 	v->sound = b;
+	if (PortSessionEnabled() && !PortAudioMediaRole(b, PORT_SESSION_FILM))
+		PortSessionLog(PORT_SESSION_FILM, true, "film=%u media role assignment refused", v->sessionId);
 	v->soundRate = rate;
 	v->soundBlock = wfx.nBlockAlign;
 	PortSessionLog(PORT_SESSION_FILM, FAILED(fill), "film=%u sound buffer created fill_result=%08lx rate=%d channels=%d bits=16 decoded_bytes=%lu",

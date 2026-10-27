@@ -638,6 +638,21 @@ void Pump()
 			fakeKeys = next ? next + 1 : "";
 		}
 	}
+	// The input and audio inventories (inventory.cpp), once each, as soon as their SDL subsystems are up.
+	if (PortSessionEnabled())
+	{
+		static bool inputListed, audioListed;
+		if (!inputListed && SDL_WasInit(SDL_INIT_GAMEPAD))
+		{
+			inputListed = true;
+			PortSessionInputInventory();
+		}
+		if (!audioListed && SDL_WasInit(SDL_INIT_AUDIO))
+		{
+			audioListed = true;
+			PortSessionAudioInventory();
+		}
+	}
 	PortMouseKeepRelative();
 	// Keys left held by a dropped message go up once the game has read the ring.
 	if (gReleasePending && Free() > 64)
@@ -867,6 +882,13 @@ extern "C" HWND WINAPI PortCreateWindowExA(DWORD exstyle, LPCSTR cls, LPCSTR tit
 			"logical_available=%d logical_size=%dx%d pixels_available=%d pixel_size=%dx%d display_scale_ieee754=%08x",
 			count, (unsigned)display, haveBounds, bounds.x, bounds.y, bounds.w, bounds.h,
 			haveLogical, logicalW, logicalH, havePixels, pixelW, pixelH, scaleBits);
+		static bool inventoried;
+		if (!inventoried)
+		{
+			inventoried = true;
+			PortSessionDisplayInventory(sdl);
+			PortSessionSettingsInventory();
+		}
 	}
 	return win.handle;
 }

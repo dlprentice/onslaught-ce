@@ -28,8 +28,8 @@ so. Release packages carry each shipped component's licence text in `licenses/`.
 | hwdata `pnp.ids` | libdisplay-info `275e6459`'s copy | GPL-2.0-or-later OR XFree86 1.0 (the XFree86 1.0 option; `licenses/hwdata-pnp.ids-LICENSE` carries hwdata's statement and the licence text, both pinned in `port/deps.lock`) | monitor maker names (PNP IDs); its table is compiled into dxvk-native's Direct3D 9 library |
 | libxkbcommon | 1.13.2 | MIT | keyboard layouts for SDL3 on Linux; a shared library beside the program |
 | FFmpeg | 7.1.1 (decoders and demuxer only; no GPL or non-free parts) | LGPL-2.1-or-later | the game's films; shared libraries beside the program, which you may replace with your own build. Each release also offers the exact FFmpeg source it was built from. |
-| Monocypher | 4.0.2 | BSD-2-Clause OR CC0-1.0 | compiled into the launcher; unused while automatic updating is suspended |
-| zlib | 1.3.2 | Zlib | compressed game files on Windows (a DLL beside the program); Linux uses the system's |
+| Monocypher | 4.0.2 | BSD-2-Clause OR CC0-1.0 | compiled into the launcher: the update feed's signature check |
+| zlib | 1.3.2 | Zlib | compressed game files and the launcher's update unpacking on Windows (a DLL beside the program); Linux uses the system's |
 | libogg, libvorbis | 1.0 | BSD-3-Clause | the game's music and voices, built with the game's original compiler into `libvorbis_vc6.a` (attached to the `vorbis-vc6-1` release and pinned by SHA-256 in `port/deps.lock`) by `port/vorbis/build.py`, from Xiph.Org's 1.0 source fetched from downloads.xiph.org by the SHA-256 pins in that script |
 | MinGW-w64 runtime | from llvm-mingw 20260922 | ZPL-2.1 and public domain | the Windows C runtime start-up, linked into `bea.exe` |
 | libc++, libc++abi, libunwind | from llvm-mingw 20260922 | Apache-2.0 WITH LLVM-exception | the Windows C++ runtime, linked into `bea.exe` |

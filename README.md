@@ -1,28 +1,40 @@
 # Onslaught CE
 
-Status: preview — 0.1.7 corrective release; launchers 0.1.0–0.1.6 must not be run
+Status: preview — 0.1.8: download it once by hand, and it updates itself from then on
 Last updated: 2026-10-27
-Summary: the native Battle Engine Aquila port, the affected-launcher safety hold, manual migration and source build.
+Summary: the native Battle Engine Aquila port, the one-time manual move to 0.1.8, signed updates and source build.
 
 A native port of *Battle Engine Aquila*; you need your own copy.
 
-## Launcher safety warning
+## Getting 0.1.8: one download by hand, then it updates itself
 
-**Do not run released Onslaught CE versions 0.1.0 through 0.1.6 on Linux or Windows.** Their launcher source
-contains name-based startup cleanup that can delete unrelated neighboring folders named like
-`<program folder>.old-*`. The shipped Linux 0.1.6 package has reproduced data deletion; on Linux a matching
-directory link can also lead cleanup into its target. Windows link behavior has not been measured.
+**Why by hand, this once?** The updater in Onslaught CE 0.1.0–0.1.6 tidied up at startup by deleting any folder next
+to the game folder whose name started like it (for example `Onslaught CE.old-backup` beside `Onslaught CE`). We know
+of no case where this deleted anything of a player's, but it could, so 0.1.7 switched updating off. 0.1.8 brings
+updates back with a new updater that only ever touches its own folder inside the Onslaught CE folder, checks every
+update's signature before using it, and can go back to the previous version. Old launchers cannot reach it, so you
+download 0.1.8 yourself once; after that it updates itself.
 
-**Disabling update checks does not disable this cleanup.** Do not start an affected launcher to update it,
-check its version, or try different update flags. Keep the old program folder, user data and all neighboring
-backup/staging paths untouched. Read the [manual migration steps](#manual-migration-from-affected-launchers)
-before installing a replacement. **0.1.7 is the corrected release:** its launcher removes no neighboring paths and
-its automatic updating is suspended. Install it by hand into a new empty folder, as the migration steps describe.
+From any earlier Onslaught CE (0.1.0 to 0.1.7):
+
+1. **Close Onslaught CE.** Do not start the old version again (from 0.1.0–0.1.6, not even to check its version).
+2. **Back up your careers and settings:** copy the folder `~/.local/share/onslaught-ce` (Linux) or
+   `%APPDATA%\Onslaught CE` (Windows; paste that into the Explorer address bar) somewhere safe.
+3. **Download** the 0.1.8 package for your system from the
+   [Releases page](https://github.com/dlprentice/onslaught-ce/releases).
+4. **Extract it into a new, empty folder.** Do not extract it over the old one.
+5. **Run** `onslaught-ce` (Linux) or `onslaught-ce.exe` (Windows) from the new folder. It finds your careers and
+   settings by itself. Then point your shortcut at the new folder.
+
+Keep the old folder and your backup until you are happy; never run the old launcher. If you set `BEA_USER_DIR` for
+an earlier version, set it the same way for 0.1.8. Anything unusual (a relative `BEA_USER_DIR`, data in
+several places, folders you are unsure of): follow the
+[detailed migration](#manual-migration-from-affected-launchers) instead.
 
 ## Quick start
 
-These steps apply to 0.1.7 or a later release whose notes address the safety warning above. Existing users should
-follow the manual migration first.
+New players start here. If you already have Onslaught CE, follow
+[Getting 0.1.8](#getting-018-one-download-by-hand-then-it-updates-itself) instead.
 
 1. Choose the package for your system from the [Releases page](https://github.com/dlprentice/onslaught-ce/releases).
    Extract it into a **new, empty, ordinary folder**, separate from the original game and every old CE folder.
@@ -52,8 +64,12 @@ and remaining limits; development source may include changes beyond that publish
 
 ## In the game
 
-- **Main menu > Onslaught CE:** About (version, licence and links), Special Thanks, Manual updates (download and
-  preservation guidance), Record sessions (see below) and Report a problem.
+- **Main menu > Onslaught CE:** About (version, licence and links), Report a problem, Record sessions (see below),
+  Updates (whether checking is on, how to roll back, where `ce.ini` is) and Special Thanks.
+- **Commands:** during play, press the `` ` `` key (left of 1, below Esc) for a small command panel (the game's
+  own text calls it the grave key): `help` lists the commands, `status` shows the camera and battle state, and
+  `camera` switches the free camera on or off (turn on the Free camera cheat first). Enter runs a command; Esc or the
+  `` ` `` key closes the panel. The game keeps running.
 - **Options > Cheats:** the game's own cheats as On/Off switches, kept in `ce.ini` so they apply to every career; the
   line under the list says what the highlighted one does:
   - **Unlock all levels** (original code TURKEY): every level opens in the level select.
@@ -99,8 +115,9 @@ refused, please [open an issue](https://github.com/dlprentice/onslaught-ce/issue
 
 ## Download and install
 
-Read the [launcher safety warning](#launcher-safety-warning) first. Download 0.1.7 or a later release whose notes
-address it, from this repository's [Releases](https://github.com/dlprentice/onslaught-ce/releases) page.
+Download 0.1.8 or later from this repository's [Releases](https://github.com/dlprentice/onslaught-ce/releases) page.
+If you have an earlier Onslaught CE, read [Getting 0.1.8](#getting-018-one-download-by-hand-then-it-updates-itself)
+first.
 
 ### Verify a download (optional)
 
@@ -111,7 +128,7 @@ download's filename). A successful check prints that filename followed by `OK` a
 missing file, malformed list or changed download fails the check.
 
 ```bash
-package=onslaught-ce-0.1.7-linux-i686.tar.gz
+package=onslaught-ce-0.1.8-linux-i686.tar.gz
 set -o pipefail
 awk -v package="$package" '
   /^[[:space:]]*$/ || /^Onslaught CE / || /^Source: / { next }
@@ -194,20 +211,23 @@ report any problems; see Known limitations and the release notes for the routes 
 
 ## Update, move and uninstall
 
-- **Update:** affected versions must use the [manual migration](#manual-migration-from-affected-launchers) below.
-  Do not start an old launcher to reach its updater. A corrected successor's own release notes describe its
-  validated update routes.
-- **Move:** a corrected successor's program folder can live anywhere; move it as a whole. Preserve affected old
-  folders during the safety hold. The launcher remembers your game folder in
+- **Update:** from 0.1.8 on, the launcher updates itself ([Updates and privacy](#updates-and-privacy)). From 0.1.0–0.1.7,
+  install 0.1.8 by hand once ([Getting 0.1.8](#getting-018-one-download-by-hand-then-it-updates-itself)); never
+  start an old launcher to reach its updater.
+- **Move:** the program folder can live anywhere; move it as a whole (with its `versions` folder) while the game is
+  closed. The launcher remembers your game folder in
   `ce.ini` (`gamedir`); if the game moves, it logs why the remembered folder no longer works and searches again, or
   set `BEA_GAME_DIR` to the new folder.
 - **Uninstall:** first make and verify a recovery copy of the user folder, including any custom `BEA_USER_DIR`.
-  It may be inside a program folder if you chose that location. During this safety hold, preserve old program
-  folders and neighboring `.old-*`, `.download-*` and `.unpack-*` paths; do not use the old launcher's cleanup.
+  It may be inside a program folder if you chose that location. Then delete the program folder. Before deleting an
+  old 0.1.0–0.1.6 folder, look at any neighboring `.old-*`, `.download-*` and `.unpack-*` folders yourself: they may
+  hold things of yours; never use the old launcher's cleanup.
 
 <a id="windows-upgrading-from-015"></a>
 
 ### Manual migration from affected launchers
+
+The detailed version of [Getting 0.1.8](#getting-018-one-download-by-hand-then-it-updates-itself), for unusual setups.
 
 1. Close CE and its launcher. **Do not run the affected version again.** Do not rename or delete its program folder
    or any neighboring `<program folder>.old-*`, `.download-*` or `.unpack-*` paths. They may contain unrelated files
@@ -223,13 +243,13 @@ report any problems; see Known limitations and the release notes for the routes 
    folders. Verify the copies and identify the locations containing your careers (`savegames`), settings (`ce.ini`)
    and recordings when present. Keep all originals and backups; if locations or conflicting files are unclear, do not
    merge or overwrite them, and seek help before choosing a working folder.
-4. Choose the user folder 0.1.7 will use. If your data is in the default folder above (no `BEA_USER_DIR`) and step 3's
-   backup is verified, 0.1.7 can use that folder as it is: leave `BEA_USER_DIR` unset. Otherwise (a custom or relative
+4. Choose the user folder 0.1.8 will use. If your data is in the default folder above (no `BEA_USER_DIR`) and step 3's
+   backup is verified, 0.1.8 can use that folder as it is: leave `BEA_USER_DIR` unset. Otherwise (a custom or relative
    `BEA_USER_DIR`, or locations you are unsure of), prepare a separate working copy of the identified game user-data
    folder outside the original game and all old CE program and staging folders, and set `BEA_USER_DIR` to its absolute
    path for the successor. Preserve any separately located launcher settings and logs as well; do not assume copying
    the game folder restores them. Do not put saves into the new program folder.
-5. Download the **0.1.7** (or later corrected) platform package and `ASSETS.txt` from that specific release, and [verify the package](#verify-a-download-optional).
+5. Download the **0.1.8** (or later) platform package and `ASSETS.txt` from that specific release, and [verify the package](#verify-a-download-optional).
    Do not use 0.1.6 as an intermediate upgrade, and do not use an old launcher's automatic update path.
 6. Extract the successor into a **new, empty folder writable by your account**, with no directory links/junctions
    in its path, separate from the original game and all old CE folders. Do not merge old executables or DLLs into it.
@@ -242,11 +262,20 @@ old helper. The embedded execution-level declaration in 0.1.6 does **not** fix t
 
 ## Updates and privacy
 
-Automatic update checks and installation are temporarily disabled in this source. The launcher makes no automatic
-update requests or downloads, and the Manual updates menu gives guidance instead of checking for a release.
-`--update-only` prints guidance and exits with status 2 without starting the game or checking whether the version is
-current. The legacy `--apply` command is refused. Keep affected released launchers closed; use the
-[manual migration](#manual-migration-from-affected-launchers) to move to 0.1.7.
+This source's launcher (from 0.1.8) checks for updates when it starts: it downloads the public files
+`ce-update-v2.json` and its signature from the latest GitHub release, checks the signature against the key built into
+the launcher, and asks before installing. **Update** downloads the package, checks its size and SHA-256 against the
+signed feed, and unpacks it into `versions/` inside the Onslaught CE folder; that folder's own files and everything
+beside it are left alone, and the version you had stays for `--rollback`. Careers and settings are not changed.
+`--update-only` checks now without starting the game; `BEA_NO_UPDATE_CHECK=1`, `update_check=0` in `ce.ini` or
+`--no-update-check` turn checking off; **Onslaught CE > Updates** in the game says which applies and where `ce.ini` is.
+Releases never carry the old `latest.json` feed that launchers 0.1.0–0.1.6 fetch, and the legacy `--apply` command
+is refused.
+
+**Going back:** if an update gives you trouble, close the game and run the launcher in the Onslaught CE folder with
+`--rollback`: `./onslaught-ce --rollback` (Linux), or `onslaught-ce.exe --rollback` from a Command Prompt in that folder
+(Windows). The version before the update becomes the active one again, and that update is not offered again; a newer
+one will be.
 
 There is no telemetry. **Report a problem** is a user-initiated action: it opens a GitHub page in your browser with
 your version and OS in its address; nothing is posted until you submit it.
@@ -257,6 +286,14 @@ Onslaught CE starts at your desktop's resolution, and Video Options lists your m
 included. On a widescreen monitor the 3D view shows more to the sides (the original's vertical view is kept); the menus,
 loading pictures and films keep their original 4:3 shape, centred with black bars, and the in-game HUD sits where it
 would on a 4:3 screen. To get the original's 4:3-only list and 640 x 480 start back, set `BEA_PORT_WIDESCREEN=0`.
+
+Above 640 x 480 the single-player HUD (radar, portrait, messages, compass and reticle) is drawn larger in
+proportion to the screen, so it stays readable at 1440p and 4K. Set
+`BEA_PORT_HUD_SCALE=0` for the original's fixed-size HUD.
+
+For testers: to try a screen size your monitor does not offer, set `BEA_PORT_WIDE_TEST=WIDTHxHEIGHT` and start with
+the same size, for example `BEA_PORT_WIDE_TEST=2560x1440 onslaught-ce -- -res 2560 1440`. The game then treats it as
+an available widescreen mode.
 
 Replays and recordings always use the original 4:3 behaviour. The original game shares one random number source
 between visual effects and play, so a wider view can change the details of a fight; that is expected.
@@ -273,8 +310,10 @@ between visual effects and play, so a wider view can change the details of a fig
 2. Say what happened and how to make it happen again.
 3. Attach `onslaught-ce.log` from your user folder (`~/.local/share/onslaught-ce` on Linux, `%APPDATA%\Onslaught CE`
    on Windows). In ordinary, unrecorded play it includes the launcher and game identities, the game executable's
-   SHA-256, graphics and audio configuration, level and player-mode changes, window focus changes, music/film
-   requests and results, and counted audio submission errors. Events carry elapsed milliseconds and a Present
+   SHA-256, graphics and audio configuration, every display (size, refresh rate, scaling, which one the game used),
+   the keyboards, mice, controllers and audio playback devices by the names your system gives them, the Onslaught CE
+   settings in use, level and player-mode changes, window focus changes, music/film requests and results, and counted
+   audio submission errors. Events carry elapsed milliseconds and a Present
    number. These details help distinguish a mixed installation, a device failure and the order of playback requests;
    successful requests do not prove what reached your speakers. Screenshots and recordings are still useful.
    `onslaught-ce.old.log` is the run before. Each stops at 4 MB, and repeated diagnostic events have their own limits.
@@ -295,7 +334,8 @@ in both and comparing them, and recordings of real play find differences our own
 - While recording, the game runs at 30 frames a second (the timing replays use), its menus take the keyboard and the
   mouse, and you can type a career's name, the screen is the original 4:3 (no widescreen), and the menus are the
   original's: the version text, no Onslaught CE menu and no Cheats page, and only cheats typed into a career's name
-  work. The game's sound plays while recording.
+  work. These Onslaught CE additions are off too: the larger HUD, the command panel, the tutorial's dodge and zoom
+  cues, and the saved Display mode (Windowed or Fullscreen) from Video Options. The game's sound plays while recording.
 - Each completed session is saved in the `tapes` folder of your user folder as
   `YYYYMMDD-HHMMSS-PID-SERIAL.tape` and a `.tape.json` beside it. The final tape appears when the recording closes
   successfully. A failed or interrupted capture may leave an `.incomplete` file; that is not a replayable tape, and
@@ -333,8 +373,8 @@ of the tutorial (through its third zone; the final drone fight is still being co
 
 ## Known limitations
 
-- Released launchers 0.1.0–0.1.6 contain the [startup cleanup hazard](#launcher-safety-warning); do not run them.
-  Follow the [manual migration](#manual-migration-from-affected-launchers) to install 0.1.7, the corrected release.
+- Released launchers 0.1.0–0.1.6 contain the [startup cleanup hazard](#getting-018-one-download-by-hand-then-it-updates-itself); do not run them.
+  Install 0.1.8 by hand once ([Getting 0.1.8](#getting-018-one-download-by-hand-then-it-updates-itself)).
   Windows 0.1.5 also has an update-helper startup failure. Neither disabling updates nor installing 0.1.6 solves the cleanup risk.
 - Windows checks cover Wine and one Windows 11 virtual machine using Microsoft's software renderer, not a PC with
   a real graphics card. During the 0.1.3 release checks, that VM updated 0.1.2 to 0.1.3, restarted, and the installed
@@ -420,10 +460,10 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) (contributions are GPL-3.0-only; never in
 
 - **Lost Toys**, for the original game
 - **Stuart Gillam** (**desimbr** on Discord), for his help, insight and guidance
-- **Jeppi** and **BermudaMaster** on Discord, for early testing and helpful reports
-- **The Onslaught CE contributors**
+- **Jeppi** and **BermudaMaster** on Discord, and every other early tester, for testing and helpful reports
+- **The Onslaught CE contributors**, including everyone who contributed work made with their own AI coding agents
 - **The Battle Engine Aquila community and preservation projects**, including everyone testing, reporting issues
-  and sharing fixes, and the people guiding and reviewing work with coding agents
+  and sharing fixes
 
 The **Onslaught CE → Special Thanks** menu carries these acknowledgements in the game. The original game's
 **Credits** remain separate.

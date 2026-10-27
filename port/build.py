@@ -439,7 +439,7 @@ def main():
     ap.add_argument("--public", action="store_true",
                     help="the public build: NvTriStrip compiled out (port/platform/public); use a separate worktree, as its\n"
                          "objects differ")
-    ap.add_argument("--ce-version", default="dev", help="the public build's version (Onslaught CE vX.Y; the release tag)")
+    ap.add_argument("--ce-version", default="dev", help="the public build's version (Onslaught CE VX.Y; the release tag)")
     ap.add_argument("files", nargs="*")
     a = ap.parse_args()
     if a.system_clang:
@@ -544,24 +544,30 @@ def launcher_version_object(out: Path, version: str) -> Path:
     return out
 
 
-def build_launcher(target, version):
-    """The public launcher: game-folder discovery and logging, with automatic updates suspended. It links SDL3 and
-    Monocypher; Linux: build/linux/onslaught-ce-launch; Windows: build/windows/onslaught-ce.exe."""
+def build_launcher(target, version, out=None, defines=()):
+    """The public launcher: game-folder discovery, logging and the signed v2 updater (port/updater/UPDATER-V2.md). It
+    links SDL3 (dialogs), Monocypher (Ed25519) and zlib (unpacking), and on Windows WinHTTP and BCrypt. Linux:
+    build/linux/onslaught-ce-launch; Windows: build/windows/onslaught-ce.exe. `out` and `defines` are for the updater
+    tests' builds only (CE_UPDATER_TESTING with a test key); package.py refuses such a launcher."""
     mc = deps.SRC / "monocypher-4.0.2/src"
     if not mc.is_dir():
         deps.unpack(deps.lock()["monocypher"], deps.SRC)
     src = [PORT / "updater/ce_launch.c", PORT / "updater/sha256.c", mc / "monocypher.c", mc / "optional/monocypher-ed25519.c"]
-    flags = ["-std=gnu11", "-O2", "-Wall", f'-DCE_VERSION="{version}"', f'-DCE_COMMIT="{source_commit()}"', f"-I{mc}", f"-I{mc / 'optional'}", f"-I{PORT / 'updater'}"]
+    flags = ["-std=gnu11", "-O2", "-Wall", f'-DCE_VERSION="{version}"', f'-DCE_COMMIT="{source_commit()}"', f"-I{mc}",
+             f"-I{mc / 'optional'}", f"-I{PORT / 'updater'}"] + list(defines)
     if target == "linux":
+        out = out or BUILD / "linux/onslaught-ce-launch"
         cmd = TARGETS["linux"]["cc"] + ["-m32"] + flags + [f"-I{deps.PREFIX / 'include'}"] + [str(s) for s in src] + \
-              [f"-L{deps.PREFIX / 'lib'}", "-lSDL3", "-Wl,-rpath,$ORIGIN/lib", "-o", str(BUILD / "linux/onslaught-ce-launch")] + \
+              [f"-L{deps.PREFIX / 'lib'}", "-lSDL3", "-lz", "-Wl,-rpath,$ORIGIN/lib", "-o", str(out)] + \
               deps.sysroot_link_flags()
     else:
-        res = manifest_object(BUILD / "windows/launcher-utf8.rc.o")
-        ver = launcher_version_object(BUILD / "windows/launcher-version.rc.o", version)
+        out = out or BUILD / "windows/onslaught-ce.exe"
+        res = manifest_object(Path(out).parent / "launcher-utf8.rc.o")
+        ver = launcher_version_object(Path(out).parent / "launcher-version.rc.o", version)
         cmd = TARGETS["windows"]["cc"] + ["-mwindows"] + flags + [f"-I{deps.PREFIX_WIN / 'include'}"] + [str(s) for s in src] + [str(res), str(ver)] + \
-              [f"-L{deps.PREFIX_WIN / 'lib'}", "-lSDL3", "-ladvapi32", "-lshell32", "-static-libgcc", "-Wl,--no-insert-timestamp",
-               "-o", str(BUILD / "windows/onslaught-ce.exe")]
+              [f"-L{deps.PREFIX_WIN / 'lib'}", "-lSDL3", "-lz", "-lwinhttp", "-lbcrypt", "-ladvapi32", "-lshell32",
+               "-static-libgcc", "-Wl,--no-insert-timestamp", "-o", str(out)]
+    Path(out).parent.mkdir(parents=True, exist_ok=True)
     r = subprocess.run(cmd)
     print(f"{target}: launcher {'built' if r.returncode == 0 else 'FAILED'}")
     return r.returncode

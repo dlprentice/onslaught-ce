@@ -85,14 +85,14 @@ def main():
         calls = out / "callers.inc"
         calls.write_text("\n".join(bodies.values()))
         shims = {}
-        for name in ("window.cpp", "dinput.cpp", "portlog.cpp"):
+        for name in ("window.cpp", "dinput.cpp", "portlog.cpp", "inventory.cpp"):
             data = (args.source_root / "port/platform/common" / name).read_bytes()
             (out / name).write_bytes(data)
             shims[name] = sha(data)
         receipt["shims_sha256"] = shims
         driver = (ROOT / "port/tools/tests/input_lifetime_driver.cpp").read_text()
         for name, path in {"WINDOW_CPP": out / "window.cpp", "DINPUT_CPP": out / "dinput.cpp",
-                           "PORTLOG_CPP": out / "portlog.cpp", "CALLERS_INC": calls}.items():
+                           "PORTLOG_CPP": out / "portlog.cpp", "INVENTORY_CPP": out / "inventory.cpp", "CALLERS_INC": calls}.items():
             driver = driver.replace(name, str(path))
         cpp = out / "driver.cpp"
         cpp.write_text(driver)

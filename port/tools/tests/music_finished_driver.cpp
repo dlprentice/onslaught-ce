@@ -9,6 +9,7 @@ bool PortSessionEnabled() { return false; }
 void PortSessionLog(PortSessionCategory, bool, const char *, ...) {}
 void PortSessionAsset(PortSessionCategory, const char *, const char *, long) {}
 void PortSessionMediaActive(PortSessionCategory, const void *, bool) {}
+bool PortAudioMediaRole(const void *, PortSessionCategory) { return false; }
 void PortSessionCount(PortSessionCounter) {}
 void PortSessionAudioError(const char *) {}
 void PortSessionSummary() {}

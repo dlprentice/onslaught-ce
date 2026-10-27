@@ -1,12 +1,107 @@
 # SPDX-License-Identifier: GPL-3.0-only
-# Frozen production negative control: undo only the audio lifecycle fix.
+# Frozen production negative control: strip later observation and undo lifecycle correction; original source SHA stays pinned.
 --- a/dsound.cpp
 +++ b/dsound.cpp
-@@ -90 +89,0 @@
+@@ -33 +32,0 @@
+-#include <errno.h>
+@@ -58 +56,0 @@
+-void MediaSnapshot(const Buffer *buffer, const char *operation);
+@@ -81,10 +78,0 @@
+-	// Ordinary-session metadata only; the existing mixer mutex protects these fixed counters and list links.
+-	Buffer *mediaBuffers = NULL;
+-	unsigned mediaSerial = 0;
+-	Uint64 musicFrames = 0, filmFrames = 0, bothRoleFrames = 0;
+-	Uint64 callbackFrames = 0, queueSamples = 0, queueFailures = 0, queueAtMixed = 0;
+-	unsigned callbackMaxFrames = 0;
+-	Uint64 streamGeneration = 0, queueGeneration = 0, retiredQueueObservations = 0;
+-	bool generationExhausted = false;
+-	bool mediaStreamActive = false; // protected by lock; snapshots never read stream during teardown
+-	int queueLastBytes = -1, queueMaxBytes = -1;
+@@ -102 +89,0 @@
 -	Uint64 virtMixedBase = 0;		// cumulative frames already mixed when this device lifetime began
-@@ -101 +99,0 @@
+@@ -113 +99,0 @@
 -	void CatchUpLocked();		// lock held; sample the clock after acquiring it
-@@ -1083,7 +1080,0 @@
+@@ -191,4 +176,0 @@
+-	Buffer *mediaNext = NULL;
+-	bool mediaRegistered = false;
+-	unsigned mediaSerial = 0;
+-	int mediaKind = -1; // set by the actual music/Bink owner, never inferred from format or buffer size
+@@ -233,9 +214,0 @@
+-		}
+-		if (gSessionAudio)
+-		{
+-			SDL_LockMutex(gMixer.lock);
+-			if (gMixer.mediaSerial != ~0u) mediaSerial = ++gMixer.mediaSerial; // zero means serial exhausted
+-			mediaNext = gMixer.mediaBuffers;
+-			gMixer.mediaBuffers = this;
+-			mediaRegistered = true;
+-			SDL_UnlockMutex(gMixer.lock);
+@@ -415 +387,0 @@
+-		MediaSnapshot(this, "play");
+@@ -478 +449,0 @@
+-		MediaSnapshot(this, "stop");
+@@ -780,7 +750,0 @@
+-	if (mediaRegistered)
+-	{
+-		Buffer **link = &gMixer.mediaBuffers;
+-		while (*link && *link != this) link = &(*link)->mediaNext;
+-		if (*link == this) *link = mediaNext;
+-		mediaRegistered = false;
+-	}
+@@ -935 +898,0 @@
+-	int musicSpan = 0, filmSpan = 0;
+@@ -1005,8 +967,0 @@
+-		// Every voice starts at this block's frame zero; only its end can shorten that prefix. Max per-role
+-		// prefix and min of those prefixes count mixed active-role frames without storage or sample arithmetic.
+-		// Silent samples and muted buffers still count: these counters do not prove audible content.
+-		if (gSessionAudio)
+-		{
+-			if (b->mediaKind == PORT_SESSION_MUSIC && i > musicSpan) musicSpan = i;
+-			if (b->mediaKind == PORT_SESSION_FILM && i > filmSpan) filmSpan = i;
+-		}
+@@ -1035,7 +989,0 @@
+-	if (gSessionAudio)
+-	{
+-		auto add = [](Uint64 &c, Uint64 n) { c = ~Uint64(0) - c < n ? ~Uint64(0) : c + n; };
+-		add(musicFrames, (unsigned)musicSpan);
+-		add(filmFrames, (unsigned)filmSpan);
+-		add(bothRoleFrames, (unsigned)(musicSpan < filmSpan ? musicSpan : filmSpan));
+-	}
+@@ -1115,8 +1062,0 @@
+-	Uint64 observedMixed = gMixer.mixed, generation = gMixer.streamGeneration;
+-	bool observe = gSessionAudio && gMixer.mediaStreamActive && stream == gMixer.stream && !gMixer.generationExhausted;
+-	if (observe)
+-	{
+-		Uint64 n = (unsigned)frames;
+-		gMixer.callbackFrames = ~Uint64(0) - gMixer.callbackFrames < n ? ~Uint64(0) : gMixer.callbackFrames + n;
+-		if ((unsigned)frames > gMixer.callbackMaxFrames) gMixer.callbackMaxFrames = (unsigned)frames;
+-	}
+@@ -1128,24 +1067,0 @@
+-	}
+-	if (observe)
+-	{
+-		// Only this callback's live stream, outside the mixer lock; no SDL-stream/mixer lock inversion.
+-		// This is SDL input data only, not converted/OS/device buffers. A failed query remains unknown.
+-		int queued = SDL_GetAudioStreamQueued(stream);
+-		SDL_LockMutex(gMixer.lock);
+-		if (!gMixer.mediaStreamActive || stream != gMixer.stream || generation != gMixer.streamGeneration || gMixer.generationExhausted)
+-		{
+-			if (gMixer.retiredQueueObservations != ~Uint64(0)) ++gMixer.retiredQueueObservations;
+-			SDL_UnlockMutex(gMixer.lock);
+-			SDL_free(buf);
+-			return;
+-		}
+-		gMixer.queueGeneration = generation;
+-		gMixer.queueLastBytes = queued < 0 ? -1 : queued;
+-		gMixer.queueAtMixed = observedMixed;
+-		if (queued < 0) { if (gMixer.queueFailures != ~Uint64(0)) ++gMixer.queueFailures; }
+-		else
+-		{
+-			if (gMixer.queueSamples != ~Uint64(0)) ++gMixer.queueSamples;
+-			if (queued > gMixer.queueMaxBytes) gMixer.queueMaxBytes = queued;
+-		}
+-		SDL_UnlockMutex(gMixer.lock);
+@@ -1165,7 +1080,0 @@
 -	SDL_LockMutex(lock);
 -	CatchUpLocked();
 -	SDL_UnlockMutex(lock);
@@ -14,14 +109,14 @@
 -
 -void Mixer::CatchUpLocked()
 -{
-@@ -1092,0 +1084 @@
+@@ -1174,0 +1084 @@
 +	SDL_LockMutex(lock);
-@@ -1095,3 +1087 @@
+@@ -1177,3 +1087 @@
 -	if (now < virtBase)
 -		return;
 -	Uint64 target = virtMixedBase + (now - virtBase) * kRate / 1000000000ull;
 +	Uint64 target = (now - virtBase) * kRate / 1000000000ull;
-@@ -1101,13 +1091,5 @@
+@@ -1183,13 +1091,5 @@
 -}
 -
 -Uint32 SDLCALL TimerTick(void *, SDL_TimerID timerId, Uint32 interval)
@@ -40,11 +135,11 @@
 +
 +Uint32 SDLCALL TimerTick(void *, SDL_TimerID, Uint32 interval)
 +{
-@@ -1116,2 +1098 @@
+@@ -1198,2 +1098 @@
 -		gMixer.CatchUpLocked();
 -		SDL_UnlockMutex(gMixer.lock);
 +		gMixer.CatchUp();
-@@ -1128,4 +1109,3 @@
+@@ -1210,4 +1109,3 @@
 -		if (buf)
 -			gMixer.Mix(buf, n);
 -		else if (gSessionAudio)
@@ -52,28 +147,42 @@
 +		SDL_LockMutex(gMixer.lock);
 +		gMixer.Mix(buf, n);
 +		SDL_UnlockMutex(gMixer.lock);
-@@ -1134 +1113,0 @@
+@@ -1216 +1113,0 @@
 -	SDL_UnlockMutex(gMixer.lock);
-@@ -1163 +1141,0 @@
+@@ -1245 +1141,0 @@
 -	{
-@@ -1165,2 +1142,0 @@
+@@ -1247,2 +1142,0 @@
 -		virtMixedBase = mixed;
 -	}
-@@ -1177,6 +1153 @@
+@@ -1258,7 +1151,0 @@
+-				if (gSessionAudio)
+-				{
+-					SDL_LockMutex(lock);
+-					if (streamGeneration == ~Uint64(0)) generationExhausted = true; else ++streamGeneration;
+-					mediaStreamActive = !generationExhausted;
+-					SDL_UnlockMutex(lock);
+-				}
+@@ -1266,12 +1153 @@
 -				{
 -					PortSessionLog(PORT_SESSION_AUDIO, true, "device resume failed; timer fallback: %.200s", SDL_GetError());
+-					if (gSessionAudio)
+-					{
+-						SDL_LockMutex(lock);
+-						mediaStreamActive = false;
+-						SDL_UnlockMutex(lock);
+-					}
 -					SDL_DestroyAudioStream(stream);
 -					stream = NULL;
 -					SDL_QuitSubSystem(SDL_INIT_AUDIO);
 -				}
 +					PortSessionLog(PORT_SESSION_AUDIO, true, "device resume failed: %.200s", SDL_GetError());
-@@ -1212,3 +1182,0 @@
+@@ -1307,3 +1182,0 @@
 -		// Publish the ID while holding the same lock the callback takes. Even dispatch during SDL_AddTimer cannot see
 -		// an unpublished generation and accidentally cancel the newly created timer.
 -		SDL_LockMutex(lock);
-@@ -1218 +1185,0 @@
+@@ -1313 +1185,0 @@
 -		SDL_UnlockMutex(lock);
-@@ -1259,8 +1225,0 @@
+@@ -1354,8 +1225,0 @@
 -	// Retire before cancellation and teardown. An in-flight callback either completed while holding this mutex, or
 -	// will observe its old ID and return without touching device-lifetime state. Never wait for it with the mutex held.
 -	SDL_LockMutex(lock);
@@ -82,9 +191,136 @@
 -	SDL_UnlockMutex(lock);
 -	if (retiredTimer)
 -		SDL_RemoveTimer(retiredTimer);
-@@ -1271,0 +1231,5 @@
+@@ -1364,7 +1227,0 @@
+-		if (gSessionAudio)
+-		{
+-			SDL_LockMutex(lock);
+-			mediaStreamActive = false;
+-			if (streamGeneration == ~Uint64(0)) generationExhausted = true; else ++streamGeneration;
+-			SDL_UnlockMutex(lock);
+-		}
+@@ -1373,0 +1231,5 @@
 +	}
 +	if (timer)
 +	{
 +		SDL_RemoveTimer(timer);
 +		timer = 0;
+@@ -1391 +1252,0 @@
+-	MediaSnapshot(NULL, "device-stop");
+@@ -1471,54 +1331,0 @@
+-void MediaSnapshot(const Buffer *target, const char *operation)
+-{
+-	if (!gSessionAudio) return;
+-	int savedError = errno;
+-#ifdef _WIN32
+-	DWORD savedLastError = GetLastError();
+-#endif
+-	unsigned serial = 0, music = 0, film = 0, other = 0;
+-	int kind = -1;
+-	Uint64 m, f, both, callbacks, samples, failures, queueFrame, retired;
+-	bool currentGeneration;
+-	unsigned demand;
+-	int last, high;
+-	SDL_LockMutex(gMixer.lock);
+-	if (target) { serial = target->mediaSerial; kind = target->mediaKind; }
+-	if (target && kind != PORT_SESSION_MUSIC && kind != PORT_SESSION_FILM)
+-	{
+-		SDL_UnlockMutex(gMixer.lock);
+-		errno = savedError;
+-#ifdef _WIN32
+-		SetLastError(savedLastError);
+-#endif
+-		return;
+-	}
+-	for (int i = 0; i < gMixer.numVoices; ++i)
+-	{
+-		int role = gMixer.voices[i]->mediaKind;
+-		if (role == PORT_SESSION_MUSIC) ++music;
+-		else if (role == PORT_SESSION_FILM) ++film;
+-		else ++other;
+-	}
+-	m = gMixer.musicFrames; f = gMixer.filmFrames; both = gMixer.bothRoleFrames;
+-	callbacks = gMixer.callbackFrames; demand = gMixer.callbackMaxFrames;
+-	last = gMixer.queueLastBytes; high = gMixer.queueMaxBytes;
+-	samples = gMixer.queueSamples; failures = gMixer.queueFailures; queueFrame = gMixer.queueAtMixed;
+-	retired = gMixer.retiredQueueObservations;
+-	currentGeneration = gMixer.mediaStreamActive && !gMixer.generationExhausted && gMixer.queueGeneration == gMixer.streamGeneration;
+-	SDL_UnlockMutex(gMixer.lock);
+-	PortSessionLog(PORT_SESSION_AUDIO, false, "media operation=%s buffer=%u role=%s music_voices=%u film_voices=%u other_voices=%u "
+-		"mixed_music_frames=%llu mixed_film_frames=%llu mixed_both_role_frames=%llu (active tagged buffers; silence/mute possible)",
+-		operation, serial, kind == PORT_SESSION_MUSIC ? "music" : kind == PORT_SESSION_FILM ? "film" : "summary", music, film, other,
+-		(unsigned long long)m, (unsigned long long)f, (unsigned long long)both);
+-	PortSessionLog(PORT_SESSION_AUDIO, false, "media callback_frames=%llu demand_max_frames=%u queued_input_last_bytes=%d "
+-		"queued_input_max_bytes=%d queue_samples=%llu queue_failures=%llu queue_mix_frame=%llu "
+-		"queue_current_generation=%d retired_queue_observations=%llu input=44100Hz/S16LE/stereo "
+-		"(last callback; SDL input only; OS/device delay unobserved)",
+-		(unsigned long long)callbacks, demand, last, high, (unsigned long long)samples, (unsigned long long)failures,
+-		(unsigned long long)queueFrame, currentGeneration ? 1 : 0, (unsigned long long)retired);
+-	errno = savedError;
+-#ifdef _WIN32
+-	SetLastError(savedLastError);
+-#endif
+-}
+-
+@@ -1526,61 +1332,0 @@
+-
+-// Opaque caller values are compared with registered replacement buffers, never blindly dereferenced.
+-bool PortAudioMediaRole(const void *target, PortSessionCategory category)
+-{
+-	if (!gSessionAudio || !target || (category != PORT_SESSION_MUSIC && category != PORT_SESSION_FILM)) return false;
+-	int savedError = errno;
+-#ifdef _WIN32
+-	DWORD savedLastError = GetLastError();
+-#endif
+-	bool found = false;
+-	SDL_LockMutex(gMixer.lock);
+-	for (Buffer *b = gMixer.mediaBuffers; b; b = b->mediaNext)
+-		if (reinterpret_cast<const void *>(static_cast<const IDirectSoundBuffer8 *>(b)) == target)
+-		{
+-			if (b->mediaKind == -1 || b->mediaKind == category)
+-			{
+-				b->mediaKind = category;
+-				found = true;
+-			}
+-			break;
+-		}
+-	SDL_UnlockMutex(gMixer.lock);
+-	errno = savedError;
+-#ifdef _WIN32
+-	SetLastError(savedLastError);
+-#endif
+-	return found;
+-}
+-
+-// Ordinary-session observation only. This never advances the mixer or calls a buffer method: the music worker
+-// already owns its buffer lifetime, while the mixer mutex protects the cursor and voice list. No addresses or PCM.
+-bool PortAudioStreamSnapshot(IDirectSoundBuffer *target, unsigned long long *ns, unsigned long long *mixed,
+-							 unsigned *voices, unsigned *playBytes)
+-{
+-	if (!gSessionAudio) return false;
+-	int savedError = errno;
+-#ifdef _WIN32
+-	DWORD savedLastError = GetLastError();
+-#endif
+-	bool found = false;
+-	SDL_LockMutex(gMixer.lock);
+-	*ns = SDL_GetTicksNS();
+-	*mixed = gMixer.mixed;
+-	*voices = (unsigned)gMixer.numVoices;
+-	for (int i = 0; i < gMixer.numVoices; ++i)
+-	{
+-		Buffer *b = gMixer.voices[i];
+-		if (reinterpret_cast<IDirectSoundBuffer *>(static_cast<IDirectSoundBuffer8 *>(b)) == target)
+-		{
+-			*playBytes = (unsigned)b->cursor * b->format.nBlockAlign;
+-			found = true;
+-			break;
+-		}
+-	}
+-	SDL_UnlockMutex(gMixer.lock);
+-	errno = savedError;
+-#ifdef _WIN32
+-	SetLastError(savedLastError);
+-#endif
+-	return found;
+-}

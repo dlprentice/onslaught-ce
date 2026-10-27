@@ -3,7 +3,8 @@
  * install and starts the game from this folder with the game folder and
  * a per-user writable folder. It never writes into the game folder.
  *
- *   onslaught-ce [--version] [--no-update-check] [--update-only] [--record] [--no-record] [--report] [-- GAME ARGUMENTS]
+ *   onslaught-ce [--version] [--no-update-check] [--update-only] [--rollback] [--record] [--no-record] [--report]
+ *                [-- GAME ARGUMENTS]
  *
  * The log: the game's output and the launcher's own messages go to <user folder>/onslaught-ce.log (the run before is
  * onslaught-ce.old.log; each stops at 4 MiB) and still to the terminal. Two fixed leased fallback logs admit concurrent
@@ -18,10 +19,16 @@
  * game's CE page where the setting was switched on; --no-record also sets record_sessions=0 and starts unrecorded.
  * --report opens the pre-filled "Report a problem" page (ce_report.h) and prints the log folder.
  *
- * Automatic update checks and installation are suspended. --update-only prints manual-download guidance and exits 2
- * before opening settings, logs or caches. The historical --apply entry point refuses with exit 2. Ordinary startup
- * does not fetch an update feed, clean neighboring folders, stage an archive or rename an installation. Old launchers
- * remain unsafe to invoke for migration; publishing this successor does not repair an older launcher's behavior. */
+ * Updates (ce_update_v2.h, UPDATER-V2.md): a signed ce-update-v2.json feed, never the old latest.json; the player is
+ * asked first; a new version is unpacked into <this folder>/versions/ and made active by one atomic state-file
+ * replacement, and this folder's own files are never changed. Nothing outside this folder and the user folder's
+ * update-v2/ is written, and nothing is deleted by name pattern. The base folder's launcher hands over to the active
+ * version at start. --update-only checks now without starting the game; --rollback makes the previous version
+ * active again. The historical --apply entry point refuses with exit 2. Old 0.1.0-0.1.6 launchers remain unsafe to
+ * invoke; this successor does not repair an older launcher's behavior. */
+#ifndef _WIN32
+#define _FILE_OFFSET_BITS 64	/* the updater's file sizes and identities */
+#endif
 #include <SDL3/SDL.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -45,7 +52,7 @@
 #ifndef CE_COMMIT
 #define CE_COMMIT "unknown"		/* build.py: the source commit (+dirty when the tree had changes) */
 #endif
-/* The release key's public half is retained for signing tools; automatic feed checks are suspended. */
+/* The release key's public half: the v2 feed's signature (ce_update_v2.h) and the signing tools. */
 static const char PUBLIC_KEY_HEX[] = "b6cf39b727c92cd8a1682c31f315a5d38427dce912e406ccbd4802f0f7634510";
 
 #ifdef _WIN32
@@ -573,6 +580,7 @@ static void log_open(int cont)
 	if (appended) log_file("\n", 1);
 	ce_os_name(os, sizeof os);
 	utc_now(date, sizeof date, "%Y-%m-%d %H:%M:%S UTC");
+	/* The lowercase "Onslaught CE v" stays: it is log_open_file's ownership magic, so earlier versions' logs still rotate. */
 	int k = snprintf(head, sizeof head, "Onslaught CE v%s" CE_VERSION_NOTE ", build %s (" PLATFORM ")\nOS: %s\n%s: %s\n", CE_VERSION,
 					 CE_COMMIT, os, cont ? "Restarted after an update" : "Started", date);
 	log_file(head, (size_t)k < sizeof head ? (size_t)k : sizeof head - 1);
@@ -627,14 +635,7 @@ static void unset_env(const char *name)
 /* Set while an update restarts the launcher: the new launcher continues this log instead of rotating it away. */
 #define LOG_CONTINUE "BEA_CE_LOG_CONTINUE"
 
-static int is_file(const char *p)
-{
-	FILE *f = fopen(p, "rb");
-	if (f) fclose(f);
-	return f != NULL;
-}
-
-/* p names a regular file, whether or not it can be read (is_file opens it, so an unreadable file fails there). */
+/* p names a regular file, whether or not it can be read. */
 static int file_exists(const char *p)
 {
 #ifdef _WIN32
@@ -937,40 +938,35 @@ static int find_game(char *dir, size_t n)
 	return found;
 }
 
-/* ---- manual updates ------------------------------------------------------------------------------------------- */
+/* ---- updates ------------------------------------------------------------------------------------------------- */
 
-/* Kept for the release-signing tools; this launcher does not fetch or verify an update feed while installation is
- * suspended. In particular, this command must run before settings/log/cache initialization and must not open a browser. */
-static void manual_update_help(void)
-{
-	(void)PUBLIC_KEY_HEX;
-	fprintf(stderr, "Onslaught CE: automatic update checking and installation are temporarily disabled.\n"
-		"This command did not check whether your version is current.\n"
-		"Download a corrected release from https://github.com/dlprentice/onslaught-ce/releases .\n"
-		"Extract it into a new empty folder. Keep your existing installation, user folder and all backup/staging folders.\n"
-		"Do not run an older launcher to perform the update. Relative BEA_USER_DIR may place launcher files and game\n"
-		"careers in different folders. Identify and back up both; keep the originals and check careers after migration.\n"
-		"Set BEA_USER_DIR to an absolute path for a separate working copy of the game's user-data folder.\n"
-		"Keep it outside the original game and old CE folders. See README.txt for the full steps.\n");
-}
+#include "ce_update_v2.h"
 
 /* ---- folders, launch ------------------------------------------------------------------------------------------ */
 
 
 
-static int init_paths(void)
+/* This program's folder (sHere): the updater needs it before anything else runs. */
+static void init_here(void)
 {
 #ifdef _WIN32
 	GetModuleFileNameA(NULL, sHere, sizeof sHere);
 	char *s = strrchr(sHere, '\\');
-	if (s) *s = 0;
-	const char *appdata = getenv("APPDATA");
-	snprintf(sUser, sizeof sUser, "%s\\Onslaught CE", appdata ? appdata : ".");
 #else
 	ssize_t n = readlink("/proc/self/exe", sHere, sizeof sHere - 1);
 	sHere[n > 0 ? n : 0] = 0;
 	char *s = strrchr(sHere, '/');
+#endif
 	if (s) *s = 0;
+}
+
+static int init_paths(void)
+{
+	init_here();
+#ifdef _WIN32
+	const char *appdata = getenv("APPDATA");
+	snprintf(sUser, sizeof sUser, "%s\\Onslaught CE", appdata ? appdata : ".");
+#else
 	const char *xdg = getenv("XDG_DATA_HOME"), *home = getenv("HOME");
 	if (xdg && *xdg) snprintf(sUser, sizeof sUser, "%s/onslaught-ce", xdg);
 	else snprintf(sUser, sizeof sUser, "%s/.local/share/onslaught-ce", home ? home : ".");
@@ -1039,7 +1035,7 @@ static void json_start_files(FILE *f, const char *dir, const char *rel, int *fir
 		const char *nm = names[i];
 		if (!strcmp(nm, ".") || !strcmp(nm, "..")) continue;
 		if (!*rel && (!strcmp(nm, "ce.ini") || log_artifact_name(nm) ||
-					  !strcmp(nm, "update") || !strcmp(nm, "tapes")))
+					  !strcmp(nm, "update") || !strcmp(nm, "update-v2") || !strcmp(nm, "tapes")))
 			continue;
 		char path[PATHN], sub[PATHN];
 		snprintf(path, sizeof path, "%s" SEP "%s", dir, nm);
@@ -1439,7 +1435,7 @@ static int redirected_output(DWORD stream)
 
 int main(int argc, char **argv)
 {
-	int updateonly = 0, record = 0, norecord = 0, report = 0, first = argc;
+	int updateonly = 0, rollback = 0, nocheck = 0, record = 0, norecord = 0, report = 0, first = argc;
 #ifdef _WIN32
 	/* Capture redirection before attaching: attachment can supply previously absent standard handles. */
 	int out_redirected = redirected_output(STD_OUTPUT_HANDLE);
@@ -1451,23 +1447,43 @@ int main(int argc, char **argv)
 		if (!err_redirected) freopen("CONOUT$", "w", stderr);
 	}
 #endif
+	/* The historical in-place swap helper's entry point is refused before anything else, whatever version is active. */
+	static const char *const options[] = {"--version", "--no-update-check", "--update-only", "--rollback", "--record",
+		"--no-record", "--report"};
 	for (int i = 1; i < argc; i++)
 	{
-		if (!strcmp(argv[i], "--version")) { printf("Onslaught CE v%s" CE_VERSION_NOTE ", build %s\n", CE_VERSION, CE_COMMIT); return 0; }
-		else if (!strcmp(argv[i], "--no-update-check")) {}   /* accepted for compatibility; no update check runs */
-		else if (!strcmp(argv[i], "--update-only")) updateonly = 1;   /* disabled updater: guidance and exit 2, no game */
+		if (!strcmp(argv[i], "--apply"))
+		{
+			fprintf(stderr, "Onslaught CE: --apply was refused before accessing installation, user or update paths.\n");
+			return 2;
+		}
+		int known = 0;	/* the option parser below stops at the first other argument: game arguments start there */
+		for (size_t k = 0; k < sizeof options / sizeof *options; ++k) known |= !strcmp(argv[i], options[k]);
+		if (!known) break;
+	}
+	/* The base folder's launcher hands over to the active updated version (versions/, ce_update_v2.h). */
+	init_here();
+	upd_find_root();
+	{
+		int status = 0;
+		if (upd_start_active(argc, argv, 0, &status)) return status;
+	}
+	for (int i = 1; i < argc; i++)
+	{
+		if (!strcmp(argv[i], "--version"))
+		{
+			printf("Onslaught CE V%s" CE_VERSION_NOTE ", build %s%s\n", CE_VERSION, CE_COMMIT, UPD_TEST_NOTE);
+			return 0;
+		}
+		else if (!strcmp(argv[i], "--no-update-check")) nocheck = 1;
+		else if (!strcmp(argv[i], "--update-only")) updateonly = 1;   /* check and offer an update now; no game */
+		else if (!strcmp(argv[i], "--rollback")) rollback = 1;        /* the previous version becomes active; no game */
 		else if (!strcmp(argv[i], "--record")) record = 1;
 		else if (!strcmp(argv[i], "--no-record")) norecord = 1;   /* sets record_sessions=0 and starts unrecorded */
 		else if (!strcmp(argv[i], "--report")) report = 1;
 		else if (!strcmp(argv[i], "--")) { first = i + 1; break; }
-		else if (!strcmp(argv[i], "--apply"))
-		{
-			fprintf(stderr, "Onslaught CE: automatic update installation is disabled; --apply was refused before accessing installation, user or update paths.\n");
-			return 2;
-		}
 		else { first = i; break; }
 	}
-	if (updateonly) { manual_update_help(); return 2; }
 	if (!init_paths())
 	{
 		say("could not prepare the settings folder; check its permissions and that no path component is a link");
@@ -1494,10 +1510,37 @@ int main(int argc, char **argv)
 		return 0;
 	}
 	const char *tape = getenv("BEA_PORT_TAPE"), *rec = getenv("BEA_PORT_RECORD"), *cont = getenv(LOG_CONTINUE);
+	const char *updated = getenv("BEA_CE_JUST_UPDATED");
 	sReplay = (tape && *tape) || (rec && *rec);
-	int continuing = cont && *cont;
+	int continuing = cont && *cont, just_updated = updated && *updated;
 	unset_env(LOG_CONTINUE);
+	unset_env("BEA_CE_JUST_UPDATED");
+	if (rollback || updateonly)
+	{
+		log_open(continuing);
+		int rc;
+		if (rollback) rc = upd_rollback();
+		else if (nocheck) { say("update: --no-update-check: nothing checked"); rc = UPD_DISABLED; }	/* no request */
+		else rc = upd_check(1);
+		if (updateonly && rc == UPD_UPDATED) say("update: installed; the next start runs the new version");
+		log_close();
+		return rc;
+	}
 	if (!sReplay) log_open(continuing);
+	if (!sReplay && !nocheck && !just_updated && upd_check(0) == UPD_UPDATED)
+	{
+		/* Start the new version with the same arguments; it continues this log and does not check again. */
+		say("update: starting the new version");
+		log_close();
+		set_env(LOG_CONTINUE, "1");
+		set_env("BEA_CE_JUST_UPDATED", "1");
+		int status = 0;
+		if (upd_start_active(argc, argv, 1, &status)) return status;
+		unset_env(LOG_CONTINUE);
+		unset_env("BEA_CE_JUST_UPDATED");
+		log_open(1);
+		say("update: the new version could not be started; this version starts instead");
+	}
 	char game[PATHN];
 	int found = find_game(game, sizeof game);
 	if (found <= 0)

@@ -28,7 +28,7 @@ def main():
     out=Path(tempfile.mkdtemp(prefix='run-',dir=parent));selected=out/'selected';selected.mkdir();writers=[]
     r={'passed':False,'inputs':{},'cases':[],'limits':['Host authored writer processes, not game/VM/user-profile execution.',
        'Only selected filesystem/stdio failure boundaries are injected; no native Windows runtime proof.','Leases coordinate cooperating launchers; no game single-instance or updater serialization.']}
-    for name in ('ce_launch.c','ce_launch_rules.h','ce_report.h','sha256.c','sha256.h'):
+    for name in ('ce_launch.c','ce_launch_rules.h','ce_report.h','ce_update_v2.h','sha256.c','sha256.h'):
         shutil.copyfile(args.source_dir/name,selected/name);r['inputs']['port/updater/'+name]=sha(selected/name)
     shutil.copyfile(HERE/'log_lease_driver.c',selected/'driver.c');r['inputs']['driver']=sha(selected/'driver.c');r['inputs']['generator']=sha(Path(__file__));r['inputs']['control_support']=sha(HERE/'log_concurrency_tests.py')
     mc=deps.SRC/'monocypher-4.0.2/src';binary=out/'writer'
@@ -98,7 +98,7 @@ def main():
             cc=[str(deps.DATA/'llvm/bin/clang'),'--target=i686-pc-linux-gnu',*deps.sysroot_flags()] if target=='linux' else [str(deps.DATA/'llvm-mingw/bin/i686-w64-mingw32-clang')]
             exe=out/('launcher-'+target+('.exe' if target=='windows' else ''));sources=[selected/'ce_launch.c',selected/'sha256.c',mc/'monocypher.c',mc/'optional/monocypher-ed25519.c']
             cmd=cc+['-std=gnu11','-O2','-Wall',f'-I{prefix/"include"}',f'-I{mc}',f'-I{mc/"optional"}',f'-I{selected}',*map(str,sources),f'-L{prefix/"lib"}','-lSDL3','-o',str(exe)]
-            cmd+=deps.sysroot_link_flags()+['-Wl,-rpath,'+str(prefix/'lib')] if target=='linux' else ['-mwindows','-ladvapi32','-lshell32','-static-libgcc']
+            cmd+=deps.sysroot_link_flags()+['-Wl,-rpath,'+str(prefix/'lib')] if target=='linux' else ['-mwindows','-lz','-lwinhttp','-lbcrypt','-ladvapi32','-lshell32','-static-libgcc']
             p=subprocess.run(cmd,capture_output=True,text=True,timeout=60);r['links'].append({'target':target,'command':cmd,'exit':p.returncode,'output':p.stdout+p.stderr,'sha256':sha(exe) if exe.exists() else None});check(p.returncode==0,'full launcher crosslink failed: '+target)
         case=folder('header-flush-failure');a=start(case,'A','header-flush-failure');check(not a.ready['persisted'] and a.ready['slot']==-1 and not a.ready['holding'] and a.ready['hold_bytes']==0 and not a.ready['hold_present'],'failed header retained output holding');a.finish();check(b'write/flush failed' in (case/'A.stderr').read_bytes(),'header failure silent');note('first-header-flush-cleans-hold',case)
         production=(selected/'ce_launch.c').read_text();bodies=[]

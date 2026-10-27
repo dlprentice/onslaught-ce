@@ -8,15 +8,18 @@ used. You will get an answer there.
 
 Problems that matter most here:
 
-- the launcher's update path, including the legacy feed verification, archive handling and installation swap;
+- the launcher's update path: the feed's signature check and parsing, downloads, unpacking, the `versions/` folder
+  and its state file, the switch between versions and the removal of old versions;
 - anything that writes outside the program's own folder and its user data folder, or into the game's installation;
 - files from the game's data or from saves that can crash the program or make it misbehave.
 
 ## What the program sends
 
-Automatic update checking and installation are temporarily disabled in the current source. Its launcher does not
-request a release feed or download an update. Released launchers 0.1.0 through 0.1.6 have a separate startup cleanup
-hazard and must not be run; see the [warning and manual migration](README.md#launcher-safety-warning).
+The current source's launcher (from 0.1.8) requests the public update feed (`ce-update-v2.json` and its signature)
+from the latest GitHub release when it starts, unless checking is turned off, and downloads a package only after you
+choose Update ([Updates and privacy](README.md#updates-and-privacy)). These requests carry nothing but what any
+download does. Released launchers 0.1.0 through 0.1.6 have a separate startup cleanup hazard and must not be run;
+see [Getting 0.1.8](README.md#getting-018-one-download-by-hand-then-it-updates-itself).
 
 Report a problem (the main menu's Onslaught CE page, or `--report`) is the one network action you start yourself: it
 opens a GitHub page in your browser with your version and OS in its address; nothing is posted until you submit it.
@@ -24,5 +27,5 @@ Nothing else leaves your machine: no identifiers, no telemetry.
 
 ## Supported versions
 
-Fixes target the latest release. 0.1.7 addresses the launcher cleanup hazard; migrate to it by hand from an affected
-version, following the [manual migration](README.md#manual-migration-from-affected-launchers).
+Fixes target the latest release, which 0.1.8 and later deliver through the signed updater. From 0.1.0–0.1.7, install
+0.1.8 by hand once ([Getting 0.1.8](README.md#getting-018-one-download-by-hand-then-it-updates-itself)).

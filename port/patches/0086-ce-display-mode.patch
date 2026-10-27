@@ -1,0 +1,65 @@
+--- a/CLIParams.cpp
++++ b/CLIParams.cpp
+@@ -137,7 +137,13 @@
+ void	CCLIParams::GetParams(char *text)	// FUNCTION: 0x00423bc0
+ {
+ 	if (text[0] == 0)
++	{
++#ifdef CE_VERSION
++		extern int CE_DisplayModeStartupBridge(int, int);
++		mForceWindowed = CE_DisplayModeStartupBridge(mForceWindowed, mAutoConfigTest || PLAYABLE_DEMO);
++#endif
+ 		return;
++	}
+ 	
+ 	// Be very careful not to use any game functions here, as
+ 	// nothing is initialised at this point (not even the memory
+@@ -320,6 +326,12 @@
+ 
+ 		current_parm++;
+ 	};
++#ifdef CE_VERSION
++	// CE-only next-start preference. Explicit -forcewindowed wins; replay/recording ignores ce.ini.
++	// No live display, resolution, monitor or save field changes here.
++	extern int CE_DisplayModeStartupBridge(int, int);
++	mForceWindowed = CE_DisplayModeStartupBridge(mForceWindowed, mAutoConfigTest || PLAYABLE_DEMO);
++#endif
+ }
+ 
+ 
+--- a/PauseMenu.cpp
++++ b/PauseMenu.cpp
+@@ -550,6 +550,15 @@
+ #line 1415
+ 	detail->mResolution = new (MEMTYPE_MENUITEM) CSCModeMenuItem((EPCText)0x13, 3);
+ 	list->AddItem(detail->mResolution);
++#ifdef CE_VERSION
++	// The CE choice is deliberately a next-start setting, not an immediate D3D reset; it sits under Screen mode.
++	extern int CE_DisplayModeAvailableBridge();
++	if (PortCeMenus() && CE_DisplayModeAvailableBridge())
++	{
++		extern CMenuItem *PortCeDisplayModeItem();
++		list->AddItem(PortCeDisplayModeItem());
++	}
++#endif
+ #line 1416
+ 	detail->mShadowDetail = sShadowDetail = new (MEMTYPE_MENUITEM) CShadowDetail((EPCText)0xe, 3);
+ 	list->AddItem(sShadowDetail);
+--- a/Career.cpp
++++ b/Career.cpp
+@@ -1221,7 +1221,15 @@
+ 		// is 640 x 480 too; otherwise that size, or the desktop's, takes its place (widescreen.cpp, as d3dapp.cpp does).
+ 		// BEA_PORT_WIDESCREEN=0 keeps 640 x 480.
+ 		unsigned	wideW, wideH;
++#ifdef CE_VERSION
++		// Leave the startup key intact until the windowed host knows its selected adapter. Once a device exists,
++		// later career/options loads retain the existing wide-mode behavior.
++		extern int CE_DisplayModeUseSavedSizeBridge();
++#endif
+ 		if (gDisplayModeKey.mWidth && !CLIPARAMS.mResWidth &&
++#ifdef CE_VERSION
++			(LT.m_pd3dDevice || !CE_DisplayModeUseSavedSizeBridge()) &&
++#endif
+ 			PortWideStartSize(gDisplayModeKey.mWidth, gDisplayModeKey.mHeight, gDisplayModeKey.m32Bit, &wideW, &wideH))
+ 		{
+ 			gDisplayModeKey.mWidth = wideW;

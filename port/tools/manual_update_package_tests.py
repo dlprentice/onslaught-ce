@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-only
-"""Actual package text/wrapper controls for suspended automatic updating; authored launchers only, no game/network."""
+"""Actual package text/wrapper controls for the v2 updater's commands and migration text; authored launchers only, no
+game/network."""
 import importlib.util
 import json
 import os
@@ -23,10 +24,11 @@ class ManualUpdatePackage(unittest.TestCase):
             for windows in (False, True):
                 with self.subTest(windows=windows):
                     text = package.readme("0.1.7", windows).decode()
-                    for phrase in ("Automatic update checking and installation are temporarily disabled", "exits 2",
-                                   "without checking whether this version is current", "new empty folder",
+                    for phrase in ("checks a signed feed (ce-update-v2.json) and asks before installing",
+                                   "goes into versions/ inside this folder", "--rollback", "update_check=0",
+                                   "--apply is refused", "new empty folder",
                                    "Do not start an Onslaught CE 0.1.0-0.1.6 launcher at all", ".download-* and .unpack-*",
-                                   "removes no neighbouring paths", "Manual updates",
+                                   "removes no neighbouring paths", "Updates (how updating works",
                                    "both launcher and game user-data folders", "relative BEA_USER_DIR", "different locations",
                                    "each whole folder to an independent backup", "separate working copy", "game's user-data folder", "its absolute path",
                                    "do not merge or overwrite"):
@@ -36,7 +38,7 @@ class ManualUpdatePackage(unittest.TestCase):
                         self.assertNotIn(stale, text)
                     with patch.object(package, "source_commit", return_value="authored"):
                         notices = package.notices("0.1.7", windows).decode()
-                    self.assertIn("compiled into the launcher; unused while automatic updating is suspended", notices)
+                    self.assertIn("Monocypher", notices)
         self.assertNotIn("the update check needs curl", package.PREFLIGHT)
 
     def test_actual_wrapper_uses_the_real_launcher_option_boundary(self):
@@ -85,11 +87,12 @@ class ManualUpdatePackage(unittest.TestCase):
                 (("--apply", "fresh", "install", "42"), 2, "apply"),
                 (("--no-update-check", "--apply", "fresh"), 2, "apply"),
                 (("--update-only", "--apply"), 2, "apply"),
-                (("--update-only",), 2, "update"), (("--no-update-check", "--update-only"), 2, "update"),
-                (("--record", "--no-record", "--update-only"), 2, "update"),
-                (("--update-only", "--", "--version"), 2, "update"),
-                (("--update-only", "--", "--apply"), 2, "update"),
-                (("--update-only", "-level", "100"), 2, "update"),
+                (("--update-only",), 13, "update"), (("--no-update-check", "--update-only"), 12, "nocheck"),
+                (("--record", "--no-record", "--update-only"), 13, "update"),
+                (("--update-only", "--", "--version"), 13, "update"),
+                (("--update-only", "--", "--apply"), 13, "update"),
+                (("--update-only", "-level", "100"), 13, "update"),
+                (("--rollback",), 10, "rollback"),
                 (("--report",), 0, "report"), (("--no-update-check", "--report"), 0, "report"),
                 (("--report", "--", "--update-only"), 0, "report"),
                 (("--report", "-level", "100"), 0, "report"),
@@ -102,13 +105,16 @@ class ManualUpdatePackage(unittest.TestCase):
                     data = row(result)
                     self.assertEqual((data["return"], data["games"], data["finds"], data["forbidden"]), (expected, 0, 0, 0))
                     if kind == "update":
-                        self.assertIn("did not check whether your version is current", result.stderr)
-                        self.assertEqual(data["paths"], 0)
+                        self.assertEqual(data["checks"], 1)
+                    if kind == "nocheck":
+                        self.assertEqual(data["checks"], 0)
+                    if kind == "rollback":
+                        self.assertEqual(data["rollbacks"], 1)
                     if kind == "apply":
                         self.assertIn("--apply was refused", result.stderr)
                         self.assertEqual(data["paths"], 0)
                     if kind == "version":
-                        self.assertIn("Onslaught CE v", result.stdout)
+                        self.assertIn("Onslaught CE V", result.stdout)
                         self.assertEqual(data["paths"], 0)
                     if kind == "report":
                         self.assertEqual(data["reports"], 1)

@@ -26,9 +26,9 @@
 #endif
 
 #define CE_ISSUES "https://github.com/dlprentice/onslaught-ce/issues/new"
-/* After the version wherever it is shown (patch 0037's menu text says the same). */
+/* After the version wherever it is shown; empty since 0.1.8 ("Onslaught CE V0.1.8", as the menu footer, patch 0074). */
 #ifndef CE_VERSION_NOTE
-#define CE_VERSION_NOTE " (preview)"
+#define CE_VERSION_NOTE ""
 #endif
 
 /* The per-user folder: BEA_USER_DIR, else Linux $XDG_DATA_HOME/onslaught-ce or ~/.local/share/onslaught-ce, Windows
@@ -187,12 +187,12 @@ static inline void ce_report_url(const char *version, const char *build, const c
 			 "`onslaught-ce.concurrent-2.log` from the same folder. Drag them into this box.\n"
 			 "%s%s%s\n"
 			 "**System**\n\n"
-			 "- Onslaught CE v%s" CE_VERSION_NOTE ", build %s\n"
+			 "- Onslaught CE V%s" CE_VERSION_NOTE ", build %s\n"
 			 "- %s\n",
 			 shortlog, haveTape ? "Optional, if you recorded the session: the tape `" : "",
 			 haveTape ? shorttape : "", haveTape ? "` and its `.json` (it lets us replay exactly what happened).\n" : "",
 			 version, build && *build ? build : "unknown", os);
-	snprintf(title, sizeof title, "Problem: (describe it in a few words) [v%s]", version);
+	snprintf(title, sizeof title, "Problem: (describe it in a few words) [V%s]", version);
 	ce_url_encode(body, ebody, sizeof ebody);
 	ce_url_encode(title, etitle, sizeof etitle);
 	snprintf(out, n, CE_ISSUES "?template=bug_report.md&title=%s&body=%s", etitle, ebody);

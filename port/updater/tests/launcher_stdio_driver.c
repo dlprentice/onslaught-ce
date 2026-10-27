@@ -55,7 +55,7 @@ static void check(const char *exe, const char *label, int file_output, int error
 	}
 	startup.hStdError = console_error ? terminal : err_write;
 	if (snprintf(command, sizeof command, "\"%s\" %s", exe,
-		error_case ? "--no-update-check --update-only" : "--version") >= (int)sizeof command) goto done;
+		error_case ? "--apply" : "--version") >= (int)sizeof command) goto done;
 	if (!CreateProcessA(exe, command, NULL, NULL, TRUE, CREATE_NO_WINDOW, NULL, NULL, &startup, &child)) goto done;
 	CloseHandle(out_write); out_write = INVALID_HANDLE_VALUE;
 	CloseHandle(err_write); err_write = INVALID_HANDLE_VALUE;
@@ -74,10 +74,9 @@ static void check(const char *exe, const char *label, int file_output, int error
 	read_text(out_read, out, sizeof out);
 	read_text(err_read, err, sizeof err);
 	if (error_case)
-		ok = code == 2 && !*out && strstr(err, "automatic update checking and installation are temporarily disabled") &&
-			strstr(err, "did not check whether your version is current");
+		ok = code == 2 && !*out && strstr(err, "--apply was refused before accessing installation, user or update paths");
 	else
-		ok = code == 0 && !strncmp(out, "Onslaught CE v", 14) && strstr(out, ", build ") && !*err;
+		ok = code == 0 && !strncmp(out, "Onslaught CE V", 14) && strstr(out, ", build ") && !*err;
 	if (!ok) printf("FAIL %s: exit=%lu stdout=[%s] stderr=[%s]\n", label, code, out, err);
 done:
 	if (!ok) { failures++; printf("FAIL %s (Windows error %lu)\n", label, GetLastError()); }
@@ -101,7 +100,7 @@ int main(int argc, char **argv)
 	length = GetFullPathNameA(argv[1], sizeof exe, exe, NULL);
 	if (!length || length >= sizeof exe || !GetTempPathA(sizeof temp, temp) ||
 		!GetTempFileNameA(temp, "ceu", 0, blocked)) return 2;
-	/* An impossible user directory must be irrelevant to --version and the early disabled-updater refusal. */
+	/* An impossible user directory must be irrelevant to --version and the early --apply refusal (the stderr case). */
 	if (!SetEnvironmentVariableA("BEA_USER_DIR", blocked)) return 2;
 	FreeConsole();
 	check(exe, "detached pipes version", 0, 0, 0);

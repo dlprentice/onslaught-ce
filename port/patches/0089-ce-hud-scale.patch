@@ -1,0 +1,286 @@
+--- a/Hud.cpp
++++ b/Hud.cpp
+@@ -2,6 +2,7 @@
+ // Functions in retail order.
+ 
+ #include	"common.h"
++#include "hud_scale.h"
+ 
+ #include	"Hud.h"
+ #include	"DebugLog.h"
+@@ -595,6 +596,15 @@
+ 		}
+ 		vp.X -= vp.Width / 2;
+ 		vp.Y -= vp.Height / 2;
++		if (CeHudScaleActive())
++		{
++			float x = float(vp.X), y = float(vp.Y), scale = CeHudScaleFactor();
++			CeHudScalePoint(&x, &y);
++			vp.X = (SINT)(x + 0.5f);
++			vp.Y = (SINT)(y + 0.5f);
++			vp.Width = (SINT)(float(vp.Width) * scale + 0.5f);
++			vp.Height = (SINT)(float(vp.Height) * scale + 0.5f);
++		}
+ 		vp.MinZ = 0;
+ 		vp.MaxZ = 1.f;
+ 		PLATFORM.SetViewport(&vp);
+@@ -1079,7 +1089,11 @@
+ {
+ 	float	zero = 0;	// STAND-IN (see above)
+ 	SetOverlayRenderStates();
+-	mCompass->Render(mBattleEngine);
++	{
++		CeHudScope scope(!GAME.IsMultiplayer() && ENGINE.GetNumViewpoints() == 1, mViewportWidth, mViewportHeight,
++			float(PLATFORM.GetWindowWidth()) * 0.5f, float(PLATFORM.GetWindowHeight()) * 0.5f);
++		mCompass->Render(mBattleEngine);
++	}
+ 
+ 	*(SRenderMatrix *)&RENDERINFO.mWorld = *(SRenderMatrix *)&ENGINE.mWorldMatrices[mViewpoint];
+ 	RENDERINFO.mWorldChanged = true;
+@@ -1095,6 +1109,8 @@
+ 	{
+ 		pos = mBattleEngine->GetInterpolatedTrackingPos();
+ 		RENDERINFO.Project((D3DXVECTOR3 *)&screen, (D3DXVECTOR3 *)&pos, mViewport);
++		CeHudScope scope(!GAME.IsMultiplayer() && ENGINE.GetNumViewpoints() == 1, mViewportWidth, mViewportHeight,
++			screen.X, screen.Y);
+ 		CSPRITERENDERER::DrawSprite(screen.X, screen.Y, 0.01f, mCrosshairPredictor, SA_CENTRE, SPT_NONE, 1.f, 0.f, 0xffffffff, 1.f, 1.f, 0.f, 1.f, 0.f, 1.f);
+ 	}
+ 
+@@ -1179,17 +1195,21 @@
+ 	float	turn = 0;
+ 	if (mUnknown0d4[mViewpoint] < 1.f)
+ 		turn = (1.f - mUnknown0d4[mViewpoint]) * 0.5f;
+-	CSPRITERENDERER::DrawSprite(screen.X, screen.Y, 0.011f, mCrosshairPrimary, SA_CENTRE, SPT_NONE, 1.f, turn + mUnknown0f4[mViewpoint], col2, scale, scale * (LT.mScreenShapeScale + zero), 0.f, 1.f, 0.f, 1.f);	// STAND-IN (see above)
+-
+-	scale = mUnknown0e4[mViewpoint];
+-	SINT	a = SINT(((1.f - mUnknown0e4[mViewpoint]) + 1.f) * 127.5f);
+-	if (a < 0)
+-		a = 0;
+-	else if (a > 0xff)
+-		a = 0xff;
+-	DWORD	col3 = BlendAlpha2(col, a);
+-	CSPRITERENDERER::DrawSprite(screen.X, screen.Y, 0.011f, mCrosshairSecondary, SA_CENTRE, SPT_NONE, 1.f, 0.f, col3, scale, scale * (LT.mScreenShapeScale + zero), 0.f, 1.f, 0.f, 1.f);	// STAND-IN (see above)
+-	CSPRITERENDERER::DrawSprite(screen.X, screen.Y, 0.011f, mCrosshairDot, SA_CENTRE, SPT_NONE, 1.f, 0.f, col3, scale, scale * (LT.mScreenShapeScale + zero), 0.f, 1.f, 0.f, 1.f);	// STAND-IN (see above)
++	{
++		CeHudScope scope(!GAME.IsMultiplayer() && ENGINE.GetNumViewpoints() == 1, mViewportWidth, mViewportHeight,
++			screen.X, screen.Y);
++		CSPRITERENDERER::DrawSprite(screen.X, screen.Y, 0.011f, mCrosshairPrimary, SA_CENTRE, SPT_NONE, 1.f, turn + mUnknown0f4[mViewpoint], col2, scale, scale * (LT.mScreenShapeScale + zero), 0.f, 1.f, 0.f, 1.f);	// STAND-IN (see above)
++
++		scale = mUnknown0e4[mViewpoint];
++		SINT	a = SINT(((1.f - mUnknown0e4[mViewpoint]) + 1.f) * 127.5f);
++		if (a < 0)
++			a = 0;
++		else if (a > 0xff)
++			a = 0xff;
++		DWORD	col3 = BlendAlpha2(col, a);
++		CSPRITERENDERER::DrawSprite(screen.X, screen.Y, 0.011f, mCrosshairSecondary, SA_CENTRE, SPT_NONE, 1.f, 0.f, col3, scale, scale * (LT.mScreenShapeScale + zero), 0.f, 1.f, 0.f, 1.f);	// STAND-IN (see above)
++		CSPRITERENDERER::DrawSprite(screen.X, screen.Y, 0.011f, mCrosshairDot, SA_CENTRE, SPT_NONE, 1.f, 0.f, col3, scale, scale * (LT.mScreenShapeScale + zero), 0.f, 1.f, 0.f, 1.f);	// STAND-IN (see above)
++	}
+ 
+ 	mUnknown190[mViewpoint] += GAME.GetRenderFrameLength() * 0.4f;
+ 	if (mUnknown190[mViewpoint] >= 6.f)
+@@ -1649,6 +1669,8 @@
+ 
+ 	if (GAME.GetGameState() <= 3)
+ 	{
++		// The warnings are centred, unlike the weapon icons above.
++		CeHudSetAnchor(mViewportX + mViewportWidth * 0.5f, mViewportBottom - HUD_OFFSET_Y);
+ 		float	t0 = 999.f;
+ 		CRadarWarningReceiver	*rwr = mBattleEngine->GetRadarWarningReceiver();
+ 		if (rwr->mUnknown1C.Size())
+@@ -2069,16 +2091,41 @@
+ 	SetOverlayRenderStates();
+ 	RENDERINFO.SRS(D3DRS_ALPHATESTENABLE, FALSE);
+ 
+-	RenderWorldTargets();
+-	RenderTargetIndicator();
+-	if (GAME.GetHelpTextDisplay())
+-		GAME.GetHelpTextDisplay()->Render();
+-	Render00483530();
+-	RenderTargetMarkers();
+-	RenderWeaponPanel();
+-	Render00485d50();
+-	Render00486940();
+-	RenderRadar(96.f);
++	RenderWorldTargets(); // Projected world markers stay in the physical viewport.
++	const int portHudEligible = !GAME.IsMultiplayer() && ENGINE.GetNumViewpoints() == 1;
++	{
++		CeHudScope scope(portHudEligible, mViewportWidth, mViewportHeight,
++			mViewportX + HUD_OFFSET_X, mViewportY + HUD_OFFSET_Y);
++		RenderTargetIndicator();
++	}
++	{
++		CeHudScope scope(portHudEligible, mViewportWidth, mViewportHeight,
++			mViewportX + mViewportWidth * 0.5f, mViewportY);
++		if (GAME.GetHelpTextDisplay())
++			GAME.GetHelpTextDisplay()->Render();
++	}
++	{
++		CeHudScope scope(portHudEligible, mViewportWidth, mViewportHeight,
++			mViewportRight - HUD_OFFSET_X, mViewportY + HUD_OFFSET_Y);
++		Render00483530();
++	}
++	RenderTargetMarkers(); // Compass and crosshair scale about their existing centres.
++	{
++		CeHudScope scope(portHudEligible, mViewportWidth, mViewportHeight,
++			mViewportX + HUD_OFFSET_X, mViewportBottom - HUD_OFFSET_Y);
++		RenderWeaponPanel();
++		Render00485d50();
++	}
++	{
++		CeHudScope scope(portHudEligible, mViewportWidth, mViewportHeight,
++			mViewportRight - HUD_OFFSET_X, mViewportBottom - HUD_OFFSET_Y);
++		Render00486940();
++	}
++	{
++		CeHudScope scope(portHudEligible, mViewportWidth, mViewportHeight,
++			mViewportX + HUD_OFFSET_X, mViewportBottom - HUD_OFFSET_Y);
++		RenderRadar(96.f);
++	}
+ }
+ 
+ //******************************************************************************************
+@@ -2141,6 +2188,10 @@
+ 
+ 	RENDERINFO.SetFogEnabled(false);
+ 	RENDERINFO.SetLightingEnabled(false);
++	const int portHudEligible = !GAME.IsMultiplayer() && ENGINE.GetNumViewpoints() == 1;
++	{
++		CeHudScope scope(portHudEligible, mViewportWidth, mViewportHeight,
++			mViewportX + mViewportWidth * 0.5f, mViewportY + mViewportHeight - HUD_OFFSET_Y);
+ 	if (PortWideActive())
+ 	{
+ 		// Port (patch 0043, widescreen): the message box is centred and narrows itself by HUD_OFFSET_X on both sides,
+@@ -2152,7 +2203,10 @@
+ 	}
+ 	else
+ 	GAME.GetMessageBox()->RenderOverlay(7);
+-
++	}
++
++	CeHudScope battleScope(portHudEligible, mViewportWidth, mViewportHeight,
++		mViewportX + mViewportWidth - HUD_OFFSET_X, mViewportY + mViewportHeight - HUD_OFFSET_Y);
+ 	SetOverlayRenderStates();
+ 	SetAlphaBlend();
+ 	CSPRITERENDERER::DrawSprite((HUD.mViewportRight - 121.f - HUD_OFFSET_X), y, 0.001f, mCircleDarkener, (ESpriteAlignment)2, SPT_NONE, 1.f, 0.f, 0x7fffffff, 1.f, 1.f, 0.f, 1.f, 0.f, 1.f);
+--- a/DXSpriteRenderer.cpp
++++ b/DXSpriteRenderer.cpp
+@@ -4,6 +4,7 @@
+ 
+ 
+ #include	"common.h"
++#include "hud_scale.h"
+ #define DXSPRITERENDERER_CPP
+ #include	"mathsconst.h"	// FUNCTION: 0x00555af0 init:ZERO_FVECTOR
+ 						// FUNCTION: 0x00555b10 init:ID_FMATRIX
+@@ -173,7 +174,12 @@
+ 	SPRITEVERTEX	*out;
+ 	if (FASTVB.Lock((void **)&out, 4) != 0xffff)
+ 	{
+-		if (FRONTEND.IsRunning() && PortWideActive())
++		if (CeHudScaleActive())
++		{
++			for (i = 0; i < 4; i++)
++				CeHudScalePoint(&verts[i].p.x, &verts[i].p.y);
++		}
++		else if (FRONTEND.IsRunning() && PortWideActive())
+ 		{
+ 			// Port (patch 0042, widescreen): the 640 x 480 virtual screen goes into the centred 4:3 box, unstretched.
+ 			float	s = PortUiScale(), left = PortUiLeft(), top = PortUiTop();
+--- a/Font.cpp
++++ b/Font.cpp
+@@ -3,6 +3,7 @@
+ // ours: nothing in the retail executable names it.
+ 
+ #include	"common.h"
++#include "hud_scale.h"
+ #include	"Platform.h"
+ 
+ // The characters of a font texture, in cell order (005db5fc; name open): printable ASCII, then the accented letters,
+@@ -107,7 +108,16 @@
+ 
+ 	if (any)
+ 	{
+-		DrawTextScaled(x + 1.f, y + 1.f, z, scalex, scaley, colour, buf, flags, shadows);
++		if (CeHudScaleActive())
++		{
++			float scale = CeHudScaleFactor();
++			CeHudScalePoint(&x, &y);
++			scalex *= scale;
++			scaley *= scale;
++			DrawTextScaled(x + scale, y + scale, z, scalex, scaley, colour, buf, flags, shadows);
++		}
++		else
++			DrawTextScaled(x + 1.f, y + 1.f, z, scalex, scaley, colour, buf, flags, shadows);
+ 		DrawTextScaled(x, y, z, scalex, scaley, colour, buf, flags, colours);
+ 	}
+ }
+@@ -115,7 +125,16 @@
+ //*********************************************************************************
+ void	CDXBitmapFont::DrawTextWithShadow(float x, float y, DWORD colour, WCHAR *text, int flags, float z, float scalex, float scaley)	// FUNCTION: 0x004659a0
+ {
+-	DrawTextScaled(x + 1.f, y + 1.f, z, scalex, scaley, colour & 0xff000000, text, flags, NULL);
++	if (CeHudScaleActive())
++	{
++		float scale = CeHudScaleFactor();
++		CeHudScalePoint(&x, &y);
++		scalex *= scale;
++		scaley *= scale;
++		DrawTextScaled(x + scale, y + scale, z, scalex, scaley, colour & 0xff000000, text, flags, NULL);
++	}
++	else
++		DrawTextScaled(x + 1.f, y + 1.f, z, scalex, scaley, colour & 0xff000000, text, flags, NULL);
+ 	DrawTextScaled(x, y, z, scalex, scaley, colour, text, flags, NULL);
+ }
+ 
+--- a/DXBattleLine.cpp
++++ b/DXBattleLine.cpp
+@@ -4,6 +4,7 @@
+ // and BattleLine.obj's Update adds the units as coloured overlay points.
+ 
+ #include	"common.h"
++#include "hud_scale.h"
+ #include	"BattleLine.h"
+ #include	"triangulate.h"
+ #include	"vbuffer.h"
+@@ -400,6 +401,8 @@
+ 	v->Z = 0.9f;
+ 	v->RHW = 0.5f;
+ 	v->Y = ty + y;
++	if (CeHudScaleActive())
++		CeHudScalePoint(&v->X, &v->Y);
+ 	if (!colours)
+ 	{
+ 		v->U0 = u0;
+@@ -657,6 +660,8 @@
+ 
+ 	mOverlayData->X = HUD.mViewportX + HUD.mViewportWidth - 128.f - HUD_OFFSET_X + s.X + 12.f;
+ 	mOverlayData->Y = (top - 18.f) - s.Y;
++	if (CeHudScaleActive())
++		CeHudScalePoint(&mOverlayData->X, &mOverlayData->Y);
+ 	mOverlayData->Z = 0.006f;
+ 	mOverlayData->RHW = 0.5f;
+ 	mOverlayData->Colour = b + g + r;
+--- a/DXCompass.cpp
++++ b/DXCompass.cpp
+@@ -3,6 +3,7 @@
+ // initializers, and its ID_FMATRIX at 0089c928 is what the render's view starts from, 0053cdbb).
+ 
+ #include "common.h"
++#include "hud_scale.h"
+ #define DXCOMPASS_CPP
+ 
+ #if TARGET == PC
+@@ -344,6 +345,12 @@
+ 
+ 	if (GAME.IsMultiplayer())
+ 		RENDERINFO.SetProjection(0.5f, 100.0f, PLATFORM.GetWindowWidth() * 0.00093750004f, PLATFORM.GetWindowHeight() * 0.00046666668f);
++	else if (CeHudScaleActive())
++	{
++		// The rings use their own projection; match the screen-space compass sprites around the same centre.
++		float hudScale = CeHudScaleFactor();
++		RENDERINFO.SetProjection(0.5f, 100.0f, PLATFORM.GetWindowWidth() * 0.00078125f / hudScale, PLATFORM.GetWindowHeight() * 0.00078125f / hudScale);
++	}
+ 	else
+ 		RENDERINFO.SetProjection(0.5f, 100.0f, PLATFORM.GetWindowWidth() * 0.00078125f, PLATFORM.GetWindowHeight() * 0.00078125f);
+ 

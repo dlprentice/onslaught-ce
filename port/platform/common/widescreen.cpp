@@ -108,7 +108,8 @@ extern "C" int CE_SettingSet(const char *key, int value);
 #define PORT_WIDE_KEY_W	"wide_mode_w"
 #define PORT_WIDE_KEY_H	"wide_mode_h"
 
-int PortWideStartSize(unsigned savedW, unsigned savedH, int saved32, unsigned *w, unsigned *h)
+static int WideStartSize(unsigned savedW, unsigned savedH, int saved32, unsigned desktopW, unsigned desktopH,
+					 unsigned *w, unsigned *h)
 {
 	if (!PortWideModes())
 		return 0;
@@ -126,7 +127,26 @@ int PortWideStartSize(unsigned savedW, unsigned savedH, int saved32, unsigned *w
 			return 1;
 		}
 	}
+	// A caller selecting a specific adapter can supply that adapter's desktop. Before the main window exists,
+	// SDL's default display is the primary, which may be a different monitor. The explicit test size still wins.
+	if (!gTestW && desktopW && desktopH)
+	{
+		*w = desktopW;
+		*h = desktopH;
+		return 1;
+	}
 	return PortWideDefaultSize(w, h);
+}
+
+int PortWideStartSize(unsigned savedW, unsigned savedH, int saved32, unsigned *w, unsigned *h)
+{
+	return WideStartSize(savedW, savedH, saved32, 0, 0, w, h);
+}
+
+int PortWideStartSizeOnDesktop(unsigned savedW, unsigned savedH, int saved32, unsigned desktopW, unsigned desktopH,
+							   unsigned *w, unsigned *h)
+{
+	return WideStartSize(savedW, savedH, saved32, desktopW, desktopH, w, h);
 }
 
 // CCareer::Save (patch 0046) with the mode it writes: a session with widescreen modes on keeps that size in ce.ini.
