@@ -212,14 +212,21 @@ report any problems; see Known limitations and the release notes for the routes 
 1. Close CE and its launcher. **Do not run the affected version again.** Do not rename or delete its program folder
    or any neighboring `<program folder>.old-*`, `.download-*` or `.unpack-*` paths. They may contain unrelated files
    or the only remaining copy of your data.
-2. Locate your actual CE user folder without starting the launcher. `BEA_USER_DIR` takes priority; otherwise use
-   `$XDG_DATA_HOME/onslaught-ce` on Linux (`~/.local/share/onslaught-ce` when unset), or `%APPDATA%\Onslaught CE`
-   on Windows. Copy the **whole folder** to a separate backup location outside all CE program and staging folders.
-   Check that the copy completed and contains the same files, including `savegames`, `ce.ini` and recordings when present.
-3. Keep the existing `BEA_USER_DIR` setting if it already names a separate user-data folder. If it is relative or
-   points inside an old CE program/staging folder, identify its actual location first, copy its whole contents into
-   a separate working user folder, and set `BEA_USER_DIR` to that working folder's absolute path for the successor.
-   Preserve both the original and the independent backup; do not put saves into the new program folder.
+2. Locate **both launcher and game user-data folders** without starting the launcher. `BEA_USER_DIR` takes priority;
+   otherwise the default is `$XDG_DATA_HOME/onslaught-ce` on Linux (`~/.local/share/onslaught-ce` when unset), or
+   `%APPDATA%\Onslaught CE` on Windows. A relative `BEA_USER_DIR` can put launcher files and game user data in
+   different locations. For example, the 0.1.6 Linux source indicates that a launch from a folder with
+   `BEA_USER_DIR=user` would resolve launcher files in `user` there and game user data under `user/user`; Windows
+   behavior has not been verified. Identify the actual locations from the old launch working directory and saved
+   files; do not assume they are the same.
+   Copy **each whole data folder** to an independent backup outside the original game and all CE program and staging
+   folders. Verify the copies and identify the locations containing your careers (`savegames`), settings (`ce.ini`)
+   and recordings when present. Keep all originals and backups; if locations or conflicting files are unclear, do not
+   merge or overwrite them, and seek help before choosing a working folder.
+3. Prepare a separate working copy of the identified game user-data folder outside the original game and all old CE
+   program and staging folders, and set `BEA_USER_DIR` to its absolute path for the successor. Preserve any separately
+   located launcher settings and logs as well; do not assume copying the game folder restores them. Do not put saves
+   into the new program folder.
 4. **Wait for a published successor whose release notes explicitly address this cleanup hazard.** Download its
    platform package and `ASSETS.txt` from that specific release, and [verify the package](#verify-a-download-optional).
    Do not use 0.1.6 as an intermediate upgrade, and do not use an old launcher's automatic update path.
