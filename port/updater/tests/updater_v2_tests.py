@@ -1170,21 +1170,26 @@ def free_port() -> int:
 
 
 class OldLaunchers(unittest.TestCase):
-    """Every released launcher's source fetches only latest.json; none can reach the v2 feed."""
+    """Every launcher released before 0.1.8 fetches only latest.json (0.1.7: no feed) and none can reach the v2 feed;
+    from 0.1.8 on, the released launchers read the v2 feed and never latest.json."""
 
     def test_old_tags_fetch_only_latest_json(self):
         tags = INFO["old_tags"]
         latest = '#define FEED "https://github.com/dlprentice/onslaught-ce/releases/latest/download/latest.json"'
         published = {f"onslaught-ce.git:v0.1.{n}" for n in range(7)}
         self.assertLessEqual(published, set(tags), "clone the public onslaught-ce into the test root (see prepare)")
-        affected = {t: v for t, v in tags.items() if not t.endswith(("v0.1.7",))}
-        for t, v in affected.items():
-            self.assertEqual(v["feed"], [latest], t)
-            self.assertFalse(v["mentions_v2"], t)
         for t, v in tags.items():
-            self.assertFalse(v["mentions_v2"], t)
+            minor = int(t.rsplit("v0.1.", 1)[1].split(".")[0])
+            if minor <= 6:
+                self.assertEqual(v["feed"], [latest], t)
+            if minor <= 7:
+                self.assertFalse(v["mentions_v2"], t)
+            else:
+                self.assertTrue(v["mentions_v2"], t)
+                self.assertNotIn(latest, v["feed"], t)
+        affected = sorted(t for t in tags if int(t.rsplit("v0.1.", 1)[1].split(".")[0]) <= 6)
         print(f"\n[old tags] {len(affected)} affected tag sources read, all fetch only latest.json: "
-              f"{', '.join(sorted(affected))}", file=sys.stderr)
+              f"{', '.join(affected)}; {len(tags) - len(affected)} later tags never fetch it", file=sys.stderr)
 
 
 def main():

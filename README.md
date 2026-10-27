@@ -162,6 +162,8 @@ awk -v package="$package" '
    - zlib
    - the Vulkan loader and a 32-bit Vulkan driver (above)
    - the X11 or Wayland client libraries
+   - `curl` (any architecture), which the launcher runs to check for and download updates; without it no update is
+     found and the game still starts
 5. A preflight check lists any missing 32-bit system libraries, with their pacman and apt package names. Set
    `BEA_SKIP_PREFLIGHT=1` to start without it.
 
@@ -270,8 +272,9 @@ signed feed, and unpacks it into `versions/` inside the Onslaught CE folder; tha
 beside it are left alone, and the version you had stays for `--rollback`. Careers and settings are not changed.
 `--update-only` checks now without starting the game; `BEA_NO_UPDATE_CHECK=1`, `update_check=0` in `ce.ini` or
 `--no-update-check` turn checking off; **Onslaught CE > Updates** in the game says which applies and where `ce.ini` is.
-Releases never carry the old `latest.json` feed that launchers 0.1.0–0.1.6 fetch, and the legacy `--apply` command
-is refused.
+On Linux the launcher downloads with the system `curl` (https only); without `curl` the check finds nothing and says so
+only in the log. Releases never carry the old `latest.json` feed that launchers 0.1.0–0.1.6 fetch, and the legacy
+`--apply` command is refused.
 
 **Going back:** if an update gives you trouble, close the game and run the launcher in the Onslaught CE folder with
 `--rollback`: `./onslaught-ce --rollback` (Linux), or `onslaught-ce.exe --rollback` from a Command Prompt in that folder

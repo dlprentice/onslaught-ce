@@ -1,6 +1,6 @@
 # Onslaught CE updater v2
 
-Status: candidate for 0.1.8; not released, no feed published
+Status: active — released in 0.1.8 (2026-10-27); the v2 feed is published on the latest release
 Last updated: 2026-10-27
 Summary: how 0.1.8 brings automatic updates back without the 0.1.0–0.1.6 hazard: a new signed feed that old
 launchers never fetch, a versioned install layout switched by one atomic state-file replacement, and deletion only
@@ -203,12 +203,14 @@ step) and `BEA_UPDATE_TEST_WRITE_LIMIT` (a simulated full disk). Each case check
 every link target, the old `update/latest.json` cache and a foreign `update-v2/stage-*` folder are byte-for-byte
 unchanged afterwards.
 
-## Publishing (not done)
+## Publishing
 
-Publishing a feed turns updating on for every 0.1.8+ player, so it needs the maintainer's explicit decision. Then:
-`python3 port/tools/sign_update_v2.py VERSION` (reads the release key in place; never copy or print it), attach
-`ce-update-v2.json` and `ce-update-v2.json.sig` to the release that is marked latest, and never attach `latest.json`.
-A broken new version is undone with `--rollback`, or by starting the base with `BEA_CE_NO_HANDOFF=1`.
+The v2 feed is published: since 0.1.8 every release marked latest carries `ce-update-v2.json` and
+`ce-update-v2.json.sig`, so every 0.1.8+ player is offered the newest release. Each release writes them with
+`python3 port/tools/sign_update_v2.py VERSION` (reads the release key in place; never copy or print it) as
+`docs/release.md` describes, and never attaches `latest.json`. On Linux the launcher downloads with the system `curl`;
+without it no feed is reached (status 13, one log line). A broken new version is undone with `--rollback`, or by
+starting the base with `BEA_CE_NO_HANDOFF=1`.
 
 ## Open limits
 
