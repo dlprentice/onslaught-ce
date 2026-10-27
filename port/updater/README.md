@@ -2,20 +2,12 @@
 
 Status: active (public builds only)
 Last updated: 2026-10-27
-Summary: how the public build's launcher finds the game, owns bounded session logs and checks signed updates.
+Summary: game discovery and bounded logs, with automatic updating suspended and manual migration guidance.
 
-**Safety hold:** Do not run released 0.1.0–0.1.6 launchers or use them to update. Their startup cleanup can delete
-neighboring `<program folder>.old-*` paths, even when update checks are disabled. The shipped 0.1.6 Linux launcher
-also followed a matching directory link into its target in an isolated test using disposable files. The same name-based
-cleanup is present in the Windows source; native Windows link behavior has not been reproduced. Preserve existing
-folders, links, user data and backups. Follow the [manual migration](https://github.com/dlprentice/onslaught-ce#manual-migration-from-affected-launchers)
-only after a corrected successor is published; do not start an affected launcher as the first update step. The
-mechanism below describes the affected releases and is not a claim that a corrected updater has shipped.
-
-`ce_launch.c` builds as `onslaught-ce-launch` (Linux, started by the `onslaught-ce` script after `preflight.sh`) and
+`ce_launch.c` builds as `onslaught-ce-launch` (Linux, started by the `onslaught-ce` script after game preflight when needed) and
 `onslaught-ce.exe` (Windows), from `build.py --public`. It links SDL3 (its dialogs) and Monocypher (Ed25519, pinned in
-`deps.lock`); `sha256.c` is its SHA-256. `ce_report.h` (header only, C and C++) is what the launcher and the game share
-for "Report a problem".
+`deps.lock`, unused while automatic updating is suspended); `sha256.c` is its SHA-256. `ce_report.h` (header only, C
+and C++) is what the launcher and the game share for "Report a problem".
 
 ## Finding the game
 
@@ -26,41 +18,35 @@ picker. A folder counts as a supported install when the game data hashed in `con
 answer is kept in `ce.ini`. The game folder is only read: the writable folder is per user (Linux
 `~/.local/share/onslaught-ce`, Windows `%APPDATA%\Onslaught CE`; `BEA_USER_DIR` overrides) and holds `ce.ini`.
 
-## Updates
+## Manual updates
 
-On start the launcher fetches `latest.json` and `latest.json.sig` from the project's latest GitHub release (system
-`curl`, https only). The signature is Ed25519 over the file's exact bytes and is checked against the public key compiled
-into the launcher before anything in the file is used; a feed that fails is ignored without a prompt. If the feed names a
-newer version (and it was not skipped), the launcher asks: Update, Later, or Skip this version. On Update it downloads the
-platform's archive (only from this project's GitHub release downloads, whatever the feed says) beside the install, checks its SHA-256 from the verified feed, unpacks it with the system `tar`, and
-renames the install to `<folder>.old-<version>` and the new folder into its place (on Windows a copy of the launcher in
-`%TEMP%` does the renames after the launcher exits). Check the installed version and actual process outcome before
-assuming a failed or interrupted attempt completed; cached downloads, unpacked files or temporary helpers can remain.
-Nothing else is sent: no identifiers, no telemetry. Off: `update_check=0` in `ce.ini` or
-`BEA_NO_UPDATE_CHECK=1`. `--update-only` checks (and updates) without starting the game; `--version` prints the version.
+Automatic update checking and installation are temporarily disabled. The launcher does not fetch `latest.json` or
+its signature, create an update cache, download/unpack an archive, rename an installation or clean neighboring
+folders. `update_check`, `BEA_NO_UPDATE_CHECK`, `BEA_UPDATE_FEED` and `BEA_UPDATE_ANSWER` do not enable those operations.
+`--no-update-check` remains accepted for command-line compatibility.
 
-### Windows 0.1.5 startup boundary
+`--update-only` prints manual-download guidance and exits **2**, before opening settings, logs or caches. That status
+means updating is disabled; it does **not** mean the installed version is current. The historical `--apply` entry
+point also refuses with exit 2 before accessing installation, user or update paths. `--version` still prints the version and exits 0 without
+initializing a user folder. None of these commands starts a game or opens a browser.
 
-The published 0.1.5 executable lacks `requestedExecutionLevel` in its otherwise present UTF-8 manifest. Because
-the Windows updater runs a copy of its **current** launcher under the name `onslaught-ce-update.exe`, a new package
-cannot supply the missing declaration before that old helper starts. In the tested ordinary Windows 11 session,
-the byte-identical 0.1.5 executable prints its version under a neutral name but CreateProcess refuses the helper
-name with `ERROR_ELEVATION_REQUIRED` (740). The full update attempt separately observed its old helper terminate with
-`STATUS_ELEVATION_REQUIRED` (`0xC000042C`) before command parameters were readable. Those are different observed failure
-forms; neither is proof that the command arguments were wrong.
+Download an explicitly corrected release from <https://github.com/dlprentice/onslaught-ce/releases> and extract it
+into a **new empty folder**. Preserve the whole previous installation, its neighboring backup/staging folders and
+its user data. A relative `BEA_USER_DIR` can put launcher files and game user data in different locations. Identify and
+preserve both complete folders and verify independent backups, including careers. Use a separate working copy of the
+identified game user-data folder outside the original game and old CE program/staging folders; set `BEA_USER_DIR` to
+its absolute path, check careers after migration and keep the originals and backups. Do not merge unclear or conflicting files. See
+[the port guide](../README.md) and its linked player steps for the migration warning.
 
-Published 0.1.6 already includes `asInvoker`/`uiAccess="false"` in the embedded manifest. Its packaged executable
-prints its version and exits 0 under both names with the same ordinary token and SDL dependency. This fits
-[Windows' documented installer detection](https://learn.microsoft.com/en-us/windows/security/application-security/application-control/user-account-control/architecture)
-for 32-bit applications without a requested execution level. It is not a complete update/takeover test.
+### Older launchers are not repaired by a new download
 
-Use the [manual migration](https://github.com/dlprentice/onslaught-ce#manual-migration-from-affected-launchers) for
-affected releases once a corrected successor is published, preserving the existing user folder and a verified recovery
-copy. Do not request administrator rights, disable UAC, alter compatibility policy or weaken critical-process/argv
-checks to certify an old updater path. An old-to-new automatic update is unsafe to recommend due to the startup cleanup.
-
-Tests use `BEA_UPDATE_FEED` (another feed, which may then be a `file://` URL) and `BEA_UPDATE_ANSWER` (update, later or
-skip, instead of the dialog); the signature and hash rules are unchanged.
+Source for releases through 0.1.6 contains destructive updater cleanup. Actual shipped Linux 0.1.6 was reproduced
+deleting matching neighboring backup folders and contents reached through a matching root symlink, even with
+`--no-update-check --update-only`. Native Windows reparse behavior was not tested. Older launchers also used
+predictable download/unpack paths and an unchecked rollback. Do not invoke one to carry out the migration: a safer
+successor cannot protect work already done by the old process. The published Windows 0.1.5 helper additionally
+lacks the normal-token execution manifest. Neither an administrator launch nor a changed signature makes these
+paths a safe migration route.
 
 ## The log
 
@@ -84,8 +70,7 @@ and on Linux the machine's GPUs from sysfs, since dxvk reports a stand-in name t
 arrives before the adapter line is held (up to 1 MB) so the GPU stays at the top. The last line is the game's exit
 status or the signal that ended it. The log is written to be attached to a public issue, so it never names the
 player's account: the home folder is written `~` (Windows `%USERPROFILE%`, `%APPDATA%`, `%LOCALAPPDATA%`) and the account
-name, as a path component anywhere else, `<user>`; the launcher's own lines say the same on the terminal. When an update
-restarts the launcher (`BEA_CE_LOG_CONTINUE`, set only for that restart), the new launcher appends to the primary log
+name, as a path component anywhere else, `<user>`; the launcher's own lines say the same on the terminal. For diagnostic compatibility, an inherited legacy restart marker (`BEA_CE_LOG_CONTINUE`) still appends to the primary log
 only after acquiring its lease and validating the file. If the primary is busy or unsafe, it starts a fresh fallback
 slot instead; it does not append to a previous unrelated fallback session. The report page asks for current, old and
 both concurrent logs from the same folder, when present. Logging artifacts are excluded from recording start files.
@@ -140,9 +125,15 @@ The issue template is `public/.github/ISSUE_TEMPLATE/bug_report.md`, exported to
 
 ## Windows output regression check
 
+`python3 port/updater/tests/update_restart_tests.py` executes the actual launcher entry point and manual-update
+message against authored host boundaries for both platform branches. It requires early refusal without opening
+paths for `--update-only` and `--apply`, side-effect-free `--version`, and ordinary game dispatch without updater
+calls. It neither starts a game nor establishes native Windows behavior.
+
 `tests/launcher_stdio_driver.c` exercises the actual Windows launcher with redirected pipes, files and a mixed
-console/pipe setup, both with and without a parent console. It checks `--version` and a deliberately invalid private
-settings path, so no game, network request or player profile is needed. Build the driver with the pinned Windows
+console/pipe setup, both with and without a parent console. It checks `--version` and the disabled `--update-only`
+response while an invalid private settings path remains unopened, so no game, network request or player profile is
+needed. Build the driver with the pinned Windows
 toolchain and run it beside the candidate's dependencies:
 
     i686-w64-mingw32-clang -std=c11 -Wall -Wextra -Werror port/updater/tests/launcher_stdio_driver.c -o launcher_stdio_driver.exe
@@ -157,3 +148,6 @@ allocates its own console, so automated checks belong in an isolated test deskto
 `latest.json` and its signature with the release key. The private key stays outside every repository; only its public half
 is in `ce_launch.c`, and `sign_release.py` refuses a key whose public half differs. Upload both packages, the FFmpeg source
 tarball, `latest.json` and `latest.json.sig` as the release's assets, tagged as given to `sign_release.py`.
+
+These packaging/signing tools remain available, but this launcher does not consume the feed. Release and migration
+validation must use the manual route above; a historic automatic-update receipt does not validate this suspended updater.

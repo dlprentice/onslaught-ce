@@ -52,9 +52,8 @@ and remaining limits; development source may include changes beyond that publish
 
 ## In the game
 
-- **Main menu > Onslaught CE:** About (version, licence and links), Special Thanks, Check for updates (explains the check the launcher
-  makes at every start, how to be asked again about a skipped version, and how to turn checks back on), Record sessions
-  (see below) and Report a problem.
+- **Main menu > Onslaught CE:** About (version, licence and links), Special Thanks, Manual updates (download and
+  preservation guidance), Record sessions (see below) and Report a problem.
 - **Options > Cheats:** the game's own cheats as On/Off switches, kept in `ce.ini` so they apply to every career; the
   line under the list says what the highlighted one does:
   - **Unlock all levels** (original code TURKEY): every level opens in the level select.
@@ -188,7 +187,7 @@ report any problems; see Known limitations and the release notes for the routes 
 
 1. Extract the zip and run the `onslaught-ce.exe` launcher. The zip also contains `bea.exe` and the SDL3, FFmpeg and
    zlib DLLs.
-2. You need Windows 10 or newer, for its built-in UCRT, curl and tar. User and game folders whose names have
+2. You need Windows 10 or newer, for its built-in UCRT. User and game folders whose names have
    characters outside your Windows language's character set work from Windows 10 version 1903 on (the UTF-8 setting
    the programs use is ignored by earlier versions).
 3. The executable is unsigned, so SmartScreen may show a warning. Choose **More info**, then **Run anyway**.
@@ -198,7 +197,8 @@ report any problems; see Known limitations and the release notes for the routes 
 - **Update:** affected versions must use the [manual migration](#manual-migration-from-affected-launchers) below.
   Do not start an old launcher to reach its updater. A corrected successor's own release notes describe its
   validated update routes.
-- **Move:** the program folder can live anywhere; move it as a whole. The launcher remembers your game folder in
+- **Move:** a corrected successor's program folder can live anywhere; move it as a whole. Preserve affected old
+  folders during the safety hold. The launcher remembers your game folder in
   `ce.ini` (`gamedir`); if the game moves, it logs why the remembered folder no longer works and searches again, or
   set `BEA_GAME_DIR` to the new folder.
 - **Uninstall:** first make and verify a recovery copy of the user folder, including any custom `BEA_USER_DIR`.
@@ -219,21 +219,21 @@ report any problems; see Known limitations and the release notes for the routes 
    `BEA_USER_DIR=user` would resolve launcher files in `user` there and game user data under `user/user`; Windows
    behavior has not been verified. Identify the actual locations from the old launch working directory and saved
    files; do not assume they are the same.
-   Copy **each whole data folder** to an independent backup outside the original game and all CE program and staging
+3. Copy **each whole data folder** to an independent backup outside the original game and all CE program and staging
    folders. Verify the copies and identify the locations containing your careers (`savegames`), settings (`ce.ini`)
    and recordings when present. Keep all originals and backups; if locations or conflicting files are unclear, do not
    merge or overwrite them, and seek help before choosing a working folder.
-3. Prepare a separate working copy of the identified game user-data folder outside the original game and all old CE
+4. Prepare a separate working copy of the identified game user-data folder outside the original game and all old CE
    program and staging folders, and set `BEA_USER_DIR` to its absolute path for the successor. Preserve any separately
    located launcher settings and logs as well; do not assume copying the game folder restores them. Do not put saves
    into the new program folder.
-4. **Wait for a published successor whose release notes explicitly address this cleanup hazard.** Download its
+5. **Wait for a published successor whose release notes explicitly address this cleanup hazard.** Download its
    platform package and `ASSETS.txt` from that specific release, and [verify the package](#verify-a-download-optional).
    Do not use 0.1.6 as an intermediate upgrade, and do not use an old launcher's automatic update path.
-5. Extract the successor into a **new, empty folder writable by your account**, with no directory links/junctions
+6. Extract the successor into a **new, empty folder writable by your account**, with no directory links/junctions
    in its path, separate from the original game and all old CE folders. Do not merge old executables or DLLs into it.
-6. Run only the successor's `onslaught-ce` (Linux) or `onslaught-ce.exe` (Windows), using the same account and the
-   user-folder choice from step 3. Check **Onslaught CE > About**, careers and settings, then update your shortcut.
+7. Run only the successor's `onslaught-ce` (Linux) or `onslaught-ce.exe` (Windows), using the same account and the
+   user-folder choice from step 4. Check **Onslaught CE > About**, careers and settings, then update your shortcut.
    Keep your backup and uncertain old/staging paths. No administrator execution or disabled UAC is required.
 
 Windows 0.1.5 also has a separate update-helper startup problem. The same manual procedure avoids invoking that
@@ -241,20 +241,14 @@ old helper. The embedded execution-level declaration in 0.1.6 does **not** fix t
 
 ## Updates and privacy
 
-The update behavior below describes the mechanism, not a workaround for the safety warning. Leave affected
-launchers closed and use the manual migration.
+Automatic update checks and installation are temporarily disabled in this source. The launcher makes no automatic
+update requests or downloads, and the Manual updates menu gives guidance instead of checking for a release.
+`--update-only` prints guidance and exits with status 2 without starting the game or checking whether the version is
+current. The legacy `--apply` command is refused. Keep affected released launchers closed; use the
+[manual migration](#manual-migration-from-affected-launchers) when a corrected successor is published.
 
-- **No telemetry:** nothing about you or your machine is sent. The only network requests the program makes by itself
-  are the launcher's update check, which reads this repository's public, signed release feed, and the update download
-  if you agree to it.
-- **Report a problem** is the one network action you start yourself: it opens a GitHub page in your browser with your
-  version and OS in its address; nothing is posted until you submit it.
-- **Update check:** each time it starts, the launcher checks the release feed (a signed `latest.json` on this
-  repository's Releases). If a newer version exists, it asks **Update / Later / Skip this version**.
-- **Verification:** the launcher verifies the feed's Ed25519 signature and the downloaded package's SHA-256 before
-  installing that package, and downloads it only from this repository's releases. Verification failure refuses the
-  package. A failed attempt can leave downloaded or temporary files; check the installed version before assuming an update completed.
-- **Opting out:** set `BEA_NO_UPDATE_CHECK=1`, or put `update_check=0` in `ce.ini`.
+There is no telemetry. **Report a problem** is a user-initiated action: it opens a GitHub page in your browser with
+your version and OS in its address; nothing is posted until you submit it.
 
 ## Screen modes and widescreen
 
@@ -384,7 +378,7 @@ python3 port/build.py --public --target linux --ce-version dev
 python3 port/build.py --public --target windows --ce-version dev
 ```
 
-`--ce-version` sets the version the menu, `--version` and the update check show; without it the build calls itself
+`--ce-version` sets the version the menu and `--version` show; without it the build calls itself
 "vdev". It also sets the Windows launcher's file and product version strings. Their numeric fields use one to four
 release-number parts, each from 0 to 65535; `-prerelease` and `+build` suffixes stay in the strings. Named development
 builds such as `dev` use numeric 0.0.0.0. The game's `bea.exe` keeps its separate retail 1.0.0.0 resource.

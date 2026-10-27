@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
 /* port/updater/ce_launch.c: Onslaught CE's launcher (port/updater/README.md). Finds the player's Battle Engine Aquila
- * install, checks the signed release feed for an update, and starts the game from this folder with the game folder and
+ * install and starts the game from this folder with the game folder and
  * a per-user writable folder. It never writes into the game folder.
  *
  *   onslaught-ce [--version] [--no-update-check] [--update-only] [--record] [--no-record] [--report] [-- GAME ARGUMENTS]
@@ -9,7 +9,7 @@
  * onslaught-ce.old.log; each stops at 4 MiB) and still to the terminal. Two fixed leased fallback logs admit concurrent
  * runs without rotating an active log; all four data files together are bounded to 16 MiB. Its first lines name the version, the build, the
  * OS and the GPU (the game's "onslaught-ce: adapter" line). It never names the player's account: home is written ~ (Windows
- * %APPDATA% and the like) and the account name <user>. An update's restart continues the same log. A replay
+ * %APPDATA% and the like) and the account name <user>. A continuation keeps the same log. A replay
  * (BEA_PORT_TAPE) or a harness recording (BEA_PORT_RECORD) gets no log, no update check and nothing else of the launcher's.
  * Session recording (--record, or record_sessions=1 in ce.ini): the game records its input to <user folder>/tapes/
  * YYYYMMDD-HHMMSS-PID-SERIAL.tape (port/platform/common/replay.cpp's record mode, on the shim clock at 30 Presents a
@@ -18,11 +18,10 @@
  * game's CE page where the setting was switched on; --no-record also sets record_sessions=0 and starts unrecorded.
  * --report opens the pre-filled "Report a problem" page (ce_report.h) and prints the log folder.
  *
- * Update rule: the feed (latest.json and its Ed25519 signature) is verified against the public key below before
- * anything is read from it; the archive's SHA-256 from the verified feed is checked before anything is unpacked; the
- * new version is unpacked beside this folder and swapped in by renaming folders, so a failure at any step leaves the
- * installed version as it was. No telemetry: the only requests are two public GETs (the feed) and, if the player agrees,
- * the archive. Opt out with BEA_NO_UPDATE_CHECK=1 or update_check=0 in ce.ini. */
+ * Automatic update checks and installation are suspended. --update-only prints manual-download guidance and exits 2
+ * before opening settings, logs or caches. The historical --apply entry point refuses with exit 2. Ordinary startup
+ * does not fetch an update feed, clean neighboring folders, stage an archive or rename an installation. Old launchers
+ * remain unsafe to invoke for migration; publishing this successor does not repair an older launcher's behavior. */
 #include <SDL3/SDL.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -46,10 +45,7 @@
 #ifndef CE_COMMIT
 #define CE_COMMIT "unknown"		/* build.py: the source commit (+dirty when the tree had changes) */
 #endif
-#define FEED "https://github.com/dlprentice/onslaught-ce/releases/latest/download/latest.json"
-/* ce_update_url_allowed admits only this repository's exact version/platform asset form, even under a valid
- * signature. curl -L still follows GitHub's redirect to its download host. */
-/* The release key's public half (the private half never leaves the release machine). */
+/* The release key's public half is retained for signing tools; automatic feed checks are suspended. */
 static const char PUBLIC_KEY_HEX[] = "b6cf39b727c92cd8a1682c31f315a5d38427dce912e406ccbd4802f0f7634510";
 
 #ifdef _WIN32
@@ -76,7 +72,7 @@ static const char PUBLIC_KEY_HEX[] = "b6cf39b727c92cd8a1682c31f315a5d38427dce912
 #endif
 
 #define PATHN 4096
-static char sHere[PATHN], sUser[PATHN], sIni[PATHN], sCache[PATHN];
+static char sHere[PATHN], sUser[PATHN], sIni[PATHN];
 /* A replay (BEA_PORT_TAPE) or a recording someone else set up (BEA_PORT_RECORD, the test harness) as the launcher
  * started: the launcher then adds nothing of its own (no log, no update check, no build name for the CE layer). */
 static int sReplay;
@@ -742,69 +738,6 @@ static int ini_set(const char *key, const char *value)
 	return 0;
 }
 
-/* Runs a program (no shell) and waits; returns its exit status, -1 when it could not start. */
-static int run(char *const argv[])
-{
-#ifdef _WIN32
-	char cmd[8192];
-	int count = 0;
-	while (argv[count]) ++count;
-	if (!count || !ce_windows_command(cmd, sizeof cmd, argv[0], argv + 1, count - 1, 0)) return -1;
-	STARTUPINFOA si = {sizeof si};
-	PROCESS_INFORMATION pi;
-	if (!CreateProcessA(argv[0], cmd, NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) return -1;
-	WaitForSingleObject(pi.hProcess, INFINITE);
-	DWORD rc = 1;
-	GetExitCodeProcess(pi.hProcess, &rc);
-	CloseHandle(pi.hProcess);
-	CloseHandle(pi.hThread);
-	return (int)rc;
-#else
-	pid_t pid = fork();
-	if (pid < 0) return -1;
-	if (pid == 0)
-	{
-		execvp(argv[0], argv);
-		_exit(127);
-	}
-	int st;
-	while (waitpid(pid, &st, 0) < 0 && errno == EINTR) {}
-	return WIFEXITED(st) ? WEXITSTATUS(st) : -1;
-#endif
-}
-
-static const char *tool(const char *name)
-{
-#ifdef _WIN32
-	/* The system's own curl.exe and tar.exe (Windows 10 1803 and later), never a same-named file found on PATH. */
-	static char p[2][MAX_PATH];
-	static int i;
-	char sys[MAX_PATH];
-	GetSystemDirectoryA(sys, sizeof sys);
-	snprintf(p[i & 1], MAX_PATH, "%s\\%s.exe", sys, name);
-	return p[i++ & 1];
-#else
-	return name;
-#endif
-}
-
-/* Tests point the feed elsewhere (BEA_UPDATE_FEED, which may then be a file:// URL); the signature and hash rules are
- * the same. Players' runs fetch only https. */
-static const char *feed_url(void)
-{
-	const char *f = getenv("BEA_UPDATE_FEED");
-	return f && *f ? f : FEED;
-}
-
-static int fetch(const char *url, const char *to, int seconds)
-{
-	char t[16];
-	snprintf(t, sizeof t, "%d", seconds);
-	const char *protos = getenv("BEA_UPDATE_FEED") ? "=https,file" : "=https";
-	char *argv[] = {(char *)tool("curl"), "-fsL", "--proto", (char *)protos, "--max-time", t, "-o", (char *)to, (char *)url, NULL};
-	return run(argv) == 0;
-}
-
 /* ---- finding the game ----------------------------------------------------------------------------------------- */
 
 /* A supported install: its two hash-pinned data files (config/game-data.sha256) match. */
@@ -1004,274 +937,26 @@ static int find_game(char *dir, size_t n)
 	return found;
 }
 
-/* ---- updates -------------------------------------------------------------------------------------------------- */
+/* ---- manual updates ------------------------------------------------------------------------------------------- */
 
-static int json_str(const char *json, const char *key, const char *from, char *out, size_t n)
+/* Kept for the release-signing tools; this launcher does not fetch or verify an update feed while installation is
+ * suspended. In particular, this command must run before settings/log/cache initialization and must not open a browser. */
+static void manual_update_help(void)
 {
-	char k[64];
-	snprintf(k, sizeof k, "\"%s\"", key);
-	const char *p = strstr(from ? from : json, k);
-	if (!p || !(p = strchr(p + strlen(k), ':')) || !(p = strchr(p, '"'))) return 0;
-	const char *e = strchr(p + 1, '"');
-	if (!e || (size_t)(e - p - 1) >= n) return 0;
-	snprintf(out, n, "%.*s", (int)(e - p - 1), p + 1);
-	return 1;
-}
-
-/* Dotted numeric versions: -1, 0 or 1. "dev" is older than any release. */
-static int version_cmp(const char *a, const char *b)
-{
-	while (*a || *b)
-	{
-		long x = strtol(a, (char **)&a, 10), y = strtol(b, (char **)&b, 10);
-		if (x != y) return x < y ? -1 : 1;
-		if (*a == '.') a++;
-		if (*b == '.') b++;
-		if (!(*a >= '0' && *a <= '9') && !(*b >= '0' && *b <= '9')) break;
-	}
-	return 0;
-}
-
-static void remove_tree(const char *path);
-
-/* The swap: everything verified and unpacked at `fresh`; `here` becomes here.old-<version>, fresh becomes here. */
-static int swap_in(const char *fresh)
-{
-	char old[PATHN];
-	snprintf(old, sizeof old, "%s.old-%s", sHere, CE_VERSION);
-	remove_tree(old);
-	if (rename(sHere, old) != 0) return 0;
-	if (rename(fresh, sHere) != 0)
-	{
-		rename(old, sHere);
-		return 0;
-	}
-	return 1;
-}
-
-static void relaunch(int argc, char **argv);
-
-#ifdef _WIN32
-/* Own a fresh directory before copying the helper and its SDL dependency. Never replace an unrelated file in TMP. */
-static int prepare_update_helper(char *folder, size_t folder_size, char *copy, size_t copy_size)
-{
-	char temp[MAX_PATH], self[MAX_PATH], sdl[PATHN], sdlcopy[MAX_PATH];
-	DWORD n = GetTempPathA(sizeof temp, temp), own = GetModuleFileNameA(NULL, self, sizeof self);
-	if (!n || n >= sizeof temp || !own || own >= sizeof self) return 0;
-	for (unsigned attempt = 0; attempt < 64; ++attempt)
-	{
-		int length = snprintf(folder, folder_size, "%sonslaught-ce-update-%lu-%lu-%u", temp,
-			(unsigned long)GetCurrentProcessId(), (unsigned long)GetTickCount(), attempt);
-		if (length < 0 || (size_t)length >= folder_size) return 0;
-		if (!CreateDirectoryA(folder, NULL))
-		{
-			if (GetLastError() == ERROR_ALREADY_EXISTS) continue;
-			return 0;
-		}
-		int a = snprintf(copy, copy_size, "%s\\onslaught-ce-update.exe", folder);
-		int b = snprintf(sdlcopy, sizeof sdlcopy, "%s\\SDL3.dll", folder);
-		int c = snprintf(sdl, sizeof sdl, "%s\\SDL3.dll", sHere);
-		if (a > 0 && (size_t)a < copy_size && b > 0 && (size_t)b < sizeof sdlcopy &&
-			c > 0 && (size_t)c < sizeof sdl && CopyFileA(self, copy, TRUE) && CopyFileA(sdl, sdlcopy, TRUE)) return 1;
-		/* Only this successfully-created directory is ours. Collisions above are left untouched. */
-		remove_tree(folder);
-		return 0;
-	}
-	return 0;
-}
-#endif
-
-static int apply_update(const char *version, const char *url, const char *sha_hex, int argc, char **argv)
-{
-	char archive[PATHN], fresh[PATHN], unpack[PATHN];
-	uint8_t want[32], got[32];
-	if (!hex_to(sha_hex, want, 32)) return 0;
-	/* Beside the install, on the same file system, so the swap is a rename. */
-	snprintf(archive, sizeof archive, "%s.download-%s", sHere, version);
-	snprintf(unpack, sizeof unpack, "%s.unpack-%s", sHere, version);
-	if (!fetch(url, archive, 1800) || !sha256_file(archive, got) || memcmp(got, want, 32))
-	{
-		remove(archive);
-		SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Onslaught CE",
-			"The update could not be downloaded, or the download did not match the signed release. Nothing was changed: "
-			"this version starts now, and you will be asked again next time.", NULL);
-		return 0;
-	}
-	remove_tree(unpack);
-	make_dirs(unpack);
-	char *tar[] = {(char *)tool("tar"), "-xf", archive, "-C", unpack, NULL};
-	int ok = run(tar) == 0;
-	remove(archive);
-	/* The archive holds one folder, onslaught-ce-<version>-<platform>. */
-	snprintf(fresh, sizeof fresh, "%s" SEP "onslaught-ce-%s-%s", unpack, version, PLATFORM);
-	char probe[PATHN];
-	snprintf(probe, sizeof probe, "%s" SEP GAME_EXE, fresh);
-	if (!ok || !is_file(probe))
-	{
-		remove_tree(unpack);
-		SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Onslaught CE", "The update could not be unpacked. Nothing was changed: this version starts now, and you will be asked again next time.", NULL);
-		return 0;
-	}
-#ifdef _WIN32
-	/* Windows cannot rename a folder holding a running program: a copy of this launcher in %TEMP% does the swap after
-	 * this process exits (--apply FRESH HERE PID). */
-	char helperdir[MAX_PATH], copy[MAX_PATH], cmd[8192], pid[32];
-	if (!prepare_update_helper(helperdir, sizeof helperdir, copy, sizeof copy)) { remove_tree(unpack); return 0; }
-	snprintf(pid, sizeof pid, "%lu", (unsigned long)GetCurrentProcessId());
-	char *helper_args[] = {"--apply", fresh, sHere, pid};
-	if (!ce_windows_command(cmd, sizeof cmd, copy, helper_args, 4, 0))
-	{
-		remove_tree(helperdir); remove_tree(unpack); return 0;
-	}
-	STARTUPINFOA si = {sizeof si};
-	PROCESS_INFORMATION pi;
-	set_env(LOG_CONTINUE, "1");	/* through the copy to the new launcher: it continues this log */
-	if (!CreateProcessA(copy, cmd, NULL, NULL, FALSE, 0, NULL, helperdir, &si, &pi))
-	{
-		unset_env(LOG_CONTINUE); remove_tree(helperdir); remove_tree(unpack); return 0;
-	}
-	CloseHandle(pi.hProcess);
-	CloseHandle(pi.hThread);
-	say("updating to v%s: the update finishes after this launcher exits", version);
-	log_close();
-	exit(0);
-#else
-	if (!swap_in(fresh))
-	{
-		remove_tree(unpack);
-		SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Onslaught CE", "The update could not be installed. Nothing was changed: "
-								 "this version starts now, and you will be asked again next time.", NULL);
-		return 0;
-	}
-	remove_tree(unpack);
-	relaunch(argc, argv);
-	return 1;
-#endif
-}
-
-static void check_for_update(int argc, char **argv)
-{
-	char opt[16];
-	const char *env = getenv("BEA_NO_UPDATE_CHECK");
-	if ((env && *env && strcmp(env, "0")) || (ini_get("update_check", opt, sizeof opt) && !strcmp(opt, "0"))) return;
-	char feed[PATHN], sig[PATHN], sigurl[1024];
-	snprintf(feed, sizeof feed, "%s" SEP "latest.json", sCache);
-	snprintf(sig, sizeof sig, "%s" SEP "latest.json.sig", sCache);
-	snprintf(sigurl, sizeof sigurl, "%s.sig", feed_url());
-	remove(feed);
-	remove(sig);
-	if (!fetch(feed_url(), feed, 10) || !fetch(sigurl, sig, 10)) return;   /* offline or no release yet: say nothing */
-	size_t n = 0;
-	char *json = read_all(feed, &n), *sighex = read_all(sig, NULL);
-	uint8_t key[32], signature[64];
-	int verified = json && sighex && hex_to(PUBLIC_KEY_HEX, key, 32) && strlen(sighex) >= 128 && hex_to(sighex, signature, 64) &&
-				   crypto_ed25519_check(signature, key, (const uint8_t *)json, n) == 0;
-	char version[64], skip[64], url[1024], sha[80];
-	const char *plat = verified ? strstr(json, "\"" PLATFORM "\"") : NULL;
-	if (plat && json_str(json, "version", NULL, version, sizeof version) && version_cmp(version, CE_VERSION) > 0 &&
-		!(ini_get("skip_version", skip, sizeof skip) && !strcmp(skip, version)) &&
-		json_str(json, "url", plat, url, sizeof url) && json_str(json, "sha256", plat, sha, sizeof sha) && strlen(sha) == 64 &&
-		ce_release_component(version, strlen(version)) &&
-		(ce_update_url_allowed(url, version, PLATFORM,
-#ifdef _WIN32
-			"zip"
-#else
-			"tar.gz"
-#endif
-		) || getenv("BEA_UPDATE_FEED")))   /* tests' feeds may name file:// archives */
-	{
-		char text[1024];
-		snprintf(text, sizeof text, "Onslaught CE v%s is available (you have v%s).\n\n"
-				 "Update: download it, check its signature, replace this copy and start the new version. Your careers and "
-				 "settings are kept.\nLater: start this version; you will be asked again next time.\n"
-				 "Skip this version: start this version and do not ask about v%s again.", version, CE_VERSION, version);
-		const SDL_MessageBoxButtonData buttons[] = {{SDL_MESSAGEBOX_BUTTON_RETURNKEY_DEFAULT, 1, "Update"},
-													{SDL_MESSAGEBOX_BUTTON_ESCAPEKEY_DEFAULT, 0, "Later"}, {0, 2, "Skip this version"}};
-		const SDL_MessageBoxData box = {SDL_MESSAGEBOX_INFORMATION, NULL, "Onslaught CE", text, 3, buttons, NULL};
-		int which = 0;
-		const char *answer = getenv("BEA_UPDATE_ANSWER");   /* tests: update, later or skip, without a dialog */
-		int asked = answer && *answer ? (which = !strcmp(answer, "update") ? 1 : !strcmp(answer, "skip") ? 2 : 0, 1)
-									  : SDL_ShowMessageBox(&box, &which);
-		if (asked)
-		{
-			if (which == 1) apply_update(version, url, sha, argc, argv);
-			else if (which == 2) ini_set("skip_version", version);
-		}
-	}
-	free(json);
-	free(sighex);
+	(void)PUBLIC_KEY_HEX;
+	fprintf(stderr, "Onslaught CE: automatic update checking and installation are temporarily disabled.\n"
+		"This command did not check whether your version is current.\n"
+		"Download a corrected release from https://github.com/dlprentice/onslaught-ce/releases .\n"
+		"Extract it into a new empty folder. Keep your existing installation, user folder and all backup/staging folders.\n"
+		"Do not run an older launcher to perform the update. Relative BEA_USER_DIR may place launcher files and game\n"
+		"careers in different folders. Identify and back up both; keep the originals and check careers after migration.\n"
+		"Set BEA_USER_DIR to an absolute path for a separate working copy of the game's user-data folder.\n"
+		"Keep it outside the original game and old CE folders. See README.txt for the full steps.\n");
 }
 
 /* ---- folders, launch ------------------------------------------------------------------------------------------ */
 
-static void remove_tree(const char *path)
-{
-#ifdef _WIN32
-	char from[PATHN + 2] = {0};
-	snprintf(from, PATHN, "%s", path);
-	SHFILEOPSTRUCTA op = {0};
-	op.wFunc = FO_DELETE;
-	op.pFrom = from;
-	op.fFlags = FOF_NO_UI;
-	SHFileOperationA(&op);
-#else
-	DIR *d = opendir(path);
-	if (!d) { remove(path); return; }
-	struct dirent *e;
-	char p[PATHN];
-	while ((e = readdir(d)))
-		if (strcmp(e->d_name, ".") && strcmp(e->d_name, ".."))
-		{
-			snprintf(p, sizeof p, "%s/%s", path, e->d_name);
-			struct stat st;
-			if (!lstat(p, &st) && S_ISDIR(st.st_mode)) remove_tree(p);
-			else remove(p);
-		}
-	closedir(d);
-	rmdir(path);
-#endif
-}
 
-/* Old installs left by an update (here.old-*) are removed on the next start. */
-static void tidy_old(void)
-{
-#ifndef _WIN32
-	char parent[PATHN], *slash;
-	snprintf(parent, sizeof parent, "%s", sHere);
-	if (!(slash = strrchr(parent, '/'))) return;
-	const char *base = slash + 1;
-	char prefix[PATHN];
-	snprintf(prefix, sizeof prefix, "%s.old-", base);
-	*slash = 0;
-	DIR *d = opendir(parent);
-	if (!d) return;
-	struct dirent *e;
-	char p[PATHN];
-	while ((e = readdir(d)))
-		if (!strncmp(e->d_name, prefix, strlen(prefix)))
-		{
-			snprintf(p, sizeof p, "%s/%s", parent, e->d_name);
-			remove_tree(p);
-		}
-	closedir(d);
-#else
-	char pattern[PATHN];
-	snprintf(pattern, sizeof pattern, "%s.old-*", sHere);
-	WIN32_FIND_DATAA fd;
-	HANDLE h = FindFirstFileA(pattern, &fd);
-	if (h == INVALID_HANDLE_VALUE) return;
-	char parent[PATHN], *slash;
-	snprintf(parent, sizeof parent, "%s", sHere);
-	if ((slash = strrchr(parent, '\\'))) *slash = 0;
-	do
-	{
-		char p[PATHN];
-		snprintf(p, sizeof p, "%s\\%s", parent, fd.cFileName);
-		remove_tree(p);
-	} while (FindNextFileA(h, &fd));
-	FindClose(h);
-#endif
-}
 
 static int init_paths(void)
 {
@@ -1293,37 +978,9 @@ static int init_paths(void)
 	const char *user = getenv("BEA_USER_DIR");
 	if (user && *user) snprintf(sUser, sizeof sUser, "%s", user);
 	snprintf(sIni, sizeof sIni, "%s" SEP "ce.ini", sUser);
-	snprintf(sCache, sizeof sCache, "%s" SEP "update", sUser);
-	return ce_make_settings_dirs(sUser) && ce_make_settings_dirs(sCache);
+	return ce_make_settings_dirs(sUser);
 }
 
-static void relaunch(int argc, char **argv)
-{
-	say("updated: starting the new version");
-	log_close();
-	set_env(LOG_CONTINUE, "1");
-	char self[PATHN];
-	snprintf(self, sizeof self, "%s" SEP "onslaught-ce-launch", sHere);
-#ifdef _WIN32
-	snprintf(self, sizeof self, "%s\\onslaught-ce.exe", sHere);
-	STARTUPINFOA si = {sizeof si};
-	PROCESS_INFORMATION pi;
-	char cmd[8192];
-	if (ce_windows_command(cmd, sizeof cmd, self, argv + 1, argc - 1, 0) &&
-		CreateProcessA(self, cmd, NULL, NULL, FALSE, 0, NULL, sHere, &si, &pi)) exit(0);
-#else
-	(void)argc;
-	argv[0] = self;
-	execv(self, argv);
-#endif
-	/* The new version did not start: this launcher carries on, in the same log. */
-	unset_env(LOG_CONTINUE);
-	if (sUser[0])
-	{
-		log_open(1);
-		say("the new version could not be started");
-	}
-}
 
 static void json_string(FILE *f, const char *v)
 {
@@ -1782,7 +1439,7 @@ static int redirected_output(DWORD stream)
 
 int main(int argc, char **argv)
 {
-	int nocheck = 0, updateonly = 0, record = 0, norecord = 0, report = 0, first = argc;
+	int updateonly = 0, record = 0, norecord = 0, report = 0, first = argc;
 #ifdef _WIN32
 	/* Capture redirection before attaching: attachment can supply previously absent standard handles. */
 	int out_redirected = redirected_output(STD_OUTPUT_HANDLE);
@@ -1797,34 +1454,20 @@ int main(int argc, char **argv)
 	for (int i = 1; i < argc; i++)
 	{
 		if (!strcmp(argv[i], "--version")) { printf("Onslaught CE v%s" CE_VERSION_NOTE ", build %s\n", CE_VERSION, CE_COMMIT); return 0; }
-		else if (!strcmp(argv[i], "--no-update-check")) nocheck = 1;
-		else if (!strcmp(argv[i], "--update-only")) updateonly = 1;   /* check (and update), then exit: no game */
+		else if (!strcmp(argv[i], "--no-update-check")) {}   /* accepted for compatibility; no update check runs */
+		else if (!strcmp(argv[i], "--update-only")) updateonly = 1;   /* disabled updater: guidance and exit 2, no game */
 		else if (!strcmp(argv[i], "--record")) record = 1;
 		else if (!strcmp(argv[i], "--no-record")) norecord = 1;   /* sets record_sessions=0 and starts unrecorded */
 		else if (!strcmp(argv[i], "--report")) report = 1;
 		else if (!strcmp(argv[i], "--")) { first = i + 1; break; }
-#ifdef _WIN32
-		else if (!strcmp(argv[i], "--apply") && i + 3 < argc)
+		else if (!strcmp(argv[i], "--apply"))
 		{
-			/* Running from %TEMP%: wait for the old launcher to exit, then swap and start the new one. */
-			HANDLE h = OpenProcess(SYNCHRONIZE, FALSE, (DWORD)strtoul(argv[i + 3], NULL, 10));
-			if (h) { WaitForSingleObject(h, 30000); CloseHandle(h); }
-			snprintf(sHere, sizeof sHere, "%s", argv[i + 2]);
-			char unpack[PATHN];
-			snprintf(unpack, sizeof unpack, "%s", argv[i + 1]);
-			char *s = strrchr(unpack, '\\');
-			int ok = swap_in(argv[i + 1]);
-			if (s) { *s = 0; remove_tree(unpack); }
-			if (!ok)
-				SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Onslaught CE", "The update could not be installed. Nothing was "
-										 "changed: Onslaught CE starts as it was.", NULL);
-			char *none[] = {argv[0], NULL};
-			relaunch(1, none);
-			return ok ? 0 : 1;
+			fprintf(stderr, "Onslaught CE: automatic update installation is disabled; --apply was refused before accessing installation, user or update paths.\n");
+			return 2;
 		}
-#endif
 		else { first = i; break; }
 	}
+	if (updateonly) { manual_update_help(); return 2; }
 	if (!init_paths())
 	{
 		say("could not prepare the settings folder; check its permissions and that no path component is a link");
@@ -1855,13 +1498,6 @@ int main(int argc, char **argv)
 	int continuing = cont && *cont;
 	unset_env(LOG_CONTINUE);
 	if (!sReplay) log_open(continuing);
-#ifndef _WIN32
-	if (continuing && !sReplay)
-		say("the update replaced the install folder; if this terminal was open there, run 'cd .' before starting again");
-#endif
-	tidy_old();
-	if (!nocheck && !sReplay) check_for_update(argc, argv);
-	if (updateonly) { log_close(); return 0; }
 	char game[PATHN];
 	int found = find_game(game, sizeof game);
 	if (found <= 0)

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // port/game/ce_frontend.cpp: the CE layer's front-end additions (patch 0050): an "Onslaught CE" action on the main menu
-// opening a page of the game's own options-style list (About, Special Thanks, Check for updates, Record sessions, Report a problem,
+// opening a page of the game's own options-style list (About, Special Thanks, Manual updates, Record sessions, Report a problem,
 // Back), and a Cheats page in Options whose switches (ce.ini, patch 0051 at IsCheatActive) work as the cheat codes do in
 // a career's name. Built as a game file (port/build.py) so it uses the game's menu classes; public builds only.
 //
@@ -610,7 +610,7 @@ public:
 		CMenuOptionsList *list = new (MEMTYPE_MENUITEM) CMenuOptionsList(title, 320.f, 300.f, FALSE, 0xb0000000);
 		list->AddItem(new (MEMTYPE_MENUITEM) CCeMenuItem(L"About Onslaught CE", CEA_ABOUT));
 		list->AddItem(new (MEMTYPE_MENUITEM) CCeMenuItem(L"Special Thanks", CEA_THANKS));
-		list->AddItem(new (MEMTYPE_MENUITEM) CCeMenuItem(L"Check for updates", CEA_UPDATES));
+		list->AddItem(new (MEMTYPE_MENUITEM) CCeMenuItem(L"Manual updates", CEA_UPDATES));
 		list->AddItem(new (MEMTYPE_MENUITEM) CCeRecordSwitch());
 		list->AddItem(new (MEMTYPE_MENUITEM) CCeMenuItem(L"Report a problem", CEA_REPORT));
 		list->AddItem(new (MEMTYPE_MENUITEM) CMenuItem((DWORD)GI_BACK, 3));
@@ -669,25 +669,10 @@ public:
 			break;
 		}
 		case CEA_UPDATES:
-			if (CE_SettingGet("update_check", 1))
-			{
-				char folder[1024];
-				snprintf(text, sizeof(text), "Onslaught CE looks for a new version each time you start it, and asks you "
-						 "before updating. To check now, quit the game and start it again.\n\nA version you chose Skip "
-						 "this version for is not offered again. To be asked about it again, quit the game, open the file "
-						 "ce.ini in a text editor, delete the line that starts with \"skip\", and start Onslaught CE again. "
-						 "ce.ini is in:\n%s\n\nNew versions are also listed at:\n" CE_LINKS "/releases",
-						 FolderText(folder, sizeof(folder), ""));
-			}
-			else
-			{
-				char folder[1024];
-				snprintf(text, sizeof(text), "Update checks are turned off. To turn them back on, quit the game, open the "
-						 "file ce.ini in a text editor, delete the line that starts with \"update\", and start Onslaught "
-						 "CE again. ce.ini is in:\n%s\n\nNew versions are also listed at:\n" CE_LINKS "/releases",
-						 FolderText(folder, sizeof(folder), ""));
-			}
-			ShowMessage(text);
+			ShowMessage("Automatic update checks and installation are disabled.\n\n"
+				"Download a corrected release and extract it into a new empty folder. Keep the old installation, user folder "
+				"and all backup/staging folders. Do not run an older launcher to update. Read README.txt for custom user "
+				"folder migration.\n\n" CE_LINKS "/releases");
 			break;
 		case CEA_THANKS:
 			ShowMessage(kSpecialThanks);

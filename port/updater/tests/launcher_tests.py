@@ -262,24 +262,78 @@ class Launcher(unittest.TestCase):
             self.assertFalse((self.user / "onslaught-ce.old.log").exists())
             self.assertNotIn("run 'cd .'", r.stderr)
 
-    def test_update_restart_continues_log(self):
+    def test_legacy_log_continuation_keeps_logs_without_updater(self):
         self.run_launcher(CODE="5")	# the run the player wants to report
         reported = self.log()
-        self.run_launcher()	# the launch that finds the update: the reported run becomes the old log
+        self.run_launcher()	# a normal launch: the reported run becomes the old log
         before = self.log()
         self.assertEqual(self.log("onslaught-ce.old.log"), reported)
-        r = self.run_launcher(BEA_CE_LOG_CONTINUE="1")	# the new version, started by the update
+        r = self.run_launcher(BEA_CE_LOG_CONTINUE="1")	# compatibility with an inherited legacy continuation marker
         self.assertIn("env: rec= clock= build=", r.stdout + r.stderr)
         self.assertEqual(self.log("onslaught-ce.old.log"), reported)
         after = self.log()
         self.assertTrue(after.startswith(before))
         self.assertIn("\nRestarted after an update: ", after[len(before):])
         hint = "the update replaced the install folder; if this terminal was open there, run 'cd .' before starting again"
-        self.assertEqual(r.stderr.count(hint), 1)
-        self.assertEqual(after.count(hint), 1)
+        self.assertNotIn(hint, r.stderr)
+        self.assertNotIn(hint, after)
         self.run_launcher()	# and the next ordinary start rotates as usual
         self.assertEqual(self.log("onslaught-ce.old.log"), after)
         self.assertNotIn(hint, self.log())
+
+    def test_disabled_update_commands_do_not_initialize_or_modify_user_paths(self):
+        blocked = self.home / "not-a-directory"
+        blocked.write_bytes(b"preserve this unrelated file")
+        for args, code in ((("--update-only",), 2), (("--apply", "fresh", "install", "42"), 2), (("--version",), 0)):
+            with self.subTest(args=args):
+                r = self.run_launcher(*args, BEA_USER_DIR=str(blocked), BEA_UPDATE_ANSWER="update",
+                                      BEA_UPDATE_FEED="file:///unread-sentinel")
+                self.assertEqual(r.returncode, code, r.stdout + r.stderr)
+                self.assertEqual(blocked.read_bytes(), b"preserve this unrelated file")
+                self.assertFalse(self.user.exists())
+                self.assertNotIn("game_pid=", r.stdout + r.stderr)
+                if args == ("--update-only",):
+                    self.assertIn("did not check whether your version is current", r.stderr)
+
+    def test_normal_launcher_preserves_unknown_update_neighbors_and_in_install_userdata(self):
+        install = self.tmp / "bin"
+        old = self.tmp / "bin.old-authored"
+        old.mkdir()
+        (old / "keep").write_bytes(b"unrelated old-folder data")
+        target = self.home / "link-target"
+        target.mkdir()
+        (target / "keep").write_bytes(b"unrelated symlink-target data")
+        old_link = self.tmp / "bin.old-link"
+        old_link.symlink_to(target, target_is_directory=True)
+        download = self.tmp / "bin.download-9.9.9"
+        download.write_bytes(b"unrelated download-name file")
+        unpack = self.tmp / "bin.unpack-9.9.9"
+        unpack.mkdir()
+        (unpack / "keep").write_bytes(b"unrelated unpack-name data")
+        user = install / "authored-user"
+        (user / "savegames").mkdir(parents=True)
+        career = user / "savegames/keep.bes"
+        career.write_bytes(b"authored non-game sentinel, never loaded as a career")
+        cache = user / "update"
+        cache.mkdir()
+        (cache / "latest.json").symlink_to(target / "keep")
+        (cache / "latest.json.sig").write_bytes(b"unrelated cached-name file")
+
+        def snapshot(path):
+            if path.is_symlink():
+                return ("link", os.readlink(path))
+            if path.is_dir():
+                return ("directory", sorted((p.name, snapshot(p)) for p in path.iterdir()))
+            return ("file", hashlib.sha256(path.read_bytes()).hexdigest())
+
+        protected = (old, target, old_link, download, unpack, career, cache, install / "bea")
+        before = [snapshot(p) for p in protected]
+        r = self.run_launcher("--", "-skipfmv", BEA_USER_DIR=str(user), BEA_UPDATE_ANSWER="update",
+                              BEA_UPDATE_FEED=(cache / "latest.json").as_uri())
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("game_pid=", r.stderr)  # the authored shell stand-in, not the game
+        self.assertEqual([snapshot(p) for p in protected], before)
+        self.assertFalse((user / "update" / "latest.json").is_file() and not (user / "update" / "latest.json").is_symlink())
 
     def test_report_url(self):
         user = self.home / ".local/share/onslaught-ce"
@@ -308,7 +362,7 @@ class Launcher(unittest.TestCase):
         linked.symlink_to(outside, target_is_directory=True)
         for user in (linked, linked / "new" / "nested"):
             with self.subTest(user=user):
-                r = self.run_launcher("--update-only", BEA_USER_DIR=str(user))
+                r = self.run_launcher("--no-update-check", BEA_USER_DIR=str(user))
                 self.assertEqual(r.returncode, 1)
                 self.assertIn("could not prepare the settings folder", r.stderr)
                 self.assertEqual(sorted(p.name for p in outside.iterdir()), ["sentinel"])

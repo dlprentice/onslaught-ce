@@ -246,7 +246,7 @@ def third_party(windows: bool) -> list:
     lock = deps.lock()
     ffl = "avformat-61.dll, avcodec-61.dll, avutil-59.dll" if windows else "lib/libavformat.so.61, libavcodec.so.61, libavutil.so.59"
     rows = [("DirectXTex", "1acf4ebe", "MIT", "the DXT block encoder (port/d3dx/src/bc.cpp) is adapted from it", ["licenses/DirectXTex-LICENSE"]),
-            ("Monocypher", lock["monocypher"]["version"], "BSD-2-Clause OR CC0-1.0", "the launcher's update-signature check",
+            ("Monocypher", lock["monocypher"]["version"], "BSD-2-Clause OR CC0-1.0", "compiled into the launcher; unused while automatic updating is suspended",
              ["licenses/Monocypher-LICENCE.md"]),
             ("FFmpeg", lock["FFmpeg"]["version"], "LGPL-2.1-or-later", f"{ffl}: shared libraries, decoders and demuxer only (Bink video and audio)",
              ["licenses/FFmpeg-COPYING.LGPLv2.1", "licenses/FFmpeg-LICENSE.md"]),
@@ -356,11 +356,19 @@ def readme(version: str, windows: bool) -> bytes:
               "remembers it (BEA_GAME_DIR overrides). By default, careers and settings go to a separate user folder:",
               ("%APPDATA%\\Onslaught CE." if windows else "$XDG_DATA_HOME/onslaught-ce, or ~/.local/share/onslaught-ce when unset."),
               "BEA_USER_DIR overrides that location. Keep it separate from the game folder and avoid linked paths.",
-              "On start it checks this project's GitHub releases for a newer signed version and asks before updating",
-              "(turn it off with update_check=0 in ce.ini or BEA_NO_UPDATE_CHECK=1). There is no telemetry: the update",
-              "check and a download you agree to are the only network requests it makes by itself.", *REPORT_PRIVACY]
-    run = (["Start onslaught-ce.exe. (bea.exe also runs directly, without the install search and update check.)",
-            "It needs Windows 10 or newer, for its built-in UCRT, curl and tar, and Windows 10 version 1903 or newer",
+              "Automatic update checking and installation are temporarily disabled. --update-only prints manual",
+              "guidance and exits 2 without checking whether this version is current; --apply is refused.",
+              "Do not run an older launcher to update. Keep the old installation and all backup/staging folders.",
+              "Locate and preserve both launcher and game user-data folders. A relative BEA_USER_DIR can put them in",
+              "different locations. Copy each whole folder to an independent backup; verify the copies and careers.",
+              "Use a separate working copy of the game's user-data folder outside the original game and old CE",
+              "program/staging folders; set BEA_USER_DIR to its absolute path. Check careers; keep originals and backups.",
+              "If the locations or conflicting files are unclear, do not merge or overwrite them; seek help first.",
+              "Use a published release whose notes address the cleanup hazard; verify and extract its package into a",
+              "new empty folder. See the project README for full migration steps. No telemetry or automatic update request.",
+              *REPORT_PRIVACY]
+    run = (["Start onslaught-ce.exe. (bea.exe also runs directly, without the install search.)",
+            "It needs Windows 10 or newer, for its built-in UCRT, and Windows 10 version 1903 or newer",
             "for user or game folder names with characters outside your Windows language's character set (earlier",
             "versions ignore the UTF-8 setting the programs ask for)."] + common +
            ["This Windows build was tested under Wine on Linux and on one Windows 11 virtual machine without a graphics",
@@ -381,9 +389,8 @@ def readme(version: str, windows: bool) -> bytes:
 # README.txt's "In the game" and "Screen modes and widescreen" (public/README.md says the same).
 IN_THE_GAME = [
     "In the game",
-    "- Main menu > Onslaught CE: About (version, licence and links), Check for updates (explains the check the",
-    "  launcher makes at every start, how to be asked again about a skipped version, and how to turn checks back",
-    "  on), Record sessions and Report a problem (below).",
+    "- Main menu > Onslaught CE: About (version, licence and links), Manual updates (download and preservation",
+    "  guidance; no automatic checks or installation), Record sessions and Report a problem (below).",
     "- Options > Cheats: the game's own cheats as On/Off switches, kept in ce.ini so they apply to every career;",
     "  the line under the list says what the highlighted one does:",
     "  - Unlock all levels (original code TURKEY): every level opens in the level select",
@@ -456,7 +463,7 @@ def limitations(windows: bool) -> list:
                  "  graphics card (Microsoft's software renderer), not on a PC with a real graphics card or its drivers.",
                  "  During the 0.1.3 release checks, that VM updated from 0.1.2 to 0.1.3, restarted, and its installed",
                  "  files matched the published package. An earlier attempt fetched no update feed; a later retry in",
-                 "  the same VM session succeeded. Updating on a PC with a real graphics card remains untested.",
+                 "  the same VM session succeeded. These are historical observations; automatic updating is now suspended.",
                  "- The executables are unsigned, so SmartScreen may warn you (choose More info, then Run anyway)."] if windows else
                 [*textwrap.wrap("- You need " + GLIBC_TEXT + ".", README_WIDTH, subsequent_indent="  ", break_on_hyphens=False),
                  *textwrap.wrap("- You need " + VULKAN_TEXT + ".", README_WIDTH, subsequent_indent="  ", break_on_hyphens=False)])
@@ -474,14 +481,14 @@ def quick_start(windows: bool) -> list:
     """The quick start for this platform's package (the repository README, public/README.md, gives both)."""
     exe, user = ("onslaught-ce.exe", "%APPDATA%\\Onslaught CE") if windows else ("./onslaught-ce", "$XDG_DATA_HOME/onslaught-ce (or ~/.local/share/onslaught-ce when unset)")
     return ["Quick start",
-            "1. Extract the download into any folder, for example your Downloads folder, not your game folder. You can move",
-            "   the folder anywhere later.",
+            "1. Extract the download into a new empty folder outside your original game folder. Preserve old installations",
+            "   and user folders; do not overwrite or run an older launcher to update. You can move the new folder later.",
             f"2. Run {exe}.",
             "3. It finds your Steam copy of Battle Engine Aquila by itself, or asks once where it is.",
             "",
             "Keep the program and its user folder separate from the original game. By default, careers and settings go to",
             f"{user}. Keep recovery copies before changing save locations; do not point BEA_USER_DIR into the game folder.",
-            "Delete the program folder to uninstall; keep any careers you want before deleting the user folder."]
+            "Preserve old program and staging folders during the launcher safety hold; keep verified user-data backups."]
 
 
 NOTICE_LINES = [
@@ -504,14 +511,22 @@ def notice(version: str, windows: bool) -> bytes:
 
 LAUNCHER = r'''#!/usr/bin/env bash
 # Onslaught CE: checks the 32-bit system libraries, then hands over to onslaught-ce-launch, which finds your Battle
-# Engine Aquila install (BEA_GAME_DIR, ce.ini, Steam's libraries, or asks once), checks for a signed update and starts
-# the game from this folder; saves and settings use a separate user folder by default.
+# Engine Aquila install (BEA_GAME_DIR, ce.ini, Steam's libraries, or asks once), starts
+# the game from this folder (automatic updates are suspended); saves and settings use a separate user folder by default.
 set -euo pipefail
 HERE=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
-case "${1:-}" in
-	--version|--report|--update-only) ;;	# these start no game: no library check
-	*) if [ "${BEA_SKIP_PREFLIGHT:-}" != 1 ]; then "$HERE/preflight.sh" || exit 1; fi ;;
-esac
+# Mirror the launcher's option prefix: -- or the first unrecognized argument begins game arguments.
+# Only recognized commands that cannot start a game may skip the game-library preflight.
+preflight=1
+for arg in "$@"; do
+	case "$arg" in
+		--version|--apply) preflight=0; break ;;
+		--update-only|--report) preflight=0 ;;
+		--no-update-check|--record|--no-record) ;;
+		*) break ;;
+	esac
+done
+if [ "$preflight" = 1 ] && [ "${BEA_SKIP_PREFLIGHT:-}" != 1 ]; then "$HERE/preflight.sh" || exit 1; fi
 export DXVK_WSI_DRIVER=SDL3 DXVK_LOG_LEVEL=${DXVK_LOG_LEVEL:-none}
 export LD_LIBRARY_PATH="$HERE/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 exec "$HERE/onslaught-ce-launch" "$@"
@@ -563,7 +578,6 @@ else
 		have "$o" || echo "onslaught-ce: note: no 32-bit $o (SDL works without it, with fewer display features)" >&2
 	done
 fi
-command -v curl >/dev/null 2>&1 || echo "onslaught-ce: note: curl is not installed; the update check needs curl" >&2
 # A 32-bit Vulkan driver: an ICD manifest whose library resolves to a 32-bit ELF (Arch names the library without a
 # path, shared by both architectures; Debian installs per-architecture manifests with absolute paths).
 # The Vulkan loader's own override (VK_DRIVER_FILES, or the older VK_ICD_FILENAMES: what the Steam Linux Runtime's

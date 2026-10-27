@@ -35,7 +35,8 @@ and the repository (scratch space, archive drives) are not scanned, so set it to
 `--public` compiles `platform/public/`'s replacements in place of the files the public build must not ship and reports
 "not shippable" for any still missing; `package.py` refuses such a build and any binary that still names a private
 path. The launcher and updater, and what the signed feed holds, are in [updater/README.md](updater/README.md). No game
-files are packaged: the launcher reads the player's own install. There is no telemetry.
+files are packaged: the launcher reads the player's own install. Automatic update checks and installation are
+temporarily disabled in this source; the signing tool remains available. There is no telemetry.
 
 ### Released launcher safety hold and manual migration
 
@@ -46,9 +47,11 @@ does not disable startup cleanup. Predictable download/unpack names and unverifi
 reasons to avoid invoking an affected updater; no corrected successor is claimed here.
 
 Migration must not start the old launcher. Preserve its entire program folder and uncertain neighboring
-`.old-*`, `.download-*` and `.unpack-*` paths. Copy and verify the whole actual user folder, honoring custom
-`BEA_USER_DIR`, to an independent backup. If custom data is inside an old install or uses a relative path, preserve
-it and prepare a separate working copy outside program/staging folders before selecting an absolute user path.
+`.old-*`, `.download-*` and `.unpack-*` paths. A relative `BEA_USER_DIR` can put launcher and game user data in different
+locations; identify and preserve both complete folders and verify independent backups, including careers. Use a
+separate working copy of the identified game user-data folder outside the original game and CE program/staging folders
+and select its absolute user path.
+Keep originals and backups, check careers, and do not merge unclear or conflicting files.
 Only after a published successor explicitly addresses the hazard, verify its download and extract into a new,
 empty, ordinary writable folder. Run that successor only; retain backups and uncertain old paths.
 

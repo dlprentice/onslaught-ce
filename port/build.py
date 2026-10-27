@@ -545,8 +545,8 @@ def launcher_version_object(out: Path, version: str) -> Path:
 
 
 def build_launcher(target, version):
-    """The public build's launcher (port/updater): game-folder discovery and the signed update check, linked with SDL3
-    (its dialogs) and Monocypher (Ed25519). Linux: build/linux/onslaught-ce-launch; Windows: build/windows/onslaught-ce.exe."""
+    """The public launcher: game-folder discovery and logging, with automatic updates suspended. It links SDL3 and
+    Monocypher; Linux: build/linux/onslaught-ce-launch; Windows: build/windows/onslaught-ce.exe."""
     mc = deps.SRC / "monocypher-4.0.2/src"
     if not mc.is_dir():
         deps.unpack(deps.lock()["monocypher"], deps.SRC)

@@ -8,16 +8,15 @@ used. You will get an answer there.
 
 Problems that matter most here:
 
-- the launcher's update path: the release feed and its Ed25519 signature, the downloaded archive and its SHA-256, and
-  how the update is unpacked and swapped in;
+- the launcher's update path, including the legacy feed verification, archive handling and installation swap;
 - anything that writes outside the program's own folder and its user data folder, or into the game's installation;
 - files from the game's data or from saves that can crash the program or make it misbehave.
 
 ## What the program sends
 
-The launcher makes two HTTPS requests when it starts (the signed release feed, `latest.json` and its signature, from
-this repository's releases), and downloads an update archive from this repository's releases only if you agree to an
-update. The update check can be turned off (`update_check=0` in `ce.ini`, or `BEA_NO_UPDATE_CHECK=1`).
+Automatic update checking and installation are temporarily disabled in the current source. Its launcher does not
+request a release feed or download an update. Released launchers 0.1.0 through 0.1.6 have a separate startup cleanup
+hazard and must not be run; see the [warning and manual migration](README.md#launcher-safety-warning).
 
 Report a problem (the main menu's Onslaught CE page, or `--report`) is the one network action you start yourself: it
 opens a GitHub page in your browser with your version and OS in its address; nothing is posted until you submit it.
@@ -25,4 +24,5 @@ Nothing else leaves your machine: no identifiers, no telemetry.
 
 ## Supported versions
 
-Only the latest release receives fixes.
+Fixes target the latest release. Await a published successor whose release notes explicitly address the launcher
+cleanup hazard before migrating from an affected version.

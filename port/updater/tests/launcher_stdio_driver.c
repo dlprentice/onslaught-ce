@@ -74,7 +74,8 @@ static void check(const char *exe, const char *label, int file_output, int error
 	read_text(out_read, out, sizeof out);
 	read_text(err_read, err, sizeof err);
 	if (error_case)
-		ok = code == 1 && !*out && strstr(err, "could not prepare the settings folder") != NULL;
+		ok = code == 2 && !*out && strstr(err, "automatic update checking and installation are temporarily disabled") &&
+			strstr(err, "did not check whether your version is current");
 	else
 		ok = code == 0 && !strncmp(out, "Onslaught CE v", 14) && strstr(out, ", build ") && !*err;
 	if (!ok) printf("FAIL %s: exit=%lu stdout=[%s] stderr=[%s]\n", label, code, out, err);
@@ -100,7 +101,7 @@ int main(int argc, char **argv)
 	length = GetFullPathNameA(argv[1], sizeof exe, exe, NULL);
 	if (!length || length >= sizeof exe || !GetTempPathA(sizeof temp, temp) ||
 		!GetTempFileNameA(temp, "ceu", 0, blocked)) return 2;
-	/* An existing regular file is an impossible user directory: tests the launcher's early stderr error safely. */
+	/* An impossible user directory must be irrelevant to --version and the early disabled-updater refusal. */
 	if (!SetEnvironmentVariableA("BEA_USER_DIR", blocked)) return 2;
 	FreeConsole();
 	check(exe, "detached pipes version", 0, 0, 0);
