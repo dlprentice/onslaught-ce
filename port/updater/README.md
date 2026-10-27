@@ -1,8 +1,16 @@
 # Onslaught CE launcher and updater
 
 Status: active (public builds only)
-Last updated: 2026-10-26
+Last updated: 2026-10-27
 Summary: how the public build's launcher finds the game, owns bounded session logs and checks signed updates.
+
+**Safety hold:** Do not run released 0.1.0–0.1.6 launchers or use them to update. Their startup cleanup can delete
+neighboring `<program folder>.old-*` paths, even when update checks are disabled. The shipped 0.1.6 Linux launcher
+also followed a matching directory link into its target in an isolated test using disposable files. The same name-based
+cleanup is present in the Windows source; native Windows link behavior has not been reproduced. Preserve existing
+folders, links, user data and backups. Follow the [manual migration](https://github.com/dlprentice/onslaught-ce#manual-migration-from-affected-launchers)
+only after a corrected successor is published; do not start an affected launcher as the first update step. The
+mechanism below describes the affected releases and is not a claim that a corrected updater has shipped.
 
 `ce_launch.c` builds as `onslaught-ce-launch` (Linux, started by the `onslaught-ce` script after `preflight.sh`) and
 `onslaught-ce.exe` (Windows), from `build.py --public`. It links SDL3 (its dialogs) and Monocypher (Ed25519, pinned in
@@ -46,10 +54,10 @@ prints its version and exits 0 under both names with the same ordinary token and
 [Windows' documented installer detection](https://learn.microsoft.com/en-us/windows/security/application-security/application-control/user-account-control/architecture)
 for 32-bit applications without a requested execution level. It is not a complete update/takeover test.
 
-Use the [manual ZIP migration](https://github.com/dlprentice/onslaught-ce#windows-upgrading-from-015) for affected 0.1.5 installs,
-preserving the existing user folder and a verified recovery copy. Do not request administrator rights, disable UAC,
-alter compatibility policy or weaken critical-process/argv checks to certify the old path. A production-feed update
-from the manifested 0.1.6 launcher to a legitimate higher release remains pending.
+Use the [manual migration](https://github.com/dlprentice/onslaught-ce#manual-migration-from-affected-launchers) for
+affected releases once a corrected successor is published, preserving the existing user folder and a verified recovery
+copy. Do not request administrator rights, disable UAC, alter compatibility policy or weaken critical-process/argv
+checks to certify an old updater path. An old-to-new automatic update is unsafe to recommend due to the startup cleanup.
 
 Tests use `BEA_UPDATE_FEED` (another feed, which may then be a `file://` URL) and `BEA_UPDATE_ANSWER` (update, later or
 skip, instead of the dialog); the signature and hash rules are unchanged.

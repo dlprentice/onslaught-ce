@@ -1,22 +1,38 @@
 # Onslaught CE
 
-Status: active preview
-Last updated: 2026-10-26
-Summary: the native Battle Engine Aquila port, its installation requirements, download verification and source build.
+Status: preview — released launcher safety warning
+Last updated: 2026-10-27
+Summary: the native Battle Engine Aquila port, the affected-launcher safety hold, manual migration and source build.
 
 A native port of *Battle Engine Aquila*; you need your own copy.
 
+## Launcher safety warning
+
+**Do not run released Onslaught CE versions 0.1.0 through 0.1.6 on Linux or Windows.** Their launcher source
+contains name-based startup cleanup that can delete unrelated neighboring folders named like
+`<program folder>.old-*`. The shipped Linux 0.1.6 package has reproduced data deletion; on Linux a matching
+directory link can also lead cleanup into its target. Windows link behavior has not been measured.
+
+**Disabling update checks does not disable this cleanup.** Do not start an affected launcher to update it,
+check its version, or try different update flags. Keep the old program folder, user data and all neighboring
+backup/staging paths untouched. Read the [manual migration steps](#manual-migration-from-affected-launchers)
+before installing a replacement. Use only a published successor whose release notes explicitly address this
+cleanup hazard; development changes and a higher version number alone do not establish that result.
+
 ## Quick start
 
-1. Download the package for your system from the [latest release](https://github.com/dlprentice/onslaught-ce/releases/latest)
-   and extract it into any folder, for example your Downloads folder, not your game folder. You can move the folder
-   anywhere later.
+These steps apply only to a published successor that addresses the safety warning above. Existing users should
+follow the manual migration first.
+
+1. Choose that release's package for your system from the [Releases page](https://github.com/dlprentice/onslaught-ce/releases).
+   Extract it into a **new, empty, ordinary folder**, separate from the original game and every old CE folder.
 2. Run `onslaught-ce` (Linux) or `onslaught-ce.exe` (Windows).
 3. It finds your Steam copy of *Battle Engine Aquila* by itself, or asks once where it is.
 
 Keep the program and its user folder separate from the original game. Careers and settings go to
 `$XDG_DATA_HOME/onslaught-ce` (Linux, or `~/.local/share/onslaught-ce` when unset) or
-`%APPDATA%\Onslaught CE` (Windows) by default; delete the program folder to uninstall. Keep recovery copies of your careers before changing save locations.
+`%APPDATA%\Onslaught CE` (Windows) by default. Keep recovery copies of your careers before changing save locations
+or removing any program folder.
 
 Onslaught CE is a native port of *Battle Engine Aquila* (Lost Toys, 2003) for Linux (i686) and Windows (i686), built
 from the game's source code.
@@ -29,7 +45,8 @@ The source has three parts:
   and reconstruction concessions. The native port uses a different compiler and replacement platform code.
 - **A platform layer**: SDL3, with dxvk-native on Linux and the system's Direct3D 9 on Windows.
 
-This is an early preview. The main menu and `onslaught-ce --version` show the installed version and build.
+This is an early preview. After installing a corrected successor, its main menu and `onslaught-ce --version`
+show its version and build. Use existing logs to identify an affected installation without running its launcher.
 See the [latest release notes](https://github.com/dlprentice/onslaught-ce/releases/latest) for the checks performed
 and remaining limits; development source may include changes beyond that published package.
 
@@ -83,7 +100,8 @@ refused, please [open an issue](https://github.com/dlprentice/onslaught-ce/issue
 
 ## Download and install
 
-Download a build from this repository's [Releases](https://github.com/dlprentice/onslaught-ce/releases) page.
+Read the [launcher safety warning](#launcher-safety-warning) first. Download only a published successor whose
+release notes explicitly address it, from this repository's [Releases](https://github.com/dlprentice/onslaught-ce/releases) page.
 
 ### Verify a download (optional)
 
@@ -177,37 +195,47 @@ report any problems; see Known limitations and the release notes for the routes 
 
 ## Update, move and uninstall
 
-- **Update:** the launcher offers each new release when it starts (below). For a manual update, close CE and extract
-  the new package into a new, empty folder. Keep your existing user folder and point your shortcut at the new launcher.
-  Windows 0.1.5 users should follow the [one-time upgrade steps](#windows-upgrading-from-015) below.
+- **Update:** affected versions must use the [manual migration](#manual-migration-from-affected-launchers) below.
+  Do not start an old launcher to reach its updater. A corrected successor's own release notes describe its
+  validated update routes.
 - **Move:** the program folder can live anywhere; move it as a whole. The launcher remembers your game folder in
   `ce.ini` (`gamedir`); if the game moves, it logs why the remembered folder no longer works and searches again, or
   set `BEA_GAME_DIR` to the new folder.
-- **Uninstall:** delete the program folder. To remove your careers and settings too, delete your user folder
-  (`~/.local/share/onslaught-ce` or `%APPDATA%\Onslaught CE`). Keep any careers you want before deleting that folder.
+- **Uninstall:** first make and verify a recovery copy of the user folder, including any custom `BEA_USER_DIR`.
+  It may be inside a program folder if you chose that location. During this safety hold, preserve old program
+  folders and neighboring `.old-*`, `.download-*` and `.unpack-*` paths; do not use the old launcher's cleanup.
 
-### Windows: upgrading from 0.1.5
+<a id="windows-upgrading-from-015"></a>
 
-Windows can mistake 0.1.5's update helper for an installer and refuse to start it with ordinary permissions.
-The fix is already in 0.1.6, but the old launcher can fail before installing it. Use the Windows ZIP once:
+### Manual migration from affected launchers
 
-1. Close CE and its launcher. Copy your existing `%APPDATA%\Onslaught CE` folder to a separate backup location.
-   If you use `BEA_USER_DIR`, back up that folder instead and keep using the same setting. Check that the recovery
-   copy contains your careers and `ce.ini` before continuing.
-2. Download the Windows ZIP from [release 0.1.6](https://github.com/dlprentice/onslaught-ce/releases/tag/v0.1.6)
-   or a newer release. Extract it into a **new, empty folder writable by your Windows account**, separate from your
-   original Battle Engine Aquila installation. Keep the old CE folder; do not merge its executable or DLLs into the new one.
-3. Run the new folder's `onslaught-ce.exe` normally, using the same Windows account and user-folder setting.
-   It uses your existing careers, settings and remembered game location. Do not copy them into the program folder.
-   This workaround does not require **Run as administrator** or disabling Windows' User Account Control.
-4. Check the version in **Onslaught CE > About**, and check your careers and settings before retiring the old folder.
-   Update any shortcut to the new launcher. Keep your recovery copy.
+1. Close CE and its launcher. **Do not run the affected version again.** Do not rename or delete its program folder
+   or any neighboring `<program folder>.old-*`, `.download-*` or `.unpack-*` paths. They may contain unrelated files
+   or the only remaining copy of your data.
+2. Locate your actual CE user folder without starting the launcher. `BEA_USER_DIR` takes priority; otherwise use
+   `$XDG_DATA_HOME/onslaught-ce` on Linux (`~/.local/share/onslaught-ce` when unset), or `%APPDATA%\Onslaught CE`
+   on Windows. Copy the **whole folder** to a separate backup location outside all CE program and staging folders.
+   Check that the copy completed and contains the same files, including `savegames`, `ce.ini` and recordings when present.
+3. Keep the existing `BEA_USER_DIR` setting if it already names a separate user-data folder. If it is relative or
+   points inside an old CE program/staging folder, identify its actual location first, copy its whole contents into
+   a separate working user folder, and set `BEA_USER_DIR` to that working folder's absolute path for the successor.
+   Preserve both the original and the independent backup; do not put saves into the new program folder.
+4. **Wait for a published successor whose release notes explicitly address this cleanup hazard.** Download its
+   platform package and `ASSETS.txt` from that specific release, and [verify the package](#verify-a-download-optional).
+   Do not use 0.1.6 as an intermediate upgrade, and do not use an old launcher's automatic update path.
+5. Extract the successor into a **new, empty folder writable by your account**, with no directory links/junctions
+   in its path, separate from the original game and all old CE folders. Do not merge old executables or DLLs into it.
+6. Run only the successor's `onslaught-ce` (Linux) or `onslaught-ce.exe` (Windows), using the same account and the
+   user-folder choice from step 3. Check **Onslaught CE > About**, careers and settings, then update your shortcut.
+   Keep your backup and uncertain old/staging paths. No administrator execution or disabled UAC is required.
 
-The packaged 0.1.6 launcher prints its version with ordinary permissions under a neutral filename and the update-helper
-name in the tested Windows 11 session. A complete automatic upgrade **from 0.1.6 to a newer release** still needs
-end-to-end validation; this startup check is not that result.
+Windows 0.1.5 also has a separate update-helper startup problem. The same manual procedure avoids invoking that
+old helper. The embedded execution-level declaration in 0.1.6 does **not** fix the cleanup hazard above.
 
 ## Updates and privacy
+
+The update behavior below describes the mechanism, not a workaround for the safety warning. Leave affected
+launchers closed and use the manual migration.
 
 - **No telemetry:** nothing about you or your machine is sent. The only network requests the program makes by itself
   are the launcher's update check, which reads this repository's public, signed release feed, and the update download
@@ -301,8 +329,9 @@ of the tutorial (through its third zone; the final drone fight is still being co
 
 ## Known limitations
 
-- The Windows 0.1.5 updater can fail before starting its helper. Use the [one-time manual upgrade](#windows-upgrading-from-015)
-  to 0.1.6. Automatic takeover from 0.1.6 to a later release is not yet validated.
+- Released launchers 0.1.0–0.1.6 contain the [startup cleanup hazard](#launcher-safety-warning); do not run them.
+  Follow the [manual migration](#manual-migration-from-affected-launchers) when a corrected successor is published.
+  Windows 0.1.5 also has an update-helper startup failure. Neither disabling updates nor installing 0.1.6 solves the cleanup risk.
 - Windows checks cover Wine and one Windows 11 virtual machine using Microsoft's software renderer, not a PC with
   a real graphics card. During the 0.1.3 release checks, that VM updated 0.1.2 to 0.1.3, restarted, and the installed
   files matched the published package. An earlier attempt fetched no feed; a later retry succeeded. The
