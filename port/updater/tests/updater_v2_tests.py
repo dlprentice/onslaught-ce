@@ -356,7 +356,7 @@ class UpdaterV2(unittest.TestCase):
     def version_of(self, install=None):
         r = self.run_launcher("--version", install=install)
         self.assertEqual(r.returncode, 0, r.stderr)
-        return r.stdout.split()[2].lstrip("v")
+        return r.stdout.split()[2].lstrip("vV").rstrip(",")  # "Onslaught CE V0.1.8, build ..."
 
     def state(self):
         p = self.install / "versions/state"
@@ -718,7 +718,7 @@ class UpdaterV2(unittest.TestCase):
         shutil.move(str(versions), self.case / "orig")
         shutil.move(str(self.case / "copy"), versions)  # same names and contents, new inodes (a restore or copy)
         r = self.run_launcher("--version")
-        self.assertEqual(r.stdout.split()[2].lstrip("v"), BASE)
+        self.assertEqual(r.stdout.split()[2].lstrip("vV").rstrip(","), BASE)
         self.assertIn("move the versions folder out of the Onslaught CE folder", r.stderr)
         before = tree(versions)
         n = len(self.server.requests)

@@ -11,8 +11,9 @@ A native port of *Battle Engine Aquila*; you need your own copy.
 **Why by hand, this once?** The updater in Onslaught CE 0.1.0–0.1.6 tidied up at startup by deleting any folder next
 to the game folder whose name started like it (for example `Onslaught CE.old-backup` beside `Onslaught CE`). We know
 of no case where this deleted anything of a player's, but it could, so 0.1.7 switched updating off. 0.1.8 brings
-updates back with a new updater that only ever touches its own folder inside the Onslaught CE folder, checks every
-update's signature before using it, and can go back to the previous version. Old launchers cannot reach it, so you
+updates back with a new updater that only ever touches its own two folders (`versions` inside the Onslaught CE folder
+and `update-v2` in your user folder), never anything beside them; it checks every update's signature before using
+it, and can go back to the previous version. Old launchers cannot reach it, so you
 download 0.1.8 yourself once; after that it updates itself.
 
 From any earlier Onslaught CE (0.1.0 to 0.1.7):
