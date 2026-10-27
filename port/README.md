@@ -25,7 +25,6 @@ licence text is [COPYING](../COPYING) (GPL version 3).
 
     python3 port/build.py --target all --public --ce-version X.Y   # the shippable build: no NvTriStrip, bundled libraries
     BEA_PRIVATE_PATHS=<scratch:archive folders> python3 port/tools/package.py X.Y   # Linux tarball and Windows zip
-    python3 port/tools/sign_release.py X.Y                         # latest.json and its Ed25519 signature, the update feed
 
 `--ce-version` names the version the game and launcher show ("Onslaught CE vX.Y (preview)"); without it the build is
 "vdev". `package.py` scans every packaged binary for this machine's paths: the home folder, the repository and the
@@ -36,7 +35,9 @@ and the repository (scratch space, archive drives) are not scanned, so set it to
 "not shippable" for any still missing; `package.py` refuses such a build and any binary that still names a private
 path. The launcher and updater, and what the signed feed holds, are in [updater/README.md](updater/README.md). No game
 files are packaged: the launcher reads the player's own install. Automatic update checks and installation are
-temporarily disabled in this source; the signing tool remains available. There is no telemetry.
+temporarily disabled in this source. Releases are manual-only and publish no `latest.json` or `latest.json.sig`:
+launchers 0.1.0–0.1.6 would offer an installable signed feed through their unsafe in-place route, so
+`tools/sign_release.py` is not part of a release while updating is suspended. There is no telemetry.
 
 ### Released launcher safety hold and manual migration
 

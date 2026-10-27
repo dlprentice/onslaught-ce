@@ -5,7 +5,13 @@ title: "Problem: "
 labels: bug
 ---
 
-<!-- `onslaught-ce --report` (or `onslaught-ce.exe --report`) opens this page with your version and system filled in. -->
+<!-- In 0.1.7 or later, `onslaught-ce --report` (or `onslaught-ce.exe --report`) opens this page with your version and
+     system filled in. -->
+
+> **Safety:** do not start an Onslaught CE 0.1.0–0.1.6 launcher to fill in this report, not even to check its
+> version: its startup cleanup can delete neighbouring `<program folder>.old-*` paths. Give the version you downloaded
+> instead, and see the README's
+> [manual migration](https://github.com/dlprentice/onslaught-ce#manual-migration-from-affected-launchers).
 
 **What happened**
 
@@ -32,6 +38,7 @@ Native Linux, native Windows, or the Windows package under Wine or Proton (which
 
 **System**
 
-- Onslaught CE version (main menu, bottom left, or `onslaught-ce --version`):
+- Onslaught CE version (0.1.7 or later: main menu, bottom left, or `onslaught-ce --version`; 0.1.0–0.1.6: the version
+  you downloaded, without starting it):
 - Linux distribution or Windows version:
 - GPU:

@@ -25,12 +25,14 @@ class ManualUpdatePackage(unittest.TestCase):
                     text = package.readme("0.1.7", windows).decode()
                     for phrase in ("Automatic update checking and installation are temporarily disabled", "exits 2",
                                    "without checking whether this version is current", "new empty folder",
-                                   "Do not run an older launcher to update", "Manual updates",
+                                   "Do not start an Onslaught CE 0.1.0-0.1.6 launcher at all", ".download-* and .unpack-*",
+                                   "removes no neighbouring paths", "Manual updates",
                                    "both launcher and game user-data folders", "relative BEA_USER_DIR", "different locations",
                                    "each whole folder to an independent backup", "separate working copy", "game's user-data folder", "its absolute path",
                                    "do not merge or overwrite"):
                         self.assertIn(phrase, text)
-                    for stale in ("checks this project's GitHub releases", "how to turn checks back", "Check for updates"):
+                    for stale in ("checks this project's GitHub releases", "how to turn checks back", "Check for updates",
+                                  "Use a published release whose notes address"):
                         self.assertNotIn(stale, text)
                     with patch.object(package, "source_commit", return_value="authored"):
                         notices = package.notices("0.1.7", windows).decode()

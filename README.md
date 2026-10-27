@@ -111,7 +111,7 @@ download's filename). A successful check prints that filename followed by `OK` a
 missing file, malformed list or changed download fails the check.
 
 ```bash
-package=onslaught-ce-0.1.4-linux-i686.tar.gz
+package=onslaught-ce-0.1.7-linux-i686.tar.gz
 set -o pipefail
 awk -v package="$package" '
   /^[[:space:]]*$/ || /^Onslaught CE / || /^Source: / { next }
@@ -223,10 +223,12 @@ report any problems; see Known limitations and the release notes for the routes 
    folders. Verify the copies and identify the locations containing your careers (`savegames`), settings (`ce.ini`)
    and recordings when present. Keep all originals and backups; if locations or conflicting files are unclear, do not
    merge or overwrite them, and seek help before choosing a working folder.
-4. Prepare a separate working copy of the identified game user-data folder outside the original game and all old CE
-   program and staging folders, and set `BEA_USER_DIR` to its absolute path for the successor. Preserve any separately
-   located launcher settings and logs as well; do not assume copying the game folder restores them. Do not put saves
-   into the new program folder.
+4. Choose the user folder 0.1.7 will use. If your data is in the default folder above (no `BEA_USER_DIR`) and step 3's
+   backup is verified, 0.1.7 can use that folder as it is: leave `BEA_USER_DIR` unset. Otherwise (a custom or relative
+   `BEA_USER_DIR`, or locations you are unsure of), prepare a separate working copy of the identified game user-data
+   folder outside the original game and all old CE program and staging folders, and set `BEA_USER_DIR` to its absolute
+   path for the successor. Preserve any separately located launcher settings and logs as well; do not assume copying
+   the game folder restores them. Do not put saves into the new program folder.
 5. Download the **0.1.7** (or later corrected) platform package and `ASSETS.txt` from that specific release, and [verify the package](#verify-a-download-optional).
    Do not use 0.1.6 as an intermediate upgrade, and do not use an old launcher's automatic update path.
 6. Extract the successor into a **new, empty folder writable by your account**, with no directory links/junctions
@@ -261,11 +263,13 @@ between visual effects and play, so a wider view can change the details of a fig
 
 ## Report a problem
 
-1. Choose **Onslaught CE > Report a problem** in the main menu, or run `onslaught-ce --report` (Windows: `onslaught-ce.exe --report`, from a Command Prompt in the program folder or
-   a shortcut with `--report` added). It opens a new issue on this repository in your browser, already filled in with
-   your version and system (which GitHub sees in the page's address), and prints the folder that holds your log.
-   Nothing is posted until you submit the issue.
-   You can also open an issue on the [Issues](https://github.com/dlprentice/onslaught-ce/issues) page yourself.
+1. In 0.1.7 or later, choose **Onslaught CE > Report a problem** in the main menu, or run `onslaught-ce --report`
+   (Windows: `onslaught-ce.exe --report`, from a Command Prompt in the program folder or a shortcut with `--report`
+   added). Do not start a 0.1.0–0.1.6 launcher to report a problem, by either route; use the
+   [Issues](https://github.com/dlprentice/onslaught-ce/issues) page instead and give the version you downloaded.
+   Report a problem opens a new issue on this repository in your browser, already filled in with your version and
+   system (which GitHub sees in the page's address), and prints the folder that holds your log. Nothing is posted
+   until you submit the issue. You can also open an issue on the Issues page yourself.
 2. Say what happened and how to make it happen again.
 3. Attach `onslaught-ce.log` from your user folder (`~/.local/share/onslaught-ce` on Linux, `%APPDATA%\Onslaught CE`
    on Windows). In ordinary, unrecorded play it includes the launcher and game identities, the game executable's

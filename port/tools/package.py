@@ -358,14 +358,17 @@ def readme(version: str, windows: bool) -> bytes:
               "BEA_USER_DIR overrides that location. Keep it separate from the game folder and avoid linked paths.",
               "Automatic update checking and installation are temporarily disabled. --update-only prints manual",
               "guidance and exits 2 without checking whether this version is current; --apply is refused.",
-              "Do not run an older launcher to update. Keep the old installation and all backup/staging folders.",
+              "Do not start an Onslaught CE 0.1.0-0.1.6 launcher at all, not even to check its version or update it: its",
+              "startup cleanup can delete neighbouring <program folder>.old-* paths and follow a matching directory link",
+              "into its target. Keep the old installation and every .old-*, .download-* and .unpack-* path untouched.",
               "Locate and preserve both launcher and game user-data folders. A relative BEA_USER_DIR can put them in",
               "different locations. Copy each whole folder to an independent backup; verify the copies and careers.",
-              "Use a separate working copy of the game's user-data folder outside the original game and old CE",
+              "If your data was in the default folder and its backup is verified, this release can use it as it is.",
+              "Otherwise use a separate working copy of the game's user-data folder outside the original game and old CE",
               "program/staging folders; set BEA_USER_DIR to its absolute path. Check careers; keep originals and backups.",
               "If the locations or conflicting files are unclear, do not merge or overwrite them; seek help first.",
-              "Use a published release whose notes address the cleanup hazard; verify and extract its package into a",
-              "new empty folder. See the project README for full migration steps. No telemetry or automatic update request.",
+              "This release's launcher removes no neighbouring paths: verify its package and extract it into a new empty",
+              "folder. See the project README for full migration steps. No telemetry or automatic update request.",
               *REPORT_PRIVACY]
     run = (["Start onslaught-ce.exe. (bea.exe also runs directly, without the install search.)",
             "It needs Windows 10 or newer, for its built-in UCRT, and Windows 10 version 1903 or newer",
@@ -482,12 +485,13 @@ def quick_start(windows: bool) -> list:
     exe, user = ("onslaught-ce.exe", "%APPDATA%\\Onslaught CE") if windows else ("./onslaught-ce", "$XDG_DATA_HOME/onslaught-ce (or ~/.local/share/onslaught-ce when unset)")
     return ["Quick start",
             "1. Extract the download into a new empty folder outside your original game folder. Preserve old installations",
-            "   and user folders; do not overwrite or run an older launcher to update. You can move the new folder later.",
+            "   and user folders; do not overwrite them or start a 0.1.0-0.1.6 launcher. You can move the new folder later.",
             f"2. Run {exe}.",
             "3. It finds your Steam copy of Battle Engine Aquila by itself, or asks once where it is.",
             "",
-            "Keep the program and its user folder separate from the original game. By default, careers and settings go to",
-            f"{user}. Keep recovery copies before changing save locations; do not point BEA_USER_DIR into the game folder.",
+            *textwrap.wrap("Keep the program and its user folder separate from the original game. By default, careers and "
+                           f"settings go to {user}. Keep recovery copies before changing save locations; do not point "
+                           "BEA_USER_DIR into the game folder.", README_WIDTH, break_on_hyphens=False),
             "Preserve old program and staging folders during the launcher safety hold; keep verified user-data backups."]
 
 

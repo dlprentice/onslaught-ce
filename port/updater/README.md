@@ -144,10 +144,12 @@ allocates its own console, so automated checks belong in an isolated test deskto
 
 ## Releasing
 
-`build.py --target all --public --ce-version X.Y`, `tools/package.py X.Y`, then `tools/sign_release.py X.Y [--tag TAG]` (0.1 ships as `v0.1.0`), which writes
-`latest.json` and its signature with the release key. The private key stays outside every repository; only its public half
-is in `ce_launch.c`, and `sign_release.py` refuses a key whose public half differs. Upload both packages, the FFmpeg source
-tarball, `latest.json` and `latest.json.sig` as the release's assets, tagged as given to `sign_release.py`.
+While automatic updating is suspended, a release is **manual-only**: `build.py --target all --public --ce-version
+X.Y`, then `tools/package.py X.Y`. Upload the two packages, their stable-name copies, the FFmpeg source tarball,
+`ASSETS.txt` and `RC-REPORT.txt`. **Do not upload `latest.json` or `latest.json.sig`, and do not run
+`tools/sign_release.py` for a release:** launchers 0.1.0–0.1.6 fetch `releases/latest/download/latest.json` and would
+offer an installable signed feed through their unsafe in-place route. The private key stays outside every
+repository; only its public half is in `ce_launch.c`.
 
 These packaging/signing tools remain available, but this launcher does not consume the feed. Release and migration
 validation must use the manual route above; a historic automatic-update receipt does not validate this suspended updater.
