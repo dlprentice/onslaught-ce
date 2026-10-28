@@ -1,0 +1,91 @@
+--- a/CollisionSeekingRound.cpp
++++ b/CollisionSeekingRound.cpp
+@@ -45,9 +45,9 @@
+ 				FVector end = start + mForThing->GetVelocity();
+ 				FVector delta = start - end;
+ 				// Retail tests the unbounded trajectory line; it does not clamp this fraction.
+-				float fraction = (delta * start) / delta.MagnitudeSq();
++				float fraction = delta.DotYZX(start) / delta.MagnitudeSqYZX();
+ 				FVector closest = start + (end - start) * fraction;
+-				float distanceSquared = closest.MagnitudeSq();
++				float distanceSquared = closest.MagnitudeSqYZX();
+ 				// Port (patch 0019): a still round makes fraction 0/0; retail's fcompp + test ah,1 (00425e01..00425e0c) then
+ 				// takes the unordered NaN as greater and returns FALSE, where clang's > is false.
+ 				if (!(distanceSquared <= radius * radius))
+--- a/Cylinder.cpp
++++ b/Cylinder.cpp
+@@ -125,7 +125,7 @@
+ 				normal.X = 0;
+ 				normal.Y = 0;
+ 			}
+-			normal.Normalise();
++			normal.NormaliseXZY();
+ 			float dot = (normal * move->mMove);	// STAND-IN bracket: its tuple schedules the last faddp before the copy's first store (0044027b)
+ 			report->mNormals[0] = normal;
+ 			if (dot > 0)
+@@ -171,11 +171,11 @@
+ 	if (((start.Z > mHeight) && (end.Z > mHeight)) || ((start.Z < -mHeight) && (end.Z < -mHeight)))
+ 		return FALSE;
+ 	FVector delta = start - end;
+-	if (start.MagnitudeSq() > mRadiusSquared)
++	if (start.MagnitudeSqYZX() > mRadiusSquared)
+ 	{
+ 		if (end.MagnitudeSq() > mRadiusSquared)	// two ifs: `&&` here spills one squared term
+ 		{
+-			float fraction = (delta * start) / delta.MagnitudeSq();
++			float fraction = (delta * start) / delta.MagnitudeSqYZX();
+ 			if ((fraction < 0.0) || (fraction > 1.0))
+ 				return FALSE;
+ 			FVector closest = start + (end - start) * fraction;
+@@ -186,8 +186,8 @@
+ 	}
+ 	if ((fabsf(start.Z) > mHeight) || (fabsf(end.Z) > mHeight) || report->mTestTriangles)
+ 	{
+-		float speed = (end - start).Magnitude();
+-		float distance = -start.Magnitude();
++		float speed = (end - start).MagnitudeYZX();
++		float distance = -start.MagnitudeYZX();
+ 		float aa = speed * speed;
+ 		float bb = 2 * (speed * distance);
+ 		float root = sqrtf(bb * bb - 4 * aa * (distance * distance - mRadiusSquared));
+--- a/HLCollisionDetector.cpp
++++ b/HLCollisionDetector.cpp
+@@ -55,7 +55,7 @@
+ 	mThing->mForThing->GetCentrePos(centre);
+ 	FVector delta = otherCentre - centre;
+ 	float radius = mThing->mRadius + other->mRadius;
+-	float distanceSquared = delta.MagnitudeSq();
++	float distanceSquared = delta.MagnitudeSqYZX();
+ 	if (distanceSquared - radius * radius < 0.0)
+ 	{
+ 		if ((mThing->mCollisionFlags & 0x100) || (other->mCollisionFlags & 0x100))
+@@ -113,7 +113,7 @@
+ 	other->mForThing->GetCentrePos(otherCentre);
+ 	mThing->mForThing->GetCentrePos(centre);
+ 	FVector delta = otherCentre - centre;
+-	float distance = delta.Magnitude() - (mThing->mRadius + other->mRadius);
++	float distance = delta.MagnitudeYZX() - (mThing->mRadius + other->mRadius);
+ 	if (distance > 0.0f)
+ 	{
+ 		CThing *otherThing = other->mForThing;
+--- a/Sphere.cpp
++++ b/Sphere.cpp
+@@ -23,15 +23,15 @@
+ 	FVector offset = move->mPos - ownMove->mPos;
+ 	FVector start = offset + other->mStart;
+ 	FVector end = offset + other->mEnd;
+-	if ((start.MagnitudeSq() < mRadiusSquared) || (end.MagnitudeSq() < mRadiusSquared))
++	if ((start.MagnitudeSqYZX() < mRadiusSquared) || (end.MagnitudeSqYZX() < mRadiusSquared))
+ 		return TRUE;
+ 
+ 	FVector delta = start - end;
+-	float fraction = (delta * start) / delta.MagnitudeSq();
++	float fraction = delta.DotYZX(start) / delta.MagnitudeSqYZX();
+ 	if ((fraction >= 0.0) && (fraction <= 1.0))
+ 	{
+ 		FVector closest = start + (end - start) * fraction;
+-		float closestDistance = closest.MagnitudeSq();
++		float closestDistance = closest.MagnitudeSqYZX();
+ 		if (closestDistance <= mRadiusSquared)
+ 			result = TRUE;
+ 	}

@@ -4,7 +4,7 @@
  
  #if defined(CE_VERSION)
  extern "C" BOOL PortGetMouseClientPosition(POINT *position);
-+void PortCeGamepadUpdate(int pad);								// port/game/ce_gamepad.cpp (patch 0106)
++void PortCeGamepadUpdateAll(int consumer);						// port/game/ce_gamepad.cpp (patch 0106)
 +int PortCeGamepadInputs(int id, int pad, SControlInput *out);
 +// CE (patch 0106): the control a centred mouse axis was last sent to; its zero does not hold off a gamepad's value.
 +static int sCeMouseRestId = -1;
@@ -16,7 +16,7 @@
  		ReadControllerState() ;
  	}
 +#if defined(CE_VERSION)
-+	PortCeGamepadUpdate(pad);	// CE (patch 0106): this update's pad snapshot for press and release edges
++	PortCeGamepadUpdateAll(pad);	// CE (patch 0106): one shared snapshot of all pads for this flush group
 +#endif
  
  	// auto repeat stuff (note only 1 repeat button is accepted at once )
@@ -101,11 +101,11 @@
  // with the constructor's vtable instead. Placement evidence. Lands with the WorldPhysicsManager and BattleEngine moves:
  // alone it shifts the dds and bdl witnesses.
 +#if defined(CE_VERSION)
-+// CE (patch 0106): in ordinary single-player play a press or release is a change since the previous controller update
-+// (port/game/ce_gamepad.cpp), not since the previous Present, so no edge falls between two game updates.
++// CE (patch 0106): ordinary play reads the ordered button state delivered for this controller update.
 +int PortCeGamepadEdge(int pad, int button, bool release);
++int PortCeGamepadOn(int pad, int button);
 +inline int CPCController::GetJoyButtonOnce(int pad_number, int button) { int e = PortCeGamepadEdge(pad_number, button, false); return e >= 0 ? e : LT.JoyButtonOnce(pad_number, button) ; }
-+inline int CPCController::GetJoyButtonOn(int pad_number, int button) { return LT.JoyButtonOn(pad_number, button) ; }	// FUNCTION: 0x005147f0
++inline int CPCController::GetJoyButtonOn(int pad_number, int button) { int e = PortCeGamepadOn(pad_number, button); return e >= 0 ? e : LT.JoyButtonOn(pad_number, button) ; }	// FUNCTION: 0x005147f0
 +inline int CPCController::GetJoyButtonRelease(int pad_number, int button) { int e = PortCeGamepadEdge(pad_number, button, true); return e >= 0 ? e : LT.JoyButtonRelease(pad_number, button) ; }
 +#else
  inline int CPCController::GetJoyButtonOnce(int pad_number, int button) { return LT.JoyButtonOnce(pad_number, button) ; }	// FUNCTION: 0x005147b0

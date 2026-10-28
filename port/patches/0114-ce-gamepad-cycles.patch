@@ -1,0 +1,110 @@
+--- a/FrontEnd.cpp
++++ b/FrontEnd.cpp
+@@ -1,3 +1,7 @@
++#if defined(CE_VERSION)
++void PortCeGamepadBeginCycle();
++#endif
++
+ #include "../platform/common/portlog.h"
+ #include	"common.h"
+ 
+@@ -544,6 +548,9 @@
+ 	MUSIC.UpdateStatus();
+ 
+ 	// Update controller
++#if defined(CE_VERSION)
++	PortCeGamepadBeginCycle();
++#endif
+ 	for (int port = 0; port < NUM_CONTROLLER_PORTS; port++)
+ 		mControllers[port]->Flush();
+ 
+--- a/DXFMV.cpp
++++ b/DXFMV.cpp
+@@ -1,3 +1,7 @@
++#if defined(CE_VERSION)
++void PortCeGamepadBeginCycle();
++#endif
++
+ // DXFMV.cpp: reconstructed from DXFMV.obj (0053f070..0053f58f); Stuart's release has no copy. The PC's film player: a
+ // Bink file through the front end's video, full screen, until it ends or a key, button or mouse click skips it.
+ 
+@@ -100,6 +104,9 @@
+ 	PLATFORM.ClearScreen(0);
+ 	PLATFORM.Flip(FALSE);
+ 	PLATFORM.ClearScreen(0);
++#if defined(CE_VERSION)
++	PortCeGamepadBeginCycle();
++#endif
+ 	controller->Flush();
+ 	mQuit = FALSE;
+ 	RENDERINFO.SetFogEnabled(false);
+@@ -120,6 +127,9 @@
+ 			mQuit = TRUE;
+ 			CLIPARAMS.mAttractMode = FALSE;
+ 		}
++#if defined(CE_VERSION)
++		PortCeGamepadBeginCycle();
++#endif
+ 		controller->Flush();
+ 
+ 		int	result = mVideo.NextFrame(true);
+--- a/game.cpp
++++ b/game.cpp
+@@ -1,3 +1,7 @@
++#if defined(CE_VERSION)
++void PortCeGamepadBeginCycle();
++#endif
++
+ #include "../platform/common/portlog.h"
+ #include	"common.h"
+ 			
+@@ -1393,6 +1397,9 @@
+ 		do
+ 		{
+ 			PLATFORM.Process();
++#if defined(CE_VERSION)
++			PortCeGamepadBeginCycle();
++#endif
+ 			mController[0]->Flush();
+ 
+ 			if (old_time < PLATFORM.GetSysTimeFloat() - 1.f)
+@@ -1412,6 +1419,9 @@
+ 		// and make sure we end up drawing the string again, and the right one at that.
+ 		draw_string_at_bottom = true;
+ 		pause_for_showing_controls = false;
++#if defined(CE_VERSION)
++		PortCeGamepadBeginCycle();
++#endif
+ 		mController[0]->Flush();	// retail (0046e021)
+ 	}
+ 
+@@ -1874,6 +1884,9 @@
+ 
+ void CGame::Update()	// FUNCTION: 0x0046e910
+ { PORT_UPDATE_HOOK();
++#if defined(CE_VERSION)
++	PortCeGamepadBeginCycle();
++#endif
+ /*#if TARGET == PS2
+ #ifndef _DEBUG
+ 	extern UINT g_OldSP;
+@@ -4442,6 +4455,9 @@
+ 	CCONTROLLER	* pController0 = new(MEMTYPE_CONTROLLER) CCONTROLLER(&gcch,0);
+ 	CCONTROLLER	* pController1 = new(MEMTYPE_CONTROLLER) CCONTROLLER(&gcch,1);
+ 
++#if defined(CE_VERSION)
++	PortCeGamepadBeginCycle();
++#endif
+ 	pController0->Flush();
+ 	pController1->Flush();
+ 
+@@ -4459,6 +4475,9 @@
+ 		if (PortCeQuitRequested()) break; // leave through the existing controller/music cleanup
+ #endif
+ 
++#if defined(CE_VERSION)
++		PortCeGamepadBeginCycle();
++#endif
+ 		pController0->Flush();
+ 		pController1->Flush();
+ 

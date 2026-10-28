@@ -1637,10 +1637,6 @@ static int upd_ask(const UpdOffer *o)
 	const char *answer = getenv("BEA_UPDATE_ANSWER");
 	if (answer && *answer) return !strcmp(answer, "update") ? 1 : !strcmp(answer, "skip") ? 2 : 0;
 #endif
-#ifndef _WIN32
-	const char *x11 = getenv("DISPLAY"), *wayland = getenv("WAYLAND_DISPLAY");
-	if (!(x11 && *x11) && !(wayland && *wayland)) return -1;
-#endif
 	char text[1024];
 	snprintf(text, sizeof text, "Onslaught CE V%s is available (you have V%s).\n\n"
 		"Update: download it (%.1f MB), check its signature and install it inside this Onslaught CE folder, beside "
@@ -1652,7 +1648,7 @@ static int upd_ask(const UpdOffer *o)
 		{SDL_MESSAGEBOX_BUTTON_ESCAPEKEY_DEFAULT, 0, "Later"}, {0, 2, "Skip this version"}};
 	const SDL_MessageBoxData box = {SDL_MESSAGEBOX_INFORMATION, NULL, "Onslaught CE", text, 3, buttons, NULL};
 	int which = 0;
-	return SDL_ShowMessageBox(&box, &which) ? which : -1;
+	return ask_box(&box, &which, 1) ? which : -1;
 }
 
 static void upd_tell(int explicit_cmd, const char *text)
@@ -1662,7 +1658,7 @@ static void upd_tell(int explicit_cmd, const char *text)
 	const char *answer = getenv("BEA_UPDATE_ANSWER");
 	if (answer && *answer) return;
 #endif
-	SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Onslaught CE", text, NULL);
+	tell_box(SDL_MESSAGEBOX_ERROR, text);
 }
 
 /* Unpacks the verified package into a new recorded entry and makes it active. Returns an UPD_* status. */
@@ -1906,7 +1902,7 @@ static int upd_check(int explicit_cmd)
 	}
 	int answer = upd_ask(&o);
 	say("update: offered v%s: %s", o.version, answer == 1 ? "update" : answer == 2 ? "skip this version" :
-		answer == 0 ? "later" : "nobody could be asked (no display)");
+		answer == 0 ? "later" : "nobody could be asked");
 	if (answer == 2) ini_set("skip_version", o.version);
 	if (answer != 1) { rc = UPD_NOT_NOW; goto recover; }
 	if (!upd_fetch(o.url, pkg, o.size, 1800, &pn))

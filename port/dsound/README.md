@@ -3,7 +3,7 @@
 # port/dsound: DirectSound 8 over SDL3 audio
 
 Status: active (mixing, notifications and DirectSound 3D in place; nobody has listened to the result yet)
-Last updated: 2026-10-27 (bounded ordinary media-mix observations)
+Last updated: 2026-10-28 (playlist transitions; bounded ordinary media-mix observations)
 Summary: what the game's sound code needs from DirectSound, how this module provides it, and how it is checked.
 
 Replaces port/platform/common/dsound.cpp (the platform's silent form; `build.py` drops it when this directory
@@ -54,8 +54,10 @@ The callback updates fixed counters for requested mix frames and samples its own
 mutex. A stream-lifetime join rejects an observation from a retired or reused stream. Negative queue results stay
 unknown. Queue bytes use the 44.1 kHz, stereo S16 input format; converted audio, Windows/device buffering and physical
 playback remain unobserved. Play, Stop and device teardown report snapshots through the existing bounded session-log
-budget. Once that ordinary budget is exhausted, even the device-stop media snapshot may be absent; the final
-session summary does not contain these frame counters, so an absent snapshot cannot establish that overlap did not
+budget. At device teardown, one fixed-size snapshot is also staged for the next existing summary line, which is not
+subject to the normal or error event budgets. It reports cumulative process-local tagged-mixer frame counts and the
+last SDL input queue observation, not sound reaching the device or speakers. The launcher still has a fixed log-size
+cap, and an abrupt process exit can prevent the final line: an absent snapshot cannot establish that overlap did not
 occur. These observations add no callback allocation, formatting or file I/O. The existing callback does allocate
 its PCM buffer and can grow mixer scratch storage. Faithful, replay, recording and private routes keep these
 observations disabled.
@@ -68,6 +70,18 @@ Windows runtime, device-quality or reporter-reproduction result.
 
 `python3 port/tools/audio_media_race_tests.py` uses ThreadSanitizer and controlled SDL boundaries to interleave a
 snapshot with stream teardown. It also checks a mutant that restores the unlocked stream-pointer read.
+
+`python3 port/tools/audio_media_summary_tests.py` couples the actual mixer, worker, Bink owner and session logger.
+Authored PCM, exhausted event budgets, muted buffers, disabled diagnostics and maximum counters check that the final
+summary survives a full event budget, stays bounded and does not claim audible output. This is not a physical-audio
+or Windows-runtime observation.
+
+The CE custom-playlist commands stop the existing music stream before starting a new track. Without that stop,
+the music worker opens the new reader but sees its single looping buffer is already playing and does not fill it
+from the beginning: previously queued PCM continues before later refills use the new reader. This affected adding a
+folder while level music played, `music next`, and clearing the custom list. `ce_music_transition_tests.py` connects
+the actual playlist, worker and mixer using distinct authored PCM; its stop-removal controls retain the old audio.
+This fixes those transitions, not the reported Windows startup-film overlap, whose cause remains unconfirmed.
 
 ## Checks
 
@@ -128,7 +142,7 @@ block phase), not from the mix.
 ## Compared with retail
 
 The retail replay shim logged every DirectSound call retail BEA.exe makes in level 100 under Wine (3,600 Presents, virtual clock;
-Onslaught local-data link-runtime 20261015-f/audio-level100). The port's `BEA_AUDIO_CALLLOG` over the same 3,600
+a retained private capture). The port's `BEA_AUDIO_CALLLOG` over the same 3,600
 Presents, both through C's dsnorm.py:
 
 - The first 11 Plays agree: same frame (3), same order, same flags, sizes and peaks, and identical content hashes for

@@ -42,7 +42,7 @@ def body(source, pattern):
     return source[start:end] + '\n'
 
 
-PATCHED = ('HelpText.cpp', 'MissionScript/IScript.cpp', 'MessageBox.cpp')
+PATCHED = ('HelpText.cpp', 'MissionScript/IScript.cpp', 'MessageBox.cpp', 'Controller.cpp')
 QUEUE = (r'^void\s+CMessageBox::SwitchMessagesOn\(', r'^void\s+CMessageBox::TryAdvance\(',
          r'^void\s+CMessageBox::AddMessage\(', r'^void\s+CMessageBox::StartMessage\(')
 
@@ -93,6 +93,8 @@ def main():
     keys = (ROOT / 'port/platform/common/ce_tutorial_keys.cpp').read_text()
     controller_h = (ROOT / 'src/Controller.h').read_text()
     controller = (ROOT / 'src/Controller.cpp').read_text()
+    console_h = (ROOT / 'src/console.h').read_text()
+    game_source = (ROOT / 'src/game.cpp').read_text()
     pc = (ROOT / 'src/PCController.cpp').read_text()
     code = (ROOT / 'port/game/ce_tutorial_guidance.cpp').read_text()
     ce = (ROOT / 'port/platform/common/ce.cpp').read_text()
@@ -100,10 +102,14 @@ def main():
     walker = (ROOT / 'src/BattleEngineWalkerPart.cpp').read_text()
     font = (ROOT / 'src/Font.cpp').read_text()
     joy = re.search(r'enum EJoyButtonPushType\s*\{.*?\};', controller_h, re.S).group(0)
-    action_lines = [line for line in controller_h.splitlines() if re.match(
-        r'#define BUTTON_MECH_(?:STRAFE_LEFT|STRAFE_RIGHT|CHANGE_ZOOM_IN|CHANGE_ZOOM_OUT)\s', line)]
+    action_lines = [line for line in controller_h.splitlines() if re.match(r'#define BUTTON_\w+\s', line)]
+    axis_lines = [line for line in controller_h.splitlines() if re.match(r'#define ANALOGUE_(?:X1|Y1|X2|Y2|POV_X|POV_Y|ACT_AS_DIGITAL_THRESHOLD)\s', line)]
     structs = controller_h[controller_h.index('struct SControlInput'):controller_h.index('class CController\n')]
-    control = joy + '\n' + '\n'.join(action_lines) + '\n' + structs
+    patched_controller = (mirror/'Controller.cpp').read_text()
+    mappings = body(patched_controller, r'^void\s+CController::DoMappings\(')
+    assert 'int pad = mPadNumber;' in mappings
+    assert re.search(r'int input_num = pad;.*?if \(GAME.IsMultiplayer\(\) \|\| input_num != 0\)\s*break;\s*input_num = 1;', mappings, re.S)
+    control = joy + '\n' + '\n'.join(action_lines + axis_lines) + '\n' + structs
     constructors = controller[controller.index('SControlBinding::SControlBinding(bool'):controller.index('HRESULT InitMouse()')]
     names = ('BUTTON_MECH_STRAFE_LEFT', 'BUTTON_MECH_STRAFE_RIGHT', 'BUTTON_MECH_CHANGE_ZOOM_IN', 'BUTTON_MECH_CHANGE_ZOOM_OUT')
     rows = []
@@ -119,9 +125,23 @@ def main():
         'control.inc': control,
         'bindings.inc': bindings,
         'lookup.inc': body(controller, r'^SControlBinding \*FindControlBinding\('),
+        'player_pad.inc': re.search(r'int GetPadNumber\(\) \{[^}]+\}', controller_h).group(0) + '\n',
+        'game_controller.inc': body(game_source, r'^CCONTROLLER \*CGame::GetController\('),
+        'console_types.inc': (re.search(r'enum ECVarType\s*\{.*?\};', console_h, re.S).group(0) + '\n' +
+                              re.search(r'struct CConsoleVar\s*\{.*?\};', console_h, re.S).group(0)),
+        'console_find.inc': body(console_h, r'CConsoleVar\s*\*FindVariable\(char \*name\)'),
+        'analog_dead_zone.inc': '\n'.join(re.findall(r'^#define ANALOGUE_DEAD_ZONE(?:_SCALE)?\s+[^\n]+', controller, re.M)) + '\n',
+        'mapped_input.inc': body(controller, r'^float\s+CController::GetMappedInputValue\('),
+        'mapping_probe.inc': body(patched_controller, r'^inline float DigitalValueForButton\(') +
+                             mappings.replace('void CController::DoMappings()', 'void MappingProbe::DoMappings()', 1),
         'key_name.inc': body(keynames, r'^extern "C" int WINAPI GetKeyNameTextA\('),
         'font.inc': body(font, r'^int\s+CDXBitmapFont::WordWrap\('),
         'ce_layer.inc': body(ce, r'^bool PortCeLayer\('),
+        'pad_header.inc': (ROOT/'port/include/ce_tutorial_pad.h').read_text(),
+        'pad_info.inc': body(dinput, r'^bool OrdinaryCeInput\(') +
+                        body(dinput, r'^bool BindableGamepadTriggers\(') +
+                        body(dinput, r'^extern "C" int PortCeTutorialPadInfo\('),
+        'gamepad.inc': re.sub(r'^#include\s+.*$', '', (ROOT/'port/game/ce_gamepad.cpp').read_text(), flags=re.M),
         'walker.inc': '\n'.join(re.search(r'^(?:float|int) CBattleEngineWalkerPart::'+n+r'\s*=.*?;', walker, re.M).group(0)
                                 for n in ('mDashTime', 'mDashStart', 'mDashEnd', 'mDashLength', 'mDashVelocity')) + '\n' +
                       body(walker, r'^void\s+CBattleEngineWalkerPart::StrafeLeft\(') +
@@ -169,6 +189,12 @@ def main():
              # the player's keyboard layout and bindings, and the generic text when a binding cannot be named
              'layout-azerty', 'layout-nonlatin', 'layout-unknown', 'remap-keys', 'remap-arrows', 'remap-layout', 'secondary',
              'joystick', 'unbound', 'duplicate', 'strafe-once', 'wheel-held', 'unprintable', 'long-labels', 'font-no-dot',
+             'pad-default', 'stick-default', 'pad-custom', 'pad-incomplete', 'pad-missing-axis', 'pad-missing-button',
+             'pad-disconnected', 'pad-hotplug', 'pad-swap', 'pad-wrong-sign', 'pad-long-keys', 'pad-face', 'pad-disabled',
+             'pad-second', 'pad-nonlatin', 'pad-fence', 'pad-player-two', 'keyboard-player-two', 'no-controller', 'stick-no-twist', 'pad-strafe-buttons',
+             'timing-change', 'pad-timing-change', 'timing-missing', 'timing-missing-generic', 'timing-type', 'timing-null', 'timing-nan', 'timing-small', 'timing-large',
+             'pad-mouse-blocked', 'pad-mouse-normal', 'pad-mouse-player-two', 'pad-mouse-default', 'pad-mouse-zoom',
+             'mouse-blocked-keys', 'mouse-unbound-keys',
              # faithful, replay and network fences, and missing game objects
              'layer-off', 'demo', 'autoconfig', 'record-demo', 'play-demo', 'multiplayer', 'other-level', 'language',
              'font-missing', 'font-invalid', 'event-exhausted', 'box-missing', 'help-missing']
@@ -227,16 +253,51 @@ def main():
         ('network-cues', [('guidance.inc', '"BEA_NET_JOIN"', '"BEA_UNUSED_JOIN"', 1)], 'forced-BEA_NET_JOIN', 'dodge cue admission'),
         ('multiplayer-cues', [('guidance.inc', 'GAME.IsMultiplayer() || ', '', 1)], 'multiplayer', 'dodge cue admission'),
         ('wrong-wheel', [('guidance.inc', '"Mouse wheel up", "Mouse wheel down"', '"Mouse wheel down", "Mouse wheel up"', 1)], 'normal', 'actual default wheel'),
+        ('unplugged-pad', [('pad_info.inc', 'd->pad && SDL_GamepadConnected(d->pad)', 'd->pad', 1)], 'pad-disconnected', 'dodge names the current keys'),
+        ('ignore-custom', [('gamepad.inc', 'if (!n && NoJoystickBindings())', 'if (!n)', 1)], 'pad-incomplete', 'dodge names the current keys'),
+        ('ignore-axis-capability', [('pad_info.inc', 'if (SDL_GamepadHasAxis(d->pad, axes[i])) result.axes |= 1u << i;', 'result.axes |= 1u << i;', 1)],
+         'pad-missing-axis', 'dodge names the current keys'),
+        ('unrotated-pad-buttons', [('guidance.inc', 'int raw = rotated && button < 4 ? (button + 1) % 4 : button;', 'int raw = button;', 1)],
+         'pad-face', 'rotated physical face buttons named'),
+        ('pad-stale-hotplug', [('help.inc', 'PortCeTutorialRefresh(this);', '(void)this;', 1)], 'pad-hotplug', 'connecting a pad refreshes'),
+        ('ignore-pad-disabled', [('guidance.inc', '!LT.mUnknown33474[pad] || ', '', 1)], 'pad-disabled', 'dodge names the current keys'),
+        ('gamepad-wrong-zoom', [('gamepad.inc', '{BUTTON_MECH_CHANGE_ZOOM_IN, BUTTON_ONCE, PAD_RB}',
+                                 '{BUTTON_MECH_CHANGE_ZOOM_IN, BUTTON_ONCE, PAD_LB}', 1)],
+         'pad-default', 'available default controller zoom and mouse named'),
+        ('wrong-player-port', [('guidance.inc', 'return pad == 0 || pad == 1 ? pad : -1;',
+                                'return pad == 0 || pad == 1 ? 0 : -1;', 1)],
+         'pad-player-two', 'a connected pad remains usable'),
+        ('wrong-binding-slots', [('guidance.inc', 'for (int i = playerPad; i < 2; ++i)', 'for (int i = 0; i < 2; ++i)', 2)],
+         'keyboard-player-two', 'dodge names the current keys'),
+        ('mouse-axis-slot-bypass', [('guidance.inc',
+                                    'return first.mType != MOUSE_AXIS_PLUS_ANY && first.mType != MOUSE_AXIS_MINUS_ANY &&\n\t\tfirst.mType != MOUSE_AXIS_PLUS && first.mType != MOUSE_AXIS_MINUS;',
+                                    'return true;', 1)], 'pad-mouse-blocked', 'unsupported movement binding uses the generic text'),
+        ('mouse-rest-ignored', [('mapping_probe.inc', 'if (sMouse)\n\t\t\t\t\t\t{', 'if (false)\n\t\t\t\t\t\t{', 1)],
+         'pad-mouse-blocked', 'slot-0 mouse rest suppresses slot-1 joystick'),
+        ('mouse-default-blocked', [('mapping_probe.inc', '(IsButtonSet(mapping->mId) && !mouse_rest_only)',
+                                    'IsButtonSet(mapping->mId)', 1)],
+         'pad-mouse-default', 'centered mouse does not suppress the CE default'),
         ('no-original-priority', [('script.inc', 'PortCeTutorialYield(help);', '(void)help;', 1)], 'yield', 'CE cue yields'),
         ('altered-radio', [('script.inc', 'args[1]->GetInt(), time, from, done, 10', 'args[1]->GetInt(), time + 1.f, from, done, 10', 1)], 'normal', 'radio message and schedule'),
         ('wrong-dash-window', [('walker.inc', 't > ( EVENT_MANAGER.GetTime() - mDashTime)', 't < ( EVENT_MANAGER.GetTime() - mDashTime)', 2)], 'normal', 'dash timing'),
+        ('weak-dash-start', [('walker.inc', 'float CBattleEngineWalkerPart::mDashStart = 0.9f;',
+                              'float CBattleEngineWalkerPart::mDashStart = 0.1f;', 1)], 'normal', 'partial first strafe cannot start a dash'),
+        ('weak-dash-end', [('walker.inc', 'float CBattleEngineWalkerPart::mDashEnd = 0.8f;',
+                            'float CBattleEngineWalkerPart::mDashEnd = 0.1f;', 1)], 'normal', 'partial opposite strafe cannot finish a dash'),
+        ('no-deadzone', [('analog_dead_zone.inc', '#define ANALOGUE_DEAD_ZONE 0.15f', '#define ANALOGUE_DEAD_ZONE 0.f', 1),
+                         ('analog_dead_zone.inc', '#define ANALOGUE_DEAD_ZONE_SCALE ((float)(1.0 / (1.0 - 0.15)))',
+                          '#define ANALOGUE_DEAD_ZONE_SCALE 1.f', 1)],
+         'normal', 'partial first deflection fails after deadzone'),
+        ('fixed-dash-time', [('guidance.inc', 'float duration = *static_cast<float *>(var->mData);', 'float duration = 0.2f;', 1)],
+         'timing-change', 'registered dash timing changes the cue'),
         ('displace-help', [('guidance.inc', 'return;\t\t// never displace the game\'s own help', '{ help->mMessages[0].mActive = FALSE; }', 1)], 'slots', 'never overwrite'),
     ]
     for name, edits, mode, message in mutants:
         check(compile_case(variant(name, edits)), mode, 2, message)
     syntax = []
     toolchains = {}
-    GAME_SOURCES = (ROOT/'port/game/ce_tutorial_guidance.cpp', mirror/'HelpText.cpp', mirror/'MissionScript/IScript.cpp', mirror/'MessageBox.cpp')
+    GAME_SOURCES = (ROOT/'port/game/ce_tutorial_guidance.cpp', ROOT/'port/game/ce_gamepad.cpp',
+                    mirror/'HelpText.cpp', mirror/'MissionScript/IScript.cpp', mirror/'MessageBox.cpp')
     for platform in ('linux', 'windows'):
         target = build.TARGETS[platform]
         compiler = Path(target['cxx'][0])
@@ -261,6 +322,7 @@ def main():
         includes = [build.PORT/'d3dx/include', build.PORT/'include', *target['includes'], mirror, mirror/'MissionScript']
         names = {'ce_tutorial_guidance.cpp': ('PortCeTutorialHelpCue(int)', 'PortCeTutorialRadioStart(int)', 'PortCeTutorialYield(CHelpTextDisplay*)',
                                               'PortCeTutorialRefresh(CHelpTextDisplay*)', 'PortCeTutorialPrintableKey'),
+                 'ce_gamepad.cpp': ('PortCeGamepadInputs(int, int, SControlInput*)',),
                  'IScript.cpp': ('PortCeTutorialHelpCue(int)', 'PortCeTutorialYield(CHelpTextDisplay*)'),
                  'HelpText.cpp': ('PortCeTutorialRefresh(CHelpTextDisplay*)',),
                  'MessageBox.cpp': ('PortCeTutorialRadioStart(int)',)}
@@ -291,8 +353,31 @@ def main():
                 good = all(n in symbols for n in expected) and (public or 'PortCeTutorial' not in symbols)
                 objects.append({'platform':platform, 'ce':public, 'source':source.name, 'sha256':sha(obj), 'symbols_ok':good, 'commands':cmds})
                 print(('PASS ' if good else 'FAIL ')+tag+' production object symbols', flush=True)
-    inputs = [patch, driver, ROOT/'port/game/ce_tutorial_guidance.cpp', ROOT/'src/Controller.h',
-              ROOT/'src/Controller.cpp', ROOT/'src/PCController.cpp', ROOT/'src/MissionScript/IScript.cpp',
+    # dinput.cpp is port code: build it with the production pcxx rule (not the game file's QIfist pipeline).
+    layout = ['-std=gnu++17', '-DNOMINMAX', '-fms-extensions', '-fno-autolink', '-fno-strict-aliasing',
+              '-fwrapv', '-mms-bitfields', '-fshort-wchar', '-g', '-O2', '-w']
+    for platform in ('linux', 'windows'):
+        target = build.TARGETS[platform]
+        prefix = build.deps.PREFIX if platform == 'linux' else build.deps.PREFIX_WIN
+        includes = [build.PORT/'d3dx/include', build.PORT/'include', *target['includes'], prefix/'include']
+        for public in (True, False):
+            tag = platform + ('-ce-' if public else '-faithful-') + 'dinput'
+            obj = out/(tag+'.o')
+            cmd = [*target['cxx'], *layout, *(['-DCE_VERSION="fixture"'] if public else []),
+                   *['-I'+str(p) for p in includes], '-c', '-o', str(obj), str(ROOT/'port/platform/common/dinput.cpp')]
+            p = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+            (out/(tag+'.log')).write_text(p.stdout+p.stderr)
+            if p.returncode:
+                raise RuntimeError('production port-object build failed: '+str(out/(tag+'.log')))
+            nm = build.deps.DATA / ('llvm/bin/llvm-nm' if platform == 'linux' else 'llvm-mingw/bin/llvm-nm')
+            symbols = subprocess.run([str(nm), '-C', str(obj)], capture_output=True, text=True, check=True).stdout
+            good = ('PortCeTutorialPadInfo' in symbols) == public
+            objects.append({'platform':platform, 'ce':public, 'source':'dinput.cpp', 'sha256':sha(obj),
+                            'symbols_ok':good, 'commands':[cmd]})
+            print(('PASS ' if good else 'FAIL ')+tag+' production port-object symbols', flush=True)
+    inputs = [patch, driver, ROOT/'port/game/ce_tutorial_guidance.cpp', ROOT/'port/game/ce_gamepad.cpp',
+              ROOT/'port/include/ce_tutorial_pad.h', ROOT/'src/Controller.h',
+              ROOT/'src/Controller.cpp', ROOT/'src/PCController.cpp', ROOT/'src/game.cpp', ROOT/'src/console.h', ROOT/'src/MissionScript/IScript.cpp',
               ROOT/'src/HelpText.cpp', ROOT/'src/Font.cpp', ROOT/'src/BattleEngineWalkerPart.cpp', ROOT/'port/platform/linux/user.cpp', ROOT/'port/platform/common/ce.cpp',
               ROOT/'src/MessageBox.cpp', ROOT/'port/platform/common/dinput.cpp', ROOT/'port/platform/common/ce_tutorial_keys.cpp']
     receipt = {'inputs':{str(p.relative_to(ROOT)):sha(p) for p in inputs}, 'pieces':{k:sha(out/k) for k in pieces},

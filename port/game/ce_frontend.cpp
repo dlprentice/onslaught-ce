@@ -588,8 +588,13 @@ enum ECeAction
 	CEA_ABOUT,
 	CEA_UPDATES,
 	CEA_REPORT,
-	CEA_THANKS
+	CEA_THANKS,
+	CEA_BONUS,
+	CEA_COOP_A,
+	CEA_COOP_B
 };
+
+bool	PortCeBonusStart(int level);		// ce_bonus.cpp
 
 CPauseMenu::CPauseMenu(EPortCeNoLists) : mActive(FALSE), mPage(0), mCloseTime(-1.f)
 {
@@ -616,6 +621,9 @@ public:
 		list->AddItem(new (MEMTYPE_MENUITEM) CCeMenuItem(L"Report a problem", CEA_REPORT));
 		list->AddItem(new (MEMTYPE_MENUITEM) CCeRecordSwitch());
 		list->AddItem(new (MEMTYPE_MENUITEM) CCeMenuItem(L"Updates", CEA_UPDATES));
+		list->AddItem(new (MEMTYPE_MENUITEM) CCeMenuItem(L"Bonus: Aquila Prototype", CEA_BONUS));
+		list->AddItem(new (MEMTYPE_MENUITEM) CCeMenuItem(L"Bonus co-op: Defence A", CEA_COOP_A));
+		list->AddItem(new (MEMTYPE_MENUITEM) CCeMenuItem(L"Bonus co-op: Defence B", CEA_COOP_B));
 		list->AddItem(new (MEMTYPE_MENUITEM) CCeMenuItem(L"Special Thanks", CEA_THANKS));
 		list->AddItem(new (MEMTYPE_MENUITEM) CMenuItem((DWORD)GI_BACK, 3));
 		mLists.Append(list);
@@ -691,6 +699,18 @@ public:
 		case CEA_THANKS:
 			ShowMessage(kSpecialThanks);
 			break;
+		case CEA_BONUS:
+		case CEA_COOP_A:
+		case CEA_COOP_B:
+		{
+			// The playable demo's level, or the two co-op maps the Multiplayer grid leaves out (two players on one
+			// PC), played outside every career: nothing they do is kept (ce_bonus.cpp).
+			const int action = ((CCeMenuItem *)item)->mAction;
+			Leave();
+			if (!PortCeBonusStart(action == CEA_BONUS ? 201 : action == CEA_COOP_A ? 856 : 858))
+				ShowMessage("The bonus level could not be started.");
+			return;
+		}
 		case CEA_REPORT:
 		{
 			char folder[1024];

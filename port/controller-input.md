@@ -35,25 +35,47 @@ only the first controller plugged in later is picked up; plug both in before sta
   bindings keeps exactly those): left stick moves and strafes, right stick turns and pitches, RT charges and fires the
   gun pod, LT the landing jets, A morphs, X changes weapon, Y cloaks, RB and LB zoom. A flight stick: stick to turn and
   pitch, twist to strafe, hat to move, trigger to fire, thumb button to change weapon, buttons 2 and 3 to morph and
-  cloak, 4 landing jets, 5 and 6 zoom.
+  cloak, 4 landing jets, 5 zoom in and 7 zoom out (6 is Pause, as on every pad).
 
 Retail sends a centred mouse to the turn and pitch controls on every update; a control that only the centred mouse set
-takes the controller's value, and a moving mouse still wins. Presses and releases are taken per controller update
-rather than per drawn frame, so a quick tap is not lost between two game updates. The game's own 15% per-axis dead
-zone applies (`CController::GetMappedInputValue`, [`src/Controller.cpp`](../src/Controller.cpp)).
+takes the controller's value, and a moving mouse still wins. SDL button and trigger changes are queued in order and
+delivered at most once per button per controller update, so a complete tap between updates can still be received while
+different buttons may act together. The queues are bounded: a per-pad queue overflow discards that pad's pending
+changes; overflow of the shared incoming SDL event buffer discards pending changes for every pad. A disconnect or
+focus change also discards affected pending changes. The current device state becomes the new baseline. The sticks,
+D-pad and flight-stick hat are sampled as levels. If an SDL gamepad mapping assigns multiple physical inputs to one
+logical button or trigger, that output is sampled too, because SDL's individual release event can disagree with its
+aggregate held state; a sub-poll tap on such an output can be missed. If its mapping cannot be inspected, all of that
+pad's buttons are sampled. Buttons are sampled as well if SDL cannot install the event watch. For sampled inputs,
+an unusually short tap between samples can still be missed. The game's own 15% per-axis dead zone applies
+(`CController::GetMappedInputValue`, [`src/Controller.cpp`](../src/Controller.cpp)).
 
 The triggers can also be bound by hand: select an action in the controls editor and press the trigger while it is
 capturing. A saved binding that already names button 16 or 17 responds to that trigger.
 
+This development branch adds the connected controller's available, active dodge and zoom inputs to the English Level
+100 help, alongside keyboard or mouse controls when both fit. It reads the actual bindings and the CE
+defaults; a customized joystick disables those defaults. Unavailable, unrecognized or potentially blocked secondary
+inputs are not named. Flight-stick button hints count the SDL inputs from 1; the controls editor displays the game's
+internal button numbers, which can differ. Dodging calls for full controller travel; the displayed time suggestion is
+inside the walker's currently registered interval, or omitted if unavailable. The prompts update on remapping and on
+a controller being connected or removed. If a description will not fit, the cue uses a shorter or generic one. Other
+languages and the faithful, tape and network paths keep their existing behaviour. These changes have focused tests; a
+player-facing tutorial run and a physical controller check remain open.
+
 ## Where it is off
 
 All of the above is CE behaviour. It is off in faithful builds and while a tape, recording, virtual clock or probe run is
-active (the trigger buttons as well), so recorded and compared runs keep retail's input exactly. In multiplayer the
-no-setup defaults are off (players use their Controller Options bindings); hotplug, flight-stick detection and the
-trigger buttons still work there.
+active (the trigger buttons as well), so recorded and compared runs keep retail's input exactly. In retail multiplayer
+the no-setup defaults are off (players use their Controller Options bindings); the CE bonus local co-op maps admit the
+defaults for each player. Hotplug, flight-stick detection and the trigger buttons still work in multiplayer.
 Controller input is not recorded by the keyboard-and-mouse tape format. There is no per-device profile. Rumble (patch 0105, `game/ce_rumble.cpp`) plays on the game pad numbered for the player (pad 1 for player 1, pad 2 for player 2), not on whichever pad custom bindings name; gamepads only, a flight stick does not rumble.
 
 ## Checks
+
+For ordinary CE play, fractional relative mouse deltas accumulate until they make a whole count. The first interval
+after a focus transition is discarded because SDL can combine old and new motion in that poll. This is covered by
+source-coupled fakes; physical mouse and compositor behavior remain untested.
 
 `port/tools/input_lifetime_tests.py` checks the adapter and the extracted game input callers with SDL virtual gamepads:
 axis changes, trigger edges, unplug, and the replay and recording fences. It opens no game window.

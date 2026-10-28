@@ -15,6 +15,7 @@
 """
 import argparse
 import hashlib
+import json
 import os
 import re
 import shlex
@@ -22,6 +23,7 @@ import shutil
 import subprocess
 import sys
 from collections import Counter
+from contextlib import nullcontext
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "tools"))
@@ -344,7 +346,7 @@ def allocator_syms(target, out):
     return path
 
 
-def ninja_file(target, sources, syntax, link):
+def ninja_file(target, sources, syntax, link, sdl_marker=None):
     t = TARGETS[target]
     out = BUILD / target
     inc = [PORT / "d3dx/include", PORT / "include"] + t["includes"] + [MIRROR, MIRROR / "MissionScript"]
@@ -390,7 +392,10 @@ def ninja_file(target, sources, syntax, link):
         rule = "cc" if s.suffix.lower() == ".c" else "cxx" if syntax or s.name.lower() == "cframetimer.cpp" else "qcxx"
         # The rename list is an input of every renamed object: a changed list must recompile them (the command line
         # names only its path, so ninja would otherwise keep objects renamed by the old list).
-        renamed = "" if syntax or rule == "cc" else f" | {allocator_syms(target, out)}"
+        implicit = [] if syntax or rule == "cc" else [allocator_syms(target, out)]
+        if sdl_marker:
+            implicit.append(sdl_marker)
+        renamed = " | " + " ".join(map(str, implicit)) if implicit else ""
         lines.append(f"build {obj}: {rule} {s}{renamed}")
     if link and not syntax:
         for s, rule, extra in port_sources(target):
@@ -400,7 +405,8 @@ def ninja_file(target, sources, syntax, link):
                 where = Path("third-party") / s.name
             obj = out / "port" / (str(where) + ".o")
             objs.append(obj)
-            lines.append(f"build {obj}: {rule} {s}" + (f"\n  extra = {extra}" if extra else ""))
+            lines.append(f"build {obj}: {rule} {s}" + (f" | {sdl_marker}" if sdl_marker else "") +
+                         (f"\n  extra = {extra}" if extra else ""))
         if target == "windows":
             res = out / "port/platform/windows/utf8.rc.o"
             objs.append(res)
@@ -410,7 +416,7 @@ def ninja_file(target, sources, syntax, link):
             objs.append(ver)
             lines.append(f"build {ver}: res {RESOURCE.with_name('version.rc')}")
         exe = out / ("bea" if target == "linux" else "bea.exe")
-        lines.append(f"build {exe}: link {' '.join(str(o) for o in objs)}")
+        lines.append(f"build {exe}: link {' '.join(str(o) for o in objs)}" + (f" | {sdl_marker}" if sdl_marker else ""))
     out.mkdir(parents=True, exist_ok=True)
     path = out / ("syntax.ninja" if syntax else "build.ninja")
     write_if_changed(path, ("\n".join(lines) + "\n").encode())
@@ -472,21 +478,34 @@ def main():
     rc = 0
     for target in (["linux", "windows"] if a.target == "all" else [a.target]):
         check_compiler(target)
-        nf = ninja_file(target, sources, a.syntax, link=not a.files)
-        r = subprocess.run(["ninja", "-f", str(nf), "-j", str(a.j)] + (["-k", "0"] if a.k else []),
-                           capture_output=a.k, text=True)
-        if a.k:
-            log = r.stdout + r.stderr
-            (BUILD / target / "last.log").write_text(log)
-            print(f"{target}: ninja exit {r.returncode}; log {BUILD / target / 'last.log'}")
-            census(log)
-            if r.returncode and not re.search(r"^\S+?:\d+:\d+: (?:fatal )?error:", log, re.M):
-                # A link or ninja failure has no compiler error site; show it rather than a clean census.
-                print("build failed outside the compiler:\n" + "\n".join(
-                    l for l in log.strip().splitlines() if "error" in l and "LNK4217" not in l)[-2000:])
-        rc = rc or r.returncode
-        if PUBLIC and not a.syntax and not a.files and r.returncode == 0:
-            rc = rc or build_launcher(target, a.ce_version)
+        full_public = PUBLIC and not a.syntax and not a.files
+        with deps.sdl_install_lock(target) if full_public else nullcontext():
+            marker = None
+            if full_public:
+                deps.require_sdl_receipt(target)
+                marker = BUILD / target / ".sdl3-input.sha256"
+                deps.write_cache_if_changed(marker, (deps.sdl_receipt_sha256(target) + "\n").encode())
+                deps.write_cache_file(BUILD / target / ".bea-sdl3-link.json", b'{"status":"incomplete"}\n')
+            nf = ninja_file(target, sources, a.syntax, link=not a.files, sdl_marker=marker)
+            r = subprocess.run(["ninja", "-f", str(nf), "-j", str(a.j)] + (["-k", "0"] if a.k else []),
+                               capture_output=a.k, text=True)
+            if a.k:
+                log = r.stdout + r.stderr
+                (BUILD / target / "last.log").write_text(log)
+                print(f"{target}: ninja exit {r.returncode}; log {BUILD / target / 'last.log'}")
+                census(log)
+                if r.returncode and not re.search(r"^\S+?:\d+:\d+: (?:fatal )?error:", log, re.M):
+                    # A link or ninja failure has no compiler error site; show it rather than a clean census.
+                    print("build failed outside the compiler:\n" + "\n".join(
+                        l for l in log.strip().splitlines() if "error" in l and "LNK4217" not in l)[-2000:])
+            rc = rc or r.returncode
+            if full_public and r.returncode == 0:
+                launcher_rc = build_launcher(target, a.ce_version)
+                rc = rc or launcher_rc
+                if launcher_rc == 0:
+                    receipt = deps.sdl_link_receipt(BUILD, target)
+                    deps.write_cache_file(BUILD / target / ".bea-sdl3-link.json",
+                                          (json.dumps(receipt, sort_keys=True) + "\n").encode())
     return rc
 
 
@@ -545,6 +564,12 @@ def launcher_version_object(out: Path, version: str) -> Path:
 
 
 def build_launcher(target, version, out=None, defines=()):
+    with deps.sdl_install_lock(target):
+        deps.require_sdl_receipt(target)
+        return _build_launcher(target, version, out, defines)
+
+
+def _build_launcher(target, version, out=None, defines=()):
     """The public launcher: game-folder discovery, logging and the signed v2 updater (port/updater/UPDATER-V2.md). It
     links SDL3 (dialogs), Monocypher (Ed25519) and zlib (unpacking), and on Windows WinHTTP and BCrypt. Linux:
     build/linux/onslaught-ce-launch; Windows: build/windows/onslaught-ce.exe. `out` and `defines` are for the updater

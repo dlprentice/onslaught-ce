@@ -1,0 +1,360 @@
+--- a/AirGuide.cpp
++++ b/AirGuide.cpp
+@@ -163,7 +163,7 @@
+ 			continue;
+ 		float	r = thing->GetRadius();
+ 		FVector	d = thing->GetPos() - mUnit->GetPos();
+-		float	gap = d.MagnitudeSq() - r * r - radiusSq;
++		float	gap = d.MagnitudeSqXZY() - r * r - radiusSq;
+ 		if ((gap < best) && (gap < 225.0f))
+ 		{
+ 			mNearest = thing;
+--- a/BoatAI.cpp
++++ b/BoatAI.cpp
+@@ -19,7 +19,7 @@
+ 		{
+ 			mForUnit->GoToPoint(mWaypoint->GetPos(), FALSE);
+ 			FVector	d = mWaypoint->GetPos() - mForUnit->GetPos();
+-			if (d.Y * d.Y + d.X * d.X + d.Z * d.Z < 16.0f)
++			if (((d.X * d.X) + (d.Z * d.Z)) + (d.Y * d.Y) < 16.0f)
+ 				mWaypoint = ((CWaypoint *)mWaypoint.ToRead())->mNext.ToRead();
+ 			Unknown3();
+ 		}
+--- a/BoatGuide.cpp
++++ b/BoatGuide.cpp
+@@ -56,7 +56,7 @@
+ 	mUnit->mUnknown120.mYaw = yaw;
+ 
+ 	float	distanceSq = d.MagnitudeXYSq();
+-	d.Normalise();
++	d.NormaliseYZX();
+ 	if (distanceSq < 0.01f)
+ 	{
+ 		mMode = 0;
+--- a/CarrierAI.cpp
++++ b/CarrierAI.cpp
+@@ -18,7 +18,7 @@
+ 
+ 	FVector	d = waypoint->GetPos() - mForUnit->GetPos();
+ 	mForUnit->GoToPoint(waypoint->GetPos(), FALSE);
+-	if (d.MagnitudeSq() < 16.0f)
++	if (d.MagnitudeSqXZY() < 16.0f)
+ 	{
+ 		mWaypoint = NULL;
+ 		mForUnit->Stop();
+--- a/CarrierGuide.cpp
++++ b/CarrierGuide.cpp
+@@ -130,7 +130,7 @@
+ 		GetUnit()->SetUnknown174(0);
+ 
+ 	FVector	forward(0, (GetUnit()->GetMaxVelocity() * 0.05f /* retail 005d8584: / 20.0f */) * 4.0f, 0);
+-	FMatrix	ori(d.Azimuth(), d.Elevation(), 0);
++	FMatrix	ori(d.Azimuth(), d.ElevationYZX(), 0);
+ 	forward = ori * forward;
+ 	GetUnit()->SetUnknown14C(forward);
+ 	GetUnit()->SetUnknown120(CEulerAngles(yaw, pitch, roll));
+--- a/CarverAI.cpp
++++ b/CarverAI.cpp
+@@ -50,7 +50,7 @@
+ 	if (target)
+ 	{
+ 		FVector	d = target->GetPos() - mForUnit->GetPos();
+-		float	gap = d.Magnitude() - mForUnit->GetRadius() - target->GetRadius();
++		float	gap = d.MagnitudeYZX() - mForUnit->GetRadius() - target->GetRadius();
+ 		SINT	band;
+ 		if (mAttacking)
+ 		{
+@@ -107,7 +107,7 @@
+ 		if (!(entry->GetThing()->GetThingType() & THING_TYPE_AMMUNITION))
+ 			continue;
+ 		FVector	d = entry->GetThing()->GetPos() - mForUnit->GetPos();
+-		if (d.Magnitude() > 20.0f)
++		if (d.MagnitudeYZX() > 20.0f)
+ 			continue;
+ 		if ((((CRound *)entry->GetThing())->mUnknownE8.ToRead() == mForUnit) && (((CRound *)entry->GetThing())->mData->mUnknown1C > 0))
+ 		{
+--- a/ComponentAI.cpp
++++ b/ComponentAI.cpp
+@@ -38,7 +38,7 @@
+ 	for (CThing *thing = it.First(); thing; thing = it.Next())
+ 	{
+ 		FVector	d = thing->GetPos() - mForUnit->GetPos();
+-		float	distance = d.Magnitude();
++		float	distance = d.MagnitudeYZX();
+ 		CUnit	*unit;
+ 		if (thing->GetThingType() & THING_TYPE_UNKNOWN_20000000)
+ 			unit = ((CSquad *)thing)->Unknown74();
+--- a/DiveBomberAI.cpp
++++ b/DiveBomberAI.cpp
+@@ -199,7 +199,7 @@
+ 		FVector	aim;
+ 		target->GetTargetablePos(&aim);
+ 		float	radius = TargetRadius();
+-		float	gap = (aim - mForUnit->GetPos()).Magnitude() - mForUnit->GetRadius() - radius;
++		float	gap = (aim - mForUnit->GetPos()).MagnitudeYZX() - mForUnit->GetRadius() - radius;
+ 		float	gapXY = (aim - mForUnit->GetPos()).MagnitudeXY() - mForUnit->GetRadius() - radius;
+ 
+ 		// The three `goto done` skip to the one `return delay` (a skip as Stuart's DXEngine.cpp:687), which gives `delay` the one return
+@@ -219,7 +219,7 @@
+ 		if (!((gap > 55.0f) && (gapXY > 40.0f)))
+ 		{
+ 			FVector	away = mForUnit->GetPos() - aim;
+-			away.Normalise();
++			away.NormaliseXZY();
+ 			away *= 150.0f;
+ 			mForUnit->GoToPoint(mForUnit->GetPos() + away, FALSE);
+ 			goto done;
+@@ -299,7 +299,7 @@
+ 		float	gap = mTarget->GetRadius();
+ 		if ((mTarget->GetThingType() & THING_TYPE_COMPONENT) && (((CComponent *)mTarget.ToRead())->mParent.ToRead()))
+ 			gap = ((CComponent *)mTarget.ToRead())->mParent->GetRadius();
+-		gap = d.Magnitude() - mForUnit->GetRadius() - gap;
++		gap = d.MagnitudeYZX() - mForUnit->GetRadius() - gap;
+ 
+ 		if (mUnknown68)
+ 		{
+--- a/DropshipGuide.cpp
++++ b/DropshipGuide.cpp
+@@ -140,10 +140,10 @@
+ 				FVector	normal = MAP.Normal(pos);
+ 				FVector	side = fwd ^ normal;
+ 				FVector	up = side ^ normal;
+-				up.Normalise();
++				up.NormaliseXZY();
+ 				pitch = -up.Z;
+ 				FVector	s = side;
+-				s.Normalise();
++				s.NormaliseXZY();
+ 				roll = s.Z;
+ 
+ 				float	vx = 0, vy = 0;
+@@ -178,7 +178,7 @@
+ 				FVector	normal = MAP.Normal(pos);
+ 				FVector	side = fwd ^ normal;
+ 				FVector	up = side ^ normal;
+-				up.Normalise();
++				up.NormaliseYZX();
+ 				pitch = -up.Z;
+ 				FVector	s = side;
+ 				s.Normalise();
+--- a/FenrirMainGunAI.cpp
++++ b/FenrirMainGunAI.cpp
+@@ -38,7 +38,7 @@
+ 	for (CThing *thing = it.First(); thing; thing = it.Next())
+ 	{
+ 		FVector	d = thing->GetPos() - mForUnit->GetPos();
+-		float	distance = d.Magnitude();
++		float	distance = d.MagnitudeYZX();
+ 		CUnit	*unit;
+ 		if (thing->GetThingType() & THING_TYPE_UNKNOWN_20000000)
+ 			unit = ((CSquad *)thing)->Unknown74();
+--- a/GillMAI.cpp
++++ b/GillMAI.cpp
+@@ -25,7 +25,7 @@
+ 	if (target)
+ 	{
+ 		FVector	d = target->GetPos() - mForUnit->GetPos();
+-		float	distance = d.Magnitude();
++		float	distance = d.MagnitudeYZX();
+ 		float	reach = 15.0f;
+ 		if (target->GetThingType() & THING_TYPE_NAVAL)
+ 			reach = 25.0f;
+@@ -59,7 +59,7 @@
+ 	for (CThing *thing = it.First(); thing; thing = it.Next())
+ 	{
+ 		FVector	d = thing->GetPos() - mForUnit->GetPos();
+-		float	distance = d.Magnitude();
++		float	distance = d.MagnitudeYZX();
+ 		CUnit	*unit;
+ 		if (thing->GetThingType() & THING_TYPE_UNKNOWN_20000000)
+ 			unit = ((CSquad *)thing)->Unknown74();
+--- a/GillMHeadAI.cpp
++++ b/GillMHeadAI.cpp
+@@ -149,7 +149,7 @@
+ 	for (CThing *thing = it.First(); thing; thing = it.Next())
+ 	{
+ 		FVector	d = thing->GetPos() - mForUnit->GetPos();
+-		float	distanceSq = d.MagnitudeSq();
++		float	distanceSq = d.MagnitudeSqYZX();
+ 		CUnit	*unit;
+ 		if (thing->GetThingType() & THING_TYPE_UNKNOWN_20000000)
+ 			unit = ((CSquad *)thing)->Unknown74();
+--- a/GroundAttackAI.cpp
++++ b/GroundAttackAI.cpp
+@@ -82,7 +82,7 @@
+ 		CBattleEngine	*be;
+ 		if ((player) && (be = player->GetBattleEngine()))
+ 		{
+-			float	distance = (be->GetPos() - mForUnit->GetPos()).Magnitude();
++			float	distance = (be->GetPos() - mForUnit->GetPos()).MagnitudeYZX();
+ 			if (distance > 100.0f)
+ 				mForUnit->GoToPoint(be->GetPos(), FALSE);
+ 			else
+--- a/InfantryGuide.cpp
++++ b/InfantryGuide.cpp
+@@ -181,7 +181,7 @@
+ 		{
+ 			FVector	d = thing->GetPos() - GetUnit()->GetPos();
+ 			float	r = thing->GetRadius();
+-			float	gap = d.MagnitudeSq();
++			float	gap = d.MagnitudeSqXZY();
+ 			gap -= r * r;
+ 			if ((gap < best) && (gap < 1.0f))
+ 			{
+--- a/MechGuide.cpp
++++ b/MechGuide.cpp
+@@ -65,7 +65,7 @@
+ 			if (!(target->GetPos() == GetUnit()->GetPos()))
+ 			{
+ 				d = GetUnit()->GetPos() - target->GetPos();
+-				d.Normalise();
++				d.NormaliseXZY();
+ 				d *= 10.0f;
+ 			}
+ 			pushed = TRUE;
+@@ -125,7 +125,7 @@
+ 		}
+ 
+ 		float	distanceSq = d.MagnitudeXYSq();
+-		d.Normalise();
++		d.NormaliseYZX();
+ 		if (distanceSq < 0.01f)
+ 		{
+ 			mMode = 0;
+@@ -171,7 +171,7 @@
+ 		if (!(thing->GetThingType() & (THING_TYPE_VEHICLE | THING_TYPE_MECH)))
+ 			continue;
+ 		FVector	d = thing->GetPos() - mUnit->GetPos();
+-		float	gap = d.Magnitude() - mUnit->GetRadius() - thing->GetRadius();
++		float	gap = d.MagnitudeYZX() - mUnit->GetRadius() - thing->GetRadius();
+ 		if ((gap < best) && (gap < 1.0f))
+ 		{
+ 			mTarget = thing;
+--- a/PlaneAI.cpp
++++ b/PlaneAI.cpp
+@@ -26,7 +26,7 @@
+ 	CBattleEngine	*be;
+ 	if ((mForUnit->GetUnitDataUnknown120()) && (player = GAME.GetPlayer(0)) && (be = player->GetBattleEngine()))
+ 	{
+-		float	distance = (be->GetPos() - mForUnit->GetPos()).Magnitude();
++		float	distance = (be->GetPos() - mForUnit->GetPos()).MagnitudeYZX();
+ 		if (distance > 120.0f)
+ 		{
+ 			mForUnit->GoToPoint(be->GetPos(), FALSE);
+@@ -43,7 +43,7 @@
+ 		mTarget->GetTargetablePos(&aim);
+ 		CUnit	*target = mTarget.ToRead();
+ 		FVector	d = aim - mForUnit->GetPos();
+-		float	distance = d.Magnitude() - mForUnit->GetRadius() - target->GetRadius();
++		float	distance = d.MagnitudeYZX() - mForUnit->GetRadius() - target->GetRadius();
+ 		SINT	band;
+ 		if (mUnknown60)
+ 		{
+--- a/SquadRelaxed.cpp
++++ b/SquadRelaxed.cpp
+@@ -64,7 +64,7 @@
+ 	if (target)
+ 	{
+ 		FVector	d = target->GetPos() - mPos;
+-		float	m = d.Magnitude();		// Normalise() written out: its inline copy orders the x87 stack differently
++		float	m = d.MagnitudeYZX();		// Normalise() written out: its inline copy orders the x87 stack differently
+ 		if (m != 0) { float inv = 1.0f / m; d.X *= inv; d.Y *= inv; d.Z *= inv; }
+ 		d *= 45.0f;
+ 		mPos += d;
+--- a/TentacleAI.cpp
++++ b/TentacleAI.cpp
+@@ -40,13 +40,13 @@
+ 			t->mHeadAngles.mRoll = d.Azimuth() - t->mCurrentOrientation.mYaw;
+ 			t->mUnknown2D0 = d.Elevation() - t->mCurrentOrientation.mPitch;
+ 		}
+-		if ((t->mUnknown2E4 - t->mHeadOffset).MagnitudeSq() < 16.0f)
++		if ((t->mUnknown2E4 - t->mHeadOffset).MagnitudeSqYZX() < 16.0f)
+ 		{
+ 			float	x = GAME.FloatRandom() * 30.0f - 15.0f;
+ 			float	y = GAME.FloatRandom() * 20.0f + 10.0f;
+ 			float	z = -(GAME.FloatRandom() * 40.0f + 3.0f);
+ 			FVector	v(x, y, z);
+-			v.Normalise();
++			v.NormaliseYZX();
+ 			v *= t->GetHeadLength();
+ 			t->mUnknown2E4 = v;
+ 		}
+@@ -90,7 +90,7 @@
+ 		break;
+ 
+ 	case 2:
+-		float	dist = (t->mUnknown2E4 - t->mHeadOffset).MagnitudeSq();
++		float	dist = (t->mUnknown2E4 - t->mHeadOffset).MagnitudeSqXZY();
+ 		t->mUnknown2D0 = PI / 3;
+ 		if (dist < 16.0f)
+ 			t->mUnknown2C0 = 0;
+--- a/TerrainGuide.cpp
++++ b/TerrainGuide.cpp
+@@ -51,7 +51,7 @@
+ 		mUnit->mUnknown120.mYaw = yaw;
+ 
+ 		float	distanceSq = d.MagnitudeXYSq();
+-		d.Normalise();
++		d.NormaliseYZX();
+ 		if (distanceSq < 0.01f)
+ 		{
+ 			mMode = 0;
+--- a/ThunderheadGuide.cpp
++++ b/ThunderheadGuide.cpp
+@@ -49,7 +49,7 @@
+ 		GetUnit()->mUnknown120.mYaw = yaw;
+ 
+ 		float	distanceSq = d.MagnitudeXYSq();
+-		d.Normalise();
++		d.NormaliseYZX();
+ 		if (distanceSq < 0.01f)
+ 		{
+ 			mMode = 0;
+@@ -64,8 +64,8 @@
+ 		FMatrix	&ori = GetUnit()->GetOrientation();
+ 		velocity = ori * (FVector(0, speed, 0) * 0.2f /* retail 005d8c68: / 5.0f */);
+ 		FVector	next = velocity + GetUnit()->GetPos();
+-		float	nextDistance = (next - mHome).Magnitude();
+-		if (((GetUnit()->GetPos() - mHome).Magnitude() > nextDistance) || (nextDistance < 70.0f))
++		float	nextDistance = (next - mHome).MagnitudeYZX();
++		if (((GetUnit()->GetPos() - mHome).MagnitudeYZX() > nextDistance) || (nextDistance < 70.0f))
+ 			GetUnit()->mUnknown14C = velocity;
+ 	}
+ 	else
+--- a/UnitAI.cpp
++++ b/UnitAI.cpp
+@@ -396,7 +396,7 @@
+ 			continue;
+ 
+ 		FVector	d = thing->GetPos() - mForUnit->GetPos();
+-		float	distanceSq = d.MagnitudeSq();
++		float	distanceSq = d.MagnitudeSqYZX();
+ 		CUnitData	*data = mForUnit->mUnitData;
+ 		float	range = (1.0f - unit->GetStealth() * 0.01f /* retail 005d85fc: / 100.0f */) * data->mMaxTargetRange;
+ 		if (!(distanceSq < range * range))
+@@ -510,12 +510,12 @@
+ 			FVector	d = pos - mForUnit->GetPos();
+ 			if (mForUnit->GetThingType() & THING_TYPE_AIR_UNIT)
+ 			{
+-				if (d.MagnitudeSq() < 6.25f)
++				if (d.MagnitudeSqYZX() < 6.25f)
+ 					mEmitterIndex++;
+ 			}
+ 			else
+ 			{
+-				if (d.MagnitudeSq() < 0.5625f)
++				if (d.MagnitudeSqYZX() < 0.5625f)
+ 					mEmitterIndex++;
+ 			}
+ 			mForUnit->GoToPoint(pos, TRUE);
+--- a/WaypointManager.cpp
++++ b/WaypointManager.cpp
+@@ -100,7 +100,7 @@
+ 			for (CWaypoint *w = path->mWaypoints.First(); w; w = path->mWaypoints.Next())
+ 			{
+ 				FVector d = w->GetPos() - *pos;
+-				float dist = d.Y * d.Y + d.Z * d.Z + d.X * d.X;
++				float dist = ((d.X * d.X) + (d.Z * d.Z)) + (d.Y * d.Y);
+ 				if (dist < best)
+ 				{
+ 					best = dist;

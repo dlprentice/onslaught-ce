@@ -17,6 +17,7 @@ FAKE = ROOT / "port/tools/ce_palette_fake.h"
 PALETTE = ROOT / "port/game/ce_palette.cpp"
 CONSOLE_H = ROOT / "port/game/ce_console.h"
 MUSIC_H = ROOT / "port/game/ce_music.h"
+PHOTO_H = ROOT / "port/game/ce_photo.h"
 ACTIONS = ROOT / "port/game/ce_console_game.cpp"
 FLAGS = ("BEA_PORT_CE_LAYER", "BEA_PORT_CLOCK", "BEA_PORT_TAPE", "BEA_PORT_PROBES", "BEA_PORT_RECORD",
          "BEA_PORT_PILOT", "BEA_PORT_AUTOPILOT", "BEA_NET_HOST", "BEA_NET_JOIN")
@@ -77,6 +78,7 @@ class PaletteTests(unittest.TestCase):
         (folder / "ce_palette.cpp").write_text(palette_text)
         (folder / "ce_console.h").write_bytes(CONSOLE_H.read_bytes())
         (folder / "ce_music.h").write_bytes(MUSIC_H.read_bytes())
+        (folder / "ce_photo.h").write_bytes(PHOTO_H.read_bytes())
         (folder / "ce_palette_fake.h").write_bytes(FAKE.read_bytes())
         for name in ("common.h", "game.h", "frontend.h", "PauseMenu.h", "CLIParams.h", "ltshell.h", "DXEngine.h",
                      "Hud.h", "SpriteRenderer.h", "renderinfo.h", "Texture.h", "GameInterface.h"):
@@ -164,6 +166,9 @@ class PaletteTests(unittest.TestCase):
             ("devstats-unfenced", "\tif (!proof)\n", "\tif (false && !proof)\n", "FAIL"),
             ("devstats-proof-without-layer", '&& Present("BEA_PORT_CE_LAYER");', ';', "FAIL"),
             ("devstats-sticky", "\tdevStats = -1;\n}", "}", "FAIL"),
+            ("devstats-in-photo", "if (!DevStatsAllowed() || PortCePhotoOn()) return false;", "if (!DevStatsAllowed()) return false;", "FAIL"),
+            ("photo-keeps-panel", "\tif (on) Close();\n}", "}", "FAIL"),
+            ("photo-ignores-refusal", "if (!PortCePhotoSet(on)) {", "if (!PortCePhotoSet(on) && false) {", "FAIL"),
             ("words-unbounded", "if (argc == int(kArgs)) return -1;", "if (argc == int(kArgs) + 1) return -1;", "out of bounds"),
             ("music-dir-first-word", "snprintf(dir, sizeof(dir), \"%s\", rest);", "snprintf(dir, sizeof(dir), \"%s\", argv[2]);", "FAIL"),
             ("music-dir-word-limit", "{ CmdMusic(2, head); return; }", "{}", "FAIL"),

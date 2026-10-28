@@ -1,0 +1,33 @@
+--- a/maths.h
++++ b/maths.h
+@@ -324,16 +324,21 @@
+ 	FVector	operator*(const FVector &v) const { return FVector(((Row[0].Z * v.Z) + (Row[0].Y * v.Y)) + (Row[0].X * v.X), ((Row[1].Z * v.Z) + (Row[1].Y * v.Y)) + (Row[1].X * v.X), ((Row[2].Z * v.Z) + (Row[2].Y * v.Y)) + (Row[2].X * v.X)); }
+ 	FMatrix	operator*(const FMatrix &m) const	// CFEPGoodies::ButtonPressed (0045d44a..0045d5ad)
+ 	{
++		// Port (patch 0094): each cell summed as retail's out-of-line copy (0040d320, which 64 calls use) sums it; clang
++		// keeps the text, and the source's (k0 + k1) + k2 differs from retail in 8 of 9 cells (k0 = Row.X * m.Row[0],
++		// k1 = Row.Y * m.Row[1], k2 = Row.Z * m.Row[2]).
++		// Retail's one inline copy, in CFEPGoodies::ButtonPressed, has its own cell orders: patch 0130 writes them there.
++		const FVector &A = Row[0], &B = Row[1], &C = Row[2];
+ 		return FMatrix(
+-					   FVector(Row[0].X * m.Row[0].X + Row[0].Y * m.Row[1].X + Row[0].Z * m.Row[2].X,
+-							   Row[0].X * m.Row[0].Y + Row[0].Y * m.Row[1].Y + Row[0].Z * m.Row[2].Y,
+-							   Row[0].X * m.Row[0].Z + Row[0].Y * m.Row[1].Z + Row[0].Z * m.Row[2].Z),
+-					   FVector(Row[1].X * m.Row[0].X + Row[1].Y * m.Row[1].X + Row[1].Z * m.Row[2].X,
+-							   Row[1].X * m.Row[0].Y + Row[1].Y * m.Row[1].Y + Row[1].Z * m.Row[2].Y,
+-							   Row[1].X * m.Row[0].Z + Row[1].Y * m.Row[1].Z + Row[1].Z * m.Row[2].Z),
+-					   FVector(Row[2].X * m.Row[0].X + Row[2].Y * m.Row[1].X + Row[2].Z * m.Row[2].X,
+-							   Row[2].X * m.Row[0].Y + Row[2].Y * m.Row[1].Y + Row[2].Z * m.Row[2].Y,
+-							   Row[2].X * m.Row[0].Z + Row[2].Y * m.Row[1].Z + Row[2].Z * m.Row[2].Z));
++					   FVector(((A.X * m.Row[0].X) + (A.Y * m.Row[1].X)) + (A.Z * m.Row[2].X),
++							   ((A.Z * m.Row[2].Y) + (A.Y * m.Row[1].Y)) + (A.X * m.Row[0].Y),
++							   ((A.Z * m.Row[2].Z) + (A.Y * m.Row[1].Z)) + (A.X * m.Row[0].Z)),
++					   FVector(((B.Z * m.Row[2].X) + (B.Y * m.Row[1].X)) + (B.X * m.Row[0].X),
++							   ((B.X * m.Row[0].Y) + (B.Z * m.Row[2].Y)) + (B.Y * m.Row[1].Y),
++							   ((B.X * m.Row[0].Z) + (B.Z * m.Row[2].Z)) + (B.Y * m.Row[1].Z)),
++					   FVector(((C.Z * m.Row[2].X) + (C.Y * m.Row[1].X)) + (C.X * m.Row[0].X),
++							   ((C.X * m.Row[0].Y) + (C.Z * m.Row[2].Y)) + (C.Y * m.Row[1].Y),
++							   ((C.Z * m.Row[2].Z) + (C.Y * m.Row[1].Z)) + (C.X * m.Row[0].Z)));
+ 	}
+ 	FMatrix	operator*(float f) const { return FMatrix(Row[0] * f, Row[1] * f, Row[2] * f); }
+ #if defined(EXPLOSION_CPP) || defined(MESH_CPP)	// defined in explosion.obj (0044c210); CMesh::Load reads with it. The other objects keep their declaration counts

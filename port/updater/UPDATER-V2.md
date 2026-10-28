@@ -1,7 +1,7 @@
 # Onslaught CE updater v2
 
 Status: active — released in 0.1.8 (2026-10-27); the v2 feed is published on the latest release
-Last updated: 2026-10-27
+Last updated: 2026-10-28 (dialogs shown by a child process, with a terminal fallback)
 Summary: how 0.1.8 brings automatic updates back without the 0.1.0–0.1.6 hazard: a new signed feed that old
 launchers never fetch, a versioned install layout switched by one atomic state-file replacement, and deletion only
 of what the updater itself created and recorded.
@@ -102,7 +102,10 @@ game; Windows: a handle that denies deletion), so retention never removes a runn
 ## Installing an update
 
 The player is asked first, with **Update** (Enter), **Later** (Escape) or **Skip this version** (`skip_version` in
-`ce.ini`). With no display (Linux without `DISPLAY` or `WAYLAND_DISPLAY`) nobody is asked and nothing is installed.
+`ce.ini`). On Linux the box is shown by a child process (`ask_box`, ce_launch.c), so a dialog backend that fails or
+crashes cannot take the launcher down (0.1.8's and 0.1.9's crashed in SDL's own X11 dialog without zenity and the 32-bit
+libXrandr); then, or with no display, the question goes to the terminal when there is one, and otherwise nobody is
+asked and nothing is installed (`port/updater/tests/messagebox_tests.py`).
 `BEA_NO_UPDATE_CHECK=1`, `update_check=0` in `ce.ini` and `--no-update-check` turn checking off: no request is made.
 An unreachable feed is silent (one log line). A replay or harness recording never checks.
 

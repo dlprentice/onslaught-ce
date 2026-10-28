@@ -1,0 +1,13 @@
+--- a/Round.cpp
++++ b/Round.cpp
+@@ -336,7 +336,9 @@
+ struct FSeekVector : public FVector
+ {
+ 	__forceinline void	Scale(float f) { X *= f; Y *= f; Z *= f; }
+-	void	Normalise() { float m = sqrtf((X * X) + (Y * Y) + (Z * Z)); if (m) Scale(1.0f / m); }
++	// Port (patch 0109): retail's inline seek normalise sums (Y*Y + Z*Z) + X*X (004d951c..004d952e); this member copy
++	// of maths.h's summed (X*X + Y*Y) + Z*Z, which rounds differently at 24 bits (level 431's missile, P46).
++	void	Normalise() { float m = sqrtf(((Y * Y) + (Z * Z)) + (X * X)); if (m) Scale(1.0f / m); }
+ };
+ void CRound::Move()	// FUNCTION: 0x004d8e40
+ {

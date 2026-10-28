@@ -1,7 +1,7 @@
 # Onslaught CE launcher and updater
 
 Status: active (public builds only)
-Last updated: 2026-10-27
+Last updated: 2026-10-28 (dialogs shown by a child process, with a terminal fallback)
 Summary: game discovery and bounded logs, and the signed v2 updater (UPDATER-V2.md) that replaces the suspended one.
 
 `ce_launch.c` builds as `onslaught-ce-launch` (Linux, started by the `onslaught-ce` script after game preflight when needed) and
@@ -90,8 +90,9 @@ gets the DirectInput mouse. The launcher also sets `BEA_AUDIO_MONITOR=1` unless 
 Because the CE layer is off while recording, the Onslaught CE page that switched `record_sessions=1` on is hidden in
 every recorded session. So while it is set, each start asks first (an SDL message box): **Record** (Enter), **Not this
 time** (Escape) or **Stop recording**, which sets `record_sessions=0`. `--no-record` does the same as Stop recording
-without asking; `--record` records without asking. Where no box can be shown (no display), the session is recorded, as
-set. Tests answer with `BEA_RECORD_ANSWER=record|once|stop`. The launcher and the game change `ce.ini` the same way
+without asking; `--record` records without asking. Where no box can be shown (no display, or a dialog that fails or
+crashes: on Linux every box is shown by a child process, `ask_box`), the question goes to the terminal when there is
+one; with nobody to ask, the session is recorded, as set. Tests answer with `BEA_RECORD_ANSWER=record|once|stop`. The launcher and the game change `ce.ini` the same way
 (`ce_ini_write`, ce_report.h): the whole file is written to `ce.ini.tmp`, every write and the close are checked, and it
 is renamed over `ce.ini`, so a failed write leaves the old file whole.
 

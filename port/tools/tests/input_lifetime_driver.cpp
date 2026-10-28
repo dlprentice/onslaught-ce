@@ -4,6 +4,7 @@
 #include <cassert>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <vector>
 #include <windows.h>
 #include <dinput.h>
@@ -99,7 +100,7 @@ static unsigned sKeysRead, spKeysRead;
 static HMODULE TestModuleHandle(const char *) { return nullptr; }
 #define GetModuleHandle TestModuleHandle
 struct { bool mBuildResources = false, mAutoConfigTest = false; } CLIPARAMS;
-struct Console { void Print(const char *, ...) {} void AddMessage(const char *, ...) {} } CONSOLE, SETUP_HISTORY;
+struct Console { void Print(const char *, ...) {} void AddMessage(const char *, ...) {} } CONSOLE, SETUP_HISTORY, LOG;
 struct PCLTShell {
     IDirectInputDevice8A *pJoystick[MAX_JOYPADS]{};
     uintptr_t canary = 0x12345678;
@@ -119,7 +120,45 @@ struct PCLTShell {
     HRESULT InitDirectInput(HWND);
     HRESULT UpdateJoystick(int, bool);
 } LT;
+#if defined(CE_VERSION) && defined(CE_EDGE_TESTS)
+enum { BUTTON_ON, BUTTON_ONCE, BUTTON_RELEASE, BUTTON_REPEAT, ANALOGUE_PLUS, ANALOGUE_MINUS,
+       ANALOGUE_PLUS_ACT_AS_BUTTON_REPEAT, ANALOGUE_MINUS_ACT_AS_BUTTON_REPEAT, KEY_ONCE, KEY_ON, KEY_RELEASE,
+       MOUSE_AXIS_PLUS_ANY, MOUSE_AXIS_MINUS_ANY, MOUSE_AXIS_PLUS, MOUSE_AXIS_MINUS, MOUSE_BUTTON_ON,
+       MOUSE_BUTTON_ONCE, MOUSE_BUTTON_RELEASE };
+enum { BUTTON_FRONTEND_CHEAT = 45 };
+constexpr float ANALOGUE_ACT_AS_DIGITAL_THRESHOLD = .9f;
+struct SControlInput { int mPad, mType; short mKey, mVKey; };
+struct SControlBinding { bool mConfigurable; int mId; SControlInput mInput[2]; } CONTROL_BINDINGS[4];
+struct CController {
+    int mPadNumber = 0, mNumMappings = 0;
+    bool mPlaying = false, mRecording = false, mPausedBeforeMap = false;
+    float mLastRepeatTime = 0, mNextDelayTime = 0;
+    unsigned mButtons1 = 0, mButtons2 = 0, mButtons3 = 0, mButtons1Old = 0, mButtons2Old = 0, mButtons3Old = 0;
+    std::vector<int> actions;
+    virtual int GetJoyButtonOnce(int, int) = 0;
+    virtual int GetJoyButtonOn(int, int) = 0;
+    virtual int GetJoyButtonRelease(int, int) = 0;
+    void Flush();
+    void DoMappings();
+    void CalcNumMappings() {}
+    void ReadControllerState() {}
+    void RecordControllerState() {}
+    bool RepeatOccured(BOOL, SControlBinding *) { return false; }
+    float GetMappedInputValue(int, int) { return 0; }
+    bool GetKeyOnce(int) { return false; }
+    bool GetKeyOn(int) { return false; }
+    bool GetKeyRelease(int) { return false; }
+    bool IsButtonSet(int id) { return id >= 0 && id < 32 && (mButtons1 & (1u << id)); }
+    void UnsetButton(int id) { if (id >= 0 && id < 32) mButtons1 &= ~(1u << id); }
+    void SendButtonAction(int id, float) { if (id >= 0 && id < 32) mButtons1 |= 1u << id; actions.push_back(id); }
+};
+struct CPCController : CController {
+    int GetJoyButtonOnce(int, int) override;
+    int GetJoyButtonOn(int, int) override;
+    int GetJoyButtonRelease(int, int) override;
+#else
 struct CPCController {
+#endif
     float GetJoyAnalogueLeftX(int), GetJoyAnalogueLeftY(int), GetJoyAnalogueRightX(int), GetJoyAnalogueRightY(int);
 };
 static IDirectInputDevice8A *sMouse;
@@ -133,12 +172,26 @@ enum { MOUSE_EVENT_UP = 3, MOUSE_EVENT_DOWN = 4 };
 using MouseTrapper = bool (*)(WORD, int);
 #define MOUSE_TRAP static_cast<MouseTrapper>(nullptr)
 struct { bool IsRunning() { return false; } } FRONTEND;
-struct { int GetWindowWidth() { return 640; } int GetWindowHeight() { return 480; } } PLATFORM;
+struct { int GetWindowWidth() { return 640; } int GetWindowHeight() { return 480; }
+    float GetSysTimeFloat() { return 0; } bool KeyOn(int) { return false; } } PLATFORM;
 static void SetMouseInputActive(BOOL value) { sMouseInputActive = value; }
 static void ResetMouseTransientState() { MOUSE_WHEEL = 0; }
 static int PortUiMouse(int *, int *) { return 0; }
 #define GetCursorPos PortGetCursorPos
 #include "CALLERS_INC"
+
+#if defined(CE_VERSION) && defined(CE_EDGE_TESTS)
+static bool testMultiplayer, testBonus;
+struct InputTestGame { bool IsMultiplayer() { return testMultiplayer; } bool IsPaused() { return false; } } GAME;
+bool PortCeBonusCoopRunning() { return testBonus; }
+GAMEPAD_EDGE_FUNCTIONS
+static bool gMouseAxisLocked[MAX_JOYPADS], sSendingMouseRest, sMouseAxisRead;
+static float gMouseSensitivity = 1;
+static int sCeMouseRestId = -1;
+static float DigitalValueForButton(int) { return 1; }
+int PortCeGamepadInputs(int, int, SControlInput *) { return 0; } // isolate the actual saved-binding mapping path
+GAMEPAD_MAPPING_FUNCTIONS
+#endif
 
 #define CHECK(expr) do { if (!(expr)) { fprintf(stderr, "failed: %s at %d SDL=%s\n", #expr, __LINE__, SDL_GetError()); return 1; } } while (0)
 static unsigned windowMouse, directDown, directUp, focusNotifications;
@@ -186,7 +239,16 @@ int main(int argc, char **argv) {
     CHECK(SUCCEEDED(DirectInput8Create(nullptr, 0x800, IID_IDirectInput8A, &factory, nullptr)));
     static_cast<IDirectInput8A *>(factory)->Release();
     const char *test = argv[1];
+    if (!strcmp(test, "mouse-fraction-tape")) setenv("BEA_PORT_TAPE", "fixture", 1);
+    if (!strcmp(test, "mouse-fraction-record")) setenv("BEA_PORT_RECORD", "fixture", 1);
+    if (!strcmp(test, "mouse-fraction-clock")) setenv("BEA_PORT_CLOCK", "fixture", 1);
+    if (!strcmp(test, "mouse-fraction-probes")) setenv("BEA_PORT_PROBES", "fixture", 1);
+    if (!strcmp(test, "mouse-fraction-disabled")) ceLayer = false;
     if (!strncmp(test, "pad-", 4)) {
+        if (!strcmp(test, "pad-edge-tape")) setenv("BEA_PORT_TAPE", "fixture", 1);
+        if (!strcmp(test, "pad-edge-record")) setenv("BEA_PORT_RECORD", "fixture", 1);
+        if (!strcmp(test, "pad-edge-clock")) setenv("BEA_PORT_CLOCK", "fixture", 1);
+        if (!strcmp(test, "pad-edge-probes")) setenv("BEA_PORT_PROBES", "fixture", 1);
         if (!strcmp(test, "pad-trigger-disabled")) ceLayer = false;
         if (!strcmp(test, "pad-trigger-tape")) setenv("BEA_PORT_TAPE", "fixture", 1);
         if (!strcmp(test, "pad-trigger-record")) setenv("BEA_PORT_RECORD", "fixture", 1);
@@ -195,14 +257,41 @@ int main(int argc, char **argv) {
         // The UI override may be forced during a tape; it must not force live controller actions.
         if (strncmp(test, "pad-trigger-", 12) == 0) setenv("BEA_PORT_CE_LAYER", "1", 1);
         std::vector<SDL_Joystick *> pads;
-        for (int i = 0; i < (!strcmp(test, "pad-limit") ? 5 : 1); ++i) { pads.push_back(VirtualPad()); CHECK(pads.back()); }
+        bool two = !strcmp(test, "pad-edge-two") || !strcmp(test, "pad-edge-cross-binding") ||
+                   !strcmp(test, "pad-edge-two-consumers") || !strcmp(test, "pad-edge-repeat-consumer") ||
+                   !strcmp(test, "pad-edge-cross-overflow") || !strcmp(test, "pad-edge-bonus-two");
+        for (int i = 0; i < (!strcmp(test, "pad-limit") ? 5 : two ? 2 : 1); ++i)
+            { pads.push_back(VirtualPad()); CHECK(pads.back()); }
+        if (!strcmp(test, "pad-edge-duplicate-binding")) {
+            SDL_GUID guid = SDL_GetJoystickGUID(pads[0]); char s[33]{}, mapping[256]{};
+            SDL_GUIDToString(guid, s, sizeof(s));
+            snprintf(mapping, sizeof(mapping), "%s,Authored duplicate,a:b0,a:b1,b:b2,start:b6,leftx:a0,lefty:a1,rightx:a2,righty:a3,lefttrigger:a4,righttrigger:a5,", s);
+            CHECK(SDL_AddGamepadMapping(mapping) >= 0);
+        }
         if (strncmp(test, "pad-trigger-", 12) == 0) {
             CHECK(SDL_SetJoystickVirtualAxis(pads[0], SDL_GAMEPAD_AXIS_LEFT_TRIGGER, -32768));
             CHECK(SDL_SetJoystickVirtualAxis(pads[0], SDL_GAMEPAD_AXIS_RIGHT_TRIGGER, -32768));
             SDL_UpdateJoysticks();
         }
         CHECK(SUCCEEDED(LT.InitDirectInput(reinterpret_cast<HWND>(1))));
-        CHECK(LT.canary == 0x12345678 && LT.mJoypads == (!strcmp(test, "pad-limit") ? 4 : 1));
+        CHECK(LT.canary == 0x12345678 && LT.mJoypads == (!strcmp(test, "pad-limit") ? 4 : two ? 2 : 1));
+#if defined(CE_VERSION)
+        if (!strcmp(test, "pad-tutorial-info") || !strcmp(test, "pad-tutorial-unplug")) {
+            CeTutorialPadInfo info{};
+            CHECK(PortCeTutorialPadInfo(LT.pJoystick[0], &info));
+            CHECK(info.kind == CE_TUTORIAL_GAMEPAD);
+            CHECK((info.axes & (CE_PAD_X1 | CE_PAD_Y1 | CE_PAD_X2 | CE_PAD_Y2)) ==
+                  (CE_PAD_X1 | CE_PAD_Y1 | CE_PAD_X2 | CE_PAD_Y2));
+            CHECK((info.buttons & (1u << SDL_GAMEPAD_BUTTON_LEFT_SHOULDER)) &&
+                  (info.buttons & (1u << SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER)));
+            CHECK(!PortCeTutorialPadInfo(nullptr, &info) && !PortCeTutorialPadInfo(LT.pJoystick[0], nullptr));
+            if (!strcmp(test, "pad-tutorial-unplug")) {
+                CHECK(SDL_DetachVirtualJoystick(virtualIds[0]));
+                SDL_UpdateJoysticks();
+                CHECK(!PortCeTutorialPadInfo(LT.pJoystick[0], &info));
+            }
+        } else
+#endif
         if (!strcmp(test, "pad-properties")) {
             // The game's Controller Options page names each pad by DIPROP_INSTANCENAME, and InitDirectInput sets the
             // axis range with DIPROP_RANGE. Both are MAKEDIPROP(n) references; a comparison an optimizing compiler can
@@ -283,6 +372,179 @@ int main(int argc, char **argv) {
                 CHECK(SUCCEEDED(LT.UpdateJoystick(0, true)));
                 CHECK(!LT.JoyButtonOnce(0, 16) && !LT.JoyButtonOnce(0, 17));
             }
+        } else if (!strcmp(test, "pad-quick-tap") || !strncmp(test, "pad-edge-", 9)) {
+#if defined(CE_VERSION) && defined(CE_EDGE_TESTS)
+            if (!strcmp(test, "pad-edge-stale-focus")) {
+                SDL_Event stale{}; stale.type = SDL_EVENT_WINDOW_FOCUS_LOST; stale.window.windowID = 17; stale.window.timestamp = 1;
+                CHECK(SDL_PushEvent(&stale));
+            }
+            CHECK(SUCCEEDED(LT.pJoystick[0]->Acquire()));
+            CHECK(SUCCEEDED(LT.UpdateJoystick(0, true))); PortCeGamepadUpdate(0);
+            auto button = [&](bool down) {
+                if (!SDL_SetJoystickVirtualButton(pads[0], SDL_GAMEPAD_BUTTON_SOUTH, down)) return false;
+                SDL_UpdateJoysticks();
+                return true;
+            };
+            auto update = [&] { CHECK(SUCCEEDED(LT.UpdateJoystick(0, true))); PortCeGamepadUpdate(0); return 0; };
+            if (!strcmp(test, "pad-edge-bonus-two")) {
+                CHECK(SUCCEEDED(LT.pJoystick[1]->Acquire())); CHECK(SUCCEEDED(LT.UpdateJoystick(1, true)));
+                CONTROL_BINDINGS[0] = {true, 16, {{0, BUTTON_ONCE, 3, 0}, {1, BUTTON_ONCE, 3, 0}}};
+                CONTROL_BINDINGS[1] = {true, 17, {{0, BUTTON_RELEASE, 3, 0}, {1, BUTTON_RELEASE, 3, 0}}};
+                CPCController p0, p1; p0.mNumMappings = p1.mNumMappings = 2; p1.mPadNumber = 1;
+                testMultiplayer = true; testBonus = true;
+                PortCeGamepadBeginCycle(); p0.Flush(); p1.Flush();
+                for (int pad = 0; pad < 2; ++pad) {
+                    CHECK(SDL_SetJoystickVirtualButton(pads[pad], SDL_GAMEPAD_BUTTON_SOUTH, true)); SDL_UpdateJoysticks();
+                    CHECK(SDL_SetJoystickVirtualButton(pads[pad], SDL_GAMEPAD_BUTTON_SOUTH, false)); SDL_UpdateJoysticks();
+                }
+                PortCeGamepadBeginCycle(); p0.Flush(); p1.Flush();
+                CHECK(p0.actions.size() == 1 && p0.actions[0] == 16 && p1.actions.size() == 1 && p1.actions[0] == 16);
+                PortCeGamepadBeginCycle(); p0.Flush(); p1.Flush();
+                CHECK(p0.actions.size() == 2 && p0.actions[1] == 17 && p1.actions.size() == 2 && p1.actions[1] == 17);
+                PortCeGamepadBeginCycle(); p0.Flush(); p1.Flush(); CHECK(p0.actions.size() == 2 && p1.actions.size() == 2);
+            } else if (!strcmp(test, "pad-edge-cross-binding") || !strcmp(test, "pad-edge-two-consumers") ||
+                !strcmp(test, "pad-edge-repeat-consumer")) {
+                CHECK(SUCCEEDED(LT.pJoystick[1]->Acquire())); CHECK(SUCCEEDED(LT.UpdateJoystick(1, true)));
+                CONTROL_BINDINGS[0] = {true, 16, {{-1, 0, 0, 0}, {1, BUTTON_ONCE, 3, 0}}};
+                CONTROL_BINDINGS[1] = {true, 17, {{-1, 0, 0, 0}, {1, BUTTON_RELEASE, 3, 0}}};
+                CPCController p0, p1; p0.mNumMappings = p1.mNumMappings = 2; p1.mPadNumber = 1;
+                PortCeGamepadBeginCycle(); p0.Flush();
+                if (strcmp(test, "pad-edge-cross-binding")) p1.Flush();
+                CHECK(p0.actions.empty() && p1.actions.empty());
+                CHECK(SDL_SetJoystickVirtualButton(pads[1], SDL_GAMEPAD_BUTTON_SOUTH, true)); SDL_UpdateJoysticks();
+                CHECK(SDL_SetJoystickVirtualButton(pads[1], SDL_GAMEPAD_BUTTON_SOUTH, false)); SDL_UpdateJoysticks();
+                CHECK(SUCCEEDED(LT.UpdateJoystick(0, true))); CHECK(SUCCEEDED(LT.UpdateJoystick(1, true)));
+                PortCeGamepadBeginCycle(); p0.Flush();
+                CHECK(p0.actions.size() == 1 && p0.actions[0] == 16 && PortCeGamepadOn(1, 3));
+                if (strcmp(test, "pad-edge-cross-binding")) {
+                    p1.Flush(); CHECK(p1.actions.size() == 1 && p1.actions[0] == 16 && PortCeGamepadOn(1, 3));
+                }
+                if (strcmp(test, "pad-edge-repeat-consumer")) PortCeGamepadBeginCycle();
+                p0.Flush(); CHECK(p0.actions.size() == 2 && p0.actions[1] == 17 && !PortCeGamepadOn(1, 3));
+                if (strcmp(test, "pad-edge-cross-binding")) {
+                    p1.Flush(); CHECK(p1.actions.size() == 2 && p1.actions[1] == 17);
+                }
+                PortCeGamepadBeginCycle(); p0.Flush(); CHECK(p0.actions.size() == 2);
+            } else if (!strcmp(test, "pad-edge-no-poll-held")) {
+                CHECK(button(true)); PortCeGamepadUpdate(0);
+                CHECK(PortCeGamepadOn(0, 3) && PortCeGamepadEdge(0, 3, false));
+                PortCeGamepadUpdate(0);
+                CHECK(PortCeGamepadOn(0, 3) && !PortCeGamepadEdge(0, 3, true));
+                CHECK(button(false)); PortCeGamepadUpdate(0);
+                CHECK(!PortCeGamepadOn(0, 3) && PortCeGamepadEdge(0, 3, true));
+            } else if (!strcmp(test, "pad-edge-duplicate-binding")) {
+                CHECK(button(true)); CHECK(update() == 0); CHECK(PortCeGamepadOn(0, 3));
+                CHECK(SDL_SetJoystickVirtualButton(pads[0], SDL_GAMEPAD_BUTTON_EAST, true)); SDL_UpdateJoysticks();
+                CHECK(update() == 0); CHECK(PortCeGamepadOn(0, 3));
+                CHECK(button(false)); CHECK(SUCCEEDED(LT.UpdateJoystick(0, true))); CHECK(LT.JoyButtonOn(0, 3));
+                CHECK(update() == 0); CHECK(PortCeGamepadOn(0, 3) && !PortCeGamepadEdge(0, 3, true));
+                // B remains an unambiguous mapping, so its complete tap must still be retained.
+                CHECK(SDL_SetJoystickVirtualButton(pads[0], SDL_GAMEPAD_BUTTON_WEST, true)); SDL_UpdateJoysticks();
+                CHECK(SDL_SetJoystickVirtualButton(pads[0], SDL_GAMEPAD_BUTTON_WEST, false)); SDL_UpdateJoysticks();
+                CHECK(update() == 0); CHECK(PortCeGamepadOn(0, 3) && PortCeGamepadEdge(0, 0, false));
+                CHECK(update() == 0); CHECK(PortCeGamepadOn(0, 3) && PortCeGamepadEdge(0, 0, true));
+                CHECK(SDL_SetJoystickVirtualButton(pads[0], SDL_GAMEPAD_BUTTON_EAST, false)); SDL_UpdateJoysticks();
+                CHECK(update() == 0); CHECK(!PortCeGamepadOn(0, 3) && PortCeGamepadEdge(0, 3, true));
+            } else if (!strcmp(test, "pad-edge-no-watch")) {
+                SDL_RemoveEventWatch(PadWatch, nullptr); CHECK(button(true)); CHECK(update() == 0);
+                CHECK(PortCeGamepadOn(0, 3) && PortCeGamepadEdge(0, 3, false));
+                CHECK(button(false)); CHECK(update() == 0);
+                CHECK(!PortCeGamepadOn(0, 3) && PortCeGamepadEdge(0, 3, true));
+            } else if (!strcmp(test, "pad-edge-missing-focus-event")) {
+                CHECK(button(true)); CHECK(update() == 0); CHECK(PortCeGamepadOn(0, 3));
+                focused = false; CHECK(update() == 0); CHECK(!PortCeGamepadOn(0, 3));
+                CHECK(button(false)); focused = true; CHECK(update() == 0);
+                CHECK(!PortCeGamepadOn(0, 3) && !PortCeGamepadEdge(0, 3, true));
+                CHECK(button(true)); CHECK(update() == 0); CHECK(PortCeGamepadEdge(0, 3, false));
+            } else if (!strcmp(test, "pad-edge-cross-overflow")) {
+                CHECK(SUCCEEDED(LT.pJoystick[1]->Acquire())); CHECK(SUCCEEDED(LT.UpdateJoystick(1, true))); PortCeGamepadUpdate(1);
+                CHECK(SDL_SetJoystickVirtualButton(pads[1], SDL_GAMEPAD_BUTTON_SOUTH, true)); SDL_UpdateJoysticks();
+                CHECK(SDL_SetJoystickVirtualButton(pads[1], SDL_GAMEPAD_BUTTON_SOUTH, false)); SDL_UpdateJoysticks();
+                PortCeGamepadUpdate(1); CHECK(PortCeGamepadEdge(1, 3, false)); // release stays queued on pad 1
+                for (int i = 0; i < 140; ++i) CHECK(button((i & 1) == 0));
+                PortCeGamepadUpdate(1); CHECK(!PortCeGamepadEdge(1, 3, false) && !PortCeGamepadEdge(1, 3, true));
+            } else if (!strcmp(test, "pad-edge-overflow-focus")) {
+                for (int i = 0; i < 139; ++i) CHECK(button((i & 1) == 0));
+                focused = false; SDL_Event event{}; event.type = SDL_EVENT_WINDOW_FOCUS_LOST; event.window.windowID = 17;
+                CHECK(SDL_PushEvent(&event)); CHECK(update() == 0); CHECK(!PortCeGamepadOn(0, 3));
+                focused = true; event.type = SDL_EVENT_WINDOW_FOCUS_GAINED; event.window.timestamp = 0; CHECK(SDL_PushEvent(&event));
+                CHECK(button(false)); CHECK(update() == 0); CHECK(button(true)); CHECK(update() == 0);
+                CHECK(PortCeGamepadEdge(0, 3, false) == 1);
+            } else if (!strcmp(test, "pad-edge-overflow") || !strcmp(test, "pad-edge-event-overflow")) {
+                for (int i = 0; i < (!strcmp(test, "pad-edge-overflow") ? 70 : 140); ++i) CHECK(button((i & 1) == 0));
+                CHECK(update() == 0); CHECK(PortCeGamepadEdge(0, 3, false) == 0 && PortCeGamepadEdge(0, 3, true) == 0);
+                CHECK(button(true)); CHECK(update() == 0); CHECK(PortCeGamepadEdge(0, 3, false) == 1);
+            } else if (!strcmp(test, "pad-edge-stale-focus")) {
+                CHECK(button(true)); CHECK(update() == 0); CHECK(PortCeGamepadEdge(0, 3, false) == 1);
+            } else if (!strcmp(test, "pad-edge-focus")) {
+                CHECK(button(true));
+                focused = false; SDL_Event event{}; event.type = SDL_EVENT_WINDOW_FOCUS_LOST; event.window.windowID = 17;
+                CHECK(SDL_PushEvent(&event)); CHECK(button(false)); CHECK(update() == 0);
+                CHECK(!PortCeGamepadOn(0, 3) && !PortCeGamepadEdge(0, 3, true));
+                focused = true; event.type = SDL_EVENT_WINDOW_FOCUS_GAINED; event.window.timestamp = 0; CHECK(SDL_PushEvent(&event));
+                CHECK(update() == 0); CHECK(button(true)); CHECK(update() == 0);
+                CHECK(PortCeGamepadEdge(0, 3, false) == 1);
+            } else if (!strcmp(test, "pad-edge-chord") || !strcmp(test, "pad-edge-chord-pulses")) {
+                CHECK(button(true));
+                CHECK(SDL_SetJoystickVirtualButton(pads[0], SDL_GAMEPAD_BUTTON_EAST, true)); SDL_UpdateJoysticks();
+                if (!strcmp(test, "pad-edge-chord-pulses")) {
+                    CHECK(button(false));
+                    CHECK(SDL_SetJoystickVirtualButton(pads[0], SDL_GAMEPAD_BUTTON_EAST, false)); SDL_UpdateJoysticks();
+                }
+                CHECK(update() == 0);
+                CHECK(PortCeGamepadEdge(0, 3, false) == 1 && PortCeGamepadEdge(0, 0, false) == 1);
+                CHECK(PortCeGamepadOn(0, 3) == 1 && PortCeGamepadOn(0, 0) == 1);
+                if (!strcmp(test, "pad-edge-chord")) {
+                    CHECK(button(false));
+                    CHECK(SDL_SetJoystickVirtualButton(pads[0], SDL_GAMEPAD_BUTTON_EAST, false)); SDL_UpdateJoysticks();
+                }
+                CHECK(update() == 0);
+                CHECK(PortCeGamepadEdge(0, 3, true) == 1 && PortCeGamepadEdge(0, 0, true) == 1);
+                CHECK(PortCeGamepadOn(0, 3) == 0 && PortCeGamepadOn(0, 0) == 0);
+            } else if (!strcmp(test, "pad-edge-two")) {
+                CHECK(SUCCEEDED(LT.pJoystick[1]->Acquire())); CHECK(SUCCEEDED(LT.UpdateJoystick(1, true))); PortCeGamepadUpdate(1);
+                CHECK(SDL_SetJoystickVirtualButton(pads[1], SDL_GAMEPAD_BUTTON_SOUTH, true)); SDL_UpdateJoysticks();
+                CHECK(SDL_SetJoystickVirtualButton(pads[1], SDL_GAMEPAD_BUTTON_SOUTH, false)); SDL_UpdateJoysticks();
+                CHECK(update() == 0); CHECK(!PortCeGamepadEdge(0, 3, false));
+                CHECK(SUCCEEDED(LT.UpdateJoystick(1, true))); PortCeGamepadUpdate(1); CHECK(PortCeGamepadEdge(1, 3, false) == 1);
+                CHECK(SUCCEEDED(LT.UpdateJoystick(1, true))); PortCeGamepadUpdate(1); CHECK(PortCeGamepadEdge(1, 3, true) == 1);
+            } else if (!strcmp(test, "pad-edge-trigger")) {
+                CHECK(SDL_SetJoystickVirtualAxis(pads[0], SDL_GAMEPAD_AXIS_RIGHT_TRIGGER, -32768)); SDL_UpdateJoysticks(); CHECK(update() == 0);
+                CHECK(SDL_SetJoystickVirtualAxis(pads[0], SDL_GAMEPAD_AXIS_RIGHT_TRIGGER, 32767)); SDL_UpdateJoysticks();
+                CHECK(SDL_SetJoystickVirtualAxis(pads[0], SDL_GAMEPAD_AXIS_RIGHT_TRIGGER, -32768)); SDL_UpdateJoysticks();
+                CHECK(update() == 0); CHECK(PortCeGamepadEdge(0, 17, false) == 1 && PortCeGamepadOn(0, 17) == 1);
+                CHECK(update() == 0); CHECK(PortCeGamepadEdge(0, 17, true) == 1 && PortCeGamepadOn(0, 17) == 0);
+            } else if (!strcmp(test, "pad-edge-hotplug")) {
+                CHECK(button(true)); CHECK(SDL_DetachVirtualJoystick(virtualIds[0])); SDL_UpdateJoysticks();
+                CHECK(update() == 0); CHECK(!PortCeGamepadOn(0, 3) && !PortCeGamepadEdge(0, 3, true));
+                pads.push_back(VirtualPad()); CHECK(pads.back()); SDL_Delay(550);
+                CHECK(update() == 0); CHECK(!PortCeGamepadEdge(0, 3, false));
+                CHECK(SDL_SetJoystickVirtualButton(pads.back(), SDL_GAMEPAD_BUTTON_SOUTH, true)); SDL_UpdateJoysticks();
+                CHECK(update() == 0); CHECK(PortCeGamepadEdge(0, 3, false) == 1);
+            } else if (!strcmp(test, "pad-edge-multiplayer")) {
+                testMultiplayer = true; CHECK(button(true)); CHECK(update() == 0);
+                CHECK(PortCeGamepadOn(0, 3) == -1 && PortCeGamepadEdge(0, 3, false) == -1);
+                CHECK(button(false)); testMultiplayer = false; CHECK(update() == 0);
+                CHECK(button(true)); CHECK(update() == 0); CHECK(PortCeGamepadEdge(0, 3, false) == 1);
+            } else if (!strcmp(test, "pad-edge-tape") || !strcmp(test, "pad-edge-record") ||
+                       !strcmp(test, "pad-edge-clock") || !strcmp(test, "pad-edge-probes")) {
+                CHECK(button(true)); CHECK(update() == 0);
+                CHECK(PortCeGamepadOn(0, 3) == -1 && PortCeGamepadEdge(0, 3, false) == -1);
+            } else {
+                CHECK(button(true));
+                if (!strcmp(test, "pad-edge-order")) CHECK(SUCCEEDED(LT.UpdateJoystick(0, true)));
+                CHECK(button(false));
+                if (!strcmp(test, "pad-edge-order")) CHECK(SUCCEEDED(LT.UpdateJoystick(0, true)));
+                CHECK(update() == 0); CHECK(PortCeGamepadEdge(0, 3, false) == 1 && PortCeGamepadOn(0, 3) == 1);
+                CHECK(update() == 0); CHECK(PortCeGamepadEdge(0, 3, true) == 1 && PortCeGamepadOn(0, 3) == 0);
+                CHECK(update() == 0); CHECK(!PortCeGamepadEdge(0, 3, false) && !PortCeGamepadEdge(0, 3, true));
+                CHECK(button(true)); CHECK(update() == 0); CHECK(PortCeGamepadEdge(0, 3, false) == 1);
+                CHECK(update() == 0); CHECK(PortCeGamepadOn(0, 3) == 1 && !PortCeGamepadEdge(0, 3, false));
+                CHECK(button(false)); CHECK(update() == 0); CHECK(PortCeGamepadEdge(0, 3, true) == 1);
+            }
+#else
+            return 2;
+#endif
         } else if (!strcmp(test, "pad-axes")) {
             CHECK(SUCCEEDED(LT.pJoystick[0]->Acquire()));
             CPCController controller;
@@ -362,6 +624,7 @@ int main(int argc, char **argv) {
         ReleaseAll("test focus loss"); Drain(); CHECK(directUp == 0);
     } else {
         Device mouse(MOUSE, 0); mouse.SetCooperativeLevel(MainWindow(), DISCL_EXCLUSIVE | DISCL_FOREGROUND);
+        if (!strcmp(test, "mouse-fraction-no-focus")) focused = false;
         if (!strcmp(test, "wheel-stale")) { Wheel(2); Drain(); MOUSE_WHEEL = 0; }
         injectFocusLoss = !strcmp(test, "wheel-race");
         CHECK(SUCCEEDED(mouse.Acquire())); sMouse = &mouse;
@@ -386,6 +649,62 @@ int main(int argc, char **argv) {
             focused = true; event.type = SDL_EVENT_WINDOW_FOCUS_GAINED; CHECK(SDL_PushEvent(&event)); Drain();
             DIMOUSESTATE2 state{}; CHECK(SUCCEEDED(mouse.GetDeviceState(sizeof(state), &state))); CHECK(state.lZ == 0);
             Wheel(1); Drain(); CHECK(SUCCEEDED(mouse.GetDeviceState(sizeof(state), &state))); CHECK(state.lZ == 120);
+        } else if (!strcmp(test, "mouse-fraction-mixed")) {
+            MOUSE_X = MOUSE_Y = 0;
+            relativeX = .25f; relativeY = -.25f; CHECK(SUCCEEDED(PollMouseState())); CHECK(MOUSE_X == 0 && MOUSE_Y == 0);
+            relativeX = .25f; relativeY = -.25f; CHECK(SUCCEEDED(PollMouseMotion())); CHECK(MOUSE_X == 0 && MOUSE_Y == 0);
+            relativeX = .25f; relativeY = -.25f; CHECK(SUCCEEDED(PollMouseState())); CHECK(MOUSE_X == 0 && MOUSE_Y == 0);
+            relativeX = .25f; relativeY = -.25f; CHECK(SUCCEEDED(PollMouseMotion())); CHECK(MOUSE_X == 1 && MOUSE_Y == -1);
+            CHECK(SUCCEEDED(PollMouseState())); CHECK(MOUSE_X == 1 && MOUSE_Y == -1); // no duplicate delivery
+        } else if (!strcmp(test, "mouse-fraction-invalid")) {
+            MOUSE_X = MOUSE_Y = 0;
+            relativeX = .75f; relativeY = -.75f; CHECK(SUCCEEDED(PollMouseState()));
+            relativeX = std::numeric_limits<float>::quiet_NaN(); relativeY = std::numeric_limits<float>::infinity();
+            CHECK(SUCCEEDED(PollMouseMotion())); CHECK(MOUSE_X == 0 && MOUSE_Y == 0);
+            for (int i = 0; i < 4; ++i) { relativeX = .25f; relativeY = -.25f; CHECK(SUCCEEDED(PollMouseState())); }
+            CHECK(MOUSE_X == 1 && MOUSE_Y == -1);
+            MOUSE_X = MOUSE_Y = 0;
+            relativeX = (std::numeric_limits<float>::max)(); relativeY = -(std::numeric_limits<float>::max)();
+            CHECK(SUCCEEDED(PollMouseState())); CHECK(MOUSE_X == 0 && MOUSE_Y == 0);
+            relativeX = 1.f; relativeY = -1.f; CHECK(SUCCEEDED(PollMouseState())); CHECK(MOUSE_X == 1 && MOUSE_Y == -1);
+        } else if (!strcmp(test, "mouse-fraction-pending-focus")) {
+            MOUSE_X = MOUSE_Y = 0;
+            relativeX = 1.5f; relativeY = -1.5f; // SDL still holds this from the old focus epoch.
+            focused = false; SDL_Event event{}; event.type = SDL_EVENT_WINDOW_FOCUS_LOST; event.window.windowID = 17;
+            CHECK(SDL_PushEvent(&event)); Drain();
+            focused = true; event.type = SDL_EVENT_WINDOW_FOCUS_GAINED; event.window.timestamp = 0; CHECK(SDL_PushEvent(&event)); Drain();
+            CHECK(SUCCEEDED(PollMouseMotion())); CHECK(MOUSE_X == 0 && MOUSE_Y == 0);
+            relativeX = .5f; relativeY = -.5f; CHECK(SUCCEEDED(PollMouseState())); CHECK(MOUSE_X == 0 && MOUSE_Y == 0);
+            relativeX = .5f; relativeY = -.5f; CHECK(SUCCEEDED(PollMouseState())); CHECK(MOUSE_X == 1 && MOUSE_Y == -1);
+        } else if (!strcmp(test, "mouse-fraction-no-focus")) {
+            MOUSE_X = MOUSE_Y = 0;
+            relativeX = 2.f; relativeY = -2.f; CHECK(SUCCEEDED(PollMouseState()));
+            CHECK(MOUSE_X == 0 && MOUSE_Y == 0);
+            relativeX = 2.f; relativeY = -2.f; CHECK(SUCCEEDED(PollMouseState()));
+            CHECK(MOUSE_X == 0 && MOUSE_Y == 0);
+        } else if (!strncmp(test, "mouse-fraction", 14)) {
+            bool fenced = strcmp(test, "mouse-fraction") && strcmp(test, "mouse-fraction-reset") && strcmp(test, "mouse-fraction-focus");
+            MOUSE_X = MOUSE_Y = 0;
+            for (int i = 0; i < 4; ++i) {
+                relativeX = .25f; relativeY = -.25f; CHECK(SUCCEEDED(PollMouseState()));
+            }
+            CHECK(MOUSE_X == (fenced ? 0 : 1) && MOUSE_Y == (fenced ? 0 : -1));
+            MOUSE_X = MOUSE_Y = 0;
+            if (!fenced) {
+                relativeX = .75f; relativeY = -.75f; CHECK(SUCCEEDED(PollMouseState()));
+                if (!strcmp(test, "mouse-fraction-reset")) {
+                    CHECK(SUCCEEDED(mouse.Unacquire())); CHECK(SUCCEEDED(mouse.Acquire()));
+                } else if (!strcmp(test, "mouse-fraction-focus")) {
+                    focused = false; SDL_Event event{}; event.type = SDL_EVENT_WINDOW_FOCUS_LOST; event.window.windowID = 17;
+                    CHECK(SDL_PushEvent(&event)); Drain();
+                    focused = true; event.type = SDL_EVENT_WINDOW_FOCUS_GAINED; event.window.timestamp = 0; CHECK(SDL_PushEvent(&event)); Drain();
+                    CHECK(SUCCEEDED(PollMouseState())); // discard the ambiguous first focus-epoch poll
+                } else {
+                    relativeX = -.75f; relativeY = .75f; CHECK(SUCCEEDED(PollMouseState()));
+                }
+                relativeX = .5f; relativeY = -.5f; CHECK(SUCCEEDED(PollMouseState())); CHECK(MOUSE_X == 0 && MOUSE_Y == 0);
+                relativeX = .5f; relativeY = -.5f; CHECK(SUCCEEDED(PollMouseState())); CHECK(MOUSE_X == 1 && MOUSE_Y == -1);
+            }
         } else if (!strcmp(test, "relative-focus")) {
             relativeMode = false; focused = false; PortMouseKeepRelative(); CHECK(!relativeMode);
             focused = true; PortMouseKeepRelative(); CHECK(relativeMode);

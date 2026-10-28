@@ -38,6 +38,7 @@ extern "C" unsigned CE_MusicSeed(void);
 bool PortCeLayer();
 bool PortRecording();
 void PlayMusicStream(char *filename);		// PCMusicStream.cpp
+void StopMusicStream();
 
 namespace {
 const int kTracks = 256;					// the playlist's limit; a bigger folder adds its first 256 by name
@@ -114,6 +115,7 @@ void Step(bool cue)
 void Play()
 {
 	custom = true;
+	StopMusicStream(); // the stream must be stopped before a different reader can replace it
 	PlayMusicStream(tracks[at]);
 }
 
@@ -201,7 +203,11 @@ void CeMusic::Clear()
 	count = 0;
 	at = -1;
 	folder[0] = 0;
-	if (custom && MUSIC.mPlaying && MUSIC.mCurrentSong) PlayMusicStream(MUSIC.mCurrentSong->mFilename);
+	if (custom && MUSIC.mPlaying && MUSIC.mCurrentSong)
+	{
+		StopMusicStream();
+		PlayMusicStream(MUSIC.mCurrentSong->mFilename);
+	}
 	custom = false;
 }
 

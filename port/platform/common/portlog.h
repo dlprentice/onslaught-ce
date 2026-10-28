@@ -24,6 +24,17 @@ void PortSessionAsset(PortSessionCategory category, const char *action, const ch
 void PortSessionMediaActive(PortSessionCategory category, const void *token, bool playing);
 // Internal replacement-buffer identity only. Tags never imply nonzero samples or physical playback.
 bool PortAudioMediaRole(const void *buffer, PortSessionCategory category);
+// A fixed-size, process-local observation from the mixer at device stop. These counters describe tagged input
+// mixed by this process, not audible output; samples may be silent or muted and OS/device queues are unobserved.
+struct PortSessionFinalMedia {
+	unsigned long long musicFrames, filmFrames, bothRoleFrames, callbackFrames;
+	unsigned long long queueSamples, queueFailures, queueAtMixed, retiredQueueObservations;
+	unsigned callbackMaxFrames;
+	int queueLastBytes, queueMaxBytes;
+	unsigned queueCurrentGeneration;
+};
+// Called outside the audio callback and mixer mutex; staged once for the next existing unbudgeted summary line.
+void PortSessionSetFinalMedia(const PortSessionFinalMedia *snapshot);
 void PortSessionSummary();
 // Cheap counters only: safe on the audio callback; the main thread/teardown formats their bounded summaries.
 enum PortSessionCounter { PORT_COUNT_AUDIO_CALLBACKS, PORT_COUNT_AUDIO_PUT_FAILED, PORT_COUNT_AUDIO_ALLOC_FAILED,

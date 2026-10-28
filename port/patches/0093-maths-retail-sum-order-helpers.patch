@@ -1,0 +1,17 @@
+--- a/maths.h
++++ b/maths.h
+@@ -111,6 +111,14 @@
+ 	float	MagnitudeYZX() const { return sqrtf(((Y * Y) + (Z * Z)) + (X * X)); }
+ 	void	NormaliseYZX() { float m = sqrtf(((Y * Y) + (Z * Z)) + (X * X)); if (m) { m = 1.0f / m; X *= m; Y *= m; Z *= m; } }
+ 	float	DotYZX(const FVector &a) const { return ((Y * a.Y) + (Z * a.Z)) + (X * a.X); }
++	// Port (patch 0093): the other two retail groupings of an inlined sum of three squares, (X*X + Z*Z) + Y*Y, and the
++	// squared and elevation forms of the Y/Z-first one, for the sites patches 0095..0098 name, each read from pristine
++	// BEA.exe (74154bfa) at its address and from the VC6 listing of the matched source.
++	float	MagnitudeSqYZX() const { return ((Y * Y) + (Z * Z)) + (X * X); }
++	float	MagnitudeSqXZY() const { return ((X * X) + (Z * Z)) + (Y * Y); }
++	float	MagnitudeXZY() const { return sqrtf(((X * X) + (Z * Z)) + (Y * Y)); }
++	void	NormaliseXZY() { float m = sqrtf(((X * X) + (Z * Z)) + (Y * Y)); if (m) { m = 1.0f / m; X *= m; Y *= m; Z *= m; } }
++	float	ElevationYZX() const { float m = MagnitudeYZX(); if (m > 0.f) return asinf(Z / m); return 0.f; }
+ 	// Stuart's names; decoded from the inline copies in CGame::ToggleFreeCameraOn (0047046d..004704d8).
+ 	// VC6's float wrapper preserves the operand setup in CInfantryUnit::Init (00488c3d..00488c43) and
+ 	// the scheduling boundary before CPanCamera::Update's final matrix copy (00419ce5..00419d03).

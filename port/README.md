@@ -1,18 +1,19 @@
 # Native port (Linux and Windows)
 
-Status: active (both targets build, link and run the game; Linux replays are compared with retail Present by Present, see PARITY.md; native Windows acceptance uses a software-rendered VM, not physical-GPU validation)
-Last updated: 2026-10-27 (released-launcher cleanup warning and manual migration)
+Status: active (both targets build, link and run the game; Linux replays are compared with retail Present by Present, logged in PARITY.md in the private working tree; native Windows acceptance uses a software-rendered VM, not physical-GPU validation)
+Last updated: 2026-10-28 (private-tree references marked; earlier: released-launcher cleanup warning and manual migration)
 Summary: a second build of the decompilation's sources as native i686 Linux and Windows programs; layout, ownership,
 commands and rules.
 
 The port compiles the same `src/` the matching build compiles, with clang for i686 Linux and i686 Windows, against
 Direct3D 9 (dxvk-native on Linux, the system's on Windows) and one SDL3 platform layer for the window, input and
 audio. Retail data is read from the player's install; nothing retail is committed. The VC6 build stays byte-identical:
-`tools/decomp.py check` keeps every function matching. [PLAN.md](PLAN.md) has the targets, the API surface, the parity
-hazards and the phases.
+the private working tree's `tools/decomp.py check` keeps every function matching, and its `port/PLAN.md` has the
+targets, the API surface, the parity hazards and the phases (neither is in the public export; the public decompilation
+is https://github.com/dlprentice/onslaught-decomp).
 
     python3 port/tools/deps.py build     # pinned inputs, both targets, into local-data/port (about 10 minutes)
-    python3 port/probe/run.py            # P0: the triangle on Linux (NVIDIA, Intel) and Windows-under-Wine, compared
+    python3 port/probe/run.py            # private tree only: P0, the triangle on Linux (NVIDIA, Intel) and Windows-under-Wine, compared
     python3 port/build.py [--target linux|windows] [-k]   # the game: local-data/port/build/<target>/bea[.exe]
 
 Licence: GPL-3.0 (`SPDX-License-Identifier: GPL-3.0-only`), matching Stuart's release (GPL version 3, no "or later"

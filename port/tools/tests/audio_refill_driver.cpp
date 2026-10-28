@@ -22,6 +22,9 @@ static std::vector<Timer> timers;
 static SDL_TimerID nextTimer = 1;
 static std::atomic<Uint64> realNow{1000000000ull}, virtualNow{1000000000ull};
 static bool virtualMode, resumeFails, initFails, openFails;
+// Optional authored track identities for the playlist/actual-stream transition fixture. Other tests keep the
+// original evolving half-buffer pattern and never inspect real audio data.
+static bool namedMusicReads;
 static bool diagnosticsEnabled=true;static unsigned clockReads,refillLines,riskLines;static unsigned firstRiskSeq;
 static unsigned opens, destroys, audioInits, audioQuits, checks, notifications, submissions;
 static std::vector<Sint16> submitted;
@@ -82,6 +85,9 @@ extern "C" void SDLCALL SDL_LockMutex(SDL_Mutex *mutex)
 }
 extern "C" void SDLCALL SDL_UnlockMutex(SDL_Mutex *mutex) { --lockDepth; mutex->value.unlock(); }
 extern "C" Uint64 SDLCALL SDL_GetTicksNS() { ++clockReads; return realNow.load(); }
+#ifdef AUDIO_REFILL_REAL_LOGGER
+extern "C" Uint64 SDLCALL SDL_GetTicks() { if (mediaInCallback) ++mediaCallbackLogCalls; return realNow.load() / 1000000; }
+#endif
 extern "C" void *SDLCALL SDL_malloc(size_t bytes)
 {
 	if (role == 1 && holdAllocate)
@@ -161,7 +167,11 @@ unsigned long long PortClockFrames() { return 0; }
 bool PortClockVirtual() { return virtualMode; }
 unsigned long long PortClockPeekNs() { return virtualNow.load(); }
 void PortAudioGuardCheck() {}
-static int gEnabled=-1;bool PortCeLayer();
+bool PortCeLayer();
+#ifdef AUDIO_REFILL_REAL_LOGGER
+#include "session-logger.inc"
+#else
+static int gEnabled=-1;
 #include "admission.inc"
 bool PortDevLog() { return false; }
 void PortSessionLog(PortSessionCategory category, bool error, const char *format, ...) {
@@ -171,10 +181,12 @@ void PortSessionLog(PortSessionCategory category, bool error, const char *format
 }
 void PortSessionAsset(PortSessionCategory, const char *, const char *, long) {}
 void PortSessionMediaActive(PortSessionCategory, const void *, bool) {}
+void PortSessionSetFinalMedia(const PortSessionFinalMedia *) {}
 void PortSessionCount(PortSessionCounter) {}
 void PortSessionAudioError(const char *) {}
 void PortSessionSummary() {}
 void PortSessionPulse(unsigned) {}
+#endif
 
 #include <strings.h>
 #define _tcsicmp strcasecmp
@@ -198,10 +210,10 @@ extern "C" void WINAPI LeaveCriticalSection(LPCRITICAL_SECTION){}
 static IDirectSound8 *device;
 struct SoundBoundary {IDirectSound8 *GetDirectSound(){return device;}} SOUND;
 struct CBaseWaveFileRead {
- unsigned frame=0;
- virtual ~CBaseWaveFileRead()=default;void Close(){}void Open(char*){frame=0;}bool HasFormat(){return true;}
+ unsigned frame=0;short marker=1000;
+ virtual ~CBaseWaveFileRead()=default;void Close(){}void Open(char*name){frame=0;if(namedMusicReads)marker=strstr(name,"a.ogg")?2000:strstr(name,"b.ogg")?3000:1000;}bool HasFormat(){return true;}
  DWORD GetChannels(){return 2;}DWORD GetSampleRate(){return 44100;}
- HRESULT Read(UINT size,BYTE *out,UINT *got){for(unsigned i=0;i<size/4;++i){short v=1000+1000*(frame++/65536);memcpy(out+i*4,&v,2);memcpy(out+i*4+2,&v,2);}*got=size;return 0;}
+ HRESULT Read(UINT size,BYTE *out,UINT *got){for(unsigned i=0;i<size/4;++i){short v=namedMusicReads?marker:1000+1000*(frame/65536);++frame;memcpy(out+i*4,&v,2);memcpy(out+i*4+2,&v,2);}*got=size;return 0;}
 };
 using COggFileRead=CBaseWaveFileRead;
 #include "music.inc"

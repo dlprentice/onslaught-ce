@@ -1,0 +1,19 @@
+--- a/src/video/x11/SDL_x11toolkit.c
++++ b/src/video/x11/SDL_x11toolkit.c
+@@ -1010,12 +1010,14 @@
+ 
+ #ifdef SDL_VIDEO_DRIVER_X11_XRANDR
+     int xrandr_event_base, xrandr_error_base;
+-    window->xrandr = X11_XRRQueryExtension(window->display, &xrandr_event_base, &xrandr_error_base);
++    /* Battle Engine Aquila port (Onslaught CE): libXrandr is optional (SDL_x11dyn.c leaves its symbols NULL when it
++       is missing), so ask only when it was loaded; the message box crashed calling a NULL XRRQueryExtension. */
++    window->xrandr = SDL_X11_HAVE_XRANDR && X11_XRRQueryExtension(window->display, &xrandr_event_base, &xrandr_error_base);
+ #endif
+ 
+ #ifndef NO_SHARED_MEMORY
+     window->shm_pixmap = False;
+-    window->shm = X11_XShmQueryExtension(window->display) ? SDL_X11_HAVE_SHM : false;
++    window->shm = SDL_X11_HAVE_SHM && X11_XShmQueryExtension(window->display) ? SDL_X11_HAVE_SHM : false;
+     if (window->shm) {
+         int major;
+         int minor;

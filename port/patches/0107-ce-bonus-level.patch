@@ -1,0 +1,86 @@
+--- a/FrontEnd.cpp
++++ b/FrontEnd.cpp
+@@ -27,6 +27,10 @@
+ #include	"mouse.h"
+ 
+ #include	"game.h"
++#ifdef CE_VERSION
++bool	PortCeBonusLevelEnd();			// port/game/ce_bonus.cpp (patch 0107)
++bool	PortCeBonusReturning();
++#endif
+ 
+ #ifdef CE_VERSION
+ bool			PortCeMenus();				// Port (patch 0050): port/game/ce_frontend.cpp
+@@ -99,6 +103,10 @@
+ 	EVENT_MANAGER.Init() ;
+ //	CAREER.Test();
+ 
++#ifdef CE_VERSION
++	// Patch 0107: after the CE bonus level the career is put back as it was before it, not updated.
++	if (!PortCeBonusLevelEnd())
++#endif
+ 	CAREER.Update() ;
+ 
+ 	if (inLoadedSystem)
+@@ -283,6 +291,11 @@
+ 		else
+ 		{
+ 			// If it's not the first run, we should autosave.
++#ifdef CE_VERSION
++			if (PortCeBonusReturning())
++				mActivePage = FEP_DEBRIEFING;	// patch 0107: no save after the CE bonus level
++			else
++#endif
+ 			if (PLAYABLE_DEMO)
+ 			{
+ 				if (CLIPARAMS.mAttractMode)
+--- a/FEPDebriefing.cpp
++++ b/FEPDebriefing.cpp
+@@ -13,6 +13,10 @@
+ #include	"renderinfo.h"
+ #include	"SpriteRenderer.h"
+ #include	"mouse.h"
++#ifdef CE_VERSION
++bool	PortCeBonusReturning();				// port/game/ce_bonus.cpp (patch 0107)
++void	PortCeBonusLeaveDebriefing();
++#endif
+ 
+ 
+ // FUNCTION: 0x00456690 init:ZERO_FVECTOR
+@@ -56,6 +60,10 @@
+ 		{
+ 			if (PLAYABLE_DEMO)
+ 				FRONTEND.SetQuit(-1);
++#ifdef CE_VERSION
++			else if (PortCeBonusReturning())
++				PortCeBonusLeaveDebriefing();	// patch 0107: back to the main menu
++#endif
+ 			else
+ 				FRONTEND.SetPage(FEP_LEVEL_SELECT, 30);
+ 
+@@ -461,12 +469,25 @@
+ 
+ 	CAREER.CountGoodies();
+ 
++#ifdef CE_VERSION
++	// Patch 0107: the CE bonus level shows no goodies and leaves the career's goodie notices alone.
++	if (PortCeBonusReturning())
++	{
++		mNumGoodies = 0;
++		mFirstGoodie = FALSE;
++	}
++	else
++	{
++#endif
+ 	if (PLAYABLE_DEMO)
+ 		mNumGoodies = 0;
+ 	else
+ 		mNumGoodies = CAREER.GetAndResetGoodieNewCount();
+ 
+ 	mFirstGoodie = CAREER.GetAndResetFirstGoodie();
++#ifdef CE_VERSION
++	}
++#endif
+ 
+ 	if (mNumGoodies >= MAX_DEBRIEF_GOODIES)
+ 		mNumGoodies = MAX_DEBRIEF_GOODIES - 1;

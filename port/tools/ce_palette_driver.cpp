@@ -4,6 +4,7 @@
 #include "ce_palette_fake.h"
 #include "ce_console.h"
 #include "ce_music.h"
+#include "ce_photo.h"
 #include <cstdio>
 #include <map>
 
@@ -44,6 +45,11 @@ static int devStatsIni = 0, devStatsReads = 0;
 extern "C" int CE_SettingGetBool(const char *key, int def) { ++devStatsReads; return !std::strcmp(key, "dev_stats") ? devStatsIni : def; }
 void PortCeDevStatsOut(const char *, ...) {}
 void PortCeDevStatsDraw() {}
+// Photo mode (ce_photo.h), recorded; port/tools/ce_photo_tests.py runs the real one.
+static bool photoOn = false, photoAvailable = true; static int photoKeys = 0;
+bool PortCePhotoOn() { return photoOn; }
+bool PortCePhotoSet(bool on) { if (!photoAvailable) { photoOn = false; return false; } act(on ? "photo on" : "photo off"); photoOn = on; return true; }
+bool PortCePhotoKey(unsigned, bool) { ++photoKeys; return false; }
 
 namespace CeConsoleGame {
 bool ConsoleLine(int i, char *out, int n) {
@@ -540,6 +546,36 @@ static void devStats() {
     devStatsIni = 0;
 }
 
+static void photo() {
+    // photo switches photo mode (the panel closes for a clear view); off leaves it open; photo mode hides devstats.
+    openPalette(); command("devstats on");
+    check(PortCeDevStatsOn(), "devstats on before photo mode");
+    clear(); command("photo");
+    check(photoOn && log.back() == "photo on" && !LT.GetKeytrap() && printed("Photo mode on"), "photo turns it on and closes the panel");
+    check(!PortCeDevStatsOn(), "photo mode hides the developer information");
+    openPalette(); clear(); command("photo off");
+    check(!photoOn && LT.GetKeytrap() && printed("Photo mode off."), "photo off, the panel stays");
+    check(PortCeDevStatsOn(), "the developer information returns after photo mode");
+    clear(); command("photo on");
+    check(photoOn, "photo on");
+    openPalette(); clear(); command("photo 1");
+    check(photoOn && !LT.GetKeytrap(), "photo 1 keeps it on");
+    openPalette(); clear(); command("photo 0");
+    check(!photoOn, "photo 0");
+    clear(); command("photo maybe");
+    check(!photoOn && printed("Usage: photo"), "photo takes on or off");
+    clear(); command("photo on now");
+    check(!photoOn && printed("Usage: photo"), "photo takes one word at most");
+    photoAvailable = false; clear(); command("photo on");
+    check(!photoOn && printed("Photo mode is temporarily unavailable. F12 saves a screenshot."), "photo mode refusal is said so");
+    photoAvailable = true;
+    clear(); command("help photo");
+    check(printed("photo [on|off]") && printed("F12 saves a screenshot"), "help photo names the keys");
+    command("devstats off"); closePalette();
+    check(photoKeys > 0, "the message handler offers keys to photo mode first");
+    PortCeConsoleLevelEnd();
+}
+
 static void music() {
     // The retail playlist commands as music ...: status, a folder with spaces, play types, next and clear.
     openPalette();
@@ -637,6 +673,7 @@ int main(int argc, char **argv) {
     panel();
     lifetimes();
     devStats();
+    photo();
     music();
     fences();
     std::puts("console admission, gates, bounds, undo, panel and key lifetimes passed");

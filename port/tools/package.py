@@ -253,7 +253,7 @@ def third_party(windows: bool) -> list:
             ("libvorbis, libogg", "1.0", "BSD-3-Clause", "statically linked (libvorbis_vc6.a: Xiph's 1.0 source built with Visual C++ 6, as the "
              "original game's DLLs; vendor string \"Xiph.Org libVorbis I 20020717\")", ["licenses/libvorbis-1.0-COPYING", "licenses/libogg-1.0-COPYING"]),
             ("SDL3", lock["SDL3"]["version"], "Zlib", ("SDL3.dll" if windows else "lib/libSDL3.so.0") +
-             ", patched: port/deps-patches/SDL3-offscreen-fullscreen-modes.patch in the source", ["licenses/SDL3-LICENSE.txt"]),
+             ", patched: port/deps-patches/SDL3-offscreen-fullscreen-modes.patch and SDL3-x11-optional-extensions.patch in the source", ["licenses/SDL3-LICENSE.txt"]),
             ("  hidapi", "(SDL3 " + lock["SDL3"]["version"] + "'s copy)", "BSD-3-Clause, the BSD option of its three licences",
              "compiled into " + ("SDL3.dll" if windows else "lib/libSDL3.so.0") + " (game controllers)", ["licenses/hidapi-LICENSE"]),
             ("  yuv2rgb", "(SDL3 " + lock["SDL3"]["version"] + "'s copy)", "BSD-3-Clause, (c) 2016 Adrien Descamps",
@@ -412,6 +412,7 @@ IN_THE_GAME = [
     "  original.",
     "- Keyboard: no key release is lost, typed characters come from the key presses themselves (no desktop input",
     "  method in the way), and the letter and digit keys work by their position on any keyboard layout.",
+    "- F12 saves a screenshot in eligible single-player levels; F11 photo mode is temporarily unavailable.",
     "- A quiet console: the developers' messages are hidden unless BEA_PORT_VERBOSE=1 is set.",
     "- A log file for reports, onslaught-ce.log in your user folder, and session recording (both below).",
     "",
@@ -788,12 +789,21 @@ def main():
                                                         "src/ files the public build must replace (never upload these)")
     ap.add_argument("--build", type=Path, help="the build folder (default this checkout's local-data/port/build)")
     a = ap.parse_args()
+    # Both runtime DLLs and the Linux SDL library stay fixed from validation until the archives are written.
+    with deps.sdl_install_lock("linux"), deps.sdl_install_lock("windows"):
+        package(a)
+
+
+def package(a):
     global ALLOW_UNREPLACED
     ALLOW_UNREPLACED = a.test
     build = a.build or WORK / "build"
     # Validate both candidates and their selected shared inputs before creating any package or copying symbols.
     for windows in (False, True):
         check_public(build / ("windows/bea.exe" if windows else "linux/bea"), windows)
+    for target in ("linux", "windows"):
+        deps.require_sdl_receipt(target)
+        deps.require_sdl_link_receipt(build, target)
     out = a.out or WORK / "release" / a.version
     (out / "symbols").mkdir(parents=True, exist_ok=True)
     made = []

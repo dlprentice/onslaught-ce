@@ -366,6 +366,79 @@ static void say(const char *fmt, ...)
 	log_bytes(clean, strlen(clean));
 }
 
+#ifndef _WIN32
+/* The question on the terminal, when stdin and stderr both are one: the text and the numbered buttons; an empty line
+ * picks the Return-key default and end of input the Escape-key default. 0 when there is no terminal. */
+static int ask_terminal(const SDL_MessageBoxData *box, int *which)
+{
+	if (!isatty(0) || !isatty(2)) return 0;
+	int enter = -1, esc = -1;
+	fprintf(stderr, "\n%s\n\n%s\n\n", box->title, box->message);
+	for (int i = 0; i < box->numbuttons; i++)
+	{
+		if (box->buttons[i].flags & SDL_MESSAGEBOX_BUTTON_RETURNKEY_DEFAULT) enter = i;
+		if (box->buttons[i].flags & SDL_MESSAGEBOX_BUTTON_ESCAPEKEY_DEFAULT) esc = i;
+		fprintf(stderr, "  %d. %s%s\n", i + 1, box->buttons[i].text, enter == i ? " (Enter)" : "");
+	}
+	for (;;)
+	{
+		char line[64];
+		fprintf(stderr, "Choose 1-%d: ", box->numbuttons);
+		fflush(stderr);
+		int k = -1;
+		if (!fgets(line, sizeof line, stdin)) k = esc;
+		else if (line[0] == '\n') k = enter;
+		else if (atoi(line) >= 1 && atoi(line) <= box->numbuttons) k = atoi(line) - 1;
+		else continue;
+		if (k < 0) return 0;
+		*which = box->buttons[k].buttonID;
+		return 1;
+	}
+}
+#endif
+
+/* A message box that cannot take the launcher down. On Linux SDL shows it with zenity or, without zenity, its own X11
+ * dialog, and either can fail or crash on a desktop missing a library (0.1.8's and 0.1.9's crashed in SDL's X11 dialog
+ * without the 32-bit libXrandr). So the box is shown by a child process; when that fails or crashes, or there is no
+ * display, the question goes to the terminal if terfallback is set and there is one. Returns 1 with *which set, or 0
+ * when nobody could be asked: callers then take their safe default (an update is never installed). */
+static int ask_box(const SDL_MessageBoxData *box, int *which, int terfallback)
+{
+#ifdef _WIN32
+	(void)terfallback;
+	return SDL_ShowMessageBox(box, which);
+#else
+	const char *x11 = getenv("DISPLAY"), *wayland = getenv("WAYLAND_DISPLAY");
+	if ((x11 && *x11) || (wayland && *wayland))
+	{
+		fflush(NULL);
+		pid_t pid = fork();
+		if (pid == 0)
+		{
+			int w = -1;
+			_exit(SDL_ShowMessageBox(box, &w) && w >= 0 && w < 64 ? w : 100);
+		}
+		int st = 0;
+		if (pid > 0) while (waitpid(pid, &st, 0) < 0 && errno == EINTR) {}
+		if (pid > 0 && WIFEXITED(st) && WEXITSTATUS(st) < 64) { *which = WEXITSTATUS(st); return 1; }
+		if (pid > 0 && WIFSIGNALED(st)) say("the message box crashed (signal %d)", WTERMSIG(st));
+		else say("the message box could not be shown");
+	}
+	if (terfallback && ask_terminal(box, which)) return 1;
+	say("nobody could be asked (no working message box%s)", terfallback ? " or terminal" : "");
+	return 0;
+#endif
+}
+
+/* An information or error box with one OK button; with no working box the text stays in the log and on the terminal. */
+static void tell_box(SDL_MessageBoxFlags flags, const char *text)
+{
+	const SDL_MessageBoxButtonData ok = {SDL_MESSAGEBOX_BUTTON_RETURNKEY_DEFAULT | SDL_MESSAGEBOX_BUTTON_ESCAPEKEY_DEFAULT, 0, "OK"};
+	const SDL_MessageBoxData box = {flags, NULL, "Onslaught CE", text, 1, &ok, NULL};
+	int which = 0;
+	if (!ask_box(&box, &which, 0)) say("%s", text);
+}
+
 static void utc_now(char *out, size_t n, const char *format)
 {
 	time_t now = time(NULL);
@@ -897,7 +970,7 @@ static int ask_for_install(char *found, size_t n)
 			"Steam libraries.\n\nChoose the folder that contains BEA.exe (the game's Steam or disc install folder). "
 			"Onslaught CE only reads from it.", 2, buttons, NULL};
 		int which = 0;
-		if (!SDL_ShowMessageBox(&box, &which)) return -1;
+		if (!ask_box(&box, &which, 0)) return -1;
 		if (which != 1) return 0;
 		sPickDone = 0;
 		sPicked[0] = 0;
@@ -914,7 +987,7 @@ static int ask_for_install(char *found, size_t n)
 		snprintf(text, sizeof text, "That folder is not a supported Battle Engine Aquila install: %s.\n\n"
 				 "Choose the folder that contains BEA.exe. If it is a copy of the game that should work, please report it "
 				 "as a problem.", why);
-		SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_WARNING, "Onslaught CE", text, NULL);
+		tell_box(SDL_MESSAGEBOX_WARNING, text);
 	}
 }
 
@@ -1252,7 +1325,7 @@ static int ask_record(void)
 	int which = 1;
 	const char *answer = getenv("BEA_RECORD_ANSWER");   /* tests: record, once or stop, without a dialog */
 	if (answer && *answer) which = !strcmp(answer, "stop") ? 2 : !strcmp(answer, "once") ? 0 : 1;
-	else if (!SDL_ShowMessageBox(&box, &which)) which = 1;
+	else if (!ask_box(&box, &which, 1)) which = 1;
 	if (which == 2)
 	{
 		if (ini_set("record_sessions", "0")) say("session recording switched off (record_sessions=0 in ce.ini)");

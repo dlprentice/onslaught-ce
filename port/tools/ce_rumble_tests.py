@@ -74,7 +74,7 @@ class RumbleTests(unittest.TestCase):
         (folder / "callers.inc").write_text("\n".join(definition(files[f], s) for f, s in FUNCTIONS.values()))
         common = folder / "platform/common"
         common.mkdir(parents=True)
-        for n in ("window.cpp", "dinput.cpp", "portlog.cpp", "portlog.h", "platform.h", "ce.cpp"):
+        for n in ("window.cpp", "dinput.cpp", "portlog.cpp", "portlog.h", "platform.h", "ce.cpp", "ce_pad_queue.h"):
             shutil.copy(ROOT / "port/platform/common" / n, common)
         if dinput is not None:
             (common / "dinput.cpp").write_text(dinput)

@@ -18,6 +18,7 @@ FFmpeg	7.1.1	LGPL-2.1-or-later (decoders and demuxer only; no --enable-gpl or --
 # Patches applied to an input when deps.py unpacks it (port/deps-patches/<name>-*.patch); deps.py refuses a patch whose
 # SHA-256 differs from its line here. Columns: patch, sha256.
 patch:SDL3-offscreen-fullscreen-modes.patch	1050bc13b622f4c92cee926552b42a66c93009c21d19c1271b27d6b832225cc0
+patch:SDL3-x11-optional-extensions.patch	991c73c76e4af2eb05612fc0095d94dbaf54b5300c80965577af646a33d93242
 # Licence texts the release packages carry for code compiled into a prebuilt input (dxvk-native's libdxvk_d3d9.so.0
 # holds two MIT-licensed submodules of dxvk v3.1.1, at the commits that tag records, and libdisplay-info's copy of
 # hwdata's pnp.ids: hwdata's licence statement at its v0.412 tag and the XFree86 1.0 text The XFree86 Project

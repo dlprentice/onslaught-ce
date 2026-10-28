@@ -24,6 +24,8 @@ using HWND = void *; using BOOL = int;
 #define DIK_DOWN 0xd0
 #define DIK_PRIOR 0xc9
 #define DIK_NEXT 0xd1
+#define DIK_F11 0x57
+#define DIK_F12 0x58
 #define WM_COMMAND 0x0111
 #define WM_KEYDOWN 0x0100
 #define WM_KEYUP 0x0101
@@ -73,7 +75,7 @@ extern PCLTShell LT;
 extern WORD gCharScanCode;
 extern bool gKeyPressed;
 inline LRESULT HandleMouseMessage(UINT, WPARAM, LPARAM) { return 0; }
-struct Cli { bool mAutoConfigTest = false, mRecordDemo = false, mPlaybackDemo = false, mAttractMode = false; int mStressTest = 0; };
+struct Cli { bool mAutoConfigTest = false, mRecordDemo = false, mPlaybackDemo = false, mAttractMode = false; int mStressTest = 0; BOOL mKillHUD = FALSE; };
 extern Cli CLIPARAMS;
 extern BOOL PLAYABLE_DEMO;
 struct FakeController {};
@@ -135,5 +137,6 @@ bool PortCePaletteOpen(unsigned key, bool repeat);
 bool PortCePaletteSuppressDown(unsigned key);
 bool PortCePaletteRelease(unsigned key);
 bool PortCePaletteSuppressChar(unsigned key);
+bool PortCePhotoKey(unsigned key, bool repeat);
 #endif
 #endif

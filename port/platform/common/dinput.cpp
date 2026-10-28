@@ -11,8 +11,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef CE_VERSION
+#include <cmath>
+#include <limits>
+#include "ce_pad_queue.h"
+#endif
 
 #include "platform.h"
+#include "ce_tutorial_pad.h"
 
 bool PortCeLayer();
 
@@ -30,10 +36,58 @@ namespace
 HWND gMouseWindow;	// the window of the game's acquired mouse (relative mode is re-asserted for it each frame)
 Uint64 gMouseReleasedAt;	// SDL event timestamp cutoff: queued captured events must not become menu input on release
 
-// A physical trigger can be bound through the game's existing joystick-button
-// controls. Tapes do not record controller input, so even a forced CE layer must
-// leave the faithful, replay, recording and probe input paths unchanged.
-bool BindableGamepadTriggers()
+#ifdef CE_VERSION
+// SDL event watches can run on a producer thread. They copy only bounded records here; the main thread resolves
+// device ownership, filters focus and consumes the ordered per-device queues. No SDL API is called under this lock.
+struct PadEvent
+{
+	Uint64 timestamp;
+	Uint32 type, device, window;
+	Uint8 button;
+	Sint16 value;
+};
+const unsigned kPadEvents = 256;
+SDL_SpinLock gPadEventLock;
+PadEvent gPadEvents[kPadEvents];
+unsigned gPadEventCount;
+bool gPadEventOverflow;
+
+bool SDLCALL PadWatch(void *, SDL_Event *e)
+{
+	PadEvent v{};
+	v.timestamp = e->common.timestamp;
+	v.type = e->type;
+	switch (e->type)
+	{
+	case SDL_EVENT_GAMEPAD_BUTTON_DOWN: case SDL_EVENT_GAMEPAD_BUTTON_UP:
+		v.device = e->gbutton.which; v.button = e->gbutton.button; break;
+	case SDL_EVENT_JOYSTICK_BUTTON_DOWN: case SDL_EVENT_JOYSTICK_BUTTON_UP:
+		v.device = e->jbutton.which; v.button = e->jbutton.button; break;
+	case SDL_EVENT_GAMEPAD_AXIS_MOTION:
+		if (e->gaxis.axis != SDL_GAMEPAD_AXIS_LEFT_TRIGGER && e->gaxis.axis != SDL_GAMEPAD_AXIS_RIGHT_TRIGGER)
+			return true;
+		v.device = e->gaxis.which; v.button = e->gaxis.axis; v.value = e->gaxis.value; break;
+	case SDL_EVENT_JOYSTICK_REMOVED:
+		v.device = e->jdevice.which; break;
+	case SDL_EVENT_GAMEPAD_REMAPPED:
+		v.device = e->gdevice.which; break;
+	case SDL_EVENT_WINDOW_FOCUS_LOST: case SDL_EVENT_WINDOW_FOCUS_GAINED:
+		v.window = e->window.windowID; break;
+	default:
+		return true;
+	}
+	SDL_LockSpinlock(&gPadEventLock);
+	if (gPadEventCount == kPadEvents)
+		gPadEventOverflow = true;
+	else if (!gPadEventOverflow)
+		gPadEvents[gPadEventCount++] = v;
+	SDL_UnlockSpinlock(&gPadEventLock);
+	return true;
+}
+#endif
+
+// CE input additions leave faithful, replay, recording and probe paths unchanged even if the CE layer is forced on.
+bool OrdinaryCeInput()
 {
 #if defined(CE_VERSION)
 	const char *const offline[] = { "BEA_PORT_TAPE", "BEA_PORT_RECORD", "BEA_PORT_CLOCK", "BEA_PORT_PROBES" };
@@ -49,18 +103,45 @@ bool BindableGamepadTriggers()
 #endif
 }
 
+// Physical triggers are bindable as joystick buttons only for ordinary CE play.
+bool BindableGamepadTriggers() { return OrdinaryCeInput(); }
+
+#ifdef CE_VERSION
+// An invalid SDL value must not cause an out-of-range float-to-integer conversion or poison later input.
+LONG CeMouseDelta(float delta, float &remainder)
+{
+	double value = (double)delta + (double)remainder;
+	if (!std::isfinite(value) || value < (double)(std::numeric_limits<LONG>::min)() ||
+		value > (double)(std::numeric_limits<LONG>::max)())
+	{
+		remainder = 0;
+		return 0;
+	}
+	LONG whole = (LONG)value;
+	remainder = (float)(value - (double)whole);
+	return whole;
+}
+#endif
+
 // BEA_PORT_FAKE_PAD (a test switch, as window.cpp's BEA_PORT_FAKE_KEYS): an SDL virtual gamepad is attached when
 // DirectInput starts, so the game enumerates it as an ordinary pad, and its script changes it once a Present count is
 // reached: PRESENT:bBUTTON:d|u presses or releases an SDL gamepad button, PRESENT:aAXIS:VALUE moves an SDL gamepad
 // axis (-32768..32767), PRESENT:hHAT:VALUE sets a hat (SDL_HAT_* bits). Entries are comma-separated and in Present
 // order. BEA_PORT_FAKE_PAD_KIND=stick attaches a flight stick (4 axes, 8 buttons, 1 hat, not a gamepad) instead.
 // For hotplug, PRESENT:detach unplugs the device and PRESENT:attach plugs it in again; BEA_PORT_FAKE_PAD_LATE=1 leaves it
-// unplugged until the first attach. BEA_PORT_FAKE_PAD=1 attaches the gamepad with no script. The gamepad logs every
+// unplugged until the first attach. BEA_PORT_FAKE_PAD=1 attaches the gamepad with no script. BEA_PORT_FAKE_PAD2 scripts a
+// second gamepad the same way (no kind or late switch). The gamepad logs every
 // rumble it is asked for (FakePadRumble).
 extern "C" unsigned PortPresentCount(void);	// d3d9hooks.cpp
-SDL_Joystick *gFakePad;
-SDL_JoystickID gFakePadId;
-const char *gFakePadScript;
+// Two test pads: BEA_PORT_FAKE_PAD and BEA_PORT_FAKE_PAD2 (always a gamepad), attached in that order, so the second is
+// the game's pad 1 (player 2 in a local two-player game).
+struct FakePad
+{
+	SDL_Joystick	*pad;
+	SDL_JoystickID	id;
+	const char		*script;
+};
+FakePad gFakePads[2];
 
 // A DIPROP_* "GUID" is MAKEDIPROP(n), a reference made from the integer n. Clang assumes a reference names a real
 // object, so it folds &prop == &DIPROP_RANGE, and even the address converted to an integer and compared with 4, to
@@ -81,11 +162,11 @@ bool SDLCALL FakePadRumble(void *, Uint16 low, Uint16 high)
 	return true;
 }
 
-void FakePadPlug()
+void FakePadPlug(int n)
 {
 	SDL_VirtualJoystickDesc descriptor;
 	SDL_INIT_INTERFACE(&descriptor);
-	const char *kind = getenv("BEA_PORT_FAKE_PAD_KIND");
+	const char *kind = n ? NULL : getenv("BEA_PORT_FAKE_PAD_KIND");
 	if (kind && !strcmp(kind, "stick"))
 	{
 		descriptor.type = SDL_JOYSTICK_TYPE_FLIGHT_STICK;
@@ -101,78 +182,88 @@ void FakePadPlug()
 		descriptor.nbuttons = SDL_GAMEPAD_BUTTON_COUNT;
 		descriptor.axis_mask = (1u << SDL_GAMEPAD_AXIS_COUNT) - 1;
 		descriptor.button_mask = (1u << SDL_GAMEPAD_BUTTON_COUNT) - 1;
-		descriptor.name = "CE test gamepad";
+		descriptor.name = n ? "CE test gamepad 2" : "CE test gamepad";
 		descriptor.Rumble = FakePadRumble;
 	}
-	gFakePadId = SDL_AttachVirtualJoystick(&descriptor);
-	gFakePad = gFakePadId ? SDL_OpenJoystick(gFakePadId) : NULL;
-	fprintf(stderr, PORT_LOG_PREFIX "test: virtual %s %s\n", kind && !strcmp(kind, "stick") ? "flight stick" : "gamepad",
-			gFakePad ? "attached" : SDL_GetError());
+	FakePad &f = gFakePads[n];
+	f.id = SDL_AttachVirtualJoystick(&descriptor);
+	f.pad = f.id ? SDL_OpenJoystick(f.id) : NULL;
+	fprintf(stderr, PORT_LOG_PREFIX "test: virtual %s%s %s\n", kind && !strcmp(kind, "stick") ? "flight stick" : "gamepad",
+			n ? " 2" : "", f.pad ? "attached" : SDL_GetError());
 }
 
 void FakePadAttach()
 {
-	const char *script = getenv("BEA_PORT_FAKE_PAD");
-	if (!script || !*script || gFakePad || gFakePadScript)
-		return;
-	gFakePadScript = strcmp(script, "1") ? script : "";	// "1": a pad that sends nothing (rumble runs)
-	const char *late = getenv("BEA_PORT_FAKE_PAD_LATE");
-	if (!(late && *late == '1'))
-		FakePadPlug();
+	static const char *const names[2] = {"BEA_PORT_FAKE_PAD", "BEA_PORT_FAKE_PAD2"};
+	for (int n = 0; n < 2; n++)
+	{
+		FakePad &f = gFakePads[n];
+		const char *script = getenv(names[n]);
+		if (!script || !*script || f.pad || f.script)
+			continue;
+		f.script = strcmp(script, "1") ? script : "";	// "1": a pad that sends nothing (rumble runs)
+		const char *late = n ? NULL : getenv("BEA_PORT_FAKE_PAD_LATE");
+		if (!(late && *late == '1'))
+			FakePadPlug(n);
+	}
 }
 
 void FakePadStep()
 {
-	while (gFakePadScript && *gFakePadScript)
+	for (int n = 0; n < 2; n++)
 	{
-		unsigned present = 0;
-		int which = 0;
-		char change = 0;
-		float value = 0;
-		char word[8] = "";
-		if (sscanf(gFakePadScript, "%u:%6[a-z]", &present, word) == 2 && (!strcmp(word, "attach") || !strcmp(word, "detach")))
+		FakePad &f = gFakePads[n];
+		while (f.script && *f.script)
 		{
-			if (PortPresentCount() < present)
-				return;
-			if (!strcmp(word, "attach") && !gFakePad)
-				FakePadPlug();
-			else if (!strcmp(word, "detach") && gFakePad)
+			unsigned present = 0;
+			int which = 0;
+			char change = 0;
+			float value = 0;
+			char word[8] = "";
+			if (sscanf(f.script, "%u:%6[a-z]", &present, word) == 2 && (!strcmp(word, "attach") || !strcmp(word, "detach")))
 			{
-				SDL_CloseJoystick(gFakePad);
-				SDL_DetachVirtualJoystick(gFakePadId);
-				gFakePad = NULL;
-				fprintf(stderr, PORT_LOG_PREFIX "test: virtual device detached\n");
+				if (PortPresentCount() < present)
+					break;
+				if (!strcmp(word, "attach") && !f.pad)
+					FakePadPlug(n);
+				else if (!strcmp(word, "detach") && f.pad)
+				{
+					SDL_CloseJoystick(f.pad);
+					SDL_DetachVirtualJoystick(f.id);
+					f.pad = NULL;
+					fprintf(stderr, PORT_LOG_PREFIX "test: virtual device detached\n");
+				}
 			}
+			else if (!f.pad)
+				break;
+			else if (sscanf(f.script, "%u:b%d:%c", &present, &which, &change) == 3)
+			{
+				if (PortPresentCount() < present)
+					break;
+				SDL_SetJoystickVirtualButton(f.pad, which, change == 'd');
+			}
+			else if (sscanf(f.script, "%u:a%d:%f", &present, &which, &value) == 3)
+			{
+				if (PortPresentCount() < present)
+					break;
+				SDL_SetJoystickVirtualAxis(f.pad, which, (Sint16)value);
+			}
+			else if (sscanf(f.script, "%u:h%d:%f", &present, &which, &value) == 3)
+			{
+				if (PortPresentCount() < present)
+					break;
+				SDL_SetJoystickVirtualHat(f.pad, which, (Uint8)value);
+			}
+			else
+			{
+				fprintf(stderr, PORT_LOG_PREFIX "test: BEA_PORT_FAKE_PAD entry not understood: %.40s\n", f.script);
+				f.script = NULL;
+				break;
+			}
+			SDL_UpdateJoysticks();
+			const char *next = strchr(f.script, ',');
+			f.script = next ? next + 1 : "";
 		}
-		else if (!gFakePad)
-			return;
-		else if (sscanf(gFakePadScript, "%u:b%d:%c", &present, &which, &change) == 3)
-		{
-			if (PortPresentCount() < present)
-				return;
-			SDL_SetJoystickVirtualButton(gFakePad, which, change == 'd');
-		}
-		else if (sscanf(gFakePadScript, "%u:a%d:%f", &present, &which, &value) == 3)
-		{
-			if (PortPresentCount() < present)
-				return;
-			SDL_SetJoystickVirtualAxis(gFakePad, which, (Sint16)value);
-		}
-		else if (sscanf(gFakePadScript, "%u:h%d:%f", &present, &which, &value) == 3)
-		{
-			if (PortPresentCount() < present)
-				return;
-			SDL_SetJoystickVirtualHat(gFakePad, which, (Uint8)value);
-		}
-		else
-		{
-			fprintf(stderr, PORT_LOG_PREFIX "test: BEA_PORT_FAKE_PAD entry not understood: %.40s\n", gFakePadScript);
-			gFakePadScript = NULL;
-			return;
-		}
-		SDL_UpdateJoysticks();
-		const char *next = strchr(gFakePadScript, ',');
-		gFakePadScript = next ? next + 1 : "";
 	}
 }
 
@@ -328,6 +419,16 @@ struct Device : public IDirectInputDevice8A
 	bool acquired = false;
 	bool triggerDown[2] = { false, false };
 	LONG rangeMin = -1000, rangeMax = 1000;
+#ifdef CE_VERSION
+	float ceMouseRemainderX = 0, ceMouseRemainderY = 0;
+	unsigned ceMouseFocusVersion = 0;
+	CePadQueue ceButtons;
+	SDL_JoystickID ceIdentity = 0;
+	Uint64 ceInputSince = 0;
+	bool ceFocused = true;
+	bool ceMappingKnown = false;
+	uint32_t ceSampleOnly = 0;
+#endif
 
 	Device(Kind k, SDL_JoystickID id) : kind(k), joystickId(id) {}
 
@@ -428,6 +529,15 @@ struct Device : public IDirectInputDevice8A
 		if (acquired)
 			return S_FALSE;
 		acquired = true;
+#ifdef CE_VERSION
+		if (kind == JOYSTICK)
+		{
+			ceButtons.Reset();
+			ceInputSince = SDL_GetTicksNS();
+			if (SDL_Window *w = PortSdlWindow(window))
+				ceFocused = (SDL_GetWindowFlags(w) & SDL_WINDOW_INPUT_FOCUS) != 0;
+		}
+#endif
 		if (getenv("BEA_PORT_INPUT_LOG"))
 			fprintf(stderr, PORT_LOG_PREFIX "input: DirectInput %s acquired (cooperative %08lx)\n",
 					kind == MOUSE ? "mouse" : kind == KEYBOARD ? "keyboard" : "pad", (unsigned long)cooperative);
@@ -437,6 +547,12 @@ struct Device : public IDirectInputDevice8A
 		if (kind == MOUSE)
 		{
 			ResetWheel(PortSdlWindow(window));	// do not inherit menu or previous-acquisition wheel input
+#ifdef CE_VERSION
+			ceMouseRemainderX = ceMouseRemainderY = 0;
+			SDL_LockSpinlock(&gWheelLock);
+			ceMouseFocusVersion = gWheelFocusVersion;
+			SDL_UnlockSpinlock(&gWheelLock);
+#endif
 			PortSessionLog(PORT_SESSION_WINDOW, false, "mouse acquired cooperative=%08lx relative_mode=requested", (unsigned long)cooperative);
 			gMouseWindow = window;
 			if (SDL_Window *w = PortSdlWindow(window))
@@ -460,11 +576,19 @@ struct Device : public IDirectInputDevice8A
 			return S_FALSE;
 		acquired = false;
 		if (kind == JOYSTICK)
+		{
 			triggerDown[0] = triggerDown[1] = false;
+#ifdef CE_VERSION
+			ceButtons.Reset();
+#endif
+		}
 		if (kind == MOUSE)
 		{
 			gMouseReleasedAt = SDL_GetTicksNS();
 			ResetWheel(NULL);
+#ifdef CE_VERSION
+			ceMouseRemainderX = ceMouseRemainderY = 0;
+#endif
 			PortSessionLog(PORT_SESSION_WINDOW, false, "mouse unacquired");
 			gMouseWindow = NULL;
 			if (SDL_Window *w = PortSdlWindow(window))
@@ -532,8 +656,30 @@ struct Device : public IDirectInputDevice8A
 			}
 			float dx = 0, dy = 0;
 			SDL_MouseButtonFlags b = SDL_GetRelativeMouseState(&dx, &dy);
-			m->lX = (LONG)dx;
-			m->lY = (LONG)dy;
+#ifdef CE_VERSION
+			if (OrdinaryCeInput())
+			{
+				SDL_LockSpinlock(&gWheelLock);
+				unsigned focusVersion = gWheelFocusVersion;
+				bool focused = gWheelFocused;
+				SDL_UnlockSpinlock(&gWheelLock);
+				if (!focused || focusVersion != ceMouseFocusVersion)
+				{
+					ceMouseRemainderX = ceMouseRemainderY = 0;
+					ceMouseFocusVersion = focusVersion;
+					// SDL's own accumulator has no per-event epoch. Discard the first poll after a focus transition:
+					// it may mix stale motion with new motion, so at most one interval of new movement is also discarded.
+					dx = dy = 0;
+				}
+				m->lX = CeMouseDelta(dx, ceMouseRemainderX);
+				m->lY = CeMouseDelta(dy, ceMouseRemainderY);
+			}
+			else
+#endif
+			{
+				m->lX = (LONG)dx;
+				m->lY = (LONG)dy;
+			}
 			SDL_LockSpinlock(&gWheelLock);
 			m->lZ = (LONG)(gWheel * WHEEL_DELTA);
 			gWheel = 0;
@@ -669,6 +815,121 @@ struct Device : public IDirectInputDevice8A
 	static const HRESULT DI_NOEFFECT_OR_OK = DI_OK;
 };
 
+#ifdef CE_VERSION
+// SDL permits multiple physical inputs for one logical output. Its individual UP events can disagree with the
+// aggregate level; sample those outputs instead of inventing a release when a second source is still held.
+void RefreshPadMapping(Device *d)
+{
+	d->ceMappingKnown = true;
+	d->ceSampleOnly = 0;
+	if (!d->pad) return;
+	int count = 0;
+	SDL_GamepadBinding **bindings = SDL_GetGamepadBindings(d->pad, &count);
+	if (!bindings)
+	{
+		d->ceSampleOnly = 0xffffffffu; // unable to prove an unambiguous mapping
+		return;
+	}
+	unsigned seen = 0;
+	for (int i = 0; i < count; ++i)
+	{
+		const SDL_GamepadBinding &binding = *bindings[i];
+		int button = -1;
+		if (binding.output_type == SDL_GAMEPAD_BINDTYPE_BUTTON && binding.output.button >= 0 &&
+			binding.output.button < 16 && binding.output.button < SDL_GAMEPAD_BUTTON_DPAD_UP)
+		{
+			button = binding.output.button;
+			if (button < 4) button = (button + 3) % 4;
+		}
+		else if (binding.output_type == SDL_GAMEPAD_BINDTYPE_AXIS &&
+			(binding.output.axis.axis == SDL_GAMEPAD_AXIS_LEFT_TRIGGER || binding.output.axis.axis == SDL_GAMEPAD_AXIS_RIGHT_TRIGGER))
+			button = binding.output.axis.axis == SDL_GAMEPAD_AXIS_LEFT_TRIGGER ? 16 : 17;
+		if (button < 0) continue;
+		unsigned bit = 1u << button;
+		if (seen & bit) d->ceSampleOnly |= bit;
+		seen |= bit;
+	}
+	SDL_free(bindings);
+}
+
+void DrainPadEvents()
+{
+	PadEvent pending[kPadEvents];
+	unsigned count;
+	bool overflow;
+	SDL_LockSpinlock(&gPadEventLock);
+	count = gPadEventCount;
+	overflow = gPadEventOverflow;
+	memcpy(pending, gPadEvents, count * sizeof(PadEvent));
+	gPadEventCount = 0;
+	gPadEventOverflow = false;
+	SDL_UnlockSpinlock(&gPadEventLock);
+	if (overflow)
+	{
+		for (Device *d : gPadSlots)
+			if (d)
+			{
+				d->ceButtons.Reset();
+				d->ceInputSince = SDL_GetTicksNS();
+				if (SDL_Window *w = PortSdlWindow(d->window))
+					d->ceFocused = (SDL_GetWindowFlags(w) & SDL_WINDOW_INPUT_FOCUS) != 0;
+			}
+		PortSessionLog(PORT_SESSION_WINDOW, true, "controller event queue overflow; resynchronizing buttons");
+		return;
+	}
+	for (unsigned i = 0; i < count; ++i)
+	{
+		const PadEvent &v = pending[i];
+		for (Device *d : gPadSlots)
+		{
+			if (!d || !d->acquired) continue;
+			if (v.timestamp && v.timestamp < d->ceInputSince) continue;
+			if (v.type == SDL_EVENT_WINDOW_FOCUS_LOST || v.type == SDL_EVENT_WINDOW_FOCUS_GAINED)
+			{
+				SDL_Window *w = PortSdlWindow(d->window);
+				if (v.window && (!w || SDL_GetWindowID(w) != v.window)) continue;
+				d->ceFocused = v.type == SDL_EVENT_WINDOW_FOCUS_GAINED;
+				d->ceButtons.Reset();
+				d->ceInputSince = v.timestamp;
+				continue;
+			}
+			if (d->joystickId != v.device) continue;
+			if (v.type == SDL_EVENT_JOYSTICK_REMOVED || v.type == SDL_EVENT_GAMEPAD_REMAPPED)
+			{
+				d->ceButtons.Reset();
+				if (v.type == SDL_EVENT_GAMEPAD_REMAPPED) RefreshPadMapping(d);
+				continue;
+			}
+			if (!d->ceFocused || !d->ceButtons.active) continue;
+			unsigned button;
+			bool down;
+			if ((v.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN || v.type == SDL_EVENT_GAMEPAD_BUTTON_UP) && d->pad)
+			{
+				if (v.button >= 16 || v.button >= SDL_GAMEPAD_BUTTON_DPAD_UP) continue;
+				button = v.button < 4 ? (v.button + 3) % 4 : v.button;
+				down = v.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN;
+			}
+			else if ((v.type == SDL_EVENT_JOYSTICK_BUTTON_DOWN || v.type == SDL_EVENT_JOYSTICK_BUTTON_UP) && d->joy)
+			{
+				if (v.button >= 32) continue;
+				button = v.button < 4 ? (v.button + 3) % 4 : v.button;
+				down = v.type == SDL_EVENT_JOYSTICK_BUTTON_DOWN;
+			}
+			else if (v.type == SDL_EVENT_GAMEPAD_AXIS_MOTION && d->pad)
+			{
+				button = v.button == SDL_GAMEPAD_AXIS_LEFT_TRIGGER ? 16 : 17;
+				bool wasDown = (d->ceButtons.observed & (uint32_t(1) << button)) != 0;
+				down = wasDown ? v.value > 12288 : v.value >= 16384;
+			}
+			else continue;
+			if (d->ceSampleOnly & (uint32_t(1) << button)) continue;
+			if (!d->ceButtons.Change(button, down))
+				PortSessionLog(PORT_SESSION_WINDOW, true, "controller button queue overflow; resynchronizing buttons");
+		}
+	}
+}
+#endif
+
 // Device instance GUIDs for controllers carry the SDL joystick id.
 // Hotplug in ordinary CE play: the game builds its pad list once, when DirectInput starts, so a slot whose controller
 // has gone re-binds to the first connected controller no other slot holds (a gamepad first, then a flight stick), at
@@ -690,6 +951,11 @@ void Rebind(Device *d)
 		return;
 	if ((d->pad && SDL_GamepadConnected(d->pad)) || (d->joy && SDL_JoystickConnected(d->joy)))
 		return;
+#ifdef CE_VERSION
+	d->ceButtons.Reset();
+	d->ceInputSince = SDL_GetTicksNS();
+	d->ceMappingKnown = false;
+#endif
 	static Uint64 lastTry;
 	Uint64 now = SDL_GetTicks();
 	if (lastTry && now - lastTry < 500)
@@ -851,6 +1117,53 @@ struct Input : public IDirectInput8A
 };
 }
 
+#ifdef CE_VERSION
+// The tutorial asks what the already-bound SDL device can actually read. In particular an empty placeholder slot is
+// not a connected gamepad, and a flight stick need not have a twist axis or all the buttons in the default preset.
+extern "C" int PortCeTutorialPadInfo(void *device, CeTutorialPadInfo *info)
+{
+	if (!device || !info)
+		return 0;
+	Device *d = static_cast<Device *>(static_cast<IDirectInputDevice8A *>(device));
+	if (d->kind != JOYSTICK)
+		return 0;
+	CeTutorialPadInfo result = {};
+	if (d->pad && SDL_GamepadConnected(d->pad))
+	{
+		result.kind = CE_TUTORIAL_GAMEPAD;
+		const SDL_GamepadAxis axes[] = { SDL_GAMEPAD_AXIS_LEFTX, SDL_GAMEPAD_AXIS_LEFTY,
+			SDL_GAMEPAD_AXIS_RIGHTX, SDL_GAMEPAD_AXIS_RIGHTY };
+		for (int i = 0; i < 4; ++i)
+			if (SDL_GamepadHasAxis(d->pad, axes[i])) result.axes |= 1u << i;
+		const SDL_GamepadButton hats[] = { SDL_GAMEPAD_BUTTON_DPAD_LEFT, SDL_GAMEPAD_BUTTON_DPAD_RIGHT,
+			SDL_GAMEPAD_BUTTON_DPAD_UP, SDL_GAMEPAD_BUTTON_DPAD_DOWN };
+		for (int i = 0; i < 4; ++i)
+			if (SDL_GamepadHasButton(d->pad, hats[i])) result.axes |= 1u << (i + 4);
+		// The adapter reads SDL buttons before the D-pad as buttons, and exposes the triggers at 16 and 17.
+		for (int i = 0; i < SDL_GAMEPAD_BUTTON_DPAD_UP; ++i)
+			if (SDL_GamepadHasButton(d->pad, (SDL_GamepadButton)i)) result.buttons |= 1u << i;
+		if (BindableGamepadTriggers() && SDL_GamepadHasAxis(d->pad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER)) result.buttons |= 1u << 16;
+		if (BindableGamepadTriggers() && SDL_GamepadHasAxis(d->pad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER)) result.buttons |= 1u << 17;
+	}
+	else if (d->joy && SDL_JoystickConnected(d->joy))
+	{
+		result.kind = CE_TUTORIAL_STICK;
+		int axes = SDL_GetNumJoystickAxes(d->joy);
+		if (axes > 3) result.axes |= CE_PAD_X1; // twist
+		if (axes > 0) result.axes |= CE_PAD_X2;
+		if (axes > 1) result.axes |= CE_PAD_Y2;
+		if (SDL_GetNumJoystickHats(d->joy) > 0)
+			result.axes |= CE_PAD_HAT_LEFT | CE_PAD_HAT_RIGHT | CE_PAD_HAT_UP | CE_PAD_HAT_DOWN;
+		int buttons = SDL_GetNumJoystickButtons(d->joy);
+		for (int i = 0; i < buttons && i < 32; ++i) result.buttons |= 1u << i;
+	}
+	else
+		return 0;
+	*info = result;
+	return 1;
+}
+#endif
+
 // The CE rumble (patch 0105, CPCPlatform::TriggerRumble): one effect of the given motor strengths and length on the
 // controller behind a joystick device this shim made. 1 when SDL took it, 0 otherwise (no such pad, or no rumble).
 extern "C" int PortRumblePad(void *device, unsigned short low, unsigned short high, unsigned ms)
@@ -872,9 +1185,93 @@ extern "C" HRESULT WINAPI DirectInput8Create(HINSTANCE, DWORD, REFIID, LPVOID *o
 		SDL_AddEventWatch(WheelWatch, NULL);
 		watching = true;
 	}
+#ifdef CE_VERSION
+	static bool padWatching;
+	if (!padWatching && BindableGamepadTriggers())
+	{
+		padWatching = SDL_AddEventWatch(PadWatch, NULL);
+		if (!padWatching)
+			PortSessionLog(PORT_SESSION_WINDOW, true, "controller event watch unavailable; using sampled buttons: %.200s", SDL_GetError());
+	}
+#endif
 	*out = static_cast<IDirectInput8A *>(Make<Input>());
 	return DI_OK;
 }
+
+#ifdef CE_VERSION
+// Consume distinct button changes, stopping before a second transition of the same button. A return of 0 means the
+// consumer must rebase both its old and new states (focus/device change or queue overflow), not synthesize an edge.
+int PortCePadNext(void *device, bool rotate, unsigned *out)
+{
+	Device *d = device ? static_cast<Device *>(static_cast<IDirectInputDevice8A *>(device)) : NULL;
+	if (!d || d->kind != JOYSTICK || !out) return -1;
+	// LT's joystick poll can be stale when updates run without Process (PreRun). Refresh before reconciling.
+	DIJOYSTATE2 state{};
+	bool sampled = d->acquired && SUCCEEDED(d->GetDeviceState(sizeof(state), &state));
+	if (sampled && !d->ceMappingKnown) RefreshPadMapping(d);
+	DrainPadEvents();
+	if (SDL_Window *w = PortSdlWindow(d->window))
+	{
+		bool focused = (SDL_GetWindowFlags(w) & SDL_WINDOW_INPUT_FOCUS) != 0;
+		if (focused != d->ceFocused)
+		{
+			d->ceFocused = focused;
+			d->ceButtons.Reset();
+			d->ceInputSince = SDL_GetTicksNS();
+		}
+	}
+	bool connected = (d->pad && SDL_GamepadConnected(d->pad)) || (d->joy && SDL_JoystickConnected(d->joy));
+	if (!sampled || !d->ceFocused || !connected)
+	{
+		d->ceButtons.Reset();
+		*out = 0;
+		return 0;
+	}
+	if (d->ceIdentity != d->joystickId)
+	{
+		d->ceButtons.Reset();
+		d->ceIdentity = d->joystickId;
+	}
+	unsigned observed = 0;
+	for (int b = 0; b < 32; ++b)
+		if (state.rgbButtons[rotate && b < 4 ? (b + 1) % 4 : b]) observed |= 1u << b;
+	if (!d->ceButtons.active)
+	{
+		d->ceButtons.Arm(observed);
+		*out = observed;
+		return 0;
+	}
+	// Outputs with ambiguous SDL mappings use their aggregate sampled state, without sacrificing other queued buttons.
+	unsigned sampleOnly = (d->ceButtons.observed & ~d->ceSampleOnly) | (observed & d->ceSampleOnly);
+	if (!d->ceButtons.Snapshot(sampleOnly))
+	{
+		d->ceButtons.Arm(observed);
+		*out = observed;
+		return 0;
+	}
+	// If a backend supplies a level without an SDL button event, retain the sampled transition too. A queued event
+	// takes precedence so its earlier transition cannot be overwritten by the latest physical state.
+	if (!d->ceButtons.count && !d->ceButtons.Snapshot(observed))
+	{
+		d->ceButtons.Arm(observed);
+		*out = observed;
+		return 0;
+	}
+	*out = d->ceButtons.Next();
+	return 1;
+}
+
+void PortCePadForget(void *device)
+{
+	DrainPadEvents();
+	Device *d = device ? static_cast<Device *>(static_cast<IDirectInputDevice8A *>(device)) : NULL;
+	if (d && d->kind == JOYSTICK)
+	{
+		d->ceButtons.Reset();
+		d->ceInputSince = SDL_GetTicksNS();
+	}
+}
+#endif
 
 bool PortDinputMouseAcquired() { return gMouseWindow != NULL; }
 

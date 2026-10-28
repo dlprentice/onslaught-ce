@@ -66,7 +66,15 @@ and remaining limits; development source may include changes beyond that publish
 ## In the game
 
 - **Main menu > Onslaught CE:** About (version, licence and links), Report a problem, Record sessions (see below),
-  Updates (whether checking is on, how to roll back, where `ce.ini` is) and Special Thanks.
+  Updates (whether checking is on, how to roll back, where `ce.ini` is), Bonus: Aquila Prototype and the two Bonus
+  co-op maps (see below) and Special Thanks.
+- **Bonus: Aquila Prototype:** level 201, the original's playable-demo level, which the full game never offers. It does
+  not advance career progress and returns to the main menu. Settings can still be saved, including into a career file.
+- **Bonus co-op: Defence A and B:** two two-player co-op maps (levels 856 and 858) that the original's Multiplayer page
+  leaves out: together, defend the island's buildings against the landing craft. Both players share this PC, in split
+  screen, as in the original's multiplayer: each picks a Battle Engine on the Multiplayer start page; player 2 uses the
+  second set of keys in Controller Options, or a second gamepad. Like the bonus level they do not advance career
+  progress; settings can still be saved.
 - **Options > Cheats:** the original game's cheats as On/Off switches; see [Cheats](#cheats).
 - **The console:** the original's developer console, back for solo play; press the `` ` `` (grave) key, left of 1 on a US
   keyboard. See [The console](#the-console).
@@ -101,7 +109,7 @@ Free camera controls:
 - **Arrow keys**: turn left and right, look up and down. There is no up or down key and no speed key: look up or
   down, then fly, at one fixed speed.
 - **Esc**: freeze or unfreeze the battle without a menu. The camera still flies while the battle is frozen, so you can
-  line up a screenshot.
+  line up a screenshot; F12 saves the current view.
 
 The battle keeps going while you look around unless you freeze it, and your Battle Engine can be hit.
 
@@ -140,6 +148,8 @@ the original's command interpreter: it has its own list of commands, and never r
   skips to your next track; `music clear` goes back to the game's music. These are the original's playlist commands
   (`m_adddir`, `m_playtype`), which the PC release never registered. They last for the session; `ce.ini` keeps the
   settings (below).
+- **Photo mode:** temporarily unavailable while we fix a gameplay difference. `photo` and F11 explain the hold; F12
+  still saves a screenshot in eligible single-player levels (below).
 - **With Free camera on:** `camera` (as the F key), `remotecameraon` (views from whatever is under the crosshair) and
   `remotecameraoff`.
 - **With Unlock all levels on:** `map <level>` (leaves this level for another campaign level), `win` and `lose`. A win
@@ -151,6 +161,18 @@ the original's command interpreter: it has its own list of commands, and never r
   in network games, in demos, and while a session is recorded or replayed.
 - `console_theme=green` in `ce.ini` draws the text in green. This is an Onslaught CE choice: nothing shows that the
   original's console was green.
+
+### Photo mode and screenshots
+
+- **F11 and the console's `photo` command:** HUD-hiding photo mode is temporarily unavailable. Hiding those elements
+  changed the course of some battles, so we are correcting it before bringing the mode back. To move the camera or
+  freeze the battle while framing a shot, use the Free camera cheat (above).
+- **F12** saves what is on screen as a PNG in the `screenshots` folder of your user folder, named by the date and time
+  (`onslaught-ce-20261029-153012.png`, then `-2`, `-3` ... in the same second). It never replaces a file. A note at the
+  bottom of the screen says it was saved; the note is never in the picture. The folder holds up to 2000 files: move
+  some out when it says it is full.
+- F12 works in single-player levels, but not while a session is recorded or replayed, in multiplayer, a network game
+  or a demo. F11 and F12 belong to a menu or the console while one has the keyboard.
 
 ### Your own music, end-of-level statistics and rumble
 
@@ -196,6 +218,9 @@ No game files are included. You need your own copy of *Battle Engine Aquila* for
 The settings writer refuses linked parent paths; the Linux save writer also refuses linked and hard-linked write
 targets. These checks do not make arbitrary redirected folders safe on every platform. Original-install careers
 remain available in the load menu, with a same-named CE career taking precedence.
+
+Close the game and launcher before editing `ce.ini` or changing it through another tool. Concurrent settings changes
+can overwrite one another.
 
 **Supported edition.** The launcher accepts an install whose two mission data files match the SHA-256 hashes in
 `config/game-data.sha256`, which come from the Steam edition. Other editions can have different files and may be
@@ -249,7 +274,9 @@ awk -v package="$package" '
    - glibc, libgcc and libstdc++
    - zlib
    - the Vulkan loader and a 32-bit Vulkan driver (above)
-   - the X11 or Wayland client libraries
+   - the X11 or Wayland client libraries, and libXrandr
+   - `zenity` (any architecture), which shows the launcher's questions (the update offer, the game folder, session
+     recording); without it the launcher uses SDL's own dialog, or asks on the terminal if no dialog works
    - `curl` (any architecture), which the launcher runs to check for and download updates; without it no update is
      found and the game still starts
 5. A preflight check lists any missing 32-bit system libraries, with their pacman and apt package names. Set
@@ -260,7 +287,7 @@ The 32-bit libraries by distribution family (plus your GPU's 32-bit Vulkan drive
 - **Arch and derivatives** (enable the `multilib` repository in `/etc/pacman.conf` first; tested):
 
   ```sh
-  sudo pacman -S --needed lib32-glibc lib32-gcc-libs lib32-zlib lib32-vulkan-icd-loader lib32-libx11 lib32-libxext lib32-wayland
+  sudo pacman -S --needed lib32-glibc lib32-gcc-libs lib32-zlib lib32-vulkan-icd-loader lib32-libx11 lib32-libxext lib32-libxrandr lib32-wayland zenity
   sudo pacman -S --needed lib32-vulkan-radeon     # or lib32-vulkan-intel, or lib32-nvidia-utils
   ```
 
@@ -271,7 +298,7 @@ The 32-bit libraries by distribution family (plus your GPU's 32-bit Vulkan drive
   ```sh
   sudo dpkg --add-architecture i386 && sudo apt update
   sudo apt install libc6:i386 libstdc++6:i386 libgcc-s1:i386 zlib1g:i386 libvulkan1:i386 libx11-6:i386 libxext6:i386 \
-      libwayland-client0:i386 libwayland-cursor0:i386 mesa-vulkan-drivers:i386   # NVIDIA: the driver's i386 libraries
+      libxrandr2:i386 libwayland-client0:i386 libwayland-cursor0:i386 zenity mesa-vulkan-drivers:i386   # NVIDIA: the driver's i386 libraries
   ```
 
 - **Fedora** (Fedora 40's Intel driver, Mesa 24.1, is refused for its push-constant size; other Fedora releases and
@@ -279,7 +306,7 @@ The 32-bit libraries by distribution family (plus your GPU's 32-bit Vulkan drive
 
   ```sh
   sudo dnf install glibc.i686 libstdc++.i686 libgcc.i686 zlib-ng-compat.i686 vulkan-loader.i686 libX11.i686 libXext.i686 \
-      libwayland-client.i686 libwayland-cursor.i686 mesa-vulkan-drivers.i686     # NVIDIA: the driver's i686 libraries
+      libXrandr.i686 libwayland-client.i686 libwayland-cursor.i686 zenity mesa-vulkan-drivers.i686     # NVIDIA: the driver's i686 libraries
   ```
 
 - **Steam Deck and SteamOS** (untested): add `onslaught-ce` to Steam as a non-Steam game and set its compatibility tool

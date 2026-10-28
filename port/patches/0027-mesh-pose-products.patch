@@ -88,7 +88,7 @@
 +			FVector	tpos = thing->GetRenderPos();
 +			FMatrix	tori = thing->GetRenderOrientation();
 +			FVector	&p = *pos;	// STAND-IN (b): see above
-+			// Port (patch 0027): the position's rows have their own VC6 sum orders too (004b4e94..004b4ee8):
++			// Port (patch 0027): the position's rows have their own VC6 sum orders too (004b4ef2..004b4f3f):
 +			// X sums (Y + X) + Z, Y and Z sum (X + Y) + Z; maths.h's operator (patch 0010) sums (Z + Y) + X.
 +			FVector	rotated(((tori.Row[0].Y * p.Y) + (tori.Row[0].X * p.X)) + (tori.Row[0].Z * p.Z),
 +							((tori.Row[1].X * p.X) + (tori.Row[1].Y * p.Y)) + (tori.Row[1].Z * p.Z),

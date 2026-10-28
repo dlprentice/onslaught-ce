@@ -1,0 +1,24 @@
+--- a/FEPGoodies.cpp
++++ b/FEPGoodies.cpp
+@@ -1472,7 +1472,20 @@
+ 				{
+ 					FMatrix delta;
+ 					delta.MakeRotationF(dx*0.1f /* retail 005d85c0: / 10.0f */,dy*0.1f /* retail 005d85c0: / 10.0f */,0);
+-					mMeshOri=delta * mMeshOri;
++					// Port (patch 0130): retail compiles this product inline with its own cell orders (pristine 74154bfa,
++					// 0045d44a..0045d4e2), not the out-of-line copy's (0040d320) that FMatrix::operator* follows with patch 0094.
++					// Each cell: the bracketed pair first, then the last term; delta's row 2 is held in registers.
++					const FVector &A = delta.Row[0], &B = delta.Row[1], &C = delta.Row[2];
++					const FMatrix m = mMeshOri;
++					mMeshOri = FMatrix(FVector(((A.X * m.Row[0].X) + (A.Z * m.Row[2].X)) + (A.Y * m.Row[1].X),
++												 ((A.Y * m.Row[1].Y) + (A.Z * m.Row[2].Y)) + (A.X * m.Row[0].Y),
++												 ((A.X * m.Row[0].Z) + (A.Z * m.Row[2].Z)) + (A.Y * m.Row[1].Z)),
++										FVector(((B.Z * m.Row[2].X) + (B.X * m.Row[0].X)) + (B.Y * m.Row[1].X),
++												 ((B.X * m.Row[0].Y) + (B.Y * m.Row[1].Y)) + (B.Z * m.Row[2].Y),
++												 ((B.Z * m.Row[2].Z) + (B.X * m.Row[0].Z)) + (B.Y * m.Row[1].Z)),
++										FVector(((C.Y * m.Row[1].X) + (C.Z * m.Row[2].X)) + (C.X * m.Row[0].X),
++												 ((C.X * m.Row[0].Y) + (C.Z * m.Row[2].Y)) + (C.Y * m.Row[1].Y),
++												 ((C.Y * m.Row[1].Z) + (C.Z * m.Row[2].Z)) + (C.X * m.Row[0].Z)));
+ 				}
+ 
+ 				mMeshDistance+=dz*0.1f;

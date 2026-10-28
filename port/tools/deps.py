@@ -16,13 +16,17 @@ whose usr/lib32 holds the i686 libraries), prefix/ (Linux i686: lib, include, li
 llvm-mingw's i686-w64-mingw32-clang. Nothing here touches the system.
 """
 import hashlib
+import fcntl
 import json
 import os
 import re
 import shutil
+import stat
+from contextlib import contextmanager
 import subprocess
 import sys
 import tarfile
+import tempfile
 import urllib.request
 from pathlib import Path
 
@@ -79,6 +83,8 @@ def patch_pins():
     for line in (PORT / "deps.lock").read_text().splitlines():
         if line.startswith("patch:"):
             name, sha = line[len("patch:"):].split("\t")
+            if name in pins:
+                raise SystemExit(f"duplicate dependency patch pin: {name}")
             pins[name] = sha.strip()
     return pins
 
@@ -137,27 +143,402 @@ def fetch(rows):
             raise SystemExit(f"{f}: SHA-256 {got} differs from deps.lock's {r['sha']}")
 
 
-def unpack(r, dest):
-    """Unpack r's archive into dest (once) and apply its port/deps-patches/<name>-*.patch; return its top directory."""
+def patch_identity(r):
+    """Validate and capture the exact ordered patch bytes before consulting any cached source or binary."""
+    patches = []
+    pins = patch_pins()
+    wanted = {name: sha for name, sha in pins.items() if name.startswith(r["name"] + "-") and name.endswith(".patch")}
+    files = sorted((PORT / "deps-patches").glob(f"{r['name']}-*.patch"))
+    if set(wanted) != {patch.name for patch in files}:
+        raise SystemExit(f"{r['name']}: dependency patches and deps.lock pins differ")
+    for patch in files:
+        data = patch.read_bytes()
+        got = hashlib.sha256(data).hexdigest()
+        if wanted[patch.name] != got:
+            raise SystemExit(f"{patch}: SHA-256 {got} is not deps.lock's pin ({wanted[patch.name]})")
+        patches.append((patch.name, got, data))
+
+    return ({"schema": 2, "archive": r["file"].name, "sha256": r["sha"],
+             "patches": [[name, sha] for name, sha, _ in patches]}, patches)
+
+
+def source_tree_sha256(top):
+    """Hash files, symlinks and modes of the patched source, without following symlinks."""
+    digest = hashlib.sha256()
+    for path in sorted(top.rglob("*")):
+        relative = path.relative_to(top).as_posix()
+        mode = path.lstat().st_mode
+        if stat.S_ISLNK(mode):
+            kind, data = "link", os.readlink(path).encode()
+        elif stat.S_ISREG(mode):
+            kind = "file"
+            with path.open("rb") as stream:
+                data = hashlib.file_digest(stream, "sha256").digest()
+        elif stat.S_ISDIR(mode):
+            kind, data = "dir", b""
+        else:
+            raise SystemExit(f"{path}: unsupported dependency source file type")
+        header = json.dumps([relative, kind, stat.S_IMODE(mode), len(data)], ensure_ascii=True).encode()
+        digest.update(len(header).to_bytes(8, "big") + header + data)
+    return digest.hexdigest()
+
+
+def read_cache_file(path, max_bytes=65536):
+    """Read bounded regular cache metadata without following links or blocking on a FIFO."""
+    path = Path(path)
+    if path.is_symlink():
+        raise SystemExit(f"{path}: refusing a symlink cache metadata file")
+    with os.fdopen(os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW), "rb") as stream:
+        info = os.fstat(stream.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_size > max_bytes:
+            raise SystemExit(f"{path}: cache metadata must be a regular file of at most {max_bytes} bytes")
+        data = stream.read(max_bytes + 1)
+        if len(data) > max_bytes:
+            raise SystemExit(f"{path}: cache metadata must be a regular file of at most {max_bytes} bytes")
+        return data
+
+
+def checked_stamp(r, dest, identity):
+    """Read a stamped source without extracting or changing it."""
     stamp = dest / f".{r['file'].name}.unpacked"
-    # The stamp records the top directory, so an unpacked archive is not read again (the LLVM release is 1.9 GB of xz).
-    known = stamp.read_text().strip() if stamp.exists() else ""
-    if known:
-        return dest / known
-    with tarfile.open(r["file"]) as t:
-        top = dest / t.getnames()[0].split("/")[0]
-    if not stamp.exists():
-        dest.mkdir(parents=True, exist_ok=True)
+    try:
+        known = json.loads(read_cache_file(stamp))
+    except (ValueError, OSError):
+        known = None
+    top_name = known.get("top") if isinstance(known, dict) else None
+    if not isinstance(top_name, str) or not top_name or top_name in (".", "..") or Path(top_name).name != top_name:
+        raise SystemExit(f"{stamp}: legacy or invalid dependency stamp; use a fresh BEA_PORT_DATA cache")
+    if {key: value for key, value in known.items() if key not in ("top", "source_tree_sha256")} != identity:
+        raise SystemExit(f"{stamp}: dependency archive or patch set changed; use a fresh BEA_PORT_DATA cache")
+    top = dest / top_name
+    if not top.is_dir() or top.is_symlink():
+        raise SystemExit(f"{stamp}: cached dependency directory is missing or invalid; use a fresh BEA_PORT_DATA cache")
+    source_hash = known.get("source_tree_sha256")
+    if (identity["patches"] or r["name"] == "SDL3") and (not isinstance(source_hash, str) or source_tree_sha256(top) != source_hash):
+        raise SystemExit(f"{stamp}: patched dependency source changed; use a fresh BEA_PORT_DATA cache")
+    return top, source_hash
+
+
+def unpack(r, dest):
+    """Unpack one pinned archive and its ordered, pinned patches; return its top directory.
+
+    The shared cache cannot safely be overwritten while another checkout uses it. An old stamp or a changed patch
+    set is therefore a refusal, not permission to reuse or replace its contents. Use a fresh BEA_PORT_DATA cache to
+    rebuild; preserve the old cache until its owner has checked it. The archive itself is not read again on a hit.
+    """
+    dest = Path(dest)
+    identity, patches = patch_identity(r)
+    stamp = dest / f".{r['file'].name}.unpacked"
+    dest.mkdir(parents=True, exist_ok=True)
+    # Builds from multiple worktrees share this cache; serialize the check, extraction, patching and stamp write.
+    lockpath = dest / f".{r['file'].name}.unpack.lock"
+    with os.fdopen(os.open(lockpath, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600), "r+") as lockfile:
+        fcntl.flock(lockfile, fcntl.LOCK_EX)
+        if stamp.exists() or stamp.is_symlink():
+            return checked_stamp(r, dest, identity)[0]
+
+        with r["file"].open("rb") as stream:
+            archive_hash = hashlib.file_digest(stream, "sha256").hexdigest()
+        if archive_hash != r["sha"]:
+            raise SystemExit(f"{r['file']}: SHA-256 {archive_hash} is not deps.lock's pin ({r['sha']})")
         with tarfile.open(r["file"]) as t:
+            names = t.getnames()
+            top_name = names[0].split("/")[0] if names else ""
+            if not top_name or top_name in (".", "..") or Path(top_name).name != top_name:
+                raise SystemExit(f"{r['file']}: archive has no safe top directory")
+            top = dest / top_name
+            if top.exists() or top.is_symlink():
+                raise SystemExit(f"{top}: dependency directory exists without a verified stamp; use a fresh BEA_PORT_DATA cache")
             t.extractall(dest, filter="data")
-        pins = patch_pins()
-        for patch in sorted((PORT / "deps-patches").glob(f"{r['name']}-*.patch")):
-            got = hashlib.sha256(patch.read_bytes()).hexdigest()
-            if pins.get(patch.name) != got:
-                raise SystemExit(f"{patch}: SHA-256 {got} is not deps.lock's pin ({pins.get(patch.name, 'none')})")
-            subprocess.run(["patch", "-s", "-p1", "-d", str(top), "-i", str(patch)], check=True)
-    stamp.write_text(top.name + "\n")
-    return top
+        if not top.is_dir() or top.is_symlink():
+            raise SystemExit(f"{r['file']}: extracted top is not a directory")
+        for _, _, data in patches:
+            subprocess.run(["patch", "-s", "--batch", "--forward", "--fuzz=0", "-p1", "-d", str(top)],
+                           input=data, check=True)
+        source_hash = source_tree_sha256(top) if patches or r["name"] == "SDL3" else None
+        with stamp.open("x") as stream:
+            stream.write(json.dumps(dict(identity, top=top_name, source_tree_sha256=source_hash), sort_keys=True) + "\n")
+        return top
+
+
+def sdl_prefix(target):
+    if target == "linux":
+        return PREFIX
+    if target == "windows":
+        return PREFIX_WIN
+    raise ValueError(f"unknown SDL target: {target}")
+
+
+def write_cache_file(path, data):
+    """Replace generated cache metadata atomically without following a destination symlink."""
+    path = Path(path)
+    if path.is_symlink():
+        raise SystemExit(f"{path}: refusing a symlink cache metadata file")
+    if path.exists() and not stat.S_ISREG(path.lstat().st_mode):
+        raise SystemExit(f"{path}: refusing a non-regular cache metadata file")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    with os.fdopen(fd, "wb") as stream:
+        stream.write(data)
+    os.replace(temporary, path)
+
+
+def write_cache_if_changed(path, data):
+    path = Path(path)
+    if path.is_symlink():
+        raise SystemExit(f"{path}: refusing a symlink cache metadata file")
+    if not path.exists() or read_cache_file(path) != data:
+        write_cache_file(path, data)
+
+
+@contextmanager
+def sdl_install_lock(target, exclusive=False):
+    """Serialize installation with links and packaging that consume the shared SDL prefix."""
+    prefix = sdl_prefix(target)
+    prefix.parent.mkdir(parents=True, exist_ok=True)
+    lockpath = prefix.parent / f".{prefix.name}-sdl3.lock"
+    with os.fdopen(os.open(lockpath, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600), "r+") as stream:
+        fcntl.flock(stream, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
+        yield
+
+
+def sdl_artifacts(target):
+    prefix = sdl_prefix(target)
+    if target == "linux":
+        files = ("lib/libSDL3.so", "lib/libSDL3.so.0")
+    else:
+        files = ("bin/SDL3.dll", "lib/libSDL3.dll.a")
+    result = {}
+    for name in files:
+        path = prefix / name
+        if not path.is_file():
+            raise SystemExit(f"{path}: SDL dependency missing; rebuild with port/tools/deps.py")
+        with path.open("rb") as stream:
+            result[name] = hashlib.file_digest(stream, "sha256").hexdigest()
+    headers = prefix / "include/SDL3"
+    if not headers.is_dir() or headers.is_symlink():
+        raise SystemExit(f"{headers}: SDL headers missing; rebuild with port/tools/deps.py")
+    result["include/SDL3"] = source_tree_sha256(headers)
+    return result
+
+
+def sdl_header_hashes(folder):
+    if not folder.is_dir() or folder.is_symlink():
+        raise SystemExit(f"{folder}: SDL header directory missing or invalid")
+    result = {}
+    for path in sorted(folder.rglob("*")):
+        if path.is_symlink():
+            raise SystemExit(f"{path}: refusing symlink SDL header")
+        if path.is_dir():
+            continue
+        if not path.is_file():
+            raise SystemExit(f"{path}: unsupported SDL header type")
+        with path.open("rb") as stream:
+            result[path.relative_to(folder).as_posix()] = hashlib.file_digest(stream, "sha256").hexdigest()
+    return result
+
+
+def require_sdl_build_outputs(target, name, source, installed):
+    """An install is receipted only if the runtime and link libraries equal the just-built outputs."""
+    folder = (BUILD if target == "linux" else BUILD_WIN) / name
+    pairs = (("libSDL3.so", "lib/libSDL3.so"), ("libSDL3.so.0", "lib/libSDL3.so.0")) if target == "linux" else \
+            (("SDL3.dll", "bin/SDL3.dll"), ("libSDL3.dll.a", "lib/libSDL3.dll.a"))
+    for built, installed_name in pairs:
+        path = folder / built
+        if not path.is_file():
+            raise SystemExit(f"{path}: built SDL output missing; refusing the installed library")
+        with path.open("rb") as stream:
+            digest = hashlib.file_digest(stream, "sha256").hexdigest()
+        if digest != installed[installed_name]:
+            raise SystemExit(f"{path}: installed SDL differs from the just-built output")
+    headers = sdl_header_hashes(source / "include/SDL3")
+    revision = folder / "include-revision/SDL3/SDL_revision.h"
+    if "SDL_revision.h" not in headers or not revision.is_file() or revision.is_symlink():
+        raise SystemExit(f"{revision}: generated SDL revision header missing or invalid")
+    with revision.open("rb") as stream:
+        headers["SDL_revision.h"] = hashlib.file_digest(stream, "sha256").hexdigest()
+    if headers != sdl_header_hashes(sdl_prefix(target) / "include/SDL3"):
+        raise SystemExit("installed SDL headers differ from the source and generated build outputs")
+
+
+SDL_OPTS = ["-DSDL_TESTS=OFF", "-DSDL_EXAMPLES=OFF", "-DSDL_STATIC=OFF"]
+
+
+def sdl_cmake():
+    """The CMake executable unpacked from the pinned archive, not an arbitrary PATH lookup."""
+    archive = lock()["cmake"]["file"].name
+    if not archive.endswith(".tar.gz"):
+        raise SystemExit("the pinned CMake archive must be a .tar.gz")
+    return TOOLS / archive.removesuffix(".tar.gz") / "bin/cmake"
+
+
+def sdl_recipe(target, cmake):
+    """The exact SDL configure command and limited environment used by both build and receipt validation.
+
+    Do not inherit arbitrary compiler, pkg-config or CMake variables from the caller. Only PATH and the optional
+    SOURCE_DATE_EPOCH are inherited; the receipt hashes them and never serializes the environment or secrets.
+    """
+    env = {"PATH": os.environ.get("PATH", ""), "HOME": str(DATA / ".sdl-home"),
+           "TMPDIR": str(DATA / ".sdl-tmp"), "LC_ALL": "C", "TZ": "UTC", "CMAKE_BUILD_PARALLEL_LEVEL": "8"}
+    if "SOURCE_DATE_EPOCH" in os.environ:
+        env["SOURCE_DATE_EPOCH"] = os.environ["SOURCE_DATE_EPOCH"]
+    if target == "linux":
+        llvm = DATA / "llvm/bin"
+        maps = f"-ffile-prefix-map={SRC}=src -ffile-prefix-map={BUILD}=build -ffile-prefix-map={DATA}=deps"
+        pkg = (f"{PREFIX}/lib/pkgconfig:{SYSROOT}/usr/lib/i386-linux-gnu/pkgconfig:{SYSROOT}/usr/share/pkgconfig"
+               if SYSROOT else f"{PREFIX}/lib/pkgconfig:/usr/lib32/pkgconfig:/usr/share/pkgconfig")
+        sflags, lflags = " ".join(sysroot_flags()), " ".join(sysroot_link_flags())
+        env.update(CC=str(llvm / "clang"), CXX=str(llvm / "clang++"), AR=str(llvm / "llvm-ar"),
+                   RANLIB=str(llvm / "llvm-ranlib"), CFLAGS=f"-m32 {sflags} {maps}".replace("  ", " "),
+                   CXXFLAGS=f"-m32 {sflags} {maps}".replace("  ", " "), LDFLAGS=f"-m32 {lflags}".strip(),
+                   PKG_CONFIG_LIBDIR=pkg)
+        cm = [str(cmake), "-G", "Ninja", "-DCMAKE_BUILD_TYPE=Release", f"-DCMAKE_INSTALL_PREFIX={PREFIX}",
+              "-DCMAKE_INSTALL_LIBDIR=lib", f"-DCMAKE_PREFIX_PATH={PREFIX}", "-DBUILD_SHARED_LIBS=ON"]
+        if SYSROOT:
+            cm += [f"-DCMAKE_SYSROOT={SYSROOT}", f"-DCMAKE_FIND_ROOT_PATH={PREFIX}", "-DCMAKE_LIBRARY_ARCHITECTURE=i386-linux-gnu",
+                   "-DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=ONLY", "-DCMAKE_FIND_ROOT_PATH_MODE_LIBRARY=ONLY",
+                   "-DCMAKE_FIND_ROOT_PATH_MODE_PACKAGE=ONLY", "-DCMAKE_FIND_ROOT_PATH_MODE_PROGRAM=NEVER",
+                   f"-DWAYLAND_SCANNER={SYSROOT}/wayland-scanner"]
+    elif target == "windows":
+        bin_ = DATA / "llvm-mingw/bin"
+        env["PATH"] = f"{bin_}:{env['PATH']}"
+        env["PKG_CONFIG_LIBDIR"] = f"{PREFIX_WIN}/lib/pkgconfig"
+        cm = [str(cmake), "-G", "Ninja", "-DCMAKE_BUILD_TYPE=Release", "-DCMAKE_SYSTEM_NAME=Windows",
+              "-DCMAKE_SYSTEM_PROCESSOR=x86", f"-DCMAKE_C_COMPILER={bin_}/i686-w64-mingw32-clang",
+              f"-DCMAKE_CXX_COMPILER={bin_}/i686-w64-mingw32-clang++", f"-DCMAKE_RC_COMPILER={bin_}/i686-w64-mingw32-windres",
+              f"-DCMAKE_FIND_ROOT_PATH={PREFIX_WIN}", "-DCMAKE_FIND_ROOT_PATH_MODE_PROGRAM=NEVER",
+              "-DCMAKE_FIND_ROOT_PATH_MODE_LIBRARY=ONLY", "-DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=ONLY",
+              f"-DCMAKE_INSTALL_PREFIX={PREFIX_WIN}", "-DCMAKE_INSTALL_LIBDIR=lib", "-DBUILD_SHARED_LIBS=ON",
+              "-DCMAKE_SHARED_LINKER_FLAGS=-Wl,--no-insert-timestamp", "-DCMAKE_EXE_LINKER_FLAGS=-Wl,--no-insert-timestamp",
+              f"-DCMAKE_C_FLAGS=-ffile-prefix-map={SRC}=src -ffile-prefix-map={BUILD_WIN}=build -ffile-prefix-map={DATA}=deps"]
+    else:
+        raise ValueError(f"unknown SDL target: {target}")
+    return cm, env
+
+
+def sdl_config_sha256(target):
+    cm, env = sdl_recipe(target, sdl_cmake())
+    # Clean RC builds live at different absolute paths. Their selected dependency roots are equivalent; other PATH
+    # entries and all meaningful configuration values remain part of the identity. No raw environment is saved.
+    root = str(DATA)
+    def neutral(value):
+        if not DATA.is_absolute() or len(root) <= 1:
+            return value
+        return re.sub(r"(?<![A-Za-z0-9_])" + re.escape(root) + r"(?=/|:|=|$)", "<DATA>", value)
+    payload = {"command": [neutral(x) for x in cm + SDL_OPTS],
+               "environment": {key: neutral(value) for key, value in sorted(env.items())}}
+    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+
+
+def sdl_expected(target):
+    """Pin the build/configuration recipe, lockfile, patched source and inputs without reading cached archives."""
+    row = lock()["SDL3"]
+    identity, _ = patch_identity(row)
+    _, source_hash = checked_stamp(row, SRC, identity)
+    recipe = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+    locked = hashlib.sha256((PORT / "deps.lock").read_bytes()).hexdigest()
+    return {"input": identity, "source_tree_sha256": source_hash, "recipe_sha256": recipe, "lock_sha256": locked,
+            "configure_sha256": sdl_config_sha256(target)}
+
+
+def sdl_build_folder(target, expected):
+    key = hashlib.sha256(json.dumps(expected, sort_keys=True).encode()).hexdigest()[:16]
+    name = ("sdl3-" if target == "linux" else "win32-sdl3-") + key
+    return (BUILD if target == "linux" else BUILD_WIN) / name
+
+
+def sdl_cmake_cache_sha256(target, expected):
+    # Preserve the effective discovered configuration too: CMake can retain an old option even if a later command
+    # omits it. A changed or missing cache invalidates the installed build before it can be reused or packaged.
+    cache = sdl_build_folder(target, expected) / "CMakeCache.txt"
+    try:
+        return hashlib.sha256(read_cache_file(cache, 2 * 1024 * 1024)).hexdigest()
+    except OSError:
+        raise SystemExit(f"{cache}: SDL CMake cache missing or invalid; rebuild in a fresh BEA_PORT_DATA cache")
+
+
+def require_sdl_receipt(target):
+    """Refuse missing, stale or changed installed SDL. Caller holds sdl_install_lock while using it."""
+    receipt = sdl_prefix(target) / ".bea-sdl3-build.json"
+    try:
+        known = json.loads(read_cache_file(receipt))
+    except (OSError, ValueError):
+        raise SystemExit(f"{receipt}: SDL build receipt missing or invalid; rebuild with port/tools/deps.py")
+    source = sdl_expected(target)
+    identity = dict(source, target=target, schema=2)
+    if not isinstance(known, dict) or any(known.get(key) != value for key, value in identity.items()):
+        raise SystemExit(f"{receipt}: SDL build receipt is stale or its artifacts changed; rebuild with port/tools/deps.py")
+    expected = dict(source, target=target, artifacts=sdl_artifacts(target), schema=2,
+                    cmake_cache_sha256=sdl_cmake_cache_sha256(target, source))
+    if known != expected:
+        raise SystemExit(f"{receipt}: SDL build receipt is stale or its artifacts changed; rebuild with port/tools/deps.py")
+
+
+def sdl_receipt_sha256(target):
+    """Identify the validated install while its shared lock is held."""
+    receipt = sdl_prefix(target) / ".bea-sdl3-build.json"
+    return hashlib.sha256(read_cache_file(receipt)).hexdigest()
+
+
+def sdl_link_receipt(build, target):
+    """Bind the built game and launcher to the SDL install selected for their full public build."""
+    folder = Path(build) / target
+    result = {"schema": 1, "target": target, "sdl_receipt_sha256": sdl_receipt_sha256(target)}
+    for name in (("bea", "onslaught-ce-launch") if target == "linux" else ("bea.exe", "onslaught-ce.exe")):
+        path = folder / name
+        try:
+            with path.open("rb") as stream:
+                result[name] = hashlib.file_digest(stream, "sha256").hexdigest()
+        except OSError:
+            raise SystemExit(f"{path}: public build missing; rebuild with port/build.py --public")
+    return result
+
+
+def require_sdl_link_receipt(build, target):
+    receipt = Path(build) / target / ".bea-sdl3-link.json"
+    try:
+        known = json.loads(read_cache_file(receipt))
+    except (OSError, ValueError):
+        raise SystemExit(f"{receipt}: SDL link receipt missing or invalid; rebuild with port/build.py --public")
+    if known != sdl_link_receipt(build, target):
+        raise SystemExit(f"{receipt}: SDL install or linked programs changed; rebuild with port/build.py --public")
+
+
+def build_sdl(row, target, cm, cmake, env):
+    """Install SDL from a fresh, verified source/build pair and bind the installed files to that pair."""
+    expected_cmake = sdl_cmake()
+    expected_cm, expected_env = sdl_recipe(target, expected_cmake)
+    if str(cmake) != str(expected_cmake) or [str(arg) for arg in cm] != expected_cm or env != expected_env:
+        raise SystemExit("SDL configure command or environment differs from the production recipe")
+    source = unpack(row, SRC)
+    expected = sdl_expected(target)
+    folder = sdl_build_folder(target, expected)
+    name = folder.name
+    with sdl_install_lock(target, exclusive=True):
+        prefix = sdl_prefix(target)
+        if prefix.is_symlink():
+            raise SystemExit(f"{prefix}: refusing a symlink SDL install directory")
+        prefix.mkdir(parents=True, exist_ok=True)
+        receipt = prefix / ".bea-sdl3-build.json"
+        if folder.is_symlink():
+            raise SystemExit(f"{folder}: refusing a symlink SDL build directory")
+        if folder.exists():
+            # A no-op CMake build must not bless an older or modified output merely because install copies it.
+            # An interrupted build without a valid prior receipt is intentionally retried in a fresh cache.
+            require_sdl_receipt(target)
+            require_sdl_build_outputs(target, name, source, sdl_artifacts(target))
+        # A failed or interrupted install must not leave the previous receipt looking usable.
+        write_cache_file(receipt, b'{"status":"incomplete"}\n')
+        Path(env["HOME"]).mkdir(parents=True, exist_ok=True)
+        Path(env["TMPDIR"]).mkdir(parents=True, exist_ok=True)
+        cmake_project(cm, cmake, name, source, SDL_OPTS, env)
+        if sdl_expected(target) != expected:
+            raise SystemExit("SDL source, patch pins or build recipe changed during the build")
+        installed = sdl_artifacts(target)
+        require_sdl_build_outputs(target, name, source, installed)
+        payload = dict(expected, target=target, artifacts=installed, schema=2,
+                       cmake_cache_sha256=sdl_cmake_cache_sha256(target, expected))
+        write_cache_file(receipt, (json.dumps(payload, sort_keys=True) + "\n").encode())
 
 
 # What the build reads from the sysroot tarball (one pinned file, 1.2 GiB, about 62,000 members): the i386 headers,
@@ -337,8 +718,8 @@ def build_linux(rows, cmake, meson):
                  "-Dxkb-config-versioned-extensions-path=/usr/share/xkeyboard-config-2.d"], xenv)
     run(meson + ["install", "-C", BUILD / "xkbcommon"], xenv)
 
-    cmake_project(cm, cmake, "sdl3", unpack(rows["SDL3"], SRC),
-                  ["-DSDL_TESTS=OFF", "-DSDL_EXAMPLES=OFF", "-DSDL_STATIC=OFF"], env)
+    sdl_cm, sdl_env = sdl_recipe("linux", cmake)
+    build_sdl(rows["SDL3"], "linux", sdl_cm, cmake, sdl_env)
     for name, opts in XIPH:
         cmake_project(cm, cmake, name, unpack(rows[name], SRC), opts, env)
     print(f"deps: Linux i686 installed into {PREFIX}; dxvk-native in {DATA / 'dxvk-native'}")
@@ -377,8 +758,8 @@ def build_windows(rows, cmake):
           # deterministic PE files: no link time in the headers, and source and build folders mapped out
           "-DCMAKE_SHARED_LINKER_FLAGS=-Wl,--no-insert-timestamp", "-DCMAKE_EXE_LINKER_FLAGS=-Wl,--no-insert-timestamp",
           f"-DCMAKE_C_FLAGS=-ffile-prefix-map={SRC}=src -ffile-prefix-map={BUILD_WIN}=build -ffile-prefix-map={DATA}=deps"]
-    cmake_project(cm, cmake, "win32-sdl3", unpack(rows["SDL3"], SRC),
-                  ["-DSDL_TESTS=OFF", "-DSDL_EXAMPLES=OFF", "-DSDL_STATIC=OFF"], env)
+    sdl_cm, sdl_env = sdl_recipe("windows", cmake)
+    build_sdl(rows["SDL3"], "windows", sdl_cm, cmake, sdl_env)
     for name, opts in XIPH:
         cmake_project(cm, cmake, f"win32-{name}", unpack(rows[name], SRC), opts, env)
     # zlib: the Linux build links the system's lib32-zlib (the same 1.3.2); Windows builds it.

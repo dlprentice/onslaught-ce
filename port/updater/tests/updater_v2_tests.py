@@ -347,7 +347,7 @@ class UpdaterV2(unittest.TestCase):
             if "BEA_GAME_DIR" in e:
                 e["BEA_GAME_DIR"] = winpath(e["BEA_GAME_DIR"])
             cmd = ["wine", str(install / "onslaught-ce.exe"), *args]
-        r = subprocess.run(cmd, env=e, capture_output=True, text=True, timeout=timeout)
+        r = subprocess.run(cmd, env=e, capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL)
         r.log = "".join((self.user / n).read_text(errors="replace") for n in
                         ("onslaught-ce.log", "onslaught-ce.concurrent-1.log", "onslaught-ce.concurrent-2.log")
                         if (self.user / n).exists())

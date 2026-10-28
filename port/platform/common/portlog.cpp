@@ -29,6 +29,9 @@ unsigned gPulseSummaries;
 unsigned gAudioErrorState;
 char gAudioError[192];
 unsigned char gMediaLock;
+unsigned char gFinalMediaLock;
+PortSessionFinalMedia gFinalMedia;
+bool gFinalMediaPending;
 struct Media { const void *token; PortSessionCategory kind; } gMedia[16];
 const char *const kNames[] = {"game", "window", "video", "sound", "music", "film"};
 const char *const kCounters[] = {"callbacks", "callback_put_failed", "callback_alloc_failed", "music_refills",
@@ -169,6 +172,16 @@ void PortSessionAudioError(const char *error)
 	__atomic_store_n(&gAudioErrorState, 2u, __ATOMIC_RELEASE);
 }
 
+void PortSessionSetFinalMedia(const PortSessionFinalMedia *snapshot)
+{
+	if (!PortSessionEnabled() || !snapshot) return;
+	ErrorGuard guard;
+	while (__atomic_test_and_set(&gFinalMediaLock, __ATOMIC_ACQUIRE)) {}
+	gFinalMedia = *snapshot;
+	gFinalMediaPending = true;
+	__atomic_clear(&gFinalMediaLock, __ATOMIC_RELEASE);
+}
+
 void PortSessionPulse(unsigned frame)
 {
 	if (!PortSessionEnabled()) return;
@@ -194,7 +207,7 @@ void PortSessionSummary()
 	unsigned expected = 2;
 	if (__atomic_compare_exchange_n(&gAudioErrorState, &expected, 3u, false, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED))
 		PortSessionLog(PORT_SESSION_AUDIO, true, "first callback submission error: %s", gAudioError);
-	char text[640];
+	char text[1024];
 	int used = snprintf(text, sizeof text, "events=%u errors=%u", __atomic_load_n(&gNormal, __ATOMIC_RELAXED),
 		__atomic_load_n(&gErrors, __ATOMIC_RELAXED));
 	for (int i = 0; i < PORT_SESSION_COUNTERS; ++i)
@@ -203,6 +216,25 @@ void PortSessionSummary()
 			__atomic_load_n(&gCounts[i], __ATOMIC_RELAXED));
 		if (n < 0 || (size_t)n >= sizeof text - (size_t)used) break;
 		used += n;
+	}
+	PortSessionFinalMedia media{};
+	bool haveFinalMedia;
+	while (__atomic_test_and_set(&gFinalMediaLock, __ATOMIC_ACQUIRE)) {}
+	haveFinalMedia = gFinalMediaPending;
+	if (haveFinalMedia) { media = gFinalMedia; gFinalMediaPending = false; }
+	__atomic_clear(&gFinalMediaLock, __ATOMIC_RELEASE);
+	if (haveFinalMedia)
+	{
+		// The shared event budgets do not gate this already-existing summary line. The fixed buffer is big enough
+		// for every field even at its maximum value; no callback formats or emits this observation.
+		snprintf(text + used, sizeof text - (size_t)used,
+			" media_final=1 mixed_music_frames=%llu mixed_film_frames=%llu mixed_both_role_frames=%llu"
+			" callback_frames=%llu demand_max_frames=%u queued_input_last_bytes=%d queued_input_max_bytes=%d"
+			" queue_samples=%llu queue_failures=%llu queue_mix_frame=%llu queue_current_generation=%u"
+			" retired_queue_observations=%llu input=44100Hz-S16LE-stereo silence_or_mute_possible=1 output_device_unobserved=1",
+			media.musicFrames, media.filmFrames, media.bothRoleFrames, media.callbackFrames, media.callbackMaxFrames,
+			media.queueLastBytes, media.queueMaxBytes, media.queueSamples, media.queueFailures, media.queueAtMixed,
+			media.queueCurrentGeneration, media.retiredQueueObservations);
 	}
 	Line("summary", text);
 }

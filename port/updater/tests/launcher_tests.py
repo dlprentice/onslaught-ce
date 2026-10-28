@@ -87,7 +87,7 @@ class Launcher(unittest.TestCase):
         e.update(env)
         # no core file from the stand-in's SIGSEGV
         return subprocess.run([str(self.tmp / "bin/onslaught-ce-launch"), *args], env=e, capture_output=True, text=True,
-                              preexec_fn=lambda: resource.setrlimit(resource.RLIMIT_CORE, (0, 0)))
+                              stdin=subprocess.DEVNULL, preexec_fn=lambda: resource.setrlimit(resource.RLIMIT_CORE, (0, 0)))
 
     def log(self, name="onslaught-ce.log"):
         return (self.user / name).read_text()

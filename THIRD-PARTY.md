@@ -1,7 +1,7 @@
 # Third-party components
 
 Status: active
-Last updated: 2026-10-27
+Last updated: 2026-10-28 (SDL3 also carries the X11 optional-extensions patch)
 Summary: the licences and purposes of components built into or shipped with Onslaught CE.
 
 Onslaught CE's own code is GPL-3.0-only (`COPYING`). The build fetches the components below at the versions
@@ -12,7 +12,7 @@ so. Release packages carry each shipped component's licence text in `licenses/`.
 
 | Component | Version | Licence | How it is used |
 | --- | --- | --- | --- |
-| SDL3 | 3.4.16, with `port/deps-patches/SDL3-offscreen-fullscreen-modes.patch` | zlib | window, input and sound; a shared library beside the program (patched, as the patch file records) |
+| SDL3 | 3.4.16, with `port/deps-patches/SDL3-offscreen-fullscreen-modes.patch` and `SDL3-x11-optional-extensions.patch` | zlib | window, input and sound; a shared library beside the program (patched, as the patch file records) |
 | hidapi | SDL3 3.4.16's copy (`src/hidapi`) | BSD-3-Clause (the BSD option of its three licences) | game controllers; compiled into the SDL3 library on both platforms |
 | yuv2rgb | SDL3 3.4.16's copy (`src/video/yuv2rgb`) | BSD-3-Clause, (c) 2016 Adrien Descamps | YUV to RGB conversion; compiled into the SDL3 library on both platforms |
 | fdlibm | SDL3 3.4.16's copy (`src/libm`) | Sun Microsystems' fdlibm notice, (c) 1993 ("provided that this notice is preserved") | maths functions; compiled into the SDL3 library on both platforms |

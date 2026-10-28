@@ -1,0 +1,60 @@
+--- a/weapon.cpp
++++ b/weapon.cpp
+@@ -298,20 +298,23 @@
+ // through the derived FSpawnOri/FSpawnTurn by static_cast, which is not portable C++ (no dynamic-type guarantee); the
+ // views add no members or virtuals and emit no out-of-line methods, and VC6 compiles their reads as reads of the
+ // FMatrix.
++// Port (patch 0110): VC6 orders these two products by its own operand ranking, which the decomp steers with the
++// (double) conversions above; clang adds every cell left to right, (X + Y) + Z. Each cell below is written in
++// retail's order (pristine 74154bfa, 00506ed1..005072c3): the bracketed pair first, then the last term.
+ struct FSpawnOri : public FMatrix
+ {
+ 	FMatrix operator*(const FMatrix &m) const
+ 	{
+ 		return FMatrix(
+-			FVector(Row[0].X * m.Row[0].X + Row[0].Y * m.Row[1].X + Row[0].Z * m.Row[2].X,
+-				(double)Row[0].X * m.Row[0].Y + Row[0].Y * m.Row[1].Y + Row[0].Z * m.Row[2].Y,
+-				Row[0].X * m.Row[0].Z + Row[0].Y * m.Row[1].Z + Row[0].Z * m.Row[2].Z),
+-			FVector(Row[1].X * m.Row[0].X + Row[1].Y * m.Row[1].X + Row[1].Z * m.Row[2].X,
+-				(double)Row[1].X * m.Row[0].Y + Row[1].Y * m.Row[1].Y + Row[1].Z * m.Row[2].Y,
+-				Row[1].X * m.Row[0].Z + Row[1].Y * m.Row[1].Z + Row[1].Z * m.Row[2].Z),
+-			FVector(Row[2].X * m.Row[0].X + Row[2].Y * m.Row[1].X + Row[2].Z * m.Row[2].X,
+-				(double)Row[2].X * m.Row[0].Y + Row[2].Y * m.Row[1].Y + Row[2].Z * m.Row[2].Y,
+-				Row[2].X * m.Row[0].Z + Row[2].Y * m.Row[1].Z + Row[2].Z * m.Row[2].Z));
++			FVector(((Row[0].Z * m.Row[2].X + Row[0].Y * m.Row[1].X) + Row[0].X * m.Row[0].X),
++				((Row[0].X * m.Row[0].Y + Row[0].Z * m.Row[2].Y) + Row[0].Y * m.Row[1].Y),
++				((Row[0].Z * m.Row[2].Z + Row[0].Y * m.Row[1].Z) + Row[0].X * m.Row[0].Z)),
++			FVector(((Row[1].Z * m.Row[2].X + Row[1].Y * m.Row[1].X) + Row[1].X * m.Row[0].X),
++				((Row[1].X * m.Row[0].Y + Row[1].Z * m.Row[2].Y) + Row[1].Y * m.Row[1].Y),
++				((Row[1].Z * m.Row[2].Z + Row[1].Y * m.Row[1].Z) + Row[1].X * m.Row[0].Z)),
++			FVector(((Row[2].Z * m.Row[2].X + Row[2].Y * m.Row[1].X) + Row[2].X * m.Row[0].X),
++				((Row[2].X * m.Row[0].Y + Row[2].Z * m.Row[2].Y) + Row[2].Y * m.Row[1].Y),
++				((Row[2].X * m.Row[0].Z + Row[2].Z * m.Row[2].Z) + Row[2].Y * m.Row[1].Z)));
+ 	}
+ };
+ 
+@@ -320,15 +323,15 @@
+ 	FMatrix operator*(const FMatrix &m) const
+ 	{
+ 		return FMatrix(
+-			FVector(Row[0].X * m.Row[0].X + Row[0].Y * m.Row[1].X + Row[0].Z * m.Row[2].X,
+-				Row[0].X * m.Row[0].Y + Row[0].Y * m.Row[1].Y + Row[0].Z * m.Row[2].Y,
+-				Row[0].X * m.Row[0].Z + Row[0].Y * m.Row[1].Z + Row[0].Z * m.Row[2].Z),
+-			FVector(Row[1].X * m.Row[0].X + Row[1].Y * m.Row[1].X + (double)Row[1].Z * m.Row[2].X,
+-				Row[1].X * m.Row[0].Y + Row[1].Y * m.Row[1].Y + Row[1].Z * m.Row[2].Y,
+-				Row[1].X * m.Row[0].Z + Row[1].Y * m.Row[1].Z + Row[1].Z * m.Row[2].Z),
+-			FVector((double)Row[2].X * m.Row[0].X + Row[2].Y * m.Row[1].X + Row[2].Z * m.Row[2].X,
+-				Row[2].X * m.Row[0].Y + Row[2].Y * m.Row[1].Y + Row[2].Z * m.Row[2].Y,
+-				Row[2].X * m.Row[0].Z + (double)Row[2].Y * m.Row[1].Z + (double)Row[2].Z * m.Row[2].Z));
++			FVector(((Row[0].X * m.Row[0].X + Row[0].Z * m.Row[2].X) + Row[0].Y * m.Row[1].X),
++				((Row[0].Z * m.Row[2].Y + Row[0].Y * m.Row[1].Y) + Row[0].X * m.Row[0].Y),
++				((Row[0].Z * m.Row[2].Z + Row[0].Y * m.Row[1].Z) + Row[0].X * m.Row[0].Z)),
++			FVector(((Row[1].Y * m.Row[1].X + Row[1].X * m.Row[0].X) + Row[1].Z * m.Row[2].X),
++				((Row[1].Z * m.Row[2].Y + Row[1].Y * m.Row[1].Y) + Row[1].X * m.Row[0].Y),
++				((Row[1].Z * m.Row[2].Z + Row[1].Y * m.Row[1].Z) + Row[1].X * m.Row[0].Z)),
++			FVector(((Row[2].Z * m.Row[2].X + Row[2].Y * m.Row[1].X) + Row[2].X * m.Row[0].X),
++				((Row[2].Z * m.Row[2].Y + Row[2].Y * m.Row[1].Y) + Row[2].X * m.Row[0].Y),
++				((Row[2].Z * m.Row[2].Z + Row[2].Y * m.Row[1].Z) + Row[2].X * m.Row[0].Z)));
+ 	}
+ };
+ 

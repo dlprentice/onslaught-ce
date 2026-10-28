@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // port/game/ce_gamepad.cpp: the CE layer's gamepad support (patch 0106 at CController::DoMappings and the CPCController
-// joystick reads). In ordinary CE single-player play only:
+// joystick reads). In ordinary CE single-player play and the CE bonus local co-op maps:
 //
-// - Press and release edges per controller update. Retail compares a pad with its state one Present earlier
-//   (LT.JoyButtonOnce), but the game reads its controllers once per game update, so at more Presents than updates a
-//   press or release that does not land on an update's own Present is never seen, for any joystick binding. Here each
-//   controller update snapshots its pad's buttons and an edge is a change since the previous update's snapshot.
+// - Button presses and releases are delivered in SDL order, at most one transition per button per game update.
+//   This retains a complete tap between updates, keeps a release after its press and lets distinct buttons act together.
+//   Directional axes and the hat are still sampled as levels. The bounded queues resynchronize rather than invent input
+//   on overflow or focus/device loss.
 // - An SDL gamepad (Xbox layout) or a flight stick works without setup. Retail binds menus to keys only, and its joystick preset
 //   (FEPControls' sJoyBindings) goes only into an input a keyboard preset leaves free, which the shipped presets never
 //   do, and names buttons SDL's gamepad layout does not have. So:
@@ -20,7 +20,7 @@
 //   overwritten and careers save exactly what the player chose. Binding any game control to a joystick input in the
 //   controls editor turns the game-control defaults off (the menu ones stay).
 //
-// Faithful builds, tapes, recordings, probes, the virtual clock and multiplayer keep retail's behaviour.
+// Faithful builds, tapes, recordings, probes, the virtual clock and other multiplayer keep retail's behaviour.
 #ifdef CE_VERSION
 
 #include "common.h"
@@ -32,6 +32,9 @@
 #include <string.h>
 
 bool PortCeLayer();
+bool PortCeBonusCoopRunning();	// ce_bonus.cpp: the CE bonus co-op maps, two pads for two players
+int PortCePadNext(void *device, bool rotate, unsigned *out);
+void PortCePadForget(void *device);
 
 namespace
 {
@@ -94,7 +97,7 @@ const Default kGame[] = {
 // its twist as the left stick's X and its hat as the POV, and its raw buttons go through the same rotation, so game 3 is
 // the trigger, 0 the thumb button, 1 and 2 the next two; 4 and up are unrotated. Menus use kMenu as for a gamepad
 // (hat to move, trigger to select, thumb button back).
-enum { STICK_THUMB = 0, STICK_2 = 1, STICK_3 = 2, STICK_TRIGGER = 3, STICK_4 = 4, STICK_5 = 5, STICK_6 = 6 };
+enum { STICK_THUMB = 0, STICK_2 = 1, STICK_3 = 2, STICK_TRIGGER = 3, STICK_4 = 4, STICK_5 = 5, STICK_6 = 6, STICK_7 = 7 };
 const Default kStick[] = {
 	{BUTTON_MECH_YAW_LEFT, ANALOGUE_MINUS, ANALOGUE_X2},
 	{BUTTON_MECH_YAW_RIGHT, ANALOGUE_PLUS, ANALOGUE_X2},
@@ -111,7 +114,7 @@ const Default kStick[] = {
 	{BUTTON_MECH_CLOAK, BUTTON_ONCE, STICK_3},
 	{BUTTON_MECH_LANDING_JETS, BUTTON_ON, STICK_4},
 	{BUTTON_MECH_CHANGE_ZOOM_IN, BUTTON_ONCE, STICK_5},
-	{BUTTON_MECH_CHANGE_ZOOM_OUT, BUTTON_ONCE, STICK_6},
+	{BUTTON_MECH_CHANGE_ZOOM_OUT, BUTTON_ONCE, STICK_7},	// not 6: kMenu pauses on 6 for every pad
 };
 
 // True when the game's pad is a flight stick rather than a gamepad: the adapter's device type, asked every time, since
@@ -127,6 +130,8 @@ bool IsStick(int pad)
 
 // Each pad's buttons at the previous and the current controller update.
 unsigned char sPrevious[MAX_JOYPADS][kButtons], sCurrent[MAX_JOYPADS][kButtons];
+bool sCycleReady;
+unsigned sCycleConsumers;
 
 bool Ordinary()
 {
@@ -147,7 +152,7 @@ bool Ordinary()
 
 bool Allowed(int pad)
 {
-	return Ordinary() && !GAME.IsMultiplayer() && pad >= 0 && pad < LT.mJoypads && pad < MAX_JOYPADS &&
+	return Ordinary() && (!GAME.IsMultiplayer() || PortCeBonusCoopRunning()) && pad >= 0 && pad < LT.mJoypads && pad < MAX_JOYPADS &&
 		   LT.mUnknown33474[pad];
 }
 
@@ -163,15 +168,47 @@ bool NoJoystickBindings()
 }
 }
 
-// At the start of a controller update: this pad's buttons become the current snapshot, the last one the previous.
+// At the start of a controller update: deliver the next queued button state, with no edge on a new capture epoch.
 void PortCeGamepadUpdate(int pad)
 {
 	if (!Allowed(pad))
+	{
+		if (pad >= 0 && pad < LT.mJoypads && pad < MAX_JOYPADS)
+		{
+			PortCePadForget(LT.pJoystick[pad]);
+			memset(sPrevious[pad], 0, kButtons);
+			memset(sCurrent[pad], 0, kButtons);
+		}
 		return;
-	memcpy(sPrevious[pad], sCurrent[pad], kButtons);
-	const DIJOYSTATE2 *state = LT.JoyState(pad);
+	}
+	unsigned next = 0;
+	int result = PortCePadNext(LT.pJoystick[pad], LT.mJoypadIsNewtype[pad], &next);
+	if (result > 0) memcpy(sPrevious[pad], sCurrent[pad], kButtons);
 	for (int b = 0; b < kButtons; b++)
-		sCurrent[pad][b] = state && state->rgbButtons[b] ? 1 : 0;
+	{
+		sCurrent[pad][b] = (next >> b) & 1u;
+		if (result <= 0) sPrevious[pad][b] = sCurrent[pad][b];
+	}
+}
+
+// The owning flush group begins a cycle; all pads advance once because either can appear in a single-player binding.
+void PortCeGamepadBeginCycle()
+{
+	sCycleReady = false;
+	sCycleConsumers = 0;
+}
+
+void PortCeGamepadUpdateAll(int consumer)
+{
+	unsigned bit = consumer >= 0 && consumer < 32 ? 1u << consumer : 0;
+	// A repeated flush by the same controller begins a new cycle even if a caller missed an explicit boundary.
+	if (bit && (sCycleConsumers & bit)) PortCeGamepadBeginCycle();
+	if (!sCycleReady)
+	{
+		for (int pad = 0; pad < LT.mJoypads && pad < MAX_JOYPADS; ++pad) PortCeGamepadUpdate(pad);
+		sCycleReady = true;
+	}
+	sCycleConsumers |= bit;
 }
 
 // A joystick button's press (release false) or release edge since the previous controller update. Returns -1 when
@@ -181,6 +218,13 @@ int PortCeGamepadEdge(int pad, int button, bool release)
 	if (!Allowed(pad) || button < 0 || button >= kButtons)
 		return -1;
 	return release ? (sPrevious[pad][button] && !sCurrent[pad][button]) : (!sPrevious[pad][button] && sCurrent[pad][button]);
+}
+
+// Held actions read the same delivered state as edges: a queued press followed by release must hold for one update.
+int PortCeGamepadOn(int pad, int button)
+{
+	if (!Allowed(pad) || button < 0 || button >= kButtons) return -1;
+	return sCurrent[pad][button];
 }
 
 // The CE gamepad inputs for this control and pad (at most 2), written to out; 0 when none apply.

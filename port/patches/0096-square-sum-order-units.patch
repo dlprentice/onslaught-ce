@@ -1,0 +1,420 @@
+--- a/animal.cpp
++++ b/animal.cpp
+@@ -170,7 +170,7 @@
+ 		v = mOrientation.GetColumnY();
+ 		float	want_yaw = dir.Azimuth();
+ 		float	yaw = v.Azimuth();
+-		float	pitch = v.Elevation();
++		float	pitch = v.ElevationYZX();
+ 
+ 		FMatrix	m(1, 0, 0, 0, 1, 0, 0, 0, 1);
+ 
+--- a/BattleEngine.cpp
++++ b/BattleEngine.cpp
+@@ -623,7 +623,7 @@
+ 			inverseOri.TransposeInPlace();
+ 
+ 			FVector		heading=inverseOri*path;
+-			heading.Normalise();
++			heading.NormaliseYZX();
+ 
+ 			if ((heading.Y<cosf(weapon->GetMaxDeflection())) || (loseLocks) || (unit->IsDying()))
+ 			{
+@@ -678,7 +678,7 @@
+ 								inverseOri.TransposeInPlace();
+ 
+ 								FVector		heading=inverseOri*path;
+-								heading.Normalise();
++								heading.NormaliseYZX();
+ 
+ 								if (heading.Y>cosf(weapon->GetMaxDeflection()))
+ 									StartLock(unit,weapon->GetLockTime(),TRUE);
+@@ -729,7 +729,7 @@
+ 						{
+ 							FMatrix		inverseOri=mOrientation;
+ 							FVector		path=mCurrentUnitOverCrosshair->GetPos()-mPos;
+-							float		pathMagnitudeSq=path.MagnitudeSq();
++							float		pathMagnitudeSq=path.MagnitudeSqYZX();
+ 							float		lockRangeSq=weapon->GetLockRange();
+ 							lockRangeSq*=lockRangeSq;
+ 
+@@ -769,7 +769,7 @@
+ 			(inWeapon->CanLock(item)))
+ 		{
+ 			FVector		distVector=item->GetPos()-inPos;
+-			float		distMagnitudeSq=distVector.MagnitudeSq();
++			float		distMagnitudeSq=distVector.MagnitudeSqYZX();
+ 			float		distSq=dist*(1.0f-item->GetStealth()*0.01f /* retail 005d85fc: / 100.0f */);
+ 			distSq*=distSq;
+ 
+@@ -3201,7 +3201,7 @@
+ 			FVector		vectorA=orientation*FVector(0,1,0);
+ 			FVector		vectorB=outOrientation*FVector(0,1,0);
+ 
+-			float		angle=vectorA*vectorB;
++			float		angle=vectorA.DotYZX(vectorB);
+ 
+ 			if ((angle>0.9f) && (inWeapon->AdjustAim()))
+ 			{
+--- a/BattleEngineJetPart.cpp
++++ b/BattleEngineJetPart.cpp
+@@ -111,7 +111,7 @@
+ 	if (mDoingLoop) return;
+ 	if (mDoingBarrelCount!=0) return ;
+ 
+-	if (mMainPart->GetVelocity().MagnitudeSq()>0.01f*0.01f)
++	if (mMainPart->GetVelocity().MagnitudeSqXZY()>0.01f*0.01f)
+ 	{
+ 		float	yawRate=(vx*mMainPart->mConfiguration->mAirTurnRate*0.010638298f /* retail 005d8c94: / 94.0f */) *mMainPart->ZoomModifier(mMainPart->mZoom);
+ 		float	rollRate=(vx*0.008547009f /* retail 005d8c90: / 117.0f */)  *mMainPart->ZoomModifier(mMainPart->mZoom);
+--- a/Camera.cpp
++++ b/Camera.cpp
+@@ -537,8 +537,8 @@
+ 	float yaw = ((EVENT_MANAGER.GetTime() - mStartTime) * mRotateYawSpeed);
+ 	FMatrix m(yaw,0.0f,0.0f) ;
+ 	FVector s = m*  FVector(-1.0f,0.0f,1.0f) ;
+-	s.Normalise();
+-	FMatrix ori(s.Azimuth(), s.Elevation(), 0.0f) ;
++	s.NormaliseYZX();
++	FMatrix ori(s.Azimuth(), s.ElevationYZX(), 0.0f) ;
+ 	mLastCalcOriTime = EVENT_MANAGER.GetTime() ;
+ 	mLastCalcOri = ori ;
+ 	return ori;
+--- a/Cockpit.cpp
++++ b/Cockpit.cpp
+@@ -238,7 +238,7 @@
+ 	along.Normalise();
+ 	float targetPitch = along.Z * -0.25f;
+ 	FVector right = cross;
+-	right.Normalise();
++	right.NormaliseYZX();
+ 	float targetRoll = right.Z * 0.75f;
+ 
+ 	if (targetPitch - 0.01f > mUnknownA4)
+--- a/debris.cpp
++++ b/debris.cpp
+@@ -114,7 +114,7 @@
+ 	{
+ 		float	dx = d->mPos.X - pos.X;
+ 		float	dy = d->mPos.Y - pos.Y;
+-		d->mDistance = (d->mPos - pos).Magnitude();
++		d->mDistance = (d->mPos - pos).MagnitudeYZX();
+ 
+ 		bool	moved = false;
+ 		if (dx > gDebrisArea)
+--- a/Dropship.cpp
++++ b/Dropship.cpp
+@@ -293,7 +293,7 @@
+ 	else if (GetDoorState() != 5)
+ 	{
+ 		// at its top speed it flies straight along its heading
+-		float	speed = mVelocity.Magnitude();
++		float	speed = mVelocity.MagnitudeXZY();
+ 		float	max = GetUnitData()->mUnknownB4 * 0.03125f;
+ 		if (speed >= max)
+ 			SetVelocity(mOrientation * FVector(0, speed, 0));
+--- a/Infantry.cpp
++++ b/Infantry.cpp
+@@ -260,12 +260,12 @@
+ 		FVector	pos = mPos;
+ 		pos.Z -= 0.5f;
+ 		FVector	d = pos - inByThis->GetPos();
+-		d.Normalise();
++		d.NormaliseYZX();
+ 		if (inByThis->IsA(THING_TYPE_EXPLOSION))
+ 			d.Z -= float(GAME.Random() % 65536) * (0.25f / 65536.0f);
+ 		else if (inByThis->IsA(THING_TYPE_BATTLE_ENGINE))
+ 			d.Z = -(float(GAME.Random() % 65536) * (0.3f / 65536.0f) + 0.3f);
+-		d.Normalise();
++		d.NormaliseYZX();
+ 		mKnockedDown = TRUE;
+ 		d *= 2.0f;
+ 		SetUnknown14C(d);
+--- a/MCBuggy.cpp
++++ b/MCBuggy.cpp
+@@ -357,7 +357,7 @@
+ 		FVector	normal = MAP.Normal(ground);
+ 		normal = normal * 0.01f + mSmoothNormal * 0.99f;
+ 		mSmoothNormal = normal;
+-		static_cast<FBuggyNormal &>(normal).Normalise();
++		normal.NormaliseYZX();
+ 
+ 		GroundBasis(m, normal, FVector(0, -1, 0));
+ 
+--- a/MCMech.cpp
++++ b/MCMech.cpp
+@@ -417,7 +417,7 @@
+ 					FMatrix	lori;
+ 					mesh->GetPart(p)->GetWorldTransforms(mFirstFrame + i, 0, 0, mThing, &lori, &lpos, true, 0, 0);
+ 					FVector	d = lpos - bpos;
+-					length = d.Magnitude();
++					length = d.MagnitudeYZX();
+ 					mShared->mLegOris[i][l].MakeFromDirection(d, FVector(0, -1, 0));
+ 				}
+ 			}
+--- a/MeshPart.cpp
++++ b/MeshPart.cpp
+@@ -384,7 +384,7 @@
+ 		if (v.Z > max_z)
+ 			max_z = v.Z;
+ 
+-		float	r = (v + mOffsetPos).MagnitudeSq();
++		float	r = (v + mOffsetPos).MagnitudeSqYZX();
+ 		if (r > radius)
+ 			radius = r;
+ 		mBoundingBox->mValid = TRUE;
+@@ -995,7 +995,7 @@
+ 	float	best_dist = 99999.0f;
+ 	for (SINT i = 0; i < mNumPVertices; i++)
+ 	{
+-		float	dist = (mPVertices[0][i] - pos).Magnitude();
++		float	dist = (mPVertices[0][i] - pos).MagnitudeYZX();
+ 		if (dist < best_dist)
+ 		{
+ 			best_dist = dist;
+@@ -1336,11 +1336,11 @@
+ 		{
+ 			if (!vertex_faces)
+ 				mDVertices[i].mNormal = FVector(1.0f, 0, 0);
+-			else if (vertex_normal.Magnitude() < 0.001f)
++			else if (vertex_normal.MagnitudeYZX() < 0.001f)
+ 				mDVertices[i].mNormal = FVector(1.0f, 0, 0);
+ 			else
+ 			{
+-				vertex_normal.Normalise();
++				vertex_normal.NormaliseYZX();
+ 				mDVertices[i].mNormal = vertex_normal;
+ 			}
+ 		}
+@@ -1348,7 +1348,7 @@
+ 			mDVertices[i].mSmoothNormal = FVector(1.0f, 0, 0);
+ 		else
+ 		{
+-			position_normal.Normalise();
++			position_normal.NormaliseYZX();
+ 			mDVertices[i].mSmoothNormal = position_normal;
+ 		}
+ 	}
+--- a/ParticleManager.cpp
++++ b/ParticleManager.cpp
+@@ -463,7 +463,7 @@
+ 			FVector	pos = p->mPos;
+ 			if (p->mFoR)
+ 				pos += p->mFoR->mPos;
+-			return (cpos - pos).MagnitudeSq();
++			return (cpos - pos).MagnitudeSqYZX();
+ 		}
+ 		return 0.f;
+ 	}
+@@ -477,7 +477,7 @@
+ 	if (cam)
+ 	{
+ 		FVector	cpos = cam->GetPos();
+-		float	d = (cpos - pos).MagnitudeSq();
++		float	d = (cpos - pos).MagnitudeSqYZX();
+ 		if (d < best)
+ 			best = d;
+ 	}
+@@ -485,7 +485,7 @@
+ 	if (cam)
+ 	{
+ 		FVector	cpos = cam->GetPos();
+-		float	d = (cpos - pos).MagnitudeSq();
++		float	d = (cpos - pos).MagnitudeSqYZX();
+ 		if (d < best)
+ 			best = d;
+ 	}
+--- a/Round.cpp
++++ b/Round.cpp
+@@ -228,8 +228,8 @@
+ 	{
+ 		FVector	to_thing = other_thing->GetPos() - mPos;
+ 		FVector	dir = mVelocity;
+-		dir.Normalise();
+-		mPos += dir * to_thing.Magnitude();
++		dir.NormaliseYZX();
++		mPos += dir * to_thing.MagnitudeYZX();
+ 	}
+ 
+ 	mUnknown124 = 1;
+@@ -362,7 +362,7 @@
+ 	if (mUnknownE8.ToRead())
+ 	{
+ 		FVector	d = mUnknownE8->GetPos() - mPos;
+-		if ((d.X * d.X + d.Y * d.Y + d.Z * d.Z) < mData->mProximity * mData->mProximity)
++		if ((((d.Y * d.Y) + (d.Z * d.Z)) + (d.X * d.X)) < mData->mProximity * mData->mProximity)
+ 		{
+ 			Unknown4d9f30(0, 0, 0);
+ 			StartDieProcess();
+@@ -401,7 +401,7 @@
+ 	{
+ 		if (mUnknownE8->IsA(THING_TYPE_BATTLE_ENGINE))
+ 		{
+-			if (((mUnknownE8->GetPos() - mPos).MagnitudeSq() < 225.f) && (!((CUnit *)mUnknownE8.ToRead())->CanBeLocked()))
++			if (((mUnknownE8->GetPos() - mPos).MagnitudeSqXZY() < 225.f) && (!((CUnit *)mUnknownE8.ToRead())->CanBeLocked()))
+ 			{
+ 				ReleaseTarget();
+ 				mUnknown130 = 0;
+@@ -428,7 +428,7 @@
+ 			FVector	d(((ori.Row[0].Z * e.Z) + (ori.Row[0].Y * e.Y)) + (ori.Row[0].X * e.X),
+ 				((ori.Row[1].Z * e.Z) + (ori.Row[1].Y * e.Y)) + (ori.Row[1].X * e.X),
+ 				((ori.Row[2].Z * e.Z) + (ori.Row[2].X * e.X)) + (ori.Row[2].Y * e.Y));
+-			static_cast<FSeekVector &>(d).Normalise();	// STAND-IN (ids): FSeekVector
++			d.NormaliseYZX();	// Port (patch 0096): retail sums (Y*Y + Z*Z) + X*X here (FSeekVector is the decomp stand-in)
+ 
+ 			if ((!Data_mWeirdoSeek(this)) && ((float)cos(Data_mSeekAngle(this)) > d.Y) && (!mData->mUnknown6C))
+ 				ReleaseTarget();
+@@ -804,7 +804,7 @@
+ 		{
+ 			FVector	centre;
+ 			thing->GetCentrePos(centre);
+-			float	distsq = (centre - mPos).MagnitudeSq();
++			float	distsq = (centre - mPos).MagnitudeSqXZY();
+ 			float	reach = mData->mUnknown90;
+ 			if ((distsq < reach * reach) && (distsq > 0.25f))
+ 				return thing;
+@@ -835,7 +835,7 @@
+ 			if (((u->IsA(THING_TYPE_BATTLE_ENGINE)) && (mUnknown130)) || (!u->IsA(THING_TYPE_BATTLE_ENGINE)))
+ 			{
+ 				FVector	d = inv * (u->GetPos() - mPos);
+-				d.Normalise();
++				d.NormaliseYZX();
+ 				if (mData->mWeirdoSeek)
+ 				{
+ 					if ((d.Y > best) && ((float)cos(mData->mSeekAngle) > d.Y) && (((CUnit *)mUnknownEC.ToRead())->IsTargetAlligence(u->GetAllegiance())))
+@@ -922,7 +922,7 @@
+ 		init.mJumpsPerformed = mJumpsPerformed + 1;
+ 		FVector	vel(0, 0, 0);
+ 		if (round->mData->mBeam)
+-			vel.Y = (pos - mPos).Magnitude();
++			vel.Y = (pos - mPos).MagnitudeYZX();
+ 		else
+ 			vel.Y = round->mData->mSpeed * 0.05f /* retail 005d8584: / 20.0f */;
+ 
+@@ -932,7 +932,7 @@
+ 			init.mPos.Z = ground;
+ 		init.mDest = pos;
+ 		FVector	dir = pos - init.mPos;
+-		init.mOrientation = FMatrix(dir.Azimuth(), dir.Elevation(), 0);
++		init.mOrientation = FMatrix(dir.Azimuth(), dir.ElevationYZX(), 0);
+ 		init.mVelocity = init.mOrientation * vel;
+ 		init.mOrientationType = DIRECTION_COSINE_MATRIX;
+ 		init.mRoundData = mData;
+--- a/Sentinel.cpp
++++ b/Sentinel.cpp
+@@ -137,7 +137,7 @@
+ 		if (MAP.GetWaterLevel() + 2.0f > init.mPos.Z)
+ 		{
+ 			FVector	d = init.mPos - mPos;
+-			if (d * d < GetRadius() * GetRadius())
++			if (d.MagnitudeSqYZX() < GetRadius() * GetRadius())
+ 			{
+ 				SINT		index = mUnitData->mSmallExplosion;
+ 				CExplosion	*explosion = UPhysicsManager::SpawnExplosion(index);
+--- a/SoundManager.cpp
++++ b/SoundManager.cpp
+@@ -1003,8 +1003,8 @@
+ 			{
+ 				// Make relative to nearest camera
+ 				
+-				float c1dist=(se->mPos-campos1).MagnitudeSq();
+-				float c2dist=(se->mPos-campos2).MagnitudeSq();
++				float c1dist=(se->mPos-campos1).MagnitudeSqYZX();
++				float c2dist=(se->mPos-campos2).MagnitudeSqYZX();
+ 
+ 				if (c2dist<c1dist)
+ 				{
+--- a/SpawnerThng.cpp
++++ b/SpawnerThng.cpp
+@@ -455,7 +455,7 @@
+ 		if ((thing) && (thing->IsA(THING_TYPE_UNIT)) && (!(thing->GetThingType() & (THING_TYPE_COMPONENT | THING_TYPE_EMPLACEMENT | THING_TYPE_INFANTRY | THING_TYPE_MECH | THING_TYPE_BUILDING))) && (thing != mOwner))
+ 		{
+ 			FVector	d = thing->GetPos() - pos;
+-			if (d.MagnitudeSq() < 36.0f)
++			if (d.MagnitudeSqXZY() < 36.0f)
+ 				return FALSE;
+ 		}
+ 	}
+--- a/SpawnPoint.cpp
++++ b/SpawnPoint.cpp
+@@ -76,7 +76,7 @@
+ 		CThing *thing = entry->GetThing();
+ 		if (thing && thing->IsA(THING_TYPE_UNIT) && !thing->IsA(THING_TYPE_INFANTRY | THING_TYPE_COMPONENT))
+ 		{
+-			if ((thing->GetPos() - mPos).MagnitudeSq() < 16.0f)
++			if ((thing->GetPos() - mPos).MagnitudeSqXZY() < 16.0f)
+ 				return FALSE;
+ 		}
+ 		entry = MAP_WHO.GetNextEntryWithinRadius();
+--- a/Start.cpp
++++ b/Start.cpp
+@@ -79,7 +79,7 @@
+ 		CThing *thing = entry->GetThing();
+ 		if (thing && thing->IsA(THING_TYPE_UNIT) && !thing->IsA(THING_TYPE_INFANTRY | THING_TYPE_COMPONENT))
+ 		{
+-			if ((thing->GetPos() - mPos).MagnitudeSq() < 16.0f)
++			if ((thing->GetPos() - mPos).MagnitudeSqXZY() < 16.0f)
+ 				return FALSE;
+ 		}
+ 		entry = MAP_WHO.GetNextEntryWithinRadius();
+--- a/tree.cpp
++++ b/tree.cpp
+@@ -169,7 +169,7 @@
+ 	{
+ 		mLife = 0;
+ 		FVector	dir = mPos - inByThis->GetPos();
+-		dir.Normalise();
++		dir.NormaliseYZX();
+ 		CreateFallingTree(dir);
+ 	}
+ }
+@@ -195,9 +195,9 @@
+ 		return;
+ 
+ 	FVector	dir = mPos - other_thing->GetPos();
+-	if (other_thing->IsA(THING_TYPE_EXPLOSION) && !(dir.Magnitude() <= ((CExplosion *)other_thing)->mCurrentRadius))
++	if (other_thing->IsA(THING_TYPE_EXPLOSION) && !(dir.MagnitudeYZX() <= ((CExplosion *)other_thing)->mCurrentRadius))
+ 		return;
+-	dir.Normalise();
++	dir.NormaliseYZX();
+ 	CreateFallingTree(dir);
+ }
+ 
+--- a/Unit.cpp
++++ b/Unit.cpp
+@@ -479,7 +479,7 @@
+ 	if (MAP.GetWaterLevel() + 2.0f > init.mPos.Z)
+ 	{
+ 		FVector	d = init.mPos - mPos;
+-		if (d * d < GetRadius() * GetRadius())
++		if (d.MagnitudeSqYZX() < GetRadius() * GetRadius())
+ 		{
+ 			SINT	index = mUnitData->mSmallExplosion;
+ 			CExplosion	*explosion = UPhysicsManager::SpawnExplosion(index);
+@@ -663,7 +663,7 @@
+ 				if ((GAME.GetPlayer(i)) && (GAME.GetCurrentCamera(i)))
+ 				{
+ 					FVector	d = mPos - GAME.GetCurrentCamera(i)->GetPos();
+-					if (d.Y * d.Y + d.X * d.X + d.Z * d.Z < 2500.0f)
++					if (((d.X * d.X) + (d.Z * d.Z)) + (d.Y * d.Y) < 2500.0f)
+ 						mUnknown110 = TRUE;
+ 				}
+ 			}
+@@ -1889,7 +1889,7 @@
+ 				FVector	n = report->mNormals[0];
+ 				for (SINT j = 1; j < 3; j++)
+ 					n += report->mNormals[j];
+-				n.Normalise();
++				n.NormaliseXZY();
+ 				if ((down * n) > 0.69f)
+ 					on_top = TRUE;
+ 			}
+@@ -2322,7 +2322,7 @@
+ 			else if ((!IsOnGround()) && (!IsInWater()) && (spawner->mData->mConditions & 4))
+ 				can_spawn = TRUE;
+ 
+-			float	dist = (target->GetPos() - mPos).Magnitude();
++			float	dist = (target->GetPos() - mPos).MagnitudeYZX();
+ 			if ((spawner->Unknown4e4480(target)) && (can_spawn) &&
+ 				(spawner->mData->mMinRange <= dist) && (spawner->mData->mMaxRange >= dist))
+ 				spawner->DoSpawn();

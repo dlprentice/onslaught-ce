@@ -1506,6 +1506,14 @@ void MediaSnapshot(const Buffer *target, const char *operation)
 	retired = gMixer.retiredQueueObservations;
 	currentGeneration = gMixer.mediaStreamActive && !gMixer.generationExhausted && gMixer.queueGeneration == gMixer.streamGeneration;
 	SDL_UnlockMutex(gMixer.lock);
+	if (!target)
+	{
+		// Stage the bounded stop snapshot for the existing final summary even if the ordinary event budget is full.
+		// The mixer mutex is released first; this adds no callback formatting, allocation or output.
+		PortSessionFinalMedia finalMedia = {m, f, both, callbacks, samples, failures, queueFrame, retired,
+			demand, last, high, currentGeneration ? 1u : 0u};
+		PortSessionSetFinalMedia(&finalMedia);
+	}
 	PortSessionLog(PORT_SESSION_AUDIO, false, "media operation=%s buffer=%u role=%s music_voices=%u film_voices=%u other_voices=%u "
 		"mixed_music_frames=%llu mixed_film_frames=%llu mixed_both_role_frames=%llu (active tagged buffers; silence/mute possible)",
 		operation, serial, kind == PORT_SESSION_MUSIC ? "music" : kind == PORT_SESSION_FILM ? "film" : "summary", music, film, other,

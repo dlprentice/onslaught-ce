@@ -10,7 +10,8 @@
 //   port sets the same control word itself (dxvk-native may not), and logs the word before and after the real call.
 // - IDirect3DDevice9::Present: counts frames (a progress line every 300), and with BEA_PORT_SHOT=FRAME:PATH writes
 //   that frame's back buffer as a binary PPM before presenting it; with BEA_PORT_QUIT=FRAME it posts WM_CLOSE to the
-//   device's window at that frame (the game's own shutdown path, as when the player closes the window).
+//   device's window at that frame (the game's own shutdown path, as when the player closes the window). In public builds,
+//   a frame CE photo mode asks for (port/game/ce_photo.cpp) is read back and saved as a PNG first (ce_screenshot.cpp).
 #include <windows.h>
 #include <d3d9.h>
 
@@ -557,6 +558,45 @@ void WriteShot(IDirect3DDevice9 *dev)
 	back->Release();
 }
 
+#ifdef CE_VERSION
+}
+#include "../../game/ce_photo.h"
+namespace
+{
+// CE photo mode's screenshot: the back buffer as the player sees it (a multisampled one resolved first), read back
+// through a system-memory copy and handed to CE_ScreenshotSave; its outcome goes to the photo mode's note.
+void TakeCeShot(IDirect3DDevice9 *dev)
+{
+	IDirect3DSurface9 *back = NULL, *flat = NULL, *copy = NULL;
+	D3DSURFACE_DESC d;
+	D3DLOCKED_RECT lr;
+	char name[96] = "";
+	int status = CE_SHOT_READ;
+	if (SUCCEEDED(dev->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &back)))
+	{
+		back->GetDesc(&d);
+		IDirect3DSurface9 *source = back;
+		if (d.MultiSampleType != D3DMULTISAMPLE_NONE &&
+			SUCCEEDED(dev->CreateRenderTarget(d.Width, d.Height, d.Format, D3DMULTISAMPLE_NONE, 0, FALSE, &flat, NULL)) &&
+			SUCCEEDED(dev->StretchRect(back, NULL, flat, NULL, D3DTEXF_NONE)))
+			source = flat;
+		if ((source != back || d.MultiSampleType == D3DMULTISAMPLE_NONE) &&
+			SUCCEEDED(dev->CreateOffscreenPlainSurface(d.Width, d.Height, d.Format, D3DPOOL_SYSTEMMEM, &copy, NULL)) &&
+			SUCCEEDED(dev->GetRenderTargetData(source, copy)) && SUCCEEDED(copy->LockRect(&lr, NULL, D3DLOCK_READONLY)))
+		{
+			status = CE_ScreenshotSave(lr.pBits, lr.Pitch, (int)d.Width, (int)d.Height, (unsigned)d.Format, name, sizeof name);
+			copy->UnlockRect();
+		}
+	}
+	if (copy) copy->Release();
+	if (flat) flat->Release();
+	if (back) back->Release();
+	if (status == CE_SHOT_SAVED) fprintf(stderr, PORT_LOG_PREFIX "screenshot %s saved (frame %u)\n", name, gFrames);
+	else fprintf(stderr, PORT_LOG_PREFIX "screenshot not saved (status %d, frame %u)\n", status, gFrames);
+	PortCePhotoShotDone(status, name);
+}
+#endif
+
 // BEA_PORT_D3DLOG=FRAME:PATH: one frame's draws as the device saw them, for comparing a renderer with the game's
 // (the device is created pure, so Get* is not relied on: the hooks keep a shadow of what the game set). For each
 // DrawPrimitive/DrawIndexedPrimitive in frame FRAME (Presents counted from 0): its arguments, stream 0, textures 0-3,
@@ -918,6 +958,10 @@ HRESULT STDMETHODCALLTYPE Present(IDirect3DDevice9 *dev, const RECT *src, const 
 		snprintf(gShotPath, sizeof(gShotPath), "%s/shot-%05u.ppm", gShotDir, gFrames);
 		WriteShot(dev);
 	}
+#ifdef CE_VERSION
+	if (PortCePhotoShotWanted())
+		TakeCeShot(dev);
+#endif
 	if (gQuitFrame && gFrames == gQuitFrame)
 	{
 		// As if the player closed the window: the game's own shutdown path (BEA_PORT_QUIT=FRAME).

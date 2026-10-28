@@ -1,0 +1,107 @@
+--- a/ltshell.cpp
++++ b/ltshell.cpp
+@@ -40,6 +40,7 @@
+ bool PortCePaletteSuppressDown(unsigned key);
+ bool PortCePaletteRelease(unsigned key);
+ bool PortCePaletteSuppressChar(unsigned key);
++bool PortCePhotoKey(unsigned key, bool repeat);	// patch 0108: port/game/ce_photo.cpp
+ #endif
+ 
+ #if defined(CE_VERSION)
+@@ -1339,7 +1340,8 @@
+ 		{
+ 			gKeyPressed = true;
+ #ifdef CE_VERSION
+-			if (PortCePaletteSuppressDown(key)) {}
++			if (PortCePhotoKey(key, (lParam & 0x40000000) != 0)) {}	// patch 0108: F11 photo mode, F12 screenshot
++			else if (PortCePaletteSuppressDown(key)) {}
+ 			else if (PortCePaletteOpen(key, (lParam & 0x40000000) != 0)) {}
+ 			else
+ #endif
+--- a/DXEngine.cpp
++++ b/DXEngine.cpp
+@@ -604,8 +604,8 @@
+ 	//*****************************************
+ 	//** Render Cockpit
+ 
+-#ifdef DEV_VERSION
+-	if(!CLIPARAMS.mKillHUD)
++#if defined(DEV_VERSION) || defined(CE_VERSION)
++	if(!CLIPARAMS.mKillHUD)		// patch 0108: CE photo mode sets the developer build's -killhud (port/game/ce_photo.cpp)
+ #endif
+ 	{
+ 		if (player)
+@@ -1138,6 +1138,7 @@
+ extern bool	gInFrontEnd;			// 00679b40, defined in FrontEnd.cpp
+ #ifdef CE_VERSION
+ void PortCePaletteRender();
++void PortCePhotoRender();	// patch 0108: port/game/ce_photo.cpp
+ #endif
+ 
+ HRESULT	CDXEngine::PostRender(CViewport *viewport)	// FUNCTION: 0x0053ecc0
+@@ -1174,6 +1175,9 @@
+ 			if (player)
+ 			{
+ 				if ((GAME.GetCamera(i)->GetShowHUD()))
++#ifdef CE_VERSION
++				if (!CLIPARAMS.mKillHUD)	// patch 0108: photo mode hides the battle line, as a camera showing no HUD does
++#endif
+ 					render=TRUE;
+ 			}
+ 		}
+@@ -1283,6 +1287,7 @@
+ 		GAMEINTERFACE.Render();
+ #ifdef CE_VERSION
+ 		PortCePaletteRender();
++		PortCePhotoRender();
+ #endif
+ 	}
+ 
+--- a/Hud.cpp
++++ b/Hud.cpp
+@@ -3,6 +3,9 @@
+ 
+ #include	"common.h"
+ #include "hud_scale.h"
++#ifdef CE_VERSION
++#include	"CLIParams.h"	// patch 0108: CE photo mode's mKillHUD
++#endif
+ 
+ #include	"Hud.h"
+ #include	"DebugLog.h"
+@@ -2146,6 +2149,9 @@
+ 	{
+ 		CPlayer *player = ENGINE.GetPlayerForViewpoint(i);
+ 		if (player && GAME.GetCamera(i)->GetShowHUD())
++#ifdef CE_VERSION
++		if (!CLIPARAMS.mKillHUD)	// patch 0108: CE photo mode draws what a camera showing no HUD draws
++#endif
+ 			RenderOverlayForViewpoint(player, i);
+ 	}
+ 
+--- a/game.cpp
++++ b/game.cpp
+@@ -86,6 +86,7 @@
+ bool PortCeDevStatsOn();	// patch 0102: port/game/ce_palette.cpp, ce_console_game.cpp
+ void PortCeDevStatsOut(const char *fmt, ...);
+ void PortCeDevStatsDraw();
++#include "../game/ce_photo.h"	// patch 0108: CE photo mode (port/game/ce_photo.cpp)
+ #include "../game/ce_debrief.h"	// patch 0104: the end-of-level statistics panel (port/game/ce_debrief.cpp)
+ #endif
+ 
+@@ -553,6 +554,7 @@
+ #endif
+ #ifdef CE_VERSION
+ 	PortCeConsoleLevelEnd();	// patch 0100: put back what the CE console changed, before anything is freed
++	PortCePhotoLevelEnd();		// patch 0108: photo mode ends with the level
+ #endif
+ 	extern bool pause_for_showing_controls;
+ 	if (mQuit == QT_RESTART_LEVEL && PLAYABLE_DEMO)
+@@ -2236,6 +2238,7 @@
+ 		return;
+ #ifdef CE_VERSION
+ 	PortCeConsoleFrame();	// patch 0100: a film the CE console asked for plays between frames
++	PortCePhotoFrame();		// patch 0108
+ #endif
+ 
+ //	mBaseTime = PLATFORM.GetSysTimeFloat();

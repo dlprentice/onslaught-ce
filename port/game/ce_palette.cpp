@@ -21,6 +21,7 @@
 #include "Texture.h"
 #include "ce_console.h"
 #include "ce_music.h"
+#include "ce_photo.h"
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -527,6 +528,16 @@ void CmdMusic(int argc, Arg *argv)
 	MusicUsage();
 }
 
+// Photo mode (ce_photo.cpp) is temporarily unavailable; its control also reports that to the player.
+void CmdPhoto(int argc, Arg *argv)
+{
+	bool on = !PortCePhotoOn();
+	if (argc > 2 || (argc == 2 && !ParseBool(argv[1], &on))) { Out("Usage: photo [on|off]."); return; }
+	if (!PortCePhotoSet(on)) { Out("Photo mode is temporarily unavailable. F12 saves a screenshot."); return; }
+	Out(on ? "Photo mode on: HUD hidden. F11 or photo returns; F12 saves a screenshot." : "Photo mode off.");
+	if (on) Close();
+}
+
 void CmdDevStats(int argc, Arg *argv)
 {
 	if (argc == 1) devStats = PortCeDevStatsOn() ? 0 : 1;
@@ -551,6 +562,7 @@ const Command kCommands[] = {
 	{"fmv_play", "<film>", "Lists the game's films (none plays during a battle).", -1, CmdFilm},
 	{"playsound", "<name>", "Plays a sound this level has loaded.", -1, CmdSound},
 	{"music", "[adddir|playtype|next|clear]", "Your own .ogg folder in place of the level music; music alone says more.", -1, CmdMusic},
+	{"photo", "[on|off]", "Photo mode is temporarily unavailable. F12 saves a screenshot in your screenshots folder.", -1, CmdPhoto},
 	{"devstats", "[on|off]", "The original developers' information text: level, time, events, FPS, health.", -1, CmdDevStats},
 	{"splitscreen", "horizontal|vertical", "Sets how the next two-player game splits the screen.", -1, CmdSplit},
 	{"camera", "", "Free camera on or off, as the F key.", kCheatCamera, CmdCamera},
@@ -833,9 +845,10 @@ void PortCeConsoleLevelEnd()
 }
 
 // Whether CGame::DrawDebugStuff draws its developer text this frame (patch 0102): devstats, else ce.ini's dev_stats=1.
+// Never in photo mode.
 bool PortCeDevStatsOn()
 {
-	if (!DevStatsAllowed()) return false;
+	if (!DevStatsAllowed() || PortCePhotoOn()) return false;
 	if (devStats >= 0) return devStats != 0;
 	if (devStatsIni < 0) devStatsIni = CE_SettingGetBool("dev_stats", 0) ? 1 : 0;
 	return devStatsIni != 0;

@@ -220,7 +220,7 @@ class MusicTests(unittest.TestCase):
             ("no-track-limit", "music", "\tif (count >= kTracks) return 0;\n", "", ("bounds", None)),
             ("unsorted", "music", "while (i < count && Compare(tracks[i], path) < 0) ++i;", "i = count;", ("linear", None)),
             ("no-dedupe", "music", "if (i < count && !Compare(tracks[i], path)) return 1;", "", ("linear", None)),
-            ("clear-silent", "music", "if (custom && MUSIC.mPlaying && MUSIC.mCurrentSong) PlayMusicStream(MUSIC.mCurrentSong->mFilename);", "",
+            ("clear-silent", "music", "PlayMusicStream(MUSIC.mCurrentSong->mFilename);", "",
              ("linear", None)),
             ("no-header-check", "scan", "return p[11] == 2 && rate == 44100;", "return p[11] != 0xff && rate != 1;", ("linear", None)),
             ("path-unbounded", "scan", "(size_t)len > kTrackPath", "(size_t)len > kTrackPath + 1", ("long", None)),

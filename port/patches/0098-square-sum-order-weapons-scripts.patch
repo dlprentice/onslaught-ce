@@ -1,0 +1,77 @@
+--- a/Lights.cpp
++++ b/Lights.cpp
+@@ -53,7 +53,7 @@
+ 	for (SINT c0 = 0; c0 < n; c0++)
+ 	{
+ 		FVector	d = ENGINE.GetCameraForViewpoint(c0)->GetPos() - pos;
+-		float	dist = d.MagnitudeSq();
++		float	dist = d.MagnitudeSqXZY();
+ 		if (dist < nearest)
+ 			nearest = dist;
+ 	}
+--- a/MissionScript/IScript.cpp
++++ b/MissionScript/IScript.cpp
+@@ -589,7 +589,7 @@
+ void	IScript::Normalise(CDataType **args, int num_args, CDataType **result)	// FUNCTION: 0x00534500
+ {
+ 	FVector	v = args[0]->GetPosition();
+-	v.Normalise();
++	v.NormaliseYZX();
+ #line 636
+ 	*result = new (MT_SCRIPT) CPositionDataType(v);
+ }
+@@ -1302,7 +1302,7 @@
+ 	FVector	other = args[0]->GetThing()->GetPos();
+ 	FVector	offset = other - pos;
+ #line 1446
+-	*result = new (MT_SCRIPT) CFloatDataType(offset.Magnitude());
++	*result = new (MT_SCRIPT) CFloatDataType(offset.MagnitudeYZX());
+ }
+ 
+ //******************************************************************************************
+--- a/RadarWarningReceiver.cpp
++++ b/RadarWarningReceiver.cpp
+@@ -97,7 +97,7 @@
+ 	for (CRound *r = (CRound *)rounds.First(); r; r = (CRound *)rounds.Next())
+ 	{
+ 		FVector	d = r->GetPos() - GetPrimaryPosition();
+-		if ((d.Magnitude() <= mScanDistance) && (r->mUnknownE8.ToRead() == (CThing *)mAttachedTo) && (r->mData->mUnknown1C > 0))
++		if ((d.MagnitudeYZX() <= mScanDistance) && (r->mUnknownE8.ToRead() == (CThing *)mAttachedTo) && (r->mData->mUnknown1C > 0))
+ 		{
+ 			t = FindThreat(&mThreats, r);
+ 
+@@ -106,12 +106,12 @@
+ 			{
+ 				t->mSeen = TRUE;
+ 				t->mYaw = yaw;
+-				t->mDistance = d.Magnitude();
++				t->mDistance = d.MagnitudeYZX();
+ 			}
+ 			else
+ 			{
+ #line 65
+-				t = new(MEMTYPE_RADAR) SRadarThreat(yaw, d.Magnitude(), r->GetThingNumber(), r, EVENT_MANAGER.GetTime());
++				t = new(MEMTYPE_RADAR) SRadarThreat(yaw, d.MagnitudeYZX(), r->GetThingNumber(), r, EVENT_MANAGER.GetTime());
+ 				mThreats.Add(t);
+ 
+ 				SoundAlarm(mAttachedTo, yaw);
+--- a/weapon.cpp
++++ b/weapon.cpp
+@@ -462,7 +462,7 @@
+ 				// (Y*Y + Z*Z) + X*X (Magnitude's bracketed squares in rank order, see above).
+ 				// Finite threshold cases agree; NaN payload behavior is unproved.
+ 				FVector delta = target->GetPos() - pos;
+-				float distance = delta.Magnitude();
++				float distance = delta.MagnitudeYZX();
+ 				float roundSpeed = round->mData->mSpeed;
+ 				if (roundSpeed * init.mLifeSpan > distance)
+ 				{
+@@ -1432,7 +1432,7 @@
+ 			speed = 0;
+ 		FVector vel = GetPrimaryOrientation() * FVector(0, speed, 0);
+ 		FVector tvel = target->GetVelocity();
+-		float t = (pos - tpos).Magnitude() / vel.Magnitude();
++		float t = (pos - tpos).MagnitudeYZX() / vel.Magnitude();
+ 		t *= 20.0f;
+ 		return tvel * t + tpos;
+ 	}

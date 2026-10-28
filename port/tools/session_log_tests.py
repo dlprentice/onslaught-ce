@@ -95,10 +95,12 @@ int main(int argc, char **argv) {
         PortSessionAudioError("must not copy");
         PortSessionAsset(PORT_SESSION_MUSIC, "must not print", "/sensitive/name.ogg");
         PortSessionMediaActive(PORT_SESSION_MUSIC, &player, true);
+        PortSessionFinalMedia final{};
+        PortSessionSetFinalMedia(&final);
         PortSessionPulse(300);
         PortSessionSummary();
         SessionGameUpdate();
-        CHECK(gCounts[PORT_COUNT_AUDIO_CALLBACKS] == 0 && gAudioErrorState == 0 && gFrame == 0);
+        CHECK(gCounts[PORT_COUNT_AUDIO_CALLBACKS] == 0 && gAudioErrorState == 0 && gFrame == 0 && !gFinalMediaPending);
         CHECK(clock_reads == 0 && GAME.player_reads == 0 && errno == EDOM);
     } else if (!std::strcmp(mode, "basic")) {
         CHECK(enabled);
@@ -128,6 +130,20 @@ int main(int argc, char **argv) {
         });
         for (auto &w : workers) w.join();
         CHECK(gCounts[PORT_COUNT_MUSIC_REFILLS] == 800);
+        PortSessionSummary();
+    } else if (!std::strcmp(mode, "media-final-threads")) {
+        CHECK(enabled);
+        std::vector<std::thread> workers;
+        for (unsigned t=0; t<4; ++t) workers.emplace_back([t] {
+            for (unsigned i=0; i<100; ++i) {
+                unsigned long long id = t*100 + i + 1;
+                PortSessionFinalMedia s{};
+                s.musicFrames=s.filmFrames=s.bothRoleFrames=id;
+                PortSessionSetFinalMedia(&s);
+                PortSessionSummary();
+            }
+        });
+        for (auto &w : workers) w.join();
         PortSessionSummary();
     } else if (!std::strcmp(mode, "media")) {
         CHECK(enabled);
@@ -282,6 +298,18 @@ class SessionLog(unittest.TestCase):
         self.assertEqual(len(set(re.findall(r"thread=\d+ event=\d+ END", text))), 800)
         self.assertTrue(all(line.endswith(" END") for line in events))
         self.assertIn("music_refills=800", text)
+
+    def test_concurrent_final_media_snapshots_are_whole_and_bounded(self):
+        text = self.run_case("media-final-threads")
+        lines = [line for line in text.splitlines() if "media_final=1" in line]
+        self.assertGreater(len(lines), 0)
+        self.assertLessEqual(len(lines), 400)
+        for line in lines:
+            values = re.search(r"mixed_music_frames=(\d+) mixed_film_frames=(\d+) mixed_both_role_frames=(\d+)", line)
+            self.assertIsNotNone(values)
+            self.assertEqual(values.group(1), values.group(2))
+            self.assertEqual(values.group(2), values.group(3))
+            self.assertLess(len(line), 1200)
 
     def test_lifetime_ledger_deduplicates_without_claiming_audible_overlap(self):
         text = self.run_case("media")

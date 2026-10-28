@@ -186,6 +186,7 @@ void PortSessionLog(PortSessionCategory, bool, const char *, ...) {}
 #endif
 void PortSessionAsset(PortSessionCategory, const char *, const char *, long) {}
 void PortSessionMediaActive(PortSessionCategory, const void *, bool) {}
+void PortSessionSetFinalMedia(const PortSessionFinalMedia *) {}
 void PortSessionCount(PortSessionCounter) {}
 void PortSessionAudioError(const char *) {}
 void PortSessionSummary() {}

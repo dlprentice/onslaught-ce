@@ -8,6 +8,7 @@ first answer per slot must fail.
     python3 port/tools/ce_gamepad_tests.py
 """
 import os
+import re
 from pathlib import Path
 import subprocess
 import tempfile
@@ -84,6 +85,33 @@ class IsStickTests(unittest.TestCase):
         ran = self.run_driver(mutant)
         self.assertNotEqual(ran.returncode, 0, "mutant survived: " + ran.stdout)
         self.assertIn("a flight stick plugged into the empty slot is a flight stick", ran.stderr)
+
+
+class StickButtons(unittest.TestCase):
+    """No flight-stick play control shares a button with the menu table's Pause, which applies to every pad (the 0.1.9
+    docs review: Zoom out on button 6 also paused)."""
+
+    @staticmethod
+    def table(source, name):
+        body = source[source.index(f"const Default {name}[] = {{"):]
+        return body[:body.index("};")]
+
+    def stick_keys(self, source):
+        enum = source[source.index("enum { STICK_THUMB"):]
+        values = dict(re.findall(r"(STICK_\w+) = (\d+)", enum[:enum.index("};")]))
+        return {int(values[k]) for k in re.findall(r",\s*(STICK_\w+)\}", self.table(source, "kStick"))}
+
+    def pause_key(self, source):
+        pads = dict(re.findall(r"(PAD_\w+) = (\d+)", source[source.index("enum { PAD_B"):]))
+        return int(pads[re.search(r"\{BUTTON_PAUSE, BUTTON_ONCE, (PAD_\w+)\}", self.table(source, "kMenu")).group(1)])
+
+    def test_pause_button_is_free_on_a_flight_stick(self):
+        source = SOURCE.read_text()
+        self.assertNotIn(self.pause_key(source), self.stick_keys(source))
+
+    def test_mutant_zoom_out_on_the_pause_button_fails(self):
+        source = SOURCE.read_text().replace("BUTTON_MECH_CHANGE_ZOOM_OUT, BUTTON_ONCE, STICK_7}", "BUTTON_MECH_CHANGE_ZOOM_OUT, BUTTON_ONCE, STICK_6}")
+        self.assertIn(self.pause_key(source), self.stick_keys(source))
 
 
 if __name__ == "__main__":
