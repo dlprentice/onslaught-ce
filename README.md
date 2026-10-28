@@ -1,12 +1,12 @@
 # Onslaught CE
 
-Status: preview — 0.1.8: download it once by hand, and it updates itself from then on
-Last updated: 2026-10-27
-Summary: the native Battle Engine Aquila port, the one-time manual move to 0.1.8, signed updates and source build.
+Status: preview — from 0.1.8 on it updates itself; from 0.1.7 or earlier, download the latest release once by hand
+Last updated: 2026-10-28
+Summary: the native Battle Engine Aquila port, the one-time manual move from 0.1.7 or earlier, signed updates and source build.
 
 A native port of *Battle Engine Aquila*; you need your own copy.
 
-## Getting 0.1.8: one download by hand, then it updates itself
+## Getting the latest version: one download by hand, then it updates itself
 
 **Why by hand, this once?** The updater in Onslaught CE 0.1.0–0.1.6 tidied up at startup by deleting any folder next
 to the game folder whose name started like it (for example `Onslaught CE.old-backup` beside `Onslaught CE`). We know
@@ -14,28 +14,28 @@ of no case where this deleted anything of a player's, but it could, so 0.1.7 swi
 updates back with a new updater that only ever touches its own two folders (`versions` inside the Onslaught CE folder
 and `update-v2` in your user folder), never anything beside them; it checks every update's signature before using
 it, and can go back to the previous version. Old launchers cannot reach it, so you
-download 0.1.8 yourself once; after that it updates itself.
+download the latest release (0.1.8 or later) yourself once; after that it updates itself.
 
 From any earlier Onslaught CE (0.1.0 to 0.1.7):
 
 1. **Close Onslaught CE.** Do not start the old version again (from 0.1.0–0.1.6, not even to check its version).
 2. **Back up your careers and settings:** copy the folder `~/.local/share/onslaught-ce` (Linux) or
    `%APPDATA%\Onslaught CE` (Windows; paste that into the Explorer address bar) somewhere safe.
-3. **Download** the 0.1.8 package for your system from the
+3. **Download** the latest package for your system (0.1.8 or later) from the
    [Releases page](https://github.com/dlprentice/onslaught-ce/releases).
 4. **Extract it into a new, empty folder.** Do not extract it over the old one.
 5. **Run** `onslaught-ce` (Linux) or `onslaught-ce.exe` (Windows) from the new folder. It finds your careers and
    settings by itself. Then point your shortcut at the new folder.
 
 Keep the old folder and your backup until you are happy; never run the old launcher. If you set `BEA_USER_DIR` for
-an earlier version, set it the same way for 0.1.8. Anything unusual (a relative `BEA_USER_DIR`, data in
+an earlier version, set it the same way for the new version. Anything unusual (a relative `BEA_USER_DIR`, data in
 several places, folders you are unsure of): follow the
 [detailed migration](#manual-migration-from-affected-launchers) instead.
 
 ## Quick start
 
 New players start here. If you already have Onslaught CE, follow
-[Getting 0.1.8](#getting-018-one-download-by-hand-then-it-updates-itself) instead.
+[Getting the latest version](#getting-the-latest-version-one-download-by-hand-then-it-updates-itself) instead.
 
 1. Choose the package for your system from the [Releases page](https://github.com/dlprentice/onslaught-ce/releases).
    Extract it into a **new, empty, ordinary folder**, separate from the original game and every old CE folder.
@@ -70,6 +70,9 @@ and remaining limits; development source may include changes beyond that publish
 - **Options > Cheats:** the original game's cheats as On/Off switches; see [Cheats](#cheats).
 - **The console:** the original's developer console, back for solo play; press the `` ` `` (grave) key, left of 1 on a US
   keyboard. See [The console](#the-console).
+- **Controllers:** gamepads and flight sticks work in the menus and in play without setup, and can be plugged in while
+  the game runs; a player who set up their own joystick controls keeps them. See
+  [port/controller-input.md](port/controller-input.md).
 - **Keyboard:** no key release is lost, typed characters come from the key presses themselves (no desktop input method
   in the way), and the letter and digit keys work by their position on any keyboard layout.
 - **A quiet console:** the developers' messages are hidden unless `BEA_PORT_VERBOSE=1` is set.
@@ -78,8 +81,9 @@ and remaining limits; development source may include changes beyond that publish
 ### Cheats
 
 Options > Cheats turns the original game's cheats on and off. They are kept in `ce.ini` in your user folder and apply
-to every career. Typing a code into a career's name works too, as in the original. All cheats are off while a session
-is being recorded and in replays.
+to every career. Typing a code into a career's name works too, as in the original. The Cheats page's switches are off
+while a session is being recorded and in replays; a code typed into a career's name still works then, as in the
+original.
 
 | Cheat | Original code | What it does |
 | --- | --- | --- |
@@ -167,7 +171,8 @@ demo.
   own words and layout, and "CHEATER!" in red when god mode was on. The game kept counting these; the PC release left
   the panel commented out.
 - **Gamepad rumble** (`rumble`, on unless set to 0): your controller rumbles when your Battle Engine is hit or shaken
-  by its own weapons, with the original PC version's effect: full strength for a quarter of a second. Player 1's
+  by its own weapons, with the effect Stuart's PC source code played (the released game's rumble call was empty): full
+  strength for a quarter of a second. Gamepads only; flight sticks do not rumble. Player 1's
   rumble goes to the first controller and player 2's to the second, the controllers the CE gamepad controls give them;
   a player who bound another controller in Controller Options feels the rumble on that player's numbered one. It needs a controller with rumble motors; nobody has tested how it feels on one yet.
 
@@ -200,7 +205,7 @@ refused, please [open an issue](https://github.com/dlprentice/onslaught-ce/issue
 ## Download and install
 
 Download 0.1.8 or later from this repository's [Releases](https://github.com/dlprentice/onslaught-ce/releases) page.
-If you have an earlier Onslaught CE, read [Getting 0.1.8](#getting-018-one-download-by-hand-then-it-updates-itself)
+If you have an earlier Onslaught CE, read [Getting the latest version](#getting-the-latest-version-one-download-by-hand-then-it-updates-itself)
 first.
 
 ### Verify a download (optional)
@@ -212,7 +217,7 @@ download's filename). A successful check prints that filename followed by `OK` a
 missing file, malformed list or changed download fails the check.
 
 ```bash
-package=onslaught-ce-0.1.8-linux-i686.tar.gz
+package=onslaught-ce-0.1.9-linux-i686.tar.gz
 set -o pipefail
 awk -v package="$package" '
   /^[[:space:]]*$/ || /^Onslaught CE / || /^Source: / { next }
@@ -298,7 +303,7 @@ report any problems; see Known limitations and the release notes for the routes 
 ## Update, move and uninstall
 
 - **Update:** from 0.1.8 on, the launcher updates itself ([Updates and privacy](#updates-and-privacy)). From 0.1.0–0.1.7,
-  install 0.1.8 by hand once ([Getting 0.1.8](#getting-018-one-download-by-hand-then-it-updates-itself)); never
+  install the latest release by hand once ([Getting the latest version](#getting-the-latest-version-one-download-by-hand-then-it-updates-itself)); never
   start an old launcher to reach its updater.
 - **Move:** the program folder can live anywhere; move it as a whole (with its `versions` folder) while the game is
   closed. The launcher remembers your game folder in
@@ -313,7 +318,7 @@ report any problems; see Known limitations and the release notes for the routes 
 
 ### Manual migration from affected launchers
 
-The detailed version of [Getting 0.1.8](#getting-018-one-download-by-hand-then-it-updates-itself), for unusual setups.
+The detailed version of [Getting the latest version](#getting-the-latest-version-one-download-by-hand-then-it-updates-itself), for unusual setups.
 
 1. Close CE and its launcher. **Do not run the affected version again.** Do not rename or delete its program folder
    or any neighboring `<program folder>.old-*`, `.download-*` or `.unpack-*` paths. They may contain unrelated files
@@ -329,8 +334,8 @@ The detailed version of [Getting 0.1.8](#getting-018-one-download-by-hand-then-i
    folders. Verify the copies and identify the locations containing your careers (`savegames`), settings (`ce.ini`)
    and recordings when present. Keep all originals and backups; if locations or conflicting files are unclear, do not
    merge or overwrite them, and seek help before choosing a working folder.
-4. Choose the user folder 0.1.8 will use. If your data is in the default folder above (no `BEA_USER_DIR`) and step 3's
-   backup is verified, 0.1.8 can use that folder as it is: leave `BEA_USER_DIR` unset. Otherwise (a custom or relative
+4. Choose the user folder the new version will use. If your data is in the default folder above (no `BEA_USER_DIR`) and step 3's
+   backup is verified, the new version can use that folder as it is: leave `BEA_USER_DIR` unset. Otherwise (a custom or relative
    `BEA_USER_DIR`, or locations you are unsure of), prepare a separate working copy of the identified game user-data
    folder outside the original game and all old CE program and staging folders, and set `BEA_USER_DIR` to its absolute
    path for the successor. Preserve any separately located launcher settings and logs as well; do not assume copying
@@ -354,7 +359,8 @@ the launcher, and asks before installing. **Update** downloads the package, chec
 signed feed, and unpacks it into `versions/` inside the Onslaught CE folder; that folder's own files and everything
 beside it are left alone, and the version you had stays for `--rollback`. Careers and settings are not changed.
 `--update-only` checks now without starting the game; `BEA_NO_UPDATE_CHECK=1`, `update_check=0` in `ce.ini` or
-`--no-update-check` turn checking off; **Onslaught CE > Updates** in the game says which applies and where `ce.ini` is.
+`--no-update-check` turn checking off; **Onslaught CE > Updates** in the game says whether `update_check` in `ce.ini` has turned checking off, and where
+`ce.ini` is.
 On Linux the launcher downloads with the system `curl` (https only); without `curl` the check finds nothing and says so
 only in the log. Releases never carry the old `latest.json` feed that launchers 0.1.0–0.1.6 fetch, and the legacy
 `--apply` command is refused.
@@ -460,8 +466,8 @@ of the tutorial (through its third zone; the final drone fight is still being co
 
 ## Known limitations
 
-- Released launchers 0.1.0–0.1.6 contain the [startup cleanup hazard](#getting-018-one-download-by-hand-then-it-updates-itself); do not run them.
-  Install 0.1.8 by hand once ([Getting 0.1.8](#getting-018-one-download-by-hand-then-it-updates-itself)).
+- Released launchers 0.1.0–0.1.6 contain the [startup cleanup hazard](#getting-the-latest-version-one-download-by-hand-then-it-updates-itself); do not run them.
+  Install the latest release by hand once ([Getting the latest version](#getting-the-latest-version-one-download-by-hand-then-it-updates-itself)).
   Windows 0.1.5 also has an update-helper startup failure. Neither disabling updates nor installing 0.1.6 solves the cleanup risk.
 - Windows checks cover Wine and one Windows 11 virtual machine using Microsoft's software renderer, not a PC with
   a real graphics card. During the 0.1.3 release checks, that VM updated 0.1.2 to 0.1.3, restarted, and the installed
@@ -491,8 +497,8 @@ of the tutorial (through its third zone; the final drone fight is still being co
   The 0.1.5 candidate corrects music starts that could survive a stop request; the reported Windows overlapping
   music has not yet been reproduced and attributed to this defect.
 - The tutorial is playable through its third zone; its final drone fight is still being completed.
-- Joystick and controller support is limited to what the original game supported, and controllers have not been tested
-  yet.
+- Gamepads and flight sticks work without setup ([how](port/controller-input.md)), but have been tested only with
+  virtual devices so far.
 - Widescreen play is not compared with the original (the original has no widescreen); replays and recordings use 4:3.
 - Planned, not in this version yet: multiplayer, mods and HUD options.
 

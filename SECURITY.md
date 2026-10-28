@@ -19,7 +19,7 @@ The current source's launcher (from 0.1.8) requests the public update feed (`ce-
 from the latest GitHub release when it starts, unless checking is turned off, and downloads a package only after you
 choose Update ([Updates and privacy](README.md#updates-and-privacy)). These requests carry nothing but what any
 download does. Released launchers 0.1.0 through 0.1.6 have a separate startup cleanup hazard and must not be run;
-see [Getting 0.1.8](README.md#getting-018-one-download-by-hand-then-it-updates-itself).
+see [Getting the latest version](README.md#getting-the-latest-version-one-download-by-hand-then-it-updates-itself).
 
 Report a problem (the main menu's Onslaught CE page, or `--report`) is the one network action you start yourself: it
 opens a GitHub page in your browser with your version and OS in its address; nothing is posted until you submit it.
@@ -28,4 +28,4 @@ Nothing else leaves your machine: no identifiers, no telemetry.
 ## Supported versions
 
 Fixes target the latest release, which 0.1.8 and later deliver through the signed updater. From 0.1.0–0.1.7, install
-0.1.8 by hand once ([Getting 0.1.8](README.md#getting-018-one-download-by-hand-then-it-updates-itself)).
+the latest release by hand once ([Getting the latest version](README.md#getting-the-latest-version-one-download-by-hand-then-it-updates-itself)).

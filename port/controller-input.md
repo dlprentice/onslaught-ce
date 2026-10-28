@@ -1,7 +1,7 @@
 # Controller input in the native port
 
-Status: CE gamepad and flight-stick support on the controllers branch; physical-controller acceptance remains open
-Last updated: 2026-10-27
+Status: CE gamepad and flight-stick support, released in 0.1.9; physical-controller acceptance remains open
+Last updated: 2026-10-28
 Summary: how the native port finds controllers, what a gamepad or flight stick does without any setup, how hotplug
 works, where all of it is switched off, and what has and has not been checked.
 
@@ -21,7 +21,8 @@ these game numbers.
 **Hotplug.** A controller plugged in after the game started, or unplugged and plugged in again, is bound to the first
 free game pad slot the next time the game reads it; the log says `input: controller connected to a game pad slot`. A
 slot without a controller reads as an idle pad. The adapter retries an empty slot at most every half second, so a press
-in the first half second after plugging in can be missed.
+in the first half second after plugging in can be missed. A game started with no controller has one empty slot, so
+only the first controller plugged in later is picked up; plug both in before starting for two players.
 
 ## What a controller does without setup
 
@@ -46,9 +47,11 @@ capturing. A saved binding that already names button 16 or 17 responds to that t
 
 ## Where it is off
 
-All of the above is CE behaviour. It is off in faithful builds, in multiplayer, and while a tape, recording, virtual
-clock or probe run is active (the trigger buttons as well), so recorded and compared runs keep retail's input exactly.
-Controller input is not recorded by the keyboard-and-mouse tape format. There is no per-device profile. Rumble (patch 0105, `game/ce_rumble.cpp`) plays on the game pad numbered for the player (pad 1 for player 1, pad 2 for player 2), not on whichever pad custom bindings name.
+All of the above is CE behaviour. It is off in faithful builds and while a tape, recording, virtual clock or probe run is
+active (the trigger buttons as well), so recorded and compared runs keep retail's input exactly. In multiplayer the
+no-setup defaults are off (players use their Controller Options bindings); hotplug, flight-stick detection and the
+trigger buttons still work there.
+Controller input is not recorded by the keyboard-and-mouse tape format. There is no per-device profile. Rumble (patch 0105, `game/ce_rumble.cpp`) plays on the game pad numbered for the player (pad 1 for player 1, pad 2 for player 2), not on whichever pad custom bindings name; gamepads only, a flight stick does not rumble.
 
 ## Checks
 
