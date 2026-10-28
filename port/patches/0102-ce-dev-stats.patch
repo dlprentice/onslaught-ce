@@ -1,0 +1,49 @@
+--- a/game.cpp
++++ b/game.cpp
+@@ -83,6 +83,9 @@
+ void PortCeConsoleFrame();
+ void PortCeConsoleLevelStart();
+ bool PortCeLayer();
++bool PortCeDevStatsOn();	// patch 0102: port/game/ce_palette.cpp, ce_console_game.cpp
++void PortCeDevStatsOut(const char *fmt, ...);
++void PortCeDevStatsDraw();
+ #endif
+ 
+ //******************************************************************************************
+@@ -3830,6 +3833,36 @@
+ 	}
+ 
+ #else
++#ifdef CE_VERSION
++	// Patch 0102: the developer build's information text (the CLIPARAMS.mDeveloperMode lines above, and the Xbox
++	// build's DEFAULT heap lines) as a CE overlay, read only. The PC has no TEXDATA or VBDATA heap, so those lines are
++	// left out.
++	if (PortCeDevStatsOn())
++	{
++		PortCeDevStatsOut("World %d,  Time = %2.2f, Event list size = %d(%d) (proc last frame=%d), Num Things = %d, ",GetCurrentLevel(), EVENT_MANAGER.GetTime(), EVENT_MANAGER.TotalEvents(), CScheduledEvent::GetNumCreated(), EVENT_MANAGER.GetNumEventsProcessedInLastUpdate(), WORLD.GetThingNB().Size());
++		if (mFixedFrameRate)
++			PortCeDevStatsOut(", (fixed rate gc) %2.2f FPS ", PLATFORM.GetFPS());
++		else
++			PortCeDevStatsOut("\n %2.2f FPS ", PLATFORM.GetFPS());
++		CPlayer* p = GetPlayer(0) ;
++		if (p)
++		{
++			if (p->IsGod())
++				PortCeDevStatsOut("\nGOD mode Score = %0d", mScore);
++			else if (CBattleEngine* player_unit = p->GetBattleEngine())
++			{
++				PortCeDevStatsOut("\n Health = %2.2f Energy = %2.2f Score = %0d", player_unit->GetLife() , player_unit->GetEnergy(), mScore);
++				if (player_unit->IsAugActive())
++					PortCeDevStatsOut("\n Aug Bar = %2.2f Aug Active", player_unit->GetAugValue());
++				else
++					PortCeDevStatsOut("\n Aug Bar = %2.2f", player_unit->GetAugValue());
++			}
++		}
++		PortCeDevStatsOut( "\nDEFAULT Heap - Size: %0dMB / Peak: %0d", MEM_MANAGER.GetDefaultHeapSize() / (1024 * 1024), MEM_MANAGER.GetDefaultPeakSize() );
++		PortCeDevStatsOut( "\n                Used: %0d / Free: %0d", MEM_MANAGER.GetDefaultUsedSize(), MEM_MANAGER.GetDefaultHeapSize() - MEM_MANAGER.GetDefaultUsedSize() );
++		PortCeDevStatsDraw();
++	}
++#endif
+ 	// retail: no debug text; the unfinished-version watermark blinks instead (0047179d)
+ 	if (gShowUnfinishedWatermark && ((float)fmod(PLATFORM.GetSysTimeFloat(), 2.0) < 1.3f))
+ 	{

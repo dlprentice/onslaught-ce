@@ -1,0 +1,136 @@
+--- a/game.cpp
++++ b/game.cpp
+@@ -79,6 +79,10 @@
+ extern SINT	performing_stress_test;
+ #ifdef CE_VERSION
+ void PortCePaletteClose();
++void PortCeConsoleLevelEnd();	// patch 0100: port/game/ce_palette.cpp
++void PortCeConsoleFrame();
++void PortCeConsoleLevelStart();
++bool PortCeLayer();
+ #endif
+ 
+ //******************************************************************************************
+@@ -410,6 +414,9 @@
+ 	CONSOLE.RegisterVariable("cg_interleavedsplitscreen","Is split-screen mode interleaved",CVar_bool,&mInterleavedSplitscreen);
+ 	CONSOLE.RegisterVariable("cg_fullscreenmultiplayer","Show only player 1 fullscreen",CVar_bool,&mFullscreenMultiplayer);
+ 	CONSOLE.RegisterVariable("g_framelength","Game frame/tick length (seconds)",CVar_float,&mFrameLength);
++#ifdef CE_VERSION
++	PortCeConsoleLevelStart();	// patch 0100: a split chosen in the CE console, for the next two-player game
++#endif
+ 	
+ 	con_resetmemsizes(NULL);
+ 
+@@ -540,6 +547,9 @@
+ #ifdef CE_VERSION
+ 	PortCePaletteClose();
+ #endif
++#ifdef CE_VERSION
++	PortCeConsoleLevelEnd();	// patch 0100: put back what the CE console changed, before anything is freed
++#endif
+ 	extern bool pause_for_showing_controls;
+ 	if (mQuit == QT_RESTART_LEVEL && PLAYABLE_DEMO)
+ 		pause_for_showing_controls = true;
+@@ -1337,6 +1347,11 @@
+ 	CONSOLE.SetLoadingFraction(0.6f);
+ 
+ 	// Execute startup script (on every level load... ^-^;;)
++#ifdef CE_VERSION
++	// Patch 0100: the CE layer never runs a script file (its commands are unbounded and include bind); replays,
++	// recordings and the faithful build run it as retail does.
++	if (!PortCeLayer())
++#endif
+ 	CONSOLE.Exec("autoexec.con");	
+ 
+ 	CONSOLE.SetLoadingFraction(0.7f);
+@@ -2215,6 +2230,9 @@
+ 	//quit early???
+ 	if (qt != QT_NONE)
+ 		return;
++#ifdef CE_VERSION
++	PortCeConsoleFrame();	// patch 0100: a film the CE console asked for plays between frames
++#endif
+ 
+ //	mBaseTime = PLATFORM.GetSysTimeFloat();
+ 
+--- a/System.cpp
++++ b/System.cpp
+@@ -41,6 +41,9 @@
+ #include "eventmanager.h"
+ #include "landscape.h"
+ #include "ParticleTexture.h"
++#ifdef CE_VERSION
++int PortCeConsoleTakeLevel();	// patch 0100: port/game/ce_console_game.cpp
++#endif
+ 
+ CTweakSLONG	TWIMTBP("TWIMTBP", 0);				// 0083d3f8: show the "The way it's meant to be played" film
+ // FUNCTION: 0x004efae0 init:TWIMTBP
+@@ -385,6 +388,15 @@
+ 			{
+ 				MEM_MANAGER.LogDebugStats();
+ 				EQuitType	quit = GAME.RunLevel(result);
++#ifdef CE_VERSION
++				// Patch 0100: the CE console's map command leaves a level for another; run it before the front end.
++				for (SINT next = PortCeConsoleTakeLevel(); quit == QT_QUIT_TO_FRONTEND && next > 0; next = PortCeConsoleTakeLevel())
++				{
++					FRONTEND.mSelectedLevel = next;
++					result = next;
++					quit = GAME.RunLevel(next);
++				}
++#endif
+ 				MEM_MANAGER.LogDebugStats();
+ 				MEM_MANAGER.CalcAndShowDeltas();
+ 				if (quit == QT_QUIT_TIMEOUT)
+--- a/console.cpp
++++ b/console.cpp
+@@ -910,6 +910,14 @@
+ 	char	text[0x2000];
+ 	va_list	args;
+ 	va_start(args, fmt);
++#ifdef CE_VERSION
++	// Patch 0100: with the CE layer on (the CE console shows these lines) a line never runs past its 0x80-byte row
++	// and the text never past its buffer; replays and the faithful build keep retail's unbounded copy.
++	const bool bounded = PortCeLayer();
++	if (bounded)
++		vsnprintf(text, sizeof(text), fmt, args);
++	else
++#endif
+ 	vsprintf(text, fmt, args);
+ 
+ 	if (mTrace)
+@@ -923,7 +931,13 @@
+ 	for (int i = 0; i < (int)strlen(text); i++)
+ 	{
+ 		if (text[i] != '\n')
++		{
++#ifdef CE_VERSION
++			if (bounded && pos >= 0x7f)
++				continue;
++#endif
+ 			line[pos++] = text[i];
++		}
+ 		else
+ 		{
+ 			line[pos] = 0;
+--- a/ltshell.cpp
++++ b/ltshell.cpp
+@@ -1349,6 +1349,9 @@
+ 			}
+ 			else
+ 			{
++#ifdef CE_VERSION
++				if (!PortCeLayer())	// patch 0100: the CE layer runs no key binds
++#endif
+ 				CONSOLE.HandleBind(wParam,KEY_EVENT_DOWN);
+ 				KeyDown[key] = TRUE;
+ 				KeyWasDown[key] = TRUE;	
+@@ -1371,6 +1374,9 @@
+ 			}
+ 			else
+ 			{
++#ifdef CE_VERSION
++				if (!PortCeLayer())	// patch 0100
++#endif
+ 				CONSOLE.HandleBind(wParam,KEY_EVENT_UP);
+ 			}
+ 

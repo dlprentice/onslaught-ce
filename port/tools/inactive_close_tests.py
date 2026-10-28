@@ -93,6 +93,9 @@ FLOAT DXUtil_Timer(unsigned request) {
     throw UnexpectedCall{};
 }
 @CE_LAYER@
+// ltshell.cpp's own state the patched functions read (CE quit request) and a Windows type they use.
+static bool sPortQuitRequested;
+typedef unsigned UINT;
 struct PCLTShell {
     BOOL m_bActive = TRUE, m_bReady = TRUE, m_bWindowed = TRUE;
     BOOL m_bFrameMoving = TRUE, m_bSingleStep = TRUE;

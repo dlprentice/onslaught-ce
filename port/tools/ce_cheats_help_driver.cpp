@@ -130,15 +130,20 @@ int main() {
     check(CE_NUM_CHEATS == 5, "five supported player-facing cheats");
     const int ids[] = {1, 0, 5, 3, 4};
     for (int i = 0; i < CE_NUM_CHEATS; ++i) check(kCheats[i].mCheat == ids[i], "cheat identity and order");
-    for (const WCHAR *key : {L"F", L"WASD", L"arrows", L"Esc"})
+    for (const WCHAR *key : {L"F:", L"W/S fly", L"A/D slide", L"arrows look", L"Esc freezes", L"F returns", L"still be hit"})
         check(std::wcsstr(kCheats[4].mHelp, key) != nullptr, "free-camera keys are discoverable");
+    for (const WCHAR *missing : {L"speed", L"up/down", L"Space", L"Shift", L"mouse"})
+        check(std::wcsstr(kCheats[4].mHelp, missing) == nullptr, "no free-camera key the game does not have");
+    check(std::wcsstr(kCheats[0].mHelp, L"progress is not changed") != nullptr, "level unlock writes nothing");
+    check(std::wcsstr(kCheats[1].mHelp, L"Nothing is saved") != nullptr, "goodie unlock writes nothing");
+    check(std::wcsstr(kCheats[3].mHelp, L"not in your career") != nullptr, "god mode is kept out of careers");
     check(std::wcsstr(kCheats[2].mHelp, L"available unlock hints") != nullptr,
           "hints do not promise descriptions for every goodie");
     check(std::wcsstr(kCheats[2].mHelp, L"even if Unlock all goodies is on") != nullptr,
           "hint priority is discoverable");
     // MenuOptionsList::Render centers six 20px rows at y=300; Back starts at y=325.
     const float back_y = 325.f;
-    const WCHAR *note = L"Cheats apply to every career and are off while a session is being recorded.";
+    const WCHAR *note = L"Cheats apply to all careers and are off when recording. Wins count as usual.";
     for (int width : {7, 8, 9, 10}) {
         PLATFORM.font.advance = width;
         for (int i = 0; i < CE_NUM_CHEATS; ++i) {

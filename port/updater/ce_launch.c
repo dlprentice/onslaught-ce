@@ -80,6 +80,8 @@ static const char PUBLIC_KEY_HEX[] = "b6cf39b727c92cd8a1682c31f315a5d38427dce912
 
 #define PATHN 4096
 static char sHere[PATHN], sUser[PATHN], sIni[PATHN];
+/* "1" when the player chose the user folder (BEA_USER_DIR before any launcher set it), else "0"; the game logs it. */
+static const char *sUserCustom = "0";
 /* A replay (BEA_PORT_TAPE) or a recording someone else set up (BEA_PORT_RECORD, the test harness) as the launcher
  * started: the launcher then adds nothing of its own (no log, no update check, no build name for the CE layer). */
 static int sReplay;
@@ -971,8 +973,10 @@ static int init_paths(void)
 	if (xdg && *xdg) snprintf(sUser, sizeof sUser, "%s/onslaught-ce", xdg);
 	else snprintf(sUser, sizeof sUser, "%s/.local/share/onslaught-ce", home ? home : ".");
 #endif
-	const char *user = getenv("BEA_USER_DIR");
+	const char *user = getenv("BEA_USER_DIR"), *custom = getenv("BEA_CE_CUSTOM_USER_DIR");
 	if (user && *user) snprintf(sUser, sizeof sUser, "%s", user);
+	/* A launcher restarted by an update inherits BEA_USER_DIR from us: keep the first launcher's answer. */
+	sUserCustom = custom && (!strcmp(custom, "0") || !strcmp(custom, "1")) ? custom : user && *user ? "1" : "0";
 	snprintf(sIni, sizeof sIni, "%s" SEP "ce.ini", sUser);
 	return ce_make_settings_dirs(sUser);
 }
@@ -1277,6 +1281,7 @@ static int start_game(char **args, int nargs, const char *game)
 	}
 	set_env("BEA_GAME_DIR", game);
 	set_env("BEA_USER_DIR", sUser);
+	set_env("BEA_CE_CUSTOM_USER_DIR", sUserCustom);
 	if (!sReplay) set_env("BEA_CE_BUILD", CE_COMMIT);	/* the game's "Report a problem" page names it (ce.cpp) */
 	char shortgame[PATHN];
 	ce_short_path(game, shortgame, sizeof shortgame);

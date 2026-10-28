@@ -67,26 +67,109 @@ and remaining limits; development source may include changes beyond that publish
 
 - **Main menu > Onslaught CE:** About (version, licence and links), Report a problem, Record sessions (see below),
   Updates (whether checking is on, how to roll back, where `ce.ini` is) and Special Thanks.
-- **Commands:** during play, press the `` ` `` key (left of 1, below Esc) for a small command panel (the game's
-  own text calls it the grave key): `help` lists the commands, `status` shows the camera and battle state, and
-  `camera` switches the free camera on or off (turn on the Free camera cheat first). Enter runs a command; Esc or the
-  `` ` `` key closes the panel. The game keeps running.
-- **Options > Cheats:** the game's own cheats as On/Off switches, kept in `ce.ini` so they apply to every career; the
-  line under the list says what the highlighted one does:
-  - **Unlock all levels** (original code TURKEY): every level opens in the level select.
-  - **Unlock all goodies** (MALLOY): every goodie opens on the Goodies page.
-  - **Goodie hints** (latête): the Goodies page shows how to unlock each goodie; while it is on, goodies cannot be
-    opened.
-  - **God mode option** (Maladim): adds a God switch to Controller Options, in the pause menu (applies at once) and in
-    Options (applies from the next level), for no damage and endless energy; turning the cheat off ends god mode. God
-    mode set this way is kept in `ce.ini`, not in your careers, so a recorded session never carries it.
-  - **Free camera** (F key, Aurore): in a level, F lets you fly the camera; F again returns it.
-
-  They are off while a session is being recorded. Typing a code into a career's name still works as in the original.
+- **Options > Cheats:** the original game's cheats as On/Off switches; see [Cheats](#cheats).
+- **The console:** the original's developer console, back for solo play; press the `` ` `` (grave) key, left of 1 on a US
+  keyboard. See [The console](#the-console).
 - **Keyboard:** no key release is lost, typed characters come from the key presses themselves (no desktop input method
   in the way), and the letter and digit keys work by their position on any keyboard layout.
 - **A quiet console:** the developers' messages are hidden unless `BEA_PORT_VERBOSE=1` is set.
 - **A log file** for reports, `onslaught-ce.log` in your user folder, and **session recording** (both below).
+
+### Cheats
+
+Options > Cheats turns the original game's cheats on and off. They are kept in `ce.ini` in your user folder and apply
+to every career. Typing a code into a career's name works too, as in the original. All cheats are off while a session
+is being recorded and in replays.
+
+| Cheat | Original code | What it does |
+| --- | --- | --- |
+| Unlock all levels | TURKEY | Every level shows as open in the level select. Your career's real progress is not changed. In the console it also allows `map`, `win` and `lose`. |
+| Unlock all goodies | MALLOY | Every goodie on the Goodies page is open. Nothing is written to your career. |
+| Goodie hints | latête | The Goodies page shows the available unlock hints. While it is on, goodies cannot be opened, even with Unlock all goodies. |
+| God mode option | Maladim | Adds **God** to Controller Options (in the pause menu, applying at once, and in Options, from the next level). God on: no damage and energy that never runs out. Set this way it is kept in `ce.ini`, not in your career. Turning the cheat off ends god mode. |
+| Free camera | Aurore | In a level, **F** detaches the camera so you can fly around the battle. In the console it also allows `camera` and the remote camera. |
+
+Free camera controls:
+
+- **F**: free camera on or off. Off returns to your previous view.
+- **W / S**: fly forward and back, in the direction you are looking.
+- **A / D**: slide left and right.
+- **Arrow keys**: turn left and right, look up and down. There is no up or down key and no speed key: look up or
+  down, then fly, at one fixed speed.
+- **Esc**: freeze or unfreeze the battle without a menu. The camera still flies while the battle is frozen, so you can
+  line up a screenshot.
+
+The battle keeps going while you look around unless you freeze it, and your Battle Engine can be hit.
+
+The cheats themselves write nothing to your career (only the end-of-level statistics read the original's count of
+god-mode uses, to show "CHEATER!"). A level you finish with their help, including one ended with the console's `win`,
+counts like any other: a win opens the next levels, earns its goodies and records its grade (a level's grade is only
+ever raised, never lowered). A code in a career's name works when the name contains it exactly, including latête on Linux
+and Windows.
+
+### The console
+
+The original game has a developer console that the PC release never showed. Onslaught CE brings it back for solo play:
+press the `` ` `` (grave) key, left of 1 on a US keyboard, during a level. It drops down over the top of the screen, as a
+dark panel with the game's own log (what it loaded, and what commands print), and takes a command line. It never runs
+the original's command interpreter: it has its own list of commands, and never runs script files or key binds (so an
+`autoexec.con` in the game folder is ignored).
+
+- **Keys:** Enter runs the line, Tab completes a command name, Up and Down recall earlier lines, PgUp and PgDn scroll
+  the log, Esc or the grave key closes the console. The game does not pause for it. A line holds up to 63 printable
+  characters; anything longer, or a character the console cannot take, is refused rather than cut.
+- **Always available:** `help` (and `help <command>`), `version`, `status`, `showvars`, `show <variable>`,
+  `set <variable> <value>` (views, weather, hit-flash colours and the console's own `cg_consolealpha`, each checked
+  against its range), `cg_whatami` (graphics card), `listatmospherics`, `navmapon` and `navmapoff` (the landscape's
+  navigation map), `setgammabias <0 to 0.005>` (full screen only), `fmv_play` (lists the game's films: the cutscenes
+  1-33, `GILL_M_on_a_fork` and `UsTheMovie` play from the Goodies page, `ltlogo` and `openingfmv` when the game
+  starts; none plays during a battle), `playsound <name>` (a sound the level has
+  already loaded) and `splitscreen horizontal|vertical` (for the next two-player game).
+- **Developer information:** `devstats` (or `devstats on`/`off`) shows the original developers' information text in
+  the top left: level, game time, event-list size and events processed, thing count, frame rate, health, energy and
+  score (or "GOD mode Score") and the Aug bar, and the game's own DEFAULT heap use. It is the text the developer build
+  drew; the PC release never showed it. The TEXDATA and VBDATA heap lines of the original are left out: the PC game has
+  no such heaps. `dev_stats=1` in `ce.ini` turns it on in every level; `devstats` changes it until the level ends.
+  It is pale yellow as in the original, or green with `console_theme=green`, and only reads the game.
+- **Your music:** `music` says what your playlist holds and plays; `music adddir <folder>` adds a folder of your own
+  tracks (the rest of the line is the folder, spaces included); `music playtype single|linear|random`; `music next`
+  skips to your next track; `music clear` goes back to the game's music. These are the original's playlist commands
+  (`m_adddir`, `m_playtype`), which the PC release never registered. They last for the session; `ce.ini` keeps the
+  settings (below).
+- **With Free camera on:** `camera` (as the F key), `remotecameraon` (views from whatever is under the crosshair) and
+  `remotecameraoff`.
+- **With Unlock all levels on:** `map <level>` (leaves this level for another campaign level), `win` and `lose`. A win
+  from the console counts in your career like any other win.
+- **Put back at the end of each level:** every variable `set` changed, the navigation map, the gamma bias and the
+  remote camera.
+- **Not available:** `exec`, `bind`, `memstats`, `dumpmem`, `dumptextures` and the original's other developer
+  commands that write files or run scripts; `quit` points you at the pause menu. The console is closed in multiplayer,
+  in network games, in demos, and while a session is recorded or replayed.
+- `console_theme=green` in `ce.ini` draws the text in green. This is an Onslaught CE choice: nothing shows that the
+  original's console was green.
+
+### Your own music, end-of-level statistics and rumble
+
+Three things the original team built that the PC release left switched off. Each is an Onslaught CE option in `ce.ini`
+in your user folder, and none of them is ever on while a session is recorded or replayed, in a network game or in a
+demo.
+
+- **Your own music** (`music_dir`, `music_playtype`): `music_dir=` the full path of a folder of `.ogg` tracks plays
+  them in place of the level music (the front end and the credits keep the game's own). `music_playtype=linear` (the
+  default) plays them in name order and round again, `random` shuffles them, `single` plays one and then stays quiet
+  until the next level's music. A track must be Ogg Vorbis, stereo, 44100 Hz (the one format the game's music player
+  plays; others are left out and counted in the log), with a full path of at most 255 bytes. Up to 256 tracks are used
+  from the folder, which is read, never written; subfolders are not searched. On Linux `~/` is your home folder. The
+  game pauses for about three seconds between tracks, as it does between its own. The console's `music` commands
+  change it for the session.
+- **End-of-level statistics** (`debrief_stats`, on unless set to 0): the victory and defeat screens list your mission
+  time, time in jet and walker mode, rounds fired, accuracy (once you have fired) and damage taken, in the original's
+  own words and layout, and "CHEATER!" in red when god mode was on. The game kept counting these; the PC release left
+  the panel commented out.
+- **Gamepad rumble** (`rumble`, on unless set to 0): your controller rumbles when your Battle Engine is hit or shaken
+  by its own weapons, with the original PC version's effect: full strength for a quarter of a second. Player 1's
+  rumble goes to the first controller and player 2's to the second, the controllers the CE gamepad controls give them;
+  a player who bound another controller in Controller Options feels the rumble on that player's numbered one. It needs a controller with rumble motors; nobody has tested how it feels on one yet.
 
 Onslaught CE is an unofficial fan project. It is not affiliated with or endorsed by the game's developer, publisher or
 rights holders; *Battle Engine Aquila* is a trademark of its owners.

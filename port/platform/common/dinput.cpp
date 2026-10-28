@@ -14,6 +14,8 @@
 
 #include "platform.h"
 
+bool PortCeLayer();
+
 // ---- data formats (the SDK's c_dfDI* tables; only their identity and sizes matter to this implementation) ---------------
 extern "C" {
 const DIDATAFORMAT c_dfDIKeyboard = { sizeof(DIDATAFORMAT), sizeof(DIOBJECTDATAFORMAT), DIDF_RELAXIS, 256, 0, NULL };
@@ -27,6 +29,152 @@ namespace
 {
 HWND gMouseWindow;	// the window of the game's acquired mouse (relative mode is re-asserted for it each frame)
 Uint64 gMouseReleasedAt;	// SDL event timestamp cutoff: queued captured events must not become menu input on release
+
+// A physical trigger can be bound through the game's existing joystick-button
+// controls. Tapes do not record controller input, so even a forced CE layer must
+// leave the faithful, replay, recording and probe input paths unchanged.
+bool BindableGamepadTriggers()
+{
+#if defined(CE_VERSION)
+	const char *const offline[] = { "BEA_PORT_TAPE", "BEA_PORT_RECORD", "BEA_PORT_CLOCK", "BEA_PORT_PROBES" };
+	for (const char *name : offline)
+	{
+		const char *value = getenv(name);
+		if (value && *value)
+			return false;
+	}
+	return PortCeLayer();
+#else
+	return false;
+#endif
+}
+
+// BEA_PORT_FAKE_PAD (a test switch, as window.cpp's BEA_PORT_FAKE_KEYS): an SDL virtual gamepad is attached when
+// DirectInput starts, so the game enumerates it as an ordinary pad, and its script changes it once a Present count is
+// reached: PRESENT:bBUTTON:d|u presses or releases an SDL gamepad button, PRESENT:aAXIS:VALUE moves an SDL gamepad
+// axis (-32768..32767), PRESENT:hHAT:VALUE sets a hat (SDL_HAT_* bits). Entries are comma-separated and in Present
+// order. BEA_PORT_FAKE_PAD_KIND=stick attaches a flight stick (4 axes, 8 buttons, 1 hat, not a gamepad) instead.
+// For hotplug, PRESENT:detach unplugs the device and PRESENT:attach plugs it in again; BEA_PORT_FAKE_PAD_LATE=1 leaves it
+// unplugged until the first attach. BEA_PORT_FAKE_PAD=1 attaches the gamepad with no script. The gamepad logs every
+// rumble it is asked for (FakePadRumble).
+extern "C" unsigned PortPresentCount(void);	// d3d9hooks.cpp
+SDL_Joystick *gFakePad;
+SDL_JoystickID gFakePadId;
+const char *gFakePadScript;
+
+// A DIPROP_* "GUID" is MAKEDIPROP(n), a reference made from the integer n. Clang assumes a reference names a real
+// object, so it folds &prop == &DIPROP_RANGE, and even the address converted to an integer and compared with 4, to
+// false: no property ever matched (the controls page showed every pad as not present). The volatile read hides the
+// value from that reasoning.
+inline uintptr_t PropId(REFGUID prop)
+{
+	volatile uintptr_t id = (uintptr_t)&prop;
+	return id;
+}
+
+// The test gamepad reports the rumble it is asked for (low and high motor strengths, and when, on stderr), so a run
+// shows the CE rumble (patch 0105) firing without a physical controller.
+bool SDLCALL FakePadRumble(void *, Uint16 low, Uint16 high)
+{
+	fprintf(stderr, PORT_LOG_PREFIX "fake pad rumble low=%u high=%u at %llu ms\n", (unsigned)low, (unsigned)high,
+			(unsigned long long)SDL_GetTicks());
+	return true;
+}
+
+void FakePadPlug()
+{
+	SDL_VirtualJoystickDesc descriptor;
+	SDL_INIT_INTERFACE(&descriptor);
+	const char *kind = getenv("BEA_PORT_FAKE_PAD_KIND");
+	if (kind && !strcmp(kind, "stick"))
+	{
+		descriptor.type = SDL_JOYSTICK_TYPE_FLIGHT_STICK;
+		descriptor.naxes = 4;
+		descriptor.nbuttons = 8;
+		descriptor.nhats = 1;
+		descriptor.name = "CE test flight stick";
+	}
+	else
+	{
+		descriptor.type = SDL_JOYSTICK_TYPE_GAMEPAD;
+		descriptor.naxes = SDL_GAMEPAD_AXIS_COUNT;
+		descriptor.nbuttons = SDL_GAMEPAD_BUTTON_COUNT;
+		descriptor.axis_mask = (1u << SDL_GAMEPAD_AXIS_COUNT) - 1;
+		descriptor.button_mask = (1u << SDL_GAMEPAD_BUTTON_COUNT) - 1;
+		descriptor.name = "CE test gamepad";
+		descriptor.Rumble = FakePadRumble;
+	}
+	gFakePadId = SDL_AttachVirtualJoystick(&descriptor);
+	gFakePad = gFakePadId ? SDL_OpenJoystick(gFakePadId) : NULL;
+	fprintf(stderr, PORT_LOG_PREFIX "test: virtual %s %s\n", kind && !strcmp(kind, "stick") ? "flight stick" : "gamepad",
+			gFakePad ? "attached" : SDL_GetError());
+}
+
+void FakePadAttach()
+{
+	const char *script = getenv("BEA_PORT_FAKE_PAD");
+	if (!script || !*script || gFakePad || gFakePadScript)
+		return;
+	gFakePadScript = strcmp(script, "1") ? script : "";	// "1": a pad that sends nothing (rumble runs)
+	const char *late = getenv("BEA_PORT_FAKE_PAD_LATE");
+	if (!(late && *late == '1'))
+		FakePadPlug();
+}
+
+void FakePadStep()
+{
+	while (gFakePadScript && *gFakePadScript)
+	{
+		unsigned present = 0;
+		int which = 0;
+		char change = 0;
+		float value = 0;
+		char word[8] = "";
+		if (sscanf(gFakePadScript, "%u:%6[a-z]", &present, word) == 2 && (!strcmp(word, "attach") || !strcmp(word, "detach")))
+		{
+			if (PortPresentCount() < present)
+				return;
+			if (!strcmp(word, "attach") && !gFakePad)
+				FakePadPlug();
+			else if (!strcmp(word, "detach") && gFakePad)
+			{
+				SDL_CloseJoystick(gFakePad);
+				SDL_DetachVirtualJoystick(gFakePadId);
+				gFakePad = NULL;
+				fprintf(stderr, PORT_LOG_PREFIX "test: virtual device detached\n");
+			}
+		}
+		else if (!gFakePad)
+			return;
+		else if (sscanf(gFakePadScript, "%u:b%d:%c", &present, &which, &change) == 3)
+		{
+			if (PortPresentCount() < present)
+				return;
+			SDL_SetJoystickVirtualButton(gFakePad, which, change == 'd');
+		}
+		else if (sscanf(gFakePadScript, "%u:a%d:%f", &present, &which, &value) == 3)
+		{
+			if (PortPresentCount() < present)
+				return;
+			SDL_SetJoystickVirtualAxis(gFakePad, which, (Sint16)value);
+		}
+		else if (sscanf(gFakePadScript, "%u:h%d:%f", &present, &which, &value) == 3)
+		{
+			if (PortPresentCount() < present)
+				return;
+			SDL_SetJoystickVirtualHat(gFakePad, which, (Uint8)value);
+		}
+		else
+		{
+			fprintf(stderr, PORT_LOG_PREFIX "test: BEA_PORT_FAKE_PAD entry not understood: %.40s\n", gFakePadScript);
+			gFakePadScript = NULL;
+			return;
+		}
+		SDL_UpdateJoysticks();
+		const char *next = strchr(gFakePadScript, ',');
+		gFakePadScript = next ? next + 1 : "";
+	}
+}
 
 template <class T, class... A> T *Make(A... a) { return new (malloc(sizeof(T))) T(a...); }
 template <class T> void Destroy(T *p)
@@ -164,6 +312,9 @@ bool SDLCALL WheelWatch(void *, SDL_Event *e)
 }
 
 enum Kind { KEYBOARD, MOUSE, JOYSTICK };
+struct Device;
+Device *gPadSlots[8];	// the game's pad devices, for hotplug (Rebind, below)
+void Rebind(Device *d);
 
 struct Device : public IDirectInputDevice8A
 {
@@ -171,9 +322,11 @@ struct Device : public IDirectInputDevice8A
 	Kind kind;
 	SDL_JoystickID joystickId = 0;
 	SDL_Gamepad *pad = NULL;
+	SDL_Joystick *joy = NULL;	// a joystick SDL does not know as a gamepad (a flight stick): ordinary CE play only
 	HWND window = NULL;
 	DWORD cooperative = 0;
 	bool acquired = false;
+	bool triggerDown[2] = { false, false };
 	LONG rangeMin = -1000, rangeMax = 1000;
 
 	Device(Kind k, SDL_JoystickID id) : kind(k), joystickId(id) {}
@@ -191,8 +344,13 @@ struct Device : public IDirectInputDevice8A
 		if (!r)
 		{
 			Unacquire();
+			for (Device *&slot : gPadSlots)
+				if (slot == this)
+					slot = NULL;
 			if (pad)
 				SDL_CloseGamepad(pad);
+			if (joy)
+				SDL_CloseJoystick(joy);
 			Destroy(this);
 		}
 		return r;
@@ -203,9 +361,10 @@ struct Device : public IDirectInputDevice8A
 		memset(caps, 0, size);
 		caps->dwSize = size;
 		caps->dwFlags = DIDC_ATTACHED;
-		caps->dwDevType = kind == JOYSTICK ? DI8DEVTYPE_GAMEPAD : 0;
+		caps->dwDevType = kind == JOYSTICK ? (joy ? DI8DEVTYPE_JOYSTICK : DI8DEVTYPE_GAMEPAD) : 0;
 		caps->dwAxes = kind == JOYSTICK ? 6 : kind == MOUSE ? 3 : 0;
-		caps->dwButtons = kind == JOYSTICK ? 16 : kind == MOUSE ? 8 : 0;
+		caps->dwButtons = joy ? (DWORD)SDL_min(SDL_GetNumJoystickButtons(joy), 32) :
+			kind == JOYSTICK ? (BindableGamepadTriggers() ? 18 : 16) : kind == MOUSE ? 8 : 0;
 		caps->dwPOVs = kind == JOYSTICK ? 1 : 0;
 		return DI_OK;
 	}
@@ -232,18 +391,20 @@ struct Device : public IDirectInputDevice8A
 	}
 	HRESULT STDMETHODCALLTYPE GetProperty(REFGUID prop, LPDIPROPHEADER h) override
 	{
-		if (&prop == &DIPROP_INSTANCENAME || &prop == &DIPROP_PRODUCTNAME)
+		if (PropId(prop) == 13 || PropId(prop) == 14)	// DIPROP_INSTANCENAME, DIPROP_PRODUCTNAME
 		{
-			const char *name = pad ? SDL_GetGamepadName(pad) : kind == MOUSE ? "Mouse" : "Keyboard";
+			const char *name = pad ? SDL_GetGamepadName(pad) : joy ? SDL_GetJoystickName(joy) : kind == MOUSE ? "Mouse" : "Keyboard";
 			LPDIPROPSTRING s = (LPDIPROPSTRING)h;
 			unsigned short *w = (unsigned short *)s->wsz;
 			int i = 0;
-			for (; name && name[i] && i < MAX_PATH - 1; i++)
+			// At most 63 characters: the game copies the name into its own text buffers (the Controller Options page's
+			// joystick line is 208 characters, after "Joystick 1: " and before ": Enabled").
+			for (; name && name[i] && i < 63; i++)
 				w[i] = (unsigned char)name[i];
 			w[i] = 0;
 			return DI_OK;
 		}
-		if (&prop == &DIPROP_RANGE)
+		if (PropId(prop) == 4)	// DIPROP_RANGE
 		{
 			LPDIPROPRANGE r = (LPDIPROPRANGE)h;
 			r->lMin = rangeMin;
@@ -254,7 +415,7 @@ struct Device : public IDirectInputDevice8A
 	}
 	HRESULT STDMETHODCALLTYPE SetProperty(REFGUID prop, LPCDIPROPHEADER h) override
 	{
-		if (&prop == &DIPROP_RANGE)
+		if (PropId(prop) == 4)	// DIPROP_RANGE
 		{
 			const DIPROPRANGE *r = (const DIPROPRANGE *)h;
 			rangeMin = r->lMin;
@@ -298,6 +459,8 @@ struct Device : public IDirectInputDevice8A
 		if (!acquired)
 			return S_FALSE;
 		acquired = false;
+		if (kind == JOYSTICK)
+			triggerDown[0] = triggerDown[1] = false;
 		if (kind == MOUSE)
 		{
 			gMouseReleasedAt = SDL_GetTicksNS();
@@ -308,6 +471,12 @@ struct Device : public IDirectInputDevice8A
 				SDL_SetWindowRelativeMouseMode(w, false);
 		}
 		return DI_OK;
+	}
+	// A plain joystick's raw axis, scaled as Axis (absent axes rest at the centre).
+	LONG RawAxis(int a)
+	{
+		int v = joy && a < SDL_GetNumJoystickAxes(joy) ? SDL_GetJoystickAxis(joy, a) : 0;
+		return rangeMin + (LONG)((long long)(v + 32768) * (rangeMax - rangeMin) / 65535);
 	}
 	LONG Axis(SDL_GamepadAxis a)
 	{
@@ -320,6 +489,11 @@ struct Device : public IDirectInputDevice8A
 			return DIERR_NOTACQUIRED;
 		memset(data, 0, size);
 		PortPumpInput();
+		if (kind == JOYSTICK)
+		{
+			FakePadStep();
+			Rebind(this);
+		}
 		if (kind == KEYBOARD)
 		{
 			int n = 0;
@@ -380,6 +554,41 @@ struct Device : public IDirectInputDevice8A
 				m->rgbButtons[4] = (b & SDL_BUTTON_X2MASK) ? 0x80 : 0;
 			}
 		}
+		else if (joy && size >= sizeof(DIJOYSTATE))
+		{
+			// A flight stick, laid out for the fields the game reads (PCController.cpp): the stick's X and Y as the
+			// right stick (Z and Rz: look and steer), the twist (axis 3) as the left stick's X (X: strafe), the hat as
+			// the POV. The throttle (axis 2) is not mapped: many rest at one end, which would read as a held stick.
+			DIJOYSTATE2 *j = (DIJOYSTATE2 *)data;
+			LONG centre = rangeMin + (rangeMax - rangeMin) / 2;
+			j->lX = RawAxis(3);
+			j->lY = centre;
+			j->lZ = RawAxis(0);
+			j->lRz = RawAxis(1);
+			j->lRx = j->lRy = centre;
+			for (int i = 0; i < 4; i++)
+				j->rgdwPOV[i] = 0xFFFFFFFF;
+			if (SDL_GetNumJoystickHats(joy) > 0)
+			{
+				Uint8 h = SDL_GetJoystickHat(joy, 0);
+				int dx = ((h & SDL_HAT_RIGHT) ? 1 : 0) - ((h & SDL_HAT_LEFT) ? 1 : 0);
+				int dy = ((h & SDL_HAT_DOWN) ? 1 : 0) - ((h & SDL_HAT_UP) ? 1 : 0);
+				static const DWORD pov[3][3] = { { 31500, 0, 4500 }, { 27000, 0xFFFFFFFF, 9000 }, { 22500, 18000, 13500 } };
+				j->rgdwPOV[0] = pov[dy + 1][dx + 1];
+			}
+			int buttons = SDL_min(SDL_GetNumJoystickButtons(joy), 32);
+			for (int i = 0; i < buttons; i++)
+				j->rgbButtons[i] = SDL_GetJoystickButton(joy, i) ? 0x80 : 0;
+		}
+		else if (kind == JOYSTICK && !pad && size >= sizeof(DIJOYSTATE))
+		{
+			// A slot with no controller (unplugged, or the empty slot): an idle pad, sticks centred and the hat released.
+			DIJOYSTATE2 *j = (DIJOYSTATE2 *)data;
+			LONG centre = rangeMin + (rangeMax - rangeMin) / 2;
+			j->lX = j->lY = j->lZ = j->lRx = j->lRy = j->lRz = centre;
+			for (int i = 0; i < 4; i++)
+				j->rgdwPOV[i] = 0xFFFFFFFF;
+		}
 		else if (pad && size >= sizeof(DIJOYSTATE))
 		{
 			DIJOYSTATE2 *j = (DIJOYSTATE2 *)data;
@@ -401,6 +610,21 @@ struct Device : public IDirectInputDevice8A
 			}
 			for (int i = 0; i < 16 && i < SDL_GAMEPAD_BUTTON_DPAD_UP; i++)
 				j->rgbButtons[i] = SDL_GetGamepadButton(pad, (SDL_GamepadButton)i) ? 0x80 : 0;
+			// Slots 16 and 17 were not emitted by the SDL adapter. Keep existing
+			// gamepad button numbers intact and expose actual trigger pressure there.
+			// Hysteresis prevents a noisy trigger from repeatedly pressing at rest.
+			if (BindableGamepadTriggers() && SDL_GamepadConnected(pad))
+			{
+				const SDL_GamepadAxis axes[] = { SDL_GAMEPAD_AXIS_LEFT_TRIGGER, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER };
+				for (int i = 0; i < 2; i++)
+				{
+					int value = SDL_GetGamepadAxis(pad, axes[i]); // SDL gamepad triggers: 0..32767
+					triggerDown[i] = triggerDown[i] ? value > 12288 : value >= 16384;
+					j->rgbButtons[16 + i] = triggerDown[i] ? 0x80 : 0;
+				}
+			}
+			else
+				triggerDown[0] = triggerDown[1] = false;
 		}
 		return DI_OK;
 	}
@@ -446,6 +670,58 @@ struct Device : public IDirectInputDevice8A
 };
 
 // Device instance GUIDs for controllers carry the SDL joystick id.
+// Hotplug in ordinary CE play: the game builds its pad list once, when DirectInput starts, so a slot whose controller
+// has gone re-binds to the first connected controller no other slot holds (a gamepad first, then a flight stick), at
+// most twice a second; with nothing attached at startup the game is offered one empty slot (kPlaceholder) that binds
+// the same way. A slot never changes kind of slot for the game; an unbound slot reads as an idle pad.
+const SDL_JoystickID kPlaceholder = 0xffff;
+
+bool Claimed(SDL_JoystickID id)
+{
+	for (Device *d : gPadSlots)
+		if (d && (d->pad || d->joy) && d->joystickId == id)
+			return true;
+	return false;
+}
+
+void Rebind(Device *d)
+{
+	if (!BindableGamepadTriggers())
+		return;
+	if ((d->pad && SDL_GamepadConnected(d->pad)) || (d->joy && SDL_JoystickConnected(d->joy)))
+		return;
+	static Uint64 lastTry;
+	Uint64 now = SDL_GetTicks();
+	if (lastTry && now - lastTry < 500)
+		return;
+	lastTry = now;
+	if (d->pad)
+		SDL_CloseGamepad(d->pad);
+	if (d->joy)
+		SDL_CloseJoystick(d->joy);
+	d->pad = NULL;
+	d->joy = NULL;
+	d->triggerDown[0] = d->triggerDown[1] = false;
+	int count = 0;
+	SDL_JoystickID *ids = SDL_GetJoysticks(&count);
+	for (int pass = 0; pass < 2 && ids && !d->pad && !d->joy; pass++)
+		for (int i = 0; i < count && !d->pad && !d->joy; i++)
+			if (SDL_IsGamepad(ids[i]) == (pass == 0) && !Claimed(ids[i]))
+			{
+				if (pass == 0)
+					d->pad = SDL_OpenGamepad(ids[i]);
+				else
+					d->joy = SDL_OpenJoystick(ids[i]);
+				if (d->pad || d->joy)
+				{
+					d->joystickId = ids[i];
+					fprintf(stderr, PORT_LOG_PREFIX "input: controller connected to a game pad slot: %s\n",
+							d->pad ? SDL_GetGamepadName(d->pad) : SDL_GetJoystickName(d->joy));
+				}
+			}
+	SDL_free(ids);
+}
+
 GUID PadGuid(SDL_JoystickID id)
 {
 	GUID g = GUID_Joystick;
@@ -482,13 +758,24 @@ struct Input : public IDirectInput8A
 		{
 			SDL_JoystickID id = (SDL_JoystickID)(guid.Data4[7] | (guid.Data4[6] << 8));
 			Device *d = Make<Device>(JOYSTICK, id);
-			d->pad = SDL_OpenGamepad(id);
-			if (!d->pad)
+			if (id == kPlaceholder && BindableGamepadTriggers())
+				d->joystickId = 0;	// unbound until a controller connects (Rebind)
+			else if (SDL_IsGamepad(id))
+				d->pad = SDL_OpenGamepad(id);
+			else if (BindableGamepadTriggers())
+				d->joy = SDL_OpenJoystick(id);
+			if (!d->pad && !d->joy && !(id == kPlaceholder && BindableGamepadTriggers()))
 			{
 				d->Release();
 				*out = NULL;
 				return DIERR_DEVICENOTREG;
 			}
+			for (Device *&slot : gPadSlots)
+				if (!slot)
+				{
+					slot = d;
+					break;
+				}
 			*out = d;
 		}
 		return DI_OK;
@@ -497,9 +784,10 @@ struct Input : public IDirectInput8A
 	{
 		if (devclass != DI8DEVCLASS_GAMECTRL && devclass != DI8DEVCLASS_ALL)
 			return DI_OK;
-		int count = 0;
+		int count = 0, offered = 0;
+		bool stop = false;
 		SDL_JoystickID *ids = SDL_GetGamepads(&count);
-		for (int i = 0; i < count; i++)
+		for (int i = 0; i < count && !stop; i++)
 		{
 			DIDEVICEINSTANCEA d;
 			memset(&d, 0, sizeof(d));
@@ -510,10 +798,42 @@ struct Input : public IDirectInput8A
 			const char *name = SDL_GetGamepadNameForID(ids[i]);
 			snprintf(d.tszInstanceName, sizeof(d.tszInstanceName), "%s", name ? name : "Controller");
 			snprintf(d.tszProductName, sizeof(d.tszProductName), "%s", name ? name : "Controller");
-			if (cb(&d, ctx) == DIENUM_STOP)
-				break;
+			stop = cb(&d, ctx) == DIENUM_STOP;
+			offered++;
 		}
 		SDL_free(ids);
+		// Ordinary CE play also offers joysticks SDL does not know as gamepads (flight sticks), after the gamepads.
+		ids = BindableGamepadTriggers() ? SDL_GetJoysticks(&count) : NULL;
+		for (int i = 0; ids && i < count && !stop; i++)
+		{
+			if (SDL_IsGamepad(ids[i]))
+				continue;
+			DIDEVICEINSTANCEA d;
+			memset(&d, 0, sizeof(d));
+			d.dwSize = sizeof(d);
+			d.guidInstance = PadGuid(ids[i]);
+			d.guidProduct = d.guidInstance;
+			d.dwDevType = DI8DEVTYPE_JOYSTICK;
+			const char *name = SDL_GetJoystickNameForID(ids[i]);
+			snprintf(d.tszInstanceName, sizeof(d.tszInstanceName), "%s", name ? name : "Joystick");
+			snprintf(d.tszProductName, sizeof(d.tszProductName), "%s", name ? name : "Joystick");
+			stop = cb(&d, ctx) == DIENUM_STOP;
+			offered++;
+		}
+		SDL_free(ids);
+		// Ordinary CE play with nothing attached: one empty slot, so a controller plugged in later still works.
+		if (!offered && BindableGamepadTriggers())
+		{
+			DIDEVICEINSTANCEA d;
+			memset(&d, 0, sizeof(d));
+			d.dwSize = sizeof(d);
+			d.guidInstance = PadGuid(kPlaceholder);
+			d.guidProduct = d.guidInstance;
+			d.dwDevType = DI8DEVTYPE_GAMEPAD;
+			snprintf(d.tszInstanceName, sizeof(d.tszInstanceName), "Controller (connect any time)");
+			snprintf(d.tszProductName, sizeof(d.tszProductName), "Controller (connect any time)");
+			cb(&d, ctx);
+		}
 		return DI_OK;
 	}
 	HRESULT STDMETHODCALLTYPE GetDeviceStatus(REFGUID) override { return DI_OK; }
@@ -531,10 +851,21 @@ struct Input : public IDirectInput8A
 };
 }
 
+// The CE rumble (patch 0105, CPCPlatform::TriggerRumble): one effect of the given motor strengths and length on the
+// controller behind a joystick device this shim made. 1 when SDL took it, 0 otherwise (no such pad, or no rumble).
+extern "C" int PortRumblePad(void *device, unsigned short low, unsigned short high, unsigned ms)
+{
+	Device *d = device ? static_cast<Device *>(static_cast<IDirectInputDevice8A *>(device)) : NULL;
+	if (!d || d->kind != JOYSTICK || !d->pad)
+		return 0;
+	return SDL_RumbleGamepad(d->pad, low, high, ms) ? 1 : 0;
+}
+
 extern "C" HRESULT WINAPI DirectInput8Create(HINSTANCE, DWORD, REFIID, LPVOID *out, IUnknown *)
 {
 	if (!SDL_WasInit(SDL_INIT_GAMEPAD) && !SDL_InitSubSystem(SDL_INIT_GAMEPAD))
 		return DIERR_NOTINITIALIZED;
+	FakePadAttach();
 	static bool watching;
 	if (!watching)
 	{

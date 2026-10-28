@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
-// Minimal authored game boundary used to execute the production palette and patched message handler.
+// Minimal authored game boundary used to execute the production console (port/game/ce_palette.cpp) and the patched
+// message handler. The console's game actions (port/game/ce_console.h) are recorded by the driver's fakes.
 #ifndef CE_PALETTE_FAKE_H
 #define CE_PALETTE_FAKE_H
 #include <cstdint>
@@ -18,6 +19,11 @@ using HWND = void *; using BOOL = int;
 #define DIK_RETURN 0x1c
 #define DIK_NUMPADENTER 0x9c
 #define DIK_BACK 0x0e
+#define DIK_TAB 0x0f
+#define DIK_UP 0xc8
+#define DIK_DOWN 0xd0
+#define DIK_PRIOR 0xc9
+#define DIK_NEXT 0xd1
 #define WM_COMMAND 0x0111
 #define WM_KEYDOWN 0x0100
 #define WM_KEYUP 0x0101
@@ -75,7 +81,7 @@ struct FakePlayer {};
 struct FakeCamera {};
 struct FakePause { BOOL mActive = FALSE; };
 struct FakeGame {
-    int state = 3, players = 1, calls = 0; bool multiplayer = false, paused = false, freeCamera = false;
+    int state = 3, players = 1; bool multiplayer = false;
     bool playerPresent = true, controllerPresent = true, cameraPresent = true, pausePresent = true;
     FakePlayer player; FakeController controller; FakeCamera camera; FakePause pause;
     int GetGameState() { return state; }
@@ -85,39 +91,37 @@ struct FakeGame {
     FakeController *GetController(int) { return controllerPresent ? &controller : nullptr; }
     FakeCamera *GetCurrentCamera(int) { return cameraPresent ? &camera : nullptr; }
     FakePause *GetPauseMenu() { return pausePresent ? &pause : nullptr; }
-    bool IsFreeCameraOn(int) { return freeCamera; }
-    bool IsPaused() { return paused; }
-    void ReceiveButtonAction(FakeController *, int button, float val) { if (button == 1 && val == 1.f) { ++calls; freeCamera = !freeCamera; } }
 };
 #define GAME_STATE_PLAYING 3
 extern FakeGame GAME;
-struct FakeSave { bool cheat = false; bool IsCheatActive(int n) { return n == 4 && cheat; } };
-struct FakeFrontend { bool running = false; FakeSave mFEPSaveGame; bool IsRunning() { return running; } };
+struct FakeFrontend { bool running = false; bool IsRunning() { return running; } };
 extern FakeFrontend FRONTEND;
 struct FakeInterface { bool menu = false, mShowJoypad = false; bool IsMenuUp() { return menu; } };
 extern FakeInterface GAMEINTERFACE;
-struct FakeEngine { bool landscape = true; void *GetLandscape() { return landscape ? this : nullptr; } };
-extern FakeEngine ENGINE;
 struct CDXTexture { int width = 64, height = 64; int GetRealWidth() { return width; } int GetRealHeight() { return height; } };
 struct FakeHud { bool present = true; CDXTexture white; CDXTexture *GetWhiteTexture() { return present ? &white : nullptr; } };
 extern FakeHud HUD;
-struct FakeDraw { float x, y, sx, sy; std::wstring text; };
+struct FakeDraw { float x, y, sx, sy; DWORD colour; std::wstring text; };
 extern std::vector<FakeDraw> draws;
 struct CDXBitmapFont {
     int height = 16;
     int GetHeight() { return height; }
-    bool CanDisplay(WCHAR c) { return c != L'$' && c != L'~'; }
+    // As the game's font: no cell for "$@[\]^_{|}~" (src/Font.cpp FONT_UNMAPPED_CHARACTERS) or anything above 0xff.
+    bool CanDisplay(WCHAR c) { return c >= 32 && c <= 0xff && !std::wcschr(L"$@[\\]^_{|}~", c); }
     void GetTextExtent(WCHAR *s, SIZE *size) { size->cx = int(std::wcslen(s)) * 8; size->cy = 16; }
-    void DrawTextWithShadow(float x, float y, DWORD, WCHAR *s, int, float, float sx, float sy) { draws.push_back({x, y, sx, sy, s}); }
+    void DrawTextWithShadow(float x, float y, DWORD colour, WCHAR *s, int, float, float sx, float sy) {
+        for (WCHAR *c = s; *c; ++c) if (!CanDisplay(*c)) { std::fprintf(stderr, "FAIL: undrawable character %x\n", unsigned(*c)); std::exit(2); }
+        draws.push_back({x, y, sx, sy, colour, s});
+    }
 };
 struct FakePlatform { int w = 640, h = 480; bool present = true; CDXBitmapFont font; CDXBitmapFont *Font(int) { return present ? &font : nullptr; } int GetWindowWidth() { return w; } int GetWindowHeight() { return h; } };
 extern FakePlatform PLATFORM;
 struct FakeRenderInfo { void SetFogEnabled(bool) {} void SetLightingEnabled(bool) {} void SRS(int, int) {} void Apply() {} };
 extern FakeRenderInfo RENDERINFO;
-struct FakeRect { float x = 0, y = 0, w = 0, h = 0; };
-extern FakeRect rect;
+struct FakeRect { float x = 0, y = 0, w = 0, h = 0; DWORD colour = 0; };
+extern std::vector<FakeRect> sprites;
 struct CSPRITERENDERER {
-    static void DrawColouredSprite(float x, float y, float, CDXTexture *t, DWORD, float sx, float sy) { rect = {x, y, sx * t->width, sy * t->height}; }
+    static void DrawColouredSprite(float x, float y, float, CDXTexture *t, DWORD colour, float sx, float sy) { sprites.push_back({x, y, sx * t->width, sy * t->height, colour}); }
 };
 struct FakeConsole { std::vector<std::pair<unsigned, int>> binds; void HandleBind(unsigned key, int event) { binds.emplace_back(key, event); } };
 extern FakeConsole CONSOLE;

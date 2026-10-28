@@ -150,17 +150,27 @@ void PortSessionAudioInventory()
 	SDL_free(devices);
 }
 
+// Whether the player chose the user folder. The launcher always passes BEA_USER_DIR to the game, so it also says
+// whether the player had set it (BEA_CE_CUSTOM_USER_DIR); a game started directly has only BEA_USER_DIR.
+static int CustomUserFolder(const char *user, const char *custom)
+{
+	if (custom && (!strcmp(custom, "0") || !strcmp(custom, "1")))
+		return custom[0] - '0';
+	return user && *user ? 1 : 0;
+}
+
 // The CE settings (ce.ini) and environment switches that change how the game runs, as numbers only.
 void PortSessionSettingsInventory()
 {
 	if (!PortSessionEnabled() || !CE_SettingGet)
 		return;
 	// -1: the variable is not set (the default applies); otherwise its number.
-	const char *wide = getenv("BEA_PORT_WIDESCREEN"), *hud = getenv("BEA_PORT_HUD_SCALE"), *user = getenv("BEA_USER_DIR");
+	const char *wide = getenv("BEA_PORT_WIDESCREEN"), *hud = getenv("BEA_PORT_HUD_SCALE"), *user = getenv("BEA_USER_DIR"),
+	           *custom = getenv("BEA_CE_CUSTOM_USER_DIR");
 	PortSessionLog(PORT_SESSION_GAME, false,
 		"settings windowed=%d wide_mode=%dx%d record_sessions=%d god_mode=%d widescreen_env=%d hud_scale_env=%d "
 		"custom_user_folder=%d",
 		CE_SettingGet("windowed", -1), CE_SettingGet("wide_mode_w", 0), CE_SettingGet("wide_mode_h", 0),
 		CE_SettingGet("record_sessions", 0), CE_SettingGet("god_mode", 0), wide && *wide ? atoi(wide) : -1,
-		hud && *hud ? atoi(hud) : -1, user && *user ? 1 : 0);
+		hud && *hud ? atoi(hud) : -1, CustomUserFolder(user, custom));
 }

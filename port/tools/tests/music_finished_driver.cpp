@@ -14,6 +14,7 @@ void PortSessionCount(PortSessionCounter) {}
 void PortSessionAudioError(const char *) {}
 void PortSessionSummary() {}
 void PortSessionPulse(unsigned) {}
+bool PortCeMusicTrackEnded() { return false; }	// patch 0103's CE playlist: no player's track plays in this harness
 class CPCMusic { public: BOOL DeviceGetTrackFinished(); };
 #include POLL_SOURCE
 

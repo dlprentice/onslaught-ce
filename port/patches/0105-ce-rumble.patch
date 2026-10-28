@@ -1,0 +1,19 @@
+--- a/PCPlatform.cpp
++++ b/PCPlatform.cpp
+@@ -364,8 +364,16 @@
+ // one (/OPT:ICF).
+ 
++#ifdef CE_VERSION
++#include "../game/ce_rumble.h"	// patch 0105: the CE gamepad rumble (port/game/ce_rumble.cpp)
++#endif
+ // FUNCTION: 0x00452b60
+ void CPCPlatform::TriggerRumble(int pad)
+ {
++#ifdef CE_VERSION
++	// Patch 0105: Stuart's PC shell played a 0.25 s full-strength effect on the player's pad here; CE plays it through
++	// SDL where ce_rumble.cpp allows (ce.ini rumble, default on; never in faithful play). Retail's body is empty.
++	PortCeTriggerRumble((void *const *)LT.pJoystick, LT.mJoypads, pad);
++#endif
+ }
+ 
+ #endif

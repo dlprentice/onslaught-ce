@@ -1,0 +1,38 @@
+--- a/PCMusic.cpp
++++ b/PCMusic.cpp
+@@ -14,6 +14,10 @@
+ void	StopMusicStream();							// 005285b0
+ void	SetMusicStreamVolume(float volume);			// 005285e0
+ bool GetMusicStreamFinished(); // port-only atomic completion poll
++#ifdef CE_VERSION
++char	*PortCeMusicPlay(char *gameFile, int selection);	// patch 0103: the CE music playlist (port/game/ce_music.cpp)
++bool	PortCeMusicTrackEnded();
++#endif
+ 
+ // FUNCTION: 0x005152c0 init:MUSIC
+ CPCMusic	MUSIC;										// 00889a48
+@@ -31,6 +35,11 @@
+ 
+ void CPCMusic::DevicePlay(char *filename)	// FUNCTION: 0x00515350
+ {
++#ifdef CE_VERSION
++	// Patch 0103: a level's cue (mSelection, set just before by CMusic::PlaySelection) streams one of the player's own
++	// tracks when the CE playlist has any; every other cue, and every fenced run, streams the game's file unchanged.
++	filename = PortCeMusicPlay(filename, mSelection);
++#endif
+ 	PlayMusicStream(filename);
+ }
+ 
+@@ -62,6 +71,12 @@
+ BOOL CPCMusic::DeviceGetTrackFinished()	// FUNCTION: 0x00515390
+ {
+ 	PumpMusicStream();		// Port (patch 0035): under the virtual clocks, the stream's wakes are handled before the poll
++#ifdef CE_VERSION
++	// Patch 0103: the end of one of the player's tracks is the CE playlist's to handle (the next track, or silence in
++	// single mode); the game's own music logic, and its rand() draw for the next cue, never sees it.
++	if (GetMusicStreamFinished() && PortCeMusicTrackEnded())
++		return FALSE;
++#endif
+ 	return GetMusicStreamFinished();
+ }
+ 

@@ -229,6 +229,109 @@ extern "C" int CE_SettingGetBool(const char *key, int def)
 	return value;
 }
 
+// Whether ce.ini sets key to exactly value (ASCII letters compared ignoring case, surrounding blanks and a final CR
+// ignored), read as CE_SettingGetBool reads: by length, refusing linked or odd files and ambiguous duplicates. 0 when the
+// key is missing, set to something else, set twice, or the file cannot be read whole.
+extern "C" int CE_SettingIs(const char *key, const char *value)
+{
+	if (!key || !*key || !value) return 0;
+	CeSettingsDir dir;
+	FILE *f = ce_ini_open_regular(&dir);
+	if (!f) return 0;
+	const size_t limit = 1u << 20;
+	char *text = (char *)malloc(limit + 1);
+	if (!text) { fclose(f); ce_settings_dir_close(&dir); return 0; }
+	size_t len = 0, got;
+	while (len < limit + 1 && (got = fread(text + len, 1, limit + 1 - len, f)) > 0) len += got;
+	bool bad = ferror(f) || !feof(f) || len > limit;
+	if (fclose(f) != 0) bad = true;
+	ce_settings_dir_close(&dir);
+	if (bad) { free(text); return 0; }
+	size_t size = strlen(key), want = strlen(value);
+	int match = 0;
+	bool seen = false;
+	for (size_t at = 0; at < len;)
+	{
+		const char *line = text + at;
+		const char *nl = (const char *)memchr(line, '\n', len - at);
+		size_t n = nl ? (size_t)(nl - line) : len - at;
+		at += n + (nl ? 1 : 0);
+		if (n <= size || memcmp(line, key, size) || line[size] != '=') continue;
+		if (seen) { match = 0; break; }
+		seen = true;
+		size_t pos = size + 1, end = n;
+		if (end > pos && line[end - 1] == '\r') --end;
+		while (pos < end && (line[pos] == ' ' || line[pos] == '\t')) ++pos;
+		while (end > pos && (line[end - 1] == ' ' || line[end - 1] == '\t')) --end;
+		match = end - pos == want;
+		for (size_t i = 0; match && i < want; ++i)
+		{
+			char a = line[pos + i], b = value[i];
+			if (a >= 'A' && a <= 'Z') a = (char)(a + 32);
+			if (b >= 'A' && b <= 'Z') b = (char)(b + 32);
+			match = a == b;
+		}
+	}
+	free(text);
+	return match;
+}
+
+// The text ce.ini sets key to (surrounding blanks and a final CR removed), read as CE_SettingIs reads: by length,
+// refusing linked or odd files and ambiguous duplicates. 1 with out holding the text; 0 (out empty) when the key is
+// missing, set twice, empty, longer than n - 1 bytes, holds a control byte, or the file cannot be read whole.
+extern "C" int CE_SettingGetText(const char *key, char *out, int n)
+{
+	if (!out || n <= 0) return 0;
+	out[0] = 0;
+	if (!key || !*key) return 0;
+	CeSettingsDir dir;
+	FILE *f = ce_ini_open_regular(&dir);
+	if (!f) return 0;
+	const size_t limit = 1u << 20;
+	char *text = (char *)malloc(limit + 1);
+	if (!text) { fclose(f); ce_settings_dir_close(&dir); return 0; }
+	size_t len = 0, got;
+	while (len < limit + 1 && (got = fread(text + len, 1, limit + 1 - len, f)) > 0) len += got;
+	bool bad = ferror(f) || !feof(f) || len > limit;
+	if (fclose(f) != 0) bad = true;
+	ce_settings_dir_close(&dir);
+	if (bad) { free(text); return 0; }
+	size_t size = strlen(key);
+	const char *found = NULL;
+	size_t foundLen = 0;
+	bool seen = false, ambiguous = false;
+	for (size_t at = 0; at < len;)
+	{
+		const char *line = text + at;
+		const char *nl = (const char *)memchr(line, '\n', len - at);
+		size_t n2 = nl ? (size_t)(nl - line) : len - at;
+		at += n2 + (nl ? 1 : 0);
+		if (n2 <= size || memcmp(line, key, size) || line[size] != '=') continue;
+		if (seen) { ambiguous = true; break; }
+		seen = true;
+		size_t pos = size + 1, end = n2;
+		if (end > pos && line[end - 1] == '\r') --end;
+		while (pos < end && (line[pos] == ' ' || line[pos] == '\t')) ++pos;
+		while (end > pos && (line[end - 1] == ' ' || line[end - 1] == '\t')) --end;
+		found = line + pos;
+		foundLen = end - pos;
+	}
+	int ok = 0;
+	if (found && !ambiguous && foundLen > 0 && foundLen < (size_t)n)
+	{
+		ok = 1;
+		for (size_t i = 0; i < foundLen; ++i)
+			if ((unsigned char)found[i] < 0x20 || found[i] == 0x7f) ok = 0;
+		if (ok)
+		{
+			memcpy(out, found, foundLen);
+			out[foundLen] = 0;
+		}
+	}
+	free(text);
+	return ok;
+}
+
 // Sets key=value in ce.ini (replacing its line, or adding one) through ce_ini_write's write-and-rename, so a failed write
 // leaves the old file whole; 1 when the file was written, 0 (and a log line) when it was not.
 extern "C" int CE_SettingSet(const char *key, int value)

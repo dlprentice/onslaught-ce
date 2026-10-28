@@ -120,9 +120,9 @@ class Inventory(unittest.TestCase):
         if built.returncode:
             raise RuntimeError(built.stdout + built.stderr)
 
-    def run_driver(self, *args, user="JohnDoe"):
+    def run_driver(self, *args, user="JohnDoe", extra=None):
         env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "USER": user, "BEA_USER_DIR": "/x",
-               "BEA_PORT_HUD_SCALE": "0"}
+               "BEA_PORT_HUD_SCALE": "0", **(extra or {})}
         result = subprocess.run([str(self.exe), *args], capture_output=True, text=True, env=env, timeout=10)
         self.assertEqual(0, result.returncode, result.stderr)
         return result.stdout.splitlines()
@@ -148,6 +148,14 @@ class Inventory(unittest.TestCase):
                       "hud_scale_env=0 custom_user_folder=1", text)
         self.assertNotIn("JohnDoe", text)
         self.assertNotIn("johndoe", text.lower().replace("<user>", ""))
+
+    def test_custom_user_folder_is_the_players_choice(self):
+        # Through the launcher BEA_USER_DIR is always set; BEA_CE_CUSTOM_USER_DIR says whether the player set it.
+        for flag, want in (("0", 0), ("1", 1), ("junk", 1)):
+            text = "\n".join(self.run_driver(extra={"BEA_CE_CUSTOM_USER_DIR": flag}))
+            self.assertIn(f"custom_user_folder={want}", text, flag)
+        text = "\n".join(self.run_driver(extra={"BEA_USER_DIR": "", "BEA_CE_CUSTOM_USER_DIR": "x"}))
+        self.assertIn("custom_user_folder=0", text)
 
     def test_off_session_writes_nothing(self):
         self.assertEqual([], self.run_driver("off"))

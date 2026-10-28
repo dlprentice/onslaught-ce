@@ -29,6 +29,7 @@ echo "out: args $*"
 echo "onslaught-ce: adapter Stand-in GPU (vendor 8086, device 1234, driver 1.2.3.4)" >&2
 echo "env: rec=${BEA_PORT_RECORD:-} clock=${BEA_PORT_CLOCK:-} build=${BEA_CE_BUILD:-} monitor=${BEA_AUDIO_MONITOR:-}"
 echo "folder_logged=${BEA_CE_GAME_FOLDER_LOGGED:-}"
+echo "custom_user_dir=${BEA_CE_CUSTOM_USER_DIR:-unset} user_dir_set=${BEA_USER_DIR:+1}"
 # The Linux entry point receives the launcher's marker; a direct launch still reports both paths.
 if [ "${BEA_CE_GAME_FOLDER_LOGGED:-}" = 1 ]; then
   echo "onslaught-ce: writable folder $BEA_USER_DIR" >&2
@@ -90,6 +91,15 @@ class Launcher(unittest.TestCase):
 
     def log(self, name="onslaught-ce.log"):
         return (self.user / name).read_text()
+
+    def test_game_learns_whether_the_player_chose_the_user_folder(self):
+        # The launcher always gives the game BEA_USER_DIR; BEA_CE_CUSTOM_USER_DIR says whether the player set it,
+        # and a launcher restarted by an update keeps the first launcher's answer.
+        for env, want in (({}, "1"), ({"BEA_USER_DIR": ""}, "0"),
+                          ({"BEA_CE_CUSTOM_USER_DIR": "0"}, "0"), ({"BEA_CE_CUSTOM_USER_DIR": "junk"}, "1")):
+            r = self.run_launcher("--", "-level", "100", **env)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn(f"custom_user_dir={want} user_dir_set=1", r.stdout + r.stderr, env)
 
     def test_log_header_and_tee(self):
         r = self.run_launcher("--", "-level", "100")

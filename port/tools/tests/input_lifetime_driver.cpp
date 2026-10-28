@@ -64,7 +64,7 @@ static int SDLCALL FocusLossProducer(void *) {
 }
 extern "C" { char PortWindowShellBytes[0x331e4]; unsigned PortPresentCount(void) { return 0; }
 int PortMapMouse(float *, float *) { return 0; } }
-static bool recording, replay, tapeCursor;
+static bool recording, replay, tapeCursor, ceLayer = true;
 struct RecordedKey { bool down; unsigned vk, scan; };
 static std::vector<RecordedKey> recordedKeys;
 static unsigned recordedWindowMouse, recordedMotion, recordedWheel, recordedButtons;
@@ -87,7 +87,7 @@ bool PortReplayMouse(long *dx, long *dy, long *dz, int *buttons) {
 }
 int PortWideModes() { return 0; }
 int PortWideActive() { return 0; }
-bool PortCeLayer() { return true; }
+bool PortCeLayer() { return ceLayer; }
 void PortVideoInit() {}
 bool PortDevLog() { return false; }
 
@@ -112,6 +112,8 @@ struct PCLTShell {
     DIJOYSTATE2 *mJoyState[MAX_JOYPADS], *mOldJoyState[MAX_JOYPADS];
     PCLTShell() { for (int i = 0; i < MAX_JOYPADS; ++i) { mJoyState[i] = &states[i]; mOldJoyState[i] = &oldStates[i]; } }
     DIJOYSTATE2 *JoyState(int pad) { return mJoyState[pad]; }
+    DIJOYSTATE2 *OldJoyState(int pad) { return mOldJoyState[pad]; }
+    JOY_BUTTON_ACCESSORS
     static BOOL CALLBACK EnumJoysticksCallback(const DIDEVICEINSTANCE *, VOID *);
     static BOOL CALLBACK EnumAxesCallback(const DIDEVICEOBJECTINSTANCE *, VOID *);
     HRESULT InitDirectInput(HWND);
@@ -185,11 +187,42 @@ int main(int argc, char **argv) {
     static_cast<IDirectInput8A *>(factory)->Release();
     const char *test = argv[1];
     if (!strncmp(test, "pad-", 4)) {
+        if (!strcmp(test, "pad-trigger-disabled")) ceLayer = false;
+        if (!strcmp(test, "pad-trigger-tape")) setenv("BEA_PORT_TAPE", "fixture", 1);
+        if (!strcmp(test, "pad-trigger-record")) setenv("BEA_PORT_RECORD", "fixture", 1);
+        if (!strcmp(test, "pad-trigger-clock")) setenv("BEA_PORT_CLOCK", "fixture", 1);
+        if (!strcmp(test, "pad-trigger-probes")) setenv("BEA_PORT_PROBES", "fixture", 1);
+        // The UI override may be forced during a tape; it must not force live controller actions.
+        if (strncmp(test, "pad-trigger-", 12) == 0) setenv("BEA_PORT_CE_LAYER", "1", 1);
         std::vector<SDL_Joystick *> pads;
         for (int i = 0; i < (!strcmp(test, "pad-limit") ? 5 : 1); ++i) { pads.push_back(VirtualPad()); CHECK(pads.back()); }
+        if (strncmp(test, "pad-trigger-", 12) == 0) {
+            CHECK(SDL_SetJoystickVirtualAxis(pads[0], SDL_GAMEPAD_AXIS_LEFT_TRIGGER, -32768));
+            CHECK(SDL_SetJoystickVirtualAxis(pads[0], SDL_GAMEPAD_AXIS_RIGHT_TRIGGER, -32768));
+            SDL_UpdateJoysticks();
+        }
         CHECK(SUCCEEDED(LT.InitDirectInput(reinterpret_cast<HWND>(1))));
         CHECK(LT.canary == 0x12345678 && LT.mJoypads == (!strcmp(test, "pad-limit") ? 4 : 1));
-        if (!strcmp(test, "pad-acquire") || !strcmp(test, "pad-reacquire")) {
+        if (!strcmp(test, "pad-properties")) {
+            // The game's Controller Options page names each pad by DIPROP_INSTANCENAME, and InitDirectInput sets the
+            // axis range with DIPROP_RANGE. Both are MAKEDIPROP(n) references; a comparison an optimizing compiler can
+            // fold made every property miss (every pad "Not present").
+            DIPROPSTRING name{}; name.diph.dwSize = sizeof(name); name.diph.dwHeaderSize = sizeof(DIPROPHEADER);
+            name.diph.dwHow = DIPH_DEVICE;
+            CHECK(SUCCEEDED(LT.pJoystick[0]->GetProperty(DIPROP_INSTANCENAME, &name.diph)));
+            CHECK(name.wsz[0] == 'I' && name.wsz[1] == 'n');
+            DIPROPRANGE range{}; range.diph.dwSize = sizeof(range); range.diph.dwHeaderSize = sizeof(DIPROPHEADER);
+            range.diph.dwHow = DIPH_DEVICE; range.lMin = -200; range.lMax = 200;
+            CHECK(SUCCEEDED(LT.pJoystick[0]->SetProperty(DIPROP_RANGE, &range.diph)));
+            DIPROPRANGE back{}; back.diph.dwSize = sizeof(back); back.diph.dwHeaderSize = sizeof(DIPROPHEADER);
+            back.diph.dwHow = DIPH_DEVICE;
+            CHECK(SUCCEEDED(LT.pJoystick[0]->GetProperty(DIPROP_RANGE, &back.diph)) && back.lMin == -200 && back.lMax == 200);
+            CHECK(SDL_SetJoystickVirtualAxis(pads[0], SDL_GAMEPAD_AXIS_LEFTX, 32767));
+            SDL_UpdateJoysticks();
+            LT.pJoystick[0]->Acquire();
+            CHECK(SUCCEEDED(LT.UpdateJoystick(0, false)));
+            CHECK(LT.JoyState(0)->lX == 200);
+        } else if (!strcmp(test, "pad-acquire") || !strcmp(test, "pad-reacquire")) {
             CHECK(SDL_SetJoystickVirtualButton(pads[0], SDL_GAMEPAD_BUTTON_SOUTH, true));
             SDL_UpdateJoysticks();
             CHECK(SUCCEEDED(LT.UpdateJoystick(0, true)));
@@ -201,6 +234,54 @@ int main(int argc, char **argv) {
                 CHECK(SUCCEEDED(LT.UpdateJoystick(0, false)));
                 CHECK(SUCCEEDED(LT.UpdateJoystick(0, false)));
                 CHECK(LT.JoyState(0)->rgbButtons[3] == 0x80);
+            }
+        } else if (strncmp(test, "pad-trigger-", 12) == 0) {
+            bool enabled = !strcmp(test, "pad-trigger-edges") || !strcmp(test, "pad-trigger-unplug");
+#if defined(CE_VERSION)
+            enabled = enabled || !strcmp(test, "pad-trigger-build-mode");
+#else
+            CHECK(!enabled); // The focused faithful controls do not request CE-only edge cases.
+#endif
+            CHECK(SUCCEEDED(LT.pJoystick[0]->Acquire()));
+            auto step = [&](int left, int right) {
+                if (!SDL_SetJoystickVirtualAxis(pads[0], SDL_GAMEPAD_AXIS_LEFT_TRIGGER, left) ||
+                    !SDL_SetJoystickVirtualAxis(pads[0], SDL_GAMEPAD_AXIS_RIGHT_TRIGGER, right)) return false;
+                SDL_UpdateJoysticks();
+                return SUCCEEDED(LT.UpdateJoystick(0, true));
+            };
+            CHECK(step(-32768, -32768));
+            CHECK(!LT.JoyButtonOn(0, 16) && !LT.JoyButtonOn(0, 17));
+            DIDEVCAPS caps{}; caps.dwSize = sizeof(caps);
+            CHECK(SUCCEEDED(LT.pJoystick[0]->GetCapabilities(&caps)));
+            CHECK(step(20000, -32768));
+            CHECK(LT.JoyButtonOn(0, 16) == enabled && LT.JoyButtonOnce(0, 16) == enabled);
+            CHECK(!LT.JoyButtonOn(0, 17));
+            CHECK(caps.dwButtons == (enabled ? 18u : 16u));
+            CHECK(step(-5000, 20000));
+            CHECK(LT.JoyButtonOn(0, 16) == enabled && !LT.JoyButtonOnce(0, 16));
+            CHECK(LT.JoyButtonOn(0, 17) == enabled && LT.JoyButtonOnce(0, 17) == enabled);
+            CHECK(step(-20000, -5000));
+            CHECK(!LT.JoyButtonOn(0, 16) && LT.JoyButtonRelease(0, 16) == enabled);
+            CHECK(LT.JoyButtonOn(0, 17) == enabled && !LT.JoyButtonOnce(0, 17));
+            CHECK(step(-5000, -20000));
+            CHECK(!LT.JoyButtonOn(0, 16) && !LT.JoyButtonOn(0, 17));
+            CHECK(LT.JoyButtonRelease(0, 17) == enabled);
+            // A held trigger must not latch after loss of acquisition.
+            CHECK(step(20000, -32768));
+            CHECK(SUCCEEDED(LT.pJoystick[0]->Unacquire()));
+            CHECK(SUCCEEDED(LT.pJoystick[0]->Acquire()));
+            CHECK(step(-5000, -32768));
+            CHECK(!LT.JoyButtonOn(0, 16));
+            if (!strcmp(test, "pad-trigger-unplug")) {
+                CHECK(step(20000, 20000));
+                CHECK(LT.JoyButtonOn(0, 16) && LT.JoyButtonOn(0, 17));
+                CHECK(SDL_DetachVirtualJoystick(virtualIds[0]));
+                SDL_UpdateJoysticks();
+                CHECK(SUCCEEDED(LT.UpdateJoystick(0, true)));
+                CHECK(!LT.JoyButtonOn(0, 16) && !LT.JoyButtonOn(0, 17));
+                CHECK(LT.JoyButtonRelease(0, 16) && LT.JoyButtonRelease(0, 17));
+                CHECK(SUCCEEDED(LT.UpdateJoystick(0, true)));
+                CHECK(!LT.JoyButtonOnce(0, 16) && !LT.JoyButtonOnce(0, 17));
             }
         } else if (!strcmp(test, "pad-axes")) {
             CHECK(SUCCEEDED(LT.pJoystick[0]->Acquire()));

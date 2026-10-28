@@ -34,10 +34,14 @@ FUNCTIONS = {
     "SHUTDOWN_MOUSE": ("Controller.cpp", r"HRESULT ShutdownMouse\(\)"),
     "MOUSE_MESSAGE": ("mouse.cpp", r"LRESULT __stdcall\s+HandleMouseMessage\([^\n]*"),
 }
-CASES = ("pad-acquire", "pad-reacquire", "pad-axes", "pad-limit", "mouse-exclusive", "relative-focus", "wheel-stale", "wheel-focus",
+CASES = ("pad-acquire", "pad-reacquire", "pad-properties", "pad-axes", "pad-limit", "mouse-exclusive", "relative-focus", "wheel-stale", "wheel-focus",
          "wheel-race", "wheel-menu", "wheel-before-acquire",
          "wheel-once", "wheel-focus-pending", "wheel-window", "release-overflow", "release-repress", "record-release-overflow",
-         "record-mouse", "replay-key", "replay-mouse", "pause-cursor", "pause-tape", "pause-no-focus")
+         "record-mouse", "replay-key", "replay-mouse", "pause-cursor", "pause-tape", "pause-no-focus",
+         "pad-trigger-edges", "pad-trigger-build-mode", "pad-trigger-unplug", "pad-trigger-disabled", "pad-trigger-tape", "pad-trigger-record",
+         "pad-trigger-clock", "pad-trigger-probes")
+FAITHFUL_CASES = ("pad-trigger-build-mode", "pad-trigger-disabled", "pad-trigger-tape", "pad-trigger-record",
+                  "pad-trigger-clock", "pad-trigger-probes")
 
 
 def sha(data):
@@ -55,7 +59,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source-root", type=Path, default=ROOT)
     parser.add_argument("--case", choices=CASES, action="append")
+    parser.add_argument("--faithful", action="store_true", help="compile without CE_VERSION for focused faithful controls")
+    parser.add_argument("--optimize", action="store_true", help="compile with -O2, as the game is (the DIPROP folding showed only there)")
     args = parser.parse_args()
+    if args.faithful and (not args.case or any(case not in FAITHFUL_CASES for case in args.case)):
+        parser.error("--faithful requires only explicit trigger-fence cases")
     parent = ROOT / "local-data/port/input-lifetime-tests"
     parent.mkdir(parents=True, exist_ok=True)
     out = Path(tempfile.mkdtemp(prefix="run-", dir=parent))
@@ -84,6 +92,14 @@ def main():
         receipt["functions_sha256"] = {name: sha(body.encode()) for name, body in bodies.items()}
         calls = out / "callers.inc"
         calls.write_text("\n".join(bodies.values()))
+        header = (args.source_root / "src/ltshell.h").read_text(encoding="latin-1")
+        accessors = []
+        for name in ("JoyButtonOnce", "JoyButtonOn", "JoyButtonRelease"):
+            found = re.findall(r"\bBOOL\s+" + name + r"\([^)]*\)\s*\{[^}]*\}", header, re.DOTALL)
+            if len(found) != 1:
+                raise RuntimeError(f"expected one inline input accessor: {name}")
+            accessors.append(found[0])
+        receipt["input_accessors_sha256"] = sha("\n".join(accessors).encode())
         shims = {}
         for name in ("window.cpp", "dinput.cpp", "portlog.cpp", "inventory.cpp"):
             data = (args.source_root / "port/platform/common" / name).read_bytes()
@@ -91,6 +107,7 @@ def main():
             shims[name] = sha(data)
         receipt["shims_sha256"] = shims
         driver = (ROOT / "port/tools/tests/input_lifetime_driver.cpp").read_text()
+        driver = driver.replace("JOY_BUTTON_ACCESSORS", "\n".join(accessors))
         for name, path in {"WINDOW_CPP": out / "window.cpp", "DINPUT_CPP": out / "dinput.cpp",
                            "PORTLOG_CPP": out / "portlog.cpp", "INVENTORY_CPP": out / "inventory.cpp", "CALLERS_INC": calls}.items():
             driver = driver.replace(name, str(path))
@@ -100,7 +117,8 @@ def main():
         binary = out / "driver"
         command = [str(deps.DATA / "llvm/bin/clang++"), "--target=i686-pc-linux-gnu", "-m32", "-std=c++17",
                    "-ffunction-sections", "-fdata-sections", "-Wl,--gc-sections", "-fshort-wchar",
-                   "-fms-extensions", "-fno-autolink", "-w", "-O0", '-DCE_VERSION="input-test"',
+                   "-fms-extensions", "-fno-autolink", "-w", "-O2" if args.optimize else "-O0",
+                   *([] if args.faithful else ['-DCE_VERSION="input-test"']),
                    f"-I{deps.PORT / 'include/linux'}", f"-I{deps.DATA / 'dxvk-native/usr/include/dxvk'}",
                    f"-I{deps.PREFIX / 'include'}", f"-I{args.source_root / 'port/platform/common'}",
                    str(cpp), f"-L{deps.PREFIX / 'lib'}", "-lSDL3", f"-Wl,-rpath,{deps.PREFIX / 'lib'}", "-o", str(binary)]

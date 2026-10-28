@@ -484,14 +484,16 @@ struct SCeCheat
 };
 
 static const SCeCheat	kCheats[] = {
-	{L"Unlock all levels: ", 1, L"Opens every level in the level select.", L"Original code: TURKEY"},
-	{L"Unlock all goodies: ", 0, L"Opens every goodie on the Goodies page.", L"Original code: MALLOY"},
-	{L"Goodie hints: ", 5, L"Shows available unlock hints. Goodies cannot be opened, even if Unlock all goodies is on.",
-	 L"Original code: lat\u00eate"},
-	{L"God mode option: ", PORT_CE_GOD_CHEAT, L"Adds a God switch to Controller Options; turn it on there for no damage "
-											   L"and endless energy.", L"Original code: Maladim"},
-	{L"Free camera (F key): ", 4, L"F toggles camera. WASD move; arrows look; Esc pauses. The grave key (left of 1, below Esc) opens CE commands.",
-	 L"Original code: Aurore"},
+	{L"Unlock all levels: ", 1, L"Every level shows as open in the level select. Your career's own progress is not changed.",
+	 L"Original code: TURKEY"},
+	{L"Unlock all goodies: ", 0, L"Every goodie on the Goodies page is open. Nothing is saved to your career.",
+	 L"Original code: MALLOY"},
+	{L"Goodie hints: ", 5, L"The Goodies page shows the available unlock hints. Goodies cannot be opened, even if Unlock all "
+						   L"goodies is on.", L"Original code: lat\u00eate"},
+	{L"God mode option: ", PORT_CE_GOD_CHEAT, L"Adds God to Controller Options. God on: no damage, endless energy. Kept in "
+											   L"ce.ini, not in your career.", L"Original code: Maladim"},
+	{L"Free camera (F key): ", 4, L"F: free camera. W/S fly, A/D slide, arrows look. Esc freezes the battle; F returns. You "
+								  L"can still be hit.", L"Original code: Aurore"},
 };
 #define CE_NUM_CHEATS	int(sizeof(kCheats) / sizeof(kCheats[0]))
 
@@ -509,7 +511,7 @@ public:
 		CMenuItem::Render(x, y, selected);
 		if (FEMESSBOX.BeingDisplayed())
 			return;
-		static WCHAR note[] = L"Cheats apply to every career and are off while a session is being recorded.";
+		static WCHAR note[] = L"Cheats apply to all careers and are off when recording. Wins count as usual.";
 		CDXBitmapFont *font = PLATFORM.Font(FONT_SMALL);
 		float line = float(font->GetHeight());
 		// what the highlighted cheat does, in white, then its original code, as trivia, in the note's grey
@@ -665,7 +667,7 @@ public:
 					 "from the game's source code to run natively on today's computers. It plays the game files of your "
 					 "own copy of the game.\n\nAn unofficial fan project, not affiliated with or endorsed by the game's "
 					 "developer, publisher or rights holders. Free software under the GNU General Public License, version 3, with no "
-					 "warranty.\n\nCommands: press the grave key (left of 1, below Esc) during play.\n\nSource code, new versions and problem reports:\n"
+					 "warranty.\n\nConsole: press the grave key (left of 1) in a solo level, then type help.\n\nSource code, new versions and problem reports:\n"
 					 CE_LINKS, CE_VERSION,
 					 *build ? ", build " : "", build);
 			ShowMessage(text);

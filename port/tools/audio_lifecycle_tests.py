@@ -39,7 +39,8 @@ def music_sources(out, fixed):
     for name in names:
         shutil.copyfile(ROOT / "src" / name, out / name)
     for patch in sorted((ROOT / "port/patches").glob("*.patch")):
-        if not fixed and patch.name == "0062-music-finished-poll.patch":
+        # The negative control leaves out 0062, and 0103 (the CE playlist), which is written on 0062's poll.
+        if not fixed and patch.name in ("0062-music-finished-poll.patch", "0103-ce-music-playlist.patch"):
             continue
         sections = [part for part in re.split(r"(?=^--- a/)", patch.read_text(), flags=re.M)
                     if any(part.startswith("--- a/" + name + "\n") for name in names)]

@@ -1,0 +1,77 @@
+--- a/game.cpp
++++ b/game.cpp
+@@ -86,6 +86,7 @@
+ bool PortCeDevStatsOn();	// patch 0102: port/game/ce_palette.cpp, ce_console_game.cpp
+ void PortCeDevStatsOut(const char *fmt, ...);
+ void PortCeDevStatsDraw();
++#include "../game/ce_debrief.h"	// patch 0104: the end-of-level statistics panel (port/game/ce_debrief.cpp)
+ #endif
+ 
+ //******************************************************************************************
+@@ -4181,6 +4182,66 @@
+ 			//		PLATFORM.Font( FONT_NORMAL )->DrawTextShadowed((float) x,(float) y, 0x00FF0000,ToWCHAR("CHEATER!"));
+ 			//		y+=16;
+ 			//	}		
++#ifdef CE_VERSION
++				// Patch 0104: the rows above, drawn as they are written: the game's strings, the colon at x + cc and the
++				// value at x + nc that the loop above measured, 16 apart in my_c, from the stats the game still counts
++				// (accuracy only after a round was fired). CHEATER! is red in FONT_NORMAL: Stuart's PC layer drew it at the
++				// panel's alpha, the DX line above has alpha 0. It shows when god mode was switched on in the level (the
++				// original's PS_CHEATED, counted by CPlayer::SetIsGod) or is on now: god mode the career or the Cheats page
++				// brings into a level is set in CPlayer's constructor, which counts nothing. ce_debrief.cpp says whether
++				// (on in CE, never in faithful play) and keeps the rows inside the screen.
++				if (p && PortCeDebriefStatsOn(!IsMultiplayer() && GetNPlayers() == 1))
++				{
++					WCHAR			*ceLabel[CE_DEBRIEF_MAX_ROWS];
++					char			ceValue[CE_DEBRIEF_MAX_ROWS][32];
++					CeDebriefPanel	cePanel;
++					int				ceRows = 0;
++					ceLabel[ceRows] = TEXT_DB.GetString(TOTAL_MISSION_TIME);
++					sprintf(ceValue[ceRows++],"%.2fs",((float) p->GetStat(PS_TIMEASJET)+p->GetStat(PS_TIMEASWALKER))/20.0f);
++					ceLabel[ceRows] = TEXT_DB.GetString(TIME_IN_JET_MODE);
++					sprintf(ceValue[ceRows++],"%.2fs",((float) p->GetStat(PS_TIMEASJET))/20.0f);
++					ceLabel[ceRows] = TEXT_DB.GetString(TIME_IN_WALKER_MODE);
++					sprintf(ceValue[ceRows++],"%.2fs",((float) p->GetStat(PS_TIMEASWALKER))/20.0f);
++					ceLabel[ceRows] = TEXT_DB.GetString(ROUNDS_FIRED);
++					sprintf(ceValue[ceRows++],"%d",p->GetStat(PS_ROUNDSFIRED));
++					if (p->GetStat(PS_ROUNDSFIRED)>0)
++					{
++						ceLabel[ceRows] = TEXT_DB.GetString(ACCURACY);
++						sprintf(ceValue[ceRows++],"%.2f%%",((float) p->GetStat(PS_ROUNDSHIT)*100.0f) / ((float) p->GetStat(PS_ROUNDSFIRED)));
++					}
++					ceLabel[ceRows] = TEXT_DB.GetString(DAMAGE_TAKEN);
++					sprintf(ceValue[ceRows++],"%.2f",((float) p->GetStat(PS_DAMAGETAKEN)) / 256.0f);
++					cePanel.x = (float) x;
++					cePanel.y = (float) y;
++					// Above the Retry/Quit menu a lost level raises (CGameInterface::Render: y = 70 - 5h/2 + 240, then the
++					// title's h and three 0x18 steps to Retry, h the normal font's height; measured at 343 on 640 x 480).
++					const int ceH = PLATFORM.Font( FONT_NORMAL )->GetHeight();
++					cePanel.bottom = 70.f - float((ceH * 5) / 2) + 240.f + float(ceH) + 3.f * 24.f - 4.f;
++					cePanel.right = 620.f;
++					cePanel.rise = 22.f;		// into the 30 the code above leaves before the rows, keeping 8
++					cePanel.nc = nc;
++					cePanel.rowStep = 16.f;
++					cePanel.cheatHeight = (float) ceH;
++					cePanel.rows = ceRows;
++					cePanel.cheat = p->GetStat(PS_CHEATED)>0 || p->IsGod();
++					for (int ceRow = 0; ceRow < ceRows; ceRow ++)
++					{
++						SIZE s;
++						PLATFORM.Font( FONT_SMALL )->GetTextExtent(ToWCHAR(ceValue[ceRow]), &s);
++						cePanel.valueWidth[ceRow] = (float) s.cx;
++					}
++					float	ceX[CE_DEBRIEF_MAX_ROWS + 1], ceY[CE_DEBRIEF_MAX_ROWS + 1];
++					int		cePlaced = PortCeDebriefLayout(cePanel, ceX, ceY);
++					for (int ceRow = 0; ceRow < cePlaced && ceRow < ceRows; ceRow ++)
++					{
++						PLATFORM.Font( FONT_SMALL )->DrawTextShadowed(ceX[ceRow],ceY[ceRow], my_c, ceLabel[ceRow]);
++						PLATFORM.Font( FONT_SMALL )->DrawTextShadowed(ceX[ceRow]+cc,ceY[ceRow], my_c,ToWCHAR(":"));
++						PLATFORM.Font( FONT_SMALL )->DrawTextShadowed(ceX[ceRow]+nc,ceY[ceRow], my_c,ToWCHAR(ceValue[ceRow]));
++					}
++					if (cePanel.cheat && cePlaced == ceRows + 1)
++						PLATFORM.Font( FONT_NORMAL )->DrawTextShadowed(ceX[ceRows],ceY[ceRows], 0xffff0000,ToWCHAR("CHEATER!"));
++				}
++#endif
+ 			}
+ 		}
+ 			

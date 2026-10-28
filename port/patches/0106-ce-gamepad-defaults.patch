@@ -1,0 +1,117 @@
+--- a/Controller.cpp
++++ b/Controller.cpp
+@@ -13,6 +13,10 @@
+ 
+ #if defined(CE_VERSION)
+ extern "C" BOOL PortGetMouseClientPosition(POINT *position);
++void PortCeGamepadUpdate(int pad);								// port/game/ce_gamepad.cpp (patch 0106)
++int PortCeGamepadInputs(int id, int pad, SControlInput *out);
++// CE (patch 0106): the control a centred mouse axis was last sent to; its zero does not hold off a gamepad's value.
++static int sCeMouseRestId = -1;
+ #endif
+ 
+ // retail: the PC build's controls. The bindings the player can remap (CONTROL_BINDINGS, PCController.cpp)
+@@ -472,6 +476,9 @@
+ 	{
+ 		ReadControllerState() ;
+ 	}
++#if defined(CE_VERSION)
++	PortCeGamepadUpdate(pad);	// CE (patch 0106): this update's pad snapshot for press and release edges
++#endif
+ 
+ 	// auto repeat stuff (note only 1 repeat button is accepted at once )
+ 	float sys_time = PLATFORM.GetSysTimeFloat() ;
+@@ -645,6 +652,9 @@
+ 							if (val == 0.0f) sSendingMouseRest = true;
+ 							SendButtonAction(mapping->mId, val) ;
+ 							sSendingMouseRest = false;
++#if defined(CE_VERSION)
++							if (val == 0.0f) sCeMouseRestId = mapping->mId;
++#endif
+ 						}
+ 						sMouseAxisRead = true;
+ 						break ;
+@@ -697,6 +707,62 @@
+ 				break;
+ 			input_num = 1;
+ 		}
++#if defined(CE_VERSION)
++		// CE (patch 0106): an SDL gamepad's menu and default game inputs (port/game/ce_gamepad.cpp), read beside the
++		// bindings with their push types' own rules; none in faithful, replay, recording or multiplayer play.
++		{
++			SControlInput extra[2];
++			int count = PortCeGamepadInputs(mapping->mId, pad, extra);
++			// retail sends a centred mouse axis every update; that zero alone leaves the control to the gamepad
++			bool mouse_rest_only = sCeMouseRestId == mapping->mId;
++			sCeMouseRestId = -1;
++			for (int k = 0; k < count; k++)
++			{
++				SControlInput *input = &extra[k];
++				if (CLIPARAMS.mAutoConfigTest || mPlaying || (IsButtonSet(mapping->mId) && !mouse_rest_only))
++					break;
++				switch (input->mType)
++				{
++				case BUTTON_ONCE:
++					if (GetJoyButtonOnce(input->mPad, input->mKey) == TRUE)
++						SendButtonAction(mapping->mId, 1.0f);
++					break;
++				case BUTTON_ON:
++					if (GetJoyButtonOn(input->mPad, input->mKey) == TRUE)
++						SendButtonAction(mapping->mId, DigitalValueForButton(mapping->mId));
++					break;
++				case BUTTON_RELEASE:
++					if (GetJoyButtonRelease(input->mPad, input->mKey) == TRUE)
++						SendButtonAction(mapping->mId, 1.0f);
++					break;
++				case ANALOGUE_PLUS:
++				{
++					float ana_val = GetMappedInputValue(input->mPad, input->mKey);
++					if (ana_val > 0.0f)
++						SendButtonAction(mapping->mId, ana_val);
++					break;
++				}
++				case ANALOGUE_MINUS:
++				{
++					float ana_val = GetMappedInputValue(input->mPad, input->mKey);
++					if (ana_val < 0.0f)
++						SendButtonAction(mapping->mId, ana_val);
++					break;
++				}
++				case ANALOGUE_PLUS_ACT_AS_BUTTON_REPEAT:
++					if (GetMappedInputValue(input->mPad, input->mKey) > ANALOGUE_ACT_AS_DIGITAL_THRESHOLD &&
++						RepeatOccured(repeat_on, mapping))
++						SendButtonAction(mapping->mId, 1.0f);
++					break;
++				case ANALOGUE_MINUS_ACT_AS_BUTTON_REPEAT:
++					if (GetMappedInputValue(input->mPad, input->mKey) < -ANALOGUE_ACT_AS_DIGITAL_THRESHOLD &&
++						RepeatOccured(repeat_on, mapping))
++						SendButtonAction(mapping->mId, 1.0f);
++					break;
++				}
++			}
++		}
++#endif
+ 	}
+ 
+ 	// retail: both shift keys
+--- a/PCController.cpp
++++ b/PCController.cpp
+@@ -162,9 +162,18 @@
+ // before GetKeyOn), where VC6 puts inline functions defined after it; in the class (Stuart's later header) they come out
+ // with the constructor's vtable instead. Placement evidence. Lands with the WorldPhysicsManager and BattleEngine moves:
+ // alone it shifts the dds and bdl witnesses.
++#if defined(CE_VERSION)
++// CE (patch 0106): in ordinary single-player play a press or release is a change since the previous controller update
++// (port/game/ce_gamepad.cpp), not since the previous Present, so no edge falls between two game updates.
++int PortCeGamepadEdge(int pad, int button, bool release);
++inline int CPCController::GetJoyButtonOnce(int pad_number, int button) { int e = PortCeGamepadEdge(pad_number, button, false); return e >= 0 ? e : LT.JoyButtonOnce(pad_number, button) ; }
++inline int CPCController::GetJoyButtonOn(int pad_number, int button) { return LT.JoyButtonOn(pad_number, button) ; }	// FUNCTION: 0x005147f0
++inline int CPCController::GetJoyButtonRelease(int pad_number, int button) { int e = PortCeGamepadEdge(pad_number, button, true); return e >= 0 ? e : LT.JoyButtonRelease(pad_number, button) ; }
++#else
+ inline int CPCController::GetJoyButtonOnce(int pad_number, int button) { return LT.JoyButtonOnce(pad_number, button) ; }	// FUNCTION: 0x005147b0
+ inline int CPCController::GetJoyButtonOn(int pad_number, int button) { return LT.JoyButtonOn(pad_number, button) ; }	// FUNCTION: 0x005147f0
+ inline int CPCController::GetJoyButtonRelease(int pad_number, int button) { return LT.JoyButtonRelease(pad_number, button) ; }	// FUNCTION: 0x00514810
++#endif
+ inline BOOL CPCController::GetKeyOnce(int key) { return LT.xKeyOnceThisFrame(key) ; }	// FUNCTION: 0x00514850
+ inline BOOL CPCController::GetKeyRelease(int key) { return LT.xKeyUp(key) ; }	// FUNCTION: 0x00514870
+ inline BOOL CPCController::GetKeyOn(int key) { return PLATFORM.KeyOn(key) ; }	// FUNCTION: 0x00514890
