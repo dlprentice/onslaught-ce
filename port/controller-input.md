@@ -53,8 +53,8 @@ an unusually short tap between samples can still be missed. The game's own 15% p
 The triggers can also be bound by hand: select an action in the controls editor and press the trigger while it is
 capturing. A saved binding that already names button 16 or 17 responds to that trigger.
 
-This development branch adds the connected controller's available, active dodge and zoom inputs to the English Level
-100 help, alongside keyboard or mouse controls when both fit. It reads the actual bindings and the CE
+The English Level 100 help shows the connected controller's available, active dodge and zoom inputs alongside
+keyboard or mouse controls when both fit. It reads the actual bindings and the CE
 defaults; a customized joystick disables those defaults. Unavailable, unrecognized or potentially blocked secondary
 inputs are not named. Flight-stick button hints count the SDL inputs from 1; the controls editor displays the game's
 internal button numbers, which can differ. Dodging calls for full controller travel; the displayed time suggestion is
@@ -69,7 +69,10 @@ All of the above is CE behaviour. It is off in faithful builds and while a tape,
 active (the trigger buttons as well), so recorded and compared runs keep retail's input exactly. In retail multiplayer
 the no-setup defaults are off (players use their Controller Options bindings); the CE bonus local co-op maps admit the
 defaults for each player. Hotplug, flight-stick detection and the trigger buttons still work in multiplayer.
-Controller input is not recorded by the keyboard-and-mouse tape format. There is no per-device profile. Rumble (patch 0105, `game/ce_rumble.cpp`) plays on the game pad numbered for the player (pad 1 for player 1, pad 2 for player 2), not on whichever pad custom bindings name; gamepads only, a flight stick does not rumble.
+Controller input is not recorded by the keyboard-and-mouse tape format. There is no per-device profile. When enabled
+in eligible CE play, rumble (patch 0105, `game/ce_rumble.cpp`) goes to the controller slot numbered for the player
+(slot 1 for player 1, slot 2 for player 2), not to whichever controller custom bindings name. Rumble is off during
+recording, replay, demo and network modes. CE sends rumble only to gamepads; a flight stick does not rumble.
 
 ## Checks
 

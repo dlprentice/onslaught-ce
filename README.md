@@ -78,11 +78,13 @@ and remaining limits; development source may include changes beyond that publish
 - **Options > Cheats:** the original game's cheats as On/Off switches; see [Cheats](#cheats).
 - **The console:** the original's developer console, back for solo play; press the `` ` `` (grave) key, left of 1 on a US
   keyboard. See [The console](#the-console).
-- **Controllers:** gamepads and flight sticks work in the menus and in play without setup, and can be plugged in while
-  the game runs; a player who set up their own joystick controls keeps them. See
+- **Controllers:** gamepads and flight sticks have menu controls and default play controls for solo and bonus co-op
+  when joystick bindings have not been customized. Other local multiplayer uses Controller Options. Controllers can
+  be plugged in while the game runs; for two players, plug both in before starting. See
   [port/controller-input.md](port/controller-input.md).
-- **Keyboard:** no key release is lost, typed characters come from the key presses themselves (no desktop input method
-  in the way), and the letter and digit keys work by their position on any keyboard layout.
+- **Keyboard:** the port releases held keys on focus loss and attempts to repair delayed releases. Typed characters
+  come from key presses rather than a desktop input method; letter and digit keys use their physical positions across
+  keyboard layouts.
 - **A quiet console:** the developers' messages are hidden unless `BEA_PORT_VERBOSE=1` is set.
 - **A log file** for reports, `onslaught-ce.log` in your user folder, and **session recording** (both below).
 
@@ -172,7 +174,8 @@ the original's command interpreter: it has its own list of commands, and never r
   bottom of the screen says it was saved; the note is never in the picture. The folder holds up to 2000 files: move
   some out when it says it is full.
 - F12 works in single-player levels, but not while a session is recorded or replayed, in multiplayer, a network game
-  or a demo. F11 and F12 belong to a menu or the console while one has the keyboard.
+  or a demo. A key-capturing menu or the console can take these keys first; the pause-menu interaction has not been
+  tested.
 
 ### Your own music, end-of-level statistics and rumble
 
@@ -192,11 +195,11 @@ demo.
   time, time in jet and walker mode, rounds fired, accuracy (once you have fired) and damage taken, in the original's
   own words and layout, and "CHEATER!" in red when god mode was on. The game kept counting these; the PC release left
   the panel commented out.
-- **Gamepad rumble** (`rumble`, on unless set to 0): your controller rumbles when your Battle Engine is hit or shaken
+- **Gamepad rumble** (`rumble`, on unless set to 0): CE requests a rumble when your Battle Engine is hit or shaken
   by its own weapons, with the effect Stuart's PC source code played (the released game's rumble call was empty): full
-  strength for a quarter of a second. Gamepads only; flight sticks do not rumble. Player 1's
-  rumble goes to the first controller and player 2's to the second, the controllers the CE gamepad controls give them;
-  a player who bound another controller in Controller Options feels the rumble on that player's numbered one. It needs a controller with rumble motors; nobody has tested how it feels on one yet.
+  strength for a quarter of a second. Gamepads only; flight sticks do not rumble. Player 1's request goes to the first
+  controller slot and player 2's to the second. Custom Controller Options bindings do not change which slot is used.
+  It needs a controller with rumble motors; nobody has tested how it feels on one yet.
 
 Onslaught CE is an unofficial fan project. It is not affiliated with or endorsed by the game's developer, publisher or
 rights holders; *Battle Engine Aquila* is a trademark of its owners.
@@ -469,24 +472,26 @@ in both and comparing them, and recordings of real play find differences our own
 
 ## How faithful is it?
 
-The port is compared with the original game using recorded replays under a virtual clock: the game's state is checked
-every 50 frames on the standard levels, and on every frame for the recorded play sessions.
+The port is compared with the original game using recorded replays under a virtual clock. Selected state fields are
+checked at specified frames, often every 50 frames on standard levels and every frame on selected recorded sessions.
+Some original-game references also synchronize music or voice loading for the comparison.
 
-**Standard test levels.** The available sampled state agrees with the retained original-game references for
+**Standard test levels (an earlier 0.1.5 candidate).** The available sampled state agreed with the retained original-game references for
 levels 100, 200, 400, 521 and 611 through 10,000 frames, and level 860 through 3,250 frames. Missing player
 state after death is unavailable evidence, not a match. Beyond frame 3,250, level 860's original-game recordings
-disagree with each other. The earlier level-200 health and level-860 energy differences are corrected in the
-0.1.5 candidate; this does not prove all gameplay, pictures or sound are identical.
+disagreed with each other. The earlier level-200 health and level-860 energy differences were corrected in that
+candidate; this does not prove all gameplay, pictures or sound are identical. Later development comparisons use
+additional references and cover more frames; the release notes describe the checks for each published version.
 
-**60-level sweep.** This sweep played the first ~3,000 frames (about 1 min 40 s) of 60 levels with one generic input
+**Historical 60-level sweep.** This sweep played the first ~3,000 frames (about 1 min 40 s) of 60 levels with one generic input
 recording. 30 of those levels have original-game recordings to compare against:
 
-- 20 match exactly.
-- 2 have known small differences that are being fixed: levels 322 and 431.
+- 20 matched the recorded fields at the sampled frames.
+- 2 had small differences at the time: levels 322 and 431.
 - 8 have original-game recordings that disagree with each other, so they can't decide a match.
 
-Those 30 levels were replayed again on the 0.1 build itself. Replays run in faithful mode (4:3, no CE menus or cheat
-switches).
+Those 30 levels were replayed again on the 0.1 build itself; the sweep is not a claim about later releases. Replays run
+in faithful mode (4:3, no CE menus or cheat switches).
 
 **Played through on the port:** the full front end, creating, loading and saving careers, options and videos, and most
 of the tutorial (through its third zone; the final drone fight is still being completed).
@@ -524,10 +529,10 @@ of the tutorial (through its third zone; the final drone fight is still being co
   The 0.1.5 candidate corrects music starts that could survive a stop request; the reported Windows overlapping
   music has not yet been reproduced and attributed to this defect.
 - The tutorial is playable through its third zone; its final drone fight is still being completed.
-- Gamepads and flight sticks work without setup ([how](port/controller-input.md)), but have been tested only with
-  virtual devices so far.
+- Gamepad and flight-stick defaults cover menus, solo play and bonus co-op ([how](port/controller-input.md)); only
+  virtual devices have been tested so far.
 - Widescreen play is not compared with the original (the original has no widescreen); replays and recordings use 4:3.
-- Planned, not in this version yet: multiplayer, mods and HUD options.
+- Planned, not in this version yet: Internet multiplayer, general mod support and additional HUD options.
 
 ## Building from source
 

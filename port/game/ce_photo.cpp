@@ -93,7 +93,7 @@ bool PortCePhotoSet(bool on)
 	return true;
 }
 
-// F11 reports photo mode unavailable and F12 saves a screenshot, in a level where no menu or console has the keyboard
+// F11 reports photo mode unavailable and F12 saves a screenshot, in an allowed level when no keytrap has the keyboard
 // (ltshell.cpp, patch 0108, before the console's own keys). True when the key was taken; a held key's repeats are too.
 bool PortCePhotoKey(unsigned key, bool repeat)
 {
