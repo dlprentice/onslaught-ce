@@ -268,6 +268,30 @@ static void proof() {
     PortCePhotoLevelEnd();
     unsetenv("BEA_PORT_TAPE"); unsetenv("BEA_PORT_PHOTO_PROOF"); unsetenv("BEA_PORT_CE_LAYER");
 }
+
+static void proofNote() {
+    // The proof switch's frames are saved without the note too, as F12's are: the note of the picture before is drawn in the frames
+    // between, never in one that is to be saved.
+    setenv("BEA_PORT_TAPE", "1", 1);
+    setenv("BEA_PORT_PHOTO_PROOF", "4", 1);
+    setenv("BEA_PORT_CE_LAYER", "1", 1);
+    PortCePhotoLevelEnd();
+    presents = 0;
+    int noted = 0, quiet = 0;
+    for (int i = 1; i <= 16; ++i) {
+        PortCePhotoFrame();
+        render();
+        const bool savedNow = (presents + 1) % 4 == 0;
+        if (savedNow) check(draws.empty() && sprites.empty(), "nothing of a note is in a frame the proof switch saves");
+        else if (i > 4) { check(drew(L"Saved screenshot proof.png"), "the note of the picture before is in the frames between"); ++noted; }
+        else ++quiet;
+        ++presents;
+        if (PortCePhotoShotWanted()) PortCePhotoShotDone(CE_SHOT_SAVED, "proof.png");
+    }
+    check(noted == 9 && quiet == 3, "the frames between the pictures were checked");
+    PortCePhotoLevelEnd();
+    unsetenv("BEA_PORT_TAPE"); unsetenv("BEA_PORT_PHOTO_PROOF"); unsetenv("BEA_PORT_CE_LAYER");
+}
 #endif
 
 int main(int argc, char **argv) {
@@ -288,6 +312,7 @@ int main(int argc, char **argv) {
     levelEnd();
     fences();
     proof();
+    proofNote();
     std::puts("photo mode keys, owners, level end, fences and proof passed");
 #else
     (void)argc; (void)argv;

@@ -955,7 +955,7 @@ typedef HRESULT (STDMETHODCALLTYPE *DrawIdxUPFn)(IDirect3DDevice9 *, D3DPRIMITIV
 												 const void *, UINT);
 void **gDeviceTable;			// the hook table of the game's device (CreateDevice)
 bool gDrawsFiltered;			// the filter is in the table
-int gDrawsDropped;				// open CePhotoDrawScopes
+int gDrawsDropped;				// open CePhotoDrawScopes: the render thread's (the game draws from one thread), so no lock
 void *gDrawsReal[4];			// the entries the filter replaced
 const int kDrawSlots[4] = {81, 82, 83, 84};		// DrawPrimitive, DrawIndexedPrimitive and their UP forms
 
@@ -1231,7 +1231,10 @@ extern "C" unsigned PortPresentCount(void) { return gFrames; }
 
 #ifdef CE_VERSION
 // Photo mode's draw filter in the device's draw entries (on), or the device's own again (off); asked for again, it does
-// nothing, which lets ce_photo.cpp re-apply it every frame for a device made anew.
+// nothing, which lets ce_photo.cpp re-apply it every frame for a device made anew. "Own" is whatever each entry held when
+// the filter went in, BEA_PORT_D3DLOG's hook included. A hook put in an entry while the filter is in (the log's, when
+// Windows' one shared table is filled again by a device made during photo mode) is replaced by the filter, and off then
+// writes the older entry back over it: a debug log can miss draws or stop logging them, nothing else changes.
 void PortCeDrawHooks(bool on)
 {
 	if (on == gDrawsFiltered || !gDeviceTable)

@@ -49,7 +49,7 @@ const unsigned long long kNoteMs = 2500;		// CE_ScreenshotTicks: SDL's milliseco
 const char *const kFenced[] = {"BEA_PORT_CLOCK", "BEA_PORT_TAPE", "BEA_PORT_PROBES", "BEA_PORT_RECORD",
 							   "BEA_PORT_PILOT", "BEA_PORT_AUTOPILOT", "BEA_NET_HOST", "BEA_NET_JOIN"};
 bool photo;						// photo mode on (the draw calls of the HUD, battle line and cockpit routines are dropped)
-bool shotPending;				// the next Present is saved; the note is not drawn in that frame
+bool shotPending;				// F12 asked: the next Present is saved; the note is not drawn in that frame
 char note[96];
 unsigned long long noteUntil;
 
@@ -80,6 +80,15 @@ bool Allowed()
 	if (PLAYABLE_DEMO || CLIPARAMS.mAutoConfigTest || CLIPARAMS.mRecordDemo || CLIPARAMS.mPlaybackDemo ||
 		CLIPARAMS.mStressTest || CLIPARAMS.mAttractMode || FRONTEND.IsRunning()) return false;
 	return !GAME.IsMultiplayer() && GAME.GetNPlayers() == 1 && GAME.GetPlayer(0);
+}
+
+// Whether the Present that follows the frame being drawn saves it: F12 asked, or the proof switch's next multiple of N (the
+// Present counts itself before it asks, PortCePhotoShotWanted, so the frame in hand is the one after the Presents counted).
+bool SavedNext()
+{
+	if (shotPending) return true;
+	const unsigned every = ProofEvery();
+	return every && (PortPresentCount() + 1) % every == 0;
 }
 
 void Note(const char *text)
@@ -164,7 +173,7 @@ void PortCePhotoShotDone(int status, const char *name)
 // After the console (CDXEngine::PostRender): the note, bottom centre, never in a frame being saved.
 void PortCePhotoRender()
 {
-	if (shotPending || !note[0] || CE_ScreenshotTicks() >= noteUntil || !Allowed()) return;
+	if (SavedNext() || !note[0] || CE_ScreenshotTicks() >= noteUntil || !Allowed()) return;
 	CDXBitmapFont *font = PLATFORM.Font(FONT_SMALL);
 	CDXTexture *white = HUD.GetWhiteTexture();
 	if (!font || !white || white->GetRealWidth() <= 0 || white->GetRealHeight() <= 0 || font->GetHeight() <= 0) return;

@@ -202,7 +202,7 @@ the original's command interpreter: it has its own list of commands, and never r
   some out when it says it is full.
 - Both work in single-player levels, but not while a session is recorded or replayed, in multiplayer, a network game
   or a demo. A key-capturing menu or the console can take these keys first; the pause-menu interaction has not been
-  tested.
+  tested. Photo mode is tested on Linux; Windows testing of it is limited (see the release notes).
 
 ### Your own music, end-of-level statistics and rumble
 
