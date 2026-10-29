@@ -14,8 +14,8 @@ without /QIfist in retail (config/file-flags.txt), so build.py does not run this
 
 Division by a constant: VC6 at /O2 compiles `x / C` as `x * (1/C)`, the reciprocal a constant of the operation's type
 (CBattleEngineWalkerPart::Forward's mGroundVelocity/50 is `fmuls __real@4@3ff9a3d70a3d70a3d800`, 0.02f, in the decomp's
-VC6 object), which can differ from a true division in the last bit (the battle engine's velocity at frame 3301 of Peer
-C's level-100 tape). Every `fdiv` whose divisor is a constant becomes an `fmul` by 1/C, rounded once from the exact value to
+VC6 object), which can differ from a true division in the last bit (the battle engine's velocity at frame 3301 of a
+recorded level-100 tape). Every `fdiv` whose divisor is a constant becomes an `fmul` by 1/C, rounded once from the exact value to
 the type (VC6 computes it in extended precision first; its constant names show the 64-bit value). cframetimer.cpp gets this too only if it is ever run through here (it is not).
 """
 import struct

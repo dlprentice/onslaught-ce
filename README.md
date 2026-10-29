@@ -1,7 +1,7 @@
 # Onslaught CE
 
 Status: preview — from 0.1.8 on it updates itself; from 0.1.7 or earlier, download the latest release once by hand
-Last updated: 2026-10-28
+Last updated: 2026-10-29
 Summary: the native Battle Engine Aquila port, the one-time manual move from 0.1.7 or earlier, signed updates and source build.
 
 A native port of *Battle Engine Aquila*; you need your own copy.
@@ -636,13 +636,14 @@ its win and debrief. This covers one recorded route; it does not establish compl
 - Recording and replay were compared using an isolated native PipeWire null sink as well as silent audio;
   the tested tape, mixed audio and saved bytes agree. Ordinary-clock music transitions and clean shutdown were
   also exercised. These checks do not validate a physical audio device, listening quality or every race schedule.
-  Music starts that could survive a stop request are corrected (0.1.5); the reported Windows overlapping
-  music has not been reproduced and attributed to that defect.
+  Music starts that could survive a stop request are corrected (0.1.5). Menu music that played twice, reported on
+  Windows after a sound option (quality, hardware sound, device or 3D sound) had been changed, is corrected (0.1.12).
 - Complete tutorial parity with the original has not yet been established.
 - Gamepad and flight-stick defaults cover menus, solo play and bonus co-op ([how](port/controller-input.md)); only
   virtual devices have been tested so far.
 - Widescreen play is not compared with the original (the original has no widescreen); replays and recordings use 4:3.
-- Planned, not in this version yet: Internet multiplayer, general mod support and additional HUD options.
+- Planned, not in this version yet: Internet multiplayer, mods on Windows and additional HUD options. On Linux, mods
+  are an early test ([Mods (experimental)](#mods-experimental)).
 
 ## Building from source
 

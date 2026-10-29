@@ -1,7 +1,7 @@
 # Native port (Linux and Windows)
 
 Status: active (both targets build, link and run the game; Linux replays are compared with retail Present by Present, logged in PARITY.md in the private working tree; native Windows acceptance uses a software-rendered VM, not physical-GPU validation)
-Last updated: 2026-10-28 (private-tree references marked; earlier: released-launcher cleanup warning and manual migration)
+Last updated: 2026-10-29 (the v2 feed is published with every release since 0.1.8, and the latest release is the corrected successor; earlier: private-tree references marked, released-launcher cleanup warning and manual migration)
 Summary: a second build of the decompilation's sources as native i686 Linux and Windows programs; layout, ownership,
 commands and rules.
 

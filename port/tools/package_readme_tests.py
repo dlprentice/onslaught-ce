@@ -57,6 +57,10 @@ class PackageReadmeTests(unittest.TestCase):
             "Physical audio devices and listening quality have not been validated",
             "Only virtual devices have been tested; physical controllers and Windows drivers remain open",
             "Windows reparse-point behaviour is unmeasured",
+            "Mods (experimental): on Linux, Onslaught CE can read replacement game files",
+            "On Windows mods are not active in this release: a mods= line is ignored and the log says so",
+            "A save that fails now says so", "An error occurred during saving.",
+            "after a language change in the front end it appears in the usual message box",
         ):
             with self.subTest(phrase=phrase, windows=windows):
                 self.assertIn(phrase, flat)
