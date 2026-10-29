@@ -1,5 +1,7 @@
 # port/vorbis: retail's Ogg Vorbis decoder, rebuilt
 
+Some files and commands named on this page (`tests/`, `probe/`, `run.py`, `check_tape.sh`, `replay_session.py`, `PLAN.md`, `PARITY.md`, `tools/decomp.py`, `docs/release.md`, `tools/release_rc.py`) live only in the private working repository and are not in this public tree; they are named so that the description is complete. The decompilation's public export is [onslaught-decomp](https://github.com/dlprentice/onslaught-decomp).
+
 The game decodes its music and voice lines with Xiph.Org's libvorbis and libogg (BSD), from the `vorbis.dll` and
 `ogg.dll` it ships. `build.py` rebuilds that exact decoder from Xiph's source, so the port hears what retail hears,
 sample for sample.

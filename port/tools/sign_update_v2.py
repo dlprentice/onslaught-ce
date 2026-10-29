@@ -4,19 +4,21 @@
 
     python3 port/tools/sign_update_v2.py VERSION [--dir DIR] [--tag TAG] [--key PEM]
 
+--key (or the environment variable ONSLAUGHT_CE_SIGNING_KEY) names the private key file; there is no default location.
+
 Reads the two packages in DIR (default local-data/port/release/VERSION) and writes there:
   ce-update-v2.json      {"format": "onslaught-ce-update-v2", "version", "packages": {PLATFORM: {"url", "sha256",
                          "size"}}}: the URLs are the release's GitHub download links (tag vVERSION, or --tag)
   ce-update-v2.json.sig  Ed25519 over b"onslaught-ce update feed v2\\n" + the feed's exact bytes, as 128 hex digits
 
 It never writes latest.json (the 0.1.0-0.1.6 launchers' feed name) and refuses a DIR that holds one. Publishing the
-feed needs the maintainer's explicit decision (UPDATER-V2.md, "Publishing"). The private key (default
-~/Private/onslaught-ce-signing/onslaught-ce-release.ed25519.pem) is read, never copied or printed, and must match the
-launcher's PUBLIC_KEY_HEX. The tests use feed_bytes() and sign() with their own key.
+feed needs the maintainer's explicit decision (UPDATER-V2.md, "Publishing"). The private key (the file --key or
+ONSLAUGHT_CE_SIGNING_KEY names) is read, never copied or printed, and must match the launcher's PUBLIC_KEY_HEX. The tests use feed_bytes() and sign() with their own key.
 """
 import argparse
 import hashlib
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -47,8 +49,11 @@ def main():
     ap.add_argument("version")
     ap.add_argument("--dir", type=Path)
     ap.add_argument("--tag", help="the release tag the packages are attached to (default vVERSION)")
-    ap.add_argument("--key", type=Path, default=Path.home() / "Private/onslaught-ce-signing/onslaught-ce-release.ed25519.pem")
+    ap.add_argument("--key", type=Path, default=os.environ.get("ONSLAUGHT_CE_SIGNING_KEY") or None,
+                    help="the private key (PEM); default: the file the environment variable ONSLAUGHT_CE_SIGNING_KEY names")
     a = ap.parse_args()
+    if a.key is None:
+        sys.exit("the private key file is not named: pass --key PEM or set ONSLAUGHT_CE_SIGNING_KEY")
     if not re.fullmatch(r"[0-9]{1,5}(\.[0-9]{1,5}){0,3}", a.version):
         sys.exit("VERSION: one to four numeric parts (the launcher compares them numerically)")
     sys.path.insert(0, str(Path(__file__).resolve().parent))

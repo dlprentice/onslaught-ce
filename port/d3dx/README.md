@@ -3,8 +3,10 @@
 # port/d3dx: the D3DX 9 subset for the native port
 
 Status: active (headers, maths, assembler and DXGetErrorString9 done; texture loader exact on 837 of 871 default-path cases, the rest sub-4x4 DXT mips)
-Last updated: 2026-10-15
+Last updated: 2026-10-29 (private-tree references marked; earlier: 2026-10-15)
 Summary: what the port's D3DX replacement covers, how it is checked against retail d3dx9, and what it leaves out.
+
+Some files and commands named on this page (`tests/`, `probe/`, `run.py`, `check_tape.sh`, `replay_session.py`, `PLAN.md`, `PARITY.md`, `tools/decomp.py`, `docs/release.md`, `tools/release_rc.py`) live only in the private working repository and are not in this public tree; they are named so that the description is complete. The decompilation's public export is [onslaught-decomp](https://github.com/dlprentice/onslaught-decomp).
 
 Licence: GPL-3.0-only. Written for the port from the public D3DX 9 API; retail
 `d3dx9.lib` (DirectX 9.0 SDK, pinned in the Onslaught lab) is used only as a black-box oracle, never copied.

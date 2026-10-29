@@ -37,7 +37,7 @@ and the repository (scratch space, archive drives) are not scanned, so set it to
 path. The launcher and updater, and what the signed feed holds, are in [updater/README.md](updater/README.md). No game
 files are packaged: the launcher reads the player's own install. The launcher's updater is v2 ([updater/UPDATER-V2.md](updater/UPDATER-V2.md)): a
 signed `ce-update-v2.json` feed, never `latest.json`, which launchers 0.1.0–0.1.6 fetch and which is never published
-again (`tools/sign_release.py` is retired). No v2 feed is published yet. There is no telemetry.
+again (`tools/sign_release.py` is retired). The v2 feed has been published with every release since 0.1.8. There is no telemetry.
 
 ### Released launcher safety hold and manual migration
 
@@ -45,7 +45,7 @@ Do not run released launchers 0.1.0 through 0.1.6 on either platform. Their sour
 deletion of neighboring `<program folder>.old-*` paths; the shipped Linux 0.1.6 package has reproduced data deletion
 and traversal through a matching directory link. Windows reparse behavior remains unmeasured. Disabling updates
 does not disable startup cleanup. Predictable download/unpack names and unverified rollback paths are additional
-reasons to avoid invoking an affected updater; no corrected successor is claimed here.
+reasons to avoid invoking an affected updater. The latest release is the corrected successor (0.1.7 switched the old updater off, and 0.1.8 brought the v2 updater).
 
 Migration must not start the old launcher. Preserve its entire program folder and uncertain neighboring
 `.old-*`, `.download-*` and `.unpack-*` paths. A relative `BEA_USER_DIR` can put launcher and game user data in different
@@ -53,7 +53,7 @@ locations; identify and preserve both complete folders and verify independent ba
 separate working copy of the identified game user-data folder outside the original game and CE program/staging folders
 and select its absolute user path.
 Keep originals and backups, check careers, and do not merge unclear or conflicting files.
-Only after a published successor explicitly addresses the hazard, verify its download and extract into a new,
+Only then verify the latest release's download and extract it into a new,
 empty, ordinary writable folder. Run that successor only; retain backups and uncertain old paths.
 
 The complete steps live in the [player README](https://github.com/dlprentice/onslaught-ce#manual-migration-from-affected-launchers).

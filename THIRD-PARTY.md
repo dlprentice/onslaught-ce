@@ -31,7 +31,7 @@ so. Release packages carry each shipped component's licence text in `licenses/`.
 | Monocypher | 4.0.2 | BSD-2-Clause OR CC0-1.0 | compiled into the launcher: the update feed's signature check |
 | zlib | 1.3.2 | Zlib | compressed game files and the launcher's update unpacking on Windows (a DLL beside the program); Linux uses the system's |
 | libogg, libvorbis | 1.0 | BSD-3-Clause | the game's music and voices, built with the game's original compiler into `libvorbis_vc6.a` (attached to the `vorbis-vc6-1` release and pinned by SHA-256 in `port/deps.lock`) by `port/vorbis/build.py`, from Xiph.Org's 1.0 source fetched from downloads.xiph.org by the SHA-256 pins in that script |
-| MinGW-w64 runtime | from llvm-mingw 20260922 | ZPL-2.1 and public domain | the Windows C runtime start-up, linked into `bea.exe` |
+| MinGW-w64 runtime | from llvm-mingw 20260922 | ZPL-2.1 and others (as the package notice says) | the Windows C runtime start-up, linked into `bea.exe` |
 | libc++, libc++abi, libunwind | from llvm-mingw 20260922 | Apache-2.0 WITH LLVM-exception | the Windows C++ runtime, linked into `bea.exe` |
 
 ## In this repository's source

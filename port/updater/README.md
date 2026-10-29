@@ -1,8 +1,10 @@
 # Onslaught CE launcher and updater
 
 Status: active (public builds only)
-Last updated: 2026-10-28 (dialogs shown by a child process, with a terminal fallback)
+Last updated: 2026-10-29 (private-tree references marked; earlier: 2026-10-28 (dialogs shown by a child process, with a terminal fallback))
 Summary: game discovery and bounded logs, and the signed v2 updater (UPDATER-V2.md) that replaces the suspended one.
+
+Some files and commands named on this page (`tests/`, `probe/`, `run.py`, `check_tape.sh`, `replay_session.py`, `PLAN.md`, `PARITY.md`, `tools/decomp.py`, `docs/release.md`, `tools/release_rc.py`) live only in the private working repository and are not in this public tree; they are named so that the description is complete. The decompilation's public export is [onslaught-decomp](https://github.com/dlprentice/onslaught-decomp).
 
 `ce_launch.c` builds as `onslaught-ce-launch` (Linux, started by the `onslaught-ce` script after game preflight when needed) and
 `onslaught-ce.exe` (Windows), from `build.py --public`. It links SDL3 (its dialogs), Monocypher (Ed25519, pinned in

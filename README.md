@@ -14,14 +14,14 @@ of no case where this deleted anything of a player's, but it could, so 0.1.7 swi
 updates back with a new updater that only ever touches its own two folders (`versions` inside the Onslaught CE folder
 and `update-v2` in your user folder), never anything beside them; it checks every update's signature before using
 it, and can go back to the previous version. Old launchers cannot reach it, so you
-download the latest release (0.1.8 or later) yourself once; after that it updates itself.
+download the latest release yourself once; after that it updates itself.
 
 From any earlier Onslaught CE (0.1.0 to 0.1.7):
 
 1. **Close Onslaught CE.** Do not start the old version again (from 0.1.0–0.1.6, not even to check its version).
 2. **Back up your careers and settings:** copy the folder `~/.local/share/onslaught-ce` (Linux) or
    `%APPDATA%\Onslaught CE` (Windows; paste that into the Explorer address bar) somewhere safe.
-3. **Download** the latest package for your system (0.1.8 or later) from the
+3. **Download** the latest package for your system from the
    [Releases page](https://github.com/dlprentice/onslaught-ce/releases).
 4. **Extract it into a new, empty folder.** Do not extract it over the old one.
 5. **Run** `onslaught-ce` (Linux) or `onslaught-ce.exe` (Windows) from the new folder. It finds your careers and
@@ -251,6 +251,14 @@ remain available in the load menu, with a CE career of the same on-disk name tak
 has both an older one-byte spelling and a UTF-8 spelling, the older spelling can be selected even when it is in the
 original folder. Keep both files and seek help before overwriting either one.
 
+**How a career is saved (0.1.10 and later).** A career, and `defaultoptions.bea`, is written to a temporary file in the same
+folder, flushed to disk and read back; only then is it moved over the old file in one step. A save that fails part-way leaves
+the previous file as it was. Saving over a name that already exists asks once: Yes writes your new career into the Onslaught CE
+folder (also when the name belongs to a career in the original game's `savegames` folder, which is never written), No changes
+nothing. If the game or the computer stops in the middle of a save, a hidden temporary file named `.ce-write-<number>-<number>`
+(on Windows with `.tmp` added) can be left in the `savegames` folder. It is not a career and the game does not list it; you may
+delete it.
+
 On Linux, a career filename whose in-game name exceeds 31 16-bit units is omitted from the list because it cannot fit
 the game's name field. The game emits a name-free diagnostic once, normally captured in a launcher log; it does not
 show an on-screen warning. This check does not change the file. If a career is missing, keep its file and ask for help
@@ -266,20 +274,20 @@ refused, please [open an issue](https://github.com/dlprentice/onslaught-ce/issue
 
 ## Download and install
 
-Download 0.1.8 or later from this repository's [Releases](https://github.com/dlprentice/onslaught-ce/releases) page.
+Download the latest release from this repository's [Releases](https://github.com/dlprentice/onslaught-ce/releases) page.
 If you have an earlier Onslaught CE, read [Getting the latest version](#getting-the-latest-version-one-download-by-hand-then-it-updates-itself)
 first.
 
 ### Verify a download (optional)
 
-Download `ASSETS.txt` from the same release into the folder containing your package. It lists each file's SHA-256,
-byte size and name; releases before 0.1.2 omit the size. It is not directly a `sha256sum --check` file.
+Download `ASSETS.txt` from the same release into the folder containing your package. It lists the SHA-256,
+byte size and name of each downloadable file except itself and `RC-REPORT.txt`; releases before 0.1.2 omit the size. It is not directly a `sha256sum --check` file.
 In Bash on Linux, this command handles either form and checks just the package you name (change `package` to your
 download's filename). A successful check prints that filename followed by `OK` and exits zero. A missing entry,
 missing file, malformed list or changed download fails the check.
 
 ```bash
-package=onslaught-ce-0.1.9-linux-i686.tar.gz
+package=onslaught-ce-linux-i686.tar.gz   # or onslaught-ce-X.Y.Z-linux-i686.tar.gz
 set -o pipefail
 awk -v package="$package" '
   /^[[:space:]]*$/ || /^Onslaught CE / || /^Source: / { next }
@@ -404,7 +412,7 @@ The detailed version of [Getting the latest version](#getting-the-latest-version
    folder outside the original game and all old CE program and staging folders, and set `BEA_USER_DIR` to its absolute
    path for the successor. Preserve any separately located launcher settings and logs as well; do not assume copying
    the game folder restores them. Do not put saves into the new program folder.
-5. Download the **0.1.8** (or later) platform package and `ASSETS.txt` from that specific release, and [verify the package](#verify-a-download-optional).
+5. Download the **latest** platform package and `ASSETS.txt` from that specific release, and [verify the package](#verify-a-download-optional).
    Do not use 0.1.6 as an intermediate upgrade, and do not use an old launcher's automatic update path.
 6. Extract the successor into a **new, empty folder writable by your account**, with no directory links/junctions
    in its path, separate from the original game and all old CE folders. Do not merge old executables or DLLs into it.

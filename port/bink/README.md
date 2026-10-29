@@ -2,9 +2,11 @@
 
 # port/bink: the game's Bink videos through FFmpeg
 
-Status: active (decoding, sound and timing in place; not yet in the game's build or compared with RAD's binkw32.dll)
-Last updated: 2026-10-15
+Status: active (decoding, sound and timing in place and in both packages; compared with RAD's binkw32.dll: 48,294 of 48,627 frames byte-identical)
+Last updated: 2026-10-29 (private-tree references marked; earlier: 2026-10-15)
 Summary: the Bink entry points the front end calls, decoded with FFmpeg's LGPL Bink decoders, and how it is checked.
+
+Some files and commands named on this page (`tests/`, `probe/`, `run.py`, `check_tape.sh`, `replay_session.py`, `PLAN.md`, `PARITY.md`, `tools/decomp.py`, `docs/release.md`, `tools/release_rc.py`) live only in the private working repository and are not in this public tree; they are named so that the description is complete. The decompilation's public export is [onslaught-decomp](https://github.com/dlprentice/onslaught-decomp).
 
 Replaces port/platform/common/bink.cpp (the platform's stand-in, which could not open a file; `build.py`
 drops it when this directory has sources), with the same 13 names and calling convention as src/binkapi.h.

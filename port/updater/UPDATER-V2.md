@@ -1,10 +1,12 @@
 # Onslaught CE updater v2
 
 Status: active — released in 0.1.8 (2026-10-27); the v2 feed is published on the latest release
-Last updated: 2026-10-28 (dialogs shown by a child process, with a terminal fallback)
+Last updated: 2026-10-29 (private-tree references marked; earlier: 2026-10-28 (dialogs shown by a child process, with a terminal fallback))
 Summary: how 0.1.8 brings automatic updates back without the 0.1.0–0.1.6 hazard: a new signed feed that old
 launchers never fetch, a versioned install layout switched by one atomic state-file replacement, and deletion only
 of what the updater itself created and recorded.
+
+Some files and commands named on this page (`tests/`, `probe/`, `run.py`, `check_tape.sh`, `replay_session.py`, `PLAN.md`, `PARITY.md`, `tools/decomp.py`, `docs/release.md`, `tools/release_rc.py`) live only in the private working repository and are not in this public tree; they are named so that the description is complete. The decompilation's public export is [onslaught-decomp](https://github.com/dlprentice/onslaught-decomp).
 
 ## The hazard this replaces
 
