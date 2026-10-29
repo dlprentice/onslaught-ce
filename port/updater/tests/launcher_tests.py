@@ -39,7 +39,8 @@ fi
 echo "a mounted drive: /run/media/${USER:-}/Games and $HOME/x but not ${HOME}y"
 case "${FAKE:-}" in
   big) yes 'a line of game output, sixty-four bytes long, to fill the log up' | head -c 5000000 >&2 ;;
-  segv) kill -SEGV $$ ;;
+  # SIGSEGV from a helper that has switched dumping off (PR_SET_DUMPABLE 4): no core file, no systemd-coredump record, no crash toast
+  segv) exec "${STAND_IN_PYTHON:-python3}" -c 'import ctypes, os, signal; ctypes.CDLL(None).prctl(4, 0, 0, 0, 0); os.kill(os.getpid(), signal.SIGSEGV)' ;;
 esac
 # A fixture tape and the recorder's exact publication acknowledgement, not evidence of gameplay recording.
 if [ -n "${BEA_PORT_RECORD:-}" ] && [ -z "${BEA_PORT_TAPE:-}" ]; then
@@ -83,9 +84,9 @@ class Launcher(unittest.TestCase):
         e = {k: v for k, v in os.environ.items()
              if k not in ("DISPLAY", "WAYLAND_DISPLAY", "XDG_DATA_HOME", "BEA_PORT_TAPE", "BEA_PORT_RECORD", "BEA_PORT_CLOCK")}
         e.update(HOME=str(self.home), BEA_USER_DIR=str(self.user), BEA_GAME_DIR=INSTALL, BEA_NO_UPDATE_CHECK="1",
-                 BEA_REPORT_NO_OPEN="1", LD_LIBRARY_PATH=str(deps.PREFIX / "lib"))
+                 BEA_REPORT_NO_OPEN="1", LD_LIBRARY_PATH=str(deps.PREFIX / "lib"), STAND_IN_PYTHON=sys.executable)
         e.update(env)
-        # no core file from the stand-in's SIGSEGV
+        # no core file from the stand-in's SIGSEGV (RLIMIT_CORE only stops the file: the stand-in also switches dumping off)
         return subprocess.run([str(self.tmp / "bin/onslaught-ce-launch"), *args], env=e, capture_output=True, text=True,
                               stdin=subprocess.DEVNULL, preexec_fn=lambda: resource.setrlimit(resource.RLIMIT_CORE, (0, 0)))
 

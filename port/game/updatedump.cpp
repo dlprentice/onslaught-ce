@@ -18,6 +18,9 @@
 #include "eventmanager.h"
 #include "thing.h"
 #include "SeedUniformRandomNumberStream.h"
+#ifdef CE_COMMANDER_TEST
+#include "ce_commander.h"
+#endif
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -120,6 +123,9 @@ static void SessionGameUpdate()
 
 void PortUpdateHook()
 {
+#ifdef CE_COMMANDER_TEST
+	CeCommanderUpdate();		// the commander order prototype (ce_commander.cpp): returns at once unless its proof switch is set
+#endif
 	SessionGameUpdate();
 	if (!gInit)
 	{

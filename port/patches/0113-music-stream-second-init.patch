@@ -1,0 +1,30 @@
+--- a/PCMusicStream.cpp
++++ b/PCMusicStream.cpp
+@@ -48,6 +48,7 @@
+ 
+ void	PlayMusicStream(char *filename);
+ void	StopMusicStream();
++void	ShutdownMusicStream();			// Port (patch 0113): InitMusicStream shuts an earlier stream down first
+ bool	PortClockVirtual();				// Port (patch 0035): port/platform/common/clock.cpp
+ static int	MusicStreamHandle(DWORD result);
+ #ifdef CE_VERSION
+@@ -287,6 +288,19 @@
+ // Near miss: statement and local-layout order of the buffer description not yet reproduced.
+ void	InitMusicStream()	// FUNCTION: 0x005282b0
+ {
++	// Port (patch 0113): a second initialisation shuts the first stream down. Saved options that differ from the
++	// defaults in a sound setting make WinMain's options load re-initialise the sound before the window exists
++	// (ReinitialiseSound, which also starts the front end's track), and CSystem::Init then initialises the music again.
++	// This function used to replace the buffer, events, worker and reader without stopping the first stream, which
++	// went on looping while its worker refilled the new buffer. Whether Windows' DirectSound lets that window-less
++	// first initialisation succeed is not measured; the port's does.
++	if (sBuffer)
++	{
++#ifdef CE_VERSION
++		PortSessionLog(PORT_SESSION_MUSIC, false, "stream re-initialised: the earlier stream is shut down first");
++#endif
++		ShutdownMusicStream();
++	}
+ #ifdef CE_VERSION
+ 	// Cache admission on the main thread before creating a worker. Faithful/private paths retain their behavior.
+ 	sCeStreamAdmission = PortCeLayer();

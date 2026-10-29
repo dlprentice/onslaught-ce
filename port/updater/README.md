@@ -27,7 +27,7 @@ a new version into `versions/` inside its own folder and switches to it with one
 folder's own files and everything beside it are never touched, and nothing is deleted by name pattern. `--update-only`
 checks now without starting the game, `--rollback` returns to the previous version, `BEA_NO_UPDATE_CHECK=1`,
 `update_check=0` in `ce.ini` or `--no-update-check` turn checking off, and `--apply` is refused with 2. The design,
-exit statuses and tests are in [UPDATER-V2.md](UPDATER-V2.md); no v2 feed is published yet.
+exit statuses and tests are in [UPDATER-V2.md](UPDATER-V2.md); the signed v2 feed is published with every release since 0.1.8.
 
 Moving from 0.1.0–0.1.6 stays manual: download a corrected release and extract it into a **new empty folder**.
 Preserve the whole previous installation, its neighboring backup/staging folders and its user data. A relative

@@ -448,6 +448,9 @@ def main():
                     help="the public build: NvTriStrip compiled out (port/platform/public); use a separate worktree, as its\n"
                          "objects differ")
     ap.add_argument("--ce-version", default="dev", help="the public build's version (Onslaught CE VX.Y; the release tag)")
+    ap.add_argument("--commander-test", action="store_true",
+                    help="the commander order prototype: a test build, never shipped (its source is not in the public tree);\n"
+                         "use a separate worktree, as its objects differ")
     ap.add_argument("files", nargs="*")
     a = ap.parse_args()
     if a.system_clang:
@@ -471,6 +474,8 @@ def main():
         for t in TARGETS.values():
             t["cxx"] += maps
             t["cc"] += maps
+    if a.commander_test:
+        CE_DEFINES.append("-DCE_COMMANDER_TEST=1")
     sources = build_mirror()
     if a.files:
         want = {f.lower().replace("\\", "/").removeprefix("src/") for f in a.files}

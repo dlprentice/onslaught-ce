@@ -5,11 +5,17 @@
 #define _GNU_SOURCE
 #include <signal.h>
 #include <spawn.h>
+#ifdef __linux__
+#include <sys/prctl.h>
+#endif
 
 int posix_spawn(pid_t *pid, const char *path, const posix_spawn_file_actions_t *fa, const posix_spawnattr_t *attr,
 				char *const argv[], char *const envp[])
 {
 	(void)pid; (void)path; (void)fa; (void)attr; (void)argv; (void)envp;
+#ifdef PR_SET_DUMPABLE
+	prctl(PR_SET_DUMPABLE, 0);	/* no core file and no systemd-coredump record from this deliberate crash (RLIMIT_CORE only stops the file) */
+#endif
 	raise(SIGSEGV);
 	return -1;
 }

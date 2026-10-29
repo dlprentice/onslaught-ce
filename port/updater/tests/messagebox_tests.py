@@ -31,6 +31,7 @@ LAUNCHER = deps.WORK / "build/linux/onslaught-ce-launch"
 XVFB = os.environ.get("XVFB") or shutil.which("Xvfb")
 INSTALL = os.environ.get("BEA_GAME_DIR") or str(Path.home() / ".local/share/Steam/steamapps/common/Battle Engine Aquila")
 XRANDR32 = [p for p in ("/usr/lib32/libXrandr.so.2", "/usr/lib/i386-linux-gnu/libXrandr.so.2") if os.path.exists(p)]
+NEEDS_XRANDR32 = unittest.skipUnless(XRANDR32, "SDL's own dialog needs the 32-bit libXrandr; absent here")
 QUIT = "onslaught-ce: no supported Battle Engine Aquila install was chosen"
 NOBODY = "onslaught-ce: could not find Battle Engine Aquila in Steam's libraries; set BEA_GAME_DIR to its folder"
 ZENITY = "#!/bin/sh\nif [ \"$1\" = --version ]; then echo 4.0.0; exit 0; fi\n%s\n"
@@ -193,6 +194,7 @@ class MessageBox(unittest.TestCase):
         self.assertIn(QUIT, err)
         self.assertNotIn("message box", err)
 
+    @NEEDS_XRANDR32
     def test_no_zenity_uses_sdls_own_dialog(self):
         # 0.1.8 and 0.1.9 crashed here (SIGSEGV in SDL's X11 dialog) when the 32-bit libXrandr was missing.
         rc, err = self.run_launcher(key=ESCAPE)
@@ -200,6 +202,7 @@ class MessageBox(unittest.TestCase):
         self.assertIn(QUIT, err)
         self.assertNotIn("message box", err)
 
+    @NEEDS_XRANDR32
     def test_zenity_errors_then_sdls_own_dialog(self):
         self.zenity("exit 255")  # an error: SDL falls back to its own dialog
         rc, err = self.run_launcher(key=ESCAPE)
