@@ -567,7 +567,7 @@ static void photo() {
     clear(); command("photo on now");
     check(!photoOn && printed("Usage: photo"), "photo takes one word at most");
     photoAvailable = false; clear(); command("photo on");
-    check(!photoOn && printed("Photo mode is temporarily unavailable. F12 saves a screenshot."), "photo mode refusal is said so");
+    check(!photoOn && printed("Photo mode is unavailable here."), "photo mode refused here is said so");
     photoAvailable = true;
     clear(); command("help photo");
     check(printed("photo [on|off]") && printed("F12 saves a screenshot"), "help photo names the keys");

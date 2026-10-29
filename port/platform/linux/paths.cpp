@@ -257,8 +257,9 @@ int PortResolvePath(const char *game_path, PortPathMode mode, char *out, size_t 
 	return 0;
 }
 
-// Resolve spelling without creating anything, then open every parent through the protected descriptor walk.
-static int UserParent(const char *game_path, char *leaf, size_t n, bool create)
+// Resolve spelling without creating anything, then open every parent through the protected descriptor walk. The result is an
+// O_PATH descriptor of the folder that holds the file (see handles.h) and `leaf` receives the file's name in it.
+int PortUserParent(const char *game_path, char *leaf, size_t n, bool create)
 {
 	char path[4096];
 	if (PortResolvePath(game_path, PORT_PATH_WRITE, path, sizeof(path)) != 0)
@@ -328,7 +329,7 @@ int PortOpenUserFile(const char *game_path, int flags, bool copy_original)
 			}
 		}
 	}
-	int parent = UserParent(game_path, leaf, sizeof(leaf), true);
+	int parent = PortUserParent(game_path, leaf, sizeof(leaf), true);
 	if (parent < 0)
 	{
 		if (in >= 0)
@@ -432,7 +433,7 @@ int PortOpenUserFile(const char *game_path, int flags, bool copy_original)
 int PortDeleteUserFile(const char *game_path)
 {
 	char leaf[256];
-	int parent = UserParent(game_path, leaf, sizeof(leaf), false);
+	int parent = PortUserParent(game_path, leaf, sizeof(leaf), false);
 	if (parent < 0)
 		return -1;
 	struct stat st;
@@ -445,7 +446,7 @@ int PortDeleteUserFile(const char *game_path)
 int PortMakeUserDirectory(const char *game_path)
 {
 	char leaf[256];
-	int parent = UserParent(game_path, leaf, sizeof(leaf), true);
+	int parent = PortUserParent(game_path, leaf, sizeof(leaf), true);
 	if (parent < 0)
 		return -1;
 	int result = mkdirat(parent, leaf, 0755), error = errno;

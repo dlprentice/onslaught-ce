@@ -1532,6 +1532,17 @@ void MediaSnapshot(const Buffer *target, const char *operation)
 
 } // namespace
 
+#ifdef CE_VERSION
+// The music worker owns the locked destination and keeps its buffer alive until this returns. Decode happens before
+// this call; the mixer lock protects only the bounded in-memory publication, never the file/decoder read.
+void PortAudioPublishMusicHalf(void *destination, const void *decoded, DWORD bytes)
+{
+	SDL_LockMutex(gMixer.lock);
+	memcpy(destination, decoded, bytes);
+	SDL_UnlockMutex(gMixer.lock);
+}
+#endif
+
 // Opaque caller values are compared with registered replacement buffers, never blindly dereferenced.
 bool PortAudioMediaRole(const void *target, PortSessionCategory category)
 {

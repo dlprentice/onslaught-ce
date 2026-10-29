@@ -441,6 +441,13 @@ const char *PortUserDir()
 
 extern "C" {
 
+// The writable-folder path (UTF-8) a write to game_path reaches, for save_replace.cpp. As every write does, it creates the
+// parent folders the game folder also has; it never creates the file. 0, or a Win32 error.
+unsigned PortResolveUserPath(const char *game_path, char *out, unsigned n)
+{
+	return Resolve(game_path, WRITE, out, n) == 0 ? 0 : ERROR_INVALID_NAME;
+}
+
 unsigned PortSaveLookupUtf16(const void *name, int *index)
 {
 	*index = -1;

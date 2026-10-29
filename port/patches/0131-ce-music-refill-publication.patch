@@ -1,0 +1,76 @@
+--- a/PCMusicStream.cpp
++++ b/PCMusicStream.cpp
+@@ -55,6 +55,22 @@
+ static bool sCeStreamAdmission, sCeStreamLockReady;
+ static bool sCeStreamPending, sCeStreamStopped;
+ static CRITICAL_SECTION sCeStreamLock;
++
++// Ordinary CE alone uses staged refills. Forced CE drawing in a replay/recording must retain the original path.
++static bool sPortSafeMusicRefill;
++static BYTE sPortMusicRefill[STREAM_HALF];
++void PortAudioPublishMusicHalf(void *, const void *, DWORD);
++static bool PortSafeMusicRefill()
++{
++	if (!PortCeLayer() || PortClockVirtual()) return false;
++	const char *names[] = {"BEA_PORT_CLOCK", "BEA_PORT_TAPE", "BEA_PORT_PROBES", "BEA_PORT_RECORD"};
++	for (const char *name : names)
++	{
++		const char *value = getenv(name);
++		if (value && *value) return false;
++	}
++	return true;
++}
+ 
+ // Port (patch 0058): requests and the whole worker operation share one recursive lock. Stop waits for an in-flight
+ // open/fill, then returns with no start left to run. The worker itself calls Stop on EOF/error, hence recursion.
+@@ -255,8 +271,26 @@
+ #ifdef CE_VERSION
+ 			CPortRefillObservation portRefillBefore=PortRefillObservation();
+ #endif
+-			sBuffer->Lock(offset, STREAM_HALF, &data1, &size1, &data2, &size2, 0);
+-			HRESULT portRead = sReader->Read(size1, (BYTE *)data1, &got);
++			HRESULT portLock = sBuffer->Lock(offset, STREAM_HALF, &data1, &size1, &data2, &size2, 0);
++#ifdef CE_VERSION
++			// This music buffer has two fixed, non-wrapping halves. Refuse an unexpected lock rather than writing
++			// directly into live mixer memory or overflowing the staging area.
++			if (sPortSafeMusicRefill && (FAILED(portLock) || size1 != STREAM_HALF || size2 != 0 || !data1))
++			{
++				if (SUCCEEDED(portLock)) sBuffer->Unlock(data1, size1, data2, size2);
++				PortSessionLog(PORT_SESSION_MUSIC, true, "music refill lock failed or had unexpected size");
++				StopMusicStream();
++				sReader->Close();
++				sSilentHalves = 0;
++				sBytesStreamed = 0;
++				SetMusicStreamFinished(true);
++				break;
++			}
++			BYTE *portData = sPortSafeMusicRefill ? sPortMusicRefill : (BYTE *)data1;
++#else
++			BYTE *portData = (BYTE *)data1;
++#endif
++			HRESULT portRead = sReader->Read(size1, portData, &got);
+ #ifdef CE_VERSION
+ 			PortSessionCount(PORT_COUNT_MUSIC_REFILLS);
+ 			if (got < size1) PortSessionCount(PORT_COUNT_MUSIC_SHORT_READS);
+@@ -264,9 +298,12 @@
+ #endif
+ 			if (got < size1)
+ 			{
+-				memset((BYTE *)data1 + got, 0, size1 - got);
++				memset(portData + got, 0, size1 - got);
+ 				sSilentHalves++;
+ 			}
++#ifdef CE_VERSION
++			if (sPortSafeMusicRefill) PortAudioPublishMusicHalf(data1, portData, size1);
++#endif
+ 			sBuffer->Unlock(data1, size1, data2, size2);
+ #ifdef CE_VERSION
+ 			PortRefillReport(offset,portRefillBefore);
+@@ -291,6 +328,7 @@
+ 	// Cache admission on the main thread before creating a worker. Faithful/private paths retain their behavior.
+ 	sCeStreamAdmission = PortCeLayer();
+ 	sPortRefillDiagnostics = PortSessionEnabled();
++	sPortSafeMusicRefill = PortSafeMusicRefill();
+ #endif
+ 	WAVEFORMATEX		wfx;
+ 	DSBUFFERDESC		desc;

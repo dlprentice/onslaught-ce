@@ -1307,7 +1307,7 @@ static int finish_recording(int game_status)
 }
 
 /* record_sessions=1: whether to record this start. The game's CE page, where the player switched recording on, is hidden
- * in a recorded session (its menus are the original game's, so the tape replays exactly), so the way to switch it off is
+ * in a recorded session (its menus are the original game's, so the tape can be replayed), so the way to switch it off is
  * here. Returns 1 to record; "Stop recording" also sets record_sessions=0. No dialog (no display): record, as set. */
 static int ask_record(void)
 {
@@ -1315,9 +1315,10 @@ static int ask_record(void)
 												{SDL_MESSAGEBOX_BUTTON_ESCAPEKEY_DEFAULT, 0, "Not this time"},
 												{0, 2, "Stop recording"}};
 	const SDL_MessageBoxData box = {SDL_MESSAGEBOX_INFORMATION, NULL, "Onslaught CE",
-		"Session recording is on. A recording keeps your keyboard and mouse input, and a copy of your careers and "
-		"settings as they were at the start, so a problem you report can be replayed exactly.\n\n"
-		"While recording, the game runs at 30 frames a second with the original menus (keyboard and mouse), so "
+		"Session recording is on. A recording keeps your keyboard and mouse input and copies some files from your "
+		"CE user folder, which can help reproduce a reported problem.\n\n"
+		"Direct gamepad and flight-stick controls are unavailable while recording; use the keyboard and mouse. "
+		"By default the game runs at 30 frames a second with the original menus, so "
 		"the Onslaught CE menu and cheats are hidden.\n\n"
 		"Record: record this session.\n"
 		"Not this time: play without recording; you will be asked again next time.\n"
@@ -1635,7 +1636,12 @@ int main(int argc, char **argv)
 		if (ini_record && ini_set("record_sessions", "0")) say("session recording switched off (record_sessions=0 in ce.ini)");
 	}
 	else if (record || (ini_record && (sReplay || ask_record())))	/* a replay: start_recording says why not */
+	{
 		start_recording(argv + first, argc - first);
+		/* The explicit CLI path may be unattended even with a display; do not add a blocking dialog there. */
+		if (*sRecordingPath)
+			say("Direct gamepad and flight-stick controls are unavailable while recording; use the keyboard and mouse.");
+	}
 	int rc = finish_recording(start_game(argv + first, argc - first, game));
 	log_close();
 	return rc;

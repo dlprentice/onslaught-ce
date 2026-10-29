@@ -65,12 +65,16 @@ player-facing tutorial run and a physical controller check remain open.
 
 ## Where it is off
 
-All of the above is CE behaviour. It is off in faithful builds and while a tape, recording, virtual clock or probe run is
-active (the trigger buttons as well), so recorded and compared runs keep retail's input exactly. In retail multiplayer
-the no-setup defaults are off (players use their Controller Options bindings); the CE bonus local co-op maps admit the
-defaults for each player. Hotplug, flight-stick detection and the trigger buttons still work in multiplayer.
-Controller input is not recorded by the keyboard-and-mouse tape format. There is no per-device profile. When enabled
-in eligible CE play, rumble (patch 0105, `game/ce_rumble.cpp`) goes to the controller slot numbered for the player
+The CE defaults and trigger buttons are off in faithful builds and while a tape, recording, virtual clock or probe run
+is active. In CE recordings and replays, gamepads report neutral input, including for saved joystick bindings; flight
+sticks that SDL does not recognize as gamepads are not offered. The keyboard-and-mouse tape format does not capture
+controller input. The mapped joystick value is also neutral while a legacy demo dispatches its recorded actions in a
+CE tape session; those action IDs still dispatch. Older tapes cannot recover controller input that was never recorded.
+Ordinary play and faithful builds retain their controller behavior. A clock or probe run without
+recording or replay does not apply this controller-input fence. In retail multiplayer the no-setup defaults are off
+(players use their Controller Options bindings); the CE bonus local co-op maps admit the defaults for each player.
+Hotplug, flight-stick detection and the trigger buttons still work in multiplayer. There is no per-device profile.
+When enabled in eligible CE play, rumble (patch 0105, `game/ce_rumble.cpp`) goes to the controller slot numbered for the player
 (slot 1 for player 1, slot 2 for player 2), not to whichever controller custom bindings name. Rumble is off during
 recording, replay, demo and network modes. CE sends rumble only to gamepads; a flight stick does not rumble.
 
@@ -81,7 +85,11 @@ after a focus transition is discarded because SDL can combine old and new motion
 source-coupled fakes; physical mouse and compositor behavior remain untested.
 
 `port/tools/input_lifetime_tests.py` checks the adapter and the extracted game input callers with SDL virtual gamepads:
-axis changes, trigger edges, unplug, and the replay and recording fences. It opens no game window.
+axis changes, trigger edges, unplug, and the replay and recording fences. A two-player hotplug case checks that one
+pad's disconnect does not discard the other pad's quick tap, and that a replacement arriving held does not invent a
+press. It opens no game window. SDL initialization may still discover host joystick devices; use a private device
+namespace with empty `/sys` and `/run` when host-device isolation is required. These virtual-device checks do not
+establish physical-controller or native Windows behavior.
 
 The test switch `BEA_PORT_FAKE_PAD` attaches an SDL virtual gamepad (or, with `BEA_PORT_FAKE_PAD_KIND=stick`, a
 flight stick) and drives it by Present count, including `attach` and `detach` (`BEA_PORT_FAKE_PAD_LATE=1` starts

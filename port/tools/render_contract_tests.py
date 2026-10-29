@@ -123,6 +123,7 @@ struct FVector {
     FVector &operator+=(FVector v) { X+=v.X; Y+=v.Y; Z+=v.Z; return *this; }
     float Azimuth() const { return std::atan2(X,Y); }
     float Elevation() const { return 0; }
+    float ElevationYZX() const { return 0; }
 };
 struct FMatrix {
     FMatrix()=default;

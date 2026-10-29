@@ -70,5 +70,8 @@ const char *PortUserDir();
 int PortOpenUserFile(const char *game_path, int flags, bool copy_original);
 int PortDeleteUserFile(const char *game_path);
 int PortMakeUserDirectory(const char *game_path);
+// The folder that holds a writable file, opened without following links beneath the user root (created when `create`: only
+// folders the game folder also has). An O_PATH descriptor, so it can base openat/renameat but not fsync. 0 or -1 with errno.
+int PortUserParent(const char *game_path, char *leaf, size_t n, bool create);
 
 #endif

@@ -39,8 +39,9 @@ def music_sources(out, fixed):
     for name in names:
         shutil.copyfile(ROOT / "src" / name, out / name)
     for patch in sorted((ROOT / "port/patches").glob("*.patch")):
-        # The negative control leaves out 0062, and 0103 (the CE playlist), which is written on 0062's poll.
-        if not fixed and patch.name in ("0062-music-finished-poll.patch", "0103-ce-music-playlist.patch"):
+        # The negative control leaves out 0062 and later patches which depend on that worker/poll shape.
+        if not fixed and patch.name in ("0062-music-finished-poll.patch", "0103-ce-music-playlist.patch",
+                                        "0131-ce-music-refill-publication.patch", "0132-ce-music-refill-order-diagnostics.patch"):
             continue
         sections = [part for part in re.split(r"(?=^--- a/)", patch.read_text(), flags=re.M)
                     if any(part.startswith("--- a/" + name + "\n") for name in names)]
@@ -95,7 +96,8 @@ def main():
         shutil.copyfile(ROOT / "port/platform/common/portlog.h", header)
         if variant == "before":
             checked(["patch", "--batch", "--fuzz=0", "-p1", "-i", str(ROOT / "port/tools/tests/audio_lifecycle_baseline.patch")], cwd=source.parent)
-            if sha(source) != "7ff6346a53fedc7ed6c7496fde083117fb8b21e3fefa583f32c0651684fba036":
+            # This frozen pre-lifecycle mixer also carries the separately guarded CE refill publisher.
+            if sha(source) != "e845d1ac13f7227f3bdeda5716dabaa4bd28acf6afb069d4fe15dea57f5e60be":
                 raise RuntimeError("negative control no longer matches the frozen production mixer")
         binary = folder / "driver"
         command = [args.compiler, *flags, '-DMIXER_SOURCE="' + str(source) + '"',

@@ -17,6 +17,7 @@ int CountedRand() { ++draws; return std::rand(); }
 static bool recording = false;
 bool PortRecording() { return recording; }
 extern "C" bool SDL_OpenURL(const char *) { return false; }	// ce.cpp's report page, never called here
+extern "C" unsigned long long SDL_GetTicks(void) { return 0; }	// ce.cpp's settings retry clock, never read here
 bool PortSessionEnabled() { return false; }
 void PortSessionLog(PortSessionCategory, bool, const char *, ...) {}
 

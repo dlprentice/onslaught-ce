@@ -88,7 +88,8 @@ def main():
             (folder / 'admission.inc').write_text(session); (folder / 'ce-admission.inc').write_text(admission)
             if variant == 'before':
                 run(['patch', '--batch', '--fuzz=0', '-p1', '-i', ROOT / 'port/tools/tests/audio_media_baseline.patch'], 'restore-before', cwd=source.parent)
-                assert sha(source) == '553930734263e5937f7854e1666f5c2edd9f7e0c07a42290cfa484c324252a59'  # verified below against original commit
+                # The frozen pre-observation mixer also carries the independently guarded refill publisher.
+                assert sha(source) == '7f2f61e8909c2e63c6c13de4522dc501b56da6ae0bbab887bf95b7ab7e752479'
             if mutation:
                 name, old, new, _, _ = mutation; p = folder / name; text = p.read_text()
                 assert text.count(old) == (2 if variant == 'no-lifetime-epoch' else 1), (variant, old); p.write_text(text.replace(old, new))

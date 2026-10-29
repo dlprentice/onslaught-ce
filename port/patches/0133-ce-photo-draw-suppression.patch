@@ -1,0 +1,82 @@
+--- a/DXEngine.cpp
++++ b/DXEngine.cpp
+@@ -4,6 +4,9 @@
+ 
+ #include "../platform/common/portlog.h"
+ #include "common.h"
++#ifdef CE_VERSION
++#include "../game/ce_photo.h"	// patch 0133: CE photo mode drops the HUD routines' draw calls
++#endif
+ 
+ #ifdef _DIRECTX
+ 
+@@ -604,8 +607,8 @@
+ 	//*****************************************
+ 	//** Render Cockpit
+ 
+-#if defined(DEV_VERSION) || defined(CE_VERSION)
+-	if(!CLIPARAMS.mKillHUD)		// patch 0108: CE photo mode sets the developer build's -killhud (port/game/ce_photo.cpp)
++#ifdef DEV_VERSION
++	if(!CLIPARAMS.mKillHUD)
+ #endif
+ 	{
+ 		if (player)
+@@ -622,6 +625,9 @@
+ 	//			LT.SRS(D3DRS_LIGHTING,TRUE);
+ 				RENDERINFO.SetLightingEnabled(TRUE);
+ 				
++#ifdef CE_VERSION
++				CePhotoDrawScope photoDraw;	// patch 0133: photo mode drops the cockpit's draw calls; its routines run in full
++#endif
+ 				be->GetCockpit()->Render() ;
+ 				RENDERQUEUE.Render();
+ 				RENDERINFO.SetLightingEnabled(FALSE);
+@@ -1175,15 +1181,19 @@
+ 			if (player)
+ 			{
+ 				if ((GAME.GetCamera(i)->GetShowHUD()))
+-#ifdef CE_VERSION
+-				if (!CLIPARAMS.mKillHUD)	// patch 0108: photo mode hides the battle line, as a camera showing no HUD does
+-#endif
+ 					render=TRUE;
+ 			}
+ 		}
+ 
+ 		if (render)
++#ifdef CE_VERSION
++		{
++			CePhotoDrawScope photoDraw;	// patch 0133: photo mode drops the battle line's draw calls; its routine runs in full
++#endif
+ 			HUD.RenderBattleline(viewport);
++#ifdef CE_VERSION
++		}
++#endif
+ 		if (PortWideActive())
+ 			HUD_OFFSET_X = portHudOffset;	// Port (patch 0043): the menus below are the virtual screen's
+ 
+--- a/Hud.cpp
++++ b/Hud.cpp
+@@ -4,7 +4,7 @@
+ #include	"common.h"
+ #include "hud_scale.h"
+ #ifdef CE_VERSION
+-#include	"CLIParams.h"	// patch 0108: CE photo mode's mKillHUD
++#include "../game/ce_photo.h"	// patch 0133: CE photo mode drops the HUD overlay's draw calls
+ #endif
+ 
+ #include	"Hud.h"
+@@ -2150,9 +2150,13 @@
+ 		CPlayer *player = ENGINE.GetPlayerForViewpoint(i);
+ 		if (player && GAME.GetCamera(i)->GetShowHUD())
+ #ifdef CE_VERSION
+-		if (!CLIPARAMS.mKillHUD)	// patch 0108: CE photo mode draws what a camera showing no HUD draws
++		{
++			CePhotoDrawScope photoDraw;	// patch 0133: photo mode drops the overlay's draw calls; its routines run in full
+ #endif
+ 			RenderOverlayForViewpoint(player, i);
++#ifdef CE_VERSION
++		}
++#endif
+ 	}
+ 
+ 	RENDERINFO.SetLightingEnabled(true);

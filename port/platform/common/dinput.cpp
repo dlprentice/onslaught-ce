@@ -86,7 +86,8 @@ bool SDLCALL PadWatch(void *, SDL_Event *e)
 }
 #endif
 
-// CE input additions leave faithful, replay, recording and probe paths unchanged even if the CE layer is forced on.
+// CE input additions are off in faithful, replay, recording and probe paths even if the CE layer is forced on.
+// A separate tape fence below neutralizes unrecorded joystick state in CE recordings and replays.
 bool OrdinaryCeInput()
 {
 #if defined(CE_VERSION)
@@ -107,6 +108,14 @@ bool OrdinaryCeInput()
 bool BindableGamepadTriggers() { return OrdinaryCeInput(); }
 
 #ifdef CE_VERSION
+// A session tape carries keyboard and mouse events, not joystick state. Do not let a connected pad or
+// flight stick change a recording or its replay through a saved joystick binding.
+bool TapeOwnsControllerInput()
+{
+	const char *tape = getenv("BEA_PORT_TAPE"), *record = getenv("BEA_PORT_RECORD");
+	return (tape && *tape) || (record && *record);
+}
+
 // An invalid SDL value must not cause an out-of-range float-to-integer conversion or poison later input.
 LONG CeMouseDelta(float delta, float &remainder)
 {
@@ -617,6 +626,19 @@ struct Device : public IDirectInputDevice8A
 		{
 			FakePadStep();
 			Rebind(this);
+#ifdef CE_VERSION
+			if (TapeOwnsControllerInput() && size >= sizeof(DIJOYSTATE))
+			{
+				// Keep the device and its configured range, but report a released, centered pad.
+				// The tape owns only keyboard/mouse input; neither a held stick nor a button can add
+				// an unrecorded action. Other modes, including ordinary and faithful play, are unchanged.
+				DIJOYSTATE2 *j = (DIJOYSTATE2 *)data;
+				LONG centre = rangeMin + (rangeMax - rangeMin) / 2;
+				j->lX = j->lY = j->lZ = j->lRx = j->lRy = j->lRz = centre;
+				for (int i = 0; i < 4; ++i) j->rgdwPOV[i] = 0xFFFFFFFF;
+				return DI_OK;
+			}
+#endif
 		}
 		if (kind == KEYBOARD)
 		{
@@ -1118,6 +1140,12 @@ struct Input : public IDirectInput8A
 }
 
 #ifdef CE_VERSION
+// Controller.cpp also uses this fence before interpreting saved joystick mappings, including legacy demo playback.
+extern "C" bool PortCeTapeOwnsControllerInput()
+{
+	return TapeOwnsControllerInput();
+}
+
 // The tutorial asks what the already-bound SDL device can actually read. In particular an empty placeholder slot is
 // not a connected gamepad, and a flight stick need not have a twist axis or all the buttons in the default preset.
 extern "C" int PortCeTutorialPadInfo(void *device, CeTutorialPadInfo *info)

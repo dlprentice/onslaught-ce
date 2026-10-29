@@ -34,7 +34,7 @@ Native Linux, native Windows, or the Windows package under Wine or Proton (which
 - Please attach `onslaught-ce.log` from your user folder: `~/.local/share/onslaught-ce` (Linux) or
   `%APPDATA%\Onslaught CE` (Windows). `onslaught-ce.old.log` beside it is the run before.
 - Optional: if you recorded the session (`onslaught-ce --record`, or `record_sessions=1` in `ce.ini`), put its `.tape`
-  and `.tape.json` from the `tapes` folder in a zip and attach that too. It lets us replay exactly what happened.
+  and `.tape.json` from the `tapes` folder in a zip and attach that too. It can help us reproduce what happened.
 
 **System**
 

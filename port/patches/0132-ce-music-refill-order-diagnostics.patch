@@ -1,0 +1,128 @@
+--- a/PCMusicStream.cpp
++++ b/PCMusicStream.cpp
+@@ -91,6 +91,8 @@
+ // never read the observation clock, cursor, voice list or diagnostic sequence. This is underrun risk, not audibility.
+ bool PortAudioStreamSnapshot(IDirectSoundBuffer *, unsigned long long *, unsigned long long *, unsigned *, unsigned *);
+ static bool sPortRefillDiagnostics;
++static bool sPortRefillOrderKnown, sPortRefillOrderPending;
++static unsigned sPortRefillExpectedHalf, sPortRefillOrderLines;
+ static unsigned sPortRefillSequence, sPortRefillNormalLines, sPortRefillRiskLines;
+ static unsigned long long sPortRefillLastNs;
+ struct CPortRefillObservation
+@@ -105,6 +107,26 @@
+     if (sPortRefillDiagnostics)
+         out.playing=PortAudioStreamSnapshot(sBuffer,&out.ns,&out.mixed,&out.voices,&out.play);
+     return out;
++}
++static void PortRefillForget()
++{
++    if (!sPortRefillDiagnostics) return;
++    sPortRefillOrderKnown = false;
++    sPortRefillOrderPending = false;
++}
++// Worker-only observation of accepted refill wakes. An anomaly says nothing about audible output; event coalescing
++// and bounded logs mean absence cannot rule out missed wakes. The CE stream guard owns this state.
++static void PortRefillOrder(DWORD offset)
++{
++    if (!sPortRefillDiagnostics || !sPortRefillOrderKnown) return;
++    unsigned half = offset / STREAM_HALF;
++    if (half == sPortRefillExpectedHalf) { sPortRefillExpectedHalf ^= 1u; return; }
++    sPortRefillOrderKnown = false;
++    if (sPortRefillOrderLines >= 8u) return; // bounded for the process as well as once per playback epoch
++    ++sPortRefillOrderLines;
++    PortSessionLog(PORT_SESSION_MUSIC, false,
++        "refill order anomaly expected_half=%u handled_half=%u (handled wakes only; audible output unknown)",
++        sPortRefillExpectedHalf, half);
+ }
+ static void PortRefillReport(DWORD offset,const CPortRefillObservation &before)
+ {
+@@ -144,6 +166,7 @@
+ 		{
+ #ifdef CE_VERSION
+ 			DWORD portError = GetLastError();
++			if (sPortRefillDiagnostics) { CPortMusicStreamGuard guard; PortRefillForget(); }
+ 			PortSessionCount(PORT_COUNT_MUSIC_WAIT_FAILED);
+ 			PortSessionLog(PORT_SESSION_MUSIC, true, "worker wait failed error=%lu", (unsigned long)portError);
+ #endif
+@@ -178,7 +201,10 @@
+ 			ResetEvent(sPlayEvent);
+ 		}
+ 		else if ((result == 1 || result == 2) && (sCeStreamStopped || sCeStreamPending))
++		{
++			PortRefillForget(); // this consumed wake is not handled, so subsequent order is unknown
+ 			return 0; // a consumed refill from the stopped/replaced track cannot cancel the new request
++		}
+ 	}
+ #endif
+ 	DWORD	offset;
+@@ -236,6 +262,13 @@
+ #ifdef CE_VERSION
+ 				PortSessionAsset(PORT_SESSION_MUSIC, "buffer start", sTrackName, portPlay);
+ 				if (SUCCEEDED(portPlay)) PortSessionMediaActive(PORT_SESSION_MUSIC, sBuffer, true);
++				if (sPortRefillDiagnostics)
++				{
++					// Play may report success without a voice. The existing first-refill snapshot will decide whether
++					// the new voice actually plays; until then its handled-wake order stays unknown.
++					sPortRefillOrderKnown = false;
++					sPortRefillOrderPending = SUCCEEDED(portPlay);
++				}
+ #endif
+ 				sBytesStreamed += size1;
+ 			}
+@@ -304,15 +337,37 @@
+ #ifdef CE_VERSION
+ 			if (sPortSafeMusicRefill) PortAudioPublishMusicHalf(data1, portData, size1);
+ #endif
++#ifdef CE_VERSION
++			HRESULT portUnlock = sBuffer->Unlock(data1, size1, data2, size2);
++			if (sPortRefillDiagnostics)
++			{
++				// A failed read/unlock or missing voice leaves wake history uncertain. Reuse the existing
++				// pre-refill snapshot; do not add a callback, mixer or clock observation.
++				if (FAILED(portRead) || FAILED(portUnlock) || !portRefillBefore.playing)
++					PortRefillForget();
++				else
++				{
++					if (sPortRefillOrderPending)
++					{
++						sPortRefillOrderPending = false;
++						sPortRefillOrderKnown = true;
++						sPortRefillExpectedHalf = 0;
++					}
++					PortRefillOrder(offset);
++				}
++			}
++			PortRefillReport(offset,portRefillBefore);
++#else
+ 			sBuffer->Unlock(data1, size1, data2, size2);
+-#ifdef CE_VERSION
+-			PortRefillReport(offset,portRefillBefore);
+ #endif
+ 			sBytesStreamed += size1;
+ 			break;
+ 
+ 		}
+ 		case 3:		// shut down
++#ifdef CE_VERSION
++			PortRefillForget(); // quit also retires the guarded observation
++#endif
+ 			sThreadAwake = FALSE;
+ 			return 1;
+ 		}
+@@ -328,6 +383,8 @@
+ 	// Cache admission on the main thread before creating a worker. Faithful/private paths retain their behavior.
+ 	sCeStreamAdmission = PortCeLayer();
+ 	sPortRefillDiagnostics = PortSessionEnabled();
++	sPortRefillOrderKnown = false;
++	sPortRefillOrderPending = false;
+ 	sPortSafeMusicRefill = PortSafeMusicRefill();
+ #endif
+ 	WAVEFORMATEX		wfx;
+@@ -508,6 +565,7 @@
+ {
+ #ifdef CE_VERSION
+ 	CPortMusicStreamGuard guard;
++	PortRefillForget(); // stop invalidates this observation while the stream guard is held
+ 	if (sCeStreamLockReady)
+ 	{
+ 		sCeStreamPending = false;

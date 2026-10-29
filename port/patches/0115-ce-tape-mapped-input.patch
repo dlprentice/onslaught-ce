@@ -1,0 +1,23 @@
+--- a/Controller.cpp
++++ b/Controller.cpp
+@@ -13,6 +13,7 @@
+ 
+ #if defined(CE_VERSION)
+ extern "C" BOOL PortGetMouseClientPosition(POINT *position);
++extern "C" bool PortCeTapeOwnsControllerInput();
+ void PortCeGamepadUpdateAll(int consumer);						// port/game/ce_gamepad.cpp (patch 0106)
+ int PortCeGamepadInputs(int id, int pad, SControlInput *out);
+ // CE (patch 0106): the control a centred mouse axis was last sent to; its zero does not hold off a gamepad's value.
+@@ -708,6 +709,12 @@
+ // retail: the sticks and hat through a dead zone of 0.15, the rest scaled to reach 1; buttons give 0 or 1
+ float CController::GetMappedInputValue(int pad_number, int button)	// FUNCTION: 0x0042e3d0
+ {
++#if defined(CE_VERSION)
++	// Tape input has no joystick values. A missing/disabled pad can otherwise have a zeroed POV interpreted as up;
++	// legacy demo playback still dispatches its recorded action, but never reads an unrecorded live joystick value.
++	if (PortCeTapeOwnsControllerInput())
++		return 0.0f;
++#endif
+ 	float val;
+ 	switch (button)
+ 	{

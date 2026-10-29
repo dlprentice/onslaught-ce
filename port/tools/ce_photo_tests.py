@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-only
-"""CE photo mode (port/game/ce_photo.cpp, patch 0108) and its screenshot writer (port/platform/common/ce_screenshot.cpp).
+"""CE photo mode (port/game/ce_photo.cpp, patches 0108 and 0133) and its screenshot writer (port/platform/common/ce_screenshot.cpp).
 
-- The patch: where its gates sit in the patched DXEngine.cpp, Hud.cpp, ltshell.cpp and game.cpp, and that the faithful
-  build's view of those files (CE_VERSION and DEV_VERSION undefined) is unchanged by it.
+- The patches: where their hooks sit in the patched DXEngine.cpp, Hud.cpp, ltshell.cpp and game.cpp (the HUD overlay, the battle
+  line and the cockpit routines each run inside a draw scope, and nothing skips them), and that the faithful build's view of
+  those files (CE_VERSION and DEV_VERSION undefined) is unchanged by them. The filter that scope switches is
+  photo_draw_filter_tests.py.
 - Photo mode itself with the real patched message handler against the console's authored fakes (ce_photo_driver.cpp):
-  F11 and F12 and who owns them, the disabled HUD switch, the note kept out of a saved frame, the fences,
-  level end and the proof switch.
+  F11 and F12 and who owns them, the draw filter switched with photo mode and the scope that opens it, the developer
+  -killhud field left alone, the note kept out of a saved frame, the fences, level end and the proof switch.
 - The writer on the pinned SDL library (ce_screenshot_driver.cpp), one case per process: the pixels of the PNG it wrote,
   decoded here, for each back buffer format; never replacing a file or following a link; the folder bounds; a write
   refused part way leaves nothing.
@@ -32,7 +34,7 @@ from ce_palette_tests import function, no_core, sections, SANITIZE  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 PATCHES = ROOT / "port/patches"
-PATCH = "0108-ce-photo-mode.patch"
+PATCH_NAMES = ("0108-ce-photo-mode.patch", "0133-ce-photo-draw-suppression.patch")
 PHOTO = ROOT / "port/game/ce_photo.cpp"
 PHOTO_H = ROOT / "port/game/ce_photo.h"
 WRITER = ROOT / "port/platform/common/ce_screenshot.cpp"
@@ -47,9 +49,9 @@ NAME = re.compile(r"^onslaught-ce-\d{8}-\d{6}(-\d+)?\.png$")
 STATUS = {"SAVED": 0, "FORMAT": -1, "SIZE": -2, "FOLDER": -3, "FULL": -4, "ENCODE": -5, "WRITE": -6, "NAME": -7}
 
 
-def patched(out, names, skip=None):
+def patched(out, names, skip=()):
     """src/ copies of names in out/src, normalised as the build's mirror is, with every port patch's section for them
-    applied in order (skip: one patch left out)."""
+    applied in order (skip: patches left out)."""
     mirror = out / "src"
     mirror.mkdir(parents=True, exist_ok=True)
     build.SYSTEM_NAMES.update(build.system_header_names())
@@ -58,7 +60,7 @@ def patched(out, names, skip=None):
         source = (ROOT / "src" / name).read_bytes().decode("latin-1")
         (mirror / name).write_bytes(build.normalise(source, mirror, index, [mirror, mirror / "MissionScript"]).encode("latin-1"))
     for patch in sorted(PATCHES.glob("*.patch")):
-        if patch.name == skip:
+        if patch.name in skip:
             continue
         parts = sections(patch.read_text(encoding="latin1"))
         for name in names:
@@ -116,13 +118,16 @@ def placed(files):
         "F11 and F12 are offered to photo mode before the console"
     engine = files["DXEngine.cpp"]
     late = function(engine, "static void draw_fairly_late_stuff(")
-    gate = late.index("#if defined(DEV_VERSION) || defined(CE_VERSION)\n\tif(!CLIPARAMS.mKillHUD)")
-    assert gate < late.index("be->GetCockpit()->Render()"), "the cockpit is behind -killhud in CE builds"
+    assert "#ifdef DEV_VERSION\n\tif(!CLIPARAMS.mKillHUD)\n#endif\n" in late, "the cockpit keeps the developer build's own -killhud test, as src/ has it"
+    assert "CE_VERSION)" not in late.split("be->GetCockpit()")[0].split("Render Cockpit")[1], "photo mode does not open the cockpit's -killhud test"
+    cockpit = re.search(r"\(player->ShouldRenderInternalCockpit\(\) == TRUE\)\)\n(.*?)be->GetCockpit\(\)->Render\(\) ;\n\t+RENDERQUEUE\.Render\(\);", late, re.S)
+    assert cockpit and re.search(r"RENDERINFO\.SetLightingEnabled\(TRUE\);\s*\n#ifdef CE_VERSION\n\t+CePhotoDrawScope photoDraw;[^\n]*\n#endif\n\t+$",
+                                 cockpit.group(1)), "the cockpit and its queue run inside a draw scope, not behind a test"
     post = function(engine, "HRESULT\tCDXEngine::PostRender(")
-    assert post.count("CLIPARAMS.mKillHUD") == 1, "PostRender hides only the battle line"
-    battle = post[post.index("if ((GAME.GetCamera(i)->GetShowHUD()))"):post.index("HUD.RenderBattleline(viewport)")]
-    assert re.search(r"GetShowHUD\(\)\)\)\n#ifdef CE_VERSION\n\t+if \(!CLIPARAMS\.mKillHUD\)[^\n]*\n#endif\n\t+render=TRUE;", battle), \
-        "the battle line goes with the HUD in photo mode"
+    assert "CLIPARAMS" not in post, "PostRender no longer reads -killhud"
+    assert re.search(r"GetShowHUD\(\)\)\)\n\t+render=TRUE;", post), "the battle line goes where it always did"
+    assert re.search(r"if \(render\)\n#ifdef CE_VERSION\n\t\t\{\n\t\t\tCePhotoDrawScope photoDraw;[^\n]*\n#endif\n\t\t\tHUD\.RenderBattleline\(viewport\);"
+                     r"\n#ifdef CE_VERSION\n\t\t\}\n#endif", post), "the battle line runs inside a draw scope"
     for kept in ("HUD.Render();", "GAME.GetMessageLog()->Render(viewport)", "GAME.GetLevelBriefingLog()->Render(viewport)",
                  "GAME.GetPauseMenu()->Render()", "GAMEINTERFACE.Render();", "HUD.RenderOverlay();"):
         assert kept in post, kept
@@ -130,10 +135,12 @@ def placed(files):
     assert re.search(r"GAMEINTERFACE\.Render\(\);\n#ifdef CE_VERSION\n\t\tPortCePaletteRender\(\);\n\t\tPortCePhotoRender\(\);\n#endif",
                      mirror), "the note is drawn last, outside the mirror pass"
     hud = function(files["Hud.cpp"], "void\tCHud::Render()")
-    assert re.search(r"GetShowHUD\(\)\)\n#ifdef CE_VERSION\n\t\tif \(!CLIPARAMS\.mKillHUD\)[^\n]*\n#endif\n\t\t\tRenderOverlayForViewpoint",
-                     hud), "the HUD overlay is drawn as for a camera that shows no HUD"
+    assert "CLIPARAMS" not in hud, "the HUD no longer reads -killhud"
+    assert re.search(r"GetShowHUD\(\)\)\n#ifdef CE_VERSION\n\t\t\{\n\t\t\tCePhotoDrawScope photoDraw;[^\n]*\n#endif\n\t\t\tRenderOverlayForViewpoint\(player, i\);"
+                     r"\n#ifdef CE_VERSION\n\t\t\}\n#endif", hud), "the HUD overlay runs inside a draw scope"
     assert hud.index("mFlash =") < hud.index("RenderOverlayForViewpoint"), "the HUD's own bookkeeping still runs"
-    assert '#ifdef CE_VERSION\n#include\t"CLIParams.h"' in files["Hud.cpp"]
+    for name in ("Hud.cpp", "DXEngine.cpp"):
+        assert '#ifdef CE_VERSION\n#include "../game/ce_photo.h"' in files[name], f"{name} includes the scope's header only in CE builds"
     game = files["game.cpp"]
     assert re.search(r"PortCeConsoleLevelEnd\(\);[^\n]*\n\tPortCePhotoLevelEnd\(\);", game), "photo mode ends with the level"
     assert re.search(r"PortCeConsoleFrame\(\);[^\n]*\n\tPortCePhotoFrame\(\);", game), "between frames"
@@ -206,22 +213,26 @@ class PhotoTests(unittest.TestCase):
     def test_patch_places_and_faithful_view(self):
         files = patched(self.out / "with", FILES)
         check_structure(files)
-        without = patched(self.out / "without", FILES, skip=PATCH)
+        without = patched(self.out / "without", FILES, skip=PATCH_NAMES)
         for name in FILES:
             with self.subTest(file=name):
                 self.assertNotEqual(files[name], without[name])
-                self.assertEqual(faithful(files[name]), faithful(without[name]), f"patch 0108 changes the faithful {name}")
+                self.assertEqual(faithful(files[name]), faithful(without[name]), f"patches 0108 and 0133 change the faithful {name}")
 
     def test_structure_mutants_are_caught(self):
         files = patched(self.out / "with", FILES)
         mutants = [
             ("key-after-console", "ltshell.cpp", "\t\t\tif (PortCePhotoKey(key, (lParam & 0x40000000) != 0)) {}	// patch 0108: F11 photo mode, F12 screenshot\n\t\t\telse if (PortCePaletteSuppressDown(key)) {}",
              "\t\t\tif (PortCePaletteSuppressDown(key)) {}\n\t\t\telse if (PortCePhotoKey(key, (lParam & 0x40000000) != 0)) {}"),
-            ("cockpit-dev-only", "DXEngine.cpp", "#if defined(DEV_VERSION) || defined(CE_VERSION)\n\tif(!CLIPARAMS.mKillHUD)", "#ifdef DEV_VERSION\n\tif(!CLIPARAMS.mKillHUD)"),
-            ("battle-line-kept", "DXEngine.cpp", "#ifdef CE_VERSION\n\t\t\t\tif (!CLIPARAMS.mKillHUD)", "#ifdef CE_VERSION\n\t\t\t\tif (true)"),
+            ("cockpit-scope-removed", "DXEngine.cpp", "\t\t\t\tCePhotoDrawScope photoDraw;\t// patch 0133: photo mode drops the cockpit's draw calls; its routines run in full\n", ""),
+            ("cockpit-behind-killhud", "DXEngine.cpp", "#ifdef DEV_VERSION\n\tif(!CLIPARAMS.mKillHUD)\n#endif", "#if defined(DEV_VERSION) || defined(CE_VERSION)\n\tif(!CLIPARAMS.mKillHUD)\n#endif"),
+            ("battle-line-behind-killhud", "DXEngine.cpp", "\t\t\t\tif ((GAME.GetCamera(i)->GetShowHUD()))\n\t\t\t\t\trender=TRUE;", "\t\t\t\tif ((GAME.GetCamera(i)->GetShowHUD()))\n\t\t\t\tif (!CLIPARAMS.mKillHUD)\n\t\t\t\t\trender=TRUE;"),
+            ("battle-line-scope-removed", "DXEngine.cpp", "\t\t\tCePhotoDrawScope photoDraw;\t// patch 0133: photo mode drops the battle line's draw calls; its routine runs in full\n", ""),
             ("pause-menu-hidden", "DXEngine.cpp", "\t\tGAME.GetPauseMenu()->Render() ;", "\t\tif (!CLIPARAMS.mKillHUD) GAME.GetPauseMenu()->Render() ;"),
             ("note-under-console", "DXEngine.cpp", "\t\tPortCePaletteRender();\n\t\tPortCePhotoRender();", "\t\tPortCePhotoRender();\n\t\tPortCePaletteRender();"),
-            ("hud-shown", "Hud.cpp", "\t\tif (!CLIPARAMS.mKillHUD)	// patch 0108", "\t\tif (true)	// patch 0108"),
+            ("hud-scope-removed", "Hud.cpp", "\t\t\tCePhotoDrawScope photoDraw;\t// patch 0133: photo mode drops the overlay's draw calls; its routines run in full\n", ""),
+            ("hud-skipped", "Hud.cpp", "\t\t\tRenderOverlayForViewpoint(player, i);\n#ifdef CE_VERSION", "\t\t\tif (false) RenderOverlayForViewpoint(player, i);\n#ifdef CE_VERSION"),
+            ("hud-behind-photo", "Hud.cpp", "\t\tif (player && GAME.GetCamera(i)->GetShowHUD())\n#ifdef CE_VERSION", "\t\tif (player && GAME.GetCamera(i)->GetShowHUD() && !PortCePhotoOn())\n#ifdef CE_VERSION"),
             ("no-level-end", "game.cpp", "\tPortCePhotoLevelEnd();", "\t;"),
             ("no-frame", "game.cpp", "\tPortCePhotoFrame();", "\t;"),
         ]
@@ -305,12 +316,17 @@ class PhotoTests(unittest.TestCase):
             ("key-not-taken", "\telse shotPending = true;\n\treturn true;", "\telse shotPending = true;\n\treturn false;", "ordinary", None),
             ("note-in-shot", "if (shotPending || !note[0]", "if (!note[0]", "ordinary", None),
             ("shot-repeats", "\tshotPending = false;\n\treturn wanted;", "\treturn wanted;", "ordinary", None),
-            ("photo-on-allowed", 'if (on) { Note("Photo unavailable (F12: screenshot).", true); return false; }', 'if (on) { Note("Photo unavailable (F12: screenshot).", true); return true; }', "ordinary", None),
-            ("proof-sets-hud", "if (!Allowed()) shotPending = false;", "if (!Allowed()) shotPending = false;\n\tif (ProofEvery()) CLIPARAMS.mKillHUD = TRUE;", "ordinary", None),
+            ("f11-never-leaves", "if (key == kPhotoKey) PortCePhotoSet(!photo);", "if (key == kPhotoKey) PortCePhotoSet(true);", "ordinary", None),
+            ("filter-never-on", "\tphoto = on;\n\tPortCeDrawHooks(on);", "\tphoto = on;", "ordinary", None),
+            ("filter-never-off", "\tphoto = on;\n\tPortCeDrawHooks(on);", "\tphoto = on;\n\tif (on) PortCeDrawHooks(on);", "ordinary", None),
+            ("proof-without-photo", "Switch(photo || ProofEvery());", "Switch(photo);", "ordinary", None),
+            ("frame-no-reapply", "Switch(photo || ProofEvery());", "if (ProofEvery()) Switch(true);", "ordinary", None),
+            ("sets-killhud", "\tphoto = on;\n\tPortCeDrawHooks(on);", "\tphoto = on;\n\tCLIPARAMS.mKillHUD = on;\n\tPortCeDrawHooks(on);", "ordinary", None),
+            ("level-end-keeps-photo", "void PortCePhotoLevelEnd()\n{\n\tSwitch(false);", "void PortCePhotoLevelEnd()\n{", "ordinary", None),
             ("level-end-keeps-shot", "\tshotPending = false;\n\tnoteUntil = 0;", "\tnoteUntil = 0;", "ordinary", None),
-            ("level-end-overwrites-hud", "void PortCePhotoLevelEnd()\n{", "void PortCePhotoLevelEnd()\n{\n\tCLIPARAMS.mKillHUD = FALSE;", "ordinary", None),
-            ("fence-keeps-shot", "if (!Allowed()) shotPending = false;", "if (!Allowed()) {}", "ordinary", None),
-            ("set-ignores-fence", "if (!Allowed()) return false;\n\tif (on)", "if (on)", "ordinary", None),
+            ("fence-keeps-photo", "if (!Allowed()) { Switch(false); shotPending = false; return; }", "if (!Allowed()) { shotPending = false; return; }", "ordinary", None),
+            ("fence-keeps-shot", "if (!Allowed()) { Switch(false); shotPending = false; return; }", "if (!Allowed()) { Switch(false); return; }", "ordinary", None),
+            ("set-ignores-fence", "if (!Allowed()) { Switch(false); return false; }", "", "ordinary", None),
             ("note-forever", "CE_ScreenshotTicks() >= noteUntil || ", "", "ordinary", None),
             ("multiplayer", "return !GAME.IsMultiplayer() && GAME.GetNPlayers() == 1", "return GAME.GetNPlayers() >= 1", "ordinary", None),
             ("front-end", "CLIPARAMS.mAttractMode || FRONTEND.IsRunning()) return false;", "CLIPARAMS.mAttractMode) return false;", "ordinary", None),

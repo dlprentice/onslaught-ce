@@ -190,7 +190,7 @@ static inline void ce_report_url(const char *version, const char *build, const c
 			 "- Onslaught CE V%s" CE_VERSION_NOTE ", build %s\n"
 			 "- %s\n",
 			 shortlog, haveTape ? "Optional, if you recorded the session: the tape `" : "",
-			 haveTape ? shorttape : "", haveTape ? "` and its `.json` (it lets us replay exactly what happened).\n" : "",
+			 haveTape ? shorttape : "", haveTape ? "` and its `.json` (it can help us reproduce what happened).\n" : "",
 			 version, build && *build ? build : "unknown", os);
 	snprintf(title, sizeof title, "Problem: (describe it in a few words) [V%s]", version);
 	ce_url_encode(body, ebody, sizeof ebody);
@@ -230,8 +230,13 @@ static inline void ce_settings_dir_close(CeSettingsDir *dir)
 #endif
 }
 
-static inline int ce_settings_dir_open(const char *path, int create, CeSettingsDir *dir)
+/* Opens the settings directory. With create == 0, a failed open also says in *absent (when given) whether the path simply does
+ * not exist yet: some component is missing and nothing on the way is a file, a link, a reparse point or otherwise refused.
+ * The settings reader takes that as an empty file (the first write, create == 1, makes the folders); any other refusal
+ * stays a failed read. */
+static inline int ce_settings_dir_open_ex(const char *path, int create, CeSettingsDir *dir, int *absent)
 {
+	if (absent) *absent = 0;
 #ifdef _WIN32
 	dir->count = 0;
 	DWORD n = GetFullPathNameA(path, sizeof dir->path, dir->path, NULL);
@@ -253,7 +258,8 @@ static inline int ce_settings_dir_open(const char *path, int create, CeSettingsD
 		HANDLE h = CreateFileA(dir->path, FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING,
 			FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, NULL);
 		DWORD error = h == INVALID_HANDLE_VALUE ? GetLastError() : 0;
-		if (h == INVALID_HANDLE_VALUE && create && (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND))
+		int gone = h == INVALID_HANDLE_VALUE && (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND);
+		if (gone && create)
 		{
 			if (CreateDirectoryA(dir->path, NULL) || GetLastError() == ERROR_ALREADY_EXISTS)
 				h = CreateFileA(dir->path, FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING,
@@ -267,6 +273,7 @@ static inline int ce_settings_dir_open(const char *path, int create, CeSettingsD
 		{
 			if (h != INVALID_HANDLE_VALUE) CloseHandle(h);
 			ce_settings_dir_close(dir);
+			if (absent && !create && gone) *absent = 1;
 			return 0;
 		}
 		dir->handles[dir->count++] = h;
@@ -297,11 +304,15 @@ static inline int ce_settings_dir_open(const char *path, int create, CeSettingsD
 		if (!strcmp(part, "..")) { close(fd); return 0; }
 		if (strcmp(part, "."))
 		{
-			int next = openat(fd, part, flags);
-			if (next < 0 && errno == ENOENT && create && (mkdirat(fd, part, 0700) == 0 || errno == EEXIST))
+			int next = openat(fd, part, flags), why = next < 0 ? errno : 0;
+			if (next < 0 && why == ENOENT && create && (mkdirat(fd, part, 0700) == 0 || errno == EEXIST))
 				next = openat(fd, part, flags);
 			close(fd);
-			if (next < 0) return 0;
+			if (next < 0)
+			{
+				if (absent && !create && why == ENOENT) *absent = 1;
+				return 0;
+			}
 			fd = next;
 		}
 		if (!end) break;
@@ -310,6 +321,11 @@ static inline int ce_settings_dir_open(const char *path, int create, CeSettingsD
 	dir->fd = fd;
 	return 1;
 #endif
+}
+
+static inline int ce_settings_dir_open(const char *path, int create, CeSettingsDir *dir)
+{
+	return ce_settings_dir_open_ex(path, create, dir, NULL);
 }
 
 static inline int ce_make_settings_dirs(const char *path)

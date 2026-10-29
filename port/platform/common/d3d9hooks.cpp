@@ -12,6 +12,8 @@
 //   that frame's back buffer as a binary PPM before presenting it; with BEA_PORT_QUIT=FRAME it posts WM_CLOSE to the
 //   device's window at that frame (the game's own shutdown path, as when the player closes the window). In public builds,
 //   a frame CE photo mode asks for (port/game/ce_photo.cpp) is read back and saved as a PNG first (ce_screenshot.cpp).
+// - IDirect3DDevice9::DrawPrimitive and its three siblings: in public builds, while photo mode is on, the draw calls
+//   made inside a CePhotoDrawScope (the HUD overlay, the battle line, the cockpit) do nothing (ce_photo.h, patch 0133).
 #include <windows.h>
 #include <d3d9.h>
 
@@ -944,6 +946,48 @@ HRESULT STDMETHODCALLTYPE DrawIdx(IDirect3DDevice9 *d, D3DPRIMITIVETYPE t, INT b
 	return gDrawIdx(d, t, base, minv, nv, si, pc);
 }
 
+#ifdef CE_VERSION
+// CE photo mode's draw filter (ce_photo.h, patch 0133). While photo mode is on, PortCeDrawHooks puts these in the device's
+// four draw entries; inside a CePhotoDrawScope they do nothing, so the HUD overlay, battle line and cockpit routines run in
+// full and only their pictures are lost. With photo mode off the entries are the ones the device came with.
+typedef HRESULT (STDMETHODCALLTYPE *DrawUPFn)(IDirect3DDevice9 *, D3DPRIMITIVETYPE, UINT, const void *, UINT);
+typedef HRESULT (STDMETHODCALLTYPE *DrawIdxUPFn)(IDirect3DDevice9 *, D3DPRIMITIVETYPE, UINT, UINT, UINT, const void *, D3DFORMAT,
+												 const void *, UINT);
+void **gDeviceTable;			// the hook table of the game's device (CreateDevice)
+bool gDrawsFiltered;			// the filter is in the table
+int gDrawsDropped;				// open CePhotoDrawScopes
+void *gDrawsReal[4];			// the entries the filter replaced
+const int kDrawSlots[4] = {81, 82, 83, 84};		// DrawPrimitive, DrawIndexedPrimitive and their UP forms
+
+HRESULT STDMETHODCALLTYPE FilterDraw(IDirect3DDevice9 *d, D3DPRIMITIVETYPE t, UINT start, UINT count)
+{
+	return gDrawsDropped > 0 ? D3D_OK : ((DrawFn)gDrawsReal[0])(d, t, start, count);
+}
+HRESULT STDMETHODCALLTYPE FilterDrawIdx(IDirect3DDevice9 *d, D3DPRIMITIVETYPE t, INT base, UINT minv, UINT nv, UINT si, UINT pc)
+{
+	return gDrawsDropped > 0 ? D3D_OK : ((DrawIdxFn)gDrawsReal[1])(d, t, base, minv, nv, si, pc);
+}
+HRESULT STDMETHODCALLTYPE FilterDrawUP(IDirect3DDevice9 *d, D3DPRIMITIVETYPE t, UINT count, const void *data, UINT stride)
+{
+	return gDrawsDropped > 0 ? D3D_OK : ((DrawUPFn)gDrawsReal[2])(d, t, count, data, stride);
+}
+HRESULT STDMETHODCALLTYPE FilterDrawIdxUP(IDirect3DDevice9 *d, D3DPRIMITIVETYPE t, UINT minv, UINT nv, UINT count, const void *index,
+										  D3DFORMAT format, const void *data, UINT stride)
+{
+	return gDrawsDropped > 0 ? D3D_OK : ((DrawIdxUPFn)gDrawsReal[3])(d, t, minv, nv, count, index, format, data, stride);
+}
+void *const kDrawFilters[4] = {(void *)&FilterDraw, (void *)&FilterDrawIdx, (void *)&FilterDrawUP, (void *)&FilterDrawIdxUP};
+
+// A device made (CreateDevice): its hook table. Linux gives each device a private copy, which holds the device's own draw
+// entries; Windows has one shared table, where the filter, if it is in, stays.
+void NoteDeviceTable(void **table)
+{
+	if (gDeviceTable != table)
+		gDrawsFiltered = false;
+	gDeviceTable = table;
+}
+#endif
+
 HRESULT STDMETHODCALLTYPE Present(IDirect3DDevice9 *dev, const RECT *src, const RECT *dst, HWND w, const RGNDATA *dirty)
 {
 	if (gLog && (int)gFrames == gLogFrame)
@@ -1056,6 +1100,9 @@ HRESULT STDMETHODCALLTYPE CreateDevice(IDirect3D9 *d3d, UINT adapter, D3DDEVTYPE
 	if (SUCCEEDED(hr) && *out)
 	{
 		void **table = HookTable(*out, kDeviceSlots);
+#ifdef CE_VERSION
+		NoteDeviceTable(table);
+#endif
 		if (!gPresent)
 			gPresent = (PresentFn)table[17];
 		SetSlot(table, 17, (void *)&Present);
@@ -1181,3 +1228,29 @@ void PortWideViewport(int box)
 }
 
 extern "C" unsigned PortPresentCount(void) { return gFrames; }
+
+#ifdef CE_VERSION
+// Photo mode's draw filter in the device's draw entries (on), or the device's own again (off); asked for again, it does
+// nothing, which lets ce_photo.cpp re-apply it every frame for a device made anew.
+void PortCeDrawHooks(bool on)
+{
+	if (on == gDrawsFiltered || !gDeviceTable)
+		return;
+	for (int i = 0; i < 4; i++)
+	{
+		if (on)
+			gDrawsReal[i] = gDeviceTable[kDrawSlots[i]];
+		SetSlot(gDeviceTable, kDrawSlots[i], on ? kDrawFilters[i] : gDrawsReal[i]);
+	}
+	gDrawsFiltered = on;
+	if (!on)
+		gDrawsDropped = 0;
+}
+
+void PortCeDrawsDropped(int delta)
+{
+	gDrawsDropped += delta;
+	if (gDrawsDropped < 0)
+		gDrawsDropped = 0;
+}
+#endif

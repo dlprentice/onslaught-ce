@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
-// CE photo mode (port/game/ce_photo.cpp, patch 0108) and its screenshot writer (port/platform/common/ce_screenshot.cpp).
+// CE photo mode (port/game/ce_photo.cpp, patches 0108 and 0133) and its screenshot writer (port/platform/common/ce_screenshot.cpp).
 #ifndef PORT_CE_PHOTO_H
 #define PORT_CE_PHOTO_H
 
@@ -27,6 +27,23 @@ extern "C" int CE_ScreenshotSave(const void *pixels, int pitch, int width, int h
 extern "C" unsigned long long CE_ScreenshotTicks(void);
 
 bool	PortCePhotoOn();
+
+// Photo mode hides the HUD, the battle line and the cockpit by dropping the draw calls their routines make (patch 0133),
+// never by skipping the routines: what they compute feeds the simulation (the HUD's warning panel calls
+// CBattleEngine::TestDanger, which starts the incoming-warhead warning that draws from rand).
+void	PortCeDrawHooks(bool on);			// d3d9hooks.cpp: the device's draw entries filtered (on) or as the device came (off)
+void	PortCeDrawsDropped(int delta);		// d3d9hooks.cpp: nests; while positive, filtered draw calls do nothing
+
+class CePhotoDrawScope
+{
+	bool dropping;
+public:
+	CePhotoDrawScope() : dropping(PortCePhotoOn()) { if (dropping) PortCeDrawsDropped(1); }
+	~CePhotoDrawScope() { if (dropping) PortCeDrawsDropped(-1); }
+	CePhotoDrawScope(const CePhotoDrawScope &) = delete;
+	CePhotoDrawScope &operator=(const CePhotoDrawScope &) = delete;
+};
+
 bool	PortCePhotoSet(bool on);
 bool	PortCePhotoKey(unsigned key, bool repeat);
 void	PortCePhotoFrame();

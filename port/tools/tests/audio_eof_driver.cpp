@@ -83,8 +83,13 @@ enum {PORT_SESSION_MUSIC,PORT_COUNT_MUSIC_REFILLS,PORT_COUNT_MUSIC_SHORT_READS,P
 static void PortSessionCount(int n){if(n==PORT_COUNT_MUSIC_REFILLS)++refills;if(n==PORT_COUNT_MUSIC_SHORT_READS)++shorts;if(n==PORT_COUNT_MUSIC_READ_FAILED)++errors;}
 static void PortSessionAsset(int,const char*action,const char*,HRESULT=0){if(!strcmp(action,"EOF drained"))++eofdrained;}
 static void PortSessionMediaActive(int,void*,bool){}
+static void PortSessionLog(int,bool,const char*,...){}
 constexpr DWORD DSBSTATUS_PLAYING=1,DSBSTATUS_LOOPING=4,DSBPLAY_LOOPING=1,DSBLOCK_ENTIREBUFFER=2;
 constexpr DWORD STREAM_BUFFER_SIZE=524288,STREAM_HALF=262144;
+// The extracted worker uses an authored buffer/publication boundary; the reader itself is production code.
+static bool sPortSafeMusicRefill = true;
+static BYTE sPortMusicRefill[STREAM_HALF];
+static void PortAudioPublishMusicHalf(void *destination,const void *source,DWORD bytes){memcpy(destination,source,bytes);}
 struct IDirectSoundBuffer {
  std::vector<BYTE> data=std::vector<BYTE>(STREAM_BUFFER_SIZE);bool playing=false;
  HRESULT GetStatus(DWORD*p){*p=playing?DSBSTATUS_PLAYING|DSBSTATUS_LOOPING:0;return 0;}
@@ -95,11 +100,14 @@ struct IDirectSoundBuffer {
 static IDirectSoundBuffer buffer,*sBuffer=&buffer;
 static CBaseWaveFileRead*sReader;
 static bool MUSIC_STREAM_FINISHED,sCeStreamLockReady,sCeStreamPending,sCeStreamStopped,sPortRefillDiagnostics;
+static bool sPortRefillOrderKnown,sPortRefillOrderPending; static unsigned sPortRefillExpectedHalf;
 static bool sThreadAwake;static void*sPlayEvent;
 static DWORD sBytesStreamed;static int sSilentHalves;static char sTrackName[4096];
 static unsigned sPortRefillSequence;static unsigned long long sPortRefillLastNs;
-struct CPortMusicStreamGuard{};struct CPortRefillObservation{};
+struct CPortMusicStreamGuard{};struct CPortRefillObservation{bool playing=false;};
 static CPortRefillObservation PortRefillObservation(){return {};}
+static void PortRefillForget(){sPortRefillOrderKnown=false;sPortRefillOrderPending=false;}
+static void PortRefillOrder(DWORD){}
 static void PortRefillReport(DWORD,const CPortRefillObservation&){}
 static void ResetEvent(void*){}
 static void SetMusicStreamFinished(bool b){MUSIC_STREAM_FINISHED=b;}

@@ -14,6 +14,8 @@ void PortSessionCount(PortSessionCounter) {}
 void PortSessionAudioError(const char *) {}
 void PortSessionSummary() {}
 void PortSessionPulse(unsigned) {}
+// This fixture tests the worker/poll, with a controlled buffer rather than the production mixer.
+void PortAudioPublishMusicHalf(void *destination, const void *source, DWORD bytes) { memcpy(destination, source, bytes); }
 bool PortCeMusicTrackEnded() { return false; }	// patch 0103's CE playlist: no player's track plays in this harness
 class CPCMusic { public: BOOL DeviceGetTrackFinished(); };
 #include POLL_SOURCE

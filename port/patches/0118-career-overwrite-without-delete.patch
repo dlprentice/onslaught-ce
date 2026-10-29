@@ -1,0 +1,46 @@
+--- a/FEPSaveGame.cpp
++++ b/FEPSaveGame.cpp
+@@ -11,4 +11,8 @@
+ #if defined(_WIN32) && TARGET == PC
+ extern "C" int PortSaveNamesEqual(const void *, const void *);
++#endif
++#if TARGET == PC
++// Port 0118: an overwrite YES approves one retry of this name and deletes nothing. Windows: platform/windows/save_namespace.cpp;
++// Linux: platform/linux/save_overwrite.cpp.
+ extern "C" unsigned PortSaveApproveOverwrite(const void *, const void *);
+ extern "C" int PortSaveConsumeOverwrite(const void *);
+@@ -69,5 +73,5 @@
+ 
+ 	case BUTTON_FRONTEND_MENU_BACK:
+-#if defined(_WIN32) && TARGET == PC
++#if TARGET == PC
+ 		PortSaveClearOverwrite();
+ #endif
+@@ -104,5 +108,5 @@
+ 			{
+ 			case FEMB_YES:
+-#if defined(_WIN32) && TARGET == PC
++#if TARGET == PC
+ 				// The explicit overwrite approval belongs only to this immediate retry and name.
+ 				// Do not delete the old career: subsequent admission can still fail before WriteSave starts.
+@@ -159,5 +163,5 @@
+ 
+ 			case FEMB_NO:
+-#if defined(_WIN32) && TARGET == PC
++#if TARGET == PC
+ 				PortSaveClearOverwrite();
+ #endif
+@@ -359,5 +363,5 @@
+ void	CFEPSaveGame::CreateSave()	// FUNCTION: 0x00464c50
+ {
+-#if defined(_WIN32) && TARGET == PC
++#if TARGET == PC
+ 	// Consume before any early return, including card/format/space failures.
+ 	bool approved_overwrite = PortSaveConsumeOverwrite(mSaveGameName) != 0;
+@@ -421,5 +425,5 @@
+ 	}
+ 
+-#if defined(_WIN32) && TARGET == PC
++#if TARGET == PC
+ 	allowed_overwrite = allowed_overwrite || approved_overwrite;
+ #endif

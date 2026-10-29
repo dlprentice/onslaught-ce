@@ -1,0 +1,61 @@
+--- a/PCMemoryCard.cpp
++++ b/PCMemoryCard.cpp
+@@ -25,4 +25,6 @@
+ extern "C" unsigned PortSaveReserveUtf8(const char *);
+ #endif
++// Port 0117: a career is written whole and replaced atomically (port/platform/common/save_replace.h); 0 is success.
++extern "C" int PortReplaceUserFile(const char *game_path, const void *data, unsigned size, const char *what);
+ #ifndef _WIN32
+ // Port 0101: Linux career names. A UTF-8 file name of code page 1252 characters reaches the game as those characters (so
+@@ -281,5 +283,9 @@
+ 	}
+ 
+-	f = fopen(path, "wb");
++	// Port 0117: an existing career is admitted as it is. The retail fopen "wb" cut it to nothing here, before the new bytes
++	// existed; WriteSave now replaces it as a whole. Only a name nobody has gets an empty file, created exclusively.
++	f = fopen(path, "rb");
++	if (!f)
++		f = fopen(path, "wbx");
+ 	if (f)
+ 	{
+@@ -348,14 +354,6 @@
+ 	strcat(path, SAVE_EXTENSION);
+ #endif
+-	FILE *f = fopen(path, "wb");
+-	if (f)
+-	{
+-		if (fwrite(data, datasize, 1, f) == 1)
+-		{
+-			fclose(f);
+-			return(MCE_SUCCESS);
+-		}
+-	}
+-	return 1;
++	// Port 0117: the whole career or nothing. The retail fopen "wb" cut the old file short first, so any failure lost it.
++	return PortReplaceUserFile(path, data, datasize, "career") == 0 ? MCE_SUCCESS : 1;
+ }
+ 
+--- a/FEPOptions.cpp
++++ b/FEPOptions.cpp
+@@ -11,4 +11,5 @@
+ 
+ extern char			gSaveFromOptions;			// 006799d0: makes the save page's success box show hard-coded text 0xd6
++extern "C" int		PortReplaceUserFile(const char *game_path, const void *data, unsigned size, const char *what);	// port 0117
+ 
+ static CPauseMenu	*gOptionsMenu;				// 0089bc30; static: retail keeps Shutdown and Cleanup apart, and LINK never folds code that refers to a static
+@@ -109,12 +110,7 @@
+ void	CFEPOptions::WriteDefaultOptionsFile(char *data, int size)	// FUNCTION: 0x0051f680
+ {
+-	FILE	*f = fopen("defaultoptions.bea", "wb");
+-
+-	if (f)
+-	{
+-		fwrite(data, size, 1, f);
+-		fclose(f);
+-	}
+-	else
++	// Port 0117: the file is replaced as a whole (port/platform/common/save_replace.h), so a failed write keeps the options
++	// already saved. The retail fopen "wb" cut the file to nothing first, and ignored a short write.
++	if (PortReplaceUserFile("defaultoptions.bea", data, size, "options") != 0)
+ 	{
+ 		SETUP_HISTORY.AddMessage("Couldn't write defaultoptions");

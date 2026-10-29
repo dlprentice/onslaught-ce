@@ -244,7 +244,111 @@ int main() {
     files.clear();
     check(listed("lat\xc3\xaate") && listed("Linux Test 1") && listed("x"), "otherwise every career is listed");
     check(listed("abc"), "short names");
+    // GetSaveName's output is later copied into the virtual keyboard's 32-unit array. Count the actual returned
+    // 16-bit name, including byte-for-byte fallbacks, not the number of UTF-8 bytes or displayed characters.
+    check(listed(std::string(31, 'Q').c_str()), "31 ASCII units are admitted");
+    check(!listed(std::string(32, 'Q').c_str()), "32 ASCII units are refused");
+    check(!listed(std::string(255, 'Q').c_str()) && !listed(std::string(256, 'Q').c_str()),
+          "long and over-capacity names are refused without a truncated identity");
+    for (int n : {31, 32}) {
+        std::string utf8, legacy, malformed;
+        for (int i = 0; i < n; ++i) { utf8 += "\xc3\xa9"; legacy += char(0xe9); malformed += char(0xff); }
+        check(listed(utf8.c_str()) == (n == 31), "UTF-8 1252 names use returned units");
+        check(listed(legacy.c_str()) == (n == 31), "legacy names use returned units");
+        check(listed(malformed.c_str()) == (n == 31), "non-UTF8 names use returned units");
+    }
+    std::string emoji7, emoji8;
+    for (int i = 0; i < 7; ++i) emoji7 += "\xf0\x9f\x98\x80";
+    emoji8 = emoji7 + "\xf0\x9f\x98\x80";
+    check(listed(emoji7.c_str()) && !listed(emoji8.c_str()), "supplementary UTF-8 follows the existing byte fallback");
+    std::string twin31utf, twin31raw, twin32utf, twin32raw;
+    for (int i = 0; i < 31; ++i) { twin31utf += "\xc3\xa9"; twin31raw += char(0xe9); }
+    twin32utf = twin31utf + "\xc3\xa9"; twin32raw = twin31raw + char(0xe9);
+    files.clear();
+    files.insert(path(twin31raw.c_str())); files.insert(path(twin32raw.c_str()));
+    check(listed(twin31raw.c_str()) && !listed(twin31utf.c_str()), "eligible twins retain legacy precedence");
+    check(!listed(twin32raw.c_str()) && !listed(twin32utf.c_str()), "oversized twins are both skipped");
+    check(!PortSaveEntryOK(nullptr) && !PortSaveEntryOK("") && !PortSaveEntryOK(".bes") &&
+          !PortSaveEntryOK("odd") && !PortSaveEntryOK("file.txt") && PortSaveEntryOK("valid.BES"),
+          "malformed or empty entries are refused; the suffix remains case-insensitive");
     std::puts("Linux career names passed");
+}
+'''
+
+
+ENUM_DRIVER = r'''
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <set>
+#include <string>
+#include <vector>
+typedef uint16_t WCHAR; typedef int BOOL;
+#define TRUE 1
+#define FALSE 0
+#define MAX_PATH 260
+#define MCE_SUCCESS 0
+#define _A_HIDDEN 2
+#define _A_SYSTEM 4
+#define _A_SUBDIR 16
+#define SKIP_ATTRIBUTES (_A_HIDDEN | _A_SYSTEM | _A_SUBDIR)
+#define SAVE_DIRECTORY "savegames\\"
+#define SAVE_EXTENSION ".bes"
+#define SAVE_PATTERN "savegames\\*.bes"
+static std::set<std::string> files;
+static int _access(const char *path, int) { return files.count(path) ? 0 : -1; }
+static size_t wcslen16(const WCHAR *s) { size_t n = 0; while (s[n]) ++n; return n; }
+#define wcslen wcslen16
+#include "wchar.inc"
+#undef wcslen
+#include "helpers.inc"
+struct _finddata_t { unsigned attrib; char name[256]; };
+static long sFindHandle = -1;
+static _finddata_t sFindData;
+struct Entry { std::string name; unsigned attrib; };
+static std::vector<Entry> entries;
+static size_t position;
+static void fill(_finddata_t *out) {
+    out->attrib = entries[position].attrib;
+    std::snprintf(out->name, sizeof out->name, "%s", entries[position].name.c_str());
+}
+static long _findfirst(const char *, _finddata_t *out) {
+    position = 0; if (entries.empty()) return -1; fill(out); return 1;
+}
+static int _findnext(long, _finddata_t *out) {
+    if (++position >= entries.size()) return -1;
+    fill(out); return 0;
+}
+static int _findclose(long) { return 0; }
+static WCHAR *copy16(WCHAR *to, const WCHAR *from) {
+    WCHAR *original = to; while ((*to++ = *from++)) {} return original;
+}
+#define wcscpy copy16
+struct CPCMemoryCard {
+    int GetNumSaves(int, int *);
+    int GetSaveName(int, int, WCHAR *);
+};
+#include "enumerator.inc"
+#undef wcscpy
+static void check(bool c, const char *m) { if (!c) { std::fprintf(stderr, "FAIL: %s\n", m); std::exit(2); } }
+int main() {
+    std::string utf31;
+    for (int i = 0; i < 31; ++i) utf31 += "\xc3\xa9";
+    entries = {{std::string(32,'Q') + ".bes", 0}, {"hidden.bes", _A_HIDDEN}, {"plain.bes", 0},
+               {std::string(100,'Q') + ".bes", 0}, {utf31 + ".BES", 0}, {std::string(32,'Z') + ".bes", 0}};
+    CPCMemoryCard card; int count = -1;
+    check(card.GetNumSaves(0, &count) == MCE_SUCCESS && count == 2, "FirstSave and NextSave skip unsafe entries");
+    WCHAR buffer[64]; for (auto &unit : buffer) unit = 0x5a5a;
+    check(card.GetSaveName(0, 0, buffer) == MCE_SUCCESS && wcslen16(buffer) == 5 && buffer[32] == 0x5a5a,
+          "first returned name is safe and in order");
+    for (auto &unit : buffer) unit = 0x5a5a;
+    check(card.GetSaveName(0, 1, buffer) == MCE_SUCCESS && wcslen16(buffer) == 31 && buffer[32] == 0x5a5a,
+          "31-unit UTF-8 name reaches the existing callers safely");
+    entries = {{std::string(32,'Q') + ".bes", 0}, {std::string(100,'Q') + ".bes", 0}};
+    check(card.GetNumSaves(0, &count) == MCE_SUCCESS && count == 0 && card.GetSaveName(0, 0, buffer) != MCE_SUCCESS,
+          "an all-unsafe enumeration is empty");
+    std::puts("Linux save enumeration boundary passed");
 }
 '''
 
@@ -272,7 +376,7 @@ class SaveCp1252Tests(unittest.TestCase):
 
     def compile_run(self, name, sources, expect):
         exe = self.out / name
-        cmd = [os.environ.get("CXX", "g++"), "-std=c++14", "-g", "-Wall", "-Wextra", "-Werror", "-Wno-unused-function",
+        cmd = [os.environ.get("CXX", "g++"), "-std=c++14", "-g", "-Wall", "-Wextra", "-Werror", "-Wno-unused-function", "-Wno-unused-parameter",
                *SANITIZE, "-I", str(self.out), *map(str, sources), "-o", str(exe)]
         built = subprocess.run(cmd, capture_output=True, text=True, timeout=120, preexec_fn=no_core)
         self.assertEqual(built.returncode, 0, built.stderr)
@@ -280,6 +384,7 @@ class SaveCp1252Tests(unittest.TestCase):
                              env=dict(os.environ, ASAN_OPTIONS="detect_leaks=0"))
         self.assertEqual(ran.returncode, 0, ran.stdout + ran.stderr)
         self.assertIn(expect, ran.stdout)
+        return ran
 
     def test_codec(self):
         (self.out / "codec_driver.cpp").write_text(CODEC_DRIVER, encoding="latin1")
@@ -308,7 +413,31 @@ class SaveCp1252Tests(unittest.TestCase):
         (self.out / "card_driver.cpp").write_text(CARD_DRIVER.replace("VK_KEYS", ", ".join(map(str, keyboard_keys()))), encoding="latin1")
         if mutate:
             return self.compile_fails("card-mutant", [self.out / "card_driver.cpp", CODEC], mutate[2])
-        self.compile_run("card", [self.out / "card_driver.cpp", CODEC], "Linux career names passed")
+        result = self.compile_run("card", [self.out / "card_driver.cpp", CODEC], "Linux career names passed")
+        notice = "a career filename exceeds the supported name length; it was not listed or modified"
+        self.assertEqual(result.stderr.count(notice), 1, result.stderr)
+        self.assertNotIn("Q" * 32, result.stderr)  # The bounded diagnostic carries no player-supplied name.
+        signatures = (
+            "static inline BOOL NextSave()", "static inline BOOL FirstSave()",
+            "int CPCMemoryCard::GetNumSaves(int card,int *num)",
+            "int CPCMemoryCard::GetSaveName(int card,int save,WCHAR *name)")
+        actual_functions = [function(card, name) for name in signatures]
+        actual_enumerator = "\n".join(actual_functions)
+        (self.out / "enumerator.inc").write_text(actual_enumerator, encoding="latin1")
+        (self.out / "enum_driver.cpp").write_text(ENUM_DRIVER, encoding="latin1")
+        enumeration = self.compile_run("enum", [self.out / "enum_driver.cpp", CODEC], "Linux save enumeration boundary passed")
+        self.assertEqual(enumeration.stderr.count(notice), 1, enumeration.stderr)
+        # Independently remove the admission call at each production enumerator site: both mutants must fail.
+        guard = "!PortSaveEntryOK(sFindData.name)"
+        for index, label in ((0, "next"), (1, "first")):
+            self.assertEqual(actual_functions[index].count(guard), 1)
+            mutant = list(actual_functions)
+            mutant[index] = mutant[index].replace(guard, "FALSE")
+            (self.out / f"enumerator-{label}.inc").write_text("\n".join(mutant), encoding="latin1")
+            driver = ENUM_DRIVER.replace('"enumerator.inc"', f'"enumerator-{label}.inc"')
+            (self.out / f"enum-{label}.cpp").write_text(driver, encoding="latin1")
+            self.compile_fails(f"enum-{label}", [self.out / f"enum-{label}.cpp", CODEC],
+                               "FirstSave and NextSave skip unsafe entries")
         # Every Linux path builder goes through PortSaveFile, and the listing and lookup through PortSaveWide.
         linux = card[card.index("int CPCMemoryCard::GetSaveName"):]
         self.assertNotIn("FromWCHAR(name)", linux)
@@ -317,7 +446,7 @@ class SaveCp1252Tests(unittest.TestCase):
 
     def compile_fails(self, name, sources, message):
         exe = self.out / name
-        cmd = [os.environ.get("CXX", "g++"), "-std=c++14", "-g", "-Wall", "-Wextra", "-Werror", "-Wno-unused-function",
+        cmd = [os.environ.get("CXX", "g++"), "-std=c++14", "-g", "-Wall", "-Wextra", "-Werror", "-Wno-unused-function", "-Wno-unused-parameter",
                *SANITIZE, "-I", str(self.out), *map(str, sources), "-o", str(exe)]
         built = subprocess.run(cmd, capture_output=True, text=True, timeout=120, preexec_fn=no_core)
         self.assertEqual(built.returncode, 0, built.stderr)
@@ -347,9 +476,13 @@ class SaveCp1252Tests(unittest.TestCase):
             "\tif (false && PortSaveNameFromLegacyCp1252(base, wide, 256))",
             "lists as A(TM)"))
 
+    def test_mutant_without_name_limit_reaches_unsafe_caller(self):
+        self.test_patched_card_and_cheat(mutate=(
+            "if (units == 32)", "if (false && units == 32)", "32 ASCII units are refused"))
+
     def test_windows_source_unchanged(self):
         before = patched(self.out, "PCMemoryCard.cpp", upto="0066-save-name-utf8.patch")
-        after = patched(self.out, "PCMemoryCard.cpp")
+        after = patched(self.out, "PCMemoryCard.cpp", upto="0101-save-name-cp1252-linux.patch")   # later patches are their own tests
         self.assertNotEqual(before, after)
         self.assertEqual(windows_view(before), windows_view(after), "patch 0101 changes no line a Windows build compiles")
         self.assertIn("PortSaveNameUtf16(sFindData.name, name, 32)", windows_view(after))

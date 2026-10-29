@@ -9,6 +9,15 @@
 #include <windows.h>
 #include <dinput.h>
 #include <SDL3/SDL.h>
+#define PI 3.14159265358979f
+#define ANALOGUE_X1 -1
+#define ANALOGUE_Y1 -2
+#define ANALOGUE_X2 -3
+#define ANALOGUE_Y2 -4
+#define ANALOGUE_POV_X -5
+#define ANALOGUE_POV_Y -6
+#define ANALOGUE_DEAD_ZONE 0.15f
+#define ANALOGUE_DEAD_ZONE_SCALE ((float)(1.0 / (1.0 - 0.15)))
 
 static bool focused = true, relativeMode, injectFocusLoss;
 static int SDLCALL FocusLossProducer(void *);
@@ -42,12 +51,26 @@ static SDL_JoystickID *TestGamepads(int *count) {
     for (int i = 0; i < *count; ++i) ids[i] = virtualIds[i];
     ids[*count] = 0; return ids;
 }
+// Rebind enumerates joysticks, not gamepads. Restrict that path too to this fixture's still-connected virtual IDs.
+static SDL_JoystickID *TestJoysticks(int *count) {
+    std::vector<SDL_JoystickID> connected;
+    for (SDL_JoystickID id : virtualIds) {
+        SDL_Joystick *joy = SDL_GetJoystickFromID(id);
+        if (joy && SDL_JoystickConnected(joy)) connected.push_back(id);
+    }
+    *count = connected.size();
+    auto ids = static_cast<SDL_JoystickID *>(SDL_malloc((*count + 1) * sizeof(SDL_JoystickID)));
+    if (!ids) { *count = 0; return nullptr; }
+    for (int i = 0; i < *count; ++i) ids[i] = connected[i];
+    ids[*count] = 0; return ids;
+}
 #define SDL_GetWindowFlags TestWindowFlags
 #define SDL_SetWindowRelativeMouseMode TestSetRelative
 #define SDL_GetWindowRelativeMouseMode TestGetRelative
 #define SDL_GetRelativeMouseState TestRelativeState
 #define SDL_GetWindowID TestWindowID
 #define SDL_GetGamepads TestGamepads
+#define SDL_GetJoysticks TestJoysticks
 #define SDL_GetGlobalMouseState TestGlobalMouse
 #define SDL_GetMouseState TestWindowMouse
 #define SDL_GetMouseFocus TestMouseFocus
@@ -120,39 +143,57 @@ struct PCLTShell {
     HRESULT InitDirectInput(HWND);
     HRESULT UpdateJoystick(int, bool);
 } LT;
-#if defined(CE_VERSION) && defined(CE_EDGE_TESTS)
+#if defined(CE_EDGE_TESTS)
 enum { BUTTON_ON, BUTTON_ONCE, BUTTON_RELEASE, BUTTON_REPEAT, ANALOGUE_PLUS, ANALOGUE_MINUS,
        ANALOGUE_PLUS_ACT_AS_BUTTON_REPEAT, ANALOGUE_MINUS_ACT_AS_BUTTON_REPEAT, KEY_ONCE, KEY_ON, KEY_RELEASE,
        MOUSE_AXIS_PLUS_ANY, MOUSE_AXIS_MINUS_ANY, MOUSE_AXIS_PLUS, MOUSE_AXIS_MINUS, MOUSE_BUTTON_ON,
        MOUSE_BUTTON_ONCE, MOUSE_BUTTON_RELEASE };
 enum { BUTTON_FRONTEND_CHEAT = 45 };
 constexpr float ANALOGUE_ACT_AS_DIGITAL_THRESHOLD = .9f;
+static bool testKeyOn;
 struct SControlInput { int mPad, mType; short mKey, mVKey; };
 struct SControlBinding { bool mConfigurable; int mId; SControlInput mInput[2]; } CONTROL_BINDINGS[4];
+struct FixtureDemoBuffer {
+    unsigned words[3]{}, cursor = 0;
+    void Read(void *out, size_t n) { assert(cursor < 3 && n == sizeof(unsigned)); memcpy(out, &words[cursor++], n); }
+    bool EndOfFile() { return false; }
+    void Close() {}
+};
 struct CController {
     int mPadNumber = 0, mNumMappings = 0;
     bool mPlaying = false, mRecording = false, mPausedBeforeMap = false;
     float mLastRepeatTime = 0, mNextDelayTime = 0;
     unsigned mButtons1 = 0, mButtons2 = 0, mButtons3 = 0, mButtons1Old = 0, mButtons2Old = 0, mButtons3Old = 0;
     std::vector<int> actions;
+    std::vector<float> actionValues;
     virtual int GetJoyButtonOnce(int, int) = 0;
     virtual int GetJoyButtonOn(int, int) = 0;
     virtual int GetJoyButtonRelease(int, int) = 0;
+    virtual float GetJoyAnalogueLeftX(int) = 0;
+    virtual float GetJoyAnalogueLeftY(int) = 0;
+    virtual float GetJoyAnalogueRightX(int) = 0;
+    virtual float GetJoyAnalogueRightY(int) = 0;
+    virtual float GetJoyPovX(int) = 0;
+    virtual float GetJoyPovY(int) = 0;
     void Flush();
     void DoMappings();
     void CalcNumMappings() {}
-    void ReadControllerState() {}
+    virtual void ReadControllerState() = 0;
     void RecordControllerState() {}
     bool RepeatOccured(BOOL, SControlBinding *) { return false; }
-    float GetMappedInputValue(int, int) { return 0; }
+    float GetMappedInputValue(int, int);
     bool GetKeyOnce(int) { return false; }
-    bool GetKeyOn(int) { return false; }
+    bool GetKeyOn(int) { return testKeyOn; }
     bool GetKeyRelease(int) { return false; }
     bool IsButtonSet(int id) { return id >= 0 && id < 32 && (mButtons1 & (1u << id)); }
     void UnsetButton(int id) { if (id >= 0 && id < 32) mButtons1 &= ~(1u << id); }
-    void SendButtonAction(int id, float) { if (id >= 0 && id < 32) mButtons1 |= 1u << id; actions.push_back(id); }
+    void SendButtonAction(int id, float value) {
+        if (id >= 0 && id < 32) mButtons1 |= 1u << id; actions.push_back(id); actionValues.push_back(value);
+    }
 };
 struct CPCController : CController {
+    FixtureDemoBuffer mDataFile;
+    void ReadControllerState() override;
     int GetJoyButtonOnce(int, int) override;
     int GetJoyButtonOn(int, int) override;
     int GetJoyButtonRelease(int, int) override;
@@ -160,6 +201,7 @@ struct CPCController : CController {
 struct CPCController {
 #endif
     float GetJoyAnalogueLeftX(int), GetJoyAnalogueLeftY(int), GetJoyAnalogueRightX(int), GetJoyAnalogueRightY(int);
+    float GetJoyPovX(int), GetJoyPovY(int);
 };
 static IDirectInputDevice8A *sMouse;
 static DIMOUSESTATE2 sMouseState;
@@ -180,14 +222,18 @@ static int PortUiMouse(int *, int *) { return 0; }
 #define GetCursorPos PortGetCursorPos
 #include "CALLERS_INC"
 
-#if defined(CE_VERSION) && defined(CE_EDGE_TESTS)
+#if defined(CE_EDGE_TESTS)
 static bool testMultiplayer, testBonus;
 struct InputTestGame { bool IsMultiplayer() { return testMultiplayer; } bool IsPaused() { return false; } } GAME;
 bool PortCeBonusCoopRunning() { return testBonus; }
+#if defined(CE_VERSION)
 GAMEPAD_EDGE_FUNCTIONS
+#endif
 static bool gMouseAxisLocked[MAX_JOYPADS], sSendingMouseRest, sMouseAxisRead;
 static float gMouseSensitivity = 1;
+#if defined(CE_VERSION)
 static int sCeMouseRestId = -1;
+#endif
 static float DigitalValueForButton(int) { return 1; }
 int PortCeGamepadInputs(int, int, SControlInput *) { return 0; } // isolate the actual saved-binding mapping path
 GAMEPAD_MAPPING_FUNCTIONS
@@ -245,8 +291,15 @@ int main(int argc, char **argv) {
     if (!strcmp(test, "mouse-fraction-probes")) setenv("BEA_PORT_PROBES", "fixture", 1);
     if (!strcmp(test, "mouse-fraction-disabled")) ceLayer = false;
     if (!strncmp(test, "pad-", 4)) {
-        if (!strcmp(test, "pad-edge-tape")) setenv("BEA_PORT_TAPE", "fixture", 1);
-        if (!strcmp(test, "pad-edge-record")) setenv("BEA_PORT_RECORD", "fixture", 1);
+        if (!strcmp(test, "pad-edge-tape") || !strncmp(test, "pad-edge-tape-saved", 19) || !strncmp(test, "pad-neutral-tape", 16)) setenv("BEA_PORT_TAPE", "fixture", 1);
+        if (!strcmp(test, "pad-edge-record") || !strncmp(test, "pad-edge-record-saved", 21) || !strncmp(test, "pad-neutral-record", 18) || !strcmp(test, "pad-neutral-faithful")) setenv("BEA_PORT_RECORD", "fixture", 1);
+        if (!strncmp(test, "pad-edge-pov-record-", 20) || !strncmp(test, "pad-edge-demo-record-", 21) || !strcmp(test, "pad-edge-record-keys")) setenv("BEA_PORT_RECORD", "fixture", 1);
+        if (!strncmp(test, "pad-edge-pov-tape-", 18) || !strncmp(test, "pad-edge-demo-tape-", 19) || !strcmp(test, "pad-edge-tape-keys")) setenv("BEA_PORT_TAPE", "fixture", 1);
+        if (!strcmp(test, "pad-edge-pov-faithful-disabled")) setenv("BEA_PORT_RECORD", "fixture", 1);
+        if (!strcmp(test, "pad-neutral-empty-record")) setenv("BEA_PORT_RECORD", "", 1);
+        if (!strcmp(test, "pad-neutral-empty-tape")) setenv("BEA_PORT_TAPE", "", 1);
+        if (!strcmp(test, "pad-neutral-clock")) setenv("BEA_PORT_CLOCK", "fixture", 1);
+        if (!strcmp(test, "pad-neutral-probes")) setenv("BEA_PORT_PROBES", "fixture", 1);
         if (!strcmp(test, "pad-edge-clock")) setenv("BEA_PORT_CLOCK", "fixture", 1);
         if (!strcmp(test, "pad-edge-probes")) setenv("BEA_PORT_PROBES", "fixture", 1);
         if (!strcmp(test, "pad-trigger-disabled")) ceLayer = false;
@@ -259,8 +312,12 @@ int main(int argc, char **argv) {
         std::vector<SDL_Joystick *> pads;
         bool two = !strcmp(test, "pad-edge-two") || !strcmp(test, "pad-edge-cross-binding") ||
                    !strcmp(test, "pad-edge-two-consumers") || !strcmp(test, "pad-edge-repeat-consumer") ||
-                   !strcmp(test, "pad-edge-cross-overflow") || !strcmp(test, "pad-edge-bonus-two");
-        for (int i = 0; i < (!strcmp(test, "pad-limit") ? 5 : two ? 2 : 1); ++i)
+                   !strcmp(test, "pad-edge-cross-overflow") || !strcmp(test, "pad-edge-bonus-two") ||
+                   !strcmp(test, "pad-edge-hotplug-two") || !strcmp(test, "pad-neutral-record-two") ||
+                   !strcmp(test, "pad-neutral-tape-two") || !strcmp(test, "pad-edge-record-saved-two") ||
+                   !strcmp(test, "pad-edge-tape-saved-two");
+        const bool noPad = (!strncmp(test, "pad-edge-pov-", 13) || !strncmp(test, "pad-edge-demo-", 14)) && strstr(test, "-absent");
+        for (int i = 0; i < (noPad ? 0 : !strcmp(test, "pad-limit") ? 5 : two ? 2 : 1); ++i)
             { pads.push_back(VirtualPad()); CHECK(pads.back()); }
         if (!strcmp(test, "pad-edge-duplicate-binding")) {
             SDL_GUID guid = SDL_GetJoystickGUID(pads[0]); char s[33]{}, mapping[256]{};
@@ -274,9 +331,99 @@ int main(int argc, char **argv) {
             SDL_UpdateJoysticks();
         }
         CHECK(SUCCEEDED(LT.InitDirectInput(reinterpret_cast<HWND>(1))));
-        CHECK(LT.canary == 0x12345678 && LT.mJoypads == (!strcmp(test, "pad-limit") ? 4 : two ? 2 : 1));
+        CHECK(LT.canary == 0x12345678 && LT.mJoypads == (noPad ? 0 : !strcmp(test, "pad-limit") ? 4 : two ? 2 : 1));
+        if (!strncmp(test, "pad-neutral-", 12)) {
+            bool blocked = !strncmp(test, "pad-neutral-record", 18) || !strncmp(test, "pad-neutral-tape", 16);
+            for (int pad = 0; pad < (two ? 2 : 1); ++pad) {
+                CHECK(SUCCEEDED(LT.pJoystick[pad]->Acquire()));
+                CHECK(SDL_SetJoystickVirtualAxis(pads[pad], SDL_GAMEPAD_AXIS_LEFTX, 32767));
+                CHECK(SDL_SetJoystickVirtualAxis(pads[pad], SDL_GAMEPAD_AXIS_LEFTY, -32768));
+                CHECK(SDL_SetJoystickVirtualAxis(pads[pad], SDL_GAMEPAD_AXIS_RIGHTX, 32767));
+                CHECK(SDL_SetJoystickVirtualAxis(pads[pad], SDL_GAMEPAD_AXIS_RIGHTY, -32768));
+                CHECK(SDL_SetJoystickVirtualButton(pads[pad], SDL_GAMEPAD_BUTTON_DPAD_RIGHT, true));
+                CHECK(SDL_SetJoystickVirtualButton(pads[pad], SDL_GAMEPAD_BUTTON_SOUTH, true));
+                SDL_UpdateJoysticks();
+                CHECK(SUCCEEDED(LT.UpdateJoystick(pad, true)));
+                DIJOYSTATE2 *state = LT.JoyState(pad);
+                if (blocked) {
+                    CHECK(state->lX == 0 && state->lY == 0 && state->lZ == 0 && state->lRz == 0);
+                    CHECK(state->lRx == 0 && state->lRy == 0);
+                    for (int i = 0; i < 4; ++i) CHECK(state->rgdwPOV[i] == 0xFFFFFFFF);
+                    for (int i = 0; i < 32; ++i) CHECK(state->rgbButtons[i] == 0);
+                    CHECK(SDL_SetJoystickVirtualButton(pads[pad], SDL_GAMEPAD_BUTTON_SOUTH, false)); SDL_UpdateJoysticks();
+                    CHECK(SUCCEEDED(LT.UpdateJoystick(pad, true)) && !LT.JoyButtonRelease(pad, 3));
+                } else {
+                    CHECK(state->lX == 1000 && state->lY == -1000 && state->lZ == 1000 && state->lRz == -1000);
+                    CHECK(state->rgdwPOV[0] == 9000 && LT.JoyButtonOn(pad, 3));
+                }
+            }
+            // A configured non-default range still reports its own center, rather than a hard-coded zero.
+            DIPROPRANGE range{}; range.diph.dwSize = sizeof(range); range.diph.dwHeaderSize = sizeof(DIPROPHEADER);
+            range.diph.dwHow = DIPH_DEVICE; range.lMin = 100; range.lMax = 900;
+            CHECK(SUCCEEDED(LT.pJoystick[0]->SetProperty(DIPROP_RANGE, &range.diph)));
+            DIJOYSTATE2 raw{}; CHECK(SUCCEEDED(LT.pJoystick[0]->GetDeviceState(sizeof(raw), &raw)));
+            CHECK(raw.lX == (blocked ? 500 : 900));
+            if (blocked) {
+                CHECK(raw.lY == 500 && raw.lZ == 500 && raw.lRx == 500 && raw.lRy == 500 && raw.lRz == 500);
+                for (unsigned char button : raw.rgbButtons) CHECK(button == 0);
+            }
+            DIJOYSTATE rawLegacy{}; CHECK(SUCCEEDED(LT.pJoystick[0]->GetDeviceState(sizeof(rawLegacy), &rawLegacy)));
+            CHECK(rawLegacy.lX == (blocked ? 500 : 900));
+            if (blocked) for (int i = 0; i < 4; ++i) CHECK(rawLegacy.rgdwPOV[i] == 0xFFFFFFFF);
+        }
+#if defined(CE_EDGE_TESTS)
+        if (!strcmp(test, "pad-edge-pov-faithful-disabled")) {
+            CHECK(SUCCEEDED(LT.pJoystick[0]->Acquire())); LT.mUnknown33474[0] = false;
+            CHECK(SUCCEEDED(LT.UpdateJoystick(0, true)));
+            CONTROL_BINDINGS[0] = {true, 16, {{0, ANALOGUE_MINUS, ANALOGUE_POV_Y, 0}, {-1, 0, 0, 0}}};
+            CPCController player; player.mNumMappings = 1; player.Flush();
+            CHECK(player.GetMappedInputValue(0, ANALOGUE_POV_Y) == -1.0f);
+            CHECK(player.actions.size() == 1 && player.actions[0] == 16 && player.actionValues[0] == -1.0f);
+        } else
+#endif
 #if defined(CE_VERSION)
-        if (!strcmp(test, "pad-tutorial-info") || !strcmp(test, "pad-tutorial-unplug")) {
+        if (!strncmp(test, "pad-edge-pov-", 13) || !strncmp(test, "pad-edge-demo-", 14)) {
+#if defined(CE_EDGE_TESTS)
+            const bool demo = !strncmp(test, "pad-edge-demo-", 14);
+            const bool blocked = strstr(test, "-record-") || strstr(test, "-tape-");
+            const bool disabled = strstr(test, "-disabled");
+            const bool keyboard = strstr(test, "-keyboard"), mouse = strstr(test, "-mouse");
+            if (!noPad) CHECK(SUCCEEDED(LT.pJoystick[0]->Acquire()));
+            if (disabled) LT.mUnknown33474[0] = false;
+            if (keyboard || mouse) {
+                CHECK(SDL_SetJoystickVirtualButton(pads[0], SDL_GAMEPAD_BUTTON_SOUTH, true)); SDL_UpdateJoysticks();
+            }
+            CHECK(SUCCEEDED(LT.UpdateJoystick(0, true)));
+            CONTROL_BINDINGS[0] = {true, 16, {{0, ANALOGUE_MINUS, ANALOGUE_POV_Y, 0}, {-1, 0, 0, 0}}};
+            if (keyboard || mouse) CONTROL_BINDINGS[0].mInput[0] = {0, keyboard ? KEY_ON : MOUSE_BUTTON_ON, 3, 0};
+            CPCController player; player.mNumMappings = 1;
+            if (demo) { player.mPlaying = true; player.mDataFile.words[0] = 1u << 16; }
+            PortCeGamepadBeginCycle(); player.Flush();
+            const float value = player.GetMappedInputValue(0, ANALOGUE_POV_Y);
+            CHECK(value == (blocked || !disabled ? 0.0f : -1.0f));
+            if (demo) {
+                CHECK(player.mPlaying && player.mDataFile.cursor == 3 && player.actions.size() == 1);
+                CHECK(player.actions[0] == 16 && player.actionValues[0] == value);
+            } else if (blocked || !disabled) CHECK(player.actions.empty());
+            else CHECK(player.actions.size() == 1 && player.actions[0] == 16 && player.actionValues[0] == -1.0f);
+#else
+            return 2;
+#endif
+        } else if (!strcmp(test, "pad-edge-record-keys") || !strcmp(test, "pad-edge-tape-keys")) {
+#if defined(CE_EDGE_TESTS)
+            CHECK(SUCCEEDED(LT.pJoystick[0]->Acquire()));
+            CHECK(SDL_SetJoystickVirtualButton(pads[0], SDL_GAMEPAD_BUTTON_SOUTH, true)); SDL_UpdateJoysticks();
+            CHECK(SUCCEEDED(LT.UpdateJoystick(0, true)));
+            CONTROL_BINDINGS[0] = {true, 16, {{0, ANALOGUE_MINUS, ANALOGUE_POV_Y, 0}, {0, KEY_ON, 1, 0}}};
+            CONTROL_BINDINGS[1] = {true, 17, {{0, MOUSE_BUTTON_ON, 0, 0}, {-1, 0, 0, 0}}};
+            testKeyOn = true; MOUSE_HELD[0] = true;
+            CPCController player; player.mNumMappings = 2;
+            PortCeGamepadBeginCycle(); player.Flush();
+            CHECK(player.actions.size() == 2 && player.actions[0] == 16 && player.actions[1] == 17);
+#else
+            return 2;
+#endif
+        } else if (!strcmp(test, "pad-tutorial-info") || !strcmp(test, "pad-tutorial-unplug")) {
             CeTutorialPadInfo info{};
             CHECK(PortCeTutorialPadInfo(LT.pJoystick[0], &info));
             CHECK(info.kind == CE_TUTORIAL_GAMEPAD);
@@ -514,6 +661,34 @@ int main(int argc, char **argv) {
                 CHECK(SDL_SetJoystickVirtualAxis(pads[0], SDL_GAMEPAD_AXIS_RIGHT_TRIGGER, -32768)); SDL_UpdateJoysticks();
                 CHECK(update() == 0); CHECK(PortCeGamepadEdge(0, 17, false) == 1 && PortCeGamepadOn(0, 17) == 1);
                 CHECK(update() == 0); CHECK(PortCeGamepadEdge(0, 17, true) == 1 && PortCeGamepadOn(0, 17) == 0);
+            } else if (!strcmp(test, "pad-edge-hotplug-two")) {
+                CHECK(SUCCEEDED(LT.pJoystick[1]->Acquire())); CHECK(SUCCEEDED(LT.UpdateJoystick(1, true)));
+                CONTROL_BINDINGS[0] = {true, 16, {{0, BUTTON_ONCE, 3, 0}, {1, BUTTON_ONCE, 3, 0}}};
+                CONTROL_BINDINGS[1] = {true, 17, {{0, BUTTON_RELEASE, 3, 0}, {1, BUTTON_RELEASE, 3, 0}}};
+                CPCController p0, p1; p0.mNumMappings = p1.mNumMappings = 2; p1.mPadNumber = 1;
+                testMultiplayer = true; testBonus = true;
+                auto cycle = [&] {
+                    PortCeGamepadBeginCycle(); p0.Flush(); p1.Flush();
+                };
+                cycle(); CHECK(p0.actions.empty() && p1.actions.empty());
+                // Losing player one's pad must discard its pending press without discarding player two's quick tap.
+                CHECK(button(true)); CHECK(SDL_DetachVirtualJoystick(virtualIds[0])); SDL_UpdateJoysticks();
+                CHECK(SDL_SetJoystickVirtualButton(pads[1], SDL_GAMEPAD_BUTTON_SOUTH, true)); SDL_UpdateJoysticks();
+                CHECK(SDL_SetJoystickVirtualButton(pads[1], SDL_GAMEPAD_BUTTON_SOUTH, false)); SDL_UpdateJoysticks();
+                cycle(); CHECK(p0.actions.empty() && p1.actions.size() == 1 && p1.actions[0] == 16);
+                cycle(); CHECK(p0.actions.empty() && p1.actions.size() == 2 && p1.actions[1] == 17);
+                cycle(); CHECK(p0.actions.empty() && p1.actions.size() == 2);
+                // The replacement arrives already held: it is the new baseline, not a synthetic press.
+                pads.push_back(VirtualPad()); CHECK(pads.back());
+                CHECK(SDL_SetJoystickVirtualButton(pads.back(), SDL_GAMEPAD_BUTTON_SOUTH, true)); SDL_UpdateJoysticks();
+                SDL_Delay(550); cycle();
+                CHECK(PortCeGamepadOn(0, 3) && p0.actions.empty() && p1.actions.size() == 2);
+                CHECK(SDL_SetJoystickVirtualButton(pads.back(), SDL_GAMEPAD_BUTTON_SOUTH, false)); SDL_UpdateJoysticks();
+                cycle(); CHECK(p0.actions.size() == 1 && p0.actions[0] == 17 && p1.actions.size() == 2);
+                CHECK(SDL_SetJoystickVirtualButton(pads.back(), SDL_GAMEPAD_BUTTON_SOUTH, true)); SDL_UpdateJoysticks();
+                cycle(); CHECK(p0.actions.size() == 2 && p0.actions[1] == 16 && p1.actions.size() == 2);
+                CHECK(SDL_SetJoystickVirtualButton(pads.back(), SDL_GAMEPAD_BUTTON_SOUTH, false)); SDL_UpdateJoysticks();
+                cycle(); CHECK(p0.actions.size() == 3 && p0.actions[2] == 17 && p1.actions.size() == 2);
             } else if (!strcmp(test, "pad-edge-hotplug")) {
                 CHECK(button(true)); CHECK(SDL_DetachVirtualJoystick(virtualIds[0])); SDL_UpdateJoysticks();
                 CHECK(update() == 0); CHECK(!PortCeGamepadOn(0, 3) && !PortCeGamepadEdge(0, 3, true));
@@ -526,6 +701,19 @@ int main(int argc, char **argv) {
                 CHECK(PortCeGamepadOn(0, 3) == -1 && PortCeGamepadEdge(0, 3, false) == -1);
                 CHECK(button(false)); testMultiplayer = false; CHECK(update() == 0);
                 CHECK(button(true)); CHECK(update() == 0); CHECK(PortCeGamepadEdge(0, 3, false) == 1);
+            } else if (!strncmp(test, "pad-edge-record-saved", 21) || !strncmp(test, "pad-edge-tape-saved", 19)) {
+                // A saved button binding must not dispatch a live pad action into a keyboard/mouse tape.
+                CHECK(button(true)); CHECK(update() == 0);
+                CHECK(PortCeGamepadOn(0, 3) == -1 && !LT.JoyButtonOn(0, 3));
+                if (two) {
+                    CHECK(SUCCEEDED(LT.pJoystick[1]->Acquire()));
+                    CHECK(SDL_SetJoystickVirtualButton(pads[1], SDL_GAMEPAD_BUTTON_SOUTH, true)); SDL_UpdateJoysticks();
+                    CHECK(SUCCEEDED(LT.UpdateJoystick(1, true)) && !LT.JoyButtonOn(1, 3));
+                }
+                CONTROL_BINDINGS[0] = {true, 16, {{two ? 1 : 0, BUTTON_ON, 3, 0}, {-1, 0, 0, 0}}};
+                CPCController p0; p0.mNumMappings = 1;
+                PortCeGamepadBeginCycle(); p0.Flush();
+                CHECK(p0.actions.empty());
             } else if (!strcmp(test, "pad-edge-tape") || !strcmp(test, "pad-edge-record") ||
                        !strcmp(test, "pad-edge-clock") || !strcmp(test, "pad-edge-probes")) {
                 CHECK(button(true)); CHECK(update() == 0);

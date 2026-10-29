@@ -7,10 +7,13 @@ from pathlib import Path
 import re
 import resource
 import subprocess
+import sys
 import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "port"))
+import build  # noqa: E402
 PATCHES = ROOT / "port/patches"
 DRIVER = ROOT / "port/tools/ce_palette_driver.cpp"
 FAKE = ROOT / "port/tools/ce_palette_fake.h"
@@ -44,10 +47,22 @@ def no_core():
     resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
 
 
+def mirror_text(name):
+    """src/NAME as the port's mirror holds it before any patch: include names and their case normalised as build.py does.
+    The patches' context lines are written against that text ("common.h", not the original's "Common.h")."""
+    build.SYSTEM_NAMES.update(build.system_header_names())
+    rows = [l.split(maxsplit=1) for l in (ROOT / "config/game-data.sha256").read_text().splitlines() if l.strip()]
+    targets = ([build.MIRROR_ROOT / f.relative_to(ROOT) for f in build.tracked_sources()] +
+               [build.MIRROR / r for _, r in rows] + [build.MIRROR / "data/NVShaderFragments.inc"])
+    raw = (ROOT / "src" / name).read_bytes().decode("latin-1")
+    return build.normalise(raw, build.MIRROR_ROOT / "src", build.CaseIndex(targets),
+                           [build.MIRROR, build.MIRROR / "MissionScript"]).encode("latin-1")
+
+
 def patched(out, names):
-    """src/ copies of names with every port patch's section for them applied in the build's order, at fuzz 0."""
+    """The mirror's copies of names with every port patch's section for them applied in the build's order, at fuzz 0."""
     for name in names:
-        (out / name).write_bytes((ROOT / "src" / name).read_bytes())
+        (out / name).write_bytes(mirror_text(name))
     for patch in sorted(PATCHES.glob("*.patch")):
         parts = sections(patch.read_text(encoding="latin1"))
         for name in names:

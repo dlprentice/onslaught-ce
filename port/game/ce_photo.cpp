@@ -1,14 +1,23 @@
 // SPDX-License-Identifier: GPL-3.0-only
-// F11's HUD-hiding photo mode is temporarily disabled: suppressing the normal HUD/cockpit render calls changes later
-// simulation state. The replacement render-only suppression is still under review. F12's screenshot key remains.
+// CE photo mode: F11 or the console's photo command hides the HUD, the battle line and the cockpit, and F12 saves the
+// frame as a PNG. Retail keeps the CLIPARAMS.mKillHUD field (CLIParams.h, +0x29c) and the cockpit's test of it (DXEngine.cpp,
+// under DEV_VERSION), but nothing sets it, and photo mode does not either: it drops the draw calls the HUD overlay, the
+// battle line and the cockpit routines make (patch 0133, CePhotoDrawScope, d3d9hooks.cpp) and lets the routines run in
+// full. What they compute feeds the simulation: the HUD's warning panel calls CBattleEngine::TestDanger, which starts the
+// incoming-warhead warning that draws from rand, so skipping the routines changed every later random draw (patch 0108's
+// first design). Photo mode now only hides drawing and saves pictures: it moves no camera, pauses nothing and changes no
+// game state. Menus, the message and briefing logs, the pause menu and the end of level screens are still drawn: they take
+// input. The free camera is untouched: F and the camera command still need the Free camera cheat, and so does its Esc
+// photo pause; photo mode needs none.
 //
-// F11 or the console's photo command explains the temporary unavailability; F12 saves a PNG in the user's screenshots
+// F11 or the console's photo command switches it; F12 saves the frame as a PNG in the per-user folder's screenshots
 // folder (ce_screenshot.cpp, read back at the Present, d3d9hooks.cpp), and a brief note says so. The frame saved is
-// drawn without that note. Level end cancels any pending screenshot.
+// drawn without that note. Photo mode ends when the level ends.
 //
 // Never in faithful play: off in a replay, a recording, under probes or the virtual clocks, for a test pilot or a network
 // game, in multiplayer, demos and the front end, or where the CE layer is off. BEA_PORT_PHOTO_PROOF=N with
-// BEA_PORT_CE_LAYER=1 is a screenshot test switch: a screenshot every N Presents, without enabling photo mode.
+// BEA_PORT_CE_LAYER=1 is a test switch: photo mode on in every level under a tape, and a screenshot every N Presents,
+// so a replay can show that neither changes the game.
 #ifdef CE_VERSION
 
 #include "common.h"
@@ -39,10 +48,10 @@ const unsigned kPhotoKey = DIK_F11, kShotKey = DIK_F12;
 const unsigned long long kNoteMs = 2500;		// CE_ScreenshotTicks: SDL's milliseconds, never the game's clock
 const char *const kFenced[] = {"BEA_PORT_CLOCK", "BEA_PORT_TAPE", "BEA_PORT_PROBES", "BEA_PORT_RECORD",
 							   "BEA_PORT_PILOT", "BEA_PORT_AUTOPILOT", "BEA_NET_HOST", "BEA_NET_JOIN"};
+bool photo;						// photo mode on (the draw calls of the HUD, battle line and cockpit routines are dropped)
 bool shotPending;				// the next Present is saved; the note is not drawn in that frame
 char note[96];
 unsigned long long noteUntil;
-bool holdNotice;				// place the short F11 notice away from the radio subtitles
 
 bool Present(const char *name)
 {
@@ -50,7 +59,7 @@ bool Present(const char *name)
 	return value && *value;
 }
 
-// BEA_PORT_PHOTO_PROOF=N (N > 0) with the CE layer forced on: a screenshot every N Presents; no photo mode.
+// BEA_PORT_PHOTO_PROOF=N (N > 0) with the CE layer forced on: photo mode in every level, a screenshot every N Presents.
 unsigned ProofEvery()
 {
 	const char *value = getenv("BEA_PORT_PHOTO_PROOF");
@@ -73,46 +82,57 @@ bool Allowed()
 	return !GAME.IsMultiplayer() && GAME.GetNPlayers() == 1 && GAME.GetPlayer(0);
 }
 
-void Note(const char *text, bool hold = false)
+void Note(const char *text)
 {
 	snprintf(note, sizeof(note), "%s", text);
 	noteUntil = CE_ScreenshotTicks() + kNoteMs;
-	holdNotice = hold;
+}
+
+// Photo mode on or off, and the device's draw entries filtered or as the device came; asking again re-applies them, which
+// a device made anew needs.
+void Switch(bool on)
+{
+	photo = on;
+	PortCeDrawHooks(on);
 }
 
 }
 
-bool PortCePhotoOn() { return false; }
+bool PortCePhotoOn() { return photo; }
 
 // Photo mode on or off (the console's photo, F11); false when it is not available here (it is then off).
 bool PortCePhotoSet(bool on)
 {
-	if (!Allowed()) return false;
-	if (on) { Note("Photo unavailable (F12: screenshot).", true); return false; }
-	noteUntil = 0;
+	if (!Allowed()) { Switch(false); return false; }
+	Switch(on);
+	if (on) Note("Photo mode: HUD hidden. F11 returns, F12 saves a screenshot.");
+	else noteUntil = 0;
 	return true;
 }
 
-// F11 reports photo mode unavailable and F12 saves a screenshot, in an allowed level when no keytrap has the keyboard
+// F11 switches photo mode and F12 saves a screenshot, in a level where no menu or console has the keyboard
 // (ltshell.cpp, patch 0108, before the console's own keys). True when the key was taken; a held key's repeats are too.
 bool PortCePhotoKey(unsigned key, bool repeat)
 {
 	if ((key != kPhotoKey && key != kShotKey) || LT.GetKeytrap() || !Allowed()) return false;
 	if (repeat) return true;
-	if (key == kPhotoKey) PortCePhotoSet(true);
+	if (key == kPhotoKey) PortCePhotoSet(!photo);
 	else shotPending = true;
 	return true;
 }
 
-// Between frames (CGame::MainLoop, after the console's): discard a screenshot that is no longer allowed.
+// Between frames (CGame::MainLoop, after the console's): photo mode ends where it is no longer allowed, and the proof
+// switch keeps it on.
 void PortCePhotoFrame()
 {
-	if (!Allowed()) shotPending = false;
+	if (!Allowed()) { Switch(false); shotPending = false; return; }
+	Switch(photo || ProofEvery());
 }
 
-// The level is ending (CGame::ShutdownRestartLoop, beside the console's): discard any unsaved screenshot.
+// The level is ending (CGame::ShutdownRestartLoop, beside the console's): photo mode off.
 void PortCePhotoLevelEnd()
 {
+	Switch(false);
 	shotPending = false;
 	noteUntil = 0;
 }
@@ -141,8 +161,7 @@ void PortCePhotoShotDone(int status, const char *name)
 	Note(text);
 }
 
-// After the console (CDXEngine::PostRender): F11's short hold notice at top left, screenshot status at bottom centre;
-// neither is drawn in a frame being saved. Other HUD elements may still share the notice's screen area.
+// After the console (CDXEngine::PostRender): the note, bottom centre, never in a frame being saved.
 void PortCePhotoRender()
 {
 	if (shotPending || !note[0] || CE_ScreenshotTicks() >= noteUntil || !Allowed()) return;
@@ -159,12 +178,10 @@ void PortCePhotoRender()
 	text[n] = 0;
 	SIZE extent;
 	font->GetTextExtent(text, &extent);
-	float textScale = holdNotice ? 0.9f * scale : scale;
+	float textScale = scale;
 	if (float(extent.cx) * textScale > w - 32.f * scale && extent.cx > 0) textScale = (w - 32.f * scale) / float(extent.cx);
 	const float tw = float(extent.cx) * textScale, th = float(font->GetHeight()) * textScale;
-	const float pad = 6.f * scale;
-	const float x = holdNotice ? 16.f * scale : (w - tw) * 0.5f;
-	const float y = holdNotice ? 48.f * scale : h - 40.f * scale - th;
+	const float pad = 6.f * scale, x = (w - tw) * 0.5f, y = h - 40.f * scale - th;
 	RENDERINFO.SetFogEnabled(false);
 	RENDERINFO.SetLightingEnabled(false);
 	LT.SRS(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);

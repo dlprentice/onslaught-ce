@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-only
-// Execute the production screenshot and temporarily disabled photo controls with the real patched message handler.
-// Check ownership, non-activation through F11/console/proof, fences, F12, and the note kept out of the saved frame.
+// Execute the production CE photo mode (port/game/ce_photo.cpp) with the real patched message handler against the console's
+// authored fake game boundary (port/tools/ce_palette_fake.h): the keys and who owns them, the draw filter it switches and the
+// scope that opens it, its fences and proof switch, the screenshot request and the note that must never be in the frame being
+// saved. Photo mode never touches the developer -killhud field: the HUD routines run, only their draw calls are dropped.
 #include "ce_palette_fake.h"
 #include "ce_photo.h"
 #include <cstdio>
@@ -27,6 +29,11 @@ static unsigned long long ticks = 1000;
 static unsigned presents = 0;
 extern "C" unsigned long long CE_ScreenshotTicks(void) { return ticks; }
 extern "C" unsigned PortPresentCount(void) { return presents; }
+// d3d9hooks.cpp's draw filter, recorded: whether it is in the device's draw entries and how many scopes are open.
+static bool filtered = false;
+static int dropped = 0, filterCalls = 0;
+void PortCeDrawHooks(bool on) { filtered = on; ++filterCalls; if (!on) dropped = 0; }
+void PortCeDrawsDropped(int delta) { dropped += delta; if (dropped < 0) dropped = 0; }
 #endif
 #include "msgproc.inc"
 
@@ -54,31 +61,35 @@ static const char *const kFlags[] = {"BEA_PORT_CLOCK", "BEA_PORT_TAPE", "BEA_POR
                                      "BEA_PORT_PILOT", "BEA_PORT_AUTOPILOT", "BEA_NET_HOST", "BEA_NET_JOIN"};
 
 static void keys() {
-    // F11 is consumed, explains the temporary hold, and does not change the developer HUD flag.
+    // F11 switches photo mode and the draw filter with it; the key is taken from the game (no key state, no bind); repeats are
+    // taken and ignored; the developer field is never touched.
     clearKeys();
     down(DIK_F11);
-    check(!PortCePhotoOn() && CLIPARAMS.mKillHUD == FALSE, "F11 cannot activate photo mode");
+    check(PortCePhotoOn() && filtered && CLIPARAMS.mKillHUD == FALSE, "F11 turns photo mode and the draw filter on, and leaves -killhud alone");
     check(!LT.KeyDown[DIK_F11] && !LT.KeyWasDown[DIK_F11] && CONSOLE.binds.empty(), "F11 is not a game key down");
     down(DIK_F11, true);
-    check(!PortCePhotoOn() && !LT.KeyDown[DIK_F11], "a held F11 repeats nothing and stays taken");
+    check(PortCePhotoOn() && !LT.KeyDown[DIK_F11], "a held F11 repeats nothing and stays taken");
     up(DIK_F11);
+    check(!LT.KeyDown[DIK_F11], "F11's release leaves no key down");
     render();
-    check(drew(L"Photo unavailable (F12: screenshot)."), "F11 explains the hold and F12");
-    check(!draws.empty() && draws[0].x == 16 && draws[0].y == 48 && draws[0].sx == 0.9f,
-          "the F11 notice is compact and placed above radio subtitles");
+    check(drew(L"Photo mode: HUD hidden. F11 returns, F12 saves a screenshot."), "photo mode says how to leave it");
     for (const auto &d : draws) check(d.x >= 0 && d.y >= 0 && d.x + float(d.text.size() * 8) * d.sx <= PLATFORM.w + 0.01f, "the note fits");
-    check(!PortCePhotoSet(true) && !PortCePhotoOn() && CLIPARAMS.mKillHUD == FALSE, "console enable is refused");
-    check(PortCePhotoSet(false), "console off is accepted");
+    press(DIK_F11);
+    check(!PortCePhotoOn() && !filtered && dropped == 0 && CLIPARAMS.mKillHUD == FALSE, "F11 again ends photo mode and the draw filter");
     render();
-    check(draws.empty(), "off removes the note");
+    check(draws.empty(), "the note goes with photo mode");
+    check(PortCePhotoSet(true) && PortCePhotoOn() && filtered, "the console turns it on");
+    check(PortCePhotoSet(false) && !PortCePhotoOn() && !filtered, "and off");
+    // Other keys stay the game's.
     clearKeys();
     down(0x21);
     check(LT.KeyDown[0x21] && CONSOLE.binds.empty(), "F (the free camera) is still the game's key");
     up(0x21);
-    // F12 still saves exactly one frame, without the note in that frame.
+    // F12 asks for the next Present; the note is never drawn in that frame; one request is one picture.
+    clearKeys();
     press(DIK_F11);
     render();
-    check(drew(L"Photo unavailable (F12: screenshot)."), "the unavailability note is showing");
+    check(drew(L"Photo mode: HUD hidden."), "the photo mode note is showing");
     press(DIK_F12);
     check(!LT.KeyDown[DIK_F12] && !LT.KeyWasDown[DIK_F12], "F12 is not a game key down");
     render();
@@ -86,7 +97,7 @@ static void keys() {
     check(PortCePhotoShotWanted(), "the Present after F12 is saved");
     check(!PortCePhotoShotWanted(), "one F12, one screenshot");
     render();
-    check(drew(L"Photo unavailable (F12: screenshot)."), "the note is back in the next frame");
+    check(drew(L"Photo mode: HUD hidden."), "the note is back in the next frame");
     down(DIK_F12, true);
     check(!PortCePhotoShotWanted(), "a held F12 takes one screenshot");
     up(DIK_F12);
@@ -101,8 +112,69 @@ static void keys() {
     PortCePhotoShotDone(CE_SHOT_WRITE, ""); render();
     check(drew(L"Screenshot not saved (error 6)."), "a failed write is said so");
     ticks += 10000;
-    press(DIK_F12); check(frame(), "F12 works while photo mode is unavailable");
+    // Screenshots without photo mode too: the frame as the player sees it.
+    press(DIK_F11);
+    check(!PortCePhotoOn(), "photo mode off");
+    press(DIK_F12); check(frame(), "F12 works without photo mode");
     check(!frame(), "and only once");
+}
+
+static void scope() {
+    // The scope the patched HUD, battle line and cockpit routines open: it drops draw calls only while photo mode is on, nests,
+    // and always closes.
+    PortCePhotoSet(false);
+    { CePhotoDrawScope s; check(dropped == 0, "a scope with photo mode off drops nothing"); }
+    PortCePhotoSet(true);
+    check(dropped == 0, "photo mode alone drops nothing outside a scope");
+    {
+        CePhotoDrawScope outer;
+        check(dropped == 1, "a scope drops while photo mode is on");
+        { CePhotoDrawScope inner; check(dropped == 2, "scopes nest"); }
+        check(dropped == 1, "an inner scope closes only itself");
+    }
+    check(dropped == 0, "the draw calls after the routine are drawn");
+    // Photo mode turned off with a scope open (not a thing a frame does) leaves the filter off and the count zero.
+    { CePhotoDrawScope s; PortCePhotoSet(false); check(dropped == 0 && !filtered, "photo mode off clears the count"); }
+    check(dropped == 0, "and the scope's close never takes it below zero");
+    // A scope opened before photo mode was on does not close one it never opened.
+    PortCePhotoSet(false);
+    { CePhotoDrawScope s; PortCePhotoSet(true); check(dropped == 0, "a scope opened with photo mode off stays shut"); }
+    check(dropped == 0, "and closing it changes nothing");
+    PortCePhotoSet(false);
+}
+
+// A routine that leaves a block in the middle: the scope is a destructor's, so an early return, a continue and a break close it.
+static int leaving(bool early) { CePhotoDrawScope s; if (early) return dropped; return dropped * 10; }
+
+static void leaks() {
+    // A draw made outside any scope while photo mode is on is drawn (the count is zero there); a scope never stays open.
+    PortCePhotoSet(true);
+    check(dropped == 0, "outside any scope nothing is dropped while photo mode is on");
+    check(leaving(true) == 1 && dropped == 0, "an early return closes the scope");
+    check(leaving(false) == 10 && dropped == 0, "so does the end of the routine");
+    for (int i = 0; i < 4; ++i) {
+        CePhotoDrawScope s;
+        if (i == 1) continue;
+        check(dropped == 1, "a loop's scope is open in its body");
+        if (i == 2) break;
+    }
+    check(dropped == 0, "a continue and a break close it");
+    // Photo mode ended between two frames: a scope opened the frame before has closed, the next one is inert.
+    { CePhotoDrawScope s; }
+    PortCePhotoSet(false);
+    check(leaving(true) == 0 && dropped == 0 && !filtered, "scopes are inert when photo mode is off");
+}
+
+static void devices() {
+    // A device made anew has its own draw entries: the between-frames hook puts the filter back while photo mode is on.
+    PortCePhotoSet(true);
+    filtered = false;
+    PortCePhotoFrame();
+    check(PortCePhotoOn() && filtered, "photo mode re-applies the filter to a device made anew");
+    PortCePhotoSet(false);
+    const int calls = filterCalls;
+    PortCePhotoFrame();
+    check(!PortCePhotoOn() && !filtered && filterCalls >= calls, "off stays off");
 }
 
 static void owners() {
@@ -115,37 +187,43 @@ static void owners() {
 }
 
 static void levelEnd() {
+    // Level end: photo mode and the filter off, no screenshot carried into the next level.
     CLIPARAMS.mKillHUD = FALSE;
-    press(DIK_F11); press(DIK_F12);
+    press(DIK_F11);
+    check(PortCePhotoOn() && filtered, "photo mode on before the level ends");
+    press(DIK_F12);
     PortCePhotoLevelEnd();
-    check(!PortCePhotoOn() && CLIPARAMS.mKillHUD == FALSE, "level end leaves photo unavailable");
+    check(!PortCePhotoOn() && !filtered && dropped == 0 && CLIPARAMS.mKillHUD == FALSE, "level end ends photo mode");
     check(!PortCePhotoShotWanted(), "level end drops a screenshot not yet taken");
+    // A developer -killhud set by someone else is theirs: photo mode neither sets nor clears it.
     CLIPARAMS.mKillHUD = TRUE;
-    check(!PortCePhotoSet(true) && CLIPARAMS.mKillHUD == TRUE, "refused enable preserves another HUD setting");
+    check(PortCePhotoSet(true) && CLIPARAMS.mKillHUD == TRUE, "photo on over a set field");
     PortCePhotoLevelEnd();
-    check(CLIPARAMS.mKillHUD == TRUE, "level end does not overwrite another HUD setting");
+    check(CLIPARAMS.mKillHUD == TRUE, "the field is as it was");
     CLIPARAMS.mKillHUD = FALSE;
+    PortCePhotoLevelEnd();
+    check(CLIPARAMS.mKillHUD == FALSE, "level end without photo mode changes nothing");
 }
 
 static void refusedHere(const char *why) {
     clearKeys();
     down(DIK_F11); up(DIK_F11); down(DIK_F12); up(DIK_F12);
-    check(!PortCePhotoOn() && LT.KeyWasDown[DIK_F11] && LT.KeyWasDown[DIK_F12], why);
-    check(!PortCePhotoSet(true) && CLIPARAMS.mKillHUD == FALSE, why);
-    check(!PortCePhotoSet(false), why);
+    check(!PortCePhotoOn() && !filtered && LT.KeyWasDown[DIK_F11] && LT.KeyWasDown[DIK_F12], why);
+    check(!PortCePhotoSet(true) && !PortCePhotoOn() && !filtered && CLIPARAMS.mKillHUD == FALSE, why);
     check(!PortCePhotoShotWanted(), why);
 }
 
 static void fences() {
     // Every replay, recording, probe, clock, pilot and network switch; recording; multiplayer, demos and the front end.
     for (const char *flag : kFlags) {
+        check(PortCePhotoSet(true), "photo mode before the fence");
         press(DIK_F12);
         setenv(flag, "1", 1);
         PortCePhotoFrame();
         unsetenv(flag);
+        check(!PortCePhotoOn() && !filtered, "a fence ends photo mode and the filter");
         check(!PortCePhotoShotWanted(), "a fence permanently discards a pending screenshot");
         setenv(flag, "1", 1);
-        check(!PortCePhotoOn() && CLIPARAMS.mKillHUD == FALSE, "a fence leaves photo mode unavailable");
         check(!PortCePhotoShotWanted(), "a fence drops the screenshot");
         refusedHere("a fence refuses photo mode and its keys");
         unsetenv(flag);
@@ -161,11 +239,12 @@ static void fences() {
 #ifdef FAKE_NETWORK
     SetBootRequested(true); refusedHere("a network game refuses it"); SetBootRequested(false);
 #endif
-    check(!PortCePhotoSet(true) && PortCePhotoSet(false), "photo remains unavailable after fences");
+    check(PortCePhotoSet(true) && PortCePhotoSet(false), "allowed again");
 }
 
 static void proof() {
-    // BEA_PORT_PHOTO_PROOF=N under a tape: without a forced CE layer nothing; with it, screenshots but never photo mode.
+    // BEA_PORT_PHOTO_PROOF=N under a tape: nothing without the CE layer forced; with it, photo mode in the level and a
+    // screenshot at every Present that is a multiple of N, exactly.
     setenv("BEA_PORT_TAPE", "1", 1);
     setenv("BEA_PORT_PHOTO_PROOF", "4", 1);
     presents = 0;
@@ -174,11 +253,11 @@ static void proof() {
     presents = 0;
     std::string saved;
     for (int i = 0; i < 12; ++i) if (frame()) saved += std::to_string(presents) + " ";
-    check(!PortCePhotoOn() && CLIPARAMS.mKillHUD == FALSE, "the proof switch cannot enable photo mode");
+    check(PortCePhotoOn() && filtered && CLIPARAMS.mKillHUD == FALSE, "the proof switch keeps photo mode on and -killhud alone");
     check(saved == "4 8 12 ", "the proof screenshots are every 4th Present exactly");
     setenv("BEA_PORT_PHOTO_PROOF", "0", 1);
     PortCePhotoFrame();
-    check(!PortCePhotoOn() && CLIPARAMS.mKillHUD == FALSE, "without the proof the tape fence ends it");
+    check(!PortCePhotoOn() && !filtered, "without the proof the tape fence ends it");
     setenv("BEA_PORT_PHOTO_PROOF", "4", 1);
 #ifdef FAKE_NETWORK
     SetBootRequested(true);
@@ -197,11 +276,14 @@ int main(int argc, char **argv) {
         // The CE layer off (a replay, a recording, or forced off): nothing at all.
         refusedHere("a disabled layer takes no key");
         PortCePhotoFrame();
-        check(!frame() && CLIPARAMS.mKillHUD == FALSE && draws.empty(), "a disabled layer saves and draws nothing");
+        check(!frame() && !filtered && CLIPARAMS.mKillHUD == FALSE && draws.empty(), "a disabled layer saves and draws nothing");
         std::puts("disabled mode passed");
         return 0;
     }
     keys();
+    scope();
+    leaks();
+    devices();
     owners();
     levelEnd();
     fences();

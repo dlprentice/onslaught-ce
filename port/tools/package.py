@@ -361,8 +361,9 @@ def readme(version: str, windows: bool) -> bytes:
               "--update-only checks now, --rollback returns to the previous version, BEA_NO_UPDATE_CHECK=1 or",
               "update_check=0 in ce.ini turns checking off. --apply is refused.",
               "Do not start an Onslaught CE 0.1.0-0.1.6 launcher at all, not even to check its version or update it: its",
-              "startup cleanup can delete neighbouring <program folder>.old-* paths and follow a matching directory link",
-              "into its target. Keep the old installation and every .old-*, .download-* and .unpack-* path untouched.",
+              "startup cleanup can delete neighbouring <program folder>.old-* paths. On Linux it has followed a matching",
+              "directory link into its target; Windows reparse-point behaviour is unmeasured. Keep the old installation",
+              "and every .old-*, .download-* and .unpack-* path untouched.",
               "Locate and preserve both launcher and game user-data folders. A relative BEA_USER_DIR can put them in",
               "different locations. Copy each whole folder to an independent backup; verify the copies and careers.",
               "If your data was in the default folder and its backup is verified, this release can use it as it is.",
@@ -370,15 +371,15 @@ def readme(version: str, windows: bool) -> bytes:
               "program/staging folders; set BEA_USER_DIR to its absolute path. Check careers; keep originals and backups.",
               "If the locations or conflicting files are unclear, do not merge or overwrite them; seek help first.",
               "This release's launcher removes no neighbouring paths: verify its package and extract it into a new empty",
-              "folder. See the project README for full migration steps. No telemetry; the update check sends nothing",
-              "but the request for the public feed.",
+              "folder. See the project README for full migration steps. No telemetry; the update check sends requests",
+              "for the public feed and its signature.",
               *REPORT_PRIVACY]
     run = (["Start onslaught-ce.exe. (bea.exe also runs directly, without the install search.)",
             "It needs Windows 10 or newer, for its built-in UCRT, and Windows 10 version 1903 or newer",
             "for user or game folder names with characters outside your Windows language's character set (earlier",
             "versions ignore the UTF-8 setting the programs ask for)."] + common +
-           ["This Windows build was tested under Wine on Linux and on one Windows 11 virtual machine without a graphics",
-            "card (see Known limitations)."] if windows else
+           ["Earlier Windows builds were checked under Wine on Linux and on one Windows 11 virtual machine using",
+            "software graphics. See Known limitations and this version's release notes for the routes checked."] if windows else
            textwrap.wrap("Run ./onslaught-ce [game arguments]. It first checks for the 32-bit system libraries it needs "
                          "and names the packages to install when one is missing. It needs " + GLIBC_TEXT + ".",
                          README_WIDTH, break_on_hyphens=False) + common)
@@ -396,7 +397,18 @@ def readme(version: str, windows: bool) -> bytes:
 IN_THE_GAME = [
     "In the game",
     "- Main menu > Onslaught CE: About (version, licence and links), Updates (how updating works and how to turn",
-    "  the checks off), Record sessions and Report a problem (below).",
+    "  the checks off), Record sessions, Report a problem, Coming soon / ideas, Bonus: Aquila Prototype,",
+    "  Bonus co-op: Defence A, Bonus co-op: Defence B, and Special Thanks. The game's Credits remain separate.",
+    "  Coming soon / ideas describes planned features and their limits; it does not start those features.",
+    "- Bonus: Aquila Prototype is the original playable-demo level (201). It returns to the main menu after the level.",
+    "  Bonus co-op: Defence A and B are two-player local split-screen defence maps (856 and 858) on this PC.",
+    "  Choose each player's Battle Engine on the Multiplayer start page; player 2 uses the second set of keys in",
+    "  Controller Options or a second gamepad. Plug in both gamepads before starting if using two.",
+    "  These bonus levels do not advance career progress at level end; other game paths can still save the live",
+    "  career and settings during play, including on pause/continue.",
+    "- Console: during an eligible solo level, press the grave key (`; left of 1 on a US keyboard), type help and",
+    "  press Enter. Esc or grave closes it; the game does not pause. It is unavailable in multiplayer, demos,",
+    "  recordings and replays.",
     "- Options > Cheats: the game's own cheats as On/Off switches, kept in ce.ini so they apply to every career;",
     "  the line under the list says what the highlighted one does:",
     "  - Unlock all levels (original code TURKEY): every level opens in the level select",
@@ -405,24 +417,42 @@ IN_THE_GAME = [
     "    cannot be opened",
     "  - God mode option (Maladim): adds a God switch to Controller Options, in the pause menu (applies at once)",
     "    and in Options (applies from the next level), for no damage and endless energy; turning the cheat off",
-    "    ends god mode. God mode set this way is kept in ce.ini, not in your careers, so a recorded session never",
-    "    carries it.",
+    "    ends god mode. God mode set this way is kept in ce.ini, not in your careers.",
     "  - Free camera (F key, Aurore): in a level, F lets you fly the camera; F again returns it",
-    "  They are off while a session is being recorded. Typing a code into a career's name still works as in the",
+    "  These switches are off in recordings and replays. Typing a code into a career's name still works as in the",
     "  original.",
-    "- Keyboard: no key release is lost, typed characters come from the key presses themselves (no desktop input",
-    "  method in the way), and the letter and digit keys work by their position on any keyboard layout.",
-    "- F12 saves a screenshot in eligible single-player levels; F11 photo mode is temporarily unavailable.",
+    "- Keyboard: held keys are released on focus loss, and delayed releases are repaired when possible. Typed",
+    "  characters come from key presses; letter and digit keys use their physical positions across layouts.",
+    "- Walker dodging (on the ground, not already dodging): with the default US keyboard, tap A then D for right,",
+    "  or D then A for left.",
+    "  Try releasing the first key before pressing the other. Aim for about 0.15 game seconds between presses:",
+    "  the default window is more than 0.1 and less than 0.2 game seconds. Too fast or slow will not dodge.",
+    "  If you remapped controls or use another layout, check left and right movement in Controller Options.",
+    "  The English tutorial can show a cue in eligible ordinary solo play; it is off in recordings and replays.",
+    "- Zoom: with default mouse bindings, wheel down zooms in and wheel up zooms out. In eligible ordinary play,",
+    "  the default gamepad's right bumper zooms in and left bumper out. Manual zoom works only with some weapons;",
+    "  some zoom while charging. Check Controller Options for changed bindings.",
+    "- Controllers: gamepad and flight-stick defaults cover menus, solo play and bonus co-op when joystick controls",
+    "  have not been customized. Other local multiplayer uses Controller Options. Only virtual devices were tested.",
+    "- Photo mode: F11 (or the console's photo command) hides the HUD and cockpit for pictures, and F12 saves a",
+    "  screenshot. Both work in single-player levels, not in recordings, replays, multiplayer or demos.",
     "- A quiet console: the developers' messages are hidden unless BEA_PORT_VERBOSE=1 is set.",
     "- A log file for reports, onslaught-ce.log in your user folder, and session recording (both below).",
     "",
     "Screen modes and widescreen",
-    "Onslaught CE starts at your desktop's resolution, and Video Options lists your monitor's sizes, widescreen ones",
-    "included. On a widescreen monitor the 3D view shows more to the sides (the original's vertical view is kept); the",
-    "menus, loading pictures and films keep their original 4:3 shape, centred with black bars, and the in-game HUD sits",
+    "Video Options > Display mode offers Windowed or Fullscreen. Quit and restart for a saved choice to take effect;",
+    "the menu says if the choice could not be saved. An explicit -forcewindowed game argument takes priority.",
+    "The saved display-mode choice is ignored while recording or replaying.",
+    "By default, Onslaught CE starts at your desktop's resolution; a saved or explicit screen mode can change it.",
+    "Video Options lists your monitor's sizes, including widescreen ones. On a widescreen monitor the 3D view shows",
+    "more to the sides (the original's vertical view is kept). Menus, loading pictures and films keep their original",
+    "4:3 shape, centred with black bars, and the in-game HUD sits",
     "where it would on a 4:3 screen. To get the original's 4:3-only list and 640 x 480 start back, set",
     "BEA_PORT_WIDESCREEN=0. Replays and recordings always use the original 4:3 behaviour. The original game shares one",
     "random number source between visual effects and play, so a wider view can change the details of a fight.",
+    "In eligible ordinary single-player play with widescreen modes enabled, the HUD automatically scales up when",
+    "both screen dimensions exceed 640 x 480. Set BEA_PORT_HUD_SCALE=0 for the original fixed-size HUD. Scaling is",
+    "off in recordings and replays, multiplayer, and when BEA_PORT_WIDESCREEN=0.",
     "",
 ]
 
@@ -430,8 +460,8 @@ IN_THE_GAME = [
 def help_lines(windows: bool) -> list:
     """README.txt's "Report a problem" and "Help make Onslaught CE more faithful" (public/README.md says the same)."""
     launcher = "onslaught-ce.exe" if windows else "./onslaught-ce"
-    user = "%APPDATA%\\Onslaught CE" if windows else "~/.local/share/onslaught-ce"
-    ini = user + ("\\" if windows else "/") + "ce.ini"
+    user = ("%APPDATA%\\Onslaught CE by default" if windows else
+            "$XDG_DATA_HOME/onslaught-ce, or ~/.local/share/onslaught-ce when unset")
     where = (" (from a Command Prompt in this folder, or a shortcut with --report added)" if windows else "")
     return ["Report a problem",
             *textwrap.wrap(f"Choose Onslaught CE > Report a problem in the main menu, or run {launcher} --report{where}.",
@@ -439,35 +469,45 @@ def help_lines(windows: bool) -> list:
             "It opens a new issue on the project's GitHub page in your browser, filled in with your version and",
             "system, and shows the folder that holds your log. Nothing is posted until you submit the issue. Say what",
             "happened and how to make it happen again, and attach onslaught-ce.log from that folder",
-            f"({user}; onslaught-ce.old.log is the run before, and each stops at 4 MB). The log holds",
-            "the version, your OS and GPU and the game's messages. It writes your " +
-            ("user folders as %APPDATA%" if windows else "home folder as ~"),
-            "and never your account name, but look it over before you attach it.",
+            *textwrap.wrap(f"({user}; onslaught-ce.old.log is the run before, and each stops at 4 MB). "
+                           "BEA_USER_DIR can select another folder. The log holds", README_WIDTH, break_on_hyphens=False),
+            "the version, your OS and GPU and the game's messages. Home paths and account-name path components are",
+            "shortened; look the file over before sharing it.",
             "If you recorded the session (below), attach its tape too.",
             "",
             "Help make Onslaught CE more faithful",
-            "The goal is a game that behaves exactly like the original, frame by frame; recordings of real play find",
-            f"differences our own tests miss. Record one session with {launcher} --record, or every session",
+            "We compare recorded input with the original; recordings of real play can reveal differences our tests miss.",
+            f"Record one session with {launcher} --record, or every session",
             f"with Onslaught CE > Record sessions in the main menu. That starts the next time you launch Onslaught CE",
-            f"(quit the game, then start it again); it puts record_sessions=1 in {ini}.",
+            "(quit the game, then start it again); it puts record_sessions=1 in ce.ini in your user folder.",
             f"While it is on, each start asks whether to record: Stop recording there, or starting with",
             f"{launcher} --no-record, turns it off again.",
-            "While recording the game runs at 30 frames a second (the timing replays use), its menus take the keyboard",
-            "and the mouse, and you can type a career's name, the screen is the original 4:3 (no widescreen), and the",
-            "menus are the original's: the version text, no Onslaught CE menu and no Cheats page, and only cheats typed",
-            "into a career's name work. The game's sound plays while recording.",
-            "Each session is saved in the tapes folder beside ce.ini as a .tape (your key presses, typed characters and",
-            "mouse only) and a .tape.json (version, OS, date, game arguments, and a copy of your options and saved careers as",
-            "the session started). To share one, zip the two files and attach them to an issue, saying what differed",
-            "from the original and roughly when.",
+            "By default, recording targets 30 frames a second for play and uses the replay clock. Its menus take",
+            "the keyboard and mouse, and you can type a career's name. Direct gamepad and flight-stick input is",
+            "disabled during recording and replay because the tape does not record it. An older tape made with live",
+            "controller input cannot recover it and may replay differently. The screen is the original 4:3.",
+            "The menus are the original's: the version text, no Onslaught CE menu and no Cheats page, and only cheats",
+            "typed into a career's name work. The larger HUD, console, CE tutorial dodge and zoom cues, and the saved display",
+            "mode are off; see Walker dodging above. By default the game tries to play sound through the audio monitor",
+            "when a device is available.",
+            "Each completed session is saved in the tapes folder beside ce.ini as a .tape and a .tape.json. The tape",
+            "records key presses and releases, typed text, mouse input, their frame numbers and the game's rendering",
+            "size for menu mouse input. The JSON includes version/build, platform/OS, date/time, clock, frame rate,",
+            "audio-monitor setting, game arguments and encoded copies of some CE user-folder files at the start,",
+            "including game options, careers and possibly other files. Session recording does not capture video, game",
+            "audio or microphone audio. Both files can contain personal information; review them before sharing.",
+            "To share a completed session, zip both files and say what differed from the original and roughly when.",
+            "An interrupted or failed capture may leave an .incomplete file; it is not a completed recording. Keep it",
+            "for diagnosis rather than replaying it.",
             ""]
 
 
 def limitations(windows: bool) -> list:
     """README.txt's "Known limitations", this platform's lines only (public/README.md and the release notes list
     both platforms')."""
-    platform = (["- This Windows build has been tested under Wine on Linux and on one Windows 11 virtual machine without a",
-                 "  graphics card (Microsoft's software renderer), not on a PC with a real graphics card or its drivers.",
+    platform = (["- Earlier Windows builds were checked under Wine on Linux and on one Windows 11 virtual machine with",
+                 "  Microsoft's software renderer. Physical Windows graphics cards and drivers remain unvalidated for",
+                 "  this version; see its release notes for the routes tested.",
                  "  During the 0.1.3 release checks, that VM updated from 0.1.2 to 0.1.3, restarted, and its installed",
                  "  files matched the published package. An earlier attempt fetched no update feed; a later retry in",
                  "  the same VM session succeeded. These are historical observations of the retired 0.1.0-0.1.6 updater.",
@@ -475,12 +515,13 @@ def limitations(windows: bool) -> list:
                 [*textwrap.wrap("- You need " + GLIBC_TEXT + ".", README_WIDTH, subsequent_indent="  ", break_on_hyphens=False),
                  *textwrap.wrap("- You need " + VULKAN_TEXT + ".", README_WIDTH, subsequent_indent="  ", break_on_hyphens=False)])
     return ["Known limitations", *platform,
-            "- The tutorial is playable through its third zone; its final drone fight is still being completed.",
-            "- Joystick and controller support is limited to what the original game supported, and controllers have not",
-            "  been tested yet.",
+            "- Complete tutorial parity with the original has not yet been established.",
+            "- Gamepad and flight-stick defaults cover menus, solo play and bonus co-op with uncustomized joystick",
+            "  controls. Only virtual devices have been tested; physical controllers and Windows drivers remain open.",
+            "- Physical audio devices and listening quality have not been validated by the recorded and virtual controls.",
             "- Widescreen play is not compared with the original (the original has no widescreen); replays and recordings",
             "  use 4:3.",
-            "- Planned, not in this version yet: multiplayer, mods and HUD options.",
+            "- Planned, not in this version yet: Internet multiplayer, general mod support and additional HUD options.",
             ""]
 
 
@@ -496,7 +537,14 @@ def quick_start(windows: bool) -> list:
             *textwrap.wrap("Keep the program and its user folder separate from the original game. By default, careers and "
                            f"settings go to {user}. Keep recovery copies before changing save locations; do not point "
                            "BEA_USER_DIR into the game folder.", README_WIDTH, break_on_hyphens=False),
-            "Preserve old program and staging folders during the launcher safety hold; keep verified user-data backups."]
+            "Preserve old program and staging folders during the launcher safety hold; keep verified user-data backups."] + (
+            [] if windows else [
+                "Linux careers: a filename whose in-game name exceeds 31 16-bit units is omitted from the list. The game",
+                "emits one name-free diagnostic, normally captured in a launcher log, but shows no on-screen warning.",
+                "If a career is missing, keep its file and ask for help. If the same career has older one-byte and UTF-8",
+                "spellings across folders, the older spelling can be chosen from the original folder; keep both and ask",
+                "for help before overwriting either one.",
+            ])
 
 
 NOTICE_LINES = [

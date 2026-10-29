@@ -33,9 +33,11 @@ def run(args, **kwargs):
 
 
 def prepare(out):
-    for name in ('CLIParams.cpp', 'PauseMenu.cpp', 'Career.cpp', 'CLIParams.h'):
+    for name in ('CLIParams.cpp', 'PauseMenu.cpp', 'Career.cpp', 'CLIParams.h', 'FEPSaveGame.cpp'):
         (out / name).write_bytes((ROOT / 'src' / name).read_bytes())
-    for name in ('0046-widescreen-career-options.patch', '0071-force-windowed-cli.patch', '0086-ce-display-mode.patch'):
+    for name in ('0046-widescreen-career-options.patch', '0051-ce-cheat-switches-FEPSaveGame.patch',
+                 '0052-ce-god-not-saved-Career.patch',
+                 '0071-force-windowed-cli.patch', '0086-ce-display-mode.patch'):
         run(['patch', '--batch', '--fuzz=0', '-p1', '-d', out, '-i', PORT / 'patches' / name, '--forward', '-r', '-'])
     parser = cli_windowed_tests.parser_source((out / 'CLIParams.cpp').read_text('latin-1'))
     prefix = ('extern int CE_DisplayModeStartupBridge(int,int);\n'
@@ -46,6 +48,16 @@ def prepare(out):
     signatures = (r'^CMenuMenuItem::CMenuMenuItem\(', r'^void\s+CMenuMenuItem::Refresh\(',
                   r'^void\s+CMenuMenuItem::Commit\(', r'^bool\s+CMenuMenuItem::HasPendingChange\(')
     (out / 'native_menu.inc').write_text('\n'.join(public_d3dapp_tests.function(native, p) for p in signatures) + '\n')
+    action = public_d3dapp_tests.function(native, r'^void\s+CMenuMenuItem::ReceiveButtonAction\(')
+    (out / 'native_cheat_action.inc').write_text(action + '\n')
+    render = public_d3dapp_tests.function(native, r'^void\s+CMenuMenuItem::RenderList\(')
+    first = render.index('\tint\t\tvalue = GetValue();')
+    last = render.index('\n\twcscpy(text, GetText());', first)
+    (out / 'native_cheat_sync.inc').write_text(render[first:last] + '\n')
+    mouse = public_d3dapp_tests.function(render, r'^\s*if\s*\(CFrontEnd::MouseClickedInRect\(lx \+ 2.f, ly, cx2, cy2\)\)')
+    (out / 'native_cheat_mouse.inc').write_text(mouse + '\n')
+    save=(out/'FEPSaveGame.cpp').read_text('latin-1')
+    (out/'native_name_cheat.inc').write_text(public_d3dapp_tests.function(save, r'^BOOL CFEPSaveGame::IsCheatActive\(')+'\n')
     (out / 'native_apply.inc').write_text(public_d3dapp_tests.function(
         native, r'^void\s+CApplyMenuItem::ReceiveButtonAction\(') + '\n')
     pause = (out / 'PauseMenu.cpp').read_text('latin-1')
@@ -53,6 +65,10 @@ def prepare(out):
     end = pause.index('#endif', start) + len('#endif')
     (out / 'native_row.inc').write_text(pause[start:end] + '\n')
     career = (out / 'Career.cpp').read_text('latin-1')
+    career_save = public_d3dapp_tests.function(career, r'^void\s+CCareer::Save\(char\s*\*')
+    start = career_save.index('#ifdef CE_VERSION\n\t// Port (patch 0052')
+    end = career_save.index('\n\tdest += sizeof(CCareer);', start)
+    (out / 'native_ce_save_block.inc').write_text(career_save[start:end] + '\n')
     key = career.index('memcpy(&gDisplayModeKey, source, sizeof(CDisplayModeKey));')
     start = career.index('\n\t{', key) + 1
     end = career.index('\n\tint\t\told = CLIPARAMS.mVSync;', start)
@@ -62,15 +78,26 @@ def prepare(out):
                        r'^static int\s+WideStartSize\(', r'^int\s+PortWideStartSize\(',
                        r'^int\s+PortWideStartSizeOnDesktop\(')
     (out / 'native_wide.inc').write_text('\n'.join(public_d3dapp_tests.function(wide, p) for p in wide_signatures) + '\n')
+    frontend = (PORT / 'game/ce_frontend.cpp').read_text()
+    first = frontend.index('class CCeCheatSwitch : public CCeSwitch')
+    last = frontend.index('\n};', first) + len('\n};')
+    (out / 'native_cheat_switch.inc').write_text(frontend[first:last] + '\n')
+    gods = (r'^static bool\s+GodFromSwitchOnly\(', r'^static int\s+GodMask\(',
+            r'^bool\s+PortCeCareerSaving\(', r'^void\s+PortCeCareerLoaded\(')
+    (out / 'native_ce_god.inc').write_text('\n'.join(public_d3dapp_tests.function(frontend, p) for p in gods) + '\n')
     report = (PORT / 'updater/ce_report.h').read_text()
     start = report.index('typedef struct CeSettingsDir')
     end = report.index('} CeSettingsDir;', start) + len('} CeSettingsDir;')
     ce = (PORT / 'platform/common/ce.cpp').read_text()
     parts = [public_d3dapp_tests.function(report, r'^static inline void ce_user_dir\('), report[start:end],
              public_d3dapp_tests.function(report, r'^static inline void ce_settings_dir_close\('),
+             public_d3dapp_tests.function(report, r'^static inline int ce_settings_dir_open_ex\('),
              public_d3dapp_tests.function(report, r'^static inline int ce_settings_dir_open\('),
              public_d3dapp_tests.function(ce, r'^static FILE \*ce_ini_open_regular\('),
              public_d3dapp_tests.function(ce, r'^static char \*ce_ini_read\('),
+             public_d3dapp_tests.function(ce, r'^static int ce_ini_value\('),
+             public_d3dapp_tests.function(ce, r'^static int ce_ini_value_span\('),
+             public_d3dapp_tests.function(ce, r'^extern "C" int CE_TrySettingGet\('),
              public_d3dapp_tests.function(ce, r'^extern "C" int CE_SettingGet\('),
              public_d3dapp_tests.function(ce, r'^extern "C" int CE_SettingGetBool\(')]
     (out / 'native_windows_read.inc').write_text('\n'.join(parts) + '\n')
@@ -89,7 +116,7 @@ def build_fixtures(out, overrides=None, targets=('ce', 'private', 'host', 'windo
     product = [overrides.get('ce', PORT / 'platform/common/ce.cpp'),
                overrides.get('display', PORT / 'platform/common/display_mode.cpp'),
                overrides.get('parser', out / 'parser.cpp')]
-    wrap = ['-Wl,--wrap=' + n for n in ('fopen', 'openat', 'fread', 'ferror', 'fwrite', 'fprintf', 'fflush', 'fsync', 'renameat')]
+    wrap = ['-Wl,--wrap=' + n for n in ('fopen', 'openat', 'fread', 'ferror', 'fclose', 'fwrite', 'fprintf', 'fflush', 'fsync', 'renameat')]
     for name, defines in (('ce', ['-DCE_VERSION="fixture"']), ('private', [])):
         if name not in targets: continue
         cmd = common + defines + ['-DVIDEO_SOURCE="' + str(overrides.get('video', PORT / 'game/ce_video_options.cpp')) + '"',
@@ -213,31 +240,131 @@ def negative_controls(base):
         ('binary-unknown', 'ce', PORT / 'platform/common/ce.cpp',
          'if (bad) { free(text); return def; }',
          "if (bad || memchr(text, '\\0', len)) { free(text); return def; }", 'ce'),
+        ('cheat-close-read', 'ce', PORT / 'platform/common/ce.cpp',
+         'if (fclose(f) != 0) bad = true;', '(void)fclose(f);', 'ce'),
+        ('cheat-failed-cache', 'ce', PORT / 'platform/common/ce.cpp',
+         'if (!ok)\n\t{\n\t\tsCheatReadFailed = true;',
+         'if (!ok) { for (int i = 0; i < 6; ++i) sCheats[i] = 0; return true; }\n\tif (!ok)\n\t{\n\t\tsCheatReadFailed = true;', 'ce'),
+        ('cheat-god-recovery', 'ce', PORT / 'platform/common/ce.cpp',
+         'sMaladimNeedsRestart = true;', 'sMaladimNeedsRestart = false;', 'ce'),
+        ('god-load-unlatched', 'god', None,
+         'CE_MaladimRequireRestart();', '/* injected: no restart latch */', 'ce'),
+        ('god-save-old-parser', 'god', None,
+         'else if (saved != mask)', 'else if (CE_SettingGet(PORT_CE_GOD_KEY, 0) != mask)', 'ce'),
+        ('god-save-unmasked', 'god', None,
+         'return true;\n}', 'return false;\n}', 'ce'),
+        ('maladim-off-old-parser', 'switch', None,
+         '!CE_TrySettingGet(PORT_CE_GOD_KEY, 0, &saved)',
+         '!(saved = CE_SettingGet(PORT_CE_GOD_KEY, 0), 1)', 'ce'),
+        ('cheat-forced-retry', 'ce', PORT / 'platform/common/ce.cpp',
+         '(capture || SDL_GetTicks() - sCheatReadFailedAt < 1000)',
+         '(false || SDL_GetTicks() - sCheatReadFailedAt < 1000)', 'ce'),
+        ('cheat-file-changed', 'ce', PORT / 'platform/common/ce.cpp',
+         'if (!bad && (fstat(fileno(f), &after)', 'if (false && !bad && (fstat(fileno(f), &after)', 'ce'),
+        ('cheat-binary-prefix', 'ce', PORT / 'platform/common/ce.cpp',
+         'sCheats[i] = ce_ini_value_span(t, len, kCheatKeys[i], 0) ? 1 : 0;',
+         'sCheats[i] = ce_ini_value(t, kCheatKeys[i], 0) ? 1 : 0;', 'ce'),
         ('fifo-block', 'ce', PORT / 'platform/common/ce.cpp',
          'O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC', 'O_RDONLY | O_NOFOLLOW | O_CLOEXEC', 'ce'),
         ('symlink-follow', 'ce', PORT / 'platform/common/ce.cpp',
-         'O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC', 'O_RDONLY | O_NONBLOCK | O_CLOEXEC', 'ce'))
+         'O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC', 'O_RDONLY | O_NONBLOCK | O_CLOEXEC', 'ce'),
+        ('folder-refused-read-as-empty', 'ce', PORT / 'platform/common/ce.cpp',
+         'if (missing && absent) *missing = 1;', 'if (missing) *missing = 1;', 'ce'),
+        ('folder-absent-not-recognised', 'ce', PORT / 'platform/common/ce.cpp',
+         'if (missing && absent) *missing = 1;', 'if (missing && absent && false) *missing = 1;', 'ce'),
+        ('folder-any-errno-is-absent', 'ce-header', PORT / 'updater/ce_report.h',
+         'if (absent && !create && why == ENOENT) *absent = 1;', 'if (absent && !create) *absent = 1;', 'ce'))
     results = {}
     for label, kind, source, old, new, target in cases:
         out = base / ('negative-' + label); out.mkdir()
         prepare(out)
-        text = (source or out / 'parser.cpp').read_text()
+        report = PORT / 'updater/ce_report.h'
+        if kind == 'ce-header':
+            # the mutated header is the one this fixture's ce.cpp includes
+            header = out / 'ce_report.h'
+            header_text = source.read_text(); assert old in header_text, label
+            header.write_text(header_text.replace(old, new, 1))
+            kind, source, old, new, report = 'ce', PORT / 'platform/common/ce.cpp', 'static FILE *ce_ini_open_regular(', \
+                'static FILE *ce_ini_open_regular(', header
+        original = source or (out / 'native_ce_god.inc' if kind == 'god' else
+                              out / 'native_cheat_switch.inc' if kind == 'switch' else out / 'parser.cpp')
+        text = original.read_text()
         assert old in text, label
         text = text.replace(old, new, 1)
         if kind == 'ce':
             for relative, absolute in (('../../network/compatibility.h', PORT / 'network/compatibility.h'),
-                                       ('../../updater/ce_report.h', PORT / 'updater/ce_report.h')):
+                                       ('../../updater/ce_report.h', report)):
                 text = text.replace('"' + relative + '"', '"' + str(absolute) + '"')
-        mutant = out / ('mutant-' + kind + '.cpp'); mutant.write_text(text)
-        build_fixtures(out, {kind: mutant}, (target,))
+        if kind in ('god','switch'):
+            original.write_text(text)
+            build_fixtures(out, targets=(target,))
+        else:
+            mutant = out / ('mutant-' + kind + '.cpp'); mutant.write_text(text)
+            build_fixtures(out, {kind: mutant}, (target,))
         user = out / 'user'; user.mkdir()
-        if label == 'fifo-block': os.mkfifo(user / 'ce.ini')
+        if label in ('cheat-close-read','cheat-failed-cache','cheat-forced-retry'):
+            (user / 'ce.ini').write_bytes(b'cheat_malloy=1\nunknown=preserved\n')
+        elif label == 'cheat-file-changed':
+            (user / 'ce.ini').write_bytes(b'wide_mode_w=800\nunknown=retained\n')
+        elif label == 'cheat-binary-prefix':
+            (user / 'ce.ini').write_bytes(b'unknown=\x00\xff\ncheat_malloy=1\n')
+        elif label in ('cheat-god-recovery','god-load-unlatched','god-save-unmasked'):
+            (user / 'ce.ini').write_bytes(b'cheat_malloy=1\ncheat_maladim=1\ngod_mode=1\nunknown=preserved\n')
+        elif label in ('god-save-old-parser','maladim-off-old-parser'):
+            (user / 'ce.ini').write_bytes(b'unknown=\x00\xff\ncheat_malloy=1\ncheat_maladim=1\ngod_mode=1\n')
+        elif label in ('folder-refused-read-as-empty', 'folder-any-errno-is-absent'):
+            (user / 'file').write_bytes(b'not a folder')
+        elif label == 'fifo-block': os.mkfifo(user / 'ce.ini')
         elif label == 'symlink-follow':
             target_file = user / 'target'; target_file.write_bytes(b'windowed=1\n'); (user / 'ce.ini').symlink_to(target_file)
         else: (user / 'ce.ini').write_bytes(b'unknown=\x00\xff\nwindowed=1\n')
         env = {k: v for k, v in os.environ.items() if not k.startswith(('BEA_PORT_', 'BEA_USER_DIR', 'SDL_'))}
         env['BEA_USER_DIR'] = str(user)
-        if label == 'replay-fence':
+        if label in ('cheat-close-read','cheat-failed-cache'):
+            fault = 'close-read' if label == 'cheat-close-read' else 'read'
+            p = subprocess.run([str(out/'ce'), 'cheat-retry', fault], env=env, text=True,
+                               capture_output=True, timeout=10)
+            assert p.returncode == 2, (label, p.returncode, p.stdout, p.stderr)
+            result = 'actual cheat retry assertion fails'
+        elif label in ('folder-refused-read-as-empty', 'folder-any-errno-is-absent'):
+            env['BEA_USER_DIR'] = str(user / 'file' / 'user')
+            p = subprocess.run([str(out/'ce'), 'cheat-folder-refused'], env=env, text=True, capture_output=True, timeout=10)
+            assert p.returncode == 2 and 'refused folder is unavailable' in p.stderr, (label, p.returncode, p.stderr)
+            result = 'a refused folder reads as an empty, available setting'
+        elif label == 'folder-absent-not-recognised':
+            env['BEA_USER_DIR'] = str(user / 'never' / 'created')
+            p = subprocess.run([str(out/'ce'), 'cheat-folder-absent'], env=env, text=True, capture_output=True, timeout=10)
+            assert p.returncode == 2 and 'absent folder is a ready, off setting' in p.stderr, (label, p.returncode, p.stderr)
+            result = 'a never-created folder reads as unavailable'
+        elif label == 'cheat-forced-retry':
+            env.update(BEA_PORT_CE_LAYER='1', BEA_PORT_TAPE='fixture')
+            p = subprocess.run([str(out/'ce'), 'cheat-forced-capture'], env=env, text=True,
+                               capture_output=True, timeout=10)
+            assert p.returncode == 2 and 'forced capture holds' in p.stderr, (label,p.returncode,p.stderr)
+            result = 'forced capture one-time fallback assertion fails'
+        elif label == 'cheat-file-changed':
+            result = run([out/'ce','get-int','7','change-read'], env=env)
+            assert result == '800', (label, result)
+        elif label == 'cheat-binary-prefix':
+            result = run([out/'ce','cheat-state'], env=env)
+            assert result == '1 0 1', (label, result)
+        elif label == 'cheat-god-recovery':
+            result = run([out/'ce','career-probe'], env=env)
+            assert result == '1 1' and b'god_mode=0' in (user/'ce.ini').read_bytes(), (label,result)
+        elif label == 'god-load-unlatched':
+            result = run([out/'ce','career-godread-probe'], env=env)
+            assert result == '1 1' and b'god_mode=0' in (user/'ce.ini').read_bytes(), (label,result)
+        elif label == 'god-save-old-parser':
+            result = run([out/'ce','career-deliberate-off'], env=env)
+            assert result == 'career-deliberate-off pass' and b'god_mode=1' in (user/'ce.ini').read_bytes(), (label,result)
+        elif label == 'maladim-off-old-parser':
+            result = run([out/'ce','maladim-off','none'], env=env)
+            assert result == 'maladim-off pass' and b'god_mode=1' in (user/'ce.ini').read_bytes(), (label,result)
+        elif label == 'god-save-unmasked':
+            p=subprocess.run([str(out/'ce'),'career-save-active-failure'],env=env,text=True,capture_output=True,timeout=10)
+            assert p.returncode==2 and 'serialized career masks' in p.stderr, (label,p.returncode,p.stderr)
+            result = 'actual career mask assertion fails'
+        elif label == 'replay-fence':
             env.update(BEA_PORT_CE_LAYER='1', BEA_PORT_TAPE='fixture')
             result = run([out / 'ce', 'cli', '0', '-level 110'], env=env)
             assert result != '0 0 0 0 640 480 0 0 0', (label, result)
@@ -289,18 +416,24 @@ def negative_controls(base):
     result = run([out / 'host', 'career-primary-smaller', ''], env=env)
     assert result == '0 1 1 1280 800 1 1 0', result
     results['career-startup'] = result
-    for label, old, new, scenario in (
+    for label, old, new, scenario, reader, message, result in (
         ('windows-final-reparse', 'FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT',
-         'FILE_ATTRIBUTE_DIRECTORY', 'reparse'),
+         'FILE_ATTRIBUTE_DIRECTORY', 'reparse', 'boolean', 'reader result or default', 'reparse refusal assertion fails'),
         ('windows-parent-reparse', '(info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT)',
-         'false', 'parent-link')):
+         'false', 'parent-link', 'boolean', 'reader result or default', 'reparse refusal assertion fails'),
+        ('windows-denied-folder-is-absent', 'int gone = h == INVALID_HANDLE_VALUE && (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND);',
+         'int gone = h == INVALID_HANDLE_VALUE;', 'parent-denied', 'checked', 'checked reader: success, empty file or failed read',
+         'a refused folder reads as an empty file'),
+        ('windows-absent-folder-not-recognised', 'if (absent && !create && gone) *absent = 1;',
+         '(void)absent;', 'parent-missing', 'checked', 'checked reader: success, empty file or failed read',
+         'a never-created folder reads as a failed read')):
         out = base / ('negative-' + label); out.mkdir(); prepare(out)
         path = out / 'native_windows_read.inc'; text = path.read_text()
         assert text.count(old) == 1, (label, text.count(old)); path.write_text(text.replace(old, new, 1))
         build_fixtures(out, targets=('windows-read',))
-        p = subprocess.run([str(out / 'windows-read'), scenario, 'boolean'], text=True, capture_output=True, timeout=10)
-        assert p.returncode == 2 and 'reader result or default' in p.stderr, (label, p.returncode, p.stderr)
-        results[label] = 'reparse refusal assertion fails'
+        p = subprocess.run([str(out / 'windows-read'), scenario, reader], text=True, capture_output=True, timeout=10)
+        assert p.returncode == 2 and message in p.stderr, (label, p.returncode, p.stderr)
+        results[label] = result
     return results
 
 
@@ -403,6 +536,210 @@ class DisplayTests(unittest.TestCase):
         self.ini.write_bytes(b'cheat_malloy=1\n'); self.assertEqual(self.call('ce', 'cheat'), '1')
         self.ini.write_bytes(b'cheat_malloy=0\n'); self.assertEqual(self.call('ce', 'cheat'), '0')
 
+    def test_integer_reader_refuses_incomplete_and_oversized_input(self):
+        self.ini.write_bytes(b'wide_mode_w=800\nunknown=retained\n')
+        for failure in ('read', 'short-read', 'close-read', 'open-read'):
+            with self.subTest(failure=failure):
+                self.assertEqual(self.call('ce', 'get-int', '7', failure), '7')
+                self.assertEqual(self.ini.read_bytes(), b'wide_mode_w=800\nunknown=retained\n')
+        self.ini.write_bytes(b'wide_mode_w=800\n' + b'x' * (1 << 20))
+        self.assertEqual(self.call('ce', 'get-int', '7'), '7')
+
+    def test_integer_reader_refuses_linux_changed_during_read(self):
+        for failure, expected in (('truncate-read', b'wide'),
+                                  ('change-read', b'Xide_mode_w=800\nunknown=retained\n')):
+            with self.subTest(failure=failure):
+                self.ini.write_bytes(b'wide_mode_w=800\nunknown=retained\n')
+                self.assertEqual(self.call('ce', 'get-int', '7', failure), '7')
+                self.assertEqual(self.ini.read_bytes(), expected)
+
+    def test_cheat_read_failure_is_visible_and_retries(self):
+        for failure in ('read', 'short-read', 'close-read', 'open-read'):
+            with self.subTest(failure=failure):
+                self.ini.write_bytes(b'cheat_malloy=1\nunknown=preserved\n')
+                self.assertEqual(self.call('ce', 'cheat-retry', failure), 'cheat-retry pass')
+                self.assertEqual(self.ini.read_bytes(), b'cheat_malloy=0\nunknown=preserved\n')
+
+    def test_cheat_read_failure_limits_polling_and_action_retries(self):
+        for failure, clock in (('read', 'normal'), ('open-read', 'normal'), ('read', 'wrap'), ('read', 'backward')):
+            with self.subTest(failure=failure, clock=clock):
+                self.ini.write_bytes(b'cheat_malloy=1\nunknown=preserved\n')
+                self.assertEqual(self.call('ce', 'cheat-poll', failure, clock), 'cheat-poll pass')
+                self.assertEqual(self.ini.read_bytes(), b'cheat_malloy=0\nunknown=preserved\n')
+
+    def test_cheat_missing_and_empty_file_remain_writable(self):
+        self.assertEqual(self.call('ce', 'cheat-write'), 'cheat-write pass')
+        self.assertEqual(self.ini.read_bytes(), b'cheat_malloy=1\n')
+        self.ini.write_bytes(b'')
+        self.assertEqual(self.call('ce', 'cheat-write'), 'cheat-write pass')
+        self.assertEqual(self.ini.read_bytes(), b'cheat_malloy=1\n')
+
+    def test_missing_user_folder_is_an_empty_read_and_the_first_write_creates_it(self):
+        for depth in ('user', 'never/created/user'):
+            with self.subTest(depth=depth):
+                folder = self.user / 'absent' / depth
+                env = dict(self.env, BEA_USER_DIR=str(folder))
+                self.assertFalse(folder.exists())
+                self.assertEqual(self.call('ce', 'cheat-folder-absent', env=env), 'cheat-folder-absent pass')
+                self.assertEqual((folder / 'ce.ini').read_bytes(), b'cheat_malloy=1\n')
+                self.assertEqual(folder.stat().st_mode & 0o777, 0o700)
+
+    def test_refused_user_folders_stay_unavailable_and_nothing_is_created(self):
+        def listing(top):
+            return sorted(os.path.join(d, n) for d, ds, fs in os.walk(top, onerror=lambda e: None) for n in ds + fs)
+        base = self.user / 'refused'; base.mkdir()
+        real = base / 'real'; real.mkdir()
+        (base / 'file').write_bytes(b'not a folder')
+        (base / 'link').symlink_to(real, target_is_directory=True)
+        (base / 'dangling').symlink_to(base / 'nowhere', target_is_directory=True)
+        locked = base / 'locked'; locked.mkdir()
+        cases = {'file in the way': base / 'file' / 'user', 'folder is a file': base / 'file',
+                 'link in the way': base / 'link' / 'user', 'folder is a link': base / 'link',
+                 'dangling link': base / 'dangling', 'below a dangling link': base / 'dangling' / 'user'}
+        if os.geteuid():    # root searches a closed folder, so there is no refusal to observe
+            cases['no search access to the parent'] = locked / 'user'
+        locked.chmod(0)
+        try:
+            before = listing(base)
+            for label, folder in cases.items():
+                with self.subTest(label=label):
+                    env = dict(self.env, BEA_USER_DIR=str(folder))
+                    self.assertEqual(self.call('ce', 'cheat-folder-refused', env=env), 'cheat-folder-refused pass')
+                    self.assertEqual(listing(base), before)
+        finally:
+            locked.chmod(0o700)
+        self.assertEqual(list(locked.iterdir()), [])
+
+    def test_cheat_reads_are_fenced_from_faithful_runs(self):
+        self.ini.write_bytes(b'cheat_malloy=1\n')
+        self.assertEqual(self.call('ce', 'cheat-state'), '1 1 1')
+        self.assertEqual(self.call('private', 'cheat-state'), '0 0 0')
+        for key in ('BEA_PORT_CLOCK', 'BEA_PORT_TAPE', 'BEA_PORT_PROBES', 'BEA_PORT_RECORD'):
+            with self.subTest(key=key):
+                env = dict(self.env, **{key: 'fixture'})
+                self.assertEqual(self.call('ce', 'cheat-state', env=env), '0 0 0')
+
+    def test_forced_capture_preserves_one_time_failed_read_fallback(self):
+        for key in ('BEA_PORT_CLOCK', 'BEA_PORT_TAPE', 'BEA_PORT_PROBES', 'BEA_PORT_RECORD'):
+            with self.subTest(key=key):
+                self.ini.write_bytes(b'cheat_malloy=1\nunknown=preserved\n')
+                env = dict(self.env, BEA_PORT_CE_LAYER='1', **{key: 'fixture'})
+                self.assertEqual(self.call('ce', 'cheat-forced-capture', env=env), 'cheat-forced-capture pass')
+                self.assertEqual(self.ini.read_bytes(), b'cheat_malloy=0\nunknown=preserved\n')
+
+    def test_unavailable_cheats_use_actual_keyboard_and_mouse_commit_paths(self):
+        cases=(('keyboard-off',0),('keyboard-on',1),('keyboard-fail',1),
+               ('mouse-off',0),('mouse-on',1),('mouse-fail',1),
+               ('no-choice',1),('cancel',1),('keyboard-shared',0))
+        for scenario, expected in cases:
+            with self.subTest(scenario=scenario):
+                self.ini.write_bytes(b'cheat_malloy=1\nunknown=preserved\n')
+                self.assertEqual(self.call('ce', 'cheat-dispatch', scenario), 'cheat-dispatch pass')
+                self.assertEqual(self.ini.read_bytes(),
+                                 f'cheat_malloy={expected}\nunknown=preserved\n'.encode())
+
+    def test_failed_cheat_load_cannot_clear_unrestored_god_setting(self):
+        original=b'cheat_malloy=1\ncheat_maladim=1\ngod_mode=1\nunknown=preserved\n'
+        for scenario in ('career-late-recovery','career-late-on','career-late-mouse-off','career-late-mouse-on',
+                         'career-name'):
+            with self.subTest(scenario=scenario):
+                self.ini.write_bytes(original)
+                self.assertEqual(self.call('ce',scenario),scenario+' pass')
+                self.assertEqual(self.ini.read_bytes(),original)
+        self.assertEqual(self.call('ce','career-normal'),'career-normal pass')
+        self.assertEqual(self.ini.read_bytes(),original)
+
+    def test_forced_capture_holds_maladim_after_failed_load(self):
+        original=b'cheat_malloy=1\ncheat_maladim=1\ngod_mode=1\nunknown=preserved\n'
+        self.ini.write_bytes(original)
+        env=dict(self.env, BEA_PORT_CE_LAYER='1', BEA_PORT_TAPE='fixture')
+        self.assertEqual(self.call('ce','career-forced-recovery',env=env),'career-forced-recovery pass')
+        self.assertEqual(self.ini.read_bytes(),original)
+
+    def test_other_cheat_write_preserves_held_god_setting(self):
+        original=b'cheat_malloy=1\ncheat_maladim=1\ngod_mode=1\nunknown=preserved\n'
+        self.ini.write_bytes(original)
+        self.assertEqual(self.call('ce','career-other-write'),'career-other-write pass')
+        self.assertEqual(self.ini.read_bytes(),original.replace(b'cheat_malloy=1',b'cheat_malloy=0'))
+
+    def test_normal_career_load_and_deliberate_god_off(self):
+        original=b'cheat_malloy=1\ncheat_maladim=1\ngod_mode=1\nunknown=preserved\n'
+        self.ini.write_bytes(original)
+        self.assertEqual(self.call('ce','career-normal'),'career-normal pass')
+        self.assertEqual(self.ini.read_bytes(),original)
+        self.assertEqual(self.call('ce','career-deliberate-off'),'career-deliberate-off pass')
+        self.assertEqual(self.ini.read_bytes(),original.replace(b'god_mode=1',b'god_mode=0'))
+
+    def test_failed_god_read_stays_held_across_recovery_and_later_load(self):
+        original=b'cheat_malloy=1\ncheat_maladim=1\ngod_mode=1\nunknown=preserved\n'
+        for scenario in ('career-godread-fail','career-godread-later','career-godread-name'):
+            with self.subTest(scenario=scenario):
+                self.ini.write_bytes(original)
+                self.assertEqual(self.call('ce',scenario),scenario+' pass')
+                self.assertEqual(self.ini.read_bytes(),original)
+        self.assertEqual(self.call('ce','career-normal'),'career-normal pass')
+        self.assertEqual(self.ini.read_bytes(),original)
+
+    def test_missing_god_key_is_default_without_restart_hold(self):
+        original=b'cheat_malloy=1\ncheat_maladim=1\nunknown=preserved\n'
+        self.ini.write_bytes(original)
+        self.assertEqual(self.call('ce','career-godmissing'),'career-godmissing pass')
+        self.assertEqual(self.ini.read_bytes(),original)
+
+    def test_god_read_and_deliberate_off_preserve_unrelated_binary(self):
+        original=b'unknown=\x00\xff\ncheat_malloy=1\ncheat_maladim=1\ngod_mode=1\n'
+        self.ini.write_bytes(original)
+        self.assertEqual(self.call('ce','career-normal'),'career-normal pass')
+        self.assertEqual(self.ini.read_bytes(),original)
+        self.assertEqual(self.call('ce','career-deliberate-off'),'career-deliberate-off pass')
+        self.assertEqual(self.ini.read_bytes(),original.replace(b'god_mode=1',b'god_mode=0'))
+
+    def test_maladim_switch_off_clears_binary_prefixed_god_setting_or_reports_partial_result(self):
+        original=b'unknown=\x00\xff\ncheat_malloy=1\ncheat_maladim=1\ngod_mode=1\n'
+        for fault, god in (('none',0),('post-switch-read',1),('post-switch-clear',1)):
+            with self.subTest(fault=fault):
+                self.ini.write_bytes(original)
+                self.assertEqual(self.call('ce','maladim-off',fault),'maladim-off pass')
+                expected=original.replace(b'cheat_maladim=1',b'cheat_maladim=0')
+                expected=expected.replace(b'god_mode=1',f'god_mode={god}'.encode())
+                self.assertEqual(self.ini.read_bytes(),expected)
+
+    def test_save_side_read_failure_leaves_god_setting_and_logs(self):
+        original=b'cheat_malloy=1\ncheat_maladim=1\ngod_mode=1\nunknown=preserved\n'
+        for scenario, expected in (('career-save-read-error',original),
+                                   ('career-save-read-retry',original.replace(b'god_mode=1',b'god_mode=0'))):
+            with self.subTest(scenario=scenario):
+                self.ini.write_bytes(original)
+                p=subprocess.run([str(self.out/'ce'),scenario],env=self.env,text=True,capture_output=True,timeout=10)
+                self.assertEqual((p.returncode,p.stdout.strip()),(0,scenario+' pass'),p.stderr)
+                self.assertIn('could not read god mode while saving',p.stderr)
+                self.assertEqual(self.ini.read_bytes(),expected)
+
+    def test_repeated_save_read_failure_preserves_serialized_and_live_god_states(self):
+        original=b'cheat_malloy=1\ncheat_maladim=1\ngod_mode=1\nunknown=preserved\n'
+        self.ini.write_bytes(original)
+        p=subprocess.run([str(self.out/'ce'),'career-save-active-failure'],env=self.env,text=True,
+                         capture_output=True,timeout=10)
+        self.assertEqual((p.returncode,p.stdout.strip()),(0,'career-save-active-failure pass'),p.stderr)
+        self.assertEqual(p.stderr.count('could not read god mode while saving'),2)
+        self.assertEqual(self.ini.read_bytes(),original)
+
+    def test_all_cheat_values_use_one_read_and_keep_first_key(self):
+        self.ini.write_bytes(b'cheat_malloy=1\ncheat_turkey=0\ncheat_v3r5iof=1\n'
+                             b'cheat_maladim=1\ncheat_aurore=0\ncheat_latete=1\ncheat_turkey=1\n')
+        self.assertEqual(self.call('ce', 'cheat-all'), '1 101101 1')
+
+    def test_cheat_after_unrelated_binary_line_reads_and_writes_preserving_it(self):
+        self.ini.write_bytes(b'unknown=\x00\xff\ncheat_malloy=1\n')
+        self.assertEqual(self.call('ce', 'cheat-state'), '1 1 1')
+        self.assertEqual(self.call('ce', 'cheat-clear'), 'cheat-clear pass')
+        self.assertEqual(self.ini.read_bytes(), b'unknown=\x00\xff\ncheat_malloy=0\n')
+        for data, expected in ((b'cheat_malloy=1\x00extra\ncheat_malloy=0\n', '1 1 1'),
+                               (b'cheat_malloy=\x00extra\ncheat_malloy=1\n', '1 0 1'),
+                               (b'unknown=\x00\xff\ncheat_malloy=0\ncheat_malloy=1\n', '1 0 1')):
+            with self.subTest(data=data):
+                self.ini.write_bytes(data)
+                self.assertEqual(self.call('ce', 'cheat-state'), expected)
     def test_settings_reader_refuses_nonregular_and_links_without_blocking(self):
         missing = self.user / 'missing' / 'user'
         env = dict(self.env, BEA_USER_DIR=str(missing))
@@ -435,9 +772,9 @@ class DisplayTests(unittest.TestCase):
         self.assertEqual(self.call('ce', 'get', '7', 'none', env=dict(self.env, BEA_USER_DIR=str(nonregular))), '7')
 
     def test_windows_reader_actual_source_with_win32_boundary_seams(self):
-        for name in ('regular', 'missing', 'parent-missing', 'parent-link', 'reparse', 'directory', 'pipe',
-                     'info-fail', 'fd-fail', 'stream-fail'):
-            for reader in ('boolean', 'integer'):
+        for name in ('regular', 'missing', 'parent-missing', 'parent-path-missing', 'parent-denied', 'parent-link', 'reparse',
+                     'directory', 'pipe', 'info-fail', 'fd-fail', 'stream-fail'):
+            for reader in ('boolean', 'integer', 'checked'):
                 with self.subTest(name=name, reader=reader):
                     self.assertEqual(self.call('windows-read', name, reader), name + ' pass')
 

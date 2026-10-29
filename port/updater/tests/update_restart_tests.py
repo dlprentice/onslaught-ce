@@ -30,9 +30,15 @@ SEAMS = r'''
 #define STD_ERROR_HANDLE 2
 #define ATTACH_PARENT_PROCESS 1
 #define SDL_MESSAGEBOX_INFORMATION 1
+#define SDL_MESSAGEBOX_BUTTON_RETURNKEY_DEFAULT 1
+#define SDL_MESSAGEBOX_BUTTON_ESCAPEKEY_DEFAULT 2
+typedef struct { int flags, buttonid; const char *text; } SDL_MessageBoxButtonData;
+typedef struct { int flags; void *window; const char *title, *message; int numbuttons;
+                 const SDL_MessageBoxButtonData *buttons; const void *colorScheme; } SDL_MessageBoxData;
 static const char PUBLIC_KEY_HEX[]="retained-source-key";
-static char sHere[PATHN],sUser[PATHN];
+static char sHere[PATHN],sUser[PATHN],sRecordingPath[PATHN];
 static int sReplay,paths,logs,finds,games,records,reports,dialogs,forbidden,handoffs,checks,rollbacks;
+static int asks,record_notices,notice_content;
 static char **game_args;
 static int game_argc;
 static int init_paths(void) { ++paths; strcpy(sHere,"authored install");strcpy(sUser,"authored user");return 1; }
@@ -51,27 +57,35 @@ static int upd_start_active(int argc,char **argv,int after,int *status)
 { (void)argc;(void)argv;(void)after;(void)status;++handoffs;return 0; }
 static int upd_check(int explicit_cmd) { ++checks;return explicit_cmd ? 13 : 13; }
 static int upd_rollback(void) { ++rollbacks;return 10; }
-static int ini_get(const char *key,char *out,size_t n) { (void)key;(void)out;(void)n;return 0; }
+static int ini_get(const char *key,char *out,size_t n)
+{ const char *v=getenv("TEST_INI_RECORD"); if(strcmp(key,"record_sessions")||!v||!*v)return 0;
+  snprintf(out,n,"%s",v);return 1; }
 static int ini_set(const char *key,const char *value) { (void)key;(void)value;++forbidden;return 0; }
 static int find_game(char *out,size_t n) { ++finds;snprintf(out,n,"authored game folder");return 1; }
 static int start_game(char **args,int n,const char *folder)
 { (void)folder;++games;game_args=args;game_argc=n;return 0; }
 static int finish_recording(int rc) { return rc; }
-static void start_recording(char **args,int n) { (void)args;(void)n;++records; }
-static int ask_record(void) { return 0; }
+static void start_recording(char **args,int n)
+{ (void)args;(void)n;++records; if(!sReplay && !getenv("TEST_RECORD_FAIL")) strcpy(sRecordingPath,"authored.tape"); }
+static int ask_box(const SDL_MessageBoxData *box,int *which,int terminal)
+{ (void)terminal;notice_content = strstr(box->message,"Direct gamepad and flight-stick controls are unavailable") &&
+  strstr(box->message,"keyboard and mouse");++asks;const char *choice=getenv("TEST_ASK_CHOICE");
+  *which=choice ? atoi(choice) : 1; return 1; }
 static int ce_open_report(const char *v,const char *c,const char *u,char *out,size_t n)
 { (void)v;(void)c;(void)u;++reports;snprintf(out,n,"not opened");return 0; }
 static int SDL_ShowSimpleMessageBox(int flags,const char *title,const char *text,void *window)
 { (void)flags;(void)title;(void)text;(void)window;++dialogs;return 1; }
-static void say(const char *text,...) { (void)text; }
+static void say(const char *text,...)
+{ if(strstr(text,"Direct gamepad and flight-stick controls are unavailable") &&
+     strstr(text,"keyboard and mouse")){++record_notices;notice_content=1;} }
 @FUNCTIONS@
 static void string_out(const char *s)
 { putchar('"');for(;*s;s++){if(*s=='"'||*s=='\\')putchar('\\');putchar(*s);}putchar('"'); }
 int main(int argc,char **argv)
 {
  int rc=ce_test_main(argc,argv);
- printf("RESULT {\"return\":%d,\"paths\":%d,\"logs\":%d,\"finds\":%d,\"games\":%d,\"records\":%d,\"reports\":%d,\"dialogs\":%d,\"forbidden\":%d,\"handoffs\":%d,\"checks\":%d,\"rollbacks\":%d,\"game_args\":[",
- rc,paths,logs,finds,games,records,reports,dialogs,forbidden,handoffs,checks,rollbacks);
+ printf("RESULT {\"return\":%d,\"paths\":%d,\"logs\":%d,\"finds\":%d,\"games\":%d,\"records\":%d,\"reports\":%d,\"dialogs\":%d,\"forbidden\":%d,\"handoffs\":%d,\"checks\":%d,\"rollbacks\":%d,\"asks\":%d,\"record_notices\":%d,\"notice_content\":%d,\"game_args\":[",
+ rc,paths,logs,finds,games,records,reports,dialogs,forbidden,handoffs,checks,rollbacks,asks,record_notices,notice_content);
  for(int i=0;i<game_argc;i++){if(i)putchar(',');string_out(game_args[i]);}puts("]}");return 0;
 }
 '''
@@ -79,7 +93,7 @@ int main(int argc,char **argv)
 
 def production_functions(source):
     functions = []
-    for name in ("main",):
+    for name in ("ask_record", "main"):
         matches = re.findall(r"^(?:static )?(?:int|void) " + name + r"\([^\n]*\)\n\{\n.*?^\}", source, re.M | re.S)
         if len(matches) != 1:
             raise RuntimeError(f"expected one complete production {name}")
@@ -115,7 +129,8 @@ class EntryPoint(unittest.TestCase):
         cls.temp.cleanup()
 
     def invoke(self, platform, *args, **extra):
-        env = {k: v for k, v in os.environ.items() if not k.startswith(("BEA_PORT_", "BEA_UPDATE_"))}
+        env = {k: v for k, v in os.environ.items() if not k.startswith(("BEA_PORT_", "BEA_UPDATE_", "TEST_"))
+               and k != "BEA_RECORD_ANSWER"}
         env.update(extra)
         result = subprocess.run([str(self.drivers[platform]), *args], env=env, check=True,
                                 capture_output=True, text=True, timeout=5)
@@ -178,6 +193,34 @@ class EntryPoint(unittest.TestCase):
             self.assertEqual((row["return"], row["games"], row["logs"], row["checks"]), (0,1,0,0))
             row, _ = self.invoke(platform, BEA_CE_JUST_UPDATED="1")
             self.assertEqual((row["games"], row["checks"]), (1, 0))
+
+    def test_recording_controller_notice_matches_the_actual_launch_path(self):
+        for platform in self.drivers:
+            with self.subTest(platform=platform, mode="explicit"):
+                row, _ = self.invoke(platform, "--record")
+                self.assertEqual((row["records"], row["asks"], row["record_notices"], row["notice_content"]),
+                                 (1, 0, 1, 1))
+            with self.subTest(platform=platform, mode="configured"):
+                row, _ = self.invoke(platform, TEST_INI_RECORD="1")
+                self.assertEqual((row["records"], row["asks"], row["record_notices"], row["notice_content"]),
+                                 (1, 1, 1, 1))
+            with self.subTest(platform=platform, mode="declined"):
+                row, _ = self.invoke(platform, TEST_INI_RECORD="1", TEST_ASK_CHOICE="0")
+                self.assertEqual((row["records"], row["asks"], row["record_notices"], row["notice_content"]),
+                                 (0, 1, 0, 1))
+            with self.subTest(platform=platform, mode="failed"):
+                row, _ = self.invoke(platform, "--record", TEST_RECORD_FAIL="1")
+                self.assertEqual((row["records"], row["asks"], row["record_notices"]), (1, 0, 0))
+            with self.subTest(platform=platform, mode="unattended-with-display"):
+                row, _ = self.invoke(platform, "--record", DISPLAY=":authored")
+                self.assertEqual((row["records"], row["asks"], row["dialogs"], row["record_notices"]), (1, 0, 0, 1))
+            for inherited in ("BEA_PORT_TAPE", "BEA_PORT_RECORD"):
+                with self.subTest(platform=platform, mode=inherited):
+                    row, _ = self.invoke(platform, "--record", **{inherited: "fixture"})
+                    self.assertEqual((row["records"], row["asks"], row["record_notices"]), (1, 0, 0))
+            with self.subTest(platform=platform, mode="ordinary"):
+                row, _ = self.invoke(platform)
+                self.assertEqual((row["records"], row["asks"], row["record_notices"]), (0, 0, 0))
 
     def test_v1_feed_swap_and_pattern_cleanup_are_absent(self):
         updater = (SOURCE.parent / "ce_update_v2.h").read_text()

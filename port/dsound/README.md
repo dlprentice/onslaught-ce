@@ -3,7 +3,7 @@
 # port/dsound: DirectSound 8 over SDL3 audio
 
 Status: active (mixing, notifications and DirectSound 3D in place; nobody has listened to the result yet)
-Last updated: 2026-10-28 (playlist transitions; bounded ordinary media-mix observations)
+Last updated: 2026-10-28 (music refill backlog controls and publication; playlist transitions and media-mix observations)
 Summary: what the game's sound code needs from DirectSound, how this module provides it, and how it is checked.
 
 Replaces port/platform/common/dsound.cpp (the platform's silent form; `build.py` drops it when this directory
@@ -82,6 +82,69 @@ from the beginning: previously queued PCM continues before later refills use the
 folder while level music played, `music next`, and clearing the custom list. `ce_music_transition_tests.py` connects
 the actual playlist, worker and mixer using distinct authored PCM; its stop-removal controls retain the old audio.
 This fixes those transitions, not the reported Windows startup-film overlap, whose cause remains unconfirmed.
+
+## Music refill publication
+
+The ordinary CE worker decodes a music half into a 256 KiB staging buffer and publishes it under the mixer mutex.
+It holds the existing stream guard before the mixer mutex; the callback never takes that stream guard. The decoder's
+file read does not hold the mixer mutex. An unexpected buffer-lock failure or half size stops the stream instead of
+writing into the live buffer. Faithful, private, virtual-clock, replay, recording and probe routes keep their previous
+refill path, including when the CE drawing layer is forced on during those routes.
+
+In `python3 port/tools/audio_refill_overlap_tests.py`, the actual worker and mixer use authored PCM, a fake SDL
+stream and controlled thread scheduling. A predecessor control pauses a refill during a stereo frame after playback
+has wrapped onto the same half: its submitted block contains new and old frames and one split stereo frame. The
+candidate submits the old block until the completed half is published. A relaxed-atomic ThreadSanitizer control
+reports the predecessor's reader/mixer data race; the staged and different-half controls are clean in that harness.
+Pausing an instrumented publication halfway through the copy makes the callback wait; removing the publication lock
+lets it submit both old and new frames. This checks the lock separately from staging the decoder's output.
+Normal stereo PCM, short and empty streams, failed locks, and a fake shutdown while the decoder is held are checked.
+The callback completes while that reader is held. These are PCM submitted to a fake stream, not sound heard at a device.
+
+The publication copy holds the mixer mutex for up to one 256 KiB copy; it can delay a callback and has no proven
+real-time bound on a player's machine. In one local host-only sample of 500 uncontended copies, the median was
+4.7 microseconds, the 99th percentile 6.0 microseconds and the maximum 8.8 microseconds; scheduling, hardware and
+Windows may differ. A late refill can still replay old samples before publication. This fixes the demonstrated
+partial-update hazard in the admitted path; it does not establish the cause of any player's distortion or film/music
+overlap, Windows device behavior, or audible quality.
+
+The related late-worker risk has a separate limit. In `python3 port/tools/audio_refill_backlog_tests.py`, the actual
+worker and mixer use authored PCM and controlled event and SDL boundaries. After an on-time first refill, a stalled
+worker lets the second-half notification occur before the next first-half notification. With both pending, the
+wait checks the first-half event first; the worker then puts the next two decoded halves into the opposite slots.
+The fake SDL callback receives the later marker where the on-time control receives the earlier marker. Selecting the
+known older event first in this one fixture preserves slot order but cannot recover the old sample already mixed, and
+is not a general correction. A separate fixture produces four half notifications during two cycles but only two
+pending auto-reset event states. The Windows [wait API](https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-waitformultipleobjects)
+specifies index-order selection when multiple objects are signaled, and [SetEvent](https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-setevent)
+does not count repeated signals on an already signaled event. These host controls do not run Windows.
+
+In the same one-voice, step-1 fixture, the final valid frame of the initial ring brings the mix to 131072 frames;
+the next frame is stale if no refill has been published. A single callback spanning that boundary submits both
+valid and stale frames before a worker can inspect them. Another control pauses the actual reader just before the
+deadline, lets a callback cross it, then observes the current worker publishing the completed but late half. The
+fixture's global mix count happens to equal music frames only because it has one uninterrupted voice at step 1.
+If the worker publishes exactly at that boundary before the next callback, its next sample is fresh: a recovery
+rule that treats equality alone as an overrun would discard a still-recoverable track.
+
+The play cursor is modulo the ring, the existing mix-frame counter covers all voices, and the logged refill sequence
+counts worker operations. They do not provide a per-music-stream count or the chronological order of coalesced
+events. A safe recovery must define what happens to audio already mixed or queued, how to handle clean EOF and
+multiple missed halves, and how stop, replacement and shutdown interact with an in-flight read. Reordering the two
+event handles alone cannot establish those properties. No late-refill recovery has been validated or connected to
+the reported Windows symptoms.
+
+Ordinary-session diagnostics can also report an unexpected handled refill-half order, once per observed playback
+epoch and at most eight times per process, subject to the shared log budget. The worker arms the observation only
+when the existing first-refill snapshot confirms the new voice is playing. Stop, failed waits or refills, an inactive
+snapshot, or a consumed wake discarded during replacement leave order unknown; no later anomaly is reported until a
+new observed start. A reader open while the same voice plays does not restart the order. The line describes handled
+wake order only: it does not prove audible underrun. An absent line does not rule out missed or coalesced events,
+unknown order, exhausted log budgets or an unobserved start. The observation does no
+callback work or additional snapshot and does not change completion or playlist logic, although logging can affect
+worker scheduling.
+`python3 port/tools/audio_refill_order_tests.py` compares authored PCM with the preceding worker and exercises the
+fences, lifecycle, bounded reporting and causal mutants; it does not establish Windows or physical-output behavior.
 
 ## Checks
 

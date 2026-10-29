@@ -30,17 +30,28 @@ FUNCTIONS = {
     "UPDATE": ("ltshell.cpp", r"HRESULT PCLTShell::UpdateJoystick\(int joypad, bool first\)"),
     **{f"JOY_{axis}": ("PCController.cpp", rf"float\s+CPCController::GetJoyAnalogue{axis}\(int pad_number\)")
        for axis in ("LeftX", "LeftY", "RightX", "RightY")},
+    "POVX": ("PCController.cpp", r"float CPCController::GetJoyPovX\(int pad_number\)"),
+    "POVY": ("PCController.cpp", r"float CPCController::GetJoyPovY\(int pad_number\)"),
     "POLL_MOUSE": ("Controller.cpp", r"HRESULT PollMouseState\(\)"),
     "POLL_MOTION": ("Controller.cpp", r"HRESULT PollMouseMotion\(\)"),
     "SHUTDOWN_MOUSE": ("Controller.cpp", r"HRESULT ShutdownMouse\(\)"),
     "MOUSE_MESSAGE": ("mouse.cpp", r"LRESULT __stdcall\s+HandleMouseMessage\([^\n]*"),
 }
 CASES = ("pad-acquire", "pad-reacquire", "pad-properties", "pad-axes", "pad-limit", "pad-quick-tap", "pad-edge-order", "pad-edge-chord", "pad-edge-chord-pulses",
-         "pad-edge-overflow", "pad-edge-event-overflow", "pad-edge-overflow-focus", "pad-edge-focus", "pad-edge-stale-focus", "pad-edge-hotplug",
+         "pad-edge-overflow", "pad-edge-event-overflow", "pad-edge-overflow-focus", "pad-edge-focus", "pad-edge-stale-focus", "pad-edge-hotplug", "pad-edge-hotplug-two",
          "pad-edge-two", "pad-edge-cross-binding", "pad-edge-two-consumers", "pad-edge-repeat-consumer", "pad-edge-bonus-two",
          "pad-edge-no-poll-held", "pad-edge-duplicate-binding", "pad-edge-no-watch", "pad-edge-missing-focus-event",
          "pad-edge-cross-overflow", "pad-edge-trigger", "pad-edge-multiplayer", "pad-edge-tape", "pad-edge-record", "pad-edge-clock",
-         "pad-edge-probes", "mouse-exclusive", "relative-focus", "wheel-stale", "wheel-focus",
+         "pad-edge-probes", "pad-edge-record-saved", "pad-edge-tape-saved", "pad-edge-record-saved-two",
+         "pad-edge-tape-saved-two", "pad-neutral-record", "pad-neutral-tape", "pad-neutral-record-two", "pad-neutral-tape-two",
+         "pad-edge-pov-record-absent", "pad-edge-pov-record-disabled", "pad-edge-pov-record-enabled",
+         "pad-edge-pov-tape-absent", "pad-edge-pov-tape-disabled", "pad-edge-pov-tape-enabled", "pad-edge-pov-ordinary-disabled",
+         "pad-edge-demo-record-absent", "pad-edge-demo-record-disabled", "pad-edge-demo-record-enabled",
+         "pad-edge-demo-tape-absent", "pad-edge-demo-tape-disabled", "pad-edge-demo-tape-enabled",
+         "pad-edge-demo-record-keyboard", "pad-edge-demo-record-mouse", "pad-edge-demo-tape-keyboard", "pad-edge-demo-tape-mouse",
+         "pad-edge-demo-ordinary-disabled", "pad-edge-tape-keys", "pad-edge-record-keys",
+         "pad-neutral-empty-record", "pad-neutral-empty-tape", "pad-neutral-ordinary", "pad-neutral-clock", "pad-neutral-probes",
+         "mouse-exclusive", "relative-focus", "wheel-stale", "wheel-focus",
          "wheel-race", "wheel-menu", "wheel-before-acquire",
          "wheel-once", "wheel-focus-pending", "wheel-window", "release-overflow", "release-repress", "record-release-overflow",
          "record-mouse", "replay-key", "replay-mouse", "pause-cursor", "pause-tape", "pause-no-focus",
@@ -50,7 +61,8 @@ CASES = ("pad-acquire", "pad-reacquire", "pad-properties", "pad-axes", "pad-limi
          "pad-trigger-edges", "pad-trigger-build-mode", "pad-trigger-unplug", "pad-trigger-disabled", "pad-trigger-tape", "pad-trigger-record",
          "pad-trigger-clock", "pad-trigger-probes", "pad-tutorial-info", "pad-tutorial-unplug")
 FAITHFUL_CASES = ("pad-trigger-build-mode", "pad-trigger-disabled", "pad-trigger-tape", "pad-trigger-record",
-                  "pad-trigger-clock", "pad-trigger-probes", "mouse-fraction-disabled", "mouse-fraction-tape")
+                  "pad-trigger-clock", "pad-trigger-probes", "pad-neutral-faithful", "pad-edge-pov-faithful-disabled",
+                  "mouse-fraction-disabled", "mouse-fraction-tape")
 
 
 def sha(data):
@@ -67,7 +79,7 @@ def definition(source, signature):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source-root", type=Path, default=ROOT)
-    parser.add_argument("--case", choices=CASES, action="append")
+    parser.add_argument("--case", choices=CASES + tuple(case for case in FAITHFUL_CASES if case not in CASES), action="append")
     parser.add_argument("--faithful", action="store_true", help="compile without CE_VERSION for focused faithful controls")
     parser.add_argument("--optimize", action="store_true", help="compile with -O2, as the game is (the DIPROP folding showed only there)")
     args = parser.parse_args()
@@ -122,7 +134,7 @@ def main():
             driver = driver.replace(name, str(path))
         edge_test = any(case == "pad-quick-tap" or case.startswith("pad-edge-") for case in (args.case or CASES))
         edge_source = ""
-        if edge_test:
+        if edge_test and not args.faithful:
             gamepad = (args.source_root / "port/game/ce_gamepad.cpp").read_text()
             edge_bodies = [definition(gamepad, sig) for sig in (r"bool Ordinary\(\)", r"bool Allowed\(int pad\)",
                 r"void PortCeGamepadUpdate\(int pad\)", r"void PortCeGamepadBeginCycle\(\)",
@@ -136,11 +148,14 @@ def main():
         mapping_source = ""
         if edge_test:
             controller = (out / "Controller.cpp").read_text(encoding="latin-1")
-            mapping_source = definition(controller, r"void CController::Flush\(\)") + definition(controller, r"void CController::DoMappings\(\)")
+            mapping_source = (definition(controller, r"void CController::Flush\(\)") +
+                              definition(controller, r"void CController::DoMappings\(\)") +
+                              definition(controller, r"float CController::GetMappedInputValue\(int pad_number, int button\)"))
             pccontroller = (out / "PCController.cpp").read_text(encoding="latin-1")
+            mapping_source += definition(pccontroller, r"void\s+CPCController::ReadControllerState\(\)")
             for name in ("Once", "On", "Release"):
                 found = [line for line in re.findall(r"^inline int CPCController::GetJoyButton" + name + r"\([^\n]*", pccontroller, re.MULTILINE)
-                         if "PortCeGamepad" in line]
+                         if ("PortCeGamepad" in line) != args.faithful]
                 if len(found) != 1:
                     raise RuntimeError(f"expected one CE gamepad accessor: {name}")
                 mapping_source += "\n" + found[0] + "\n"

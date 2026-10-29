@@ -76,6 +76,7 @@ class RumbleTests(unittest.TestCase):
         common.mkdir(parents=True)
         for n in ("window.cpp", "dinput.cpp", "portlog.cpp", "portlog.h", "platform.h", "ce.cpp", "ce_pad_queue.h"):
             shutil.copy(ROOT / "port/platform/common" / n, common)
+        shutil.copy(ROOT / "port/include/ce_tutorial_pad.h", common)    # dinput.cpp's tutorial pad query types
         if dinput is not None:
             (common / "dinput.cpp").write_text(dinput)
         (folder / "updater").mkdir()

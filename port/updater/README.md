@@ -81,8 +81,9 @@ holds the pipe.
 
 `--record`, or `record_sessions=1` in `ce.ini` (the main menu's Onslaught CE page writes it), starts the game in record mode (port/platform/common/replay.cpp):
 `BEA_PORT_RECORD=<user folder>/tapes/YYYYMMDD-HHMMSS.tape` and, unless set, `BEA_PORT_CLOCK=shim`, so the game runs
-at 30 Presents a second and its tape replays exactly. The launcher prints one line saying so. Never while a tape is
-replayed (`BEA_PORT_TAPE`) or another recording is set (`BEA_PORT_RECORD`). In record mode the CE layer is off, the
+at 30 Presents a second and its tape (keyboard and mouse only; controller input is not recorded) can be replayed. The
+launcher prints one line saying so. Never while a tape is replayed (`BEA_PORT_TAPE`) or another recording is set
+(`BEA_PORT_RECORD`). In record mode the CE layer is off, the
 front end and pause menu get keys, typed text (tape 2's `C` lines) and the window mouse (`W` lines; no focus messages) and the battle
 gets the DirectInput mouse. The launcher also sets `BEA_AUDIO_MONITOR=1` unless it is set, so the session is heard
 (port/dsound/README.md: a write-only monitor of the virtual clock's mix).

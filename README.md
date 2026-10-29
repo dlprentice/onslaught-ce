@@ -66,8 +66,9 @@ and remaining limits; development source may include changes beyond that publish
 ## In the game
 
 - **Main menu > Onslaught CE:** About (version, licence and links), Report a problem, Record sessions (see below),
-  Updates (whether checking is on, how to roll back, where `ce.ini` is), Bonus: Aquila Prototype and the two Bonus
-  co-op maps (see below) and Special Thanks.
+  Updates (whether checking is on, how to roll back, where `ce.ini` is), Coming soon / ideas, Bonus: Aquila Prototype
+  and the two Bonus co-op maps (see below), and Special Thanks. Coming soon / ideas describes planned features and
+  their current limits; its entries do not start those features.
 - **Bonus: Aquila Prototype:** level 201, the original's playable-demo level, which the full game never offers. It does
   not advance career progress and returns to the main menu. Settings can still be saved, including into a career file.
 - **Bonus co-op: Defence A and B:** two two-player co-op maps (levels 856 and 858) that the original's Multiplayer page
@@ -84,9 +85,33 @@ and remaining limits; development source may include changes beyond that publish
   [port/controller-input.md](port/controller-input.md).
 - **Keyboard:** the port releases held keys on focus loss and attempts to repair delayed releases. Typed characters
   come from key presses rather than a desktop input method; letter and digit keys use their physical positions across
-  keyboard layouts.
+  keyboard layouts. For the walker's special move, see [Dodging](#dodging).
 - **A quiet console:** the developers' messages are hidden unless `BEA_PORT_VERBOSE=1` is set.
 - **A log file** for reports, `onslaught-ce.log` in your user folder, and **session recording** (both below).
+
+### Dodging
+
+In walker mode, with your Battle Engine on the ground and not already dodging, use the default US keyboard bindings:
+
+- **Dodge right:** tap **A**, then **D**.
+- **Dodge left:** tap **D**, then **A**.
+
+Try releasing the first key before pressing the other. Aim for about 0.15 game seconds between presses: with the
+default timing, the second press must be more than 0.1 and less than 0.2 game seconds after the first. Too fast or
+too slow will not trigger a dodge. If you changed the bindings or use a different keyboard layout, check the
+left and right movement inputs in **Controller Options** and use those instead.
+
+In eligible ordinary solo play, the English tutorial can show a contextual dodge cue when the radio message starts.
+The cue is off during session recording and replay; use this guide while recording. The same keyboard sequence and
+timing apply.
+
+### Zooming
+
+With the default mouse binding, scroll the wheel down to zoom in and up to zoom out. With the default gamepad
+bindings in eligible ordinary play, the right bumper zooms in and the left bumper zooms out. You can change the
+bindings in **Controller Options**. Manual zoom only works with weapons that support it; some weapons zoom while
+charging instead. The English tutorial can show a zoom cue in eligible ordinary solo play, but not in recordings
+or replays.
 
 ### Cheats
 
@@ -111,7 +136,7 @@ Free camera controls:
 - **Arrow keys**: turn left and right, look up and down. There is no up or down key and no speed key: look up or
   down, then fly, at one fixed speed.
 - **Esc**: freeze or unfreeze the battle without a menu. The camera still flies while the battle is frozen, so you can
-  line up a screenshot; F12 saves the current view.
+  line up a screenshot. With photo mode (F11) the view is clear of the HUD, and F12 saves it.
 
 The battle keeps going while you look around unless you freeze it, and your Battle Engine can be hit.
 
@@ -150,8 +175,8 @@ the original's command interpreter: it has its own list of commands, and never r
   skips to your next track; `music clear` goes back to the game's music. These are the original's playlist commands
   (`m_adddir`, `m_playtype`), which the PC release never registered. They last for the session; `ce.ini` keeps the
   settings (below).
-- **Photo mode:** temporarily unavailable while we fix a gameplay difference. `photo` and F11 explain the hold; F12
-  still saves a screenshot in eligible single-player levels (below).
+- **Photo mode:** `photo` (or `photo on`/`off`) hides the HUD for pictures, as F11 does, and closes the console; F12
+  saves a screenshot (below).
 - **With Free camera on:** `camera` (as the F key), `remotecameraon` (views from whatever is under the crosshair) and
   `remotecameraoff`.
 - **With Unlock all levels on:** `map <level>` (leaves this level for another campaign level), `win` and `lose`. A win
@@ -166,14 +191,16 @@ the original's command interpreter: it has its own list of commands, and never r
 
 ### Photo mode and screenshots
 
-- **F11 and the console's `photo` command:** HUD-hiding photo mode is temporarily unavailable. Hiding those elements
-  changed the course of some battles, so we are correcting it before bringing the mode back. To move the camera or
-  freeze the battle while framing a shot, use the Free camera cheat (above).
+- **F11** (or the console's `photo`, `photo on`/`off`) hides the HUD for pictures: the cockpit, the HUD and its radio
+  messages, the battle line and the developer information. Menus, the pause menu, the message log and the end-of-level
+  screens are still drawn, since they take your input. F11 again, or the end of the level, brings everything back. It
+  needs no cheat: it only hides drawing, and the battle plays out as it would without it. To fly the camera around the
+  battle, and to freeze it while you frame a shot (Esc), use the Free camera cheat (above) with it.
 - **F12** saves what is on screen as a PNG in the `screenshots` folder of your user folder, named by the date and time
   (`onslaught-ce-20261029-153012.png`, then `-2`, `-3` ... in the same second). It never replaces a file. A note at the
   bottom of the screen says it was saved; the note is never in the picture. The folder holds up to 2000 files: move
   some out when it says it is full.
-- F12 works in single-player levels, but not while a session is recorded or replayed, in multiplayer, a network game
+- Both work in single-player levels, but not while a session is recorded or replayed, in multiplayer, a network game
   or a demo. A key-capturing menu or the console can take these keys first; the pause-menu interaction has not been
   tested.
 
@@ -220,7 +247,14 @@ No game files are included. You need your own copy of *Battle Engine Aquila* for
 `BEA_USER_DIR` overrides that location. Use a separate ordinary directory, not the game folder or a link into it.
 The settings writer refuses linked parent paths; the Linux save writer also refuses linked and hard-linked write
 targets. These checks do not make arbitrary redirected folders safe on every platform. Original-install careers
-remain available in the load menu, with a same-named CE career taking precedence.
+remain available in the load menu, with a CE career of the same on-disk name taking precedence. On Linux, if a name
+has both an older one-byte spelling and a UTF-8 spelling, the older spelling can be selected even when it is in the
+original folder. Keep both files and seek help before overwriting either one.
+
+On Linux, a career filename whose in-game name exceeds 31 16-bit units is omitted from the list because it cannot fit
+the game's name field. The game emits a name-free diagnostic once, normally captured in a launcher log; it does not
+show an on-screen warning. This check does not change the file. If a career is missing, keep its file and ask for help
+before changing it.
 
 Close the game and launcher before editing `ce.ini` or changing it through another tool. Concurrent settings changes
 can overwrite one another.
@@ -410,9 +444,10 @@ included. On a widescreen monitor the 3D view shows more to the sides (the origi
 loading pictures and films keep their original 4:3 shape, centred with black bars, and the in-game HUD sits where it
 would on a 4:3 screen. To get the original's 4:3-only list and 640 x 480 start back, set `BEA_PORT_WIDESCREEN=0`.
 
-Above 640 x 480 the single-player HUD (radar, portrait, messages, compass and reticle) is drawn larger in
-proportion to the screen, so it stays readable at 1440p and 4K. Set
-`BEA_PORT_HUD_SCALE=0` for the original's fixed-size HUD.
+In eligible ordinary single-player play with widescreen modes enabled, the HUD (radar, portrait, messages, compass
+and reticle) scales up when the screen is wider than 640 and taller than 480 pixels, to make it easier to read.
+Set `BEA_PORT_HUD_SCALE=0` for the original's fixed-size HUD. Scaling is off in recordings and replays,
+multiplayer, and when `BEA_PORT_WIDESCREEN=0`.
 
 For testers: to try a screen size your monitor does not offer, set `BEA_PORT_WIDE_TEST=WIDTHxHEIGHT` and start with
 the same size, for example `BEA_PORT_WIDE_TEST=2560x1440 onslaught-ce -- -res 2560 1440`. The game then treats it as
@@ -443,7 +478,7 @@ between visual effects and play, so a wider view can change the details of a fig
    Home paths and account-name path components are shortened; look the file over before sharing it. It needs no
    administrator access, records no microphone audio and is never uploaded automatically. You can also share the
    file directly with someone helping you. Replays and session recordings omit the detailed ordinary-play events.
-4. If you recorded the session (below), attach its tape too: it lets us replay exactly what happened.
+4. If you recorded the session (below), attach its tape too: it can help us reproduce what happened.
 
 ## Help make Onslaught CE more faithful
 
@@ -454,18 +489,27 @@ in both and comparing them, and recordings of real play find differences our own
   menu. That starts the next time you launch Onslaught CE (quit the game, then start it again); it puts
   `record_sessions=1` in `ce.ini` in your user folder. While it is on, each start asks whether to record: **Stop
   recording** there (or starting with `onslaught-ce --no-record`) turns it off again.
-- While recording, the game runs at 30 frames a second (the timing replays use), its menus take the keyboard and the
-  mouse, and you can type a career's name, the screen is the original 4:3 (no widescreen), and the menus are the
-  original's: the version text, no Onslaught CE menu and no Cheats page, and only cheats typed into a career's name
-  work. These Onslaught CE additions are off too: the larger HUD, the command panel, the tutorial's dodge and zoom
-  cues, and the saved Display mode (Windowed or Fullscreen) from Video Options. The game's sound plays while recording.
+- By default, recording targets 30 frames a second for play and uses the replay clock. Its menus take the keyboard
+  and mouse, and you can type a career's name. Direct gamepad and flight-stick input is disabled during recording and
+  replay because the tape does not record it; use the keyboard and mouse. An older tape made with live controller
+  input cannot recover that input and may replay differently. The screen is the original 4:3 (no
+  widescreen), and the menus are the original's: the version text, no Onslaught CE menu and no Cheats page, and only
+  cheats typed into a career's name work. These Onslaught CE additions are off too: the larger HUD, the command panel,
+  the tutorial's dodge and zoom
+  cues, and the saved Display mode (Windowed or Fullscreen) from Video Options. By default the game tries to play sound
+  through the audio monitor when a device is available. The [dodging instructions](#dodging) above remain available in
+  this guide.
 - Each completed session is saved in the `tapes` folder of your user folder as
   `YYYYMMDD-HHMMSS-PID-SERIAL.tape` and a `.tape.json` beside it. The final tape appears when the recording closes
-  successfully. A failed or interrupted capture may leave an `.incomplete` file; that is not a replayable tape, and
-  the launcher reports that the recording failed. Earlier recordings are never replaced.
-  The tape holds only your key presses, typed characters and mouse movement and clicks, frame by frame. The `.json` names the version, your OS,
-  the date and the game's arguments, and holds a copy of your options and saved careers as the session started, so a
-  replay starts where you did. No screen capture, sound recording or microphone audio is included.
+  successfully. A failed or interrupted capture may leave an `.incomplete` file; it is not a completed recording.
+  Keep it for diagnosis rather than replaying it. The launcher reports that the recording failed. Earlier recordings
+  are never replaced.
+  The tape records key presses and releases, typed text, mouse movement and buttons, their frame numbers, and the
+  game's rendering size for menu mouse input. The `.json` includes the CE version and build, platform and OS, date and
+  time, clock, frame rate and audio-monitor setting, game arguments, and encoded copies of some files in your CE user
+  folder at the start. These can include game options, saved careers and other files in that folder. Session recording
+  does not capture video, game audio or microphone audio. Both files can contain personal information; review them
+  before sharing.
 - To share a session, put the `.tape` and its `.tape.json` in a zip and attach it to an issue, saying what to look at
   (what differed from the original, and roughly when). Sessions where something looked or behaved
   differently from the original help most.
@@ -493,8 +537,11 @@ recording. 30 of those levels have original-game recordings to compare against:
 Those 30 levels were replayed again on the 0.1 build itself; the sweep is not a claim about later releases. Replays run
 in faithful mode (4:3, no CE menus or cheat switches).
 
-**Played through on the port:** the full front end, creating, loading and saving careers, options and videos, and most
-of the tutorial (through its third zone; the final drone fight is still being completed).
+**Earlier interactive check:** the front end, creating, loading and saving careers, options, videos and the tutorial
+through its third zone. Complete tutorial parity with the original remains open.
+
+**Recorded session check:** Onslaught CE 0.1.9 for Linux replayed a player-recorded Level 100 tutorial session through
+its win and debrief. This covers one recorded route; it does not establish complete parity with the original.
 
 ## Known limitations
 
@@ -528,7 +575,7 @@ of the tutorial (through its third zone; the final drone fight is still being co
   also exercised. These checks do not validate a physical audio device, listening quality or every race schedule.
   The 0.1.5 candidate corrects music starts that could survive a stop request; the reported Windows overlapping
   music has not yet been reproduced and attributed to this defect.
-- The tutorial is playable through its third zone; its final drone fight is still being completed.
+- Complete tutorial parity with the original has not yet been established.
 - Gamepad and flight-stick defaults cover menus, solo play and bonus co-op ([how](port/controller-input.md)); only
   virtual devices have been tested so far.
 - Widescreen play is not compared with the original (the original has no widescreen); replays and recordings use 4:3.

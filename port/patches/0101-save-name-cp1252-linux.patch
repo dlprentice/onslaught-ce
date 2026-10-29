@@ -1,6 +1,6 @@
 --- a/PCMemoryCard.cpp
 +++ b/PCMemoryCard.cpp
-@@ -24,12 +24,83 @@
+@@ -24,12 +24,99 @@
  extern "C" unsigned PortSaveLookupUtf16(const void *, int *);
  extern "C" unsigned PortSaveReserveUtf8(const char *);
  #endif
@@ -70,13 +70,29 @@
  	return PortSaveNameUtf16(filename, NULL, 0) == 0;
  #else
 -	return TRUE;
-+	// A UTF-8 name whose Latin-1 twin also exists is listed once, as the twin (the file every name lookup chooses).
++	// Reject names the load page would copy beyond the virtual keyboard's 32-unit buffer. Count the same 16-bit
++	// name GetSaveName returns, not the UTF-8 filename bytes. Never alter the unsupported file.
 +	char base[256];
-+	size_t n = strlen(filename);
-+	if (n < 4 || n - 4 >= sizeof(base))
-+		return TRUE;
++	if (!filename)
++		return FALSE;
++	size_t n = 0;
++	while (n < sizeof(base) + 4 && filename[n]) ++n;
++	if (n <= 4 || n >= sizeof(base) + 4 || filename[n - 4] != '.' ||
++		(filename[n - 3] | 0x20) != 'b' || (filename[n - 2] | 0x20) != 'e' || (filename[n - 1] | 0x20) != 's')
++		return FALSE;
 +	memcpy(base, filename, n - 4);
 +	base[n - 4] = 0;
++	WCHAR *shown = PortSaveWide(base);
++	size_t units = 0;
++	while (units < 32 && shown[units]) ++units;
++	if (units == 32)
++	{
++		static int reported = 0;
++		if (!__sync_lock_test_and_set(&reported, 1))
++			fprintf(stderr, "onslaught-ce: a career filename exceeds the supported name length; it was not listed or modified\n");
++		return FALSE;
++	}
++	// A UTF-8 name whose Latin-1 twin also exists is listed once, as the twin (the file every name lookup chooses).
 +	static WCHAR wide[256];
 +	if (!PortSaveNameFromFileCp1252(base, wide, 256))
 +		return TRUE;
@@ -85,7 +101,7 @@
  #endif
  }
  
-@@ -125,7 +196,7 @@
+@@ -125,7 +212,7 @@
  #else
  		strcpy(buffer, sFindData.name);
  		buffer[strlen(buffer) - 4] = 0;			// drop the extension
@@ -94,7 +110,7 @@
  #endif
  
  		if (sFindHandle != -1)
-@@ -180,7 +251,7 @@
+@@ -180,7 +267,7 @@
  
  	_mkdir(SAVE_DIRECTORY);
  	strcpy(path, SAVE_DIRECTORY);
@@ -103,7 +119,7 @@
  	strcat(path, SAVE_EXTENSION);
  
  	if (!allowed_overwrite)
-@@ -204,7 +275,7 @@
+@@ -204,7 +291,7 @@
  		{
  			strcpy(buffer, sFindData.name);
  			buffer[strlen(buffer) - 4] = 0;
@@ -112,7 +128,7 @@
  			{
  				index++;
  				if (!NextSave())
-@@ -240,7 +311,7 @@
+@@ -240,7 +327,7 @@
  	if (lookupError || admitted == -1) { SetLastError(lookupError ? lookupError : 2); return MCE_FAILURE; }
  #else
  	strcpy(path, SAVE_DIRECTORY);
@@ -121,7 +137,7 @@
  	strcat(path, SAVE_EXTENSION);
  #endif
  	return DeleteFile(path) ? MCE_SUCCESS : 1;
-@@ -257,7 +328,7 @@
+@@ -257,7 +344,7 @@
  	if (lookupError || admitted == -1) { SetLastError(lookupError ? lookupError : 2); return MCE_FAILURE; }
  #else
  	strcpy(path, SAVE_DIRECTORY);
@@ -130,7 +146,7 @@
  	strcat(path, SAVE_EXTENSION);
  #endif
  	FILE *f = fopen(path, "wb");
-@@ -284,7 +355,7 @@
+@@ -284,7 +371,7 @@
  	if (lookupError || admitted == -1) { SetLastError(lookupError ? lookupError : 2); return MCE_FAILURE; }
  #else
  	strcpy(path, SAVE_DIRECTORY);

@@ -36,9 +36,13 @@
 bool			PortCeLayer();						// port/platform/common/ce.cpp
 extern "C" int	CE_OpenReportPage(void);
 extern "C" int	CE_SettingGet(const char *key, int def);
+extern "C" int	CE_TrySettingGet(const char *key, int def, int *out);
 extern "C" int	CE_SettingSet(const char *key, int value);
 extern "C" int	CE_CheatOn(int n);
 extern "C" int	CE_CheatSet(int n, int on);
+extern "C" int	CE_CheatReady(int n);
+extern "C" int	CE_CheatRestartRequired(int n);
+extern "C" void CE_MaladimRequireRestart(void);
 extern "C" int	CE_UserDirForDialog(char *out, int n, int (*shown)(int));
 extern "C" const char *CE_BuildName(void);
 
@@ -329,7 +333,10 @@ bool	PortCeCareerSaving(CCareer *career)
 	if (!GodFromSwitchOnly())
 		return false;
 	int mask = GodMask(career);
-	if (CE_SettingGet(PORT_CE_GOD_KEY, 0) != mask)
+	int saved = 0;
+	if (!CE_TrySettingGet(PORT_CE_GOD_KEY, 0, &saved))
+		fprintf(stderr, PORT_LOG_PREFIX "could not read god mode while saving; the setting was not updated\n");
+	else if (saved != mask)
 		CE_SettingSet(PORT_CE_GOD_KEY, mask);
 	return true;
 }
@@ -339,7 +346,13 @@ void	PortCeCareerLoaded(CCareer *career)
 {
 	if (!GodFromSwitchOnly())
 		return;
-	int mask = CE_SettingGet(PORT_CE_GOD_KEY, 0);
+	int mask = 0;
+	if (!CE_TrySettingGet(PORT_CE_GOD_KEY, 0, &mask))
+	{
+		CE_MaladimRequireRestart();
+		fprintf(stderr, PORT_LOG_PREFIX "could not read god mode while loading; restart after fixing settings\n");
+		return;
+	}
 	if (mask & 1)
 		career->SetIsGod(0, TRUE);
 	if (mask & 2)
@@ -402,7 +415,10 @@ public:
 	{
 		if (!CE_CheatSet(mCheat, value))
 		{
-			ShowMessage("Your settings could not be saved, so this was not changed.", 415.f);
+			if (CE_CheatRestartRequired(mCheat))
+				ShowMessage("Your settings could not be read. Restart Onslaught CE to retry this cheat.", 415.f);
+			else
+				ShowMessage("Your settings could not be read or saved, so this was not changed.", 415.f);
 			return;
 		}
 		if (mCheat == PORT_CE_GOD_CHEAT)
@@ -413,17 +429,27 @@ public:
 				CAREER.SetIsGod(0, FALSE);
 				CAREER.SetIsGod(1, FALSE);
 			}
-			if (!value && CE_SettingGet(PORT_CE_GOD_KEY, 0))
-				CE_SettingSet(PORT_CE_GOD_KEY, 0);
+			if (!value)
+			{
+				int saved = 0;
+				if (!CE_TrySettingGet(PORT_CE_GOD_KEY, 0, &saved) ||
+					(saved && !CE_SettingSet(PORT_CE_GOD_KEY, 0)))
+					ShowMessage("The Maladim switch is off, but the God setting could not be cleared. Check your settings before enabling it again.", 415.f);
+			}
 			SyncGodItem();
 		}
 	}
-	virtual int		GetValue() { return CE_CheatOn(mCheat) ? 1 : 0; }
+	virtual int		GetValue()
+	{
+		// Keep a pending choice stable if another row or gameplay loads the settings while this list is open.
+		if (mExpanded && mValue == -1) return -1;
+		return CE_CheatReady(mCheat) ? (CE_CheatOn(mCheat) ? 1 : 0) : -1;
+	}
 	// On and Off, as the page's help line says what each cheat turns on
 	virtual WCHAR	*GetChoiceText(int n)
 	{
-		static WCHAR off[] = L"Off", on[] = L"On";
-		return n ? on : off;
+		static WCHAR off[] = L"Off", on[] = L"On", unavailable[] = L"Unavailable", restart[] = L"Restart to retry";
+		return n < 0 ? (CE_CheatRestartRequired(mCheat) ? restart : unavailable) : n ? on : off;
 	}
 
 	int		mCheat;
@@ -449,12 +475,12 @@ public:
 		sValue = value;
 		char folder[1024], text[1536];
 		if (value)
-			snprintf(text, sizeof(text), "Session recording is now on. It starts the next time you launch Onslaught CE: quit "
-					 "the game, then start it again. Each start then asks whether to record; choose Stop recording there to "
-					 "turn it off.\n\nA recording keeps your keyboard and mouse input and a copy of your careers and "
-					 "settings, so a problem you report can be replayed exactly. Recordings are saved in:\n%s\n\nWhile "
-					 "recording, the game runs at 30 frames a second with the original menus, so the Onslaught CE menu and "
-					 "cheats are hidden.", FolderText(folder, sizeof(folder), "tapes"));
+			snprintf(text, sizeof(text), "Session recording is on from the next time you start Onslaught CE. Each start asks "
+					 "whether to record; Stop recording there turns it off.\n\nA recording keeps your keyboard and mouse "
+					 "input and copies some files from your CE folder to help reproduce a problem. Gamepads and flight sticks "
+					 "are not recorded and are unavailable while recording; an older tape made with one can replay "
+					 "differently. Saved in:\n%s\n\nWhile recording, the game runs at 30 frames a second with the original "
+					 "menus; the Onslaught CE menu and cheats are hidden.", FolderText(folder, sizeof(folder), "tapes"));
 		else
 			snprintf(text, sizeof(text), "Session recording is now off, from the next time you launch Onslaught CE.");
 		ShowMessage(text);
@@ -591,8 +617,33 @@ enum ECeAction
 	CEA_THANKS,
 	CEA_BONUS,
 	CEA_COOP_A,
-	CEA_COOP_B
+	CEA_COOP_B,
+	CEA_PLANS,
+	CEA_PLAN_FIRST
 };
+
+// These are descriptions, not controls. The separate Godot project and early concepts are labelled as such.
+struct SCePlan { const WCHAR *mLabel; const char *mText; };
+static const SCePlan kCePlans[] = {
+	{L"Online play", "Internet Host and Join, versus, skirmish and cross-platform play are in development and not available yet. "
+	 "Larger matches are a future idea. For two players on one PC, use Multiplayer on the main menu."},
+	{L"Campaign co-op", "Playing the campaign together online is experimental and not available yet. Local co-op bonus "
+	 "levels are on the Onslaught CE page."},
+	{L"Battle Engine / mods", "Online Battle Engine customization and more supported mod tools are being explored. They are "
+	 "not available here yet; existing in-game choices remain."},
+	{L"Map and mission tools", "Map and mission creation tools are being explored outside the game. They are not available here."},
+	{L"HUD and display", "Parts of the solo HUD can scale at higher resolutions. Selectable HUD size and changing display mode without a restart are "
+	 "being explored. Windowed and Fullscreen settings currently need a restart."},
+	{L"Controls and tutorial", "More dodge and zoom guidance, control options and controller refinements are planned. "
+	 "Solo gamepad defaults and English tutorial cues already exist."},
+	{L"CE features in recordings", "Session recordings use original-style menus today. Controller input is not recorded and "
+	 "many CE additions are off. More recording support is being explored."},
+	{L"Full photo mode", "Photo mode already hides the HUD for pictures (F11), and F12 saves a screenshot in single-player levels. "
+	 "A fuller photo mode with camera tools is an idea, not a feature yet."},
+	{L"Godot and commander ideas", "The separate Godot rebuild is in development. Commander-style battlefield control is a "
+	 "long-term idea, not a feature of this game."}
+};
+#define CE_NUM_PLANS int(sizeof(kCePlans) / sizeof(kCePlans[0]))
 
 bool	PortCeBonusStart(int level);		// ce_bonus.cpp
 
@@ -621,10 +672,17 @@ public:
 		list->AddItem(new (MEMTYPE_MENUITEM) CCeMenuItem(L"Report a problem", CEA_REPORT));
 		list->AddItem(new (MEMTYPE_MENUITEM) CCeRecordSwitch());
 		list->AddItem(new (MEMTYPE_MENUITEM) CCeMenuItem(L"Updates", CEA_UPDATES));
+		list->AddItem(new (MEMTYPE_MENUITEM) CCeMenuItem(L"Coming soon / ideas", CEA_PLANS));
 		list->AddItem(new (MEMTYPE_MENUITEM) CCeMenuItem(L"Bonus: Aquila Prototype", CEA_BONUS));
 		list->AddItem(new (MEMTYPE_MENUITEM) CCeMenuItem(L"Bonus co-op: Defence A", CEA_COOP_A));
 		list->AddItem(new (MEMTYPE_MENUITEM) CCeMenuItem(L"Bonus co-op: Defence B", CEA_COOP_B));
 		list->AddItem(new (MEMTYPE_MENUITEM) CCeMenuItem(L"Special Thanks", CEA_THANKS));
+		list->AddItem(new (MEMTYPE_MENUITEM) CMenuItem((DWORD)GI_BACK, 3));
+		mLists.Append(list);
+		static WCHAR plansTitle[] = L"Coming Soon / Ideas";
+		list = new (MEMTYPE_MENUITEM) CMenuOptionsList(plansTitle, 320.f, 300.f, FALSE, 0xb0000000);
+		for (int i = 0; i < CE_NUM_PLANS; i++)
+			list->AddItem(new (MEMTYPE_MENUITEM) CCeMenuItem(kCePlans[i].mLabel, CEA_PLAN_FIRST + i));
 		list->AddItem(new (MEMTYPE_MENUITEM) CMenuItem((DWORD)GI_BACK, 3));
 		mLists.Append(list);
 	}
@@ -645,7 +703,7 @@ public:
 			Choose(list->mItems.At(list->mSelected));
 			break;
 		case BUTTON_FRONTEND_MENU_BACK:
-			Leave();
+			Back();
 			break;
 		}
 	}
@@ -656,17 +714,41 @@ public:
 		CFrontEnd::PlaySound(FES_BACK);
 	}
 
+	void	Back()
+	{
+		if (mPage == 0)
+			Leave();
+		else
+		{
+			mPage = 0;
+			CFrontEnd::PlaySound(FES_BACK);
+		}
+	}
+
+	WCHAR	*PageTitle()
+	{
+		static WCHAR mainTitle[] = L"Onslaught CE", plansTitle[] = L"Coming Soon / Ideas";
+		return mPage == 1 ? plansTitle : mainTitle;
+	}
+
 	void	Choose(CMenuItem *item)
 	{
 		if (item->mText == GI_BACK)
 		{
-			Leave();
+			Back();
 			return;
 		}
 		if ((item->mId != CCeMenuItem::ID) || !item->IsEnabled())
 			return;
 		char text[1536];
-		switch (((CCeMenuItem *)item)->mAction)
+		const int action = ((CCeMenuItem *)item)->mAction;
+		if ((action >= CEA_PLAN_FIRST) && (action < CEA_PLAN_FIRST + CE_NUM_PLANS))
+		{
+			ShowMessage(kCePlans[action - CEA_PLAN_FIRST].mText);
+			CFrontEnd::PlaySound(FES_SELECT);
+			return;
+		}
+		switch (action)
 		{
 		case CEA_ABOUT:
 		{
@@ -698,6 +780,10 @@ public:
 		}
 		case CEA_THANKS:
 			ShowMessage(kSpecialThanks);
+			break;
+		case CEA_PLANS:
+			mPage = 1;
+			mLists.At(mPage)->Reset();
 			break;
 		case CEA_BONUS:
 		case CEA_COOP_A:
@@ -801,7 +887,7 @@ public:
 		// the message box is translucent: the list is not drawn behind it
 		if (mMenu && !FEMESSBOX.BeingDisplayed())
 			mMenu->Draw();
-		FRONTEND.DrawTitleBar(title, transition, dest);
+		FRONTEND.DrawTitleBar(mMenu ? mMenu->PageTitle() : title, transition, dest);
 		FRONTEND.GetCommonPage()->RenderHelpText(1, transition);
 		FRONTEND.GetCommonPage()->RenderSmallBEALogo(RangeTransition(transition, 0.75f, 1.f));
 	}

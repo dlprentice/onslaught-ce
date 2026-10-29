@@ -107,11 +107,19 @@ static void ce_ini_path(char *out, size_t n)
 
 // Open only an ordinary settings file under a checked directory. In particular, a FIFO must not block startup, and
 // neither a final link nor a linked parent may redirect reads. Keep Windows parent handles until the read is finished.
-static FILE *ce_ini_open_regular(CeSettingsDir *dir)
+// *missing: the file is not there, or the folder it would be in does not exist yet (the first write makes it); a folder
+// that is refused for any other reason (a link, a file in the way, no access) is a failed read, not a missing file.
+static FILE *ce_ini_open_regular(CeSettingsDir *dir, int *missing = NULL)
 {
+	if (missing) *missing = 0;
 	char user[4096];
 	ce_user_dir(user, sizeof(user));
-	if (!ce_settings_dir_open(user, 0, dir)) return NULL;
+	int absent = 0;
+	if (!ce_settings_dir_open_ex(user, 0, dir, &absent))
+	{
+		if (missing && absent) *missing = 1;
+		return NULL;
+	}
 	int input = -1;
 #ifdef _WIN32
 	char path[4500];
@@ -119,6 +127,8 @@ static FILE *ce_ini_open_regular(CeSettingsDir *dir)
 	HANDLE in = path_len >= 0 && (size_t)path_len < sizeof(path) ?
 		CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, NULL) :
 		INVALID_HANDLE_VALUE;
+	if (missing && in == INVALID_HANDLE_VALUE && path_len >= 0 && (size_t)path_len < sizeof(path) &&
+		GetLastError() == ERROR_FILE_NOT_FOUND) *missing = 1;
 	if (in != INVALID_HANDLE_VALUE)
 	{
 		BY_HANDLE_FILE_INFORMATION info;
@@ -131,6 +141,7 @@ static FILE *ce_ini_open_regular(CeSettingsDir *dir)
 	if (!f && input >= 0) _close(input);
 #else
 	input = openat(dir->fd, "ce.ini", O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC);
+	if (missing && input < 0 && errno == ENOENT) *missing = 1;
 	if (input >= 0)
 	{
 		struct stat st;
@@ -143,47 +154,120 @@ static FILE *ce_ini_open_regular(CeSettingsDir *dir)
 	return f;
 }
 
-static char *ce_ini_read()
+// Read the entire bounded file, or fail without returning a partial prefix. A missing file, or a user folder that does
+// not exist yet, is a successful empty read; an inaccessible or refused directory or an invalid/failed file is not. Linux also
+// checks the open and named file's identity, size and timestamps around the read. These checks cannot prevent a
+// same-user change and reversal between observations, and are not a cross-process transaction.
+static char *ce_ini_read(int *ok = NULL, size_t *length = NULL)
 {
+	if (ok) *ok = 0;
+	if (length) *length = 0;
 	CeSettingsDir dir;
-	FILE *f = ce_ini_open_regular(&dir);
-	if (!f) return NULL;
-	char *t = NULL;
-	size_t len = 0, cap = 0, got;
+	int missing = 0;
+	FILE *f = ce_ini_open_regular(&dir, &missing);
+	if (!f && !missing) return NULL;
+	char *t = (char *)malloc(1);
+	if (!t) { if (f) { fclose(f); ce_settings_dir_close(&dir); } return NULL; }
+	t[0] = 0;
+	if (!f) { if (ok) *ok = 1; return t; }
+	size_t len = 0, cap = 1, got;
+	bool bad = false;
+#ifndef _WIN32
+	struct stat before, after, named;
+	if (fstat(fileno(f), &before) != 0 || before.st_size < 0 || before.st_size > (1u << 20)) bad = true;
+#endif
 	char buf[4096];
-	while ((got = fread(buf, 1, sizeof(buf), f)) > 0 && len < (1u << 20))
+	while (!bad && (got = fread(buf, 1, sizeof(buf), f)) > 0)
 	{
+		if (got > (1u << 20) - len) { bad = true; break; }
 		if (len + got + 1 > cap)
 		{
-			cap = (len + got + 1) * 2;
-			char *m = (char *)realloc(t, cap);
+			size_t next = cap * 2;
+			if (next < len + got + 1) next = len + got + 1;
+			if (next > (1u << 20) + 1) next = (1u << 20) + 1;
+			char *m = (char *)realloc(t, next);
 			if (!m)
+			{
+				bad = true;
 				break;
+			}
 			t = m;
+			cap = next;
 		}
 		memcpy(t + len, buf, got);
 		len += got;
 		t[len] = 0;
 	}
-	fclose(f);
+	if (ferror(f) || !feof(f)) bad = true;
+#ifndef _WIN32
+	auto same = [](const struct stat &a, const struct stat &b) {
+		return a.st_dev == b.st_dev && a.st_ino == b.st_ino && a.st_mode == b.st_mode &&
+			a.st_nlink == b.st_nlink && a.st_size == b.st_size &&
+			a.st_mtim.tv_sec == b.st_mtim.tv_sec && a.st_mtim.tv_nsec == b.st_mtim.tv_nsec &&
+			a.st_ctim.tv_sec == b.st_ctim.tv_sec && a.st_ctim.tv_nsec == b.st_ctim.tv_nsec;
+	};
+	if (!bad && (fstat(fileno(f), &after) != 0 || fstatat(dir.fd, "ce.ini", &named, AT_SYMLINK_NOFOLLOW) != 0 ||
+		!same(before, after) || !same(after, named) || (size_t)after.st_size != len)) bad = true;
+#endif
+	if (fclose(f) != 0) bad = true;
 	ce_settings_dir_close(&dir);
+	if (bad) { free(t); return NULL; }
+	if (ok) *ok = 1;
+	if (length) *length = len;
 	return t;
 }
 
-// The value of key in ce.ini as an integer, or def when it is missing.
-extern "C" int CE_SettingGet(const char *key, int def)
+// Preserve the existing first-key and integer parsing behavior for a complete read.
+static int ce_ini_value(const char *t, const char *key, int def)
 {
-	char *t = ce_ini_read();
-	if (!t)
-		return def;
 	size_t k = strlen(key);
 	int v = def;
-	for (char *l = t; l && *l; l = strchr(l, '\n') ? strchr(l, '\n') + 1 : NULL)
+	for (const char *l = t; l && *l; l = strchr(l, '\n') ? strchr(l, '\n') + 1 : NULL)
 		if (!strncmp(l, key, k) && l[k] == '=')
 		{
 			v = atoi(l + k + 1);
 			break;
 		}
+	return v;
+}
+
+// Cheat settings use the same first-key rule, but unrelated lines may contain NULs that the writer preserves.
+// The entire read is NUL-terminated; the first matching value still uses the previous atoi behavior.
+static int ce_ini_value_span(const char *t, size_t len, const char *key, int def)
+{
+	size_t k = strlen(key);
+	for (size_t at = 0; at < len;)
+	{
+		const char *line = t + at;
+		const char *nl = (const char *)memchr(line, '\n', len - at);
+		size_t n = nl ? (size_t)(nl - line) : len - at;
+		if (n > k && !memcmp(line, key, k) && line[k] == '=') return atoi(line + k + 1);
+		at += n + (nl ? 1 : 0);
+	}
+	return def;
+}
+
+// A checked read for settings whose callers must distinguish a missing key from an unreadable file. Unlike the
+// legacy integer getter, it scans complete lines after unrelated embedded NULs, as the settings writer does.
+extern "C" int CE_TrySettingGet(const char *key, int def, int *out)
+{
+	if (!key || !*key || !out) return 0;
+	int ok = 0;
+	size_t len = 0;
+	char *t = ce_ini_read(&ok, &len);
+	if (!ok) return 0;
+	int v = ce_ini_value_span(t, len, key, def);
+	free(t);
+	*out = v;
+	return 1;
+}
+
+// The value of key in ce.ini as an integer, or def when it is missing or the file could not be read whole.
+extern "C" int CE_SettingGet(const char *key, int def)
+{
+	char *t = ce_ini_read();
+	if (!t) return def;
+	int v = ce_ini_value(t, key, def);
 	free(t);
 	return v;
 }
@@ -349,6 +433,78 @@ extern "C" int CE_SettingSet(const char *key, int value)
 }
 
 static int sCheats[6] = {-1, -1, -1, -1, -1, -1};	// -1 until read from ce.ini
+static bool sCheatReadFailed = false;
+static Uint64 sCheatReadFailedAt = 0;
+static bool sMaladimNeedsRestart = false;
+enum { kMaladimCheat = 3 };
+
+// The explicit overlay-forced capture mode historically cached failed reads as off; do not introduce a later
+// automatic settings change into that mode. It is not the ordinary faithful replay path or a parity guarantee.
+static bool ce_forced_capture()
+{
+	const char *force = getenv("BEA_PORT_CE_LAYER");
+	if (!force || force[0] != '1') return false;
+	const char *names[] = {"BEA_PORT_CLOCK", "BEA_PORT_TAPE", "BEA_PORT_PROBES", "BEA_PORT_RECORD"};
+	for (const char *name : names) { const char *value = getenv(name); if (value && *value) return true; }
+	return false;
+}
+
+// A failed read is not a valid off snapshot. Retry automatic reads at most once per second while the file remains
+// unavailable (the menu queries each row every frame); an explicit player action always gets an immediate retry.
+// In an explicitly forced CE capture, retain the previous one-time fallback for automatic queries instead.
+static bool ce_cheats_init(bool action)
+{
+	if (sCheats[0] >= 0) return true;
+	bool capture = ce_forced_capture();
+	if (!action && sCheatReadFailed && (capture || SDL_GetTicks() - sCheatReadFailedAt < 1000)) return false;
+	int ok = 0;
+	size_t len = 0;
+	char *t = ce_ini_read(&ok, &len);
+	if (!ok)
+	{
+		sCheatReadFailed = true;
+		// If a career loaded while this read failed, turning Maladim on later would let a save overwrite an
+		// unrestored god_mode. Keep that one switch unavailable for this process; other switches may recover.
+		sMaladimNeedsRestart = true;
+		if (!capture) sCheatReadFailedAt = SDL_GetTicks();
+		return false;
+	}
+	for (int i = 0; i < 6; i++) sCheats[i] = ce_ini_value_span(t, len, kCheatKeys[i], 0) ? 1 : 0;
+	free(t);
+	sCheatReadFailed = false;
+	return true;
+}
+
+// The Cheats page uses this to distinguish an unreadable setting from a real off value.
+extern "C" int CE_CheatReady(int n)
+{
+#ifdef CE_VERSION
+	return n >= 0 && n < 6 && PortCeLayer() && ce_cheats_init(false) &&
+		!(n == kMaladimCheat && sMaladimNeedsRestart) ? 1 : 0;
+#else
+	(void)n;
+	return 0;
+#endif
+}
+
+extern "C" int CE_CheatRestartRequired(int n)
+{
+#ifdef CE_VERSION
+	return n == kMaladimCheat && sMaladimNeedsRestart ? 1 : 0;
+#else
+	(void)n;
+	return 0;
+#endif
+}
+
+// A failed god_mode read during career load leaves the runtime flags unrestored. Do not permit a later cheat-only
+// save to overwrite that value in this process; the player can restart after the settings file is readable.
+extern "C" void CE_MaladimRequireRestart(void)
+{
+#ifdef CE_VERSION
+	sMaladimNeedsRestart = true;
+#endif
+}
 
 // Whether the Cheats page has cheat n (IsCheatActive's number, 0..5) on: always 0 where the CE layer is off, so replays,
 // recordings and the harness see only the career's name, as retail does.
@@ -357,10 +513,7 @@ extern "C" int CE_CheatOn(int n)
 #ifdef CE_VERSION
 	if (n < 0 || n >= 6 || !PortCeLayer())
 		return 0;
-	if (sCheats[n] < 0)
-		for (int i = 0; i < 6; i++)
-			sCheats[i] = CE_SettingGet(kCheatKeys[i], 0) ? 1 : 0;
-	return sCheats[n];
+	return ce_cheats_init(false) && !(n == kMaladimCheat && sMaladimNeedsRestart) ? sCheats[n] : 0;
 #else
 	return 0;
 #endif
@@ -372,7 +525,9 @@ extern "C" int CE_CheatSet(int n, int on)
 #ifdef CE_VERSION
 	if (n < 0 || n >= 6 || !PortCeLayer())
 		return 0;
-	CE_CheatOn(n);
+	if (n == kMaladimCheat && sMaladimNeedsRestart) return 0;
+	if (!ce_cheats_init(true)) return 0;
+	if (n == kMaladimCheat && sMaladimNeedsRestart) return 0;
 	if (!CE_SettingSet(kCheatKeys[n], on ? 1 : 0))
 		return 0;
 	sCheats[n] = on ? 1 : 0;

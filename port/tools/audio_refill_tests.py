@@ -48,7 +48,10 @@ def main():
         folder.mkdir()
         shutil.copyfile(ROOT / "src/PCMusicStream.cpp", folder / "PCMusicStream.cpp")
         for patch in sorted((ROOT / "port/patches").glob("*.patch")):
-            if label == "baseline" and patch.name == "0073-audio-refill-diagnostics.patch":
+            # The later publication patch is based on the diagnostics patch and is absent from this baseline.
+            if label == "baseline" and patch.name in ("0073-audio-refill-diagnostics.patch",
+                                                      "0131-ce-music-refill-publication.patch",
+                                                      "0132-ce-music-refill-order-diagnostics.patch"):
                 continue
             sections = [s for s in re.split(r"(?=^--- a/)", patch.read_text(), flags=re.M)
                         if s.startswith("--- a/PCMusicStream.cpp\n")]
@@ -108,7 +111,8 @@ def main():
                     "stdout": r.stdout, "stderr": r.stderr})
                 (folder / f"{binary.name}-{gate}-{mode}.log").write_text(r.stdout + r.stderr)
                 print(label, binary.name, gate, mode, "PASS" if passed else "FAIL", flush=True)
-    # The diagnostic changes observation only: playback bytes/cursor progression and recovery agree with baseline.
+    # Serial scheduling: the diagnostic and staged publisher preserve playback/cursor progression and recovery.
+    # This test does not cover concurrent access to a half while the decoder is filling it.
     keys = ("frames", "mismatched_frames", "first_bad_frame", "refill_dispatches", "voices", "reader_frames")
     references = {mode: json.loads(next(c["stdout"] for c in receipt["cases"]
         if c["variant"] == "baseline" and c["public"] and c["gate"] == "ordinary" and c["mode"] == mode))

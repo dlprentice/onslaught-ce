@@ -140,6 +140,7 @@ struct CDXTexture { int mHeight = 480, mWidth = 640; } *gFMVSplash;
 int FMV_SKIP_FRAMES = 0x7fffffff;
 struct CDXSpriteRenderer { template<class... Args> static void DrawColouredSprite(Args...) {} };
 bool PortWideActive() { return false; } void PortWideViewport(int) {}
+void PortCeGamepadBeginCycle() {}
 float PortUiLeft() { return 0; } float PortUiTop() { return 0; } float PortUiScale() { return 1; }
 struct CMonitor { static void Shutdown() {} };
 // A bounded synthetic successful file-open boundary, never a game path or retail input.

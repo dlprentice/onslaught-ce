@@ -18,14 +18,29 @@ import re
 import resource
 import shlex
 import subprocess
+import sys
 import tempfile
 
 import inactive_close_tests as shell_tests
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "port"))
+import build  # noqa: E402
 FILES = (*shell_tests.FILES, "DXFMV.cpp", "DXFrontEndVideo.cpp", "fmv.cpp", "game.cpp")
 CORRECTION = "0060-consume-ce-quit-in-film-and-credits.patch"
 CASES = ("normal", "skip", "active-close", "minimized-close", "lost-close", "already-close", "close-next-call")
+
+
+def mirror_text(root, name):
+    """root's src/NAME as the port's mirror holds it before any patch: include names and their case normalised as build.py does.
+    The patches' context lines are written against that text ("common.h", not the original's "Common.h")."""
+    build.SYSTEM_NAMES.update(build.system_header_names())
+    rows = [l.split(maxsplit=1) for l in (ROOT / "config/game-data.sha256").read_text().splitlines() if l.strip()]
+    targets = ([build.MIRROR_ROOT / f.relative_to(ROOT) for f in build.tracked_sources()] +
+               [build.MIRROR / r for _, r in rows] + [build.MIRROR / "data/NVShaderFragments.inc"])
+    raw = (root / "src" / name).read_bytes().decode("latin-1")
+    return build.normalise(raw, build.MIRROR_ROOT / "src", build.CaseIndex(targets),
+                           [build.MIRROR, build.MIRROR / "MissionScript"]).encode("latin-1")
 
 
 def sha(data):
@@ -74,7 +89,7 @@ def main():
         source_dir = out / "source"
         source_dir.mkdir()
         for name in FILES:
-            (source_dir / name).write_bytes((args.source_root / "src" / name).read_bytes())
+            (source_dir / name).write_bytes(mirror_text(args.source_root, name))
         before = None
         for patch in sorted((args.source_root / "port/patches").glob("*.patch")):
             if patch.name == CORRECTION:

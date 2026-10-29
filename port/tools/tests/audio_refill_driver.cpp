@@ -13,6 +13,13 @@
 #include <vector>
 #include <string>
 #include <cstdarg>
+#ifdef AUDIO_REFILL_OVERLAP
+static void FixturePublishBoundary();
+#endif
+#ifdef AUDIO_REFILL_ORDER_TEST
+static unsigned fixtureSnapshotCalls, fixtureOrderCalls;
+static void FixtureWaitFailedBoundary();
+#endif
 #include MIXER_SOURCE
 
 struct SDL_Mutex { std::recursive_mutex value; };
@@ -26,6 +33,11 @@ static bool virtualMode, resumeFails, initFails, openFails;
 // original evolving half-buffer pattern and never inspect real audio data.
 static bool namedMusicReads;
 static bool diagnosticsEnabled=true;static unsigned clockReads,refillLines,riskLines;static unsigned firstRiskSeq;
+#ifdef AUDIO_REFILL_ORDER_TEST
+static unsigned fixtureOrderLines;
+static std::vector<std::string> fixtureOrderMessages;
+static bool fixtureFailNextRead, fixtureWaitFailOnce;
+#endif
 static unsigned opens, destroys, audioInits, audioQuits, checks, notifications, submissions;
 static std::vector<Sint16> submitted;
 static int putLimit;
@@ -37,6 +49,17 @@ static std::vector<std::string> mediaLines;
 static void (*mediaQueueHook)() = nullptr;
 struct MixLimit {};
 static thread_local int role, lockDepth;
+#ifdef AUDIO_REFILL_OVERLAP
+static std::recursive_mutex fixtureStreamGuard;
+static thread_local unsigned fixtureGuardDepth;
+static std::atomic<unsigned> fixtureOrderViolations{0};
+static std::atomic<bool> fixtureShutdownAttempted{false};
+static std::atomic<bool> fixtureManualWorkerDone{true};
+static std::atomic<bool> fixtureCallbackLockAttempted{false};
+static bool fixtureExpectStreamGuard;
+static int fixtureFramesRemaining = -1;
+static unsigned fixtureReaderCloses;
+#endif
 static std::mutex gateMutex;
 static std::condition_variable gateCv;
 static bool holdBeforeLock, atLock, releaseLock;
@@ -65,6 +88,10 @@ static void ReleaseLockBoundary()
 extern "C" SDL_Mutex *SDLCALL SDL_CreateMutex() { return new SDL_Mutex; }
 extern "C" void SDLCALL SDL_LockMutex(SDL_Mutex *mutex)
 {
+#ifdef AUDIO_REFILL_OVERLAP
+	if (role == 5 && fixtureExpectStreamGuard && mutex == gMixer.lock && fixtureGuardDepth == 0) ++fixtureOrderViolations;
+	if (role == 4 && mutex == gMixer.lock) fixtureCallbackLockAttempted = true;
+#endif
 	if (role == 3)
 	{
 		std::lock_guard<std::mutex> lock(gateMutex);
@@ -175,7 +202,13 @@ static int gEnabled=-1;
 #include "admission.inc"
 bool PortDevLog() { return false; }
 void PortSessionLog(PortSessionCategory category, bool error, const char *format, ...) {
+#ifdef AUDIO_REFILL_ORDER_TEST
+ if(category==PORT_SESSION_MUSIC&&!strncmp(format,"refill order anomaly",20))++fixtureOrderCalls;
+#endif
  if(!diagnosticsEnabled)return;char line[1024];va_list args;va_start(args,format);vsnprintf(line,sizeof line,format,args);va_end(args);
+#ifdef AUDIO_REFILL_ORDER_TEST
+ if(category==PORT_SESSION_MUSIC&&!strncmp(line,"refill order anomaly",20)){++fixtureOrderLines;fixtureOrderMessages.emplace_back(line);}
+#endif
  if(category==PORT_SESSION_AUDIO&&!strncmp(line,"media ",6)){mediaLines.emplace_back(line);if(mediaInCallback)++mediaCallbackLogCalls;}
  if(category==PORT_SESSION_MUSIC&&!strncmp(line,"refill seq=",11)) {++refillLines;if(error){++riskLines;if(!firstRiskSeq)sscanf(line,"refill seq=%u",&firstRiskSeq);}fprintf(stderr,"%s\n",line);}
 }
@@ -192,28 +225,80 @@ void PortSessionPulse(unsigned) {}
 #define _tcsicmp strcasecmp
 #define _tcsncpy strncpy
 #define ZeroMemory(p,n) memset(p,0,n)
-struct EventBoundary {bool signaled=false;};static std::vector<EventBoundary*> eventOwners;
+#ifdef AUDIO_REFILL_OVERLAP
+struct EventBoundary { std::atomic<bool> signaled; explicit EventBoundary(bool state) : signaled(state) {} };
+#else
+struct EventBoundary {bool signaled=false;};
+#endif
+static std::vector<EventBoundary*> eventOwners;
 static BOOL SignalEvent(HANDLE h){((EventBoundary*)h)->signaled=true;return TRUE;}
 extern "C" HANDLE WINAPI CreateEventA(LPSECURITY_ATTRIBUTES,BOOL,BOOL state,LPCSTR){auto e=new EventBoundary{bool(state)};eventOwners.push_back(e);return (HANDLE)e;}
 extern "C" BOOL WINAPI ResetEvent(HANDLE h){for(auto e:eventOwners)if((HANDLE)e==h){e->signaled=false;return TRUE;}return FALSE;}
-extern "C" DWORD WINAPI WaitForMultipleObjects(DWORD count,const HANDLE *events,BOOL,DWORD){for(DWORD i=0;i<count;++i)if(((EventBoundary*)events[i])->signaled){((EventBoundary*)events[i])->signaled=false;return i;}return WAIT_TIMEOUT;}
+extern "C" DWORD WINAPI WaitForMultipleObjects(DWORD count,const HANDLE *events,BOOL,DWORD){
+#ifdef AUDIO_REFILL_ORDER_TEST
+ if(fixtureWaitFailOnce){fixtureWaitFailOnce=false;return WAIT_FAILED;}
+#endif
+ for(DWORD i=0;i<count;++i)if(((EventBoundary*)events[i])->signaled){((EventBoundary*)events[i])->signaled=false;return i;}return WAIT_TIMEOUT;}
 extern "C" HANDLE WINAPI CreateThread(LPSECURITY_ATTRIBUTES,SIZE_T,LPTHREAD_START_ROUTINE,LPVOID,DWORD,LPDWORD){return (HANDLE)1;}
-extern "C" BOOL WINAPI GetExitCodeThread(HANDLE,LPDWORD code){*code=0;return TRUE;}
+extern "C" BOOL WINAPI GetExitCodeThread(HANDLE,LPDWORD code){
+#ifdef AUDIO_REFILL_OVERLAP
+ *code=fixtureManualWorkerDone ? 0 : STILL_ACTIVE;
+#else
+ *code=0;
+#endif
+ return TRUE;}
 extern "C" BOOL WINAPI CloseHandle(HANDLE){return TRUE;}
-extern "C" void WINAPI Sleep(DWORD){}
+extern "C" void WINAPI Sleep(DWORD delay){
+#ifdef AUDIO_REFILL_ORDER_TEST
+ if(delay==100)FixtureWaitFailedBoundary();
+#endif
+#ifdef AUDIO_REFILL_OVERLAP
+ std::this_thread::yield();
+#endif
+}
 extern "C" DWORD WINAPI GetLastError(){return 0;}
 extern "C" void WINAPI InitializeCriticalSection(LPCRITICAL_SECTION){}
 extern "C" void WINAPI DeleteCriticalSection(LPCRITICAL_SECTION){}
+#ifdef AUDIO_REFILL_OVERLAP
+extern "C" void WINAPI EnterCriticalSection(LPCRITICAL_SECTION){if(lockDepth)++fixtureOrderViolations;if(role==6)fixtureShutdownAttempted=true;fixtureStreamGuard.lock();++fixtureGuardDepth;}
+extern "C" void WINAPI LeaveCriticalSection(LPCRITICAL_SECTION){--fixtureGuardDepth;fixtureStreamGuard.unlock();}
+#else
 extern "C" void WINAPI EnterCriticalSection(LPCRITICAL_SECTION){}
 extern "C" void WINAPI LeaveCriticalSection(LPCRITICAL_SECTION){}
+#endif
 #include "ce-admission.inc"
 static IDirectSound8 *device;
 struct SoundBoundary {IDirectSound8 *GetDirectSound(){return device;}} SOUND;
+#ifdef AUDIO_REFILL_OVERLAP
+static void RefillWriteBoundary(unsigned index);
+#endif
 struct CBaseWaveFileRead {
  unsigned frame=0;short marker=1000;
- virtual ~CBaseWaveFileRead()=default;void Close(){}void Open(char*name){frame=0;if(namedMusicReads)marker=strstr(name,"a.ogg")?2000:strstr(name,"b.ogg")?3000:1000;}bool HasFormat(){return true;}
+ virtual ~CBaseWaveFileRead()=default;void Close(){
+#ifdef AUDIO_REFILL_OVERLAP
+ ++fixtureReaderCloses;
+#endif
+ }void Open(char*name){frame=0;if(namedMusicReads)marker=strstr(name,"a.ogg")?2000:strstr(name,"b.ogg")?3000:1000;}bool HasFormat(){return true;}
  DWORD GetChannels(){return 2;}DWORD GetSampleRate(){return 44100;}
- HRESULT Read(UINT size,BYTE *out,UINT *got){for(unsigned i=0;i<size/4;++i){short v=namedMusicReads?marker:1000+1000*(frame/65536);++frame;memcpy(out+i*4,&v,2);memcpy(out+i*4+2,&v,2);}*got=size;return 0;}
+ HRESULT Read(UINT size,BYTE *out,UINT *got){
+#ifdef AUDIO_REFILL_ORDER_TEST
+ if(fixtureFailNextRead){fixtureFailNextRead=false;*got=0;return E_FAIL;}
+#endif
+ unsigned frames=size/4;
+#ifdef AUDIO_REFILL_OVERLAP
+ if(fixtureFramesRemaining>=0){frames=std::min(frames,(unsigned)fixtureFramesRemaining);fixtureFramesRemaining-=frames;}
+#endif
+ for(unsigned i=0;i<frames;++i){short v=namedMusicReads?marker:1000+1000*(frame/65536);++frame;memcpy(out+i*4,&v,2);
+#ifdef AUDIO_REFILL_OVERLAP
+ RefillWriteBoundary(i);
+#endif
+ memcpy(out+i*4+2,&v,2);}
+#ifdef AUDIO_REFILL_OVERLAP
+ *got=frames*4;
+#else
+ *got=size;
+#endif
+ return 0;}
 };
 using COggFileRead=CBaseWaveFileRead;
 #include "music.inc"

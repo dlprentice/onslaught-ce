@@ -32,6 +32,12 @@ MUTANTS = (
      "if (!sCycleReady)", "if (true)"),
     ("duplicate-map-treated-as-simple", "pad-edge-duplicate-binding", "port/platform/common/dinput.cpp",
      "if (seen & bit) d->ceSampleOnly |= bit;", "if (false) d->ceSampleOnly |= bit;"),
+    ("unplug-resets-other-player", "pad-edge-hotplug-two", "port/platform/common/dinput.cpp",
+     "if (d->joystickId != v.device) continue;",
+     "if (d->joystickId != v.device && v.type != SDL_EVENT_JOYSTICK_REMOVED) continue;"),
+    ("held-reconnect-invents-press", "pad-edge-hotplug-two", "port/platform/common/dinput.cpp",
+     "if (!d->ceButtons.active)\n\t{\n\t\td->ceButtons.Arm(observed);\n\t\t*out = observed;\n\t\treturn 0;",
+     "if (!d->ceButtons.active)\n\t{\n\t\td->ceButtons.Arm(observed);\n\t\t*out = observed;\n\t\treturn 1;"),
     ("fresh-sample-omitted", "pad-edge-no-poll-held", "port/platform/common/dinput.cpp",
      "bool sampled = d->acquired && SUCCEEDED(d->GetDeviceState(sizeof(state), &state));", "bool sampled = d->acquired;"),
     ("overflow-does-not-rebase-all", "pad-edge-cross-overflow", "port/platform/common/dinput.cpp",
@@ -44,7 +50,7 @@ MUTANTS = (
 class OrderedButtonsTests(unittest.TestCase):
     def test_real_adapter_and_callers(self):
         cases = ("pad-quick-tap", "pad-edge-order", "pad-edge-chord", "pad-edge-chord-pulses", "pad-edge-overflow", "pad-edge-event-overflow", "pad-edge-overflow-focus", "pad-edge-focus",
-                 "pad-edge-stale-focus", "pad-edge-hotplug", "pad-edge-two", "pad-edge-cross-binding", "pad-edge-two-consumers",
+                 "pad-edge-stale-focus", "pad-edge-hotplug", "pad-edge-hotplug-two", "pad-edge-two", "pad-edge-cross-binding", "pad-edge-two-consumers",
                  "pad-edge-repeat-consumer", "pad-edge-bonus-two", "pad-edge-no-poll-held", "pad-edge-duplicate-binding",
                  "pad-edge-no-watch", "pad-edge-missing-focus-event", "pad-edge-cross-overflow", "pad-edge-trigger", "pad-edge-multiplayer",
                  "pad-edge-tape", "pad-edge-record", "pad-edge-clock", "pad-edge-probes")

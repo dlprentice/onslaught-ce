@@ -11,10 +11,13 @@ import re
 import resource
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "port"))
+import build  # noqa: E402
 TESTS = ROOT / "port/tools/tests"
 DEBRIEF = ROOT / "port/game/ce_debrief.cpp"
 PATCH = ROOT / "port/patches/0104-ce-debrief-stats.patch"
@@ -27,9 +30,21 @@ def no_core():
     resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
 
 
+def mirror_text(name):
+    """src/NAME as the port's mirror holds it before any patch: include names and their case normalised as build.py does.
+    The patches' context lines are written against that text ("common.h", not the original's "Common.h")."""
+    build.SYSTEM_NAMES.update(build.system_header_names())
+    rows = [l.split(maxsplit=1) for l in (ROOT / "config/game-data.sha256").read_text().splitlines() if l.strip()]
+    targets = ([build.MIRROR_ROOT / f.relative_to(ROOT) for f in build.tracked_sources()] +
+               [build.MIRROR / r for _, r in rows] + [build.MIRROR / "data/NVShaderFragments.inc"])
+    raw = (ROOT / "src" / name).read_bytes().decode("latin-1")
+    return build.normalise(raw, build.MIRROR_ROOT / "src", build.CaseIndex(targets),
+                           [build.MIRROR, build.MIRROR / "MissionScript"]).encode("latin-1")
+
+
 def patched_game(out, patch_text=None):
-    """src/game.cpp with every port patch's game.cpp section applied in the build's order, at fuzz 0."""
-    (out / "game.cpp").write_bytes((ROOT / "src/game.cpp").read_bytes())
+    """The mirror's game.cpp with every port patch's game.cpp section applied in the build's order, at fuzz 0."""
+    (out / "game.cpp").write_bytes(mirror_text("game.cpp"))
     for patch in sorted((ROOT / "port/patches").glob("*.patch")):
         text = patch_text if patch == PATCH and patch_text is not None else patch.read_text(encoding="latin1")
         for m in re.finditer(r"(?ms)^--- a/game\.cpp\n\+\+\+ b/game\.cpp\n.*?(?=^--- a/|\Z)", text):
