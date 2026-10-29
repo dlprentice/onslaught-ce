@@ -4,6 +4,10 @@
 // back, and then rename(2) puts them over the target in one step; the folder is flushed last. The previous file is never
 // opened for writing, so no failure or interruption can leave it short or empty. A crash between the write and the rename
 // leaves one hidden ".ce-write-" file, which is never listed as a career (careers are the *.bes entries).
+// Two saves of one career at the same moment: the later rename wins, and a save that meets the other's rename while it checks the
+// target waits for it (LOOKS below). That rename keeps the old file at no link for as long as it takes: about a microsecond on tmpfs,
+// 40 to 400 microseconds on btrfs, and longer when the other process is descheduled inside it. A save that still finds the name
+// without a link after all its looks (25.55 ms) is refused, with the career intact and nothing lost, as before this was added.
 #include "handles.h"
 #include "../common/portlog.h"
 #include "../common/save_replace.h"
@@ -17,6 +21,12 @@
 
 namespace
 {
+// How often the target's name is looked up when the file it leads to has just lost its last name (another save's rename), and the
+// wait before the second look, which doubles before each later one: 50, 100 ... 12,800 microseconds, 25.55 ms in all and none after
+// the last look. Looking again at once does not work: 8 looks cost about 5 microseconds, and on btrfs the other rename takes longer.
+const int LOOKS = 10;
+const useconds_t FIRST_WAIT_US = 50;
+
 const char *Reason(int step)
 {
 	switch (step)
@@ -76,8 +86,20 @@ int PortReplaceUserFile(const char *game_path, const void *data, unsigned size, 
 
 	// An existing target must be a plain file with one name: a link would be replaced instead of written through, a
 	// second hard link would keep the old bytes alive, and a special file or folder is not a career.
+	// Another save of this career can rename over the name between our lookup and our reading the attributes: the file we
+	// found has then lost its only name (st_nlink 0), and the name leads to it until that rename returns, after which it holds
+	// that save's complete file. Wait for the rename and look the name up again instead of refusing; a file that still shows no
+	// link after all the looks is not a career we can replace. Only this path sleeps: an ordinary save never waits.
 	struct stat target;
-	bool exists = fstatat(parent, leaf, &target, AT_SYMLINK_NOFOLLOW) == 0;
+	bool exists = false;
+	for (int look = 0; look < LOOKS; look++)
+	{
+		exists = fstatat(parent, leaf, &target, AT_SYMLINK_NOFOLLOW) == 0;
+		if (!exists || target.st_nlink != 0)
+			break;
+		if (look + 1 < LOOKS)
+			usleep(FIRST_WAIT_US << look);
+	}
 	if (exists ? (!S_ISREG(target.st_mode) || target.st_nlink != 1) : errno != ENOENT)
 	{
 		int error = exists ? EACCES : errno;

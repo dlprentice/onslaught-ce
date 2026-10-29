@@ -73,5 +73,9 @@ int PortMakeUserDirectory(const char *game_path);
 // The folder that holds a writable file, opened without following links beneath the user root (created when `create`: only
 // folders the game folder also has). An O_PATH descriptor, so it can base openat/renameat but not fsync. 0 or -1 with errno.
 int PortUserParent(const char *game_path, char *leaf, size_t n, bool create);
+// A read of a game file: an enabled mod's verified copy (platform/common/mods.h) when `resolved`, the path a read would
+// take, is the game folder's own copy (the writable folder's copy of a file still wins over a mod). A read-only
+// descriptor, or -1 to read `resolved` as usual.
+int PortModReadFd(const char *game_path, const char *resolved);
 
 #endif

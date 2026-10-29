@@ -236,6 +236,8 @@ def port_sources(target):
         out += [(nvt / "src" / n, "pcxx", "") for n in ("NvTriStrip.cpp", "NvTriStripObjects.cpp")]
     # The C runtime that the VC6-built libvorbis/libogg 1.0 objects call (port/vorbis).
     out += [(PORT / "vorbis/vc6crt.c", "pcc", "")]
+    # SHA-256 for the mod checks (platform/common/mods.cpp), the launcher's own implementation.
+    out += [(PORT / "updater/sha256.c", "pcc", "")]
     return out
 
 

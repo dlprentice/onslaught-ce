@@ -15,11 +15,13 @@
 #include <mmsystem.h>
 #include <direct.h>
 #include <io.h>
+#include <fcntl.h>
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
+#include "../common/mods.h"
 #include "../common/platform.h"
 #include "../common/save_names.h"
 
@@ -162,6 +164,23 @@ int Resolve(const char *game_path, Mode mode, char *out, size_t n)
 		}
 	}
 	return 0;
+}
+
+// Whether a read of game_path that would take `resolved` reads the game folder's own copy: only then may an enabled
+// mod's copy replace it (platform/common/mods.h); the writable folder's copy of a file still wins over a mod.
+bool ModMayReplace(const char *game_path, const char *resolved)
+{
+	char rel[MAX_PATH], game[MAX_PATH * 2];
+	if (!PortModsActive() || Absolute(game_path) || !Relative(game_path, rel, sizeof(rel)))
+		return false;
+	snprintf(game, sizeof(game), "%s\\%s", gGameDir, rel);
+	return _stricmp(game, resolved) == 0;
+}
+
+// An enabled mod's verified copy of a game file for reading, or NULL.
+HANDLE ModRead(const char *game_path, const char *resolved)
+{
+	return ModMayReplace(game_path, resolved) ? (HANDLE)PortModOpenRead(game_path) : NULL;
 }
 
 int CopyOnWrite(const char *game_path, char *out, size_t n)
@@ -427,6 +446,18 @@ DWORD SaveFoldedNameAbsent(const void *name)
 }
 }
 
+// Whether the game folder itself has this regular file (mods.h: a mod may only replace the game's files).
+bool PortGameHasFile(const char *rel)
+{
+	Init();
+	char native[MAX_PATH], path[MAX_PATH * 2];
+	if (!Relative(rel, native, sizeof(native)))
+		return false;
+	snprintf(path, sizeof(path), "%s\\%s", gGameDir, native);
+	DWORD a = GetFileAttributesA(path);
+	return a != INVALID_FILE_ATTRIBUTES && !(a & FILE_ATTRIBUTE_DIRECTORY);
+}
+
 const char *PortGameDir()
 {
 	Init();
@@ -517,7 +548,22 @@ FILE *port_fopen(const char *name, const char *mode)
 	bool update = strchr(mode, 'a') || (strchr(mode, 'r') && strchr(mode, '+'));
 	int rc = writes ? (update ? CopyOnWrite(name, path, sizeof(path)) : Resolve(name, WRITE, path, sizeof(path)))
 					: Resolve(name, READ, path, sizeof(path));
-	return rc == 0 ? fopen(path, mode) : NULL;
+	if (rc != 0)
+		return NULL;
+	if (HANDLE h = writes ? NULL : ModRead(name, path))
+	{
+		int fd = _open_osfhandle((intptr_t)h, _O_RDONLY | (strchr(mode, 'b') ? _O_BINARY : _O_TEXT));
+		if (fd < 0)
+		{
+			CloseHandle(h);
+			return NULL;
+		}
+		FILE *f = _fdopen(fd, mode);
+		if (!f)
+			_close(fd);
+		return f;
+	}
+	return fopen(path, mode);
 }
 
 int port_access(const char *name, int mode)
@@ -583,6 +629,8 @@ HANDLE WINAPI PortCreateFileA(LPCSTR name, DWORD access, DWORD share, LPSECURITY
 		SetLastError(ERROR_ACCESS_DENIED);
 		return INVALID_HANDLE_VALUE;
 	}
+	if (HANDLE h = write ? NULL : ModRead(name, path))
+		return h;
 	return CreateFileA(path, access, share, sa, disposition, flags, templ);
 }
 
@@ -642,8 +690,12 @@ DWORD WINAPI PortGetFileAttributesA(LPCSTR name)
 HMMIO WINAPI PortMmioOpenA(LPSTR name, LPMMIOINFO info, DWORD flags)
 {
 	char path[MAX_PATH * 2];
-	if (Resolve(name, (flags & (MMIO_WRITE | MMIO_READWRITE)) ? WRITE : READ, path, sizeof(path)) != 0)
+	bool write = (flags & (MMIO_WRITE | MMIO_READWRITE)) != 0;
+	if (Resolve(name, write ? WRITE : READ, path, sizeof(path)) != 0)
 		return NULL;
+	char mod[MAX_PATH * 2];
+	if (!write && ModMayReplace(name, path) && PortModPath(name, mod, sizeof(mod)))
+		return mmioOpenA(mod, info, flags);
 	return mmioOpenA(path, info, flags);
 }
 }

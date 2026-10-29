@@ -1,0 +1,11 @@
+--- a/weapon.cpp
++++ b/weapon.cpp
+@@ -1435,7 +1435,7 @@
+ 			speed = 0;
+ 		FVector vel = GetPrimaryOrientation() * FVector(0, speed, 0);
+ 		FVector tvel = target->GetVelocity();
+-		float t = (pos - tpos).MagnitudeYZX() / vel.Magnitude();
++		float t = (pos - tpos).MagnitudeYZX() / vel.MagnitudeYZX();	// Port (patch 0112): retail 0050a1d4..0050a1f0 sums vel's squares as (Y*Y + Z*Z) + X*X, not maths.h's (X*X + Y*Y) + Z*Z (the first magnitude, 0050a1ac..0050a1ca, is patch 0098's)
+ 		t *= 20.0f;
+ 		return tvel * t + tpos;
+ 	}

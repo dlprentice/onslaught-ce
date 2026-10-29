@@ -194,6 +194,8 @@ bool DesktopBox(int &left, int &top, int &width, int &height)
 
 IDirect3DDevice9 *gDevice;		// the game's device (PortWideViewport)
 
+unsigned gResets;			// completed resets: Direct3D puts every sampler state back to its default (the BEA_PORT_D3DLOG record starts again)
+
 HRESULT STDMETHODCALLTYPE Reset(IDirect3DDevice9 *device, D3DPRESENT_PARAMETERS *pp)
 {
 	HWND focus = NULL;
@@ -202,6 +204,8 @@ HRESULT STDMETHODCALLTYPE Reset(IDirect3DDevice9 *device, D3DPRESENT_PARAMETERS 
 		focus = cp.hFocusWindow;
 	DesktopFullscreen(focus, pp);
 	HRESULT hr = gReset(device, pp);
+	if (SUCCEEDED(hr))
+		gResets++;
 	PortSessionLog(PORT_SESSION_VIDEO, FAILED(hr), "device reset result=%08lx size=%ux%u windowed=%d format=%d",
 		(unsigned long)hr, pp ? pp->BackBufferWidth : 0, pp ? pp->BackBufferHeight : 0,
 		pp ? (int)pp->Windowed : -1, pp ? (int)pp->BackBufferFormat : -1);
@@ -636,6 +640,21 @@ int gLogFrame = -1;
 FILE *gLog;
 DWORD gRS[256]; bool gRSSet[256];
 DWORD gTSS[4][33]; bool gTSSSet[4][33];
+// Sampler states (D3DSAMP_*): the values the device accepted. A pure device cannot be asked (GetSamplerState fails on one,
+// and the game's device is pure), so what the log shows is what SetSamplerState was told, until a Reset ends the record.
+typedef HRESULT (STDMETHODCALLTYPE *SetSamplerFn)(IDirect3DDevice9 *, DWORD, D3DSAMPLERSTATETYPE, DWORD);
+SetSamplerFn gSetSampler;
+DWORD gSamp[4][14]; bool gSampSet[4][14]; unsigned gSampResets;
+const char *const kSampNames[14] = {"0", "ADDRESSU", "ADDRESSV", "ADDRESSW", "BORDERCOLOR", "MAGFILTER", "MINFILTER", "MIPFILTER",
+									"MIPMAPLODBIAS", "MAXMIPLEVEL", "MAXANISOTROPY", "SRGBTEXTURE", "ELEMENTINDEX", "DMAPOFFSET"};
+void SamplerSync()
+{
+	if (gSampResets != gResets)
+	{
+		memset(gSampSet, 0, sizeof(gSampSet));
+		gSampResets = gResets;
+	}
+}
 float gVSC[96][4]; bool gVSCSet[96];
 IDirect3DBaseTexture9 *gTex[4];
 IDirect3DVertexShader9 *gVS;
@@ -824,6 +843,11 @@ void LogState(const char *what)
 		for (int k = 0; k < 33; k++)
 			if (gTSSSet[st][k])
 				fprintf(gLog, "  tss%d.%d %08lx\n", st, k, (unsigned long)gTSS[st][k]);
+	SamplerSync();
+	for (int st = 0; st < 4; st++)
+		for (int k = 1; k < 14; k++)
+			if (gSampSet[st][k])
+				fprintf(gLog, "  samp%d.%s %08lx\n", st, kSampNames[k], (unsigned long)gSamp[st][k]);
 	for (int k = 0; k < 256; k++)
 		if (gRSSet[k])
 			fprintf(gLog, "  rs%d %08lx\n", k, (unsigned long)gRS[k]);
@@ -904,6 +928,15 @@ HRESULT STDMETHODCALLTYPE SetTSS(IDirect3DDevice9 *d, DWORD st, D3DTEXTURESTAGES
 {
 	if (st < 4 && (unsigned)k < 33) { gTSS[st][k] = v; gTSSSet[st][k] = true; }
 	return gSetTSS(d, st, k, v);
+}
+HRESULT STDMETHODCALLTYPE SetSampler(IDirect3DDevice9 *d, DWORD st, D3DSAMPLERSTATETYPE k, DWORD v)
+{
+	HRESULT hr = gSetSampler(d, st, k, v);
+	SamplerSync();
+	if (SUCCEEDED(hr) && st < 4 && (unsigned)k < 14) { gSamp[st][k] = v; gSampSet[st][k] = true; }
+	else if (FAILED(hr) && Logging() && gLog)
+		fprintf(gLog, "  SetSamplerState(%lu, %d, %08lx) failed %08lx\n", (unsigned long)st, (int)k, (unsigned long)v, (unsigned long)hr);
+	return hr;
 }
 HRESULT STDMETHODCALLTYPE SetVS(IDirect3DDevice9 *d, IDirect3DVertexShader9 *vs)
 {
@@ -1123,7 +1156,7 @@ HRESULT STDMETHODCALLTYPE CreateDevice(IDirect3D9 *d3d, UINT adapter, D3DDEVTYPE
 		{
 			if (!gSetRS)
 			{
-				gSetRS = (SetRSFn)table[57]; gSetTex = (SetTexFn)table[65]; gSetTSS = (SetTSSFn)table[67];
+				gSetRS = (SetRSFn)table[57]; gSetTex = (SetTexFn)table[65]; gSetTSS = (SetTSSFn)table[67]; gSetSampler = (SetSamplerFn)table[69];
 				gDraw = (DrawFn)table[81]; gDrawIdx = (DrawIdxFn)table[82]; gSetVS = (SetVSFn)table[92];
 				gSetVSC = (SetVSCFn)table[94]; gSetStream = (SetStreamFn)table[100];
 				gSetTransform = (SetTransformFn)table[44];
@@ -1131,7 +1164,7 @@ HRESULT STDMETHODCALLTYPE CreateDevice(IDirect3D9 *d3d, UINT adapter, D3DDEVTYPE
 				gSetMat = (SetMatFn)table[49]; gSetLight = (SetLightFn)table[51]; gLightEnable = (LightEnableFn)table[53];
 			}
 			const struct { int slot; void *fn; } logged[] = {
-				{57, (void *)&SetRS}, {65, (void *)&SetTex}, {67, (void *)&SetTSS}, {81, (void *)&Draw},
+				{57, (void *)&SetRS}, {65, (void *)&SetTex}, {67, (void *)&SetTSS}, {69, (void *)&SetSampler}, {81, (void *)&Draw},
 				{82, (void *)&DrawIdx}, {92, (void *)&SetVS}, {94, (void *)&SetVSC}, {100, (void *)&SetStream},
 				{44, (void *)&SetTransform}, {107, (void *)&SetPS}, {109, (void *)&SetPSC}, {37, (void *)&SetRT},
 				{39, (void *)&SetDS}, {49, (void *)&SetMat}, {51, (void *)&SetLight}, {53, (void *)&LightEnable}};

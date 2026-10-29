@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 
 extern "C" ssize_t __real_write(int, const void *, size_t);
@@ -19,6 +20,7 @@ extern "C" int __real_close(int);
 extern "C" int __real_openat(int, const char *, int, ...);
 extern "C" int __real_renameat(int, const char *, int, const char *);
 extern "C" int __real_fstatat(int, const char *, struct stat *, int);
+extern "C" int __real_usleep(useconds_t);
 
 // How often creating a temporary file ran into a name that was already taken (a real EEXIST, not an injected one).
 static long gTempEexist;
@@ -137,19 +139,60 @@ extern "C" int __wrap_renameat(int from_dir, const char *from, int to_dir, const
     return result;
 }
 
-// "target-unlinked-once" / "target-unlinked-always": the career's name led to the previous file, which another process's
-// rename had already unlinked when its attributes were read, so it shows no link at all (st_nlink 0). That is what a second
-// writer sees when the first one's rename lands between its lookup and its check; the temporary files (".ce-") are not touched.
+// What save_replace.cpp asks to sleep, recorded one line per call (the microseconds) in the file SAVE_TEST_SLEEPS names, and then
+// really slept: the time-window faults below need the time to pass.
+extern "C" int __wrap_usleep(useconds_t us)
+{
+    if (const char *log = getenv("SAVE_TEST_SLEEPS"))
+        if (FILE *f = fopen(log, "a")) { fprintf(f, "%u\n", (unsigned)us); fclose(f); }
+    return __real_usleep(us);
+}
+
+static int ErrnoNamed(const char *name)
+{
+    static const struct { const char *name; int error; } table[] = {{"eio", EIO}, {"eloop", ELOOP}, {"eacces", EACCES}, {"enotdir", ENOTDIR},
+                                                                    {"enametoolong", ENAMETOOLONG}, {"enoent", ENOENT}};
+    for (const auto &row : table)
+        if (!strcmp(name, row.name)) return row.error;
+    return EINVAL;
+}
+
+// The career's name led to the previous file, which another process's rename had already unlinked when its attributes were read,
+// so it shows no link at all (st_nlink 0). That is what a second writer sees when the first one's rename lands between its lookup
+// and its check; the temporary files (".ce-") are not touched. The faults say how long the state lasts, counted from the first
+// look at the career (SAVE_TEST_N is the number):
+//   target-unlinked-once        the first look only
+//   target-unlinked-looks       the first N looks
+//   target-unlinked-always      every look
+//   target-unlinked-for-us      every look for N microseconds (a rename that takes that long)
+//   target-unlinked-then-ERRNO  the first N looks, and the next one fails with ERRNO (eio, eloop, eacces, enotdir, enametoolong,
+//                               enoent): the name went away or broke while the save waited
 extern "C" int __wrap_fstatat(int dirfd, const char *path, struct stat *st, int flags)
 {
+    const char *fault = getenv("SAVE_TEST_FAULT");
     int result = __real_fstatat(dirfd, path, st, flags);
-    bool once = Fault("target-unlinked-once"), always = Fault("target-unlinked-always");
-    if (result == 0 && (once || always) && flags == AT_SYMLINK_NOFOLLOW && strncmp(path, ".ce-", 4) != 0 && S_ISREG(st->st_mode))
+    if (!fault || strncmp(fault, "target-unlinked-", 16) != 0 || result != 0 || flags != AT_SYMLINK_NOFOLLOW ||
+        !strncmp(path, ".ce-", 4) || !S_ISREG(st->st_mode))
+        return result;
+    static long looks;
+    static struct timespec first;
+    if (++looks == 1) clock_gettime(CLOCK_MONOTONIC, &first);
+    const char *given = getenv("SAVE_TEST_N");
+    const long n = given ? atol(given) : 0;
+    if (Fault("target-unlinked-once")) { if (looks <= 1) st->st_nlink = 0; }
+    else if (Fault("target-unlinked-looks")) { if (looks <= n) st->st_nlink = 0; }
+    else if (Fault("target-unlinked-always")) st->st_nlink = 0;
+    else if (Fault("target-unlinked-for-us"))
     {
-        static bool done;
-        if (always || !done)
-            st->st_nlink = 0;
-        done = true;
+        struct timespec now;
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        long elapsed = (now.tv_sec - first.tv_sec) * 1000000L + (now.tv_nsec - first.tv_nsec) / 1000L;
+        if (elapsed < n) st->st_nlink = 0;
+    }
+    else if (!strncmp(fault, "target-unlinked-then-", 21))
+    {
+        if (looks <= n) st->st_nlink = 0;
+        else { errno = ErrnoNamed(fault + 21); return -1; }
     }
     return result;
 }

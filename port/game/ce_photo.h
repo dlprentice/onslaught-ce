@@ -51,5 +51,6 @@ void	PortCePhotoLevelEnd();
 bool	PortCePhotoShotWanted();
 void	PortCePhotoShotDone(int status, const char *name);
 void	PortCePhotoRender();
+bool	PortCePhotoSavedNext();		// the frame being drawn is saved as a screenshot at the Present that follows (ce_notice.cpp)
 
 #endif

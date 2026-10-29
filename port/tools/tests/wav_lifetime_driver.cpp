@@ -8,6 +8,8 @@ static unsigned failures, checks, allocations, frees, opens, closes, invalid_cal
 static HMMIO active[16];
 static unsigned active_count;
 void PortPathsInit();
+// mmio.cpp asks the file layer (files.cpp, not linked here) for a mod's copy of the file: no mod is ever active here.
+int PortModReadFd(const char *, const char *) { return -1; }
 TCHAR *ToTCHAR(char *text) { return text; }
 CMemoryHeap::CMemoryHeap() {}
 CMemoryHeap::~CMemoryHeap() {}

@@ -629,11 +629,16 @@ static const SCePlan kCePlans[] = {
 	 "Larger matches are a future idea. For two players on one PC, use Multiplayer on the main menu."},
 	{L"Campaign co-op", "Playing the campaign together online is experimental and not available yet. Local co-op bonus "
 	 "levels are on the Onslaught CE page."},
-	{L"Battle Engine / mods", "Online Battle Engine customization and more supported mod tools are being explored. They are "
-	 "not available here yet; existing in-game choices remain."},
-	{L"Map and mission tools", "Map and mission creation tools are being explored outside the game. They are not available here."},
-	{L"HUD and display", "Parts of the solo HUD can scale at higher resolutions. Selectable HUD size and changing display mode without a restart are "
-	 "being explored. Windowed and Fullscreen settings currently need a restart."},
+	{L"Battle Engine / mods", "Mods are experimental and work on Linux only. A mods= line in ce.ini turns on mods from the mods folder "
+	 "beside it; Windows ignores the line and logs why. Each mod file is checked at start. A mod can replace game files such "
+	 "as textures or supply a level's world file. There is no mod menu (see Mods in the project README). Online Battle "
+	 "Engine customization is not available."},
+	{L"Map and mission tools", "A level editor is being built outside the game, in the separate Onslaught Companion app. There are no "
+	 "map or mission tools in the game itself."},
+	{L"HUD and display", "Parts of the solo HUD can scale at higher resolutions. On a wide screen, text drawn at twice its size or more "
+	 "uses a sharper copy of the font (not in recordings or replays, on 4:3 screens or when widescreen modes are off). Selectable "
+	 "HUD size and changing display mode without a restart are being explored. Windowed and Fullscreen settings currently need "
+	 "a restart."},
 	{L"Controls and tutorial", "More dodge and zoom guidance, control options and controller refinements are planned. "
 	 "Solo gamepad defaults and English tutorial cues already exist."},
 	{L"CE features in recordings", "Session recordings use original-style menus today. Controller input is not recorded and "

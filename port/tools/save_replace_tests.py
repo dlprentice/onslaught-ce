@@ -33,7 +33,7 @@ import deps
 HEADER = deps.PORT / "platform/common/save_replace.h"
 CODES = {name: int(value) for name, value in
          zip(re.findall(r"^\s*(PORT_REPLACE_[A-Z]+)", HEADER.read_text(), re.M), range(100))}
-WRAPS = ",".join("--wrap=" + n for n in ("write", "pread", "fsync", "close", "openat", "renameat", "fstatat"))
+WRAPS = ",".join("--wrap=" + n for n in ("write", "pread", "fsync", "close", "openat", "renameat", "fstatat", "usleep"))
 
 
 def sha(data):
@@ -53,6 +53,7 @@ def compile_driver(source_dir, out, replace_source=None, extra=()):
            f"-I{deps.DATA / 'dxvk-native/usr/include/dxvk'}",
            str(source_dir / "save_replace_driver.cpp"), str(source_dir / "save_replace_faults.cpp"),
            str(platform / "files.cpp"), str(platform / "paths.cpp"), str(replace_source or platform / "save_replace.cpp"),
+           str(source_dir / "mods_none.cpp"),
            f"-Wl,{WRAPS}", *extra, "-o", str(out)]
     subprocess.run(cmd, check=True, capture_output=True, text=True)
 
@@ -109,12 +110,14 @@ class Fixture(unittest.TestCase):
         (folder / name).write_bytes(data)
         return data
 
-    def run_driver(self, *args, fault=None, game=None, user=None, timeout=60):
+    def run_driver(self, *args, fault=None, game=None, user=None, timeout=60, env_extra=None):
         env = dict(os.environ, BEA_GAME_DIR=str(game or self.game), BEA_USER_DIR=str(user or self.user),
                    HOME=str(self.root))
-        env.pop("SAVE_TEST_FAULT", None)
+        for name in ("SAVE_TEST_FAULT", "SAVE_TEST_N", "SAVE_TEST_SLEEPS"):
+            env.pop(name, None)
         if fault:
             env["SAVE_TEST_FAULT"] = fault
+        env.update(env_extra or {})
         return subprocess.run([str(self.driver), *map(str, args)], env=env, capture_output=True, timeout=timeout,
                               cwd=self.root)
 
@@ -127,6 +130,13 @@ class Fixture(unittest.TestCase):
 
     def temporaries(self):
         return sorted(p.name for p in self.user.rglob(".ce-write-*"))
+
+    LOOKS = 10                                                  # save_replace.cpp: the career's name is looked up at most this often
+    WAITS = [50 << i for i in range(LOOKS - 1)]                 # 50, 100 ... 12,800 microseconds, none after the last look
+
+    def sleeps(self, log):
+        """The microseconds save_replace.cpp asked to sleep, in order (the fault wrapper's record)."""
+        return [int(x) for x in log.read_text().split()] if log.exists() else []
 
     def career(self, name="Hawk.bes"):
         return self.user / "SaveGames" / name
@@ -347,34 +357,126 @@ class AtomicReplace(Fixture):
         self.assertEqual(CODES["PORT_REPLACE_REFUSED"], code, r.stderr)
         self.assertEqual(before, self.tree(self.user))
 
-    def test_known_limit_a_career_unlinked_by_another_replace_during_the_check_is_refused_and_nothing_is_lost(self):
-        """Two processes replacing the same career at the same moment: the second looks the name up, the first one's rename lands,
-        and the attributes it then reads belong to a file with no link left (st_nlink 0), which is not a plain single-link career,
-        so it refuses. Measured: about 0.3 % of tightly looped replaces by two writers on tmpfs; on btrfs, where a flushed replace
-        takes about 20 ms, none in 9,600 replaces by two writers and about one in a thousand with four writers (an independent
-        review saw 2 of 1,600, 7 of 9,600 (0.07 %) and one run with none). It fails safe: the career is the winner's complete
-        file or the old one, no temporary file is left, and the caller gets a failure to show. The fault wrapper makes the same
-        observation once, deterministically."""
+    def unlinked(self, fault, n=None, data=None, old=None):
+        """One replace of the existing career while the wrapper shows its name without a link as FAULT says; returns the status,
+        the process result, the sleeps save_replace.cpp asked for and the bytes it was asked to save."""
+        log = self.root / "sleeps.txt"
+        log.unlink(missing_ok=True)
+        data = data or payload("loser", 2000)
+        code, r = self.replace(r"savegames\Hawk.bes", data, fault=fault,
+                               env_extra={"SAVE_TEST_SLEEPS": str(log), **({} if n is None else {"SAVE_TEST_N": str(n)})})
+        return code, r, self.sleeps(log), data
+
+    def test_an_ordinary_save_never_sleeps(self):
+        """The wait is only for a name that shows no link: replacing a career, creating one, and shadowing a game-folder one all go
+        straight through."""
+        log = self.root / "sleeps.txt"
+        folder = self.user / "SaveGames"
+        for case in ("existing", "new", "shadow"):
+            with self.subTest(case=case):
+                (folder / "Hawk.bes").unlink(missing_ok=True)
+                (folder / "New.bes").unlink(missing_ok=True)
+                if case == "existing":
+                    self.user_save()
+                name = "New.bes" if case == "new" else "Hawk.bes"     # shadow: Hawk.bes exists only in the game folder
+                folder.mkdir(parents=True, exist_ok=True)
+                code, r = self.replace(rf"savegames\{name}", payload(case, 3000), env_extra={"SAVE_TEST_SLEEPS": str(log)})
+                self.assertEqual(CODES["PORT_REPLACE_OK"], code, r.stderr)
+                self.assertEqual([], self.sleeps(log), f"a {case} career made the save sleep")
+
+    def test_a_career_unlinked_by_another_replace_during_the_check_is_waited_for_and_replaced(self):
+        """Two processes replacing the same career at the same moment: the second looks the name up, the first one's rename lands, and
+        the attributes it then reads belong to a file with no link left (st_nlink 0). It used to refuse (about 0.3 % of tightly looped
+        replaces by two writers on tmpfs). Now it waits 50 microseconds, looks again, finds the other save's complete file and
+        replaces that. The fault wrapper makes the same observation once, deterministically; the sleep is recorded."""
+        self.user_save()
+        code, r, sleeps, data = self.unlinked("target-unlinked-once")
+        self.assertEqual(CODES["PORT_REPLACE_OK"], code, r.stderr)
+        self.assertEqual(data, self.career().read_bytes())
+        self.assertEqual([], self.temporaries())
+        self.assertNotIn("was not saved", r.stderr.decode())
+        self.assertEqual([50], sleeps, "one wait of 50 microseconds before the second look, none after it")
+
+    def test_the_waits_double_and_the_last_look_is_not_followed_by_one(self):
+        """A name that never shows a link is looked up ten times with waits of 50 microseconds doubling (25.55 ms in all) and is then
+        refused: the career is untouched, nothing is left behind, the next save works."""
         old = self.user_save()
-        code, r = self.replace(r"savegames\Hawk.bes", payload("loser", 2000), fault="target-unlinked-once")
+        code, r, sleeps, _ = self.unlinked("target-unlinked-always", data=payload("loser", 2000))
         self.assertEqual(CODES["PORT_REPLACE_REFUSED"], code, r.stderr)
         self.assertEqual(old, self.career().read_bytes())
         self.assertEqual([], self.temporaries())
         self.assertIn("career was not saved: the file cannot be written", r.stderr.decode())
         self.assertIn("the previous file is unchanged", r.stderr.decode())
-        # the retry that the player or the next save makes works
+        self.assertEqual(self.WAITS, sleeps)
+        self.assertEqual(25550, sum(sleeps))
         data = payload("retry", 2500)
         code, _ = self.replace(r"savegames\Hawk.bes", data)
         self.assertEqual(CODES["PORT_REPLACE_OK"], code)
         self.assertEqual(data, self.career().read_bytes())
 
-    def test_a_hard_linked_career_is_refused(self):
+    def test_the_name_is_looked_up_ten_times_not_more_and_not_fewer(self):
+        """The first nine looks showing no link and the tenth a file: replaced. All ten: refused. (An independent review found the suites
+        pinned neither number: a loop of two looks or a hundred passed them.)"""
+        self.user_save()
+        code, r, sleeps, data = self.unlinked("target-unlinked-looks", n=self.LOOKS - 1)
+        self.assertEqual(CODES["PORT_REPLACE_OK"], code, r.stderr)
+        self.assertEqual(data, self.career().read_bytes())
+        self.assertEqual(self.WAITS, sleeps)
+        code, r, sleeps, _ = self.unlinked("target-unlinked-looks", n=self.LOOKS, data=payload("late", 2000))
+        self.assertEqual(CODES["PORT_REPLACE_REFUSED"], code, r.stderr)
+        self.assertEqual(data, self.career().read_bytes(), "the first replace's career is what is left")
+        self.assertEqual(self.WAITS, sleeps)
+
+    def test_a_rename_that_takes_a_while_is_waited_out_and_one_that_takes_too_long_is_refused(self):
+        """What the file system does: the other save's rename keeps the old file at no link for as long as it takes (about a microsecond
+        on tmpfs, 40 to 400 microseconds on btrfs, milliseconds when the process is descheduled in it). The wrapper reports no link for
+        that long from the first look, however many looks there are: 20 microseconds to 20 milliseconds are waited out (the immediate
+        looks that were tried first spanned about 5 microseconds and did not get past 20), a window longer than the 25.55 ms of waits
+        is refused."""
+        for microseconds in (20, 100, 400, 1500, 6000, 20000):
+            with self.subTest(window_us=microseconds):
+                self.user_save()
+                code, r, sleeps, data = self.unlinked("target-unlinked-for-us", n=microseconds, data=payload(f"w{microseconds}", 2000))
+                self.assertEqual(CODES["PORT_REPLACE_OK"], code, r.stderr)
+                self.assertEqual(data, self.career().read_bytes())
+                self.assertTrue(sleeps and self.WAITS[:len(sleeps)] == sleeps, f"the waits are 50, 100, 200 ...: {sleeps}")
+        old = self.user_save()
+        code, r, sleeps, _ = self.unlinked("target-unlinked-for-us", n=5_000_000)
+        self.assertEqual(CODES["PORT_REPLACE_REFUSED"], code, r.stderr)
+        self.assertEqual(old, self.career().read_bytes())
+        self.assertEqual(self.WAITS, sleeps)
+        self.assertEqual([], self.temporaries())
+
+    def test_a_look_that_fails_after_the_name_showed_no_link_is_judged_by_its_error(self):
+        """While the save waits the name can go away (the other save was deleted, or the career removed): that is a new file, and the
+        save creates it. Any other failure of the look (an I/O error, a loop, no permission, a path that stopped being a folder) is
+        not a missing name and refuses the save, whether it comes after the first no-link look or after the ninth."""
+        for n in (1, self.LOOKS - 1):
+            for error in ("eio", "eloop", "eacces", "enotdir", "enametoolong"):
+                with self.subTest(after_looks=n, error=error):
+                    old = self.user_save()
+                    code, r, sleeps, _ = self.unlinked("target-unlinked-then-" + error, n=n)
+                    self.assertEqual(CODES["PORT_REPLACE_REFUSED"], code, r.stderr)
+                    self.assertEqual(old, self.career().read_bytes())
+                    self.assertEqual([], self.temporaries())
+                    self.assertEqual(self.WAITS[:n], sleeps)
+        for n in (1, self.LOOKS - 1):
+            with self.subTest(after_looks=n, error="enoent"):
+                self.user_save()
+                code, r, sleeps, data = self.unlinked("target-unlinked-then-enoent", n=n, data=payload(f"gone{n}", 2500))
+                self.assertEqual(CODES["PORT_REPLACE_OK"], code, r.stderr)
+                self.assertEqual(data, self.career().read_bytes())
+                self.assertEqual(self.WAITS[:n], sleeps)
+
+    def test_a_hard_linked_career_is_refused_at_once_without_waiting(self):
         self.user_save()
         os.link(self.career(), self.user / "other-name")
         before = self.tree(self.user)
-        code, _ = self.replace(r"savegames\Hawk.bes", payload("hard", 1000))
+        log = self.root / "sleeps.txt"
+        code, _ = self.replace(r"savegames\Hawk.bes", payload("hard", 1000), env_extra={"SAVE_TEST_SLEEPS": str(log)})
         self.assertEqual(CODES["PORT_REPLACE_REFUSED"], code)
         self.assertEqual(before, self.tree(self.user))
+        self.assertEqual([], self.sleeps(log), "only a name that shows no link is waited for")
 
     def test_an_empty_buffer_never_replaces_a_career(self):
         old = self.user_save()
@@ -587,12 +689,77 @@ class Mutants(Fixture):
             compile_driver(deps.PORT / "tools/tests", binary, replace_source=source)
         return binary
 
-    def attempt(self, binary, fault, data):
+    def attempt(self, binary, fault, data, n=None):
         saved, self.driver = self.driver, binary
         try:
-            return self.replace(r"savegames\Hawk.bes", data, fault=fault)
+            return self.replace(r"savegames\Hawk.bes", data, fault=fault, env_extra={} if n is None else {"SAVE_TEST_N": str(n)})
         finally:
             self.driver = saved
+
+    def attempt_logged(self, binary, fault, data, n=None):
+        """attempt() with the sleeps the mutant asked for: (status, sleeps)."""
+        log = self.root / "mutant-sleeps.txt"
+        log.unlink(missing_ok=True)
+        saved, self.driver = self.driver, binary
+        try:
+            code, _ = self.replace(r"savegames\Hawk.bes", data, fault=fault,
+                                   env_extra={"SAVE_TEST_SLEEPS": str(log), **({} if n is None else {"SAVE_TEST_N": str(n)})})
+        finally:
+            self.driver = saved
+        return code, self.sleeps(log)
+
+    def test_without_the_second_look_a_career_unlinked_during_the_check_is_refused(self):
+        mutant = self.mutant("no-second-look", "look < LOOKS", "look < 1")
+        self.user_save()
+        code, _ = self.attempt(mutant, "target-unlinked-once", payload("x", 5000))
+        self.assertEqual(CODES["PORT_REPLACE_REFUSED"], code)    # the real code replaces it (the test above), so it would fail the mutant
+
+    def test_without_the_wait_a_rename_that_takes_a_while_is_refused(self):
+        mutant = self.mutant("no-wait", "\t\tif (look + 1 < LOOKS)\n\t\t\tusleep(FIRST_WAIT_US << look);\n", "")
+        for microseconds in (400, 6000):
+            self.user_save()
+            code, _ = self.attempt(mutant, "target-unlinked-for-us", payload("x", 5000), n=microseconds)
+            self.assertEqual(CODES["PORT_REPLACE_REFUSED"], code, f"{microseconds} us")    # the real code waits it out
+
+    def test_with_a_constant_wait_the_waits_do_not_double(self):
+        mutant = self.mutant("constant-wait", "usleep(FIRST_WAIT_US << look)", "usleep(FIRST_WAIT_US)")
+        self.user_save()
+        code, sleeps = self.attempt_logged(mutant, "target-unlinked-always", payload("x", 5000))
+        self.assertEqual([50] * (self.LOOKS - 1), sleeps)
+        self.assertNotEqual(self.WAITS, sleeps)                              # the suite expects 50, 100, 200 ...
+
+    def test_with_a_wait_after_the_last_look_the_refusal_comes_late(self):
+        mutant = self.mutant("wait-after-last", "if (look + 1 < LOOKS)", "if (true)")
+        self.user_save()
+        code, sleeps = self.attempt_logged(mutant, "target-unlinked-always", payload("x", 5000))
+        self.assertEqual(self.LOOKS, len(sleeps))
+        self.assertNotEqual(self.WAITS, sleeps)
+
+    def test_with_two_looks_a_name_that_shows_no_link_eight_times_is_refused(self):
+        mutant = self.mutant("two-looks", "const int LOOKS = 10;", "const int LOOKS = 2;")
+        self.user_save()
+        code, _ = self.attempt(mutant, "target-unlinked-looks", payload("x", 5000), n=self.LOOKS - 1)
+        self.assertEqual(CODES["PORT_REPLACE_REFUSED"], code)
+
+    def test_with_a_hundred_looks_a_name_that_shows_no_link_ten_times_is_replaced(self):
+        mutant = self.mutant("hundred-looks", "const int LOOKS = 10;", "const int LOOKS = 100;")
+        self.user_save()
+        code, _ = self.attempt(mutant, "target-unlinked-looks", payload("x", 5000), n=self.LOOKS)
+        self.assertEqual(CODES["PORT_REPLACE_OK"], code)    # the real code refuses after ten looks
+
+    def test_if_a_look_that_fails_were_a_new_file_the_career_would_be_replaced_whatever_the_error(self):
+        mutant = self.mutant("failed-look-is-new", ": errno != ENOENT)", ": false)")
+        self.user_save()
+        code, _ = self.attempt(mutant, "target-unlinked-then-eio", payload("x", 5000), n=1)
+        self.assertEqual(CODES["PORT_REPLACE_OK"], code)    # an I/O error on the name is no new file: the real code refuses
+
+    def test_a_target_that_is_not_waiting_for_a_rename_must_not_make_the_save_sleep(self):
+        mutant = self.mutant("wait-for-any-link-count", "if (!exists || target.st_nlink != 0)", "if (!exists || target.st_nlink == 1)")
+        self.user_save()
+        os.link(self.career(), self.user / "other-name")
+        code, sleeps = self.attempt_logged(mutant, None, payload("x", 5000))
+        self.assertEqual(CODES["PORT_REPLACE_REFUSED"], code)
+        self.assertEqual(self.WAITS, sleeps)                # the mutant waits for a hard link; the real code refuses at once
 
     def test_without_the_read_back_a_corrupted_write_is_published(self):
         mutant = self.mutant("no-readback", "if (!step && !ReadsBack(fd, bytes, size))", "if (false)")

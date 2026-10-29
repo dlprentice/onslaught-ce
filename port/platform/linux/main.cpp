@@ -12,6 +12,9 @@
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow);
 
+// Weak: only a test-only diagnostic build defines it (kernel.cpp: ExitProcess); in every other build it is null.
+extern "C" void PortExitHook(int status) __attribute__((weak));
+
 int main(int argc, char **argv)
 {
 #ifdef CE_VERSION
@@ -64,5 +67,7 @@ int main(int argc, char **argv)
 	// and shuts down RECONNECT_INTERFACE and the memory manager, all in memory with no file writes.
 	PortReplayAtExit();
 	fflush(NULL);
+	if (PortExitHook)
+		PortExitHook(rc);
 	_exit(rc);
 }

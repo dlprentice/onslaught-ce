@@ -7,7 +7,10 @@
 #include <cstdarg>
 #include <cerrno>
 #include <cstring>
+#include <csignal>
+#include <string>
 #include <unistd.h>
+#include <sys/prctl.h>
 #include <windows.h>
 #include <SDL3/SDL.h>
 static Uint64 ticks = 5000000000ULL, delayed;
@@ -181,6 +184,25 @@ int main(int argc, char **argv) {
     const char *test = argv[1];
     gNumWindows = 1; gWindows[0].sdl = reinterpret_cast<SDL_Window *>(1);
     gWindows[0].handle = reinterpret_cast<HWND>(1); gWindows[0].proc = Proc;
+    if (!strcmp(test, "tape-missing") || !strcmp(test, "tape-missing-stdout") || !strcmp(test, "tape-and-record") || !strcmp(test, "tape-ok") ||
+        !strcmp(test, "probes-unwritable") || !strcmp(test, "probes-unwritable-recording")) {
+        // A tape or a probe file that cannot be started, found at the first Present while the real game has its device and dxvk's worker
+        // threads running (replay_stop_tests.py): the process must stop at once with status 3. This exit handler stands in for a library
+        // destructor that crashes under a running worker thread: it is reached only through exit().
+        // The crash is on purpose and must be silent: not dumpable, so the kernel runs no core handler (no core file, no coredump record in
+        // the journal, no "process crashed" notification on the desktop; RLIMIT_CORE alone stops only the file).
+        atexit([] { prctl(PR_SET_DUMPABLE, 0); raise(SIGSEGV); });
+        const bool probes = !strncmp(test, "probes-", 7);
+        if (!probes) setenv("BEA_PORT_TAPE", argv[2], 1);          // for tape-missing the path names nothing
+        if (!probes && strcmp(test, "tape-missing") && strcmp(test, "tape-missing-stdout")) { FILE *tape = fopen(argv[2], "w"); fputs("# onslaught tape 2\n", tape); fclose(tape); }
+        if (!strcmp(test, "tape-and-record")) { std::string rec = std::string(argv[2]) + ".recording"; setenv("BEA_PORT_RECORD", rec.c_str(), 1); }
+        if (probes) { std::string where = std::string(argv[2]) + ".no-such-folder/probes.txt"; setenv("BEA_PORT_PROBES", where.c_str(), 1); }
+        if (!strcmp(test, "probes-unwritable-recording")) setenv("BEA_PORT_RECORD", argv[2], 1);    // a recording is open when the probe file fails
+        if (!strcmp(test, "tape-missing-stdout")) fputs("STDOUT-PENDING-AT-THE-STOP", stdout);      // a pipe: fully buffered, lost unless the stop flushes
+        Frame(1);
+        if (!strcmp(test, "tape-ok")) _exit(0);                    // the tape started: leave without the crashing handler
+        return 0;                                                  // not reached: the start failed and stopped the process
+    }
     if (!strcmp(test, "existing-destination")) { FILE *old = fopen(argv[2], "wb"); fputs("OLD RECORDING\n", old); fclose(old); }
     if (!strcmp(test, "stage-collision")) {
         char path[4096]; snprintf(path, sizeof path, "%s.recording-%lu-0.incomplete", argv[2], (unsigned long)getpid());

@@ -58,6 +58,14 @@ VULKAN_TEXT = ("a 32-bit Vulkan 1.3 graphics driver that offers what the game's 
                "constants. The Mesa drivers of Ubuntu 22.04 (23.2) and Debian 12 (22.3) lack those extensions (Debian 12 "
                "has a newer Mesa in bookworm-backports), and Intel's Mesa 24.1 driver (Fedora 40) offers only 128 bytes "
                "of push constants")
+# What the Linux package uses when it is there and does without when it is not (preflight.sh notes the X11 libraries on an X11
+# session and libdecor on a Wayland one, and does not stop; port/updater/ce_update_v2.h runs curl; ce_launch.c's message boxes
+# use zenity, or SDL's own X11 window).
+LINUX_OPTIONAL = ("- Optional: curl (the update check and download use it), zenity (SDL shows the launcher's message boxes "
+                  "with it, or in its own window without it), on an X11 session the 32-bit libXrandr, libXcursor, libXi and "
+                  "libXfixes (SDL works without them, with fewer display features) and on a Wayland session the 32-bit "
+                  "libdecor (without it the windows have no title bar on some desktops). The launcher only notes a missing "
+                  "library.")
 # dxvk's licence is not in the dxvk-native tarball; fetched from the release tag and checked.
 DXVK_LICENSE = ("https://raw.githubusercontent.com/doitsujin/dxvk/v3.1.1/LICENSE",
                 "a5cb1a6ded7d2d7e92d550ba28edd21be2d1d4044662b399887351023e30ce64")
@@ -336,8 +344,9 @@ def notices(version: str, windows: bool) -> bytes:
              "formats are RAD Game Tools'. The program decodes only the player's own game files.",
              "The Xiph.Org Foundation's name is not used to endorse or promote this program.", "", *D3DAPP, ""]
     if windows:
-        text += ["The source paths under llvm-mingw/llvm-project in bea.exe come from llvm-mingw's own build machine,",
-                 "inside its statically linked libc++abi and libunwind.", ""]
+        text += ["Source paths from llvm-mingw's own build machine (folders named llvm-mingw, llvm-project and mingw-w64) remain",
+                 "in three files: bea.exe, inside its statically linked libc++abi and libunwind, and SDL3.dll and libz.dll,",
+                 "inside the MinGW-w64 runtime objects linked into them. They are llvm-mingw's folders, not this program's.", ""]
     return "\n".join(text).encode()
 
 
@@ -378,8 +387,8 @@ def readme(version: str, windows: bool) -> bytes:
             "It needs Windows 10 or newer, for its built-in UCRT, and Windows 10 version 1903 or newer",
             "for user or game folder names with characters outside your Windows language's character set (earlier",
             "versions ignore the UTF-8 setting the programs ask for)."] + common +
-           ["Earlier Windows builds were checked under Wine on Linux and on one Windows 11 virtual machine using",
-            "software graphics. See Known limitations and this version's release notes for the routes checked."] if windows else
+           ["Windows builds have been checked under Wine on Linux and on one Windows 11 virtual machine using software",
+            "graphics; this version's release notes list the routes checked for it. See also Known limitations."] if windows else
            textwrap.wrap("Run ./onslaught-ce [game arguments]. It first checks for the 32-bit system libraries it needs "
                          "and names the packages to install when one is missing. It needs " + GLIBC_TEXT + ".",
                          README_WIDTH, break_on_hyphens=False) + common)
@@ -435,8 +444,8 @@ IN_THE_GAME = [
     "- Controllers: gamepad and flight-stick defaults cover menus, solo play and bonus co-op when joystick controls",
     "  have not been customized. Other local multiplayer uses Controller Options. Only virtual devices were tested.",
     "- Photo mode: F11 (or the console's photo command) hides the HUD and cockpit for pictures, and F12 saves a",
-    "  screenshot. Both work in single-player levels, not in recordings, replays, multiplayer or demos. Tested on",
-    "  Linux; Windows testing of it is limited (see the release notes).",
+    "  screenshot. Both work in single-player levels, but not while a session is recorded or replayed, in multiplayer,",
+    "  a network game or a demo. Tested on Linux; Windows testing of it is limited (see the release notes).",
     "- A quiet console: the developers' messages are hidden unless BEA_PORT_VERBOSE=1 is set.",
     "- A log file for reports, onslaught-ce.log in your user folder, and session recording (both below).",
     "",
@@ -454,6 +463,12 @@ IN_THE_GAME = [
     "In eligible ordinary single-player play with widescreen modes enabled, the HUD automatically scales up when",
     "both screen dimensions exceed 640 x 480. Set BEA_PORT_HUD_SCALE=0 for the original fixed-size HUD. Scaling is",
     "off in recordings and replays, multiplayer, and when BEA_PORT_WIDESCREEN=0.",
+    "On a wide screen where the menus' and HUD's text is drawn at twice its original size or more (a 4K screen,",
+    "for example), Onslaught CE draws it from a sharper copy of the game's letters, so it stays crisp instead of",
+    "soft; the letters keep their shapes, sizes and places. The text is deliberately sharper than the original's",
+    "soft pixels, and looks brighter. A font's sharper copy is made the first time it is used, which can pause the",
+    "game for a moment (about a tenth of a second). This is off in recordings and replays, on 4:3 screens and when",
+    "BEA_PORT_WIDESCREEN=0.",
     "",
 ]
 
@@ -506,15 +521,13 @@ def help_lines(windows: bool) -> list:
 def limitations(windows: bool) -> list:
     """README.txt's "Known limitations", this platform's lines only (public/README.md and the release notes list
     both platforms')."""
-    platform = (["- Earlier Windows builds were checked under Wine on Linux and on one Windows 11 virtual machine with",
+    platform = (["- Windows builds have been checked under Wine on Linux and on one Windows 11 virtual machine with",
                  "  Microsoft's software renderer. Physical Windows graphics cards and drivers remain unvalidated for",
                  "  this version; see its release notes for the routes tested.",
-                 "  During the 0.1.3 release checks, that VM updated from 0.1.2 to 0.1.3, restarted, and its installed",
-                 "  files matched the published package. An earlier attempt fetched no update feed; a later retry in",
-                 "  the same VM session succeeded. These are historical observations of the retired 0.1.0-0.1.6 updater.",
                  "- The executables are unsigned, so SmartScreen may warn you (choose More info, then Run anyway)."] if windows else
                 [*textwrap.wrap("- You need " + GLIBC_TEXT + ".", README_WIDTH, subsequent_indent="  ", break_on_hyphens=False),
-                 *textwrap.wrap("- You need " + VULKAN_TEXT + ".", README_WIDTH, subsequent_indent="  ", break_on_hyphens=False)])
+                 *textwrap.wrap("- You need " + VULKAN_TEXT + ".", README_WIDTH, subsequent_indent="  ", break_on_hyphens=False),
+                 *textwrap.wrap(LINUX_OPTIONAL, README_WIDTH, subsequent_indent="  ", break_on_hyphens=False)])
     return ["Known limitations", *platform,
             "- Complete tutorial parity with the original has not yet been established.",
             "- Gamepad and flight-stick defaults cover menus, solo play and bonus co-op with uncustomized joystick",

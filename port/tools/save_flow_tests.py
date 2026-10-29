@@ -19,10 +19,13 @@ import re
 import resource
 import signal
 import subprocess
+import sys
 import tempfile
 import unittest
 
-import deps
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import build  # noqa: E402
+import deps  # noqa: E402
 
 ROOT = deps.PORT.parent
 PATCHES = deps.PORT / "patches"
@@ -32,7 +35,7 @@ FIRST_NEW_PATCH = "0117"
 PLATFORM = ("files.cpp", "paths.cpp", "save_replace.cpp", "save_overwrite.cpp", "save_cp1252.cpp", "crt.cpp")
 # build.py GAME_CRT: game objects use LIBCMT's stream table (a second fclose returns EOF; ReadSave closes twice)
 GAME_CRT = {"fopen": "bea_crt_fopen", "port_fopen": "bea_crt_port_fopen", "fclose": "bea_crt_fclose"}
-WRAPS = ",".join("--wrap=" + n for n in ("write", "pread", "fsync", "close", "openat", "renameat", "fstatat"))
+WRAPS = ",".join("--wrap=" + n for n in ("write", "pread", "fsync", "close", "openat", "renameat", "fstatat", "usleep"))
 INCLUDES = [f"-I{deps.PORT / 'include'}", f"-I{deps.PORT / 'include/linux'}", f"-I{deps.DATA / 'dxvk-native/usr/include/dxvk'}"]
 # build.py NO_WIDE_LIBCALLS: LLVM must not turn a 16-bit wide-string loop into a call to glibc's 32-bit wcslen and friends.
 NO_WIDE_LIBCALLS = ["-fno-builtin-" + f for f in ("wcslen", "wcscmp", "wcsncmp", "wcschr", "wcscpy", "wcsncpy", "wcscat",
@@ -54,10 +57,16 @@ def sections(patch):
         r"(?ms)^--- a/([^\n]+)\n\+\+\+ b/[^\n]+\n.*?(?=^--- a/|\Z)", patch)}
 
 
-def patched(out, name, after, exclude=()):
+def patched(out, name, after, exclude=(), mirror=False):
     """src/name with the port patches applied in name order: all of them (after) or those before 0117 (before), less any
-    patch whose number is in exclude."""
-    (out / name).write_bytes((ROOT / "src" / name).read_bytes())
+    patch whose number is in exclude. mirror: start from the text the build's mirror makes of the file (its includes
+    normalised), which the patches written after 0117 take their context lines from (0137's hunk after PauseMenu.cpp's includes)."""
+    source = (ROOT / "src" / name).read_bytes()
+    if mirror:
+        build.SYSTEM_NAMES.update(build.system_header_names())
+        index = build.CaseIndex([out / path.relative_to(ROOT) for path in build.tracked_sources()])
+        source = build.normalise(source.decode("latin-1"), out, index, [out, out / "MissionScript"]).encode("latin-1")
+    (out / name).write_bytes(source)
     for patch in sorted(PATCHES.glob("*.patch")):
         if (not after and patch.name[:4] >= FIRST_NEW_PATCH) or patch.name[:4] in exclude:
             continue
@@ -149,7 +158,7 @@ class Build:
         for obj in objects:
             self.run_cmd([str(deps.DATA / "llvm/bin/llvm-objcopy"), f"--redefine-syms={syms}", str(obj)], "objcopy")
         for source in (*[deps.PORT / "platform/linux" / n for n in PLATFORM], deps.PORT / "platform/common/crtfile.cpp",
-                       TESTS / "save_replace_faults.cpp"):
+                       TESTS / "save_replace_faults.cpp", TESTS / "mods_none.cpp"):
             obj = d / (source.stem + ".o")
             self.run_cmd([*base, *PLATFORM_FLAGS, f"-I{deps.PORT / 'platform/linux'}", f"-I{deps.PORT / 'platform'}", *INCLUDES,
                           "-c", str(source), "-o", str(obj)], source.stem)
@@ -170,7 +179,9 @@ class Flow(unittest.TestCase):
         cls.before = Build(Path(cls.scratch.name), False)
         cls.after = Build(Path(cls.scratch.name), True)
         cls.only0117 = Build(Path(cls.scratch.name), True, exclude=("0118",), label="only0117")
-        cls.only0118 = Build(Path(cls.scratch.name), True, exclude=("0117",), label="only0118")
+        # 0137 (the save-failed notice) takes its FEPOptions.cpp context from 0117's lines, so it cannot apply without 0117;
+        # it is not part of the question this variant answers (0118's approval without 0117's atomic write).
+        cls.only0118 = Build(Path(cls.scratch.name), True, exclude=("0117", "0137"), label="only0118")
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix="save-flow-case-", dir=deps.WORK / "tests")
@@ -334,9 +345,10 @@ class TheReportedFailure(Flow):
 
 
 class FailuresDuringTheOverwrite(Flow):
-    # target-unlinked-once is the failure two processes saving the same career at the same moment can cause (PARITY.md, career writes)
+    # target-unlinked-always is a target that keeps showing no link; a single observation (what two processes saving the same career
+    # at the same moment can cause) is looked up again and succeeds (test_a_save_that_meets_another_saves_rename_still_succeeds)
     FAULTS = ("write-eio", "enospc", "fsync-eio", "readback-flip", "write-dropped", "rename-eio", "close-eio", "temp-eacces",
-              "target-unlinked-once")
+              "target-unlinked-always")
 
     def test_every_failure_shows_the_save_failed_message_and_keeps_the_previous_copy(self):
         self.game_save()
@@ -352,6 +364,18 @@ class FailuresDuringTheOverwrite(Flow):
                 self.assertNotIn("autosave-armed", events)
                 self.assertEqual(1, self.questions(events))
                 self.assertEqual(0, counts["delete"])
+
+    def test_a_save_that_meets_another_saves_rename_still_succeeds(self):
+        """The target's name led to a file another save's rename had just unlinked (one observation of st_nlink 0): the name is looked up
+        again and the overwrite goes through as if nothing had happened, with one question and no error."""
+        self.game_save()
+        self.user_save()
+        events, counts, r = self.page(self.after, "Y", fault="target-unlinked-once")
+        self.assertEqual((1, 0, 1), (self.questions(events), counts["delete"], counts["write"]), events)
+        self.assertIn("page:success", events)
+        self.assertNotIn("message:FEX_SAVEERROR", events)
+        self.assertEqual(self.new.read_bytes(), self.career().read_bytes())
+        self.assertEqual([], [p.name for p in (self.user / "savegames").glob(".ce-write-*")])
 
     def test_a_real_write_limit_loses_the_career_before_and_not_after(self):
         """The same kernel limit (RLIMIT_FSIZE, 512 bytes) on the autosave path, which truncates in place before the patches."""
@@ -525,7 +549,7 @@ class SourceTrace(unittest.TestCase):
     def setUpClass(cls):
         cls.dir = tempfile.TemporaryDirectory(prefix="save-trace-", dir=deps.WORK / "tests")
         cls.addClassCleanup(cls.dir.cleanup)
-        cls.patched = {n: patched(Path(cls.dir.name), n, True) for n in
+        cls.patched = {n: patched(Path(cls.dir.name), n, True, mirror=True) for n in
                        ("PCMemoryCard.cpp", "FEPOptions.cpp", "FEPSaveGame.cpp", "PauseMenu.cpp", "FEPMain.cpp", "Platform.cpp",
                         "FEPLoadGame.cpp", "FEPDirectory.cpp")}
 
@@ -553,38 +577,42 @@ class SourceTrace(unittest.TestCase):
             "FEPLoadGame.cpp": (None, 0, 1),                    # the options follow a load
         }
         for name, (owner, saves, options) in expected.items():
-            with self.subTest(name):
-                text = self.patched[name]
-                self.assertEqual(saves, len(re.findall(r"MEMORYCARD\.WriteSave\(", text)))
-                self.assertEqual(saves, len(re.findall(r"MEMORYCARD\.CreateSave\(.*?, TRUE\)", text)))
-                self.assertEqual(options, len(re.findall(r"WriteDefaultOptionsFile\(", text)))
-                self.assertEqual(0, len(re.findall(r"MEMORYCARD\.DeleteSave\(", text)))
+            # 0137 keeps the faithful lines beside its CE_VERSION ones, so each build's view of the site is counted: once each
+            for ce in (False, True):
+                with self.subTest(name, ce_layer=ce):
+                    text = self.live(name, ce=ce)
+                    self.assertEqual(saves, len(re.findall(r"MEMORYCARD\.WriteSave\(", text)))
+                    self.assertEqual(saves, len(re.findall(r"MEMORYCARD\.CreateSave\(.*?, TRUE\)", text)))
+                    self.assertEqual(options, len(re.findall(r"WriteDefaultOptionsFile\(", text)))
+                    self.assertEqual(0, len(re.findall(r"MEMORYCARD\.DeleteSave\(", text)))
         # SaveDefaultOptions asks the save page for the career (autosave) and writes the options file
         options = self.patched["FEPOptions.cpp"]
         self.assertIn("WriteDefaultOptionsFile(buffer, size)", options)
         self.assertEqual(0, len(re.findall(r"MEMORYCARD\.", options)))
 
-    def live(self, name, windows=False, after=True):
-        """The file as the compiler sees it on Linux (or Windows): conditionals resolved, includes empty."""
+    def live(self, name, windows=False, after=True, ce=False):
+        """The file as the compiler sees it on Linux (or Windows): conditionals resolved, includes empty. ce: CE_VERSION defined
+        (the public builds; the faithful build leaves it undefined)."""
         d = Path(self.dir.name) / ("live-" + ("after" if after else "before"))
         d.mkdir(exist_ok=True)
-        text = self.patched[name] if after else patched(d, name, False)
+        text = self.patched[name] if after else patched(d, name, False, mirror=True)
         (d / name).write_text(text, encoding="latin1")
         for include in re.findall(r'#include\s*[<"]([^>"]+)[>"]', text):
             (d / include).parent.mkdir(parents=True, exist_ok=True)
             (d / include).write_text("")
         r = subprocess.run([str(LLVM), "-E", "-P", "-x", "c++", "-nostdinc", f"-I{d}", "-DPC=1", "-DXBOX=2", "-DPS2=3", "-DTARGET=PC",
-                            *(["-D_WIN32=1"] if windows else []), str(d / name)], capture_output=True, text=True, timeout=30)
+                            *(["-D_WIN32=1"] if windows else []), *(["-DCE_VERSION=1"] if ce else []), str(d / name)],
+                           capture_output=True, text=True, timeout=30)
         self.assertEqual(0, r.returncode, r.stderr)
         return r.stdout
 
     def test_the_only_deletes_are_the_directory_screen_and_the_partial_save_cleanup(self):
-        for windows in (False, True):
-            with self.subTest(windows=windows):
-                sites = {name: len(re.findall(r"MEMORYCARD\.DeleteSave\(", self.live(name, windows))) for name in self.patched}
+        for windows, ce in ((False, False), (True, False), (False, True), (True, True)):
+            with self.subTest(windows=windows, ce_layer=ce):
+                sites = {name: len(re.findall(r"MEMORYCARD\.DeleteSave\(", self.live(name, windows, ce=ce))) for name in self.patched}
                 self.assertEqual({"FEPDirectory.cpp": 1, "FEPSaveGame.cpp": 2}, {k: v for k, v in sites.items() if v})
                 # the two in the save page are the card-full cleanups (CreateSave), never the overwrite YES (Process)
-                page = self.live("FEPSaveGame.cpp", windows)
+                page = self.live("FEPSaveGame.cpp", windows, ce=ce)
                 self.assertNotIn("DeleteSave", function(page, r"^void\s+CFEPSaveGame::Process\("))
                 self.assertEqual(2, len(re.findall(r"DeleteSave\(", function(page, r"^void\s+CFEPSaveGame::CreateSave\("))))
 

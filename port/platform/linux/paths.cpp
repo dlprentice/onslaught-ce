@@ -257,6 +257,14 @@ int PortResolvePath(const char *game_path, PortPathMode mode, char *out, size_t 
 	return 0;
 }
 
+// Whether the game folder itself has this regular file (mods.h: a mod may only replace the game's files).
+bool PortGameHasFile(const char *rel)
+{
+	char path[4096];
+	struct stat st;
+	return PortResolvePath(rel, PORT_PATH_GAME, path, sizeof(path)) == 0 && stat(path, &st) == 0 && S_ISREG(st.st_mode);
+}
+
 // Resolve spelling without creating anything, then open every parent through the protected descriptor walk. The result is an
 // O_PATH descriptor of the folder that holds the file (see handles.h) and `leaf` receives the file's name in it.
 int PortUserParent(const char *game_path, char *leaf, size_t n, bool create)

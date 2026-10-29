@@ -448,9 +448,14 @@ extern "C" DWORD WINAPI GetCurrentProcessId(void) { return (DWORD)getpid(); }
 // Windows' ExitProcess ends the process without the C runtime's exit work: the game's static destructors do not run
 // (CConsole::FatalError calls it with half the game built; running ~DeviceObject then crashed, A's empty-folder run).
 // Streams are flushed so the port's logs keep their last lines.
+// PortExitHook is weak: only a test-only diagnostic build defines it (to seal its record, which no atexit handler can,
+// as the process ends with _exit); in every other build the pointer is null and nothing is called.
+extern "C" void PortExitHook(int status) __attribute__((weak));
 extern "C" DECLSPEC_NORETURN void WINAPI ExitProcess(UINT code)
 {
 	fflush(NULL);
+	if (PortExitHook)
+		PortExitHook((int)code);
 	_exit((int)code);
 }
 

@@ -6,6 +6,7 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 namespace
 {
@@ -43,7 +44,10 @@ extern "C" HMMIO WINAPI mmioOpenA(LPSTR name, LPMMIOINFO info, DWORD)
 	char path[4096];
 	if (PortResolvePath(name, PORT_PATH_READ, path, sizeof(path)) != 0)
 		return NULL;
-	FILE *f = fopen(path, "rb");
+	int mod = PortModReadFd(name, path);
+	FILE *f = mod >= 0 ? fdopen(mod, "rb") : fopen(path, "rb");
+	if (!f && mod >= 0)
+		close(mod);
 	if (!f)
 	{
 		if (info)

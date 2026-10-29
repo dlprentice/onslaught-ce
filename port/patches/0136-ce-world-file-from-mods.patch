@@ -1,0 +1,42 @@
+--- a/world.cpp
++++ b/world.cpp
+@@ -357,15 +357,21 @@
+ 
+ 	sprintf(name, "%sworld%03d.wrd", path, level);
+ 
++	// CE: a world body an enabled mod supplies as data\worlds\worldNNN.wrd (platform/common/mods.h) is this world's file even
++	// when the level archive holds its own. It is decided for the real world and the base world separately: the other one
++	// keeps its place in the archive. With no mod supplying the file nothing here changes.
++	extern bool PortModHas(const char *game_path);
++	BOOL	modWorld = PortModHas(name);
++
+ 	if (base)
+ 	{
+-		if ((mBaseWorldLevel == level) && (mBaseWorldResourcePos != -1))
++		if ((!modWorld) && (mBaseWorldLevel == level) && (mBaseWorldResourcePos != -1))
+ 		{
+ 			TRACE("Loading base world from resource file...\n");
+ 			strcpy(name, CResourceAccumulator::GetResourceFileName());
+ 			start = mBaseWorldResourcePos;
+ 		}
+-		else
++		else if (!modWorld)
+ 		{
+ 			mWorldResourcePos = -1;
+ 			mBaseWorldResourcePos = -1;
+@@ -373,13 +379,13 @@
+ 	}
+ 	else
+ 	{
+-		if ((mWorldLevel == level) && (mWorldResourcePos != -1))
++		if ((!modWorld) && (mWorldLevel == level) && (mWorldResourcePos != -1))
+ 		{
+ 			TRACE("Loading world from resource file...\n");
+ 			strcpy(name, CResourceAccumulator::GetResourceFileName());
+ 			start = mWorldResourcePos;
+ 		}
+-		else
++		else if (!modWorld)
+ 		{
+ 			mWorldResourcePos = -1;
+ 			mBaseWorldResourcePos = -1;

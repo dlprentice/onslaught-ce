@@ -1,0 +1,147 @@
+--- a/PauseMenu.cpp
++++ b/PauseMenu.cpp
+@@ -26,6 +26,10 @@
+ #include	"player.h"
+ #include	"DebugLog.h"
+ #include	"data/MissionScripts/text/text.stf"
++#ifdef CE_VERSION
++bool PortCeTakeOptionsFailure();	// patch 0137: port/game/ce_notice.cpp
++void PortCeSaveFailedNotice();
++#endif
+ 
+ 
+ // the menus and their items come from the memory type 0x80, beyond Stuart's list (004cdedd)
+@@ -1511,15 +1515,28 @@
+ #line 1547
+ 		char	*buffer = new (MEMTYPE_SCRATCHPAD) char[size];
+ 		CAREER.Save(buffer);
++#ifdef CE_VERSION
++		bool	saveFailed = false;		// patch 0137: the retail PC code ignores a failed save here; CE tells the player
++		PortCeTakeOptionsFailure();
++#endif
+ 
+ 		if (FRONTEND.mFEPSaveGame.mSaveGameName[0])
+ 		{
+ 			int save;
++#ifdef CE_VERSION
++			saveFailed = (MEMORYCARD.CreateSave(FRONTEND.GetMemoryCardNumber(), FRONTEND.mFEPSaveGame.mSaveGameName, &save, TRUE) != MCE_SUCCESS) ||
++						 (MEMORYCARD.WriteSave(FRONTEND.GetMemoryCardNumber(), save, FRONTEND.mFEPSaveGame.mSaveGameName, buffer, size) != MCE_SUCCESS);
++#else
+ 			if (MEMORYCARD.CreateSave(FRONTEND.GetMemoryCardNumber(), FRONTEND.mFEPSaveGame.mSaveGameName, &save, TRUE) == MCE_SUCCESS)
+ 				MEMORYCARD.WriteSave(FRONTEND.GetMemoryCardNumber(), save, FRONTEND.mFEPSaveGame.mSaveGameName, buffer, size);
++#endif
+ 		}
+ 
+ 		CFEPOptions::WriteDefaultOptionsFile(buffer, size);
++#ifdef CE_VERSION
++		if (PortCeTakeOptionsFailure() || saveFailed)
++			PortCeSaveFailedNotice();
++#endif
+ 		delete [] buffer;
+ 	}
+ 	DeActivate(TRUE);
+--- a/FEPMain.cpp
++++ b/FEPMain.cpp
+@@ -17,6 +17,10 @@
+ #include	"TransitionHelpers.h"
+ #include	"SpriteRenderer.h"
+ #ifdef CE_VERSION
++bool PortCeTakeOptionsFailure();	// patch 0137: port/game/ce_notice.cpp
++bool PortCeSaveErrorMessage(WCHAR *out, int n);
++#endif
++#ifdef CE_VERSION
+ // Port (patch 0050, the CE layer): an "Onslaught CE" action before Quit (port/game/ce_frontend.cpp). The actions keep
+ // their numbers; a row's action is PortCeMainAction(row), which is the row itself wherever the CE menus are off
+ // (replays, recordings, the test harness, private builds), so those runs see the original seven rows.
+@@ -305,15 +309,36 @@
+ #line 148
+ 		char	*buffer = new (MEMTYPE_SCRATCHPAD) char[size];
+ 		CAREER.Save(buffer);
++#ifdef CE_VERSION
++		bool	saveFailed = false;		// patch 0137: the retail PC code ignores a failed save here; CE shows the save page's error box
++		PortCeTakeOptionsFailure();
++#endif
+ 
+ 		if (FRONTEND.mFEPSaveGame.mSaveGameName[0])
+ 		{
+ 			int save;
++#ifdef CE_VERSION
++			saveFailed = (MEMORYCARD.CreateSave(FRONTEND.GetMemoryCardNumber(), FRONTEND.mFEPSaveGame.mSaveGameName, &save, TRUE) != MCE_SUCCESS) ||
++						 (MEMORYCARD.WriteSave(FRONTEND.GetMemoryCardNumber(), save, FRONTEND.mFEPSaveGame.mSaveGameName, buffer, size) != MCE_SUCCESS);
++#else
+ 			if (MEMORYCARD.CreateSave(FRONTEND.GetMemoryCardNumber(), FRONTEND.mFEPSaveGame.mSaveGameName, &save, TRUE) == MCE_SUCCESS)
+ 				MEMORYCARD.WriteSave(FRONTEND.GetMemoryCardNumber(), save, FRONTEND.mFEPSaveGame.mSaveGameName, buffer, size);
++#endif
+ 		}
+ 
+ 		CFEPOptions::WriteDefaultOptionsFile(buffer, size);
++#ifdef CE_VERSION
++		if (PortCeTakeOptionsFailure() || saveFailed)
++		{
++			// The save page's generic error box (CFEPSaveGame::Process), in place of the language box that is showing.
++			WCHAR	msg[256];
++			if (PortCeSaveErrorMessage(msg, 256))
++			{
++				FEMESSBOX.Kill();
++				FEMESSBOX.Create(320.f, 240.f, 400, FO(100), msg, PLATFORM.Font(FONT_SMALL), 0, 10, FALSE, FEMB_OPTION_A_CONTINUE, FALSE);
++			}
++		}
++#endif
+ 		delete [] buffer;
+ 
+ 		if (CLIPARAMS.mMusic)
+--- a/FEPOptions.cpp
++++ b/FEPOptions.cpp
+@@ -11,6 +11,9 @@
+ 
+ extern char			gSaveFromOptions;			// 006799d0: makes the save page's success box show hard-coded text 0xd6
+ extern "C" int		PortReplaceUserFile(const char *game_path, const void *data, unsigned size, const char *what);	// port 0117
++#ifdef CE_VERSION
++void	PortCeOptionsWriteFailed();		// patch 0137: port/game/ce_notice.cpp
++#endif
+ 
+ static CPauseMenu	*gOptionsMenu;				// 0089bc30; static: retail keeps Shutdown and Cleanup apart, and LINK never folds code that refers to a static
+ 
+@@ -114,6 +117,9 @@
+ 	if (PortReplaceUserFile("defaultoptions.bea", data, size, "options") != 0)
+ 	{
+ 		SETUP_HISTORY.AddMessage("Couldn't write defaultoptions");
++#ifdef CE_VERSION
++		PortCeOptionsWriteFailed();	// patch 0137: the callers that tell the player ask whether it happened
++#endif
+ 	}
+ }
+ 
+--- a/FrontEndText.cpp
++++ b/FrontEndText.cpp
+@@ -1217,3 +1217,12 @@
+ void CFrontEndText::Shutdown()
+ {
+ }
++#ifdef CE_VERSION
++
++// Patch 0137: the save error line for port/game/ce_notice.cpp, without GetText's test of the X key (it toggles the English text and
++// takes the key from the game).
++WCHAR	*PortCeSaveErrorText()
++{
++	return TEXT_DB.GetString(FETX_SAVEERROR);
++}
++#endif
+--- a/DXEngine.cpp
++++ b/DXEngine.cpp
+@@ -1145,6 +1145,7 @@
+ #ifdef CE_VERSION
+ void PortCePaletteRender();
+ void PortCePhotoRender();	// patch 0108: port/game/ce_photo.cpp
++void PortCeNoticeRender();	// patch 0137: port/game/ce_notice.cpp
+ #endif
+ 
+ HRESULT	CDXEngine::PostRender(CViewport *viewport)	// FUNCTION: 0x0053ecc0
+@@ -1298,6 +1299,7 @@
+ #ifdef CE_VERSION
+ 		PortCePaletteRender();
+ 		PortCePhotoRender();
++		PortCeNoticeRender();
+ #endif
+ 	}
+ 

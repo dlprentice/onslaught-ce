@@ -257,7 +257,10 @@ the previous file as it was. Saving over a name that already exists asks once: Y
 folder (also when the name belongs to a career in the original game's `savegames` folder, which is never written), No changes
 nothing. If the game or the computer stops in the middle of a save, a hidden temporary file named `.ce-write-<number>-<number>`
 (on Windows with `.tmp` added) can be left in the `savegames` folder. It is not a career and the game does not list it; you may
-delete it.
+delete it. From 0.1.11, two of the game's automatic saves say so when they fail: after the pause menu's Continue the game's own save error
+message ("An error occurred during saving." in English, and in the language you chose) appears for a few seconds at the bottom of
+the screen, and after a language change in the front end it appears in the usual message box. The career you had is unchanged. Its other automatic saves of
+settings (leaving the Options page, after loading a career, a display reset) stay quiet. Recordings and replays show neither.
 
 On Linux, a career filename whose in-game name exceeds 31 16-bit units is omitted from the list because it cannot fit
 the game's name field. The game emits a name-free diagnostic once, normally captured in a launcher log; it does not
@@ -319,7 +322,9 @@ awk -v package="$package" '
    - glibc, libgcc and libstdc++
    - zlib
    - the Vulkan loader and a 32-bit Vulkan driver (above)
-   - the X11 or Wayland client libraries, and libXrandr
+   - the X11 or Wayland client libraries; libXrandr (X11) and libdecor (Wayland) are optional: the preflight only notes
+     a missing one (SDL works without libXrandr, with fewer display features; without libdecor the windows have no title
+     bar on some desktops)
    - `zenity` (any architecture), which shows the launcher's questions (the update offer, the game folder, session
      recording); without it the launcher uses SDL's own dialog, or asks on the terminal if no dialog works
    - `curl` (any architecture), which the launcher runs to check for and download updates; without it no update is
@@ -457,12 +462,64 @@ and reticle) scales up when the screen is wider than 640 and taller than 480 pix
 Set `BEA_PORT_HUD_SCALE=0` for the original's fixed-size HUD. Scaling is off in recordings and replays,
 multiplayer, and when `BEA_PORT_WIDESCREEN=0`.
 
+On a wide screen where the menus' and HUD's text is drawn at twice its original size or more (a 4K screen, for example),
+Onslaught CE draws it from a sharper copy of the game's letters, so it stays crisp instead of soft; the letters keep
+their shapes, sizes and places. The text is deliberately sharper than the original's soft pixels, and looks brighter. A
+font's sharper copy is made the first time it is used, which can pause the game for a moment (about a tenth of a second).
+This is off in recordings and replays, on 4:3 screens and when `BEA_PORT_WIDESCREEN=0`.
+
 For testers: to try a screen size your monitor does not offer, set `BEA_PORT_WIDE_TEST=WIDTHxHEIGHT` and start with
 the same size, for example `BEA_PORT_WIDE_TEST=2560x1440 onslaught-ce -- -res 2560 1440`. The game then treats it as
 an available widescreen mode.
 
 Replays and recordings always use the original 4:3 behaviour. The original game shares one random number source
 between visual effects and play, so a wider view can change the details of a fight; that is expected.
+
+## Mods (experimental)
+
+Onslaught CE can read replacement game files, such as textures, from mods on Linux. This is an early test of the
+feature: a mod can replace files the game already has and supply a level's world file (below), and there is no mod menu
+yet. Mods are disabled on Windows until path handling is safe and tested there: on Windows a `mods=` line in `ce.ini` is
+ignored, and the log says so.
+
+- A mod is a folder in the `mods` folder of your user folder: `~/.local/share/onslaught-ce/mods/<id>` on Linux.
+  It holds a `mod.json` and the replacement files at the paths the game
+  uses, for example `data/resources/dxtntextures/meshtex%BE_texA.tga(0)A1R5G5B5.aya`.
+- With the game closed, back up `ce.ini` and add one line naming the mods in order: `mods=first-mod,second-mod`.
+  When two mods replace the same file, the later one wins. Remove an id (or the line) to turn a mod off.
+- Nothing in the game folder or in a mod's folder is ever changed. A file you put in your user folder yourself still
+  wins over a mod.
+- Every file is checked when the game starts: `mod.json` must list it with its size and SHA-256, it must be inside the
+  mod's folder (no links), and it must replace a file the game has (or be a world file, below). A mod with any problem
+  is not loaded at all, and the log says why. The log also names each active mod and every file it replaces or adds, and notes the first time the
+  game reads each one.
+- A mod can also supply a level's world: `data/worlds/world100.wrd` (three digits, the level number) listed like any other
+  file. The game then reads that world body instead of the one inside the level's archive. A level's own world and its base
+  world are separate files (`world001.wrd` is the base world of level 100), and a mod may supply either or both. Careers
+  remember which buildings of a base world are still standing, so edit a base world by adding things at the end, not by
+  moving or removing the ones it has. If a world file changes after the game has started (an editor saving it, say), the
+  game loads that level's own world instead, and the log says so.
+- A mod's files are read by the game itself. The checks above cover where a file is and what it contains at the byte
+  level, not what a texture, archive or world inside it does, so install mods only from people you trust.
+- Mods are always off in replays, recordings and network play, so those stay the same for everyone.
+
+`mod.json` looks like this (`id` is the folder's name; optional `ce_min` and `ce_max`, such as `"0.2"`, limit
+the Onslaught CE versions it loads in):
+
+```json
+{"schema": 1, "id": "red-aquila", "name": "Red Aquila", "version": "1.0", "author": "you",
+ "description": "A red battle engine.",
+ "files": [{"path": "data/resources/dxtntextures/meshtex%BE_texA.tga(0)A1R5G5B5.aya",
+            "size": 146214, "sha256": "<64 hexadecimal digits>"}]}
+```
+
+`port/tools/mods.py` in the source writes a new `mod.json` for a mod folder (`manifest`) and packs and unpacks the
+game's `.aya` files (`pack`, `unpack`); outputs must be new names outside the selected game folder. Set `--game` when
+using a non-default game folder. The tool cannot enable mods or edit `ce.ini`. These output operations currently need
+Linux directory handles, reject links and conservatively refuse alternate mounts of the game's filesystem; an
+interrupted write may leave an incomplete new file. A texture `.aya` holds a DDS image.
+A texture may be larger than the original (twice
+the size has been tested), but its unpacked file must stay under 5 MiB, the game's limit for one texture.
 
 ## Report a problem
 
@@ -557,20 +614,18 @@ its win and debrief. This covers one recorded route; it does not establish compl
   Install the latest release by hand once ([Getting the latest version](#getting-the-latest-version-one-download-by-hand-then-it-updates-itself)).
   Windows 0.1.5 also has an update-helper startup failure. Neither disabling updates nor installing 0.1.6 solves the cleanup risk.
 - Windows checks cover Wine and one Windows 11 virtual machine using Microsoft's software renderer, not a PC with
-  a real graphics card. During the 0.1.3 release checks, that VM updated 0.1.2 to 0.1.3, restarted, and the installed
-  files matched the published package. An earlier attempt fetched no feed; a later retry succeeded. The
-  [release notes](https://github.com/dlprentice/onslaught-ce/releases/latest) describe the tested routes and known
-  limitations. The ordinary-play idle-title hang with disabled films is fixed in 0.1.4; faithful replay retains
-  retail behavior. The 0.1.5 candidate also corrects a default-fullscreen mouse hit-area mismatch and recovery
-  after minimize/focus changes, reproduced in that VM. The player's AMD graphics setup remains untested.
+  a real graphics card. The [release notes](https://github.com/dlprentice/onslaught-ce/releases/latest) describe the
+  routes tested for each version and its known limitations. Ordinary play does not hang at the idle title screen when films are disabled (fixed in 0.1.4);
+  faithful replay retains retail behavior there. A default-fullscreen mouse hit-area mismatch and a recovery problem after minimize/focus changes, both
+  reproduced in the Windows 11 virtual machine, are corrected (0.1.5). The player's AMD graphics setup remains untested.
   Please report problems with the log.
 - The Windows executable is unsigned, so SmartScreen may warn you (see above).
 - On Linux you need glibc 2.29 or newer and a 32-bit Vulkan 1.3 graphics driver with dxvk's required extensions (see
   Linux above). It was run in Ubuntu 24.04 and Debian 12 (with backported Mesa) file systems and in the Steam Linux
   Runtime 3.0 container, all with test drivers and no window; nobody has played it on those systems or on a Steam
   Deck, and the Steam shortcut route for the Deck (above) has not been tried. Those runs used a 0.1.3 candidate build,
-  not the released packages. The 0.1.5 candidate corrects an asset-decompression buffer overrun and an audio-file
-  cleanup defect reproduced in a Fedora 40 file system with the software driver (lavapipe). Bounded level-entry
+  not the released packages. An asset-decompression buffer overrun and an audio-file cleanup defect reproduced in a
+  Fedora 40 file system with the software driver (lavapipe) are corrected (0.1.5). Bounded level-entry
   and shutdown checks pass there; this is not a full-playthrough or hardware-driver validation.
 - One effect depends on leftover memory rather than on the game: a walking unit's foot-landing flags are never given
   a starting value by the original game's code, so whether its first landing makes a stomp explosion depends on what
@@ -581,8 +636,8 @@ its win and debrief. This covers one recorded route; it does not establish compl
 - Recording and replay were compared using an isolated native PipeWire null sink as well as silent audio;
   the tested tape, mixed audio and saved bytes agree. Ordinary-clock music transitions and clean shutdown were
   also exercised. These checks do not validate a physical audio device, listening quality or every race schedule.
-  The 0.1.5 candidate corrects music starts that could survive a stop request; the reported Windows overlapping
-  music has not yet been reproduced and attributed to this defect.
+  Music starts that could survive a stop request are corrected (0.1.5); the reported Windows overlapping
+  music has not been reproduced and attributed to that defect.
 - Complete tutorial parity with the original has not yet been established.
 - Gamepad and flight-stick defaults cover menus, solo play and bonus co-op ([how](port/controller-input.md)); only
   virtual devices have been tested so far.

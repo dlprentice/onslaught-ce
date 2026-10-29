@@ -2,6 +2,7 @@
 // port/platform/linux/files.cpp: the game's file calls on Linux (CreateFile/ReadFile/..., FindFirstFile, the CRT's
 // fopen/_access/_findfirst/_mkdir) through the path layer (paths.cpp).
 #include "handles.h"
+#include "../common/mods.h"
 #include <io.h>
 
 #include <dirent.h>
@@ -24,6 +25,16 @@ static DWORD ErrnoToWin32(int e)
 	case EEXIST: return ERROR_ALREADY_EXISTS;
 	default: return ERROR_GEN_FAILURE;
 	}
+}
+
+int PortModReadFd(const char *game_path, const char *resolved)
+{
+	if (!PortModsActive())
+		return -1;
+	char game[4096];
+	if (PortResolvePath(game_path, PORT_PATH_GAME, game, sizeof(game)) != 0 || strcmp(game, resolved) != 0)
+		return -1;
+	return PortModOpenRead(game_path);
 }
 
 // ---- CRT ------------------------------------------------------------------------------------------------------------
@@ -50,6 +61,14 @@ extern "C" FILE *port_fopen(const char *name, const char *mode)
 	{
 		errno = ENOENT;
 		return NULL;
+	}
+	int mod = PortModReadFd(name, path);
+	if (mod >= 0)
+	{
+		FILE *f = fdopen(mod, mode);
+		if (!f)
+			close(mod);
+		return f;
 	}
 	return fopen(path, mode);
 }
@@ -333,7 +352,11 @@ extern "C" HANDLE WINAPI CreateFileA(LPCSTR name, DWORD access, DWORD, LPSECURIT
 	if (write)
 		fd = PortOpenUserFile(name, flags, disposition == OPEN_EXISTING || disposition == OPEN_ALWAYS);
 	else if (PortResolvePath(name, PORT_PATH_READ, path, sizeof(path)) == 0)
-		fd = open(path, flags, 0644);
+	{
+		fd = PortModReadFd(name, path);
+		if (fd < 0)
+			fd = open(path, flags, 0644);
+	}
 	if (fd < 0)
 	{
 		PortSetLastError(ErrnoToWin32(errno));

@@ -238,13 +238,24 @@ void OpenRecord(const char *path)
 	RecordFailure("cannot create an exclusive recording stage");
 }
 
+// A tape (or a probe file) that cannot be started stops the process here, at the first Present, with the device and dxvk's worker
+// threads running: not exit(), whose handlers and library destructors would run under those threads and crash in the driver after
+// the message (a segmentation fault; main.cpp has the rule, and the window-size stop below is the same). The only handler the
+// game has registered by now is its own ExitCode, which a developer-only stop may skip; a recording that is already open is finished
+// by the caller first (FinalizeRecord), as exit() would have, and the C streams are flushed here.
+[[noreturn]] void StopAtOnce()
+{
+	fflush(NULL);
+	_Exit(3);
+}
+
 void Load(const char *path)
 {
 	FILE *f = fopen(path, "r");
 	if (!f)
 	{
 		fprintf(stderr, PORT_LOG_PREFIX "replay: cannot open tape %s\n", path);
-		exit(3);
+		StopAtOnce();
 	}
 	size_t cap = 0, unknown = 0;
 	unsigned version = 1, cw = 0, ch = 0;
@@ -329,7 +340,7 @@ void Init()
 		if (gActive)
 		{
 			fprintf(stderr, PORT_LOG_PREFIX "replay: BEA_PORT_RECORD and BEA_PORT_TAPE are exclusive\n");
-			exit(3);
+			StopAtOnce();
 		}
 		OpenRecord(rec);
 		gTapeCursor = true;
@@ -350,7 +361,8 @@ void Init()
 	{
 		if (gRecording) RecordFailure("probe output initialization failed");
 		fprintf(stderr, PORT_LOG_PREFIX "replay: cannot write probes %s\n", probes);
-		exit(3);
+		FinalizeRecord();		// what exit(3) would have run for an open recording: it was marked failed above, so nothing is published
+		StopAtOnce();
 	}
 	if (gProbes)
 		if (atexit(EldAtExit) != 0 && gRecording)

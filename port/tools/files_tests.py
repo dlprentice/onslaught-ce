@@ -77,6 +77,17 @@ int main(int argc, char **argv)
     if (!strcmp(argv[1], "access")) return port_access(argv[2], 0) == 0 ? 0 : 1;
     if (!strcmp(argv[1], "attributes")) return GetFileAttributesA(argv[2]) == INVALID_FILE_ATTRIBUTES ? 1 : 0;
     if (!strcmp(argv[1], "mkdir")) return CreateDirectoryA(argv[2], NULL) ? 0 : 1;
+    if (!strcmp(argv[1], "win-read"))
+    {
+        HANDLE h = CreateFileA(argv[2], GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+        if (h == INVALID_HANDLE_VALUE) return 1;
+        char b[4096];
+        DWORD n;
+        while (ReadFile(h, b, sizeof b, &n, NULL) && n) fwrite(b, 1, n, stdout);
+        PortFileClose((PortHandle *)h);
+        PortHandleFree((PortHandle *)h);
+        return 0;
+    }
     if (!strcmp(argv[1], "win-open"))
     {
         if (argc != 5) return 2;
@@ -196,12 +207,18 @@ class FileOverlay(unittest.TestCase):
         faults = build / "faults.cpp"
         faults.write_text(FAULTS)
         cls.driver = build / "files-driver"
+        sha256 = build / "sha256.o"
+        subprocess.run([str(deps.DATA / "llvm/bin/clang"), "--target=i686-pc-linux-gnu", "-m32", "-O1", "-c",
+                        str(deps.PORT / "updater/sha256.c"), "-o", str(sha256)], check=True, capture_output=True)
         platform = deps.PORT / "platform/linux"
         cmd = [str(deps.DATA / "llvm/bin/clang++"), "--target=i686-pc-linux-gnu", "-m32", "-std=c++17",
                "-ffunction-sections", "-fdata-sections", "-Wl,--gc-sections", "-fshort-wchar", "-fms-extensions",
                "-fno-autolink", "-w", "-O0", f"-I{platform}", f"-I{deps.PORT / 'include/linux'}",
                f"-I{deps.DATA / 'dxvk-native/usr/include/dxvk'}", str(source), str(platform / "files.cpp"),
                str(platform / "paths.cpp"), str(deps.PORT / "platform/common/registry.cpp"), str(faults),
+               # The mod layer the read paths consult (platform/common/mods.h), with its ce.ini reader and SHA-256.
+               str(deps.PORT / "platform/common/mods.cpp"), str(deps.PORT / "platform/common/ce.cpp"),
+               str(sha256), "-lz",
                "-Wl,--wrap=read,--wrap=write,--wrap=fsync,--wrap=close,--wrap=openat,--wrap=linkat,--wrap=unlinkat",
                "-o", str(cls.driver)]
         subprocess.run(cmd, check=True, capture_output=True, text=True)
@@ -229,8 +246,12 @@ class FileOverlay(unittest.TestCase):
                 hashlib.sha256(p.read_bytes()).hexdigest() if p.is_file() else "directory"
                 for p in root.rglob("*")}
 
-    def run_driver(self, action, path, *args, expected=0, fault=None, redirect=None, cwd=None):
+    def run_driver(self, action, path, *args, expected=0, fault=None, redirect=None, cwd=None, extra_env=None):
         env = dict(os.environ, BEA_GAME_DIR=str(self.game), BEA_USER_DIR=str(self.user), HOME=str(self.root))
+        for name in ("BEA_PORT_CLOCK", "BEA_PORT_TAPE", "BEA_PORT_PROBES", "BEA_PORT_RECORD", "BEA_PORT_PILOT",
+                     "BEA_PORT_AUTOPILOT", "BEA_NET_HOST", "BEA_NET_JOIN"):
+            env.pop(name, None)
+        env.update(extra_env or {})
         env.pop("FILES_TEST_FAULT", None)
         env.pop("FILES_TEST_REDIRECT", None)
         if fault:
@@ -254,6 +275,30 @@ class FileOverlay(unittest.TestCase):
         folder = self.user / "SAVEGAMES"
         folder.mkdir(parents=True, exist_ok=True)
         (folder / name).write_bytes(data)
+
+    def test_mod_copy_between_user_copy_and_game_file(self):
+        (self.game / "data").mkdir()
+        (self.game / "data/Thing.bin").write_bytes(b"original thing")
+        self.original = self.snapshot()
+        mod = self.user / "mods/m"
+        (mod / "data").mkdir(parents=True)
+        (mod / "data/Thing.bin").write_bytes(b"modded thing")
+        (mod / "mod.json").write_text('{"schema": 1, "id": "m", "name": "M", "version": "1", "files": [{"path": '
+                                      '"data/Thing.bin", "size": 12, "sha256": "%s"}]}'
+                                      % hashlib.sha256(b"modded thing").hexdigest())
+        (self.user / "ce.ini").write_text("mods=m\n")
+        mod_before = self.tree_snapshot(mod)
+        for action in ("read", "win-read"):
+            with self.subTest(action=action):
+                self.assertEqual(b"modded thing", self.run_driver(action, r"DATA\thing.BIN"))
+                self.assertEqual(b"original thing", self.run_driver(action, r"data\Thing.bin",
+                                                                    extra_env={"BEA_PORT_TAPE": "tape"}))
+        # An update copies the game's file into the user folder, never the mod's copy; the user copy then wins.
+        self.run_driver("update", r"data\Thing.bin", "O")
+        self.assertEqual(b"Original thing", (self.user / "data/Thing.bin").read_bytes())
+        self.assertEqual(b"Original thing", self.run_driver("read", r"data\Thing.bin"))
+        self.assertEqual(b"Original thing", self.run_driver("win-read", r"data\Thing.bin"))
+        self.assertEqual(mod_before, self.tree_snapshot(mod), "a mod folder changed")
 
     def test_original_list_without_user_save_folder(self):
         self.assert_names(["Alpha.bes", "beta.BES", "zeta.bes", "_tail.bes"])

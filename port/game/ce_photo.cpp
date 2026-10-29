@@ -109,6 +109,9 @@ void Switch(bool on)
 
 bool PortCePhotoOn() { return photo; }
 
+// Whether the frame being drawn is the one the Present after it saves as a screenshot (the notices of ce_notice.cpp stay out of it).
+bool PortCePhotoSavedNext() { return SavedNext(); }
+
 // Photo mode on or off (the console's photo, F11); false when it is not available here (it is then off).
 bool PortCePhotoSet(bool on)
 {

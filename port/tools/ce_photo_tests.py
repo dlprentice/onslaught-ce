@@ -35,6 +35,8 @@ from ce_palette_tests import function, no_core, sections, SANITIZE  # noqa: E402
 ROOT = Path(__file__).resolve().parents[2]
 PATCHES = ROOT / "port/patches"
 PATCH_NAMES = ("0108-ce-photo-mode.patch", "0133-ce-photo-draw-suppression.patch")
+# Patches whose hunks are written against photo mode's (the save error notice is drawn after its note): left out of the run without it.
+BUILT_ON_PHOTO = ("0137-ce-save-failed-notice.patch",)
 PHOTO = ROOT / "port/game/ce_photo.cpp"
 PHOTO_H = ROOT / "port/game/ce_photo.h"
 WRITER = ROOT / "port/platform/common/ce_screenshot.cpp"
@@ -132,8 +134,8 @@ def placed(files):
                  "GAME.GetPauseMenu()->Render()", "GAMEINTERFACE.Render();", "HUD.RenderOverlay();"):
         assert kept in post, kept
     mirror = post[post.index("if (!gMirrorPass)\t\t// retail PC (0053efc4)"):]
-    assert re.search(r"GAMEINTERFACE\.Render\(\);\n#ifdef CE_VERSION\n\t\tPortCePaletteRender\(\);\n\t\tPortCePhotoRender\(\);\n#endif",
-                     mirror), "the note is drawn last, outside the mirror pass"
+    assert re.search(r"GAMEINTERFACE\.Render\(\);\n#ifdef CE_VERSION\n\t\tPortCePaletteRender\(\);\n\t\tPortCePhotoRender\(\);\n(\t\tPortCeNoticeRender\(\);\n)?#endif",
+                     mirror), "the note is drawn after the console, outside the mirror pass (only the save error notice, patch 0137, may follow it)"
     hud = function(files["Hud.cpp"], "void\tCHud::Render()")
     assert "CLIPARAMS" not in hud, "the HUD no longer reads -killhud"
     assert re.search(r"GetShowHUD\(\)\)\n#ifdef CE_VERSION\n\t\t\{\n\t\t\tCePhotoDrawScope photoDraw;[^\n]*\n#endif\n\t\t\tRenderOverlayForViewpoint\(player, i\);"
@@ -213,7 +215,7 @@ class PhotoTests(unittest.TestCase):
     def test_patch_places_and_faithful_view(self):
         files = patched(self.out / "with", FILES)
         check_structure(files)
-        without = patched(self.out / "without", FILES, skip=PATCH_NAMES)
+        without = patched(self.out / "without", FILES, skip=PATCH_NAMES + BUILT_ON_PHOTO)
         for name in FILES:
             with self.subTest(file=name):
                 self.assertNotEqual(files[name], without[name])
