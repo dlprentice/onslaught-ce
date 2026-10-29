@@ -1,0 +1,11 @@
+--- a/BattleEngine.cpp
++++ b/BattleEngine.cpp
+@@ -2522,7 +2522,7 @@
+ 			FVector		bv=mOrientation*launchVector;
+ 			FVector		ov=mAutoAimTarget->GetVelocity();
+ 
+-			float		t=(bp-op).Magnitude()/(bv.Magnitude())*GAME_FR;
++			float		t=(bp-op).MagnitudeYZX()/(bv.MagnitudeYZX())*GAME_FR;	// Port (patch 0111): retail 0040b258..0040b293 sums both squares as (Y*Y + Z*Z) + X*X, not maths.h's (X*X + Y*Y) + Z*Z
+ 
+ 			FVector		predictedPos=op+ov*t;
+ 
