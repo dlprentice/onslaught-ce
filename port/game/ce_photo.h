@@ -45,6 +45,8 @@ public:
 };
 
 bool	PortCePhotoSet(bool on);
+bool	PortCePhotoAvailable();		// photo mode can be switched here (F11's rule): the pause menu's Photo Mode item (patch 0138)
+bool	PortCePhotoMenuSet(bool on);	// the same switch for that item, its note naming the pause menu
 bool	PortCePhotoKey(unsigned key, bool repeat);
 void	PortCePhotoFrame();
 void	PortCePhotoLevelEnd();

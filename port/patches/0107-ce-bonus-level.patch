@@ -53,7 +53,7 @@
  				FRONTEND.SetQuit(-1);
 +#ifdef CE_VERSION
 +			else if (PortCeBonusReturning())
-+				PortCeBonusLeaveDebriefing();	// patch 0107: back to the main menu
++				PortCeBonusLeaveDebriefing();	// patch 0107: back to the Onslaught CE page
 +#endif
  			else
  				FRONTEND.SetPage(FEP_LEVEL_SELECT, 30);

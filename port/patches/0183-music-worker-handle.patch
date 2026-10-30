@@ -1,0 +1,11 @@
+--- a/PCMusicStream.cpp
++++ b/PCMusicStream.cpp
+@@ -479,2 +479,3 @@
+ 		if (sThread)			// Port (patch 0035): no thread ran under the virtual clocks
++		{
+ 			do
+@@ -485,2 +486,4 @@
+ 			while (code == STILL_ACTIVE);
++			CloseHandle(sThread);	// Port (patch 0183): release the completed worker's handle
++		}
+ 		sThread = NULL;

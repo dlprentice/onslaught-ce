@@ -16,7 +16,7 @@ import subprocess
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[2]
-PREDECESSOR_SKIPS = {"0131-ce-music-refill-publication.patch", "0132-ce-music-refill-order-diagnostics.patch"}
+PREDECESSOR_SKIPS = {"0131-ce-music-refill-publication.patch", "0132-ce-music-refill-order-diagnostics.patch", "0187-audio-observation-counters.patch"}
 
 
 def sha(path):

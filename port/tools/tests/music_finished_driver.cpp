@@ -11,6 +11,8 @@ void PortSessionAsset(PortSessionCategory, const char *, const char *, long) {}
 void PortSessionMediaActive(PortSessionCategory, const void *, bool) {}
 bool PortAudioMediaRole(const void *, PortSessionCategory) { return false; }
 void PortSessionCount(PortSessionCounter) {}
+void PortSessionObserve(PortSessionObservation, unsigned) {}
+void PortSessionObserveMax(PortSessionObservation, unsigned) {}
 void PortSessionAudioError(const char *) {}
 void PortSessionSummary() {}
 void PortSessionPulse(unsigned) {}

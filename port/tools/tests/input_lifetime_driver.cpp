@@ -25,6 +25,9 @@ static float relativeX, relativeY;
 static SDL_MouseButtonFlags relativeButtons;
 static std::vector<SDL_JoystickID> virtualIds;
 static SDL_Window *testWindow = reinterpret_cast<SDL_Window *>(1);
+static float testPixelDensity = 1.f;
+static bool testWideModes = false;
+static float TestPixelDensity(SDL_Window *) { return testPixelDensity; }
 static SDL_Window *TestMouseFocus() { return focused ? testWindow : nullptr; }
 static SDL_MouseButtonFlags TestGlobalMouse(float *x, float *y) { if (x) *x = 2300; if (y) *y = 300; return 0; }
 static SDL_MouseButtonFlags TestWindowMouse(float *x, float *y) { if (x) *x = 380; if (y) *y = 300; return 0; }
@@ -74,6 +77,7 @@ static SDL_JoystickID *TestJoysticks(int *count) {
 #define SDL_GetGlobalMouseState TestGlobalMouse
 #define SDL_GetMouseState TestWindowMouse
 #define SDL_GetMouseFocus TestMouseFocus
+#define SDL_GetWindowPixelDensity TestPixelDensity
 // window.cpp only reads LT's raw key array for its optional debug switch. Keep that independent of the caller fixture.
 #define LT PortWindowShellBytes
 #include "WINDOW_CPP"
@@ -109,7 +113,7 @@ bool PortReplayMouse(long *dx, long *dy, long *dz, int *buttons) {
     if (!replay) return false;
     *dx = 3; *dy = -4; *dz = 120; *buttons = 1; return true;
 }
-int PortWideModes() { return 0; }
+int PortWideModes() { return testWideModes ? 1 : 0; }
 int PortWideActive() { return 0; }
 bool PortCeLayer() { return ceLayer; }
 void PortVideoInit() {}
@@ -212,13 +216,27 @@ static float sMouseFracX, sMouseFracY;
 struct MouseButton { BOOL mDown, mReleased; int mX, mY; float mFracX, mFracY; } MOUSE_BUTTONS[3];
 enum { MOUSE_EVENT_UP = 3, MOUSE_EVENT_DOWN = 4 };
 using MouseTrapper = bool (*)(WORD, int);
-#define MOUSE_TRAP static_cast<MouseTrapper>(nullptr)
-struct { bool IsRunning() { return false; } } FRONTEND;
+static MouseTrapper mouseTrap;
+#define MOUSE_TRAP mouseTrap
+struct { bool running = false; bool IsRunning() { return running; } } FRONTEND;
 struct { int GetWindowWidth() { return 640; } int GetWindowHeight() { return 480; }
     float GetSysTimeFloat() { return 0; } bool KeyOn(int) { return false; } } PLATFORM;
 static void SetMouseInputActive(BOOL value) { sMouseInputActive = value; }
 static void ResetMouseTransientState() { MOUSE_WHEEL = 0; }
 static int PortUiMouse(int *, int *) { return 0; }
+// Real menu admission and geometry bodies use fixture-owned state; most cases retain the easily recognised old map.
+static int gMenuMouse, gMenuArg = -1;
+static bool gMenuMapOpen, testRealGeometry, testMapActive;
+static unsigned testMapW = 640, testMapH = 480;
+static float testMapX = 1.f, testMapY = 1.f, testMapScale = 1.f, testMapLeft, testMapTop;
+static bool TestMenuMapOpen() { return gMenuMapOpen; }
+REAL_CE_LAYER_FUNCTION
+REAL_WIDE_FUNCTIONS
+int PortUiMouseMenu(int active) { gMenuArg = active; return gMenuMouse && TestUiMouseMenu(active); }
+void PortUiMouseMenuPoint(int *x, int *y) {
+    if (testRealGeometry) TestUiMouseMenuPoint(x, y);
+    else { *x /= 2; *y = *y / 2 + 1; }
+}
 #define GetCursorPos PortGetCursorPos
 #include "CALLERS_INC"
 
@@ -260,6 +278,19 @@ static void Wheel(float value, SDL_WindowID id = 17) {
     SDL_Event event{}; event.type = SDL_EVENT_MOUSE_WHEEL; event.wheel.windowID = id; event.wheel.y = value;
     if (!SDL_PushEvent(&event)) exit(7);
 }
+static void PushMouseAt(Uint32 type, float x, float y, Uint8 button = SDL_BUTTON_LEFT) {
+    SDL_Event event{}; event.type = type;
+    if (type == SDL_EVENT_MOUSE_MOTION) {
+        event.motion.windowID = 17; event.motion.x = x; event.motion.y = y;
+    } else {
+        event.button.windowID = 17; event.button.button = button;
+        event.button.down = type == SDL_EVENT_MOUSE_BUTTON_DOWN; event.button.x = x; event.button.y = y;
+    }
+    if (!SDL_PushEvent(&event)) exit(7);
+}
+static unsigned passedMouseTraps;
+static bool SwallowMouse(WORD, int) { return true; }
+static bool PassMouse(WORD, int) { ++passedMouseTraps; return false; }
 static void MouseEvent(Uint32 type) {
     SDL_Event event{}; event.type = type; event.button.windowID = 17;
     event.button.button = SDL_BUTTON_LEFT; event.button.x = 10; event.button.y = 20;
@@ -764,6 +795,126 @@ int main(int argc, char **argv) {
         CHECK(SUCCEEDED(ShutdownMouse()));
         Drain(); CHECK(MOUSE_WHEEL == 0 && windowMouse == 0);
         Wheel(2); Drain(); CHECK(MOUSE_WHEEL == 240 && windowMouse == 1);
+    } else if (!strncmp(test, "menu-click-late-", 16)) {
+        // A press, its release and then more movement, all waiting when the game reads its messages (one Drain is one batch): in the CE layer's menus the batch ends at the release, so the click
+        // is judged where the button was released and the movement arrives with the next batch. With the layer off (here by the setting, and by a tape) nothing waits: the movement is the last word.
+        if (!strcmp(test, "menu-click-late-motion-off")) setenv("BEA_PORT_CE_LAYER", "0", 1);
+        if (!strcmp(test, "menu-click-late-motion-tape")) setenv("BEA_PORT_TAPE", "fixture", 1);
+        const bool waits = !strcmp(test, "menu-click-late-motion");
+        gMenuMouse = 1;
+        MOUSE_X = 50; MOUSE_Y = 26;
+        PushMouseAt(SDL_EVENT_MOUSE_BUTTON_DOWN, 640.f, 360.f); PushMouseAt(SDL_EVENT_MOUSE_BUTTON_UP, 640.f, 360.f); PushMouseAt(SDL_EVENT_MOUSE_MOTION, 100.f, 50.f);
+        Drain();
+        if (waits) {
+            CHECK(MOUSE_X == 320 && MOUSE_Y == 181);					// where the button was released, as the menus' virtual screen has it
+            CHECK(MOUSE_BUTTONS[0].mReleased);
+            CHECK(MouseClickedInRect(300.f, 160.f, 340.f, 260.f));		// the click lands on the item it was made on
+            CHECK(!MouseClickedInRect(40.f, 20.f, 60.f, 40.f));			// and not on the one the pointer moved to
+            Drain();
+            CHECK(MOUSE_X == 50 && MOUSE_Y == 26);						// the movement is delivered with the next batch, after the click was judged
+        } else {
+            CHECK(MOUSE_X == 100 && MOUSE_Y == 50);						// nothing waits: the window's own pixels, the last movement
+            CHECK(!MouseClickedInRect(300.f, 160.f, 340.f, 260.f));		// and the click is judged there: the retail behaviour, left as it is
+        }
+    } else if (!strncmp(test, "menu-click-", 11)) {
+        // Event coordinates enter through the real SDL pump and MouseLParam. The scaling cases also run the real
+        // back-buffer setup, menu transform, admission and CE layer predicate with fixture-owned window state.
+        // Recording/replay/default-off controls call the actual handler directly with the real CE layer predicate;
+        // recording's pump intentionally captures rather than dispatching a button event.
+        if (!strcmp(test, "menu-click-record")) setenv("BEA_PORT_RECORD", "fixture", 1);
+        if (!strcmp(test, "menu-click-tape")) setenv("BEA_PORT_TAPE", "fixture", 1);
+        if (!strcmp(test, "menu-click-off")) setenv("BEA_PORT_CE_LAYER", "0", 1);
+        bool gated = !strcmp(test, "menu-click-record") || !strcmp(test, "menu-click-tape") ||
+                     !strcmp(test, "menu-click-off") || !strcmp(test, "menu-click-active") ||
+                     !strcmp(test, "menu-click-map") || !strcmp(test, "menu-click-frontend") ||
+                     !strcmp(test, "menu-click-faithful");
+        gMenuMouse = 1;
+        if (!strcmp(test, "menu-click-active")) sMouseInputActive = true;
+        if (!strcmp(test, "menu-click-map")) gMenuMapOpen = true;
+        if (!strcmp(test, "menu-click-frontend")) FRONTEND.running = true;
+        if (!strcmp(test, "menu-click-trap")) mouseTrap = SwallowMouse;
+        if (!strcmp(test, "menu-click-trap-pass")) mouseTrap = PassMouse;
+        MOUSE_X = 50; MOUSE_Y = 26;
+        if (gated || mouseTrap == SwallowMouse) {
+            HandleMouseMessage(WM_LBUTTONDOWN, 0, MAKELPARAM(640, 360));
+            HandleMouseMessage(WM_LBUTTONUP, 0, MAKELPARAM(640, 360));
+            CHECK(MOUSE_X == 50 && MOUSE_Y == 26);
+            if (mouseTrap) CHECK(!MOUSE_BUTTONS[0].mDown && !MOUSE_BUTTONS[0].mReleased);
+            else CHECK(MOUSE_BUTTONS[0].mDown && MOUSE_BUTTONS[0].mReleased);
+        } else {
+            bool geometry = !strcmp(test, "menu-click-hidpi") || !strcmp(test, "menu-click-43-hidpi") ||
+                            !strcmp(test, "menu-click-geometry-change");
+            bool geometry43 = !strcmp(test, "menu-click-43-hidpi");
+            if (geometry) {
+                testRealGeometry = true; testWideModes = true; testPixelDensity = geometry43 ? 2.f : 1.25f;
+                TestWideBackBuffer(geometry43 ? 1280 : 1920, geometry43 ? 960 : 1080);
+            }
+            if (!strcmp(test, "menu-click-focus")) {
+                focused = false; SDL_Event e{}; e.type = SDL_EVENT_WINDOW_FOCUS_LOST; e.window.windowID = 17;
+                CHECK(SDL_PushEvent(&e)); Drain();
+                focused = true; e.type = SDL_EVENT_WINDOW_FOCUS_GAINED;
+                CHECK(SDL_PushEvent(&e)); Drain();
+            }
+            float x = geometry ? (geometry43 ? 320.f : 768.f) : 640.f;
+            float y = geometry ? (geometry43 ? 240.f : 432.f) : 360.f;
+            int ey = geometry ? 240 : 181;
+            bool moveAway = !strcmp(test, "menu-click-move-away");
+            if (!strcmp(test, "menu-click-motion")) { PushMouseAt(SDL_EVENT_MOUSE_MOTION, x, y); Drain(); }
+            Uint8 button = !strcmp(test, "menu-click-right") ? SDL_BUTTON_RIGHT :
+                           !strcmp(test, "menu-click-middle") ? SDL_BUTTON_MIDDLE : SDL_BUTTON_LEFT;
+            int index = button == SDL_BUTTON_RIGHT ? 2 : button == SDL_BUTTON_MIDDLE ? 1 : 0;
+            PushMouseAt(SDL_EVENT_MOUSE_BUTTON_DOWN, moveAway ? 100.f : x, moveAway ? 50.f : y, button); Drain();
+            CHECK(MOUSE_X == (moveAway ? 50 : 320) && MOUSE_Y == (moveAway ? 26 : ey));
+            CHECK(MOUSE_BUTTONS[index].mDown && !MOUSE_BUTTONS[index].mReleased);
+            CHECK(MOUSE_BUTTONS[index].mX == (moveAway ? 50 : 320) && MOUSE_BUTTONS[index].mY == (moveAway ? 26 : ey));
+            if (moveAway) {
+                // A press at A and real motion to B still activates B on release, as the game currently does.
+                PushMouseAt(SDL_EVENT_MOUSE_MOTION, x, y); Drain();
+                CHECK(MOUSE_X == 320 && MOUSE_Y == ey);
+            } else {
+                // Move to a different point, then release at the target without another motion. Release must update it.
+                PushMouseAt(SDL_EVENT_MOUSE_MOTION, 100.f, 50.f); Drain();
+            }
+            // The geometry-change case switches real back-buffer math and fake density; it does not simulate OS resize.
+            if (!strcmp(test, "menu-click-geometry-change")) {
+                TestWideBackBuffer(1280, 960); testPixelDensity = 2.f; x = 320.f; y = 240.f;
+            }
+            PushMouseAt(SDL_EVENT_MOUSE_BUTTON_UP, x, y, button); Drain();
+            CHECK(MOUSE_X == 320 && MOUSE_Y == ey && MOUSE_BUTTONS[index].mReleased);
+            if (mouseTrap == PassMouse) CHECK(passedMouseTraps == 2);
+            if (index == 0) {
+                CHECK(MouseClickedInRect(300.f, 160.f, 340.f, 260.f));
+                CHECK(!MouseClickedInRect(40.f, 20.f, 60.f, 40.f));
+            }
+        }
+    } else if (!strncmp(test, "menu-mouse", 10)) {
+        // An in-game menu: the game's mouse is released (ShutdownMouse), the window's mouse messages are the pointer. The patched mouse module asks the layer whether this pointer is the virtual screen's
+        // (PortUiMouseMenu, with the game's own "mouse input active" flag) and maps the position and each button's position through the layer's helper; the front end keeps its own mapping.
+        Device *mouse = Make<Device>(MOUSE, 0);
+        mouse->SetCooperativeLevel(MainWindow(), DISCL_EXCLUSIVE | DISCL_FOREGROUND);
+        CHECK(SUCCEEDED(mouse->Acquire())); sMouse = mouse;
+        CHECK(SUCCEEDED(ShutdownMouse()));
+        Drain();
+        gMenuMouse = strcmp(test, "menu-mouse-off") != 0;
+        if (!strcmp(test, "menu-mouse-active")) { sMouseInputActive = true; MOUSE_X = 111; MOUSE_Y = 222; }
+        PushMouseAt(SDL_EVENT_MOUSE_MOTION, 640, 360); Drain();
+        CHECK(gMenuArg == (!strcmp(test, "menu-mouse-active") ? 1 : 0));		// the game's own flag is what the layer is asked with
+        if (!strcmp(test, "menu-mouse")) {
+            CHECK(MOUSE_X == 320 && MOUSE_Y == 181);						// the position, mapped
+            PushMouseAt(SDL_EVENT_MOUSE_BUTTON_DOWN, 100, 50, SDL_BUTTON_LEFT); Drain();
+            CHECK(MOUSE_BUTTONS[0].mX == 50 && MOUSE_BUTTONS[0].mY == 26);	// each button's own position too
+            PushMouseAt(SDL_EVENT_MOUSE_BUTTON_DOWN, 200, 100, SDL_BUTTON_MIDDLE); Drain();
+            CHECK(MOUSE_BUTTONS[1].mX == 100 && MOUSE_BUTTONS[1].mY == 51);
+            PushMouseAt(SDL_EVENT_MOUSE_BUTTON_DOWN, 300, 150, SDL_BUTTON_RIGHT); Drain();
+            CHECK(MOUSE_BUTTONS[2].mX == 150 && MOUSE_BUTTONS[2].mY == 76);
+            CHECK(sLastMoveX == 320 && sLastMoveY == 181);
+        } else if (!strcmp(test, "menu-mouse-off")) {
+            CHECK(MOUSE_X == 640 && MOUSE_Y == 360);						// the layer says no (a replay, a recording, the map open): the window's pixels as retail
+            PushMouseAt(SDL_EVENT_MOUSE_BUTTON_DOWN, 100, 50, SDL_BUTTON_LEFT); Drain();
+            CHECK(MOUSE_BUTTONS[0].mX == 100 && MOUSE_BUTTONS[0].mY == 50);
+        } else {
+            CHECK(MOUSE_X == 111 && MOUSE_Y == 222);						// the game's own mouse is on (a walker's mouse look): its accumulated position is left alone
+        }
     } else if (!strncmp(test, "pause-", 6)) {
         Device *mouse = Make<Device>(MOUSE, 0);
         mouse->SetCooperativeLevel(MainWindow(), DISCL_EXCLUSIVE | DISCL_FOREGROUND);

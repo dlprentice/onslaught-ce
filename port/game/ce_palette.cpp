@@ -273,8 +273,8 @@ void CmdHelp(int argc, Arg *argv)
 				const Command &c = kCommands[i];
 				Out("%s %s", c.name, c.usage);
 				Out("  %s", c.help);
-				if (c.cheat == kCheatLevels) Out("  Needs the Unlock all levels cheat (Options > Cheats).");
-				if (c.cheat == kCheatCamera) Out("  Needs the Free camera cheat (Options > Cheats).");
+				if (c.cheat == kCheatLevels) Out("  Needs the Unlock All Levels cheat (Onslaught CE > Cheats).");
+				if (c.cheat == kCheatCamera) Out("  Needs the Free Camera cheat (Onslaught CE > Cheats).");
 				return;
 			}
 		Out("No command %s. Type help.", argv[1]);
@@ -293,7 +293,7 @@ void CmdHelp(int argc, Arg *argv)
 		at = (wrote > 0 && at + wrote < int(sizeof(line))) ? at + wrote : int(sizeof(line)) - 1;
 	}
 	if (at) Out("  %s", line);
-	Out("* needs its cheat switched on in Options > Cheats.");
+	Out("* needs its cheat switched on in Onslaught CE > Cheats.");
 }
 
 void CmdVersion(int, Arg *) { Out("%s", CeConsoleGame::Version()); }
@@ -618,8 +618,8 @@ void Run(const char *line)
 		if (!Same(c.name, argv[0])) continue;
 		if (c.cheat >= 0 && !CheatOn(c.cheat))
 		{
-			if (c.cheat == kCheatCamera) Out("%s needs the Free camera cheat: Options > Cheats.", c.name);
-			else Out("%s needs the Unlock all levels cheat: Options > Cheats.", c.name);
+			if (c.cheat == kCheatCamera) Out("%s needs the Free Camera cheat: Onslaught CE > Cheats.", c.name);
+			else Out("%s needs the Unlock All Levels cheat: Onslaught CE > Cheats.", c.name);
 			return;
 		}
 		c.run(argc, argv);

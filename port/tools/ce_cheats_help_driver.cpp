@@ -131,42 +131,78 @@ int main() {
     const int ids[] = {1, 0, 5, 3, 4};
     for (int i = 0; i < CE_NUM_CHEATS; ++i) check(kCheats[i].mCheat == ids[i], "cheat identity and order");
     for (const WCHAR *key : {L"F:", L"W/S fly", L"A/D slide", L"arrows look", L"Esc freezes", L"F returns", L"still be hit"})
-        check(std::wcsstr(kCheats[4].mHelp, key) != nullptr, "free-camera keys are discoverable");
+        check(std::wcsstr(kCheats[4].mHint.mHelp, key) != nullptr, "free-camera keys are discoverable");
     for (const WCHAR *missing : {L"speed", L"up/down", L"Space", L"Shift", L"mouse"})
-        check(std::wcsstr(kCheats[4].mHelp, missing) == nullptr, "no free-camera key the game does not have");
-    check(std::wcsstr(kCheats[0].mHelp, L"progress is not changed") != nullptr, "level unlock writes nothing");
-    check(std::wcsstr(kCheats[1].mHelp, L"Nothing is saved") != nullptr, "goodie unlock writes nothing");
-    check(std::wcsstr(kCheats[3].mHelp, L"not in your career") != nullptr, "god mode is kept out of careers");
-    check(std::wcsstr(kCheats[2].mHelp, L"available unlock hints") != nullptr,
+        check(std::wcsstr(kCheats[4].mHint.mHelp, missing) == nullptr, "no free-camera key the game does not have");
+    check(std::wcsstr(kCheats[0].mHint.mHelp, L"progress is not changed") != nullptr, "level unlock writes nothing");
+    check(std::wcsstr(kCheats[1].mHint.mHelp, L"Nothing is saved") != nullptr, "goodie unlock writes nothing");
+    check(std::wcsstr(kCheats[3].mHint.mHelp, L"not in your career") != nullptr, "god mode is kept out of careers");
+    check(std::wcsstr(kCheats[2].mHint.mHelp, L"available unlock hints") != nullptr,
           "hints do not promise descriptions for every goodie");
-    check(std::wcsstr(kCheats[2].mHelp, L"even if Unlock all goodies is on") != nullptr,
-          "hint priority is discoverable");
-    // MenuOptionsList::Render centers six 20px rows at y=300; Back starts at y=325.
-    const float back_y = 325.f;
-    const WCHAR *note = L"Cheats apply to all careers and are off when recording. Wins count as usual.";
-    for (int width : {7, 8, 9, 10}) {
-        PLATFORM.font.advance = width;
-        for (int i = 0; i < CE_NUM_CHEATS; ++i) {
-            CMenuOptionsList list;
-            list.mSelected = i;
-            CCeCheatsBack back(&list);
-            draws.clear();
-            back.Render(320.f, back_y, 0);
-            int help = lines(kCheats[i].mHelp), code = lines(kCheats[i].mCode), bottom = lines(note);
-            check(int(draws.size()) == help + code + bottom, "all help, code and note lines drawn");
-            check(drawn(0, help) == compact(kCheats[i].mHelp), "help survives word wrapping");
-            check(drawn(help, code) == compact(kCheats[i].mCode), "code survives word wrapping");
-            check(drawn(help + code, bottom) == compact(note), "note survives word wrapping");
-            for (const Draw &line : draws) check(line.width < 420, "line fits help width");
-            check(draws[help + code - 1].y + 16.f <= draws[help + code].y, "help and code do not overlap note");
-            check(draws.back().y + 16.f <= 449.f, "note stays above help bar");
+    // the hint names the switch as its row does
+    check(std::wcsstr(kCheats[2].mHint.mHelp, L"even if Unlock All Goodies is on") != nullptr
+              && std::wcscmp(kCheats[1].mLabel, L"Unlock All Goodies: ") == 0,
+          "hint priority is discoverable, and names the switch as its row does");
+    const WCHAR *codes[] = {L"Original code: TURKEY", L"Original code: MALLOY", nullptr, L"Original code: Maladim", L"Original code: Aurore"};
+    for (int i = 0; i < CE_NUM_CHEATS; ++i) {
+        check(kCheats[i].mHint.mExtra != nullptr && std::wcsstr(kCheats[i].mHint.mExtra, L"Original code: ") == kCheats[i].mHint.mExtra,
+              "each cheat's hint carries its original code");
+        if (codes[i]) check(std::wcscmp(kCheats[i].mHint.mExtra, codes[i]) == 0, "the original codes");
+    }
+    check(std::wcscmp(kCheatsNote, L"Cheats apply to all careers and are off when recording. Wins count as usual.") == 0,
+          "the Cheats page's standing note");
+    for (int page = 0; page < CEP_COUNT; ++page) check(std::wcslen(kCeTitles[page]) > 0 && std::wcslen(kCeTitles[page]) < 24, "page titles");
+
+    // MenuOptionsList::Render centres N rows of 20 px at y=300 (the page has no title row): the first row is at 285-10N, so
+    // Back, the last, is at 265+10N. Every page's hints, for every row, must fit between Back and the help bar.
+    struct Page { const char *name; const SCeHint *hints; int stride; int count; const WCHAR *note; };
+    const Page pages[] = {
+        {"hub", &kHubRows[0].mHint, int(sizeof(SCeRow)), int(sizeof(kHubRows) / sizeof(kHubRows[0])), nullptr},
+        {"bonus levels", &kBonusRows[0].mHint, int(sizeof(SCeRow)), CE_NUM_BONUS, nullptr},
+        {"settings", kSettingsHints, int(sizeof(SCeHint)), CE_NUM_SETTINGS, nullptr},
+        {"cheats", &kCheats[0].mHint, int(sizeof(SCeCheat)), CE_NUM_CHEATS, kCheatsNote},
+        {"help", &kHelpRows[0].mHint, int(sizeof(SCeRow)), int(sizeof(kHelpRows) / sizeof(kHelpRows[0])), nullptr},
+        {"plans", kPlanHints, int(sizeof(SCeHint)), CE_NUM_PLANS, nullptr},
+    };
+    check(pages[0].count == 5 && pages[1].count == 7 && pages[2].count == 1 && pages[4].count == 5 && pages[5].count == 9,
+          "every page's rows");
+    for (const Page &page : pages) {
+        const float back_y = 265.f + 10.f * float(page.count + 1);
+        check(back_y + 20.f < 449.f, "Back is above the help bar");
+        for (int width : {7, 8, 9, 10}) {
+            PLATFORM.font.advance = width;
+            for (int i = 0; i <= page.count; ++i) {
+                // the last selection is Back itself, which has no hint
+                CMenuOptionsList list;
+                list.mSelected = i;
+                CCeBack back(&list, page.hints, page.stride, page.count, page.note);
+                draws.clear();
+                back.Render(320.f, back_y, 0);
+                const SCeHint *hint = i < page.count ? (const SCeHint *)((const char *)page.hints + i * page.stride) : nullptr;
+                int help = hint ? lines(hint->mHelp) : 0, code = hint && hint->mExtra ? lines(hint->mExtra) : 0;
+                int bottom = page.note ? lines(page.note) : 0;
+                check(int(draws.size()) == help + code + bottom, "all help, code and note lines drawn, and none for Back");
+                if (hint) {
+                    check(drawn(0, help) == compact(hint->mHelp), "help survives word wrapping");
+                    if (hint->mExtra) check(drawn(help, code) == compact(hint->mExtra), "code survives word wrapping");
+                    check(draws[0].y >= back_y + 20.f, "the hint starts below Back");
+                    check(draws[0].colour == 0xffffffff, "the hint is white");
+                }
+                if (page.note) check(drawn(help + code, bottom) == compact(page.note), "note survives word wrapping");
+                for (const Draw &line : draws) check(line.width < 420, "line fits help width");
+                if (help + code && bottom) check(draws[help + code - 1].y + 16.f <= draws[help + code].y, "help and code do not overlap note");
+                if (help + code) check(draws[help + code - 1].y + 16.f <= 449.f, "help stays above the help bar");
+                if (bottom) check(draws.back().y + 16.f <= 449.f, "note stays above help bar");
+                check(help + code <= 5, "a hint is five lines at most");
+            }
         }
     }
+    PLATFORM.font.advance = 8;
     CMenuOptionsList list;
-    CCeCheatsBack back(&list);
+    CCeBack back(&list, &kCheats[0].mHint, int(sizeof(SCeCheat)), CE_NUM_CHEATS, kCheatsNote);
     draws.clear();
     FEMESSBOX.open = true;
-    back.Render(320.f, back_y, 0);
+    back.Render(320.f, 325.f, 0);
     check(draws.empty(), "message box suppresses help behind it");
-    std::puts("CE cheat help: five selections, wrapping, spacing and message box passed");
+    std::puts("CE cheat help: every page's hints, wrapping, spacing and message box passed");
 }

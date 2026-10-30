@@ -35,6 +35,8 @@ static int dropped = 0, filterCalls = 0;
 void PortCeDrawHooks(bool on) { filtered = on; ++filterCalls; if (!on) dropped = 0; }
 void PortCeDrawsDropped(int delta) { dropped += delta; if (dropped < 0) dropped = 0; }
 #endif
+// The commander map's open key (patch 0162), called from the message procedure included below: no map here.
+bool PortCeCmdKey(unsigned, bool) { return false; }
 #include "msgproc.inc"
 
 static void check(bool condition, const char *message) {
@@ -80,6 +82,15 @@ static void keys() {
     check(draws.empty(), "the note goes with photo mode");
     check(PortCePhotoSet(true) && PortCePhotoOn() && filtered, "the console turns it on");
     check(PortCePhotoSet(false) && !PortCePhotoOn() && !filtered, "and off");
+    // The pause menu's Photo Mode item (patch 0138): available where F11 is; the same switch, its note naming the menu.
+    check(PortCePhotoAvailable(), "the pause menu's item is offered in an ordinary solo level");
+    check(PortCePhotoMenuSet(true) && PortCePhotoOn() && filtered && CLIPARAMS.mKillHUD == FALSE, "the pause menu's item turns it on");
+    render();
+    check(drew(L"Photo mode: HUD hidden. Pause menu or F11 returns; F12 saves a screenshot."), "its note names the pause menu");
+    for (const auto &d : draws) check(d.x >= 0 && d.y >= 0 && d.x + float(d.text.size() * 8) * d.sx <= PLATFORM.w + 0.01f, "that note fits");
+    check(PortCePhotoMenuSet(false) && !PortCePhotoOn() && !filtered && dropped == 0, "and the same item turns it off");
+    render();
+    check(draws.empty(), "the note goes with photo mode");
     // Other keys stay the game's.
     clearKeys();
     down(0x21);
@@ -205,11 +216,21 @@ static void levelEnd() {
     check(CLIPARAMS.mKillHUD == FALSE, "level end without photo mode changes nothing");
 }
 
-static void refusedHere(const char *why) {
+// itemOffered: the pause menu's Photo Mode item is still on the menu where the front end's flag is the only thing set (it is
+// drawn with that flag set), though choosing it switches nothing there.
+static void refusedHere(const char *why, bool itemOffered = false) {
     clearKeys();
     down(DIK_F11); up(DIK_F11); down(DIK_F12); up(DIK_F12);
     check(!PortCePhotoOn() && !filtered && LT.KeyWasDown[DIK_F11] && LT.KeyWasDown[DIK_F12], why);
     check(!PortCePhotoSet(true) && !PortCePhotoOn() && !filtered && CLIPARAMS.mKillHUD == FALSE, why);
+    check(PortCePhotoAvailable() == itemOffered, why);	// the pause menu's item is no way round a fence
+    if (itemOffered) {
+        // the item is chosen inside the menu's drawing by a mouse click, with the front end's flag set: it still works, and ends
+        check(PortCePhotoMenuSet(true) && PortCePhotoOn() && filtered, "a click on the Photo Mode item, taken inside the menu's drawing, turns photo mode on");
+        check(PortCePhotoMenuSet(false) && !PortCePhotoOn() && !filtered, "and off");
+    } else {
+        check(!PortCePhotoMenuSet(true) && !PortCePhotoOn() && !filtered, why);
+    }
     check(!PortCePhotoShotWanted(), why);
 }
 
@@ -232,7 +253,10 @@ static void fences() {
     GAME.multiplayer = true; refusedHere("multiplayer refuses it"); GAME.multiplayer = false;
     GAME.players = 2; refusedHere("two players refuse it"); GAME.players = 1;
     GAME.playerPresent = false; refusedHere("no player refuses it"); GAME.playerPresent = true;
-    FRONTEND.running = true; refusedHere("the front end refuses it"); FRONTEND.running = false;
+    // The pause menu is drawn with the front end's flag set (DXEngine.cpp: gInFrontEnd around the menu's Render): its Photo Mode
+    // item must still be offered then, and a mouse click on it, taken inside that drawing, must still work. F11 and the console
+    // refuse with the flag set (refusedHere checks them).
+    FRONTEND.running = true; refusedHere("the front end refuses it", true); FRONTEND.running = false;
     PLAYABLE_DEMO = TRUE; refusedHere("the demo refuses it"); PLAYABLE_DEMO = FALSE;
     CLIPARAMS.mAttractMode = true; refusedHere("attract mode refuses it"); CLIPARAMS.mAttractMode = false;
     CLIPARAMS.mPlaybackDemo = true; refusedHere("demo playback refuses it"); CLIPARAMS.mPlaybackDemo = false;

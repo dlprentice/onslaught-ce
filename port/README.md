@@ -1,23 +1,25 @@
 # Native port (Linux and Windows)
 
 Status: active (both targets build, link and run the game; Linux replays are compared with retail Present by Present, logged in PARITY.md in the private working tree; native Windows acceptance uses a software-rendered VM, not physical-GPU validation)
-Last updated: 2026-10-29 (the v2 feed is published with every release since 0.1.8, and the latest release is the corrected successor; earlier: private-tree references marked, released-launcher cleanup warning and manual migration)
+Last updated: 2026-10-29 (matching concession and upstream credit clarified; earlier: the v2 feed, private-tree references, released-launcher cleanup warning and manual migration)
 Summary: a second build of the decompilation's sources as native i686 Linux and Windows programs; layout, ownership,
 commands and rules.
 
 The port compiles the same `src/` the matching build compiles, with clang for i686 Linux and i686 Windows, against
 Direct3D 9 (dxvk-native on Linux, the system's on Windows) and one SDL3 platform layer for the window, input and
-audio. Retail data is read from the player's install; nothing retail is committed. The VC6 build stays byte-identical:
-the private working tree's `tools/decomp.py check` keeps every function matching, and its `port/PLAN.md` has the
-targets, the API surface, the parity hazards and the phases (neither is in the public export; the public decompilation
-is https://github.com/dlprentice/onslaught-decomp).
+audio. Retail data is read from the player's install; nothing retail is committed. The VC6 matching build is separate:
+the private working tree's `tools/decomp.py check` compares its compiled functions with the executable using a recorded
+one-byte compiled-object concession. That tree's README records the score and source stand-ins; its `port/PLAN.md` has
+dated targets, API counts, parity hazards and phases (neither is in the public export; the public decompilation is
+https://github.com/dlprentice/onslaught-decomp).
 
     python3 port/tools/deps.py build     # pinned inputs, both targets, into local-data/port (about 10 minutes)
     python3 port/probe/run.py            # private tree only: P0, the triangle on Linux (NVIDIA, Intel) and Windows-under-Wine, compared
     python3 port/build.py [--target linux|windows] [-k]   # the game: local-data/port/build/<target>/bea[.exe]
 
-Licence: GPL-3.0 (`SPDX-License-Identifier: GPL-3.0-only`), matching Stuart's release (GPL version 3, no "or later"
-grant). Third-party inputs keep their own licences (`deps.lock`).
+Licence: GPL-3.0 (`SPDX-License-Identifier: GPL-3.0-only`), matching the upstream Onslaught source (GPL version 3,
+no "or later" grant). The public NOTICE retains the source attribution; third-party inputs keep their own licences
+(`deps.lock`).
 
 ## Public release
 

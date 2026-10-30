@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // port/game/ce_frontend.cpp: the CE layer's front-end additions (patch 0050): an "Onslaught CE" action on the main menu
-// opening a page of the game's own options-style list (About, Special Thanks, Updates, Record sessions, Report a problem,
-// Back), and a Cheats page in Options whose switches (ce.ini, patch 0051 at IsCheatActive) work as the cheat codes do in
-// a career's name. Built as a game file (port/build.py) so it uses the game's menu classes; public builds only.
+// opening a page of the game's own options-style lists: Bonus Levels, CE Settings, Cheats (switches kept in ce.ini, patch
+// 0051 at IsCheatActive, that work as the cheat codes do in a career's name), Help & Info (Controls & Tips, What's Coming,
+// Updates & Rollback, About, Special Thanks) and Report a Problem. Every row has a hint under the list. The
+// pause menu's Photo Mode item (patch 0138) is made here too. Built as a game file (port/build.py) so it uses the game's
+// menu classes; public builds only.
 //
 // None of it exists while the CE menus are off: in replays, recordings and the test harness (PortCeLayer, ce.cpp), under
 // -autoconfigtest and in the playable demo, the main menu has its seven rows, the language-test page keeps its slot and
-// the options page its four lists, so a tape navigates exactly the menus retail had.
+// the options page and the pause menu are the game's own, so a tape navigates exactly the menus retail had.
 #ifdef CE_VERSION
 
 #include "common.h"
@@ -24,12 +26,13 @@
 #include "TransitionHelpers.h"
 #include "data/MissionScripts/text/text.stf"
 #include "../platform/common/portlog.h"
+#include "ce_photo.h"
 
 #include <stdio.h>
 #include <string.h>
 
 #define MEMTYPE_MENUITEM	((EMemoryType)0x80)		// the menu items' memory type (MenuItem.cpp, PauseMenu.cpp)
-#define PORT_CE_CHEATS_PCTEXT	0x4345				// the options list's Cheats item (patch 0050, PauseMenu.cpp)
+#define PORT_CE_PHOTO_PCTEXT	0x4346				// the pause menu's Photo Mode item (patch 0138, PauseMenu.cpp)
 #define PORT_CE_ACTION		9						// the main menu's CE action (patch 0050, FEPMain.cpp)
 #define FEP_CE				FEP_LANGUAGE_TEST		// the CE page's slot
 
@@ -275,15 +278,6 @@ public:
 	int			mAction;
 };
 
-// The options list's Cheats item: chosen, CPauseMenu::ButtonPressed opens page 4 by its PC text (patch 0050).
-class CCeCheatsItem : public CMenuItem
-{
-public:
-	CCeCheatsItem() : CMenuItem((EPCText)PORT_CE_CHEATS_PCTEXT, 3) {}
-
-	virtual WCHAR	*GetText() { static WCHAR text[] = L"Cheats"; return text; }
-};
-
 // A Yes/No switch with its own label (the game's Yes and No, as its other switches).
 class CCeSwitch : public CBOOLMenuItem
 {
@@ -455,12 +449,12 @@ public:
 	int		mCheat;
 };
 
-// Record sessions: the launcher reads record_sessions from ce.ini as it starts the game. The list asks for the value
-// every frame (CMenuMenuItem::RenderList), so it is read from ce.ini once and kept, as the cheats are.
+// Record Play for Bug Reports: the launcher reads record_sessions from ce.ini as it starts the game. The list asks for the
+// value every frame (CMenuMenuItem::RenderList), so it is read from ce.ini once and kept, as the cheats are.
 class CCeRecordSwitch : public CCeSwitch
 {
 public:
-	CCeRecordSwitch() : CCeSwitch(L"Record sessions: ") {}
+	CCeRecordSwitch() : CCeSwitch(L"Record Play for Bug Reports: ") {}
 
 	static int	sValue;
 
@@ -496,6 +490,14 @@ public:
 int	CCeRecordSwitch::sValue = -1;
 
 //*********************************************************************************
+// Under each page's list the page says what the highlighted row does: a line in white, and for some rows a second line in
+// grey (the cheats' original codes). The texts are in the tables below, one hint a row; the list's last item, Back, draws them.
+struct SCeHint
+{
+	const WCHAR	*mHelp;
+	const WCHAR	*mExtra;
+};
+
 // The cheats the game checks (IsCheatActive's numbers; V3R5IOF, number 2, has no effect in the PC game and is left out),
 // each with the line the page shows while it is highlighted: what it does (src/FEPLevelSelect.cpp IsWorldUnlocked,
 // FEPGoodies.cpp get_goodie_state, PauseMenu.cpp's controls list and Player.cpp SetIsGod, game.cpp's
@@ -505,51 +507,54 @@ struct SCeCheat
 {
 	const WCHAR	*mLabel;
 	int			mCheat;
-	const WCHAR	*mHelp;
-	const WCHAR	*mCode;
+	SCeHint		mHint;
 };
 
 static const SCeCheat	kCheats[] = {
-	{L"Unlock all levels: ", 1, L"Every level shows as open in the level select. Your career's own progress is not changed.",
-	 L"Original code: TURKEY"},
-	{L"Unlock all goodies: ", 0, L"Every goodie on the Goodies page is open. Nothing is saved to your career.",
-	 L"Original code: MALLOY"},
-	{L"Goodie hints: ", 5, L"The Goodies page shows the available unlock hints. Goodies cannot be opened, even if Unlock all "
-						   L"goodies is on.", L"Original code: lat\u00eate"},
-	{L"God mode option: ", PORT_CE_GOD_CHEAT, L"Adds God to Controller Options. God on: no damage, endless energy. Kept in "
-											   L"ce.ini, not in your career.", L"Original code: Maladim"},
-	{L"Free camera (F key): ", 4, L"F: free camera. W/S fly, A/D slide, arrows look. Esc freezes the battle; F returns. You "
-								  L"can still be hit.", L"Original code: Aurore"},
+	{L"Unlock All Levels: ", 1, {L"Every level shows as open in the level select. Your career's own progress is not changed.",
+	 L"Original code: TURKEY"}},
+	{L"Unlock All Goodies: ", 0, {L"Every goodie on the Goodies page is open. Nothing is saved to your career.",
+	 L"Original code: MALLOY"}},
+	{L"Goodie Hints: ", 5, {L"The Goodies page shows the available unlock hints. Goodies cannot be opened, even if Unlock All "
+							L"Goodies is on.", L"Original code: lat\u00eate"}},
+	{L"God Mode Option: ", PORT_CE_GOD_CHEAT, {L"Adds God to Controller Options. God on: no damage, endless energy. Kept in "
+											   L"ce.ini, not in your career.", L"Original code: Maladim"}},
+	{L"Free Camera (F Key): ", 4, {L"F: free camera. W/S fly, A/D slide, arrows look. Esc freezes the battle; F returns. You "
+								   L"can still be hit.", L"Original code: Aurore"}},
 };
 #define CE_NUM_CHEATS	int(sizeof(kCheats) / sizeof(kCheats[0]))
+static WCHAR	kCheatsNote[] = L"Cheats apply to all careers and are off when recording. Wins count as usual.";
 
 // The page's Back item, the list's last: after drawing itself (the list draws its items in order, so this comes after
-// the others) it draws, below the list, the highlighted cheat's help line and the page's standing note, in the small
-// font's normal text with its shadow as the options pages draw their rows (the list's disabled grey is for what cannot
-// be chosen). Nothing is drawn while a message box is shown over the list.
-class CCeCheatsBack : public CMenuItem
+// the others) it draws, below the list, the highlighted row's hint (hints[row], stride bytes apart, count of them: Back
+// itself has none) and the page's standing note, if it has one, in the small font's normal text with its shadow as the
+// options pages draw their rows (the list's disabled grey is for what cannot be chosen). Nothing is drawn while a message
+// box is shown over the list.
+class CCeBack : public CMenuItem
 {
 public:
-	CCeCheatsBack(CMenuOptionsList *list) : CMenuItem((DWORD)GI_BACK, 3), mList(list) {}
+	CCeBack(CMenuOptionsList *list, const SCeHint *hints, int stride, int count, const WCHAR *note)
+		: CMenuItem((DWORD)GI_BACK, 3), mList(list), mHints(hints), mStride(stride), mCount(count), mNote(note) {}
 
 	virtual void	Render(float x, float y, BOOL selected)
 	{
 		CMenuItem::Render(x, y, selected);
 		if (FEMESSBOX.BeingDisplayed())
 			return;
-		static WCHAR note[] = L"Cheats apply to all careers and are off when recording. Wins count as usual.";
 		CDXBitmapFont *font = PLATFORM.Font(FONT_SMALL);
 		float line = float(font->GetHeight());
-		// what the highlighted cheat does, in white, then its original code, as trivia, in the note's grey
-		if ((mList->mSelected >= 0) && (mList->mSelected < CE_NUM_CHEATS))
+		// what the highlighted row does, in white, then (for a cheat) its original code, as trivia, in the note's grey
+		if ((mList->mSelected >= 0) && (mList->mSelected < mCount))
 		{
-			const SCeCheat &cheat = kCheats[mList->mSelected];
+			const SCeHint &hint = *(const SCeHint *)((const char *)mHints + mList->mSelected * mStride);
 			float ty = y + 20.f + line * 0.5f;
-			ty += line * Lines(font, cheat.mHelp, ty, 0xffffffff);
-			Lines(font, cheat.mCode, ty, kGrey);
+			ty += line * Lines(font, hint.mHelp, ty, 0xffffffff);
+			if (hint.mExtra)
+				Lines(font, hint.mExtra, ty, kGrey);
 		}
 		// the note ends a little above the page's help bar (CFEPCommon::RenderHelpText draws it at y 455)
-		Lines(font, note, 449.f, kGrey, true);
+		if (mNote)
+			Lines(font, mNote, 449.f, kGrey, true);
 	}
 
 	static const DWORD	kGrey = 0xffa8a8a8;
@@ -576,22 +581,10 @@ public:
 	}
 
 	CMenuOptionsList	*mList;
+	const SCeHint		*mHints;
+	int					mStride, mCount;
+	const WCHAR			*mNote;
 };
-
-CMenuItem	*PortCeCheatsItem()
-{
-	return new (MEMTYPE_MENUITEM) CCeCheatsItem();
-}
-
-CMenuOptionsList	*PortCeCheatsList(float y)
-{
-	static WCHAR title[] = L"Cheats";
-	CMenuOptionsList *list = new (MEMTYPE_MENUITEM) CMenuOptionsList(title, 320.f, y, FALSE, 0xb0000000);
-	for (const SCeCheat &cheat : kCheats)
-		list->AddItem(new (MEMTYPE_MENUITEM) CCeCheatSwitch(cheat.mLabel, cheat.mCheat));
-	list->AddItem(new (MEMTYPE_MENUITEM) CCeCheatsBack(list));
-	return list;
-}
 
 //*********************************************************************************
 // The CE page's menu: a CPauseMenu without the pause menu's lists (patch 0050's constructor), so the list draws and
@@ -608,6 +601,8 @@ static const char kSpecialThanks[] =
 	"BEA community and\npreservation projects.\n\n"
 	"Original game credits: Credits.";
 
+// What a row does when chosen. The first values are the old page's, kept; the plans are CEA_PLAN_FIRST + their index, the
+// five Race Challenges CEA_RACE_FIRST + 0..4 (levels 901-905, ce_bonus.cpp), the pages CEA_PAGE_*.
 enum ECeAction
 {
 	CEA_NONE = 0,
@@ -616,11 +611,88 @@ enum ECeAction
 	CEA_REPORT,
 	CEA_THANKS,
 	CEA_BONUS,
-	CEA_COOP_A,
-	CEA_COOP_B,
+	CEA_COOP,
 	CEA_PLANS,
-	CEA_PLAN_FIRST
+	CEA_PLAN_FIRST,
+	CEA_RACE_FIRST = 100,
+	CEA_PAGE_BONUS = 120,
+	CEA_PAGE_SETTINGS,
+	CEA_PAGE_CHEATS,
+	CEA_PAGE_HELP,
+	CEA_TIPS
 };
+#define CE_NUM_RACES	5
+
+// The pages (lists of rows) and where Back goes from each: the hub, its four pages, and What's Coming under Help & Info.
+enum ECePage
+{
+	CEP_HUB = 0,
+	CEP_BONUS,
+	CEP_SETTINGS,
+	CEP_CHEATS,
+	CEP_HELP,
+	CEP_PLANS,
+	CEP_COUNT
+};
+static const int	kCeParent[CEP_COUNT] = {-1, CEP_HUB, CEP_HUB, CEP_HUB, CEP_HUB, CEP_HELP};
+static WCHAR		kCeTitles[CEP_COUNT][24] = {L"Onslaught CE", L"Bonus Levels", L"CE Settings", L"Cheats", L"Help & Info",
+												L"What's Coming"};
+
+// A row: its label, what it does, and its hint (the font has no underscore, so a setting's
+// ce.ini name is left to the README).
+struct SCeRow
+{
+	const WCHAR	*mLabel;
+	int			mAction;
+	SCeHint		mHint;
+};
+
+static const SCeRow	kHubRows[] = {
+	{L"Bonus Levels", CEA_PAGE_BONUS, {L"Extra levels. None of them changes your career progress.", 0}},
+	{L"CE Settings", CEA_PAGE_SETTINGS, {L"Options that Onslaught CE adds. They are kept in ce.ini.", 0}},
+	{L"Cheats", CEA_PAGE_CHEATS, {L"The original game's cheats as switches. They apply to every career.", 0}},
+	{L"Help & Info", CEA_PAGE_HELP, {L"Controls and tips, what is coming, updates, about and thanks.", 0}},
+	{L"Report a Problem", CEA_REPORT, {L"Opens a problem report in your browser. Nothing is sent until you submit it.", 0}},
+};
+
+// Levels 201, 856 and 901-905 (ce_bonus.cpp), in the order of the list; a bonus level returns here, its row highlighted. The original
+// ships the building-defence scenario twice (levels 856 and 858 are the same map), so the list has it once.
+static const SCeRow	kBonusRows[] = {
+	{L"Aquila Prototype", CEA_BONUS, {L"1 player. The original's demo level. Career progress is not changed.", 0}},
+	{L"Building Defence", CEA_COOP, {L"2 players on this PC, in split screen. Career progress is not changed.", 0}},
+	{L"Race Challenge 1", CEA_RACE_FIRST + 0, {L"1 player. Three laps against the clock. Career progress is not changed.", 0}},
+	{L"Race Challenge 2", CEA_RACE_FIRST + 1, {L"1 player. Three laps against the clock. Career progress is not changed.", 0}},
+	{L"Race Challenge 3", CEA_RACE_FIRST + 2, {L"1 player. Three laps against the clock. Career progress is not changed.", 0}},
+	{L"Race Challenge 4", CEA_RACE_FIRST + 3, {L"1 player. Three laps against the clock. Career progress is not changed.", 0}},
+	{L"Race Challenge 5", CEA_RACE_FIRST + 4, {L"1 player. Three laps against the clock. Career progress is not changed.", 0}},
+};
+#define CE_NUM_BONUS	int(sizeof(kBonusRows) / sizeof(kBonusRows[0]))
+
+// CE Settings: the switch rows are items of their own (Record Play for Bug Reports); their hints.
+static const SCeHint	kSettingsHints[] = {
+	{L"Records your play for bug reports, from the next start of the game.", 0},
+};
+#define CE_NUM_SETTINGS	int(sizeof(kSettingsHints) / sizeof(kSettingsHints[0]))
+
+static const SCeRow	kHelpRows[] = {
+	{L"Controls & Tips", CEA_TIPS, {L"Dodge, zoom, photo mode, screenshots, the console, the free camera and the commander map.", 0}},
+	{L"What's Coming", CEA_PLANS, {L"Plans and ideas. Nothing there starts a feature.", 0}},
+	{L"Updates & Rollback", CEA_UPDATES, {L"How updates work, and how to go back to the version before.", 0}},
+	{L"About Onslaught CE", CEA_ABOUT, {L"The version, the licence, and where the source and reports are.", 0}},
+	{L"Special Thanks", CEA_THANKS, {L"The people and projects behind the game and this port.", 0}},
+};
+
+// The Controls & Tips note: eight lines at most in the game's font (about 47 characters a line in the message box), so the lines
+// are broken here rather than left to the wrap. Only what exists: the dodge and the zoom as README's Dodging and Zooming say
+// them, F11, F12 and the console (solo levels), the free camera with its cheat, and the commander map, which commander=1 in
+// ce.ini turns on (experimental, off by default). The font has no backquote, so the console's key is named in words.
+static const char kControlsTips[] =
+	"Controls & Tips\n"
+	"Dodge, in walker mode: tap A then D,\nor D then A.\n"
+	"Zoom: mouse wheel, or the gamepad bumpers.\n"
+	"Solo levels: F11 photo mode, F12 screenshot,\nthe grave key (left of 1) opens the console.\n"
+	"F: free camera, with the Free Camera cheat on.\n"
+	"M: commander map, with commander=1 in ce.ini.";
 
 // These are descriptions, not controls. The separate Godot project and early concepts are labelled as such.
 struct SCePlan { const WCHAR *mLabel; const char *mText; };
@@ -635,22 +707,55 @@ static const SCePlan kCePlans[] = {
 	 "Engine customization is not available."},
 	{L"Map and mission tools", "A level editor is being built outside the game, in the separate Onslaught Companion app. There are no "
 	 "map or mission tools in the game itself."},
-	{L"HUD and display", "Parts of the solo HUD can scale at higher resolutions. On a wide screen, text drawn at twice its size or more "
-	 "uses a sharper copy of the font (not in recordings or replays, on 4:3 screens or when widescreen modes are off). Selectable "
-	 "HUD size and changing display mode without a restart are being explored. Windowed and Fullscreen settings currently need "
-	 "a restart."},
+	{L"HUD and display", "On a wide screen the solo HUD's corner groups sit in the screen's corners, and a setting in ce.ini (named in "
+	 "the README) keeps them in the 4:3 columns instead. Parts of the HUD can also scale at higher resolutions. Both are off in "
+	 "recordings, replays and multiplayer. Sharper text is off by default. A setting in ce.ini (see the README) can sharpen bitmap "
+	 "text drawn at least twice as large horizontally or vertically on a non-4:3 picture. It is normally off in recordings and "
+	 "replays or when widescreen modes are off. Selectable HUD size and changing display mode without a restart are being "
+	 "explored. Windowed and Fullscreen settings currently need a restart."},
 	{L"Controls and tutorial", "More dodge and zoom guidance, control options and controller refinements are planned. "
 	 "Solo gamepad defaults and English tutorial cues already exist."},
 	{L"CE features in recordings", "Session recordings use original-style menus today. Controller input is not recorded and "
 	 "many CE additions are off. More recording support is being explored."},
 	{L"Full photo mode", "Photo mode already hides the HUD for pictures (F11), and F12 saves a screenshot in single-player levels. "
 	 "A fuller photo mode with camera tools is an idea, not a feature yet."},
-	{L"Godot and commander ideas", "The separate Godot rebuild is in development. Commander-style battlefield control is a "
-	 "long-term idea, not a feature of this game."}
+	{L"Godot and commander ideas", "The separate Godot rebuild is in development. Commander mode (experimental): an optional map "
+	 "for ordering friendly squads in single-player missions. Turn it on in the ce.ini file (see the README). A second player "
+	 "taking the commander seat online is an idea, not available."}
 };
 #define CE_NUM_PLANS int(sizeof(kCePlans) / sizeof(kCePlans[0]))
 
+// The same topics as the list shows them: in Title Case like the original's pages (kCePlans' own labels are the topics'
+// names, kept as they were), each with its hint. A test checks the two tables name the same topics.
+static const WCHAR	*const kPlanLabels[CE_NUM_PLANS] = {
+	L"Online Play", L"Campaign Co-op", L"Battle Engine / Mods", L"Map and Mission Tools", L"HUD and Display",
+	L"Controls and Tutorial", L"CE Features in Recordings", L"Full Photo Mode", L"Godot and Commander Ideas"};
+static const SCeHint	kPlanHints[CE_NUM_PLANS] = {
+	{L"In development. Not available yet.", 0},
+	{L"Experimental. Not available yet.", 0},
+	{L"Experimental, and on Linux only. There is no mod menu.", 0},
+	{L"Planned outside the game, in the Companion app.", 0},
+	{L"Some of it works today. More is being explored.", 0},
+	{L"Some of it works today. More is planned.", 0},
+	{L"Recordings use the original's menus today.", 0},
+	{L"An idea. F11 and F12 work today.", 0},
+	{L"The Godot rebuild is in development. The commander map is experimental.", 0},
+};
+
 bool	PortCeBonusStart(int level);		// ce_bonus.cpp
+int		PortCeBonusTakeReturn();			// ce_bonus.cpp: the bonus level the front end has just come back from, or 0
+
+// The level a Bonus Levels row starts (ce_bonus.cpp), or 0 for any other action.
+static int	BonusLevel(int action)
+{
+	if (action == CEA_BONUS)
+		return 201;
+	if (action == CEA_COOP)
+		return 856;
+	if ((action >= CEA_RACE_FIRST) && (action < CEA_RACE_FIRST + CE_NUM_RACES))
+		return 901 + action - CEA_RACE_FIRST;
+	return 0;
+}
 
 CPauseMenu::CPauseMenu(EPortCeNoLists) : mActive(FALSE), mPage(0), mCloseTime(-1.f)
 {
@@ -670,25 +775,39 @@ class CCeMenu : public CPauseMenu
 public:
 	CCeMenu() : CPauseMenu(PORT_CE_NO_LISTS)
 	{
-		static WCHAR title[] = L"Onslaught CE";
-		CMenuOptionsList *list = new (MEMTYPE_MENUITEM) CMenuOptionsList(title, 320.f, 300.f, FALSE, 0xb0000000);
-		// What a player came to do first; the acknowledgements last, before Back, as credits are.
-		list->AddItem(new (MEMTYPE_MENUITEM) CCeMenuItem(L"About Onslaught CE", CEA_ABOUT));
-		list->AddItem(new (MEMTYPE_MENUITEM) CCeMenuItem(L"Report a problem", CEA_REPORT));
+		// Each page is a list of its rows and, last, Back, which draws the highlighted row's hint (CCeBack); the lists are
+		// in ECePage's order.
+		AddPage(CEP_HUB, kHubRows, int(sizeof(kHubRows) / sizeof(kHubRows[0])));
+		AddPage(CEP_BONUS, kBonusRows, CE_NUM_BONUS);
+		CMenuOptionsList *list = NewList(CEP_SETTINGS);
 		list->AddItem(new (MEMTYPE_MENUITEM) CCeRecordSwitch());
-		list->AddItem(new (MEMTYPE_MENUITEM) CCeMenuItem(L"Updates", CEA_UPDATES));
-		list->AddItem(new (MEMTYPE_MENUITEM) CCeMenuItem(L"Coming soon / ideas", CEA_PLANS));
-		list->AddItem(new (MEMTYPE_MENUITEM) CCeMenuItem(L"Bonus: Aquila Prototype", CEA_BONUS));
-		list->AddItem(new (MEMTYPE_MENUITEM) CCeMenuItem(L"Bonus co-op: Defence A", CEA_COOP_A));
-		list->AddItem(new (MEMTYPE_MENUITEM) CCeMenuItem(L"Bonus co-op: Defence B", CEA_COOP_B));
-		list->AddItem(new (MEMTYPE_MENUITEM) CCeMenuItem(L"Special Thanks", CEA_THANKS));
-		list->AddItem(new (MEMTYPE_MENUITEM) CMenuItem((DWORD)GI_BACK, 3));
+		list->AddItem(new (MEMTYPE_MENUITEM) CCeBack(list, kSettingsHints, int(sizeof(SCeHint)), CE_NUM_SETTINGS, NULL));
 		mLists.Append(list);
-		static WCHAR plansTitle[] = L"Coming Soon / Ideas";
-		list = new (MEMTYPE_MENUITEM) CMenuOptionsList(plansTitle, 320.f, 300.f, FALSE, 0xb0000000);
+		list = NewList(CEP_CHEATS);
+		for (const SCeCheat &cheat : kCheats)
+			list->AddItem(new (MEMTYPE_MENUITEM) CCeCheatSwitch(cheat.mLabel, cheat.mCheat));
+		list->AddItem(new (MEMTYPE_MENUITEM) CCeBack(list, &kCheats[0].mHint, int(sizeof(SCeCheat)), CE_NUM_CHEATS, kCheatsNote));
+		mLists.Append(list);
+		AddPage(CEP_HELP, kHelpRows, int(sizeof(kHelpRows) / sizeof(kHelpRows[0])));
+		list = NewList(CEP_PLANS);
 		for (int i = 0; i < CE_NUM_PLANS; i++)
-			list->AddItem(new (MEMTYPE_MENUITEM) CCeMenuItem(kCePlans[i].mLabel, CEA_PLAN_FIRST + i));
-		list->AddItem(new (MEMTYPE_MENUITEM) CMenuItem((DWORD)GI_BACK, 3));
+			list->AddItem(new (MEMTYPE_MENUITEM) CCeMenuItem(kPlanLabels[i], CEA_PLAN_FIRST + i));
+		list->AddItem(new (MEMTYPE_MENUITEM) CCeBack(list, kPlanHints, int(sizeof(SCeHint)), CE_NUM_PLANS, NULL));
+		mLists.Append(list);
+	}
+
+	static CMenuOptionsList	*NewList(int page)
+	{
+		return new (MEMTYPE_MENUITEM) CMenuOptionsList(kCeTitles[page], 320.f, 300.f, FALSE, 0xb0000000);
+	}
+
+	// A page of plain rows: each its own row, then Back.
+	void	AddPage(int page, const SCeRow *rows, int count)
+	{
+		CMenuOptionsList *list = NewList(page);
+		for (int i = 0; i < count; i++)
+			list->AddItem(new (MEMTYPE_MENUITEM) CCeMenuItem(rows[i].mLabel, rows[i].mAction));
+		list->AddItem(new (MEMTYPE_MENUITEM) CCeBack(list, &rows[0].mHint, int(sizeof(SCeRow)), count, NULL));
 		mLists.Append(list);
 	}
 
@@ -719,21 +838,37 @@ public:
 		CFrontEnd::PlaySound(FES_BACK);
 	}
 
+	// Back goes to the page above (the hub leaves the Onslaught CE page, to the main menu).
 	void	Back()
 	{
-		if (mPage == 0)
+		if (mPage == CEP_HUB)
 			Leave();
 		else
 		{
-			mPage = 0;
+			mPage = kCeParent[mPage];
 			CFrontEnd::PlaySound(FES_BACK);
 		}
 	}
 
+	// A page opens with its first row highlighted.
+	void	OpenPage(int page)
+	{
+		mPage = page;
+		mLists.At(mPage)->Reset();
+	}
+
+	// A bonus level has just ended and the Onslaught CE page is open again: its list, the level's row highlighted.
+	void	ShowBonus(int level)
+	{
+		OpenPage(CEP_BONUS);
+		for (int row = 0; row < CE_NUM_BONUS; row++)
+			if (BonusLevel(kBonusRows[row].mAction) == level)
+				mLists.At(mPage)->mSelected = row;
+	}
+
 	WCHAR	*PageTitle()
 	{
-		static WCHAR mainTitle[] = L"Onslaught CE", plansTitle[] = L"Coming Soon / Ideas";
-		return mPage == 1 ? plansTitle : mainTitle;
+		return kCeTitles[mPage];
 	}
 
 	void	Choose(CMenuItem *item)
@@ -753,8 +888,36 @@ public:
 			CFrontEnd::PlaySound(FES_SELECT);
 			return;
 		}
+		if (const int level = BonusLevel(action))
+		{
+			// The playable demo's level, the two co-op maps the Multiplayer grid leaves out (two players on one PC) or one
+			// of the original's five Race Challenges (levels 901-905), played outside every career: nothing they do is
+			// kept, and the front end comes back to this list with the level's row highlighted (ce_bonus.cpp, patch 0116).
+			Leave();
+			if (!PortCeBonusStart(level))
+				ShowMessage(level >= 901 ? "The race could not be started." : "The bonus level could not be started.");
+			return;
+		}
 		switch (action)
 		{
+		case CEA_PAGE_BONUS:
+			OpenPage(CEP_BONUS);
+			break;
+		case CEA_PAGE_SETTINGS:
+			OpenPage(CEP_SETTINGS);
+			break;
+		case CEA_PAGE_CHEATS:
+			OpenPage(CEP_CHEATS);
+			break;
+		case CEA_PAGE_HELP:
+			OpenPage(CEP_HELP);
+			break;
+		case CEA_PLANS:
+			OpenPage(CEP_PLANS);
+			break;
+		case CEA_TIPS:
+			ShowMessage(kControlsTips);
+			break;
 		case CEA_ABOUT:
 		{
 			const char *build = CE_BuildName();
@@ -786,22 +949,6 @@ public:
 		case CEA_THANKS:
 			ShowMessage(kSpecialThanks);
 			break;
-		case CEA_PLANS:
-			mPage = 1;
-			mLists.At(mPage)->Reset();
-			break;
-		case CEA_BONUS:
-		case CEA_COOP_A:
-		case CEA_COOP_B:
-		{
-			// The playable demo's level, or the two co-op maps the Multiplayer grid leaves out (two players on one
-			// PC), played outside every career: nothing they do is kept (ce_bonus.cpp).
-			const int action = ((CCeMenuItem *)item)->mAction;
-			Leave();
-			if (!PortCeBonusStart(action == CEA_BONUS ? 201 : action == CEA_COOP_A ? 856 : 858))
-				ShowMessage("The bonus level could not be started.");
-			return;
-		}
 		case CEA_REPORT:
 		{
 			char folder[1024];
@@ -903,6 +1050,9 @@ public:
 			mMenu = new (MEMTYPE_MENUITEM) CCeMenu();
 		CPauseMenu::mOptionsPage = true;
 		mMenu->Activate(0);
+		// A bonus level has just ended: the page opens on the Bonus Levels list, that level's row highlighted (ce_bonus.cpp).
+		if (int level = PortCeBonusTakeReturn())
+			mMenu->ShowBonus(level);
 	}
 
 	CCeMenu	*mMenu;
@@ -918,6 +1068,37 @@ CFrontEndPage	*PortCePage()
 void	PortCeOpenPage()
 {
 	FRONTEND.SetPage(FEP_CE, 70);
+}
+
+//*********************************************************************************
+// The pause menu's Photo Mode item (patch 0138, PauseMenu.cpp): photo mode on or off as F11 does it, so a gamepad can reach
+// it. The item is in the menu only where photo mode can be used, a solo level (PortCePhotoAvailable: F11's own rule), and
+// takes no row anywhere else, so a multiplayer, network or demo pause menu is the game's own. Its text says what choosing
+// it does.
+class CCePhotoItem : public CMenuItem
+{
+public:
+	CCePhotoItem() : CMenuItem((EPCText)PORT_CE_PHOTO_PCTEXT, 3) {}
+
+	virtual WCHAR	*GetText()
+	{
+		static WCHAR off[] = L"Photo Mode", on[] = L"End Photo Mode";
+		return PortCePhotoOn() ? on : off;
+	}
+
+	virtual BOOL	IsEnabled() { return PortCePhotoAvailable() ? TRUE : FALSE; }
+	virtual int		GetHeight() { return PortCePhotoAvailable() ? 20 : 0; }
+
+	virtual void	Render(float x, float y, BOOL selected)
+	{
+		if (PortCePhotoAvailable())
+			CMenuItem::Render(x, y, selected);
+	}
+};
+
+CMenuItem	*PortCePhotoItem()
+{
+	return new (MEMTYPE_MENUITEM) CCePhotoItem();
 }
 
 #endif

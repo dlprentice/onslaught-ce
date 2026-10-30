@@ -50,6 +50,8 @@ static bool photoOn = false, photoAvailable = true; static int photoKeys = 0;
 bool PortCePhotoOn() { return photoOn; }
 bool PortCePhotoSet(bool on) { if (!photoAvailable) { photoOn = false; return false; } act(on ? "photo on" : "photo off"); photoOn = on; return true; }
 bool PortCePhotoKey(unsigned, bool) { ++photoKeys; return false; }
+// The commander map's open key (patch 0162); port/tools/ce_commander_tests.py checks the real one's place.
+bool PortCeCmdKey(unsigned, bool) { return false; }
 
 namespace CeConsoleGame {
 bool ConsoleLine(int i, char *out, int n) {
@@ -301,7 +303,7 @@ static void commands() {
     command("help");
     check(printed("Commands") && printed("navmapon") && printed("camera*") && printed("win*"), "help lists commands and marks cheat ones");
     command("help map");
-    check(printed("Unlock all levels"), "help names a command's cheat");
+    check(printed("Unlock All Levels") && printed("Onslaught CE > Cheats"), "help names a command's cheat and where to switch it on");
     command("version");
     check(newest() == "Onslaught CE Vtest", "version");
     command("status");

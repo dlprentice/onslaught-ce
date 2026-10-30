@@ -81,12 +81,7 @@ static BOOL ResetEvent(HANDLE handle)
 	static_cast<Event *>(handle)->signalled = false;
 	return TRUE;
 }
-static BOOL CloseHandle(HANDLE handle)
-{
-	std::lock_guard<std::mutex> hold(lock_);
-	if (Known(handle)) static_cast<Event *>(handle)->closed = true;
-	return TRUE;
-}
+static BOOL CloseHandle(HANDLE handle);
 
 // Workers: each remembers the stream whose InitMusicStream created it.
 struct Worker
@@ -98,8 +93,26 @@ struct Worker
 	HANDLE *list = nullptr;
 	DWORD count = 0;
 	unsigned handled = 0;
+	bool closed = false;
 };
 static std::vector<Worker *> workers;
+static unsigned worker_closes, worker_close_live, worker_close_duplicate;
+static BOOL CloseHandle(HANDLE handle)
+{
+	std::lock_guard<std::mutex> hold(lock_);
+	if (Known(handle)) { static_cast<Event *>(handle)->closed = true; return TRUE; }
+	for (Worker *w : workers)
+	{
+		if (w != handle) continue;
+		if (w->closed) { ++worker_close_duplicate; return FALSE; }
+		if (w->exit == STILL_ACTIVE) ++worker_close_live;
+		w->closed = true;
+		++worker_closes;
+		return TRUE;
+	}
+	++unknown_handles;
+	return FALSE;
+}
 static thread_local Worker *tWorker;			// null on the main thread
 struct IDirectSoundBuffer;
 static std::vector<IDirectSoundBuffer *> buffers;
@@ -309,6 +322,7 @@ bool PortAudioStreamSnapshot(IDirectSoundBuffer *b, unsigned long long *ns, unsi
 	*play = 0;
 	return b && b->playing && !b->released;
 }
+unsigned long long PortAudioStreamNotifyMixed(IDirectSoundBuffer *) { return 0; }	// no mixing here, so no notification count (patch 0187's age)
 void PortAudioPublishMusicHalf(void *destination, const void *decoded, DWORD bytes) { memcpy(destination, decoded, bytes); }
 
 #include MUSIC_SOURCE
@@ -374,6 +388,7 @@ int main(int argc, char **argv)
 	bool first_playing_after_second_init = Playing() && buffers[0]->playing && !buffers[0]->released;
 	unsigned first_released_at_second_init = buffers[0]->releases;
 	bool first_worker_alive_at_second_init = !workers.empty() && workers[0]->exit == STILL_ACTIVE;
+	bool first_worker_closed_at_second_init = !workers.empty() && workers[0]->closed;
 	Tick();										// the opening films: a first buffer still looping goes on notifying
 	Tick();
 	// The front end: MUSIC.PlaySelection(MUS_FRONTEND).
@@ -387,6 +402,8 @@ int main(int argc, char **argv)
 
 	// The game's exit: MUSIC.Shutdown, then any worker left behind is told to quit so the process can end.
 	ShutdownMusicStream();
+	unsigned worker_handles_open = 0;
+	for (Worker *w : workers) if (!w->closed) ++worker_handles_open;
 	for (size_t i = 0; i < events.size(); i += 4)
 	{
 		if (i / 4 < workers.size() && workers[i / 4]->exit == STILL_ACTIVE)
@@ -402,7 +419,8 @@ int main(int argc, char **argv)
 
 	unsigned events_open = 0;
 	for (Event *e : events) if (!e->closed) ++events_open;
-	printf("{\"buffer_released_live_worker\":%u,\"reader_deleted_live_worker\":%u,\"closed_event_uses\":%u,\"events_open\":%u,"
+	printf("{\"worker_closes\":%u,\"worker_close_live\":%u,\"worker_close_duplicate\":%u,\"worker_handles_open\":%u,"
+		   "\"first_worker_closed_at_second_init\":%s,\"buffer_released_live_worker\":%u,\"reader_deleted_live_worker\":%u,\"closed_event_uses\":%u,\"events_open\":%u,"
 		   "\"mode\":\"%s\",\"checks\":%u,\"buffers\":%zu,\"workers\":%zu,\"max_playing\":%u,"
 		   "\"first_playing_after_second_init\":%s,\"first_released_at_second_init\":%u,"
 		   "\"first_worker_alive_at_second_init\":%s,\"playing_at_front_end\":%u,\"second_playing_at_front_end\":%s,"
@@ -410,7 +428,9 @@ int main(int argc, char **argv)
 		   "\"foreign_locks\":%u,\"foreign_reads\":%u,\"readers_created\":%u,\"reader_deletes\":%u,"
 		   "\"locks_initialized\":%u,\"locks_destroyed\":%u,\"locks_reinitialized\":%u,\"unknown_handles\":%u,"
 		   "\"closed_signals\":%u}\n",
-		   buffer_released_live_worker, reader_deleted_live_worker, closed_event_uses, events_open,
+		   worker_closes, worker_close_live, worker_close_duplicate, worker_handles_open,
+		   first_worker_closed_at_second_init ? "true" : "false", buffer_released_live_worker,
+		   reader_deleted_live_worker, closed_event_uses, events_open,
 		   mode, checks, buffers.size(), workers.size(), max_playing,
 		   first_playing_after_second_init ? "true" : "false", first_released_at_second_init,
 		   first_worker_alive_at_second_init ? "true" : "false", playing_at_front_end,

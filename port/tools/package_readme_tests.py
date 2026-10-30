@@ -30,12 +30,24 @@ class PackageReadmeTests(unittest.TestCase):
         self.assertNotIn("\r", text)
         self.assertLessEqual(max(map(len, text.splitlines())), package.README_WIDTH)
         for phrase in (
-            "Main menu > Onslaught CE:", "Coming soon / ideas describes planned features and their limits",
-            "it does not start those features", "Bonus: Aquila Prototype", "Bonus co-op: Defence A",
-            "Bonus co-op: Defence B", "Special Thanks", "The game's Credits remain separate",
-            "two-player local split-screen defence maps", "Multiplayer start page", "player 2 uses the second set of keys",
-            "Plug in both gamepads before starting", "do not advance career progress at level end",
-            "other game paths can still save the live career and settings during play, including on pause/continue",
+            "Main menu > Onslaught CE: Bonus Levels, CE Settings, Cheats, Help & Info and Report a Problem",
+            "Each row has a hint under the list", "The Options page is the original's",
+            "What's Coming (planned features and their limits; it does not start those features)",
+            "it does not start those features", "Aquila Prototype is the original playable-demo level (201)",
+            "Building Defence is a two-player local split-screen defence map", "which are the same map, so the list has it once",
+            "each comes back to this list with its row highlighted",
+            "Race Challenge 1 to 5", "Special Thanks", "The game's Credits remain separate",
+            "CE Settings: Record Play for Bug Reports", "Help & Info: Controls & Tips", "Updates & Rollback",
+            "Onslaught CE > Cheats: the game's own cheats as On/Off switches", "Unlock All Levels (original code TURKEY)",
+            "the pause menu also has a Photo Mode row", "The row then reads End Photo Mode",
+            "one-player time trials (levels 901 to 905)", "those routes save your career as the original does",
+            "Race Challenge 1 after grades of C or better in 26 campaign levels",
+            "each later race when the one before it is finished fast enough",
+            "(under 145, 195, 150 and 105 seconds for races 1 to 4; the fifth opens nothing more)",
+            "saves nothing and returns to the Bonus Levels list",
+            "two-player local split-screen defence map (level 856)", "Multiplayer start page", "player 2 uses the second set of keys",
+            "Plug in both gamepads before starting",
+            "Settings can still be saved during play, including into a career file; bonus-level progress is left out",
             "Console: during an eligible solo level, press the grave key", "type help and press Enter",
             "Esc or grave closes it; the game does not pause", "unavailable in multiplayer, demos, recordings and replays",
             "Video Options > Display mode offers Windowed or Fullscreen", "Quit and restart for a saved choice to take effect",
@@ -61,12 +73,20 @@ class PackageReadmeTests(unittest.TestCase):
             "On Windows mods are not active in this release: a mods= line is ignored and the log says so",
             "A save that fails now says so", "An error occurred during saving.",
             "after a language change in the front end it appears in the usual message box",
+            "Sharper text is off by default: the menus' and HUD's text keeps the original's soft look",
+            "Put sharp_ui=1 in ce.ini to turn it on", "with widescreen modes enabled on a non-4:3 picture",
+            "bitmap text drawn at least twice its original size horizontally or vertically (for example, menu text at 1920 x 1080)",
+            "In ordinary use it does not apply in recordings and replays, on 4:3 screens or when BEA_PORT_WIDESCREEN=0",
+            "a valid BEA_PORT_WIDE_TEST=WIDTHxHEIGHT forces wide modes even during recording or replay and when "
+            "BEA_PORT_WIDESCREEN=0. Unset it before making a faithful reference tape",
         ):
             with self.subTest(phrase=phrase, windows=windows):
                 self.assertIn(phrase, flat)
         # The photo-mode contexts are the public README's, word for word (the 0.1.10 reviewers found the three texts differing).
         self.assertIn("Both work in single-player levels, but not while a session is recorded or replayed, in multiplayer, "
                       "a network game or a demo.", flat)
+        # The sharper text is off unless sharp_ui=1 (0.1.13); no text may still promise it on wide screens by default.
+        self.assertNotIn("Onslaught CE draws it from a sharper copy", flat)
         if windows:
             for phrase in ("Run onslaught-ce.exe", "%APPDATA%\\Onslaught CE", "onslaught-ce.exe --record",
                            "Windows builds have been checked under Wine on Linux", "Windows 11 virtual machine",
@@ -108,12 +128,23 @@ class PackageReadmeTests(unittest.TestCase):
             for windows in (False, True):
                 with self.subTest(windows=windows):
                     text = self.assert_player_guide(package.readme("0.1.10", windows), windows)
-                    # Compare the displayed menu labels to the actual CE menu, not just this generator's list.
+                    # Compare the displayed menu labels to the actual CE menu, not just this generator's list: the rows of the
+                    # pages' tables (a label and its action) and the cheat switches' labels.
                     front_end = (ROOT / "port/game/ce_frontend.cpp").read_text()
-                    labels = set(re.findall(r'CCeMenuItem\(L"([^"]+)"', front_end))
-                    for label in ("Bonus: Aquila Prototype", "Bonus co-op: Defence A", "Bonus co-op: Defence B", "Special Thanks"):
+                    labels = set(re.findall(r'\{L"([^"]+)", CEA_', front_end))
+                    cheats = {re.sub(r" \(.*", "", name) for name in re.findall(r'\{L"([^"]+): ", \w+, \{', front_end)}
+                    self.assertEqual(len(cheats), 5)
+                    flat = " ".join(text.split())
+                    for label in ("Bonus Levels", "CE Settings", "Cheats", "Help & Info", "Report a Problem", "Aquila Prototype",
+                                  "Building Defence", "Race Challenge 1", "Controls & Tips",
+                                  "What's Coming", "Updates & Rollback", "About Onslaught CE", "Special Thanks"):
                         self.assertIn(label, labels)
-                        self.assertIn(label, text)
+                        self.assertIn(label, flat)
+                    for label in cheats:
+                        self.assertIn(label, flat)
+                    # the one switch on CE Settings
+                    self.assertIn('CCeSwitch(L"Record Play for Bug Reports: ")', front_end)
+                    self.assertIn("Record Play for Bug Reports", flat)
 
     def test_windows_notices_name_the_three_files_that_carry_llvm_mingw_source_paths(self):
         # Measured on the published 0.1.10 Windows package: bea.exe (libc++abi and libunwind sources), SDL3.dll and libz.dll

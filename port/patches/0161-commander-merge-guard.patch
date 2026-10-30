@@ -1,0 +1,19 @@
+--- a/SquadNormal.cpp
++++ b/SquadNormal.cpp
+@@ -184,9 +184,16 @@
+ 	mUnknown114 = TRUE;
+ }
+ 
++#ifdef CE_VERSION
++bool CeCommanderNoMerge(const void *squad);	// patch 0161: port/game/ce_commander.cpp
++#endif
+ // Reconstructs the repeated eligibility tests at 004e8f97 and 004e90cf.
+ inline BOOL CNormalSquad::CanMerge()
+ {
++#ifdef CE_VERSION
++	if (CeCommanderNoMerge(this))	// patch 0161: a squad the commander module holds an order for is not dissolved into another
++		return FALSE;
++#endif
+ 	if (mUnknown10C > 0 && !mUnknown84 && mUnknown114 && !mUnknown80 && !IsShuttingDown())
+ 	{
+ 		ListIterator<CNormalSquadMember> it(&mMembers);

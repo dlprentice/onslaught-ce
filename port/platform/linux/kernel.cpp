@@ -134,6 +134,17 @@ static ULONGLONG MonotonicNs()
 }
 
 static const ULONGLONG kStartNs = MonotonicNs();
+// The real clock the game reads: the operating system's, less the time the game waited for its minimized window (common/clock.cpp: the CE layer only, never in the virtual clocks).
+static ULONGLONG GameNs()
+{
+	for (;;)
+	{
+		const auto generation = PortClockReadBegin();
+		const ULONGLONG m = MonotonicNs();
+		const ULONGLONG value = m - PortClockShiftNs(m);
+		if (PortClockReadValid(generation)) return value;
+	}
+}
 
 extern "C" void WINAPI Sleep(DWORD ms)
 {
@@ -154,10 +165,10 @@ extern "C" BOOL WINAPI QueryPerformanceFrequency(LARGE_INTEGER *f)
 // Real time, or the port's virtual clocks (BEA_PORT_CLOCK, port/platform/common/clock.cpp).
 extern "C" BOOL WINAPI QueryPerformanceCounter(LARGE_INTEGER *c)
 {
-	c->QuadPart = PortClockVirtual() ? PortClockQpc() : (LONGLONG)MonotonicNs();
+	c->QuadPart = PortClockVirtual() ? PortClockQpc() : (LONGLONG)GameNs();
 	return TRUE;
 }
-static DWORD Milliseconds() { return PortClockVirtual() ? (DWORD)PortClockMs() : (DWORD)((MonotonicNs() - kStartNs) / 1000000ull); }
+static DWORD Milliseconds() { return PortClockVirtual() ? (DWORD)PortClockMs() : (DWORD)((GameNs() - kStartNs) / 1000000ull); }
 extern "C" DWORD WINAPI GetTickCount(void) { return Milliseconds(); }
 extern "C" DWORD WINAPI timeGetTime(void) { return Milliseconds(); }
 extern "C" MMRESULT WINAPI timeBeginPeriod(UINT) { return MMSYSERR_NOERROR; }

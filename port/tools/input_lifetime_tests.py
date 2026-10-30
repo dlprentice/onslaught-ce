@@ -36,8 +36,12 @@ FUNCTIONS = {
     "POLL_MOTION": ("Controller.cpp", r"HRESULT PollMouseMotion\(\)"),
     "SHUTDOWN_MOUSE": ("Controller.cpp", r"HRESULT ShutdownMouse\(\)"),
     "MOUSE_MESSAGE": ("mouse.cpp", r"LRESULT __stdcall\s+HandleMouseMessage\([^\n]*"),
+    "MOUSE_AT": ("mouse.cpp", r"inline BOOL\s+MouseAt\([^\n]*"),
+    "MOUSE_CLICK": ("mouse.cpp", r"bool\s+MouseClickedInRect\([^\n]*"),
 }
-CASES = ("pad-acquire", "pad-reacquire", "pad-properties", "pad-axes", "pad-limit", "pad-quick-tap", "pad-edge-order", "pad-edge-chord", "pad-edge-chord-pulses",
+CASES = ("menu-click-left", "menu-click-motion", "menu-click-move-away", "menu-click-focus", "menu-click-right", "menu-click-middle",
+         "menu-click-hidpi", "menu-click-43-hidpi", "menu-click-geometry-change", "menu-click-active", "menu-click-map", "menu-click-frontend", "menu-click-off",
+         "menu-click-record", "menu-click-tape", "menu-click-trap", "menu-click-trap-pass", "menu-click-late-motion", "menu-click-late-motion-off", "menu-click-late-motion-tape", "menu-mouse", "menu-mouse-off", "menu-mouse-active", "pad-acquire", "pad-reacquire", "pad-properties", "pad-axes", "pad-limit", "pad-quick-tap", "pad-edge-order", "pad-edge-chord", "pad-edge-chord-pulses",
          "pad-edge-overflow", "pad-edge-event-overflow", "pad-edge-overflow-focus", "pad-edge-focus", "pad-edge-stale-focus", "pad-edge-hotplug", "pad-edge-hotplug-two",
          "pad-edge-two", "pad-edge-cross-binding", "pad-edge-two-consumers", "pad-edge-repeat-consumer", "pad-edge-bonus-two",
          "pad-edge-no-poll-held", "pad-edge-duplicate-binding", "pad-edge-no-watch", "pad-edge-missing-focus-event",
@@ -60,7 +64,7 @@ CASES = ("pad-acquire", "pad-reacquire", "pad-properties", "pad-axes", "pad-limi
          "mouse-fraction-clock", "mouse-fraction-probes", "mouse-fraction-disabled",
          "pad-trigger-edges", "pad-trigger-build-mode", "pad-trigger-unplug", "pad-trigger-disabled", "pad-trigger-tape", "pad-trigger-record",
          "pad-trigger-clock", "pad-trigger-probes", "pad-tutorial-info", "pad-tutorial-unplug")
-FAITHFUL_CASES = ("pad-trigger-build-mode", "pad-trigger-disabled", "pad-trigger-tape", "pad-trigger-record",
+FAITHFUL_CASES = ("menu-click-faithful", "pad-trigger-build-mode", "pad-trigger-disabled", "pad-trigger-tape", "pad-trigger-record",
                   "pad-trigger-clock", "pad-trigger-probes", "pad-neutral-faithful", "pad-edge-pov-faithful-disabled",
                   "mouse-fraction-disabled", "mouse-fraction-tape")
 
@@ -128,6 +132,23 @@ def main():
             shims[name] = sha(data)
         receipt["shims_sha256"] = shims
         driver = (ROOT / "port/tools/tests/input_lifetime_driver.cpp").read_text()
+        ce_layer = definition((args.source_root / "port/platform/common/ce.cpp").read_text(), r"bool PortCeLayer\(\)")
+        receipt["ce_layer_sha256"] = sha(ce_layer.encode())
+        driver = driver.replace("REAL_CE_LAYER_FUNCTION", ce_layer.replace("bool PortCeLayer()", "bool TestRealCeLayer()", 1))
+        wide = (args.source_root / "port/platform/common/widescreen.cpp").read_text()
+        wide_signatures = (r"void PortWideBackBuffer\(unsigned w, unsigned h\)", r"void PortUiMouse\(int \*x, int \*y\)",
+                           r"void PortUiMouseMenuPoint\(int \*x, int \*y\)", r"int PortUiMouseMenu\(int mouseInputActive\)")
+        wide_functions = [definition(wide, signature) for signature in wide_signatures]
+        receipt["menu_geometry_functions_sha256"] = [sha(body.encode()) for body in wide_functions]
+        # Isolate these real bodies from the stand-ins used by the other input tests; only names and state storage change.
+        renames = {"PortWideBackBuffer": "TestWideBackBuffer", "PortUiMouse": "TestUiMouse",
+                   "PortUiMouseMenuPoint": "TestUiMouseMenuPoint", "PortUiMouseMenu": "TestUiMouseMenu",
+                   "PortCeLayer": "TestRealCeLayer", "PortCeCmdMapOpen": "TestMenuMapOpen",
+                   "gW": "testMapW", "gH": "testMapH", "gActive": "testMapActive", "gX": "testMapX",
+                   "gY": "testMapY", "gScale": "testMapScale", "gLeft": "testMapLeft", "gTop": "testMapTop"}
+        mapped_wide = "\n".join(re.sub(r"\b(" + "|".join(renames) + r")\b", lambda m: renames[m[0]], body)
+                                for body in wide_functions)
+        driver = driver.replace("REAL_WIDE_FUNCTIONS", mapped_wide)
         driver = driver.replace("JOY_BUTTON_ACCESSORS", "\n".join(accessors))
         for name, path in {"WINDOW_CPP": out / "window.cpp", "DINPUT_CPP": out / "dinput.cpp",
                            "PORTLOG_CPP": out / "portlog.cpp", "INVENTORY_CPP": out / "inventory.cpp", "CALLERS_INC": calls}.items():

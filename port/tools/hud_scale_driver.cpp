@@ -14,6 +14,7 @@ bool layer = true;
 int wideModes = 1;
 bool PortCeLayer() { return layer; }
 int PortWideModes() { return wideModes; }
+extern "C" int CE_SettingGetBool(const char *, int def) { return def; }	// hud_anchor is under test in hud_anchor_driver.cpp
 
 static void check(bool value, const char *message)
 {

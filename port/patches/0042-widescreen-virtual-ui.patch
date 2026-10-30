@@ -20,40 +20,52 @@
  			float	sx = float(PLATFORM.GetWindowWidth()) * (1.f / 640.f);
 --- a/mouse.cpp
 +++ b/mouse.cpp
-@@ -73,6 +73,9 @@
+@@ -73,6 +73,12 @@
  			sMouseFracX = float(MOUSE_X) / float(PLATFORM.GetWindowWidth());
  			sMouseFracY = float(MOUSE_Y) / float(PLATFORM.GetWindowHeight());
  		}
++		if (!FRONTEND.IsRunning() && PortUiMouseMenu(sMouseInputActive))
++			PortUiMouseMenuPoint(&MOUSE_X, &MOUSE_Y);	// Port: an in-game menu's pointer is the virtual screen's, as the front end's (widescreen.cpp)
++		else
 +		if (FRONTEND.IsRunning() && PortWideActive())
 +			PortUiMouse(&MOUSE_X, &MOUSE_Y);	// Port (patch 0042, widescreen): the 4:3 box's virtual screen
 +		else
  		if (FRONTEND.IsRunning())
  		{
  			MOUSE_X *= 640;
-@@ -104,6 +107,9 @@
+@@ -104,6 +110,12 @@
  			MOUSE_BUTTONS[2].mY = DWORD(lParam) >> 16;
  			MOUSE_BUTTONS[2].mFracX = float(MOUSE_BUTTONS[2].mX) / float(PLATFORM.GetWindowWidth());
  			MOUSE_BUTTONS[2].mFracY = float(MOUSE_BUTTONS[2].mY) / float(PLATFORM.GetWindowHeight());
++			if (!FRONTEND.IsRunning() && PortUiMouseMenu(sMouseInputActive))
++				PortUiMouseMenuPoint(&MOUSE_BUTTONS[2].mX, &MOUSE_BUTTONS[2].mY);	// Port: an in-game menu's pointer is the virtual screen's, as the front end's (widescreen.cpp)
++			else
 +			if (FRONTEND.IsRunning() && PortWideActive())
 +				PortUiMouse(&MOUSE_BUTTONS[2].mX, &MOUSE_BUTTONS[2].mY);	// Port (patch 0042)
 +			else
  			if (FRONTEND.IsRunning())
  			{
  				MOUSE_BUTTONS[2].mX *= 640;
-@@ -133,6 +139,9 @@
+@@ -133,6 +145,12 @@
  			MOUSE_BUTTONS[0].mY = DWORD(lParam) >> 16;
  			MOUSE_BUTTONS[0].mFracX = float(MOUSE_BUTTONS[0].mX) / float(PLATFORM.GetWindowWidth());
  			MOUSE_BUTTONS[0].mFracY = float(MOUSE_BUTTONS[0].mY) / float(PLATFORM.GetWindowHeight());
++			if (!FRONTEND.IsRunning() && PortUiMouseMenu(sMouseInputActive))
++				PortUiMouseMenuPoint(&MOUSE_BUTTONS[0].mX, &MOUSE_BUTTONS[0].mY);	// Port: an in-game menu's pointer is the virtual screen's, as the front end's (widescreen.cpp)
++			else
 +			if (FRONTEND.IsRunning() && PortWideActive())
 +				PortUiMouse(&MOUSE_BUTTONS[0].mX, &MOUSE_BUTTONS[0].mY);	// Port (patch 0042)
 +			else
  			if (FRONTEND.IsRunning())
  			{
  				MOUSE_BUTTONS[0].mX *= 640;
-@@ -162,6 +171,9 @@
+@@ -162,6 +180,12 @@
  			MOUSE_BUTTONS[1].mY = DWORD(lParam) >> 16;
  			MOUSE_BUTTONS[1].mFracX = float(MOUSE_BUTTONS[1].mX) / float(PLATFORM.GetWindowWidth());
  			MOUSE_BUTTONS[1].mFracY = float(MOUSE_BUTTONS[1].mY) / float(PLATFORM.GetWindowHeight());
++			if (!FRONTEND.IsRunning() && PortUiMouseMenu(sMouseInputActive))
++				PortUiMouseMenuPoint(&MOUSE_BUTTONS[1].mX, &MOUSE_BUTTONS[1].mY);	// Port: an in-game menu's pointer is the virtual screen's, as the front end's (widescreen.cpp)
++			else
 +			if (FRONTEND.IsRunning() && PortWideActive())
 +				PortUiMouse(&MOUSE_BUTTONS[1].mX, &MOUSE_BUTTONS[1].mY);	// Port (patch 0042)
 +			else

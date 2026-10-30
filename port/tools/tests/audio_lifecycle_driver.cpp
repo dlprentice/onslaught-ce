@@ -188,6 +188,8 @@ void PortSessionAsset(PortSessionCategory, const char *, const char *, long) {}
 void PortSessionMediaActive(PortSessionCategory, const void *, bool) {}
 void PortSessionSetFinalMedia(const PortSessionFinalMedia *) {}
 void PortSessionCount(PortSessionCounter) {}
+void PortSessionObserve(PortSessionObservation, unsigned) {}
+void PortSessionObserveMax(PortSessionObservation, unsigned) {}
 void PortSessionAudioError(const char *) {}
 void PortSessionSummary() {}
 void PortSessionPulse(unsigned) {}

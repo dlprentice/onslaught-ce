@@ -1,17 +1,15 @@
 --- a/PauseMenu.cpp
 +++ b/PauseMenu.cpp
-@@ -471,6 +471,28 @@
+@@ -471,6 +471,26 @@
  
  extern CTweakSLONG	ALLOW_WIDESCREEN_MODES;			// 0089c0a0
  
 +#ifdef CE_VERSION
-+// Port (patch 0050, the CE layer): the options page's Cheats item and list (port/game/ce_frontend.cpp). Without the CE
-+// menus (replays, recordings, the harness, private builds) the options page is the game's own.
++// Port (patch 0050, the CE layer): the options menu tells port/game/ce_frontend.cpp that it exists, so the Maladim switch on
++// the Onslaught CE page's Cheats list can add or remove the God item on its controls list at once. The options page itself
++// is the game's own: the Cheats list is on the Onslaught CE page.
 +bool				PortCeMenus();
-+CMenuItem			*PortCeCheatsItem();
-+CMenuOptionsList	*PortCeCheatsList(float y);
 +void				PortCeOptionsMenu(CPauseMenu *menu, bool alive);
-+#define				PORT_CE_CHEATS_PCTEXT	0x4345
 +
 +// Port: the God item's switch with no player. The front end's options page shows it too (its controls list is the pause
 +// menu's), where GAME.GetPlayer(0) is NULL and retail's SetIsGod call crashes; there it sets the career's god flag, which
@@ -29,33 +27,18 @@
  //******************************************************************************************
  // FUNCTION: 0x004cde60
  CPauseMenu::CPauseMenu(bool options_page) : mActive(FALSE), mPage(0), mCloseTime(-1.f)
-@@ -497,6 +519,10 @@
- 	list->AddItem(new (MEMTYPE_MENUITEM) CMenuItem((EPCText)2, 3));
- 	if (options_page)
- 	{
-+#ifdef CE_VERSION
-+		if (PortCeMenus())
-+			list->AddItem(PortCeCheatsItem());
-+#endif
- #line 1353
- 		list->AddItem(new (MEMTYPE_MENUITEM) CMenuItem((DWORD)JCL_CREDITS, 1));
- 	}
-@@ -606,6 +632,14 @@
+@@ -606,6 +626,10 @@
  	list->AddItem(new (MEMTYPE_MENUITEM) CApplyMenuItem(list));
  	list->AddItem(new (MEMTYPE_MENUITEM) CMenuItem((DWORD)GI_BACK, 3));
  	mLists.Append(list);
 +#ifdef CE_VERSION
-+	// the cheats, page 4, after the sound
 +	if (options_page && PortCeMenus())
-+	{
-+		mLists.Append(PortCeCheatsList(y));
 +		PortCeOptionsMenu(this, true);
-+	}
 +#endif
  
  	mCircle1 = NULL;
  	mCircle2 = NULL;
-@@ -1432,6 +1466,9 @@
+@@ -1432,6 +1456,9 @@
  // FUNCTION: 0x004d05e0
  CPauseMenu::~CPauseMenu()
  {
@@ -65,18 +48,7 @@
  	mLists.DeleteAll();
  	SAFE_DELETE(mConfirm);
  	SAFE_DELETE(mQuitConfirm);
-@@ -1584,17 +1621,31 @@
- 		case 78:
- 		case 79:
- 			return;
-+#ifdef CE_VERSION
-+		case PORT_CE_CHEATS_PCTEXT:
-+			mPage = 4;
-+			mLists.At(mPage)->Reset();
-+			break;
-+#endif
- 		}
- 		break;
+@@ -1589,12 +1616,20 @@
  
  	case GI_GOD_OFF:
  		item->mText = GI_GOD_ON;
@@ -97,7 +69,7 @@
  		break;
  
  	case GI_BRIEFING:
-@@ -1738,10 +1789,18 @@
+@@ -1738,10 +1773,18 @@
  	switch (item->mText)
  	{
  	case GI_GOD_OFF:

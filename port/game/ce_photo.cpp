@@ -68,7 +68,10 @@ unsigned ProofEvery()
 	return n > 0 && n < 1000000 ? unsigned(n) : 0;
 }
 
-bool Allowed()
+// Whether photo mode can be used in a level: the CE layer, none of the fences, no demo, and one player. It does not ask whether
+// the front end is running: the pause menu is drawn with the front end's flag set (DXEngine.cpp, gInFrontEnd around
+// GAME.GetPauseMenu()->Render()), and its Photo Mode item (patch 0138) asks this while it is drawn.
+bool AllowedInLevel()
 {
 	if (!PortCeLayer()) return false;
 	if (!ProofEvery())
@@ -78,8 +81,14 @@ bool Allowed()
 	}
 	if (CE_BootRequested && CE_BootRequested()) return false;
 	if (PLAYABLE_DEMO || CLIPARAMS.mAutoConfigTest || CLIPARAMS.mRecordDemo || CLIPARAMS.mPlaybackDemo ||
-		CLIPARAMS.mStressTest || CLIPARAMS.mAttractMode || FRONTEND.IsRunning()) return false;
+		CLIPARAMS.mStressTest || CLIPARAMS.mAttractMode) return false;
 	return !GAME.IsMultiplayer() && GAME.GetNPlayers() == 1 && GAME.GetPlayer(0);
+}
+
+// Whether photo mode can be switched now by F11 or the console: in a level (AllowedInLevel), with the front end not running.
+bool Allowed()
+{
+	return !FRONTEND.IsRunning() && AllowedInLevel();
 }
 
 // Whether the Present that follows the frame being drawn saves it: F12 asked, or the proof switch's next multiple of N (the
@@ -112,15 +121,30 @@ bool PortCePhotoOn() { return photo; }
 // Whether the frame being drawn is the one the Present after it saves as a screenshot (the notices of ce_notice.cpp stay out of it).
 bool PortCePhotoSavedNext() { return SavedNext(); }
 
-// Photo mode on or off (the console's photo, F11); false when it is not available here (it is then off).
-bool PortCePhotoSet(bool on)
+// Whether the pause menu's Photo Mode item (patch 0138) is offered: a solo level in the CE layer, as F11 has it. Asked while the
+// menu is drawn, when the front end's flag is set (AllowedInLevel), and so is its choice: a mouse click is taken inside the
+// menu's drawing, which the item exists only in a level's pause menu to make safe.
+bool PortCePhotoAvailable() { return AllowedInLevel(); }
+
+namespace {
+// Photo mode on or off; the note names the way back (the pause menu's note says the menu). The pause menu's item is chosen inside
+// the menu's drawing when a mouse clicks it (the front end's flag is set then), so it asks AllowedInLevel, as the item's row does.
+bool SetPhoto(bool on, bool fromMenu)
 {
-	if (!Allowed()) { Switch(false); return false; }
+	if (!(fromMenu ? AllowedInLevel() : Allowed())) { Switch(false); return false; }
 	Switch(on);
-	if (on) Note("Photo mode: HUD hidden. F11 returns, F12 saves a screenshot.");
+	if (on) Note(fromMenu ? "Photo mode: HUD hidden. Pause menu or F11 returns; F12 saves a screenshot."
+						  : "Photo mode: HUD hidden. F11 returns, F12 saves a screenshot.");
 	else noteUntil = 0;
 	return true;
 }
+}
+
+// Photo mode on or off (the console's photo, F11); false when it is not available here (it is then off).
+bool PortCePhotoSet(bool on) { return SetPhoto(on, false); }
+
+// The pause menu's Photo Mode item (patch 0138): the same switch.
+bool PortCePhotoMenuSet(bool on) { return SetPhoto(on, true); }
 
 // F11 switches photo mode and F12 saves a screenshot, in a level where no menu or console has the keyboard
 // (ltshell.cpp, patch 0108, before the console's own keys). True when the key was taken; a held key's repeats are too.

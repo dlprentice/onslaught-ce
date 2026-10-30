@@ -1,0 +1,59 @@
+--- a/ltshell.cpp
++++ b/ltshell.cpp
+@@ -41,6 +41,7 @@
+ bool PortCePaletteRelease(unsigned key);
+ bool PortCePaletteSuppressChar(unsigned key);
+ bool PortCePhotoKey(unsigned key, bool repeat);	// patch 0108: port/game/ce_photo.cpp
++bool PortCeCmdKey(unsigned key, bool repeat);	// patch 0162: port/game/ce_cmdmap.cpp
+ #endif
+ 
+ #if defined(CE_VERSION)
+@@ -1343,6 +1344,7 @@
+ 			if (PortCePhotoKey(key, (lParam & 0x40000000) != 0)) {}	// patch 0108: F11 photo mode, F12 screenshot
+ 			else if (PortCePaletteSuppressDown(key)) {}
+ 			else if (PortCePaletteOpen(key, (lParam & 0x40000000) != 0)) {}
++			else if (PortCeCmdKey(key, (lParam & 0x40000000) != 0)) {}	// patch 0162: the commander map's open key
+ 			else
+ #endif
+ 			if (mCurrentKeytrap)
+--- a/DXEngine.cpp
++++ b/DXEngine.cpp
+@@ -1303,6 +1303,11 @@
+ #endif
+ 	}
+ 
++#ifdef CE_VERSION
++	void PortCeCmdRender();	// patch 0162: port/game/ce_cmdmap.cpp (declared here, not with the others, so that this patch does not lean on theirs)
++	if (!gMirrorPass)
++		PortCeCmdRender();	// the commander map, over everything else the frame drew
++#endif
+ 	PLATFORM.EndScene();
+ 
+ 	mFirstFrame=FALSE;
+--- a/game.cpp
++++ b/game.cpp
+@@ -91,6 +91,8 @@
+ void PortCeDevStatsOut(const char *fmt, ...);
+ void PortCeDevStatsDraw();
+ #include "../game/ce_photo.h"	// patch 0108: CE photo mode (port/game/ce_photo.cpp)
++void PortCeCmdFrame();	// patch 0162: port/game/ce_cmdmap.cpp
++void PortCeCmdLevelEnd();
+ #include "../game/ce_debrief.h"	// patch 0104: the end-of-level statistics panel (port/game/ce_debrief.cpp)
+ #endif
+ 
+@@ -559,6 +561,7 @@
+ #ifdef CE_VERSION
+ 	PortCeConsoleLevelEnd();	// patch 0100: put back what the CE console changed, before anything is freed
+ 	PortCePhotoLevelEnd();		// patch 0108: photo mode ends with the level
++	PortCeCmdLevelEnd();		// patch 0162: the commander map closes with the level
+ #endif
+ 	extern bool pause_for_showing_controls;
+ 	if (mQuit == QT_RESTART_LEVEL && PLAYABLE_DEMO)
+@@ -2252,6 +2255,7 @@
+ #ifdef CE_VERSION
+ 	PortCeConsoleFrame();	// patch 0100: a film the CE console asked for plays between frames
+ 	PortCePhotoFrame();		// patch 0108
++	PortCeCmdFrame();		// patch 0162
+ #endif
+ 
+ //	mBaseTime = PLATFORM.GetSysTimeFloat();

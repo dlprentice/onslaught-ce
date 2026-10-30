@@ -30,6 +30,8 @@ from ce_photo_tests import patched, faithful  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 PATCH_NAME = "0137-ce-save-failed-notice.patch"
+# Patches whose PauseMenu.cpp hunks are written against this patch's (0138's declarations follow its own): left out with it.
+BUILT_ON_NOTICE = ("0138-ce-pause-photo-mode.patch",)
 NOTICE = ROOT / "port/game/ce_notice.cpp"
 NOTICE_H = ROOT / "port/game/ce_notice.h"
 PHOTO_H = ROOT / "port/game/ce_photo.h"
@@ -96,7 +98,7 @@ class NoticeTests(unittest.TestCase):
     def test_patch_places_and_faithful_view(self):
         files = patched(self.out / "with", FILES)
         check_structure(files)
-        without = patched(self.out / "without", FILES, skip=(PATCH_NAME,))
+        without = patched(self.out / "without", FILES, skip=(PATCH_NAME, *BUILT_ON_NOTICE))
         for name in FILES:
             with self.subTest(file=name):
                 self.assertNotEqual(files[name], without[name])

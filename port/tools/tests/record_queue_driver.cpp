@@ -106,6 +106,8 @@ int PortMapMouse(float *, float *) { return 0; }
 static bool acquired;
 bool PortDinputMouseAcquired() { return acquired; }
 bool PortDinputOwnsMouseEvent(Uint64) { return acquired; }
+int PortUiMouseMenu(int) { return 0; }		// the CE layer's menu pointer: off here (a recording and its replay are the faithful path), so the queue ends no batch at a button release
+void PortUiMouseMenuPoint(int *, int *) {}
 void PortMouseKeepRelative() {}
 int PortWideModes() { return 0; }
 void PortVideoInit() {}

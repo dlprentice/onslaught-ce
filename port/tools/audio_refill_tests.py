@@ -51,7 +51,7 @@ def main():
             # The later publication patch is based on the diagnostics patch and is absent from this baseline.
             if label == "baseline" and patch.name in ("0073-audio-refill-diagnostics.patch",
                                                       "0131-ce-music-refill-publication.patch",
-                                                      "0132-ce-music-refill-order-diagnostics.patch"):
+                                                      "0132-ce-music-refill-order-diagnostics.patch", "0187-audio-observation-counters.patch"):
                 continue
             sections = [s for s in re.split(r"(?=^--- a/)", patch.read_text(), flags=re.M)
                         if s.startswith("--- a/PCMusicStream.cpp\n")]

@@ -1,8 +1,15 @@
 # Onslaught CE
 
 Status: preview — from 0.1.8 on it updates itself; from 0.1.7 or earlier, download the latest release once by hand
-Last updated: 2026-10-29
+Last updated: 2026-10-30
 Summary: the native Battle Engine Aquila port, the one-time manual move from 0.1.7 or earlier, signed updates and source build.
+
+This README follows this source branch, which can describe work that is not in the latest download. The README
+packaged with your download and the [release notes](https://github.com/dlprentice/onslaught-ce/releases)
+describe the version you installed. Versions 0.1.8 and later have a signed-update path; versions 0.1.0 through
+0.1.7 require the one-time manual migration below. On Linux, if you still use 0.1.8 or 0.1.9, check the
+[0.1.12 release notes](https://github.com/dlprentice/onslaught-ce/releases/tag/v0.1.12) for their 32-bit
+dependency caveat.
 
 A native port of *Battle Engine Aquila*; you need your own copy.
 
@@ -52,8 +59,8 @@ from the game's source code.
 
 The source has three parts:
 
-- **Stuart Gillam's GPL source release** of the game ([stuart73/Onslaught](https://github.com/stuart73/Onslaught)).
-- **A byte-matching decompilation** that completes that release
+- **The upstream GPL Onslaught source** ([stuart73/Onslaught](https://github.com/stuart73/Onslaught)).
+- **A byte-matching decompilation** that reconstructs more of the PC code
   ([onslaught-decomp](https://github.com/dlprentice/onslaught-decomp)), which records its measured matching coverage
   and reconstruction concessions. The native port uses a different compiler and replacement platform code.
 - **A platform layer**: SDL3, with dxvk-native on Linux and the system's Direct3D 9 on Windows.
@@ -65,18 +72,35 @@ and remaining limits; development source may include changes beyond that publish
 
 ## In the game
 
-- **Main menu > Onslaught CE:** About (version, licence and links), Report a problem, Record sessions (see below),
-  Updates (whether checking is on, how to roll back, where `ce.ini` is), Coming soon / ideas, Bonus: Aquila Prototype
-  and the two Bonus co-op maps (see below), and Special Thanks. Coming soon / ideas describes planned features and
-  their current limits; its entries do not start those features.
-- **Bonus: Aquila Prototype:** level 201, the original's playable-demo level, which the full game never offers. It does
-  not advance career progress and returns to the main menu. Settings can still be saved, including into a career file.
-- **Bonus co-op: Defence A and B:** two two-player co-op maps (levels 856 and 858) that the original's Multiplayer page
-  leaves out: together, defend the island's buildings against the landing craft. Both players share this PC, in split
-  screen, as in the original's multiplayer: each picks a Battle Engine on the Multiplayer start page; player 2 uses the
-  second set of keys in Controller Options, or a second gamepad. Like the bonus level they do not advance career
-  progress; settings can still be saved.
-- **Options > Cheats:** the original game's cheats as On/Off switches; see [Cheats](#cheats).
+- **Main menu > Onslaught CE:** a page with **Bonus Levels**, **CE Settings**, **Cheats**, **Help & Info** and
+  **Report a Problem**. Each row has a hint under the list. The Options page is the original's.
+- **Bonus Levels:** Aquila Prototype, Building Defence, and Race Challenge 1 to 5 (each below). None of them
+  advances career progress. A bonus level started here comes back to this list with its row highlighted.
+- **CE Settings:** Record Play for Bug Reports (see [Help make Onslaught CE more faithful](#help-make-onslaught-ce-more-faithful)).
+- **Help & Info:** Controls & Tips (dodge, zoom, photo mode and screenshots, the console, the free camera and the
+  commander map), What's Coming (planned features and their current limits; its entries do not start those features),
+  Updates & Rollback (whether checking is on, how to roll back, where `ce.ini` is), About Onslaught CE (version, licence
+  and links) and Special Thanks.
+  This page is not in the 0.1.12 download.
+- **Aquila Prototype:** level 201, the original's playable-demo level, which the full game never offers. It does
+  not advance career progress and returns to the Bonus Levels list. Settings can still be saved, including into a
+  career file.
+- **Building Defence:** a two-player co-op map (level 856) that the original's Multiplayer page leaves out: together,
+  defend the island's buildings against the landing craft. The original ships this scenario twice, as levels 856 and 858,
+  which are the same map, so the list has one entry. Both players share this PC, in split screen, as in the original's
+  multiplayer: each picks a Battle Engine on the Multiplayer start page; player 2 uses the second set of keys in
+  Controller Options, or a second gamepad. Like the other bonus levels it does not advance career progress and comes
+  back to the Bonus Levels list; settings can still be saved.
+- **Race Challenge 1 to 5:** the original's five one-player time trials (levels 901 to 905): three laps against the
+  clock in the Racer Battle Engine. The original opens them from the Goodies page, in the five cells that follow the
+  first eight of its top row: Race Challenge 1 once you have a grade of C or better in 26 campaign levels, and each
+  later race when the one before it is finished fast enough (under 145, 195, 150 and 105 seconds for races 1 to 4; the
+  fifth opens nothing more). The Unlock All Goodies cheat opens all five at once (see [Cheats](#cheats)). Those routes
+  save your career as the original does. The five rows on the Bonus Levels list start the races with none of that.
+  Like the other bonus levels, a race does not advance career progress; when it ends (finished, lost or quit from the
+  pause menu) nothing is saved and you are back on the Bonus Levels list, with that race highlighted. Settings can still
+  be saved during play, including into a career file; bonus-level progress is left out.
+- **Cheats:** the original game's cheats as On/Off switches, on the Onslaught CE page; see [Cheats](#cheats).
 - **The console:** the original's developer console, back for solo play; press the `` ` `` (grave) key, left of 1 on a US
   keyboard. See [The console](#the-console).
 - **Controllers:** gamepads and flight sticks have menu controls and default play controls for solo and bonus co-op
@@ -86,6 +110,8 @@ and remaining limits; development source may include changes beyond that publish
 - **Keyboard:** the port releases held keys on focus loss and attempts to repair delayed releases. Typed characters
   come from key presses rather than a desktop input method; letter and digit keys use their physical positions across
   keyboard layouts. For the walker's special move, see [Dodging](#dodging).
+- **Alt-Tab and minimizing:** CE holds the game clock while it waits for a minimized window, helping avoid a fast-forward when you return (the original can do that on a fast PC;
+  `BEA_PORT_MINIMIZED_CLOCK=run` brings that back for comparison). This adjustment is off during recordings and replays.
 - **A quiet console:** the developers' messages are hidden unless `BEA_PORT_VERBOSE=1` is set.
 - **A log file** for reports, `onslaught-ce.log` in your user folder, and **session recording** (both below).
 
@@ -115,20 +141,24 @@ or replays.
 
 ### Cheats
 
-Options > Cheats turns the original game's cheats on and off. They are kept in `ce.ini` in your user folder and apply
+Onslaught CE > Cheats, in the main menu, turns the original game's cheats on and off. They are kept in `ce.ini` in your user folder and apply
 to every career. Typing a code into a career's name works too, as in the original. The Cheats page's switches are off
 while a session is being recorded and in replays; a code typed into a career's name still works then, as in the
 original.
 
 | Cheat | Original code | What it does |
 | --- | --- | --- |
-| Unlock all levels | TURKEY | Every level shows as open in the level select. Your career's real progress is not changed. In the console it also allows `map`, `win` and `lose`. |
-| Unlock all goodies | MALLOY | Every goodie on the Goodies page is open. Nothing is written to your career. |
-| Goodie hints | latête | The Goodies page shows the available unlock hints. While it is on, goodies cannot be opened, even with Unlock all goodies. |
-| God mode option | Maladim | Adds **God** to Controller Options (in the pause menu, applying at once, and in Options, from the next level). God on: no damage and energy that never runs out. Set this way it is kept in `ce.ini`, not in your career. Turning the cheat off ends god mode. |
-| Free camera | Aurore | In a level, **F** detaches the camera so you can fly around the battle. In the console it also allows `camera` and the remote camera. |
+| Unlock All Levels | TURKEY | Every level shows as open in the level select. Your career's real progress is not changed. In the console it also allows `map`, `win` and `lose`. |
+| Unlock All Goodies | MALLOY | Every goodie on the Goodies page is open. Nothing is written to your career. |
+| Goodie Hints | latête | The Goodies page shows the available unlock hints. While it is on, goodies cannot be opened, even with Unlock All Goodies. |
+| God Mode Option | Maladim | Adds **God** to Controller Options (in the pause menu, applying at once, and in Options, from the next level). God on: no damage and energy that never runs out. Set this way it is kept in `ce.ini`, not in your career. Turning the cheat off ends god mode. |
+| Free Camera | Aurore | In a level, **F** detaches the camera so you can fly around the battle. In the console it also allows `camera` and the remote camera. |
 
-Free camera controls:
+These are default keyboard bindings. In ordinary play, Space changes the Battle Engine
+between walker and aircraft. F toggles Free Camera when its cheat is enabled. With the defaults, use the arrow
+keys to look around in Free Camera; ordinary mouse-look does not turn that camera.
+
+Free Camera controls:
 
 - **F**: free camera on or off. Off returns to your previous view.
 - **W / S**: fly forward and back, in the direction you are looking.
@@ -177,9 +207,9 @@ the original's command interpreter: it has its own list of commands, and never r
   settings (below).
 - **Photo mode:** `photo` (or `photo on`/`off`) hides the HUD for pictures, as F11 does, and closes the console; F12
   saves a screenshot (below).
-- **With Free camera on:** `camera` (as the F key), `remotecameraon` (views from whatever is under the crosshair) and
+- **With Free Camera on:** `camera` (as the F key), `remotecameraon` (views from whatever is under the crosshair) and
   `remotecameraoff`.
-- **With Unlock all levels on:** `map <level>` (leaves this level for another campaign level), `win` and `lose`. A win
+- **With Unlock All Levels on:** `map <level>` (leaves this level for another campaign level), `win` and `lose`. A win
   from the console counts in your career like any other win.
 - **Put back at the end of each level:** every variable `set` changed, the navigation map, the gamma bias and the
   remote camera.
@@ -195,14 +225,19 @@ the original's command interpreter: it has its own list of commands, and never r
   messages, the battle line and the developer information. Menus, the pause menu, the message log and the end-of-level
   screens are still drawn, since they take your input. F11 again, or the end of the level, brings everything back. It
   needs no cheat: it only hides drawing, and the battle plays out as it would without it. To fly the camera around the
-  battle, and to freeze it while you frame a shot (Esc), use the Free camera cheat (above) with it.
+  battle, and to freeze it while you frame a shot (Esc), use the Free Camera cheat (above) with it.
 - **F12** saves what is on screen as a PNG in the `screenshots` folder of your user folder, named by the date and time
   (`onslaught-ce-20261029-153012.png`, then `-2`, `-3` ... in the same second). It never replaces a file. A note at the
   bottom of the screen says it was saved; the note is never in the picture. The folder holds up to 2000 files: move
   some out when it says it is full.
-- Both work in single-player levels, but not while a session is recorded or replayed, in multiplayer, a network game
-  or a demo. A key-capturing menu or the console can take these keys first; the pause-menu interaction has not been
-  tested. Photo mode is tested on Linux; Windows testing of it is limited (see the release notes).
+- **Photo Mode in the pause menu:** in a single-player level the pause menu has a **Photo Mode** row, between the
+  options rows and Retry, so a gamepad can reach it. Choosing it closes the menu, resumes the battle and turns photo
+  mode on, as F11 does, and writes nothing (not a career, not your settings). While photo mode is on the row reads
+  **End Photo Mode**: open the pause menu again and choose it to bring everything back. In multiplayer, a
+  network game, a demo, a recording or a replay the row is not drawn and cannot be chosen.
+- F11 and F12 work in single-player levels, but not while a session is recorded or replayed, in multiplayer, a network
+  game or a demo. A key-capturing menu or the console can take these keys first. Photo mode is tested on Linux;
+  Windows testing of it is limited (see the release notes).
 
 ### Your own music, end-of-level statistics and rumble
 
@@ -223,10 +258,32 @@ demo.
   own words and layout, and "CHEATER!" in red when god mode was on. The game kept counting these; the PC release left
   the panel commented out.
 - **Gamepad rumble** (`rumble`, on unless set to 0): CE requests a rumble when your Battle Engine is hit or shaken
-  by its own weapons, with the effect Stuart's PC source code played (the released game's rumble call was empty): full
+  by its own weapons, with the effect present in the upstream PC source (the released game's rumble call was empty): full
   strength for a quarter of a second. Gamepads only; flight sticks do not rumble. Player 1's request goes to the first
   controller slot and player 2's to the second. Custom Controller Options bindings do not change which slot is used.
   It needs a controller with rumble motors; nobody has tested how it feels on one yet.
+
+### Commander map (experimental)
+
+`commander=1` in `ce.ini` (off unless you set it) turns on a map of the battle for single-player levels. Press **M** to open it;
+the battle pauses while it is open. Your squads are green boxes with their unit counts, the enemy squads are red (every enemy squad the game reports as detectable, however far from you:
+this is not the HUD's radar), and the cross is you. Click a box (or press Tab) to pick a squad, then give it an order:
+
+- **Right click** a place: **Move** there. A passive march: the squad does not fire on the way, and it stays passive once it has arrived, even when it is attacked,
+  until you give it another order (**H** or **X** makes it fight where it stands).
+- **A**, then click a place: **Advance** there. The squad fights what it meets on the way.
+- **H** or **X**: **Hold**. The squad stays where it is and fires at what comes into range.
+- **R**: **Fall back** to the nearest safe place on your side. It is a Move to that place, so it is passive in the same way, on the way and once there,
+  until you give another order.
+
+The mouse wheel, Q and E zoom, the arrow keys pan, Space centres the map on you, C on the picked squad, Home on the whole
+action. Esc cancels an armed order, then drops the pick, then closes; M closes. Squads that follow a mission script, aircraft, turrets,
+buildings and mission objectives take no orders (the map says so when you try); artillery can only Hold. Until the level has
+started, M answers "The battle has not started yet." The map never opens in a recorded or replayed session, a network game, a demo
+or the front end.
+
+It is an experiment. The map is drawn from the level's heights, not the 3D view, and the orders are the game's own squad commands.
+It has only been run on Linux: there is no gamepad control for it, and no Windows build has run it. Turn it off by removing the line.
 
 Onslaught CE is an unofficial fan project. It is not affiliated with or endorsed by the game's developer, publisher or
 rights holders; *Battle Engine Aquila* is a trademark of its owners.
@@ -436,7 +493,7 @@ the launcher, and asks before installing. **Update** downloads the package, chec
 signed feed, and unpacks it into `versions/` inside the Onslaught CE folder; that folder's own files and everything
 beside it are left alone, and the version you had stays for `--rollback`. Careers and settings are not changed.
 `--update-only` checks now without starting the game; `BEA_NO_UPDATE_CHECK=1`, `update_check=0` in `ce.ini` or
-`--no-update-check` turn checking off; **Onslaught CE > Updates** in the game says whether `update_check` in `ce.ini` has turned checking off, and where
+`--no-update-check` turn checking off; **Onslaught CE > Help & Info > Updates & Rollback** in the game says whether `update_check` in `ce.ini` has turned checking off, and where
 `ce.ini` is.
 On Linux the launcher downloads with the system `curl` (https only); without `curl` the check finds nothing and says so
 only in the log. Releases never carry the old `latest.json` feed that launchers 0.1.0–0.1.6 fetch, and the legacy
@@ -447,32 +504,42 @@ only in the log. Releases never carry the old `latest.json` feed that launchers 
 (Windows). The version before the update becomes the active one again, and that update is not offered again; a newer
 one will be.
 
-There is no telemetry. **Report a problem** is a user-initiated action: it opens a GitHub page in your browser with
+There is no telemetry. **Report a Problem** is a user-initiated action: it opens a GitHub page in your browser with
 your version and OS in its address; nothing is posted until you submit it.
 
 ## Screen modes and widescreen
 
 Onslaught CE starts at your desktop's resolution, and Video Options lists your monitor's sizes, widescreen ones
 included. On a widescreen monitor the 3D view shows more to the sides (the original's vertical view is kept); the menus,
-loading pictures and films keep their original 4:3 shape, centred with black bars, and the in-game HUD sits where it
-would on a 4:3 screen. To get the original's 4:3-only list and 640 x 480 start back, set `BEA_PORT_WIDESCREEN=0`.
+loading pictures and films keep their original 4:3 shape, centred with black bars. To get the original's 4:3-only list
+and 640 x 480 start back, set `BEA_PORT_WIDESCREEN=0`. The pause menu, the message and briefing logs and the end-of-level menus read the mouse inside that
+centred picture too, so the pointer and the items under it agree at any window size, and a click acts on the item it was made on even when the pointer had not moved first.
 
 In eligible ordinary single-player play with widescreen modes enabled, the HUD (radar, portrait, messages, compass
 and reticle) scales up when the screen is wider than 640 and taller than 480 pixels, to make it easier to read.
 Set `BEA_PORT_HUD_SCALE=0` for the original's fixed-size HUD. Scaling is off in recordings and replays,
 multiplayer, and when `BEA_PORT_WIDESCREEN=0`.
 
-On a wide screen where the menus' and HUD's text is drawn at twice its original size or more (a 4K screen, for example),
-Onslaught CE draws it from a sharper copy of the game's letters, so it stays crisp instead of soft; the letters keep
-their shapes, sizes and places. The text is deliberately sharper than the original's soft pixels, and looks brighter. A
-font's sharper copy is made the first time it is used, which can pause the game for a moment (about a tenth of a second).
-This is off in recordings and replays, on 4:3 screens and when `BEA_PORT_WIDESCREEN=0`.
+In the same play the HUD's corner groups (the target panel, objectives, radar, weapon and ammunition readouts and the
+radio portrait) sit in the corners of the screen, where the original's HUD sits at 4:3, while the radio messages,
+warnings, compass and reticle stay in the middle. On a very wide screen the corners are far apart: put `hud_anchor=0`
+in `ce.ini` to keep them in the columns a 4:3 picture would have, as `BEA_PORT_HUD_SCALE=0` does. In multiplayer the HUD
+stays in the 4:3 columns.
+
+Sharper text is off by default: the menus' and HUD's text keeps the original's soft look, as the rest of the picture
+does. Put `sharp_ui=1` in `ce.ini` to turn it on: with widescreen modes enabled on a non-4:3 picture, bitmap text
+drawn at least twice its original size horizontally or vertically (for example, menu text at 1920 x 1080) can use a
+sharper copy of the game's letters, so it can look crisp instead of soft; the letters keep their shapes, sizes and
+places. The text is then deliberately sharper than the original's soft pixels and looks brighter. A font's sharper copy
+is made the first time it is used, which can pause the game for a moment (about a tenth of a second). In ordinary use
+it does not apply in recordings and replays, on 4:3 screens or when `BEA_PORT_WIDESCREEN=0`.
 
 For testers: to try a screen size your monitor does not offer, set `BEA_PORT_WIDE_TEST=WIDTHxHEIGHT` and start with
 the same size, for example `BEA_PORT_WIDE_TEST=2560x1440 onslaught-ce -- -res 2560 1440`. The game then treats it as
-an available widescreen mode.
+an available widescreen mode. A valid test switch forces widescreen modes on even during recording or replay and when
+`BEA_PORT_WIDESCREEN=0`; unset it before making a faithful reference tape.
 
-Replays and recordings always use the original 4:3 behaviour. The original game shares one random number source
+In ordinary use, replays and recordings use the original 4:3 behaviour. The original game shares one random number source
 between visual effects and play, so a wider view can change the details of a fight; that is expected.
 
 ## Mods (experimental)
@@ -501,7 +568,7 @@ ignored, and the log says so.
   game loads that level's own world instead, and the log says so.
 - A mod's files are read by the game itself. The checks above cover where a file is and what it contains at the byte
   level, not what a texture, archive or world inside it does, so install mods only from people you trust.
-- Mods are always off in replays, recordings and network play, so those stay the same for everyone.
+- Mods are always off whenever a run is meant to be reproducible or shared, so those stay the same for everyone: replays and recordings (and the developer settings behind them: a deterministic clock, input tapes, probes, pilots and autopilot) and network play (host, join or handoff). A test that should load a mod must run live on the real clock.
 
 `mod.json` looks like this (`id` is the folder's name; optional `ce_min` and `ce_max`, such as `"0.2"`, limit
 the Onslaught CE versions it loads in):
@@ -523,15 +590,17 @@ the size has been tested), but its unpacked file must stay under 5 MiB, the game
 
 ## Report a problem
 
-1. In 0.1.7 or later, choose **Onslaught CE > Report a problem** in the main menu, or run `onslaught-ce --report`
+1. In 0.1.7 or later, choose **Onslaught CE > Report a Problem** in the main menu, or run `onslaught-ce --report`
    (Windows: `onslaught-ce.exe --report`, from a Command Prompt in the program folder or a shortcut with `--report`
    added). Do not start a 0.1.0–0.1.6 launcher to report a problem, by either route; use the
    [Issues](https://github.com/dlprentice/onslaught-ce/issues) page instead and give the version you downloaded.
-   Report a problem opens a new issue on this repository in your browser, already filled in with your version and
+   Report a Problem opens a new issue on this repository in your browser, already filled in with your version and
    system (which GitHub sees in the page's address), and prints the folder that holds your log. Nothing is posted
    until you submit the issue. You can also open an issue on the Issues page yourself.
 2. Say what happened and how to make it happen again.
-3. Attach `onslaught-ce.log` from your user folder (`~/.local/share/onslaught-ce` on Linux, `%APPDATA%\Onslaught CE`
+3. Attach `onslaught-ce.log` from your user folder (`$XDG_DATA_HOME/onslaught-ce` (when `XDG_DATA_HOME` is set
+and nonempty;
+otherwise `~/.local/share/onslaught-ce`) on Linux, `%APPDATA%\Onslaught CE`
    on Windows). In ordinary, unrecorded play it includes the launcher and game identities, the game executable's
    SHA-256, graphics and audio configuration, every display (size, refresh rate, scaling, which one the game used),
    the keyboards, mice, controllers and audio playback devices by the names your system gives them, the Onslaught CE
@@ -545,19 +614,24 @@ the size has been tested), but its unpacked file must stay under 5 MiB, the game
    file directly with someone helping you. Replays and session recordings omit the detailed ordinary-play events.
 4. If you recorded the session (below), attach its tape too: it can help us reproduce what happened.
 
+If you set `BEA_USER_DIR` to a folder, look for the log in that folder instead. Logs can include local paths,
+user names
+and device details; review them before sharing publicly, while keeping the details needed to diagnose the
+problem.
+
 ## Help make Onslaught CE more faithful
 
 The goal is a game that behaves exactly like the original. We check that by replaying recorded input
 in both and comparing them, and recordings of real play find differences our own test runs miss.
 
-- Record one session with `onslaught-ce --record`, or every session with **Onslaught CE > Record sessions** in the main
-  menu. That starts the next time you launch Onslaught CE (quit the game, then start it again); it puts
+- Record one session with `onslaught-ce --record`, or every session with **Onslaught CE > CE Settings > Record Play for Bug
+  Reports** in the main menu. That starts the next time you launch Onslaught CE (quit the game, then start it again); it puts
   `record_sessions=1` in `ce.ini` in your user folder. While it is on, each start asks whether to record: **Stop
   recording** there (or starting with `onslaught-ce --no-record`) turns it off again.
 - By default, recording targets 30 frames a second for play and uses the replay clock. Its menus take the keyboard
   and mouse, and you can type a career's name. Direct gamepad and flight-stick input is disabled during recording and
   replay because the tape does not record it; use the keyboard and mouse. An older tape made with live controller
-  input cannot recover that input and may replay differently. The screen is the original 4:3 (no
+  input cannot recover that input and may replay differently. The screen is normally the original 4:3 (no
   widescreen), and the menus are the original's: the version text, no Onslaught CE menu and no Cheats page, and only
   cheats typed into a career's name work. These Onslaught CE additions are off too: the larger HUD, the command panel,
   the tutorial's dodge and zoom
@@ -641,9 +715,17 @@ its win and debrief. This covers one recorded route; it does not establish compl
 - Complete tutorial parity with the original has not yet been established.
 - Gamepad and flight-stick defaults cover menus, solo play and bonus co-op ([how](port/controller-input.md)); only
   virtual devices have been tested so far.
-- Widescreen play is not compared with the original (the original has no widescreen); replays and recordings use 4:3.
+- Widescreen play is not compared with the original (the original has no widescreen); ordinary replays and recordings use 4:3.
 - Planned, not in this version yet: Internet multiplayer, mods on Windows and additional HUD options. On Linux, mods
   are an early test ([Mods (experimental)](#mods-experimental)).
+
+- On Windows in 0.1.12, the pause-menu pointer can select the wrong item at some display sizes, and the
+  system cursor may remain visible in fullscreen. Changes are in development; further testing on physical
+  Windows
+  hardware is needed. If you encounter this, include your display settings and log in your report.
+
+- Reports of layered or stuttering music and map-edge artifacts still need retesting on the affected Windows
+  hardware. An AMD-specific cause has not been confirmed.
 
 ## Building from source
 
@@ -678,7 +760,7 @@ launch the game or open an audio device.
 ## Licence
 
 Onslaught CE is licensed under **GPL-3.0-only** (see [COPYING](COPYING), [NOTICE](NOTICE) and
-[REUSE.toml](REUSE.toml)). Stuart's release ships the GPLv3 text without a version statement; we treat it, and license
+[REUSE.toml](REUSE.toml)). The upstream Onslaught source ships the GPLv3 text without a separate “or later” grant; we treat it, and license
 our work, as GPL-3.0-only. Third-party components keep their own licences; see [THIRD-PARTY.md](THIRD-PARTY.md). The
 FFmpeg libraries ship as replaceable shared libraries, and their source tarball is attached to each release.
 
@@ -713,4 +795,4 @@ The **Onslaught CE → Special Thanks** menu carries these acknowledgements in t
   formats, behaviours and history.
 - [Onslaught-Career-Editor](https://github.com/dlprentice/Onslaught-Career-Editor): companion app for saves, settings
   and lore; to be renamed onslaught-companion.
-- [stuart73/Onslaught](https://github.com/stuart73/Onslaught): Stuart Gillam's release of the game's source.
+- [stuart73/Onslaught](https://github.com/stuart73/Onslaught): upstream GPL source for the game.

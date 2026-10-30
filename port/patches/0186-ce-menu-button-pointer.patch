@@ -1,0 +1,81 @@
+--- a/mouse.cpp
++++ b/mouse.cpp
+@@ -57,6 +57,18 @@
+ 	if (CLIPARAMS.mAutoConfigTest)
+ 		return FALSE;
+ 
++#if defined(CE_VERSION)
++	// SDL button events carry the pointer's position even without a preceding motion event. In a CE in-game menu,
++	// use that point for the cursor and the game's rectangle test, after the mouse trap accepts the event.
++	auto menuButtonPoint = [lParam]() {
++		if (!FRONTEND.IsRunning() && PortUiMouseMenu(sMouseInputActive))
++		{
++			MOUSE_X = lParam & 0xffff;
++			MOUSE_Y = DWORD(lParam) >> 16;
++			PortUiMouseMenuPoint(&MOUSE_X, &MOUSE_Y);
++		}
++	};
++#endif
+ 	switch (msg)
+ 	{
+ 	case WM_MOUSEMOVE:
+@@ -94,6 +106,9 @@
+ 	case WM_RBUTTONUP:
+ 		if (MOUSE_TRAP && MOUSE_TRAP(2, MOUSE_EVENT_UP))
+ 			break;
++#if defined(CE_VERSION)
++		menuButtonPoint();
++#endif
+ 		MOUSE_HELD[2] = false;
+ 		MOUSE_BUTTONS[2].mReleased = TRUE;
+ 		break;
+@@ -102,6 +117,9 @@
+ 		gKeyPressed = true;
+ 		if (MOUSE_TRAP && MOUSE_TRAP(2, MOUSE_EVENT_DOWN))
+ 			break;
++#if defined(CE_VERSION)
++		menuButtonPoint();
++#endif
+ 		MOUSE_HELD[2] = true;
+ 		if (!MOUSE_BUTTONS[2].mDown)
+ 		{
+@@ -129,6 +147,9 @@
+ 	case WM_LBUTTONUP:
+ 		if (MOUSE_TRAP && MOUSE_TRAP(0, MOUSE_EVENT_UP))
+ 			break;
++#if defined(CE_VERSION)
++		menuButtonPoint();
++#endif
+ 		MOUSE_HELD[0] = false;
+ 		MOUSE_BUTTONS[0].mReleased = TRUE;
+ 		break;
+@@ -137,6 +158,9 @@
+ 		gKeyPressed = true;
+ 		if (MOUSE_TRAP && MOUSE_TRAP(0, MOUSE_EVENT_DOWN))
+ 			break;
++#if defined(CE_VERSION)
++		menuButtonPoint();
++#endif
+ 		MOUSE_HELD[0] = true;
+ 		if (!MOUSE_BUTTONS[0].mDown)
+ 		{
+@@ -164,6 +188,9 @@
+ 	case WM_MBUTTONUP:
+ 		if (MOUSE_TRAP && MOUSE_TRAP(1, MOUSE_EVENT_UP))
+ 			break;
++#if defined(CE_VERSION)
++		menuButtonPoint();
++#endif
+ 		MOUSE_BUTTONS[1].mReleased = TRUE;
+ 		MOUSE_HELD[1] = false;
+ 		break;
+@@ -172,6 +199,9 @@
+ 		gKeyPressed = true;
+ 		if (MOUSE_TRAP && MOUSE_TRAP(1, MOUSE_EVENT_DOWN))
+ 			break;
++#if defined(CE_VERSION)
++		menuButtonPoint();
++#endif
+ 		MOUSE_HELD[1] = true;
+ 		if (!MOUSE_BUTTONS[1].mDown)
+ 		{

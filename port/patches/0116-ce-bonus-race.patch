@@ -1,0 +1,40 @@
+--- a/FrontEnd.cpp
++++ b/FrontEnd.cpp
+@@ -34,6 +34,8 @@
+ #ifdef CE_VERSION
+ bool	PortCeBonusLevelEnd();			// port/game/ce_bonus.cpp (patch 0107)
+ bool	PortCeBonusReturning();
++bool	PortCeBonusRaceReturning();		// patch 0116: the race that ended was a CE bonus race
++bool	PortCeBonusCoopReturning();		// patch 0116: the multiplayer map that ended was a CE bonus co-op map
+ #endif
+ 
+ #ifdef CE_VERSION
+@@ -277,6 +279,13 @@
+ 	{
+ 		if ((mSelectedLevel > 900) && (mSelectedLevel < 906)) // Race levels
+ 		{
++#ifdef CE_VERSION
++			// Patch 0116: a CE bonus race saves nothing (no autosave page) and comes back to the Onslaught CE page, which
++			// takes the language-test page's slot (patch 0050); the career was put back in memory by patch 0107's call above.
++			if (PortCeBonusRaceReturning())
++				mActivePage = FEP_LANGUAGE_TEST;
++			else
++#endif
+ 			if ((GetAutoSave() != AUTO_SAVE_PRETEND) && (performing_stress_test == 0) && (!CLIPARAMS.mAutoConfigTest) && (!gAllCheatsEnabled))
+ 			{
+ 				// Save the damn thing.
+@@ -291,7 +300,14 @@
+ 			}
+ 		}
+ 		else if ((mSelectedLevel >= 850) && (mSelectedLevel < 880))
++		{
+ 			mActivePage = FEP_MULTIPLAYER;
++#ifdef CE_VERSION
++			// Patch 0116: a CE bonus co-op map comes back to the Onslaught CE page's Bonus Levels list, not the Multiplayer page.
++			if (PortCeBonusCoopReturning())
++				mActivePage = FEP_LANGUAGE_TEST;
++#endif
++		}
+ 		else
+ 		{
+ 			// If it's not the first run, we should autosave.

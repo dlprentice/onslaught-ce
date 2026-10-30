@@ -87,6 +87,8 @@ struct Mixer
 	Uint64 streamGeneration = 0, queueGeneration = 0, retiredQueueObservations = 0;
 	bool generationExhausted = false;
 	bool mediaStreamActive = false; // protected by lock; snapshots never read stream during teardown
+	Uint64 feedLastNs = 0;			// patch 0187: when the previous device callback of this stream ran; protected by lock
+	unsigned feedLastFrames = 0;
 	int queueLastBytes = -1, queueMaxBytes = -1;
 	Buffer3D *all3D[1024];			// every live 3D buffer, for CommitDeferredSettings
 	int num3D = 0;
@@ -193,6 +195,14 @@ struct Buffer final : public IDirectSoundBuffer8
 	unsigned mediaSerial = 0;
 	int mediaKind = -1; // set by the actual music/Bink owner, never inferred from format or buffer size
 	double cursor = 0;			// play position in frames of the buffer's format
+	// Patch 0187, ordinary-session observation of a music-tagged looping buffer only: whether each of its two halves holds data
+	// written since the cursor last entered it (0 consumed, 1 fresh, 2 unknown: since the buffer stopped, or not entered yet since
+	// it started), and the mixer's frame count (plus one, 0 = none) at the latest position notification. The cursor entering a half
+	// that was not refilled replays old data; refilling a half that still holds data not yet entered overwrites it. Atomic bytes:
+	// the music worker unlocks while the mixer notifies. Counts only; nothing here reads a clock or changes what the game sees.
+	unsigned char halfFresh[2] = {2, 2};
+	unsigned cursorBytes = 0;		// the cursor as the mixer last left it, for the worker's writes to see which half is being played
+	Uint64 lastNotifyMixed = 0;
 	DSBPOSITIONNOTIFY notes[32];
 	DWORD numNotes = 0;
 	Buffer3D *b3d = NULL;
@@ -256,10 +266,53 @@ struct Buffer final : public IDirectSoundBuffer8
 		return (Sint16)(p[2 * c] | p[2 * c + 1] << 8) * (1.0f / 32768.0f);
 	}
 
+	// Patch 0187, lock held: the cursor went from byte `from` to byte `to` (wrapped: past the end of the buffer). Passing the middle enters
+	// the second half and wrapping enters the first. A half that is entered is consumed; one that was already consumed was not refilled
+	// since it was last entered. (The game's notifications are at the end of each half, so they are not the entries.)
+	void ObserveCrossing(double from, double to, bool wrapped)
+	{
+		double half = (double)(Bytes() / 2);
+		if (half <= 0) return;
+		bool second = wrapped ? (half >= from || half < to) : (half >= from && half < to);
+		for (int h = 1; h >= 0; --h)
+		{
+			if (h == 1 ? !second : !wrapped) continue;
+			if (__atomic_exchange_n(&halfFresh[h], (unsigned char)0, __ATOMIC_RELAXED) == 0)
+				PortSessionObserve(PORT_OBS_MUSIC_STALE_HALVES);
+		}
+	}
+
+	// Patch 0187, called by the music worker after it wrote [p1, p1+n1) and [p2, p2+n2): each half that was written whole is fresh
+	// for the next time the cursor enters it; one that already was fresh was never entered, so its data is lost. A half the cursor is
+	// in now is being played, so what is written into it reaches this lap and is consumed, not fresh.
+	void ObserveWrite(const void *p1, DWORD n1, const void *p2, DWORD n2)
+	{
+		DWORD bytes = Bytes(), half = bytes / 2;
+		const unsigned char *base = data->bytesPtr;
+		if (!half || !base) return;
+		const int playingHalf = __atomic_load_n(&cursorBytes, __ATOMIC_RELAXED) >= half ? 1 : 0;
+		auto mark = [&](const void *p, DWORD n) {
+			const unsigned char *q = (const unsigned char *)p;
+			if (!q || q < base || q >= base + bytes) return;
+			DWORD begin = (DWORD)(q - base), end = begin + n;
+			for (int h = 0; h < 2; ++h)
+				if (begin <= h * half && end >= (h + 1) * half)
+					if (__atomic_exchange_n(&halfFresh[h], (unsigned char)(h == playingHalf ? 0 : 1), __ATOMIC_RELAXED) == 1)
+						PortSessionObserve(PORT_OBS_MUSIC_OVERWRITTEN_HALVES);
+		};
+		mark(p1, n1);
+		mark(p2, n2);
+	}
+
 	// Fires the notifications whose offsets the cursor passed from one frame position to another. Lock held.
 	void Notify(double fromFrame, double toFrame, bool wrapped)
 	{
 		double from = fromFrame * format.nBlockAlign, to = toFrame * format.nBlockAlign;
+		if (gSessionAudio && mediaKind == PORT_SESSION_MUSIC)
+		{
+			__atomic_store_n(&cursorBytes, (unsigned)to, __ATOMIC_RELAXED);
+			ObserveCrossing(from, to, wrapped);
+		}
 		for (DWORD i = 0; i < numNotes; i++)
 		{
 			DWORD off = notes[i].dwOffset;
@@ -268,13 +321,19 @@ struct Buffer final : public IDirectSoundBuffer8
 			double o = off;
 			bool passed = wrapped ? (o >= from || o < to) : (o >= from && o < to);
 			if (passed)
+			{
+				if (gSessionAudio && mediaKind == PORT_SESSION_MUSIC)
+					lastNotifyMixed = gMixer.mixed + 1;		// patch 0187: when, in mixed frames, for the refill's age
 				SetEvent(notes[i].hEventNotify);
+			}
 		}
 	}
 
 	void Halt()		// lock held
 	{
 		playing = false;
+		if (gSessionAudio && mediaKind == PORT_SESSION_MUSIC)
+			halfFresh[0] = halfFresh[1] = 2;		// patch 0187: what is written while it is stopped is not an overwrite
 		for (int i = 0; i < gMixer.numVoices; i++)
 			if (gMixer.voices[i] == this)
 			{
@@ -401,6 +460,7 @@ struct Buffer final : public IDirectSoundBuffer8
 					(unsigned long)priority, (unsigned long)playFlags, h, peak, bytes ? 1 : 0, (unsigned long)bytes,
 					(unsigned long)cp, (unsigned long)cw);
 		}
+		bool secondMusicVoice = false;
 		SDL_LockMutex(gMixer.lock);
 		looping = (playFlags & DSBPLAY_LOOPING) != 0;
 		if (!playing && Bytes() && !(flags & DSBCAPS_PRIMARYBUFFER) && gMixer.numVoices < kMaxVoices)
@@ -410,9 +470,32 @@ struct Buffer final : public IDirectSoundBuffer8
 			playing = true;
 			lastGain[0] = lastGain[1] = -1;		// start at the target gain, without a ramp
 			gMixer.voices[gMixer.numVoices++] = this;
+			if (gSessionAudio && mediaKind == PORT_SESSION_MUSIC)
+			{
+				// Patch 0187: a new play begins a new epoch of the half observation, and counts the music voices.
+				int current = Bytes() && (DWORD)cursor * format.nBlockAlign >= Bytes() / 2 ? 1 : 0;
+				halfFresh[current] = 0;
+				halfFresh[1 - current] = 2;
+				cursorBytes = (unsigned)cursor * format.nBlockAlign;
+				lastNotifyMixed = 0;
+				unsigned music = 0;
+				for (int i = 0; i < gMixer.numVoices; i++)
+					if (gMixer.voices[i]->mediaKind == PORT_SESSION_MUSIC) ++music;
+				PortSessionObserve(PORT_OBS_MUSIC_VOICE_STARTS);
+				PortSessionObserveMax(PORT_OBS_MUSIC_VOICES_MAX, music);
+				secondMusicVoice = music > 1;
+			}
 		}
 		SDL_UnlockMutex(gMixer.lock);
 		MediaSnapshot(this, "play");
+		if (secondMusicVoice)
+		{
+			// Once per process: a second music voice while one plays is the double start (the 0.1.10 defect). Outside the lock.
+			static unsigned char sLogged;
+			if (!__atomic_test_and_set(&sLogged, __ATOMIC_RELAXED))
+				PortSessionLog(PORT_SESSION_MUSIC, true, "a second music-tagged buffer started while another plays "
+					"(see music_voices_max; not audible-content proof)");
+		}
 		return DS_OK;
 	}
 	HRESULT STDMETHODCALLTYPE SetCurrentPosition(DWORD p) override
@@ -478,9 +561,11 @@ struct Buffer final : public IDirectSoundBuffer8
 		MediaSnapshot(this, "stop");
 		return DS_OK;
 	}
-	HRESULT STDMETHODCALLTYPE Unlock(LPVOID, DWORD n1, LPVOID, DWORD n2) override
+	HRESULT STDMETHODCALLTYPE Unlock(LPVOID p1, DWORD n1, LPVOID p2, DWORD n2) override
 	{
 		gMixer.CatchUp();
+		if (gSessionAudio && mediaKind == PORT_SESSION_MUSIC)
+			ObserveWrite(p1, n1, p2, n2);
 		// DirectSound rejects an unlock larger than the buffer (the game unlocks its samples with twice their size and
 		// gets this error in retail too; the data is written either way)
 		HRESULT hr = (n1 > Bytes() || n2 > Bytes()) ? DSERR_INVALIDPARAM : DS_OK;
@@ -1119,6 +1204,18 @@ void SDLCALL Feed(void *, SDL_AudioStream *stream, int additional, int)
 		Uint64 n = (unsigned)frames;
 		gMixer.callbackFrames = ~Uint64(0) - gMixer.callbackFrames < n ? ~Uint64(0) : gMixer.callbackFrames + n;
 		if ((unsigned)frames > gMixer.callbackMaxFrames) gMixer.callbackMaxFrames = (unsigned)frames;
+		// Patch 0187: the time since the previous callback of this stream, and one count when it is over three chunks. The
+		// counters are lock-free; nothing is formatted or logged here.
+		Uint64 nowNs = SDL_GetTicksNS();
+		if (gMixer.feedLastNs && nowNs >= gMixer.feedLastNs)
+		{
+			Uint64 gap = nowNs - gMixer.feedLastNs;
+			PortSessionObserveMax(PORT_OBS_AUDIO_GAP_US_MAX, gap / 1000 > 0xffffffffull ? 0xffffffffu : (unsigned)(gap / 1000));
+			if (gap > (Uint64)gMixer.feedLastFrames * 3 * 1000000000ull / kRate)
+				PortSessionObserve(PORT_OBS_AUDIO_CALLBACKS_LATE);
+		}
+		gMixer.feedLastNs = nowNs;
+		gMixer.feedLastFrames = (unsigned)frames;
 	}
 	SDL_UnlockMutex(gMixer.lock);
 	if (!SDL_PutAudioStreamData(stream, buf, frames * 4) && gSessionAudio)
@@ -1260,7 +1357,17 @@ void Mixer::Start()
 					SDL_LockMutex(lock);
 					if (streamGeneration == ~Uint64(0)) generationExhausted = true; else ++streamGeneration;
 					mediaStreamActive = !generationExhausted;
+					feedLastNs = 0;
 					SDL_UnlockMutex(lock);
+					// Patch 0187: what the device granted, as numbers (never its name): rate, channels and buffer size in frames.
+					SDL_AudioSpec granted;
+					int periodFrames = 0;
+					if (SDL_GetAudioDeviceFormat(SDL_GetAudioStreamDevice(stream), &granted, &periodFrames))
+					{
+						PortSessionObserveMax(PORT_OBS_DEVICE_RATE, granted.freq > 0 ? (unsigned)granted.freq : 0);
+						PortSessionObserveMax(PORT_OBS_DEVICE_CHANNELS, granted.channels > 0 ? (unsigned)granted.channels : 0);
+						PortSessionObserveMax(PORT_OBS_DEVICE_PERIOD_FRAMES, periodFrames > 0 ? (unsigned)periodFrames : 0);
+					}
 				}
 				if (!SDL_ResumeAudioStreamDevice(stream))
 				{
@@ -1602,6 +1709,35 @@ bool PortAudioStreamSnapshot(IDirectSoundBuffer *target, unsigned long long *ns,
 	SetLastError(savedLastError);
 #endif
 	return found;
+}
+
+// Patch 0187: the mixer's frame count (plus one) when the buffer's latest position notification fired, comparable with the
+// frame count PortAudioStreamSnapshot returns, or 0 if it is unknown (not an ordinary session, not a playing music buffer, or
+// no notification since it started). Read-only like the snapshot above; no clock is read.
+unsigned long long PortAudioStreamNotifyMixed(IDirectSoundBuffer *target)
+{
+	if (!gSessionAudio) return 0;
+	int savedError = errno;
+#ifdef _WIN32
+	DWORD savedLastError = GetLastError();
+#endif
+	unsigned long long mixedPlusOne = 0;
+	SDL_LockMutex(gMixer.lock);
+	for (int i = 0; i < gMixer.numVoices; ++i)
+	{
+		Buffer *b = gMixer.voices[i];
+		if (reinterpret_cast<IDirectSoundBuffer *>(static_cast<IDirectSoundBuffer8 *>(b)) == target)
+		{
+			mixedPlusOne = b->lastNotifyMixed;
+			break;
+		}
+	}
+	SDL_UnlockMutex(gMixer.lock);
+	errno = savedError;
+#ifdef _WIN32
+	SetLastError(savedLastError);
+#endif
+	return mixedPlusOne;
 }
 
 extern "C" HRESULT WINAPI DirectSoundEnumerateA(LPDSENUMCALLBACKA cb, LPVOID ctx)

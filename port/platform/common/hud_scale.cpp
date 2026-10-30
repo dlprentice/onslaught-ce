@@ -5,6 +5,7 @@
 
 extern bool PortCeLayer();
 extern int PortWideModes();
+extern "C" int CE_SettingGetBool(const char *key, int def);	// ce.cpp: the ce.ini switch
 
 namespace
 {
@@ -26,6 +27,18 @@ bool Enabled()
 	const char *off = getenv("BEA_PORT_HUD_SCALE");
 	return !(off && *off == '0') && PortWideModes();
 }
+}
+
+// The ini's answer is read once, the first time the HUD scale's gate lets it matter (a replay or a faithful run never reads it),
+// so a change of hud_anchor takes effect at the next start.
+bool CeHudAnchorEnabled()
+{
+	if (!Enabled())
+		return false;
+	static int ini = -1;
+	if (ini < 0)
+		ini = CE_SettingGetBool("hud_anchor", 1) ? 1 : 0;
+	return ini == 1;
 }
 
 CeHudScope::CeHudScope(int eligible, float width, float height, float anchorX, float anchorY)

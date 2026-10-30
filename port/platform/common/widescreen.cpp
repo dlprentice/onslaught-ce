@@ -5,13 +5,15 @@
 // - the 3D view widens horizontally (Hor+: the vertical field of view stays the game's), or extends vertically on a
 //   screen narrower than 4:3 (Vert+), by PortWideX and PortWideY; the projection and the visibility gamut widen together;
 // - the 640 x 480 virtual screen of the front end and the in-game menus is drawn into the largest centred 4:3 box
-//   (PortUiScale, PortUiLeft, PortUiTop), and the in-game HUD is moved into that box's columns (PortHudInset);
-// - the display mode list offers the desktop's sizes and the default mode is the desktop's (d3d9hooks.cpp, patch 0046).
+//   (PortUiScale, PortUiLeft, PortUiTop), and the in-game HUD is moved into that box's columns (PortHudInset), except in
+//   ordinary single-player play, where its corner groups sit in the screen's corners (PortHudAnchored, ce_hud_anchor.cpp);
+// - the display mode list offers the desktop's sizes and the default mode is the desktop's (d3d9hooks.cpp, patch 0046);
+// - with ce.ini's sharp_ui=1 (off by default), bitmap text at twice its size or more can use a sharper texture (DXFont.cpp).
 //
-// Faithful runs never take these paths: PortWideModes is false in a replay or a recording (PortCeLayer), on the
-// offscreen video driver (test runs) and with BEA_PORT_WIDESCREEN=0, and PortWideActive is also false whenever the back
-// buffer is 4:3. Each patch site keeps the game's own statements in its else arm. BEA_PORT_WIDE_TEST=WxH forces both
-// on (offscreen, or under a tape) and makes WxH the default mode: for tests only.
+// Ordinarily PortWideModes is false for replays or recordings (PortCeLayer), offscreen and BEA_PORT_WIDESCREEN=0.
+// A valid BEA_PORT_WIDE_TEST=WxH forces modes on before those checks and chooses the default size;
+// BEA_PORT_CE_LAYER=1 can bypass the replay/recording gate. PortWideActive still requires a non-4:3 back buffer.
+// Each patch site keeps the game's own statements in its else arm.
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -21,6 +23,7 @@
 #include <SDL3/SDL.h>
 
 bool PortCeLayer();		// ce.cpp
+int PortHudAnchored();	// ce_hud_anchor.cpp
 
 namespace
 {
@@ -250,17 +253,85 @@ float PortUiScale() { return gScale; }
 float PortUiLeft() { return gLeft; }
 float PortUiTop() { return gTop; }
 
+// The sharper UI: ce.ini sharp_ui=1 is off by default. A public bitmap font can use a sharper copy when the wide path
+// is active and the larger drawing scale is at least 2 (DXFont.cpp, CrispWanted). A 4:3 back buffer is never active.
+// Replays, recordings, offscreen and BEA_PORT_WIDESCREEN=0 ordinarily disable wide modes; BEA_PORT_WIDE_TEST can
+// override those checks, and BEA_PORT_CE_LAYER=1 can bypass the replay/recording gate. Each eligible caller asks
+// last, so ce.ini is read once on an eligible draw; the session log says the answer, and changes take effect next start.
+extern "C" int CE_SettingGetBool(const char *key, int def);	// ce.cpp
+int PortSharpUi()
+{
+	if (!gActive)
+		return 0;
+	static int ini = -1;
+	if (ini < 0)
+	{
+		ini = CE_SettingGetBool("sharp_ui", 0) ? 1 : 0;
+		PortSessionLog(PORT_SESSION_VIDEO, false, "sharp_ui=%d (ce.ini): %s", ini,
+					   ini ? "text at twice its size or more is drawn from sharper copies of the fonts" : "the game's soft text");
+	}
+	return ini;
+}
+
 // The HUD's shift into the 4:3 columns of a viewport: the part of its width the widening added, halved. PortHudBegin
 // returns the shifted HUD_OFFSET_X for the HUD's drawing and keeps the game's own value, which the centred message box
-// reads back (PortHudOriginal: it narrows itself by HUD_OFFSET_X on both sides).
-float PortHudInset(float viewportWidth) { return gActive ? viewportWidth * (1.f - 1.f / gX) * 0.5f : 0.f; }
+// reads back (PortHudOriginal: it narrows itself by HUD_OFFSET_X on both sides). The game lays its HUD out against the
+// window's edges (HUD_OFFSET_X is 0), so where PortHudAnchored says so (ordinary single-player play) the shift is none: the
+// corner groups sit in the screen's corners, the compass, reticle and radio box stay where they were, and everything the
+// HUD scale anchors follows because its anchors are made from the same HUD_OFFSET_X. PortHudBegin decides once per pass:
+// the objective panel's own PortHudInset terms are drawn inside it.
+static bool gHudAnchored;
+static int gHudLogged = -1;	// the answer last told to the developer log (-1: none yet)
+float PortHudInset(float viewportWidth) { return gActive && !gHudAnchored ? viewportWidth * (1.f - 1.f / gX) * 0.5f : 0.f; }
 static float gHudOriginal;
 float PortHudBegin(float offset, float viewportWidth)
 {
 	gHudOriginal = offset;
-	return offset + PortHudInset(viewportWidth);
+	gHudAnchored = PortHudAnchored() != 0;
+	float shifted = offset + PortHudInset(viewportWidth);
+	if (gHudLogged != (int)gHudAnchored)
+	{
+		gHudLogged = gHudAnchored;
+		if (PortDevLog())
+			fprintf(stderr, PORT_LOG_PREFIX "widescreen: the HUD's corner groups %s (HUD_OFFSET_X %.0f)\n",
+					gHudAnchored ? "sit in the screen's corners" : "sit in the 4:3 columns", (double)shifted);
+	}
+	return shifted;
 }
 float PortHudOriginal() { return gHudOriginal; }
+
+// An in-game menu (the pause menu, the message and briefing logs, the end-of-level menus) draws in the 640 x 480 virtual screen as the front end does, but the game scales the pointer to it only while
+// the front end runs: there the pointer stayed in window pixels, which is right at 640 x 480 only, so in a bigger window (or a wide one, where the screen is a 4:3 box) the arrow was drawn off its place
+// or not at all and no menu item felt the mouse. While the game's own mouse is released (it is, in a menu), the layer is on (not in a replay or a recording) and the commander map, which reads
+// window pixels, is not open, the pointer of those menus is mapped as the front end's (patch 0042's mouse hunks ask).
+#ifdef CE_VERSION
+bool PortCeCmdMapOpen();	// ce_cmdmap.cpp
+#endif
+void PortUiMouse(int *x, int *y);
+int PortUiMouseMenu(int mouseInputActive)
+{
+#ifdef CE_VERSION
+	return !mouseInputActive && PortCeLayer() && !PortCeCmdMapOpen() ? 1 : 0;
+#else
+	(void)mouseInputActive;
+	return 0;
+#endif
+}
+
+// The same point as the virtual screen's, for the pointer those menus read: through the 4:3 box where the wide paths are on, else scaled by the back buffer's size as the front end's.
+void PortUiMouseMenuPoint(int *x, int *y)
+{
+	if (gActive)
+	{
+		PortUiMouse(x, y);
+		return;
+	}
+	if (gW && gH)
+	{
+		*x = (int)((long long)*x * 640 / (long long)gW);
+		*y = (int)((long long)*y * 480 / (long long)gH);
+	}
+}
 
 // A window position (back buffer pixels) as the 640 x 480 virtual screen's.
 void PortUiMouse(int *x, int *y)

@@ -123,13 +123,39 @@ void PostMouseMove(HWND h, WPARAM w, LPARAM l)
 	Post(h, WM_MOUSEMOVE, w, l);
 }
 
+// The game reads every waiting message at the start of a frame and judges a click afterwards, against the pointer's position when its logic runs. A mouse message that follows a button release in the same
+// batch would move that position before the judgement, so in the CE layer's menus the batch ends at the release and the messages behind it are the next batch's first: the click is judged where the button
+// was released, and the movement or the next press arrives one frame later. "In the menus" is PortUiMouseMenu's question (not in a replay or a recording, not while the commander map reads window pixels),
+// asked as patch 0042 asks it, with the game's mouse released: while the game holds the mouse acquired (PortDinputOwnsMouseEvent with no timestamp) DirectInput owns it, no mouse message reaches this
+// queue, and a release that did is not a menu's click.
+bool gMouseAfterReleaseWaits;	// a button release was handed to the game in this batch
+
+bool IsMouseMessage(UINT m) { return m >= WM_MOUSEFIRST && m <= WM_MOUSEWHEEL; }
+bool IsButtonRelease(UINT m) { return m == WM_LBUTTONUP || m == WM_RBUTTONUP || m == WM_MBUTTONUP; }
+
 bool Pop(MSG *out, bool remove)
 {
 	if (gHead == gTail)
+	{
+		if (remove)
+			gMouseAfterReleaseWaits = false;
 		return false;
+	}
+	if (gMouseAfterReleaseWaits && IsMouseMessage(gQueue[gHead].message))
+	{
+		if (remove)
+			gMouseAfterReleaseWaits = false;		// this batch is over: the waiting message opens the next one
+		return false;
+	}
 	*out = gQueue[gHead];
 	if (remove)
+	{
 		gHead = (gHead + 1) % 256;
+		// Only a release in the menus sets the wait, and only the batch's end clears it (a mouse message that waits, or an empty
+		// queue): a key or any other message handed out after the release does not end it.
+		if (IsButtonRelease(out->message) && PortUiMouseMenu(PortDinputOwnsMouseEvent(0) ? 1 : 0))
+			gMouseAfterReleaseWaits = true;
+	}
 	return true;
 }
 
@@ -496,6 +522,19 @@ extern "C" char LT[];	// PCLTShell (ltshell.cpp): KeyDown[256] at +0x330e4, as r
 // Turns pending SDL events into messages.
 void Pump()
 {
+	// A faked minimize's restore (BEA_PORT_FAKE_KEYS' hPRESENT:SECONDS, below): once its time is up the window is restored and has focus again, even while the game is waiting in GetMessage
+	// for it (no Present comes while it waits).
+	static Uint64 fakeRestoreAt;
+	if (fakeRestoreAt && SDL_GetTicksNS() >= fakeRestoreAt)
+	{
+		fakeRestoreAt = 0;
+		SDL_Event r{};
+		r.type = SDL_EVENT_WINDOW_RESTORED;
+		SDL_PushEvent(&r);
+		SDL_Event g{};
+		g.type = SDL_EVENT_WINDOW_FOCUS_GAINED;
+		SDL_PushEvent(&g);
+	}
 	// BEA_PORT_FAKE_CLICK=SECONDS:X,Y (a test switch): after SECONDS, one left click at window point X,Y, through the
 	// same event path as the player's mouse.
 	static int fakeState = 0;
@@ -516,14 +555,15 @@ void Pump()
 			fakeState = 2;
 		}
 	}
-	// BEA_PORT_FAKE_KEYS=PRESENT:SDLSCAN:RAWSCAN:d|u|x[,...] (a test switch, for record mode's and the input path's
+	// BEA_PORT_FAKE_KEYS=PRESENT:SDLSCAN:RAWSCAN:d|u|x|r[,...] (a test switch, for record mode's and the input path's
 	// checks): once PRESENT Presents have completed, an SDL key event through the same path as the player's keyboard
-		// (x: the key goes up in SDL's state but its event is lost); kPRESENT:SDLSCAN:MOD a key-down with modifier state MOD
+		// (x: the key goes up in SDL's state but its event is lost; r: a key-down with the repeat flag, as a held key's auto-repeat); kPRESENT:SDLSCAN:MOD a key-down with modifier state MOD
 	// (hex SDL_Keymod) and its key-up; mPRESENT:DX:DY a relative mouse movement; aPRESENT:X:Y a mouse movement to window
 	// point X,Y; bPRESENT:BUTTON:d|u[:X:Y] a mouse button (at window point X,Y);
 	// sPRESENT:N:SDLSCAN a key-down, N mouse movements and the key-up, all queued before one pump (a backlog; wPRESENT:N:SDLSCAN
 	// the same with N zero wheel steps, which are not coalesced);
-	// cPRESENT:SCAN logs the game's KeyDown[SCAN] (hex PC scan code).
+	// cPRESENT:SCAN logs the game's KeyDown[SCAN] (hex PC scan code);
+	// hPRESENT:SECONDS the window loses focus and is minimized, and is restored and focused again after SECONDS of real time: the player's Alt-Tab out of a fullscreen game and back.
 	static const char *fakeKeys = getenv("BEA_PORT_FAKE_KEYS");
 	if (fakeKeys && *fakeKeys)
 	{
@@ -531,7 +571,7 @@ void Pump()
 		char ud = 0;
 		int mdx = 0, mdy = 0;
 		bool used = false;
-		float ax = 0, ay = 0;
+		float ax = 0, ay = 0, away = 0;
 		if (sscanf(fakeKeys, "a%u:%f:%f", &present, &ax, &ay) == 3 && PortPresentCount() >= present)
 		{
 			SDL_Event f{};	// an absolute mouse movement (the window mouse: menus)
@@ -539,6 +579,18 @@ void Pump()
 			f.motion.x = ax;
 			f.motion.y = ay;
 			SDL_PushEvent(&f);
+			used = true;
+		}
+		else if (sscanf(fakeKeys, "h%u:%f", &present, &away) == 2 && PortPresentCount() >= present && away > 0.f)
+		{
+			SDL_Event lost{};
+			lost.type = SDL_EVENT_WINDOW_FOCUS_LOST;
+			SDL_PushEvent(&lost);
+			SDL_Event mini{};
+			mini.type = SDL_EVENT_WINDOW_MINIMIZED;
+			SDL_PushEvent(&mini);
+			fakeRestoreAt = SDL_GetTicksNS() + (Uint64)((double)away * 1e9);
+			fprintf(stderr, PORT_LOG_PREFIX "test: window minimized at Present %u, restored in %.1f s\n", PortPresentCount(), (double)away);
 			used = true;
 		}
 		else if (sscanf(fakeKeys, "m%u:%d:%d", &present, &mdx, &mdy) == 3 && PortPresentCount() >= present)
@@ -618,16 +670,18 @@ void Pump()
 		}
 		else if (sscanf(fakeKeys, "%u:%u:%x:%c", &present, &sc, &raw, &ud) == 4 && PortPresentCount() >= present)
 		{
+			const bool press = ud == 'd' || ud == 'r';	// r: a key-down that is the operating system's auto-repeat of a held key
 			if (sc < SDL_SCANCODE_COUNT)
-				gFakeHeld[sc] = ud == 'd';
+				gFakeHeld[sc] = press;
 			if (ud != 'x')
 			{
 				SDL_Event f{};
-				f.type = ud == 'd' ? SDL_EVENT_KEY_DOWN : SDL_EVENT_KEY_UP;
+				f.type = press ? SDL_EVENT_KEY_DOWN : SDL_EVENT_KEY_UP;
 				f.key.scancode = (SDL_Scancode)sc;
 				f.key.key = SDL_GetKeyFromScancode((SDL_Scancode)sc, SDL_KMOD_NONE, false);
 				f.key.raw = (Uint16)raw;
-				f.key.down = ud == 'd';
+				f.key.down = press;
+				f.key.repeat = ud == 'r';
 				SDL_PushEvent(&f);
 			}
 			used = true;
@@ -960,11 +1014,17 @@ extern "C" BOOL WINAPI PortPeekMessageA(LPMSG msg, HWND, UINT, UINT, UINT remove
 
 extern "C" BOOL WINAPI PortGetMessageA(LPMSG msg, HWND, UINT, UINT)
 {
+	// The game waits here while its window is minimized (its WM_SIZE handler made it inactive, the original's d3dapp): the time it waits is not game time, so the clock it reads stands still
+	// for the wait (clock.cpp: CE layer and the real clock only) and the game does not run the time it was away as one burst when the window comes back.
+	PortClockPauseBegin();
 	for (;;)
 	{
 		Pump();
 		if (Pop(msg, true))
+		{
+			PortClockPauseEnd();
 			return msg->message != WM_QUIT;
+		}
 		SDL_WaitEventTimeout(NULL, 10);
 	}
 }
@@ -1141,8 +1201,11 @@ extern "C" BOOL PortGetMouseClientPosition(LPPOINT p)
 	float x = 0, y = 0;
 	SDL_GetMouseState(&x, &y);
 	LPARAM mapped = MouseLParam(x, y);
-	p->x = LOWORD(mapped);
-	p->y = HIWORD(mapped);
+	int ix = LOWORD(mapped), iy = HIWORD(mapped);
+	if (PortUiMouseMenu(0))
+		PortUiMouseMenuPoint(&ix, &iy);	// the released mouse starts where an in-game menu or the front end reads it: the virtual screen's point (widescreen.cpp)
+	p->x = ix;
+	p->y = iy;
 	return TRUE;
 }
 

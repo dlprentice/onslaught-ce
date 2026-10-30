@@ -19,9 +19,12 @@ SDL_Window *PortMainSdlWindow();	// window.cpp: the game's first window (NULL be
 void PortVideoInit();				// SDL video with the port's hints, once
 void PortWideBackBuffer(unsigned w, unsigned h);	// d3d9hooks.cpp: the device's back buffer at CreateDevice and Reset
 int PortWideModes();
+int PortUiMouseMenu(int mouseInputActive);		// widescreen.cpp: an in-game menu's pointer is the virtual screen's (the game's mouse released, CE layer, the commander map not open)
+void PortUiMouseMenuPoint(int *x, int *y);	// a window position (back buffer pixels) as that pointer
 int PortWideDesktopSize(unsigned *w, unsigned *h);
 int PortWideDisplaySizes(unsigned (*out)[2], int max);
 int PortWideActive();
+int PortSharpUi();
 float PortUiScale();
 float PortUiLeft();
 float PortUiTop();
@@ -67,6 +70,12 @@ long long PortClockQpf();						// virtual counter frequency (0 when real)
 long long PortClockQpc();
 unsigned long PortClockMs();					// timeGetTime, GetTickCount
 unsigned long long PortClockFiletime();			// 100 ns units since 1601 (FILETIME)
+unsigned long long PortClockRawNs();			// the operating system's monotonic clock in nanoseconds (the real clock's base)
+unsigned long long PortClockShiftNs(unsigned long long rawNs);	// how far the game's real clock is behind it now (0 outside the CE layer's real clock)
+unsigned long long PortClockReadBegin();		// bracket the raw reading and its shift; retry if a wait began or ended in between
+bool PortClockReadValid(unsigned long long generation);
+void PortClockPauseBegin();						// window.cpp: the game starts waiting for its minimized window: the real clock stands still (CE layer, real clock only)
+void PortClockPauseEnd();						// and carries on from where it stood when the wait ends, so the game does not run the time it was away as one burst
 void PortClockSleep(unsigned long ms);			// a Sleep(ms) happened
 
 #endif

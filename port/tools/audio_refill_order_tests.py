@@ -63,7 +63,7 @@ def main():
             music = folder / "PCMusicStream.cpp"
             music.write_bytes((ROOT / "src/PCMusicStream.cpp").read_bytes())
             for patch in sorted((ROOT / "port/patches").glob("*.patch")):
-                if variant == "predecessor" and patch.name == PATCH:
+                if variant == "predecessor" and patch.name in (PATCH, "0187-audio-observation-counters.patch"):
                     continue
                 sections = [s for s in re.split(r"(?=^--- a/)", patch.read_text(), flags=re.M)
                             if s.startswith("--- a/PCMusicStream.cpp\n")]

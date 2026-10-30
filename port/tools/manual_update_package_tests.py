@@ -28,7 +28,7 @@ class ManualUpdatePackage(unittest.TestCase):
                                    "goes into versions/ inside this folder", "--rollback", "update_check=0",
                                    "--apply is refused", "new empty folder",
                                    "Do not start an Onslaught CE 0.1.0-0.1.6 launcher at all", ".download-* and .unpack-*",
-                                   "removes no neighbouring paths", "Updates (how updating works",
+                                   "removes no neighbouring paths", "Rollback (how updating works",
                                    "both launcher and game user-data folders", "relative BEA_USER_DIR", "different locations",
                                    "each whole folder to an independent backup", "separate working copy", "game's user-data folder", "its absolute path",
                                    "do not merge or overwrite"):

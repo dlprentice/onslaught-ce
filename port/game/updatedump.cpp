@@ -18,7 +18,7 @@
 #include "eventmanager.h"
 #include "thing.h"
 #include "SeedUniformRandomNumberStream.h"
-#ifdef CE_COMMANDER_TEST
+#ifdef CE_VERSION
 #include "ce_commander.h"
 #endif
 
@@ -123,8 +123,8 @@ static void SessionGameUpdate()
 
 void PortUpdateHook()
 {
-#ifdef CE_COMMANDER_TEST
-	CeCommanderUpdate();		// the commander order prototype (ce_commander.cpp): returns at once unless its proof switch is set
+#ifdef CE_VERSION
+	CeCommanderUpdate();		// the commander order layer (ce_commander.cpp): returns at once unless the map is on
 #endif
 	SessionGameUpdate();
 	if (!gInit)

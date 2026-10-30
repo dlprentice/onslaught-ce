@@ -138,5 +138,6 @@ bool PortCePaletteSuppressDown(unsigned key);
 bool PortCePaletteRelease(unsigned key);
 bool PortCePaletteSuppressChar(unsigned key);
 bool PortCePhotoKey(unsigned key, bool repeat);
+bool PortCeCmdKey(unsigned key, bool repeat);
 #endif
 #endif

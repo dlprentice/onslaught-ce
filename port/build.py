@@ -449,7 +449,7 @@ def main():
                          "objects differ")
     ap.add_argument("--ce-version", default="dev", help="the public build's version (Onslaught CE VX.Y; the release tag)")
     ap.add_argument("--commander-test", action="store_true",
-                    help="the commander order prototype: a test build, never shipped (its source is not in the public tree);\n"
+                    help="adds the commander mode's test machinery (an order tape, a probe, a proof switch and diagnostics) to a build: for tests, never shipped;\n"
                          "use a separate worktree, as its objects differ")
     ap.add_argument("files", nargs="*")
     a = ap.parse_args()

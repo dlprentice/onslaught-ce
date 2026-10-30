@@ -31,8 +31,13 @@ Native Linux, native Windows, or the Windows package under Wine or Proton (which
 
 **Files**
 
-- Please attach `onslaught-ce.log` from your user folder: `~/.local/share/onslaught-ce` (Linux) or
+- Please attach `onslaught-ce.log` from your user folder: `$XDG_DATA_HOME/onslaught-ce` (when `XDG_DATA_HOME`
+  is set and nonempty;
+  otherwise `~/.local/share/onslaught-ce`) (Linux) or
   `%APPDATA%\Onslaught CE` (Windows). `onslaught-ce.old.log` beside it is the run before.
+  If you set `BEA_USER_DIR` to a folder, the log is in that folder instead. Logs can include local paths, user
+  names and device details;
+  please review them before posting publicly.
 - Optional: if you recorded the session (`onslaught-ce --record`, or `record_sessions=1` in `ce.ini`), put its `.tape`
   and `.tape.json` from the `tapes` folder in a zip and attach that too. It can help us reproduce what happened.
 

@@ -7,6 +7,8 @@
 
 #ifdef AUDIO_MEDIA_BASELINE
 bool PortAudioMediaRole(const void *, PortSessionCategory) { return false; }
+// The frozen pre-observation mixer has no notification frame count; the music code of patch 0187 asks for it.
+unsigned long long PortAudioStreamNotifyMixed(IDirectSoundBuffer *) { return 0; }
 #endif
 using U32 = uint32_t;
 using S32 = int32_t;

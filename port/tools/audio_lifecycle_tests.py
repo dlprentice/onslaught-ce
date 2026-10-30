@@ -41,7 +41,7 @@ def music_sources(out, fixed):
     for patch in sorted((ROOT / "port/patches").glob("*.patch")):
         # The negative control leaves out 0062 and later patches which depend on that worker/poll shape.
         if not fixed and patch.name in ("0062-music-finished-poll.patch", "0103-ce-music-playlist.patch",
-                                        "0131-ce-music-refill-publication.patch", "0132-ce-music-refill-order-diagnostics.patch"):
+                                        "0131-ce-music-refill-publication.patch", "0132-ce-music-refill-order-diagnostics.patch", "0187-audio-observation-counters.patch"):
             continue
         sections = [part for part in re.split(r"(?=^--- a/)", patch.read_text(), flags=re.M)
                     if any(part.startswith("--- a/" + name + "\n") for name in names)]

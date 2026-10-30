@@ -1,0 +1,36 @@
+--- a/Career.cpp
++++ b/Career.cpp
+@@ -64,6 +64,7 @@
+ #ifdef CE_VERSION
+ void	PortCeCareerLoaded(CCareer *career);				// Port (patch 0052): port/game/ce_frontend.cpp
+ bool	PortCeCareerSaving(CCareer *career);
++void	PortCeBonusFilterSave(CCareer *career, void *dest);	// Port (patch 0181): port/game/ce_bonus.cpp
+ #endif
+ void	ApplyControlPreset(int preset);		// 00453780
+ void	ReinitialiseSound(bool restore_music);	// 004cddf0
+@@ -1467,6 +1468,7 @@
+ #endif
+ 	memcpy(dest, this, sizeof(CCareer));
+ #ifdef CE_VERSION
++	PortCeBonusFilterSave(this, dest);
+ 	SetIsGod(0, portGod0);
+ 	SetIsGod(1, portGod1);
+ #endif
+--- a/System.cpp
++++ b/System.cpp
+@@ -43,6 +43,7 @@
+ #include "ParticleTexture.h"
+ #ifdef CE_VERSION
+ int PortCeConsoleTakeLevel();	// patch 0100: port/game/ce_console_game.cpp
++void PortCeBonusBeforeConsoleLevel();	// patch 0181: port/game/ce_bonus.cpp
+ #endif
+ 
+ CTweakSLONG	TWIMTBP("TWIMTBP", 0);				// 0083d3f8: show the "The way it's meant to be played" film
+@@ -392,6 +393,7 @@
+ 				// Patch 0100: the CE console's map command leaves a level for another; run it before the front end.
+ 				for (SINT next = PortCeConsoleTakeLevel(); quit == QT_QUIT_TO_FRONTEND && next > 0; next = PortCeConsoleTakeLevel())
+ 				{
++					PortCeBonusBeforeConsoleLevel();	// patch 0181: restore a bonus before choosing the next level
+ 					FRONTEND.mSelectedLevel = next;
+ 					result = next;
+ 					quit = GAME.RunLevel(next);

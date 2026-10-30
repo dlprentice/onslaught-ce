@@ -21,7 +21,7 @@ bool PortCeLayer();
 namespace
 {
 const unsigned kNormalLimit = 2048, kErrorLimit = 512;
-unsigned gNormal, gErrors, gCounts[PORT_SESSION_COUNTERS];
+unsigned gNormal, gErrors, gCounts[PORT_SESSION_COUNTERS], gObs[PORT_SESSION_OBSERVATIONS];
 unsigned gLast[PORT_SESSION_COUNTERS];
 unsigned gFrame;
 int gEnabled = -1;
@@ -36,6 +36,12 @@ struct Media { const void *token; PortSessionCategory kind; } gMedia[16];
 const char *const kNames[] = {"game", "window", "video", "sound", "music", "film"};
 const char *const kCounters[] = {"callbacks", "callback_put_failed", "callback_alloc_failed", "music_refills",
 	"music_short_reads", "music_read_failed", "music_wait_failed", "monitor_queue_drops", "monitor_put_failed"};
+// Patch 0187: the observations, in PortSessionObservation order. They print on their own line after each summary.
+const char *const kObservations[] = {"music_risk_refills", "music_pair_refills", "music_order_anomalies", "music_lines_dropped",
+	"music_voice_starts", "music_stale_halves", "music_overwritten_halves", "audio_callbacks_late", "events_dropped",
+	"errors_dropped", "music_refill_us_max", "music_notify_age_us_max", "music_voices_max", "audio_gap_us_max", "device_rate",
+	"device_channels", "device_period_frames"};
+static_assert(sizeof kObservations / sizeof kObservations[0] == PORT_SESSION_OBSERVATIONS, "one name per observation");
 
 struct ErrorGuard
 {
@@ -107,6 +113,7 @@ void PortSessionLog(PortSessionCategory category, bool error, const char *format
 	{
 		if (n == limit) Line("log", error ? "error event limit reached; counters and final summary remain active" :
 			"ordinary event limit reached; errors, counters and final summary remain active");
+		PortSessionObserve(error ? PORT_OBS_ERRORS_DROPPED : PORT_OBS_EVENTS_DROPPED);
 		return;
 	}
 	char text[640];
@@ -158,6 +165,21 @@ void PortSessionCount(PortSessionCounter counter)
 	if (__atomic_load_n(&gEnabled, __ATOMIC_ACQUIRE) != 1) return;
 	if (counter >= 0 && counter < PORT_SESSION_COUNTERS)
 		__atomic_fetch_add(&gCounts[counter], 1u, __ATOMIC_RELAXED);
+}
+
+void PortSessionObserve(PortSessionObservation which, unsigned amount)
+{
+	// The same already-published admission as PortSessionCount: the audio callback never calls getenv or SDL here.
+	if (__atomic_load_n(&gEnabled, __ATOMIC_ACQUIRE) != 1 || which < 0 || which >= PORT_SESSION_OBSERVATIONS) return;
+	unsigned n = __atomic_load_n(&gObs[which], __ATOMIC_RELAXED);
+	while (!__atomic_compare_exchange_n(&gObs[which], &n, ~0u - n < amount ? ~0u : n + amount, false, __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {}
+}
+
+void PortSessionObserveMax(PortSessionObservation which, unsigned value)
+{
+	if (__atomic_load_n(&gEnabled, __ATOMIC_ACQUIRE) != 1 || which < 0 || which >= PORT_SESSION_OBSERVATIONS) return;
+	unsigned n = __atomic_load_n(&gObs[which], __ATOMIC_RELAXED);
+	while (value > n && !__atomic_compare_exchange_n(&gObs[which], &n, value, false, __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {}
 }
 
 void PortSessionAudioError(const char *error)
@@ -236,5 +258,18 @@ void PortSessionSummary()
 			media.queueLastBytes, media.queueMaxBytes, media.queueSamples, media.queueFailures, media.queueAtMixed,
 			media.queueCurrentGeneration, media.retiredQueueObservations);
 	}
+	// Patch 0187: the music and mixer observations, one fixed-size line of numbers printed just before the summary line, so the
+	// summary stays the last line and keeps its text: anything that reads it reads the same line as before, and a reader that
+	// does not know the audio-obs line skips it.
+	char obs[768];
+	int usedObs = 0;
+	for (int i = 0; i < PORT_SESSION_OBSERVATIONS; ++i)
+	{
+		int n = snprintf(obs + usedObs, sizeof obs - (size_t)usedObs, "%s%s=%u", i ? " " : "", kObservations[i],
+			__atomic_load_n(&gObs[i], __ATOMIC_RELAXED));
+		if (n < 0 || (size_t)n >= sizeof obs - (size_t)usedObs) break;
+		usedObs += n;
+	}
+	Line("audio-obs", obs);
 	Line("summary", text);
 }

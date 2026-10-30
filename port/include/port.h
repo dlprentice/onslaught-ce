@@ -42,15 +42,19 @@ void PortUpdateHook();
 #ifdef __cplusplus
 int PortWideModes();				// the mode list and the default mode may offer the desktop's sizes
 int PortWideActive();				// this back buffer takes the wide paths
+int PortSharpUi();					// and ce.ini's sharp_ui=1 asks for the sharper UI (off by default; ask after the other terms)
 float PortWideX();					// the 3D view's horizontal widening (Hor+), 1 when narrower than 4:3
 float PortWideY();					// its vertical extension (Vert+, narrower than 4:3), else 1
 float PortUiScale();				// the 640 x 480 virtual screen's scale into its centred 4:3 box
 float PortUiLeft();					// that box's left edge in back buffer pixels
 float PortUiTop();					// and its top edge
-float PortHudInset(float viewportWidth);	// the HUD's shift into a viewport's 4:3 columns
+float PortHudInset(float viewportWidth);	// the HUD's shift into a viewport's 4:3 columns (none while it is anchored to the corners)
 float PortHudBegin(float offset, float viewportWidth);	// HUD_OFFSET_X with that shift (the game's value kept)
 float PortHudOriginal();			// the game's HUD_OFFSET_X while the shifted one is in place
+int PortHudAnchored();				// ce_hud_anchor.cpp: the HUD's corner groups sit in the screen's corners (single player, hud_anchor)
 void PortUiMouse(int *x, int *y);	// back buffer pixels to the virtual screen's, clamped to 640 x 480
+int PortUiMouseMenu(int mouseInputActive);	// an in-game menu's pointer (the game's mouse released, CE layer, the commander map not open): its position is the virtual screen's like the front end's
+void PortUiMouseMenuPoint(int *x, int *y);	// a window position (back buffer pixels) as that pointer: the virtual screen's
 int PortWideDefaultSize(unsigned *w, unsigned *h);	// the default mode's size (the desktop's), when PortWideModes
 // The size to start at instead of a saved mode that is no choice (none, or a 640 x 480 the size ce.ini keeps from the
 // last save with widescreen modes on does not confirm); 0 keeps the saved mode

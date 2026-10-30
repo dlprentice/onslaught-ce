@@ -36,7 +36,7 @@ ROOT = Path(__file__).resolve().parents[2]
 PATCHES = ROOT / "port/patches"
 PATCH_NAMES = ("0108-ce-photo-mode.patch", "0133-ce-photo-draw-suppression.patch")
 # Patches whose hunks are written against photo mode's (the save error notice is drawn after its note): left out of the run without it.
-BUILT_ON_PHOTO = ("0137-ce-save-failed-notice.patch",)
+BUILT_ON_PHOTO = ("0137-ce-save-failed-notice.patch", "0162-commander-map-hooks.patch")
 PHOTO = ROOT / "port/game/ce_photo.cpp"
 PHOTO_H = ROOT / "port/game/ce_photo.h"
 WRITER = ROOT / "port/platform/common/ce_screenshot.cpp"
@@ -330,10 +330,16 @@ class PhotoTests(unittest.TestCase):
             ("level-end-keeps-shot", "\tshotPending = false;\n\tnoteUntil = 0;", "\tnoteUntil = 0;", "ordinary", None),
             ("fence-keeps-photo", "if (!Allowed()) { Switch(false); shotPending = false; return; }", "if (!Allowed()) { shotPending = false; return; }", "ordinary", None),
             ("fence-keeps-shot", "if (!Allowed()) { Switch(false); shotPending = false; return; }", "if (!Allowed()) { Switch(false); return; }", "ordinary", None),
-            ("set-ignores-fence", "if (!Allowed()) { Switch(false); return false; }", "", "ordinary", None),
+            ("set-ignores-fence", "if (!(fromMenu ? AllowedInLevel() : Allowed())) { Switch(false); return false; }", "", "ordinary", None),
+            ("menu-item-ignores-fence", "bool PortCePhotoAvailable() { return AllowedInLevel(); }", "bool PortCePhotoAvailable() { return true; }", "ordinary", None),
+            ("menu-note-is-f11s", "fromMenu ? \"Photo mode: HUD hidden. Pause menu or F11 returns; F12 saves a screenshot.\"",
+             "!fromMenu ? \"Photo mode: HUD hidden. Pause menu or F11 returns; F12 saves a screenshot.\"", "ordinary", None),
+            ("menu-item-never-on", "bool PortCePhotoMenuSet(bool on) { return SetPhoto(on, true); }", "bool PortCePhotoMenuSet(bool on) { return SetPhoto(on && false, true); }", "ordinary", None),
             ("note-forever", "CE_ScreenshotTicks() >= noteUntil || ", "", "ordinary", None),
             ("multiplayer", "return !GAME.IsMultiplayer() && GAME.GetNPlayers() == 1", "return GAME.GetNPlayers() >= 1", "ordinary", None),
-            ("front-end", "CLIPARAMS.mAttractMode || FRONTEND.IsRunning()) return false;", "CLIPARAMS.mAttractMode) return false;", "ordinary", None),
+            ("front-end", "return !FRONTEND.IsRunning() && AllowedInLevel();", "return AllowedInLevel();", "ordinary", None),
+            ("menu-item-asks-the-front-end", "bool PortCePhotoAvailable() { return AllowedInLevel(); }", "bool PortCePhotoAvailable() { return Allowed(); }", "ordinary", None),
+            ("menu-choice-asks-the-front-end", "if (!(fromMenu ? AllowedInLevel() : Allowed()))", "if (!Allowed())", "ordinary", None),
             ("network-boot", "\tif (CE_BootRequested && CE_BootRequested()) return false;\n", "", "network", None),
         ]
         caught = []

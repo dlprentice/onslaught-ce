@@ -16,7 +16,7 @@
  		ReadOptions(source);
  	}
 +#ifdef CE_VERSION
-+	// Port (patch 0052, the CE layer): god mode set through Options > Cheats is kept in ce.ini, never in the file
++	// Port (patch 0052, the CE layer): god mode set through Onslaught CE > Cheats is kept in ce.ini, never in the file
 +	PortCeCareerLoaded(this);
 +#endif
  

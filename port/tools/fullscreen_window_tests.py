@@ -3,8 +3,10 @@
 """Check the actual DesktopFullscreen callback with scripted SDL windows.
 
 Requires Python and a host C++ compiler; no SDL installation, game data, display or GPU. Both platform branches are
-compiled from the unmodified function extracted from d3d9hooks.cpp. Windows exclusive presentation must prepare the
-owned SDL client size without changing Direct3D's parameters; Linux retains its desktop-fullscreen conversion.
+compiled from the unmodified functions extracted from d3d9hooks.cpp and ce.cpp. Both CE and private builds are
+tested, as are the actual CE-layer decisions for tapes, recordings, probes and forced captures. Windows exclusive
+presentation must prepare the owned SDL client size without changing Direct3D's parameters; Linux retains its
+desktop-fullscreen conversion.
 The fake SDL applies pending dimensions at SyncWindow to detect missing synchronization. This is instrumentation,
 not a model of Win32 message timing: real SDL client rectangles, native hit testing, mouse delivery and Direct3D
 CreateDevice/Reset behavior still require a native runtime check. Each run retains its source hash and results.
@@ -22,6 +24,8 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[2]
 SOURCE = Path("port/platform/common/d3d9hooks.cpp")
+LAYER_SOURCE = Path("port/platform/common/ce.cpp")
+LAYER_ENV = ("BEA_PORT_CE_LAYER", "BEA_PORT_CLOCK", "BEA_PORT_TAPE", "BEA_PORT_PROBES", "BEA_PORT_RECORD")
 
 HARNESS = r"""
 #include <cstdio>
@@ -49,7 +53,8 @@ SDL_Window windows[2];
 HWND handles[] = {&windows[0], &windows[1]};
 static int alien;
 static const char *driver = "x11", *exclusive;
-static unsigned hide_calls;
+static unsigned hide_calls, show_calls;
+static bool cursor_visible = true;
 UINT gBoxW = 31, gBoxH = 37;
 SDL_Window *gBoxWindow = &windows[0];
 SDL_Window *PortSdlWindow(HWND handle)
@@ -83,7 +88,9 @@ bool SDL_SetWindowFullscreen(SDL_Window *w, bool enabled)
 {
     ++w->fullscreen_calls; w->fullscreen_enabled = enabled; return true;
 }
-bool SDL_HideCursor() { ++hide_calls; return true; }
+bool SDL_HideCursor() { ++hide_calls; cursor_visible = false; return true; }
+bool SDL_ShowCursor() { ++show_calls; cursor_visible = true; return true; }
+@CE_LAYER@
 const char *SDL_GetCurrentVideoDriver() { return driver; }
 const char *SDL_GetError() { return "scripted SDL error"; }
 const char *test_getenv(const char *name)
@@ -112,6 +119,9 @@ int main(int argc, char **argv)
     else if (!std::strcmp(test, "same-size")) { windows[1].width = 1280; windows[1].height = 800; }
     else if (!std::strcmp(test, "null-parameters")) null_params = true;
     else if (!std::strcmp(test, "windowed")) pp.Windowed = TRUE;
+    else if (!std::strcmp(test, "windowed-unowned-device")) { pp.Windowed = TRUE; pp.hDeviceWindow = &alien; }
+    else if (!std::strcmp(test, "windowed-unowned-focus")) { pp.Windowed = TRUE; pp.hDeviceWindow = nullptr; focus = &alien; }
+    else if (!std::strcmp(test, "transition-unowned-device") || !std::strcmp(test, "transition-unowned-focus")) {}
     else if (!std::strcmp(test, "zero-width")) pp.BackBufferWidth = 0;
     else if (!std::strcmp(test, "zero-height")) pp.BackBufferHeight = 0;
     else if (!std::strcmp(test, "unowned-device")) pp.hDeviceWindow = &alien;
@@ -119,7 +129,26 @@ int main(int argc, char **argv)
     else if (!std::strcmp(test, "offscreen")) driver = "offscreen";
     else if (!std::strcmp(test, "no-driver")) driver = nullptr;
     else if (!std::strcmp(test, "exclusive-opt-out")) exclusive = "1";
+    else if (!std::strcmp(test, "no-ce-layer")) {}
+    else if (!std::strcmp(test, "windowed-no-ce-layer")) pp.Windowed = TRUE;
     else return 2;
+    if (!std::strncmp(test, "transition-", 11))
+    {
+        // A foreign windowed device must not undo our fullscreen cursor state; our own later windowed device can.
+        DesktopFullscreen(focus, &pp);
+        bool after_fullscreen = cursor_visible;
+        pp.Windowed = TRUE;
+        pp.hDeviceWindow = !std::strcmp(test, "transition-unowned-device") ? &alien : nullptr;
+        HWND foreign_focus = !std::strcmp(test, "transition-unowned-focus") ? &alien : handles[0];
+        DesktopFullscreen(foreign_focus, &pp);
+        bool after_foreign = cursor_visible;
+        pp.hDeviceWindow = handles[1];
+        DesktopFullscreen(handles[0], &pp);
+        std::printf("{\"transition\":[%s,%s,%s],\"hide_calls\":%u,\"show_calls\":%u}\n",
+                    after_fullscreen ? "true" : "false", after_foreign ? "true" : "false",
+                    cursor_visible ? "true" : "false", hide_calls, show_calls);
+        return 0;
+    }
     D3DPRESENT_PARAMETERS expected;
     std::memcpy(&expected, &pp, sizeof(pp));
 #ifndef _WIN32
@@ -131,8 +160,8 @@ int main(int argc, char **argv)
 #endif
     DesktopFullscreen(focus, null_params ? nullptr : &pp);
     int box_window = gBoxWindow == &windows[0] ? 0 : gBoxWindow == &windows[1] ? 1 : -1;
-    std::printf("{\"parameters_ok\":%s,\"box\":[%u,%u,%d],\"hide_calls\":%u,\"windows\":[",
-                std::memcmp(&pp, &expected, sizeof(pp)) ? "false" : "true", gBoxW, gBoxH, box_window, hide_calls);
+    std::printf("{\"parameters_ok\":%s,\"box\":[%u,%u,%d],\"hide_calls\":%u,\"show_calls\":%u,\"windows\":[",
+                std::memcmp(&pp, &expected, sizeof(pp)) ? "false" : "true", gBoxW, gBoxH, box_window, hide_calls, show_calls);
     for (unsigned i = 0; i < 2; ++i)
     {
         const SDL_Window &w = windows[i];
@@ -160,9 +189,31 @@ def extract_function(source):
     return matches[0].group() + "\n"
 
 
-def check_result(platform, case, actual):
+def extract_layer(source):
+    matches = list(re.finditer(r"^bool PortCeLayer\(\)\n\{\n.*?^\}", source, re.MULTILINE | re.DOTALL))
+    if len(matches) != 1:
+        raise RuntimeError("expected one complete PortCeLayer definition")
+    return matches[0].group() + "\n"
+
+
+def check_result(platform, case, actual, private=False, layer_off=False):
     """Check observable effects, allowing repeated successful resize/sync calls where a resize is needed."""
     errors = []
+    ce_off = private or layer_off or case in ("no-ce-layer", "windowed-no-ce-layer")
+    if case in ("transition-unowned-device", "transition-unowned-focus"):
+        # Linux's pre-existing desktop-fullscreen path hides independently of the CE layer.
+        first = platform == "windows" and ce_off
+        expected = [first, first, first if ce_off else True]
+        if actual.get("transition") != expected:
+            errors.append(f"cursor transition: expected {expected}, got {actual.get('transition')}")
+        if actual.get("hide_calls") != (0 if platform == "windows" and ce_off else 1):
+            errors.append("fullscreen cursor hide count differs")
+        if actual.get("show_calls") != (0 if ce_off else 1):
+            errors.append("foreign/owned cursor restore count differs")
+        return errors
+    unowned_windowed = case in ("windowed-unowned-device", "windowed-unowned-focus")
+    case = {"no-ce-layer": "device-preferred", "windowed-no-ce-layer": "windowed",
+            "windowed-unowned-device": "windowed", "windowed-unowned-focus": "windowed"}.get(case, case)
     sizes = [[640, 480], [640, 480]]
     if case in ("width-only", "same-size"):
         sizes[1][1] = 800
@@ -181,8 +232,15 @@ def check_result(platform, case, actual):
         errors.append("presentation parameters changed unexpectedly")
     if actual.get("box") != box:
         errors.append(f"desktop-fullscreen bookkeeping: expected {box}, got {actual.get('box')}")
-    if (actual.get("hide_calls", 0) > 0) != owned_convert:
-        errors.append("unexpected cursor visibility request")
+    # Linux hides the cursor in its desktop-fullscreen conversion as before. Windows hides it in a fullscreen mode it prepared a native window for, in the CE layer only (retail's
+    # WM_SETCURSOR answer), and both show it again when the mode is windowed (CE layer only).
+    native_window = platform == "windows" and case in ("device-preferred", "focus-fallback", "width-only", "height-only", "same-size", "zero-width", "zero-height")
+    hide_expected = owned_convert if platform == "linux" else (native_window and not ce_off)
+    show_expected = case == "windowed" and not ce_off and not unowned_windowed
+    if (actual.get("hide_calls", 0) > 0) != hide_expected:
+        errors.append(f"cursor hide: expected {hide_expected}, got {actual.get('hide_calls')} call(s)")
+    if (actual.get("show_calls", 0) > 0) != show_expected:
+        errors.append(f"cursor show: expected {show_expected}, got {actual.get('show_calls')} call(s)")
     windows = actual.get("windows", [])
     if len(windows) != 2:
         return errors + ["missing window observations"]
@@ -201,17 +259,23 @@ def check_result(platform, case, actual):
     return errors
 
 
-def run_case(binary, platform, case):
+def run_case(binary, platform, case, private=False, layer_env=None, layer_off=False, label=None):
+    env = dict(os.environ)
+    for name in LAYER_ENV:
+        env.pop(name, None)
+    env.update(layer_env or {})
+    if case in ("no-ce-layer", "windowed-no-ce-layer"):
+        env["BEA_PORT_CE_LAYER"] = "0"
     try:
-        proc = subprocess.run([str(binary), case], capture_output=True, text=True, timeout=5)
+        proc = subprocess.run([str(binary), case], capture_output=True, text=True, timeout=5, env=env)
     except subprocess.TimeoutExpired:
         return {"case": case, "timeout": True, "pass": False}
     try:
         actual = json.loads(proc.stdout)
     except json.JSONDecodeError:
         actual = {}
-    errors = check_result(platform, case, actual)
-    return {"case": case, "exit": proc.returncode, "actual": actual, "errors": errors,
+    errors = check_result(platform, case, actual, private, layer_off)
+    return {"case": label or case, "layer_env": layer_env or {}, "exit": proc.returncode, "actual": actual, "errors": errors,
             "stderr": proc.stderr, "pass": proc.returncode == 0 and not errors}
 
 
@@ -231,34 +295,67 @@ def main():
         receipt["source_sha256"] = digest(raw)
         (out / "d3d9hooks.cpp").write_bytes(raw)
         function = extract_function(raw.decode("utf-8"))
+        raw_layer = (args.source_root / LAYER_SOURCE).read_bytes()
+        receipt["layer_source_sha256"] = digest(raw_layer)
+        layer = extract_layer(raw_layer.decode("utf-8"))
+        receipt["layer_function_sha256"] = digest(layer.encode())
         receipt["function_sha256"] = digest(function.encode())
         driver = out / "harness.cpp"
-        driver.write_text(HARNESS.replace("@FUNCTION@", function))
+        driver.write_text(HARNESS.replace("@FUNCTION@", function).replace("@CE_LAYER@", layer))
         receipt["driver_sha256"] = digest(driver.read_bytes())
         cases = {
             "windows": ("device-preferred", "focus-fallback", "width-only", "height-only", "same-size",
-                        "null-parameters", "windowed", "zero-width", "zero-height", "unowned-device", "unowned-focus"),
+                        "null-parameters", "windowed", "zero-width", "zero-height", "unowned-device", "unowned-focus",
+                        "no-ce-layer", "windowed-no-ce-layer", "windowed-unowned-device", "windowed-unowned-focus"),
             "linux": ("device-preferred", "focus-fallback", "null-parameters", "windowed", "offscreen",
-                      "no-driver", "exclusive-opt-out", "unowned-device"),
+                      "no-driver", "exclusive-opt-out", "unowned-device", "no-ce-layer", "windowed-no-ce-layer",
+                      "windowed-unowned-device", "windowed-unowned-focus"),
         }
         for platform, names in cases.items():
-            binary = out / platform
-            command = [*shlex.split(args.cxx), "-std=c++11", "-O0", "-Wall", "-Wextra"]
-            if platform == "windows":
-                command.append("-D_WIN32")
-            command += [str(driver), "-o", str(binary)]
-            result = subprocess.run(command, capture_output=True, text=True, timeout=30,
-                                    env=dict(os.environ, TMPDIR=str(out)))
-            record = {"compile": command, "compile_exit": result.returncode,
-                      "compiler_output": result.stdout + result.stderr, "cases": []}
-            receipt["platforms"][platform] = record
-            if result.returncode:
-                raise RuntimeError(f"{platform} harness did not compile")
-            for case in names:
-                observation = run_case(binary, platform, case)
-                record["cases"].append(observation)
-                print(f"{'PASS' if observation['pass'] else 'FAIL'} {platform}: {case}")
-        passed = all(case["pass"] for record in receipt["platforms"].values() for case in record["cases"])
+            receipt["platforms"][platform] = {}
+            for build in ("ce", "private"):
+                binary = out / f"{platform}-{build}"
+                command = [*shlex.split(args.cxx), "-std=c++11", "-O0", "-Wall", "-Wextra"]
+                if platform == "windows":
+                    command.append("-D_WIN32")
+                if build == "ce":
+                    command.append('-DCE_VERSION="test"')
+                command += [str(driver), "-o", str(binary)]
+                result = subprocess.run(command, capture_output=True, text=True, timeout=30,
+                                        env=dict(os.environ, TMPDIR=str(out)))
+                record = {"compile": command, "compile_exit": result.returncode,
+                          "compiler_output": result.stdout + result.stderr, "cases": []}
+                receipt["platforms"][platform][build] = record
+                if result.returncode:
+                    raise RuntimeError(f"{platform} {build} harness did not compile")
+                for case in names:
+                    observation = run_case(binary, platform, case, private=build == "private")
+                    record["cases"].append(observation)
+                    print(f"{'PASS' if observation['pass'] else 'FAIL'} {platform} {build}: {case}")
+                # Each run is a fresh process because the production layer decision is cached.
+                for variable in ("BEA_PORT_CLOCK", "BEA_PORT_TAPE", "BEA_PORT_PROBES", "BEA_PORT_RECORD"):
+                    for case in ("device-preferred", "windowed"):
+                        observation = run_case(binary, platform, case, private=build == "private",
+                                               layer_env={variable: "1"}, layer_off=True,
+                                               label=f"{case} with {variable}")
+                        record["cases"].append(observation)
+                        print(f"{'PASS' if observation['pass'] else 'FAIL'} {platform} {build}: {observation['case']}")
+                for case in ("device-preferred", "windowed"):
+                    observation = run_case(binary, platform, case, private=build == "private",
+                                           layer_env={"BEA_PORT_TAPE": "1", "BEA_PORT_CE_LAYER": "1"},
+                                           label=f"{case} with forced CE tape")
+                    record["cases"].append(observation)
+                    print(f"{'PASS' if observation['pass'] else 'FAIL'} {platform} {build}: {observation['case']}")
+                for case in ("transition-unowned-device", "transition-unowned-focus"):
+                    for label, environment, off in (("ordinary", {}, False),
+                                                     ("tape", {"BEA_PORT_TAPE": "1"}, True),
+                                                     ("forced tape", {"BEA_PORT_TAPE": "1", "BEA_PORT_CE_LAYER": "1"}, False)):
+                        observation = run_case(binary, platform, case, private=build == "private",
+                                               layer_env=environment, layer_off=off, label=f"{case}: {label}")
+                        record["cases"].append(observation)
+                        print(f"{'PASS' if observation['pass'] else 'FAIL'} {platform} {build}: {observation['case']}")
+        passed = all(case["pass"] for platform in receipt["platforms"].values()
+                     for record in platform.values() for case in record["cases"])
     except (OSError, RuntimeError, subprocess.TimeoutExpired) as error:
         receipt["error"] = str(error)
         print(f"FAIL {error}")

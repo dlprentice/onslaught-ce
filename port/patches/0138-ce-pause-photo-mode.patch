@@ -1,0 +1,45 @@
+--- a/PauseMenu.cpp
++++ b/PauseMenu.cpp
+@@ -30,6 +30,12 @@
+ bool PortCeTakeOptionsFailure();	// patch 0137: port/game/ce_notice.cpp
+ void PortCeSaveFailedNotice();
+ #endif
++#ifdef CE_VERSION
++CMenuItem *PortCePhotoItem();		// patch 0138: the Photo Mode item (port/game/ce_frontend.cpp)
++bool PortCePhotoOn();				// port/game/ce_photo.cpp
++bool PortCePhotoMenuSet(bool on);
++#define PORT_CE_PHOTO_PCTEXT	0x4346	// its mPCText, the same value in ce_frontend.cpp
++#endif
+ 
+ 
+ // the menus and their items come from the memory type 0x80, beyond Stuart's list (004cdedd)
+@@ -526,6 +532,10 @@
+ 	}
+ 	else
+ 	{
++#ifdef CE_VERSION
++		if (PortCeMenus())
++			list->AddItem(PortCePhotoItem());		// patch 0138: Photo Mode, a row only in a solo level
++#endif
+ #line 1358
+ 		list->AddItem(new (MEMTYPE_MENUITEM) CMenuItem((DWORD)GI_RETRY, 2));
+ 		list->AddItem(new (MEMTYPE_MENUITEM) CMenuItem((DWORD)GI_QUIT, 2));
+@@ -1637,6 +1647,18 @@
+ 		case 78:
+ 		case 79:
+ 			return;
++#ifdef CE_VERSION
++		case PORT_CE_PHOTO_PCTEXT:
++			// patch 0138: Continue's way out of the menu (the career and the options are not written), then photo mode
++			// switched as F11 does it
++			RelinquishControl();
++			GAME.UnPause();
++			InitMouse();
++			DeActivate(TRUE);
++			PortCePhotoMenuSet(!PortCePhotoOn());
++			back_sound = TRUE;
++			break;
++#endif
+ 		}
+ 		break;
+ 

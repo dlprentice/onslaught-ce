@@ -25,6 +25,10 @@
 
 #include <SDL3/SDL.h>
 
+#ifdef CE_VERSION
+bool PortCeLayer();	// ce.cpp
+#endif
+
 namespace
 {
 const int kSlots = 64;			// covers IDirect3D9Ex (20) and IDirect3DDevice9Ex (134 would be more; see Copy)
@@ -91,6 +95,36 @@ UINT gBoxW, gBoxH;			// the game's back buffer while it is shown desktop-fullscr
 UINT gBackW, gBackH;		// the game's back buffer (its drawing size, LTShell::GetWindowWidth), from CreateDevice and Reset
 SDL_Window *gBoxWindow;
 
+#ifdef CE_VERSION
+// DesktopFullscreen changes SDL cursor visibility before Direct3D can accept or reject a mode. Keep the prior
+// visibility for our window so a failed CreateDevice/Reset does not leave the requested mode's cursor behind.
+// The CE layer gate leaves private builds, normal recordings and replays on their existing path.
+struct CeCursorBeforeModeChange
+{
+	HWND handle;
+	SDL_Window *window;
+	SDL_WindowID windowId;
+	bool visible;
+
+	CeCursorBeforeModeChange(HWND focus, const D3DPRESENT_PARAMETERS *pp)
+		: handle(pp && pp->hDeviceWindow ? pp->hDeviceWindow : focus),
+		  window(pp && PortCeLayer() ? PortSdlWindow(handle) : NULL),
+		  windowId(window ? SDL_GetWindowID(window) : 0),
+		  visible(windowId ? SDL_CursorVisible() : false) {}
+
+	void RestoreIfFailed(HRESULT result) const
+	{
+		// An SDL window may be destroyed and replaced at the same address and native handle while Direct3D runs.
+		// Require its original nonzero SDL ID as well; an unavailable ID does not authorize a cursor change.
+		if (SUCCEEDED(result) || !windowId || PortSdlWindow(handle) != window ||
+			SDL_GetWindowID(window) != windowId || SDL_CursorVisible() == visible)
+			return;
+		if (!(visible ? SDL_ShowCursor() : SDL_HideCursor()))
+			fprintf(stderr, PORT_LOG_PREFIX "failed to restore cursor after rejected display mode: %s\n", SDL_GetError());
+	}
+};
+#endif
+
 // Fullscreen on a modern desktop: the game asks for an exclusive 4:3 mode (640x480 and up), which dxvk on Linux cannot
 // switch a widescreen monitor to. As Wine does, the port keeps the desktop's mode: the swapchain becomes windowed
 // at the game's resolution and its window covers the desktop, where dxvk scales the image. Offscreen (test) runs are
@@ -101,6 +135,12 @@ void DesktopFullscreen(HWND focus, D3DPRESENT_PARAMETERS *pp)
 	{
 		if (pp)
 			gBoxW = gBoxH = 0;
+#ifdef CE_VERSION
+		// Windowed (again): restore the cursor only for our SDL window. An unrelated D3D device must not
+		// change the game's cursor while its own fullscreen device is active.
+		if (pp && PortCeLayer() && PortSdlWindow(pp->hDeviceWindow ? pp->hDeviceWindow : focus))
+			SDL_ShowCursor();
+#endif
 		return;
 	}
 #ifdef _WIN32
@@ -120,6 +160,13 @@ void DesktopFullscreen(HWND focus, D3DPRESENT_PARAMETERS *pp)
 						pp->BackBufferWidth, pp->BackBufferHeight, SDL_GetError());
 		}
 	}
+#ifdef CE_VERSION
+	// Retail hides Windows' cursor in fullscreen (d3dapp's WM_SETCURSOR answers SetCursor(NULL)); SDL owns this window, so the game never sees that message and its menus, which draw their own cursor,
+	// showed the system arrow beside it. Hidden while the window is fullscreen, in the CE layer only (a replay or a recording keeps SDL's default); SDL keeps cursor visibility in its mouse state.
+	// In the Windows VM the desktop cursor returned when the game lost focus.
+	if (native && PortCeLayer())
+		SDL_HideCursor();
+#endif
 	return;						// Windows' own Direct3D 9 still owns the exclusive mode switch
 #endif
 	const char *driver = SDL_GetCurrentVideoDriver();
@@ -202,8 +249,14 @@ HRESULT STDMETHODCALLTYPE Reset(IDirect3DDevice9 *device, D3DPRESENT_PARAMETERS 
 	D3DDEVICE_CREATION_PARAMETERS cp;
 	if (SUCCEEDED(device->GetCreationParameters(&cp)))
 		focus = cp.hFocusWindow;
+#ifdef CE_VERSION
+	CeCursorBeforeModeChange cursorBefore(focus, pp);
+#endif
 	DesktopFullscreen(focus, pp);
 	HRESULT hr = gReset(device, pp);
+#ifdef CE_VERSION
+	cursorBefore.RestoreIfFailed(hr);
+#endif
 	if (SUCCEEDED(hr))
 		gResets++;
 	PortSessionLog(PORT_SESSION_VIDEO, FAILED(hr), "device reset result=%08lx size=%ux%u windowed=%d format=%d",
@@ -1107,12 +1160,18 @@ HRESULT STDMETHODCALLTYPE CreateDevice(IDirect3D9 *d3d, UINT adapter, D3DDEVTYPE
 					(unsigned)LOWORD(id.DriverVersion.LowPart));
 	}
 	unsigned short before = ControlWord();
+#ifdef CE_VERSION
+	CeCursorBeforeModeChange cursorBefore(focus, pp);
+#endif
 	DesktopFullscreen(focus, pp);
 	if (pp)
 		fprintf(stderr, PORT_LOG_PREFIX "CreateDevice asks %ux%u format %d windowed %d refresh %u\n", pp->BackBufferWidth,
 				pp->BackBufferHeight, (int)pp->BackBufferFormat, (int)pp->Windowed, pp->FullScreen_RefreshRateInHz);
 	HRESULT hr = gCreateDevice(d3d, adapter, type, focus, flags, pp, out);
 	unsigned short after = ControlWord();
+#ifdef CE_VERSION
+	cursorBefore.RestoreIfFailed(hr);
+#endif
 	if (SUCCEEDED(hr) && pp)
 	{
 		gDevice = *out;

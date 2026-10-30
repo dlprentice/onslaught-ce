@@ -16,7 +16,7 @@
  	if (CLIPARAMS.mAutoConfigTest || gAllCheatsEnabled)
  		return(TRUE);
 +#ifdef CE_VERSION
-+	// Port (patch 0051, the CE layer): a cheat switched on in Options > Cheats (ce.ini, every career) counts as its code
++	// Port (patch 0051, the CE layer): a cheat switched on in Onslaught CE > Cheats (ce.ini, every career) counts as its code
 +	// in the career's name. Off in replays, recordings and the harness, so their careers decide alone, as in retail.
 +	if (!gPortCheatNameOnly && CE_CheatOn(cheatno))
 +		return(TRUE);

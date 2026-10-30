@@ -16,6 +16,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <thread>
 #include <time.h>
 #if defined(_WIN32)
 #include <windows.h>
@@ -52,19 +53,101 @@ long long gQpcBase, gQpcDt;
 unsigned long gMsBase;
 unsigned long long gFtBase;
 
-unsigned long long RealNs()
+// The real clock the game reads leaves out the time it waited for its window to be restored (PortClockPauseBegin/End, window.cpp's GetMessage while the window is minimized: the original's
+// idle wait, which it never accounted for: CGame::MainLoop keeps its base time and catches up one frame length per pass, so a game that was away for a minute ran that minute at full speed
+// afterwards). Bracket a real read with the generation so a thread suspended across a wait cannot apply a newer
+// offset to its older sample. The window thread is the only writer; an odd generation lasts only while publishing
+// the start or end, never throughout the blocking wait itself. Keep the generation and snapshot fields sequentially
+// consistent: seeing a new field must make the final generation check see the intervening publication as well.
+std::atomic<unsigned long long> gOffsetNs{ 0 };		// the raw clock minus the clock the game reads, over the waits that are over
+std::atomic<unsigned long long> gFrozenNs{ 0 };		// the clock the game reads while it stands still, in the raw clock's own count
+std::atomic<bool> gFrozen{ false };
+std::atomic<unsigned long long> gClockGeneration{ 0 };
+#ifdef CE_VERSION
+bool gPauseRawValid = true;						// only the window thread writes or reads this
+#endif
+#if defined(_WIN32)
+std::atomic<long long> gRawFrequency{ 0 };
+std::atomic<unsigned long long> gLastRawNs{ 0 };
+#endif
+
+unsigned long long ReadBegin()
+{
+	for (;;)
+	{
+		const auto generation = gClockGeneration.load();
+		if (!(generation & 1)) return generation;
+		std::this_thread::yield();
+	}
+}
+bool ReadValid(unsigned long long generation) { return gClockGeneration.load() == generation; }
+
+bool TryRawNs(unsigned long long &raw)
 {
 #if defined(_WIN32)
-	LARGE_INTEGER c, f;
-	QueryPerformanceCounter(&c);
-	QueryPerformanceFrequency(&f);
-	return (unsigned long long)(c.QuadPart / f.QuadPart) * 1000000000ull +
-		   (unsigned long long)(c.QuadPart % f.QuadPart) * 1000000000ull / (unsigned long long)f.QuadPart;
+	LARGE_INTEGER c{};
+	if (!QueryPerformanceCounter(&c)) return false;
+	long long frequency = gRawFrequency.load();
+	if (!frequency)
+	{
+		LARGE_INTEGER f{};
+		if (!QueryPerformanceFrequency(&f) || f.QuadPart <= 0) return false;
+		frequency = f.QuadPart;
+		// Windows documents this frequency as fixed at boot, so a successful query can be reused.
+		gRawFrequency.store(frequency);
+	}
+	raw = (unsigned long long)(c.QuadPart / frequency) * 1000000000ull +
+		  (unsigned long long)(c.QuadPart % frequency) * 1000000000ull / (unsigned long long)frequency;
+	// A thread with an older OS sample can finish after a newer one. Keep the fallback monotonic.
+	auto last = gLastRawNs.load();
+	while (last < raw && !gLastRawNs.compare_exchange_weak(last, raw)) {}
+	return true;
 #else
 	timespec ts;
 	clock_gettime(CLOCK_MONOTONIC, &ts);
-	return (unsigned long long)ts.tv_sec * 1000000000ull + ts.tv_nsec;
+	raw = (unsigned long long)ts.tv_sec * 1000000000ull + ts.tv_nsec;
+	return true;
 #endif
+}
+
+unsigned long long LastRawNs()
+{
+#if defined(_WIN32)
+	// If the OS cannot provide a counter, retain the last valid sample (zero before the first).
+	return gLastRawNs.load();
+#else
+	return 0;
+#endif
+}
+
+unsigned long long RawNs()
+{
+	unsigned long long raw = 0;
+	return TryRawNs(raw) ? raw : LastRawNs();
+}
+
+// How far the clock the game reads is behind the operating system's right now, given the operating system's clock (rawNs, read once by the caller): the wait so far while it lasts (the clock
+// stands still), the waits that are over after it.
+unsigned long long Shift(unsigned long long rawNs)
+{
+	if (gFrozen.load())
+	{
+		// A raw reading older than the frozen game time keeps the completed-wait offset instead of underflowing. After earlier waits, a stale reading still newer than that time can be clamped forward.
+		const unsigned long long frozen = gFrozenNs.load();
+		return rawNs >= frozen ? rawNs - frozen : gOffsetNs.load();
+	}
+	return gOffsetNs.load();
+}
+
+unsigned long long RealNs()
+{
+	for (;;)
+	{
+		const auto generation = ReadBegin();
+		const unsigned long long raw = RawNs();
+		const unsigned long long value = raw - Shift(raw);
+		if (ReadValid(generation)) return value;
+	}
 }
 
 unsigned long long RealFiletime()
@@ -192,6 +275,60 @@ void PortClockFrame()
 	default:
 		break;
 	}
+}
+
+#ifdef CE_VERSION
+bool PortCeLayer();
+#ifdef _WIN32
+void PortWindowsClockPauseBegin();
+void PortWindowsClockPauseEnd();
+#endif
+#endif
+
+// The operating system's clock in nanoseconds, as RawNs reads it. Linux brackets its own raw reading and shift;
+// Windows tracks its native counter and millisecond readings separately.
+unsigned long long PortClockRawNs() { return RawNs(); }
+
+unsigned long long PortClockShiftNs(unsigned long long rawNs) { return Mode() == REAL ? Shift(rawNs) : 0; }
+unsigned long long PortClockReadBegin() { return ReadBegin(); }
+bool PortClockReadValid(unsigned long long generation) { return ReadValid(generation); }
+
+void PortClockPauseBegin()
+{
+#ifdef CE_VERSION
+	// BEA_PORT_MINIMIZED_CLOCK=run keeps the original's behaviour (the clock runs through the wait), to compare a build with retail's.
+	static const bool keepRunning = [] { const char *v = getenv("BEA_PORT_MINIMIZED_CLOCK"); return v && !strcmp(v, "run"); }();
+	if (keepRunning || Mode() != REAL || !PortCeLayer() || gFrozen.load())
+		return;
+	gClockGeneration.fetch_add(1);
+	unsigned long long raw = 0;
+	gPauseRawValid = TryRawNs(raw);
+	if (!gPauseRawValid) raw = LastRawNs();
+	if (!gPauseRawValid && raw < gOffsetNs.load()) raw = gOffsetNs.load();
+	gFrozenNs.store(raw - gOffsetNs.load());
+#ifdef _WIN32
+	PortWindowsClockPauseBegin();
+#endif
+	gFrozen.store(true);
+	gClockGeneration.fetch_add(1);
+#endif
+}
+
+void PortClockPauseEnd()
+{
+#ifdef CE_VERSION
+	if (!gFrozen.load())
+		return;
+	gClockGeneration.fetch_add(1);
+	unsigned long long raw = 0;
+	if (gPauseRawValid && TryRawNs(raw))
+		gOffsetNs.store(raw - gFrozenNs.load());	// a failed edge cannot replace the last known offset
+#ifdef _WIN32
+	PortWindowsClockPauseEnd();
+#endif
+	gFrozen.store(false);
+	gClockGeneration.fetch_add(1);
+#endif
 }
 
 // For DirectSound's mixer (port/dsound): the virtual time, including the main thread's sleeps and escapes, without

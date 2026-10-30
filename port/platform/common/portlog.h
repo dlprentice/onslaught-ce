@@ -41,6 +41,32 @@ enum PortSessionCounter { PORT_COUNT_AUDIO_CALLBACKS, PORT_COUNT_AUDIO_PUT_FAILE
 	PORT_COUNT_MUSIC_REFILLS, PORT_COUNT_MUSIC_SHORT_READS, PORT_COUNT_MUSIC_READ_FAILED, PORT_COUNT_MUSIC_WAIT_FAILED,
 	PORT_COUNT_MONITOR_DROPS, PORT_COUNT_MONITOR_PUT_FAILED, PORT_SESSION_COUNTERS };
 void PortSessionCount(PortSessionCounter counter);
+// Observations of the music worker and the mixer (patch 0187): counters and maxima that are counted before any line budget
+// and printed on their own "audio-obs" line after each summary, so that the summary line keeps its text. Same fences and the
+// same callback rules as the counters above: ignored unless the session diagnostics are admitted, no lock, clock, format or I/O.
+// Counters add (saturating); the rest keep the largest value seen. Microsecond maxima saturate at 4294 seconds. None is
+// evidence of audible output.
+enum PortSessionObservation {
+	PORT_OBS_MUSIC_RISK_REFILLS,		// refills the diagnostics flag as underrun risk, whether or not their line was logged
+	PORT_OBS_MUSIC_PAIR_REFILLS,		// a refill of the same half within half a second of the previous refill (two refill sources)
+	PORT_OBS_MUSIC_ORDER_ANOMALIES,		// handled wakes out of half order, whether or not their line was logged
+	PORT_OBS_MUSIC_LINES_DROPPED,		// refill and order lines not logged because their own line budget was spent
+	PORT_OBS_MUSIC_VOICE_STARTS,		// music-tagged buffers started
+	PORT_OBS_MUSIC_STALE_HALVES,		// a music half was entered that was not refilled since it was last entered
+	PORT_OBS_MUSIC_OVERWRITTEN_HALVES,	// a music half was refilled while it still held data that had not been entered yet
+	PORT_OBS_AUDIO_CALLBACKS_LATE,		// device callbacks more than three chunks after the previous one
+	PORT_OBS_EVENTS_DROPPED,			// ordinary session events not logged because the session limit was reached
+	PORT_OBS_ERRORS_DROPPED,			// error session events not logged because the session limit was reached
+	PORT_OBS_MUSIC_REFILL_US_MAX,		// the longest refill, from before the read to after the unlock
+	PORT_OBS_MUSIC_NOTIFY_AGE_US_MAX,	// the largest time from the buffer's latest position notification to the start of a refill
+	PORT_OBS_MUSIC_VOICES_MAX,			// the most music-tagged buffers playing at once
+	PORT_OBS_AUDIO_GAP_US_MAX,			// the longest time between two device callbacks
+	PORT_OBS_DEVICE_RATE,				// the granted device's sample rate
+	PORT_OBS_DEVICE_CHANNELS,			// the granted device's channel count
+	PORT_OBS_DEVICE_PERIOD_FRAMES,		// the granted device's buffer size in frames
+	PORT_SESSION_OBSERVATIONS };
+void PortSessionObserve(PortSessionObservation which, unsigned amount = 1);
+void PortSessionObserveMax(PortSessionObservation which, unsigned value);
 void PortSessionAudioError(const char *error);
 void PortSessionPulse(unsigned frame);
 // One-off inventories for problem reports (inventory.cpp): every display, input and audio playback device, and the

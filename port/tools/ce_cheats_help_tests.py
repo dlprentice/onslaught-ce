@@ -75,8 +75,10 @@ class CheatHelpTests(unittest.TestCase):
 
     def test_actual_help_renderer_wraps_without_overlapping(self):
         frontend = FRONTEND.read_text()
-        start = frontend.index("struct SCeCheat")
-        end = frontend.index("\nCMenuItem\t*PortCeCheatsItem()", start)
+        # From the hint type to the declarations after the page tables: the cheat table, the Back item that draws the hints, and
+        # every page's rows, hints and notes (the tables the CE page is made of).
+        start = frontend.index("struct SCeHint")
+        end = frontend.index("\nbool\tPortCeBonusStart(int level);", start)
         wrap = function((ROOT / "src/Font.cpp").read_text(), "int\t\tCDXBitmapFont::WordWrap(")
         camera = function((ROOT / "src/Camera.cpp").read_text(),
                           "void CControllableCamera::ReceiveButtonAction(")
@@ -101,7 +103,7 @@ class CheatHelpTests(unittest.TestCase):
             self.assertEqual(built.returncode, 0, built.stderr)
             ran = subprocess.run([str(exe)], capture_output=True, text=True, timeout=5, preexec_fn=no_core)
             self.assertEqual(ran.returncode, 0, ran.stderr)
-            self.assertIn("wrapping, spacing and message box passed", ran.stdout)
+            self.assertIn("every page's hints, wrapping, spacing and message box passed", ran.stdout)
 
 
 if __name__ == "__main__":

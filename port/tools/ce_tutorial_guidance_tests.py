@@ -157,7 +157,7 @@ def main():
     for name, value in pieces.items():
         (out / name).write_text(value)
     driver = ROOT / 'port/tools/ce_tutorial_guidance_driver.cpp'
-    SDL_INCLUDE = build.deps.DATA / 'prefix/include'	# the pinned SDL3 headers (only the header types; SDL is not linked)
+    SDL_INCLUDE = build.deps.PREFIX / 'include'	# the selected pinned SDL3 headers (types only; SDL is not linked)
     if not (SDL_INCLUDE / 'SDL3/SDL.h').exists():
         raise RuntimeError('pinned SDL3 headers missing; run port/tools/deps.py build: ' + str(SDL_INCLUDE))
     cases, commands = [], []

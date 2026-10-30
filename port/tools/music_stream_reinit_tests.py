@@ -9,11 +9,11 @@ looping, with its worker refilling the new buffer: the session log's outstanding
 
 src/PCMusicStream.cpp gets every port patch's PCMusicStream.cpp section in number order ("candidate") and the same
 without patch 0113 ("predecessor", the frozen negative control), and compiles whole inside a driver that gives each
-stream its own buffer, position events, worker and reader; the real session log (portlog.cpp) is linked in. Modes:
-ordinary CE (the public build, session log on), faithful (a tape set: the CE layer and log off), the virtual clock
-(no worker: the main thread pumps) and the private build. On a tree without patch 0113 the candidate is the
-predecessor and fails. This is a host scheduling and ownership check, not a Windows runtime, audio-quality or
-game-run claim: the run-level check is port/tools/run_startup_music_tests.py.
+stream its own buffer, position events, worker and reader; the real session log (portlog.cpp) is linked in. Patch 0183 also closes each completed worker handle.
+The negative control omits just 0183, while the older predecessor omits 0113. Modes are ordinary CE (the public
+build, session log on), faithful (a tape set: the CE layer and log off), the virtual clock (no worker: the main
+thread pumps) and the private build. This is a host scheduling and ownership check, not a Windows runtime,
+audio-quality or game-run claim: the run-level check is port/tools/run_startup_music_tests.py.
 """
 import argparse
 import hashlib
@@ -27,6 +27,7 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[2]
 PATCH = "0113-music-stream-second-init.patch"
+HANDLE_PATCH = "0183-music-worker-handle.patch"
 MODES = {"public": ("ce", "faithful", "virtual"), "private": ("private",)}
 
 
@@ -45,7 +46,7 @@ def music_source(folder, skip):
     (folder / "PCMusicStream.cpp").write_bytes((ROOT / "src/PCMusicStream.cpp").read_bytes())
     applied = {}
     for patch in sorted((ROOT / "port/patches").glob("*.patch")):
-        if patch.name == skip:
+        if patch.name in (skip or set()):
             continue
         sections = [s for s in re.split(r"(?=^--- a/)", patch.read_text(), flags=re.M)
                     if s.startswith("--- a/PCMusicStream.cpp\n")]
@@ -79,7 +80,7 @@ def judge(variant, mode, observed, stderr):
     want(observed.get("workers") == (2 if threaded else 0), "one worker per stream (none on the virtual clock)")
     want(observed.get("second_plays") == 1 and observed.get("second_playing_at_front_end"), "the front end's start")
     want(observed.get("readers_created") == 2, "one reader per stream")
-    if variant == "candidate":
+    if variant in ("candidate", "no_handle"):
         want(observed.get("reader_deletes") == 2, "both readers deleted by exit")
         want(not observed.get("first_playing_after_second_init"), "the first stream still plays after the second init")
         want(observed.get("first_released_at_second_init") == 1, "the first buffer is released at the second init")
@@ -104,12 +105,22 @@ def judge(variant, mode, observed, stderr):
         if threaded:
             want(observed.get("foreign_locks", 0) > 0 and observed.get("foreign_reads", 0) > 0,
                  "negative control: the orphaned worker no longer refills the new stream")
+    # The worker must be closed after it has exited. The virtual-clock route creates none. The predecessor
+    # deliberately leaves its first worker orphaned; the no-handle mutant keeps 0113 but omits only this fix.
+    closed = 0 if not threaded or variant == "no_handle" else (1 if variant == "predecessor" else 2)
+    want(observed.get("worker_closes") == closed, "unexpected number of closed worker handles")
+    want(observed.get("worker_handles_open") == (0 if not threaded else 2 - closed), "unexpected open worker handles")
+    want(observed.get("worker_close_live") == 0 and observed.get("worker_close_duplicate") == 0,
+         "a worker handle was closed before exit or more than once")
+    if threaded:
+        want(observed.get("first_worker_closed_at_second_init") == (variant == "candidate"),
+             "first worker handle was not closed at replacement")
     if mode == "ce":
         want(bool(starts), "the session log has no music start lifetimes")
-        want(max(starts or [0]) == (1 if variant == "candidate" else 2),
+        want(max(starts or [0]) == (2 if variant == "predecessor" else 1),
              f"outstanding_music_starts reached {max(starts or [0])}")
         replaced = sum("stream re-initialised: the earlier stream is shut down first" in line for line in sessions)
-        want(replaced == (1 if variant == "candidate" else 0), f"{replaced} re-initialisation lines")
+        want(replaced == (0 if variant == "predecessor" else 1), f"{replaced} re-initialisation lines")
         want(sum("music: buffer start" in line for line in sessions) == 2, "two buffer starts: startup and front end")
     else:
         want(not sessions, "a faithful, virtual-clock or private run wrote session lines")
@@ -136,13 +147,14 @@ def main():
     admission.write_text(function(ce.read_text(), "bool PortCeLayer()\n{"))
     receipt = {"scope": __doc__, "pins": {str(p.relative_to(ROOT)): sha(p) for p in
                                           (ROOT / "src/PCMusicStream.cpp", driver, portlog, header, ce, Path(__file__))},
-               "patch_present": (ROOT / "port/patches" / PATCH).is_file(), "variants": {}, "commands": [], "cases": [],
+               "patch_present": all((ROOT / "port/patches" / name).is_file() for name in (PATCH, HANDLE_PATCH)),
+               "variants": {}, "commands": [], "cases": [],
                "compiler": subprocess.run([args.compiler, "--version"], capture_output=True, text=True,
                                           check=True).stdout.splitlines()[0]}
     env = {k: v for k, v in os.environ.items()
            if k not in ("BEA_PORT_CLOCK", "BEA_PORT_TAPE", "BEA_PORT_PROBES", "BEA_PORT_RECORD", "BEA_PORT_CE_LAYER")}
     env["TMPDIR"] = str(out)
-    for variant, skip in (("candidate", None), ("predecessor", PATCH)):
+    for variant, skip in (("candidate", set()), ("predecessor", {PATCH}), ("no_handle", {HANDLE_PATCH})):
         source, applied = music_source(out / variant, skip)
         receipt["variants"][variant] = {"patches": applied, "source_sha256": sha(source)}
         for build, modes in MODES.items():
@@ -178,7 +190,8 @@ def main():
     print(out / "result.json")
     total = len(receipt["cases"])
     good = sum(case["passed"] for case in receipt["cases"])
-    print(f"{good}/{total} expected outcomes" + ("" if receipt["patch_present"] else f" ({PATCH} is not in this tree)"))
+    missing = [name for name in (PATCH, HANDLE_PATCH) if not (ROOT / "port/patches" / name).is_file()]
+    print(f"{good}/{total} expected outcomes" + ("" if not missing else f" (missing patches: {', '.join(missing)})"))
     return 0 if good == total else 1
 
 

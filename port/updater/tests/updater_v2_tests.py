@@ -140,17 +140,28 @@ def small_user_dir(root: Path, platform: str) -> Path:
     return root / "small-user"
 
 
+def small_install_dir(root: Path, platform: str) -> Path:
+    """Keep Wine's tmpfs install short enough for the launcher's Windows MAX_PATH limit."""
+    return Path("/tmp/onslaught-ce-updater-small-install") if platform == "windows" else root / "small-install"
+
+
 def sandbox(root: Path, platform: str, pattern, info) -> int:
     game = os.environ.get("BEA_GAME_DIR") or str(Path.home() / ".local/share/Steam/steamapps/common/Battle Engine Aquila")
     home = str(Path.home())
     small = info["packages"][f"{platform}/{BASE}"]["unpacked"] + (1 << 20)
+    small_install = small_install_dir(root, platform)
     small_user = small_user_dir(root, platform)
-    for d in (root / "small-install", small_user, root / "home"):
+    dirs = [small_user, root / "home"]
+    if platform != "windows":
+        dirs.append(small_install)
+    for d in dirs:
         d.mkdir(parents=True, exist_ok=True)
     cmd = ["bwrap", "--die-with-parent", "--unshare-all", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc",
            "--tmpfs", "/tmp", "--tmpfs", "/run/user", "--tmpfs", home, "--ro-bind", str(PORT_DIR.parent), str(PORT_DIR.parent),
-           "--bind", str(root), str(root),
-           "--size", str(small), "--tmpfs", str(root / "small-install"),
+           "--bind", str(root), str(root)]
+    if platform == "windows":
+        cmd += ["--dir", str(small_install)]
+    cmd += ["--size", str(small), "--tmpfs", str(small_install),
            "--size", str(256 << 10), "--tmpfs", str(small_user),
            "--setenv", "HOME", str(root / "home"), "--unsetenv", "DISPLAY", "--unsetenv", "WAYLAND_DISPLAY",
            "--unsetenv", "XDG_RUNTIME_DIR", "--unsetenv", "XDG_DATA_HOME", "--unsetenv", "BEA_USER_DIR"]
@@ -500,7 +511,7 @@ class UpdaterV2(unittest.TestCase):
                 self.assertEqual(self.version_of(), BASE)
                 self.assert_clean()
         # a real full file system: the install on a small tmpfs (room for the base, not the new version)
-        small = ROOT / "small-install" / self.id().split(".")[-1]
+        small = small_install_dir(ROOT, PLATFORM) / self.id().split(".")[-1]
         small.mkdir()
         install = self.unpack_base(small)
         r = self.run_launcher("--update-only", install=install, feed=self.publish())

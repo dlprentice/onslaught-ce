@@ -1,0 +1,29 @@
+--- a/SquadRelaxed.cpp
++++ b/SquadRelaxed.cpp
+@@ -34,6 +34,9 @@
+ 	SUPERTYPE::Shutdown();
+ }
+ 
++#ifdef CE_VERSION
++int CeCommanderRelaxed(void *squad, FVector *pos);	// patch 0160: port/game/ce_commander.cpp
++#endif
+ //******************************************************************************************
+ // Each few seconds: forget the members that have gone, move the centre towards the target, and send the idle members
+ // there.
+@@ -70,9 +73,16 @@
+ 		mPos += d;
+ 	}
+ 
++#ifdef CE_VERSION
++	int ceOrder = CeCommanderRelaxed(this, &mPos);	// patch 0160: 0 no order, 1 mPos is the commanded goal, 2 leave the members alone
++#endif
+ 	ListIterator<CActiveReader<CUnit> >	it(&mMembers);
+ 	for (CActiveReader<CUnit> *r = it.First(); r; r = it.Next())
+ 	{
++#ifdef CE_VERSION
++		if (ceOrder == 2)
++			break;
++#endif
+ 		CUnit	*unit = r->ToRead();
+ 		if ((unit) && (!unit->GetCurrentTarget()))
+ 		{

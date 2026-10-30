@@ -4,9 +4,10 @@
 // widths are measured from the texture's alpha) or a Windows font drawn into a new texture (a system font). Text is
 // drawn as one screen-space quad per character through the shared quad buffer. The arithmetic is the game's, in the
 // same order, so text lands on the same pixels and measures the same widths; the front end's 640 x 480 coordinates
-// scale by the window through multiplications by 1/640 and 1/480, as the game's compiled code does. Where the picture is
-// a wide mode and the text is drawn at two or more times its texture's size (a 4K screen), a bitmap font is drawn from a
-// sharper copy of its texture (CrispTexture below); everywhere else the game's texture is the one drawn.
+// scale by the window through multiplications by 1/640 and 1/480, as the game's compiled code does. Where the player asked
+// for it (ce.ini sharp_ui=1, off by default), the picture takes the non-4:3 wide path and bitmap text is drawn at least
+// twice its texture's size horizontally or vertically (for example, menus at 1920 x 1080), it can use a sharper copy;
+// elsewhere the game's texture is the one drawn.
 #include	"Common.h"
 #include	"Platform.h"
 #include	"Texture.h"
@@ -82,17 +83,19 @@ int		LastInkedColumn(const D3DLOCKED_RECT &lr, int left, int x, int top, int row
 // interpolation of its alpha and the edge then steepened around half coverage, keeps the glyph's outline and gives it
 // a crisp edge at any size from twice up; its colour is interpolated weighted by the alpha, so a font with a shaded face
 // (the title font) keeps it and no edge darkens. The characters' cells, widths and the quads drawn are the original
-// texture's: only the pixels sampled differ.
+// texture's: only the pixels sampled differ. It is the player's choice (ce.ini sharp_ui=1, PortSharpUi): by default the
+// text keeps the original's soft look, as the rest of the picture does.
 const int		CRISP_SCALE = 4;
 const float		CRISP_FROM = 0.30f;			// the alpha below which the steepened edge is clear, and above CRISP_TO fully inked
 const float		CRISP_TO = 0.70f;
 const float		CRISP_MIN_SCALE = 2.0f;		// text drawn at less than this keeps the game's texture
 
-// Whether text of this size is drawn from the copy: wide modes only (4:3, replays and recordings keep the game's pictures
-// exactly: PortWideActive is false there), bitmap fonts only, and only text drawn at CRISP_MIN_SCALE or more.
+// The copy requires PortWideActive, a bitmap font, the larger drawing scale at CRISP_MIN_SCALE or more and sharp_ui=1.
+// Ordinary replays and recordings disable wide modes; BEA_PORT_WIDE_TEST or BEA_PORT_CE_LAYER=1 can bypass that gate.
+// A 4:3 back buffer remains inactive. PortSharpUi is asked last, so only an eligible draw reads the setting.
 bool	CrispWanted(bool sysFont, float scale, int wide)
 {
-	return !sysFont && wide && scale >= CRISP_MIN_SCALE;
+	return !sysFont && wide && scale >= CRISP_MIN_SCALE && PortSharpUi();
 }
 
 // Catmull-Rom weights of the four source texels around output texel `o` of an upsampling by CRISP_SCALE; `first` is the
