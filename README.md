@@ -1,7 +1,7 @@
 # Onslaught CE
 
 Status: preview — from 0.1.8 on it updates itself; from 0.1.7 or earlier, download the latest release once by hand
-Last updated: 2026-10-30
+Last updated: 2026-11-02 (public contribution setup and recording privacy clarified)
 Summary: the native Battle Engine Aquila port, the one-time manual move from 0.1.7 or earlier, signed updates and source build.
 
 This README follows this source branch, which can describe work that is not in the latest download. The README
@@ -612,7 +612,9 @@ otherwise `~/.local/share/onslaught-ce`) on Linux, `%APPDATA%\Onslaught CE`
    Home paths and account-name path components are shortened; look the file over before sharing it. It needs no
    administrator access, records no microphone audio and is never uploaded automatically. You can also share the
    file directly with someone helping you. Replays and session recordings omit the detailed ordinary-play events.
-4. If you recorded the session (below), attach its tape too: it can help us reproduce what happened.
+4. If you recorded the session (below), mention that a recording is available. Do not attach the raw tape or metadata
+   to a public issue: they can contain typed text, careers and other user files. Agree an appropriate evidence route
+   with a maintainer first.
 
 If you set `BEA_USER_DIR` to a folder, look for the log in that folder instead. Logs can include local paths,
 user names
@@ -649,9 +651,9 @@ in both and comparing them, and recordings of real play find differences our own
   folder at the start. These can include game options, saved careers and other files in that folder. Session recording
   does not capture video, game audio or microphone audio. Both files can contain personal information; review them
   before sharing.
-- To share a session, put the `.tape` and its `.tape.json` in a zip and attach it to an issue, saying what to look at
-  (what differed from the original, and roughly when). Sessions where something looked or behaved
-  differently from the original help most.
+- Start a report with what differed from the original and roughly when. Do not upload a raw `.tape`/`.tape.json` zip
+  publicly: encoded user files can include saves and private information. Tell a maintainer that the recording exists
+  and agree a suitable evidence route; see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## How faithful is it?
 
@@ -729,8 +731,8 @@ its win and debrief. This covers one recorded route; it does not establish compl
 
 ## Building from source
 
-The build runs on Linux (x86-64) and makes both programs from a Git checkout of this repository. It needs Python 3,
-Git, Ninja and the usual build tools, and your installed game (the build checks the few game files it compiles in by
+The build runs on Linux (x86-64) and makes both programs from a Git checkout of this repository. Use Python 3.12 or newer,
+Git, Ninja, Make, patch and pkgconf, and your installed game (the build checks the few game files it compiles in by
 their hashes, `config/game-data.sha256`; set `BEA_GAME_DIR` if the game is not in Steam's default folder).
 
 ```sh

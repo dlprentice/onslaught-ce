@@ -1,5 +1,9 @@
 # port/vorbis: retail's Ogg Vorbis decoder, rebuilt
 
+Status: active decoder documentation; dated comparisons retain their original scope
+Last updated: 2026-11-02
+Summary: decoder provenance, pinned prebuilt libraries, optional regeneration and historical comparison evidence.
+
 Some files and commands named on this page (`tests/`, `probe/`, `run.py`, `check_tape.sh`, `replay_session.py`, `PLAN.md`, `PARITY.md`, `tools/decomp.py`, `docs/release.md`, `tools/release_rc.py`) live only in the private working repository and are not in this public tree; they are named so that the description is complete. The decompilation's public export is [onslaught-decomp](https://github.com/dlprentice/onslaught-decomp).
 
 The game decodes its music and voice lines with Xiph.Org's libvorbis and libogg (BSD), from the `vorbis.dll` and
@@ -68,9 +72,8 @@ pairs into a 22.05 kHz buffer (`OGG_HASH_HALF=1` in the harness).
 - **Layout.** The game compiles `src/oggvorbis.h` with `-malign-double`, which gives MSVC's layout, the one these
   objects use. The clang-built 1.3.7 aligns 64-bit fields to 4 bytes instead, so its structures do not match that
   header.
-- **Precision.** The decoder must run at 0x27F to match retail. The port's worker threads currently inherit the main
-  thread's 0x07F (Direct3D's single precision). Starting each thread at 0x27F, as Windows does, belongs in the
-  platform layer's CreateThread.
+- **Precision.** The decoder must run at 0x27F to match retail. The platform layer starts worker threads at that
+  precision (see `port/platform/linux/kernel.cpp`), separately from the main graphics thread's precision.
 
 ## Status and what the build needs
 
@@ -87,12 +90,13 @@ pairs into a 22.05 kHz buffer (`OGG_HASH_HALF=1` in the harness).
 
 ## In the port
 
-`port/build.py` links `lib/<target>/libvorbis_vc6.a` and compiles `vc6crt.c` with the port (Linux `-no-pie`); it stops
-with a message when the library has not been built. Level 100 on the Linux port (`--shim-clock`, 1,500 Presents,
+`port/build.py` links `lib/<target>/libvorbis_vc6.a` and compiles `vc6crt.c` with the port (Linux `-no-pie`). If the
+library is absent, the ordinary build fetches its hash-pinned prebuilt archive; regenerating it requires VC6.
+The following is a historical level-100 Linux comparison (`--shim-clock`, 1,500 Presents,
 `BEA_AUDIO_CALLLOG`; lead, 2026-10-15): the music fill and all eight voice lines carry retail's PCM, at retail's
 Presents. Four hash equal in the log; the other five are the odd-length lines, which the port's DirectSound rounds up
 to a whole frame and hashes with the pad byte (port/dsound/README.md): their decoded PCM plus one zero byte gives the
-port's hash exactly, and without it retail's. The Windows build links; it has not been run.
+port's hash exactly, and without it retail's. That dated comparison did not include Windows runtime acceptance.
 
 ## Commands
 

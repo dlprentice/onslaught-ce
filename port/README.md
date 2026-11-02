@@ -1,7 +1,7 @@
 # Native port (Linux and Windows)
 
 Status: active (both targets build, link and run the game; Linux replays are compared with retail Present by Present, logged in PARITY.md in the private working tree; native Windows acceptance uses a software-rendered VM, not physical-GPU validation)
-Last updated: 2026-10-29 (matching concession and upstream credit clarified; earlier: the v2 feed, private-tree references, released-launcher cleanup warning and manual migration)
+Last updated: 2026-11-02 (public build and contribution routes clarified)
 Summary: a second build of the decompilation's sources as native i686 Linux and Windows programs; layout, ownership,
 commands and rules.
 
@@ -14,8 +14,7 @@ dated targets, API counts, parity hazards and phases (neither is in the public e
 https://github.com/dlprentice/onslaught-decomp).
 
     python3 port/tools/deps.py build     # pinned inputs, both targets, into local-data/port (about 10 minutes)
-    python3 port/probe/run.py            # private tree only: P0, the triangle on Linux (NVIDIA, Intel) and Windows-under-Wine, compared
-    python3 port/build.py [--target linux|windows] [-k]   # the game: local-data/port/build/<target>/bea[.exe]
+    python3 port/build.py --public [--target linux|windows] [-k]   # the game: local-data/port/build/<target>/bea[.exe]
 
 Licence: GPL-3.0 (`SPDX-License-Identifier: GPL-3.0-only`), matching the upstream Onslaught source (GPL version 3,
 no "or later" grant). The public NOTICE retains the source attribution; third-party inputs keep their own licences
@@ -67,18 +66,22 @@ as migration workarounds, and do not use 0.1.6 as an intermediate release.
 
 | Path | What |
 |---|---|
-| `deps.lock`, `tools/`, `probe/` | pinned third-party inputs and their builds into `local-data/port/`; the private-Xvfb runner; the P0 probe |
+| `deps.lock`, `tools/` | pinned third-party inputs and their builds into `local-data/port/`; isolated run and check tools |
 | `build.py` | the port build (ninja): flags, include overlay, mirror + patch queue, link |
 | `include/` | Win32, DirectSound, DirectInput, mmsystem and VC6 CRT shims over dxvk-native's headers |
 | `platform/` | `common/` (both targets: the SDL3 window and message pump, DirectInput 8, the Direct3D 9 hooks, clocks, registry, NvTriStrip bridge), `linux/` (Win32 over POSIX and SDL3, paths, entry point), `windows/` (file overlay, clocks) |
 | `aliases.tsv` | linklib/aliases.tsv's second names in the Itanium ABI (`--defsym` on Linux, `/alternatename` on Windows) |
+| `game/` | CE gameplay additions and integration code |
+| `platform/public/` | public replacements for excluded SDK/framework components |
 | `patches/` | port-only source edits that cannot be byte-neutral in `src/`, applied to a generated mirror |
 | `d3dx/` | `include/` (d3dx9*.h, dxerr9.h) and `src/`: maths, zlib-wrapped DDS loader, vs/ps 1.x assembler, DXGetErrorString9; `tests/` |
 
 ## Rules
 
-- `src/` line counts never change (`__LINE__` strings and `.bss` creation order depend on them). Byte-neutral fixes go to
-  `src/` as ordinary claimed commits, proven by `tools/decomp.py check`; anything else is a patch in `patches/`.
+- `src/` line counts never change (`__LINE__` strings and `.bss` creation order depend on them). Propose source changes
+  through [CE contribution guide](https://github.com/dlprentice/onslaught-ce/blob/main/CONTRIBUTING.md); maintainers run the matching check in their working source. That tool
+  is not part of the CE export. The separate [public decompilation](https://github.com/dlprentice/onslaught-decomp)
+  documents its own function-check setup. CE behavior changes normally belong in `game/`, platform code or `patches/`.
 - Pinned dependency builds go to the canonical checkout's ignored `local-data/port/` (shared by every worktree:
   identical pinned inputs, about 1.6 GB, `BEA_PORT_DATA` overrides). What derives from a checkout's own `src/` (the
   mirror, objects, probe output) goes to that checkout's ignored `local-data/port/`.
