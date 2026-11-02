@@ -731,15 +731,58 @@ its win and debrief. This covers one recorded route; it does not establish compl
 
 ## Building from source
 
-The build runs on Linux (x86-64) and makes both programs from a Git checkout of this repository. Use Python 3.12 or newer,
-Git, Ninja, Make, patch and pkgconf, and your installed game (the build checks the few game files it compiles in by
-their hashes, `config/game-data.sha256`; set `BEA_GAME_DIR` if the game is not in Steam's default folder).
+The build runs on Linux (x86-64) and makes both programs from a Git checkout of this public repository. Use Python
+3.12 or newer, Git, Ninja, Make, patch, pkgconf, Bison 3.6 or newer, and a host C/C++ compiler. Packaging additionally
+uses curl and GNU binutils. No private checkout or maintainer setup script is required. Windows contributors can
+use a Linux development environment to produce the Windows executable; native Windows play is a separate check.
+
+On Windows, use [WSL2](https://learn.microsoft.com/en-us/windows/wsl/install) with an x86-64 Linux distribution.
+Check `wsl --list --verbose` from Windows first. If it is missing, the owner can use `wsl --install`; enabling the
+features can require administrator access and a restart, so an agent must obtain the owner's approval for that
+host setup. Run the build commands below inside the Linux terminal and keep the checkout in
+the [Linux filesystem](https://learn.microsoft.com/en-us/windows/wsl/filesystems), such as `~/src/onslaught-ce`,
+rather than `/mnt/c`. Your installed game's read-only inputs can be reached on its mounted Windows drive through
+`BEA_GAME_DIR`. Test the resulting Windows zip on Windows; WSL compilation or a Linux run does not prove native
+Windows graphics, input or audio. The Linux build route is established; this WSL onboarding recipe has not been
+run in the Windows test VM.
+
+Compilation reads two files from your own licensed game: `data/MissionScripts/onsldef.msl` and
+`data/MissionScripts/text/text.stf`, checked against `config/game-data.sha256`. Set `BEA_GAME_DIR` to the installation
+root if it is not in Steam's default folder. The full installation is needed to play. Do not commit or share these files.
+
+Start with a no-game baseline; these authored tooling checks need no private files or dependency download:
+
+```sh
+python3 port/tools/build_tests.py
+python3 port/tools/deps_tests.py
+python3 port/tools/package_readme_tests.py
+python3 port/tools/manual_update_package_tests.py
+```
+
+Then prepare the pinned dependencies and compile:
 
 ```sh
 python3 port/tools/deps.py build                   # the pinned toolchains, libraries and Linux sysroot, checked by SHA-256
 python3 port/build.py --public --target linux --ce-version dev
 python3 port/build.py --public --target windows --ce-version dev
 ```
+
+The first dependency setup downloads roughly 3.2 GiB before extraction and compilation. Budget additional disk
+space for both toolchains and their build trees; elapsed time depends on your network and machine. Subsequent
+builds reuse this checkout's ignored `local-data/port/` dependencies.
+
+After building both targets, stage a self-contained development package:
+
+```sh
+python3 port/tools/package.py dev
+ce_dev_dir=$(mktemp -d "$PWD/local-data/port/dev-run.XXXXXX")
+tar -xzf local-data/port/release/dev/onslaught-ce-dev-linux-i686.tar.gz -C "$ce_dev_dir"
+```
+
+The extracted `onslaught-ce-dev-linux-i686/onslaught-ce` launcher is the entry point. Use a separate absolute
+`BEA_USER_DIR` for development careers and settings. The Windows zip is in the same release output directory.
+Keep these local packages separate from installed releases; never publish a development package as an accepted release.
+Follow [CONTRIBUTING.md](CONTRIBUTING.md) to baseline, develop and submit a feature from your fork.
 
 `--ce-version` sets the version the menu and `--version` show; without it the build calls itself
 "vdev". It also sets the Windows launcher's file and product version strings. Their numeric fields use one to four

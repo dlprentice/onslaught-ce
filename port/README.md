@@ -1,19 +1,19 @@
 # Native port (Linux and Windows)
 
-Status: active (both targets build, link and run the game; Linux replays are compared with retail Present by Present, logged in PARITY.md in the private working tree; native Windows acceptance uses a software-rendered VM, not physical-GPU validation)
+Status: active (both targets build, link and run; measured scope and limits are summarized in the public CE README's Known limitations; native Windows acceptance uses a software-rendered VM, not physical-GPU validation)
 Last updated: 2026-11-02 (public build and contribution routes clarified)
 Summary: a second build of the decompilation's sources as native i686 Linux and Windows programs; layout, ownership,
 commands and rules.
 
 The port compiles the same `src/` the matching build compiles, with clang for i686 Linux and i686 Windows, against
 Direct3D 9 (dxvk-native on Linux, the system's on Windows) and one SDL3 platform layer for the window, input and
-audio. Retail data is read from the player's install; nothing retail is committed. The VC6 matching build is separate:
-the private working tree's `tools/decomp.py check` compares its compiled functions with the executable using a recorded
-one-byte compiled-object concession. That tree's README records the score and source stand-ins; its `port/PLAN.md` has
-dated targets, API counts, parity hazards and phases (neither is in the public export; the public decompilation is
-https://github.com/dlprentice/onslaught-decomp).
+audio. Retail data is read from the player's install; nothing retail is committed. The VC6 matching build is separate.
+The [public decompilation](https://github.com/dlprentice/onslaught-decomp#reproducing-the-match) documents its pinned
+inputs, measured matching coverage, compiled-object concession and remaining exclusions. The public CE README owns
+the port's [known limitations](https://github.com/dlprentice/onslaught-ce#known-limitations) and
+[public setup](https://github.com/dlprentice/onslaught-ce#building-from-source).
 
-    python3 port/tools/deps.py build     # pinned inputs, both targets, into local-data/port (about 10 minutes)
+    python3 port/tools/deps.py build     # pinned inputs, both targets, into local-data/port
     python3 port/build.py --public [--target linux|windows] [-k]   # the game: local-data/port/build/<target>/bea[.exe]
 
 Licence: GPL-3.0 (`SPDX-License-Identifier: GPL-3.0-only`), matching the upstream Onslaught source (GPL version 3,
@@ -83,7 +83,7 @@ as migration workarounds, and do not use 0.1.6 as an intermediate release.
   is not part of the CE export. The separate [public decompilation](https://github.com/dlprentice/onslaught-decomp)
   documents its own function-check setup. CE behavior changes normally belong in `game/`, platform code or `patches/`.
 - Pinned dependency builds go to the canonical checkout's ignored `local-data/port/` (shared by every worktree:
-  identical pinned inputs, about 1.6 GB, `BEA_PORT_DATA` overrides). What derives from a checkout's own `src/` (the
+  identical pinned inputs, about 3.2 GiB of downloads before extraction and builds, `BEA_PORT_DATA` overrides). What derives from a checkout's own `src/` (the
   mirror, objects, probe output) goes to that checkout's ignored `local-data/port/`.
 
 ## Compile contract (until `build.py` owns it)

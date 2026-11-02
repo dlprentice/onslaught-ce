@@ -16,10 +16,13 @@ checked and published by the next export with credit. Do not hand-edit generated
 1. Fork and clone this repository, create a branch, and record the upstream commit and existing edits.
 2. Read `AGENTS.md`, the [build guide](README.md#building-from-source), relevant [port documentation](port/README.md)
    and licence notices. CE has no repository submodules to initialize.
-3. Choose one bounded issue in its owning source files. Preserve unrelated work.
-4. Run the affected checks. `python3 port/tools/build_tests.py` is a no-game fixture check requiring Python, Git
-   and Ninja, without a game build or network access. Ordinary game builds use the Linux-hosted `--public` route
-   and require your own game installation and pinned build inputs.
+3. Follow the public setup, record the affected baseline results, then implement one bounded feature or fix in its
+   owning source files. Preserve unrelated work. Ordinary development does not require maintainer pre-approval;
+   coordinate larger or overlapping changes through a public issue.
+4. Run the affected checks before and after the change. `python3 port/tools/build_tests.py` is a no-game fixture
+   check requiring Python, Git and Ninja, without a game build or network access. The build guide names the public
+   dependency setup and the two files from your own licensed game needed by the Linux-hosted `--public` build.
+   Commit scoped paths and push the feature branch to your fork.
 5. Describe the problem, change, base commit, exact checks and unavailable checks in the PR. Maintainers complete
    remaining acceptance gates before integration. Distinguish Wine, Windows VMs and physical Windows hardware.
    Do not add hosted CI or release workflows.
@@ -38,6 +41,12 @@ has separate public product owners:
 CE is not a combined build of these products. Read each owner's current contribution guide and evidence; planned
 multiplayer, editor or commander features are not automatically available in a published package. Keep existing
 reference submodules at their recorded pins in repositories that actually declare them.
+
+You only need to clone and configure the products involved in your task. For Companion work, follow
+[its setup](https://github.com/dlprentice/Onslaught-Career-Editor#build-and-run); for the rebuild, follow
+[Godot's setup](https://github.com/dlprentice/onslaught-godot#building-and-testing). Each owns its own build and tests.
+Read the other public owners when their interfaces or findings are relevant; they are not all prerequisites
+for a single-product contribution.
 
 ## Useful contributions
 
