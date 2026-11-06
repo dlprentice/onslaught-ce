@@ -4,7 +4,7 @@
 
 Please report security problems privately through GitHub's **Report a vulnerability** form on this repository's
 Security tab, not in a public issue. Describe what you found, how to reproduce it, and which version and system you
-used. You will get an answer there.
+used. A maintainer reads reports there; no response time is promised.
 
 Problems that matter most here:
 

@@ -55,4 +55,5 @@ the program; they are not part of it, apart from the runtime libraries listed ab
 ## Not part of the public build
 
 NVIDIA's NvTriStrip has no stated licence, so the public build leaves it out (`build.py --public`). The game only needs
-it to build meshes from raw model files, which the retail data never does.
+it to build meshes from raw model files, which the retail data never does. The dependency setup (`port/deps.lock`)
+still downloads its pinned archive and checks its hash; the public build neither unpacks nor compiles it.

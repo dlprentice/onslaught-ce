@@ -1,7 +1,7 @@
 # Native port (Linux and Windows)
 
 Status: active (both targets build, link and run; measured scope and limits are summarized in the public CE README's Known limitations; native Windows acceptance uses a software-rendered VM, not physical-GPU validation)
-Last updated: 2026-11-02 (public build and contribution routes clarified)
+Last updated: 2026-11-06 (maintainer release steps marked, environment variables listed, files named but not in this tree)
 Summary: a second build of the decompilation's sources as native i686 Linux and Windows programs; layout, ownership,
 commands and rules.
 
@@ -16,6 +16,11 @@ the port's [known limitations](https://github.com/dlprentice/onslaught-ce#known-
     python3 port/tools/deps.py build     # pinned inputs, both targets, into local-data/port
     python3 port/build.py --public [--target linux|windows] [-k]   # the game: local-data/port/build/<target>/bea[.exe]
 
+Files this tree names but does not hold: comments and guides under `port/` and `src/` sometimes name `PLAN.md`,
+`PARITY.md`, `tools/decomp.py`, `docs/release.md`, `tools/release_rc.py` and folders such as `tests/` and `probe/`. They
+belong to the maintainers' working source, which this repository is generated from, and are not in this tree; the
+[public decompilation](https://github.com/dlprentice/onslaught-decomp) is the public home of the matching tools.
+
 Licence: GPL-3.0 (`SPDX-License-Identifier: GPL-3.0-only`), matching the upstream Onslaught source (GPL version 3,
 no "or later" grant). The public NOTICE retains the source attribution; third-party inputs keep their own licences
 (`deps.lock`).
@@ -24,6 +29,10 @@ no "or later" grant). The public NOTICE retains the source attribution; third-pa
 
 The port is released as [Onslaught CE](https://github.com/dlprentice/onslaught-ce), from an export of this source. Its
 licence text is [COPYING](../COPYING) (GPL version 3).
+
+The two commands below are the maintainers' release steps, not part of contributing. A contributor builds a test
+package with the development steps in the README's
+[Building from source](https://github.com/dlprentice/onslaught-ce#building-from-source) and does not publish one.
 
     python3 port/build.py --target all --public --ce-version X.Y   # the shippable build: no NvTriStrip, bundled libraries
     BEA_PRIVATE_PATHS=<scratch:archive folders> python3 port/tools/package.py X.Y   # Linux tarball and Windows zip
@@ -70,11 +79,11 @@ as migration workarounds, and do not use 0.1.6 as an intermediate release.
 | `build.py` | the port build (ninja): flags, include overlay, mirror + patch queue, link |
 | `include/` | Win32, DirectSound, DirectInput, mmsystem and VC6 CRT shims over dxvk-native's headers |
 | `platform/` | `common/` (both targets: the SDL3 window and message pump, DirectInput 8, the Direct3D 9 hooks, clocks, registry, NvTriStrip bridge), `linux/` (Win32 over POSIX and SDL3, paths, entry point), `windows/` (file overlay, clocks) |
-| `aliases.tsv` | linklib/aliases.tsv's second names in the Itanium ABI (`--defsym` on Linux, `/alternatename` on Windows) |
+| `aliases.tsv` | linklib/aliases.tsv's second names in the Itanium ABI, the C++ name-mangling scheme of the Linux and MinGW toolchains (the original compiler mangled names differently); applied with `--defsym` on Linux and `/alternatename` on Windows |
 | `game/` | CE gameplay additions and integration code |
 | `platform/public/` | public replacements for excluded SDK/framework components |
 | `patches/` | port-only source edits that cannot be byte-neutral in `src/`, applied to a generated mirror |
-| `d3dx/` | `include/` (d3dx9*.h, dxerr9.h) and `src/`: maths, zlib-wrapped DDS loader, vs/ps 1.x assembler, DXGetErrorString9; `tests/` |
+| `d3dx/` | `include/` (d3dx9*.h, dxerr9.h) and `src/`: maths, zlib-wrapped DDS loader, vs/ps 1.x assembler, DXGetErrorString9 |
 
 ## Rules
 
@@ -82,9 +91,26 @@ as migration workarounds, and do not use 0.1.6 as an intermediate release.
   through [CE contribution guide](https://github.com/dlprentice/onslaught-ce/blob/main/CONTRIBUTING.md); maintainers run the matching check in their working source. That tool
   is not part of the CE export. The separate [public decompilation](https://github.com/dlprentice/onslaught-decomp)
   documents its own function-check setup. CE behavior changes normally belong in `game/`, platform code or `patches/`.
-- Pinned dependency builds go to the canonical checkout's ignored `local-data/port/` (shared by every worktree:
-  identical pinned inputs, about 3.2 GiB of downloads before extraction and builds, `BEA_PORT_DATA` overrides). What derives from a checkout's own `src/` (the
-  mirror, objects, probe output) goes to that checkout's ignored `local-data/port/`.
+- Pinned dependency builds go to the ignored `local-data/port/` of your clone's main working tree, which every Git
+  worktree of that clone shares (or to the folder `BEA_PORT_DATA` names). The first setup
+  downloads roughly 3.2 GiB before extraction and builds (an estimate: `deps.lock` records no sizes). What derives
+  from a checkout's own `src/` (the mirror, objects, probe output) goes to that checkout's ignored `local-data/port/`.
+
+## Environment variables
+
+The variables a player sets are in the [README](https://github.com/dlprentice/onslaught-ce#readme) (`BEA_GAME_DIR`,
+`BEA_USER_DIR` and the settings it lists). Build and development variables:
+
+| Variable | Used by | Meaning |
+| --- | --- | --- |
+| `BEA_PORT_DATA` | `tools/deps.py`, `build.py` | where the pinned dependencies are built and cached (default `local-data/port` in the clone's main working tree) |
+| `BEA_PORT_SYSROOT` | `tools/deps.py`, `build.py` | `sniper` (the default, an old-glibc sysroot for the Linux build) or `host` |
+| `BEA_GAME_DIR` | the build and many checks | the game installation whose two build inputs `config/game-data.sha256` pins |
+| `BEA_PRIVATE_PATHS` | `tools/package.py` | colon-separated folders to scan packaged binaries for, besides the home folder and the clone; a maintainer's release step |
+| `BEA_VC6` | `vorbis/build.py` | the pinned Visual C++ 6 toolchain, only to regenerate the prebuilt libvorbis, which needs Wine and a toolchain this repository does not supply |
+| `BEA_PORT_TAPE`, `BEA_PORT_RECORD`, `BEA_PORT_CLOCK`, `BEA_AUDIO_MONITOR` | the launcher and the checks | replay, recording, virtual clock and audio-monitor controls ([updater/README.md](updater/README.md), [dsound/README.md](dsound/README.md)); developer switches, not player settings |
+
+Other `BEA_PORT_*` names appear in individual checks and patches; the file that reads one is the place that describes it.
 
 ## Compile contract (until `build.py` owns it)
 

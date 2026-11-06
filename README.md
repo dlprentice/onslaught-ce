@@ -1,14 +1,15 @@
 # Onslaught CE
 
 Status: preview — from 0.1.8 on it updates itself; from 0.1.7 or earlier, download the latest release once by hand
-Last updated: 2026-11-02 (public contribution setup and recording privacy clarified)
+Last updated: 2026-11-06 (contributor routes, repository layout and the 0.1.13 Windows status)
 Summary: the native Battle Engine Aquila port, the one-time manual move from 0.1.7 or earlier, signed updates and source build.
 
 This README follows this source branch, which can describe work that is not in the latest download. The README
 packaged with your download and the [release notes](https://github.com/dlprentice/onslaught-ce/releases)
 describe the version you installed. Versions 0.1.8 and later have a signed-update path; versions 0.1.0 through
 0.1.7 require the one-time manual migration below. On Linux, if you still use 0.1.8 or 0.1.9, check the
-[0.1.12 release notes](https://github.com/dlprentice/onslaught-ce/releases/tag/v0.1.12) for their 32-bit
+[0.1.13](https://github.com/dlprentice/onslaught-ce/releases/tag/v0.1.13) or
+[0.1.12](https://github.com/dlprentice/onslaught-ce/releases/tag/v0.1.12) release notes for their 32-bit
 dependency caveat.
 
 A native port of *Battle Engine Aquila*; you need your own copy.
@@ -342,6 +343,8 @@ first.
 
 Download `ASSETS.txt` from the same release into the folder containing your package. It lists the SHA-256,
 byte size and name of each downloadable file except itself and `RC-REPORT.txt`; releases before 0.1.2 omit the size. It is not directly a `sha256sum --check` file.
+Both files are written by the maintainers' release process, whose tooling is not in this repository: `ASSETS.txt`
+is the checksum list, and `RC-REPORT.txt` is that release's own check report, which you do not need to play.
 In Bash on Linux, this command handles either form and checks just the package you name (change `package` to your
 download's filename). A successful check prints that filename followed by `OK` and exits zero. A missing entry,
 missing file, malformed list or changed download fails the check.
@@ -613,12 +616,11 @@ otherwise `~/.local/share/onslaught-ce`) on Linux, `%APPDATA%\Onslaught CE`
    administrator access, records no microphone audio and is never uploaded automatically. You can also share the
    file directly with someone helping you. Replays and session recordings omit the detailed ordinary-play events.
 4. If you recorded the session (below), mention that a recording is available. Do not attach the raw tape or metadata
-   to a public issue: they can contain typed text, careers and other user files. Agree an appropriate evidence route
-   with a maintainer first.
+   to a public issue: they can contain typed text, careers and other user files. Say in your issue that a recording
+   exists and attach nothing; a maintainer will agree an evidence route with you there.
 
 If you set `BEA_USER_DIR` to a folder, look for the log in that folder instead. Logs can include local paths,
-user names
-and device details; review them before sharing publicly, while keeping the details needed to diagnose the
+user names and device details; review them before sharing publicly, while keeping the details needed to diagnose the
 problem.
 
 ## Help make Onslaught CE more faithful
@@ -652,8 +654,8 @@ in both and comparing them, and recordings of real play find differences our own
   does not capture video, game audio or microphone audio. Both files can contain personal information; review them
   before sharing.
 - Start a report with what differed from the original and roughly when. Do not upload a raw `.tape`/`.tape.json` zip
-  publicly: encoded user files can include saves and private information. Tell a maintainer that the recording exists
-  and agree a suitable evidence route; see [CONTRIBUTING.md](CONTRIBUTING.md).
+  publicly: encoded user files can include saves and private information. Say in the issue that the recording exists and
+  attach nothing; a maintainer will agree an evidence route with you there (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ## How faithful is it?
 
@@ -697,7 +699,7 @@ its win and debrief. This covers one recorded route; it does not establish compl
   Please report problems with the log.
 - The Windows executable is unsigned, so SmartScreen may warn you (see above).
 - On Linux you need glibc 2.29 or newer and a 32-bit Vulkan 1.3 graphics driver with dxvk's required extensions (see
-  Linux above). It was run in Ubuntu 24.04 and Debian 12 (with backported Mesa) file systems and in the Steam Linux
+  Linux above). It was run in Ubuntu 24.04 and Debian 12 (with backported Mesa) systems and in the Steam Linux
   Runtime 3.0 container, all with test drivers and no window; nobody has played it on those systems or on a Steam
   Deck, and the Steam shortcut route for the Deck (above) has not been tried. Those runs used a 0.1.3 candidate build,
   not the released packages. An asset-decompression buffer overrun and an audio-file cleanup defect reproduced in a
@@ -721,10 +723,11 @@ its win and debrief. This covers one recorded route; it does not establish compl
 - Planned, not in this version yet: Internet multiplayer, mods on Windows and additional HUD options. On Linux, mods
   are an early test ([Mods (experimental)](#mods-experimental)).
 
-- On Windows in 0.1.12, the pause-menu pointer can select the wrong item at some display sizes, and the
-  system cursor may remain visible in fullscreen. Changes are in development; further testing on physical
-  Windows
-  hardware is needed. If you encounter this, include your display settings and log in your report.
+- On Windows, 0.1.12 could select the wrong pause-menu item at some display sizes and could leave the system
+  cursor visible in fullscreen. 0.1.13 changes both. The pointer fix was checked on Linux (1920x1080 and 1024x768)
+  and in a Windows 11 virtual machine, and the fullscreen cursor fix in that virtual machine; neither has been seen on
+  a physical Windows PC with its own graphics driver. If you still see either, include your display settings and log
+  in your report.
 
 - Reports of layered or stuttering music and map-edge artifacts still need retesting on the affected Windows
   hardware. An AMD-specific cause has not been confirmed.
@@ -738,8 +741,7 @@ use a Linux development environment to produce the Windows executable; native Wi
 
 On Windows, use [WSL2](https://learn.microsoft.com/en-us/windows/wsl/install) with an x86-64 Linux distribution.
 Check `wsl --list --verbose` from Windows first. If it is missing, the owner can use `wsl --install`; enabling the
-features can require administrator access and a restart, so an agent must obtain the owner's approval for that
-host setup. Run the build commands below inside the Linux terminal and keep the checkout in
+features needs administrator access and a restart, so the machine's owner must approve that step. Run the build commands below inside the Linux terminal and keep the checkout in
 the [Linux filesystem](https://learn.microsoft.com/en-us/windows/wsl/filesystems), such as `~/src/onslaught-ce`,
 rather than `/mnt/c`. Your installed game's read-only inputs can be reached on its mounted Windows drive through
 `BEA_GAME_DIR`. Test the resulting Windows zip on Windows; WSL compilation or a Linux run does not prove native
@@ -750,7 +752,9 @@ Compilation reads two files from your own licensed game: `data/MissionScripts/on
 `data/MissionScripts/text/text.stf`, checked against `config/game-data.sha256`. Set `BEA_GAME_DIR` to the installation
 root if it is not in Steam's default folder. The full installation is needed to play. Do not commit or share these files.
 
-Start with a no-game baseline; these authored tooling checks need no private files or dependency download:
+Start with a no-game baseline. These authored tooling checks need no game files and no dependency download, only the
+programs listed above (the last compiles a small C driver with `cc`, or the compiler `CC` names). They are the whole
+no-game baseline:
 
 ```sh
 python3 port/tools/build_tests.py
@@ -767,9 +771,10 @@ python3 port/build.py --public --target linux --ce-version dev
 python3 port/build.py --public --target windows --ce-version dev
 ```
 
-The first dependency setup downloads roughly 3.2 GiB before extraction and compilation. Budget additional disk
-space for both toolchains and their build trees; elapsed time depends on your network and machine. Subsequent
-builds reuse this checkout's ignored `local-data/port/` dependencies.
+The first dependency setup downloads roughly 3.2 GiB (an estimate; `port/deps.lock` records no sizes) before extraction
+and compilation. Budget additional disk space for both toolchains and their build trees; elapsed time depends on your network and machine. Subsequent
+builds reuse the ignored `local-data/port/` dependencies of your clone's main working tree, which every Git worktree of
+that clone shares (or the folder `BEA_PORT_DATA` names).
 
 After building both targets, stage a self-contained development package:
 
@@ -798,7 +803,8 @@ launch the game or open an audio device.
 
 - `port/deps.lock` pins every downloaded input by URL and SHA-256.
 - One input comes prebuilt: libvorbis, built with the game's original compiler. It is fetched from this repository's
-  release assets, with its source and build script.
+  release assets, with its source and build script. The dependency setup downloads that prebuilt library; rebuilding
+  it needs Wine and the pinned Visual C++ 6 toolchain, which this repository does not supply (`port/vorbis/README.md`).
 - `port/README.md` describes the build in detail: the compiler flags, the platform layer and the patches the port
   applies to `src/`.
 
@@ -813,6 +819,31 @@ The public graphics host is the GPL-3.0-only implementation in `port/platform/pu
 The inherited SDK sample framework is excluded from this source tree and from the public build.
 
 The game's data is not part of this project and is not covered by its licence.
+
+## What is in this repository
+
+This repository is generated: its `main` is written by an export from the maintainers' working source, so the source
+folders below change only through that export (see [CONTRIBUTING.md](CONTRIBUTING.md)).
+
+| Folder | What it holds |
+| --- | --- |
+| `src/` | the game's C++ source, from the decompilation of the original; its line counts are fixed because the game's own build depends on them |
+| `linklib/` | extra definitions and second names for symbols the link needs, kept apart from `src/` |
+| `port/` | the native port: the build script, the Linux and Windows platform layer, the launcher and updater, patches applied to a generated copy of `src/`, replacement libraries and the checks ([port/README.md](port/README.md)) |
+| `config/` | SHA-256 pins for inputs the build verifies: the two game files it reads and the original compiler's files used to rebuild one library |
+| `LICENSES/` | the licence texts that [REUSE.toml](REUSE.toml) names |
+
+Some comments and guides under `port/` and `src/` name files, notes and tools that live only in the maintainers' working
+source and are not in this tree; [port/README.md](port/README.md) says which.
+
+## Where to ask and where to contribute
+
+Questions and ideas go to this repository's [Discussions](https://github.com/dlprentice/onslaught-ce/discussions). Problems go to its
+[Issues](https://github.com/dlprentice/onslaught-ce/issues) page (use the problem report form). [CONTRIBUTING.md](CONTRIBUTING.md) says which
+public repository takes which kind of work, what a first contribution needs, and how a pull request is taken in.
+Commander, Video Options, camera feel and the planned network play, map editor and museum are changing quickly, and the
+maintainers' working source has unreleased changes in these areas that this tree does not show yet: open an issue
+before starting larger work there.
 
 ## Contributing and security
 
