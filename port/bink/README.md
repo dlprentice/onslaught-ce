@@ -2,14 +2,15 @@
 
 # port/bink: the game's Bink videos through FFmpeg
 
-Status: active (decoding, sound and timing in place and in both packages; compared with RAD's binkw32.dll: 48,294 of 48,627 frames byte-identical)
-Last updated: 2026-10-29 (private-tree references marked; earlier: 2026-10-15)
+Status: active (decoding and the sound and timing code in place and in both packages; the sound track's timing against the picture and any listening check not yet done; compared with RAD's binkw32.dll: 48,294 of 48,627 frames byte-identical)
+Last updated: 2026-11-06 (AVPacket layout, helper count, status and private-tree references corrected; earlier: 2026-10-29 (private-tree references marked; earlier: 2026-10-15))
 Summary: the Bink entry points the front end calls, decoded with FFmpeg's LGPL Bink decoders, and how it is checked.
 
-Some files and commands named on this page (`tests/`, `probe/`, `run.py`, `check_tape.sh`, `replay_session.py`, `PLAN.md`, `PARITY.md`, `tools/decomp.py`, `docs/release.md`, `tools/release_rc.py`) live only in the private working repository and are not in this public tree; they are named so that the description is complete. The decompilation's public export is [onslaught-decomp](https://github.com/dlprentice/onslaught-decomp).
+Some files and commands named on this page (`port/bink/tests/`, `bink_test`, `probe/`, `run.py`, `check_tape.sh`, `replay_session.py`, `PLAN.md`, `PARITY.md`, `tools/decomp.py`, `docs/release.md`, `tools/release_rc.py`) live only in the private working repository and are not in this public tree; they are named so that the description is complete. The decompilation's public export is [onslaught-decomp](https://github.com/dlprentice/onslaught-decomp).
 
-Replaces port/platform/common/bink.cpp (the platform's stand-in, which could not open a file; `build.py`
-drops it when this directory has sources), with the same 13 names and calling convention as src/binkapi.h.
+Replaces port/platform/common/bink.cpp (the platform's stand-in, which could not open a file; `build.py` drops it when
+this directory has sources), with the same 11 functions and calling convention as src/binkapi.h, plus two internal
+logging helpers (BinkLog, BinkLogging).
 
 ## What it does
 
@@ -36,10 +37,10 @@ FFmpeg 7.1.1, `https://ffmpeg.org/releases/ffmpeg-7.1.1.tar.xz`, SHA-256
 parts enabled). Public builds link it as shared libraries beside the program, which the player may replace; private
 builds link it statically. `port/tools/deps.py`'s `build_ffmpeg_shared` (public) and `build_ffmpeg` (private) are the
 recipe: the Bink demuxer, the three Bink decoders and the file protocol only, no assembly, no autodetected libraries;
-Windows with its native threads. bink.cpp is compiled with `-mno-ms-bitfields` after the port's layout flags: with `-mms-bitfields` FFmpeg's
-structures lay out differently on Linux (AVPacket 80 bytes instead of 76) and decoding fails. `BINK`, the only structure
-shared with the game, holds 32-bit fields and lays out the same either way. Link: `-lavformat -lavcodec -lavutil`, plus
-`-lm -lpthread` on Linux and `-lbcrypt` on Windows.
+Windows with its native threads. bink.cpp is compiled with `-mno-ms-bitfields` after the port's layout flags: with
+`-mms-bitfields` AVPacket is 76 bytes on Linux instead of 80 (FFmpeg's own layout), and decoding fails. `BINK`, the only
+structure shared with the game, holds 32-bit fields and lays out the same either way. Link: `-lavformat -lavcodec
+-lavutil`, plus `-lm -lpthread` on Linux and `-lbcrypt` on Windows.
 
 ## Checks
 
@@ -53,19 +54,21 @@ Against retail's `binkw32.dll` (the install's, under Wine; `tests/retail_compare
 
 - **Whole frames.** Every frame of all 66 videos was decoded both ways through bink_test with the game's 32-bit copy
   flags. 48,294 of 48,627 frames are byte-identical, alpha included.
-- **How the conversion was found.** FFmpeg's YUV for 114 sampled frames maps to retail's RGB as an exact function,
-  separable per term. The tables above reproduce it on every pixel of the 198 sampled frames.
+- **How the conversion was found.** FFmpeg's YUV for the 114 frames used to fit the conversion maps to retail's RGB as
+  an exact function, separable per term. The tables above reproduce it on every pixel of the 198 first, middle and last
+  frames.
 - **The 333 frames that differ** are in five videos: gill_m_on_a_fork (160), PC_231_exact (154), PC_611_exact (11),
   PC_100_exact (7) and PC_311_exact (1).
   - In gill_m_on_a_fork and PC_231 they start as clusters FFmpeg's decoder reconstructs differently from RAD's. That
     motion compensation carries them to the next key frame is inferred from their persistence.
-  - The three briefings' single pixels are on the bottom row of 201x149 frames, where retail's colour is luma 235 and
-    FFmpeg's is 236 to 238. That cause is unexplained.
-  - Details are in port/PARITY.md.
+  - The single pixels of the three videos named above (PC_611_exact, PC_100_exact and PC_311_exact) are on the bottom
+    row of 201x149 frames, where retail's colour is luma 235 and FFmpeg's is 236 to 238. That cause is unexplained.
+  - Details are in the maintainers' private working repository (`port/PARITY.md`, not in this tree).
 - **What is left.** Exactness would need FFmpeg's decoder patched for those cases. FFmpeg is LGPL, so a modified copy's
   source would ship with the port.
 
-The game plays its videos (level 100 without -skipfmv, the virtual clock): cutscenes/01.vid runs its full 123.8 s and
-the level starts after it. Frame 120 was looked at. The sound is the game's chosen track 0, at the game's volume
-(−816), and agrees with FFmpeg's own decode within ±2. Nobody has listened to it. Not yet checked: the sound track's
-timing against the picture, and the 565 copy path (USE_32_BIT_FMV off).
+The game plays its videos (level 100 without -skipfmv, on the virtual clock described in
+[port/dsound/README.md](../dsound/README.md) under The port's virtual clock): cutscenes/01.vid runs its full 123.8 s and
+the level starts after it. Frame 120 was looked at. The sound is the game's chosen track 0, at the game's volume (−816),
+and agrees with FFmpeg's own decode within ±2. Nobody has listened to it. Not yet checked: the sound track's timing
+against the picture, and the 565 copy path (USE_32_BIT_FMV off).

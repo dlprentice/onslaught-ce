@@ -38,8 +38,9 @@ Native Linux, native Windows, or the Windows package under Wine or Proton (which
   If you set `BEA_USER_DIR` to a folder, the log is in that folder instead. Logs can include local paths, user
   names and device details;
   please review them before posting publicly.
-- Optional: if you recorded the session (`onslaught-ce --record`, or `record_sessions=1` in `ce.ini`), put its `.tape`
-  and `.tape.json` from the `tapes` folder in a zip and attach that too. It can help us reproduce what happened.
+- Optional: if you recorded the session (`onslaught-ce --record`, or `record_sessions=1` in `ce.ini`), say in this issue
+  that the recording exists, and attach nothing: a raw `.tape` or `.tape.json` can contain typed text, careers and other
+  user files. A maintainer will agree an evidence route with you here.
 
 **System**
 

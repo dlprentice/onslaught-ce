@@ -1,23 +1,23 @@
 # Onslaught CE updater v2
 
 Status: active — released in 0.1.8 (2026-10-27); the v2 feed is published on the latest release
-Last updated: 2026-10-29 (private-tree references marked; earlier: 2026-10-28 (dialogs shown by a child process, with a terminal fallback))
+Last updated: 2026-11-06 (feed example labelled as illustrative, release-tag and test paths, the bwrap prerequisite, the 0.1.7 wording; earlier: 2026-10-29 (private-tree references marked; earlier: 2026-10-28 (dialogs shown by a child process, with a terminal fallback)))
 Summary: how 0.1.8 brings automatic updates back without the 0.1.0–0.1.6 hazard: a new signed feed that old
 launchers never fetch, a versioned install layout switched by one atomic state-file replacement, and deletion only
 of what the updater itself created and recorded.
 
-Some files and commands named on this page (`tests/`, `probe/`, `run.py`, `check_tape.sh`, `replay_session.py`, `PLAN.md`, `PARITY.md`, `tools/decomp.py`, `docs/release.md`, `tools/release_rc.py`) live only in the private working repository and are not in this public tree; they are named so that the description is complete. The decompilation's public export is [onslaught-decomp](https://github.com/dlprentice/onslaught-decomp).
+Some files and commands named on this page (`probe/`, `run.py`, `check_tape.sh`, `replay_session.py`, `PLAN.md`, `PARITY.md`, `tools/decomp.py`, `docs/release.md`, `tools/release_rc.py`) live only in the private working repository and are not in this public tree; they are named so that the description is complete. The decompilation's public export is [onslaught-decomp](https://github.com/dlprentice/onslaught-decomp).
 
 ## The hazard this replaces
 
 Launchers 0.1.0–0.1.6 delete every neighbour named `<install>.old-*` at startup, following a directory link into its
 target, and fetch `https://github.com/dlprentice/onslaught-ce/releases/latest/download/latest.json`. Publishing a feed at
-that URL would make an old launcher offer its unsafe in-place swap. 0.1.7 therefore removed updating entirely. v2 keeps
+that URL would make an old launcher offer its unsafe in-place swap. 0.1.7 therefore switched updating off. v2 keeps
 every one of those launchers away from it:
 
 - **A new feed name.** v2 fetches `ce-update-v2.json` and `ce-update-v2.json.sig` from
-  `releases/latest/download/`. Every released launcher's source (this source repository's tags `ce-v0.1.0`, `ce-v0.1.2`–`ce-v0.1.6`
-  and the public onslaught-ce tags `v0.1.0`–`v0.1.6`, read by `tests/updater_v2_tests.py`) has exactly one feed define,
+  `releases/latest/download/`. Every released launcher's source (the private working repository's tags `ce-v0.1.0`, `ce-v0.1.2`–`ce-v0.1.6`
+  and the public onslaught-ce tags `v0.1.0`–`v0.1.6`, read by `port/updater/tests/updater_v2_tests.py`) has exactly one feed define,
   `latest.json` at that URL, and the sig URL is that URL plus `.sig`; none names the v2 feed. `latest.json` is never
   published again: `tools/sign_release.py` is retired and `tools/sign_update_v2.py` refuses a folder holding one.
 - **Domain separation.** The v2 signature is Ed25519 over `onslaught-ce update feed v2\n` followed by the feed's exact
@@ -33,12 +33,14 @@ no route serves an installable old feed, whichever release is marked latest. Nev
 
 ## The feed
 
+The block below is illustrative: its version, URLs and sizes are placeholders, and the live feed is at https://github.com/dlprentice/onslaught-ce/releases/latest/download/ce-update-v2.json.
+
 ```json
 {
  "format": "onslaught-ce-update-v2",
- "version": "0.1.8.1",
+ "version": "0.1.X",
  "packages": {
-  "linux-i686": {"url": "https://github.com/dlprentice/onslaught-ce/releases/download/v0.1.8.1/onslaught-ce-0.1.8.1-linux-i686.tar.gz",
+  "linux-i686": {"url": "https://github.com/dlprentice/onslaught-ce/releases/download/v0.1.X/onslaught-ce-0.1.X-linux-i686.tar.gz",
                  "sha256": "<64 lowercase hex>", "size": 6725296},
   "windows-i686": {"url": "...windows-i686.zip", "sha256": "...", "size": 3702551}
  }
@@ -200,7 +202,7 @@ again. `--apply` (the 0.1.0–0.1.6 helper's entry point) is still refused with 
 `port/updater/tests/updater_v2_tests.py` builds updater test launchers (`-DCE_UPDATER_TESTING` with a generated
 test key; `--version` prints `[CE-UPDATER-TEST-BUILD]` and `package.py` refuses such a launcher) for 0.1.8, 0.1.8.1,
 0.1.8.2 and 0.1.8.3 on both platforms, packages them like releases, and runs every case inside bwrap (loopback only,
-read-only system, private HOME and `/tmp`, the real home hidden); Windows runs under Wine with a private prefix and no
+read-only system, private HOME and `/tmp`, the real home hidden; bubblewrap, `bwrap`, must be installed on Linux); Windows runs under Wine with a private prefix and no
 display. Test builds alone accept `BEA_UPDATE_V2_FEED`, `http://127.0.0.1:PORT/` package URLs with the exact file
 name, `BEA_UPDATE_ANSWER`, `BEA_UPDATE_TEST_CRASH_AT=step[:N]` (killed with SIGKILL / `TerminateProcess` at that
 step) and `BEA_UPDATE_TEST_WRITE_LIMIT` (a simulated full disk). Each case checks that every neighbour
@@ -213,7 +215,7 @@ unchanged afterwards.
 The v2 feed is published: since 0.1.8 every release marked latest carries `ce-update-v2.json` and
 `ce-update-v2.json.sig`, so every 0.1.8+ player is offered the newest release. Each release writes them with
 `python3 port/tools/sign_update_v2.py VERSION` (reads the release key in place; never copy or print it) as
-`docs/release.md` describes, and never attaches `latest.json`. On Linux the launcher downloads with the system `curl`;
+the maintainer's release notes (not in this tree) describe, and never attaches `latest.json`. On Linux the launcher downloads with the system `curl`;
 without it no feed is reached (status 13, one log line). A broken new version is undone with `--rollback`, or by
 starting the base with `BEA_CE_NO_HANDOFF=1`.
 

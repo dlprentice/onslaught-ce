@@ -1,7 +1,7 @@
 # Native port (Linux and Windows)
 
 Status: active (both targets build, link and run; measured scope and limits are summarized in the public CE README's Known limitations; native Windows acceptance uses a software-rendered VM, not physical-GPU validation)
-Last updated: 2026-11-06 (maintainer release steps marked, environment variables listed, files named but not in this tree)
+Last updated: 2026-11-06 (maintainer release steps marked, environment variables listed, files named but not in this tree; compile contract and migration wording corrected)
 Summary: a second build of the decompilation's sources as native i686 Linux and Windows programs; layout, ownership,
 commands and rules.
 
@@ -15,6 +15,9 @@ the port's [known limitations](https://github.com/dlprentice/onslaught-ce#known-
 
     python3 port/tools/deps.py build     # pinned inputs, both targets, into local-data/port
     python3 port/build.py --public [--target linux|windows] [-k]   # the game: local-data/port/build/<target>/bea[.exe]
+
+`-k` keeps the build going after errors (passed to ninja as `-k 0`) and prints a census of the error sites by message and
+file; the full log is `local-data/port/build/<target>/last.log`.
 
 Files this tree names but does not hold: comments and guides under `port/` and `src/` sometimes name `PLAN.md`,
 `PARITY.md`, `tools/decomp.py`, `docs/release.md`, `tools/release_rc.py` and folders such as `tests/` and `probe/`. They
@@ -35,19 +38,19 @@ package with the development steps in the README's
 [Building from source](https://github.com/dlprentice/onslaught-ce#building-from-source) and does not publish one.
 
     python3 port/build.py --target all --public --ce-version X.Y   # the shippable build: no NvTriStrip, bundled libraries
-    BEA_PRIVATE_PATHS=<scratch:archive folders> python3 port/tools/package.py X.Y   # Linux tarball and Windows zip
+    BEA_PRIVATE_PATHS=/first/folder:/second/folder python3 port/tools/package.py X.Y   # Linux tarball and Windows zip
 
 `--ce-version` names the version the game and launcher show ("Onslaught CE VX.Y"); without it the build is
-"vdev". `package.py` scans every packaged binary for this machine's paths: the home folder, the repository and the
-account name always, and the colon-separated folders in `BEA_PRIVATE_PATHS` too. Left unset, folders outside the home
-and the repository (scratch space, archive drives) are not scanned, so set it to them when building a release.
+"vdev". `package.py` scans every packaged binary for the builder's home folder, the checkout path and the account name
+always, and for the colon-separated folders in `BEA_PRIVATE_PATHS` too. Left unset, folders outside the home and the
+checkout (scratch space, external drives) are not scanned, so list them in `BEA_PRIVATE_PATHS` when building a release.
 
 `--public` compiles `platform/public/`'s replacements in place of the files the public build must not ship and reports
 "not shippable" for any still missing; `package.py` refuses such a build and any binary that still names a private
 path. The launcher and updater, and what the signed feed holds, are in [updater/README.md](updater/README.md). No game
 files are packaged: the launcher reads the player's own install. The launcher's updater is v2 ([updater/UPDATER-V2.md](updater/UPDATER-V2.md)): a
 signed `ce-update-v2.json` feed, never `latest.json`, which launchers 0.1.0–0.1.6 fetch and which is never published
-again (`tools/sign_release.py` is retired). The v2 feed has been published with every release since 0.1.8. There is no telemetry.
+again (`tools/sign_release.py` is retired: running it only prints a refusal and exits). The v2 feed has been published with every release since 0.1.8. There is no telemetry.
 
 ### Released launcher safety hold and manual migration
 
@@ -55,13 +58,14 @@ Do not run released launchers 0.1.0 through 0.1.6 on either platform. Their sour
 deletion of neighboring `<program folder>.old-*` paths; the shipped Linux 0.1.6 package has reproduced data deletion
 and traversal through a matching directory link. Windows reparse behavior remains unmeasured. Disabling updates
 does not disable startup cleanup. Predictable download/unpack names and unverified rollback paths are additional
-reasons to avoid invoking an affected updater. The latest release is the corrected successor (0.1.7 switched the old updater off, and 0.1.8 brought the v2 updater).
+reasons to avoid invoking an affected updater. The corrected successor is the latest release on the
+[GitHub releases page](https://github.com/dlprentice/onslaught-ce/releases); 0.1.7 switched the old updater off, and 0.1.8 brought the v2 updater.
 
 Migration must not start the old launcher. Preserve its entire program folder and uncertain neighboring
 `.old-*`, `.download-*` and `.unpack-*` paths. A relative `BEA_USER_DIR` can put launcher and game user data in different
 locations; identify and preserve both complete folders and verify independent backups, including careers. Use a
 separate working copy of the identified game user-data folder outside the original game and CE program/staging folders
-and select its absolute user path.
+and set `BEA_USER_DIR` to its absolute path for the successor.
 Keep originals and backups, check careers, and do not merge unclear or conflicting files.
 Only then verify the latest release's download and extract it into a new,
 empty, ordinary writable folder. Run that successor only; retain backups and uncertain old paths.
@@ -83,7 +87,7 @@ as migration workarounds, and do not use 0.1.6 as an intermediate release.
 | `game/` | CE gameplay additions and integration code |
 | `platform/public/` | public replacements for excluded SDK/framework components |
 | `patches/` | port-only source edits that cannot be byte-neutral in `src/`, applied to a generated mirror |
-| `d3dx/` | `include/` (d3dx9*.h, dxerr9.h) and `src/`: maths, zlib-wrapped DDS loader, vs/ps 1.x assembler, DXGetErrorString9 |
+| `d3dx/` | `include/` (d3dx9*.h, dxerr9.h) and `src/`: maths, zlib-wrapped DDS loader, vs/ps 1.x assembler, DXGetErrorString9 (its tests are maintainer-only) |
 
 ## Rules
 
@@ -112,23 +116,31 @@ The variables a player sets are in the [README](https://github.com/dlprentice/on
 
 Other `BEA_PORT_*` names appear in individual checks and patches; the file that reads one is the place that describes it.
 
-## Compile contract (until `build.py` owns it)
+## Compile contract
 
-Targets: Linux `--target=i686-pc-linux-gnu` and Windows `--target=i686-w64-mingw32` (llvm-mingw), both clang, both
-built here. Every translation unit gets `-fms-extensions -fno-strict-aliasing -fwrapv -malign-double -mms-bitfields
+`build.py` applies the flags below to both targets: Linux `--target=i686-pc-linux-gnu` and Windows
+`--target=i686-w64-mingw32` (llvm-mingw), both clang. Every game translation unit (`src/`, compiled from its generated
+mirror, and `port/game/`) gets `-fms-extensions -fno-strict-aliasing -fwrapv -malign-double -mms-bitfields
 -fshort-wchar`, and then one of two flag classes:
 
-- **x87 class** (game sources, the generated mirror, and port code whose results must match the VC6 build, such as the
-  d3dx maths): `-std=gnu++14 -Wno-c++11-narrowing -Wno-reserved-user-defined-literal` (C: `-std=gnu99`)
-  `-mno-sse -mfpmath=387`. clang 22's i686 default does float maths in SSE, and `-mfpmath=387` is refused while SSE is
-  on (measured). These files never include SDL headers. C++11 or later is forced by dxvk-native's headers
-  (`constexpr` GUID helpers in `windows_base.h`); the two warning switches keep VC6-era forms compiling (HRESULT `case`
-  labels above 0x7fffffff, `"text"MACRO`), measured on a probe TU that also showed x87-only code.
+- **x87 class** (game sources, the generated mirror, and port code whose results must match the VC6 build, such as
+  d3dx's `maths_x87.cpp`): `-std=gnu++14 -Wno-c++11-narrowing -Wno-reserved-user-defined-literal` (C: `-std=gnu99`; port
+  code uses `-std=gnu++17`, below) `-mno-sse -mfpmath=387`. clang 22's i686 default does float maths in SSE, and
+  `-mfpmath=387` is refused while SSE is on (measured). These files never include SDL headers. C++11 or later is forced
+  by dxvk-native's headers (`constexpr` GUID helpers in `windows_base.h`); the two warning switches keep VC6-era forms
+  compiling (HRESULT `case` labels above 0x7fffffff, `"text"MACRO`), measured on a probe TU that also showed x87-only
+  code.
 - **platform class** (`platform/`, anything that includes SDL): `-std=gnu++17`, the target's default SSE.
 
-`port/d3dx/flags.txt` (`file: -flags`) appends per-file flags, for example `-msse -mfpmath=sse` where retail d3dx9's
-SSE path is what players got. The include order is `port/d3dx/include`, `port/include`, then dxvk-native's
-`usr/include/dxvk` (Linux) or llvm-mingw's MinGW headers (Windows), so the port's d3dx and shim headers win. dxvk-native
-(Linux only) defines `WINAPI`, `STDMETHODCALLTYPE` and `__stdcall` empty and `LONG`/`HRESULT` as `int32_t`. D3DX types keep the
-SDK layout (`D3DXMATRIX` derives from `D3DMATRIX`; game code reads `.m` and `_11`). `-fshort-wchar` gives a 2-byte
-`WCHAR` on Linux, as on Windows; no D3D9 entry point the game calls takes one.
+Port code outside `port/game/` compiles as `-std=gnu++17` with the list above minus `-malign-double`. Its per-file flags
+come from `port/d3dx/flags.txt` and `port/bink/flags.txt` (`file: -flags`), appended after the class flags:
+`maths.cpp` and `texture.cpp` take `-msse -mfpmath=sse`, where retail d3dx9's SSE path is what players got, and
+`bink.cpp` takes `-mno-ms-bitfields`. Other d3dx files keep the x87 switches, and the rest of `dsound`, `bink` and
+`platform/` take the target's default SSE. The C files under `port/` (`vorbis/vc6crt.c`, `updater/sha256.c`) use
+`-std=gnu99 -O2 -w` and none of the switches above.
+
+The include order is `port/d3dx/include`, `port/include`, then dxvk-native's `usr/include/dxvk` (Linux) or llvm-mingw's
+MinGW headers (Windows), so the port's d3dx and shim headers win. dxvk-native (Linux only) defines `WINAPI`,
+`STDMETHODCALLTYPE` and `__stdcall` empty and `LONG`/`HRESULT` as `int32_t`. D3DX types keep the SDK layout
+(`D3DXMATRIX` derives from `D3DMATRIX`; game code reads `.m` and `_11`). `-fshort-wchar` gives a 2-byte `WCHAR` on
+Linux, as on Windows; no D3D9 entry point the game calls takes one.

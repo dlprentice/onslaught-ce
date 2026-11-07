@@ -3,13 +3,13 @@
 # port/d3dx: the D3DX 9 subset for the native port
 
 Status: active (headers, maths, assembler and DXGetErrorString9 done; texture loader exact on 837 of 871 default-path cases, the rest sub-4x4 DXT mips)
-Last updated: 2026-10-29 (private-tree references marked; earlier: 2026-10-15)
+Last updated: 2026-11-06 (licence line, maintainer-only recipes, clarified counts and claims; earlier: 2026-10-29, private-tree references marked; 2026-10-15)
 Summary: what the port's D3DX replacement covers, how it is checked against retail d3dx9, and what it leaves out.
 
 Some files and commands named on this page (`tests/`, `probe/`, `run.py`, `check_tape.sh`, `replay_session.py`, `PLAN.md`, `PARITY.md`, `tools/decomp.py`, `docs/release.md`, `tools/release_rc.py`) live only in the private working repository and are not in this public tree; they are named so that the description is complete. The decompilation's public export is [onslaught-decomp](https://github.com/dlprentice/onslaught-decomp).
 
-Licence: GPL-3.0-only. Written for the port from the public D3DX 9 API; retail
-`d3dx9.lib` (DirectX 9.0 SDK, pinned in the Onslaught lab) is used only as a black-box oracle, never copied.
+Licence: GPL-3.0-only. `src/bc.cpp` is adapted from DirectXTex and is also MIT (see [THIRD-PARTY.md](../../THIRD-PARTY.md)). Written for the port from the public D3DX 9 API; retail
+`d3dx9.lib` (DirectX 9.0 SDK, pinned by the maintainers; the oracle input is not part of this repository) is used only as a black-box oracle, never copied.
 
 ## What the game calls
 
@@ -34,7 +34,7 @@ flags for both targets.
 
 ## Maths
 
-Bit-exact with retail on this machine (13th-gen Intel): 0 of 90,000 records differ on Linux and on Windows (the mingw
+Bit-exact with retail, measured on a 13th-gen Intel processor: 0 of 90,000 records differ on Linux and on Windows (the mingw
 build run under Wine), at both 24- and 53-bit x87 precision, over 15 operations (aliased and in-place forms included) and
 four input classes: game-like transforms and projections, uniform values, the whole float exponent range, and edges
 (zeros, denormals, infinities, NaNs with distinct signs and payloads, signalling NaNs). The order was fitted on two seeds
@@ -56,8 +56,9 @@ Retail runs its SSE implementations here, so `maths.cpp` is compiled with SSE (`
   matrices, as every game call passes them; retail's behaviour with a NULL matrix was not measured.
 
 Limits: `rcpss` is an approximation whose bits are the processor's, and Intel and AMD tables differ, so the port matches
-retail run on the same processor; the measurement here is Intel only. Retail on a pre-SSE processor took other paths,
-which nobody now plays on.
+retail run on the same processor; the measurement here is Intel only. Retail on a pre-SSE processor took other paths.
+
+Maintainer only: needs `tests/` and the pinned `d3dx9.lib`; not runnable from this tree.
 
 Run: `python3 tests/maths_cases.py local-data/port/d3dx/maths/input.bin 6000 3` writes inputs;
 `tests/wine/oracle.py build`, then `tests/wine/oracle.py run maths pc24|pc53 Z:<input> Z:<output>` records retail into
@@ -71,7 +72,7 @@ and on Windows under Wine: same HRESULT, same code bytes, and a message buffer e
 
 | Set | Shaders | Match | Message text identical |
 |---|---|---|---|
-| corpus: the 44 vertex shaders in the retail resources (as stored, and as `CompileShader` rewrites them, which is what the game assembles), the 10 shader strings in `src/`, 367 written cases | 465 | 465 | 147 of 147 |
+| corpus: 88 texts (the 44 vertex shaders in the retail resources, as stored and as `CompileShader` rewrites them, which is what the game assembles), the 10 shader strings in `src/`, 367 written cases | 465 | 465 | 147 of 147 |
 | holdout `--fuzz-valid` seeds 21, 22, 23 (mostly valid programs for each version) | 12,000 | 12,000 | all 1,032 |
 | holdout `--fuzz` seeds 7, 8 (random programs, half mutated; nearly all fail) | 6,000 | 6,000 | 2,010 of 5,979 |
 
@@ -94,6 +95,8 @@ Diagnostic text: `assembler.cpp` reproduces 16 retail diagnostic format strings 
 `syntax error : unexpected token '%s'`). They are kept as interoperability strings: short functional messages observed
 from retail's black-box output by the oracle harness, as Wine's d3dcompiler does, and not copied from SDK files.
 
+Maintainer only: needs `tests/` and the pinned `d3dx9.lib`; not runnable from this tree.
+
 Run: `tests/asm_corpus.py` writes the corpus (`--fuzz-valid` or `--fuzz COUNT SEED` writes a holdout set);
 `tests/wine/oracle.py run assemble Z:<list-wine.txt> Z:<retail.bin>` records retail; `tests/run_asm.sh` (`ASM_SET=` a
 set's folder, `TARGET=windows`, `--messages`) builds, runs and compares.
@@ -104,7 +107,7 @@ set's folder, `TARGET=windows`, `--messages`) builds, runs and compares.
 uncompressed RGB and luminance) and TGA. They are compared with retail through a headless fake device
 (`tests/fakedev.c`, C89, built by VC6 into the oracle and by clang into the port's driver, so both D3DX
 implementations make their calls on the same device). Its caps and texture formats come from a profile:
-`tests/profiles/dxvk.txt` is dxvk-native 3.1.1 on this machine (`tests/dxvk_caps.cpp`); `tex_corpus.py` derives a
+`tests/profiles/dxvk.txt` is dxvk-native 3.1.1, the version pinned in `port/deps.lock` (`tests/dxvk_caps.cpp`); `tex_corpus.py` derives a
 pow2-only profile without DXT2/DXT4 and one without DXT. A case passes when the HRESULT, `D3DXIMAGE_INFO`, the
 `CreateTexture` parameters and every level's bytes are equal.
 
@@ -150,14 +153,14 @@ Not reproduced, and not pursued further:
   encoder. The levels are 2x2 and 1x1; neither item is pursued further.
 - DXT2 and DXT4 decoding: retail un-premultiplies and rounds exact halves down where every float model tried rounds
   up (54 to 90 channels in 460,800).
-- Resampling to other sizes (the texture-resolution loss shift), linear and triangle filters, conversions into 16-bit
+- Resampling to other sizes, linear and triangle filters, conversions into 16-bit
   formats with dithering, and some HRESULTs in the sweep; none is on the default path.
 
 ## DXGetErrorString9
 
-`DXGetErrorString9A` (`dxerr.cpp`) returns retail DxErr9's name for 262,159 of 262,159 codes on both targets: every
-code in facilities 0x876 (both severities) and 7 (0x8007xxxx), all of 0x8004xxxx and the generic COM codes, as listed
-by `tests/errstr_table.py codes`. `dxerr_names.inc` (2,349 names) is
+`DXGetErrorString9A` (`dxerr.cpp`) returns retail DxErr9's name for all 262,159 codes that `tests/errstr_table.py codes`
+lists for the facilities below, on both targets: every code in facilities 0x876 (both severities) and 7 (0x8007xxxx), all of
+0x8004xxxx and the generic COM codes. `dxerr_names.inc` (2,349 names) is
 generated by `tests/errstr_table.py` from the oracle's output; other codes are "Unknown", as in retail. The names are
 public identifiers from the SDK and Windows headers, observed from DxErr9's black-box output as interoperability
 strings; DxErr9's descriptions are not carried, since the game never asks for them.

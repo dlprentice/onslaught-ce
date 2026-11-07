@@ -3,7 +3,7 @@
 # port/dsound: DirectSound 8 over SDL3 audio
 
 Status: active (mixing, notifications and DirectSound 3D in place; nobody has listened to the result yet)
-Last updated: 2026-10-29 (private-tree references marked; earlier: 2026-10-28 (music refill backlog controls and publication; playlist transitions and media-mix observations))
+Last updated: 2026-11-06 (private names removed, claims dated or corrected, maintainer-only recipes marked, log lines introduced; earlier: 2026-10-29, private-tree references marked; 2026-10-28, music refill backlog controls and publication; playlist transitions and media-mix observations)
 Summary: what the game's sound code needs from DirectSound, how this module provides it, and how it is checked.
 
 Some files and commands named on this page (`tests/`, `probe/`, `run.py`, `check_tape.sh`, `replay_session.py`, `PLAN.md`, `PARITY.md`, `tools/decomp.py`, `docs/release.md`, `tools/release_rc.py`) live only in the private working repository and are not in this public tree; they are named so that the description is complete. The decompilation's public export is [onslaught-decomp](https://github.com/dlprentice/onslaught-decomp).
@@ -38,22 +38,42 @@ beyond the maximum for `DSBCAPS_MUTE3DATMAXDISTANCE`, an equal-power stereo pan 
 from the velocities along the line of sight; `DS3D_DEFERRED` settings wait for `CommitDeferredSettings`. Gains ramp
 over each mix to avoid clicks.
 
-`BEA_AUDIO_CALLLOG=file` logs every DirectSound call in the retail replay shim's log format (frames are the port's Presents), so
-the port's calls and retail's can be compared after both pass through C's dsnorm.py. `BEA_AUDIO_RECORD=file.wav` writes the final mix (the header is kept valid about once a second, so an interrupted run
+`BEA_AUDIO_CALLLOG=file` logs every DirectSound call in the log format of a maintainer's retail replay shim (frames are the port's Presents), so
+the port's calls and retail's can be compared after both logs pass through the same normaliser (a maintainer tool, not in this tree). `BEA_AUDIO_RECORD=file.wav` writes the final mix (the header is kept valid about once a second, so an interrupted run
 leaves a playable file). `BEA_AUDIO_CLOCK=timer` mixes on a 10 ms timer without opening a device, which is also the
 fallback when no device opens; offscreen and test runs use it so nothing plays through the desktop's speakers.
 
 ## Ordinary session observations
 
-Ordinary CE logs distinguish outstanding media requests from frames actually mixed from explicitly tagged music
-and film buffers. A stopped or naturally ended film no longer contributes active-role frames even if its handle
+Ordinary CE sessions write these lines to the session log. Each counter below says what it counts and what it does
+not show.
+
+- `media operation=play` and `media operation=stop`, one each per Play and Stop of a music or film buffer, and
+  `media operation=device-stop` at device teardown. `buffer=` is the buffer's process-local serial, numbered when the
+  buffer is created in an ordinary session. `role=` is music, film, or summary (teardown). `music_voices`, `film_voices`
+  and `other_voices` count the mixer's voices by role at that instant only. `mixed_music_frames` and `mixed_film_frames`
+  total the frames in which a music or a film buffer was mixing (the active-role frames); two music buffers playing at
+  once count once. `mixed_both_role_frames` totals the frames in which a music and a film buffer were both mixing. Silent
+  and muted buffers are counted (the line says so), so no total shows audible content.
+- `media callback_frames=`, on the same occasions. `callback_frames` totals the frames the SDL callback has requested for
+  the mixer's stream, and `demand_max_frames` is the largest single request. `queued_input_last_bytes` is the SDL input
+  queue after the last callback (-1 when the query failed), and `queued_input_max_bytes` its largest value.
+  `queue_samples` and `queue_failures` count the successful and failed queries. `queue_mix_frame` is the mixed-frame
+  count at the last query, and `queue_current_generation` is 1 when that query belongs to the current, still active
+  stream. `retired_queue_observations` counts queries discarded because their stream had stopped, been replaced or
+  reached the generation limit. These are SDL's input queue numbers only: converted audio, OS and device buffering, and
+  physical playback are not observed.
+- The `summary` line's `media_final=1` field, at device teardown: the totals from the device-teardown snapshot, printed
+  whatever the event budget.
+
+A stopped or naturally ended film no longer contributes active-role frames even if its handle
 has not closed. These counters include silent or muted buffers: they do not establish audible two-track content.
-The shared-role frame count is music plus film; it does not count two music voices separately or observe other
+The both-role count is the overlap of the music and film counts, not their sum; it does not count two music voices separately or observe other
 processes. A voice-count snapshot describes only the instant at which it was taken.
 Each buffer has a process-local serial; no audio payload, media name, microphone input or user identifier is added.
 
 The callback updates fixed counters for requested mix frames and samples its own SDL input queue outside the mixer
-mutex. A stream-lifetime join rejects an observation from a retired or reused stream. Negative queue results stay
+mutex. A stream-lifetime join (the stream and its generation are checked again, under the mixer lock, once the query returns) rejects an observation from a retired or reused stream. Negative queue results stay
 unknown. Queue bytes use the 44.1 kHz, stereo S16 input format; converted audio, Windows/device buffering and physical
 playback remain unobserved. Play, Stop and device teardown report snapshots through the existing bounded session-log
 budget. At device teardown, one fixed-size snapshot is also staged for the next existing summary line, which is not
@@ -161,11 +181,11 @@ configurations.
 The timings are asserted on the timer clock; SDL's dummy driver paces on real time, so under machine load its run
 asserts only order, alternation and the recording's content (`DSOUND_TEST_ORDER_ONLY`, `--content-only`).
 
-The game: level 100 (`port/tools/run.py NAME --timeout 120 -- -level 100 -skipfmv`, with `BEA_AUDIO_CLOCK=timer`
+The game (maintainer recipe: needs `port/tools/run.py`, not in this tree): level 100 (`port/tools/run.py NAME --timeout 120 -- -level 100 -skipfmv`, with `BEA_AUDIO_CLOCK=timer`
 and `BEA_AUDIO_RECORD`; `BEA_AUDIO_TRACE` logs every Play and `BEA_AUDIO_DUMP=dir` writes each played buffer) records
 about 115 s of mix at -17.9 LUFS integrated, -3.2 dBFS true peak, no clipped samples. What the spectrogram shows,
 traced to its buffers: the music stream from the start (the 44.1 kHz Ogg track, band-limited near 17 kHz by Vorbis),
-whose percussion makes the thin vertical lines that run through it (attacks with decays, not clicks); five looping
+whose percussion makes the thin vertical lines that run through it (attacks with decays, not clicks); five of the bank's nine looping
 ambience samples at 22.05 kHz; and Tatiana's first voice line (a 5 s, 22.05 kHz sample with formant structure and
 sibilants to 11 kHz), the bright broadband event about ten seconds in. The first build resampled linearly, which
 mirrored that line's speech band up to 22 kHz; the windowed sinc ends it at about 12 kHz. That is measurement, not
@@ -173,7 +193,7 @@ listening: nobody has listened to the port's audio yet.
 
 ## The port's virtual clock
 
-Under `BEA_PORT_CLOCK` (`run.py --virtual`, `--twice`), no device opens and the mix follows the port's virtual clock.
+Under `BEA_PORT_CLOCK` (`run.py --virtual`, `--twice`; maintainer recipe: needs `port/tools/run.py`, not in this tree), no device opens and the mix follows the port's virtual clock.
 Every call that reads or changes playback first mixes whole 10 ms blocks up to the virtual time now, read through
 `PortClockPeekNs` (which does not count as a clock read). So play and write cursors, `GetStatus`, notifications, and
 every volume, position or 3D change fall on the same block in every run. The 10 ms timer only keeps notifications
@@ -188,9 +208,9 @@ and caps the game sees are the same constants. The device starts once about 60 m
 200 ms is dropped (the virtual clock catching up after a stall), and an empty one plays silence. Virtual time stands
 still while a level loads, so music gaps there, and films that run one frame per Present can drift from real time.
 The log says `audio virtual clock, monitor <driver>`. Tests play it on SDL's `disk` driver (`run.py --audio-monitor
-OUT.raw`, with `BEA_PORT_REQUIRE_DUMMY_AUDIO=silent`), so nothing reaches the desktop.
+OUT.raw`, with `BEA_PORT_REQUIRE_DUMMY_AUDIO=silent`; maintainer recipe: needs `port/tools/run.py`, not in this tree), so nothing reaches the desktop.
 
-`run.py vclock --twice --shot 1500 -- -level 100 -skipfmv` gives identical frames, with the tutorial's eighth subtitle
+`run.py vclock --twice --shot 1500 -- -level 100 -skipfmv` (maintainer recipe: needs `port/tools/run.py`, not in this tree) gives identical frames, with the tutorial's eighth subtitle
 and its portrait on screen (2026-10-15).
 
 Voice lines in level 100 (Presents at which each line's Play and the game's Stop fall):
@@ -198,22 +218,23 @@ Voice lines in level 100 (Presents at which each line's Play and the game's Stop
 - **The present clock** (`--virtual`, which also counts the main thread's sleeps): starts 190, 366, 581, 770, 940, 1012,
   1234, 1400; the same in every run.
 - **The retail shim clock** (`--shim-clock`): starts 190/366/582/772/943/1015/1237/1403 and stops 342/558/748/919/991/
-  1213/1379/1523. These are exactly retail's when C paces retail's DirectSound with this model under the same clock
-  (C's harness golden-640/level100, two retail processes).
+  1213/1379/1523. These are exactly retail's when retail's DirectSound is paced with this model under the same clock
+  (two retail processes, level 100).
 
-The present-clock list is one Present earlier three times. That comes from the clock (the sleeps it counts move the
+On the shim clock the starts are 0 to 3 Presents later than on the present clock: two are equal, one is one Present later, one is two Presents later, and four are three Presents later. That comes from the clock (the sleeps it counts move the
 block phase), not from the mix.
 
 ## Compared with retail
 
 The retail replay shim logged every DirectSound call retail BEA.exe makes in level 100 under Wine (3,600 Presents, virtual clock;
-a retained private capture). The port's `BEA_AUDIO_CALLLOG` over the same 3,600
-Presents, both through C's dsnorm.py:
+the capture is kept by the maintainers and is not part of this repository). The port's `BEA_AUDIO_CALLLOG` over the same 3,600
+Presents, both logs passed through the same normaliser:
 
 - The first 11 Plays agree: same frame (3), same order, same flags, sizes and peaks, and identical content hashes for
   all nine looping ambience samples (ADPCM from the sample bank). The music stream's first fill and the voice lines
-  differ in content but not in size or peak: both are Ogg, decoded by libvorbis 1.3.7 in the port and by retail's
-  2003 vorbis.dll.
+  differ in content but not in size or peak: both are Ogg. At that comparison (not dated in this file) the port decoded them with libvorbis 1.3.7, and retail with
+  its own `vorbis.dll` (libvorbis 1.0, linked on 2002-07-19). The current build links the VC6-built libvorbis 1.0 instead
+  (`port/vorbis/`, `port/deps.lock`).
 - Retail's timings are not a reference for the mixing clock: its Wine device was a null ALSA output that consumes
   audio far faster than real time (the 512 KB music buffer refilled 11 times within frame 4; a 5 s voice line reported
   finished after 20 frames).
@@ -226,7 +247,7 @@ Presents, both through C's dsnorm.py:
   (a size beyond the buffer is rejected; the data written under the lock is kept) rejects those 172 and accepts the
   other 682. Buffers are rounded up to whole frames, as Wine's DirectSound does: retail's 242,509-byte voice line locks
   as 242,510. (Retail's Play line still says bytes=242509; this module's says 242510 and hashes that many bytes.)
-- The call log also writes calls retail's log never shows (C's shim does not hook them): the listener's
+- The call log also writes calls retail's log never shows (the retail replay shim does not hook them): the listener's
   SetAllParameters and CommitDeferredSettings, and a 3D buffer's SetMode and SetAllParameters. Their lines are named
   `port.Listener.*` and `port.3D.*`; drop them before comparing (`grep -v ' port\.'`).
 - The Ogg decoder behind the music and voice lines is in `port/vorbis/`: retail's libvorbis 1.0, rebuilt with VC6, matches all nine Ogg buffers in the log (the music fill and eight voice lines).

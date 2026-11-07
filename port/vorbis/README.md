@@ -1,14 +1,15 @@
 # port/vorbis: retail's Ogg Vorbis decoder, rebuilt
 
 Status: active decoder documentation; dated comparisons retain their original scope
-Last updated: 2026-11-02
+Last updated: 2026-11-06 (private-tree references and archive paths corrected; earlier: 2026-11-02)
 Summary: decoder provenance, pinned prebuilt libraries, optional regeneration and historical comparison evidence.
 
 Some files and commands named on this page (`tests/`, `probe/`, `run.py`, `check_tape.sh`, `replay_session.py`, `PLAN.md`, `PARITY.md`, `tools/decomp.py`, `docs/release.md`, `tools/release_rc.py`) live only in the private working repository and are not in this public tree; they are named so that the description is complete. The decompilation's public export is [onslaught-decomp](https://github.com/dlprentice/onslaught-decomp).
 
 The game decodes its music and voice lines with Xiph.Org's libvorbis and libogg (BSD), from the `vorbis.dll` and
-`ogg.dll` it ships. `build.py` rebuilds that exact decoder from Xiph's source, so the port hears what retail hears,
-sample for sample.
+`ogg.dll` it ships. `port/vorbis/build.py` can rebuild that decoder from Xiph's source with Visual C++ 6; the ordinary
+build links the same VC6-built code from a pinned archive. Its output matches retail's on the measured buffers (see
+Why it matters and In the port); those are measurements, not a listening test.
 
 ## Which decoder retail has
 
@@ -57,8 +58,10 @@ pairs into a 22.05 kHz buffer (`OGG_HASH_HALF=1` in the harness).
 
 ## How the objects reach the port
 
-- **Windows.** `lib/windows/libvorbis_vc6.a` holds the VC6 COFF objects as compiled.
-- **Linux.** `lib/linux/libvorbis_vc6.a` holds the same objects converted to ELF by objcopy, with two repairs:
+- **Windows.** `local-data/port/vorbis/lib/windows/libvorbis_vc6.a` holds the VC6 COFF objects as compiled. Its pinned
+  copy is the `libvorbis_vc6-windows-i686.a` asset of the `vorbis-vc6-1` release (`port/deps.lock`).
+- **Linux.** `local-data/port/vorbis/lib/linux/libvorbis_vc6.a` holds the same objects converted to ELF by objcopy (its
+  pinned copy is `libvorbis_vc6-linux-i686.a` in the same release), with two repairs:
   - every R_386_PC32 addend gets −4, because COFF's REL32 implies it and ELF does not;
   - VC6's COMDAT floating constants (`_real@…`) become weak symbols.
 
@@ -77,23 +80,26 @@ pairs into a 22.05 kHz buffer (`OGG_HASH_HALF=1` in the harness).
 
 ## Status and what the build needs
 
-- The exact build needs Visual C++ 6. It is proprietary, so it is not in this repository: it comes from the
-  decomp's pinned toolchain in the Onslaught lab (`BEA_VC6`), run under Wine. Without it, a clang build of the same
-  source plays correctly but differs from retail by ±1 in about 0.1% of samples.
+- The exact build needs Visual C++ 6.0 SP5, run under Wine. It is proprietary, so it is not in this repository: supply
+  your own copy (see [onslaught-decomp](https://github.com/dlprentice/onslaught-decomp#reproducing-the-match)) and set
+  `BEA_VC6`. It is needed only to regenerate the archive. Without a locally built archive, `port/build.py` fetches the
+  pinned VC6-built one (`deps.lock`), so the game links the VC6-built objects that reproduce retail's decoded PCM. A clang
+  rebuild of libvorbis is not linked into the game; it differs from retail by ±1 in 0.06–0.10% of samples.
 - The game build (port/build.py) links these VC6-built libvorbis/libogg 1.0 objects (libvorbis_vc6.a; a build without
   VC6 fetches the same library, pinned by SHA-256 in deps.lock, from the release assets), and the game's worker threads
   start at 0x27F (port/platform/linux/kernel.cpp), as retail's do. Release binaries carry libvorbis 1.0's vendor string
   "Xiph.Org libVorbis I 20020717". The clang-built 1.3.x that tools/deps.py installs into the dependency prefix is not
   linked into the game.
-- A binary release that links these libraries must reproduce Xiph's BSD notice and disclaimer (port/PLAN.md, release
-  obligations).
+- A binary release that links these libraries must reproduce Xiph's BSD notice and disclaimer (see `THIRD-PARTY.md`, the
+  libogg and libvorbis row; `LICENSES/BSD-3-Clause.txt`; and the `NOTICE-libvorbis_vc6.txt` in the `vorbis-vc6-1` release).
 
 ## In the port
 
-`port/build.py` links `lib/<target>/libvorbis_vc6.a` and compiles `vc6crt.c` with the port (Linux `-no-pie`). If the
-library is absent, the ordinary build fetches its hash-pinned prebuilt archive; regenerating it requires VC6.
+`port/build.py` links `local-data/port/vorbis/lib/<target>/libvorbis_vc6.a` and compiles `vc6crt.c` with the port
+(Linux `-no-pie`). If the library is absent, the ordinary build fetches its hash-pinned prebuilt archive; regenerating it
+requires VC6.
 The following is a historical level-100 Linux comparison (`--shim-clock`, 1,500 Presents,
-`BEA_AUDIO_CALLLOG`; lead, 2026-10-15): the music fill and all eight voice lines carry retail's PCM, at retail's
+`BEA_AUDIO_CALLLOG`; dated 2026-10-15): the music fill and all eight voice lines carry retail's PCM, at retail's
 Presents. Four hash equal in the log; the other five are the odd-length lines, which the port's DirectSound rounds up
 to a whole frame and hashes with the pad byte (port/dsound/README.md): their decoded PCM plus one zero byte gives the
 port's hash exactly, and without it retail's. That dated comparison did not include Windows runtime acceptance.
@@ -102,7 +108,8 @@ port's hash exactly, and without it retail's. That dated comparison did not incl
 
 ```
 BEA_VC6=<the pinned VC6> [BEA_WINEPREFIX=<prefix>] python3 port/vorbis/build.py
-port/vorbis/tests/run_tests.sh      # the nine retail hashes, Linux and Windows (Wine: PEERH_D3DX_WINEPREFIX)
+# maintainer test (tests/ is not in this tree): the nine retail hashes, Linux and Windows (Wine: BEA_D3DX_WINEPREFIX)
+port/vorbis/tests/run_tests.sh
 ```
 
 `build.py` checks VC6 against `config/toolchain.sha256` and `config/vc6-include.sha256`, and the source tarballs

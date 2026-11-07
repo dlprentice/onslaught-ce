@@ -1,10 +1,10 @@
 # Onslaught CE launcher and updater
 
 Status: active (public builds only)
-Last updated: 2026-10-29 (private-tree references marked; earlier: 2026-10-28 (dialogs shown by a child process, with a terminal fallback))
-Summary: game discovery and bounded logs, and the signed v2 updater (UPDATER-V2.md) that replaces the suspended one.
+Last updated: 2026-11-06 (launcher facts checked against the tree: tape names, data folder, Windows toolchain, the 0.1.7 wording; earlier: 2026-10-29 (private-tree references marked; earlier: 2026-10-28 (dialogs shown by a child process, with a terminal fallback)))
+Summary: game discovery and bounded logs, and the signed v2 updater (UPDATER-V2.md) that replaces the one 0.1.7 switched off.
 
-Some files and commands named on this page (`tests/`, `probe/`, `run.py`, `check_tape.sh`, `replay_session.py`, `PLAN.md`, `PARITY.md`, `tools/decomp.py`, `docs/release.md`, `tools/release_rc.py`) live only in the private working repository and are not in this public tree; they are named so that the description is complete. The decompilation's public export is [onslaught-decomp](https://github.com/dlprentice/onslaught-decomp).
+Some files and commands named on this page (`probe/`, `run.py`, `check_tape.sh`, `replay_session.py`, `PLAN.md`, `PARITY.md`, `tools/decomp.py`, `docs/release.md`, `tools/release_rc.py`) live only in the private working repository and are not in this public tree; they are named so that the description is complete. The decompilation's public export is [onslaught-decomp](https://github.com/dlprentice/onslaught-decomp).
 
 `ce_launch.c` builds as `onslaught-ce-launch` (Linux, started by the `onslaught-ce` script after game preflight when needed) and
 `onslaught-ce.exe` (Windows), from `build.py --public`. It links SDL3 (its dialogs), Monocypher (Ed25519, pinned in
@@ -18,7 +18,7 @@ In order: `BEA_GAME_DIR`; `gamedir=` in `ce.ini`; every Steam library (Linux `~/
 of `HKCU\Software\Valve\Steam`), each library's `steamapps/common/Battle Engine Aquila`; then a message box and a folder
 picker. A folder counts as a supported install when the game data hashed in `config/game-data.sha256` matches. The
 answer is kept in `ce.ini`. The game folder is only read: the writable folder is per user (Linux
-`~/.local/share/onslaught-ce`, Windows `%APPDATA%\Onslaught CE`; `BEA_USER_DIR` overrides) and holds `ce.ini`.
+`$XDG_DATA_HOME/onslaught-ce`, or `~/.local/share/onslaught-ce` when `XDG_DATA_HOME` is unset or empty; Windows `%APPDATA%\Onslaught CE`; `BEA_USER_DIR` overrides) and holds `ce.ini`.
 
 ## Updates
 
@@ -29,7 +29,7 @@ checks now without starting the game, `--rollback` returns to the previous versi
 `update_check=0` in `ce.ini` or `--no-update-check` turn checking off, and `--apply` is refused with 2. The design,
 exit statuses and tests are in [UPDATER-V2.md](UPDATER-V2.md); the signed v2 feed is published with every release since 0.1.8.
 
-Moving from 0.1.0–0.1.6 stays manual: download a corrected release and extract it into a **new empty folder**.
+Moving from 0.1.0–0.1.7 stays manual: download a corrected release and extract it into a **new empty folder**.
 Preserve the whole previous installation, its neighboring backup/staging folders and its user data. A relative
 `BEA_USER_DIR` can put launcher files and game user data in different locations. Identify and preserve both complete
 folders and verify independent backups, including careers. See [the port guide](../README.md) and its linked player
@@ -42,7 +42,7 @@ deleting matching neighboring backup folders and contents reached through a matc
 `--no-update-check --update-only`. Native Windows reparse behavior was not tested. Older launchers also used
 predictable download/unpack paths and an unchecked rollback. Do not invoke one to carry out the migration: a safer
 successor cannot protect work already done by the old process. The published Windows 0.1.5 helper additionally
-lacks the normal-token execution manifest. Neither an administrator launch nor a changed signature makes these
+lacks an `asInvoker` manifest (the declaration that the program runs with the normal token), and it hit Windows installer detection in the measured ordinary session (see port/README.md). Neither an administrator launch nor a changed signature makes these
 paths a safe migration route.
 
 ## The log
@@ -82,7 +82,7 @@ holds the pipe.
 ## Session recording
 
 `--record`, or `record_sessions=1` in `ce.ini` (the main menu's Onslaught CE page writes it), starts the game in record mode (port/platform/common/replay.cpp):
-`BEA_PORT_RECORD=<user folder>/tapes/YYYYMMDD-HHMMSS.tape` and, unless set, `BEA_PORT_CLOCK=shim`, so the game runs
+`BEA_PORT_RECORD=<user folder>/tapes/YYYYMMDD-HHMMSS-PID-SERIAL.tape` (PID and SERIAL are eight hex digits each) and, unless set, `BEA_PORT_CLOCK=shim`, so the game runs
 at 30 Presents a second and its tape (keyboard and mouse only; controller input is not recorded) can be replayed. The
 launcher prints one line saying so. Never while a tape is replayed (`BEA_PORT_TAPE`) or another recording is set
 (`BEA_PORT_RECORD`). In record mode the CE layer is off, the
@@ -100,14 +100,12 @@ one; with nobody to ask, the session is recorded, as set. Tests answer with `BEA
 is renamed over `ce.ini`, so a failed write leaves the old file whole.
 
 The tape is replay.cpp's format 2 (`# onslaught tape 2`, then `K`, `M`, `C`, `W_CLIENT` and `W` lines). The port's
-parser counts and skips lines it does not know; the rebuild's ([onslaught-godot](https://github.com/dlprentice/onslaught-godot)
-`rebuild/OnslaughtRebuild.Parity/RetailTape.cs`) rejects the header and the `C` and `W` lines until it learns them, and
-a build that reads format 1 drops them and drifts, so `run.py`, `check_tape.sh` and `replay_session.py` refuse a newer
+parser counts and skips lines it does not know. The rebuild's parser ([onslaught-godot](https://github.com/dlprentice/onslaught-godot)
+`rebuild/OnslaughtRebuild.Parity/RetailTape.cs`) reads the header and every line kind listed above, and a build that reads only format 1 drops the `C` and `W` lines and drifts, so `run.py`, `check_tape.sh` and `replay_session.py` refuse a newer
 format. The session's details go in a sidecar `<name>.tape.json`: format (`onslaught-ce session tape 2`), the tape line
 kinds, `audio_monitor`, tape name, CE version, build, platform, OS, UTC date, clock, Presents a second,
 the game arguments, and `start_files`, the user folder's game files as the session started (options, careers, the
-game's own text files; base64; the launcher's files and anything over 1 MB left out; 4 MB in all). Replay a player's
-session from a fresh writable folder with its start files:
+game's own text files; base64; the launcher's files and anything over 1 MB left out; 4 MB in all). Replay a player's session from a fresh writable folder with its start files (a maintainer tool: `run.py` is not in this tree):
 
     python3 port/tools/run.py NAME --shim-clock --tape S.tape --start S.tape.json --probes --every 1 -- GAME_ARGS
 
@@ -119,8 +117,7 @@ version, build and OS, and the paths of the log and the newest tape (home or `%A
 `%APPDATA%`). It prints the user folder and the address; on Windows without a console a message box names the folder.
 The main menu's Onslaught CE page (port/game/ce_frontend.cpp) calls the same page through `extern "C" int CE_OpenReportPage(void)` (port/platform/common/ce.cpp,
 public builds only; it does nothing where the CE layer is off). Nothing is sent: the player submits the issue or not.
-The issue template is `public/.github/ISSUE_TEMPLATE/bug_report.md`, exported to the repository's `.github/` with
-`config.yml` beside it (a link to the security advisory form); the body above repeats the template's sections.
+The issue template is `.github/ISSUE_TEMPLATE/bug_report.md`, with `config.yml` beside it (a link to the security advisory form); the body above repeats the template's sections.
 
 ## Windows output regression check
 
@@ -129,10 +126,9 @@ message against authored host boundaries for both platform branches. It requires
 paths for `--update-only` and `--apply`, side-effect-free `--version`, and ordinary game dispatch without updater
 calls. It neither starts a game nor establishes native Windows behavior.
 
-`tests/launcher_stdio_driver.c` exercises the actual Windows launcher with redirected pipes, files and a mixed
+`port/updater/tests/launcher_stdio_driver.c` exercises the actual Windows launcher with redirected pipes, files and a mixed
 console/pipe setup, both with and without a parent console. It checks `--version` and the `--apply` refusal on stderr
-while an invalid private settings path remains unopened, so no game, network request or player profile is needed. Build the driver with the pinned Windows
-toolchain and run it beside the candidate's dependencies:
+while an invalid private settings path remains unopened, so no game, network request or player profile is needed. Build the driver with the pinned Windows toolchain, llvm-mingw 20260922 (pinned in `port/deps.lock`; `python3 port/tools/deps.py build windows` unpacks it into `local-data/port/llvm-mingw`, and its `bin` folder goes first on `PATH`), and run it beside the candidate's dependencies:
 
     i686-w64-mingw32-clang -std=c11 -Wall -Wextra -Werror port/updater/tests/launcher_stdio_driver.c -o launcher_stdio_driver.exe
     launcher_stdio_driver.exe path\to\onslaught-ce.exe
@@ -147,5 +143,5 @@ Upload the two packages, their stable-name copies, the FFmpeg source tarball, `A
 **Never upload `latest.json` or `latest.json.sig`:** launchers 0.1.0–0.1.6 fetch
 `releases/latest/download/latest.json` and would offer it through their unsafe in-place route; `tools/sign_release.py`
 is retired. The v2 feed (`tools/sign_update_v2.py`, attached as `ce-update-v2.json` and `.sig`) turns updating on
-for 0.1.8+ players and is published only on the maintainer's explicit decision (UPDATER-V2.md, "Publishing"). The private key
+for 0.1.8+ players, and every release marked latest carries it, signed by the maintainer at release time (UPDATER-V2.md, "Publishing"). The private key
 stays outside every repository; only its public half is in `ce_launch.c`.

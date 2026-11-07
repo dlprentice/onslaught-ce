@@ -1,7 +1,7 @@
 # Controller input in the native port
 
 Status: CE gamepad and flight-stick support, released in 0.1.9; physical-controller acceptance remains open
-Last updated: 2026-10-28
+Last updated: 2026-11-06 (pad slots, flight-stick numbering and co-op wording corrected; earlier: 2026-10-28)
 Summary: how the native port finds controllers, what a gamepad or flight stick does without any setup, how hotplug
 works, where all of it is switched off, and what has and has not been checked.
 
@@ -21,8 +21,10 @@ these game numbers.
 **Hotplug.** A controller plugged in after the game started, or unplugged and plugged in again, is bound to the first
 free game pad slot the next time the game reads it; the log says `input: controller connected to a game pad slot`. A
 slot without a controller reads as an idle pad. The adapter retries an empty slot at most every half second, so a press
-in the first half second after plugging in can be missed. A game started with no controller has one empty slot, so
-only the first controller plugged in later is picked up; plug both in before starting for two players.
+in the first half second after plugging in can be missed. In ordinary CE play, a game started with no controller has one
+empty slot, so only the first controller plugged in later is picked up. With controllers present at start, the game gets
+one slot for each, up to four, and a later controller takes a slot only when an unplug has emptied one. Plug both in
+before starting for two players.
 
 ## What a controller does without setup
 
@@ -31,35 +33,36 @@ only the first controller plugged in later is picked up; plug both in before sta
 
 - **Menus** (always): D-pad or left stick to move, A to select, B to go back, Start to pause; A also skips a cutscene
   or the opening pan. A flight stick uses its hat, trigger and thumb button the same way.
-- **Play**, only while no configurable control is bound to a joystick (a player who set up their own joystick
-  bindings keeps exactly those): left stick moves and strafes, right stick turns and pitches, RT charges and fires the
-  gun pod, LT the landing jets, A morphs, X changes weapon, Y cloaks, RB and LB zoom. A flight stick: stick to turn and
-  pitch, twist to strafe, hat to move, trigger to fire, thumb button to change weapon, buttons 2 and 3 to morph and
-  cloak, 4 landing jets, 5 zoom in and 7 zoom out (6 is Pause, as on every pad).
+- **Play**, only while no configurable control is bound to a joystick (a player who set up their own joystick bindings
+  keeps exactly those): left stick moves and strafes, right stick turns and pitches, RT charges and fires the gun pod,
+  LT the landing jets, A morphs, X changes weapon, Y cloaks, RB and LB zoom. A flight stick: stick to turn and pitch,
+  twist to strafe, hat to move, trigger to fire, thumb button to change weapon, buttons 2 and 3 to morph and cloak, 4
+  landing jets, 5 zoom in and 7 zoom out (6 is Pause, as on every pad). These numbers are SDL's button indexes, counted
+  from 0; the hints show each one plus 1.
 
 Retail sends a centred mouse to the turn and pitch controls on every update; a control that only the centred mouse set
 takes the controller's value, and a moving mouse still wins. SDL button and trigger changes are queued in order and
-delivered at most once per button per controller update, so a complete tap between updates can still be received while
-different buttons may act together. The queues are bounded: a per-pad queue overflow discards that pad's pending
-changes; overflow of the shared incoming SDL event buffer discards pending changes for every pad. A disconnect or
-focus change also discards affected pending changes. The current device state becomes the new baseline. The sticks,
-D-pad and flight-stick hat are sampled as levels. If an SDL gamepad mapping assigns multiple physical inputs to one
-logical button or trigger, that output is sampled too, because SDL's individual release event can disagree with its
-aggregate held state; a sub-poll tap on such an output can be missed. If its mapping cannot be inspected, all of that
-pad's buttons are sampled. Buttons are sampled as well if SDL cannot install the event watch. For sampled inputs,
-an unusually short tap between samples can still be missed. The game's own 15% per-axis dead zone applies
-(`CController::GetMappedInputValue`, [`src/Controller.cpp`](../src/Controller.cpp)).
+delivered at most once per button per controller update, so a press and its release between two updates are both
+delivered, in order, while different buttons may act together. The queues are bounded: a per-pad queue overflow discards
+that pad's pending changes; overflow of the shared incoming SDL event buffer discards pending changes for every pad. A
+disconnect or focus change also discards affected pending changes. The current device state becomes the new baseline.
+The sticks, D-pad and flight-stick hat are sampled as levels, read as a held state at each update. If an SDL gamepad
+mapping assigns multiple physical inputs to one logical button or trigger, that output is sampled too, because SDL's
+individual release event can disagree with its aggregate held state; a sub-poll tap on such an output can be missed. If
+its mapping cannot be inspected, all of that pad's buttons are sampled. Buttons are sampled as well if SDL cannot
+install the event watch. For sampled inputs, an unusually short tap between samples can still be missed. The game's own
+15% per-axis dead zone applies (`CController::GetMappedInputValue`, [`src/Controller.cpp`](../src/Controller.cpp)).
 
 The triggers can also be bound by hand: select an action in the controls editor and press the trigger while it is
 capturing. A saved binding that already names button 16 or 17 responds to that trigger.
 
-The English Level 100 help shows the connected controller's available, active dodge and zoom inputs alongside
-keyboard or mouse controls when both fit. It reads the actual bindings and the CE
-defaults; a customized joystick disables those defaults. Unavailable, unrecognized or potentially blocked secondary
-inputs are not named. Flight-stick button hints count the SDL inputs from 1; the controls editor displays the game's
-internal button numbers, which can differ. Dodging calls for full controller travel; the displayed time suggestion is
-inside the walker's currently registered interval, or omitted if unavailable. The prompts update on remapping and on
-a controller being connected or removed. If a description will not fit, the cue uses a shorter or generic one. Other
+The English Level 100 help shows the connected controller's available, active dodge and zoom inputs alongside keyboard
+or mouse controls when both fit. It reads the actual bindings and the CE defaults; a customized joystick disables those
+defaults. Unavailable, unrecognized or potentially blocked secondary inputs are not named. Flight-stick button hints
+count the SDL inputs from 1; the controls editor displays the game's internal button numbers, which can differ. Dodging
+calls for full controller travel; the displayed time suggestion is inside the dodge window (more than half and less than
+all of the walker's dash time), or omitted if that time is unavailable. The prompts update on remapping and on a
+controller being connected or removed. If a description will not fit, the cue uses a shorter or generic one. Other
 languages and the faithful, tape and network paths keep their existing behaviour. These changes have focused tests; a
 player-facing tutorial run and a physical controller check remain open.
 
@@ -70,13 +73,14 @@ is active. In CE recordings and replays, gamepads report neutral input, includin
 sticks that SDL does not recognize as gamepads are not offered. The keyboard-and-mouse tape format does not capture
 controller input. The mapped joystick value is also neutral while a legacy demo dispatches its recorded actions in a
 CE tape session; those action IDs still dispatch. Older tapes cannot recover controller input that was never recorded.
-Ordinary play and faithful builds retain their controller behavior. A clock or probe run without
-recording or replay does not apply this controller-input fence. In retail multiplayer the no-setup defaults are off
-(players use their Controller Options bindings); the CE bonus local co-op maps admit the defaults for each player.
-Hotplug, flight-stick detection and the trigger buttons still work in multiplayer. There is no per-device profile.
-When enabled in eligible CE play, rumble (patch 0105, `game/ce_rumble.cpp`) goes to the controller slot numbered for the player
-(slot 1 for player 1, slot 2 for player 2), not to whichever controller custom bindings name. Rumble is off during
-recording, replay, demo and network modes. CE sends rumble only to gamepads; a flight stick does not rumble.
+Faithful builds keep their existing controller behavior, with no CE defaults or trigger buttons. A clock or probe run
+without recording or replay does not apply the recording and replay fence above. In retail multiplayer the no-setup
+defaults are off (players use their Controller Options bindings); the CE bonus local co-op maps (Building Defence,
+levels 856 and 858; see [the public README](../README.md), Bonus Levels) admit the defaults for each player. Hotplug,
+flight-stick detection and the trigger buttons still work in multiplayer. There is no per-device profile. When enabled
+in eligible CE play, rumble (patch 0105, `game/ce_rumble.cpp`) goes to the controller slot numbered for the player (slot
+1 for player 1, slot 2 for player 2), not to whichever controller custom bindings name. Rumble is off during recording,
+replay, demo and network modes. CE sends rumble only to gamepads; a flight stick does not rumble.
 
 ## Checks
 
@@ -87,9 +91,8 @@ source-coupled fakes; physical mouse and compositor behavior remain untested.
 `port/tools/input_lifetime_tests.py` checks the adapter and the extracted game input callers with SDL virtual gamepads:
 axis changes, trigger edges, unplug, and the replay and recording fences. A two-player hotplug case checks that one
 pad's disconnect does not discard the other pad's quick tap, and that a replacement arriving held does not invent a
-press. It opens no game window. SDL initialization may still discover host joystick devices; use a private device
-namespace with empty `/sys` and `/run` when host-device isolation is required. These virtual-device checks do not
-establish physical-controller or native Windows behavior.
+press. It opens no game window. SDL initialization may still discover host joystick devices; the test does not isolate
+`/sys` or `/run` itself. These virtual-device checks do not establish physical-controller or native Windows behavior.
 
 The test switch `BEA_PORT_FAKE_PAD` attaches an SDL virtual gamepad (or, with `BEA_PORT_FAKE_PAD_KIND=stick`, a
 flight stick) and drives it by Present count, including `attach` and `detach` (`BEA_PORT_FAKE_PAD_LATE=1` starts
