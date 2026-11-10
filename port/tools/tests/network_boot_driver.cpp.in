@@ -1,0 +1,253 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Actual boot/core/readers and extracted native callers; game objects below are explicit test boundaries.
+#include "handles.h"
+#include "ce_network_boot.h"
+#include "common.h"
+#include "CLIParams.h"
+#include <cstdarg>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <string>
+#include <vector>
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/stat.h>
+#include <strings.h>
+
+static unsigned checks, params_calls, loaded, blanked, script_opens, callbacks, automation_prepare;
+static char error[192];
+static void Check(bool ok, const char *message) {
+    ++checks; if (!ok) { std::fprintf(stderr, "FAIL %s (%s)\n", message, error); std::exit(2); }
+}
+PortHandle *PortHandleNew(PortHandleKind kind, size_t size) {
+    auto *p = static_cast<PortHandle *>(std::calloc(1, size)); if (p) p->kind = kind; return p;
+}
+void PortHandleFree(PortHandle *p) { std::free(p); }
+PortHandle *PortCheck(HANDLE h, int kind) {
+    auto *p = static_cast<PortHandle *>(h); return p && p->kind == kind ? p : nullptr;
+}
+void PortSetLastError(DWORD) {}
+extern "C" int WINAPI WideCharToMultiByte(UINT, DWORD, LPCWSTR, int, LPSTR, int, LPCSTR, LPBOOL) { std::abort(); }
+extern "C" bool SDL_OpenURL(const char *) { std::abort(); }
+extern "C" FILE *port_fopen(const char *, const char *);
+extern "C" FILE *bea_crt_fopen(const char *, const char *);
+extern "C" int bea_crt_fclose(FILE *);
+extern "C" int CE_CheatCachedStatus(unsigned *);
+extern "C" int CE_CheatSet(int, int);
+extern "C" void CE_NetWindowAutomationPrepare(void) { ++automation_prepare; }
+extern "C" void CE_NetUpdateAutomationPrepare(void) { ++automation_prepare; }
+extern "C" void PortInitializeContentRoots(void) { ++automation_prepare; PortPathsInit(); }
+CCLIParams::CCLIParams() {
+    std::memset(static_cast<void *>(this), 0, sizeof *this); mLevelNo = 852; mGoStraightToDeviceSelectScreen = -1;
+    std::strcpy(mSampleBankRoot, ".");
+}
+void CCLIParams::GetParams(char *) { ++params_calls; }
+CCLIParams CLIPARAMS;
+bool E3_BUILD;
+int PLAYABLE_DEMO;
+char DEFAULT_OPTIONS_NAME[260] = "defaultoptions.bea";
+static std::string mode, game, user;
+
+static void Write(const std::string &path, const char *bytes) {
+    FILE *f = std::fopen(path.c_str(), "wb"); Check(f, "fixture create");
+    Check(std::fwrite(bytes, 1, std::strlen(bytes), f) == std::strlen(bytes) && !std::fclose(f), "fixture write");
+}
+static std::string Bytes(const std::string &path) {
+    FILE *f = std::fopen(path.c_str(), "rb"); if (!f) return {};
+    std::string result; char buf[256]; size_t n;
+    while ((n = std::fread(buf, 1, sizeof buf, f))) result.append(buf, n);
+    std::fclose(f); return result;
+}
+static void Context(bool expected) {
+    CE_CompatibilityResult result; std::memset(&result, 0xa5, sizeof result);
+    bool ok = CE_BootPrepared(&result, error, sizeof error) != 0;
+    Check(ok == expected, expected ? "actual early boot supplies context" : "refusal cannot expose context");
+    if (!expected) { CE_CompatibilityResult zero{}; Check(!std::memcmp(&zero, &result, sizeof zero), "refused context zeroed"); }
+}
+
+// The exact native option-load slice is compiled in Entry, with allocation/career effects controlled.
+enum { MEMTYPE_SCRATCHPAD = 1, DEBUG_LOG_LINES = 30 };
+void *operator new[](size_t size, int) { return ::operator new[](size); }
+struct FakeCareer {
+    static int SizeOfSaveGame() { return 8; }
+    bool Load(const char *data, bool original) { Check(!original && !std::memcmp(data, "OPTIONS!", 8), "actual options caller bytes"); ++loaded; return true; }
+    void Blank() { ++blanked; }
+} CAREER;
+using CCareer = FakeCareer;
+bool OPTIONS_LOADED;
+struct FakeMemory { unsigned size = 32u * 1024u * 1024u; void Init(unsigned) {} } MEM_MANAGER;
+struct FakePlatform { unsigned GetMemorySize() { return MEM_MANAGER.size; } } PLATFORM;
+struct FakeEvent { float GetTime() { return 0; } } EVENT_MANAGER;
+struct FakeAdapter { struct { DWORD VendorId = 0x1234, DeviceId = 0x5678; LARGE_INTEGER DriverVersion{}; } d3dAdapterIdentifier; };
+using D3DAdapterInfo = FakeAdapter;
+struct FakeShell { HINSTANCE mhInstance{}; unsigned m_dwAdapter{}; FakeAdapter m_Adapters[1]; } LT;
+#define TRACE(...) ((void)0)
+static char *StrCopyN(char *dst, char *src, int n) { std::strncpy(dst, src, n); return dst; }
+struct CDebugLog {
+    char *mFileName; bool mOpened = false; int mEnabled; unsigned mLast = 0; float mLastTime = 0;
+    char mLines[30][80]{}; float mLineTimes[30]{};
+    CDebugLog(const char *path, bool enabled) : mFileName(const_cast<char *>(path)), mEnabled(enabled) {}
+    void AddMessage(char *, ...); void AddString(char *, ...);
+};
+static char *sFallbackName = const_cast<char *>("c:\\setuphistory.txt");
+CDebugLog LOG("c:\\debug.log", false), SETUP_HISTORY("setuphistory.txt", true);
+@LOG_CALLERS@
+static int Entry(char *lpCmdLine) {
+    HINSTANCE hInstance = nullptr;
+@ENTRY@
+    return 0;
+}
+
+// Real card-ID parser and scalar setters, with two registered rendering targets and a synthetic adapter.
+#include "tweak.h"
+CTweak *CTweak::mFirst;
+@TWEAK_CALLERS@
+static CTweakSLONG snow(const_cast<char *>("DISABLE_SNOW"), 0), vsync(const_cast<char *>("FORCE_VSYNC"), 0);
+
+enum ECVarType { CVar_int, CVar_DWORD, CVar_string, CVar_float, CVar_bool, CVar_fvector, CVar_fmatrix };
+struct FVector { float X, Y, Z; };
+struct FMatrix { FVector Row[3]; };
+struct CConsoleVar { char *mName; ECVarType mType; void *mData; bool mReadOnly; CConsoleVar *mNext; };
+struct CConsoleCommand { char *mName; void (*mFunction)(char *); CConsoleCommand *mNext; };
+struct CConsole {
+    CConsoleCommand *mCommands{}; CConsoleVar *mVariables{};
+    void Print(char *, ...) {}
+    CConsoleVar *FindVariable(char *name) { for (auto *v = mVariables; v; v = v->mNext) if (!strcasecmp(v->mName, name)) return v; return nullptr; }
+    void ExecuteCommand(char *); void SetVariable(char *, char *); void Exec(char *);
+} CONSOLE;
+class CDXMemBuffer {
+    std::vector<char> data; size_t pos{};
+public:
+    bool InitFromFile(const char *name, int, int, unsigned) {
+        ++script_opens;
+        HANDLE h = CreateFileA(name, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
+        if (h == INVALID_HANDLE_VALUE) return false;
+        DWORD size = GetFileSize(h, nullptr), got = 0; data.resize(size);
+        bool ok = ReadFile(h, data.data(), size, &got, nullptr) && got == size;
+        PortFileClose(static_cast<PortHandle *>(h)); PortHandleFree(static_cast<PortHandle *>(h)); return ok;
+    }
+    bool EndOfFile() { return pos >= data.size(); }
+    void Read(char *p, unsigned) { *p = data[pos++]; }
+    void Close() {}
+};
+enum { MEMTYPE_MEMBUFFER = 2 };
+@CONSOLE_CALLERS@
+static void CountCommand(char *) { ++callbacks; }
+using EQuitType = int;
+extern "C" int CE_SessionGameAbortLoad(void);
+extern "C" unsigned long long SDL_GetTicks(void) { return 0; }	// ce.cpp's cheat timing reads the SDL clock
+static bool PortCeLayer() { return false; }	// patch 0100's gate in the extracted startup-script lines: the CE layer is off here
+static int Automatic() {
+    const bool ceEditorAuthoring = false;	// patch 0206 wraps the script call so an editor session runs none: no editor session exists in this fixture
+@AUTOMATIC@
+    return 0;
+}
+extern "C" int CE_SessionGameAbortLoad(void) { return -7; }
+
+// This compatibility-only fixture has no campaign launch. The campaign runtime
+// suite links the real validator and exercises admission and restart cleanup.
+int CE_HandoffCampaignValid(const CE_Handoff *) { return 0; }
+void CE_CodeWipe(void *memory, size_t size) {
+    volatile unsigned char *p = static_cast<volatile unsigned char *>(memory);
+    while (size--) *p++ = 0;
+}
+
+int main(int argc, char **argv) {
+    if (argc != 2) return 1; mode = argv[1]; game = std::getenv("BEA_GAME_DIR"); user = std::getenv("BEA_USER_DIR");
+    unsigned mask = 123; Check(!CE_CheatCachedStatus(&mask) && mask == 123, "cold cache query preserves output");
+#ifndef BOOT_TEST_WINDOWS
+    PortPathsInit();
+#else
+    // The Windows-order model substitutes Linux readers. Their root initialization is eager offline,
+    // whereas the real Windows Resolve owner initializes lazily; online init stays inside BootStart.
+    if (mode == "offline") PortPathsInit();
+#endif
+    if (mode == "offline") { unsetenv("BEA_NET_HOST"); unsetenv("BEA_NET_JOIN"); }
+    if (mode == "bad-level") CLIPARAMS.mLevelNo = 851;	// neither the level-852 route nor a co-op level
+    if (mode == "lockstep-boot") CLIPARAMS.mLevelNo = 856;	// a co-op level: admitted with the lockstep contract (its archive is in this case's content)
+    if (mode == "bad-options") std::strcpy(DEFAULT_OPTIONS_NAME, "data/default physics.dat");
+    if (mode == "cardid-absolute") CLIPARAMS.mCardID = true;
+    if (mode == "build") CLIPARAMS.mBuildResources = true;
+    if (mode == "demo") CLIPARAMS.mPlaybackDemo = true;
+    if (mode == "both-roles") setenv("BEA_NET_JOIN", "127.0.0.1:1234", 1);
+    if (mode == "supplied-context") setenv("BEA_NET_COMPAT", "arbitrary", 1);
+    if (mode == "forced-layer-off") setenv("BEA_PORT_CE_LAYER", "0", 1);
+    if (mode == "automation") setenv("BEA_PORT_TAPE", "not-opened", 1);
+    if (mode == "root-invalid") setenv("BEA_USER_DIR", (user + "/absent").c_str(), 1);
+    char commandline[] = "-level 852"; int entry = Entry(commandline);
+    bool denied = mode == "bad-level" || mode == "bad-options" || mode == "cardid-absolute" || mode == "build" ||
+        mode == "demo" || mode == "both-roles" || mode == "supplied-context" || mode == "forced-layer-off" ||
+        mode == "automation" || mode == "root-invalid";
+    Check(params_calls == 1, "actual post-parser hook runs once");
+    if (denied) {
+        if (mode != "forced-layer-off")
+            Check(!automation_prepare, "early refusal precedes native initialization and automation preparation");
+        Check(entry == 1 && !loaded && !blanked, "entry refusal precedes local options and native load");
+        Context(false); Check(!CE_BootStart(), "failed startup cannot retry");
+    } else {
+        Check(entry == 0 && loaded == 1 && blanked == 1, "ordinary native options route preserved");
+        if (mode == "offline") {
+            Check(!CE_BootRequested() && CE_BootAutomaticScript() == 1, "offline script remains native");
+            CConsoleCommand c{const_cast<char *>("count"), CountCommand, nullptr}; CONSOLE.mCommands = &c;
+            char line[] = "count"; CONSOLE.ExecuteCommand(line); Check(callbacks == 1, "offline console dispatch preserved");
+        } else {
+            Context(true); Check(CE_BootRequested() && automation_prepare >= 2, "actual role and automation owners prepared");
+            Check(CE_BootLockstep() == (mode == "lockstep-boot" ? 1 : 0), "the admitted contract is the level's: lockstep on a co-op level, the level-852 route otherwise");
+            Check(CE_CheatCachedStatus(&mask) && mask == 0, "actual settings cache warmed before Prepare");
+            FILE *f = CE_BootOpenLocal(CE_BOOT_OPTIONS, "defaultoptions.bea", "rb");
+            Check(f && std::fgetc(f) == 'O' && bea_crt_fclose(f) == 0 && bea_crt_fclose(f) == EOF, "local stream retains one close owner");
+            LoadCardId(const_cast<char *>("cardid.txt"));
+            Check(snow.mValue == 1 && vsync.mValue == 1, "ordinary nonempty native card-ID parser preserved");
+            Context(true);
+            if (mode == "console") {
+                CConsoleCommand c{const_cast<char *>("count"), CountCommand, nullptr}; CONSOLE.mCommands = &c;
+                char line[] = "count"; CONSOLE.ExecuteCommand(line); Check(!callbacks, "armed command refused before callback"); Context(false);
+            } else if (mode == "variable") {
+                int value = 7; CConsoleVar v{const_cast<char *>("value"), CVar_int, &value, false, nullptr}; CONSOLE.mVariables = &v;
+                char name[] = "value.x", number[] = "99"; CONSOLE.SetVariable(name, number);
+                Check(value == 7 && !std::strcmp(name, "value.x"), "setter refuses before argument or target mutation"); Context(false);
+            } else if (mode == "script") {
+                CONSOLE.Exec(const_cast<char *>("missing-script.con")); Check(!script_opens, "script refuses before loader even when missing"); Context(false);
+            } else if (mode == "auto-nonempty") {
+                Write(user + "/autoexec.con", "count\n"); Check(Automatic() == -7 && !script_opens, "automatic script changed before native load is refused"); Context(false);
+            } else if (mode == "cheat") {
+                std::string before = Bytes(user + "/ce.ini"); Check(!CE_CheatSet(2, 1), "armed cheat setter refuses");
+                Check(CE_CheatCachedStatus(&mask) && !mask && Bytes(user + "/ce.ini") == before, "cheat refusal precedes cache and persistence"); Context(false);
+            } else if (mode == "role-removed" || mode == "role-switched") {
+                unsetenv("BEA_NET_HOST"); if (mode == "role-switched") setenv("BEA_NET_JOIN", "127.0.0.1:1234", 1); Context(false);
+            } else if (mode == "crt-mutate" || mode == "native-mutate" || mode == "direct-mutate") {
+                Write(game + "/data/default physics.dat", "changed physics");
+                if (mode == "native-mutate") Check(CreateFileA("data/default physics.dat", GENERIC_READ, 0, nullptr, OPEN_EXISTING, 0, nullptr) == INVALID_HANDLE_VALUE, "native opened object proof refuses changed bytes");
+                else if (mode == "direct-mutate") { Check(!chdir(game.c_str()), "fixture cwd"); Check(!bea_crt_fopen("data/default physics.dat", "rb"), "direct CRT opened object proof refuses changed bytes"); }
+                else Check(!port_fopen("data/default physics.dat", "rb"), "CRT opened object proof refuses changed bytes"); Context(false);
+            } else if (mode == "write" || mode == "native-write") {
+                std::string before = Bytes(game + "/data/default physics.dat");
+                if (mode == "write") Check(!port_fopen("data/default physics.dat", "wb"), "data write refuses before COW/truncate");
+                else Check(CreateFileA("data/default physics.dat", GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, 0, nullptr) == INVALID_HANDLE_VALUE, "native data write refuses before COW/truncate");
+                Check(Bytes(game + "/data/default physics.dat") == before && access((user + "/data/default physics.dat").c_str(), F_OK), "refused write cannot create a shadow or alter source"); Context(false);
+            } else if (mode == "unknown") { Check(!port_fopen("unknown.conf", "rb"), "unknown reference refuses even when missing"); Context(false); }
+            else if (mode == "mmio") { Check(!mmioOpenA(const_cast<char *>("data/default physics.dat"), nullptr, MMIO_READ), "unproved reader refuses"); Context(false); }
+            else if (mode == "native-wide") { Check(CreateFileW(L"data/default physics.dat", GENERIC_READ, 0, nullptr, OPEN_EXISTING, 0, nullptr) == INVALID_HANDLE_VALUE, "unproved wide conversion refuses before aliasing"); Context(false); }
+            else if (mode == "local-invalid") { Check(!CE_BootOpenLocal(CE_BOOT_OPTIONS, "data/default physics.dat", "wb"), "local owner cannot name data"); Context(false); }
+            else if (mode == "local-hardlink" || mode == "local-symlink") {
+                std::string target = user + "/setuphistory.txt"; unlink(target.c_str());
+                if (mode == "local-hardlink") Check(!link((game + "/data/default physics.dat").c_str(), target.c_str()), "fixture hardlink");
+                else Check(!symlink((game + "/data/default physics.dat").c_str(), target.c_str()), "fixture symlink");
+                std::string before = Bytes(game + "/data/default physics.dat"); Check(!CE_BootOpenLocal(CE_BOOT_SETUP_LOG, "setuphistory.txt", "w"), "local link refuses before truncation");
+                Check(Bytes(game + "/data/default physics.dat") == before, "local rejection preserves linked authored bytes");
+            } else if (mode == "retire") {
+                CE_CompatibilityRetire(); Context(false); CE_CompatibilityResult r{};
+                Check(!CE_CompatibilityPrepare(CE_COMPAT_LEVEL852_WORLD11_INPUT5_CONTROL5, 852, &r, error, sizeof error), "retired process cannot rearm");
+            } else {
+                Check(Automatic() == 0 && !script_opens, "known-empty automatic script has no native execution");
+                FILE *data = port_fopen(".\\data\\default physics.dat", "rb"); Check(data, "stock single-dot path admitted");
+                Check(std::ftell(data) == 0 && std::fgetc(data) == 'p', "validation preserves FILE offset and bytes"); std::fclose(data);
+                HANDLE h = CreateFileA("data/default physics.dat", GENERIC_READ, 0, nullptr, OPEN_EXISTING, 0, nullptr);
+                char first = 0; DWORD n = 0; Check(h != INVALID_HANDLE_VALUE && ReadFile(h, &first, 1, &n, nullptr) && n == 1 && first == 'p', "native proof preserves offset and bytes");
+                PortFileClose(static_cast<PortHandle *>(h)); PortHandleFree(static_cast<PortHandle *>(h)); Context(true);
+            }
+        }
+    }
+    std::printf("PASS %s %u\n", argv[1], checks); return 0;
+}

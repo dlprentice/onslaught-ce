@@ -56,6 +56,33 @@ SYSROOT = DATA / f"sysroot-{SYSROOT_NAME}" if SYSROOT_NAME else None
 if SYSROOT:
     PREFIX, BUILD = DATA / f"prefix-{SYSROOT_NAME}", DATA / f"build-{SYSROOT_NAME}"
 
+
+def real_prefix_maps():
+    """The (path, name) pairs, besides DATA itself, that turn this cache's folders into the names a cache that HOLDS them gives. The compilers print the REAL path of what they read: clang finds its
+    own include folder from the real path of its program, and the sysroot's .pc files name the sysroot's real path. A cache whose `llvm`, `llvm-mingw`, `sysroot-sniper` or other entries are symbolic
+    links to shared folders outside it (a worktree's dependency cache) therefore leaks those folders' absolute paths into __FILE__ and the debug information, where `-ffile-prefix-map=<DATA>=deps`
+    never matches; the build id (a hash of the unstripped output) then differs from a build against a cache of the same content at another path. Each entry of DATA that is a link to a folder outside
+    the cache maps its real folder to `deps/<name of the real folder>` (the string a cache that holds the folder gives, since clang resolves `llvm` to `LLVM-<version>`); a DATA that is itself
+    reached through a link maps its real path to `deps` as well. In a cache with no such link the list is empty, so those builds (and their SDL receipts) are unchanged."""
+    real = DATA.resolve()
+    maps = [(real, "deps")] if real != DATA else []
+    for entry in sorted(DATA.iterdir()) if DATA.is_dir() else []:
+        if entry.is_symlink():
+            target = entry.resolve()
+            if target.is_dir() and not target.is_relative_to(real) and (target, f"deps/{target.name}") not in maps:
+                maps.append((target, f"deps/{target.name}"))
+    return maps
+
+
+def prefix_map_flags():
+    """The prefix-map flags for the cache's own paths: DATA becomes `deps`, then the real paths of real_prefix_maps() (last, so that they win over a broader map such as the checkout's)."""
+    return [f"-ffile-prefix-map={path}={name}" for path, name in [(DATA, "deps"), *real_prefix_maps()]]
+
+
+def prefix_maps_arg(src, build):
+    """The space-separated maps of a dependency build: its source folder, its build folder, then the cache (prefix_map_flags)."""
+    return " ".join([f"-ffile-prefix-map={src}=src", f"-ffile-prefix-map={build}=build", *prefix_map_flags()])
+
 CROSS = """[binaries]
 c = '{llvm}/clang'
 cpp = '{llvm}/clang++'
@@ -64,8 +91,8 @@ strip = '{llvm}/llvm-strip'
 pkg-config = 'pkgconf'
 
 [built-in options]
-c_args = ['-m32', '-ffile-prefix-map={data}=deps']
-cpp_args = ['-m32', '-ffile-prefix-map={data}=deps']
+c_args = ['-m32', {maps}]
+cpp_args = ['-m32', {maps}]
 c_link_args = ['-m32']
 cpp_link_args = ['-m32']
 
@@ -372,19 +399,25 @@ def sdl_cmake():
     return TOOLS / archive.removesuffix(".tar.gz") / "bin/cmake"
 
 
+# The SDL configure's PATH is FIXED (earlier review's finding, 2026-10-31): the receipt hashes the configure environment, and CMake's cache holds the tool paths it found, so a PATH taken from the
+# builder's shell made every cache valid only for the shell that built it. Everything the configure looks up by name (ninja, pkg-config, make, patch, tar, xz, git, python3) is in /usr/bin; cmake,
+# meson, the compilers and the linker are the pinned ones inside the cache and are called by absolute path.
+SDL_PATH = "/usr/bin:/bin"
+
+
 def sdl_recipe(target, cmake):
     """The exact SDL configure command and limited environment used by both build and receipt validation.
 
-    Do not inherit arbitrary compiler, pkg-config or CMake variables from the caller. Only PATH and the optional
-    SOURCE_DATE_EPOCH are inherited; the receipt hashes them and never serializes the environment or secrets.
+    Do not inherit arbitrary compiler, pkg-config or CMake variables from the caller. Only the optional SOURCE_DATE_EPOCH is inherited
+    (the receipt hashes it) and PATH is the fixed SDL_PATH; the receipt never serializes the environment or secrets.
     """
-    env = {"PATH": os.environ.get("PATH", ""), "HOME": str(DATA / ".sdl-home"),
+    env = {"PATH": SDL_PATH, "HOME": str(DATA / ".sdl-home"),
            "TMPDIR": str(DATA / ".sdl-tmp"), "LC_ALL": "C", "TZ": "UTC", "CMAKE_BUILD_PARALLEL_LEVEL": "8"}
     if "SOURCE_DATE_EPOCH" in os.environ:
         env["SOURCE_DATE_EPOCH"] = os.environ["SOURCE_DATE_EPOCH"]
     if target == "linux":
         llvm = DATA / "llvm/bin"
-        maps = f"-ffile-prefix-map={SRC}=src -ffile-prefix-map={BUILD}=build -ffile-prefix-map={DATA}=deps"
+        maps = prefix_maps_arg(SRC, BUILD)
         pkg = (f"{PREFIX}/lib/pkgconfig:{SYSROOT}/usr/lib/i386-linux-gnu/pkgconfig:{SYSROOT}/usr/share/pkgconfig"
                if SYSROOT else f"{PREFIX}/lib/pkgconfig:/usr/lib32/pkgconfig:/usr/share/pkgconfig")
         sflags, lflags = " ".join(sysroot_flags()), " ".join(sysroot_link_flags())
@@ -410,7 +443,7 @@ def sdl_recipe(target, cmake):
               "-DCMAKE_FIND_ROOT_PATH_MODE_LIBRARY=ONLY", "-DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=ONLY",
               f"-DCMAKE_INSTALL_PREFIX={PREFIX_WIN}", "-DCMAKE_INSTALL_LIBDIR=lib", "-DBUILD_SHARED_LIBS=ON",
               "-DCMAKE_SHARED_LINKER_FLAGS=-Wl,--no-insert-timestamp", "-DCMAKE_EXE_LINKER_FLAGS=-Wl,--no-insert-timestamp",
-              f"-DCMAKE_C_FLAGS=-ffile-prefix-map={SRC}=src -ffile-prefix-map={BUILD_WIN}=build -ffile-prefix-map={DATA}=deps"]
+              f"-DCMAKE_C_FLAGS={prefix_maps_arg(SRC, BUILD_WIN)}"]
     else:
         raise ValueError(f"unknown SDL target: {target}")
     return cm, env
@@ -655,7 +688,7 @@ def build_linux(rows, cmake, meson):
     # folders are mapped out so a rebuild elsewhere gives the same bytes.
     llvm = DATA / "llvm/bin"
     cross = DATA / (f"i686-linux-{SYSROOT_NAME}.ini" if SYSROOT else "i686-linux.ini")
-    text = CROSS.replace("{llvm}", str(llvm)).replace("{data}", str(DATA))
+    text = CROSS.replace("{llvm}", str(llvm)).replace("{maps}", ", ".join(f"'{flag}'" for flag in prefix_map_flags()))
     if SYSROOT:
         sysroot(rows)
         mingw_toolchain(rows)
@@ -663,7 +696,7 @@ def build_linux(rows, cmake, meson):
         text = (text.replace("_args = ['-m32', '-ffile", f"_args = ['-m32', {cflag}, '-ffile")
                 .replace("_link_args = ['-m32']", f"_link_args = ['-m32', {lflag}]"))
     cross.write_text(text)
-    maps = f"-ffile-prefix-map={SRC}=src -ffile-prefix-map={BUILD}=build -ffile-prefix-map={DATA}=deps"
+    maps = prefix_maps_arg(SRC, BUILD)
     if SYSROOT:
         pkg = f"{PREFIX}/lib/pkgconfig:{SYSROOT}/usr/lib/i386-linux-gnu/pkgconfig:{SYSROOT}/usr/share/pkgconfig"
     else:
@@ -722,6 +755,7 @@ def build_linux(rows, cmake, meson):
     build_sdl(rows["SDL3"], "linux", sdl_cm, cmake, sdl_env)
     for name, opts in XIPH:
         cmake_project(cm, cmake, name, unpack(rows[name], SRC), opts, env)
+    cmake_project(cm, cmake, "enet", unpack(rows["enet"], SRC), ["-DBUILD_SHARED_LIBS=OFF"], env)
     print(f"deps: Linux i686 installed into {PREFIX}; dxvk-native in {DATA / 'dxvk-native'}")
 
 
@@ -757,7 +791,7 @@ def build_windows(rows, cmake):
           f"-DCMAKE_INSTALL_PREFIX={PREFIX_WIN}", "-DCMAKE_INSTALL_LIBDIR=lib", "-DBUILD_SHARED_LIBS=ON",
           # deterministic PE files: no link time in the headers, and source and build folders mapped out
           "-DCMAKE_SHARED_LINKER_FLAGS=-Wl,--no-insert-timestamp", "-DCMAKE_EXE_LINKER_FLAGS=-Wl,--no-insert-timestamp",
-          f"-DCMAKE_C_FLAGS=-ffile-prefix-map={SRC}=src -ffile-prefix-map={BUILD_WIN}=build -ffile-prefix-map={DATA}=deps"]
+          f"-DCMAKE_C_FLAGS={prefix_maps_arg(SRC, BUILD_WIN)}"]
     sdl_cm, sdl_env = sdl_recipe("windows", cmake)
     build_sdl(rows["SDL3"], "windows", sdl_cm, cmake, sdl_env)
     for name, opts in XIPH:
@@ -767,6 +801,7 @@ def build_windows(rows, cmake):
     # libogg's win32/ogg.def names its library "ogg", so its import library refers to ogg.dll, while CMake installs
     # libogg.dll; install it under the name the import library (and so every importer) uses.
     shutil.copy2(PREFIX_WIN / "bin/libogg.dll", PREFIX_WIN / "bin/ogg.dll")
+    cmake_project(cm, cmake, "win32-enet", unpack(rows["enet"], SRC), ["-DBUILD_SHARED_LIBS=OFF"], env)
     print(f"deps: Windows i686 installed into {PREFIX_WIN}; toolchain {link}")
 
 
@@ -779,6 +814,10 @@ FFMPEG_COMMON = ["--enable-static", "--disable-shared", "--disable-autodetect", 
                  "--enable-demuxer=bink", "--enable-protocol=file", "--arch=x86_32", "--enable-cross-compile"]
 
 
+# RESIDUAL (the review, 2026-10-31: "static no"): these static libraries export their configure line as a string constant (avutil_configuration) that holds THIS cache's absolute --prefix and --cc
+# paths, and their objects' debug information holds the cache's path; -ffile-prefix-map never touches string constants. They serve non-public builds only (the public build links the shared
+# libraries below, built with the neutral recipe, and its shipped bytes are proven independent of the cache's path), and every private comparison builds both sides against one cache, so the static
+# libraries still differ between two caches. Making them path-independent would take the shared recipe's neutral configure (wrapper compiler, --prefix=/usr, DESTDIR install, a copy into PREFIX).
 def build_ffmpeg(rows, target):
     src = unpack(rows["FFmpeg"], SRC)
     out = (BUILD if target == "linux" else BUILD_WIN) / f"ffmpeg-{target}"

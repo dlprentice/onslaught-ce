@@ -16,6 +16,7 @@ extern "C" unsigned PortPresentCount() { return 1; }
 static bool filtered;
 void PortCeDrawHooks(bool on) { filtered = on; }
 void PortCeDrawsDropped(int) {}
+bool PortCeCmdSuppressFlightHud() { return false; }
 
 typedef char Arg[64];
 static std::string line;

@@ -606,6 +606,24 @@ class CrispTests(unittest.TestCase):
                 else:
                     self.assertIn("caught", results.values(), f"mutant {name} survived: {results}")
 
+    def test_clear_row_fast_path_keeps_transparent_colours(self):
+        # Clear texels may carry RGB for filtering.  Tied zero alphas must
+        # choose the same first sample as the full reference search.
+        source = SOURCE.read_text()
+        old = "const DWORD clear = clearRow[sx > 0 ? sx - 1 : 0] & 0x00ffffff;"
+        mutants = (
+            ("wrong-clear-sample", "const DWORD clear = clearRow[sx] & 0x00ffffff;"),
+            ("discard-clear-colour", "const DWORD clear = clearRow[sx > 0 ? sx - 1 : 0] & 0x00000000;"),
+        )
+        self.assertEqual(source.count(old), 1)
+        for name, replacement in mutants:
+            with self.subTest(mutant=name):
+                for qifist in (False, True):
+                    exe = self.build(f"{name}-{'q' if qifist else 'p'}", source.replace(old, replacement), qifist)
+                    ran = self.run_exe(exe)
+                    self.assertNotEqual(ran.returncode, 0, f"{name} survived {'qifist' if qifist else 'plain'}")
+                    self.assertIn("FAIL:", ran.stderr, f"{name} failed without a pixel assertion")
+
     def build_sharp(self, name, program_text):
         program = self.out / f"{name}.cpp"
         program.write_text(program_text)

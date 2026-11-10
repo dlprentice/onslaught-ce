@@ -1,0 +1,177 @@
+--- a/ltshell.cpp
++++ b/ltshell.cpp
+@@ -0,0 +1,3 @@
++#ifndef CE_NETWORK_OFF
++#include "ce_network_boot.h"
++#endif
+@@ -227,7 +230,11 @@
+ {
+ 	SetUnhandledExceptionFilter(NULL); // We don't want re-entrant exception handling!
+ 
+-	FILE *fout=fopen("OnslaughtException.txt","wt");
++#ifdef CE_NETWORK_OFF
++	FILE *fout=fopen("OnslaughtException.txt","wt");
++#else
++	FILE *fout=CE_BootOpenLocal(CE_BOOT_EXCEPTION_LOG, "OnslaughtException.txt", "wt");
++#endif
+ #if 0	// the retail build compiles none of the dump (00512040: the fopen, then return)
+ 
+ 	char buffer[4096];
+@@ -626,6 +633,9 @@
+ 
+ 	// JCL - process command line
+ 	CLIPARAMS.GetParams(lpCmdLine);
++#ifndef CE_NETWORK_OFF
++	if (!CE_BootStart()) return 1;
++#endif
+ 
+ 	LOG.AddMessage("Init game with %d bytes", PLATFORM.GetMemorySize()) ;
+ 	
+@@ -636,7 +646,11 @@
+ 	LT.mhInstance=hInstance;
+ 
+ 	// the saved options (a career-shaped file: Load applies its key bindings and options, then the career is wiped)
+-	FILE	*file = fopen(DEFAULT_OPTIONS_NAME, "rb");
++#ifdef CE_NETWORK_OFF
++	FILE	*file = fopen(DEFAULT_OPTIONS_NAME, "rb");
++#else
++	FILE	*file = CE_BootOpenLocal(CE_BOOT_OPTIONS, DEFAULT_OPTIONS_NAME, "rb");
++#endif
+ 	if (file)
+ 	{
+ 		int		size = CCareer::SizeOfSaveGame();
+--- a/console.cpp
++++ b/console.cpp
+@@ -0,0 +1,3 @@
++#ifndef CE_NETWORK_OFF
++#include "ce_network_boot.h"
++#endif
+@@ -476,6 +479,9 @@
+ // FUNCTION: 0x0042a7b0
+ void CConsole::SetVariable(char *name, char *value)
+ {
++#ifndef CE_NETWORK_OFF
++	if (!CE_CompatibilityConsoleOperation(CE_COMPAT_CONSOLE_SET_VARIABLE, name, strlen(name), NULL, 0)) return;
++#endif
+ 	char *postfix;
+ 	char *dot = strchr(name, '.');
+ 	if (dot)
+@@ -601,6 +607,9 @@
+ // FUNCTION: 0x0042ad30
+ void CConsole::Exec(char *filename)
+ {
++#ifndef CE_NETWORK_OFF
++	if (!CE_CompatibilityConsoleOperation(CE_COMPAT_CONSOLE_SCRIPT, filename, strlen(filename), NULL, 0)) return;
++#endif
+ 	Print("Executing script %s\n", filename);
+ 
+ 	CDXMemBuffer	file;
+@@ -933,6 +942,9 @@
+ // FUNCTION: 0x0042b9c0
+ void CConsole::ExecuteCommand(char *line)
+ {
++#ifndef CE_NETWORK_OFF
++	if (!CE_CompatibilityConsoleOperation(CE_COMPAT_CONSOLE_EXECUTE, line, strlen(line), NULL, 0)) return;
++#endif
+ 	char	cmd[256];
+ 
+ 	if (strlen(line) < 1)
+--- a/game.cpp
++++ b/game.cpp
+@@ -68,4 +68,7 @@
+ #endif
+ 
++#ifndef CE_NETWORK_OFF
++#include "ce_network_boot.h"
++#endif
+ #include	<string.h>
+ #include	<stdio.h>
+--- a/tweak.cpp
++++ b/tweak.cpp
+@@ -0,0 +1,3 @@
++#ifndef CE_NETWORK_OFF
++#include "ce_network_boot.h"
++#endif
+@@ -47,7 +50,11 @@
+ void	LoadCardId(char *filename)	// FUNCTION: 0x005286e0
+ {
+ 	D3DAdapterInfo	*adapter = &LT.m_Adapters[LT.m_dwAdapter];
+-	FILE			*f = fopen(filename, "ra");
++#ifdef CE_NETWORK_OFF
++	FILE			*f = fopen(filename, "ra");
++#else
++	FILE			*f = CE_BootOpenLocal(CE_BOOT_CARD_ID, filename, "ra");
++#endif
+ 
+ 	if (f)
+ 	{
+--- a/DebugLog.cpp
++++ b/DebugLog.cpp
+@@ -0,0 +1,3 @@
++#ifndef CE_NETWORK_OFF
++#include "ce_network_boot.h"
++#endif
+@@ -57,16 +60,28 @@
+ 		FILE	*f;
+ 		if (!mOpened)
+ 		{
+-			f = fopen(mFileName, "w");
++#ifdef CE_NETWORK_OFF
++			f = fopen(mFileName, "w");
++#else
++			f = CE_BootOpenLocal(CE_BOOT_SETUP_LOG, mFileName, "w");
++#endif
+ 			if ((!f) && (mFileName[strlen(mFileName) - 5] == 'p'))
+ 			{
+ 				mFileName = sFallbackName;
+-				f = fopen(sFallbackName, "w");
++#ifdef CE_NETWORK_OFF
++				f = fopen(sFallbackName, "w");
++#else
++				f = CE_BootOpenLocal(CE_BOOT_SETUP_LOG, sFallbackName, "w");
++#endif
+ 			}
+ 			mOpened = true;
+ 		}
+ 		else
+-			f = fopen(mFileName, "a");
++#ifdef CE_NETWORK_OFF
++			f = fopen(mFileName, "a");
++#else
++			f = CE_BootOpenLocal(CE_BOOT_SETUP_LOG, mFileName, "a");
++#endif
+ 
+ 		if (f)
+ 		{
+@@ -93,16 +108,28 @@
+ 		FILE	*f;
+ 		if (!mOpened)
+ 		{
+-			f = fopen(mFileName, "w");
++#ifdef CE_NETWORK_OFF
++			f = fopen(mFileName, "w");
++#else
++			f = CE_BootOpenLocal(CE_BOOT_SETUP_LOG, mFileName, "w");
++#endif
+ 			if ((!f) && (mFileName[strlen(mFileName) - 5] == 'p'))
+ 			{
+ 				mFileName = sFallbackName;
+-				f = fopen(sFallbackName, "w");
++#ifdef CE_NETWORK_OFF
++				f = fopen(sFallbackName, "w");
++#else
++				f = CE_BootOpenLocal(CE_BOOT_SETUP_LOG, sFallbackName, "w");
++#endif
+ 			}
+ 			mOpened = true;
+ 		}
+ 		else
+-			f = fopen(mFileName, "a");
++#ifdef CE_NETWORK_OFF
++			f = fopen(mFileName, "a");
++#else
++			f = CE_BootOpenLocal(CE_BOOT_SETUP_LOG, mFileName, "a");
++#endif
+ 
+ 		if (f)
+ 		{

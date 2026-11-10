@@ -25,13 +25,14 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import build  # noqa: E402
 from ce_palette_tests import function, no_core, SANITIZE  # noqa: E402
 from ce_photo_tests import patched, faithful  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 PATCH_NAME = "0137-ce-save-failed-notice.patch"
-# Patches whose PauseMenu.cpp hunks are written against this patch's (0138's declarations follow its own): left out with it.
-BUILT_ON_NOTICE = ("0138-ce-pause-photo-mode.patch",)
+# Patches whose hunks are written against this patch's (0138's PauseMenu.cpp declarations follow its own; 0201's chat overlay is drawn between photo mode's note and this notice): left out with it.
+BUILT_ON_NOTICE = ("0138-ce-pause-photo-mode.patch", "0201-network-text-chat-overlay.patch")
 NOTICE = ROOT / "port/game/ce_notice.cpp"
 NOTICE_H = ROOT / "port/game/ce_notice.h"
 PHOTO_H = ROOT / "port/game/ce_photo.h"
@@ -79,9 +80,16 @@ def check_structure(files):
     assert "#ifdef CE_VERSION\n\n// Patch 0137" in text, "only in CE builds"
     post = function(files["DXEngine.cpp"], "HRESULT\tCDXEngine::PostRender(")
     mirror = post[post.index("if (!gMirrorPass)\t\t// retail PC (0053efc4)"):]
-    assert re.search(r"GAMEINTERFACE\.Render\(\);\n#ifdef CE_VERSION\n\t\tPortCePaletteRender\(\);\n\t\tPortCePhotoRender\(\);\n\t\tPortCeNoticeRender\(\);\n#endif", mirror), \
-        "the notice is drawn after photo mode's note, outside the mirror pass"
+    # between photo mode's note and the notice only the chat overlay (patch 0201, a build with the network's text chat) may be drawn
+    chat = r"(?:#ifndef CE_NETWORK_OFF\n#if defined\(CE_NETWORK_TEXT\)\n\t\t\{ extern void PortCeChatRender\(\); PortCeChatRender\(\); \}\n#endif\n#endif\n)?"
+    assert re.search(r"GAMEINTERFACE\.Render\(\);\n#ifdef CE_VERSION\n\t\tPortCePaletteRender\(\);\n\t\tPortCePhotoRender\(\);\n" + chat + r"\t\tPortCeNoticeRender\(\);\n#endif", mirror), \
+        "the notice is drawn after photo mode's note (and the chat overlay's, if there is one), outside the mirror pass"
 
+
+
+def faithful_differences(alone, without):
+    """The files whose faithful view (CE_VERSION undefined) differs between a tree with the notice patch and one without it."""
+    return [name for name in FILES if faithful(alone[name]) != faithful(without[name])]
 
 
 class NoticeTests(unittest.TestCase):
@@ -98,14 +106,58 @@ class NoticeTests(unittest.TestCase):
     def test_patch_places_and_faithful_view(self):
         files = patched(self.out / "with", FILES)
         check_structure(files)
+        # The comparison isolates this patch: both trees leave out the patches written against it (BUILT_ON_NOTICE cannot apply without it, and 0201's lines are the network's), so that a
+        # difference of theirs is not counted as this patch's; each has its own suite.
+        alone = patched(self.out / "alone", FILES, skip=BUILT_ON_NOTICE)
         without = patched(self.out / "without", FILES, skip=(PATCH_NAME, *BUILT_ON_NOTICE))
         for name in FILES:
             with self.subTest(file=name):
-                self.assertNotEqual(files[name], without[name])
-                self.assertEqual(faithful(files[name]), faithful(without[name]), f"patch 0137 changes the faithful {name}")
+                self.assertNotEqual(alone[name], without[name])
+                self.assertEqual(faithful(alone[name]), faithful(without[name]), f"patch 0137 changes the faithful {name}")
+        self.assertEqual(faithful_differences(alone, without), [])
+
+    def test_an_unguarded_notice_line_is_caught_by_the_faithful_comparison(self):
+        # The comparison itself, not only faithful(): one line of each hook of the patch taken out of its CE_VERSION block (the block closed before it and opened again after) must make the file differ.
+        alone = patched(self.out / "alone", FILES, skip=BUILT_ON_NOTICE)
+        without = patched(self.out / "without", FILES, skip=(PATCH_NAME, *BUILT_ON_NOTICE))
+        self.assertEqual(faithful_differences(alone, without), [], "the unmutated trees are equal")
+        hooks = (("PauseMenu.cpp", r"(?m)^\s*PortCeSaveFailedNotice\(\);"),
+                 ("FEPMain.cpp", r"(?m)^\s*if \(PortCeSaveErrorMessage\(msg, 256\)\)"),
+                 ("FEPOptions.cpp", r"(?m)^\s*PortCeOptionsWriteFailed\(\);"),
+                 ("FrontEndText.cpp", r"(?m)^WCHAR\t\*PortCeSaveErrorText\(\)"),
+                 ("DXEngine.cpp", r"(?m)^\s*PortCeNoticeRender\(\);"))
+        for name, pattern in hooks:
+            with self.subTest(file=name, hook=pattern):
+                text = alone[name]
+                found = list(re.finditer(pattern, text))
+                # PauseMenu.cpp also holds the graphics-policy patch's (0204) own call, in its own CE_VERSION block, where a refused graphics request says
+                # so; that patch's suite checks it. The first call is this patch's, and is the one mutated here.
+                self.assertEqual(len(found), 2 if name == "PauseMenu.cpp" else 1, "the hook line is found once (twice in PauseMenu.cpp: 0204 adds one)")
+                start, end = found[0].start(), text.index("\n", found[0].end())
+                mutant = dict(alone)
+                mutant[name] = text[:start] + "#endif\n" + text[start:end] + "\n#ifdef CE_VERSION" + text[end:]
+                self.assertEqual(faithful_differences(mutant, without), [name], f"a line of patch 0137 in {name} outside CE_VERSION went unseen")
+
+    def test_the_chat_overlay_may_stand_before_the_notice_and_nowhere_else(self):
+        files = patched(self.out / "with", FILES)
+        check_structure(files)
+        chat = "#ifndef CE_NETWORK_OFF\n#if defined(CE_NETWORK_TEXT)\n\t\t{ extern void PortCeChatRender(); PortCeChatRender(); }\n#endif\n#endif\n"
+        note, notice = "\t\tPortCePhotoRender();\n", "\t\tPortCeNoticeRender();\n"
+        text = files["DXEngine.cpp"]
+        self.assertEqual(text.count(note + chat + notice), 1, "the chat overlay stands between photo mode's note and the notice")
+        mutants = {"chat-after-the-notice": note + notice + chat, "chat-before-photo-mode-note": chat + note + notice}
+        for name, replacement in mutants.items():
+            with self.subTest(mutant=name):
+                mutated = text.replace(note + chat + notice, replacement, 1)
+                self.assertNotEqual(mutated, text, "the mutant changed the text")
+                broken = dict(files)
+                broken["DXEngine.cpp"] = mutated
+                with self.assertRaises(AssertionError, msg=f"mutant {name} survived"):
+                    check_structure(broken)
 
     def test_structure_mutants_are_caught(self):
-        files = patched(self.out / "with", FILES)
+        # The mutants' anchors are main's lines, so they mutate the text a public build compiles; the network's view (the chat overlay between the notes) is checked unmutated above.
+        files = {name: build.network_view(text, off=True) for name, text in patched(self.out / "with", FILES).items()}
         mutants = [
             ("pause-and-not-short-circuit", "PauseMenu.cpp", "!= MCE_SUCCESS) ||\n\t\t\t\t\t\t (MEMORYCARD.WriteSave", "!= MCE_SUCCESS) |\n\t\t\t\t\t\t (MEMORYCARD.WriteSave"),
             ("pause-write-without-create", "PauseMenu.cpp", "saveFailed = (MEMORYCARD.CreateSave(FRONTEND.GetMemoryCardNumber(), FRONTEND.mFEPSaveGame.mSaveGameName, &save, TRUE) != MCE_SUCCESS) ||",

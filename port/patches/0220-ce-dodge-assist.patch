@@ -1,0 +1,47 @@
+--- a/Controller.cpp
++++ b/Controller.cpp
+@@ -16,6 +16,13 @@
+ extern "C" bool PortCeTapeOwnsControllerInput();
+ void PortCeGamepadUpdateAll(int consumer);						// port/game/ce_gamepad.cpp (patch 0106)
+ int PortCeGamepadInputs(int id, int pad, SControlInput *out);
++#if defined(CE_VERSION)
++// CE (patch 0220): the Dodge Button (port/game/ce_dodge_assist.cpp).
++int PortCeDodgeAssistKey(int pad);
++int PortCeDodgeAssistFilter(CController *controller, int pad, int button, float value);
++int PortCeDodgeAssistEnd(CController *controller, int pad, int key_down, int *ids, int *hard);
++static bool sCeDodgeSending = false;		// true while the Dodge Button's own strafe actions are being sent
++#endif
+ // CE (patch 0106): the control a centred mouse axis was last sent to; its zero does not hold off a gamepad's value.
+ static int sCeMouseRestId = -1;
+ #endif
+@@ -778,6 +785,19 @@
+ 		SendButtonAction(BUTTON_FRONTEND_CHEAT, 0.0f);
+ 	}
+ 
++#if defined(CE_VERSION)
++	{
++		// CE (patch 0220): the Dodge Button (port/game/ce_dodge_assist.cpp). Its strafe actions follow the player's own, in this update.
++		int tap_ids[3], tap_hard[3];
++		int dodge_key = PortCeDodgeAssistKey(pad);
++		int taps = PortCeDodgeAssistEnd(this, pad, dodge_key && GetKeyOn(dodge_key) == TRUE, tap_ids, tap_hard);
++		sCeDodgeSending = true;
++		for (int k = 0; k < taps; k++)
++			SendButtonAction(tap_ids[k], tap_hard[k] ? DigitalValueForButton(tap_ids[k]) : 0.0f);
++		sCeDodgeSending = false;
++	}
++#endif
++
+ 	if (mRecording)
+ 	{
+ 		RecordControllerState() ;
+@@ -826,6 +846,10 @@
+ void	CController::SendButtonAction(int button, float ana_val)	// FUNCTION: 0x0042e4d0
+ {
+ 	SetButton(button) ;
++#if defined(CE_VERSION)
++	if (!sCeDodgeSending && PortCeDodgeAssistFilter(this, mPadNumber, button, ana_val))
++		return;		// CE (patch 0220): the Dodge Button's double tap stands in for the player's strafe actions while it runs
++#endif
+ #ifndef CE_NETWORK_OFF
+ 	if (CE_WorldCaptureAction(this,button,ana_val)) return;
+ #endif

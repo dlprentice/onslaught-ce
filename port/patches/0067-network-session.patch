@@ -1,0 +1,207 @@
+--- a/game.h
++++ b/game.h
+@@ -90,6 +90,7 @@
+ {
+ #ifndef CE_NETWORK_OFF
+ 	friend class CENetworkWorldAdapter;
++	friend class CENetworkSession;
+ #endif
+ 	//***************************************************************************
+ 	// CGame methods
+--- a/game.cpp
++++ b/game.cpp
+@@ -71,2 +71,5 @@
+ #include	<stdio.h>
++#ifndef CE_NETWORK_OFF
++#include "ce_network_session.h"
++#endif
+ // FUNCTION: 0x0046bd20 init:ZERO_FVECTOR
+@@ -590,2 +593,5 @@
+ 	WORLD.Shutdown();
++#ifndef CE_NETWORK_OFF
++	CE_SessionAfterWorldShutdown();
++#endif
+ 	SOUND.SetGameSoundsMasterVolume(1.0f);
+@@ -1265,2 +1271,9 @@
+ 
++#ifndef CE_NETWORK_OFF
++	if (!CE_SessionAfterLoad())
++	{
++		return (EQuitType)CE_SessionGameAbortLoad();
++	}
++
++#endif
+ 	static int lTime = 0;
+@@ -1390,3 +1403,10 @@
+ 
+-	PreRun() ;
++#ifdef CE_NETWORK_OFF
++	PreRun() ;
++#else
++	if (!CE_SessionPreparePlay())
++	{
++		return (EQuitType)CE_SessionGameAbortLoad();
++	}
++#endif
+ 
+@@ -1516,2 +1536,5 @@
+ 
++#ifndef CE_NETWORK_OFF
++	mQuit = (EQuitType)CE_SessionBeginTeardown(mQuit);
++#endif
+ 	// out fill out structure before we start deleting things
+@@ -1540,2 +1563,5 @@
+ {
++#ifndef CE_NETWORK_OFF
++	if (!CE_SessionConfigureLevel(aLevel)) { CE_SessionAfterWorldShutdown(); return QT_LOAD_ERROR; }
++#endif
+ 	mRestarting = FALSE ;
+@@ -1674,6 +1674,8 @@
+ void CGame::Render( SINT num_renders )	// FUNCTION: 0x0046e460
+ {
+ #ifndef CE_NETWORK_OFF
++	CE_SessionBeforeRender();
++	if (CE_SessionActive() && mQuit != QT_NONE) return;
+ 	if (!CE_WorldCanRender()) return;
+ #endif
+ 	// retail: with the extra GeForce FX features on, a single-player frame first renders the landscape's reflection
+@@ -1998,2 +2028,5 @@
+ 		EVENT_MANAGER.Flush() ;
++#ifndef CE_NETWORK_OFF
++		CE_SessionAfterFlush();
++#endif
+ 		PROFILE_END(TotalEventManager) ;
+@@ -4374 +4407,50 @@
+ // FUNCTION: 0x00472890 ?ReceiveButtonAction@CGameCreditControlHandler@@UAEXPAVCController@@HM@Z
++#ifndef CE_NETWORK_OFF
++
++// The fixed session bridge lives beside the real callers. It does not create actors or mission events.
++class CENetworkSession
++{
++public:
++    static void PreRun() { GAME.PreRun(); }
++    static int QuitCode() { return GAME.mQuit; }
++    static void RebaseRenderClock()
++    {
++        GAME.mBaseTime = PLATFORM.GetSysTimeFloat();
++        GAME.mFrameTime = GAME.mFrameTime2 = GAME.mBaseTime;
++        GAME.CalcRenderFrameFraction();
++    }
++    static int AbortLoad()
++    {
++        EQuitType quit = GAME.mQuit == QT_NONE ? QT_LOAD_ERROR : GAME.mQuit;
++        quit = (EQuitType)CE_SessionBeginTeardown(quit);
++        GAME.SetQuit(quit);
++        for (int i = 0; i < MAX_PLAYERS; ++i)
++        {
++            SAFE_DELETE(GAME.mPlayer[i]);
++            SAFE_DELETE(GAME.mCurrentCamera[i]);
++        }
++        return quit;
++    }
++};
++extern "C" void CE_SessionGamePreRun() { CENetworkSession::PreRun(); }
++extern "C" int CE_SessionGamePump()
++{
++    // The normal platform loop blocks on GetMessage while inactive. A load/start barrier must retain its own
++    // monotonic deadline even when minimized, so only drain a bounded batch of this window's queued messages.
++    MSG message;
++    for (unsigned budget = 0; budget < 64 && PeekMessage(&message, NULL, 0U, 0U, PM_REMOVE); ++budget)
++    {
++        if (message.message == WM_QUIT) { GAME.SetQuit(QT_QUIT_TO_SYSTEM); return 1; }
++        TranslateMessage(&message);
++        DispatchMessage(&message);
++    }
++    if (LT.WantsToQuit()) { GAME.SetQuit(QT_QUIT_TO_SYSTEM); return 1; }
++    return 0;
++}
++extern "C" void CE_SessionGameIdle() { Sleep(1); }
++extern "C" int CE_SessionGameQuitCode() { return CENetworkSession::QuitCode(); }
++extern "C" void CE_SessionGameSetQuit(int quit) { GAME.SetQuit((EQuitType)quit); }
++extern "C" uint32_t CE_SessionGameTick() { return EVENT_MANAGER.GetFrameCount(); }
++extern "C" void CE_SessionGameRebaseRenderClock() { CENetworkSession::RebaseRenderClock(); }
++extern "C" int CE_SessionGameAbortLoad() { return CENetworkSession::AbortLoad(); }
++#endif
+--- a/ltshell.cpp
++++ b/ltshell.cpp
+@@ -0,0 +1,3 @@
++#ifndef CE_NETWORK_OFF
++#include "ce_network_session.h"
++#endif
+@@ -751,12 +754,26 @@
+ #endif
+     BOOL bGotMsg;
++#ifndef CE_NETWORK_OFF
++    int session_device_state = 0; // unknown until this iteration actually tests the device
++#endif
+ 	BOOL cant_proc=TRUE;
+     // Use PeekMessage() if the app is active, so we can use idle time to
+     // render the scene. Else, use GetMessage() to avoid eating CPU time.
+-    if( m_bActive )
++#ifdef CE_NETWORK_OFF
++    if( m_bActive )
++#else
++    if( m_bActive || CE_SessionActive() )
++#endif
+         bGotMsg = PeekMessage( &mMsg, NULL, 0U, 0U, PM_REMOVE );
+     else
+         bGotMsg = GetMessage( &mMsg, NULL, 0U, 0U );
+ 
++#ifndef CE_NETWORK_OFF
++    if (bGotMsg && CE_SessionActive() && mMsg.message == WM_QUIT)
++    {
++        CE_SessionGameSetQuit(QT_QUIT_TO_SYSTEM);
++        return FALSE;
++    }
++#endif
+     if( bGotMsg )
+     {
+@@ -782,12 +799,22 @@
+ 
+ 		HRESULT hr;
++#ifndef CE_NETWORK_OFF
++        session_device_state = 1;
++#endif
+ 		// Test the cooperative level to see if it's okay to render
+ 		if( FAILED( hr = m_pd3dDevice->TestCooperativeLevel() ) )
+ 		{
++#ifndef CE_NETWORK_OFF
++            session_device_state = 2;
++#endif
+ 			// If the device was lost, do not render until we get it back
+ 			if( D3DERR_DEVICELOST == hr )
+ 			{
+ 				cant_proc = TRUE;
+-				Sleep(10); // Port: yield while unavailable; the next iteration still pumps window events.
++#ifdef CE_NETWORK_OFF
++				Sleep(10); // Port: yield while unavailable; the next iteration still pumps window events.
++#else
++				if (!CE_SessionActive()) Sleep(10); // Network sessions yield once at their bounded service boundary.
++#endif
+ 			}
+ 
+@@ -821,5 +848,9 @@
+ 		FLOAT fAppTime        = DXUtil_Timer( TIMER_GETAPPTIME );
+ 		FLOAT fElapsedAppTime = DXUtil_Timer( TIMER_GETELAPSEDTIME );
+-		if( ( 0.0f == fElapsedAppTime ) && m_bFrameMoving )
++#ifdef CE_NETWORK_OFF
++		if( ( 0.0f == fElapsedAppTime ) && m_bFrameMoving )
++#else
++		if( ( 0.0f == fElapsedAppTime ) && m_bFrameMoving && !CE_SessionActive() )
++#endif
+ 			return S_OK;
+ 
+@@ -869,4 +900,13 @@
+ 	}*/
+ 	
++#ifndef CE_NETWORK_OFF
++    if (CE_SessionActive())
++    {
++        int service = CE_SessionSystemService(m_bActive && m_bReady, session_device_state);
++        if (service == CE_SESSION_EXIT) return FALSE;
++        if (service == CE_SESSION_WAIT) cant_proc = TRUE;
++        if (cant_proc) Sleep(10); // Bound an inactive/device-lost network loop without inventing a message.
++    }
++#endif
+ 	return	cant_proc;
+ }

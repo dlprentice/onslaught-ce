@@ -18,6 +18,7 @@ import subprocess
 import tempfile
 
 import deps
+from window_tests import private_ui_compile_args
 
 ROOT = Path(__file__).resolve().parents[2]
 SOURCE = "port/platform/common/replay.cpp"
@@ -77,7 +78,7 @@ def main():
                        f"-I{deps.PORT / 'include/linux'}", f"-I{deps.DATA / 'dxvk-native/usr/include/dxvk'}",
                        f"-I{deps.PREFIX / 'include'}", f"-I{ROOT / 'port/platform/common'}", str(path),
                        f"-L{deps.PREFIX / 'lib'}", "-lSDL3", f"-Wl,-rpath,{deps.PREFIX / 'lib'}", "-o", str(binary)]
-            result = subprocess.run(command, capture_output=True, text=True, timeout=60,
+            result = subprocess.run(command + private_ui_compile_args(ROOT / "port"), capture_output=True, text=True, timeout=60,
                                     env=dict(os.environ, TMPDIR=str(folder)))
             receipt["builds"][label] = {"source_sha256": sha(source), "window_sha256": sha(window),
                                          "driver_sha256": sha(path.read_bytes()), "command": command,

@@ -1,0 +1,15 @@
+--- a/ltshell.cpp
++++ b/ltshell.cpp
+@@ -718,7 +718,11 @@
+ //						  "Onslaught" , MB_ICONEXCLAMATION|MB_OK );
+ 
+ 	PortSessionSummary();
+-	return LT.MsgInfo();
++#ifdef CE_NETWORK_OFF
++	return LT.MsgInfo();
++#else
++	return CE_SessionExitCode(LT.MsgInfo(), LT.WantsToQuit());
++#endif
+ }
+ 
+ //-----------------------------------------------------------------------------

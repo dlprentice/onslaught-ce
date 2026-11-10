@@ -1,3 +1,6 @@
+#ifdef CE_VERSION
+#include "../../game/ce_project.h"
+#endif
 // SPDX-License-Identifier: GPL-3.0-only
 // port/platform/linux/paths.cpp: the game's Windows-style relative paths on Linux. Two roots: the player's game folder
 // (BEA_GAME_DIR, default Steam's), read only, and the port's writable folder (BEA_USER_DIR, default
@@ -5,6 +8,9 @@
 // writable folder, copying a game file there first when it is opened for update, so the install is never modified.
 // Every path component matches case-insensitively, as on Windows.
 #include "handles.h"
+#ifndef CE_NETWORK_OFF
+#include "../common/platform.h"
+#endif
 
 #include <dirent.h>
 #include <errno.h>
@@ -20,6 +26,20 @@ static char sUserDir[4096];
 const char *PortGameDir() { return sGameDir; }
 const char *PortUserDir() { return sUserDir; }
 
+#ifndef CE_NETWORK_OFF
+extern "C" int PortCachedContentRoots(char *game, size_t game_size, char *user, size_t user_size)
+{
+	if (game && game_size) game[0] = 0;
+	if (user && user_size) user[0] = 0;
+	if (!game || !user || game == user || !game_size || !user_size || !sGameDir[0] || !sUserDir[0]) return 0;
+	size_t g = strlen(sGameDir), u = strlen(sUserDir);
+	if (g >= game_size || u >= user_size) return 0;
+	memcpy(game, sGameDir, g + 1);
+	memcpy(user, sUserDir, u + 1);
+	return 1;
+}
+
+#endif
 static bool GameDirectory(int fd)
 {
 	struct stat game, here;
@@ -81,7 +101,28 @@ static int OpenUserRoot(bool create)
 	return fd < 0 ? -1 : WalkDirectories(fd, path, create);
 }
 
-void PortPathsInit()
+bool PortPathsProjectPreflight()
+{
+#ifdef CE_VERSION
+    if (PortCeProjectRequested())
+    {
+        const char* game = getenv("BEA_GAME_DIR");
+        const char* user = getenv("BEA_USER_DIR");
+        if (!PortCeProjectProfilePreflight(game, user, sizeof(sGameDir), sizeof(sUserDir))) return false;
+        int fd = open("/", O_PATH | O_DIRECTORY | O_CLOEXEC);
+        if (fd >= 0) fd = WalkDirectories(fd, user, false);
+        if (fd < 0)
+        {
+            fprintf(stderr, "CE project: the explicit user root cannot be opened without following links; no profile was initialized.\n");
+            return false;
+        }
+        close(fd);
+    }
+#endif
+    return true;
+}
+
+void PortPathsNamesOnly()
 {
 	const char *game = getenv("BEA_GAME_DIR");
 	const char *home = getenv("HOME");
@@ -97,6 +138,11 @@ void PortPathsInit()
 		snprintf(sUserDir, sizeof(sUserDir), "%s/onslaught-ce", xdg);
 	else
 		snprintf(sUserDir, sizeof(sUserDir), "%s/.local/share/onslaught-ce", home ? home : "");
+}
+
+void PortPathsInit()
+{
+	PortPathsNamesOnly();
 	int fd = OpenUserRoot(true);
 	if (fd >= 0)
 		close(fd);
@@ -263,6 +309,21 @@ bool PortGameHasFile(const char *rel)
 	char path[4096];
 	struct stat st;
 	return PortResolvePath(rel, PORT_PATH_GAME, path, sizeof(path)) == 0 && stat(path, &st) == 0 && S_ISREG(st.st_mode);
+}
+
+// Whether the port's writable folder holds its own copy of this file (ce_graphics_policy.cpp: the saved options of
+// the player's CE profile, as opposed to the file the retail game left in the game folder, which a read falls back to).
+// 1: a regular file is there; 0: definitely none (nothing, or no folder to hold it); -1: not known (a link, a folder, an
+// ambiguous spelling, an error): callers treat the file as the player's.
+int PortUserFileState(const char *rel)
+{
+	char path[4096];
+	struct stat st;
+	if (PortResolvePath(rel, PORT_PATH_SHADOW, path, sizeof(path)) != 0)
+		return -1;
+	if (lstat(path, &st) == 0)
+		return S_ISREG(st.st_mode) ? 1 : -1;
+	return errno == ENOENT || errno == ENOTDIR ? 0 : -1;
 }
 
 // Resolve spelling without creating anything, then open every parent through the protected descriptor walk. The result is an

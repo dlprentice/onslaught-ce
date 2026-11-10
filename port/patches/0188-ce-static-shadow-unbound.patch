@@ -1,0 +1,15 @@
+--- a/StaticShadows.cpp
++++ b/StaticShadows.cpp
+@@ -71,6 +71,12 @@
+ 				s->mThing->SetStaticShadow(s);
+ 			else
+ 				TRACE("Warning - unattached static shadow\n");
++#if defined(CE_VERSION)
++			// CE (patch 0188): a thing that cannot hold a static shadow (the base SetStaticShadow does nothing) leaves the shadow unbound, as the removal path does;
++			// a binding that nothing ever cleared left a stale pointer that the walk of the list used after the thing was gone (the level's end, Retry).
++			if (s->mThing && s->mThing->GetStaticShadow() != s)
++				s->mThing = NULL;
++#endif
+ 		}
+ 
+ 		for (SINT i = 0; i < s->mNumMaps; i++)

@@ -356,10 +356,28 @@ class UnpackTests(unittest.TestCase):
             receipt = (deps.PREFIX / ".bea-sdl3-build.json").read_text()
             self.assertNotIn(secret, receipt)
             deps.require_sdl_receipt("linux")
-            with patch.dict(os.environ, {"PATH": os.environ["PATH"] + ":/different-tool-search"}):
+            with patch.dict(os.environ, {"SOURCE_DATE_EPOCH": "1700000000"}):                     # the one variable the recipe still inherits
                 with self.assertRaisesRegex(SystemExit, "stale or its artifacts changed"):
                     deps.require_sdl_receipt("linux")
             deps.require_sdl_receipt("linux")
+
+    def test_the_callers_path_is_not_part_of_the_receipt_and_the_configure_path_is_fixed(self):
+        """earlier review's finding: a PATH from the builder's shell made a cache valid only for that shell. The configure's PATH is the fixed SDL_PATH."""
+        self.prepare_sdl()
+        self.assertEqual("/usr/bin:/bin", deps.SDL_PATH)
+        with patch.dict(os.environ, {"PATH": "/opt/other/bin:/usr/local/bin:/usr/bin"}):
+            self.fake_build("linux")
+            _, env = deps.sdl_recipe("linux", deps.sdl_cmake())
+            self.assertEqual("/usr/bin:/bin", env["PATH"])
+            first = deps.sdl_config_sha256("linux")
+            deps.require_sdl_receipt("linux")
+        with tempfile.TemporaryDirectory() as _synthetic_search_root, patch.dict(os.environ, {"PATH": os.pathsep.join((os.path.join(_synthetic_search_root, "sample-bin"), '/usr/bin'))}):
+            self.assertEqual(first, deps.sdl_config_sha256("linux"), "another shell's PATH gives the same configuration hash")
+            deps.require_sdl_receipt("linux")
+        with patch.dict(os.environ, {"PATH": ""}):
+            deps.require_sdl_receipt("linux")
+            _, windows = deps.sdl_recipe("windows", deps.sdl_cmake())
+            self.assertEqual(f"{deps.DATA / 'llvm-mingw/bin'}:/usr/bin:/bin", windows["PATH"], "the Windows configure puts the pinned toolchain in front of the same fixed PATH")
 
     def test_equivalent_clean_data_roots_have_identical_configuration_hashes(self):
         self.prepare_sdl()
@@ -381,7 +399,7 @@ class UnpackTests(unittest.TestCase):
                  patch.object(deps, "BUILD", root / "build-sniper"), patch.object(deps, "PREFIX", root / "prefix-sniper"), \
                  patch.object(deps, "SYSROOT", root / "sysroot-sniper"), \
                  patch.object(deps, "LLD", root / "llvm-mingw/bin/ld.lld"), \
-                 patch.dict(os.environ, {"PATH": str(root) + "-sibling/bin:/usr/bin"}):
+                 patch.dict(os.environ, {"SOURCE_DATE_EPOCH": str(root) + "-sibling"}):
                 hashes.append(deps.sdl_config_sha256("linux"))
         self.assertNotEqual(hashes[0], hashes[1])
 
@@ -526,6 +544,103 @@ class UnpackTests(unittest.TestCase):
             with self.assertRaisesRegex(SystemExit, "linked programs changed"):
                 package.package(args)
         self.assertFalse(out.exists())
+
+
+class PrefixMapTests(unittest.TestCase):
+    """The cache's paths become names in __FILE__ and the debug information, whether the cache holds its toolchains or links to shared folders outside it (a worktree's dependency cache)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix="bea-prefix-map-tests-")
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name).resolve()
+        self.shared = self.root / "shared"
+        self.cache = self.root / "cache"
+        for folder in (self.shared / "LLVM-22.1.8", self.shared / "sysroot-sniper", self.shared / "tools", self.cache):
+            folder.mkdir(parents=True)
+        (self.shared / "llvm").symlink_to("LLVM-22.1.8")                               # a link inside the shared folder, as the unpacker makes it
+        self.use(self.cache)
+
+    def use(self, data):
+        patcher = patch.object(deps, "DATA", data)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_a_cache_that_holds_its_folders_gets_no_extra_map(self):
+        (self.cache / "LLVM-22.1.8").mkdir()
+        (self.cache / "llvm").symlink_to("LLVM-22.1.8")                                  # a link that stays inside the cache is covered by the cache's own map
+        (self.cache / "sysroot-sniper").mkdir()
+        self.assertEqual([], deps.real_prefix_maps())
+        self.assertEqual([f"-ffile-prefix-map={self.cache}=deps"], deps.prefix_map_flags())
+        self.assertEqual(f"-ffile-prefix-map=/s=src -ffile-prefix-map=/b=build -ffile-prefix-map={self.cache}=deps", deps.prefix_maps_arg("/s", "/b"),
+                         "the flags of such a cache are exactly the ones it always had: no rebuild, no stale receipt")
+
+    def test_a_link_to_a_folder_outside_the_cache_maps_the_real_folder_to_the_name_a_holding_cache_gives(self):
+        (self.cache / "llvm").symlink_to(self.shared / "llvm")                            # a chain: the link, then the shared folder's own link, then the folder
+        (self.cache / "sysroot-sniper").symlink_to(self.shared / "sysroot-sniper")
+        (self.cache / "tools").symlink_to(self.shared / "tools")
+        self.assertEqual([(self.shared / "LLVM-22.1.8", "deps/LLVM-22.1.8"), (self.shared / "sysroot-sniper", "deps/sysroot-sniper"), (self.shared / "tools", "deps/tools")],
+                         deps.real_prefix_maps(), "the REAL folder (clang resolves llvm to LLVM-<version>) and the name the same folder has inside a cache that holds it")
+        self.assertEqual(f"-ffile-prefix-map={self.cache}=deps", deps.prefix_map_flags()[0], "the cache's own map stays first")
+        self.assertEqual(f"-ffile-prefix-map={self.shared / 'tools'}=deps/tools", deps.prefix_map_flags()[-1], "and the real folders come last, so that they win over a broader map of the build")
+
+    def test_two_links_to_one_folder_map_it_once_and_a_link_to_a_file_or_to_nothing_maps_nothing(self):
+        (self.cache / "a").symlink_to(self.shared / "tools")
+        (self.cache / "b").symlink_to(self.shared / "tools")
+        (self.shared / "a-file").write_text("x")
+        (self.cache / "file").symlink_to(self.shared / "a-file")
+        (self.cache / "gone").symlink_to(self.shared / "does-not-exist")
+        self.assertEqual([(self.shared / "tools", "deps/tools")], deps.real_prefix_maps())
+
+    def test_a_cache_reached_through_a_link_maps_its_real_path_too(self):
+        holder = self.root / "holder"
+        holder.mkdir()
+        (holder / "x").mkdir()
+        (self.root / "via").symlink_to(holder)
+        self.use(self.root / "via")                                                       # DATA spelled through a link: the compilers print the real path
+        self.assertEqual([(holder, "deps")], deps.real_prefix_maps())
+        self.assertEqual([f"-ffile-prefix-map={self.root / 'via'}=deps", f"-ffile-prefix-map={holder}=deps"], deps.prefix_map_flags())
+
+    def test_a_missing_cache_has_no_maps_and_the_cross_file_carries_every_flag(self):
+        self.use(self.root / "absent")
+        self.assertEqual([], deps.real_prefix_maps())
+        (self.cache / "tools").symlink_to(self.shared / "tools")
+        self.use(self.cache)
+        cross = deps.CROSS.replace("{llvm}", "/l").replace("{maps}", ", ".join(f"'{flag}'" for flag in deps.prefix_map_flags()))
+        self.assertIn(f"c_args = ['-m32', '-ffile-prefix-map={self.cache}=deps', '-ffile-prefix-map={self.shared / 'tools'}=deps/tools']", cross)
+        self.assertIn(f"cpp_args = ['-m32', '-ffile-prefix-map={self.cache}=deps', '-ffile-prefix-map={self.shared / 'tools'}=deps/tools']", cross)
+        self.assertNotIn("{maps}", cross)
+        self.assertNotIn("{data}", cross)
+
+    def test_every_dependency_compile_site_uses_the_helpers_and_none_spells_the_cache_map_by_hand(self):
+        text = (Path(deps.__file__)).read_text(encoding="utf-8")
+        self.assertEqual(0, text.count("=deps\""), "no site spells -ffile-prefix-map=<DATA>=deps itself")
+        self.assertEqual(4, text.count("prefix_maps_arg(SRC,"), "the SDL and library builds, Linux and Windows")
+        self.assertIn('.replace("{maps}"', text, "and the Meson cross file")
+        build = (Path(deps.__file__).resolve().parents[1] / "build.py").read_text(encoding="utf-8")
+        self.assertIn("(RESOLVED, \".\"), *deps.real_prefix_maps())", build, "the game's own objects: the real folders last")
+
+
+# The canonical dependency cache's SDL receipts were written when deps.py hashed to this value. sdl_expected() hashes the
+# whole file, so any edit to deps.py, a docstring or a comment included, makes that cache refuse every build. Change the
+# file only together with a deliberate cache rebuild, then replace this constant (port/README.md, "Dependency cache
+# identity").
+RECIPE_FILE_SHA256 = "f5c9fa1e44c46b1083d78307c4c04b95c0ef2fefc4cfe7575b4bd2b8866fa6ce"
+
+
+class RecipeIdentityTests(unittest.TestCase):
+    def test_deps_py_still_hashes_to_the_value_the_existing_caches_recorded(self):
+        got = hashlib.sha256(Path(deps.__file__).read_bytes()).hexdigest()
+        self.assertEqual(RECIPE_FILE_SHA256, got,
+                         "deps.py changed: every existing SDL receipt is now stale. Revert the edit (prose included), or "
+                         "rebuild the cache deliberately and update RECIPE_FILE_SHA256 and port/README.md")
+
+    def test_the_sdl_receipt_identity_is_that_file_hash(self):
+        with patch.object(deps, "lock", return_value={"SDL3": {}}), \
+                patch.object(deps, "patch_identity", return_value=({}, None)), \
+                patch.object(deps, "checked_stamp", return_value=(None, "tree")), \
+                patch.object(deps, "sdl_config_sha256", return_value="config"):
+            expected = deps.sdl_expected("linux")
+        self.assertEqual(RECIPE_FILE_SHA256, expected["recipe_sha256"])
 
 
 if __name__ == "__main__":

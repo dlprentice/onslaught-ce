@@ -13,6 +13,7 @@
 #include "text.h"
 #include "ltshell.h"
 #include "ce_tutorial_pad.h"
+#include "ce_dodge_assist.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -282,6 +283,57 @@ void DodgeFallback(char *out, int size, bool timingKnown, const char *timing)
 	else snprintf(out, size, "Ground dodge: fully strafe one way, then the other. Timing varies.");
 }
 
+// "left stick left or right" from "left stick left" and "left stick right"; otherwise the two names with "or" between them.
+void PadEither(const char *left, const char *right, char *out, int size)
+{
+	const char *l = strrchr(left, ' '), *r = strrchr(right, ' ');
+	if (l && r && DirectionOrNumber(l + 1) && DirectionOrNumber(r + 1) &&
+		l - left == r - right && !strncmp(left, right, (size_t)(l - left)))
+		snprintf(out, size, "%s or %s", left, r + 1);
+	else
+		snprintf(out, size, "%s or %s", left, right);
+}
+
+// The gamepad button that is the Dodge Button, named as the other pad inputs are, for the player's own pad: only a gamepad has one,
+// and only while the button is not bound to a control of the player's own.
+bool DodgeButtonName(CDXBitmapFont *font, char *out, int size)
+{
+	int playerPad = PlayerPad();
+	if (playerPad < 0 || playerPad >= LT.mJoypads || playerPad >= MAX_JOYPADS || !PortCeDodgeAssistPadFree(playerPad)) return false;
+	CeTutorialPadInfo info = {};
+	if (!LT.mUnknown33474[playerPad] || !PortCeTutorialPadInfo(LT.pJoystick[playerPad], &info) || info.kind == CE_TUTORIAL_STICK) return false;
+	SControlInput input = {playerPad, BUTTON_ON, CE_DODGE_PAD_BUTTON, 0};
+	return PadInputName(input, BUTTON_MECH_MORPH, info, LT.mJoypadIsNewtype[playerPad], font, out, size);
+}
+
+// The cue when the Dodge Button is on (CE Settings) and this player can use it: the key and the gamepad button, then the old double tap
+// with the actual keys when there is room. The Dodge Button works with whatever strafe inputs the player has, so it says "strafe".
+// False when it is off or unusable here: the cue is then the one built from the bindings alone.
+bool DodgeAssistLine(CDXBitmapFont *font, bool keys, const char *left, const char *right, bool pad, const char *padLeft, const char *padRight,
+	bool timingKnown, const char *timing, char *line, int size)
+{
+	char button[32] = {};
+	const bool on = PortCeDodgeAssistOn();
+	const bool key = on && PlayerPad() == 0 && PortCeDodgeAssistKeyFree();
+	const bool padButton = on && DodgeButtonName(font, button, sizeof(button));
+	if (!key && !padButton) return false;
+	char hold[96], strafe[96] = "strafe left or right", old[96] = "", either[64] = "";
+	if (key && padButton) snprintf(hold, sizeof(hold), "hold Left Ctrl or %s", button);
+	else if (key) snprintf(hold, sizeof(hold), "hold Left Ctrl");
+	else snprintf(hold, sizeof(hold), "hold %s", button);
+	if (pad) PadEither(padLeft, padRight, either, sizeof(either));
+	if (key && !padButton && keys) snprintf(strafe, sizeof(strafe), "press %s or %s", left, right);
+	else if (!key && padButton && pad) snprintf(strafe, sizeof(strafe), "push %s", either);
+	if (keys) snprintf(old, sizeof(old), " Or tap %s then %s%s%s.", left, right, timingKnown ? " " : "", timingKnown ? timing : "");
+	if (keys && timingKnown) snprintf(old, sizeof(old), " Or tap %s then %s %s apart.", left, right, timing);
+	for (int form = 0; form < 2; ++form)
+	{
+		snprintf(line, size, "Ground dodge: %s and %s.%s", hold, strafe, form == 0 ? old : "");
+		if (strlen(line) < (size_t)kBufferSize && Printable(font, line)) return true;
+	}
+	return false;
+}
+
 bool Build(int kind, WCHAR *out)
 {
 	CDXBitmapFont *font = PLATFORM.Font(FONT_NORMAL);
@@ -314,7 +366,9 @@ bool Build(int kind, WCHAR *out)
 		bool pad = PadPair(BUTTON_MECH_STRAFE_LEFT, BUTTON_MECH_STRAFE_RIGHT, font, padLeft, padRight);
 		char sequence[64] = {};
 		if (pad) PadSequence(padLeft, padRight, sequence, sizeof(sequence));
-		if (pad && keys)
+		if (DodgeAssistLine(font, keys, left, right, pad, padLeft, padRight, timingKnown, timing, line, sizeof(line)))
+			;
+		else if (pad && keys)
 		{
 			if (timingKnown)
 				snprintf(line, sizeof(line), "Ground dodge: %s then %s or fully push %s %s apart. Reverse for left.", left, right, sequence, timing);

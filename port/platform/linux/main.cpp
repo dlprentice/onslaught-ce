@@ -2,7 +2,18 @@
 // port/platform/linux/main.cpp: the Linux entry point. It sets up the path layer and SDL, then runs the game's own
 // WinMain (src/ltshell.cpp) with the command line rebuilt from argv, as Windows would pass it.
 #include "handles.h"
+#include "../common/mods.h"
 #include "../common/platform.h"
+#include "../common/feel.h"
+#ifdef CE_VERSION
+#include "../../game/ce_project.h"
+#endif
+#ifndef CE_NETWORK_OFF
+#include "../common/ce_netlobby.h"
+#if defined(CE_NETWORK_SIGNALING)
+#include "../../network/signaling_https.h"
+#endif
+#endif
 
 #include <SDL3/SDL.h>
 #include <stdio.h>
@@ -23,6 +34,21 @@ int main(int argc, char **argv)
 		printf("Onslaught CE V%s\n", CE_VERSION);
 		return 0;
 	}
+	if (argc > 1 && !strcmp(argv[1], "--check-mods"))	// the loader's startup checks and nothing else (mods.h)
+	{
+		PortPathsNamesOnly();
+		int status = PortModsCheck(argc - 2, argv + 2);
+		fflush(NULL);
+		_exit(status);
+	}
+#endif
+    if (!PortPathsProjectPreflight()) return 1;
+#ifndef CE_NETWORK_OFF
+#if defined(CE_NETWORK_SIGNALING)
+	// The pinned curl global lifecycle begins before any SDL/audio worker can
+	// start. Failure leaves the explicit signaling factory unavailable.
+	(void)CeInitializeSignalHttps();
+#endif
 #endif
 	PortPathsInit();
 	// dxvk-native finds its window system through this; SDL3 is the port's.
@@ -53,6 +79,10 @@ int main(int argc, char **argv)
 		fprintf(stderr, PORT_LOG_PREFIX "game folder %s, writable folder %s\n", PortGameDir(), PortUserDir());
 	unsetenv("BEA_CE_GAME_FOLDER_LOGGED");
 	int rc = WinMain(GetModuleHandleA(NULL), NULL, cmdline, SW_SHOWNORMAL);
+#ifdef CE_VERSION
+	// The game's shell drops CSystem::Run's result and returns its last message's value, whichever way the level ended.
+	if (PortCeProjectRequested()) rc = PortCeProjectExitStatus();
+#endif
 	PortSessionSummary();
 	SDL_Quit();
 	// The process ends as on Windows, where ExitProcess stops every other thread before a DLL's detach code runs:
@@ -65,8 +95,15 @@ int main(int argc, char **argv)
 	// do that outlives the process. It restores the accessibility keys, which the SystemParametersInfoA stub
 	// (port/platform/linux/user.cpp) reports as off, so there is nothing to restore; the rest frees PATCHMANAGER data
 	// and shuts down RECONNECT_INTERFACE and the memory manager, all in memory with no file writes.
+	if (PORT_FEEL_ON()) PortFeelFlush();		// the frame-feel log (feel.h): _exit below runs no atexit handler
 	PortReplayAtExit();
 	fflush(NULL);
+#ifndef CE_NETWORK_OFF
+	// A network game's restart (ce_netlobby.h): into the game process after the lobby's Start, or back to the front end
+	// after the match. It replaces this process and returns only when nothing is due.
+	CE_LobbyAfterExit();
+	// The test-only exit hook runs last, right before _exit, after every other exit step has had its turn.
+#endif
 	if (PortExitHook)
 		PortExitHook(rc);
 	_exit(rc);

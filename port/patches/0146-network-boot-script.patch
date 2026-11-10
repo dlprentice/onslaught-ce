@@ -1,0 +1,24 @@
+--- a/game.cpp
++++ b/game.cpp
+@@ -1364,12 +1364,20 @@
+ 	CONSOLE.SetLoadingFraction(0.6f);
+ 
+ 	// Execute startup script (on every level load... ^-^;;)
++#ifndef CE_NETWORK_OFF
++	int ce_script = CE_BootAutomaticScript();
++	if (ce_script < 0) return (EQuitType)CE_SessionGameAbortLoad();
++#endif
+ #ifdef CE_VERSION
+ 	// Patch 0100: the CE layer never runs a script file (its commands are unbounded and include bind); replays,
+ 	// recordings and the faithful build run it as retail does.
+ 	if (!PortCeLayer())
+ #endif
+-	CONSOLE.Exec("autoexec.con");	
++#ifdef CE_NETWORK_OFF
++	CONSOLE.Exec("autoexec.con");	
++#else
++	if (ce_script > 0) CONSOLE.Exec("autoexec.con");	
++#endif
+ 
+ 	CONSOLE.SetLoadingFraction(0.7f);
+ 

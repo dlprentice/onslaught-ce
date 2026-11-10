@@ -55,7 +55,11 @@ struct CMenuItem {
     virtual ~CMenuItem() = default;
     virtual void Render(float, float, BOOL) {}
 };
+// ce.cpp's switches for the unfinished features: the page tables that follow hold their rows too (the help text is measured for all of them).
+bool PortCeExperimental(const char *) { return true; }
 #include "cheats_help.inc"
+// The tables' two helpers for the experimental modes belong to the menu this driver does not build; named here so that they count as used.
+static const bool tablesHelpersLinked = (ExperimentalOffered(0) || PlanText(0) != nullptr);
 
 // Run the real camera input handler with an identity transform and a fake pause boundary.
 // This checks key actions, not the game's camera maths or rendering.
@@ -86,8 +90,9 @@ struct CControllableCamera {
 };
 #include "camera_actions.inc"
 
+static const char *current_page = "";		// the page the help-fit loop is measuring, named in its failures
 static void check(bool condition, const char *message) {
-    if (!condition) { std::fprintf(stderr, "FAIL: %s\n", message); std::exit(2); }
+    if (!condition) { std::fprintf(stderr, "FAIL: %s%s%s%s\n", message, *current_page ? " (page: " : "", current_page, *current_page ? ")" : ""); std::exit(2); }
 }
 static std::wstring compact(std::wstring text) {
     text.erase(std::remove(text.begin(), text.end(), L' '), text.end());
@@ -153,25 +158,58 @@ int main() {
           "the Cheats page's standing note");
     for (int page = 0; page < CEP_COUNT; ++page) check(std::wcslen(kCeTitles[page]) > 0 && std::wcslen(kCeTitles[page]) < 24, "page titles");
 
-    // MenuOptionsList::Render centres N rows of 20 px at y=300 (the page has no title row): the first row is at 285-10N, so
-    // Back, the last, is at 265+10N. Every page's hints, for every row, must fit between Back and the help bar.
-    struct Page { const char *name; const SCeHint *hints; int stride; int count; const WCHAR *note; };
+    // MenuOptionsList::Render centres N rows of 20 px (Back is the last) on the page's y (the page has no title row): the first row
+    // is at y-10N-15 and Back at y+10N-35. Most pages are centred on 300; CE Settings, with thirteen rows, is centred on 260. Every
+    // page's hints, for every row, must fit between Back and the help bar, and every first row must be below the title bar.
+    struct Page { const char *name; const SCeHint *hints; int stride; int count; const WCHAR *note; float centre; };
+    // The Help and plan hints as the page shows them without the experimental modes (the hints that replace the ones naming the commander map
+    // and the Map Editor), and the settings without the Commander Map row: all measured here as well.
+    static SCeRow plainHelp[sizeof(kHelpRows) / sizeof(kHelpRows[0])];
+    for (size_t i = 0; i < sizeof(kHelpRows) / sizeof(kHelpRows[0]); ++i) plainHelp[i] = kHelpRows[i];
+    plainHelp[0].mHint.mHelp = kControlsHintPlain;
+    static SCeHint plainPlans[CE_NUM_PLANS];
+    for (int i = 0; i < CE_NUM_PLANS; ++i) plainPlans[i] = kPlanHints[i];
+    for (const SCePlanPlain &plain : kPlanPlain) plainPlans[plain.mIndex].mHelp = plain.mHint;
+    static SCeSetting plainSettings[CE_NUM_SETTINGS];
+    int plainCount = 0;
+    for (const SCeSetting &setting : kSettings) if (std::strcmp(setting.mKey, "commander")) plainSettings[plainCount++] = setting;
     const Page pages[] = {
-        {"hub", &kHubRows[0].mHint, int(sizeof(SCeRow)), int(sizeof(kHubRows) / sizeof(kHubRows[0])), nullptr},
-        {"bonus levels", &kBonusRows[0].mHint, int(sizeof(SCeRow)), CE_NUM_BONUS, nullptr},
-        {"settings", kSettingsHints, int(sizeof(SCeHint)), CE_NUM_SETTINGS, nullptr},
-        {"cheats", &kCheats[0].mHint, int(sizeof(SCeCheat)), CE_NUM_CHEATS, kCheatsNote},
-        {"help", &kHelpRows[0].mHint, int(sizeof(SCeRow)), int(sizeof(kHelpRows) / sizeof(kHelpRows[0])), nullptr},
-        {"plans", kPlanHints, int(sizeof(SCeHint)), CE_NUM_PLANS, nullptr},
+        {"hub", &kHubRows[0].mHint, int(sizeof(SCeRow)), int(sizeof(kHubRows) / sizeof(kHubRows[0])), nullptr, kCeListY},
+        {"bonus levels", &kBonusRows[0].mHint, int(sizeof(SCeRow)), CE_NUM_BONUS, nullptr, kCeListY},
+        {"settings", &kSettings[0].mHint, int(sizeof(SCeSetting)), CE_NUM_SETTINGS, nullptr, kCeSettingsY},
+        {"cheats", &kCheats[0].mHint, int(sizeof(SCeCheat)), CE_NUM_CHEATS, kCheatsNote, kCeListY},
+        {"help", &kHelpRows[0].mHint, int(sizeof(SCeRow)), int(sizeof(kHelpRows) / sizeof(kHelpRows[0])), nullptr, kCeListY},
+        {"plans", kPlanHints, int(sizeof(SCeHint)), CE_NUM_PLANS, nullptr, kCeListY},
+        {"help without the experimental modes", &plainHelp[0].mHint, int(sizeof(SCeRow)), int(sizeof(kHelpRows) / sizeof(kHelpRows[0])), nullptr, kCeListY},
+        {"plans without the experimental modes", plainPlans, int(sizeof(SCeHint)), CE_NUM_PLANS, nullptr, kCeListY},
+        {"settings without the Commander Map row", &plainSettings[0].mHint, int(sizeof(SCeSetting)), plainCount, nullptr, kCeSettingsY},
+        {"hub without the experimental rows", &kHubRows[0].mHint, int(sizeof(SCeRow)), 5, nullptr, kCeListY},
+#ifndef CE_NETWORK_OFF
+        {"hub with network unavailable", &kHubRows[1].mHint, int(sizeof(SCeRow)), int(sizeof(kHubRows) / sizeof(kHubRows[0])) - 1, nullptr, kCeListY},
+#endif
     };
-    check(pages[0].count == 5 && pages[1].count == 7 && pages[2].count == 1 && pages[4].count == 5 && pages[5].count == 9,
-          "every page's rows");
+    // The hub's rows: Bonus Levels, CE Settings, Cheats, Help & Info, Report a Problem, and the three experimental ones (Map Editor, Museum
+    // Prototype, Goodies Gallery); with the network compiled in, Network Game is the first.
+#ifdef CE_NETWORK_OFF
+    const int hub_count = 8;
+#else
+    const int hub_count = 9;
+    check(pages[10].count == 8, "the hub without an offered network row");
+#endif
+    check(pages[0].count == hub_count && pages[1].count == 7 && pages[2].count == 13 && pages[4].count == 5 && pages[5].count == 9 &&
+          pages[8].count == 12 && pages[7].count == 9 && pages[6].count == 5, "every page's rows");
     for (const Page &page : pages) {
-        const float back_y = 265.f + 10.f * float(page.count + 1);
+        current_page = page.name;
+        const float first_y = page.centre - 10.f * float(page.count + 1) - 15.f;
+        const float back_y = page.centre + 10.f * float(page.count + 1) - 35.f;
+        check(first_y >= 104.f, "the first row is below the title bar");
         check(back_y + 20.f < 449.f, "Back is above the help bar");
         for (int width : {7, 8, 9, 10}) {
             PLATFORM.font.advance = width;
             for (int i = 0; i <= page.count; ++i) {
+                char where[160];
+                std::snprintf(where, sizeof where, "%s, row %d, glyph advance %d", page.name, i, width);
+                current_page = where;
                 // the last selection is Back itself, which has no hint
                 CMenuOptionsList list;
                 list.mSelected = i;
@@ -191,7 +229,10 @@ int main() {
                 if (page.note) check(drawn(help + code, bottom) == compact(page.note), "note survives word wrapping");
                 for (const Draw &line : draws) check(line.width < 420, "line fits help width");
                 if (help + code && bottom) check(draws[help + code - 1].y + 16.f <= draws[help + code].y, "help and code do not overlap note");
-                if (help + code) check(draws[help + code - 1].y + 16.f <= 449.f, "help stays above the help bar");
+                if (help + code) {
+                    std::snprintf(where, sizeof where, "%s, row %d, glyph advance %d, %d help and %d code lines, last at y %.0f", page.name, i, width, help, code, double(draws[help + code - 1].y));
+                    check(draws[help + code - 1].y + 16.f <= 449.f, "help stays above the help bar");
+                }
                 if (bottom) check(draws.back().y + 16.f <= 449.f, "note stays above help bar");
                 check(help + code <= 5, "a hint is five lines at most");
             }

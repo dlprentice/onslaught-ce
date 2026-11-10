@@ -1,0 +1,12 @@
+--- a/game.cpp
++++ b/game.cpp
+@@ -552,6 +552,9 @@
+ //******************************************************************************************
+ void	CGame::ShutdownRestartLoop()	// FUNCTION: 0x0046ca70
+ {	
++#ifndef CE_NETWORK_OFF
++	mQuit = (EQuitType)CE_SessionBeginTeardown(mQuit);
++#endif
+ #ifdef CE_VERSION
+ 	PortSessionLog(PORT_SESSION_GAME, false, "leave level=%d phase=%d quit=%d", mCurrentLevel, (int)mGameState, (int)mQuit);
+ #endif

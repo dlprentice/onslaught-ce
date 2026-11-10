@@ -107,6 +107,10 @@ size_t gCount, gNext;
 FILE *gProbes;
 unsigned gEvery = 50, gMax;
 bool gActive, gInit, gObjects;
+#ifndef CE_NETWORK_OFF
+bool gPacingObserved;
+long gReplaySleepUs;
+#endif
 long gMouseX, gMouseY, gMouseZ;
 int gButtons;
 FILE *gRecord;
@@ -740,7 +744,16 @@ void PortReplayFrame(unsigned frame, HWND window)
 {
 	if (!gInit)
 		Init();
+#ifdef CE_NETWORK_OFF
 	static long sleepUs = getenv("BEA_PORT_REPLAY_SLEEP_US") ? atol(getenv("BEA_PORT_REPLAY_SLEEP_US")) : 0;
+#else
+	if (!gPacingObserved)
+	{
+		gReplaySleepUs = getenv("BEA_PORT_REPLAY_SLEEP_US") ? atol(getenv("BEA_PORT_REPLAY_SLEEP_US")) : 0;
+		gPacingObserved = true;
+	}
+	const long sleepUs = gReplaySleepUs;
+#endif
 	if (sleepUs > 0)
 		SDL_DelayNS((Uint64)sleepUs * 1000);	// a test switch: the main thread sleeps at each Present, as record mode's pacing does
 	if (gRecording)
@@ -922,3 +935,16 @@ void PortRecordButton(int bit, bool down)
 
 // window.cpp uses this before consuming a deferred SDL event or clearing a synthetic held-key lifetime.
 bool PortRecordInputSpace(unsigned slots) { return RecordSpace(slots); }
+
+#ifndef CE_NETWORK_OFF
+// Pure actual-owner status. A genuine Present must have observed the pacing option too.
+// Do not call Init or a consuming input API to manufacture a known-idle admission result.
+extern "C" int CE_NetAutomationIdle(void)
+{
+	if (!gInit || !gPacingObserved) return -1;
+	return !gActive && !gRecording && !gProbes && !gPilot && !gTapeCursor &&
+		!gRecord && !gRecordFailed && !gRecordStageOwned && !gPendingCount &&
+		!gEvents && !gCount && !gObjects && !gMax && gReplaySleepUs <= 0 ? 1 : 0;
+}
+
+#endif

@@ -1,0 +1,186 @@
+--- a/game.cpp
++++ b/game.cpp
+@@ -1,3 +1,6 @@
++#ifdef CE_VERSION
++#include "ce_editor.h"
++#endif
+ #ifndef CE_NETWORK_OFF
+ #include "ce_network_lockstep.h"
+ #endif
+@@ -561,7 +564,11 @@
+ }
+ //******************************************************************************************
+ void	CGame::ShutdownRestartLoop()	// FUNCTION: 0x0046ca70
+-{	
++{
++#ifdef CE_VERSION
++	PortCeEditorLevelEnd();
++#endif
++	
+ #ifndef CE_NETWORK_OFF
+ 	mQuit = (EQuitType)CE_SessionBeginTeardown(mQuit);
+ #endif
+@@ -909,6 +916,9 @@
+ #ifdef CE_VERSION
+ 	PortSessionLog(PORT_SESSION_GAME, false, "post-load level=%d ready players=%d", mCurrentLevel, mPlayers);
+ #endif
++	#ifdef CE_VERSION
++	if (PortCeEditorActive() && !PortCeEditorAfterLoad()) return FALSE;
++#endif
+ 	return TRUE;
+ }
+ 
+@@ -1133,6 +1143,10 @@
+ //******************************************************************************************
+ void	CGame::RunIntroFMV()	// FUNCTION: 0x0046d890
+ {
++#ifdef CE_VERSION
++	if (PortCeEditorActive()) return;
++#endif
++
+ 	SINT	fmv = GetIntroFMV();
+ 
+ 	if (fmv != -1)
+@@ -1167,6 +1181,10 @@
+ //******************************************************************************************
+ void	CGame::RunOutroFMV()	// FUNCTION: 0x0046d9f0
+ {
++#ifdef CE_VERSION
++	if (PortCeEditorActive()) return;
++#endif
++
+ #ifdef E3BUILD
+ 	return;
+ #endif
+@@ -1293,6 +1311,12 @@
+ 
+ EQuitType	CGame::RestartLoopRunLevel(SINT aLevel)	// FUNCTION: 0x0046dc30
+ {
++#ifdef CE_VERSION
++	const bool ceEditorAuthoring = PortCeEditorActive();
++#else
++	const bool ceEditorAuthoring = false;
++#endif
++
+ 	if( !mFirstTimeRound )
+ 		CONSOLE.SetLoadingRange( 0.f, 80.f );
+ 
+@@ -1407,9 +1431,9 @@
+ 	if (!PortCeLayer())
+ #endif
+ #ifdef CE_NETWORK_OFF
+-	CONSOLE.Exec("autoexec.con");	
++	(ceEditorAuthoring ? (void)0 : CONSOLE.Exec("autoexec.con"));	
+ #else
+-	if (ce_script > 0) CONSOLE.Exec("autoexec.con");	
++	if (ce_script > 0) (ceEditorAuthoring ? (void)0 : CONSOLE.Exec("autoexec.con"));	
+ #endif
+ 
+ 	CONSOLE.SetLoadingFraction(0.7f);
+@@ -2300,6 +2324,10 @@
+ //******************************************************************************************
+ void	CGame::PreRun()
+ {
++#ifdef CE_VERSION
++	if (PortCeEditorActive()) return;
++#endif
++
+ 	if (!CLIPARAMS.mBuildResources)
+ 	{
+ 		// runs the game for a defined time ( in mPreRunTime attribute )
+@@ -2313,6 +2341,10 @@
+ //******************************************************************************************
+ void	CGame::MainLoop()	// FUNCTION: 0x0046eee0
+ {
++#ifdef CE_VERSION
++	PortCeEditorFrame();
++#endif
++
+ 
+ #if ENABLE_PROFILER==1
+ 	CProfiler::ResetAll();
+--- a/FrontEnd.cpp
++++ b/FrontEnd.cpp
+@@ -1,3 +1,6 @@
++#ifdef CE_VERSION
++#include "ce_editor.h"
++#endif
+ #if defined(CE_VERSION)
+ void PortCeGamepadBeginCycle();
+ #endif
+@@ -232,6 +235,13 @@
+ 	GAME.mRenderFrameNumber=0;
+ 
+ 	// start point
++#ifdef CE_VERSION
++	if (PortCeEditorTakeReturn())
++	{
++		mActivePage = FEP_LANGUAGE_TEST;
++	}
++	else
++#endif
+ 	if (CLIPARAMS.mGoStraightToDeviceSelectScreen != -1)
+ 	{
+ 		// We were on the "new career" screen before we went to the xbox dashboard
+--- a/ltshell.cpp
++++ b/ltshell.cpp
+@@ -1,3 +1,6 @@
++#ifdef CE_VERSION
++#include "ce_editor.h"
++#endif
+ #ifndef CE_NETWORK_OFF
+ #include "ce_network_boot.h"
+ #endif
+@@ -1448,7 +1451,8 @@
+ 		{
+ 			gKeyPressed = true;
+ #ifdef CE_VERSION
+-			if (PortCePhotoKey(key, (lParam & 0x40000000) != 0)) {}	// patch 0108: F11 photo mode, F12 screenshot
++			if (PortCeEditorKey(key, (lParam & 0x40000000) != 0)) {}
++			else if (PortCePhotoKey(key, (lParam & 0x40000000) != 0)) {}	// patch 0108: F11 photo mode, F12 screenshot
+ 			else if (PortCePaletteSuppressDown(key)) {}
+ 			else if (PortCePaletteOpen(key, (lParam & 0x40000000) != 0)) {}
+ 			else if (PortCeCmdKey(key, (lParam & 0x40000000) != 0)) {}	// patch 0162: the commander map's open key
+--- a/DXEngine.cpp
++++ b/DXEngine.cpp
+@@ -1,3 +1,6 @@
++#ifdef CE_VERSION
++#include "ce_editor.h"
++#endif
+ // DXEngine.cpp: implementation of the CDXEngine class.
+ //
+ //////////////////////////////////////////////////////////////////////
+@@ -1317,6 +1320,7 @@
+ 	void PortCeCmdRender();	// patch 0162: port/game/ce_cmdmap.cpp (declared here, not with the others, so that this patch does not lean on theirs)
+ 	if (!gMirrorPass)
+ 		PortCeCmdRender();	// the commander map, over everything else the frame drew
++		PortCeEditorRender();
+ #endif
+ 	PLATFORM.EndScene();
+ 
+--- a/actor.cpp
++++ b/actor.cpp
+@@ -1,4 +1,7 @@
+ #include "common.h"
++#ifdef CE_VERSION
++#include "ce_editor.h"
++#endif
+ #include "map.h"
+ #include "actor.h"
+ #include "DebugLog.h"
+@@ -292,6 +295,15 @@
+ 
+ FVector CActor::GetRenderPos()	// FUNCTION: 0x00401be0
+ {
++#ifdef CE_VERSION
++	// CE_EDITOR_CURRENT_TRANSLATION_BEGIN
++	{
++		FVector ceEditorPosition;
++		if (PortCeEditorDrawPosition(this, &ceEditorPosition))
++			return ceEditorPosition;
++	}
++	// CE_EDITOR_CURRENT_TRANSLATION_END
++#endif
+ 	return mOldPos+((mPos-mOldPos) * GAME.GetFrameRenderFraction()) ;
+ }
+ 

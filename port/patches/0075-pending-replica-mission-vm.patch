@@ -1,0 +1,95 @@
+--- a/MissionScript/vm.cpp
++++ b/MissionScript/vm.cpp
+@@ -1,3 +1,6 @@
++#ifndef CE_NETWORK_OFF
++#include "ce_network_session.h"
++#endif
+ // vm.cpp: the mission-script VM (reconstructed from the retail object, 005398a0..00539c70; not in Stuart's release;
+ // the file's name is ours, after vm.h).
+ 
+@@ -39,6 +42,15 @@
+ // a script's handler for an event, with its arguments on the stack; the object code's init code runs first, once
+ void	CVM::CallEvent(CMissionScriptObjectCode *code, int event, CDataType **args, int num_args)	// FUNCTION: 0x00539990
+ {
++#ifndef CE_NETWORK_OFF
++	if (CE_SessionMissionVMBlocked())
++	{
++		for (int i = 0; i < num_args; ++i) delete args[i];
++		Clean();
++		return;
++	}
++
++#endif
+ 	if (mStack.mNumValues)
+ 		LOG.AddMessage("FATAL ERROR: stack not empty on call");
+ 
+@@ -69,6 +81,15 @@
+ // the code at pc (an event function's entry), with its arguments on the stack
+ void	CVM::CallFunction(CMissionScriptObjectCode *code, int pc, CDataType **args, int num_args)	// FUNCTION: 0x00539a60
+ {
++#ifndef CE_NETWORK_OFF
++	if (CE_SessionMissionVMBlocked())
++	{
++		for (int i = 0; i < num_args; ++i) delete args[i];
++		Clean();
++		return;
++	}
++
++#endif
+ 	mCode = code;
+ 	if (!code->mInitRun && code->mUnknown5c)
+ 	{
+@@ -88,6 +109,10 @@
+ //******************************************************************************************
+ void	CVM::GotoInstruction(int pc)	// FUNCTION: 0x00539ae0
+ {
++#ifndef CE_NETWORK_OFF
++	if (CE_SessionMissionVMBlocked()) { Clean(); return; }
++
++#endif
+ 	mPC = pc;
+ 	Run();
+ }
+--- a/MissionScript/IScript.cpp
++++ b/MissionScript/IScript.cpp
+@@ -1,3 +1,6 @@
++#ifndef CE_NETWORK_OFF
++#include "ce_network_session.h"
++#endif
+ // IScript.cpp: a thing's mission script and the natives scripts call (reconstructed from the retail object,
+ // 0052fe30..0053873f; not in Stuart's release). The allocations' line numbers are retail's (__FILE__ 0064fa40).
+ #define ISCRIPT_CPP
+@@ -320,6 +323,10 @@
+ // PlayAnimationWait's script resumes where it stopped
+ void	IScript::FinishedPlayingAnim()	// FUNCTION: 0x00533840
+ {
++#ifndef CE_NETWORK_OFF
++	if (CE_SessionMissionVMBlocked()) return; // owned continuations remain with the native destructor
++
++#endif
+ 	if (!mAnimVM)
+ 		return;
+ 
+@@ -2063,6 +2070,10 @@
+ //******************************************************************************************
+ void	IScript::HandleEvent(CEvent *event)	// FUNCTION: 0x005385e0
+ {
++#ifndef CE_NETWORK_OFF
++	if (CE_SessionMissionVMBlocked()) return; // owned continuations remain with the native destructor
++
++#endif
+ 	switch (event->GetEventNum())
+ 	{
+ 	case SCRIPT_MESSAGE_FOLLOW_WAYPOINT:
+--- a/game.cpp
++++ b/game.cpp
+@@ -1592,6 +1592,9 @@
+ 	if( !Init() )
+ 	{
+ 		Shutdown();
++#ifndef CE_NETWORK_OFF
++		CE_SessionAfterWorldShutdown();
++#endif
+ 		return QT_LOAD_ERROR;
+ 	}	
+ 

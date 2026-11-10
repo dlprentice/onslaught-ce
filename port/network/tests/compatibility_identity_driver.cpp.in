@@ -1,0 +1,96 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// The runner inserts the actual Windows stamp and Read bodies. Only the OS API seam is authored here;
+// real short FILE streams carry different bytes. This is not a Windows filesystem/runtime test.
+#include <cassert>
+#include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <filesystem>
+#include <string>
+#include <monocypher.h>
+#include "fixture_guard.h"
+namespace fs = std::filesystem;
+using DWORD = uint32_t;
+using HANDLE = void *;
+struct FILETIME { DWORD dwLowDateTime, dwHighDateTime; };
+struct BY_HANDLE_FILE_INFORMATION {
+    DWORD dwFileAttributes;
+    FILETIME ftCreationTime, ftLastAccessTime, ftLastWriteTime;
+    DWORD dwVolumeSerialNumber, nFileSizeHigh, nFileSizeLow, nNumberOfLinks, nFileIndexHigh, nFileIndexLow;
+};
+struct FILE_ID_128 { uint8_t Identifier[16]; };
+struct FILE_ID_INFO { uint64_t VolumeSerialNumber; FILE_ID_128 FileId; };
+enum FILE_INFO_BY_HANDLE_CLASS { FileIdInfo = 18 };
+constexpr DWORD FILE_TYPE_DISK = 1, FILE_ATTRIBUTE_DIRECTORY = 16, FILE_ATTRIBUTE_REPARSE_POINT = 1024,
+    FILE_READ_ATTRIBUTES = 128, FILE_SHARE_READ = 1, FILE_SHARE_WRITE = 2, FILE_SHARE_DELETE = 4,
+    OPEN_EXISTING = 3, FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000;
+#define INVALID_HANDLE_VALUE ((HANDLE)(intptr_t)-1)
+struct Native {
+    BY_HANDLE_FILE_INFORMATION legacy{};
+    uint64_t volume = 0x100000001ull, low = 7, high = 1;
+    std::string path;
+};
+static Native inventory, opened;
+static FILE *stream;
+static bool fail_full, fail_legacy, fail_close, wrong_type;
+static unsigned full_queries;
+DWORD GetFileType(HANDLE) { return wrong_type ? 3 : FILE_TYPE_DISK; }
+bool GetFileInformationByHandle(HANDLE h, BY_HANDLE_FILE_INFORMATION *out) {
+    if (fail_legacy && h == &opened) return false;
+    *out = static_cast<Native *>(h)->legacy; return true;
+}
+bool GetFileInformationByHandleEx(HANDLE h, FILE_INFO_BY_HANDLE_CLASS kind, void *out, DWORD size) {
+    assert(kind == FileIdInfo && size == sizeof(FILE_ID_INFO));
+    ++full_queries;
+    if (fail_full && h == &opened) return false;
+    Native *native = static_cast<Native *>(h);
+    FILE_ID_INFO info{}; info.VolumeSerialNumber = native->volume;
+    std::memcpy(info.FileId.Identifier, &native->low, 8);
+    std::memcpy(info.FileId.Identifier + 8, &native->high, 8);
+    std::memcpy(out, &info, sizeof info); return true;
+}
+HANDLE CreateFileW(const char *path, DWORD, DWORD, void *, DWORD, DWORD, void *) {
+    return inventory.path == path ? &inventory : INVALID_HANDLE_VALUE;
+}
+bool CloseHandle(HANDLE) { return !fail_close; }
+int _fileno(FILE *f) { return fileno(f); }
+intptr_t _get_osfhandle(int fd) { assert(stream && fd == fileno(stream)); return (intptr_t)&opened; }
+extern "C" FILE *port_fopen(const char *logical, const char *mode) {
+    assert(!std::strcmp(logical, "data/authored.aya") && !std::strcmp(mode, "rb"));
+    stream = std::fopen(opened.path.c_str(), mode); return stream;
+}
+@ACTUAL@
+int main(int argc, char **argv) {
+    assert(FixtureGuard() && argc == 4);
+    std::string mode = argv[1]; inventory.path = argv[2]; opened.path = argv[3];
+    inventory.legacy.dwVolumeSerialNumber = 1;
+    inventory.legacy.nFileIndexLow = 7;
+    inventory.legacy.nFileSizeLow = 4;
+    inventory.legacy.ftLastWriteTime.dwLowDateTime = 1;
+    inventory.legacy.ftCreationTime.dwLowDateTime = 1;
+    opened.legacy = inventory.legacy;
+    if (mode == "same-file") opened.path = inventory.path;
+    else if (mode == "same-full-legacy-different") { opened.path = inventory.path; opened.legacy.nFileIndexLow = 8; }
+    else if (mode == "id128-collision") opened.high = 2;
+    else if (mode == "volume64-collision") opened.volume = 0x200000001ull;
+    else if (mode == "unknown-legacy") {
+        inventory.legacy.nFileIndexLow = opened.legacy.nFileIndexLow = 0xffffffffu;
+        inventory.legacy.nFileIndexHigh = opened.legacy.nFileIndexHigh = 0xffffffffu;
+        opened.high = 2;
+    } else if (mode == "unknown-full-zero") opened.low = opened.high = 0;
+    else if (mode == "unknown-full-ones") opened.low = opened.high = UINT64_MAX;
+    else if (mode == "unknown-volume-zero") opened.volume = 0;
+    else if (mode == "unknown-volume-ones") opened.volume = UINT64_MAX;
+    else if (mode == "full-query-failure") fail_full = true;
+    else if (mode == "legacy-metadata-failure") fail_legacy = true;
+    else if (mode == "close-failure") fail_close = true;
+    else if (mode == "wrong-type") wrong_type = true;
+    else return 2;
+    Entry entry{fs::path(inventory.path), false, {}};
+    char error[160]{}; uint8_t digest[32]{};
+    bool admitted = PathStamp(entry.path, entry.stamp) && Read("data/authored.aya", entry, digest, error, sizeof error);
+    uint8_t expected[32]; HASH_CTX hash; HashInit(&hash); HashUpdate(&hash, "AAAA", 4); HashFinal(&hash, expected);
+    std::printf("%s %u %u %u\n", mode.c_str(), unsigned(admitted), full_queries,
+                unsigned(admitted && !std::memcmp(digest, expected, sizeof digest)));
+    return 0;
+}

@@ -65,9 +65,10 @@ class MenuMouse(unittest.TestCase):
     def test_mutants_of_the_two_functions_are_caught(self):
         text = WIDE.read_text()
         for old, new in (
-                ("return !mouseInputActive && PortCeLayer() && !PortCeCmdMapOpen() ? 1 : 0;", "return PortCeLayer() && !PortCeCmdMapOpen() ? 1 : 0;"),		# the game's own mouse look not left alone
-                ("return !mouseInputActive && PortCeLayer() && !PortCeCmdMapOpen() ? 1 : 0;", "return !mouseInputActive && !PortCeCmdMapOpen() ? 1 : 0;"),		# a replay or a recording mapped too
-                ("return !mouseInputActive && PortCeLayer() && !PortCeCmdMapOpen() ? 1 : 0;", "return !mouseInputActive && PortCeLayer() ? 1 : 0;"),		# the commander map's pixels mapped
+                ("return !mouseInputActive && PortCeLayer() && !PortCeCmdMapOpen() && !PortCeEditorMousePixels() ? 1 : 0;", "return PortCeLayer() && !PortCeCmdMapOpen() && !PortCeEditorMousePixels() ? 1 : 0;"),		# the game's own mouse look not left alone
+                ("return !mouseInputActive && PortCeLayer() && !PortCeCmdMapOpen() && !PortCeEditorMousePixels() ? 1 : 0;", "return !mouseInputActive && !PortCeCmdMapOpen() && !PortCeEditorMousePixels() ? 1 : 0;"),		# a replay or a recording mapped too
+                ("return !mouseInputActive && PortCeLayer() && !PortCeCmdMapOpen() && !PortCeEditorMousePixels() ? 1 : 0;", "return !mouseInputActive && PortCeLayer() && !PortCeEditorMousePixels() ? 1 : 0;"),		# the commander map's pixels mapped
+                ("return !mouseInputActive && PortCeLayer() && !PortCeCmdMapOpen() && !PortCeEditorMousePixels() ? 1 : 0;", "return !mouseInputActive && PortCeLayer() && !PortCeCmdMapOpen() ? 1 : 0;"),		# the editor's pixels mapped
                 ("void PortUiMouseMenuPoint(int *x, int *y)\n{", "void PortUiMouseMenuPoint(int *x, int *y)\n{\n\t(void)PortSharpUi();"),	# unrelated sharp-text setting read
                 ("\tif (gActive)\n\t{\n\t\tPortUiMouse(x, y);\n\t\treturn;\n\t}\n\tif (gW && gH)", "\tif (!gActive)\n\t{\n\t\tPortUiMouse(x, y);\n\t\treturn;\n\t}\n\tif (gW && gH)"),		# the box for a 4:3 window and none for a wide one
                 ("*x = (int)((long long)*x * 640 / (long long)gW);", "*x = (int)((long long)*x * 480 / (long long)gW);"),		# a wrong scale
@@ -186,7 +187,7 @@ class MenuMouse(unittest.TestCase):
         cmdmap = CMDMAP.read_text()
         self.assertIn("bool PortCeCmdMapOpen() { return gOpen || gOpening; }", cmdmap)
         self.assertIn("\tgOpening = true;\n\tShutdownMouse();", cmdmap)
-        self.assertIn("\tgOpening = false;\n\tGAME.GetController(0)->SetToControl(&gSink);", cmdmap)
+        self.assertIn("\tgOpening = false;\n\tif (!strategic) { GAME.GetController(0)->SetToControl(&gSink); }", cmdmap)
 
 
 if __name__ == "__main__":

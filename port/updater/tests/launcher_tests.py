@@ -22,7 +22,7 @@ PORT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PORT / "tools"))
 import deps  # noqa: E402
 
-LAUNCHER = deps.WORK / "build/linux/onslaught-ce-launch"
+LAUNCHER = Path(os.environ.get("BEA_LAUNCHER") or deps.WORK / "build/linux/onslaught-ce-launch")   # BEA_LAUNCHER: a launcher built on its own (build.build_launcher)
 GAME = r'''#!/bin/sh
 echo "game_pid=$$"
 echo "out: args $*"
@@ -212,6 +212,23 @@ class Launcher(unittest.TestCase):
         self.assertNotIn("recording saved to", result.stderr)
         self.assertEqual(list((self.user / "tapes").glob("*.tape")), [])
         self.assertEqual(len(list((self.user / "tapes").glob("*.incomplete"))), 1)
+
+    def test_launcher_reads_and_writes_around_the_experimental_block(self):
+        # the [Experimental] header and its comment line, which the game writes once, are skipped by the launcher's reader; the launcher's own
+        # write of record_sessions changes the line in place, and a key it adds goes above the header
+        self.user.mkdir()
+        ini = self.user / "ce.ini"
+        block = ("[Experimental]\n; Unfinished features, off in this release. They may change or break. Set a line to 1 to try one.\n"
+                 "map_editor=0\nmuseum=0\ncommander=1\nplay_unit=0\n")
+        ini.write_text("gamedir=/somewhere\nrecord_sessions=1\n\n" + block)
+        r = self.run_launcher(BEA_RECORD_ANSWER="record")
+        self.assertIn("clock=shim", r.stderr, "the launcher reads record_sessions=1 above the block")
+        r = self.run_launcher(BEA_RECORD_ANSWER="stop")
+        self.assertIn("env: rec= clock=", r.stderr)
+        self.assertEqual(ini.read_text(), "gamedir=/somewhere\nrecord_sessions=0\n\n" + block)
+        ini.write_text("gamedir=/somewhere\n\n" + block)
+        r = self.run_launcher(BEA_RECORD_ANSWER="record")
+        self.assertIn("env: rec= clock=", r.stderr, "no record_sessions line: not recording")
 
     def test_record_prompt_and_no_record(self):
         # record_sessions=1 asks each start: Not this time records nothing and keeps the setting; Stop recording and

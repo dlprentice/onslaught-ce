@@ -63,6 +63,7 @@ void PortSetLastError(DWORD e);
 // PORT_PATH_GAME: the game-folder copy only, without creating anything (the other half of a merged search).
 enum PortPathMode { PORT_PATH_READ, PORT_PATH_WRITE, PORT_PATH_SHADOW, PORT_PATH_GAME };
 int PortResolvePath(const char *game_path, PortPathMode mode, char *out, size_t n);
+bool PortPathsProjectPreflight();
 void PortPathsInit();
 const char *PortGameDir();
 const char *PortUserDir();

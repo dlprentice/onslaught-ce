@@ -1,0 +1,32 @@
+--- a/eventmanager.cpp
++++ b/eventmanager.cpp
+@@ -12,6 +12,9 @@
+ #include "profile.h"
+ #include "thing.h"
+ #include "CLIParams.h"
++#ifndef CE_NETWORK_OFF
++#include "ce_network_lockstep.h"	// port (lockstep co-op): the test trace of processed events
++#endif
+ 
+ #include <stdio.h>
+ 
+@@ -339,6 +342,9 @@
+ 			cunt++;
+ 			IListener* to_call = next_event->GetToCall() ;
+ 			next_event->SetReuse(FALSE);
++#ifndef CE_NETWORK_OFF
++			CE_LockstepTraceEvent(next_event->GetEventNum(), to_call, next_event->GetTime());
++#endif
+ 			if (to_call)
+ 			{
+ 				to_call->HandleEvent(next_event);
+@@ -357,6 +363,9 @@
+ 		IListener* to_call = next_event->GetToCall() ;
+ 		next_event->SetReuse(FALSE);
+ 		mCurrentProcessOverflowEventNum++;
++#ifndef CE_NETWORK_OFF
++		CE_LockstepTraceEvent(next_event->GetEventNum(), to_call, next_event->GetTime());
++#endif
+ 		if (to_call)
+ 		{
+ 		   to_call->HandleEvent(next_event);

@@ -10,10 +10,11 @@
 #include "platform.h"
 #include "portlog.h"
 
-static bool layer = true, mapOpen = false;
+static bool layer = true, mapOpen = false, editorPixels = false;
 static int sharpSettingsReads, sessionLogs;
 bool PortCeLayer() { return layer; }
 bool PortCeCmdMapOpen() { return mapOpen; }
+bool PortCeEditorMousePixels() { return editorPixels; }		// the native editor's paused scene keeps the window's pixels (ce_editor.cpp)
 bool PortDevLog() { return false; }
 int PortHudAnchored() { return 0; }
 SDL_Window *PortMainSdlWindow() { return 0; }
@@ -48,13 +49,14 @@ int main()
 	for (int active = 0; active < 2; ++active)
 		for (int ce = 0; ce < 2; ++ce)
 			for (int open = 0; open < 2; ++open)
-			{
-				layer = ce != 0; mapOpen = open != 0;
-				char what[96];
-				snprintf(what, sizeof(what), "the menus' pointer is virtual exactly when the mouse is released (active %d), the layer is on (%d) and the map is closed (%d)", active, ce, open);
-				expect(PortUiMouseMenu(active) == (!active && ce && !open ? 1 : 0), what);
-			}
-	layer = true; mapOpen = false;
+				for (int editing = 0; editing < 2; ++editing)
+				{
+					layer = ce != 0; mapOpen = open != 0; editorPixels = editing != 0;
+					char what[128];
+					snprintf(what, sizeof(what), "the menus' pointer is virtual exactly when the mouse is released (active %d), the layer is on (%d), the map is closed (%d) and the editor's scene is not up (%d)", active, ce, open, editing);
+					expect(PortUiMouseMenu(active) == (!active && ce && !open && !editing ? 1 : 0), what);
+				}
+	layer = true; mapOpen = false; editorPixels = false;
 #else
 	for (int active = 0; active < 2; ++active)
 		for (int ce = 0; ce < 2; ++ce)

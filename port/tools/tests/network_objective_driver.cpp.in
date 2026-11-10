@@ -1,0 +1,177 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Actual native objective callers and actual adapter capture/wire/apply bodies, with controlled actor boundaries.
+#include "ce_network_world.h"
+#include "network.h"
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <climits>
+#include <algorithm>
+#include <vector>
+using BOOL=int;
+#include "MissionObjective.h"
+
+constexpr unsigned NUM_WORLD_COUNTERS=26,kEntities=8,kBirths=8;
+constexpr uint32_t kMagic=0x43455731;
+constexpr int ENGINE_THING=2,ROUND_THING=3,CANNON_THING=4,FEATURE_THING=5,BUILDING_THING=6,EXPLOSION_THING=7;
+constexpr int GAME_STATE_PLAYING=2,CLOCK_TICK=1;
+constexpr int TRUE=1,FALSE=0,TF_MARKED_OBJECTIVE=32;
+using EGameState=int;
+struct FVector { float x=0,y=0,z=0; };struct Vec { float v[3]={}; };
+void PutVec(FVector &out,const Vec &in){out={in.v[0],in.v[1],in.v[2]};}
+struct CThing { unsigned id; short mFlags=0; uint32_t mThingType=1; FVector mPos;
+    virtual ~CThing()=default; virtual const char *_GetClassName(){return "fixture";} void Shutdown(){}
+    void Teleport(FVector p){mPos=p;} void SetObjective(BOOL);
+};
+struct CBattleEngine:CThing{}; struct CRoundData{int mUnknown70=0;}; struct CRound:CThing{CRoundData *mData;};
+struct CCannon:CThing{}; struct CFeature:CThing{}; struct CBuilding:CThing{}; struct CExplosion:CThing{}; struct CExplosionData{};
+struct Core { uint32_t id,kind,initial_number,flags,type; Vec pos; char class_name[16]; };
+struct Round { char definition[16]; uint32_t incarnation; };
+struct ExplosionState { uint32_t serial,definition,deep,allegiance; uint64_t schema; float radius; };
+struct ExplosionBirth { uint32_t serial,id,deep,definition,allegiance; uint64_t schema; float radius; };
+struct Entity { Core core; Round round; ExplosionState explosion; int engine,cannon,feature,building; };
+/* OBJECTIVE_STATE */
+struct CE_WorldFrame {
+    uint32_t epoch,tick,sequence,level,phase,paused,count,consumed_sequence,birth_count;
+    uint32_t lifecycle_baseline,lifecycle_watermark; ExplosionBirth births[kBirths];
+    int32_t score,lives[2],counters_a[NUM_WORLD_COUNTERS],counters_b[NUM_WORLD_COUNTERS];
+    ObjectiveState primary[MAX_PRIMARY_OBJECTIVES],secondary[MAX_SECONDARY_OBJECTIVES];
+    float end_count; uint32_t fade,alpha; Entity entities[kEntities];
+};
+struct GameBoundary {
+    int mGameState=GAME_STATE_PLAYING,mPause=0,mScore=0,mPlayer1Lives=2,mPlayer2Lives=2;
+    int mFadeOut=0,mWinLoseScreenAlpha=0,mPausedAllGameSounds=0,mUpdateFrameNumber=0; float mEndLevelCount=-1;
+    CMissionObjective mPrimaryObjectives[MAX_PRIMARY_OBJECTIVES],mSecondaryObjectives[MAX_SECONDARY_OBJECTIVES];
+    int GetCurrentLevel(){return 852;}
+    CMissionObjective *GetPrimaryObjective(int i){return &mPrimaryObjectives[i];}
+    CMissionObjective *GetSecondaryObjective(int i){return &mSecondaryObjectives[i];}
+    /* NATIVE_GAME_SETTERS */
+} GAME;
+struct CDataType { int value; int GetInt(){return value;} };
+struct IScript {
+    CThing *mThing=nullptr;
+    void PrimaryObjectiveComplete(CDataType **,int,CDataType **);
+    void SecondaryObjectiveComplete(CDataType **,int,CDataType **);
+    void PrimaryObjectiveFailed(CDataType **,int,CDataType **);
+    void SecondaryObjectiveFailed(CDataType **,int,CDataType **);
+    void SetObjective(CDataType **,int,CDataType **);
+    void UnsetObjective(CDataType **,int,CDataType **);
+};
+/* NATIVE_SCRIPT_CALLERS */
+struct Events { uint32_t mFrameCount=1; float mTime=0; uint32_t GetFrameCount(){return mFrameCount;} } EVENT_MANAGER;
+struct Noticeboard { std::vector<CThing*> things; void Add(CThing *t){things.push_back(t);} void Remove(CThing *t){things.erase(std::remove(things.begin(),things.end(),t),things.end());} };
+struct World { int32_t mCountersA[NUM_WORLD_COUNTERS]={},mCountersB[NUM_WORLD_COUNTERS]={}; std::vector<CThing*> things; Noticeboard objectives;
+    std::vector<CThing*> &GetThingNB(){return things;}
+    Noticeboard &GetObjectiveThingNB(){return objectives;}
+} WORLD;
+/* NATIVE_THING_SET_OBJECTIVE */
+template<class T> struct ListIterator { std::vector<T*> *v; size_t at=0; explicit ListIterator(std::vector<T*> *p):v(p){}
+    T *First(){at=0;return at<v->size()?(*v)[at]:nullptr;} T *Next(){++at;return at<v->size()?(*v)[at]:nullptr;}
+};
+struct Sounds { void PauseAllSamples(){} void UnPauseAllSamples(){} } SOUND;
+struct UPhysicsManager { static CRoundData *GetRoundData(char *){return nullptr;} };
+struct Binding { CThing *thing; uint32_t id,initial_number; } bindings[kEntities];
+uint32_t binding_count=0,next_id=1,applied_tick=0,applied_sequence=0,captured_tick=0,captured_sequence=0,replica_ack=0,sent_sequence=0,birth_applied=0,birth_count=0;
+uint32_t life_baseline=0,life_generated=0,life_committed_tick=0,life_seen_id=0,life_live_count=0;
+struct Live { uint32_t id,kind,birth_serial; } life_live[kEntities];
+struct Commands { uint32_t consumed=0; } commands;
+bool active=false,poisoned=false,applying=false,birth_failed=false,life_failed=false,life_enabled=false;
+void *life_pending=nullptr,*round_pending=nullptr,*shot_active=nullptr;
+ExplosionBirth birth_journal[kBirths]; CE_WorldConfig config={};
+char failure[192];
+int Fail(const char *s){std::snprintf(failure,sizeof failure,"%s",s);return 0;}
+int FailKind(const char *s,const char *){return Fail(s);}
+uint32_t ThingKind(CThing *){return ENGINE_THING;}
+Binding *ByThing(CThing *t){for(unsigned i=0;i<binding_count;++i)if(bindings[i].thing==t)return &bindings[i];return nullptr;}
+Binding *ById(uint32_t id){for(unsigned i=0;i<binding_count;++i)if(bindings[i].id==id)return &bindings[i];return nullptr;}
+Binding *Bind(CThing *t,uint32_t id,uint32_t initial){if(binding_count==kEntities)return nullptr;bindings[binding_count]={t,id,initial};return &bindings[binding_count++];}
+uint32_t Id(CThing *t){Binding *b=ByThing(t);return b?b->id:0;}
+struct ApplyScope { bool committed=false; ApplyScope(){applying=true;} ~ApplyScope(){applying=false;if(!committed)poisoned=true;} };
+void LifeInvalidateProof(){} bool LifeRecordProof(const CE_WorldFrame &){return true;}
+CE_WorldFrame *CE_WorldFrameCreate(){return (CE_WorldFrame*)std::calloc(1,sizeof(CE_WorldFrame));}
+void CE_WorldFrameDestroy(CE_WorldFrame *p){std::free(p);}
+void WriteBirth(CE_NetWriter*,const ExplosionBirth&){} void ReadBirth(CE_NetReader*,ExplosionBirth&){}
+void WriteCore(CE_NetWriter *w,const Core &c){CE_NetWriteU32(w,c.id);CE_NetWriteU32(w,c.kind);CE_NetWriteU32(w,c.initial_number);CE_NetWriteU32(w,c.flags);CE_NetWriteU32(w,c.type);}
+void ReadCore(CE_NetReader *r,Core &c){c.id=CE_NetReadU32(r);c.kind=CE_NetReadU32(r);c.initial_number=CE_NetReadU32(r);c.flags=CE_NetReadU32(r);c.type=CE_NetReadU32(r);}
+void WriteEngine(CE_NetWriter*,int){} void ReadEngine(CE_NetReader*,int&){}
+void WriteCannon(CE_NetWriter*,int){} void ReadCannon(CE_NetReader*,int&){}
+void WriteFeature(CE_NetWriter*,int){} void ReadFeature(CE_NetReader*,int&){}
+void WriteBuilding(CE_NetWriter*,int){} void ReadBuilding(CE_NetReader*,int&){}
+void WriteExplosion(CE_NetWriter*,const ExplosionState&){} void ReadExplosion(CE_NetReader*,ExplosionState&){}
+void WriteRound(CE_NetWriter*,const Round&){} void ReadRound(CE_NetReader*,Round&){}
+class CENetworkWorldAdapter { public:
+    /* OBJECTIVE_HELPERS */
+    // This small fixture substitutes actor validation and lifecycle, not objective validation.
+    static bool Validate(const CE_WorldFrame &f){return f.epoch&&f.tick&&f.sequence&&f.level==852&&f.count==2&&ObjectivesBound(f);}
+    static bool CoreCapture(CThing *thing,Core &out){Binding *b=ByThing(thing);if(!b)return false;out.id=b->id;out.kind=ENGINE_THING;out.initial_number=b->initial_number;
+        /* ACTUAL_MARKED_CAPTURE */
+        return true;}
+    static bool EngineCapture(CBattleEngine*,int&,const Core&){return true;}
+    static bool RoundCapture(CRound*,Round&){return false;} static bool CannonCapture(CCannon*,int&,const Core&){return false;}
+    static bool FeatureCapture(CFeature*,int&,const Core&){return false;} static bool BuildingCapture(CBuilding*,int&,const Core&){return false;}
+    static bool ExplosionCapture(CExplosion*,ExplosionState&){return false;}
+    static int LifeReadiness(const CE_WorldFrame&){return CE_WORLD_READY;}
+    static bool PlanBirths(const CE_WorldFrame&,uint32_t &next){next=birth_applied;return true;}
+    static bool BirthCompatible(const ExplosionBirth&,CExplosionData*&){return false;}
+    static CThing *Baseline(const Core &c){for(CThing *t:WORLD.things)if(t->id==c.initial_number)return t;return nullptr;}
+    static bool Compatible(CThing*,const Entity&){return true;}
+    static CExplosion *CreateExplosion(const CE_WorldFrame&,CThing**,const ExplosionBirth&,CExplosionData*){return nullptr;}
+    static void CoreApply(CThing *thing,const Core &in){
+        /* ACTUAL_MARKED_APPLY */
+    }
+    static bool EngineApply(CBattleEngine*,int){return true;}
+    static void RoundApply(CRound*,const Round&){} static void CannonApply(CCannon*,int){} static void FeatureApply(CFeature*,int){}
+    static bool BuildingApply(CBuilding*,int){return true;} static void ExplosionApply(CExplosion*,const ExplosionState&,Binding&){}
+    /* ACTUAL_CAPTURE */
+    /* ACTUAL_APPLY */
+};
+/* ACTUAL_ENTRYPOINTS */
+
+static int checks=0;
+static void Check(bool ok,const char *what){++checks;if(!ok){std::fprintf(stderr,"FAIL %s: %s\n",what,failure);std::exit(2);}}
+static void Event(void (IScript::*fn)(CDataType**,int,CDataType**),int slot,int id){IScript s;CDataType a{slot},b{id};CDataType *args[]={&a,&b};(s.*fn)(args,2,nullptr);}
+int main(){
+    CBattleEngine host1,host2,guest1,guest2;host1.id=guest1.id=1;host2.id=guest2.id=2;
+    WORLD.things={&host1,&host2};Bind(&host1,1,1);Bind(&host2,2,2);
+    active=true;config={CE_WORLD_HOST,7,0,852};EVENT_MANAGER.mFrameCount=100;
+    Event(&IScript::PrimaryObjectiveComplete,1,123456);
+    Event(&IScript::PrimaryObjectiveFailed,10,-1);
+    Event(&IScript::SecondaryObjectiveFailed,1,INT32_MIN);
+    Event(&IScript::SecondaryObjectiveComplete,10,INT32_MAX);
+    IScript arena;arena.mThing=&host1;arena.SetObjective(nullptr,0,nullptr);
+    Check((host1.mFlags&TF_MARKED_OBJECTIVE)&&WORLD.objectives.things.size()==1&&WORLD.objectives.things[0]==&host1,"native arena SetObjective registers marked host object");
+    GameBoundary host_game=GAME;
+    GAME.mPrimaryObjectives[2].Set(3,55);CE_WorldFrame unsupported={};
+    Check(!CE_WorldCapture(&unsupported),"unsupported native objective refuses capture");
+    GAME=host_game;
+    CE_WorldFrame host={},guest={};uint8_t wire[4096];uint32_t size=0;
+    Check(CE_WorldCapture(&host)==1,"actual host capture");
+    Check(CE_WorldEncode(&host,wire,sizeof wire,&size)==1,"actual host encode");
+    Check(CE_WorldDecode(&guest,wire,size)==1,"actual guest decode");
+    GAME=GameBoundary{}; WORLD.things={&guest1,&guest2}; WORLD.objectives.things.clear(); binding_count=0;
+    config.role=CE_WORLD_REPLICA;config.local_player=1;applied_tick=applied_sequence=0;
+    Check(CE_WorldApply(&guest)==1,"actual guest whole apply");
+    Check(GAME.mPrimaryObjectives[0].GetStatus()==MOS_COMPLETE&&GAME.mPrimaryObjectives[0].GetStringID()==123456&&GAME.mPrimaryObjectives[9].GetStatus()==MOS_FAILED&&GAME.mPrimaryObjectives[9].GetStringID()==-1,"primary endpoint native script events survive full chain");
+    Check(GAME.mSecondaryObjectives[0].GetStatus()==MOS_FAILED&&GAME.mSecondaryObjectives[0].GetStringID()==INT32_MIN&&GAME.mSecondaryObjectives[9].GetStatus()==MOS_COMPLETE&&GAME.mSecondaryObjectives[9].GetStringID()==INT32_MAX,"secondary endpoint native script events survive full chain");
+    Check((guest1.mFlags&TF_MARKED_OBJECTIVE)&&WORLD.objectives.things.size()==1&&WORLD.objectives.things[0]==&guest1,"native arena marker reaches guest noticeboard through actual capture and apply callers");
+    Check(GAME.mPrimaryObjectives[1].GetStatus()==MOS_NOT_DEFINED&&GAME.mPrimaryObjectives[1].GetStringID()==-1,"undefined native objective sentinel survives baseline");
+    Check(!CE_WorldApply(&guest)&&GAME.mPrimaryObjectives[0].GetStringID()==123456,"duplicate sequence cannot rewrite guest state");
+    GameBoundary guest_game=GAME;
+    GAME=host_game;WORLD.things={&host1,&host2};WORLD.objectives.things={&host1};binding_count=0;Bind(&host1,1,1);Bind(&host2,2,2);config.role=CE_WORLD_HOST;
+    EVENT_MANAGER.mFrameCount=101;Event(&IScript::PrimaryObjectiveComplete,2,101);
+    CE_WorldFrame dropped={};Check(CE_WorldCapture(&dropped),"capture intermediate objective frame");
+    EVENT_MANAGER.mFrameCount=102;Event(&IScript::SecondaryObjectiveComplete,3,202);arena.UnsetObjective(nullptr,0,nullptr);
+    CE_WorldFrame latest={};Check(CE_WorldCapture(&latest)&&CE_WorldEncode(&latest,wire,sizeof wire,&size),"capture and encode latest full objective image");
+    CE_WorldFrame decoded={};Check(CE_WorldDecode(&decoded,wire,size),"decode latest full objective image");
+    GAME=guest_game;WORLD.things={&guest1,&guest2};WORLD.objectives.things={&guest1};binding_count=0;Bind(&guest1,1,1);Bind(&guest2,2,2);config.role=CE_WORLD_REPLICA;
+    Check(CE_WorldApply(&decoded)&&GAME.mPrimaryObjectives[1].GetStringID()==101&&GAME.mSecondaryObjectives[2].GetStringID()==202,"latest objective image repairs dropped intermediate snapshot");
+    Check(!(guest1.mFlags&TF_MARKED_OBJECTIVE)&&WORLD.objectives.things.empty(),"native marker removal reaches guest noticeboard on later image");
+    Check(!CE_WorldApply(&dropped)&&GAME.mSecondaryObjectives[2].GetStringID()==202,"late older frame cannot roll objectives back");
+    guest=decoded;
+    CE_WorldFrame bad=guest;bad.sequence++;bad.tick++;bad.secondary[9].state=3;
+    Check(!CE_WorldApply(&bad)&&GAME.mSecondaryObjectives[9].GetStringID()==INT32_MAX,"invalid state refused before native objective mutation");
+    Check(!CE_WorldDecode(&bad,wire,size-1)&&bad.secondary[9].state==3,"truncated decode leaves destination unchanged");
+    active=false;Check(!CE_WorldCapture(&host)&&!CE_WorldApply(&guest),"offline world never enters host capture or replica apply");
+    std::printf("%d objective source-chain controls passed\n",checks);return 0;
+}

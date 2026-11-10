@@ -1638,12 +1638,7 @@ static int upd_ask(const UpdOffer *o)
 	if (answer && *answer) return !strcmp(answer, "update") ? 1 : !strcmp(answer, "skip") ? 2 : 0;
 #endif
 	char text[1024];
-	snprintf(text, sizeof text, "Onslaught CE V%s is available (you have V%s).\n\n"
-		"Update: download it (%.1f MB), check its signature and install it inside this Onslaught CE folder, beside "
-		"this version, which is kept. Your careers and settings are not changed.\n"
-		"Later: start this version; you will be asked again next time.\n"
-		"Skip this version: start this version and do not ask about v%s again.", o->version, CE_VERSION,
-		(double)o->size / 1e6, o->version);
+	ce_box_text_update_offer(text, sizeof text, o->version, CE_VERSION, (double)o->size / 1e6);
 	const SDL_MessageBoxButtonData buttons[] = {{SDL_MESSAGEBOX_BUTTON_RETURNKEY_DEFAULT, 1, "Update"},
 		{SDL_MESSAGEBOX_BUTTON_ESCAPEKEY_DEFAULT, 0, "Later"}, {0, 2, "Skip this version"}};
 	const SDL_MessageBoxData box = {SDL_MESSAGEBOX_INFORMATION, NULL, "Onslaught CE", text, 3, buttons, NULL};
@@ -1658,7 +1653,7 @@ static void upd_tell(int explicit_cmd, const char *text)
 	const char *answer = getenv("BEA_UPDATE_ANSWER");
 	if (answer && *answer) return;
 #endif
-	tell_box(SDL_MESSAGEBOX_ERROR, text);
+	tell_box(SDL_MESSAGEBOX_WARNING, text);	/* nothing was changed and the game starts: a warning, not an error */
 }
 
 /* Unpacks the verified package into a new recorded entry and makes it active. Returns an UPD_* status. */
@@ -1877,7 +1872,7 @@ static int upd_check(int explicit_cmd)
 	const char *why = "";
 	if (!ftext || !stext || !upd_signature_ok(ftext, flen, stext, slen))
 	{
-		say("update: the feed's signature did not verify (%" PRIu64 " + %" PRIu64 " bytes); ignored", fn, sn);
+		say("update: the update feed's signature could not be verified (%" PRIu64 " + %" PRIu64 " bytes read), so no update is offered", fn, sn);
 		free(ftext); free(stext);
 		rc = UPD_BAD_FEED;
 		goto recover;
@@ -1908,7 +1903,7 @@ static int upd_check(int explicit_cmd)
 	if (!upd_fetch(o.url, pkg, o.size, 1800, &pn))
 	{
 		say("update: the package download failed or exceeded its signed size (%" PRIu64 " of %" PRIu64 " bytes)", pn, o.size);
-		upd_tell(explicit_cmd, "The update could not be downloaded. Nothing was changed: this version starts now.");
+		upd_tell(explicit_cmd, CE_BOX_UPDATE_DOWNLOAD_FAILED);
 		rc = UPD_BAD_PACKAGE;
 		goto recover;
 	}
@@ -1916,8 +1911,8 @@ static int upd_check(int explicit_cmd)
 	uint8_t want[32], got[32];
 	if (pn != o.size || !hex_to(o.sha, want, 32) || !sha256_file(pkg, got) || memcmp(got, want, 32))
 	{
-		say("update: the package does not match the signed feed (%" PRIu64 " bytes, expected %" PRIu64 "); discarded", pn, o.size);
-		upd_tell(explicit_cmd, "The downloaded update did not match the signed release. Nothing was changed: this version starts now.");
+		say("update: the downloaded package is not the one the signed feed lists (%" PRIu64 " bytes, expected %" PRIu64 "); discarded, nothing installed", pn, o.size);
+		upd_tell(explicit_cmd, CE_BOX_UPDATE_NOT_THE_RELEASE);
 		rc = UPD_BAD_PACKAGE;
 		goto recover;
 	}
@@ -1925,7 +1920,7 @@ static int upd_check(int explicit_cmd)
 	char installed[64];
 	rc = upd_install(pkg, &o, installed, sizeof installed);
 	if (rc != UPD_UPDATED && rc != UPD_BUSY)
-		upd_tell(explicit_cmd, "The update could not be installed. Nothing was changed: this version starts now.");
+		upd_tell(explicit_cmd, CE_BOX_UPDATE_INSTALL_FAILED);
 recover:
 	upd_stage_recover(area, &lk, &jr);
 unlock:

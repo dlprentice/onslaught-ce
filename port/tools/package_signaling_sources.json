@@ -1,0 +1,893 @@
+{
+  "schema": 1,
+  "sdk": {
+    "name": "sysroot-sniper",
+    "version": "3.0.20261021.266025",
+    "sha256": "8f71947035f97925a311b2ed753f22efcf2f13d6f1631945b8e537f8903ce2cf",
+    "url": "https://repo.steampowered.com/steamrt-images-sniper/snapshots/3.0.20261021.266025/com.valvesoftware.SteamRuntime.Sdk-amd64,i386-sniper-sysroot.tar.gz",
+    "file": "com.valvesoftware.SteamRuntime.Sdk-amd64,i386-sniper-sysroot.tar.gz",
+    "licence": "Debian 11 packages' own licences (GPL, LGPL, MIT and others; headers, crt files and libraries for linking only)",
+    "bytes": 1234880637
+  },
+  "source_metadata": {
+    "url": "https://repo.steampowered.com/steamrt-images-sniper/snapshots/3.0.20261021.266025/com.valvesoftware.SteamRuntime.Sdk-i386-sniper-sources.deb822.gz",
+    "sha256": "eebd64d41fefc92d06b5837748f823f90173b390e906f12377022947e15cf208"
+  },
+  "libraries": [
+    {
+      "soname": "libbrotlicommon.so.1",
+      "path": "usr/lib/i386-linux-gnu/libbrotlicommon.so.1.0.9",
+      "bytes": 136696,
+      "sha256": "0bade5f1c500a86caf778224a7e5b51144bbd981f1acec9051234205bbc50c51",
+      "needed": [
+        "libc.so.6"
+      ]
+    },
+    {
+      "soname": "libbrotlidec.so.1",
+      "path": "usr/lib/i386-linux-gnu/libbrotlidec.so.1.0.9",
+      "bytes": 50664,
+      "sha256": "a8b7cc1083c1905ae4936976f8c32020cb6db5e05dc628cd48c990d87d39f1d9",
+      "needed": [
+        "libbrotlicommon.so.1",
+        "libc.so.6"
+      ]
+    },
+    {
+      "soname": "libcurl-gnutls.so.4",
+      "path": "usr/lib/i386-linux-gnu/libcurl-gnutls.so.4.7.0",
+      "bytes": 645280,
+      "sha256": "04622797e04473793b36e5b1d2a40abc098f5e0fa44fb86ef1ad6db18884ad42",
+      "needed": [
+        "libnghttp2.so.14",
+        "libidn2.so.0",
+        "libssh2.so.1",
+        "libpsl.so.5",
+        "libnettle.so.8",
+        "libgnutls.so.30",
+        "libbrotlidec.so.1",
+        "libz.so.1",
+        "libpthread.so.0",
+        "libc.so.6"
+      ]
+    },
+    {
+      "soname": "libffi.so.7",
+      "path": "usr/lib/i386-linux-gnu/libffi.so.7.1.0",
+      "bytes": 34384,
+      "sha256": "0b92ef4458791706e9f9f04af2636ab5196efc82aac3496900d181e0ec11a091",
+      "needed": [
+        "libc.so.6"
+      ]
+    },
+    {
+      "soname": "libgcrypt.so.20",
+      "path": "usr/lib/i386-linux-gnu/libgcrypt.so.20.2.8",
+      "bytes": 939328,
+      "sha256": "829ce3975d32a49961670f66128a603397976f0538cecf0147aba952c0b872a9",
+      "needed": [
+        "libgpg-error.so.0",
+        "libc.so.6"
+      ]
+    },
+    {
+      "soname": "libgmp.so.10",
+      "path": "usr/lib/i386-linux-gnu/libgmp.so.10.4.1",
+      "bytes": 576328,
+      "sha256": "2f682418dc8ce354939984d438d78b34dd6440711889fc0839a5499bceb99e7c",
+      "needed": [
+        "libc.so.6"
+      ]
+    },
+    {
+      "soname": "libgnutls.so.30",
+      "path": "usr/lib/i386-linux-gnu/libgnutls.so.30.29.1",
+      "bytes": 2251860,
+      "sha256": "95b2584382d8b75e6da030199151200f63a51621b5961af55ef4c06b2c6049d1",
+      "needed": [
+        "libp11-kit.so.0",
+        "libidn2.so.0",
+        "libunistring.so.2",
+        "libtasn1.so.6",
+        "libnettle.so.8",
+        "libhogweed.so.6",
+        "libgmp.so.10",
+        "libpthread.so.0",
+        "libc.so.6",
+        "ld-linux.so.2"
+      ]
+    },
+    {
+      "soname": "libgpg-error.so.0",
+      "path": "lib/i386-linux-gnu/libgpg-error.so.0.29.0",
+      "bytes": 157064,
+      "sha256": "4b33f990ed2f8fb8aa6cbabd123f005e1abbf9bf00f356cd20a254f226680ba7",
+      "needed": [
+        "libc.so.6"
+      ]
+    },
+    {
+      "soname": "libhogweed.so.6",
+      "path": "usr/lib/i386-linux-gnu/libhogweed.so.6.4",
+      "bytes": 293208,
+      "sha256": "7eec162724c724159bbe1242293d71c730a5b7e78002aee7cbd62dccd26a46d7",
+      "needed": [
+        "libnettle.so.8",
+        "libgmp.so.10",
+        "libc.so.6"
+      ]
+    },
+    {
+      "soname": "libidn2.so.0",
+      "path": "usr/lib/i386-linux-gnu/libidn2.so.0.3.7",
+      "bytes": 132404,
+      "sha256": "039a83d97c5e4c49d3775942fafca1582e5244f764a7716e0d2f5940d25d37da",
+      "needed": [
+        "libunistring.so.2",
+        "libc.so.6"
+      ]
+    },
+    {
+      "soname": "libnettle.so.8",
+      "path": "usr/lib/i386-linux-gnu/libnettle.so.8.4",
+      "bytes": 301184,
+      "sha256": "53e7709bcdb03d58b0c05df11b7af0c18393cdbcadb093be16ce29600cbe222b",
+      "needed": [
+        "libc.so.6"
+      ]
+    },
+    {
+      "soname": "libnghttp2.so.14",
+      "path": "usr/lib/i386-linux-gnu/libnghttp2.so.14.20.1",
+      "bytes": 198216,
+      "sha256": "81a314d92b3821f68bb1e5e5380db91cfd4b65256957192fa3346cf8760e7372",
+      "needed": [
+        "libc.so.6"
+      ]
+    },
+    {
+      "soname": "libp11-kit.so.0",
+      "path": "usr/lib/i386-linux-gnu/libp11-kit.so.0.3.0",
+      "bytes": 1388908,
+      "sha256": "c85c8a71b5fd044fb42f213ef0c97a95e419761481770da93419008303246a5d",
+      "needed": [
+        "libffi.so.7",
+        "libdl.so.2",
+        "libpthread.so.0",
+        "libc.so.6",
+        "ld-linux.so.2"
+      ]
+    },
+    {
+      "soname": "libpsl.so.5",
+      "path": "usr/lib/i386-linux-gnu/libpsl.so.5.3.2",
+      "bytes": 70908,
+      "sha256": "c32df6c7a859cb204252d728a9694dd65b8cfa4ccfc7c570707feb4d97a75a9b",
+      "needed": [
+        "libunistring.so.2",
+        "libidn2.so.0",
+        "libc.so.6"
+      ]
+    },
+    {
+      "soname": "libssh2.so.1",
+      "path": "usr/lib/i386-linux-gnu/libssh2.so.1.0.1",
+      "bytes": 239076,
+      "sha256": "46a5daffd594a24abd3f6bdf138521a92d1ed2faec171fc86f5b6cf2a04d988f",
+      "needed": [
+        "libgcrypt.so.20",
+        "libz.so.1",
+        "libc.so.6"
+      ]
+    },
+    {
+      "soname": "libtasn1.so.6",
+      "path": "usr/lib/i386-linux-gnu/libtasn1.so.6.6.0",
+      "bytes": 87404,
+      "sha256": "5aae0733cb6c3276deb33e408cd18f68a50fabec8a64f07a58c927d49722a74a",
+      "needed": [
+        "libc.so.6"
+      ]
+    },
+    {
+      "soname": "libunistring.so.2",
+      "path": "usr/lib/i386-linux-gnu/libunistring.so.2.1.0",
+      "bytes": 1574292,
+      "sha256": "88ab277bd10f0904ab11ff51309fbdbdc82961d823dda2bd1628ad220b19d919",
+      "needed": [
+        "libc.so.6"
+      ]
+    },
+    {
+      "soname": "libz.so.1",
+      "path": "lib/i386-linux-gnu/libz.so.1.2.11",
+      "bytes": 116316,
+      "sha256": "185008ebda8d4218fe8e346ac85cf1fc70cd43d619a76dc4a6ec0de79604ac44",
+      "needed": [
+        "libc.so.6"
+      ]
+    }
+  ],
+  "notices": [
+    {
+      "package": "libbrotli1",
+      "version": "1.0.9-2+b2",
+      "sdk_path": "usr/share/doc/libbrotli1/copyright",
+      "output": "licenses/native-signaling/libbrotli1-copyright.txt",
+      "bytes": 1354,
+      "sha256": "24a64e5bb83d0960d1835696a1e23c0896ad6055b0ca47c66ab0eb9a766324b1",
+      "archive_member": "usr/share/doc/libbrotli1/copyright",
+      "licence_reference": "usr/share/doc/libbrotli1/copyright"
+    },
+    {
+      "package": "libcurl3-gnutls",
+      "version": "7.74.0-1.3+steamrt3.2+deb11u16+bsrt3.1",
+      "sdk_path": "usr/share/doc/libcurl3-gnutls/copyright",
+      "output": "licenses/native-signaling/libcurl3-gnutls-copyright.txt",
+      "bytes": 10829,
+      "sha256": "6d3ee82dfc845dfab206e56f6e74ca656a1ffa84e0ee99ac98558f55c21d6b04",
+      "archive_member": "usr/share/doc/libcurl3-gnutls/copyright",
+      "licence_reference": "usr/share/doc/libcurl3-gnutls/copyright"
+    },
+    {
+      "package": "libffi7",
+      "version": "3.3-6",
+      "sdk_path": "usr/share/doc/libffi7/copyright",
+      "output": "licenses/native-signaling/libffi7-copyright.txt",
+      "bytes": 3440,
+      "sha256": "7258c8acc378030d8dbe1fcdf394e915769fa31dcbaf3d2991d9a79891f3bcdc",
+      "archive_member": "usr/share/doc/libffi7/copyright",
+      "licence_reference": "usr/share/doc/libffi7/copyright"
+    },
+    {
+      "package": "libgcrypt20",
+      "version": "1.8.7-6+steamrt3.1+bsrt3.1",
+      "sdk_path": "usr/share/doc/libgcrypt20/copyright",
+      "output": "licenses/native-signaling/libgcrypt20-copyright.txt",
+      "bytes": 21681,
+      "sha256": "8f11910ef604ead72fbdc0c0caa641e3f955f66c4868175310ed7290e32b0f37",
+      "archive_member": "usr/share/doc/libgcrypt20/copyright",
+      "licence_reference": "usr/share/doc/libgcrypt20/copyright"
+    },
+    {
+      "package": "libgmp10",
+      "version": "2:6.2.1+dfsg-1+deb11u1",
+      "sdk_path": "usr/share/doc/libgmp10/copyright",
+      "output": "licenses/native-signaling/libgmp10-copyright.txt",
+      "bytes": 2019,
+      "sha256": "f73f781beb9f85b3f921f9bf540fc89d6eff9e20689ef9323ce510d077a30878",
+      "archive_member": "usr/share/doc/libgmp10/copyright",
+      "licence_reference": "usr/share/doc/libgmp10/copyright"
+    },
+    {
+      "package": "libgnutls30",
+      "version": "3.7.1-5+deb11u10",
+      "sdk_path": "usr/share/doc/libgnutls30/copyright",
+      "output": "licenses/native-signaling/libgnutls30-copyright.txt",
+      "bytes": 49174,
+      "sha256": "1934ff9a4bb0ed9238392c228e8c9cca0858b22d8528c2ac6b9ea45129d55330",
+      "archive_member": "usr/share/doc/libgnutls30/copyright",
+      "licence_reference": "usr/share/doc/libgnutls30/copyright"
+    },
+    {
+      "package": "libgpg-error0",
+      "version": "1.38-2+steamrt3.1+bsrt3.1",
+      "sdk_path": "usr/share/doc/libgpg-error0/copyright",
+      "output": "licenses/native-signaling/libgpg-error0-copyright.txt",
+      "bytes": 5009,
+      "sha256": "ef74578dd392759954c80d4ad3986273d05d8c2098b2e9ee18980f88e0ad3342",
+      "archive_member": "usr/share/doc/libgpg-error0/copyright",
+      "licence_reference": "usr/share/doc/libgpg-error0/copyright"
+    },
+    {
+      "package": "libhogweed6",
+      "version": "3.7.3-1",
+      "sdk_path": "usr/share/doc/libhogweed6/copyright",
+      "output": "licenses/native-signaling/libhogweed6-copyright.txt",
+      "bytes": 20902,
+      "sha256": "d8b51ce04d337e49df2f6258a5c8558f3080ff2cf629deb9f07c0361d1757e7b",
+      "archive_member": "usr/share/doc/libhogweed6/copyright",
+      "licence_reference": "usr/share/doc/libhogweed6/copyright"
+    },
+    {
+      "package": "libidn2-0",
+      "version": "2.3.0-5",
+      "sdk_path": "usr/share/doc/libidn2-0/copyright",
+      "output": "licenses/native-signaling/libidn2-0-copyright.txt",
+      "bytes": 5348,
+      "sha256": "41702469f28e8ff406345e3d1dd0c741f11bdfca319264f67036efd6aaa79e4b",
+      "archive_member": "usr/share/doc/libidn2-0/copyright",
+      "licence_reference": "usr/share/doc/libidn2-0/copyright"
+    },
+    {
+      "package": "libnettle8",
+      "version": "3.7.3-1",
+      "sdk_path": "usr/share/doc/libnettle8/copyright",
+      "output": "licenses/native-signaling/libnettle8-copyright.txt",
+      "bytes": 20902,
+      "sha256": "d8b51ce04d337e49df2f6258a5c8558f3080ff2cf629deb9f07c0361d1757e7b",
+      "archive_member": "usr/share/doc/libnettle8/copyright",
+      "licence_reference": "usr/share/doc/libnettle8/copyright"
+    },
+    {
+      "package": "libnghttp2-14",
+      "version": "1.43.0-1+deb11u3",
+      "sdk_path": "usr/share/doc/libnghttp2-14/copyright",
+      "output": "licenses/native-signaling/libnghttp2-14-copyright.txt",
+      "bytes": 11911,
+      "sha256": "2310a85e31051d9d60e22be1b35e20ee447ad1de8b80a88bb46711154374318e",
+      "archive_member": "usr/share/doc/libnghttp2-14/copyright",
+      "licence_reference": "usr/share/doc/libnghttp2-14/copyright"
+    },
+    {
+      "package": "libp11-kit0",
+      "version": "0.23.22-1",
+      "sdk_path": "usr/share/doc/libp11-kit0/copyright",
+      "output": "licenses/native-signaling/libp11-kit0-copyright.txt",
+      "bytes": 8244,
+      "sha256": "a366c3574c517b1e738ae2ca268d5ae2bff638a430bb32a0f0c6a1980f0faca6",
+      "archive_member": "usr/share/doc/libp11-kit0/copyright",
+      "licence_reference": "usr/share/doc/libp11-kit0/copyright"
+    },
+    {
+      "package": "libpsl5",
+      "version": "0.21.0-1.2",
+      "sdk_path": "usr/share/doc/libpsl5/copyright",
+      "output": "licenses/native-signaling/libpsl5-copyright.txt",
+      "bytes": 2943,
+      "sha256": "a530da63c89b707cb51a9c84667aecd0f2a138b0503734cbc8e73ea7cc6fbae0",
+      "archive_member": "usr/share/doc/libpsl5/copyright",
+      "licence_reference": "usr/share/doc/libpsl5/copyright"
+    },
+    {
+      "package": "libssh2-1",
+      "version": "1.9.0-2+deb11u1",
+      "sdk_path": "usr/share/doc/libssh2-1/copyright",
+      "output": "licenses/native-signaling/libssh2-1-copyright.txt",
+      "bytes": 2024,
+      "sha256": "3fa5959b11519a8818b429078b46114a8e2dbb4d2ce4e8e66c7ee088c3ac2c7c",
+      "archive_member": "usr/share/doc/libssh2-1/copyright",
+      "licence_reference": "usr/share/doc/libssh2-1/copyright"
+    },
+    {
+      "package": "libtasn1-6",
+      "version": "4.16.0-2+deb11u2",
+      "sdk_path": "usr/share/doc/libtasn1-6/copyright",
+      "output": "licenses/native-signaling/libtasn1-6-copyright.txt",
+      "bytes": 3451,
+      "sha256": "ab2f3532a1bf45d90643e92c1dfb985982698ecbf63f12595acfd9598d36350d",
+      "archive_member": "usr/share/doc/libtasn1-6/copyright",
+      "licence_reference": "usr/share/doc/libtasn1-6/copyright"
+    },
+    {
+      "package": "libunistring2",
+      "version": "0.9.10-4",
+      "sdk_path": "usr/share/doc/libunistring2/copyright",
+      "output": "licenses/native-signaling/libunistring2-copyright.txt",
+      "bytes": 6067,
+      "sha256": "5b188ea82b86a3136a7480600b2e244df542c702effe7aedf04951c9d9559eb3",
+      "archive_member": "usr/share/doc/libunistring2/copyright",
+      "licence_reference": "usr/share/doc/libunistring2/copyright"
+    },
+    {
+      "package": "zlib1g",
+      "version": "1:1.2.11.dfsg-2+deb11u2",
+      "sdk_path": "usr/share/doc/zlib1g/copyright",
+      "output": "licenses/native-signaling/zlib1g-copyright.txt",
+      "bytes": 2920,
+      "sha256": "d77204eee882807240f6351c4f5ae2a4bcdb5b773ff77d10647b9b66b826b2fb",
+      "archive_member": "usr/share/doc/zlib1g/copyright",
+      "licence_reference": "usr/share/doc/zlib1g/copyright"
+    },
+    {
+      "package": "common-licenses",
+      "version": "3.0.20261021.266025",
+      "sdk_path": "usr/share/common-licenses/Apache-2.0",
+      "output": "licenses/native-signaling/common/Apache-2.0.txt",
+      "bytes": 11358,
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "archive_member": "usr/share/common-licenses/Apache-2.0",
+      "licence_reference": "usr/share/common-licenses/Apache-2.0"
+    },
+    {
+      "package": "common-licenses",
+      "version": "3.0.20261021.266025",
+      "sdk_path": "usr/share/common-licenses/GFDL-1.2",
+      "output": "licenses/native-signaling/common/GFDL-1.2.txt",
+      "bytes": 20431,
+      "sha256": "56976e64523fa1e68db4e6f464f5b2cb89d7d08f54b1d012e317b8db286b3faf",
+      "archive_member": "usr/share/common-licenses/GFDL-1.2",
+      "licence_reference": "usr/share/common-licenses/GFDL-1.2"
+    },
+    {
+      "package": "common-licenses",
+      "version": "3.0.20261021.266025",
+      "sdk_path": "usr/share/common-licenses/GFDL-1.3",
+      "output": "licenses/native-signaling/common/GFDL-1.3.txt",
+      "bytes": 22962,
+      "sha256": "4748f03ed2dbcc14cde6ebc30799899c403e356a7465dc30fcf2b80c45fc0059",
+      "archive_member": "usr/share/common-licenses/GFDL-1.3",
+      "licence_reference": "usr/share/common-licenses/GFDL-1.3"
+    },
+    {
+      "package": "common-licenses",
+      "version": "3.0.20261021.266025",
+      "sdk_path": "usr/share/common-licenses/GPL",
+      "output": "licenses/native-signaling/common/GPL.txt",
+      "bytes": 35147,
+      "sha256": "8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903",
+      "archive_member": "usr/share/common-licenses/GPL-3",
+      "licence_reference": "usr/share/common-licenses/GPL"
+    },
+    {
+      "package": "common-licenses",
+      "version": "3.0.20261021.266025",
+      "sdk_path": "usr/share/common-licenses/GPL-2",
+      "output": "licenses/native-signaling/common/GPL-2.txt",
+      "bytes": 18092,
+      "sha256": "8177f97513213526df2cf6184d8ff986c675afb514d4e68a404010521b880643",
+      "archive_member": "usr/share/common-licenses/GPL-2",
+      "licence_reference": "usr/share/common-licenses/GPL-2"
+    },
+    {
+      "package": "common-licenses",
+      "version": "3.0.20261021.266025",
+      "sdk_path": "usr/share/common-licenses/GPL-3",
+      "output": "licenses/native-signaling/common/GPL-3.txt",
+      "bytes": 35147,
+      "sha256": "8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903",
+      "archive_member": "usr/share/common-licenses/GPL-3",
+      "licence_reference": "usr/share/common-licenses/GPL-3"
+    },
+    {
+      "package": "common-licenses",
+      "version": "3.0.20261021.266025",
+      "sdk_path": "usr/share/common-licenses/LGPL",
+      "output": "licenses/native-signaling/common/LGPL.txt",
+      "bytes": 7651,
+      "sha256": "da7eabb7bafdf7d3ae5e9f223aa5bdc1eece45ac569dc21b3b037520b4464768",
+      "archive_member": "usr/share/common-licenses/LGPL-3",
+      "licence_reference": "usr/share/common-licenses/LGPL"
+    },
+    {
+      "package": "common-licenses",
+      "version": "3.0.20261021.266025",
+      "sdk_path": "usr/share/common-licenses/LGPL-2",
+      "output": "licenses/native-signaling/common/LGPL-2.txt",
+      "bytes": 25383,
+      "sha256": "b7993225104d90ddd8024fd838faf300bea5e83d91203eab98e29512acebd69c",
+      "archive_member": "usr/share/common-licenses/LGPL-2",
+      "licence_reference": "usr/share/common-licenses/LGPL-2"
+    },
+    {
+      "package": "common-licenses",
+      "version": "3.0.20261021.266025",
+      "sdk_path": "usr/share/common-licenses/LGPL-2.1",
+      "output": "licenses/native-signaling/common/LGPL-2.1.txt",
+      "bytes": 26530,
+      "sha256": "dc626520dcd53a22f727af3ee42c770e56c97a64fe3adb063799d8ab032fe551",
+      "archive_member": "usr/share/common-licenses/LGPL-2.1",
+      "licence_reference": "usr/share/common-licenses/LGPL-2.1"
+    },
+    {
+      "package": "common-licenses",
+      "version": "3.0.20261021.266025",
+      "sdk_path": "usr/share/common-licenses/LGPL-3",
+      "output": "licenses/native-signaling/common/LGPL-3.txt",
+      "bytes": 7651,
+      "sha256": "da7eabb7bafdf7d3ae5e9f223aa5bdc1eece45ac569dc21b3b037520b4464768",
+      "archive_member": "usr/share/common-licenses/LGPL-3",
+      "licence_reference": "usr/share/common-licenses/LGPL-3"
+    }
+  ],
+  "source_packages": [
+    {
+      "package": "brotli",
+      "version": "1.0.9-2",
+      "files": [
+        {
+          "url": "https://repo.steampowered.com/steamrt-images-sniper/snapshots/3.0.20261021.266025/sources/brotli_1.0.9-2.dsc",
+          "sha256": "8c4c86748ec9770e08b60233d658593650444b04a452dc5b607ed5b5537b683e",
+          "bytes": 2261,
+          "filename": "brotli_1.0.9-2.dsc"
+        },
+        {
+          "url": "https://repo.steampowered.com/steamrt-images-sniper/snapshots/3.0.20261021.266025/sources/brotli_1.0.9.orig.tar.gz",
+          "sha256": "f9e8d81d0405ba66d181529af42a3354f838c939095ff99930da6aa9cdf6fe46",
+          "bytes": 486984,
+          "filename": "brotli_1.0.9.orig.tar.gz"
+        },
+        {
+          "url": "https://repo.steampowered.com/steamrt-images-sniper/snapshots/3.0.20261021.266025/sources/brotli_1.0.9-2.debian.tar.xz",
+          "sha256": "ab81b1db852c8d01e0fa5b0b650bb486f32a232b35336828423af50af6fecca0",
+          "bytes": 5552,
+          "filename": "brotli_1.0.9-2.debian.tar.xz"
+        }
+      ]
+    },
+    {
+      "package": "curl",
+      "version": "7.74.0-1.3+steamrt3.2+deb11u16",
+      "files": [
+        {
+          "url": "https://repo.steampowered.com/steamrt-images-sniper/snapshots/3.0.20261021.266025/sources/curl_7.74.0-1.3+steamrt3.2+deb11u16.dsc",
+          "sha256": "44e591568e2d274cdc9fa1cbb33b5ad59b1b9f11a826ca9a75611b5813e57663",
+          "bytes": 1864,
+          "filename": "curl_7.74.0-1.3+steamrt3.2+deb11u16.dsc"
+        },
+        {
+          "url": "https://repo.steampowered.com/steamrt-images-sniper/snapshots/3.0.20261021.266025/sources/curl_7.74.0.orig.tar.gz",
+          "sha256": "e56b3921eeb7a2951959c02db0912b5fcd5fdba5aca071da819e1accf338bbd7",
+          "bytes": 4043409,
+          "filename": "curl_7.74.0.orig.tar.gz"
+        },
+        {
+          "url": "https://repo.steampowered.com/steamrt-images-sniper/snapshots/3.0.20261021.266025/sources/curl_7.74.0-1.3+steamrt3.2+deb11u16.debian.tar.xz",
+          "sha256": "fd40b1c1ba82667e42f3a733a70d767f1bf96bc2571c92189036303179994153",
+          "bytes": 80256,
+          "filename": "curl_7.74.0-1.3+steamrt3.2+deb11u16.debian.tar.xz"
+        }
+      ]
+    },
+    {
+      "package": "gmp",
+      "version": "2:6.2.1+dfsg-1+deb11u1",
+      "files": [
+        {
+          "url": "https://repo.steampowered.com/steamrt-images-sniper/snapshots/3.0.20261021.266025/sources/gmp_6.2.1+dfsg-1+deb11u1.dsc",
+          "sha256": "4c09eb0a1c333fc5e67184a18f050af0f46f7f0fdeb533557bebd89df07c137b",
+          "bytes": 2181,
+          "filename": "gmp_6.2.1+dfsg-1+deb11u1.dsc"
+        },
+        {
+          "url": "https://repo.steampowered.com/steamrt-images-sniper/snapshots/3.0.20261021.266025/sources/gmp_6.2.1+dfsg.orig.tar.xz",
+          "sha256": "c6ba08e3f079260ab90ff44ab8801eae134cd62cd78f4aa56317c0e70daa40cb",
+          "bytes": 1853476,
+          "filename": "gmp_6.2.1+dfsg.orig.tar.xz"
+        },
+        {
+          "url": "https://repo.steampowered.com/steamrt-images-sniper/snapshots/3.0.20261021.266025/sources/gmp_6.2.1+dfsg-1+deb11u1.debian.tar.xz",
+          "sha256": "3cde187d542f5c095c6db8b76ec5252353e0413b492c57eb2e67ed3c43f40172",
+          "bytes": 21920,
+          "filename": "gmp_6.2.1+dfsg-1+deb11u1.debian.tar.xz"
+        }
+      ]
+    },
+    {
+      "package": "gnutls28",
+      "version": "3.7.1-5+deb11u10",
+      "files": [
+        {
+          "url": "https://repo.steampowered.com/steamrt-images-sniper/snapshots/3.0.20261021.266025/sources/gnutls28_3.7.1-5+deb11u10.dsc",
+          "sha256": "6615de987442a244d54bab8de49d46e91ce02efbd917a03444075cf73252fc03",
+          "bytes": 3545,
+          "filename": "gnutls28_3.7.1-5+deb11u10.dsc"
+        },
+        {
+          "url": "https://repo.steampowered.com/steamrt-images-sniper/snapshots/3.0.20261021.266025/sources/gnutls28_3.7.1.orig.tar.xz",
+          "sha256": "3777d7963eca5e06eb315686163b7b3f5045e2baac5e54e038ace9835e5cac6f",
+          "bytes": 6038388,
+          "filename": "gnutls28_3.7.1.orig.tar.xz"
+        },
+        {
+          "url": "https://repo.steampowered.com/steamrt-images-sniper/snapshots/3.0.20261021.266025/sources/gnutls28_3.7.1.orig.tar.xz.asc",
+          "sha256": "13a683b12602c169a7ad7827ab0e3f35c8fa1f98675d0073cf7d54a8cd635582",
+          "bytes": 854,
+          "filename": "gnutls28_3.7.1.orig.tar.xz.asc"
+        },
+        {
+          "url": "https://repo.steampowered.com/steamrt-images-sniper/snapshots/3.0.20261021.266025/sources/gnutls28_3.7.1-5+deb11u10.debian.tar.xz",
+          "sha256": "a1b2c47bbc5c38e180d0aa02219901ec99a9cdc90cf7c4fb4b3762f58d23060e",
+          "bytes": 165252,
+          "filename": "gnutls28_3.7.1-5+deb11u10.debian.tar.xz"
+        }
+      ]
+    },
+    {
+      "package": "libffi",
+      "version": "3.3-6",
+      "files": [
+        {
+          "url": "https://repo.steampowered.com/steamrt-images-sniper/snapshots/3.0.20261021.266025/sources/libffi_3.3-6.dsc",
+          "sha256": "cb5dcd6b54e0c8c7db4cd97deef68ac9e2ede49138ca5db194b60338eae8dd65",
+          "bytes": 1934,
+          "filename": "libffi_3.3-6.dsc"
+        },
+        {
+          "url": "https://repo.steampowered.com/steamrt-images-sniper/snapshots/3.0.20261021.266025/sources/libffi_3.3.orig.tar.gz",
+          "sha256": "72fba7922703ddfa7a028d513ac15a85c8d54c8d67f55fa5a4802885dc652056",
+          "bytes": 1305466,
+          "filename": "libffi_3.3.orig.tar.gz"
+        },
+        {
+          "url": "https://repo.steampowered.com/steamrt-images-sniper/snapshots/3.0.20261021.266025/sources/libffi_3.3-6.debian.tar.xz",
+          "sha256": "d15879289f32acf2afbbcc6ccf6e0c1aa306f6f06abb8b0301bfa41bffea9a55",
+          "bytes": 9168,
+          "filename": "libffi_3.3-6.debian.tar.xz"
+        }
+      ]
+    },
+    {
+      "package": "libgcrypt20",
+      "version": "1.8.7-6+steamrt3.1",
+      "files": [
+        {
+          "url": "https://repo.steampowered.com/steamrt-images-sniper/snapshots/3.0.20261021.266025/sources/libgcrypt20_1.8.7-6+steamrt3.1.dsc",
+          "sha256": "e1776dd87eab8a884284b597863649364e8c5d1daadb842abc913b032add5967",
+          "bytes": 1515,
+          "filename": "libgcrypt20_1.8.7-6+steamrt3.1.dsc"
+        },
+        {
+          "url": "https://repo.steampowered.com/steamrt-images-sniper/snapshots/3.0.20261021.266025/sources/libgcrypt20_1.8.7.orig.tar.bz2",
+          "sha256": "03b70f028299561b7034b8966d7dd77ef16ed139c43440925fe8782561974748",
+          "bytes": 2985660,
+          "filename": "libgcrypt20_1.8.7.orig.tar.bz2"
+        },
+        {
+          "url": "https://repo.steampowered.com/steamrt-images-sniper/snapshots/3.0.20261021.266025/sources/libgcrypt20_1.8.7-6+steamrt3.1.debian.tar.xz",
+          "sha256": "5fc8fb047b77d242c26cf46aebcc658de601e77a6fac350d0322f5253aa86cbc",
+          "bytes": 37984,
+          "filename": "libgcrypt20_1.8.7-6+steamrt3.1.debian.tar.xz"
+        }
+      ]
+    },
+    {
+      "package": "libgpg-error",
+      "version": "1.38-2+steamrt3.1",
+      "files": [
+        {
+          "url": "https://repo.steampowered.com/steamrt-images-sniper/snapshots/3.0.20261021.266025/sources/libgpg-error_1.38-2+steamrt3.1.dsc",
+          "sha256": "6101b5f57d9bdca2c3ce30a39b9b7ca7f2a85a493b773c1af6f6ae3af1770b8e",
+          "bytes": 1558,
+          "filename": "libgpg-error_1.38-2+steamrt3.1.dsc"
+        },
+        {
+          "url": "https://repo.steampowered.com/steamrt-images-sniper/snapshots/3.0.20261021.266025/sources/libgpg-error_1.38.orig.tar.bz2",
+          "sha256": "d8988275aa69d7149f931c10442e9e34c0242674249e171592b430ff7b3afd02",
+          "bytes": 957637,
+          "filename": "libgpg-error_1.38.orig.tar.bz2"
+        },
+        {
+          "url": "https://repo.steampowered.com/steamrt-images-sniper/snapshots/3.0.20261021.266025/sources/libgpg-error_1.38-2+steamrt3.1.debian.tar.xz",
+          "sha256": "0f4b7a8ccba81e2a2c53bbbf51b623c99eaa422f67771be8c18c74b215073a1d",
+          "bytes": 19708,
+          "filename": "libgpg-error_1.38-2+steamrt3.1.debian.tar.xz"
+        }
+      ]
+    },
+    {
+      "package": "libidn2",
+      "version": "2.3.0-5",
+      "files": [
+        {
+          "url": "https://repo.steampowered.com/steamrt-images-sniper/snapshots/3.0.20261021.266025/sources/libidn2_2.3.0-5.dsc",
+          "sha256": "f8a787741b2395fe87c2773252e539bcc068fde0a5367316082cbbd2fed2be16",
+          "bytes": 2046,
+          "filename": "libidn2_2.3.0-5.dsc"
+        },
+        {
+          "url": "https://repo.steampowered.com/steamrt-images-sniper/snapshots/3.0.20261021.266025/sources/libidn2_2.3.0.orig.tar.gz",
+          "sha256": "e1cb1db3d2e249a6a3eb6f0946777c2e892d5c5dc7bd91c74394fc3a01cab8b5",
+          "bytes": 2164993,
+          "filename": "libidn2_2.3.0.orig.tar.gz"
+        },
+        {
+          "url": "https://repo.steampowered.com/steamrt-images-sniper/snapshots/3.0.20261021.266025/sources/libidn2_2.3.0-5.debian.tar.xz",
+          "sha256": "e061b97d035e374bc6a948a514c26ad7d1bda31c8147cc8db02e604c82865a15",
+          "bytes": 11276,
+          "filename": "libidn2_2.3.0-5.debian.tar.xz"
+        }
+      ]
+    },
+    {
+      "package": "libpsl",
+      "version": "0.21.0-1.2",
+      "files": [
+        {
+          "url": "https://repo.steampowered.com/steamrt-images-sniper/snapshots/3.0.20261021.266025/sources/libpsl_0.21.0-1.2.dsc",
+          "sha256": "d46b69dd1cb43dc48375d70c4895d0a0d5964131196a7de4e0ad1ea2912d6df4",
+          "bytes": 2216,
+          "filename": "libpsl_0.21.0-1.2.dsc"
+        },
+        {
+          "url": "https://repo.steampowered.com/steamrt-images-sniper/snapshots/3.0.20261021.266025/sources/libpsl_0.21.0.orig.tar.gz",
+          "sha256": "055aa87ec166c7afb985d0816c07ff440e1eb899881a318c51c69a0aeea8e279",
+          "bytes": 8598583,
+          "filename": "libpsl_0.21.0.orig.tar.gz"
+        },
+        {
+          "url": "https://repo.steampowered.com/steamrt-images-sniper/snapshots/3.0.20261021.266025/sources/libpsl_0.21.0-1.2.debian.tar.xz",
+          "sha256": "012d3b6ec5634c59e6a4aa9f854d756ef23f08edf21d70ae5a888c55e95abd5d",
+          "bytes": 12724,
+          "filename": "libpsl_0.21.0-1.2.debian.tar.xz"
+        }
+      ]
+    },
+    {
+      "package": "libssh2",
+      "version": "1.9.0-2+deb11u1",
+      "files": [
+        {
+          "url": "https://repo.steampowered.com/steamrt-images-sniper/snapshots/3.0.20261021.266025/sources/libssh2_1.9.0-2+deb11u1.dsc",
+          "sha256": "d1927132489695d986ae2c5e3cda5d325aa2c5ab6b0572ebe2e1f39b5116b16b",
+          "bytes": 2039,
+          "filename": "libssh2_1.9.0-2+deb11u1.dsc"
+        },
+        {
+          "url": "https://repo.steampowered.com/steamrt-images-sniper/snapshots/3.0.20261021.266025/sources/libssh2_1.9.0.orig.tar.gz",
+          "sha256": "d5fb8bd563305fd1074dda90bd053fb2d29fc4bce048d182f96eaa466dfadafd",
+          "bytes": 888551,
+          "filename": "libssh2_1.9.0.orig.tar.gz"
+        },
+        {
+          "url": "https://repo.steampowered.com/steamrt-images-sniper/snapshots/3.0.20261021.266025/sources/libssh2_1.9.0-2+deb11u1.debian.tar.xz",
+          "sha256": "094bfb01c5f721ef20718c9e435edefeed98231e19bef848d48ea0b93ba1dc5b",
+          "bytes": 9356,
+          "filename": "libssh2_1.9.0-2+deb11u1.debian.tar.xz"
+        }
+      ]
+    },
+    {
+      "package": "libtasn1-6",
+      "version": "4.16.0-2+deb11u2",
+      "files": [
+        {
+          "url": "https://repo.steampowered.com/steamrt-images-sniper/snapshots/3.0.20261021.266025/sources/libtasn1-6_4.16.0-2+deb11u2.dsc",
+          "sha256": "14d6a0a7b417eaa38ff74663952169dea930c219740ec13a9e8f12c5a5076133",
+          "bytes": 2618,
+          "filename": "libtasn1-6_4.16.0-2+deb11u2.dsc"
+        },
+        {
+          "url": "https://repo.steampowered.com/steamrt-images-sniper/snapshots/3.0.20261021.266025/sources/libtasn1-6_4.16.0.orig.tar.gz",
+          "sha256": "0e0fb0903839117cb6e3b56e68222771bebf22ad7fc2295a0ed7d576e8d4329d",
+          "bytes": 1812442,
+          "filename": "libtasn1-6_4.16.0.orig.tar.gz"
+        },
+        {
+          "url": "https://repo.steampowered.com/steamrt-images-sniper/snapshots/3.0.20261021.266025/sources/libtasn1-6_4.16.0.orig.tar.gz.asc",
+          "sha256": "06c201e8c3b43c27465ed79294d4c4ec8dcd3e95e4a6176ecbf273229ee3e2d0",
+          "bytes": 488,
+          "filename": "libtasn1-6_4.16.0.orig.tar.gz.asc"
+        },
+        {
+          "url": "https://repo.steampowered.com/steamrt-images-sniper/snapshots/3.0.20261021.266025/sources/libtasn1-6_4.16.0-2+deb11u2.debian.tar.xz",
+          "sha256": "983c88d5dd93f96ac58bd6f6f776d52db6b91193cb1902de194e0ec5102b536d",
+          "bytes": 21068,
+          "filename": "libtasn1-6_4.16.0-2+deb11u2.debian.tar.xz"
+        }
+      ]
+    },
+    {
+      "package": "libunistring",
+      "version": "0.9.10-4",
+      "files": [
+        {
+          "url": "https://repo.steampowered.com/steamrt-images-sniper/snapshots/3.0.20261021.266025/sources/libunistring_0.9.10-4.dsc",
+          "sha256": "5c7940807b538d4204506349cbd67e5c677afb9f0e46e94455353e3f746a481e",
+          "bytes": 2212,
+          "filename": "libunistring_0.9.10-4.dsc"
+        },
+        {
+          "url": "https://repo.steampowered.com/steamrt-images-sniper/snapshots/3.0.20261021.266025/sources/libunistring_0.9.10.orig.tar.xz",
+          "sha256": "eb8fb2c3e4b6e2d336608377050892b54c3c983b646c561836550863003c05d7",
+          "bytes": 2051320,
+          "filename": "libunistring_0.9.10.orig.tar.xz"
+        },
+        {
+          "url": "https://repo.steampowered.com/steamrt-images-sniper/snapshots/3.0.20261021.266025/sources/libunistring_0.9.10.orig.tar.xz.asc",
+          "sha256": "e1606f691034fa21b00e08269622743547c16d21cca6c8a64156b4774a49e78e",
+          "bytes": 1310,
+          "filename": "libunistring_0.9.10.orig.tar.xz.asc"
+        },
+        {
+          "url": "https://repo.steampowered.com/steamrt-images-sniper/snapshots/3.0.20261021.266025/sources/libunistring_0.9.10-4.debian.tar.xz",
+          "sha256": "6c9554e1a1c6d0a02ca4868a5422d176e57a3131c1a8a21de5503b164997525c",
+          "bytes": 40936,
+          "filename": "libunistring_0.9.10-4.debian.tar.xz"
+        }
+      ]
+    },
+    {
+      "package": "nettle",
+      "version": "3.7.3-1",
+      "files": [
+        {
+          "url": "https://repo.steampowered.com/steamrt-images-sniper/snapshots/3.0.20261021.266025/sources/nettle_3.7.3-1.dsc",
+          "sha256": "63a1a80f37b6484f479dfa1cbd30152feff3b1a5a2161fdab05b90edde212c1f",
+          "bytes": 2033,
+          "filename": "nettle_3.7.3-1.dsc"
+        },
+        {
+          "url": "https://repo.steampowered.com/steamrt-images-sniper/snapshots/3.0.20261021.266025/sources/nettle_3.7.3.orig.tar.gz",
+          "sha256": "661f5eb03f048a3b924c3a8ad2515d4068e40f67e774e8a26827658007e3bcf0",
+          "bytes": 2383985,
+          "filename": "nettle_3.7.3.orig.tar.gz"
+        },
+        {
+          "url": "https://repo.steampowered.com/steamrt-images-sniper/snapshots/3.0.20261021.266025/sources/nettle_3.7.3-1.debian.tar.xz",
+          "sha256": "97af0e306aec6f6c5d8e73a7a3ce2856c76bcff9cdcfa7640e932a5a3aee9f24",
+          "bytes": 21956,
+          "filename": "nettle_3.7.3-1.debian.tar.xz"
+        }
+      ]
+    },
+    {
+      "package": "nghttp2",
+      "version": "1.43.0-1+deb11u3",
+      "files": [
+        {
+          "url": "https://repo.steampowered.com/steamrt-images-sniper/snapshots/3.0.20261021.266025/sources/nghttp2_1.43.0-1+deb11u3.dsc",
+          "sha256": "60ec7decf7fa548fb56f2079c282e163e5b939b392b5da2450dd9a57c3647952",
+          "bytes": 2574,
+          "filename": "nghttp2_1.43.0-1+deb11u3.dsc"
+        },
+        {
+          "url": "https://repo.steampowered.com/steamrt-images-sniper/snapshots/3.0.20261021.266025/sources/nghttp2_1.43.0.orig.tar.bz2",
+          "sha256": "556f24653397c71ebb8270b3c5e5507f0893e6eac2c6eeda6be2ecf6e1f50f62",
+          "bytes": 4521786,
+          "filename": "nghttp2_1.43.0.orig.tar.bz2"
+        },
+        {
+          "url": "https://repo.steampowered.com/steamrt-images-sniper/snapshots/3.0.20261021.266025/sources/nghttp2_1.43.0-1+deb11u3.debian.tar.xz",
+          "sha256": "2e5c0d70838b1349d000102f84c2fc6535801b3be82fbb25c226ca031d7a82ab",
+          "bytes": 25252,
+          "filename": "nghttp2_1.43.0-1+deb11u3.debian.tar.xz"
+        }
+      ]
+    },
+    {
+      "package": "p11-kit",
+      "version": "0.23.22-1",
+      "files": [
+        {
+          "url": "https://repo.steampowered.com/steamrt-images-sniper/snapshots/3.0.20261021.266025/sources/p11-kit_0.23.22-1.dsc",
+          "sha256": "b5f7a7908a7da082fa74c2a35667f4f4dd1324eaf43ff4b4a0ffa7e2763774a6",
+          "bytes": 2417,
+          "filename": "p11-kit_0.23.22-1.dsc"
+        },
+        {
+          "url": "https://repo.steampowered.com/steamrt-images-sniper/snapshots/3.0.20261021.266025/sources/p11-kit_0.23.22.orig.tar.xz",
+          "sha256": "8a8f40153dd5a3f8e7c03e641f8db400133fb2a6a9ab2aee1b6d0cb0495ec6b6",
+          "bytes": 830016,
+          "filename": "p11-kit_0.23.22.orig.tar.xz"
+        },
+        {
+          "url": "https://repo.steampowered.com/steamrt-images-sniper/snapshots/3.0.20261021.266025/sources/p11-kit_0.23.22.orig.tar.xz.asc",
+          "sha256": "52d36bd38ed84dcc394b97da18ff4b4e220f0b13c5e7922f5b908312678b0b02",
+          "bytes": 854,
+          "filename": "p11-kit_0.23.22.orig.tar.xz.asc"
+        },
+        {
+          "url": "https://repo.steampowered.com/steamrt-images-sniper/snapshots/3.0.20261021.266025/sources/p11-kit_0.23.22-1.debian.tar.xz",
+          "sha256": "05a157dbeb054dd14c19c0c4f72c50e57fb69c4cfa4b5d34bc7ecdb5d12e7265",
+          "bytes": 22256,
+          "filename": "p11-kit_0.23.22-1.debian.tar.xz"
+        }
+      ]
+    },
+    {
+      "package": "zlib",
+      "version": "1:1.2.11.dfsg-2+deb11u2",
+      "files": [
+        {
+          "url": "https://repo.steampowered.com/steamrt-images-sniper/snapshots/3.0.20261021.266025/sources/zlib_1.2.11.dfsg-2+deb11u2.dsc",
+          "sha256": "ec2ee2fc4dfd1f799dfa6a95133ebccbd7531886de38b0a8e3e58b66706a6dc7",
+          "bytes": 2905,
+          "filename": "zlib_1.2.11.dfsg-2+deb11u2.dsc"
+        },
+        {
+          "url": "https://repo.steampowered.com/steamrt-images-sniper/snapshots/3.0.20261021.266025/sources/zlib_1.2.11.dfsg.orig.tar.gz",
+          "sha256": "80c481411a4fe8463aeb8270149a0e80bb9eaf7da44132b6e16f2b5af01bc899",
+          "bytes": 370248,
+          "filename": "zlib_1.2.11.dfsg.orig.tar.gz"
+        },
+        {
+          "url": "https://repo.steampowered.com/steamrt-images-sniper/snapshots/3.0.20261021.266025/sources/zlib_1.2.11.dfsg-2+deb11u2.debian.tar.xz",
+          "sha256": "c19794df214f0c2571b19f7dea853c066410232abe9f0ddad77231fabccde0da",
+          "bytes": 23984,
+          "filename": "zlib_1.2.11.dfsg-2+deb11u2.debian.tar.xz"
+        }
+      ]
+    }
+  ]
+}

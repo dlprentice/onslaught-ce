@@ -1,0 +1,25 @@
+--- a/game.cpp
++++ b/game.cpp
+@@ -721,7 +721,11 @@
+ 		return FALSE;
+ 	}
+ 
+-	if (WORLD.IsMultiplayer())
++#ifdef CE_NETWORK_OFF
++	if (WORLD.IsMultiplayer())
++#else
++	if (WORLD.IsMultiplayer() || CE_LockstepCoopPlayers())	// port: lockstep co-op plays a solo level with two players
++#endif
+ 		mPlayers=2;
+ 	else
+ 		mPlayers=1;
+@@ -830,6 +834,9 @@
+ 				
+ 				it.mPos = FVector( xpos, ypos, 0.0f );
+ 				it.mPlayerNumber = mPlayer[ i ]->GetNumber();
++#ifndef CE_NETWORK_OFF
++				CE_LockstepPartnerStart(i, &it);	// port: lockstep co-op's second player starts beside the first
++#endif
+ 				
+ 				start->Init( &it );
+ 				mPlayer[ i ]->AssignBattleEngine( start->GetPlayerObject() );

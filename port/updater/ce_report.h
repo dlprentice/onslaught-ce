@@ -336,14 +336,82 @@ static inline int ce_make_settings_dirs(const char *path)
 	return 1;
 }
 
-/* Sets key=value, keeping unrelated bytes (including non-text bytes) with the baseline's final-newline normalization.
- * A new, exclusive temporary file is flushed and closed before same-directory replacement. Existing unreadable,
- * non-regular or symlink/reparse-point settings files are refused. Failed reads/writes leave the original intact.
- * The caller owns admission of the selected user directory; this helper does not know the game's install directory. */
-static inline int ce_ini_write(const char *ini, const char *key, const char *value)
+/* The header of the block that lists the unfinished features (ce_ini_add_section). Every reader of ce.ini takes lines that
+ * begin with "key=", so this header and the ";" comment lines under it are skipped as they always were. A key that is not in
+ * the file yet is added above the header, so the block stays at the end and the keys under it are its own. */
+#define CE_INI_EXPERIMENTAL_HEADER "[Experimental]"
+
+/* The largest ce.ini the game's readers (ce.cpp) accept; they refuse a longer file and use their defaults. The writer never
+ * produces a longer one. */
+#define CE_INI_MAX_BYTES (1u << 20)
+
+/* Whether the line at l (n bytes, without its newline) is exactly header, a final CR and trailing blanks aside. */
+static inline int ce_ini_is_header(const char *l, size_t n, const char *header)
+{
+	size_t h = strlen(header);
+	while (n > 0 && (l[n - 1] == '\r' || l[n - 1] == ' ' || l[n - 1] == '\t')) n--;
+	return n == h && !memcmp(l, header, h);
+}
+
+/* Where the first line equal to header starts in t (len bytes), or len when there is none. */
+static inline size_t ce_ini_find_header(const char *t, size_t len, const char *header)
+{
+	for (size_t at = 0; at < len;)
+	{
+		const char *nl = (const char *)memchr(t + at, '\n', len - at);
+		size_t n = nl ? (size_t)(nl - (t + at)) : len - at;
+		if (ce_ini_is_header(t + at, n, header)) return at;
+		at += n + (nl ? 1 : 0);
+	}
+	return len;
+}
+
+/* Where a key that is not in the file yet goes when the file has the header at header_at: above the header, and above the one blank line
+ * that sets the header apart from the lines before it, so the block keeps its blank line. header_at when there is no such line. */
+static inline size_t ce_ini_insert_before(const char *t, size_t header_at)
+{
+	if (header_at >= 1 && t[header_at - 1] == '\n')
+	{
+		if (header_at == 1 || t[header_at - 2] == '\n') return header_at - 1;
+		if (t[header_at - 2] == '\r' && (header_at == 2 || t[header_at - 3] == '\n')) return header_at - 2;
+	}
+	return header_at;
+}
+
+/* Whether some line of t begins with key and "=". */
+static inline int ce_ini_has_key(const char *t, size_t len, const char *key)
+{
+	size_t k = strlen(key);
+	for (size_t at = 0; at < len;)
+	{
+		const char *nl = (const char *)memchr(t + at, '\n', len - at);
+		size_t n = nl ? (size_t)(nl - (t + at)) : len - at;
+		if (n > k && !memcmp(t + at, key, k) && t[at + k] == '=') return 1;
+		at += n + (nl ? 1 : 0);
+	}
+	return 0;
+}
+
+/* Sets key=value, or (key NULL, section given) adds a block of settings, keeping unrelated bytes (including non-text bytes)
+ * with the baseline's final-newline normalization. A new, exclusive temporary file is flushed and closed before
+ * same-directory replacement. Existing unreadable, non-regular or symlink/reparse-point settings files are refused. Failed
+ * reads/writes leave the original intact. The caller owns admission of the selected user directory; this helper does not
+ * know the game's install directory.
+ * A key that is not in the file is added above CE_INI_EXPERIMENTAL_HEADER (and the blank line before it) when the file has that line, else at the end.
+ * The block (section_header, then the comment text section_note, whole lines each starting with ";", then each of
+ * section_keys as key=0 unless the file already has a line for it somewhere) is written only when the file has no line equal
+ * to section_header; it never changes a line that is there, and a file that already has it is not written at all (it keeps its
+ * inode, its mode and its bytes, and a read-only file with the block is a success).
+ * A write replaces the file with one that has the same permission bits (a new file is private to its owner), and refuses a file its
+ * owner cannot write (no owner write bit; on Windows the read-only attribute): the player made it read-only, so it is left as it is
+ * and the call returns 0. The result is never longer than CE_INI_MAX_BYTES, the size every reader of ce.ini accepts: a write that
+ * would grow the file past it is refused and the file is left as it is. */
+static inline int ce_ini_edit(const char *ini, const char *key, const char *value, const char *section_header,
+	const char *section_note, const char *const *section_keys, int section_count)
 {
 	char parent[4200], name[256];
-	if (!ini || !key || !*key || !value || (size_t)snprintf(parent, sizeof parent, "%s", ini) >= sizeof parent) return 0;
+	if (!ini || (size_t)snprintf(parent, sizeof parent, "%s", ini) >= sizeof parent) return 0;
+	if (key ? (!*key || !value) : (!section_header || !*section_header || section_count < 0 || (section_count && !section_keys))) return 0;
 	char *slash = strrchr(parent, '/');
 #ifdef _WIN32
 	char *backslash = strrchr(parent, '\\');
@@ -366,7 +434,8 @@ static inline int ce_ini_write(const char *ini, const char *key, const char *val
 	char *t = NULL;
 	size_t len = 0;
 	FILE *f = NULL;
-	int input = -1, absent = 0;
+	int input = -1, absent = 0, readonly = 0;
+	unsigned keep_mode = 0600;	/* the permission bits the replacement gets: the old file's, else private */
 #ifdef _WIN32
 	char full[4500];
 	snprintf(full, sizeof full, "%s\\%s", dir.path, name);
@@ -377,7 +446,10 @@ static inline int ce_ini_write(const char *ini, const char *key, const char *val
 		BY_HANDLE_FILE_INFORMATION info;
 		if (GetFileType(in) == FILE_TYPE_DISK && GetFileInformationByHandle(in, &info) &&
 			!(info.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)))
+		{
+			readonly = (info.dwFileAttributes & FILE_ATTRIBUTE_READONLY) != 0;
 			input = _open_osfhandle((intptr_t)in, _O_RDONLY | _O_BINARY);
+		}
 		if (input < 0) CloseHandle(in);
 	}
 	if (input >= 0) f = _fdopen(input, "rb");
@@ -388,6 +460,11 @@ static inline int ce_ini_write(const char *ini, const char *key, const char *val
 	{
 		struct stat st;
 		if (fstat(input, &st) != 0 || !S_ISREG(st.st_mode)) { close(input); input = -1; }
+		else
+		{
+			keep_mode = (unsigned)(st.st_mode & 0777);
+			readonly = !(st.st_mode & S_IWUSR);
+		}
 	}
 	if (input >= 0) f = fdopen(input, "rb");
 #endif
@@ -418,12 +495,16 @@ static inline int ce_ini_write(const char *ini, const char *key, const char *val
 			memcpy(t + len, buf, got);
 			len += got;
 			t[len] = 0;
-			if (len > (1u << 20)) { bad = 1; break; }	/* not a ce.ini */
+			if (len > CE_INI_MAX_BYTES) { bad = 1; break; }	/* not a ce.ini */
 		}
 		if (ferror(f)) bad = 1;
 		if (fclose(f) != 0) bad = 1;
 		if (bad) { free(t); ce_settings_dir_close(&dir); return 0; }
 	}
+	/* The block is only ever added: a file that has its header needs no write, so it is left whole (and keeps its inode and mode). */
+	if (!key && t && ce_ini_find_header(t, len, section_header) < len) { free(t); ce_settings_dir_close(&dir); return 1; }
+	/* A write replaces the file, which a read-only file's owner has asked us not to do. */
+	if (readonly) { free(t); ce_settings_dir_close(&dir); return 0; }
 	char tmp[320];
 	FILE *o = NULL;
 #ifdef _WIN32
@@ -460,14 +541,19 @@ static inline int ce_ini_write(const char *ini, const char *key, const char *val
 		if (stream >= 0 && !(o = fdopen(stream, "wb"))) close(stream);
 	}
 #endif
-	size_t k = strlen(key);
-	int ok = o != NULL, written = 0;
+	size_t k = key ? strlen(key) : 0;
+	int ok = o != NULL, written = key ? 0 : 1;
+	size_t header_at = key && t ? ce_ini_find_header(t, len, CE_INI_EXPERIMENTAL_HEADER) : len;
+	if (header_at < len) header_at = ce_ini_insert_before(t, header_at);
+	int has_key = key && t ? ce_ini_has_key(t, len, key) : 0;
 	for (size_t at = 0; ok && at < len;)
 	{
 		char *l = t + at;
 		char *nl = (char *)memchr(l, '\n', len - at);
 		size_t n = nl ? (size_t)(nl - l + 1) : len - at;
-		if (n > k && !memcmp(l, key, k) && l[k] == '=')
+		if (key && !has_key && !written && at == header_at && fprintf(o, "%s=%s\n", key, value) < 0) ok = 0;
+		if (key && !has_key && at == header_at) written = 1;
+		if (key && n > k && !memcmp(l, key, k) && l[k] == '=')
 		{
 			if (!written && fprintf(o, "%s=%s\n", key, value) < 0) ok = 0;
 			written = 1;
@@ -477,8 +563,21 @@ static inline int ce_ini_write(const char *ini, const char *key, const char *val
 		at += n;
 	}
 	if (ok && !written && fprintf(o, "%s=%s\n", key, value) < 0) ok = 0;
+	if (ok && !key)
+	{
+		if (len > 0 && fputc('\n', o) == EOF) ok = 0;
+		if (ok && fprintf(o, "%s\n%s", section_header, section_note ? section_note : "") < 0) ok = 0;
+		for (int i = 0; ok && i < section_count; i++)
+			if ((!t || !ce_ini_has_key(t, len, section_keys[i])) && fprintf(o, "%s=0\n", section_keys[i]) < 0) ok = 0;
+	}
 	if (o && (fflush(o) != 0 || ferror(o))) ok = 0;
+	if (ok && o)
+	{
+		long size = ftell(o);	/* what a reader would find: more than it accepts is refused here, not written */
+		if (size < 0 || (unsigned long)size > CE_INI_MAX_BYTES) ok = 0;
+	}
 #ifndef _WIN32
+	if (ok && fchmod(output, (mode_t)keep_mode) != 0) ok = 0;
 	if (ok && fsync(output) != 0) ok = 0;
 #else
 	if (ok && !FlushFileBuffers(output)) ok = 0;
@@ -519,6 +618,19 @@ static inline int ce_ini_write(const char *ini, const char *key, const char *val
 #endif
 	ce_settings_dir_close(&dir);
 	return ok;
+}
+
+
+/* Sets key=value in the settings file ini, as ce_ini_edit describes. */
+static inline int ce_ini_write(const char *ini, const char *key, const char *value)
+{
+	return key ? ce_ini_edit(ini, key, value, NULL, NULL, NULL, 0) : 0;
+}
+
+/* Adds the block that lists the unfinished features, if ini has no line equal to header (ce_ini_edit). 1 when the file now has it. */
+static inline int ce_ini_add_section(const char *ini, const char *header, const char *note, const char *const *keys, int count)
+{
+	return ce_ini_edit(ini, NULL, NULL, header, note, keys, count);
 }
 
 #endif

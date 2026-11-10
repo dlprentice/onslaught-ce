@@ -1,0 +1,8 @@
+{
+  "schema": 1,
+  "approval": "<32 lowercase hexadecimal characters>",
+  "host": "p_<32 lowercase hexadecimal characters>_host",
+  "guest": "p_<32 lowercase hexadecimal characters>_guest",
+  "issuedAt": 0,
+  "expiresAt": 900
+}

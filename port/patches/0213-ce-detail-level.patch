@@ -1,0 +1,51 @@
+--- a/PauseMenu.cpp
++++ b/PauseMenu.cpp
+@@ -1,7 +1,11 @@
+ // PauseMenu.cpp: the in-game menu, which the PC options page also shows (reconstructed from the retail PC executable;
+ #ifdef CE_VERSION
+ #include "ce_graphics_policy.h"
++#else
++#define PortCeDetailLandscape(preset, choices, high) (preset)
++#define PortCeDetailAntiAliasingHigh(selection, gameHigh) ((selection) == (gameHigh))
+ #endif
++#line 5
+ // Stuart's file is not in his release). The menu items' class names are the retail RTTI's.
+ 
+ #include	"common.h"
+@@ -1315,7 +1319,7 @@ void	CVideoDetailLevel::SetValue(int val
+ 		mShadowDetail->SetSelection(2);
+ 		mTreeDetail->SetSelection(2);
+ 		mVSync->SetSelection(1);
+-		mLandscapeRes->SetSelection(mHighLandscapeRes);
++		mLandscapeRes->SetSelection(PortCeDetailLandscape(mHighLandscapeRes, mLandscapeRes->GetNumChoices(), 1));
+ 		mTrilinear->SetSelection(1);
+ 		mTextureRes->SetSelection(TEXTURE_RES_LOSS_SHIFT.mValue);
+ 		m32Bit->SetSelection(m32Bit->GetDefault());
+@@ -1327,7 +1331,7 @@ void	CVideoDetailLevel::SetValue(int val
+ 		mShadowDetail->SetSelection(1);
+ 		mTreeDetail->SetSelection(1);
+ 		mVSync->SetSelection(1);
+-		mLandscapeRes->SetSelection(mMediumLandscapeRes);
++		mLandscapeRes->SetSelection(PortCeDetailLandscape(mMediumLandscapeRes, mLandscapeRes->GetNumChoices(), 0));
+ 		mTrilinear->SetSelection(1);
+ 		mTextureRes->SetSelection(TEXTURE_RES_LOSS_SHIFT.mValue);
+ 		m32Bit->SetSelection(m32Bit->GetDefault());
+@@ -1356,15 +1360,15 @@ int		CVideoDetailLevel::GetValue()
+ 		return 1;
+ 
+ 	if ((mResolution->GetSelection() == LT.GetCurrentDevice()->dwMediumDetailMode) && (mShadowDetail->GetSelection() == 1) && (mTreeDetail->GetSelection() == 1) &&
+-		(mVSync->GetSelection() == 1) && (mLandscapeRes->GetSelection() == mMediumLandscapeRes) && (mTrilinear->GetSelection() == 1) &&
++		(mVSync->GetSelection() == 1) && (mLandscapeRes->GetSelection() == PortCeDetailLandscape(mMediumLandscapeRes, mLandscapeRes->GetNumChoices(), 0)) && (mTrilinear->GetSelection() == 1) &&
+ 		(mTextureRes->GetSelection() == TEXTURE_RES_LOSS_SHIFT.mValue) && (m32Bit->GetSelection() == m32Bit->GetDefault()) &&
+ 		(mMultiSample->GetSelection() == 0))
+ 		return 2;
+ 
+ 	if ((mResolution->GetSelection() == LT.GetCurrentDevice()->dwHighDetailMode) && (mShadowDetail->GetSelection() == 2) &&
+-		(mTreeDetail->GetSelection() == 2) && (mVSync->GetSelection() == 1) && (mLandscapeRes->GetSelection() == mHighLandscapeRes) &&
++		(mTreeDetail->GetSelection() == 2) && (mVSync->GetSelection() == 1) && (mLandscapeRes->GetSelection() == PortCeDetailLandscape(mHighLandscapeRes, mLandscapeRes->GetNumChoices(), 1)) &&
+ 		(mTrilinear->GetSelection() == 1) && (mTextureRes->GetSelection() == TEXTURE_RES_LOSS_SHIFT.mValue) &&
+-		(m32Bit->GetSelection() == m32Bit->GetDefault()) && ((mMultiSample->GetNumChoices() == 1) || (mMultiSample->GetSelection() == 1)))
++		(m32Bit->GetSelection() == m32Bit->GetDefault()) && ((mMultiSample->GetNumChoices() == 1) || (PortCeDetailAntiAliasingHigh(mMultiSample->GetSelection(), 1))))
+ 		return 3;
+ 
+ 	return 0;

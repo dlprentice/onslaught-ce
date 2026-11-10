@@ -1,0 +1,66 @@
+--- a/DXMemoryManager.cpp
++++ b/DXMemoryManager.cpp
+@@ -3,6 +3,9 @@
+ // Seeded from Stuart's GPL source (DXMemoryManager.cpp at 5352a81c); divergences are listed in README.md.
+ 
+ #include "common.h"
++#ifndef CE_NETWORK_OFF
++#include "ce_network_lockstep.h"
++#endif
+ #define DXMEMORYMANAGER_CPP
+ #include "MemoryManager.h"
+ #include "DXMemoryManager.h"
+@@ -146,6 +149,19 @@
+ 		if (mTypeHeap[aType] == &mSoundHeap  ) CONSOLE.FatalError(FALSE, 0xd0, -1);
+ 	}
+ 
++#ifndef CE_NETWORK_OFF
++	if (data && CE_LockstepRequested())
++	{
++		// the whole payload the heap handed out: a tiny cell in full (16 bytes, even for a request of none), else the block's own size, which is the request rounded up to 16
++		// or a little more when its block was not split
++		UINT	lClear = (aSize + 0xf) & 0xfffffff0;
++		if (mDefaultHeap.IsTiny(data) || mThingHeap.IsTiny(data))
++			lClear = TINY_BLOCK;
++		else if (CMemoryBlock::GetBlock(data)->GetSize() > lClear)
++			lClear = CMemoryBlock::GetBlock(data)->GetSize();
++		memset(data, 0, lClear);	// port (lockstep co-op): a block starts as zeros on both peers, not as what the heap last held there (the draw loop allocates and frees on its own schedule)
++	}
++#endif
+ 	return data;
+ }
+ 
+--- a/MemoryManager.cpp
++++ b/MemoryManager.cpp
+@@ -7,6 +7,9 @@
+ #include "DebugLog.h"
+ #include "membuffer.h"
+ #include "Platform.h"
++#ifndef CE_NETWORK_OFF
++#include "ce_network_lockstep.h"
++#endif
+ 
+ // No maths-constant initializers belong to this object (none precede 004a1390); the pair after it (004a3010) is
+ // MenuItem.obj's.
+@@ -420,6 +423,10 @@
+ 	{
+ 		UINT copysize = min(newsize, TINY_BLOCK);
+ 		memmove(data, temp, copysize);
++#ifndef CE_NETWORK_OFF
++		if (copysize < newsize && CE_LockstepRequested())
++			memset((char *)data + copysize, 0, newsize - copysize);	// port (lockstep co-op): the grown part starts as zeros, as a new block does (patch 0156)
++#endif
+ 	}
+ 	else
+ 	{
+@@ -699,6 +706,10 @@
+ 	{
+ 		SINT lSize = ( apBlock->GetSize() > aSize ) ? aSize : apBlock->GetSize();
+ 		memcpy( lpMem, apBlock->GetMem(), lSize );
++#ifndef CE_NETWORK_OFF
++		if (lSize < (SINT)aSize && CE_LockstepRequested())
++			memset((char *)lpMem + lSize, 0, aSize - lSize);	// port (lockstep co-op): the grown part starts as zeros, as a new block does (patch 0156)
++#endif
+ 	}
+ 	Free( apBlock );
+ 

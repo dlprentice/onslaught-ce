@@ -1,0 +1,120 @@
+--- a/actor.cpp
++++ b/actor.cpp
+@@ -35,7 +35,12 @@
+ 
+ 	int r = (int)GetMoveMultiplier() ;
+ 
+-	mDoFullMoveCount = GAME.Random() % r ;
++#ifdef CE_NETWORK_OFF
++	mDoFullMoveCount = GAME.Random() % r ;
++#else
++	if (!CE_WorldActorInitPhase(this,r,&mDoFullMoveCount))
++		mDoFullMoveCount = GAME.Random() % r ;
++#endif
+ 
+ 	AddMoveEvent(NULL);
+ }
+--- a/weapon.cpp
++++ b/weapon.cpp
+@@ -58,6 +58,9 @@
+ // is inlined with what is left divided by the sites still to come).
+ BOOL CWeapon::Fire()	// FUNCTION: 0x00506010
+ {
++#ifndef CE_NETWORK_OFF
++	if (!CE_WorldRoundSpawnAllowed()) return FALSE;
++#endif
+ 	mUnknown68 = (SINT)mCharge / 100;
+ 	mCharge = 0;
+ 	mMode = GetWeaponMode(mData->mChargeModes[mUnknown68]);
+@@ -386,11 +389,17 @@
+ // (double) conversions give retail's term orders (00506ed1..005070d3, 005070e0..005072d5) without scheduler nodes.
+ BOOL CWeapon::SpawnRound()	// FUNCTION: 0x005069f0
+ {
++#ifndef CE_NETWORK_OFF
++	if (!CE_WorldRoundSpawnAllowed()) return FALSE;
++#endif
+ 	BOOL fired = FALSE;
+ 	if (mAttachedTo->IsA(THING_TYPE_BATTLE_ENGINE) && !((CBattleEngine *)mAttachedTo)->WeaponFired(this))
+ 		return FALSE;
+ 
+ 	CWeaponModeData *mode = mMode;
++#ifndef CE_NETWORK_OFF
++	unsigned int ceShot = CE_WorldShotBegin(this,mode);
++#endif
+ 	if (mode)
+ 	{
+ 		if (WeaponMode_mSoundA(WeaponModeOf(this)) && !mode->mSoundPerBurst)
+@@ -553,6 +562,9 @@
+ 			fired = TRUE;
+ 		}
+ 	}
++#ifndef CE_NETWORK_OFF
++	CE_WorldShotEnd(this,ceShot);
++#endif
+ 	return fired;
+ }
+ 
+--- a/Round.cpp
++++ b/Round.cpp
+@@ -92,6 +92,9 @@
+ //******************************************************************************************
+ void CRound::Init(CInitThing *init)	// FUNCTION: 0x004d8410
+ {
++#ifndef CE_NETWORK_OFF
++	CE_WorldRoundBirth(this,init);
++#endif
+ 	CRoundInitThing	*rinit = (CRoundInitThing *)init;
+ 
+ 	mDest = rinit->mDest;
+@@ -186,6 +189,9 @@
+ 		WORLD.mSet60.Add(this);
+ 
+ 	Unknown4dac90(NULL);
++#ifndef CE_NETWORK_OFF
++	CE_WorldRoundInitialized(this,init);
++#endif
+ }
+ 
+ //******************************************************************************************
+@@ -200,6 +206,9 @@
+ 
+ void CRound::Hit(CThing *other_thing, CCollisionReport *report)	// FUNCTION: 0x004d8ae0
+ {
++#ifndef CE_NETWORK_OFF
++	if (CE_WorldReplica()) return;
++#endif
+ 	SUPERTYPE::Hit(other_thing, report);
+ 
+ 	if (mFlags & TF_DYING)
+@@ -264,6 +273,9 @@
+ //******************************************************************************************
+ void CRound::Shutdown()	// FUNCTION: 0x004d8dc0
+ {
++#ifndef CE_NETWORK_OFF
++	CE_WorldRoundShutdown(this);
++#endif
+ 	if (mData->mUnknown58)
+ 		WORLD.mSet60.Remove(this);
+ 
+@@ -601,6 +613,9 @@
+ // pass); with maths.h's body the function is 4 bytes from retail.
+ void CRound::Unknown4d9f30(SINT mode, CCollisionReport *report, CThing *thing)	// FUNCTION: 0x004d9f30
+ {
++#ifndef CE_NETWORK_OFF
++	if (CE_WorldReplica()) return;
++#endif
+ 	CExplosionInitThing	init;
+ 	init.mOriginator = mUnknownEC.ToRead();
+ 	if ((init.mOriginator) && (init.mOriginator->IsA(THING_TYPE_BATTLE_ENGINE)))
+--- a/WorldPhysicsManager.cpp
++++ b/WorldPhysicsManager.cpp
+@@ -224,6 +224,9 @@
+ #line 203
+ CRound *UPhysicsManager::SpawnRound(CRoundData *data)	// FUNCTION: 0x0050f7a0
+ {
++#ifndef CE_NETWORK_OFF
++	if (!CE_WorldRoundSpawnAllowed()) return NULL;
++#endif
+ 	if (MEM_MANAGER.GetThingHeap()->GetFreeSize() < 204800)
+ 		return NULL;
+ 	if (!data)

@@ -27,7 +27,7 @@ PORT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PORT / "tools")); sys.path.insert(0, str(PORT))
 import deps  # noqa: E402
 
-LAUNCHER = deps.WORK / "build/linux/onslaught-ce-launch"
+LAUNCHER = Path(os.environ.get("BEA_LAUNCHER") or deps.WORK / "build/linux/onslaught-ce-launch")        # BEA_LAUNCHER: a launcher built on its own (build.build_launcher)
 XVFB = os.environ.get("XVFB") or shutil.which("Xvfb")
 INSTALL = os.environ.get("BEA_GAME_DIR") or str(Path.home() / ".local/share/Steam/steamapps/common/Battle Engine Aquila")
 XRANDR32 = [p for p in ("/usr/lib32/libXrandr.so.2", "/usr/lib/i386-linux-gnu/libXrandr.so.2") if os.path.exists(p)]
@@ -45,6 +45,26 @@ def build_shim(out: Path) -> Path:
     subprocess.run(build.TARGETS["linux"]["cc"] + ["-m32", "-shared", "-fPIC", "-O1", str(Path(__file__).with_name(
         "spawn_crash_shim.c")), "-o", str(so)] + deps.sysroot_link_flags(), check=True)
     return so
+
+
+def build_unwrapped(out: Path) -> Path:
+    """The launcher with ask_box showing the text as written (no ce_box_wrap): the control that shows the width test can fail."""
+    import build  # noqa: E402
+    src = out / "port-unwrapped"
+    shutil.copytree(PORT / "updater", src / "updater")
+    c = src / "updater/ce_launch.c"
+    text = c.read_text()
+    old = "\tif (ce_box_wrap(box->message, wrapped, sizeof wrapped, CE_BOX_COLUMNS)) shown.message = wrapped;\n"
+    assert text.count(old) == 1, "ask_box's wrap no longer matches the control"
+    c.write_text(text.replace(old, "\t(void)wrapped;\n"))
+    exe, real = out / "unwrapped-launch", build.PORT
+    build.PORT = src
+    try:
+        if build.build_launcher("linux", "0.0.0-unwrapped", exe):
+            raise RuntimeError("unwrapped launcher build failed")
+    finally:
+        build.PORT = real
+    return exe
 
 
 def build_mutant(out: Path) -> Path:
@@ -100,6 +120,7 @@ class MessageBox(unittest.TestCase):
 
     def setUp(self):
         self.dir = Path(tempfile.mkdtemp(prefix="case-", dir=self.tmp))
+        self.widths = []
         for d in ("bin", "fakebin", "home", "user"):
             (self.dir / d).mkdir()
         shutil.copy2(LAUNCHER, self.dir / "bin/onslaught-ce-launch")
@@ -125,18 +146,34 @@ class MessageBox(unittest.TestCase):
         self.x11.XFree(children)
         return x.value + w.value // 2, y.value + h.value // 2
 
+    def widest_window(self):
+        """The width of the widest top-level window of the private screen (the dialog: no window manager runs, so nothing else is there)."""
+        d, u, i = ctypes.c_void_p(self.dpy), ctypes.c_ulong, ctypes.c_int
+        root, parent, n = u(), u(), ctypes.c_uint()
+        children = ctypes.POINTER(u)()
+        if not self.x11.XQueryTree(d, u(self.x11.XDefaultRootWindow(d)), ctypes.byref(root), ctypes.byref(parent), ctypes.byref(children), ctypes.byref(n)) or not n.value:
+            return 0
+        widest = 0
+        for k in range(n.value):
+            x, y, w, h, bw, depth = i(), i(), ctypes.c_uint(), ctypes.c_uint(), ctypes.c_uint(), ctypes.c_uint()
+            self.x11.XGetGeometry(d, u(children[k]), ctypes.byref(root), ctypes.byref(x), ctypes.byref(y), ctypes.byref(w), ctypes.byref(h), ctypes.byref(bw), ctypes.byref(depth))
+            widest = max(widest, w.value)
+        self.x11.XFree(children)
+        return widest
+
     def keys(self, stop, keysym):
         """Press the key every second, with the pointer on the dialog (no window manager: the window under the pointer
-        gets the key), until stop is set."""
+        gets the key), until stop is set. The widest window seen before each press is kept in self.widths."""
         kc = self.x11.XKeysymToKeycode(ctypes.c_void_p(self.dpy), ctypes.c_ulong(keysym))
         while not stop.wait(1.0):
+            self.widths.append(self.widest_window())
             self.xtst.XTestFakeMotionEvent(ctypes.c_void_p(self.dpy), 0, *self.newest_window_centre(), 0)
             self.xtst.XTestFakeKeyEvent(ctypes.c_void_p(self.dpy), kc, 1, 0)
             self.xtst.XTestFakeKeyEvent(ctypes.c_void_p(self.dpy), kc, 0, 0)
             self.x11.XFlush(ctypes.c_void_p(self.dpy))
 
-    def run_launcher(self, exe=None, display=True, crash=False, key=None, game=False, tty_answer=None):
-        env = {"PATH": str(self.dir / "fakebin"), "HOME": str(self.dir / "home"), "BEA_USER_DIR": str(self.dir / "user"),
+    def run_launcher(self, exe=None, display=True, crash=False, key=None, game=False, tty_answer=None, path=None):
+        env = {"PATH": path or str(self.dir / "fakebin"), "HOME": str(self.dir / "home"), "BEA_USER_DIR": str(self.dir / "user"),
                "BEA_NO_UPDATE_CHECK": "1", "LD_LIBRARY_PATH": str(deps.PREFIX / "lib")}
         if display:
             env["DISPLAY"] = f":{self.display}"
@@ -252,6 +289,45 @@ class MessageBox(unittest.TestCase):
         self.assertIn("nobody could be asked (no working message box or terminal)", err)
         self.assertIn("onslaught-ce: recording this session", err)
         self.assertIn("record_sessions=1", (self.dir / "user/ce.ini").read_text())
+
+    def dialog_width(self, exe=None, game=False, real_zenity=False):
+        """The widest window the launcher's question opens on the private 1280x800 screen: the system's real zenity (SDL's first choice; it is told not to
+        wrap) or, without zenity, SDL's own X11 dialog. Escape answers it."""
+        self.widths.clear()
+        self.run_launcher(exe=exe, key=ESCAPE, game=game, path="/usr/bin:/bin" if real_zenity else None)
+        seen = [w for w in self.widths if w]
+        self.assertTrue(seen, "no dialog was seen on the screen")
+        return max(seen)
+
+    BACKENDS = (("zenity", True, unittest.skipUnless(shutil.which("zenity"), "no zenity on this machine")),
+                ("sdl-own-dialog", False, NEEDS_XRANDR32))
+
+    def width_tests(name, real_zenity, skip):
+        @skip
+        def game_question(self):
+            width = self.dialog_width(real_zenity=real_zenity)
+            self.assertGreater(width, 200, "that is no dialog")
+            self.assertLessEqual(width, 1000, f"{name}: the game question's dialog is {width} pixels wide")
+
+        @skip
+        @unittest.skipUnless(Path(INSTALL, "data").is_dir(), "no game install (BEA_GAME_DIR)")
+        def recording_question(self):
+            # the longest text of any box: before the wrap its longest line was 221 characters
+            (self.dir / "user/ce.ini").write_text("record_sessions=1\n")
+            width = self.dialog_width(game=True, real_zenity=real_zenity)
+            self.assertGreater(width, 200, "that is no dialog")
+            self.assertLessEqual(width, 1000, f"{name}: the recording question's dialog is {width} pixels wide")
+            (self.dir / "user/ce.ini").write_text("record_sessions=1\n")
+            unwrapped = self.dialog_width(exe=build_unwrapped(self.dir), game=True, real_zenity=real_zenity)
+            self.assertGreater(unwrapped, 1280, f"{name}: without the wrap the dialog is {unwrapped} pixels wide: the control cannot tell")
+            self.assertGreater(unwrapped, width + 400, f"{name}: {unwrapped} against {width}")
+        return game_question, recording_question
+
+    for _name, _zenity, _skip in BACKENDS:
+        _g, _r = width_tests(_name, _zenity, _skip)
+        locals()[f"test_the_game_question_fits_a_1280_pixel_screen_{_name.replace('-', '_')}"] = _g
+        locals()[f"test_the_recording_question_fits_a_1280_pixel_screen_and_the_unwrapped_one_does_not_{_name.replace('-', '_')}"] = _r
+    del width_tests, _name, _zenity, _skip, _g, _r
 
     def test_mutant_without_the_child_crashes(self):
         rc, err = self.run_launcher(exe=build_mutant(self.dir), crash=True)

@@ -95,15 +95,17 @@ class CheatHelpTests(unittest.TestCase):
             (out / "word_wrap.inc").write_text(wrap)
             (out / "camera_buttons.inc").write_text(controls[first:last] + "\n" + pause.group(0) + "\n")
             (out / "camera_actions.inc").write_text(camera)
-            exe = out / "driver"
-            cmd = [os.environ.get("CXX", "g++"), "-std=c++14", "-Wall", "-Wextra", "-Werror",
-                   "-Wno-unused-parameter",
-                   "-I", str(out), str(DRIVER), "-o", str(exe)]
-            built = subprocess.run(cmd, capture_output=True, text=True, timeout=30, preexec_fn=no_core)
-            self.assertEqual(built.returncode, 0, built.stderr)
-            ran = subprocess.run([str(exe)], capture_output=True, text=True, timeout=5, preexec_fn=no_core)
-            self.assertEqual(ran.returncode, 0, ran.stderr)
-            self.assertIn("every page's hints, wrapping, spacing and message box passed", ran.stdout)
+            for network in (False, True):
+                with self.subTest(network=network):
+                    exe = out / ("driver-network" if network else "driver-public")
+                    cmd = [os.environ.get("CXX", "g++"), "-std=c++14", "-Wall", "-Wextra", "-Werror",
+                           "-Wno-unused-parameter", *([] if network else ["-DCE_NETWORK_OFF=1"]),
+                           "-I", str(out), str(DRIVER), "-o", str(exe)]
+                    built = subprocess.run(cmd, capture_output=True, text=True, timeout=30, preexec_fn=no_core)
+                    self.assertEqual(built.returncode, 0, built.stderr)
+                    ran = subprocess.run([str(exe)], capture_output=True, text=True, timeout=5, preexec_fn=no_core)
+                    self.assertEqual(ran.returncode, 0, ran.stderr)
+                    self.assertIn("every page's hints, wrapping, spacing and message box passed", ran.stdout)
 
 
 if __name__ == "__main__":

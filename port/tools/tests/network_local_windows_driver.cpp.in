@@ -1,0 +1,115 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Actual Windows local-writer body, host-backed WinAPI/CRT seams. Not Windows runtime evidence.
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <string>
+#include <map>
+#include <vector>
+#include <cerrno>
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/stat.h>
+#include <cstdint>
+using DWORD = uint32_t; using BOOL = int; using HANDLE = intptr_t;
+constexpr HANDLE INVALID_HANDLE_VALUE = -1;
+constexpr DWORD INVALID_FILE_ATTRIBUTES = ~DWORD(0), FILE_ATTRIBUTE_DIRECTORY = 16, FILE_ATTRIBUTE_REPARSE_POINT = 1024;
+constexpr DWORD GENERIC_READ = 0x80000000, GENERIC_WRITE = 0x40000000, FILE_READ_ATTRIBUTES = 128;
+constexpr DWORD FILE_SHARE_READ = 1, FILE_SHARE_WRITE = 2, FILE_SHARE_DELETE = 4, OPEN_EXISTING = 3, CREATE_NEW = 1;
+constexpr DWORD FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000, FILE_TYPE_DISK = 1, ERROR_FILE_NOT_FOUND = 2, ERROR_ACCESS_DENIED = 5;
+constexpr int FileIdInfo = 18, FILE_BEGIN = SEEK_SET, FILE_END = SEEK_END, MAX_PATH = 260;
+constexpr int _O_WRONLY = O_WRONLY, _O_BINARY = 0, _O_TEXT = 0, _O_APPEND = O_APPEND;
+struct FILE_ID_128 { unsigned char Identifier[16]; };
+struct FILE_ID_INFO { uint64_t VolumeSerialNumber; FILE_ID_128 FileId; };
+struct BY_HANDLE_FILE_INFORMATION { DWORD dwFileAttributes, nNumberOfLinks; };
+struct LARGE_INTEGER { long long QuadPart; };
+static std::string fault, root, native; static char gUserDir[MAX_PATH];
+static unsigned checks, root_queries, open_count, named_queries, transferred, truncated, positioned, closes, inits;
+static DWORD last_error; static std::map<int, bool> handles; static bool proof, named_closed;
+static int owner_fd = -1;
+static void Check(bool value, const char *why) { ++checks; if (!value) { std::fprintf(stderr,"FAIL %s\n",why); std::exit(2); } }
+static void Init() { ++inits; }
+extern "C" int CE_BootRequested() { return fault != "offline"; }
+extern "C" int CE_CompatibilityUnsupportedReader(char *, size_t) { return 0; }
+extern "C" FILE *port_fopen(const char *, const char *) { Check(fault == "offline", "only offline delegates"); return std::tmpfile(); }
+enum {CE_BOOT_OPTIONS=1, CE_BOOT_CARD_ID=2, CE_BOOT_SETUP_LOG=3, CE_BOOT_EXCEPTION_LOG=4};
+@POLICY@
+static DWORD GetLastError() { return last_error; }
+static void SetLastError(DWORD n) { last_error = n; }
+static DWORD GetFileAttributesA(const char *path) {
+    Check(path == std::string(gUserDir), "only expected root attributes"); ++root_queries;
+    if (fault == "root-missing") return INVALID_FILE_ATTRIBUTES;
+    if (fault == "root-file") return 0;
+    if (fault == "root-link" || (fault == "root-replaced" && root_queries == 2)) return FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT;
+    return FILE_ATTRIBUTE_DIRECTORY;
+}
+static HANDLE CreateFileA(const char *path, DWORD access, DWORD share, void *, DWORD disposition, DWORD flags, void *) {
+    ++open_count; std::string p = path; for (char &c : p) if (c == '\\') c = '/';
+    Check(p == native, "exact local owner path"); Check(flags == FILE_FLAG_OPEN_REPARSE_POINT,"no reparse traversal");
+    const bool named = access == FILE_READ_ATTRIBUTES;
+    Check(named ? share == (FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE) : share == FILE_SHARE_READ,"share mask");
+    Check(disposition == OPEN_EXISTING || disposition == CREATE_NEW,"no create-always or truncate before proof");
+    if (fault == "open-fails" || (named && fault == "named-open-fails")) { last_error = ERROR_ACCESS_DENIED; return INVALID_HANDLE_VALUE; }
+    if (disposition == CREATE_NEW && fault == "create-race") { last_error = 80; return INVALID_HANDLE_VALUE; }
+    int fd = open(p.c_str(), (named ? O_RDONLY : O_RDWR) | O_NOFOLLOW | (disposition == CREATE_NEW ? O_CREAT|O_EXCL : 0), 0600);
+    if (fd < 0) { last_error = errno == ENOENT ? ERROR_FILE_NOT_FOUND : ERROR_ACCESS_DENIED; return INVALID_HANDLE_VALUE; }
+    handles.emplace(fd, named); return fd;
+}
+static DWORD GetFileType(HANDLE) { return fault == "pipe" ? 3 : FILE_TYPE_DISK; }
+static BOOL GetFileInformationByHandle(HANDLE h, BY_HANDLE_FILE_INFORMATION *out) {
+    if (fault == "basic-info") return 0; struct stat s{}; if (fstat(h,&s)) return 0;
+    out->dwFileAttributes = fault == "file-link" ? FILE_ATTRIBUTE_REPARSE_POINT : fault == "file-directory" ? FILE_ATTRIBUTE_DIRECTORY : 0;
+    out->nNumberOfLinks = fault == "hardlink" ? 2 : s.st_nlink; return 1;
+}
+static BOOL GetFileInformationByHandleEx(HANDLE h, int cls, void *v, size_t size) {
+    Check(cls == FileIdInfo && size == sizeof(FILE_ID_INFO),"full 128-bit identity query");
+    const bool named = handles.at(h); if (named) ++named_queries;
+    if (fault == "opened-id" || (named && fault == "named-id")) return 0;
+    struct stat s{}; if (fstat(h,&s)) return 0; auto *id = static_cast<FILE_ID_INFO *>(v); std::memset(id,0,size);
+    id->VolumeSerialNumber = s.st_dev; std::memcpy(id->FileId.Identifier,&s.st_ino,sizeof s.st_ino);
+    if (named && fault == "upper-id") id->FileId.Identifier[15] = 1;
+    if (named && fault == "volume") ++id->VolumeSerialNumber;
+    if (named) proof = fault != "upper-id" && fault != "volume"; return 1;
+}
+static BOOL CloseHandle(HANDLE h) {
+    auto it=handles.find(h); Check(it != handles.end(),"owned handle only closed"); bool named=it->second; handles.erase(it); ++closes;
+    if(named) named_closed=true; Check(!close(h),"native close"); return !(named && fault == "named-close");
+}
+static int _open_osfhandle(intptr_t h,int flags) {
+    Check(proof && named_closed && root_queries == 2,"transfer only after both identities and root recheck");
+    Check((flags&O_ACCMODE)==O_WRONLY,"output descriptor flags");
+    if(fault=="fd-convert") return -1; ++transferred; owner_fd=h; handles.erase(h);
+    if(flags&O_APPEND) Check(!fcntl(h,F_SETFL,fcntl(h,F_GETFL)|O_APPEND),"host append seam"); return h;
+}
+static FILE *_fdopen(int fd,const char *mode) { Check(fd==owner_fd,"stream adopts proved descriptor"); if(fault=="fdopen") return nullptr; return fdopen(fd,mode); }
+static int _close(int fd) { Check(fd==owner_fd,"close adopted descriptor"); return close(fd); }
+static BOOL SetFilePointerEx(HANDLE fd,LARGE_INTEGER offset,LARGE_INTEGER *,int origin) {
+    Check(fd==owner_fd && proof && named_closed && transferred && offset.QuadPart==0,"seek uses proved same handle"); ++positioned;
+    if(fault=="seek") return 0; return lseek(fd,0,origin)>=0;
+}
+static BOOL SetEndOfFile(HANDLE fd) {
+    Check(fd==owner_fd && positioned && proof && transferred,"truncate only proved same handle"); ++truncated;
+    if(fault=="truncate") return 0; return ftruncate(fd,lseek(fd,0,SEEK_CUR))==0;
+}
+enum {READ};
+static int Resolve(const char *name,int,char *out,size_t n) { Check(std::string(name)=="cardid.txt","only card read resolves"); std::snprintf(out,n,"%s/cardid.txt",gUserDir); return 0; }
+@WRITER@
+static std::string Bytes() { FILE *f=std::fopen(native.c_str(),"rb"); if(!f)return{}; char b[128]; auto n=fread(b,1,sizeof b,f); fclose(f); return{b,n}; }
+int main(int argc,char **argv) {
+    Check(argc==3,"args"); fault=argv[1]; root=argv[2]; std::snprintf(gUserDir,sizeof gUserDir,"%s",root.c_str());
+    bool card=fault=="card-read", create=fault=="new"||fault=="create-race";
+    native=root+(card?"/cardid.txt":"/setuphistory.txt");
+    if(!create) { FILE *f=std::fopen(native.c_str(),"wb"); Check(f,"fixture"); Check(fwrite("ORIGINAL",1,8,f)==8&&!fclose(f),"fixture bytes"); }
+    const char *name=card?"cardid.txt":"setuphistory.txt", *mode=fault=="append"?"a":card?"ra":"w";
+    FILE *f=PortOpenLocalFile(card?2:3,fault=="bad-name"?"data/x":name,mode);
+    bool accepted=fault=="normal"||fault=="new"||fault=="append"||fault=="card-read"||fault=="offline";
+    Check(bool(f)==accepted,"writer admission result");
+    if(f) { if(card) Check(fgetc(f)=='O',"card read preserved"); else if(fault!="offline") Check(fwrite("X",1,1,f)==1,"writer emits"); Check(!fclose(f),"stream closes"); }
+    Check(handles.empty(),"all native handles closed or transferred");
+    if(transferred) Check(fcntl(owner_fd,F_GETFD)==-1 && errno==EBADF,"all transferred descriptors closed");
+    if(accepted&&!card&&fault!="offline") { Check(Bytes()==(fault=="append"?"ORIGINALX":"X"),"correct final bytes"); Check(transferred==1,"one stream owner"); }
+    else if(!create) Check(Bytes()=="ORIGINAL","refusal/read preserves previous bytes");
+    if(fault=="upper-id") Check(named_queries==1&&!transferred&&!truncated,"upper half mismatch matters");
+    if(fault=="bad-name"||fault=="root-missing"||fault=="root-file"||fault=="root-link") Check(!open_count,"early rejection has no file open");
+    std::printf("PASS %s %u\n",argv[1],checks); return 0;
+}

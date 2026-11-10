@@ -1,0 +1,60 @@
+--- a/BattleEngineConfigurations.h
++++ b/BattleEngineConfigurations.h
+@@ -27,6 +27,15 @@
+ 										int			inConfigurationId);
+ 
+ 		static SLONG				CountConfigurations()				{ return sConfigurations; }
++#ifndef CE_NETWORK_OFF
++		// Port: a borrowed raw level name; no index or data-manager fallback and no mutation.
++		static const char* NetworkConfigurationName(int index)
++		{
++			if (sConfigurations < 1 || sConfigurations > kMaxConfigurations ||
++				index < 0 || index >= sConfigurations) return 0;
++			return sConfigurationName[index];
++		}
++#endif
+ };
+ 
+ #endif
+--- a/BattleEngineDataManager.h
++++ b/BattleEngineDataManager.h
+@@ -242,6 +242,9 @@
+ 
+ class UBattleEngineDataManager
+ {
++#ifndef CE_NETWORK_OFF
++	friend class CENetworkLoadedAdmission;
++#endif
+ 	private:
+ 		static SPtrSet<CBattleEngineData>	sData;
+ 
+--- a/BattleEngine.h
++++ b/BattleEngine.h
+@@ -80,6 +80,7 @@
+ DECLARE_THING_CLASS(CBattleEngine, CUnit)  
+ public:
+ #ifndef CE_NETWORK_OFF
++	friend class CENetworkLoadedAdmission;
+ 	friend class CENetworkWorldAdapter;
+ #endif
+ 	friend class CBattleEngineWalkerPart ;
+--- a/Controller.h
++++ b/Controller.h
+@@ -165,6 +165,7 @@
+ class CController
+ {
+ #ifndef CE_NETWORK_OFF
++	friend class CENetworkLoadedAdmission;
+ 	friend class CENetworkWorldAdapter;
+ #endif
+ public:
+--- a/game.h
++++ b/game.h
+@@ -89,6 +89,7 @@
+ class	CGame : public IController
+ {
+ #ifndef CE_NETWORK_OFF
++	friend class CENetworkLoadedAdmission;
+ 	friend class CENetworkWorldAdapter;
+ 	friend class CENetworkSession;
+ #endif

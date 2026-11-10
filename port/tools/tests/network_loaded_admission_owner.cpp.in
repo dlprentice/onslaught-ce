@@ -1,0 +1,81 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Actual owner configuration/getter and lazy-operation prefixes with controlled OS/I/O/event boundaries.
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <cstdint>
+#include <initializer_list>
+#include <atomic>
+using Uint64=uint64_t;const int SDL_EVENT_MOUSE_MOTION=1,SDL_EVENT_MOUSE_BUTTON_DOWN=2,SDL_EVENT_MOUSE_BUTTON_UP=3,
+ SDL_EVENT_WINDOW_RESTORED=4,SDL_EVENT_WINDOW_FOCUS_GAINED=5,SDL_BUTTON_LEFT=1;
+struct SDL_Event {int type=0;struct{float x=0,y=0;}motion;struct{int button=0;bool down=false;float x=0,y=0;}button;};
+unsigned getenv_calls=0,events=0,clock_reads=0,file_opens=0,delays=0;bool fail_open=false;
+// The ordinary Pump prefix also reports input activity. This admission fixture models that owner
+// as a counted boundary; it does not claim to exercise SDL input activity or its timing.
+unsigned activity_pulses=0;
+void *MainWindow(){return nullptr;} void *Sdl(void *window){return window;}
+namespace PortInputActivity { void Pulse(void *){++activity_pulses;} }
+const char*OwnerEnv(const char*n){++getenv_calls;return std::getenv(n);}
+Uint64 SDL_GetTicks(){++clock_reads;return 100000;}
+// The extracted Pump prefix now contains a fake-restore timer. Its state is zero
+// in these admission controls; the window suite exercises the restore path.
+Uint64 SDL_GetTicksNS(){++clock_reads;return Uint64(100000)*1000000;}
+bool SDL_PushEvent(SDL_Event*){++events;return true;}
+void SDL_DelayNS(Uint64){++delays;}
+FILE*OwnerOpen(const char*,const char*){++file_opens;return fail_open?nullptr:reinterpret_cast<FILE*>(uintptr_t(1));}
+#define PORT_LOG_PREFIX "fixture: "
+#define getenv OwnerEnv
+// The frame-feel measurement (feel.h) is off in this fixture: the extracted Pump prefix tests it once and has nothing to count.
+#define PORT_FEEL_ON() 0
+void PortFeelPump() {}
+enum {REAL=0,PRESENT=1,SHIM=2};std::atomic<int>gMode{-1};double gDt=1./30;unsigned long long gDtNs=0;long long gQpcDt=0;
+/* CLOCK_MODE */
+/* CLOCK_IDLE */
+/* WINDOW_STATE_AND_PREP */
+/* WINDOW_IDLE */
+void CandidateWindowOwner()
+/* WINDOW_PREFIX */
+void OriginalWindowOwner()
+/* ORIGINAL_WINDOW_PREFIX */
+FILE*gDump=nullptr;bool gInit=false,gThings=true;unsigned long gFrom=1,gTo=0xffffffffUL,gUpdate=0;
+/* UPDATE_STATE_AND_PREP */
+/* UPDATE_IDLE */
+void CandidateUpdateOwner(){
+#define fopen OwnerOpen
+/* UPDATE_PREFIX */
+#undef fopen
+}
+void OriginalUpdateOwner(){
+ bool gInit=false;FILE*gDump=nullptr;unsigned long gFrom=1,gTo=0xffffffffUL;bool gThings=true;
+#define fopen OwnerOpen
+/* ORIGINAL_UPDATE_PREFIX */
+#undef fopen
+ (void)gDump;(void)gFrom;(void)gTo;(void)gThings;
+}
+// Replay state is controlled storage; the query and first-Present pacing observation are actual bodies.
+bool gActive=false,gRecording=false,gObjects=false,gPacingObserved=false,gTapeCursor=false,gRecordFailed=false,gRecordStageOwned=false;
+long gReplaySleepUs=0;FILE*gProbes=nullptr,*gRecord=nullptr;const char*gPilot=nullptr;void*gEvents=nullptr;size_t gPendingCount=0,gCount=0;unsigned gMax=0;
+/* REPLAY_IDLE */
+void ReplayPresentPacing(){
+/* REPLAY_PACING */
+}
+#undef getenv
+unsigned checks=0;void check(bool b,const char*why){++checks;if(!b){fprintf(stderr,"FAIL %s\n",why);exit(2);}}
+void Clear(){unsetenv("BEA_PORT_FAKE_CLICK");unsetenv("BEA_PORT_FAKE_KEYS");unsetenv("BEA_PORT_UPDATE_DUMP");unsetenv("BEA_PORT_UPDATE_DUMP_FROM");unsetenv("BEA_PORT_UPDATE_DUMP_TO");unsetenv("BEA_PORT_UPDATE_DUMP_THINGS");unsetenv("BEA_PORT_REPLAY_SLEEP_US");unsetenv("BEA_PORT_CLOCK");unsetenv("BEA_PORT_CLOCK_DT");}
+int main(int argc,char**argv){check(argc==2,"case");Clear();const char*c=argv[1];
+ if(!strcmp(c,"clock-cold")){check(CE_NetClockOrdinary()==-1&&gMode.load()==-1&&!getenv_calls,"cold clock query never initializes");}
+ else if(!strcmp(c,"clock-real")){check(Mode()==REAL&&CE_NetClockOrdinary()==1,"actual normal mode selected");const auto before=getenv_calls;setenv("BEA_PORT_CLOCK","present",1);check(CE_NetClockOrdinary()==1&&getenv_calls==before&&Mode()==REAL,"actual mode retained despite changed env");}
+ else if(!strcmp(c,"clock-virtual")){setenv("BEA_PORT_CLOCK","present",1);check(Mode()==PRESENT&&CE_NetClockOrdinary()==0,"actual virtual mode refused");unsetenv("BEA_PORT_CLOCK");const auto before=getenv_calls;check(CE_NetClockOrdinary()==0&&getenv_calls==before,"virtual mode retained");}
+ else if(!strcmp(c,"cold")){check(CE_NetWindowAutomationIdle()==-1&&CE_NetUpdateAutomationIdle()==-1&&CE_NetAutomationIdle()==-1,"cold unknown");check(getenv_calls==0&&!events&&!clock_reads&&!file_opens&&!delays,"pure cold queries");}
+ else if(!strcmp(c,"off-owner")){OriginalWindowOwner();OriginalUpdateOwner();const unsigned old_env=getenv_calls;check(!events&&!clock_reads&&!file_opens&&!activity_pulses,"original OFF boundaries");getenv_calls=0;CandidateWindowOwner();CandidateUpdateOwner();check(getenv_calls==old_env,"same ordinary OFF configuration reads");check(CE_NetWindowAutomationIdle()==1&&CE_NetUpdateAutomationIdle()==1,"ordinary OFF owners known idle");check(!events&&!clock_reads&&!file_opens&&activity_pulses==1,"candidate OFF calls the modeled activity boundary without events IO or clocks");}
+ else if(!strcmp(c,"prepare-idle")){InitWindowAutomationConfig();InitUpdateAutomationConfig();const auto before=getenv_calls;check(CE_NetWindowAutomationIdle()==1&&CE_NetUpdateAutomationIdle()==1,"prepared idle");check(getenv_calls==before&&!events&&!clock_reads&&!file_opens,"prepare/getter no effects");}
+ else if(!strcmp(c,"disabled-sticky")){InitWindowAutomationConfig();InitUpdateAutomationConfig();setenv("BEA_PORT_FAKE_KEYS","a0:1:2",1);setenv("BEA_PORT_FAKE_CLICK","0:1,2",1);setenv("BEA_PORT_UPDATE_DUMP","unopened",1);const auto before=getenv_calls;CandidateWindowOwner();CandidateUpdateOwner();check(getenv_calls==before&&!events&&!clock_reads&&!file_opens,"cached disabled choice cannot enable later");check(CE_NetWindowAutomationIdle()==1&&CE_NetUpdateAutomationIdle()==1,"disabled remains idle");}
+ else if(!strcmp(c,"keys-history")){setenv("BEA_PORT_FAKE_KEYS","a0:1:2",1);InitWindowAutomationConfig();check(CE_NetWindowAutomationIdle()==0,"configured keys");gWindowFakeKeys="";unsetenv("BEA_PORT_FAKE_KEYS");check(CE_NetWindowAutomationIdle()==0,"exhausted keys history retained");}
+ else if(!strcmp(c,"click-history")){setenv("BEA_PORT_FAKE_CLICK","0:1,2",1);CandidateWindowOwner();check(events==3&&clock_reads==1,"actual ordinary click prefix emits three");check(gWindowFakeState==2&&CE_NetWindowAutomationIdle()==0,"completed click history retained");}
+ else if(!strcmp(c,"dump-history")){setenv("BEA_PORT_UPDATE_DUMP","unopened",1);fail_open=true;InitUpdateAutomationConfig();check(!file_opens&&CE_NetUpdateAutomationIdle()==0,"configured dump refuses before file open");CandidateUpdateOwner();check(file_opens==1&&gDumpAttempted&&!gDump,"actual failed open boundary");unsetenv("BEA_PORT_UPDATE_DUMP");check(CE_NetUpdateAutomationIdle()==0,"failed dump history retained");}
+ else if(!strcmp(c,"dump-range")){setenv("BEA_PORT_UPDATE_DUMP_FROM","7",1);setenv("BEA_PORT_UPDATE_DUMP_TO","19",1);setenv("BEA_PORT_UPDATE_DUMP_THINGS","0",1);InitUpdateAutomationConfig();check(gFrom==7&&gTo==19&&!gThings&&!file_opens&&!events,"actual parse no write");check(CE_NetUpdateAutomationIdle()==1,"range options without dump inactive");}
+ else if(!strcmp(c,"replay-present")){gInit=true;check(CE_NetAutomationIdle()==-1,"Init alone lacks pacing observation");ReplayPresentPacing();const auto before=getenv_calls;check(CE_NetAutomationIdle()==1&&!delays&&getenv_calls==before,"ordinary actual Present pacing idle");setenv("BEA_PORT_REPLAY_SLEEP_US","100",1);ReplayPresentPacing();check(!delays,"pacing choice retained");}
+ else if(!strcmp(c,"replay-pacing")){gInit=true;setenv("BEA_PORT_REPLAY_SLEEP_US","100",1);ReplayPresentPacing();check(delays==1&&CE_NetAutomationIdle()==0,"actual pacing refuses");unsetenv("BEA_PORT_REPLAY_SLEEP_US");unsetenv("BEA_PORT_CLOCK");unsetenv("BEA_PORT_CLOCK_DT");check(CE_NetAutomationIdle()==0,"pacing history retained");}
+ else if(!strcmp(c,"replay-modes")){gInit=true;gPacingObserved=true;for(bool*p:{&gActive,&gRecording,&gObjects,&gTapeCursor,&gRecordFailed,&gRecordStageOwned}){*p=true;check(CE_NetAutomationIdle()==0,"actual replay flag");*p=false;}gProbes=reinterpret_cast<FILE*>(uintptr_t(1));check(!CE_NetAutomationIdle(),"probe handle");gProbes=nullptr;gPendingCount=1;check(!CE_NetAutomationIdle(),"pending input");gPendingCount=0;gMax=1;check(!CE_NetAutomationIdle(),"configured replay close");}
+ else check(false,"known case");printf("%s: %u assertions passed\n",c,checks);
+}

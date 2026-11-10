@@ -1,3 +1,9 @@
+#ifndef CE_NETWORK_OFF
+#include "private_ui_input.h"
+#endif
+#ifndef CE_NETWORK_OFF
+#include "../../game/ce_network_chat_ui.h"
+#endif
 // SPDX-License-Identifier: GPL-3.0-only
 // port/platform/common/window.cpp: the game's window and message loop on SDL3, on both targets. The game registers a
 // class and creates its window (d3dapp.cpp); here that is an SDL window, and SDL's events become the messages the
@@ -11,11 +17,27 @@
 #include <SDL3/SDL.h>
 #include <stdio.h>
 #include <stdlib.h>
+#ifndef CE_NETWORK_OFF
+#include <limits.h>
+#include <float.h>
+#endif
 #include <string.h>
 
 #include "platform.h"
+#include "feel.h"
+#ifndef CE_NETWORK_OFF
+#include "../../game/ce_network_session.h"
+#include "input_activity.h"
+#endif
 extern "C" unsigned PortPresentCount(void);	// d3d9hooks.cpp
+#if defined(CE_VERSION) && defined(BEA_PUBLIC_GRAPHICS_HOST)
+extern "C" void PortCeRetryDisplayInput();	// repair a refused menu capture release on the normal input pump
+#endif
 bool PortDinputOwnsMouseEvent(Uint64 timestamp);	// dinput.cpp: current capture and queued events from completed captures
+#ifndef CE_NETWORK_OFF
+void PortDinputDiagnosticMouseEvent(SDL_Window *source, const SDL_Event *event, bool queued);
+void PortDinputDiagnosticMouseEnd(SDL_Window *source);
+#endif
 bool PortRecordInputSpace(unsigned slots);	// replay.cpp: fail capture before deferring an unrepresentable input
 
 #if defined(_WIN32)
@@ -74,6 +96,9 @@ bool gReleasePending;	// release repair or a focus-loss release batch is waiting
 // BEA_PORT_INPUT_LOG: keys down and up (scan code, keycode, virtual key), drops, synthetic releases, focus.
 bool InputLog()
 {
+#ifndef CE_NETWORK_OFF
+    if (PortPrivateUiConfigured()) return false;
+#endif
 	static int on = -1;
 	if (on < 0)
 		on = getenv("BEA_PORT_INPUT_LOG") ? 1 : 0;
@@ -90,8 +115,16 @@ bool Post(HWND h, UINT msg, WPARAM w, LPARAM l)
 		// full: drop, as a saturated Windows queue would; a dropped key-up must not leave a key held (gReleasePending)
 		static unsigned drops;
 		if (InputLog() || drops < 8)
+#ifdef CE_NETWORK_OFF
 			fprintf(stderr, PORT_LOG_PREFIX "input: queue full, message %04x (%08lx, %08lx) dropped\n", msg, (unsigned long)w, (unsigned long)l);
+#else
+			// Message types can identify individual button actions, while payloads may contain keys or coordinates.
+			fprintf(stderr, PORT_LOG_PREFIX "input: queue full, message dropped (drop=%u)\n", drops + 1u);
+#endif
 		drops++;
+#ifndef CE_NETWORK_OFF
+		if (PortInputActivity::MouseMessage(msg)) PortInputActivity::Count(PortInputActivity::DROPPED);
+#endif
 		gReleasePending = true;
 		return false;
 	}
@@ -103,9 +136,21 @@ bool Post(HWND h, UINT msg, WPARAM w, LPARAM l)
 	m.time = (DWORD)SDL_GetTicks();
 	m.pt.x = m.pt.y = 0;
 	gTail = next;
+#ifndef CE_NETWORK_OFF
+	if (PortInputActivity::MouseMessage(msg)) PortInputActivity::Count(PortInputActivity::QUEUED);
+#endif
 	return true;
 }
 
+#ifndef CE_NETWORK_OFF
+// Ordinary WndProc/key-trap filtering edits only the selected field. Private
+// characters never visit KeyEvent's record/dump path, and retain queue pressure.
+bool PrivateUiCharacter(void* context, unsigned char character) {
+    if ((gTail + 1) % 256 == gHead) return false;
+    return Post(static_cast<HWND>(context), WM_CHAR, character, 0);
+}
+
+#endif
 // The player's mouse movement, coalesced as Windows does (WM_MOUSEMOVE is made from the latest position when the queue
 // is read, never one per hardware report): a move that follows an unread move replaces it.
 void PostMouseMove(HWND h, WPARAM w, LPARAM l)
@@ -117,6 +162,9 @@ void PostMouseMove(HWND h, WPARAM w, LPARAM l)
 		{
 			last.lParam = l;
 			last.time = (DWORD)SDL_GetTicks();
+#ifndef CE_NETWORK_OFF
+			PortInputActivity::Count(PortInputActivity::COALESCED);
+#endif
 			return;
 		}
 	}
@@ -151,6 +199,9 @@ bool Pop(MSG *out, bool remove)
 	if (remove)
 	{
 		gHead = (gHead + 1) % 256;
+#ifndef CE_NETWORK_OFF
+		if (PortInputActivity::MouseMessage(out->message)) PortInputActivity::Count(PortInputActivity::DEQUEUED);
+#endif
 		// Only a release in the menus sets the wait, and only the batch's end clears it (a mouse message that waits, or an empty
 		// queue): a key or any other message handed out after the release does not end it.
 		if (IsButtonRelease(out->message) && PortUiMouseMenu(PortDinputOwnsMouseEvent(0) ? 1 : 0))
@@ -520,8 +571,167 @@ void KeyEvent(const SDL_KeyboardEvent &e, HWND h)
 extern "C" char LT[];	// PCLTShell (ltshell.cpp): KeyDown[256] at +0x330e4, as retail's (gdb on the Linux build)
 
 // Turns pending SDL events into messages.
+#ifndef CE_NETWORK_OFF
+struct DiagnosticMouseToken
+{
+	unsigned present, button;
+	int x, y;
+	char kind, edge;
+};
+
+bool DiagnosticUnsigned(const char *&cursor, unsigned limit, unsigned *out)
+{
+	if (*cursor < '0' || *cursor > '9') return false;
+	unsigned value = 0;
+	do
+	{
+		unsigned digit = (unsigned)(*cursor - '0');
+		if (value > limit / 10 || (value == limit / 10 && digit > limit % 10)) return false;
+		value = value * 10 + digit;
+		++cursor;
+	} while (*cursor >= '0' && *cursor <= '9');
+	*out = value;
+	return true;
+}
+
+bool DiagnosticMickeys(const char *&cursor, int *out)
+{
+	bool negative = *cursor == '-';
+	if (negative || *cursor == '+') ++cursor;
+	unsigned value = 0;
+	if (!DiagnosticUnsigned(cursor, 32767, &value)) return false;
+	*out = negative ? -(int)value : (int)value;
+	return true;
+}
+
+// The legacy event-only parser accepts prefixes and narrows button numbers. Only the complete, bounded current
+// token may additionally feed an acquired device; parse original decimal values before any event-field narrowing.
+bool ParseDiagnosticMouseToken(const char *text, DiagnosticMouseToken *out)
+{
+	const char *end = text;
+	while (*end && *end != ',' && end - text < 128) ++end;
+	if (end - text == 128) return false;
+	DiagnosticMouseToken token{};
+	const char *cursor = text;
+	token.kind = *cursor++;
+	if ((token.kind != 'm' && token.kind != 'b') ||
+		!DiagnosticUnsigned(cursor, UINT_MAX, &token.present) || *cursor++ != ':') return false;
+	if (token.kind == 'm')
+	{
+		if (!DiagnosticMickeys(cursor, &token.x) || *cursor++ != ':' || !DiagnosticMickeys(cursor, &token.y)) return false;
+	}
+	else
+	{
+		if (!DiagnosticUnsigned(cursor, SDL_BUTTON_X2, &token.button) || token.button < SDL_BUTTON_LEFT || *cursor++ != ':') return false;
+		token.edge = *cursor++;
+		if (token.edge != 'd' && token.edge != 'u') return false;
+		if (cursor < end && *cursor == ':')
+		{
+			for (unsigned coordinate = 0; coordinate < 2; ++coordinate)
+			{
+				if (*cursor++ != ':') return false;
+				char *after = NULL;
+				float value = strtof(cursor, &after);
+				if (after == cursor || after > end || !(value >= -FLT_MAX && value <= FLT_MAX)) return false;
+				cursor = after;
+			}
+		}
+	}
+	if (cursor != end) return false;
+	*out = token;
+	return true;
+}
+
+// Only bounded, reachable d/u pairs may own a diagnostic device button. The existing event-only fixture syntax
+// remains available to menus and record mode; these checks authorize only its additional acquired-device level.
+bool DiagnosticMousePair(const char *text, unsigned button, unsigned pressed)
+{
+	DiagnosticMouseToken head{};
+	if (!ParseDiagnosticMouseToken(text, &head) || head.kind != 'b' || head.edge != 'd' || head.button != button || head.present != pressed) return false;
+	const char *cursor = text;
+	unsigned previous = pressed, bytes = 0;
+	for (unsigned token = 0; token < 256; ++token)
+	{
+		unsigned length = 0;
+		while (cursor[length] && cursor[length] != ',' && length < 128 && bytes + length < 16384) ++length;
+		if (!cursor[length] || length == 128 || bytes + length == 16384) return false;
+		cursor += length + 1; bytes += length + 1;
+		length = 0;
+		while (cursor[length] && cursor[length] != ',' && length < 128 && bytes + length < 16384) ++length;
+		if (!length || length == 128 || bytes + length == 16384) return false;
+		unsigned present = 0, a = 0, b = 0;
+		int x = 0, y = 0, end = -1;
+		float fx = 0, fy = 0;
+		char edge = 0;
+		if (cursor[0] == 'b' || cursor[0] == 'm')
+		{
+			DiagnosticMouseToken next{};
+			if (!ParseDiagnosticMouseToken(cursor, &next)) return false;
+			present = next.present; a = next.button; edge = next.edge; end = (int)length;
+		}
+		else if (cursor[0] == 'a') sscanf(cursor, "a%u:%f:%f%n", &present, &fx, &fy, &end);
+		else if (cursor[0] == 'k') sscanf(cursor, "k%u:%u:%x%n", &present, &a, &b, &end);
+		else if (cursor[0] == 's' || cursor[0] == 'w')
+		{
+			sscanf(cursor + 1, "%u:%u:%u%n", &present, &a, &b, &end);
+			if (end >= 0) ++end;
+		}
+		else if (cursor[0] == 'c') sscanf(cursor, "c%u:%x%n", &present, &a, &end);
+		else sscanf(cursor, "%u:%u:%x:%c%n", &present, &a, &b, &edge, &end);
+		if (end != (int)length || present < previous || present - pressed > 3600) return false;
+		if (cursor[0] == 'b' && a == button) return edge == 'u';
+		previous = present;
+	}
+	return false;
+}
+
+// Configuration only: explicit network boot may snapshot the same choice before admission.
+// Normal play still observes it at the first Pump. Completion never clears the configured history.
+bool gWindowAutomationReady, gWindowAutomationConfigured;
+int gWindowFakeState;
+const char *gWindowFakeKeys;
+void InitWindowAutomationConfig()
+{
+	if (gWindowAutomationReady) return;
+	gWindowFakeState = getenv("BEA_PORT_FAKE_CLICK") ? 1 : 2;
+	gWindowFakeKeys = getenv("BEA_PORT_FAKE_KEYS");
+	gWindowAutomationConfigured = gWindowFakeState == 1 || (gWindowFakeKeys && *gWindowFakeKeys);
+	gWindowAutomationReady = true;
+}
+
+#endif
+// Authored keys on a wall-clock timeline (feel.h's script): the events BEA_PORT_FAKE_KEYS' numeric token makes, by time. A key whose time has come is
+// pushed as an SDL event and marked held, as a real key is when the system reports it: asked at the event pump and, between the game's pumps, wherever
+// the input is refreshed (PortPumpInput), so that a scripted key is as early for code that reads the keyboard's state (PortKeyHeldNow) as a real one.
+void FeelScriptedKeys()
+{
+	if (!PORT_FEEL_ON())
+		return;
+	unsigned fsc = 0, fraw = 0;
+	int fdown = 0;
+	while (PortFeelKeyDue(&fsc, &fraw, &fdown))
+	{
+		if (fsc < SDL_SCANCODE_COUNT)
+			gFakeHeld[fsc] = fdown != 0;
+		SDL_Event f{};
+		f.type = fdown ? SDL_EVENT_KEY_DOWN : SDL_EVENT_KEY_UP;
+		f.key.scancode = (SDL_Scancode)fsc;
+		f.key.key = SDL_GetKeyFromScancode((SDL_Scancode)fsc, SDL_KMOD_NONE, false);
+		f.key.raw = (Uint16)fraw;
+		f.key.down = fdown != 0;
+		SDL_PushEvent(&f);
+	}
+}
+
 void Pump()
 {
+	if (PORT_FEEL_ON()) PortFeelPump();		// frame-feel measurement (feel.h): the first pump after a Present starts a pass
+#ifndef CE_NETWORK_OFF
+#if defined(CE_NETWORK_TEXT)
+    PortCeChatFrame();
+#endif
+
+#endif
 	// A faked minimize's restore (BEA_PORT_FAKE_KEYS' hPRESENT:SECONDS, below): once its time is up the window is restored and has focus again, even while the game is waiting in GetMessage
 	// for it (no Present comes while it waits).
 	static Uint64 fakeRestoreAt;
@@ -535,11 +745,19 @@ void Pump()
 		g.type = SDL_EVENT_WINDOW_FOCUS_GAINED;
 		SDL_PushEvent(&g);
 	}
+#ifndef CE_NETWORK_OFF
+	InitWindowAutomationConfig();
+	PortInputActivity::Pulse(Sdl(MainWindow()));
+#endif
 	// BEA_PORT_FAKE_CLICK=SECONDS:X,Y (a test switch): after SECONDS, one left click at window point X,Y, through the
 	// same event path as the player's mouse.
+#ifdef CE_NETWORK_OFF
 	static int fakeState = 0;
 	if (fakeState == 0)
 		fakeState = getenv("BEA_PORT_FAKE_CLICK") ? 1 : 2;
+#else
+	int &fakeState = gWindowFakeState;
+#endif
 	if (fakeState == 1)
 	{
 		float secs = 0, fx = 0, fy = 0;
@@ -559,12 +777,22 @@ void Pump()
 	// checks): once PRESENT Presents have completed, an SDL key event through the same path as the player's keyboard
 		// (x: the key goes up in SDL's state but its event is lost; r: a key-down with the repeat flag, as a held key's auto-repeat); kPRESENT:SDLSCAN:MOD a key-down with modifier state MOD
 	// (hex SDL_Keymod) and its key-up; mPRESENT:DX:DY a relative mouse movement; aPRESENT:X:Y a mouse movement to window
+#ifdef CE_NETWORK_OFF
 	// point X,Y; bPRESENT:BUTTON:d|u[:X:Y] a mouse button (at window point X,Y);
+#else
+	// point X,Y; bPRESENT:BUTTON:d|u[:X:Y] a mouse button (at window point X,Y). Acquired devices additionally receive
+	// authored mickeys once and paired button levels; physical state is additive, and replay/record keeps priority.
+	// A device press needs its explicit up within 256 valid ordered tokens/3600 Presents; no unpaired final hold.
+#endif
 	// sPRESENT:N:SDLSCAN a key-down, N mouse movements and the key-up, all queued before one pump (a backlog; wPRESENT:N:SDLSCAN
 	// the same with N zero wheel steps, which are not coalesced);
 	// cPRESENT:SCAN logs the game's KeyDown[SCAN] (hex PC scan code);
 	// hPRESENT:SECONDS the window loses focus and is minimized, and is restored and focused again after SECONDS of real time: the player's Alt-Tab out of a fullscreen game and back.
+#ifdef CE_NETWORK_OFF
 	static const char *fakeKeys = getenv("BEA_PORT_FAKE_KEYS");
+#else
+	const char *&fakeKeys = gWindowFakeKeys;
+#endif
 	if (fakeKeys && *fakeKeys)
 	{
 		unsigned present = 0, sc = 0, raw = 0, n = 0;
@@ -599,7 +827,14 @@ void Pump()
 			f.type = SDL_EVENT_MOUSE_MOTION;
 			f.motion.xrel = (float)mdx;
 			f.motion.yrel = (float)mdy;
+#ifdef CE_NETWORK_OFF
 			SDL_PushEvent(&f);
+#else
+			bool queued = SDL_PushEvent(&f);
+			DiagnosticMouseToken token{};
+			bool valid = ParseDiagnosticMouseToken(fakeKeys, &token) && token.kind == 'm';
+			PortDinputDiagnosticMouseEvent(Sdl(MainWindow()), &f, queued && valid);
+#endif
 			used = true;
 		}
 		else if (sscanf(fakeKeys, "b%u:%u:%c", &present, &sc, &ud) == 3 && PortPresentCount() >= present)
@@ -615,7 +850,15 @@ void Pump()
 				f.button.x = ax;
 				f.button.y = ay;
 			}
+#ifdef CE_NETWORK_OFF
 			SDL_PushEvent(&f);
+#else
+			bool queued = SDL_PushEvent(&f);
+			DiagnosticMouseToken token{};
+			bool paired = ParseDiagnosticMouseToken(fakeKeys, &token) && token.kind == 'b' &&
+				(token.edge == 'u' || DiagnosticMousePair(fakeKeys, token.button, token.present));
+			PortDinputDiagnosticMouseEvent(Sdl(MainWindow()), &f, queued && paired);
+#endif
 			used = true;
 		}
 		else if (sscanf(fakeKeys, "k%u:%u:%x", &present, &sc, &raw) == 3 && PortPresentCount() >= present)
@@ -689,9 +932,22 @@ void Pump()
 		if (used)
 		{
 			const char *next = strchr(fakeKeys, ',');
+			if (PORT_FEEL_ON())
+			{
+				char note[64] = "inject ";
+				size_t len = next ? (size_t)(next - fakeKeys) : strlen(fakeKeys);
+				if (len > sizeof(note) - 8) len = sizeof(note) - 8;
+				memcpy(note + 7, fakeKeys, len);
+				note[7 + len] = 0;
+				PortFeelNote(note);
+			}
 			fakeKeys = next ? next + 1 : "";
+#ifndef CE_NETWORK_OFF
+			if (!*fakeKeys) PortDinputDiagnosticMouseEnd(Sdl(MainWindow()));
+#endif
 		}
 	}
+	FeelScriptedKeys();
 	// The input and audio inventories (inventory.cpp), once each, as soon as their SDL subsystems are up.
 	if (PortSessionEnabled())
 	{
@@ -708,6 +964,9 @@ void Pump()
 		}
 	}
 	PortMouseKeepRelative();
+#if defined(CE_VERSION) && defined(BEA_PUBLIC_GRAPHICS_HOST)
+	PortCeRetryDisplayInput();
+#endif
 	// Keys left held by a dropped message go up once the game has read the ring.
 	if (gReleasePending && Free() > 64)
 	{
@@ -727,6 +986,12 @@ void Pump()
 			e = deferred;
 		else if (!SDL_PollEvent(&e))
 			break;
+#ifndef CE_NETWORK_OFF
+#if defined(CE_NETWORK_TEXT)
+        if (PortCeChatEvent(&e)) continue;
+#endif
+
+#endif
 		// Hold at most one dequeued event and leave the SDL tail untouched. Normal input keeps the existing pump;
 		// after capture failure, the same bounded record-mode delivery resumes when the next Present frees space.
 		unsigned slots = e.type == SDL_EVENT_KEY_UP ? 1 :
@@ -740,6 +1005,12 @@ void Pump()
 			break;
 		}
 		haveDeferred = false;
+		if (PORT_FEEL_ON() && (e.type == SDL_EVENT_MOUSE_MOTION || e.type == SDL_EVENT_KEY_DOWN || e.type == SDL_EVENT_KEY_UP ||
+							 e.type == SDL_EVENT_MOUSE_BUTTON_DOWN || e.type == SDL_EVENT_MOUSE_BUTTON_UP))
+		{
+			Uint64 stamped = e.common.timestamp, now = SDL_GetTicksNS();
+			PortFeelEvent((unsigned)e.type, stamped && now > stamped ? now - stamped : 0);
+		}
 		HWND h = MainWindow();
 		switch (e.type)
 		{
@@ -774,6 +1045,8 @@ void Pump()
 				Post(h, WM_SIZE, SIZE_RESTORED, MAKELPARAM(e.window.data1, e.window.data2));
 			break;
 		case SDL_EVENT_WINDOW_MINIMIZED:
+			// Minimize can precede focus loss; end held keys at either boundary.
+			ReleaseAll("minimize");
 			PortSessionLog(PORT_SESSION_WINDOW, false, "minimized");
 			Post(h, WM_SIZE, SIZE_MINIMIZED, 0);
 			break;
@@ -796,6 +1069,9 @@ void Pump()
 			KeyEvent(e.key, h);
 			break;
 		case SDL_EVENT_MOUSE_MOTION:
+#ifndef CE_NETWORK_OFF
+			PortInputActivity::Count(PortInputActivity::MOTION);
+#endif
 			if (PortRecording())
 			{
 				// record mode: DirectInput-style movement and the window message, one of which the tape keeps
@@ -804,12 +1080,22 @@ void Pump()
 				break;
 			}
 			if (PortDinputOwnsMouseEvent(e.common.timestamp))
+#ifndef CE_NETWORK_OFF
+			{
+				PortInputActivity::Count(PortInputActivity::CAPTURE_SUPPRESSED);
+#endif
 				break;	// exclusive DirectInput owns game mouse input; recording makes the same choice at Present
+#ifndef CE_NETWORK_OFF
+			}
+#endif
 			PostMouseMove(h, MouseButtons(), MouseLParam(e.motion.x, e.motion.y));
 			break;
 		case SDL_EVENT_MOUSE_BUTTON_DOWN:
 		case SDL_EVENT_MOUSE_BUTTON_UP:
 		{
+#ifndef CE_NETWORK_OFF
+			PortInputActivity::Count(PortInputActivity::BUTTON);
+#endif
 			if (PortRecording())
 			{
 				int bit = e.button.button == SDL_BUTTON_LEFT ? 0 : e.button.button == SDL_BUTTON_RIGHT ? 1 : e.button.button == SDL_BUTTON_MIDDLE ? 2 : -1;
@@ -823,7 +1109,14 @@ void Pump()
 				break;
 			}
 			if (PortDinputOwnsMouseEvent(e.common.timestamp))
+#ifndef CE_NETWORK_OFF
+			{
+				PortInputActivity::Count(PortInputActivity::CAPTURE_SUPPRESSED);
+#endif
 				break;
+#ifndef CE_NETWORK_OFF
+			}
+#endif
 			bool down = e.type == SDL_EVENT_MOUSE_BUTTON_DOWN;
 			UINT msg = 0;
 			if (e.button.button == SDL_BUTTON_LEFT) msg = down ? WM_LBUTTONDOWN : WM_LBUTTONUP;
@@ -834,6 +1127,9 @@ void Pump()
 			break;
 		}
 		case SDL_EVENT_MOUSE_WHEEL:
+#ifndef CE_NETWORK_OFF
+			PortInputActivity::Count(PortInputActivity::WHEEL);
+#endif
 			if (PortRecording())
 			{
 				PortRecordWheel(e.wheel.y);
@@ -841,7 +1137,14 @@ void Pump()
 				break;
 			}
 			if (PortDinputOwnsMouseEvent(e.common.timestamp))
+#ifndef CE_NETWORK_OFF
+			{
+				PortInputActivity::Count(PortInputActivity::CAPTURE_SUPPRESSED);
+#endif
 				break;	// otherwise the window message and DirectInput both add this wheel delta
+#ifndef CE_NETWORK_OFF
+			}
+#endif
 			Post(h, WM_MOUSEWHEEL, MAKEWPARAM(MouseButtons(), (short)(e.wheel.y * WHEEL_DELTA)), 0);
 			break;
 		default:
@@ -849,6 +1152,9 @@ void Pump()
 		}
 	}
 	Reconcile();
+#ifndef CE_NETWORK_OFF
+    PortPrivateUiPump(PortPresentCount(), PrivateUiCharacter, MainWindow());
+#endif
 }
 }
 
@@ -953,8 +1259,16 @@ extern "C" BOOL WINAPI PortDestroyWindow(HWND h)
 	Window *w = Find(h);
 	if (!w)
 		return FALSE;
+#ifndef CE_NETWORK_OFF
+	SDL_Event destroyed{};
+	destroyed.type = SDL_EVENT_WINDOW_DESTROYED;
+	PortDinputDiagnosticMouseEvent(w->sdl, &destroyed, true);
+#endif
 	if (w->proc)
 		w->proc(h, WM_DESTROY, 0, 0);
+#ifndef CE_NETWORK_OFF
+	PortInputActivity::Pulse(w->sdl, true);
+#endif
 	SDL_DestroyWindow(w->sdl);
 	*w = gWindows[--gNumWindows];
 	return TRUE;
@@ -1035,7 +1349,14 @@ extern "C" LRESULT WINAPI PortDispatchMessageA(const MSG *msg)
 {
 	Window *w = Find(msg->hwnd);
 	if (w && w->proc)
+#ifndef CE_NETWORK_OFF
+	{
+		if (PortInputActivity::MouseMessage(msg->message)) PortInputActivity::Count(PortInputActivity::DISPATCHED);
+#endif
 		return w->proc(msg->hwnd, msg->message, msg->wParam, msg->lParam);
+#ifndef CE_NETWORK_OFF
+	}
+#endif
 	return 0;
 }
 
@@ -1243,4 +1564,73 @@ extern "C" BOOL WINAPI PortClientToScreen(HWND h, LPPOINT p)
 // ---- the platform layer's view of the windows ---------------------------------------------------------------------------
 SDL_Window *PortSdlWindow(HWND hwnd) { return Sdl(hwnd); }
 SDL_Window *PortMainSdlWindow() { return gNumWindows ? gWindows[0].sdl : NULL; }
-void PortPumpInput() { SDL_PumpEvents(); }
+void PortPumpInput()
+{
+	FeelScriptedKeys();
+	SDL_PumpEvents();
+}
+
+// The keyboard as it is held now, for code that must not wait for the game's next message pump: the game takes its messages once for every update (20 a
+// second, CGame::MainLoop), so a key's press and release reach the key trap and KeyDown[] up to 50 ms after they happened, while SDL's state is
+// refreshed with every frame's DirectInput polls. `dik` is the game's key code, the scan code of ltshell.cpp's MsgProc with the extended keys 0x80
+// higher. 1: held; 0: not; -1: the platform cannot say (the key has no SDL scancode here). SDL's state is refreshed at most once for a Present.
+extern "C" int PortKeyHeldNow(unsigned dik)
+{
+	static unsigned short sdlOfPc[0x200];
+	static bool built;
+	static unsigned refreshed = ~0u;
+	if (!built)
+	{
+		for (int s = 1; s < SDL_SCANCODE_COUNT; ++s)
+		{
+			const unsigned pc = PcScan((SDL_Scancode)s) & 0x1ff;
+			if (pc && !sdlOfPc[pc])
+				sdlOfPc[pc] = (unsigned short)s;
+		}
+		built = true;
+	}
+	const unsigned pc = dik >= 0x80 ? ((dik - 0x80) | 0x100) : dik;
+	if (pc >= 0x200 || !sdlOfPc[pc])
+		return -1;
+	if (refreshed != PortPresentCount())
+	{
+		refreshed = PortPresentCount();
+		PortPumpInput();
+	}
+	const unsigned s = sdlOfPc[pc];
+	if (gFakeHeld[s])
+		return 1;
+	int n = 0;
+	const bool *state = SDL_GetKeyboardState(&n);
+	return state && (int)s < n ? (state[s] ? 1 : 0) : -1;
+}
+#ifndef CE_NETWORK_OFF
+
+// Query only this process's main SDL window. The compatibility GetForegroundWindow shim is not a focus test.
+extern "C" uint32_t CE_SessionWindowStatus()
+{
+    SDL_Window *window = PortMainSdlWindow();
+    if (!window) return CE_SESSION_NO_WINDOW;
+    SDL_WindowFlags flags = SDL_GetWindowFlags(window);
+    uint32_t reasons = (flags & SDL_WINDOW_INPUT_FOCUS) ? 0u : CE_SESSION_UNFOCUSED;
+    if (flags & SDL_WINDOW_MINIMIZED) reasons |= CE_SESSION_MINIMIZED;
+    if (flags & SDL_WINDOW_HIDDEN) reasons |= CE_SESSION_HIDDEN;
+    return reasons;
+}
+
+// No event emission, SDL calls or timing; boot and the ordinary owner share configuration only.
+extern "C" void CE_NetWindowAutomationPrepare(void) { InitWindowAutomationConfig(); }
+extern "C" int CE_NetWindowAutomationIdle(void)
+{
+	if (!gWindowAutomationReady) return -1;
+#ifdef CE_NET_TEST_AUTOMATION
+	// Private network test builds only (build.py --test-automation, refused with --public): authored SDL input through
+	// the player's event path is allowed so two-process gameplay can be driven. Tapes, probes and dumps stay refused.
+	return 1;
+#else
+	return !gWindowAutomationConfigured && gWindowFakeState == 2 &&
+		(!gWindowFakeKeys || !*gWindowFakeKeys) ? 1 : 0;
+#endif
+}
+
+#endif

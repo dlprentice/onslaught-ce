@@ -1,0 +1,25 @@
+--- a/MessageBox.cpp
++++ b/MessageBox.cpp
+@@ -13,6 +13,9 @@
+ #include	"thing.h"
+ #include	"SoundManager.h"
+ #include	"CLIParams.h"
++#ifndef CE_NETWORK_OFF
++#include	"ce_network_lockstep.h"	// port (lockstep co-op): a message ends by its text, not this PC's audio
++#endif
+ #include	"Platform.h"
+ #include	"console.h"
+ #include	"frontend.h"
+@@ -598,7 +601,11 @@
+ 		return;
+ 	}
+ 
+-	if ((mCurrent->mFinishedPlaying != TRUE) && (EVENT_MANAGER.GetTime() - mStartTime <= 12.f))
++#ifdef CE_NETWORK_OFF
++	if ((mCurrent->mFinishedPlaying != TRUE) && (EVENT_MANAGER.GetTime() - mStartTime <= 12.f))
++#else
++	if ((mCurrent->mFinishedPlaying != TRUE) && !CE_LockstepActive() && (EVENT_MANAGER.GetTime() - mStartTime <= 12.f))
++#endif
+ 	{
+ 		EVENT_MANAGER.AddEvent(0.038f, MESSAGE_BOX_REVEAL, this);
+ 		return;

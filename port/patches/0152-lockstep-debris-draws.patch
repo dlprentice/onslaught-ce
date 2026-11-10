@@ -1,0 +1,56 @@
+--- a/DestroyableSegment.cpp
++++ b/DestroyableSegment.cpp
+@@ -326,6 +326,9 @@
+ 		vel *= (float(GAME.Random() % 65536) * (1.0f / 65536.0f)) * 0.07f;
+ 		if (link.mEffect)
+ 		{
++#ifndef CE_NETWORK_OFF
++			CE_LockstepCrtHold hold;	// port (lockstep co-op): only a created particle picks its rubble mesh
++#endif
+ 			CParticleMesh	*mp = link.mEffect->mParticle;
+ 			if (mp)
+ 			{
+--- a/Mech.cpp
++++ b/Mech.cpp
+@@ -3,6 +3,9 @@
+ // The allocations' __LINE__s are the retail ones; the #lines place them.
+ 
+ #include "common.h"
++#ifndef CE_NETWORK_OFF
++#include "ce_network_lockstep.h"
++#endif
+ #include "unit.h"
+ #include "InitThing.h"
+ #include "game.h"
+@@ -173,6 +176,9 @@
+ 			PARTICLE_MANAGER.CreateEffect(pd, &link, ZERO_FVECTOR, 0, 0);
+ 			if (link.mEffect)
+ 			{
++#ifndef CE_NETWORK_OFF
++				CE_LockstepCrtHold hold;	// port (lockstep co-op): only a created particle draws its velocity
++#endif
+ 				CParticle	*particle = link.mEffect->mParticle;
+ 				if (particle)
+ 				{
+--- a/RTBuilding.cpp
++++ b/RTBuilding.cpp
+@@ -2,6 +2,9 @@
+ // building's render thing: the mesh render thing, holding the building's rubble mesh.
+ 
+ #include "common.h"
++#ifndef CE_NETWORK_OFF
++#include "ce_network_lockstep.h"
++#endif
+ #include "RTBuilding.h"
+ #include "mesh.h"
+ #include "meshrenderer.h"
+@@ -56,6 +59,9 @@
+ {
+ 	if (!mNumRubble)
+ 		return NULL;
++#ifndef CE_NETWORK_OFF
++	CE_LockstepCrtHold hold;	// port (lockstep co-op): the rubble's level of detail is drawn only for a created particle
++#endif
+ 	SINT	n = rand() % mNumRubble;
+ 	CMESH	*m = mRubble;
+ 	for (SINT i = 0; (i < n) && (m->mNextInChain); i++)

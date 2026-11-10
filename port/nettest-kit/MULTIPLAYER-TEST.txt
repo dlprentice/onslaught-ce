@@ -1,0 +1,57 @@
+Onslaught CE 0.1.8-nettest.1: two-player network test
+=====================================================
+
+What it is: Onslaught CE 0.1.8 with the new two-player network code, for testing only. Two players, each on their
+own PC with their own copy of Battle Engine Aquila, play level 852 head to head. It is not campaign co-op.
+
+It is separate from your normal Onslaught CE: it runs from its own folder, keeps its settings and log in that
+folder's "user" subfolder (never your careers), and never checks for or installs updates.
+
+1. Which file
+   Linux PC:   onslaught-ce-nettest-linux.tar.gz   (extract it, then use host.sh or join.sh inside)
+   Windows PC: onslaught-ce-nettest-windows.zip    (extract it, then use host.cmd or join.cmd inside)
+   Extract it into a new folder of its own (for example Downloads), not into the game folder or your
+   Onslaught CE folder. Linux and Windows PCs can play each other.
+
+2. Agree a password
+   Both players type the same password. Letters and digits only, for example three random words run together.
+   Use one you do not use anywhere else.
+
+3. Who hosts
+   Either player. The host is player 1 and runs the battle; the other player joins as player 2.
+
+4. Same home network first (no router setup)
+   Host:  Linux:   ./host.sh PASSWORD           Windows: host.cmd PASSWORD   (or double-click and type it)
+          It shows this PC's address, for example 192.168.1.20. Tell it to the other player.
+   Join:  Linux:   ./join.sh 192.168.1.20 PASSWORD     Windows: join.cmd 192.168.1.20 PASSWORD
+   Start the host first, then the join within about 20 seconds. If either side gives up waiting, close both
+   and start again (rejoining a running game is not supported yet).
+   Windows may ask whether to allow the game on the network: choose Allow (private networks). Windows may
+   also warn about an unrecognised app: More info, then Run anyway.
+
+5. Over the internet (second)
+   On the host's router, forward UDP port 27652 to the host PC's address from step 4. The joining player
+   uses the host's public address (search "what is my IP" on the host PC) instead of 192.168.x.x.
+   Another port: set PORT before starting, on both PCs (Linux: PORT=30000 ./host.sh ...;
+   Windows: set PORT=30000, then host.cmd ...).
+
+6. How to read the outcome
+   The log is user/onslaught-ce.log in the folder you extracted. Lines to look for:
+     connected, the network session has started (you are player 1)   it worked (player 2 on the joining PC)
+     Connection lost, waiting... (25 s)    no data from the other PC for 2 s (also shown on screen); it
+                                           stops after 30 s, or says "Connection restored"
+     peer deliberately left the engineering session   the other player quit normally
+     network engineering session stopped: ...         it failed; the rest of the line says why:
+       the other player has a different Onslaught CE version: yours is X, theirs is Y
+                                           both need this same test build
+       network endpoint or private invite is missing or invalid
+                                           the address or password was not given
+       peer left, timed out, or failed transport admission
+                                           wrong password, wrong address, or blocked by a firewall/router
+       session load or start barrier timed out
+                                           the other side did not start in time, or the port is blocked
+   Please send back both PCs' onslaught-ce.log files, whether it was the home network or the internet, and how
+   it felt (smooth, jumpy, frozen).
+
+Limits of this test build: level 852 only; the host's PC decides what happens and the joining player sees it a
+moment later; a quit or a dropped connection ends the game for both.

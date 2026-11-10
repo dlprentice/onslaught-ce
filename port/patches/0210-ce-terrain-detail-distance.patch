@@ -1,0 +1,149 @@
+--- a/DXLandscape.cpp
++++ b/DXLandscape.cpp
+@@ -11,6 +11,8 @@
+ #include	"DXLandscape.h"
+ #include	"LandscapeTexture.h"
+ #include	"engine.h"
++#include "../platform/common/terrain_quality.h"
++#include "../game/ce_terrain_reserve.h"
+ #include	"DXEngine.h"
+ #include	"map.h"
+ #include	"game.h"
+@@ -1075,9 +1077,12 @@
+ // widening; the original declarations are unknown.
+ static inline BOOL AllocatePatch(SINT level, UWORD slot, CLandscapeVB *&patch)
+ {
++	CeTerrainQualityAllocationAttempt(level);
+ 	patch = PATCHMANAGER.mLists[level].Allocate(slot);
++	if (!patch) patch = CeTerrainReserveAllocate(level, slot);
+ 	if (patch)
+ 		return TRUE;
++	CeTerrainQualityAllocationFailure(level);
+ 	return FALSE;
+ }
+ 
+@@ -1098,6 +1103,7 @@
+ // Frees the tile's patch slot.
+ static inline void RetireLandscapePatch(SLandscapeCell *tile)
+ {
++	CeTerrainReserveReleased(tile->mPatch);
+ 	tile->mPatch->mSlot = 0xffff;
+ 	tile->mPatch = NULL;
+ }
+@@ -1340,6 +1346,7 @@
+ 			view->mLODs[l].mUnknown08 = 0;
+ 
+ 		SLandscapeCell	*tile = view->mTiles;
++
+ 		BOOL	joined = TRUE;
+ 		for (SINT y = 0; y < 64; y++)
+ 		{
+@@ -1349,6 +1356,14 @@
+ 			SINT	row;
+ 			for (x = 0, row = y * 64, below = vert + 65; x < 64; vert++, below++, span += 2, tile++, cam.X += 8.0f, x++)
+ 			{
++			    if (!CeTerrainQualityExtended() && CeTerrainReserveOwns(tile->mPatch)) {
++
++			    	RetireLandscapePatch(tile);
++
++			    	tile->mUnknown10 = -1;
++
++			    }
++
+ 				t = row + x;
+ 				if ((x < gamut->mMinX) || (x > gamut->mMaxX) || (y < gamut->mMinY) || (y > gamut->mMaxY) ||
+ 					(span[0] < tile->mMinHeight) || (span[1] > tile->mMaxHeight))
+@@ -1372,14 +1387,15 @@
+ 				SINT	near8 = minlod >> 3;
+ 				near8 = near8 * near8;
+ 				float	dist2 = cam.X * cam.X + dz2 + dy2;
++				float geometryDist2 = CeTerrainGeometryDistanceSquared(dist2);
+ 				BOOL	inFarRing = FALSE;
+ 				float	lod;
+-				if (near8 > dist2)
++				if (near8 > geometryDist2)
+ 					lod = 8.0f;
+ 				else
+ 				{
+ 					float	complexity = LANDSCAPE_LOWRES_GEOM.mValue ? 0.0f : tile->mComplexity;
+-					lod = (1.0f / (float)sqrt(dist2)) * (minlod + complexity);
++					lod = (1.0f / (float)sqrt(geometryDist2)) * (minlod + complexity);
+ 					if (lod < 2.0f)
+ 						inFarRing = TRUE;
+ 				}
+@@ -1427,6 +1443,7 @@
+ 
+ 						// its texture level, by distance ahead of the view, and the tile listed at that level
+ 						SINT	tex = ChooseLandscapeTexture(view, cam, look, dist2, dz2);
++						CeTerrainQualityTexture(tex);
+ 						SLandscapeLOD	*lod2 = &view->mLODs[tex];
+ 						lod2->mData[lod2->mUnknown08] = t;	// t's low word (`mov bx,WORD PTR`, 00547130), as the escaped t gives it
+ 						lod2->mUnknown08++;
+@@ -1441,12 +1458,14 @@
+ 						}
+ 
+ 						// stitch its edges to coarser neighbours
++						CeTerrainQualityPatch(tile->mUnknown10);
+ 						StitchLandscapeCell(tile, x, y);
+ 						continue;
+ 					}
+ 				}
+ 
+ 				// in the far ring: strung into its strip
++				CeTerrainQualityFarCell();
+ 				AppendLandscapeFarCell(idx, joined, vert, below);
+ 				tile->mUnknown10 = -1;
+ 				if (tile->mPatch)
+--- a/game.cpp
++++ b/game.cpp
+@@ -10,6 +10,7 @@
+ 			
+ #include	"game.h"
+ #include	"engine.h"
++#include "../platform/common/terrain_quality.h"
+ #include	"map.h"
+ #include	"world.h"
+ #include	"eventmanager.h"
+@@ -1779,6 +1780,7 @@
+ 	if (CE_SessionActive() && mQuit != QT_NONE) return;
+ 	if (!CE_WorldCanRender()) return;
+ #endif
++	CeTerrainRenderFrameScope ceTerrainFrame;
+ 	// retail: with the extra GeForce FX features on, a single-player frame first renders the landscape's reflection
+ 	// into its texture at 256x256, then renders again to the screen (0046e4bc..0046e4f2, 0046e8c5)
+ 	CRenderTargetSwap	mirror;
+--- a/DXPatchManager.cpp
++++ b/DXPatchManager.cpp
+@@ -10,6 +10,7 @@
+ #include "LandscapeVB.h"
+ #include "landscapeib.h"
+ #include "chunker.h"
++#include "../game/ce_terrain_reserve.h"
+ 
+ CDXPatchManager	PATCHMANAGER;						// 009c64d8
+ // FUNCTION: 0x005502d0 init:PATCHMANAGER
+@@ -42,6 +43,8 @@
+ 	CLandscapeVB	*vb = (CLandscapeVB *)mPatches;
+ 	for (SINT c0 = 0; c0 < mCount; vb++, c0++)
+ 		vb->mSlot = 0xffff;
++	CeTerrainReserveReset(this);
++
+ }
+ 
+ //******************************************************************************************
+@@ -78,11 +81,15 @@
+ 	for (SINT level = 0; level < 3; level++)
+ 		for (SINT edges = 0; edges < 16; edges++)
+ 			mIBs[level * 16 + edges].Init(level, edges);
++	CeTerrainReserveInit(this);
++
+ }
+ 
+ //******************************************************************************************
+ void	CDXPatchManager::Shutdown()	// FUNCTION: 0x005506e0
+ {
++	CeTerrainReserveShutdown();
++
+ 	if (mLists)
+ 	{
+ 		delete [] mLists;

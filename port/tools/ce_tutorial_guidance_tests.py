@@ -5,7 +5,8 @@
 The fixture compiles the exact patched bodies of the script calls, the radio queue (enqueue, advance, start), the help
 renderer, the binding table and lookup, the dash code, the native word wrapper, the port's DirectInput key mapping and
 the CE guidance, against synthetic game, clock, font and SDL keyboard-layout boundaries, then checks causal mutants
-and both targets' production objects. The supplied mirror provides the pinned-source headers. Fixture rendering uses
+and both targets' production objects. The mirror provides the pinned-source headers: --mirror names an existing one, and without it the suite builds a full one
+in its scratch folder (premirror.py, which needs BEA_GAME_DIR as every mirror does). Fixture rendering uses
 artificial font metrics and does not establish visual acceptance.
 """
 import argparse
@@ -22,6 +23,7 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'port'))
 import build
+import premirror
 
 
 def sha(path):
@@ -49,7 +51,7 @@ QUEUE = (r'^void\s+CMessageBox::SwitchMessagesOn\(', r'^void\s+CMessageBox::TryA
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--mirror', type=Path, required=True, help="port/build.py's mirror (local-data/port/mirror/src)")
+    parser.add_argument('--mirror', type=Path, help="port/build.py's mirror (local-data/port/mirror/src); default: build a full one in the scratch folder")
     parser.add_argument('--compiler', default='g++')
     args = parser.parse_args()
     parent = ROOT / 'local-data/port/ce-tutorial-guidance-tests'
@@ -57,12 +59,18 @@ def main():
     out = Path(tempfile.mkdtemp(prefix='run-', dir=parent))
     mirror = out / 'mirror'
     mirror.mkdir()
+    if args.mirror is None:
+        args.mirror = premirror.scratch_mirror(out / 'premirror')
     for src in args.mirror.rglob('*'):
         if src.is_file() and (src.suffix.lower() in ('.h', '.hpp', '.inl', '.stf') or
                               str(src.relative_to(args.mirror)) in PATCHED):
             dest = mirror / src.relative_to(args.mirror)
             dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(src, dest)
+            if src.suffix.lower() == '.cpp':
+                # the text a public build compiles: the guidance does not depend on the network, whose hooks are out (build.network_view)
+                dest.write_bytes(build.network_view(src.read_bytes().decode('latin-1'), off=True).encode('latin-1'))
+            else:
+                shutil.copyfile(src, dest)
     patch = ROOT / 'port/patches/0090-ce-tutorial-guidance-IScript.patch'
     # A mirror from port/build.py already carries this patch: take it back out of the copy first.
     reverse = subprocess.run(['patch', '--batch', '--fuzz=0', '-R', '-p1', '--dry-run', '-i', str(patch)], cwd=mirror,
@@ -141,7 +149,7 @@ def main():
         'pad_info.inc': body(dinput, r'^bool OrdinaryCeInput\(') +
                         body(dinput, r'^bool BindableGamepadTriggers\(') +
                         body(dinput, r'^extern "C" int PortCeTutorialPadInfo\('),
-        'gamepad.inc': re.sub(r'^#include\s+.*$', '', (ROOT/'port/game/ce_gamepad.cpp').read_text(), flags=re.M),
+        'gamepad.inc': re.sub(r'^#include\s+.*$', '', build.network_view((ROOT/'port/game/ce_gamepad.cpp').read_text(), off=True), flags=re.M),
         'walker.inc': '\n'.join(re.search(r'^(?:float|int) CBattleEngineWalkerPart::'+n+r'\s*=.*?;', walker, re.M).group(0)
                                 for n in ('mDashTime', 'mDashStart', 'mDashEnd', 'mDashLength', 'mDashVelocity')) + '\n' +
                       body(walker, r'^void\s+CBattleEngineWalkerPart::StrafeLeft\(') +
@@ -194,6 +202,8 @@ def main():
              'pad-second', 'pad-nonlatin', 'pad-fence', 'pad-player-two', 'keyboard-player-two', 'no-controller', 'stick-no-twist', 'pad-strafe-buttons',
              'timing-change', 'pad-timing-change', 'timing-missing', 'timing-missing-generic', 'timing-type', 'timing-null', 'timing-nan', 'timing-small', 'timing-large',
              'pad-mouse-blocked', 'pad-mouse-normal', 'pad-mouse-player-two', 'pad-mouse-default', 'pad-mouse-zoom',
+             # the Dodge Button in the cue, on and off
+             'dodge-keys', 'dodge-both', 'dodge-pad', 'dodge-pad-bound', 'dodge-stick', 'dodge-key-bound', 'dodge-off', 'dodge-player-two',
              'mouse-blocked-keys', 'mouse-unbound-keys',
              # faithful, replay and network fences, and missing game objects
              'layer-off', 'demo', 'autoconfig', 'record-demo', 'play-demo', 'multiplayer', 'other-level', 'language',
@@ -290,6 +300,18 @@ def main():
          'normal', 'partial first deflection fails after deadzone'),
         ('fixed-dash-time', [('guidance.inc', 'float duration = *static_cast<float *>(var->mData);', 'float duration = 0.2f;', 1)],
          'timing-change', 'registered dash timing changes the cue'),
+        ('dodge-off-ignored', [('guidance.inc', 'const bool on = PortCeDodgeAssistOn();', 'const bool on = true;', 1)], 'dodge-off',
+         'without a usable Dodge Button the cue is the one built from the bindings'),
+        ('dodge-key-bound-ignored', [('guidance.inc', 'on && PlayerPad() == 0 && PortCeDodgeAssistKeyFree()', 'on && PlayerPad() == 0', 1)], 'dodge-key-bound',
+         'without a usable Dodge Button the cue is the one built from the bindings'),
+        ('dodge-pad-bound-ignored', [('guidance.inc', '|| !PortCeDodgeAssistPadFree(playerPad)) return false;', ') return false;', 1)], 'dodge-pad-bound',
+         'no gamepad button when it is bound to another control'),
+        ('dodge-stick-button', [('guidance.inc', '|| info.kind == CE_TUTORIAL_STICK) return false;\n\tSControlInput input', ') return false;\n\tSControlInput input', 1)], 'dodge-stick',
+         'no gamepad button when it is bound to another control, or on a flight stick'),
+        ('dodge-key-on-player-two', [('guidance.inc', 'on && PlayerPad() == 0 && PortCeDodgeAssistKeyFree()', 'on && PortCeDodgeAssistKeyFree()', 1)], 'dodge-player-two',
+         'dodge names the current keys'),
+        ('dodge-no-plain-form', [('guidance.inc', 'for (int form = 0; form < 2; ++form)', 'for (int form = 0; form < 1; ++form)', 1)], 'dodge-both',
+         'the key and the gamepad button; the double tap does not fit and is left out'),
         ('displace-help', [('guidance.inc', 'return;\t\t// never displace the game\'s own help', '{ help->mMessages[0].mActive = FALSE; }', 1)], 'slots', 'never overwrite'),
     ]
     for name, edits, mode, message in mutants:
@@ -305,7 +327,7 @@ def main():
         if platform == 'linux' and not version.startswith(build.LINUX_CLANG_VERSION):
             raise RuntimeError('wrong Linux compiler: '+version)
         toolchains[platform] = {'version': version, 'binary_sha256': sha(compiler)}
-        includes = [build.PORT/'d3dx/include', build.PORT/'include', *target['includes'], mirror, mirror/'MissionScript']
+        includes = [build.PORT/'d3dx/include', build.PORT/'include', build.PORT/'game', *target['includes'], mirror, mirror/'MissionScript']
         for source in GAME_SOURCES:
             cmd = [*target['cxx'], '-std=gnu++14', *build.MSCXX, *build.COMMON, *build.X87, *build.NO_MATH_BUILTINS,
                    '-DCE_VERSION="fixture"', '-fsyntax-only', '-include', str(build.PORT/'include/port.h'),
@@ -319,7 +341,7 @@ def main():
     objects = []
     for platform in ('linux', 'windows'):
         target = build.TARGETS[platform]
-        includes = [build.PORT/'d3dx/include', build.PORT/'include', *target['includes'], mirror, mirror/'MissionScript']
+        includes = [build.PORT/'d3dx/include', build.PORT/'include', build.PORT/'game', *target['includes'], mirror, mirror/'MissionScript']
         names = {'ce_tutorial_guidance.cpp': ('PortCeTutorialHelpCue(int)', 'PortCeTutorialRadioStart(int)', 'PortCeTutorialYield(CHelpTextDisplay*)',
                                               'PortCeTutorialRefresh(CHelpTextDisplay*)', 'PortCeTutorialPrintableKey'),
                  'ce_gamepad.cpp': ('PortCeGamepadInputs(int, int, SControlInput*)',),

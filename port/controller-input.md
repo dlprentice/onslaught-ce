@@ -1,9 +1,9 @@
 # Controller input in the native port
 
 Status: CE gamepad and flight-stick support, released in 0.1.9; physical-controller acceptance remains open
-Last updated: 2026-11-06 (pad slots, flight-stick numbering and co-op wording corrected; earlier: 2026-10-28)
+Last updated: 2026-11-07 (pad slots, flight-stick numbering and co-op wording corrected 2026-11-06; earlier: 2026-11-05, 2026-10-28)
 Summary: how the native port finds controllers, what a gamepad or flight stick does without any setup, how hotplug
-works, where all of it is switched off, and what has and has not been checked.
+works, the Dodge Button, where all of it is switched off, and what has and has not been checked.
 
 ## Devices
 
@@ -66,6 +66,41 @@ controller being connected or removed. If a description will not fit, the cue us
 languages and the faithful, tape and network paths keep their existing behaviour. These changes have focused tests; a
 player-facing tutorial run and a physical controller check remain open.
 
+## The Dodge Button
+
+The walker's ground dodge is a double tap: two full strafe pushes in opposite directions, the second between half and the
+whole of `g_dash_time` (0.2 s, so 0.1 to 0.2 s) after the first (README, Dodging). Two facts of the game's own code make that
+harder than it sounds: the first push counts only when the last strafe value the game was given was not already full that way
+(so a dodge to the right after strafing left, with nothing in between, loses its first push), and the second push dashes the
+*other* way if the first side's push began between half and the whole of `g_dash_time` earlier.
+
+[`game/ce_dodge_assist.cpp`](game/ce_dodge_assist.cpp) (rules in [`game/ce_dodge_assist_rules.h`](game/ce_dodge_assist_rules.h),
+hooks in patch 0220 at `CController::DoMappings` and `CController::SendButtonAction`) gives the player one press for it. Hold
+**Left Ctrl** on the keyboard (controller 0 only, as the keyboard bindings are) or **B** on a gamepad (game button 0; the right
+face button on an Xbox-layout pad, which the tutorial cue, naming buttons by position, calls the right button) and push left or right with whatever inputs strafe (A or D, the left stick, or the player's
+own bindings), in either order or together. At the end of that controller update the assist sends the two strafe actions of a
+double tap through the game's own path, as keys would send them: a full push to the other side, then, 0.55 to 0.95 of
+`g_dash_time` later by the game's own clock (`EVENT_MANAGER.GetTime()`), a full push to the chosen side. In ordinary play the
+game's logic steps that clock 0.05 s at a time (twenty updates a second), so three updates, 0.15 s, is the centre of the window (0.1 s,
+0.2 s) and what the assist sends (its log line says 150 or 151 ms); two and four updates sit on the window's edges, where the
+rounding of the game's float clock decides, and a double tap by hand lands at two, three or four. `StrafeLeft` and `StrafeRight` decide with their own code: the dash is the original one, the same speed,
+length and cost; only the typing of it is done. While the double tap runs the player's own strafe actions are held back, so they
+cannot join or break it, and they pass again after it; a press kept for 0.35 s waits for the walker to be ready (a dash under
+way, or a push of the player's own that the first push would complete the wrong way: the first push then waits until that has
+passed, about 0.1 s at worst). A slow frame that carries the second push past the window starts the double tap once more, with
+a neutral strafe action first when the game would not count the first push, unless the walker would not take it. Holding both keys
+dodges once; for the next, let go of either and press again, or change direction (D to A, say) with the button still held. A press
+made during the first part of a dash (a dash lasts 0.75 s) is dropped; one made in its last 0.35 s dodges when it is over. Flight sticks have no Dodge Button; a key or button the player has bound to a control of their own is
+not one; the A then D (D then A) double tap works as before.
+
+It is on by default in ordinary CE play: CE Settings, Dodge Button (`dodge_button` in `ce.ini`, 1 or absent on, 0 off; read when
+a level is entered, so a change applies from the next level). It adds an input and takes none away: without a press of the
+button what reaches the player is, update for update, what the controller sent before. It is off, and the controller update is
+the original's, in a recording or replay, under probes or the virtual clock, for a test pilot, in a demo or attract loop, and in
+network play and its boot: the lockstep samples this peer's controls as semantic actions and applies them at the same tick on
+both peers, and nothing here has been run on two peers to show that the assisted double tap would be the same on both, so
+it stays off there. Tutorial level 100's dodge cue names the Dodge Button first when it is on and usable.
+
 ## Where it is off
 
 The CE defaults and trigger buttons are off in faithful builds and while a tape, recording, virtual clock or probe run
@@ -74,13 +109,16 @@ sticks that SDL does not recognize as gamepads are not offered. The keyboard-and
 controller input. The mapped joystick value is also neutral while a legacy demo dispatches its recorded actions in a
 CE tape session; those action IDs still dispatch. Older tapes cannot recover controller input that was never recorded.
 Faithful builds keep their existing controller behavior, with no CE defaults or trigger buttons. A clock or probe run
-without recording or replay does not apply the recording and replay fence above. In retail multiplayer the no-setup
-defaults are off (players use their Controller Options bindings); the CE bonus local co-op maps (Building Defence,
-levels 856 and 858; see [the public README](../README.md), Bonus Levels) admit the defaults for each player. Hotplug,
-flight-stick detection and the trigger buttons still work in multiplayer. There is no per-device profile. When enabled
-in eligible CE play, rumble (patch 0105, `game/ce_rumble.cpp`) goes to the controller slot numbered for the player (slot
-1 for player 1, slot 2 for player 2), not to whichever controller custom bindings name. Rumble is off during recording,
-replay, demo and network modes. CE sends rumble only to gamepads; a flight stick does not rumble.
+without recording or replay does not apply the recording and replay fence above. In local two-player split screen (the original's
+multiplayer maps, and the CE bonus local co-op maps: Building Defence, levels 856 and 858; see
+[the public README](../README.md), Bonus Levels) the defaults apply to each player's own pad: pad 0 is player 1's
+and pad 1 player 2's, the same pad that rumble uses for that player (slot 1 and slot 2 below); with one pad connected only player 1 has one and player 2's
+bindings are unchanged. A pad's Start opens the pause menu and its D-pad and A work it (shown with either pad). Network
+co-op samples the local peer's own pad the same way. Hotplug, flight-stick detection and the trigger buttons work in
+multiplayer as well. There is no per-device profile.
+When enabled in eligible CE play, rumble (patch 0105, `game/ce_rumble.cpp`) goes to the controller slot numbered for the player
+(slot 1 for player 1, slot 2 for player 2), not to whichever controller custom bindings name. Rumble is off during
+recording, replay, demo and network modes. CE sends rumble only to gamepads; a flight stick does not rumble.
 
 ## Checks
 
@@ -94,6 +132,32 @@ pad's disconnect does not discard the other pad's quick tap, and that a replacem
 press. It opens no game window. SDL initialization may still discover host joystick devices; the test does not isolate
 `/sys` or `/run` itself. These virtual-device checks do not establish physical-controller or native Windows behavior.
 
+`port/tools/ce_dodge_assist_tests.py` runs the Dodge Button's rules and glue beside the game's own `DoMappings`, `StrafeLeft` and
+`StrafeRight` (see its header for what it checks and its mutants); it opens no game window and uses no device.
+
+Offscreen runs of the Linux build on level 100 (authored key events and `BEA_PORT_FAKE_PAD`, the frames read) showed the keyboard
+and the gamepad each making six dodges, left and right, with one session-log line apiece (`dodge button: dodge right, 151 ms
+between the two pushes`), no dodge with `dodge_button=0`, and, of seven different spacings typed by hand through the same events, one landing (three
+of the ten attempts of that run were mislabelled and ran at about 25 Presents, so they are not counted as separate spacings); a
+review's read-only trace saw hand double taps of two and three updates land. The figures are in `port/PARITY.md`, The Dodge Button. Authored events and a virtual gamepad are not a hand on a keyboard or a
+physical pad.
+
+Run these three checks separately on the exact candidate tree. Use an isolated private HOME and XDG
+directories with the runtime directory set to mode 0700, disable network access, unset `DISPLAY`,
+`WAYLAND_DISPLAY` and `DBUS_SESSION_BUS_ADDRESS`, and set `SDL_VIDEODRIVER=dummy`,
+`SDL_AUDIO_DRIVER=dummy`, `BEA_REPORT_NO_OPEN=1` and `BROWSER=/bin/true`. Capture each command’s
+stdout and stderr privately and check its exit status.
+
+```sh
+python3 port/tools/input_lifetime_tests.py
+python3 port/tools/jeppi_fkey_focus_tests.py
+python3 port/tools/jeppi_fkey_focus_permissions_tests.py
+```
+
+The focus check intentionally runs a failing child as a negative control; the parent command must
+pass. These synthetic checks do not establish pause-menu, flight, physical-device or native Windows
+behavior.
+
 The test switch `BEA_PORT_FAKE_PAD` attaches an SDL virtual gamepad (or, with `BEA_PORT_FAKE_PAD_KIND=stick`, a
 flight stick) and drives it by Present count, including `attach` and `detach` (`BEA_PORT_FAKE_PAD_LATE=1` starts
 unplugged); the syntax is at the top of `dinput.cpp`. Offscreen runs of the Linux build with no keyboard input at all
@@ -101,5 +165,9 @@ have shown: the title and main menu driven by the pad, the Onslaught CE page rea
 left-stick movement, right-stick turn left and right and pitch up in the aircraft, a flight stick in the menus and
 morphing, and a pad plugged in late or unplugged and replugged then working the menus.
 
-Not checked: physical gamepads and flight sticks, Windows drivers (the shared adapter is compiled for Windows but
+On the original's two-player split-screen level 856 (offscreen Linux build, `BEA_PORT_FAKE_PAD` and `BEA_PORT_FAKE_PAD2`) pad 0's stick
+moved the top view only, pad 1's the bottom view only, with one pad only the top view moved, and either pad opened and walked the
+pause menu; with the virtual clock the same scripts changed nothing (`port/PARITY.md`, Split-screen gamepads).
+
+Not checked: how the Dodge Button feels under a real hand on a keyboard or a physical pad, physical gamepads and flight sticks, Windows drivers (the shared adapter is compiled for Windows but
 these runs were Linux), how the defaults feel in play, and the walker's turn on a level that starts on the ground.

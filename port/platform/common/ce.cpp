@@ -9,6 +9,9 @@
 #include <string.h>
 
 #include "portlog.h"
+#ifndef CE_NETWORK_OFF
+#include "../../network/compatibility.h"
+#endif
 
 bool PortCeLayer()
 {
@@ -89,8 +92,9 @@ extern "C" int CE_OpenReportPage(void)
 }
 
 // ce.ini, the launcher's key=value file in the per-user folder (port/updater/README.md), as the CE menus read and write
-// it: record_sessions (the launcher reads it at the next start) and the Cheats page's switches, cheat_<code>=1. The
-// game reads the file once and keeps what it writes; other lines are kept as they are.
+// it: the CE Settings page's rows (CE_SettingSetText; record_sessions and update_check are read by the launcher at the next
+// start) and the Cheats page's switches, cheat_<code>=1. The game reads the file once and keeps what it writes; other lines
+// are kept as they are.
 static const char *const kCheatKeys[6] = {"cheat_malloy", "cheat_turkey", "cheat_v3r5iof", "cheat_maladim", "cheat_aurore",
 										  "cheat_latete"};
 
@@ -313,6 +317,50 @@ extern "C" int CE_SettingGetBool(const char *key, int def)
 	return value;
 }
 
+// The unfinished features, one ce.ini line each, all off unless the player sets the line to 1: the native map and mission editor
+// (map_editor), the native museum visit and the Goodies Gallery row (museum), Commander (commander: its CE Settings row, the M key,
+// the live view and orders) and playing a unit (play_unit; the older play_unit=tank counts as 1). The lines sit under [Experimental]
+// (PortCeExperimentalBlock). Each mode is read once, the first time anything asks (the CE menus ask as they are built, at the start),
+// and kept for the process: a later edit of ce.ini applies at the next start. A ce.ini that cannot be read whole answers no. The
+// callers that a recording, a replay or a probe run fences (Commander, play_unit) ask only after their own fence has passed, so those
+// runs never open ce.ini for it. Network play is not behind these lines: a default build does not contain it. A name that is not one
+// of the four answers no.
+extern "C" int CE_SettingIs(const char *key, const char *value);	// below
+
+static const char *const kExperimentalKeys[4] = {"map_editor", "museum", "commander", "play_unit"};
+
+bool PortCeExperimental(const char *mode)
+{
+	static int on[4] = {-1, -1, -1, -1};
+	for (int i = 0; mode && i < 4; i++)
+	{
+		if (strcmp(mode, kExperimentalKeys[i]))
+			continue;
+		if (on[i] < 0)
+			on[i] = (CE_SettingGetBool(mode, 0) == 1 || (i == 3 && CE_SettingIs(mode, "tank"))) ? 1 : 0;
+		return on[i] == 1;
+	}
+	return false;
+}
+
+// Adds the [Experimental] block to ce.ini when the file has none: the header, one warning line and a line "mode=0" for each mode that
+// has no line in the file yet (a value the player set, such as commander=1 from 0.1.13, stays where it is and is not repeated). It
+// changes no other line and is written once: a file that has the header is left as it is. Called once, as the first CE main menu is
+// built, so a replay, a recording and a probe run (no CE layer) never touch ce.ini for it.
+void PortCeExperimentalBlock()
+{
+	static bool done;
+	if (done)
+		return;
+	done = true;
+	char path[4200];
+	ce_ini_path(path, sizeof(path));
+	if (!ce_ini_add_section(path, CE_INI_EXPERIMENTAL_HEADER,
+							"; Unfinished features, off in this release. They may change or break. Set a line to 1 to try one.\n",
+							kExperimentalKeys, 4))
+		fprintf(stderr, PORT_LOG_PREFIX "could not add the [Experimental] lines to ce.ini; it is unchanged\n");
+}
+
 // Whether ce.ini sets key to exactly value (ASCII letters compared ignoring case, surrounding blanks and a final CR
 // ignored), read as CE_SettingGetBool reads: by length, refusing linked or odd files and ambiguous duplicates. 0 when the
 // key is missing, set to something else, set twice, or the file cannot be read whole.
@@ -416,6 +464,49 @@ extern "C" int CE_SettingGetText(const char *key, char *out, int n)
 	return ok;
 }
 
+// Whether ce.ini says value for a line the launcher owns (update_check and record_sessions: the launcher reads them before the
+// game starts). The launcher's own reader (ce_launch.c, ini_get) takes the first line that starts with key and an equals sign
+// and its text up to a carriage return or the end of the line, and tests that text exactly: no blanks are trimmed, no case is
+// folded, and a line that comes twice counts once. It reads the file as one C string, so a NUL byte ends what it sees. This is
+// that reading, on the file as the game's other readers open it (by length, refusing linked or odd files and files over 1 MiB).
+// 0 when the key is missing, says something else, or the file cannot be read whole. The CE Settings page shows these two lines
+// as the launcher takes them from a file the game can read; for a file the game refuses it shows the defaults, which the
+// launcher, reading the file its own way, need not follow (port/PARITY.md, CE Settings: known limit).
+extern "C" int CE_SettingLauncherIs(const char *key, const char *value)
+{
+	if (!key || !*key || !value) return 0;
+	CeSettingsDir dir;
+	FILE *f = ce_ini_open_regular(&dir);
+	if (!f) return 0;
+	const size_t limit = 1u << 20;
+	char *text = (char *)malloc(limit + 1);
+	if (!text) { fclose(f); ce_settings_dir_close(&dir); return 0; }
+	size_t len = 0, got;
+	while (len < limit + 1 && (got = fread(text + len, 1, limit + 1 - len, f)) > 0) len += got;
+	bool bad = ferror(f) || !feof(f) || len > limit;
+	if (fclose(f) != 0) bad = true;
+	ce_settings_dir_close(&dir);
+	if (bad) { free(text); return 0; }
+	text[len] = 0;
+	len = strlen(text);
+	size_t size = strlen(key), want = strlen(value);
+	int match = 0;
+	for (size_t at = 0; at < len;)
+	{
+		const char *line = text + at;
+		const char *nl = (const char *)memchr(line, '\n', len - at);
+		size_t n = nl ? (size_t)(nl - line) : len - at;
+		at += n + (nl ? 1 : 0);
+		if (n <= size || memcmp(line, key, size) || line[size] != '=') continue;
+		size_t pos = size + 1, end = pos;
+		while (end < n && line[end] != '\r') ++end;
+		match = end - pos == want && !memcmp(line + pos, value, want);
+		break;
+	}
+	free(text);
+	return match;
+}
+
 // Sets key=value in ce.ini (replacing its line, or adding one) through ce_ini_write's write-and-rename, so a failed write
 // leaves the old file whole; 1 when the file was written, 0 (and a log line) when it was not.
 extern "C" int CE_SettingSet(const char *key, int value)
@@ -427,6 +518,34 @@ extern "C" int CE_SettingSet(const char *key, int value)
 	if (!ce_ini_write(path, key, v))
 	{
 		fprintf(stderr, PORT_LOG_PREFIX "could not write ce.ini (%s=%d); it is unchanged\n", key, value);
+		return 0;
+	}
+	return 1;
+}
+
+// Sets key to a text in ce.ini as CE_SettingSet sets a number: through ce_ini_write's write-and-rename, with the same log line
+// when that fails. The writer puts the value in as it is, so one thing is refused here: a key or value that is not part of a
+// single line of text (a key with a blank or "=", an empty value, or either holding a control byte, which would join or split
+// lines of the file). 1 when the file was written, 0 (the file as it was) when it was not.
+extern "C" int CE_SettingSetText(const char *key, const char *value)
+{
+	bool plain = key && *key && value && *value;
+	for (const char *c = plain ? key : ""; *c; c++)
+		if ((unsigned char)*c <= 0x20 || *c == 0x7f || *c == '=')
+			plain = false;
+	for (const char *c = plain ? value : ""; *c; c++)
+		if ((unsigned char)*c < 0x20 || *c == 0x7f)
+			plain = false;
+	if (!plain)
+	{
+		fprintf(stderr, PORT_LOG_PREFIX "refused a ce.ini setting that is not one line of text; it is unchanged\n");
+		return 0;
+	}
+	char path[4200];
+	ce_ini_path(path, sizeof(path));
+	if (!ce_ini_write(path, key, value))
+	{
+		fprintf(stderr, PORT_LOG_PREFIX "could not write ce.ini (%s=%s); it is unchanged\n", key, value);
 		return 0;
 	}
 	return 1;
@@ -525,6 +644,9 @@ extern "C" int CE_CheatSet(int n, int on)
 #ifdef CE_VERSION
 	if (n < 0 || n >= 6 || !PortCeLayer())
 		return 0;
+#ifndef CE_NETWORK_OFF
+	if (!CE_CompatibilityRuntimeMutation(NULL, 0)) return 0;	// no cheat changes during a network session (compatibility.h)
+#endif
 	if (n == kMaladimCheat && sMaladimNeedsRestart) return 0;
 	if (!ce_cheats_init(true)) return 0;
 	if (n == kMaladimCheat && sMaladimNeedsRestart) return 0;
@@ -538,6 +660,26 @@ extern "C" int CE_CheatSet(int n, int on)
 #endif
 }
 
+#ifndef CE_NETWORK_OFF
+// No settings read or lazy layer initialization here. Unknown cache entries leave the output untouched.
+extern "C" int CE_CheatCachedStatus(unsigned *mask)
+{
+	if (!mask) return 0;
+#ifdef CE_VERSION
+	unsigned value = 0;
+	for (unsigned i = 0; i < 6; ++i)
+	{
+		if (sCheats[i] < 0 || sCheats[i] > 1) return 0;
+		value |= unsigned(sCheats[i]) << i;
+	}
+	*mask = value;
+#else
+	*mask = 0;
+#endif
+	return 1;
+}
+
+#endif
 // The per-user folder for an in-game message, in characters the game's font has (shown(c) is CDXBitmapFont::CanDisplay;
 // bytes above 0x7f count as missing, since the message turns bytes into Latin-1 characters). The font has no "~", "\\",
 // "_", "$", "@", "[", "]", "^", "{", "|" or "}" (src/Font.cpp, FONT_UNMAPPED_CHARACTERS): the full path, with "/" for

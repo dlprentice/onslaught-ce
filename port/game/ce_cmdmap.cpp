@@ -1,18 +1,16 @@
 // SPDX-License-Identifier: GPL-3.0-only
-// Commander mode, the map: an overlay for single-player levels. The M key opens it: the battle pauses (the game's own pause, without the pause menu),
-// the mouse is released as the pause menu releases it, the keyboard and the mouse buttons go to this file through the game's key trap, and the
-// pilot's controls are parked on a sink until the map closes. The map shows the level from above, the player's squads as boxes, the enemy squads as red
-// marks (every enemy squad with a unit the game reports as detectable: that is most units, with no range, unlike the HUD radar, which stops at about 220 world units) and the pilot's engine; the player picks a squad with a click or Tab and gives it one of the orders of the order layer
-// (ce_commander.h):
-//   left click           pick the squad under the pointer (a click on nothing picks none)
-//   Tab, Shift+Tab       the next and the previous squad
-//   right click          Move there (a passive march: the squad holds fire on the way and once there, until its next order)
-//   A, then a click      Advance there (a march that fights on the way); Esc cancels
-//   H, X, R              Hold (X too: a held squad fights), Fall back
-//   wheel, Q, E          zoom out and in (the wheel about the pointer); the arrow keys pan; Space centres on the pilot, C on the picked squad, Home on the action
-//                        (the view is kept from one opening to the next within a level)
-//   M, Esc               close (Esc first cancels an armed order, then drops the pick)
-// Orders go through CeCmdIssue, the order layer of ce_commander.cpp, which applies them to the squads the way the mission scripts do.
+// Optional Commander controls: M enters the live 3D battlefield without pausing.
+// The pilot remains present and vulnerable. Left click selects a ground-squad
+// marker, right click orders a passive Move, A then a terrain click orders an
+// Advance, and H holds. The command panel exposes those actions and Fall back.
+// Arrows or middle-button dragging pan, wheel/R/F zoom, Q/E turn, and PgUp/PgDn
+// tilt. M/Esc return to the pilot; V optionally opens the paused tactical map.
+//
+// The live pointer uses the actual world-render camera matrices and viewport,
+// captured before HUD drawing, and intersects its forward ray with the map's
+// heightfield. Every action refreshes squad identities and rechecks the current
+// local camera owner. Orders still pass through ce_commander's authority gates.
+// The paused overview retains its own input sink, view, zoom and ordering path.
 //
 // Never in faithful play: off where the CE layer is off, in a replay, a recording, under probes or the virtual clocks, for a test pilot or a
 // network game, in multiplayer, demos and the front end, and unless ce.ini says commander=1 (a test build's proof switch, BEA_PORT_COMMANDER_PROOF=1
@@ -20,6 +18,10 @@
 // sprite and font calls, allocates nothing but the controller stack entry the pause menu also makes, and draws no random number. Squads that follow
 // mission scripts, aircraft and objectives are drawn but take no orders.
 #ifdef CE_VERSION
+
+#include <algorithm>
+#include <cmath>
+#include "ce_world_view.h"
 
 #include "common.h"
 #include "game.h"
@@ -38,20 +40,26 @@
 #include "renderinfo.h"
 #include "Texture.h"
 #include "ce_commander.h"
+#include "ce_commander_camera.h"
+#include "ce_photo.h"
+#include "ce_playunit.h"
+#include "Camera.h"
 
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#ifdef CE_COMMANDER_TEST
-#include <time.h>
-#endif
 
 #if !defined(__clang__) && !defined(__GNUC__)
 #error The commander map requires weak symbol support for the network boot boundary
 #endif
 extern "C" int CE_BootRequested(void) __attribute__((weak));
 extern "C" unsigned PortPresentCount(void);		// d3d9hooks.cpp
+bool PortClockVirtual();						// clock.cpp: a virtual clock (a replay, a recording, probes, or a test build's proof run)
+extern "C" int PortKeyHeldNow(unsigned dik);	// window.cpp: 1 a key is held, 0 it is not, -1 the platform cannot say
+// clock.cpp: the operating system's monotonic clock in nanoseconds. This file is built by the game's rule, whose include list has no SDL
+// directory on Windows, so its wall clock comes from the port and not from an SDL header.
+unsigned long long PortClockRawNs();
 bool PortCeLayer();
 bool PortRecording();
 
@@ -96,22 +104,41 @@ int gUntracked;				// squads the order layer's table had no room for, or this on
 #ifdef CE_COMMANDER_TEST
 unsigned gFrames;			// frames drawn while open, and the milliseconds they took the processor to issue (diagnostics, never read by the game)
 double gMsTotal, gMsMax;
-
-double Ms()
-{
-	timespec t;
-	clock_gettime(CLOCK_MONOTONIC, &t);
-	return double(t.tv_sec) * 1000.0 + double(t.tv_nsec) * 1e-6;
-}
 #endif
+
+// The map's clock, in nanoseconds, as an integer. Every time the map measures is the difference of two readings of it, taken as integers and only then
+// turned into seconds: the game's x87 unit is left at single precision (Direct3D leaves it so, d3d9hooks.cpp), which rounds each double result to a
+// 24-bit mantissa, so the clock as a double (milliseconds since boot) cannot hold the difference of two frames. After a day and a half of uptime it is a
+// multiple of 16 ms, after three days of 32 ms: the live camera moved in steps of 16 ms of travel on the frames where the reading changed and not at all
+// on the others (frame-feel log, 144 Hz: a move every second or third frame, always the same size), and the paused map's pan was quantized the same way.
+// Under a virtual clock (the map is off in faithful play; only a test build's proof switch turns it on there) the time is the frames' own, 1/30 s a Present as
+// the clock's default is, so that a proof run moves the camera the same way every time.
+std::uint64_t Ns()
+{
+	if (PortClockVirtual()) return static_cast<std::uint64_t>(PortPresentCount()) * 33333333ull;
+	return PortClockRawNs();
+}
+
+// Seconds from one reading of Ns() to a later one (zero if the clock went backwards).
+double SecondsBetween(std::uint64_t from, std::uint64_t to)
+{
+	return to > from ? double(to - from) * 1e-9 : 0.0;
+}
 
 // The world: the occupied cells, and the square window of it the map shows (it opens on the action and zooms and pans).
 float gBoundsX0, gBoundsY0, gBoundsX1, gBoundsY1;
 float gViewX, gViewY, gViewSpan;
+std::uint64_t gMapLastNs;
 bool gTerrainDirty;
 int gKeptLevel = -1;			// the level the kept view belongs to
 float gKeptCentreX, gKeptCentreY, gKeptSpan;
 DWORD gTerrain[kGrid * kGrid];
+// The terrain is kGrid x kGrid cells whose colours change only with the view. Drawn as 16,384 sprites a frame it took the main thread about
+// nine milliseconds of every frame the map was open (frame-feel log, 60 Hz model); as one stretched texture it takes well under one. The texture
+// is made when the map first draws and freed when it closes; it is filled again every frame, which is cheap (64 KB) and means a device reset
+// that empties it costs one frame. Where it cannot be made the map draws the cells as before.
+CDXTexture *gTerrainTexture;
+bool gTerrainTextureFailed;
 
 struct Layout
 {
@@ -345,6 +372,7 @@ void ZoomAt(float factor, float px, float py)
 
 void Pan(float dx, float dy) { SetView(gViewX + gViewSpan * 0.5f + dx * gViewSpan, gViewY + gViewSpan * 0.5f + dy * gViewSpan, gViewSpan); }
 
+
 DWORD Mix(DWORD a, DWORD b, float t)
 {
 	if (t < 0.f) t = 0.f;
@@ -554,9 +582,73 @@ bool ClipToMap(float &x0, float &y0, float &x1, float &y1)
 	return true;
 }
 
+// One frame's terrain from the texture. False when it cannot be made or filled: the caller draws the cells.
+bool DrawTerrainFromTexture()
+{
+	// BEA_PORT_COMMANDER_TERRAIN=cells draws the cells one by one as before (a test switch, to compare the two on one build).
+	static int cells = -1;
+	if (cells < 0) { const char *mode = getenv("BEA_PORT_COMMANDER_TERRAIN"); cells = mode && !strcmp(mode, "cells"); }
+	if (cells || gTerrainTextureFailed) return false;
+	if (!gTerrainTexture)
+	{
+		CDXTexture *texture = new (MEMTYPE_TEXTURE) CDXTexture;
+		texture->InitEmpty(kGrid, kGrid, TEXFMT_A8R8G8B8, 1, 0, 1);
+		if (!texture->GetTexture() || texture->GetRealWidth() <= 0 || texture->GetRealHeight() <= 0)
+		{
+			texture->Release();
+			gTerrainTextureFailed = true;
+			return false;
+		}
+		gTerrainTexture = texture;
+	}
+	D3DLOCKED_RECT lr;
+	if (FAILED(gTerrainTexture->GetTexture()->LockRect(0, &lr, NULL, D3DLOCK_NOSYSLOCK)))
+		return false;
+	for (int j = 0; j < kGrid; ++j)
+		memcpy((unsigned char *)lr.pBits + j * lr.Pitch, &gTerrain[j * kGrid], sizeof(DWORD) * kGrid);
+	gTerrainTexture->GetTexture()->UnlockRect(0);
+	// Nearest-neighbour: the map is a grid of flat cells, not a smoothed picture.
+	IDirect3DDevice9 *device = LT.GetDevice();
+	DWORD magnify = D3DTEXF_LINEAR, minify = D3DTEXF_LINEAR;
+	if (device)
+	{
+		device->GetSamplerState(0, D3DSAMP_MAGFILTER, &magnify);
+		device->GetSamplerState(0, D3DSAMP_MINFILTER, &minify);
+		device->SetSamplerState(0, D3DSAMP_MAGFILTER, D3DTEXF_POINT);
+		device->SetSamplerState(0, D3DSAMP_MINFILTER, D3DTEXF_POINT);
+	}
+	// The cells' edges are the floor of their positions. A quad covers the pixels whose centres it holds, but a pixel samples the texture at the position of its
+	// corner, so the texel boundaries of a plain quad fall on the first pixel at or past them (the ceiling): every edge a pixel too far right and down (frame
+	// by frame against the cells, 99,676 of 307,200 pixels differed). The quad stays on the map's pixels, and its texture coordinates start a hair under one
+	// pixel along (0.999 of a pixel, in the units of the map's side) so that every boundary falls on the floor, as the cells' do.
+	const float shiftU = 0.999f / L.mapSide, shiftV = 0.999f / L.mapSide;
+	CSPRITERENDERER::mBatch = TRUE;
+	CSPRITERENDERER::DrawSprite(L.mapX, L.mapY, 0.001f, gTerrainTexture, SA_TOP_LEFT, SPT_NONE, 1.f, 0.f, 0xffffffff, L.mapSide / gTerrainTexture->GetRealWidth(),
+								L.mapSide / gTerrainTexture->GetRealHeight(), shiftU, 1.f + shiftU, shiftV, 1.f + shiftV);
+	FASTVB.Render();
+	CSPRITERENDERER::mBatch = FALSE;
+	if (device)
+	{
+		device->SetSamplerState(0, D3DSAMP_MAGFILTER, magnify);
+		device->SetSamplerState(0, D3DSAMP_MINFILTER, minify);
+	}
+	return true;
+}
+
+void FreeTerrainTexture()
+{
+	if (gTerrainTexture)
+	{
+		gTerrainTexture->Release();
+		gTerrainTexture = NULL;
+	}
+	gTerrainTextureFailed = false;
+}
+
 // One batch through the game's fast vertex buffer, as the compass draws its markers (the buffer flushes itself when it fills).
 void DrawTerrain()
 {
+	if (DrawTerrainFromTexture()) return;
 	const float cell = L.mapSide / float(kGrid);
 	CSPRITERENDERER::mBatch = TRUE;
 	for (int j = 0; j < kGrid; ++j)
@@ -799,7 +891,7 @@ void DrawHints()
 {
 	const float line = LineHeight() + 2.f * L.s, y = L.h - 40.f * L.s;
 	const float room = L.w - 24.f * L.s;
-	Text(12.f * L.s, y, kQuiet, "Left click: pick   Right click: move, passive   A, then click: advance, fights   H, X: hold, fires   R: fall back, passive", room);
+	Text(12.f * L.s, y, kQuiet, "V: live 3D view | Left click: pick   Right click: move, passive   A, then click: advance, fights   H, X: hold, fires   R: fall back, passive", room);
 	Text(12.f * L.s, y + line, kQuiet, "Tab: next squad   Wheel, Q, E, arrows: zoom, pan   Space: to you   C: to squad   Home: all   Esc: cancel, close   M: close", room);
 }
 
@@ -871,8 +963,495 @@ void DumpWorld(const char *when)
 }
 #endif
 
+
+// CE_STRATEGIC_CAMERA_BEGIN: this complete block is exercised with authored consumers.
+void Close();
+void Open(bool strategic = false);
+bool StrategicTrap(WORD key, int event);
+
+bool gStrategic = false;
+bool gStrategicRender = false;
+CGenericCamera gStrategicCamera;
+CCamera* gStrategicOriginal = NULL;
+CPlayer* gObservedPlayer = NULL;
+CBattleEngine* gObservedPilot = NULL;
+SINT gObservedPilotNumber = 0;
+CCamera* gObservedCamera = NULL;
+std::uint64_t gMissionLifetime = 1, gPilotLifetime = 1, gCameraLifetime = 1;
+CeCommanderCameraBinding gStrategicBinding;
+float gStrategicYaw = 0, gStrategicPitch = 1.15f, gStrategicFocusZ = 0;
+std::uint64_t gStrategicLastNs = 0;
+std::uint64_t gStrategicViewSession = 1;
+bool gStrategicDragging = false;
+float gStrategicDragX = 0, gStrategicDragY = 0;
+int gStrategicWheel = 0;
+int gStrategicClickOrder = CE_CMD_ADVANCE;
+
+bool StrategicCanAct();
+bool StrategicWorldArea(float x, float y) {
+    return x >= 0 && y >= 62.f * L.s && x < L.w && y < L.h - 112.f * L.s;
+}
+
+bool StrategicHeight(float x, float y, float* height) {
+    if (!height || !std::isfinite(x) || !std::isfinite(y) || x < gBoundsX0 || y < gBoundsY0 ||
+        x >= gBoundsX1 || y >= gBoundsY1 || x < 0 || y < 0 ||
+        x >= float(MAP.mGridWidth - 1) || y >= float(MAP.mGridHeight - 1)) return false;
+    const float h = MAP.Collide(FVector(x, y, 0));
+    if (!std::isfinite(h)) return false;
+    *height = h; return true;
+}
+
+bool StrategicPixel(const CeWorldViewSample& view, float x, float y, CeViewPoint* pixel) {
+    float height;
+    if (!StrategicHeight(x, y, &height)) return false;
+    const CeViewPoint world = {x, y, height};
+    return CeViewProject(view.view, view.projection, view.viewport, world, pixel);
+}
+
+bool StrategicClipAxis(double start, double delta, double lo, double hi, double* first, double* last) {
+    if (std::fabs(delta) < 1e-12) return start >= lo && start <= hi;
+    double a = (lo - start) / delta, b = (hi - start) / delta;
+    if (a > b) { const double swap = a; a = b; b = swap; }
+    *first = (std::max)(*first, a); *last = (std::min)(*last, b);
+    return *first <= *last;
+}
+
+// Intersect the rendered forward ray with the real heightfield. Limit sampling
+// to the map rectangle; reject sky, missing/stale views and below-ground starts.
+// The first sampled crossing is refined, never guessed from a flat pilot plane.
+// This is ground picking, not arbitrary structure/mesh collision.
+bool StrategicGround(const CeWorldViewSample& view, float px, float py, CeViewPoint* hit) {
+    CeViewPoint nearPoint, farPoint;
+    if (!hit || !CeViewRay(view.view, view.projection, view.viewport, px, py, &nearPoint, &farPoint)) return false;
+    const double dx = double(farPoint.x) - nearPoint.x, dy = double(farPoint.y) - nearPoint.y,
+                 dz = double(farPoint.z) - nearPoint.z;
+    double first = 0, last = 1;
+    const double hiX = (std::min)(double(gBoundsX1) - .001, double(MAP.mGridWidth - 1) - .001);
+    const double hiY = (std::min)(double(gBoundsY1) - .001, double(MAP.mGridHeight - 1) - .001);
+    if (!StrategicClipAxis(nearPoint.x, dx, (std::max)(0.0, double(gBoundsX0)), hiX, &first, &last) ||
+        !StrategicClipAxis(nearPoint.y, dy, (std::max)(0.0, double(gBoundsY0)), hiY, &first, &last)) return false;
+    auto gap = [&](double t, double* difference) {
+        const float x = float(nearPoint.x + dx * t), y = float(nearPoint.y + dy * t);
+        float height;
+        if (!StrategicHeight(x, y, &height)) return false;
+        *difference = nearPoint.z + dz * t - height;
+        return std::isfinite(*difference);
+    };
+    double previousGap;
+    if (!gap(first, &previousGap) || previousGap >= 0) return false;
+    const double span = (std::max)(std::fabs(dx), std::fabs(dy)) * (last - first);
+    const int steps = (std::min)(1024, (std::max)(2, int(std::ceil(span))));
+    double previous = first;
+    for (int i = 1; i <= steps; ++i) {
+        const double t = first + (last - first) * double(i) / steps;
+        double difference;
+        if (!gap(t, &difference)) return false;
+        if (difference >= 0) {
+            double lo = previous, hi = t;
+            for (int n = 0; n < 18; ++n) {
+                const double mid = (lo + hi) * .5;
+                if (!gap(mid, &difference)) return false;
+                if (difference >= 0) hi = mid; else lo = mid;
+            }
+            CeViewPoint point = {float(nearPoint.x + dx * hi), float(nearPoint.y + dy * hi), 0};
+            if (!StrategicHeight(point.x, point.y, &point.z)) return false;
+            *hit = point; return true;
+        }
+        previous = t;
+    }
+    return false;
+}
+
+int StrategicPick(const CeWorldViewSample& view, float px, float py) {
+    int best = -1; float distance = 1e30f;
+    for (int i = 0; i < gCount; ++i) {
+        const CeCmdSquad& squad = gSquads[i];
+        if (!squad.friendly) continue;
+        CeViewPoint pixel;
+        if (!StrategicPixel(view, squad.x, squad.y, &pixel) || !StrategicWorldArea(pixel.x, pixel.y)) continue;
+        const float dx = pixel.x - px, dy = pixel.y - py, d = dx * dx + dy * dy;
+        const float radius = 18.f * L.s;
+        if (d <= radius * radius && d < distance) { best = squad.ordinal; distance = d; }
+    }
+    return best;
+}
+
+void StrategicArm(int verb) {
+    if (!ByOrdinal(gSelected)) { Note("Pick a squad first."); return; }
+    gArmed = true; gStrategicClickOrder = verb;
+    Note(verb == CE_CMD_ADVANCE ? "Advance: click the terrain. Squad will fight." : "Move: click the terrain. Squad will hold fire.");
+}
+
+// The bottom command panel owns its clicks; no click on a button also reaches
+// the battlefield. Button geometry is shared by drawing and hit testing.
+int StrategicButtonAt(float x, float y) {
+    const float left = 12.f * L.s, top = L.h - 43.f * L.s;
+    if (y < top || y >= top + 29.f * L.s || x < left) return -1;
+    const int index = int((x - left) / (112.f * L.s));
+    if (index < 0 || index >= 4 || x >= left + index * 112.f * L.s + 104.f * L.s) return -1;
+    return index;
+}
+
+void StrategicPointer(WORD key, int event) {
+    if (!StrategicCanAct()) return;
+    const float px = float(MOUSE_X), py = float(MOUSE_Y);
+    if (event == kMouseUp && key == 1) { gStrategicDragging = false; return; }
+    if (event == kMouseUp && (key == 3 || key == 4)) {
+        if (StrategicWorldArea(px, py)) gStrategicWheel += key == 3 ? 1 : -1;
+        return;
+    }
+    if (event != kMouseDown || key > 2) return;
+    Refresh(); // Input may arrive after destruction/replacement and before another frame.
+    const int button = key == 0 ? StrategicButtonAt(px, py) : -1;
+    if (button >= 0) {
+        if (button < 2) StrategicArm(button == 0 ? CE_CMD_MOVE : CE_CMD_ADVANCE);
+        else { gArmed = false; Order(button == 2 ? CE_CMD_HOLD : CE_CMD_FALLBACK, 0, 0); }
+        return;
+    }
+    if (!StrategicWorldArea(px, py)) return;
+    if (key == 1) { gStrategicDragging = true; gStrategicDragX = px; gStrategicDragY = py; return; }
+    CeWorldViewSample view;
+    if (!CeWorldViewRead(CeWorldViewOwner::Commander, gStrategicViewSession, &view)) {
+        Note("The view changed; try again after it redraws."); return;
+    }
+    if (key == 0 && !gArmed) {
+        const int hit = StrategicPick(view, px, py);
+        const CeCmdSquad* squad = ByOrdinal(hit);
+        if (squad && !squad->commandable) Note(WhyText(squad->why));
+        else { gSelected = hit; if (hit >= 0) Note("Squad selected. Right click terrain to move."); }
+        return;
+    }
+    CeViewPoint target;
+    if (!StrategicGround(view, px, py, &target)) { Note("Point at visible ground inside the map."); return; }
+    const int verb = key == 0 && gArmed ? gStrategicClickOrder : CE_CMD_MOVE;
+    gArmed = false; Order(verb, target.x, target.y);
+}
+
+
+void AdvanceCameraLifetime(std::uint64_t& lifetime) {
+    if (lifetime != 0) ++lifetime; // Overflow stays refused; never reuse an identity.
+}
+
+bool SameCameraBinding(const CeCommanderCameraBinding& a, const CeCommanderCameraBinding& b) {
+    return a.mission == b.mission && a.pilot == b.pilot && a.camera == b.camera;
+}
+
+CeCommanderCameraContext StrategicContext() {
+    CeCommanderCameraContext c;
+    c.binding.mission = gMissionLifetime; c.binding.pilot = gPilotLifetime;
+    c.binding.camera = gCameraLifetime;
+    // Refuse fenced/teardown paths before reading a player, actor or camera.
+    if (!Allowed() || GAME.IsPaused()) return c;
+    CPlayer* player = GAME.GetPlayer(0);
+    CBattleEngine* pilot = player ? player->GetBattleEngine() : NULL;
+    const SINT pilotNumber = pilot ? pilot->GetThingNumber() : 0;
+    CCamera* camera = GAME.GetCurrentCamera(0);
+    // CThing's constructor assigns its creation number before incrementing the
+    // counter. Include that number so a new actor at reused storage is noticed.
+    if (player != gObservedPlayer || pilot != gObservedPilot || pilotNumber != gObservedPilotNumber) {
+        AdvanceCameraLifetime(gPilotLifetime); gObservedPlayer = player; gObservedPilot = pilot;
+        gObservedPilotNumber = pilotNumber;
+    }
+    if (camera != gObservedCamera) {
+        AdvanceCameraLifetime(gCameraLifetime); gObservedCamera = camera;
+    }
+    c.binding.mission = gMissionLifetime; c.binding.pilot = gPilotLifetime;
+    c.binding.camera = gCameraLifetime;
+    c.admitted_ordinary_solo = true;
+    c.live_pilot = pilot && pilot->GetLife() > 0;
+    c.camera_available = camera != NULL;
+    c.competing_camera_owner = LT.GetKeytrap() != (pKeyTrapper)Trap;
+    return c;
+}
+
+class StrategicCameraConsumer : public CeCommanderCameraConsumer {
+public:
+    bool Capture(const CeCommanderCameraBinding& binding) noexcept override {
+        CeCommanderCameraContext c = StrategicContext();
+        if (!c.admitted_ordinary_solo || !c.live_pilot || !c.camera_available ||
+            c.competing_camera_owner || !SameCameraBinding(c.binding, binding)) return false;
+        AdvanceCameraLifetime(gStrategicViewSession);
+        if (!gStrategicViewSession) return false;
+        CeWorldViewInvalidate(CeWorldViewOwner::Commander);
+        gStrategicDragging = false; gStrategicWheel = 0;
+        gStrategicBinding = binding;
+        gStrategicOriginal = GAME.GetCurrentCamera(0);
+        gStrategicCamera.mZoom = gStrategicOriginal->GetZoom();
+        gStrategicYaw = gStrategicOriginal->GetYaw();
+        gStrategicPitch = 1.15f;
+        gStrategicFocusZ = GAME.GetPlayer(0)->GetBattleEngine()->GetPos().Z;
+        return true;
+    }
+    bool BeginStrategicView(const CeCommanderCameraBinding& binding) noexcept override {
+        gStrategicRender = true;
+        PortCeDrawHooks(true);
+        return UpdateStrategicView(binding, CeCommanderCameraInput());
+    }
+    bool UpdateStrategicView(const CeCommanderCameraBinding& binding,
+                             const CeCommanderCameraInput& input) noexcept override {
+        CeCommanderCameraContext c = StrategicContext();
+        if (!c.admitted_ordinary_solo || !c.live_pilot || c.competing_camera_owner ||
+            !SameCameraBinding(c.binding, binding) || !gStrategicOriginal) return false;
+    const float dt = static_cast<float>((std::min)(input.elapsed_seconds, 0.1));
+        gStrategicYaw += static_cast<float>(input.orbit_horizontal) * dt;
+    gStrategicPitch = (std::max)(0.35f, (std::min)(1.5f,
+            gStrategicPitch + static_cast<float>(input.orbit_vertical) * dt));
+        FMatrix flat; flat.MakeRotationYawF(gStrategicYaw);
+        FVector step = flat * FVector(static_cast<float>(input.pan_horizontal),
+                                      static_cast<float>(input.pan_vertical), 0);
+        const float speed = gViewSpan * dt;
+        // The map stores its lower-left corner; SetView accepts its centre.
+        const float centreX = gViewX + gViewSpan * 0.5f;
+        const float centreY = gViewY + gViewSpan * 0.5f;
+        SetView(centreX + step.X * speed, centreY + step.Y * speed,
+                gViewSpan * std::exp(-static_cast<float>(input.zoom) * dt));
+        gStrategicCamera.mOrientation.MakeRotationF(gStrategicYaw, gStrategicPitch, 0);
+        const FVector forward = gStrategicCamera.mOrientation * FVector(0, 1, 0);
+        gStrategicCamera.mPos = FVector(gViewX + gViewSpan * 0.5f,
+                                      gViewY + gViewSpan * 0.5f, gStrategicFocusZ) -
+                                   forward * (gViewSpan * 0.8f);
+        return true;
+    }
+    bool Restore(const CeCommanderCameraBinding& binding) noexcept override {
+        const CeCommanderCameraContext c = StrategicContext();
+        if (!c.admitted_ordinary_solo || !c.live_pilot || !c.camera_available ||
+            c.competing_camera_owner || !SameCameraBinding(c.binding, binding)) return false;
+        Abandon(binding); // The simulation camera was never modified.
+        return true;
+    }
+    void Abandon(const CeCommanderCameraBinding&) noexcept override {
+        CeWorldViewInvalidate(CeWorldViewOwner::Commander);
+        gStrategicDragging = false; gStrategicWheel = 0;
+        gStrategicRender = false; gStrategicOriginal = NULL;
+        PortCeDrawHooks(PortCePhotoOn());
+    }
+};
+StrategicCameraConsumer gStrategicConsumer;
+CeCommanderCameraOwner gStrategicOwner(gStrategicConsumer);
+
+// A key that moves the camera, as it is held now. The key trap's record (gDown) is made by the game's message pump, which runs once for every update (20 a
+// second), so a key's press and release reach it up to 50 ms after they happened, and the camera ran on for that long after the key was let go. The
+// platform's own record of the keyboard is refreshed with every frame (PortKeyHeldNow): the camera reads that where the platform can say, and the trap's
+// record where it cannot. BEA_PORT_COMMANDER_VIEW=ticks or =messages reads the trap's record, to compare the two.
+bool gStrategicMessageKeys = false;
+bool CameraKeyDown(WORD key) {
+    if (!gStrategicMessageKeys) {
+        const int held = PortKeyHeldNow(key);
+        if (held >= 0) return held != 0;
+    }
+    return gDown[key];
+}
+
+// The camera's input for the time since it last moved: the keys that are down, the wheel and the grabbed pointer, scaled by that time.
+CeCommanderCameraInput StrategicInput() {
+    const std::uint64_t now = Ns();
+    CeCommanderCameraInput input;
+    input.elapsed_seconds = SecondsBetween(gStrategicLastNs, now);
+    gStrategicLastNs = now;
+    input.pan_horizontal = double(CameraKeyDown(DIK_RIGHT)) - double(CameraKeyDown(DIK_LEFT));
+    input.pan_vertical = double(CameraKeyDown(DIK_UP) || CameraKeyDown(DIK_W)) - double(CameraKeyDown(DIK_DOWN) || CameraKeyDown(DIK_S));
+    input.orbit_horizontal = double(CameraKeyDown(DIK_E)) - double(CameraKeyDown(DIK_Q));
+    input.orbit_vertical = double(CameraKeyDown(DIK_NEXT)) - double(CameraKeyDown(DIK_PRIOR));
+    input.zoom = double(CameraKeyDown(DIK_R)) - double(CameraKeyDown(DIK_F));
+    const double bounded = (std::min)(input.elapsed_seconds, .1);
+    if (bounded > 0) {
+        input.zoom += double(gStrategicWheel) * std::log(1.25) / bounded;
+        gStrategicWheel = 0;
+        if (gStrategicDragging && L.h > 0) {
+            // A grabbed view follows the pointer. Pixel deltas do not acquire a
+            // second frame-time multiplier; keyboard motion remains timed.
+            input.pan_horizontal += (gStrategicDragX - float(MOUSE_X)) / L.h / bounded;
+            input.pan_vertical += (float(MOUSE_Y) - gStrategicDragY) / L.h / bounded;
+            gStrategicDragX = float(MOUSE_X); gStrategicDragY = float(MOUSE_Y);
+        }
+    }
+    return input;
+}
+
+void StrategicFrame() {
+    const CeCommanderCameraResult result = gStrategicOwner.Update(StrategicContext(), StrategicInput());
+    if (result == CeCommanderCameraResult::ContextLost || result == CeCommanderCameraResult::ConsumerFailed)
+        Close();
+    else if (result == CeCommanderCameraResult::Updated)
+        Refresh(); // The battle runs here: a displayed squad may have died or changed allegiance.
+}
+
+// Once for each rendered frame, as the frame's camera is chosen (SelectStrategicCamera): the camera moves by the time since it last moved, whichever
+// call that was. StrategicFrame runs once for each game update, and on its own it moved the camera in steps of one update, 20 a second: the frame-feel
+// log showed the world view change on 37 of the 40 frames that held an update and on none of the others, at 60 and at 144 frames a second alike. A
+// lost context or a failed update is left to the next update, which closes the view. BEA_PORT_COMMANDER_VIEW=ticks (read by PortCeCmdRender)
+// gives the update-stepped camera back, to compare the two.
+bool gStrategicTickOnly = false;
+unsigned gStrategicAdvancedAt = ~0u;
+void StrategicAdvance() {
+    const unsigned frame = PortPresentCount();
+    if (gStrategicTickOnly || frame == gStrategicAdvancedAt) return;		// a frame's other views (a reflection) keep the camera the first one used
+    gStrategicAdvancedAt = frame;
+    gStrategicOwner.Update(StrategicContext(), StrategicInput());
+}
+
+bool StrategicCanAct() {
+    const CeCommanderCameraContext c = StrategicContext();
+    if (!gOpen || !gStrategic || !gStrategicOwner.Active() ||
+        !c.admitted_ordinary_solo || !c.live_pilot || !c.camera_available ||
+        c.competing_camera_owner || !SameCameraBinding(c.binding, gStrategicBinding)) {
+        Close(); return false;
+    }
+    return true;
+}
+
+// Recheck the live context and squad identities at the key event, not merely at
+// the previous rendered frame. The order layer remains the authority for Hold.
+void StrategicSquadAction(WORD key) {
+    const CeCommanderCameraContext c = StrategicContext();
+    if (!gOpen || !gStrategic || !gStrategicOwner.Active() ||
+        !c.admitted_ordinary_solo || !c.live_pilot || !c.camera_available ||
+        c.competing_camera_owner || !SameCameraBinding(c.binding, gStrategicBinding)) {
+        Close(); return;
+    }
+    Refresh();
+    if (key == DIK_TAB) {
+        Cycle(gDown[DIK_LSHIFT] || gDown[DIK_RSHIFT] ? -1 : 1);
+        if (gSelected < 0) Note("There are no squads here to command.");
+    } else if (key == DIK_C) {
+        if (const CeCmdSquad *s = ByOrdinal(gSelected)) SetView(s->x, s->y, gViewSpan);
+        else Note("Pick a squad first.");
+    } else if (key == DIK_A) {
+        StrategicArm(CE_CMD_ADVANCE);
+    } else if (key == DIK_H || key == DIK_X) {
+        gArmed = false; Order(CE_CMD_HOLD, 0.f, 0.f);
+    }
+}
+
+// V: from the paused map to the live view (strategic) or back. The trap's record of the keys that are down goes across the switch.
+// Open() alone would build a new record from the game's key state, which a key trap stops updating, and would mark M held, as it is
+// for the press that opens the map from the battle: the first M after a V would then do nothing, and a key held across the V would
+// repeat as a press.
+void SwitchView(bool strategic) {
+    bool held[sizeof(gDown)];
+    memcpy(held, gDown, sizeof(gDown));
+    Close();
+    if (!gOpen) Open(strategic);
+    memcpy(gDown, held, sizeof(gDown));
+}
+
+bool StrategicTrap(WORD key, int event) {
+    if (event == kMouseDown || event == kMouseUp) { StrategicPointer(key, event); return true; }
+    if (key < sizeof(gDown) / sizeof(gDown[0])) {
+        if (event == KEY_EVENT_UP) { gDown[key] = false; return true; }
+        if (event == KEY_EVENT_DOWN) {
+            const bool repeat = gDown[key]; gDown[key] = true;
+            if (!repeat && (key == DIK_ESCAPE || key == DIK_M)) {
+                if (key == DIK_ESCAPE) gEscClosed = true;
+                Close();
+            } else if (!repeat && key == DIK_V) {
+                SwitchView(false);
+            } else if (!repeat && (key == DIK_TAB || key == DIK_C || key == DIK_H || key == DIK_X || key == DIK_A)) {
+                StrategicSquadAction(key);
+            }
+        }
+    }
+    return true;
+}
+
+CCamera* SelectStrategicCamera(CCamera* camera, CPlayer* player) {
+    if (!gOpen || !gStrategic || !gStrategicRender || !gStrategicOwner.Active()) return camera;
+    const CeCommanderCameraContext c = StrategicContext();
+    if (!c.admitted_ordinary_solo || !c.live_pilot || !c.camera_available ||
+        c.competing_camera_owner || !SameCameraBinding(c.binding, gStrategicBinding)) {
+        gStrategicOwner.Reset(); return camera;
+    }
+    if (player != GAME.GetPlayer(0) || camera != gStrategicOriginal) return camera;
+    StrategicAdvance();
+    return &gStrategicCamera;
+}
+
+void DrawStrategicHints() {
+    CeWorldViewSample view;
+    const bool haveView = CeWorldViewRead(CeWorldViewOwner::Commander, gStrategicViewSession, &view);
+    const float line = 20.f * L.s;
+    gHover = haveView && StrategicWorldArea(float(MOUSE_X), float(MOUSE_Y))
+        ? StrategicPick(view, float(MOUSE_X), float(MOUSE_Y)) : -1;
+    if (haveView) for (int i = 0; i < gCount; ++i) {
+        const CeCmdSquad& squad = gSquads[i];
+        if (!squad.visible && !squad.friendly) continue;
+        CeViewPoint pixel;
+        if (!StrategicPixel(view, squad.x, squad.y, &pixel) || !StrategicWorldArea(pixel.x, pixel.y)) continue;
+        const float half = (squad.ordinal == gSelected ? 12.f : 8.f) * L.s;
+        const DWORD color = squad.ordinal == gSelected ? kPick : (squad.friendly ? (squad.commandable ? kFriend : kQuiet) : kEnemy);
+        Outline(pixel.x - half, pixel.y - half, half * 2, half * 2, (std::max)(1.f, L.s), color);
+        char count[24]; snprintf(count, sizeof(count), "%d", squad.members);
+        Text(pixel.x + half + 3 * L.s, pixel.y - half, color, count, 36 * L.s);
+        if (squad.ordinal == gSelected && (squad.verb == CE_CMD_MOVE || squad.verb == CE_CMD_ADVANCE)) {
+            CeViewPoint target;
+            if (StrategicPixel(view, squad.gx, squad.gy, &target) && StrategicWorldArea(target.x, target.y)) {
+                const DWORD orderColor = squad.verb == CE_CMD_ADVANCE ? kAdvanceColour : kMoveColour;
+                Outline(target.x - 6 * L.s, target.y - 6 * L.s, 12 * L.s, 12 * L.s, (std::max)(1.f, L.s), orderColor);
+                Dots(pixel.x, pixel.y, target.x, target.y, (std::max)(1.f, L.s), orderColor);
+            }
+        }
+    }
+    Box(0, 0, L.w, 62.f * L.s, 0xd0101820);
+    Text(12 * L.s, 8 * L.s, kText, "COMMANDER | Battle running; pilot vulnerable | Esc pilot", L.w - 24 * L.s);
+    Text(12 * L.s, 8 * L.s + line, kQuiet, "Arrows / middle drag: pan   Wheel: zoom   Q/E: turn   PgUp/PgDn: tilt", L.w - 24 * L.s);
+    if (gNote[0] && PortPresentCount() < gNoteUntil)
+        Text(12 * L.s, 8 * L.s + 2 * line, kPick, gNote, L.w - 24 * L.s);
+    else Text(12 * L.s, 8 * L.s + 2 * line, kQuiet, "Click squad | Right click: move | A then click: advance | H: hold", L.w - 24 * L.s);
+
+    const CeCmdSquad* squad = ByOrdinal(gSelected);
+    const float x = 12 * L.s, y = L.h - 102 * L.s, width = L.w - 24 * L.s;
+    Box(0, L.h - 112 * L.s, L.w, 112 * L.s, 0xe0101820);
+    char text[160];
+    if (!squad) {
+        Text(x, y, kText, "No squad selected", width);
+        Text(x, y + line, kQuiet, "Click a green marker or press Tab. C centers the selected squad.", width);
+    } else {
+        snprintf(text, sizeof(text), "Squad %d | %s | %d unit%s", squad->ordinal,
+                 squad->unit[0] ? squad->unit : (squad->vehicles ? "Vehicles" : "Infantry"),
+                 squad->members, squad->members == 1 ? "" : "s");
+        Text(x, y, kPick, text, width);
+        snprintf(text, sizeof(text), "Order: %s%s", OrderName(*squad), squad->deploys ? " | Deploys: hold only" : "");
+        Text(x, y + line, kText, text, width);
+    }
+    static const char* const labels[] = {"Move", "Advance [A]", "Hold [H]", "Fall back"};
+    const int hover = StrategicButtonAt(float(MOUSE_X), float(MOUSE_Y));
+    for (int i = 0; i < 4; ++i) {
+        const float left = x + i * 112.f * L.s, top = L.h - 43.f * L.s;
+        const bool available = squad && (!squad->deploys || i == 2);
+        const bool armed = gArmed && ((i == 0 && gStrategicClickOrder == CE_CMD_MOVE) || (i == 1 && gStrategicClickOrder == CE_CMD_ADVANCE));
+        Box(left, top, 104 * L.s, 29 * L.s, armed ? 0xff344c4c : (hover == i && available ? 0xff314050 : 0xff1a2632));
+        Outline(left, top, 104 * L.s, 29 * L.s, (std::max)(1.f, L.s), available ? kFriend : kQuiet);
+        Text(left + 6 * L.s, top + 7 * L.s, available ? kText : kQuiet, labels[i], 92 * L.s);
+    }
+    Text(470 * L.s, L.h - 36 * L.s, kQuiet, "V: tactical map", L.w - 482 * L.s);
+    DrawCursor();
+}
+// CE_STRATEGIC_CAMERA_END
+
+void PanMapFrame()
+{
+	if (!gOpen || gStrategic) return;
+	const std::uint64_t now = Ns();
+	const double elapsed = (std::min)(0.1, SecondsBetween(gMapLastNs, now));
+	// Idle frames count too; a new press must not inherit time spent waiting.
+	gMapLastNs = now;
+	// Keep the old distance at 60 FPS, without making slower frames pan more slowly.
+	const float distance = static_cast<float>(elapsed * (0.012 * 60.0));
+	const bool left = CameraKeyDown(DIK_LEFT), right = CameraKeyDown(DIK_RIGHT), up = CameraKeyDown(DIK_UP), down = CameraKeyDown(DIK_DOWN);
+	if (left || right || up || down)
+		Pan((float(right) - float(left)) * distance, (float(down) - float(up)) * distance);
+}
+
 void Close()
 {
+    const bool wasStrategic = gStrategic;
+    const bool ownedStrategicInput = LT.GetKeytrap() == (pKeyTrapper)Trap;
+    if (gOpen && wasStrategic) {
+        if (gStrategicOwner.Leave(StrategicContext()) == CeCommanderCameraResult::RestorePending) {
+            Note("Camera restoration pending. Press Esc to retry."); return;
+        }
+    }
+
 	if (!gOpen) return;
 	gOpen = false;
 	gKeptLevel = GAME.GetCurrentLevel();
@@ -882,9 +1461,9 @@ void Close()
 	gArmed = false;
 	if (LT.GetKeytrap() == (pKeyTrapper)Trap) LT.SetKeytrap(NULL);
 	if (CCONTROLLER *controller = GAME.GetController(0))
-		if (controller->GetToControl() == &gSink) controller->RelinquishControl();
-	GAME.*GameAccess::PauseField() = FALSE;
-	InitMouse();
+		if (!wasStrategic) { if (controller->GetToControl() == &gSink) controller->RelinquishControl(); }
+	if (!wasStrategic) { GAME.*GameAccess::PauseField() = FALSE; }
+	if (!wasStrategic || ownedStrategicInput) { InitMouse(); }
 #ifdef CE_COMMANDER_TEST
 	{
 		CeCmdHash h;
@@ -894,9 +1473,10 @@ void Close()
 		DumpWorld("close");
 	}
 #endif
+    gStrategic = false;
 }
 
-void Open()
+void Open(bool strategic)
 {
 	if (GAME.IsPaused()) return;
 	Refresh();
@@ -909,12 +1489,12 @@ void Open()
 		Note("There are no squads here to command.");
 		return;
 	}
-	GAME.Pause();
-	if (!GAME.IsPaused()) return;
+	if (!strategic) { GAME.Pause(); }
+	if (!strategic) { if (!GAME.IsPaused()) return; }
 	gOpening = true;
 	ShutdownMouse();		// the pointer it starts from stays in window pixels, which the map reads (PortCeCmdMapOpen)
 	gOpening = false;
-	GAME.GetController(0)->SetToControl(&gSink);
+	if (!strategic) { GAME.GetController(0)->SetToControl(&gSink); }
 	LT.SetKeytrap((pKeyTrapper)Trap);
 	// A key that is already held when the map opens is not a new press when it repeats (the window layer posts every auto-repeat as a key-down): the game's own
 	// key state knows which ones those are, because it is not updated while a key trap is installed but cleared by every key-up.
@@ -933,6 +1513,7 @@ void Open()
 	if (gKeptLevel == GAME.GetCurrentLevel()) SetView(gKeptCentreX, gKeptCentreY, gKeptSpan);
 	else FitView();
 	Lay();		// the layout exists before the first frame draws it: a zoom or a pan in the same batch of messages as the open key works on it
+	gMapLastNs = Ns(); // Reopening or leaving the live view starts a fresh pan interval.
 #ifdef CE_COMMANDER_TEST
 	{
 		CeCmdHash h;
@@ -941,11 +1522,28 @@ void Open()
 		DumpWorld("open");
 	}
 #endif
+    gStrategic = strategic;
+    if (strategic) {
+        const CeCommanderCameraResult result = gStrategicOwner.Enter(StrategicContext());
+        if (result != CeCommanderCameraResult::Entered) {
+            Note("The live camera could not start."); Close(); return;
+        }
+        gStrategicLastNs = Ns();
+    }
 }
 
 // Keys and mouse buttons while the map is open. The mouse module reads a trap's return value (true: the button was taken).
 bool Trap(WORD key, int event)
 {
+    // CE_STRATEGIC_TRAP_BEGIN
+    if (gStrategic) return StrategicTrap(key, event);
+    if (gOpen && key == DIK_V && event == KEY_EVENT_DOWN) {
+        const bool repeat = gDown[key]; gDown[key] = true;
+        if (!repeat) SwitchView(true);
+        return true;
+    }
+    // CE_STRATEGIC_TRAP_END
+
 	if (!gOpen || LT.GetKeytrap() != (pKeyTrapper)Trap) return false;
 	if (event == kMouseDown && key <= 2)
 	{
@@ -1016,7 +1614,35 @@ void LogLayout()
 
 // Whether the map is open (or is opening: the pointer ShutdownMouse starts it from is a window pixel too): while it is, the pointer stays in window pixels (the map reads them), not the virtual screen's that
 // the game's in-game menus use (widescreen.cpp).
+CCamera* PortCeCmdRenderCamera(CCamera* camera, CPlayer* player)
+{
+    return SelectStrategicCamera(camera, player);
+}
+
+extern "C" std::uint64_t PortCeCmdWorldViewToken()
+{
+    if (!gOpen || !gStrategic || !gStrategicRender || !gStrategicOwner.Active()) return 0;
+    const CeCommanderCameraContext context = StrategicContext();
+    return context.admitted_ordinary_solo && context.live_pilot && context.camera_available &&
+        !context.competing_camera_owner && SameCameraBinding(context.binding, gStrategicBinding)
+        ? gStrategicViewSession : 0;
+}
+
+bool PortCeCmdSuppressFlightHud()
+{
+    return gOpen && gStrategic && gStrategicRender && gStrategicOwner.Active();
+}
+
 bool PortCeCmdMapOpen() { return gOpen || gOpening; }
+
+// The paused map's window on the world (lower-left corner and span), for the frame-feel log (feel.h) at each Present: reads fields only. 0 when the map is
+// not the paused one.
+extern "C" int CeCmdFeelView(float *out)
+{
+	if (!gOpen || gStrategic) return 0;
+	out[0] = gViewX; out[1] = gViewY; out[2] = gViewSpan;
+	return 1;
+}
 
 // ---- the hooks (patch 0162) ----------------------------------------------------------------------------------------------------------
 
@@ -1037,7 +1663,7 @@ bool PortCeCmdKey(unsigned key, bool repeat)
 	}
 	if (!Allowed()) return false;
 	if (repeat) return true;
-	Open();
+	Open(true);
 	return true;
 }
 
@@ -1093,6 +1719,7 @@ static void TestFrame()
 // Between frames (CGame::MainLoop): the map closes where it is no longer allowed.
 void PortCeCmdFrame()
 {
+    if (gOpen && gStrategic) StrategicFrame();
 	if (gOpen && (!Allowed() || LT.GetKeytrap() != (pKeyTrapper)Trap)) Close();
 #ifdef CE_COMMANDER_TEST
 	TestFrame();
@@ -1102,15 +1729,36 @@ void PortCeCmdFrame()
 // The level is ending (CGame::ShutdownRestartLoop): put back what opening changed.
 void PortCeCmdLevelEnd()
 {
+    CePlayUnitLevelEnd();
+    gStrategicOwner.Reset();
 	Close();
 	gKeptLevel = -1;
 	gSelected = -1;
 	gNote[0] = 0;
+    AdvanceCameraLifetime(gMissionLifetime);
+    gObservedPlayer = NULL; gObservedPilot = NULL; gObservedCamera = NULL;
 }
 
 // After the console and the photo note (CDXEngine::PostRender): the map when it is open, else the note that says why it did not open.
 void PortCeCmdRender()
 {
+	// The paused map's terrain texture lives only while the map is open.
+	if (!gOpen) FreeTerrainTexture();
+	static bool viewSwitchRead = false;
+	if (!viewSwitchRead)
+	{
+		viewSwitchRead = true;
+		const char *mode = getenv("BEA_PORT_COMMANDER_VIEW");
+		gStrategicTickOnly = mode && !strcmp(mode, "ticks");
+		gStrategicMessageKeys = mode && (!strcmp(mode, "ticks") || !strcmp(mode, "messages"));
+	}
+    // CE_STRATEGIC_RENDER_BEGIN
+    if (gOpen && gStrategic) {
+        if (!Allowed() || !gStrategicOwner.Active()) { Close(); return; }
+        Lay(); BeginDraw(); DrawStrategicHints(); EndDraw(); return;
+    }
+    // CE_STRATEGIC_RENDER_END
+
 	if (gNoteNotYet && !NotYet()) { gNote[0] = 0; gNoteNotYet = false; }	// the battle has started: the note that it had not is stale
 	if (!gOpen && !(gNote[0] && PortPresentCount() < gNoteUntil)) return;
 	if (!Allowed() && !(!gOpen && NotYet() && DrawingReady())) { Close(); return; }	// the note that the battle has not started is drawn before the level can host the map
@@ -1125,11 +1773,12 @@ void PortCeCmdRender()
 		return;
 	}
 #ifdef CE_COMMANDER_TEST
-	const double began = Ms();
+	const std::uint64_t began = Ns();
 #endif
 	Refresh();
-	if (gDown[DIK_LEFT] || gDown[DIK_RIGHT] || gDown[DIK_UP] || gDown[DIK_DOWN])	// held arrows pan a fraction of the view a frame
-		Pan(((gDown[DIK_RIGHT] ? 1.f : 0.f) - (gDown[DIK_LEFT] ? 1.f : 0.f)) * 0.012f, ((gDown[DIK_DOWN] ? 1.f : 0.f) - (gDown[DIK_UP] ? 1.f : 0.f)) * 0.012f);
+	// CE_MAP_PAN_BEGIN
+	PanMapFrame();
+	// CE_MAP_PAN_END
 	gHover = OnMap(float(MOUSE_X), float(MOUSE_Y)) ? PickAt(float(MOUSE_X), float(MOUSE_Y)) : -1;
 	if (!gLayoutLogged) { LogLayout(); gLayoutLogged = true; }
 	if (gTerrainDirty) BuildTerrain();
@@ -1147,7 +1796,7 @@ void PortCeCmdRender()
 	DrawCursor();
 	EndDraw();
 #ifdef CE_COMMANDER_TEST
-	const double took = Ms() - began;
+	const double took = SecondsBetween(began, Ns()) * 1000.0;
 	++gFrames;
 	gMsTotal += took;
 	if (took > gMsMax) gMsMax = took;

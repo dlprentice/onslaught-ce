@@ -20,6 +20,9 @@ extern CTweakSLONG SCREEN_SHAPE, TEXTURE_RES_LOSS_SHIFT, TEXTURE_ALLOW_32_BIT;
 void LoadCardId(char *filename);
 HRESULT D3DUtil_SetDeviceCursor(LPDIRECT3DDEVICE9 device, HCURSOR cursor);
 #ifdef CE_VERSION
+#ifndef BEA_PUBLIC_D3DAPP_TEST
+#include "ce_graphics_policy.h"
+#endif
 extern "C" int CE_DisplayModeUseSavedSize();
 int PortWideStartSizeOnDesktop(unsigned, unsigned, int, unsigned, unsigned, unsigned *, unsigned *);
 #endif
@@ -39,6 +42,12 @@ CD3DApplication *windowOwner;
 IDirect3DQuery9 *resourceQuery;
 unsigned pauseDepth;
 bool deviceObjectsLive;
+bool presentationTransition;
+CD3DApplication *presentationFailureOwner;
+BOOL presentationRecoveryReady;
+CD3DApplication *recoveryOwner;
+BOOL recoveryReady;
+bool recoveryAttempt;
 unsigned physicalAdapter[10], mappedAdapterCount;
 struct WindowModeState
 {
@@ -100,6 +109,26 @@ DWORD TextureCaps(IDirect3D9 *d3d, UINT adapter, D3DDEVTYPE type, D3DFORMAT colo
     }
     return bits;
 }
+#ifdef CE_VERSION
+void GraphicsCapabilities(CD3DApplication &app)
+{
+    if (!PortCeGraphicsPolicyActive()) return;
+    const UINT adapter = physicalAdapter[app.m_dwAdapter];
+    const D3DDEVTYPE type = app.GetCurrentDevice()->DeviceType;
+    const D3DFORMAT colour = app.m_Adapters[app.m_dwAdapter].d3ddmDesktop.Format;
+    const auto target = [&](D3DFORMAT format) {
+        return SUCCEEDED(app.m_pD3D->CheckDeviceFormat(adapter, type, colour, D3DUSAGE_RENDERTARGET,
+            D3DRTYPE_TEXTURE, format)) &&
+            SUCCEEDED(app.m_pD3D->CheckDepthStencilMatch(adapter, type, colour, format, D3DFMT_D16));
+    };
+    const bool float32 = target(D3DFMT_R32F);
+    const bool floatTarget = float32 || target(D3DFMT_A32B32G32R32F);
+    const bool formats = (!PortCeGraphicsFloatTargetRequired() || floatTarget) && target(D3DFMT_R5G6B5) &&
+        SUCCEEDED(app.m_pD3D->CheckDeviceFormat(adapter, type, colour, D3DUSAGE_DEPTHSTENCIL,
+            D3DRTYPE_SURFACE, D3DFMT_D16));
+    PortCeGraphicsBeginDevice(app.m_d3dCaps.PixelShaderVersion, app.m_d3dCaps.VertexShaderVersion, formats, float32);
+}
+#endif
 bool ValidateMode(CD3DApplication &app, UINT physical, D3DDEVTYPE type, D3DCAPS9 &caps, D3DFORMAT colour,
                   BOOL windowed, D3DModeInfo &mode)
 {
@@ -199,7 +228,8 @@ struct ModeChange
           selectedIndex(window.published ? window.savedIndex : owner.GetCurrentDevice()->dwCurrentMode),
           createFlags(owner.m_dwCreateFlags), desktop(owner.m_Adapters[adapterIndex].d3ddmDesktop),
           caps(owner.GetCurrentDevice()->d3dCaps), parameters(owner.m_d3dpp),
-          windowed(window.published ? TRUE : owner.m_pd3dDevice ? owner.m_d3dpp.Windowed : owner.m_bWindowed),
+          windowed(presentationTransition || presentationFailureOwner == &owner ? owner.m_bWindowed :
+                   window.published ? TRUE : owner.m_pd3dDevice ? owner.m_d3dpp.Windowed : owner.m_bWindowed),
           screenShape(owner.mScreenShapeScale), committed(false)
     {
         // The resize caller has already written its requested dimensions into the presentation parameters.
@@ -210,7 +240,7 @@ struct ModeChange
             parameters.BackBufferFormat = previous.mode.Format; parameters.AutoDepthStencilFormat = previous.mode.DepthStencilFormat;
         }
     }
-    ~ModeChange()
+    void Restore()
     {
         if (committed) return;
         D3DAdapterInfo &adapter = app.m_Adapters[adapterIndex];
@@ -222,7 +252,9 @@ struct ModeChange
         adapter.d3ddmDesktop = desktop; adapter.dwCurrentDevice = deviceIndex;
         app.m_dwAdapter = adapterIndex; app.m_bWindowed = windowed; app.m_d3dpp = parameters;
         app.m_dwCreateFlags = createFlags; app.mScreenShapeScale = screenShape;
+        committed = true;
     }
+    ~ModeChange() { Restore(); }
 };
 }
 
@@ -502,6 +534,9 @@ HRESULT CD3DApplication::FinishDeviceChange()
     result = surface->GetDesc(&m_d3dsdBackBuffer);
     Drop(surface);
     if (FAILED(result)) return result;
+#ifdef CE_VERSION
+    GraphicsCapabilities(*this);
+#endif
     if (m_bShowCursorWhenFullscreen && !m_bWindowed)
     {
         D3DUtil_SetDeviceCursor(m_pd3dDevice, reinterpret_cast<HCURSOR>(GetClassLong(m_hWnd, GCL_HCURSOR)));
@@ -589,12 +624,18 @@ HRESULT CD3DApplication::Initialize3DEnvironment(bool reset)
                 m_rcWindowBounds.right - m_rcWindowBounds.left, m_rcWindowBounds.bottom - m_rcWindowBounds.top, SWP_SHOWWINDOW);
             result = FinishDeviceChange();
             if (SUCCEEDED(result)) { deviceObjectsLive = true; result = InitDeviceObjects(); }
+#ifdef CE_VERSION
+            PortCeGraphicsFinishDevice(SUCCEEDED(result));
+#endif
             if (SUCCEEDED(result)) { m_bActive = TRUE; change.committed = true; return S_OK; }
             if (deviceObjectsLive) { InvalidateDeviceObjects(); DeleteDeviceObjects(); deviceObjectsLive = false; }
             Drop(resourceQuery);
             Drop(m_pd3dDevice);
             break;
         }
+        // A cooperative reset can race another focus change. Keep its device and let the outer shell pump
+        // restoration/close messages before retrying; a temporary loss is not a reason to create a REF device.
+        if (result == D3DERR_DEVICELOST && resetting && recoveryAttempt) return result;
         if (result == D3DERR_DEVICELOST) { Sleep(100); continue; }
         if (lockable) { lockable = false; continue; }
         if (m_d3dpp.MultiSampleType != D3DMULTISAMPLE_NONE) { device.MultiSampleType = D3DMULTISAMPLE_NONE; continue; }
@@ -606,7 +647,7 @@ HRESULT CD3DApplication::Initialize3DEnvironment(bool reset)
     }
     RestoreMode(*GetCurrentDevice(), *window);
     // The reference rasterizer is a final fallback, never a recursion back into HAL.
-    if (GetCurrentDevice()->DeviceType == D3DDEVTYPE_HAL)
+    if (!presentationTransition && presentationFailureOwner != this && GetCurrentDevice()->DeviceType == D3DDEVTYPE_HAL)
     {
         D3DAdapterInfo &adapter = m_Adapters[m_dwAdapter];
         for (DWORD i = 0; i < adapter.dwNumDevices; ++i)
@@ -626,6 +667,8 @@ HRESULT CD3DApplication::Initialize3DEnvironment(bool reset)
 
 HRESULT CD3DApplication::Resize3DEnvironment()
 {
+    if (presentationFailureOwner == this) return D3DERR_DEVICELOST;
+    if (DeviceRecoveryPending()) return D3DERR_DEVICELOST;
     WindowModeState *window = CurrentWindowState(*this);
     if (!window || (!m_bWindowed && window->only)) return E_FAIL;
     ModeChange change(*this, *window);
@@ -649,12 +692,55 @@ HRESULT CD3DApplication::Reset3DEnvironment(BOOL skipPicker, bool showProgress)
 {
     // The game's two callers pass TRUE. The retired sample picker is deliberately unsupported by the public host.
     if (!skipPicker) return E_NOTIMPL;
-    BOOL wasReady = m_bReady;
+    if (recoveryOwner == this || recoveryAttempt) return D3DERR_DEVICELOST;
+    BOOL wasReady = presentationFailureOwner == this ? presentationRecoveryReady : m_bReady;
     m_bReady = FALSE;
     HRESULT result = ReleaseDeviceObjects(showProgress);
     if (SUCCEEDED(result)) { deviceObjectsLive = false; result = Initialize3DEnvironment(true); }
-    if (SUCCEEDED(result)) m_bReady = wasReady;
+    if (SUCCEEDED(result))
+    {
+        if (presentationFailureOwner == this) presentationFailureOwner = NULL;
+        m_bReady = wasReady && pauseDepth == 0;
+    }
     if (SUCCEEDED(result) && !m_bFrameMoving) { m_bSingleStep = TRUE; DXUtil_Timer(TIMER_START); DXUtil_Timer(TIMER_STOP); }
+    return result;
+}
+
+bool CD3DApplication::DeviceRecoveryPending() const { return recoveryOwner == this || presentationFailureOwner == this; }
+
+HRESULT CD3DApplication::RecoverLostDevice()
+{
+    if ((!m_pd3dDevice && presentationFailureOwner != this) || (recoveryOwner && recoveryOwner != this)) return E_FAIL;
+    if (recoveryAttempt) return D3DERR_DEVICELOST;
+    struct Attempt
+    {
+        Attempt() { recoveryAttempt = true; }
+        ~Attempt() { recoveryAttempt = false; }
+    } attempt;
+    HRESULT result = m_pd3dDevice ? m_pd3dDevice->TestCooperativeLevel() : D3DERR_DEVICENOTRESET;
+    // The shell owns yielding: active sessions must reach their one bounded service/yield boundary.
+    if (result == D3DERR_DEVICELOST) return result;
+    if (FAILED(result) && result != D3DERR_DEVICENOTRESET) return result;
+    if (recoveryOwner != this)
+    {
+        if (SUCCEEDED(result) && presentationFailureOwner != this) return result;
+        recoveryReady = presentationFailureOwner == this ? presentationRecoveryReady : m_bReady;
+        m_bReady = FALSE;
+        recoveryOwner = this;
+        result = deviceObjectsLive ? ReleaseDeviceObjects(false) : S_OK;
+        if (FAILED(result)) { recoveryOwner = NULL; return result; }
+        deviceObjectsLive = false;
+    }
+    // No message dispatch occurs in this scope. The guard also prevents callback-triggered nested recovery.
+    result = Initialize3DEnvironment(true);
+    if (result == D3DERR_DEVICELOST) return result;
+    recoveryOwner = NULL;
+    if (SUCCEEDED(result))
+    {
+        if (presentationFailureOwner == this) presentationFailureOwner = NULL;
+        m_bReady = recoveryReady && pauseDepth == 0;
+        if (!m_bFrameMoving) { m_bSingleStep = TRUE; DXUtil_Timer(TIMER_START); DXUtil_Timer(TIMER_STOP); }
+    }
     return result;
 }
 
@@ -666,18 +752,72 @@ HRESULT CD3DApplication::AdjustWindowForChange()
 
 HRESULT CD3DApplication::ForceWindowed(BOOL windowed)
 {
+    if (presentationFailureOwner == this) return D3DERR_DEVICELOST;
+    if (DeviceRecoveryPending()) return D3DERR_DEVICELOST;
     WindowModeState *state = CurrentWindowState(*this);
-    if (!state || (windowed ? !state->valid : state->only)) return E_FAIL;
-    // Reset stays on the existing adapter/device. Selecting a different provider requires fresh creation.
+    if (presentationTransition || !m_pd3dDevice || !state || (windowed ? !state->valid : state->only)) return E_FAIL;
+    windowed = windowed ? TRUE : FALSE;
+    if (m_bWindowed == windowed) return S_OK;
+    ModeChange previous(*this, *state);
+    // A desktop-fullscreen backend may present a window to D3D. Retain the player's logical mode explicitly.
+    previous.windowed = m_bWindowed;
+    const RECT oldBounds = m_rcWindowBounds, oldClient = m_rcWindowClient;
+    const BOOL wasReady = m_bReady, wasActive = m_bActive;
+    const D3DSURFACE_DESC oldBackBuffer = m_d3dsdBackBuffer;
+    const D3DCAPS9 oldCaps = m_d3dCaps;
+    const D3DMULTISAMPLE_TYPE oldSamples = GetCurrentDevice()->MultiSampleType;
+    if (windowed)
+    {
+        // The owning platform has prepared the desired client size before this call. Capture it now so the
+        // subsequent SetWindowPos and window-mode publication cannot restore stale startup dimensions.
+        RECT bounds, client;
+        if (!GetWindowRect(m_hWnd, &bounds) || !GetClientRect(m_hWnd, &client) ||
+            !ClientSize(static_cast<long long>(client.right) - client.left,
+                        static_cast<long long>(client.bottom) - client.top)) return E_FAIL;
+        m_rcWindowBounds = bounds; m_rcWindowClient = client;
+    }
+    struct Transition
+    {
+        Transition() { presentationTransition = true; }
+        ~Transition() { presentationTransition = false; }
+    } transition;
+    // A mode switch stays on this provider; an unavailable presentation must not silently create a REF device.
     m_bWindowed = GetCurrentDevice()->bWindowed = windowed;
-    m_bReady = FALSE;
     HRESULT result = Reset3DEnvironment(TRUE, false);
-    if (SUCCEEDED(result)) m_bReady = TRUE;
+    if (SUCCEEDED(result))
+    {
+        previous.committed = true;
+        m_bReady = wasReady && pauseDepth == 0;
+        return result;
+    }
+    // Restore host metadata before rebuilding the previous presentation. The outer platform transaction owns
+    // the physical window rollback. Never admit rendering after a rollback that could not restore resources.
+    previous.Restore();
+    GetCurrentDevice()->MultiSampleType = oldSamples;
+    m_rcWindowBounds = oldBounds; m_rcWindowClient = oldClient;
+    m_d3dsdBackBuffer = oldBackBuffer; m_d3dCaps = oldCaps;
+    m_bActive = wasActive; m_bReady = FALSE;
+    HRESULT restored = Reset3DEnvironment(TRUE, false);
+    m_bReady = SUCCEEDED(restored) && wasReady && pauseDepth == 0;
+    if (FAILED(restored))
+    {
+        // The failed restoration has its own provisional ModeChange. Reapply this transaction's explicit
+        // snapshot after it unwinds; a native windowed D3D parameter still does not change logical fullscreen.
+        previous.committed = false; previous.Restore();
+        GetCurrentDevice()->MultiSampleType = oldSamples;
+        m_rcWindowBounds = oldBounds; m_rcWindowClient = oldClient;
+        m_d3dsdBackBuffer = oldBackBuffer; m_d3dCaps = oldCaps;
+        m_bActive = wasActive;
+        presentationFailureOwner = this;
+        presentationRecoveryReady = wasReady || pauseDepth != 0;
+    }
+    // Return the requested change's error even when its rollback succeeded; callers must not persist it.
     return result;
 }
 
 HRESULT CD3DApplication::ToggleFullscreen()
 {
+    if (DeviceRecoveryPending()) return D3DERR_DEVICELOST;
     WindowModeState *state = CurrentWindowState(*this);
     if (!state || (m_bWindowed && state->only)) return E_FAIL;
     D3DDeviceInfo &device = *GetCurrentDevice();
@@ -715,6 +855,8 @@ LRESULT CD3DApplication::MsgProc(HWND window, UINT message, WPARAM wparam, LPARA
             if (previous.right - previous.left != m_rcWindowClient.right - m_rcWindowClient.left ||
                 previous.bottom - previous.top != m_rcWindowClient.bottom - m_rcWindowClient.top)
             {
+                // Keep the latest client rectangle for the pending reset, without nested invalidation/reset.
+                if (DeviceRecoveryPending()) break;
                 m_bReady = FALSE;
                 m_d3dpp.BackBufferWidth = m_rcWindowClient.right - m_rcWindowClient.left;
                 m_d3dpp.BackBufferHeight = m_rcWindowClient.bottom - m_rcWindowClient.top;
@@ -759,12 +901,14 @@ VOID CD3DApplication::Pause(BOOL paused)
         if (!pauseDepth++ && m_bFrameMoving) DXUtil_Timer(TIMER_STOP);
     }
     else if (pauseDepth && !--pauseDepth && m_bFrameMoving) DXUtil_Timer(TIMER_START);
-    m_bReady = pauseDepth == 0;
+    m_bReady = pauseDepth == 0 && !DeviceRecoveryPending() && presentationFailureOwner != this;
 }
 
 VOID CD3DApplication::Cleanup3DEnvironment()
 {
     m_bActive = m_bReady = FALSE;
+    if (presentationFailureOwner == this) { presentationFailureOwner = NULL; presentationRecoveryReady = FALSE; }
+    if (DeviceRecoveryPending()) { recoveryOwner = NULL; recoveryReady = FALSE; }
     if (m_pd3dDevice && deviceObjectsLive) { ReleaseDeviceObjects(false); deviceObjectsLive = false; }
     DiscardWindowModes(*this);
     Drop(resourceQuery);

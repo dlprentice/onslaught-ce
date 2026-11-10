@@ -1,0 +1,96 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Actual root guard followed by actual legacy Init/MakeDirs, on an authored existing namespace.
+// All Windows directory calls are recorded API seams; this does not write any Windows filesystem.
+#include <cassert>
+#include <clocale>
+#include <cuchar>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <set>
+#include <string>
+#include <vector>
+#include "fixture_guard.h"
+constexpr unsigned MAX_PATH = 260, CP_UTF8 = 65001, MB_ERR_INVALID_CHARS = 8;
+static unsigned code_page = CP_UTF8, init_calls;
+static std::string game, user;
+static std::set<std::string> existing;
+static std::vector<std::string> created;
+char gGameDir[MAX_PATH], gUserDir[MAX_PATH];
+unsigned GetACP() { return code_page; }
+int MultiByteToWideChar(unsigned page, unsigned flags, const char *input, int count, wchar_t *out, int capacity) {
+    assert(page == CP_UTF8 && flags == MB_ERR_INVALID_CHARS && count == -1);
+    std::mbstate_t state{};
+    std::vector<wchar_t> wide;
+    for (const char *p = input; *p;) {
+        char32_t c;
+        size_t n = std::mbrtoc32(&c, p, std::strlen(p), &state);
+        if (n == static_cast<size_t>(-1) || n == static_cast<size_t>(-2) || !n) return 0;
+        if (c <= 0xffff) wide.push_back(static_cast<wchar_t>(c));
+        else {
+            c -= 0x10000;
+            wide.push_back(static_cast<wchar_t>(0xd800 | (c >> 10)));
+            wide.push_back(static_cast<wchar_t>(0xdc00 | (c & 0x3ff)));
+        }
+        p += n;
+    }
+    if (wide.size() + 1 > static_cast<size_t>(capacity)) return 0;
+    if (!wide.empty()) std::memcpy(out, wide.data(), wide.size() * sizeof(wchar_t));
+    out[wide.size()] = 0;
+    return static_cast<int>(wide.size() + 1);
+}
+@GUARD@
+const char *AuthoredGetenv(const char *name) {
+    if (!std::strcmp(name, "BEA_GAME_DIR")) return game.c_str();
+    if (!std::strcmp(name, "BEA_USER_DIR")) return user.c_str();
+    return nullptr;
+}
+unsigned GetModuleFileNameA(void *, char *, unsigned) { std::abort(); }
+bool CreateDirectoryA(const char *path, void *) {
+    if (existing.count(path)) return false;
+    created.emplace_back(path); existing.insert(path); return true;
+}
+#define getenv AuthoredGetenv
+@LEGACY@
+@QUERY@
+int main(int argc, char **argv) {
+    assert(FixtureGuard() && argc == 2);
+    assert(std::setlocale(LC_CTYPE, "C.UTF-8")); // The authored API seam models strict UTF-8 conversion only.
+    std::string mode = argv[1]; game = "C:\\Owned\\Game"; user = "C:\\Owned\\short-user";
+    if (mode == "utf8-short") {
+        user = "C:\\Owned\\";
+        for (unsigned i = 0; i < 60; ++i) user += "\xc3\xa9";
+        user += "\\UserRootForCompatibilityPreflight";
+    } else if (mode == "utf8-wide") {
+        user = "C:\\Owned\\";
+        for (unsigned i = 0; i < 100; ++i) user += "\xc3\xa9";
+        user += "\\UserRootForCompatibilityPreflight" + std::string(30, 'x');
+    } else if (mode == "ascii-259" || mode == "ascii-260") {
+        user = "C:\\Owned\\" + std::string(mode == "ascii-259" ? 250 : 251, 'a');
+    } else if (mode == "game-wide") game += std::string(260, 'x');
+    else if (mode == "invalid-utf8") user += "\xc0\xaf";
+    else if (mode == "wrong-code-page") code_page = 1252;
+    else if (mode == "dot-parent") user = "C:\\Owned\\missing\\..\\short-user";
+    else if (mode == "dot-component") user = "C:\\Owned\\.\\short-user";
+    else if (mode == "repeat-separator") user = "C:\\Owned\\\\short-user";
+    else if (mode == "unc") user = "\\\\server\\share\\user";
+    else if (mode == "relative") user = "Owned\\short-user";
+    else if (mode != "ascii-short") return 2;
+    existing.insert("C:"); existing.insert(game);
+    for (size_t i = 3; i < user.size(); ++i) if (user[i] == '\\') existing.insert(user.substr(0, i));
+    existing.insert(user);
+    if (mode == "dot-parent") existing.erase("C:\\Owned\\missing");
+    char cached_game[MAX_PATH], cached_user[MAX_PATH];
+    assert(!PortCachedContentRoots(cached_game, sizeof cached_game, cached_user, sizeof cached_user));
+    assert(!gGameDir[0] && !gUserDir[0] && created.empty()); // Query must not initialize the reader.
+    bool admitted = WindowsLauncherRoot(game.c_str()) && WindowsLauncherRoot(user.c_str());
+    if (admitted) { ++init_calls; Init(); }
+    bool cached = PortCachedContentRoots(cached_game, sizeof cached_game, cached_user, sizeof cached_user);
+    if (cached) assert(game == cached_game && user == cached_user);
+    char small_game[MAX_PATH] = "sentinel", small_user[MAX_PATH] = "sentinel";
+    bool small = !PortCachedContentRoots(small_game, 1, small_user, sizeof small_user) && !small_game[0] && !small_user[0];
+    small = small && !PortCachedContentRoots(small_game, sizeof small_game, small_user, 1) && !small_game[0] && !small_user[0];
+    std::printf("%s %u %u %zu %zu %u %u %u\n", mode.c_str(), unsigned(admitted), init_calls, created.size(), user.size(),
+                unsigned(admitted && user == gUserDir && game == gGameDir), unsigned(cached), unsigned(small));
+    return 0;
+}

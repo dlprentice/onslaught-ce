@@ -2,7 +2,8 @@
 // The HUD anchoring chain against authored boundaries: the production gate (port/platform/common/hud_scale.cpp), the
 // production viewpoint test (port/game/ce_hud_anchor.cpp, against a fake game and engine) and the very statements of
 // widescreen.cpp that apply or withhold patch 0043's inset (cut out of the file by hud_anchor_tests.py).
-// Usage: hud_anchor_driver absent|on|off  (what ce.ini's hud_anchor says: no line, 1, 0).
+// Usage: hud_anchor_driver absent|on|off  (what ce.ini's hud_anchor says: no line, 1, 0). The driver also runs ce.ini's hud_scale
+// (the size) through its three answers in each mode, to show that the corners are independent of it, and CeHudSettingsReload.
 #include "game.h"
 #include "DXEngine.h"
 #include "hud_scale.h"
@@ -17,12 +18,15 @@ bool layer = true;
 int wideModes = 1;
 bool devLog = true;
 int iniMode = 0, iniReads = 0;	// 0: no line, 1: hud_anchor=1, 2: hud_anchor=0
+int scaleMode = 0;				// the same for hud_scale
 bool PortCeLayer() { return layer; }
 int PortWideModes() { return wideModes; }
 bool PortDevLog() { return devLog; }
 extern "C" int CE_SettingGetBool(const char *key, int def)
 {
 	++iniReads;
+	if (!strcmp(key, "hud_scale"))
+		return scaleMode == 0 ? def : scaleMode == 1 ? 1 : 0;
 	if (strcmp(key, "hud_anchor") != 0 || iniMode == 0)
 		return def;
 	return iniMode == 1 ? 1 : 0;
@@ -118,6 +122,46 @@ int main(int argc, char **argv)
 	gActive = false;
 	check(near(PortHudBegin(0.f, 1920.f), 0.f) && near(PortHudInset(1920.f), 0.f), "a back buffer that is not widened has no shift");
 	gActive = true;
+
+	// The corners and the size are separate questions: hud_scale decides the size only, so the original size keeps the corners (or
+	// the columns) hud_anchor says, and so does the larger one.
+	for (int size : {2, 1, 0})
+	{
+		scaleMode = size;
+		CeHudSettingsReload();
+		check(CeHudAnchorEnabled() == wanted && PortHudAnchored() == (wanted ? 1 : 0), "the corners do not depend on hud_scale");
+		CeHudScope scope(1, 3840.f, 2160.f, 0.f, 0.f);
+		check(CeHudScaleActive() == (size != 2), "hud_scale 0 is the original size, 1 and no line the larger");
+	}
+	scaleMode = 0;
+
+	// A change of ce.ini is seen only after CeHudSettingsReload, which asks for the answer again (once).
+	CeHudSettingsReload();
+	iniReads = 0;
+	check(CeHudAnchorEnabled() == wanted && iniReads == 1, "the reload asks again");
+	iniMode = wanted ? 2 : 1;
+	check(CeHudAnchorEnabled() == wanted && iniReads == 1, "a changed line is not seen before the reload");
+	CeHudSettingsReload();
+	check(CeHudAnchorEnabled() == !wanted && PortHudAnchored() == (wanted ? 0 : 1) && iniReads == 2, "after the reload the changed line is the answer, asked for once");
+	iniMode = !strcmp(argv[1], "on") ? 1 : !strcmp(argv[1], "off") ? 2 : 0;
+	CeHudSettingsReload();
+	check(CeHudAnchorEnabled() == wanted, "and back");
+
+	// The environment variable: 0 pins the 4:3 columns (the corners and the size both), any other value forces the larger size
+	// over hud_scale and leaves the corners to hud_anchor.
+	setenv("BEA_PORT_HUD_SCALE", "0", 1);
+	CeHudSettingsReload();
+	check(!CeHudAnchorEnabled() && !PortHudAnchored(), "BEA_PORT_HUD_SCALE=0 pins the columns whatever hud_anchor says");
+	setenv("BEA_PORT_HUD_SCALE", "1", 1);
+	scaleMode = 2;
+	CeHudSettingsReload();
+	{
+		CeHudScope scope(1, 3840.f, 2160.f, 0.f, 0.f);
+		check(CeHudScaleActive() && CeHudAnchorEnabled() == wanted, "BEA_PORT_HUD_SCALE=1 forces the larger size and leaves the corners to hud_anchor");
+	}
+	unsetenv("BEA_PORT_HUD_SCALE");
+	scaleMode = 0;
+	CeHudSettingsReload();
 
 	// The developer log tells each change once, and nothing when it is off.
 	devLog = false;

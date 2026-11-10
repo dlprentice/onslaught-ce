@@ -1,0 +1,14 @@
+--- a/DXEngine.cpp
++++ b/DXEngine.cpp
+@@ -1304,6 +1304,11 @@
+ #ifdef CE_VERSION
+ 		PortCePaletteRender();
+ 		PortCePhotoRender();
++#ifndef CE_NETWORK_OFF
++#if defined(CE_NETWORK_TEXT)
++		{ extern void PortCeChatRender(); PortCeChatRender(); }
++#endif
++#endif
+ 		PortCeNoticeRender();
+ #endif
+ 	}

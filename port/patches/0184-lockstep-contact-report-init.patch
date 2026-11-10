@@ -1,0 +1,29 @@
+--- a/collisionseekingthing.cpp
++++ b/collisionseekingthing.cpp
+@@ -10,6 +10,9 @@
+ #include "Line.h"
+ #include "world.h"
+ #include "DebugLog.h"
++#ifndef CE_NETWORK_OFF
++#include "ce_network_lockstep.h"
++#endif
+ 
+ // FUNCTION: 0x00426060 init:ZERO_FVECTOR
+ // FUNCTION: 0x00426080 init:ID_FMATRIX
+@@ -121,6 +124,16 @@
+ 	otherMove.mPos = other->mForThing->GetPos() + otherVolume->mPos;
+ 	otherMove.mMove = other->mForThing->GetLocalLastFrameMovement();
+ 	CCollisionReport report;
++#ifndef CE_NETWORK_OFF
++	// Shared sessions start each report with known normals; collision writers can still replace any slot.
++	if (CE_LockstepSharing())
++		for (SINT i = 0; i < 6; ++i)
++		{
++			report.mNormals[i].X = 0.f;
++			report.mNormals[i].Y = 0.f;
++			report.mNormals[i].Z = 0.f;
++		}
++#endif
+ 	report.mUnknown00 = 0;
+ 	report.mNumContacts = 0;
+ 	report.mUnknownA8 = 0;

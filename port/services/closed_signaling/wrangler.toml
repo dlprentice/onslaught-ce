@@ -1,0 +1,27 @@
+# SPDX-License-Identifier: GPL-3.0-only
+name = "onslaught-ce-closed-signaling"
+main = "worker.mjs"
+compatibility_date = "2026-11-02"
+workers_dev = false
+preview_urls = false
+
+[vars]
+CE_ENABLED = "false"
+CE_CAPABILITY_SECONDS = "7200"
+CE_GRANT_SECONDS = "7200"
+CE_ENCRYPTION_LIMIT = "10000"
+
+[observability]
+enabled = false
+
+[[durable_objects.bindings]]
+name = "CLOSED_PAIRS"
+class_name = "ClosedPairs"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["ClosedPairs"]
+
+[[services]]
+binding = "TURN_ISSUER"
+service = "onslaught-ce-closed-turn-issuer"

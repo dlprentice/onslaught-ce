@@ -38,6 +38,8 @@ void PortClockPauseBegin() { pauseBegins++; }
 void PortClockPauseEnd() { pauseEnds++; }
 static bool gameMouseAcquired;
 bool PortDinputOwnsMouseEvent(Uint64 timestamp) { return !timestamp && gameMouseAcquired; }	// no timestamp: is the game's mouse acquired now (a real event's timestamp is never 0)
+void PortDinputDiagnosticMouseEvent(SDL_Window *, const SDL_Event *, bool) {}	// the diagnostic mouse sampler (dinput.cpp) is not part of this fixture
+void PortDinputDiagnosticMouseEnd(SDL_Window *) {}
 bool PortRecording() { return recording; }
 bool PortRecordInputSpace(unsigned) { return true; }
 void PortRecordKey(bool down, unsigned vk, unsigned scan) {
@@ -229,6 +231,14 @@ int main(int argc, char **argv) {
 '''
 
 
+def private_ui_compile_args(port, *, link=True):
+    """Close whole-window fixtures over the selected tree's platform unit."""
+    source = Path(port) / "platform/common/private_ui_input.cpp"
+    if not source.is_file():
+        return []  # Older source trees have neither this unit nor its callers.
+    return ["-I", str(source.parent)] + ([str(source)] if link else [])
+
+
 class MessagePump(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -253,7 +263,7 @@ class MessagePump(unittest.TestCase):
             f"-I{deps.PORT / 'include/linux'}", f"-I{deps.DATA / 'dxvk-native/usr/include/dxvk'}",
             f"-I{deps.PREFIX / 'include'}", f"-I{deps.PORT / 'platform/common'}", str(source), f"-L{deps.PREFIX / 'lib'}", "-lSDL3",
             f"-Wl,-rpath,{deps.PREFIX / 'lib'}", "-o", str(binary),
-        ], check=True, capture_output=True, text=True)
+        ] + private_ui_compile_args(deps.PORT), check=True, capture_output=True, text=True)
         return binary
 
     def run_case(self, case, extra=None, binary=None):
@@ -328,6 +338,18 @@ class MessagePump(unittest.TestCase):
 
     def test_the_idle_wait_of_a_minimized_window_stops_the_clock_and_ends_when_it_is_restored(self):
         self.check_case("idle-wait", {"BEA_PORT_FAKE_KEYS": "h0:0.3"})
+
+    def test_private_ui_pump_uses_the_production_window_handle(self):
+        source = (deps.PORT / "platform/common/window.cpp").read_text()
+        correct = "PortPrivateUiPump(PortPresentCount(), PrivateUiCharacter, MainWindow());"
+        wrong = "PortPrivateUiPump(PortPresentCount(), PrivateUiCharacter, h);"
+        self.assertEqual(source.count(correct), 1)
+        mutant = self.build / "window-private-ui-wrong-h.cpp"
+        mutant.write_text(source.replace(correct, wrong))
+        with self.assertRaises(subprocess.CalledProcessError) as caught:
+            self.compile_driver(mutant, "driver-private-ui-wrong-h")
+        self.assertIn("undeclared identifier 'h'", caught.exception.stderr)
+
 
 
 if __name__ == "__main__":

@@ -1,0 +1,38 @@
+--- a/MenuItem.cpp
++++ b/MenuItem.cpp
+@@ -275,7 +275,7 @@ void	CMenuMenuItem::Render(float x, floa
+ 
+ // FUNCTION: 0x004a3c30
+ void	CMenuMenuItem::RenderList(float x, float y, BOOL on_top)
+-{
++{ extern WCHAR *PortCeValueFit(WCHAR *, float, float *); extern WCHAR *PortCeListFit(WCHAR *, float);
+ 	WCHAR	text[100];
+ 	int		value = GetValue();
+ 
+@@ -318,7 +318,7 @@ void	CMenuMenuItem::RenderList(float x,
+ 		for (i = 0; i < GetNumChoices(); i++)
+ 		{
+ 			SIZE	s;
+-			PLATFORM.Font(FONT_SMALL)->GetTextExtent(GetChoiceText(i), &s);
++			PLATFORM.Font(FONT_SMALL)->GetTextExtent(PortCeListFit(GetChoiceText(i), lx + 2.f), &s);
+ 			if (s.cx > widest)
+ 				widest = s.cx;
+ 		}
+@@ -368,7 +368,7 @@ void	CMenuMenuItem::RenderList(float x,
+ 			if (CFrontEnd::GetCursorStateInRect(lx + 2.f, ly, x2, ny))
+ 				mSelection = i;
+ 
+-			PLATFORM.Font(FONT_SMALL)->DrawTextWithShadow(lx + 2.f, ly, c, GetChoiceText(i), 0, 0, 1.f, yscale);
++			PLATFORM.Font(FONT_SMALL)->DrawTextWithShadow(lx + 2.f, ly, c, PortCeListFit(GetChoiceText(i), lx + 2.f), 0, 0, 1.f, yscale);
+ 
+ 			float	cy2 = ly + size.cy;
+ 			float	cx2 = size.cx + lx + 2.f;
+@@ -395,7 +395,7 @@ void	CMenuMenuItem::RenderList(float x,
+ 		}
+ 	}
+ 	else
+-		PLATFORM.Font(FONT_SMALL)->DrawTextWithShadow(lx, y, col, GetChoiceText(mSelection), 0, 0, 1.f, 1.f);
++		{ float ceFit; WCHAR *ceText = PortCeValueFit(GetChoiceText(mSelection), lx, &ceFit); PLATFORM.Font(FONT_SMALL)->DrawTextWithShadow(lx, y, col, ceText, 0, 0, ceFit, 1.f); }
+ }
+ 
+ // FUNCTION: 0x004a40f0

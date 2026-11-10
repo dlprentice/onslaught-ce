@@ -258,6 +258,12 @@ struct CController {
 int PortCePadNext(void *, bool, unsigned *out) { *out = 0; return 0; }
 void PortCePadForget(void *) {}
 #include "gamepad.inc"
+// The Dodge Button (ce_dodge_assist.cpp), as the cue asks about it: off unless a mode switches it on.
+enum { CE_DODGE_PAD_BUTTON = 0 };
+static bool dodgeOn = false, dodgeKeyFree = true, dodgePadFree = true;
+bool PortCeDodgeAssistOn() { return dodgeOn; }
+bool PortCeDodgeAssistKeyFree() { return dodgeKeyFree; }
+bool PortCeDodgeAssistPadFree(int) { return dodgePadFree; }
 #include "guidance.inc"
 
 // The exact port-patched mapping loop, with synthetic input reads and an observer on sent actions. This tests whether
@@ -266,6 +272,10 @@ static bool gMouseAxisLocked[2] = {}, sSendingMouseRest = false, sMouseAxisRead 
 static int sCeMouseRestId = -1, MOUSE_X = 320, MOUSE_Y = 240, MOUSE_WHEEL = 0;
 static float gMouseSensitivity = 1.f, probeAxis = -1.f;
 static bool probeKey = false;
+// The Dodge Button's hooks (patch 0220) are in the mapping loop and do nothing in this fixture: the cue is what it tests.
+static bool sCeDodgeSending = false;
+int PortCeDodgeAssistKey(int) { return 0; }
+int PortCeDodgeAssistEnd(void *, int, int, int *, int *) { return 0; }
 static void *sMouse = nullptr;
 struct { bool mReleased; } MOUSE_BUTTONS[3] = {};
 static bool MOUSE_HELD[3] = {};
@@ -357,7 +367,7 @@ int main(int argc, char **argv)
 	if (Is(mode, "language")) TEXT.language = 1;
 	if (Is(mode, "font-missing")) PLATFORM.absent = true;
 	if (Is(mode, "font-invalid")) PLATFORM.font.valid = false;
-	bool padCase = !strncmp(mode, "pad-", 4) || !strncmp(mode, "stick-", 6);
+	bool padCase = !strncmp(mode, "pad-", 4) || !strncmp(mode, "stick-", 6) || Is(mode, "dodge-pad") || Is(mode, "dodge-both") || Is(mode, "dodge-pad-bound") || Is(mode, "dodge-stick");
 	if (padCase)
 	{
 		LT.pJoystick[0] = &fakeDevice;
@@ -365,7 +375,7 @@ int main(int argc, char **argv)
 		fakePad.axes = (1u << SDL_GAMEPAD_AXIS_COUNT) - 1;
 		fakePad.buttons = (1u << SDL_GAMEPAD_BUTTON_MISC1) - 1;
 		fakePad.numAxes = Is(mode, "stick-no-twist") ? 3 : 4; fakePad.numButtons = 8; fakePad.numHats = 1;
-		if (!strncmp(mode, "stick-", 6)) fakeDevice.joy = reinterpret_cast<SDL_Joystick *>(&fakePad);
+		if (!strncmp(mode, "stick-", 6) || Is(mode, "dodge-stick")) fakeDevice.joy = reinterpret_cast<SDL_Joystick *>(&fakePad);
 		else fakeDevice.pad = reinterpret_cast<SDL_Gamepad *>(&fakePad);
 		if (Is(mode, "pad-missing-axis")) fakePad.axes &= ~(1u << SDL_GAMEPAD_AXIS_LEFTX);
 		if (Is(mode, "pad-missing-button")) fakePad.buttons &= ~(1u << SDL_GAMEPAD_BUTTON_LEFT_SHOULDER);
@@ -373,7 +383,7 @@ int main(int argc, char **argv)
 		if (Is(mode, "pad-second") || Is(mode, "pad-player-two") || Is(mode, "pad-mouse-player-two"))
 			{ LT.pJoystick[1] = LT.pJoystick[0]; LT.pJoystick[0] = nullptr; LT.mJoypads = 2; }
 	}
-	if (Is(mode, "pad-player-two") || Is(mode, "keyboard-player-two") || Is(mode, "pad-mouse-player-two")) fakePlayerController.mPadNumber = 1;
+	if (Is(mode, "pad-player-two") || Is(mode, "keyboard-player-two") || Is(mode, "pad-mouse-player-two") || Is(mode, "dodge-player-two")) fakePlayerController.mPadNumber = 1;
 	if (Is(mode, "no-controller")) GAME.mController[0] = nullptr;
 	bool ce = true;
 #ifndef CE_VERSION
@@ -448,13 +458,21 @@ int main(int argc, char **argv)
 	if (Is(mode, "box-missing")) GAME.box = nullptr;
 	if (Is(mode, "help-missing")) GAME.help = nullptr;
 
+	// --- the Dodge Button (CE Settings), its key and its gamepad button ---
+	if (!strncmp(mode, "dodge-", 6))
+	{
+		dodgeOn = !Is(mode, "dodge-off");
+		dodgeKeyFree = !Is(mode, "dodge-key-bound") && !Is(mode, "dodge-pad");
+		dodgePadFree = !Is(mode, "dodge-pad-bound");
+	}
+
 	// --- bindings and layouts the player may have ---
 	if (Is(mode, "layout-azerty")) fakeLayout = 1;
 	if (Is(mode, "layout-nonlatin")) fakeLayout = 2;
 	if (Is(mode, "pad-nonlatin")) fakeLayout = 2;
 	if (Is(mode, "layout-unknown")) fakeLayout = 3;
 	if (Is(mode, "remap-keys")) { SetInput(BUTTON_MECH_STRAFE_LEFT, 0, 0, KEY_ON, 0x10); SetInput(BUTTON_MECH_STRAFE_RIGHT, 0, 0, KEY_ON, 0x12); }
-	if (Is(mode, "keyboard-player-two")) { SetInput(BUTTON_MECH_STRAFE_LEFT, 1, 0, KEY_ON, 0x10); SetInput(BUTTON_MECH_STRAFE_RIGHT, 1, 0, KEY_ON, 0x12); }
+	if (Is(mode, "keyboard-player-two") || Is(mode, "dodge-player-two")) { SetInput(BUTTON_MECH_STRAFE_LEFT, 1, 0, KEY_ON, 0x10); SetInput(BUTTON_MECH_STRAFE_RIGHT, 1, 0, KEY_ON, 0x12); }
 	if (Is(mode, "remap-arrows")) { SetInput(BUTTON_MECH_STRAFE_LEFT, 0, 0, KEY_ON, 0xcb); SetInput(BUTTON_MECH_STRAFE_RIGHT, 0, 0, KEY_ON, 0xcd); }
 	if (Is(mode, "remap-layout"))
 	{
@@ -646,6 +664,16 @@ int main(int argc, char **argv)
 	if (generic)
 		Check(dodge == (timingUnknown ? L"Ground dodge: fully strafe one way, then the other. Timing varies." :
 			L"Ground dodge: fully strafe one way, then the other 101-199ms apart."), "unsupported movement binding uses the generic text");
+	else if (Is(mode, "dodge-keys"))
+		Check(dodge == L"Ground dodge: hold Left Ctrl and press A or D. Or tap A then D 101-199ms apart.", "the Dodge Button's key first, then the double tap with the actual keys");
+	else if (Is(mode, "dodge-both"))
+		Check(dodge == L"Ground dodge: hold Left Ctrl or right button and strafe left or right.", "the key and the gamepad button; the double tap does not fit and is left out");
+	else if (Is(mode, "dodge-pad"))
+		Check(dodge == L"Ground dodge: hold right button and push left stick left or right. Or tap A then D 101-199ms apart.", "the gamepad button alone, with the stick");
+	else if (Is(mode, "dodge-pad-bound") || Is(mode, "dodge-stick"))
+		Check(dodge == L"Ground dodge: hold Left Ctrl and press A or D. Or tap A then D 101-199ms apart.", "no gamepad button when it is bound to another control, or on a flight stick");
+	else if (Is(mode, "dodge-key-bound") || Is(mode, "dodge-off"))
+		Check(dodge == L"Ground dodge right: A, then D 101-199ms apart. Reverse for left.", "without a usable Dodge Button the cue is the one built from the bindings");
 	else if (Is(mode, "pad-timing-change"))
 		Check(dodge == L"Ground dodge: A then D or fully push left stick left then right 201-399ms apart. Reverse for left.",
 			"registered dash timing changes the controller cue");
@@ -666,7 +694,7 @@ int main(int argc, char **argv)
 		Check(dodge == L"Ground dodge right: fully push left stick left then right 101-199ms apart. Reverse for left.", "long combined line uses the actual controller binding");
 	else
 	{
-		const wchar_t *keys = Is(mode, "layout-azerty") ? L"Q, then D " : (Is(mode, "remap-keys") || Is(mode, "keyboard-player-two") || Is(mode, "mouse-unbound-keys")) ? L"Q, then E " :
+		const wchar_t *keys = Is(mode, "layout-azerty") ? L"Q, then D " : (Is(mode, "remap-keys") || Is(mode, "keyboard-player-two") || Is(mode, "dodge-player-two") || Is(mode, "mouse-unbound-keys")) ? L"Q, then E " :
 			Is(mode, "remap-arrows") ? L"Left arrow, then Right arrow " : Is(mode, "remap-layout") ? L"A, then D " :
 			Is(mode, "secondary") ? L"Q, then D " : Is(mode, "long-labels") ? L"Right Shift, then Right arrow " : L"A, then D ";
 		std::wstring expectedText = std::wstring(L"Ground dodge right: ") + keys;
@@ -746,9 +774,10 @@ int main(int argc, char **argv)
 	Check(Active(h) == 1 && Find(h, L"odge") < 0, "a new CE cue retires the other: one CE cue at a time");
 	std::wstring zoom = TextAt(h, Find(h, L"oom"));
 	Check(zoom.size() <= 99, "zoom cue fits the native line");
-	if (Is(mode, "pad-default") || Is(mode, "pad-missing-axis") || Is(mode, "pad-long-keys") || Is(mode, "pad-second") || Is(mode, "pad-mouse-default") || Is(mode, "pad-timing-change"))
+	if (Is(mode, "pad-default") || Is(mode, "pad-missing-axis") || Is(mode, "pad-long-keys") || Is(mode, "pad-second") || Is(mode, "pad-mouse-default") || Is(mode, "pad-timing-change") ||
+		Is(mode, "dodge-both") || Is(mode, "dodge-pad") || Is(mode, "dodge-pad-bound"))
 		Check(zoom == L"Zoom: Mouse wheel down/Mouse wheel up or right bumper/left bumper (in/out). Some weapons only.", "available default controller zoom and mouse named");
-	else if (Is(mode, "stick-default") || Is(mode, "stick-no-twist") || Is(mode, "pad-swap"))
+	else if (Is(mode, "stick-default") || Is(mode, "stick-no-twist") || Is(mode, "pad-swap") || Is(mode, "dodge-stick"))
 		Check(zoom.find(L"stick button 6") != std::wstring::npos && zoom.find(L"stick button 8") != std::wstring::npos,
 			"available flight stick zoom buttons named");
 	else if (Is(mode, "pad-custom"))
@@ -760,7 +789,7 @@ int main(int argc, char **argv)
 	else if (Is(mode, "pad-nonlatin") || Is(mode, "pad-player-two"))
 		Check(zoom.find(L"right bumper") != std::wstring::npos && zoom.find(L"left bumper") != std::wstring::npos,
 			"available controller zoom remains named when keys cannot be named");
-	else if (Is(mode, "wheel-held") || Is(mode, "unbound") || Is(mode, "duplicate") || Is(mode, "keyboard-player-two") || Is(mode, "no-controller") ||
+	else if (Is(mode, "wheel-held") || Is(mode, "unbound") || Is(mode, "duplicate") || Is(mode, "keyboard-player-two") || Is(mode, "dodge-player-two") || Is(mode, "no-controller") ||
 		Is(mode, "pad-mouse-zoom") || Is(mode, "pad-mouse-player-two"))
 		Check(zoom == L"Zoom: see Zoom In and Zoom Out in Controller Configuration. Not every weapon zooms.", "unsupported zoom binding uses the generic text");
 	else if (Is(mode, "long-labels") || Is(mode, "long-names"))

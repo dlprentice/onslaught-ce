@@ -37,6 +37,8 @@ int CE_SettingSet(const char *, int value)
 
 #ifdef CE_VERSION
 struct { int mNextLevel; } SYSTEM;
+bool PortCeExperimental(const char *) { return false; }	// ce.cpp: the ce.ini [Experimental] lines; PortCeMenus asks each once and no save path here depends on the answer
+void PortCeExperimentalBlock() {}	// ce.cpp: adds the [Experimental] lines to ce.ini; no save path here depends on it
 #include "native_policy.inc"
 bool PortCeBonusStart(int);
 bool PortCeBonusLevelEnd();

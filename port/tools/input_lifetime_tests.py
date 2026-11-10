@@ -16,9 +16,13 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import sys
 import tempfile
 
 import deps
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import build
+from window_tests import private_ui_compile_args
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -39,13 +43,25 @@ FUNCTIONS = {
     "MOUSE_AT": ("mouse.cpp", r"inline BOOL\s+MouseAt\([^\n]*"),
     "MOUSE_CLICK": ("mouse.cpp", r"bool\s+MouseClickedInRect\([^\n]*"),
 }
-CASES = ("menu-click-left", "menu-click-motion", "menu-click-move-away", "menu-click-focus", "menu-click-right", "menu-click-middle",
-         "menu-click-hidpi", "menu-click-43-hidpi", "menu-click-geometry-change", "menu-click-active", "menu-click-map", "menu-click-frontend", "menu-click-off",
+CASES = (
+    'window-minimize-isolated-key',
+    'window-minimize-isolated-late-focus',
+    'window-minimize-isolated-wheel',
+    'window-minimize-isolated-fraction',
+    'window-minimize-isolated-relative',
+    'window-minimize-isolated-wheel-early-focus',
+    'window-minimize-isolated-relative-early-focus',
+    'window-minimize-isolated-wheel-maximize',
+    'window-minimize-isolated-key-duplicate',
+    'window-minimize-isolated-wheel-foreign',
+    'window-minimize-isolated-wheel-inactive-restore',
+    "menu-click-left", "menu-click-motion", "menu-click-move-away", "menu-click-focus", "menu-click-right", "menu-click-middle",
+         "menu-click-hidpi", "menu-click-43-hidpi", "menu-click-geometry-change", "menu-click-active", "menu-click-map", "menu-click-editor", "menu-click-frontend", "menu-click-off",
          "menu-click-record", "menu-click-tape", "menu-click-trap", "menu-click-trap-pass", "menu-click-late-motion", "menu-click-late-motion-off", "menu-click-late-motion-tape", "menu-mouse", "menu-mouse-off", "menu-mouse-active", "pad-acquire", "pad-reacquire", "pad-properties", "pad-axes", "pad-limit", "pad-quick-tap", "pad-edge-order", "pad-edge-chord", "pad-edge-chord-pulses",
          "pad-edge-overflow", "pad-edge-event-overflow", "pad-edge-overflow-focus", "pad-edge-focus", "pad-edge-stale-focus", "pad-edge-hotplug", "pad-edge-hotplug-two",
-         "pad-edge-two", "pad-edge-cross-binding", "pad-edge-two-consumers", "pad-edge-repeat-consumer", "pad-edge-bonus-two",
+         "pad-edge-two", "pad-edge-cross-binding", "pad-edge-two-consumers", "pad-edge-repeat-consumer", "pad-edge-split-two",
          "pad-edge-no-poll-held", "pad-edge-duplicate-binding", "pad-edge-no-watch", "pad-edge-missing-focus-event",
-         "pad-edge-cross-overflow", "pad-edge-trigger", "pad-edge-multiplayer", "pad-edge-tape", "pad-edge-record", "pad-edge-clock",
+         "pad-edge-cross-overflow", "pad-edge-trigger", "pad-edge-split-screen", "pad-edge-tape", "pad-edge-record", "pad-edge-clock",
          "pad-edge-probes", "pad-edge-record-saved", "pad-edge-tape-saved", "pad-edge-record-saved-two",
          "pad-edge-tape-saved-two", "pad-neutral-record", "pad-neutral-tape", "pad-neutral-record-two", "pad-neutral-tape-two",
          "pad-edge-pov-record-absent", "pad-edge-pov-record-disabled", "pad-edge-pov-record-enabled",
@@ -63,8 +79,23 @@ CASES = ("menu-click-left", "menu-click-motion", "menu-click-move-away", "menu-c
          "mouse-fraction-invalid", "mouse-fraction-tape", "mouse-fraction-record",
          "mouse-fraction-clock", "mouse-fraction-probes", "mouse-fraction-disabled",
          "pad-trigger-edges", "pad-trigger-build-mode", "pad-trigger-unplug", "pad-trigger-disabled", "pad-trigger-tape", "pad-trigger-record",
-         "pad-trigger-clock", "pad-trigger-probes", "pad-tutorial-info", "pad-tutorial-unplug")
-FAITHFUL_CASES = ("menu-click-faithful", "pad-trigger-build-mode", "pad-trigger-disabled", "pad-trigger-tape", "pad-trigger-record",
+         "pad-trigger-clock", "pad-trigger-probes", "pad-tutorial-info", "pad-tutorial-unplug",
+    "--ce-hotplug-enumeration",
+    "--ce-hotplug-cached-default",
+    "window-focus-cycle", "window-minimize-cycle",
+)
+FAITHFUL_CASES = (
+    'window-minimize-isolated-key',
+    'window-minimize-isolated-late-focus',
+    'window-minimize-isolated-wheel',
+    'window-minimize-isolated-relative',
+    'window-minimize-isolated-wheel-early-focus',
+    'window-minimize-isolated-relative-early-focus',
+    'window-minimize-isolated-wheel-maximize',
+    'window-minimize-isolated-key-duplicate',
+    'window-minimize-isolated-wheel-foreign',
+    'window-minimize-isolated-wheel-inactive-restore',
+    "menu-click-faithful", "pad-trigger-build-mode", "pad-trigger-disabled", "pad-trigger-tape", "pad-trigger-record",
                   "pad-trigger-clock", "pad-trigger-probes", "pad-neutral-faithful", "pad-edge-pov-faithful-disabled",
                   "mouse-fraction-disabled", "mouse-fraction-tape")
 
@@ -88,13 +119,12 @@ def main():
     parser.add_argument("--optimize", action="store_true", help="compile with -O2, as the game is (the DIPROP folding showed only there)")
     args = parser.parse_args()
     if args.faithful and (not args.case or any(case not in FAITHFUL_CASES for case in args.case)):
-        parser.error("--faithful requires only explicit trigger-fence cases")
+        parser.error("--faithful requires only explicit faithful controls")
     parent = ROOT / "local-data/port/input-lifetime-tests"
     parent.mkdir(parents=True, exist_ok=True)
     out = Path(tempfile.mkdtemp(prefix="run-", dir=parent))
     receipt = {"source_root": str(args.source_root.resolve()), "patches": [], "cases": [],
-               "limits": ["Actual production shims and extracted game callers; SDL virtual gamepads.",
-                          "Mouse/focus/geometry are API fakes; no native window, GPU or physical-device evidence."]}
+               "limits": ['Actual production shims and extracted game callers; SDL virtual gamepads.', 'Mouse/focus/geometry are API fakes; no native window, GPU or physical-device evidence.', 'Lifecycle fixtures use synthetic SDL state on Linux; native Windows, AMD, window-manager and physical-player acceptance are separate.']}
     passed = False
     try:
         sources = {name: (args.source_root / "src" / name).read_bytes() for name in SOURCES}
@@ -143,7 +173,7 @@ def main():
         # Isolate these real bodies from the stand-ins used by the other input tests; only names and state storage change.
         renames = {"PortWideBackBuffer": "TestWideBackBuffer", "PortUiMouse": "TestUiMouse",
                    "PortUiMouseMenuPoint": "TestUiMouseMenuPoint", "PortUiMouseMenu": "TestUiMouseMenu",
-                   "PortCeLayer": "TestRealCeLayer", "PortCeCmdMapOpen": "TestMenuMapOpen",
+                   "PortCeLayer": "TestRealCeLayer", "PortCeCmdMapOpen": "TestMenuMapOpen", "PortCeEditorMousePixels": "TestMenuEditorPixels",
                    "gW": "testMapW", "gH": "testMapH", "gActive": "testMapActive", "gX": "testMapX",
                    "gY": "testMapY", "gScale": "testMapScale", "gLeft": "testMapLeft", "gTop": "testMapTop"}
         mapped_wide = "\n".join(re.sub(r"\b(" + "|".join(renames) + r")\b", lambda m: renames[m[0]], body)
@@ -156,7 +186,7 @@ def main():
         edge_test = any(case == "pad-quick-tap" or case.startswith("pad-edge-") for case in (args.case or CASES))
         edge_source = ""
         if edge_test and not args.faithful:
-            gamepad = (args.source_root / "port/game/ce_gamepad.cpp").read_text()
+            gamepad = build.network_view((args.source_root / "port/game/ce_gamepad.cpp").read_text(), off=True)
             edge_bodies = [definition(gamepad, sig) for sig in (r"bool Ordinary\(\)", r"bool Allowed\(int pad\)",
                 r"void PortCeGamepadUpdate\(int pad\)", r"void PortCeGamepadBeginCycle\(\)",
                 r"void PortCeGamepadUpdateAll\(int consumer\)", r"int PortCeGamepadEdge\(int pad, int button, bool release\)",
@@ -193,7 +223,7 @@ def main():
                    f"-I{deps.PORT / 'include'}", f"-I{deps.PORT / 'include/linux'}", f"-I{deps.DATA / 'dxvk-native/usr/include/dxvk'}",
                    f"-I{deps.PREFIX / 'include'}", f"-I{args.source_root / 'port/platform/common'}",
                    str(cpp), f"-L{deps.PREFIX / 'lib'}", "-lSDL3", f"-Wl,-rpath,{deps.PREFIX / 'lib'}", "-o", str(binary)]
-        result = subprocess.run(command, capture_output=True, text=True, timeout=60,
+        result = subprocess.run(command + private_ui_compile_args(args.source_root / "port"), capture_output=True, text=True, timeout=60,
                                 env=dict(os.environ, TMPDIR=str(out)))
         receipt["compile"] = {"command": command, "exit": result.returncode, "output": result.stdout + result.stderr}
         if result.returncode:
@@ -204,6 +234,25 @@ def main():
             result = subprocess.run([str(binary), case], env=env, capture_output=True, text=True, timeout=10)
             observation = {"case": case, "exit": result.returncode, "stdout": result.stdout,
                            "stderr": result.stderr, "pass": result.returncode == 0}
+
+            if case in ("window-focus-cycle", "window-minimize-cycle"):
+                rows = [line.removeprefix("INPUT_LIFECYCLE_COUNTS ") for line in result.stdout.splitlines()
+                        if line.startswith("INPUT_LIFECYCLE_COUNTS ")]
+                try:
+                    counts = json.loads(rows[0]) if len(rows) == 1 else None
+                except json.JSONDecodeError:
+                    counts = None
+                minimized = case == "window-minimize-cycle"
+                expected = {"checks": 25 if minimized else 19, "pushed": 4 if minimized else 2,
+                            "focus_lost": 1, "focus_gained": 1,
+                            "minimized": int(minimized), "restored": int(minimized),
+                            "minimized_messages": int(minimized), "restored_messages": int(minimized),
+                            "restore_width": 1024 if minimized else 0,
+                            "restore_height": 768 if minimized else 0,
+                            "focus_messages": 4, "skipped": 0}
+                observation["lifecycle_counts"] = counts
+                observation["lifecycle_expected"] = expected
+                observation["pass"] = observation["pass"] and counts == expected
             receipt["cases"].append(observation)
             print(f"{'PASS' if observation['pass'] else 'FAIL'} {case}")
         passed = all(case["pass"] for case in receipt["cases"])

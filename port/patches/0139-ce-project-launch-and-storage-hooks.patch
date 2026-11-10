@@ -1,0 +1,80 @@
+--- a/System.cpp
++++ b/System.cpp
+@@ -1,3 +1,6 @@
++#ifdef CE_VERSION
++#include "ce_project.h"
++#endif
+ // System.cpp: reconstructed from System.obj (004ef9c0..004f0535); Stuart's release has no copy. The game's top level:
+ // start everything, show the opening films, then alternate the front end and levels; and the stress test.
+ 
+@@ -310,6 +313,17 @@
+ //******************************************************************************************
+ SINT	CSystem::Run()	// FUNCTION: 0x004f0330
+ {
++#ifdef CE_VERSION
++    if (PortCeProjectRequested())
++    {
++        int level = PortCeProjectLaunchLevel();
++        if (level < 0) return -1;
++        FRONTEND.mSelectedLevel = level;
++        GAME.RunLevel(level);
++        return PortCeProjectLoaded() ? 0 : -1;
++    }
++#endif
++
+ 	if (CLIPARAMS.mStressTest > 0)
+ 		StressTest(CLIPARAMS.mStressTest);
+ 
+--- a/PCMemoryCard.cpp
++++ b/PCMemoryCard.cpp
+@@ -1,3 +1,6 @@
++#ifdef CE_VERSION
++#include "ce_project.h"
++#endif
+ #include "common.h"
+ #define PCMEMORYCARD_CPP
+ #if TARGET==PC
+@@ -229,6 +232,10 @@
+ 
+ int CPCMemoryCard::CreateSave(int card,WCHAR *name,int *save,BOOL allowed_overwrite)	// FUNCTION: 0x00514be0
+ {
++#ifdef CE_VERSION
++    if (!PortCeProjectCareerAllowed()) return MCE_FAILURE;
++#endif
++
+ #ifdef _WIN32
+ 	if (save) *save = -1;
+ 	char path[MAX_PATH];
+@@ -324,6 +331,10 @@
+ 
+ int CPCMemoryCard::DeleteSave(int card,int save,WCHAR *name)	// FUNCTION: 0x00514ec0
+ {
++#ifdef CE_VERSION
++    if (!PortCeProjectCareerAllowed()) return MCE_FAILURE;
++#endif
++
+ 	char	path[MAX_PATH];
+ 
+ #ifdef _WIN32
+@@ -341,6 +352,10 @@
+ 
+ int CPCMemoryCard::WriteSave(int card,int save,WCHAR *name,void *data,int datasize)	// FUNCTION: 0x00514f80
+ {
++#ifdef CE_VERSION
++    if (!PortCeProjectCareerAllowed()) return MCE_FAILURE;
++#endif
++
+ 	char	path[MAX_PATH];
+ 
+ #ifdef _WIN32
+@@ -360,6 +375,10 @@
+ // retail: a complete read closes the file twice
+ int CPCMemoryCard::ReadSave(int card,int save,WCHAR *name,void *data,int datasize,int *bytesread)	// FUNCTION: 0x00515080
+ {
++#ifdef CE_VERSION
++    if (!PortCeProjectCareerAllowed()) return MCE_FAILURE;
++#endif
++
+ 	char	path[MAX_PATH];
+ 
+ #ifdef _WIN32

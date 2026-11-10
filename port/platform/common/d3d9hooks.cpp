@@ -20,13 +20,18 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <cmath>
 
 #include "platform.h"
+#include "feel.h"
 
 #include <SDL3/SDL.h>
 
 #ifdef CE_VERSION
 bool PortCeLayer();	// ce.cpp
+#endif
+#if defined(CE_VERSION) && defined(BEA_PUBLIC_GRAPHICS_HOST)
+bool PortDinputMouseAcquired();	// dinput.cpp owns the current gameplay/menu input intent
 #endif
 
 namespace
@@ -94,6 +99,51 @@ ResetFn gReset;
 UINT gBoxW, gBoxH;			// the game's back buffer while it is shown desktop-fullscreen (0: not)
 UINT gBackW, gBackH;		// the game's back buffer (its drawing size, LTShell::GetWindowWidth), from CreateDevice and Reset
 SDL_Window *gBoxWindow;
+
+#if defined(CE_VERSION) && defined(BEA_PUBLIC_GRAPHICS_HOST)
+// The menu owns one bounded transaction around its public-host reset. Keep the SDL presentation separate from
+// D3D's Windowed bit: Linux desktop-fullscreen already uses a windowed swapchain.
+struct CeDisplayWindowState
+{
+	HWND handle;
+	SDL_Window *window;
+	SDL_WindowID id;
+	SDL_DisplayMode mode;
+	bool active, hasMode, fullscreen, cursor, relative, hasPosition;
+	int x, y, width, height;
+	unsigned boxWidth, boxHeight;
+	SDL_Window *boxWindow;
+
+	CeDisplayWindowState() : handle(NULL), window(NULL), id(0), mode(), active(false), hasMode(false),
+		fullscreen(false), cursor(false), relative(false), hasPosition(false), x(0), y(0), width(0), height(0),
+		boxWidth(0), boxHeight(0), boxWindow(NULL) {}
+
+	bool Owned() const
+	{
+		return active && id && PortSdlWindow(handle) == window && SDL_GetWindowID(window) == id;
+	}
+	bool Restore()
+	{
+		if (!Owned()) return false;
+		bool ok = true;
+		// Leave fullscreen before restoring a normal client size. A compositor may choose the restored position.
+		if ((SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN) && !SDL_SetWindowFullscreen(window, false)) ok = false;
+		if (!SDL_SetWindowSize(window, width, height)) ok = false;
+		if (hasPosition) SDL_SetWindowPosition(window, x, y);
+		if (!SDL_SetWindowFullscreenMode(window, hasMode ? &mode : NULL)) ok = false;
+		if (fullscreen && !SDL_SetWindowFullscreen(window, true)) ok = false;
+		if (!SDL_SyncWindow(window)) ok = false;
+		if (SDL_GetWindowRelativeMouseMode(window) != relative && !SDL_SetWindowRelativeMouseMode(window, relative)) ok = false;
+		if (SDL_CursorVisible() != cursor && !(cursor ? SDL_ShowCursor() : SDL_HideCursor())) ok = false;
+		gBoxW = boxWidth; gBoxH = boxHeight; gBoxWindow = boxWindow;
+		return ok;
+	}
+};
+CeDisplayWindowState ceDisplayWindow;
+CeDisplayWindowState ceDisplayInputRetry;
+Uint64 ceDisplayInputLastTry;
+unsigned ceDisplayInputLogged;
+#endif
 
 #ifdef CE_VERSION
 // DesktopFullscreen changes SDL cursor visibility before Direct3D can accept or reject a mode. Keep the prior
@@ -194,6 +244,105 @@ void DesktopFullscreen(HWND focus, D3DPRESENT_PARAMETERS *pp)
 
 }
 
+#if defined(CE_VERSION) && defined(BEA_PUBLIC_GRAPHICS_HOST)
+extern "C" int CE_DisplayModeAvailable();
+
+extern "C" int PortCeDisplayWindowBegin(HWND handle, int windowed, unsigned width, unsigned height)
+{
+	if (!CE_DisplayModeAvailable() || ceDisplayWindow.active || (windowed != 0 && windowed != 1) ||
+		!width || !height || width > 65535 || height > 32767) return 0;
+	SDL_Window *window = PortSdlWindow(handle);
+	if (!window) return 0;
+	CeDisplayWindowState saved;
+	saved.handle = handle; saved.window = window; saved.id = SDL_GetWindowID(window);
+	if (!saved.id || !SDL_GetWindowSize(window, &saved.width, &saved.height) || saved.width <= 0 || saved.height <= 0) return 0;
+	saved.hasPosition = SDL_GetWindowPosition(window, &saved.x, &saved.y);
+	saved.fullscreen = (SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN) != 0;
+	saved.cursor = SDL_CursorVisible(); saved.relative = SDL_GetWindowRelativeMouseMode(window);
+	const SDL_DisplayMode *mode = SDL_GetWindowFullscreenMode(window);
+	saved.hasMode = mode != NULL;
+	if (mode) saved.mode = *mode;
+	saved.boxWidth = gBoxW; saved.boxHeight = gBoxH; saved.boxWindow = gBoxWindow;
+	const float density = SDL_GetWindowPixelDensity(window);
+	if (!(density > 0.f) || !std::isfinite(density)) return 0;
+	const double logicalWidth = (double)width / density, logicalHeight = (double)height / density;
+	if (logicalWidth < 1. || logicalHeight < 1. || logicalWidth > 65535. || logicalHeight > 32767.) return 0;
+	saved.active = true; ceDisplayWindow = saved;
+	PortSessionLog(PORT_SESSION_VIDEO, false, "window mode request=%s render=%ux%u logical=%dx%d pixel_density=%.3f",
+		windowed ? "windowed" : "fullscreen", width, height, (int)(logicalWidth + .5), (int)(logicalHeight + .5), (double)density);
+	bool ok = true;
+	if (windowed)
+	{
+		if (saved.fullscreen && !SDL_SetWindowFullscreen(window, false)) ok = false;
+		if (ok && !SDL_SetWindowSize(window, (int)(logicalWidth + .5), (int)(logicalHeight + .5))) ok = false;
+		if (ok && !SDL_SyncWindow(window)) ok = false;
+	}
+	if (ok) return 1;
+	const bool restored = ceDisplayWindow.Restore();
+	ceDisplayWindow.active = false;
+	PortSessionLog(PORT_SESSION_VIDEO, true, "window mode preparation refused; previous SDL state restored=%d", restored ? 1 : 0);
+	return restored ? 0 : -1;
+}
+
+extern "C" int PortCeDisplayWindowReady()
+{
+	if (!ceDisplayWindow.Owned()) return 0;
+	if (SDL_GetWindowRelativeMouseMode(ceDisplayWindow.window) != ceDisplayWindow.relative &&
+		!SDL_SetWindowRelativeMouseMode(ceDisplayWindow.window, ceDisplayWindow.relative))
+	{
+		ceDisplayInputRetry = ceDisplayWindow;
+		ceDisplayInputLastTry = SDL_GetTicks();
+		ceDisplayInputLogged = 0;
+		PortSessionLog(PORT_SESSION_VIDEO, true, "window mode input restoration refused before settings commit");
+		return 0;
+	}
+	return 1;
+}
+
+extern "C" int PortCeDisplayInputReady()
+{
+	return ceDisplayInputRetry.active ? 0 : 1;
+}
+
+extern "C" void PortCeRetryDisplayInput()
+{
+	if (!ceDisplayInputRetry.active) return;
+	if (!CE_DisplayModeAvailable() || !ceDisplayInputRetry.Owned())
+	{
+		ceDisplayInputRetry.active = false;
+		return;
+	}
+	SDL_Window *window = ceDisplayInputRetry.window;
+	const bool relative = PortDinputMouseAcquired();
+	if (SDL_GetWindowRelativeMouseMode(window) == relative)
+	{
+		ceDisplayInputRetry.active = false;
+		return;
+	}
+	// The normal acquired-mouse owner has just tried enabling relative input. Only a failed release needs
+	// this additional repair, and a later acquisition supersedes the original menu's request.
+	if (relative || (SDL_GetWindowFlags(window) & SDL_WINDOW_MINIMIZED)) return;
+	const Uint64 now = SDL_GetTicks();
+	if (now >= ceDisplayInputLastTry && now - ceDisplayInputLastTry < 1000) return;
+	ceDisplayInputLastTry = now;
+	const bool ok = SDL_SetWindowRelativeMouseMode(window, false);
+	if (ceDisplayInputLogged++ < 5)
+		PortSessionLog(PORT_SESSION_VIDEO, !ok, "window mode input release recovery=%s", ok ? "success" : "failed");
+	if (ok) ceDisplayInputRetry.active = false;
+}
+
+extern "C" int PortCeDisplayWindowEnd(int commit)
+{
+	if (!ceDisplayWindow.active) return 0;
+	bool ok = ceDisplayWindow.Owned();
+	if (!commit) ok = ceDisplayWindow.Restore();
+	ceDisplayWindow.active = false;
+	if (!ok) PortSessionLog(PORT_SESSION_VIDEO, true, "window mode %s could not retain the owned window state", commit ? "commit" : "rollback");
+	else PortSessionLog(PORT_SESSION_VIDEO, false, "window mode %s completed", commit ? "commit" : "rollback");
+	return ok ? 1 : 0;
+}
+#endif
+
 // The back buffer's size while it is shown desktop-fullscreen (the space PortMapMouse maps into), else 0.
 extern "C" int PortMouseBox(unsigned *w, unsigned *h)
 {
@@ -253,12 +402,21 @@ HRESULT STDMETHODCALLTYPE Reset(IDirect3DDevice9 *device, D3DPRESENT_PARAMETERS 
 	CeCursorBeforeModeChange cursorBefore(focus, pp);
 #endif
 	DesktopFullscreen(focus, pp);
+	if (PORT_FEEL_ON()) PortFeelBeforeReset();
 	HRESULT hr = gReset(device, pp);
 #ifdef CE_VERSION
 	cursorBefore.RestoreIfFailed(hr);
 #endif
 	if (SUCCEEDED(hr))
 		gResets++;
+	if (PORT_FEEL_ON() && pp)
+	{
+		char note[160];
+		snprintf(note, sizeof note, "device reset result=%08lx size=%ux%u windowed=%d interval=%08lx refresh=%u",
+				 (unsigned long)hr, pp->BackBufferWidth, pp->BackBufferHeight, (int)pp->Windowed, (unsigned long)pp->PresentationInterval,
+				 pp->FullScreen_RefreshRateInHz);
+		PortFeelNote(note);
+	}
 	PortSessionLog(PORT_SESSION_VIDEO, FAILED(hr), "device reset result=%08lx size=%ux%u windowed=%d format=%d",
 		(unsigned long)hr, pp ? pp->BackBufferWidth : 0, pp ? pp->BackBufferHeight : 0,
 		pp ? (int)pp->Windowed : -1, pp ? (int)pp->BackBufferFormat : -1);
@@ -567,14 +725,31 @@ char gShotPath[1024];
 
 void WriteShot(IDirect3DDevice9 *dev)
 {
-	IDirect3DSurface9 *back = NULL, *copy = NULL;
+	IDirect3DSurface9 *back = NULL, *copy = NULL, *flat = NULL;
 	D3DSURFACE_DESC d;
 	D3DLOCKED_RECT lr;
 	if (FAILED(dev->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &back)))
 		return;
 	back->GetDesc(&d);
+	// A multisampled back buffer cannot be read back as it is (the read-back of its samples comes out stretched across the frame): the
+	// frame is resolved into a plain render target first, as the photo mode's shot does.
+	IDirect3DSurface9 *source = back;
+	if (d.MultiSampleType != D3DMULTISAMPLE_NONE)
+	{
+		if (SUCCEEDED(dev->CreateRenderTarget(d.Width, d.Height, d.Format, D3DMULTISAMPLE_NONE, 0, FALSE, &flat, NULL)) &&
+			SUCCEEDED(dev->StretchRect(back, NULL, flat, NULL, D3DTEXF_NONE)))
+			source = flat;
+		else
+		{
+			fprintf(stderr, PORT_LOG_PREFIX "frame %u: the multisampled back buffer could not be resolved for read-back\n", gFrames);
+			if (flat)
+				flat->Release();
+			back->Release();
+			return;
+		}
+	}
 	if (SUCCEEDED(dev->CreateOffscreenPlainSurface(d.Width, d.Height, d.Format, D3DPOOL_SYSTEMMEM, &copy, NULL)) &&
-		SUCCEEDED(dev->GetRenderTargetData(back, copy)) && SUCCEEDED(copy->LockRect(&lr, NULL, D3DLOCK_READONLY)))
+		SUCCEEDED(dev->GetRenderTargetData(source, copy)) && SUCCEEDED(copy->LockRect(&lr, NULL, D3DLOCK_READONLY)))
 	{
 		if (FILE *f = fopen(gShotPath, "wb"))
 		{
@@ -614,6 +789,8 @@ void WriteShot(IDirect3DDevice9 *dev)
 		fprintf(stderr, PORT_LOG_PREFIX "frame %u: back buffer read-back failed (format %d)\n", gFrames, (int)d.Format);
 	if (copy)
 		copy->Release();
+	if (flat)
+		flat->Release();
 	back->Release();
 }
 
@@ -1076,6 +1253,7 @@ void NoteDeviceTable(void **table)
 
 HRESULT STDMETHODCALLTYPE Present(IDirect3DDevice9 *dev, const RECT *src, const RECT *dst, HWND w, const RGNDATA *dirty)
 {
+	if (PORT_FEEL_ON()) PortFeelPresentBegin(dev);		// frame-feel measurement (feel.h): one test when off
 	if (gLog && (int)gFrames == gLogFrame)
 		fflush(gLog);
 	gFrames++;
@@ -1087,6 +1265,17 @@ HRESULT STDMETHODCALLTYPE Present(IDirect3DDevice9 *dev, const RECT *src, const 
 	{
 		snprintf(gShotPath, sizeof(gShotPath), "%s/shot-%05u.ppm", gShotDir, gFrames);
 		WriteShot(dev);
+	}
+	if (PORT_FEEL_ON())
+	{
+		char where[600];
+		if (PortFeelShotDue(where, sizeof where, gFrames))
+		{
+			// a run of consecutive frames for looking at (the script's shots verb or BEA_PORT_FEEL_SHOTS), named by Present number (the log's frame
+			// numbers start at 0, this one at 1)
+			snprintf(gShotPath, sizeof(gShotPath), "%s/shot-%05u.ppm", where, gFrames);
+			WriteShot(dev);
+		}
 	}
 #ifdef CE_VERSION
 	if (PortCePhotoShotWanted())
@@ -1113,6 +1302,7 @@ HRESULT STDMETHODCALLTYPE Present(IDirect3DDevice9 *dev, const RECT *src, const 
 		dst = &box;
 	}
 	HRESULT hr = gPresent(dev, src, dst, w, dirty);
+	if (PORT_FEEL_ON()) PortFeelPresentEnd(dev, (long)hr);
 	static HRESULT lastResult = D3D_OK;
 	if (hr != lastResult)
 	{
@@ -1172,6 +1362,14 @@ HRESULT STDMETHODCALLTYPE CreateDevice(IDirect3D9 *d3d, UINT adapter, D3DDEVTYPE
 #ifdef CE_VERSION
 	cursorBefore.RestoreIfFailed(hr);
 #endif
+	if (PORT_FEEL_ON() && pp)
+	{
+		char note[160];
+		snprintf(note, sizeof note, "device create result=%08lx size=%ux%u windowed=%d interval=%08lx refresh=%u",
+				 (unsigned long)hr, pp->BackBufferWidth, pp->BackBufferHeight, (int)pp->Windowed, (unsigned long)pp->PresentationInterval,
+				 pp->FullScreen_RefreshRateInHz);
+		PortFeelNote(note);
+	}
 	if (SUCCEEDED(hr) && pp)
 	{
 		gDevice = *out;
@@ -1201,6 +1399,7 @@ HRESULT STDMETHODCALLTYPE CreateDevice(IDirect3D9 *d3d, UINT adapter, D3DDEVTYPE
 		if (!gReset)
 			gReset = (ResetFn)table[16];
 		SetSlot(table, 16, (void *)&Reset);
+		if (PORT_FEEL_ON()) PortFeelDeviceCreated(*out, table, SetSlot);		// BeginScene, EndScene, SetTransform and the draws, when measuring
 		if (const char *spec = getenv("BEA_PORT_D3DLOG"))
 		{
 			const char *colon = strchr(spec, ':');

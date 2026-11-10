@@ -1,0 +1,15 @@
+--- a/Platform.cpp
++++ b/Platform.cpp
+@@ -40,6 +40,12 @@
+ 			delete [] data;
+ 		}
+ 	}
++#if defined(CE_VERSION) && defined(BEA_PUBLIC_GRAPHICS_HOST)
++	// CE window changes run after the normal options reset and after this frame has been presented.
++	extern void PortCeApplyPendingDisplayMode();
++	PortCeApplyPendingDisplayMode();
++#endif
++
+ }
+ 
+ void CPlatform::CreateDirectoryPath(char *path, BOOL strip_file_name)	// FUNCTION: 0x004d2600

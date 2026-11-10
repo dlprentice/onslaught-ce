@@ -1,0 +1,12 @@
+--- a/game.cpp
++++ b/game.cpp
+@@ -2261,6 +2261,9 @@
+ 		CalcRenderFrameFraction();
+ 		
+ 		Update();
++#ifndef CE_NETWORK_OFF
++		CE_SessionAfterUpdate();	// port (lockstep co-op): the tick ends here, before sound, landscape and rendering
++#endif
+ 		
+ 		// incase something went wrong in update (like reset a level) 
+ 		if (mQuit == QT_QUIT_TO_FRONTEND || mQuit == QT_USER_QUIT_TO_FRONTEND)

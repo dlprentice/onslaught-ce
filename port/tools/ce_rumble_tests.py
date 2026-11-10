@@ -19,6 +19,7 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import deps  # noqa: E402
+from window_tests import private_ui_compile_args
 
 ROOT = Path(__file__).resolve().parents[2]
 SOURCES = ("ltshell.cpp", "PCPlatform.cpp", "BattleEngine.cpp")
@@ -74,13 +75,15 @@ class RumbleTests(unittest.TestCase):
         (folder / "callers.inc").write_text("\n".join(definition(files[f], s) for f, s in FUNCTIONS.values()))
         common = folder / "platform/common"
         common.mkdir(parents=True)
-        for n in ("window.cpp", "dinput.cpp", "portlog.cpp", "portlog.h", "platform.h", "ce.cpp", "ce_pad_queue.h"):
+        for n in ("window.cpp", "dinput.cpp", "portlog.cpp", "portlog.h", "platform.h", "ce.cpp", "ce_pad_queue.h", "input_activity.h"):
             shutil.copy(ROOT / "port/platform/common" / n, common)
         shutil.copy(ROOT / "port/include/ce_tutorial_pad.h", common)    # dinput.cpp's tutorial pad query types
         if dinput is not None:
             (common / "dinput.cpp").write_text(dinput)
         (folder / "updater").mkdir()
         shutil.copy(ROOT / "port/updater/ce_report.h", folder / "updater")
+        (folder / "network").mkdir()
+        shutil.copy(ROOT / "port/network/compatibility.h", folder / "network")    # ce.cpp's "../../network/compatibility.h"
         game = folder / "game"
         game.mkdir()
         (game / "common.h").write_text("")
@@ -104,7 +107,7 @@ class RumbleTests(unittest.TestCase):
                f"-I{deps.PORT / 'include/linux'}", f"-I{deps.DATA / 'dxvk-native/usr/include/dxvk'}",
                f"-I{deps.PREFIX / 'include'}", f"-I{common}", f"-I{game}", *sources,
                f"-L{deps.PREFIX / 'lib'}", "-lSDL3", f"-Wl,-rpath,{deps.PREFIX / 'lib'}", "-o", str(exe)]
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=120, env=dict(os.environ, TMPDIR=str(folder)))
+        r = subprocess.run(cmd + private_ui_compile_args(ROOT / "port"), capture_output=True, text=True, timeout=120, env=dict(os.environ, TMPDIR=str(folder)))
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         return exe
 

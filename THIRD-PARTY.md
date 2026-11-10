@@ -1,12 +1,13 @@
 # Third-party components
 
 Status: active
-Last updated: 2026-10-29 (the MinGW-w64 runtime's licences as the package notice lists them; earlier: SDL3 also carries the X11 optional-extensions patch)
+Last updated: 2026-11-02 (the network and ICE rows; earlier: 2026-10-29 the MinGW-w64 runtime's licences as the package notice lists them)
 Summary: the licences and purposes of components built into or shipped with Onslaught CE.
 
 Onslaught CE's own code is GPL-3.0-only (`COPYING`). The build fetches the components below at the versions
-`port/deps.lock` pins, each checked by SHA-256; none of their source is in this repository except where a file says
-so. Release packages carry each shipped component's licence text in `licenses/`.
+`port/deps.lock` or the explicit optional `port/ice-deps.lock` pins, each checked by SHA-256; none of their source is
+in this repository except where a file says so. Release packages carry each shipped component's licence text in
+`licenses/`.
 
 ## In the program
 
@@ -33,6 +34,34 @@ so. Release packages carry each shipped component's licence text in `licenses/`.
 | libogg, libvorbis | 1.0 | BSD-3-Clause | the game's music and voices, built with the game's original compiler into `libvorbis_vc6.a` (attached to the `vorbis-vc6-1` release and pinned by SHA-256 in `port/deps.lock`) by `port/vorbis/build.py`, from Xiph.Org's 1.0 source fetched from downloads.xiph.org by the SHA-256 pins in that script |
 | MinGW-w64 runtime | from llvm-mingw 20260922 | ZPL-2.1 and others (as the package notice says) | the Windows C runtime start-up, linked into `bea.exe` |
 | libc++, libc++abi, libunwind | from llvm-mingw 20260922 | Apache-2.0 WITH LLVM-exception | the Windows C++ runtime, linked into `bea.exe` |
+
+## Only in a build with the network compiled in
+
+The default public build leaves the network out (`CE_NETWORK_OFF`, see `port/README.md`) and contains none of this. The public build made with `--with-network` (the experimental
+co-op source build) and a private network or test-automation build also use the rows below; the package of a `--with-network` build carries ENet's licence file and a notice row
+for each, and `port/tools/package.py` refuses a package whose build folder names one flavour and whose program is the other:
+
+| Component | Version | Licence | How it is used |
+| --- | --- | --- | --- |
+| ENet | 1.3.18, pinned upstream commit `5a9c537f` | MIT | direct-IP game transport, linked statically; sockets are opened only by explicit session creation |
+| Monocypher | 4.0.2 | BSD-2-Clause OR CC0-1.0 | also compiled into the game there, for the authenticated network encryption |
+
+## Only in an explicit ICE build
+
+`--public --with-network --with-ice` additionally uses the component below. The default public build and the direct-IP
+`--with-network` build do not fetch or link it. Its archive and required modification are pinned separately in
+`port/ice-deps.lock`; the [relay-policy record](port/network/LIBJUICE-RELAY-POLICY.md) describes the exact patch.
+
+| Component | Version | Licence | How it is used |
+| --- | --- | --- | --- |
+| libjuice | 1.7.4, commit `b89c792e3612faf2f12cf35bcc56857313a06be3`, with `port/network/libjuice-relay-only.patch` | MPL-2.0 | statically linked experimental ICE/TURN client; built with its server and Nettle backend disabled |
+
+The source export includes `LICENSES/MPL-2.0.txt` and the MPL-2.0 patch. An ICE package requires the separate
+`package.py --with-ice` opt-in and exact build receipts. It includes the unmodified upstream source archive, the exact
+patch, reconstruction instructions and original licence text and notices. `ICE-SOURCE-NOTICE.txt` in that package
+records the MPL-2.0 source terms and additional GPL-3.0-only option for the combination under MPL section 3.3. The
+ordinary package path refuses ICE binaries. Source inclusion does not establish release or platform acceptance;
+Windows relay requests remain refused by the client.
 
 ## In this repository's source
 

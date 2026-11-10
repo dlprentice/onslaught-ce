@@ -53,6 +53,7 @@ def compile_driver(source_dir, out, replace_source=None, extra=()):
            f"-I{deps.DATA / 'dxvk-native/usr/include/dxvk'}",
            str(source_dir / "save_replace_driver.cpp"), str(source_dir / "save_replace_faults.cpp"),
            str(platform / "files.cpp"), str(platform / "paths.cpp"), str(replace_source or platform / "save_replace.cpp"),
+           str(deps.PORT / "tools/tests/network_hook_stubs.cpp"), "-DNETWORK_HOOK_STUBS_NO_LOCAL_FILE",     # files.cpp's network hooks
            str(source_dir / "mods_none.cpp"),
            f"-Wl,{WRAPS}", *extra, "-o", str(out)]
     subprocess.run(cmd, check=True, capture_output=True, text=True)

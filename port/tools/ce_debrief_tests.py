@@ -90,6 +90,8 @@ class DebriefTests(unittest.TestCase):
         for n in ("portlog.h", "ce.cpp"):
             shutil.copy(ROOT / "port/platform/common" / n, common)
         shutil.copy(ROOT / "port/updater/ce_report.h", folder / "updater")
+        (folder / "network").mkdir()
+        shutil.copy(ROOT / "port/network/compatibility.h", folder / "network")    # ce.cpp's "../../network/compatibility.h"
         driver = (TESTS / "ce_debrief_driver.cpp").read_text().replace("PANEL_INC", str(game / "panel.inc"))
         (game / "driver.cpp").write_text(driver)
         cxx = os.environ.get("CXX", "g++")

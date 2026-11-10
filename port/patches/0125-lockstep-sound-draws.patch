@@ -1,0 +1,76 @@
+--- a/SoundManager.cpp
++++ b/SoundManager.cpp
+@@ -3,6 +3,9 @@
+ #include	"common.h"	// FUNCTION: 0x004dfe40 init:ZERO_FVECTOR
+ #include	"game.h"	// FUNCTION: 0x004dfe60 init:ID_FMATRIX
+ #include	"SoundManager.h"
++#ifndef CE_NETWORK_OFF
++#include "ce_network_lockstep.h"
++#endif
+ #include	"AudibleThing.h"
+ #include	"profile.h"
+ #include	"Camera.h"
+@@ -1195,7 +1198,11 @@
+ 
+ 	// Pick a random chained effect
+ 	
+-	int chainnum=rand() % numchained;
++#ifdef CE_NETWORK_OFF
++	int chainnum=rand() % numchained;
++#else
++	int chainnum=CE_LockstepSoundRand() % numchained;	// port (lockstep co-op): sound draws never reach the shared stream
++#endif
+ 
+ 	current=effect;
+ 	
+@@ -1215,7 +1222,11 @@
+ 
+ 	if ((current->mPitchVariance!=0) && (CPCSoundManager::GetPitchVarianceEnabled()))	// PC (004e19bb)
+ 	{
+-		float rpitch=((float) (rand() % current->mPitchVariance))*0.01f /* retail 005d85fc: / 100.0f */;
++#ifdef CE_NETWORK_OFF
++		float rpitch=((float) (rand() % current->mPitchVariance))*0.01f /* retail 005d85fc: / 100.0f */;
++#else
++		float rpitch=((float) (CE_LockstepSoundRand() % current->mPitchVariance))*0.01f /* retail 005d85fc: / 100.0f */;
++#endif
+ 		
+ 		pitch=pitch+rpitch;
+ 		
+--- a/Music.cpp
++++ b/Music.cpp
+@@ -4,6 +4,9 @@
+ 
+ #include "music.h"	// FUNCTION: 0x004bb2b0 init:ID_FMATRIX
+ #include "console.h"
++#ifndef CE_NETWORK_OFF
++#include "ce_network_lockstep.h"
++#endif
+ #include "Career.h"
+ #include <stdio.h>
+ #include <string.h>
+@@ -413,7 +416,11 @@
+ 	}
+ 	
+ //	int songnum=(rand()*songs)/RAND_MAX;
+-	int songnum=(rand() % songs);
++#ifdef CE_NETWORK_OFF
++	int songnum=(rand() % songs);
++#else
++	int songnum=(CE_LockstepSoundRand() % songs);	// port (lockstep co-op): music draws never reach the shared stream
++#endif
+ 	
+ 	c=mFirstSong;
+ 	while (songnum>0)
+@@ -516,7 +523,11 @@
+ 		}
+ 		else
+ 		{
+-			tnum = (rand() >> 8) % 8;
++#ifdef CE_NETWORK_OFF
++			tnum = (rand() >> 8) % 8;
++#else
++			tnum = (CE_LockstepSoundRand() >> 8) % 8;
++#endif
+ 			if (tnum == 7)
+ 				tnum = 9;
+ 		}

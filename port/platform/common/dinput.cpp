@@ -1,3 +1,6 @@
+#ifndef CE_NETWORK_OFF
+#include "../../game/ce_network_chat_ui.h"
+#endif
 // SPDX-License-Identifier: GPL-3.0-only
 // port/platform/common/dinput.cpp: the DirectInput 8 objects the game uses (ltshell.cpp, Controller.cpp,
 // PCController.cpp), over SDL3, on both targets: the system keyboard and mouse, and game controllers as DIJOYSTATE2.
@@ -11,6 +14,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifndef CE_NETWORK_OFF
+#include <limits.h>
+#endif
 #ifdef CE_VERSION
 #include <cmath>
 #include <limits>
@@ -18,6 +24,10 @@
 #endif
 
 #include "platform.h"
+#include "feel.h"
+#ifndef CE_NETWORK_OFF
+#include "input_activity.h"
+#endif
 #include "ce_tutorial_pad.h"
 
 bool PortCeLayer();
@@ -366,27 +376,105 @@ SDL_SpinLock gWheelLock;
 float gWheel;
 SDL_WindowID gWheelWindow;
 Uint64 gWheelAcquiredAt;
-bool gWheelFocused;
+bool gWheelFocused, gWheelMinimized;
 unsigned gWheelFocusVersion;
 
+#ifndef CE_NETWORK_OFF
+// Only window.cpp's explicitly authored BEA_PORT_FAKE_KEYS b/m events feed this sampler. SDL_PushEvent alone
+// does not change SDL's device cache. Keep physical SDL state authoritative and add bounded diagnostic input.
+int gDiagnosticX, gDiagnosticY;
+SDL_MouseButtonFlags gDiagnosticButtons;
+bool gDiagnosticFailed, gDiagnosticLogged;
+bool gDiagnosticDestroyed;
+Uint64 gDiagnosticSince;
+
+bool DiagnosticMouseEnabled()
+{
+	const char *fixture = getenv("BEA_PORT_FAKE_KEYS");
+	return fixture && *fixture;
+}
+
+void ClearDiagnosticMouse()
+{
+	gDiagnosticX = gDiagnosticY = 0;
+	gDiagnosticButtons = 0;
+}
+
+bool FailDiagnosticMouse()
+{
+	ClearDiagnosticMouse();
+	gDiagnosticFailed = true;
+	bool log = !gDiagnosticLogged;
+	gDiagnosticLogged = true;
+	return log;
+}
+
+void DiagnosticMousePoll(SDL_Window *source, LONG *dx, LONG *dy, SDL_MouseButtonFlags *buttons)
+{
+	// PortReplayMouse has already established replay/record priority before this function is reached.
+	bool enabled = DiagnosticMouseEnabled();
+	if (!enabled)
+	{
+		SDL_LockSpinlock(&gWheelLock);
+		ClearDiagnosticMouse();
+		SDL_UnlockSpinlock(&gWheelLock);
+		return;
+	}
+	enabled = !PortRecording();
+	SDL_WindowID id = source ? SDL_GetWindowID(source) : 0;
+	bool log = false;
+	SDL_LockSpinlock(&gWheelLock);
+	if (!enabled || !id || id != gWheelWindow || !gWheelFocused || gWheelMinimized || gDiagnosticFailed || gDiagnosticDestroyed)
+		ClearDiagnosticMouse();
+	else
+	{
+		long long x = (long long)*dx + gDiagnosticX, y = (long long)*dy + gDiagnosticY;
+		if (x < INT_MIN || x > INT_MAX || y < INT_MIN || y > INT_MAX)
+			log = FailDiagnosticMouse();
+		else
+		{
+			*dx = (LONG)x;
+			*dy = (LONG)y;
+			*buttons |= gDiagnosticButtons; // a synthetic release never cancels a physical hold
+			gDiagnosticX = gDiagnosticY = 0;
+		}
+	}
+	SDL_UnlockSpinlock(&gWheelLock);
+	if (log) fprintf(stderr, PORT_LOG_PREFIX "diagnostic mouse fixture failed: relative accumulation overflow\n");
+}
+
+#endif
 void ResetWheel(SDL_Window *w)
 {
 	Uint64 acquiredAt = w ? SDL_GetTicksNS() : 0;
 	SDL_WindowID id = w ? SDL_GetWindowID(w) : 0;
 	SDL_LockSpinlock(&gWheelLock);
 	gWheel = 0;
+#ifndef CE_NETWORK_OFF
+	ClearDiagnosticMouse();
+#endif
 	gWheelWindow = id;
 	gWheelAcquiredAt = acquiredAt;
+#ifndef CE_NETWORK_OFF
+	gDiagnosticSince = acquiredAt;
+	gDiagnosticDestroyed = false;
+#endif
 	gWheelFocused = false;
+	gWheelMinimized = false;
 	unsigned version = gWheelFocusVersion;
 	SDL_UnlockSpinlock(&gWheelLock);
 	if (w)
 	{
-		bool focused = (SDL_GetWindowFlags(w) & SDL_WINDOW_INPUT_FOCUS) != 0;
+		SDL_WindowFlags flags = SDL_GetWindowFlags(w);
+		bool focused = (flags & SDL_WINDOW_INPUT_FOCUS) != 0;
+		bool minimized = (flags & SDL_WINDOW_MINIMIZED) != 0;
 		SDL_LockSpinlock(&gWheelLock);
 		// A watch can report a newer focus event while the main thread queries SDL. Never overwrite that event.
 		if (gWheelWindow == id && gWheelFocusVersion == version)
+		{
 			gWheelFocused = focused;
+			gWheelMinimized = minimized;
+		}
 		SDL_UnlockSpinlock(&gWheelLock);
 	}
 }
@@ -396,14 +484,30 @@ bool SDLCALL WheelWatch(void *, SDL_Event *e)
 	SDL_LockSpinlock(&gWheelLock);
 	if (gWheelWindow)
 	{
-		if ((e->type == SDL_EVENT_WINDOW_FOCUS_LOST || e->type == SDL_EVENT_WINDOW_FOCUS_GAINED) &&
+		if ((e->type == SDL_EVENT_WINDOW_FOCUS_LOST || e->type == SDL_EVENT_WINDOW_FOCUS_GAINED ||
+		    e->type == SDL_EVENT_WINDOW_MINIMIZED ||
+		    (gWheelMinimized && (e->type == SDL_EVENT_WINDOW_RESTORED || e->type == SDL_EVENT_WINDOW_MAXIMIZED))) &&
 			(!e->window.windowID || e->window.windowID == gWheelWindow))
 		{
 			gWheelFocusVersion++;
-			gWheelFocused = e->type == SDL_EVENT_WINDOW_FOCUS_GAINED;
-			if (!gWheelFocused) gWheel = 0;
+			if (e->type == SDL_EVENT_WINDOW_FOCUS_LOST || e->type == SDL_EVENT_WINDOW_FOCUS_GAINED)
+				gWheelFocused = e->type == SDL_EVENT_WINDOW_FOCUS_GAINED;
+			else
+				gWheelMinimized = e->type == SDL_EVENT_WINDOW_MINIMIZED;
+#ifndef CE_NETWORK_OFF
+			if (e->common.timestamp > gDiagnosticSince) gDiagnosticSince = e->common.timestamp;
+			ClearDiagnosticMouse();
+#endif
+			gWheel = 0;
 		}
-		if (e->type == SDL_EVENT_MOUSE_WHEEL && gWheelFocused && e->wheel.timestamp >= gWheelAcquiredAt &&
+#ifndef CE_NETWORK_OFF
+		if (e->type == SDL_EVENT_WINDOW_DESTROYED && e->window.windowID == gWheelWindow)
+		{
+			gDiagnosticDestroyed = true;
+			ClearDiagnosticMouse();
+		}
+#endif
+		if (e->type == SDL_EVENT_MOUSE_WHEEL && gWheelFocused && !gWheelMinimized && e->wheel.timestamp >= gWheelAcquiredAt &&
 			(!e->wheel.windowID || e->wheel.windowID == gWheelWindow))
 			gWheel += e->wheel.y;
 	}
@@ -564,6 +668,9 @@ struct Device : public IDirectInputDevice8A
 #endif
 			PortSessionLog(PORT_SESSION_WINDOW, false, "mouse acquired cooperative=%08lx relative_mode=requested", (unsigned long)cooperative);
 			gMouseWindow = window;
+#ifndef CE_NETWORK_OFF
+			PortInputActivity::Acquired(true);
+#endif
 			if (SDL_Window *w = PortSdlWindow(window))
 			{
 				if (!SDL_SetWindowRelativeMouseMode(w, true))
@@ -600,6 +707,9 @@ struct Device : public IDirectInputDevice8A
 #endif
 			PortSessionLog(PORT_SESSION_WINDOW, false, "mouse unacquired");
 			gMouseWindow = NULL;
+#ifndef CE_NETWORK_OFF
+			PortInputActivity::Acquired(false);
+#endif
 			if (SDL_Window *w = PortSdlWindow(window))
 				SDL_SetWindowRelativeMouseMode(w, false);
 		}
@@ -619,9 +729,26 @@ struct Device : public IDirectInputDevice8A
 	HRESULT STDMETHODCALLTYPE GetDeviceState(DWORD size, LPVOID data) override
 	{
 		if (!acquired)
+#ifndef CE_NETWORK_OFF
+		{
+			if (kind == MOUSE) PortInputActivity::Count(PortInputActivity::UNACQUIRED_POLL);
+#endif
 			return DIERR_NOTACQUIRED;
+#ifndef CE_NETWORK_OFF
+		}
+#endif
 		memset(data, 0, size);
 		PortPumpInput();
+#ifndef CE_NETWORK_OFF
+#if defined(CE_NETWORK_TEXT)
+        if (PortCeChatCapturingInput()) {
+            float ignored_x = 0, ignored_y = 0;
+            SDL_GetRelativeMouseState(&ignored_x, &ignored_y);
+            return DI_OK;
+        }
+#endif
+
+#endif
 		if (kind == JOYSTICK)
 		{
 			FakePadStep();
@@ -650,6 +777,17 @@ struct Device : public IDirectInputDevice8A
 					if (unsigned char d = DikFor((SDL_Scancode)s))
 						if (d < size)
 							out[d] = 0x80;
+			if (PORT_FEEL_ON())
+			{
+				// frame-feel measurement (feel.h): how many keys are down and a hash of which
+				unsigned count = 0, hash = 2166136261u;
+				for (DWORD i = 0; i < size && i < 256; i++)
+				{
+					if (out[i]) count++;
+					hash = (hash ^ out[i]) * 16777619u;
+				}
+				PortFeelKeyPoll(count, hash);
+			}
 			if (getenv("BEA_PORT_INPUT_LOG"))
 			{
 				static int last = -1;
@@ -663,11 +801,19 @@ struct Device : public IDirectInputDevice8A
 		}
 		else if (kind == MOUSE)
 		{
+#ifndef CE_NETWORK_OFF
+			PortInputActivity::Count(PortInputActivity::POLL);
+#endif
 			DIMOUSESTATE2 *m = (DIMOUSESTATE2 *)data;
 			long tx, ty, tz;
 			int tb;
 			if (PortReplayMouse(&tx, &ty, &tz, &tb))
 			{
+#ifndef CE_NETWORK_OFF
+				SDL_LockSpinlock(&gWheelLock);
+				ClearDiagnosticMouse();
+				SDL_UnlockSpinlock(&gWheelLock);
+#endif
 				// A tape plays the mouse (replay.cpp): its movement once, its buttons as a level; SDL's is ignored.
 				m->lX = tx;
 				m->lY = ty;
@@ -677,13 +823,16 @@ struct Device : public IDirectInputDevice8A
 				return DI_OK;
 			}
 			float dx = 0, dy = 0;
+			SDL_Window* mouseWindow = PortSdlWindow(window);
+			SDL_WindowFlags mouseFlags = mouseWindow ? SDL_GetWindowFlags(mouseWindow) : 0;
+			bool windowFocused = (mouseFlags & SDL_WINDOW_INPUT_FOCUS) && !(mouseFlags & SDL_WINDOW_MINIMIZED);
 			SDL_MouseButtonFlags b = SDL_GetRelativeMouseState(&dx, &dy);
 #ifdef CE_VERSION
 			if (OrdinaryCeInput())
 			{
 				SDL_LockSpinlock(&gWheelLock);
 				unsigned focusVersion = gWheelFocusVersion;
-				bool focused = gWheelFocused;
+				bool focused = windowFocused && gWheelFocused && !gWheelMinimized;
 				SDL_UnlockSpinlock(&gWheelLock);
 				if (!focused || focusVersion != ceMouseFocusVersion)
 				{
@@ -702,8 +851,11 @@ struct Device : public IDirectInputDevice8A
 				m->lX = (LONG)dx;
 				m->lY = (LONG)dy;
 			}
+#ifndef CE_NETWORK_OFF
+			DiagnosticMousePoll(PortSdlWindow(window), &m->lX, &m->lY, &b);
+#endif
 			SDL_LockSpinlock(&gWheelLock);
-			m->lZ = (LONG)(gWheel * WHEEL_DELTA);
+			m->lZ = windowFocused && gWheelFocused && !gWheelMinimized ? (LONG)(gWheel * WHEEL_DELTA) : 0;
 			gWheel = 0;
 			SDL_UnlockSpinlock(&gWheelLock);
 			m->rgbButtons[0] = (b & SDL_BUTTON_LMASK) ? 0x80 : 0;
@@ -716,11 +868,23 @@ struct Device : public IDirectInputDevice8A
 					fprintf(stderr, PORT_LOG_PREFIX "input: mouse poll buttons %x move %.0f,%.0f\n", (unsigned)b, dx, dy);
 				lastb = b;
 			}
+			if (PORT_FEEL_ON())
+			{
+				long ax = 0, ay = 0;
+				PortFeelMouseTake(&ax, &ay);		// authored movement from the feel script, if there is one (feel.h)
+				m->lX += ax;
+				m->lY += ay;
+			}
+			if (PORT_FEEL_ON())
+				PortFeelMousePoll(m->lX, m->lY, (m->rgbButtons[0] ? 1u : 0u) | (m->rgbButtons[1] ? 2u : 0u) | (m->rgbButtons[2] ? 4u : 0u));
 			if (size >= sizeof(DIMOUSESTATE2))
 			{
 				m->rgbButtons[3] = (b & SDL_BUTTON_X1MASK) ? 0x80 : 0;
 				m->rgbButtons[4] = (b & SDL_BUTTON_X2MASK) ? 0x80 : 0;
 			}
+#ifndef CE_NETWORK_OFF
+			if (m->lX || m->lY || m->lZ || b) PortInputActivity::Count(PortInputActivity::NONZERO_POLL);
+#endif
 		}
 		else if (joy && size >= sizeof(DIJOYSTATE))
 		{
@@ -1310,6 +1474,84 @@ bool PortDinputOwnsMouseEvent(Uint64 timestamp)
 	return gMouseWindow != NULL || (timestamp && timestamp <= gMouseReleasedAt);
 }
 
+#ifndef CE_NETWORK_OFF
+// Called only by window.cpp's authored b/m diagnostic branches after queue admission (or to cancel a failed push).
+// A window-destroy notification revokes diagnostic ownership before SDL frees the window. No SDL queries run under
+// the lock: the event watch can revoke focus concurrently with these main-thread calls or with an acquired poll.
+void PortDinputDiagnosticMouseEvent(SDL_Window *source, const SDL_Event *event, bool queued)
+{
+	SDL_WindowID id = source ? SDL_GetWindowID(source) : 0;
+	if (event->type == SDL_EVENT_WINDOW_DESTROYED)
+	{
+		SDL_LockSpinlock(&gWheelLock);
+		if (id && id == gWheelWindow) { gDiagnosticDestroyed = true; ClearDiagnosticMouse(); }
+		SDL_UnlockSpinlock(&gWheelLock);
+		return;
+	}
+	const char *tape = getenv("BEA_PORT_TAPE"), *record = getenv("BEA_PORT_RECORD");
+	bool enabled = DiagnosticMouseEnabled() && !(tape && *tape) && !(record && *record);
+	bool log = false;
+	SDL_LockSpinlock(&gWheelLock);
+	if (!enabled)
+		ClearDiagnosticMouse();
+	else if (!id || id != gWheelWindow)
+	{
+		// Another window cannot feed or cancel this acquisition's authored input.
+	}
+	else if (!queued)
+		log = FailDiagnosticMouse();
+	else if (gWheelFocused && !gWheelMinimized && event->common.timestamp >= gDiagnosticSince && !gDiagnosticFailed && !gDiagnosticDestroyed)
+	{
+		SDL_WindowID eventWindow = event->type == SDL_EVENT_MOUSE_MOTION ? event->motion.windowID : event->button.windowID;
+		if (eventWindow && eventWindow != id) { SDL_UnlockSpinlock(&gWheelLock); return; }
+		if (event->type == SDL_EVENT_MOUSE_MOTION)
+		{
+			float x = event->motion.xrel, y = event->motion.yrel;
+			// Authored integer mickeys only; reject NaN/infinity/fractions before conversion. A failed fixture stays
+			// empty until its end, rather than silently wrapping or clipping an apparently successful aim sample.
+			if (!(x >= -32767.f && x <= 32767.f && y >= -32767.f && y <= 32767.f) || (float)(int)x != x || (float)(int)y != y)
+				log = FailDiagnosticMouse();
+			else
+			{
+				long long dx = (long long)gDiagnosticX + (int)x, dy = (long long)gDiagnosticY + (int)y;
+				if (dx < -1048576 || dx > 1048576 || dy < -1048576 || dy > 1048576)
+					log = FailDiagnosticMouse();
+				else { gDiagnosticX = (int)dx; gDiagnosticY = (int)dy; }
+			}
+		}
+		else if (event->type == SDL_EVENT_MOUSE_BUTTON_DOWN || event->type == SDL_EVENT_MOUSE_BUTTON_UP)
+		{
+			unsigned button = event->button.button;
+			if (button < SDL_BUTTON_LEFT || button > SDL_BUTTON_X2)
+				log = FailDiagnosticMouse();
+			else if (event->type == SDL_EVENT_MOUSE_BUTTON_DOWN)
+				gDiagnosticButtons |= SDL_BUTTON_MASK(button);
+			else
+				gDiagnosticButtons &= ~SDL_BUTTON_MASK(button);
+		}
+	}
+	SDL_UnlockSpinlock(&gWheelLock);
+	if (log) fprintf(stderr, PORT_LOG_PREFIX "diagnostic mouse fixture failed: queue, input or accumulation bound\n");
+}
+
+void PortDinputDiagnosticMouseEnd(SDL_Window *source)
+{
+	SDL_WindowID id = source ? SDL_GetWindowID(source) : 0;
+	bool log = false;
+	SDL_LockSpinlock(&gWheelLock);
+	if (!id || id == gWheelWindow)
+	{
+		if (gDiagnosticButtons) log = FailDiagnosticMouse();
+		gDiagnosticButtons = 0;
+		// Keep a valid final motion for one eligible poll in this acquisition. Focus/release/destroy resets still
+		// discard it. Buttons require an explicit bounded pair; an unmatched final press is never left held.
+		gDiagnosticFailed = gDiagnosticLogged = false;
+	}
+	SDL_UnlockSpinlock(&gWheelLock);
+	if (log) fprintf(stderr, PORT_LOG_PREFIX "diagnostic mouse fixture failed: unmatched press at end\n");
+}
+
+#endif
 // Each frame (window.cpp's pump): while the game holds the mouse and its window has keyboard focus, relative mode must be on.
 // A compositor can refuse it (the window not yet focused at acquire) or drop it (a focus change); without it the pointer
 // stops at the screen's edges and the battle engine stops turning or pitching (recorded play, 2026-10-16).
@@ -1318,6 +1560,7 @@ void PortMouseKeepRelative()
 	if (!gMouseWindow)
 		return;
 	SDL_Window *w = PortSdlWindow(gMouseWindow);
+	if (w && (SDL_GetWindowFlags(w) & SDL_WINDOW_MINIMIZED)) return;
 	if (!w || !(SDL_GetWindowFlags(w) & SDL_WINDOW_INPUT_FOCUS) || SDL_GetWindowRelativeMouseMode(w))
 		return;
 	static Uint64 lastTry;

@@ -1,0 +1,44 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Actual authenticated transport receive path. ENet sends are fenced by a null peer; no socket is created.
+#include CE_TRANSPORT_SOURCE
+#include <cstdlib>
+#include <memory>
+
+extern "C" ENetPacket *enet_packet_create(const void *,size_t,enet_uint32){std::abort();}
+extern "C" void enet_packet_destroy(ENetPacket *){std::abort();}
+extern "C" int enet_peer_send(ENetPeer *,enet_uint8,ENetPacket *){std::abort();}
+extern "C" void enet_peer_reset(ENetPeer *){std::abort();}
+extern "C" void enet_host_flush(ENetHost *){std::abort();}
+extern "C" void enet_peer_disconnect_later(ENetPeer *,enet_uint32){std::abort();}
+extern "C" void enet_peer_disconnect_now(ENetPeer *,enet_uint32){std::abort();}
+
+static unsigned checks;
+static void Check(bool condition,const char *what){++checks;if(!condition){std::fprintf(stderr,"FAIL %s\n",what);std::exit(2);}}
+static const uint8_t world10[32]={/* WORLD10_DIGEST */};
+static const uint8_t world11[32]={/* WORLD11_DIGEST */};
+
+static void Challenge(const uint8_t *guest_digest,const uint8_t *host_digest,uint32_t expected_error,bool corrupt=false){
+    std::unique_ptr<CE_NetSession> guest(new CE_NetSession);
+    guest->status.role=CE_NET_GUEST;guest->status.phase=CE_NET_AUTHENTICATING;guest->stage=kHelloSent;
+    std::memset(guest->secret,0x37,32);std::memset(guest->clientNonce,0x61,32);
+    std::memcpy(guest->compatibility,guest_digest,32);
+    Header h={};h.kind=kChallenge;h.sequence=1;h.message=1;h.total=96;h.parts=1;std::memset(h.session,0x28,16);
+    uint8_t plain[96]={};std::memcpy(plain,guest->clientNonce,32);std::memset(plain+32,0x72,32);std::memcpy(plain+64,host_digest,32);
+    std::array<uint8_t,kWire> wire={};WriteHeader(wire.data(),h);uint8_t nonce[24];Nonce(nonce,h,true);
+    crypto_aead_lock(wire.data()+kHeader,wire.data()+kHeader+96,guest->secret,nonce,wire.data(),kHeader,plain,sizeof plain);
+    if(corrupt)wire[kHeader+96]^=1;
+    ReceivePacket(guest.get(),wire.data(),kHeader+96+kTag,0,100);
+    if(corrupt){Check(guest->status.phase==CE_NET_AUTHENTICATING&&guest->status.rejected_packets==1&&!guest->messageSequence[0],"bad authentication cannot masquerade as schema refusal");return;}
+    Check(guest->status.phase==CE_NET_FAILED&&guest->status.error==expected_error&&guest->count==0,"expected bounded transport failure");
+    Check(guest->stage==kHelloSent,"mismatch or controlled missing peer cannot enter an active session");
+    Check(guest->messageSequence[0]==(expected_error==CE_NET_IO?1u:0u),"schema mismatch refuses before a proof is queued");
+}
+int main(){
+    Check(std::memcmp(world10,world11,32)!=0,"independent world-10 and world-11 fixture contexts differ");
+    Challenge(world10,world11,CE_NET_INCOMPATIBLE);
+    Challenge(world11,world10,CE_NET_INCOMPATIBLE);
+    // Equal contexts proceed to the proof send. The intentional null peer makes that later send fail as IO.
+    Challenge(world11,world11,CE_NET_IO);
+    Challenge(world10,world11,CE_NET_OK,true);
+    std::printf("%u authenticated handshake boundary controls passed; no socket opened\n",checks);
+}

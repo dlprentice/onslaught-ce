@@ -20,12 +20,22 @@ import deps
 
 
 DRIVER = r'''#include "handles.h"
+#include "compatibility.h"
 #include <io.h>
 #include <stdlib.h>
 #include <string.h>
 
 extern "C" FILE *port_fopen(const char *, const char *);
+// This suite retains the offline file-overlay boundary; actual admission is tested by the coupled hook fixture.
+extern "C" int CE_BootRequested(void) { return 0; }
+extern "C" int CE_BootLocalFileAllowed(unsigned, const char *, const char *) { return 0; }
+extern "C" int CE_CompatibilityObserveAuthoredRead(const char *, int, char *, size_t) { return 1; }
+extern "C" int CE_CompatibilityAuthoredOpenFailed(const char *, char *, size_t) { return 1; }
+extern "C" int CE_CompatibilityValidateOpenedFile(const char *, FILE *, char *, size_t) { return 1; }
+extern "C" int CE_CompatibilityValidateOpenedNative(const char *, intptr_t, char *, size_t) { return 1; }
+extern "C" int CE_CompatibilityUnsupportedReader(char *, size_t) { return 1; }
 extern "C" int port_access(const char *, int);
+extern int PortUserFileState(const char *);
 extern "C" LONG WINAPI PortRegCreateKeyExA(HKEY,LPCSTR,DWORD,LPSTR,DWORD,REGSAM,LPSECURITY_ATTRIBUTES,PHKEY,LPDWORD);
 extern "C" LONG WINAPI PortRegSetValueExA(HKEY,LPCSTR,DWORD,DWORD,const BYTE *,DWORD);
 extern "C" LONG WINAPI PortRegCloseKey(HKEY);
@@ -75,6 +85,7 @@ int main(int argc, char **argv)
     }
     if (!strcmp(argv[1], "delete")) return DeleteFileA(argv[2]) ? 0 : 1;
     if (!strcmp(argv[1], "access")) return port_access(argv[2], 0) == 0 ? 0 : 1;
+    if (!strcmp(argv[1], "user-state")) { printf("%d\n", PortUserFileState(argv[2])); return 0; }
     if (!strcmp(argv[1], "attributes")) return GetFileAttributesA(argv[2]) == INVALID_FILE_ATTRIBUTES ? 1 : 0;
     if (!strcmp(argv[1], "mkdir")) return CreateDirectoryA(argv[2], NULL) ? 0 : 1;
     if (!strcmp(argv[1], "win-read"))
@@ -214,6 +225,7 @@ class FileOverlay(unittest.TestCase):
         cmd = [str(deps.DATA / "llvm/bin/clang++"), "--target=i686-pc-linux-gnu", "-m32", "-std=c++17",
                "-ffunction-sections", "-fdata-sections", "-Wl,--gc-sections", "-fshort-wchar", "-fms-extensions",
                "-fno-autolink", "-w", "-O0", f"-I{platform}", f"-I{deps.PORT / 'include/linux'}",
+               f"-I{deps.PORT / 'network'}",
                f"-I{deps.DATA / 'dxvk-native/usr/include/dxvk'}", str(source), str(platform / "files.cpp"),
                str(platform / "paths.cpp"), str(deps.PORT / "platform/common/registry.cpp"), str(faults),
                # The mod layer the read paths consult (platform/common/mods.h), with its ce.ini reader and SHA-256.
@@ -275,6 +287,60 @@ class FileOverlay(unittest.TestCase):
         folder = self.user / "SAVEGAMES"
         folder.mkdir(parents=True, exist_ok=True)
         (folder / name).write_bytes(data)
+
+    def user_state(self, path):
+        return int(self.run_driver("user-state", path).decode().strip())
+
+    def test_user_file_state_tells_the_profile_copy_from_the_game_folders_file(self):
+        # ce_graphics_policy.cpp: a read serves the game folder's options file when the profile has none, and only the
+        # profile's own copy counts as saved choices.
+        (self.game / "defaultoptions.bea").write_bytes(b"retail options")
+        self.original = self.snapshot()
+        self.user.mkdir(parents=True, exist_ok=True)
+        self.assertEqual(b"retail options", self.run_driver("read", "defaultoptions.bea"))
+        self.assertEqual(0, self.user_state("defaultoptions.bea"), "the game folder's file is not the profile's")
+        (self.user / "defaultoptions.bea").write_bytes(b"profile options")
+        self.assertEqual(b"profile options", self.run_driver("read", "defaultoptions.bea"))
+        self.assertEqual(1, self.user_state("defaultoptions.bea"))
+        self.assertEqual(1, self.user_state("DefaultOptions.BEA"), "the path layer matches names ignoring case")
+        self.assertEqual(0, self.user_state("elsewhere.bea"))
+        self.assertEqual(0, self.user_state(r"savegames\Alpha.bes"), "a game file in a folder the profile lacks")
+
+    def test_user_file_state_is_unknown_for_what_is_not_a_regular_file(self):
+        (self.game / "defaultoptions.bea").write_bytes(b"retail options")
+        self.original = self.snapshot()
+        self.user.mkdir(parents=True, exist_ok=True)
+        (self.user / "defaultoptions.bea").mkdir()
+        self.assertEqual(-1, self.user_state("defaultoptions.bea"), "a folder in its place")
+        (self.user / "defaultoptions.bea").rmdir()
+        (self.user / "target.bea").write_bytes(b"x")
+        (self.user / "defaultoptions.bea").symlink_to("target.bea")
+        self.assertEqual(-1, self.user_state("defaultoptions.bea"), "a link in its place")
+        (self.user / "defaultoptions.bea").unlink()
+        (self.user / "DefaultOptions.bea").write_bytes(b"one")
+        (self.user / "DEFAULTOPTIONS.BEA").write_bytes(b"two")
+        self.assertIn(self.user_state("defaultoptions.bea"), (-1, 1), "two spellings are never reported absent")
+        (self.user / "DefaultOptions.bea").unlink()
+        (self.user / "DEFAULTOPTIONS.BEA").unlink()
+        os.mkfifo(self.user / "defaultoptions.bea")
+        self.assertEqual(-1, self.user_state("defaultoptions.bea"), "a named pipe in its place")
+        (self.user / "defaultoptions.bea").unlink()
+        self.assertEqual(-1, self.user_state("C:defaultoptions.bea"), "a spelling the path layer refuses is not reported absent")
+        (self.user / "defaultoptions.bea").write_bytes(b"profile options")
+        os.chmod(self.user, 0)
+        try:
+            self.assertEqual(-1, self.user_state("defaultoptions.bea"), "a profile folder that cannot be searched is not reported absent")
+        finally:
+            os.chmod(self.user, 0o755)
+
+    def test_user_file_state_changes_nothing(self):
+        (self.game / "defaultoptions.bea").write_bytes(b"retail options")
+        self.original = self.snapshot()
+        self.user.mkdir(parents=True, exist_ok=True)
+        before = self.tree_snapshot(self.user)
+        for name in ("defaultoptions.bea", "missing/folder/file.bea", "savegames", ".."):
+            self.user_state(name)
+        self.assertEqual(before, self.tree_snapshot(self.user), "asking created or changed a file in the user folder")
 
     def test_mod_copy_between_user_copy_and_game_file(self):
         (self.game / "data").mkdir()

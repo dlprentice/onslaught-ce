@@ -1,0 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-only
+# Unified-diff context prefixes unchanged upstream blank lines and tab indentation.
+# The nine trailing-space lines are unchanged context, not added or removed code.
+# Preserve the dependency recipes' exact patch hash; retain EOF checks and all
+# whitespace checks for every other path. Do not generalize this exception.
+/libjuice-relay-only.patch whitespace=-blank-at-eol,-space-before-tab

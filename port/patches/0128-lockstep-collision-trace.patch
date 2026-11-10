@@ -1,0 +1,21 @@
+--- a/HLCollisionDetector.cpp
++++ b/HLCollisionDetector.cpp
+@@ -1,5 +1,8 @@
+ // Persistent collision scheduling reconstructed from the pristine PC executable.
+ #include "common.h"
++#ifndef CE_NETWORK_OFF
++#include "ce_network_lockstep.h"
++#endif
+ #define HLCOLLISIONDETECTOR_CPP
+ #include "collisionseekingthing.h"
+ #include "thing.h"
+@@ -123,6 +126,9 @@
+ 		if (speed == 0.0f)
+ 			return;
+ 		float time = EVENT_MANAGER.GetTime() + distance / speed;
++#ifndef CE_NETWORK_OFF
++		CE_LockstepTraceCollision(&centre.X, &otherCentre.X, mThing->mRadius, other->mRadius, speed, time);	// port: lockstep test trace
++#endif
+ 		if (time > EVENT_MANAGER.GetTime())
+ 		{
+ 			float eventTime = time;

@@ -12,6 +12,9 @@ class FVector;
 // Once at the top of every CGame::Update (port/game/updatedump.cpp, PortUpdateHook): keeps the table of the level's squads current while the map is on.
 void	CeCommanderUpdate();
 
+// The paused map's window on the world, for the frame-feel log (feel.h): out[0..2] = the lower-left corner and the span; 1 while the paused map is open, else 0.
+extern "C" int	CeCmdFeelView(float *out);
+
 // Patch 0161, CNormalSquad::CanMerge: true for a squad that has an order from the map (and for the squad it would merge into), so it is not dissolved into
 // another squad.
 bool	CeCommanderNoMerge(const void *squad);

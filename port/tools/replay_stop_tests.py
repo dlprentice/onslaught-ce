@@ -22,6 +22,7 @@ import unittest
 from pathlib import Path
 
 import deps
+from window_tests import private_ui_compile_args
 
 ROOT = Path(__file__).resolve().parents[2]
 REPLAY = (ROOT / "port/platform/common/replay.cpp").read_text()
@@ -48,7 +49,7 @@ def build(folder, replay_text, name):
                f"-I{deps.PORT / 'include/linux'}", f"-I{deps.DATA / 'dxvk-native/usr/include/dxvk'}", f"-I{deps.PREFIX / 'include'}",
                f"-I{ROOT / 'port/platform/common'}", str(driver), f"-L{deps.PREFIX / 'lib'}", "-lSDL3",
                f"-Wl,-rpath,{deps.PREFIX / 'lib'}", "-o", str(binary)]
-    result = subprocess.run(command, capture_output=True, text=True, timeout=120, env=dict(os.environ, TMPDIR=str(folder)))
+    result = subprocess.run(command + private_ui_compile_args(ROOT / "port"), capture_output=True, text=True, timeout=120, env=dict(os.environ, TMPDIR=str(folder)))
     if result.returncode:
         raise RuntimeError(f"{name} did not compile:\n{result.stdout}{result.stderr}")
     return binary

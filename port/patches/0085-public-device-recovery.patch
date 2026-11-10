@@ -1,0 +1,49 @@
+--- a/ltshell.cpp
++++ b/ltshell.cpp
+@@ -776,6 +776,24 @@
+ 			cant_proc =	FALSE;
+         }
+     }
++
++#if defined(BEA_PUBLIC_GRAPHICS_HOST)
++	// Recovery keeps rendering disabled until resources are restored. Drain ordinary messages first;
++	// never dispatch a nested pump while invalidation/reset callbacks are running.
++	if (!bGotMsg && mMsg.message != WM_QUIT && m_bActive && DeviceRecoveryPending())
++	{
++		HRESULT recovery = RecoverLostDevice();
++#ifndef CE_NETWORK_OFF
++		session_device_state = SUCCEEDED(recovery) ? 1 : 2;
++		if (recovery == D3DERR_DEVICELOST && !CE_SessionActive()) Sleep(10);
++#else
++		if (recovery == D3DERR_DEVICELOST) Sleep(10);
++#endif
++		if (FAILED(recovery) && recovery != D3DERR_DEVICELOST)
++			SendMessage(LT.GetHWnd(), WM_CLOSE, 0, 0);
++		cant_proc = TRUE;
++	}
++#endif
+ 
+ 	if(!cant_proc) // stuff from top of Render3DEnvironment()
+ 	{
+@@ -826,7 +844,12 @@
+ 					m_d3dpp.BackBufferFormat = pAdapterInfo->d3ddmDesktop.Format;
+ 				}
+ 
++#if defined(BEA_PUBLIC_GRAPHICS_HOST)
++				hr = RecoverLostDevice();
++				if (FAILED(hr) && hr != D3DERR_DEVICELOST)
++#else
+ 				if( FAILED( hr = Reset3DEnvironment(TRUE, FALSE) ) )
++#endif
+ 				{
+ 		            SendMessage( LT.GetHWnd(), WM_CLOSE, 0, 0 );
+ 					cant_proc = TRUE;
+@@ -847,4 +870,8 @@
++#if defined(BEA_PUBLIC_GRAPHICS_HOST)
++			return cant_proc; // A zero clock delta must not turn unavailable resources into a runnable frame.
++#else
+ 			return S_OK;
++#endif
+ 
+ 
+ // Not sure about this shite

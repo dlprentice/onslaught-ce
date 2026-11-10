@@ -204,6 +204,11 @@ void Dump(CDXLandscape &land,int view,const char *unsafe,int constructorCount=0)
 }
 int main(int argc,char **argv){
     if(argc!=2)return 2;
+#ifdef CE_TERRAIN_NEUTRAL_FIXTURE
+    if(CeTerrainQualityExtended() || CeTerrainGeometryDistanceSquared(64.f)!=64.f){
+        std::fputs("Authored Normal terrain fixture policy changed\n",stderr);return 17;
+    }
+#endif
     std::string test=argv[1];
     bool gated=test=="gated-far-reset"||test=="gated-near-reset"||test=="gated-recover";
     const int levels=gated?4:5; // native two-view path uses four levels; other controls exercise five
@@ -278,7 +283,24 @@ def definition(source, start):
     return source[hits[0].start():end]
 
 
-def terrain_driver(sources):
+NEUTRAL_TERRAIN_QUALITY = r"""
+// Keep this device-lifetime fixture at ordinary Normal policy. The dedicated
+// terrain-quality suite links the real frame policy and resource controls.
+#define CE_TERRAIN_NEUTRAL_FIXTURE 1
+float CeTerrainGeometryDistanceSquared(float value){return value;}
+bool CeTerrainQualityExtended(){return false;}
+void CeTerrainQualityPatch(int){}
+void CeTerrainQualityFarCell(){}
+void CeTerrainQualityAllocationAttempt(int){}
+void CeTerrainQualityAllocationFailure(int=-1){}
+void CeTerrainQualityTexture(int){}
+CLandscapeVB *CeTerrainReserveAllocate(int,unsigned short){return nullptr;}
+bool CeTerrainReserveOwns(const void*){return false;}
+void CeTerrainReserveReleased(const void*){}
+"""
+
+
+def terrain_driver(sources, *, quality_policy=False):
     landscape = sources["DXLandscape.cpp"]
     functions = []
     for start in ("CLandscapeView::CLandscapeView()", "void CLandscapeView::CreateMipLevels(SINT levels)",
@@ -308,7 +330,8 @@ def terrain_driver(sources):
     engine = definition(sources["DXEngine.cpp"], "HRESULT CDXEngine::Render(int viewpoint)")
     gate = engine[engine.index("\tif (GAME.IsMultiplayer())"):engine.index("\n\t// And then start doing drawing.")]
     declaration = re.search(r"^\s*virtual HRESULT\s+InvalidateDeviceObjects\(\);[^\n]*", sources["landscape.h"], re.MULTILINE)
-    return (HARNESS.replace("@LOD_STRUCT@", lod[0]).replace("@FUNCTIONS@", "\n".join(functions))
+    quality = "" if quality_policy else NEUTRAL_TERRAIN_QUALITY
+    return (HARNESS.replace("@LOD_STRUCT@", lod[0]).replace("@FUNCTIONS@", quality + "\n".join(functions))
             .replace("@DRAW_CONSUMER@", consumer).replace("@DEVICE_OBJECT@", sources["deviceobject.h"])
             .replace("@ENGINE_GATE@", gate).replace("@INVALIDATE_DECL@", declaration[0] if declaration else "")
             .replace("@LAYOUT_HEADER@", re.sub(r'^#include[^\n]*', '', sources["landscape.h"], flags=re.MULTILINE)))
@@ -355,6 +378,17 @@ def main():
                 receipt["cases"].append({"variant": variant, "case": case, "unsafe": value["unsafe"],
                     "far_count": value["far_count"], "lod_counts": value["lod_counts"],
                     "observation_sha256": hashlib.sha256(proc.stdout.encode()).hexdigest()})
+        # A neutral fixture must not silently become an Extended-quality run.
+        # This guards its stated precondition; it is not renderer acceptance.
+        driver = terrain_driver(texts["patched"])
+        normal = "float CeTerrainGeometryDistanceSquared(float value){return value;}"
+        if driver.count(normal) != 1:
+            raise RuntimeError("authored Normal terrain hook changed")
+        mutant = driver.replace(normal, normal.replace("return value;", "return value*.25f;"))
+        binary = common.compile_driver(args.cxx, out, "extended-neutral-control", mutant, receipt)
+        proc = subprocess.run([str(binary), "success-near"], capture_output=True, text=True, timeout=5)
+        receipt["checks"].append({"name": "accidental Extended policy is refused by Normal fixture",
+            "pass": proc.returncode == 17 and "Authored Normal terrain fixture policy changed" in proc.stderr})
         for case in ("pre-init-notification", "partial-init-notification"):
             after = observations["patched", case]
             receipt["checks"].append({"name": case+": callback safe with no initialized views", "pass":

@@ -106,6 +106,10 @@ int PortMapMouse(float *, float *) { return 0; }
 static bool acquired;
 bool PortDinputMouseAcquired() { return acquired; }
 bool PortDinputOwnsMouseEvent(Uint64) { return acquired; }
+// This fixture substitutes the DirectInput owner; its real diagnostic callbacks are covered separately
+// by diagnostic_mouse_tests.py. No authored mouse-diagnostic script is enabled in the recording cases here.
+void PortDinputDiagnosticMouseEvent(SDL_Window *, const SDL_Event *, bool) {}
+void PortDinputDiagnosticMouseEnd(SDL_Window *) {}
 int PortUiMouseMenu(int) { return 0; }		// the CE layer's menu pointer: off here (a recording and its replay are the faithful path), so the queue ends no batch at a button release
 void PortUiMouseMenuPoint(int *, int *) {}
 void PortMouseKeepRelative() {}
@@ -119,6 +123,7 @@ void PortSessionDisplayInventory(SDL_Window *) {}
 void PortSessionInputInventory() {}
 void PortSessionAudioInventory() {}
 void PortSessionSettingsInventory() {}
+void PortSessionWindowSummary(bool, const char *, ...) {}
 struct Message { UINT type; WPARAM w; LPARAM l; };
 static std::vector<Message> messages;
 static unsigned keyDown, keyUp, chars, buttons, moves, wUp;

@@ -15,10 +15,13 @@ import resource
 import shutil
 import struct
 import subprocess
+import sys
 import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "port"))
+import build  # noqa: E402
 TESTS = ROOT / "port/tools/tests"
 MUSIC = ROOT / "port/game/ce_music.cpp"
 PATCH = ROOT / "port/patches/0103-ce-music-playlist.patch"
@@ -36,10 +39,22 @@ def sections(patch):
         r"(?ms)^--- a/([^\n]+)\n\+\+\+ b/[^\n]+\n.*?(?=^--- a/|\Z)", patch)}
 
 
+def mirror_text(name):
+    """src/NAME as the port's mirror holds it before any patch: include names and their case normalised as build.py does.
+    The patches' context lines are written against that text ("common.h", not the original's "Common.h")."""
+    build.SYSTEM_NAMES.update(build.system_header_names())
+    rows = [l.split(maxsplit=1) for l in (ROOT / "config/game-data.sha256").read_text().splitlines() if l.strip()]
+    targets = ([build.MIRROR_ROOT / f.relative_to(ROOT) for f in build.tracked_sources()] +
+               [build.MIRROR / r for _, r in rows] + [build.MIRROR / "data/NVShaderFragments.inc"])
+    raw = (ROOT / "src" / name).read_bytes().decode("latin-1")
+    return build.normalise(raw, build.MIRROR_ROOT / "src", build.CaseIndex(targets),
+                           [build.MIRROR, build.MIRROR / "MissionScript"]).encode("latin-1")
+
+
 def patched(out, names, skip=()):
-    """src/ copies of names with every port patch's section for them applied in the build's order, at fuzz 0."""
+    """The mirror's copies of names with every port patch's section for them applied in the build's order, at fuzz 0."""
     for name in names:
-        (out / name).write_bytes((ROOT / "src" / name).read_bytes())
+        (out / name).write_bytes(mirror_text(name))
     for patch in sorted((ROOT / "port/patches").glob("*.patch")):
         if patch.name in skip:
             continue
@@ -53,6 +68,9 @@ def patched(out, names, skip=()):
                                    capture_output=True, text=True, timeout=10, preexec_fn=no_core)
                 if r.returncode or "fuzz" in r.stdout.lower():
                     raise AssertionError(f"{patch.name} {name}: {r.stdout}{r.stderr}")
+    # The text a public build compiles: the music playlist does not depend on the network, whose hooks (build.network_view) are out.
+    for name in names:
+        (out / name).write_bytes(build.network_view((out / name).read_bytes().decode("latin-1"), off=True).encode("latin-1"))
 
 
 def ogg(channels=2, rate=44100):
@@ -100,6 +118,8 @@ class MusicTests(unittest.TestCase):
         for name in ("portlog.h", "ce.cpp", "ce_music_scan.cpp"):
             shutil.copy(ROOT / "port/platform/common" / name, common)
         shutil.copy(ROOT / "port/updater/ce_report.h", folder / "updater")
+        (folder / "network").mkdir()
+        shutil.copy(ROOT / "port/network/compatibility.h", folder / "network")    # ce.cpp's "../../network/compatibility.h"
 
     def build(self, folder, ce=True, network=False):
         game, common = folder / "game", folder / "platform/common"

@@ -1,0 +1,23 @@
+--- a/DXEngine.cpp
++++ b/DXEngine.cpp
+@@ -3,6 +3,10 @@
+ //////////////////////////////////////////////////////////////////////
+ 
+ #include "../platform/common/portlog.h"
++
++#ifdef CE_VERSION
++extern "C" void PortCeWorldViewCapture();
++#endif
+ #include "common.h"
+ #ifdef CE_VERSION
+ #include "../game/ce_photo.h"	// patch 0133: CE photo mode drops the HUD routines' draw calls
+@@ -814,6 +818,9 @@
+ 			RENDERINFO.SetProjection(mNearZ,howfar,mNearZ*zoom*PortWideX(),mNearZ*zoom*mCamera[mCurrentViewpoint]->GetAspectRatio()*PortWideY());
+ 		else
+ 		RENDERINFO.SetProjection(mNearZ,howfar,mNearZ*zoom,mNearZ*zoom*mCamera[mCurrentViewpoint]->GetAspectRatio());
++#ifdef CE_VERSION
++    PortCeWorldViewCapture();
++#endif
+ 
+ 		if (mRenderLandscape)
+ 		{

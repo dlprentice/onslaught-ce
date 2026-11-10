@@ -36,6 +36,11 @@ struct PortSessionFinalMedia {
 // Called outside the audio callback and mixer mutex; staged once for the next existing unbudgeted summary line.
 void PortSessionSetFinalMedia(const PortSessionFinalMedia *snapshot);
 void PortSessionSummary();
+#ifndef CE_NETWORK_OFF
+// Normal window summaries use the ordinary event budget. The first eight final owned-window summaries have a
+// separate process-wide budget, so normal-event saturation cannot hide the last aggregate input-route counters.
+void PortSessionWindowSummary(bool final, const char *format, ...);
+#endif
 // Cheap counters only: safe on the audio callback; the main thread/teardown formats their bounded summaries.
 enum PortSessionCounter { PORT_COUNT_AUDIO_CALLBACKS, PORT_COUNT_AUDIO_PUT_FAILED, PORT_COUNT_AUDIO_ALLOC_FAILED,
 	PORT_COUNT_MUSIC_REFILLS, PORT_COUNT_MUSIC_SHORT_READS, PORT_COUNT_MUSIC_READ_FAILED, PORT_COUNT_MUSIC_WAIT_FAILED,

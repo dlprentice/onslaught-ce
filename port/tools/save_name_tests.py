@@ -71,6 +71,8 @@ def main():
         sources = ("src/PCMemoryCard.cpp", "src/PCMemoryCard.h", "src/UMTexture.cpp", "src/FEPSaveGame.cpp",
                    "port/platform/common/save_names.h", "port/platform/common/save_names.cpp",
                    "port/platform/common/crtfile.cpp", "port/platform/common/portlog.h",
+                   "port/game/ce_network_boot.h", "port/platform/common/ce_netcode.h", "port/network/compatibility.h",    # ce_network_boot.h includes both
+                   "port/tools/tests/network_hook_stubs.cpp",    # crtfile.cpp's hooks
                    "port/patches/0066-save-name-utf8.patch", "port/tools/tests/save_names_driver.cpp",
                    "port/platform/windows/files.cpp", "port/platform/windows/save_namespace.cpp",
                    "port/tools/tests/save_find_driver.cpp", "port/tools/tests/save_namespace_boundary.h",
@@ -136,7 +138,7 @@ int CompareStringOrdinal(const WCHAR *, int, const WCHAR *, int, BOOL);
         receipt["cases"].append({"binary":"patch","case":"production-normalized-source","returncode":admitted.returncode,"passed":ok})
         if not ok: raise RuntimeError("0066 failed after production include normalization")
         objects = [out / "port/platform/common/save_names.cpp", out / "port/platform/common/crtfile.cpp",
-                   out / "port/platform/windows/save_namespace.cpp",
+                   out / "port/platform/windows/save_namespace.cpp", out / "port/tools/tests/network_hook_stubs.cpp",
                    out / "port/tools/tests/save_names_driver.cpp"]
         def build(label, source, windows):
             binary = out / label
@@ -302,7 +304,7 @@ int CompareStringOrdinal(const WCHAR *, int, const WCHAR *, int, BOOL);
                    "-I"+str(out), "-I"+str(out/"port/platform/common"), "-DTEST_WINDOWS_SAVES=1",
                    '-DSAVE_CARD_SOURCE="'+str(out/"PCMemoryCard.cpp")+'"','-DCONVERTER_SOURCE="'+str(out/"converters.inc")+'"',
                    '-DUI_SOURCE="'+str(ui_source)+'"',str(out/"port/platform/common/save_names.cpp"),
-                   str(out/"port/platform/common/crtfile.cpp"),str(out/"port/platform/windows/save_namespace.cpp"),
+                   str(out/"port/platform/common/crtfile.cpp"),str(out/"port/platform/windows/save_namespace.cpp"),str(out/"port/tools/tests/network_hook_stubs.cpp"),
                    str(out/"port/tools/tests/save_overwrite_driver.cpp"),"-o",str(ui_binary)]
         receipt["commands"].append(command)
         with (out/"overwrite-ui.build.log").open("w") as log:

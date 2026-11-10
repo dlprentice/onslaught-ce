@@ -51,8 +51,8 @@ class OrderedButtonsTests(unittest.TestCase):
     def test_real_adapter_and_callers(self):
         cases = ("pad-quick-tap", "pad-edge-order", "pad-edge-chord", "pad-edge-chord-pulses", "pad-edge-overflow", "pad-edge-event-overflow", "pad-edge-overflow-focus", "pad-edge-focus",
                  "pad-edge-stale-focus", "pad-edge-hotplug", "pad-edge-hotplug-two", "pad-edge-two", "pad-edge-cross-binding", "pad-edge-two-consumers",
-                 "pad-edge-repeat-consumer", "pad-edge-bonus-two", "pad-edge-no-poll-held", "pad-edge-duplicate-binding",
-                 "pad-edge-no-watch", "pad-edge-missing-focus-event", "pad-edge-cross-overflow", "pad-edge-trigger", "pad-edge-multiplayer",
+                 "pad-edge-repeat-consumer", "pad-edge-split-two", "pad-edge-no-poll-held", "pad-edge-duplicate-binding",
+                 "pad-edge-no-watch", "pad-edge-missing-focus-event", "pad-edge-cross-overflow", "pad-edge-trigger", "pad-edge-split-screen",
                  "pad-edge-tape", "pad-edge-record", "pad-edge-clock", "pad-edge-probes")
         args = [sys.executable, str(HARNESS), "--optimize"]
         for case in cases:

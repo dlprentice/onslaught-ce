@@ -1,0 +1,16 @@
+--- a/Controller.cpp
++++ b/Controller.cpp
+@@ -651,7 +651,13 @@
+ 						if (sMouse)
+ 						{
+ 							if (val == 0.0f) sSendingMouseRest = true;
++#ifndef CE_NETWORK_OFF
++							CE_WorldMouseAxis(1);
++#endif
+ 							SendButtonAction(mapping->mId, val) ;
++#ifndef CE_NETWORK_OFF
++							CE_WorldMouseAxis(0);
++#endif
+ 							sSendingMouseRest = false;
+ #if defined(CE_VERSION)
+ 							if (val == 0.0f) sCeMouseRestId = mapping->mId;

@@ -3,6 +3,9 @@
 #ifndef PORT_PLATFORM_H
 #define PORT_PLATFORM_H
 #include <windows.h>
+#ifndef CE_NETWORK_OFF
+#include <stddef.h>
+#endif
 
 #include "portlog.h"
 
@@ -58,6 +61,16 @@ bool PortDinputMouseAcquired();
 // The player's game folder (read only) and the port's writable folder (port/platform/<target>/...paths).
 const char *PortGameDir();
 const char *PortUserDir();
+#ifndef CE_NETWORK_OFF
+// Read already initialized effective roots without initialization, environment reads, I/O or creation.
+// Main-thread query after normal application file-layer setup; caller-owned output buffers must not overlap.
+// Returns 0 for uninitialized roots or insufficient buffers (no partial/truncated roots), 1 for the full pair.
+extern "C" int PortCachedContentRoots(char *game, size_t game_size, char *user, size_t user_size);
+#ifdef _WIN32
+// Normal Windows path initialization, called only after exact launcher-root admission checks.
+extern "C" void PortInitializeContentRoots(void);
+#endif
+#endif
 
 // The clocks (clock.cpp): BEA_PORT_CLOCK = present (deterministic) or shim (the retail replay shim's clock), else real.
 bool PortClockVirtual();

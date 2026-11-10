@@ -2,6 +2,9 @@
 // port/platform/linux/files.cpp: the game's file calls on Linux (CreateFile/ReadFile/..., FindFirstFile, the CRT's
 // fopen/_access/_findfirst/_mkdir) through the path layer (paths.cpp).
 #include "handles.h"
+#ifndef CE_NETWORK_OFF
+#include "../../game/ce_network_boot.h"
+#endif
 #include "../common/mods.h"
 #include <io.h>
 
@@ -38,7 +41,11 @@ int PortModReadFd(const char *game_path, const char *resolved)
 }
 
 // ---- CRT ------------------------------------------------------------------------------------------------------------
+#ifdef CE_NETWORK_OFF
 extern "C" FILE *port_fopen(const char *name, const char *mode)
+#else
+static FILE *OpenFile(const char *name, const char *mode)
+#endif
 {
 	char path[4096];
 	// The first character selects the operation. LoadCardId uses "ra", which the CRT accepts as a read mode.
@@ -73,6 +80,41 @@ extern "C" FILE *port_fopen(const char *name, const char *mode)
 	return fopen(path, mode);
 }
 
+#ifndef CE_NETWORK_OFF
+extern "C" FILE *port_fopen(const char *name, const char *mode)
+{
+	bool writes = mode[0] == 'w' || mode[0] == 'a' || strchr(mode, '+');
+	if (!CE_CompatibilityObserveAuthoredRead(name, writes, NULL, 0)) { errno = EACCES; return NULL; }
+	FILE *file = OpenFile(name, mode);
+	if (!file && !writes)
+	{
+		int open_error = errno;
+		CE_CompatibilityAuthoredOpenFailed(name, NULL, 0);
+		errno = open_error;
+		return NULL;
+	}
+	if (file && !writes && !CE_CompatibilityValidateOpenedFile(name, file, NULL, 0))
+	{
+		fclose(file);
+		errno = EACCES;
+		return NULL;
+	}
+	return file;
+}
+
+extern "C" FILE *PortOpenLocalFile(unsigned owner, const char *name, const char *mode)
+{
+	if (!CE_BootRequested()) return port_fopen(name, mode);
+	if (!CE_BootLocalFileAllowed(owner, name, mode))
+	{
+		CE_CompatibilityUnsupportedReader(NULL, 0);
+		errno = EACCES;
+		return NULL;
+	}
+	return OpenFile(name, mode);
+}
+
+#endif
 extern "C" int port_access(const char *name, int mode)
 {
 	char path[4096];
@@ -333,6 +375,14 @@ extern "C" HANDLE WINAPI CreateFileA(LPCSTR name, DWORD access, DWORD, LPSECURIT
 {
 	char path[4096];
 	bool write = (access & GENERIC_WRITE) != 0;
+#ifndef CE_NETWORK_OFF
+	if (!CE_CompatibilityObserveAuthoredRead(name, write || disposition != OPEN_EXISTING ||
+		(access & ~DWORD(GENERIC_READ)), NULL, 0))
+	{
+		PortSetLastError(ERROR_ACCESS_DENIED);
+		return INVALID_HANDLE_VALUE;
+	}
+#endif
 	// Creation and truncation cannot use a read-only path into the original folder.
 	if (!write && disposition != OPEN_EXISTING)
 	{
@@ -359,9 +409,22 @@ extern "C" HANDLE WINAPI CreateFileA(LPCSTR name, DWORD access, DWORD, LPSECURIT
 	}
 	if (fd < 0)
 	{
+#ifndef CE_NETWORK_OFF
+		int open_error = errno;
+		if (!write) CE_CompatibilityAuthoredOpenFailed(name, NULL, 0);
+		errno = open_error;
+#endif
 		PortSetLastError(ErrnoToWin32(errno));
 		return INVALID_HANDLE_VALUE;
 	}
+#ifndef CE_NETWORK_OFF
+	if (!write && !CE_CompatibilityValidateOpenedNative(name, fd, NULL, 0))
+	{
+		close(fd);
+		PortSetLastError(ERROR_ACCESS_DENIED);
+		return INVALID_HANDLE_VALUE;
+	}
+#endif
 	PortFile *f = (PortFile *)PortHandleNew(PORT_FILE, sizeof(PortFile));
 	f->fd = fd;
 	return f;
@@ -370,6 +433,14 @@ extern "C" HANDLE WINAPI CreateFileA(LPCSTR name, DWORD access, DWORD, LPSECURIT
 extern "C" HANDLE WINAPI CreateFileW(LPCWSTR name, DWORD access, DWORD share, LPSECURITY_ATTRIBUTES sa, DWORD disposition,
 									 DWORD flags, HANDLE templ)
 {
+#ifndef CE_NETWORK_OFF
+	// The admitted game's callers use narrow logical paths. Do not admit a lossy ACP conversion as another file.
+	if (!CE_CompatibilityUnsupportedReader(NULL, 0))
+	{
+		PortSetLastError(ERROR_ACCESS_DENIED);
+		return INVALID_HANDLE_VALUE;
+	}
+#endif
 	char narrow[4096];
 	WideCharToMultiByte(CP_ACP, 0, name, -1, narrow, sizeof(narrow), NULL, NULL);
 	return CreateFileA(narrow, access, share, sa, disposition, flags, templ);

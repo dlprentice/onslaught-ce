@@ -1,0 +1,21 @@
+--- a/game.cpp
++++ b/game.cpp
+@@ -2278,6 +2278,18 @@
+ 	//                   unpredictably)
+ 
+ 	int i;
++#ifndef CE_NETWORK_OFF
++	// port (lockstep co-op): a peer draws one view (CE_WorldViewPlayer) as viewpoint 0; a solo level has one landscape view
++	if (CE_LockstepActive())
++	{
++		if (GetCamera(CE_WorldViewPlayer(0)))
++		{
++			ENGINE.mCurrentViewpoint=0;
++			ENGINE.UpdatePos(GetCamera(CE_WorldViewPlayer(0)));
++		}
++	}
++	else
++#endif
+ 	for (i=0;i<mPlayers;i++)
+ 	{
+ 		if (GetCamera(i))

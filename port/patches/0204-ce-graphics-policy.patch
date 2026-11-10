@@ -1,0 +1,271 @@
+--- a/DXLandscape.cpp
++++ b/DXLandscape.cpp
+@@ -1,4 +1,7 @@
+ // DXLandscape.cpp: reconstructed from DXLandscape.obj (00544360..00547d3f); Stuart's release has no copy.
++#ifdef CE_VERSION
++#include "ce_graphics_policy.h"
++#endif
+ // The PC landscape: a 512-metre height field drawn as 64x64 tiles of 8 metres through one vertex buffer of the
+ // whole grid, each viewpoint with its own mip levels of the landscape texture and levels of detail. With the
+ // GeForce FX features it also keeps a reflection target and a readable Z buffer.
+@@ -221,6 +224,7 @@
+ 	InitDeviceObjects();
+ 
+ 	if (mPixelShader && mUnknown08 && mDepthSurface)
++		{
+ 		mVertexShader = CVertexShader::Create("LandscapeShader", (DWORD *)
+ 			"vs.1.1\n"
+ 			"\n"
+@@ -244,6 +248,10 @@
+ 			"; stick z in the red, green and blue channels\n"
+ 			"mul oT0.xyz, r3.z, c[95].z\n"
+ 			"mov oT0.w, c[94].w\n", 4, NULL, 0, -1);
++#ifdef CE_VERSION
++		PortCeGraphicsResourceOutcome(CE_GRAPHICS_LANDSCAPE_VERTEX, mVertexShader && mVertexShader->mShader);
++#endif
++	}
+ 
+ 	return TRUE;
+ }
+@@ -251,11 +259,20 @@
+ //******************************************************************************************
+ HRESULT CDXLandscape::InitDeviceObjects()	// FUNCTION: 0x00544cc0
+ {
++#ifdef CE_VERSION
++	const bool ceExtraRequested = PortCeGraphicsRequested() && !GAME.IsMultiplayer();
++#endif
++
+ 	if ((GEFORCE_FX_POWER.mValue) && (!GAME.IsMultiplayer()) && (EXTRA_GEFORCE_FX_FEATURES.mValue) &&
+ 		(LT.m_d3dCaps.PixelShaderVersion >= D3DPS_VERSION(2, 0)))
+ 	{
+ 		if (FAILED(LT.D3D_CreatePixelShader("ps_2_0\ndcl t0\nmov oC0, t0\n", &mPixelShader)))
++			{
++#ifdef CE_VERSION
++			if (ceExtraRequested) PortCeGraphicsResourceOutcome(CE_GRAPHICS_LANDSCAPE, false);
++#endif
+ 			return S_OK;
++		}
+ 
+ 		HRESULT	hr = LT.D3D_CreateTextureNoCheck(256, 256, 1, D3DUSAGE_RENDERTARGET, D3DFMT_R5G6B5, D3DPOOL_DEFAULT, &mMirrorTexture);
+ 		if (FAILED(hr))
+@@ -293,6 +310,11 @@
+ 				SETUP_HISTORY.AddMessage("FakeZBuffer disallowed for %s", DXGetErrorString9(hr));
+ 		}
+ 	}
++	#ifdef CE_VERSION
++	if (ceExtraRequested) PortCeGraphicsResourceOutcome(CE_GRAPHICS_LANDSCAPE, mPixelShader && mMirrorTexture && mDepthSurface &&
++            (!MY_READABLE_Z_BUFFER.mValue || mUnknown08) &&
++            (!OTHER_ZBUFFER_AS_TEXTURE.mValue || mDepthTexture));
++#endif
+ 	return S_OK;
+ }
+ 
+@@ -845,19 +867,34 @@
+ 
+ 	if (FAILED(LT.m_pd3dDevice->GetRenderTarget(0, &mRenderTarget)))
+ 	{
++		{
++#ifdef CE_VERSION
++		PortCeGraphicsResourceOutcome(CE_GRAPHICS_LANDSCAPE, false);
++#endif
+ 		EXTRA_GEFORCE_FX_FEATURES.Set(0);
++	}
+ 		return false;
+ 	}
+ 	if (FAILED(LT.m_pd3dDevice->GetDepthStencilSurface(&mDepthStencil)))
+ 	{
++		{
++#ifdef CE_VERSION
++		PortCeGraphicsResourceOutcome(CE_GRAPHICS_LANDSCAPE, false);
++#endif
+ 		EXTRA_GEFORCE_FX_FEATURES.Set(0);
++	}
+ 		return false;
+ 	}
+ 
+ 	IDirect3DSurface9	*surface;
+ 	if (FAILED(target->GetSurfaceLevel(0, &surface)))
+ 	{
++		{
++#ifdef CE_VERSION
++		PortCeGraphicsResourceOutcome(CE_GRAPHICS_LANDSCAPE, false);
++#endif
+ 		EXTRA_GEFORCE_FX_FEATURES.Set(0);
++	}
+ 		return false;
+ 	}
+ 
+@@ -868,7 +905,12 @@
+ 	{
+ 		SETUP_HISTORY.AddMessage("Failed SRT in for %s", DXGetErrorString9(hr));
+ 		RestoreTargets(mRenderTarget, mDepthStencil);
++		{
++#ifdef CE_VERSION
++		PortCeGraphicsResourceOutcome(CE_GRAPHICS_LANDSCAPE, false);
++#endif
+ 		EXTRA_GEFORCE_FX_FEATURES.Set(0);
++	}
+ 		return false;
+ 	}
+ 	hr = LT.GetDevice()->SetDepthStencilSurface(ENGINE.GetLandscape()->mDepthSurface);
+@@ -876,7 +918,12 @@
+ 	{
+ 		SETUP_HISTORY.AddMessage("Failed SDSS in for %s", DXGetErrorString9(hr));
+ 		RestoreTargets(mRenderTarget, mDepthStencil);
++		{
++#ifdef CE_VERSION
++		PortCeGraphicsResourceOutcome(CE_GRAPHICS_LANDSCAPE, false);
++#endif
+ 		EXTRA_GEFORCE_FX_FEATURES.Set(0);
++	}
+ 		return false;
+ 	}
+ 
+@@ -947,7 +994,12 @@
+ 	mVertexShader->SetConstants();
+ 	if (!mPixelShader || FAILED(LT.GetDevice()->SetPixelShader(mPixelShader)))
+ 	{
++		{
++#ifdef CE_VERSION
++		PortCeGraphicsResourceOutcome(CE_GRAPHICS_LANDSCAPE, false);
++#endif
+ 		EXTRA_GEFORCE_FX_FEATURES.Set(0);
++	}
+ 		return false;
+ 	}
+ 	LT.GetDevice()->SetPixelShaderConstantF(0, SHADOW_PS_CONSTANTS, 3);
+--- a/DXParticleTexture.cpp
++++ b/DXParticleTexture.cpp
+@@ -1,4 +1,7 @@
+ // DXParticleTexture.cpp: reconstructed from DXParticleTexture.obj (0054fa70..005502c4); Stuart's release has no copy.
++#ifdef CE_VERSION
++#include "ce_graphics_policy.h"
++#endif
+ // The particle textures of the PC build: each keeps a dynamic vertex buffer the particles fill each frame; with the
+ // extra GeForce FX features on, they draw through a shader that fades them against the landscape's depth.
+ #include "common.h"
+@@ -166,6 +169,9 @@
+ 		LT.D3D_CreatePixelShader(PARTICLE_PIXEL_SHADER_TEXT, &sPixelShader);
+ 	}
+ 	SETUP_HISTORY.AddMessage("CPT::RAS() end");
++#ifdef CE_VERSION
++	PortCeGraphicsResourceOutcome(CE_GRAPHICS_PARTICLES, sVertexShader && sVertexShader->mShader && sPixelShader);
++#endif
+ }
+ 
+ //******************************************************************************************
+@@ -214,7 +220,12 @@
+ 		else
+ 		{
+ 			LT.D3D_Release((IUnknown **)&sPixelShader);
+-			EXTRA_GEFORCE_FX_FEATURES.Set(0);
++			{
++#ifdef CE_VERSION
++		PortCeGraphicsResourceOutcome(CE_GRAPHICS_PARTICLES, false);
++#endif
++		EXTRA_GEFORCE_FX_FEATURES.Set(0);
++	}
+ 		}
+ 	}
+ 
+--- a/DXWater.cpp
++++ b/DXWater.cpp
+@@ -1,4 +1,7 @@
+ // DXWater.cpp: reconstructed from DXWater.obj (0055af90..0055d5dd); Stuart's release has no copy. The water's
++#ifdef CE_VERSION
++#include "ce_graphics_policy.h"
++#endif
+ // textures and, on cards with pixel shader 2.0, its shaders, and the render pass.
+ #include "../platform/common/portlog.h"
+ #include "common.h"
+@@ -225,6 +228,9 @@
+ 		if (SUCCEEDED(LT.D3D_CreatePixelShader(WATER_PS_TEXT, &sPixelShader)))
+ 			sShader = CVertexShader::Create("watershader", (DWORD *)WATER_VS_TEXT, 8, NULL, 0, -1);
+ 	}
++	#ifdef CE_VERSION
++	PortCeGraphicsResourceOutcome(CE_GRAPHICS_WATER, sShader && sShader->mShader && sPixelShader);
++#endif
+ 	return S_OK;
+ }
+ 
+--- a/PauseMenu.cpp
++++ b/PauseMenu.cpp
+@@ -1,7 +1,13 @@
+ // PauseMenu.cpp: the in-game menu, which the PC options page also shows (reconstructed from the retail PC executable;
++#ifdef CE_VERSION
++#include "ce_graphics_policy.h"
++#endif
+ // Stuart's file is not in his release). The menu items' class names are the retail RTTI's.
+ 
+ #include	"common.h"
++#ifdef CE_VERSION
++#include "ce_notice.h"
++#endif
+ #define	PAUSEMENU_CPP
+ 
+ #include	"PauseMenu.h"
+@@ -1253,6 +1259,15 @@
+ // FUNCTION: 0x004cfd00
+ void	CnVidia::SetValue(int value)
+ {
++#ifdef CE_VERSION
++	if (!PortCeGraphicsStoreRequest(value))
++	{
++		mSelection = mValue = GetValue();
++		PortCeSaveFailedNotice();
++		return;
++	}
++#endif
++
+ 	EXTRA_GEFORCE_FX_FEATURES.Set(float(value));
+ 	DisplaySettingChanged();
+ }
+@@ -2050,3 +2065,25 @@
+ // FUNCTION: 0x00418410 ?GetHeight@CJoystickEnableItem@@UAEHXZ
+ // FUNCTION: 0x00466120 ??0CMonitor@@QAE@XZ
+ // FUNCTION: 0x00505d00 ??0?$SPtrSet@VCMenuEvent@@@@QAE@XZ
++
++
++#if defined(CE_VERSION) && defined(BEA_PUBLIC_GRAPHICS_HOST)
++void PortCeGraphicsApplyFreshDefaults()
++{
++    if (!PortCeGraphicsTakeFreshDefaults()) return;
++    // Use native visual setters, including geometry/landscape side effects. Keep presentation, resolution,
++    // VSync and anti-aliasing choices unchanged; the separate beyond-retail quality controls stay opt-in.
++    CShadowDetail shadows(static_cast<EPCText>(0), 0);
++    shadows.SetValue(shadows.GetNumChoices() - 1);
++    CTreeDetail geometry(static_cast<EPCText>(0), 0);
++    geometry.SetValue(geometry.GetNumChoices() - 1);
++    CLandscapeRes landscape(static_cast<EPCText>(0), 0);
++    landscape.SetValue(landscape.GetNumChoices() - 1);
++    CTrilinear filtering(static_cast<EPCText>(0), 0);
++    filtering.SetValue(filtering.GetNumChoices() - 1);
++    CTextureRes textures(static_cast<EPCText>(0), 0);
++    textures.SetValue(0); // Native texture choices begin with full resolution.
++    CEnable32Bit colour(static_cast<EPCText>(0), 0);
++    colour.SetValue(colour.GetNumChoices() - 1);
++}
++#endif
+--- a/ltshell.cpp
++++ b/ltshell.cpp
+@@ -6,6 +6,10 @@
+ #endif
+ #include "../platform/common/portlog.h"
+ #include "common.h"
++#if defined(CE_VERSION) && defined(BEA_PUBLIC_GRAPHICS_HOST)
++#include "ce_graphics_policy.h"
++#include <errno.h>
++#endif
+ 
+ #if TARGET == PC
+ 
+@@ -687,6 +691,9 @@
+ 	FILE	*file = fopen(DEFAULT_OPTIONS_NAME, "rb");
+ #else
+ 	FILE	*file = CE_BootOpenLocal(CE_BOOT_OPTIONS, DEFAULT_OPTIONS_NAME, "rb");
++#endif
++#if defined(CE_VERSION) && defined(BEA_PUBLIC_GRAPHICS_HOST)
++	PortCeGraphicsOptionsOpened(file != NULL, errno);
+ #endif
+ 	if (file)
+ 	{

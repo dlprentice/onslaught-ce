@@ -44,7 +44,7 @@ GAME_FLAGS = ["-std=gnu++14", "-fms-compatibility", "-fms-compatibility-version=
               "-D__GNUC_PATCHLEVEL__=1", "-D__GNUC_STDC_INLINE__=1", "-fms-extensions", "-fno-autolink", "-fno-sized-deallocation",
               "-fno-strict-aliasing", "-fwrapv", "-malign-double", "-mms-bitfields", "-fshort-wchar", "-g", "-O1", "-w",
               "-mno-sse", "-mfpmath=387", *NO_WIDE_LIBCALLS, "-include", str(deps.PORT / "include/port.h")]
-PLATFORM_FLAGS = ["-std=gnu++17", "-DNOMINMAX", "-fms-extensions", "-fno-autolink", "-fno-strict-aliasing", "-fwrapv",
+PLATFORM_FLAGS = ["-std=gnu++17", "-DNOMINMAX", "-DNETWORK_HOOK_STUBS_NO_LOCAL_FILE", "-fms-extensions", "-fno-autolink", "-fno-strict-aliasing", "-fwrapv",
                   "-mms-bitfields", "-fshort-wchar", "-g", "-O1", "-w", "-ffunction-sections", "-fdata-sections", *NO_WIDE_LIBCALLS]
 
 
@@ -63,9 +63,9 @@ def patched(out, name, after, exclude=(), mirror=False):
     normalised), which the patches written after 0117 take their context lines from (0137's hunk after PauseMenu.cpp's includes)."""
     source = (ROOT / "src" / name).read_bytes()
     if mirror:
-        build.SYSTEM_NAMES.update(build.system_header_names())
-        index = build.CaseIndex([out / path.relative_to(ROOT) for path in build.tracked_sources()])
-        source = build.normalise(source.decode("latin-1"), out, index, [out, out / "MissionScript"]).encode("latin-1")
+        # The text the build's mirror makes of the file, game-data includes and all (build.mirror_text): patches written after 0117
+        # (0204's include hunk after PauseMenu.cpp's includes) take their context lines from it.
+        source = build.mirror_text(name)
     (out / name).write_bytes(source)
     for patch in sorted(PATCHES.glob("*.patch")):
         if (not after and patch.name[:4] >= FIRST_NEW_PATCH) or patch.name[:4] in exclude:
@@ -158,7 +158,7 @@ class Build:
         for obj in objects:
             self.run_cmd([str(deps.DATA / "llvm/bin/llvm-objcopy"), f"--redefine-syms={syms}", str(obj)], "objcopy")
         for source in (*[deps.PORT / "platform/linux" / n for n in PLATFORM], deps.PORT / "platform/common/crtfile.cpp",
-                       TESTS / "save_replace_faults.cpp", TESTS / "mods_none.cpp"):
+                       TESTS / "save_replace_faults.cpp", TESTS / "network_hook_stubs.cpp", TESTS / "mods_none.cpp"):
             obj = d / (source.stem + ".o")
             self.run_cmd([*base, *PLATFORM_FLAGS, f"-I{deps.PORT / 'platform/linux'}", f"-I{deps.PORT / 'platform'}", *INCLUDES,
                           "-c", str(source), "-o", str(obj)], source.stem)
@@ -590,9 +590,9 @@ class SourceTrace(unittest.TestCase):
         self.assertIn("WriteDefaultOptionsFile(buffer, size)", options)
         self.assertEqual(0, len(re.findall(r"MEMORYCARD\.", options)))
 
-    def live(self, name, windows=False, after=True, ce=False):
+    def live(self, name, windows=False, after=True, ce=False, network_off=False):
         """The file as the compiler sees it on Linux (or Windows): conditionals resolved, includes empty. ce: CE_VERSION defined
-        (the public builds; the faithful build leaves it undefined)."""
+        (the public builds; the faithful build leaves it undefined). network_off: the ordinary public build, without network hooks."""
         d = Path(self.dir.name) / ("live-" + ("after" if after else "before"))
         d.mkdir(exist_ok=True)
         text = self.patched[name] if after else patched(d, name, False, mirror=True)
@@ -601,7 +601,8 @@ class SourceTrace(unittest.TestCase):
             (d / include).parent.mkdir(parents=True, exist_ok=True)
             (d / include).write_text("")
         r = subprocess.run([str(LLVM), "-E", "-P", "-x", "c++", "-nostdinc", f"-I{d}", "-DPC=1", "-DXBOX=2", "-DPS2=3", "-DTARGET=PC",
-                            *(["-D_WIN32=1"] if windows else []), *(["-DCE_VERSION=1"] if ce else []), str(d / name)],
+                            *(["-D_WIN32=1"] if windows else []), *(["-DCE_VERSION=1"] if ce else []),
+                            *(["-DCE_NETWORK_OFF=1"] if network_off else []), str(d / name)],
                            capture_output=True, text=True, timeout=30)
         self.assertEqual(0, r.returncode, r.stderr)
         return r.stdout
@@ -620,10 +621,10 @@ class SourceTrace(unittest.TestCase):
         """0118 only widens the guards 0066 put around the approval, so a Windows build compiles the identical page."""
         self.assertEqual(self.live("FEPSaveGame.cpp", windows=True, after=False), self.live("FEPSaveGame.cpp", windows=True))
 
-    def test_the_card_changes_on_windows_only_in_the_whole_file_write(self):
+    def test_the_network_off_card_changes_on_windows_only_in_the_whole_file_write(self):
         import difflib
-        before = [l.strip() for l in self.live("PCMemoryCard.cpp", windows=True, after=False).splitlines() if l.strip()]
-        after = [l.strip() for l in self.live("PCMemoryCard.cpp", windows=True).splitlines() if l.strip()]
+        before = [l.strip() for l in self.live("PCMemoryCard.cpp", windows=True, after=False, network_off=True).splitlines() if l.strip()]
+        after = [l.strip() for l in self.live("PCMemoryCard.cpp", windows=True, network_off=True).splitlines() if l.strip()]
         changes = [l for l in difflib.unified_diff(before, after, lineterm="", n=0) if l[:1] in "+-" and l[:3] not in ("+++", "---")]
         self.assertEqual([
             '+extern "C" int PortReplaceUserFile(const char *game_path, const void *data, unsigned size, const char *what);',

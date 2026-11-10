@@ -1,0 +1,20 @@
+--- a/PauseMenu.cpp
++++ b/PauseMenu.cpp
+@@ -2087,7 +2087,8 @@ void PortCeGraphicsApplyFreshDefaults()
+ {
+     if (!PortCeGraphicsTakeFreshDefaults()) return;
+     // Use native visual setters, including geometry/landscape side effects. Keep presentation, resolution,
+-    // VSync and anti-aliasing choices unchanged; the separate beyond-retail quality controls stay opt-in.
++    // VSync choices unchanged. Every other quality row takes the last choice it lists (textures: full resolution), and anti-aliasing the
++    // highest level the device lists, through the native setters; Full models and Terrain detail distance take theirs in the policy.
+     CShadowDetail shadows(static_cast<EPCText>(0), 0);
+     shadows.SetValue(shadows.GetNumChoices() - 1);
+     CTreeDetail geometry(static_cast<EPCText>(0), 0);
+@@ -2100,5 +2101,7 @@ void PortCeGraphicsApplyFreshDefaults()
+     textures.SetValue(0); // Native texture choices begin with full resolution.
+     CEnable32Bit colour(static_cast<EPCText>(0), 0);
+     colour.SetValue(colour.GetNumChoices() - 1);
++    CMultiSample antialiasing(static_cast<EPCText>(0), 0);
++    if (antialiasing.GetNumChoices() > 1) antialiasing.SetValue(antialiasing.GetNumChoices() - 1);
+ }
+ #endif

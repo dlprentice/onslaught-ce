@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // port/game/ce_gamepad.cpp: the CE layer's gamepad support (patch 0106 at CController::DoMappings and the CPCController
-// joystick reads). In ordinary CE single-player play and the CE bonus local co-op maps:
+// joystick reads). In ordinary CE play: single player, two-player split screen (pad 0 is player 1's, pad 1 player 2's, as on
+// the CE bonus local co-op maps) and each admitted network co-op peer, whose controller samples its own pad:
 //
 // - Button presses and releases are delivered in SDL order, at most one transition per button per game update.
 //   This retains a complete tap between updates, keeps a release after its press and lets distinct buttons act together.
@@ -20,7 +21,7 @@
 //   overwritten and careers save exactly what the player chose. Binding any game control to a joystick input in the
 //   controls editor turns the game-control defaults off (the menu ones stay).
 //
-// Faithful builds, tapes, recordings, probes, the virtual clock and other multiplayer keep retail's behaviour.
+// Faithful builds, tapes, recordings, probes and the virtual clock keep retail's behaviour.
 #ifdef CE_VERSION
 
 #include "common.h"
@@ -32,7 +33,6 @@
 #include <string.h>
 
 bool PortCeLayer();
-bool PortCeBonusCoopRunning();	// ce_bonus.cpp: the CE bonus co-op maps, two pads for two players
 int PortCePadNext(void *device, bool rotate, unsigned *out);
 void PortCePadForget(void *device);
 
@@ -152,8 +152,9 @@ bool Ordinary()
 
 bool Allowed(int pad)
 {
-	return Ordinary() && (!GAME.IsMultiplayer() || PortCeBonusCoopRunning()) && pad >= 0 && pad < LT.mJoypads && pad < MAX_JOYPADS &&
-		   LT.mUnknown33474[pad];
+	// The pad is the controller's own: player 1 reads pad 0, player 2 pad 1, and each admitted network co-op peer
+	// samples its own controller. Recordings and other faithful runs fall outside Ordinary().
+	return Ordinary() && pad >= 0 && pad < LT.mJoypads && pad < MAX_JOYPADS && LT.mUnknown33474[pad];
 }
 
 // True while no configurable control reads a joystick (the joystick push types come before KEY_ONCE).
@@ -225,6 +226,12 @@ int PortCeGamepadOn(int pad, int button)
 {
 	if (!Allowed(pad) || button < 0 || button >= kButtons) return -1;
 	return sCurrent[pad][button];
+}
+
+// Whether the game's pad in this slot is a flight stick: the Dodge Button (ce_dodge_assist.cpp) is a gamepad's.
+bool PortCeGamepadIsStick(int pad)
+{
+	return pad >= 0 && pad < MAX_JOYPADS && IsStick(pad);
 }
 
 // The CE gamepad inputs for this control and pad (at most 2), written to out; 0 when none apply.

@@ -4,6 +4,7 @@
 // builds use the real API. Allocation is malloc-based (the game's operator new serves every C++ allocation).
 #include "handles.h"
 #include "../common/platform.h"
+#include "../common/feel.h"
 
 #include <errno.h>
 #include <pthread.h>
@@ -464,6 +465,7 @@ extern "C" DWORD WINAPI GetCurrentProcessId(void) { return (DWORD)getpid(); }
 extern "C" void PortExitHook(int status) __attribute__((weak));
 extern "C" DECLSPEC_NORETURN void WINAPI ExitProcess(UINT code)
 {
+	if (PORT_FEEL_ON()) PortFeelFlush();		// the frame-feel log (feel.h): no atexit handler runs here either
 	fflush(NULL);
 	if (PortExitHook)
 		PortExitHook((int)code);

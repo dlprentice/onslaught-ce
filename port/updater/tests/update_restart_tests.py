@@ -21,6 +21,7 @@ SEAMS = r'''
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "ce_launch_rules.h"
 #define PATHN 4096
 #define CE_VERSION "0.1.8"
 #define CE_VERSION_NOTE ""
@@ -116,7 +117,7 @@ class EntryPoint(unittest.TestCase):
             c = folder / (platform + ".c")
             c.write_text(SEAMS.replace("@FUNCTIONS@", functions))
             exe = folder / platform
-            result = subprocess.run([*compiler, "-std=c11", "-Wall", "-Wextra", "-Werror",
+            result = subprocess.run([*compiler, "-std=c11", "-Wall", "-Wextra", "-Werror", "-I", str(SOURCE.parent),
                                      "-Wno-unused-function", "-Wno-unused-variable",
                                      *(["-D_WIN32"] if platform == "windows" else []), str(c), "-o", str(exe)],
                                     capture_output=True, text=True)

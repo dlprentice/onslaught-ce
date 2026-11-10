@@ -5,7 +5,9 @@
 patch 0043's inset, executed together (hud_anchor_driver.cpp) with ce.ini saying nothing, hud_anchor=1 and hud_anchor=0:
 - no inset in ordinary single-player play, the 4:3 columns' inset otherwise (multiplayer, two viewpoints, a fenced run);
 - a fenced run (a replay, a recording, probes, the virtual clock, BEA_PORT_HUD_SCALE=0, no CE layer, no widescreen modes)
-  never even reads ce.ini; the answer is read once;
+  never even reads ce.ini; the answer is read once, and again only after CeHudSettingsReload (the CE Settings page's change
+  applies from the next level);
+- the corners do not depend on ce.ini's hud_scale (the original size keeps them): the size and the corners are separate answers;
 - the developer log says each change once, with the HUD_OFFSET_X the pass really gets, and nothing when it is off.
 Static: the viewpoint test is the one the HUD scale's scopes use (patch 0089), the objective panel's six explicit inset terms
 (patch 0043) still call PortHudInset, and PortHudBegin is what decides them."""
@@ -16,6 +18,14 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[2]
 PORT = ROOT / "port"
+sys.path.insert(0, str(PORT))
+import build  # noqa: E402
+
+
+def anchor_text(network):
+    """ce_hud_anchor.cpp as a default public build compiles it (the CE_NETWORK_OFF conditionals resolved: main's text) or as a build with the network does."""
+    return build.network_view((PORT / "game/ce_hud_anchor.cpp").read_text(), off=not network)
+
 
 FAKE_GAME = """#pragma once
 struct FakeGame { bool multiplayer = false; bool IsMultiplayer() { return multiplayer; } };
@@ -50,10 +60,16 @@ def static_checks():
         fail("PortHudBegin decides before it adds the inset")
     if "return shifted;" not in block:
         fail("PortHudBegin returns the offset with the inset it logged")
-    anchor = (PORT / "game/ce_hud_anchor.cpp").read_text()
+    anchor = anchor_text(False)
     eligible = "!GAME.IsMultiplayer() && ENGINE.GetNumViewpoints() == 1"
     if "CeHudAnchorEnabled() && " + eligible not in anchor:
         fail("the viewpoint test of ce_hud_anchor.cpp changed")
+    coop = "(CE_LockstepRequested() || (!GAME.IsMultiplayer() && ENGINE.GetNumViewpoints() == 1))"
+    if "CeHudAnchorEnabled() && " + coop not in anchor_text(True):
+        fail("a network co-op game is not let through ce_hud_anchor.cpp's gate")
+    after = (PORT / "patches/0157-network-hud-scale-coop.patch").read_text()
+    if after.count(coop) != 5 or after.count(eligible) != 10 or after.count("\n+#ifdef CE_NETWORK_OFF\n") != 5:
+        fail("patch 0157 no longer rewrites the HUD scale's five scopes as main's test in its CE_NETWORK_OFF branch and the co-op test in the other")
     scale = (PORT / "patches/0089-ce-hud-scale.patch").read_text()
     if scale.count(eligible) < 2:
         fail("the HUD scale's scopes no longer use the viewpoint test that PortHudAnchored mirrors")
@@ -70,8 +86,11 @@ MUTANTS = (
     ("multiplayer not tested", "port/game/ce_hud_anchor.cpp", " && !GAME.IsMultiplayer()", ""),
     ("viewpoints not tested", "port/game/ce_hud_anchor.cpp", " && ENGINE.GetNumViewpoints() == 1", ""),
     ("the ini's default is off", "port/platform/common/hud_scale.cpp", 'CE_SettingGetBool("hud_anchor", 1)', 'CE_SettingGetBool("hud_anchor", 0)'),
-    ("the ini is ignored", "port/platform/common/hud_scale.cpp", "return ini == 1;", "return true;"),
-    ("the HUD scale's gate is skipped", "port/platform/common/hud_scale.cpp", "if (!Enabled())\n\t\treturn false;\n\tstatic int ini", "if (false)\n\t\treturn false;\n\tstatic int ini"),
+    ("the ini is ignored", "port/platform/common/hud_scale.cpp", "return sAnchorIni == 1;", "return true;"),
+    ("the HUD scale's gate is skipped", "port/platform/common/hud_scale.cpp", "if (!Enabled())\n\t\treturn false;\n\tif (sAnchorIni < 0)", "if (false)\n\t\treturn false;\n\tif (sAnchorIni < 0)"),
+    ("the ini is read at every call", "port/platform/common/hud_scale.cpp", "if (sAnchorIni < 0)\n\t\tsAnchorIni =", "if (true)\n\t\tsAnchorIni ="),
+    ("a reload leaves the anchor answer", "port/platform/common/hud_scale.cpp", "\tsScaleIni = -1;\n\tsAnchorIni = -1;\n}", "\tsScaleIni = -1;\n}"),
+    ("the original size takes the corners with it", "port/platform/common/hud_scale.cpp", "if (!Enabled())\n\t\treturn false;\n\tif (sAnchorIni < 0)", "if (!Enabled() || !ScaleWanted())\n\t\treturn false;\n\tif (sAnchorIni < 0)"),
     ("never anchored", "BLOCK", "gHudAnchored = PortHudAnchored() != 0;", "gHudAnchored = false;"),
     ("always anchored", "BLOCK", "gHudAnchored = PortHudAnchored() != 0;", "gHudAnchored = true;"),
     ("the inset ignores the answer", "BLOCK", "return gActive && !gHudAnchored ?", "return gActive ?"),
@@ -102,7 +121,7 @@ def mutant_checks(out, fakes, block):
     for number, (name, source, old, new) in enumerate(MUTANTS):
         folder = out / ("mutant-%d" % number)
         folder.mkdir()
-        sources = {"port/game/ce_hud_anchor.cpp": (PORT / "game/ce_hud_anchor.cpp").read_text(),
+        sources = {"port/game/ce_hud_anchor.cpp": anchor_text(False),
                    "port/platform/common/hud_scale.cpp": (PORT / "platform/common/hud_scale.cpp").read_text()}
         inc = block
         if source == "BLOCK":
@@ -136,16 +155,34 @@ def main():
         (fakes / "game.h").write_text(FAKE_GAME)
         (fakes / "DXEngine.h").write_text(FAKE_ENGINE)
         (out / "widescreen_hud.inc").write_text(block)
+        (out / "ce_hud_anchor_default.cpp").write_text(anchor_text(False))		# main's text: the build with the network has its own driver below
+        (out / "ce_hud_anchor_network.cpp").write_text(anchor_text(True))
         binary = out / "hud-anchor-test"
         command = ["g++", "-std=c++17", "-O2", "-Wall", "-Wextra", "-Werror", "-I" + str(out), "-I" + str(fakes),
                    "-I" + str(PORT / "include"), str(PORT / "tools/hud_anchor_driver.cpp"),
-                   str(PORT / "game/ce_hud_anchor.cpp"), str(PORT / "platform/common/hud_scale.cpp"), "-o", str(binary)]
+                   str(out / "ce_hud_anchor_default.cpp"), str(PORT / "platform/common/hud_scale.cpp"), "-o", str(binary)]
         subprocess.run(command, check=True, timeout=60)
         failure = driver_passes(binary)
         if failure:
             fail(failure)
         mutant_checks(out, fakes, block)
-    print("HUD anchoring: gate, viewpoint test and inset decision executed with ce.ini silent, on and off; %d mutants caught by the executed driver: PASS" % len(MUTANTS))
+        coop_bin = out / "hud-anchor-coop-test"
+        subprocess.run(["g++", "-std=c++17", "-O2", "-Wall", "-Wextra", "-Werror", "-I" + str(fakes), "-I" + str(PORT / "include"),
+                        str(PORT / "tools/hud_anchor_coop_driver.cpp"), str(out / "ce_hud_anchor_network.cpp"),
+                        str(PORT / "platform/common/hud_scale.cpp"), "-o", str(coop_bin)], check=True, timeout=60)
+        ran = subprocess.run([str(coop_bin)], capture_output=True, text=True, timeout=10)
+        if ran.returncode or "PASS" not in ran.stdout:
+            fail("the co-op gate: " + ran.stdout + ran.stderr)
+        # the mutant of the network flavour: a co-op game not let through must fail that driver
+        gate = "(CE_LockstepRequested() || (!GAME.IsMultiplayer() && ENGINE.GetNumViewpoints() == 1))"
+        weak = anchor_text(True).replace(gate, "(!GAME.IsMultiplayer() && ENGINE.GetNumViewpoints() == 1)")
+        (out / "ce_hud_anchor_weak.cpp").write_text(weak)
+        subprocess.run(["g++", "-std=c++17", "-O2", "-w", "-I" + str(fakes), "-I" + str(PORT / "include"), str(PORT / "tools/hud_anchor_coop_driver.cpp"),
+                        str(out / "ce_hud_anchor_weak.cpp"), str(PORT / "platform/common/hud_scale.cpp"), "-o", str(out / "coop-weak")], check=True, timeout=60)
+        if weak == anchor_text(True) or subprocess.run([str(out / "coop-weak")], capture_output=True, text=True, timeout=10).returncode == 0:
+            fail("a gate that leaves a co-op game out was not caught by the co-op driver")
+    print("HUD anchoring: gate, viewpoint test and inset decision executed with ce.ini silent, on and off; %d mutants caught by the executed driver; "
+          "the co-op gate of the build with the network executed: PASS" % len(MUTANTS))
     return 0
 
 

@@ -1,7 +1,7 @@
 # Onslaught CE launcher and updater
 
 Status: active (public builds only)
-Last updated: 2026-11-06 (launcher facts checked against the tree: tape names, data folder, Windows toolchain, the 0.1.7 wording; earlier: 2026-10-29 (private-tree references marked; earlier: 2026-10-28 (dialogs shown by a child process, with a terminal fallback)))
+Last updated: 2026-11-07 (the ce.ini [Experimental] header and its comment line are skipped by the reader; earlier: 2026-11-06, launcher facts checked against the tree: tape names, data folder, Windows toolchain, the 0.1.7 wording; earlier: 2026-10-31 (every message box wraps its text at 76 characters, and the update notices that change nothing are warnings in calmer words; earlier: 2026-10-30 (the signer paths are written from the repository root); earlier: 2026-10-29 (private-tree references marked; earlier: 2026-10-28 (dialogs shown by a child process, with a terminal fallback))))
 Summary: game discovery and bounded logs, and the signed v2 updater (UPDATER-V2.md) that replaces the one 0.1.7 switched off.
 
 Some files and commands named on this page (`probe/`, `run.py`, `check_tape.sh`, `replay_session.py`, `PLAN.md`, `PARITY.md`, `tools/decomp.py`, `docs/release.md`, `tools/release_rc.py`) live only in the private working repository and are not in this public tree; they are named so that the description is complete. The decompilation's public export is [onslaught-decomp](https://github.com/dlprentice/onslaught-decomp).
@@ -19,6 +19,18 @@ of `HKCU\Software\Valve\Steam`), each library's `steamapps/common/Battle Engine 
 picker. A folder counts as a supported install when the game data hashed in `config/game-data.sha256` matches. The
 answer is kept in `ce.ini`. The game folder is only read: the writable folder is per user (Linux
 `$XDG_DATA_HOME/onslaught-ce`, or `~/.local/share/onslaught-ce` when `XDG_DATA_HOME` is unset or empty; Windows `%APPDATA%\Onslaught CE`; `BEA_USER_DIR` overrides) and holds `ce.ini`.
+
+## Message boxes
+
+Every question and notice the launcher shows (the game folder, session recording, updates) goes through one function, `ask_box`
+(`ce_launch.c`), which wraps the text at 76 characters (`ce_box_wrap`, `ce_launch_rules.h`, where the texts themselves live) before SDL
+shows it: SDL's own dialogs and zenity, which SDL tells not to wrap, size themselves to the longest line. Measured on a private 1,280 x 800
+screen with zenity, the session-recording question was 1,698 pixels wide as written (its buttons and text ran off the screen) and is 677 now;
+the game-folder question went from 961 to 655. The terminal question keeps the text as written. `port/updater/tests/box_text_tests.py` looks at every text with
+its longest arguments and at the source (no box shows itself with SDL directly or carries a literal text of its own); `port/updater/tests/messagebox_tests.py`
+measures a real dialog, with a launcher that does not wrap as the control. The three update notices that change nothing (download failed, not the
+file the signed release lists, install failed) are warnings, not errors, and say that nothing was changed, that this version starts now and that
+the update will be offered again.
 
 ## Updates
 
@@ -98,6 +110,7 @@ crashes: on Linux every box is shown by a child process, `ask_box`), the questio
 one; with nobody to ask, the session is recorded, as set. Tests answer with `BEA_RECORD_ANSWER=record|once|stop`. The launcher and the game change `ce.ini` the same way
 (`ce_ini_write`, ce_report.h): the whole file is written to `ce.ini.tmp`, every write and the close are checked, and it
 is renamed over `ce.ini`, so a failed write leaves the old file whole.
+`ce.ini` is flat: the launcher reads the first line that begins with a key and `=`, so the `[Experimental]` header and the `;` line under it, which the game writes once (port/README.md, "Unfinished features"), are skipped; `ce_ini_write` puts a key that is not there yet above that header, so the block stays last.
 
 The tape is replay.cpp's format 2 (`# onslaught tape 2`, then `K`, `M`, `C`, `W_CLIENT` and `W` lines). The port's
 parser counts and skips lines it does not know. The rebuild's parser ([onslaught-godot](https://github.com/dlprentice/onslaught-godot)
@@ -141,7 +154,7 @@ allocates its own console, so automated checks belong in an isolated test deskto
 `build.py --target all --public --ce-version X.Y`, then `tools/package.py X.Y` (it refuses an updater test build).
 Upload the two packages, their stable-name copies, the FFmpeg source tarball, `ASSETS.txt` and `RC-REPORT.txt`.
 **Never upload `latest.json` or `latest.json.sig`:** launchers 0.1.0–0.1.6 fetch
-`releases/latest/download/latest.json` and would offer it through their unsafe in-place route; `tools/sign_release.py`
-is retired. The v2 feed (`tools/sign_update_v2.py`, attached as `ce-update-v2.json` and `.sig`) turns updating on
+`releases/latest/download/latest.json` and would offer it through their unsafe in-place route; `port/tools/sign_release.py`
+is retired. The v2 feed (`port/tools/sign_update_v2.py`, attached as `ce-update-v2.json` and `.sig`) turns updating on
 for 0.1.8+ players, and every release marked latest carries it, signed by the maintainer at release time (UPDATER-V2.md, "Publishing"). The private key
 stays outside every repository; only its public half is in `ce_launch.c`.

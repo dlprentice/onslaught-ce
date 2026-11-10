@@ -72,7 +72,8 @@ def patched(out, names):
                                          capture_output=True, text=True, timeout=10, preexec_fn=no_core)
                 if applied.returncode or "fuzz" in applied.stdout.lower():
                     raise AssertionError(f"{patch.name} {name}: {applied.stdout}{applied.stderr}")
-    return {name: (out / name).read_text(encoding="latin1") for name in names}
+    # The text a public build compiles: the CE console and palette do not depend on the network, whose hooks (build.network_view) are out.
+    return {name: build.network_view((out / name).read_text(encoding="latin1"), off=True) for name in names}
 
 
 class PaletteTests(unittest.TestCase):
@@ -244,7 +245,11 @@ class PaletteTests(unittest.TestCase):
         loop = function(game, "void\tCGame::MainLoop()")
         self.assertLess(loop.rindex("if (qt != QT_NONE)"), loop.index("PortCeConsoleFrame()"))
         self.assertLess(loop.index("PortCeConsoleFrame()"), loop.index("Update();"))
-        script = re.search(r"#ifdef CE_VERSION\n(?:\s*//[^\n]*\n)*\s*if \(!PortCeLayer\(\)\)\n#endif\n\s*CONSOLE\.Exec\(\"autoexec\.con\"\);", game)
+        # The script line has a second form for a build with the network (a conditional on CE_NETWORK_OFF follows the layer's guard):
+        # the guard is checked in the text as the default public build compiles it, which is the plain form. The native editor's patch
+        # (0206) wraps the call so that an authoring session does not run the script either; the layer's guard still comes first.
+        script = re.search(r"#ifdef CE_VERSION\n(?:\s*//[^\n]*\n)*\s*if \(!PortCeLayer\(\)\)\n#endif\n\s*(?:\(ceEditorAuthoring \? \(void\)0 : CONSOLE\.Exec\(\"autoexec\.con\"\)\)|CONSOLE\.Exec\(\"autoexec\.con\"\));",
+                           build.network_view(game, off=True))
         self.assertIsNotNone(script, "autoexec.con runs only with the CE layer off")
         shell = function(files["ltshell.cpp"], "LRESULT PCLTShell::MsgProc(")
         self.assertEqual(len(re.findall(r"if \(!PortCeLayer\(\)\)[^\n]*\n#endif\n\s*CONSOLE\.HandleBind", shell)), 2)

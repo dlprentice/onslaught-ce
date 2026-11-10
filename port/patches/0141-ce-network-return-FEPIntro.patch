@@ -1,0 +1,28 @@
+--- a/FEPIntro.cpp
++++ b/FEPIntro.cpp
+@@ -76,7 +76,11 @@
+ 		FRONTEND.PlaySound(FES_SELECT);
+ 	}
+ }
+-
++#ifdef CE_NETWORK_OFF
++
++#else
++void	PortCeNetIntro(float idle);	// Port (patch 0111): port/game/ce_netpages.cpp, the return from a network game
++#endif
+ //*********************************************************************************
+ void	CFEPIntro::Process(EFEPState state)	// FUNCTION: 0x0051b6b0
+ {
+@@ -87,7 +91,11 @@
+ 
+ 		if ((CLIPARAMS.mAutoConfigTest) && (PLATFORM.GetSysTimeFloat() - mStartTime > 3.f))
+ 			ButtonPressed(BUTTON_FRONTEND_MENU_SELECT, 1.f);
+-
++#ifdef CE_NETWORK_OFF
++
++#else
++		PortCeNetIntro(PLATFORM.GetSysTimeFloat() - mStartTime);	// nothing unless this process came back from one
++#endif
+ 		if ((!mUnknown0c) && (!gIntroUnknown))
+ 		{
+ 			if (PLATFORM.GetSysTimeFloat() - mStartTime > 30.f)

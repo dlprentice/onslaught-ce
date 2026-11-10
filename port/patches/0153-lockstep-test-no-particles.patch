@@ -1,0 +1,13 @@
+--- a/ParticleManager.cpp
++++ b/ParticleManager.cpp
+@@ -234,6 +234,10 @@
+ #endif
+ 	if (ENGINE.DebugNoParticles())
+ 		return;
++#ifndef CE_NETWORK_OFF
++	if (CE_LockstepTestNoParticles())	// port: test-only (BEA_LOCKSTEP_NO_PARTICLES), this peer's pool stays empty while the other's is untouched
++		return;
++#endif
+ 
+ 	CParticle	*p = AllocateParticle(pd, important);
+ 	if (p)

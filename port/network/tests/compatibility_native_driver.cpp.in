@@ -1,0 +1,79 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Actual Windows NativeStamp/NativeDigest/HandleStamp bodies with an authored OS seam.
+// Real short FILEs back the handles; this is not native Windows or ReFS execution.
+#include <array>
+#include <cassert>
+#include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <string>
+#include <monocypher.h>
+#include "fixture_guard.h"
+using DWORD = uint32_t;
+using HANDLE = void *;
+struct FILETIME { DWORD dwLowDateTime, dwHighDateTime; };
+struct BY_HANDLE_FILE_INFORMATION {
+    DWORD dwFileAttributes; FILETIME ftCreationTime, ftLastAccessTime, ftLastWriteTime;
+    DWORD dwVolumeSerialNumber, nFileSizeHigh, nFileSizeLow, nNumberOfLinks, nFileIndexHigh, nFileIndexLow;
+};
+struct FILE_ID_128 { uint8_t Identifier[16]; };
+struct FILE_ID_INFO { uint64_t VolumeSerialNumber; FILE_ID_128 FileId; };
+struct LARGE_INTEGER { int64_t QuadPart; };
+enum FILE_INFO_BY_HANDLE_CLASS { FileIdInfo = 18 };
+constexpr DWORD FILE_TYPE_DISK = 1, FILE_ATTRIBUTE_DIRECTORY = 16, FILE_ATTRIBUTE_REPARSE_POINT = 1024,
+    GENERIC_READ = 0x80000000u, FILE_SHARE_READ = 1, FILE_SHARE_WRITE = 2, FILE_SHARE_DELETE = 4, FILE_BEGIN = 0;
+#define INVALID_HANDLE_VALUE ((HANDLE)(intptr_t)-1)
+struct Native { BY_HANDLE_FILE_INFORMATION legacy{}; uint64_t volume = 0x100000001ull, low = 7, high = 1; FILE *file = nullptr; };
+static Native original, reopened;
+static std::string mode, path;
+static unsigned reopen_calls, close_calls, original_read_or_move, full_queries;
+static bool flags_active;
+DWORD GetFileType(HANDLE h) { return h && !(flags_active && mode == "wrong-type") ? FILE_TYPE_DISK : 0; }
+bool GetFileInformationByHandle(HANDLE h, BY_HANDLE_FILE_INFORMATION *out) { *out = static_cast<Native *>(h)->legacy; return true; }
+bool GetFileInformationByHandleEx(HANDLE h, FILE_INFO_BY_HANDLE_CLASS kind, void *out, DWORD size) {
+    assert(kind == FileIdInfo && size == sizeof(FILE_ID_INFO)); ++full_queries;
+    if (flags_active && (mode == "query-fail" || (mode == "reopen-query-fail" && h == &reopened))) return false;
+    auto *n = static_cast<Native *>(h); FILE_ID_INFO info{}; info.VolumeSerialNumber = n->volume;
+    std::memcpy(info.FileId.Identifier, &n->low, 8); std::memcpy(info.FileId.Identifier + 8, &n->high, 8);
+    std::memcpy(out, &info, sizeof info); return true;
+}
+HANDLE ReOpenFile(HANDLE h, DWORD access, DWORD share, DWORD flags) {
+    ++reopen_calls; assert(h == &original && access == GENERIC_READ && share == 7 && flags == 0);
+    if (mode == "reopen-fail") return INVALID_HANDLE_VALUE;
+    reopened = original; reopened.file = std::fopen(path.c_str(), "rb"); assert(reopened.file);
+    if (mode == "reopen-wrong-id") ++reopened.high;
+    return &reopened;
+}
+bool SetFilePointerEx(HANDLE h, LARGE_INTEGER offset, LARGE_INTEGER *, DWORD origin) {
+    if (h == &original) ++original_read_or_move;
+    assert(h == &reopened && offset.QuadPart == 0 && origin == FILE_BEGIN);
+    return mode != "seek-fail" && std::fseek(reopened.file, 0, SEEK_SET) == 0;
+}
+bool ReadFile(HANDLE h, void *out, DWORD count, DWORD *got, void *overlapped) {
+    if (h == &original) ++original_read_or_move;
+    assert(h == &reopened && !overlapped);
+    if (mode == "read-fail") return false;
+    if (mode == "short-eof") { *got = 0; return true; }
+    *got = std::fread(out, 1, count, reopened.file);
+    if (mode == "original-drift" && *got) ++original.high;
+    return !std::ferror(reopened.file);
+}
+bool CloseHandle(HANDLE h) { assert(h == &reopened); ++close_calls; bool ok = !std::fclose(reopened.file); reopened.file = nullptr; return ok && mode != "close-fail"; }
+using Digest = std::array<uint8_t, 32>;
+using HASH_CTX = crypto_blake2b_ctx;
+#define _WIN32 1
+@ACTUAL@
+int main(int argc, char **argv) {
+    assert(FixtureGuard() && argc == 3); mode = argv[1]; path = argv[2];
+    original.file = std::fopen(path.c_str(), "rb"); assert(original.file);
+    original.legacy.nFileSizeLow = 4; original.legacy.ftLastWriteTime.dwLowDateTime = 1;
+    original.legacy.ftCreationTime.dwLowDateTime = 1; Stamp expected{}; assert(HandleStamp(&original, expected));
+    assert(std::fseek(original.file, 2, SEEK_SET) == 0); flags_active = true;
+    if (mode == "wrong-original") ++original.high;
+    Digest digest{}; bool admitted = NativeDigest(reinterpret_cast<intptr_t>(&original), expected, digest);
+    Digest golden{}; HASH_CTX hash; HashInit(&hash); HashUpdate(&hash, "AAAA", 4); HashFinal(&hash, golden.data());
+    bool unchanged = std::ftell(original.file) == 2 && !original_read_or_move && std::fgetc(original.file) == 'A';
+    assert(!std::fclose(original.file));
+    std::printf("%s %u %u %u %u %u\n", mode.c_str(), unsigned(admitted), unsigned(admitted && digest == golden), unsigned(unchanged), reopen_calls, close_calls);
+    return 0;
+}

@@ -1,0 +1,25 @@
+--- a/game.cpp
++++ b/game.cpp
+@@ -3854,6 +3854,22 @@
+ 		PLATFORM.DrawDebugText( 450, 460, 0xff7f7f7f, "Shadows out of date.", 0L );
+ 	}*/
+ 
++#ifndef CE_NETWORK_OFF
++	// Port (network session): while the other player is silent, its countdown at the top of the screen in the game's
++	// own shadowed font (CE_SessionNotice is empty outside a running network session).
++	if (*CE_SessionNotice())
++	{
++		char	notice[96];
++		snprintf(notice, sizeof(notice), "%s", CE_SessionNotice());
++		bool	front = gInFrontEnd;
++		gInFrontEnd = true;
++		SIZE	extent;
++		PLATFORM.Font(FONT_NORMAL)->GetTextExtent(ToWCHAR(notice), &extent);
++		PLATFORM.Font(FONT_NORMAL)->DrawTextShadowed(320.f - float(extent.cx) * 0.5f, 80, 0xffffd040, ToWCHAR(notice));
++		gInFrontEnd = front;
++	}
++
++#endif
+ 	// more hacks
+ 
+ 	if (mGameState > GAME_STATE_PLAYING && mGameState < GAME_STATE_QUIT && mEndLevelCount >= 0.049f)

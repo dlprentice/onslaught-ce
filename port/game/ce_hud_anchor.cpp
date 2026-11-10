@@ -8,10 +8,22 @@
 #include "game.h"
 #include "DXEngine.h"
 #include "hud_scale.h"
+#ifndef CE_NETWORK_OFF
+extern "C" int CE_LockstepRequested(void);
+#endif
 
 // Whether the HUD about to be drawn is pinned to the corners: the HUD scale's gate with ce.ini's hud_anchor, for a single
+#ifdef CE_NETWORK_OFF
 // viewpoint and not in multiplayer, the same test as the HUD scale's scopes (patch 0089) apply to each group.
+#else
+// viewpoint and not in multiplayer (a network co-op game draws one player's view whatever the engine's count of viewpoints), the
+// same test as the HUD scale's scopes (patches 0089 and 0157) apply to each group.
+#endif
 int PortHudAnchored()
 {
+#ifdef CE_NETWORK_OFF
 	return CeHudAnchorEnabled() && !GAME.IsMultiplayer() && ENGINE.GetNumViewpoints() == 1;
+#else
+	return CeHudAnchorEnabled() && (CE_LockstepRequested() || (!GAME.IsMultiplayer() && ENGINE.GetNumViewpoints() == 1));
+#endif
 }

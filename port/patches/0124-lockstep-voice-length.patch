@@ -1,0 +1,47 @@
+--- a/MessageBox.cpp
++++ b/MessageBox.cpp
+@@ -477,6 +477,9 @@
+ //*********************************************************************************
+ void	CMessageBox::PlayPendingSamples()	// FUNCTION: 0x004b7d90
+ {
++#ifndef CE_NETWORK_OFF
++	CE_LockstepCrtHold hold;	// lockstep co-op: the voice's decode draws never reach the shared stream
++#endif
+ 	if (GAME.IsPaused())
+ 		return;
+ 	if (GAME.GetGameState() > GAME_STATE_PLAYING)
+@@ -524,6 +527,9 @@
+ 		return;
+ 	}
+ 
++#ifndef CE_NETWORK_OFF
++	CE_LockstepVoiceFile(NULL);	// lockstep co-op: this message has no voice length until its file is read below
++#endif
+ #ifdef CE_VERSION
+ 	PortCeTutorialRadioStart(mCurrent->mStringId);
+ #endif
+@@ -532,6 +538,14 @@
+ 	if (sound)
+ 	{
+ 		sprintf(mVoiceName, "%s\\messagebox\\%s", TEXT.GetLanguageName(), sound);
++#ifndef CE_NETWORK_OFF
++		if (CE_LockstepActive())	// lockstep co-op: the voice's length from its file, whether or not this PC has sound
++		{
++			char voice[260];
++			sprintf(voice, "data\\sounds\\%s.ogg", mVoiceName);
++			CE_LockstepVoiceFile(voice);
++		}
++#endif
+ 		CMessage *message = mCurrent;
+ 		if (SOUND.IsInitialised())
+ 		{
+@@ -604,7 +604,8 @@
+ #ifdef CE_NETWORK_OFF
+ 	if ((mCurrent->mFinishedPlaying != TRUE) && (EVENT_MANAGER.GetTime() - mStartTime <= 12.f))
+ #else
+-	if ((mCurrent->mFinishedPlaying != TRUE) && !CE_LockstepActive() && (EVENT_MANAGER.GetTime() - mStartTime <= 12.f))
++	// lockstep co-op: until the voice has had its length (both peers read it from the same file), not until this PC's audio says so
++	if ((CE_LockstepActive() ? EVENT_MANAGER.GetTime() - mStartTime < 0.2f + CE_LockstepVoiceSeconds() : mCurrent->mFinishedPlaying != TRUE) && (EVENT_MANAGER.GetTime() - mStartTime <= 12.f))
+ #endif
+ 	{
+ 		EVENT_MANAGER.AddEvent(0.038f, MESSAGE_BOX_REVEAL, this);

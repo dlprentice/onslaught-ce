@@ -12,6 +12,11 @@
 #include <stdio.h>
 #include <mutex>
 #include "portlog.h"
+#ifndef CE_NETWORK_OFF
+#include "../../game/ce_network_boot.h"
+#include <errno.h>
+#include <string.h>
+#endif
 
 extern "C" FILE *port_fopen(const char *name, const char *mode);	// port/platform/<target>/files.cpp
 
@@ -42,7 +47,25 @@ FILE *Register(FILE *f)
 
 extern "C" FILE *bea_crt_fopen(const char *path, const char *mode)
 {
+#ifdef CE_NETWORK_OFF
 	return Register(fopen(path, mode));
+#else
+	bool writes = mode[0] == 'w' || mode[0] == 'a' || strchr(mode, '+');
+	if (!CE_CompatibilityObserveAuthoredRead(path, writes, NULL, 0)) { errno = EACCES; return NULL; }
+	FILE *file = fopen(path, mode);
+	if (file && !writes && !CE_CompatibilityValidateOpenedFile(path, file, NULL, 0))
+	{
+		fclose(file);
+		errno = EACCES;
+		return NULL;
+	}
+	return Register(file);
+}
+
+extern "C" FILE *bea_crt_local_fopen(unsigned owner, const char *path, const char *mode)
+{
+	return Register(PortOpenLocalFile(owner, path, mode));
+#endif
 }
 
 extern "C" FILE *bea_crt_port_fopen(const char *path, const char *mode)

@@ -23,3 +23,9 @@ SPDX-License-Identifier = "GPL-3.0-only AND BSD-3-Clause"
 path = "port/patches/**"
 SPDX-FileCopyrightText = "the Onslaught CE contributors"
 SPDX-License-Identifier = "GPL-3.0-only"
+
+[[annotations]]
+path = "port/network/libjuice-relay-only.patch"
+precedence = "override"
+SPDX-FileCopyrightText = "2026 Onslaught CE contributors"
+SPDX-License-Identifier = "MPL-2.0"

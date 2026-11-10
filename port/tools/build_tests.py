@@ -127,5 +127,187 @@ class LauncherVersionTests(unittest.TestCase):
             mirror.assert_not_called()
 
 
+class NetworkIdentityTests(unittest.TestCase):
+    def test_native_network_layout_override_stays_with_its_translation_unit(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            port = root / "port"
+            (port / "network").mkdir(parents=True)
+            for name in ("native_posix_stat.cpp", "compatibility.cpp", "transport.cpp"):
+                (port / "network" / name).write_text("// authored fixture\n")
+            (port / "network/flags.txt").write_text("native_posix_stat.cpp: -mno-ms-bitfields\n")
+            (root / "monocypher-4.0.2/src").mkdir(parents=True)
+            (root / "monocypher-4.0.2/src/monocypher.c").write_text("// authored fixture\n")
+            # The profile in which the network is published: a public build today compiles none of its modules (CE_NETWORK_OFF), so the
+            # exclusion is switched off to see how the modules' flags are chosen.
+            with patch.object(build, "PORT", port), patch.object(build.deps, "SRC", root), \
+                 patch.object(build, "PUBLIC", True), patch.object(build, "NETWORK_SOURCE_ID", "ab" * 32), \
+                 patch.object(build, "network_module", return_value=False), \
+                 patch.object(build.deps, "unpack") as unpack:
+                for target in ("linux", "windows"):
+                    rows = {p.name: (rule, extra) for p, rule, extra in build.port_sources(target)}
+                    self.assertEqual("pcxx", rows["native_posix_stat.cpp"][0])
+                    self.assertIn("-mno-ms-bitfields", rows["native_posix_stat.cpp"][1])
+                    self.assertNotIn("-mno-ms-bitfields", rows["compatibility.cpp"][1])
+                    self.assertNotIn("-mno-ms-bitfields", rows["transport.cpp"][1])
+                    self.assertNotIn("CE_NETWORK_SIMULATION_ID", rows["native_posix_stat.cpp"][1])
+                    self.assertIn("CE_NETWORK_SIMULATION_ID", rows["compatibility.cpp"][1])
+                    self.assertIn("-mms-bitfields", build.COMMON)
+                unpack.assert_not_called()
+
+    def test_source_selection_uses_the_same_explicit_index_authority_as_identity(self):
+        result = type("Result", (), {"stdout": b"src/game.cpp\0"})()
+        with patch.dict(build.os.environ, {"GIT_INDEX_FILE": "/unexpected-index", "GIT_DIR": "/unexpected-dir",
+                                          "GIT_WORK_TREE": "/unexpected-tree", "GIT_CONFIG_COUNT": "1"}), \
+             patch.object(build.subprocess, "run", return_value=result) as run:
+            self.assertEqual([build.ROOT / "src/game.cpp"], build.tracked_sources())
+            env = run.call_args.kwargs["env"]
+            for key in ("GIT_INDEX_FILE", "GIT_DIR", "GIT_WORK_TREE", "GIT_CONFIG_COUNT"):
+                self.assertNotIn(key, env)
+            self.assertEqual("1", env["GIT_NO_LAZY_FETCH"])
+            self.assertEqual("1", env["GIT_LITERAL_PATHSPECS"])
+            self.assertEqual(build.os.devnull, env["GIT_CONFIG_GLOBAL"])
+
+    def test_public_mirror_compiles_every_tracked_input_and_only_the_identity_omits_the_exporters_private_ones(self):
+        # A public build of the private tree compiles the inputs main's public build compiles, the exporter's private-only ones included
+        # (a build from the exported tree has none to compile). The declared source identity alone leaves them out, as the exporter does.
+        names = ["src/game.cpp", "src/splinebasis.c", "linklib/nvtristrip_vc6.h", "src/maths.h"]
+        result = type("Result", (), {"stdout": "\0".join(names).encode() + b"\0"})()
+        with patch.object(build.subprocess, "run", return_value=result):
+            for public in (False, True):
+                with self.subTest(public=public), patch.object(build, "PUBLIC", public):
+                    self.assertEqual([build.ROOT / name for name in names], build.tracked_sources())
+        self.assertEqual(("src/splinebasis.c", "linklib/nvtristrip_vc6.h"), build.network_source_id.PUBLIC_OMISSIONS)
+
+    def test_fixed_profile_generates_id_only_for_its_owning_translation_unit(self):
+        identity = "ab" * 32
+        with patch.object(build, "PUBLIC", True), patch.object(build, "SYSTEM_CLANG", False), \
+             patch.object(build.deps, "SYSROOT_NAME", "sniper"), patch.object(build, "NETWORK_SOURCE_ID", None), \
+             patch.object(build.network_source_id, "compute_source_id", return_value=identity) as compute:
+            build.configure_network_identity()
+            compute.assert_called_once_with(build.ROOT)
+            self.assertEqual(f" '-DCE_NETWORK_SIMULATION_ID=\"{identity}\"'",
+                             build.network_identity_flag(Path("port/network/compatibility.cpp")))
+            self.assertEqual("", build.network_identity_flag(Path("port/network/transport.cpp")))
+
+    def test_other_profiles_remain_offline_without_reusing_a_previous_identity(self):
+        for public, system, sysroot in ((False, False, "sniper"), (True, True, "sniper"),
+                                        (True, False, "")):
+            with self.subTest(public=public, system=system, sysroot=sysroot), \
+                 patch.object(build, "PUBLIC", public), patch.object(build, "SYSTEM_CLANG", system), \
+                 patch.object(build.deps, "SYSROOT_NAME", sysroot), \
+                 patch.object(build, "NETWORK_SOURCE_ID", "ab" * 32), \
+                 patch.object(build.network_source_id, "compute_source_id") as compute:
+                build.configure_network_identity()
+                compute.assert_not_called()
+                self.assertIsNone(build.NETWORK_SOURCE_ID)
+                self.assertEqual("", build.network_identity_flag(Path("compatibility.cpp")))
+
+    def test_invalid_or_incomplete_source_identity_cannot_be_advertised(self):
+        with patch.object(build, "PUBLIC", True), patch.object(build, "SYSTEM_CLANG", False), \
+             patch.object(build.deps, "SYSROOT_NAME", "sniper"), patch.object(build, "NETWORK_SOURCE_ID", None):
+            for bad in ("", "ab" * 31, "AB" * 32, '";unexpected'):
+                with self.subTest(identity=bad), \
+                     patch.object(build.network_source_id, "compute_source_id", return_value=bad), \
+                     self.assertRaisesRegex(ValueError, "SHA-256"):
+                    build.configure_network_identity()
+            with patch.object(build.network_source_id, "compute_source_id", side_effect=ValueError("missing input")), \
+                 self.assertRaisesRegex(ValueError, "missing input"):
+                build.configure_network_identity()
+            self.assertIsNone(build.NETWORK_SOURCE_ID)
+
+
+class PublicFlavourTests(unittest.TestCase):
+    """The default public build has no network; --public --with-network is the same build with it (the experimental co-op release)."""
+
+    def run_main(self, *argv):
+        targets = {name: {key: list(value) for key, value in row.items()} for name, row in build.TARGETS.items()}
+        fake = type("Result", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+        with patch.object(sys, "argv", ["build.py", *argv, "--syntax"]), patch.object(build, "PUBLIC", False), \
+             patch.object(build, "WITH_NETWORK", False), patch.object(build, "TEST_AUTOMATION", False), patch.object(build, "CE_DEFINES", []), \
+             patch.object(build, "WITH_ICE", False), \
+             patch.object(build, "TARGETS", targets), patch.object(build, "build_mirror", return_value=[]), \
+             patch.object(build.ice_deps, "install_lock", return_value=nullcontext()), \
+             patch.object(build, "configure_network_identity"), patch.object(build, "check_compiler"), \
+             patch.object(build, "ninja_file", return_value=Path("/nonexistent.ninja")), patch.object(build.subprocess, "run", return_value=fake):
+            build.main()
+            return list(build.CE_DEFINES), build.PUBLIC, build.WITH_NETWORK
+
+    def test_the_default_public_build_defines_network_off(self):
+        defines, public, with_network = self.run_main("--public")
+        self.assertTrue(public)
+        self.assertFalse(with_network)
+        self.assertIn("-DCE_NETWORK_OFF=1", defines)
+
+    def test_with_network_is_the_public_build_without_that_define(self):
+        defines, public, with_network = self.run_main("--public", "--with-network", "--ce-version", "0.2.0")
+        self.assertTrue(public)
+        self.assertTrue(with_network)
+        self.assertNotIn("-DCE_NETWORK_OFF=1", defines)
+        self.assertIn("'-DCE_VERSION=\"0.2.0\"'", defines)
+        self.assertIn("-DBEA_PUBLIC_GRAPHICS_HOST=1", defines)
+        self.assertNotIn("-DCE_NET_TEST_AUTOMATION=1", defines)
+
+    def test_with_network_needs_the_public_build_and_excludes_test_automation(self):
+        with self.assertRaisesRegex(SystemExit, "public"):
+            self.run_main("--with-network")
+        with self.assertRaises(SystemExit):
+            self.run_main("--public", "--with-network", "--test-automation")
+
+    def test_ice_is_explicit_and_requires_the_public_network_flavour(self):
+        for args in (("--with-ice",), ("--public", "--with-ice")):
+            with self.subTest(args=args), self.assertRaisesRegex(SystemExit, "requires --public --with-network"):
+                self.run_main(*args)
+        for args in (("--public",), ("--public", "--with-network")):
+            defines, _, _ = self.run_main(*args)
+            self.assertNotIn("-DCE_NETWORK_ICE=1", defines)
+            self.assertNotIn("-DJUICE_STATIC=1", defines)
+        defines, _, _ = self.run_main("--public", "--with-network", "--with-ice")
+        self.assertIn("-DCE_NETWORK_ICE=1", defines)
+        self.assertIn("-DJUICE_STATIC=1", defines)
+
+    def fixture_port(self, root):
+        port = root / "port"
+        (port / "network").mkdir(parents=True)
+        (port / "network/transport.cpp").write_text("// authored fixture\n")
+        (port / "platform/common").mkdir(parents=True)
+        (port / "platform/common/ce_netlobby.cpp").write_text("// authored fixture\n")
+        (port / "platform/common/window.cpp").write_text("// authored fixture\n")
+        (root / "monocypher-4.0.2/src").mkdir(parents=True)
+        (root / "monocypher-4.0.2/src/monocypher.c").write_text("// authored fixture\n")
+        native = root / "src" / build.NVTRISTRIP / "src"
+        native.mkdir(parents=True)
+        for name in ("NvTriStrip.cpp", "NvTriStripObjects.cpp"):
+            (native / name).write_text("// authored fixture\n")
+        return port
+
+    def test_modules_follow_the_flavour(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            port = self.fixture_port(root)
+            for public, with_network, network_modules in ((False, False, True), (True, False, False), (True, True, True)):
+                with self.subTest(public=public, with_network=with_network), patch.object(build, "PORT", port), patch.object(build.deps, "SRC", root), \
+                     patch.object(build, "PUBLIC", public), patch.object(build, "WITH_NETWORK", with_network), patch.object(build, "NETWORK_SOURCE_ID", None), \
+                     patch.object(build.deps, "DATA", root), \
+                     patch.object(build.deps, "unpack", side_effect=AssertionError("authored fixture must not unpack third-party inputs")):
+                    names = {p.name for p, rule, extra in build.port_sources("linux")}
+                    self.assertEqual(network_modules, "transport.cpp" in names)
+                    self.assertEqual(network_modules, "ce_netlobby.cpp" in names)
+                    self.assertNotIn("network_off.cpp", names)		# no flavour needs the legacy stand-in file: the default build compiles main's text, with no network reference left
+                    self.assertIn("window.cpp", names)
+                    # the public builds keep their NvTriStrip stand-in whatever the network
+                    self.assertEqual(public, "nvtristrip_public.cpp" in names)
+
+    def test_enet_is_linked_where_the_network_is(self):
+        for target, libs in (("linux", ("-lenet",)), ("windows", ("-lenet", "-lws2_32"))):
+            for public, with_network, linked in ((False, False, True), (True, False, False), (True, True, True)):
+                with self.subTest(target=target, public=public, with_network=with_network), patch.object(build, "PUBLIC", public), \
+                     patch.object(build, "WITH_NETWORK", with_network), patch.object(build, "vorbis_lib", return_value=""), \
+                     patch.object(build.deps, "require_ffmpeg_shared", return_value=[]):
+                    flags = build.link_flags(target).split()
+                    for lib in libs:
+                        self.assertEqual(linked, lib in flags, lib)
+
+
 if __name__ == "__main__":
     unittest.main()

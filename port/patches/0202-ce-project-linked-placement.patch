@@ -1,0 +1,143 @@
+--- a/world.cpp
++++ b/world.cpp
+@@ -1,3 +1,6 @@
++#ifdef CE_VERSION
++#include "ce_project.h"
++#endif
+ // world.cpp: reconstructed from world.obj (0050a750..0050d86f); Stuart's release has no copy. The allocations'
+ // __LINE__ values are the retail ones; the #line directives place them, because the retail file's layout is unknown.
+ #include "common.h"
+@@ -350,6 +353,10 @@
+ //******************************************************************************************
+ BOOL CWorld::Load(SINT level, BOOL base)	// FUNCTION: 0x0050b520
+ {
++#ifdef CE_VERSION
++    if (!PortCeProjectBeginWorld(level, base != FALSE)) return FALSE;
++#endif
++
+ 	char	path[] = "data\\worlds\\";
+ 	char	name[200];
+ 	char	status[256];
+@@ -778,6 +785,11 @@
+ 	for (SINT i = 0; i < num; i++)
+ 	{
+ 		CInitThing	*init = inits[i];
++#ifdef CE_VERSION
++        if (!PortCeProjectApplyPlacement(init->mName, sizeof(init->mName), base != FALSE,
++                                        &init->mPos.X, &init->mPos.Y, &init->mPos.Z)) return FALSE;
++#endif
++
+ 		if ((TargetOf(init) >= 0) && (TargetOf(init) < num))	// STAND-IN (a): the accessor (see above)
+ 			init->mTarget = (SINT)things[TargetOf(init)];
+ 		else
+@@ -920,7 +932,10 @@
+ 			COccupancy::BuildStatic();
+ 		CONSOLE.SetLoadingFraction(1.0f);
+ 	}
+-	return TRUE;
++	#ifdef CE_VERSION
++    if (!PortCeProjectEndWorld(base != FALSE)) return FALSE;
++#endif
++    return TRUE;
+ }
+ 
+ //******************************************************************************************
+--- a/Career.cpp
++++ b/Career.cpp
+@@ -1,3 +1,6 @@
++#ifdef CE_VERSION
++#include "ce_project.h"
++#endif
+ // Career.cpp: implementation of the CCareer class.
+ //
+ //////////////////////////////////////////////////////////////////////
+@@ -185,6 +188,10 @@
+ //******************************************************************************************
+ void CCareerNode::SetBaseThingExistTo(int offset, BOOL val)	// FUNCTION: 0x0041b770
+ {
++#ifdef CE_VERSION
++    if (!PortCeProjectCareerAllowed()) return;
++#endif
++
+ 	int i = offset >> 5 ;
+ 	int b = offset & 31 ;
+ 
+@@ -432,6 +439,10 @@
+ // update career from end level data stucture
+ void CCareer::Update()	// FUNCTION: 0x0041bd00
+ {
++#ifdef CE_VERSION
++    if (!PortCeProjectCareerAllowed()) return;
++#endif
++
+ 	// the below should only happen when a level is won
+ 	if (END_LEVEL_DATA.mFinalState != GAME_STATE_LEVEL_WON)
+ 	{
+@@ -591,6 +602,10 @@
+ //******************************************************************************************
+ void CCareer::UpdateThingsKilled()	// FUNCTION: 0x0041c180
+ {
++#ifdef CE_VERSION
++    if (!PortCeProjectCareerAllowed()) return;
++#endif
++
+ 	// don't score on traning level
+ 	if (END_LEVEL_DATA.mWorldFinished == 100) return ;
+ 
+@@ -737,6 +752,10 @@
+ //******************************************************************************************
+ void CCareer::UpdateGoodieStates()	// FUNCTION: 0x0041c470
+ {
++#ifdef CE_VERSION
++    if (!PortCeProjectCareerAllowed()) return;
++#endif
++
+ 	SINT oc = CountGoodies();
+ 
+ 	BOOL jcl_fuck_me_its_late = (GetGoodieState(0) <= GS_INSTRUCTIONS);
+@@ -1740,6 +1759,10 @@
+ //******************************************************************************************	v
+ void	CCareer::SetSlot(int num, BOOL val)	// FUNCTION: 0x004214e0
+ {
++#ifdef CE_VERSION
++    if (!PortCeProjectCareerAllowed()) return;
++#endif
++
+ 	if (num <0 || num >= MAX_CAREER_SLOTS*8)
+ 	{
+ 		LOG.AddMessage("Error: Outside slot range (%d) in call to SetSlot", num) ;
+--- a/Career.h
++++ b/Career.h
+@@ -1,3 +1,6 @@
++#ifdef CE_VERSION
++#include "ce_project.h"
++#endif
+ // Career.h: interface for the CCareer class.
+ //
+ //////////////////////////////////////////////////////////////////////
+@@ -141,7 +144,11 @@
+ 	CCareerNode* GetNode(int num) { if (num < 0) return NULL ; return &mNode[num] ; }
+ 	CCareerNodeLink* GetLink(int num) { if (num <0) return NULL ;return &mNodeLink[num] ; } 
+ 	EGoodieState	GetGoodieState(int goodie_num) { return mGoodies[goodie_num].mState; }
+-	void			SetGoodieState(int goodie_num, EGoodieState state) { mGoodies[goodie_num].mState = state ; }
++	void			SetGoodieState(int goodie_num, EGoodieState state) {
++#ifdef CE_VERSION
++    if (!PortCeProjectCareerAllowed()) return;
++#endif
++ mGoodies[goodie_num].mState = state ; }
+ 	
+ 	// For the Debriefing Screen
+ 	SINT			GetAndResetGoodieNewCount();
+@@ -154,7 +161,11 @@
+ 
+ 	// Check if a career is in progress (i.e. at least one completed level)
+ 	BOOL InProgress() { return( mCareerInProgress ); }
+-	void SetInProgress() {mCareerInProgress = TRUE;}
++	void SetInProgress() {
++#ifdef CE_VERSION
++    if (!PortCeProjectCareerAllowed()) return;
++#endif
++mCareerInProgress = TRUE;}
+ 
+ 	CSArray<int, MAX_CAREER_SLOTS>&	GetSlots()	{ return mSlots; }
+ 

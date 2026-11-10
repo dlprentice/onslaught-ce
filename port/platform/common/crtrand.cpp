@@ -15,12 +15,19 @@
 extern "C" unsigned PortPresentCount(void);	// d3d9hooks.cpp: Presents completed so far
 static thread_local unsigned int tHoldRand = 1;
 static thread_local unsigned int tCalls;	// rand calls on this thread (the CRT probe reads the main thread's)
+#ifndef CE_NETWORK_OFF
+// Lockstep co-op test trace (ce_network_lockstep.cpp, BEA_LOCKSTEP_DUMP): told each draw's caller during a shared tick.
+extern "C" { void (*gPortCrtTrace)(void *caller); }
+#endif
 
 extern "C" void bea_crt_srand(unsigned int seed) { tHoldRand = seed; }
 
 extern "C" int bea_crt_rand(void)
 {
 	tCalls++;
+#ifndef CE_NETWORK_OFF
+	if (gPortCrtTrace) gPortCrtTrace(__builtin_return_address(0));
+#endif
 	static int mode = -1;
 	static FILE *log;
 	static unsigned ranges[16][2];
@@ -81,3 +88,14 @@ extern "C" void PortCrtRandState(unsigned int *calls, unsigned int *hold)
 	*calls = tCalls;
 	*hold = tHoldRand;
 }
+
+#ifndef CE_NETWORK_OFF
+// Lockstep co-op (ce_network_lockstep.cpp) puts the main thread's state back after drawing a frame, so draws made
+// only for this peer's own view never reach the shared simulation.
+extern "C" void PortCrtRandSet(unsigned int calls, unsigned int hold)
+{
+	tCalls = calls;
+	tHoldRand = hold;
+}
+
+#endif

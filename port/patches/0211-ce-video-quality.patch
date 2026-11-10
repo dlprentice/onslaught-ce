@@ -1,0 +1,20 @@
+--- a/PauseMenu.cpp
++++ b/PauseMenu.cpp
+@@ -593,6 +593,17 @@
+ 		list->AddItem(PortCeDisplayModeItem());
+ 	}
+ #endif
++#ifdef CE_VERSION
++	// Quality requests use the same native list and Apply action, then switch at the next whole render frame.
++	extern bool PortCeQualityOptionsAvailable();
++	if (PortCeQualityOptionsAvailable())
++	{
++		extern CMenuItem *PortCeFullModelsItem();
++		extern CMenuItem *PortCeTerrainDetailItem();
++		list->AddItem(PortCeFullModelsItem());
++		list->AddItem(PortCeTerrainDetailItem());
++	}
++#endif
+ #line 1416
+ 	detail->mShadowDetail = sShadowDetail = new (MEMTYPE_MENUITEM) CShadowDetail((EPCText)0xe, 3);
+ 	list->AddItem(sShadowDetail);

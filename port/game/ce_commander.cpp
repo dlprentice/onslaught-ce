@@ -67,6 +67,7 @@
 #include "SeedUniformRandomNumberStream.h"
 #endif
 
+#include <math.h>
 #include <stdarg.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -80,6 +81,7 @@
 extern "C" unsigned PortPresentCount(void);		// d3d9hooks.cpp
 #endif
 extern "C" int CE_SettingGetBool(const char *key, int def);	// ce.cpp: the ce.ini switch
+bool PortCeExperimental(const char *mode);	// ce.cpp: the ce.ini [Experimental] lines, each read once
 
 namespace
 {
@@ -209,7 +211,8 @@ void ReadConfiguration()
 #else
 	const bool allowed = !Fenced();
 #endif
-	gMap = allowed && (proofMap || CE_SettingGetBool("commander", 0) != 0);
+	// The map is one of the unfinished features: ce.ini's commander=1 (the line under [Experimental], or the same line from 0.1.13), read once in ce.cpp.
+	gMap = allowed && (proofMap || PortCeExperimental("commander"));
 	gEnabled = allowed && (gMap
 #ifdef CE_COMMANDER_TEST
 						   || gTapePath || gProbePath
@@ -899,6 +902,24 @@ bool CeCmdIssue(int ordinal, int verb, float x, float y, const char **why)
 	const char *reason = NULL;
 	if (!why) why = &reason;
 	*why = NULL;
+	// Only point orders consume caller coordinates. Hold and fall back choose
+	// their own destination; reject malformed point orders before any lookup,
+	// selection description or terrain query can have side effects.
+	switch (verb) {
+	case CE_CMD_MOVE:
+	case CE_CMD_ADVANCE:
+		if (!isfinite(x) || !isfinite(y)) {
+			*why = "Choose a finite destination.";
+			return false;
+		}
+		break;
+	case CE_CMD_HOLD:
+	case CE_CMD_FALLBACK:
+		break;
+	default:
+		*why = "that is not an order";
+		return false;
+	}
 	Rec *r = CeCmdMapOn() && gEnabled ? ByOrdinal(ordinal) : NULL;
 	if (!r) { *why = "that squad is gone"; return false; }
 	CeCmdSquad s;

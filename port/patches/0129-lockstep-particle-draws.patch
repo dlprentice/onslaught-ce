@@ -1,0 +1,101 @@
+--- a/ParticleManager.cpp
++++ b/ParticleManager.cpp
+@@ -1,6 +1,9 @@
+ // ParticleManager.cpp: reconstructed from ParticleManager.obj (004cad60..004cbec4); Stuart's release has no copy. The
+ // names are ours unless noted; the allocations' __LINE__ values are the retail ones (#line: the layout is unknown).
+ #include "common.h"
++#ifndef CE_NETWORK_OFF
++#include "ce_network_lockstep.h"
++#endif
+ #include "ParticleManager.h"	// FUNCTION: 0x004cad60 init:ZERO_FVECTOR
+ #include "mathsconst.h"			// FUNCTION: 0x004cad80 init:ID_FMATRIX
+ #include "ParticleDescriptor.h"
+@@ -226,6 +229,9 @@
+ //******************************************************************************************
+ void CParticleManager::CreateEffect(CParticleDescriptor *pd, CParticleEffectLink *link, FVector pos, BOOL a, BOOL important)	// FUNCTION: 0x004cb3d0
+ {
++#ifndef CE_NETWORK_OFF
++	CE_LockstepCrtHold hold;	// port (lockstep co-op): a particle's draws stay off the shared streams (its pool follows each peer's view)
++#endif
+ 	if (ENGINE.DebugNoParticles())
+ 		return;
+ 
+@@ -280,6 +286,9 @@
+ //******************************************************************************************
+ CParticle *CParticleManager::AllocateParticle(CParticleDescriptor *pd, BOOL important)	// FUNCTION: 0x004cb5c0
+ {
++#ifndef CE_NETWORK_OFF
++	CE_LockstepCrtHold hold;	// port (lockstep co-op): as CreateEffect
++#endif
+ 	if (!pd)
+ 		return NULL;
+ 
+--- a/Building.cpp
++++ b/Building.cpp
+@@ -2,6 +2,9 @@
+ // starts with its maths constants and the retail copies of CUnit's inline members (004175b0..00417630).
+ 
+ #include "common.h"
++#ifndef CE_NETWORK_OFF
++#include "ce_network_lockstep.h"
++#endif
+ #include "weapon.h"	// retail's .data has this TU's kWeaponCoolRate copy (weapon.h reached it; the include path is ours)
+ #include "unit.h"
+ #include "world.h"
+@@ -221,6 +224,9 @@
+ // Set the initial motion and mesh of a newly created debris particle.
+ static inline void InitialiseBuildingDebris(CParticleMesh *particle, FVector &velocity, CBuilding *building)
+ {
++#ifndef CE_NETWORK_OFF
++	CE_LockstepCrtHold hold;	// port (lockstep co-op): only a created particle draws its rubble mesh
++#endif
+ 	velocity.Z = velocity.Z * 2 - 0.04f;
+ 	particle->mVelocity = velocity;
+ 	CRenderThing *renderThing = building->GetRenderThing();
+--- a/DestroyableSegment.cpp
++++ b/DestroyableSegment.cpp
+@@ -5,6 +5,9 @@
+ // 74154bfae14ddc8ecb87a0766f5bc381c7b7f1ab334ed7a753040eda1e1e7750.
+ 
+ #include "common.h"
++#ifndef CE_NETWORK_OFF
++#include "ce_network_lockstep.h"
++#endif
+ #include "SpawnerThng.h"
+ #include "DestroyableSegment.h"
+ #include "DestructableSegmentsController.h"
+@@ -604,6 +607,9 @@
+ 
+ 	if ((link.Full()) && (link.mEffect->mParticle))
+ 	{
++#ifndef CE_NETWORK_OFF
++	CE_LockstepCrtHold hold;	// port (lockstep co-op): only a created particle draws its spin
++#endif
+ 		CParticleMesh	*mp = link.mEffect->mParticle;
+ 		link.SetPos(pos);
+ 		link.SetOrientation(ori);
+--- a/weapon.cpp
++++ b/weapon.cpp
+@@ -1,6 +1,9 @@
+ // weapon.cpp: reconstructed from weapon.obj (00505d10..0050a2ae); neither this file nor weapon.h was released.
+ // Some member names survive in Stuart's BattleEngine/part callers; other labels are reconstruction names.
+ #include "common.h"
++#ifndef CE_NETWORK_OFF
++#include "ce_network_lockstep.h"
++#endif
+ #include "weapon.h"				// FUNCTION: 0x00505d10 init:ZERO_FVECTOR
+ #include "unit.h"				// FUNCTION: 0x00505d30 init:ID_FMATRIX
+ #include "eventmanager.h"
+@@ -577,6 +580,12 @@
+ //******************************************************************************************
+ void CWeapon::MoveEmitter(BOOL orientate)	// FUNCTION: 0x005078f0
+ {
++#ifndef CE_NETWORK_OFF
++	// port (lockstep co-op): placing a live muzzle effect evaluates the launch pose; done mid-tick it would stamp that
++	// pose's frame cache only on a peer whose effect is still alive, so a lockstep tick places it after the update
++	if (CE_LockstepDeferEmitter(this, orientate))
++		return;
++#endif
+ 	CWeaponModeData *mode = mMode;
+ 	if (mode)
+ 	{

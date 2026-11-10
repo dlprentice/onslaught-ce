@@ -35,8 +35,13 @@ from ce_palette_tests import function, no_core, sections, SANITIZE  # noqa: E402
 ROOT = Path(__file__).resolve().parents[2]
 PATCHES = ROOT / "port/patches"
 PATCH_NAMES = ("0108-ce-photo-mode.patch", "0133-ce-photo-draw-suppression.patch")
-# Patches whose hunks are written against photo mode's (the save error notice is drawn after its note): left out of the run without it.
-BUILT_ON_PHOTO = ("0137-ce-save-failed-notice.patch", "0162-commander-map-hooks.patch")
+DEPENDENT = ("0149-network-hud-view-player.patch", "0157-network-hud-scale-coop.patch",
+             "0201-network-text-chat-overlay.patch")    # network patches whose hunks anchor on lines PATCH_NAMES add (0201's chat overlay is drawn between the note and the save error notice, and applies only with 0137)
+# Patches whose hunks are written against photo mode's (the save error notice is drawn after its note), or against a patch that is (the 4K HUD, 0190, applies only on top of 0157): left out of both trees of the comparison.
+BUILT_ON_PHOTO = ("0137-ce-save-failed-notice.patch", "0162-commander-map-hooks.patch", "0190-ce-hud-4k.patch",
+                  "0206-native-editor-lifecycle.patch",  # its DXEngine.cpp hunk anchors on the photo draw scope (0133) and its key hook on the photo key chain (0108)
+                  "0207-ce-museum-visit-lifecycle.patch",  # written on top of 0206's game.cpp
+                  "0209-ce-world-view-snapshot.patch")  # its declaration hunk anchors on the photo header; full-stack checks keep it
 PHOTO = ROOT / "port/game/ce_photo.cpp"
 PHOTO_H = ROOT / "port/game/ce_photo.h"
 WRITER = ROOT / "port/platform/common/ce_screenshot.cpp"
@@ -105,6 +110,12 @@ def faithful(text):
     return "\n".join(out)
 
 
+def faithful_differences(alone, without):
+    """The files whose faithful view differs between a tree with photo mode and one without it, each as a public build sees it."""
+    return [name for name in FILES
+            if faithful(build.network_view(alone[name], off=True)) != faithful(build.network_view(without[name], off=True))]
+
+
 def check_structure(files):
     """Where patch 0108 puts photo mode in the patched game files (raises AssertionError)."""
     try:
@@ -114,6 +125,12 @@ def check_structure(files):
 
 
 def placed(files):
+    # Both texts a build can see: a public build's (the network's hooks compiled out) and a build with the network (build.network_view).
+    for off in (True, False):
+        placed_in({name: build.network_view(text, off=off) for name, text in files.items()})
+
+
+def placed_in(files):
     shell = function(files["ltshell.cpp"], "LRESULT PCLTShell::MsgProc(")
     keydown = shell[shell.index("if( WM_KEYDOWN == uMsg )"):shell.index("WM_KEYUP == uMsg")]
     assert keydown.index("if (PortCePhotoKey(key, (lParam & 0x40000000) != 0)) {}") < keydown.index("PortCePaletteSuppressDown(key)"), \
@@ -127,18 +144,22 @@ def placed(files):
                                  cockpit.group(1)), "the cockpit and its queue run inside a draw scope, not behind a test"
     post = function(engine, "HRESULT\tCDXEngine::PostRender(")
     assert "CLIPARAMS" not in post, "PostRender no longer reads -killhud"
-    assert re.search(r"GetShowHUD\(\)\)\)\n\t+render=TRUE;", post), "the battle line goes where it always did"
+    # the condition is main's (GetShowHUD()))) or, with the network layer (patch 0149), the viewed player's (ending in GetShowHUD())))
+    assert re.search(r"GetShowHUD\(\)\)\)?\n\t+render=TRUE;", post), "the battle line goes where it always did"
     assert re.search(r"if \(render\)\n#ifdef CE_VERSION\n\t\t\{\n\t\t\tCePhotoDrawScope photoDraw;[^\n]*\n#endif\n\t\t\tHUD\.RenderBattleline\(viewport\);"
                      r"\n#ifdef CE_VERSION\n\t\t\}\n#endif", post), "the battle line runs inside a draw scope"
     for kept in ("HUD.Render();", "GAME.GetMessageLog()->Render(viewport)", "GAME.GetLevelBriefingLog()->Render(viewport)",
                  "GAME.GetPauseMenu()->Render()", "GAMEINTERFACE.Render();", "HUD.RenderOverlay();"):
         assert kept in post, kept
     mirror = post[post.index("if (!gMirrorPass)\t\t// retail PC (0053efc4)"):]
-    assert re.search(r"GAMEINTERFACE\.Render\(\);\n#ifdef CE_VERSION\n\t\tPortCePaletteRender\(\);\n\t\tPortCePhotoRender\(\);\n(\t\tPortCeNoticeRender\(\);\n)?#endif",
-                     mirror), "the note is drawn after the console, outside the mirror pass (only the save error notice, patch 0137, may follow it)"
+    # what may follow photo mode's note: the chat overlay (patch 0201, in a build with the network and its text chat) and the save error notice (patch 0137)
+    chat = r"(?:#if defined\(CE_NETWORK_TEXT\)\n\t\t\{ extern void PortCeChatRender\(\); PortCeChatRender\(\); \}\n#endif\n)?"
+    assert re.search(r"GAMEINTERFACE\.Render\(\);\n#ifdef CE_VERSION\n\t\tPortCePaletteRender\(\);\n\t\tPortCePhotoRender\(\);\n" + chat + r"(\t\tPortCeNoticeRender\(\);\n)?#endif",
+                     mirror), "the note is drawn after the console, outside the mirror pass (only the chat overlay, patch 0201, and the save error notice, patch 0137, may follow it)"
     hud = function(files["Hud.cpp"], "void\tCHud::Render()")
     assert "CLIPARAMS" not in hud, "the HUD no longer reads -killhud"
-    assert re.search(r"GetShowHUD\(\)\)\n#ifdef CE_VERSION\n\t\t\{\n\t\t\tCePhotoDrawScope photoDraw;[^\n]*\n#endif\n\t\t\tRenderOverlayForViewpoint\(player, i\);"
+    # the condition is main's (GetShowHUD())) or, with the network layer (patch 0149), the viewed player's (a longer line ending in GetShowHUD()))
+    assert re.search(r"GetShowHUD\(\)\)+\n#ifdef CE_VERSION\n\t\t\{\n\t\t\tCePhotoDrawScope photoDraw;[^\n]*\n#endif\n\t\t\tRenderOverlayForViewpoint\(player, i\);"
                      r"\n#ifdef CE_VERSION\n\t\t\}\n#endif", hud), "the HUD overlay runs inside a draw scope"
     assert hud.index("mFlash =") < hud.index("RenderOverlayForViewpoint"), "the HUD's own bookkeeping still runs"
     for name in ("Hud.cpp", "DXEngine.cpp"):
@@ -215,17 +236,64 @@ class PhotoTests(unittest.TestCase):
     def test_patch_places_and_faithful_view(self):
         files = patched(self.out / "with", FILES)
         check_structure(files)
-        without = patched(self.out / "without", FILES, skip=PATCH_NAMES + BUILT_ON_PHOTO)
+        # Patches 0149 (the network's HUD view player) and 0157 (its co-op HUD scale) anchor on lines patches 0108 and 0133 add, so they cannot apply without them; 0201 (its chat overlay) applies only
+        # with 0137 (the save error notice), and 0190 (the 4K HUD) only on top of 0157. The comparison isolates photo mode: both trees leave those patches (and the others written against it) out, so that a
+        # difference of theirs, such as the 4K HUD's lines that CE_VERSION does not guard, is not counted as photo mode's; each has its own suite. Both trees are compared as a public build sees them.
+        alone = patched(self.out / "alone", FILES, skip=(*DEPENDENT, *BUILT_ON_PHOTO))
+        without = patched(self.out / "without", FILES, skip=(*PATCH_NAMES, *DEPENDENT, *BUILT_ON_PHOTO))
         for name in FILES:
             with self.subTest(file=name):
-                self.assertNotEqual(files[name], without[name])
-                self.assertEqual(faithful(files[name]), faithful(without[name]), f"patches 0108 and 0133 change the faithful {name}")
+                public, other = build.network_view(alone[name], off=True), build.network_view(without[name], off=True)
+                self.assertNotEqual(public, other)
+                self.assertEqual(faithful(public), faithful(other), f"patches 0108 and 0133 change the faithful {name}")
+        self.assertEqual(faithful_differences(alone, without), [])
+
+    def test_an_unguarded_photo_line_is_caught_by_the_faithful_comparison(self):
+        # The comparison itself, not only faithful(): one line of each photo mode hook taken out of its CE_VERSION block (the block closed before it and opened again after) must make the file differ.
+        alone = patched(self.out / "alone", FILES, skip=(*DEPENDENT, *BUILT_ON_PHOTO))
+        without = patched(self.out / "without", FILES, skip=(*PATCH_NAMES, *DEPENDENT, *BUILT_ON_PHOTO))
+        self.assertEqual(faithful_differences(alone, without), [], "the unmutated trees are equal")
+        public = {name: build.network_view(text, off=True) for name, text in alone.items()}
+        hooks = (("ltshell.cpp", r"(?m)^\s*if \(PortCePhotoKey\(key,"),
+                 ("DXEngine.cpp", r"(?m)^\s*PortCePhotoRender\(\);"),
+                 ("Hud.cpp", r"(?m)^\s*CePhotoDrawScope photoDraw;"),
+                 ("game.cpp", r"(?m)^\s*PortCePhotoFrame\(\);"),
+                 ("game.cpp", r"(?m)^\s*PortCePhotoLevelEnd\(\);"))
+        for name, pattern in hooks:
+            with self.subTest(file=name, hook=pattern):
+                text = public[name]
+                found = list(re.finditer(pattern, text))
+                self.assertEqual(len(found), 1, "the hook line is found once")
+                start, end = found[0].start(), text.index("\n", found[0].end())
+                mutant = dict(public)
+                mutant[name] = text[:start] + "#endif\n" + text[start:end] + "\n#ifdef CE_VERSION" + text[end:]
+                self.assertEqual(faithful_differences(mutant, without), [name], f"a photo mode line of {name} outside CE_VERSION went unseen")
+
+    def test_the_chat_overlay_may_follow_the_note_and_nowhere_else(self):
+        # check_structure lets the chat overlay (patch 0201, network text chat) stand between photo mode's note and the save error notice; before the console or between the console and the note it must not.
+        files = patched(self.out / "with", FILES)
+        check_structure(files)
+        chat = "#ifndef CE_NETWORK_OFF\n#if defined(CE_NETWORK_TEXT)\n\t\t{ extern void PortCeChatRender(); PortCeChatRender(); }\n#endif\n#endif\n"
+        text = files["DXEngine.cpp"]
+        self.assertEqual(text.count(chat), 1, "the chat overlay's block is found once")
+        console, note = "\t\tPortCePaletteRender();\n", "\t\tPortCePhotoRender();\n"
+        self.assertEqual(text.count(console + note + chat), 1)
+        mutants = {"chat-before-the-console": chat + console + note, "chat-between-the-console-and-the-note": console + chat + note}
+        for name, replacement in mutants.items():
+            with self.subTest(mutant=name):
+                mutated = text.replace(console + note + chat, replacement, 1)
+                self.assertNotEqual(mutated, text, "the mutant changed the text")
+                broken = dict(files)
+                broken["DXEngine.cpp"] = mutated
+                with self.assertRaises(AssertionError, msg=f"mutant {name} survived"):
+                    check_structure(broken)
 
     def test_structure_mutants_are_caught(self):
-        files = patched(self.out / "with", FILES)
+        # The mutants' anchors are main's lines, so they mutate the text a public build compiles; the network's view is checked unmutated above.
+        files = {name: build.network_view(text, off=True) for name, text in patched(self.out / "with", FILES).items()}
         mutants = [
-            ("key-after-console", "ltshell.cpp", "\t\t\tif (PortCePhotoKey(key, (lParam & 0x40000000) != 0)) {}	// patch 0108: F11 photo mode, F12 screenshot\n\t\t\telse if (PortCePaletteSuppressDown(key)) {}",
-             "\t\t\tif (PortCePaletteSuppressDown(key)) {}\n\t\t\telse if (PortCePhotoKey(key, (lParam & 0x40000000) != 0)) {}"),
+            ("key-after-console", "ltshell.cpp", "\t\t\telse if (PortCePhotoKey(key, (lParam & 0x40000000) != 0)) {}	// patch 0108: F11 photo mode, F12 screenshot\n\t\t\telse if (PortCePaletteSuppressDown(key)) {}",
+             "\t\t\telse if (PortCePaletteSuppressDown(key)) {}\n\t\t\telse if (PortCePhotoKey(key, (lParam & 0x40000000) != 0)) {}"),
             ("cockpit-scope-removed", "DXEngine.cpp", "\t\t\t\tCePhotoDrawScope photoDraw;\t// patch 0133: photo mode drops the cockpit's draw calls; its routines run in full\n", ""),
             ("cockpit-behind-killhud", "DXEngine.cpp", "#ifdef DEV_VERSION\n\tif(!CLIPARAMS.mKillHUD)\n#endif", "#if defined(DEV_VERSION) || defined(CE_VERSION)\n\tif(!CLIPARAMS.mKillHUD)\n#endif"),
             ("battle-line-behind-killhud", "DXEngine.cpp", "\t\t\t\tif ((GAME.GetCamera(i)->GetShowHUD()))\n\t\t\t\t\trender=TRUE;", "\t\t\t\tif ((GAME.GetCamera(i)->GetShowHUD()))\n\t\t\t\tif (!CLIPARAMS.mKillHUD)\n\t\t\t\t\trender=TRUE;"),
@@ -321,11 +389,12 @@ class PhotoTests(unittest.TestCase):
             ("proof-shot-off-by-one", "return every && (PortPresentCount() + 1) % every == 0;", "return every && PortPresentCount() % every == 0;", "ordinary", None),
             ("shot-repeats", "\tshotPending = false;\n\treturn wanted;", "\treturn wanted;", "ordinary", None),
             ("f11-never-leaves", "if (key == kPhotoKey) PortCePhotoSet(!photo);", "if (key == kPhotoKey) PortCePhotoSet(true);", "ordinary", None),
-            ("filter-never-on", "\tphoto = on;\n\tPortCeDrawHooks(on);", "\tphoto = on;", "ordinary", None),
-            ("filter-never-off", "\tphoto = on;\n\tPortCeDrawHooks(on);", "\tphoto = on;\n\tif (on) PortCeDrawHooks(on);", "ordinary", None),
+            ("filter-never-on", "\tphoto = on;\n\tPortCeDrawHooks(on || PortCeCmdSuppressFlightHud());", "\tphoto = on;", "ordinary", None),
+            ("filter-never-off", "\tphoto = on;\n\tPortCeDrawHooks(on || PortCeCmdSuppressFlightHud());", "\tphoto = on;\n\tif (on) PortCeDrawHooks(on || PortCeCmdSuppressFlightHud());", "ordinary", None),
+            ("strategic-filter-cleared", "PortCeDrawHooks(on || PortCeCmdSuppressFlightHud());", "PortCeDrawHooks(on);", "ordinary", None),
             ("proof-without-photo", "Switch(photo || ProofEvery());", "Switch(photo);", "ordinary", None),
             ("frame-no-reapply", "Switch(photo || ProofEvery());", "if (ProofEvery()) Switch(true);", "ordinary", None),
-            ("sets-killhud", "\tphoto = on;\n\tPortCeDrawHooks(on);", "\tphoto = on;\n\tCLIPARAMS.mKillHUD = on;\n\tPortCeDrawHooks(on);", "ordinary", None),
+            ("sets-killhud", "\tphoto = on;\n\tPortCeDrawHooks(on || PortCeCmdSuppressFlightHud());", "\tphoto = on;\n\tCLIPARAMS.mKillHUD = on;\n\tPortCeDrawHooks(on || PortCeCmdSuppressFlightHud());", "ordinary", None),
             ("level-end-keeps-photo", "void PortCePhotoLevelEnd()\n{\n\tSwitch(false);", "void PortCePhotoLevelEnd()\n{", "ordinary", None),
             ("level-end-keeps-shot", "\tshotPending = false;\n\tnoteUntil = 0;", "\tnoteUntil = 0;", "ordinary", None),
             ("fence-keeps-photo", "if (!Allowed()) { Switch(false); shotPending = false; return; }", "if (!Allowed()) { shotPending = false; return; }", "ordinary", None),

@@ -126,6 +126,11 @@ void PortWideBackBuffer(UINT, UINT) {}
 bool PortWideModes() { return true; }
 bool PortSessionEnabled() { return false; }
 void PortSessionLog(int, bool, const char *, ...) {}
+// frame-feel measurement (feel.h): off in this fixture
+#define PORT_FEEL_ON() 0
+void PortFeelBeforeReset() {}
+void PortFeelNote(const char *) {}
+void PortFeelDeviceCreated(void *, void **, void (*)(void **, int, void *)) {}
 unsigned short ControlWord() { return 0x37f; }
 void SetControlWord(unsigned short) {}
 @LAYER@

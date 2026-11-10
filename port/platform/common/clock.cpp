@@ -412,3 +412,13 @@ void PortClockSleep(unsigned long ms)
 			gShimSleepMs.fetch_add(ms);
 	}
 }
+
+#ifndef CE_NETWORK_OFF
+// Read the mode already selected by the normal clock owner. Admission must not initialize it.
+extern "C" int CE_NetClockOrdinary(void)
+{
+	const int mode = gMode.load();
+	return mode < 0 ? -1 : mode == REAL ? 1 : 0;
+}
+
+#endif

@@ -1,0 +1,114 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Actual validator/native getter/query bodies, with controlled loaded-object/platform boundaries.
+// These prepared objects are not native actor Init, a World Apply or gameplay acceptance.
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <vector>
+#include <typeinfo>
+#include <limits>
+using SINT=int; using SLONG=int; using BOOL=int; using WCHAR=char16_t;
+const BOOL TRUE=1,FALSE=0; enum {QT_NONE,QT_QUIT};
+enum {GAME_STATE_NOT_RUNNING,GAME_STATE_PRE_RUNNING,GAME_STATE_PANNING,GAME_STATE_PLAYING,GAME_STATE_LEVEL_LOST};
+enum {kCooperativeMultiplayer=1,kVersusMultiplayer=2};
+struct CThing {virtual ~CThing(){};}; struct IController {virtual ~IController(){};};
+template<class T> struct SPtrSet {std::vector<T*> values;int expected=-1;int owner_cursor=71;int Size(){return expected<0?(int)values.size():expected;}};
+template<class T> struct ListIterator {SPtrSet<T>*s;size_t i=0;ListIterator(SPtrSet<T>*p):s(p){} T*First(){i=0;return i<s->values.size()?s->values[i]:nullptr;}T*Next(){++i;return i<s->values.size()?s->values[i]:nullptr;}};
+struct CBattleEngineData {char*mConfigurationName;};
+class UBattleEngineDataManager {friend class CENetworkLoadedAdmission;friend struct Fixture;static SPtrSet<CBattleEngineData>sData;public:static CBattleEngineData*GetConfiguration(int i){if(i<0)i=0;return (unsigned)i<sData.values.size()?sData.values[i]:nullptr;} static CBattleEngineData*GetConfiguration(char*n){for(auto*p:sData.values)if(!strcmp(p->mConfigurationName,n))return p;return nullptr;}};
+SPtrSet<CBattleEngineData>UBattleEngineDataManager::sData;
+const int kMaxConfigurations=20;
+class UBattleEngineConfigurations {friend struct Fixture;static int sConfigurations;static char*sConfigurationName[20];public:static int CountConfigurations(){return sConfigurations;} static CBattleEngineData*GetConfiguration(int);
+/* RAW_ACCESSOR */
+};
+int UBattleEngineConfigurations::sConfigurations;char*UBattleEngineConfigurations::sConfigurationName[20];
+/* NATIVE_FALLBACK */
+struct CPlayer;
+struct CBattleEngine:CThing {CPlayer*owner=nullptr;int mConfigurationId=0;CBattleEngineData*mConfiguration=nullptr;int mInfinateEnergy=0,vulnerable=1;CPlayer*GetPlayer(){return owner;}int GetVulnerable(){return vulnerable;}};
+struct CPlayer:IController {int number=0,god=0;CBattleEngine*engine=nullptr;int GetNumber(){return number;}CBattleEngine*GetBattleEngine(){return engine;}int IsGod(){return god;}};
+struct CController {virtual~CController(){}int pad=0,mPlaying=0,mRecording=0;IController*target=nullptr;int GetPadNumber(){return pad;}IController*GetToControl(){return target;}};
+struct CPCController:CController{};struct OtherController:CPCController{};
+struct CBattleEngineInitThing {int mConfigurationId=0;};
+struct CStart:CThing {int number=0;CBattleEngine*engine=nullptr;CBattleEngineInitThing mInit;unsigned GetPlayerNumber(){return number;}CBattleEngine*GetPlayerObject(){return engine;}};
+struct SFrontEndSettings {int mInvertSides=0,mPlayer1Configuration=0,mPlayer2Configuration=0;};
+struct CGame {int level=852,mCurrentlyRunningLevel=852,n=2,phase=GAME_STATE_PRE_RUNNING,mQuit=0,mAdvanceFrame=0,mFixedFrameRate=0,mAllowedAutoAim=1,mFullscreenMultiplayer=0,mSupervisorMode=1;float mFrameLength=.05f;SFrontEndSettings settings;CPlayer*players[2]{};CController*mController[2]{};bool freecam[2]{};int GetCurrentLevel(){return level;}int GetNPlayers(){return n;}int GetGameState(){return phase;}CPlayer*GetPlayer(int i){return players[i];}bool IsFreeCameraOn(int i){return freecam[i];}SFrontEndSettings*GetFrontEndSettings(){return &settings;}BOOL IsMultiplayer();}GAME;
+/* NATIVE_GAME_MP */
+struct CWorld {int mType=2;SPtrSet<CStart>starts;SPtrSet<CThing>things;BOOL IsMultiplayer();SPtrSet<CStart>&GetStartNB(){return starts;}SPtrSet<CThing>&GetThingNB(){return things;}}WORLD;
+/* NATIVE_WORLD_MP */
+struct CCareer {int god[2]{};int GetIsGod(int i){return god[i];}}CAREER;
+struct CCLIParams {
+#define FLAG(x) int x=0;
+/* CLI_FLAGS */
+#undef FLAG
+}CLIPARAMS;
+SINT PLAYABLE_DEMO=0,performing_stress_test=0;bool E3_BUILD=false,gPortCheatNameOnly=false;char gAllCheatsEnabled=0;
+struct CFEPSaveGame {WCHAR mSaveGameName[256]{};BOOL IsCheatActive(int);};struct CFrontEnd {CFEPSaveGame mFEPSaveGame;}FRONTEND;
+unsigned native_queries=0,cheat_on_calls=0,unexpected_io=0,cached_calls=0;int cache_status=1;unsigned cache_mask=0;
+char*FromWCHAR(const WCHAR*s){static char text[257];unsigned i=0;for(;i<256&&s[i];++i)text[i]=(char)s[i];text[i]=0;return text;}
+/* NATIVE_CHEAT_TABLE */
+extern "C" int CE_CheatOn(int i){++cheat_on_calls;if(cache_status!=1){++unexpected_io;return 0;}return (cache_mask>>i)&1;}
+/* NATIVE_CHEAT_QUERY */
+int automation=1,window_automation=1,update_automation=1;int clock_status=1;
+extern "C" int CE_CheatCachedStatus(unsigned*out){++cached_calls;if(cache_status!=1)return 0;*out=cache_mask;return 1;}
+extern "C" int CE_NetAutomationIdle(){return automation;}
+extern "C" int CE_NetWindowAutomationIdle(){return window_automation;}
+extern "C" int CE_NetUpdateAutomationIdle(){return update_automation;}
+extern "C" int CE_NetClockOrdinary(){return clock_status;}
+extern "C" bool PortTypeInfoEqual(const std::type_info&a,const std::type_info&b)noexcept{return a==b;}
+/* ACTUAL_VALIDATOR */
+unsigned checks=0;
+void check(bool value,const char*why){++checks;if(!value){fprintf(stderr,"FAIL %s: %s\n",why,CE_NetLoadedAdmissionError());exit(2);}}
+struct Fixture {
+ static CPlayer players[2];static CBattleEngine engines[2];static CPCController controllers[2];static CStart starts[2];
+ static char standard[16],racer[16],other[16],bad[256];static CBattleEngineData data[3];
+ static void Reset(){GAME=CGame();WORLD=CWorld();CAREER=CCareer();CLIPARAMS=CCLIParams();FRONTEND=CFrontEnd();PLAYABLE_DEMO=performing_stress_test=0;E3_BUILD=false;gAllCheatsEnabled=0;gPortCheatNameOnly=false;automation=window_automation=update_automation=1;clock_status=1;cache_status=1;cache_mask=0;native_queries=cheat_on_calls=unexpected_io=cached_calls=0;
+  UBattleEngineConfigurations::sConfigurations=2;UBattleEngineConfigurations::sConfigurationName[0]=standard;UBattleEngineConfigurations::sConfigurationName[1]=other;
+  data[0].mConfigurationName=racer;data[1].mConfigurationName=standard;data[2].mConfigurationName=other;
+  auto&r=UBattleEngineDataManager::sData;r=SPtrSet<CBattleEngineData>();r.values={&data[0],&data[1],&data[2]};
+  for(int i=0;i<2;++i){players[i]=CPlayer();engines[i]=CBattleEngine();controllers[i]=CPCController();starts[i]=CStart();players[i].number=i+1;players[i].engine=&engines[i];engines[i].owner=&players[i];engines[i].mConfiguration=&data[1];controllers[i].pad=i;controllers[i].target=&players[i];starts[i].number=i+1;starts[i].engine=&engines[i];GAME.players[i]=&players[i];GAME.mController[i]=&controllers[i];WORLD.starts.values.push_back(&starts[i]);WORLD.things.values.push_back(&engines[i]);WORLD.things.values.push_back(&starts[i]);}
+ }
+ static void Refused(const char*label){const int registry_cursor=UBattleEngineDataManager::sData.owner_cursor,thing_cursor=WORLD.things.owner_cursor,start_cursor=WORLD.starts.owner_cursor;check(CE_NetLoadedAdmissionValidate()==0,label);check(CE_NetLoadedAdmissionError()[0]!=0,"concrete error");check(unexpected_io==0,"no first cheat IO");check(registry_cursor==UBattleEngineDataManager::sData.owner_cursor&&thing_cursor==WORLD.things.owner_cursor&&start_cursor==WORLD.starts.owner_cursor,"local iterators do not mutate native cursor");}
+ static void Run(){
+ Reset();check(CE_NetLoadedAdmissionValidate()==1,"cold loaded objects positive without WorldBegin");check(!CE_NetLoadedAdmissionError()[0],"success error cleared");check(cheat_on_calls==6&&unexpected_io==0,"six genuine native queries on warmed cache");check(GAME.mSupervisorMode==1,"ordinary supervisor state retained");
+ Reset();check(UBattleEngineConfigurations::NetworkConfigurationName(-1)==nullptr&&UBattleEngineConfigurations::NetworkConfigurationName(2)==nullptr,"raw accessor rejects indices");check(UBattleEngineConfigurations::GetConfiguration(99)==&data[1],"native index fallback positive witness");engines[1].mConfigurationId=99;Refused("invalid engine ID despite native fallback");
+ Reset();UBattleEngineConfigurations::sConfigurationName[0]=other;check(UBattleEngineConfigurations::GetConfiguration(0)==&data[2],"changed raw selection native control");Refused("raw name engine pointer mismatch");
+ Reset();UBattleEngineConfigurations::sConfigurationName[0]=(char*)"missing";engines[0].mConfiguration=engines[1].mConfiguration=&data[0];check(UBattleEngineConfigurations::GetConfiguration(0)==&data[0],"native missing-name fallback witness");Refused("missing name cannot fallback");
+ Reset();UBattleEngineDataManager::sData.values.push_back(&data[1]);Refused("duplicate named registry alias");
+ Reset();data[2].mConfigurationName=standard;Refused("duplicate named registry binding");
+ for(int count:{0,-1,21}){Reset();UBattleEngineConfigurations::sConfigurations=count;check(UBattleEngineConfigurations::NetworkConfigurationName(0)==nullptr,"raw count guard");Refused("bad level count");}
+ Reset();UBattleEngineDataManager::sData.expected=65537;Refused("engineering registry ceiling");
+ Reset();UBattleEngineDataManager::sData.expected=4;Refused("registry count mismatch");
+ Reset();memset(bad,'x',sizeof bad);UBattleEngineConfigurations::sConfigurationName[0]=bad;Refused("unterminated raw name");
+ Reset();UBattleEngineConfigurations::sConfigurationName[0]=nullptr;Refused("missing raw name");
+ Reset();data[1].mConfigurationName=nullptr;Refused("missing registry name");
+ Reset();GAME.settings.mPlayer2Configuration=1;Refused("actual selected index");check(!cached_calls,"selection refuses before platform queries");
+ Reset();GAME.settings.mInvertSides=1;Refused("actual inverted sides");
+ Reset();CBattleEngineData foreign{standard};engines[1].mConfiguration=&foreign;Refused("foreign same-name configuration pointer");
+ Reset();engines[1].mConfiguration=nullptr;Refused("null loaded configuration");
+ Reset();starts[1].mInit.mConfigurationId=1;Refused("start raw index mismatch");
+ Reset();starts[1].engine=&engines[0];Refused("start owner mismatch");
+ Reset();starts[1].number=1;Refused("duplicate canonical start");
+ Reset();WORLD.starts.values.pop_back();Refused("missing start");
+ Reset();WORLD.things.values.pop_back();WORLD.things.values.pop_back();Refused("missing engine membership");
+ Reset();WORLD.things.values.push_back(&engines[0]);Refused("duplicate engine membership");
+ Reset();OtherController wrong;wrong.pad=1;wrong.target=&players[1];GAME.mController[1]=&wrong;Refused("nonexact controller");
+ for(int i=0;i<2;++i){Reset();CAREER.god[i]=1;Refused("career god");Reset();players[i].god=1;Refused("player god");Reset();engines[i].vulnerable=0;Refused("effective invulnerability");Reset();engines[i].mInfinateEnergy=1;Refused("effective infinite energy");Reset();controllers[i].mPlaying=1;Refused("native controller playback");Reset();controllers[i].mRecording=1;Refused("native controller recording");Reset();GAME.freecam[i]=true;Refused("native free camera");}
+ for(int i=0;i<6;++i){Reset();cache_mask=1u<<i;Refused("actual cached CE switch");Reset();for(unsigned j=0;j<strlen(cheatkey);++j)FRONTEND.mFEPSaveGame.mSaveGameName[j]=(unsigned char)(cheatname[i][j]^cheatkey[j]);Refused("actual native career code");}
+ Reset();cache_status=0;Refused("unknown cheat cache");check(!cheat_on_calls,"cold cache never reaches lazy query");
+ Reset();gPortCheatNameOnly=true;Refused("temporary name-only query");
+ Reset();for(auto&c:FRONTEND.mFEPSaveGame.mSaveGameName)c='x';Refused("unterminated career name");
+ for(int*value:{&automation,&window_automation,&update_automation})for(int state:{-1,0}){Reset();*value=state;Refused("automation cold or configured");}
+ Reset();clock_status=0;Refused("virtual clock");Reset();clock_status=-1;Refused("unknown clock");
+ for(float value:{0.f,-.05f,std::numeric_limits<float>::quiet_NaN(),std::numeric_limits<float>::infinity()}){Reset();GAME.mFrameLength=value;Refused("native frame clock");}
+ for(int CCLIParams::*field:{
+/* FLAG_MEMBERS */
+ }){Reset();CLIPARAMS.*field=1;Refused("native CLI mode");}
+ for(int*value:{&PLAYABLE_DEMO,&performing_stress_test}){Reset();*value=1;Refused("native global mode");}
+ Reset();gAllCheatsEnabled=1;Refused("persistent cheats after autoconfig");Reset();E3_BUILD=true;Refused("native E3 global");
+ Reset();GAME.mAdvanceFrame=1;Refused("frame advance");Reset();GAME.mFixedFrameRate=1;Refused("fixed frame");Reset();GAME.mAllowedAutoAim=0;Refused("gameplay auto aim setting");Reset();GAME.mFullscreenMultiplayer=1;Refused("legacy fullscreen override");
+ Reset();GAME.mCurrentlyRunningLevel=100;Refused("native IsMultiplayer actual running level");Reset();WORLD.mType=0;Refused("native world type");Reset();GAME.level=100;Refused("current level");Reset();GAME.mQuit=QT_QUIT;Refused("quitting");Reset();GAME.phase=GAME_STATE_NOT_RUNNING;Refused("wrong admission phase");
+ Reset();check(CE_NetLoadedAdmissionValidate()==1,"reset positive");printf("loaded admission: %u assertions passed\n",checks);
+ }
+};
+CPlayer Fixture::players[2];CBattleEngine Fixture::engines[2];CPCController Fixture::controllers[2];CStart Fixture::starts[2];char Fixture::standard[16]="Standard",Fixture::racer[16]="Racer",Fixture::other[16]="Other",Fixture::bad[256];CBattleEngineData Fixture::data[3];
+int main(){Fixture::Run();}

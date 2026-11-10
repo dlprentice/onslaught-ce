@@ -1,0 +1,72 @@
+--- a/Hud.cpp
++++ b/Hud.cpp
+@@ -3,6 +3,9 @@
+ 
+ #include	"common.h"
+ #include "hud_scale.h"
++#ifndef CE_NETWORK_OFF
++extern "C" int CE_LockstepRequested(void);	// a co-op game of the network release (the lobby's Start): its HUD is scaled and anchored as a solo game's is
++#endif
+ #ifdef CE_VERSION
+ #include "../game/ce_photo.h"	// patch 0133: CE photo mode drops the HUD overlay's draw calls
+ #endif
+@@ -1093,7 +1096,11 @@
+ 	float	zero = 0;	// STAND-IN (see above)
+ 	SetOverlayRenderStates();
+ 	{
++#ifdef CE_NETWORK_OFF
+ 		CeHudScope scope(!GAME.IsMultiplayer() && ENGINE.GetNumViewpoints() == 1, mViewportWidth, mViewportHeight,
++#else
++		CeHudScope scope((CE_LockstepRequested() || (!GAME.IsMultiplayer() && ENGINE.GetNumViewpoints() == 1)), mViewportWidth, mViewportHeight,
++#endif
+ 			float(PLATFORM.GetWindowWidth()) * 0.5f, float(PLATFORM.GetWindowHeight()) * 0.5f);
+ 		mCompass->Render(mBattleEngine);
+ 	}
+@@ -1112,7 +1119,11 @@
+ 	{
+ 		pos = mBattleEngine->GetInterpolatedTrackingPos();
+ 		RENDERINFO.Project((D3DXVECTOR3 *)&screen, (D3DXVECTOR3 *)&pos, mViewport);
++#ifdef CE_NETWORK_OFF
+ 		CeHudScope scope(!GAME.IsMultiplayer() && ENGINE.GetNumViewpoints() == 1, mViewportWidth, mViewportHeight,
++#else
++		CeHudScope scope((CE_LockstepRequested() || (!GAME.IsMultiplayer() && ENGINE.GetNumViewpoints() == 1)), mViewportWidth, mViewportHeight,
++#endif
+ 			screen.X, screen.Y);
+ 		CSPRITERENDERER::DrawSprite(screen.X, screen.Y, 0.01f, mCrosshairPredictor, SA_CENTRE, SPT_NONE, 1.f, 0.f, 0xffffffff, 1.f, 1.f, 0.f, 1.f, 0.f, 1.f);
+ 	}
+@@ -1199,7 +1210,11 @@
+ 	if (mUnknown0d4[mViewpoint] < 1.f)
+ 		turn = (1.f - mUnknown0d4[mViewpoint]) * 0.5f;
+ 	{
++#ifdef CE_NETWORK_OFF
+ 		CeHudScope scope(!GAME.IsMultiplayer() && ENGINE.GetNumViewpoints() == 1, mViewportWidth, mViewportHeight,
++#else
++		CeHudScope scope((CE_LockstepRequested() || (!GAME.IsMultiplayer() && ENGINE.GetNumViewpoints() == 1)), mViewportWidth, mViewportHeight,
++#endif
+ 			screen.X, screen.Y);
+ 		CSPRITERENDERER::DrawSprite(screen.X, screen.Y, 0.011f, mCrosshairPrimary, SA_CENTRE, SPT_NONE, 1.f, turn + mUnknown0f4[mViewpoint], col2, scale, scale * (LT.mScreenShapeScale + zero), 0.f, 1.f, 0.f, 1.f);	// STAND-IN (see above)
+ 
+@@ -2115,7 +2130,11 @@
+ 	RENDERINFO.SRS(D3DRS_ALPHATESTENABLE, FALSE);
+ 
+ 	RenderWorldTargets(); // Projected world markers stay in the physical viewport.
++#ifdef CE_NETWORK_OFF
+ 	const int portHudEligible = !GAME.IsMultiplayer() && ENGINE.GetNumViewpoints() == 1;
++#else
++	const int portHudEligible = (CE_LockstepRequested() || (!GAME.IsMultiplayer() && ENGINE.GetNumViewpoints() == 1));
++#endif
+ 	{
+ 		CeHudScope scope(portHudEligible, mViewportWidth, mViewportHeight,
+ 			mViewportX + HUD_OFFSET_X, mViewportY + HUD_OFFSET_Y);
+@@ -2227,7 +2246,11 @@
+ 
+ 	RENDERINFO.SetFogEnabled(false);
+ 	RENDERINFO.SetLightingEnabled(false);
++#ifdef CE_NETWORK_OFF
+ 	const int portHudEligible = !GAME.IsMultiplayer() && ENGINE.GetNumViewpoints() == 1;
++#else
++	const int portHudEligible = (CE_LockstepRequested() || (!GAME.IsMultiplayer() && ENGINE.GetNumViewpoints() == 1));
++#endif
+ 	{
+ 		CeHudScope scope(portHudEligible, mViewportWidth, mViewportHeight,
+ 			mViewportX + mViewportWidth * 0.5f, mViewportY + mViewportHeight - HUD_OFFSET_Y);

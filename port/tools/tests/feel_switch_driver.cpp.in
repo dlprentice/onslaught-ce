@@ -1,0 +1,143 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Host driver for the frame-feel module's switch (port/platform/common/feel.cpp, PortFeelOn). feel_tests.py pastes the function's own text at
+// the marker below and compiles it here with the module's globals and the few things it calls replaced by counted stand-ins: the log is opened only where the
+// CE layer is admitted, the decision is made once for the run, and the options are read as the header says. No game, device, display or clock is used.
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <string>
+
+typedef uint64_t Uint64;
+#define PORT_LOG_PREFIX "fixture: "
+
+static int opens, layer_queries, script_loads;
+static bool layer;
+static bool PortCeLayer() { ++layer_queries; return layer; }
+static FILE *CountedOpen(const char *path, const char *mode) { ++opens; return fopen(path, mode); }
+#define fopen CountedOpen
+
+static int gOn = -1;
+static FILE *gOut;
+static Uint64 gT0, gPaceNs, gLastFlush;
+static bool gGpuOn = true, gHeapOn;
+static double gFlushEveryS = 30.0;
+static size_t gMax = 4000000;
+static unsigned gEnvShotFirst, gEnvShotCount;
+static std::string gEnvShotDir;
+static Uint64 Now() { return 12345; }
+static void AtExit() {}
+static bool LoadScript(const char *) { ++script_loads; return true; }
+
+/* PORT_FEEL_ON */
+
+static int checks, failures;
+#define CHECK(cond, label) do { ++checks; if (!(cond)) { ++failures; printf("FAIL %s (line %d)\n", label, __LINE__); } } while (0)
+
+static const char *const kVariables[] = {"BEA_PORT_FEEL_LOG", "BEA_PORT_FEEL_PACE_HZ", "BEA_PORT_FEEL_GPU", "BEA_PORT_FEEL_HEAP",
+                                         "BEA_PORT_FEEL_FLUSH_S", "BEA_PORT_FEEL_MAX_EVENTS", "BEA_PORT_FEEL_SHOTS", "BEA_PORT_FEEL_SCRIPT"};
+
+// A fresh run: no option set, nothing decided, the layer not admitted.
+static void Fresh()
+{
+	for (const char *name : kVariables) unsetenv(name);
+	if (gOut) fclose(gOut);
+	gOut = nullptr;
+	gOn = -1; gT0 = gPaceNs = gLastFlush = 0; gGpuOn = true; gHeapOn = false; gFlushEveryS = 30.0; gMax = 4000000;
+	gEnvShotFirst = gEnvShotCount = 0; gEnvShotDir.clear();
+	opens = layer_queries = script_loads = 0; layer = false;
+	unlink(getenv("FEEL_DRIVER_LOG"));
+}
+
+static bool Exists(const char *path) { return access(path, F_OK) == 0; }
+
+// Measurement with the options in `settings` (name=value) set, the layer admitted.
+static void Measured(std::initializer_list<const char *> settings)
+{
+	Fresh();
+	setenv("BEA_PORT_FEEL_LOG", getenv("FEEL_DRIVER_LOG"), 1);
+	for (const char *s : settings)
+	{
+		std::string text = s;
+		const size_t eq = text.find('=');
+		setenv(text.substr(0, eq).c_str(), text.c_str() + eq + 1, 1);
+	}
+	layer = true;
+}
+
+int main()
+{
+	const char *log = getenv("FEEL_DRIVER_LOG");
+	if (!log || !*log) return 3;
+
+	// off unless a log is named, and then the layer is not even asked
+	Fresh(); layer = true;
+	CHECK(PortFeelOn() == 0 && opens == 0 && layer_queries == 0 && !Exists(log), "no log named: off, and nothing asked or opened");
+	Fresh(); layer = true; setenv("BEA_PORT_FEEL_LOG", "", 1);
+	CHECK(PortFeelOn() == 0 && opens == 0 && layer_queries == 0, "an empty name is no name");
+
+	// a faithful run (replay, recording, probes, virtual clock: the CE layer is not admitted) never measures, whatever else is set, and is not asked twice
+	Fresh(); setenv("BEA_PORT_FEEL_LOG", log, 1); setenv("BEA_PORT_FEEL_SCRIPT", "script.txt", 1); setenv("BEA_PORT_FEEL_PACE_HZ", "60", 1);
+	CHECK(PortFeelOn() == 0, "the layer not admitted: off");
+	CHECK(opens == 0 && !Exists(log) && script_loads == 0 && gPaceNs == 0 && gOn == 0, "and no log made, no script read, no display model");
+	layer = true;
+	CHECK(PortFeelOn() == 0 && layer_queries == 1 && opens == 0 && !Exists(log), "the decision stands for the run: a layer admitted later does not turn it on");
+
+	// the other way round: nothing named at the start, a name given later: still off
+	Fresh(); layer = true;
+	CHECK(PortFeelOn() == 0, "nothing named: off");
+	setenv("BEA_PORT_FEEL_LOG", log, 1);
+	CHECK(PortFeelOn() == 0 && opens == 0 && !Exists(log), "a log named after the decision does not turn it on");
+
+	// a measured run opens the log once and stays on
+	Measured({});
+	CHECK(PortFeelOn() == 1 && opens == 1 && layer_queries == 1 && Exists(log) && script_loads == 0, "the layer admitted and a log named: on, the log opened once");
+	CHECK(PortFeelOn() == 1 && PortFeelOn() == 1 && PortFeelOn() == 1 && opens == 1 && layer_queries == 1, "and asked and opened no more");
+	CHECK(gPaceNs == 0 && gGpuOn && !gHeapOn && gMax == 4000000 && gFlushEveryS == 30.0 && gEnvShotCount == 0, "with the defaults when nothing else is set");
+
+	// a script is read only when it is named
+	Measured({"BEA_PORT_FEEL_SCRIPT=script.txt"});
+	CHECK(PortFeelOn() == 1 && script_loads == 1, "a named script is read once");
+	Measured({"BEA_PORT_FEEL_SCRIPT="});
+	CHECK(PortFeelOn() == 1 && script_loads == 0, "an empty script name reads none");
+
+	// a log that cannot be written leaves it off, for good
+	Measured({}); setenv("BEA_PORT_FEEL_LOG", "/nonexistent-folder/feel.log", 1);
+	CHECK(PortFeelOn() == 0 && opens == 1 && PortFeelOn() == 0 && opens == 1 && gOn == 0, "an unwritable log: off, tried once");
+
+	// the display model: a rate from 1 to 1000 a second, nothing else
+	struct { const char *text; Uint64 period; } rates[] = {
+		{"60", 16666667ull}, {"144", 6944444ull}, {"1", 1000000000ull}, {"1000", 1000000ull}, {"59.94", 16683350ull},
+		{"0", 0}, {"0.5", 0}, {"-60", 0}, {"1000.5", 0}, {"100000", 0}, {"abc", 0}, {"", 0}, {"nan", 0}, {"inf", 0}};
+	for (auto &rate : rates)
+	{
+		std::string setting = std::string("BEA_PORT_FEEL_PACE_HZ=") + rate.text;
+		Measured({setting.c_str()});
+		const int on = PortFeelOn();
+		char label[96];
+		snprintf(label, sizeof(label), "pace %s Hz", rate.text);
+		CHECK(on == 1 && gPaceNs == rate.period, label);
+	}
+
+	// the other options
+	Measured({"BEA_PORT_FEEL_GPU=0"});            PortFeelOn(); CHECK(!gGpuOn, "GPU=0 leaves the timestamp queries out");
+	Measured({"BEA_PORT_FEEL_GPU=00"});           PortFeelOn(); CHECK(gGpuOn, "only a plain 0 does");
+	Measured({"BEA_PORT_FEEL_GPU=1"});            PortFeelOn(); CHECK(gGpuOn, "GPU=1 keeps them");
+	Measured({"BEA_PORT_FEEL_HEAP=1"});           PortFeelOn(); CHECK(gHeapOn, "HEAP=1 samples the heap");
+	Measured({"BEA_PORT_FEEL_HEAP=11"});          PortFeelOn(); CHECK(!gHeapOn, "only a plain 1 does");
+	Measured({"BEA_PORT_FEEL_HEAP=0"});           PortFeelOn(); CHECK(!gHeapOn, "HEAP=0 does not");
+	Measured({"BEA_PORT_FEEL_FLUSH_S=5"});        PortFeelOn(); CHECK(gFlushEveryS == 5.0, "the flush interval");
+	Measured({"BEA_PORT_FEEL_FLUSH_S=0"});        PortFeelOn(); CHECK(gFlushEveryS == 0.0, "0 writes only at exit");
+	Measured({"BEA_PORT_FEEL_MAX_EVENTS=50000"}); PortFeelOn(); CHECK(gMax == 50000, "the event limit");
+	Measured({"BEA_PORT_FEEL_MAX_EVENTS=1000"});  PortFeelOn(); CHECK(gMax == 4000000, "a limit of 1000 or less is ignored");
+	Measured({"BEA_PORT_FEEL_MAX_EVENTS=junk"});  PortFeelOn(); CHECK(gMax == 4000000, "and so is a word");
+	Measured({"BEA_PORT_FEEL_SHOTS=100:5:/some/folder"});
+	PortFeelOn(); CHECK(gEnvShotFirst == 100 && gEnvShotCount == 5 && gEnvShotDir == "/some/folder", "frames: first, count and folder");
+	Measured({"BEA_PORT_FEEL_SHOTS=100:5:"});     PortFeelOn(); CHECK(gEnvShotCount == 0, "a frames setting without a folder is ignored");
+	Measured({"BEA_PORT_FEEL_SHOTS=100"});        PortFeelOn(); CHECK(gEnvShotCount == 0, "and so is one without a count");
+
+	Fresh();
+	printf("feel switch checks=%d failures=%d\n", checks, failures);
+	return failures ? 2 : 0;
+}

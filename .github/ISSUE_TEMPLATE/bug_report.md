@@ -31,10 +31,12 @@ Native Linux, native Windows, or the Windows package under Wine or Proton (which
 
 **Files**
 
-- Please attach `onslaught-ce.log` from your user folder: `$XDG_DATA_HOME/onslaught-ce` (when `XDG_DATA_HOME`
-  is set and nonempty;
-  otherwise `~/.local/share/onslaught-ce`) (Linux) or
-  `%APPDATA%\Onslaught CE` (Windows). `onslaught-ce.old.log` beside it is the run before.
+- Please attach the affected run's log from your user folder: `$XDG_DATA_HOME/onslaught-ce` when `XDG_DATA_HOME`
+  is set and nonempty, otherwise `~/.local/share/onslaught-ce` (Linux), or `%APPDATA%\Onslaught CE` (Windows).
+  The usual file is `onslaught-ce.log`; `onslaught-ce.old.log`, when present, holds the previous primary log. If you ran
+  multiple copies at once, the affected run may instead be in `onslaught-ce.concurrent-1.log` or
+  `onslaught-ce.concurrent-2.log`. Check the start time in the log to find the affected run and save it promptly;
+  later launches can replace log files.
   If you set `BEA_USER_DIR` to a folder, the log is in that folder instead. Logs can include local paths, user
   names and device details;
   please review them before posting publicly.

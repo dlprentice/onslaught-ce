@@ -18,12 +18,19 @@
 #include <fcntl.h>
 
 #include <stdio.h>
+#ifndef CE_NETWORK_OFF
+#include <errno.h>
+#include <fcntl.h>
+#endif
 #include <stdlib.h>
 #include <string.h>
 
 #include "../common/mods.h"
 #include "../common/platform.h"
 #include "../common/save_names.h"
+#ifndef CE_NETWORK_OFF
+#include "../../game/ce_network_boot.h"
+#endif
 
 namespace
 {
@@ -52,7 +59,7 @@ void MakeDirs(const char *path)
 	CreateDirectoryA(tmp, NULL);
 }
 
-void Init()
+void Names()
 {
 	if (gGameDir[0])
 		return;
@@ -71,6 +78,13 @@ void Init()
 		snprintf(gUserDir, sizeof(gUserDir), "%s", user);
 	else
 		snprintf(gUserDir, sizeof(gUserDir), "%s\\Onslaught CE", appdata && *appdata ? appdata : ".");
+}
+
+void Init()
+{
+	if (gGameDir[0])
+		return;
+	Names();
 	MakeDirs(gUserDir);
 }
 
@@ -458,6 +472,26 @@ bool PortGameHasFile(const char *rel)
 	return a != INVALID_FILE_ATTRIBUTES && !(a & FILE_ATTRIBUTE_DIRECTORY);
 }
 
+// Whether the port's writable folder holds its own copy of this file (ce_graphics_policy.cpp: the saved options of the
+// player's CE profile, as opposed to the file the retail game left in the game folder, which a read falls back to).
+// 1: a regular file is there; 0: definitely none; -1: not known (a folder, a link, an error): callers treat the file as the player's.
+int PortUserFileState(const char *rel)
+{
+	Init();
+	char native[MAX_PATH], path[MAX_PATH * 2];
+	if (!Relative(rel, native, sizeof(native)))
+		return -1;
+	snprintf(path, sizeof(path), "%s\\%s", gUserDir, native);
+	DWORD a = GetFileAttributesA(path);
+	if (a != INVALID_FILE_ATTRIBUTES)
+		return (a & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) ? -1 : 1;
+	DWORD error = GetLastError();
+	return error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND ? 0 : -1;
+}
+
+// The check mode (mods.h): Init without its folder. A later Init finds the names set and creates nothing either.
+void PortPathsNamesOnly() { Names(); }
+
 const char *PortGameDir()
 {
 	Init();
@@ -541,7 +575,23 @@ unsigned PortSaveReserveUtf8(const char *path)
 
 int port_findnext(intptr_t h, struct _finddata_t *d);
 
+#ifdef CE_NETWORK_OFF
 FILE *port_fopen(const char *name, const char *mode)
+#else
+int PortCachedContentRoots(char *game, size_t game_size, char *user, size_t user_size)
+{
+	if (game && game_size) game[0] = 0;
+	if (user && user_size) user[0] = 0;
+	if (!game || !user || game == user || !game_size || !user_size || !gGameDir[0] || !gUserDir[0]) return 0;
+	size_t g = strlen(gGameDir), u = strlen(gUserDir);
+	if (g >= game_size || u >= user_size) return 0;
+	memcpy(game, gGameDir, g + 1);
+	memcpy(user, gUserDir, u + 1);
+	return 1;
+}
+
+static FILE *OpenFile(const char *name, const char *mode)
+#endif
 {
 	char path[MAX_PATH * 2];
 	bool writes = strpbrk(mode, "wa+") != NULL;
@@ -566,6 +616,93 @@ FILE *port_fopen(const char *name, const char *mode)
 	return fopen(path, mode);
 }
 
+#ifndef CE_NETWORK_OFF
+void PortInitializeContentRoots(void) { Init(); }
+
+FILE *port_fopen(const char *name, const char *mode)
+{
+	bool writes = strpbrk(mode, "wa+") != NULL;
+	if (!CE_CompatibilityObserveAuthoredRead(name, writes, NULL, 0)) { errno = EACCES; return NULL; }
+	FILE *file = OpenFile(name, mode);
+	if (!file && !writes)
+	{
+		int open_error = errno;
+		DWORD native_error = GetLastError();
+		CE_CompatibilityAuthoredOpenFailed(name, NULL, 0);
+		errno = open_error;
+		SetLastError(native_error);
+		return NULL;
+	}
+	if (file && !writes && !CE_CompatibilityValidateOpenedFile(name, file, NULL, 0))
+	{
+		fclose(file);
+		errno = EACCES;
+		return NULL;
+	}
+	return file;
+}
+
+FILE *PortOpenLocalFile(unsigned owner, const char *name, const char *mode)
+{
+	if (!CE_BootRequested()) return port_fopen(name, mode);
+	if (!CE_BootLocalFileAllowed(owner, name, mode))
+	{
+		CE_CompatibilityUnsupportedReader(NULL, 0);
+		errno = EACCES;
+		return NULL;
+	}
+	// Card-ID's legacy "ra" is a read mode. Do not let the old substring-based COW test copy it.
+	if (mode[0] == 'r')
+	{
+		char path[MAX_PATH * 2];
+		return Resolve(name, READ, path, sizeof path) == 0 ? fopen(path, mode) : NULL;
+	}
+	// These owners use flat names only. Open without truncation, establish the opened object and
+	// named identity, then truncate/append that same handle. This is not an atomic filesystem lock.
+	Init();
+	char path[MAX_PATH * 2];
+	if (snprintf(path, sizeof path, "%s\\%s", gUserDir, name) >= (int)sizeof path) return NULL;
+	DWORD root_attributes = GetFileAttributesA(gUserDir);
+	if (root_attributes == INVALID_FILE_ATTRIBUTES || !(root_attributes & FILE_ATTRIBUTE_DIRECTORY) ||
+		(root_attributes & FILE_ATTRIBUTE_REPARSE_POINT)) { errno = EACCES; return NULL; }
+	HANDLE file = CreateFileA(path, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ, NULL,
+		OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, NULL);
+	if (file == INVALID_HANDLE_VALUE && GetLastError() == ERROR_FILE_NOT_FOUND)
+		file = CreateFileA(path, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ, NULL,
+			CREATE_NEW, FILE_FLAG_OPEN_REPARSE_POINT, NULL);
+	if (file == INVALID_HANDLE_VALUE) return NULL;
+	BY_HANDLE_FILE_INFORMATION basic = {};
+	FILE_ID_INFO opened = {}, named_id = {};
+	bool valid = GetFileType(file) == FILE_TYPE_DISK && GetFileInformationByHandle(file, &basic) &&
+		!(basic.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) &&
+		basic.nNumberOfLinks == 1 && GetFileInformationByHandleEx(file, FileIdInfo, &opened, sizeof opened);
+	HANDLE named = valid ? CreateFileA(path, FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+		NULL, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, NULL) : INVALID_HANDLE_VALUE;
+	valid = valid && named != INVALID_HANDLE_VALUE;
+	if (named != INVALID_HANDLE_VALUE)
+	{
+		valid = valid && GetFileInformationByHandleEx(named, FileIdInfo, &named_id, sizeof named_id) &&
+			opened.VolumeSerialNumber == named_id.VolumeSerialNumber &&
+			!memcmp(opened.FileId.Identifier, named_id.FileId.Identifier, sizeof opened.FileId.Identifier);
+		if (!CloseHandle(named)) valid = false;
+	}
+	root_attributes = GetFileAttributesA(gUserDir);
+	valid = valid && root_attributes != INVALID_FILE_ATTRIBUTES && (root_attributes & FILE_ATTRIBUTE_DIRECTORY) &&
+		!(root_attributes & FILE_ATTRIBUTE_REPARSE_POINT);
+	if (!valid) { CloseHandle(file); errno = EACCES; SetLastError(ERROR_ACCESS_DENIED); return NULL; }
+	int flags = _O_WRONLY | (strchr(mode, 'b') ? _O_BINARY : _O_TEXT) | (mode[0] == 'a' ? _O_APPEND : 0);
+	int fd = _open_osfhandle((intptr_t)file, flags);
+	if (fd < 0) { CloseHandle(file); return NULL; }
+	FILE *stream = _fdopen(fd, mode);
+	if (!stream) { _close(fd); return NULL; }
+	LARGE_INTEGER zero = {};
+	valid = SetFilePointerEx(file, zero, NULL, mode[0] == 'a' ? FILE_END : FILE_BEGIN) != 0;
+	if (valid && mode[0] == 'w') valid = SetEndOfFile(file) != 0;
+	if (!valid) { fclose(stream); errno = EACCES; SetLastError(ERROR_ACCESS_DENIED); return NULL; }
+	return stream;
+}
+
+#endif
 int port_access(const char *name, int mode)
 {
 	char path[MAX_PATH * 2];
@@ -621,17 +758,53 @@ HANDLE WINAPI PortCreateFileA(LPCSTR name, DWORD access, DWORD share, LPSECURITY
 {
 	char path[MAX_PATH * 2];
 	bool write = (access & GENERIC_WRITE) != 0;
+#ifndef CE_NETWORK_OFF
+	if (!CE_CompatibilityObserveAuthoredRead(name, write || disposition != OPEN_EXISTING ||
+		(access & ~DWORD(GENERIC_READ)), NULL, 0))
+	{
+		SetLastError(ERROR_ACCESS_DENIED);
+		return INVALID_HANDLE_VALUE;
+	}
+#endif
 	int rc = !write ? Resolve(name, READ, path, sizeof(path))
 					: (disposition == OPEN_EXISTING || disposition == OPEN_ALWAYS) ? CopyOnWrite(name, path, sizeof(path))
 																				   : Resolve(name, WRITE, path, sizeof(path));
 	if (rc != 0)
 	{
+#ifndef CE_NETWORK_OFF
+		int open_error = errno;
+		if (!write) CE_CompatibilityAuthoredOpenFailed(name, NULL, 0);
+		errno = open_error;
+#endif
 		SetLastError(ERROR_ACCESS_DENIED);
 		return INVALID_HANDLE_VALUE;
 	}
+#ifdef CE_NETWORK_OFF
 	if (HANDLE h = write ? NULL : ModRead(name, path))
 		return h;
 	return CreateFileA(path, access, share, sa, disposition, flags, templ);
+#else
+	HANDLE file = write ? NULL : ModRead(name, path);	// a verified read-only replacement (mods), opened by the mod layer
+	if (!file)
+		file = CreateFileA(path, access, share, sa, disposition, flags, templ);
+	if (file == INVALID_HANDLE_VALUE)
+	{
+		DWORD open_error = GetLastError();
+		int crt_error = errno;
+		if (!write) CE_CompatibilityAuthoredOpenFailed(name, NULL, 0);
+		errno = crt_error;
+		SetLastError(open_error);
+		return INVALID_HANDLE_VALUE;
+	}
+	if (file != INVALID_HANDLE_VALUE && !write &&
+		!CE_CompatibilityValidateOpenedNative(name, (intptr_t)file, NULL, 0))
+	{
+		CloseHandle(file);
+		SetLastError(ERROR_ACCESS_DENIED);
+		return INVALID_HANDLE_VALUE;
+	}
+	return file;
+#endif
 }
 
 // Search handles are the port's own (a merged listing); they never reach kernel32.
@@ -687,15 +860,39 @@ DWORD WINAPI PortGetFileAttributesA(LPCSTR name)
 	return Resolve(name, READ, path, sizeof(path)) == 0 ? GetFileAttributesA(path) : INVALID_FILE_ATTRIBUTES;
 }
 
+// A mod's file reaches WinMM as the handle of its verified snapshot: no path is opened a second time, the wave reader then runs on the standard file procedure as it does for the
+// game's own files, and mmioClose closes the handle, which removes the snapshot. Only a plain read is served: a probe (MMIO_EXIST and the like), a caller's buffer or a caller's
+// I/O procedure keeps its meaning and takes the game's file. The mod layer is asked only when a mod may replace this read at all (ModMayReplace, as before the
+// snapshot reader): with no mod enabled, or a user-folder copy in the way, it is not consulted.
 HMMIO WINAPI PortMmioOpenA(LPSTR name, LPMMIOINFO info, DWORD flags)
 {
+#ifndef CE_NETWORK_OFF
+	if (!CE_CompatibilityUnsupportedReader(NULL, 0))
+	{
+		if (info) info->wErrorRet = MMIOERR_CANNOTOPEN;
+		SetLastError(ERROR_ACCESS_DENIED);
+		return NULL;
+	}
+#endif
 	char path[MAX_PATH * 2];
 	bool write = (flags & (MMIO_WRITE | MMIO_READWRITE)) != 0;
 	if (Resolve(name, write ? WRITE : READ, path, sizeof(path)) != 0)
 		return NULL;
-	char mod[MAX_PATH * 2];
-	if (!write && ModMayReplace(name, path) && PortModPath(name, mod, sizeof(mod)))
-		return mmioOpenA(mod, info, flags);
+	if (!write && ModMayReplace(name, path) && !(flags & (MMIO_CREATE | MMIO_DELETE | MMIO_EXIST | MMIO_PARSE | MMIO_GETTEMP)) &&
+		(!info || (!info->pchBuffer && !info->pIOProc && (!info->fccIOProc || info->fccIOProc == FOURCC_DOS))))
+		if (HANDLE snapshot = ModRead(name, path))
+		{
+			MMIOINFO reader = info ? *info : MMIOINFO{};
+			reader.fccIOProc = FOURCC_DOS;
+			reader.adwInfo[0] = HandleToUlong(snapshot);
+			reader.adwInfo[1] = reader.adwInfo[2] = 0;
+			HMMIO opened = mmioOpenA(NULL, &reader, flags);
+			if (!opened)
+				CloseHandle(snapshot);
+			if (info)
+				*info = reader;
+			return opened;
+		}
 	return mmioOpenA(path, info, flags);
 }
 }

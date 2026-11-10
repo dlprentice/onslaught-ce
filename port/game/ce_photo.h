@@ -27,10 +27,13 @@ extern "C" int CE_ScreenshotSave(const void *pixels, int pitch, int width, int h
 extern "C" unsigned long long CE_ScreenshotTicks(void);
 
 bool	PortCePhotoOn();
+bool	PortCeEditorSuppressFlightHud();	// the paused native authoring scene owns the flight draw scopes
+bool	PortCeCmdSuppressFlightHud();	// the live strategic renderer owns the same flight draw scopes
 
 // Photo mode hides the HUD, the battle line and the cockpit by dropping the draw calls their routines make (patch 0133),
 // never by skipping the routines: what they compute feeds the simulation (the HUD's warning panel calls
 // CBattleEngine::TestDanger, which starts the incoming-warhead warning that draws from rand).
+// The live commander view reuses these flight-only scopes; the message box is drawn outside them.
 void	PortCeDrawHooks(bool on);			// d3d9hooks.cpp: the device's draw entries filtered (on) or as the device came (off)
 void	PortCeDrawsDropped(int delta);		// d3d9hooks.cpp: nests; while positive, filtered draw calls do nothing
 
@@ -38,7 +41,7 @@ class CePhotoDrawScope
 {
 	bool dropping;
 public:
-	CePhotoDrawScope() : dropping(PortCePhotoOn()) { if (dropping) PortCeDrawsDropped(1); }
+	CePhotoDrawScope() : dropping(PortCePhotoOn() || PortCeCmdSuppressFlightHud() || PortCeEditorSuppressFlightHud()) { if (dropping) PortCeDrawsDropped(1); }
 	~CePhotoDrawScope() { if (dropping) PortCeDrawsDropped(-1); }
 	CePhotoDrawScope(const CePhotoDrawScope &) = delete;
 	CePhotoDrawScope &operator=(const CePhotoDrawScope &) = delete;

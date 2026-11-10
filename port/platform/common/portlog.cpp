@@ -21,7 +21,13 @@ bool PortCeLayer();
 namespace
 {
 const unsigned kNormalLimit = 2048, kErrorLimit = 512;
+#ifndef CE_NETWORK_OFF
+const unsigned kWindowFinalLimit = 8;
+#endif
 unsigned gNormal, gErrors, gCounts[PORT_SESSION_COUNTERS], gObs[PORT_SESSION_OBSERVATIONS];
+#ifndef CE_NETWORK_OFF
+unsigned gWindowFinals;
+#endif
 unsigned gLast[PORT_SESSION_COUNTERS];
 unsigned gFrame;
 int gEnabled = -1;
@@ -135,6 +141,33 @@ void PortSessionAsset(PortSessionCategory category, const char *action, const ch
 	PortSessionLog(category, result < 0, "%s asset=%.120s result=%08lx", action, base, (unsigned long)result);
 }
 
+#ifndef CE_NETWORK_OFF
+void PortSessionWindowSummary(bool final, const char *format, ...)
+{
+	if (!PortSessionEnabled()) return;
+	ErrorGuard guard;
+	if (final)
+	{
+		unsigned n = __atomic_load_n(&gWindowFinals, __ATOMIC_RELAXED);
+		while (n < kWindowFinalLimit && !__atomic_compare_exchange_n(&gWindowFinals, &n, n + 1u, false,
+			__ATOMIC_RELAXED, __ATOMIC_RELAXED)) {}
+		if (n >= kWindowFinalLimit) return;
+	}
+	char text[640];
+	va_list args;
+	va_start(args, format);
+	vsnprintf(text, sizeof text, format, args);
+	va_end(args);
+	if (final)
+	{
+		Clean(text);
+		Line(kNames[PORT_SESSION_WINDOW], text); // A bounded summary, never a fabricated error.
+	}
+	else
+		PortSessionLog(PORT_SESSION_WINDOW, false, "%s", text);
+}
+
+#endif
 void PortSessionMediaActive(PortSessionCategory category, const void *token, bool playing)
 {
 	if (!PortSessionEnabled() || !token || (category != PORT_SESSION_MUSIC && category != PORT_SESSION_FILM)) return;

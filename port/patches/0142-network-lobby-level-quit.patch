@@ -1,0 +1,28 @@
+--- a/System.cpp
++++ b/System.cpp
+@@ -326,7 +326,11 @@
+ 
+ 	if (CLIPARAMS.mStressTest > 0)
+ 		StressTest(CLIPARAMS.mStressTest);
+-
++#ifdef CE_NETWORK_OFF
++
++#else
++	int PortLobbyLevelQuit(int quit, int to_system);	// Port (patch 0112): port/platform/common/ce_netlobby.cpp
++#endif
+ 	SINT	result = 0;
+ 	if (CLIPARAMS.mLevelNo != -1)
+ 	{
+@@ -341,7 +345,11 @@
+ 			}
+ 			level = mNextLevel;
+ 			mNextLevel = -1;
+-			if (GAME.RunLevel(level) == QT_QUIT_TO_SYSTEM)
++#ifdef CE_NETWORK_OFF
++			if (GAME.RunLevel(level) == QT_QUIT_TO_SYSTEM)
++#else
++			if (PortLobbyLevelQuit(GAME.RunLevel(level), QT_QUIT_TO_SYSTEM) == QT_QUIT_TO_SYSTEM)
++#endif
+ 				break;
+ 		}
+ 	}

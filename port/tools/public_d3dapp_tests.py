@@ -25,7 +25,7 @@ PORT = ROOT / "port"
 SUPPORT = PORT / "tools/tests"
 PUBLIC = PORT / "platform/public"
 CASES = ("boot", "wide", "wide-only-on", "wide-only-off", "no-modes", "mixed", "saved", "saved-msaa", "preset-index", "windowed",
-         "depth", "depth16-fallback", "depth-stencil", "depth32", "vp-fallback", "msaa-fallback", "lost-once", "fallback",
+         "depth", "depth16-fallback", "depth-stencil", "depth32", "vp-fallback", "msaa-fallback", "reset-msaa-refused", "lost-once", "fallback",
          "reset", "reset-retry", "query-reset", "paused-reset", "close", "minimize", "pause", "resize", "cleanup", "picker")
 OWNERSHIP = ("owned-reset-ref", "owned-query-reset-ref", "owned-reset-ref-fail", "owned-failed-create")
 MAPPING = ("physical-primary", "physical-secondary", "physical-recovery")
@@ -35,6 +35,9 @@ WINDOWED = ("desktop-only", "desktop-secondary", "explicit-client", "fullscreen-
             "client-height-limit", "client-zero", "client-negative", "desktop-unavailable", "window-only-escape",
             "ref-window-only", "physical-fullscreen", "window-rebuild", "failed-hal-slot", "owner-reuse", "mode-capacity", "client-shape", "resize-shape")
 PUBLICATION = ("query", "caps", "depth", "size", "pending-index", "reset", "fullscreen-reset", "create", "finish", "init", "resize-reset", "resize-restore")
+PRESENTATION = ("roundtrip", "paused", "reset-rollback", "logical-rollback", "init-rollback", "rollback-refused", "invalid-client",
+                "logical-rollback-refused", "paused-rollback-refused", "windowed-rollback-refused", "rollback-retry", "paused-rollback-retry",
+                "cooperative-rollback-retry", "cooperative-rollback-refused")
 
 
 def command(args, **kwargs):
@@ -177,6 +180,8 @@ def main():
     parser.add_argument("--before-ref", help="also prove ownership/mapping negatives from this frozen public-host commit")
     parser.add_argument("--window-before-ref", help="prove windowed admission/persistence negatives from this frozen public host")
     parser.add_argument("--publication-before-ref", help="prove failed publication persistence negatives from this frozen public host")
+    parser.add_argument("--presentation-before-ref", help="prove runtime mode transaction failures from this frozen public host")
+    parser.add_argument("--rollback-before-ref", help="prove persistent-restoration failures from this frozen public host")
     args = parser.parse_args()
     scratch = ROOT / "local-data/public-d3dapp-tests"
     scratch.mkdir(parents=True, exist_ok=True)
@@ -185,7 +190,7 @@ def main():
     recovery_source(scratch / "recovery", True)
     binary = scratch / "public-driver"
     instrumentation = ["-fsanitize=address,undefined", "-fno-omit-frame-pointer"] if args.sanitizers else []
-    command(common + instrumentation + ["-I", scratch / "recovery", PUBLIC / "d3dapp.cpp", SUPPORT / "public_d3dapp_driver.cpp", "-o", binary])
+    command(common + instrumentation + ["-DBEA_PUBLIC_PRESENTATION_RECOVERY", "-I", scratch / "recovery", PUBLIC / "d3dapp.cpp", SUPPORT / "public_d3dapp_driver.cpp", "-o", binary])
     results = {name: command([binary, name]) for name in CASES}
     expected = {"boot": ("size=640x480", "modes=3"), "wide": ("size=1920x1080", "presets=4,4,4"),
                 "saved": ("size=1024x768",), "depth": ("depth=77",), "fallback": ("creates=2",),
@@ -198,6 +203,7 @@ def main():
                      "saved-msaa": ("samples=4",), "preset-index": ("selected=2", "size=1024x768"),
                      "depth16-fallback": ("depth=80",), "depth-stencil": ("depth=75",), "depth32": ("depth=71",),
                      "vp-fallback": ("flags=128",), "msaa-fallback": ("creates=2", "samples=0"), "lost-once": ("creates=2",),
+                     "reset-msaa-refused": ("creates=1", "resets=2", "samples=0", "events=release-progress,reset,reset,init,"),
                      "reset-retry": ("events=release-progress,reset,device-release,create,init,",),
                      "query-reset": ("events=release,query-release,reset,query-create,init,",),
                      "paused-reset": ("events=release,reset,init,timer-start,timer-stop,",),
@@ -229,12 +235,54 @@ def main():
     print(f"windowed: {len(WINDOWED)} independent desktop/fullscreen, real options/menu, transition and bounds controls passed")
     publication = {name: command([binary, 'publication-control', name]) for name in PUBLICATION}
     print(f"publication: {len(PUBLICATION)} actual Flip/key-writer failure and stage-rollback controls passed")
+    presentation = {name: command([binary, 'presentation-control', name]) for name in PRESENTATION}
+    print(f"presentation: {len(PRESENTATION)} runtime transaction, rollback, pause and geometry controls passed")
     receipt = {"host_sha256": hashlib.sha256((PUBLIC / 'd3dapp.cpp').read_bytes()).hexdigest(),
                "driver_sha256": hashlib.sha256((SUPPORT / 'public_d3dapp_driver.cpp').read_bytes()).hexdigest(),
                "caller_sha256": hashlib.sha256((scratch / 'recovery/public_d3dapp_callers.h').read_bytes()).hexdigest(),
-               "windowed": windowed, "publication": publication,
+               "windowed": windowed, "publication": publication, "presentation": presentation,
                "flip_sha256": hashlib.sha256((scratch / 'recovery/public_d3dapp_flip.h').read_bytes()).hexdigest(),
                "limits": "Actual production host/caller snippets; synthetic D3D/Win32. No game, GPU, native Windows or monitor claim."}
+    if args.presentation_before_ref:
+        before = scratch / 'presentation-before'
+        recovery_source(before, True)
+        source = before / 'd3dapp.cpp'
+        source.write_text(command(['git', '-C', ROOT, 'show', f'{args.presentation_before_ref}:port/platform/public/d3dapp.cpp']))
+        negative = before / 'driver'
+        command(common + ['-I', before, source, SUPPORT / 'public_d3dapp_driver.cpp', '-o', negative])
+        receipt['presentation_before_ref'] = args.presentation_before_ref
+        receipt['presentation_negatives'] = {}
+        for name, label in {
+            'roundtrip': 'prepared active size replaces stale startup geometry',
+            'paused': 'mode switch preserves existing pause readiness',
+            'reset-rollback': 'requested mode failure remains visible to caller',
+            'logical-rollback': 'rollback preserves explicit logical fullscreen',
+            'init-rollback': 'requested mode failure remains visible to caller',
+        }.items():
+            proc = subprocess.run([str(negative), 'presentation-control', name], text=True, capture_output=True, timeout=10)
+            if proc.returncode != 1 or f'FAIL: {label}' not in proc.stdout:
+                raise AssertionError(f'{name}: expected runtime transaction negative missing\n{proc.stdout}{proc.stderr}')
+            receipt['presentation_negatives'][name] = proc.stdout
+        print(f'presentation: {len(receipt["presentation_negatives"])} frozen implementation negatives reproduced')
+    if args.rollback_before_ref:
+        before = scratch / 'rollback-before'
+        recovery_source(before, True)
+        source = before / 'd3dapp.cpp'
+        source.write_text(command(['git', '-C', ROOT, 'show', f'{args.rollback_before_ref}:port/platform/public/d3dapp.cpp']))
+        negative = before / 'driver'
+        command(common + ['-I', before, source, SUPPORT / 'public_d3dapp_driver.cpp', '-o', negative])
+        receipt['rollback_before_ref'] = args.rollback_before_ref
+        receipt['rollback_negatives'] = {}
+        for name, label in {
+            'logical-rollback-refused': 'rollback preserves explicit logical fullscreen',
+            'paused-rollback-refused': 'unpause cannot revive failed presentation restoration',
+            'windowed-rollback-refused': 'unpause cannot revive failed presentation restoration',
+        }.items():
+            proc = subprocess.run([str(negative), 'presentation-control', name], text=True, capture_output=True, timeout=10)
+            if proc.returncode != 1 or f'FAIL: {label}' not in proc.stdout:
+                raise AssertionError(f'{name}: expected persistent-restoration negative missing\n{proc.stdout}{proc.stderr}')
+            receipt['rollback_negatives'][name] = proc.stdout
+        print(f'presentation: {len(receipt["rollback_negatives"])} frozen persistent-restoration negatives reproduced')
     if args.publication_before_ref:
         before = scratch / 'publication-before'
         recovery_source(before, True)

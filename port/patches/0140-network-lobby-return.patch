@@ -1,0 +1,21 @@
+--- a/ltshell.cpp
++++ b/ltshell.cpp
+@@ -742,12 +742,16 @@
+ //	if ( _CrtDumpMemoryLeaks() )
+ //		::MessageBox( NULL , "Memory leaks detected on exit!\nCheck debugging traces for details." ,
+ //						  "Onslaught" , MB_ICONEXCLAMATION|MB_OK );
+-
++#ifdef CE_NETWORK_OFF
++
++#else
++	int PortLobbyShellExit(int code, int native_quit);	// Port (patch 0110): port/platform/common/ce_netlobby.cpp
++#endif
+ 	PortSessionSummary();
+ #ifdef CE_NETWORK_OFF
+ 	return LT.MsgInfo();
+ #else
+-	return CE_SessionExitCode(LT.MsgInfo(), LT.WantsToQuit());
++	return PortLobbyShellExit(CE_SessionExitCode(LT.MsgInfo(), LT.WantsToQuit()), LT.WantsToQuit());
+ #endif
+ }
+ 

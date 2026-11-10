@@ -42,6 +42,7 @@ HARNESS = r"""
 #define PS2 3
 #define TARGET PC
 using BOOL = int;
+using UINT = unsigned;
 using FLOAT = float;
 using HRESULT = int32_t;
 using HWND = void *;
@@ -96,6 +97,11 @@ FLOAT DXUtil_Timer(unsigned request) {
 // ltshell.cpp's own state the patched functions read (CE quit request) and a Windows type they use.
 static bool sPortQuitRequested;
 typedef unsigned UINT;
+// Offline controls must not enter networking or reinterpret the original message/device contract.
+enum { CE_SESSION_EXIT=2, CE_SESSION_WAIT=1 };
+int CE_SessionActive() { return 0; }
+void CE_SessionGameSetQuit(int) { throw UnexpectedCall{}; }
+int CE_SessionSystemService(int, int) { throw UnexpectedCall{}; }
 struct PCLTShell {
     BOOL m_bActive = TRUE, m_bReady = TRUE, m_bWindowed = TRUE;
     BOOL m_bFrameMoving = TRUE, m_bSingleStep = TRUE;

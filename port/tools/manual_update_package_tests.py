@@ -62,6 +62,7 @@ class ManualUpdatePackage(unittest.TestCase):
             driver = root / "driver.c"
             driver.write_text(seams.replace("@FUNCTIONS@", controls.production_functions(source)))
             compiled = subprocess.run([*shlex.split(os.environ.get("CC", "cc")), "-std=c11", "-Wall", "-Wextra", "-Werror",
+                                       "-I", str(HERE.parent / "updater"),
                                        "-Wno-unused-function", "-Wno-unused-variable", str(driver), "-o",
                                        str(root / "onslaught-ce-launch")], capture_output=True, text=True, timeout=30)
             self.assertEqual(compiled.returncode, 0, compiled.stdout + compiled.stderr)

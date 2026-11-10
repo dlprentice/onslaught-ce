@@ -1,0 +1,32 @@
+--- a/DXEngine.cpp
++++ b/DXEngine.cpp
+@@ -1180,7 +1180,12 @@
+ 
+ 			if (player)
+ 			{
+-				if ((GAME.GetCamera(i)->GetShowHUD()))
++#ifdef CE_NETWORK_OFF
++				if ((GAME.GetCamera(i)->GetShowHUD()))
++#else
++				SINT hud_player = CE_WorldViewPlayer(i);
++				if (CE_WorldActive() ? (hud_player >= 0 && hud_player < 2 && player->GetNumber() == hud_player + 1 && GAME.GetCamera(hud_player) && GAME.GetCamera(hud_player)->GetShowHUD()) : GAME.GetCamera(i)->GetShowHUD())
++#endif
+ 					render=TRUE;
+ 			}
+ 		}
+--- a/Hud.cpp
++++ b/Hud.cpp
+@@ -2168,7 +2168,12 @@
+ 	for (int i = 0; i < n; i ++)
+ 	{
+ 		CPlayer *player = ENGINE.GetPlayerForViewpoint(i);
+-		if (player && GAME.GetCamera(i)->GetShowHUD())
++#ifdef CE_NETWORK_OFF
++		if (player && GAME.GetCamera(i)->GetShowHUD())
++#else
++		SINT hud_player = CE_WorldViewPlayer(i);
++		if (player && (CE_WorldActive() ? (hud_player >= 0 && hud_player < 2 && player->GetNumber() == hud_player + 1 && GAME.GetCamera(hud_player) && GAME.GetCamera(hud_player)->GetShowHUD()) : GAME.GetCamera(i)->GetShowHUD()))
++#endif
+ #ifdef CE_VERSION
+ 		{
+ 			CePhotoDrawScope photoDraw;	// patch 0133: photo mode drops the overlay's draw calls; its routines run in full

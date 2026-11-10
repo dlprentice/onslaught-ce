@@ -1,0 +1,65 @@
+--- a/MissionScript/IScript.cpp
++++ b/MissionScript/IScript.cpp
+@@ -280,6 +280,15 @@
+ //******************************************************************************************
+ void	IScript::StartedDying()	// FUNCTION: 0x00533660
+ {
++#ifdef CE_VERSION
++	// patch 0176: entered while the VM runs (a script's Damage native started this unit dying), in a level a mod supplies: it waits for the next frame
++	extern bool PortCeScriptDeferNested(int level, const char *entry);	// port/platform/common/ce_script_guard.cpp
++	if (MISSION_SCRIPT_VM.mRunning && PortCeScriptDeferNested(GAME.GetCurrentLevel(), "startedDying"))
++	{
++		EVENT_MANAGER.AddEvent(SCRIPT_MESSAGE_DEFERRED_STARTED_DYING, this, NEXT_FRAME);
++		return;
++	}
++#endif
+ 	if (GAME.GetGameState() == GAME_STATE_LEVEL_LOST)
+ 		MISSION_SCRIPT_VM.Clean();
+ 	else
+@@ -306,6 +315,15 @@
+ //******************************************************************************************
+ void	IScript::Died()	// FUNCTION: 0x005337e0
+ {
++#ifdef CE_VERSION
++	// patch 0176: as StartedDying; if the script is deleted before the next frame the event is dropped (by code reading)
++	extern bool PortCeScriptDeferNested(int level, const char *entry);
++	if (MISSION_SCRIPT_VM.mRunning && PortCeScriptDeferNested(GAME.GetCurrentLevel(), "died"))
++	{
++		EVENT_MANAGER.AddEvent(SCRIPT_MESSAGE_DEFERRED_DIED, this, NEXT_FRAME);
++		return;
++	}
++#endif
+ 	if (GAME.GetGameState() == GAME_STATE_LEVEL_LOST)
+ 		MISSION_SCRIPT_VM.Clean();
+ 	else
+@@ -2110,6 +2128,16 @@
+ 				MISSION_SCRIPT_VM.CallEvent(mCode, SCRIPT_EVENT_TIMER, &gEventArg, 0);
+ 		}
+ 		break;
++#ifdef CE_VERSION
++
++	case SCRIPT_MESSAGE_DEFERRED_STARTED_DYING:
++		StartedDying();		// patch 0176: the VM is idle between events; if it were not, this defers again
++		break;
++
++	case SCRIPT_MESSAGE_DEFERRED_DIED:
++		Died();
++		break;
++#endif
+ 	}
+ }
+ 
+--- a/MissionScript/IScript.h
++++ b/MissionScript/IScript.h
+@@ -34,6 +34,11 @@
+ 	SCRIPT_MESSAGE_FOLLOW_WAYPOINT = 2000,	// UpdateWaypointFollowing reschedules it every frame
+ 	SCRIPT_MESSAGE_RESUME,					// a Wait native's suspended VM carries on
+ 	SCRIPT_MESSAGE_TIMER					// SetTimer's timer went off
++#ifdef CE_VERSION
++	,
++	SCRIPT_MESSAGE_DEFERRED_STARTED_DYING,	// patch 0176: StartedDying, entered while the VM ran in a level a mod supplies
++	SCRIPT_MESSAGE_DEFERRED_DIED			// patch 0176: Died, likewise
++#endif
+ };
+ 
+ class IScript : public CMonitor

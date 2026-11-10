@@ -18,8 +18,14 @@
 #include "eventmanager.h"
 #include "thing.h"
 #include "SeedUniformRandomNumberStream.h"
+#ifndef CE_NETWORK_OFF
+#include "ce_network_lockstep.h"
+#endif
 #ifdef CE_VERSION
 #include "ce_commander.h"
+#endif
+#ifdef CE_VERSION
+#include "ce_playunit.h"
 #endif
 
 #include <stdio.h>
@@ -27,6 +33,7 @@
 #include <string.h>
 #include <typeinfo>
 #include "../platform/common/portlog.h"
+#include "../platform/common/feel.h"
 
 // The dump is the port's own output, written where the caller asks: the C library's fopen, not the game's (port.h
 // sends game files' fopen through the path layer, which refuses absolute paths).
@@ -121,15 +128,73 @@ static void SessionGameUpdate()
 	}
 }
 
+#ifndef CE_NETWORK_OFF
+// Configuration only. A disabled choice remains disabled even if the environment later changes.
+// Normal play observes these settings at its original first-Update boundary; network boot may
+// prepare them earlier without opening a dump, reading the clock or advancing the update count.
+static bool gDumpConfigReady, gDumpRequested, gDumpAttempted;
+static void InitUpdateAutomationConfig()
+{
+	if (gDumpConfigReady) return;
+	const char *path = getenv("BEA_PORT_UPDATE_DUMP");
+	gDumpRequested = path && *path;
+	if (const char *v = getenv("BEA_PORT_UPDATE_DUMP_FROM")) gFrom = strtoul(v, NULL, 10);
+	if (const char *v = getenv("BEA_PORT_UPDATE_DUMP_TO")) gTo = strtoul(v, NULL, 10);
+	if (const char *v = getenv("BEA_PORT_UPDATE_DUMP_THINGS")) gThings = *v && *v != '0';
+	gDumpConfigReady = true;
+}
+
+extern "C" void CE_NetUpdateAutomationPrepare(void) { InitUpdateAutomationConfig(); }
+extern "C" int CE_NetUpdateAutomationIdle(void)
+{
+	if (!gDumpConfigReady) return -1;
+	return !gDumpRequested && !gDumpAttempted && !gDump ? 1 : 0;
+}
+
+#endif
+// The game's render fraction and its pause and phase, for the frame-feel log (feel.h) at each Present: reads fields only. The focus (a driven unit's pose, the paused
+// map's window) comes from two CE modules, which only a CE build has: a private build leaves it at 0, as the caller made the sample.
+static void FeelSample(PortFeelGameSample *s)
+{
+	s->fraction = GAME.GetFrameRenderFraction();
+	s->fraction2 = GAME.GetFrameRenderFraction2();
+	s->level = GAME.GetCurrentLevel();
+	s->state = GAME.GetGameState();
+	s->paused = GAME.IsPaused();
+#ifdef CE_VERSION
+	s->focus = CePlayUnitFeelPose(s->pose);		// the driven unit's displayed and simulated pose, when one is driven
+	if (!s->focus && CeCmdFeelView(s->pose)) s->focus = 2;		// or the paused map's window on the world
+#endif
+}
+
 void PortUpdateHook()
 {
+	if (PORT_FEEL_ON())
+	{
+		// Observation only: the game is not touched, and the clock the game reads is not read.
+		static bool sampler;
+		if (!sampler)
+		{
+			PortFeelSetGameSampler(FeelSample);
+			sampler = true;
+		}
+		PortFeelTick(GAME.GetCurrentLevel(), GAME.GetGameState(), GAME.IsPaused(), Bits(EVENT_MANAGER.GetTime()));
+	}
+#ifndef CE_NETWORK_OFF
+	CE_LockstepUpdateEntry();	// lockstep co-op test automation: the stack the update's callees start from (BEA_LOCKSTEP_POISON_STACK)
+#endif
 #ifdef CE_VERSION
 	CeCommanderUpdate();		// the commander order layer (ce_commander.cpp): returns at once unless the map is on
+	CePlayUnitUpdate();			// the play-as-a-unit developer option (ce_playunit.cpp): returns at once unless ce.ini asks for it
 #endif
 	SessionGameUpdate();
 	if (!gInit)
 	{
+#ifndef CE_NETWORK_OFF
+		InitUpdateAutomationConfig();
+#endif
 		gInit = true;
+#ifdef CE_NETWORK_OFF
 		const char *path = getenv("BEA_PORT_UPDATE_DUMP");
 		if (path && *path && !(gDump = fopen(path, "w")))
 			fprintf(stderr, PORT_LOG_PREFIX "update dump: cannot write %s\n", path);
@@ -139,6 +204,15 @@ void PortUpdateHook()
 			gTo = strtoul(v, NULL, 10);
 		if (const char *v = getenv("BEA_PORT_UPDATE_DUMP_THINGS"))
 			gThings = *v && *v != '0';
+#else
+		if (gDumpRequested)
+		{
+			gDumpAttempted = true;
+			const char *path = getenv("BEA_PORT_UPDATE_DUMP");
+			if (path && *path && !(gDump = fopen(path, "w")))
+				fprintf(stderr, PORT_LOG_PREFIX "update dump: cannot write %s\n", path);
+		}
+#endif
 	}
 	gUpdate++;
 	if (!gDump)

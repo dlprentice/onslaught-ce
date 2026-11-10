@@ -14,6 +14,7 @@ Reads this checkout's local-data/port/build/{linux/bea,windows/bea.exe}, which m
 No game files go in either package: the launcher reads the player's own install. Refuses a binary that still names
 this machine's paths: strings of each stripped file matched against the user's home, the repository and the private
 locations listed in BEA_PRIVATE_PATHS (colon-separated; set it to this machine's scratch and archive folders).
+ICE/libjuice requires the explicit --with-ice path, verified build receipts, and the pinned source and licence inputs.
 """
 import argparse
 import gzip
@@ -86,6 +87,28 @@ MINGW_RUNTIME = ("https://raw.githubusercontent.com/mingw-w64/mingw-w64/62891fa4
 
 
 ALLOW_UNREPLACED = False
+# The public build made with build.py --public --with-network (the experimental co-op release) links ENet and has the game-side Monocypher: its package carries ENet's
+# licence and notice, which the default public build, having neither, must not claim. package() sets this from the build folder's flavour.txt.
+NETWORK = False
+# The optional ICE build retains this tag in executable data, including after LTO and stripping. Check the binary,
+# not only flavour.txt: a one-target build can overwrite that shared marker while retaining the other executable.
+ICE_FEATURE_MARKER = b"CE-NET-FEATURE:ICE-LIBJUICE:1"
+# While mods are off on Windows (port/platform/common/mods.cpp, PlatformOff), every public Windows program holds the line below, and a Windows build made with
+# build.py --mods-windows-test (the mod loader switched on, for the gate's mods cases) does not: flavour.txt cannot tell the two apart. Every public program
+# holds the mod layer's --check-mods command (mods.h), so a program that has the command and lacks the line is the test build; a test's authored stand-in,
+# which is no CE program, has neither and is judged by the other checks. The commit that enables mods on Windows removes the line from mods.cpp, and this
+# check with it.
+MODS_CPP = PORT / "platform/common/mods.cpp"
+MODS_WINDOWS_OFF = "off on Windows until the loader's checks on NTFS have passed"
+MODS_CHECK_COMMAND = "--check-mods"
+
+
+def mods_windows_switch_problem(program: bytes, mods_source: str):
+    """Why a Windows program must not be packaged as a release, or None: the mod loader switched on while the source keeps mods off on Windows."""
+    if MODS_WINDOWS_OFF in mods_source and MODS_CHECK_COMMAND.encode() in program and MODS_WINDOWS_OFF.encode() not in program:
+        return ("the mod loader is switched on (a build.py --mods-windows-test build), and mods stay off on Windows until the loader's checks on NTFS "
+                "have passed; rebuild without --mods-windows-test, or make a local test package with --test")
+    return None
 
 
 def sha256(data: bytes) -> str:
@@ -210,6 +233,7 @@ def licences(windows: bool) -> dict:
         "licenses/libvorbis-1.0-COPYING": from_tarball(vorbis / "libvorbis-1.0.tar.gz", "/COPYING"),
         "licenses/DirectXTex-LICENSE": fetch_text("DirectXTex-1acf4ebe-LICENSE", DIRECTXTEX),
         "licenses/Monocypher-LICENCE.md": from_tarball(lock["monocypher"]["file"], "/LICENCE.md"),
+        **({"licenses/ENet-LICENSE": from_tarball(lock["enet"]["file"], "/LICENSE")} if NETWORK else {}),
         "licenses/SDL3-LICENSE.txt": from_tarball(dl / Path(lock["SDL3"]["url"]).name, "/LICENSE.txt"),
         # SDL3 compiles in its copy of hidapi (libSDL3.so.0 and SDL3.dll alike), which offers three licences; this
         # program takes the BSD-style one (src/hidapi/LICENSE.txt names the choice).
@@ -253,8 +277,11 @@ def third_party(windows: bool) -> list:
     (a name indented by two spaces is a part of the row above it); main() checks every file is in the archive."""
     lock = deps.lock()
     ffl = "avformat-61.dll, avcodec-61.dll, avutil-59.dll" if windows else "lib/libavformat.so.61, libavcodec.so.61, libavutil.so.59"
-    rows = [("DirectXTex", "1acf4ebe", "MIT", "the DXT block encoder (port/d3dx/src/bc.cpp) is adapted from it", ["licenses/DirectXTex-LICENSE"]),
-            ("Monocypher", lock["monocypher"]["version"], "BSD-2-Clause OR CC0-1.0", "compiled into the launcher: the v2 update feed's signature check",
+    mono = ("compiled into the launcher (the v2 update feed's signature check) and the game (the network's authenticated encryption)" if NETWORK
+            else "compiled into the launcher: the v2 update feed's signature check")
+    rows = ([("ENet", lock["enet"]["version"], "MIT", "statically linked direct-IP game transport", ["licenses/ENet-LICENSE"])] if NETWORK else [])
+    rows += [("DirectXTex", "1acf4ebe", "MIT", "the DXT block encoder (port/d3dx/src/bc.cpp) is adapted from it", ["licenses/DirectXTex-LICENSE"]),
+            ("Monocypher", lock["monocypher"]["version"], "BSD-2-Clause OR CC0-1.0", mono,
              ["licenses/Monocypher-LICENCE.md"]),
             ("FFmpeg", lock["FFmpeg"]["version"], "LGPL-2.1-or-later", f"{ffl}: shared libraries, decoders and demuxer only (Bink video and audio)",
              ["licenses/FFmpeg-COPYING.LGPLv2.1", "licenses/FFmpeg-LICENSE.md"]),
@@ -363,12 +390,12 @@ def readme(version: str, windows: bool) -> bytes:
     launcher = "onslaught-ce.exe" if windows else "onslaught-ce"
     common = ["It finds your Battle Engine Aquila install in Steam's libraries, or asks you once for its folder and",
               "remembers it (BEA_GAME_DIR overrides). By default, careers and settings go to a separate user folder:",
-              ("%APPDATA%\\Onslaught CE." if windows else "$XDG_DATA_HOME/onslaught-ce, or ~/.local/share/onslaught-ce when unset."),
+              ("%APPDATA%\\Onslaught CE." if windows else "$XDG_DATA_HOME/onslaught-ce, or ~/.local/share/onslaught-ce when unset or empty."),
               "BEA_USER_DIR overrides that location. Keep it separate from the game folder and avoid linked paths.",
               "Updates: at start it checks a signed feed (ce-update-v2.json) and asks before installing. A new version",
               "goes into versions/ inside this folder; this folder's own files and everything beside it are left alone.",
               "--update-only checks now, --rollback returns to the previous version, BEA_NO_UPDATE_CHECK=1 or",
-              "update_check=0 in ce.ini turns checking off. --apply is refused.",
+              "Check for Updates at Start: No in CE Settings (update_check=0 in ce.ini) turns checking off. --apply is refused.",
               "Do not start an Onslaught CE 0.1.0-0.1.6 launcher at all, not even to check its version or update it: its",
               "startup cleanup can delete neighbouring <program folder>.old-* paths. On Linux it has followed a matching",
               "directory link into its target; Windows reparse-point behaviour is unmeasured. Keep the old installation",
@@ -398,8 +425,35 @@ def readme(version: str, windows: bool) -> bytes:
                       "copy of the game (for example from Steam).", f"Project page, source and releases: {PUBLIC_REPO}",
                       ""] + run +
                      ["", f"{exe} is Onslaught CE's game program; {launcher} is the program to start.", ""] +
-                     IN_THE_GAME + help_lines(windows) + limitations(windows) + NOTICE_LINES +
+                     in_the_game() + help_lines(windows) + limitations(windows) + NOTICE_LINES +
                      ["", "Licence: GPL-3.0-only (COPYING). Third-party components: THIRD-PARTY-NOTICES.txt and licenses/.", ""]).encode()
+
+
+# The build with the network compiled in (flavour public-network) offers the Network game page; its README.txt says what the page says (experimental, what a
+# mismatch does, no matchmaking server, what was not tested, what the game contacts). package_readme_tests.py checks the sentences against the page's own text.
+NETWORK_GAME_LINES = [
+    "- Network game (experimental): Main menu > Onslaught CE > Network Game hosts or joins a two-player co-op game on",
+    "  the building defence or the tutorial. It is new and unfinished, so expect problems. Both players need the same",
+    "  Onslaught CE version and their own copy of the game. If the two games ever disagree, the game ends with a",
+    "  message. A network game does not change your careers. Its HUD scales and sits as in single-player play",
+    "  (BEA_PORT_HUD_SCALE=0 turns the scaling off). There is no pause in a network game and Escape does nothing; to",
+    "  leave, close the window (the other player is told). There is no matchmaking server: play on one network, or the",
+    "  host forwards a UDP port on its router (net_port in ce.ini, default 27652) and gives the other player its",
+    "  public address; the Network game page's row \"How to connect over the Internet\" walks the host through the",
+    "  router, the firewall prompt and the public address. Not tested: play through routers over the real internet,",
+    "  more than two players, Windows on real hardware. Running the Windows build under Wine or Proton, keep the game",
+    "  and user folders on a C: path (the user folder's default is): a folder reached through Wine's Z: drive can be",
+    "  refused at network admission. The game sends data only to the other player's address and contacts no server.",
+    "  The host's page lists this PC's addresses; on Windows that asks the system to look up this PC's own name.",
+]
+
+
+def in_the_game() -> list[str]:
+    """The "In the game" list; a build with the network compiled in adds the Network game paragraph before the closing console and log bullets."""
+    if not NETWORK:
+        return IN_THE_GAME
+    at = IN_THE_GAME.index("- A quiet console: the developers' messages are hidden unless BEA_PORT_VERBOSE=1 is set.")
+    return IN_THE_GAME[:at] + NETWORK_GAME_LINES + IN_THE_GAME[at:]
 
 
 # README.txt's "In the game" and "Screen modes and widescreen" (public/README.md says the same).
@@ -422,11 +476,43 @@ IN_THE_GAME = [
     "  All Goodies in Onslaught CE > Cheats; those routes save your career as the original does. The five rows on the",
     "  Bonus Levels list start the races with none of that; a race does not advance career progress and, when it ends",
     "  (finished, lost or quit from the pause menu), saves nothing and returns to the Bonus Levels list.",
-    "- CE Settings: Record Play for Bug Reports (see Help make Onslaught CE more faithful, below).",
-    "- Help & Info: Controls & Tips (dodge, zoom, photo mode and screenshots, the console, the free camera and the",
-    "  commander map), What's Coming (planned features and their limits; it does not start those features), Updates &",
+    "- CE Settings: a list of choices, each written to ce.ini in your user folder when you make it: HUD Size and HUD",
+    "  Layout (see Screen modes and widescreen, below), Sharper Text (experimental), End-of-Level Stats, Controller",
+    "  Rumble, Dodge Button (see Walker dodging, below), Developer Information, Your",
+    "  Music (shows the folder ce.ini sets: see Your",
+    "  own music, below), Music Order, Console Text, Check for Updates at Start and Record Play for Bug Reports (see",
+    "  Help make Onslaught CE more faithful, below). Select opens a row's list of choices, and so do Left and Right,",
+    "  which also move to the choice before or after; in the list they move as Up and Down do. Nothing is written",
+    "  until Select picks a choice other than the one shown, and Escape closes the list unchanged. The row's hint says",
+    "  when a change is used: from the next level for the two HUD rows and Dodge Button, the next time the console",
+    "  opens for Console Text (the developer information text keeps its colour until the next start), otherwise the",
+    "  next time you start the game. If ce.ini cannot be written, a message says so and the row keeps its old choice.",
+    "  The page is not on the menu while a session is recorded.",
+    "- Your own music: a music_dir= line in ce.ini, with the absolute path of a folder (on Linux ~/ is your home",
+    "  folder), plays the folder's tracks in place of the level music; the front end and the credits keep the game's",
+    "  own. A track must be Ogg Vorbis, stereo, 44100 Hz, with a full path of at most 255 bytes. Up to 256 tracks are",
+    "  used, subfolders are not searched, and the folder is only read. Music Order in CE Settings (music_playtype) sets",
+    "  how they play: in order, shuffled, or one track and then quiet. Both lines are read once a session, so a change",
+    "  applies the next time you start the game. Your Music in CE Settings shows the folder ce.ini sets, and the log",
+    "  says how many tracks were found there. For one session, the console command music adddir <folder> adds a",
+    "  folder's tracks without changing ce.ini. Your own music is off in recordings, replays, network games and demos.",
+    "- Help & Info: Controls & Tips (dodge, zoom, photo mode and screenshots, the console and the free",
+    "  camera), What's Coming (planned features and their limits; it does not start those features), Updates &",
     "  Rollback (how updating works and how to turn the checks off), About Onslaught CE (version, licence and links)",
     "  and Special Thanks.",
+    "- Video Options on a new profile: the first time you start with no saved options of your own (a new install, or",
+    "  a profile that only has the old game folder's file), every quality row starts at its highest choice except",
+    "  Full models, anti-aliasing starts at the highest level your graphics device lists, and extra graphical",
+    "  features start On where the device passes the capability test. Full models starts Off: it draws every model",
+    "  in full detail at any distance and is the largest cost in frame rate, so turn it On if your computer has the",
+    "  room. Terrain detail distance starts at Extended, which draws the terrain further away; choose Normal for the",
+    "  original's distance. Anything you saved before is kept as it was: the new defaults apply once, to a profile",
+    "  with no options of its own, and every row can be changed afterwards.",
+    "- Unfinished features: the first start adds an [Experimental] block to ce.ini that lists them, each set to 0",
+    "  (off). They are unsupported and may change or break; a line set to 1 turns that feature on from the next",
+    "  start. None of them is on a menu until its line is on, and none is needed to play. Leave the lines at 0",
+    "  unless you want to try one. A line you already set in an earlier version (0.1.13 or before) is kept",
+    "  as it is.",
     "- Console: during an eligible solo level, press the grave key (`; left of 1 on a US keyboard), type help and",
     "  press Enter. Esc or grave closes it; the game does not pause. It is unavailable in multiplayer, demos,",
     "  recordings and replays.",
@@ -446,15 +532,21 @@ IN_THE_GAME = [
     "  characters come from key presses; letter and digit keys use their physical positions across layouts.",
     "- Walker dodging (on the ground, not already dodging): with the default US keyboard, tap A then D for right,",
     "  or D then A for left.",
-    "  Try releasing the first key before pressing the other. Aim for about 0.15 game seconds between presses:",
-    "  the default window is more than 0.1 and less than 0.2 game seconds. Too fast or slow will not dodge.",
-    "  If you remapped controls or use another layout, check left and right movement in Controller Options.",
-    "  The English tutorial can show a cue in eligible ordinary solo play; it is off in recordings and replays.",
+    "  Dodge Button: hold Left Ctrl and press A or D, or, on a gamepad, hold B (the right face button on an",
+    "  Xbox-style pad; the tutorial cue calls it the right button) and push the left stick left or right. The",
+    "  game then makes the two taps itself, through its own controls, and the dodge is the original one. For",
+    "  about 0.15 seconds your own left and right are held back. If you pushed the same direction 0.1 to 0.2",
+    "  seconds before, the first tap waits a moment. It follows whatever inputs you use to strafe. For the",
+    "  next dodge, let go and press again, or change direction with the button still held; a press made early",
+    "  in a dodge (it lasts about three quarters of a second) is dropped, one made in its last 0.35 seconds",
+    "  follows it at once. A key or button you have bound to a control of your own is not used; flight sticks",
+    "  have none. It is on by default (CE Settings, Dodge Button; dodge_button=0 in ce.ini turns it off, from",
+    "  the next level) and off in recordings, replays, demos and network games.",
     "- Zoom: with default mouse bindings, wheel down zooms in and wheel up zooms out. In eligible ordinary play,",
     "  the default gamepad's right bumper zooms in and left bumper out. Manual zoom works only with some weapons;",
     "  some zoom while charging. Check Controller Options for changed bindings.",
-    "- Controllers: gamepad and flight-stick defaults cover menus, solo play and bonus co-op when joystick controls",
-    "  have not been customized. Other local multiplayer uses Controller Options. Only virtual devices were tested.",
+    "- Controllers: gamepad and flight-stick defaults cover menus, solo play, two-player split screen (one pad for each",
+    "  player) and bonus co-op when joystick controls have not been customized. Only virtual devices were tested.",
     "- Photo mode: F11 (or the console's photo command) hides the HUD and cockpit for pictures, and F12 saves a",
     "  screenshot. Both work in single-player levels, but not while a session is recorded or replayed, in multiplayer,",
     "  a network game or a demo. Tested on Linux; Windows testing of it is limited (see the release notes).",
@@ -469,14 +561,13 @@ IN_THE_GAME = [
     "  occurred during saving.\" in English, and in the language you chose) appears for a few seconds at the bottom of",
     "  the screen, and after a language change in the front end it appears in the usual message box. The career you",
     "  had is unchanged. Recordings and replays show neither.",
-    "- Commander map (experimental, off by default): commander=1 in ce.ini lets M open a map of a single-player level,",
-    "  where you pick a squad and give it Move, Advance, Hold or Fall back. Tested on Linux only; no gamepad control.",
     "- A quiet console: the developers' messages are hidden unless BEA_PORT_VERBOSE=1 is set.",
-    "- A log file for reports, onslaught-ce.log in your user folder, and session recording (both below).",
+    "- A log file for reports in your user folder, and session recording (both below).",
     "",
     "Screen modes and widescreen",
-    "Video Options > Display mode offers Windowed or Fullscreen. Quit and restart for a saved choice to take effect;",
-    "the menu says if the choice could not be saved. An explicit -forcewindowed game argument takes priority.",
+    "Video Options > Window mode offers Windowed or Fullscreen. Choose Apply to switch without restarting.",
+    "If saving fails, the menu says the change is for this session only.",
+    "An explicit -forcewindowed game argument takes priority.",
     "The saved display-mode choice is ignored while recording or replaying.",
     "By default, Onslaught CE starts at your desktop's resolution; a saved or explicit screen mode can change it.",
     "Video Options lists your monitor's sizes, including widescreen ones. On a widescreen monitor the 3D view shows",
@@ -485,15 +576,23 @@ IN_THE_GAME = [
     "BEA_PORT_WIDESCREEN=0. Ordinarily, replays and recordings use the original 4:3 behaviour. The original game shares",
     "one random number source between visual effects and play, so a wider view can change the details of a fight.",
     "In eligible ordinary single-player play with widescreen modes enabled, the HUD automatically scales up when",
-    "both screen dimensions exceed 640 x 480. Set BEA_PORT_HUD_SCALE=0 for the original fixed-size HUD. Scaling is",
-    "off in recordings and replays, multiplayer, and when BEA_PORT_WIDESCREEN=0.",
+    "both screen dimensions exceed 640 x 480, keeping the size it has at 640 x 480 relative to the screen (at 3840 x",
+    "2160 it is 4.5 times as large), and so do the markers it draws on targets and objectives, each about its own",
+    "target. Choose HUD Size: Original in CE Settings (hud_scale=0 in ce.ini) for the original fixed-size HUD, from",
+    "the next level on (a hud_scale line written into ce.ini by hand is read once, when your first level starts:",
+    "restart the game after changing it); or set BEA_PORT_HUD_SCALE=0, which also keeps the corner groups below in",
+    "the 4:3 columns. A BEA_PORT_HUD_SCALE that is set and not empty decides the size instead of ce.ini: a value that",
+    "starts with 0 (0, 00, 05 ...) gives the original's, with the corner groups in the 4:3 columns, and any other",
+    "value the larger HUD; the HUD Size row still shows what ce.ini says. Scaling is off in recordings and replays,",
+    "split-screen multiplayer, and when BEA_PORT_WIDESCREEN=0.",
     "In the same play the HUD's corner groups (the target panel, objectives, radar, weapon and ammunition readouts and",
     "the radio portrait) sit in the corners of the screen, where the original's HUD sits at 4:3, while the radio",
-    "messages, warnings, compass and reticle stay in the middle. On a very wide screen the corners are far apart: put",
-    "hud_anchor=0 in ce.ini to keep them in the columns a 4:3 picture would have, as BEA_PORT_HUD_SCALE=0 does. In",
-    "multiplayer the HUD stays in the 4:3 columns.",
+    "messages, warnings, compass and reticle stay in the middle. On a very wide screen the corners are far apart:",
+    "choose HUD Layout: 4:3 Columns in CE Settings (hud_anchor=0 in ce.ini) to keep them in the columns a 4:3",
+    "picture would have, as BEA_PORT_HUD_SCALE=0 does. In split-screen multiplayer the HUD stays in the 4:3 columns.",
     "Sharper text is off by default: the menus' and HUD's text keeps the original's soft look, as the rest of the",
-    "picture does. Put sharp_ui=1 in ce.ini to turn it on: with widescreen modes enabled on a non-4:3 picture,",
+    "picture does. Choose Sharper Text: Yes in CE Settings (sharp_ui=1 in ce.ini) to turn it on from the next start:",
+    "with widescreen modes enabled on a non-4:3 picture,",
     "bitmap text drawn at least twice its original size horizontally or vertically (for example, menu text at 1920 x",
     "1080) can use a sharper copy of the game's letters, so it can look crisp instead of soft; the letters keep their",
     "shapes, sizes and places.",
@@ -510,18 +609,22 @@ def help_lines(windows: bool) -> list:
     """README.txt's "Report a problem" and "Help make Onslaught CE more faithful" (public/README.md says the same)."""
     launcher = "onslaught-ce.exe" if windows else "./onslaught-ce"
     user = ("%APPDATA%\\Onslaught CE by default" if windows else
-            "$XDG_DATA_HOME/onslaught-ce, or ~/.local/share/onslaught-ce when unset")
+            "$XDG_DATA_HOME/onslaught-ce, or ~/.local/share/onslaught-ce when unset or empty")
     where = (" (from a Command Prompt in this folder, or a shortcut with --report added)" if windows else "")
     return ["Report a problem",
             *textwrap.wrap(f"Choose Onslaught CE > Report a Problem in the main menu, or run {launcher} --report{where}.",
                            README_WIDTH),
             "It opens a new issue on the project's GitHub page in your browser, filled in with your version and",
             "system, and shows the folder that holds your log. Nothing is posted until you submit the issue. Say what",
-            "happened and how to make it happen again, and attach onslaught-ce.log from that folder",
-            *textwrap.wrap(f"({user}; onslaught-ce.old.log is the run before, and each stops at 4 MB). "
-                           "BEA_USER_DIR can select another folder. The log holds", README_WIDTH, break_on_hyphens=False),
+            "happened and how to make it happen again. Attach the affected run's log from your user folder",
+            *textwrap.wrap(f"({user}). The usual file is onslaught-ce.log; onslaught-ce.old.log, when present, "
+                           "holds the previous primary log. If multiple copies ran at once, the affected run may "
+                           "be in onslaught-ce.concurrent-1.log or onslaught-ce.concurrent-2.log. Check its start "
+                           "time to identify the run and save it promptly; later launches can replace log files. "
+                           "Each stops at 4 MB. BEA_USER_DIR can select another folder. The log holds",
+                           README_WIDTH, break_on_hyphens=False),
             "the version, your OS and GPU and the game's messages. Home paths and account-name path components are",
-            "shortened; look the file over before sharing it.",
+            "shortened; look the file over before sharing it. You can share it directly with someone helping you.",
             "If you recorded the session (below), attach its tape too.",
             "",
             "Help make Onslaught CE more faithful",
@@ -568,13 +671,14 @@ def limitations(windows: bool) -> list:
             "- Physical audio devices and listening quality have not been validated by the recorded and virtual controls.",
             "- Widescreen play is not compared with the original (the original has no widescreen); ordinary replays and",
             "  recordings use 4:3.",
-            "- Planned, not in this version yet: Internet multiplayer, general mod support and additional HUD options.",
+            ("- Planned, not in this version yet: matchmaking, versus play, general mod support and additional HUD options." if NETWORK else
+             "- Planned, not in this version yet: Internet multiplayer, general mod support and additional HUD options."),
             ""]
 
 
 def quick_start(windows: bool) -> list:
     """The quick start for this platform's package (the repository README, public/README.md, gives both)."""
-    exe, user = ("onslaught-ce.exe", "%APPDATA%\\Onslaught CE") if windows else ("./onslaught-ce", "$XDG_DATA_HOME/onslaught-ce (or ~/.local/share/onslaught-ce when unset)")
+    exe, user = ("onslaught-ce.exe", "%APPDATA%\\Onslaught CE") if windows else ("./onslaught-ce", "$XDG_DATA_HOME/onslaught-ce (or ~/.local/share/onslaught-ce when unset or empty)")
     return ["Quick start",
             "1. Extract the download into a new empty folder outside your original game folder. Preserve old installations",
             "   and user folders; do not overwrite them or start a 0.1.0-0.1.6 launcher. You can move the new folder later.",
@@ -776,26 +880,77 @@ def machine_paths(path: Path) -> list:
     return sorted({l for l in out.splitlines() if pat.search(l)})
 
 
-def check_public(binary: Path, windows: bool):
+def links_enet(symbols: str) -> bool:
+    """Whether an `nm` listing shows ENet linked into the program."""
+    return re.search(r"(?<![A-Za-z0-9])_?enet_(?:host_create|host_service|peer_send|packet_create)\b", symbols) is not None
+
+
+def links_ice(symbols: str) -> bool:
+    """ICE/libjuice in an unstripped Linux or Windows symbol listing, including older builds without the tag."""
+    return re.search(r"(?<![A-Za-z0-9_])(?:(?:__imp_)?_?(?:juice_[A-Za-z0-9_]+|CE_NetCreateIce|"
+                     r"ce_network_ice_feature_marker)\b|CeIce(?:Bridge|Session)::)", symbols) is not None
+
+
+def check_public(binary: Path, windows: bool, *, with_ice=False, with_native_signaling=False):
+    if binary.exists():
+        has_native_marker = b"CE-NATIVE-SIGNALING-V1" in binary.read_bytes()
+        if has_native_marker != with_native_signaling:
+            sys.exit("native-signaling binary requires its explicit package opt-in and matching marker")
+    elif with_native_signaling:
+        sys.exit("native-signaling package binary is missing")
     target = "windows" if windows else "linux"
     deps.require_ffmpeg_shared(target)
+    ice_error = f"{binary}: contains ICE/libjuice; its licence and notice packaging has not been reviewed"
+    try:
+        has_ice_marker = ICE_FEATURE_MARKER in binary.read_bytes()
+    except OSError:
+        sys.exit(f"{binary}: package candidate missing or unreadable; build with build.py --public")
+    if has_ice_marker and not with_ice:
+        sys.exit(ice_error)
+    program = binary.read_bytes() if windows and not ALLOW_UNREPLACED else b""
+    if MODS_CHECK_COMMAND.encode() in program:		# a CE program: whether its mod loader may be on depends on mods.cpp
+        try:
+            mods_source = MODS_CPP.read_text(errors="replace")
+        except OSError:
+            sys.exit(f"{MODS_CPP}: cannot be read, and packaging a Windows program needs it to tell whether mods are off on Windows")
+        if problem := mods_windows_switch_problem(program, mods_source):
+            sys.exit(f"{binary}: {problem}")
     marker = WORK / "mirror/public-unreplaced.txt"
     if not marker.exists():
         sys.exit(f"{marker}: missing; build with build.py --public")
     if marker.read_text().strip() and not ALLOW_UNREPLACED:
         sys.exit("the public build still compiled src/ files it must replace: " + marker.read_text().split().__str__())
-    syms = subprocess.run([str(deps.DATA / ("llvm-mingw/bin/llvm-nm" if windows else "llvm/bin/llvm-nm")), "-C", str(binary)],
-                          capture_output=True, text=True).stdout
+    try:
+        syms = subprocess.run([str(deps.DATA / ("llvm-mingw/bin/llvm-nm" if windows else "llvm/bin/llvm-nm")), "-C", str(binary)],
+                              capture_output=True, text=True, check=True).stdout
+    except (OSError, subprocess.CalledProcessError):
+        sys.exit(f"{binary}: cannot inspect candidate symbols; rebuild an unstripped public binary")
+    if not syms.strip():
+        sys.exit(f"{binary}: no candidate symbols; packaging requires an unstripped public binary")
+    has_ice_symbols = links_ice(syms)
+    if has_ice_symbols and not with_ice:
+        sys.exit(ice_error)
+    if with_ice and not (has_ice_marker and has_ice_symbols):
+        sys.exit(f"{binary}: explicit ICE package requires its retained feature tag and unstripped ICE symbols")
     if re.search(r"NvStripifier|NvStripInfo|VertexCache", syms):
         sys.exit(f"{binary}: contains NvTriStrip; build with build.py --public")
+    has_enet = links_enet(syms)
+    if has_enet and not NETWORK:
+        sys.exit(f"{binary}: contains ENet, but the build folder is the default public flavour (no ENet notice would ship); rebuild without the network or with --with-network")
+    if NETWORK and not has_enet:
+        sys.exit(f"{binary}: the build folder says --with-network but the program has no ENet; rebuild with build.py --public --with-network")
     expected = {path.name for path in deps.ffmpeg_shared_files(target, runtime=True)}
     if windows:
         expected = {name.lower() for name in expected}
         tool = deps.DATA / "llvm-mingw/bin/llvm-readobj"
         imports = subprocess.run([str(tool), "--coff-imports", str(binary)], capture_output=True, text=True, check=True).stdout
+        if with_native_signaling and not re.search('(?im)^\\s*Name:\\s*WINHTTP\\.dll\\s*$', imports):
+            sys.exit('native-signaling Windows binary does not import WinHTTP')
         needed = {name.lower() for name in re.findall(r"^\s+Name: (\S+)\s*$", imports, re.M)}
     else:
         dyn = subprocess.run(["readelf", "-d", str(binary)], capture_output=True, text=True, check=True).stdout
+        if with_native_signaling and not re.search('\\(NEEDED\\).*\\[libcurl-gnutls\\.so\\.4\\]', dyn):
+            sys.exit('native-signaling Linux binary does not import pinned libcurl-GnuTLS')
         needed = set(re.findall(r"\(NEEDED\).*Shared library: \[([^]]+)\]", dyn))
         if "[$ORIGIN/lib]" not in dyn:
             sys.exit(f"{binary}: RUNPATH is not $ORIGIN/lib; build with build.py --public")
@@ -881,32 +1036,78 @@ def main():
     ap.add_argument("version")
     ap.add_argument("--out", type=Path)
     ap.add_argument("--test", action="store_true", help="local test packages only: allow a build that still compiled "
-                                                        "src/ files the public build must replace (never upload these)")
+                                                        "src/ files the public build must replace, or a Windows build with the mod "
+                                                        "loader switched on (build.py --mods-windows-test); never upload these")
     ap.add_argument("--build", type=Path, help="the build folder (default this checkout's local-data/port/build)")
+    ap.add_argument("--with-ice", action="store_true", help="explicit experimental ICE package: require exact ICE profile/receipts and include pinned libjuice source and licences")
+    ap.add_argument("--with-native-signaling", action="store_true", help="include the pinned native HTTPS dependencies, notices and matching source (requires --with-ice)")
     a = ap.parse_args()
     # Both runtime DLLs and the Linux SDL library stay fixed from validation until the archives are written.
     with deps.sdl_install_lock("linux"), deps.sdl_install_lock("windows"):
         package(a)
 
 
+def build_flavour(build: Path, *, with_ice=False) -> str:
+    """Public flavour; the optional ICE profile is recognised only with an explicit opt-in."""
+    marker = build / "flavour.txt"
+    word = marker.read_text().strip() if marker.exists() else "public"
+    if word not in ("public", "public-network", *(("public-network-ice",) if with_ice else ())):
+        sys.exit(f"{marker}: unknown flavour {word!r}")
+    return word
+
+
 def package(a):
-    global ALLOW_UNREPLACED
+    global ALLOW_UNREPLACED, NETWORK
     ALLOW_UNREPLACED = a.test
     build = a.build or WORK / "build"
+    with_ice = getattr(a, "with_ice", False)
+    with_native_signaling = getattr(a, "with_native_signaling", False)
+    if with_native_signaling and not with_ice:
+        sys.exit("--with-native-signaling requires --with-ice")
+    native_payloads = None
+    flavour = build_flavour(build, with_ice=with_ice)
+    if with_ice and (flavour != "public-network-ice" or a.test):
+        sys.exit("--with-ice requires exactly public-network-ice and does not allow --test")
+    NETWORK = flavour in ("public-network", "public-network-ice")
+    ice_payloads = None
+    if with_ice:
+        import package_ice_inputs
+        if with_native_signaling:
+            import package_signaling_inputs
+            ice_payloads = package_ice_inputs.prepare(build, with_native_signaling=True)
+            try:
+                native_payloads = package_signaling_inputs.prepare()
+            except (OSError, ValueError) as error:
+                sys.exit(f"native-signaling package inputs: {error}")
+        else:
+            ice_payloads = package_ice_inputs.prepare(build)
     # Validate both candidates and their selected shared inputs before creating any package or copying symbols.
     for windows in (False, True):
-        check_public(build / ("windows/bea.exe" if windows else "linux/bea"), windows)
+        binary = build / ("windows/bea.exe" if windows else "linux/bea")
+        if with_ice:
+            if with_native_signaling:
+                check_public(binary, windows, with_ice=True, with_native_signaling=True)
+            else:
+                check_public(binary, windows, with_ice=True)
+        else:
+            check_public(binary, windows)
     for target in ("linux", "windows"):
         deps.require_sdl_receipt(target)
         deps.require_sdl_link_receipt(build, target)
-    out = a.out or WORK / "release" / a.version
+    out = a.out or WORK / "release" / (a.version + "-ice" if with_ice else a.version)
     (out / "symbols").mkdir(parents=True, exist_ok=True)
     made = []
     epoch = source_epoch()
     for windows in (False, True):
         src = build / ("windows/bea.exe" if windows else "linux/bea")
         exe = "bea.exe" if windows else "bea"
-        shutil.copy2(src, out / "symbols" / (f"bea-{a.version}.exe" if windows else f"bea-{a.version}"))
+        saved = out / "symbols" / (f"bea-{a.version}.exe" if windows else f"bea-{a.version}")
+        shutil.copy2(src, saved)
+        ice_payload = ice_payloads["windows" if windows else "linux"] if with_ice else None
+        native_payload = native_payloads["windows" if windows else "linux"] if native_payloads else None
+        if with_ice:
+            package_ice_inputs.check_snapshot(saved, ice_payload["binaries"]["game"])
+            src = saved
         stripped = out / ("stage-" + exe)
         strip(src, stripped, windows)
         bad = machine_paths(stripped)
@@ -915,18 +1116,40 @@ def package(a):
         top = f"onslaught-ce-{a.version}-{'windows' if windows else 'linux'}-i686"
         files = {f"{top}/{exe}": (stripped.read_bytes(), 0o755)}
         launcher = build / ("windows/onslaught-ce.exe" if windows else "linux/onslaught-ce-launch")
+        launcher_name = launcher.name
         if b"CE-UPDATER-TEST-BUILD" in launcher.read_bytes():
             sys.exit(f"{launcher}: an updater test build (test key, test hooks); build the release launcher")
-        lstripped = out / ("stage-" + launcher.name)
+        if with_ice:
+            saved_launcher = out / "symbols" / (f"onslaught-ce-{a.version}.exe" if windows else f"onslaught-ce-launch-{a.version}")
+            shutil.copy2(launcher, saved_launcher)
+            package_ice_inputs.check_snapshot(saved_launcher, ice_payload["binaries"]["launcher"])
+            launcher = saved_launcher
+        lstripped = out / ("stage-" + launcher_name)
         strip(launcher, lstripped, windows)
         if machine_paths(lstripped):
             sys.exit(f"{lstripped}: machine paths remain")
-        files[f"{top}/{launcher.name}"] = (lstripped.read_bytes(), 0o755)
+        files[f"{top}/{launcher_name}"] = (lstripped.read_bytes(), 0o755)
         lstripped.unlink()
         files.update({f"{top}/{k}": (v, 0o644) for k, v in licences(windows).items()})
         files[f"{top}/THIRD-PARTY-NOTICES.txt"] = (notices(a.version, windows), 0o644)
         files[f"{top}/README.txt"] = (readme(a.version, windows), 0o644)
         files[f"{top}/NOTICE.txt"] = (notice(a.version, windows), 0o644)
+        if with_ice:
+            files.update({f"{top}/{name}": (data, 0o644) for name, data in ice_payload["files"].items()})
+            files[f"{top}/THIRD-PARTY-NOTICES.txt"] = (files[f"{top}/THIRD-PARTY-NOTICES.txt"][0] + b"\n" + ice_payload["notice"], 0o644)
+            files[f"{top}/NOTICE.txt"] = (files[f"{top}/NOTICE.txt"][0] + b"\nSee ICE-SOURCE-NOTICE.txt for libjuice source and licence options.\n", 0o644)
+            files[f"{top}/README.txt"] = (package_ice_inputs.readme(files[f"{top}/README.txt"][0]), 0o644)
+        if native_payload:
+            for name, data in native_payload["files"].items():
+                key = f"{top}/{name}"
+                if key in files:
+                    sys.exit("native-signaling input collides with an existing package file")
+                files[key] = (data, 0o644)
+            for name in ("THIRD-PARTY-NOTICES.txt", "NOTICE.txt"):
+                key = f"{top}/{name}"
+                files[key] = (files[key][0] + native_payload["notice"], files[key][1])
+            key = f"{top}/README.txt"
+            files[key] = (files[key][0] + b"\nNative-signaling dependency source and license notices are included; see NATIVE-SIGNALING-SOURCE-NOTICE.txt.\n", files[key][1])
         shipped = list(WINDOWS_DLLS) if windows else [(d / so).resolve() for d, so in LINUX_LIBS]
         bad = [f"{f.name}: {l}" for f in shipped for l in machine_paths(f)]
         if bad:
@@ -949,12 +1172,22 @@ def package(a):
                 files[f"{top}/lib/{so}"] = ((d / so).resolve().read_bytes(), 0o755)
             files[f"{top}/onslaught-ce"] = (LAUNCHER.encode(), 0o755)
             files[f"{top}/preflight.sh"] = (PREFLIGHT.replace("@GLIBC@", GLIBC).encode(), 0o755)
-            needed = glibc_needed([src, launcher] + [(d / so).resolve() for d, so in LINUX_LIBS])
+            native_elfs = []
+            if native_payload:
+                for soname, data in native_payload["libraries"].items():
+                    key = f"{top}/lib/{soname}"
+                    if key in files:
+                        if files[key][0] != data:
+                            sys.exit("native-signaling SDK library conflicts with an existing runtime")
+                    else:
+                        native_elfs.append(native_payload["paths"][soname])
+                    files[key] = (data, 0o755)
+            needed = glibc_needed(list([src, launcher] + [(d / so).resolve() for d, so in LINUX_LIBS]) + native_elfs)
             if needed != GLIBC:
                 sys.exit(f"{top}: the programs and libraries need glibc {needed}, but package.py's GLIBC (README.txt, "
                          f"preflight.sh, public/README.md and the release notes) says {GLIBC}")
             if deps.SYSROOT:
-                gaps = sysroot_gaps([src, launcher] + [(d / so).resolve() for d, so in LINUX_LIBS])
+                gaps = sysroot_gaps(list([src, launcher] + [(d / so).resolve() for d, so in LINUX_LIBS]) + native_elfs)
                 if gaps:
                     sys.exit(f"{top}: needs system library versions the Steam Runtime 3 sysroot does not have:\n  " + "\n  ".join(gaps))
             pkg = out / f"{top}.tar.gz"

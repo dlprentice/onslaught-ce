@@ -122,6 +122,21 @@ class ModToolSafety(unittest.TestCase):
         self.assertNotEqual(again.returncode, 0)
         self.assertEqual((mod / "mod.json").read_bytes(), saved)
 
+    def test_manifest_refuses_a_folder_name_the_loader_refuses(self):
+        # The loader refuses an id that is a Windows device name on every platform (mods.cpp, DeviceName), so the tool does not write a mod.json for one.
+        # Names that only begin like one are ordinary ids; mods_tests.py compares this rule with the loader's own answers.
+        for name, ok in (("con", False), ("aux", False), ("nul", False), ("prn", False), ("com0", False), ("lpt9", False), ("Upper", False),
+                         ("com10", True), ("console", True), ("nul-sounds", True), ("lpt1x", True)):
+            with self.subTest(name):
+                mod = self.user / name
+                (mod / "data").mkdir(parents=True)
+                (mod / "data/thing.bin").write_bytes(b"content")
+                p = self.cli("manifest", mod, "--name", "X", "--version", "1", "--game", self.game)
+                self.assertEqual(p.returncode == 0, ok, p.stderr)
+                self.assertEqual((mod / "mod.json").exists(), ok)
+                if not ok:
+                    self.assertIn("a Windows device name" if name.islower() else "lowercase letters", p.stderr)
+
     def test_manifest_directory_and_total_byte_budgets_fail_before_publication(self):
         mod = self.user / "budget"
         data = mod / "data"

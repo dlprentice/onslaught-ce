@@ -111,7 +111,7 @@ void Note(const char *text)
 void Switch(bool on)
 {
 	photo = on;
-	PortCeDrawHooks(on);
+	PortCeDrawHooks(on || PortCeCmdSuppressFlightHud());
 }
 
 }

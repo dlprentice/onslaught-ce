@@ -35,6 +35,10 @@ static bool file_injected;
 // Production CRT registration/close table, with only its pathname open mapped to normal stdio.
 #define PORT_LOG_PREFIX "fixture: "
 extern "C" FILE *port_fopen(const char *name,const char *mode){return std::fopen(name,mode);}
+// The network layer's content-admission hooks and local-file seam in crtfile.cpp: every read is admitted, local files are ordinary files.
+extern "C" int CE_CompatibilityObserveAuthoredRead(const char *,int,char *,size_t){return 1;}
+extern "C" int CE_CompatibilityValidateOpenedFile(const char *,FILE *,char *,size_t){return 1;}
+extern "C" FILE *PortOpenLocalFile(unsigned,const char *name,const char *mode){return std::fopen(name,mode);}
 #include "crtfile.inc"
 static int ObserveClose(FILE *file) {
  unsigned matches=0;for(FILE *entry:gOpen)if(entry==file)++matches;

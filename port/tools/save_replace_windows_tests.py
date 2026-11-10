@@ -72,9 +72,10 @@ SHARING_VIOLATION, LOCK_VIOLATION = 32, 33
 PRODUCTION = ("port/platform/common/save_replace.h", "port/platform/common/portlog.h", "port/platform/common/platform.h",
               "port/platform/common/save_names.h", "port/platform/common/save_names.cpp", "port/platform/windows/files.cpp",
               "port/platform/windows/save_namespace.cpp", "port/platform/windows/save_replace.cpp",
-              "port/platform/windows/utf8.rc", "port/platform/windows/utf8.manifest", "port/platform/common/mods.h")
+              "port/platform/windows/utf8.rc", "port/platform/windows/utf8.manifest", "port/platform/common/mods.h",
+              "port/game/ce_network_boot.h", "port/network/compatibility.h", "port/platform/common/ce_netcode.h")  # files.cpp network hook declarations
 TEST_SOURCES = ("port/tools/tests/save_replace_windows_driver.cpp", "port/tools/tests/save_replace_windows_hooks.h",
-                "port/tools/tests/mods_none.cpp")
+                "port/tools/tests/mods_none.cpp", "port/tools/tests/network_hook_stubs.cpp")      # the mod layer's and the hooks' stand-ins (files.cpp defines PortOpenLocalFile itself)
 REPLACE_SOURCE = "port/platform/windows/save_replace.cpp"
 TEMP = re.compile(r"(?:.*/)?\.ce-write-\d+-\d+\.tmp")
 GAME_MTIME, USER_MTIME = 1_000_000_000 * 10**9, 1_100_000_000 * 10**9   # long ago, so any rewrite shows
@@ -182,7 +183,7 @@ def kv(text):
 
 
 class Build:
-    FLAGS = ["-std=c++17", "-O1", "-g", "-DNOMINMAX", "-D_WIN32_WINNT=0x0a00", "-fshort-wchar", "-mms-bitfields", "-Wall", "-Wextra",
+    FLAGS = ["-std=c++17", "-O1", "-g", "-DNOMINMAX", "-DNETWORK_HOOK_STUBS_NO_LOCAL_FILE", "-D_WIN32_WINNT=0x0a00", "-fshort-wchar", "-mms-bitfields", "-Wall", "-Wextra",
              "-Wno-unused-parameter", "-Wno-unused-function"]
 
     def __init__(self, out):
@@ -233,7 +234,7 @@ class Build:
         obj.mkdir()
         jobs = [(self.out / "port/platform/common/save_names.cpp", False), (self.out / "port/platform/windows/save_namespace.cpp", False),
                 (self.out / "port/platform/windows/files.cpp", False), (self.out / TEST_SOURCES[0], False),
-                (self.out / TEST_SOURCES[2], False), (self.out / REPLACE_SOURCE, True)]
+                (self.out / TEST_SOURCES[2], False), (self.out / TEST_SOURCES[3], False), (self.out / REPLACE_SOURCE, True)]
         with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
             futures = [pool.submit(self.compile, src, obj / (src.stem + ".o"), hooks) for src, hooks in jobs]
             self.objects = [f.result() for f in futures]

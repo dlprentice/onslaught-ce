@@ -5,6 +5,7 @@
 //   open <path>   prints "OPEN <sha256> <bytes>" for the mod copy PortModOpenRead returns, or "NONE"
 //   has <path>    prints "HAS 1" when PortModHas says an active mod supplies the path, else "HAS 0" (the file is
 //                 re-checked against its startup identity; nothing is read)
+// With the arguments --check-mods [id ...] it is the game's check mode instead: PortModsCheck, its status the exit status.
 // BEA_USER_DIR is the user folder; BEA_GAME_DIR the game folder whose files a mod may replace.
 #include <stdio.h>
 #include <stdlib.h>
@@ -34,8 +35,16 @@ bool PortGameHasFile(const char *rel)
 	return stat(p.c_str(), &st) == 0 && S_ISREG(st.st_mode);
 }
 
-int main()
+void PortPathsNamesOnly() {}	// the two functions above read the environment at each call
+
+int main(int argc, char **argv)
 {
+	if (argc > 1 && !strcmp(argv[1], "--check-mods"))
+	{
+		int status = PortModsCheck(argc - 2, argv + 2);
+		fflush(NULL);
+		_exit(status);
+	}
 	char line[4096];
 	int held = -1;
 	while (fgets(line, sizeof line, stdin))

@@ -192,6 +192,22 @@ void	CrispUpsample(const void *src, int srcPitch, int w, int h, int cell, void *
 					kernelInk = kernelInk || rowInk[row[k]];
 				}
 				const int	sy = o / CRISP_SCALE;
+				// If both the interpolation taps and the colour-search window are clear,
+				// every output alpha is zero. The reference colour search chooses its
+				// first, upper-left sample when all alphas tie, including its clear RGB.
+				if (!kernelInk && !rowInk[sy > 0 ? sy - 1 : 0] && !rowInk[sy] &&
+					!rowInk[sy + 1 < ch ? sy + 1 : ch - 1])
+				{
+					const int clearY = sy > 0 ? sy - 1 : 0;
+					const DWORD *clearRow = (const DWORD *)((const UBYTE *)src + (cy + clearY) * srcPitch) + cx;
+					for (int sx = 0; sx < cw; sx++)
+					{
+						const DWORD clear = clearRow[sx > 0 ? sx - 1 : 0] & 0x00ffffff;
+						for (int dx = 0; dx < CRISP_SCALE; dx++)
+							dest[sx * CRISP_SCALE + dx] = clear;
+					}
+					continue;
+				}
 				for (int x = 0; x < cw * CRISP_SCALE; x++)
 				{
 					float	sum[4] = {0.f, 0.f, 0.f, 0.f};

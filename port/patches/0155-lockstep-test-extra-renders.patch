@@ -1,0 +1,22 @@
+--- a/game.cpp
++++ b/game.cpp
+@@ -78,6 +78,7 @@
+ #include	<stdio.h>
+ #ifndef CE_NETWORK_OFF
+ #include "ce_network_session.h"
++#include "ce_network_lockstep.h"
+ #endif
+ // FUNCTION: 0x0046bd20 init:ZERO_FVECTOR
+ bool		CGame::mFirstInit = true;	WCHAR gWatermarkCoverA[50] = L"Your graphics card is not fully supported, please"; WCHAR gWatermarkCoverB[50] = L"Your graphics card is not fully supported, please";	// retail: 0062ba48, 0062baac (the watermark's covers; on one line to keep Stuart's line numbers)
+@@ -2468,7 +2469,11 @@
+ 			PLATFORM.Flip(TRUE);
+ 		}
+ 	}
++#ifdef CE_NETWORK_OFF
+ 	while ((PLATFORM.GetSysTimeFloat() - mBaseTime) < mFrameLength);
++#else
++	while (((PLATFORM.GetSysTimeFloat() - mBaseTime) < mFrameLength) || CE_LockstepTestExtraRender(num_renders));	// port (lockstep co-op, tests): this peer may draw more frames per tick
++#endif
+ 	
+ /*
+ #if TARGET == XBOX

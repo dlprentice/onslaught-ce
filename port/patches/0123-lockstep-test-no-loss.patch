@@ -1,0 +1,12 @@
+--- a/game.cpp
++++ b/game.cpp
+@@ -2593,6 +2593,9 @@
+ //******************************************************************************************
+ void CGame::DeclareLevelLost(int message, BOOL player_died)	// FUNCTION: 0x0046f430
+ {
++#ifndef CE_NETWORK_OFF
++	if (CE_LockstepTestNoLoss()) return;	// port: test-only (BEA_LOCKSTEP_NO_LOSS), a long lockstep run keeps playing
++#endif
+ 	mLevelLostReason = message ;
+ 
+ 	if (message)

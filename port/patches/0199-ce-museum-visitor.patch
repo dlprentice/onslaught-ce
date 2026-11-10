@@ -1,0 +1,140 @@
+--- a/FEPGoodies.cpp
++++ b/FEPGoodies.cpp
+@@ -16,6 +16,26 @@
+ #include	"mouse.h"
+ #include	"Credits.h"
+ #include	"tweak.h"
++
++#ifdef CE_VERSION
++// patch 0199 (port/game/ce_museum.h): during the Museum Preview's visit the gallery reads a picture or a model as viewed, whatever the
++// career holds, and a video, a level or a cheat as unavailable; it starts no other load and writes no unlock.
++extern "C" bool PortCeMuseumActive(void);
++extern "C" void PortCeMuseumEnd(void);
++extern "C" bool PortCeMuseumCanLoad(bool visual);
++extern "C" bool PortCeMuseumCanChangeUnlocks(void);
++extern "C" int PortCeMuseumReadUnlock(int ordinary, bool visual, int viewed, int unavailable);
++static EGoodieType get_goodie_type_hack(SINT goodie_num);
++
++static EGoodieState ce_museum_visual_state(SINT goodie_num)
++{
++	if (goodie_num < 0 || goodie_num >= MAX_NUM_GOODIES)
++		return GS_UNKNOWN;
++	const EGoodieType type = get_goodie_type_hack(goodie_num);
++	return (EGoodieState)PortCeMuseumReadUnlock(GS_UNKNOWN, type == GT_IMAGE || type == GT_MESH, GS_OLD, GS_UNKNOWN);
++}
++#endif
++
+ // the number of complete rows of goodies
+ #define	NUM_GOODIES_X	123
+ 
+@@ -443,6 +463,12 @@
+ //*********************************************************************************
+ static EGoodieState	get_goodie_state(SINT x, SINT y)
+ {
++#ifdef CE_VERSION
++	// patch 0199: a visitor sees a picture or a model as viewable before the unlock cheats are asked; the helper bounds the grid index
++	// before it reads the exhibit's type.
++	if (PortCeMuseumActive())
++		return ce_museum_visual_state(get_goodie_number(x, y));
++#endif
+ 	int num=get_goodie_number(x, y);
+ 
+ 	if (num==-1)
+@@ -460,6 +486,9 @@
+ 	int num=get_goodie_number(x, y);
+ 
+ 	if (num!=-1)
++#ifdef CE_VERSION
++		if (PortCeMuseumCanChangeUnlocks())		// patch 0199: a visitor changes no unlock
++#endif
+ 		CAREER.SetGoodieState(get_goodie_number(x, y), s);
+ }
+ 
+@@ -1204,12 +1233,21 @@
+ //*********************************************************************************
+ void	CFEPGoodies::Shutdown()	// FUNCTION: 0x0045c9e0
+ {
++#ifdef CE_VERSION
++	PortCeMuseumEnd();		// patch 0199: the gallery is closing
++#endif
+ 	FreeUpGoodyResources();
+ }
+ 
+ //*********************************************************************************
+ void	CFEPGoodies::StartLoadingGoody()	// FUNCTION: 0x0045c9f0
+ {
++#ifdef CE_VERSION
++	// patch 0199: a visitor starts only a picture or a model; the grid's own state, which a visit answers for the cell under the cursor,
++	// has classified it.
++	if (PortCeMuseumActive() && !PortCeMuseumCanLoad(get_goodie_state(mCX, mCY) == GS_OLD))
++		return;
++#endif
+ 	// reset some stuff
+ 	mImageX = 0;
+ 	mImageY = 0;
+@@ -1407,6 +1445,13 @@
+ 		case BUTTON_FRONTEND_MENU_BACK:
+ 			FRONTEND.PlaySound(FES_BACK);
+ 			FreeUpGoodyResources();  // just in case they're still here...
++#ifdef CE_VERSION
++			if (PortCeMuseumActive())		// patch 0199: a visitor saves no default options
++			{
++				FRONTEND.SetPage(FEP_LANGUAGE_TEST, 70);
++			}
++			else
++#endif
+ 			CFEPOptions::SaveDefaultOptions(false);
+ 			break;
+ 		};
+@@ -2451,7 +2496,11 @@
+ 	//** Title Bar
+ 
+ 	if (mGoodyState != GOODY_LOADED)
++#ifdef CE_VERSION
++		FRONTEND.DrawTitleBar(PortCeMuseumActive() ? ToWCHAR("Goodies Gallery") : (FET.GetText(FEX_GOODIES2)), transition, dest);	// patch 0199
++#else
+ 		FRONTEND.DrawTitleBar(FET.GetText(FEX_GOODIES2), transition, dest);
++#endif
+ 
+ 	//***********************************************
+ 	//** Help Text
+--- a/FrontEnd.cpp
++++ b/FrontEnd.cpp
+@@ -31,6 +31,12 @@
+ #include	"mouse.h"
+ 
+ #include	"game.h"
++
++#ifdef CE_VERSION
++extern "C" bool PortCeMuseumActive(void);		// patch 0199: port/game/ce_museum.cpp
++extern "C" void PortCeMuseumEnd(void);
++extern "C" int PortCeMuseumPage(int current, int requested, int ce, int gallery, int ordinary_back);
++#endif
+ #ifdef CE_VERSION
+ bool	PortCeBonusLevelEnd();			// port/game/ce_bonus.cpp (patch 0107)
+ bool	PortCeBonusReturning();
+@@ -510,6 +516,24 @@
+ void	CFrontEnd::SetPage(EFrontEndPage page, SINT time)	// FUNCTION: 0x00466ae0
+ {
+ #ifdef CE_VERSION
++	// patch 0199: admit a visitor redirect only for a real, existing requested page; any other request ends the visit and goes on
++	// through the original path unchanged. The gallery's Back asks for the save page, which saves the career on the way out; a
++	// visitor goes back to the CE page instead, as the CE page opens from the main menu, and nothing is saved.
++	if (PortCeMuseumActive())
++	{
++		const unsigned pageCount = sizeof(mPages) / sizeof(mPages[0]);
++		if (((unsigned)page >= pageCount) || (mPages[page] == 0))
++			PortCeMuseumEnd();
++		else
++		{
++			const EFrontEndPage asked = page;
++			page = (EFrontEndPage)PortCeMuseumPage(mActivePage, page, FEP_LANGUAGE_TEST, FEP_GOODIES, FEP_SAVEGAME);
++			if (page != asked)
++				time = 70;
++		}
++	}
++#endif
++#ifdef CE_VERSION
+ 	PortSessionLog(PORT_SESSION_GAME, false, "frontend page=%d requested=%d transition_ticks=%d", (int)mActivePage, (int)page, time);
+ #endif
+ 	// Shouldn't happen...

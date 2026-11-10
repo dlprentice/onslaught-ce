@@ -404,9 +404,13 @@ static int ask_terminal(const SDL_MessageBoxData *box, int *which)
  * when nobody could be asked: callers then take their safe default (an update is never installed). */
 static int ask_box(const SDL_MessageBoxData *box, int *which, int terfallback)
 {
+	/* SDL's dialogs never wrap their text, so it is wrapped here, once, for every box (ce_box_wrap); the terminal question keeps the text as written. */
+	char wrapped[2048];
+	SDL_MessageBoxData shown = *box;
+	if (ce_box_wrap(box->message, wrapped, sizeof wrapped, CE_BOX_COLUMNS)) shown.message = wrapped;
 #ifdef _WIN32
 	(void)terfallback;
-	return SDL_ShowMessageBox(box, which);
+	return SDL_ShowMessageBox(&shown, which);
 #else
 	const char *x11 = getenv("DISPLAY"), *wayland = getenv("WAYLAND_DISPLAY");
 	if ((x11 && *x11) || (wayland && *wayland))
@@ -416,7 +420,7 @@ static int ask_box(const SDL_MessageBoxData *box, int *which, int terfallback)
 		if (pid == 0)
 		{
 			int w = -1;
-			_exit(SDL_ShowMessageBox(box, &w) && w >= 0 && w < 64 ? w : 100);
+			_exit(SDL_ShowMessageBox(&shown, &w) && w >= 0 && w < 64 ? w : 100);
 		}
 		int st = 0;
 		if (pid > 0) while (waitpid(pid, &st, 0) < 0 && errno == EINTR) {}
@@ -965,10 +969,7 @@ static int ask_for_install(char *found, size_t n)
 												{SDL_MESSAGEBOX_BUTTON_ESCAPEKEY_DEFAULT, 0, "Quit"}};
 	for (;;)
 	{
-		const SDL_MessageBoxData box = {SDL_MESSAGEBOX_INFORMATION, NULL, "Onslaught CE",
-			"Onslaught CE plays the game files of your own copy of Battle Engine Aquila, and could not find it in your "
-			"Steam libraries.\n\nChoose the folder that contains BEA.exe (the game's Steam or disc install folder). "
-			"Onslaught CE only reads from it.", 2, buttons, NULL};
+		const SDL_MessageBoxData box = {SDL_MESSAGEBOX_INFORMATION, NULL, "Onslaught CE", CE_BOX_GAME_MISSING, 2, buttons, NULL};
 		int which = 0;
 		if (!ask_box(&box, &which, 0)) return -1;
 		if (which != 1) return 0;
@@ -984,9 +985,7 @@ static int ask_for_install(char *found, size_t n)
 		char why[256], text[512];
 		if (!install_problem(sPicked, why, sizeof why)) { snprintf(found, n, "%s", sPicked); return 1; }
 		say("the chosen folder is not a supported Battle Engine Aquila install: %s", why);
-		snprintf(text, sizeof text, "That folder is not a supported Battle Engine Aquila install: %s.\n\n"
-				 "Choose the folder that contains BEA.exe. If it is a copy of the game that should work, please report it "
-				 "as a problem.", why);
+		ce_box_text_bad_folder(text, sizeof text, why);
 		tell_box(SDL_MESSAGEBOX_WARNING, text);
 	}
 }
@@ -1314,15 +1313,7 @@ static int ask_record(void)
 	const SDL_MessageBoxButtonData buttons[] = {{SDL_MESSAGEBOX_BUTTON_RETURNKEY_DEFAULT, 1, "Record"},
 												{SDL_MESSAGEBOX_BUTTON_ESCAPEKEY_DEFAULT, 0, "Not this time"},
 												{0, 2, "Stop recording"}};
-	const SDL_MessageBoxData box = {SDL_MESSAGEBOX_INFORMATION, NULL, "Onslaught CE",
-		"Session recording is on. A recording keeps your keyboard and mouse input and copies some files from your "
-		"CE user folder, which can help reproduce a reported problem.\n\n"
-		"Direct gamepad and flight-stick controls are unavailable while recording; use the keyboard and mouse. "
-		"By default the game runs at 30 frames a second with the original menus, so "
-		"the Onslaught CE menu and cheats are hidden.\n\n"
-		"Record: record this session.\n"
-		"Not this time: play without recording; you will be asked again next time.\n"
-		"Stop recording: play without recording, and turn session recording off.", 3, buttons, NULL};
+	const SDL_MessageBoxData box = {SDL_MESSAGEBOX_INFORMATION, NULL, "Onslaught CE", CE_BOX_RECORD, 3, buttons, NULL};
 	int which = 1;
 	const char *answer = getenv("BEA_RECORD_ANSWER");   /* tests: record, once or stop, without a dialog */
 	if (answer && *answer) which = !strcmp(answer, "stop") ? 2 : !strcmp(answer, "once") ? 0 : 1;
@@ -1579,11 +1570,10 @@ int main(int argc, char **argv)
 #ifdef _WIN32
 		if (!console)
 		{
-			char text[PATHN + 256];
-			snprintf(text, sizeof text, "%s\n\nPlease attach the logs that exist: onslaught-ce.log, onslaught-ce.old.log, "
-				"onslaught-ce.concurrent-1.log and onslaught-ce.concurrent-2.log from this folder:\n%s",
-					 opened ? "The problem report page is open in your browser." : "Your browser could not be opened.", sUser);
-			SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_INFORMATION, "Onslaught CE", text, NULL);
+			char text[PATHN + 256], shown[PATHN + 256];
+			ce_box_text_report(text, sizeof text, opened, sUser);
+			SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_INFORMATION, "Onslaught CE",
+									 ce_box_wrap(text, shown, sizeof shown, CE_BOX_COLUMNS) ? shown : text, NULL);
 		}
 #endif
 		return 0;

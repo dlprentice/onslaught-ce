@@ -1,0 +1,171 @@
+--- a/rtmesh.cpp
++++ b/rtmesh.cpp
+@@ -1,3 +1,4 @@
++#include "../platform/common/model_quality.h" // CE-only frame-stable object detail policy.
+ // rtmesh.cpp: reconstructed from rtmesh.obj (004dc280..004dd5bf); Stuart's release has no copy. The allocations'
+ // __LINE__ values are the retail ones; the #line directives place them, because the retail file's layout is unknown.
+ #include "common.h"
+@@ -253,6 +254,7 @@
+ // store (004dcce9). The LOD test reads mMesh, so the lower LOD is read again after the comparisons (004dcdb3).
+ void CRTMesh::Render(DWORD flags)	// FUNCTION: 0x004dcba0
+ {
++	const bool ce_full_models = CeModelQualityEnabled();
+ 	// move to the head of this frame's list
+ 	if (mNextRendered)
+ 		mNextRendered->mPrevRendered = mPrevRendered;
+@@ -279,18 +281,19 @@
+ 	float	radius = GetBoundingBox()->mRadius;
+ 	float	lod = (dist = (float)sqrt(dist)) / radius * mThing->GetRenderImposterBias() * MESH_LOD_BIAS * zoom;
+ 
+-	BOOL	near_enough = ((!FORCE_OBJECT_IMPOSTERS) && (lod < IMPOSTER_FADE_END));
++	BOOL	near_enough = ce_full_models || (((!FORCE_OBJECT_IMPOSTERS) && (lod < IMPOSTER_FADE_END)));
+ 	if ((!mImposter) | near_enough)	// STAND-IN (layout; review F 2026-10-15): bitwise or; `||` loses 004dcba0
+ 	{
+ 		FVector	offset = ZERO_FVECTOR;
+ 		FMatrix	ori = ID_FMATRIX;
+ 
+ 		SINT	alpha = 255 - (SINT)(((lod - IMPOSTER_FADE_START) * 255.0f) / (IMPOSTER_FADE_END - IMPOSTER_FADE_START));
++		if (ce_full_models) alpha = 255; // Remove only the distance fade.
+ 		if ((alpha > 255) || (!mImposter))
+ 			alpha = 255;
+ 
+ 		CMESH	*mesh = mMesh;
+-		if (mMesh->mNextInChain)
++		if (!ce_full_models && (mMesh->mNextInChain))
+ 		{
+ 			if (lod > MESH_LOD_MED_THRESHOLD)
+ 				mesh = mesh->mNextInChain;
+@@ -305,7 +308,10 @@
+ 			detail = 0;
+ 		else if (detail > 100)
+ 			detail = 100;
++		if (ce_full_models) detail = 100;
++		if (mesh != mMesh) CeModelQualityCount(CE_MODEL_REDUCED_MESH);
+ 		MESH_SURFACE_DETAIL = detail;
++		CeModelQualityCount(CE_MODEL_MESH);
+ 		CMeshRenderer::Render(&offset, &ori, mesh, mThing, this, mUnknown24, false, flags);
+ 		MESH_SURFACE_DETAIL = 100;
+ 
+@@ -314,6 +320,7 @@
+ 		if ((SNOW_LAYER_ENABLE) && (mThing->GetSnowDensity()))
+ 		{
+ 			RENDERINFO.mSnowDensity = mThing->GetSnowDensity();
++			CeModelQualityCount(CE_MODEL_MESH);
+ 			CMeshRenderer::Render(&offset, &ori, mesh, mThing, this, mUnknown24, false, 0x10);
+ 		}
+ 
+@@ -325,6 +332,7 @@
+ //******************************************************************************************
+ void CRTMesh::RenderImposter()	// FUNCTION: 0x004dcea0
+ {
++	if (CeModelQualityEnabled()) return;
+ 	FVector	pos = ENGINE.GetCamera()->GetPos();
+ 	float	zoom = ENGINE.GetCamera()->GetZoom();
+ 	if (MESH_LOD_IGNORE_ZOOM)
+@@ -357,6 +365,7 @@
+ 				SINT	frames = mImposter->mNumFrames;
+ 				frame = ((SINT)(mThing->GetRenderFrame() * frames)) % frames;
+ 			}
++			CeModelQualityCount(CE_MODEL_IMPOSTOR);
+ 			mImposter->Render(mThing, alpha, frame);
+ 		}
+ 	}
+--- a/RTTree.cpp
++++ b/RTTree.cpp
+@@ -1,3 +1,4 @@
++#include "../platform/common/model_quality.h" // CE-only frame-stable object detail policy.
+ // RTTree.cpp: reconstructed from RTTree.obj (004dd5c0..004de09f); Stuart's release has no copy. The tree detail
+ // the options pick (CRTMesh's two statics) lives here too.
+ #include "common.h"
+@@ -104,6 +105,7 @@
+ //******************************************************************************************
+ void CRTTree::RenderImposter()	// FUNCTION: 0x004dd850
+ {
++	if (CeModelQualityEnabled()) return;
+ 	FVector	cam = ENGINE.GetCamera()->GetPos();
+ 	FVector	pos;
+ 	pos = mThing->GetRenderPos();
+@@ -118,6 +120,7 @@
+ 	if ((!close && !falling) || FORCE_OBJECT_IMPOSTERS)
+ 	{
+ 		if ((slope >= mMaxSlope) || (((CTree *)mThing)->mFalling))
++			CeModelQualityCount(CE_MODEL_TREE_IMPOSTOR);
+ 			mImposter->Render(mThing, 255, 0);
+ 		mImposterDrawn = TRUE;
+ 	}
+@@ -142,7 +145,7 @@
+ 	float	beyond = cam.X * cam.X + cam.Y * cam.Y - TREE_MESH_DISTANCE * TREE_MESH_DISTANCE;
+ 	BOOL	falling = (((CTree *)mThing)->mFalling != NULL);
+ 	BOOL	close = (beyond <= 0);
+-	if ((!close && !falling) || FORCE_OBJECT_IMPOSTERS)
++	if (!CeModelQualityEnabled() && ((!close && !falling) || FORCE_OBJECT_IMPOSTERS))
+ 		return;
+ 
+ 	FMatrix	ori;
+@@ -182,6 +185,7 @@
+ 	RENDERINFO.SetAmbient((((SINT)(red * 255.0f)) << 16) | (((SINT)(green * 255.0f)) << 8) | ((SINT)(blue * 255.0f)));
+ 
+ 	ENGINE.SetTreeLighting(TRUE);
++	CeModelQualityCount(CE_MODEL_TREE);
+ 	CMeshRenderer::Render(&pos, &ori, mMesh, NULL, NULL, 0, true, 0);
+ 
+ 	RENDERINFO.SetAmbient(old_ambient);
+--- a/gcgamut.cpp
++++ b/gcgamut.cpp
+@@ -1,3 +1,4 @@
++#include "../platform/common/model_quality.h" // CE-only frame-stable object detail policy.
+ // gcgamut.cpp: C3DGamut, the region of the map the camera can see (reconstructed; the file name is the object's
+ // __FILE__, 0062c968). The map is cut into 64 x 64 cells; each frame MakeIt finds the cells under the view and
+ // ComputePlanes the height span of each cell that the view's four side planes leave open.
+@@ -536,7 +537,7 @@
+ 						if (thing->IsA(THING_TYPE_TREE))
+ 						{
+ 							float	td = TREE_MESH_DISTANCE + 10.f;
+-							if (d2 < td * td)
++							if (CeModelQualityEnabled() || (d2 < td * td))
+ 							{
+ 								while (entry)
+ 								{
+--- a/DXTrees.cpp
++++ b/DXTrees.cpp
+@@ -1,3 +1,4 @@
++#include "../platform/common/model_quality.h" // CE-only frame-stable object detail policy.
+ // DXTrees.cpp: reconstructed from DXTrees.obj (0055a230..0055af8f); Stuart's release has no copy. The landscape's
+ // trees, drawn from two vertex buffers that the shell's device-object list rebuilds.
+ 
+@@ -211,6 +212,9 @@
+ 		return;
+ 	if (!mVBuf)
+ 		Build();
++	// Keep lazy buffers and HideTree ownership current for a later live switch back.
++	if (CeModelQualityEnabled()) return;
++
+ 
+ 	RENDERINFO.SetWorld(ZERO_FVECTOR, ID_FMATRIX);
+ 	LT.D3D_SetTexture(0, CDXImposter::sTexture->GetTexture());
+@@ -263,6 +267,7 @@
+ 	LT.STS(2, D3DTSS_TEXTURETRANSFORMFLAGS, D3DTTFF_DISABLE);
+ 	LT.STS(3, D3DTSS_TEXTURETRANSFORMFLAGS, D3DTTFF_DISABLE);
+ 	RENDERINFO.Apply(true, false);
++	CeModelQualityCount(CE_MODEL_TREE_BATCH);
+ 	mVBuf->DrawIndexed(false, 0, 0);
+ 	RENDERINFO.mBillboard = FALSE;
+ 
+--- a/game.cpp
++++ b/game.cpp
+@@ -18,6 +18,7 @@
+ #include	"world.h"
+ #include	"eventmanager.h"
+ #include	"profile.h"
++#include "../platform/common/model_quality.h"
+ #include	"imposter.h"
+ #include	"DebugLog.h"
+ #include	"atmospherics.h"
+@@ -1801,6 +1802,7 @@
+ }
+ void CGame::Render( SINT num_renders )	// FUNCTION: 0x0046e460
+ {
++	CeModelQualityBeginFrame(); // One snapshot covers mirror and all player views.
+ #ifndef CE_NETWORK_OFF
+ 	CE_SessionBeforeRender();
+ 	if (CE_SessionActive() && mQuit != QT_NONE) return;

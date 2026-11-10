@@ -1,7 +1,7 @@
 # Onslaught CE updater v2
 
 Status: active — released in 0.1.8 (2026-10-27); the v2 feed is published on the latest release
-Last updated: 2026-11-06 (feed example labelled as illustrative, release-tag and test paths, the bwrap prerequisite, the 0.1.7 wording; earlier: 2026-10-29 (private-tree references marked; earlier: 2026-10-28 (dialogs shown by a child process, with a terminal fallback)))
+Last updated: 2026-11-06 (feed example labelled as illustrative, release-tag and test paths, the bwrap prerequisite, the 0.1.7 wording; earlier: 2026-11-03 (the failure notice is quoted as the launcher says it now; earlier: 2026-10-30 (the signer paths are written from the repository root; earlier: 2026-10-29 (private-tree references marked; earlier: 2026-10-28 (dialogs shown by a child process, with a terminal fallback)))))
 Summary: how 0.1.8 brings automatic updates back without the 0.1.0–0.1.6 hazard: a new signed feed that old
 launchers never fetch, a versioned install layout switched by one atomic state-file replacement, and deletion only
 of what the updater itself created and recorded.
@@ -19,7 +19,7 @@ every one of those launchers away from it:
   `releases/latest/download/`. Every released launcher's source (the private working repository's tags `ce-v0.1.0`, `ce-v0.1.2`–`ce-v0.1.6`
   and the public onslaught-ce tags `v0.1.0`–`v0.1.6`, read by `port/updater/tests/updater_v2_tests.py`) has exactly one feed define,
   `latest.json` at that URL, and the sig URL is that URL plus `.sig`; none names the v2 feed. `latest.json` is never
-  published again: `tools/sign_release.py` is retired and `tools/sign_update_v2.py` refuses a folder holding one.
+  published again: `port/tools/sign_release.py` is retired and `port/tools/sign_update_v2.py` refuses a folder holding one.
 - **Domain separation.** The v2 signature is Ed25519 over `onslaught-ce update feed v2\n` followed by the feed's exact
   bytes. A v2 feed and signature uploaded by mistake as `latest.json` would not verify in an old launcher, and an old
   `latest.json` pair does not verify in v2 (tested).
@@ -142,8 +142,8 @@ An unreachable feed is silent (one log line). A replay or harness recording neve
 8. **Retention.** Entries other than `active` and `previous` are removed (below). The base is never removed.
    `--rollback` swaps `active` and `previous` in one state replacement and removes nothing.
 
-Every failure before step 6 leaves the active version as it was; the player sees "Nothing was changed: this version
-starts now", and the log says which step failed.
+Every failure before step 6 leaves the active version as it was; the player sees a warning ("Nothing was changed, and this
+version is starting now. You will be offered the update again next time."), and the log says which step failed.
 
 ## Deleting only what the updater made
 

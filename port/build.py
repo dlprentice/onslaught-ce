@@ -28,6 +28,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "tools"))
 import deps  # noqa: E402
+import ice_deps  # noqa: E402
+import network_source_id  # noqa: E402
 
 PORT = deps.PORT
 ROOT = PORT.parent                        # this checkout (worktree), whose src/ is ported
@@ -97,7 +99,13 @@ INCLUDE = re.compile(r'^(\s*#\s*include\s*)([<"])([^>"]+)([>"])', re.M)
 
 def tracked_sources():
     """src/'s and linklib/'s tracked files (linklib/ holds the link-only definitions whose owner is still open)."""
-    out = subprocess.run(["git", "-C", str(ROOT), "ls-files", "-z", "src", "linklib"], capture_output=True, check=True).stdout
+    # Match the source-identity helper's explicit-root index authority. A caller's alternate index or
+    # worktree must not select different compiler inputs from those bound into network compatibility.
+    env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+    env.update(GIT_OPTIONAL_LOCKS="0", GIT_NO_LAZY_FETCH="1", GIT_CONFIG_NOSYSTEM="1",
+               GIT_CONFIG_GLOBAL=os.devnull, GIT_LITERAL_PATHSPECS="1")
+    out = subprocess.run(["git", "-C", str(ROOT), "ls-files", "-z", "src", "linklib"],
+                         env=env, capture_output=True, check=True).stdout
     return [ROOT / p for p in out.decode().split("\0") if p]
 
 
@@ -209,6 +217,229 @@ def module_flags(module):
     return flags
 
 
+def network_view(text, off=False):
+    """The text with its CE_NETWORK_OFF conditionals resolved: off=True as a --public build sees it (the network's hooks gone, the
+    original code kept), off=False as a build with the network sees it. Other conditionals are left alone. Tests read patched source
+    through this when they look for the text a hook produces."""
+    out, stack = [], []        # None: an ordinary conditional; [kept]: a CE_NETWORK_OFF one
+    for line in text.split("\n"):
+        s = line.strip()
+        if re.match(r"#\s*ifndef\s+CE_NETWORK_OFF\b", s):
+            stack.append([not off])
+            continue
+        if re.match(r"#\s*ifdef\s+CE_NETWORK_OFF\b", s):
+            stack.append([off])
+            continue
+        if re.match(r"#\s*if", s):
+            stack.append(None)
+        elif re.match(r"#\s*else\b", s) and stack and stack[-1] is not None:
+            stack[-1][0] = not stack[-1][0]
+            continue
+        elif re.match(r"#\s*endif\b", s) and stack:
+            if stack.pop() is not None:
+                continue
+        if all(e is None or e[0] for e in stack):
+            out.append(line)
+    if stack:
+        raise ValueError("unbalanced conditionals")
+    return "\n".join(out)
+
+
+NETWORK_CODE = (".c", ".cpp", ".h", ".hpp", ".inl", ".inc")
+
+
+def resolve_network_off(paths):
+    """The default public build (no network): each of these mirror files that holds a CE_NETWORK_OFF conditional is rewritten with it resolved
+    (network_view, off=True), so the compiler is given main's text itself, line for line. Defining CE_NETWORK_OFF alone would leave the
+    network's guarded lines in the file: the preprocessor skips them but still counts them, which moves every __LINE__ after a hook (the
+    game's new(...) passes one to the allocator) and every line table in the debug information."""
+    for path in paths:
+        if path.suffix.lower() not in NETWORK_CODE or not path.is_file():
+            continue
+        raw = path.read_bytes()
+        if b"CE_NETWORK_OFF" in raw:
+            write_if_changed(path, network_view(raw.decode("latin-1"), off=True).encode("latin-1"))
+
+
+RESOLVED = BUILD / "resolved"
+VIEW = RESOLVED / "port"       # a default public build's copy of the port's code (build_port_view)
+VIEW_SKIPPED = {"tools", "tests", "network", "nettest-kit", "patches", "deps-patches"}
+
+
+def default_flavour():
+    """build.py --public without --with-network: the build that must be main's (nothing of the network in it)."""
+    return PUBLIC and not WITH_NETWORK
+
+
+def build_port_view():
+    """The default public build compiles a copy of the port's code with its CE_NETWORK_OFF conditionals resolved, under RESOLVED/port: every
+    file holds main's text line for line, which the preprocessor alone cannot give (it skips the network's lines but still counts them: every
+    __LINE__ after a hook and every line table in the debug information moves, and so does the linker's hash of the image that the stripped
+    program still carries). Files that hold no conditional are copied as they are. RESOLVED is mapped to "." like the checkout, and last in
+    the list, because the compiler's debug-information map takes the last entry that matches (the checkout's own entry would rename the view's
+    include directories in the line tables), so __FILE__ and the debug names read as the original files'. The network's own directory and the tools are not copied: a
+    default build that reached for one would not find it."""
+    keep = set()
+    for path in sorted(PORT.rglob("*")):
+        if not path.is_file() or path.suffix.lower() not in NETWORK_CODE:
+            continue
+        rel = path.relative_to(PORT)
+        if set(rel.parts[:-1]) & VIEW_SKIPPED:
+            continue
+        raw = path.read_bytes()
+        if b"CE_NETWORK_OFF" in raw:
+            raw = network_view(raw.decode("latin-1"), off=True).encode("latin-1")
+        write_if_changed(VIEW / rel, raw)
+        keep.add(VIEW / rel)
+    for stale in sorted(VIEW.rglob("*"), reverse=True):
+        if stale.is_file() and stale not in keep:
+            stale.unlink()
+
+
+def cc_path(path):
+    """A port file or include directory as the compiler is given it: in a default public build the copy under VIEW."""
+    path = Path(path)
+    if default_flavour() and path.is_relative_to(PORT) and not (set(path.relative_to(PORT).parts) & VIEW_SKIPPED):
+        return VIEW / path.relative_to(PORT)
+    return path
+
+
+def mirror_text(name, root=ROOT):
+    """root's src/NAME as the mirror holds it before any patch: include names and their case normalised as build_mirror does. The
+    patches' context lines are written against that text ("common.h", not the original's "Common.h"), so a test that applies them to a
+    copy of src/ starts from this and not from the raw file."""
+    SYSTEM_NAMES.update(system_header_names())
+    rows = [l.split(maxsplit=1) for l in (ROOT / "config/game-data.sha256").read_text().splitlines() if l.strip()]
+    targets = ([MIRROR_ROOT / f.relative_to(ROOT) for f in tracked_sources()] + [MIRROR / r for _, r in rows] +
+               [MIRROR / "data/NVShaderFragments.inc"])
+    raw = (Path(root) / "src" / name).read_bytes().decode("latin-1")
+    return normalise(raw, MIRROR_ROOT / "src", CaseIndex(targets), [MIRROR, MIRROR / "MissionScript"]).encode("latin-1")
+
+
+def patched_text(names, skip=(), network=None):
+    """{name: text} of src/NAME in the mirror's form with every patch's section for it applied in the build's order at fuzz 0 (skip:
+    patch file names left out). network None leaves the CE_NETWORK_OFF conditionals in; False resolves them as a --public build sees the
+    text, True as a build with the network sees it (network_view). Raises RuntimeError naming the patch that does not apply."""
+    import tempfile
+    names = list(names)
+    scratch = ROOT / "local-data"
+    scratch.mkdir(exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="ce-patched-", dir=scratch) as tmp:
+        for name in names:
+            (Path(tmp) / name).write_bytes(mirror_text(name))
+        for patch in sorted((PORT / "patches").glob("*.patch")):
+            if patch.name in skip:
+                continue
+            text = patch.read_text(encoding="latin-1")
+            sections = [part for part in re.split(r"(?=^--- a/)", text, flags=re.M)
+                        if any(part.startswith(f"--- a/{name}\n") for name in names)]
+            if not sections:
+                continue
+            done = subprocess.run(["patch", "--batch", "--fuzz=0", "-p1", "-d", tmp], input="".join(sections).encode("latin-1"),
+                                  capture_output=True)
+            out = (done.stdout + done.stderr).decode("latin-1")
+            if done.returncode or "fuzz" in out.lower():
+                raise RuntimeError(f"{patch.name} does not apply to {', '.join(names)}:\n{out}")
+        texts = {name: (Path(tmp) / name).read_bytes().decode("latin-1") for name in names}
+    return texts if network is None else {name: network_view(text, off=not network) for name, text in texts.items()}
+
+
+def network_module(source):
+    """The files that exist only for the network (their callers' hooks are guarded by CE_NETWORK_OFF)."""
+    path = Path(source)
+    return (path.parent == PORT / "network" or path.name in ("monocypher.c", "ce_netlobby.cpp", "ce_netcode.cpp",
+                                                           "ce_netpages.cpp", "typeinfo_bridge.cpp", "private_ui_input.cpp")
+            or (path.parent == PORT / "game" and path.name.startswith("ce_network_")))
+
+
+ICE_BINARY_TAG = "CE-NET-FEATURE:ICE-LIBJUICE:1"
+NATIVE_SIGNALING_TAG = "CE-NATIVE-SIGNALING-V1"
+NATIVE_SIGNALING_SOURCES = frozenset(("signaling_provider.cpp", "signaling_https.cpp"))
+TEXT_CHAT_SOURCES = ("text_chat.cpp", "text_chat_owner.cpp", "media_profile.cpp")
+
+
+def ice_marker_source():
+    """A loadable feature tag retained by the compiler and an explicit linker root, including under LTO/strip."""
+    source = BUILD / "ice-feature.c"
+    write_if_changed(source, ('__attribute__((used)) const char ce_network_ice_feature_marker[] = "' +
+                             ICE_BINARY_TAG + '";\n').encode("ascii"))
+    return source
+
+
+def native_signaling_marker_source():
+    """Only the explicit profile gets this retained, loadable binary tag."""
+    source = BUILD / "native-signaling-feature.c"
+    write_if_changed(source, ('__attribute__((used)) const char ce_network_native_signaling_feature_marker[] = "' +
+                             NATIVE_SIGNALING_TAG + '";\n').encode("ascii"))
+    return source
+
+
+def native_signaling_backend(target):
+    return {"linux": "libcurl-gnutls", "windows": "winhttp"}[target]
+
+
+def native_signaling_dependency(target):
+    """Use only the existing pinned SDK/import library; never a host curl fallback."""
+    if target == "linux":
+        if deps.SYSROOT_NAME != "sniper" or deps.SYSROOT is None:
+            raise SystemExit("native signaling requires the pinned sniper SDK for Linux")
+        base = deps.SYSROOT
+        path = base / "usr/lib/i386-linux-gnu/libcurl-gnutls.so"
+    elif target == "windows":
+        base = deps.DATA / "llvm-mingw"
+        path = base / "i686-w64-mingw32/lib/libwinhttp.a"
+    else:
+        raise ValueError("unsupported native signaling target")
+    if not path.is_file() or not path.resolve().is_relative_to(base.resolve()):
+        raise SystemExit("native signaling pinned HTTPS dependency is unavailable")
+    return path
+
+
+def write_ice_link_receipt(target):
+    """Record the successful optional game/launcher link without private paths or repository identifiers."""
+    if not (PUBLIC and WITH_NETWORK and WITH_ICE):
+        raise ValueError("an ICE link receipt requires the public network ICE profile")
+    library = ice_deps.require(target)
+    row, install = ice_deps.pin(), ice_deps.prefix(target)
+
+    def digest(path):
+        with Path(path).open("rb") as stream:
+            return hashlib.file_digest(stream, "sha256").hexdigest()
+
+    def artifact(name):
+        path = BUILD / target / name
+        return dict(name=name, size=path.stat().st_size, sha256=digest(path))
+
+    game = "bea.exe" if target == "windows" else "bea"
+    launcher = "onslaught-ce.exe" if target == "windows" else "onslaught-ce-launch"
+    game_bytes = (BUILD / target / game).read_bytes()
+    if ICE_BINARY_TAG.encode("ascii") + b"\0" not in game_bytes:
+        raise SystemExit("optional ICE game is missing its retained feature marker")
+    native_marker = NATIVE_SIGNALING_TAG.encode("ascii") + b"\0" in game_bytes
+    if native_marker != WITH_NATIVE_SIGNALING:
+        raise SystemExit("native signaling game marker does not match the requested profile")
+    del game_bytes
+    dependency = json.loads(deps.read_cache_file(install / ".bea-ice-build.json"))
+    receipt = dict(schema=2, target=target, profile="public-network-ice", source_id=NETWORK_SOURCE_ID,
+                   source_patches=dependency["source_patches"], source_tree_sha256=dependency["source_tree_sha256"],
+                   build_recipe_sha256=digest(Path(__file__)), marker=ICE_BINARY_TAG,
+                   system_clang=SYSTEM_CLANG, sysroot_name=deps.SYSROOT_NAME,
+                   test_build=any(flag.startswith(("-DCE_NET_TEST_AUTOMATION", "-DCE_COMMANDER_TEST", "-DCE_PLAYUNIT_TEST"))
+                                  for flag in CE_DEFINES),
+                   libjuice=dict(name=row["name"], version=row["version"], licence=row["licence"],
+                                 source_sha256=row["sha"], source_url=row["url"],
+                                 build_receipt_sha256=digest(install / ".bea-ice-build.json"),
+                                 static_library_sha256=digest(library),
+                                 header_sha256=digest(install / "include/juice/juice.h"),
+                                 licence_text_sha256=digest(install / "licenses/MPL-2.0.txt")),
+                   binaries=dict(game=artifact(game), launcher=artifact(launcher)))
+    if WITH_NATIVE_SIGNALING:
+        receipt["native_signaling"] = dict(enabled=True, marker=NATIVE_SIGNALING_TAG,
+                                           https_backend=native_signaling_backend(target))
+    deps.write_cache_file(BUILD / target / ".bea-ice-link.json",
+                          (json.dumps(receipt, sort_keys=True) + "\n").encode())
+
+
 def port_sources(target):
     """(source, rule, extra flags) for the port's own code and third-party sources linked into the program."""
     out = [(s, "dcxx", module_flags("d3dx").get(s.name, "")) for s in sorted((PORT / "d3dx/src").glob("*.cpp"))]
@@ -218,12 +449,39 @@ def port_sources(target):
     for module in ("dsound", "bink"):
         flags = module_flags(module)
         out += [(s, "pcxx", flags.get(s.name, "")) for s in sorted((PORT / module).glob("*.cpp"))]
+    # Transport initialization remains explicit. Its buffers use the host allocator, not the game's private heap.
+    mc = deps.SRC / "monocypher-4.0.2/src"
+    if not (mc / "monocypher.c").is_file():
+        deps.unpack(deps.lock()["monocypher"], deps.SRC)
+    # Native OS ABI bridges override only their own layout flags; shared network structures keep pcxx's ABI.
+    network_flags = module_flags("network")
+    ice_include = f" -I{ice_deps.prefix(target) / 'include'}" if WITH_ICE else ""
+    out += [(s, "pcxx", f"-I{mc}" + ice_include + network_identity_flag(s) + " " + network_flags.get(s.name, ""))
+            for s in sorted((PORT / "network").glob("*.cpp"))
+            if WITH_NATIVE_SIGNALING or s.name not in NATIVE_SIGNALING_SOURCES]
+    if WITH_TEXT_CHAT:
+        out += [(PORT / "network/optional" / name, "pcxx", f"-I{mc} -I{PORT / 'network'}" + ice_include)
+                for name in TEXT_CHAT_SOURCES]
+    out += [(mc / "monocypher.c", "pcc", "")]
     for d in ("common", target):
-        out += [(s, "pcxx", "") for s in sorted((PORT / "platform" / d).glob("*.cpp"))
+        out += [(s, "pcxx", network_identity_flag(s).strip()) for s in sorted((PORT / "platform" / d).glob("*.cpp"))
                 if not (d == "common" and s.name in replaced)]
-    # Port code that reads game objects through the game's own headers: built as a game file (flags, port.h, renames).
-    out += [(s, "qcxx", "") for s in sorted((PORT / "game").glob("*.cpp"))]
+    # Game-object hooks keep the game's flags and allocator renames. HOST_BUFFER_GAME_MODULES (below) are the standalone
+    # units beside them that own host STL buffers and native handles: they are compiled as port code and never see those renames.
+    # The chat overlay is a game-object hook that also handles SDL events; the Windows toolchain has no SDL of its own.
+    game_extra = {"ce_network_chat_ui.cpp": f"-I{cc_path(deps.PREFIX_WIN / 'include')}"} if target == "windows" else {}
+    # The museum's room writer takes two class identifiers from the game's oids.h, a header that holds only an enumeration.
+    # -iquote lets the mirror answer quoted includes and nothing else: as -I it would also stand before the system directories
+    # for every <angle> include of the standard library.
+    host_extra = {"ce_museum_visit_generate.cpp": f"-iquote{MIRROR}"}
+    out += [(s, 'pcxx' if s.name in HOST_BUFFER_GAME_MODULES else 'qcxx', host_extra.get(s.name, game_extra.get(s.name, "")))
+            for s in sorted((PORT / "game").glob("*.cpp"))]
     if PUBLIC:
+        # The default public build has no network (CE_NETWORK_OFF, defined below): none of its modules or hooks are compiled.
+        # --with-network leaves those modules and hooks in, as a private build has them.
+        if not WITH_NETWORK:
+            out = [o for o in out if not network_module(o[0])]
+            out = [(cc_path(src), rule, extra) for src, rule, extra in out]
         # The public build (--public): no NvTriStrip (its repository states no licence, port/PLAN.md). With retail data
         # the game never strips at run time; the stub refuses the raw-mesh path instead (port/platform/public).
         out = [o for o in out if o[0].name != "nvtristrip_bridge.cpp"]
@@ -236,8 +494,13 @@ def port_sources(target):
         out += [(nvt / "src" / n, "pcxx", "") for n in ("NvTriStrip.cpp", "NvTriStripObjects.cpp")]
     # The C runtime that the VC6-built libvorbis/libogg 1.0 objects call (port/vorbis).
     out += [(PORT / "vorbis/vc6crt.c", "pcc", "")]
-    # SHA-256 for the mod checks (platform/common/mods.cpp), the launcher's own implementation.
+    # SHA-256 for the mod checks (platform/common/mods.cpp) and, in a build with the network, the join code and handoff
+    # (platform/common/ce_netcode.cpp): the launcher's own implementation, compiled once for both.
     out += [(PORT / "updater/sha256.c", "pcc", "")]
+    if WITH_ICE:
+        out += [(ice_marker_source(), "pcc", "")]
+    if WITH_NATIVE_SIGNALING:
+        out += [(native_signaling_marker_source(), "pcc", "")]
     return out
 
 
@@ -267,6 +530,16 @@ def link_flags(target):
         defsyms = " ".join(f"-Wl,-Xlink=-alternatename:_{a}=_{b}" for a, b in aliases)
     else:
         defsyms = " ".join(f"-Wl,--defsym={a}={b}" for a, b in aliases)
+    network = ("-lenet " if target == "linux" else "-lenet -lws2_32 ") if network_compiled_in() else ""
+    if WITH_ICE:
+        # Name the verified static archive explicitly: a host library cannot satisfy a missing optional input.
+        network += shlex.quote(str(ice_deps.require(target))) + " " + ("-lbcrypt " if target == "windows" else "")
+        network += "-Wl,--undefined=" + ("_" if target == "windows" else "") + "ce_network_ice_feature_marker "
+    if WITH_NATIVE_SIGNALING:
+        dependency = native_signaling_dependency(target)
+        # Link the checked file itself: an earlier -L prefix must not replace it.
+        network += shlex.quote(str(dependency)) + " "
+        network += "-Wl,--undefined=" + ("_" if target == "windows" else "") + "ce_network_native_signaling_feature_marker "
     if target == "linux":
         dxvk = deps.DATA / "dxvk-native/usr/lib32"
         lib = deps.PREFIX / "lib"
@@ -274,9 +547,10 @@ def link_flags(target):
         rpath = "'$$ORIGIN/lib'" if PUBLIC else f"{lib}:{dxvk}"
         lld = "".join(f + " " for f in deps.sysroot_link_flags())
         return (f"-m32 {lld}{defsyms} -L{lib} -L{dxvk} -Wl,-rpath,{rpath} -no-pie -ldxvk_d3d9 -lSDL3 {vorbis_lib(target)} -lz "
-                f"{ffmpeg} -lpthread -ldl -lm")
+                f"{ffmpeg} {network}-lpthread -ldl -lm")
     lib = deps.PREFIX_WIN / "lib"
-    return (f"-mwindows -Wl,--no-insert-timestamp {defsyms} -L{lib} -lSDL3 {vorbis_lib(target)} -lz {ffmpeg} {'-lbcrypt' if ffmpeg else ''} -ld3d9 -ldxguid -luuid -lwinmm -lgdi32 -luser32 "
+    return (f"-mwindows -Wl,--no-insert-timestamp {defsyms} -L{lib} -lSDL3 {vorbis_lib(target)} -lz {ffmpeg} {'-lbcrypt ' if ffmpeg or not PUBLIC else ''}"
+            f"-ld3d9 -ldxguid -luuid -lwinmm -lgdi32 -luser32 {network}"
             "-ladvapi32 -lversion -lcomdlg32 -lvfw32 -lole32 -static-libstdc++ -static-libgcc")
 
 
@@ -291,6 +565,19 @@ GAME_CRT = {"rand": "bea_crt_rand", "srand": "bea_crt_srand", "fopen": "bea_crt_
             "fclose": "bea_crt_fclose"}
 GAME_ALLOCATOR = {"_Znwj": "bea_game_new", "_Znaj": "bea_game_new_array", "_ZdlPv": "bea_game_delete",
                   "_ZdaPv": "bea_game_delete_array"}
+# The port/game units compiled as port code (pcxx), not with the game's flags and renames (qcxx). Each owns host STL buffers, exceptions
+# or native handles, so the operator new its containers instantiate must stay the host's: the game rule renames it to the game's private
+# allocator, which only a translation unit that includes MemoryManager.h defines, and the link then finds no definition. The museum's
+# room writer and cache provider are two of them; its engine adapter (ce_museum_visit_engine.cpp) reads game objects and keeps the game
+# rule. Only plain records and callbacks cross between them, and ce_museum_visit.h asserts their layout under both rules.
+HOST_BUFFER_GAME_MODULES = frozenset(("ce_network_boot_authority.cpp", "ce_network_invitation.cpp", "ce_project.cpp",
+                                      "ce_museum_visit.cpp", "ce_museum_visit_generate.cpp"))
+
+
+def network_compiled_in():
+    """The network's modules, hooks and libraries belong to this build: every private build, and the public build made with --with-network. The default
+    public build has none of it (CE_NETWORK_OFF)."""
+    return not PUBLIC or WITH_NETWORK
 
 
 def objcopy(target):
@@ -301,6 +588,12 @@ def objcopy(target):
 
 SYSTEM_CLANG = False
 PUBLIC = False
+WITH_NETWORK = False  # build.py --public --with-network: the public build with the network compiled in (the experimental co-op build)
+WITH_ICE = False  # explicit --public --with-network --with-ice only; never an ordinary dependency or package
+WITH_NATIVE_SIGNALING = False  # explicit HTTPS profile layered on the optional public network ICE build
+WITH_TEXT_CHAT = False  # optional bounded network text transport and UI; never part of the default build
+NETWORK_SOURCE_ID = None
+TEST_AUTOMATION = False  # build.py --test-automation (private network test builds; never with --public)
 CE_DEFINES = []   # the public build's CE_VERSION (game files: the CE layer of patch 0037; unset in private builds)
 # The public build replaces these src/ files (derived from Microsoft's DirectX SDK samples, which cannot ship) with the
 # port's own versions in port/platform/public/, same names and interfaces, compiled as game files; the patches below
@@ -311,6 +604,29 @@ PUBLIC_SKIPPED_PATCHES = {"0034-constant-divisions-DXFont.patch": "DXFont.cpp",
                           "0041-widescreen-screen-shape.patch": "d3dapp.cpp",
                           "0045-widescreen-mode-gate.patch": "d3dapp.cpp",
                           "0046-widescreen-native-default.patch": "d3dapp.cpp"}
+
+
+def configure_network_identity():
+    """Bind the fixed public-source profile; other builds remain usable offline, with networking refused."""
+    global NETWORK_SOURCE_ID
+    NETWORK_SOURCE_ID = None
+    if (PUBLIC or TEST_AUTOMATION) and not SYSTEM_CLANG and deps.SYSROOT_NAME == "sniper":
+        identity = (network_source_id.compute_source_id(ROOT, with_ice=True) if WITH_ICE else
+                    network_source_id.compute_source_id(ROOT))
+        if not re.fullmatch(r"[0-9a-f]{64}", identity):
+            raise ValueError("network source identity must be a SHA-256 hex digest")
+        if TEST_AUTOMATION:
+            # A test-automation build admits only its own kind: never a public or release build of the same source.
+            identity = hashlib.sha256(b"CE_NET_TEST_AUTOMATION\0" + identity.encode()).hexdigest()
+        NETWORK_SOURCE_ID = identity
+
+
+def network_identity_flag(source):
+    # Only the owning translation units consume the ID (the content admission, and the lobby's build check,
+    # platform/common/ce_netlobby.cpp). Updating it need not rebuild unrelated game objects.
+    if source.name in ("compatibility.cpp", "ce_netlobby.cpp") and NETWORK_SOURCE_ID is not None:
+        return f" '-DCE_NETWORK_SIMULATION_ID=\"{NETWORK_SOURCE_ID}\"'"
+    return ""
 
 
 def use_system_clang():
@@ -351,15 +667,15 @@ def allocator_syms(target, out):
 def ninja_file(target, sources, syntax, link, sdl_marker=None):
     t = TARGETS[target]
     out = BUILD / target
-    inc = [PORT / "d3dx/include", PORT / "include"] + t["includes"] + [MIRROR, MIRROR / "MissionScript"]
+    inc = [cc_path(p) for p in [PORT / "d3dx/include", PORT / "include", PORT / "game"] + t["includes"]] + [MIRROR, MIRROR / "MissionScript"]
     incflags = " ".join(f"-I{p}" for p in inc)
-    common = " ".join(COMMON + X87 + NO_MATH_BUILTINS + CE_DEFINES) + f" -include {PORT / 'include/port.h'} {incflags}"
+    common = " ".join(COMMON + X87 + NO_MATH_BUILTINS + CE_DEFINES) + f" -include {cc_path(PORT / 'include/port.h')} {incflags}"
     mode = "-fsyntax-only" if syntax else "-c -o $out"
     out.mkdir(parents=True, exist_ok=True)
     rename = "" if syntax else f" && {objcopy(target)} --redefine-syms={allocator_syms(target, out)} $out"
     sdl = deps.PREFIX if target == "linux" else deps.PREFIX_WIN
     # The port's own code: C++17, struct layout and 2-byte wchar_t as the game (shared structures have one layout).
-    portinc = " ".join(f"-I{p}" for p in [PORT / "d3dx/include", PORT / "include"] + t["includes"] +
+    portinc = " ".join(f"-I{cc_path(p)}" for p in [PORT / "d3dx/include", PORT / "include"] + t["includes"] +
                        [sdl / "include", deps.DATA / "src" / NVTRISTRIP / "include", deps.DATA / "src" / NVTRISTRIP / "src"])
     # (No -malign-double: libstdc++'s <cmath> rejects it, and no structure shared with the game holds a double.)
     layout = "-DNOMINMAX -fms-extensions -fno-autolink -fno-strict-aliasing -fwrapv -mms-bitfields -fshort-wchar -g -O2 -w"
@@ -368,13 +684,15 @@ def ninja_file(target, sources, syntax, link, sdl_marker=None):
              "  depfile = $out.d\n  deps = gcc\n  description = C++ $in",
              # /QIfist (tools/qifist.py): unoptimised IR, float-to-integer conversions rounded as fistp does, then
              # optimised and compiled. Every game C++ file but cframetimer.cpp, which retail built without /QIfist.
-             f"rule qcxx\n  command = $cxx -std=gnu++14 {" ".join(MSCXX)} {common} -MD -MF $out.d -S -emit-llvm "
+             f"rule qcxx\n  command = $cxx -std=gnu++14 {" ".join(MSCXX)} {common} $extra -MD -MF $out.d -S -emit-llvm "
              f"-Xclang -disable-llvm-passes -o $out.ll $in && {sys.executable} {PORT / 'tools/qifist.py'} $out.ll > /dev/null "
              f"&& $cxx {' '.join(COMMON + X87)} -c -o $out $out.ll{rename} && rm -f $out.ll\n"
              "  depfile = $out.d\n  deps = gcc\n  description = C++ /QIfist $in",
              f"rule cc\n  command = $cc -std=gnu99 {common} -MD -MF $out.d {mode} $in && touch $out\n"
              "  depfile = $out.d\n  deps = gcc\n  description = C $in",
-             f"rule dcxx\n  command = $cxx -std=gnu++17 {layout} {' '.join(X87)} $extra {portinc} -MD -MF $out.d -c -o $out $in\n"
+             # (d3dx takes none of CE_DEFINES but the network's: its Windows texture loader holds a guarded hook)
+             f"rule dcxx\n  command = $cxx -std=gnu++17 {layout} {' '.join(X87)} {' '.join(d for d in CE_DEFINES if d.startswith('-DCE_NETWORK_OFF'))} "
+             f"$extra {portinc} -MD -MF $out.d -c -o $out $in\n"
              "  depfile = $out.d\n  deps = gcc\n  description = D3DX $in",
              f"rule pcxx\n  command = $cxx -std=gnu++17 {layout} {' '.join(CE_DEFINES)} $extra {portinc} -MD -MF $out.d -c -o $out $in\n"
              "  depfile = $out.d\n  deps = gcc\n  description = PORT $in",
@@ -401,9 +719,11 @@ def ninja_file(target, sources, syntax, link, sdl_marker=None):
         lines.append(f"build {obj}: {rule} {s}{renamed}")
     if link and not syntax:
         for s, rule, extra in port_sources(target):
-            try:
+            if s.is_relative_to(PORT):
                 where = s.relative_to(PORT)				# platform/common/clock.cpp and platform/windows/clock.cpp
-            except ValueError:
+            elif s.is_relative_to(VIEW):
+                where = s.relative_to(VIEW)				# a default build's copy of the port file (build_port_view): the same object name
+            else:
                 where = Path("third-party") / s.name
             obj = out / "port" / (str(where) + ".o")
             objs.append(obj)
@@ -418,7 +738,11 @@ def ninja_file(target, sources, syntax, link, sdl_marker=None):
             objs.append(ver)
             lines.append(f"build {ver}: res {RESOURCE.with_name('version.rc')}")
         exe = out / ("bea" if target == "linux" else "bea.exe")
-        lines.append(f"build {exe}: link {' '.join(str(o) for o in objs)}" + (f" | {sdl_marker}" if sdl_marker else ""))
+        link_inputs = ([sdl_marker] if sdl_marker else []) + ([ice_deps.require(target)] if WITH_ICE else [])
+        if WITH_NATIVE_SIGNALING:
+            link_inputs.append(native_signaling_dependency(target))
+        lines.append(f"build {exe}: link {' '.join(str(o) for o in objs)}" +
+                     (" | " + " ".join(map(str, link_inputs)) if link_inputs else ""))
     out.mkdir(parents=True, exist_ok=True)
     path = out / ("syntax.ninja" if syntax else "build.ninja")
     write_if_changed(path, ("\n".join(lines) + "\n").encode())
@@ -448,11 +772,44 @@ def main():
                     help="the public build: NvTriStrip compiled out (port/platform/public); use a separate worktree, as its\n"
                          "objects differ")
     ap.add_argument("--ce-version", default="dev", help="the public build's version (Onslaught CE VX.Y; the release tag)")
+    ap.add_argument("--with-network", action="store_true",
+                    help="with --public: the public build with the network compiled in (Host / Join and the lockstep co-op, experimental); the\n"
+                         "default public build has none of it; use a separate worktree, as its objects differ")
+    ap.add_argument("--with-ice", action="store_true",
+                    help="with --public --with-network: compile the optional ICE session bridge; requires ice_deps.py build;\n"
+                         "use a separate worktree; packaging requires package.py --with-ice and exact build receipts;\n"
+                         "Windows ICE requests remain refused")
+    ap.add_argument("--with-native-signaling", action="store_true",
+                    help="with --public --with-network --with-ice: compile the optional native HTTPS signaling client;\n"
+                         "does not select a provider or load credentials; packaging requires separate explicit opt-in")
+    ap.add_argument("--with-text-chat", action="store_true",
+                    help="with networking compiled in: compile the optional bounded in-game text chat")
+    ap.add_argument("--test-automation", action="store_true",
+                    help="private network test build only: authored BEA_PORT_FAKE_KEYS/FAKE_CLICK input counts as idle at\n"
+                         "network admission (CE_NET_TEST_AUTOMATION); refused with --public")
     ap.add_argument("--commander-test", action="store_true",
                     help="adds the commander mode's test machinery (an order tape, a probe, a proof switch and diagnostics) to a build: for tests, never shipped;\n"
                          "use a separate worktree, as its objects differ")
+    ap.add_argument("--play-unit-test", action="store_true",
+                    help="adds the play-as-a-unit option's test machinery (a probe, a proof switch, god mode for the Battle Engine and a control) to a build: for tests, never shipped;\n"
+                         "use a separate worktree, as its objects differ")
+    ap.add_argument("--mods-windows-test", action="store_true",
+                    help="the Windows build with the mod loader switched ON (PORT_MODS_WINDOWS_ON): for the gate's mods cases and the Wine tests, never shipped while mods are\n"
+                         "off on Windows; use a separate worktree, as its objects differ")
     ap.add_argument("files", nargs="*")
     a = ap.parse_args()
+    if a.with_native_signaling and not (a.public and a.with_network and a.with_ice):
+        raise SystemExit("--with-native-signaling requires --public --with-network --with-ice")
+    if a.with_network and not a.public:
+        raise SystemExit("--with-network is for the public build: a private build has the network already")
+    if a.with_ice and not (a.public and a.with_network):
+        raise SystemExit("--with-ice requires --public --with-network")
+    if a.test_automation:
+        if a.public:
+            raise SystemExit("--test-automation is for private network test builds; it cannot be combined with --public")
+        global TEST_AUTOMATION
+        TEST_AUTOMATION = True
+        CE_DEFINES.append("-DCE_NET_TEST_AUTOMATION=1")
     if a.system_clang:
         use_system_clang()
     if a.public:
@@ -467,16 +824,53 @@ def main():
                 raise SystemExit(f"--ce-version {a.ce_version!r}: {error}") from error
         CE_DEFINES.append(f"'-DCE_VERSION=\"{a.ce_version}\"'")
         CE_DEFINES.append("-DBEA_PUBLIC_GRAPHICS_HOST=1")
+        # The network (Host / Join, the engineering session, the lockstep co-op) is compiled out of the default public build:
+        # CE_NETWORK_OFF removes its hooks from the game's own code and port_sources leaves out its modules (network_module).
+        # --with-network is the build that offers them.
+        if a.with_network:
+            global WITH_NETWORK
+            WITH_NETWORK = True
+        else:
+            CE_DEFINES.append("-DCE_NETWORK_OFF=1")
+        if a.with_ice:
+            global WITH_ICE
+            WITH_ICE = True
+            CE_DEFINES.extend(["-DCE_NETWORK_ICE=1", "-DJUICE_STATIC=1"])
+        if a.with_native_signaling:
+            global WITH_NATIVE_SIGNALING
+            WITH_NATIVE_SIGNALING = True
+            CE_DEFINES.append("-DCE_NETWORK_SIGNALING=1")
         # No machine paths in the shipped binary (__FILE__ in assertions and logs, debug information): this checkout,
         # its mirror and build, and the shared dependency directory become relative names.
         maps = [f"-ffile-prefix-map={p}={n}" for p, n in ((MIRROR_ROOT, "mirror"), (BUILD, "build"), (deps.DATA, "deps"),
-                                                           (ROOT, "."))]
+                                                           (ROOT, "."), (RESOLVED, "."), *deps.real_prefix_maps())]
         for t in TARGETS.values():
             t["cxx"] += maps
             t["cc"] += maps
     if a.commander_test:
         CE_DEFINES.append("-DCE_COMMANDER_TEST=1")
+    if a.play_unit_test:
+        CE_DEFINES.append("-DCE_PLAYUNIT_TEST=1")
+    if a.mods_windows_test:
+        CE_DEFINES.append("-DPORT_MODS_WINDOWS_ON=1")
+    if a.with_text_chat:
+        if not network_compiled_in():
+            raise SystemExit("--with-text-chat requires networking compiled in")
+        global WITH_TEXT_CHAT
+        WITH_TEXT_CHAT = True
+        CE_DEFINES.append("-DCE_NETWORK_TEXT=1")
+    if WITH_NATIVE_SIGNALING:
+        for target in (["linux", "windows"] if a.target == "all" else [a.target]):
+            native_signaling_dependency(target)
     sources = build_mirror()
+    if default_flavour():
+        resolve_network_off(sorted(MIRROR_ROOT.rglob("*")))
+        build_port_view()
+    configure_network_identity()
+    if PUBLIC and not a.syntax and not a.files:
+        # which public flavour this build folder holds: the packager reads it to carry (or refuse) ENet's licence and notice
+        write_if_changed(BUILD / "flavour.txt", b"public-network-ice\n" if WITH_ICE else
+                         b"public-network\n" if WITH_NETWORK else b"public\n")
     if a.files:
         want = {f.lower().replace("\\", "/").removeprefix("src/") for f in a.files}
         # linklib/ sources are outside MIRROR (src/): compare those by their path under MIRROR_ROOT only.
@@ -486,13 +880,16 @@ def main():
     for target in (["linux", "windows"] if a.target == "all" else [a.target]):
         check_compiler(target)
         full_public = PUBLIC and not a.syntax and not a.files
-        with deps.sdl_install_lock(target) if full_public else nullcontext():
+        with deps.sdl_install_lock(target) if full_public else nullcontext(), \
+             ice_deps.install_lock(target) if WITH_ICE else nullcontext():
             marker = None
             if full_public:
                 deps.require_sdl_receipt(target)
                 marker = BUILD / target / ".sdl3-input.sha256"
                 deps.write_cache_if_changed(marker, (deps.sdl_receipt_sha256(target) + "\n").encode())
                 deps.write_cache_file(BUILD / target / ".bea-sdl3-link.json", b'{"status":"incomplete"}\n')
+                if WITH_ICE:
+                    deps.write_cache_file(BUILD / target / ".bea-ice-link.json", b'{"status":"incomplete"}\n')
             nf = ninja_file(target, sources, a.syntax, link=not a.files, sdl_marker=marker)
             r = subprocess.run(["ninja", "-f", str(nf), "-j", str(a.j)] + (["-k", "0"] if a.k else []),
                                capture_output=a.k, text=True)
@@ -513,6 +910,8 @@ def main():
                     receipt = deps.sdl_link_receipt(BUILD, target)
                     deps.write_cache_file(BUILD / target / ".bea-sdl3-link.json",
                                           (json.dumps(receipt, sort_keys=True) + "\n").encode())
+                    if WITH_ICE:
+                        write_ice_link_receipt(target)
     return rc
 
 

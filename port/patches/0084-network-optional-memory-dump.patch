@@ -1,0 +1,18 @@
+--- a/game.cpp
++++ b/game.cpp
+@@ -1278,7 +1278,14 @@
+ 	static int lTime = 0;
+ 	char buf[256];
+ 	sprintf(buf,"Post Load %d",lTime++);
+-	MEM_MANAGER.DumpMemory(buf);	// retail (0046dd37)
++#ifdef CE_NETWORK_OFF
++	MEM_MANAGER.DumpMemory(buf);	// retail (0046dd37)
++#else
++	// Optional retail diagnostic writes outside authored data. A requested network process skips
++	// the call before its allocator/dump flag changes; the normal offline call and counter remain.
++	if (!CE_BootRequested())
++		MEM_MANAGER.DumpMemory(buf);	// retail (0046dd37)
++#endif
+ 
+ 	if (GetIntroFMV()!=-1)
+ 	{

@@ -1,0 +1,27 @@
+{
+  "schema": 1,
+  "purpose": "offline authored runtime fixture; not a deployment dependency declaration",
+  "name": "@cloudflare/workerd-linux-64",
+  "version": "1.20261102.1",
+  "source_commit": "c4ae7efa554a0483044c2c540ee64f87093501b9",
+  "source_url": "https://github.com/cloudflare/workerd/tree/c4ae7efa554a0483044c2c540ee64f87093501b9",
+  "license": "Apache-2.0",
+  "license_url": "https://raw.githubusercontent.com/cloudflare/workerd/c4ae7efa554a0483044c2c540ee64f87093501b9/LICENSE",
+  "license_sha256": "0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594",
+  "archive_url": "https://registry.npmjs.org/@cloudflare/workerd-linux-64/-/workerd-linux-64-1.20261102.1.tgz",
+  "archive_sha256": "b8264d97d340aefda16da6a3262346313bd9c70aef72f14cefe864d568b0d3d6",
+  "archive_bytes": 44608187,
+  "binary_path": "package/bin/workerd",
+  "binary_sha256": "4670a10274597e0f53bb2d2257ac16e76f88123a32cbf49876a158e2fd1f0a6c",
+  "binary_bytes": 151538752,
+  "compatibility_date": "2026-11-02",
+  "vectors": {
+    "source_commit": "e8c862cf142197c6a4f3c211d69699b8b2fd338a",
+    "url": "https://raw.githubusercontent.com/google/boringssl/e8c862cf142197c6a4f3c211d69699b8b2fd338a/crypto/cipher/test/aes_256_gcm_tests.txt",
+    "sha256": "5f4c4fbbed80e021a9e5e3372284ff2779d2569c293c69fc86727f8c7ac0f087",
+    "bytes": 64853,
+    "license": "Apache-2.0; retain complete upstream licence and notices",
+    "license_url": "https://raw.githubusercontent.com/google/boringssl/e8c862cf142197c6a4f3c211d69699b8b2fd338a/LICENSE",
+    "license_sha256": "827c8d8fc207c2392794eef9e00fe246f9f61fdcc132556c275be3dd8c3cd97f"
+  }
+}

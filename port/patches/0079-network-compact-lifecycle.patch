@@ -1,0 +1,32 @@
+--- a/explosion.cpp
++++ b/explosion.cpp
+@@ -194,6 +194,9 @@
+ 		WORLD.AddThing(this);
+ 		AddShutdownEvent();
+ 	}
++#ifndef CE_NETWORK_OFF
++	CE_WorldExplosionInitialized(this,init);
++#endif
+ }
+ 
+ //*********************************************************************************
+--- a/thing.cpp
++++ b/thing.cpp
+@@ -102,6 +102,7 @@
+ void CThing::Shutdown()	// FUNCTION: 0x004f3600
+ {
+ #ifndef CE_NETWORK_OFF
++	CE_WorldLifecycleForget(this);
+ 	CE_WorldForget(this);
+ #endif
+ 	WORLD.RemoveThing(this);
+@@ -116,6 +119,9 @@
+ //******************************************************************************************
+ CThing::~CThing()	// FUNCTION: 0x004f3640
+ {
++#ifndef CE_NETWORK_OFF
++	CE_WorldLifecycleDestroyed(this);
++#endif
+ 	if (mCollisionSeekingThing)
+ 	{
+ 		delete mCollisionSeekingThing;

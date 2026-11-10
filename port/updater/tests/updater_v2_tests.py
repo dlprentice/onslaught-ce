@@ -452,7 +452,9 @@ class UpdaterV2(unittest.TestCase):
                 feed, n = self.publish(**kw), len(self.server.requests)
                 r = self.run_launcher("--update-only", feed=feed)
                 self.assertEqual(r.returncode, EXIT["bad_feed"], r.stderr + r.log)
-                self.assertIn("signature did not verify", r.log)
+                self.assertIn("signature could not be verified", r.log)
+                self.assertIn("so no update is offered", r.log)
+                self.assertNotIn("did not verify", r.log + r.stderr)
                 self.assertFalse((self.install / "versions").exists())
                 self.assertEqual(len(self.server.requests[n:]), 2, self.server.requests[n:])  # feed and signature only
                 self.assert_clean()
@@ -475,6 +477,10 @@ class UpdaterV2(unittest.TestCase):
             with self.subTest(kind):
                 r = self.run_launcher("--update-only", feed=self.publish(**kw))
                 self.assertEqual(r.returncode, EXIT["bad_package"], kind + r.stderr + r.log)
+                if kind == "hash":
+                    self.assertIn("is not the one the signed feed lists", r.log)
+                    self.assertIn("discarded, nothing installed", r.log)
+                    self.assertNotIn("did not match", r.log + r.stderr)
                 self.assertEqual(self.version_of(), BASE)
                 self.assertFalse((self.install / "versions").exists())
                 self.assert_clean()

@@ -1,0 +1,16 @@
+--- a/engine.cpp
++++ b/engine.cpp
+@@ -303,6 +303,13 @@
+ 
+ void CEngine::SetViewpoint(int viewpoint,CCamera *camera,CViewport *viewport,CPlayer *player)	// FUNCTION: 0x0044a020
+ {
++#ifdef CE_VERSION
++    extern CCamera* PortCeCmdRenderCamera(CCamera*, CPlayer*);
++    camera = PortCeCmdRenderCamera(camera, player);
++	extern CCamera *PortCePlayUnitRenderCamera(CCamera *, CPlayer *);
++	camera = PortCePlayUnitRenderCamera(camera, player);
++#endif
++
+ 	memcpy(&mViewport[viewpoint],viewport,sizeof(mViewport[viewpoint]));
+ 	mPlayer[viewpoint]=player;
+ 	if (mCamera[viewpoint])

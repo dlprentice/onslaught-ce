@@ -1,0 +1,85 @@
+--- a/MissionScript/IScript.cpp
++++ b/MissionScript/IScript.cpp
+@@ -800,14 +800,30 @@
+ void	IScript::EnableWeapon(CDataType **args, int num_args, CDataType **result)	// FUNCTION: 0x00534fb0
+ {
+ 	if (mThing->IsA(THING_TYPE_UNIT))
++#ifndef CE_NETWORK_OFF
++	{
++#endif
+ 		((CUnit *)mThing)->EnableWeapon(args[0]->GetString());
++#ifndef CE_NETWORK_OFF
++		CThing *partner = (CThing *)CE_LockstepTutorialPartner(mThing);
++		if (partner) ((CUnit *)partner)->EnableWeapon(args[0]->GetString());
++	}
++#endif
+ }
+ 
+ //******************************************************************************************
+ void	IScript::DisableWeapon(CDataType **args, int num_args, CDataType **result)	// FUNCTION: 0x00534fe0
+ {
+ 	if (mThing->IsA(THING_TYPE_UNIT))
++#ifndef CE_NETWORK_OFF
++	{
++#endif
+ 		((CUnit *)mThing)->DisableWeapon(args[0]->GetString());
++#ifndef CE_NETWORK_OFF
++		CThing *partner = (CThing *)CE_LockstepTutorialPartner(mThing);
++		if (partner) ((CUnit *)partner)->DisableWeapon(args[0]->GetString());
++	}
++#endif
+ }
+ 
+ //******************************************************************************************
+@@ -828,14 +844,30 @@
+ void	IScript::EnableFlightMode(CDataType **args, int num_args, CDataType **result)	// FUNCTION: 0x00535070
+ {
+ 	if (mThing->IsA(THING_TYPE_BATTLE_ENGINE))
++#ifndef CE_NETWORK_OFF
++	{
++#endif
+ 		((CBattleEngine *)mThing)->EnableFlightMode();
++#ifndef CE_NETWORK_OFF
++		CThing *partner = (CThing *)CE_LockstepTutorialPartner(mThing);
++		if (partner) ((CBattleEngine *)partner)->EnableFlightMode();
++	}
++#endif
+ }
+ 
+ //******************************************************************************************
+ void	IScript::DisableFlightMode(CDataType **args, int num_args, CDataType **result)	// FUNCTION: 0x00535090
+ {
+ 	if (mThing->IsA(THING_TYPE_BATTLE_ENGINE))
++#ifndef CE_NETWORK_OFF
++	{
++#endif
+ 		((CBattleEngine *)mThing)->DisableFlightMode();
++#ifndef CE_NETWORK_OFF
++		CThing *partner = (CThing *)CE_LockstepTutorialPartner(mThing);
++		if (partner) ((CBattleEngine *)partner)->DisableFlightMode();
++	}
++#endif
+ }
+ 
+ //******************************************************************************************
+@@ -1191,12 +1223,20 @@
+ void	IScript::Activate(CDataType **args, int num_args, CDataType **result)	// FUNCTION: 0x00535d50
+ {
+ 	mThing->Activate();
++#ifndef CE_NETWORK_OFF
++	CThing *partner = (CThing *)CE_LockstepTutorialPartner(mThing);
++	if (partner) partner->Activate();
++#endif
+ }
+ 
+ //******************************************************************************************
+ void	IScript::Deactivate(CDataType **args, int num_args, CDataType **result)	// FUNCTION: 0x00535d60
+ {
+ 	mThing->Deactivate();
++#ifndef CE_NETWORK_OFF
++	CThing *partner = (CThing *)CE_LockstepTutorialPartner(mThing);
++	if (partner) partner->Deactivate();
++#endif
+ }
+ 
+ //******************************************************************************************

@@ -52,6 +52,8 @@ bool PortCePhotoSet(bool on) { if (!photoAvailable) { photoOn = false; return fa
 bool PortCePhotoKey(unsigned, bool) { ++photoKeys; return false; }
 // The commander map's open key (patch 0162); port/tools/ce_commander_tests.py checks the real one's place.
 bool PortCeCmdKey(unsigned, bool) { return false; }
+// The native editor's key hook (patch 0206); no editor session exists here, so it takes no key. ce_editor_tests.py runs the real one.
+bool PortCeEditorKey(unsigned, bool) { return false; }
 
 namespace CeConsoleGame {
 bool ConsoleLine(int i, char *out, int n) {

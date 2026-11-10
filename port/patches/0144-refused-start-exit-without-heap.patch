@@ -1,0 +1,35 @@
+--- a/ltshell.cpp
++++ b/ltshell.cpp
+@@ -537,6 +537,11 @@
+ //-----------------------------------------------------------------------------
+ #ifndef EDITORBUILD
+ //-----------------------------------------------------------------------------
++#ifndef CE_NETWORK_OFF
++// Set once the memory manager exists. A refused network start returns from WinMain between atexit(ExitCode) and
++// MEM_MANAGER.Init, and Windows then runs ExitCode over heaps that were never given memory.
++static bool sMemoryManagerReady;
++#endif
+ void ExitCode()	// FUNCTION: 0x00512070
+ {
+ 	// put back the accessibility shortcut keys WinMain turned off
+@@ -547,6 +552,10 @@
+ 	if (sStartupFilterKeys.cbSize)
+ 		SystemParametersInfo(SPI_SETFILTERKEYS, 0, &sStartupFilterKeys, 0);
+ 
++#ifndef CE_NETWORK_OFF
++	if (!sMemoryManagerReady)
++		return;
++#endif
+ 	TRACE("cleaning up last minute stuff that needs memory manager");
+ 	PATCHMANAGER.FreeData();
+ 	RECONNECT_INTERFACE[0].Shutdown();
+@@ -646,6 +655,9 @@
+ #ifndef VANILLA_MEMORYMANAGER
+ 	MEM_MANAGER.Init(PLATFORM.GetMemorySize());
+ #endif	
++#ifndef CE_NETWORK_OFF
++	sMemoryManagerReady = true;
++#endif
+ 
+ 	LT.mhInstance=hInstance;
+ 

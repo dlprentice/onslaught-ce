@@ -39,6 +39,17 @@ MAX_MANIFEST_NODES = 8192
 MAX_MANIFEST_BYTES = 1 << 30
 BE_TEXTURE = "data/resources/dxtntextures/meshtex%BE_texA.tga(0)A1R5G5B5.aya"
 ID_RE = re.compile(r"[a-z0-9_-]{1,48}")
+# The ids the loader refuses although ID_RE takes them (mods.cpp, DeviceName): Windows device names, which no Windows folder can have.
+DEVICE_ID_RE = re.compile(r"con|prn|aux|nul|com[0-9]|lpt[0-9]")
+
+
+def id_problem(mod_id):
+    """Why the loader would refuse a mod folder of this name (mods.cpp: ValidId, then DeviceName), or None when it takes it."""
+    if not ID_RE.fullmatch(mod_id):
+        return "a mod folder's name is 1 to 48 lowercase letters, digits, '-' or '_'"
+    if DEVICE_ID_RE.fullmatch(mod_id):
+        return "a Windows device name, which no Windows folder can have (a mod must load on every platform)"
+    return None
 
 
 def default_game():
@@ -246,8 +257,9 @@ def _manifest_files(dir_fd, parts, files, budget):
 def write_manifest(moddir, name, version, author="", description="", ce_min=None, ce_max=None, game=None):
     moddir = Path(moddir)
     mod_id = moddir.name
-    if not ID_RE.fullmatch(mod_id):
-        raise SystemExit(f"{mod_id!r}: a mod folder's name is 1 to 48 lowercase letters, digits, '-' or '_'")
+    problem = id_problem(mod_id)
+    if problem:
+        raise SystemExit(f"{mod_id!r}: {problem}")
     guard = _reject_game_output(moddir / "mod.json", game if game is not None else default_game())
     files = []
     root = _open_directory(moddir, guard)

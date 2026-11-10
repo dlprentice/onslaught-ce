@@ -1,0 +1,55 @@
+--- a/rtmesh.cpp
++++ b/rtmesh.cpp
+@@ -10,6 +10,9 @@
+ #include "engine.h"
+ #include "console.h"
+ #include "DebugLog.h"
++#ifndef CE_NETWORK_OFF
++#include "ce_network_lockstep.h"
++#endif
+ #include "ParticleManager.h"
+ #include "frontend.h"
+ #include "renderinfo.h"
+@@ -478,6 +481,17 @@
+ 		FVector	offset;
+ 		part->GetWorldTransforms(frame, frame, 0, mThing, &ori, &offset, 0, TRUE, 0);
+ 		FVector	result = ori * vertex + offset;
++#ifndef CE_NETWORK_OFF
++		{	// port (lockstep co-op, tests): the chosen vertex, the part's transform and the point they give, for the per-tick trace
++			float v[3] = {vertex.X, vertex.Y, vertex.Z}, o[9] = {ori.Row[0].X, ori.Row[0].Y, ori.Row[0].Z, ori.Row[1].X, ori.Row[1].Y, ori.Row[1].Z, ori.Row[2].X, ori.Row[2].Y, ori.Row[2].Z};
++			float f[3] = {offset.X, offset.Y, offset.Z}, r[3] = {result.X, result.Y, result.Z};
++			CE_LockstepTraceSurface(v, part->mPartNumber, o, f, r);
++			FVector	rp = mThing ? mThing->GetRenderPos() : FVector(0, 0, 0);
++			FMatrix	ro = mThing ? mThing->GetRenderOrientation() : ID_FMATRIX;
++			float ip[3] = {rp.X, rp.Y, rp.Z}, io[9] = {ro.Row[0].X, ro.Row[0].Y, ro.Row[0].Z, ro.Row[1].X, ro.Row[1].Y, ro.Row[1].Z, ro.Row[2].X, ro.Row[2].Y, ro.Row[2].Z};
++			CE_LockstepTraceSurfaceInputs(ip, io, mThing ? mThing->GetRenderFrame() : 0.0f, mThing && mThing->GetMotionController() ? 1 : 0);
++		}
++#endif
+ 		return result;
+ 	}
+ 	return FVector(0, 0, 0);
+--- a/explosion.cpp
++++ b/explosion.cpp
+@@ -16,6 +16,9 @@
+ #include	"unit.h"
+ #include	"GeneralVolume.h"
+ #include	"DXMemBuffer.h"
++#ifndef CE_NETWORK_OFF
++#include "ce_network_lockstep.h"
++#endif
+ 
+ // The per-file maths constants from maths.h come first:
+ // FUNCTION: 0x0044b840 init:ZERO_FVECTOR
+@@ -42,6 +45,12 @@
+ 	CE_WorldExplosionBirth(this,init);
+ #endif
+ 	mOriginator.SetReader(i->mOriginator);
++#ifndef CE_NETWORK_OFF
++	{	// port (lockstep co-op, tests): where an explosion starts and who asked, for the per-tick trace
++		float p[3] = {i->mPos.X, i->mPos.Y, i->mPos.Z};
++		CE_LockstepTraceSpawn(p, __builtin_return_address(0));
++	}
++#endif
+ 
+ 	if (MAP.GetWaterLevel() + 1.5f > i->mPos.Z)
+ 	{

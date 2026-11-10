@@ -4,6 +4,9 @@
 #undef printf
 #undef fopen
 
+// The platform mmio.cpp refuses a reader the content admission cannot validate and reports the Win32 error: admitted here, never refused.
+extern "C" int CE_CompatibilityUnsupportedReader(char *, size_t) { return 1; }
+void PortSetLastError(unsigned long) {}
 static unsigned failures, checks, allocations, frees, opens, closes, invalid_calls;
 static HMMIO active[16];
 static unsigned active_count;

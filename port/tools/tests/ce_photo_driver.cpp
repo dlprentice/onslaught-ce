@@ -37,6 +37,11 @@ void PortCeDrawsDropped(int delta) { dropped += delta; if (dropped < 0) dropped 
 #endif
 // The commander map's open key (patch 0162), called from the message procedure included below: no map here.
 bool PortCeCmdKey(unsigned, bool) { return false; }
+// The native editor's key hook (patch 0206); no editor session exists here, so it takes no key. ce_editor_tests.py runs the real one.
+bool PortCeEditorKey(unsigned, bool) { return false; }
+bool PortCeEditorSuppressFlightHud() { return false; }	// the paused editor scene owns the draw scopes; none is open here
+static bool strategic_hud = false;
+bool PortCeCmdSuppressFlightHud() { return strategic_hud; }
 #include "msgproc.inc"
 
 static void check(bool condition, const char *message) {
@@ -131,7 +136,7 @@ static void keys() {
 }
 
 static void scope() {
-    // The scope the patched HUD, battle line and cockpit routines open: it drops draw calls only while photo mode is on, nests,
+    // The scope the patched HUD, battle line and cockpit routines open: it drops draw calls for photo or strategic mode, nests,
     // and always closes.
     PortCePhotoSet(false);
     { CePhotoDrawScope s; check(dropped == 0, "a scope with photo mode off drops nothing"); }
@@ -151,6 +156,36 @@ static void scope() {
     PortCePhotoSet(false);
     { CePhotoDrawScope s; PortCePhotoSet(true); check(dropped == 0, "a scope opened with photo mode off stays shut"); }
     check(dropped == 0, "and closing it changes nothing");
+    PortCePhotoSet(false);
+
+    // A live strategic renderer enables the same device filter, without photo
+    // mode, its screenshot request, or a different gameplay/pause owner.
+    PortCePhotoShotWanted(); // Consume the earlier key-control case's pending request.
+    strategic_hud = true;
+    PortCeDrawHooks(true);
+    for (int i = 0; i < 4; ++i) {
+        PortCePhotoFrame();
+        check(filtered, "strategic draw filter remains enabled each frame");
+        check(!PortCePhotoOn(), "strategic view leaves photo mode off");
+    }
+    check(!PortCePhotoShotWanted(), "strategic view requests no photo screenshot");
+    {
+        CePhotoDrawScope flight;
+        check(dropped == 1, "strategic flight draws are dropped");
+        { CePhotoDrawScope nested; check(dropped == 2, "strategic flight scopes nest"); }
+        check(dropped == 1, "nested strategic scope closes only itself");
+    }
+    check(filtered && dropped == 0, "messages drawn after the flight scope remain visible");
+    strategic_hud = false;
+    PortCeDrawHooks(PortCePhotoOn());
+    { CePhotoDrawScope ordinary; check(dropped == 0 && !filtered, "ordinary flight rendering resumes after strategic exit"); }
+
+    strategic_hud = true;
+    PortCePhotoSet(true);
+    PortCePhotoFrame();
+    strategic_hud = false;
+    PortCeDrawHooks(PortCePhotoOn());
+    check(PortCePhotoOn() && filtered, "strategic exit retains an independently enabled photo owner");
     PortCePhotoSet(false);
 }
 

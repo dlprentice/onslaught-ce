@@ -3,6 +3,9 @@
 // seek, RIFF chunk descend/ascend, and the buffered direct access through MMIOINFO (mmioGetInfo/Advance/SetInfo).
 // Linux only; Windows uses WinMM.
 #include "handles.h"
+#ifndef CE_NETWORK_OFF
+#include "../../network/compatibility.h"
+#endif
 
 #include <stdlib.h>
 #include <string.h>
@@ -41,6 +44,14 @@ bool ReadDword(Mmio *m, DWORD *v)
 
 extern "C" HMMIO WINAPI mmioOpenA(LPSTR name, LPMMIOINFO info, DWORD)
 {
+#ifndef CE_NETWORK_OFF
+	if (!CE_CompatibilityUnsupportedReader(NULL, 0))
+	{
+		if (info) info->wErrorRet = MMIOERR_CANNOTOPEN;
+		PortSetLastError(ERROR_ACCESS_DENIED);
+		return NULL;
+	}
+#endif
 	char path[4096];
 	if (PortResolvePath(name, PORT_PATH_READ, path, sizeof(path)) != 0)
 		return NULL;

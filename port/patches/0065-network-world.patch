@@ -1,0 +1,764 @@
+--- a/BattleEngine.cpp
++++ b/BattleEngine.cpp
+@@ -883,6 +883,9 @@
+ void	CBattleEngine::LockHit(	// FUNCTION: 0x00407140
+ 	CThing		*inUnit)
+ {
++#ifndef CE_NETWORK_OFF
++	if (CE_WorldReplica()) return;
++#endif
+ 	if (inUnit)
+ 	{
+ 		for (CLockInfo *item=mFiredLocks.First(); item; item=mFiredLocks.Next())
+@@ -1116,6 +1119,9 @@
+ 
+ void	CBattleEngine::UpdateMouseLookAngles()	// FUNCTION: 0x00407540
+ {
++#ifndef CE_NETWORK_OFF
++	if (CE_WorldBypassMouse(this)) return;
++#endif
+ 	static int	frame = 0;				// 006601f8
+ 	static int	last_frame = 2;		// 00622f0c
+ 
+@@ -3297,7 +3303,11 @@
+ 
+ 	// only render battle engine when we are not in first person view
+ #ifndef EDITORBUILD2
+-	if (mPlayer->GetIsInFPV() == FALSE || mVisible == TRUE || (mPlayer->GetNumber() - 1 != ENGINE.mCurrentViewpoint))
++#ifdef CE_NETWORK_OFF
++	if (mPlayer->GetIsInFPV() == FALSE || mVisible == TRUE || (mPlayer->GetNumber() - 1 != ENGINE.mCurrentViewpoint))
++#else
++	if (mPlayer->GetIsInFPV() == FALSE || mVisible == TRUE || (mPlayer->GetNumber() - 1 != CE_WorldViewPlayer(ENGINE.mCurrentViewpoint)))
++#endif
+ 		SUPERTYPE::Render(flags) ;
+ #else
+ 	SUPERTYPE::Render(flags) ;
+--- a/BattleEngine.h
++++ b/BattleEngine.h
+@@ -79,6 +79,9 @@
+ 
+ DECLARE_THING_CLASS(CBattleEngine, CUnit)  
+ public:
++#ifndef CE_NETWORK_OFF
++	friend class CENetworkWorldAdapter;
++#endif
+ 	friend class CBattleEngineWalkerPart ;
+ 	friend class CBattleEngineJetPart ;
+ 
+--- a/BattleEngineJetPart.h
++++ b/BattleEngineJetPart.h
+@@ -22,6 +22,9 @@
+ 
+ class CBattleEngineJetPart 
+ {
++#ifndef CE_NETWORK_OFF
++	friend class CENetworkWorldAdapter;
++#endif
+ public:
+ 			CBattleEngineJetPart(CBattleEngine* main_part);
+ 			~CBattleEngineJetPart();
+--- a/BattleEngineWalkerPart.h
++++ b/BattleEngineWalkerPart.h
+@@ -15,6 +15,9 @@
+ 
+ class CBattleEngineWalkerPart 
+ {
++#ifndef CE_NETWORK_OFF
++	friend class CENetworkWorldAdapter;
++#endif
+ 	public:
+ 					CBattleEngineWalkerPart(CBattleEngine* main_part);
+ 					~CBattleEngineWalkerPart();
+--- a/Camera.cpp
++++ b/Camera.cpp
+@@ -853,6 +853,9 @@
+ 
+ const float CCamera::GetAspectRatio()	// FUNCTION: 0x0041b070
+ {
++#ifndef CE_NETWORK_OFF
++	if (CE_WorldActive()) return CE_WorldViewAspect(0.75f);
++#endif
+ 	if (GAME.IsMultiplayer())
+ 		return 0.5f;
+ 	else
+--- a/Compass.cpp
++++ b/Compass.cpp
+@@ -98,7 +98,11 @@
+ 	float	cy = PLATFORM.GetWindowHeight() * 0.5f;
+ 	int		view = 0;
+ 	float	a;
+-	if (GAME.IsMultiplayer())
++#ifdef CE_NETWORK_OFF
++	if (GAME.IsMultiplayer())
++#else
++	if ((GAME.IsMultiplayer() && !CE_WorldActive()))
++#endif
+ 	{
+ 		if (be->GetPlayer()->GetNumber() == 1)
+ 			cy *= 0.5f;
+@@ -158,7 +162,11 @@
+ 					a += PI_M2;
+ 				while (a > PI_M2)
+ 					a -= PI_M2;
+-				float	radius = GAME.IsMultiplayer() ? 95.0f : 111.5f;
++#ifdef CE_NETWORK_OFF
++				float	radius = GAME.IsMultiplayer() ? 95.0f : 111.5f;
++#else
++				float	radius = (GAME.IsMultiplayer() && !CE_WorldActive()) ? 95.0f : 111.5f;
++#endif
+ 				CDXSpriteRenderer::DrawSprite((float)sin(a) * radius + cx, cy - ((float)cos(a) * radius) * LT.mScreenShapeScale, 0.001f,
+ 											  mThreatFlash, SA_CENTRE, SPT_NONE, 1.0f, a, 0xff000000 - SINT((m->mTime / 20.0f) * -255.0f) * 0x10101,
+ 											  1.0f, 1.0f, 0, 1.0f, 0, 1.0f);
+@@ -175,7 +183,11 @@
+ 			a += PI_M2;
+ 		while (a > PI_M2)
+ 			a -= PI_M2;
+-		float	radius = GAME.IsMultiplayer() ? 80.0f : 96.0f;
++#ifdef CE_NETWORK_OFF
++		float	radius = GAME.IsMultiplayer() ? 80.0f : 96.0f;
++#else
++		float	radius = (GAME.IsMultiplayer() && !CE_WorldActive()) ? 80.0f : 96.0f;
++#endif
+ 		float	t = EVENT_MANAGER.GetTime() - d->mStartTime;
+ 		if (t < 0)
+ 			continue;
+@@ -188,7 +200,11 @@
+ 	}
+ 	FASTVB.Render();
+ 
+-	float	radius = GAME.IsMultiplayer() ? 100.0f : 110.0f;
++#ifdef CE_NETWORK_OFF
++	float	radius = GAME.IsMultiplayer() ? 100.0f : 110.0f;
++#else
++	float	radius = (GAME.IsMultiplayer() && !CE_WorldActive()) ? 100.0f : 110.0f;
++#endif
+ 	float	life = be->GetLife();
+ 	float	initialLife = be->GetInitialLife();
+ 	float	maxEnergy = be->GetMaxEnergy();
+@@ -236,7 +252,11 @@
+ 		FVector	tp = t->GetRenderPos();
+ 		FVector	d = tp - be->GetRenderPos();
+ 		a = be->GetInterpolatedEulerOrientation().mYaw - d.Azimuth();
+-		float	r = GAME.IsMultiplayer() ? 82.0f : 98.0f;
++#ifdef CE_NETWORK_OFF
++		float	r = GAME.IsMultiplayer() ? 82.0f : 98.0f;
++#else
++		float	r = (GAME.IsMultiplayer() && !CE_WorldActive()) ? 82.0f : 98.0f;
++#endif
+ 		while (a < 0)
+ 			a += PI_M2;
+ 		while (a > PI_M2)
+--- a/Controller.cpp
++++ b/Controller.cpp
+@@ -739,6 +739,9 @@
+ void	CController::SendButtonAction(int button, float ana_val)	// FUNCTION: 0x0042e4d0
+ {
+ 	SetButton(button) ;
++#ifndef CE_NETWORK_OFF
++	if (CE_WorldCaptureAction(this,button,ana_val)) return;
++#endif
+ 
+ 	if (mToControlStack.First() == NULL)
+ 	{
+--- a/DXCompass.cpp
++++ b/DXCompass.cpp
+@@ -352,7 +352,11 @@
+ 	LT.SRS(D3DRS_ALPHATESTENABLE, FALSE);
+ 
+ 	int		which;
+-	if (GAME.IsMultiplayer())
++#ifdef CE_NETWORK_OFF
++	if (GAME.IsMultiplayer())
++#else
++	if ((GAME.IsMultiplayer() && !CE_WorldActive()))
++#endif
+ 		which = 0;
+ 	else
+ 		which = (mUnknown3c10 + 1) % 2;
+@@ -396,7 +400,11 @@
+ 
+ 	CCompass::Render(be);
+ 
+-	if (GAME.IsMultiplayer())
++#ifdef CE_NETWORK_OFF
++	if (GAME.IsMultiplayer())
++#else
++	if ((GAME.IsMultiplayer() && !CE_WorldActive()))
++#endif
+ 		mUnknown3c10 = 0;
+ 	else
+ 		mUnknown3c10 = (mUnknown3c10 + 1) % 2;
+--- a/Hud.cpp
++++ b/Hud.cpp
+@@ -1235,7 +1235,11 @@
+ void	CHud::RenderRadar(float size)	// FUNCTION: 0x00484c50
+ {
+ 	SetOverlayRenderStates();
+-	float	cy = (((GAME.IsMultiplayer()) && (mViewpoint == 0)) ? HUD.mViewportHeight + HUD_OFFSET_Y : HUD.mViewportHeight) + HUD.mViewportY - 44.f - HUD_OFFSET_Y;
++#ifdef CE_NETWORK_OFF
++	float	cy = (((GAME.IsMultiplayer()) && (mViewpoint == 0)) ? HUD.mViewportHeight + HUD_OFFSET_Y : HUD.mViewportHeight) + HUD.mViewportY - 44.f - HUD_OFFSET_Y;
++#else
++	float	cy = ((((GAME.IsMultiplayer() && !CE_WorldActive())) && (mViewpoint == 0)) ? HUD.mViewportHeight + HUD_OFFSET_Y : HUD.mViewportHeight) + HUD.mViewportY - 44.f - HUD_OFFSET_Y;
++#endif
+ 
+ 	FVector	centre = mBattleEngine->GetRenderPos();
+ 	float	yaw = -mBattleEngine->GetInterpolatedEulerOrientation().mYaw;
+@@ -1500,7 +1504,11 @@
+ // the HUD's bottom edge plus an offset; the second player's view in a split screen ignores HUD_OFFSET_Y
+ inline float	CHud::GetBottom(float offset)
+ {
+-	if (GAME.IsMultiplayer())
++#ifdef CE_NETWORK_OFF
++	if (GAME.IsMultiplayer())
++#else
++	if ((GAME.IsMultiplayer() && !CE_WorldActive()))
++#endif
+ 	{
+ 		if (mBattleEngine->GetPlayer()->GetNumber() == 1)
+ 			return (HUD.mViewportBottom + offset);
+@@ -1607,7 +1615,11 @@
+ 			PLATFORM.Font(FONT_NORMAL)->DrawTextDynamic((HUD.mViewportX + HUD_OFFSET_X + 165.f), y, 0.008f, 0.6f, 0.6f, 0xffff6040, name, changed, 1, 0);
+ 		}
+ 
+-		if (GAME.IsMultiplayer())
++#ifdef CE_NETWORK_OFF
++		if (GAME.IsMultiplayer())
++#else
++		if ((GAME.IsMultiplayer() && !CE_WorldActive()))
++#endif
+ 		{
+ 			SINT	lives = GAME.GetPlayerLives(mBattleEngine->GetPlayer()->GetNumber());
+ 			if (lives >= 0)
+@@ -1695,7 +1707,11 @@
+ 	if (mBattleEngine->IsEnergyWeapon())
+ 	{
+ 		float	y;
+-		if (GAME.IsMultiplayer())
++#ifdef CE_NETWORK_OFF
++		if (GAME.IsMultiplayer())
++#else
++		if ((GAME.IsMultiplayer() && !CE_WorldActive()))
++#endif
+ 		{
+ 			if (mBattleEngine->GetPlayer()->GetNumber() == 1)
+ 				y = HUD.mViewportBottom + 45.f;
+@@ -1749,7 +1765,11 @@
+ 	else
+ 	{
+ 		float	y;
+-		if (GAME.IsMultiplayer())
++#ifdef CE_NETWORK_OFF
++		if (GAME.IsMultiplayer())
++#else
++		if ((GAME.IsMultiplayer() && !CE_WorldActive()))
++#endif
+ 		{
+ 			if (mBattleEngine->GetPlayer()->GetNumber() == 1)
+ 				y = PLATFORM.GetWindowHeight() * 0.5f - 80.f;
+@@ -2106,7 +2126,11 @@
+ 	mViewportY = float(viewport->Y);
+ 
+ 	float y, y2;
+-	if (GAME.IsMultiplayer())
++#ifdef CE_NETWORK_OFF
++	if (GAME.IsMultiplayer())
++#else
++	if ((GAME.IsMultiplayer() && !CE_WorldActive()))
++#endif
+ 	{
+ 		y = PLATFORM.GetWindowHeight() * 0.5f + 78.f;
+ 		y2 = (PLATFORM.GetWindowHeight() * 0.5f + 78.f - 16.f);
+--- a/MCMech.cpp
++++ b/MCMech.cpp
+@@ -160,6 +160,9 @@
+ // Rebuild the bones: each frame when something asked for a transform, else every few frames.
+ void CMCMech::ProcessMovement(BOOL force, BOOL fixed_step)	// FUNCTION: 0x004988b0
+ {
++#ifndef CE_NETWORK_OFF
++	if (CE_WorldReplica()) return;
++#endif
+ 	mWasUsed = mUsed;
+ 	if ((!mUsed) && (GAME.GetGameState() >= GAME_STATE_PANNING) && (!force) && (mProcessCount >= 5))
+ 		return;
+--- a/Player.cpp
++++ b/Player.cpp
+@@ -328,10 +328,18 @@
+ 		// retail: the career's options, one for the walker on the ground and one otherwise (004d31d3)
+ 		if (mBattleEngine->IsWalkerOnGroundOrObject())
+ 		{
+-			if (CAREER.GetInvertYAxis(mNumber-1))
++#ifdef CE_NETWORK_OFF
++			if (CAREER.GetInvertYAxis(mNumber-1))
++#else
++			if (CE_WorldInvertPitch(mNumber-1,TRUE,CAREER.GetInvertYAxis(mNumber-1)))
++#endif
+ 				val = -val;
+ 		}
+-		else if (CAREER.GetInvertJetYAxis(mNumber-1))
++#ifdef CE_NETWORK_OFF
++		else if (CAREER.GetInvertJetYAxis(mNumber-1))
++#else
++		else if (CE_WorldInvertPitch(mNumber-1,FALSE,CAREER.GetInvertJetYAxis(mNumber-1)))
++#endif
+ 		{
+ 			val = -val;
+ 		}
+--- a/SoundManager.cpp
++++ b/SoundManager.cpp
+@@ -962,7 +962,11 @@
+ 
+ void CSoundManager::UpdateSoundPosition(CSoundEvent *se,BOOL firsttime)	// FUNCTION: 0x004e1360
+ {
+-	CCamera *cam = GAME.GetCamera(0);
++#ifdef CE_NETWORK_OFF
++	CCamera *cam = GAME.GetCamera(0);
++#else
++	CCamera *cam = GAME.GetCamera(CE_WorldViewPlayer(0));
++#endif
+ 	
+ 	FVector campos1=ZERO_FVECTOR;
+ 	FMatrix camori1=ID_FMATRIX;
+@@ -975,7 +979,11 @@
+ 		camori1=cam->GetOrientation();
+ 	}
+ 
+-	if (GAME.IsMultiplayer())
++#ifdef CE_NETWORK_OFF
++	if (GAME.IsMultiplayer())
++#else
++	if (GAME.IsMultiplayer() && !CE_WorldActive())
++#endif
+ 	{
+ 		cam = GAME.GetCamera(1);
+ 
+@@ -999,7 +1007,11 @@
+ 			FVector rcpos=campos1;
+ 			FMatrix rcori=camori1;
+ 
+-			if (GAME.IsMultiplayer())
++#ifdef CE_NETWORK_OFF
++			if (GAME.IsMultiplayer())
++#else
++			if (GAME.IsMultiplayer() && !CE_WorldActive())
++#endif
+ 			{
+ 				// Make relative to nearest camera
+ 				
+@@ -1253,7 +1265,11 @@
+ {
+ 	PROFILE_FN(UpdateSounds);
+ 
+-	CCamera *cam = GAME.GetCamera(0);
++#ifdef CE_NETWORK_OFF
++	CCamera *cam = GAME.GetCamera(0);
++#else
++	CCamera *cam = GAME.GetCamera(CE_WorldViewPlayer(0));
++#endif
+ 
+ 	if (cam)
+ 	{
+--- a/actor.h
++++ b/actor.h
+@@ -12,6 +12,9 @@
+ 
+ DECLARE_THING_CLASS(CActor, CComplexThing)
+ public:
++#ifndef CE_NETWORK_OFF
++	friend class CENetworkWorldAdapter;
++#endif
+ 
+ 							~CActor() ;
+ 	virtual void			Init(CInitThing* init)	;
+--- a/eventmanager.cpp
++++ b/eventmanager.cpp
+@@ -169,6 +169,9 @@
+ 
+ void CEventManager::AddEvent(const int event_num, CMonitor* to_call, const float& time, const int start_or_end, CMonitor* data, CScheduledEvent* re_use_event)	// FUNCTION: 0x0044b370 ?AddEvent@CEventManager@@QAEXHPAVCMonitor@@ABMH0PAVCScheduledEvent@@@Z
+ {
++#ifndef CE_NETWORK_OFF
++	if (CE_WorldReplica()) return;
++#endif
+ //	PROFILE_START(AddEvent) ;
+ 
+ 	if (mValid == FALSE)
+@@ -292,6 +295,9 @@
+ // advance time to the next game code time
+ void CEventManager::AdvanceTime()	// FUNCTION: 0x0044b600
+ {
++#ifndef CE_NETWORK_OFF
++	if (CE_WorldReplica()) return;
++#endif
+ 	mFrameCount++ ;
+ 	mTime = mFrameCount * CLOCK_TICK ;
+ 
+@@ -310,6 +316,9 @@
+ 
+ void CEventManager::Flush()	// FUNCTION: 0x0044b640
+ {
++#ifndef CE_NETWORK_OFF
++	if (CE_WorldReplica()) return;
++#endif
+ 
+ #ifdef GENERATE_DEBUG_REPORT
+ 	// do debug stuff
+--- a/eventmanager.h
++++ b/eventmanager.h
+@@ -42,6 +42,9 @@
+ 
+ class CEventManager
+ {
++#ifndef CE_NETWORK_OFF
++	friend class CENetworkWorldAdapter;
++#endif
+ public:
+ 					CEventManager();
+ 	virtual			~CEventManager();
+--- a/game.cpp
++++ b/game.cpp
+@@ -1673,6 +1673,9 @@
+ }
+ void CGame::Render( SINT num_renders )	// FUNCTION: 0x0046e460
+ {
++#ifndef CE_NETWORK_OFF
++	if (!CE_WorldCanRender()) return;
++#endif
+ 	// retail: with the extra GeForce FX features on, a single-player frame first renders the landscape's reflection
+ 	// into its texture at 256x256, then renders again to the screen (0046e4bc..0046e4f2, 0046e8c5)
+ 	CRenderTargetSwap	mirror;
+@@ -1733,7 +1736,11 @@
+ 		mRenderRecord[mCurrentRR].rendernumber=num_renders;
+ 	#endif
+ 
+-		if (!mFullscreenMultiplayer)
++#ifdef CE_NETWORK_OFF
++		if (!mFullscreenMultiplayer)
++#else
++		if (!mFullscreenMultiplayer && !CE_WorldActive())
++#endif
+ 			ENGINE.SetNumViewpoints(mPlayers);
+ 		else
+ 			ENGINE.SetNumViewpoints(1);
+@@ -1742,7 +1749,11 @@
+ 
+ 		if (mWinLoseScreenAlpha != 255)	// retail: nothing behind an opaque win/lose screen (0046e5c8)
+ 		{
+-		if ((mPlayers==1) || (mFullscreenMultiplayer))
++#ifdef CE_NETWORK_OFF
++		if ((mPlayers==1) || (mFullscreenMultiplayer))
++#else
++		if ((mPlayers==1) || (mFullscreenMultiplayer) || CE_WorldActive())
++#endif
+ 		{
+ 			// Fullscreen singleplayer
+ 			viewport.Width=fullscreen.Width;
+@@ -1755,7 +1766,11 @@
+ 			PollMouseMotion();
+ 			if (mPlayer[0]->GetBattleEngine())
+ 				mPlayer[0]->GetBattleEngine()->UpdateMouseLookAngles();
+-			ENGINE.SetViewpoint(0,GetCamera(0),&viewport,GetPlayer(0));
++#ifdef CE_NETWORK_OFF
++			ENGINE.SetViewpoint(0,GetCamera(0),&viewport,GetPlayer(0));
++#else
++			ENGINE.SetViewpoint(0,GetCamera(CE_WorldViewPlayer(0)),&viewport,GetPlayer(CE_WorldViewPlayer(0)));
++#endif
+ 			ENGINE.Render(0);
+ 		}
+ 		else if (mPlayers==2)
+@@ -1981,6 +1996,9 @@
+ 		{
+ 			if (mController[i])
+ 			{
++#ifndef CE_NETWORK_OFF
++				if (CE_WorldControllerFlush(i)) continue;
++#endif
+ 				// retail: a walker on the ground locks the mouse's pitch axes (0046eb83)
+ 				if (mPlayer[i]->GetBattleEngine())
+ 					gMouseAxisLocked[i] = mPlayer[i]->GetBattleEngine()->IsWalkerOnGroundOrObject();
+@@ -2001,7 +2019,11 @@
+ 	{
+ 		for (int i=0;i<mPlayers;i++)
+ 		{
+-			if (mController[i])
++#ifdef CE_NETWORK_OFF
++			if (mController[i])
++#else
++			if (mController[i] && !CE_WorldControllerFlush(i))
++#endif
+ 				mController[i]->Flush();
+ 		}
+ 	}
+@@ -3861,7 +3883,11 @@
+ 		}
+ 		lLastTime = time;
+ 
+-		mWinLoseScreenAlpha+=step;
++#ifdef CE_NETWORK_OFF
++		mWinLoseScreenAlpha+=step;
++#else
++		if (!CE_WorldReplica()) mWinLoseScreenAlpha+=step;
++#endif
+ 		if (mWinLoseScreenAlpha>max) mWinLoseScreenAlpha=max;
+ 	
+ 		DWORD alpha=mWinLoseScreenAlpha<<24;
+@@ -3875,8 +3901,23 @@
+ 
+ 		RENDERINFO.SetFogEnabled(false);
+ 
++#ifndef CE_NETWORK_OFF
++		if (CE_WorldActive() && (mGameState == GAME_STATE_PLAYER_1_WON || mGameState == GAME_STATE_PLAYER_2_WON || mGameState == GAME_STATE_GAME_DRAWN))
++		{
++			draw_end_level_darkener(alpha);
++			BOOL localWon = mGameState == (CE_WorldLocalPlayer() == 0 ? GAME_STATE_PLAYER_1_WON : GAME_STATE_PLAYER_2_WON);
++			DWORD text = mGameState == GAME_STATE_GAME_DRAWN ? JCL_DRAW : localWon ? FETX_VICTORY : FETX_DEFEAT;
++			SIZE extent;
++			PLATFORM.Font(FONT_NORMAL)->GetTextExtent(TEXT_DB.GetString(text), &extent);
++			PLATFORM.Font(FONT_NORMAL)->DrawTextShadowed(320.f - float(extent.cx) * 0.5f, 50, 0xffffffff, TEXT_DB.GetString(text));
++		}
++#endif
+ 		// erghh this is a hack.. what do we want?????
+-		if (mGameState == GAME_STATE_PLAYER_1_WON)
++#ifdef CE_NETWORK_OFF
++		if (mGameState == GAME_STATE_PLAYER_1_WON)
++#else
++		if (!CE_WorldActive() && mGameState == GAME_STATE_PLAYER_1_WON)
++#endif
+ 		{
+ 			draw_end_level_darkener(alpha);
+ 
+@@ -3887,7 +3928,11 @@
+ 			PLATFORM.Font(FONT_NORMAL)->DrawTextShadowed(320.f - float(s.cx) * 0.5f, 245, 0xffffffff, TEXT_DB.GetString(FETX_DEFEAT));
+ 		}
+ 
+-		if (mGameState == GAME_STATE_PLAYER_2_WON)
++#ifdef CE_NETWORK_OFF
++		if (mGameState == GAME_STATE_PLAYER_2_WON)
++#else
++		if (!CE_WorldActive() && mGameState == GAME_STATE_PLAYER_2_WON)
++#endif
+ 		{
+ 			draw_end_level_darkener(alpha);
+ 
+@@ -3898,7 +3943,11 @@
+ 			PLATFORM.Font(FONT_NORMAL)->DrawTextShadowed(320.f - float(s.cx) * 0.5f, 245, 0xffffffff, TEXT_DB.GetString(FETX_VICTORY));
+ 		}
+ 
+-		if (mGameState == GAME_STATE_GAME_DRAWN)
++#ifdef CE_NETWORK_OFF
++		if (mGameState == GAME_STATE_GAME_DRAWN)
++#else
++		if (!CE_WorldActive() && mGameState == GAME_STATE_GAME_DRAWN)
++#endif
+ 		{
+ 			draw_end_level_darkener(alpha);
+ 
+--- a/game.h
++++ b/game.h
+@@ -88,6 +88,9 @@
+ 
+ class	CGame : public IController
+ {
++#ifndef CE_NETWORK_OFF
++	friend class CENetworkWorldAdapter;
++#endif
+ 	//***************************************************************************
+ 	// CGame methods
+ 	//***************************************************************************
+--- a/player.h
++++ b/player.h
+@@ -57,6 +57,9 @@
+ 
+ class CPlayer : public IController
+ {
++#ifndef CE_NETWORK_OFF
++	friend class CENetworkWorldAdapter;
++#endif
+ public:
+ 					CPlayer(int number);
+ 	virtual			~CPlayer();
+--- a/thing.cpp
++++ b/thing.cpp
+@@ -101,6 +101,9 @@
+ //******************************************************************************************
+ void CThing::Shutdown()	// FUNCTION: 0x004f3600
+ {
++#ifndef CE_NETWORK_OFF
++	CE_WorldForget(this);
++#endif
+ 	WORLD.RemoveThing(this);
+ 	if ((mFlags & TF_IS_BIG_THING) != 0)
+ 	{	
+--- a/thing.h
++++ b/thing.h
+@@ -93,6 +93,9 @@
+ //******************************************************************************************
+ DECLARE_MULTI_INTERFACE_CLASS(CThing, IAudibleThing, IRenderableThing)
+ public:
++#ifndef CE_NETWORK_OFF
++	friend class CENetworkWorldAdapter;
++#endif
+ 	static void				ResetThingCounter() { sThingCount = 0; }	// inline (CGame::LoadLevel 0046ce43)
+ 							CThing();
+ 	virtual					~CThing();
+@@ -235,6 +238,9 @@
+ 
+ DECLARE_THING_CLASS(CComplexThing, CThing)
+ public:
++#ifndef CE_NETWORK_OFF
++	friend class CENetworkWorldAdapter;
++#endif
+ 	CComplexThing();
+ 	~CComplexThing();
+ 	virtual void			Init(CInitThing* init)	;
+--- a/unit.h
++++ b/unit.h
+@@ -43,6 +43,9 @@
+ 
+ DECLARE_THING_CLASS(CUnit, CActor)
+ public:
++#ifndef CE_NETWORK_OFF
++	friend class CENetworkWorldAdapter;
++#endif
+ 	CUnit();																// 004f7e90
+ 	virtual			~CUnit();												// 004f84e0
+ 
+--- a/Round.cpp
++++ b/Round.cpp
+@@ -822,6 +822,9 @@
+ // inv * vector and Normalise (README, how a value is read); a plain local, brackets or no reference leave 6 instructions off.
+ void CRound::Unknown4dac90(CScheduledEvent *reuse)	// FUNCTION: 0x004dac90
+ {
++#ifndef CE_NETWORK_OFF
++	if (CE_WorldReplica()) return;
++#endif
+ 	if (mData->mUnknown48 != 1)
+ 		return;
+ 
+--- a/Controller.h
++++ b/Controller.h
+@@ -164,6 +164,9 @@
+ 
+ class CController
+ {
++#ifndef CE_NETWORK_OFF
++	friend class CENetworkWorldAdapter;
++#endif
+ public:
+ 					CController(IController* to_control, int padnumber, int configuration = 1);	// 0042d640
+ 	virtual			~CController();
+--- a/BattleEngineWalkerPart.cpp
++++ b/BattleEngineWalkerPart.cpp
+@@ -364,7 +364,11 @@
+ 	// (0041366f), which a plain value local lets VC6 fold into the displacement (89 bytes off).
+ 	float	mult;
+ 	const SINT &playerIndex = mMainPart->mPlayer->GetNumber() - 1;	// STAND-IN (ids), see above
+-	SINT	type = CONTROL_BINDINGS[1].mInput[playerIndex].mType;
++#ifdef CE_NETWORK_OFF
++	SINT	type = CONTROL_BINDINGS[1].mInput[playerIndex].mType;
++#else
++	SINT	type = CE_WorldWalkerBindingType(playerIndex,CONTROL_BINDINGS[1].mInput[playerIndex].mType);
++#endif
+ 	if ((type == MOUSE_AXIS_MINUS_ANY) || (type == MOUSE_AXIS_PLUS_ANY))
+ 		mult = 1.7f;
+ 	else
+@@ -381,7 +385,11 @@
+ 	// `-=` 95)
+ 	float	mult;
+ 	const SINT &playerIndex = mMainPart->mPlayer->GetNumber() - 1;	// STAND-IN (ids), see Rotate
+-	SINT	type = CONTROL_BINDINGS[1].mInput[playerIndex].mType;
++#ifdef CE_NETWORK_OFF
++	SINT	type = CONTROL_BINDINGS[1].mInput[playerIndex].mType;
++#else
++	SINT	type = CE_WorldWalkerBindingType(playerIndex,CONTROL_BINDINGS[1].mInput[playerIndex].mType);
++#endif
+ 	if ((type == MOUSE_AXIS_MINUS_ANY) || (type == MOUSE_AXIS_PLUS_ANY))
+ 		mult = 1.7f;
+ 	else
+--- a/collisionseekingthing.cpp
++++ b/collisionseekingthing.cpp
+@@ -76,6 +76,9 @@
+ // for both response and callback admission reproduces retail's shared CMP at 004267ce.
+ void CCollisionSeekingThing::Unknown6(CCollisionSeekingThing *other)	// FUNCTION: 0x004264a0
+ {
++#ifndef CE_NETWORK_OFF
++	if (CE_WorldReplica()) return;
++#endif
+ 	if (!(mCollisionFlags & 0x400)) return;
+ 	if (mIgnoreThing == other->mForThing || other->mIgnoreThing == mForThing) return;
+ 	if (other->mForThing->GetFlags() & TF_INVISIBLE) return;
+--- a/Unit.cpp
++++ b/Unit.cpp
+@@ -2151,6 +2151,10 @@
+ //******************************************************************************************
+ int CUnit::GetShouldDoHitEffect(SINT part)	// FUNCTION: 0x004fd5e0
+ {
++#ifndef CE_NETWORK_OFF
++	int replicated;
++	if (CE_WorldUnitHitEffect(this,part,&replicated)) return replicated;
++#endif
+ 	if (mSegments)
+ 	{
+ 		if (EVENT_MANAGER.GetTime() - mSegments->GetLastDamageTime(part) < 1.0f)
+--- a/Cockpit.cpp
++++ b/Cockpit.cpp
+@@ -134,6 +134,9 @@
+ {
+ 	mOldShakePos = mShakePos;
+ 	mOldOrientation = mOrientation;
++#ifndef CE_NETWORK_OFF
++	CE_WorldCockpitInitialized(this);
++#endif
+ 
+ 	if (!mBattleEngine || mBattleEngine->IsDying())
+ 		return;
+--- a/explosion.cpp
++++ b/explosion.cpp
+@@ -42,6 +42,9 @@
+ {
+ 	CExplosionInitThing	*i = (CExplosionInitThing *)init;
+ 
++#ifndef CE_NETWORK_OFF
++	CE_WorldExplosionBirth(this,init);
++#endif
+ 	mOriginator.SetReader(i->mOriginator);
+ 
+ 	if (MAP.GetWaterLevel() + 1.5f > i->mPos.Z)
+@@ -78,6 +81,9 @@
+ 		else
+ 			mCurrentRadius = 0;
+ 
++#ifndef CE_NETWORK_OFF
++		CE_WorldExplosionReady(this,init);
++#endif
+ 		SUPERTYPE::Init(init);
+ 
+ 		CParticleDescriptor	*pd = NULL;
+@@ -194,5 +200,8 @@
+ void	CExplosion::Hit(CThing *other_thing, CCollisionReport *report)	// FUNCTION: 0x0044bf10
+ {
++#ifndef CE_NETWORK_OFF
++	if (CE_WorldReplica()) return;
++#endif
+ 	if (mCurrentRadius <= 0)
+ 		return;
+ 
+@@ -247,5 +256,8 @@
+ void	CExplosion::Unknown66()	// FUNCTION: 0x0044c0f0
+ {
++#ifndef CE_NETWORK_OFF
++	if (CE_WorldReplica()) return;
++#endif
+ 	mCurrentRadius += mRadius / float(mBehaviour->mTime);
+ 	if (mCurrentRadius >= mRadius)
+ 		AddShutdownEvent();
+--- a/WorldPhysicsManager.cpp
++++ b/WorldPhysicsManager.cpp
+@@ -289,6 +289,9 @@
+ #line 259
+ CExplosion *UPhysicsManager::SpawnExplosion(SINT index)	// FUNCTION: 0x0050ff10
+ {
++#ifndef CE_NETWORK_OFF
++	if (!CE_WorldExplosionSpawnAllowed()) return NULL;
++#endif
+ 	if (MEM_MANAGER.GetThingHeap()->GetFreeSize() < 204800)
+ 		return NULL;
+ 	if (index <= -1)

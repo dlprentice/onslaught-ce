@@ -1,0 +1,44 @@
+# The patches that exist for the network (co-op lockstep, Host / Join, the world and session layers): one name per line.
+# Every hunk in them is inside CE_NETWORK_OFF guards, so a --public build (which defines it) patches src/ to exactly what main's
+# patches alone produce; port/tools/network_public_source_tests.py proves it. A new network patch is listed here in the same change.
+0065-network-world.patch
+0067-network-session.patch
+0075-pending-replica-mission-vm.patch
+0076-network-graceful-departure-exit.patch
+0079-network-compact-lifecycle.patch
+0081-network-pulse-round-lifecycle.patch
+0082-compatibility-hooks.patch
+0083-loaded-admission.patch
+0084-network-optional-memory-dump.patch
+0120-lockstep-after-update.patch
+0121-lockstep-message-timing.patch
+0122-lockstep-event-trace.patch
+0123-lockstep-test-no-loss.patch
+0124-lockstep-voice-length.patch
+0125-lockstep-sound-draws.patch
+0126-lockstep-coop-players.patch
+0127-lockstep-landscape-view.patch
+0128-lockstep-collision-trace.patch
+0129-lockstep-particle-draws.patch
+0140-network-lobby-return.patch
+0141-ce-network-return-FEPIntro.patch
+0142-network-lobby-level-quit.patch
+0143-lockstep-tutorial-gates.patch
+0144-refused-start-exit-without-heap.patch
+0145-network-connection-notice.patch
+0146-network-boot-script.patch
+0147-network-update-gates.patch
+0148-network-mouse-axis.patch
+0149-network-hud-view-player.patch
+0150-network-compass-projection.patch
+0151-network-teardown-gate.patch
+0152-lockstep-debris-draws.patch
+0153-lockstep-test-no-particles.patch
+0154-lockstep-spawn-trace.patch
+0155-lockstep-test-extra-renders.patch
+0156-lockstep-zero-allocations.patch
+0157-network-hud-scale-coop.patch
+0184-lockstep-contact-report-init.patch
+0185-network-career-write-fence.patch
+0189-network-campaign-outcomes.patch
+0201-network-text-chat-overlay.patch

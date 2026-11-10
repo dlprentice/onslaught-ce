@@ -1,0 +1,15 @@
+--- a/DXCompass.cpp
++++ b/DXCompass.cpp
+@@ -343,7 +343,11 @@
+ 	m.Row[1].Z *= scale;
+ 	RENDERINFO.SetWorld(pos, m);
+ 
+-	if (GAME.IsMultiplayer())
++#ifdef CE_NETWORK_OFF
++	if (GAME.IsMultiplayer())
++#else
++	if ((GAME.IsMultiplayer() && !CE_WorldActive()))
++#endif
+ 		RENDERINFO.SetProjection(0.5f, 100.0f, PLATFORM.GetWindowWidth() * 0.00093750004f, PLATFORM.GetWindowHeight() * 0.00046666668f);
+ 	else if (CeHudScaleActive())
+ 	{

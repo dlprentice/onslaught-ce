@@ -80,6 +80,9 @@ public:
     HWND GetHWnd() { return m_hWnd; }
     VOID Cleanup3DEnvironment();
     HRESULT Reset3DEnvironment(BOOL skipPicker, bool showProgress);
+    // Cooperative loss is retried by the shell's ordinary message pump, never by a nested pump.
+    HRESULT RecoverLostDevice();
+    bool DeviceRecoveryPending() const;
     D3DAdapterInfo *GetAdapterInfo(int adapter); // implemented by Career.cpp
     D3DDeviceInfo *GetCurrentDevice() { return &m_Adapters[m_dwAdapter].devices[m_Adapters[m_dwAdapter].dwCurrentDevice]; }
     void SetResolution(int width, int height);

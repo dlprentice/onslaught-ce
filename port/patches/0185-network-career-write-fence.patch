@@ -1,0 +1,47 @@
+--- a/PCMemoryCard.cpp
++++ b/PCMemoryCard.cpp
+@@ -230,8 +230,20 @@
+ 	return 1;
+ }
+ 
++#ifndef CE_NETWORK_OFF
++extern "C" int CE_BootRequested(void);
++extern "C" int CE_LockstepRequested(void);
++#endif
+ int CPCMemoryCard::CreateSave(int card,WCHAR *name,int *save,BOOL allowed_overwrite)	// FUNCTION: 0x00514be0
+ {
++#ifndef CE_NETWORK_OFF
++	// A network boot or test co-op request may not create, replace or delete a career.
++	if (CE_BootRequested() || CE_LockstepRequested())
++	{
++		if (save) *save = -1;
++		return 1;
++	}
++#endif
+ #ifdef CE_VERSION
+     if (!PortCeProjectCareerAllowed()) return MCE_FAILURE;
+ #endif
+@@ -331,6 +343,11 @@
+ 
+ int CPCMemoryCard::DeleteSave(int card,int save,WCHAR *name)	// FUNCTION: 0x00514ec0
+ {
++#ifndef CE_NETWORK_OFF
++	// A network boot or test co-op request may not create, replace or delete a career.
++	if (CE_BootRequested() || CE_LockstepRequested())
++		return 1;
++#endif
+ #ifdef CE_VERSION
+     if (!PortCeProjectCareerAllowed()) return MCE_FAILURE;
+ #endif
+@@ -352,6 +369,11 @@
+ 
+ int CPCMemoryCard::WriteSave(int card,int save,WCHAR *name,void *data,int datasize)	// FUNCTION: 0x00514f80
+ {
++#ifndef CE_NETWORK_OFF
++	// A network boot or test co-op request may not create, replace or delete a career.
++	if (CE_BootRequested() || CE_LockstepRequested())
++		return 1;
++#endif
+ #ifdef CE_VERSION
+     if (!PortCeProjectCareerAllowed()) return MCE_FAILURE;
+ #endif

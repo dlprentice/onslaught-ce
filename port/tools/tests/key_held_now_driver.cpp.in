@@ -1,0 +1,123 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Host driver for window.cpp's PortKeyHeldNow, the keyboard as it is held now (the Commander's camera and the paused map's pan read it). feel_tests.py pastes the
+// text of PcScan and PortKeyHeldNow at the two markers below and compiles it against SDL's own scancode header, with the keyboard state, the Present counter and the
+// event pump replaced by stand-ins that can be set and counted. The physical keyboard is not involved: this checks the game's key code to SDL scancode mapping, the
+// answer for a held, a released and an unknown key, the scripted keys' record, and that the state is refreshed once for a Present.
+#include <SDL3/SDL_scancode.h>
+
+#include <stdio.h>
+#include <string.h>
+
+static bool gFakeHeld[SDL_SCANCODE_COUNT];
+static unsigned present, pumps;
+extern "C" unsigned PortPresentCount(void) { return present; }
+static void PortPumpInput() { ++pumps; }
+
+static bool keyboard[SDL_SCANCODE_COUNT];
+static int keyboard_size = SDL_SCANCODE_COUNT;
+static bool keyboard_missing;
+extern "C" const bool *SDL_GetKeyboardState(int *count)
+{
+	if (count) *count = keyboard_size;
+	return keyboard_missing ? nullptr : keyboard;
+}
+
+/* PCSCAN */
+/* PORT_KEY_HELD_NOW */
+
+static int checks, failures;
+#define CHECK(cond, label) do { ++checks; if (!(cond)) { ++failures; printf("FAIL %s (line %d)\n", label, __LINE__); } } while (0)
+
+static void Quiet()
+{
+	memset(keyboard, 0, sizeof(keyboard));
+	memset(gFakeHeld, 0, sizeof(gFakeHeld));
+	keyboard_size = SDL_SCANCODE_COUNT;
+	keyboard_missing = false;
+}
+
+// The game's key code (DirectInput's: the PC scan code, with the extended keys 0x80 higher) of a PC scan code as PcScan gives it (0x100 for extended).
+static unsigned DikOf(unsigned pc) { return pc & 0x100 ? (pc & 0xff) + 0x80 : pc; }
+
+int main()
+{
+	// the keys the Commander's camera and map read, by the code the game uses for them
+	static const struct { unsigned dik; SDL_Scancode sdl; const char *name; } camera[] = {
+		{0x1e, SDL_SCANCODE_A, "A"}, {0x20, SDL_SCANCODE_D, "D"}, {0x11, SDL_SCANCODE_W, "W"}, {0x1f, SDL_SCANCODE_S, "S"},
+		{0x10, SDL_SCANCODE_Q, "Q"}, {0x12, SDL_SCANCODE_E, "E"}, {0x13, SDL_SCANCODE_R, "R"}, {0x21, SDL_SCANCODE_F, "F"},
+		{0x2e, SDL_SCANCODE_C, "C"}, {0x23, SDL_SCANCODE_H, "H"}, {0x2d, SDL_SCANCODE_X, "X"}, {0x2f, SDL_SCANCODE_V, "V"},
+		{0x32, SDL_SCANCODE_M, "M"}, {0x01, SDL_SCANCODE_ESCAPE, "Escape"}, {0x0f, SDL_SCANCODE_TAB, "Tab"},
+		{0x2a, SDL_SCANCODE_LSHIFT, "left Shift"}, {0x36, SDL_SCANCODE_RSHIFT, "right Shift"},
+		{0xc8, SDL_SCANCODE_UP, "Up"}, {0xd0, SDL_SCANCODE_DOWN, "Down"}, {0xcb, SDL_SCANCODE_LEFT, "Left"}, {0xcd, SDL_SCANCODE_RIGHT, "Right"},
+		{0xc9, SDL_SCANCODE_PAGEUP, "Page Up"}, {0xd1, SDL_SCANCODE_PAGEDOWN, "Page Down"},
+	};
+	for (const auto &key : camera)
+	{
+		char label[96];
+		Quiet();
+		snprintf(label, sizeof(label), "%s is up when the state says so", key.name);
+		CHECK(PortKeyHeldNow(key.dik) == 0, label);
+		keyboard[key.sdl] = true;
+		snprintf(label, sizeof(label), "%s is held when the state says so", key.name);
+		CHECK(PortKeyHeldNow(key.dik) == 1, label);
+		for (const auto &other : camera)
+			if (other.dik != key.dik && PortKeyHeldNow(other.dik) != 0)
+			{
+				snprintf(label, sizeof(label), "%s held reads as %s too", key.name, other.name);
+				CHECK(false, label);
+			}
+		keyboard[key.sdl] = false;
+		gFakeHeld[key.sdl] = true;
+		snprintf(label, sizeof(label), "%s is held when a scripted key has it down", key.name);
+		CHECK(PortKeyHeldNow(key.dik) == 1, label);
+	}
+
+	// every SDL key with a PC scan code answers for exactly that code (the lowest SDL scancode of a shared code owns it)
+	int mapped = 0;
+	for (int s = 1; s < SDL_SCANCODE_COUNT; ++s)
+	{
+		const unsigned pc = PcScan((SDL_Scancode)s) & 0x1ff;
+		if (!pc) continue;
+		int owner = 0;
+		for (int t = 1; t < SDL_SCANCODE_COUNT && !owner; ++t)
+			if ((PcScan((SDL_Scancode)t) & 0x1ff) == pc) owner = t;
+		Quiet();
+		keyboard[s] = true;
+		const int answer = PortKeyHeldNow(DikOf(pc));
+		++mapped;
+		CHECK(answer == (owner == s ? 1 : 0), "an SDL key with a PC scan code is read at the game's code for it, and no other");
+	}
+	CHECK(mapped > 90, "the mapping covers the keyboard");
+
+	// a code that no SDL key here has: the platform cannot say
+	Quiet();
+	CHECK(PortKeyHeldNow(0) == -1 && PortKeyHeldNow(0x55) == -1 && PortKeyHeldNow(0xff) == -1, "a code without a key: cannot say");
+	CHECK(PortKeyHeldNow(0x200) == -1 && PortKeyHeldNow(0x400) == -1 && PortKeyHeldNow(0xffffffffu) == -1, "a code beyond the table: cannot say");
+
+	// the state is refreshed once for a Present, however often it is asked
+	Quiet(); present = 100;
+	const unsigned before = pumps;
+	for (int i = 0; i < 6; ++i) PortKeyHeldNow(0x12);
+	CHECK(pumps - before == 1, "six asks in one Present refresh the state once");
+	const unsigned first = pumps;
+	present = 101;
+	PortKeyHeldNow(0x12); PortKeyHeldNow(0xc8); PortKeyHeldNow(0x11);
+	CHECK(pumps - first == 1, "a new Present refreshes the state once");
+	present = 101;
+	PortKeyHeldNow(0x12);
+	CHECK(pumps - first == 1, "and the same Present does not again");
+	present = 102;
+	PortKeyHeldNow(0x12);
+	CHECK(pumps - first == 2, "the next Present does");
+
+	// a state that is missing or shorter than the key's index: cannot say (a scripted key still answers)
+	Quiet(); keyboard_missing = true;
+	CHECK(PortKeyHeldNow(0x12) == -1, "no state: cannot say");
+	gFakeHeld[SDL_SCANCODE_E] = true;
+	CHECK(PortKeyHeldNow(0x12) == 1, "no state, a scripted key down: held");
+	Quiet(); keyboard[SDL_SCANCODE_RIGHT] = true; keyboard_size = SDL_SCANCODE_E;
+	CHECK(PortKeyHeldNow(0xcd) == -1 && PortKeyHeldNow(0x1e) == 0, "a state shorter than the key's index: cannot say; a shorter key's is read");
+
+	printf("key held now checks=%d failures=%d\n", checks, failures);
+	return failures ? 2 : 0;
+}

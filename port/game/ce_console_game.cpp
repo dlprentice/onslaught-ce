@@ -293,11 +293,16 @@ void PortCeDevStatsDraw()
 		*end = keep;
 		line = end + 1;
 	}
-	const float room = (float)PLATFORM.GetWindowWidth() - 48.f;
-	const float scale = (widest > room && room > 0.f) ? room / widest : 1.f;
+	// Its place and size are 640 x 480's, scaled to the window as the CE overlays' are (ce_notice.cpp, ce_palette.cpp); at 640 x 480 the factor is 1.
+	const float width = (float)PLATFORM.GetWindowWidth(), height = (float)PLATFORM.GetWindowHeight();
+	const float fit = (width / 640.f < height / 480.f) ? width / 640.f : height / 480.f;
+	const float layout = fit > 1.f ? fit : 1.f;
+	const float x = 40.f * layout, y = 30.f * layout;
+	const float room = width - 48.f * layout;
+	const float scale = (widest * layout > room && room > 0.f) ? room / widest : layout;
 	WCHAR *w = ToWCHAR(sDevStats);
-	font->DrawTextScaled(41, 31, 0.0f, scale, scale, 0xff000000, w, 0, NULL);
-	font->DrawTextScaled(40, 30, 0.0f, scale, scale, PortCeDevStatsGreen() ? 0xff40ff40 : 0xffffff80, w, 0, NULL);
+	font->DrawTextScaled(x + layout, y + layout, 0.0f, scale, scale, 0xff000000, w, 0, NULL);
+	font->DrawTextScaled(x, y, 0.0f, scale, scale, PortCeDevStatsGreen() ? 0xff40ff40 : 0xffffff80, w, 0, NULL);
 }
 
 // The front end's loop (patch 0100, System.cpp): the level a console jump asked for, once.

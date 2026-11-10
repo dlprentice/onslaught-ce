@@ -1,0 +1,3 @@
+# SPDX-License-Identifier: GPL-3.0-only
+# libc writes native Linux stat64 layout. Keep this bridge native; compatibility/game APIs retain MS layout.
+native_posix_stat.cpp: -mno-ms-bitfields

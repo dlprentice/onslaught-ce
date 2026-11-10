@@ -25,10 +25,19 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from ce_palette_tests import sections  # noqa: E402
 from ce_photo_tests import faithful, patched  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 PATCHES = ("0160-commander-relaxed-goal.patch", "0161-commander-merge-guard.patch", "0162-commander-map-hooks.patch")
+# Patches whose hunks in these files carry no context lines (`@@ -N,0 +M,K @@`, patch 0189's campaign outcome hooks). patch places such a hunk by its line number alone, so in a tree that lacks the
+# commander patches' added lines the hook lands a few lines away from where it belongs and the two texts differ for a reason that is not the commander's. They are left out of both trees of the
+# faithful comparison; their own patches' suites check them.
+# Patches whose hunks anchor on lines the commander patches add (the native editor's lifecycle hooks sit beside the commander map's in game.cpp and ltshell.cpp, and the
+# museum visit's beside the editor's): in the tree without the commander patches they cannot apply. They are left out of both trees as well, and their own suites check them.
+BUILT_ON_COMMANDER = ("0206-native-editor-lifecycle.patch", "0207-ce-museum-visit-lifecycle.patch")
+POSITIONAL = ("0189-network-campaign-outcomes.patch",)
+LEFT_OUT = (*POSITIONAL, *BUILT_ON_COMMANDER)
 MODULE = ROOT / "port/game/ce_commander.cpp"
 MAP = ROOT / "port/game/ce_cmdmap.cpp"
 HEADER = ROOT / "port/game/ce_commander.h"
@@ -49,6 +58,24 @@ LAYOUT_CHECKS = ("static_assert(sizeof(void *) == 4,", "static_assert(sizeof(CAc
 
 def comments_off(text):
     return "\n".join(l for l in text.split("\n") if not l.strip().startswith("//"))
+
+
+def without_nonallocating_std(text):
+    # Scalar IDs and these math functions allocate no objects. All other std
+    # facilities remain subject to the existing namespace/allocation ban.
+    return re.sub(r"\bstd::(?:min|max|exp|ceil|fabs|isfinite|log|uint64_t)\b", "", text)
+
+
+def map_resource_violations(text):
+    text = without_nonallocating_std(comments_off(text))
+    # The one allocation the map makes: the paused map's terrain texture, made once when it first draws (the frame-feel lane) and kept for the process.
+    text = text.replace("new (MEMTYPE_TEXTURE) CDXTexture;", "", 1)
+    forbidden = ("FloatRandom", "IntRandom", "rand(", "srand(", "Random(", "malloc", "calloc", "realloc",
+                 "delete ", "std::", "MEM_MANAGER", "<new>")
+    found = [word for word in forbidden if word in text]
+    if re.search(r"\bnew\s*[A-Za-z_\[(]", text):
+        found.append("new")
+    return found
 
 
 def without_test(text):
@@ -101,9 +128,11 @@ def check_gates(map_text, module_text):
     shipped = without_test(sw)
     assert "const bool allowed = !Fenced();" in shipped, "a plain build is allowed only where no fenced switch is set"
     assert "const bool allowed = gProof || !Fenced();" in sw, "a test build's proof switch is the one way past the fence"
-    assert re.search(r"gMap = allowed && \(proofMap \|\| CE_SettingGetBool\(\"commander\", 0\) != 0\);", shipped), "the map is on only where allowed, and by the ini"
+    assert re.search(r"gMap = allowed && \(proofMap \|\| PortCeExperimental\(\"commander\"\)\);", shipped), \
+        "the map is on only where allowed, and by the commander line of the ini (ce.cpp PortCeExperimental, read once)"
     assert re.search(r"gEnabled = allowed && \(gMap", shipped), "the order layer is on only where allowed"
-    assert sw.index("allowed &&") < sw.index("CE_SettingGetBool"), "the ini is read only where it is allowed"
+    assert sw.index("allowed &&") < sw.index('PortCeExperimental("commander")'), "the ini is read only where it is allowed"
+    assert "CE_SettingGetBool" not in shipped, "the commander line is read at one place, ce.cpp's PortCeExperimental"
 
 
 def check_layout(module_text):
@@ -121,12 +150,12 @@ def function(text, head):
 
 # The map's one change to DXEngine.cpp's PostRender: its own declaration (so that the patch does not lean on the lines other patches add beside it), the mirror-pass guard
 # and the call, after the block that draws the interface and the notes of the other CE patches.
-RENDER_BLOCK = r"#ifdef CE_VERSION\n\tvoid PortCeCmdRender\(\);[^\n]*\n\tif \(!gMirrorPass\)\n\t\tPortCeCmdRender\(\);[^\n]*\n#endif\n"
+RENDER_BLOCK = r"#ifdef CE_VERSION\n\tvoid PortCeCmdRender\(\);[^\n]*\n\tif \(!gMirrorPass\)\n\t\tPortCeCmdRender\(\);[^\n]*\n(?:\t\tPortCeEditorRender\(\);[^\n]*\n)?#endif\n"
 
 
 def check_keys(map_text):
     """Keys the map sees: those already held when it opens are held (their auto-repeats are not new presses), and the Esc that closes it is the map's until a new press."""
-    opened = function(map_text, "void Open()")
+    opened = function(map_text, 'void Open(bool strategic)')
     assert "for (int k = 0; k < 256; ++k) gDown[k] = LT.KeyDown[k] != 0;" in opened and "memset(gDown" not in opened, \
         "a key that is already held when the map opens is held, not a new press when it repeats"
     assert opened.index("gDown[k] = LT.KeyDown[k]") < opened.index("gDown[kOpenKey] = true;"), "the open key stays held whatever the game's state says"
@@ -166,13 +195,33 @@ def check_placement(files):
     assert game.count("PortCeCmdFrame(") == 2 and game.count("PortCeCmdLevelEnd(") == 2, "one declaration and one call each"
 
 
+# The ICE link receipt (build.py, write_ice_link_receipt) marks a test build by reading the defines the build was given; it names this module's among the test builds' and defines nothing.
+RECEIPT_READ = re.compile(r'test_build=any\(flag\.startswith\(\([^)]*"-DCE_COMMANDER_TEST"[^)]*\)\)\s+for flag in CE_DEFINES\)')
+
+
+def check_define_sites(build):
+    """Where build.py names CE_COMMANDER_TEST (raises AssertionError): its --commander-test flag is the one place that defines it, and the ICE link receipt reads the defines to mark a test build; no
+    other line mentions it."""
+    assert build.count("-DCE_COMMANDER_TEST=") == 1 and build.count('CE_DEFINES.append("-DCE_COMMANDER_TEST=1")') == 1, "only build.py's flag defines it"
+    assert 'if a.commander_test:\n        CE_DEFINES.append("-DCE_COMMANDER_TEST=1")' in build, "and only where --commander-test was given"
+    assert len(RECEIPT_READ.findall(build)) == 1, "the one other mention is the ICE receipt's test of the defines it was given"
+    assert len(re.findall(r"CE_COMMANDER_TEST", build)) == 2, "the flag's definition and the receipt's test are every mention"
+
+
+def faithful_differences(alone, without):
+    """The files whose faithful view (CE_VERSION undefined) differs between a tree with the commander patches and one without them."""
+    return [name for name in FILES if faithful(alone[name]) != faithful(without[name])]
+
+
 class Static(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.tmp = tempfile.TemporaryDirectory()
         base = Path(cls.tmp.name)
         cls.with_ = patched(base / "with", FILES)
-        cls.without = patched(base / "without", FILES, skip=PATCHES)
+        # The faithful comparison isolates the commander patches: both trees leave out the positional patches (see POSITIONAL).
+        cls.alone = patched(base / "alone", FILES, skip=LEFT_OUT)
+        cls.without = patched(base / "without", FILES, skip=(*PATCHES, *LEFT_OUT))
 
     @classmethod
     def tearDownClass(cls):
@@ -183,8 +232,17 @@ class Static(unittest.TestCase):
 
     def test_the_faithful_view_is_the_text_without_the_patches(self):
         for name in FILES:
-            self.assertNotEqual(self.with_[name], self.without[name], f"{name}: the patches change nothing")
-            self.assertEqual(faithful(self.with_[name]), faithful(self.without[name]), f"{name}: the faithful build (CE_VERSION undefined) is not the unpatched text")
+            self.assertNotEqual(self.alone[name], self.without[name], f"{name}: the patches change nothing")
+            self.assertEqual(faithful(self.alone[name]), faithful(self.without[name]), f"{name}: the faithful build (CE_VERSION undefined) is not the unpatched text")
+        self.assertEqual(faithful_differences(self.alone, self.without), [])
+
+    def test_the_patches_left_out_of_that_comparison_are_placed_by_line_number(self):
+        # A name stays in POSITIONAL only while it exists and still has a hunk of no context in one of these files; one that no longer does is taken out, not kept.
+        for patch in POSITIONAL:
+            parts = sections((ROOT / "port/patches" / patch).read_text(encoding="latin1"))
+            blind = [name for name in FILES if name in parts
+                     and any(old != "0" and count == "0" for old, count in re.findall(r"(?m)^@@ -(\d+),(\d+) ", parts[name]))]
+            self.assertTrue(blind, f"{patch} has no hunk of no context in these files: it need not be left out")
 
     def test_the_test_machinery_is_private(self):
         for path in (MODULE, MAP, HEADER):
@@ -197,9 +255,7 @@ class Static(unittest.TestCase):
         self.assertNotIn("CE_COMMANDER_TEST", update, "updatedump.cpp: the one call is the order layer's, in every CE build")
         self.assertIn("#ifdef CE_VERSION\n#include \"ce_commander.h\"\n#endif", update)
         self.assertIn("#ifdef CE_VERSION\n\tCeCommanderUpdate();", update)
-        build = BUILD.read_text()
-        self.assertEqual(len(re.findall(r"CE_COMMANDER_TEST", build)), 1, "only build.py's flag defines it")
-        self.assertIn('if a.commander_test:\n        CE_DEFINES.append("-DCE_COMMANDER_TEST=1")', build)
+        check_define_sites(BUILD.read_text())
         users = sorted(str(p.relative_to(ROOT)) for p in (ROOT / "port").rglob("*")
                        if p.is_file() and p.suffix in (".cpp", ".h", ".py", ".patch", ".c") and "CE_COMMANDER_TEST" in p.read_text(errors="ignore"))
         self.assertEqual(users, ["port/build.py", "port/game/ce_cmdmap.cpp", "port/game/ce_commander.cpp", "port/game/ce_commander.h",
@@ -212,6 +268,11 @@ class Static(unittest.TestCase):
             self.assertNotIn(word, module, f"a build without the test define still compiles {word!r} of the order layer")
         self.assertEqual(re.findall(r"getenv\(([^)]*)\)", module), ["name"], "the one environment read is the fence's list")
         map_text = without_test(comments_off(MAP.read_text()))
+        # The two comparison switches of the frame-feel lane (README "Frame-feel measurement": BEA_PORT_COMMANDER_VIEW and BEA_PORT_COMMANDER_TERRAIN bring the earlier behaviours
+        # back on one build) are read while the map draws, and only then: the map draws only with the experimental switch and commander=1. They are the only environment reads.
+        self.assertEqual(sorted(re.findall(r"getenv\(\"(BEA_PORT_COMMANDER_[A-Z]+)\"\)", map_text)), ["BEA_PORT_COMMANDER_TERRAIN", "BEA_PORT_COMMANDER_VIEW"])
+        self.assertEqual(len(re.findall(r"getenv\(", map_text)), 2)
+        map_text = re.sub(r"getenv\(\"BEA_PORT_COMMANDER_(?:TERRAIN|VIEW)\"\)", "", map_text)
         for word in ("BEA_PORT_COMMANDER", "getenv", "clock_gettime", "time.h", "CeCmdWorldHash", "CeCmdWorldDump", "CeCmdHash", "fopen"):
             self.assertNotIn(word, map_text, f"a build without the test define still compiles {word!r} of the map")
 
@@ -221,10 +282,15 @@ class Static(unittest.TestCase):
             self.assertNotIn(word, text, f"the order layer names {word!r}")
 
     def test_the_map_draws_no_random_number_and_allocates_nothing(self):
-        text = comments_off(MAP.read_text())
-        for word in ("FloatRandom", "IntRandom", "rand(", "srand(", "Random(", "malloc", "calloc", "realloc", "delete ", "std::", "MEM_MANAGER", "<new>"):
-            self.assertNotIn(word, text, f"the map names {word!r}")
-        self.assertEqual(re.findall(r"\bnew\s*[A-Za-z_\[(]", text), [], "no new: the controller sink is a global, as the game's own reconnect interfaces are")
+        self.assertEqual(map_resource_violations(MAP.read_text()), [], "the map names a forbidden allocation/random facility")
+
+    def test_scalar_math_exception_keeps_allocation_and_random_controls(self):
+        self.assertEqual(map_resource_violations("std::ceil(x); std::fabs(x); std::isfinite(x); std::log(x);"), [])
+        for text in ("std::vector<float> values;", "std::string text;", "std::make_unique<X>();", "std::logarithm(x);",
+                     "new X;", "new\tX[2];", "new (p) X;", "malloc(4);", "calloc(1,4);", "realloc(p,4);", "delete p;",
+                     "rand();", "srand(1);", "FloatRandom();", "IntRandom();", "Random();", "MEM_MANAGER;", "#include <new>"):
+            with self.subTest(control=text):
+                self.assertTrue(map_resource_violations(text), "a forbidden authored control escaped the scan")
 
     def test_the_layout_reads_are_checked_at_compile_time(self):
         check_layout(MODULE.read_text())
@@ -260,7 +326,10 @@ class Mutants(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.tmp = tempfile.TemporaryDirectory()
-        cls.files = patched(Path(cls.tmp.name) / "with", FILES)
+        base = Path(cls.tmp.name)
+        cls.files = patched(base / "with", FILES)
+        cls.alone = patched(base / "alone", FILES, skip=LEFT_OUT)
+        cls.without = patched(base / "without", FILES, skip=(*PATCHES, *LEFT_OUT))
 
     @classmethod
     def tearDownClass(cls):
@@ -334,6 +403,46 @@ class Mutants(unittest.TestCase):
         # a hook outside the CE_VERSION conditional is a difference the faithful build would compile
         text = self.files["SquadNormal.cpp"].replace("#ifdef CE_VERSION\n\tif (CeCommanderNoMerge(this))", "\tif (0)\n\tif (CeCommanderNoMerge(this))", 1)
         self.assertNotEqual(faithful(text), faithful(self.files["SquadNormal.cpp"]))
+
+    def test_each_unguarded_hook_is_caught_by_the_faithful_comparison(self):
+        # The comparison itself, not only faithful(): one line of each commander hook taken out of its CE_VERSION block (the block closed before it and opened again after) must make the file differ.
+        self.assertEqual(faithful_differences(self.alone, self.without), [], "the unmutated trees are equal")
+        hooks = (("SquadRelaxed.cpp", r"(?m)^\s*int ceOrder = CeCommanderRelaxed\(this, &mPos\);"),
+                 ("SquadNormal.cpp", r"(?m)^\s*if \(CeCommanderNoMerge\(this\)\)"),
+                 ("ltshell.cpp", r"(?m)^\s*else if \(PortCeCmdKey\(key,"),
+                 ("DXEngine.cpp", r"(?m)^\s*void PortCeCmdRender\(\);"),
+                 ("DXEngine.cpp", r"(?m)^\s*PortCeCmdRender\(\);"),
+                 ("game.cpp", r"(?m)^void PortCeCmdFrame\(\);"),
+                 ("game.cpp", r"(?m)^\s*PortCeCmdFrame\(\);"),
+                 ("game.cpp", r"(?m)^void PortCeCmdLevelEnd\(\);"),
+                 ("game.cpp", r"(?m)^\s*PortCeCmdLevelEnd\(\);"))
+        for name, pattern in hooks:
+            with self.subTest(file=name, hook=pattern):
+                text = self.alone[name]
+                found = list(re.finditer(pattern, text))
+                self.assertEqual(len(found), 1, "the hook line is found once")
+                start, end = found[0].start(), text.index("\n", found[0].end())
+                mutant = dict(self.alone)
+                mutant[name] = text[:start] + "#endif\n" + text[start:end] + "\n#ifdef CE_VERSION" + text[end:]
+                self.assertEqual(faithful_differences(mutant, self.without), [name], f"a hook of {name} outside CE_VERSION went unseen")
+
+    def test_a_second_definition_of_the_test_define_is_caught(self):
+        build = BUILD.read_text()
+        check_define_sites(build)
+        anchor = "    if a.mods_windows_test:\n"
+        self.assertEqual(build.count(anchor), 1)
+        mutants = {
+            "a second definition": build.replace(anchor, '    CE_DEFINES.append("-DCE_COMMANDER_TEST=1")\n' + anchor),
+            "the definition outside its flag": build.replace('if a.commander_test:\n        CE_DEFINES.append("-DCE_COMMANDER_TEST=1")',
+                                                              'CE_DEFINES.append("-DCE_COMMANDER_TEST=1")'),
+            "a third mention": build + "\n# CE_COMMANDER_TEST\n",
+            "the receipt's test lost": build.replace('"-DCE_NET_TEST_AUTOMATION", "-DCE_COMMANDER_TEST"', '"-DCE_NET_TEST_AUTOMATION"'),
+        }
+        for name, text in mutants.items():
+            with self.subTest(mutant=name):
+                self.assertNotEqual(text, build, "the mutant changed the text")
+                with self.assertRaises(AssertionError, msg=f"{name} went unseen"):
+                    check_define_sites(text)
 
     def test_gate_without_attract_mode(self):
         text = MAP.read_text()
@@ -417,10 +526,20 @@ class Mutants(unittest.TestCase):
 
     def test_switch_reading_the_ini_before_the_fence(self):
         text = MODULE.read_text()
-        old = "gMap = allowed && (proofMap || CE_SettingGetBool(\"commander\", 0) != 0);"
+        old = "gMap = allowed && (proofMap || PortCeExperimental(\"commander\"));"
         self.assertEqual(text.count(old), 1)
         with self.assertRaises(AssertionError):
-            check_gates(MAP.read_text(), text.replace(old, "gMap = (CE_SettingGetBool(\"commander\", 0) != 0 && allowed) || proofMap;"))
+            check_gates(MAP.read_text(), text.replace(old, "gMap = (PortCeExperimental(\"commander\") && allowed) || proofMap;"))
+
+    def test_switch_without_the_commander_line(self):
+        # ce.ini commander=1 (under [Experimental], or as 0.1.13 wrote it) is the map's switch, read once in ce.cpp: a gate that does not ask it is caught.
+        text = MODULE.read_text()
+        gate = "proofMap || PortCeExperimental(\"commander\")"
+        self.assertEqual(text.count(gate), 1)
+        with self.assertRaises(AssertionError):
+            check_gates(MAP.read_text(), text.replace(gate, "proofMap || true"))
+        with self.assertRaises(AssertionError):
+            check_gates(MAP.read_text(), text.replace(gate, "proofMap || PortCeExperimental(\"museum\")"))
 
     def test_member_record_without_its_size_check(self):
         text = MODULE.read_text()
@@ -433,6 +552,97 @@ class Mutants(unittest.TestCase):
         self.assertEqual(text.count("++gDropped"), 1)
         with self.assertRaises(AssertionError):
             check_layout(text.replace("++gDropped", "(void)0"))
+
+
+
+
+class CommandBoundary(unittest.TestCase):
+    """Execute production order code; only the surrounding world is authored."""
+
+    @staticmethod
+    def definition(source, name):
+        match = re.search(
+            r"(?m)^[\t ]*[\w :*&<>]+\b" + re.escape(name) +
+            r"\([^;{]*\)\s*\{", source)
+        if not match:
+            raise AssertionError("production function missing: " + name)
+        position = source.index("{", match.start()) + 1
+        depth = 1
+        while position < len(source) and depth:
+            depth += (source[position] == "{") - (source[position] == "}")
+            position += 1
+        if depth:
+            raise AssertionError("production function is incomplete: " + name)
+        return source[match.start():position]
+
+    @classmethod
+    def setUpClass(cls):
+        import subprocess
+        cls.subprocess = subprocess
+        cls.root = Path(__file__).resolve().parents[2]
+        scratch = cls.root / "local-data" / "commander-boundary-tests"
+        scratch.mkdir(parents=True, exist_ok=True)
+        cls.tmp = tempfile.TemporaryDirectory(prefix="run-", dir=scratch)
+        cls.directory = Path(cls.tmp.name)
+        cls.logs = scratch / (cls.directory.name + "-logs")
+        cls.logs.mkdir()
+        cls.source = (cls.root / "port/game/ce_commander.cpp").read_text()
+        records = []
+        for kind, name in (("enum", "Verb"), ("struct", "Rec")):
+            match = re.search(r"\b" + kind + r"\s+" + name +
+                              r"\s*\{.*?\};", cls.source, re.S)
+            if not match:
+                raise AssertionError("production order type missing: " + name)
+            records.append(match.group(0))
+        (cls.directory / "ce_commander_boundary_records.inc").write_text(
+            "\n".join(records))
+        cls.production = "\n\n".join(cls.definition(cls.source, name) for name in
+            ("Ground", "SetMembers", "Plant", "Hold", "CeCmdIssue"))
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def execute(self, name, production):
+        include = self.directory / "ce_commander_boundary_under_test.inc"
+        include.write_text(production)
+        binary = self.directory / name
+        command = [os.environ.get("CXX", "g++"), "-std=c++17", "-O2", "-Wall",
+                   "-DCE_VERSION=1",
+                   "-Wextra", "-Wno-unused-parameter", "-I", str(self.directory),
+                   "-I", str(self.root / "port/game"),
+                   str(self.root / "port/tools/ce_commander_boundary_driver.cpp"),
+                   "-o", str(binary)]
+        with (self.logs / (name + ".compile.stdout")).open("wb") as out, \
+             (self.logs / (name + ".compile.stderr")).open("wb") as err:
+            result = self.subprocess.run(command, stdout=out, stderr=err, timeout=60)
+        self.assertEqual(result.returncode, 0,
+                         "boundary driver compilation failed; private logs: " +
+                         str(self.logs))
+        with (self.logs / (name + ".stdout")).open("wb") as out, \
+             (self.logs / (name + ".stderr")).open("wb") as err:
+            return self.subprocess.run([str(binary)], stdout=out, stderr=err,
+                                       timeout=20).returncode
+
+    def test_production_orders_reach_consumers_and_invalid_orders_do_not(self):
+        self.assertEqual(self.execute("production", self.production), 0,
+                         "boundary execution failed; private logs: " +
+                         str(self.logs))
+
+    def test_nonfinite_guard_is_causal(self):
+        guard = re.compile(r"if \(!isfinite\(x\) \|\| "
+                           r"!isfinite\(y\)\) \{[^}]*\}", re.S)
+        mutant, count = guard.subn("", self.production)
+        self.assertEqual(count, 1, "finite guard was not uniquely identified")
+        self.assertNotEqual(self.execute("missing-finite-guard", mutant), 0,
+                            "driver accepted a removed finite guard")
+
+    def test_destination_delivery_is_causal(self):
+        mutant, count = re.subn(r"Ground\(x, y\)", "Ground(y, x)",
+                                self.production, count=1)
+        self.assertEqual(count, 1, "point destination was not found")
+        self.assertNotEqual(self.execute("swapped-destination", mutant), 0,
+                            "driver accepted a wrong downstream destination")
 
 
 if __name__ == "__main__":

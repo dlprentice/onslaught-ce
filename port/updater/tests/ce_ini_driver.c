@@ -1,7 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
 /* Isolated shared-writer driver. Build with the port's SDL headers; no SDL library, game, or display is needed.
  * ce-ini-driver INI KEY VALUE [--wait] returns 0 on a successful write, 1 on refusal. --wait prints its PID and waits
- * for a newline so the tests can populate temporary-name collisions without racing the writer. */
+ * for a newline so the tests can populate temporary-name collisions without racing the writer.
+ * ce-ini-driver INI --experimental adds the [Experimental] block (ce_ini_add_section) with the four unfinished-feature keys. */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -56,6 +57,11 @@ static int test_rename(int olddir, const char *oldname, int newdir, const char *
 
 int main(int argc, char **argv)
 {
+	if (argc == 3 && !strcmp(argv[2], "--experimental"))
+	{
+		static const char *const keys[] = {"map_editor", "museum", "commander", "play_unit"};
+		return ce_ini_add_section(argv[1], CE_INI_EXPERIMENTAL_HEADER, "; Unfinished features, off in this release.\n", keys, 4) ? 0 : 1;
+	}
 	if (argc < 4 || argc > 5) return 2;
 	if (argc == 5)
 	{

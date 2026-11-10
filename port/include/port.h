@@ -12,6 +12,15 @@
 #define __stdcall
 #endif
 
+#ifndef CE_NETWORK_OFF
+// Explicit network sessions use typed game hooks. Every hook preserves offline behavior until admission;
+// these declarations do not create a transport or read an endpoint.
+#ifdef __cplusplus
+#include "../game/ce_network_world.h"
+#include "../game/ce_network_session.h"
+#endif
+
+#endif
 // ---- both targets -------------------------------------------------------------------------------------------------
 // MemoryManager.h defines the game's operator new/delete `static inline`, which VC6 accepted at global scope: each game
 // file had its own, so game code used the game's heap and NvTriStrip, the STL and the runtime the C runtime's. Patch

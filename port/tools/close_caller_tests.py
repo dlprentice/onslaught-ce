@@ -108,6 +108,9 @@ def main():
         if before is None:
             raise RuntimeError("correction absent: cannot create the required old-source negative control")
         after = {name: (source_dir / name).read_text(encoding="latin-1") for name in FILES}
+        # The text a public build compiles: the close-handling callers do not depend on the network, whose hooks are out (build.network_view).
+        before = {name: build.network_view(text, off=True) for name, text in before.items()}
+        after = {name: build.network_view(text, off=True) for name, text in after.items()}
         ce = (args.source_root / "port/platform/common/ce.cpp").read_text()
         driver_path = args.source_root / "port/tools/tests/close_caller_driver.cpp"
         driver_text = driver_path.read_text()

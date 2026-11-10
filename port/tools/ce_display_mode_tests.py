@@ -117,7 +117,8 @@ def build_fixtures(out, overrides=None, targets=('ce', 'private', 'host', 'windo
                overrides.get('display', PORT / 'platform/common/display_mode.cpp'),
                overrides.get('parser', out / 'parser.cpp')]
     wrap = ['-Wl,--wrap=' + n for n in ('fopen', 'openat', 'fread', 'ferror', 'fclose', 'fwrite', 'fprintf', 'fflush', 'fsync', 'renameat')]
-    for name, defines in (('ce', ['-DCE_VERSION="fixture"']), ('private', [])):
+    for name, defines in (('ce', ['-DCE_VERSION="fixture"']), ('private', []),
+                          ('runtime', ['-DCE_VERSION="fixture"', '-DBEA_PUBLIC_GRAPHICS_HOST=1'])):
         if name not in targets: continue
         cmd = common + defines + ['-DVIDEO_SOURCE="' + str(overrides.get('video', PORT / 'game/ce_video_options.cpp')) + '"',
                                   *wrap, PORT / 'tools/tests/ce_display_mode_driver.cpp', *product, '-o', out / name]
@@ -201,6 +202,11 @@ int main(int argc,char **argv){
  }
  if(!strncmp(argv[1],"wide-policy",11)){
   if(!strcmp(argv[1],"wide-policy-test")){gTestW=1600;gTestH=900;}
+  // HiDPI desktops: SDL reports the desktop's mode in points with the display's density, and the game starts at its pixels.
+  if(!strcmp(argv[1],"wide-policy-hidpi125"))primary={1536,864,1.25f};
+  if(!strcmp(argv[1],"wide-policy-hidpi150"))primary={1280,720,1.5f};
+  if(!strcmp(argv[1],"wide-policy-hidpi200"))primary={1280,720,2.f};
+  if(!strcmp(argv[1],"wide-policy-hidpi160"))primary={1200,675,1.6f};
   if(!strcmp(argv[1],"wide-policy-disabled"))wide=false;
   unsigned sw=0,sh=0;
   if(!strcmp(argv[1],"wide-policy-sentinel")){sw=640;sh=480;}
@@ -454,12 +460,12 @@ def compile_targets(out):
         platform_inc = [PORT / 'd3dx/include', PORT / 'include', *t['includes'], sdl / 'include']
         platform_flags = [*t['cxx'], '-std=gnu++17', '-DNOMINMAX', '-fms-extensions', '-fno-autolink',
                           '-fno-strict-aliasing', '-fwrapv', '-mms-bitfields', '-fshort-wchar', '-w',
-                          '-DCE_VERSION="fixture"', '-c', *(f'-I{x}' for x in platform_inc)]
+                          '-DCE_VERSION="fixture"', '-DBEA_PUBLIC_GRAPHICS_HOST=1', '-c', *(f'-I{x}' for x in platform_inc)]
         units = [build.MIRROR / 'CLIParams.cpp', build.MIRROR / 'PauseMenu.cpp', build.MIRROR / 'Career.cpp',
                  PORT / 'game/ce_video_options.cpp', build.MIRROR / 'd3dapp.cpp']
         commands, outputs = [], []
         all_units = [(unit, game_flags) for unit in units] + [
-            (PORT / 'platform/common' / unit, platform_flags) for unit in ('ce.cpp', 'display_mode.cpp', 'widescreen.cpp')]
+            (PORT / 'platform/common' / unit, platform_flags) for unit in ('ce.cpp', 'display_mode.cpp', 'widescreen.cpp', 'd3d9hooks.cpp', 'window.cpp')]
         for unit, flags in all_units:
             obj = out / (name + '-' + unit.name + '.o')
             command = [*flags, unit, '-o', obj]
@@ -857,6 +863,10 @@ class DisplayTests(unittest.TestCase):
         self.assertEqual(self.call('host', 'remembered-secondary', ''), '0 1 1 800 600 1 1 0')
         self.assertEqual(self.call('host', 'wide-policy', ''), '1 1920 1080 1 1280 800')
         self.assertEqual(self.call('host', 'wide-policy-test', ''), '1 1600 900 1 1600 900')
+        # A HiDPI desktop starts at its own pixels (Hyprland's scale 1.25 on a 1920 x 1080 panel is the player's case).
+        for name, expected in (('wide-policy-hidpi125', '1 1920 1080 1 1280 800'), ('wide-policy-hidpi150', '1 1920 1080 1 1280 800'),
+                               ('wide-policy-hidpi160', '1 1920 1080 1 1280 800'), ('wide-policy-hidpi200', '1 2560 1440 1 1280 800')):
+            with self.subTest(name=name): self.assertEqual(self.call('host', name, ''), expected)
         self.assertEqual(self.call('host', 'wide-policy-disabled', ''), '0 0 0 0 0 0')
         self.assertEqual(self.call('host', 'wide-policy-saved', ''), '0 0 0 0 0 0')
         self.assertEqual(self.call('host', 'wide-policy-sentinel', ''), '1 800 600 1 800 600')

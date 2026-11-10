@@ -1,0 +1,101 @@
+# SPDX-FileCopyrightText: 2026 Onslaught CE contributors
+# SPDX-License-Identifier: MPL-2.0
+# Local relay policy for libjuice b89c792e3612faf2f12cf35bcc56857313a06be3.
+# Preserve all upstream copyright and Mozilla Public License notices.
+--- a/include/juice/juice.h
++++ b/include/juice/juice.h
+@@ -120,6 +120,10 @@
+ 
+ JUICE_EXPORT juice_agent_t *juice_create(const juice_config_t *config);
+ JUICE_EXPORT void juice_destroy(juice_agent_t *agent);
++
++// CE extension: set before gathering or remote candidates; immutable once started.
++// Require at least one relay endpoint in every checked/selected application path.
++JUICE_EXPORT int juice_set_relay_only(juice_agent_t *agent, bool enabled);
+ 
+ JUICE_EXPORT int juice_gather_candidates(juice_agent_t *agent);
+ JUICE_EXPORT int juice_get_local_description(juice_agent_t *agent, char *buffer, size_t size);
+--- a/src/agent.c
++++ b/src/agent.c
+@@ -155,6 +155,14 @@
+ error:
+ 	agent_destroy(agent);
+ 	return NULL;
++}
++
++int agent_set_relay_only(juice_agent_t *agent, bool enabled) {
++	if (agent->conn_impl || agent->candidate_pairs_count || agent->remote.candidates_count ||
++	    agent->remote.ice_ufrag[0])
++		return -1;
++	agent->relay_only = enabled;
++	return 0;
+ }
+ 
+ void agent_destroy(juice_agent_t *agent) {
+@@ -668,6 +676,22 @@
+ }
+ 
+ int agent_send(juice_agent_t *agent, const char *data, size_t size, int ds) {
++	if (agent->relay_only) {
++		// Check and use the same entry while selection cannot change.
++		conn_lock(agent);
++		agent_stun_entry_t *entry = atomic_load(&agent->selected_entry);
++		if (!entry || !entry->pair || !entry->pair->remote ||
++		    (!entry->relay_entry && entry->pair->remote->type != ICE_CANDIDATE_TYPE_RELAYED)) {
++			conn_unlock(agent);
++			return -1;
++		}
++		int ret = entry->relay_entry
++		              ? agent_channel_send(agent, entry->relay_entry, &entry->record, data, size, ds)
++		              : agent_direct_send(agent, &entry->record, data, size, ds);
++		conn_unlock(agent);
++		return ret;
++	}
++
+ 	// Try not to lock in the send path
+ 	agent_stun_entry_t *selected_entry = atomic_load(&agent->selected_entry);
+ 	if (!selected_entry) {
+@@ -2398,6 +2422,10 @@
+ 
+ int agent_add_candidate_pair(juice_agent_t *agent, ice_candidate_t *local, // local may be NULL
+                              ice_candidate_t *remote) {
++	if (agent->relay_only && (!local || local->type != ICE_CANDIDATE_TYPE_RELAYED) &&
++	    remote->type != ICE_CANDIDATE_TYPE_RELAYED)
++		return 0;
++
+ 	ice_candidate_pair_t pair;
+ 	bool is_controlling = agent->mode == AGENT_MODE_CONTROLLING;
+ 	if (ice_create_candidate_pair(local, remote, is_controlling, &pair)) {
+--- a/src/agent.h
++++ b/src/agent.h
+@@ -130,6 +130,7 @@
+ 	juice_state_t state;
+ 	agent_mode_t mode;
+ 	juice_ice_tcp_mode_t ice_tcp_mode;
++	bool relay_only; // CE policy; configured before gathering, then immutable
+ 
+ 	ice_description_t local;
+ 	ice_description_t remote;
+@@ -158,6 +159,7 @@
+ 
+ juice_agent_t *agent_create(const juice_config_t *config);
+ void agent_destroy(juice_agent_t *agent);
++int agent_set_relay_only(juice_agent_t *agent, bool enabled);
+ 
+ int agent_gather_candidates(juice_agent_t *agent);
+ int agent_resolve_servers(juice_agent_t *agent);
+--- a/src/juice.c
++++ b/src/juice.c
+@@ -28,6 +28,12 @@
+ JUICE_EXPORT void juice_destroy(juice_agent_t *agent) {
+ 	if (agent)
+ 		agent_destroy(agent);
++}
++
++JUICE_EXPORT int juice_set_relay_only(juice_agent_t *agent, bool enabled) {
++	if (!agent)
++		return JUICE_ERR_INVALID;
++	return agent_set_relay_only(agent, enabled) == 0 ? JUICE_ERR_SUCCESS : JUICE_ERR_FAILED;
+ }
+ 
+ JUICE_EXPORT int juice_gather_candidates(juice_agent_t *agent) {

@@ -31,16 +31,18 @@ using WPARAM = uintptr_t; using LPARAM = intptr_t; using LRESULT = intptr_t; usi
 const BOOL TRUE = 1, FALSE = 0;
 const HRESULT S_OK = 0, E_FAIL = static_cast<HRESULT>(0x80004005u), E_NOTIMPL = static_cast<HRESULT>(0x80004001u);
 const HRESULT D3DERR_DEVICELOST = static_cast<HRESULT>(0x88760868u);
+const HRESULT D3DERR_DEVICENOTRESET = static_cast<HRESULT>(0x88760869u);
 enum APPMSGTYPE { MSG_NONE, MSGERR_APPMUSTEXIT, MSGWARN_SWITCHEDTOREF };
 enum D3DFORMAT { D3DFMT_UNKNOWN=0,D3DFMT_R8G8B8=20,D3DFMT_A8R8G8B8=21,D3DFMT_X8R8G8B8=22,D3DFMT_R5G6B5=23,
     D3DFMT_A1R5G5B5=25,D3DFMT_A4R4G4B4=26,D3DFMT_D16=80,D3DFMT_D15S1=73,D3DFMT_D24S8=75,D3DFMT_D24X8=77,
-    D3DFMT_D24X4S4=79,D3DFMT_D32=71,D3DFMT_DXT1=100,D3DFMT_DXT2=101,D3DFMT_DXT4=103 };
+    D3DFMT_D24X4S4=79,D3DFMT_D32=71,D3DFMT_DXT1=100,D3DFMT_DXT2=101,D3DFMT_DXT4=103,
+    D3DFMT_R32F=114,D3DFMT_A32B32G32R32F=116 };
 enum D3DDEVTYPE { D3DDEVTYPE_HAL=1,D3DDEVTYPE_REF=2,D3DDEVTYPE_SW=3 };
 enum D3DMULTISAMPLE_TYPE { D3DMULTISAMPLE_TEST_UNSET=-1,D3DMULTISAMPLE_NONE=0,D3DMULTISAMPLE_2_SAMPLES=2,D3DMULTISAMPLE_3_SAMPLES=3,
     D3DMULTISAMPLE_4_SAMPLES=4,D3DMULTISAMPLE_6_SAMPLES=6,D3DMULTISAMPLE_8_SAMPLES=8 };
 const DWORD D3DCREATE_FPU_PRESERVE=2,D3DCREATE_PUREDEVICE=16,D3DCREATE_SOFTWARE_VERTEXPROCESSING=32,
     D3DCREATE_HARDWARE_VERTEXPROCESSING=64,D3DCREATE_MIXED_VERTEXPROCESSING=128,D3DCREATE_DISABLE_DRIVER_MANAGEMENT=256;
-const DWORD D3DDEVCAPS_HWTRANSFORMANDLIGHT=1,D3DDEVCAPS_PUREDEVICE=2,D3DUSAGE_DEPTHSTENCIL=2;
+const DWORD D3DDEVCAPS_HWTRANSFORMANDLIGHT=1,D3DDEVCAPS_PUREDEVICE=2,D3DUSAGE_DEPTHSTENCIL=2,D3DUSAGE_RENDERTARGET=1;
 const int D3DRTYPE_TEXTURE=3,D3DRTYPE_SURFACE=1,D3DSWAPEFFECT_DISCARD=1,D3DSWAPEFFECT_COPY=3,
     D3DPRESENT_INTERVAL_DEFAULT=0,D3DPRESENT_INTERVAL_ONE=1,D3DPRESENT_INTERVAL_IMMEDIATE=2,
     D3DPRESENTFLAG_LOCKABLE_BACKBUFFER=1,D3DBACKBUFFER_TYPE_MONO=0,D3DQUERYTYPE_RESOURCEMANAGER=5,D3D_SDK_VERSION=32;
@@ -48,7 +50,8 @@ struct POINT { LONG x=0,y=0; };
 struct RECT { LONG left=0,top=0,right=0,bottom=0; };
 inline void SetRect(RECT *r,LONG l,LONG t,LONG w,LONG h) { *r={l,t,w,h}; }
 struct MINMAXINFO { POINT ptReserved,ptMaxSize,ptMaxPosition,ptMinTrackSize,ptMaxTrackSize; };
-struct D3DCAPS9 { DWORD DevCaps=3,MaxTextureWidth=4096,MaxTextureHeight=4096; };
+struct D3DCAPS9 { DWORD DevCaps=3,MaxTextureWidth=4096,MaxTextureHeight=4096,
+    PixelShaderVersion=0xffff0200u,VertexShaderVersion=0xfffe0101u; };
 struct D3DDISPLAYMODE { UINT Width=0,Height=0,RefreshRate=0; D3DFORMAT Format=D3DFMT_UNKNOWN; };
 struct D3DADAPTER_IDENTIFIER9 { char Driver[128]={},Description[128]={}; struct { DWORD HighPart=0,LowPart=0; } DriverVersion;
     DWORD VendorId=0,DeviceId=0,SubSysId=0,Revision=0,WHQLLevel=0; };
@@ -65,7 +68,7 @@ struct IDirect3DQuery9 { unsigned refs=0; IDirect3DDevice9 *owner=nullptr; unsig
 struct IDirect3DSurface9 { unsigned refs=0; IDirect3DDevice9 *owner=nullptr; HRESULT GetDesc(D3DSURFACE_DESC *); unsigned Release(); };
 struct IDirect3DDevice9 {
     unsigned refs=0,identifier=0; UINT adapter=0; D3DDEVTYPE type=D3DDEVTYPE_HAL; DWORD creationFlags=0;
-    HRESULT Reset(D3DPRESENT_PARAMETERS *); HRESULT GetDeviceCaps(D3DCAPS9 *);
+    HRESULT Reset(D3DPRESENT_PARAMETERS *); HRESULT TestCooperativeLevel(); HRESULT GetDeviceCaps(D3DCAPS9 *);
     HRESULT GetBackBuffer(UINT,UINT,int,IDirect3DSurface9 **); HRESULT CreateQuery(int,IDirect3DQuery9 **);
     BOOL ShowCursor(BOOL); void SetCursorPosition(int,int,DWORD); unsigned GetAvailableTextureMem(); unsigned Release();
 };
@@ -128,4 +131,14 @@ struct TestConsole { void FatalError(BOOL,int,int) { throw std::runtime_error("f
 struct TestShell { void TriggerQuit(); }; extern TestShell LT;
 void SetSetupMessage(int);
 #include "../../platform/public/d3dapp.h"
+#ifdef CE_VERSION
+#include "../../game/ce_graphics_policy.h"
+#ifndef BEA_GRAPHICS_POLICY_TEST
+// These display/recovery fixtures have an inactive CE graphics policy. The graphics suite links the real policy.
+inline bool PortCeGraphicsPolicyActive() { return false; }
+inline bool PortCeGraphicsFloatTargetRequired() { return false; }
+inline void PortCeGraphicsBeginDevice(unsigned, unsigned, bool, bool) {}
+inline void PortCeGraphicsFinishDevice(bool) {}
+#endif
+#endif
 #endif

@@ -305,13 +305,15 @@ float PortHudOriginal() { return gHudOriginal; }
 // or not at all and no menu item felt the mouse. While the game's own mouse is released (it is, in a menu), the layer is on (not in a replay or a recording) and the commander map, which reads
 // window pixels, is not open, the pointer of those menus is mapped as the front end's (patch 0042's mouse hunks ask).
 #ifdef CE_VERSION
+bool PortCeEditorMousePixels();
+
 bool PortCeCmdMapOpen();	// ce_cmdmap.cpp
 #endif
 void PortUiMouse(int *x, int *y);
 int PortUiMouseMenu(int mouseInputActive)
 {
 #ifdef CE_VERSION
-	return !mouseInputActive && PortCeLayer() && !PortCeCmdMapOpen() ? 1 : 0;
+	return !mouseInputActive && PortCeLayer() && !PortCeCmdMapOpen() && !PortCeEditorMousePixels() ? 1 : 0;
 #else
 	(void)mouseInputActive;
 	return 0;
