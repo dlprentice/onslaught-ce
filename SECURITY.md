@@ -1,5 +1,9 @@
 # Security
 
+Status: active
+Last updated: 2026-11-11
+Summary: how to report a security problem privately, what matters most here, what the program sends over the network, and which versions get fixes.
+
 ## Reporting a problem
 
 Please report security problems privately through GitHub's **Report a vulnerability** form on this repository's

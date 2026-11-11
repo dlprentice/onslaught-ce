@@ -1,0 +1,63 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// The report creation and CUnit::Hit bodies come from the patched source; the collision reports are authored.
+#include <cmath>
+#include <cstdio>
+#include <initializer_list>
+using SINT = int;
+using BOOL = int;
+#define TRUE 1
+#define FALSE 0
+#define THING_TYPE_UNIT 1
+#define THING_TYPE_CAN_BE_WALKED_ON 2
+static int gNetwork;
+extern "C" int CE_LockstepSharing() { return gNetwork; }
+struct FVector {
+    float X,Y,Z; unsigned pad;
+    FVector(float x=0,float y=0,float z=0):X(x),Y(y),Z(z),pad(0x12345678u) {}
+    FVector &operator+=(const FVector &o) { X+=o.X; Y+=o.Y; Z+=o.Z; return *this; }
+    float operator*(const FVector &o) const { return X*o.X+Y*o.Y+Z*o.Z; }
+    void NormaliseXZY() @NORMAL_BODY@
+};
+struct CCollisionReport {
+    int mUnknown00,mNumContacts,other;
+    FVector mNormals[6];
+    CCollisionReport():mUnknown00(1),mNumContacts(0),other(12345) {
+        for(auto &v:mNormals) { v.X=0;v.Y=0;v.Z=-1;v.pad=0x12345678u; }
+    }
+};
+struct CThing { int bits; bool IsA(int type) const { return (bits&type)!=0; } };
+struct CUnit;
+struct CSquad { void Unknown4e6640(CUnit *,CThing *) {} };
+struct Ref { CSquad *ToRead() { return nullptr; } CSquad *operator->() { return nullptr; } };
+struct CBase { void Hit(CThing *,CCollisionReport *) {} };
+struct CUnit:CBase {
+    using SUPERTYPE=CBase;
+    Ref mSquad; int mUnknown248=0,ground=0,object=0;
+    float Gravity() { return 1; }
+    void DeclareOnObject(CThing *) { ++object; }
+    void DeclareOnGround() { ++ground; }
+    void Hit(CThing *,CCollisionReport *);
+};
+void CUnit::Hit(CThing *other_thing,CCollisionReport *report) @HIT_BODY@
+static void run(int network,int scenario) {
+    gNetwork=network;
+@REPORT_INIT@
+    bool cleared=true, preserved=true, pad=true;
+    for(const auto &v:report.mNormals) {
+        cleared &= v.X==0 && v.Y==0 && v.Z==0;
+        preserved &= v.X==0 && v.Y==0 && v.Z==-1;
+        pad &= v.pad==0x12345678u;
+    }
+    bool metadata=report.mUnknown00==1 && report.mNumContacts==0 && report.other==12345;
+    report.mNumContacts=scenario==3?3:scenario==4?6:scenario==5?1:2;
+    if(scenario==1 || scenario==2 || scenario==3 || scenario==4) {
+        report.mNormals[0]=FVector(1,0,0);
+        report.mNormals[1]=FVector(-.8f,0,-.6f);
+        // A producer writes the third slot before an early return, without incrementing count in scenarios 1 and 2.
+        report.mNormals[2]=FVector(0,0,scenario==2?1.f:-1.f);
+    } else if(scenario==5) report.mNormals[0]=FVector(0,0,-1);
+    CUnit unit;CThing other{THING_TYPE_CAN_BE_WALKED_ON};unit.Hit(&other,&report);
+    int support=unit.ground==unit.object?unit.ground:-1;
+    printf("%d %d %d %d %d %d %d\n",network,scenario,cleared,preserved,pad,metadata,support);
+}
+int main(){for(int network:{0,1})for(int scenario=0;scenario<6;++scenario)run(network,scenario);}

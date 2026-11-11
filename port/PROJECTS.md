@@ -1,10 +1,10 @@
 # CE linked mission projects
 
 Status: experimental source; Linux production link and isolated installed-map runs shown; Windows execution and player acceptance are separate
-Last updated: 2026-11-04
-Summary: a career-independent prototype loads a Toolkit-authored project and repositions existing named objects on an installed map.
+Last updated: 2026-11-11
+Summary: a career-independent prototype loads a Companion-authored project and repositions existing named objects on an installed map.
 
-Toolkit's Mission project page keeps authored placement IDs, XYZ coordinates and source text in a
+The Mission project page of the Companion app (in [Onslaught-Career-Editor](https://github.com/dlprentice/Onslaught-Career-Editor), called the Toolkit in its guides) keeps authored placement IDs, XYZ coordinates and source text in a
 `.ceproject` document. Linking an installed map adds version 2's `map` record. Opening and saving an
 unlinked version-1 document preserves that earlier format.
 
@@ -102,7 +102,7 @@ the build does, compiles the real runtime owner in C++14,
 and extracts the actual launch/world/career entry hooks into an authored fixture. It checks coordinate
 application before object initialization, refusal paths, the acceptance of a binding no placement uses, ordinary-mode
 behavior, career fences and unchanged authored input files. Compiling causal controls must fail their intended
-assertions. The optional `--project` argument accepts only the exact authored fixture published by Toolkit's
+assertions. The optional `--project` argument accepts only the exact authored fixture published by the Companion's
 `CeMissionRuntimeLinkTests` through its production file adapter, allowing a connected editor-save → CE-loader check
 without retail data.
 
@@ -114,7 +114,7 @@ main's queue stands without them, and in a build with the network each card writ
 network career guard, with the project's storage guard right after it.
 
 ```sh
-python3 port/tools/run_ce_project_tests.py --help    # lab-only: an installed game copy, gdb and the offscreen runner
+python3 port/tools/run_ce_project_tests.py --help    # lab-only, and not in this tree: an installed game copy, gdb and the offscreen runner
 ```
 
 That runner holds a frozen production binary to an installed map, keeping names, coordinates and frames in ignored

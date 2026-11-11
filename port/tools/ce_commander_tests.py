@@ -150,7 +150,10 @@ def function(text, head):
 
 # The map's one change to DXEngine.cpp's PostRender: its own declaration (so that the patch does not lean on the lines other patches add beside it), the mirror-pass guard
 # and the call, after the block that draws the interface and the notes of the other CE patches.
-RENDER_BLOCK = r"#ifdef CE_VERSION\n\tvoid PortCeCmdRender\(\);[^\n]*\n\tif \(!gMirrorPass\)\n\t\tPortCeCmdRender\(\);[^\n]*\n(?:\t\tPortCeEditorRender\(\);[^\n]*\n)?#endif\n"
+# The map's call alone under the mirror-pass test (this patch by itself), or braced together with the map editor's overlay
+# call (patch 0206): never the editor call after the unbraced test, where it would run in the mirrored pass too.
+RENDER_BLOCK = (r"#ifdef CE_VERSION\n\tvoid PortCeCmdRender\(\);[^\n]*\n\tif \(!gMirrorPass\)\n"
+                r"(?:\t\tPortCeCmdRender\(\);[^\n]*\n|\t\{\n\t\tPortCeCmdRender\(\);[^\n]*\n\t\tPortCeEditorRender\(\);[^\n]*\n\t\}\n)#endif\n")
 
 
 def check_keys(map_text):
@@ -390,7 +393,18 @@ class Mutants(unittest.TestCase):
             check_placement(files)
 
     def test_map_drawn_in_the_mirror_pass(self):
-        files = self.mutate("DXEngine.cpp", "\tif (!gMirrorPass)\n\t\tPortCeCmdRender();", "\tPortCeCmdRender();")
+        braced = "\tif (!gMirrorPass)\n\t{\n\t\tPortCeCmdRender();"
+        if braced in self.files["DXEngine.cpp"]:
+            files = self.mutate("DXEngine.cpp", braced, "\t{\n\t\tPortCeCmdRender();")
+        else:
+            files = self.mutate("DXEngine.cpp", "\tif (!gMirrorPass)\n\t\tPortCeCmdRender();", "\tPortCeCmdRender();")
+        with self.assertRaises((AssertionError, ValueError)):
+            check_placement(files)
+
+    def test_editor_overlay_after_the_unbraced_mirror_test(self):
+        # patch 0206 as it once was: the editor call after the map's unbraced test, indented as if guarded
+        files = self.mutate("DXEngine.cpp", "\tif (!gMirrorPass)\n\t{\n\t\tPortCeCmdRender();", "\tif (!gMirrorPass)\n\t\tPortCeCmdRender();")
+        files["DXEngine.cpp"] = files["DXEngine.cpp"].replace("\t\tPortCeEditorRender();\n\t}\n", "\t\tPortCeEditorRender();\n", 1)
         with self.assertRaises((AssertionError, ValueError)):
             check_placement(files)
 

@@ -60,7 +60,8 @@ static float testPixelDensity = 1.f;
 static bool testWideModes = false;
 static float TestPixelDensity(SDL_Window *) { return testPixelDensity; }
 static SDL_Window *TestMouseFocus() { return focused ? testWindow : nullptr; }
-static SDL_MouseButtonFlags TestGlobalMouse(float *x, float *y) { if (x) *x = 2300; if (y) *y = 300; return 0; }
+static float testGlobalX = 2300, testGlobalY = 300;	// the pointer's desktop position
+static SDL_MouseButtonFlags TestGlobalMouse(float *x, float *y) { if (x) *x = testGlobalX; if (y) *y = testGlobalY; return 0; }
 static SDL_MouseButtonFlags TestWindowMouse(float *x, float *y) { if (x) *x = 380; if (y) *y = 300; return 0; }
 static SDL_WindowFlags TestWindowFlags(SDL_Window *) {
     SDL_WindowFlags captured = focused ? SDL_WINDOW_INPUT_FOCUS : 0;
@@ -1342,6 +1343,53 @@ int main(int argc, char **argv) {
             CHECK(MOUSE_BUTTONS[0].mX == 100 && MOUSE_BUTTONS[0].mY == 50);
         } else {
             CHECK(MOUSE_X == 111 && MOUSE_Y == 222);						// the game's own mouse is on (a walker's mouse look): its accumulated position is left alone
+        }
+    } else if (!strncmp(test, "window-mode-pointer", 19)) {
+        // CE's Window mode switch moves and resizes the window under a pointer the player has not touched. The window
+        // system then reports a move (the pointer's position in the window changed; the native Windows rehearsal showed
+        // one), which set the game's mouse-moved latch, and the pause menu's options list highlighted the row under the
+        // pointer. These cases send that report through the real window.cpp and mouse message handler: -still is the
+        // defect (the latch must stay clear), -moves the control (a real move after the switch is a move at once),
+        // -display a display mode change that moved the pointer during the switch, -none no switch (reports unchanged).
+        Device *mouse = Make<Device>(MOUSE, 0);
+        mouse->SetCooperativeLevel(MainWindow(), DISCL_EXCLUSIVE | DISCL_FOREGROUND);
+        CHECK(SUCCEEDED(mouse->Acquire())); sMouse = mouse;
+        CHECK(SUCCEEDED(ShutdownMouse()));
+        Drain();
+        gMenuMouse = 1;
+        PushMouseAt(SDL_EVENT_MOUSE_MOTION, 640, 360); Drain();			// the player's last real move, before the switch
+        CHECK(sMouseMoved && MOUSE_X == 320 && MOUSE_Y == 181);
+        sMouseMoved = false;											// a later frame: the game clears the latch each frame
+        bool hold = strcmp(test, "window-mode-pointer-none") != 0;
+#if POINTER_HOLD_API && defined(CE_VERSION)
+        if (hold) PortHoldPointerForWindowChange(false);				// d3d9hooks' window mode request
+        if (!strcmp(test, "window-mode-pointer-display")) { testGlobalX = 1150; testGlobalY = 150; }	// the new display mode moved it
+        if (hold) PortHoldPointerForWindowChange(true);				// its commit
+#else
+        if (!strcmp(test, "window-mode-pointer-display")) { testGlobalX = 1150; testGlobalY = 150; }
+#endif
+        PushMouseAt(SDL_EVENT_MOUSE_MOTION, 900, 500); Drain();			// the report after the switch: new window position, same pointer
+        if (!hold) {
+            CHECK(sMouseMoved && MOUSE_X == 450 && MOUSE_Y == 251);	// without a switch every report is a move, as before
+        } else {
+            CHECK(!sMouseMoved && MOUSE_X == 320 && MOUSE_Y == 181);	// not a move: the highlight stays where the keyboard left it
+            PushMouseAt(SDL_EVENT_MOUSE_MOTION, 901, 500); Drain();		// a second report, the pointer still not moved
+            CHECK(!sMouseMoved && MOUSE_X == 320 && MOUSE_Y == 181);
+            if (!strcmp(test, "window-mode-pointer-display")) {
+                testGlobalX = 2300; testGlobalY = 300;					// the position from before the switch is held too
+                PushMouseAt(SDL_EVENT_MOUSE_MOTION, 902, 500); Drain();
+                CHECK(!sMouseMoved && MOUSE_X == 320 && MOUSE_Y == 181);
+            }
+            if (!strcmp(test, "window-mode-pointer-moves") || !strcmp(test, "window-mode-pointer-display")) {
+                testGlobalX += 4;											// the player moves the mouse: hover at once
+                PushMouseAt(SDL_EVENT_MOUSE_MOTION, 904, 500); Drain();
+                CHECK(sMouseMoved && MOUSE_X == 452 && MOUSE_Y == 251);
+                sMouseMoved = false; testGlobalX -= 4;						// and back to the held position: the hold has ended
+                PushMouseAt(SDL_EVENT_MOUSE_MOTION, 900, 500); Drain();
+                CHECK(sMouseMoved && MOUSE_X == 450 && MOUSE_Y == 251);
+            }
+            PushMouseAt(SDL_EVENT_MOUSE_BUTTON_DOWN, 900, 500, SDL_BUTTON_LEFT); Drain();	// a click without a move is judged where the pointer is
+            CHECK(MOUSE_X == 450 && MOUSE_Y == 251 && MOUSE_BUTTONS[0].mDown);
         }
     } else if (!strncmp(test, "pause-", 6)) {
         Device *mouse = Make<Device>(MOUSE, 0);

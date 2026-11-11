@@ -1,10 +1,16 @@
 # Contributing
 
 Status: active
-Last updated: 2026-11-06
+Last updated: 2026-11-11
 Summary: where each kind of work goes, what a first contribution needs and runs, how a pull request on this generated repository is taken in, the areas still changing quickly, and the evidence boundaries.
 
 Thank you for your interest. Please read this before opening an issue or a pull request.
+
+Everyone taking part follows the [Code of Conduct](CODE_OF_CONDUCT.md).
+
+Not sure where to start? Ask in [Discussions](https://github.com/dlprentice/onslaught-ce/discussions), or read
+[Useful contributions](#useful-contributions) below; issues labelled `good first issue` or `help wanted` are
+worth a look when there are any. A first change can be as small as a corrected sentence in a guide.
 
 ## Where to contribute
 
@@ -28,7 +34,8 @@ Everyone contributes by fork and pull request. No invitation, collaborator acces
 needed, and no response time is promised.
 
 Questions and ideas: https://github.com/dlprentice/onslaught-ce/discussions
-(problems go to this repository's Issues, using the problem report form).
+(problems go to this repository's Issues, using the problem report form). Discussions, Issues and the private
+security form in [SECURITY.md](SECURITY.md) are the ways to reach the maintainer.
 
 ## How a pull request is taken in
 
@@ -94,8 +101,8 @@ before starting larger work in them, so the change is not made against code that
 
 ## Related repositories
 
-The former single repository now has separate public owners, listed in [Where to contribute](#where-to-contribute).
-Onslaught CE is not a combined build of them. Read the owner's own contribution guide and evidence for work there;
+The project's public repositories are listed in [Where to contribute](#where-to-contribute). Onslaught CE is not a
+combined build of them. Read the owner's own contribution guide and evidence for work there;
 planned multiplayer, editor or commander features are not automatically available in a published package. You only
 need to clone and set up the repositories your task touches. For Companion work, follow
 [its setup](https://github.com/dlprentice/Onslaught-Career-Editor#build-and-run); for the rebuild,

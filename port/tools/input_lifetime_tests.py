@@ -20,6 +20,7 @@ import sys
 import tempfile
 
 import deps
+import quiet_crash
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import build
 from window_tests import private_ui_compile_args
@@ -57,7 +58,8 @@ CASES = (
     'window-minimize-isolated-wheel-inactive-restore',
     "menu-click-left", "menu-click-motion", "menu-click-move-away", "menu-click-focus", "menu-click-right", "menu-click-middle",
          "menu-click-hidpi", "menu-click-43-hidpi", "menu-click-geometry-change", "menu-click-active", "menu-click-map", "menu-click-editor", "menu-click-frontend", "menu-click-off",
-         "menu-click-record", "menu-click-tape", "menu-click-trap", "menu-click-trap-pass", "menu-click-late-motion", "menu-click-late-motion-off", "menu-click-late-motion-tape", "menu-mouse", "menu-mouse-off", "menu-mouse-active", "pad-acquire", "pad-reacquire", "pad-properties", "pad-axes", "pad-limit", "pad-quick-tap", "pad-edge-order", "pad-edge-chord", "pad-edge-chord-pulses",
+         "menu-click-record", "menu-click-tape", "menu-click-trap", "menu-click-trap-pass", "menu-click-late-motion", "menu-click-late-motion-off", "menu-click-late-motion-tape", "menu-mouse", "menu-mouse-off", "menu-mouse-active",
+         "window-mode-pointer-still", "window-mode-pointer-moves", "window-mode-pointer-display", "window-mode-pointer-none", "pad-acquire", "pad-reacquire", "pad-properties", "pad-axes", "pad-limit", "pad-quick-tap", "pad-edge-order", "pad-edge-chord", "pad-edge-chord-pulses",
          "pad-edge-overflow", "pad-edge-event-overflow", "pad-edge-overflow-focus", "pad-edge-focus", "pad-edge-stale-focus", "pad-edge-hotplug", "pad-edge-hotplug-two",
          "pad-edge-two", "pad-edge-cross-binding", "pad-edge-two-consumers", "pad-edge-repeat-consumer", "pad-edge-split-two",
          "pad-edge-no-poll-held", "pad-edge-duplicate-binding", "pad-edge-no-watch", "pad-edge-missing-focus-event",
@@ -161,6 +163,9 @@ def main():
             (out / name).write_bytes(data)
             shims[name] = sha(data)
         receipt["shims_sha256"] = shims
+        # An older window.cpp (--source-root) has no pointer hold: the window-mode-pointer cases then show the defect.
+        pointer_hold = b"void PortHoldPointerForWindowChange(bool after)" in (out / "window.cpp").read_bytes()
+        receipt["pointer_hold_API_present"] = pointer_hold
         driver = (ROOT / "port/tools/tests/input_lifetime_driver.cpp").read_text()
         ce_layer = definition((args.source_root / "port/platform/common/ce.cpp").read_text(), r"bool PortCeLayer\(\)")
         receipt["ce_layer_sha256"] = sha(ce_layer.encode())
@@ -219,7 +224,7 @@ def main():
         command = [str(deps.DATA / "llvm/bin/clang++"), "--target=i686-pc-linux-gnu", "-m32", "-std=c++17",
                    "-ffunction-sections", "-fdata-sections", "-Wl,--gc-sections", "-fshort-wchar",
                    "-fms-extensions", "-fno-autolink", "-w", "-O2" if args.optimize else "-O0",
-                   *([] if args.faithful else ['-DCE_VERSION="input-test"']), *(['-DCE_EDGE_TESTS'] if edge_test else []),
+                   *([] if args.faithful else ['-DCE_VERSION="input-test"']), *(['-DCE_EDGE_TESTS'] if edge_test else []), f"-DPOINTER_HOLD_API={int(pointer_hold)}",
                    f"-I{deps.PORT / 'include'}", f"-I{deps.PORT / 'include/linux'}", f"-I{deps.DATA / 'dxvk-native/usr/include/dxvk'}",
                    f"-I{deps.PREFIX / 'include'}", f"-I{args.source_root / 'port/platform/common'}",
                    str(cpp), f"-L{deps.PREFIX / 'lib'}", "-lSDL3", f"-Wl,-rpath,{deps.PREFIX / 'lib'}", "-o", str(binary)]
@@ -231,7 +236,7 @@ def main():
         env = {key: value for key, value in os.environ.items() if not key.startswith(("BEA_PORT_", "SDL_"))}
         env.update(SDL_VIDEO_DRIVER="dummy", SDL_AUDIO_DRIVER="dummy", SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS="1")
         for case in args.case or CASES:
-            result = subprocess.run([str(binary), case], env=env, capture_output=True, text=True, timeout=10)
+            result = quiet_crash.run([str(binary), case], env=env, capture_output=True, text=True, timeout=10)
             observation = {"case": case, "exit": result.returncode, "stdout": result.stdout,
                            "stderr": result.stderr, "pass": result.returncode == 0}
 

@@ -48,6 +48,7 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'port'))
 import build
+import quiet_crash
 
 PATCH = '0220-ce-dodge-assist.patch'
 
@@ -171,7 +172,7 @@ def main():
 
     def run(binary, mode, wanted=0, message=''):
         env = dict(os.environ, ASAN_OPTIONS='detect_leaks=1:abort_on_error=1', UBSAN_OPTIONS='halt_on_error=1')
-        p = subprocess.run([str(binary), mode], capture_output=True, text=True, env=env, timeout=120)
+        p = quiet_crash.run([str(binary), mode], capture_output=True, text=True, env=env, timeout=120)
         ok = p.returncode == wanted and (not message or message in p.stderr)
         results.append({'mode': mode, 'binary': binary.parent.name, 'expected': wanted, 'exit': p.returncode, 'stdout': p.stdout.strip()[:300],
                         'stderr': p.stderr.strip()[:300], 'passed': ok})
@@ -189,8 +190,8 @@ def main():
     for mode in ([] if only else MODES):
         run(with_patch, mode)
     def digest(binary, mode):
-        p = subprocess.run([str(binary), mode], capture_output=True, text=True, timeout=120,
-                           env=dict(os.environ, ASAN_OPTIONS='detect_leaks=1:abort_on_error=1', UBSAN_OPTIONS='halt_on_error=1'))
+        p = quiet_crash.run([str(binary), mode], capture_output=True, text=True, timeout=120,
+                            env=dict(os.environ, ASAN_OPTIONS='detect_leaks=1:abort_on_error=1', UBSAN_OPTIONS='halt_on_error=1'))
         return p.returncode, [l for l in p.stdout.splitlines() if l.startswith(mode + ' ')], p.stderr
 
     base_digest = {}

@@ -58,6 +58,9 @@ bool PortDevLog(){return false;}
 void PortSessionLog(int,bool error,const char *,...){errors+=error;}
 static unsigned gBoxW=1920,gBoxH=1080;
 static SDL_Window *gBoxWindow=&mainWindow;
+// window.cpp's pointer hold (input_lifetime_tests' window-mode-pointer cases run the real one): counted here.
+static int holdsBefore,holdsAfter;
+void PortHoldPointerForWindowChange(bool after){(after?holdsAfter:holdsBefore)++;}
 #include "runtime_display_window.inc"
 static void check(bool yes,const char *why){if(!yes){fprintf(stderr,"FAIL: %s\n",why);exit(2);}}
 static void checkOriginal(){
@@ -70,10 +73,12 @@ int main(int argc,char **argv){
     if(argc!=2)return 3;std::string what=argv[1];
     if(what=="windowed"){
         check(PortCeDisplayWindowBegin(handle,1,1920,1080)==1,"windowed preparation accepted");
+        check(holdsBefore==1&&holdsAfter==0,"pointer held before the window changes");
         check(!mainWindow.fullscreen&&mainWindow.w==1536&&mainWindow.h==864,"pixel resolution converted to logical size");
         mainWindow.relative=false;visible=true;gBoxW=gBoxH=0;gBoxWindow=nullptr;
         check(PortCeDisplayWindowReady()==1&&ceDisplayWindow.active,"input restored before settings commit, snapshot retained");
         check(PortCeDisplayWindowEnd(1)==1,"commit accepted");
+        check(holdsBefore==1&&holdsAfter==1,"pointer hold extended at commit");
         check(mainWindow.relative&&visible&&!mainWindow.fullscreen,"relative input preserved and new presentation retained");
         check(gBoxW==0&&gBoxH==0,"committed mouse mapping retained");
     }else if(what=="fullscreen"){
@@ -83,10 +88,12 @@ int main(int argc,char **argv){
         mainWindow.fullscreen=true;
         check(PortCeDisplayWindowReady()==1,"fullscreen input ready");
         check(PortCeDisplayWindowEnd(1)==1&&mainWindow.fullscreen,"fullscreen commit retained");
+        check(holdsBefore==1&&holdsAfter==1,"fullscreen switch holds the pointer before and after");
     }else if(what=="rollback"){
         check(PortCeDisplayWindowBegin(handle,1,1920,1080)==1,"rollback setup");
         mainWindow.relative=false;visible=true;gBoxW=gBoxH=0;gBoxWindow=nullptr;
         check(PortCeDisplayWindowEnd(0)==1,"rollback accepted");checkOriginal();
+        check(holdsBefore==1&&holdsAfter==1,"rollback keeps the pointer hold");
     }else if(what=="mode-copy"){
         mainWindow.modeSet=true;mainWindow.mode={77,1600,900,60.f};
         check(PortCeDisplayWindowBegin(handle,1,1920,1080)==1,"mode setup");
@@ -96,6 +103,7 @@ int main(int argc,char **argv){
     }else if(what=="nested"){
         check(PortCeDisplayWindowBegin(handle,1,1920,1080)==1,"first transaction");
         int n=writes();check(PortCeDisplayWindowBegin(handle,0,640,480)==0&&writes()==n,"nested request refused before writes");
+        check(holdsBefore==1,"a refused nested request does not renew the hold");
         check(PortCeDisplayWindowEnd(0)==1,"outer snapshot retained");checkOriginal();
     }else if(what=="replacement-id"||what=="replacement-pointer"){
         check(PortCeDisplayWindowBegin(handle,1,1920,1080)==1,"replacement setup");
@@ -177,6 +185,7 @@ int main(int argc,char **argv){
         mainWindow.id=0;check(PortCeDisplayWindowBegin(handle,1,1920,1080)==0,"missing SDL identity");mainWindow.id=7;
         for(float d:{0.f,-1.f,NAN,INFINITY}){mainWindow.density=d;check(PortCeDisplayWindowBegin(handle,1,1920,1080)==0,"invalid density");}
         check(writes()==0&&!ceDisplayWindow.active,"invalid requests have no SDL writes");
+        check(holdsBefore==0&&holdsAfter==0,"refused requests never hold the pointer");
     }else return 3;
     puts("window transaction pass");return 0;
 }

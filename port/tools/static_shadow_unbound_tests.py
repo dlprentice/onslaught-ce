@@ -18,25 +18,21 @@ The level-888 stand-in's Retry (exit 139 before, 0 after) is a run, not this tes
     python3 port/tools/static_shadow_unbound_tests.py
 """
 import re
-import resource
 import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+import quiet_crash
 
 ROOT = Path(__file__).resolve().parents[2]
 PATCH = ROOT / "port/patches/0188-ce-static-shadow-unbound.patch"
 SOURCE = ROOT / "src/StaticShadows.cpp"
 
 
-def no_core():
-    """The stand-in program of a mutant may crash on purpose (a null thing dereferenced). Its core limit is zero, so that a crash of it leaves no core file. (The kernel still tells systemd-coredump of a
-    crash that dumps nothing, and that journals it and raises the desktop's crash notice: so STUBS also catches SIGSEGV itself and exits, and the test asserts that no run dies of a signal.)"""
-    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
-
-
+# The stand-in program of a mutant may crash on purpose (a null thing dereferenced): it runs through quiet_crash, which leaves no core file and no
+# coredumpctl record. (STUBS also catches SIGSEGV itself and exits, and the test asserts that no run dies of a signal.)
 def added_lines(patch_text: str) -> list:
     return [line[1:] for line in patch_text.splitlines() if line.startswith("+") and not line.startswith("+++")]
 
@@ -134,7 +130,7 @@ class RuleTests(unittest.TestCase):
             source.write_text(STUBS.replace("@RULE@", rule))
             built = subprocess.run([compiler, "-std=c++17", "-O0", "-Wall", "-Wextra", "-Werror", "-Wno-unused-parameter", str(source), "-o", str(tmp / "rule")], capture_output=True, text=True)
             self.assertEqual(0, built.returncode, "the stand-in program compiles")
-            ran = subprocess.run([str(tmp / "rule")], capture_output=True, text=True, timeout=10, preexec_fn=no_core)
+            ran = subprocess.run([str(tmp / "rule")], capture_output=True, text=True, timeout=10, preexec_fn=quiet_crash.preexec)
             return ran.returncode, ran.stdout.strip()
         finally:
             shutil.rmtree(tmp, ignore_errors=True)

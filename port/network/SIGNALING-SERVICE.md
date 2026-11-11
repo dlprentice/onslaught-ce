@@ -1,8 +1,8 @@
 # Authenticated signaling and temporary credential delivery
 
-Status: closed-pair source; a closed pilot Worker is deployed and has run pilots 002 and 004; no menu-to-relay pilot has passed yet
-Last updated: 2026-11-07 (a link to a runner script that is not in the tree is removed); earlier: 2026-11-03
-Summary: fixed two-player routes, signed accountless pair admission, a private issuer binding and the HTTPS/client contract compose with durable permits and encrypted storage in authored offline checks.
+Status: closed-pair source; not deployed for public use; no menu-to-relay pilot is recorded in this tree
+Last updated: 2026-11-11
+Summary: fixed two-player routes, signed accountless pair admission, a private issuer binding and the HTTPS/client contract compose with durable permits and encrypted storage in authored offline checks; the checks for the encrypted storage itself are not in this tree.
 
 ## Decision and existing boundary
 
@@ -10,11 +10,9 @@ The first experimental service admits one private, operator-approved pair
 through separate short-lived host and guest capabilities. Players do not need
 registered accounts. A fixed HTTPS API and the existing durable pair/permit
 authority remain the boundary. Cloudflare Access/OAuth is an optional future
-identity route, not a prerequisite for this pair flow. A closed pilot Worker is
-deployed: the r2 bundle, built from the
-[closed_signaling sources](../services/closed_signaling/README.md) on main,
-admitting 24 pair approvals and 96 issuance permits per UTC day. It has run
-pilots 002 and 004, but no menu-to-relay pilot has passed yet. The existing TURN
+identity route, not a prerequisite for this pair flow. The Worker source is in
+[closed_signaling](../services/closed_signaling/README.md); the service is not
+deployed for public use, and this tree records no menu-to-relay pilot. The existing TURN
 product is separate from selecting a broker host, paid Workers plan or identity
 provider; this source performs no account, subscription or deployment operation.
 
@@ -219,8 +217,8 @@ and the two implementations carry different ones:
   keeps its original, deliberately small ceiling: two pair approvals, hence eight
   global issuance permits, per UTC day;
 - the closed-pair Worker ([`worker.mjs`](../services/closed_signaling/worker.mjs),
-  `MAX_APPROVALS_PER_DAY` and `MAX_PERMITS_PER_DAY`) admits 24 approvals and 96
-  reserved issuance permits per UTC day, still one active pair at a time.
+  `MAX_APPROVALS_PER_DAY` and `MAX_PERMITS_PER_DAY`) sets 24 approvals and 96
+  reserved issuance permits per UTC day in its source, still one active pair at a time.
 
 Reserve all four permits in a global durable budget before accepting a pair. An
 approval whose pair is not created leaves no reservation behind: the prototype
@@ -435,33 +433,15 @@ live quota/permit state; a future deployed migration must preserve those
 records under a separately reviewed procedure. Historical fixture databases
 remain unchanged.
 
-The tests scan database, WAL and shared-memory files for synthetic credential,
-record and storage-key markers before and after logical removal, with SQLite
-secure deletion disabled. They check upstream known-answer vectors, tampering,
-row swaps, wrong keys, nonce samples and abrupt process exits at reservation,
-provider-response and encrypted-commit boundaries. Removing encryption makes
-the raw-storage check fail; weakened nonce, tag and binding checks fail their
-controls. Ciphertext may still remain in journals and free pages after expiry.
+The offline checks for this storage, `port/tools/signaling_session_store_tests.py`, are not in this tree, so
+nothing here runs them. The claims in this section that rest on them (scans of the database, WAL and shared-memory
+files for plaintext, known-answer vectors, nonce sampling, tampering and row-swap controls, abrupt-exit cases) cannot be reproduced
+from this repository.
+
+Ciphertext may still remain in journals and free pages after expiry.
 That ciphertext is not securely erased, and a retained storage key can decrypt
 retained ciphertext. Python may also retain in-memory plaintext copies. No
 cryptographic-deletion or complete memory-erasure claim is made.
-
-Run the offline cases from a Linux checkout with the pinned local archive:
-
-```sh
-python3 port/tools/signaling_session_store_tests.py --output local-data/signaling-check \
-  --monocypher-archive ARCHIVE
-```
-
-Use a new output directory. The optional real encrypted-exchange check adds
-`--exchange-source PATH`; its exact source hashes,
-archive URL, licence and SHA-256 are the existing
-[courier fixture pins](../tools/ice_pilot_courier_tests.py). Without the exchange
-source, that optional check is explicitly skipped; the archive is always
-required for encrypted storage. Verification used a network-disabled
-namespace, private HOME/TMPDIR, no desktop/session environment, disabled core
-dumps and bounded CPU/memory. No libjuice agent, provider connection or game
-process is created by this suite.
 
 This is Linux SQLite behavior, not a Cloudflare Durable Objects integration or
 a Windows privacy result. It does not establish OAuth/Access verification,

@@ -617,7 +617,7 @@ public:
 static const char kSpecialThanks[] =
 	"Special Thanks\n\n"
 	"Lost Toys - original game.\n"
-	"Stuart Gillam (Discord: desimbr)\n"
+	"Stuart Gillam\n"
 	"Help, insight, guidance.\n\n"
 	"Early testers: Jeppi,\n"
 	"BermudaMaster and others.\n\n"

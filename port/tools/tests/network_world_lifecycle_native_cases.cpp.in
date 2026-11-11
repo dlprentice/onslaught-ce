@@ -1,0 +1,156 @@
+int main(){
+ RoundResources();
+ CExplosionData pulse; pulse.mName=(char*)"Mech Pulse Hit Large";pulse.mRadius=1;pulse.mDamage=4;pulse.mLight=0;
+ CParticleDescriptor pd{1};CEffect sound;pulse.mParticleA=pulse.mParticleB=pulse.mParticleC=pulse.mParticleD=&pd;pulse.mSoundA=&sound;
+ SPtrSet<CExplosionData>registry;registry.v.push_back(&pulse);UPhysicsManager::mExplosions=&registry;
+ std::vector<uint8_t>birthBytes,deathBytes;CE_WorldLifecycleInfo birthInfo{},deathInfo{};
+ CBattleEngine owner;
+ auto start=[&](int role){reset(role,true);life_enabled=true;life_baseline=1;life_baseline_tick=life_tick=life_committed_tick=100;life_seen_id=49;
+   next_id=50;Binding*b=Bind(&owner,37,17);check(b!=nullptr,"genuine dependency boundary bound");
+   life_keys[0].id=37;life_keys[0].size=4;memcpy(life_keys[0].bytes,"BE2!",4);life_key_count=1;};
+ // Actual proof/Start/API bodies; exact WriteCore bytes, controlled complete-frame header/validation/commit boundaries.
+ CBattleEngine firstOwner;
+ CE_WorldFrame baseline{};baseline.count=2;for(unsigned i=0;i<2;++i){Entity&e=baseline.entities[i];e.core.id=36+i;e.core.kind=ENGINE_THING;e.core.initial_number=16+i;e.core.player=i+1;e.core.flags=TF_IN_MAP_WHO;Name(e.core.class_name,"CBattleEngine");Name(e.core.mesh,"local-engine.msh");Name(e.engine.cockpit.mesh,"local-cockpit.msh");e.engine.cockpit.schema=123+i;for(unsigned j=0;j<9;++j)e.core.orientation.v[j]=e.core.old_orientation.v[j]=(j%4==0?1.f:0.f);}
+ auto owners=[&](int role){reset(role,true);Bind(&firstOwner,36,16);Bind(&owner,37,17);captured_sequence=2;captured_tick=101;published_frame=published_tick=0;applied_sequence=applied_tick=0;};
+ owners(CE_WORLD_HOST);
+ check(!CE_WorldLifecycleStart(&baseline)&&!life_enabled,"host Start requires exact local baseline publication");
+ uint8_t encodedBaseline[1000];uint32_t encodedSize=0;check(CE_WorldEncode(&baseline,encodedBaseline,sizeof encodedBaseline,&encodedSize)&&!life_proof_valid,"Encode alone cannot mint local baseline proof");
+ check(CE_WorldFramePublished(&baseline)&&life_proof_valid&&life_proof_sequence==1,"exact successful publication retains candidate byte proof");
+ CE_WorldFrame changed=baseline;changed.entities[1].core.pos.v[0]=123.25f;
+ check(!CE_WorldLifecycleStart(&changed)&&!life_enabled&&life_proof_valid,"same epoch sequence tick changed Core pose refuses prior-proof mismatch");
+ changed=baseline;changed.score=123;check(!CE_WorldLifecycleStart(&changed)&&!life_enabled,"same epoch sequence tick changed scalar refuses prior-proof mismatch");
+ check(CE_WorldEncode(&changed,encodedBaseline,sizeof encodedBaseline,&encodedSize)&&!CE_WorldLifecycleStart(&changed),"Encode Send0 cannot replace the retained successful publication");
+ CE_WorldFrame later=baseline;later.sequence=2;later.tick=101;later.entities[1].core.pos.v[0]=20;
+ check(CE_WorldEncode(&later,encodedBaseline,sizeof encodedBaseline,&encodedSize)&&!CE_WorldLifecycleStart(&later)&&life_proof_sequence==1,"newer capture Encode Send0 leaves earlier successful candidate intact");
+ // Initial acquisition rechecks every world-owned failure latch and the live loaded/event context.
+ birth_failed=true;check(!CE_WorldLifecycleStart(&baseline)&&!life_enabled&&life_proof_valid,"failed birth latch refuses without erasing prior byte proof");birth_failed=false;
+ life_failed=true;check(!CE_WorldLifecycleStart(&baseline)&&!life_enabled,"failed lifecycle latch refuses initial admission");life_failed=false;
+ poisoned=true;check(!CE_WorldLifecycleStart(&baseline)&&!life_enabled,"poisoned replica cannot acquire lifecycle ownership");poisoned=false;
+ applying=true;check(!CE_WorldLifecycleStart(&baseline)&&!life_enabled,"in-progress Apply cannot acquire lifecycle ownership");applying=false;
+ GAME.level=110;check(!CE_WorldLifecycleStart(&baseline)&&!life_enabled,"current loaded level mismatch refuses initial admission");GAME.level=852;
+ GAME.players=1;check(!CE_WorldLifecycleStart(&baseline)&&!life_enabled,"current player count mismatch refuses initial admission");GAME.players=2;
+ GAME.state=GAME_STATE_NOT_RUNNING;check(!CE_WorldLifecycleStart(&baseline)&&!life_enabled,"unloaded frontend phase refuses initial admission");GAME.state=GAME_STATE_LEVEL_WON;
+ check(!CE_WorldLifecycleStart(&baseline)&&!life_enabled,"terminal current phase refuses initial admission");GAME.state=GAME_STATE_PLAYING;
+ GAME.mQuit=1;check(!CE_WorldLifecycleStart(&baseline)&&!life_enabled,"pending quit refuses initial admission");GAME.mQuit=QT_NONE;
+ EVENT_MANAGER.valid=false;check(!CE_WorldLifecycleStart(&baseline)&&!life_enabled,"invalid event epoch refuses initial admission");EVENT_MANAGER.valid=true;EVENT_MANAGER.frame=99;
+ check(!CE_WorldLifecycleStart(&baseline)&&!life_enabled,"rewound event epoch refuses initial admission");EVENT_MANAGER.frame=100;
+ life_pending=&owner;check(!CE_WorldLifecycleStart(&baseline)&&!life_enabled&&life_pending==&owner,"pending entry refuses initial admission without clearing its token");life_pending=nullptr;
+ life_creating=true;check(!CE_WorldLifecycleStart(&baseline)&&!life_enabled,"controlled Init token refuses initial admission");life_creating=false;
+ creating_explosion=true;check(!CE_WorldLifecycleStart(&baseline)&&!life_enabled,"factory creation token refuses initial admission");creating_explosion=false;
+ ExplosionBirth pendingBirth{};applying_birth=&pendingBirth;check(!CE_WorldLifecycleStart(&baseline)&&!life_enabled,"pending birth pointer refuses initial admission");applying_birth=nullptr;
+ birth_spawn=(CExplosion*)&owner;check(!CE_WorldLifecycleStart(&baseline)&&!life_enabled,"pending native spawn pointer refuses initial admission");birth_spawn=nullptr;
+ birth_generated=1;check(!CE_WorldLifecycleStart(&baseline)&&!life_enabled,"pre-baseline history cannot be erased by Start");birth_generated=0;
+ check(CE_WorldLifecycleStart(&baseline)&&life_enabled&&life_key_count==2,"original published bytes admit exact engine keys without inferring peer ACK");
+ later.lifecycle_baseline=1;check(CE_WorldFramePublished(&later)&&life_proof_sequence==1&&CE_WorldLifecycleStart(&baseline),"lifecycle-enabled later publication cannot overwrite initial owned baseline proof");
+ life_pending=&owner;life_count=1;life_generated=1;check(CE_WorldLifecycleStart(&baseline)&&life_pending==&owner&&life_count==1&&life_generated==1,"repeated identical Start retains pending token and queue ownership");
+ baseline.encoding[4]^=1;check(!CE_WorldLifecycleStart(&baseline)&&life_pending==&owner&&life_count==1,"different baseline bytes cannot reset active lifecycle ownership");baseline.encoding[4]^=1;
+ baseline.epoch=8;check(!CE_WorldLifecycleStart(&baseline)&&life_pending==&owner,"foreign epoch Start cannot replace active ownership");baseline.epoch=7;
+ life_pending=nullptr;binding_count=0;owners(CE_WORLD_HOST);later.lifecycle_baseline=0;EVENT_MANAGER.frame=101;
+ check(CE_WorldFramePublished(&baseline)&&CE_WorldFramePublished(&later)&&life_proof_sequence==2,"latest successful ordinary pre-Start publication is the sole bounded candidate");
+ check(!CE_WorldLifecycleStart(&baseline)&&CE_WorldLifecycleStart(&later),"superseded pre-Start candidate refuses while latest exact bytes admit");
+ binding_count=0;owners(CE_WORLD_REPLICA);applied_sequence=1;applied_tick=100;
+ check(!CE_WorldLifecycleStart(&baseline)&&!life_enabled,"replica metadata without whole Apply bytes cannot mint proof");applied_sequence=applied_tick=0;
+ check(CE_WorldApply(&baseline)&&life_proof_valid&&life_proof_sequence==1,"only successful whole Apply retains replica candidate byte proof");
+ changed=baseline;changed.entities[1].core.pos.v[0]=123.25f;check(!CE_WorldLifecycleStart(&changed),"replica same metadata altered Core pose refuses after whole Apply");
+ changed=baseline;changed.score=123;check(!CE_WorldLifecycleStart(&changed),"replica same metadata altered scalar refuses after whole Apply");
+ check(CE_WorldLifecycleStart(&baseline)&&life_enabled,"replica original wholly applied baseline bytes admit");
+ later.lifecycle_baseline=1;check(CE_WorldApply(&later)&&life_proof_sequence==1&&CE_WorldLifecycleStart(&baseline),"later active whole Apply cannot replace initial owned baseline proof");
+ binding_count=0;owners(CE_WORLD_REPLICA);check(CE_WorldApply(&baseline),"establish candidate before failed Apply");changed=baseline;changed.sequence=2;changed.tick=101;changed.commit=false;
+ check(!CE_WorldApply(&changed)&&!life_proof_valid&&!CE_WorldLifecycleStart(&baseline),"failed Apply invalidates prior candidate and cannot mint a replacement");
+ binding_count=0;owners(CE_WORLD_REPLICA);check(CE_WorldApply(&baseline),"establish candidate before partial Apply");changed.partial=true;
+ check(!CE_WorldApply(&changed)&&poisoned&&!life_proof_valid&&!CE_WorldLifecycleStart(&baseline),"partial poisoned Apply cannot authorize old or new baseline bytes");
+ binding_count=0;owners(CE_WORLD_REPLICA);check(CE_WorldApply(&baseline),"establish candidate before null Apply");check(!CE_WorldApply(nullptr)&&!life_proof_valid&&!CE_WorldLifecycleStart(&baseline),"null failed Apply cannot leave a reusable baseline proof");
+ // Real pre-Start native Entry failure before Bind/serial: the preserved prior publication is insufficient.
+ binding_count=0;owners(CE_WORLD_HOST);check(CE_WorldFramePublished(&baseline),"retain original publication before unsupported native Init");
+ CExplosion*failedEntry=UPhysicsManager::SpawnExplosion(0);CExplosionInitThing rejectedInit;rejectedInit.mBehaviour=&pulse;rejectedInit.mPos={1,2,-1};strcpy(rejectedInit.mName,"unsupported-name");failedEntry->Init(&rejectedInit);
+ check(birth_failed&&!birth_count&&!birth_generated&&!birth_published&&!birth_ack&&!birth_applied&&!life_failed&&!life_pending&&!life_live_count&&life_proof_valid,"actual failed native Entry leaves zero birth counters with prior proof intact");
+ check(!CE_WorldLifecycleStart(&baseline)&&!life_enabled,"actual zero-counter failed native Entry cannot acquire lifecycle ownership");failedEntry->Shutdown();
+ binding_count=0;owners(CE_WORLD_REPLICA);check(CE_WorldApply(&baseline)&&CE_WorldLifecycleStart(&baseline),"establish exact committed candidate before mutation-scope failure");
+ {ApplyScope failedScope;}
+ check(poisoned&&!life_proof_valid&&!CE_WorldLifecycleStart(&baseline),"failed mutation scope invalidates prior byte proof without clearing owned baseline");
+ start(CE_WORLD_HOST);EVENT_MANAGER.frame=101;
+ CExplosion*host=UPhysicsManager::SpawnExplosion(0);CExplosionInitThing init;init.mBehaviour=&pulse;init.mOriginator=&owner;init.mPos={1,2,-1};init.mImportant=TRUE;
+ host->Init(&init);
+ check(!life_failed&&!life_pending&&life_count==1&&life_generated==1&&life_live_count==1,"actual common Init completion produces exactly one capsule");
+ check(entry_calls==1&&ready_calls==1&&base_inits==1&&fx_calls==1&&sounds==1&&lights==1,"actual normal Init keeps original host effects and both seams");
+ uint8_t bytes[1000],again[1000];check(CE_WorldPeekLifecycle(&birthInfo,bytes,sizeof bytes)==1,"actual source birth ready for immutable publication");birthBytes.assign(bytes,bytes+birthInfo.size);
+ LifeRecord decoded{};check(DecodeLife(bytes,birthInfo.size,decoded)&&decoded.birth.tick==101&&decoded.core.pos.v[2]==-1&&decoded.explosion.serial==1,"entry plus post-Init native fields serialized");
+ check(life_count==1&&life_published==0,"Send0 cannot publish or retire");
+ CE_WorldLifecycleAck premature{7,1,1,101};check(CE_WorldAcknowledgeLifecycle(&premature)==-1&&!life_published&&life_count==1,"unpublished ACK cannot retire generated source history");
+ check(CE_WorldLifecyclePublished(&birthInfo)==1&&life_count==1,"exact Send1 publication retains until Apply ACK");
+ EVENT_MANAGER.frame=102;host->Shutdown();
+ check(life_count==2&&life_generated==2&&life_live_count==0&&WORLD.things.v.empty(),"actual Shutdown then destructor emits one explicit despawn");
+ check(CE_WorldPeekLifecycle(&deathInfo,bytes,sizeof bytes)==1&&deathInfo.kind==CE_WORLD_LIFECYCLE_DESPAWN&&deathInfo.source_tick==102,"authoritative removal time retained separately from local FX lifetime");deathBytes.assign(bytes,bytes+deathInfo.size);
+ check(CE_WorldLifecyclePublished(&deathInfo)==1,"publish explicit despawn");
+ CE_WorldLifecycleAck ack{7,1,2,102};ack.epoch=8;check(CE_WorldAcknowledgeLifecycle(&ack)==-1&&life_count==2,"wrong epoch ACK cannot retire");ack.epoch=7;ack.source_tick=103;check(CE_WorldAcknowledgeLifecycle(&ack)==-1&&life_count==2,"future clock ACK cannot retire");ack.source_tick=101;check(CE_WorldAcknowledgeLifecycle(&ack)==-1&&life_count==2,"fresh ACK must name exact published tick");ack.source_tick=102;
+ check(CE_WorldAcknowledgeLifecycle(&ack)==1&&life_count==0&&life_ack==2,"whole Apply proof cumulatively retires published operations");
+ ack.operation=1;ack.source_tick=101;check(CE_WorldAcknowledgeLifecycle(&ack)==1&&life_ack==2&&!life_count,"stale reordered cumulative ACK is idempotent without retirement rollback");
+ check(CE_WorldLifecyclePublished(&birthInfo)==1&&life_ack==2&&!life_count,"late publication of exact retired tuple is idempotent");birthInfo.id++;check(!CE_WorldLifecyclePublished(&birthInfo),"changed retired tuple refuses");birthInfo.id--;
+ start(CE_WORLD_REPLICA);unsigned oldFrame=EVENT_MANAGER.frame;float oldTime=EVENT_MANAGER.GetTime();
+ CE_WorldLifecycleAck out{91,92,93,94};check(!CE_WorldAppliedLifecycle(&out)&&out.epoch==91,"no proof before native Apply");
+ LifeRecord future{};check(DecodeLife(deathBytes.data(),deathBytes.size(),future),"decode future-order adversary");future.info.id=37;uint32_t adversarySize=0;check(EncodeLife(future,bytes,adversarySize),"encode structurally valid but known-owner despawn");
+ check(CE_WorldApplyLifecycle(bytes,adversarySize)==-1&&!allocations&&!fx_calls,"future-order defer cannot hide baseline-owner destruction");
+ CE_WorldFrame deferred{};deferred.count=1;deferred.lifecycle_watermark=1;Entity&entry=deferred.entities[0];entry.core.id=100;entry.core.kind=ROUND_THING;Name(entry.core.class_name,"CRound");Name(entry.round.definition,"Mech Pulse Bolt Medium");entry.round.incarnation=1;check(CENetworkWorldAdapter::RoundDefinition(&selectedRound,entry.round.schema),"selected resource schema for deferred round");
+ check(CENetworkWorldAdapter::FrameResources(deferred),"future-state resource preflight admits known round definition");Name(entry.round.definition,"unknown round");
+ check(!CENetworkWorldAdapter::FrameResources(deferred),"malformed deferred round definition refuses before waiting");entry={};entry.core.id=38;entry.core.initial_number=17;entry.core.kind=ENGINE_THING;Name(entry.core.class_name,"CBattleEngine");
+ check(!CENetworkWorldAdapter::FrameResources(deferred),"deferred state cannot relabel canonical engine ID");entry={};entry.core.id=100;entry.core.kind=EXPLOSION_THING;Name(entry.core.class_name,"CExplosion");entry.explosion=decoded.explosion;
+ check(CENetworkWorldAdapter::FrameResources(deferred),"future-state selected explosion resources preflight before defer");entry.explosion.schema++;
+ check(!CENetworkWorldAdapter::FrameResources(deferred),"malformed deferred explosion fingerprint refuses before waiting");
+ check(CE_WorldApplyLifecycle(deathBytes.data(),deathBytes.size())==0&&allocations==0&&fx_calls==0&&EVENT_MANAGER.frame==oldFrame,"fully valid future-order despawn defers with no Init/clock mutation");
+ check(CE_WorldApplyLifecycle(birthBytes.data(),birthBytes.size())==1,"actual native factory and Init commit one ordered birth");
+ check(EVENT_MANAGER.frame==oldFrame&&EVENT_MANAGER.GetTime()==oldTime&&applied_tick==100&&applied_sequence==1,"lifecycle Apply never rewinds or advances global clock/game frame");
+ check(life_applied==1&&birth_applied==1&&life_live_count==1&&allocations==1&&fx_calls==1&&sounds==1&&events_queued==0,"exactly one native local presentation with authoritative scheduling fenced");
+ check(CE_WorldAppliedLifecycle(&out)==1&&out.operation==1&&out.source_tick==101,"proof appears only after whole native Apply");
+ check(CE_WorldApplyLifecycle(birthBytes.data(),birthBytes.size())==2&&allocations==1&&fx_calls==1,"duplicate has no native Init/effect replay");
+ auto*replica=(CExplosion*)life_live[0].thing;CUnit victim;replica->Hit(&victim,nullptr);float savedRadius=replica->mCurrentRadius;replica->Unknown66();check(replica->mCurrentRadius==savedRadius,"actual replica grow guard preserves authoritative radius");
+ check(damage_calls==0&&kills==0&&base_hits==0&&events_queued==0,"actual direct Hit/grow guards block authoritative callbacks");
+ check(CE_WorldApplyLifecycle(deathBytes.data(),deathBytes.size())==1&&WORLD.things.v.empty()&&life_live_count==0,"authoritative ordered despawn retires real native actor once");
+ check(fx_calls==1&&fx_unlinks==1,"native detached particle link unlinks without guessed Stop/Kill/expiry on actor removal");
+ check(CE_WorldApplyLifecycle(deathBytes.data(),deathBytes.size())==2&&fx_calls==1,"duplicate despawn cannot re-delete or replay FX");
+ check(CE_WorldApplyLifecycle(birthBytes.data(),birthBytes.size())==2&&fx_calls==1,"late exact birth duplicate cannot resurrect despawned actor");
+ binding_count=0;start(CE_WORLD_REPLICA);check(!UPhysicsManager::SpawnExplosion(0)&&!allocations&&!heap_reads&&poisoned,"unrequested native factory refuses before allocation or heap read");
+ // Original source age is retained. It neither gains a fake current tick nor authorizes a backward unseen event.
+ binding_count=0;start(CE_WORLD_REPLICA);applied_tick=life_committed_tick=103;
+ check(CE_WorldApplyLifecycle(birthBytes.data(),birthBytes.size())==-1&&allocations==0&&fx_calls==0,"unseen old event refuses before factory instead of relabeling source age");
+ binding_count=0;start(CE_WORLD_REPLICA);LifeRecord altered{};check(DecodeLife(birthBytes.data(),birthBytes.size(),altered),"decode saved authored source");
+ altered.dependency.bytes[0]^=1;uint32_t size=0;check(EncodeLife(altered,bytes,size),"encode structurally valid foreign dependency");
+ check(CE_WorldApplyLifecycle(bytes,size)==-1&&!allocations&&!fx_calls,"byte-exact baseline dependency refusal precedes irreversible Init");
+ altered.dependency.bytes[0]^=1;altered.definition_schema++;altered.birth.schema++;altered.explosion.schema++;check(EncodeLife(altered,bytes,size),"encode coherent foreign definition fingerprint");
+ check(CE_WorldApplyLifecycle(bytes,size)==-1&&!allocations&&!fx_calls,"foreign definition refusal precedes irreversible Init");
+ // Mutation failure after native Init cannot advance or expose an application-proof watermark.
+ binding_count=0;start(CE_WORLD_REPLICA);compatibility_refusal=true;
+ check(CE_WorldApplyLifecycle(birthBytes.data(),birthBytes.size())==-1&&poisoned&&!life_applied&&!birth_applied,"partial native Apply poisons without watermark advance");
+ out={91,92,93,94};check(!CE_WorldAppliedLifecycle(&out)&&out.epoch==91,"poisoned native Apply cannot ACK an unapplied birth");
+ while(!WORLD.things.v.empty())WORLD.things.v.front()->Shutdown();compatibility_refusal=false;
+ // Source publication of an older object's later despawn cannot lower the birth ceiling.
+ binding_count=0;start(CE_WORLD_HOST);EVENT_MANAGER.frame=101;
+ host=UPhysicsManager::SpawnExplosion(0);host->Init(&init);CExplosion*secondHost=UPhysicsManager::SpawnExplosion(0);secondHost->Init(&init);
+ EVENT_MANAGER.frame=102;host->Shutdown();
+ CE_WorldLifecycleInfo published{};for(unsigned op=1;op<=3;++op){check(CE_WorldPeekLifecycle(&published,bytes,sizeof bytes)==1&&CE_WorldLifecyclePublished(&published),"publish multiple births then older despawn in source order");}
+ check(birth_published==2,"older despawn cannot lower legacy published birth ceiling");secondHost->Shutdown();
+ // Deep arm completion must not read poison-valued native own fields.
+ binding_count=0;start(CE_WORLD_HOST);EVENT_MANAGER.frame=101;host=UPhysicsManager::SpawnExplosion(0);own_sentinel(*host);CExplosionInitThing deep;deep.mBehaviour=&pulse;deep.mPos={1,2,10};deep.mOriginator=&owner;host->Init(&deep);
+ check(life_count==1&&!life_failed&&base_inits==0&&fx_calls==0,"actual deep common completion avoids normal native fields");
+ CE_WorldLifecycleInfo info{};check(CE_WorldPeekLifecycle(&info,bytes,sizeof bytes)==1&&DecodeLife(bytes,info.size,decoded)&&decoded.birth.deep&&decoded.core.pos.v[0]==0,"deep canonical capsule excludes uninitialized own position");host->Shutdown();
+ // Repeated completion is rejected before owned fields are read a second time.
+ binding_count=0;start(CE_WORLD_HOST);EVENT_MANAGER.frame=101;host=UPhysicsManager::SpawnExplosion(0);host->Init(&init);
+ auto beforeRepeat=core_captures;CENetworkWorldAdapter::LifeComplete(host);check(life_failed&&core_captures==beforeRepeat&&life_count==1,"repeated completion cannot capture or append again");host->Shutdown();
+ // The last64 exact operation bytes, not a guessed ID, are duplicate proof.
+ binding_count=0;start(CE_WORLD_REPLICA);LifeRecord loopBirth{},loopDeath{};check(DecodeLife(birthBytes.data(),birthBytes.size(),loopBirth)&&DecodeLife(deathBytes.data(),deathBytes.size(),loopDeath),"decode immutable lifecycle templates");
+ std::vector<uint8_t>lastDuplicate;
+ for(unsigned i=0;i<33;++i){
+   loopBirth.info.operation=2*i+1;loopBirth.info.source_tick=loopBirth.birth.tick=101+2*i;loopBirth.info.id=loopBirth.birth.id=loopBirth.core.id=50+i;
+   loopBirth.birth_serial=loopBirth.birth.serial=loopBirth.explosion.serial=i+1;uint32_t count=0;check(EncodeLife(loopBirth,bytes,count)&&CE_WorldApplyLifecycle(bytes,count)==1,"ordered capsule creates one new native incarnation");
+   loopDeath.info.operation=2*i+2;loopDeath.info.source_tick=102+2*i;loopDeath.info.id=50+i;loopDeath.birth_serial=i+1;
+   check(EncodeLife(loopDeath,bytes,count)&&CE_WorldApplyLifecycle(bytes,count)==1,"ordered capsule retires exact incarnation without a guessed lifetime");lastDuplicate.assign(bytes,bytes+count);
+ }
+ auto effectCount=fx_calls;check(CE_WorldApplyLifecycle(birthBytes.data(),birthBytes.size())==-1&&fx_calls==effectCount,"expired duplicate proof refuses without resurrection");
+ check(CE_WorldApplyLifecycle(lastDuplicate.data(),lastDuplicate.size())==2&&fx_calls==effectCount,"recent exact duplicate remains idempotent at fixed history cap");
+ // Invalidated pending token is checked before any CoreCapture/own-field read.
+ binding_count=0;start(CE_WORLD_HOST);host=UPhysicsManager::SpawnExplosion(0);CENetworkWorldAdapter::ExplosionBirthEntry(host,&init);check(life_pending==host,"entry acquires non-owning pending token");
+ CExplosion*dead=host;delete host;check(life_failed&&!life_pending&&binding_count==1,"direct destruction invalidates pending token and forgets only destroyed binding");
+ auto captures=core_captures;CENetworkWorldAdapter::LifeComplete(dead);check(core_captures==captures&&!life_count,"invalid token completion never dereferences freed object");
+ binding_count=0;LifeReset();check(!life_enabled&&!life_count&&!life_applied,"epoch end clears compact proof/ownership only after native teardown");
+ RoundControls();
+ std::cout<<"PASS compact lifecycle native/API "<<tests<<" assertions\n";return 0;
+}

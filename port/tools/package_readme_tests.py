@@ -17,6 +17,8 @@ import zipfile
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
+# The project README: public/README.md in this repository, README.md at the root of the exported tree.
+PROJECT_README = ROOT / "public/README.md" if (ROOT / "public/README.md").is_file() else ROOT / "README.md"
 spec = importlib.util.spec_from_file_location("ce_package_readme", HERE / "package.py")
 package = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(package)
@@ -169,7 +171,7 @@ class PackageReadmeTests(unittest.TestCase):
         self.assertIn("const int kFreshTerrainDetail = 1;", policy, "Terrain detail distance starts Extended")
         ce = (ROOT / "port/platform/common/ce.cpp").read_text()
         self.assertIn('Unfinished features, off in this release. They may change or break. Set a line to 1 to try one.', ce)
-        public = " ".join((ROOT / "public/README.md").read_text().split())
+        public = " ".join(PROJECT_README.read_text().split())
         self.assertIn("under `[Experimental]` in `ce.ini`", public)
         self.assertIn("**Full models** starts **Off**", public)
         self.assertIn("**Terrain detail distance** starts at **Extended**", public)
@@ -237,7 +239,7 @@ class PackageReadmeTests(unittest.TestCase):
         source = re.sub(r'"\s*"', "", (ROOT / "port/game/ce_frontend.cpp").read_text())     # adjacent string literals joined
         named = set(re.findall(r'([A-Z][a-z]+(?: [a-z]+)*) in the (project )?README', source))
         self.assertTrue({("Your own music", ""), ("Updates", ""), ("Mods", "project ")} <= named, named)
-        public = (ROOT / "public/README.md").read_text()
+        public = PROJECT_README.read_text()
         for name, project in sorted(named):
             with self.subTest(name=name):
                 if project:

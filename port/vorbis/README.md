@@ -1,7 +1,7 @@
 # port/vorbis: retail's Ogg Vorbis decoder, rebuilt
 
 Status: active decoder documentation; dated comparisons retain their original scope
-Last updated: 2026-11-06 (private-tree references and archive paths corrected; earlier: 2026-11-02)
+Last updated: 2026-11-06
 Summary: decoder provenance, pinned prebuilt libraries, optional regeneration and historical comparison evidence.
 
 Some files and commands named on this page (`tests/`, `probe/`, `run.py`, `check_tape.sh`, `replay_session.py`, `PLAN.md`, `PARITY.md`, `tools/decomp.py`, `docs/release.md`, `tools/release_rc.py`) live only in the private working repository and are not in this public tree; they are named so that the description is complete. The decompilation's public export is [onslaught-decomp](https://github.com/dlprentice/onslaught-decomp).

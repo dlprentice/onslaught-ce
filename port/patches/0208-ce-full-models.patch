@@ -85,15 +85,18 @@
  	FVector	cam = ENGINE.GetCamera()->GetPos();
  	FVector	pos;
  	pos = mThing->GetRenderPos();
-@@ -118,6 +120,7 @@
+@@ -118,7 +120,10 @@
  	if ((!close && !falling) || FORCE_OBJECT_IMPOSTERS)
  	{
  		if ((slope >= mMaxSlope) || (((CTree *)mThing)->mFalling))
++		{
 +			CeModelQualityCount(CE_MODEL_TREE_IMPOSTOR);
  			mImposter->Render(mThing, 255, 0);
++		}
  		mImposterDrawn = TRUE;
  	}
-@@ -142,7 +145,7 @@
+ }
+@@ -142,7 +147,7 @@
  	float	beyond = cam.X * cam.X + cam.Y * cam.Y - TREE_MESH_DISTANCE * TREE_MESH_DISTANCE;
  	BOOL	falling = (((CTree *)mThing)->mFalling != NULL);
  	BOOL	close = (beyond <= 0);
@@ -102,7 +105,7 @@
  		return;
  
  	FMatrix	ori;
-@@ -182,6 +185,7 @@
+@@ -182,6 +187,7 @@
  	RENDERINFO.SetAmbient((((SINT)(red * 255.0f)) << 16) | (((SINT)(green * 255.0f)) << 8) | ((SINT)(blue * 255.0f)));
  
  	ENGINE.SetTreeLighting(TRUE);

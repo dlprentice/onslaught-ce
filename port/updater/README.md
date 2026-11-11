@@ -1,7 +1,7 @@
 # Onslaught CE launcher and updater
 
 Status: active (public builds only)
-Last updated: 2026-11-07 (the ce.ini [Experimental] header and its comment line are skipped by the reader; earlier: 2026-11-06, launcher facts checked against the tree: tape names, data folder, Windows toolchain, the 0.1.7 wording; earlier: 2026-10-31 (every message box wraps its text at 76 characters, and the update notices that change nothing are warnings in calmer words; earlier: 2026-10-30 (the signer paths are written from the repository root); earlier: 2026-10-29 (private-tree references marked; earlier: 2026-10-28 (dialogs shown by a child process, with a terminal fallback))))
+Last updated: 2026-11-07
 Summary: game discovery and bounded logs, and the signed v2 updater (UPDATER-V2.md) that replaces the one 0.1.7 switched off.
 
 Some files and commands named on this page (`probe/`, `run.py`, `check_tape.sh`, `replay_session.py`, `PLAN.md`, `PARITY.md`, `tools/decomp.py`, `docs/release.md`, `tools/release_rc.py`) live only in the private working repository and are not in this public tree; they are named so that the description is complete. The decompilation's public export is [onslaught-decomp](https://github.com/dlprentice/onslaught-decomp).
@@ -130,7 +130,7 @@ version, build and OS, and the paths of the log and the newest tape (home or `%A
 `%APPDATA%`). It prints the user folder and the address; on Windows without a console a message box names the folder.
 The main menu's Onslaught CE page (port/game/ce_frontend.cpp) calls the same page through `extern "C" int CE_OpenReportPage(void)` (port/platform/common/ce.cpp,
 public builds only; it does nothing where the CE layer is off). Nothing is sent: the player submits the issue or not.
-The issue template is `.github/ISSUE_TEMPLATE/bug_report.md`, with `config.yml` beside it (a link to the security advisory form); the body above repeats the template's sections.
+The issue template is `.github/ISSUE_TEMPLATE/bug_report.md`, with `config.yml` beside it (links to Discussions and to the security advisory form); the body above repeats the template's sections.
 
 ## Windows output regression check
 

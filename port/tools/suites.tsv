@@ -1,22 +1,18 @@
 # Every *_tests.py under port/: path, style (script|module), args, needs, class, time limit in seconds (- = the runner's default), note. See run_suites.py.
 # path	style	args	needs	class	timeout	note
-port/d3dx/tests/texture_paths_tests.py	script	-	deps+game	release	-	
 port/network/tests/close_drain_tests.py	script	--enet-source {data}/src/enet-5a9c537fd464b3c6d3c55e1d3bd47588faf71b42	deps	optional	-	
 port/network/tests/run_tests.py	script	-	deps	quarantined	-	test_pre_connection_silent_host: the no-poll control receives a datagram because the close path now notifies the peer (cf1ce6f1, enet_peer_disconnect_now); whether silence is still required is the multiplayer owner's decision; 27 of 28 tests pass
 port/network/tests/terminal_close_tests.py	script	--enet-source {data}/src/enet-5a9c537fd464b3c6d3c55e1d3bd47588faf71b42	deps	optional	-	
-port/tools/audio_counters_tests.py	script	-	none	release	-	
-port/tools/audio_eof_tests.py	script	-	none	release	-	
-port/tools/audio_lifecycle_tests.py	script	-	none	release	-	
-port/tools/audio_media_race_tests.py	script	-	none	release	-	
-port/tools/audio_media_summary_tests.py	script	-	none	release	-	
-port/tools/audio_media_tests.py	script	-	none	release	-	
-port/tools/audio_refill_backlog_tests.py	script	-	none	release	-	
-port/tools/audio_refill_order_tests.py	script	-	none	release	-	
-port/tools/audio_refill_overlap_tests.py	script	-	none	release	-	
-port/tools/audio_refill_tests.py	script	-	none	release	-	
+port/tools/audio_eof_tests.py	script	-	deps	release	-	
+port/tools/audio_lifecycle_tests.py	script	-	deps	release	-	
+port/tools/audio_media_race_tests.py	script	-	deps	release	-	
+port/tools/audio_media_summary_tests.py	script	-	deps	release	-	
+port/tools/audio_media_tests.py	script	-	deps	release	-	
+port/tools/audio_refill_backlog_tests.py	script	-	deps	release	-	
+port/tools/audio_refill_order_tests.py	script	-	deps	release	-	
+port/tools/audio_refill_overlap_tests.py	script	-	deps	release	-	
+port/tools/audio_refill_tests.py	script	-	deps	release	-	
 port/tools/background_clear_tests.py	script	-	none	release	-	
-port/tools/border_diag_run_tests.py	script	-	none	release	-	
-port/tools/border_diag_tests.py	script	-	none	release	-	
 port/tools/build_tests.py	script	-	deps	release	-	
 port/tools/ce_bonus_save_tests.py	script	-	none	release	-	
 port/tools/ce_bonus_tests.py	script	-	none	release	-	
@@ -35,8 +31,7 @@ port/tools/ce_editor_lifecycle_tests.py	script	-	deps	release	-
 port/tools/ce_editor_storage_tests.py	script	-	none	release	-	
 port/tools/ce_editor_tests.py	script	-	none	release	-	
 port/tools/ce_experimental_modes_tests.py	script	-	none	release	-	
-port/tools/ce_frontend_tests.py	script	-	deps+game	release	-	builds its own scratch mirror (premirror.py); about 2 to 7 minutes
-port/tools/ce_gamepad_edge_tests.py	script	-	none	release	-	
+port/tools/ce_gamepad_edge_tests.py	script	-	deps	release	-	
 port/tools/ce_gamepad_network_tests.py	script	-	deps	optional	-	
 port/tools/ce_gamepad_tests.py	script	-	none	release	-	
 port/tools/ce_graphics_defaults_tests.py	script	--causal-controls	none	release	-	
@@ -45,12 +40,12 @@ port/tools/ce_handoff_recovery_tests.py	script	-	none	release	-
 port/tools/ce_handoff_writer_safety_tests.py	script	-	none	release	-	
 port/tools/ce_menu_fit_tests.py	script	--causal-controls	none	release	-	
 port/tools/ce_menu_mouse_tests.py	script	-	deps	release	-	
-port/tools/ce_mouse_fraction_tests.py	script	-	none	release	-	
+port/tools/ce_mouse_fraction_tests.py	script	-	deps	release	-	
 port/tools/ce_museum_tests.py	script	-	deps	release	-	
 port/tools/ce_museum_visit_build_tests.py	script	-	deps	release	-	
 port/tools/ce_museum_visit_tests.py	script	-	deps	release	-	
 port/tools/ce_music_tests.py	script	-	deps	release	-	
-port/tools/ce_music_transition_tests.py	script	-	none	release	-	
+port/tools/ce_music_transition_tests.py	script	-	deps	release	-	
 port/tools/ce_netcode_tests.py	script	-	none	optional	-	
 port/tools/ce_notice_tests.py	script	-	deps	release	-	
 port/tools/ce_palette_tests.py	script	-	deps	release	-	
@@ -70,13 +65,12 @@ port/tools/ce_world_view_tests.py	script	-	none	release	-
 port/tools/cli_windowed_tests.py	script	-	none	release	-	
 port/tools/close_caller_tests.py	script	-	deps	release	-	
 port/tools/compose_bundle_tests.py	script	-	none	release	-	
-port/tools/crt_wrapper_tests.py	script	-	none	release	-	
 port/tools/cursor_mode_failure_tests.py	script	-	none	release	-	
 port/tools/deps_tests.py	script	-	deps	release	-	
 port/tools/device_loss_tests.py	script	-	none	release	-	
 port/tools/devstats_layout_tests.py	script	-	none	release	-	
 port/tools/diagnostic_mouse_tests.py	script	-	deps	release	-	
-port/tools/dinput_property_tests.py	script	-	none	release	-	
+port/tools/dinput_property_tests.py	script	-	deps	release	-	
 port/tools/display_mode_tests.py	script	-	none	release	-	
 port/tools/feel_tests.py	script	-	deps	release	-	
 port/tools/ffmpeg_shared_tests.py	script	-	deps	release	-	
@@ -91,7 +85,6 @@ port/tools/ice_credentials_tests.py	script	-	none	optional	-
 port/tools/ice_exchange_bridge_tests.py	script	--monocypher-archive {data}/downloads/monocypher-4.0.2.tar.gz --output {fresh} --run	deps	optional	-	
 port/tools/ice_exchange_tests.py	script	--monocypher-archive {data}/downloads/monocypher-4.0.2.tar.gz --output {fresh} --run	deps	optional	-	
 port/tools/ice_flow_integration_tests.py	script	-	fixture	optional	-	needs a built network-and-ICE game folder (--build)
-port/tools/ice_frontend_pair_tests.py	script	-	none	optional	-	
 port/tools/ice_game_tests.py	script	-	fixture	optional	-	needs the pinned libjuice and ENet archives (--juice-archive, --enet-archive), which the dependency cache does not hold
 port/tools/ice_pilot_courier_tests.py	script	--output {fresh}	deps	optional	-	
 port/tools/ice_signaling_consumer_tests.py	script	-	deps	optional	-	
@@ -101,7 +94,7 @@ port/tools/inactive_close_tests.py	script	-	none	release	-
 port/tools/input_lifetime_tests.py	script	-	deps	release	-	
 port/tools/inventory_tests.py	script	-	none	release	-	
 port/tools/jeppi_fkey_focus_permissions_tests.py	script	-	none	release	-	
-port/tools/jeppi_fkey_focus_tests.py	script	-	none	release	-	
+port/tools/jeppi_fkey_focus_tests.py	script	-	deps	release	-	
 port/tools/lockstep_contact_init_tests.py	script	-	deps	optional	-	
 port/tools/lockstep_particle_draw_tests.py	script	-	deps	optional	-	
 port/tools/lockstep_production_shape_tests.py	script	-	none	optional	-	
@@ -117,7 +110,6 @@ port/tools/mods_tool_safety_tests.py	script	-	none	release	-
 port/tools/mods_windows_conversion_tests.py	script	-	none	release	-	
 port/tools/mods_windows_disabled_tests.py	script	-	none	release	-	
 port/tools/mods_windows_readonly_tests.py	script	--cxx {data}/llvm-mingw/bin/i686-w64-mingw32-clang++ --cc {data}/llvm-mingw/bin/i686-w64-mingw32-clang --out {scratch}	deps	release	-	
-port/tools/mods_wine_tests.py	script	-	deps+game+wine+xvfb	release	-	needs Wine, Xvfb and BEA_WINE_PREFIX; without the prefix every test skips
 port/tools/mouse_activity_tests.py	script	-	deps	release	-	
 port/tools/music_stream_reinit_tests.py	script	-	none	release	-	
 port/tools/music_stream_stop_tests.py	script	-	none	release	-	
@@ -195,25 +187,17 @@ port/tools/package_ice_tests.py	script	-	deps	optional	-
 port/tools/package_readme_tests.py	script	-	none	release	-	
 port/tools/package_signaling_tests.py	script	-	none	optional	-	
 port/tools/packed_buffer_tests.py	script	--mirror {mirror}	deps+mirror	release	-	
+port/tools/patch_control_body_tests.py	script	-	none	release	-	
+port/tools/patch_indentation_tests.py	script	-	deps+game	release	-	compiles every game unit of four mirrors syntax-only with only -Wmisleading-indentation; about a minute on 16 threads
 port/tools/photo_draw_filter_tests.py	script	-	none	release	-	
 port/tools/private_ui_input_tests.py	script	-	none	release	-	
-port/tools/probecmp_tests.py	script	-	none	release	-	
 port/tools/public_d3dapp_tests.py	script	-	none	release	-	
 port/tools/public_device_recovery_tests.py	script	--mutants	deps	release	-	
-port/tools/record_queue_tests.py	script	--baseline-ref f5890e57b4b4a5e6b9b1a28787da7331a46b527f	deps	release	-	
-port/tools/record_wrapper_tests.py	script	-	deps+game	release	-	
+port/tools/quiet_crash_tests.py	script	-	none	release	-	
 port/tools/relay_access_policy_tests.py	script	-	none	optional	-	
 port/tools/render_contract_tests.py	script	-	none	release	-	
 port/tools/render_diagnostics_tests.py	script	-	none	release	-	
-port/tools/replay_session_tests.py	script	-	none	release	-	
 port/tools/replay_stop_tests.py	script	-	deps	release	-	
-port/tools/run_ce_project_tests.py	script	-	fixture	witness	-	a game-run driver, not a suite: it needs a built game, a game folder, a level and the GPU lock (--exe, --game-dir, --level)
-port/tools/run_env_tests.py	script	-	game	release	-	
-port/tools/run_fresh_shot_tests.py	script	-	none	release	-	
-port/tools/run_ownership_tests.py	script	-	deps	release	-	
-port/tools/run_startup_music_tests.py	script	-	fixture	witness	-	a game-run driver, not a suite: it runs the game offscreen for one named case (NAME) under the GPU lock
-port/tools/run_suites_tests.py	script	-	none	release	-	
-port/tools/run_tests.py	script	-	none	release	-	
 port/tools/runtime_display_mode_tests.py	script	-	none	release	-	
 port/tools/save_cp1252_tests.py	script	-	deps	release	-	
 port/tools/save_flow_tests.py	script	-	deps+game	release	-	
@@ -226,10 +210,8 @@ port/tools/signaling_api_contract_tests.py	script	-	fixture	optional	-	needs a c
 port/tools/signaling_pair_bindings_tests.py	script	-	fixture	optional	-	needs a compiled crypto library and its SHA-256 (--crypto-library, --crypto-sha256)
 port/tools/signaling_worker_http_tests.py	script	-	fixture	optional	-	needs the worker inputs folder (--inputs)
 port/tools/signaling_worker_invitation_export_tests.py	script	--output {fresh}	none	optional	-	
-port/tools/startup_music_judge_tests.py	script	-	none	release	-	
 port/tools/state_delivery_tests.py	script	-	deps	optional	-	
 port/tools/state_delta_tests.py	script	-	deps	optional	-	
-port/tools/state_repair_check_tests.py	script	--before-ref 5732d2b809e9be5f5301668cbbf206a8168aca1c	deps	optional	-	
 port/tools/static_shadow_unbound_tests.py	script	-	none	release	-	
 port/tools/terrain_buffer_lifetime_tests.py	script	-	none	release	-	
 port/tools/terrain_quality_tests.py	script	-	none	release	-	
@@ -238,7 +220,6 @@ port/tools/text_chat_owner_tests.py	script	-	none	optional	-
 port/tools/text_chat_tests.py	script	-	none	optional	-	
 port/tools/text_chat_transport_tests.py	script	-	deps	optional	-	
 port/tools/turn_operator_issue_tests.py	script	-	none	optional	-	
-port/tools/typed_objects_tests.py	script	-	deps	release	-	
 port/tools/typeinfo_bridge_tests.py	script	-	deps	release	-	
 port/tools/vbuf_persistence_tests.py	script	-	none	release	-	
 port/tools/wav_lifetime_tests.py	script	--mirror {mirror}	deps+mirror	release	-	

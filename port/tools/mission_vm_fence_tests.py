@@ -12,17 +12,17 @@ import json
 import os
 from pathlib import Path
 import re
-import resource
 import shutil
 import subprocess
 import tempfile
 from network_session_tests import body
+import quiet_crash
 ROOT=Path(__file__).resolve().parents[2]
 def digest(path):return hashlib.sha256(path.read_bytes()).hexdigest()
 def block(text,signature):return body(text,signature).rstrip()+";\n"
 def main():
  p=argparse.ArgumentParser(description=__doc__);p.add_argument('--compiler',default='clang++');p.add_argument('--asan',action='store_true');args=p.parse_args()
- resource.setrlimit(resource.RLIMIT_CORE,(0,0));parent=ROOT/'local-data/port/mission-vm-fence-tests';parent.mkdir(parents=True,exist_ok=True);out=Path(tempfile.mkdtemp(prefix='run-',dir=parent))
+ parent=ROOT/'local-data/port/mission-vm-fence-tests';parent.mkdir(parents=True,exist_ok=True);out=Path(tempfile.mkdtemp(prefix='run-',dir=parent))
  raw=out/'raw';(raw/'MissionScript').mkdir(parents=True);pins={}
  names=['MissionScript/vm.cpp','MissionScript/IScript.cpp','MissionScript/vminternal.h','MissionScript/DataType.h','MissionScript/ScriptObjectCode.cpp','MissionScript/asminstruction.h','SPtrSet.h','SPtrSet.cpp','Monitor.h','Monitor.cpp','Listener.h','activereader.h','activereader.cpp','Event.h','event.cpp','scheduledevent.h','scheduledevent.cpp']
  for name in names:
@@ -51,14 +51,14 @@ def main():
   emit(folder,'vm.inc','#define MAX_INSTRUCTIONS_PER_RUN 10000\nCVM MISSION_SCRIPT_VM;\n'+body(vm_text,'CVM\t&CVM::operator=')+'\n'+'\n'.join(body(vm_text,'void\tCVM::'+n+'(') for n in ('Clean','CallEvent','CallFunction','GotoInstruction','Run')))
   emit(folder,'script.inc','\n'.join(body(script_text,sig) for sig in ('IScript::IScript(','IScript::~IScript(','void\tIScript::Pause(','void\tIScript::FinishedPlayingAnim(','void\tIScript::UpdateWaypointFollowing(','void\tIScript::HandleEvent(')))
  prepare(out,vm,script);baseline=out/'baseline';prepare(baseline,original,(ROOT/'src/MissionScript/IScript.cpp').read_text())
- env=dict(os.environ,TMPDIR=str(out),ASAN_OPTIONS='detect_leaks=1:abort_on_error=1:disable_coredump=1');driver=ROOT/'port/tools/tests/mission_vm_fence_driver.cpp';commands=[]
+ env=dict(os.environ,TMPDIR=str(out),ASAN_OPTIONS='detect_leaks=1:abort_on_error=1');driver=ROOT/'port/tools/tests/mission_vm_fence_driver.cpp';commands=[]
  def compile_at(folder):
   command=[args.compiler,'-std=c++17','-O1','-g','-Wall','-Wextra','-Werror','-Wno-unused-parameter','-Wno-deprecated-copy','-Wno-parentheses','-Wno-ignored-qualifiers','-I'+str(folder),str(driver),'-o',str(folder/'driver')]
   if args.asan:command[1:1]=['-fsanitize=address,undefined','-fno-omit-frame-pointer']
   commands.append(command);r=subprocess.run(command,capture_output=True,text=True,env=env,timeout=30);(folder/'build.log').write_text(r.stdout+r.stderr);return r.returncode
  receipt={'scope':__doc__,'source_sha256':pins,'patch_sha256':digest(patch),'session_source_sha256':digest(ROOT/'port/game/ce_network_session.cpp'),'session_header_sha256':digest(ROOT/'port/game/ce_network_session.h'),'driver_sha256':digest(driver),'runner_sha256':digest(Path(__file__)),'external_run_callers':callers,'internal_run_sites':internal,'commands':commands,'cases':[]}
  def run(folder,case,expected=0,reason=''):
-  r=subprocess.run([str(folder/'driver'),case],capture_output=True,text=True,env=env,timeout=6);(folder/(case+'.log')).write_text(r.stdout+r.stderr);passed=r.returncode==expected and (reason in r.stderr if reason else True);observed=json.loads(r.stdout) if r.returncode==0 else {};receipt['cases'].append({'variant':folder.name,'case':case,'exit':r.returncode,'expected':expected,'reason':reason,'observed':observed,'stderr':r.stderr,'passed':passed});print(folder.name,case,'PASS' if passed else 'FAIL',flush=True);return observed
+  r=quiet_crash.run([str(folder/'driver'),case],capture_output=True,text=True,env=env,timeout=6);(folder/(case+'.log')).write_text(r.stdout+r.stderr);passed=r.returncode==expected and (reason in r.stderr if reason else True);observed=json.loads(r.stdout) if r.returncode==0 else {};receipt['cases'].append({'variant':folder.name,'case':case,'exit':r.returncode,'expected':expected,'reason':reason,'observed':observed,'stderr':r.stderr,'passed':passed});print(folder.name,case,'PASS' if passed else 'FAIL',flush=True);return observed
  status=compile_at(out);receipt['compile_exit']=status
  if not status:
   positives=('blocked-event','blocked-function','blocked-goto','stack-move','blocked-animation','blocked-message','blocked-waypoint','blocked-timer');normal=('normal-event','normal-function','normal-goto','normal-animation','normal-message','normal-waypoint','normal-timer')

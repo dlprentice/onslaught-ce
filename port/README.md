@@ -1,7 +1,7 @@
 # Native port (Linux and Windows)
 
 Status: active (both targets build, link and run; measured scope and limits are summarized in the public CE README's Known limitations; native Windows acceptance uses a software-rendered VM, not physical-GPU validation)
-Last updated: 2026-11-10 (the dependency cache identity note; new-profile video defaults and the dodge_button key named; earlier, 2026-11-07: the unfinished features listed under [Experimental] in ce.ini; earlier, 2026-11-06: maintainer release steps marked, environment variables listed, files named but not in this tree; compile contract and migration wording corrected)
+Last updated: 2026-11-11
 Summary: a second build of the decompilation's sources as native i686 Linux and Windows programs; layout, ownership,
 commands and rules.
 
@@ -23,6 +23,23 @@ Files this tree names but does not hold: comments and guides under `port/` and `
 `PARITY.md`, `tools/ce_frontend_tests.py` (a maintainer-only check that reads font source this tree leaves out), `tools/decomp.py`, `docs/release.md`, `tools/release_rc.py` and folders such as `tests/` and `probe/`. They
 belong to the maintainers' working source, which this repository is generated from, and are not in this tree; the
 [public decompilation](https://github.com/dlprentice/onslaught-decomp) is the public home of the matching tools.
+
+## Guides in this folder
+
+- This page: the build, the layout, the rules, the build and development variables and `ce.ini`'s unfinished-feature lines.
+- [controller-input.md](controller-input.md): gamepads, flight sticks, hotplug and the Dodge Button.
+- [updater/README.md](updater/README.md): the launcher (finding the game, logs, Report a Problem);
+  [updater/UPDATER-V2.md](updater/UPDATER-V2.md): the signed updater.
+- The replacement libraries: [d3dx](d3dx/README.md), [bink](bink/README.md), [dsound](dsound/README.md) and
+  [vorbis](vorbis/README.md).
+- [PROJECTS.md](PROJECTS.md): linked mission projects (experimental).
+- [recording-design.md](recording-design.md): a proposal for recording CE features; it is not implemented.
+- The experimental ICE and relay work, none of it in a default build: [ICE-BUILD.md](ICE-BUILD.md),
+  [network/ICE-BRIDGE.md](network/ICE-BRIDGE.md), [network/LIBJUICE-RELAY-POLICY.md](network/LIBJUICE-RELAY-POLICY.md),
+  [network/RELAY-ACCESS.md](network/RELAY-ACCESS.md), [network/SIGNALING-SERVICE.md](network/SIGNALING-SERVICE.md),
+  [network/ICE-PILOT-COURIER.md](network/ICE-PILOT-COURIER.md),
+  [network/ICE-FLOW-INTEGRATION.md](network/ICE-FLOW-INTEGRATION.md) and
+  [services/closed_signaling/README.md](services/closed_signaling/README.md).
 
 Licence: GPL-3.0 (`SPDX-License-Identifier: GPL-3.0-only`), matching the upstream Onslaught source (GPL version 3,
 no "or later" grant). The public NOTICE retains the source attribution; third-party inputs keep their own licences
@@ -219,7 +236,7 @@ On a fresh profile CE writes `full_models=0` and `terrain_detail_distance=1` to 
 
 ## Unfinished features (`ce.ini` `[Experimental]`)
 
-`ce.ini` lists every unfinished feature, one line each, switched off, in a block that CE writes when the file lacks it (a new profile, or the first start of 0.1.14):
+`ce.ini` lists every unfinished feature, one line each, switched off, in a block that CE writes when the file lacks it (a new profile, or an existing `ce.ini` that has no such block yet):
 
 ```
 [Experimental]

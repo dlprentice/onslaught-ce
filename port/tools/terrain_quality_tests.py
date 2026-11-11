@@ -25,6 +25,7 @@ SOURCE = INCLUDE / "terrain_quality.cpp"
 DRIVER = TOOLS / "tests/terrain_quality_driver.cpp"
 sys.path.insert(0, str(TOOLS))
 import render_contract_tests as common
+import quiet_crash
 import terrain_buffer_lifetime_tests as terrain
 
 
@@ -55,8 +56,8 @@ class Policy(unittest.TestCase):
         return binary
 
     def run_case(self, mode, *, public=True, env=None, binary=None):
-        return subprocess.run([str(binary or self.binaries[public]), mode], env=environment(**(env or {})),
-                              capture_output=True, text=True, timeout=10)
+        return quiet_crash.run([str(binary or self.binaries[public]), mode], env=environment(**(env or {})),
+                               capture_output=True, text=True, timeout=10)
 
     def passed(self, mode, **kwargs):
         done = self.run_case(mode, **kwargs)
@@ -309,8 +310,8 @@ struct PatchList {
 
     def run_case(self, variant, choice, height=-20, capacity=4096, movement=0, env=None):
         args = [str(choice), str(height), str(capacity), str(movement)]
-        proc = subprocess.run([str(self.binaries[variant]), *args], env=environment(**(env or {})),
-                              capture_output=True, text=True, timeout=15)
+        proc = quiet_crash.run([str(self.binaries[variant]), *args], env=environment(**(env or {})),
+                               capture_output=True, text=True, timeout=15)
         self.assertEqual(proc.returncode, 0, "actual terrain fixture failed; source/diagnostics are private")
         text = re.sub(r'(?<![\w"])(-?0x[0-9a-f.]+p[+-]?[0-9]+)', r'"\1"', proc.stdout)
         value = json.loads(text)
@@ -328,8 +329,8 @@ struct PatchList {
 
     def test_actual_normal_draw_retires_reserve_owners_after_resource_loss(self):
         self.run_case("patched", 0, movement=2)
-        p = subprocess.run([str(self.binaries["retirement-mutant"]), "0", "-20", "4096", "2"],
-                           env=environment(), capture_output=True, text=True, timeout=15)
+        p = quiet_crash.run([str(self.binaries["retirement-mutant"]), "0", "-20", "4096", "2"],
+                            env=environment(), capture_output=True, text=True, timeout=15)
         self.assertEqual(p.returncode, 8)
         self.assertIn("Authored reserve retirement control failed", p.stderr)
 

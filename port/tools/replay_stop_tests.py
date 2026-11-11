@@ -12,7 +12,6 @@ one that skips the flush must lose what is buffered on standard output. The cras
 open when the probe file fails keeps its stage and publishes nothing. Only authored files in a private temporary folder are used.
 """
 import os
-import resource
 import shutil
 import signal
 import subprocess
@@ -22,6 +21,7 @@ import unittest
 from pathlib import Path
 
 import deps
+import quiet_crash
 from window_tests import private_ui_compile_args
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -30,11 +30,6 @@ WINDOW = ROOT / "port/platform/common/window.cpp"
 DRIVER = (ROOT / "port/tools/tests/record_queue_driver.cpp").read_text()
 STOP = "fflush(NULL);\n\t_Exit(3);"
 PROBES = "\t\tFinalizeRecord();\t\t// what exit(3) would have run for an open recording: it was marked failed above, so nothing is published\n\t\tStopAtOnce();\n"
-
-
-def no_core():
-    """The negative control crashes on purpose: no core file (systemd-coredump would keep one for each)."""
-    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
 
 
 def build(folder, replay_text, name):
@@ -72,7 +67,7 @@ class StopAtOnce(unittest.TestCase):
     def run_case(self, binary, case):
         tape = Path(self.dir.name) / f"{binary.name}-{case}.tape"
         env = {k: v for k, v in os.environ.items() if not k.startswith(("BEA_PORT_", "SDL_"))}
-        r = subprocess.run([str(binary), case, str(tape)], env=env, capture_output=True, text=True, timeout=30, preexec_fn=no_core)
+        r = subprocess.run([str(binary), case, str(tape)], env=env, capture_output=True, text=True, timeout=30, preexec_fn=quiet_crash.preexec)
         return r, tape
 
     def test_a_tape_that_does_not_exist_stops_the_game_with_the_message_and_status_3(self):

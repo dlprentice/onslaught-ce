@@ -268,6 +268,7 @@ extern "C" int PortCeDisplayWindowBegin(HWND handle, int windowed, unsigned widt
 	const double logicalWidth = (double)width / density, logicalHeight = (double)height / density;
 	if (logicalWidth < 1. || logicalHeight < 1. || logicalWidth > 65535. || logicalHeight > 32767.) return 0;
 	saved.active = true; ceDisplayWindow = saved;
+	PortHoldPointerForWindowChange(false);	// the window is about to move under the pointer (window.cpp)
 	PortSessionLog(PORT_SESSION_VIDEO, false, "window mode request=%s render=%ux%u logical=%dx%d pixel_density=%.3f",
 		windowed ? "windowed" : "fullscreen", width, height, (int)(logicalWidth + .5), (int)(logicalHeight + .5), (double)density);
 	bool ok = true;
@@ -334,6 +335,7 @@ extern "C" void PortCeRetryDisplayInput()
 extern "C" int PortCeDisplayWindowEnd(int commit)
 {
 	if (!ceDisplayWindow.active) return 0;
+	PortHoldPointerForWindowChange(true);	// where the switch left the pointer, if a display mode change moved it
 	bool ok = ceDisplayWindow.Owned();
 	if (!commit) ok = ceDisplayWindow.Restore();
 	ceDisplayWindow.active = false;

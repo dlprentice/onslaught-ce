@@ -14,7 +14,6 @@ import json
 import os
 from pathlib import Path
 import re
-import resource
 import shutil
 import subprocess
 import sys
@@ -23,6 +22,7 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'port'))
 import build
+import quiet_crash
 
 
 def definition(text, name):
@@ -41,11 +41,32 @@ def definition(text, name):
     return text[match.start():end]
 
 
+MASK = re.compile(r'//[^\n]*|/\*.*?\*/|"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'', re.S)
+
+
+def mirror_guarded(body, call):
+    """True when CALL is made once in BODY, inside the braced block of an `if (!gMirrorPass)`: drawn in an ordinary pass and
+    never into the mirrored pass's reflection texture, like every other overlay at the end of CDXEngine::PostRender."""
+    masked = MASK.sub(lambda m: ''.join('\n' if c == '\n' else ' ' for c in m[0]), body)
+    if masked.count(call) != 1:
+        return False
+    k, depth = masked.index(call), 0
+    while k > 0:
+        k -= 1
+        if masked[k] == '}':
+            depth += 1
+        elif masked[k] == '{':
+            if not depth:
+                break
+            depth -= 1
+    return re.search(r'\bif\s*\(\s*!\s*gMirrorPass\s*\)\s*$', masked[:k]) is not None
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--out', type=Path)
     args = parser.parse_args()
-    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+    # The driver may crash on purpose in a control: it runs through quiet_crash (no core file and no coredumpctl record).
     parent = ROOT / 'local-data/native-editor-lifecycle-tests'
     parent.mkdir(parents=True, exist_ok=True)
     out = args.out or Path(tempfile.mkdtemp(prefix='run-', dir=parent))
@@ -61,7 +82,7 @@ def main():
              'PortCeEditorObserveWorldObject', 'PortCeEditorEndWorld', 'PortCeEditorAfterLoad', 'PortCeEditorFrame',
              'PortCeEditorLevelEnd', 'PortCeEditorCancel', 'PortCeEditorTakeReturn', 'PortCeEditorMenuReturn')
     functions = '\n'.join(definition(source, name) for name in names)
-    texts = build.patched_text(('game.cpp', 'FrontEnd.cpp', 'actor.cpp'))
+    texts = build.patched_text(('game.cpp', 'FrontEnd.cpp', 'actor.cpp', 'DXEngine.cpp'))
     # The same early guard the production game compiles. No generated game body is published.
     pre_run = definition(texts['game.cpp'], 'CGame::PreRun')
     entry = pre_run[pre_run.index('{') + 1:]
@@ -101,6 +122,20 @@ def main():
         raise ValueError('The draw translation is not the first statement of the actor render-position getter.')
     if actor.count('#ifdef CE_VERSION\n#include "ce_editor.h"\n#endif') != 1:
         raise ValueError('The actor source does not include the editor interface under the CE guard.')
+    # The overlay draws over the finished picture of an ordinary pass only. Patch 0206 once added its call after the commander
+    # map's unbraced `if (!gMirrorPass)`, indented as if guarded, so it also drew into the mirrored pass; the call now shares
+    # the condition's braced body. The two controls are that old shape and a call after the block.
+    post_render = definition(texts['DXEngine.cpp'], 'CDXEngine::PostRender')
+    overlay = 'PortCeEditorRender();'
+    if not mirror_guarded(post_render, overlay):
+        raise ValueError('The editor overlay is drawn outside the mirror-pass condition.')
+    braced = re.search(r'if \(!gMirrorPass\)\n\t\{\n(\t\tPortCeCmdRender\(\);[^\n]*\n)\t\tPortCeEditorRender\(\);\n\t\}\n', post_render)
+    if not braced:
+        raise ValueError('Overlay control anchor changed.')
+    unbraced = post_render.replace(braced[0], 'if (!gMirrorPass)\n' + braced[1] + '\t\tPortCeEditorRender();\n', 1)
+    after = post_render.replace(braced[0], 'if (!gMirrorPass)\n\t{\n' + braced[1] + '\t}\n\tPortCeEditorRender();\n', 1)
+    if mirror_guarded(unbraced, overlay) or mirror_guarded(after, overlay):
+        raise ValueError('The mirror-pass overlay check accepts an unguarded call.')
     translation = found[0]
     (out / 'editor-render-translation.private.inc').write_text(translation)
     (out / 'editor-declarations.private.inc').write_text(declarations + '\n')
@@ -124,12 +159,12 @@ def main():
         (folder / 'compile.stderr').write_bytes(built.stderr)
         if built.returncode:
             return {'compiled': False, 'exit': None}
-        ran = subprocess.run([str(binary)], env=environment, capture_output=True, timeout=10, check=False)
+        ran = quiet_crash.run([str(binary)], env=environment, capture_output=True, timeout=10, check=False)
         (folder / 'run.stdout').write_bytes(ran.stdout)
         (folder / 'run.stderr').write_bytes(ran.stderr)
         project_environment = dict(environment, BEA_CE_PROJECT='authored-startup-intent.ceproject')
-        project_run = subprocess.run([str(binary), 'project-start'], env=project_environment,
-                                     capture_output=True, timeout=10, check=False)
+        project_run = quiet_crash.run([str(binary), 'project-start'], env=project_environment,
+                                      capture_output=True, timeout=10, check=False)
         (folder / 'project-start.stdout').write_bytes(project_run.stdout)
         (folder / 'project-start.stderr').write_bytes(project_run.stderr)
         return {'compiled': True, 'exit': ran.returncode, 'startup_project_exit': project_run.returncode}

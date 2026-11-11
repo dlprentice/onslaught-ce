@@ -150,11 +150,14 @@
  // DXEngine.cpp: implementation of the CDXEngine class.
  //
  //////////////////////////////////////////////////////////////////////
-@@ -1317,6 +1320,7 @@
+@@ -1316,7 +1319,10 @@
+ #ifdef CE_VERSION
  	void PortCeCmdRender();	// patch 0162: port/game/ce_cmdmap.cpp (declared here, not with the others, so that this patch does not lean on theirs)
  	if (!gMirrorPass)
++	{
  		PortCeCmdRender();	// the commander map, over everything else the frame drew
 +		PortCeEditorRender();
++	}
  #endif
  	PLATFORM.EndScene();
  

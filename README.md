@@ -1,8 +1,8 @@
 # Onslaught CE
 
-Status: preview — from 0.1.8 on it updates itself; from 0.1.7 or earlier, download the latest release once by hand
-Last updated: 2026-11-07 (0.1.14: new-profile video defaults with Extended terrain, Window mode, the terrain reserve, the Dodge Button, the unfinished features listed and switched off in ce.ini; earlier: 2026-11-06 contributor routes, repository layout, the 0.1.13 Windows status and the video limit; 2026-11-04 public setup and experimental network source builds)
-Summary: the native Battle Engine Aquila port, the one-time manual move from 0.1.7 or earlier, signed updates and default or experimental network source builds.
+Status: preview. From 0.1.8 on it updates itself; from 0.1.7 or earlier, download the latest release once by hand.
+Last updated: 2026-11-11
+Summary: the native Battle Engine Aquila port: how to install, play, update, report a problem and build it, and where the project's other repositories are.
 
 This README follows this source branch, which can describe work that is not in the latest download. The README
 packaged with your download and the [release notes](https://github.com/dlprentice/onslaught-ce/releases)
@@ -12,7 +12,43 @@ describe the version you installed. Versions 0.1.8 and later have a signed-updat
 [0.1.12](https://github.com/dlprentice/onslaught-ce/releases/tag/v0.1.12) release notes for their 32-bit
 dependency caveat.
 
-A native port of *Battle Engine Aquila*; you need your own copy.
+Onslaught CE is a native port of *Battle Engine Aquila* (Lost Toys, 2003) for Linux (i686) and Windows (i686), built
+from the game's source code. You need your own copy of the game.
+
+## Contents
+
+- **Install and play:** [Quick start](#quick-start), [Download and install](#download-and-install) (system
+  requirements for [Linux](#linux) and [Windows](#windows)), [what is in the game](#in-the-game), and
+  [your own copy of the game](#you-need-your-own-copy-of-the-game).
+- **Already have Onslaught CE?** [Getting the latest version](#getting-the-latest-version-one-download-by-hand-then-it-updates-itself),
+  [update, move and uninstall](#update-move-and-uninstall), [updates and privacy](#updates-and-privacy).
+- **Settings and features:** [screen modes and widescreen](#screen-modes-and-widescreen),
+  [Video Options](#video-options-new-profile-defaults-window-mode-and-extended-terrain), [mods](#mods-experimental).
+- **Problems and accuracy:** [report a problem](#report-a-problem),
+  [record a session](#help-make-onslaught-ce-more-faithful), [how faithful it is](#how-faithful-is-it),
+  [known limitations](#known-limitations).
+- **Build and contribute:** [Building from source](#building-from-source), [what is in this repository](#what-is-in-this-repository),
+  [contributing, questions and security](#contributing-questions-and-security), [licence](#licence).
+- **About:** [related projects](#related-projects), [credits](#credits-and-special-thanks).
+
+## Quick start
+
+New players start here. If you already have Onslaught CE, follow
+[Getting the latest version](#getting-the-latest-version-one-download-by-hand-then-it-updates-itself) instead.
+
+1. Choose the package for your system from the [Releases page](https://github.com/dlprentice/onslaught-ce/releases).
+   Extract it into a **new, empty, ordinary folder**, separate from the original game and every old CE folder.
+2. Run `onslaught-ce` (Linux) or `onslaught-ce.exe` (Windows).
+3. It finds your Steam copy of *Battle Engine Aquila* by itself, or asks once where it is.
+
+Keep the program and its user folder separate from the original game. Careers and settings go to
+`$XDG_DATA_HOME/onslaught-ce` (Linux, or `~/.local/share/onslaught-ce` when unset) or
+`%APPDATA%\Onslaught CE` (Windows) by default. Keep recovery copies of your careers before changing save locations
+or removing any program folder.
+
+This is an early preview. The main menu and `onslaught-ce --version` show your version and build. The
+[latest release notes](https://github.com/dlprentice/onslaught-ce/releases/latest) list the checks made and the
+remaining limits; the source here may include changes that are not in that download.
 
 ## Getting the latest version: one download by hand, then it updates itself
 
@@ -40,58 +76,30 @@ an earlier version, set it the same way for the new version. Anything unusual (a
 several places, folders you are unsure of): follow the
 [detailed migration](#manual-migration-from-affected-launchers) instead.
 
-## Quick start
-
-New players start here. If you already have Onslaught CE, follow
-[Getting the latest version](#getting-the-latest-version-one-download-by-hand-then-it-updates-itself) instead.
-
-1. Choose the package for your system from the [Releases page](https://github.com/dlprentice/onslaught-ce/releases).
-   Extract it into a **new, empty, ordinary folder**, separate from the original game and every old CE folder.
-2. Run `onslaught-ce` (Linux) or `onslaught-ce.exe` (Windows).
-3. It finds your Steam copy of *Battle Engine Aquila* by itself, or asks once where it is.
-
-Keep the program and its user folder separate from the original game. Careers and settings go to
-`$XDG_DATA_HOME/onslaught-ce` (Linux, or `~/.local/share/onslaught-ce` when unset) or
-`%APPDATA%\Onslaught CE` (Windows) by default. Keep recovery copies of your careers before changing save locations
-or removing any program folder.
-
-Onslaught CE is a native port of *Battle Engine Aquila* (Lost Toys, 2003) for Linux (i686) and Windows (i686), built
-from the game's source code.
-
-The source has three parts:
-
-- **The upstream GPL Onslaught source** ([stuart73/Onslaught](https://github.com/stuart73/Onslaught)).
-- **A byte-matching decompilation** that reconstructs more of the PC code
-  ([onslaught-decomp](https://github.com/dlprentice/onslaught-decomp)), which records its measured matching coverage
-  and reconstruction concessions. The native port uses a different compiler and replacement platform code.
-- **A platform layer**: SDL3, with dxvk-native on Linux and the system's Direct3D 9 on Windows.
-
-This is an early preview. After installing a corrected successor, its main menu and `onslaught-ce --version`
-show its version and build. Use existing logs to identify an affected installation without running its launcher.
-See the [latest release notes](https://github.com/dlprentice/onslaught-ce/releases/latest) for the checks performed
-and remaining limits; development source may include changes beyond that published package.
-
 ## In the game
 
 - **Main menu > Onslaught CE:** a page with **Bonus Levels**, **CE Settings**, **Cheats**, **Help & Info** and
   **Report a Problem**. Each row has a hint under the list. The Options page is the original's.
 - **Bonus Levels:** Aquila Prototype, Building Defence, and Race Challenge 1 to 5 (each below). None of them
   advances career progress. A bonus level started here comes back to this list with its row highlighted.
-- **CE Settings:** a list of choices, each written to `ce.ini` in your user folder when you make it: **HUD Size** and **HUD Layout**
-  (the HUD on a wide screen, see [Screen modes and widescreen](#screen-modes-and-widescreen)), **Sharper Text** (experimental),
-  **End-of-Level Stats**, **Controller Rumble**, **Dodge Button** (see [Dodging](#dodging)), **Developer Information**, **Your Music** (shows the
-  folder `ce.ini` sets: see **Your own music** below), **Music Order**, **Console Text**, **Check for Updates at Start** and **Record Play for Bug Reports**
-  (see [Help make Onslaught CE more faithful](#help-make-onslaught-ce-more-faithful)). Select opens a row's list of choices, and so do
-  Left and Right, which also move to the choice before or after; in the list they move as Up and Down do. Nothing is written until
-  Select picks a choice other than the one shown, and Escape closes the list unchanged. The row's hint says when a change is used: from
-  the next level for the two HUD rows and Dodge Button, the next time the console opens for Console Text (the developer information text keeps its
-  colour until the next start), otherwise the next time you start the game. If `ce.ini` cannot be written, a message says so
-  and the row keeps its old choice. The page is not on the menu while a session is recorded.
+- **CE Settings:** a list of choices, each written to `ce.ini` in your user folder when you make it. The page is not on
+  the menu while a session is recorded.
+  - Rows: **HUD Size** and **HUD Layout** (the HUD on a wide screen, see
+    [Screen modes and widescreen](#screen-modes-and-widescreen)), **Sharper Text** (experimental), **End-of-Level Stats**,
+    **Controller Rumble**, **Dodge Button** (see [Dodging](#dodging)), **Developer Information**, **Your Music** (shows the
+    folder `ce.ini` sets: see **Your own music** below), **Music Order**, **Console Text**, **Check for Updates at Start** and
+    **Record Play for Bug Reports** (see [Help make Onslaught CE more faithful](#help-make-onslaught-ce-more-faithful)).
+  - Choosing: Select opens a row's list of choices, and so do Left and Right, which also move to the choice before or
+    after; in the list they move as Up and Down do. Nothing is written until Select picks a choice other than the one
+    shown, and Escape closes the list unchanged.
+  - When a change applies: the row's hint says. It is from the next level for the two HUD rows and Dodge Button, the next
+    time the console opens for Console Text (the developer information text keeps its colour until the next start),
+    otherwise the next time you start the game.
+  - If `ce.ini` cannot be written, a message says so and the row keeps its old choice.
 - **Unfinished features:** they are listed, switched off, under `[Experimental]` in `ce.ini`; they are unsupported and liable to change.
 - **Help & Info:** Controls & Tips (dodge, zoom, photo mode and screenshots, the console and the free camera), What's Coming (planned features and their current limits; its entries do not start those features),
   Updates & Rollback (whether CE Settings has update checks on, how to roll back, where `ce.ini` is), About Onslaught CE (version, licence
   and links) and Special Thanks.
-  This page is not in the 0.1.12 download.
 - **Aquila Prototype:** level 201, the original's playable-demo level, which the full game never offers. It does
   not advance career progress and returns to the Bonus Levels list. Settings can still be saved, including into a
   career file.
@@ -797,13 +805,11 @@ its win and debrief. This covers one recorded route; it does not establish compl
 - Widescreen play is not compared with the original (the original has no widescreen); ordinary replays and recordings use 4:3.
 - Planned, not in this version yet: Internet multiplayer, mods on Windows and additional HUD options. On Linux, mods
   are an early test ([Mods (experimental)](#mods-experimental)).
-
 - On Windows, 0.1.12 could select the wrong pause-menu item at some display sizes and could leave the system
   cursor visible in fullscreen. 0.1.13 changes both. The pointer fix was checked on Linux (1920x1080 and 1024x768)
   and in a Windows 11 virtual machine, and the fullscreen cursor fix in that virtual machine; neither has been seen on
   a physical Windows PC with its own graphics driver. If you still see either, include your display settings and log
   in your report.
-
 - Reports of layered or stuttering music and map-edge artifacts still need retesting on the affected Windows
   hardware. An AMD-specific cause has not been confirmed.
 
@@ -964,6 +970,14 @@ The game's data is not part of this project and is not covered by its licence.
 This repository is generated: its `main` is written by an export from the maintainers' working source, so the source
 folders below change only through that export (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
+The source has three parts:
+
+- **The upstream GPL Onslaught source** ([stuart73/Onslaught](https://github.com/stuart73/Onslaught)).
+- **A byte-matching decompilation** that reconstructs more of the PC code
+  ([onslaught-decomp](https://github.com/dlprentice/onslaught-decomp)), which records its measured matching coverage
+  and reconstruction concessions. The native port uses a different compiler and replacement platform code.
+- **A platform layer**: SDL3, with dxvk-native on Linux and the system's Direct3D 9 on Windows.
+
 | Folder | What it holds |
 | --- | --- |
 | `src/` | the game's C++ source, from the decompilation of the original; its line counts are fixed because the game's own build depends on them |
@@ -972,27 +986,29 @@ folders below change only through that export (see [CONTRIBUTING.md](CONTRIBUTIN
 | `config/` | SHA-256 pins for inputs the build verifies: the two game files it reads and the original compiler's files used to rebuild one library |
 | `LICENSES/` | the licence texts that [REUSE.toml](REUSE.toml) names |
 
+The main files at the top level: [CONTRIBUTING.md](CONTRIBUTING.md) (where each kind of work goes and how a pull request is
+taken in), [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md), [SECURITY.md](SECURITY.md), [THIRD-PARTY.md](THIRD-PARTY.md) (the components built into or shipped with the
+program), [NOTICE](NOTICE), [COPYING](COPYING) and [AGENTS.md](AGENTS.md) (the rules for automated agents).
+
 Some comments and guides under `port/` and `src/` name files, notes and tools that live only in the maintainers' working
 source and are not in this tree; [port/README.md](port/README.md) says which.
 
-## Where to ask and where to contribute
+## Contributing, questions and security
 
-Questions and ideas go to this repository's [Discussions](https://github.com/dlprentice/onslaught-ce/discussions). Problems go to its
-[Issues](https://github.com/dlprentice/onslaught-ce/issues) page (use the problem report form). [CONTRIBUTING.md](CONTRIBUTING.md) says which
-public repository takes which kind of work, what a first contribution needs, and how a pull request is taken in.
+Questions and ideas go to this repository's [Discussions](https://github.com/dlprentice/onslaught-ce/discussions).
+Problems go to its [Issues](https://github.com/dlprentice/onslaught-ce/issues) page (use the problem report form).
+Security problems are reported privately, as [SECURITY.md](SECURITY.md) describes.
+
+[CONTRIBUTING.md](CONTRIBUTING.md) says which public repository takes which kind of work, what a first contribution
+needs and how a pull request is taken in. Contributions are GPL-3.0-only, and never include game files.
 Commander, Video Options, camera feel and the planned network play, map editor and museum are changing quickly, and the
 maintainers' working source has unreleased changes in these areas that this tree does not show yet: open an issue
 before starting larger work there.
 
-## Contributing and security
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) (contributions are GPL-3.0-only; never include game files) and
-[SECURITY.md](SECURITY.md) (report problems privately).
-
 ## Credits and special thanks
 
 - **Lost Toys**, for the original game
-- **Stuart Gillam** (**desimbr** on Discord), for his help, insight and guidance
+- **Stuart Gillam**, for his help, insight and guidance
 - **Jeppi** and **BermudaMaster** on Discord, and every other early tester, for testing and helpful reports
 - **The Onslaught CE contributors**, including everyone who contributed work made with their own AI coding agents
 - **The Battle Engine Aquila community and preservation projects**, including everyone testing, reporting issues

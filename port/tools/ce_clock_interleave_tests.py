@@ -7,7 +7,6 @@ host. The Windows OS calls are stand-ins: this does not establish behaviour on a
 """
 import os
 from pathlib import Path
-import resource
 import subprocess
 import sys
 import tempfile
@@ -15,6 +14,7 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import deps  # noqa: E402
+import quiet_crash
 
 ROOT = Path(__file__).resolve().parents[2]
 DRIVER = ROOT / "port/tools/tests/ce_clock_race_driver.cpp"
@@ -71,10 +71,8 @@ class Interleavings(unittest.TestCase):
         clean = {k: v for k, v in os.environ.items() if not k.startswith("BEA_PORT_")}
         clean.update(env or {})
         clean["BEA_TEST_CLOCK_FREQUENCY"] = str(frequency)
-        def no_core():
-            resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
-        result = subprocess.run([str(binary or self.binaries[platform, build]), scenario, clock, mode, str(frequency)],
-                                env=clean, capture_output=True, text=True, timeout=5, preexec_fn=no_core)
+        result = quiet_crash.run([str(binary or self.binaries[platform, build]), scenario, clock, mode, str(frequency)],
+                                 env=clean, capture_output=True, text=True, timeout=5)
         self.assertEqual(result.returncode, 1 if fails else 0, result.stdout + result.stderr)
         self.assertTrue(result.stdout.startswith("FAIL" if fails else "PASS"), result.stdout + result.stderr)
 

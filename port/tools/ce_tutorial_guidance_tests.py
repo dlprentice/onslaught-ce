@@ -23,6 +23,7 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'port'))
 import build
+import quiet_crash
 import premirror
 
 
@@ -184,7 +185,7 @@ def main():
 
     def check(binary, mode, wanted=0, message=''):
         env = dict(os.environ, ASAN_OPTIONS='detect_leaks=1:abort_on_error=1', UBSAN_OPTIONS='halt_on_error=1')
-        p = subprocess.run([str(binary), mode], capture_output=True, text=True, env=env, timeout=10)
+        p = quiet_crash.run([str(binary), mode], capture_output=True, text=True, env=env, timeout=10)
         ok = p.returncode == wanted and (not message or message in p.stderr)
         cases.append({'mode': mode, 'binary': binary.parent.name, 'expected': wanted, 'exit': p.returncode,
                       'stdout': p.stdout, 'stderr': p.stderr, 'passed': ok})

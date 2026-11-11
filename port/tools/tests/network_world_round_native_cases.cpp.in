@@ -1,0 +1,101 @@
+// Authored selected resources at native caller boundaries, not retail-loaded objects or visual acceptance.
+static CRoundData selectedRound{};static CWeaponModeData selectedMode{};
+static SPtrSet<CRoundData>roundRegistry;static SPtrSet<CWeaponModeData>modeRegistry;
+static void RoundResources(){
+ selectedRound={};selectedRound.mName=(char*)"Mech Pulse Bolt Medium";selectedRound.mUnknown08=(char*)"Mech Pulse Hit Medium";
+ selectedRound.mParticleAName=(char*)"Mech Pulse Bolt Medium";static CParticleDescriptor trail{2};selectedRound.mParticleA=&trail;
+ selectedRound.mRadius=.07f;selectedRound.mSpeed=35;selectedRound.mLifeSpan=6;selectedRound.mUnknown1C=.8f;selectedRound.mExplode=1;
+ selectedRound.mSeekAngle=.785f;selectedRound.mSeekTerminationTime=1000;selectedRound.mUnknown90=10;
+ selectedMode={};selectedMode.mName=(char*)"Mech Pulse Cannon Charged";selectedMode.mRound=&selectedRound;selectedMode.mVolleySize=selectedMode.mBurstSize=1;selectedMode.mReloadTime=.1f;selectedMode.mMuzzleLight=-1;
+ roundRegistry.v={&selectedRound};modeRegistry.v={&selectedMode};UPhysicsManager::mRounds=&roundRegistry;UPhysicsManager::mWeaponModes=&modeRegistry;
+}
+static void RoundControls(){
+ RoundResources();CBattleEngine owner;WalkerBoundary walker;JetBoundary jet;CWeapon weapon;CWeaponData weaponData;weaponData.mName=(char*)"Pulse Cannon Pod";
+ owner.mWalkerPart=&walker;owner.mJetPart=&jet;walker.mPrimaryWeapon=&weapon;weapon.mAttachedTo=&owner;weapon.mData=&weaponData;
+ auto start=[&](int role){reset(role,true);life_enabled=true;life_baseline=1;life_baseline_tick=life_tick=life_committed_tick=100;life_seen_id=49;next_id=50;
+   owner.mThingType=THING_TYPE_THING|THING_TYPE_UNIT|THING_TYPE_BATTLE_ENGINE;Bind(&owner,37,17);life_keys[0].id=37;life_keys[0].size=4;memcpy(life_keys[0].bytes,"BE2!",4);life_key_count=1;};
+ CRoundInitThing init;init.mRoundData=&selectedRound;init.mLifeSpan=6;init.mPos={1,2,3};init.mVelocity={0,1.75f,0};init.mDest={9,8,7};init.mOrientationType=DIRECTION_COSINE_MATRIX;init.mOrientation=ID_FMATRIX;init.mAllegiance=kNeutralAllegiance;
+ const CRoundInitThing pristine=init;
+ uint8_t bytes[1000],endBytes[1000];CE_WorldLifecycleInfo info{},endInfo{};LifeRecord record{};
+ start(CE_WORLD_HOST);EVENT_MANAGER.frame=101;MAP.ground_hit=true;
+ unsigned shot=CE_WorldShotBegin(&weapon,&selectedMode);check(shot==1&&shot_active==1&&!life_count,"selected native weapon scope assigns internal ShotID before round Init");
+ CRound*host=UPhysicsManager::SpawnRound(&selectedRound);host->mUnknownEC=&owner;host->Init(&init);CE_WorldShotEnd(&weapon,shot);
+ check(!life_failed&&!round_pending&&!shot_active&&life_count==1&&life_live_count==1,"actual round Init common completion commits one immutable birth");
+ check(GAME.random_calls==1&&host->mDoFullMoveCount==1&&trail_calls==1&&events_queued>=2,"host actual actor Init keeps one random draw and native next-move phase");
+ auto*cst=dynamic_cast<CCSPersistentThing*>(host->mCollisionSeekingThing);
+ check(cst&&collision_scans==1&&!(cst->mCollisionFlags&0x400)&&!collision_continuations,"actual persistent Init clears collision admission before synchronous detector scan");
+ CEvent activate{3000};cst->HandleEvent(&activate);cst->Unknown6();check(collision_continuations==1,"native activation event later admits the controlled collision continuation");
+ check(CE_WorldPeekLifecycle(&info,bytes,sizeof bytes)==1&&DecodeLife(bytes,info.size,record)&&record.info.kind==CE_WORLD_LIFECYCLE_ROUND_BIRTH&&record.round_birth.shot==1,"native round entry and post Init capsule decode");
+ check(record.core.pos.v[2]==0&&record.core.old_pos.v[2]==3&&record.round_birth.pos.v[2]==3&&record.round_birth.destination.v[0]==9&&record.round.destination.v[0]==5&&record.round.incarnation==record.info.operation&&record.round_birth.inventory==0&&record.round_birth.index==0,"entry keeps original pose while actual Thing Init water clamp and ground-query poststate are preserved");
+ check(info.size<=1000&&record.round_birth.actor_phase==1&&record.round.schema,"complete selected round capsule fits bounded packet without truncation");
+ const unsigned birthSize=info.size;std::vector<uint8_t>birth(bytes,bytes+birthSize);
+ check(CE_WorldLifecyclePublished(&info)&&birth_published==0&&life_count==1,"round publication changes no legacy explosion serial and cannot retire pending native birth");
+ EVENT_MANAGER.frame=102;host->mPos={4,5,6};host->mOldPos={3,4,5};host->Shutdown();
+ check(trail_kills==1&&life_count==2&&life_live_count==0,"native round Shutdown journals endpoint before killing its owned trail");
+ check(CE_WorldPeekLifecycle(&endInfo,endBytes,sizeof endBytes)==1&&DecodeLife(endBytes,endInfo.size,record)&&record.info.kind==CE_WORLD_LIFECYCLE_ROUND_DESPAWN&&record.core.pos.v[0]==4,"round endpoint capsule preserves explicit authoritative disappearance");
+ const unsigned deathSize=endInfo.size;std::vector<uint8_t>death(endBytes,endBytes+deathSize);
+ check(CE_WorldLifecyclePublished(&endInfo)&&!birth_published,"round despawn publication never invents explosion birth proof");
+ CE_WorldLifecycleAck ack{7,1,2,102};EVENT_MANAGER.frame=103;check(CE_WorldAcknowledgeLifecycle(&ack)==1&&!life_count,"only admitted cumulative whole-Apply proof retires round source history");
+ binding_count=0;start(CE_WORLD_REPLICA);unsigned clock=EVENT_MANAGER.frame;float time=EVENT_MANAGER.GetTime();
+ check(CE_WorldApplyLifecycle(birth.data(),birth.size())==1&&!poisoned,"whole selected round Apply calls genuine factory and native Init exactly once");
+ check(GAME.random_calls==0&&events_queued==0&&trail_calls==1&&EVENT_MANAGER.frame==clock&&EVENT_MANAGER.GetTime()==time,"controlled replica phase does not rerun RNG schedule gameplay or rewrite clocks");
+ auto*remote=dynamic_cast<CRound*>(life_live[0].thing);check(remote&&remote->mDoFullMoveCount==1&&remote->mUnknownEC.ToRead()==&owner&&remote->mDest.X==5&&remote->mStartTime==record.round.start,"post Init named fields and monitored launcher adopt source state");
+ cst=dynamic_cast<CCSPersistentThing*>(remote->mCollisionSeekingThing);check(cst&&!(cst->mCollisionFlags&0x400)&&collision_scans==1&&!collision_continuations,"replica actual persistent Init keeps start-delay and event fence without early contacts");
+ cst->HandleEvent(&activate);cst->Unknown6();check(!collision_continuations,"replica collision entry guard blocks even directly activated source collision state");
+ Entity changedRound{};changedRound.core=record.core;changedRound.core.id=50;Name(changedRound.core.class_name,"CRound");changedRound.core.kind=ROUND_THING;
+ LifeRecord originalRound{};check(DecodeLife(birth.data(),birth.size(),originalRound),"decode committed round identity for compatibility negative");changedRound.core=originalRound.core;changedRound.round=originalRound.round;changedRound.round.incarnation++;
+ check(!CENetworkWorldAdapter::Compatible(remote,changedRound)&&ByThing(remote)->round_incarnation==1,"same live object cannot adopt a different lifecycle incarnation through snapshot compatibility");
+ LifeRecord reusedShot=originalRound;reusedShot.info.operation=2;reusedShot.info.ordinal=2;reusedShot.info.id=reusedShot.core.id=51;reusedShot.birth_serial=reusedShot.round.incarnation=2;uint32_t changedSize=0;
+ check(EncodeLife(reusedShot,bytes,changedSize)&&CE_WorldApplyLifecycle(bytes,changedSize)==-1&&life_applied==1&&trail_calls==1,"reused source ShotID refuses before another native round Init");
+ CE_WorldLifecycleAck applied{91,92,93,94};check(CE_WorldAppliedLifecycle(&applied)&&applied.operation==1,"round application ACK appears after whole native commit");
+ auto oldAlloc=allocations;check(CE_WorldApplyLifecycle(birth.data(),birth.size())==2&&allocations==oldAlloc&&trail_calls==1,"exact round birth duplicate never reruns Init or particles");
+ check(CE_WorldApplyLifecycle(death.data(),death.size())==1&&WORLD.things.v.empty()&&!life_live_count&&trail_kills==1,"explicit round despawn retires native actor and trail once");
+ check(CE_WorldApplyLifecycle(death.data(),death.size())==2&&CE_WorldApplyLifecycle(birth.data(),birth.size())==2&&!life_live_count&&trail_calls==1,"late round duplicates cannot resurrect retired flight or replay trail");
+ // Fully decoded resource/dependency/shot mismatch must refuse before factory, native readers, events or RNG.
+ binding_count=0;start(CE_WORLD_REPLICA);LifeRecord bad{};check(DecodeLife(birth.data(),birth.size(),bad),"decode round adversary template");
+ bad.dependency.bytes[0]^=1;uint32_t size=0;check(EncodeLife(bad,bytes,size)&&CE_WorldApplyLifecycle(bytes,size)==-1&&!allocations&&!trail_calls&&!GAME.random_calls,"round baseline dependency bytes refuse before native Init");
+ bad.dependency.bytes[0]^=1;bad.round_birth.mode_schema++;check(EncodeLife(bad,bytes,size)&&CE_WorldApplyLifecycle(bytes,size)==-1&&!allocations,"foreign weapon mode fingerprint refuses before factory");
+ check(DecodeLife(birth.data(),birth.size(),bad),"restore selected round adversary");bad.round_birth.actor_phase=2;check(!EncodeLife(bad,bytes,size),"unsupported post Init phase cannot enter round capsule");
+ check(DecodeLife(birth.data(),birth.size(),bad),"restore native entry work-bound adversary");bad.round_birth.lifespan=1000000;
+ check(EncodeLife(bad,bytes,size)&&CE_WorldApplyLifecycle(bytes,size)==-1&&!allocations,"foreign finite lifespan refuses before native line-query work");
+ check(DecodeLife(birth.data(),birth.size(),bad),"restore native velocity adversary");bad.round_birth.velocity.v[0]=bad.core.velocity.v[0]=1000000;
+ check(EncodeLife(bad,bytes,size)&&CE_WorldApplyLifecycle(bytes,size)==-1&&!allocations,"huge finite coherent velocity refuses before native line-query loop");
+ struct NormCase{const char*name;Vec velocity;bool admitted;};const NormCase normCases[]={
+   {"zero",{{0,0,0}},false},{"signed-zero",{{-0.f,0,-0.f}},false},
+   {"minimum-subnormal",{{0,0x1p-149f,0}},false},{"1e-30",{{0,1e-30f,0}},false},{"all-tiny",{{1e-30f,1e-30f,1e-30f}},false},
+   {"small-positive",{{0,1e-20f,0}},true},{"ordinary",{{0,1.75f,0}},true}};
+ for(const NormCase &c:normCases){check(DecodeLife(birth.data(),birth.size(),bad),"restore coherent scalar norm case");bad.round_birth.velocity=bad.core.velocity=c.velocity;
+   unsigned savedFrame=EVENT_MANAGER.frame;float savedTime=EVENT_MANAGER.GetTime();bool admitted=CENetworkWorldAdapter::RoundEntryValues(&selectedRound,bad.round_birth);
+   std::cout<<"NORM_GUARD_CASE "<<c.name<<" admitted="<<admitted<<"\n";
+   check(admitted==c.admitted,"native norm admission matches computed positive finite magnitude");
+   check(!allocations&&!heap_reads&&!trail_calls&&!GAME.random_calls&&!events_queued&&!life_applied&&EVENT_MANAGER.frame==savedFrame&&EVENT_MANAGER.GetTime()==savedTime,"numeric guard changes no factory clock RNG event or application state");
+   if(!c.admitted)check(EncodeLife(bad,bytes,size)&&CE_WorldApplyLifecycle(bytes,size)==-1&&!allocations&&!heap_reads&&!trail_calls&&!GAME.random_calls&&!events_queued&&!life_applied&&EVENT_MANAGER.frame==savedFrame,"coherent zero-norm capsule refuses before native factory or scheduling");
+ }
+ selectedRound.mUnknown70=1;check(CE_WorldApplyLifecycle(birth.data(),birth.size())==-1&&!allocations,"missile resource cannot pass exact selected CRound closure");selectedRound.mUnknown70=0;
+ selectedMode.mClipName=(char*)"unadmitted casing";check(CE_WorldApplyLifecycle(birth.data(),birth.size())==-1&&!allocations,"unadmitted shell dependency refuses selected round before factory");selectedMode.mClipName=nullptr;
+ check(!UPhysicsManager::SpawnRound(&selectedRound)&&poisoned&&!heap_reads,"unrequested replica round allocation refuses before heap or constructor");
+ binding_count=0;start(CE_WORLD_REPLICA);heap.free=204799;check(CE_WorldApplyLifecycle(birth.data(),birth.size())==-1&&poisoned&&!allocations&&!life_applied&&!trail_calls,"native heap refusal poisons without Round or ShotID application proof");
+ binding_count=0;start(CE_WORLD_REPLICA);compatibility_refusal=true;
+ check(CE_WorldApplyLifecycle(birth.data(),birth.size())==-1&&poisoned&&!life_applied&&!last_round_shot,"post Init compatibility refusal poisons without round or ShotID ACK");
+ check(!CE_WorldAppliedLifecycle(&applied),"partial round Apply cannot advertise a successful watermark");
+ compatibility_refusal=false;while(!WORLD.things.v.empty()){auto*t=WORLD.things.v.front();t->Shutdown();}
+ // Mix both actual native families in one epoch: round incarnation is an operation ID, never explosion serial.
+ binding_count=0;start(CE_WORLD_HOST);EVENT_MANAGER.frame=101;CExplosionInitThing impactInit;impactInit.mBehaviour=UPhysicsManager::mExplosions->v[0];impactInit.mOriginator=&owner;impactInit.mPos={1,2,-1};
+ CExplosion*impact=UPhysicsManager::SpawnExplosion(0);impact->Init(&impactInit);shot=CE_WorldShotBegin(&weapon,&selectedMode);host=UPhysicsManager::SpawnRound(&selectedRound);host->mUnknownEC=&owner;init=pristine;host->Init(&init);CE_WorldShotEnd(&weapon,shot);impact->Shutdown();host->Shutdown();
+ struct SavedOperation{std::vector<uint8_t>bytes;CE_WorldLifecycleInfo info;};std::vector<SavedOperation>mixed;
+ for(unsigned operation=1;operation<=4;++operation){check(CE_WorldPeekLifecycle(&info,bytes,sizeof bytes)==1&&info.operation==operation,"mixed native source retains every completion and endpoint in order");mixed.push_back({std::vector<uint8_t>(bytes,bytes+info.size),info});check(CE_WorldLifecyclePublished(&info),"mixed source publication preserves exact tuple");}
+ check(DecodeLife(mixed[1].bytes.data(),mixed[1].bytes.size(),record)&&record.round.incarnation==2&&record.round_birth.shot==1&&birth_published==1&&life_generated==4,"round operation incarnation never aliases the separate explosion birth serial");
+ binding_count=0;start(CE_WORLD_REPLICA);for(const auto&operation:mixed)check(CE_WorldApplyLifecycle(operation.bytes.data(),operation.bytes.size())==1,"mixed native Round and impact lifecycle commits in original order");
+ check(life_applied==4&&birth_applied==1&&last_round_shot==1&&!life_live_count&&WORLD.things.v.empty()&&trail_calls==1&&trail_kills==1&&fx_calls==1&&!GAME.random_calls&&!events_queued,"mixed whole commits retain separate counters and exactly once trail and detached impact effects");
+ // Pending-token destruction and pre-baseline history remain fail-closed before any freed-field read.
+ binding_count=0;start(CE_WORLD_HOST);EVENT_MANAGER.frame=101;shot=CE_WorldShotBegin(&weapon,&selectedMode);host=UPhysicsManager::SpawnRound(&selectedRound);host->mUnknownEC=&owner;
+ init=pristine;CENetworkWorldAdapter::RoundEntry(host,&init);check(round_pending==host,"selected round entry acquires its separate nonowning token");CRound*dead=host;delete host;
+ unsigned captures=core_captures;CENetworkWorldAdapter::RoundComplete(dead);check(life_failed&&!round_pending&&core_captures==captures&&!life_count,"destroyed pending round cannot be captured or assigned a premature ID");CE_WorldShotEnd(&weapon,shot);
+ binding_count=0;reset(CE_WORLD_HOST,true);host=UPhysicsManager::SpawnRound(&selectedRound);host->mUnknownEC=&owner;init=pristine;host->Init(&init);
+ check(birth_failed&&!birth_generated&&!life_generated,"pre-baseline native round history refuses even with zero journal counters");host->Shutdown();
+ binding_count=0;reset(CE_WORLD_HOST,false);host=UPhysicsManager::SpawnRound(&selectedRound);host->mUnknownEC=&owner;init=pristine;host->Init(&init);
+ check(GAME.random_calls==1&&host->mDoFullMoveCount==1&&!life_failed&&!birth_failed&&!life_count,"offline native round Init and random phase remain unchanged");host->Shutdown();
+ binding_count=0;start(CE_WORLD_REPLICA);auto*otherActor=new CActor;CInitThing neutral;otherActor->Init(&neutral);
+ check(poisoned&&!GAME.random_calls&&!events_queued&&!life_applied,"uncontrolled actor Init poisons without RNG fallback or successful application proof");otherActor->Shutdown();
+ binding_count=0;LifeReset();std::cout<<"ROUND_SIZES birth="<<birthSize<<" despawn="<<deathSize<<"\n";
+}

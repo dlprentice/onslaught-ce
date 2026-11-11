@@ -18,6 +18,9 @@ void PortMouseKeepRelative();	// dinput.cpp: re-assert relative mode for the acq
 // Posts to the game's message queue (window.cpp; d3d9hooks' BEA_PORT_QUIT).
 extern "C" BOOL WINAPI PortPostMessageA(HWND h, UINT m, WPARAM w, LPARAM l);
 SDL_Window *PortMainSdlWindow();	// window.cpp: the game's first window (NULL before it exists)
+#ifdef CE_VERSION
+void PortHoldPointerForWindowChange(bool after);	// window.cpp: a Window mode switch under a resting pointer is not a pointer move
+#endif
 // Widescreen and native resolutions (widescreen.cpp; the game's side is declared in port.h).
 void PortVideoInit();				// SDL video with the port's hints, once
 void PortWideBackBuffer(unsigned w, unsigned h);	// d3d9hooks.cpp: the device's back buffer at CreateDevice and Reset

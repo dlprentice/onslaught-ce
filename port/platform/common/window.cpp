@@ -171,6 +171,37 @@ void PostMouseMove(HWND h, WPARAM w, LPARAM l)
 	Post(h, WM_MOUSEMOVE, w, l);
 }
 
+#ifdef CE_VERSION
+// CE's Window mode option changes the window while the game runs, which the original could not do. The window then
+// changes size and place under a pointer the player has not touched, and the window system reports a pointer move
+// because the pointer's position in the window changed. The game takes any move as the player reaching for the mouse
+// (its menus highlight the row under the pointer), so the highlight left the row the keyboard was on. From the switch
+// until the pointer really moves, a move report is not passed on while the pointer's desktop position is one held at
+// the switch (before it, and after it in case the display mode moved the pointer). The first report from anywhere else
+// ends the hold and goes through. Where SDL has no desktop position (Wayland), the position it gives moves with the
+// window, so the report goes through as before.
+bool gPointerHeld;
+float gPointerHeldX[2], gPointerHeldY[2];
+unsigned gPointerHeldReports;
+
+bool PointerStillSinceWindowChange()
+{
+	if (!gPointerHeld)
+		return false;
+	float x = 0, y = 0;
+	SDL_GetGlobalMouseState(&x, &y);
+	for (int i = 0; i < 2; i++)
+		if (x == gPointerHeldX[i] && y == gPointerHeldY[i])
+		{
+			if (gPointerHeldReports++ < 4)
+				PortSessionLog(PORT_SESSION_WINDOW, false, "pointer move report after a window mode change held: the pointer has not moved");
+			return true;
+		}
+	gPointerHeld = false;
+	return false;
+}
+#endif
+
 // The game reads every waiting message at the start of a frame and judges a click afterwards, against the pointer's position when its logic runs. A mouse message that follows a button release in the same
 // batch would move that position before the judgement, so in the CE layer's menus the batch ends at the release and the messages behind it are the next batch's first: the click is judged where the button
 // was released, and the movement or the next press arrives one frame later. "In the menus" is PortUiMouseMenu's question (not in a replay or a recording, not while the commander map reads window pixels),
@@ -1088,6 +1119,10 @@ void Pump()
 #ifndef CE_NETWORK_OFF
 			}
 #endif
+#ifdef CE_VERSION
+			if (PointerStillSinceWindowChange())
+				break;	// the window moved under a resting pointer (PortHoldPointerForWindowChange)
+#endif
 			PostMouseMove(h, MouseButtons(), MouseLParam(e.motion.x, e.motion.y));
 			break;
 		case SDL_EVENT_MOUSE_BUTTON_DOWN:
@@ -1498,6 +1533,28 @@ extern "C" int WINAPI PortShowCursor(BOOL show)
 	}
 	return sCursorCount;
 }
+
+#ifdef CE_VERSION
+// The Window mode switch (d3d9hooks.cpp) calls this before it changes the window (after=false: a new hold) and again
+// when it ends (after=true: the position the switch left, if it moved the pointer), only for the game's SDL window, so
+// SDL's video is running. See PointerStillSinceWindowChange.
+void PortHoldPointerForWindowChange(bool after)
+{
+	if (after && !gPointerHeld)
+		return;		// no hold to extend: the pointer has moved since the switch began
+	float x = 0, y = 0;
+	SDL_GetGlobalMouseState(&x, &y);
+	if (!after)
+	{
+		gPointerHeldX[0] = x;
+		gPointerHeldY[0] = y;
+		gPointerHeldReports = 0;
+	}
+	gPointerHeldX[1] = x;
+	gPointerHeldY[1] = y;
+	gPointerHeld = true;
+}
+#endif
 
 extern "C" BOOL WINAPI PortGetCursorPos(LPPOINT p)
 {

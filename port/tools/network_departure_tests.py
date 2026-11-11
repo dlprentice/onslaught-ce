@@ -11,13 +11,13 @@ import json
 import os
 from pathlib import Path
 import re
-import resource
 import shutil
 import subprocess
 import sys
 import tempfile
 
 import deps
+import quiet_crash
 from network_session_tests import body
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -43,7 +43,7 @@ def main():
     parser.add_argument("--cc", default="clang")
     parser.add_argument("--asan", action="store_true")
     args = parser.parse_args()
-    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+    # The controls abort on purpose (abort_on_error=1): their runs go through quiet_crash (no core file, no coredumpctl record).
     parent = ROOT / "local-data/port/network-departure-tests"
     parent.mkdir(parents=True, exist_ok=True)
     out = Path(tempfile.mkdtemp(prefix="run-", dir=parent))
@@ -90,7 +90,7 @@ def main():
     enet, mc = args.enet_source.resolve(), deps.SRC / "monocypher-4.0.2/src"
     if not (enet / "include/enet/enet.h").is_file() or not (mc / "monocypher.c").is_file():
         raise RuntimeError("supply already-available pinned ENet and Monocypher sources; nothing is downloaded")
-    env = dict(os.environ, TMPDIR=str(out), ASAN_OPTIONS="detect_leaks=1:abort_on_error=1:disable_coredump=1")
+    env = dict(os.environ, TMPDIR=str(out), ASAN_OPTIONS="detect_leaks=1:abort_on_error=1")
     for key in tuple(env):
         if key.startswith("BEA_"):
             env.pop(key)
@@ -128,7 +128,7 @@ def main():
         return binary
 
     def exercise(binary, case, reason=""):
-        proc = subprocess.run([str(binary), case], env=env, capture_output=True, text=True, timeout=5)
+        proc = quiet_crash.run([str(binary), case], env=env, capture_output=True, text=True, timeout=5)
         (out / (binary.name + "-" + case + ".log")).write_text(proc.stdout + proc.stderr)
         passed = proc.returncode == (2 if reason else 0) and (reason in proc.stderr if reason else True)
         row = {"variant": binary.name, "case": case, "exit": proc.returncode, "reason": reason,

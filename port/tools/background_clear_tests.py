@@ -121,6 +121,7 @@ def main():
     files=['src/DXEngine.cpp','src/DXKempyCube.cpp','src/BattleEngine.cpp','src/d3dapp.cpp','port/platform/public/d3dapp.cpp','port/platform/common/ce.cpp','port/patches/'+PATCH,'port/tools/background_clear_tests.py']
     receipt={'passed':False,'inputs':{},'commands':[],'cases':[],'limits':['Host controlled D3D clear/viewport and poison surface; no rendered GPU pixels or reporter reproduction.','Water clipping counterexample at height1000 is not an admitted ordinary-flight state; height150 control proves sky opening alone insufficient.','Faithful backbuffer residue remains unchanged; CE-only behavior gives uncovered pixels the existing background only after a successful Clear. Device/Clear failure status behavior is intentionally unchanged.']}
     try:
+        files=[rel for rel in files if rel!='src/d3dapp.cpp' or (ROOT/rel).is_file()]   # the private SDK host, where this tree holds it
         for rel in files:
             p=out/rel;p.parent.mkdir(parents=True,exist_ok=True);p.write_bytes((ROOT/rel).read_bytes());receipt['inputs'][rel]=hashlib.sha256(p.read_bytes()).hexdigest()
         raw=(out/'src/DXEngine.cpp').read_text()
@@ -139,7 +140,7 @@ def main():
         if not far or not start or not step:raise ValueError('projection/water constants changed')
         receipt['inputs']['src/DXWater.cpp']=hashlib.sha256(water.encode()).hexdigest()
         last=float(start[1].rstrip('f'))+24*float(step[1].rstrip('f'))
-        for rel in ('src/d3dapp.cpp','port/platform/public/d3dapp.cpp'):
+        for rel in [r for r in ('src/d3dapp.cpp','port/platform/public/d3dapp.cpp') if r in files]:
             if 'D3DSWAPEFFECT_DISCARD' not in (out/rel).read_text():raise ValueError('discard selection no longer present')
         if 'if (mPos.Z<-150.0f)' not in (out/'src/BattleEngine.cpp').read_text():raise ValueError('ordinary aircraft height countercontrol changed')
         ce=function((out/'port/platform/common/ce.cpp').read_text(),'bool PortCeLayer()')

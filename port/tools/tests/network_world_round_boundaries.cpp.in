@@ -1,0 +1,23 @@
+// Controlled owner/resource/list/geometry interfaces only. Native actor/round methods are extracted below.
+/* ROUND_DATA_FIELDS */
+/* MODE_DATA_FIELDS */
+struct CWeaponData{char*mName=nullptr;int mChargeModes[5]={};};
+struct CWeapon{CUnit*mAttachedTo=nullptr;CWeaponData*mData=nullptr;static CWeaponModeData*GetWeaponMode(int);};
+struct WalkerBoundary{CWeapon*mPrimaryWeapon=nullptr,*mAugWeapon=nullptr;SPtrSet<CWeapon>mWeapons;};
+struct JetBoundary{SPtrSet<CWeapon>mWeapons;};
+unsigned lock_hits=0;
+struct CBattleEngine:CUnit{WalkerBoundary*mWalkerPart=nullptr;JetBoundary*mJetPart=nullptr;SPtrSet<CWeapon>mWeapons;
+ const char*_GetClassName()override{return "CBattleEngine";}void LockHit(CThing*){if(!CE_WorldReplica())++lock_hits;}};
+/* ROUND_INIT_CLASS */
+struct CRound:CActor{using SUPERTYPE=CActor;CRoundData*mData;Reader mUnknownE8,mUnknownEC;CParticleEffectLink mEffect;
+ float mStartTime;FVector mBeamStart,mDest;int mJumpsPerformed,mUnknown124,mUnknown128,mUnknown130;EAllegiance mAllegiance;BOOL mUnknown120,mUnknown12C;
+ explicit CRound(CRoundData*);void Init(CInitThing*)override;void Shutdown()override;float Gravity();BOOL ClipToGround()override;BOOL CanGoUnderWater()override;void Unknown4dac90(CScheduledEvent*);
+ const char*_GetClassName()override{return "CRound";}void SetThingType(ULONG t)override{SUPERTYPE::SetThingType(t|THING_TYPE_AMMUNITION);}
+ FVector GetVelocity(){return mVelocity;} };
+struct CMissile:CRound{explicit CMissile(CRoundData*d):CRound(d){}const char*_GetClassName()override{return "CMissile";}};
+struct UPhysicsManager{static SPtrSet<CRoundData>*mRounds;static SPtrSet<CWeaponModeData>*mWeaponModes;static SPtrSet<CExplosionData>*mExplosions;
+ static CRound*SpawnRound(CRoundData*);static CExplosion*SpawnExplosion(int);
+ static CRoundData*GetRoundData(char*n){if(mRounds)for(auto*d:mRounds->v)if(d->mName&&!strcmp(n,d->mName))return d;return nullptr;}
+ static CExplosionData*GetExplosionData(int n){return n>=0&&(unsigned)n<mExplosions->v.size()?mExplosions->v[n]:nullptr;}};
+SPtrSet<CRoundData>*UPhysicsManager::mRounds=nullptr;SPtrSet<CWeaponModeData>*UPhysicsManager::mWeaponModes=nullptr;SPtrSet<CExplosionData>*UPhysicsManager::mExplosions=nullptr;
+CWeaponModeData*CWeapon::GetWeaponMode(int n){return UPhysicsManager::mWeaponModes&&n>=0&&(unsigned)n<UPhysicsManager::mWeaponModes->v.size()?UPhysicsManager::mWeaponModes->v[n]:nullptr;}

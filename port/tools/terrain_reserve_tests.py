@@ -16,6 +16,8 @@ import subprocess
 import tempfile
 import unittest
 
+import quiet_crash
+
 ROOT = Path(__file__).resolve().parents[2]
 COMMON = ROOT / "port/platform/common"
 GAME = ROOT / "port/game"
@@ -86,10 +88,10 @@ class Reserve(unittest.TestCase):
         return binary
 
     def run_case(self, mode, *, env=None, public=True, binary=None):
-        return subprocess.run([str(binary or self.binaries[public]), mode],
-                              env={"PATH": os.environ.get("PATH", "/usr/bin"),
-                                   "HOME": "/nonexistent", **(env or {})},
-                              capture_output=True, text=True, timeout=10)
+        return quiet_crash.run([str(binary or self.binaries[public]), mode],
+                               env={"PATH": os.environ.get("PATH", "/usr/bin"),
+                                    "HOME": "/nonexistent", **(env or {})},
+                               capture_output=True, text=True, timeout=10)
 
     def passed(self, mode, **kwargs):
         p = self.run_case(mode, **kwargs)

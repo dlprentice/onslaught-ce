@@ -1,7 +1,7 @@
 # Controller input in the native port
 
 Status: CE gamepad and flight-stick support, released in 0.1.9; physical-controller acceptance remains open
-Last updated: 2026-11-07 (pad slots, flight-stick numbering and co-op wording corrected 2026-11-06; earlier: 2026-11-05, 2026-10-28)
+Last updated: 2026-11-11
 Summary: how the native port finds controllers, what a gamepad or flight stick does without any setup, how hotplug
 works, the Dodge Button, where all of it is switched off, and what has and has not been checked.
 
@@ -139,7 +139,7 @@ Offscreen runs of the Linux build on level 100 (authored key events and `BEA_POR
 and the gamepad each making six dodges, left and right, with one session-log line apiece (`dodge button: dodge right, 151 ms
 between the two pushes`), no dodge with `dodge_button=0`, and, of seven different spacings typed by hand through the same events, one landing (three
 of the ten attempts of that run were mislabelled and ran at about 25 Presents, so they are not counted as separate spacings); a
-review's read-only trace saw hand double taps of two and three updates land. The figures are in `port/PARITY.md`, The Dodge Button. Authored events and a virtual gamepad are not a hand on a keyboard or a
+review's read-only trace saw hand double taps of two and three updates land. The figures are in `port/PARITY.md`, The Dodge Button (a file of the maintainers' working source, not in this tree). Authored events and a virtual gamepad are not a hand on a keyboard or a
 physical pad.
 
 Run these three checks separately on the exact candidate tree. Use an isolated private HOME and XDG
@@ -167,7 +167,7 @@ morphing, and a pad plugged in late or unplugged and replugged then working the 
 
 On the original's two-player split-screen level 856 (offscreen Linux build, `BEA_PORT_FAKE_PAD` and `BEA_PORT_FAKE_PAD2`) pad 0's stick
 moved the top view only, pad 1's the bottom view only, with one pad only the top view moved, and either pad opened and walked the
-pause menu; with the virtual clock the same scripts changed nothing (`port/PARITY.md`, Split-screen gamepads).
+pause menu; with the virtual clock the same scripts changed nothing (`port/PARITY.md`, Split-screen gamepads; not in this tree).
 
 Not checked: how the Dodge Button feels under a real hand on a keyboard or a physical pad, physical gamepads and flight sticks, Windows drivers (the shared adapter is compiled for Windows but
 these runs were Linux), how the defaults feel in play, and the walker's turn on a level that starts on the ground.

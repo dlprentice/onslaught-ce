@@ -1,7 +1,7 @@
 # Onslaught CE: guide for automated agents
 
 Status: active
-Last updated: 2026-11-02
+Last updated: 2026-11-11
 Summary: public fork contributions and maintainer export ownership.
 
 This repository is generated from the maintainers' working source. Contributors may edit and commit proposals on
@@ -16,4 +16,4 @@ Private repository access and a maintainer's private analysis database are not p
   (`port/updater/UPDATER-V2.md`); never publish a `latest.json` feed.
   Report a problem opens a GitHub page in the user's browser with their version and OS in its address; nothing is
   posted until they submit it. The program has no telemetry.
-- Build: `README.md`, "Building from source".
+- Build: `README.md`, "Building from source". Layout, rules and the guides for each part: `port/README.md`.

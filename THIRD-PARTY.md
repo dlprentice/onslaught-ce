@@ -1,7 +1,7 @@
 # Third-party components
 
 Status: active
-Last updated: 2026-11-02 (the network and ICE rows; earlier: 2026-10-29 the MinGW-w64 runtime's licences as the package notice lists them)
+Last updated: 2026-11-02
 Summary: the licences and purposes of components built into or shipped with Onslaught CE.
 
 Onslaught CE's own code is GPL-3.0-only (`COPYING`). The build fetches the components below at the versions

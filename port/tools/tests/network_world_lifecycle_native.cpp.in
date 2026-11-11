@@ -1,0 +1,135 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Extracted native explosion/lifecycle caller controls. Controlled geometry, renderer, particle and sound boundaries.
+#include CE_WORLD_HEADER
+#include CE_NET_HEADER
+#include <algorithm>
+#include <cassert>
+#include <cmath>
+#include <cstdint>
+#include <cstdlib>
+#include <cstdio>
+#include <cstring>
+#include <iostream>
+#include <new>
+#include <typeinfo>
+#include <string>
+#include <vector>
+using SINT=int;using BOOL=int;using ULONG=uint32_t;using DWORD=uint32_t;using std::sqrtf;
+bool PortTypeInfoEqual(const std::type_info&a,const std::type_info&b){return a==b;}
+constexpr BOOL TRUE=1,FALSE=0;constexpr float PI=3.14159265358979323846f,NEXT_FRAME=.05f;
+#include NATIVE_THING_TYPES
+constexpr int TF_DECLARED_SHUTDOWN=1,TF_IN_MAP_WHO=2,TF_DYING=4,TF_IS_BIG_THING=64;
+constexpr int SHUTDOWN=2000,START_OF_FRAME=0,EXPLOSION_EVENT_GROW=3000;
+/* GAME_STATE_ENUM */
+constexpr int STATIC_THING=1,ENGINE_THING=2,ROUND_THING=3,EXPLOSION_THING=7; constexpr int QT_NONE=0; constexpr int TF_MARKED_OBJECTIVE=32;
+constexpr unsigned kEntities=128,kParts=96,kName=96,kBirths=64,kWeapons=16;constexpr uint32_t kNewBirthAge=2;
+constexpr int MEMTYPE_EXPLOSION=1,MT_ROUND=2,MT_CST=3,END_OF_FRAME=1;constexpr float GAME_FR=20;
+constexpr int ST_SETINITIALPOSITION=0,ST_GAME_SOUND=0;
+enum EOrientationType{EULER_ANGLES,DIRECTION_COSINE_MATRIX};
+enum EAllegiance{kForsetiAllegiance,kMuspellAllegiance,kNeutralAllegiance,kUndefinedAllegiance,kInvalidAllegiance,kToggleAllegiance,kIndependentAllegiance};
+enum ECollisionType{kCollideNothing,kCollideGround,kCollideWater,kCollideThing};
+enum ECollisionLevel{ECL_OUTER_SPHERE,ECL_APPROX_GEOMETRY_SHAPES,ECL_MESH};
+enum ECollisionResponse{ECR_PASSIVE,ECR_STATIC,ECR_SLIDE};
+enum eLightType{LIGHT0};
+std::vector<std::string> trace;int allocations=0,heap_reads=0,base_inits=0,shutdowns=0,fx_calls=0,fx_positions=0,fx_orientations=0,fx_unlinks=0,sounds=0,lights=0,damage_calls=0,kills=0,base_hits=0,events_attempted=0,events_queued=0,attached_radius_reads=0;
+int entry_calls=0,ready_calls=0,important_arg=-1;float light_size=0,base_radius=0;uint32_t base_mask=0;int base_map=-1;bool selected_matrix=false;void*selected_pd=nullptr;
+struct FVector{float X,Y,Z,Pad;FVector(){}FVector(float x,float y,float z):X(x),Y(y),Z(z){}void Set(float x,float y,float z){X=x;Y=y;Z=z;}FVector operator+(const FVector&o)const{return {X+o.X,Y+o.Y,Z+o.Z};}FVector operator-(const FVector&o)const{return {X-o.X,Y-o.Y,Z-o.Z};}FVector&operator+=(const FVector&o){X+=o.X;Y+=o.Y;Z+=o.Z;return *this;}FVector operator*(float n)const{return {X*n,Y*n,Z*n};}/* VECTOR_MAGNITUDE */void NormaliseYZX(){Normalise();}void Normalise(){float m=Magnitude();if(m){X/=m;Y/=m;Z/=m;}}float MagnitudeYZX()const{return std::sqrt((Y*Y+Z*Z)+X*X);}};
+struct FMatrix{FVector Row[3];FMatrix(){}FMatrix(float,float,float){Row[0]={1,0,0};Row[1]={0,1,0};Row[2]={0,0,1};}static FMatrix RotationInlineCopy(float a,float b,float c){return FMatrix(a,b,c);}FMatrix operator*(const FMatrix&)const{return *this;}FVector GetColumnY(){return {Row[0].Y,Row[1].Y,Row[2].Y};}};
+FVector ZERO_FVECTOR(0,0,0);FMatrix ID_FMATRIX(0,0,0);
+struct CScheduledEvent;enum ActorEvent{MOVE=1000,LF_MOVE=1001};struct CEvent{int number;int GetEventNum(){return number;}};
+struct CMonitor{virtual~CMonitor()=default;void Shutdown(){trace.push_back("MonitorShutdown");}};
+struct CThing;struct CExplosion;struct CInitThing;struct CExplosionInitThing;struct CCollisionReport;
+int CE_WorldReplica();void CE_WorldExplosionInitialized(CExplosion*,CInitThing*);void CE_WorldLifecycleForget(const void*);void CE_WorldLifecycleDestroyed(const void*);int CE_WorldExplosionSpawnAllowed();void CE_WorldExplosionBirth(CExplosion*,CInitThing*);void CE_WorldExplosionReady(CExplosion*,CInitThing*);void CE_WorldForget(const void*);
+struct Reader{CThing*p=nullptr;void SetReader(CThing*q){trace.push_back("ReaderSet");p=q;}CThing*ToRead(){return p;}void operator=(CThing*q){SetReader(q);}CThing*operator->(){return p;}};
+struct RenderBoundary{FVector GetRandomSurfacePoint(int){trace.push_back("SurfacePoint");return {0,0,0};}};
+struct ScriptBoundary{void Died(){trace.push_back("ScriptDied");}void Hit(void*){trace.push_back("ScriptHit");}};
+struct SectorBoundary{int GetLayer(){return 4;}};struct MapWhoBoundary{void Init(FVector,CThing*,float){}SectorBoundary GetSectorIn(){return {};}};
+constexpr int USE_BIGLIST_FOR=3;struct CCollisionSeekingThing;struct CInitCSThing;
+struct MeshBoundary;
+struct CThing:CMonitor{
+ static short sThingCount;uint32_t mThingType;short mFlags,mThingNumber;RenderBoundary*mRenderThing;CCollisionSeekingThing*mCollisionSeekingThing;FVector mPos;MapWhoBoundary mMapWhoEntry;
+ CThing();virtual~CThing();virtual void Init(CInitThing*);void RoundThingInit(CInitThing*);void InitCollisionSeekingThing(CInitCSThing*);void InitRenderThing(CInitThing*){}virtual BOOL ClipToGround(){return TRUE;}virtual BOOL CanGoUnderWater(){return FALSE;}virtual void Deactivate(){}virtual void Shutdown();virtual void AddShutdownEvent();
+ virtual float GetRadius(){++attached_radius_reads;return 8.f;}virtual FVector GetPos(){return mPos;}virtual FMatrix&GetOrientation();
+ virtual RenderBoundary*GetRenderThing(){return mRenderThing;}virtual bool IsA(uint32_t t){return(mThingType&t)!=0;}bool IsDying(){return mFlags&TF_DYING;}
+ virtual const char*_GetClassName(){return "CThing";}virtual MeshBoundary*GetRTMesh(){return nullptr;}virtual void Teleport(FVector p){mPos=p;}virtual void SetObjective(bool){}
+ virtual void Damage(float,CThing*,BOOL,int){++damage_calls;mFlags|=TF_DYING;}
+ virtual void SetThingType(uint32_t t){mThingType=t|THING_TYPE_THING;}virtual void HandleEvent(CEvent*){}virtual void Hit(CThing*,CCollisionReport*){}
+};short CThing::sThingCount=0;
+struct CAnimation{float mFrame=0,mLastFrame=0,mFrameIncrement=0;int mAnimMode=0,mAnimIndex=0,mForceLooped=0;};using EAnimMode=int;
+struct MeshBoundary{const char*GetName(){return "";}};using CMesh=MeshBoundary;
+struct CComplexThing:CThing{using SUPERTYPE=CThing;FMatrix mOrientation;void*mMotionController;ScriptBoundary*mMissionScript;char*mName;CAnimation*mAnimation;
+ CComplexThing();void SetThingType(uint32_t t)override{SUPERTYPE::SetThingType(t|THING_TYPE_COMPLEX_THING);}void Init(CInitThing*)override;void AddShutdownEvent()override;void Hit(CThing*,CCollisionReport*)override;FMatrix&GetOrientation()override{return mOrientation;}};
+struct CActor:CComplexThing{using SUPERTYPE=CComplexThing;FVector mOldPos,mVelocity;FMatrix mOldOrientation;int mDoFullMoveCount=0;float mLastMoveTime=0,mLastTimeOnGround=0,mLastTimeInWater=0,mLastTimeOnObject=0;void Init(CInitThing*)override;virtual float GetMoveMultiplier(){return 1;}void AddMoveEvent(CEvent*);void SetThingType(ULONG t)override{SUPERTYPE::SetThingType(t|THING_TYPE_ACTOR);}};
+FMatrix&CThing::GetOrientation(){return ID_FMATRIX;}
+struct UnitDataBoundary{bool mFenrir=true;};struct CUnit:CThing{UnitDataBoundary*mUnitData=nullptr;int mAllegiance=0;void*mSegments=nullptr;void ConfirmedKill(CUnit*){++kills;}};
+struct CCollisionReport{int mUnknown00=0,mNumContacts=0;int mContactParts[6]={};float mContactDistances[6]={};};
+struct CParticleDescriptor{int id;};struct CEffect{};
+struct CExplosionData{CParticleDescriptor*mParticleA=nullptr,*mParticleB=nullptr,*mParticleC=nullptr,*mParticleD=nullptr;CEffect*mSoundA=nullptr,*mSoundB=nullptr;char*mParticleAName=nullptr,*mParticleBName=nullptr,*mParticleCName=nullptr,*mParticleDName=nullptr,*mSoundAName=nullptr,*mSoundBName=nullptr,*mName=nullptr;float mRadius=0,mDamage=0;int mVolumetric=1,mTime=10,mSmart=0,mOriented=0,mLight=-1;};
+struct CInitCSThing{CThing*mForThing=nullptr,*mIgnoreThing=nullptr;uint32_t mNotSeekCollisionWithBF=0;void*mShape=nullptr;ECollisionLevel mDesiredCollision=ECL_APPROX_GEOMETRY_SHAPES,mMinCollision=ECL_OUTER_SPHERE,mMaxCollision=ECL_MESH;ECollisionResponse mCollisionResponse=ECR_SLIDE;BOOL mStartCollideOnNextFrame=TRUE,mUseFixedMeshTransforms=FALSE,mDoOBBForMeshCol=FALSE,mIgnoreAnimationCollision=FALSE;float mTimeBeforeStart=-1,mRoundLength=0;};
+struct CInitThing{FVector mPos;FMatrix mOrientation;float mYaw,mPitch,mRoll;FVector mVelocity;EOrientationType mOrientationType;int mMeshNo;EAllegiance mAllegiance;CThing*mTarget,*mSpawnedBy;BOOL mActive,mAttachScriptsToUnits;char mScript[96],mName[96],mSpawnScript[96];int mWaypointPath;float mForceRadius;CInitCSThing mInitCST;CInitThing();};constexpr int kNullEmitter=0;
+/* INIT_DERIVED_CLASS */
+struct CExplosion:CComplexThing{using SUPERTYPE=CComplexThing;
+ float mCurrentRadius,mRadius;CExplosionData*mBehaviour;ECollisionType mColType;int mAllegiance;Reader mOriginator;
+ const char*_GetClassName()override{return "CExplosion";}
+ void Init(CInitThing*)override;void Hit(CThing*,CCollisionReport*)override;void Unknown66();void HandleEvent(CEvent*)override;
+ float GetRadius()override;float Unknown67();void SetThingType(uint32_t)override;
+};
+struct CSphere{float radius;explicit CSphere(float r):radius(r){}};
+struct CLine{FVector start,end;CLine(FVector a,FVector b):start(a),end(b){}};
+struct Heap{unsigned free=204800;unsigned GetFreeSize(){++heap_reads;return free;}}heap;
+struct Memory{Heap*GetThingHeap(){return &heap;}}MEM_MANAGER;
+void*operator new(std::size_t n,int){++allocations;return ::operator new(n);}void operator delete(void*p,int){::operator delete(p);}
+struct Map{float water=0;float ground=10;bool ground_hit=false;FVector hit{5,6,7};unsigned ground_queries=0;float GetWaterLevel(){return water;}float Collide(FVector){return ground;}bool Unknown490a40(CLine*,FVector*out,int){++ground_queries;*out=hit;return ground_hit;}}MAP;
+struct Events{bool valid=true;BOOL IsValid(){return valid;}uint32_t frame=100;float GetTime(){return frame*.05f;}uint32_t GetFrameCount(){return frame;}void AddEvent(int,CMonitor*,float,int=0,void * =nullptr,CScheduledEvent * =nullptr){++events_attempted;if(!CE_WorldReplica())++events_queued;}void AddEvent(float,int,CMonitor*){++events_attempted;if(!CE_WorldReplica())++events_queued;}}EVENT_MANAGER;
+struct SetBoundary{std::vector<CThing*>v;void Add(CThing*t){v.push_back(t);}void Append(CThing*t){Add(t);}bool Contains(CThing*t){return std::find(v.begin(),v.end(),t)!=v.end();}void Remove(CThing*t){v.erase(std::remove(v.begin(),v.end(),t),v.end());}};
+struct World{SetBoundary things,big,mSet60,mSet110;void AddThing(CThing*t){trace.push_back("WorldAdd");things.Add(t);}void RemoveThing(CThing*t){things.Remove(t);}SetBoundary&GetBigThingsNB(){return big;}}WORLD;
+unsigned trail_calls=0,trail_kills=0;struct CParticleEffectLink{void*mEffect=nullptr;bool Full(){return mEffect!=nullptr;}void Kill(){if(mEffect){++trail_kills;trace.push_back("TrailKill");mEffect=nullptr;}}CParticleEffectLink(){}~CParticleEffectLink(){++fx_unlinks;trace.push_back("FXUnlink");}void SetPos(const FVector&){++fx_positions;trace.push_back("FXPos");}void SetOrientation(const FMatrix&){++fx_orientations;trace.push_back("FXOri");}};
+struct Particles{void AddParticle(CParticleDescriptor*p,CParticleEffectLink*l,bool){++trail_calls;l->mEffect=p;trace.push_back("TrailCreate");}void CreateEffect(CParticleDescriptor*p,CParticleEffectLink*,FVector,int,BOOL important){++fx_calls;selected_pd=p;important_arg=important;trace.push_back("FXCreate");}}PARTICLE_MANAGER;
+struct Sound{template<class...T>void PlayEffect(T...){++sounds;trace.push_back("Sound");}}SOUND;
+struct Engine{void LogLight(FVector,eLightType,float size){++lights;light_size=size;trace.push_back("Light");}}ENGINE;
+template<class T>struct SPtrSet{std::vector<T*>v;int Size(){return (int)v.size();}};
+template<class T>struct ListIterator{SPtrSet<T>*s;unsigned i=0;explicit ListIterator(SPtrSet<T>*p):s(p){}T*First(){i=0;return s->v.empty()?nullptr:s->v[0];}T*Next(){return ++i<s->v.size()?s->v[i]:nullptr;}};
+unsigned collision_scans=0,collision_continuations=0;struct CCollisionSeekingThing:CMonitor{unsigned mCollisionFlags=0;CThing*mForThing=nullptr;CSphere*mShape=nullptr;virtual~CCollisionSeekingThing(){delete mShape;}virtual void Init(CInitCSThing*i){mCollisionFlags=0x400;mForThing=i->mForThing;mShape=static_cast<CSphere*>(i->mShape);}void Unknown6();};
+struct DetectorBoundary{void Init(CCollisionSeekingThing*t){++collision_scans;t->Unknown6();}};
+struct CCSPersistentThing:CCollisionSeekingThing{DetectorBoundary mCollisionDetector;void Init(CInitCSThing*)override;void HandleEvent(CEvent*);};struct CCollisionSeekingRound:CCollisionSeekingThing{};
+struct LogBoundary{template<class...A>void AddMessage(A...){}}LOG;
+#define ASSERT(x) assert(x)
+/* ROUND_BOUNDARY_TYPES */
+/* PROTOCOL_STRUCTS */
+/* LIFECYCLE_GLOBALS */
+struct EngineBoundary{uint32_t configuration=0,part_count=1;CockpitState cockpit;};
+struct Entity{Core core;ExplosionState explosion;RoundState round;EngineBoundary engine;};
+struct CE_WorldFrame{uint32_t epoch=7,level=852,tick=100,sequence=1,count=0,birth_count=0,lifecycle_baseline=0,lifecycle_watermark=0,phase=GAME_STATE_PLAYING;bool valid=true,commit=true,partial=false;int32_t score=0;uint8_t encoding[32]={1,2,3};ExplosionBirth births[kBirths]={};Entity entities[kEntities]={};};
+CE_WorldConfig config={CE_WORLD_HOST,7,0,852};
+bool active=false,poisoned=false,applying=false,birth_failed=false,creating_explosion=false;
+Binding bindings[kEntities]={};uint32_t binding_count=0,next_id=1,birth_count=0,birth_generated=0,birth_applied=0,birth_published=0,applied_tick=100,applied_sequence=1;
+ExplosionBirth birth_journal[kBirths]={};const ExplosionBirth*applying_birth=nullptr;CExplosion*birth_spawn=nullptr;
+uint32_t birth_ack=0,published_frame=0,published_tick=0,captured_sequence=0,captured_tick=0;
+char error_text[192]={};
+/* HELPERS */
+uint32_t ThingKind(CThing*t){return dynamic_cast<CRound*>(t)?ROUND_THING:dynamic_cast<CExplosion*>(t)?EXPLOSION_THING:dynamic_cast<CBattleEngine*>(t)?ENGINE_THING:STATIC_THING;}
+/* BIND */
+struct GameBoundary{int mQuit=QT_NONE,level=852,players=2;EGameState state=GAME_STATE_PLAYING;unsigned random_calls=0;int Random(){++random_calls;return 17;}int GetCurrentLevel(){return level;}int GetNPlayers(){return players;}EGameState GetGameState(){return state;}}GAME;
+unsigned core_captures=0;bool compatibility_refusal=false;
+struct CENetworkWorldAdapter{public:
+/* ADAPTER */
+};
+int CE_WorldReplica(){return active&&config.role==CE_WORLD_REPLICA;}
+/* SPAWN_ALLOWED */
+void CE_WorldExplosionBirth(CExplosion*e,CInitThing*i){++entry_calls;trace.push_back("Entry");CENetworkWorldAdapter::ExplosionBirthEntry(e,i);}
+void CE_WorldExplosionReady(CExplosion*e,CInitThing*i){++ready_calls;trace.push_back("Ready");CENetworkWorldAdapter::ExplosionReady(e,i);}
+void CE_WorldForget(const void*t){if(applying)return;for(unsigned i=0;i<binding_count;++i)if(bindings[i].thing==t){bindings[i]=bindings[--binding_count];return;}}
+/* LIFECYCLE_WRAPPERS */
+/* LIFECYCLE_CODEC */
+int CE_WorldEncode(const CE_WorldFrame*f,uint8_t*out,uint32_t capacity,uint32_t*size){if(!f||!out||!size)return 0;CE_NetWriter w;CE_NetWriterInit(&w,out,capacity);CE_NetWriteBytes(&w,f->encoding,sizeof f->encoding);for(unsigned i=0;i<f->count;++i)WriteCore(&w,f->entities[i].core);CE_NetWriteU32(&w,f->score);if(w.error)return 0;*size=w.size;return 1;}
+/* LIFECYCLE_API */
+/* ACTUAL_NATIVE */
+void CThing::Init(CInitThing*i){if(dynamic_cast<CRound*>(this)){RoundThingInit(i);return;}mPos=i->mPos;SetThingType(0);WORLD.AddThing(this);}
+void CComplexThing::Init(CInitThing*i){++base_inits;trace.push_back("BaseInit");if(auto*e=dynamic_cast<CExplosion*>(this))base_radius=e->mRadius;base_mask=i->mInitCST.mNotSeekCollisionWithBF;base_map=!!(mFlags&TF_IN_MAP_WHO);selected_matrix=i->mOrientationType==DIRECTION_COSINE_MATRIX;if(selected_matrix)mOrientation=i->mOrientation;CThing::Init(i);}
+void CComplexThing::Hit(CThing*,CCollisionReport*){++base_hits;trace.push_back("BaseHit");}
+void own_sentinel(CExplosion&e){e.mPos={-111,-222,-333};e.mRadius=12345;e.mCurrentRadius=23456;e.mBehaviour=reinterpret_cast<CExplosionData*>(uintptr_t(1));e.mAllegiance=88;e.mColType=kCollideThing;}
+void reset(int role,bool on){compatibility_refusal=false;LifeReset();birth_published=0;config.epoch=7;applied_tick=100;applied_sequence=1;EVENT_MANAGER.frame=100;EVENT_MANAGER.valid=true;GAME.mQuit=QT_NONE;GAME.level=852;GAME.players=2;GAME.state=GAME_STATE_PLAYING;assert(WORLD.things.v.empty());active=on;config.role=role;poisoned=applying=birth_failed=creating_explosion=false;binding_count=birth_count=birth_generated=birth_applied=0;next_id=1;applying_birth=nullptr;birth_spawn=nullptr;memset(bindings,0,sizeof bindings);memset(birth_journal,0,sizeof birth_journal);trace.clear();trail_calls=trail_kills=0;GAME.random_calls=0;collision_scans=collision_continuations=0;MAP.water=0;MAP.ground=10;MAP.ground_queries=0;MAP.ground_hit=false;allocations=heap_reads=base_inits=shutdowns=fx_calls=fx_positions=fx_orientations=fx_unlinks=sounds=lights=damage_calls=kills=base_hits=events_attempted=events_queued=attached_radius_reads=entry_calls=ready_calls=0;selected_pd=nullptr;important_arg=-1;light_size=base_radius=0;base_mask=0;base_map=-1;heap.free=204800;}
+void forget_stack(CThing*t){WORLD.RemoveThing(t);binding_count=0;}
+int tests=0;void check(bool yes,const char*name){if(!yes){std::cerr<<"FAIL "<<name<<" error="<<error_text<<"\n";std::exit(2);}++tests;std::cout<<"{\"case\":\""<<name<<"\",\"pass\":true}\n";}
+/* ROUND_TESTS */
+/* TESTS */

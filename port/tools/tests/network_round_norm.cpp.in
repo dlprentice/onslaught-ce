@@ -1,0 +1,43 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Actual admission/math expressions only, not a native class ABI, actor, factory or game.
+#include <cmath>
+#include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <limits>
+constexpr unsigned kName=96;
+struct FVector {float X,Y,Z,Pad;
+/* VECTOR_SET */
+/* VECTOR_MAGNITUDE */
+};
+/* TYPES */
+struct CRoundData {float mLifeSpan=6.f,mSpeed=35.f;};
+/* HELPERS */
+struct CENetworkWorldAdapter {
+/* ACTUAL_GUARD */
+};
+int main(){
+    uint16_t saved=0,selected=0;
+#ifdef UNIT_TARGET_X87
+    __asm__ volatile("fnstcw %0":"=m"(saved));selected=uint16_t((saved&~0x0f00u)|0x003fu);__asm__ volatile("fldcw %0"::"m"(selected));
+#endif
+    struct Case{const char*name;float x,y,z;bool admitted;};
+    volatile Case cases[]={
+        {"zero",0,0,0,false},{"signed_zero",-0.f,0,-0.f,false},
+        {"minimum_subnormal",0,std::numeric_limits<float>::denorm_min(),0,false},
+        {"very_small_1e30",0,1e-30f,0,false},{"all_tiny_1e30",1e-30f,1e-30f,1e-30f,false},
+        {"small_1e20",0,1e-20f,0,true},{"ordinary_pulse",0,1.75f,0,true},{"negative_axis",0,-1.75f,0,true},
+        {"small_1e22",0,1e-22f,0,true},{"underflow_1e23",0,1e-23f,0,false},
+        {"infinite_component",0,std::numeric_limits<float>::infinity(),0,false},
+        {"nan_component",0,std::numeric_limits<float>::quiet_NaN(),0,false}};
+    CRoundData data;unsigned failures=0,count=0;
+    for(const volatile Case &c:cases){RoundBirth input;std::memset(&input,0,sizeof input);input.lifespan=6.f;input.velocity={{c.x,c.y,c.z}};unsigned char before[sizeof input];std::memcpy(before,&input,sizeof input);
+        bool admitted=CENetworkWorldAdapter::RoundEntryValues(&data,input);FVector v;PutVec(v,input.velocity);float magnitude=v.Magnitude();
+        bool correct=admitted==c.admitted&&!std::memcmp(&input,before,sizeof input);failures+=!correct;++count;
+        std::printf("{\"case\":\"%s\",\"magnitude\":\"%a\",\"admitted\":%s,\"expected\":%s,\"input_unchanged\":%s}\n",c.name,double(magnitude),admitted?"true":"false",c.admitted?"true":"false",!std::memcmp(&input,before,sizeof input)?"true":"false");
+    }
+#ifdef UNIT_TARGET_X87
+    __asm__ volatile("fnclex\n\tfldcw %0"::"m"(saved));
+#endif
+    std::printf("{\"cases\":%u,\"failures\":%u,\"x87_control_word\":%u,\"actors_or_factories\":false}\n",count,failures,unsigned(selected));return failures?2:0;
+}

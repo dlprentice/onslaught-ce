@@ -3,7 +3,7 @@
 # port/dsound: DirectSound 8 over SDL3 audio
 
 Status: active (mixing, notifications and DirectSound 3D in place; nobody has listened to the result yet)
-Last updated: 2026-11-06 (private names removed, claims dated or corrected, maintainer-only recipes marked, log lines introduced; earlier: 2026-10-29, private-tree references marked; 2026-10-28, music refill backlog controls and publication; playlist transitions and media-mix observations)
+Last updated: 2026-11-06
 Summary: what the game's sound code needs from DirectSound, how this module provides it, and how it is checked.
 
 Some files and commands named on this page (`tests/`, `probe/`, `run.py`, `check_tape.sh`, `replay_session.py`, `PLAN.md`, `PARITY.md`, `tools/decomp.py`, `docs/release.md`, `tools/release_rc.py`) live only in the private working repository and are not in this public tree; they are named so that the description is complete. The decompilation's public export is [onslaught-decomp](https://github.com/dlprentice/onslaught-decomp).

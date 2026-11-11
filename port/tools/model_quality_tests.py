@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -141,6 +142,69 @@ int main() {
             self.assertEqual(compiled.returncode, 0, "renderer-predicate control did not compile")
             result = subprocess.run([str(binary)], capture_output=True, text=True, timeout=10)
             self.assertEqual(result.returncode, expected, label)
+
+    def test_tree_imposter_takes_the_original_decisions_when_off(self):
+        # Compile the mirror's CRTTree::RenderImposter (build.patched_text) against the stand-ins of
+        # port/tools/tests/model_quality_tree_driver.cpp, and the same function without patch 0208. With Full
+        # models off the two must render the imposter in the same cases with the same arguments, set the same
+        # drawn flag, and the counter must count exactly the renders; on, nothing is rendered. This caught a
+        # defect: the counter sat between the steep-or-falling test and the render without braces, so the
+        # counter became the test's body and every distant tree drew an imposter the original does not draw.
+        sys.path.insert(0, str(ROOT / "port"))
+        import build
+
+        def function(text):
+            start = text.index("void CRTTree::RenderImposter()")
+            return text[start:text.index("\n}\n", start) + 3]
+
+        patch = "0208-ce-full-models.patch"
+        patched = function(build.patched_text(["RTTree.cpp"])["RTTree.cpp"])
+        original = function(build.patched_text(["RTTree.cpp"], skip=(patch,))["RTTree.cpp"])
+        self.assertNotIn("CeModelQuality", original)
+
+        def run(label, text, *args):
+            include = self.folder / (label + ".inc")
+            include.write_text(text)
+            binary = self.folder / ("tree-" + label)
+            compiled = subprocess.run(
+                ["g++", "-std=c++11", "-O2", "-I", str(INCLUDES), f'-DTREE_FUNCTION="{include}"',
+                 str(ROOT / "port/tools/tests/model_quality_tree_driver.cpp"), "-o", str(binary)],
+                capture_output=True, text=True, timeout=120)
+            # Never echo the extracted renderer text in a public failure.
+            self.assertEqual(compiled.returncode, 0, label + ": tree stand-in fixture did not compile")
+            return subprocess.run([str(binary), *args], capture_output=True, text=True, timeout=10)
+
+        def differences(result, reference):
+            got, want = result.stdout.splitlines(), reference.stdout.splitlines()
+            wrong = [g for g, w in zip(got, want) if g != w] + ([] if len(got) == len(want) else ["(row count)"])
+            return wrong, result.stderr.strip()
+
+        reference = run("original", original, "0", "base")
+        self.assertEqual(reference.returncode, 0)
+        rows = reference.stdout.splitlines()
+        self.assertEqual(len(rows), 600)
+        # The grid reaches both decisions, and the cases where the original marks the imposter drawn without drawing it.
+        self.assertTrue(any("renders=1 " in row for row in rows))
+        self.assertTrue(any("renders=0 " in row and row.endswith("drawn=1") for row in rows))
+        off = run("patched", patched, "0")
+        wrong, error = differences(off, reference)
+        self.assertEqual((off.returncode, len(wrong)), (0, 0),
+                         f"Full models off: {len(wrong)} of {len(rows)} cases differ from the original (first: "
+                         f"{wrong[:1]}); {error}")
+        on = run("patched-on", patched, "1")
+        self.assertEqual(on.returncode, 0, on.stderr)
+        self.assertTrue(all("renders=0 " in row and row.endswith("drawn=0") for row in on.stdout.splitlines()))
+        # The negative control: the same text with the braces round the counter and the render taken away.
+        lines = patched.split("\n")
+        at = [i for i, line in enumerate(lines) if "CE_MODEL_TREE_IMPOSTOR" in line]
+        self.assertEqual(len(at), 1)
+        at = at[0]
+        self.assertTrue(lines[at - 1].strip() == "{" and lines[at + 2].strip() == "}",
+                        "the tree imposter counter and render are not one braced body")
+        unbraced = "\n".join(lines[:at - 1] + lines[at:at + 2] + lines[at + 3:])
+        mutant = run("unbraced-mutant", unbraced, "0")
+        wrong, _ = differences(mutant, reference)
+        self.assertTrue(wrong and mutant.returncode != 0, "the unbraced control was not caught")
 
     def test_causal_mutants(self):
         source = SOURCE.read_text()
