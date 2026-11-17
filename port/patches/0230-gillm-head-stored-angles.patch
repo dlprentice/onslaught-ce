@@ -1,0 +1,35 @@
+--- a/GillMHeadAI.cpp
++++ b/GillMHeadAI.cpp
+@@ -50,6 +50,15 @@
+ // emit no code; they add or remove IL nodes. The same two edits in maths.h match this function but lose 16 (the M*M
+ // bracket alone) to 68 other matches, so the products are copied here. Concession: the copies and the bracket
+ // placement are ours; Stuart's maths.h is lost, so the original spelling is unknown.
++// Port: an angle matrix as retail's out-of-line MakeRotationF leaves it, rows stored as floats (the empty asm
++// makes the compiler write the matrix to memory before its rows are read).
++static inline FMatrix StoredAngleMatrix(float yaw, float pitch, float roll)
++{
++	FMatrix	m(yaw, pitch, roll);
++	__asm__ __volatile__("" : : "r"(&m) : "memory");
++	return m;
++}
++
+ void CGillMHeadAI::Unknown9(CEvent *event)	// FUNCTION: 0x0047aad0
+ {
+ 	if (mForUnit->IsDying())
+@@ -86,13 +95,13 @@
+ 				mSweepRight = FALSE;
+ 		}
+ 
+-		FMatrix	pitch(0, 0.35f, 0);
++		FMatrix	pitch = StoredAngleMatrix(0, 0.35f, 0);
+ 		FVector	fire = MulMV(MulMM(mForUnit->GetOrientation(), pitch), FVector(0, 100.0f, 0)) + mForUnit->GetPos();	// stand-in: see above
+ 		mForUnit->WeaponUnknown509140((SINT)mTarget.ToRead(), (SINT)&fire);
+-		mForUnit->GuideUnknown6(mForUnit->GetPos() + FMatrix(body + sweep, 0, 0) * FVector(0, 10.0f, 0));
++		mForUnit->GuideUnknown6(mForUnit->GetPos() + StoredAngleMatrix(body + sweep, 0, 0) * FVector(0, 10.0f, 0));
+ 	}
+ 	else
+-		mForUnit->GuideUnknown6(mForUnit->GetPos() + FMatrix(body, 0, 0) * FVector(0, 10.0f, 0));
++		mForUnit->GuideUnknown6(mForUnit->GetPos() + StoredAngleMatrix(body, 0, 0) * FVector(0, 10.0f, 0));
+ 	EVENT_MANAGER.AddEvent(3000, this, EVENT_MANAGER.GetTime() + 0.1f, START_OF_FRAME, NULL, (CScheduledEvent *)event);
+ }
+ 
