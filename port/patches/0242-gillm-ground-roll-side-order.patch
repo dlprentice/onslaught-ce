@@ -1,0 +1,11 @@
+--- a/GillM.cpp
++++ b/GillM.cpp
+@@ -189,7 +189,7 @@
+ 	FVector	forward = ym * FVector(0.0f, 1.0f, 0.0f);
+ 	FVector	normal = MAP.Normal(mPos);
+ 	FVector	side = forward ^ normal;
+-	side.Normalise();
++	side.NormaliseXZY();	// Port: retail sums (X*X + Z*Z) + Y*Y (0047a11f..0047a12d)
+ 	return side.Z;
+ }
+ 
