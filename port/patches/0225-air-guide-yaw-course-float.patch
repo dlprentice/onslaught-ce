@@ -1,0 +1,16 @@
+--- a/AirGuide.cpp
++++ b/AirGuide.cpp
+@@ -40,11 +40,11 @@
+ 	if (!GetUnit()->IsDying())
+ 	{
+ 		FVector	d = GetDestination() - GetUnit()->GetPos();
+-		float	yaw = d.Azimuth();
++		volatile float	yawf = d.Azimuth(); float	yaw = yawf;	// Port: retail stores it as a float (004022d0)
+ 		// STAND-IN (ids): d.Z through a const reference, as in CDiveBomberGuide; written `atan2(d.Z, ...)` the function is 6 bytes off.
+ 		const float &height = d.Z;
+ 		float	pitch = (float)atan2(height, d.MagnitudeXY());
+-		float	course = GetUnit()->GetVelocity().Azimuth();
++		volatile float	coursef = GetUnit()->GetVelocity().Azimuth(); float	course = coursef;	// Port: stored (0040230e)
+ 		float	elevation = GetUnit()->GetVelocity().Elevation();
+ 		FVector	right = GetUnit()->GetOrientation().GetColumnX();
+ 
