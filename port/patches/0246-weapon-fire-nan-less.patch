@@ -1,0 +1,32 @@
+--- a/weapon.cpp
++++ b/weapon.cpp
+@@ -769,7 +769,7 @@
+ 			float horizontal = cosf(pitch) * launchSpeed;
+ 			float vertical = sinf(pitch) * launchSpeed;
+ 			float range = (sqrtf(vertical * vertical + gravity * height * 2) - vertical) / gravity * horizontal;
+-			if (range < 0)
++			if (!(range >= 0))	// Port: NaN counts as less, as retail's fcomp/test ah,1 does
+ 				range = 0;
+ 			if (!(fabsf(distance - range) < 12.0f))
+ 				return FALSE;
+@@ -812,9 +812,9 @@
+ 				float sineC = sinf(-PI / 4);
+ 				float rangeC = (rootC - sineC * launchSpeed) * (float)cos(-PI / 4) * launchSpeed / gravity;
+ 				lowerRange = rangeA;
+-				if (rangeB < lowerRange)
++				if (!(rangeB >= lowerRange))	// Port: NaN counts as less, as retail's fcomp/test ah,1 does
+ 					lowerRange = rangeB;
+-				if (rangeC < lowerRange)
++				if (!(rangeC >= lowerRange))	// Port: NaN counts as less, as retail's fcomp/test ah,1 does
+ 					lowerRange = rangeC;
+ 				upperRange = rangeA;
+ 				if (rangeB > upperRange)
+@@ -822,7 +822,7 @@
+ 				if (rangeC > upperRange)
+ 					upperRange = rangeC;
+ 			}
+-			if (distance > upperRange || distance < lowerRange)
++			if (distance > upperRange || !(distance >= lowerRange))	// Port: NaN counts as less, as retail's fcomp/test ah,1 does
+ 				return FALSE;
+ 
+ 			{
