@@ -1,0 +1,24 @@
+--- a/weapon.cpp
++++ b/weapon.cpp
+@@ -444,7 +444,7 @@
+ 					FVector centre;
+ 					mTarget->GetCentrePos(centre);
+ 					FVector delta = centre - pos;
+-					mOrientation = FMatrix(delta.Azimuth(), delta.Elevation(), 0);
++					{ volatile float az = delta.Azimuth(), el = delta.Elevation(); mOrientation = FMatrix(az, el, 0); }	// Port: retail rounds both angles to floats (00506c94, 00506cbc)
+ 				}
+ 				orientation = mOrientation;
+ 			}
+@@ -1150,10 +1150,10 @@
+ 					}
+ 				}
+ 			}
+-			mOrientation = FMatrix(d.Azimuth(), pitch, 0);
++			{ volatile float az = d.Azimuth(); mOrientation = FMatrix(az, pitch, 0); }	// Port: retail rounds the azimuth to a float (005093a7)
+ 		}
+ 		else
+-			mOrientation = FMatrix(d.Azimuth(), d.Elevation(), 0);
++			{ volatile float az = d.Azimuth(), el = d.Elevation(); mOrientation = FMatrix(az, el, 0); }	// Port: retail rounds both angles to floats (00509406, 0050942b)
+ 	}
+ 	else
+ 		mOrientation = GetPrimaryOrientation();
