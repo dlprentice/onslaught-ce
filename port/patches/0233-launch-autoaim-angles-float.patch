@@ -1,0 +1,20 @@
+--- a/BattleEngine.cpp
++++ b/BattleEngine.cpp
+@@ -3180,7 +3180,7 @@
+ 	// Adjust the angle to target if the weapon is facing forward
+ 	if (inNeedOrientation)
+ 	{
+-		FMatrix		autoAimMatrix=FMatrix(mAutoAimYawOffset,mAutoAimPitchOffset,0.0f);
++		FMatrix		autoAimMatrix=FMatrix(mAutoAimYawOffset,mAutoAimPitchOffset,0.0f); __asm__ __volatile__("" : : "r"(&autoAimMatrix) : "memory");	// Port: rows stored as floats, as retail's out-of-line constructor leaves them (0040cabc)
+ 
+ 		if (inWeapon->Gravity())
+ 		{
+@@ -3223,7 +3223,7 @@
+ 					FVector		hitPoint=targetVector*(mWlcr.mDistToImpact/targetVector.Magnitude())+cam_pos;
+ 					FVector		adjustedLine=hitPoint-outPos;
+ 
+-					outOrientation=FMatrix(adjustedLine.Azimuth(),adjustedLine.Elevation(),0.0f);
++					{ volatile float az = adjustedLine.Azimuth(), el = adjustedLine.Elevation(); outOrientation=FMatrix(az,el,0.0f); }	// Port: retail rounds both angles to floats (0040d0a1)
+ 				}
+ 				else
+ 					outOrientation=mOrientation*autoAimMatrix;
