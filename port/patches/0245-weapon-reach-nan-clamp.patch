@@ -1,0 +1,47 @@
+--- a/weapon.cpp
++++ b/weapon.cpp
+@@ -969,7 +969,7 @@
+ 			if (discriminant != 0)
+ 			{
+ 				lowerRange = (sqrtf(discriminant) - vertical) / gravity * (cosf(angleA) * launchSpeed);
+-				if (lowerRange < 0)
++				if (!(lowerRange >= 0))	// Port: a NaN range clamps to 0, as retail's fcomp/test ah,1 does (patch 0015's rule)
+ 					lowerRange = 0;
+ 			}
+ 			else
+@@ -979,7 +979,7 @@
+ 			if (discriminant != 0)
+ 			{
+ 				upperRange = (sqrtf(discriminant) - vertical) / gravity * (cosf(angleB) * launchSpeed);
+-				if (upperRange < 0)
++				if (!(upperRange >= 0))	// Port: a NaN range clamps to 0, as retail's fcomp/test ah,1 does (patch 0015's rule)
+ 					upperRange = 0;
+ 			}
+ 			else
+@@ -999,7 +999,7 @@
+ 			if (discriminant > 0)
+ 			{
+ 				rangeA = (sqrtf(discriminant) - vertical) / gravity * (cosf(angleA) * launchSpeed);
+-				if (rangeA < 0)
++				if (!(rangeA >= 0))	// Port: a NaN range clamps to 0, as retail's fcomp/test ah,1 does (patch 0015's rule)
+ 					rangeA = 0;
+ 			}
+ 			else
+@@ -1009,7 +1009,7 @@
+ 			if (discriminant > 0)
+ 			{
+ 				rangeB = (sqrtf(discriminant) - vertical) / gravity * (cosf(angleB) * launchSpeed);
+-				if (rangeB < 0)
++				if (!(rangeB >= 0))	// Port: a NaN range clamps to 0, as retail's fcomp/test ah,1 does (patch 0015's rule)
+ 					rangeB = 0;
+ 			}
+ 			else
+@@ -1019,7 +1019,7 @@
+ 			if (discriminant > 0)
+ 			{
+ 				rangeC = (sqrtf(discriminant) - vertical) / gravity * (cosf(-PI / 4) * launchSpeed);
+-				if (rangeC < 0)
++				if (!(rangeC >= 0))	// Port: a NaN range clamps to 0, as retail's fcomp/test ah,1 does (patch 0015's rule)
+ 					rangeC = 0;
+ 			}
+ 			else
