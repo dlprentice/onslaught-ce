@@ -1,0 +1,34 @@
+--- a/weapon.cpp
++++ b/weapon.cpp
+@@ -314,13 +314,13 @@
+ 		return FMatrix(
+ 			FVector(((Row[0].Z * m.Row[2].X + Row[0].Y * m.Row[1].X) + Row[0].X * m.Row[0].X),
+ 				((Row[0].X * m.Row[0].Y + Row[0].Z * m.Row[2].Y) + Row[0].Y * m.Row[1].Y),
+-				((Row[0].Z * m.Row[2].Z + Row[0].Y * m.Row[1].Z) + Row[0].X * m.Row[0].Z)),
++				((Row[0].X * m.Row[0].Z + Row[0].Z * m.Row[2].Z) + Row[0].Y * m.Row[1].Z)),
+ 			FVector(((Row[1].Z * m.Row[2].X + Row[1].Y * m.Row[1].X) + Row[1].X * m.Row[0].X),
+ 				((Row[1].X * m.Row[0].Y + Row[1].Z * m.Row[2].Y) + Row[1].Y * m.Row[1].Y),
+ 				((Row[1].Z * m.Row[2].Z + Row[1].Y * m.Row[1].Z) + Row[1].X * m.Row[0].Z)),
+ 			FVector(((Row[2].Z * m.Row[2].X + Row[2].Y * m.Row[1].X) + Row[2].X * m.Row[0].X),
+ 				((Row[2].X * m.Row[0].Y + Row[2].Z * m.Row[2].Y) + Row[2].Y * m.Row[1].Y),
+-				((Row[2].X * m.Row[0].Z + Row[2].Z * m.Row[2].Z) + Row[2].Y * m.Row[1].Z)));
++				((Row[2].Z * m.Row[2].Z + Row[2].Y * m.Row[1].Z) + Row[2].X * m.Row[0].Z)));
+ 	}
+ };
+ 
+@@ -329,13 +329,13 @@
+ 	FMatrix operator*(const FMatrix &m) const
+ 	{
+ 		return FMatrix(
+-			FVector(((Row[0].X * m.Row[0].X + Row[0].Z * m.Row[2].X) + Row[0].Y * m.Row[1].X),
++			FVector(((Row[0].Z * m.Row[2].X + Row[0].Y * m.Row[1].X) + Row[0].X * m.Row[0].X),
+ 				((Row[0].Z * m.Row[2].Y + Row[0].Y * m.Row[1].Y) + Row[0].X * m.Row[0].Y),
+ 				((Row[0].Z * m.Row[2].Z + Row[0].Y * m.Row[1].Z) + Row[0].X * m.Row[0].Z)),
+ 			FVector(((Row[1].Y * m.Row[1].X + Row[1].X * m.Row[0].X) + Row[1].Z * m.Row[2].X),
+ 				((Row[1].Z * m.Row[2].Y + Row[1].Y * m.Row[1].Y) + Row[1].X * m.Row[0].Y),
+ 				((Row[1].Z * m.Row[2].Z + Row[1].Y * m.Row[1].Z) + Row[1].X * m.Row[0].Z)),
+-			FVector(((Row[2].Z * m.Row[2].X + Row[2].Y * m.Row[1].X) + Row[2].X * m.Row[0].X),
++			FVector(((Row[2].X * m.Row[0].X + Row[2].Z * m.Row[2].X) + Row[2].Y * m.Row[1].X),
+ 				((Row[2].Z * m.Row[2].Y + Row[2].Y * m.Row[1].Y) + Row[2].X * m.Row[0].Y),
+ 				((Row[2].Z * m.Row[2].Z + Row[2].Y * m.Row[1].Z) + Row[2].X * m.Row[0].Z)));
+ 	}
