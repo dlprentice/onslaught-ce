@@ -1,0 +1,11 @@
+--- a/weapon.cpp
++++ b/weapon.cpp
+@@ -1026,6 +1026,8 @@
+ 				rangeC = 0;
+ 			if (rangeA != 0)	// STAND-IN 2: otherwise lowerRange is read unset (see above)
+ 				lowerRange = rangeA;
++			else
++				lowerRange = vertical;	// Port: retail reads the third vertical from the shared slot (00508d71..00508d86)
+ 			if (rangeB < lowerRange && rangeB != 0)
+ 				lowerRange = rangeB;
+ 			if (rangeC < lowerRange && rangeC != 0)
