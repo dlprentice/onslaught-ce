@@ -1,0 +1,35 @@
+--- a/MCDestructableSegments.cpp
++++ b/MCDestructableSegments.cpp
+@@ -44,8 +44,30 @@
+ 		float	lean = fall;
+ 		if (lean > 2.f)
+ 			lean = 2.f;
+-		FMatrix	tilt(0, lean * 0.04f /* retail 005d8ca8: / 25.0f */, lean * 0.071428575f /* retail 005dc2a4: / 14.f */);
+-		*ori = *ori * tilt;
++		// Port (patch 0251): retail expands FMatrix(0, pitch, roll) and *ori * tilt inline here (00494d29..00494f57):
++		// the cosines and sin(roll) and sin(pitch) are stored as floats, and sin(pitch) * sin(roll) takes the unrounded
++		// sine but sin(pitch) * cos(roll) the stored one (MakeRotationF, retail's 004062d0, takes it unrounded for both).
++		// Each cell of the product sums (Z + Y) + X in column X, (Z + X) + Y in column Y and (X + Z) + Y in column Z.
++		float	pitch = lean * 0.04f /* retail 005d8ca8: / 25.0f */;
++		volatile float	roll = lean * 0.071428575f /* retail 005dc2a4: / 14.f */;
++		volatile float	cy = cosf(0.0f), sy = sinf(0.0f);
++		volatile float	cr = cosf(roll), sr = sinf(roll);
++		volatile float	cp = cosf(pitch);
++		long double	spu = bea_x87_fsinl(pitch);
++		volatile float	sp = (float)spu;
++		volatile float	spsr = (float)(spu * sr);
++		volatile float	spcr = sp * cr;
++		float	t00 = cr * cy - spsr * sy, t01 = -(cp * sy), t02 = spcr * sy + sr * cy;
++		float	t10 = spsr * cy + cr * sy, t11 = cp * cy, t12 = sr * sy - spcr * cy;
++		float	t20 = -(cp * sr), t21 = sp, t22 = cp * cr;
++		FMatrix	&a = *ori;
++		FVector	r0(((a.Row[0].Z * t20) + (a.Row[0].Y * t10)) + (a.Row[0].X * t00), ((a.Row[0].Z * t21) + (a.Row[0].X * t01)) + (a.Row[0].Y * t11),
++			((a.Row[0].X * t02) + (a.Row[0].Z * t22)) + (a.Row[0].Y * t12));
++		FVector	r1(((a.Row[1].Z * t20) + (a.Row[1].Y * t10)) + (a.Row[1].X * t00), ((a.Row[1].Z * t21) + (a.Row[1].X * t01)) + (a.Row[1].Y * t11),
++			((a.Row[1].X * t02) + (a.Row[1].Z * t22)) + (a.Row[1].Y * t12));
++		FVector	r2(((a.Row[2].Z * t20) + (a.Row[2].Y * t10)) + (a.Row[2].X * t00), ((a.Row[2].Z * t21) + (a.Row[2].X * t01)) + (a.Row[2].Y * t11),
++			((a.Row[2].X * t02) + (a.Row[2].Z * t22)) + (a.Row[2].Y * t12));
++		*ori = FMatrix(r0, r1, r2);
+ 	}
+ 
+ 	mSegments->mChanged = FALSE;
