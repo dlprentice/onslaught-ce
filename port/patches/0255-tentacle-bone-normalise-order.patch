@@ -1,0 +1,38 @@
+--- a/MCTentacle.cpp
++++ b/MCTentacle.cpp
+@@ -369,6 +369,22 @@
+ // The curve's control points: the tether and its control point where the mesh has them, the head where the unit
+ // puts it, and the head's control point carried with the head. Each bone takes its point on the curve and faces the
+ // next one.
++// Port (patch 0255): FMatrix::MakeFromDirection as MCTentacle.obj emits it out of line (0049e4b0): side = back ^ up and
++// top = back ^ side as maths.h writes them, then each Normalise with its squares summed (Y*Y + Z*Z) + X*X (0049e539..
++// 0049e5e5); maths.h's Normalise sums (X*X + Y*Y) + Z*Z.
++static void TentacleFromDirection(FMatrix &m, FVector dir, FVector up)
++{
++	FVector	back = -dir;
++	FVector	side = back ^ up;
++	FVector	top = back ^ side;
++	side.NormaliseYZX();
++	top.NormaliseYZX();
++	back.NormaliseYZX();
++	m.Row[0].X = side.X;	m.Row[0].Y = top.X;	m.Row[0].Z = back.X;
++	m.Row[1].X = side.Y;	m.Row[1].Y = top.Y;	m.Row[1].Z = back.Y;
++	m.Row[2].X = side.Z;	m.Row[2].Y = top.Z;	m.Row[2].Z = back.Z;
++}
++
+ void CMCTentacle::UpdateSpline(CMesh *mesh)	// FUNCTION: 0x0049dcd0
+ {
+ 	if (!mInitialised)
+@@ -418,9 +434,9 @@
+ 		mBonePos[i] = p;
+ 
+ 		if (i)
+-			mBoneOri[i - 1].MakeFromDirection(mBonePos[i - 1] - mBonePos[i], FVector(1, 0, 0));
+-	}
+-	mBoneOri[mNumBones - 1].MakeFromDirection(mHeadCPPos - mHeadPos, FVector(1, 0, 0));
++			TentacleFromDirection(mBoneOri[i - 1], mBonePos[i - 1] - mBonePos[i], FVector(1, 0, 0));
++	}
++	TentacleFromDirection(mBoneOri[mNumBones - 1], mHeadCPPos - mHeadPos, FVector(1, 0, 0));
+ }
+ 
+ // FUNCTION: 0x0049e4b0 ?MakeFromDirection@FMatrix@@QAEXVFVector@@0@Z
