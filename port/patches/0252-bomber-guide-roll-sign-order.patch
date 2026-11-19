@@ -1,0 +1,13 @@
+--- a/BomberGuide.cpp
++++ b/BomberGuide.cpp
+@@ -45,7 +45,9 @@
+ 		float	roll = fabsf(AngleDifference(course, yaw));
+ 		if (roll > PI / 2)
+ 			roll = PI / 2;
+-		if ((right * d) < 0)
++		// Port (patch 0252): retail sums right * d as (Z + Y) + X (00416af6..00416b0b), as CAirGuide (00402553) and
++		// CCarrierGuide (004221a7) do, and its compare takes a NaN as below zero.
++		if (!((((right.Z * d.Z) + (right.Y * d.Y)) + (right.X * d.X)) >= 0))
+ 			roll *= 0.5f;
+ 		else
+ 			roll *= -0.5f;
