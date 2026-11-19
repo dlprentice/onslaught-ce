@@ -1,0 +1,15 @@
+--- a/MCSentinel.cpp
++++ b/MCSentinel.cpp
+@@ -34,8 +34,10 @@
+ 
+ 	if (!stricmp(part->mName, "X1 turret"))
+ 	{
+-		FMatrix	old_ori(sentinel->mUnknownE4 + PI / 2 + 0.3f, 0, 0);
+-		FMatrix	new_ori(sentinel->mUnknownE0 + PI / 2 + 0.3f, 0, 0);
++		// Port (patch 0256): retail adds PI / 2 + 0.3f folded into one float constant, 1.8707964f (005dc448: 0x3fef7642),
++		// in one fadd (0049c692, 0049c6b2); the text's two additions round twice.
++		FMatrix	old_ori(sentinel->mUnknownE4 + 1.8707964f, 0, 0);
++		FMatrix	new_ori(sentinel->mUnknownE0 + 1.8707964f, 0, 0);
+ 		*ori = *ori * (old_ori + (new_ori - old_ori) * frac);
+ 		ori->Normalise();
+ 	}
