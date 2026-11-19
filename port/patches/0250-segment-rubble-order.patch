@@ -1,0 +1,43 @@
+--- a/DestroyableSegment.cpp
++++ b/DestroyableSegment.cpp
+@@ -288,6 +288,22 @@
+ 	return FVector(part->mBoundingBox->mOrigin.X + x, part->mBoundingBox->mOrigin.Y + y, part->mBoundingBox->mOrigin.Z + z);
+ }
+ 
++// Port (patch 0250): retail's own row orders for ori * point in the rubble spawns. CDestroyableSegment::SpawnRubble
++// (004430d8..00443141): row 0 (Y + Z) + X, rows 1 and 2 (X + Y) + Z. CDestroyableExtraUseMeshSegment::SpawnRubble
++// (00443b21..00443b76): every row (X + Y) + Z. maths.h sums (Z + Y) + X.
++static inline FVector SegmentRubbleRows(const FMatrix &m, const FVector &v)
++{
++	return FVector(((m.Row[0].Y * v.Y) + (m.Row[0].Z * v.Z)) + (m.Row[0].X * v.X),
++		((m.Row[1].X * v.X) + (m.Row[1].Y * v.Y)) + (m.Row[1].Z * v.Z),
++		((m.Row[2].X * v.X) + (m.Row[2].Y * v.Y)) + (m.Row[2].Z * v.Z));
++}
++static inline FVector SegmentRowsXYZ(const FMatrix &m, const FVector &v)
++{
++	return FVector(((m.Row[0].X * v.X) + (m.Row[0].Y * v.Y)) + (m.Row[0].Z * v.Z),
++		((m.Row[1].X * v.X) + (m.Row[1].Y * v.Y)) + (m.Row[1].Z * v.Z),
++		((m.Row[2].X * v.X) + (m.Row[2].Y * v.Y)) + (m.Row[2].Z * v.Z));
++}
++
+ void CDestroyableSegment::SpawnRubble()	// FUNCTION: 0x00442f60
+ {
+ 	CRenderThing	*rt = mController->GetOwner()->GetRenderThing();
+@@ -310,7 +326,7 @@
+ 
+ 	for (SINT n = 0; n < count; n++)
+ 	{
+-		FVector pos = ori * GetSegmentBoxPoint(part) + partpos;
++		FVector pos = SegmentRubbleRows(ori, GetSegmentBoxPoint(part)) + partpos;
+ 
+ 		CParticleEffectLink	link;
+ 		if (data->mExplosion && n % 12 == 0)
+@@ -595,7 +611,7 @@
+ 	FMatrix	ori;
+ 	FVector	pos;
+ 	part->GetWorldTransforms(0, 0, 0, mController->GetOwner(), &ori, &pos, false, TRUE, 0);
+-	pos = ori * part->mBoundingBox->mOrigin + pos;
++	pos = SegmentRowsXYZ(ori, part->mBoundingBox->mOrigin) + pos;
+ 
+ 	FVector	vel = mDirection;
+ 	if (!mHasDirection)
