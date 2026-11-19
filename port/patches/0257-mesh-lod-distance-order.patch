@@ -1,0 +1,24 @@
+--- a/rtmesh.cpp
++++ b/rtmesh.cpp
+@@ -277,7 +277,9 @@
+ 	FVector	thing_pos;	// declared then assigned, here and in RenderImposter: Stuart's occasional habit (thing.cpp:462, :482); direct initialisation loses both (004dcba0, 004dcea0)
+ 	thing_pos = mThing->GetRenderPos();
+ 	pos = pos - thing_pos;
+-	float	dist = pos.MagnitudeSq();
++	// Port (patch 0257): retail squares the distance as (Z*Z + Y*Y) + X*X here (004dcca0, 004dcf4a); MagnitudeSq sums
++	// (X*X + Y*Y) + Z*Z.
++	float	dist = ((pos.Z * pos.Z) + (pos.Y * pos.Y)) + (pos.X * pos.X);
+ 	float	radius = GetBoundingBox()->mRadius;
+ 	float	lod = (dist = (float)sqrt(dist)) / radius * mThing->GetRenderImposterBias() * MESH_LOD_BIAS * zoom;
+ 
+@@ -340,7 +342,9 @@
+ 	FVector	thing_pos;
+ 	thing_pos = mThing->GetRenderPos();
+ 	pos = pos - thing_pos;
+-	float	dist = pos.MagnitudeSq();
++	// Port (patch 0257): retail squares the distance as (Z*Z + Y*Y) + X*X here (004dcca0, 004dcf4a); MagnitudeSq sums
++	// (X*X + Y*Y) + Z*Z.
++	float	dist = ((pos.Z * pos.Z) + (pos.Y * pos.Y)) + (pos.X * pos.X);
+ 	float	radius = GetBoundingBox()->mRadius;
+ 	float	lod = (dist = (float)sqrt(dist)) / radius * mThing->GetRenderImposterBias() * MESH_LOD_BIAS * zoom;
+ 	if (mImposter)
