@@ -1,0 +1,98 @@
+--- a/PCMemoryCard.cpp
++++ b/PCMemoryCard.cpp
+@@ -230,6 +230,51 @@
+ 	return 1;
+ }
+ 
++#include "../platform/common/replay_cheat.h"	// port 0258: PortReplayCheatRequested
++#include "../platform/common/portlog.h"	// port 0258: PORT_LOG_PREFIX
++// Port (patch 0258): the careers a cheat replay has deleted. Nothing is deleted on disk, so CreateSave counts these names as
++// gone for the rest of the replay, as they would be after a real delete.
++static WCHAR	sCheatGone[16][33];
++static int		sCheatGoneCount;
++
++static BOOL CheatGone(const WCHAR *name, BOOL forget)
++{
++	for (int k = 0; k < sCheatGoneCount; k++)
++		if (_wcsicmp(sCheatGone[k], name) == 0)
++		{
++			if (forget)
++				memcpy(sCheatGone[k], sCheatGone[--sCheatGoneCount], sizeof(sCheatGone[k]));
++			return TRUE;
++		}
++	return FALSE;
++}
++
++// CreateSave in a cheat replay: the answer the card would give, with nothing made on disk. A name that is a career (and
++// not deleted in this replay) is admitted as usual; a new one is reported as created, at the place it would take in the
++// list. Admitting an existing career never writes, here or in the plain path.
++static int CheatCreateSave(CPCMemoryCard *card, int number, WCHAR *name, int *save, BOOL allowed_overwrite)
++{
++	int count = 0, before = 0;
++	BOOL gone = CheatGone(name, TRUE);
++	card->GetNumSaves(number, &count);
++	for (int k = 0; k < count; k++)
++	{
++		WCHAR other[256];
++		if (card->GetSaveName(number, k, other) != MCE_SUCCESS)
++			continue;
++		int order = _wcsicmp(other, name);
++		if (order == 0 && !gone)
++		{
++			if (save) *save = k;
++			return allowed_overwrite ? MCE_SUCCESS : MCE_FILEEXISTS;
++		}
++		if (order < 0)
++			before++;
++	}
++	if (save) *save = before;
++	return MCE_SUCCESS;
++}
++
+ #ifndef CE_NETWORK_OFF
+ extern "C" int CE_BootRequested(void);
+ extern "C" int CE_LockstepRequested(void);
+@@ -244,6 +289,9 @@
+ 		return 1;
+ 	}
+ #endif
++	// Port (patch 0258): a cheat replay (BEA_PORT_REPLAY_CHEAT, replay.cpp) creates no career, but answers as if it had.
++	if (PortReplayCheatRequested())
++		return CheatCreateSave(this, card, name, save, allowed_overwrite);
+ #ifdef CE_VERSION
+     if (!PortCeProjectCareerAllowed()) return MCE_FAILURE;
+ #endif
+@@ -348,6 +396,18 @@
+ 	if (CE_BootRequested() || CE_LockstepRequested())
+ 		return 1;
+ #endif
++	// Port (patch 0258): a cheat replay deletes no career; the name counts as gone for the rest of the replay.
++	if (PortReplayCheatRequested())
++	{
++		if (!CheatGone(name, FALSE) && sCheatGoneCount < 16)
++		{
++			int n = 0;
++			for (; n < 32 && name[n]; n++)
++				sCheatGone[sCheatGoneCount][n] = name[n];
++			sCheatGone[sCheatGoneCount++][n] = 0;
++		}
++		return MCE_SUCCESS;
++	}
+ #ifdef CE_VERSION
+     if (!PortCeProjectCareerAllowed()) return MCE_FAILURE;
+ #endif
+@@ -374,6 +434,14 @@
+ 	if (CE_BootRequested() || CE_LockstepRequested())
+ 		return 1;
+ #endif
++	// Port (patch 0258): a cheat replay writes no career and reports the write as done, as PortReplaceUserFile does for
++	// the options (so the writer's one caller here stays the fenced write below).
++	if (PortReplayCheatRequested())
++	{
++		fprintf(stderr, PORT_LOG_PREFIX "replay: cheat replay: career not written\n");
++		fflush(stderr);
++		return MCE_SUCCESS;
++	}
+ #ifdef CE_VERSION
+     if (!PortCeProjectCareerAllowed()) return MCE_FAILURE;
+ #endif
