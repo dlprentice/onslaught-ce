@@ -1320,6 +1320,22 @@ HRESULT STDMETHODCALLTYPE Present(IDirect3DDevice9 *dev, const RECT *src, const 
 	return hr;
 }
 
+// A replay or a recording clears the main thread's stack below this hook once the device is made. The driver leaves its
+// own data there, and CE's stack starts at a different offset every run (the retail exe's does not), so whether a later
+// stack object of the game lies over that data changed from run to run. One does reach the game: CWorld::Load's stack
+// CUnitInitThing, whose string tails Copy() takes into a heap init thing whose block a dive bomber's AI later gets, and
+// that AI reads its timer (+0x70) before setting it, as retail does; retail read zero there. 128 KB covers what the
+// device creation uses (about 56 KB on Windows with an NVIDIA driver).
+static void __attribute__((noinline)) ClearStackAfterDeviceCreation()
+{
+	const char *tape = getenv("BEA_PORT_TAPE"), *record = getenv("BEA_PORT_RECORD");
+	if (!((tape && *tape) || (record && *record)))
+		return;
+	volatile unsigned char below[128 * 1024];
+	for (size_t i = 0; i < sizeof(below); i++)
+		below[i] = 0;
+}
+
 HRESULT STDMETHODCALLTYPE CreateDevice(IDirect3D9 *d3d, UINT adapter, D3DDEVTYPE type, HWND focus, DWORD flags,
 									   D3DPRESENT_PARAMETERS *pp, IDirect3DDevice9 **out)
 {
@@ -1360,6 +1376,7 @@ HRESULT STDMETHODCALLTYPE CreateDevice(IDirect3D9 *d3d, UINT adapter, D3DDEVTYPE
 		fprintf(stderr, PORT_LOG_PREFIX "CreateDevice asks %ux%u format %d windowed %d refresh %u\n", pp->BackBufferWidth,
 				pp->BackBufferHeight, (int)pp->BackBufferFormat, (int)pp->Windowed, pp->FullScreen_RefreshRateInHz);
 	HRESULT hr = gCreateDevice(d3d, adapter, type, focus, flags, pp, out);
+	ClearStackAfterDeviceCreation();
 	unsigned short after = ControlWord();
 #ifdef CE_VERSION
 	cursorBefore.RestoreIfFailed(hr);
