@@ -743,9 +743,10 @@ static void EldAtExit()
 }
 
 // BEA_PORT_REPLAY_CHEAT (see the top of this file). The retail harness's cheat, at the same offsets: GAME +0x28 the game
-// state, +0x2a4 the player (+0x20 nonzero while it has no battle engine of its own, +0x1c the battle engine); the battle
-// engine's health +0xf8 and energy +0xfc, and for each of its six weapon slots the value +0x52c+4i (ammunition when the
-// slot type +0x55c+4i is 0, heat otherwise) and the overheated flag +0x544+4i.
+// state, +0x2a4 the player (+0x1c the battle engine, +0x20 mIsGod); the battle engine's health +0xf8 and energy +0xfc,
+// and for each of its six weapon slots the value +0x52c+4i (ammunition when the slot type +0x55c+4i is 0, heat otherwise)
+// and the overheated flag +0x544+4i. Like the retail harness, the cheat holds nothing while mIsGod is set: the harness
+// took its offsets, and that test, from the game's debug readout (0x4714c0), and the original's probes were made with it.
 static bool gCheat;			// on for this replay
 static bool gCheatUsed;		// it was on at some point (the exit line says so)
 static bool gCheatChecked;	// the switch was read
@@ -763,7 +764,7 @@ static void CheatCheck()
 	gCheatChecked = true;
 	if (!gActive || !PortReplayCheatRequested())
 		return;
-	const char *net[] = {"BEA_NET_HOST", "BEA_NET_JOIN", "BEA_LOCKSTEP_HOST", "BEA_LOCKSTEP_JOIN"};
+	const char *net[] = {"BEA_NET_HOST", "BEA_NET_JOIN", "BEA_NET_HANDOFF_FILE", "BEA_LOCKSTEP_HOST", "BEA_LOCKSTEP_JOIN"};
 	for (const char *name : net)
 		if (getenv(name))
 		{
@@ -792,7 +793,7 @@ static void Cheat()
 	if (!gCheatStarted && At<int>(GAME, 0x28) == 3)
 		gCheatStarted = true;
 	char *player = gCheatStarted ? At<char *>(GAME, 0x2a4) : NULL;
-	char *be = player && At<int>(player, 0x20) == 0 ? At<char *>(player, 0x1c) : NULL;
+	char *be = player && At<int>(player, 0x20) == 0 ? At<char *>(player, 0x1c) : NULL;	// +0x20 mIsGod (see above)
 	if (!be)
 		return;
 	if (be != gCheatBe)
