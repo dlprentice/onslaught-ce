@@ -1,21 +1,3 @@
---- a/Career.cpp
-+++ b/Career.cpp
-@@ -64,6 +64,7 @@
- #ifdef CE_VERSION
- void	PortCeCareerLoaded(CCareer *career);				// Port (patch 0052): port/game/ce_frontend.cpp
- bool	PortCeCareerSaving(CCareer *career);
-+void	PortCeBonusFilterSave(CCareer *career, void *dest);	// Port (patch 0181): port/game/ce_bonus.cpp
- #endif
- void	ApplyControlPreset(int preset);		// 00453780
- void	ReinitialiseSound(bool restore_music);	// 004cddf0
-@@ -1467,6 +1468,7 @@
- #endif
- 	memcpy(dest, this, sizeof(CCareer));
- #ifdef CE_VERSION
-+	PortCeBonusFilterSave(this, dest);
- 	SetIsGod(0, portGod0);
- 	SetIsGod(1, portGod1);
- #endif
 --- a/System.cpp
 +++ b/System.cpp
 @@ -43,6 +43,7 @@

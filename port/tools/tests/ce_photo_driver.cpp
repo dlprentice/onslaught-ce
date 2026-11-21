@@ -40,8 +40,19 @@ void PortCeDrawsDropped(int delta) { dropped += delta; if (dropped < 0) dropped 
 bool PortCeCmdKey(unsigned, bool) { return false; }
 // The native editor's key hook (patch 0206); no editor session exists here, so it takes no key. ce_editor_tests.py runs the real one.
 bool PortCeEditorKey(unsigned, bool) { return false; }
-// The CE hook point key_capture (patch 0308, port/game/ce_hooks.h): no handler is registered, so it takes no key.
-bool ce_hook_key_capture(unsigned char, bool) { return false; }
+#include "ce_hooks.h"
+#ifdef CE_VERSION
+// Non-photo hook handlers referenced by port/game/ce_hooks.cpp.
+void PortCeGamepadBeginCycle() {}
+void PortCeConsoleLevelEnd() {}
+void PortCeCmdLevelEnd() {}
+void PortCeEditorRender() {}
+extern "C" void PortCeEditorFilterSave(CCareer *, void *) {}
+void PortCeBonusFilterSave(CCareer *, void *) {}
+extern "C" void PortCeMuseumVisitFilterSave(CCareer *, void *) {}
+CCamera *PortCeCmdRenderCamera(CCamera *c, CPlayer *) { return c; }
+CCamera *PortCePlayUnitRenderCamera(CCamera *c, CPlayer *) { return c; }
+#endif
 bool PortCeEditorSuppressFlightHud() { return false; }	// the paused editor scene owns the draw scopes; none is open here
 static bool strategic_hud = false;
 bool PortCeCmdSuppressFlightHud() { return strategic_hud; }

@@ -102,7 +102,7 @@ class PaletteTests(unittest.TestCase):
 
     def build(self, folder, name, ce, network=False, sanitize=True):
         flags = [os.environ.get("CXX", "g++"), "-std=c++14", "-g", "-Wall", "-Wextra", "-Werror",
-                 *(SANITIZE if sanitize else []), *(["-DCE_VERSION=1"] if ce else []), "-I", str(folder)]
+                 *(SANITIZE if sanitize else []), *(["-DCE_VERSION=1"] if ce else []), "-I", str(folder), "-I", str(ROOT / "port/game")]
         extra = []
         if network:
             real_network = ROOT / "port/game/ce_network_boot.cpp"
@@ -119,7 +119,8 @@ class PaletteTests(unittest.TestCase):
                                '{ __atomic_store_n(&requested, v ? 1 : 0, __ATOMIC_RELEASE); }\n')
             extra = ["-DFAKE_NETWORK=1", str(fixture)]
         exe = folder / name
-        built = subprocess.run(flags + extra + [str(DRIVER), str(folder / "ce_palette.cpp"), "-o", str(exe)],
+        built = subprocess.run(flags + extra + [str(DRIVER), str(folder / "ce_palette.cpp"), str(ROOT / "port/game/ce_hooks.cpp"),
+                                                str(ROOT / "port/game/ce_modes.cpp"), "-o", str(exe)],
                                capture_output=True, text=True, timeout=120, preexec_fn=no_core)
         self.assertEqual(built.returncode, 0, built.stderr)
         return exe
@@ -236,9 +237,10 @@ class PaletteTests(unittest.TestCase):
         files = patched(self.out, ["game.cpp", "System.cpp", "console.cpp", "ltshell.cpp", "DXEngine.cpp"])
         game = files["game.cpp"]
         shutdown = function(game, "void\tCGame::ShutdownRestartLoop()")
-        self.assertLess(shutdown.index("PortCePaletteClose()"), shutdown.index("PortCeConsoleLevelEnd()"))
-        self.assertLess(shutdown.index("PortCeConsoleLevelEnd()"), shutdown.index("SAFE_DELETE(mController"))
-        self.assertLess(shutdown.index("PortCeConsoleLevelEnd()"), shutdown.index("WORLD.Shutdown()"))
+        self.assertLess(shutdown.index("ce_hook_level_end("), shutdown.index("SAFE_DELETE(mController"))
+        self.assertLess(shutdown.index("ce_hook_level_end("), shutdown.index("WORLD.Shutdown()"))
+        hooks_text = (ROOT / "port/game/ce_hooks.cpp").read_text()
+        self.assertLess(hooks_text.index("CeHookPaletteLevelEnd"), hooks_text.index("CeHookConsoleLevelEnd"))
         init = function(game, "BOOL CGame::InitRestartLoop()")
         self.assertLess(init.index("mHorizontalSplitscreen=true"), init.index("PortCeConsoleLevelStart()"))
         self.assertLess(init.index('"cg_horizontalsplitscreen"'), init.index("PortCeConsoleLevelStart()"))

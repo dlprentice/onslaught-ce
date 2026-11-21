@@ -492,14 +492,14 @@ def main():
     print(("PASS " if ok else "FAIL ") + f"control: patch 0189 without its context lines ({len(got)} findings, 2 expected; "
           f"{heads} insertion at the head of the file, 1 expected)")
     # The defects this check exists for: patch 0208 with the braces round its tree imposter counter taken away, and patch
-    # 0206 with the braces round the commander map and editor overlay calls taken away (each as it once was).
+    # 0092 with the braces round the palette overlay call taken away (same unbraced `if (!gMirrorPass)` shape as 0206 once had).
     for name, marker, label in (("0208-ce-full-models.patch", "CE_MODEL_TREE_IMPOSTOR", "the tree imposter counter"),
-                                ("0206-native-editor-lifecycle.patch", "PortCeEditorRender();", "the editor overlay call")):
+                                ("0092-ce-safe-palette.patch", "\t\tPortCePaletteRender();", "the palette overlay call")):
         lines = (PATCHES / name).read_text(encoding="latin-1").split("\n")
         at = [i for i, line in enumerate(lines) if line.startswith("+") and marker in line]
         def added(i, text):
             return 0 <= i < len(lines) and lines[i][:1] == "+" and lines[i][1:].strip() == text
-        opening = next((i for i in range(at[0] - 1, at[0] - 4, -1) if added(i, "{")), None) if len(at) == 1 else None
+        opening = next((i for i in range(at[0] - 1, at[0] - 6, -1) if added(i, "{")), None) if len(at) == 1 else None
         closing = next((i for i in range(at[0] + 1, at[0] + 4) if added(i, "}")), None) if len(at) == 1 else None
         if opening is not None and closing is not None:
             mutant = lines[:opening] + lines[opening + 1:closing] + lines[closing + 1:]

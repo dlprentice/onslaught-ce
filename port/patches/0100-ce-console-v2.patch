@@ -1,17 +1,19 @@
 --- a/game.cpp
 +++ b/game.cpp
-@@ -79,6 +79,10 @@
+@@ -76,6 +76,12 @@
+ #define GAME_COUNT_WHEN_WON 5.0f ;
+ 
  extern SINT	performing_stress_test;
- #ifdef CE_VERSION
- void PortCePaletteClose();
-+void PortCeConsoleLevelEnd();	// patch 0100: port/game/ce_palette.cpp
++#ifdef CE_VERSION
++// patch 0100: port/game/ce_palette.cpp
 +void PortCeConsoleFrame();
 +void PortCeConsoleLevelStart();
 +bool PortCeLayer();
- #endif
++#endif
  
  //******************************************************************************************
-@@ -410,6 +414,9 @@
+ // Console commands
+@@ -410,6 +415,9 @@
  	CONSOLE.RegisterVariable("cg_interleavedsplitscreen","Is split-screen mode interleaved",CVar_bool,&mInterleavedSplitscreen);
  	CONSOLE.RegisterVariable("cg_fullscreenmultiplayer","Show only player 1 fullscreen",CVar_bool,&mFullscreenMultiplayer);
  	CONSOLE.RegisterVariable("g_framelength","Game frame/tick length (seconds)",CVar_float,&mFrameLength);
@@ -21,17 +23,7 @@
  	
  	con_resetmemsizes(NULL);
  
-@@ -540,6 +547,9 @@
- #ifdef CE_VERSION
- 	PortCePaletteClose();
- #endif
-+#ifdef CE_VERSION
-+	PortCeConsoleLevelEnd();	// patch 0100: put back what the CE console changed, before anything is freed
-+#endif
- 	extern bool pause_for_showing_controls;
- 	if (mQuit == QT_RESTART_LEVEL && PLAYABLE_DEMO)
- 		pause_for_showing_controls = true;
-@@ -1337,6 +1347,11 @@
+@@ -1337,6 +1345,11 @@
  	CONSOLE.SetLoadingFraction(0.6f);
  
  	// Execute startup script (on every level load... ^-^;;)

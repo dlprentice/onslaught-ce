@@ -15,6 +15,7 @@ caught by the scenarios alone.
 """
 import os
 from pathlib import Path
+import re
 import shutil
 import stat
 import subprocess
@@ -33,13 +34,13 @@ bool SDL_OpenURL(const char *url);
 }
 """
 
-# One-line weakenings of the setter: (name, old, new). Each must make the scenarios fail on its own.
+# One-line weakenings of CE_SettingSetText: (name, old, new). Matched within CE_SettingSetText only so unrelated
+# functions in ce.cpp (such as CE_SettingSetEmpty) cannot break anchor uniqueness. Each must make the scenarios fail.
 MUTANTS = (
     ("a control byte in a value is written",
      "if ((unsigned char)*c < 0x20 || *c == 0x7f)\n\t\t\tplain = false;", "if (false)\n\t\t\tplain = false;"),
     ("a key with a blank or an equals sign is written",
-     "if ((unsigned char)*c <= 0x20 || *c == 0x7f || *c == '=')\n\t\t\tplain = false;\n\tfor (const char *c = plain ? value : \"\"; *c; c++)",
-     "if (false)\n\t\t\tplain = false;\n\tfor (const char *c = plain ? value : \"\"; *c; c++)"),
+     "if ((unsigned char)*c <= 0x20 || *c == 0x7f || *c == '=')\n\t\t\tplain = false;", "if (false)\n\t\t\tplain = false;"),
     ("an empty value is written", "bool plain = key && *key && value && *value;", "bool plain = key && *key && value;"),
     ("a failed write is reported as written",
      'could not write ce.ini (%s=%s); it is unchanged\\n", key, value);\n\t\treturn 0;',
@@ -50,6 +51,18 @@ MUTANTS = (
      'fprintf(stderr, PORT_LOG_PREFIX "could not write ce.ini (%s=%s); it is unchanged\\n", key, value);',
      "(void)key;"),
 )
+
+
+def setter_span(source):
+    """(start, end) slice of CE_SettingSetText in ce.cpp, so mutants stay scoped to that function."""
+    match = re.search(r'^extern\s+"C"\s+int\s+CE_SettingSetText\s*\([^)]*\)\s*\{', source, re.M)
+    if not match:
+        raise RuntimeError("CE_SettingSetText definition missing in ce.cpp")
+    depth, end = 1, match.end()
+    while depth:
+        depth += (source[end] == "{") - (source[end] == "}")
+        end += 1
+    return match.start(), end
 
 
 class Fail(Exception):
@@ -250,12 +263,15 @@ class SettingText(unittest.TestCase):
         self.assertEqual([], failures(build(self.out, self.source, "base"), root))
 
     def test_every_mutant_is_caught_by_the_scenarios_alone(self):
+        start, end = setter_span(self.source)
+        body = self.source[start:end]
         for number, (name, old, new) in enumerate(MUTANTS):
             with self.subTest(mutant=name):
-                self.assertEqual(1, self.source.count(old), "the mutant's text is in ce.cpp exactly once")
+                self.assertEqual(1, body.count(old), "the mutant's text is in CE_SettingSetText exactly once")
                 root = self.out / ("scratch-mutant-%d" % number)
                 root.mkdir()
-                found = failures(build(self.out, self.source.replace(old, new), "mutant-%d" % number), root)
+                mutated = self.source[:start] + body.replace(old, new, 1) + self.source[end:]
+                found = failures(build(self.out, mutated, "mutant-%d" % number), root)
                 self.assertTrue(found, "mutant not caught: " + name)
 
 

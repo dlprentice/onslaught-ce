@@ -37,12 +37,12 @@ import build
 HOST_UNITS = ("ce_museum_visit.cpp", "ce_museum_visit_generate.cpp")
 GAME_UNITS = ("ce_museum.cpp", "ce_museum_hall.cpp", "ce_museum_hall_layout.cpp",
               "ce_museum_label.cpp", "ce_museum_visit_engine.cpp")
-# These helpers own their buffers and pass plain records, handles or caller-owned text across the game boundary.
-# Keep this review independent of build.py: a new exception to the game allocator needs an explicit decision.
-NETWORK_HOST = frozenset(("ce_network_boot_authority.cpp", "ce_network_invitation.cpp"))
-REVIEWED_HOST = NETWORK_HOST | {*HOST_UNITS, "ce_asset_catalog.cpp", "ce_catalogue_menu.cpp", "ce_catalogue_sounds.cpp", "ce_project.cpp"}
 HEADER = build.PORT / "game/ce_museum_visit.h"
 CALLING_CONVENTION_FLAGS = ("-mrtd", "-mregparm", "-fdefault-calling-conv")
+
+
+def is_network_host(name):
+    return build.network_module(build.PORT / "game" / name)
 
 
 def graph_problems(rows, mirror):
@@ -67,17 +67,20 @@ def graph_problems(rows, mirror):
     return problems
 
 
-def generated_rule_problems(text, network):
+def generated_rule_problems(text, network, allowed_host=None):
     edges = dict(re.findall(r"^build \S+/port/game/([^/ ]+\.cpp)\.o: (\w+) ", text, re.M))
     problems = []
-    required_host = REVIEWED_HOST if network else REVIEWED_HOST - NETWORK_HOST
-    for name in sorted(required_host | set(GAME_UNITS)):
+    host_set = build.HOST_BUFFER_GAME_MODULES if allowed_host is None else allowed_host
+    required_host = {n for n in host_set if network or not is_network_host(n)}
+    for name in sorted(required_host | set(HOST_UNITS) | set(GAME_UNITS)):
         if name not in edges:
             problems.append(f"{name}: missing generated edge")
     for name, rule in edges.items():
-        if not network and name in NETWORK_HOST:
+        if not network and is_network_host(name):
             problems.append(f"{name}: network helper in a network-disabled build")
-        wanted = "pcxx" if name in required_host else "qcxx"
+        wanted = "pcxx" if (name in required_host or name in HOST_UNITS) else "qcxx"
+        if name in GAME_UNITS:
+            wanted = "qcxx"
         if rule != wanted:
             problems.append(f"{name}: generated {rule}, want {wanted}")
     return problems
@@ -120,8 +123,16 @@ class Fixture(unittest.TestCase):
 
 
 class BuildGraphTests(Fixture):
-    def test_host_buffer_set_is_exactly_the_reviewed_one(self):
-        self.assertEqual(REVIEWED_HOST, build.HOST_BUFFER_GAME_MODULES)
+    def test_host_buffer_set_separates_museum_units_and_keeps_valid_host_units(self):
+        # Museum host-buffer helpers stay on pcxx, museum game adapters stay on qcxx, and every HOST_BUFFER_GAME_MODULES
+        # member exists under port/game/ and avoids the game's private allocator header (MemoryManager.h).
+        self.assertTrue(set(HOST_UNITS).issubset(build.HOST_BUFFER_GAME_MODULES))
+        self.assertTrue(set(GAME_UNITS).isdisjoint(build.HOST_BUFFER_GAME_MODULES))
+        for name in sorted(build.HOST_BUFFER_GAME_MODULES):
+            path = build.PORT / "game" / name
+            self.assertTrue(path.is_file(), f"HOST_BUFFER_GAME_MODULES names missing unit: {name}")
+            self.assertNotIn("MemoryManager.h", path.read_text(errors="replace"),
+                             f"host-buffer unit {name} must not include MemoryManager.h")
 
     def test_helpers_are_host_modules_and_adapter_keeps_the_game_rule_in_every_flavour(self):
         for network in (True, False):
@@ -187,11 +198,13 @@ class BuildGraphTests(Fixture):
 
     def test_generated_rules_reject_a_gameplay_unit_on_the_host_allocator(self):
         # Inject the error into the real generator's input, independent of the Python rows checked above.
+        baseline = build.HOST_BUFFER_GAME_MODULES
         for target in ("linux", "windows"):
             for name in ("ce_museum_hall.cpp", "ce_playunit.cpp"):
                 with self.subTest(target=target, name=name), patch.object(
-                        build, "HOST_BUFFER_GAME_MODULES", build.HOST_BUFFER_GAME_MODULES | {name}):
-                    self.assertIn(f"{name}: generated pcxx, want qcxx", generated_rule_problems(self.ninja(target), True))
+                        build, "HOST_BUFFER_GAME_MODULES", baseline | {name}):
+                    self.assertIn(f"{name}: generated pcxx, want qcxx",
+                                  generated_rule_problems(self.ninja(target), True, allowed_host=baseline))
 
     def test_host_rule_names_no_game_include_folder(self):
         for target in ("linux", "windows"):

@@ -122,9 +122,9 @@
 +extern "C" bool PortCeMuseumAuthoredMap();
 +extern "C" void PortCeMuseumAuthoredBackdrop();
 +#endif
- #ifdef CE_VERSION
- #include "ce_editor.h"
- #endif
+ // DXEngine.cpp: implementation of the CDXEngine class.
+ //
+ //////////////////////////////////////////////////////////////////////
 @@ -756,6 +760,9 @@
  
  		if (viewpoint == which_view_lod)

@@ -141,7 +141,7 @@ extern "C" void PortCeMuseumVisitCancel(void) {
 #endif
 }
 
-// Patch 0279 (CCareer::Save, after the bonus and editor filters): while a visit holds the player's career, a save of the live career writes the
+// Dispatched via ce_hooks.cpp save_gate (0313-ce-hook-save-gate.patch, after the bonus and editor filters): while a visit holds the player's career, a save of the live career writes the
 // record the visit found, so nothing the visit changes reaches a file (ce_museum_options.h CeMuseumCareerToSave). Keyed on the snapshot, not on Active: Cancel keeps Active while it restores.
 extern "C" void PortCeMuseumVisitFilterSave(CCareer *career, void *dest) {
 #if defined(CE_VERSION) && !defined(CE_MUSEUM_VISIT_HOST_FIXTURE)

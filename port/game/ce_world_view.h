@@ -16,6 +16,7 @@ struct CeWorldViewSample {
 // change it on every entry/replacement, and do not recycle wrapped identities.
 extern "C" std::uint64_t PortCeCmdWorldViewToken() __attribute__((weak));
 extern "C" std::uint64_t PortCeEditorWorldViewToken() __attribute__((weak));
+extern "C" bool PortCeWorldViewCaptureSuspended() __attribute__((weak));
 
 // Called only at the actual world-render projection, before terrain/HUD draw.
 // No active owner means no matrix/device reads or writes. Two owners are refused.

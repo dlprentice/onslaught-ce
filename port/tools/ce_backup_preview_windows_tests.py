@@ -13,6 +13,7 @@ import time
 ROOT = Path(__file__).resolve().parents[2]
 DRIVER = 'port/tools/tests/ce_backup_preview_windows_driver.cpp'
 SUPPORT = ['port/platform/windows/ce_backup_preview.cpp', 'port/platform/windows/ce_backup_paths.h',
+           'port/platform/windows/ce_career_restore.cpp', 'port/platform/common/ce_career_restore.h',
            'port/platform/common/ce_backup_preview.cpp', 'port/platform/common/ce_backup_preview.h',
            'port/platform/common/ce_backup_preview_ui.h', 'port/platform/common/ce_backup_verify.h',
            'port/platform/common/ce_backup_manifest.h', 'port/platform/common/ce_backup_name.h',
@@ -89,7 +90,7 @@ def seed(base):
 def build(work, boundary_root, depdir):
     root = ROOT
     sources = [DRIVER,'port/platform/windows/ce_backup_preview.cpp','port/platform/common/ce_backup_preview.cpp',
-               'port/game/ce_career_view.cpp']
+               'port/platform/windows/ce_career_restore.cpp','port/game/ce_career_view.cpp']
     for arch, target in [('i686', boundary_root/'preview-shipping32.exe'),('x86_64', work/'bin/preview.exe')]:
         compiler = depdir / ('llvm-mingw/bin/'+arch+'-w64-mingw32-clang++')
         resource = boundary_root/(arch+'-manifest.o')
@@ -113,7 +114,8 @@ def build(work, boundary_root, depdir):
             cc.write_text('extern void CePreviewObserveCompleted();\n'+control.replace(
                           tail2,'CePreviewObserveCompleted();\n      '+tail2,1))
             subprocess.run([*options,'-I'+str(root/'port/platform/windows'),'-I'+str(root/'port/platform/common'),
-                            str(root/DRIVER),str(rr),str(cc),str(root/'port/game/ce_career_view.cpp'),str(resource),
+                            str(root/DRIVER),str(rr),str(cc),str(root/'port/platform/windows/ce_career_restore.cpp'),
+                            str(root/'port/game/ce_career_view.cpp'),str(resource),
                             '-o',str(work/'bin/preview-observed.exe')],cwd=root,stdout=out,stderr=subprocess.STDOUT,check=True)
     samplegen=boundary_root/'make-sample'
     with (boundary_root/'sample-compile.log').open('xb') as out:
@@ -216,7 +218,7 @@ def exercise(work, prefix, run):
 if __name__=='__main__':
     sys.path.insert(0,str(ROOT/'port/tools'))
     import ce_career_backup_windows_tests as writer
-    parser=argparse.ArgumentParser(description=__doc__); parser.add_argument('name')
+    parser=argparse.ArgumentParser(description=__doc__); parser.add_argument('name', nargs='?', default=None)
     a=parser.parse_args()
-    sys.argv=[sys.argv[0],a.name,'--preview']
+    sys.argv=[sys.argv[0],*([a.name] if a.name else []),'--preview']
     raise SystemExit(writer.main())

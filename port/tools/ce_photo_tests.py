@@ -127,24 +127,29 @@ def faithful_differences(alone, without):
             if faithful(build.network_view(alone[name], off=True)) != faithful(build.network_view(without[name], off=True))]
 
 
-def check_structure(files):
-    """Where patch 0108 puts photo mode in the patched game files (raises AssertionError)."""
+def check_structure(files, hooks_text=None):
+    """Where patch 0108 puts photo mode in the patched game files and ce_hooks.cpp (raises AssertionError)."""
     try:
-        placed(files)
+        placed(files, hooks_text)
     except ValueError as missing:
         raise AssertionError(f"a gate is missing: {missing}") from None
 
 
-def placed(files):
+def placed(files, hooks_text=None):
     # Both texts a build can see: a public build's (the network's hooks compiled out) and a build with the network (build.network_view).
+    if hooks_text is None:
+        hooks_text = (ROOT / "port/game/ce_hooks.cpp").read_text()
     for off in (True, False):
-        placed_in({name: build.network_view(text, off=off) for name, text in files.items()})
+        placed_in({name: build.network_view(text, off=off) for name, text in files.items()}, hooks_text)
 
 
-def placed_in(files):
+def placed_in(files, hooks_text):
     shell = function(files["ltshell.cpp"], "LRESULT PCLTShell::MsgProc(")
     keydown = shell[shell.index("if( WM_KEYDOWN == uMsg )"):shell.index("WM_KEYUP == uMsg")]
-    assert keydown.index("if (PortCePhotoKey(key, (lParam & 0x40000000) != 0)) {}") < keydown.index("PortCePaletteSuppressDown(key)"), \
+    assert keydown.index("if (ce_hook_key_capture(key, (lParam & 0x40000000) != 0)) {}") < keydown.index("if (mCurrentKeytrap)"), \
+        "the CE key hook runs before the keytrap"
+    key_table = hooks_text[hooks_text.index("kKeyCapture[]"):hooks_text.index("CE_HOOK_CHECK(kKeyCapture")]
+    assert key_table.index("CeHookPhotoKey") < key_table.index("CeHookPaletteSuppressDown"), \
         "F11 and F12 are offered to photo mode before the console"
     engine = files["DXEngine.cpp"]
     late = function(engine, "static void draw_fairly_late_stuff(")
@@ -188,7 +193,9 @@ def placed_in(files):
     for name in ("Hud.cpp", "DXEngine.cpp"):
         assert '#ifdef CE_VERSION\n#include "../game/ce_photo.h"' in files[name], f"{name} includes the scope's header only in CE builds"
     game = files["game.cpp"]
-    assert re.search(r"PortCeConsoleLevelEnd\(\);[^\n]*\n\tPortCePhotoLevelEnd\(\);", game), "photo mode ends with the level"
+    assert "ce_hook_level_end(" in function(game, "void\tCGame::ShutdownRestartLoop()"), "level_end hook is called at level end"
+    end_table = hooks_text[hooks_text.index("kLevelEnd[]"):hooks_text.index("CE_HOOK_CHECK(kLevelEnd")]
+    assert end_table.index("CeHookConsoleLevelEnd") < end_table.index("CeHookPhotoLevelEnd"), "photo mode ends with the level"
     assert re.search(r"PortCeConsoleFrame\(\);[^\n]*\n\tPortCePhotoFrame\(\);", game), "between frames"
 
 
@@ -267,7 +274,8 @@ class PhotoTests(unittest.TestCase):
         for name in FILES:
             with self.subTest(file=name):
                 public, other = build.network_view(alone[name], off=True), build.network_view(without[name], off=True)
-                self.assertNotEqual(public, other)
+                if name != "ltshell.cpp":
+                    self.assertNotEqual(public, other)
                 self.assertEqual(faithful(public), faithful(other), f"patches 0108 and 0133 change the faithful {name}")
         self.assertEqual(faithful_differences(alone, without), [])
 
@@ -277,11 +285,9 @@ class PhotoTests(unittest.TestCase):
         without = patched(self.out / "without", FILES, skip=(*PATCH_NAMES, *DEPENDENT, *BUILT_ON_PHOTO))
         self.assertEqual(faithful_differences(alone, without), [], "the unmutated trees are equal")
         public = {name: build.network_view(text, off=True) for name, text in alone.items()}
-        hooks = (("ltshell.cpp", r"(?m)^\s*if \(PortCePhotoKey\(key,"),
-                 ("DXEngine.cpp", r"(?m)^\s*PortCePhotoRender\(\);"),
+        hooks = (("DXEngine.cpp", r"(?m)^\s*PortCePhotoRender\(\);"),
                  ("Hud.cpp", r"(?m)^\s*CePhotoDrawScope photoDraw;"),
-                 ("game.cpp", r"(?m)^\s*PortCePhotoFrame\(\);"),
-                 ("game.cpp", r"(?m)^\s*PortCePhotoLevelEnd\(\);"))
+                 ("game.cpp", r"(?m)^\s*PortCePhotoFrame\(\);"))
         for name, pattern in hooks:
             with self.subTest(file=name, hook=pattern):
                 text = public[name]
@@ -330,9 +336,8 @@ class PhotoTests(unittest.TestCase):
     def test_structure_mutants_are_caught(self):
         # The mutants' anchors are main's lines, so they mutate the text a public build compiles; the network's view is checked unmutated above.
         files = {name: build.network_view(text, off=True) for name, text in patched(self.out / "with", FILES).items()}
+        hooks_text = (ROOT / "port/game/ce_hooks.cpp").read_text()
         mutants = [
-            ("key-after-console", "ltshell.cpp", "\t\t\telse if (PortCePhotoKey(key, (lParam & 0x40000000) != 0)) {}	// patch 0108: F11 photo mode, F12 screenshot\n\t\t\telse if (PortCePaletteSuppressDown(key)) {}",
-             "\t\t\telse if (PortCePaletteSuppressDown(key)) {}\n\t\t\telse if (PortCePhotoKey(key, (lParam & 0x40000000) != 0)) {}"),
             ("cockpit-scope-removed", "DXEngine.cpp", "\t\t\t\tCePhotoDrawScope photoDraw;\t// patch 0133: photo mode drops the cockpit's draw calls; its routines run in full\n", ""),
             ("cockpit-behind-killhud", "DXEngine.cpp", "#ifdef DEV_VERSION\n\tif(!CLIPARAMS.mKillHUD)\n#endif", "#if defined(DEV_VERSION) || defined(CE_VERSION)\n\tif(!CLIPARAMS.mKillHUD)\n#endif"),
             ("battle-line-behind-killhud", "DXEngine.cpp", "\t\t\t\tif ((GAME.GetCamera(i)->GetShowHUD()))\n\t\t\t\t\trender=TRUE;", "\t\t\t\tif ((GAME.GetCamera(i)->GetShowHUD()))\n\t\t\t\tif (!CLIPARAMS.mKillHUD)\n\t\t\t\t\trender=TRUE;"),
@@ -342,7 +347,6 @@ class PhotoTests(unittest.TestCase):
             ("hud-scope-removed", "Hud.cpp", "\t\t\tCePhotoDrawScope photoDraw;\t// patch 0133: photo mode drops the overlay's draw calls; its routines run in full\n", ""),
             ("hud-skipped", "Hud.cpp", "\t\t\tRenderOverlayForViewpoint(player, i);\n#ifdef CE_VERSION", "\t\t\tif (false) RenderOverlayForViewpoint(player, i);\n#ifdef CE_VERSION"),
             ("hud-behind-photo", "Hud.cpp", "\t\tif (player && GAME.GetCamera(i)->GetShowHUD())\n#ifdef CE_VERSION", "\t\tif (player && GAME.GetCamera(i)->GetShowHUD() && !PortCePhotoOn())\n#ifdef CE_VERSION"),
-            ("no-level-end", "game.cpp", "\tPortCePhotoLevelEnd();", "\t;"),
             ("no-frame", "game.cpp", "\tPortCePhotoFrame();", "\t;"),
         ]
         for name, where, old, new in mutants:
@@ -351,7 +355,19 @@ class PhotoTests(unittest.TestCase):
                 broken = dict(files)
                 broken[where] = files[where].replace(old, new)
                 with self.assertRaises(AssertionError, msg=f"mutant {name} survived"):
-                    check_structure(broken)
+                    check_structure(broken, hooks_text)
+        for name, old, new in (
+            ("key-after-console",
+             '\t{10, "photo_key", CE_HOOK_RENDER, CE_GATE_VERSION, CE_MODE_NONE, CeHookPhotoKey},\n\t{20, "palette_suppress_down", CE_HOOK_RENDER, CE_GATE_VERSION, CE_MODE_NONE, CeHookPaletteSuppressDown},',
+             '\t{10, "palette_suppress_down", CE_HOOK_RENDER, CE_GATE_VERSION, CE_MODE_NONE, CeHookPaletteSuppressDown},\n\t{20, "photo_key", CE_HOOK_RENDER, CE_GATE_VERSION, CE_MODE_NONE, CeHookPhotoKey},'),
+            ("no-level-end",
+             '\t{30, "photo_level_end", CE_HOOK_SIM, CE_GATE_VERSION, CE_MODE_NONE, CeHookPhotoLevelEnd},\n',
+             ''),
+        ):
+            with self.subTest(mutant=name):
+                self.assertEqual(hooks_text.count(old), 1, name)
+                with self.assertRaises(AssertionError, msg=f"mutant {name} survived"):
+                    check_structure(files, hooks_text.replace(old, new))
 
     # ---- photo mode's logic ---------------------------------------------------------------------------------------------
     def logic(self, name, photo=None, network=False, ce=True, driver=LOGIC, overlay=None):
@@ -376,9 +392,11 @@ class PhotoTests(unittest.TestCase):
                 'extern "C" void SetBootRequested(bool v) { requested = v ? 1 : 0; }\n')
             extra = ["-DFAKE_NETWORK=1", str(folder / "network_boot.cpp")]
         exe = folder / "driver"
+        hooks_sources = [str(ROOT / "port/game/ce_hooks.cpp"), str(ROOT / "port/game/ce_modes.cpp")] if driver == LOGIC else []
         built = subprocess.run([os.environ.get("CXX", "g++"), "-std=c++14", "-g", "-Wall", "-Wextra", "-Werror",
                                 *(SANITIZE if ce else []), *(["-DCE_VERSION=1"] if ce else []), "-I", str(folder),
-                                *extra, str(driver), str(folder / "ce_photo.cpp"), "-o", str(exe)],
+                                "-I", str(ROOT / "port/game"), *extra, str(driver), str(folder / "ce_photo.cpp"),
+                                *hooks_sources, "-o", str(exe)],
                                capture_output=True, text=True, timeout=120, preexec_fn=no_core)
         self.assertEqual(built.returncode, 0, built.stderr)
         return exe

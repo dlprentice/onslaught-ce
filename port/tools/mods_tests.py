@@ -7,12 +7,14 @@ test fail.
 
     python3 port/tools/mods_tests.py            # the tests, then the mutants
     python3 port/tools/mods_tests.py --no-mutants
-    python3 port/tools/mods_tests.py --mutants-only   # only the mutants; MODS_TESTS_ONLY="text|text" keeps those whose names contain one of the texts
+    python3 port/tools/mods_tests.py --mutants-only [-j N]   # only the mutants; MODS_TESTS_ONLY="text|text" keeps those whose names contain one of the texts; BEA_MUTANT_JOBS sets default -j
 
 One control reads the player's install (BEA_GAME_DIR, else the default Steam folder): every level archive the game ships is
 offered as an added archive and none may be refused. Without an install that test is skipped, the summary says so, and the
 mutants aimed at it are reported as not exercised.
 """
+import atexit
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import itertools
 import json
@@ -26,6 +28,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 import zlib
@@ -42,7 +45,84 @@ FENCES = ("BEA_PORT_CLOCK", "BEA_PORT_TAPE", "BEA_PORT_PROBES", "BEA_PORT_RECORD
 TEX = "data/resources/dxtntextures/meshtex%Test.tga(0)A1R5G5B5.aya"
 SND = "data/sounds/test.wav"
 BUILD = ROOT / "local-data/port/mods-tests"
-DRIVER = {}		# (source text, ce version) -> driver path
+DRIVER = {}		# (source text, ce version, defines, sanitize) -> driver path
+_DRIVER_LOCK = threading.Lock()
+_DRIVER_KEY_LOCKS = {}
+_SHARED_OBJECTS = {}
+_SHARED_LOCK = threading.Lock()
+_SHARED_KEY_LOCKS = {}
+_ARCHIVE_CASES = {}
+_ARCHIVE_CACHE_LOCK = threading.Lock()
+_RUN_BUILD = None
+
+
+def _cached_cases(key, builder):
+    with _ARCHIVE_CACHE_LOCK:
+        cached = _ARCHIVE_CASES.get(key)
+    if cached is not None:
+        return cached
+    built = builder()
+    with _ARCHIVE_CACHE_LOCK:
+        return _ARCHIVE_CASES.setdefault(key, built)
+
+
+def _default_jobs():
+    env = os.environ.get("BEA_MUTANT_JOBS", "").strip()
+    if env:
+        value = int(env)
+        if value < 1:
+            raise ValueError(f"BEA_MUTANT_JOBS must be >= 1, got {value}")
+        return value
+    return min(6, os.cpu_count() or 1)
+
+
+def _run_build_dir():
+    global _RUN_BUILD
+    with _DRIVER_LOCK:
+        if _RUN_BUILD is None:
+            BUILD.mkdir(parents=True, exist_ok=True)
+            _RUN_BUILD = Path(tempfile.mkdtemp(prefix=f"run-{os.getpid()}-", dir=BUILD))
+            atexit.register(shutil.rmtree, _RUN_BUILD, True)
+        return _RUN_BUILD
+
+
+def _shared_objects(cc, cxx, ce_version, defines, sanitize):
+    """Compiles immutable driver objects (sha256.o, ce.o, mods_driver.o) once per process and flag set."""
+    skey = (cc, cxx, ce_version, tuple(defines), sanitize)
+    with _SHARED_LOCK:
+        if skey in _SHARED_OBJECTS:
+            return _SHARED_OBJECTS[skey]
+        lock = _SHARED_KEY_LOCKS.setdefault(skey, threading.Lock())
+    with lock:
+        with _SHARED_LOCK:
+            if skey in _SHARED_OBJECTS:
+                return _SHARED_OBJECTS[skey]
+        run_dir = _run_build_dir()
+        tag = hashlib.sha256(repr(skey).encode()).hexdigest()[:12]
+        out = run_dir / f"shared-{tag}"
+        out.mkdir(parents=True, exist_ok=True)
+        define = ([f'-DCE_VERSION="{ce_version}"'] if ce_version else []) + [f"-D{d}" for d in defines]
+        sanitizers = ["-fsanitize=address,undefined", "-fno-sanitize-recover=undefined", "-g", "-fno-omit-frame-pointer"] if sanitize else []
+        sha_o = out / "sha256.o"
+        ce_o = out / "ce.o"
+        drv_o = out / "mods_driver.o"
+        steps = [
+            [cc, "-O2", "-c", str(PORT / "updater/sha256.c"), "-o", str(sha_o)],
+            # ce.cpp's ce.ini reader does not depend on the version (with CE_VERSION it would also need SDL).
+            [cxx, "-std=gnu++17", "-O1", "-w", "-c", "-I", str(PORT / "platform/common"),
+             str(PORT / "platform/common/ce.cpp"), "-o", str(ce_o)],
+            [cxx, "-std=gnu++17", "-O1", "-Wall", "-Wextra", "-Werror", *sanitizers, *define, "-c",
+             "-I", str(PORT / "platform/common"), "-I", str(PORT / "updater"),
+             str(PORT / "tools/mods_driver.cpp"), "-o", str(drv_o)],
+        ]
+        for step in steps:
+            r = subprocess.run(step, capture_output=True, text=True, timeout=120, preexec_fn=no_core)
+            if r.returncode:
+                raise RuntimeError(r.stderr)
+        objs = (sha_o, ce_o, drv_o)
+        with _SHARED_LOCK:
+            _SHARED_OBJECTS[skey] = objs
+        return objs
 
 
 def no_core():
@@ -65,34 +145,36 @@ def driver(source=None, ce_version=None, defines=(), sanitize=False):
     with AddressSanitizer and UndefinedBehaviorSanitizer, to catch a read the verdicts do not show."""
     text = source if source is not None else MODS_CPP.read_text()
     key = (hashlib.sha256(text.encode()).hexdigest()[:16], ce_version, tuple(defines), sanitize)
-    if key in DRIVER:
-        return DRIVER[key]
-    out = BUILD / (f"driver-{key[0]}-{ce_version or 'dev'}" + "".join("-" + d for d in defines) + ("-asan" if sanitize else ""))
-    # mods.cpp includes "../../updater/sha256.h": the copy sits at the same depth (a/b) as in port/platform/common.
-    (out / "a/b").mkdir(parents=True, exist_ok=True)
-    (out / "updater").mkdir(exist_ok=True)
-    (out / "a/b/mods.cpp").write_text(text)
-    for name in ("mods.h", "portlog.h"):
-        shutil.copy(PORT / "platform/common" / name, out / "a/b" / name)
-    shutil.copy(PORT / "updater/sha256.h", out / "updater/sha256.h")
-    cxx, cc = os.environ.get("CXX", "g++"), os.environ.get("CC", "gcc")
-    define = ([f'-DCE_VERSION="{ce_version}"'] if ce_version else []) + [f"-D{d}" for d in defines]
-    sanitizers = ["-fsanitize=address,undefined", "-fno-sanitize-recover=undefined", "-g", "-fno-omit-frame-pointer"] if sanitize else []
-    steps = [
-        [cc, "-O2", "-c", str(PORT / "updater/sha256.c"), "-o", str(out / "sha256.o")],
-        # ce.cpp's ce.ini reader does not depend on the version (with CE_VERSION it would also need SDL).
-        [cxx, "-std=gnu++17", "-O1", "-w", "-c", "-I", str(PORT / "platform/common"),
-         str(PORT / "platform/common/ce.cpp"), "-o", str(out / "ce.o")],
-        [cxx, "-std=gnu++17", "-O1", "-Wall", "-Wextra", "-Werror", *sanitizers, *define, "-I", str(out / "a/b"),
-         "-I", str(PORT / "updater"), str(PORT / "tools/mods_driver.cpp"), str(out / "a/b/mods.cpp"),
-         str(out / "ce.o"), str(out / "sha256.o"), "-lz", "-o", str(out / "driver")],
-    ]
-    for step in steps:
+    with _DRIVER_LOCK:
+        if key in DRIVER:
+            return DRIVER[key]
+        lock = _DRIVER_KEY_LOCKS.setdefault(key, threading.Lock())
+    with lock:
+        with _DRIVER_LOCK:
+            if key in DRIVER:
+                return DRIVER[key]
+        run_dir = _run_build_dir()
+        out = run_dir / (f"driver-{key[0]}-{ce_version or 'dev'}" + "".join("-" + d for d in defines) + ("-asan" if sanitize else ""))
+        # mods.cpp includes "../../updater/sha256.h": the copy sits at the same depth (a/b) as in port/platform/common.
+        (out / "a/b").mkdir(parents=True, exist_ok=True)
+        (out / "updater").mkdir(exist_ok=True)
+        (out / "a/b/mods.cpp").write_text(text)
+        for name in ("mods.h", "portlog.h"):
+            shutil.copy(PORT / "platform/common" / name, out / "a/b" / name)
+        shutil.copy(PORT / "updater/sha256.h", out / "updater/sha256.h")
+        cxx, cc = os.environ.get("CXX", "g++"), os.environ.get("CC", "gcc")
+        sha_o, ce_o, drv_o = _shared_objects(cc, cxx, ce_version, defines, sanitize)
+        define = ([f'-DCE_VERSION="{ce_version}"'] if ce_version else []) + [f"-D{d}" for d in defines]
+        sanitizers = ["-fsanitize=address,undefined", "-fno-sanitize-recover=undefined", "-g", "-fno-omit-frame-pointer"] if sanitize else []
+        step = [cxx, "-std=gnu++17", "-O1", "-Wall", "-Wextra", "-Werror", *sanitizers, *define, "-I", str(out / "a/b"),
+                "-I", str(PORT / "updater"), str(out / "a/b/mods.cpp"),
+                str(drv_o), str(ce_o), str(sha_o), "-lz", "-o", str(out / "driver")]
         r = subprocess.run(step, capture_output=True, text=True, timeout=120, preexec_fn=no_core)
         if r.returncode:
             raise RuntimeError(r.stderr)
-    DRIVER[key] = out / "driver"
-    return DRIVER[key]
+        with _DRIVER_LOCK:
+            DRIVER[key] = out / "driver"
+            return DRIVER[key]
 
 
 def dds(width=8, height=8):
@@ -1277,22 +1359,26 @@ class ModsTests(unittest.TestCase):
             chunks[n] = (b"MESH", mesh)
         return chunks
 
-    def verdict(self, chunks):
+    def verdict_packed(self, archive):
         shutil.rmtree(self.f.user / "mods", ignore_errors=True)
-        self.f.mod("a", {LEVEL_ARCHIVE: level_archive(chunks)})
+        self.f.mod("a", {LEVEL_ARCHIVE: archive})
         self.f.enable("a")
         return self.run_driver(["active"])
+
+    def verdict(self, chunks):
+        return self.verdict_packed(level_archive(chunks))
 
     def test_one_inline_mesh_of_the_profile_is_admitted(self):
         # The 20000-to-29999 runtime id, an all-zero name, no optional word and a stream CheckInlineMesh walks; the rest of the archive is the
         # usual one. These are the shapes a converted PS2 mesh has (children, parents, references, shared pieces, a collision grid whose
         # unlisted tail is as the PS2 exporter left it, emitters with part indices, animation modes).
-        two = inline_stream(textures=2, tex_name=b"two.tga", parts=3, part_list=[
-            inline_part(0, 3, 2, children=[1, 2]), inline_part(1, 3, 2, parent=0, reference=2), inline_part(2, 3, 2, parent=0, pieces=[])])
-        emitter = bytearray(336)
-        struct.pack_into("<I", emitter, 0x40, 1)
-        cemt = chunk(b"CEMT", struct.pack("<i", 336) + bytes(emitter) + struct.pack("<I", 0) + bytes(336))
-        cases = {
+        def build_cases():
+            two = inline_stream(textures=2, tex_name=b"two.tga", parts=3, part_list=[
+                inline_part(0, 3, 2, children=[1, 2]), inline_part(1, 3, 2, parent=0, reference=2), inline_part(2, 3, 2, parent=0, pieces=[])])
+            emitter = bytearray(336)
+            struct.pack_into("<I", emitter, 0x40, 1)
+            cemt = chunk(b"CEMT", struct.pack("<i", 336) + bytes(emitter) + struct.pack("<I", 0) + bytes(336))
+            raw_cases = {
             "the smallest": inline_mesh(),
             "kept flag 1, last id": inline_mesh(runtime_id=29999, kept=1),
             "three parts with children, parents and a reference, two textures": inline_mesh(two),
@@ -1415,10 +1501,11 @@ class ModsTests(unittest.TestCase):
                                                                                                 + [inline_part(i, 258, 1, pieces=[]) for i in range(2, 256)]
                                                                                                 + [inline_part(256, 258, 1, children=[257], pieces=[]), inline_part(257, 258, 1, parent=256, pieces=[])]),
             "a camera of 256 hand frames whose map names frame 255": camera_mesh(fovs=[90.0] * 256, vhfm=bytes([255])),
-        }
-        for name, mesh in cases.items():
+            }
+            return [(name, level_archive(self.inline_archive(mesh))) for name, mesh in raw_cases.items()]
+        for name, archive in _cached_cases("inline_admitted", build_cases):
             with self.subTest(name):
-                out, err = self.verdict(self.inline_archive(mesh))
+                out, err = self.verdict_packed(archive)
                 self.assertEqual(out, ["ACTIVE 1 -"], err)
 
     def test_an_inline_mesh_the_loaders_readers_would_misread_is_refused(self):
@@ -1426,8 +1513,9 @@ class ModsTests(unittest.TestCase):
         source = self.source if self.source is not None else MODS_CPP.read_text()
         walk = source[source.index("// ---- an inline mesh"):source.index("// NULL when an added level archive's unpacked stream")]
         reached = set()
-        grid = lambda **kw: dict(grid=inline_grid(**kw))
-        cases = {
+        def build_cases():
+            grid = lambda **kw: dict(grid=inline_grid(**kw))
+            raw_cases = {
             # the reference and the archive
             "a second name byte set": (inline_mesh(name=b"\0x"), "whose reference name is not all zero"),
             "runtime id 19999": (inline_mesh(runtime_id=19999), "whose runtime id is outside 20000 to 29999"),
@@ -1861,10 +1949,11 @@ class ModsTests(unittest.TestCase):
             "a chained mesh without its CMSH": (inline_mesh(inline_stream(cmsh={8: 1}) + chain_link(bytes(400))), "does not start with a 372-byte CMSH record"),
             "the totals of a chain (three meshes of 40000 vertices)": (inline_mesh(inline_chain(3, part=dict(pieces=[dict(vertex_count=40000)]))),
                                                                        "more than 100000 vertices, 600000 indices or 1024 pieces"),
-        }
-        for name, (mesh, words) in cases.items():
+            }
+            return [(name, level_archive(self.inline_archive(mesh)), words) for name, (mesh, words) in raw_cases.items()]
+        for name, archive, words in _cached_cases("inline_refused", build_cases):
             with self.subTest(name):
-                out, err = self.verdict(self.inline_archive(mesh))
+                out, err = self.verdict_packed(archive)
                 self.assertEqual(out, ["ACTIVE 0 -"], err)
                 self.assertRefused(err, words)
                 reached.update(line[line.index("an inline mesh"):] for line in err.splitlines() if "refused a:" in line and "an inline mesh" in line)
@@ -1875,13 +1964,19 @@ class ModsTests(unittest.TestCase):
         # orientation is not, and only a part that some part lists is static. No rule is one a part's other flag, its other word, its count or its place in the mesh may switch off. So this runs the
         # product of everything the four rules read (the two flags, the two words, 8 pairs of virtual-frame and cached-frame counts, listed or not: 256 parts, each otherwise as a shipped part is)
         # against the rules as cache_reasons writes them, in the order the walk checks them. A rule held for the parts with one flag, one word, one count or one link only is a part that differs.
+        def build_cases():
+            items = []
+            for static, cpos, cori, (vframes, count), listed in itertools.product(itertools.product((0, 1), repeat=2), (False, True), (False, True),
+                                                                                    ((1, 0), (1, 1), (1, 2), (3, 0), (3, 1), (3, 2), (3, 3), (3, 4)), (True, False)):
+                reasons = cache_reasons(static, cpos, cori, vframes, count, listed)
+                name = f"flags {static}, {'a' if cpos else 'no'} CPOS, {'a' if cori else 'no'} CORI, {count} cached of {vframes} virtual frames, {'listed' if listed else 'not listed'}"
+                archive = level_archive(self.inline_archive(cache_mesh(static, (count, 16 * count if cpos else None, 48 * count if cori else None), vframes, listed)))
+                items.append((static, reasons, name, archive))
+            return items
         alone, admitted, cells = set(), set(), 0
-        for static, cpos, cori, (vframes, count), listed in itertools.product(itertools.product((0, 1), repeat=2), (False, True), (False, True),
-                                                                                ((1, 0), (1, 1), (1, 2), (3, 0), (3, 1), (3, 2), (3, 3), (3, 4)), (True, False)):
-            reasons = cache_reasons(static, cpos, cori, vframes, count, listed)
-            name = f"flags {static}, {'a' if cpos else 'no'} CPOS, {'a' if cori else 'no'} CORI, {count} cached of {vframes} virtual frames, {'listed' if listed else 'not listed'}"
+        for static, reasons, name, archive in _cached_cases("cache_product", build_cases):
             with self.subTest(name):
-                out, err = self.verdict(self.inline_archive(cache_mesh(static, (count, 16 * count if cpos else None, 48 * count if cori else None), vframes, listed)))
+                out, err = self.verdict_packed(archive)
                 if reasons:
                     self.assertEqual(out, ["ACTIVE 0 -"], err)
                     self.assertRefused(err, reasons[0])
@@ -1906,26 +2001,32 @@ class ModsTests(unittest.TestCase):
         # respect and reads its cached array, so that part (of any kind, and it lists the static one) is held to the relations like any other. So a part of each type (normal, null, emitter,
         # reference, skeletal, camera) and one with a collision grid or 2 hand frames, with and without a child of its own, is run through each combination of the static flags: a shape the walk
         # admits, and a shape that breaks each rule that can be broken for it, that rule alone (the product above runs the normal leaf part through every word, count and link).
+        def build_cases():
+            items = []
+            for kind, children, static in itertools.product(("", "null", "emitter", "reference", "skeletal", "camera", "grid", "hand frames"), (False, True), itertools.product((0, 1), repeat=2)):
+                pos, ori = not static[0], not static[1]
+                shapes = {"as BuildCache leaves it": (pos, ori, 3, 3, True), "2 cached frames of 3 virtual frames": (pos, ori, 3, 2, True),
+                          "a CPOS the wrong way": (not pos, ori, 3, 3, True), "a CORI the wrong way": (pos, not ori, 3, 3, True)}
+                if any(static):
+                    shapes["no part lists it"] = (pos, ori, 3, 3, False)
+                for shape, (cpos, cori, vframes, count, listed) in shapes.items():
+                    reasons = cache_reasons(static, cpos, cori, vframes, count, listed)
+                    archive = level_archive(self.inline_archive(cache_mesh(static, (count, 16 * count if cpos else None, 48 * count if cori else None), vframes, listed, children, kind)))
+                    items.append((kind, children, static, shape, reasons, archive))
+            return items
         cells = 0
-        for kind, children, static in itertools.product(("", "null", "emitter", "reference", "skeletal", "camera", "grid", "hand frames"), (False, True), itertools.product((0, 1), repeat=2)):
-            pos, ori = not static[0], not static[1]
-            shapes = {"as BuildCache leaves it": (pos, ori, 3, 3, True), "2 cached frames of 3 virtual frames": (pos, ori, 3, 2, True),
-                      "a CPOS the wrong way": (not pos, ori, 3, 3, True), "a CORI the wrong way": (pos, not ori, 3, 3, True)}
-            if any(static):
-                shapes["no part lists it"] = (pos, ori, 3, 3, False)
-            for shape, (cpos, cori, vframes, count, listed) in shapes.items():
-                reasons = cache_reasons(static, cpos, cori, vframes, count, listed)
-                self.assertEqual(len(reasons), 0 if shape == "as BuildCache leaves it" else 1, (kind, static, shape))
-                with self.subTest(f"{kind or 'rigid'} part, {'with' if children else 'without'} a child, flags {static}, {shape}"):
-                    out, err = self.verdict(self.inline_archive(cache_mesh(static, (count, 16 * count if cpos else None, 48 * count if cori else None), vframes, listed, children, kind)))
-                    if reasons:
-                        self.assertEqual(out, ["ACTIVE 0 -"], err)
-                        self.assertRefused(err, reasons[0])
-                        for other in {CACHE_COUNT, CACHE_CPOS, CACHE_CORI, CACHE_PARENT} - {reasons[0]}:
-                            self.assertNotIn(other, err)		# the whole answer is the one rule broken
-                    else:
-                        self.assertEqual(out, ["ACTIVE 1 -"], err)
-                cells += 1
+        for kind, children, static, shape, reasons, archive in _cached_cases("cache_kinds", build_cases):
+            self.assertEqual(len(reasons), 0 if shape == "as BuildCache leaves it" else 1, (kind, static, shape))
+            with self.subTest(f"{kind or 'rigid'} part, {'with' if children else 'without'} a child, flags {static}, {shape}"):
+                out, err = self.verdict_packed(archive)
+                if reasons:
+                    self.assertEqual(out, ["ACTIVE 0 -"], err)
+                    self.assertRefused(err, reasons[0])
+                    for other in {CACHE_COUNT, CACHE_CPOS, CACHE_CORI, CACHE_PARENT} - {reasons[0]}:
+                        self.assertNotIn(other, err)		# the whole answer is the one rule broken
+                else:
+                    self.assertEqual(out, ["ACTIVE 1 -"], err)
+            cells += 1
         self.assertEqual(cells, 8 * 2 * (4 * 4 + 3))
 
     def test_only_one_inline_mesh_is_admitted_and_a_named_one_is_still_the_325_bytes(self):
@@ -3503,49 +3604,92 @@ MUTANTS += [(f"inline: the {rule} held only where a part {where}", old, f"if ({c
                                      ("is not a skeletal part", "!skeletal"), ("is not a camera part", "!camera"), ("has 1 hand frame", "hframes == 1"))]
 
 
-def run_mutants():
+def _eval_mutant(source, entry):
+    name, old, new, test, *defines = entry
+    if source.count(old) != 1:
+        return "failed", f"mutant {name}: its text is not in mods.cpp exactly once"
+    mutant = source.replace(old, new)
+    try:
+        exe = driver(mutant, defines=defines[0] if defines else ())
+        ce_exe = driver(mutant, ce_version="0.1.9") if test == "test_ce_version_range" else None
+    except RuntimeError as e:
+        return "failed", f"mutant {name}: does not build: {e}"
+    case = ModsTests(test)
+    case.exe, case.ce_exe, case.source = exe, ce_exe, mutant
+    with open(os.devnull, "w") as devnull:
+        result = unittest.TextTestRunner(stream=devnull, verbosity=0, failfast=True).run(case)
+    killed = not result.wasSuccessful()
+    if not killed and result.skipped:
+        return "unexercised", f"mutant {name}: NOT EXERCISED ({test} was skipped: {result.skipped[0][1]})"
+    line = f"mutant {name}: {'killed by ' + test if killed else 'SURVIVED ' + test}"
+    return ("killed" if killed else "failed"), line
+
+
+def run_mutants(jobs=None):
     source = MODS_CPP.read_text()
     failures = unexercised = 0
     only = [s for s in os.environ.get("MODS_TESTS_ONLY", "").split("|") if s]	# a rerun of chosen mutants: names containing any of these texts
-    for name, old, new, test, *defines in MUTANTS:
-        if only and not any(s in name for s in only):
-            continue
-        if source.count(old) != 1:
-            print(f"mutant {name}: its text is not in mods.cpp exactly once")
-            failures += 1
-            continue
-        mutant = source.replace(old, new)
-        try:
-            exe = driver(mutant, defines=defines[0] if defines else ())
-            ce_exe = driver(mutant, ce_version="0.1.9") if test == "test_ce_version_range" else None
-        except RuntimeError as e:
-            print(f"mutant {name}: does not build: {e}")
-            failures += 1
-            continue
-        ModsTests.exe, ModsTests.ce_exe, ModsTests.source = exe, ce_exe, mutant
-        result = unittest.TextTestRunner(stream=open(os.devnull, "w"), verbosity=0).run(ModsTests(test))
-        ModsTests.exe = ModsTests.ce_exe = ModsTests.source = None
-        killed = not result.wasSuccessful()
-        if not killed and result.skipped:
-            print(f"mutant {name}: NOT EXERCISED ({test} was skipped: {result.skipped[0][1]})")
-            unexercised += 1
-            continue
-        print(f"mutant {name}: {'killed by ' + test if killed else 'SURVIVED ' + test}")
-        failures += not killed
+    selected = [entry for entry in MUTANTS if not only or any(s in entry[0] for s in only)]
+    workers = _default_jobs() if jobs is None else jobs
+    if workers <= 1 or len(selected) <= 1:
+        outcomes = (_eval_mutant(source, entry) for entry in selected)
+        for status, line in outcomes:
+            print(line, flush=True)
+            if status == "unexercised":
+                unexercised += 1
+            elif status != "killed":
+                failures += 1
+        return failures, unexercised
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = [pool.submit(_eval_mutant, source, entry) for entry in selected]
+        for future in futures:
+            status, line = future.result()
+            print(line, flush=True)
+            if status == "unexercised":
+                unexercised += 1
+            elif status != "killed":
+                failures += 1
     return failures, unexercised
+
+
+def _parse_cli(argv):
+    mutants = True
+    mutants_only = False
+    jobs = None
+    rest = [argv[0]]
+    i = 1
+    while i < len(argv):
+        a = argv[i]
+        if a == "--no-mutants":
+            mutants = False
+        elif a == "--mutants-only":
+            mutants_only = True
+        elif a in ("-j", "--jobs"):
+            if i + 1 >= len(argv):
+                raise SystemExit(f"{a} requires a positive integer")
+            jobs = int(argv[i + 1])
+            i += 1
+        elif a.startswith("--jobs="):
+            jobs = int(a.split("=", 1)[1])
+        elif a.startswith("-j") and a[2:].isdigit():
+            jobs = int(a[2:])
+        else:
+            rest.append(a)
+        i += 1
+    if jobs is not None and jobs < 1:
+        raise SystemExit(f"--jobs must be >= 1, got {jobs}")
+    return mutants, mutants_only, jobs, rest
 
 
 def main():
     BUILD.mkdir(parents=True, exist_ok=True)
-    mutants = "--no-mutants" not in sys.argv
-    mutants_only = "--mutants-only" in sys.argv
-    argv = [a for a in sys.argv if a not in ("--no-mutants", "--mutants-only")]
+    mutants, mutants_only, jobs, argv = _parse_cli(sys.argv)
     if not mutants_only:
         program = unittest.main(argv=argv, exit=False, verbosity=2)
         if not program.result.wasSuccessful():
             return 1
     if mutants:
-        failed, unexercised = run_mutants()
+        failed, unexercised = run_mutants(jobs=jobs)
         only = [s for s in os.environ.get("MODS_TESTS_ONLY", "").split("|") if s]
         chosen = sum(1 for m in MUTANTS if not only or any(s in m[0] for s in only))
         print(f"mutants: {chosen - failed - unexercised} of {chosen} killed, {unexercised} not exercised")

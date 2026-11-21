@@ -22,9 +22,25 @@ char* CCareer::WriteOptions(char* dest) { ++optionWrites; *dest = 42; return des
 #undef ASSERT
 #define ASSERT(value) Check((value), "career serialization invariant")
 #define CE_VERSION 1
+// Non-save hook handlers referenced by port/game/ce_hooks.cpp (not exercised by this save driver).
+bool PortCeLayer() { return true; }
+void PortCeGamepadBeginCycle() {}
+void PortCePaletteClose() {}
+void PortCeConsoleLevelEnd() {}
+void PortCePhotoLevelEnd() {}
+void PortCeCmdLevelEnd() {}
+bool PortCePhotoKey(unsigned, bool) { return false; }
+bool PortCePaletteSuppressDown(unsigned) { return false; }
+bool PortCePaletteOpen(unsigned, bool) { return false; }
+bool PortCeCmdKey(unsigned, bool) { return false; }
+void PortCeEditorRender() {}
+CCamera *PortCeCmdRenderCamera(CCamera *c, CPlayer *) { return c; }
+CCamera *PortCePlayUnitRenderCamera(CCamera *c, CPlayer *) { return c; }
 #ifdef EDITOR_MUSEUM_COMPOSED
 #include "editor-museum-filter.private.inc"
 #endif
+#include "ce_modes.cpp"
+#include "ce_hooks.cpp"
 #include "editor-career-save.private.inc"
 #include "editor-career-mark.private.inc"
 #undef CE_VERSION

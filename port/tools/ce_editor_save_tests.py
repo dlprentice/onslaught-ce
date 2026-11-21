@@ -51,17 +51,20 @@ def replace_once(text: str, before: str, after: str) -> str:
 def serializer(folder: Path, career: str) -> None:
     save = save_flow_tests.function(career, r"^void\s+CCareer::Save\(char\s*\*")
     mark = save_flow_tests.function(career, r"^void\s+CCareer::SaveAndMarkInProgress\(")
-    if save.count("PortCeEditorFilterSave(this, dest);") != 1:
-        raise ValueError("editor serializer hook is missing")
+    if save.count("ce_hook_save_gate(CE_SAVE_CAREER, this, dest, sizeof(CCareer));") != 1:
+        raise ValueError("save_gate serializer hook is missing")
+    hooks_text = (ROOT / "port/game/ce_hooks.cpp").read_text()
+    if not re.search(r"kSaveGate\[\].*?CeHookEditorSave\b", hooks_text, re.S):
+        raise ValueError("editor save filter is not registered on kSaveGate")
     enabled = "#ifndef CE_VERSION\n#error Enable production serializer code\n#endif\n"
     (folder / "editor-career-save.private.inc").write_text(enabled + save)
     (folder / "editor-career-mark.private.inc").write_text(enabled + mark)
 
 
-def declaration_linkage(out: Path, career: str, compiler: str, environment: dict,
+def declaration_linkage(out: Path, hooks_text: str, compiler: str, environment: dict,
                         causal: bool) -> dict:
     pattern = r"^[^\n]*\bPortCeEditorFilterSave\([^\n;]*\);[^\n]*"
-    declaration = re.search(pattern, career, re.M)
+    declaration = re.search(pattern, hooks_text, re.M)
     header = re.search(pattern, (ROOT / "port/game/ce_editor.h").read_text(), re.M)
     if not declaration or not header:
         raise ValueError("serializer callback declaration is missing")
@@ -161,7 +164,7 @@ def main() -> int:
             shutil.copyfile(path, folder / path.name)
         return folder
 
-    linkage = declaration_linkage(out, career, compiler, environment, args.causal_controls)
+    linkage = declaration_linkage(out, (ROOT / "port/game/ce_hooks.cpp").read_text(), compiler, environment, args.causal_controls)
     baseline = compile_run(out, CASES)
     baseline_passed = linkage["passed"] and baseline["compiled"] and all(
         value["exit"] == 0 for value in baseline["cases"].values()) and len(baseline["cases"]) == len(CASES)
@@ -205,7 +208,7 @@ def main() -> int:
             controls[name] = result
         folder = copy_fixture("serializer-hook-removed")
         path = folder / "editor-career-save.private.inc"
-        path.write_text(replace_once(path.read_text(), "PortCeEditorFilterSave(this, dest);", ""))
+        path.write_text(replace_once(path.read_text(), "ce_hook_save_gate(CE_SAVE_CAREER, this, dest, sizeof(CCareer));", ""))
         result = compile_run(folder, CASES)
         result["killed"] = result["compiled"] and any(
             item["behavior_failure"] for item in result["cases"].values())
@@ -262,10 +265,11 @@ def main() -> int:
     passed = baseline_passed and all(item["killed"] for item in controls.values()) and (
         not composition["requested"] or composition.get("passed", False))
     inputs = [source, project, Path(__file__), driver, ROOT / "port/game/ce_editor.h",
+              ROOT / "port/game/ce_hooks.cpp",
               ROOT / "port/tools/tests/ce_editor_lifecycle_driver.cpp",
               ROOT / "port/tools/tests/ce_editor_playtest_driver.cpp",
               ROOT / "port/tools/tests/ce_editor_save_fixture.h",
-              ROOT / "port/patches/0222-ce-editor-save-fence.patch"]
+              ROOT / "port/patches/0313-ce-hook-save-gate.patch"]
     receipt = {"passed": passed, "scope": "Actual i386 career serializers and editor lifecycle; authored data only",
                "baseline": baseline, "causal_controls": controls, "composition": composition,
                "declaration_linkage": linkage,

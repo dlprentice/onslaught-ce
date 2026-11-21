@@ -2,8 +2,7 @@
 // port/game/ce_hooks.cpp: the CE hook points (ce_hooks.h) and their one handler table. Every build compiles this file;
 // without CE_VERSION each point is an empty function. With CE_VERSION each point runs the rows of its table by its
 // dispatch (ce_hooks_dispatch.h): a row's slot orders it, a row runs only while its gate is open and its mode active, and
-// the table is checked while compiling (CE_HOOK_CHECK) and by port/tools/ce_hooks_tests.py. No handler is registered
-// yet: every point returns at once and the game runs as it did before the points existed.
+// the table is checked while compiling (CE_HOOK_CHECK) and by port/tools/ce_hooks_tests.py.
 #include "ce_hooks.h"
 #include "ce_hooks_dispatch.h"
 
@@ -23,6 +22,51 @@ typedef void (*CeHookAudioFn)(CeHookAudioEvent event, unsigned bytes);
 typedef CCamera *(*CeHookCameraFn)(CCamera *camera, int viewpoint, CPlayer *player);
 typedef CBattleEngine *(*CeHookFocusFn)(CBattleEngine *be, CPlayer *player);
 
+// Handlers owned by port/game/ce_*.cpp and dispatched from the table below.
+void			PortCeGamepadBeginCycle();									// ce_gamepad.cpp (tick_pre)
+void			PortCePaletteClose();										// ce_palette.cpp (level_end)
+void			PortCeConsoleLevelEnd();									// ce_palette.cpp (level_end)
+void			PortCePhotoLevelEnd();										// ce_photo.cpp (level_end)
+void			PortCeCmdLevelEnd();										// ce_cmdmap.cpp (level_end)
+bool			PortCePhotoKey(unsigned key, bool repeat);					// ce_photo.cpp (key_capture)
+bool			PortCePaletteSuppressDown(unsigned key);					// ce_palette.cpp (key_capture)
+bool			PortCePaletteOpen(unsigned key, bool repeat);				// ce_palette.cpp (key_capture)
+bool			PortCeCmdKey(unsigned key, bool repeat);					// ce_cmdmap.cpp (key_capture)
+void			PortCeEditorRender();										// ce_editor.cpp (draw_overlay)
+extern "C" void	PortCeEditorFilterSave(CCareer *career, void *dest);		// ce_editor.cpp (save_gate)
+void			PortCeBonusFilterSave(CCareer *career, void *dest);			// ce_bonus.cpp (save_gate)
+extern "C" void	PortCeMuseumVisitFilterSave(CCareer *career, void *dest);	// ce_museum_visit_engine.cpp (save_gate)
+CCamera			*PortCeCmdRenderCamera(CCamera *camera, CPlayer *player);	// ce_cmdmap.cpp (render_camera)
+CCamera			*PortCePlayUnitRenderCamera(CCamera *camera, CPlayer *player); // ce_playunit.cpp (render_camera)
+
+static void CeHookGamepadBeginCycle() { PortCeGamepadBeginCycle(); }
+static void CeHookPaletteLevelEnd(int, int) { PortCePaletteClose(); }
+static void CeHookConsoleLevelEnd(int, int) { PortCeConsoleLevelEnd(); }
+static void CeHookPhotoLevelEnd(int, int) { PortCePhotoLevelEnd(); }
+static void CeHookCmdLevelEnd(int, int) { PortCeCmdLevelEnd(); }
+static bool CeHookPhotoKey(unsigned char key, bool repeat) { return PortCePhotoKey(key, repeat); }
+static bool CeHookPaletteSuppressDown(unsigned char key, bool) { return PortCePaletteSuppressDown(key); }
+static bool CeHookPaletteOpen(unsigned char key, bool repeat) { return PortCePaletteOpen(key, repeat); }
+static bool CeHookCmdKey(unsigned char key, bool repeat) { return PortCeCmdKey(key, repeat); }
+static void CeHookEditorRender() { PortCeEditorRender(); }
+static void CeHookEditorSave(CeHookSaveTarget target, CCareer *career, char *dest, int)
+{
+	if (target == CE_SAVE_CAREER)
+		PortCeEditorFilterSave(career, dest);
+}
+static void CeHookBonusSave(CeHookSaveTarget target, CCareer *career, char *dest, int)
+{
+	if (target == CE_SAVE_CAREER)
+		PortCeBonusFilterSave(career, dest);
+}
+static void CeHookMuseumVisitSave(CeHookSaveTarget target, CCareer *career, char *dest, int)
+{
+	if (target == CE_SAVE_CAREER)
+		PortCeMuseumVisitFilterSave(career, dest);
+}
+static CCamera *CeHookCmdRenderCamera(CCamera *camera, int, CPlayer *player) { return PortCeCmdRenderCamera(camera, player); }
+static CCamera *CeHookPlayUnitRenderCamera(CCamera *camera, int, CPlayer *player) { return PortCePlayUnitRenderCamera(camera, player); }
+
 // ---- the table: per point, its handlers in the order they run ----
 // A row: {slot, "name", CE_HOOK_SIM or CE_HOOK_RENDER, CE_GATE_VERSION or CE_GATE_LAYER, CE_MODE_..., function},
 // slots ascending (leave gaps, 10 20 30, so a later handler can go between two).
@@ -39,10 +83,15 @@ static constexpr CeHookRow<CeHookLevelBeginFn> kLevelBegin[] = {
 };
 CE_HOOK_CHECK(kLevelBegin, CE_HOOK_SIM, CE_DISPATCH_ORDERED_BROADCAST, "level_begin");
 static constexpr CeHookRow<CeHookLevelEndFn> kLevelEnd[] = {
+	{10, "palette_close", CE_HOOK_SIM, CE_GATE_VERSION, CE_MODE_NONE, CeHookPaletteLevelEnd},
+	{20, "console_level_end", CE_HOOK_SIM, CE_GATE_VERSION, CE_MODE_NONE, CeHookConsoleLevelEnd},
+	{30, "photo_level_end", CE_HOOK_SIM, CE_GATE_VERSION, CE_MODE_NONE, CeHookPhotoLevelEnd},
+	{40, "commander_level_end", CE_HOOK_SIM, CE_GATE_VERSION, CE_MODE_NONE, CeHookCmdLevelEnd},
 	CE_HOOK_END
 };
 CE_HOOK_CHECK(kLevelEnd, CE_HOOK_SIM, CE_DISPATCH_ORDERED_BROADCAST, "level_end");
 static constexpr CeHookRow<CeHookVoidFn> kTickPre[] = {
+	{10, "gamepad_cycle", CE_HOOK_SIM, CE_GATE_VERSION, CE_MODE_NONE, CeHookGamepadBeginCycle},
 	CE_HOOK_END
 };
 CE_HOOK_CHECK(kTickPre, CE_HOOK_SIM, CE_DISPATCH_ORDERED_BROADCAST, "tick_pre");
@@ -57,6 +106,10 @@ static constexpr CeHookRow<CeHookInputFn> kInputActions[] = {
 };
 CE_HOOK_CHECK(kInputActions, CE_HOOK_SIM, CE_DISPATCH_ORDERED_BROADCAST, "input_actions");
 static constexpr CeHookRow<CeHookKeyFn> kKeyCapture[] = {
+	{10, "photo_key", CE_HOOK_RENDER, CE_GATE_VERSION, CE_MODE_NONE, CeHookPhotoKey},
+	{20, "palette_suppress_down", CE_HOOK_RENDER, CE_GATE_VERSION, CE_MODE_NONE, CeHookPaletteSuppressDown},
+	{30, "palette_open", CE_HOOK_RENDER, CE_GATE_VERSION, CE_MODE_NONE, CeHookPaletteOpen},
+	{40, "commander_key", CE_HOOK_RENDER, CE_GATE_VERSION, CE_MODE_NONE, CeHookCmdKey},
 	CE_HOOK_END
 };
 CE_HOOK_CHECK(kKeyCapture, CE_HOOK_RENDER, CE_DISPATCH_FIRST_MATCH, "key_capture");
@@ -69,6 +122,7 @@ static constexpr CeHookRow<CeHookViewFn> kDrawHud[] = {
 };
 CE_HOOK_CHECK(kDrawHud, CE_HOOK_RENDER, CE_DISPATCH_ORDERED_BROADCAST, "draw_hud");
 static constexpr CeHookRow<CeHookVoidFn> kDrawOverlay[] = {
+	{10, "editor_overlay", CE_HOOK_RENDER, CE_GATE_VERSION, CE_MODE_NONE, CeHookEditorRender},
 	CE_HOOK_END
 };
 CE_HOOK_CHECK(kDrawOverlay, CE_HOOK_RENDER, CE_DISPATCH_ORDERED_BROADCAST, "draw_overlay");
@@ -76,8 +130,11 @@ static constexpr CeHookRow<CeHookMenuFn> kMenuRows[] = {
 	CE_HOOK_END
 };
 CE_HOOK_CHECK(kMenuRows, CE_HOOK_RENDER, CE_DISPATCH_POSITIONAL_INSERT, "menu_rows");
-// save_gate, in today's order when its handlers move here: editor (patch 0222), bonus level (0181), museum visit (0279).
+// save_gate: editor, bonus level, museum visit, in the order their career filters ran in CCareer::Save.
 static constexpr CeHookRow<CeHookSaveFn> kSaveGate[] = {
+	{10, "editor_save", CE_HOOK_SIM, CE_GATE_VERSION, CE_MODE_NONE, CeHookEditorSave},
+	{20, "bonus_save", CE_HOOK_SIM, CE_GATE_VERSION, CE_MODE_NONE, CeHookBonusSave},
+	{30, "museum_visit_save", CE_HOOK_SIM, CE_GATE_VERSION, CE_MODE_NONE, CeHookMuseumVisitSave},
 	CE_HOOK_END
 };
 CE_HOOK_CHECK(kSaveGate, CE_HOOK_SIM, CE_DISPATCH_FILTER, "save_gate");
@@ -86,8 +143,10 @@ static constexpr CeHookRow<CeHookAudioFn> kAudioClock[] = {
 };
 CE_HOOK_CHECK(kAudioClock, CE_HOOK_RENDER, CE_DISPATCH_ORDERED_BROADCAST, "audio_clock");
 static_assert(CeHookWorkerSafe(kAudioClock), "audio_clock: a handler may run on the music worker thread: CE_GATE_VERSION and CE_MODE_NONE only");
-// render_camera, in today's order when its handlers move here: commander (patch 0200), then play-unit.
+// render_camera: commander, then play-unit, in the order their camera overrides ran in CEngine::SetViewpoint.
 static constexpr CeHookRow<CeHookCameraFn> kRenderCamera[] = {
+	{10, "commander_camera", CE_HOOK_SIM, CE_GATE_VERSION, CE_MODE_NONE, CeHookCmdRenderCamera},
+	{20, "playunit_camera", CE_HOOK_SIM, CE_GATE_VERSION, CE_MODE_NONE, CeHookPlayUnitRenderCamera},
 	CE_HOOK_END
 };
 CE_HOOK_CHECK(kRenderCamera, CE_HOOK_SIM, CE_DISPATCH_OVERRIDE_CHAIN, "render_camera");

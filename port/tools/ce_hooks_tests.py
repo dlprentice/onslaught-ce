@@ -72,7 +72,7 @@ DISPATCH = {
     "draw_world": "ORDERED_BROADCAST", "draw_hud": "ORDERED_BROADCAST", "draw_overlay": "ORDERED_BROADCAST",
     "menu_rows": "POSITIONAL_INSERT", "save_gate": "FILTER", "audio_clock": "ORDERED_BROADCAST", "render_camera": "OVERRIDE_CHAIN",
     "hud_focus": "OVERRIDE_CHAIN"}
-DEPENDS = {("0314-ce-hook-audio-clock", "0062-music-finished-poll")}
+DEPENDS = {("0314-ce-hook-audio-clock", "0062-music-finished-poll"), ("0313-ce-hook-save-gate", "0052-ce-god-not-saved-Career")}
 SITE_FILES = sorted({f for _, sites in SITES.values() for f, _, _ in sites})
 TABLE = re.compile(r"static constexpr CeHookRow<\w+> (k\w+)\[\] = \{(.*?)\n\s*CE_HOOK_END\n\};\nCE_HOOK_CHECK\(\1, CE_HOOK_(SIM|RENDER), CE_DISPATCH_(\w+), \"(\w+)\"\);", re.S)
 ROW = re.compile(r"\{\s*(-?\d+)\s*,\s*\"([^\"]+)\"\s*,\s*CE_HOOK_(\w+)\s*,\s*CE_GATE_(\w+)\s*,\s*CE_MODE_(\w+)\s*,\s*(\w+)\s*\}")
@@ -180,12 +180,12 @@ def mutate_table(text, point, rows):
 
 
 TABLE_MUTANTS = {  # name: (point, rows, the problem text expected)
-    "two handlers in one slot": ("tick_pre", '\t{10, "a", CE_HOOK_SIM, CE_GATE_VERSION, CE_MODE_NONE, CeHookMutant},\n'
-                                             '\t{10, "b", CE_HOOK_SIM, CE_GATE_VERSION, CE_MODE_NONE, CeHookMutant2},', "two handlers claim one slot"),
-    "slots out of order": ("tick_pre", '\t{20, "a", CE_HOOK_SIM, CE_GATE_VERSION, CE_MODE_NONE, CeHookMutant},\n'
-                                       '\t{10, "b", CE_HOOK_SIM, CE_GATE_VERSION, CE_MODE_NONE, CeHookMutant2},', "out of order"),
-    "a RENDER handler on a SIM point": ("tick_pre", '\t{10, "a", CE_HOOK_RENDER, CE_GATE_VERSION, CE_MODE_NONE, CeHookMutant},', "is RENDER on a SIM point"),
-    "a SIM handler on a RENDER point": ("draw_overlay", '\t{10, "a", CE_HOOK_SIM, CE_GATE_VERSION, CE_MODE_NONE, CeHookMutant},', "is SIM on a RENDER point"),
+    "two handlers in one slot": ("tick_pre", '\t{90, "a", CE_HOOK_SIM, CE_GATE_VERSION, CE_MODE_NONE, CeHookMutant},\n'
+                                             '\t{90, "b", CE_HOOK_SIM, CE_GATE_VERSION, CE_MODE_NONE, CeHookMutant2},', "two handlers claim one slot"),
+    "slots out of order": ("tick_pre", '\t{95, "a", CE_HOOK_SIM, CE_GATE_VERSION, CE_MODE_NONE, CeHookMutant},\n'
+                                       '\t{90, "b", CE_HOOK_SIM, CE_GATE_VERSION, CE_MODE_NONE, CeHookMutant2},', "out of order"),
+    "a RENDER handler on a SIM point": ("tick_pre", '\t{90, "a", CE_HOOK_RENDER, CE_GATE_VERSION, CE_MODE_NONE, CeHookMutant},', "is RENDER on a SIM point"),
+    "a SIM handler on a RENDER point": ("draw_overlay", '\t{90, "a", CE_HOOK_SIM, CE_GATE_VERSION, CE_MODE_NONE, CeHookMutant},', "is SIM on a RENDER point"),
 }
 
 
@@ -238,17 +238,41 @@ class TableTests(unittest.TestCase):
 #include "ce_hooks.h"
 #include "ce_hooks_dispatch.h"
 #include <cstdio>
+#include <string>
+#ifdef CE_VERSION
+static std::string gCalls;
+static unsigned gConsumeKey = 0;
+void PortCeGamepadBeginCycle() { gCalls += "gamepad;"; }
+void PortCePaletteClose() { gCalls += "palette_end;"; }
+void PortCeConsoleLevelEnd() { gCalls += "console_end;"; }
+void PortCePhotoLevelEnd() { gCalls += "photo_end;"; }
+void PortCeCmdLevelEnd() { gCalls += "cmd_end;"; }
+bool PortCePhotoKey(unsigned key, bool) { gCalls += "photo_key;"; return key == gConsumeKey && key == 1; }
+bool PortCePaletteSuppressDown(unsigned key) { gCalls += "pal_sup;"; return key == gConsumeKey && key == 2; }
+bool PortCePaletteOpen(unsigned key, bool) { gCalls += "pal_open;"; return key == gConsumeKey && key == 3; }
+bool PortCeCmdKey(unsigned key, bool) { gCalls += "cmd_key;"; return key == gConsumeKey && key == 4; }
+void PortCeEditorRender() { gCalls += "editor_overlay;"; }
+extern "C" void PortCeEditorFilterSave(CCareer *, void *) { gCalls += "editor_save;"; }
+void PortCeBonusFilterSave(CCareer *, void *) { gCalls += "bonus_save;"; }
+extern "C" void PortCeMuseumVisitFilterSave(CCareer *, void *) { gCalls += "museum_save;"; }
+CCamera *PortCeCmdRenderCamera(CCamera *c, CPlayer *) { gCalls += "cmd_cam;"; return c; }
+CCamera *PortCePlayUnitRenderCamera(CCamera *c, CPlayer *) { gCalls += "playunit_cam;"; return c; }
+#endif
 int main() {
     ce_hook_boot(); ce_hook_exit(CE_EXIT_SHELL); ce_hook_exit(CE_EXIT_ATEXIT); ce_hook_level_begin(100); ce_hook_level_end(100, 0);
     ce_hook_tick_pre(); ce_hook_tick_post(); CeHookCommand command = {1, 2, 3, 0, 0, 0}; ce_hook_input_actions(nullptr, 0); ce_hook_draw_world(nullptr, 0); ce_hook_draw_hud(nullptr, 0);
     ce_hook_draw_overlay(); CeMenuPage page = {CE_MENU_PAUSE_LIST, -1, nullptr, nullptr, nullptr, -1}; ce_hook_menu_rows(CE_MENU_BUILD, &page);
     char buffer[8] = {1, 2, 3, 4, 5, 6, 7, 8}; ce_hook_save_gate(CE_SAVE_CAREER, nullptr, buffer, 8);
+    ce_hook_save_gate(CE_SAVE_OPTIONS_FILE, nullptr, buffer, 8);
     ce_hook_audio_clock(CE_AUDIO_REFILL, 4096);
     for (int i = 0; i < 8; i++) if (buffer[i] != i + 1) return 2;
     if (ce_hook_key_capture(0x57, false)) return 3;
     CCamera *camera = reinterpret_cast<CCamera *>(&page); if (ce_hook_render_camera(0, camera, nullptr) != camera) return 4;
     CBattleEngine *be = reinterpret_cast<CBattleEngine *>(buffer); if (ce_hook_hud_focus(nullptr, be) != be) return 5;
 #ifdef CE_VERSION
+    if (gCalls != "palette_end;console_end;photo_end;cmd_end;gamepad;editor_overlay;editor_save;bonus_save;museum_save;photo_key;pal_sup;pal_open;cmd_key;cmd_cam;playunit_cam;") return 10;
+    gCalls.clear(); gConsumeKey = 2;
+    if (!ce_hook_key_capture(2, false) || gCalls != "photo_key;pal_sup;") return 11;
     if (!ce_hook_command_push(command)) return 6;
     ce_hook_tick_post();   // applied (to no handler) and emptied
     for (int i = 0; i < CE_HOOK_COMMANDS; i++) if (!ce_hook_command_push(command)) return 7;
@@ -312,37 +336,44 @@ class SiteTests(unittest.TestCase):
         self.assertEqual(places, sorted(places), f"{name}: {tokens}")
 
     def test_each_call_keeps_todays_order(self):
-        self.order("Career.cpp", "PortCeCareerSaving(this)", "memcpy(dest, this, sizeof(CCareer));", "PortCeEditorFilterSave(this, dest);",
-                   "PortCeBonusFilterSave(this, dest);", "PortCeMuseumVisitFilterSave(this, dest);", "ce_hook_save_gate(CE_SAVE_CAREER",
+        rows = table(HOOKS.read_text())
+        self.order("Career.cpp", "PortCeCareerSaving(this)", "memcpy(dest, this, sizeof(CCareer));", "ce_hook_save_gate(CE_SAVE_CAREER",
                    "SetIsGod(0, portGod0);")
-        self.order("ltshell.cpp", "PortCePaletteOpen(key", "PortCeCmdKey(key", "ce_hook_key_capture(", "mCurrentKeytrap(key,KEY_EVENT_DOWN)")
+        self.assertEqual([h[1] for h in rows["save_gate"][2]], ["editor_save", "bonus_save", "museum_visit_save"])
+        self.order("ltshell.cpp", "PortCeEditorKey(key", "ce_hook_key_capture(", "mCurrentKeytrap(key,KEY_EVENT_DOWN)")
+        self.assertEqual([h[1] for h in rows["key_capture"][2]], ["photo_key", "palette_suppress_down", "palette_open", "commander_key"])
         self.order("ltshell.cpp", "CE_BootStart()", "MEM_MANAGER.Init(", "LT.mhInstance=hInstance;", "ce_hook_boot();", "PortCeGraphicsOptionsOpened(")
         self.order("ltshell.cpp", "if (!sMemoryManagerReady)", "ce_hook_exit(CE_EXIT_ATEXIT)", "PATCHMANAGER.FreeData();")
         self.order("ltshell.cpp", "ce_hook_exit(CE_EXIT_SHELL)", "PortSessionSummary();\n#ifdef CE_NETWORK_OFF")
-        self.order("game.cpp", "\tPortCeEditorLevelEnd();\n", "\tPortCeCmdLevelEnd();\t", "ce_hook_level_end(", "\t\tMUSIC.Stop();\n\n\t// we don")
-        self.order("game.cpp", "{ PORT_UPDATE_HOOK();", "PortCeGamepadBeginCycle();\n#endif\n\tce_hook_tick_pre();", "\tce_hook_tick_post();", "void\tCGame::PreRun()")
+        self.order("game.cpp", "\tPortCeEditorLevelEnd();\n", "\tPortCeMuseumVisitLevelEnd();\n", "ce_hook_level_end(", "\t\tMUSIC.Stop();\n\n\t// we don")
+        self.assertEqual([h[1] for h in rows["level_end"][2]], ["palette_close", "console_level_end", "photo_level_end", "commander_level_end"])
+        self.order("game.cpp", "{ PORT_UPDATE_HOOK();", "\tce_hook_tick_pre();", "\tce_hook_tick_post();", "void\tCGame::PreRun()")
+        self.assertEqual([h[1] for h in rows["tick_pre"][2]], ["gamepad_cycle"])
         self.order("game.cpp", "PortCeGamepadBeginCycle();\n#endif\n\t\tmController[0]->Flush();", "ce_hook_level_begin(aLevel);", "CE_SessionPreparePlay()")
         self.order("Controller.cpp", "PortCeDodgeAssistEnd(this", "ce_hook_input_actions(this, pad);", "RecordControllerState() ;\n\t}")
         # the hall draw runs earlier in Render than draw_fairly_late_stuff, which Render calls at its end
         self.order("DXEngine.cpp", "PortCeMuseumHallDraw();\t//", "draw_fairly_late_stuff(mPlayer[mCurrentViewpoint], viewpoint);")
         self.order("DXEngine.cpp", "RENDERINFO.GetProjection(&ENGINE.mProjectionMatrices[viewpoint]);",
                    "ce_hook_draw_world(", "be->GetCockpit()->Render()", "SCREENFX.Render();")
-        self.order("DXEngine.cpp", "PortCePaletteRender();", "PortCeNoticeRender();", "PortCeCmdRender();\t//", "PortCeEditorRender();",
+        self.order("DXEngine.cpp", "PortCePaletteRender();", "PortCeNoticeRender();", "PortCeCmdRender();\t//",
                    "ce_hook_draw_overlay();", "PLATFORM.EndScene();\n\n\tmFirstFrame")
+        self.assertEqual([h[1] for h in rows["draw_overlay"][2]], ["editor_overlay"])
         self.order("Hud.cpp", "if (PortCeCmdHideCockpit()) return;", "RenderRadar(96.f);", "ce_hook_draw_hud(")
         self.order("PauseMenu.cpp", "PortCePhotoItem()", "CMenuItem((DWORD)GI_QUIT, 2));\n#ifdef", "CE_MENU_PAUSE_LIST", "mLists.Append(list);\n\n\t// the controls",
                    "PortCeOptionsMenu(this, true);", "CE_MENU_PAUSE_OPTIONS")
         self.order("FrontEnd.cpp", "mPages[FEP_LANGUAGE_TEST] = PortCePage();", "CE_MENU_FRONTEND_PAGES", "// Initialise all pages")
-        self.order("engine.cpp", "PortCeCmdRenderCamera(camera, player);", "PortCePlayUnitRenderCamera(camera, player);", "ce_hook_render_camera(")
+        self.order("engine.cpp", "ce_hook_render_camera(", "memcpy(&mViewport[viewpoint]")
+        self.assertEqual([h[1] for h in rows["render_camera"][2]], ["commander_camera", "playunit_camera"])
         self.order("PCMusicStream.cpp", "PortAudioPublishMusicHalf(", "PortRefillReport(offset,portRefillBefore);", "\t\t\tsBytesStreamed += size1;\n\t\t\tce_hook_audio_clock(CE_AUDIO_REFILL", "\t\t\tbreak;\n\n\t\t}\n\t\tcase 3:")
 
     def test_the_order_check_catches_a_moved_call(self):
-        moved = self.texts["Career.cpp"].replace("\tce_hook_save_gate(CE_SAVE_CAREER, this, dest, sizeof(CCareer));", "", 1).replace(
-            "\tPortCeEditorFilterSave(this, dest);", "\tce_hook_save_gate(CE_SAVE_CAREER, this, dest, sizeof(CCareer));\n\tPortCeEditorFilterSave(this, dest);", 1)
+        call = "\tce_hook_save_gate(CE_SAVE_CAREER, this, dest, sizeof(CCareer));\t// CE hook point (port/game/ce_hooks.h): after the career copy, before the god flags return\n"
+        moved = self.texts["Career.cpp"].replace(call, "", 1).replace(
+            "\tSetIsGod(0, portGod0);\n", "\tSetIsGod(0, portGod0);\n" + call, 1)
         saved, self.texts["Career.cpp"] = self.texts["Career.cpp"], moved
         try:
             with self.assertRaises(AssertionError):
-                self.order("Career.cpp", "PortCeEditorFilterSave(this, dest);", "PortCeMuseumVisitFilterSave(this, dest);", "ce_hook_save_gate(CE_SAVE_CAREER")
+                self.order("Career.cpp", "memcpy(dest, this, sizeof(CCareer));", "ce_hook_save_gate(CE_SAVE_CAREER", "SetIsGod(0, portGod0);")
         finally:
             self.texts["Career.cpp"] = saved
 
@@ -555,8 +586,10 @@ class SaveHazardTests(unittest.TestCase):
             body = body[:body.index("\n}\n")]
             self.assertIn(write, body, f"{path}: the filter no longer writes a whole snapshot (re-read the hazard)")
         text = build.patched_text(["Career.cpp"])["Career.cpp"]
-        places = [text.index(f"{name}(this, dest);") for name in ("PortCeEditorFilterSave", "PortCeBonusFilterSave", "PortCeMuseumVisitFilterSave")]
-        self.assertEqual(places, sorted(places))
+        self.assertLess(text.index("memcpy(dest, this, sizeof(CCareer));"), text.index("ce_hook_save_gate(CE_SAVE_CAREER, this, dest, sizeof(CCareer));"))
+        self.assertLess(text.index("ce_hook_save_gate(CE_SAVE_CAREER, this, dest, sizeof(CCareer));"), text.index("SetIsGod(0, portGod0);"))
+        rows = table(HOOKS.read_text())["save_gate"][2]
+        self.assertEqual([h[5] for h in rows], ["CeHookEditorSave", "CeHookBonusSave", "CeHookMuseumVisitSave"])
 
     @unittest.expectedFailure
     def test_two_active_filters_keep_both_snapshots(self):

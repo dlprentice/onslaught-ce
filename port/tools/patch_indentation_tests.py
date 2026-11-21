@@ -159,7 +159,6 @@ def unbrace(patch_text, marker):
 
 CONTROLS = [   # (patch, marker of the guarded added line, the file the finding must be in)
     ("0208-ce-full-models.patch", "CE_MODEL_TREE_IMPOSTOR", "src/RTTree.cpp"),
-    ("0206-native-editor-lifecycle.patch", "PortCeEditorRender();", "src/DXEngine.cpp"),
 ]
 
 

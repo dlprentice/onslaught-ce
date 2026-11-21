@@ -1,6 +1,6 @@
 // Exercise the production serializer and editor lifecycle with authored data.
 #include "editor-playtest-driver.private.inc"
-#include "ce_hooks_host_stubs.h"	// the patched career serializer calls the CE hook points; their host no-ops
+#include "ce_hooks.h"	// the patched career serializer dispatches save filters through port/game/ce_hooks.cpp
 #include "ce_editor_save_fixture.h"
 
 static void ChangeCareer(int generation) {

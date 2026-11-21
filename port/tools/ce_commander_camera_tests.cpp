@@ -523,6 +523,7 @@ float gKeptCentreX = 0, gKeptCentreY = 0, gKeptSpan = 0;
 char gNote[256] = {};
 unsigned gNoteUntil = 0;
 unsigned gNoteAtUntil = 0;
+static bool gCockpitPass = false;
 bool StrategicLive();
 float gNoteAtX = -1.f, gNoteAtY = -1.f;
 bool gNoteNotYet = false;
@@ -689,6 +690,20 @@ bool StrategicLive() { return false; }
 bool CeCmdUnitOrderRead(const CeCommandLifetimeKey&, CeCmdUnitOrderView*) { return false; }
 #undef min
 #undef max
+#include "ce_hooks.h"
+// Non-camera hook handlers referenced by port/game/ce_hooks.cpp (not exercised by this camera driver).
+bool PortCeLayer() { return true; }
+void PortCeGamepadBeginCycle() {}
+void PortCePaletteClose() {}
+void PortCeConsoleLevelEnd() {}
+void PortCePhotoLevelEnd() {}
+bool PortCePhotoKey(unsigned, bool) { return false; }
+bool PortCePaletteSuppressDown(unsigned) { return false; }
+bool PortCePaletteOpen(unsigned, bool) { return false; }
+void PortCeEditorRender() {}
+extern "C" void PortCeEditorFilterSave(CCareer *, void *) {}
+void PortCeBonusFilterSave(CCareer *, void *) {}
+extern "C" void PortCeMuseumVisitFilterSave(CCareer *, void *) {}
 
 CCamera* PresentationCamera(CCamera* camera, CPlayer* player) {
     (void)player;

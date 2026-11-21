@@ -200,7 +200,7 @@ def map_live_view_violations(text):
 
 # The Commander's entries into the game's own code, by patch: the key, the drawing after the frame, the frame and level-end calls, and the presentation hook
 # that hands its camera back. A patch that gives it another (an entry into the render above all) fails here until this list is changed on purpose.
-COMMANDER_ENTRIES = {'PortCeCmdFrame', 'PortCeCmdHideCockpit', 'PortCeCmdKey', 'PortCeCmdLevelEnd', 'PortCeCmdRender', 'PortCeCmdRenderCamera', 'PortCeCmdWorldViewToken', 'PortCeCmdThingGone', 'PortCeCmdGuidePoint'}
+COMMANDER_ENTRIES = {'PortCeCmdFrame', 'PortCeCmdHideCockpit', 'PortCeCmdKey', 'PortCeCmdLevelEnd', 'PortCeCmdRender', 'PortCeCmdRenderCamera', 'PortCeCmdRenderWorld', 'PortCeCmdWorldViewToken', 'PortCeCmdThingGone', 'PortCeCmdGuidePoint'}
 
 
 def commander_entries(patch_texts):
@@ -304,7 +304,9 @@ def check_keys(map_text):
         "its auto-repeats do not reach the game (they would open the pause menu), and a new press does"
 
 
-def check_placement(files):
+def check_placement(files, hooks_text=None):
+    if hooks_text is None:
+        hooks_text = (ROOT / "port/game/ce_hooks.cpp").read_text()
     relaxed = function(files["SquadRelaxed.cpp"], "void CRelaxedSquad::Unknown66(")
     hook = relaxed.index("int ceOrder = CeCommanderRelaxed(this, &mPos);")
     assert relaxed.index("mPos += d;") < hook < relaxed.index("ListIterator<CActiveReader<CUnit> >\tit(&mMembers);"), \
@@ -315,13 +317,14 @@ def check_placement(files):
     merge = function(files["SquadNormal.cpp"], "inline BOOL CNormalSquad::CanMerge()")
     assert re.match(r"inline BOOL CNormalSquad::CanMerge\(\)\n\{\n#ifdef CE_VERSION\n\tif \(CeCommanderNoMerge\(this\)\)[^\n]*\n\t\treturn FALSE;\n#endif\n\tif \(mUnknown10C > 0",
                     merge), "the merge guard is the first statement of CanMerge"
-    # patch 0162: the map's key goes at the end of the CE key chain (after photo mode's and the console's), before the key trap sees the key
+    # key_capture: the map's key goes at the end of the CE key chain (after photo mode's and the console's), before the key trap sees the key
     keys = files["ltshell.cpp"]
-    photo = keys.index("if (PortCePhotoKey(key,")
-    cmd = keys.index("else if (PortCeCmdKey(key, (lParam & 0x40000000) != 0)) {}", photo)
-    assert photo < keys.index("else if (PortCePaletteSuppressDown(key))", photo) < keys.index("else if (PortCePaletteOpen(key,", photo) < cmd < keys.index("if (mCurrentKeytrap)", photo), \
+    keydown = keys[keys.index("if( WM_KEYDOWN == uMsg )"):keys.index("WM_KEYUP == uMsg")]
+    hook_key = keydown.index("if (ce_hook_key_capture(key, (lParam & 0x40000000) != 0)) {}")
+    assert hook_key < keydown.index("if (mCurrentKeytrap)"), "the CE key hook runs before the key trap"
+    key_table = hooks_text[hooks_text.index("kKeyCapture[]"):hooks_text.index("CE_HOOK_CHECK(kKeyCapture")]
+    assert key_table.index("CeHookPhotoKey") < key_table.index("CeHookPaletteSuppressDown") < key_table.index("CeHookPaletteOpen") < key_table.index("CeHookCmdKey"), \
         "the map's open key is taken after photo mode's and the console's and before the key trap"
-    assert keys.count("PortCeCmdKey(") == 2, "one declaration and one call"
     engine = files["DXEngine.cpp"]
     # The CE hook point draw_overlay (patch 0311, port/game/ce_hooks.h) may sit between the map and EndScene: it runs after
     # every CE overlay, the map included, by design (HOOK-MAP section 2.9).
@@ -330,8 +333,10 @@ def check_placement(files):
     assert engine.count("PortCeCmdRender(") == 2, "one declaration and one call"
     game = files["game.cpp"]
     assert re.search(r"\tPortCePhotoFrame\(\);[^\n]*\n\tPortCeCmdFrame\(\);[^\n]*\n#endif\n", game), "the map's frame call follows photo mode's"
-    assert re.search(r"\tPortCePhotoLevelEnd\(\);[^\n]*\n\tPortCeCmdLevelEnd\(\);[^\n]*\n#endif\n", game), "the map closes after photo mode ends, before anything is freed"
-    assert game.count("PortCeCmdFrame(") == 2 and game.count("PortCeCmdLevelEnd(") == 2, "one declaration and one call each"
+    assert "ce_hook_level_end(" in function(game, "void\tCGame::ShutdownRestartLoop()"), "level_end hook is called before anything is freed"
+    end_table = hooks_text[hooks_text.index("kLevelEnd[]"):hooks_text.index("CE_HOOK_CHECK(kLevelEnd")]
+    assert end_table.index("CeHookPhotoLevelEnd") < end_table.index("CeHookCmdLevelEnd"), "the map closes after photo mode ends, before anything is freed"
+    assert game.count("PortCeCmdFrame(") == 2, "one declaration and one call"
 
 
 # The ICE link receipt (build.py, write_ice_link_receipt) marks a test build by reading the defines the build was given; it names this module's among the test builds' and defines nothing.
@@ -374,7 +379,8 @@ class Static(unittest.TestCase):
 
     def test_the_faithful_view_is_the_text_without_the_patches(self):
         for name in FILES:
-            self.assertNotEqual(self.alone[name], self.without[name], f"{name}: the patches change nothing")
+            if name != "ltshell.cpp":
+                self.assertNotEqual(self.alone[name], self.without[name], f"{name}: the patches change nothing")
             self.assertEqual(faithful(self.alone[name]), faithful(self.without[name]), f"{name}: the faithful build (CE_VERSION undefined) is not the unpatched text")
         self.assertEqual(faithful_differences(self.alone, self.without), [])
 
@@ -524,27 +530,33 @@ class Static(unittest.TestCase):
     def test_no_patch_gives_the_commander_another_entry_into_the_game(self):
         patches = sorted((ROOT / "port/patches").glob("*.patch"))
         texts = [p.read_text(encoding="latin1") for p in patches]
-        self.assertEqual(commander_entries(texts), COMMANDER_ENTRIES)
+        hooks_added = "\n".join("+" + l for l in (ROOT / "port/game/ce_hooks.cpp").read_text().splitlines())
+        self.assertEqual(commander_entries(texts + [hooks_added]), COMMANDER_ENTRIES)
         self.assertFalse([p.name for p in patches if "render-fence" in p.name], "the render fence's patch is gone")
-        # the presentation hook's line is the shared one in CEngine::SetViewpoint, and nothing else of the Commander's is in the engine's or the renderer's files
+        # the presentation hook's line is in ce_hooks.cpp (dispatched from CEngine::SetViewpoint), and nothing else of the Commander's is in the engine's or the renderer's files
         owners = {}
         for patch, text in zip(patches, texts):
             for name, body in sections(text).items():
                 for entry in commander_entries([body]):
                     owners.setdefault(entry, set()).add(name)
-        self.assertEqual(owners["PortCeCmdRenderCamera"], {"engine.cpp"})
+        for entry in commander_entries([hooks_added]):
+            owners.setdefault(entry, set()).add("ce_hooks.cpp")
+        self.assertEqual(owners["PortCeCmdRenderCamera"], {"ce_hooks.cpp"})
+        self.assertEqual(owners["PortCeCmdRenderWorld"], {"DXEngine.cpp"})
+        self.assertEqual(owners["PortCeCmdKey"], {"ce_hooks.cpp"})
+        self.assertEqual(owners["PortCeCmdLevelEnd"], {"ce_hooks.cpp"})
         self.assertEqual(owners["PortCeCmdRender"], {"DXEngine.cpp"})
         self.assertEqual(owners["PortCeCmdHideCockpit"], {"DXEngine.cpp", "Hud.cpp"})
         self.assertEqual(owners["PortCeCmdWorldViewToken"], {"MessageBox.cpp"})
         self.assertEqual(owners["PortCeCmdThingGone"], {"thing.cpp", "Unit.cpp"})
         self.assertEqual(owners["PortCeCmdGuidePoint"], {"Guide.cpp"})
-        self.assertEqual({name for names in owners.values() for name in names}, {'DXEngine.cpp', 'Hud.cpp', 'MessageBox.cpp', 'engine.cpp', 'game.cpp', 'ltshell.cpp', 'thing.cpp', 'Unit.cpp', 'Guide.cpp'})
+        self.assertEqual({name for names in owners.values() for name in names}, {'DXEngine.cpp', 'Hud.cpp', 'MessageBox.cpp', 'ce_hooks.cpp', 'game.cpp', 'thing.cpp', 'Unit.cpp', 'Guide.cpp'})
         with self.subTest(mutant="a hook in the render"):
-            self.assertNotEqual(commander_entries(texts + ["+\tif (!PortCeCmdStrategicPass())\n"]), COMMANDER_ENTRIES)
+            self.assertNotEqual(commander_entries(texts + [hooks_added, "+\tif (!PortCeCmdStrategicPass())\n"]), COMMANDER_ENTRIES)
         with self.subTest(mutant="the picture called from a patch"):
-            self.assertNotEqual(commander_entries(texts + ["+\tCeCmdViewWorld(0, NULL);\n"]), COMMANDER_ENTRIES)
+            self.assertNotEqual(commander_entries(texts + [hooks_added, "+\tCeCmdViewWorld(0, NULL);\n"]), COMMANDER_ENTRIES)
         with self.subTest(mutant="a keep and put back around a render"):
-            self.assertNotEqual(commander_entries(texts + ["+\tCeCmdSaveRenderCaches();\n"]), COMMANDER_ENTRIES)
+            self.assertNotEqual(commander_entries(texts + [hooks_added, "+\tCeCmdSaveRenderCaches();\n"]), COMMANDER_ENTRIES)
 
     def test_the_map_reaches_the_squads_only_through_the_order_layer(self):
         text = MAP.read_text()
@@ -608,16 +620,19 @@ class Mutants(unittest.TestCase):
             check_placement(files)
 
     def test_map_key_before_the_console(self):
-        call = "\t\t\telse if (PortCeCmdKey(key, (lParam & 0x40000000) != 0)) {}\t// patch 0162: the commander map's open key\n"
-        files = self.mutate("ltshell.cpp", call, "")
-        files["ltshell.cpp"] = files["ltshell.cpp"].replace("\t\t\telse if (PortCePaletteSuppressDown(key)) {}\n", call + "\t\t\telse if (PortCePaletteSuppressDown(key)) {}\n", 1)
+        hooks_text = (ROOT / "port/game/ce_hooks.cpp").read_text()
+        row = '\t{40, "commander_key", CE_HOOK_RENDER, CE_GATE_VERSION, CE_MODE_NONE, CeHookCmdKey},\n'
+        target = '\t{20, "palette_suppress_down", CE_HOOK_RENDER, CE_GATE_VERSION, CE_MODE_NONE, CeHookPaletteSuppressDown},\n'
+        self.assertEqual(hooks_text.count(row), 1)
+        mutated = hooks_text.replace(row, "", 1).replace(target, row + target, 1)
         with self.assertRaises((AssertionError, ValueError)):
-            check_placement(files)
+            check_placement(self.files, mutated)
 
     def test_map_key_after_the_key_trap(self):
-        files = self.mutate("ltshell.cpp", "\t\t\telse if (PortCeCmdKey(key, (lParam & 0x40000000) != 0)) {}\t// patch 0162: the commander map's open key\n", "")
-        files["ltshell.cpp"] = files["ltshell.cpp"].replace("\t\t\tif (mCurrentKeytrap)\n\t\t\t{\n\t\t\t\tmCurrentKeytrap(key,KEY_EVENT_DOWN);",
-                                                            "\t\t\tif (PortCeCmdKey(key, false)) {} else\n\t\t\tif (mCurrentKeytrap)\n\t\t\t{\n\t\t\t\tmCurrentKeytrap(key,KEY_EVENT_DOWN);", 1)
+        call = "\t\t\tif (ce_hook_key_capture(key, (lParam & 0x40000000) != 0)) {}\t// CE hook point (port/game/ce_hooks.h): a consumed key goes no further\n\t\t\telse\n"
+        files = self.mutate("ltshell.cpp", call, "")
+        files["ltshell.cpp"] = files["ltshell.cpp"].replace("\t\t\tif (mCurrentKeytrap)\n\t\t\t{\n\t\t\t\tmCurrentKeytrap(key,KEY_EVENT_DOWN);\n\t\t\t}\n",
+                                                            "\t\t\tif (mCurrentKeytrap)\n\t\t\t{\n\t\t\t\tmCurrentKeytrap(key,KEY_EVENT_DOWN);\n\t\t\t}\n" + call, 1)
         with self.assertRaises((AssertionError, ValueError)):
             check_placement(files)
 
@@ -648,16 +663,18 @@ class Mutants(unittest.TestCase):
             check_placement(files)
 
     def test_editor_overlay_after_the_unbraced_mirror_test(self):
-        # patch 0206 as it once was: the editor call after the map's unbraced test, indented as if guarded
-        files = self.mutate("DXEngine.cpp", "\tif (!gMirrorPass)\n\t{\n\t\tPortCeCmdRender();", "\tif (!gMirrorPass)\n\t\tPortCeCmdRender();")
-        files["DXEngine.cpp"] = files["DXEngine.cpp"].replace("\t\tPortCeEditorRender();\n\t}\n", "\t\tPortCeEditorRender();\n", 1)
+        # an extra overlay call placed after the map's unbraced mirror-pass test, indented as if guarded
+        files = self.mutate("DXEngine.cpp", "\tif (!gMirrorPass)\n\t\tPortCeCmdRender();\t// the commander map, over everything else the frame drew\n",
+                            "\tif (!gMirrorPass)\n\t\tPortCeCmdRender();\t// the commander map, over everything else the frame drew\n\t\tPortCeEditorRender();\n")
         with self.assertRaises((AssertionError, ValueError)):
             check_placement(files)
 
     def test_map_not_closed_with_the_level(self):
-        files = self.mutate("game.cpp", "\tPortCeCmdLevelEnd();\t\t// patch 0162: the commander map closes with the level\n", "")
+        hooks_text = (ROOT / "port/game/ce_hooks.cpp").read_text()
+        row = '\t{40, "commander_level_end", CE_HOOK_SIM, CE_GATE_VERSION, CE_MODE_NONE, CeHookCmdLevelEnd},\n'
+        self.assertEqual(hooks_text.count(row), 1)
         with self.assertRaises((AssertionError, ValueError)):
-            check_placement(files)
+            check_placement(self.files, hooks_text.replace(row, "", 1))
 
     def test_an_unguarded_hook_changes_the_faithful_view(self):
         # a hook outside the CE_VERSION conditional is a difference the faithful build would compile
@@ -669,13 +686,10 @@ class Mutants(unittest.TestCase):
         self.assertEqual(faithful_differences(self.alone, self.without), [], "the unmutated trees are equal")
         hooks = (("SquadRelaxed.cpp", r"(?m)^\s*int ceOrder = CeCommanderRelaxed\(this, &mPos\);"),
                  ("SquadNormal.cpp", r"(?m)^\s*if \(CeCommanderNoMerge\(this\)\)"),
-                 ("ltshell.cpp", r"(?m)^\s*else if \(PortCeCmdKey\(key,"),
                  ("DXEngine.cpp", r"(?m)^\s*void PortCeCmdRender\(\);"),
                  ("DXEngine.cpp", r"(?m)^\s*PortCeCmdRender\(\);"),
                  ("game.cpp", r"(?m)^void PortCeCmdFrame\(\);"),
-                 ("game.cpp", r"(?m)^\s*PortCeCmdFrame\(\);"),
-                 ("game.cpp", r"(?m)^void PortCeCmdLevelEnd\(\);"),
-                 ("game.cpp", r"(?m)^\s*PortCeCmdLevelEnd\(\);"))
+                 ("game.cpp", r"(?m)^\s*PortCeCmdFrame\(\);"))
         for name, pattern in hooks:
             with self.subTest(file=name, hook=pattern):
                 text = self.alone[name]

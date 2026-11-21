@@ -277,17 +277,24 @@ latest as the first Main Menu is built; a later edit applies at the next start),
 | `commander` | Commander: its CE Settings row (Commander Map), the M key, the live view and the orders |
 | `play_unit` | take a friendly tank or an eligible friendly soldier moving independently; use Morph to return to the Battle Engine |
 
+Additional opt-in `ce.ini` keys outside the four `[Experimental]` rows:
+
+| Key | What it enables | Platform status |
+|---|---|---|
+| `extras` | **Extras** page (Service Record, Goodies Catalogue, Music Player, Lore, Back Up All Careers, Restore as New) | Linux complete; Windows currently stubs Back Up All / Restore as New (`Unsupported`) while single-career backup and preview work |
+| `catalogue` | **Catalogue** page (unit/model list, live DDS texture preview, SFX and voice playback) | Linux and Windows |
+| `mods_menu` | **Mods** page in Onslaught CE | Linux active; compiled off on Windows unless built with `--mods-windows-test` |
+| `commander_tactical_map` | Legacy 2D paused tactical map mode inside Commander | Linux and Windows (requires `commander=1`) |
+| `factory_exercise` | Level-231 factory production prototype inside Commander | Experimental prototype (requires `commander=1`) |
+
 The current prototypes have these limits:
 
-- Commander provides squad selection and orders. A native-model RTS view and complete individual-unit, group and
-  structure workflows are still being developed; the existing live-view isolation checks below describe the
-  current read-only picture, not proof of those later workflows.
+- Commander renders the native 3D world inside `CeRenderFence` (saving and restoring the shadow manager and render caches so simulation state stays identical to never opening the view) and provides squad/unit selection and orders; complete group and structure workflows remain in development.
 - Taking a soldier is not a finished first-person infantry mode. Camera and weapon presentation remain work in
   progress; use the bound Morph action to return, as described in the [controls guide](controller-input.md#adjustable-keyboard-actions-development-build).
 - The Museum's walkable room and film screen are usable prototypes. Close-up exhibits can disappear, and hall
   composition and effects still need correction; expanded exhibition and multi-film work is not completed here.
-- The editor's existing-object placement, saved/draft state, F5 preview and F6 reset already work in the exercised
-  Linux path. A player-start workflow and reported interaction lag remain unresolved. It does not create new units.
+- The editor's existing-object placement, side switching, Player Start placement (`0276`), saved/draft state, F5 preview and F6 reset already work in the exercised Linux path. It does not create new units or edit terrain/scripts.
 
 With a feature's line off, its rows are not on the Onslaught CE page, a forced action of its rows does nothing, nothing it adds runs, and the Help pages do not describe it as present: without
 `commander`, Controls & Tips drops the commander view's line and the Other Projects and Ideas entry of What's Coming says it is in development; without `map_editor`, the Map and Mission Tools
@@ -389,12 +396,7 @@ earlier views back on one build.
 
 ## Commander live view: isolation runs
 
-This section describes the current source branch's read-only Commander picture. It is not acceptance of the
-separate native-world renderer or the intended RTS construction and production interface.
-
-The Commander's live view never renders the world: the game draws the pilot's frame as it does with the view closed, and the view's own picture
-(`game/ce_cmdview.cpp`) is drawn over it from read-only queries, through the device alone (PARITY.md, "Commander live view"). The rule it must keep
-is that a battle with the view open advances exactly as one in which it was never opened. Three things hold it to that:
+Commander's live view renders the native 3D scene inside `CeRenderFence` (`game/ce_render_fence.cpp`, patch `0353-ce-render-pass-fence.patch`), saving and restoring `SHADOWS` (via `CActiveReader::SetReader`) and render caches so the simulation advances identically to a run where the view was never opened. Three checks hold it to that rule:
 
 - `tools/ce_commander_tests.py` (no game): the picture's source names only the game facilities on its list of reads and none of the game's drawing,
   allocation, random or clock routines; the map's part of the live frame asks for none of the game's drawing state; the engine's presentation hook

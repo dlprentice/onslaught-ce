@@ -1,0 +1,17 @@
+--- a/DXEngine.cpp
++++ b/DXEngine.cpp
+@@ -716,6 +716,14 @@
+ 
+ HRESULT CDXEngine::Render(int viewpoint)	// FUNCTION: 0x0053e2e0
+ {
++#ifdef CE_VERSION
++	// CE: while a CE view draws the world from its own camera, draw the view's pass first inside the render fence (components, motion
++	// controllers, mesh poses and shadow manager saved and restored) and then the cockpit's own pass unseen, leaving the battle exactly
++	// as the cockpit's drawing alone leaves it (ce_cmdmap.cpp, PortCeCmdRenderWorld).
++	extern bool PortCeCmdRenderWorld(int viewpoint);
++	if (PortCeCmdRenderWorld(viewpoint))
++		return S_OK;
++#endif
+ 	SetNearZ(DEFAULT_Z_NEAR);	// retail PC: every viewpoint starts from the default near plane (0053e307)
+ 
+ 	if (!mCamera[viewpoint])

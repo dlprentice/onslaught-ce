@@ -9,7 +9,22 @@
 #include <cstring>
 #include <new>
 #include <vector>
-#include "ce_hooks_host_stubs.h"
+#include "ce_hooks.h"
+#ifdef CE_VERSION
+// Non-save hook handlers referenced by port/game/ce_hooks.cpp (not exercised by this save driver).
+void PortCeGamepadBeginCycle() {}
+void PortCePaletteClose() {}
+void PortCeConsoleLevelEnd() {}
+void PortCePhotoLevelEnd() {}
+void PortCeCmdLevelEnd() {}
+bool PortCePhotoKey(unsigned, bool) { return false; }
+bool PortCePaletteSuppressDown(unsigned) { return false; }
+bool PortCePaletteOpen(unsigned, bool) { return false; }
+bool PortCeCmdKey(unsigned, bool) { return false; }
+void PortCeEditorRender() {}
+CCamera *PortCeCmdRenderCamera(CCamera *c, CPlayer *) { return c; }
+CCamera *PortCePlayUnitRenderCamera(CCamera *c, CPlayer *) { return c; }
+#endif
 
 typedef std::int16_t SWORD;
 typedef std::uint32_t DWORD;
@@ -57,6 +72,7 @@ static CCareer* gEditorCareer = nullptr;
 static bool museumVisit = false;
 bool PortCeMuseumVisitActive(void) { return museumVisit; }
 extern "C" void PortCeMuseumVisitFilterSave(CCareer *, void *) {}	// patch 0279: no visit holds a career in this driver
+extern "C" void PortCeEditorFilterSave(CCareer *, void *);
 #include "native_editor_filter.inc"
 
 // The actual console jump action and the actual System.cpp loop from the patched source. The target RunLevel is an

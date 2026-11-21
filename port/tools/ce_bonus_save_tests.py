@@ -83,7 +83,7 @@ class BonusSaveTests(unittest.TestCase):
         result = subprocess.run([os.environ.get("CXX", "g++"), "-std=c++14", "-m32", "-O1", "-fwrapv",
                                  "-fno-strict-aliasing", "-Wall", "-Wextra", "-Werror", "-Wno-unused-parameter",
                                  *(['-DCE_VERSION="test"'] if public else []), "-I", str(cls.out), "-I", str(PORT / "game"),
-                                 str(bonus), str(DRIVER), "-o", str(cls.out / label)],
+                                 str(bonus), str(PORT / "game/ce_hooks.cpp"), str(PORT / "game/ce_modes.cpp"), str(DRIVER), "-o", str(cls.out / label)],
                                 capture_output=True, text=True, timeout=90)
         if result.returncode:
             raise AssertionError(f"{label} compilation failed:\n{result.stdout}{result.stderr}")
@@ -197,8 +197,9 @@ class BonusSaveTests(unittest.TestCase):
 
     def test_causal_controls(self):
         source = BONUS.read_text()
+        hook_call = "\tce_hook_save_gate(CE_SAVE_CAREER, this, dest, sizeof(CCareer));\t// CE hook point (port/game/ce_hooks.h): after the career copy, before the god flags return\n"
         mutants = [
-            ("missing-hook", "save", "\tPortCeBonusFilterSave(this, dest);\n", "", "bonus"),
+            ("missing-hook", "save", hook_call, "", "bonus"),
             ("live-not-entry", "bonus", "(const void *)sCareer, sizeof(filtered)", "(const void *)career, sizeof(filtered)", "bonus"),
             ("allow-other-career", "bonus", "career != &CAREER || ", "", "other-object"),
             ("allow-other-game", "bonus",
@@ -236,8 +237,8 @@ class BonusSaveTests(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0, f"{label} survived")
                 self.assertIn("FAIL:", result.stderr)
 
-        # Moving the filter after patch 0052's restoration leaks the live god flags into serialized progress.
-        old = "\tPortCeBonusFilterSave(this, dest);\n"
+        # Moving the save gate after patch 0052's restoration leaks the live god flags into serialized progress.
+        old = hook_call
         after = "\tSetIsGod(1, portGod1);\n"
         self.assertEqual(self.save.count(old), 1)
         self.assertEqual(self.save.count(after), 1)

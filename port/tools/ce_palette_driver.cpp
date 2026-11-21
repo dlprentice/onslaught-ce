@@ -16,8 +16,19 @@ bool fakeRecording = false;
 extern "C" void SetBootRequested(bool value);
 #endif
 #include "ce_layer.inc"
-// The CE hook point key_capture (patch 0308, port/game/ce_hooks.h): no handler is registered, so it takes no key.
-bool ce_hook_key_capture(unsigned char, bool) { return false; }
+#include "ce_hooks.h"
+#ifdef CE_VERSION
+// Non-console hook handlers referenced by port/game/ce_hooks.cpp.
+void PortCeGamepadBeginCycle() {}
+void PortCePhotoLevelEnd() {}
+void PortCeCmdLevelEnd() {}
+void PortCeEditorRender() {}
+extern "C" void PortCeEditorFilterSave(CCareer *, void *) {}
+void PortCeBonusFilterSave(CCareer *, void *) {}
+extern "C" void PortCeMuseumVisitFilterSave(CCareer *, void *) {}
+CCamera *PortCeCmdRenderCamera(CCamera *c, CPlayer *) { return c; }
+CCamera *PortCePlayUnitRenderCamera(CCamera *c, CPlayer *) { return c; }
+#endif
 #include "msgproc.inc"
 
 static void check(bool condition, const char *message) {

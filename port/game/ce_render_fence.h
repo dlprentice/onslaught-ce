@@ -10,8 +10,9 @@
 #ifndef CE_RENDER_FENCE_H
 #define CE_RENDER_FENCE_H
 
-// Saves every component's cached transform and render-frame stamp and every motion controller's pose bytes. False when it could not save all of
-// them (out of memory): the caller then must not draw the extra pass.
+// Saves every component's cached transform and render-frame stamp, every motion controller's pose bytes, mesh pose caches, and the shadow
+// manager's active requests and texture assignments. False when it could not save all of them (out of memory): the caller then must not
+// draw the extra pass.
 bool CeRenderFenceSave();
 // Puts back what the last CeRenderFenceSave kept.
 void CeRenderFenceRestore();

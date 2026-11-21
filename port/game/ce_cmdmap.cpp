@@ -66,6 +66,7 @@
 #include "ce_playunit.h"
 #include "Camera.h"
 #include "DXEngine.h"
+#include "ce_render_fence.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -1701,17 +1702,18 @@ bool UnitTake(CUnit* unit, int number, void* user) {
 }
 
 UnitPanel::TextSize UnitMeasure(void*, const char* text, float scale) {
-    return {CeCmdViewTextWidth(text) * scale, CeCmdViewTextHeight() * scale};
+    return {TextWidth(text, scale), (L.s > 0.f ? LineHeight() / L.s : CeCmdViewTextHeight()) * scale};
 }
 void UnitFill(void*, UnitPanel::Rect rect, uint32_t colour) {
-    CeCmdViewBox(rect.x, rect.y, rect.w, rect.h, colour);
+    if (rect.w > 0.f && rect.h > 0.f) Box(rect.x, rect.y, rect.w, rect.h, colour);
 }
 void UnitLine(void*, float x0, float y0, float x1, float y1, uint32_t colour) {
-    CeCmdViewBox((std::min)(x0, x1), (std::min)(y0, y1),
+    Box((std::min)(x0, x1), (std::min)(y0, y1),
         (std::max)(1.f, std::fabs(x1-x0)), (std::max)(1.f, std::fabs(y1-y0)), colour);
 }
 void UnitText(void*, float x, float y, const char* text, float scale, uint32_t colour) {
-    CeCmdViewText(x, y, colour, text, scale);
+    (void)scale;
+    Text(x, y, colour, text);
 }
 
 void RefreshUnitFrame() {
@@ -3407,12 +3409,17 @@ void CeCmdTestUi(const char *word, const float *n, int count, char *said, unsign
 }
 #endif
 
-// Two entries other code still names, both inert: the live view never gives the engine a camera and never hides the game's frame by dropping
-// its draws (it draws its own picture over a frame the game made whole; see CE_STRATEGIC_PICTURE above).
-// - Patch 0200's line in CEngine::SetViewpoint (shared with the play-as-a-unit view's): the camera comes back as it was given, always.
-// - The photo and editor draw scopes' query (ce_photo.h): never.
+// The world pass the battle would have drawn (PortCeCmdRenderWorld, below): while it runs, the cockpit's camera and cockpit go to the engine untouched.
+static bool gCockpitPass = false;
+
+extern "C" bool PortCeWorldViewCaptureSuspended()
+{
+    return gCockpitPass;
+}
+
 CCamera* PortCeCmdRenderCamera(CCamera* camera, CPlayer* player)
 {
+    if (gCockpitPass) return camera;
     if (!gOpen && gNativeReturning) {
         CCamera* returning = NativeReturnPresentation(camera, player);
         if (returning) return returning;
@@ -3438,7 +3445,49 @@ bool PortCeCmdSuppressFlightHud()
 }
 
 bool PortCeCmdHideCockpit()
-{ return PortCeCmdWorldViewToken() != 0 || NativeReturnEligible(); }
+{
+    return !gCockpitPass && (PortCeCmdWorldViewToken() != 0 || NativeReturnEligible());
+}
+
+// ---- Drawing that leaves the battle alone ----------------------------------------------------------------------------------------------------
+// In the original, drawing writes simulation state: CComponent::RefreshCachedTransform updates a component's cached position and orientation from
+// its parent's mesh at most once a render frame, drawing rebuilds mesh pose caches and advances motion-controller poses, and SHADOWS picks the
+// nearest units to the drawing camera so the next frame's SHADOWS.RenderTextures refreshes those units. While the Commander view is open or easing
+// back to the cockpit, draw the view's pass first inside the render fence (components, motion controllers, mesh pose caches and shadow manager
+// saved and restored, with the battle marked paused so once-a-frame battle side-effects do not double-run), then draw the cockpit's own pass last
+// with colour writes off (suspending world-view snapshot capture so the displayed Commander snapshot stays intact) and clear its depth.
+bool PortCeCmdRenderWorld(int viewpoint)
+{
+    static bool inside = false;
+    if (inside || gMirrorPass || viewpoint != 0 || (PortCeCmdWorldViewToken() == 0 && !NativeReturnEligible())) return false;
+    CPlayer* player = GAME.GetPlayer(0);
+    CCamera* cockpit = GAME.GetCamera(0);
+    if (!player || !cockpit) return false;
+    inside = true;
+    CViewport viewport = *ENGINE.GetViewportForViewpoint(0);
+    if (CeRenderFenceSave()) {
+        ENGINE.SetViewpoint(0, cockpit, &viewport, player);
+        const BOOL paused = GAME.*GameAccess::PauseField();
+        GAME.*GameAccess::PauseField() = TRUE;
+        ENGINE.Render(0);
+        GAME.*GameAccess::PauseField() = paused;
+        CeRenderFenceRestore();
+    } else {
+        CeWorldViewInvalidate(CeWorldViewOwner::Commander);
+    }
+    static unsigned char renderInfo[sizeof(RENDERINFO)];
+    memcpy(renderInfo, (const void*)&RENDERINFO, sizeof(RENDERINFO));
+    gCockpitPass = true;
+    ENGINE.SetViewpoint(0, cockpit, &viewport, player);
+    LT.SRS(D3DRS_COLORWRITEENABLE, 0);
+    ENGINE.Render(0);
+    LT.SRS(D3DRS_COLORWRITEENABLE, 0xf);
+    gCockpitPass = false;
+    LT.D3D_Clear(0, NULL, D3DCLEAR_ZBUFFER | D3DCLEAR_STENCIL, 0, 1.0f, 0L);
+    memcpy((void*)&RENDERINFO, renderInfo, sizeof(RENDERINFO));
+    inside = false;
+    return true;
+}
 
 // Whether the map is open (or is opening: the pointer ShutdownMouse starts it from is a window pixel too): while it is, the pointer stays in window pixels (the map reads them), not the virtual screen's that
 // the game's in-game menus use (widescreen.cpp).

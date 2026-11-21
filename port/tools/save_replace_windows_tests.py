@@ -70,6 +70,7 @@ INVALID_PARAMETER = 87
 SHARING_VIOLATION, LOCK_VIOLATION = 32, 33
 
 PRODUCTION = ("port/platform/common/save_replace.h", "port/platform/common/portlog.h", "port/platform/common/platform.h",
+              "port/platform/common/replay_cheat.h",
               "port/platform/common/save_names.h", "port/platform/common/save_names.cpp", "port/platform/windows/files.cpp",
               "port/platform/windows/save_namespace.cpp", "port/platform/windows/save_replace.cpp",
               "port/platform/windows/utf8.rc", "port/platform/windows/utf8.manifest", "port/platform/common/mods.h",

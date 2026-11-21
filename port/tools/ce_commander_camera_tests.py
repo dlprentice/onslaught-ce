@@ -177,11 +177,15 @@ def integration_controls(repo: Path, compiler: str, logs: Path) -> bool:
            for header in ("algorithm", "cmath")):
         raise ValueError("standard headers follow project macros")
     (logs / "ce_commander_strategic_actual.inc").write_text(integration_fragment(source))
-    patch = (repo / "port" / "patches" / "0200-ce-commander-strategic-camera.patch").read_text()
-    hook = "\n".join(line[1:] for line in patch.splitlines()
-                     if line.startswith("+") and not line.startswith("+++")) + "\n"
-    if hook.count("PortCeCmdRenderCamera(camera, player)") != 1 or f"#ifdef {public_macro}" not in hook:
+    patch = (repo / "port" / "patches" / "0315-ce-hook-render-camera.patch").read_text()
+    hooks_text = (repo / "port" / "game" / "ce_hooks.cpp").read_text()
+    if "ce_hook_render_camera(viewpoint, camera, player)" not in patch:
+        raise ValueError("render_camera site patch unavailable")
+    if f"#ifdef {public_macro}" not in hooks_text or "CeHookCmdRenderCamera" not in hooks_text or "PortCeCmdRenderCamera(camera, player)" not in hooks_text:
         raise ValueError("presentation hook unavailable")
+    if hooks_text.index("CeHookCmdRenderCamera") > hooks_text.index("CeHookPlayUnitRenderCamera"):
+        raise ValueError("commander camera must run before play-unit camera")
+    hook = "    camera = ce_hook_render_camera(0, camera, player);\n"
     (logs / "ce_commander_strategic_hook.inc").write_text(hook)
     header = (repo / "port" / "game" / "ce_photo.h").read_text()
     query = "PortCePhotoOn() || PortCeCmdSuppressFlightHud()"
@@ -201,6 +205,8 @@ def integration_controls(repo: Path, compiler: str, logs: Path) -> bool:
         str(repo / "port" / "game" / "ce_dodge_binding.cpp"),
         str(repo / "port" / "game" / "ce_command_selection.cpp"),
         str(repo / "port" / "game" / "ce_command_panel.cpp"),
+        str(repo / "port" / "game" / "ce_hooks.cpp"),
+        str(repo / "port" / "game" / "ce_modes.cpp"),
         str(repo / "port" / "tools" / "tests" / "ce_commander_camera_factory.cpp"),
         str(repo / "port" / "tools" / "ce_commander_camera_tests.cpp"),
         "-o", str(executable),

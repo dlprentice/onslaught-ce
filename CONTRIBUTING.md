@@ -24,7 +24,7 @@ is the canonical map; this is the short version.
 | The byte-matching decompilation: functions, tools, matching notes | [onslaught-decomp](https://github.com/dlprentice/onslaught-decomp). Also generated, with the same route. Matching work needs your own copy of the game plus the compiler and SDK inputs its guide names. A change to `src/` is proposed there. |
 | The Godot rebuild | [onslaught-godot](https://github.com/dlprentice/onslaught-godot), edited directly. |
 | How the game works: file formats, saves, mechanics, levels, engine | [onslaught-preservation](https://github.com/dlprentice/onslaught-preservation), edited directly. It uses onslaught-decomp's function names. |
-| The Companion (saves, backups, settings, lore, music), and the program's goals and plan (`GOAL.md`, `PROGRAM.md`) | [Onslaught-Career-Editor](https://github.com/dlprentice/Onslaught-Career-Editor). Its `rebuild/` and `reverse-engineering/` folders are frozen copies: rebuild work goes to onslaught-godot, documentation to onslaught-preservation. The Companion's features are moving into Onslaught CE, so new feature work belongs here. |
+| The Companion (saves, backups, settings, lore, music), and the program's goals and plan (`GOAL.md`, `PROGRAM.md`) | [Onslaught-Career-Editor](https://github.com/dlprentice/Onslaught-Career-Editor). Its old `rebuild/` folder now points directly to `onslaught-godot`, and documentation lives in `onslaught-preservation`. The Companion's player-facing features are moving into Onslaught CE, so new feature work belongs here. |
 
 The Onslaught and AYAResourceExtractor forks on the same account are kept as pinned references, not contribution
 targets. Security reports follow this repository's [SECURITY.md](SECURITY.md). [REUSE.toml](REUSE.toml)

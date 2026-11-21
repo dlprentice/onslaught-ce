@@ -26,6 +26,7 @@ def main():
            "retain_failed_capture":body.replace("    gWorldViewValid = false;","    // deliberately retain stale view",1),
            "capture_mirror":body.replace("    if (gMirrorPass) return;","    // deliberately capture reflected view",1),
            "retain_before_mirror":body.replace("    gWorldViewValid = false;","    if (gMirrorPass) return;\n    gWorldViewValid = false;",1),
+           "ignore_suspended_capture":body.replace("    if (PortCeWorldViewCaptureSuspended && PortCeWorldViewCaptureSuspended()) return;","    // deliberately overwrite displayed view during unseen pass",1),
            "read_in_mirror":body.replace("if (gMirrorPass || !out", "if (!out",1)}
     results={}
     for name,content in cases.items():

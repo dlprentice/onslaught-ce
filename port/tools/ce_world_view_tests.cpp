@@ -11,8 +11,10 @@ struct D3DVIEWPORT9 { unsigned X,Y,Width,Height; float MinZ,MaxZ; };
 static unsigned frame = 12;
 bool gMirrorPass;
 static std::uint64_t commanderToken;
+static bool captureSuspended;
 extern "C" unsigned PortPresentCount() { return frame; }
 extern "C" std::uint64_t PortCeCmdWorldViewToken() { return commanderToken; }
+extern "C" bool PortCeWorldViewCaptureSuspended() { return captureSuspended; }
 #ifndef CE_WORLD_VIEW_NO_EDITOR
 static std::uint64_t editorToken;
 extern "C" std::uint64_t PortCeEditorWorldViewToken() { return editorToken; }
@@ -122,5 +124,11 @@ int main(){
     Check(CeWorldViewRead(CeWorldViewOwner::Commander,302,&out),"ordinary capture recovers after mirrored wrap");
     frame=2;gMirrorPass=true;PortCeWorldViewCapture();gMirrorPass=false;
     Check(!CeWorldViewRead(CeWorldViewOwner::Commander,302,&out),"stale mirror-only frame cannot renew ordinary view");
+
+    // Suspended capture (unseen cockpit pass after displayed Commander pass) must preserve the displayed snapshot untouched.
+    RENDERINFO.view.m[0][0]=5;PortCeWorldViewCapture();
+    Check(CeWorldViewRead(CeWorldViewOwner::Commander,302,&out) && out.view[0]==5,"displayed view captured before unseen pass");
+    captureSuspended=true;RENDERINFO.view.m[0][0]=99;PortCeWorldViewCapture();captureSuspended=false;
+    Check(CeWorldViewRead(CeWorldViewOwner::Commander,302,&out) && out.view[0]==5,"suspended unseen pass does not overwrite or retire displayed view");
     std::printf("native view provider authored checks: %s\n",failed?"FAIL":"PASS");return failed?1:0;
 }

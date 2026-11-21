@@ -121,6 +121,7 @@ port/tools/ce_project_empty_variable_tests.py	script	-	none	release	-	the actual
 port/tools/ce_project_tests.py	script	-	deps+game	release	-	
 port/tools/ce_quality_options_tests.py	script	-	none	release	-	
 port/tools/ce_race_branch_tests.py	script	-	deps	release	-	
+port/tools/ce_render_fence_tests.py	script	-	none	release	-	Commander render-fence shadow save/restore and causal mutants; host build with the system compiler
 port/tools/ce_rumble_tests.py	script	-	deps	release	-	
 port/tools/ce_setting_text_tests.py	script	-	none	release	-	
 port/tools/ce_settings_tests.py	script	-	none	release	-	

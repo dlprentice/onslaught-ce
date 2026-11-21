@@ -29,6 +29,8 @@ bool WorldViewOwnerNow(CeWorldViewOwner* owner, std::uint64_t* token) {
 }
 
 extern "C" void PortCeWorldViewCapture() {
+    // An unseen cockpit pass drawn only to preserve simulation side-effects must not overwrite or retire the displayed view's snapshot.
+    if (PortCeWorldViewCaptureSuspended && PortCeWorldViewCaptureSuspended()) return;
     // Invalidate before every attempted capture; failure cannot expose an older
     // view from a different camera, including a failed device viewport query.
     gWorldViewValid = false;

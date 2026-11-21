@@ -554,18 +554,13 @@ class Fences(unittest.TestCase):
         self.assertEqual(comments_off(guide).count("delete "), 2, "the drive guide deletes the kept guide once, and is deleted once at the release")
         self.assertIn("union PilotHolder", self.code, "the driver is built once in static storage and never destroyed")
         self.assertIn("~PilotHolder() {}", self.code)
+        hooks_text = (PORT / "game/ce_hooks.cpp").read_text()
+        ce_block = hooks_text[hooks_text.index("#ifdef CE_VERSION"):hooks_text.index("#else")]
+        self.assertIn("PortCePlayUnitRenderCamera(camera, player)", ce_block)
+        self.assertLess(ce_block.index("commander_camera"), ce_block.index("playunit_camera"))
         for patch in (PORT / "patches").glob("*.patch"):
             text = patch.read_text(errors="ignore")
-            if patch.name == "0200-ce-commander-strategic-camera.patch":
-                self.assertEqual(text.count("PortCePlayUnitRenderCamera"), 2)
-                self.assertNotIn("CePlayUnit", text.replace("PortCePlayUnitRenderCamera", ""))
-                begin = text.index("#ifdef CE_VERSION")
-                end = text.index("#endif", begin)
-                hook = text[begin:end]
-                self.assertEqual(hook.count("PortCePlayUnitRenderCamera"), 2)
-                self.assertLess(hook.index("camera = PortCeCmdRenderCamera"),
-                                hook.index("camera = PortCePlayUnitRenderCamera"))
-            elif patch.name == "0241-ce-infantry-first-person.patch":
+            if patch.name == "0241-ce-infantry-first-person.patch":
                 additions = [line[1:].strip() for line in text.splitlines() if line.startswith("+") and not line.startswith("+++")]
                 visible_guard = "if (PortCePlayUnitHidesOwnMesh(this)) return;"
                 declaration = "extern bool PortCePlayUnitHidesOwnMesh(const CThing *);"

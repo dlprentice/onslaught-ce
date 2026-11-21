@@ -21,6 +21,7 @@
 #include "rtmesh.h"
 #include "RenderThing.h"
 #include "meshpose.h"
+#include "shadows.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -107,11 +108,84 @@ void KeepController(CThing* t, CMotionController* mc)
 struct SavedComponent { CComponent* c; FVector pos; FMatrix ori; SINT stamp; };
 SavedComponent* gComponents = NULL;
 size_t gComponentCount = 0, gComponentCap = 0;
+
+// CE_RENDER_FENCE_SHADOWS_BEGIN
+// The shadow manager (SHADOWS): WORLD.Render calls RequestShadow for units nearest the drawing camera, and the next frame's
+// SHADOWS.RenderTextures calls unit->GetRenderPos() and unit->Render(0) on those assigned units, refreshing their components and poses.
+// Saving raw CUnit* pointers and restoring via CActiveReader::SetReader keeps each unit's CMonitor deletion-callback list intact (a raw
+// memcpy of CShadows would leave dangling deletion callbacks or drop live ones when units die later).
+struct SavedShadowRequest { CUnit* unit; float dist; };
+struct SavedShadowTexInfo {
+    CUnit* unit;
+    signed char fade;
+    UBYTE state;
+    UBYTE unused;
+    signed char alpha;
+    UBYTE unknown08;
+    UBYTE unknown09[3];
+    float radius;
+    FVector pos;
+};
+struct SavedShadows {
+    bool valid;
+    SavedShadowRequest requests[32];
+    SavedShadowTexInfo texInfo[32];
+    SShadowTexInfo* freeList[32];
+    SINT numFree;
+    SINT unknown590;
+};
+SavedShadows gShadows = {};
+
+void SaveShadows()
+{
+    gShadows.valid = true;
+    for (int i = 0; i < 32; ++i) {
+        gShadows.requests[i].unit = SHADOWS.mRequests[i].mUnit.ToRead();
+        gShadows.requests[i].dist = SHADOWS.mRequests[i].mDist;
+        SShadowTexInfo& t = SHADOWS.mTexInfo[i];
+        gShadows.texInfo[i].unit = t.mUnit.ToRead();
+        gShadows.texInfo[i].fade = t.mFade;
+        gShadows.texInfo[i].state = t.mState;
+        gShadows.texInfo[i].unused = t.mUnused;
+        gShadows.texInfo[i].alpha = t.mAlpha;
+        gShadows.texInfo[i].unknown08 = t.mUnknown08;
+        memcpy(gShadows.texInfo[i].unknown09, t.mUnknown09, sizeof t.mUnknown09);
+        gShadows.texInfo[i].radius = t.mRadius;
+        gShadows.texInfo[i].pos = t.mPos;
+        gShadows.freeList[i] = SHADOWS.mFree[i];
+    }
+    gShadows.numFree = SHADOWS.mNumFree;
+    gShadows.unknown590 = SHADOWS.mUnknown590;
+}
+
+void RestoreShadows()
+{
+    if (!gShadows.valid) return;
+    for (int i = 0; i < 32; ++i) {
+        SHADOWS.mRequests[i].mUnit.SetReader(gShadows.requests[i].unit);
+        SHADOWS.mRequests[i].mDist = gShadows.requests[i].dist;
+        SShadowTexInfo& t = SHADOWS.mTexInfo[i];
+        t.mUnit.SetReader(gShadows.texInfo[i].unit);
+        t.mFade = gShadows.texInfo[i].fade;
+        t.mState = gShadows.texInfo[i].state;
+        t.mUnused = gShadows.texInfo[i].unused;
+        t.mAlpha = gShadows.texInfo[i].alpha;
+        t.mUnknown08 = gShadows.texInfo[i].unknown08;
+        memcpy(t.mUnknown09, gShadows.texInfo[i].unknown09, sizeof t.mUnknown09);
+        t.mRadius = gShadows.texInfo[i].radius;
+        t.mPos = gShadows.texInfo[i].pos;
+        SHADOWS.mFree[i] = gShadows.freeList[i];
+    }
+    SHADOWS.mNumFree = gShadows.numFree;
+    SHADOWS.mUnknown590 = gShadows.unknown590;
+    gShadows.valid = false;
+}
+// CE_RENDER_FENCE_SHADOWS_END
 }
 
 bool CeRenderFenceSave()
 {
-    gRegionCount = gByteCount = 0; gOverflow = false; gComponentCount = 0;
+    gRegionCount = gByteCount = 0; gOverflow = false; gComponentCount = 0; gShadows.valid = false;
     ListIterator<CThing> it(&WORLD.GetThingNB());
     for (CThing* t = it.First(); t; t = it.Next()) {
         if (CMotionController* mc = t->GetMotionController()) KeepController(t, mc);
@@ -132,7 +206,8 @@ bool CeRenderFenceSave()
         CComponent* c = (CComponent*)t;
         gComponents[gComponentCount++] = {c, c->GetPos(), c->GetOrientation(), c->mUnknown278};
     }
-    if (gOverflow) { gRegionCount = gByteCount = 0; gComponentCount = 0; return false; }
+    if (gOverflow) { gRegionCount = gByteCount = 0; gComponentCount = 0; gShadows.valid = false; return false; }
+    SaveShadows();
     return true;
 }
 
@@ -149,6 +224,7 @@ void CeRenderFenceRestore()
         CComponent* c = gComponents[i].c;
         c->GetPos() = gComponents[i].pos; c->GetOrientation() = gComponents[i].ori; c->mUnknown278 = gComponents[i].stamp;
     }
+    RestoreShadows();
 }
 
 #else

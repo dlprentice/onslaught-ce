@@ -78,17 +78,7 @@
  		mController[0]->Flush();	// retail (0046e021)
  	}
  
-@@ -1874,6 +1884,9 @@
- 
- void CGame::Update()	// FUNCTION: 0x0046e910
- { PORT_UPDATE_HOOK();
-+#if defined(CE_VERSION)
-+	PortCeGamepadBeginCycle();
-+#endif
- /*#if TARGET == PS2
- #ifndef _DEBUG
- 	extern UINT g_OldSP;
-@@ -4442,6 +4455,9 @@
+@@ -4442,6 +4452,9 @@
  	CCONTROLLER	* pController0 = new(MEMTYPE_CONTROLLER) CCONTROLLER(&gcch,0);
  	CCONTROLLER	* pController1 = new(MEMTYPE_CONTROLLER) CCONTROLLER(&gcch,1);
  

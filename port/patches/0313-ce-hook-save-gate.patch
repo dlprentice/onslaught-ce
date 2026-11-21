@@ -6,14 +6,13 @@
 +#include "ce_hooks.h"	// Port: the CE hook points (port/game/ce_hooks.h)
  void CCareer::Save(char *dest)	// FUNCTION: 0x00421350
  {
-@@ -1507,4 +1508,7 @@
-+#endif
-+	ce_hook_save_gate(CE_SAVE_CAREER, this, dest, sizeof(CCareer));	// CE hook point (port/game/ce_hooks.h): after the career filters, before the god flags return
-+#ifdef CE_VERSION
+@@ -1501,5 +1502,6 @@
+ 	memcpy(dest, this, sizeof(CCareer));
++	ce_hook_save_gate(CE_SAVE_CAREER, this, dest, sizeof(CCareer));	// CE hook point (port/game/ce_hooks.h): after the career copy, before the god flags return
+ #ifdef CE_VERSION
  	SetIsGod(0, portGod0);
  	SetIsGod(1, portGod1);
  #endif
- 	dest += sizeof(CCareer);
 --- a/FEPOptions.cpp
 +++ b/FEPOptions.cpp
 @@ -111,6 +111,8 @@

@@ -57,10 +57,11 @@ def sections(patch):
         r"(?ms)^--- a/([^\n]+)\n\+\+\+ b/[^\n]+\n.*?(?=^--- a/|\Z)", patch)}
 
 
-def patched(out, name, after, exclude=(), mirror=False):
+def patched(out, name, after, exclude=(), mirror=False, upto=None):
     """src/name with the port patches applied in name order: all of them (after) or those before 0117 (before), less any
-    patch whose number is in exclude. mirror: start from the text the build's mirror makes of the file (its includes
-    normalised), which the patches written after 0117 take their context lines from (0137's hunk after PauseMenu.cpp's includes)."""
+    patch whose number is in exclude (and optionally stopping after patch number upto). mirror: start from the text the
+    build's mirror makes of the file (its includes normalised), which the patches written after 0117 take their context
+    lines from (0137's hunk after PauseMenu.cpp's includes)."""
     source = (ROOT / "src" / name).read_bytes()
     if mirror:
         # The text the build's mirror makes of the file, game-data includes and all (build.mirror_text): patches written after 0117
@@ -68,7 +69,7 @@ def patched(out, name, after, exclude=(), mirror=False):
         source = build.mirror_text(name)
     (out / name).write_bytes(source)
     for patch in sorted(PATCHES.glob("*.patch")):
-        if (not after and patch.name[:4] >= FIRST_NEW_PATCH) or patch.name[:4] in exclude:
+        if (not after and patch.name[:4] >= FIRST_NEW_PATCH) or patch.name[:4] in exclude or (upto and patch.name[:4] > upto):
             continue
         part = sections(patch.read_text(encoding="latin1")).get(name)
         if part:
@@ -590,12 +591,13 @@ class SourceTrace(unittest.TestCase):
         self.assertIn("WriteDefaultOptionsFile(buffer, size)", options)
         self.assertEqual(0, len(re.findall(r"MEMORYCARD\.", options)))
 
-    def live(self, name, windows=False, after=True, ce=False, network_off=False, exclude=()):
+    def live(self, name, windows=False, after=True, ce=False, network_off=False, exclude=(), upto=None):
         """The file as the compiler sees it on Linux (or Windows): conditionals resolved, includes empty. ce: CE_VERSION defined
         (the public builds; the faithful build leaves it undefined). network_off: the ordinary public build, without network hooks."""
-        d = Path(self.dir.name) / ("live-" + ("after" if after else "before") + ("-" + "-".join(exclude) if exclude else ""))
+        tag = ("after" if after else "before") + ("-" + "-".join(exclude) if exclude else "") + (f"-upto-{upto}" if upto else "")
+        d = Path(self.dir.name) / ("live-" + tag)
         d.mkdir(exist_ok=True)
-        text = self.patched[name] if (after and not exclude) else patched(d, name, after, exclude=exclude, mirror=True)
+        text = self.patched[name] if (after and not exclude and not upto) else patched(d, name, after, exclude=exclude, mirror=True, upto=upto)
         (d / name).write_text(text, encoding="latin1")
         for include in re.findall(r'#include\s*[<"]([^>"]+)[>"]', text):
             (d / include).parent.mkdir(parents=True, exist_ok=True)
@@ -619,25 +621,29 @@ class SourceTrace(unittest.TestCase):
 
     def test_the_save_page_compiles_to_the_same_lines_on_windows_as_before_patch_0118(self):
         """0118 only widens the guards 0066 put around the approval, so a Windows build compiles the identical page."""
-        self.assertEqual(self.live("FEPSaveGame.cpp", windows=True, after=False), self.live("FEPSaveGame.cpp", windows=True))
+        self.assertEqual(self.live("FEPSaveGame.cpp", windows=True, exclude=("0118",)),
+                         self.live("FEPSaveGame.cpp", windows=True))
 
     def test_the_network_off_card_changes_on_windows_only_in_the_whole_file_write(self):
         import difflib
+        # Isolate the 0117/0118/0185 write-path window so unrelated later patches (such as 0352 or hook migrations)
+        # do not break this diff, while separately verifying current-tree Windows write invariants and 0352's guards.
         before = [l.strip() for l in self.live("PCMemoryCard.cpp", windows=True, after=False, network_off=True).splitlines() if l.strip()]
-        # 0352 adds an in-memory career overlay active only under BEA_PORT_REPLAY_CHEAT (PortReplayCheatRequested);
-        # check the 0117/0118/0185 write path without 0352, and separately verify 0352 stays gated on PortReplayCheatRequested.
-        after = [l.strip() for l in self.live("PCMemoryCard.cpp", windows=True, network_off=True, exclude=("0352",)).splitlines() if l.strip()]
-        changes = [l for l in difflib.unified_diff(before, after, lineterm="", n=0) if l[:1] in "+-" and l[:3] not in ("+++", "---")]
+        after_0185 = [l.strip() for l in self.live("PCMemoryCard.cpp", windows=True, network_off=True, upto="0185").splitlines() if l.strip()]
+        changes = [l for l in difflib.unified_diff(before, after_0185, lineterm="", n=0) if l[:1] in "+-" and l[:3] not in ("+++", "---")]
         self.assertEqual([
             '+extern "C" int PortReplaceUserFile(const char *game_path, const void *data, unsigned size, const char *what);',
             '-FILE *f = fopen(path, "wb");', '-if (f)', '-{', '-if (fwrite(data, datasize, 1, f) == 1)', '-{',
             '-fclose(f);', '-return(MCE_SUCCESS);', '-}', '-}', '-return 1;',
             '+return PortReplaceUserFile(path, data, datasize, "career") == 0 ? MCE_SUCCESS : 1;'],
             changes)
-        with_0352 = self.live("PCMemoryCard.cpp", windows=True, network_off=True)
+        current = self.live("PCMemoryCard.cpp", windows=True, network_off=True)
+        self.assertEqual(self.live("PCMemoryCard.cpp", windows=True, network_off=True, exclude=("0118",)), current)
+        self.assertNotIn('"wb"', current)
+        self.assertIn('PortReplaceUserFile(path, data, datasize, "career")', function(current, r"^int\s+CPCMemoryCard::WriteSave\("))
         for fn in (r"^int\s+CPCMemoryCard::CreateSave\(", r"^int\s+CPCMemoryCard::DeleteSave\(",
                    r"^int\s+CPCMemoryCard::WriteSave\(", r"^int\s+CPCMemoryCard::ReadSave\("):
-            self.assertIn("if (PortReplayCheatRequested())", function(with_0352, fn))
+            self.assertIn("if (PortReplayCheatRequested())", function(current, fn))
 
     def test_the_check_would_catch_the_old_delete_in_the_overwrite_yes(self):
         before = self.live("FEPSaveGame.cpp", windows=False, after=False)

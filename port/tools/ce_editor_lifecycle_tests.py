@@ -53,11 +53,13 @@ MASK = re.compile(r'//[^\n]*|/\*.*?\*/|"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'', 
 
 
 def mirror_guarded(body, call):
-    """True when CALL is made once in BODY, inside the braced block of an `if (!gMirrorPass)`: drawn in an ordinary pass and
-    never into the mirrored pass's reflection texture, like every other overlay at the end of CDXEngine::PostRender."""
+    """True when CALL is made once in BODY, as the single guarded statement or inside the braced block of an
+    `if (!gMirrorPass)`: drawn in an ordinary pass and never into the mirrored pass's reflection texture."""
     masked = MASK.sub(lambda m: ''.join('\n' if c == '\n' else ' ' for c in m[0]), body)
     if masked.count(call) != 1:
         return False
+    if re.search(r'\bif\s*\(\s*!\s*gMirrorPass\s*\)\s*' + re.escape(call), masked):
+        return True
     k, depth = masked.index(call), 0
     while k > 0:
         k -= 1
@@ -134,18 +136,20 @@ def main():
         raise ValueError('The draw translation is not the first statement of the actor render-position getter.')
     if actor.count('#ifdef CE_VERSION\n#include "ce_editor.h"\n#endif') != 1:
         raise ValueError('The actor source does not include the editor interface under the CE guard.')
-    # The overlay draws over the finished picture of an ordinary pass only. Patch 0206 once added its call after the commander
-    # map's unbraced `if (!gMirrorPass)`, indented as if guarded, so it also drew into the mirrored pass; the call now shares
-    # the condition's braced body. The two controls are that old shape and a call after the block.
+    # The overlay draws over the finished picture of an ordinary pass only, through the draw_overlay CE hook point
+    # (port/game/ce_hooks.cpp, patch 0311). The two controls are an unbraced call and a call after the mirror-pass guard.
+    hooks_text = (ROOT / 'port/game/ce_hooks.cpp').read_text()
+    if 'static void CeHookEditorRender() { PortCeEditorRender(); }' not in hooks_text or not re.search(r'kDrawOverlay\[\].*?CeHookEditorRender\b', hooks_text, re.S):
+        raise ValueError('The editor overlay is not registered on the draw_overlay hook point.')
     post_render = definition(texts['DXEngine.cpp'], 'CDXEngine::PostRender')
-    overlay = 'PortCeEditorRender();'
+    overlay = 'ce_hook_draw_overlay();'
     if not mirror_guarded(post_render, overlay):
-        raise ValueError('The editor overlay is drawn outside the mirror-pass condition.')
-    braced = re.search(r'if \(!gMirrorPass\)\n\t\{\n(\t\tPortCeCmdRender\(\);[^\n]*\n)\t\tPortCeEditorRender\(\);\n\t\}\n', post_render)
-    if not braced:
+        raise ValueError('The editor overlay hook point is drawn outside the mirror-pass condition.')
+    guarded = re.search(r'\tif \(!gMirrorPass\) ce_hook_draw_overlay\(\);[^\n]*\n', post_render)
+    if not guarded:
         raise ValueError('Overlay control anchor changed.')
-    unbraced = post_render.replace(braced[0], 'if (!gMirrorPass)\n' + braced[1] + '\t\tPortCeEditorRender();\n', 1)
-    after = post_render.replace(braced[0], 'if (!gMirrorPass)\n\t{\n' + braced[1] + '\t}\n\tPortCeEditorRender();\n', 1)
+    unbraced = post_render.replace(guarded[0], '\tif (!gMirrorPass)\n\t\t(void)0;\n\t\tce_hook_draw_overlay();\n', 1)
+    after = post_render.replace(guarded[0], '\tif (!gMirrorPass) {}\n\tce_hook_draw_overlay();\n', 1)
     if mirror_guarded(unbraced, overlay) or mirror_guarded(after, overlay):
         raise ValueError('The mirror-pass overlay check accepts an unguarded call.')
     translation = found[0]

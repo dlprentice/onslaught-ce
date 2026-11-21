@@ -19,6 +19,8 @@ feature works on both platforms.
 Onslaught CE is a native port of *Battle Engine Aquila* (Lost Toys, 2003) for Linux (i686) and Windows (i686), built
 from the game's source code. You need your own copy of the game.
 
+**Questions, feedback, or bug reports?** Start a thread in [Discussions](https://github.com/dlprentice/onslaught-ce/discussions) or open an issue via [Report a problem](#report-a-problem) (see [CONTRIBUTING.md](CONTRIBUTING.md) for where to file work across the project repositories).
+
 ## Contents
 
 - **Install and play:** [Quick start](#quick-start), [Download and install](#download-and-install) (system

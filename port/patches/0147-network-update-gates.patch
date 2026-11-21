@@ -8,6 +8,6 @@
 +	if (!CE_SessionBeforeUpdate()) return;
 +	if (CE_WorldReplica()) { CE_WorldPollLocalInput(); return; }
 +#endif
- #if defined(CE_VERSION)
- 	PortCeGamepadBeginCycle();
- #endif
+ /*#if TARGET == PS2
+ #ifndef _DEBUG
+ 	extern UINT g_OldSP;

@@ -35,6 +35,7 @@ Checked, each by a mode of the driver:
     python3 -I port/tools/ce_dodge_assist_tests.py [--mirror local-data/port/mirror/src]
 """
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
 import os
@@ -51,6 +52,16 @@ import build
 import quiet_crash
 
 PATCH = '0220-ce-dodge-assist.patch'
+
+
+def default_jobs():
+    env = os.environ.get('BEA_MUTANT_JOBS', '').strip()
+    if env:
+        value = int(env)
+        if value < 1:
+            raise ValueError(f'BEA_MUTANT_JOBS must be >= 1, got {value}')
+        return value
+    return min(6, os.cpu_count() or 1)
 
 
 def body(source, pattern):
@@ -141,19 +152,25 @@ def main():
     parser.add_argument('--compiler', default='g++')
     parser.add_argument('--no-mutants', action='store_true')
     parser.add_argument('--only-mutants', help='comma-separated mutant names: run only those (and the comparisons they need), not the modes')
+    parser.add_argument('-j', '--jobs', type=int, default=None, help='max parallel compiles/runs (default: BEA_MUTANT_JOBS or min(6, cpu_count))')
     args = parser.parse_args()
+    jobs = default_jobs() if args.jobs is None else args.jobs
+    if jobs < 1:
+        raise SystemExit(f'--jobs must be >= 1, got {jobs}')
     parent = ROOT / 'local-data/port/ce-dodge-assist-tests'
     parent.mkdir(parents=True, exist_ok=True)
     out = Path(tempfile.mkdtemp(prefix='run-', dir=parent))
     patched = build.patched_text(['Controller.cpp'], network=False)
     base = build.patched_text(['Controller.cpp'], skip=(PATCH,), network=False)
+    patched_files = pieces(patched, True)
+    base_files = pieces(base, False)
     driver = ROOT / 'port/tools/ce_dodge_assist_driver.cpp'
     results = []
 
-    def make(name, texts, with_patch, edits=()):
+    def make(name, base_pieces, edits=()):
         folder = out / name
         folder.mkdir()
-        files = pieces(texts, with_patch)
+        files = dict(base_pieces)
         for target, old, new, count in edits:
             assert files[target].count(old) == count, (name, target, old, files[target].count(old))
             files[target] = files[target].replace(old, new)
@@ -163,45 +180,74 @@ def main():
         cmd = [args.compiler, '-std=c++14', '-O1', '-g', '-Wall', '-Wextra', '-Wno-unused-parameter', '-Wno-sign-compare', '-fno-diagnostics-show-caret',
                '-fsanitize=address,undefined', '-fno-omit-frame-pointer', '-I' + str(folder), '-I' + str(ROOT / 'port/game'),
                '-DCE_VERSION="fixture"', str(driver), '-o', str(binary)]
-        run = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
-        (folder / 'build.log').write_text(run.stdout + run.stderr)
-        if run.returncode:
-            errors = [l for l in (run.stdout + run.stderr).splitlines() if 'error' in l][:12]
+        run_res = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+        (folder / 'build.log').write_text(run_res.stdout + run_res.stderr)
+        if run_res.returncode:
+            errors = [l for l in (run_res.stdout + run_res.stderr).splitlines() if 'error' in l][:12]
             raise RuntimeError('fixture compilation failed (' + name + '): ' + '\n'.join(errors))
         return binary
 
-    def run(binary, mode, wanted=0, message=''):
+    def run_mode(binary, mode, wanted=0, message=''):
         env = dict(os.environ, ASAN_OPTIONS='detect_leaks=1:abort_on_error=1', UBSAN_OPTIONS='halt_on_error=1')
         p = quiet_crash.run([str(binary), mode], capture_output=True, text=True, env=env, timeout=120)
         ok = p.returncode == wanted and (not message or message in p.stderr)
-        results.append({'mode': mode, 'binary': binary.parent.name, 'expected': wanted, 'exit': p.returncode, 'stdout': p.stdout.strip()[:300],
-                        'stderr': p.stderr.strip()[:300], 'passed': ok})
-        print(('PASS ' if ok else 'FAIL ') + binary.parent.name + ' ' + mode + ('' if ok else '  ' + p.stderr.strip()[:200]), flush=True)
-        return p
+        rec = {'mode': mode, 'binary': binary.parent.name, 'expected': wanted, 'exit': p.returncode, 'stdout': p.stdout.strip()[:300],
+               'stderr': p.stderr.strip()[:300], 'passed': ok}
+        line = ('PASS ' if ok else 'FAIL ') + binary.parent.name + ' ' + mode + ('' if ok else '  ' + p.stderr.strip()[:200])
+        return rec, line
 
     patch_text = (ROOT / 'port/patches' / PATCH).read_text(encoding='latin-1')
     assert re.findall(r'^\+\+\+ b/(\S+)', patch_text, re.M) == ['Controller.cpp'], 'the patch touches one file'
     assert not [l for l in patch_text.splitlines() if l.startswith('-') and not l.startswith('---')], 'the patch only adds'
     assert patch_text.count('\n@@') == 3, 'the patch has the declarations, the filter and the end hook'
 
-    with_patch = make('patched', patched, True)
-    without = make('base', base, False)
+    if jobs == 1:
+        with_patch = make('patched', patched_files)
+        without = make('base', base_files)
+    else:
+        with ThreadPoolExecutor(max_workers=min(2, jobs)) as pool:
+            f_patched = pool.submit(make, 'patched', patched_files)
+            f_base = pool.submit(make, 'base', base_files)
+            with_patch, without = f_patched.result(), f_base.result()
     only = set(x for x in (args.only_mutants or '').split(',') if x)
-    for mode in ([] if only else MODES):
-        run(with_patch, mode)
     def digest(binary, mode):
         p = quiet_crash.run([str(binary), mode], capture_output=True, text=True, timeout=120,
                             env=dict(os.environ, ASAN_OPTIONS='detect_leaks=1:abort_on_error=1', UBSAN_OPTIONS='halt_on_error=1'))
         return p.returncode, [l for l in p.stdout.splitlines() if l.startswith(mode + ' ')], p.stderr
 
-    base_digest = {}
-    for mode in ([] if only else SAME):
+    def run_same(mode):
         code_a, line_a, _ = digest(with_patch, mode)
         code_b, line_b, _ = digest(without, mode)
-        base_digest[mode] = line_b
         ok = code_a == 0 and code_b == 0 and len(line_a) == 1 and line_a == line_b
-        results.append({'mode': mode + ' = unpatched', 'passed': ok, 'patched': line_a, 'base': line_b})
-        print(('PASS ' if ok else 'FAIL ') + mode + ' sends what the controller without the patch sends', flush=True)
+        rec = {'mode': mode + ' = unpatched', 'passed': ok, 'patched': line_a, 'base': line_b}
+        line = ('PASS ' if ok else 'FAIL ') + mode + ' sends what the controller without the patch sends'
+        return mode, line_b, rec, line
+
+    base_digest = {}
+    if not only:
+        if jobs == 1:
+            for mode in MODES:
+                rec, line = run_mode(with_patch, mode)
+                results.append(rec)
+                print(line, flush=True)
+            for mode in SAME:
+                m, line_b, rec, line = run_same(mode)
+                base_digest[m] = line_b
+                results.append(rec)
+                print(line, flush=True)
+        else:
+            with ThreadPoolExecutor(max_workers=jobs) as pool:
+                mode_futures = [pool.submit(run_mode, with_patch, mode) for mode in MODES]
+                same_futures = [pool.submit(run_same, mode) for mode in SAME]
+                for future in mode_futures:
+                    rec, line = future.result()
+                    results.append(rec)
+                    print(line, flush=True)
+                for future in same_futures:
+                    m, line_b, rec, line = future.result()
+                    base_digest[m] = line_b
+                    results.append(rec)
+                    print(line, flush=True)
 
     if not args.no_mutants:
         hook = 'if (!sCeDodgeSending && PortCeDodgeAssistFilter(this, mPadNumber, button, ana_val))\n\t\treturn;'
@@ -334,30 +380,56 @@ def main():
             assert not unknown, 'no such mutant: ' + ', '.join(sorted(unknown))
             for mode in {m[5] for m in mutants if m[0] in only and m[5] in SAME}:
                 base_digest[mode] = digest(without, mode)[1]
-        for name, target, old, new, count, mode, *more in mutants:
-            if only and name not in only:
-                continue
-            binary = make('mutant-' + name, patched, True, [(target, old, new, count)] + [tuple(e) for e in more])
+        selected_mutants = [m for m in mutants if not only or m[0] in only]
+        def eval_mutant(entry):
+            name, target, old, new, count, mode, *more = entry
+            binary = make('mutant-' + name, patched_files, [(target, old, new, count)] + [tuple(e) for e in more])
             code, line, err = digest(binary, mode)
             if mode in SAME:
                 caught = code != 0 or line != base_digest[mode]
             else:
                 caught = code != 0
-            results.append({'mutant': name, 'mode': mode, 'caught': caught, 'passed': caught})
-            print(('PASS ' if caught else 'FAIL ') + 'mutant ' + name + ' is caught by ' + mode + (': ' + err.strip().splitlines()[0][:110] if caught and err.strip() else ''), flush=True)
+            rec = {'mutant': name, 'mode': mode, 'caught': caught, 'passed': caught}
+            msg = ('PASS ' if caught else 'FAIL ') + 'mutant ' + name + ' is caught by ' + mode + (': ' + err.strip().splitlines()[0][:110] if caught and err.strip() else '')
+            return rec, msg
+        if jobs == 1 or len(selected_mutants) <= 1:
+            for entry in selected_mutants:
+                rec, msg = eval_mutant(entry)
+                results.append(rec)
+                print(msg, flush=True)
+        else:
+            with ThreadPoolExecutor(max_workers=jobs) as pool:
+                futures = [pool.submit(eval_mutant, entry) for entry in selected_mutants]
+                for future in futures:
+                    rec, msg = future.result()
+                    results.append(rec)
+                    print(msg, flush=True)
     if args.mirror:
         mirror = args.mirror.resolve()
-        for platform in ('linux', 'windows'):
+        def run_syntax(platform, source):
             target = build.TARGETS[platform]
             includes = [build.PORT / 'd3dx/include', build.PORT / 'include', build.PORT / 'game', *target['includes'], mirror, mirror / 'MissionScript']
-            for source in (ROOT / 'port/game/ce_dodge_assist.cpp', ROOT / 'port/game/ce_gamepad.cpp', mirror / 'Controller.cpp'):
-                cmd = [*target['cxx'], '-std=gnu++14', *build.MSCXX, *build.COMMON, *build.X87, *build.NO_MATH_BUILTINS, '-DCE_VERSION="fixture"',
-                       '-DCE_NETWORK_OFF=1', '-fsyntax-only', '-fno-caret-diagnostics', '-include', str(build.PORT / 'include/port.h'),
-                       *['-I' + str(p) for p in includes], str(source)]
-                done = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
-                ok = done.returncode == 0
-                results.append({'platform': platform, 'source': source.name, 'passed': ok})
-                print(('PASS ' if ok else 'FAIL ') + platform + ' syntax ' + source.name, flush=True)
+            cmd = [*target['cxx'], '-std=gnu++14', *build.MSCXX, *build.COMMON, *build.X87, *build.NO_MATH_BUILTINS, '-DCE_VERSION="fixture"',
+                   '-DCE_NETWORK_OFF=1', '-fsyntax-only', '-fno-caret-diagnostics', '-include', str(build.PORT / 'include/port.h'),
+                   *['-I' + str(p) for p in includes], str(source)]
+            done = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+            ok = done.returncode == 0
+            rec = {'platform': platform, 'source': source.name, 'passed': ok}
+            msg = ('PASS ' if ok else 'FAIL ') + platform + ' syntax ' + source.name
+            return rec, msg
+        syntax_tasks = [(platform, source) for platform in ('linux', 'windows')
+                        for source in (ROOT / 'port/game/ce_dodge_assist.cpp', ROOT / 'port/game/ce_gamepad.cpp', mirror / 'Controller.cpp')]
+        if jobs == 1:
+            for st in syntax_tasks:
+                rec, msg = run_syntax(*st)
+                results.append(rec)
+                print(msg, flush=True)
+        else:
+            with ThreadPoolExecutor(max_workers=jobs) as pool:
+                for future in [pool.submit(run_syntax, *st) for st in syntax_tasks]:
+                    rec, msg = future.result()
+                    results.append(rec)
+                    print(msg, flush=True)
     (out / 'results.json').write_text(json.dumps(results, indent=1))
     failed = [r for r in results if not r.get('passed')]
     print('%d checks, %d failed; %s' % (len(results), len(failed), out / 'results.json'))
