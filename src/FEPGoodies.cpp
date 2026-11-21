@@ -1,5 +1,5 @@
 #include	"Common.h"	// Stuart's file, with the PC build's changes noted at each function
-
+#define ASYNCCACHE_FULL
 #include	"FEPGoodies.h"
 #include	"Frontend.h"
 #include	"Renderinfo.h"
@@ -1260,7 +1260,7 @@ void	CFEPGoodies::StartLoadingGoody()	// FUNCTION: 0x0045c9f0
 void	CFEPGoodies::LoadingGoodyPoll()	// FUNCTION: 0x0045cc10
 {
 	// Let's see if he's done something.
-	if (mGoodyState == GOODY_LOADING && !mGoodieLoader.Busy() && mGoodieLoader.mMemBuffer)
+	if (mGoodyState == GOODY_LOADING && !mGoodieLoader.IsBusy() && mGoodieLoader.mMemBuffer)
 	{
 		int goodie_number = get_goodie_number(mCX, mCY);
 
@@ -1270,12 +1270,12 @@ void	CFEPGoodies::LoadingGoodyPoll()	// FUNCTION: 0x0045cc10
 		float started = PLATFORM.GetSysTimeFloat();
 
 		// yes! Load the goodie from the resource file in memory.
-		mGoodieLoader.GrabMutex();
+		mGoodieLoader.Lock();
 		CResourceAccumulator::ReadResources(-1000 - goodie_number, mGoodieLoader.mMemBuffer);
 		mGoodieLoader.mMemBuffer->Close();
 		delete mGoodieLoader.mMemBuffer;
 		mGoodieLoader.mMemBuffer = NULL;
-		mGoodieLoader.ReleaseMutex();
+		mGoodieLoader.Unlock();
 
 		mGoodyState = GOODY_LOADED;		
 

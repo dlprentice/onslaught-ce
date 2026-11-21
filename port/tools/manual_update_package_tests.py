@@ -24,15 +24,16 @@ class ManualUpdatePackage(unittest.TestCase):
             for windows in (False, True):
                 with self.subTest(windows=windows):
                     text = package.readme("0.1.7", windows).decode()
+                    flat = " ".join(text.split())
                     for phrase in ("checks a signed feed (ce-update-v2.json) and asks before installing",
                                    "goes into versions/ inside this folder", "--rollback", "update_check=0",
-                                   "--apply is refused", "new empty folder",
+                                   "To go back to the version before", "new empty folder",
                                    "Do not start an Onslaught CE 0.1.0-0.1.6 launcher at all", ".download-* and .unpack-*",
-                                   "removes no neighbouring paths", "Rollback (how updating works",
+                                   "removes no neighbouring paths", "See the project README for full migration steps",
                                    "both launcher and game user-data folders", "relative BEA_USER_DIR", "different locations",
                                    "each whole folder to an independent backup", "separate working copy", "game's user-data folder", "its absolute path",
                                    "do not merge or overwrite"):
-                        self.assertIn(phrase, text)
+                        self.assertIn(phrase, flat)
                     for stale in ("checks this project's GitHub releases", "how to turn checks back", "Check for updates",
                                   "Use a published release whose notes address"):
                         self.assertNotIn(stale, text)

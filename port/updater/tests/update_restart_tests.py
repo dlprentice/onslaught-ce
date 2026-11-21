@@ -70,7 +70,7 @@ static int finish_recording(int rc) { return rc; }
 static void start_recording(char **args,int n)
 { (void)args;(void)n;++records; if(!sReplay && !getenv("TEST_RECORD_FAIL")) strcpy(sRecordingPath,"authored.tape"); }
 static int ask_box(const SDL_MessageBoxData *box,int *which,int terminal)
-{ (void)terminal;notice_content = strstr(box->message,"Direct gamepad and flight-stick controls are unavailable") &&
+{ (void)terminal;notice_content = strstr(box->message,"gamepads and flight sticks do not work") &&
   strstr(box->message,"keyboard and mouse");++asks;const char *choice=getenv("TEST_ASK_CHOICE");
   *which=choice ? atoi(choice) : 1; return 1; }
 static int ce_open_report(const char *v,const char *c,const char *u,char *out,size_t n)

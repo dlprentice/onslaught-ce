@@ -289,6 +289,7 @@ typedef uint16_t WCHAR; typedef int BOOL;
 #define FALSE 0
 #define MAX_PATH 260
 #define MCE_SUCCESS 0
+#define MCE_FAILURE 1
 #define _A_HIDDEN 2
 #define _A_SYSTEM 4
 #define _A_SUBDIR 16
@@ -324,13 +325,21 @@ static int _findclose(long) { return 0; }
 static WCHAR *copy16(WCHAR *to, const WCHAR *from) {
     WCHAR *original = to; while ((*to++ = *from++)) {} return original;
 }
+#define wcslen wcslen16
 #define wcscpy copy16
+struct CPCMemoryCard;
+struct SCheatCareer { WCHAR name[256]; };
+static SCheatCareer sCheatCareers[1];
+static int sCheatCount;
+static BOOL CheatCareers() { return FALSE; }
+static void CheatList(CPCMemoryCard *, int) {}
 struct CPCMemoryCard {
     int GetNumSaves(int, int *);
     int GetSaveName(int, int, WCHAR *);
 };
 #include "enumerator.inc"
 #undef wcscpy
+#undef wcslen
 static void check(bool c, const char *m) { if (!c) { std::fprintf(stderr, "FAIL: %s\n", m); std::exit(2); } }
 int main() {
     std::string utf31;

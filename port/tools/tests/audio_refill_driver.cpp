@@ -321,6 +321,7 @@ struct CBaseWaveFileRead {
  return 0;}
 };
 using COggFileRead=CBaseWaveFileRead;
+#include "../../game/ce_hooks_host_stubs.h"
 #include "music.inc"
 static unsigned Dispatch(){HANDLE events[4]={sPlayEvent,sFirstHalfEvent,sSecondHalfEvent,sQuitEvent};unsigned count=0;
  for(;;){DWORD next=WaitForMultipleObjects(4,events,FALSE,0);if(next>3)break;MusicStreamHandle(next);++count;}return count;}

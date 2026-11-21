@@ -205,7 +205,7 @@ port/tools/network_chat_ui_tests.py	script	-	deps	optional	-
 port/tools/network_compatibility_admission_tests.py	script	-	deps+game	optional	-	
 port/tools/network_compatibility_hooks_tests.py	script	-	deps+game	optional	-	
 port/tools/network_compatibility_tests.py	script	-	deps+game	optional	-	
-port/tools/network_connection_entry_tests.py	script	--output-dir {fresh}	none	quarantined	-	its --output-dir must be a fresh folder below the checkout's own local-data; run_suites' {fresh} lies under OUT, so it refuses there (owner: co-op line)
+port/tools/network_connection_entry_tests.py	script	--output-dir {fresh}	none	optional	-	connection menu host driver
 port/tools/network_default_text_tests.py	script	-	deps	release	-	proves the --public build compiles the network out (port/README.md)
 port/tools/network_departure_tests.py	script	-	deps	optional	-	
 port/tools/network_ground_aim_tests.py	script	-	none	optional	-	

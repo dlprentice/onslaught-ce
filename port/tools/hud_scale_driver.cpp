@@ -45,6 +45,7 @@ struct Sprite { Point p; };
 struct FrontEnd { bool running = false; bool IsRunning() const { return running; } } FRONTEND;
 struct Platform { int w = 1920, h = 1080; int GetWindowWidth() { return w; } int GetWindowHeight() { return h; } } PLATFORM;
 struct Game { bool multiplayer = false; bool IsMultiplayer() { return multiplayer; } } GAME;
+#define CE_SPLIT_HUD() GAME.IsMultiplayer()
 static bool CE_WorldActive() { return false; }	// the network layer's replica query in the extracted compass condition (patch 0150)
 struct RenderInfo
 {

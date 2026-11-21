@@ -7,6 +7,8 @@
 #include "ice_signaling.h"
 #include "ce_network_invitation.h"
 
+bool PortRunOffersNetworkPages() { return true; }
+
 namespace {
 int checks = 0, failures = 0;
 int fixture_host_calls = 0, fixture_join_calls = 0, fixture_leave_calls = 0;

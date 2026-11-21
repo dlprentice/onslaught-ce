@@ -26,7 +26,7 @@
 #include "mathsconst.h"	// FUNCTION: 0x00549480 init:ZERO_FVECTOR
 						// FUNCTION: 0x005494a0 init:ID_FMATRIX
 
-extern SINT		GAME_RENDER_MODE;			// 00704e48 (CMeshRenderer's render mode)
+// CMeshRenderer::mRenderMode (00704e48) is declared in meshrenderer.h.
 extern FVector	gMeshRendererVector;		// 00704e38: mode 6's direction
 extern SINT		gMeshRendererAlpha;			// 00704e4c: mode 2's alpha
 extern float	gMeshRendererOffset;		// 00704e50: how far mode 6 moves the back-facing vertices
@@ -955,7 +955,7 @@ float	AbsFloat(float v);				// 004b52a0
 // The original operation taking t's address is unknown. With the unreachable call removed and the
 // original &part->mTriangles[i] form, the whole check yields 1904 bytes against retail's 1912, with
 // 1440 differing bytes (10 exact object annotations); this stand-in yields 11 exact annotations.
-void RenderPart2D(CMeshPart *part, IRenderableThing *thing)	// FUNCTION: 0x0054b800
+void RenderPart2D(CMeshPart *part, IRenderableThing *thing, SINT)	// FUNCTION: 0x0054b800
 {
 	char	str[256];
 	CMotionController	*mc = NULL;
@@ -977,7 +977,7 @@ void RenderPart2D(CMeshPart *part, IRenderableThing *thing)	// FUNCTION: 0x0054b
 			time = ma->mStart + time;
 			if (mc)
 				mc->AdjustFrame(part, &time);
-			SINT	f0 = SINT(floor(time));
+			(void)SINT(floor(time));
 			float	fl = (float)floor(time);
 			float	t = time - fl;
 			if (0) mc->AdjustFrame(part, &t);

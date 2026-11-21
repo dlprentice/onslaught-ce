@@ -9,8 +9,8 @@
 #include "event.h"
 #include "eventmanager.h"
 
-// A cdecl mesh-part renderer at 0054b800 (the DX mesh code before CDXMeshVB). Open question: its name.
-void	RenderMeshPart0054b800(CMeshPart *part, IRenderableThing *thing, SINT a);
+// A cdecl mesh-part renderer at 0054b800 (defined in DXMeshRenderer.cpp; third argument unused).
+void	RenderPart2D(CMeshPart *part, IRenderableThing *thing, SINT a);
 
 //******************************************************************************************
 CScreenOverlay::CScreenOverlay(char *name)	// FUNCTION: 0x004de3a0
@@ -85,7 +85,7 @@ void	CScreenOverlay::Render()	// FUNCTION: 0x004de860
 	{
 		CMESH	*mesh = mRenderThing->GetRTMesh();
 		for (SINT c0 = 0; c0 < mesh->mNumParts; c0++)
-			RenderMeshPart0054b800(mesh->mParts[c0], this, 0);
+			RenderPart2D(mesh->mParts[c0], this, 0);
 	}
 }
 

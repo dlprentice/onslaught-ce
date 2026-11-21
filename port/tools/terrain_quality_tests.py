@@ -297,6 +297,7 @@ struct PatchList {
         text = text.replace(selector, wrapper)
         prefix = ('#include "terrain_quality.h"\n#include "portlog.h"\n#include <stdlib.h>\n'
                   'bool PortCeLayer(){return true;}\n'
+                  'bool PortCeMuseumAuthoredMap(){return false;}\n'
                   'extern "C" int CE_SettingGetBool(const char*,int fallback){'
                   'const char *value=getenv("DRIVER_TERRAIN_STORED");return value?atoi(value):fallback;}\n'
                   'void PortSessionLog(PortSessionCategory,bool,const char*,...){}\n')

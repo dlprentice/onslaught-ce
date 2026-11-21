@@ -209,7 +209,7 @@ sentences against the page's text); a release that offers the page repeats it in
 | `build.py` | the port build (ninja): flags, include overlay, mirror + patch queue, link |
 | `include/` | Win32, DirectSound, DirectInput, mmsystem and VC6 CRT shims over dxvk-native's headers |
 | `platform/` | `common/` (both targets: the SDL3 window and message pump, DirectInput 8, the Direct3D 9 hooks, clocks, registry, NvTriStrip bridge), `linux/` (Win32 over POSIX and SDL3, paths, entry point), `windows/` (file overlay, clocks) |
-| `aliases.tsv` | linklib/aliases.tsv's second names in the Itanium ABI, the C++ name-mangling scheme of the Linux and MinGW toolchains (the original compiler mangled names differently); applied with `--defsym` on Linux and `/alternatename` on Windows |
+| `aliases.tsv` | linklib/aliases.tsv's second names in the Itanium ABI, the C++ name-mangling scheme of the Linux and MinGW toolchains (applied with `--defsym` on Linux and `/alternatename` on Windows; currently empty — 0 aliases needed) |
 | `game/` | CE gameplay additions and integration code |
 | `platform/public/` | public replacements for excluded SDK/framework components |
 | `patches/` | port-only source edits that cannot be byte-neutral in `src/`, applied to a generated mirror |

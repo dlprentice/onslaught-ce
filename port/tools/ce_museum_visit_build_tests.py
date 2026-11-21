@@ -40,7 +40,7 @@ GAME_UNITS = ("ce_museum.cpp", "ce_museum_hall.cpp", "ce_museum_hall_layout.cpp"
 # These helpers own their buffers and pass plain records, handles or caller-owned text across the game boundary.
 # Keep this review independent of build.py: a new exception to the game allocator needs an explicit decision.
 NETWORK_HOST = frozenset(("ce_network_boot_authority.cpp", "ce_network_invitation.cpp"))
-REVIEWED_HOST = NETWORK_HOST | {*HOST_UNITS, "ce_asset_catalog.cpp", "ce_catalogue_menu.cpp", "ce_project.cpp"}
+REVIEWED_HOST = NETWORK_HOST | {*HOST_UNITS, "ce_asset_catalog.cpp", "ce_catalogue_menu.cpp", "ce_catalogue_sounds.cpp", "ce_project.cpp"}
 HEADER = build.PORT / "game/ce_museum_visit.h"
 CALLING_CONVENTION_FLAGS = ("-mrtd", "-mregparm", "-fdefault-calling-conv")
 

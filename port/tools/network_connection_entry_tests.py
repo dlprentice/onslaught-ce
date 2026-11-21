@@ -62,10 +62,11 @@ def main():
     parser.add_argument("--terminal-state-only", action="store_true",
                         help="run authored status updates without menu input actions")
     args = parser.parse_args()
-    repo = Path(__file__).resolve().parents[2]
+    repo = Path(__file__).resolve().parents[2].resolve()
     output = args.output_dir.resolve()
-    if (repo / "local-data").resolve() not in output.parents or output.exists():
-        parser.error("output-dir must be fresh and below repo local-data")
+    inside_tracked = (output == repo or repo in output.parents) and (repo / "local-data") not in output.parents
+    if output.exists() or inside_tracked:
+        parser.error("output-dir must be fresh and outside tracked repository paths")
     cxx, cc = shutil.which(args.compiler), shutil.which(args.cc)
     if not cxx or not cc:
         parser.error("requested compiler is unavailable")

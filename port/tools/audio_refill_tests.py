@@ -35,7 +35,7 @@ def main():
     parent.mkdir(parents=True, exist_ok=True)
     out = Path(tempfile.mkdtemp(prefix="run-", dir=parent))
     common = Path(subprocess.check_output(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"], cwd=ROOT, text=True).strip()).parent
-    data = common / "local-data/port"
+    data = Path(os.environ["BEA_PORT_DATA"]) if os.environ.get("BEA_PORT_DATA") else common / "local-data/port"
     env = {k: v for k, v in os.environ.items() if not k.startswith(("BEA_", "SDL_AUDIO", "FIXTURE_"))}
     env.update(TMPDIR=str(out), OMP_NUM_THREADS="1", OPENBLAS_NUM_THREADS="1")
     receipt = {"mixer_sha256": sha(ROOT / "port/dsound/dsound.cpp"),

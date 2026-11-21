@@ -33,7 +33,7 @@ def main():
     parent.mkdir(parents=True, exist_ok=True)
     out = Path(tempfile.mkdtemp(prefix='run-', dir=parent))
     common = Path(subprocess.check_output(['git', 'rev-parse', '--path-format=absolute', '--git-common-dir'], cwd=ROOT, text=True).strip()).parent
-    deps = common / 'local-data/port'
+    deps = Path(os.environ['BEA_PORT_DATA']) if os.environ.get('BEA_PORT_DATA') else common / 'local-data/port'
     env = {k: v for k, v in os.environ.items() if not k.startswith(('BEA_', 'SDL_AUDIO', 'LD_PRELOAD'))}
     env.update(TMPDIR=str(out), OMP_NUM_THREADS='1', OPENBLAS_NUM_THREADS='1')
     receipt = {'scope': __doc__, 'commands': [], 'cases': [], 'pins': {}, 'pcm_comparisons': []}

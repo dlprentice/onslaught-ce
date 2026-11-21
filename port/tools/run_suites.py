@@ -31,6 +31,7 @@ table: logs stay in OUT (private, ignored local-data) and a row keeps counts onl
 wrappers (memory scope, heavy slot); it starts one suite at a time.
 """
 import argparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import hashlib
 import os
 import re
@@ -219,8 +220,12 @@ def main(argv=None):
     ap.add_argument("--allow", default="none,deps,game", help="comma list of needs this run can meet (default none,deps,game)")
     ap.add_argument("--only", nargs="*", default=[], help="run only suites whose path contains one of these")
     ap.add_argument("--timeout", type=int, default=1800, help="seconds per suite without a time limit of its own in the table")
+    ap.add_argument("-j", "--jobs", type=int, default=1, help="maximum suites to run concurrently (default 1)")
     ap.add_argument("--list", action="store_true", help="print the selection and exit")
     args = ap.parse_args(argv)
+    if args.jobs < 1:
+        print(f"--jobs must be >= 1, got {args.jobs}", file=sys.stderr)
+        return 2
     rows = read_tables(args.table or default_tables())
     chosen = selected(rows, set(args.classes.split(",")), args.only)
     allow = set(args.allow.split(","))
@@ -234,25 +239,42 @@ def main(argv=None):
         print(f"{args.out} is not empty; use a fresh folder", file=sys.stderr)
         return 2
     args.out.mkdir(parents=True, exist_ok=True)
+    (args.out / "logs").mkdir(exist_ok=True)
     commit = commit_id()
     result = args.out / "result.tsv"
     result.write_text("\t".join(RESULT_COLUMNS) + "\n")
     failed = 0
     unrun = []
-    for row in chosen:
-        why = blocked(row, allow, env, venv_python)
-        if why:
-            record = dict(suite=row["path"], outcome="not-run", exit="", seconds="", tests="", skipped="", commit=commit,
-                          command=why, log_sha256="", log="")
-        else:
-            python = str(venv_python) if "venv" in row["needs"] else sys.executable
-            record = run_one(row, args.out, env, python, args.timeout, commit)
+
+    def record_row(row, record):
+        nonlocal failed
         failed += record["outcome"].startswith("FAIL")
         if record["outcome"] == "not-run" and row["class"] == "release":
             unrun.append(row["path"])
         with open(result, "a") as stream:
             stream.write("\t".join(str(record[c]) for c in RESULT_COLUMNS) + "\n")
         print(record["outcome"], record["suite"], record["seconds"], flush=True)
+
+    runnable = []
+    for row in chosen:
+        why = blocked(row, allow, env, venv_python)
+        if why:
+            record_row(row, dict(suite=row["path"], outcome="not-run", exit="", seconds="", tests="", skipped="", commit=commit,
+                                 command=why, log_sha256="", log=""))
+        elif args.jobs == 1:
+            python = str(venv_python) if "venv" in row["needs"] else sys.executable
+            record_row(row, run_one(row, args.out, env, python, args.timeout, commit))
+        else:
+            runnable.append(row)
+
+    if runnable:
+        with ThreadPoolExecutor(max_workers=args.jobs) as pool:
+            futures = {}
+            for row in runnable:
+                python = str(venv_python) if "venv" in row["needs"] else sys.executable
+                futures[pool.submit(run_one, row, args.out, env, python, args.timeout, commit)] = row
+            for future in as_completed(futures):
+                record_row(futures[future], future.result())
     counts = {}
     for line in result.read_text().splitlines()[1:]:
         outcome = line.split("\t")[1]

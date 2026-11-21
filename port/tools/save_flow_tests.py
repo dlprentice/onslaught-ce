@@ -590,12 +590,12 @@ class SourceTrace(unittest.TestCase):
         self.assertIn("WriteDefaultOptionsFile(buffer, size)", options)
         self.assertEqual(0, len(re.findall(r"MEMORYCARD\.", options)))
 
-    def live(self, name, windows=False, after=True, ce=False, network_off=False):
+    def live(self, name, windows=False, after=True, ce=False, network_off=False, exclude=()):
         """The file as the compiler sees it on Linux (or Windows): conditionals resolved, includes empty. ce: CE_VERSION defined
         (the public builds; the faithful build leaves it undefined). network_off: the ordinary public build, without network hooks."""
-        d = Path(self.dir.name) / ("live-" + ("after" if after else "before"))
+        d = Path(self.dir.name) / ("live-" + ("after" if after else "before") + ("-" + "-".join(exclude) if exclude else ""))
         d.mkdir(exist_ok=True)
-        text = self.patched[name] if after else patched(d, name, False, mirror=True)
+        text = self.patched[name] if (after and not exclude) else patched(d, name, after, exclude=exclude, mirror=True)
         (d / name).write_text(text, encoding="latin1")
         for include in re.findall(r'#include\s*[<"]([^>"]+)[>"]', text):
             (d / include).parent.mkdir(parents=True, exist_ok=True)
@@ -624,7 +624,9 @@ class SourceTrace(unittest.TestCase):
     def test_the_network_off_card_changes_on_windows_only_in_the_whole_file_write(self):
         import difflib
         before = [l.strip() for l in self.live("PCMemoryCard.cpp", windows=True, after=False, network_off=True).splitlines() if l.strip()]
-        after = [l.strip() for l in self.live("PCMemoryCard.cpp", windows=True, network_off=True).splitlines() if l.strip()]
+        # 0352 adds an in-memory career overlay active only under BEA_PORT_REPLAY_CHEAT (PortReplayCheatRequested);
+        # check the 0117/0118/0185 write path without 0352, and separately verify 0352 stays gated on PortReplayCheatRequested.
+        after = [l.strip() for l in self.live("PCMemoryCard.cpp", windows=True, network_off=True, exclude=("0352",)).splitlines() if l.strip()]
         changes = [l for l in difflib.unified_diff(before, after, lineterm="", n=0) if l[:1] in "+-" and l[:3] not in ("+++", "---")]
         self.assertEqual([
             '+extern "C" int PortReplaceUserFile(const char *game_path, const void *data, unsigned size, const char *what);',
@@ -632,6 +634,10 @@ class SourceTrace(unittest.TestCase):
             '-fclose(f);', '-return(MCE_SUCCESS);', '-}', '-}', '-return 1;',
             '+return PortReplaceUserFile(path, data, datasize, "career") == 0 ? MCE_SUCCESS : 1;'],
             changes)
+        with_0352 = self.live("PCMemoryCard.cpp", windows=True, network_off=True)
+        for fn in (r"^int\s+CPCMemoryCard::CreateSave\(", r"^int\s+CPCMemoryCard::DeleteSave\(",
+                   r"^int\s+CPCMemoryCard::WriteSave\(", r"^int\s+CPCMemoryCard::ReadSave\("):
+            self.assertIn("if (PortReplayCheatRequested())", function(with_0352, fn))
 
     def test_the_check_would_catch_the_old_delete_in_the_overwrite_yes(self):
         before = self.live("FEPSaveGame.cpp", windows=False, after=False)

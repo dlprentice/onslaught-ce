@@ -127,6 +127,8 @@ static void MakeFixture(const std::wstring &root)
     NewFixtureFile(root + L"\\synthetic-only.marker", "synthetic-only\n");
 }
 
+int CE_SettingSetText(const char *, const char *) { return 0; }
+int CE_SettingSetEmpty(const char *) { return 0; }
 int CE_SettingGetText(const char *, char *out, int n)
 {
     if (!selectorEnabled)

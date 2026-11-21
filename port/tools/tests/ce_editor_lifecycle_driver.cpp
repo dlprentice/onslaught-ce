@@ -50,14 +50,15 @@ public:
 };
 struct { int mGridWidth=400, mGridHeight=300; float GetWaterLevel(){return 10.f;} } MAP;
 struct CGenericCamera : CCamera {};
-struct CController;
+class CController;
 struct IController {
     virtual ~IController() = default;
     virtual void ReceiveButtonAction(CController*,int,float) = 0;
     virtual BOOL CanBeControlledWhenInPause() = 0;
     virtual EControlType GetControlType() = 0;
 };
-struct CController {
+class CController {
+public:
     IController* target=nullptr;
     void SetToControl(IController* value){target=value;}
     IController* GetToControl(){return target;}
@@ -175,7 +176,7 @@ struct {
     }
 } WORLD;
 struct TestPilotEngine { float COfGHeight(){return 1.f;} FVector pos=FVector(0,0,0),old=FVector(0,0,0); FVector GetOldPos(){return old;} bool dead=false; FMatrix orient{{{1,0,0},{0,1,0},{0,0,1}}}; FMatrix GetOrientation(){return orient;} FVector GetPos(){return pos;} bool IsDying(){return dead;} };
-struct CPlayer { TestPilotEngine engine; bool exists=true; TestPilotEngine* GetBattleEngine(){return exists ? &engine : nullptr;} };
+class CPlayer { public: TestPilotEngine engine; bool exists=true; TestPilotEngine* GetBattleEngine(){return exists ? &engine : nullptr;} };
 struct CGame {
     CPlayer pilot; CPlayer* GetPlayer(int){return &pilot;}
     BOOL mPause=FALSE; EGameState mGameState=GAME_STATE_STARTING; int level=777,players=1,quit=0;

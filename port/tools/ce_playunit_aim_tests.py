@@ -129,7 +129,7 @@ def main():
             generated = generated.replace("@DRIVE_FIRE@", "void DriveFire(CUnit* u,const FVector& aim,bool haveAim,int state,bool held) " + selected[2])
             cpp, exe = work / (label + ".cpp"), work / label
             cpp.write_text(generated)
-            result = subprocess.run(["g++", "-std=c++11", "-O0", "-Wall", "-Wextra",
+            result = subprocess.run(["g++", "-std=c++11", "-O0", "-Wall", "-Wextra", '-DCE_VERSION="fixture"',
                                      "-I", str(ROOT / "port/game"), str(cpp), "-o", str(exe)],
                                     text=True, capture_output=True)
             (parent / (label + "-compile.private.log")).write_text(result.stdout + result.stderr)

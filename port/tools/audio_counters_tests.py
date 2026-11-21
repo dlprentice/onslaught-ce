@@ -72,7 +72,7 @@ class Counters(unittest.TestCase):
         parent.mkdir(parents=True, exist_ok=True)
         cls.out = Path(tempfile.mkdtemp(prefix="run-", dir=parent))
         common = Path(subprocess.check_output(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"], cwd=ROOT, text=True).strip()).parent
-        cls.data = common / "local-data/port"
+        cls.data = Path(os.environ["BEA_PORT_DATA"]) if os.environ.get("BEA_PORT_DATA") else common / "local-data/port"
         cls.env = {k: v for k, v in os.environ.items() if not k.startswith(("BEA_", "SDL_AUDIO", "FIXTURE_"))}
         cls.env.update(TMPDIR=str(cls.out), OMP_NUM_THREADS="1", OPENBLAS_NUM_THREADS="1")
         cls.ref = baseline_ref()

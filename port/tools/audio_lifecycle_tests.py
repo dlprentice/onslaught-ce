@@ -41,7 +41,8 @@ def music_sources(out, fixed):
     for patch in sorted((ROOT / "port/patches").glob("*.patch")):
         # The negative control leaves out 0062 and later patches which depend on that worker/poll shape.
         if not fixed and patch.name in ("0062-music-finished-poll.patch", "0103-ce-music-playlist.patch",
-                                        "0131-ce-music-refill-publication.patch", "0132-ce-music-refill-order-diagnostics.patch", "0187-audio-observation-counters.patch"):
+                                        "0131-ce-music-refill-publication.patch", "0132-ce-music-refill-order-diagnostics.patch",
+                                        "0187-audio-observation-counters.patch", "0314-ce-hook-audio-clock.patch"):
             continue
         sections = [part for part in re.split(r"(?=^--- a/)", patch.read_text(), flags=re.M)
                     if any(part.startswith("--- a/" + name + "\n") for name in names)]
@@ -66,7 +67,7 @@ def main():
     parent.mkdir(parents=True, exist_ok=True)
     out = Path(tempfile.mkdtemp(prefix="run-", dir=parent))
     common = Path(checked(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"], cwd=ROOT).stdout.strip()).parent
-    deps = common / "local-data/port"
+    deps = Path(os.environ["BEA_PORT_DATA"]) if os.environ.get("BEA_PORT_DATA") else common / "local-data/port"
     env = dict(os.environ, TMPDIR=str(out), OMP_NUM_THREADS="1", OPENBLAS_NUM_THREADS="1")
     for key in tuple(env):
         if key.startswith("BEA_") or key.startswith("SDL_AUDIO"):

@@ -324,6 +324,7 @@ bool PortAudioStreamSnapshot(IDirectSoundBuffer *b, unsigned long long *ns, unsi
 }
 unsigned long long PortAudioStreamNotifyMixed(IDirectSoundBuffer *) { return 0; }	// no mixing here, so no notification count (patch 0187's age)
 void PortAudioPublishMusicHalf(void *destination, const void *decoded, DWORD bytes) { memcpy(destination, decoded, bytes); }
+#include "../../game/ce_hooks_host_stubs.h"
 
 #include MUSIC_SOURCE
 

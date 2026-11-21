@@ -53,7 +53,7 @@ def main():
     parent.mkdir(parents=True, exist_ok=True)
     out = Path(tempfile.mkdtemp(prefix='run-', dir=parent))
     common = Path(subprocess.check_output(['git', 'rev-parse', '--path-format=absolute', '--git-common-dir'], cwd=ROOT, text=True).strip()).parent
-    data = common / 'local-data/port'
+    data = Path(os.environ['BEA_PORT_DATA']) if os.environ.get('BEA_PORT_DATA') else common / 'local-data/port'
     env = {k: v for k, v in os.environ.items() if not k.startswith(('BEA_', 'SDL_AUDIO', 'LD_PRELOAD'))}
     env.update(TMPDIR=str(out), OMP_NUM_THREADS='1', OPENBLAS_NUM_THREADS='1',
                ASAN_OPTIONS='detect_leaks=1:abort_on_error=0:exitcode=86:disable_coredump=1')
@@ -110,7 +110,11 @@ def main():
         flags = ['--target=i686-pc-linux-gnu', '--sysroot=' + str(data / 'sysroot-sniper'), '-O1', '-g',
                  '-fms-extensions', '-malign-double', '-mms-bitfields', '-mno-sse', '-mfpmath=387']
         shutil.copyfile(ROOT / 'port/vorbis/vc6crt.c', out / 'vc6crt.c')
-        receipt['pins']['decoder_library'] = sha(data / 'vorbis/lib/linux/libvorbis_vc6.a')
+        vorbis_lib = next((p for p in (data / 'vorbis/lib/linux/libvorbis_vc6.a',
+                                       ROOT / 'local-data/port/vorbis/lib/linux/libvorbis_vc6.a',
+                                       common / 'local-data/port/vorbis/lib/linux/libvorbis_vc6.a') if p.is_file()),
+                          data / 'vorbis/lib/linux/libvorbis_vc6.a')
+        receipt['pins']['decoder_library'] = sha(vorbis_lib)
         run([cc, *flags, '-c', out / 'vc6crt.c', '-o', out / 'vc6crt.o'], 'shim-compile')
         variants = {'baseline': baseline, 'fixed': fixed, 'private': fixed,
                     'missing-reset': fixed.replace('\tmState = 0; // Close/Open must not retain', '\t/* missing reset */ // Close/Open must not retain'),
@@ -135,7 +139,7 @@ def main():
             receipt['pins']['reader/' + label] = sha(folder / 'reader.inc')
             cmd = [cxx, *flags, '-fsanitize=address', '-fno-sanitize-link-runtime', '-std=c++17', '-pthread', '-DCE_VERSION=1',
                    *(['-DFIXTURE_PRIVATE_READER=1'] if label == 'private' else []), '-I' + str(folder), '-I' + str(ROOT / 'port/game'),
-                   ROOT / 'port/tools/tests/audio_eof_driver.cpp', out / 'vc6crt.o', data / 'vorbis/lib/linux/libvorbis_vc6.a',
+                   ROOT / 'port/tools/tests/audio_eof_driver.cpp', out / 'vc6crt.o', vorbis_lib,
                    '-lm', '-no-pie', '--ld-path=' + str(data / 'llvm-mingw/bin/ld.lld'),
                    '-L' + str(data / 'sysroot-sniper/usr/lib/i386-linux-gnu'),
                    '-Wl,-rpath,' + str(data / 'sysroot-sniper/usr/lib/i386-linux-gnu'), '-l:libasan.so.6', '-o', folder / 'driver']

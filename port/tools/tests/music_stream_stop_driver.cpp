@@ -11,6 +11,7 @@
 #include <mutex>
 #include <thread>
 #include <vector>
+#include "../../game/ce_hooks_host_stubs.h"
 
 using DWORD = uint32_t;
 using UINT = unsigned;

@@ -51,7 +51,7 @@ BACKDROPS = (("MessageLog.cpp", "void\tCMessageLog::Render("), ("LevelBriefingLo
 # The HUD's test in each build's text: one viewpoint and not multiplayer (patch 0089), or with the network compiled in also a co-op
 # game of the network release (patch 0157). The world markers' scope takes it as portHudEligible and the speaker marker's scope
 # spells it out, once in each arm of patch 0190's CE_NETWORK_OFF conditional.
-VIEWPOINT_TEST = "!GAME.IsMultiplayer() && ENGINE.GetNumViewpoints() == 1"
+VIEWPOINT_TEST = "!CE_SPLIT_HUD() && ENGINE.GetNumViewpoints() == 1"
 COOP_TEST = "(CE_LockstepRequested() || (" + VIEWPOINT_TEST + "))"
 SPEAKER = "CeHudScope scope(%s, mViewportWidth, mViewportHeight, screen.X, screen.Y);\t// Port (patch 0190)"
 # The text each build compiles (build.network_view): the default public build's, CE_NETWORK_OFF defined (build.resolve_network_off
@@ -232,8 +232,8 @@ def main():
         if battle.count("CeHudScalePoint(") != 2:
             raise RuntimeError("battleline vertex and point paths must both be transformed")
         compass = function((mirror / "DXCompass.cpp").read_text(), "void CDXCompass::Render(")
-        # The network layer rewrites the condition to "(GAME.IsMultiplayer() && !CE_WorldActive())" (patch 0150): either form starts the block.
-        start = re.search(r"\tif \(\(?GAME\.IsMultiplayer\(\)(?: && !CE_WorldActive\(\))?\)\)?", compass).start()
+        # The network layer rewrites the condition to "(CE_SPLIT_HUD() && !CE_WorldActive())" (patches 0150/0235): either form starts the block.
+        start = re.search(r"\tif \(\(?(?:GAME\.IsMultiplayer\(\)|CE_SPLIT_HUD\(\))(?: && !CE_WorldActive\(\))?\)\)?", compass).start()
         end = compass.index("\n\tLT.SSS_NoCache(", start)
         (out / "compass_projection.inc").write_text(compass[start:end] + "\n")
         def compile_driver(gate, binary):

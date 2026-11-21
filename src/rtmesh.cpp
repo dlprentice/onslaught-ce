@@ -50,7 +50,7 @@ public:
 };
 
 extern UINT		MESH_SURFACE_DETAIL;			// 00630130 (MeshRenderer.cpp; 100 unless a mesh is being drawn)
-extern SINT		GAME_RENDER_MODE;				// 00704e48: 4 forces imposters
+// CMeshRenderer::mRenderMode (00704e48: 4 forces imposters) is declared in meshrenderer.h.
 
 // CMeshPart::EvaluatePose owns the seven-argument pose operation at 004b4de0.
 
@@ -335,7 +335,7 @@ void CRTMesh::RenderImposter()	// FUNCTION: 0x004dcea0
 	if (mImposter)
 	{
 		BOOL	far_enough = (lod > IMPOSTER_FADE_START);
-		BOOL	forced = (GAME_RENDER_MODE == 4) | FORCE_OBJECT_IMPOSTERS;	// retail's bitwise or, here and in the test below (004dcfe3 or eax,edx; 004dcfe7 or edx,ecx)
+		BOOL	forced = (CMeshRenderer::mRenderMode == 4) | FORCE_OBJECT_IMPOSTERS;	// retail's bitwise or, here and in the test below (004dcfe3 or eax,edx; 004dcfe7 or edx,ecx)
 		if (forced | far_enough)
 		{
 			SINT	alpha = (SINT)((lod - IMPOSTER_FADE_START) * 255.0f / (IMPOSTER_FADE_END - IMPOSTER_FADE_START));
