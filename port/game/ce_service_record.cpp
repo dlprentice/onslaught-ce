@@ -473,6 +473,7 @@ const SRecordRow	kRecordRows[CE_RECORD_ROWS] = {
 
 const WCHAR *PortCeBackupCareerName() { return sBackupName; }
 const unsigned char *PortCeBackupSnapshot() { return sBackupSnapshot; }
+void PortCeRecordRefreshCareers() { if (sCareers) CareersOpen(); }
 #ifdef _WIN32
 const CeBackupOrigin *PortCeBackupWindowsOrigin() { return sHasBackupOrigin ? &sBackupOrigin : nullptr; }
 #endif

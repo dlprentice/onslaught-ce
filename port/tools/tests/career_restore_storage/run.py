@@ -47,7 +47,9 @@ def main():
     cc = deps.DATA / 'llvm-mingw/bin/i686-w64-mingw32-clang++'
     with (output / 'windows-build.private.log').open('xb') as log:
         subprocess.run([cc, '-std=c++17', '-Wall', '-Wextra', '-Werror', '-O1', '-static',
-                        ROOT / 'port/platform/windows/ce_career_restore.cpp', HERE / 'windows_closed.cpp',
+                        ROOT / 'port/platform/windows/ce_career_restore.cpp',
+                        ROOT / 'port/platform/windows/ce_backup_preview.cpp',
+                        HERE / 'windows_closed.cpp',
                         '-o', exe], cwd=ROOT, check=True, stdout=log, stderr=log, timeout=90)
     env = dict(os.environ, PYTHONDONTWRITEBYTECODE='1')
     for key in ('DISPLAY', 'WAYLAND_DISPLAY', 'DBUS_SESSION_BUS_ADDRESS'):

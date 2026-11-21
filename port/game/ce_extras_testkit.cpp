@@ -14,10 +14,17 @@ int		CeTestKitMenuRows(CMenuOptionsList *list, CeTestRow *out, int max);
 namespace
 {
 const char *const kXpPages[] = {"hub", "careers", "record", "missions", "goodies", "music", "catalogue", "lore", "article",
-								"contents", "stored-settings", "backup", "backup-preview", "sounds", "backup-all"};
+								"contents", "stored-settings", "backup", "backup-preview", "sounds", "backup-all",
+								"import-career", "edit-career"};
 static_assert(sizeof kXpPages / sizeof kXpPages[0] == XP_COUNT, "one page name per ECeExtrasPage");
 
-bool	XpActive() { return PortCeExtrasActive(); }
+bool	XpAdjustable()
+{
+	const SCeListPage *page = PortCeExtrasListShown();
+	return page && page->mAdjust != NULL;
+}
+bool	XpActive() { return PortCeExtrasActive() && !XpAdjustable(); }
+bool	XpEditActive() { return PortCeExtrasActive() && XpAdjustable(); }
 void	XpId(char *out, size_t size)
 {
 	const int page = PortCeExtrasPageShown();
@@ -98,8 +105,9 @@ bool	StatePreviewVerified(char *out, size_t size)
 }
 }
 
-// Right and Left page a list box by its ten rows in view.
+// Right and Left page a list box by its ten rows in view; adjustable list pages (Edit Career) use Right/Left to change values, so step by Up/Down.
 CE_TEST_PAGE("xp", 40, XpActive, XpId, XpTitle, XpRows, XpFocused, NoBox, 10, 79, 0x14d, 80, 0x14b);
+CE_TEST_PAGE("xp-edit", 40, XpEditActive, XpId, XpTitle, XpRows, XpFocused, NoBox, 0, 0, 0, 0, 0);
 CE_TEST_STATE("backup.state", StateBackup);
 CE_TEST_STATE("restore.phase", StateRestorePhase);
 CE_TEST_STATE("restore.outcome", StateRestoreOutcome);

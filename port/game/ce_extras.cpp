@@ -95,7 +95,7 @@ const DWORD	kBad = 0xff6e1e1e;			// the guide's failed state (220, 60, 60 on the
 const DWORD	kGood = 0xff175818;			// the message box's green, for a good state (always with its word)
 
 // The pages: which are list boxes, where Back goes from each, and each one's title.
-const int	kParent[XP_COUNT] = {-1, XP_HUB, XP_CAREERS, XP_RECORD, XP_RECORD, XP_HUB, XP_HUB, XP_HUB, XP_LORE, XP_ARTICLE, XP_RECORD, XP_RECORD, XP_HUB, -1, XP_HUB};
+const int	kParent[XP_COUNT] = {-1, XP_HUB, XP_CAREERS, XP_RECORD, XP_RECORD, XP_HUB, XP_HUB, XP_HUB, XP_LORE, XP_ARTICLE, XP_RECORD, XP_RECORD, XP_HUB, -1, XP_HUB, XP_HUB, XP_RECORD};
 WCHAR		kTitleExtras[] = L"Extras";
 WCHAR		kTitleRecord[] = L"Service Record";
 
@@ -115,19 +115,21 @@ const SRow	kExtrasRows[] = {
 	{L"Lore", XP_LORE, L"Read about the world, the machines and the makers.", NULL},
 	{L"Back Up All Careers", XP_BACKUP_ALL, L"One verified set of every career and your options.", L"Your careers are only read."},
 	{L"Backup Preview", XP_BACKUP_PREVIEW, L"Verify a backup and see its saved career.", L"Verify a backup before choosing Restore as New."},
+	{L"Import Career", XP_IMPORT_CAREER, L"Copy a career file into your saves as a new career.", L"Backs up your careers first. Existing careers stay untouched."},
 };
 const SRow	kRecordActions[] = {
 	{L"Missions", XP_MISSIONS, L"Every mission, with your rank.", NULL},
 	{L"Goodies", XP_GOODIES, L"Every Goodie, found or locked.", NULL},
 	{L"Saved Settings", XP_STORED_SETTINGS, L"The sound levels and player settings in this career.", L"Looking changes nothing."},
 	{L"Back Up Career", XP_BACKUP, L"Make a verified copy of this career.", L"Your original stays where it is."},
+	{L"Edit Career", XP_EDIT_CAREER, L"Change unlocks, ranks, kills or settings and save as a new career.", L"Your original career is never changed."},
 };
 const int	kExtrasCount = int(sizeof(kExtrasRows) / sizeof(kExtrasRows[0]));
 const int	kRecordActionCount = int(sizeof(kRecordActions) / sizeof(kRecordActions[0]));
 
-// Where the two lists of rows are centred (the options list centres its items of 20 on y): the record's eleven items a little
-// higher, so that a hint of three lines ends above the help bar.
-const float	kExtrasY = 300.f, kRecordY = 290.f;
+// Where the two lists of rows are centred (the options list centres its items of 20 on y): the record's items sit
+// higher so that its hint lines finish clearly above the help bar.
+const float	kExtrasY = 295.f, kRecordY = 270.f;
 
 int				sOffered = -1;
 bool			sActive;
@@ -148,6 +150,8 @@ const SCeListPage	*ListPage(int page)
 		case XP_BACKUP: return PortCeRecordBackupPage();
 	case XP_BACKUP_PREVIEW: return PortCeBackupPreviewPage();
 	case XP_BACKUP_ALL: return PortCeBackupAllPage();
+	case XP_IMPORT_CAREER: return PortCeImportCareerPage();
+	case XP_EDIT_CAREER: return PortCeCareerEditPage();
 	case XP_MUSIC:		return PortCeJukeboxPage();
 	case XP_CATALOGUE:	return PortCeCataloguePage();
 	case XP_CATALOGUE_LIST:	return PortCeCatalogueListPage();
@@ -445,13 +449,35 @@ public:
 			{
 			case BUTTON_FRONTEND_MENU_UP:		moved = CeListMove(list, -1);	SkipHeadings(page, list, -1);	break;
 			case BUTTON_FRONTEND_MENU_DOWN:		moved = CeListMove(list, 1);	SkipHeadings(page, list, 1);	break;
-			case BUTTON_FRONTEND_MENU_LEFT:		moved = CeListPage(list, -1);	SkipHeadings(page, list, -1);	break;
-			case BUTTON_FRONTEND_MENU_RIGHT:	moved = CeListPage(list, 1);	SkipHeadings(page, list, 1);	break;
+			case BUTTON_FRONTEND_MENU_LEFT:
+				if (page->mAdjust)
+				{
+					const int adj = page->mAdjust(list->mCursor, -1);
+					if (adj != 0)
+					{
+						moved = adj > 0;
+						break;
+					}
+				}
+				moved = CeListPage(list, -1);	SkipHeadings(page, list, -1);	break;
+			case BUTTON_FRONTEND_MENU_RIGHT:
+				if (page->mAdjust)
+				{
+					const int adj = page->mAdjust(list->mCursor, 1);
+					if (adj != 0)
+					{
+						moved = adj > 0;
+						break;
+					}
+				}
+				moved = CeListPage(list, 1);	SkipHeadings(page, list, 1);	break;
 			case BUTTON_PAUSE_MENU_SELECT:		SelectRow(page, list);			break;
 			case BUTTON_FRONTEND_MENU_BACK:
-				if (sPage == XP_BACKUP_PREVIEW)
+				if (sPage == XP_BACKUP_PREVIEW || sPage == XP_IMPORT_CAREER || sPage == XP_EDIT_CAREER)
 				{
-					const int step = PortCeBackupPreviewStepBack();
+					const int step = (sPage == XP_BACKUP_PREVIEW) ? PortCeBackupPreviewStepBack()
+								   : (sPage == XP_IMPORT_CAREER)  ? PortCeImportCareerStepBack()
+																  : PortCeCareerEditStepBack();
 					if (step > 0)
 						CFrontEnd::PlaySound(FES_BACK);
 					else if (step == 0)
@@ -717,6 +743,18 @@ void PortCeRecordBackupBack()
 void PortCeBackupAllBack()
 {
 	if (PortCeExtrasActive() && sPage == XP_BACKUP_ALL)
+		sMenu->Back(false);
+}
+
+void PortCeImportCareerBack()
+{
+	if (PortCeExtrasActive() && sPage == XP_IMPORT_CAREER)
+		sMenu->Back(false);
+}
+
+void PortCeCareerEditBack()
+{
+	if (PortCeExtrasActive() && sPage == XP_EDIT_CAREER)
 		sMenu->Back(false);
 }
 

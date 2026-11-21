@@ -22,8 +22,11 @@ port/tools/ce_backup_preview_windows_tests.py	script	-	deps+wine	release	-	resto
 port/tools/ce_bonus_save_tests.py	script	-	none	release	-	
 port/tools/ce_bonus_tests.py	script	-	none	release	-	
 port/tools/ce_career_backup_tests.py	script	-	none	release	-	restore lane; host build with the system compiler
+port/tools/ce_career_edit_tests.py	script	-	none	release	-	pure-byte career editor header and causal mutants; host build with the system compiler
+port/tools/ce_career_publish_tests.py	script	-	deps+wine	release	-	non-destructive career publish-as-new behind CeCareerTakeFullSet and external .bes reader; host Linux + Windows/Wine builds
 port/tools/ce_career_restore_names_tests.py	script	-	none	release	-	restore lane; host build with the system compiler
 port/tools/ce_career_restore_ui_tests.py	script	-	none	release	-	restore lane; host build with the system compiler
+port/tools/ce_career_restore_windows_tests.py	script	-	deps+wine	release	-	restore lane; runs Windows career custody backend and adverse mutants under Wine
 port/tools/ce_full_backup_ui_tests.py	script	-	none	release	-	full backup set lane; host build with the system compiler
 port/tools/ce_catalogue_filter_tests.py	script	-	none	release	-	catalogue lane; host build with the system compiler
 port/tools/ce_catalogue_sounds_tests.py	script	-	none	release	-	catalogue lane; host build with the system compiler
@@ -187,6 +190,7 @@ port/tools/mods_tool_safety_tests.py	script	-	none	release	-
 port/tools/mods_author_tests.py	script	-	none	release	900	the mod author's commands (new, check) and port/MODS.md against the loader; builds the validator with the host compiler and zlib
 port/tools/mods_windows_conversion_tests.py	script	-	none	release	-	
 port/tools/mods_windows_disabled_tests.py	script	-	none	release	-	
+port/tools/mods_windows_ntfs_tests.py	script	--out {scratch}	deps+wine	release	-	cross-compiles standalone Windows NTFS mods fixture (mods-windows-ntfs.exe) and verifies core cases and honest UNSUPPORTED_OR_DENIED reporting under Wine
 port/tools/mods_windows_readonly_tests.py	script	--cxx {data}/llvm-mingw/bin/i686-w64-mingw32-clang++ --cc {data}/llvm-mingw/bin/i686-w64-mingw32-clang --out {scratch}	deps	release	-	
 port/tools/mouse_activity_tests.py	script	-	deps	release	-	
 port/tools/music_stream_reinit_tests.py	script	-	none	release	-	

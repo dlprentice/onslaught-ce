@@ -235,6 +235,55 @@ static inline void CeModStop(char *text, int n)
 		strcpy(text + length, ".");
 }
 
+// Appends "..." to a wrapped last line (`last`, capacity at least 100 chars) so it stays narrower than `maxWidth`,
+// snapping back to a word boundary and trimming trailing punctuation/dots before falling back to character cuts.
+template <typename Char, typename WidthFn>
+static inline void CeModEllipsizeLine(Char *last, float maxWidth, WidthFn width)
+{
+	int length = 0;
+	while (last[length])
+		length++;
+	if (length > 96)
+		length = 96;
+	Char orig[100];
+	for (int i = 0; i < length; i++)
+		orig[i] = last[i];
+	orig[length] = 0;
+	auto trimPunct = [&](int pos) {
+		while (pos > 0 && (orig[pos - 1] == Char(' ') || orig[pos - 1] == Char(',') || orig[pos - 1] == Char(';') ||
+						   orig[pos - 1] == Char(':') || orig[pos - 1] == Char('-') || orig[pos - 1] == Char('/') ||
+						   orig[pos - 1] == Char('(') || orig[pos - 1] == Char('.')))
+			pos--;
+		return pos;
+	};
+	auto fits = [&](int pos) {
+		for (int i = 0; i < pos; i++)
+			last[i] = orig[i];
+		last[pos] = last[pos + 1] = last[pos + 2] = Char('.');
+		last[pos + 3] = 0;
+		return pos <= 0 || float(width(last)) < maxWidth;
+	};
+	bool placed = false;
+	for (int cut = trimPunct(length); cut > 0;)
+	{
+		if (fits(cut))
+		{
+			placed = true;
+			break;
+		}
+		int prev = cut;
+		while (prev > 0 && orig[prev - 1] != Char(' '))
+			prev--;
+		cut = trimPunct(prev);
+	}
+	if (!placed)
+	{
+		for (int cut = length; cut >= 0; cut--)
+			if (fits(trimPunct(cut)))
+				break;
+	}
+}
+
 // The pages of the list. Up to ten mods are one page of up to ten rows; more are pages of nine rows and More Mods, shared out evenly (the
 // fewest pages, then the fewest rows each page needs), so that the last page is never a few rows with a large gap above More Mods.
 static const int kCeModsSlots = 10;

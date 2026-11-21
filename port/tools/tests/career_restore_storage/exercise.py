@@ -530,7 +530,7 @@ def main():
                   no_ui=True, no_real_profiles=True, native_windows=False,
                   limitations=['Readable confirmed filename requires exact pair approval on the game thread; suggestions do not authorize a name.',
                                'Other writers can change files after the final check; postpublication warnings preserve all files.',
-                               'Only supported ASCII card namespace and supported local filesystems; Windows unsupported.'])
+                               'This Linux host suite exercises only supported ASCII card namespaces on local Linux filesystems; Windows custody runs separately in ce_career_restore_windows_tests.py.'])
     path = work / 'result.private.json'
     path.write_text(json.dumps(result, indent=2) + '\n')
     print(path.relative_to(ROOT), len(RESULTS))

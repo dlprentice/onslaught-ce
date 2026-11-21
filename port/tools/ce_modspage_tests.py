@@ -678,6 +678,61 @@ class ModsPageTests(unittest.TestCase):
         self.assertIn("if (n == 0 && mExpanded)\n\t\t\tmValue = -1;", code)
         self.assertIn("\t\tmValue = -1;\n\t\tif (!mExpanded)", code, "and whenever a key reaches the row")
 
+    def test_page_colours_and_hint_truncation_preserve_contrast_and_word_boundaries(self):
+        code = (PORT / "game/ce_modspage.cpp").read_text()
+        self.assertIn("const DWORD\tkGrey = 0xff6c6c6c;", code)
+        self.assertIn("const DWORD\tkRed = 0xff7f3838;", code)
+        self.assertIn("CeModEllipsizeLine(fill.c[n - 1], kHintWidth, Width);", code)
+        # Behavioral host check of CeModEllipsizeLine (word boundary, punctuation trimming, long-word fallback, bounds).
+        probe_dir = _run_build_dir() / "ellipsize-probe"
+        probe_dir.mkdir(parents=True, exist_ok=True)
+        probe_cpp = probe_dir / "probe.cpp"
+        probe_exe = probe_dir / "probe"
+        if not probe_exe.is_file():
+            probe_cpp.write_text(
+                '#include "ce_modspage_model.h"\n'
+                '#include <stdio.h>\n'
+                '#include <string.h>\n'
+                'static int FixedWidth(const char *s) { return (int)strlen(s) * 10; }\n'
+                'static void RunCase(const char *name, const char *in, float maxW) {\n'
+                '    char buf[128] = {};\n'
+                '    snprintf(buf, sizeof buf, "%s", in);\n'
+                '    CeModEllipsizeLine(buf, maxW, FixedWidth);\n'
+                '    printf("%s|%s\\n", name, buf);\n'
+                '}\n'
+                'int main() {\n'
+                '    RunCase("word", "Alpha beta gamma delta", 165.f);\n'
+                '    RunCase("punct", "Alpha, beta, gamma.", 155.f);\n'
+                '    RunCase("dot", "Short sentence.", 200.f);\n'
+                '    RunCase("paren", "Mode ( draft", 105.f);\n'
+                '    RunCase("longword", "Supercalifragilistic", 105.f);\n'
+                '    RunCase("punctonly", "..., -:", 50.f);\n'
+                '    RunCase("narrow", "Word", 10.f);\n'
+                '    RunCase("clamp96", "word " "0123456789 " "0123456789 " "0123456789 " "0123456789 " "0123456789 " "0123456789 " "0123456789 " "0123456789 " "0123456789", 1000.f);\n'
+                '    return 0;\n'
+                '}\n'
+            )
+            cxx = os.environ.get("CXX", "g++")
+            built = subprocess.run(
+                [cxx, "-std=gnu++17", "-O1", "-Wall", "-Wextra", "-Werror", "-I", str(PORT / "game"),
+                 "-I", str(PORT / "platform/common"), str(probe_cpp), "-o", str(probe_exe)],
+                capture_output=True, text=True, timeout=60, preexec_fn=mods_tests.no_core,
+            )
+            self.assertEqual(built.returncode, 0, built.stderr)
+        ran = subprocess.run([str(probe_exe)], capture_output=True, text=True, timeout=30, preexec_fn=mods_tests.no_core)
+        self.assertEqual(ran.returncode, 0, ran.stderr)
+        got = dict(line.split("|", 1) for line in ran.stdout.splitlines())
+        self.assertEqual(got["word"], "Alpha beta...")
+        self.assertEqual(got["punct"], "Alpha, beta...")
+        self.assertEqual(got["dot"], "Short sentence...")
+        self.assertEqual(got["paren"], "Mode...")
+        self.assertEqual(got["longword"], "Superca...")
+        self.assertEqual(got["punctonly"], "...")
+        self.assertEqual(got["narrow"], "...")
+        self.assertLessEqual(len(got["clamp96"]), 99)
+        self.assertTrue(got["clamp96"].endswith("..."), got["clamp96"])
+        self.assertFalse(got["clamp96"].endswith("...."), got["clamp96"])
+
     # ---- two mods on one file ------------------------------------------------------------------------------------------------------
     def test_two_mods_on_one_file_say_which_wins(self):
         self.three()

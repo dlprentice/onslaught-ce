@@ -34,6 +34,8 @@ enum ECeExtrasPage
 	XP_BACKUP_PREVIEW,
 	XP_CATALOGUE_LIST,	// the Catalogue's lists (ce_catalogue_list.cpp): opened from the Catalogue, Back returns there
 	XP_BACKUP_ALL,		// Back Up All Careers (ce_backup_all_page.cpp): one verified set of every career and the options
+	XP_IMPORT_CAREER,	// Import Career (ce_import_career_page.cpp): import an external .bes file as a new career
+	XP_EDIT_CAREER,		// Edit Career (ce_career_edit_page.cpp): edit a copy of a career and save as a new career
 	XP_COUNT
 };
 
@@ -91,6 +93,8 @@ struct SCeListPage
 	bool		(*mHeading)(int index);
 	// drawing beside the box for the highlighted row (the Catalogue's picture and model), in the rectangle given
 	void		(*mPane)(int index, float left, float top, float right, float bottom);
+	// optional Left (-1) / Right (+1) handler for adjustable rows: 1 adjusted, -1 at limit (consume key), 0 not adjustable (page list)
+	int			(*mAdjust)(int index, int delta);
 };
 
 // A reading page: one article in a panel (ce_reading.h). The page draws itself, including the hint under its panel; the host hands it the
@@ -149,6 +153,13 @@ void PortCeBackupPreviewBack();
 int PortCeBackupPreviewStepBack();
 const SCeListPage *PortCeBackupAllPage();
 void PortCeBackupAllBack();
+const SCeListPage *PortCeImportCareerPage();
+void PortCeImportCareerBack();
+int PortCeImportCareerStepBack();
+const SCeListPage *PortCeCareerEditPage();
+void PortCeCareerEditBack();
+int PortCeCareerEditStepBack();
+void PortCeRecordRefreshCareers();
 void PortCeRecordBackupBack();
 const WCHAR *PortCeBackupCareerName();
 const unsigned char *PortCeBackupSnapshot();

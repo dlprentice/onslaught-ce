@@ -43,8 +43,8 @@ namespace {
 
 // Text colours are authored for a doubling colour stage (ce_frontend.cpp, CCeBack::kGrey): the colour given is half of what is seen.
 const DWORD	kCream = 0xff7f6f5f;			// what describes (the colour of the original's Multiplayer description): about 253, 221, 189 on the screen
-const DWORD	kGrey = 0xff545454;				// a note: about 168 grey on the screen
-const DWORD	kRed = 0xff6e1e1e;				// a failed state's word: about 220, 60, 60 on the screen
+const DWORD	kGrey = 0xff6c6c6c;				// a note or by-line: about 216 grey on the screen (matches Museum's light grey contrast on dark navy)
+const DWORD	kRed = 0xff7f3838;				// a failed state's word: about 255, 112, 112 on the screen (crisp coral-red on dark navy)
 
 // The list's rows: ten mods on one page, or nine and More Mods when there are more; then Open Mods Folder and Back. With twelve items the
 // list is centred so that its first row sits just under the title bar, and three lines of hint and the page's note fit between Back and the
@@ -95,21 +95,7 @@ int		Lines(const char *text, float y, DWORD colour, int most)
 	if (n > most)
 	{
 		n = most;
-		WCHAR *last = fill.c[n - 1];
-		int length = 0;
-		while (last[length])
-			length++;
-		if (length > 96)
-			length = 96;
-		for (;; length--)
-		{
-			while (length > 0 && last[length - 1] == ' ')
-				length--;
-			last[length] = last[length + 1] = last[length + 2] = '.';
-			last[length + 3] = 0;
-			if (length <= 0 || float(Width(last)) < kHintWidth)
-				break;
-		}
+		CeModEllipsizeLine(fill.c[n - 1], kHintWidth, Width);
 	}
 	const float line = float(font->GetHeight());
 	for (int l = 0; l < n; l++)
