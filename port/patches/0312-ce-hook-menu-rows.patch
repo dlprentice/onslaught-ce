@@ -1,0 +1,27 @@
+--- a/FrontEnd.cpp
++++ b/FrontEnd.cpp
+@@ -109,2 +109,3 @@
++#include "ce_hooks.h"	// Port: the CE hook points (port/game/ce_hooks.h)
+ BOOL	CFrontEnd::Init(EFrontEndEntry entry,BOOL inLoadedSystem)	// FUNCTION: 0x004662a0
+ {
+@@ -202,3 +203,4 @@
++	{ CeMenuPage cePage = {CE_MENU_FRONTEND_PAGES, -1, this, NULL, NULL, -1}; ce_hook_menu_rows(CE_MENU_BUILD, &cePage); }	// CE hook point (port/game/ce_hooks.h)
+ 	
+ 	mPages[FEP_DEMOMAIN]			= &mFEPDemoMain;
+ 
+--- a/PauseMenu.cpp
++++ b/PauseMenu.cpp
+@@ -518,2 +518,3 @@
++#include "ce_hooks.h"	// Port: the CE hook points (port/game/ce_hooks.h)
+ CPauseMenu::CPauseMenu(bool options_page) : mActive(FALSE), mPage(0), mCloseTime(-1.f)
+ {
+@@ -573,3 +574,4 @@
++	{ CeMenuPage cePage = {CE_MENU_PAUSE_LIST, -1, NULL, this, list, -1}; ce_hook_menu_rows(CE_MENU_BUILD, &cePage); }	// CE hook point (port/game/ce_hooks.h)
+ 	mLists.Append(list);
+ 
+ 	// the controls
+@@ -701,3 +703,4 @@
++	{ CeMenuPage cePage = {CE_MENU_PAUSE_OPTIONS, -1, NULL, this, NULL, -1}; ce_hook_menu_rows(CE_MENU_BUILD, &cePage); }	// CE hook point (port/game/ce_hooks.h)
+ 
+ 	mCircle1 = NULL;
+ 	mCircle2 = NULL;

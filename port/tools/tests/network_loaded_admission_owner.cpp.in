@@ -28,7 +28,7 @@ FILE*OwnerOpen(const char*,const char*){++file_opens;return fail_open?nullptr:re
 // The frame-feel measurement (feel.h) is off in this fixture: the extracted Pump prefix tests it once and has nothing to count.
 #define PORT_FEEL_ON() 0
 void PortFeelPump() {}
-enum {REAL=0,PRESENT=1,SHIM=2};std::atomic<int>gMode{-1};double gDt=1./30;unsigned long long gDtNs=0;long long gQpcDt=0;
+/* CLOCK_ENUM */std::atomic<int>gMode{-1};double gDt=1./30;unsigned long long gDtNs=0;long long gQpcDt=0;
 /* CLOCK_MODE */
 /* CLOCK_IDLE */
 /* WINDOW_STATE_AND_PREP */

@@ -29,11 +29,22 @@ FDIV = re.compile(r"^(\s*)(%[-\w.$]+) = fdiv ((?:[a-z]+ )*)(float|double) ([^,\s
 INSN = re.compile(r"^(\s*)(%[-\w.$]+) = (fptosi|fptoui) (float|double|x86_fp80) ([^,\s]+) to (i\d+)(.*)$")
 
 
-def constant(text):
-    """An LLVM IR float or double literal (decimal, or the 16-digit hex of a double) as a Python float."""
+def constant(text, ty="double"):
+    """An LLVM IR float or double literal (decimal, or the 16-digit hex of a double) as a Python float.
+
+    LLVM 23+ prints decimal literals for some float constants that LLVM 22 wrote in hex (for example
+    `float 1.150000e+00` vs `0x3FF2666660000000`). Narrow `float` constants to IEEE-754 single precision
+    before computing the reciprocal so decimal and hex IR spell the exact same divisor."""
     if text.lower().startswith("0x"):
-        return struct.unpack("<d", int(text, 16).to_bytes(8, "little"))[0]
-    return float(text)
+        v = struct.unpack("<d", int(text, 16).to_bytes(8, "little"))[0]
+    else:
+        v = float(text)
+    if ty == "float":
+        try:
+            v = struct.unpack("<f", struct.pack("<f", v))[0]
+        except OverflowError:
+            v = float("inf") if v > 0 else float("-inf")
+    return v
 
 
 def nearest(exact, ty):
@@ -60,7 +71,7 @@ def reciprocal(line):
     if not m:
         return None
     indent, dst, flags, ty, val, div, tail = m.groups()
-    c = constant(div)
+    c = constant(div, ty)
     if c == 0 or c != c or abs(c) == float("inf"):
         return None
     r = 1.0 / c

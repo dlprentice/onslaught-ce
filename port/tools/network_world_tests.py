@@ -273,7 +273,7 @@ def hud_target_syntax(mirror, out):
         (mirror / name).write_text(text, encoding="latin-1")
     for platform in ("linux", "windows"):
         target = build.TARGETS[platform]
-        includes = [build.PORT / "d3dx/include", build.PORT / "include", *target["includes"], mirror, mirror / "MissionScript"]
+        includes = [build.PORT / "d3dx/include", build.PORT / "include", build.PORT / "game", *target["includes"], mirror, mirror / "MissionScript"]
         for name in ("Hud.cpp", "DXEngine.cpp", "Cockpit.cpp"):
             command = [*target["cxx"], "-std=gnu++14", *build.MSCXX, *build.COMMON, *build.X87, *build.NO_MATH_BUILTINS,
                        "-fsyntax-only", "-include", str(build.PORT / "include/port.h"), *["-I" + str(p) for p in includes], str(mirror / name)]

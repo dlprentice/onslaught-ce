@@ -1,0 +1,11 @@
+--- a/CarrierGuide.cpp
++++ b/CarrierGuide.cpp
+@@ -94,7 +94,7 @@
+ 	float	distance = d.MagnitudeXY();
+ 	const FVector	&v = d;	// STAND-IN (ids), see above
+ 	if (d.MagnitudeXY() > 2.0f)
+-		yaw = d.Azimuth();
++		{ volatile float yawf = d.Azimuth(); yaw = yawf; }	// Port: retail stores it as a float (00422050)
+ 	float	pitch = (float)atan2(v.Z, distance);
+ 	float	current = GetUnit()->GetCurrentOrientation().mYaw;
+ 	FVector	right = GetUnit()->GetOrientation().GetColumnX();

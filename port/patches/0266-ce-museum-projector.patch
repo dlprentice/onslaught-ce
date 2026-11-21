@@ -1,0 +1,53 @@
+--- a/FEPGoodies.cpp
++++ b/FEPGoodies.cpp
+@@ -1049,6 +1049,27 @@
+ 
+ //*********************************************************************************
+ 
++#ifdef CE_VERSION
++extern "C" bool PortCeMuseumCinemaFilmName(unsigned index,char *stem,unsigned cap)
++{
++    if (!stem || cap<128) return false;
++    for (SINT n=0;n<MAX_NUM_GOODIES;++n) {
++        if (get_goodie_type_hack(n)!=GT_FMV) continue;
++        if (index) { --index;continue; }
++        char filename[256]={};get_goodie_fmv(filename,n);
++        unsigned count=0;
++        for (;filename[count];++count) {
++            const unsigned char c=filename[count];
++            if (count+1>=cap || !((c>='A' && c<='Z') || (c>='a' && c<='z') ||
++                (c>='0' && c<='9') || c=='_' || c=='-' || c==' ')) return false;
++        }
++        if (!count) return false;
++        memcpy(stem,filename,count+1);return true;
++    }
++    return false;
++}
++#endif
++
+ static int get_goodie_level(SINT goodie_num)
+ {
+ 	switch (goodie_num)
+--- a/Player.cpp
++++ b/Player.cpp
+@@ -1,6 +1,9 @@
+ // Player.cpp: implementation of the CPlayer class.
+ //
+ //////////////////////////////////////////////////////////////////////
++#ifdef CE_VERSION
++extern "C" bool PortCeMuseumCinemaFire(bool release,float value);
++#endif
+ 
+ #include "common.h"	// FUNCTION: 0x004d2690 init:ZERO_FVECTOR
+ 
+@@ -318,6 +321,10 @@
+ 	// if game is pre running or panning don't allow control of movement
+ 	if (GAME.GetGameState() < GAME_STATE_PLAYING) return ;
+ 
++#ifdef CE_VERSION
++	if ((button==BUTTON_MECH_CHARGE_GUN_POD || button==BUTTON_MECH_FIRE_GUN_POD) &&
++	    PortCeMuseumCinemaFire(button==BUTTON_MECH_FIRE_GUN_POD,val)) return;
++#endif
+ 	if (mBattleEngine.ToRead() == NULL ||
+ 	    mBattleEngine->IsDying() ||
+ 		mBattleEngine->GetIsPoweredUp() == FALSE) return ;

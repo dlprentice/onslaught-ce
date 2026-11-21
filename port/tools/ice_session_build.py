@@ -96,6 +96,11 @@ def main() -> None:
             run([cxx, *cxx_flags, network / "tests/protocol_tests.cpp", *without_transport,
                  *libraries, "-o", protocol])
             binaries.append(protocol)
+        if mode == "ice":
+            origin = output / ("ice-route-origin-tests" + suffix)
+            run([cxx, *cxx_flags, network.parent / "tools/tests/mission_route_origin_driver.cpp",
+                 *without_transport, *libraries, "-o", origin])
+            binaries.append(origin)
     print("Built", args.target, "CE session and protocol fixtures:", output)
     if args.run:
         for binary in binaries:

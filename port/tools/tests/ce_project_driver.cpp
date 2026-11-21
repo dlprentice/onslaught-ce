@@ -11,8 +11,14 @@ std::string gameDirectory, userDirectory;
 int checks = 0, failures = 0, careerMutations = 0, careerReads = 0, careerWrites = 0;
 void Check(bool value, const char* message) { ++checks; if (!value) { ++failures; std::fprintf(stderr,"FAIL: %s\n",message); } }
 struct FVector { float X, Y, Z; };
-struct CInitThing { char mName[128]; FVector mPos; };
-struct CThing { FVector loaded; void Init(CInitThing* init) { loaded = init->mPos; } };
+enum EAllegiance { Friendly, Hostile, Neutral };
+struct CInitThing { char mName[128]; FVector mPos; EAllegiance mAllegiance; };
+struct CThing {
+    FVector loaded = {}; EAllegiance side = Friendly;
+    virtual ~CThing() {}
+    void Init(CInitThing* init) { loaded = init->mPos; side = init->mAllegiance; }
+};
+struct CUnit : CThing {};
 typedef int SINT; typedef int BOOL;
 const BOOL FALSE = 0, TRUE = 1;
 const int MCE_FAILURE = -1;
@@ -51,7 +57,9 @@ int main(int argc, char** argv) {
             Check(std::strstr(PortCeProjectMessage(),"did not load") != nullptr,"a map that never loaded has its own diagnostic");
         } else {
             CInitThing anchor = {}, other = {}; std::strcpy(anchor.mName,"AuthoredAnchor"); std::strcpy(other.mName,"UnrelatedObject");
-            anchor.mPos = {1,2,3}; other.mPos = {4,5,6}; CThing a = {}, b = {};
+            anchor.mPos = {1,2,3}; other.mPos = {4,5,6}; CThing scenery; CUnit unit, b;
+            CThing& a = scenario == "nonunit-side" ? scenery : static_cast<CThing&>(unit);
+            other.mAllegiance = Neutral;
             CInitThing* inits[] = {&anchor,&other}; CThing* things[] = {&a,&b};
             if (scenario == "missing") std::strcpy(anchor.mName,"MissingObject");
             if (scenario == "duplicate") std::strcpy(other.mName,"AuthoredAnchor");
@@ -65,12 +73,16 @@ int main(int argc, char** argv) {
                 Check(c.loaded.X==7 && c.loaded.Y==8 && c.loaded.Z==9,"a base-world object of the bound name keeps its position");
                 if (scenario == "base-only") std::strcpy(anchor.mName,"LevelObject");
             }
-            bool expected = scenario == "load" || scenario == "base-and-level";
+            bool expected = scenario == "load" || scenario == "base-and-level" || scenario == "unit-side";
             Check(LoadAuthoredWorld(level,inits,things,2,FALSE) == expected,"actual patch hooks accept only one complete unambiguous binding");
             Check(PortCeProjectLoaded() == expected,"a failed or partial world load cannot report project success");
             Check(PortCeProjectExitStatus() == (expected ? 0 : 1),"the exit status is the project's outcome");
             if (scenario == "near-miss") Check(a.loaded.X==1 && b.loaded.X==4,"names that only begin alike are not the bound name");
+            if (scenario == "nonunit-side") Check(a.loaded.X == 0 && a.side == Friendly,
+                "a side assigned to scenery refuses the map before initializing the bound object");
             if (expected) {
+                Check(a.side == (scenario == "unit-side" ? Hostile : Friendly) && b.side == Neutral,
+                      "only the bound unit changes allegiance before its native initializer");
                 Check(a.loaded.X==12.5f && a.loaded.Y==-7.25f && a.loaded.Z==-3.0f,"the authored transform reaches object Init in Aquila XYZ");
                 Check(b.loaded.X==4 && b.loaded.Y==5 && b.loaded.Z==6,"an unrelated installed object is unchanged");
                 Check(std::strstr(PortCeProjectMessage(),"placements loaded") != nullptr,"the successful project load has an honest visible status");

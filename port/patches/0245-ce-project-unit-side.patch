@@ -1,0 +1,17 @@
+--- a/world.cpp
++++ b/world.cpp
+@@ -805,6 +805,12 @@
+ 		CInitThing	*init = inits[i];
+ #ifdef CE_VERSION
+-        if (!PortCeProjectApplyPlacement(init->mName, sizeof(init->mName), base != FALSE,
+-                                        &init->mPos.X, &init->mPos.Y, &init->mPos.Z)) return FALSE;
++        if (PortCeProjectPlacementActive()) {
++            int side = int(init->mAllegiance);
++            if (!PortCeProjectApplyPlacement(init->mName, sizeof(init->mName), base != FALSE,
++                                             &init->mPos.X, &init->mPos.Y, &init->mPos.Z,
++                                             dynamic_cast<CUnit *>(things[i]) ? &side : nullptr))
++                return FALSE;
++            init->mAllegiance = static_cast<EAllegiance>(side);
++        }
+ #endif
+ 

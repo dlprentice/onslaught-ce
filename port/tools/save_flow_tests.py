@@ -36,7 +36,7 @@ PLATFORM = ("files.cpp", "paths.cpp", "save_replace.cpp", "save_overwrite.cpp", 
 # build.py GAME_CRT: game objects use LIBCMT's stream table (a second fclose returns EOF; ReadSave closes twice)
 GAME_CRT = {"fopen": "bea_crt_fopen", "port_fopen": "bea_crt_port_fopen", "fclose": "bea_crt_fclose"}
 WRAPS = ",".join("--wrap=" + n for n in ("write", "pread", "fsync", "close", "openat", "renameat", "fstatat", "usleep"))
-INCLUDES = [f"-I{deps.PORT / 'include'}", f"-I{deps.PORT / 'include/linux'}", f"-I{deps.DATA / 'dxvk-native/usr/include/dxvk'}"]
+INCLUDES = [f"-I{deps.PORT / 'include'}", f"-I{deps.PORT / 'include/linux'}", f"-I{deps.PORT / 'game'}", f"-I{deps.DATA / 'dxvk-native/usr/include/dxvk'}"]
 # build.py NO_WIDE_LIBCALLS: LLVM must not turn a 16-bit wide-string loop into a call to glibc's 32-bit wcslen and friends.
 NO_WIDE_LIBCALLS = ["-fno-builtin-" + f for f in ("wcslen", "wcscmp", "wcsncmp", "wcschr", "wcscpy", "wcsncpy", "wcscat",
                                                   "wmemcmp", "wmemchr", "wmemcpy", "wmemmove", "wmemset")]
@@ -179,9 +179,9 @@ class Flow(unittest.TestCase):
         cls.before = Build(Path(cls.scratch.name), False)
         cls.after = Build(Path(cls.scratch.name), True)
         cls.only0117 = Build(Path(cls.scratch.name), True, exclude=("0118",), label="only0117")
-        # 0137 (the save-failed notice) takes its FEPOptions.cpp context from 0117's lines, so it cannot apply without 0117;
-        # it is not part of the question this variant answers (0118's approval without 0117's atomic write).
-        cls.only0118 = Build(Path(cls.scratch.name), True, exclude=("0117", "0137"), label="only0118")
+        # 0137 (the save-failed notice) and 0313 (the save-gate hook) take their FEPOptions.cpp context from 0117's lines, so they cannot apply without 0117;
+        # they are not part of the question this variant answers (0118's approval without 0117's atomic write).
+        cls.only0118 = Build(Path(cls.scratch.name), True, exclude=("0117", "0137", "0313"), label="only0118")
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix="save-flow-case-", dir=deps.WORK / "tests")

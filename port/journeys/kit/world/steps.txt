@@ -1,0 +1,41 @@
+# The world queries in a running level: the camera's position, the ground and water under it, and a line straight down
+# from it (z grows down, so the line's end has the larger z). Read-only; the kit's own example.
+wait ticks 600
+key RETURN
+wait page fe:main within 900
+go "Load Game"
+wait page fe:directory within 900
+select row Gold
+wait page fe:level-select within 900
+wait ticks 60
+key RETURN
+wait page fe:briefing within 600
+wait ticks 60
+key RETURN
+wait page fe:be-config within 600
+wait ticks 60
+key RETURN
+wait page fe:wingmen within 600
+wait ticks 60
+key RETURN
+wait ticks 240
+key RETURN
+wait state game.level=* within 2400
+wait ticks 300
+wait state world.camera=*
+dump camera
+# Two points: under the camera (dry land on this level) and one under water (the water level, -10, is above the ground there).
+# Dry land: the line down meets the ground at the map's height (-16.964 on level 311).
+probe-ground 206 362
+assert world.ground[0]<-16.9
+assert world.ground[0]>-17.0
+probe-line 206 362 -200 206 362 200
+assert world.line[4]<-16.9
+assert world.line[4]>-17.0
+# Under water: the ground is at -2.472, below the water level -10, and the line stops at the water surface.
+probe-ground 300 250
+assert world.ground[1]=-10.000
+probe-line 300 250 -200 300 250 200
+assert world.line[4]<-9.9
+assert world.line[4]>-10.1
+dump probed

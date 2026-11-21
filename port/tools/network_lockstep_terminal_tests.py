@@ -147,13 +147,14 @@ campaign_configure_mutants = (
      'accepted campaign launch clears the previous mission return'),
 )
 mutants += campaign_configure_mutants
-def run(label, source_path, expected_fail=None, native_getter=getter):
+def run(label, source_path, expected_fail=None, native_getter=getter, relay=False):
     if label=='actual': src=driver
     else:
         src=out/(label+'-driver.cpp')
         src.write_text(driver.read_text().replace('#include "../../game/ce_network_lockstep.cpp"',f'#include "{source_path}"'))
     exe=out/(label+'-test')
-    cmd=['clang++','-std=c++17','-fwrapv','-O1','-DLOCKSTEP_VALIDATOR_INC="'+str(validator)+'"','-DNATIVE_SLOT_GETTER_INC="'+str(native_getter)+'"','-I',str(ROOT/'port/tools/tests/lockstep_stubs'),'-I',str(crypto),str(src),str(ROOT / 'port/game/ce_network_campaign.cpp'), str(ROOT / 'port/game/ce_network_result_exchange.cpp'), str(ROOT/'port/network/codec.cpp'),str(ROOT/'port/network/prerun_flags.cpp'),str(crypto_obj),'-o',str(exe)]
+    cmd=['clang++','-std=c++17','-fwrapv','-O1','-DLOCKSTEP_VALIDATOR_INC="'+str(validator)+'"','-DNATIVE_SLOT_GETTER_INC="'+str(native_getter)+'"','-iquote',str(source.parent),'-I',str(ROOT/'port/tools/tests/lockstep_stubs'),'-I',str(crypto),str(src),str(ROOT / 'port/game/ce_network_campaign.cpp'), str(ROOT / 'port/game/ce_network_result_exchange.cpp'), str(ROOT/'port/network/codec.cpp'),str(ROOT/'port/network/prerun_flags.cpp'),str(crypto_obj),'-o',str(exe)]
+    if relay: cmd[1:1] = ["-DCE_NETWORK_ICE=1", "-DCE_MISSION_RELAY_FIXTURE=1"]
     proc=subprocess.run(cmd,capture_output=True,text=True,env=dict(os.environ,TMPDIR=str(out)),timeout=60)
     (out/(label+'-build.log')).write_text(proc.stdout+proc.stderr)
     if proc.returncode: raise RuntimeError(f'{label}: build failed: '+proc.stderr)
@@ -164,6 +165,24 @@ def run(label, source_path, expected_fail=None, native_getter=getter):
     caught=proc.returncode!=0 and ('FAIL '+expected_fail) in proc.stdout
     print(('PASS' if caught else 'FAIL')+' negative control: '+label)
     return caught
+if sys.argv[1:] == ["--mission-relay-loss"]:
+    passed = run("mission-relay-loss", source, relay=True)
+    text = source.read_text()
+    for label, before, after, rejection in (
+        ("relay-forgotten", "L.missionRouteWasRelay = CE_NetIceUsesRelay(L.net) != 0;",
+         "L.missionRouteWasRelay = false;", "only the actual relayed active mission keeps a timeout cause"),
+        ("relay-stale", "L.missionRouteWasRelay = CE_NetIceUsesRelay(L.net) != 0;",
+         "L.missionRouteWasRelay |= CE_NetIceUsesRelay(L.net) != 0;", "a former relay path cannot type a later direct failure"),
+        ("relay-assumes-cause", "CE_NetIceRouteInterrupted(L.net))",
+         "true)", "provider I/O is not a broken game path"),
+    ):
+        if text.count(before) != 1:
+            raise SystemExit("mission relay control target missing: " + label)
+        operand = out / (label + ".cpp")
+        operand.write_text(text.replace(before, after))
+        passed = run(label, operand, rejection, relay=True) and passed
+    print("Mission route and termination controls:", "PASS" if passed else "FAIL", "(private evidence:", out, ")")
+    raise SystemExit(0 if passed else 1)
 ok=run('actual',source)
 if sys.argv[1:] == ['--campaign-return-only']:
     import json

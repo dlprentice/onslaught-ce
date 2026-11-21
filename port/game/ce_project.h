@@ -18,25 +18,53 @@ int PortCeProjectExitStatus() noexcept;
 bool PortCeProjectCareerAllowed() noexcept;
 // Shared native authoring entry fence. Query only: no launch, transport or profile changes.
 bool PortCeAuthoringSessionAllowed() noexcept;
+bool PortCeProjectPlacementActive() noexcept;
 bool PortCeProjectBeginWorld(int level, bool base) noexcept;
 bool PortCeProjectApplyPlacement(const char* name, size_t capacity, bool base,
-                                 float* x, float* y, float* z) noexcept;
+                                 float* x, float* y, float* z, int* unitSide = nullptr) noexcept;
 bool PortCeProjectEndWorld(bool base) noexcept;
 
-// Native authoring uses the same strict v2 format as project launch. Opaque documents retain all supported
+// Native authoring and gameplay support v2 placements and v3 unit side overrides. Opaque documents retain all supported
 // fields, IDs, bindings and source text. Unknown fields are rejected instead of being dropped on save.
 struct CeProjectDocument;
-struct CeProjectPosition { const char* source; float x, y, z; };
+// The most placements a project may hold (the editor asserts that its object table is at least this large).
+enum { CeProjectPlacementLimit = 4096 };
+#include "ce_hold.h"
+struct CeProjectReach { bool enabled = false; float x = 0, y = 0, z = 0; CeHoldSettings hold{}; };
+// An explicit solo walker start, independent of any placed carrier or unit.
+struct CeProjectPlayerStart {
+    bool enabled = false;
+    float x = 0, y = 0, z = 0;
+};
+struct CeProjectPosition { const char* source; float x, y, z; int side = -1; };
 CeProjectDocument* PortCeProjectDocumentNew(int level, const char* name, char* error, size_t capacity) noexcept;
 CeProjectDocument* PortCeProjectDocumentRead(const char* bytes, size_t size, char* error, size_t capacity) noexcept;
 void PortCeProjectDocumentDelete(CeProjectDocument* document) noexcept;
 int PortCeProjectDocumentLevel(const CeProjectDocument* document) noexcept;
 size_t PortCeProjectDocumentCount(const CeProjectDocument* document) noexcept;
+CeProjectReach PortCeProjectDocumentReach(const CeProjectDocument* document, size_t index = 0) noexcept;
 bool PortCeProjectDocumentPosition(const CeProjectDocument* document, size_t index, CeProjectPosition* position) noexcept;
 // One transaction: any invalid or repeated source refuses the entire update, leaving the document intact.
 bool PortCeProjectDocumentUpdate(CeProjectDocument* document, const CeProjectPosition* positions, size_t count,
-                                  char* error, size_t capacity) noexcept;
+                                  char* error, size_t capacity, const CeProjectReach* reach = nullptr, size_t reachCount = 1, const CeProjectPlayerStart* playerStart = nullptr) noexcept;
 // Required bytes INCLUDING the terminating NUL; zero on refusal. A null destination queries the exact size.
 size_t PortCeProjectDocumentWrite(const CeProjectDocument* document, char* bytes, size_t capacity,
                                   char* error, size_t errorCapacity) noexcept;
+
+// A play test owns an immutable copy of one validated saved revision. Each consumer accepts exactly
+// one level load, applies bindings before object initialization, and refuses missing or repeated names.
+// Base-world objects never satisfy a level binding. Failure stays sticky for the rest of that load.
+struct CeProjectPlayback;
+CeProjectPlayback* PortCeProjectPlaybackNew(const CeProjectDocument* document, char* error, size_t capacity) noexcept;
+void PortCeProjectPlaybackDelete(CeProjectPlayback* playback) noexcept;
+bool PortCeProjectPlaybackBegin(CeProjectPlayback* playback, int level, bool base, char* error, size_t capacity) noexcept;
+bool PortCeProjectPlaybackApply(CeProjectPlayback* playback, const char* name, size_t nameCapacity, bool base,
+                               float* x, float* y, float* z, char* error, size_t capacity, int* unitSide = nullptr) noexcept;
+bool PortCeProjectPlaybackEnd(CeProjectPlayback* playback, bool base, char* error, size_t capacity) noexcept;
+
+CeProjectPlayerStart PortCeProjectDocumentPlayerStart(const CeProjectDocument* document) noexcept;
+// Called before the native start creates its Battle Engine. Returns true only
+// when a CE solo override was applied; ordinary play is not changed.
+bool PortCeProjectApplyPlayerStart(int playerNumber, bool inverted, float& x, float& y, float& z, bool flying = false) noexcept;
+
 #endif

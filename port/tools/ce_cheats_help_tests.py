@@ -9,6 +9,8 @@ import subprocess
 import tempfile
 import unittest
 
+from ce_editor_lifecycle_tests import definition
+
 
 ROOT = Path(__file__).resolve().parents[2]
 FRONTEND = ROOT / "port/game/ce_frontend.cpp"
@@ -27,6 +29,28 @@ def function(source, signature):
             depth -= 1
         end += 1
     return source[start:end]
+
+
+def binding_help_sources(out):
+    frontend = FRONTEND.read_text()
+    assist = (ROOT / "port/game/ce_dodge_assist.cpp").read_text()
+    dik = (ROOT / "port/include/linux/dinput.h").read_text()
+    controls = (ROOT / "src/Controller.h").read_text()
+    policy = "\n".join(definition(assist, name) for name in
+                       ("KeyBound", "PortCeActionEnabled", "PortCeActionConflict"))
+    # Only this driver's synthetic controls vary. Use the production key constants and conflict policy.
+    defines = [line for text in (dik, controls) for line in text.splitlines()
+               if (match := re.match(r"#define\s+((?:DIK|BUTTON)_\w+)\s+", line))
+               and (match[1] in {"DIK_M", "DIK_T", "DIK_E"} or re.search(r"\b" + match[1] + r"\b", policy))]
+    (out / "binding_keys.inc").write_text("\n".join(defines) + "\n")
+    (out / "binding_conflict.inc").write_text(policy)
+    no_break = re.search(r"(?m)^#define\s+kNoBreak\s+\S+", frontend)
+    assert no_break
+    (out / "message.inc").write_text(no_break[0] + "\n" + "\n".join(
+        definition(frontend, name) for name in ("Widen", "Extent", "WrapLines", "ShowMessage")))
+    # Exercise the same Help & Info action as the live menu, through its actual message box formatter.
+    case = function(frontend, "case CEA_TIPS:")
+    (out / "tips_action.inc").write_text("case CEA_TIPS: " + case[case.index("{"):])
 
 
 def no_core():
@@ -91,6 +115,7 @@ class CheatHelpTests(unittest.TestCase):
         parent.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(prefix="run-", dir=parent) as tmp:
             out = Path(tmp)
+            binding_help_sources(out)
             (out / "cheats_help.inc").write_text(frontend[start:end])
             (out / "word_wrap.inc").write_text(wrap)
             (out / "camera_buttons.inc").write_text(controls[first:last] + "\n" + pause.group(0) + "\n")
@@ -100,12 +125,18 @@ class CheatHelpTests(unittest.TestCase):
                     exe = out / ("driver-network" if network else "driver-public")
                     cmd = [os.environ.get("CXX", "g++"), "-std=c++14", "-Wall", "-Wextra", "-Werror",
                            "-Wno-unused-parameter", *([] if network else ["-DCE_NETWORK_OFF=1"]),
-                           "-I", str(out), str(DRIVER), "-o", str(exe)]
+                           "-I", str(out), str(DRIVER), str(ROOT / "port/game/ce_dodge_binding.cpp"), "-o", str(exe)]
                     built = subprocess.run(cmd, capture_output=True, text=True, timeout=30, preexec_fn=no_core)
                     self.assertEqual(built.returncode, 0, built.stderr)
-                    ran = subprocess.run([str(exe)], capture_output=True, text=True, timeout=5, preexec_fn=no_core)
-                    self.assertEqual(ran.returncode, 0, ran.stderr)
-                    self.assertIn("every page's hints, wrapping, spacing and message box passed", ran.stdout)
+                    bindings = subprocess.run([str(exe), "commander-bindings"], capture_output=True, text=True,
+                                              timeout=10, preexec_fn=no_core)
+                    self.assertEqual(bindings.returncode, 0, bindings.stderr)
+                    self.assertIn("six displayed help states passed", bindings.stdout)
+                    for variant in ("optional-off", "optional-on"):
+                        with self.subTest(optional_pages=variant):
+                            ran = subprocess.run([str(exe), variant], capture_output=True, text=True, timeout=5, preexec_fn=no_core)
+                            self.assertEqual(ran.returncode, 0, ran.stderr)
+                            self.assertIn("every page's hints, wrapping, spacing and message box passed", ran.stdout)
 
 
 if __name__ == "__main__":

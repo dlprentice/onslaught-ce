@@ -154,6 +154,15 @@ class QualityOptions(unittest.TestCase):
              "CE_TerrainDetailChoice() == 1 && CE_TerrainDetailStatus()", "wording"),
             ("drop-unsaved-with-fallback", 'L"Extended (using Normal, not saved)" : L"Extended (using Normal)"',
              'L"Extended (using Normal)" : L"Extended (using Normal)"', "wording-unsaved"),
+            # The 0.1.13 form: the state in the label, a space after the colon, Off and On.
+            ("label-carries-state", 'return const_cast<WCHAR *>(kind == FullModels ? L"Full models:" : L"Terrain detail distance:");',
+             'return const_cast<WCHAR *>(results[kind] == QualityRefused ? L"Full models (not applied): " : L"Full models: ");', "invalid"),
+            ("off-on-values", '(unsaved ? L"Yes (not saved)" : L"Yes") : (unsaved ? L"No (not saved)" : L"No")',
+             '(unsaved ? L"On (not saved)" : L"On") : (unsaved ? L"Off (not saved)" : L"Off")', "defaults"),
+            ("refusal-unmarked", "if (results[kind] == QualityRefused && value == GetValue())", "if (false)", "invalid"),
+            ("refusal-on-every-choice", "if (results[kind] == QualityRefused && value == GetValue())", "if (results[kind] == QualityRefused)", "invalid"),
+            ("rows-untracked", "Refresh();\n            Track(this, true);", "Refresh();", "defaults"),
+            ("rows-never-forgotten", "~QualityItem() override { Track(this, false); }", "~QualityItem() override {}", "defaults"),
         ]
         for name, old, new, scenario in mutations:
             with self.subTest(mutant=name):

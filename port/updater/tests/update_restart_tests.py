@@ -40,6 +40,7 @@ static const char PUBLIC_KEY_HEX[]="retained-source-key";
 static char sHere[PATHN],sUser[PATHN],sRecordingPath[PATHN];
 static int sReplay,paths,logs,finds,games,records,reports,dialogs,forbidden,handoffs,checks,rollbacks;
 static int asks,record_notices,notice_content;
+static int sIniQuiet;   /* ce_launch.c's flag: main sets it for --no-record, the unsaved-choice message reads it */
 static char **game_args;
 static int game_argc;
 static int init_paths(void) { ++paths; strcpy(sHere,"authored install");strcpy(sUser,"authored user");return 1; }

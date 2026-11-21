@@ -469,6 +469,61 @@ static void prerun_admission_controls(){
  fake_idle_mode=IDLE_NONE;
 }
 
+#if defined(CE_MISSION_RELAY_FIXTURE)
+static bool selectedRelay=true;
+static bool interrupted=false;
+static const char *routeProblem="";
+extern "C" int CE_NetSignalingDirectorySelected() { return 0; }
+extern "C" int CE_LobbySignalingGameSecret(uint32_t, uint32_t, uint8_t *) { return 0; }
+extern "C" int CE_NetIceUsesRelay(const CE_NetSession *) { return selectedRelay; }
+extern "C" int CE_NetIceRouteInterrupted(const CE_NetSession *) { return interrupted; }
+extern "C" const char *CE_NetGameProblem(const CE_NetSession *) { return routeProblem; }
+extern "C" CE_NetSession *CE_NetCreateGame(const CE_NetConfig *config) { return CE_NetCreate(config); }
+static void mission_relay_loss_controls() {
+    for (bool host : {true,false}) {
+        for (bool relay : {true,false}) {
+            init(host);selectedRelay=relay;interrupted=true;routeProblem="";last_error[0]=0;
+            check(Poll() && !PortCeMissionRelayLossRole(),"live route does not mean lost connection");
+            mock_status.phase=CE_NET_FAILED;mock_status.error=CE_NET_TIMEOUT;
+            check(!Poll() && L.stage==FAILED && PortCeMissionRelayLossRole()==(relay?(host?CE_NET_HOST:CE_NET_GUEST):0),"only the actual relayed active mission keeps a timeout cause");
+            Fail("a later diagnostic");CE_LockstepAfterWorldShutdown();
+            check(PortCeMissionRelayLossRole()==(relay?(host?CE_NET_HOST:CE_NET_GUEST):0),"first terminal cause survives teardown");
+        }
+        init(host);selectedRelay=true;routeProblem="";check(Poll(),"observe the earlier relay path");
+        selectedRelay=false;check(Poll(),"observe the changed live path before loss");
+        mock_status.phase=CE_NET_FAILED;mock_status.error=CE_NET_TIMEOUT;Poll();
+        check(!PortCeMissionRelayLossRole(),"a former relay path cannot type a later direct failure");
+        init(host);selectedRelay=false;check(Poll(),"observe a direct path before relay selection");
+        selectedRelay=true;check(Poll(),"observe that the current path is now relayed");
+        mock_status.phase=CE_NET_FAILED;mock_status.error=CE_NET_TIMEOUT;Poll();
+        check(PortCeMissionRelayLossRole()==(host?CE_NET_HOST:CE_NET_GUEST),"loss follows the most recent live selected path");
+        init(host);selectedRelay=true;check(Poll(),"observe live selected route for I/O loss");
+        routeProblem="relay route closed";mock_status.phase=CE_NET_FAILED;mock_status.error=CE_NET_IO;
+        check(!Poll() && PortCeMissionRelayLossRole()==(host?CE_NET_HOST:CE_NET_GUEST),"native adapter I/O failure retains exact role");
+        init(host);selectedRelay=true;interrupted=false;check(Poll(),"observe route for voluntary departure");
+        routeProblem="";mock_status.phase=CE_NET_CLOSED;mock_status.error=CE_NET_PEER_LEFT;
+        Poll();check(!PortCeMissionRelayLossRole(),"voluntary peer departure never claims route loss");
+        init(host);selectedRelay=true;interrupted=true;check(Poll(),"observe route for unannounced transport close");
+        mock_status.phase=CE_NET_FAILED;mock_status.error=CE_NET_PEER_LEFT;Poll();
+        check(PortCeMissionRelayLossRole()==(host?CE_NET_HOST:CE_NET_GUEST),"an unannounced transport disconnect is not a voluntary leave");
+        init(host);selectedRelay=true;interrupted=false;check(Poll(),"observe route for explicit provider departure");
+        routeProblem="confirmed peer departure";mock_status.phase=CE_NET_FAILED;mock_status.error=CE_NET_PEER_LEFT;Poll();
+        check(!PortCeMissionRelayLossRole(),"an explicitly reported peer departure keeps its reason");
+        init(host);selectedRelay=true;interrupted=false;check(Poll(),"observe route for an unrelated provider I/O error");
+        routeProblem="service unavailable";mock_status.phase=CE_NET_FAILED;mock_status.error=CE_NET_IO;Poll();
+        check(!PortCeMissionRelayLossRole(),"provider I/O is not a broken game path");
+        routeProblem="";interrupted=true;
+        init(host);selectedRelay=true;check(Poll(),"observe route for completed mission");
+        L.stage=FINISHED;L.final_confirmed=true;L.final_mission=true;mock_status.phase=CE_NET_FAILED;mock_status.error=CE_NET_TIMEOUT;
+        Poll();check(!PortCeMissionRelayLossRole(),"relay cleanup after agreed result never becomes mission loss");
+        init(host);selectedRelay=true;interrupted=false;check(Poll(),"observe route for protocol fault");routeProblem="";
+        mock_status.phase=CE_NET_FAILED;mock_status.error=CE_NET_PROTOCOL;Poll();
+        check(!PortCeMissionRelayLossRole(),"a protocol fault is not an interrupted route");
+        init(host);selectedRelay=true;interrupted=true;L.stage=STARTING;routeProblem="relay setup failed";mock_status.phase=CE_NET_FAILED;mock_status.error=CE_NET_IO;Poll();
+        check(!PortCeMissionRelayLossRole(),"pre-match failure cannot pose as an in-mission loss");
+    }
+}
+#endif
 void failure_teardown_controls(){
  fake_boot_lockstep=true; init(true); last_error[0]=0;
  check(!Fail("synthetic local failure"),"local failure terminates the session");
@@ -756,6 +811,10 @@ static void content_failure_peer_close_controls() {
 
 #ifndef CE_LOCKSTEP_REAL_ADMISSION
 int main(){
+#if defined(CE_MISSION_RELAY_FIXTURE)
+    mission_relay_loss_controls();return failures?1:0;
+#endif
+
     content_failure_peer_close_controls();
     setvbuf(stdout, NULL, _IONBF, 0);
     campaign_configure_controls();

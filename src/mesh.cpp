@@ -391,7 +391,13 @@ static inline FMatrix &KeyOf(CMeshPart *part, SINT k) { FMatrix *p = &part->mHFr
 // function's own size in the retail window (a pinned-window measurement) and the frame comes out exact. Member stores are unnamed (`member = new ...`, Stuart's own style,
 // DXEngine.cpp:171, engine.cpp:310); the typed new keeps only a single `{ }`, in the file-local copy MemoryManagerMesh.h (the authorized header-copy concession; the shared MemoryManager.h keeps main's text, and its earlier thirteen-block pad is gone). Without the conversions in
 // place (the inline QuatToMatrix helper of ede89d29 at the four sites; at 9970fe15): own size 8970, CMesh::Load 15370 bytes off, natural 905/3563/15564, 205 calls, frame 0x848.
-// SYMBOL SOURCES (2026-10-14; found by a search over whole families, not by evidence): the import-time symbols that retail has and a minimal spelling lacks
+// COUNTERS AND THE FRAME-MAP STORE (2026-11-10). The old format's frame-map zero store (004a8da6, `mov byte ptr [eax+ecx-1], 0`) compiles from this text; the object patch that wrote its SIB byte is gone. C2 numbers values by their text (one id per distinct operator,
+// type and operands, in code order: the 2.04+ branch, the old format, the tail), and the store's base/index order follows the id of `part + 196` mod 4, so which loops share a counter decides it. The text has Stuart's counters (InitFromMem, the later revision): `SINT c0,
+// c1` in the old branch, c0 in both emitter loops, the key loops on each arm's i, `int i` declared after the branches, a block `SINT c0` over the bounding volumes, `for (int i...)` over the box; and his braces around each `return FALSE;`. One thing is not his: each
+// 2.04+ part arm's children loop has its own counter (two counters, five more values before the store; his one branch-level c1 gives `[ecx+eax-1]`). Where it is declared the bytes cannot show: `SINT c, c1;` in each arm compiles the same. A counter is one symbol and the
+// symbol count is fixed, so four results that were named only to supply symbols are written his way (IsMoreData, both AnimModeLoops, the A4 arm); the other two `rtex` stay named, with no evidence. The eleven brace blocks (two size units each) lift the function's own
+// size off the bottom edge of the window where every inline decision is retail's.
+// SYMBOL SOURCES (2026-10-14, partly superseded by the note above; found by a search over whole families, not by evidence): the import-time symbols that retail has and a minimal spelling lacks
 // come from structure that changes no code. The frame loops declare their own counter (`for (SINT f = 0; ...)`); the second key loop counts with the f that
 // the frame loop above it leaves in the block (VC6 leaks a for-init declaration into the enclosing block), which is the f counter without a function-level f
 // (the old `SINT i, f, c;` f was dead: dropping it changes no byte). In the old format (2.01..2.03) call results are named before they are used (FindTexture,
@@ -530,14 +536,14 @@ BOOL CMesh::InitFromMem(CDXMemBuffer &file, SINT flags)
 	UINT	version;
 	file.Read(&version, 4);
 	if (version != MESH_CHUNK)
-		return FALSE;
+		{ return FALSE; }
 	file.Read(&version, 4);
 
-	SINT	i, c;
-	char	name[MAX_PATH];
-	char	path[352];		// size measured from retail's frame (path's home spans 352 bytes up to the EH record); no original source is known. At 256: 59 bytes off, frame 0x7dc (at 9970fe15; name[256] 46, status[256] 203)
+	char	name[257];		// Stuart's sizes: his texture loops declare `char text[257], name[350];` (InitFromMem 499, 802), which round to the 260 and 352 bytes of retail's frame
+	char	path[350];		// (path's home spans 352 bytes up to the EH record). At 256: 59 bytes off, frame 0x7dc (at 9970fe15; name[256] 46, status[256] 203)
 	if ((version == MKID("2.01")) || (version == MKID("2.02")) || (version == MKID("2.03")))
 	{
+		SINT	c0, c1;		// Stuart's branch-scope counters (InitFromMem 482): c0 over the textures, parts and emitters, c1 over a part's children
 		SINT	num_textures;
 		file.Read(&num_textures, 4);
 		mNumTextures = num_textures;
@@ -545,14 +551,14 @@ BOOL CMesh::InitFromMem(CDXMemBuffer &file, SINT flags)
 		{
 #line 565
 			mTextures = new(MEMTYPE_MESHTEXTURE) CMeshTexture[num_textures];
-			for (i = 0; i < num_textures; i++)
+			for (c0 = 0; c0 < num_textures; c0++)
 			{
 				file.Read(name, 256);
-				CMeshTexture	*tex = &mTextures[i];
+				CMeshTexture	*tex = &mTextures[c0];
 				tex->InitDefault();
 				sprintf(path, "meshtex\\%s", name);
 				tex->mTexture = FindTexture(path);
-				mTextures[i].CreateVBuffer();
+				mTextures[c0].CreateVBuffer();
 			}
 		}
 
@@ -560,20 +566,20 @@ BOOL CMesh::InitFromMem(CDXMemBuffer &file, SINT flags)
 #line 585
 		mParts = new(MEMTYPE_MESH) CMeshPart *[mNumParts];
 		if (!mParts)
-			return FALSE;
-		for (i = 0; i < mNumParts; i++)
+			{ return FALSE; }
+		for (c0 = 0; c0 < mNumParts; c0++)
 		{
 #line 593
-			mParts[i] = new(MEMTYPE_MESH) CDXMeshPart;
-			if (!mParts[i])
-				return FALSE;
+			mParts[c0] = new(MEMTYPE_MESH) CDXMeshPart;
+			if (!mParts[c0])
+				{ return FALSE; }
 		}
 
 		CONSOLE.Status("Loading mesh parts (old-style)");
-		for (i = 0; i < mNumParts; i++)
+		for (c0 = 0; c0 < mNumParts; c0++)
 		{
-			CMeshPart	*part = mParts[i];
-			part->mPartNumber = i;
+			CMeshPart	*part = mParts[c0];
+			part->mPartNumber = c0;
 			part->mBaseMesh = this;
 			strcpy(part->mName, "");
 			SINT	num_vertices, num_positions, num_triangles, num_sets, num_frames;
@@ -586,10 +592,10 @@ BOOL CMesh::InitFromMem(CDXMemBuffer &file, SINT flags)
 				num_sets = num_frames;
 			file.Read(&num_triangles, 4);
 			if (!part->InitMemory(num_vertices, num_positions, num_triangles, num_frames, num_sets))
-				return FALSE;
+				{ return FALSE; }
 			part->mOffsetPos.Read(&file);
 			part->mOrientation.Read(&file);
-			if (!i)
+			if (!c0)
 				part->mOrientation = ID_FMATRIX;
 
 			part->mNumHFrames = 1;
@@ -614,13 +620,13 @@ BOOL CMesh::InitFromMem(CDXMemBuffer &file, SINT flags)
 			else
 				part->mChildren = NULL;
 			SINT	n;
-			for (c = 0; c < part->mNumChildren; c++)
+			for (c1 = 0; c1 < part->mNumChildren; c1++)
 			{
 				file.Read(&n, 4);
 				if ((n >= 0) && (n < mNumParts))
-					part->mChildren[c] = mParts[n];
+					part->mChildren[c1] = mParts[n];
 				else
-					part->mChildren[c] = NULL;
+					part->mChildren[c1] = NULL;
 			}
 			file.Read(&n, 4);
 			if ((n >= 0) && (n < mNumParts))
@@ -646,12 +652,12 @@ BOOL CMesh::InitFromMem(CDXMemBuffer &file, SINT flags)
 #line 725
 			mEmitters = new(MEMTYPE_MESH) CEmitter[mNumEmitters];
 			if (!mEmitters)
-				return FALSE;
+				{ return FALSE; }
 			MEM_MANAGER.TagMem(mEmitters, mNumEmitters * sizeof(CEmitter), "Meshes/%s/Emitters", mName);
-			for (i = 0; i < mNumEmitters; i++)
+			for (c0 = 0; c0 < mNumEmitters; c0++)
 			{
-				CEmitter	*em = &mEmitters[i];
-				em->mNumber = i;
+				CEmitter	*em = &mEmitters[c0];
+				em->mNumber = c0;
 				em->mSubpartEmitter = 0;
 				strcpy(em->mName, "Emit");
 				SINT	n;
@@ -682,8 +688,7 @@ BOOL CMesh::InitFromMem(CDXMemBuffer &file, SINT flags)
 			}
 		}
 
-		BOOL	more = file.IsMoreData();
-		if (!more)
+		if (!file.IsMoreData())
 			mNumAnimModes = 0;
 		else
 		{
@@ -705,8 +710,7 @@ BOOL CMesh::InitFromMem(CDXMemBuffer &file, SINT flags)
 					file.Read(&rate, 4);
 					CheckForAnimations(aname, anim);
 					anim->mFrameScaler = anim->mLast - anim->mStart;
-					BOOL	loops = AnimModeLoops(anim->mMode);
-					if (loops)
+					if (AnimModeLoops(anim->mMode))
 						anim->mFrameScaler++;
 					SINT	n = anim->mFrameScaler;
 					if (n)
@@ -725,7 +729,7 @@ BOOL CMesh::InitFromMem(CDXMemBuffer &file, SINT flags)
 		// format's i and num_sets no longer conflict with it, which gives retail's class 116 {i, num_sets, num_layers} and frees num_frames/T74208.
 		// Declared at the function head instead (at 9970fe15): CMesh::Load 5811 bytes off (every frame slot above it moves), natural 0/1428/5829, ledger unchanged.
 		SINT	num_layers;
-		SINT	c0, c1;		// Stuart's branch-scope counters (InitFromMem 482); the 1/3 key loop counts with c1
+		SINT	c0;		// Stuart's branch-scope counter (InitFromMem 769); each part arm's children loop declares its own c1 (see COUNTERS above the function)
 		// STAND-IN (dead padding, an authorized concession for Load's last rows): this statement and three more
 		// (two `(void)(ID_FMATRIX * ZERO_FVECTOR);` after the box's extremes are declared, `(void)(ori * za);` after corners[7]) are inline operator expansions
 		// whose results nothing reads. They compile to no code and exist for the ids the compiler spends on them: C2 numbers the temporaries and field
@@ -760,9 +764,9 @@ BOOL CMesh::InitFromMem(CDXMemBuffer &file, SINT flags)
 			num_layers = 1;
 
 		// Stuart's spelling (InitFromMem 787-899): numt, the `== 0` compares, and his c0 as the texture, allocation and part
-		// loops' counter with the children read through `SINT c` on c1. c0 costs one symbol id (it was unreferenced), which flips the 1/3 key
-		// product's first element (004a6d51, trees 56-58: 109 bytes, 3 lost); the first file-texture arm's (A8) result stored directly, as Stuart writes all four,
-		// gives that symbol back (0/28/27, object identical). One arm only: two 127 bytes, three 148 / 65 lost, the ScreenContents arm 123.
+		// loops' counter with the children read through `SINT c`. The file-texture arms A8 and A4 store their result directly, as Stuart writes
+		// all four; the ScreenContents and default arms still name it (`rtex`: one symbol each and no code; which results the original named the
+		// bytes cannot show, and the symbol count is fixed: see COUNTERS above the function).
 		// Measured and left out: c0 in the texture or allocation loop alone (15558 / 271 bytes), the 2.07 `frames = 1` hack with framesinfile.
 		SINT	numt;
 		file.Read(&numt, 4);
@@ -790,8 +794,7 @@ BOOL CMesh::InitFromMem(CDXMemBuffer &file, SINT flags)
 				}
 				else if (strnicmp(name, "A4", 2) == 0)
 				{
-					CDXTexture	*rtex = CDXTexture::FindTexture(path, TEXFMT_A4R4G4B4, 0, -1, 1, 1);
-					mTextures[c0].mTexture = rtex;
+					mTextures[c0].mTexture = CDXTexture::FindTexture(path, TEXFMT_A4R4G4B4, 0, -1, 1, 1);
 				}
 				else
 				{
@@ -838,13 +841,13 @@ BOOL CMesh::InitFromMem(CDXMemBuffer &file, SINT flags)
 #line 922
 		mParts = new(MEMTYPE_MESH) CMeshPart *[mNumParts];
 		if (!mParts)
-			return FALSE;
+			{ return FALSE; }
 		for (c0 = 0; c0 < mNumParts; c0++)
 		{
 #line 930
 			mParts[c0] = new(MEMTYPE_MESH) CDXMeshPart;
 			if (!mParts[c0])
-				return FALSE;
+				{ return FALSE; }
 		}
 
 		CONSOLE.Status("Loading mesh parts");
@@ -881,7 +884,7 @@ BOOL CMesh::InitFromMem(CDXMemBuffer &file, SINT flags)
 				file.Read(&num_sets, 4);
 				file.Read(&num_triangles, 4);
 				if (!mp->InitMemory(num_vertices, num_positions, num_triangles, num_frames, num_sets))
-					return FALSE;
+					{ return FALSE; }
 				file.Read(&mp->mNumHFrames, 4);
 #line 1003
 				mp->mVHFrameMap = new(MEMTYPE_MESH) UBYTE[mp->mNumVFrames];
@@ -898,10 +901,10 @@ BOOL CMesh::InitFromMem(CDXMemBuffer &file, SINT flags)
 					SASSERT((lVHFrameMap < 256.i) && (lVHFrameMap >= 0.i), "VHFrameMap out of bounds!!");
 					mp->mVHFrameMap[i] = (UBYTE)lVHFrameMap;
 				}
-				for (c1 = 0; c1 < mp->mNumHFrames; c1++)
+				for (i = 0; i < mp->mNumHFrames; i++)
 				{
 					// Stuart's declarations, together after the position read, and his names x..w, m, stm (InitFromMem 984-1083 and 1182-1270 in the other key block); object identical
-					mp->mHFramePositions[c1].Read(&file);
+					mp->mHFramePositions[i].Read(&file);
 					float	x, y, z, w;
 					float	sx, sy, sz, sw;
 					FVector	scale;
@@ -930,7 +933,7 @@ BOOL CMesh::InitFromMem(CDXMemBuffer &file, SINT flags)
 					m.Row[2].X = 2.0f * (xz - yw);
 					m.Row[2].Y = 2.0f * (yz + xw);
 					m.Row[2].Z = 1.0f - 2.0f * (xx + yy);
-					mp->mHFrameOrientations[c1] = m;
+					mp->mHFrameOrientations[i] = m;
 					sz = -sz;
 					SetIdentity(m);
 					xx = sx * sx; xy = sx * sy; xz = sx * sz; xw = sx * sw;
@@ -950,7 +953,7 @@ BOOL CMesh::InitFromMem(CDXMemBuffer &file, SINT flags)
 					stm.Row[0] *= scale.X;
 					stm.Row[1] *= scale.Y;
 					stm.Row[2] *= scale.Z;
-					KeyOf(mp, c1) = KeyOf(mp, c1) * m.Inverse() * stm * m;
+					KeyOf(mp, i) = KeyOf(mp, i) * m.Inverse() * stm * m;
 				}
 				mp->mOrientation = mp->GetHFrameOrientation(0);
 				mp->mOffsetPos = mp->GetKeyPosition(0);
@@ -964,7 +967,7 @@ BOOL CMesh::InitFromMem(CDXMemBuffer &file, SINT flags)
 				else
 					mp->mChildren = NULL;
 				SINT	c;
-			for (c1 = 0; c1 < mp->mNumChildren; c1++)
+			for (SINT c1 = 0; c1 < mp->mNumChildren; c1++)		// the counter is declared here and again in the other part arm (two counters, not one branch-level c1): see COUNTERS above the function
 				{
 					file.Read(&c, 4);
 					if ((c >= 0) && (c < mNumParts))
@@ -986,7 +989,7 @@ BOOL CMesh::InitFromMem(CDXMemBuffer &file, SINT flags)
 				SINT	num_frames;
 				file.Read(&num_frames, 4);
 				if (!mp->InitMemory(0, 0, 0, num_frames, 0))
-					return FALSE;
+					{ return FALSE; }
 				file.Read(&mp->mNumHFrames, 4);
 #line 1196
 				mp->mVHFrameMap = new(MEMTYPE_MESH) UBYTE[mp->mNumVFrames];
@@ -1084,7 +1087,7 @@ BOOL CMesh::InitFromMem(CDXMemBuffer &file, SINT flags)
 				else
 					mp->mChildren = NULL;
 				SINT	c;
-			for (c1 = 0; c1 < mp->mNumChildren; c1++)
+			for (SINT c1 = 0; c1 < mp->mNumChildren; c1++)
 				{
 					file.Read(&c, 4);
 					if ((c >= 0) && (c < mNumParts))
@@ -1121,10 +1124,10 @@ BOOL CMesh::InitFromMem(CDXMemBuffer &file, SINT flags)
 #line 1412
 			mEmitters = new(MEMTYPE_MESH) CEmitter[mNumEmitters];
 			if (!mEmitters)
-				return FALSE;
-			for (i = 0; i < mNumEmitters; i++)
+				{ return FALSE; }
+			for (c0 = 0; c0 < mNumEmitters; c0++)
 			{
-				CEmitter	*e = &mEmitters[i];
+				CEmitter	*e = &mEmitters[c0];
 				SINT	part;
 				SINT	number;
 				file.Read(name, 256);
@@ -1173,8 +1176,7 @@ BOOL CMesh::InitFromMem(CDXMemBuffer &file, SINT flags)
 					if (amode->mMode == AM_INVALID)
 						amode->mMode = (EAnimMode)(i + 1000);
 					amode->mFrameScaler = amode->mLast - amode->mStart;
-					BOOL	loops = AnimModeLoops(amode->mMode);
-					if (loops)
+					if (AnimModeLoops(amode->mMode))
 						amode->mFrameScaler++;
 					n = amode->mFrameScaler;
 					if (n)
@@ -1213,8 +1215,8 @@ BOOL CMesh::InitFromMem(CDXMemBuffer &file, SINT flags)
 		}
 	}
 	else
-		return FALSE;
-
+		{ return FALSE; }
+	int	i;		// Stuart declares it here, after the branches (InitFromMem 1507)
 	OptimiseTextures();
 	for (i = 0; i < mNumParts; i++)
 		mParts[i]->BuildChain();
@@ -1223,24 +1225,25 @@ BOOL CMesh::InitFromMem(CDXMemBuffer &file, SINT flags)
 
 	if (mParts)
 	{
-		for (i = 0; i < mNumParts; i++)
+		SINT	c0;		// Stuart's block counter over the bounding volumes (InitFromMem 1543)
+		for (c0 = 0; c0 < mNumParts; c0++)
 		{
-			if (mParts[i])
+			if (mParts[c0])
 			{
-				mParts[i]->GenerateSimpleBoundingBox();
-				if (mParts[i]->mPartType == 4)
+				mParts[c0]->GenerateSimpleBoundingBox();
+				if (mParts[c0]->mPartType == 4)
 				{
 					// a camera: a small box
-					mParts[i]->mBoundingBox->mOrigin.Set(0, 0, 0);
-					mParts[i]->mBoundingBox->mAxes.Set(0.05f, 0.05f, 0.1f);
-					mParts[i]->mBoundingBox->CalculateRadius();
+					mParts[c0]->mBoundingBox->mOrigin.Set(0, 0, 0);
+					mParts[c0]->mBoundingBox->mAxes.Set(0.05f, 0.05f, 0.1f);
+					mParts[c0]->mBoundingBox->CalculateRadius();
 				}
-				if (mParts[i]->mPartType == 5)
+				if (mParts[c0]->mPartType == 5)
 				{
 					// an emitter
-					mParts[i]->mBoundingBox->mOrigin.Set(0, 0, 0);
-					mParts[i]->mBoundingBox->mAxes.Set(0.1f, 0.1f, 0.1f);
-					mParts[i]->mBoundingBox->CalculateRadius();
+					mParts[c0]->mBoundingBox->mOrigin.Set(0, 0, 0);
+					mParts[c0]->mBoundingBox->mAxes.Set(0.1f, 0.1f, 0.1f);
+					mParts[c0]->mBoundingBox->CalculateRadius();
 				}
 			}
 		}
@@ -1253,17 +1256,14 @@ BOOL CMesh::InitFromMem(CDXMemBuffer &file, SINT flags)
 	if (mParts)
 	{
 		// the mesh's box: every part's box at its rest pose
-		// STAND-IN (id order): the six extremes are declared in the id order that gives retail's operand order in the origin sums (max loaded
-		// first), with the stores in retail's order (minx miny minz maxx maxy maxz, 004a9700..004a9739). With the dead padding before the box the locals'
-		// symbols start at slot 27 of a 32-id block, so a plain declaration (min x y z, max x y z) puts maxz in the next block and its hash below minz's
-		// (minz first). Declaring minz after the maxes keeps every max hash above its min's; the maxes' first values are overwritten before any read, so the
-		// zeros are dead stores and compile to nothing (plain declarations: natural 0/32/29, the z origin sum 4aa1af..4aa1b6 wrong; the check: 15 bytes off against 13).
-		float	minx = 999999.f, miny = 999999.f;
-		float	maxx = 0, maxy = 0, maxz = 0;
+		// Stuart's declarations (InitFromMem 1592-1597). The earlier id-order stand-in (minz declared after the maxes, with dead zero initialisers) is gone: with his block
+		// counters (c0 over the bounding volumes, `for (int i...)` below) the plain order gives retail's operand order in the origin sums (004a9700..004a9739, 004aa1af).
+		float	minx = 999999.f;
+		float	miny = 999999.f;
 		float	minz = 999999.f;
-		maxx = -999999.f;
-		maxy = -999999.f;
-		maxz = -999999.f;
+		float	maxx = -999999.f;
+		float	maxy = -999999.f;
+		float	maxz = -999999.f;
 		float	radius = 0;
 		float	median = 0;
 		// STAND-IN (dead padding; see the first one, in the 2.04 branch): two FMatrix * FVector expansions on the file's own constants that
@@ -1273,7 +1273,7 @@ BOOL CMesh::InitFromMem(CDXMemBuffer &file, SINT flags)
 		(void)(ID_FMATRIX * ZERO_FVECTOR);
 		(void)(ID_FMATRIX * ZERO_FVECTOR);
 		mBoundingBox->mValid = FALSE;
-		for (i = 0; i < mNumParts; i++)
+		for (int i = 0; i < mNumParts; i++)		// Stuart's for-init counter (InitFromMem 1603); VC6 leaves it in the block, so the base loop at the end counts with it
 		{
 			if (!mParts[i])
 				continue;

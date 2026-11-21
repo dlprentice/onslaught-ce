@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-only
 """Authored native-editor document transactions using the production project reader.
 
-The supported v2 document is preserved in full. Unknown properties are rejected,
+Supported CE project metadata is preserved in full. Unknown properties are rejected,
 including nested ones, rather than accepted and silently discarded. No game data,
 display, native scene or actual career is used by these checks.
 """
@@ -52,6 +52,12 @@ def main() -> int:
     checks = {'document_transactions': run([str(binary), str(fixture), str(updated)], 'baseline') == 0}
     if checks['document_transactions']:
         result = json.loads(updated.read_text())
+        with_goal = json.loads(updated.with_suffix(updated.suffix + '.goal').read_text())
+        checks['goal_adds_just_version_and_objective'] = with_goal == dict(result, version=4, objective={
+            'type': 'reach-point', 'position': [25.25, 70, -5]})
+        with_route = json.loads(updated.with_suffix(updated.suffix + '.route').read_text())
+        checks['ordered_route_preserves_other_metadata'] = with_route == dict(result, version=5, objectives=[
+            with_goal['objective'], {'type': 'reach-point', 'position': [18, 32, 4]}])
         expected = copy.deepcopy(authored)
         expected['placements'][0]['position'] = [42.25, 11.5, -4]
         checks['all_original_properties_preserved'] = all(
@@ -70,8 +76,31 @@ def main() -> int:
         'unknown-binding': lambda v: v['map']['bindings'][0].update(unsupported={'future': 1}),
         'unknown-placement': lambda v: v['placements'][0].update(unsupported={'future': 1}),
         'unknown-script': lambda v: v['scripts'][0].update(unsupported={'future': 1}),
-        'wrong-version': lambda v: v.update(version=3),
+        'side-on-v2': lambda v: v['placements'][0].update(side='muspell'),
+        'side-outside-choice': lambda v: (v.update(version=3), v['placements'][0].update(side='unknown')),
+        'side-not-a-string': lambda v: (v.update(version=3), v['placements'][0].update(side=1)),
+        'v4-without-goal': lambda v: v.update(version=4),
+        'v2-with-goal': lambda v: v.update(objective={'type':'reach-point','position':[3,4,5]}),
+        'v3-with-goal': lambda v: v.update(version=3,objective={'type':'reach-point','position':[3,4,5]}),
+        'unknown-rule': lambda v: v.update(version=4,objective={'type':'future','position':[3,4,5]}),
+        'v5-without-stops': lambda v: v.update(version=5),
+        'v5-single-not-sequence': lambda v: v.update(version=5, objectives=[{'type':'reach-point','position':[1,2,3]}]),
+        'v5-third-stop': lambda v: v.update(version=5, objectives=[{'type':'reach-point','position':[1,2,3]}]*3),
+        'v5-bad-second': lambda v: v.update(version=5, objectives=[{'type':'reach-point','position':[1,2,3]}, {'type':'future','position':[3,2,1]}]),
+        'v5-conflicting-forms': lambda v: v.update(version=5, objective={'type':'reach-point','position':[1,2,3]}, objectives=[{'type':'reach-point','position':[1,2,3]}]*2),
+        'v4-with-stops': lambda v: v.update(version=4, objectives=[{'type':'reach-point','position':[1,2,3]}]*2),
+        'rule-no-height': lambda v: v.update(version=4,objective={'type':'reach-point','position':[3,4]}),
+        'rule-out-of-range': lambda v: v.update(version=4,objective={'type':'reach-point','position':[3,2147483647,5]}),
+        'rule-extra-field': lambda v: v.update(version=4,objective={'type':'reach-point','position':[3,4,5],'script':'test'}),
+        'wrong-version': lambda v: v.update(version=5),
     }
+    for label, version, extra in (
+        ('hold-on-v5',5,{}), ('hold-negative-radius',6,{'radius':-5}), ('hold-zero-seconds',6,{'seconds':0}),
+        ('hold-fractional-seconds',6,{'seconds':1.5}), ('hold-fractional-radius',6,{'radius':12.5}),
+        ('hold-too-large',6,{'radius':121}), ('hold-too-long',6,{'seconds':31}), ('hold-extra-field',6,{'script':'text'})):
+        mutations[label]=lambda v,ver=version,changes=extra: v.update(version=ver,objectives=[dict(type='hold-area',position=[1,2,3],radius=18,seconds=3)|changes])
+    mutations['missing-hold-radius']=lambda v: v.update(version=6,objectives=[dict(type='hold-area',position=[1,2,3],seconds=3)])
+    mutations['reach-only-v6']=lambda v: v.update(version=6,objectives=[dict(type='reach-point',position=[1,2,3])])
     for name, mutate in mutations.items():
         value = copy.deepcopy(authored)
         mutate(value)

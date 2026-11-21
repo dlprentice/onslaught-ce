@@ -1,0 +1,37 @@
+--- a/PauseMenu.cpp
++++ b/PauseMenu.cpp
+@@ -529,6 +529,10 @@
+ 		}
+ 	}
+ #line 1392
++#ifdef CE_VERSION
++    extern void PortCeDodgeControlsAdd(CMenuOptionsList *);
++    PortCeDodgeControlsAdd(list);
++#endif
+ 	list->AddItem(new (MEMTYPE_MENUITEM) CControllerDefinition());
+ #line 1394
+ 	list->AddItem(new (MEMTYPE_MENUITEM) CJoystickEnableItem(0));
+@@ -1535,6 +1539,10 @@
+ // FUNCTION: 0x004d0810
+ void	CPauseMenu::ButtonPressed(CMenuItem *item, CController *from_controller)
+ {
++#ifdef CE_VERSION
++    extern bool PortCeDodgeControlsSelect(CMenuItem *);
++    if (PortCeDodgeControlsSelect(item)) return;
++#endif
+ 	BOOL back_sound = FALSE;
+ 	mChosen = item->mText;
+ 
+--- a/FEPControls.cpp
++++ b/FEPControls.cpp
+@@ -1079,6 +1079,10 @@
+ 			return true;
+ 		if (sKeyDown == false || key != sRemapKey.mKey)
+ 			return true;
++#ifdef CE_VERSION
++        extern bool PortCeDodgeReserveFromControls(int);
++        if (PortCeDodgeReserveFromControls(key)) { sKeyDown=false; return true; }
++#endif
+ 		gKeytrapReleased = true;
+ 		PLATFORM.SetKeytrap(NULL);
+ 		FRONTEND.PlaySound(FES_SELECT);

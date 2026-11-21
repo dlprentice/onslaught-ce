@@ -104,6 +104,16 @@ def read_pins(path):
     return pins
 
 
+def pin_duplicates(text):
+    """Paths listed more than once in a pin file's text (a union merge of two different re-pins of one file leaves two lines)."""
+    seen, dupes = set(), set()
+    for line in text.splitlines():
+        if line.strip() and not line.startswith("#"):
+            name = line.split(None, 1)[1].strip()
+            (dupes if name in seen else seen).add(name)
+    return sorted(dupes)
+
+
 def is_code(name):
     return name.lower().endswith(CODE)
 
@@ -202,6 +212,14 @@ def main():
 
     pins = read_pins(PINS)
     texts = checkout_texts()
+    dupes = pin_duplicates(PINS.read_text()) + pin_duplicates(SOURCE_PINS.read_text())
+    for name in dupes[:15]:
+        print("   pinned more than once:", name)
+    check("each pin file lists every path once (a union merge cannot hide a second pin)", not dupes)
+    first = next(l for l in PINS.read_text().splitlines() if l.strip() and not l.startswith("#"))
+    order = [[l.split(None, 1)[1].strip() for l in f.read_text().splitlines() if l.strip() and not l.startswith("#")] for f in (PINS, SOURCE_PINS)]
+    check("each pin file is in path order", all(o == sorted(o) for o in order))
+    check("mutant: a path pinned twice is caught", pin_duplicates(PINS.read_text() + first.replace(first[:8], "0" * 8, 1) + "\n") != [])
     check(f"main's text is pinned for {len(pins)} port files", len(pins) > 100)
     found = problems(texts, pins)
     for line in found[:15]:

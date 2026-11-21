@@ -1,0 +1,11 @@
+--- a/Controller.cpp
++++ b/Controller.cpp
+@@ -474,2 +474,3 @@
++#include "ce_hooks.h"	// Port: the CE hook points (port/game/ce_hooks.h)
+ void CController::DoMappings()	// FUNCTION: 0x0042db40
+ {
+@@ -801,3 +802,4 @@
++	ce_hook_input_actions(this, pad);	// CE hook point (port/game/ce_hooks.h): after every action of this flush, before recording
+ 	if (mRecording)
+ 	{
+ 		RecordControllerState() ;

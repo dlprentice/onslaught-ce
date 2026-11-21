@@ -24,9 +24,9 @@ enum EFontType { FONT_SMALL, FONT_NORMAL };
 enum KeyEventType { KEY_EVENT_DOWN, KEY_EVENT_UP, KEY_EVENT_CHAR };
 using pKeyTrapper = void (*)(WORD, KeyEventType);
 enum {
-    PORT_CE_NO_LISTS, FEP_LANGUAGE_TEST, FES_BACK, FES_SELECT,
+    PORT_CE_NO_LISTS, FEP_LANGUAGE_TEST, FES_BACK, FES_SELECT, FES_MOVE,
     BUTTON_PAUSE_MENU_SELECT, BUTTON_FRONTEND_MENU_BACK,
-    BUTTON_FRONTEND_MENU_UP, BUTTON_FRONTEND_MENU_DOWN,
+    BUTTON_FRONTEND_MENU_UP, BUTTON_FRONTEND_MENU_DOWN, BUTTON_FRONTEND_MENU_LEFT, BUTTON_FRONTEND_MENU_RIGHT,
     DIK_LCONTROL, DIK_RCONTROL, DIK_UP, DIK_DOWN, DIK_TAB, DIK_ESCAPE,
     DIK_RETURN, DIK_NUMPADENTER, DIK_BACK, DIK_V,
     D3DRS_SRCBLEND, D3DBLEND_SRCALPHA, D3DRS_DESTBLEND,
@@ -131,6 +131,26 @@ struct CFrontEnd {
     void SetPage(int, int) {}
 };
 inline CFrontEnd FRONTEND;
+// The game's message box: records what the page puts up and is dismissed at once (the player's OK), so a status update
+// never leaves the page behind a box in these fixtures.
+#define FO(x) (float(x) / 1000.f)
+enum { FEMB_OPTION_A_CONTINUE = 3, FEP_NONE = -1 };
+inline std::vector<std::wstring> fixture_boxes;
+struct FixtureMessageBox {
+    float mY = 0.f, mHeight = 64.f;
+    BOOL BeingDisplayed() { return FALSE; }
+    void Kill() {}
+    void Create(float, float y, float, float, WCHAR* text, CDXBitmapFont*, unsigned, unsigned, BOOL, int, unsigned) {
+        mY = y; fixture_boxes.emplace_back(text);
+    }
+    void SetOnDismiss(int, int) {}
+};
+inline FixtureMessageBox FEMESSBOX;
+// The pointer (src/mouse.h): never moved or clicked in these fixtures.
+inline int MOUSE_X = 0, MOUSE_Y = 0;
+inline bool MouseClickedInRect(float, float, float, float) { return false; }
+// The lobby's player slots (port/game/ce_network_lobby_slots.cpp): nothing to draw here.
+inline void PortCeNetDrawSlot(float, float, bool) {}
 struct FixtureCli {
     BOOL mRecordDemo = FALSE, mPlaybackDemo = FALSE, mAutoConfigTest = FALSE, mAttractMode = FALSE;
 };

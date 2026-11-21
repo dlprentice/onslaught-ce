@@ -69,6 +69,7 @@ int PortGamePrintf(const char *fmt, ...)
 // "Report a problem" for the CE layer's menu: opens the pre-filled GitHub issue page in the player's browser (the
 // launcher's --report, port/updater/ce_report.h). Nothing is sent; the player submits the page or not. Returns 1 when the
 // browser was asked to open it, 0 otherwise, and always 0 where the CE layer is off (replays, recordings, private builds).
+#include <errno.h>
 #include <stdio.h>
 #include "../../updater/ce_report.h"
 #ifndef _WIN32
@@ -85,6 +86,68 @@ extern "C" int CE_OpenReportPage(void)
 	ce_user_dir(user, sizeof(user));
 	int opened = ce_open_report(CE_VERSION, getenv("BEA_CE_BUILD"), user, url, sizeof(url));
 	fprintf(stderr, PORT_LOG_PREFIX "report page %s: %s\n", opened ? "opened" : "not opened", url);
+	return opened;
+#else
+	return 0;
+#endif
+}
+
+// <user folder>/mods, made when it is not there yet; 1 and its path in dir when it is a folder afterwards, 0 when it cannot be made or something
+// that is not a folder is named mods (a file, or a link: a name that is taken is not success, and the mods loader does not follow a link).
+extern "C" int CE_MakeModsFolder(char *dir, size_t n)
+{
+	char user[4096];
+	ce_user_dir(user, sizeof(user));
+	snprintf(dir, n, "%s/mods", user);
+#ifdef _WIN32
+	const int made = CreateDirectoryA(dir, NULL) || GetLastError() == ERROR_ALREADY_EXISTS;
+	const DWORD attributes = made ? GetFileAttributesA(dir) : INVALID_FILE_ATTRIBUTES;
+	return attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY) && !(attributes & FILE_ATTRIBUTE_REPARSE_POINT);
+#else
+	struct stat st;
+	return (mkdir(dir, 0700) == 0 || errno == EEXIST) && lstat(dir, &st) == 0 && S_ISDIR(st.st_mode);
+#endif
+}
+
+// The Mods page's "Open Mods Folder": makes <user folder>/mods when it is not there yet and asks the desktop to show it (a file: address, as the
+// report page is asked of the browser). Nothing else is created or written. Returns 1 when the desktop was asked to, 0 otherwise: where the CE
+// layer is off, where BEA_REPORT_NO_OPEN is set (tests: no window opens), or when the desktop could not be asked; -1 when there is no folder
+// and none can be made (something that is not a folder, or a link, is named mods, or the user folder cannot be written). Linux only in effect:
+// the Mods page is not offered on Windows, though the address is made right for it.
+extern "C" int CE_OpenModsFolder(void)
+{
+#ifdef CE_VERSION
+	if (!PortCeLayer())
+		return 0;
+	char dir[4200], url[3 * 4200 + 16];
+	if (!CE_MakeModsFolder(dir, sizeof(dir)))
+	{
+		fprintf(stderr, PORT_LOG_PREFIX "could not make the mods folder\n");
+		return -1;
+	}
+	size_t o = 0;
+#ifdef _WIN32
+	o += snprintf(url, sizeof(url), "file:///");
+#else
+	o += snprintf(url, sizeof(url), "file://");
+#endif
+	for (const unsigned char *c = (const unsigned char *)dir; *c && o + 4 < sizeof(url); c++)
+#ifdef _WIN32
+		if (*c == '\\')
+			url[o++] = '/';
+		else if (*c == ':' && o == 8 + 1)
+			url[o++] = ':';		// the drive's colon
+		else
+#endif
+		if ((*c >= 'A' && *c <= 'Z') || (*c >= 'a' && *c <= 'z') || (*c >= '0' && *c <= '9') || strchr("-_.~/", *c))
+			url[o++] = (char)*c;
+		else
+			o += snprintf(url + o, 4, "%%%02X", *c);
+	url[o] = 0;
+	const char *no = getenv("BEA_REPORT_NO_OPEN");
+	const int skip = no && *no && strcmp(no, "0");
+	const int opened = skip ? 0 : (SDL_OpenURL(url) ? 1 : 0);
+	fprintf(stderr, PORT_LOG_PREFIX "mods folder %s\n", opened ? "opened" : "not opened");
 	return opened;
 #else
 	return 0;
@@ -327,6 +390,32 @@ extern "C" int CE_SettingGetBool(const char *key, int def)
 // of the four answers no.
 extern "C" int CE_SettingIs(const char *key, const char *value);	// below
 
+// Whether ce.ini is a text file the unfinished features may be turned on from: no NUL byte anywhere, and every line that starts a
+// section ("[" after any blanks) closes it with "]" (a final CR and blanks aside). A damaged or binary file turns none of them on, even
+// where a line in it reads "mode=1". A missing file is well formed (and turns nothing on); one that cannot be read whole is not.
+static bool ce_ini_well_formed_for_experimental()
+{
+	int ok = 0;
+	size_t len = 0;
+	char *t = ce_ini_read(&ok, &len);
+	if (!t) return false;
+	bool good = ok != 0 && !memchr(t, 0, len);
+	for (size_t at = 0; good && at < len;)
+	{
+		const char *line = t + at;
+		const char *nl = (const char *)memchr(line, '\n', len - at);
+		size_t n = nl ? (size_t)(nl - line) : len - at;
+		at += n + (nl ? 1 : 0);
+		size_t first = 0;
+		while (first < n && (line[first] == ' ' || line[first] == '\t')) ++first;
+		if (first == n || line[first] != '[') continue;
+		while (n > first && (line[n - 1] == '\r' || line[n - 1] == ' ' || line[n - 1] == '\t')) --n;
+		if (n - first < 2 || line[n - 1] != ']') good = false;
+	}
+	free(t);
+	return good;
+}
+
 static const char *const kExperimentalKeys[4] = {"map_editor", "museum", "commander", "play_unit"};
 
 bool PortCeExperimental(const char *mode)
@@ -337,11 +426,47 @@ bool PortCeExperimental(const char *mode)
 		if (strcmp(mode, kExperimentalKeys[i]))
 			continue;
 		if (on[i] < 0)
-			on[i] = (CE_SettingGetBool(mode, 0) == 1 || (i == 3 && CE_SettingIs(mode, "tank"))) ? 1 : 0;
+			on[i] = ce_ini_well_formed_for_experimental() && (CE_SettingGetBool(mode, 0) == 1 || (i == 3 && CE_SettingIs(mode, "tank"))) ? 1 : 0;
 		return on[i] == 1;
 	}
 	return false;
 }
+
+// This scenario is separate from enabling the strategic camera in regular missions.
+extern "C" bool PortCeFactoryExercise() {
+    static const bool enabled = []() {
+        if (!ce_ini_well_formed_for_experimental()) return false;
+        int ok=0; size_t n=0;
+        char* contents=ce_ini_read(&ok,&n);
+        if (!ok || !contents) { free(contents); return false; }
+        bool inside=false, seen=false, duplicate=false, yes=false;
+        char* at=contents;
+        const char* end=contents+n;
+        while (at < end) {
+            char* next=static_cast<char*>(memchr(at,'\n',size_t(end-at)));
+            char* stop=next ? next : contents+n;
+            while (at<stop && (*at==' ' || *at=='\t')) ++at;
+            while (stop>at && (stop[-1]==' ' || stop[-1]=='\t' || stop[-1]=='\r')) --stop;
+            if (at<stop && *at=='[') inside=size_t(stop-at)==14 && memcmp(at,"[Experimental]",14)==0;
+            else if (inside && size_t(stop-at)>=16 && memcmp(at,"factory_exercise",16)==0) {
+                char* value=at+16;
+                while (value<stop && (*value==' ' || *value=='\t')) ++value;
+                if (value<stop && *value=='=') {
+                    if (seen) duplicate=true;
+                    seen=true; ++value;
+                    while (value<stop && (*value==' ' || *value=='\t')) ++value;
+                    yes=stop-value==1 && *value=='1';
+                }
+            }
+            if (!next) break;
+            at=next+1;
+        }
+        free(contents);
+        return seen && !duplicate && yes;
+    }();
+    return enabled;
+}
+
 
 // Adds the [Experimental] block to ce.ini when the file has none: the header, one warning line and a line "mode=0" for each mode that
 // has no line in the file yet (a value the player set, such as commander=1 from 0.1.13, stays where it is and is not repeated). It
@@ -546,6 +671,30 @@ extern "C" int CE_SettingSetText(const char *key, const char *value)
 	if (!ce_ini_write(path, key, value))
 	{
 		fprintf(stderr, PORT_LOG_PREFIX "could not write ce.ini (%s=%s); it is unchanged\n", key, value);
+		return 0;
+	}
+	return 1;
+}
+
+// Sets key to nothing in ce.ini ("key="), which every reader above takes as the key not being set (CE_SettingGetText answers 0 for an
+// empty value): the Mods page's way to say that no mod is enabled, as CE_SettingSetText refuses an empty value. Through the same
+// write-and-rename, with the same log line when it fails. 1 when the file was written, 0 (the file as it was) when it was not.
+extern "C" int CE_SettingSetEmpty(const char *key)
+{
+	bool plain = key && *key;
+	for (const char *c = plain ? key : ""; *c; c++)
+		if ((unsigned char)*c <= 0x20 || *c == 0x7f || *c == '=')
+			plain = false;
+	if (!plain)
+	{
+		fprintf(stderr, PORT_LOG_PREFIX "refused a ce.ini setting that is not one line of text; it is unchanged\n");
+		return 0;
+	}
+	char path[4200];
+	ce_ini_path(path, sizeof(path));
+	if (!ce_ini_write(path, key, ""))
+	{
+		fprintf(stderr, PORT_LOG_PREFIX "could not write ce.ini (%s=); it is unchanged\n", key);
 		return 0;
 	}
 	return 1;

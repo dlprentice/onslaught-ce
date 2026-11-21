@@ -690,7 +690,7 @@ static size_t CampaignReturnSuffix(const CE_CampaignLaunch &campaign,
     return count > 0 && (size_t)count < capacity ? (size_t)count : 0;
 }
 
-extern "C" size_t CE_HandoffFormat(const CE_Handoff *handoff, char *out, size_t capacity) {
+static size_t FormatBeforeRematch(const CE_Handoff *handoff, char *out, size_t capacity) {
     if (!handoff || handoff->kind != CE_HANDOFF_OUTCOME || !handoff->campaign.version)
         return LaunchCE_HandoffFormat(handoff, out, capacity);
     if (!CampaignReturnValid(handoff)) return 0;
@@ -719,7 +719,7 @@ static bool ReturnNumber(const char *&at, const char *end, const char *key,
     return true;
 }
 
-extern "C" int CE_HandoffParse(const char *text, size_t size, int64_t now,
+static int ParseBeforeRematch(const char *text, size_t size, int64_t now,
                                 CE_Handoff *handoff, const char **error) {
     const char marker[] = "\ncampaign_return_version=";
     if (!text || !handoff || size > CE_HANDOFF_MAX_BYTES)
@@ -749,6 +749,65 @@ extern "C" int CE_HandoffParse(const char *text, size_t size, int64_t now,
     if (!exact) return CampaignParseRefuse(handoff, error);
     return 1;
 }
+
+// A normal outcome stays byte-for-byte identical. Only a completed direct game
+// has a short-lived invitation in the same private, owned handoff as its outcome.
+static bool RematchReturnValid(const CE_Handoff *h) {
+    if (!h || h->kind != CE_HANDOFF_OUTCOME || !h->good || h->campaign.version ||
+        (h->rematch_role != 1 && h->rematch_role != 2) || !h->rematch_level ||
+        !memchr(h->rematch_code, 0, sizeof(h->rematch_code))) return false;
+    CE_JoinCode route = {};
+    char canonical[CE_CODE_TEXT] = {};
+    const bool ok = CE_CodeDecode(h->rematch_code, &route) == CE_CODE_OK &&
+        CE_CodeEncode(&route, canonical, sizeof(canonical)) && !strcmp(canonical, h->rematch_code);
+    CE_CodeWipe(&route, sizeof(route));
+    CE_CodeWipe(canonical, sizeof(canonical));
+    return ok;
+}
+
+extern "C" size_t CE_HandoffFormat(const CE_Handoff *h, char *out, size_t capacity) {
+    if (!h || (!h->rematch_role && !h->rematch_code[0] && !h->rematch_level))
+        return FormatBeforeRematch(h, out, capacity);
+    if (!RematchReturnValid(h)) return 0;
+    const size_t n = FormatBeforeRematch(h, out, capacity);
+    if (!n || n >= capacity) return 0;
+    const int extra = snprintf(out + n, capacity - n, "rematch=%d,%u,%s\n", h->rematch_role,
+                               unsigned(h->rematch_level), h->rematch_code);
+    return extra > 0 && size_t(extra) < capacity - n && n + size_t(extra) <= CE_HANDOFF_MAX_BYTES ? n + size_t(extra) : 0;
+}
+
+extern "C" int CE_HandoffParse(const char *text, size_t size, int64_t now,
+                                CE_Handoff *h, const char **error) {
+    static const char mark[] = "\nrematch=";
+    if (!text || !h || !size || size > CE_HANDOFF_MAX_BYTES) return CampaignParseRefuse(h, error);
+    size_t split = size;
+    for (size_t i = 0; i + sizeof(mark) - 1 <= size; ++i)
+        if (!memcmp(text + i, mark, sizeof(mark)-1)) { split = i + 1; break; }
+    if (split == size) return ParseBeforeRematch(text, size, now, h, error);
+    if (!ParseBeforeRematch(text, split, now, h, error) || h->kind != CE_HANDOFF_OUTCOME ||
+        !h->good || h->campaign.version) return CampaignParseRefuse(h, error);
+    const char *at = text + split + sizeof(mark) - 2, *end = text + size;
+    if (end - at < 5 || (at[0] != '1' && at[0] != '2') || at[1] != ',') return CampaignParseRefuse(h, error);
+    h->rematch_role = *at - '0'; at += 2;
+    const char *digits = at;
+    uint32_t level = 0;
+    while (at < end && *at >= '0' && *at <= '9') {
+        unsigned digit = unsigned(*at++ - '0');
+        if (level > (UINT32_MAX - digit)/10) return CampaignParseRefuse(h, error);
+        level = level * 10 + digit;
+    }
+    if (at == digits || at >= end || *at++ != ',' || at >= end || end[-1] != '\n' ||
+        size_t(end-at-1) >= sizeof(h->rematch_code)) return CampaignParseRefuse(h, error);
+    h->rematch_level = level;
+    memcpy(h->rematch_code, at, size_t(end-at-1));
+    h->rematch_code[end-at-1] = 0;
+    char canonical[CE_HANDOFF_MAX_BYTES+1];
+    const size_t n = CE_HandoffFormat(h, canonical, sizeof(canonical));
+    const bool ok = n == size && !memcmp(canonical, text, size);
+    CE_CodeWipe(canonical, sizeof(canonical));
+    return ok ? 1 : CampaignParseRefuse(h, error);
+}
+
 
 
 namespace {

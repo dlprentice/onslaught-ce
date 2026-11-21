@@ -1,0 +1,6 @@
+# The kit's own probe: what the title and the main menu report, with no input but one Return.
+wait ticks 600
+dump title
+key RETURN
+wait ticks 300
+dump main-menu

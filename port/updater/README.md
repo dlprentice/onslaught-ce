@@ -93,7 +93,7 @@ holds the pipe.
 
 ## Session recording
 
-`--record`, or `record_sessions=1` in `ce.ini` (the main menu's Onslaught CE page writes it), starts the game in record mode (port/platform/common/replay.cpp):
+`--record`, or `record_sessions=1` in `ce.ini` (the Main Menu's Onslaught CE page writes it), starts the game in record mode (port/platform/common/replay.cpp):
 `BEA_PORT_RECORD=<user folder>/tapes/YYYYMMDD-HHMMSS-PID-SERIAL.tape` (PID and SERIAL are eight hex digits each) and, unless set, `BEA_PORT_CLOCK=shim`, so the game runs
 at 30 Presents a second and its tape (keyboard and mouse only; controller input is not recorded) can be replayed. The
 launcher prints one line saying so. Never while a tape is replayed (`BEA_PORT_TAPE`) or another recording is set
@@ -104,7 +104,7 @@ gets the DirectInput mouse. The launcher also sets `BEA_AUDIO_MONITOR=1` unless 
 
 Because the CE layer is off while recording, the Onslaught CE page that switched `record_sessions=1` on is hidden in
 every recorded session. So while it is set, each start asks first (an SDL message box): **Record** (Enter), **Not this
-time** (Escape) or **Stop recording**, which sets `record_sessions=0`. `--no-record` does the same as Stop recording
+time** (Escape) or **Turn recording off**, which sets `record_sessions=0`. `--no-record` does the same as Turn recording off
 without asking; `--record` records without asking. Where no box can be shown (no display, or a dialog that fails or
 crashes: on Linux every box is shown by a child process, `ask_box`), the question goes to the terminal when there is
 one; with nobody to ask, the session is recorded, as set. Tests answer with `BEA_RECORD_ANSWER=record|once|stop`. The launcher and the game change `ce.ini` the same way

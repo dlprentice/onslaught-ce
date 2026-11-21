@@ -1,0 +1,55 @@
+--- a/Unit.cpp
++++ b/Unit.cpp
+@@ -31,6 +31,7 @@
+ #include "player.h"
+ #include "maths_integer.h"
+ #include "Guide.h"
++#include "ce_playunit.h"
+ 
+ #define UNIT_EVENT_4001	4001	// re-aims the unit (Unknown4fb280); the names are open
+ #define UNIT_EVENT_4003	4003	// notes whether a player's camera is within 50 units
+@@ -1231,11 +1232,18 @@
+ 	if ((mAI) && (!IsDying()) && (Unknown109()))
+ 	{
+ 		float	delta = mUnknownE0;
++		FVector playerAim;
++#ifdef CE_VERSION
++		const bool playerAiming = PortCePlayUnitAimPoint(this, playerAim);
++#else
++		const bool playerAiming = false;
++#endif
+ 		CUnit	*target = mAI->mTarget.ToRead();
+-		if (target)
++		if (playerAiming || target)
+ 		{
+ 			FVector	aim;
+-			target->GetTargetablePos(&aim);
++			if (playerAiming) aim = playerAim;
++			else target->GetTargetablePos(&aim);
+ 			FVector	muzzle = (mOrientation * mUnknown1F8) + mPos;
+ 			delta = (aim - muzzle).Azimuth() - Unknown92();
+ 			mUnknown20C = EVENT_MANAGER.GetTime() + 10.0f;
+@@ -1358,14 +1366,21 @@
+ {
+ 	if ((!mUnknown224) || (mFlags & TF_DYING))
+ 		return;
++	FVector playerAim;
++#ifdef CE_VERSION
++	const bool playerAiming = PortCePlayUnitAimPoint(this, playerAim);
++#else
++	const bool playerAiming = false;
++#endif
+ 
+ 	CUnit	*target;
+-	if ((mAI) && (target = mAI->mTarget.ToRead()))
++	if (playerAiming || ((mAI) && (target = mAI->mTarget.ToRead())))
+ 	{
+ 		if ((mCurrentWeapon) && (mCurrentWeapon->mMode) && (mCurrentWeapon->mMode->mRound))
+ 		{
+ 			FVector	aim;
+-			target->GetTargetablePos(&aim);
++			if (playerAiming) aim = playerAim;
++			else target->GetTargetablePos(&aim);
+ 			mUnknownEC = mCurrentWeapon->CalculateDesiredPitch(aim);
+ 		}
+ 		mUnknown20C = EVENT_MANAGER.GetTime() + 10.0f;

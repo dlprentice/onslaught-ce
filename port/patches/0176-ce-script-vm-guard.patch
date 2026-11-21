@@ -21,7 +21,7 @@
  void	IScript::Died()	// FUNCTION: 0x005337e0
  {
 +#ifdef CE_VERSION
-+	// patch 0176: as StartedDying; if the script is deleted before the next frame the event is dropped (by code reading)
++	// patch 0176: as StartedDying in its test, not in its effect: under the guard this handler is dropped, not delayed. Every caller deletes the script in its next statement, which clears the event's target, and the event manager skips an event that has none (port/tools/script_guard_died_tests.py runs that chain); the event would arrive only for a caller that kept its script
 +	extern bool PortCeScriptDeferNested(int level, const char *entry);
 +	if (MISSION_SCRIPT_VM.mRunning && PortCeScriptDeferNested(GAME.GetCurrentLevel(), "died"))
 +	{

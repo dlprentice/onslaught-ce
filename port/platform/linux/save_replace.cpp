@@ -11,6 +11,7 @@
 #include "handles.h"
 #include "../common/portlog.h"
 #include "../common/save_replace.h"
+#include "../common/replay_cheat.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -74,6 +75,14 @@ bool ReadsBack(int fd, const unsigned char *bytes, unsigned size)
 
 int PortReplaceUserFile(const char *game_path, const void *data, unsigned size, const char *what)
 {
+	// A cheat replay (replay_cheat.h) writes no career and no options: the write is skipped and reported as done, so the
+	// replayed game goes on as it did when the tape was recorded, with no failed-save notice.
+	if (PortReplayCheatRequested())
+	{
+		fprintf(stderr, PORT_LOG_PREFIX "replay: cheat replay: %s not written\n", what ? what : "file");
+		fflush(stderr);
+		return PORT_REPLACE_OK;
+	}
 	const unsigned char *bytes = (const unsigned char *)data;
 	// A career or an options file is never empty: replacing one with nothing could only be a caller's mistake. (Retail's
 	// fwrite of zero bytes reported failure too.)

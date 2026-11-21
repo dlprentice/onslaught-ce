@@ -16,6 +16,8 @@ bool fakeRecording = false;
 extern "C" void SetBootRequested(bool value);
 #endif
 #include "ce_layer.inc"
+// The CE hook point key_capture (patch 0308, port/game/ce_hooks.h): no handler is registered, so it takes no key.
+bool ce_hook_key_capture(unsigned char, bool) { return false; }
 #include "msgproc.inc"
 
 static void check(bool condition, const char *message) {
@@ -231,7 +233,7 @@ static void retailRefusals() {
     command("EXEC autoexec.con");
     check(newest() == "exec is not available in Onslaught CE.", "a refused retail command says so");
     command("quit");
-    check(newest() == "Use the pause menu (Esc) to quit.", "quitting points at the pause menu");
+    check(newest() == "Use the Pause Menu (Esc) to quit.", "quitting points at the pause menu");
     command("set g_framelength 1");
     check(actions == before && lod == 1.f && printed("No variable g_framelength"), "the tick length is never settable");
     command("set cg_battleenginevisible 0");
@@ -445,7 +447,18 @@ static void panel() {
     }
     PLATFORM.font.height = 16;
     render();
-    check(draws.back().colour == 0xffa8a8a8 && inputLine() == L">  ", "default text colours");
+    // The text stage doubles a text colour, any channel of 0x80 or more being full brightness (DXFont.cpp's stage): the console's
+    // text is the developer text's yellow (255,255,128) and its hint is dimmer than it, in the default and the green theme.
+    auto shown = [](DWORD colour, int shift) { const int c = int((colour >> shift) & 0xff) * 2; return c > 255 ? 255 : c; };
+    auto light = [&](DWORD colour) { return shown(colour, 16) + shown(colour, 8) + shown(colour, 0); };
+    check(draws.back().colour == 0xff545428 && inputLine() == L">  ", "default hint colour");
+    DWORD lineColour = 0, lineScale = 0;
+    { const auto &prompt = draws[draws.size() - 2]; lineColour = prompt.colour; lineScale = DWORD(prompt.sx * 1000.f); }
+    check(lineColour == 0xff7f7f40 && shown(lineColour, 16) >= 254 && shown(lineColour, 8) >= 254 && shown(lineColour, 0) == 128,
+          "the console's text reads 254,254,128 on screen, the developer text's yellow");
+    check(light(draws.back().colour) < light(lineColour), "the hint is dimmer than the text");
+    check(draws.back().text == L"help lists commands. Tab completes, PgUp/PgDn scroll, Esc closes." && DWORD(draws.back().sx * 1000.f) == lineScale,
+          "the key hint is as wide as the lines above it at 640 x 480");
     command("set cg_consolealpha 100");
     render();
     check(sprites[0].colour == 0x64000000, "cg_consolealpha sets the background");
@@ -457,6 +470,7 @@ static void panel() {
     bool green = false;
     for (const auto &d : draws) green = green || d.colour == 0xff40ff40;
     check(green && sprites[0].colour == 0xc8000000, "console_theme=green colours the text, not the panel");
+    check(draws.back().colour == 0xff206820 && light(draws.back().colour) < light(0xff40ff40), "the green theme's hint is dimmer than its text");
     theme = "";
     closePalette();
 }
@@ -555,10 +569,10 @@ static void photo() {
     openPalette(); command("devstats on");
     check(PortCeDevStatsOn(), "devstats on before photo mode");
     clear(); command("photo");
-    check(photoOn && log.back() == "photo on" && !LT.GetKeytrap() && printed("Photo mode on"), "photo turns it on and closes the panel");
+    check(photoOn && log.back() == "photo on" && !LT.GetKeytrap() && printed("Photo Mode on"), "photo turns it on and closes the panel");
     check(!PortCeDevStatsOn(), "photo mode hides the developer information");
     openPalette(); clear(); command("photo off");
-    check(!photoOn && LT.GetKeytrap() && printed("Photo mode off."), "photo off, the panel stays");
+    check(!photoOn && LT.GetKeytrap() && printed("Photo Mode off."), "photo off, the panel stays");
     check(PortCeDevStatsOn(), "the developer information returns after photo mode");
     clear(); command("photo on");
     check(photoOn, "photo on");
@@ -571,7 +585,7 @@ static void photo() {
     clear(); command("photo on now");
     check(!photoOn && printed("Usage: photo"), "photo takes one word at most");
     photoAvailable = false; clear(); command("photo on");
-    check(!photoOn && printed("Photo mode is unavailable here."), "photo mode refused here is said so");
+    check(!photoOn && printed("Photo Mode is unavailable here."), "photo mode refused here is said so");
     photoAvailable = true;
     clear(); command("help photo");
     check(printed("photo [on|off]") && printed("F12 saves a screenshot"), "help photo names the keys");
@@ -584,7 +598,7 @@ static void music() {
     // The retail playlist commands as music ...: status, a folder with spaces, play types, next and clear.
     openPalette();
     clear(); command("music");
-    check(printed("Your music: 0 tracks, play type linear.") && printed("The game's music plays."), "music alone reports the playlist");
+    check(printed("Your music: 0 tracks, playing in order.") && printed("The game's music plays."), "music alone reports the playlist");
     clear(); command("music adddir /music/My Tunes");
     check(musicDir == "/music/My Tunes" && printed("Added 3 tracks; 1 .ogg file left out.") && printed("stereo, 44100 Hz"),
           "music adddir takes the rest of the line as the folder, spaces included");

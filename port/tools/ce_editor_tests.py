@@ -38,7 +38,7 @@ def main() -> int:
     header = repo / 'port/game/ce_editor.h'
     driver = repo / 'port/tools/tests/ce_editor_driver.cpp'
     exe = owner / 'state-check'
-    options = [compiler, '-std=c++11', '-Wall', '-Wextra', '-Werror', '-pedantic',
+    options = [compiler, '-std=c++14', '-Wall', '-Wextra', '-Werror', '-pedantic',
                '-I', str(header.parent), str(driver)]
     compiled = command(options + [str(source), '-o', str(exe)], owner, 'compile') == 0
     ran = compiled and command([str(exe)], owner, 'state') == 0
@@ -49,6 +49,9 @@ def main() -> int:
         'save-during-drag': ('if (moving_) return;', 'if (false) return;'),
         'retain-redo-after-new-move': ('historySize_ = historyAt_;', '(void)historyAt_;'),
         'allow-behind-camera-plane': (' || distance < 0', ''),
+        'fit-counts-far-objects': ('if (!CeEditorInside(bounds, p)) continue;   // an object far outside', '(void)bounds;   // an object far outside'),
+        'view-left-unclamped': ('focus->x = focus->x < b.minX ? b.minX : focus->x > b.maxX ? b.maxX : focus->x;', '(void)0;'),
+        'history-kept-for-other-objects': ('if (strcmp(objects_[i].source, before.objects_[i].source) || objects_[i].available != before.objects_[i].available)', 'if (false)'),
     }
     controls = {}
     for name, (old, new) in variants.items():

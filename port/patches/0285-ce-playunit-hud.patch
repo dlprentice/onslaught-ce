@@ -1,0 +1,179 @@
+--- a/Hud.cpp
++++ b/Hud.cpp
+@@ -53,6 +53,9 @@
+ #include	"mesh.h"
+ #include	"viewport.h"
+ #include	"Lights.h"
++#ifdef CE_VERSION
++#include "ce_playunit.h"	// patch 0285: the driven unit's HUD focus
++#endif
+ 
+ extern UINT		MESH_SURFACE_DETAIL;			// 00630130 (MeshRenderer.cpp; 100 unless a mesh is being drawn)
+ #include	<math.h>
+@@ -1316,6 +1319,14 @@
+ 
+ 	FVector	centre = mBattleEngine->GetRenderPos();
+ 	float	yaw = -mBattleEngine->GetInterpolatedEulerOrientation().mYaw;
++#ifdef CE_VERSION
++	CePlayUnitHudFocus ceFocus;
++	if (CePlayUnitHudFocusOf(&ceFocus))		// patch 0285: centred on the driven unit, turned with its look
++	{
++		centre = FVector(ceFocus.x, ceFocus.y, ceFocus.z);
++		yaw = -ceFocus.yaw;
++	}
++#endif
+ 	float	s = (float)sin(yaw) * 40.f / size;
+ 	float	c = (float)cos(yaw) * 40.f / size;
+ 
+@@ -1501,6 +1512,13 @@
+ 		CThing	*speaker = message->mSpeaker.ToRead();
+ 		FVector	here = mBattleEngine->GetRenderPos();
+ 		float	yaw2 = -mBattleEngine->GetInterpolatedEulerOrientation().mYaw;
++#ifdef CE_VERSION
++		if (CePlayUnitHudFocusOf(&ceFocus))	// patch 0285
++		{
++			here = FVector(ceFocus.x, ceFocus.y, ceFocus.z);
++			yaw2 = -ceFocus.yaw;
++		}
++#endif
+ 		float	s2 = (float)sin(yaw2) * 40.f / size;
+ 		float	c2 = (float)cos(yaw2) * 40.f / size;
+ 		FVector	pos = speaker->GetRenderPos();
+@@ -2231,6 +2249,11 @@
+ 			RenderOverlayForViewpoint(player, i);
+ #ifdef CE_VERSION
+ 		}
++		else if (player)
++		{
++			CePhotoDrawScope photoDraw;
++			CePlayUnitHudOverlay(player, i);	// patch 0285: a driven unit's view draws its own overlay (nothing when no unit is driven)
++		}
+ #endif
+ 	}
+ 
+--- a/Compass.cpp
++++ b/Compass.cpp
+@@ -16,6 +16,9 @@
+ #include "BattleEngine.h"
+ #include "RadarWarningReceiver.h"
+ #include "player.h"
++#ifdef CE_VERSION
++#include "ce_playunit.h"	// patch 0285: the driven unit's HUD focus
++#endif
+ #ifdef CE_VERSION
+ bool PortCeOneScreenMatch();	// patch 0235: port/game/ce_cmdmatch.cpp, a Commander match shown on one screen
+ #define CE_SPLIT_HUD() (GAME.IsMultiplayer() && !PortCeOneScreenMatch())	// the HUD of a split screen: not a match's one screen
+@@ -104,6 +107,10 @@
+ 	float	cy = PLATFORM.GetWindowHeight() * 0.5f;
+ 	int		view = 0;
+ 	float	a;
++#ifdef CE_VERSION
++	CePlayUnitHudFocus ceFocus;
++	const bool ceFocused = CePlayUnitHudFocusOf(&ceFocus);	// patch 0285: the driven unit's heading and life, no energy marker
++#endif
+ #ifdef CE_NETWORK_OFF
+ 	if (CE_SPLIT_HUD())
+ #else
+@@ -158,6 +165,9 @@
+ 		}
+ 
+ 		float	yaw = be->GetInterpolatedEulerOrientation().mYaw;
++#ifdef CE_VERSION
++	if (ceFocused) yaw = ceFocus.yaw;
++#endif
+ 		for (i = 0; i < COMPASS_MARKERS; i++)
+ 		{
+ 			SCompassMarker	*m = &mMarkers[i][view];
+@@ -220,6 +230,10 @@
+ 			continue;
+ 		if ((!HUD.IsComponentVisible(1)) && ((bar == 1) || (bar == 3)))
+ 			continue;
++#ifdef CE_VERSION
++		if (ceFocused && ((bar == 1) || (bar == 3)))
++			continue;
++#endif
+ 
+ 		int		pos;
+ 		UINT	n;
+@@ -246,6 +260,10 @@
+ 				pos = n / 360;
+ 			break;
+ 		}
++#ifdef CE_VERSION
++		if (ceFocused && (bar == 0))
++			pos = (gCompassInnerWidth * 150) / 360 - SINT(ceFocus.life * ((gCompassInnerWidth * 150) / 360 - (gCompassInnerWidth * 60) / 360) / ceFocus.fullLife);
++#endif
+ 		a = (float)pos / gCompassInnerWidth * PI_M2;
+ 		CDXSpriteRenderer::DrawSprite((float)sin(a) * radius + cx, cy - ((float)cos(a) * radius) * LT.mScreenShapeScale, 0.001f,
+ 									  mBarLine, SA_CENTRE, SPT_NONE, 1.0f, a, 0xff1f1f1f, 1.0f, 1.0f, 0, 1.0f, 0, 1.0f);
+@@ -258,6 +276,13 @@
+ 		FVector	tp = t->GetRenderPos();
+ 		FVector	d = tp - be->GetRenderPos();
+ 		a = be->GetInterpolatedEulerOrientation().mYaw - d.Azimuth();
++#ifdef CE_VERSION
++		if (ceFocused)
++		{
++			d = tp - FVector(ceFocus.x, ceFocus.y, ceFocus.z);
++			a = ceFocus.yaw - d.Azimuth();
++		}
++#endif
+ #ifdef CE_NETWORK_OFF
+ 		float	r = CE_SPLIT_HUD() ? 82.0f : 98.0f;
+ #else
+--- a/DXCompass.cpp
++++ b/DXCompass.cpp
+@@ -23,6 +23,9 @@
+ #include	"game.h"
+ #include	"Hud.h"
+ #include	"engine.h"
++#ifdef CE_VERSION
++#include "ce_playunit.h"	// patch 0285: the driven unit's HUD focus
++#endif
+ #include	"mathsconst.h"	// FUNCTION: 0x0053bc40 init:ZERO_FVECTOR
+ #ifdef CE_VERSION
+ bool PortCeOneScreenMatch();	// patch 0235: port/game/ce_cmdmatch.cpp, a Commander match shown on one screen
+@@ -238,6 +241,15 @@
+ {
+ 	int		health = gCompassInnerWidth * 150 / 360 - SINT(be->GetLife() * (gCompassInnerWidth * 150 / 360 - gCompassInnerWidth * 60 / 360) / be->GetInitialLife());
+ 	int		energy = gCompassInnerWidth * 225 / 360 + SINT(be->GetEnergy() * (gCompassInnerWidth * 360 / 360 - gCompassInnerWidth * 225 / 360) / be->GetMaxEnergy());
++#ifdef CE_VERSION
++	CePlayUnitHudFocus ceFocus;
++	const bool ceFocused = CePlayUnitHudFocusOf(&ceFocus);	// patch 0285: the driven unit's life on the health arc; no energy arc
++	if (ceFocused)
++		health = gCompassInnerWidth * 150 / 360 - SINT(ceFocus.life * (gCompassInnerWidth * 150 / 360 - gCompassInnerWidth * 60 / 360) / ceFocus.fullLife);
++	const BOOL ceEnergyShown = HUD.IsComponentVisible(1) && !ceFocused;
++#else
++	const BOOL ceEnergyShown = HUD.IsComponentVisible(1);
++#endif
+ 
+ 	D3DLOCKED_RECT	lr;
+ 	if (FAILED(mRingTexture2[mUnknown3c10]->GetTexture()->LockRect(0, &lr, NULL, D3DLOCK_NOSYSLOCK)))
+@@ -282,7 +294,7 @@
+ 
+ 	if (!HUD.IsComponentVisible(0))
+ 		h0.r = h0.g = h0.b = h.r = h.g = h.b = 0;
+-	if (!HUD.IsComponentVisible(1))
++	if (!ceEnergyShown)
+ 		e0.r = e0.g = e0.b = e.r = e.g = e.b = 0;
+ 
+ 	for (int n = gCompassInnerHeight - 2; n; n--)
+@@ -297,7 +309,7 @@
+ 			hbg += alpha;
+ 			hbar += alpha;
+ 		}
+-		if (HUD.IsComponentVisible(1))
++		if (ceEnergyShown)
+ 		{
+ 			ebg += alpha;
+ 			ebar += alpha;
+@@ -386,6 +398,10 @@
+ 	LT.GetDevice()->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 80);
+ 
+ 	float	yaw = -be->GetInterpolatedEulerOrientation().mYaw;
++#ifdef CE_VERSION
++	CePlayUnitHudFocus ceFocus;
++	if (CePlayUnitHudFocusOf(&ceFocus)) yaw = -ceFocus.yaw;	// patch 0285
++#endif
+ 	m.Row[0] = FVector((float)cos(yaw), -(float)sin(yaw), 0);
+ 	m.Row[1] = FVector((float)sin(yaw), (float)cos(yaw), 0);
+ 	m.Row[2] = FVector(0, 0, 1);

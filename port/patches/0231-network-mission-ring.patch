@@ -1,0 +1,14 @@
+--- a/DXEngine.cpp
++++ b/DXEngine.cpp
+@@ -1228,6 +1228,11 @@
+ 		GAME.GetMessageLog()->Render(viewport) ;
+ 		GAME.GetLevelBriefingLog()->Render(viewport) ;
+ 		GAME.GetPauseMenu()->Render() ;
++#ifndef CE_NETWORK_OFF
++#ifdef CE_VERSION
++		{ void PortCeNetRingRender(); PortCeNetRingRender(); }	// Port (patch 0231): a network mission's ring (port/game/ce_network_ring.cpp)
++#endif
++#endif
+ 		gInFrontEnd = false;
+ 
+  		RENDERINFO.SetFogEnabled(false);

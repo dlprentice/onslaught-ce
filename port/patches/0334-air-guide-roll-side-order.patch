@@ -1,0 +1,11 @@
+--- a/AirGuide.cpp
++++ b/AirGuide.cpp
+@@ -105,7 +105,7 @@
+ 		float	diff = (float)fabs(AngleDifference(course, heading));
+ 		if (diff > PI / 2)
+ 			diff = PI / 2;
+-		float	roll = ((right * d) < 0) ? diff : -diff;
++		float	roll = ((((right.Z * d.Z) + (right.Y * d.Y)) + (right.X * d.X)) < 0) ? diff : -diff;	// Port: retail sums (Z + Y) + X (00402553)
+ 
+ 		if (fabsf(roll) > 0.1f)
+ 			unit->SetUnknown174(1.0f);

@@ -387,64 +387,84 @@ README_WIDTH = 114
 
 
 def readme(version: str, windows: bool) -> bytes:
+    """README.txt: what it is, the quick start and where things are on the first screen; then running, updates, the upgrade warnings for
+    the 0.1.0-0.1.6 launchers, the advanced switches, and the parts the game's dialogs name (Updates, Your own music, Mods ...)."""
     launcher = "onslaught-ce.exe" if windows else "onslaught-ce"
-    common = ["It finds your Battle Engine Aquila install in Steam's libraries, or asks you once for its folder and",
-              "remembers it (BEA_GAME_DIR overrides). By default, careers and settings go to a separate user folder:",
-              ("%APPDATA%\\Onslaught CE." if windows else "$XDG_DATA_HOME/onslaught-ce, or ~/.local/share/onslaught-ce when unset or empty."),
-              "BEA_USER_DIR overrides that location. Keep it separate from the game folder and avoid linked paths.",
-              "Updates: at start it checks a signed feed (ce-update-v2.json) and asks before installing. A new version",
-              "goes into versions/ inside this folder; this folder's own files and everything beside it are left alone.",
-              "--update-only checks now, --rollback returns to the previous version, BEA_NO_UPDATE_CHECK=1 or",
-              "Check for Updates at Start: No in CE Settings (update_check=0 in ce.ini) turns checking off. --apply is refused.",
-              "Do not start an Onslaught CE 0.1.0-0.1.6 launcher at all, not even to check its version or update it: its",
-              "startup cleanup can delete neighbouring <program folder>.old-* paths. On Linux it has followed a matching",
-              "directory link into its target; Windows reparse-point behaviour is unmeasured. Keep the old installation",
-              "and every .old-*, .download-* and .unpack-* path untouched.",
-              "Locate and preserve both launcher and game user-data folders. A relative BEA_USER_DIR can put them in",
-              "different locations. Copy each whole folder to an independent backup; verify the copies and careers.",
-              "If your data was in the default folder and its backup is verified, this release can use it as it is.",
-              "Otherwise use a separate working copy of the game's user-data folder outside the original game and old CE",
-              "program/staging folders; set BEA_USER_DIR to its absolute path. Check careers; keep originals and backups.",
-              "If the locations or conflicting files are unclear, do not merge or overwrite them; seek help first.",
-              "This release's launcher removes no neighbouring paths: verify its package and extract it into a new empty",
-              "folder. See the project README for full migration steps. No telemetry; the update check sends requests",
-              "for the public feed and its signature.",
-              *REPORT_PRIVACY]
-    run = (["Start onslaught-ce.exe. (bea.exe also runs directly, without the install search.)",
-            "It needs Windows 10 or newer, for its built-in UCRT, and Windows 10 version 1903 or newer",
-            "for user or game folder names with characters outside your Windows language's character set (earlier",
-            "versions ignore the UTF-8 setting the programs ask for)."] + common +
-           ["Windows builds have been checked under Wine on Linux and on one Windows 11 virtual machine using software",
-            "graphics; this version's release notes list the routes checked for it. See also Known limitations."] if windows else
-           textwrap.wrap("Run ./onslaught-ce [game arguments]. It first checks for the 32-bit system libraries it needs "
-                         "and names the packages to install when one is missing. It needs " + GLIBC_TEXT + ".",
-                         README_WIDTH, break_on_hyphens=False) + common)
     exe = "bea.exe" if windows else "bea"
-    return "\n".join([f"Onslaught CE V{version}", ""] + quick_start(windows) + ["",
-                      "A native source port of Battle Engine Aquila (2003). It contains no game files: you need your own",
-                      "copy of the game (for example from Steam).", f"Project page, source and releases: {PUBLIC_REPO}",
-                      ""] + run +
-                     ["", f"{exe} is Onslaught CE's game program; {launcher} is the program to start.", ""] +
-                     in_the_game() + help_lines(windows) + limitations(windows) + NOTICE_LINES +
-                     ["", "Licence: GPL-3.0-only (COPYING). Third-party components: THIRD-PARTY-NOTICES.txt and licenses/.", ""]).encode()
+    user = ("%APPDATA%\\Onslaught CE" if windows else "$XDG_DATA_HOME/onslaught-ce, or ~/.local/share/onslaught-ce when unset or empty")
+    first_screen = [
+        f"Onslaught CE V{version}", "",
+        "A native source port of Battle Engine Aquila (2003). It contains no game files: you need your own copy of the game",
+        "(for example from Steam).", f"Project page, source and releases: {PUBLIC_REPO}", "",
+        *quick_start(windows), "",
+        *textwrap.wrap("In the game, Main Menu > Onslaught CE holds what this port adds: Bonus Levels, Mods, Catalogue, CE Settings, Cheats, Help & Info and "
+                       f"Report a Problem. Your careers and settings are kept in {user}, apart from the original game's folder.",
+                       README_WIDTH, break_on_hyphens=False), "",
+        *textwrap.wrap('Upgrading from Onslaught CE 0.1.0 to 0.1.6? Do not start the old launcher again. Read "Upgrading from '
+                       '0.1.0-0.1.6" below first.', README_WIDTH, break_on_hyphens=False), ""]
+    running = (["Running",
+                "Start onslaught-ce.exe. (bea.exe also runs directly, without the install search.)",
+                "It needs Windows 10 or newer, and Windows 10 version 1903 or newer for user or game folder names with",
+                "characters outside your Windows language's character set (earlier versions ignore the UTF-8 setting the",
+                "programs ask for).",
+                "Windows builds have been checked under Wine on Linux and on one Windows 11 virtual machine using software",
+                "graphics; this version's release notes list the routes checked for it. See also Known limitations."] if windows else
+               ["Running",
+                *textwrap.wrap("Run ./onslaught-ce [game arguments]. It first checks for the 32-bit system libraries it needs "
+                               "and names the packages to install when one is missing. It needs " + GLIBC_TEXT + ".",
+                               README_WIDTH, break_on_hyphens=False)])
+    running += [f"{exe} is Onslaught CE's game program; {launcher} is the program to start.", "",
+                "Updates: at start it checks a signed feed (ce-update-v2.json) and asks before installing. A new version",
+                "goes into versions/ inside this folder; this folder's own files and everything beside it are left alone.",
+                f"To go back to the version before, run {'' if windows else './'}{launcher} --rollback.", ""]
+    upgrading = [
+        "Upgrading from 0.1.0-0.1.6",
+        "Do not start an Onslaught CE 0.1.0-0.1.6 launcher at all, not even to check its version or update it: its",
+        "startup cleanup can delete neighbouring <program folder>.old-* paths. On Linux it has followed a matching",
+        "directory link into its target; Windows reparse-point behaviour is unmeasured. Keep the old installation",
+        "and every .old-*, .download-* and .unpack-* path untouched.",
+        "Preserve old installations and user folders: do not overwrite them. Keep the old program and staging folders,",
+        "and verified backups of your user data, until you have checked your careers in this version.",
+        "Locate and preserve both launcher and game user-data folders. A relative BEA_USER_DIR can put them in",
+        "different locations. Copy each whole folder to an independent backup; verify the copies and careers.",
+        "If your data was in the default folder and its backup is verified, this release can use it as it is.",
+        "Otherwise use a separate working copy of the game's user-data folder outside the original game and old CE",
+        "program/staging folders; set BEA_USER_DIR to its absolute path. Check careers; keep originals and backups.",
+        "If the locations or conflicting files are unclear, do not merge or overwrite them; seek help first.",
+        "This release's launcher removes no neighbouring paths: verify its package and extract it into a new empty",
+        "folder. See the project README for full migration steps.", ""]
+    advanced = [
+        "Advanced",
+        "BEA_GAME_DIR sets the game folder. Without it the launcher finds your Battle Engine Aquila install in Steam's",
+        "libraries, or asks you once for its folder and remembers it.",
+        "BEA_USER_DIR sets another user folder. Keep it separate from the game folder, and avoid linked paths. Keep",
+        "recovery copies before changing save locations.",
+        "--update-only checks for an update now. BEA_NO_UPDATE_CHECK=1, or Check for Updates at Start: No in CE Settings",
+        "(update_check=0 in ce.ini), turns the check off. No telemetry; the update check sends requests for the public",
+        "feed and its signature.",
+        *REPORT_PRIVACY, ""]
+    return "\n".join(first_screen + running + upgrading + advanced + in_the_game() + help_lines(windows) + limitations(windows) +
+                     NOTICE_LINES + ["", "Licence: GPL-3.0-only (COPYING). Third-party components: THIRD-PARTY-NOTICES.txt and licenses/.",
+                                     ""]).encode()
 
 
 # The build with the network compiled in (flavour public-network) offers the Network game page; its README.txt says what the page says (experimental, what a
 # mismatch does, no matchmaking server, what was not tested, what the game contacts). package_readme_tests.py checks the sentences against the page's own text.
 NETWORK_GAME_LINES = [
-    "- Network game (experimental): Main menu > Onslaught CE > Network Game hosts or joins a two-player co-op game on",
+    "- Network game (experimental): Main Menu > Onslaught CE > Network Game hosts or joins a two-player Co-Op game on",
     "  the building defence or the tutorial. It is new and unfinished, so expect problems. Both players need the same",
     "  Onslaught CE version and their own copy of the game. If the two games ever disagree, the game ends with a",
-    "  message. A network game does not change your careers. Its HUD scales and sits as in single-player play",
+    "  message. A network game does not change your careers. Its HUD scales and sits as in single-player levels",
     "  (BEA_PORT_HUD_SCALE=0 turns the scaling off). There is no pause in a network game and Escape does nothing; to",
     "  leave, close the window (the other player is told). There is no matchmaking server: play on one network, or the",
     "  host forwards a UDP port on its router (net_port in ce.ini, default 27652) and gives the other player its",
-    "  public address; the Network game page's row \"How to connect over the Internet\" walks the host through the",
+    "  public address; the Network Game page's row \"Connection Help\" walks the host through the",
     "  router, the firewall prompt and the public address. Not tested: play through routers over the real internet,",
     "  more than two players, Windows on real hardware. Running the Windows build under Wine or Proton, keep the game",
     "  and user folders on a C: path (the user folder's default is): a folder reached through Wine's Z: drive can be",
     "  refused at network admission. The game sends data only to the other player's address and contacts no server.",
     "  The host's page lists this PC's addresses; on Windows that asks the system to look up this PC's own name.",
+    "  Your own music, the Dodge Button, Photo Mode and F12 screenshots are off in a network game.",
 ]
 
 
@@ -456,11 +476,19 @@ def in_the_game() -> list[str]:
     return IN_THE_GAME[:at] + NETWORK_GAME_LINES + IN_THE_GAME[at:]
 
 
-# README.txt's "In the game" and "Screen modes and widescreen" (public/README.md says the same).
+def _item(text: str) -> list:
+    """One "In the game" bullet, wrapped like the generated lines (so no line is broken mid-sentence by hand)."""
+    return textwrap.wrap("- " + text, README_WIDTH, subsequent_indent="  ", break_on_hyphens=False)
+
+
+# README.txt's "In the game" and "Screen modes and widescreen" (public/README.md says the same). These lines are in every flavour's
+# README.txt, so they name nothing that only one flavour has: the default build has no network game, and what is off in one is said in
+# NETWORK_GAME_LINES, which only the build that offers the page carries (package_readme_tests.py holds the default text to that).
 IN_THE_GAME = [
     "In the game",
-    "- Main menu > Onslaught CE: Bonus Levels, CE Settings, Cheats, Help & Info and Report a Problem. Each row has a",
-    "  hint under the list. The Options page is the original's. The game's Credits remain separate.",
+    "- Main Menu > Onslaught CE: Bonus Levels, Mods, Catalogue, CE Settings, Cheats, Help & Info and Report a Problem.",
+    "  Each row has a hint under the list. Experimental rows depend on the features enabled. The Options page is the",
+    "  original's. The game's Credits remain separate.",
     "- Bonus Levels: Aquila Prototype, Building Defence and Race Challenge 1 to 5. None of them advances career",
     "  progress, and each comes back to this list with its row highlighted.",
     "  Aquila Prototype is the original playable-demo level (201).",
@@ -469,25 +497,27 @@ IN_THE_GAME = [
     "  Choose each player's Battle Engine on the Multiplayer start page; player 2 uses the second set of keys in",
     "  Controller Options or a second gamepad. Plug in both gamepads before starting if using two.",
     "  Settings can still be saved during play, including into a career file; bonus-level progress is left out.",
-    "- Race Challenge 1 to 5 are the original's five one-player time trials (levels 901 to 905): three laps against the",
-    "  clock in the Racer Battle Engine. The original opens them from the Goodies page: Race Challenge 1 after grades",
-    "  of C or better in 26 campaign levels, and each later race when the one before it is finished fast enough (under",
-    "  145, 195, 150 and 105 seconds for races 1 to 4; the fifth opens nothing more), or all five at once with Unlock",
-    "  All Goodies in Onslaught CE > Cheats; those routes save your career as the original does. The five rows on the",
-    "  Bonus Levels list start the races with none of that; a race does not advance career progress and, when it ends",
-    "  (finished, lost or quit from the pause menu), saves nothing and returns to the Bonus Levels list.",
-    "- CE Settings: a list of choices, each written to ce.ini in your user folder when you make it: HUD Size and HUD",
-    "  Layout (see Screen modes and widescreen, below), Sharper Text (experimental), End-of-Level Stats, Controller",
-    "  Rumble, Dodge Button (see Walker dodging, below), Developer Information, Your",
-    "  Music (shows the folder ce.ini sets: see Your",
-    "  own music, below), Music Order, Console Text, Check for Updates at Start and Record Play for Bug Reports (see",
-    "  Help make Onslaught CE more faithful, below). Select opens a row's list of choices, and so do Left and Right,",
-    "  which also move to the choice before or after; in the list they move as Up and Down do. Nothing is written",
-    "  until Select picks a choice other than the one shown, and Escape closes the list unchanged. The row's hint says",
-    "  when a change is used: from the next level for the two HUD rows and Dodge Button, the next time the console",
-    "  opens for Console Text (the developer information text keeps its colour until the next start), otherwise the",
-    "  next time you start the game. If ce.ini cannot be written, a message says so and the row keeps its old choice.",
-    "  The page is not on the menu while a session is recorded.",
+    *_item("Race Challenge 1 to 5 are the original's five single-player time trials (levels 901 to 905): three "
+           "laps against the clock in the Racer Battle Engine. The original opens them from the Goodies screen: "
+           "Race Challenge 1 after grades of C or better in 26 campaign levels, and each later race when the one "
+           "before it is finished fast enough (under 145, 195, 150 and 105 seconds for races 1 to 4; the fifth "
+           "opens nothing more), or all five at once with Unlock All Goodies in Onslaught CE > Cheats; those "
+           "routes save your career as the original does. The five rows on the Bonus Levels list start the races "
+           "with none of that; a race does not advance career progress and, when it ends (finished, lost or quit "
+           "from the Pause Menu), saves nothing and returns to the Bonus Levels list."),
+    *_item("CE Settings: a list of choices, each written to ce.ini in your user folder when you make it: HUD Size and HUD Layout "
+           "(see Screen modes and widescreen, below), Sharper Text (experimental), End-of-Level Stats, Controller Rumble, Dodge "
+           "Button (see Dodging in Walker mode, below), Developer Information, Your Music (shows the folder ce.ini sets: see Your "
+           "own music, below), Music Order, Console Text, Check for Updates at Start and Session Recording (see Help make "
+           "Onslaught CE more faithful, below). Select opens a row's list of choices, and so do Left and Right, which also move "
+           "to the choice before or after; in the list they move as Up and Down do. Nothing is written until Select picks a "
+           "choice other than the one shown, and Escape closes the list unchanged. The row's hint says when a change is used: "
+           "from the next level for the two HUD rows and Dodge Button, the next time the console opens for Console Text (the "
+           "developer text keeps its colour until the next start), otherwise the next time you start the game. If ce.ini "
+           "cannot be written, a message says so and the row keeps its old choice. A ce.ini you have made read-only is never "
+           "replaced (0.1.13 on Linux did replace it): the rows keep their choices, and the launcher's Skip this version and "
+           "Turn recording off say that the choice could not be saved and ask again the next time you start. The page is not "
+           "on the menu while a session is recorded."),
     "- Your own music: a music_dir= line in ce.ini, with the absolute path of a folder (on Linux ~/ is your home",
     "  folder), plays the folder's tracks in place of the level music; the front end and the credits keep the game's",
     "  own. A track must be Ogg Vorbis, stereo, 44100 Hz, with a full path of at most 255 bytes. Up to 256 tracks are",
@@ -495,34 +525,46 @@ IN_THE_GAME = [
     "  how they play: in order, shuffled, or one track and then quiet. Both lines are read once a session, so a change",
     "  applies the next time you start the game. Your Music in CE Settings shows the folder ce.ini sets, and the log",
     "  says how many tracks were found there. For one session, the console command music adddir <folder> adds a",
-    "  folder's tracks without changing ce.ini. Your own music is off in recordings, replays, network games and demos.",
-    "- Help & Info: Controls & Tips (dodge, zoom, photo mode and screenshots, the console and the free",
-    "  camera), What's Coming (planned features and their limits; it does not start those features), Updates &",
-    "  Rollback (how updating works and how to turn the checks off), About Onslaught CE (version, licence and links)",
-    "  and Special Thanks.",
-    "- Video Options on a new profile: the first time you start with no saved options of your own (a new install, or",
-    "  a profile that only has the old game folder's file), every quality row starts at its highest choice except",
-    "  Full models, anti-aliasing starts at the highest level your graphics device lists, and extra graphical",
-    "  features start On where the device passes the capability test. Full models starts Off: it draws every model",
-    "  in full detail at any distance and is the largest cost in frame rate, so turn it On if your computer has the",
-    "  room. Terrain detail distance starts at Extended, which draws the terrain further away; choose Normal for the",
-    "  original's distance. Anything you saved before is kept as it was: the new defaults apply once, to a profile",
-    "  with no options of its own, and every row can be changed afterwards.",
+    "  folder's tracks without changing ce.ini. Your own music is off in recordings, replays and demos.",
+    "- Help & Info: Controls & Tips (dodge, zoom, Photo Mode and screenshots, the console and the free",
+    "  camera), What's Coming (planned features and their limits; it does not start those features), Updates",
+    "  (how updating works and how to turn the checks off), About Onslaught CE (version, licence and links) and",
+    "  Special Thanks.",
+    *_item("Video Options on a new profile: the first time you start with no saved options of your own (a new install, or a profile "
+           "that only has the old game folder's file), every quality row starts at its highest choice except Full models, "
+           "anti-aliasing starts at the highest level your graphics device lists, and extra graphical features start On where the "
+           "device passes the capability test. Full models starts at No. Yes keeps full-detail models instead of distant stand-ins "
+           "and removes their distance fade. This is the largest cost in frame rate. Terrain detail distance starts at "
+           "Extended: it keeps finer ground detail up to twice as far away. The visible range and fog stay the same. "
+           "Choose Normal for the original terrain detail. Anything you saved before is "
+           "kept as it was: the new defaults apply once, to a profile with no options of its own, and every row can be changed "
+           "afterwards."),
     "- Unfinished features: the first start adds an [Experimental] block to ce.ini that lists them, each set to 0",
     "  (off). They are unsupported and may change or break; a line set to 1 turns that feature on from the next",
-    "  start. None of them is on a menu until its line is on, and none is needed to play. Leave the lines at 0",
-    "  unless you want to try one. A line you already set in an earlier version (0.1.13 or before) is kept",
-    "  as it is.",
-    "- Console: during an eligible solo level, press the grave key (`; left of 1 on a US keyboard), type help and",
-    "  press Enter. Esc or grave closes it; the game does not pause. It is unavailable in multiplayer, demos,",
-    "  recordings and replays.",
+    "  start. None is needed to play. Leave the lines at 0 unless you want to try one. A line set in an earlier",
+    "  version is kept, but what it turns on has changed: with commander=1 from 0.1.13, Commander (M by default)",
+    "  opens a live view for squad orders. The battle keeps running while your Battle Engine stands without your",
+    "  control and the HUD is hidden. Press Commander again or Escape to close it.",
+    "  The paused map on V requires the additional test setting commander_tactical_map=1.",
+    "  Commander and Take Unit (E by default) can be rebound in Options > Controls.",
+    "  Close Commander before taking a unit; use your bound Morph action to return before opening Commander again.",
+    "  With museum=1, a Museum Prototype visit is kept out of your career: nothing is saved during it, so with",
+    "  a named career the game's save error message appears each time you leave its Pause Menu. Nothing is",
+    "  wrong: the career is as it was when the visit ends.",
+    "  These are incomplete prototypes. Native-model RTS, individual-unit and structure workflows are still in",
+    "  development. Infantry camera and weapon presentation need work. Museum exhibits can disappear up close.",
+    "  The editor already supports existing-object placement, draft preview with F5 and reset with F6; a",
+    "  player-start workflow and reported interaction lag remain unresolved.",
+    *_item("Console: during an eligible single-player level, press the grave key (`; left of 1 on a US keyboard), type help and "
+           "press Enter. Esc or grave closes it; the game does not pause. It is unavailable in multiplayer, demos, recordings and "
+           "replays."),
     "- Onslaught CE > Cheats: the game's own cheats as On/Off switches, kept in ce.ini so they apply to every career;",
     "  the line under the list says what the highlighted one does:",
-    "  - Unlock All Levels (original code TURKEY): every level opens in the level select",
-    "  - Unlock All Goodies (MALLOY): every goodie opens on the Goodies page",
-    "  - Goodie Hints (lat\u00eate): the Goodies page shows how to unlock each goodie; while it is on, goodies",
+    "  - Unlock All Levels (original code TURKEY): every level opens on the Select Level screen",
+    "  - Unlock All Goodies (MALLOY): every goodie opens on the Goodies screen",
+    "  - Goodie Hints (lat\u00eate): the Goodies screen shows how to unlock each goodie; while it is on, goodies",
     "    cannot be opened",
-    "  - God Mode Option (Maladim): adds a God switch to Controller Options, in the pause menu (applies at once)",
+    "  - God Mode Option (Maladim): adds a God switch to Controller Options, in the Pause Menu (applies at once)",
     "    and in Options (applies from the next level), for no damage and endless energy; turning the cheat off",
     "    ends god mode. God mode set this way is kept in ce.ini, not in your careers.",
     "  - Free Camera (F key, Aurore): in a level, F lets you fly the camera; F again returns it",
@@ -530,34 +572,44 @@ IN_THE_GAME = [
     "  original.",
     "- Keyboard: held keys are released on focus loss, and delayed releases are repaired when possible. Typed",
     "  characters come from key presses; letter and digit keys use their physical positions across layouts.",
-    "- Walker dodging (on the ground, not already dodging): with the default US keyboard, tap A then D for right,",
-    "  or D then A for left.",
-    "  Dodge Button: hold Left Ctrl and press A or D, or, on a gamepad, hold B (the right face button on an",
-    "  Xbox-style pad; the tutorial cue calls it the right button) and push the left stick left or right. The",
-    "  game then makes the two taps itself, through its own controls, and the dodge is the original one. For",
-    "  about 0.15 seconds your own left and right are held back. If you pushed the same direction 0.1 to 0.2",
-    "  seconds before, the first tap waits a moment. It follows whatever inputs you use to strafe. For the",
+    *_item("Dodging in Walker mode (on the ground, not already dodging): with the default US keyboard, tap A then D "
+           "for right, or D then A for left."),
+    "  Dodge Button: hold the Dodge modifier (default Left Ctrl) and press one movement control: W forward,",
+    "  S back, A left or D right on the default keyboard. Use your own movement bindings if you changed them.",
+    "  On a gamepad hold B (the right face button on an Xbox-style pad) and push the left stick fully in one",
+    "  direction. Either input can come first; a diagonal does not start a new dodge. To change the modifier,",
+    "  pause, open Controller Options, select Dodge modifier and press a free key. Escape cancels.",
+    "  For about 0.15 seconds the game supplies the two pushes on the chosen axis. If you pushed the same",
+    "  direction 0.1 to 0.2 seconds before, the first tap waits a moment. For the",
     "  next dodge, let go and press again, or change direction with the button still held; a press made early",
     "  in a dodge (it lasts about three quarters of a second) is dropped, one made in its last 0.35 seconds",
     "  follows it at once. A key or button you have bound to a control of your own is not used; flight sticks",
     "  have none. It is on by default (CE Settings, Dodge Button; dodge_button=0 in ce.ini turns it off, from",
-    "  the next level) and off in recordings, replays, demos and network games.",
+    "  the next level) and off in recordings, replays and demos.",
     "- Zoom: with default mouse bindings, wheel down zooms in and wheel up zooms out. In eligible ordinary play,",
     "  the default gamepad's right bumper zooms in and left bumper out. Manual zoom works only with some weapons;",
     "  some zoom while charging. Check Controller Options for changed bindings.",
-    "- Controllers: gamepad and flight-stick defaults cover menus, solo play, two-player split screen (one pad for each",
-    "  player) and bonus co-op when joystick controls have not been customized. Only virtual devices were tested.",
-    "- Photo mode: F11 (or the console's photo command) hides the HUD and cockpit for pictures, and F12 saves a",
-    "  screenshot. Both work in single-player levels, but not while a session is recorded or replayed, in multiplayer,",
-    "  a network game or a demo. Tested on Linux; Windows testing of it is limited (see the release notes).",
-    "  In a single-player level the pause menu also has a Photo Mode row, so a gamepad can reach it: it closes the",
-    "  menu and turns photo mode on, as F11 does, and writes nothing. The row then reads End Photo Mode.",
+    *_item("Controllers: gamepad and flight-stick defaults cover menus, single-player levels, two-player split screen (one pad for each "
+           "player) and bonus Co-Op when joystick controls have not been customized. Only virtual devices were tested."),
+    "- Photo Mode: F11 (or the console's photo command) hides the HUD and cockpit for pictures, and F12 saves a",
+    "  screenshot. Both work in single-player levels, but not while a session is recorded or replayed, in multiplayer",
+    "  or a demo. Tested on Linux; Windows testing of it is limited (see the release notes).",
+    "  In a single-player level the Pause Menu also has a Photo Mode row, so a gamepad can reach it: it closes the",
+    "  menu and turns Photo Mode on, as F11 does, and writes nothing. The row then reads End Photo Mode.",
+    "- Catalogue: open Onslaught CE > Catalogue, then Models or Textures, to browse your installed files.",
+    "  Choose an item for its details; texture entries also have a preview. Model entries show information,",
+    "  not a playable unit or a new 3D model viewer. Browsing does not change or redistribute the game files.",
+    "  Find by name accepts part of a filename (up to 32 ASCII characters) and ignores letter case. Choose Find",
+    "  to apply it. Models and Textures remember separate filters. Escape cancels the text edit; Clear filter",
+    "  on the results page shows every entry again. No matches leaves Find and Clear filter available.",
+    "  Native Linux menus have been exercised; Windows compilation does not demonstrate its UI or text entry.",
     "- Mods (experimental): on Linux, Onslaught CE can read replacement game files, such as textures, from mods in the",
-    "  mods folder of your user folder, named by a mods= line in ce.ini. Every file is checked against the mod's",
-    "  mod.json when the game starts, and a mod with any problem is not loaded (the log says why). There is no mod",
-    "  menu yet. On Windows mods are not active in this release: a mods= line is ignored and the log says so. See",
-    "  Mods (experimental) in the project README.",
-    "- A save that fails now says so: after the pause menu's Continue, the game's own save error message (\"An error",
+    "  mods folder of your user folder. Onslaught CE > Mods lets you enable, disable and order installed mods;",
+    "  changes apply the next time you start the game. You can also edit the mods= line in ce.ini with the game closed.",
+    "  Every file is checked against the mod's mod.json at start; a mod with a problem is not loaded. The log says why.",
+    "  On Windows mods are not active: a mods= line is ignored and the log says so. See Mods (experimental) in the",
+    "  project README.",
+    "- A save that fails now says so: after the Pause Menu's Continue, the game's own save error message (\"An error",
     "  occurred during saving.\" in English, and in the language you chose) appears for a few seconds at the bottom of",
     "  the screen, and after a language change in the front end it appears in the usual message box. The career you",
     "  had is unchanged. Recordings and replays show neither.",
@@ -566,7 +618,13 @@ IN_THE_GAME = [
     "",
     "Screen modes and widescreen",
     "Video Options > Window mode offers Windowed or Fullscreen. Choose Apply to switch without restarting.",
-    "If saving fails, the menu says the change is for this session only.",
+    "Screen mode selects the resolution; Video adapter selects the graphics device.",
+    "If Window mode says (not changed), the game kept its previous mode.",
+    "If saving fails, the row reads (not saved) and the change is for this session only.",
+    "If the row says (restart the game), restart to recover the display or input.",
+    "Live switching has been tested on Linux. The Windows build includes the same control.",
+    "A 0.1.14 candidate switched both ways in a software-rendered Windows VM; the switch in this version",
+    "has not been verified on Windows or on a physical monitor.",
     "An explicit -forcewindowed game argument takes priority.",
     "The saved display-mode choice is ignored while recording or replaying.",
     "By default, Onslaught CE starts at your desktop's resolution; a saved or explicit screen mode can change it.",
@@ -575,7 +633,7 @@ IN_THE_GAME = [
     "4:3 shape, centred with black bars. To get the original's 4:3-only list and 640 x 480 start back, set",
     "BEA_PORT_WIDESCREEN=0. Ordinarily, replays and recordings use the original 4:3 behaviour. The original game shares",
     "one random number source between visual effects and play, so a wider view can change the details of a fight.",
-    "In eligible ordinary single-player play with widescreen modes enabled, the HUD automatically scales up when",
+    "In eligible ordinary single-player levels with widescreen modes enabled, the HUD automatically scales up when",
     "both screen dimensions exceed 640 x 480, keeping the size it has at 640 x 480 relative to the screen (at 3840 x",
     "2160 it is 4.5 times as large), and so do the markers it draws on targets and objectives, each about its own",
     "target. Choose HUD Size: Original in CE Settings (hud_scale=0 in ce.ini) for the original fixed-size HUD, from",
@@ -589,13 +647,12 @@ IN_THE_GAME = [
     "the radio portrait) sit in the corners of the screen, where the original's HUD sits at 4:3, while the radio",
     "messages, warnings, compass and reticle stay in the middle. On a very wide screen the corners are far apart:",
     "choose HUD Layout: 4:3 Columns in CE Settings (hud_anchor=0 in ce.ini) to keep them in the columns a 4:3",
-    "picture would have, as BEA_PORT_HUD_SCALE=0 does. In split-screen multiplayer the HUD stays in the 4:3 columns.",
+    "picture would have, as BEA_PORT_HUD_SCALE=0 does. Split screen keeps the 4:3 columns.",
     "Sharper text is off by default: the menus' and HUD's text keeps the original's soft look, as the rest of the",
     "picture does. Choose Sharper Text: Yes in CE Settings (sharp_ui=1 in ce.ini) to turn it on from the next start:",
-    "with widescreen modes enabled on a non-4:3 picture,",
-    "bitmap text drawn at least twice its original size horizontally or vertically (for example, menu text at 1920 x",
-    "1080) can use a sharper copy of the game's letters, so it can look crisp instead of soft; the letters keep their",
-    "shapes, sizes and places.",
+    "with widescreen modes enabled on a non-4:3 picture, bitmap text drawn at least twice its original size",
+    "horizontally or vertically (for example, menu text at 1920 x 1080) can use a sharper copy of the game's",
+    "letters, so it can look crisp instead of soft; the letters keep their shapes, sizes and places.",
     "The text is then deliberately sharper than the original's soft pixels and looks brighter. A font's sharper copy",
     "is made the first time it is used, which can pause the game for a moment (about a tenth of a second). In ordinary",
     "use it does not apply in recordings and replays, on 4:3 screens or when BEA_PORT_WIDESCREEN=0.",
@@ -612,7 +669,7 @@ def help_lines(windows: bool) -> list:
             "$XDG_DATA_HOME/onslaught-ce, or ~/.local/share/onslaught-ce when unset or empty")
     where = (" (from a Command Prompt in this folder, or a shortcut with --report added)" if windows else "")
     return ["Report a problem",
-            *textwrap.wrap(f"Choose Onslaught CE > Report a Problem in the main menu, or run {launcher} --report{where}.",
+            *textwrap.wrap(f"Choose Onslaught CE > Report a Problem in the Main Menu, or run {launcher} --report{where}.",
                            README_WIDTH),
             "It opens a new issue on the project's GitHub page in your browser, filled in with your version and",
             "system, and shows the folder that holds your log. Nothing is posted until you submit the issue. Say what",
@@ -620,19 +677,19 @@ def help_lines(windows: bool) -> list:
             *textwrap.wrap(f"({user}). The usual file is onslaught-ce.log; onslaught-ce.old.log, when present, "
                            "holds the previous primary log. If multiple copies ran at once, the affected run may "
                            "be in onslaught-ce.concurrent-1.log or onslaught-ce.concurrent-2.log. Check its start "
-                           "time to identify the run and save it promptly; later launches can replace log files. "
-                           "Each stops at 4 MB. BEA_USER_DIR can select another folder. The log holds",
+                           "time to identify the run and save it promptly; later starts can replace log files. "
+                           "Each stops at 4 MB. BEA_USER_DIR can select another folder. The log holds "
+                           "the version, your OS and GPU and the game's messages. Home paths and account-name path components are "
+                           "shortened; look the file over before sharing it. You can share it directly with someone helping you.",
                            README_WIDTH, break_on_hyphens=False),
-            "the version, your OS and GPU and the game's messages. Home paths and account-name path components are",
-            "shortened; look the file over before sharing it. You can share it directly with someone helping you.",
             "If you recorded the session (below), attach its tape too.",
             "",
             "Help make Onslaught CE more faithful",
             "We compare recorded input with the original; recordings of real play can reveal differences our tests miss.",
-            f"Record one session with {launcher} --record, or every session",
-            f"with Onslaught CE > CE Settings > Record Play for Bug Reports. That starts the next time you launch Onslaught CE",
-            "(quit the game, then start it again); it puts record_sessions=1 in ce.ini in your user folder.",
-            f"While it is on, each start asks whether to record: Stop recording there, or starting with",
+            *textwrap.wrap(f"Record one session with {launcher} --record, or every session with Onslaught CE > CE Settings > "
+                           "Session Recording. That starts the next time you start Onslaught CE (quit the game, then start it "
+                           "again); it puts record_sessions=1 in ce.ini in your user folder.", README_WIDTH, break_on_hyphens=False),
+            f"While it is on, each start asks whether to record: Turn recording off there, or starting with",
             f"{launcher} --no-record, turns it off again.",
             "By default, recording targets 30 frames a second for play and uses the replay clock. Its menus take",
             "the keyboard and mouse, and you can type a career's name. Direct gamepad and flight-stick input is",
@@ -640,12 +697,12 @@ def help_lines(windows: bool) -> list:
             "controller input cannot recover it and may replay differently. The screen is normally the original 4:3.",
             "The menus are the original's: the version text, no Onslaught CE menu and no Cheats page, and only cheats",
             "typed into a career's name work. The larger HUD, console, CE tutorial dodge and zoom cues, and the saved display",
-            "mode are off; see Walker dodging above. By default the game tries to play sound through the audio monitor",
+            "mode are off; see Dodging in Walker mode above. By default the game tries to play sound through the audio monitor",
             "when a device is available.",
             "Each completed session is saved in the tapes folder beside ce.ini as a .tape and a .tape.json. The tape",
             "records key presses and releases, typed text, mouse input, their frame numbers and the game's rendering",
             "size for menu mouse input. The JSON includes version/build, platform/OS, date/time, clock, frame rate,",
-            "audio-monitor setting, game arguments and encoded copies of some CE user-folder files at the start,",
+            "audio-monitor setting, game arguments and encoded copies of some user-folder files at the start,",
             "including game options, careers and possibly other files. Session recording does not capture video, game",
             "audio or microphone audio. Both files can contain personal information; review them before sharing.",
             "To share a completed session, zip both files and say what differed from the original and roughly when.",
@@ -665,37 +722,30 @@ def limitations(windows: bool) -> list:
                  *textwrap.wrap("- You need " + VULKAN_TEXT + ".", README_WIDTH, subsequent_indent="  ", break_on_hyphens=False),
                  *textwrap.wrap(LINUX_OPTIONAL, README_WIDTH, subsequent_indent="  ", break_on_hyphens=False)])
     return ["Known limitations", *platform,
+            *([] if windows else [
+                *textwrap.wrap("- A career whose name is longer than 31 characters is left out of the Load Game list. Keep its file and ask "
+                               "for help. If the same career exists under older one-byte and UTF-8 spellings in different folders, "
+                               "the older spelling can be chosen from the original folder; keep both and ask for help before "
+                               "overwriting either one.", README_WIDTH, subsequent_indent="  ", break_on_hyphens=False)]),
             "- Complete tutorial parity with the original has not yet been established.",
-            "- Gamepad and flight-stick defaults cover menus, solo play and bonus co-op with uncustomized joystick",
+            "- Gamepad and flight-stick defaults cover menus, single-player levels and bonus Co-Op with uncustomized joystick",
             "  controls. Only virtual devices have been tested; physical controllers and Windows drivers remain open.",
             "- Physical audio devices and listening quality have not been validated by the recorded and virtual controls.",
+        "  Audio backend initialization alone does not demonstrate audible playback.",
             "- Widescreen play is not compared with the original (the original has no widescreen); ordinary replays and",
             "  recordings use 4:3.",
-            ("- Planned, not in this version yet: matchmaking, versus play, general mod support and additional HUD options." if NETWORK else
-             "- Planned, not in this version yet: Internet multiplayer, general mod support and additional HUD options."),
+            ("- Planned, not in this version yet: matchmaking, versus play, mods on Windows and additional HUD options." if NETWORK else
+             "- Planned, not in this version yet: Internet multiplayer, mods on Windows and additional HUD options."),
             ""]
 
 
 def quick_start(windows: bool) -> list:
     """The quick start for this platform's package (the repository README, public/README.md, gives both)."""
-    exe, user = ("onslaught-ce.exe", "%APPDATA%\\Onslaught CE") if windows else ("./onslaught-ce", "$XDG_DATA_HOME/onslaught-ce (or ~/.local/share/onslaught-ce when unset or empty)")
+    exe = "onslaught-ce.exe" if windows else "./onslaught-ce"
     return ["Quick start",
-            "1. Extract the download into a new empty folder outside your original game folder. Preserve old installations",
-            "   and user folders; do not overwrite them or start a 0.1.0-0.1.6 launcher. You can move the new folder later.",
+            "1. Extract the download into a new, empty folder of its own, not inside the game's folder.",
             f"2. Run {exe}.",
-            "3. It finds your Steam copy of Battle Engine Aquila by itself, or asks once where it is.",
-            "",
-            *textwrap.wrap("Keep the program and its user folder separate from the original game. By default, careers and "
-                           f"settings go to {user}. Keep recovery copies before changing save locations; do not point "
-                           "BEA_USER_DIR into the game folder.", README_WIDTH, break_on_hyphens=False),
-            "Preserve old program and staging folders during the launcher safety hold; keep verified user-data backups."] + (
-            [] if windows else [
-                "Linux careers: a filename whose in-game name exceeds 31 16-bit units is omitted from the list. The game",
-                "emits one name-free diagnostic, normally captured in a launcher log, but shows no on-screen warning.",
-                "If a career is missing, keep its file and ask for help. If the same career has older one-byte and UTF-8",
-                "spellings across folders, the older spelling can be chosen from the original folder; keep both and ask",
-                "for help before overwriting either one.",
-            ])
+            "3. It finds your Steam copy of Battle Engine Aquila by itself, or asks once where it is."]
 
 
 NOTICE_LINES = [
@@ -891,7 +941,12 @@ def links_ice(symbols: str) -> bool:
                      r"ce_network_ice_feature_marker)\b|CeIce(?:Bridge|Session)::)", symbols) is not None
 
 
+TEST_KIT_MARKER = b"ce-testkit-v1"   # port/platform/common/ce_testkit.cpp: only a --test-kit build carries it
+
+
 def check_public(binary: Path, windows: bool, *, with_ice=False, with_native_signaling=False):
+    if binary.exists() and TEST_KIT_MARKER in binary.read_bytes():
+        sys.exit(f"{binary}: a test-kit build (build.py --test-kit); journeys' twins are never packaged")
     if binary.exists():
         has_native_marker = b"CE-NATIVE-SIGNALING-V1" in binary.read_bytes()
         if has_native_marker != with_native_signaling:
@@ -1036,8 +1091,9 @@ def main():
     ap.add_argument("version")
     ap.add_argument("--out", type=Path)
     ap.add_argument("--test", action="store_true", help="local test packages only: allow a build that still compiled "
-                                                        "src/ files the public build must replace, or a Windows build with the mod "
-                                                        "loader switched on (build.py --mods-windows-test); never upload these")
+                                                        "src/ files the public build must replace, or a program built with a test "
+                                                        "switch of build.py (--commander-test, --play-unit-test, --mods-windows-test); "
+                                                        "never upload these")
     ap.add_argument("--build", type=Path, help="the build folder (default this checkout's local-data/port/build)")
     ap.add_argument("--with-ice", action="store_true", help="explicit experimental ICE package: require exact ICE profile/receipts and include pinned libjuice source and licences")
     ap.add_argument("--with-native-signaling", action="store_true", help="include the pinned native HTTPS dependencies, notices and matching source (requires --with-ice)")
@@ -1050,10 +1106,44 @@ def main():
 def build_flavour(build: Path, *, with_ice=False) -> str:
     """Public flavour; the optional ICE profile is recognised only with an explicit opt-in."""
     marker = build / "flavour.txt"
-    word = marker.read_text().strip() if marker.exists() else "public"
+    lines = marker.read_text().splitlines() if marker.exists() else []
+    word = lines[0].strip() if lines else "public"
     if word not in ("public", "public-network", *(("public-network-ice",) if with_ice else ())):
         sys.exit(f"{marker}: unknown flavour {word!r}")
+    build_test_switches(build)		# the lines after the word are build.py's test-build lines, or the file is not one this packager knows
     return word
+
+
+# build.py records a program built with one of its test switches (--commander-test, --play-unit-test: an order tape, probes, a proof
+# switch, god mode for the Battle Engine, all driven by environment variables; --mods-windows-test: the mod loader that releases keep
+# off on Windows) in flavour.txt, on a line "test-build TARGET: SWITCH ..." after the flavour word (build.py, flavour_marker). Such a
+# build folder says "public" like a release's, and nothing else in a package told the two apart, so it is refused here.
+TEST_BUILD_LINE = re.compile(r"test-build (linux|windows): ([a-z]+(?:-[a-z]+)*(?: [a-z]+(?:-[a-z]+)*)*)")
+
+
+def build_test_switches(build: Path) -> dict:
+    """The targets of this build folder whose program was last built with a test switch, each with its switches (flavour.txt's lines
+    after the flavour word). A line there that is not a test-build line stops the packager: it is never passed over."""
+    marker = build / "flavour.txt"
+    found = {}
+    for line in (marker.read_text().splitlines()[1:] if marker.exists() else []):
+        if not line.strip():
+            continue
+        match = TEST_BUILD_LINE.fullmatch(line)
+        if not match:
+            sys.exit(f"{marker}: unknown line {line!r}")
+        found[match.group(1)] = match.group(2).split()
+    return found
+
+
+def test_build_problem(build: Path):
+    """Why this build folder must not be packaged as a release, or None: a program in it was built with a test switch."""
+    found = build_test_switches(build)
+    if not found:
+        return None
+    what = "; ".join(f"the {target} program was built with " + " and ".join("--" + switch for switch in found[target]) for target in sorted(found))
+    return (f"{what}: a test build (test probes, proof switches, god mode or a loader that releases keep off), which is never "
+            "packaged as a release; rebuild that target without the test switch, or make a local test package with --test")
 
 
 def package(a):
@@ -1066,6 +1156,8 @@ def package(a):
         sys.exit("--with-native-signaling requires --with-ice")
     native_payloads = None
     flavour = build_flavour(build, with_ice=with_ice)
+    if not a.test and (problem := test_build_problem(build)):
+        sys.exit(f"{build / 'flavour.txt'}: {problem}")
     if with_ice and (flavour != "public-network-ice" or a.test):
         sys.exit("--with-ice requires exactly public-network-ice and does not allow --test")
     NETWORK = flavour in ("public-network", "public-network-ice")

@@ -11,6 +11,10 @@ void Check(bool ok) {
     ++checks;
     if (!ok) { ++failures; std::fprintf(stderr, "editor authored check %u failed\n", checks); }
 }
+void Check(bool ok, const char *what) {
+    if (!ok) std::fprintf(stderr, "editor authored check: %s\n", what);
+    Check(ok);
+}
 bool Equal(CeEditorPoint a, CeEditorPoint b) { return a.x == b.x && a.y == b.y && a.z == b.z; }
 const CeEditorPoint start{3, 5, -7};
 const CeEditorPoint moved{13, 15, -17};
@@ -45,6 +49,9 @@ void Collection() {
     for (unsigned i = 0; i != sizeof(invalid)/sizeof(*invalid); ++i) {
         state.Reset(); Check(state.Add("valid", start, 1)); Check(!state.Add(invalid[i], start, 2));
         Check(!state.Seal()); Check(!state.Select(0));
+    }
+    for (int invalidSide = -2; invalidSide <= 3; invalidSide += 5) {
+        state.Reset(); Check(!state.Add("unit", start, 1, true, invalidSide)); Check(!state.Seal());
     }
     char name[97]; std::memset(name, 'x', sizeof(name)); name[96] = 0;
     state.Reset(); Check(!state.Add(name, start, 1)); Check(!state.Seal());
@@ -113,9 +120,45 @@ void Rays() {
     Check(!CeEditorRayPlane(start, moved, 0, 0));
     Check(!CeEditorRayPlane(start, moved, std::numeric_limits<float>::infinity(), &point));
 }
+void Bounds() {
+    // A level 512 units square; a project holds one object a million units out (the format allows it).
+    const CeEditorBounds b = CeEditorLevelBounds(512, 512);
+    Check(b.minX < 0 && b.minY < 0 && b.maxX > 512 && b.maxY > 512 && b.maxX < 1024, "the bounds are the level and a margin");
+    Check(CeEditorInside(b, CeEditorPoint{400, 50, 0}) && !CeEditorInside(b, CeEditorPoint{1000000, 1000000, 0}), "inside and outside");
+    const CeEditorPoint points[] = {{400, 50, 0}, {440, 10, 0}, {1000000, 1000000, 0}, {-1000000, -1000000, -1000}};
+    CeEditorPoint focus{0, 0, 0};
+    float distance = 0;
+    Check(CeEditorFitView(points, 4, b, &focus, &distance), "a fit with objects on the level succeeds");
+    Check(focus.x > 390 && focus.x < 450 && focus.y > 0 && focus.y < 60 && focus.z == 0 && distance >= 40 && distance <= 500,
+          "the fit frames the objects on the level and leaves out the far ones");
+    Check(!CeEditorFitView(points + 2, 2, b, &focus, &distance), "only far objects: no fit");
+    focus = CeEditorPoint{1000000, -1000000, 5000};
+    distance = 1e6f;
+    CeEditorClampView(b, &focus, &distance);
+    Check(CeEditorInside(b, focus) && distance <= b.maxX - b.minX && distance >= 5, "the view is kept on the level");
+    focus = CeEditorPoint{200, 300, 4};
+    distance = 70;
+    CeEditorClampView(b, &focus, &distance);
+    Check(Equal(focus, CeEditorPoint{200, 300, 4}) && distance == 70, "a view on the level is left alone");
+    const CeEditorBounds none = CeEditorLevelBounds(0, 0);
+    Check(CeEditorInside(none, CeEditorPoint{1000000, 0, 0}), "an unknown level size bounds nothing but the format");
+}
+void Carry() {
+    // Undo and Redo carried over a reload of the same objects, and only of the same objects.
+    static CeEditorState before, after, other;
+    before.Reset(); after.Reset(); other.Reset();
+    before.Add("A", start, 1); before.Add("B", start, 2); Check(before.Seal());
+    Check(before.Select(1) && before.BeginMove() && before.Move(moved) && before.FinishMove(true), "an edit before the reload");
+    after.Add("A", start, 7); after.Add("B", moved, 8); Check(after.Seal());
+    Check(!after.CanUndo() && after.KeepHistory(before) && after.CanUndo(), "the edit can be undone after the reload");
+    Check(after.Undo() && Equal(after.Object(1)->position, start) && after.Redo() && Equal(after.Object(1)->position, moved),
+          "and undone and redone on its own object");
+    other.Add("A", start, 7); other.Add("C", moved, 8); Check(other.Seal());
+    Check(!other.KeepHistory(before) && !other.CanUndo(), "a reload with other objects keeps no history");
+}
 }
 int main() {
-    Collection(); History(); Rays();
+    Collection(); History(); Rays(); Bounds(); Carry();
     std::printf("native editor authored state: %u checks, %u failures\n", checks, failures);
     return failures ? 1 : 0;
 }

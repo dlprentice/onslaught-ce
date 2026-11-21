@@ -184,8 +184,8 @@ namespace {
 const int kSiteMargin = 32;        // grid cells kept clear of the map's edge
 const int kSiteStep = 8;           // spacing of the ground samples that judge a site
 const int kRingStep = 16;          // spacing of the samples that judge the dry ring around a site
-const float kSiteGap = 8.0f;       // clear ground between neighbouring exhibits
-const float kSiteStandoff = 24.0f; // from the front of the first row back to the visitor's feet
+const float kSiteGap = 5.0f;       // clear ground between neighbouring exhibits (at most; small exhibits stand closer, see below)
+const float kSiteStandoff = 7.0f;  // from the front of the first row back to the visitor's feet (at most): near enough that the machines read on arrival
 const float kFlatEnough = 0.5f;    // a site this flat, with every exhibit in view, is taken at once
 const float kEyeHeight = 4.0f;     // the visitor's eye above the ground
 const float kRayStep = 3.0f;       // spacing of the samples along a line of sight
@@ -193,6 +193,23 @@ const int kRings[3] = {48, 24, 0}; // dry ring around the site, widest first
 
 int Cell(float value) { return static_cast<int>(std::floor(value + 0.5f)); }
 bool Plausible(float extent) { return extent > 0.0f && extent <= 256.0f; }  // false for NaN as well
+
+// A point of the site in its own frame (u along the row, v toward the exhibits from the visitor) in the world, for the block whose world rectangle starts at
+// (x0, y0) and measures width by depth in its own frame. Heading 0 keeps the frame, 1 turns it a quarter one way, 2 a half, 3 a quarter the other way:
+// proper rotations all, so no hall is ever mirrored.
+void Place(unsigned heading, float x0, float y0, float width, float depth, float u, float v, float *x, float *y) {
+    switch (heading) {
+    case 1: *x = x0 + v; *y = y0 + width - u; break;
+    case 2: *x = x0 + width - u; *y = y0 + depth - v; break;
+    case 3: *x = x0 + depth - v; *y = y0 + u; break;
+    default: *x = x0 + u; *y = y0 + v; break;
+    }
+}
+// The visitor's yaw for a heading: the world's yaw turns +Y toward (-sin, cos).
+float HeadingYaw(unsigned heading) {
+    static const float kPi = 3.14159265358979f;
+    return heading == 1 ? -kPi / 2 : heading == 2 ? kPi : heading == 3 ? kPi / 2 : 0.0f;
+}
 
 struct Probe {
     CeMuseumVisit::GroundHeight ground;
@@ -222,22 +239,40 @@ bool InView(const Probe &probe, float eyeX, float eyeY, float eyeZ, float x, flo
 
 bool CeMuseumVisit::PlanSite(const ExhibitFootprint *footprints, unsigned count, int gridWidth, int gridHeight, GroundHeight ground,
                             void *context, SitePlan *plan) {
-    if (!footprints || !ground || !plan || !count || count > kMaxSiteExhibits ||
+    return PlanSiteFacing(footprints, count, gridWidth, gridHeight, ground, context, 0, plan);
+}
+
+bool CeMuseumVisit::PlanSiteFacing(const ExhibitFootprint *footprints, unsigned count, int gridWidth, int gridHeight, GroundHeight ground,
+                                   void *context, unsigned heading, SitePlan *plan) {
+    if (heading > 3 || !footprints || !ground || !plan || !count || count > kMaxSiteExhibits ||
         gridWidth < 2 * kSiteMargin + 16 || gridHeight < 2 * kSiteMargin + 16 || gridWidth > 4096 || gridHeight > 4096) return false;
     for (unsigned i = 0; i != count; ++i)
         if (!Plausible(footprints[i].width) || !Plausible(footprints[i].depth) || !Plausible(footprints[i].height)) return false;
+    // Machines are a few units long and scenery tens: the gap between exhibits and the visitor's stand-off follow the largest exhibit, so a row of machines
+    // can be seen from where the visitor stands. Exhibits of ten units or more keep the full gap and stand-off.
+    float biggest = 0.0f;
+    for (unsigned i = 0; i != count; ++i) {
+        if (footprints[i].width > biggest) biggest = footprints[i].width;
+        if (footprints[i].depth > biggest) biggest = footprints[i].depth;
+    }
+    // (written out: port.h, which the game's flags include, defines min and max as macros)
+    const float wantedGap = 0.8f * biggest < 2.5f ? 2.5f : 0.8f * biggest;
+    const float wantedStandoff = 6.0f * biggest < 6.0f ? 6.0f : 6.0f * biggest;
+    const float gap = wantedGap < kSiteGap ? wantedGap : kSiteGap;
+    const float standoff = wantedStandoff < kSiteStandoff ? wantedStandoff : kSiteStandoff;
     const unsigned columns = count < 3 ? count : 3, rows = (count + columns - 1) / columns;
     float columnWidth[3] = {0, 0, 0}, rowDepth[kMaxSiteExhibits] = {};
     for (unsigned i = 0; i != count; ++i) {
         const unsigned column = i % columns, row = i / columns;
-        if (footprints[i].width + kSiteGap > columnWidth[column]) columnWidth[column] = footprints[i].width + kSiteGap;
-        if (footprints[i].depth + kSiteGap > rowDepth[row]) rowDepth[row] = footprints[i].depth + kSiteGap;
+        if (footprints[i].width + gap > columnWidth[column]) columnWidth[column] = footprints[i].width + gap;
+        if (footprints[i].depth + gap > rowDepth[row]) rowDepth[row] = footprints[i].depth + gap;
     }
     float blockWidth = 0, blockDepth = 0;
     for (unsigned column = 0; column != columns; ++column) blockWidth += columnWidth[column];
     for (unsigned row = 0; row != rows; ++row) blockDepth += rowDepth[row];
-    const float front = kSiteStandoff + kSiteGap, totalDepth = blockDepth + front;
-    const int spanX = Cell(blockWidth), spanY = Cell(totalDepth);
+    const float front = standoff + gap, totalDepth = blockDepth + front;
+    const bool turned = (heading & 1) != 0;
+    const int spanX = Cell(turned ? totalDepth : blockWidth), spanY = Cell(turned ? blockWidth : totalDepth);
     if (spanX + 2 * kSiteMargin > gridWidth || spanY + 2 * kSiteMargin > gridHeight) return false;
     // Cell centres and the visitor's standing point, relative to the site's corner.
     float columnStart[3] = {0, 0, 0}, rowStart[kMaxSiteExhibits] = {};
@@ -248,7 +283,7 @@ bool CeMuseumVisit::PlanSite(const ExhibitFootprint *footprints, unsigned count,
         relativeX[i] = columnStart[i % columns] + columnWidth[i % columns] / 2;
         relativeY[i] = front + rowStart[i / columns] + rowDepth[i / columns] / 2;
     }
-    const float visitorX = blockWidth / 2, visitorY = kSiteGap / 2;
+    const float visitorX = blockWidth / 2, visitorY = gap / 2;
     const int largest = gridWidth > gridHeight ? gridWidth : gridHeight;
     const int stride = largest / 32 > 16 ? largest / 32 : 16;
     const Probe probe = {ground, context};
@@ -287,10 +322,12 @@ bool CeMuseumVisit::PlanSite(const ExhibitFootprint *footprints, unsigned count,
                 // Which exhibits can the visitor see from the standing point?
                 unsigned visible = 0;
                 float eyeGround;
-                const float eyeX = x0 + visitorX, eyeY = y0 + visitorY;
+                float eyeX, eyeY;
+                Place(heading, static_cast<float>(x0), static_cast<float>(y0), blockWidth, totalDepth, visitorX, visitorY, &eyeX, &eyeY);
                 if (!probe.at(eyeX, eyeY, &eyeGround)) continue;
                 for (unsigned i = 0; i != count; ++i) {
-                    const float cx = x0 + relativeX[i], cy = y0 + relativeY[i];
+                    float cx, cy;
+                    Place(heading, static_cast<float>(x0), static_cast<float>(y0), blockWidth, totalDepth, relativeX[i], relativeY[i], &cx, &cy);
                     float base;
                     if (!probe.at(cx, cy, &base)) continue;
                     if (InView(probe, eyeX, eyeY, eyeGround - kEyeHeight, cx, cy, base - footprints[i].height * 0.7f)) ++visible;
@@ -307,12 +344,14 @@ bool CeMuseumVisit::PlanSite(const ExhibitFootprint *footprints, unsigned count,
     SitePlan result = {};
     result.heightRange = bestRange; result.visible = bestVisible; result.dryRing = bestRing;
     for (unsigned i = 0; i != count; ++i) {
-        const float x = bestX + relativeX[i], y = bestY + relativeY[i];
+        float x, y;
+        Place(heading, static_cast<float>(bestX), static_cast<float>(bestY), blockWidth, totalDepth, relativeX[i], relativeY[i], &x, &y);
         float height;
         result.centres[i][0] = x; result.centres[i][1] = y; result.centres[i][2] = probe.at(x, y, &height) ? height : bestMean;
     }
     float height;
-    result.visitor[0] = bestX + visitorX; result.visitor[1] = bestY + visitorY;
+    Place(heading, static_cast<float>(bestX), static_cast<float>(bestY), blockWidth, totalDepth, visitorX, visitorY, &result.visitor[0], &result.visitor[1]);
+    result.yaw = HeadingYaw(heading);
     result.visitor[2] = probe.at(result.visitor[0], result.visitor[1], &height) ? height : bestMean;
     *plan = result;
     return true;

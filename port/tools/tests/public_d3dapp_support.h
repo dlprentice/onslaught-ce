@@ -71,6 +71,8 @@ struct IDirect3DDevice9 {
     HRESULT Reset(D3DPRESENT_PARAMETERS *); HRESULT TestCooperativeLevel(); HRESULT GetDeviceCaps(D3DCAPS9 *);
     HRESULT GetBackBuffer(UINT,UINT,int,IDirect3DSurface9 **); HRESULT CreateQuery(int,IDirect3DQuery9 **);
     BOOL ShowCursor(BOOL); void SetCursorPosition(int,int,DWORD); unsigned GetAvailableTextureMem(); unsigned Release();
+    // The game shell's own release uses the device for these two (defined by the drivers that run that release).
+    HRESULT SetIndices(void *); HRESULT SetStreamSource(UINT,void *,UINT,UINT);
 };
 struct IDirect3D9 {
     unsigned refs=0;

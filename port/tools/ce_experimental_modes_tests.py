@@ -117,6 +117,16 @@ CASES = (
     ("block-crlf", BLOCK.replace("\n", "\r\n").replace("commander=0", "commander=1").encode(), "0 0 1 0"),
     ("lines-above-and-block", b"update_check=0\ncommander=1\n\n" + BLOCK.replace("commander=0\n", "").encode(), "0 0 1 0"),
     ("other-sections-ignored", b"[Other]\nmuseum=1\n[Experimental]\n", "0 1 0 0"),
+    ("header-indented-and-crlf", b"  [Experimental] \r\nmuseum=1\r\n", "0 1 0 0"),
+    # a damaged or binary ce.ini turns nothing on, whatever line it holds (the 0.2 play-unit review's file, then each fault alone)
+    ("damaged-binary-and-open-header", b"\x00\xff\xfe[Experimental\nplay_unit=1\n\x00", "0 0 0 0"),
+    ("open-header", b"[Experimental\nplay_unit=1\n", "0 0 0 0"),
+    ("indented-open-header", b"  [Experimental\nmuseum=1\n", "0 0 0 0"),
+    ("open-header-other-section", b"[Other\n[Experimental]\nmuseum=1\n", "0 0 0 0"),
+    ("empty-bracket", b"[\nmuseum=1\n", "0 0 0 0"),
+    ("nul-in-another-line", b"hud_scale=1\x00\nplay_unit=1\n", "0 0 0 0"),
+    ("nul-at-the-end", b"[Experimental]\nplay_unit=1\n\x00", "0 0 0 0"),
+    ("nul-in-a-comment", b"; a\x00b\ncommander=1\n", "0 0 0 0"),
 )
 
 
@@ -192,6 +202,12 @@ class Lines(unittest.TestCase):
                                   "static int on[4] = {-1, -1, -1, -1};\n\tfor (int i = 0; mode && i < 4; i++)\n\t{\n\t\tif (strcmp(mode, kExperimentalKeys[i]))\n\t\t\tcontinue;\n\t\tif (on[i] < 0 && on[0] < 0)\n\t\t\ton[i] = "),
             "key-renamed": ('"map_editor", "museum"', '"map_editor_", "museum"'),
             "keys-swapped": ('"map_editor", "museum", "commander", "play_unit"};\n\nbool', '"map_editor", "museum", "play_unit", "commander"};\n\nbool'),
+            # the parser before the 0.2 review: a NUL byte or an open section header did not stop a line turning a feature on
+            "the-old-parser": ("on[i] = ce_ini_well_formed_for_experimental() && (", "on[i] = ("),
+            "nul-bytes-allowed": ("bool good = ok != 0 && !memchr(t, 0, len);", "bool good = ok != 0;"),
+            "open-header-allowed": ("if (n - first < 2 || line[n - 1] != ']') good = false;", "(void)first;"),
+            "indented-header-not-seen": ("while (first < n && (line[first] == ' ' || line[first] == '\\t')) ++first;\n\t\tif (first == n || line[first] != '[') continue;",
+                                         "if (first == n || line[first] != '[') continue;"),
             "any-name-counts": ("\tfor (int i = 0; mode && i < 4; i++)\n\t{\n\t\tif (strcmp(mode, kExperimentalKeys[i]))\n\t\t\tcontinue;", "\tfor (int i = 0; mode && i < 4; i++)\n\t{\n\t\tif (false)\n\t\t\tcontinue;"),
         }
         for name, (old, new) in mutants.items():
@@ -445,7 +461,7 @@ class Block(unittest.TestCase):
             "header-early-return-needs-no-header": ("if (!key && t && ce_ini_find_header(t, len, section_header) < len)", "if (!key && t)"),
             "mode-not-kept": ("if (ok && fchmod(output, (mode_t)keep_mode) != 0) ok = 0;", ""),
             "mode-always-world-readable": ("(mode_t)keep_mode", "(mode_t)0644"),
-            "read-only-replaced": ("if (readonly) { free(t); ce_settings_dir_close(&dir); return 0; }", ""),
+            "read-only-replaced": ("if (readonly) { free(t); ce_settings_dir_close(&dir); ce_ini_refusal = CE_INI_REFUSED_READONLY; return 0; }", ""),
             "read-only-by-group-bit": ("readonly = !(st.st_mode & S_IWUSR);", "readonly = !(st.st_mode & S_IWGRP);"),
             "size-not-limited": ("if (size < 0 || (unsigned long)size > CE_INI_MAX_BYTES) ok = 0;", "if (size < 0) ok = 0;"),
             "size-limit-off-by-a-line": ("(unsigned long)size > CE_INI_MAX_BYTES", "(unsigned long)size > CE_INI_MAX_BYTES + 64"),
@@ -543,7 +559,7 @@ class Entry(unittest.TestCase):
 
     def test_playing_a_unit_counts_only_after_the_fence_and_its_own_line(self):
         text = PLAYUNIT.read_text()
-        gate = 'gWanted = !fenced && PortCeExperimental("play_unit") && !CeCmdMapOn();'
+        gate = 'gWanted = !fenced && PortCeExperimental("play_unit");'
         self.assertEqual(text.count(gate), 1)
         self.assertEqual(text.count('PortCeExperimental("'), 1, "the play_unit line is read at one place")
         self.assertNotIn('CE_SettingIs("play_unit"', text)
@@ -558,24 +574,25 @@ class Entry(unittest.TestCase):
         editor, museum = mode.split('return "map_editor";')[0], mode.split('return "map_editor";')[1].split('return "museum";')[0]
         for name in ("CEA_PAGE_EDITOR", "CEA_EDITOR_FIRST"):
             self.assertIn(name, editor)
-        for name in ("CEA_MUSEUM", "CEA_MUSEUM_VISIT"):
+        for name in ("CEA_MUSEUM", "CEA_MUSEUM_VISIT", "CEA_PAGE_MUSEUM"):
             self.assertIn(name, museum)
         # every hub row that opens an unfinished feature has an action the filter names, under the feature's own line
         hub = text[text.index("static const SCeRow\tkHubRows[]"):]
         hub = hub[:hub.index("};")]
-        want = {"Map Editor": "map_editor", "Museum Prototype": "museum", "Goodies Gallery": "museum"}
+        want = {"Map Editor": "map_editor", "Museum": "museum"}
         for label, action in re.findall(r'\{L"([^"]+)", (CEA_[A-Z_]+)', hub):
             if label in want:
                 self.assertIn(action, editor if want[label] == "map_editor" else museum, label)
         # and the features' own dispatches sit behind the one guard above them
         guard = text.index("if (!ExperimentalOffered(action))")
-        for call in ("PortCeEditorBegin(", "PortCeMuseumOpen()", "PortCeMuseumVisitBegin()", "OpenPage(CEP_EDITOR);"):
+        for call in ("PortCeEditorBegin(", "PortCeMuseumOpen()", "PortCeMuseumVisitBegin()", "OpenPage(CEP_EDITOR);", "OpenPage(CEP_MUSEUM);"):
             self.assertGreater(text.index(call, guard), guard, call)
 
     def test_the_help_pages_follow_the_features_own_lines(self):
         text = FRONTEND.read_text()
-        self.assertTrue(has(text, '{CEPL_TOOLS, "map_editor",', '{CEPL_GODOT, "commander",', 'PortCeExperimental("commander") ? kControlsTipsCommander : ""',
+        self.assertTrue(has(text, '{CEPL_TOOLS, "map_editor",', '{CEPL_GODOT, "commander",',
                             "if ((plain.mIndex == index) && !PortCeExperimental(plain.mMode))", "if (!commander)\n\t\t\tmHelpRows[0].mHint.mHelp = kControlsHintPlain;"))
+        # The Cheats Help renderer exercises the actual menu action, on/off and with saved keys.
 
     def test_mutants_of_the_entry_points_are_caught(self):
         def commander_ok(t):
@@ -584,8 +601,10 @@ class Entry(unittest.TestCase):
         self.assertTrue(commander_ok(text))
         self.assertFalse(commander_ok(text.replace('PortCeExperimental("commander")', "true")))
         text = PLAYUNIT.read_text()
-        self.assertIn('!fenced && PortCeExperimental("play_unit") &&', text)
-        self.assertNotIn('!fenced && PortCeExperimental("play_unit") &&', text.replace('PortCeExperimental("play_unit") && ', ""))
+        wanted = 'gWanted = !fenced && PortCeExperimental("play_unit");'
+        self.assertIn(wanted, text)
+        self.assertNotIn(wanted, text.replace('PortCeExperimental("play_unit")', "true"))
+        self.assertNotIn(wanted, text.replace('!fenced && PortCeExperimental("play_unit")', 'PortCeExperimental("play_unit")'))
 
 
 if __name__ == "__main__":

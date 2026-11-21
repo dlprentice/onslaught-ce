@@ -8,9 +8,13 @@ test texture mods from the player's own install.
     python3 port/tools/mods.py manifest MODDIR --name N --version V [--author A] [--description D]
                                         [--ce-min X.Y.Z] [--ce-max X.Y.Z]   # MODDIR/mod.json from MODDIR/data/**
     python3 port/tools/mods.py test-mod KIND USERDIR [--game GAMEDIR]
+    python3 port/tools/mods.py new ID --name N [--user USERDIR] [--author A] [--description D] [--game GAMEDIR]
+                                        # a sample mod (the Battle Engine's texture in other colours) made from your own install
+    python3 port/tools/mods.py check [ID ...] [--user USERDIR] [--game GAMEDIR] [--bea PATH]
+                                        # the game's own checks on the mods you name (or the ones ce.ini enables)
     python3 port/tools/mods.py preview IN.aya|IN.dds OUT.png  # the top mip level of a DXT2/DXT3 texture, for a look
 
-A mod is USERDIR/mods/<id>/ with mod.json and the replacement files at their game-relative paths (data/...); ce.ini's
+port/MODS.md is the guide to the format and the limits. A mod is USERDIR/mods/<id>/ with mod.json and the replacement files at their game-relative paths (data/...); ce.ini's
 mods=<id>,... line enables mods in order (port/platform/common/mods.h). The id is the folder's name.
 
 test-mod builds one of the test mods from the battle engine's texture in the selected install (never committed):
@@ -26,7 +30,9 @@ import json
 import os
 import re
 import stat
+import shutil
 import struct
+import subprocess
 import sys
 import zlib
 from pathlib import Path
@@ -423,26 +429,19 @@ def enable(user, mod_id):
     raise ValueError("automatic mod enabling is disabled; close the game and edit a backed-up ce.ini yourself")
 
 
-def test_mod(kind, user, game):
-    if kind not in ("recolor", "hd2x"):
-        raise ValueError("unknown test mod")
-    mod_id = "ce-test-recolor" if kind == "recolor" else "ce-test-hd2x"
+def _texture_mod(mod_id, name, version, author, description, out, user, game, kind):
+    """A new mod folder USER/mods/<mod_id> holding the Battle Engine's texture as `out` (an unpacked DDS) and a mod.json that lists it."""
     moddir = Path(user) / "mods" / mod_id
     guard = _reject_game_output(moddir, game)
-    source = Path(game) / BE_TEXTURE
-    if not source.is_file():
-        raise SystemExit(f"{source}: not found (select the install with --game or BEA_GAME_DIR)")
-    dds = unpack(_read_source(source))
-    if kind == "recolor":
-        mod_id, name, out = "ce-test-recolor", "CE test: recoloured battle engine", recolor(dds, red_rotation)
-    else:
-        mod_id, name, out = "ce-test-hd2x", "CE test: battle engine texture at 2x", upscale2x(recolor(dds, green_rotation))
     if len(out) >= TEXTURE_LIMIT:
         raise SystemExit(f"{kind}: {len(out)} bytes unpacked is over the game's texture limit")
     packed = pack(out)
-    manifest = {"schema": 1, "id": mod_id, "name": name, "version": "1", "author": "Onslaught CE tests",
-                "description": "Generated at test time from the player's own install; never distributed.",
-                "files": [{"path": BE_TEXTURE, "size": len(packed), "sha256": sha256(packed)}]}
+    manifest = {"schema": 1, "id": mod_id, "name": name, "version": version}
+    if author:
+        manifest["author"] = author
+    if description:
+        manifest["description"] = description
+    manifest["files"] = [{"path": BE_TEXTURE, "size": len(packed), "sha256": sha256(packed)}]
     user_fd = _open_directory(user, guard)
     try:
         try:
@@ -479,6 +478,67 @@ def test_mod(kind, user, game):
     return mod_id, moddir
 
 
+def _be_texture(game):
+    source = Path(game) / BE_TEXTURE
+    if not source.is_file():
+        raise SystemExit(f"{source}: not found (select the install with --game or BEA_GAME_DIR)")
+    return unpack(_read_source(source))
+
+
+def test_mod(kind, user, game):
+    if kind not in ("recolor", "hd2x"):
+        raise ValueError("unknown test mod")
+    mod_id = "ce-test-recolor" if kind == "recolor" else "ce-test-hd2x"
+    _reject_game_output(Path(user) / "mods" / mod_id, game)
+    dds = _be_texture(game)
+    if kind == "recolor":
+        mod_id, name, out = "ce-test-recolor", "CE test: recoloured battle engine", recolor(dds, red_rotation)
+    else:
+        mod_id, name, out = "ce-test-hd2x", "CE test: battle engine texture at 2x", upscale2x(recolor(dds, green_rotation))
+    return _texture_mod(mod_id, name, "1", "Onslaught CE tests", "Generated at test time from the player's own install; never distributed.",
+                        out, user, game, kind)
+
+
+def new_mod(mod_id, user, game, name, author="", description=""):
+    """A sample mod for an author to start from: the Battle Engine's texture of the player's own install with its colours rotated, so that
+    it is plainly different in a level. Nothing of the install is copied into the repository: the folder is made on the author's machine."""
+    problem = id_problem(mod_id)
+    if problem:
+        raise SystemExit(f"{mod_id!r}: {problem}")
+    _reject_game_output(Path(user) / "mods" / mod_id, game)
+    dds = _be_texture(game)
+    return _texture_mod(mod_id, name, "1.0", author, description or "A sample mod: the Battle Engine in other colours.", recolor(dds, red_rotation),
+                        user, game, "new")
+
+
+def default_user():
+    env = os.environ.get("BEA_USER_DIR")
+    if env:
+        return Path(env)
+    base = os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local/share")
+    return Path(base) / "onslaught-ce"
+
+
+def find_bea(given=None):
+    """The game program that has --check-mods: the one named, else BEA_EXE, else ./bea, else bea on the PATH."""
+    for candidate in (given, os.environ.get("BEA_EXE"), "./bea", shutil.which("bea")):
+        if candidate and Path(candidate).is_file() and os.access(candidate, os.X_OK):
+            return str(Path(candidate).resolve())
+    raise SystemExit("the game program was not found: run this in the Onslaught CE folder, or name it with --bea (a public build's bea has --check-mods)")
+
+
+def check(ids, user, game, bea=None):
+    """The game's own checks, as it runs them at start, through bea --check-mods: its lines are printed as they are. Returns its status
+    (0 nothing refused, 1 something refused, 3 this build's loader is off)."""
+    exe = find_bea(bea)
+    env = dict(os.environ, BEA_USER_DIR=str(user), BEA_GAME_DIR=str(game))
+    done = subprocess.run([exe, "--check-mods", *ids], env=env, capture_output=True, text=True, timeout=300)
+    sys.stdout.write(done.stdout)
+    if done.returncode == 3 and not done.stdout.strip():
+        print("mods: this game program has no mod checks (use a public build's bea)", file=sys.stderr)
+    return done.returncode
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -501,6 +561,18 @@ def main():
     t.add_argument("user", type=Path)
     t.add_argument("--game", type=Path, default=default_game())
     t.add_argument("--enable", action="store_true")
+    n = sub.add_parser("new")
+    n.add_argument("id")
+    n.add_argument("--name", required=True)
+    n.add_argument("--user", type=Path, default=default_user())
+    n.add_argument("--author", default="")
+    n.add_argument("--description", default="")
+    n.add_argument("--game", type=Path, default=default_game())
+    c = sub.add_parser("check")
+    c.add_argument("ids", nargs="*")
+    c.add_argument("--user", type=Path, default=default_user())
+    c.add_argument("--game", type=Path, default=default_game())
+    c.add_argument("--bea")
     a = ap.parse_args()
     if a.cmd == "unpack":
         guard = _reject_game_output(a.dst, a.game)
@@ -520,6 +592,11 @@ def main():
     elif a.cmd == "manifest":
         m = write_manifest(a.moddir, a.name, a.version, a.author, a.description, a.ce_min, a.ce_max, a.game)
         print(f"{a.moddir / 'mod.json'}: {len(m['files'])} files")
+    elif a.cmd == "new":
+        mod_id, moddir = new_mod(a.id, a.user, a.game, a.name, a.author, a.description)
+        print(f"{moddir}: {mod_id} (not enabled; add {mod_id} to the mods= line of ce.ini with the game closed, or turn it on in Onslaught CE > Mods)")
+    elif a.cmd == "check":
+        return check(a.ids, a.user, a.game, a.bea)
     else:
         if a.enable:
             enable(a.user, "")  # refuse before creating even a new test-mod folder

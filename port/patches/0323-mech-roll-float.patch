@@ -1,0 +1,18 @@
+--- a/MCMech.cpp
++++ b/MCMech.cpp
+@@ -535,9 +535,13 @@
+ 
+ static inline void MakeMechRollRows(FMatrix &matrix, float roll)
+ {
+-    matrix.Row[0] = FVector((float)cos(roll), 0.f, (float)sin(roll));
++    // Port: retail stores the roll's cosine and sine as floats (0049a3d7..0049a3f9); clang folds the matrix away and
++    // would multiply the unrounded fcos/fsin
++    volatile float c = (float)cos(roll);
++    volatile float s = (float)sin(roll);
++    matrix.Row[0] = FVector(c, 0.f, s);
+     PublishMechRollMiddle(matrix.Row[1]);
+-    PublishMechRollTrailing(matrix.Row[2], roll);
++    matrix.Row[2] = FVector(-s, 0.f, c);
+ }
+ 
+ // STAND-IN: original declaring type and constructor spelling are unknown.

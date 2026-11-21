@@ -8,6 +8,7 @@
 #define DIRECTINPUT_VERSION 0x0800
 #include <windows.h>
 #include <dinput.h>
+#include "testhooks.h"
 
 #include <SDL3/SDL.h>
 #include <new>
@@ -31,6 +32,9 @@
 #include "ce_tutorial_pad.h"
 
 bool PortCeLayer();
+#ifdef CE_VERSION
+extern "C" void PortCePlayUnitMouse(long dx, long dy) __attribute__((weak));	// ce_playunit.cpp: the look camera of a driven unit
+#endif
 
 // ---- data formats (the SDK's c_dfDI* tables; only their identity and sizes matter to this implementation) ---------------
 extern "C" {
@@ -151,7 +155,20 @@ LONG CeMouseDelta(float delta, float &remainder)
 // unplugged until the first attach. BEA_PORT_FAKE_PAD=1 attaches the gamepad with no script. BEA_PORT_FAKE_PAD2 scripts a
 // second gamepad the same way (no kind or late switch). The gamepad logs every
 // rumble it is asked for (FakePadRumble).
+#ifndef CE_NETWORK_OFF
+// BEA_PORT_FAKE_PAD_GAME optionally replaces pad 0's flight-stick script when a genuine
+// lockstep session starts. Its Presents are relative to that transition, so a
+// slow connection cannot consume the exercise. It runs once per process and
+// releases every control on entry and departure; it never starts a session.
+// BEA_PORT_FAKE_PAD_END then optionally scripts the same pad from the session's end (the
+// end screen each player answers alone), its Presents relative to that end.
+#endif
 extern "C" unsigned PortPresentCount(void);	// d3d9hooks.cpp
+#ifndef CE_NETWORK_OFF
+#ifdef CE_VERSION
+extern "C" int CE_LockstepTicking(void) __attribute__((weak));
+#endif
+#endif
 // Two test pads: BEA_PORT_FAKE_PAD and BEA_PORT_FAKE_PAD2 (always a gamepad), attached in that order, so the second is
 // the game's pad 1 (player 2 in a local two-player game).
 struct FakePad
@@ -159,6 +176,12 @@ struct FakePad
 	SDL_Joystick	*pad;
 	SDL_JoystickID	id;
 	const char		*script;
+#ifndef CE_NETWORK_OFF
+	const char		*game_script, *end_script;
+	unsigned		game_present, end_present;
+	bool			game_started, game_stopped;
+	int				axes, buttons, hats;
+#endif
 };
 FakePad gFakePads[2];
 
@@ -205,6 +228,9 @@ void FakePadPlug(int n)
 		descriptor.Rumble = FakePadRumble;
 	}
 	FakePad &f = gFakePads[n];
+#ifndef CE_NETWORK_OFF
+	f.axes = descriptor.naxes; f.buttons = descriptor.nbuttons; f.hats = descriptor.nhats;
+#endif
 	f.id = SDL_AttachVirtualJoystick(&descriptor);
 	f.pad = f.id ? SDL_OpenJoystick(f.id) : NULL;
 	fprintf(stderr, PORT_LOG_PREFIX "test: virtual %s%s %s\n", kind && !strcmp(kind, "stick") ? "flight stick" : "gamepad",
@@ -221,17 +247,62 @@ void FakePadAttach()
 		if (!script || !*script || f.pad || f.script)
 			continue;
 		f.script = strcmp(script, "1") ? script : "";	// "1": a pad that sends nothing (rumble runs)
+#ifndef CE_NETWORK_OFF
+		const char *kind = n ? NULL : getenv("BEA_PORT_FAKE_PAD_KIND");
+		f.game_script = kind && !strcmp(kind, "stick") ? getenv("BEA_PORT_FAKE_PAD_GAME") : NULL;
+		f.end_script = f.game_script ? getenv("BEA_PORT_FAKE_PAD_END") : NULL;
+#endif
 		const char *late = n ? NULL : getenv("BEA_PORT_FAKE_PAD_LATE");
 		if (!(late && *late == '1'))
 			FakePadPlug(n);
 	}
 }
 
+#ifndef CE_NETWORK_OFF
+// CE_FAKE_PAD_GAME_BEGIN: exact transition logic is compiled by the focused checks.
+void FakePadNeutral(FakePad &f)
+{
+	if (!f.pad) return;
+	for (int i = 0; i < f.axes; ++i) SDL_SetJoystickVirtualAxis(f.pad, i, 0);
+	for (int i = 0; i < f.buttons; ++i) SDL_SetJoystickVirtualButton(f.pad, i, false);
+	for (int i = 0; i < f.hats; ++i) SDL_SetJoystickVirtualHat(f.pad, i, 0);
+	SDL_UpdateJoysticks();
+}
+
+unsigned FakePadPresent(FakePad &f, unsigned present)
+{
+	if (!f.game_script || !*f.game_script) return present;
+	bool running = false;
+#ifdef CE_VERSION
+	running = CE_LockstepTicking && CE_LockstepTicking();
+#endif
+	if (!f.game_started)
+	{
+		if (!running || !f.pad) return present;
+		FakePadNeutral(f);
+		f.game_present = present; f.game_started = true; f.script = f.game_script;
+		fprintf(stderr, PORT_LOG_PREFIX "test: gameplay pad script begins at Present %u\n", present);
+	}
+	else if (!running && !f.game_stopped)
+	{
+		FakePadNeutral(f);
+		f.game_stopped = true; f.script = f.end_script ? f.end_script : ""; f.end_present = present;
+		fprintf(stderr, PORT_LOG_PREFIX "test: gameplay pad script ended\n");
+	}
+	if (f.game_stopped) return present - f.end_present;
+	return present - f.game_present;
+}
+// CE_FAKE_PAD_GAME_END
+
+#endif
 void FakePadStep()
 {
 	for (int n = 0; n < 2; n++)
 	{
 		FakePad &f = gFakePads[n];
+#ifndef CE_NETWORK_OFF
+		unsigned now = FakePadPresent(f, PortPresentCount());
+#endif
 		while (f.script && *f.script)
 		{
 			unsigned present = 0;
@@ -241,10 +312,23 @@ void FakePadStep()
 			char word[8] = "";
 			if (sscanf(f.script, "%u:%6[a-z]", &present, word) == 2 && (!strcmp(word, "attach") || !strcmp(word, "detach")))
 			{
+#ifndef CE_NETWORK_OFF
+				if (now < present)
+#else
 				if (PortPresentCount() < present)
+#endif
 					break;
 				if (!strcmp(word, "attach") && !f.pad)
+#ifndef CE_NETWORK_OFF
+				{
 					FakePadPlug(n);
+					const bool was_started = f.game_started;
+					now = FakePadPresent(f, PortPresentCount());
+					if (!was_started && f.game_started) continue;	// consume the new script, not a leftover menu press
+				}
+#else
+					FakePadPlug(n);
+#endif
 				else if (!strcmp(word, "detach") && f.pad)
 				{
 					SDL_CloseJoystick(f.pad);
@@ -257,19 +341,31 @@ void FakePadStep()
 				break;
 			else if (sscanf(f.script, "%u:b%d:%c", &present, &which, &change) == 3)
 			{
+#ifndef CE_NETWORK_OFF
+				if (now < present)
+#else
 				if (PortPresentCount() < present)
+#endif
 					break;
 				SDL_SetJoystickVirtualButton(f.pad, which, change == 'd');
 			}
 			else if (sscanf(f.script, "%u:a%d:%f", &present, &which, &value) == 3)
 			{
+#ifndef CE_NETWORK_OFF
+				if (now < present)
+#else
 				if (PortPresentCount() < present)
+#endif
 					break;
 				SDL_SetJoystickVirtualAxis(f.pad, which, (Sint16)value);
 			}
 			else if (sscanf(f.script, "%u:h%d:%f", &present, &which, &value) == 3)
 			{
+#ifndef CE_NETWORK_OFF
+				if (now < present)
+#else
 				if (PortPresentCount() < present)
+#endif
 					break;
 				SDL_SetJoystickVirtualHat(f.pad, which, (Uint8)value);
 			}
@@ -861,6 +957,9 @@ struct Device : public IDirectInputDevice8A
 			m->rgbButtons[0] = (b & SDL_BUTTON_LMASK) ? 0x80 : 0;
 			m->rgbButtons[1] = (b & SDL_BUTTON_RMASK) ? 0x80 : 0;
 			m->rgbButtons[2] = (b & SDL_BUTTON_MMASK) ? 0x80 : 0;
+			if (PORT_FEEL_ON() && PortFeelMouseButtons)		// buttons the feel script holds (feel.h), as a press of the real ones
+				if (const unsigned held = PortFeelMouseButtons())
+					for (int i = 0; i < 3; ++i) if (held & (1u << i)) m->rgbButtons[i] = 0x80;
 			if (getenv("BEA_PORT_INPUT_LOG"))
 			{
 				static SDL_MouseButtonFlags lastb = 0xffffffff;
@@ -875,6 +974,19 @@ struct Device : public IDirectInputDevice8A
 				m->lX += ax;
 				m->lY += ay;
 			}
+			if (gPortTestHooks && gPortTestHooks->mouseTake)		// testhooks.h: null in every build but a --test-kit one
+			{
+				long kx = 0, ky = 0;
+				unsigned held = 0;
+				gPortTestHooks->mouseTake(&kx, &ky, &held);
+				m->lX += kx;
+				m->lY += ky;
+				for (int i = 0; i < 3; ++i) if (held & (1u << i)) m->rgbButtons[i] = 0x80;
+			}
+#ifdef CE_VERSION
+			// Play as a unit's look camera reads the same movement the game is given (ce_playunit.cpp; it acts only while a unit is driven). A tape's mouse returned above.
+			if (PortCePlayUnitMouse) PortCePlayUnitMouse(m->lX, m->lY);
+#endif
 			if (PORT_FEEL_ON())
 				PortFeelMousePoll(m->lX, m->lY, (m->rgbButtons[0] ? 1u : 0u) | (m->rgbButtons[1] ? 2u : 0u) | (m->rgbButtons[2] ? 4u : 0u));
 			if (size >= sizeof(DIMOUSESTATE2))

@@ -64,6 +64,42 @@ bool Same(const struct stat &a, const struct stat &b) {
            a.st_ctim.tv_sec == b.st_ctim.tv_sec && a.st_ctim.tv_nsec == b.st_ctim.tv_nsec;
 }
 #endif
+// The highest number among this level's saves already in the folder (0 when there are none, or it cannot be listed), so a
+// new save is numbered after every earlier one and the newest save always has the highest number, gaps or not.
+int Highest(CeSettingsDir *dir, int level) {
+    char prefix[16];
+    snprintf(prefix, sizeof(prefix), "level-%04d-", level);
+    int highest = 0;
+    auto consider = [&](const char *leaf) {
+        int serial = 0;
+        char tail[16] = "";
+        if (strncmp(leaf, prefix, 11) || sscanf(leaf + 11, "%6d%15s", &serial, tail) != 2 || strcmp(tail, ".ceproject"))
+            return;
+        if (serial > highest) highest = serial;
+    };
+#if defined(_WIN32)
+    char pattern[4400];
+    if (!Full(dir, "level-*.ceproject", pattern, sizeof(pattern))) return 0;
+    WIN32_FIND_DATAA found;
+    HANDLE handle = FindFirstFileA(pattern, &found);
+    if (handle == INVALID_HANDLE_VALUE) return 0;
+    int entries = 0;
+    do consider(found.cFileName);
+    while (++entries < EntryLimit && FindNextFileA(handle, &found));
+    FindClose(handle);
+#else
+    int fd = openat(dir->fd, ".", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    DIR *directory = fd >= 0 ? fdopendir(fd) : nullptr;
+    if (!directory) {
+        if (fd >= 0) close(fd);
+        return 0;
+    }
+    int entries = 0;
+    for (struct dirent *row; entries < EntryLimit && (row = readdir(directory)); ++entries) consider(row->d_name);
+    closedir(directory);
+#endif
+    return highest;
+}
 } // namespace
 int PortCeEditorFiles(CeEditorFile *files, int capacity, char *error, size_t errorCapacity) noexcept {
     Error(error, errorCapacity, "");
@@ -239,7 +275,8 @@ bool PortCeEditorSave(int level, const char *bytes, size_t size, char *filename,
         return false;
     }
     char name[64];
-    for (int revision = 1; revision <= EntryLimit; ++revision) {
+    const int first = Highest(&folder.dir, level) + 1;
+    for (int revision = first; revision < first + EntryLimit && revision <= 999999; ++revision) {
         snprintf(name, sizeof(name), "level-%04d-%06d.ceproject", level, revision);
         size_t at = 0;
         bool ok = true;

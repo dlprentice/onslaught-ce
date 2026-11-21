@@ -1,0 +1,191 @@
+--- a/ResourceAccumulator.cpp
++++ b/ResourceAccumulator.cpp
+@@ -1,6 +1,10 @@
+ // ResourceAccumulator.cpp: implementation of the CResourceAccumulator class.
+ //
+ //////////////////////////////////////////////////////////////////////
++#ifdef CE_VERSION
++extern "C" bool PortCeMuseumAuthoredSource();
++extern "C" void PortCeMuseumAuthoredInstall();
++#endif
+ 
+ #include "common.h"
+ 
+@@ -956,6 +960,10 @@
+ 		}
+ 		else if (tag==MKID("ERES"))
+ 		{
++#ifdef CE_VERSION
++			if (PortCeMuseumAuthoredSource()) { c.Skip(); PortCeMuseumAuthoredInstall(); }
++			else
++#endif
+ 			ENGINE.Deserialize(&c);
+ 		}
+ 		else if (tag==MKID("WRES"))
+@@ -974,6 +982,10 @@
+ 		else if (tag==MKID("LNDS"))
+ 		{
+ #if TARGET==PS2
++#ifdef CE_VERSION
++			if (PortCeMuseumAuthoredSource()) { c.Skip(); }
++			else
++#endif
+ 			ENGINE.GetLandscape()->Deserialize(&c);
+ #else
+ 			c.Skip();
+@@ -998,6 +1010,10 @@
+ 		}
+ 		else if (tag==MKID("SSHD"))
+ 		{
++#ifdef CE_VERSION
++			if (PortCeMuseumAuthoredSource()) { c.Skip(); }
++			else
++#endif
+ 			STATICSHADOWS.DeserializeAll(&c);
+ 		}
+ 		else if(tag==MKID("PMIB"))
+@@ -1010,6 +1026,10 @@
+ 		}
+ 		else if(tag==MKID("DMKR"))
+ 		{
++#ifdef CE_VERSION
++			if (PortCeMuseumAuthoredSource()) { c.Skip(); }
++			else
++#endif
+ 			ENGINE.GetLandscape()->GetDamage()->DeserializeAll(&c);
+ 		}
+ 		else if(tag==MKID("GDIE"))
+--- a/engine.cpp
++++ b/engine.cpp
+@@ -1,3 +1,7 @@
++#ifdef CE_VERSION
++extern "C" bool PortCeMuseumAuthoredMap();
++extern "C" void PortCeMuseumAuthoredBackdrop();
++#endif
+ #define ENGINE_CPP
+ #include	"common.h"
+ #include	"engine.h"
+@@ -349,6 +353,9 @@
+ void CEngine::ResetPos(int x, int y)	// FUNCTION: 0x0044a110
+ {
+ 	ASSERT(mCurrentViewpoint!=-1);
++#ifdef CE_VERSION
++	if (!PortCeMuseumAuthoredMap())
++#endif
+ 	mLandscape->ResetPos(x, y);
+ }
+ 
+@@ -356,6 +363,9 @@
+ 
+ void CEngine::InitDamageSystem()
+ {
++#ifdef CE_VERSION
++	if (!PortCeMuseumAuthoredMap())
++#endif
+ 	mLandscape->ResetDamage();
+ // stick in tree shadows with damage markers
+ 	
+@@ -380,6 +390,9 @@
+ 	InitDamageSystem();
+ #endif
+ 
++#ifdef CE_VERSION
++	if (!PortCeMuseumAuthoredMap())
++#endif
+ 	mLandscape->BuildLevelSpecifics();
+ 
+ #if TARGET == PS2
+@@ -395,6 +408,9 @@
+ 	if (!mRenderLandscape)
+ 		return;
+ 	ASSERT(mCurrentViewpoint!=-1);
++#ifdef CE_VERSION
++	if (!PortCeMuseumAuthoredMap())
++#endif
+ 	mLandscape->UpdatePos(cam,mCurrentViewpoint);
+ }
+ 
+@@ -647,6 +663,9 @@
+ void CEngine::UpdateArea(SINT inStartX, SINT inStartY, SINT inFinishX, SINT inFinishY, BOOL updategeometryinstead)	// FUNCTION: 0x0044a6b0
+ {
+ //	mLandscape->ResetPos(0,0);
++#ifdef CE_VERSION
++	if (!PortCeMuseumAuthoredMap())
++#endif
+ 	mLandscape->UpdateArea(inStartX, inStartY, inFinishX, inFinishY, updategeometryinstead);
+ }
+ 
+--- a/DXEngine.cpp
++++ b/DXEngine.cpp
+@@ -1,3 +1,7 @@
++#ifdef CE_VERSION
++extern "C" bool PortCeMuseumAuthoredMap();
++extern "C" void PortCeMuseumAuthoredBackdrop();
++#endif
+ #ifdef CE_VERSION
+ #include "ce_editor.h"
+ #endif
+@@ -756,6 +760,9 @@
+ 
+ 		if (viewpoint == which_view_lod)
+ 		{
++#ifdef CE_VERSION
++			if (!PortCeMuseumAuthoredMap())
++#endif
+ 			mLandscape->CalcLODs(mGamut, viewpoint);
+ 		}
+ 
+@@ -763,6 +770,9 @@
+ 	}
+ 	else
+ 	{
++#ifdef CE_VERSION
++		if (!PortCeMuseumAuthoredMap())
++#endif
+ 		mLandscape->CalcLODs(mGamut, viewpoint);
+ 	}
+ 
+@@ -819,6 +829,10 @@
+ 			else
+ 			RENDERINFO.SetProjection(1.0f,vfar, zoom ,zoom*mCamera[mCurrentViewpoint]->GetAspectRatio());
+ 
++#ifdef CE_VERSION
++			if (PortCeMuseumAuthoredMap()) PortCeMuseumAuthoredBackdrop();
++			else
++#endif
+ 			mKempyCube->Render();
+ 		}
+ 
+@@ -834,7 +848,11 @@
+     PortCeMuseumViewCapture();
+ #endif
+ 
+-		if (mRenderLandscape)
++		if (mRenderLandscape
++#ifdef CE_VERSION
++		    && !PortCeMuseumAuthoredMap()
++#endif
++		)
+ 		{
+ 			mLandscape->Render(mGamut, viewpoint);
+ 
+@@ -851,6 +869,9 @@
+ 			RENDERINFO.SetLightingEnabled(FALSE);
+ 			if (!mRenderReflections)
+ 			{
++#ifdef CE_VERSION
++				if (!PortCeMuseumAuthoredMap())
++#endif
+ 				mWater->Render(wlevel);
+ 			}
+ 			RENDERINFO.SetLightingEnabled(TRUE);
+@@ -894,6 +915,9 @@
+ 			RENDERINFO.SetLightingEnabled(FALSE);
+ 			if (!mRenderReflections)
+ 			{
++#ifdef CE_VERSION
++				if (!PortCeMuseumAuthoredMap())
++#endif
+ 				mWater->Render(wlevel);
+ 			}
+ 			RENDERINFO.SetLightingEnabled(TRUE);

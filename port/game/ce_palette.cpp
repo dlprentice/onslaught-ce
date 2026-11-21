@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
-// The CE console: the original game's "~" console brought back for solo play, as a drop-down panel over the battle. It
+// The CE console: the original game's "~" console brought back for single-player play, as a drop-down panel over the battle. It
 // shows the retail console's own scrollback (CConsole::mLines: the load log, and what the commands print) and takes
 // commands from its own table, never from the retail parser: no CConsole::ExecuteCommand, Exec, Bind or HandleBind, no
 // script files and no key binds. Every command is checked here first: information and view commands are open; the level
@@ -39,6 +39,7 @@ extern "C" int CE_SettingIs(const char *key, const char *value);
 extern "C" int CE_SettingGetBool(const char *key, int def);
 
 bool PortCeLayer();
+extern "C" bool PortCeMuseumVisitActive(void) __attribute__((weak));	// ce_museum_visit.cpp (absent from a test harness that does not link the museum)
 bool PortRecording();
 extern WORD gCharScanCode;
 
@@ -393,8 +394,17 @@ void CmdRemoteOff(int, Arg *)
 	else Out("Remote camera off.");
 }
 
+// A museum visit has no level to leave for, to win or to lose: those commands would end it, or load a world the visit refuses.
+bool MuseumRefuses(const char *what)
+{
+	if (!PortCeMuseumVisitActive || !PortCeMuseumVisitActive()) return false;
+	Out("The museum has no %s. Leave it from the pause menu.", what);
+	return true;
+}
+
 void CmdMap(int argc, Arg *argv)
 {
+	if (MuseumRefuses("other level")) return;
 	int level = 0;
 	if (argc != 2 || !ParseInt(argv[1], &level)) { Out("Usage: map <level>, for example map 200."); return; }
 	if (!CampaignLevel(level)) { Out("%s is not a campaign level.", argv[1]); return; }
@@ -403,8 +413,8 @@ void CmdMap(int argc, Arg *argv)
 	JumpToLevel(level);
 }
 
-void CmdWin(int, Arg *) { Out("Level won."); Close(); Win(); }
-void CmdLose(int, Arg *) { Out("Level lost (the original's lose command gives no reason)."); Close(); Lose(); }
+void CmdWin(int, Arg *) { if (MuseumRefuses("level to win")) return; Out("Level won."); Close(); Win(); }
+void CmdLose(int, Arg *) { if (MuseumRefuses("level to lose")) return; Out("Level lost (the original's lose command gives no reason)."); Close(); Lose(); }
 
 void CmdGamma(int argc, Arg *argv)
 {
@@ -423,11 +433,11 @@ void CmdFilm(int argc, Arg *argv)
 	if (argc != 2 || !Film(argv[1], file, sizeof(file), &localise))
 	{
 		Out("Films: a cutscene number 1-33, GILL_M_on_a_fork, UsTheMovie, ltlogo, openingfmv.");
-		Out("  Goodies plays the cutscenes and the two extras; the boot films play at start.");
+		Out("  The Goodies screen plays the cutscenes and the two extras; the boot films play at start.");
 		return;
 	}
 	// Not during a battle: whether the battle catches up on the time a film took has not been measured, and the
-	// console only opens in a battle. The Goodies page plays the cutscenes and the two extras; the boot films play at start.
+	// console only opens in a battle. The Goodies screen plays the cutscenes and the two extras; the boot films play at start.
 	(void)localise;
 	Out("Films are not played during a battle; fmv_play alone lists them.");
 }
@@ -467,10 +477,11 @@ void MusicUsage()
 void CmdMusic(int argc, Arg *argv)
 {
 	static const char *const kTypes[] = {"single", "linear", "random"};
+	static const char *const kPlays[] = {"playing one track", "playing in order", "shuffled"};
 	if (argc == 1)
 	{
 		const int n = CeMusic::Tracks();
-		Out("Your music: %d track%s, play type %s.", n, n == 1 ? "" : "s", kTypes[CeMusic::Type()]);
+		Out("Your music: %d track%s, %s.", n, n == 1 ? "" : "s", kPlays[CeMusic::Type()]);
 		if (CeMusic::Folder()[0]) Out("  Folder %s", CeMusic::Folder());
 		if (const char *now = CeMusic::Now()) Out("  Playing %s", Leaf(now));
 		else if (!n) Out("  The game's music plays. music adddir <folder> adds yours.");
@@ -528,13 +539,13 @@ void CmdMusic(int argc, Arg *argv)
 	MusicUsage();
 }
 
-// Photo mode (ce_photo.cpp): the HUD hidden for pictures, as F11 does. The panel closes so the view is clear.
+// Photo Mode (ce_photo.cpp): the HUD hidden for pictures, as F11 does. The panel closes so the view is clear.
 void CmdPhoto(int argc, Arg *argv)
 {
 	bool on = !PortCePhotoOn();
 	if (argc > 2 || (argc == 2 && !ParseBool(argv[1], &on))) { Out("Usage: photo [on|off]."); return; }
-	if (!PortCePhotoSet(on)) { Out("Photo mode is unavailable here."); return; }
-	Out(on ? "Photo mode on: HUD hidden. F11 or photo returns; F12 saves a screenshot." : "Photo mode off.");
+	if (!PortCePhotoSet(on)) { Out("Photo Mode is unavailable here."); return; }
+	Out(on ? "Photo Mode on: HUD hidden. F11 or photo ends it; F12 saves a screenshot." : "Photo Mode off.");
 	if (on) Close();
 }
 
@@ -544,7 +555,7 @@ void CmdDevStats(int argc, Arg *argv)
 	else if (argc == 2 && (Same(argv[1], "on") || Same(argv[1], "1"))) devStats = 1;
 	else if (argc == 2 && (Same(argv[1], "off") || Same(argv[1], "0"))) devStats = 0;
 	else { Out("Usage: devstats [on|off]."); return; }
-	Out(devStats ? "Developer information on (the original's debug text)." : "Developer information off.");
+	Out(devStats ? "Developer text on." : "Developer text off.");
 }
 
 const Command kCommands[] = {
@@ -563,7 +574,7 @@ const Command kCommands[] = {
 	{"playsound", "<name>", "Plays a sound this level has loaded.", -1, CmdSound},
 	{"music", "[adddir|playtype|next|clear]", "Your own .ogg folder in place of the level music; music alone says more.", -1, CmdMusic},
 	{"photo", "[on|off]", "Hides the HUD for pictures (F11). F12 saves a screenshot in your screenshots folder.", -1, CmdPhoto},
-	{"devstats", "[on|off]", "The original developers' information text: level, time, events, FPS, health.", -1, CmdDevStats},
+	{"devstats", "[on|off]", "The original developers' text: level, time, events, FPS, health.", -1, CmdDevStats},
 	{"splitscreen", "horizontal|vertical", "Sets how the next two-player game splits the screen.", -1, CmdSplit},
 	{"camera", "", "Free camera on or off, as the F key.", kCheatCamera, CmdCamera},
 	{"remotecameraon", "", "Views from what is under the crosshair.", kCheatCamera, CmdRemoteOn},
@@ -629,7 +640,7 @@ void Run(const char *line)
 	for (const char *r : kRefused)
 		if (Same(r, argv[0]))
 		{
-			if (Same(r, "exit") || Same(r, "quit")) Out("Use the pause menu (Esc) to quit.");
+			if (Same(r, "exit") || Same(r, "quit")) Out("Use the Pause Menu (Esc) to quit.");
 			else Out("%s is not available in Onslaught CE.", r);
 			return;
 		}
@@ -727,8 +738,12 @@ struct Look { DWORD text, hint, panel; };
 
 Look Colours()
 {
-	Look look = {0xffffffff, 0xffa8a8a8, 0xc8000000};
-	if (green) { look.text = 0xff40ff40; look.hint = 0xff20a020; }
+	// The small font's text stage doubles a text colour (any channel of 0x80 or more is full brightness), so these are authored at
+	// half strength: yellow 0xff7f7f40 reads 254,254,128 on screen, the developer text's own yellow (255,255,128), and the hint's
+	// dimmer yellow 0xff545428 reads 168,168,80. The green theme's text 0xff40ff40 reads 128,255,128, its dimmer hint 0xff206820
+	// reads 64,208,64.
+	Look look = {0xff7f7f40, 0xff545428, 0xc8000000};
+	if (green) { look.text = 0xff40ff40; look.hint = 0xff206820; }
 	// cg_consolealpha (the retail console's background, 200 by default), when this level registered it.
 	const VarRule *r = Rule("cg_consolealpha");
 	void *data = r ? Data(r) : NULL;
@@ -944,7 +959,7 @@ void PortCePaletteRender()
 	DrawLine(font, white, left, margin + step * float(lines), width, scale, look.text, line);
 	DrawLine(font, white, left, margin + step * float(lines + 1), width, scale, look.hint,
 			 scroll ? "Scrolled back: PgDn returns. Enter runs. Esc closes."
-					: "help lists commands. Enter runs, Tab completes, Up/Down recall, PgUp/PgDn scroll, Esc closes.");
+					: "help lists commands. Tab completes, PgUp/PgDn scroll, Esc closes.");
 	LT.SRS(D3DRS_ZFUNC, D3DCMP_LESSEQUAL);
 	LT.SRS(D3DRS_ZWRITEENABLE, TRUE);
 	LT.SRS(D3DRS_ZENABLE, TRUE);

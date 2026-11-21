@@ -1,15 +1,15 @@
 --- a/MenuItem.cpp
 +++ b/MenuItem.cpp
-@@ -275,7 +275,7 @@ void	CMenuMenuItem::Render(float x, floa
+@@ -275,7 +275,7 @@ void	CMenuMenuItem::Render(float x, float y, BOOL selected)
  
  // FUNCTION: 0x004a3c30
  void	CMenuMenuItem::RenderList(float x, float y, BOOL on_top)
 -{
-+{ extern WCHAR *PortCeValueFit(WCHAR *, float, float *); extern WCHAR *PortCeListFit(WCHAR *, float);
++{ extern WCHAR *PortCeValueFit(WCHAR *, float, float *); extern WCHAR *PortCeListFit(WCHAR *, float); extern int PortCeListWindow(const void *, float, long, int, int, int, float *, int *, int *); extern void PortCeListHover(int);
  	WCHAR	text[100];
  	int		value = GetValue();
  
-@@ -318,7 +318,7 @@ void	CMenuMenuItem::RenderList(float x,
+@@ -318,7 +318,7 @@ void	CMenuMenuItem::RenderList(float x, float y, BOOL on_top)
  		for (i = 0; i < GetNumChoices(); i++)
  		{
  			SIZE	s;
@@ -18,16 +18,41 @@
  			if (s.cx > widest)
  				widest = s.cx;
  		}
-@@ -368,7 +368,7 @@ void	CMenuMenuItem::RenderList(float x,
+@@ -329,7 +329,7 @@ void	CMenuMenuItem::RenderList(float x, float y, BOOL on_top)
+ 
+ 		float	ly = float(top);
+ 		float	yscale = 1.f;
+-		int		n = GetNumChoices();
++		int		n = GetNumChoices(); int ceFirst = 0; const int ceWindow = PortCeListWindow(this, y, size.cy, n, mSelection, FRONTEND.GetCurrentPage(), &ly, &ceFirst, &n);
+ 		float	height = float(n * size.cy);
+ 		if (ly < 0.f)
+ 			ly = 0.f;
+@@ -354,10 +354,10 @@ void	CMenuMenuItem::RenderList(float x, float y, BOOL on_top)
+ 		else
+ 			back = 0xff404040;
+ 		CSPRITERENDERER::DrawSprite(lx, ly, 0.004f, CPauseMenu::mBlankTexture, SA_TOP_LEFT, SPT_NONE, 1.f, 0.f, back,
+-									(widest + 3) / 16.f, (GetNumChoices() * size.cy) * yscale / 16.f, 0.f, 1.f, 0.f, 1.f);
++									(widest + 3) / 16.f, ((ceWindow ? n : GetNumChoices()) * size.cy) * yscale / 16.f, 0.f, 1.f, 0.f, 1.f);
+ 
+ 		float	rowh = size.cy * yscale;
+-		for (i = 0; i < n; i++)
++		for (i = ceFirst; i < ceFirst + n; i++)
+ 		{
+ 			DWORD	c = 0xff404040;
+ 			if (i == mSelection)
+@@ -366,9 +366,9 @@ void	CMenuMenuItem::RenderList(float x, float y, BOOL on_top)
+ 			float	x2 = size.cx + lx + 2.f;
+ 			float	ny = ly + rowh;
  			if (CFrontEnd::GetCursorStateInRect(lx + 2.f, ly, x2, ny))
- 				mSelection = i;
+-				mSelection = i;
++				{ mSelection = i; if (ceWindow) PortCeListHover(i); }
  
 -			PLATFORM.Font(FONT_SMALL)->DrawTextWithShadow(lx + 2.f, ly, c, GetChoiceText(i), 0, 0, 1.f, yscale);
 +			PLATFORM.Font(FONT_SMALL)->DrawTextWithShadow(lx + 2.f, ly, c, PortCeListFit(GetChoiceText(i), lx + 2.f), 0, 0, 1.f, yscale);
  
  			float	cy2 = ly + size.cy;
  			float	cx2 = size.cx + lx + 2.f;
-@@ -395,7 +395,7 @@ void	CMenuMenuItem::RenderList(float x,
+@@ -395,7 +395,7 @@ void	CMenuMenuItem::RenderList(float x, float y, BOOL on_top)
  		}
  	}
  	else

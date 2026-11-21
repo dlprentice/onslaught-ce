@@ -64,10 +64,10 @@ static void notice_and_recovery(bool host) {
     suspended(599);
     check(!CE_LockstepNotice()[0], "waiting notice stays hidden before half a second");
     suspended(600);
-    check(!std::strcmp(CE_LockstepNotice(), "Waiting for the other player... (30 s)"),
+    check(!std::strcmp(CE_LockstepNotice(), "Waiting for your friend... 30"),
           "waiting notice appears at half a second");
     suspended(30099);
-    check(!std::strcmp(CE_LockstepNotice(), "Waiting for the other player... (1 s)"),
+    check(!std::strcmp(CE_LockstepNotice(), "Waiting for your friend... 1"),
           "waiting countdown preserves its original deadline");
 
     // An authored empty control sample exercises the decoder and input ring.

@@ -54,8 +54,10 @@ bool PortCeDebriefStatsOn(bool singlePlayer)
 // original's did (x, x + cc for the colon, x + nc for the value; rowStep apart). When they would run past bottom (a level
 // with many objectives, or a lost level's reason text), the panel first rises into the gap above it, by rise at most;
 // then the rows go in two columns side by side if both fit inside right; else the rows that fit are placed and the
-// rest are not drawn. The CHEATER! line (cheatHeight tall) goes under the last row. Returns the rows placed (the
-// CHEATER! line, when placed, is the last).
+// rest are not drawn. The CHEATER! line stays out of that choice where it can: when the rows fit in one column and the
+// status column (cheatX) is clear of the values, it goes there, level with the first row, as the objectives' status
+// words do; otherwise it goes under the last row (cheatHeight tall). Returns the rows placed (the CHEATER! line, when
+// placed, is the last).
 int PortCeDebriefLayout(const CeDebriefPanel &in, float outX[], float outY[])
 {
 	CeDebriefPanel panel = in;
@@ -63,7 +65,8 @@ int PortCeDebriefLayout(const CeDebriefPanel &in, float outX[], float outY[])
 	float width = 0.f;
 	for (int i = 0; i < rows; ++i)
 		if (panel.nc + panel.valueWidth[i] > width) width = panel.nc + panel.valueWidth[i];
-	const float tall = float(rows) * panel.rowStep + (panel.cheat ? panel.cheatHeight : 0.f);
+	const bool beside = panel.cheat && panel.cheatX > 0.f && panel.x + width + 8.f <= panel.cheatX && panel.cheatX + panel.cheatWidth <= panel.right;
+	const float tall = float(rows) * panel.rowStep + (panel.cheat && !beside ? panel.cheatHeight : 0.f);
 	const float over = panel.y + tall - panel.bottom;
 	if (over > 0.f && over <= panel.rise) panel.y -= over;
 	int placed = 0;
@@ -91,7 +94,13 @@ int PortCeDebriefLayout(const CeDebriefPanel &in, float outX[], float outY[])
 			++placed;
 		}
 	}
-	if (panel.cheat && placed == rows)
+	if (panel.cheat && placed == rows && beside && panel.y + tall <= panel.bottom)
+	{
+		outX[placed] = panel.cheatX;
+		outY[placed] = panel.y;
+		++placed;
+	}
+	else if (panel.cheat && placed == rows)
 	{
 		float y = panel.y;
 		for (int i = 0; i < placed; ++i) if (outX[i] == panel.x && outY[i] + panel.rowStep > y) y = outY[i] + panel.rowStep;

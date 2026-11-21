@@ -48,6 +48,7 @@
 #include <windows.h>
 #include <winternl.h>
 #else
+#include <dirent.h>
 #include <fcntl.h>
 #include <linux/memfd.h>
 #include <sched.h>
@@ -105,7 +106,8 @@ struct Identity
 
 struct Mod
 {
-	std::string id, name, version, author;
+	std::string id, name, version, author, description;
+	std::string shown[4];	// name, version, author, description as the manifest wrote them in UTF-8 (the page's; the checks use the ASCII forms above)
 	int files = 0;
 #ifdef _WIN32
 	HANDLE root = INVALID_HANDLE_VALUE;	// <user folder>\mods\<id>, held open (no delete share) for the life of the process
@@ -139,6 +141,10 @@ const std::vector<std::string> *gCheckIds;	// the ids named on the command line,
 int gCheckRefusals;	// refusal lines, and below the mods (or ids) they refused
 int gCheckRefusedMods;
 const char kReported[] = "";	// LoadMod's answer when the check mode has printed the mod's refusals itself
+// The kind of the refusal LoadMod is returning (PortModWhy, mods.h), for the Mods page: each stage of LoadMod, ReadManifest and CheckEntry sets it before the checks of that kind, so
+// the refusal's own words (the log's and --check-mods') stay as they are and the page can say the same thing in one plain sentence. PortModsReport reads it; nothing else does.
+int gWhy;
+std::string gWanted;	// PORT_MOD_WHY_RENAMED: the id mod.json holds, which the folder should be named
 
 void Log(const char *format, ...)
 {
@@ -397,6 +403,7 @@ struct Parser
 	const char *error = NULL;
 	int depth = 0;
 	size_t nodes = 0;
+	bool utf8 = false;	// \u escapes of 0x80 and above become UTF-8 instead of '?': for the texts a page shows, never for a check
 
 	bool Fail(const char *why)
 	{
@@ -455,7 +462,35 @@ struct Parser
 				}
 				if (v == 0)
 					return Fail("a NUL character in a string");
-				if (v >= 0x80)
+				if (v >= 0x80 && utf8)
+				{
+					if (v >= 0xd800 && v < 0xdc00 && end - p >= 6 && p[0] == '\\' && p[1] == 'u')
+					{
+						unsigned low = 0;
+						bool hex = true;
+						for (int i = 0; i < 4; i++)
+						{
+							char h = p[2 + i];
+							int digit = h >= '0' && h <= '9' ? h - '0' : h >= 'a' && h <= 'f' ? h - 'a' + 10 : h >= 'A' && h <= 'F' ? h - 'A' + 10 : -1;
+							hex = hex && digit >= 0;
+							low = low * 16 + (unsigned)(digit < 0 ? 0 : digit);
+						}
+						if (hex && low >= 0xdc00 && low < 0xe000)
+						{
+							v = 0x10000 + ((v - 0xd800) << 10) + (low - 0xdc00);
+							p += 6;
+						}
+					}
+					if (v >= 0xd800 && v < 0xe000)
+						*out += '?';	// a surrogate with no partner
+					else if (v < 0x800)
+						{ *out += (char)(0xc0 | (v >> 6)); *out += (char)(0x80 | (v & 0x3f)); }
+					else if (v < 0x10000)
+						{ *out += (char)(0xe0 | (v >> 12)); *out += (char)(0x80 | ((v >> 6) & 0x3f)); *out += (char)(0x80 | (v & 0x3f)); }
+					else
+						{ *out += (char)(0xf0 | (v >> 18)); *out += (char)(0x80 | ((v >> 12) & 0x3f)); *out += (char)(0x80 | ((v >> 6) & 0x3f)); *out += (char)(0x80 | (v & 0x3f)); }
+				}
+				else if (v >= 0x80)
 					*out += '?';	// non-ASCII text is kept only as a placeholder (names are logged as ASCII)
 				else
 					*out += (char)v;
@@ -640,6 +675,7 @@ bool Hex(const std::string &s, unsigned char out[32])
 // NULL and the mod's fields, or the reason the manifest is refused.
 const char *ReadManifest(const char *text, size_t size, const std::string &id, Mod *mod, std::vector<Entry> *entries)
 {
+	gWhy = PORT_MOD_WHY_INFO;	// every refusal of this function is the manifest's, but for the few that name another kind
 	Parser parser{text, text + size};
 	Json root;
 	if (!parser.Value(&root))
@@ -649,6 +685,20 @@ const char *ReadManifest(const char *text, size_t size, const std::string &id, M
 		return "text after the manifest's object";
 	if (root.type != Json::OBJ)
 		return "the manifest is not an object";
+	// What the Mods page shows of a mod it cannot load as well as of one that loads: the four texts, with their non-ASCII letters, taken here before the checks, whatever the checks then say.
+	{
+		Parser again{text, text + size};
+		again.utf8 = true;
+		Json whole;
+		if (again.Value(&whole) && whole.type == Json::OBJ)
+		{
+			const char *const keys[4] = {"name", "version", "author", "description"};
+			for (int i = 0; i < 4; i++)
+				if (const Json *v = whole.Get(keys[i]))
+					if (v->type == Json::STR && v->s.size() <= 4096)
+						mod->shown[i] = v->s;
+		}
+	}
 	static const char *const known[] = {"schema", "id", "name", "version", "author", "description", "ce_min", "ce_max",
 										"files"};
 	// The game stops at a mod's first refusal; the check mode prints it and reads on, for as long as the text can be read at all.
@@ -662,13 +712,26 @@ const char *ReadManifest(const char *text, size_t size, const std::string &id, M
 		}
 	const Json *schema = root.Get("schema");
 	if (!schema || schema->type != Json::INT || schema->negative || schema->n != 1)
+	{
+		if (schema && schema->type == Json::INT && !schema->negative && schema->n > 1)
+			gWhy = PORT_MOD_WHY_NEWER;	// a later schema: a later Onslaught CE reads it
 		REFUSE("schema is not 1");
+		gWhy = PORT_MOD_WHY_INFO;
+	}
 	const Json *jid = root.Get("id");
 	if (!jid || jid->type != Json::STR || jid->s != id)
+	{
+		if (jid && jid->type == Json::STR && ValidId(jid->s) && !DeviceName(jid->s))
+		{
+			gWhy = PORT_MOD_WHY_RENAMED;	// a mod unpacked into a folder of another name
+			gWanted = jid->s;
+		}
 		REFUSE("id is not the mod folder's name");
+		gWhy = PORT_MOD_WHY_INFO;
+	}
 	struct { const char *key; std::string *out; size_t min, max; } texts[] = {
 		{"name", &mod->name, 1, 64}, {"version", &mod->version, 1, 32}, {"author", &mod->author, 0, 64},
-		{"description", NULL, 0, 1024}};
+		{"description", &mod->description, 0, 1024}};
 	for (const auto &t : texts)
 	{
 		const Json *v = root.Get(t.key);
@@ -702,7 +765,11 @@ const char *ReadManifest(const char *text, size_t size, const std::string &id, M
 		{
 			int order = VersionCompare(running, want);
 			if (strcmp(k, "ce_min") == 0 ? order < 0 : order > 0)
+			{
+				gWhy = order < 0 ? PORT_MOD_WHY_NEWER : PORT_MOD_WHY_OLDER;
 				REFUSE("this version of Onslaught CE is outside the mod's ce_min..ce_max");
+				gWhy = PORT_MOD_WHY_INFO;
+			}
 		}
 	}
 	const Json *files = root.Get("files");
@@ -713,6 +780,7 @@ const char *ReadManifest(const char *text, size_t size, const std::string &id, M
 	}
 	if ((int)files->items.size() > kMaxFilesPerMod)
 	{
+		gWhy = PORT_MOD_WHY_TOO_BIG;
 		REFUSE("more than 4096 files");
 		return NULL;
 	}
@@ -748,7 +816,9 @@ const char *ReadManifest(const char *text, size_t size, const std::string &id, M
 		}
 		if (e.size > kMaxFile)
 		{
+			gWhy = PORT_MOD_WHY_TOO_BIG;
 			REFUSE("a file larger than 64 MiB");
+			gWhy = PORT_MOD_WHY_INFO;
 			continue;
 		}
 		entries->push_back(e);
@@ -1790,6 +1860,7 @@ const char *CheckEntry(const Mod *mod, const Entry &e, std::map<std::string, int
 {
 	static std::string reason;
 	std::vector<std::string> parts;
+	gWhy = PORT_MOD_WHY_LIST;	// the path's rules, a file listed twice
 	if (const char *bad = CheckPath(e.path, &parts))
 		return (reason = "file " + Clean(e.path, 120) + ": " + bad).c_str();
 	std::string key = Lower(e.path);
@@ -1800,10 +1871,12 @@ const char *CheckEntry(const Mod *mod, const Entry &e, std::map<std::string, int
 	const bool hasGameFile = PortGameHasFile(e.path.c_str());
 	int archiveLevel = 0;
 	const bool archive = !hasGameFile && LevelArchiveName(key, &archiveLevel);
+	gWhy = PORT_MOD_WHY_NOT_IN_GAME;
 	if (!world && !archive && !hasGameFile)
 		return (reason = "file " + e.path + ": the game has no such file (a mod can only replace the game's files, or add a "
 						 "world file, data/worlds/worldNNN.wrd, or the archive of a multiplayer level that has none, "
 						 "data/resources/NNN_res_PC.aya for NNN 850 to 899)").c_str();
+	gWhy = PORT_MOD_WHY_TOO_BIG;
 	if (world && e.size > kMaxWorld)
 		return (reason = "file " + e.path + ": a world file larger than 4 MiB").c_str();
 	if (archive && e.size > kMaxArchive)
@@ -1818,9 +1891,11 @@ const char *CheckEntry(const Mod *mod, const Entry &e, std::map<std::string, int
 	f.archive = archive;
 	memcpy(f.sha, e.sha, 32);
 	const char *why = NULL;
+	gWhy = PORT_MOD_WHY_FILE_MISSING;	// not there, or reached through a link, or not a plain file
 	auto h = OpenBelow(mod->root, e.path, &f.id, &why);
 	if (!Opened(h))
 		return (reason = "file " + e.path + ": " + why).c_str();
+	gWhy = PORT_MOD_WHY_DAMAGED;	// not the bytes the manifest lists
 	if ((unsigned long long)f.id.size != e.size)
 	{
 		CloseFile(h);
@@ -1829,6 +1904,7 @@ const char *CheckEntry(const Mod *mod, const Entry &e, std::map<std::string, int
 	if ((*total += e.size) > kMaxTotal)
 	{
 		CloseFile(h);
+		gWhy = PORT_MOD_WHY_TOO_BIG;
 		return kTooMuch;
 	}
 	std::vector<unsigned char> data;
@@ -1843,6 +1919,7 @@ const char *CheckEntry(const Mod *mod, const Entry &e, std::map<std::string, int
 	sha256_final(&c, sum);
 	if (memcmp(sum, e.sha, 32) != 0)
 		return (reason = "file " + e.path + ": its SHA-256 is not the manifest's").c_str();
+	gWhy = PORT_MOD_WHY_FORMAT;	// the bytes the author listed, in a form the game's readers cannot hold
 	if (EndsWith(key, ".aya"))
 	{
 		std::vector<unsigned char> unpacked;
@@ -1860,6 +1937,8 @@ const char *LoadMod(const std::string &id, Mod *mod, std::vector<File> *files, u
 {
 	const int refusalsBefore = gCheckRefusals;
 	mod->id = id;
+	gWhy = PORT_MOD_WHY_MISSING;	// no folder of that name (or a link in its place)
+	gWanted.clear();
 #ifdef _WIN32
 	{
 		// The user folder itself may be reached through a link (as on Linux); `mods` and the mod's own folder may not.
@@ -1915,6 +1994,7 @@ const char *LoadMod(const std::string &id, Mod *mod, std::vector<File> *files, u
 	int m = OpenBelow(mod->root, "mod.json", &mid, &why);
 #endif
 	static std::string reason;
+	gWhy = PORT_MOD_WHY_INFO;	// mod.json itself
 	if (!Opened(m))	// with the open chain's own reason (on Windows, for example, a Mod.json the volume spells in another case)
 		return (reason = std::string("mod.json is missing, a link, or not a regular file: ") + (why ? why : "it cannot be opened")).c_str();
 	std::vector<unsigned char> text;
@@ -1944,6 +2024,23 @@ const char *LoadMod(const std::string &id, Mod *mod, std::vector<File> *files, u
 	return gCheckRefusals != refusalsBefore ? kReported : NULL;
 }
 
+// The ids of a mods= line's text, in order: split at commas, blanks around an id dropped, an empty id skipped.
+void SplitIds(const char *list, std::vector<std::string> *ids)
+{
+	for (const char *p = list; *p;)
+	{
+		const char *comma = strchr(p, ',');
+		std::string id(p, comma ? (size_t)(comma - p) : strlen(p));
+		while (!id.empty() && (id.back() == ' ' || id.back() == '\t'))
+			id.pop_back();
+		while (!id.empty() && (id[0] == ' ' || id[0] == '\t'))
+			id.erase(0, 1);
+		if (!id.empty())
+			ids->push_back(id);
+		p = comma ? comma + 1 : p + strlen(p);
+	}
+}
+
 void Load()
 {
 	gFence = Fence();
@@ -1959,18 +2056,7 @@ void Load()
 				Log("no mods enabled: ce.ini has no usable mods= line");
 			return;
 		}
-		for (const char *p = list; *p;)
-		{
-			const char *comma = strchr(p, ',');
-			std::string id(p, comma ? (size_t)(comma - p) : strlen(p));
-			while (!id.empty() && (id.back() == ' ' || id.back() == '\t'))
-				id.pop_back();
-			while (!id.empty() && (id[0] == ' ' || id[0] == '\t'))
-				id.erase(0, 1);
-			if (!id.empty())
-				ids.push_back(id);
-			p = comma ? comma + 1 : p + strlen(p);
-		}
+		SplitIds(list, &ids);
 	}
 	if (gFence && gCheck)
 		Log("note: a game started with %s set keeps mods off; these checks are not affected", gFence);
@@ -2383,6 +2469,334 @@ int PortModOpenRead(const char *game_path)
 	return snapshot;
 }
 #endif
+
+// ---- the Mods page's side ---------------------------------------------------------------------------------------------
+extern "C" {
+int CE_SettingSetText(const char *key, const char *value);
+int CE_SettingSetEmpty(const char *key);
+}
+
+namespace
+{
+struct Listed
+{
+	std::string name;
+	int kind;	// 0 a folder, 1 a link, 2 an archive file
+};
+
+// The game-file keys of each mod of the last report that passed its checks, by id: what PortModsClash compares.
+std::map<std::string, std::vector<std::string>> gReportKeys;
+static_assert(kMaxMods == PORT_MODS_ON, "mods.h names the loader's bound");
+
+bool ArchiveFileName(const std::string &name)
+{
+	const std::string lower = Lower(name);
+	return EndsWith(lower, ".zip") || EndsWith(lower, ".7z") || EndsWith(lower, ".rar");
+}
+
+// The entries of <user folder>/mods a page lists: folders, links to anything, and archive files, by name; names that start
+// with a dot are left out. At most kMaxListed entries are read. False when there is no mods folder that can be listed.
+const int kMaxListed = 1024;
+
+bool ListModsFolder(std::vector<Listed> *out)
+{
+#ifdef _WIN32
+	wchar_t pattern[2 * MAX_PATH + 16];
+	if (!MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, PortUserDir(), -1, pattern, 2 * MAX_PATH))
+		return false;
+	wcscat(pattern, L"\\mods\\*");
+	WIN32_FIND_DATAW found;
+	HANDLE find = FindFirstFileW(pattern, &found);
+	if (find == INVALID_HANDLE_VALUE)
+	{
+		wcscpy(wcsrchr(pattern, L'\\'), L"");	// no entry at all, or no folder: the folder itself answers
+		const DWORD attributes = GetFileAttributesW(pattern);
+		return attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY);
+	}
+	int read = 0;
+	do
+	{
+		char name[4 * MAX_PATH];
+		if (found.cFileName[0] == L'.' || !WideCharToMultiByte(CP_UTF8, 0, found.cFileName, -1, name, sizeof name, NULL, NULL))
+			continue;
+		const bool link = (found.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0, folder = (found.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+		if (link || folder)
+			out->push_back({name, link ? 1 : 0});
+		else if (ArchiveFileName(name))
+			out->push_back({name, 2});
+	} while (++read < kMaxListed && FindNextFileW(find, &found));
+	FindClose(find);
+#else
+	int user = open(PortUserDir(), O_PATH | O_DIRECTORY | O_CLOEXEC);
+	int mods = user < 0 ? -1 : openat(user, "mods", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
+	if (user >= 0)
+		close(user);
+	if (mods < 0)
+		return false;
+	DIR *dir = fdopendir(mods);	// the stream owns the descriptor from here
+	if (!dir)
+	{
+		close(mods);
+		return false;
+	}
+	int read = 0;
+	while (const struct dirent *entry = read < kMaxListed ? readdir(dir) : NULL)
+	{
+		const char *name = entry->d_name;
+		if (name[0] == '.')
+			continue;
+		read++;
+		struct stat st;
+		if (fstatat(mods, name, &st, AT_SYMLINK_NOFOLLOW) != 0)	// the name itself, never what a link points at
+			continue;
+		if (S_ISLNK(st.st_mode) || S_ISDIR(st.st_mode))
+			out->push_back({name, S_ISLNK(st.st_mode) ? 1 : 0});
+		else if (S_ISREG(st.st_mode) && ArchiveFileName(name))
+			out->push_back({name, 2});
+	}
+	closedir(dir);
+#endif
+	// by name as a reader orders names: letters of either case together (bytewise, a capital would put "Zebra" before "arctic")
+	std::sort(out->begin(), out->end(), [](const Listed &a, const Listed &b) {
+		const std::string x = Lower(a.name), y = Lower(b.name);
+		return x != y ? x < y : a.name < b.name;
+	});
+	return true;
+}
+
+// text cut to fit a buffer of n bytes, not in the middle of a UTF-8 character.
+std::string CutUtf8(const std::string &text, size_t n)
+{
+	if (text.size() < n)
+		return text;
+	size_t keep = n - 1;
+	while (keep > 0 && ((unsigned char)text[keep] & 0xc0) == 0x80)
+		keep--;
+	return text.substr(0, keep);
+}
+
+void Copy(char *out, size_t n, const std::string &text)
+{
+	snprintf(out, n, "%s", text.c_str());
+}
+
+// One row for the folder `name` (kind as Listed has it; -1: ce.ini's line names it and the mods folder has no such entry).
+void ReportOne(const std::string &name, int kind, PortModInfo *row)
+{
+	memset(row, 0, sizeof *row);
+	Copy(row->folder, sizeof row->folder, Clean(name, 60));
+	const bool valid = ValidId(name) && !DeviceName(name);
+	if (valid)
+		Copy(row->id, sizeof row->id, name);
+	const char *refusal = NULL;
+	if (kind == 2)
+	{
+		row->why = PORT_MOD_WHY_PACKED;
+		refusal = "an archive file in the mods folder (a mod is a folder: unpack it)";
+	}
+	else if (kind == 1)
+	{
+		row->why = PORT_MOD_WHY_LINK;
+		refusal = "a link in the mods folder (a mod's folder must be a real folder)";
+	}
+	else if (kind < 0)
+	{
+		// ce.ini's line names it and the mods folder holds nothing of that name (whether or not the name could be a mod id: a line
+		// edited by hand can hold any text, and the page offers to take such an entry off the line)
+		row->why = PORT_MOD_WHY_MISSING;
+		refusal = !valid ? "ce.ini's mods= line names something that is not a mod id, and the mods folder has no such folder"
+						 : "no such folder in the user folder's mods folder (or the folder is a link)";
+	}
+	else if (!valid)
+	{
+		row->why = PORT_MOD_WHY_NAME;
+		refusal = !ValidId(name) ? "a mod id is 1 to 48 lowercase letters, digits, '-' or '_'"
+								 : "a Windows device name, which no Windows folder can have (a mod must load on every platform)";
+	}
+	else
+	{
+		Mod mod;
+		std::vector<File> files;
+		unsigned long long total = 0;
+		gWhy = PORT_MOD_WHY_NONE;
+		refusal = LoadMod(name, &mod, &files, &total);
+		if (Opened(mod.root))
+			CloseFile(mod.root);
+		Copy(row->name, sizeof row->name, CutUtf8(mod.shown[0], sizeof row->name));
+		Copy(row->version, sizeof row->version, CutUtf8(mod.shown[1], sizeof row->version));
+		Copy(row->author, sizeof row->author, CutUtf8(mod.shown[2], sizeof row->author));
+		Copy(row->description, sizeof row->description, CutUtf8(mod.shown[3], sizeof row->description));
+		if (refusal)
+		{
+			row->why = gWhy != PORT_MOD_WHY_NONE ? gWhy : PORT_MOD_WHY_OTHER;
+			if (row->why == PORT_MOD_WHY_RENAMED)
+				Copy(row->wanted, sizeof row->wanted, gWanted);
+		}
+		else
+		{
+			std::vector<std::string> &keys = gReportKeys[name];
+			std::vector<int> levels;
+			for (const File &f : files)
+			{
+				keys.push_back(f.key);
+				(!f.added ? row->replaced : f.archive ? row->archives : row->worlds)++;
+				int level = 0;
+				if (f.added && f.archive && LevelArchiveName(f.key, &level))
+				{
+					const char *owner = PortModLevelOwner(level);
+					if (owner && name == owner)
+						levels.push_back(level);
+				}
+			}
+			std::sort(keys.begin(), keys.end());
+			std::sort(levels.begin(), levels.end());
+			for (int level : levels)
+				if (row->level_count < PORT_MOD_LEVELS)
+					row->levels[row->level_count++] = level;
+		}
+	}
+	if (refusal)
+		Copy(row->detail, sizeof row->detail, Clean(refusal, 250));
+	for (const Mod &loaded : gMods)
+		if (loaded.id == name)
+			row->loaded = 1;
+}
+}
+
+bool PortModsPlatformOff()
+{
+	return PlatformOff() != NULL;
+}
+
+const char *PortModLevelOwner(int level)
+{
+	PortModsInit();
+	if (level < kArchiveFirst || level > kArchiveLast)
+		return NULL;
+	char path[64];
+	snprintf(path, sizeof path, "data/resources/%03d_res_PC.aya", level);
+	const File *file = Find(path);
+	return file && file->added && file->archive ? gMods[file->mod].id.c_str() : NULL;
+}
+
+int PortModsRefusedAtStart()
+{
+	PortModsInit();
+	return gCheckRefusedMods;
+}
+
+int PortModsReport(PortModInfo *out, int max, PortModsRun *run)
+{
+	PortModsInit();	// whatever this process loads is loaded before the folders are looked at again
+	gReportKeys.clear();
+	PortModsRun local;
+	memset(&local, 0, sizeof local);
+	local.off = gFence ? 1 : PlatformOff() ? 2 : 0;
+	local.refused_at_start = gCheckRefusedMods;
+	for (const Mod &loaded : gMods)
+		snprintf(local.loaded[local.loaded_count++], sizeof local.loaded[0], "%s", loaded.id.c_str());
+	std::vector<Listed> folder;
+	local.folder = ListModsFolder(&folder) ? 1 : 0;
+	std::vector<std::string> line;
+	char list[2048] = "";
+	if (CE_SettingGetText("mods", list, sizeof list))
+		SplitIds(list, &line);
+	if (max > PORT_MODS_ROWS)
+		max = PORT_MODS_ROWS;
+	int count = 0;
+	std::vector<std::string> taken;
+	// the line's mods first, in its order: the order they load in
+	for (const std::string &id : line)
+	{
+		if (std::find(taken.begin(), taken.end(), id) != taken.end())
+			continue;	// a second mention neither loads nor counts (Load)
+		taken.push_back(id);
+		if (count >= max)
+		{
+			local.more++;
+			continue;
+		}
+		auto entry = std::find_if(folder.begin(), folder.end(), [&](const Listed &l) { return l.name == id; });
+		ReportOne(id, entry == folder.end() ? -1 : entry->kind, &out[count]);
+		out[count].place = (int)taken.size();
+		count++;
+	}
+	for (const Listed &entry : folder)
+	{
+		if (std::find(taken.begin(), taken.end(), entry.name) != taken.end())
+			continue;
+		if (count >= max)
+		{
+			local.more++;
+			continue;
+		}
+		ReportOne(entry.name, entry.kind, &out[count++]);
+	}
+	if (run)
+		*run = local;
+	return count;
+}
+
+bool PortModsClash(const char *const *on, int count, int index, PortModClash *out)
+{
+	memset(out, 0, sizeof *out);
+	if (index < 0 || index >= count)
+		return false;
+	auto mine = gReportKeys.find(on[index]);
+	if (mine == gReportKeys.end())
+		return false;
+	std::vector<int> sharers;	// the other mods that supply one of this mod's files
+	std::vector<int> winners;	// the later mods that win one
+	for (const std::string &key : mine->second)
+	{
+		int last = -1;
+		bool shared = false;
+		for (int i = 0; i < count; i++)
+		{
+			if (i == index)
+				continue;
+			auto theirs = gReportKeys.find(on[i]);
+			if (theirs == gReportKeys.end() || !std::binary_search(theirs->second.begin(), theirs->second.end(), key))
+				continue;
+			shared = true;
+			if (std::find(sharers.begin(), sharers.end(), i) == sharers.end())
+				sharers.push_back(i);
+			if (i > index)
+				last = i;
+		}
+		out->shared += shared;
+		if (last >= 0)
+		{
+			out->lost++;
+			if (std::find(winners.begin(), winners.end(), last) == winners.end())
+				winners.push_back(last);
+		}
+	}
+	out->others = (int)sharers.size();
+	if (sharers.size() == 1)
+		snprintf(out->other, sizeof out->other, "%s", on[sharers[0]]);
+	if (winners.size() == 1 && out->lost == out->shared)
+		snprintf(out->winner, sizeof out->winner, "%s", on[winners[0]]);
+	return true;
+}
+
+bool PortModsWriteLine(const char *const *ids, int count)
+{
+	if (count < 0 || count > PORT_MODS_ON)
+		return false;
+	std::string line;
+	for (int i = 0; i < count; i++)
+	{
+		const std::string id = ids[i] ? ids[i] : "";
+		if (!ValidId(id) || DeviceName(id))
+			return false;
+		for (int j = 0; j < i; j++)
+			if (id == ids[j])
+				return false;
+		line += (i ? "," : "") + id;
+	}
+	return (line.empty() ? CE_SettingSetEmpty("mods") : CE_SettingSetText("mods", line.c_str())) != 0;
+}
 
 #if defined(_WIN32) && defined(CE_VERSION)
 // bea.exe --check-mods. The entry point is the game's own WinMain, so the Windows form of the command is this object's constructor: it runs before WinMain, and after the objects above,

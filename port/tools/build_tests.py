@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-only
 """Focused launcher build checks; no compiler, game files or network required."""
+import io
 from pathlib import Path
 import sys
 import tempfile
@@ -217,16 +218,44 @@ class NetworkIdentityTests(unittest.TestCase):
             self.assertIsNone(build.NETWORK_SOURCE_ID)
 
 
+class SourceSelectionTests(unittest.TestCase):
+    def setUp(self):
+        self.sources = [build.MIRROR / "Unit.cpp", build.MIRROR / "nested" / "Mesh.cpp",
+                        build.MIRROR_ROOT / "binextra" / "helper.cpp"]
+
+    def test_no_selectors_keep_all_sources(self):
+        self.assertEqual(build.select_sources(self.sources, []), self.sources)
+
+    def test_existing_case_slash_prefix_and_generated_aliases_still_work(self):
+        self.assertEqual(build.select_sources(self.sources,
+                         ["SRC\\UNIT.CPP", "nested/mesh.cpp", "binextra/helper.cpp"]), self.sources)
+
+    def test_duplicate_aliases_keep_source_order_without_duplicate_compiles(self):
+        self.assertEqual(build.select_sources(self.sources,
+                         ["NESTED/MESH.CPP", "src/Unit.cpp", "src/nested/mesh.cpp"]), self.sources[:2])
+
+    def test_unknown_names_are_rejected_even_with_a_matching_source(self):
+        with self.assertRaises(ValueError) as raised:
+            build.select_sources(self.sources,
+                                 ["src/Unit.cpp", "port/game/requested.cpp", "missing.cpp"])
+        self.assertIn("port/game/requested.cpp", str(raised.exception))
+        self.assertIn("missing.cpp", str(raised.exception))
+
+    def test_unknown_only_selection_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "unknown.cpp"):
+            build.select_sources(self.sources, ["unknown.cpp"])
+
+
 class PublicFlavourTests(unittest.TestCase):
     """The default public build has no network; --public --with-network is the same build with it (the experimental co-op release)."""
 
-    def run_main(self, *argv):
+    def run_main(self, *argv, source_files=None):
         targets = {name: {key: list(value) for key, value in row.items()} for name, row in build.TARGETS.items()}
         fake = type("Result", (), {"returncode": 0, "stdout": "", "stderr": ""})()
         with patch.object(sys, "argv", ["build.py", *argv, "--syntax"]), patch.object(build, "PUBLIC", False), \
              patch.object(build, "WITH_NETWORK", False), patch.object(build, "TEST_AUTOMATION", False), patch.object(build, "CE_DEFINES", []), \
              patch.object(build, "WITH_ICE", False), \
-             patch.object(build, "TARGETS", targets), patch.object(build, "build_mirror", return_value=[]), \
+             patch.object(build, "TARGETS", targets), patch.object(build, "build_mirror", return_value=source_files if source_files is not None else []), \
              patch.object(build.ice_deps, "install_lock", return_value=nullcontext()), \
              patch.object(build, "configure_network_identity"), patch.object(build, "check_compiler"), \
              patch.object(build, "ninja_file", return_value=Path("/nonexistent.ninja")), patch.object(build.subprocess, "run", return_value=fake):
@@ -307,6 +336,95 @@ class PublicFlavourTests(unittest.TestCase):
                     flags = build.link_flags(target).split()
                     for lib in libs:
                         self.assertEqual(linked, lib in flags, lib)
+
+    def test_partial_build_rejects_unselected_authored_files(self):
+        error = io.StringIO()
+        with patch.object(sys, "stderr", error), self.assertRaises(SystemExit) as raised:
+            self.run_main("--public", "--target", "all", "src/Unit.cpp",
+                          "port/game/requested.cpp", source_files=[build.MIRROR / "Unit.cpp"])
+        self.assertEqual(raised.exception.code, 2)
+        self.assertIn("port/game/requested.cpp", error.getvalue())
+
+    def test_default_public_build_skips_network_identity(self):
+        targets = {name: {key: list(value) for key, value in row.items()} for name, row in build.TARGETS.items()}
+        fake = type("Result", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+        for argv, expect_called in ((("--public",), False), (("--public", "--with-network"), True)):
+            with self.subTest(argv=argv), patch.object(sys, "argv", ["build.py", *argv, "--syntax"]), \
+                 patch.object(build, "PUBLIC", False), patch.object(build, "WITH_NETWORK", False), \
+                 patch.object(build, "TEST_AUTOMATION", False), patch.object(build, "CE_DEFINES", []), \
+                 patch.object(build, "WITH_ICE", False), patch.object(build, "NETWORK_SOURCE_ID", "ab" * 32), \
+                 patch.object(build, "TARGETS", targets), patch.object(build, "build_mirror", return_value=[]), \
+                 patch.object(build, "build_port_view"), patch.object(build, "resolve_network_off"), \
+                 patch.object(build, "configure_network_identity") as configure, patch.object(build, "check_compiler"), \
+                 patch.object(build, "ninja_file", return_value=Path("/nonexistent.ninja")), \
+                 patch.object(build.subprocess, "run", return_value=fake):
+                build.main()
+                self.assertEqual(expect_called, configure.called)
+                if not expect_called:
+                    self.assertIsNone(build.NETWORK_SOURCE_ID)
+
+
+class IncrementalMirrorTests(unittest.TestCase):
+    def test_mirror_keeps_unchanged_patched_file_mtimes_and_uses_stamp_fast_path(self):
+        import hashlib
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "src").mkdir(parents=True)
+            (root / "config").mkdir(parents=True)
+            (root / "game/data").mkdir(parents=True)
+            (root / "port/patches").mkdir(parents=True)
+            (root / "src/header.h").write_text("int header_val = 1;\n")
+            (root / "src/a.cpp").write_text('#include "header.h"\nint a() { return 1; }\n')
+            (root / "src/b.cpp").write_text('#include "header.h"\nint b() { return 2; }\n')
+            data_blob = b"fixture-data\n"
+            (root / "game/data/f.inc").write_bytes(data_blob)
+            (root / "config/game-data.sha256").write_text(f"{hashlib.sha256(data_blob).hexdigest()}  data/f.inc\n")
+            (root / "port/patches/0001-header.patch").write_text(
+                "--- a/header.h\n+++ b/header.h\n@@ -1 +1,4 @@\n+#ifndef CE_NETWORK_OFF\n+int net_val = 9;\n+#endif\n int header_val = 1;\n"
+            )
+            (root / "port/patches/0002-b.patch").write_text(
+                "--- a/b.cpp\n+++ b/b.cpp\n@@ -1,2 +1,2 @@\n #include \"header.h\"\n-int b() { return 2; }\n+int b() { return 20; }\n"
+            )
+            mirror_root = root / "work/mirror"
+            mirror_src = mirror_root / "src"
+            tracked = [root / "src/header.h", root / "src/a.cpp", root / "src/b.cpp"]
+            with patch.object(build, "ROOT", root), patch.object(build, "PORT", root / "port"), \
+                 patch.object(build, "SRC", root / "src"), patch.object(build, "GAME", root / "game"), \
+                 patch.object(build, "MIRROR_ROOT", mirror_root), patch.object(build, "MIRROR", mirror_src), \
+                 patch.object(build, "PUBLIC", True), patch.object(build, "WITH_NETWORK", False), \
+                 patch.object(build, "PUBLIC_REPLACEMENTS", ()), patch.object(build, "PUBLIC_SKIPPED_PATCHES", {}), \
+                 patch.object(build, "NV_FRAGMENTS_SIZE", 16), patch.object(build, "system_header_names", return_value={}), \
+                 patch.object(build, "tracked_sources", return_value=tracked):
+                sources = build.build_mirror(resolve_off=True)
+                self.assertEqual(2, len(sources))
+                self.assertNotIn("CE_NETWORK_OFF", (mirror_src / "header.h").read_text())
+                self.assertEqual("int header_val = 1;\n", (mirror_src / "header.h").read_text())
+                self.assertIn("return 20;", (mirror_src / "b.cpp").read_text())
+                header_mtime = (mirror_src / "header.h").stat().st_mtime_ns
+                a_mtime = (mirror_src / "a.cpp").stat().st_mtime_ns
+                b_mtime = (mirror_src / "b.cpp").stat().st_mtime_ns
+
+                # Second build with identical inputs hits the stamp fast path without calling patch.
+                with patch.object(build.subprocess, "run", side_effect=AssertionError("fast path must not invoke patch")):
+                    build.build_mirror(resolve_off=True)
+                self.assertEqual(header_mtime, (mirror_src / "header.h").stat().st_mtime_ns)
+                self.assertEqual(a_mtime, (mirror_src / "a.cpp").stat().st_mtime_ns)
+                self.assertEqual(b_mtime, (mirror_src / "b.cpp").stat().st_mtime_ns)
+
+                # Editing 0002-b.patch only touches b.cpp; header.h and a.cpp keep their mtimes.
+                (root / "port/patches/0002-b.patch").write_text(
+                    "--- a/b.cpp\n+++ b/b.cpp\n@@ -1,2 +1,2 @@\n #include \"header.h\"\n-int b() { return 2; }\n+int b() { return 21; }\n"
+                )
+                build.build_mirror(resolve_off=True)
+                self.assertIn("return 21;", (mirror_src / "b.cpp").read_text())
+                self.assertEqual(header_mtime, (mirror_src / "header.h").stat().st_mtime_ns)
+                self.assertEqual(a_mtime, (mirror_src / "a.cpp").stat().st_mtime_ns)
+                self.assertNotEqual(b_mtime, (mirror_src / "b.cpp").stat().st_mtime_ns)
+
+                # Default build_mirror() keeps CE_NETWORK_OFF conditionals intact for callers like network_refused_exit_tests.
+                build.build_mirror()
+                self.assertIn("CE_NETWORK_OFF", (mirror_src / "header.h").read_text())
+
 
 
 if __name__ == "__main__":

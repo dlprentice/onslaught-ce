@@ -19,6 +19,10 @@ typedef bool (*PortPrivateUiChar)(void* context, unsigned char character);
 typedef void (*PortPrivateUiFolderCallback)(void* context, const char* const* files, int filter);
 enum { PORT_PRIVATE_UI_DISABLED=0, PORT_PRIVATE_UI_WAITING=1,
        PORT_PRIVATE_UI_REFUSED=2, PORT_PRIVATE_UI_END=3 };
+// Typed values can be taken only by their intended form. They are never keyboard events.
+enum { PORT_PRIVATE_UI_ORIGIN = 1, PORT_PRIVATE_UI_JOIN_CODE = 2 };
+bool PortPrivateUiFieldWaiting(unsigned field) noexcept;
+bool PortPrivateUiTakeField(unsigned field, char *out, unsigned capacity) noexcept;
 bool PortPrivateUiConfigured() noexcept;
 int PortPrivateUiStatus() noexcept;
 void PortPrivateUiPump(uint64_t present, PortPrivateUiChar deliver, void* context) noexcept;

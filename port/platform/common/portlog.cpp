@@ -93,8 +93,10 @@ bool PortSessionEnabled()
 	if (enabled >= 0) return enabled == 1;
 	enabled = PortCeLayer() ? 1 : 0;
 	// The CE drawing override is not a diagnostics override. Even screenshot tests which force that layer on
-	// keep the game clock, recording and replay routes free of ordinary session observations.
-	const char *const names[] = {"BEA_PORT_CLOCK", "BEA_PORT_TAPE", "BEA_PORT_PROBES", "BEA_PORT_RECORD"};
+	// keep the recording and replay routes free of ordinary session observations. A test clock (BEA_PORT_CLOCK) keeps the log
+	// on: every journey runs on one, and the log's stamp is SDL's host clock (Line), which no game clock counts, so writing it
+	// cannot move a deterministic run.
+	const char *const names[] = {"BEA_PORT_TAPE", "BEA_PORT_PROBES", "BEA_PORT_RECORD"};
 	for (const char *name : names)
 	{
 		const char *value = getenv(name);

@@ -99,12 +99,14 @@ int main(int argc, char **argv) {
 		draws.clear(); p.stat[PS_ROUNDSFIRED] = 0; p.stat[PS_ROUNDSHIT] = 0;
 		GAME.Panel(&p, 65, 200, cc, nc, my_c);
 		check(draws.size() == 15 && !Find(L"Accuracy") && Find(L"Damage taken")->y == 200.f + 16.f * 4, "accuracy only after a round was fired");
-		// God mode was on: CHEATER! in red, the normal font, under the last row.
+		// God mode was on: CHEATER! in red, the normal font, in the objectives' status column (x + 330) level with the first row; the
+		// rows stay in their one column.
 		draws.clear(); p.stat[PS_CHEATED] = 1; p.stat[PS_ROUNDSFIRED] = 48; p.stat[PS_ROUNDSHIT] = 18;
 		GAME.Panel(&p, 65, 200, cc, nc, my_c);
 		const Draw *cheat = Find(L"CHEATER!");
-		check(cheat && cheat->colour == 0xffff0000 && cheat->font == FONT_NORMAL && cheat->x == 65.f && cheat->y == 200.f + 16.f * 6,
-			  "CHEATER! in red under the rows");
+		check(cheat && cheat->colour == 0xffff0000 && cheat->font == FONT_NORMAL && cheat->x == 65.f + 330.f && cheat->y == 200.f,
+			  "CHEATER! in red beside the rows, in the status column");
+		check(Find(L"Damage taken")->x == 65.f && Find(L"Damage taken")->y == 200.f + 16.f * 5 && Find(L"Rounds fired")->x == 65.f, "the rows stay in one column");
 		check(Fits(), "inside the screen");
 		// God mode brought in from the career or the Cheats page counts no PS_CHEATED; it is still CHEATER!.
 		draws.clear(); p.stat[PS_CHEATED] = 0; p.god = TRUE;
@@ -120,9 +122,15 @@ int main(int argc, char **argv) {
 			  "a small overrun rises instead of splitting");
 		draws.clear(); p.stat[PS_CHEATED] = 1;
 		GAME.Panel(&p, 65, 260, cc, nc, my_c);
-		check(draws.size() == 19 && Fits(), "two columns when one would reach the menu");
-		check(Find(L"Rounds fired")->x > 65.f + nc && Find(L"Rounds fired")->y == 260.f, "the second column starts level with the first");
-		check(Find(L"CHEATER!")->y == 260.f + 16.f * 3, "CHEATER! under the first column");
+		check(draws.size() == 19 && Fits(), "CHEATER! beside the rows does not push them into two columns");
+		check(Find(L"Total mission time")->y == 246.f && Find(L"Damage taken")->x == 65.f && Find(L"CHEATER!")->x == 395.f && Find(L"CHEATER!")->y == 246.f,
+			  "the rows rise as they do without it, and CHEATER! rises with them");
+		// Where the rows alone do not fit even after rising: two columns, CHEATER! under the first.
+		draws.clear();
+		GAME.Panel(&p, 65, 270, cc, nc, my_c);
+		check(draws.size() == 19 && Fits(), "two columns when the rows alone would reach the menu");
+		check(Find(L"Rounds fired")->x > 65.f + nc && Find(L"Rounds fired")->y == 270.f, "the second column starts level with the first");
+		check(Find(L"CHEATER!")->x == 65.f && Find(L"CHEATER!")->y == 270.f + 16.f * 3, "CHEATER! under the first column");
 		// Further down still: only the rows that fit, nothing past the bottom.
 		draws.clear();
 		GAME.Panel(&p, 65, 320, cc, nc, my_c);
@@ -134,6 +142,8 @@ int main(int argc, char **argv) {
 		draws.clear();
 		GAME.Panel(&p, 65, 200, 330.f, 350.f, my_c);
 		check(Fits(), "a wide label column still fits");
+		check(Find(L"CHEATER!") && Find(L"CHEATER!")->x == 65.f && Find(L"CHEATER!")->y == 200.f + 16.f * 6,
+			  "where the values reach the status column CHEATER! goes under the rows instead");
 		draws.clear();
 		GAME.Panel(nullptr, 65, 200, cc, nc, my_c);
 		check(draws.empty(), "no player, no panel");

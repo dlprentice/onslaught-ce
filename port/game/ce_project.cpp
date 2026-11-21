@@ -26,7 +26,7 @@ const char* PortGameDir();
 const char* PortUserDir();
 
 namespace {
-const size_t DocumentMax = 8u << 20, PlacementMax = 4096, ScriptMax = 128;
+const size_t DocumentMax = 8u << 20, PlacementMax = CeProjectPlacementLimit, ScriptMax = 128;
 const float CoordinateMax = 1048576.0f;
 struct Invalid : std::runtime_error { explicit Invalid(const char* message) : std::runtime_error(message) {} };
 void Need(bool condition, const char* message) { if (!condition) throw Invalid(message); }
@@ -150,17 +150,64 @@ double Number(const Json& value) {
     input >> std::noskipws >> result; Need(input && input.eof() && std::isfinite(result), "A project number is invalid or non-finite."); return result;
 }
 void Array(const Json& value, size_t max) { Need(value.kind == Json::Array && value.array.size() <= max, "A project list is invalid or too large."); }
-struct Placement { std::string id, source; float x, y, z; bool seen = false; };
-struct Project { int level = -1; std::vector<Placement> placements; };
+struct Placement { std::string id, source; float x, y, z; int side = -1; bool seen = false; };
+struct Project { int level = -1; std::vector<Placement> placements; CeProjectReach reach, secondReach; CeProjectPlayerStart playerStart; };
+CeProjectReach DecodeReach(const Json& objective, bool allowHold = false) {
+    const std::string type = Text(Field(objective,"type"),32);
+    const bool hold = allowHold && type == "hold-area";
+    CeHoldSettings settings{};
+    if (hold) {
+        Fields(objective,{"type","position","radius","seconds"});
+        const double r = Number(Field(objective,"radius")), s = Number(Field(objective,"seconds"));
+        Need(r >= 6 && r <= 120 && s >= 1 && s <= 30 && r == std::floor(r) && s == std::floor(s),
+             "A Hold Area needs a whole radius from 6 to 120 m and a duration from 1 to 30 s.");
+        settings = {int(s), int(r)};
+    } else Fields(objective,{"type","position"});
+    Need(hold || type == "reach-point","Unknown mission objective.");
+    const Json& pos = Field(objective,"position"); Array(pos,3);
+    Need(pos.array.size() == 3,"A reach point needs three coordinates.");
+    float xyz[3];
+    for (unsigned i=0;i<3;++i) {
+        const double axis = Number(pos.array[i]); Need(std::fabs(axis)<=1048576,"Reach point is outside the supported world.");
+        xyz[i] = static_cast<float>(axis);
+    }
+    return CeProjectReach{true,xyz[0],xyz[1],xyz[2],settings};
+}
 Project Decode(const std::string& bytes) {
     ValidUtf8(bytes); Json root = Reader(bytes).Read();
-    Fields(root, {"kind", "version", "coordinates", "source_language", "id", "name", "entry_script", "map", "placements", "scripts"});
-    Need(Text(Field(root,"kind"), 64) == "onslaught.ce.mission-project" && Number(Field(root,"version")) == 2, "CE needs a linked version-2 mission project.");
+    const double version = Number(Field(root,"version"));
+    if (version == 7) Fields(root, {"kind", "version", "coordinates", "source_language", "id", "name", "entry_script", "map", "placements", "scripts", "objectives", "player_start"});
+    else if (version == 4)
+        Fields(root, {"kind","version","coordinates","source_language","id","name","entry_script","map","placements","scripts","objective"});
+    else if (version == 5 || version == 6 || version == 7) Fields(root, {"kind","version","coordinates","source_language","id","name","entry_script","map","placements","scripts","objectives"});
+    else Fields(root, {"kind","version","coordinates","source_language","id","name","entry_script","map","placements","scripts"});
+    Need(Text(Field(root,"kind"), 64) == "onslaught.ce.mission-project" && (version == 2 || version == 3 || version==4 || version==5 || version == 6 || version == 7), "This mission project version is not supported.");
     Need(Text(Field(root,"coordinates"), 64) == "aquila-xyz-z-down" && Text(Field(root,"source_language"), 64) == "bea-msl", "Unsupported project coordinates or source language.");
     Id(Field(root,"id")); Text(Field(root,"name"),256);
     const Json& map = Field(root,"map"); Fields(map, {"mode","level","bindings"});
     Need(Text(Field(map,"mode"),64) == "existing-object-placement", "CE supports existing-object placement mode only.");
     double level = Number(Field(map,"level")); Need(level >= 1 && level <= 9999 && std::floor(level) == level, "The installed map number is invalid."); Project out; out.level = static_cast<int>(level);
+    if (version == 4) out.reach = DecodeReach(Field(root, "objective"));
+    if (version == 5 || version == 6 || version == 7) {
+        const Json& route = Field(root, "objectives");
+        Array(route, 2);
+        Need(route.array.size() == 2 || (version == 6 && route.array.size() == 1) || (version == 7 && route.array.size() <= 2), "This project needs one or two ordered objectives.");
+        if (!route.array.empty()) out.reach = DecodeReach(route.array[0], version >= 6);
+        if (route.array.size() == 2) out.secondReach = DecodeReach(route.array[1], version >= 6);
+        Need(version != 6 || out.reach.hold.Enabled() || out.secondReach.hold.Enabled(), "A version 6 project needs a Hold Area.");
+    }
+    if (version == 7) {
+        const Json& start = Field(root, "player_start"); Fields(start, {"position"});
+        const Json& position = Field(start, "position");
+        Need(position.kind == Json::Array && position.array.size() == 3, "A player start needs exactly three coordinates.");
+        float* values[] = {&out.playerStart.x, &out.playerStart.y, &out.playerStart.z};
+        for (size_t i = 0; i < 3; ++i) {
+            const double value = Number(position.array[i]);
+            Need(std::isfinite(value) && std::fabs(value) <= CoordinateMax, "The player start exceeds the coordinate safety bound.");
+            *values[i] = static_cast<float>(value);
+        }
+        out.playerStart.enabled = true;
+    }
     const Json& bindings = Field(map,"bindings"); Array(bindings, PlacementMax); std::map<std::string,std::string> sources; std::set<std::string> named;
     for (const Json& row : bindings.array) {
         Fields(row,{"definition","source_object"}); std::string definition = Text(Field(row,"definition"),256), source = Text(Field(row,"source_object"),96);
@@ -174,9 +221,15 @@ Project Decode(const std::string& bytes) {
     }
     auto reference = [&scriptIds](const Json& value) { if (value.kind != Json::Null) Need(scriptIds.count(Id(value)) != 0,"A source link names no script in the project."); };
     reference(Field(root,"entry_script")); const Json& placements = Field(root,"placements"); Array(placements,PlacementMax);
-    Need(!placements.array.empty(),"The linked project has no placements."); std::set<std::string> ids, used;
+    Need(!placements.array.empty() || out.playerStart.enabled,"The linked project has no placements."); std::set<std::string> ids, used;
     for (const Json& row : placements.array) {
-        Fields(row,{"id","name","definition","position","script"}); Placement p; p.id = Id(Field(row,"id"));
+        Placement p;
+        if (version >= 3 && row.object.count("side")) {
+            Fields(row,{"id","name","definition","position","script","side"});
+            const std::string& side = Text(Field(row,"side"),16);
+            Need(side == "forseti" || side == "muspell" || side == "neutral", "The selected unit's side is unknown.");
+            p.side = side == "forseti" ? 0 : side == "muspell" ? 1 : 2;
+        } else Fields(row,{"id","name","definition","position","script"}); p.id = Id(Field(row,"id"));
         Need(ids.insert(p.id).second,"Duplicate placement ID."); Text(Field(row,"name"),256); const std::string& definition = Text(Field(row,"definition"),256);
         auto binding = sources.find(definition); Need(binding != sources.end(),"A placement definition has no named map-object binding.");
         Need(used.insert(definition).second,"Existing-object placement does not clone objects; use one placement per definition."); p.source = binding->second;
@@ -225,7 +278,7 @@ std::string ReadProject() {
 }
 #endif
 }
-bool PortCeProjectRequested() noexcept { static const bool selected = std::getenv("BEA_CE_PROJECT") != nullptr; return selected; }
+bool PortCeProjectRequested() noexcept { static const char* const named = std::getenv("BEA_CE_PROJECT"); static const bool selected = named != nullptr && *named != 0; return selected; }
 bool PortCeProjectProfilePreflight(const char* gameRoot, const char* userRoot, size_t gameCapacity, size_t userCapacity) noexcept {
     if (!PortCeProjectRequested()) return true;
     try {
@@ -248,6 +301,7 @@ extern "C" bool PortCeEditorActive(void) __attribute__((weak));
 extern "C" bool PortCeMuseumVisitActive(void) __attribute__((weak));
 extern "C" bool PortCeEditorBeginWorld(int level, bool base) __attribute__((weak));
 extern "C" bool PortCeEditorObserveWorldObject(const char*,size_t,float,float,float) __attribute__((weak));
+extern "C" bool PortCeEditorApplyWorldObject(const char*,size_t,float*,float*,float*,int*) __attribute__((weak));
 extern "C" bool PortCeEditorEndWorld(bool base) __attribute__((weak));
 extern "C" int CE_BootRequested(void) __attribute__((weak));
 extern "C" int CE_SessionActive(void) __attribute__((weak));
@@ -288,7 +342,9 @@ int PortCeProjectLaunchLevel() noexcept {
 #if defined(_WIN32)
         Fail("The project launch prototype is currently available on Linux only."); return -1;
 #else
-        state.project = Decode(ReadProject()); state.message = "Linked project selected; validating the installed map.";
+        state.project = Decode(ReadProject());
+        if (state.project.reach.enabled) { Fail("Open this reach-point project in the Map Editor and choose Test Project."); return -1; }
+        state.message = "Linked project selected; validating the installed map.";
         std::fprintf(stderr,"CE project: existing-object placement; career reads, writes and progression are disabled; authored source text is not executed.\n"); return state.project.level;
 #endif
     } catch (const Invalid& error) { // Store fixed, owned messages only; never a document/path/asset string.
@@ -297,6 +353,9 @@ int PortCeProjectLaunchLevel() noexcept {
         std::fprintf(stderr,"CE project validation: %s\n",error.what());
     } catch (...) { Fail("The project could not be loaded within the available resources."); }
     return -1;
+}
+bool PortCeProjectPlacementActive() noexcept {
+    return (PortCeEditorActive && PortCeEditorActive()) || PortCeProjectRequested();
 }
 bool PortCeProjectBeginWorld(int level, bool base) noexcept {
     if (PortCeEditorActive && PortCeEditorActive())
@@ -309,10 +368,10 @@ bool PortCeProjectBeginWorld(int level, bool base) noexcept {
     if (state.began) return Fail("A project launch accepts one installed-map load only.");
     state.began = true; return true;
 }
-bool PortCeProjectApplyPlacement(const char* name, size_t capacity, bool base, float* x, float* y, float* z) noexcept {
+bool PortCeProjectApplyPlacement(const char* name, size_t capacity, bool base, float* x, float* y, float* z, int* unitSide) noexcept {
     if (PortCeEditorActive && PortCeEditorActive()) {
         if (base) return true;
-        return x && y && z && PortCeEditorObserveWorldObject && PortCeEditorObserveWorldObject(name,capacity,*x,*y,*z);
+        return x && y && z && PortCeEditorApplyWorldObject && PortCeEditorApplyWorldObject(name,capacity,x,y,z,unitSide);
     }
     if (!PortCeProjectRequested() || base) return true;
     State& state = Current();
@@ -322,7 +381,8 @@ bool PortCeProjectApplyPlacement(const char* name, size_t capacity, bool base, f
     size_t length = static_cast<size_t>(end-name);
     for (Placement& p : state.project.placements) if (p.source.size() == length && std::memcmp(p.source.data(),name,length) == 0) {
         if (p.seen) return Fail("A named map-object binding matches more than one installed object.");
-        p.seen = true; *x = p.x; *y = p.y; *z = p.z; return true;
+        if (p.side >= 0 && !unitSide) return Fail("A saved unit side does not belong to a unit.");
+        p.seen = true; *x = p.x; *y = p.y; *z = p.z; if (p.side >= 0) *unitSide = p.side; return true;
     }
     return true;
 }
@@ -439,16 +499,20 @@ CeProjectDocument* PortCeProjectDocumentRead(const char* bytes, size_t size, cha
 void PortCeProjectDocumentDelete(CeProjectDocument* document) noexcept { delete document; }
 int PortCeProjectDocumentLevel(const CeProjectDocument* document) noexcept { return document ? document->project.level : -1; }
 size_t PortCeProjectDocumentCount(const CeProjectDocument* document) noexcept { return document ? document->project.placements.size() : 0; }
+CeProjectReach PortCeProjectDocumentReach(const CeProjectDocument* document, size_t index) noexcept {
+    if (!document || index > 1) return {};
+    return index == 0 ? document->project.reach : document->project.secondReach;
+}
 bool PortCeProjectDocumentPosition(const CeProjectDocument* document, size_t index, CeProjectPosition* position) noexcept {
     if (!document || !position || index >= document->project.placements.size()) return false;
     const Placement& value = document->project.placements[index];
-    *position = CeProjectPosition{value.source.c_str(),value.x,value.y,value.z}; return true;
+    *position = CeProjectPosition{value.source.c_str(),value.x,value.y,value.z,value.side}; return true;
 }
 bool PortCeProjectDocumentUpdate(CeProjectDocument* document, const CeProjectPosition* positions, size_t count,
-                                  char* error, size_t capacity) noexcept {
+                                  char* error, size_t capacity, const CeProjectReach* reach, size_t reachCount, const CeProjectPlayerStart* playerStart) noexcept {
     DocumentError(error,capacity,"");
     try {
-        Need(document && positions && count > 0 && count <= PlacementMax, "Select a bounded set of object placements.");
+        Need(document && (positions || count == 0) && (count > 0 || (playerStart && playerStart->enabled) || document->project.playerStart.enabled) && count <= PlacementMax, "Select a bounded set of object placements.");
         Json root = document->root;
         Json& bindings = root.object.at("map").object.at("bindings"); Json& placements = root.object.at("placements");
         std::map<std::string,std::string> definitions; std::set<std::string> usedDefinitions, usedIds, edited;
@@ -464,6 +528,7 @@ bool PortCeProjectDocumentUpdate(CeProjectDocument* document, const CeProjectPos
         for (size_t i = 0; i != count; ++i) {
             const std::string source = PositionName(positions[i].source);
             Need(edited.insert(source).second,"An edited object source occurs more than once.");
+            Need(positions[i].side >= -1 && positions[i].side <= 2,"Unknown unit side.");
             Json coordinates = Coordinates(positions[i]); auto binding = definitions.find(source);
             if (binding == definitions.end()) {
                 std::string definition;
@@ -479,6 +544,74 @@ bool PortCeProjectDocumentUpdate(CeProjectDocument* document, const CeProjectPos
                 row.object["definition"] = StringValue(binding->second); row.object["position"] = std::move(coordinates); row.object["script"] = Json();
                 placed.emplace(binding->second,placements.array.size()); placements.array.push_back(std::move(row)); usedIds.insert(id);
             }
+            Json& row = placements.array[placed.at(binding->second)];
+            if (positions[i].side >= 0) {
+                const char* const sides[] = {"forseti","muspell","neutral"};
+                row.object["side"] = StringValue(sides[positions[i].side]);
+                root.object["version"] = NumberValue(3);
+            } else row.object.erase("side");
+        }
+        const CeProjectReach kept[] = {document->project.reach, document->project.secondReach};
+        const CeProjectReach* route = reach ? reach : kept;
+        const size_t length = reach ? reachCount : (kept[1].enabled ? 2u : kept[0].enabled ? 1u : 0u);
+        Need(length <= 2, "Only two ordered Reach Points are supported.");
+        const bool hadSingle = root.object.erase("objective") != 0;
+        const bool hadRoute = root.object.erase("objectives") != 0;
+        if (length && (length > 1 || route[0].enabled)) {
+            Json goals = ArrayValue();
+            bool usesHold = false;
+            for (size_t i = 0; i < length; ++i) {
+                Need(route[i].enabled && route[i].hold.Valid(), "Invalid mission objective or Hold Area settings.");
+                Json goal = ObjectValue();
+                goal.object["type"] = StringValue(route[i].hold.Enabled() ? "hold-area" : "reach-point");
+                if (route[i].hold.Enabled()) {
+                    usesHold = true;
+                    goal.object["seconds"] = NumberValue(route[i].hold.seconds);
+                    goal.object["radius"] = NumberValue(route[i].hold.radius);
+                }
+                goal.object["position"] = Coordinates(CeProjectPosition{nullptr, route[i].x, route[i].y, route[i].z});
+                goals.array.push_back(std::move(goal));
+            }
+            if (length==1 && !usesHold) root.object["objective"] = std::move(goals.array[0]);
+            else root.object["objectives"] = std::move(goals);
+            root.object["version"] = NumberValue(usesHold ? 6 : length==1 ? 4 : 5);
+        } else if (hadSingle || hadRoute) {
+            bool sided = false;
+            for (const Json& row : placements.array) if (row.object.count("side")) sided = true;
+            root.object["version"] = NumberValue(sided ? 3 : 2);
+        }
+        const CeProjectPlayerStart start = playerStart ? *playerStart : document->project.playerStart;
+        root.object.erase("player_start");
+        if (start.enabled) {
+            Need(std::isfinite(start.x) && std::isfinite(start.y) && std::isfinite(start.z) &&
+                 std::fabs(start.x) <= CoordinateMax && std::fabs(start.y) <= CoordinateMax && std::fabs(start.z) <= CoordinateMax,
+                 "The player start exceeds the coordinate safety bound.");
+            Json value = ObjectValue();
+            CeProjectPosition point{}; point.x = start.x; point.y = start.y; point.z = start.z;
+            value.object["position"] = Coordinates(point);
+            root.object["player_start"] = std::move(value);
+            if (root.object.count("objective")) {
+                Json goals = ArrayValue(); goals.array.push_back(root.object.at("objective"));
+                root.object["objectives"] = std::move(goals); root.object.erase("objective");
+            } else if (!root.object.count("objectives")) root.object["objectives"] = ArrayValue();
+            root.object["version"] = NumberValue(7);
+        } else if (Number(Field(root, "version")) == 7) {
+            int version = 2;
+            for (const Json& row : root.object.at("placements").array) if (row.object.count("side")) version = 3;
+            if (root.object.count("objective")) version = 4;
+            if (root.object.count("objectives")) {
+                Json& goals = root.object.at("objectives");
+                if (goals.array.empty()) root.object.erase("objectives");
+                else {
+                    bool hold = false;
+                    for (const Json& goal : goals.array) if (Text(Field(goal, "type"), 64) == "hold-area") hold = true;
+                    if (hold) version = 6;
+                    else if (goals.array.size() == 1) {
+                        root.object["objective"] = goals.array[0]; root.object.erase("objectives"); version = 4;
+                    } else version = 5;
+                }
+            }
+            root.object["version"] = NumberValue(version);
         }
         const std::string encoded = Encode(root); Project decoded = Decode(encoded);
         document->root = std::move(root); document->project = std::move(decoded); return true;
@@ -498,4 +631,88 @@ size_t PortCeProjectDocumentWrite(const CeProjectDocument* document, char* bytes
     } catch (const Invalid& failure) { DocumentError(error,errorCapacity,failure.what()); }
       catch (...) { DocumentError(error,errorCapacity,"The project could not be serialized within available resources."); }
     return 0;
+}
+
+struct CeProjectPlayback { Project project; bool began = false, complete = false, failed = false; };
+namespace {
+bool PlaybackFailure(CeProjectPlayback* playback, char* error, size_t capacity, const char* message) noexcept {
+    if (playback) playback->failed = true;
+    DocumentError(error,capacity,message);
+    return false;
+}
+}
+CeProjectPlayback* PortCeProjectPlaybackNew(const CeProjectDocument* document, char* error, size_t capacity) noexcept {
+    DocumentError(error,capacity,"");
+    try {
+        Need(document != nullptr,"Save a complete project before starting a play test.");
+        // Decode the retained document, rather than trusting any editor-only cached state.
+        Project project = Decode(Encode(document->root));
+        CeProjectPlayback* playback = new CeProjectPlayback();
+        playback->project = std::move(project);
+        return playback;
+    } catch (const Invalid& failure) { DocumentError(error,capacity,failure.what()); }
+      catch (...) { DocumentError(error,capacity,"The saved revision could not be prepared for play."); }
+    return nullptr;
+}
+void PortCeProjectPlaybackDelete(CeProjectPlayback* playback) noexcept { delete playback; }
+bool PortCeProjectPlaybackBegin(CeProjectPlayback* playback, int level, bool base, char* error, size_t capacity) noexcept {
+    DocumentError(error,capacity,"");
+    if (!playback || playback->failed || playback->complete)
+        return PlaybackFailure(playback,error,capacity,"The saved-revision load is no longer available.");
+    if (base) return true;
+    if (playback->began || level != playback->project.level)
+        return PlaybackFailure(playback,error,capacity,"A play test accepts one load of its linked map only.");
+    playback->began = true;
+    return true;
+}
+bool PortCeProjectPlaybackApply(CeProjectPlayback* playback, const char* name, size_t nameCapacity, bool base,
+                               float* x, float* y, float* z, char* error, size_t capacity, int* unitSide) noexcept {
+    DocumentError(error,capacity,"");
+    if (!playback || playback->failed || playback->complete)
+        return PlaybackFailure(playback,error,capacity,"The saved-revision load is no longer available.");
+    if (base) return true;
+    if (!playback->began || !name || !x || !y || !z || !std::memchr(name,0,nameCapacity))
+        return PlaybackFailure(playback,error,capacity,"A play-test placement arrived outside its validated map load.");
+    for (Placement& placement : playback->project.placements)
+        if (placement.source == name) {
+            if (placement.seen)
+                return PlaybackFailure(playback,error,capacity,"A saved object name matches more than one installed object.");
+            if (placement.side >= 0 && !unitSide)
+                return PlaybackFailure(playback,error,capacity,"A saved unit side does not belong to a unit.");
+            placement.seen = true;
+            if (placement.side >= 0) *unitSide = placement.side;
+            *x = placement.x; *y = placement.y; *z = placement.z;
+            return true;
+        }
+    return true;
+}
+bool PortCeProjectPlaybackEnd(CeProjectPlayback* playback, bool base, char* error, size_t capacity) noexcept {
+    DocumentError(error,capacity,"");
+    if (!playback || playback->failed || playback->complete)
+        return PlaybackFailure(playback,error,capacity,"The saved-revision load is no longer available.");
+    if (base) return true;
+    if (!playback->began)
+        return PlaybackFailure(playback,error,capacity,"The saved-revision map load did not begin.");
+    for (const Placement& placement : playback->project.placements)
+        if (!placement.seen)
+            return PlaybackFailure(playback,error,capacity,"A saved object name was not found in the installed map.");
+    playback->complete = true;
+    return true;
+}
+
+CeProjectPlayerStart PortCeProjectDocumentPlayerStart(const CeProjectDocument* document) noexcept {
+    return document ? document->project.playerStart : CeProjectPlayerStart{};
+}
+extern "C" bool PortCeEditorApplyPlayerStart(float& x, float& y, float& z, bool flying) __attribute__((weak));
+bool PortCeProjectApplyPlayerStart(int playerNumber, bool inverted, float& x, float& y, float& z, bool flying) noexcept {
+    if (playerNumber != (inverted ? 2 : 1)) return false;
+    if (PortCeEditorActive && PortCeEditorActive()) {
+        return PortCeEditorApplyPlayerStart && PortCeEditorApplyPlayerStart(x, y, z, flying);
+    }
+    if (!PortCeProjectRequested()) return false;
+    const State& state = Current();
+    const CeProjectPlayerStart& start = state.project.playerStart;
+    if (!state.complete || state.failed || !start.enabled) return false;
+    x = start.x; y = start.y; z = start.z;
+    return true;
 }

@@ -1,0 +1,54 @@
+--- a/Cockpit.cpp
++++ b/Cockpit.cpp
+@@ -263,6 +263,42 @@
+ 	mOrientation = mOrientation * FMatrix(yaw, pitch + mUnknownA4, roll + mUnknownA8);
+ }
+ 
++// Port (patch 0249): CCockpit::ProcessJet's turn as retail expands it inline (0042520d..004253e4). The roll's sine stays
++// unrounded on the x87 stack, sin(pitch) is stored as a float but its unrounded copy multiplies sin(roll), every other
++// sine and cosine is stored; the product with the base sums rows 2 and 1 (k2 + k1) + k0 and row 0 (k0 + k2) + k1.
++static FMatrix CockpitJetTurn(const FMatrix &b, float yaw, float pitch, float roll)
++{
++	volatile float cy = (float)bea_x87_fcosl(yaw), sy = (float)bea_x87_fsinl(yaw);
++	volatile float cr = (float)bea_x87_fcosl(roll);
++	long double sr = bea_x87_fsinl(roll);
++	volatile float cp = (float)bea_x87_fcosl(pitch);
++	long double spu = bea_x87_fsinl(pitch);
++	volatile float sp = (float)spu;
++	volatile float spsr = (float)(spu * sr);
++	volatile float spcr = sp * cr;
++	FMatrix m;
++	m.Row[0].X = cr * cy - spsr * sy;
++	m.Row[0].Y = -(cp * sy);
++	m.Row[0].Z = spcr * sy + (float)(sr * cy);
++	m.Row[1].X = spsr * cy + cr * sy;
++	m.Row[1].Y = cp * cy;
++	m.Row[1].Z = (float)(sr * sy) - spcr * cy;
++	m.Row[2].X = -(float)(cp * sr);
++	m.Row[2].Y = sp;
++	m.Row[2].Z = cp * cr;
++	FMatrix r;
++	for (int i = 1; i < 3; i++)
++	{
++		r.Row[i].X = ((m.Row[2].X * b.Row[i].Z) + (m.Row[1].X * b.Row[i].Y)) + (m.Row[0].X * b.Row[i].X);
++		r.Row[i].Y = ((m.Row[2].Y * b.Row[i].Z) + (m.Row[1].Y * b.Row[i].Y)) + (m.Row[0].Y * b.Row[i].X);
++		r.Row[i].Z = ((m.Row[2].Z * b.Row[i].Z) + (m.Row[1].Z * b.Row[i].Y)) + (m.Row[0].Z * b.Row[i].X);
++	}
++	r.Row[0].X = ((m.Row[0].X * b.Row[0].X) + (m.Row[2].X * b.Row[0].Z)) + (m.Row[1].X * b.Row[0].Y);
++	r.Row[0].Y = ((m.Row[0].Y * b.Row[0].X) + (m.Row[2].Y * b.Row[0].Z)) + (m.Row[1].Y * b.Row[0].Y);
++	r.Row[0].Z = ((m.Row[0].Z * b.Row[0].X) + (m.Row[2].Z * b.Row[0].Z)) + (m.Row[1].Z * b.Row[0].Y);
++	return r;
++}
++
+ // FUNCTION: 0x004250f0
+ void CCockpit::ProcessJet()
+ {
+@@ -298,7 +334,7 @@
+ 	// in retail's order only with retail's symbol count: the two targets, and the yaw rate read through mBattleEngine
+ 	// in the middle of roll's expression (the inline keeps its result in a symbol), give operator*'s this and the
+ 	// rotation's field symbols retail's ids.
+-	mOrientation = mOrientation * FMatrix(yaw, pitch + mUnknownA4, roll + mUnknownA8);
++	mOrientation = CockpitJetTurn(mOrientation, yaw, pitch + mUnknownA4, roll + mUnknownA8);
+ }
+ 
+ // FUNCTION: 0x00425410

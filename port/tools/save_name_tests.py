@@ -223,10 +223,10 @@ int CompareStringOrdinal(const WCHAR *, int, const WCHAR *, int, BOOL);
         def build_namespace(label, identity_source=None, namespace_source=None):
             definitions = []
             namespace_source = namespace_source or production
-            for name in ("SaveNativeSameFile", "FindAdd", "SaveDirectoryCasePolicy", "FindScan", "FindNameOrder", "FindSort", "FindStart", "FindFree", "SaveFoldedNameAbsent", "PortSaveLookupUtf16", "PortSaveReserveUtf8"):
+            for name in ("SaveNativeSameFile", "FindAdd", "SaveDirectoryCasePolicy", "FindScan", "FindNameOrder", "FindSort", "FindStart", "FindFree", "SaveFoldedNameAbsent", "LookupSave", "PortSaveLookupUtf16", "PortSaveReserveUtf8"):
                 source = identity_source if name == "SaveNativeSameFile" and identity_source else namespace_source
                 found = re.findall(r"^[^\n]*\b" + re.escape(name) + r"\([^\n]*\)\n\{\n.*?^\}", source, re.M | re.S)
-                if name=="SaveFoldedNameAbsent" and not found:continue
+                if name in ("SaveFoldedNameAbsent", "LookupSave") and not found:continue
                 if len(found) != 1: raise RuntimeError(f"expected complete production function: {name}")
                 definitions.append(found[0])
             definition = out / (label+".inc")

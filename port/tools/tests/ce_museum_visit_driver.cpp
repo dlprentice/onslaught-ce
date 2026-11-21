@@ -44,6 +44,61 @@ int main() {
     std::puts("PASS loaded identity uniqueness, ambiguity and bounded lookup");
     return 0;
 }
+#elif defined(CE_MUSEUM_DEFINITION_FIXTURE)
+// The engine's own MakeExhibitDefinition (ce_museum_visit_engine.cpp), cut from the source, run on a stand-in definition list:
+// every exhibit definition the museum makes must be one that nothing can damage, and the game's own definitions stay as they were.
+typedef int BOOL;
+#define TRUE 1
+#define FALSE 0
+struct CFeatureData {
+    char *mName;
+    char mMeshName[64];
+    BOOL mInvincible;
+    float mLife;
+    void SetMesh(char *name) { std::snprintf(mMeshName, sizeof mMeshName, "%s", name); }
+};
+struct FixtureList {
+    std::vector<CFeatureData *> items;
+    int Size() const { return int(items.size()); }
+    void *At(int i) const { return i >= 0 && i < Size() ? items[size_t(i)] : nullptr; }
+};
+struct UPhysicsManager {
+    static FixtureList *mFeatures;
+    static void AddFeature(char *name) {
+        CFeatureData *item = new CFeatureData();
+        item->mName = new char[std::strlen(name) + 1];
+        std::strcpy(item->mName, name);
+        item->mInvincible = FALSE;    // as the game's list starts a definition: it can be destroyed
+        item->mLife = 0.0f;
+        mFeatures->items.push_back(item);
+    }
+    static CFeatureData *GetFeatureData(char *name) {
+        for (CFeatureData *item : mFeatures->items) if (!std::strcmp(item->mName, name)) return item;
+        return nullptr;
+    }
+};
+FixtureList *UPhysicsManager::mFeatures;
+#include "museum_exhibit_definition.inc"
+int main() {
+    FixtureList list;
+    UPhysicsManager::mFeatures = &list;
+    char gameName[] = "authored.structure";
+    UPhysicsManager::AddFeature(gameName);
+    list.items[0]->mLife = 40.0f;
+    CFeatureData *made = MakeExhibitDefinition("authored.machine", "authored.mesh");
+    Need(made != nullptr, "an exhibit definition is made");
+    Need(made && !std::strcmp(made->mName, "ce.museum.authored.machine"), "it carries the museum's own name");
+    Need(made && !std::strcmp(made->mMeshName, "authored.mesh"), "it shows the machine's model");
+    Need(made && made->mInvincible == TRUE, "an exhibit cannot be destroyed");
+    Need(made && made->mLife > 0.0f, "an exhibit starts alive");
+    Need(list.Size() == 2 && !list.items[0]->mInvincible && list.items[0]->mLife == 40.0f, "the game's own definition is unchanged");
+    Need(!MakeExhibitDefinition("authored.machine", "authored.mesh") && list.Size() == 2, "a name already taken makes nothing");
+    CFeatureData *second = MakeExhibitDefinition("authored.structure", "authored.other");
+    Need(second && second->mInvincible == TRUE && !list.items[0]->mInvincible, "a structure shown as an exhibit is indestructible, its game definition is not");
+    for (CFeatureData *item : list.items) { delete[] item->mName; delete item; }
+    std::puts("PASS exhibit definitions cannot be destroyed and leave the game's own alone");
+    return 0;
+}
 #elif defined(CE_MUSEUM_GENERATOR_FIXTURE)
 #include "ce_museum_visit.h"
 #include <limits>
@@ -110,6 +165,7 @@ static bool TerrainHeight(int x, int y, float *height, void *opaque) {
         *height = (y >= 236 && y <= 239) ? -60.0f : -10.0f;
         return true;
     case 6: if (x >= 100 && x <= 200 && y >= 100 && y <= 200) return false; *height = -10.0f; return true;   // a lake
+    case 7: if (x < 208 || x > 272 || y < 100 || y > 460) return false; *height = -10.0f; return true;               // a dry strip, narrow across and long down
     }
     return false;
 }
@@ -273,6 +329,72 @@ int main(int argc, char **argv) {
         for (unsigned i = 0; i != 6; ++i) { large[i].width = 40.0f; large[i].depth = 40.0f; large[i].height = 20.0f; }
         Need(CeMuseumVisit::PlanSite(large, 6, 512, 512, TerrainHeight, &flat, &site), "large exhibits get a site");
         CheckSite(site, 6, large, 512, 512);
+        {   // The four headings: the same hall seen from each side.
+            const float forward[4][2] = {{0, 1}, {1, 0}, {0, -1}, {-1, 0}};
+            const float yaw[4] = {0.0f, -1.5707963f, 3.1415927f, 1.5707963f};
+            CeMuseumVisit::SitePlan faced[4] = {};
+            for (unsigned h = 0; h != 4; ++h) {
+                Need(CeMuseumVisit::PlanSiteFacing(six, 6, 512, 512, TerrainHeight, &flat, h, &faced[h]), "every heading gets a site on open ground");
+                CeMuseumVisit::SitePlan twice = {};
+                Need(CeMuseumVisit::PlanSiteFacing(six, 6, 512, 512, TerrainHeight, &flat, h, &twice) && std::memcmp(&twice, &faced[h], sizeof twice) == 0,
+                     "a heading's site is deterministic");
+                Need(faced[h].yaw > yaw[h] - 0.001f && faced[h].yaw < yaw[h] + 0.001f, "the visitor's yaw follows the heading");
+                Need(faced[h].visible == 6 && faced[h].dryRing == 48 && faced[h].heightRange == 0.0f, "a heading on open ground keeps the best site");
+                for (unsigned i = 0; i != 6; ++i) {
+                    const float dx = faced[h].centres[i][0] - faced[h].visitor[0], dy = faced[h].centres[i][1] - faced[h].visitor[1];
+                    Need(dx * forward[h][0] + dy * forward[h][1] > 8.0f, "every exhibit is in front of the visitor along the heading");
+                    Need(faced[h].centres[i][0] >= 32 && faced[h].centres[i][0] <= 512 - 32 && faced[h].centres[i][1] >= 32 && faced[h].centres[i][1] <= 512 - 32,
+                         "every exhibit of a turned hall stands clear of the map edge");
+                    for (unsigned j = i + 1; j != 6; ++j) {
+                        const float ex = faced[h].centres[i][0] - faced[h].centres[j][0], ey = faced[h].centres[i][1] - faced[h].centres[j][1];
+                        const bool across = h & 1;
+                        const float needX = ((across ? six[i].depth + six[j].depth : six[i].width + six[j].width)) / 2;
+                        const float needY = ((across ? six[i].width + six[j].width : six[i].depth + six[j].depth)) / 2;
+                        Need((ex >= needX || ex <= -needX) || (ey >= needY || ey <= -needY), "no two footprints of a turned hall overlap");
+                    }
+                }
+            }
+            CeMuseumVisit::SitePlan plain = {};
+            Need(CeMuseumVisit::PlanSite(six, 6, 512, 512, TerrainHeight, &flat, &plain) && std::memcmp(&plain, &faced[0], sizeof plain) == 0,
+                 "heading 0 is the ordinary site");
+            // turned halls keep their own geometry: the row's extent along the heading is the same, so the visitor is as far from the first exhibit
+            for (unsigned h = 1; h != 4; ++h) {
+                const float a = (faced[h].centres[0][0] - faced[h].visitor[0]) * forward[h][0] + (faced[h].centres[0][1] - faced[h].visitor[1]) * forward[h][1];
+                const float b = (faced[0].centres[0][0] - faced[0].visitor[0]) * forward[0][0] + (faced[0].centres[0][1] - faced[0].visitor[1]) * forward[0][1];
+                Need(a > b - 0.01f && a < b + 0.01f, "the first exhibit is as far in front of the visitor whichever way the hall faces");
+            }
+            CeMuseumVisit::SitePlan untouched;
+            std::memset(&untouched, 0x5a, sizeof untouched);
+            CeMuseumVisit::SitePlan refused = untouched;
+            Need(!CeMuseumVisit::PlanSiteFacing(six, 6, 512, 512, TerrainHeight, &flat, 4, &refused) && std::memcmp(&refused, &untouched, sizeof refused) == 0,
+                 "a heading above three is refused and leaves the result untouched");
+            // a wall of water on one side: only some headings leave the visitor's view clear, and every plan still reports honestly
+            Terrain lakeside = {6, 0, 512};
+            unsigned found = 0;
+            for (unsigned h = 0; h != 4; ++h) {
+                CeMuseumVisit::SitePlan s = {};
+                if (CeMuseumVisit::PlanSiteFacing(six, 6, 512, 512, TerrainHeight, &lakeside, h, &s)) {
+                    ++found;
+                    for (unsigned i = 0; i != 6; ++i) {
+                        const float dx = s.centres[i][0] < 100 ? 100 - s.centres[i][0] : s.centres[i][0] > 200 ? s.centres[i][0] - 200 : 0;
+                        const float dy = s.centres[i][1] < 100 ? 100 - s.centres[i][1] : s.centres[i][1] > 200 ? s.centres[i][1] - 200 : 0;
+                        Need(dx >= 40 || dy >= 40, "a turned hall keeps clear of the water as well");
+                    }
+                }
+            }
+            Need(found == 4, "every heading finds ground beside a lake");
+            // a strip only as wide as the row: the visitor can face along it, not across it
+            // (machines deeper than wide, so that the hall is deeper than its row is long: with the visitor 7 units from the row, as it stands now, a hall of
+            // shallow machines is shorter than the row is wide and would fit across the strip too)
+            CeMuseumVisit::ExhibitFootprint deep[6];
+            for (unsigned i = 0; i != 6; ++i) { deep[i].width = 6.0f + i; deep[i].depth = 30.0f; deep[i].height = 6.0f; }
+            Terrain strip = {7, 0, 512};
+            CeMuseumVisit::SitePlan along = {};
+            Need(CeMuseumVisit::PlanSiteFacing(deep, 6, 512, 512, TerrainHeight, &strip, 0, &along), "a hall faces along a strip as wide as its row");
+            Need(CeMuseumVisit::PlanSiteFacing(deep, 6, 512, 512, TerrainHeight, &strip, 2, &along), "and back down it");
+            Need(!CeMuseumVisit::PlanSiteFacing(deep, 6, 512, 512, TerrainHeight, &strip, 1, &along), "a turned hall does not fit across the strip");
+            Need(!CeMuseumVisit::PlanSiteFacing(deep, 6, 512, 512, TerrainHeight, &strip, 3, &along), "in either direction");
+        }
         Terrain tiny = {0, 0, 128};
         Need(!CeMuseumVisit::PlanSite(large, 6, 128, 128, TerrainHeight, &tiny, &site), "a map too small for the exhibition is refused");
         CeMuseumVisit::ExhibitFootprint bad[1] = {{0.0f, 5.0f, 5.0f}};
@@ -386,8 +508,10 @@ int main() {
     return 0;
 }
 #else
+#include <cstdarg>
 #include <dirent.h>
 #include <new>
+#include "../../platform/common/portlog.h"
 #include "Career.h"
 #include "frontend.h"
 #include "ce_museum_visit.h"
@@ -407,6 +531,18 @@ void operator delete[](void *p, size_t) noexcept { std::free(p); }
 static unsigned OpenFiles() {
     DIR *dir = opendir("/proc/self/fd"); Need(dir != NULL, "host file census available");
     unsigned count = 0; while (readdir(dir)) ++count; closedir(dir); return count;
+}
+// The player's session log: what a refusal that comes before the load writes there, so a player's log can say why the museum did not open.
+// (a fixed buffer: the allocation-failure runs inject failures into every allocation, and a log line must never be one)
+static char sessionLines[64][256];
+static unsigned sessionCount;
+void PortSessionLog(PortSessionCategory, bool, const char *format, ...) {
+    if (sessionCount == 64) return;
+    va_list args; va_start(args, format); std::vsnprintf(sessionLines[sessionCount++], sizeof sessionLines[0], format, args); va_end(args);
+}
+static bool Logged(const char *text) {
+    for (unsigned i = 0; i != sessionCount; ++i) if (std::strstr(sessionLines[i], text)) return true;
+    return false;
 }
 CCareer fixtureCareer;
 FixtureFrontend fixtureFrontend;
@@ -468,8 +604,39 @@ int main(int argc, char **argv) {
         Need(nativeGenerationCalls == 1, "native generator called once");
         PortCeMuseumVisitLevelEnd();
         Need(PortCeMuseumVisitActive(), "native guard retained through teardown");
+        const bool refused = refuseNativeGeneration || changeDuringGeneration;
+        const char *notice = reinterpret_cast<const char *>(1);
+        // RunLevel asks this where the original would end the process: a refused visit leaves for the front end instead.
+        if (refused) Need(PortCeMuseumVisitLoadRefused(), "a refused load is caught where the original would be fatal");
+        Need(!PortCeMuseumVisitTakeNotice(&notice) && !notice, "no notice is due before the front end took the return");
         Need(PortCeMuseumVisitTakeReturn() && !PortCeMuseumVisitActive() && Career() == saved, "native return restores original career");
+        Need(PortCeMuseumVisitTakeNotice(&notice), "the return leaves one notice for the Onslaught CE page");
+        Need(refused ? (notice && std::strlen(notice) > 20 && std::strstr(notice, "museum")) : !notice, "a refusal carries its sentence, a chosen exit none");
+        Need(!PortCeMuseumVisitTakeNotice(&notice) && !notice, "the notice is answered once");
+        Need(!PortCeMuseumVisitLoadRefused(), "with no visit a failed load is the original's own");
         std::puts("PASS explicit native entry, retained bodies and no fallback"); return 0;
+    }
+    if (mode == "forced-world" || mode == "forced-afterload" || mode == "forced-inactive") {
+        // BEA_PORT_MUSEUM_REFUSE forces one refusal of a visit that is loading (the route tests' switch); outside a visit it does nothing.
+        setenv("BEA_PORT_MUSEUM_REFUSE", mode == "forced-world" ? "world" : "afterload", 1);
+        Need(!CeMuseumVisit::ForcedRefusal("world") && !CeMuseumVisit::ForcedRefusal("afterload"), "the switch does nothing with no visit");
+        if (mode == "forced-inactive") {
+            Need(Read("data/worlds/world100.wrd", &bytes, &length) == 0, "no visit, no refusal: ordinary worlds");
+            std::puts("PASS forced refusal needs a visit"); return 0;
+        }
+        Need(PortCeMuseumVisitBegin(), "ordinary entry");
+        if (mode == "forced-world") {
+            Need(Read("data/worlds/world100.wrd", &bytes, &length) == -1 && !bytes && !length, "the forced unexpected world is refused, never served");
+        } else {
+            Need(Read("data/worlds/world100.wrd", &bytes, &length) == 1 && Read("data/worlds/world021.wrd", &bytes, &length) == 1, "both worlds read");
+            Need(!PortCeMuseumVisitAfterLoad(), "the forced after-load refusal fails the load");
+        }
+        PortCeMuseumVisitLevelEnd();
+        const char *notice = NULL;
+        Need(PortCeMuseumVisitLoadRefused() && PortCeMuseumVisitActive(), "a forced refusal is caught, the visit still excluding the career");
+        Need(PortCeMuseumVisitTakeReturn() && PortCeMuseumVisitTakeNotice(&notice) && notice && std::strstr(notice, "museum") && Career() == saved, "its sentence reaches the page, the career as it was");
+        unsetenv("BEA_PORT_MUSEUM_REFUSE");
+        std::puts("PASS forced refusal is caught and explained"); return 0;
     }
     if (mode == "allocation-failures") {
         unsigned files = OpenFiles(), failures = 0, successes = 0;
@@ -490,11 +657,23 @@ int main(int argc, char **argv) {
     if (mode == "guard-policy") sessionAllowed = false;
     if (mode == "guard-editor") editor = true;
     if (mode == "guard-gallery") gallery = true;
+    if (mode == "refuse-native") {
+        // The menu's own entry: a level archive the original's reader would end the process on is refused here, with the sentence, before anything changed.
+        Need(!PortCeMuseumVisitBegin(), "a damaged level archive is refused before the visit begins");
+        Need(!PortCeMuseumVisitActive() && PortCeMuseumVisitLevel() == -1, "the refusal leaves ordinary play");
+        Need(Career() == saved, "the refusal leaves the career as it was");
+        Need(std::strstr(PortCeMuseumVisitMessage(), "game files") != NULL, "the refusal says the game files could not be read");
+        Need(nativeGenerationCalls == 0 && !PortCeMuseumVisitTakeReturn(), "nothing was generated and there is no return to take");
+        Need(Logged("museum refused before loading: The museum could not read your game files"), "the player's log says why the museum did not open");
+        std::puts("PASS a damaged level archive is refused up front"); return 0;
+    }
     if (mode == "refuse" || mode == "default" || mode.find("guard-") == 0) {
         Need(!CeMuseumVisit::BeginPreparedCacheForDevelopment(), "invalid or conflicting visit refused");
         Need(!PortCeMuseumVisitActive() && PortCeMuseumVisitLevel() == -1, "refusal leaves normal mode active");
         Need(Career() == saved, "refusal preserves career");
         Need(!PortCeMuseumVisitTakeReturn(), "failed Begin has no return to consume");
+        Need(sessionCount != 0 || mode == "default", "a refusal is in the player's log");
+        Need(mode.find("guard-") != 0 || Logged("museum refused before loading: another mode is open"), "and says that another mode is open");
         std::puts("PASS refusal and unchanged career"); return 0;
     }
     Need(CeMuseumVisit::BeginPreparedCacheForDevelopment() && PortCeMuseumVisitActive(), "prepared visit begins");

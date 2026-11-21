@@ -37,6 +37,11 @@
 extern "C" int CE_SettingGet(const char *key, int def);	// ce.cpp
 extern "C" const char *CE_BootError(void);					// port/game/ce_network_boot.cpp
 extern "C" const char *CE_SessionError(void);				// port/game/ce_network_session.cpp
+extern "C" int PortCeNetConfirmedMatch(void) __attribute__((weak));
+extern "C" int PortCeNetRingLeft(void) __attribute__((weak));	// port/game/ce_network_ring.cpp: the player chose Leave Game
+#if defined(CE_NETWORK_ICE)
+extern "C" int PortCeMissionRelayLossRole(void) __attribute__((weak));
+#endif
 #ifdef CE_VERSION
 bool PortCeQuitRequested();									// ltshell.cpp (patch 0059): the window's close button
 #else
@@ -203,6 +208,11 @@ int gShellCode = 0, gShellNativeQuit = 0;
 bool gLevelToSystem = false;	// the last -level run ended by quitting to the system (the window closed)
 bool gOutcomeReady = false;
 CE_Handoff gOutcome;
+// Derived from the just-consumed launch. Never logged or stored in settings.
+char gRematchCode[CE_CODE_TEXT] = {};
+int gRematchRole = 0;
+uint32_t gRematchLevel = 0;
+
 bool OwnArgs(char *out, size_t n);
 
 void Text(char *out, size_t n, const char *fmt, const char *a = "", const char *b = "")
@@ -559,13 +569,8 @@ void BeginRestart()
 	h.kind = CE_HANDOFF_LAUNCH;
 	h.role = L.host ? 1 : 2;
 	char ip[16];
-	if (L.host)
-		snprintf(h.endpoint, sizeof h.endpoint, "%s:%u", L.bind, (unsigned)L.port);
-	else
-	{
-		Dotted(L.ip, ip, sizeof ip);
-		snprintf(h.endpoint, sizeof h.endpoint, "%s:%u", ip, (unsigned)L.port);
-	}
+	Dotted(L.ip, ip, sizeof(ip));
+	snprintf(h.endpoint, sizeof(h.endpoint), "%s:%u", ip, unsigned(L.port));
 	CE_CodeStartSecret(L.secret, L.nonce, h.secret);
 	memcpy(h.nonce, L.nonce, 16);
 	h.level = L.level;
@@ -619,7 +624,7 @@ void BeginRestart()
 #endif
 #endif
 		L.startSent = false;
-		Text(L.st.notice, sizeof L.st.notice, "The other player could not be told to start. Try Start again.");
+		Text(L.st.notice, sizeof L.st.notice, "Your friend's game could not be told to start. Choose Start again.");
 		return;
 	}
 	Close(L.host);
@@ -742,12 +747,12 @@ void HostFailure(const CE_NetStatus &s)
 	{
 		if (s.error == CE_NET_PEER_LEFT && s.phase == CE_NET_CLOSED)
 		{
-			Text(L.st.notice, sizeof L.st.notice, "The other player left.");
+			Text(L.st.notice, sizeof L.st.notice, "Your friend left. The same code still works.");
 			fprintf(stderr, LOBBY_LOG "the other player left; waiting for another with the same code\n");
 		}
 		else
 		{
-			Text(L.st.notice, sizeof L.st.notice, "The connection to the other player was lost. Waiting for another player with the same code.");
+			Text(L.st.notice, sizeof L.st.notice, "The connection to your friend was lost. The same code still works.");
 			fprintf(stderr, LOBBY_LOG "connection lost; waiting for another with the same code\n");
 		}
 	}
@@ -755,18 +760,17 @@ void HostFailure(const CE_NetStatus &s)
 	{
 		L.st.failed++;
 		if (versions && strcmp(peer, kVersion))
-			snprintf(L.st.notice, sizeof L.st.notice, "A player with Onslaught CE %s tried to join: both players need the same version.", peer);
+			snprintf(L.st.notice, sizeof L.st.notice, "Your friend has Onslaught CE %s. You both need the same version.", peer);
 		else if (versions)
-			snprintf(L.st.notice, sizeof L.st.notice, "A player with another Onslaught CE build (both say %s) tried to join: both players need the same download.", kVersion);
-		else
-			snprintf(L.st.notice, sizeof L.st.notice, "A connection attempt failed (%d of %d). A wrong code, or the player gave up.",
-					 L.st.failed, kMaxFailed);
+			Text(L.st.notice, sizeof L.st.notice, "Your friend has a different Onslaught CE download. You both need the same one.");
+		else	// once for each burst of attempts: the words do not change, so the host's page keeps one line (the count is logged)
+			Text(L.st.notice, sizeof L.st.notice, "Your friend could not join. Check that they have this code.");
 		fprintf(stderr, LOBBY_LOG "an admission attempt failed (%d of %d)\n", L.st.failed, kMaxFailed);
 		if (L.st.failed >= kMaxFailed)
 		{
 			if (NewCode())
 			{
-				Text(L.st.notice, sizeof L.st.notice, "Five attempts failed, so this game has a new code. Give the other player the new code.");
+				Text(L.st.notice, sizeof L.st.notice, "This game has a new code. Give your friend the new code.");
 				fprintf(stderr, LOBBY_LOG "five failed admissions: a new code was made\n");
 			}
 		}
@@ -827,21 +831,22 @@ void GuestFailure(const CE_NetStatus &s)
 	if (s.error == CE_NET_PEER_LEFT && s.phase == CE_NET_CLOSED)
 	{
 		L.state = CE_LOBBY_LEFT;
-		Text(L.st.notice, sizeof L.st.notice, was ? "The host left the game." : "The host closed the game.");
+		Text(L.st.notice, sizeof L.st.notice, was ? "Your friend left the game." : "Your friend closed their game.");
 		fprintf(stderr, LOBBY_LOG "the host left\n");
 		return;
 	}
 	if (was)
 	{
 		L.state = CE_LOBBY_FAILED;
-		Text(L.st.notice, sizeof L.st.notice, "The connection to the host was lost. Check that the host is still waiting, then join again.");
+		Text(L.st.notice, sizeof L.st.notice, "The connection to your friend was lost. Check that they are still hosting, then join again.");
 		fprintf(stderr, LOBBY_LOG "connection to the host lost\n");
 		return;
 	}
 	L.state = CE_LOBBY_FAILED;
-	snprintf(L.st.notice, sizeof L.st.notice, "No game answered at %s, port %u. The game cannot tell why: the code or address may be wrong, the host may not be waiting "
-			 "(a host makes a new code after five failed attempts), or a router or firewall may be blocking UDP port %u. See " CE_LOBBY_HELP_LABEL ".", here, (unsigned)L.port, (unsigned)L.port);
-	fprintf(stderr, LOBBY_LOG "could not join (transport error %u)\n", s.error);
+	// What the player reads says what to do; the game cannot tell a wrong code from a host that is not waiting or a blocked
+	// port, so the address, port and transport error go to the log only.
+	Text(L.st.notice, sizeof L.st.notice, "No game accepted this code. Check it with your friend, then choose Connect again.");
+	fprintf(stderr, LOBBY_LOG "could not join: no game answered at %s, port %u (transport error %u)\n", here, (unsigned)L.port, s.error);
 }
 
 #ifdef _WIN32
@@ -927,7 +932,7 @@ int CE_LobbyAddresses(char (*out)[16], int max)
 	return count;
 }
 
-static int LobbyHost(const char *selected_address) {
+static int LobbyHost(const char *selected_address, const CE_JoinCode *rematch = NULL) {
 	uint32_t selected_ip = 0;
     if (selected_address) {
         char choices[CE_LOBBY_ADDRESS_CHOICES][16];
@@ -947,7 +952,7 @@ static int LobbyHost(const char *selected_address) {
     }
     Forget();
 	L.host = true;
-	L.port = CE_LobbyPort();
+	L.port = rematch ? rematch->port : CE_LobbyPort();
 	snprintf(L.st.local_version, sizeof L.st.local_version, "%s", kVersion);
 	char why[200];
 	if (!CE_LobbyAvailable(why, sizeof why))
@@ -961,6 +966,7 @@ static int LobbyHost(const char *selected_address) {
 	uint32_t ip = 0;
 	if (selected_address) {
         ip = selected_ip;
+        Dotted(ip, L.bind, sizeof L.bind);
     } else if (bind && *bind)
 	{
 		if (!ParseIp(bind, &ip) || !ip)
@@ -981,15 +987,25 @@ static int LobbyHost(const char *selected_address) {
 		snprintf(L.bind, sizeof L.bind, "0.0.0.0");
 	}
 	L.ip = ip;
-	if (!NewCode())
+	if (rematch)
+	{
+		if (rematch->ipv4 != ip) return 0;
+		L.key = rematch->key;
+		CE_CodeLobbySecret(L.key, L.secret);
+		if (!CE_CodeEncode(rematch, L.st.code, sizeof(L.st.code))) return 0;
+	}
+	else if (!NewCode())
 	{
 		Text(L.st.notice, sizeof L.st.notice, "No random numbers were available for a code.");
 		return 0;
 	}
 	if (!Create())
 	{ const char *backend_problem = CreateProblem();
-		if (backend_problem && backend_problem[0]) Text(L.st.notice, sizeof L.st.notice, backend_problem); else snprintf(L.st.notice, sizeof L.st.notice, "This PC could not listen on UDP port %u: is another game using it?",
-				 (unsigned)L.port);
+		if (backend_problem && backend_problem[0]) Text(L.st.notice, sizeof L.st.notice, backend_problem); else
+		{
+			Text(L.st.notice, sizeof L.st.notice, "Could not host a game. Another copy of the game may be running. Close it, then choose Host Game again.");
+			fprintf(stderr, LOBBY_LOG "could not listen on UDP port %u\n", (unsigned)L.port);
+		}
 		CE_CodeWipe(L.st.code, sizeof L.st.code);
 		return 0;
 	}
@@ -1122,14 +1138,13 @@ void CE_LobbyUpdate(void)
 	if (L.host && L.state == CE_LOBBY_HOST_WAITING && !L.nobodyTold && !L.st.failed && !L.st.notice[0] && now - L.waitingAt >= kNobodyWaitMs)
 	{
 		L.nobodyTold = true;
-		snprintf(L.st.notice, sizeof L.st.notice, "Nobody has reached this PC yet. The game cannot tell why: the other player may not have joined yet, may have typed the code or address "
-				 "wrongly, or a router or firewall may be blocking UDP port %u. See " CE_LOBBY_HELP_LABEL ".", (unsigned)L.port);
+		Text(L.st.notice, sizeof L.st.notice, "Nobody has joined yet. If your friend cannot connect, see " CE_LOBBY_HELP_LABEL ".");
 		fprintf(stderr, LOBBY_LOG "nobody has reached this PC in %u s\n", (unsigned)(kNobodyWaitMs / 1000));
 	}
 	if (L.host && L.startSent && now - L.startAt > kStartWaitMs)
 	{
 		L.startSent = false;
-		Text(L.st.notice, sizeof L.st.notice, "The other player did not answer the start. Try Start again.");
+		Text(L.st.notice, sizeof L.st.notice, "Your friend's game did not answer the start. Choose Start again.");
 	}
 	if (!L.host && L.startSent)
 	{
@@ -1137,7 +1152,7 @@ void CE_LobbyUpdate(void)
 		if (now - L.startAt > kGuestWaitMs)
 		{
 			L.startSent = L.ackQueued = false;
-			Text(L.st.notice, sizeof L.st.notice, "The host did not start the game. Wait for the host to try again.");
+			Text(L.st.notice, sizeof L.st.notice, "Your friend's game did not start. Wait for them to choose Start again.");
 		}
 	}
 }
@@ -1253,6 +1268,34 @@ int CE_LobbyPaste(char *out, size_t size)
 int CE_LobbyCtrlHeld(void)
 {
 	return (SDL_GetModState() & SDL_KMOD_CTRL) ? 1 : 0;
+}
+
+int CE_LobbyResumeMatch(void)
+{
+	if (!gOutcomeReady || !gOutcome.rematch_role || !gOutcome.good) return 0;
+	CE_JoinCode route = {};
+	const int role = gOutcome.rematch_role;
+	const uint32_t level = gOutcome.rematch_level;
+	gOutcome.rematch_role = 0;
+	const bool decoded = CE_CodeDecode(gOutcome.rematch_code, &route) == CE_CODE_OK;
+	int started = 0;
+	if (decoded && role == 1)
+	{
+		char ip[32];
+		Dotted(route.ipv4, ip, sizeof(ip));
+		started = LobbyHost(ip, &route);
+	}
+	else if (decoded && role == 2)
+	{
+		const char *why = NULL;
+		started = CE_LobbyJoin(gOutcome.rematch_code, NULL, &why);
+	}
+	CE_CodeWipe(&route, sizeof(route));
+	CE_CodeWipe(gOutcome.rematch_code, sizeof(gOutcome.rematch_code));
+	if (!started) return 0;
+	L.level = level;
+	fprintf(stderr, LOBBY_LOG "returning to the same lobby as %s\n", role == 1 ? "host" : "guest");
+	return role;
 }
 
 int CE_LobbyOutcomePending(void)
@@ -1376,9 +1419,19 @@ void ScrubEnvironment(const char *handoff)
 		"BEA_LOCKSTEP_SKEW_AT", "BEA_LOCKSTEP_DUMP", "BEA_LOCKSTEP_QUIT_AT", "BEA_LOCKSTEP_STALL_EVERY", "BEA_LOCKSTEP_STALL_AT",
 		"BEA_LOCKSTEP_STALL_MS", "BEA_LOCKSTEP_NO_LOSS", "BEA_LOCKSTEP_NO_PARTICLES", "BEA_LOCKSTEP_EXTRA_RENDERS",
 		"BEA_LOCKSTEP_STALL_FROM", "BEA_LOCKSTEP_FLIP_CW_AT", "BEA_LOCKSTEP_NO_CW_FENCE", "BEA_LOCKSTEP_POISON_STACK",
-		"BEA_LOCKSTEP_TEST_UNINIT_READ"};
+		"BEA_LOCKSTEP_TEST_UNINIT_READ", "BEA_LOCKSTEP_TEST_FRAME_READ", "BEA_LOCKSTEP_TEST_CLOCK_READ", "BEA_LOCKSTEP_TEST_CLOCK_JITTER", "BEA_LOCKSTEP_TEST_X87_STATUS", "BEA_LOCKSTEP_TEST_FRAME_SLEEP_MS"};
+	// Test only: scripted keys for the restarted game (a network mission's ring), which the scrub would otherwise lose.
+	const char *game_keys = !strcmp(handoff, "launch") ? getenv("BEA_PORT_FAKE_KEYS_GAME")
+		: !strcmp(handoff, "outcome") ? getenv("BEA_PORT_FAKE_KEYS_RETURN") : NULL;
+	char keys[4096] = "";
+	if (game_keys && strlen(game_keys) < sizeof keys)
+		snprintf(keys, sizeof keys, "%s", game_keys);
 	for (const char *n : names)
 		SetEnv(n, NULL);
+	SetEnv("BEA_PORT_FAKE_KEYS_GAME", NULL);
+	if (!strcmp(handoff, "outcome")) SetEnv("BEA_PORT_FAKE_KEYS_RETURN", NULL);
+	if (keys[0])
+		SetEnv("BEA_PORT_FAKE_KEYS", keys);
 	SetEnv("BEA_NET_HANDOFF", handoff);
 
     SetEnv("BEA_NET_HANDOFF_FILE", gHandoffName[0] ? gHandoffName : NULL);
@@ -1438,7 +1491,7 @@ void Exec(const char *args)
 #endif
 }
 
-void ReturnToFrontEnd(bool good, const char *text)
+void ReturnToFrontEnd(bool good, const char *text, bool rematch = false)
 {
 	CE_Handoff h;
 	memset(&h, 0, sizeof h);
@@ -1450,6 +1503,15 @@ void ReturnToFrontEnd(bool good, const char *text)
 		if ((unsigned char)*c < 0x20 || *c == 0x7f)
 			*c = ' ';
     AttachCampaignReturn(&h, good);
+	if (rematch && !h.campaign.version && gRematchRole)
+	{
+		memcpy(h.rematch_code, gRematchCode, sizeof(h.rematch_code));
+		h.rematch_role = gRematchRole;
+		h.rematch_level = gRematchLevel;
+	}
+	CE_CodeWipe(gRematchCode, sizeof(gRematchCode));
+	gRematchRole = 0;
+
 	if (!true || !WriteOwnedHandoff("outcome", &h))
 		return;
 	char args[1200];
@@ -1539,7 +1601,39 @@ struct Boot
 			SetEnv("BEA_NET_SECRET", secret);
 			CE_CodeWipe(secret, sizeof secret);
 #endif
-			snprintf(gReturnArgs, sizeof gReturnArgs, "%s", h.args);
+			// Rotate the lobby invitation after each successfully agreed match. Neither the
+		// original invitation nor this key has to be shown again to the two players.
+		if (!h.campaign.version && !CE_NetGameIceRequested())
+		{
+			char address[sizeof(h.endpoint)];
+			snprintf(address, sizeof(address), "%s", h.endpoint);
+			char *port = strrchr(address, ':');
+			uint32_t ip = 0;
+			if (port) *port++ = 0;
+			if (port && ParseIp(address, &ip) && ip)
+			{
+				static const char domain[] = "onslaught-ce direct rematch v1";
+				uint8_t input[sizeof(domain) + sizeof(h.secret)], digest[32];
+				memcpy(input, domain, sizeof(domain));
+				memcpy(input + sizeof(domain), h.secret, sizeof(h.secret));
+				CE_CodeSha256(input, sizeof(input), digest);
+				CE_JoinCode route = {};
+				for (int i = 0; i < 8; ++i) route.key = (route.key << 8) | digest[i];
+				route.key &= CE_CODE_KEY_MASK;
+				if (!route.key) route.key = 1;
+				route.ipv4 = ip;
+				route.port = uint16_t(strtoul(port, NULL, 10));
+				if (CE_CodeEncode(&route, gRematchCode, sizeof(gRematchCode)))
+				{
+					gRematchRole = h.role;
+					gRematchLevel = h.level;
+				}
+				CE_CodeWipe(&route, sizeof(route));
+				CE_CodeWipe(input, sizeof(input));
+				CE_CodeWipe(digest, sizeof(digest));
+			}
+		}
+		snprintf(gReturnArgs, sizeof gReturnArgs, "%s", h.args);
 			fprintf(stderr, LOBBY_LOG "starting the network game as the %s\n", h.role == 1 ? "host" : "joining player");
 			CE_CodeWipe(&h, sizeof h);
 			return;
@@ -1615,13 +1709,35 @@ extern "C" void CE_LobbyAfterExit(void)
 	const char *error = CE_SessionError();
 	char text[256];
 	bool good = false;
+	// What the player reads (the first page's message box) says what happened in their words and what they can do; the
+	// session's own reason is in the log (here, and as "co-op session stopped: ..." where the session ended).
 	if (!gShellExited)
 	{
 		const char *boot = CE_BootError();
-		snprintf(text, sizeof text, "The network game could not start: %s.", boot && *boot ? boot : "the game stopped early");
+		fprintf(stderr, LOBBY_LOG "the network game could not start: %s\n", boot && *boot ? boot : "the game stopped early");
+		snprintf(text, sizeof text, "%s", "The network game could not start. You can host or join again.");
 	}
 	else if (error && *error)
-		snprintf(text, sizeof text, "The network game stopped: %s.", error);
+	{
+		fprintf(stderr, LOBBY_LOG "the network game stopped: %s\n", error);
+#if defined(CE_NETWORK_ICE)
+			const int lossRole = PortCeMissionRelayLossRole ? PortCeMissionRelayLossRole() : 0;
+			if (lossRole == CE_NET_HOST || lossRole == CE_NET_GUEST)
+				snprintf(text, sizeof(text), "%s", lossRole == CE_NET_HOST
+					? "Connection lost. Host a new game to play again."
+					: "Connection lost. Ask the host to start a new game.");
+			else
+#endif
+		snprintf(text, sizeof text, "%s", strstr(error, "the other player left") ? "Your friend left the game." :
+				 strstr(error, "out of step") ? "The two games went out of step, so the game stopped. You can host or join again." :
+				 "The network game stopped. You can host or join again.");
+	}
+	else if (PortCeNetRingLeft && PortCeNetRingLeft())
+	{
+		fprintf(stderr, LOBBY_LOG "the player left the network game\n");
+		good = true;
+		snprintf(text, sizeof text, "%s", "You left the game.");
+	}
 	else
 	{
 		good = gShellCode == 0;
@@ -1630,7 +1746,8 @@ extern "C" void CE_LobbyAfterExit(void)
 #ifdef _WIN32
 	SDL_Quit();
 #endif
-	ReturnToFrontEnd(good, text);
+	ReturnToFrontEnd(good, text, good && !(PortCeNetRingLeft && PortCeNetRingLeft()) &&
+			PortCeNetConfirmedMatch && PortCeNetConfirmedMatch());
 }
 
 // The game shell's last line (patch 0140, ltshell.cpp WinMain): records the exit, returns the code unchanged.

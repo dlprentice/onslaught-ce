@@ -28,6 +28,11 @@
 #include "../network/ice_game.h"
 #include "ce_network_boot.h"
 #include "ce_network_invitation.h"
+#if defined(CE_NETWORK_ICE) && !defined(_WIN32)
+#include "../platform/common/private_ui_input.h"
+#endif
+#include "../platform/common/runmode.h"
+#include "ce_menu_fit.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -38,6 +43,11 @@
 #define FEP_CE				FEP_LANGUAGE_TEST		// the CE page's slot (ce_frontend.cpp)
 
 bool	PortCeMenus();							// ce_frontend.cpp
+// The pointer (src/mouse.h): its place in the front end's 640x480 screen, and a click inside a rectangle (consumed).
+extern int	MOUSE_X, MOUSE_Y;
+bool	MouseClickedInRect(float tlx, float tly, float brx, float bry);
+// The lobby's player slot: the original's level orb (port/game/ce_network_lobby_slots.cpp).
+void	PortCeNetDrawSlot(float x, float y, bool present);
 
 namespace {
 
@@ -66,24 +76,28 @@ void	Widen(WCHAR *out, int n, const char *in)
 	out[i] = 0;
 }
 
-const DWORD	kWhite = 0xffffffff, kGrey = 0xffa8a8a8, kGood = 0xff80e080, kWarn = 0xffffcc00, kBad = 0xffff8060;
+const DWORD	kWhite = 0xffffffff, kGrey = 0xffa8a8a8, kGood = 0xff2eb030, kWarn = 0xffffcc00, kBad = 0xffdc3c3c;
+// Cream, the original's colour for words that describe (its Multiplayer page, 253,221,189 on the screen): white in the
+// row face means "you can choose this" (house rule 6). These pages draw their words after the list with the plain
+// modulate stage (Draw), so the colour is given as it shows, not at the half strength of the doubling row stage.
+const DWORD	kCream = 0xfffdddbd;
+const DWORD	kCreamAfterList = 0xff7f6f5f;
+// kWarn is the game's focus colour (CMenuItem::Render): the player's pages draw no words in it. The relay pilot's pages still do.
 
 // The join code is one word of up to 28 wide letters: at the usual 400 pixels the word wrap cut it in pieces (a lone letter on a line of its own); on a line of this width the widest code still fits.
 const float	kCodeWidth = 560.f;
 // The notices of the Host, Join and lobby pages (a few sentences long, since the game cannot tell the causes apart) and the help page's paragraphs are wrapped wider than the default 400.
 const float	kNoticeWidth = 520.f, kHelpWidth = 540.f;
+// The player's pages wrap their words to the band between the page's two arcs (house style L5 and L7: x 110 to 530).
+const float	kPageWidth = 420.f;
 
-// The words of the help page (port/tools/network_page_words_tests.py asserts them word for word). They tell the host what to do at the router, at the firewall and about the public address.
-// The game can see none of these, so nothing here claims to know what is wrong with a particular connection.
-const char *const kHelpForward = "1. Forward UDP port %u on your router to this PC (Port Forwarding or Virtual Server; this PC's address is on the host page).";
-const char *const kHelpFirewall = "2. If Windows asks about the firewall, choose Allow access.";
-const char *const kHelpAddress = "3. Give the other player the join code and your PUBLIC address (the WAN or Internet address on the router's status page). They type the code, then the address.";
-const char *const kHelpPrivate = "An address starting 10., 192.168. or 172.16 to 172.31 is private, and one starting 100.64 to 100.127 is shared by your provider: another router is in front of yours, so a port "
-								 "forward is not enough. Use a VPN or overlay network both players already use, or play on one network.";
-const char *const kHelpUntested = "Not tested: play through routers over the real internet, more than two players, Windows on real hardware.";
-// The host page's two optional lines under its code (dropped, the second first, when they do not fit above the list).
-const char *const kHostForward = "Over the internet: forward UDP port %u on your router to this PC and give your public address too (see " CE_LOBBY_HELP_LABEL ").";
-const char *const kHostFirewall = "If a firewall asks about Onslaught CE, choose Allow.";
+// The words of Connection Help (port/tools/network_page_words_tests.py asserts them word for word). They tell the host what to
+// do at the router and the firewall, and what the public address is. The game can see none of these, so nothing here claims to
+// know what is wrong with a particular connection.
+const char *const kHelpNetwork = "On the same network, Host Game and Join Game need nothing else.";
+const char *const kHelpForward = "Over the internet, the host's router must send the game's port, %u (UDP), to the host's PC. Look for Port Forwarding in the router's settings.";
+const char *const kHelpAddress = "The host then gives the friend the code and the router's public address. The friend types both.";
+const char *const kHelpFirewall = "If Windows asks about the firewall, choose Allow Access.";
 
 bool RelayRequested() { return CE_NetGameIceRequested() != 0; }
 
@@ -99,6 +113,28 @@ bool MenuAvailable(char *why, size_t size)
     return CE_LobbyAvailable(why, size) != 0;
 }
 
+// The text wrapped into fill at width, or a little narrower when that would leave one word alone on the last line (house
+// rule 6: no line of a hint or paragraph ends on a single word); returns the number of lines.
+int	Wrap(CDXBitmapFont *font, SWordWrapFill *fill, WCHAR *text, float width)
+{
+	int n = font->WordWrap(fill, text, width);
+	for (float w = width - 16.f; n >= 2 && w >= width * 0.7f; w -= 16.f)
+	{
+		bool alone = true;
+		for (const WCHAR *c = fill->c[n - 1]; *c && alone; c++)
+			alone = *c != ' ';
+		if (!alone)
+			break;
+		const int narrower = font->WordWrap(fill, text, w);
+		if (narrower != n)
+		{
+			font->WordWrap(fill, text, w + 16.f);	// one line more is worse than one word alone: keep the last good wrap
+			break;
+		}
+	}
+	return n;
+}
+
 // The height Lines() would take for the text, so that a page can see before it draws whether its words fit above its list.
 float	Height(const char *text, EFontType font_id = FONT_SMALL, float width = 400.f)
 {
@@ -108,7 +144,7 @@ float	Height(const char *text, EFontType font_id = FONT_SMALL, float width = 400
 	static WCHAR buf[600];
 	Widen(buf, 600, text);
 	CDXBitmapFont *font = PLATFORM.Font(font_id);
-	return float(font->GetHeight()) * float(font->WordWrap(&fill, buf, width));
+	return float(font->GetHeight()) * float(Wrap(font, &fill, buf, width));
 }
 
 // Where the words above a page's list must end: CMenuOptionsList::Render centres the rows on mY and draws the title 15 pixels above them.
@@ -120,6 +156,20 @@ float	ListTop(CMenuOptionsList *list)
 	return list->mY - float(height) * 0.5f - 15.f;
 }
 
+// One line centred on x (a player slot's caption): no wrap, since a caption is one or two words.
+void	LinesAt(const char *text, float x, float y, DWORD colour)
+{
+	static WCHAR buf[64];
+	Widen(buf, 64, text);
+	CDXBitmapFont *font = PLATFORM.Font(FONT_SMALL);
+	SIZE size;
+	font->GetTextExtent(buf, &size);
+	font->DrawTextWithShadow(x - float(size.cx / 2), y, colour, buf, 0, 0, 1.f, 1.f);
+}
+
+// The lobby's two player slots: centred on the page, 140 apart, on the band between the title bar and the rows.
+const float	kSlotLeftX = 250.f, kSlotRightX = 390.f, kSlotY = 170.f;
+
 // Text wrapped to the space between the page's borders, each line centred on the page, from y down; returns the next y.
 float	Lines(const char *text, float y, DWORD colour, EFontType font_id = FONT_SMALL, float width = 400.f)
 {
@@ -129,7 +179,7 @@ float	Lines(const char *text, float y, DWORD colour, EFontType font_id = FONT_SM
 	static WCHAR buf[600];
 	Widen(buf, 600, text);
 	CDXBitmapFont *font = PLATFORM.Font(font_id);
-	int n = font->WordWrap(&fill, buf, width);
+	int n = Wrap(font, &fill, buf, width);
 	float line = float(font->GetHeight());
 	for (int l = 0; l < n; l++)
 	{
@@ -140,8 +190,25 @@ float	Lines(const char *text, float y, DWORD colour, EFontType font_id = FONT_SM
 	return y + line * n;
 }
 
-enum EPage { NP_MENU = 0, NP_HOST_CHOOSE, NP_HOST, NP_JOIN, NP_LOBBY, NP_HELP, NP_CONNECTION, NP_SIGNAL_DISCLOSURE, NP_SIGNAL_STATUS, NP_INVITATION_INPUT, NP_INVITATION_PREVIEW, NP_COUNT };
-enum EAction { NA_NONE = 0, NA_HOST, NA_JOIN, NA_BACK, NA_COPY, NA_CODE, NA_ADDRESS, NA_CONNECT, NA_MAP, NA_START, NA_LEAVE, NA_HELP, NA_HOST_ADDRESS, NA_HOST_BEGIN, NA_CAMPAIGN_START, NA_PASTE_CODE, NA_PASTE_ADDRESS, NA_CLEAR_FIELDS, NA_LOCAL, NA_ONLINE, NA_BROWSE, NA_SIGNAL_DISCLOSE, NA_SIGNAL_ACCEPT, NA_SIGNAL_PROCEED, NA_SIGNAL_RETRY, NA_SIGNAL_CLOSE, NA_IMPORT_OPEN, NA_IMPORT_ORIGIN, NA_IMPORT_PASTE, NA_IMPORT_HOST, NA_IMPORT_JOIN, NA_IMPORT_USE, NA_IMPORT_CLEAR };
+// A lobby notice, a failure or the end of a network game on the player's pages: the game's message box (house style E1 and
+// rule 8), as the CE page's ShowMessage puts it up: black panel, grey edge, green OK, 400 wide, its top at or below y 122,
+// FES_SELECT as it opens. It holds every sentence the lobby gives, so nothing a player must read is dropped for room.
+void	Box(const char *text)
+{
+	if (!text || !*text)
+		return;
+	static WCHAR wide[400];
+	Widen(wide, 400, text);
+	FEMESSBOX.Kill();
+	FEMESSBOX.Create(320.f, 240.f, 400.f, FO(100), wide, PLATFORM.Font(FONT_SMALL), 0, 10, FALSE, FEMB_OPTION_A_CONTINUE, 0);
+	if (FEMESSBOX.mY - FEMESSBOX.mHeight * 0.5f < 122.f)
+		FEMESSBOX.mY = 122.f + FEMESSBOX.mHeight * 0.5f;
+	FEMESSBOX.SetOnDismiss(FEP_NONE, 0);
+	CFrontEnd::PlaySound(FES_SELECT);
+}
+
+enum EPage { NP_MENU = 0, NP_HOST_ADDRESS, NP_HOST, NP_JOIN, NP_LOBBY, NP_HELP, NP_SIGNAL_DISCLOSURE, NP_SIGNAL_STATUS, NP_INVITATION_INPUT, NP_INVITATION_PREVIEW, NP_COUNT };
+enum EAction { NA_NONE = 0, NA_HOST, NA_JOIN, NA_BACK, NA_COPY, NA_CODE, NA_ADDRESS, NA_CONNECT, NA_MAP, NA_START, NA_LEAVE, NA_HELP, NA_HOST_ADDRESS, NA_CAMPAIGN_START, NA_PASTE_CODE, NA_PASTE_ADDRESS, NA_CLEAR_FIELDS, NA_SIGNAL_DISCLOSE, NA_SIGNAL_ACCEPT, NA_SIGNAL_PROCEED, NA_SIGNAL_RETRY, NA_SIGNAL_CLOSE, NA_IMPORT_OPEN, NA_IMPORT_ORIGIN, NA_IMPORT_PASTE, NA_IMPORT_HOST, NA_IMPORT_JOIN, NA_IMPORT_USE, NA_IMPORT_CLEAR };
 
 const char* SignalHeading(CeIceSignalStatus status)
 {
@@ -170,9 +237,9 @@ const char* SignalDetail(CeIceSignalStatus status)
     case CeIceSignalStatus::NeedsConsent:
         return "Accept only if you want to play with the approved partner. Accepting permits relay setup for this private pair.";
     case CeIceSignalStatus::Admitted:
-        return "Choose Continue to prepare the selected Host or Join connection. Pair admission does not mean CE is connected yet.";
+        return "Both players have accepted. Choose the enabled action to return to your match setup.";
     case CeIceSignalStatus::AwaitingPairConsent:
-        return "The other player must accept this approved pair. The fixed setup deadline continues to run.";
+        return "Stay here while the other player accepts. Cancel invitation leaves this setup.";
     case CeIceSignalStatus::AwaitingPeerRequest:
         return "The other player must begin the same connection stage. Keep this page open while waiting.";
     case CeIceSignalStatus::AwaitingPeerRecord:
@@ -239,46 +306,140 @@ public:
 	CNetItem(const char *text, int action) : CMenuItem((EPCText)0, ID), mAction(action) { Set(text); }
 	void	Set(const char *text) { Widen(mWide, 128, text); }
 	virtual WCHAR	*GetText() { return mWide; }
+	// An absent row takes no room, is not drawn and cannot take the focus (the list skips rows that are not enabled).
+	virtual int		GetHeight() { return mHidden ? 0 : CMenuItem::GetHeight(); }
+	virtual BOOL	IsEnabled() { return !mHidden && mEnabled; }
+	virtual void	Render(float x, float y, BOOL selected) { if (!mHidden) CMenuItem::Render(x, y, selected); }
 	WCHAR	mWide[128];
 	int		mAction;
+	bool	mHidden = false;
 };
 
-// A text field: its label and value; while it is selected, a blinking cursor (the game's own: a coloured I, as the name
-// entry page draws it).
-class CNetField : public CNetItem
+// The colour of a row as CMenuItem::Render gives it: white, the game's focus yellow, or the dim grey of a row that cannot be
+// chosen.
+DWORD	RowColour(BOOL selected, BOOL enabled)
+{
+	if (!enabled)
+		return 0x50505050;
+	return selected ? 0xffffcc00 : 0xffffffff;
+}
+
+const float	kNetValueRight = 575.f;		// where a value must end on these pages: the right arc at mid-page (house style L7)
+
+// A label and its value on one row, as the game's options rows draw them (CMenuMenuItem::RenderList): the label ends a little
+// left of the list's centre with a colon, the value starts a little right of it and is squeezed, then cut, to end by
+// kCeValueRight (port/game/ce_menu_fit.h).
+class CNetValue : public CNetItem
 {
 public:
-	CNetField(const char *label, int action, int max) : CNetItem(label, action), mMax(max) { mLabel8 = label; mValue[0] = 0; Refresh(); }
+	CNetValue(const char *label, int action) : CNetItem(label, action)
+	{
+		// The game's WCHAR is 2 bytes (-fshort-wchar) and the C library's wide-string functions take 4: the colon goes on in char.
+		char text[64];
+		snprintf(text, sizeof text, label[0] ? "%s:" : "%s", label);
+		mLabel8 = label; Widen(mLabelWide, 64, text); mValueWide[0] = 0;
+	}
+	void	SetValue(const char *value) { Widen(mValueWide, 128, value); char t[200]; snprintf(t, sizeof t, mLabel8[0] ? "%s: %s" : "%s%s", mLabel8, value); Set(t); }
+	virtual void	Render(float x, float y, BOOL selected)
+	{
+		if (mHidden)
+			return;
+		CDXBitmapFont *font = PLATFORM.Font(FONT_SMALL);
+		const DWORD col = RowColour(selected, mEnabled);
+		SIZE label, value;
+		if (!mLabel8[0])
+		{
+			// centred, and no wider than the band between the arcs (L7): a longer value shows its end, where the cursor is
+			WCHAR *shown = Fitted(font, mValueWide, 2.f * (kNetValueRight - x), 1.f);
+			font->GetTextExtent(shown, &value);
+			font->DrawTextWithShadow(x - float(value.cx / 2), y, col, shown, 0, 0, 1.f, 1.f);
+			mValueEnd = x - float(value.cx / 2) + float(value.cx);
+			return;
+		}
+		// "Label:value" as the original's options rows (house rule 3): the label ends at the centre, the value starts just
+		// right of it and ends by x 575, where the right arc begins at mid-page (L7), squeezed no tighter than 0.75.
+		font->GetTextExtent(mLabelWide, &label);
+		font->DrawTextWithShadow(x - float(label.cx), y, col, mLabelWide, 0, 0, 1.f, 1.f);
+		const float vx = x + 2.f;
+		WCHAR *shown = Fitted(font, mValueWide, kNetValueRight - vx, kCeValueMinScale);
+		font->GetTextExtent(shown, &value);
+		const float scale = PortCeFitScale(vx, float(value.cx), kNetValueRight, kCeValueMinScale);
+		font->DrawTextWithShadow(vx, y, col, shown, 0, 0, scale, 1.f);
+		mValueEnd = vx + float(value.cx) * scale;
+	}
+	// The value as it can be drawn in width pixels at the given squeeze or less: whole when it fits, else its last
+	// characters (a typed value's end is what the player is looking at), so nothing is ever drawn past the arc (class of
+	// review R2 finding 2: a value the field accepts must fit, whatever its length).
+	static WCHAR	*Fitted(CDXBitmapFont *font, WCHAR *value, float width, float squeeze)
+	{
+		SIZE size;
+		WCHAR *from = value;
+		for (;;)
+		{
+			font->GetTextExtent(from, &size);
+			if (!*from || float(size.cx) * squeeze <= width)
+				return from;
+			from++;
+		}
+	}
+	const char	*mLabel8;
+	WCHAR	mLabelWide[64], mValueWide[128];
+	float	mValueEnd = 0.f;
+};
+
+// A text field: a label and the typed value as one CNetValue row; while it is selected, a blinking cursor after the value
+// (the game's own: a coloured I, as the name entry page draws it).
+class CNetField : public CNetValue
+{
+public:
+	CNetField(const char *label, int action, int max) : CNetValue(label, action), mMax(max) { mValue[0] = 0; Refresh(); }
 	void	Refresh()
 	{
-		char t[160];
-		FieldText(t, sizeof t, mLabel8, mValue[0] ? mValue : (mAction == NA_ADDRESS ? "(none)" : "(type or paste)"));
-		Set(t);
+		if (mAction == NA_CODE)
+		{
+			// As the host's page prints it: groups of four, from the first letter (dashes typed or pasted do not count).
+			char shown[64];
+			size_t n = 0, symbols = 0;
+			for (const char *c = mValue; *c && n + 2 < sizeof shown; c++)
+			{
+				if (*c == '-')
+					continue;
+				if (symbols && symbols % 4 == 0)
+					shown[n++] = '-';
+				shown[n++] = *c;
+				symbols++;
+			}
+			shown[n] = 0;
+			SetValue(shown);
+			return;
+		}
+		SetValue(mValue[0] ? mValue : (mAction == NA_ADDRESS ? "None" : ""));
 	}
 	virtual void	Render(float x, float y, BOOL selected)
 	{
-		CMenuItem::Render(x, y, selected);
-		if (selected && (fmod(PLATFORM.GetSysTimeFloat(), 1.f) < 0.5f))
+		CNetValue::Render(x, y, selected);
+		if (selected && mEnabled && (fmod(PLATFORM.GetSysTimeFloat(), 1.f) < 0.5f))
 		{
 			CDXBitmapFont *font = PLATFORM.Font(FONT_SMALL);
-			SIZE all, upto;
-			font->GetTextExtent(mWide, &all);
-			WCHAR part[160];
-			char t[160];
-		FieldText(t, sizeof t, mLabel8, mValue);
-			Widen(part, 160, t);
-			font->GetTextExtent(part, &upto);
 			static WCHAR cursor[] = L"I";
-			font->DrawTextWithShadow(x - float(all.cx / 2) + float(upto.cx) + 1.f, y, 0xff00c0ff, cursor, 0, 0, 1.f, 1.f);
+			const float cx = mValue[0] ? mValueEnd + 1.f : x + 2.f;
+			font->DrawTextWithShadow(cx, y, 0xff00c0ff, cursor, 0, 0, 1.f, 1.f);
 		}
 	}
 	bool	Add(const char *s)
 	{
 		size_t n = strlen(mValue);
 		bool any = false;
+		// The Code row takes the code's 23 letters and digits and no more (dashes and spaces do not count): what is typed
+		// past them is not taken, so a full code row always fits between the arcs (review R2 finding 2).
+		int symbols = 0;
+		for (const char *c = mValue; *c; c++)
+			symbols += *c != '-';
 		for (; *s && n < (size_t)mMax; s++)
 		{
 			char c = *s;
+			if (mAction == NA_CODE && c != '-' && c != ' ' && symbols >= CE_CODE_SYMBOLS)
+				continue;
 			if (c == '\r' || c == '\n' || c == '\t')
 				continue;
 			if ((unsigned char)c < 0x20 || (unsigned char)c > 0x7e)
@@ -289,6 +450,7 @@ public:
 				continue;
 			if (mAction == NA_CODE && c >= 'a' && c <= 'z')
 				c = char(c - 'a' + 'A');
+			symbols += mAction == NA_CODE && c != '-';
 			mValue[n++] = c;
 			any = true;
 		}
@@ -305,10 +467,66 @@ public:
 	}
 	void	Clear() { CE_CodeWipe(mValue, sizeof mValue); Refresh(); }
 
-	const char	*mLabel8;
 	char mValue[CE_INVITATION_ORIGIN_BYTES];
 	int			mMax;
 };
+
+// Whether typed text can never become an address the lobby joins (four numbers 0 to 255 with dots, then an optional
+// :port from 1 to 65535), however it goes on; an empty or unfinished value ("192.168.", "10.0.0.1:") is not.
+bool	AddressImpossible(const char *text)
+{
+	int parts = 1, digits = 0, value = 0, port = -1;
+	for (const char *c = text; *c; c++)
+	{
+		if (*c >= '0' && *c <= '9')
+		{
+			value = value * 10 + (*c - '0');
+			if (++digits > (port >= 0 ? 5 : 3) || (port < 0 && value > 255) || (port >= 0 && value > 65535))
+				return true;
+		}
+		else if (*c == '.' && port < 0)
+		{
+			if (!digits || ++parts > 4)
+				return true;
+			digits = value = 0;
+		}
+		else if (*c == ':' && port < 0)
+		{
+			if (!digits || parts != 4)
+				return true;
+			port = 0;
+			digits = value = 0;
+		}
+		else
+			return true;
+	}
+	return false;
+}
+
+// What each row does, drawn under Back while the row has the focus (house style L5: one or two plain sentences).
+const char *RowHint(int action)
+{
+	switch (action)
+	{
+	case NA_HOST:			return "Start a game and get a code for your friend.";
+	case NA_JOIN:			return "Join a friend's game with their code.";
+	case NA_HELP:			return "What to set up to play over the internet.";
+	case NA_IMPORT_OPEN:	return "Opens the invitation folder you were sent.";
+	case NA_HOST_ADDRESS:	return "Your friend connects to this address. Changing it makes a new code.";
+	case NA_COPY:			return "Copies the code so you can paste it in a message.";
+	case NA_CODE:			return "Letters and digits. You can leave out the dashes.";
+	case NA_ADDRESS:		return "Only for play over the internet. Your friend tells you this address.";
+	case NA_CONNECT:		return "Joins your friend's game.";
+	case NA_PASTE_CODE:		return "Puts a copied code in the Code row.";
+	case NA_PASTE_ADDRESS:	return "Puts a copied address in the Address row.";
+	case NA_CLEAR_FIELDS:	return "Empties the Code and Address rows.";
+	case NA_MAP:			return "Select changes the mission.";
+	case NA_START:			return "Starts the mission for you and your friend.";
+	case NA_LEAVE:			return "Leaves this game.";
+	case NA_CAMPAIGN_START:	return "Starts the campaign mission for you and your friend.";
+	default:				return NULL;
+	}
+}
 
 class CCeNetMenu;
 CCeNetMenu	*sMenu = NULL;
@@ -317,54 +535,53 @@ bool		sOpenOnEntry = false;		// the return from a network game: open these pages
 bool		sCtrl = false;
 bool		sTrap = false;
 
-void	NetKeyTrap(WORD key, KeyEventType event);
+bool	NetKeyTrap(WORD key, KeyEventType event);
+// The key trap as the shell stores it: its type returns nothing, but the game reads a bool from it for every mouse button
+// (src/mouse.cpp MOUSE_TRAP), as the name entry's VKKeyTrap gives. The cast goes through a plain function type.
+pKeyTrapper	NetTrap() { return (pKeyTrapper)(void (*)(void))NetKeyTrap; }
 
 class CCeNetMenu : public CPauseMenu
 {
 public:
 	CCeNetMenu() : CPauseMenu(PORT_CE_NO_LISTS)
 	{
-		static WCHAR title[] = L"Network game";
+		static WCHAR title[] = L"Network Game";
 		for (int p = 0; p < NP_COUNT; p++)
 			mList[p] = NULL;
 		CMenuOptionsList *l;
-		l = mList[NP_MENU] = new (MEMTYPE_MENUITEM) CMenuOptionsList(title, 320.f, 420.f, FALSE, 0xb0000000);	// low on the page: its words above take up to 13 lines
-		l->AddItem(mLocalItem = new (MEMTYPE_MENUITEM) CNetItem("Local / direct connection", NA_LOCAL));
-		l->AddItem(mOnlineItem = new (MEMTYPE_MENUITEM) CNetItem("Online relay (experimental)", NA_ONLINE));
-		l->AddItem(mBrowseItem = new (MEMTYPE_MENUITEM) CNetItem("Public lobbies (unavailable)", NA_BROWSE));
+		// The first page: Host Game, Join Game, Connection Help. The connection is the one this launch was prepared for
+		// (direct, or the relay pilot when the game was started with its setup); there is no page to choose it.
+		l = mList[NP_MENU] = new (MEMTYPE_MENUITEM) CMenuOptionsList(title, 320.f, 330.f, FALSE, 0xb0000000);
+		l->AddItem(mHostItem = new (MEMTYPE_MENUITEM) CNetItem("Host Game", NA_HOST));
+		l->AddItem(mJoinItem = new (MEMTYPE_MENUITEM) CNetItem("Join Game", NA_JOIN));
 #if defined(CE_NETWORK_ICE)
-		l->AddItem(mInvitationEntry = new (MEMTYPE_MENUITEM) CNetItem("Import Online invitation", NA_IMPORT_OPEN));
+		l->AddItem(mInvitationEntry = new (MEMTYPE_MENUITEM) CNetItem("Import Online Invitation", NA_IMPORT_OPEN));
 #else
-        mInvitationEntry = NULL;
+		mInvitationEntry = NULL;
 #endif
 		l->AddItem(new (MEMTYPE_MENUITEM) CNetItem(CE_LOBBY_HELP_LABEL, NA_HELP));
 		l->AddItem(new (MEMTYPE_MENUITEM) CNetItem("Back", NA_BACK));
 
-		l = mList[NP_CONNECTION] = new (MEMTYPE_MENUITEM) CMenuOptionsList(title, 320.f, 420.f, FALSE, 0xb0000000);	// low on the page: its words above take up to 13 lines
-		l->AddItem(mHostItem = new (MEMTYPE_MENUITEM) CNetItem("Host a game", NA_HOST));
-		l->AddItem(mJoinItem = new (MEMTYPE_MENUITEM) CNetItem("Join a game", NA_JOIN));
-		l->AddItem(new (MEMTYPE_MENUITEM) CNetItem(CE_LOBBY_HELP_LABEL, NA_HELP));
+		// The host's page, as NP_HOST, with the address row first: used when this PC has more than one address.
+		l = mList[NP_HOST_ADDRESS] = new (MEMTYPE_MENUITEM) CMenuOptionsList(title, 320.f, 380.f, FALSE, 0xb0000000);	// 640x480 screen coordinates, as every list here
+		l->AddItem(mHostAddress = new (MEMTYPE_MENUITEM) CNetValue("Address", NA_HOST_ADDRESS));
+		l->AddItem(new (MEMTYPE_MENUITEM) CNetItem("Copy Code", NA_COPY));
 		l->AddItem(new (MEMTYPE_MENUITEM) CNetItem("Back", NA_BACK));
-
-        l = mList[NP_HOST_CHOOSE] = new (MEMTYPE_MENUITEM) CMenuOptionsList(title, .5f, .72f, FALSE, 0xb0000000);
-        l->AddItem(mHostAddress = new (MEMTYPE_MENUITEM) CNetItem("Address", NA_HOST_ADDRESS));
-        l->AddItem(mHostBegin = new (MEMTYPE_MENUITEM) CNetItem("Host on this address", NA_HOST_BEGIN));
-        l->AddItem(new (MEMTYPE_MENUITEM) CNetItem("Back", NA_BACK));
-		l = mList[NP_HOST] = new (MEMTYPE_MENUITEM) CMenuOptionsList(title, 320.f, 415.f, FALSE, 0xb0000000);
-		l->AddItem(new (MEMTYPE_MENUITEM) CNetItem("Copy private code", NA_COPY));
-		l->AddItem(new (MEMTYPE_MENUITEM) CNetItem("Back", NA_BACK));
-		l = mList[NP_JOIN] = new (MEMTYPE_MENUITEM) CMenuOptionsList(title, 320.f, 385.f, FALSE, 0xb0000000);
-		l->AddItem(mCode = new (MEMTYPE_MENUITEM) CNetField("Code: ", NA_CODE, 40));
-		l->AddItem(mAddress = new (MEMTYPE_MENUITEM) CNetField("Address (optional): ", NA_ADDRESS, 21));
+		l = mList[NP_HOST] = new (MEMTYPE_MENUITEM) CMenuOptionsList(title, 320.f, 380.f, FALSE, 0xb0000000);
+		l->AddItem(mRoomCopy = new (MEMTYPE_MENUITEM) CNetItem("Copy Code", NA_COPY));
+		l->AddItem(mRoomBack = new (MEMTYPE_MENUITEM) CNetItem("Back", NA_BACK));
+		l = mList[NP_JOIN] = new (MEMTYPE_MENUITEM) CMenuOptionsList(title, 320.f, 340.f, FALSE, 0xb0000000);
+		l->AddItem(mCode = new (MEMTYPE_MENUITEM) CNetField("Code", NA_CODE, 40));
+		l->AddItem(mAddress = new (MEMTYPE_MENUITEM) CNetField("Address", NA_ADDRESS, 21));
 		l->AddItem(mConnect = new (MEMTYPE_MENUITEM) CNetItem("Connect", NA_CONNECT));
-		l->AddItem(mPasteCode = new (MEMTYPE_MENUITEM) CNetItem("Paste code", NA_PASTE_CODE));
-		l->AddItem(mPasteAddress = new (MEMTYPE_MENUITEM) CNetItem("Paste address", NA_PASTE_ADDRESS));
-		l->AddItem(mClearFields = new (MEMTYPE_MENUITEM) CNetItem("Clear fields", NA_CLEAR_FIELDS));
-		l->AddItem(new (MEMTYPE_MENUITEM) CNetItem("Back", NA_BACK));
-		l = mList[NP_LOBBY] = new (MEMTYPE_MENUITEM) CMenuOptionsList(title, 320.f, 358.f, FALSE, 0xb0000000);
-		l->AddItem(mMap = new (MEMTYPE_MENUITEM) CNetItem("Map: Building Defence (level 856)", NA_MAP));
+		l->AddItem(mPasteCode = new (MEMTYPE_MENUITEM) CNetItem("Paste Code", NA_PASTE_CODE));
+		l->AddItem(mPasteAddress = new (MEMTYPE_MENUITEM) CNetItem("Paste Address", NA_PASTE_ADDRESS));
+		l->AddItem(mClearFields = new (MEMTYPE_MENUITEM) CNetItem("Clear", NA_CLEAR_FIELDS));
+		l->AddItem(mJoinBack = new (MEMTYPE_MENUITEM) CNetItem("Back", NA_BACK));
+		l = mList[NP_LOBBY] = new (MEMTYPE_MENUITEM) CMenuOptionsList(title, 320.f, 320.f, FALSE, 0xb0000000);
+		l->AddItem(mMap = new (MEMTYPE_MENUITEM) CNetValue("Mission", NA_MAP));
 		l->AddItem(mStart = new (MEMTYPE_MENUITEM) CNetItem("Start", NA_START));
-        l->AddItem(mCampaignStart = new (MEMTYPE_MENUITEM) CNetItem("Start campaign co-op", NA_CAMPAIGN_START));
+        l->AddItem(mCampaignStart = new (MEMTYPE_MENUITEM) CNetItem("Start Campaign", NA_CAMPAIGN_START));
 
 		l->AddItem(new (MEMTYPE_MENUITEM) CNetItem("Leave", NA_LEAVE));
 		l = mList[NP_HELP] = new (MEMTYPE_MENUITEM) CMenuOptionsList(title, 320.f, 440.f, FALSE, 0xb0000000);
@@ -391,12 +608,12 @@ public:
 		l->AddItem(mSignalProceed = new (MEMTYPE_MENUITEM) CNetItem("Continue", NA_SIGNAL_PROCEED));
 		l->AddItem(mSignalRetry = new (MEMTYPE_MENUITEM) CNetItem("Retry", NA_SIGNAL_RETRY));
 		l->AddItem(mSignalClose = new (MEMTYPE_MENUITEM) CNetItem("Close pair", NA_SIGNAL_CLOSE));
-		l->AddItem(new (MEMTYPE_MENUITEM) CNetItem("Back", NA_BACK));
+		l->AddItem(new (MEMTYPE_MENUITEM) CNetItem("Cancel invitation", NA_BACK));
 		for (int p = 0; p < NP_COUNT; p++)
 			mLists.Append(mList[p]);
         mConnectionSelected = mConnectionRelay = false;
         mSignalApproved = mSignalBegan = false;
-        mSignalAction = NA_NONE; mSignalReturnPage = NP_CONNECTION; mSignalOrigin[0] = 0;
+        mSignalAction = NA_NONE; mSignalReturnPage = NP_MENU; mSignalOrigin[0] = 0;
         memset(&mInvitation, 0, sizeof mInvitation);
         mInvitationRole = CE_NET_HOST;
         snprintf(mImportOrigin->mValue, sizeof mImportOrigin->mValue, "https://");
@@ -404,6 +621,7 @@ public:
 
 		mNotice[0] = mOutcome[0] = 0;
 		mOutcomeGood = 1;
+		mReturningRoom = false;
 		mStartingAt = -1.f;
 		mQuitPosted = false;
         mHostAddressCount = mHostAddressIndex = 0;
@@ -414,6 +632,45 @@ public:
         mHostAddresses[0][0] = 0;
 	}
 
+#if defined(CE_NETWORK_ICE) && !defined(_WIN32)
+    void PracticeFields()
+    {
+        if (FEMESSBOX.BeingDisplayed()) return;
+        CNetField *field = NULL;
+        unsigned tag = 0;
+        if (mPage == NP_INVITATION_INPUT && mImportOrigin->IsEnabled() &&
+            (!mImportOrigin->mValue[0] || !strcmp(mImportOrigin->mValue, "https://")) &&
+            mInvitation.state != CE_INVITATION_CHOOSING && !SignalingSelected()) {
+            field = mImportOrigin; tag = PORT_PRIVATE_UI_ORIGIN;
+        } else if (mPage == NP_JOIN && mInvitationRole == CE_NET_GUEST && mSignalApproved &&
+            mSignalBegan && mSignalAction == NA_CONNECT && SignalOriginMatches() &&
+            SignalingSelected() && SignalingView().status == CeIceSignalStatus::Admitted &&
+            !JoinPending() && mCode->IsEnabled() && !mCode->mValue[0]) {
+            field = mCode; tag = PORT_PRIVATE_UI_JOIN_CODE;
+        }
+        if (!field || !PortPrivateUiFieldWaiting(tag)) return;
+        char value[CE_INVITATION_ORIGIN_BYTES] = {};
+        if (!PortPrivateUiTakeField(tag, value, sizeof(value))) return;
+        if (tag == PORT_PRIVATE_UI_ORIGIN) {
+            const size_t n = strlen(value);
+            if (n > 8 && n <= size_t(field->mMax) && !strncmp(value, "https://", 8) &&
+                !strpbrk(value + 8, "/?#@ \t\r\n") && !strchr(value + 8, '\\')) {
+                snprintf(field->mValue, sizeof(field->mValue), "%s", value);
+                field->Refresh();
+                Notice("Local practice address filled. Choose Join invite to review your invitation.");
+            }
+        } else {
+            CE_JoinCode decoded = {};
+            if (CE_CodeDecode(value, &decoded) == CE_CODE_OK &&
+                CE_CodeEncode(&decoded, field->mValue, sizeof(field->mValue))) {
+                field->Refresh();
+                Notice("Host code filled. Choose Connect when you are ready.");
+            }
+            CE_CodeWipe(&decoded, sizeof(decoded));
+        }
+        CE_CodeWipe(value, sizeof(value));
+    }
+#endif
 	void	Show(int page)
 	{
         if (page == NP_MENU) mConnectionSelected = false;
@@ -421,9 +678,20 @@ public:
         mCampaignMissionKnown = false;
 		mList[page]->mSelected = 0;
 		mList[page]->Reset();
+		if (PlayerPages() && page == NP_HOST)
+		{
+			mRoomCopy->mHidden = mReturningRoom;
+			mRoomBack->Set(mReturningRoom ? "Leave" : "Back");
+			if (mReturningRoom) mList[NP_HOST]->mSelected = mList[NP_HOST]->mItems.Size() - 1;
+		}
 		mNotice[0] = 0;
+		mNoticeBoxed = false;
+		mPointerX = MOUSE_X;
+		mPointerY = MOUSE_Y;
 		if (page == NP_JOIN)
 			mList[page]->mSelected = mCode->mValue[0] ? 2 : 0;
+		if (page == NP_HOST_ADDRESS)
+			mList[page]->mSelected = 1;		// Copy Code: the address is already chosen
 		Trap(page == NP_JOIN || page == NP_INVITATION_INPUT);
         if (page == NP_INVITATION_INPUT) mList[page]->mSelected = mImportOriginRow;
 
@@ -436,23 +704,124 @@ public:
         }
 }
 
+	// The co-op missions by name (a level number is not a name: house style principle). The second Building Defence map
+	// needs a name of the owner's choosing; "Building Defence 2" tells the two apart until then.
+	static const char	*MissionName(uint32_t level)
+	{
+		return level == 856 ? "Building Defence" : level == 858 ? "Building Defence 2" : level == 100 ? "Tutorial" : "Mission";
+	}
+	static bool	CampaignRowWanted() { const char *v = getenv("BEA_NET_LOBBY_CAMPAIGN"); return v && !strcmp(v, "1"); }
+
+	// The host's page: with the address row when this PC has more than one address.
+	void	ShowHost() { Show(mHostAddressCount > 1 && !RelayRequested() ? NP_HOST_ADDRESS : NP_HOST); }
+	static bool	HostPage(int page) { return page == NP_HOST || page == NP_HOST_ADDRESS; }
+
+	// The first page with the focus on the row of the action that left it (house style F2).
+	void	ShowMenu(int action)
+	{
+		Show(NP_MENU);
+		CMenuOptionsList *list = mList[NP_MENU];
+		for (int i = 0; i < list->mItems.Size(); i++)
+			if (list->mItems.At(i)->mId == CNetItem::ID && ((CNetItem *)list->mItems.At(i))->mAction == action)
+				list->mSelected = i;
+	}
+
+	// Hosting on the address shown (the first, a private LAN address when there is one), or with no address in the code
+	// when this PC has none to list. Stays on the page it was chosen from, with the lobby's reason, when it cannot.
+	bool	HostHere()
+	{
+		if (mHostAddressCount ? CE_LobbyHostAt(mHostAddresses[mHostAddressIndex]) : CE_LobbyHost())
+		{
+			ShowHost();
+			return true;
+		}
+		CE_LobbyStatus status;
+		CE_LobbyStatusGet(&status);
+		RefreshHostAddresses();
+		LobbyNotice(status.notice);
+		return false;
+	}
+
 	void	Trap(bool on)
 	{
 		if (on && !sTrap)
 		{
-			LT.SetKeytrap((pKeyTrapper)NetKeyTrap);
+			LT.SetKeytrap(NetTrap());
 			sTrap = true;
 		}
 		else if (!on && sTrap)
 		{
-			if (LT.GetKeytrap() == (pKeyTrapper)NetKeyTrap)
+			if (LT.GetKeytrap() == NetTrap())
 				LT.SetKeytrap(NULL);
 			sTrap = false;
 			sCtrl = false;
 		}
 	}
 
-	void	Notice(const char *text) { snprintf(mNotice, sizeof mNotice, "%s", text ? text : ""); }
+	void	Notice(const char *text) { snprintf(mNotice, sizeof mNotice, "%s", text ? text : ""); mNoticeBoxed = false; }
+
+	// The pages a player meets on a direct connection (the relay pilot's pages keep their own operator words).
+	bool	PlayerPages() const { return !RelayRequested() && !SignalingSelected(); }
+
+	// What the lobby says (a failure, a friend who left, nobody answering): on the player's pages always in the message
+	// box, never fitted above a list (port/tools/network_player_menu_tests.py: notice-box cases).
+	void	LobbyNotice(const char *text)
+	{
+		Notice(text);
+		if (PlayerPages() && mNotice[0])
+		{
+			mNoticeBoxed = true;
+			Trap(false);
+			Box(mNotice);
+		}
+	}
+
+	// Follows the lobby's own notice on a page that stays up (host and lobby pages): a new one is shown once.
+	void	FollowLobbyNotice(const char *notice)
+	{
+		if (!notice[0])
+			mLastLobbyNotice[0] = 0;
+		else if (strcmp(notice, mLastLobbyNotice))
+		{
+			snprintf(mLastLobbyNotice, sizeof mLastLobbyNotice, "%s", notice);
+			LobbyNotice(notice);
+		}
+	}
+
+	// With a key trap set (the Join page types into its fields) the game's own pointer hover is off (MouseInRect) and its
+	// clicks ask the trap first (MOUSE_TRAP, which NetKeyTrap answers false). Here a pointer that moved puts the focus on
+	// the enabled row under it, and a click on a text row selects that row for typing (the list's own click would choose
+	// it, which moves the focus on); a click on any other row is the list's, as on every other page.
+	void	PointerOnTrappedPage()
+	{
+		if (!sTrap)
+			return;
+		const bool moved = MOUSE_X != mPointerX || MOUSE_Y != mPointerY;
+		mPointerX = MOUSE_X;
+		mPointerY = MOUSE_Y;
+		CMenuOptionsList *list = mList[mPage];
+		float height = 0.f;
+		for (int i = 0; i < list->mItems.Size(); i++)
+			height += float(list->mItems.At(i)->GetHeight());
+		float ty = list->mY - height * 0.5f - 15.f;
+		for (int i = 0; i < list->mItems.Size(); i++)
+		{
+			CMenuItem *item = list->mItems.At(i);
+			const float h = float(item->GetHeight());
+			const bool over = MOUSE_X >= 0 && MOUSE_X < 640 && float(MOUSE_Y) >= ty && float(MOUSE_Y) < ty + h;
+			if (over && item->IsEnabled())
+			{
+				if (moved && list->mSelected != i)
+					list->mSelected = i;
+				if ((item == mCode || item == mAddress || item == mImportOrigin) && MouseClickedInRect(0.f, ty, 640.f, ty + h))
+				{
+					list->mSelected = i;
+					CFrontEnd::PlaySound(FES_SELECT);
+				}
+			}
+			ty += h;
+		}
+	}
 
     bool JoinPending() const
     {
@@ -489,9 +858,9 @@ public:
         CE_JoinCode code = {};
         const char *problem = NULL;
         if (!CE_LobbyPaste(paste, sizeof paste))
-            problem = "Nothing to paste: copy the host's code or address first.";
+            problem = "Nothing to paste. Copy your friend's code or address first.";
         else if (strlen(paste) == sizeof paste - 1)
-            problem = "Clipboard text is too long. Copy only the code or address.";
+            problem = "That text is too long. Copy only the code or address.";
         else if (field == mCode)
         {
             for (char *p = paste; *p; ++p)
@@ -508,10 +877,10 @@ public:
             while (end > first && (end[-1] == ' ' || end[-1] == '\r' || end[-1] == '\n' || end[-1] == '\t')) --end;
             *end = 0;
             if (first == end || strlen(first) > (size_t)field->mMax || strlen(first) >= sizeof value)
-                problem = "Paste only the host's IPv4 address, with an optional port.";
+                problem = "That is not an address. Copy only the address your friend sent.";
             for (const char *p = first; *p && !problem; ++p)
                 if (!((*p >= '0' && *p <= '9') || *p == '.' || *p == ':'))
-                    problem = "Paste only the host's IPv4 address, with an optional port.";
+                    problem = "That is not an address. Copy only the address your friend sent.";
             if (!problem) memcpy(value, first, strlen(first) + 1);
         }
         if (problem) Notice(problem);
@@ -530,14 +899,12 @@ public:
 
     void HostAddressText()
     {
-        char text[96];
-        if (mHostAddressCount)
-            snprintf(text, sizeof(text), "Address: %s (%d of %d)", mHostAddresses[mHostAddressIndex], mHostAddressIndex + 1, mHostAddressCount);
+        char text[64];
+        if (mHostAddressCount > 1)
+            snprintf(text, sizeof(text), "%s (%d of %d)", mHostAddresses[mHostAddressIndex], mHostAddressIndex + 1, mHostAddressCount);
         else
-            snprintf(text, sizeof(text), "Address: give it to the joining player separately");
-        mHostAddress->Set(text);
-        mHostAddress->mEnabled = mHostAddressCount > 1;
-        mHostBegin->Set(mHostAddressCount ? "Host on this address" : "Host (manual address)");
+            snprintf(text, sizeof(text), "%s", mHostAddressCount ? mHostAddresses[0] : "None");
+        mHostAddress->SetValue(text);
     }
 
     void RefreshHostAddresses()
@@ -556,7 +923,7 @@ public:
 
 	virtual void	ReceiveButtonAction(CController *from_controller, int button, float val)
 	{
-		if (PLATFORM.GetSysTimeFloat() - mOpenTime < 0.4f || mStartingAt >= 0.f)
+		if (PLATFORM.GetSysTimeFloat() - mOpenTime < 0.4f || mStartingAt >= 0.f || FEMESSBOX.BeingDisplayed())
 			return;
 		CMenuOptionsList *list = mLists.At(mPage);
 		if (list->PassToSelected(from_controller, button, val))
@@ -565,6 +932,13 @@ public:
 		{
 		default:
 			list->ReceiveButtonAction(from_controller, button, val);
+			break;
+		case BUTTON_FRONTEND_MENU_LEFT:
+		case BUTTON_FRONTEND_MENU_RIGHT:
+			if (mPage == NP_HOST_ADDRESS && list->mItems.At(list->mSelected) == mHostAddress)
+				NextHostAddress(button == BUTTON_FRONTEND_MENU_LEFT ? -1 : 1);
+			else
+				list->ReceiveButtonAction(from_controller, button, val);
 			break;
 		case BUTTON_PAUSE_MENU_SELECT:
 			Choose(list->mItems.At(list->mSelected));
@@ -577,7 +951,23 @@ public:
 
 	void	Back()
 	{
+		{
+			// A start both games have agreed (STARTING) cannot be taken back: the other game is already starting, and the
+			// page is closing to start this one. Back, Leave and Esc do nothing in that moment.
+			CE_LobbyStatus now;
+			CE_LobbyStatusGet(&now);
+			if (now.state == CE_LOBBY_STARTING)
+				return;
+		}
 		CFrontEnd::PlaySound(FES_BACK);
+		// Cancel while a join is trying: stop, and stay on the Join page with the code kept.
+		mReturningRoom = false;
+		if (mPage == NP_JOIN && PlayerPages() && JoinPending())
+		{
+			CE_LobbyLeave();
+			Show(NP_JOIN);
+			return;
+		}
 		switch (mPage)
 		{
 		case NP_MENU:
@@ -601,26 +991,27 @@ public:
                 Notice("The approved pair is closed. Load a fresh setup to connect again.");
             }
             break;
-        case NP_CONNECTION:
-                Show(NP_MENU);
-                break;
-            case NP_HOST_CHOOSE:
-            mHostAddressCount = mHostAddressIndex = 0;
-            mHostAddresses[0][0] = 0;
-            Show(mConnectionSelected ? NP_CONNECTION : NP_MENU);
-            break;
-        case NP_HOST:
-        case NP_LOBBY:
+		case NP_HOST:
+		case NP_HOST_ADDRESS:
 			CE_LobbyLeave();
-			Show(mConnectionSelected ? NP_CONNECTION : NP_MENU);
+			mHostAddressCount = mHostAddressIndex = 0;
+			mHostAddresses[0][0] = 0;
+			ShowMenu(NA_HOST);
 			break;
+		case NP_LOBBY:
+		{
+			CE_LobbyStatus s;
+			CE_LobbyStatusGet(&s);
+			CE_LobbyLeave();
+			ShowMenu(s.host ? NA_HOST : NA_JOIN);
+			break;
+		}
 		case NP_JOIN:
 			CE_LobbyLeave();
-			Show(mConnectionSelected ? NP_CONNECTION : NP_MENU);
+			ShowMenu(NA_JOIN);
 			break;
 		case NP_HELP:
-			Show(mConnectionSelected ? NP_CONNECTION : NP_MENU);
-			mList[mPage]->mSelected = mPage == NP_CONNECTION ? 2 : 3;		// the row that opened the help
+			ShowMenu(NA_HELP);
 			break;
 		}
 	}
@@ -644,7 +1035,7 @@ public:
     {
         if (!mConnectionSelected)
         {
-            snprintf(why, size, "Choose Local or Online before hosting or joining.");
+            snprintf(why, size, "Choose Host Game or Join Game first.");
             return false;
         }
         if (mConnectionRelay != RelayRequested())
@@ -655,23 +1046,37 @@ public:
         return MenuAvailable(why, size);
     }
 
-    void ChooseConnection(bool relay)
+    // Host Game and Join Game use the connection this launch was prepared for: direct, or the relay pilot when the game was
+    // started with its setup. relay says which the caller expects; a mismatch is told and nothing is started.
+    bool SelectConnection(bool relay)
     {
-        if (mPage != NP_MENU) return;
         if (relay != RelayRequested())
         {
-            Notice(relay
-                ? "Online relay is not configured for this launch. Prepare the experimental relay setup and relaunch; see Connection help."
-                : "This launch uses Online relay. Relaunch without the relay setup for a Local / direct connection.");
-            return;
+            Notice(relay ? "Online play is not set up for this launch." : "This launch is set up for Online play only.");
+            return false;
         }
         char why[192];
-        if (!MenuAvailable(why, sizeof why)) { Notice(why); return; }
+        if (!MenuAvailable(why, sizeof why)) { Notice(why); return false; }
         mConnectionSelected = true;
         mConnectionRelay = relay;
-        Show(NP_CONNECTION);
+        return true;
     }
 
+    // The host's address row: the next or previous address; the lobby hosts again there with a new code.
+    void NextHostAddress(int step)
+    {
+        CE_LobbyStatus s;
+        CE_LobbyStatusGet(&s);
+        if (!HostPage(mPage) || mHostAddressCount < 2 || s.state != CE_LOBBY_HOST_WAITING) return;
+        CFrontEnd::PlaySound(FES_MOVE);
+        mHostAddressIndex = (mHostAddressIndex + mHostAddressCount + step) % mHostAddressCount;
+        HostAddressText();
+        CE_LobbyLeave();
+        if (HostHere() && mPage == NP_HOST_ADDRESS)
+            mList[NP_HOST_ADDRESS]->mSelected = 0;
+        else if (!HostPage(mPage))
+            Notice("This address cannot be used now. Choose Host Game again.");
+    }
 
     bool InvitationPreviewValid() const
     {
@@ -782,8 +1187,14 @@ public:
         mSignalProceed->mEnabled = selected && disclosed && status == CeIceSignalStatus::Admitted &&
             (mSignalAction == NA_HOST || mSignalAction == NA_CONNECT);
         mSignalRetry->mEnabled = selected && disclosed && SignalRetryable(status);
+        if (mPage == NP_SIGNAL_STATUS && mSignalAction == NA_CONNECT &&
+            mSignalProceed->IsEnabled() && !mProceedWasReady &&
+            mList[NP_SIGNAL_STATUS]->mItems.At(mList[NP_SIGNAL_STATUS]->mSelected) == mSignalAccept)
+            mList[NP_SIGNAL_STATUS]->mSelected = 1;
+        mProceedWasReady = mSignalProceed->IsEnabled();
         mSignalClose->mEnabled = selected && status != CeIceSignalStatus::Closed;
-        mSignalProceed->Set(mSignalAction == NA_HOST ? "Prepare Host" : "Connect");
+        mSignalProceed->Set(mSignalAction == NA_HOST ? "Prepare Host" :
+            (mCode->mValue[0] ? "Join match" : "Enter host code"));
     }
     void PumpSignalUi()
     {
@@ -809,7 +1220,7 @@ public:
 		switch (action)
 		{
 		case NA_IMPORT_OPEN:
-            if (mPage != NP_MENU && mPage != NP_CONNECTION) break;
+            if (mPage != NP_MENU) break;
 #if defined(CE_NETWORK_ICE)
             CE_InvitationCancel(); CE_InvitationPoll(CE_HandoffNow(), &mInvitation);
 #endif
@@ -836,10 +1247,10 @@ public:
             if (mInvitation.state != CE_INVITATION_SELECTED || !SignalingSelected()) {
                 Notice("The approved invitation was not selected. Check the setup before continuing."); break;
             }
-            ClearSignalUi(); Show(NP_MENU); ChooseConnection(true);
-            if (mPage == NP_CONNECTION) {
-                if (mInvitationRole == CE_NET_HOST) RequireSignaling(NA_HOST, NP_CONNECTION);
-                else { Show(NP_JOIN); Notice("Join invitation selected. Enter the approved host's CE code; Connect opens network disclosure."); }
+            ClearSignalUi(); Show(NP_MENU);
+            if (SelectConnection(true)) {
+                if (mInvitationRole == CE_NET_HOST) RequireSignaling(NA_HOST, NP_MENU);
+                else { Show(NP_JOIN); Notice("Join invitation selected. Choose Connect to review and accept. The host sends a code after you both accept."); }
             }
 #endif
             break;
@@ -884,8 +1295,12 @@ public:
             {
                 const int action = mSignalAction;
                 if (action != NA_HOST && action != NA_CONNECT) break;
-                Show(action == NA_HOST ? NP_CONNECTION : NP_JOIN);
-                Choose(action == NA_HOST ? mHostItem : mConnect);
+                Show(action == NA_HOST ? NP_MENU : NP_JOIN);
+                if (action == NA_CONNECT && !mCode->mValue[0]) {
+                    Notice("Invitation accepted. Enter the host's code when it arrives, then choose Connect.");
+                } else {
+                    Choose(action == NA_HOST ? mHostItem : mConnect);
+                }
             }
             break;
         case NA_SIGNAL_RETRY:
@@ -902,24 +1317,18 @@ public:
             CE_LobbyLeave(); ClearSignalUi(); Show(NP_SIGNAL_STATUS);
             Notice("The approved pair is closed. Back returns without switching transport.");
             break;
-        case NA_LOCAL:
-                ChooseConnection(false);
-                break;
-            case NA_ONLINE:
-                ChooseConnection(true);
-                break;
-            case NA_BROWSE:
-                Notice("Public lobby browsing is unavailable. Use Host or Join with a code; the Online pilot still needs manual private-file exchange.");
-                break;
             case NA_BACK:
 			Back();
 			return;
         case NA_HOST:
-                if (mPage != NP_CONNECTION) break;
+            if (mPage != NP_MENU) break;
         {
             char why[200];
+            if (!SelectConnection(RelayRequested())) break;
             if (!ConnectionAvailable(why, sizeof why)) { Notice(why); break; }
-            if (RequireSignaling(NA_HOST, NP_CONNECTION)) break;
+            if (RequireSignaling(NA_HOST, NP_MENU)) break;
+            mOutcome[0] = 0;
+			mReturningRoom = false;
             if (RelayRequested())
             {
                 if (CE_LobbyHost()) Show(NP_HOST);
@@ -931,57 +1340,23 @@ public:
                 }
                 break;
             }
+            // One press: host at once on the first address (a private LAN address when there is one); a PC with several
+            // gets the address as a row of the host's page.
             RefreshHostAddresses();
-            Show(NP_HOST_CHOOSE);
-            if (mHostAddressCount < 2) mList[NP_HOST_CHOOSE]->mSelected = 1;
+            HostHere();
             break;
         }
         case NA_HOST_ADDRESS:
-            if (mPage != NP_HOST_CHOOSE || !mHostAddressCount) return;
-            mHostAddressIndex = (mHostAddressIndex + 1) % mHostAddressCount;
-            HostAddressText();
-            break;
-        case NA_HOST_BEGIN:
-                if (mPage != NP_HOST_CHOOSE) break;
-            {
-                char connection_problem[192];
-                if (!ConnectionAvailable(connection_problem, sizeof connection_problem))
-                {
-                    Notice(connection_problem);
-                    break;
-                }
-            if (mPage != NP_HOST_CHOOSE) return;
-            if (!mHostAddressCount)
-            {
-                RefreshHostAddresses();
-                if (mHostAddressCount)
-                {
-                    if (mHostAddressCount < 2) mList[NP_HOST_CHOOSE]->mSelected = 1;
-                    Notice("A network address became available. Confirm it before hosting.");
-                    break;
-                }
-            }
-            if (mHostAddressCount ? CE_LobbyHostAt(mHostAddresses[mHostAddressIndex]) : CE_LobbyHost())
-                Show(NP_HOST);
-            else
-            {
-                CE_LobbyStatus status;
-                CE_LobbyStatusGet(&status);
-                // Keep the rejected address fixed for this attempt. Refresh only after rejection,
-                // so a changed interface list cannot silently select a different address.
-                RefreshHostAddresses();
-                if (mHostAddressCount < 2) mList[NP_HOST_CHOOSE]->mSelected = 1;
-                Notice(status.notice);
-            }
-            break;
-
-            }
+            NextHostAddress(1);
+            return;
             case NA_JOIN:
-                if (mPage != NP_CONNECTION) break;
+                if (mPage != NP_MENU) break;
 		{
 			char why[200];
+			if (!SelectConnection(RelayRequested())) break;
 			if (!ConnectionAvailable(why, sizeof why)) { Notice(why); break; }
 			mOutcome[0] = 0;
+			mReturningRoom = false;
 			Show(NP_JOIN);
 			break;
 		}
@@ -992,8 +1367,7 @@ public:
 		{
 			CE_LobbyStatus s;
 			CE_LobbyStatusGet(&s);
-			Notice(s.code[0] && CE_LobbyCopy(s.code) ? "Private join code copied. Share it only through your agreed private channel." :
-				   "Copy failed. If a code is shown, share it only through your private channel.");
+			Notice(s.code[0] && CE_LobbyCopy(s.code) ? "Code copied." : "The code could not be copied. Read it out instead.");
 			break;
 		}
 		case NA_CODE:
@@ -1021,6 +1395,18 @@ public:
 			if (mPage != NP_JOIN || JoinPending()) return;
 			char why[256];
 			if (!ConnectionAvailable(why, sizeof(why))) { Notice(why); break; }
+			// The host publishes its code after both invited players consent. An empty field may open
+			// consent, but it never bypasses the join-code check below.
+			if (!mCode->mValue[0] && SignalingSelected() && RequireSignaling(NA_CONNECT, NP_JOIN)) break;
+			// A code that is not complete is said once, on its own line under the introduction (CodeLine), not again as
+			// a notice; Connect makes that line say what to do. No sound: the error is a sentence (house style S1).
+			if (CE_CodeDecode(mCode->mValue, NULL) != CE_CODE_OK)
+			{
+				snprintf(mTriedCode, sizeof mTriedCode, "%s", mCode->mValue);
+				mTried = true;
+				Notice("");
+				return;
+			}
 			const char *problem = NULL;
 			if (RequireSignaling(NA_CONNECT, NP_JOIN)) break;
 			if (CE_LobbyJoin(mCode->mValue, RelayRequested() ? "" : mAddress->mValue, &problem))
@@ -1079,9 +1465,16 @@ public:
 	{
         PollInvitationUi();
         PumpSignalUi();
+#if defined(CE_NETWORK_ICE) && !defined(_WIN32)
+        PracticeFields();
+#endif
 		CE_LobbyUpdate();
 		CE_LobbyStatus s;
 		CE_LobbyStatusGet(&s);
+		if (mReturningRoom && (s.state == CE_LOBBY_OFF || s.state == CE_LOBBY_FAILED ||
+		    s.state == CE_LOBBY_LEFT || s.state == CE_LOBBY_REFUSED ||
+		    (mPage == NP_LOBBY && s.state != CE_LOBBY_READY && s.state != CE_LOBBY_STARTING)))
+			mReturningRoom = false;
 		if (s.state == CE_LOBBY_STARTING)
 		{
 			if (mPage != NP_LOBBY)
@@ -1101,21 +1494,32 @@ public:
 		switch (mPage)
 		{
 		case NP_HOST:
+		case NP_HOST_ADDRESS:
 			if (s.state == CE_LOBBY_READY)
 				Show(NP_LOBBY);
 			else if (s.state == CE_LOBBY_OFF || s.state == CE_LOBBY_FAILED)
 			{
 				if (s.state == CE_LOBBY_FAILED) CE_LobbyLeave();
-				Show(NP_MENU);
-				Notice(s.notice);
+				ShowMenu(NA_HOST);
+				LobbyNotice(s.notice);
 			}
+			else
+				mLastLobbyNotice[0] = 0;	// while the host waits, what the lobby says is a line under the code (DrawText)
 			break;
 		case NP_JOIN:
 			if (s.state == CE_LOBBY_READY || s.state == CE_LOBBY_REFUSED)
+			{
 				Show(NP_LOBBY);
+				if (s.state == CE_LOBBY_REFUSED && PlayerPages())
+				{
+					char refused[sizeof s.compat + 96];
+					snprintf(refused, sizeof refused, "%s. You both need the same Onslaught CE download. Leave, update, and join again.", s.compat);
+					LobbyNotice(refused);
+				}
+			}
 			else if (s.state == CE_LOBBY_FAILED || s.state == CE_LOBBY_LEFT)
 			{
-				Notice(s.notice);
+				LobbyNotice(s.notice);
 				CE_LobbyLeave();
 			}
 			break;
@@ -1123,56 +1527,104 @@ public:
 			if (s.host && s.state == CE_LOBBY_FAILED)
 			{
 			    CE_LobbyLeave();
-			    Show(NP_MENU);
-			    Notice(s.notice);
+			    ShowMenu(NA_HOST);
+			    LobbyNotice(s.notice);
 			}
 			else if (s.host && (s.state == CE_LOBBY_HOST_WAITING || s.state == CE_LOBBY_HOST_CONNECTING))
-				Show(NP_HOST);		// the other player left: wait for another, with the same code
+				ShowHost();		// the other player left: wait for another, with the same code
 			else if (!s.host && (s.state == CE_LOBBY_LEFT || s.state == CE_LOBBY_FAILED))
 			{
 				CE_LobbyLeave();
 				Show(NP_JOIN);
-				Notice(s.notice);
+				LobbyNotice(s.notice);
 			}
 			else if (s.state == CE_LOBBY_OFF)
 				Show(NP_MENU);
+			else
+				FollowLobbyNotice(s.notice);
 			break;
 		}
+		// The key trap types into the Join page's fields; it is off while a message box is up, so the box takes Enter.
+		Trap((mPage == NP_JOIN || mPage == NP_INVITATION_INPUT) && !FEMESSBOX.BeingDisplayed());
 		bool ready = s.state == CE_LOBBY_READY;
 		mStart->mEnabled = (ready && s.host) ? TRUE : FALSE;
         mCampaignStart->mEnabled = s.host && s.state == CE_LOBBY_READY;
         mCampaignMissionPendingKnown = mPage == NP_LOBBY;
         if (mCampaignMissionPendingKnown) mCampaignMissionPending = s.level;
 
-		mStart->Set(s.host ? "Start" : "Start (the host starts the game)");
-		// The host chooses the map among the co-op levels; the guest sees the host's choice.
-		const char *map = s.level == 856 ? "Building Defence (level 856)" : s.level == 858 ? "Building Defence (level 858)" : s.level == 100 ? "Tutorial (level 100)" : "a level";
-		char mapText[80];
-		snprintf(mapText, sizeof mapText, s.host ? "Map: %s (select to change)" : "Map: %s (the host chooses)", map);
-		mMap->Set(mapText);
+		// The host chooses the mission among the co-op levels; the guest sees the host's choice as a line, not a row, and
+		// has no Start row (guide 3.6: an action a player cannot take is absent). Campaign co-op is not proven, so its row
+		// is absent unless a tester asks for it (BEA_NET_LOBBY_CAMPAIGN=1).
+		mStart->Set("Start");
+		mMap->SetValue(MissionName(s.level));
 		mMap->mEnabled = (s.host && s.state != CE_LOBBY_REFUSED) ? TRUE : FALSE;
+		mMap->mHidden = PlayerPages() && !s.host;
+		mStart->mHidden = PlayerPages() && !s.host;
+		mCampaignStart->mHidden = PlayerPages() && !CampaignRowWanted();
 		if (mPage == NP_LOBBY && !mList[NP_LOBBY]->mItems.At(mList[NP_LOBBY]->mSelected)->IsEnabled())
 			mList[NP_LOBBY]->mSelected = s.host && ready ? 1 : (mList[NP_LOBBY]->mItems.Size() - 1);
-		char why[200];
-		BOOL available = MenuAvailable(why, sizeof why) ? TRUE : FALSE;
-        const BOOL selected_available = available && mConnectionSelected
-            && mConnectionRelay == RelayRequested() ? TRUE : FALSE;
-        mHostItem->mEnabled = mJoinItem->mEnabled = selected_available;
-        mLocalItem->mEnabled = available && !RelayRequested() ? TRUE : FALSE;
-        mOnlineItem->mEnabled = available && RelayRequested() ? TRUE : FALSE;
-        mBrowseItem->mEnabled = FALSE;
-        if (mPage == NP_MENU && !mList[NP_MENU]->mItems.At(mList[NP_MENU]->mSelected)->IsEnabled())
-            mList[NP_MENU]->mSelected = available ? (RelayRequested() ? 1 : 0) : 3;
+		mHostItem->mEnabled = mJoinItem->mEnabled = TRUE;		// told why on choosing, when the lobby cannot start
 		bool connecting = s.state == CE_LOBBY_JOIN_CONNECTING;
-		mConnect->Set(connecting ? "Connecting..." : "Connect");
+		// While a join is trying, the page holds the code (dark) and Cancel only (guide F5: one disabled row at most), with
+		// the focus on Cancel; when it stops, the focus goes back to Connect.
+		const bool trying = connecting && PlayerPages();
+		mAddress->mHidden = mConnect->mHidden = mPasteCode->mHidden = mPasteAddress->mHidden = mClearFields->mHidden = trying;
+		mCode->mHidden = trying && mReturningRoom;
+		mJoinBack->Set(trying ? "Cancel" : "Back");
+		if (mPage == NP_JOIN && trying != mTrying)
+			mList[NP_JOIN]->mSelected = trying ? mList[NP_JOIN]->mItems.Size() - 1 : (mCode->mValue[0] ? 2 : 0);
+		mTrying = trying;
+		mConnect->Set(connecting && !PlayerPages() ? "Connecting..." : "Connect");
 		mConnect->mEnabled = connecting ? FALSE : TRUE;
 		mCode->mEnabled = mPasteCode->mEnabled = mClearFields->mEnabled = connecting ? FALSE : TRUE;
 		mAddress->mEnabled = mPasteAddress->mEnabled = !connecting && !RelayRequested();
-		if (RelayRequested()) mAddress->Set("Address: not used by private exchange");
+		if (RelayRequested()) mAddress->SetValue("Not Used");
 		else mAddress->Refresh();
 	}
 
-	// The page's words above its list.
+	// The line under the Join page's introduction: how much of the code is typed while it is short (grey), that it is
+	// complete (green), or what is wrong with it; after Connect with a code that is not complete, what to do instead.
+	const char	*CodeLine(DWORD *colour)
+	{
+		static char text[96];
+		const int r = CE_CodeDecode(mCode->mValue, NULL);
+		const bool tried = mTried && !strcmp(mTriedCode, mCode->mValue);
+		*colour = kWhite;
+		switch (r)
+		{
+		case CE_CODE_OK:
+			*colour = kGood;
+			return "The code is complete.";
+		case CE_CODE_EMPTY:
+			return tried ? "Type your friend's code first." : "";
+		case CE_CODE_SHORT:
+		{
+			if (tried)
+			{
+				snprintf(text, sizeof text, "The code is not complete. It has %d letters and digits.", CE_CODE_SYMBOLS);
+				return text;
+			}
+			int n = 0;
+			for (const char *c = mCode->mValue; *c; c++)
+				n += (*c != '-' && *c != ' ');
+			snprintf(text, sizeof text, "%d of %d.", n, CE_CODE_SYMBOLS);
+			*colour = kGrey;
+			return text;
+		}
+		case CE_CODE_LONG:
+			snprintf(text, sizeof text, "The code is too long. It has %d letters and digits.", CE_CODE_SYMBOLS);
+			return text;
+		case CE_CODE_BAD_CHAR:
+			return "Codes use only digits and the letters A to Z, except U.";
+		case CE_CODE_CHECK:
+			return "The code has a typo. Check it with your friend.";
+		default:
+			return "This is not an Onslaught CE code. Check it with your friend.";
+		}
+	}
+
+	// The page's words above its list. A note of the page's own is always drawn (it is one line); what the lobby says is in
+	// the message box (LobbyNotice); only the page's standing sentences give way when there is no room for them.
 	void	DrawText()
 	{
 		CE_LobbyStatus s;
@@ -1183,6 +1635,13 @@ public:
 		{
 		case NP_MENU:
             if (mInvitationEntry && !RelayRequested()) {
+#if defined(CE_NETWORK_ICE) && !defined(_WIN32)
+                if (PortPrivateUiFieldWaiting(PORT_PRIVATE_UI_ORIGIN)) {
+                    y += Lines("Local practice: you fly with an automated host.", y, kWhite);
+                    y += Lines("Choose Import Online Invitation, then Choose Join invite. You decide whether to accept.", y, kGrey);
+                    break;
+                }
+#endif
                 y = Lines("Multiplayer", y, kWhite);
                 y = Lines("Import an approved Online invitation to select native relay, or choose Local / direct. Import shows a public preview before selecting the private pair.", y, kGrey);
                 y = Lines("Public lobby browsing is unavailable.", y, kWarn);
@@ -1198,56 +1657,22 @@ public:
             }
 
 		{
-			// Something to tell first (what happened in the last game, a note, why the lobby is not available) takes the top of the page, and the page's own words shrink to the warning, so
-			// that nothing runs into the list below: the full text is 13 lines, about 245 pixels of the 256 above the list.
+			// What happened in the last game, a note, or why the lobby cannot start comes first; the page's own two sentences
+			// follow when they still fit above the list.
 			char why[200];
 			const bool available = MenuAvailable(why, sizeof why);
-			if (mOutcome[0])
-				y = Lines(mOutcome, y, mOutcomeGood ? kGood : kBad) + 10.f;
-			if (mNotice[0])
-				y = Lines(mNotice, y, kWarn) + 10.f;
+			const float top = ListTop(mList[NP_MENU]) - 6.f;
+			if (mNotice[0] && !mNoticeBoxed)
+				y = Lines(mNotice, y, kWhite, FONT_SMALL, kPageWidth) + 10.f;
 			if (!available)
-				y = Lines(why, y, kWarn) + 10.f;
-			y = Lines("Choose Local or Online for the connection prepared at launch.", y, kWhite);
-                y = Lines(RelayRequested() ? "Online relay pilot is selected for this launch."
-                                          : "Local / direct connection is selected for this launch.", y + 5.0f, kWhite);
-                Lines("Public browsing is unavailable. Use Host or Join with a code.", y + 5.0f, kWarn);
-                break;
-            }
-            case NP_CONNECTION:
-            if (SignalingSelected()) {
-                y = Lines("Online approved pair", y, kWhite);
-                y = Lines("Host creates a private CE code; Join uses the approved host's code. Network disclosure and pair consent come before the connection.", y, kGrey);
-                y = Lines("The selected setup fixes the transport and approved partner. Public lobby browsing is unavailable.", y, kGrey);
-                if (mNotice[0]) Lines(mNotice, y, kWarn);
-                break;
-            }
-
-		{
-			// Something to tell first (what happened in the last game, a note, why the lobby is not available) takes the top of the page, and the page's own words shrink to the warning, so
-			// that nothing runs into the list below: the full text is 13 lines, about 245 pixels of the 256 above the list.
-			char why[200];
-			const bool available = ConnectionAvailable(why, sizeof why);
-			const bool said = mOutcome[0] || mNotice[0] || !available;
-			if (mOutcome[0])
-				y = Lines(mOutcome, y, mOutcomeGood ? kGood : kBad) + 10.f;
-			if (mNotice[0])
-				y = Lines(mNotice, y, kWarn) + 10.f;
-			if (!available)
-				y = Lines(why, y, kWarn) + 10.f;
-			y = Lines("EXPERIMENTAL: co-op over a network is new and unfinished. Expect problems.", y, kWarn);
-			if (RelayRequested())
-			{
-				y = Lines("Two-player relay pilot. The host's code and manual file exchange are required.", y + 4.f, kWhite);
-				if (!said)
-					Lines("Have the operator and your confidential authenticated file channel ready before Host or Connect. Each relay setup has a two-minute limit. See the help below.", y + 4.f, kWhite);
-			}
-			else if (!said)
-			{
-				y = Lines("Two players, each with their own copy of the game and the same Onslaught CE version. A co-op game does not change your careers. "
-						  "There is no pause in a network game and Escape does nothing; to leave, close the window (the other player is told).", y + 4.f, kWhite);
-				Lines("There is no matchmaking server: play on one network, or read " CE_LOBBY_HELP_LABEL " (below).", y + 4.f, kWhite);
-			}
+				y = Lines(why, y, kWhite, FONT_SMALL, kPageWidth) + 10.f;
+			const char *about = RelayRequested() ? "This launch is set up for the two-player relay pilot. Each of you needs the same version of Onslaught CE."
+												 : "Play a mission with a friend on another PC. You both need the same version of Onslaught CE.";
+			const char *careers = "A network game does not change your careers.";
+			if (y + Height(about, FONT_SMALL, kPageWidth) <= top)
+				y = Lines(about, y, kCream, FONT_SMALL, kPageWidth) + 6.f;
+			if (y + Height(careers, FONT_SMALL, kPageWidth) <= top)
+				Lines(careers, y, kGrey, FONT_SMALL, kPageWidth);
 			break;
 		}
         case NP_INVITATION_INPUT:
@@ -1311,18 +1736,16 @@ public:
             if (mNotice[0]) Lines(mNotice, y, kWarn);
             break;
         }
-        case NP_HOST_CHOOSE:
-        {
-            const char* intro = "Choose the address the joining PC can reach. Select Address to change it, then host.";
-            const char* manual = "If no address is listed, host with a manual address and give it to the joining player separately.";
-            float y = ListTop(mList[NP_HOST_CHOOSE]) - Height(intro) - Height(manual) - Height(mNotice) - .04f;
-            y = Lines(intro, y, DWORD(-1));
-            y = Lines(manual, y, DWORD(-1));
-            Lines(mNotice, y, DWORD(-1));
-            break;
-        }
 		case NP_HOST:
+		case NP_HOST_ADDRESS:
 		{
+			if (PlayerPages() && mReturningRoom && s.host &&
+			    (s.state == CE_LOBBY_HOST_WAITING || s.state == CE_LOBBY_HOST_CONNECTING))
+			{
+				y = Lines("Match finished.", y, kWhite, FONT_NORMAL);
+				Lines("Waiting for your friend to return.", y + 10.0f, kCream);
+				break;
+			}
 			if (RelayRequested())
 			{
 				const char *head = SignalingSelected() ? SignalHeading(SignalingView().status) : ("Two-player relay pilot (experimental)");
@@ -1340,65 +1763,105 @@ public:
 				if (explained) Lines(explain, y + 8.f, kGrey);
 				break;
 			}
-			char addr[4][16];
-			int n = CE_LobbyAddresses(addr, 4);
-			snprintf(t, sizeof t, "This PC: %s%s%s%s%s%s%s, UDP port %u", n > 0 ? addr[0] : "no address", n > 1 ? ", " : "",
-					 n > 1 ? addr[1] : "", n > 2 ? ", " : "", n > 2 ? addr[2] : "", n > 3 ? ", " : "", n > 3 ? addr[3] : "",
-					 (unsigned)s.port);
-			const char *head = "Experimental: both need the same version.";
-			const char *waiting = s.state == CE_LOBBY_HOST_CONNECTING ? "A player is connecting..." : "Waiting for a player...";
-			const char *note = mNotice[0] ? mNotice : s.notice;
-			char explain[240];
-			snprintf(explain, sizeof explain, kHostForward, (unsigned)s.port);
-			// The code, who is awaited and the notice stay; the explanation of port forwarding is the first to go when they do not all fit above the list, and the firewall line goes before it.
-			const float need = Height(head) + 4.f + Height(t) + 8.f + Height("Join code (give it to the other player)") + 2.f + Height(s.code, FONT_NORMAL, kCodeWidth) + 8.f + Height(waiting) + (*note ? 4.f + Height(note, FONT_SMALL, kNoticeWidth) : 0.f);
-			const float room = ListTop(mList[NP_HOST]) - 6.f;
-			const bool explained = y + need + 8.f + Height(explain) <= room;
-			const bool warned = explained && y + need + 8.f + Height(explain) + 4.f + Height(kHostFirewall) <= room;
-			y = Lines(head, y, kWarn);
-			y = Lines(t, y + 4.f, kGrey);
-			y = Lines("Join code (give it to the other player)", y + 8.f, kWhite);
-			y = Lines(s.code, y + 2.f, kWarn, FONT_NORMAL, kCodeWidth);
-			y = Lines(waiting, y + 8.f, kWhite);
+			const char *waiting = s.state == CE_LOBBY_HOST_CONNECTING ? "Your friend is connecting..." : "Waiting for your friend to join.";
+			const char *note = mNoticeBoxed ? "" : mNotice;
+			// What the lobby says while the host waits (a friend who could not join or left, a new code, nobody yet) is one
+			// line under the waiting line, so the code the friend must read stays in view (review R2 finding 1). The block
+			// starts lower on the page when everything fits, higher when the lines need the room; it never drops a line.
+			const char *lobby = s.notice;
+			const float need = Height("Your Join Code", FONT_SMALL, 400.f) + 4.f + Height(s.code, FONT_NORMAL, kCodeWidth) + 6.f +
+							   Height("Read it out or send it to your friend.", FONT_SMALL, kPageWidth) + 14.f + Height(waiting, FONT_SMALL, kPageWidth) +
+							   (*lobby ? 8.f + Height(lobby, FONT_SMALL, kPageWidth) : 0.f) + (*note ? 8.f + Height(note, FONT_SMALL, kPageWidth) : 0.f);
+			const float room = ListTop(mList[mPage]) - 6.f - y;
+			const float drop = need + 36.f <= room ? 36.f : (need < room ? room - need : 0.f);
+			y = Lines("Your Join Code", y + drop, kGrey) + 4.f;
+			y = Lines(s.code, y, kWhite, FONT_NORMAL, kCodeWidth) + 6.f;
+			y = Lines("Read it out or send it to your friend.", y, kGrey, FONT_SMALL, kPageWidth) + 14.f;
+			y = Lines(waiting, y, kCream, FONT_SMALL, kPageWidth);
+			mHostLineBottom = y;
+			if (*lobby)
+				y = mHostLineBottom = Lines(lobby, y + 8.f, kWhite, FONT_SMALL, kPageWidth);
 			if (*note)
-				y = Lines(note, y + 4.f, kWarn, FONT_SMALL, kNoticeWidth);
-			if (explained)
-				y = Lines(explain, y + 8.f, kGrey);
-			if (warned)
-				Lines(kHostFirewall, y + 4.f, kGrey);
+				mHostLineBottom = Lines(note, y + 8.f, kWhite, FONT_SMALL, kPageWidth);
 			break;
 		}
 		case NP_JOIN:
 		{
-			const char *intro = SignalingSelected() ? "Enter the approved host's private CE code. Connecting first requires network disclosure and explicit approval of the pair." : (RelayRequested() ? "Two-player relay pilot: paste or type the host's code, then Connect. Transfer files between the prepared lobby folders. The address field is not used." :
-							"Type the host's code, or choose Paste code. Over the internet, also type the host's public address "
-								"(the code holds the host's home address).");
+			if (PlayerPages() && mReturningRoom && !s.host && s.state == CE_LOBBY_JOIN_CONNECTING)
+			{
+				y = Lines("Match finished.", y, kWhite, FONT_NORMAL);
+				Lines("Rejoining your friend...", y + 10.0f, kCream);
+				break;
+			}
+			const char *intro = SignalingSelected() ?
+                (mSignalApproved && SignalOriginMatches() && SignalingView().status == CeIceSignalStatus::Admitted ?
+                    (mCode->mValue[0] ? "Choose Connect to join your host." :
+                     "Invitation accepted. Wait for the host's code, then enter it and choose Connect.") :
+                 "Choose Connect to review the invitation and accept it. The host sends a code after you both accept.") : (RelayRequested() ? "Two-player relay pilot: paste or type the host's code, then Connect. Transfer files between the prepared lobby folders. The address field is not used." :
+							"Type the code your friend's game shows, then choose Connect.");
 			const char *shorter = SignalingSelected() ? "Use the approved host's CE code. Online requires pair consent." : (RelayRequested() ? "Two-player relay pilot: enter the host's code, then Connect. Transfer the private lobby files." :
-							  "Type the host's code, or choose Paste code. Over the internet, also type the host's public address.");
-			const int r = CE_CodeDecode(mCode->mValue, NULL);
-			const char *problem = mCode->mValue[0] ? CE_CodeProblem(r) : "";
+							  "Type your friend's code, then choose Connect.");
+			DWORD codeColour;
+			const char *problem = CodeLine(&codeColour);
+			const char *note = mNoticeBoxed ? "" : mNotice;
 			char connecting[120] = "";
 			if (s.state == CE_LOBBY_JOIN_CONNECTING)
 			{
 				if (RelayRequested()) snprintf(connecting, sizeof connecting, "%s", "Waiting for lobby files and the other player...");
-				else snprintf(connecting, sizeof connecting, "Connecting to %s...", s.endpoint);
+				else snprintf(connecting, sizeof connecting, "%s", "Connecting...");
 			}
 			// The words below the introduction (the code's problem, the connection, the notice) are what the player needs; the parenthesis of the introduction goes when they do not fit above the list.
-			const float rest = (*problem ? 10.f + Height(problem) : 0.f) + (*connecting ? 10.f + Height(connecting) : 0.f) + (mNotice[0] ? 10.f + Height(mNotice, FONT_SMALL, kNoticeWidth) : 0.f);
-			y = Lines(y + Height(intro) + rest <= ListTop(mList[NP_JOIN]) - 6.f ? intro : shorter, y, kWhite);
+			const float rest = (*problem ? 10.f + Height(problem, FONT_SMALL, kPageWidth) : 0.f) + (*connecting ? 10.f + Height(connecting, FONT_SMALL, kPageWidth) : 0.f) + (*note ? 10.f + Height(note, FONT_SMALL, kPageWidth) : 0.f);
+			y = Lines(!PlayerPages() && y + Height(intro, FONT_SMALL, kPageWidth) + rest <= ListTop(mList[NP_JOIN]) - 6.f ? intro : shorter, y, PlayerPages() ? kCream : kWhite, FONT_SMALL, kPageWidth);
 			if (*problem)
-				y = Lines(problem, y + 10.f, r == CE_CODE_OK ? kGood : kWarn);
+				y = Lines(problem, y + 10.f, codeColour, FONT_SMALL, kPageWidth);
 			if (*connecting)
-				y = Lines(connecting, y + 10.f, kWhite);
-			Lines(mNotice, y + 10.f, kWarn, FONT_SMALL, kNoticeWidth);
+				y = Lines(connecting, y + 10.f, kWhite, FONT_SMALL, kPageWidth);
+			if (*note)
+				Lines(note, y + 10.f, kWhite, FONT_SMALL, kPageWidth);
 			break;
 		}
 		case NP_LOBBY:
 		{
 			if (s.state == CE_LOBBY_STARTING)
 			{
-				Lines("Starting...", 200.f, kWhite, FONT_NORMAL);
-				Lines("The window closes and opens again as the game starts.", 240.f, kGrey);
+				Lines("Starting...", 220.f, kWhite, FONT_NORMAL);
+				break;
+			}
+			if (PlayerPages())
+			{
+				// Two player slots as the original's orbs (guide 3.6), each with its player under it and, for the friend,
+				// the state as a word and a colour; then, for the guest, the mission and who starts it.
+				const bool ready = s.state == CE_LOBBY_READY;
+				const char *state = ready ? "Ready" : s.state == CE_LOBBY_REFUSED ? "Different Version" : "Checking...";
+				const DWORD stateColour = ready ? kGood : s.state == CE_LOBBY_REFUSED ? kBad : kWhite;
+				for (int slot = 0; slot < 2; slot++)
+				{
+					const float sx = slot ? kSlotRightX : kSlotLeftX;
+					const bool you = (slot == 0) == (s.host != 0);
+					PortCeNetDrawSlot(sx, kSlotY, true);
+					LinesAt(slot ? "Player 2" : "Player 1", sx, kSlotY - 38.f, kGrey);
+					LinesAt(you ? "You" : "Your Friend", sx, kSlotY + 26.f, kWhite);
+					LinesAt(you && s.state == CE_LOBBY_REFUSED ? "" : state, sx, kSlotY + 44.f, stateColour);
+				}
+				y = kSlotY + 62.f;
+				if (!s.host)
+				{
+					snprintf(t, sizeof t, "Mission: %s", MissionName(s.level));
+					y = Lines(t, y + 12.f, kCream);
+					if (ready && !mReturningRoom)
+						y = Lines("Waiting for your friend to start.", y + 4.f, kCream);
+				}
+				if (mNotice[0] && !mNoticeBoxed)
+					Lines(mNotice, y + 10.f, kWhite, FONT_SMALL, kPageWidth);
+				else if (mReturningRoom && ready)
+				{
+					y = Lines("Back in the lobby together.", y + 10.0f, kWhite, FONT_SMALL, kPageWidth);
+					Lines(s.host ? "Choose a mission and select Start." : "Your friend can start the next mission.",
+					      y + 4.0f, kCream, FONT_SMALL, kPageWidth);
+				}
+				else if (mOutcome[0] && mOutcomeGood)
+					Lines(mOutcome, y + 10.f, kWhite, FONT_SMALL, kPageWidth);
 				break;
 			}
 			const char *peer = s.peer_version[0] ? s.peer_version : "...";
@@ -1412,11 +1875,8 @@ public:
 				y = Lines("Waiting for the host to start.", y + 8.f, kWhite);
 			if (s.state == CE_LOBBY_REFUSED)
 				y = Lines("Both players need the same Onslaught CE download. Leave, update, and join again.", y + 8.f, kGrey);
-			const char *note = mNotice[0] ? mNotice : s.notice;
-			const char *standing = "Experimental. If the two games ever disagree, the game ends with a message. There is no pause in the game: to leave, close the window.";
-			// The notice stays; the standing words are the first to go when both do not fit above the list.
-			if (y + 8.f + Height(standing) + (*note ? 8.f + Height(note, FONT_SMALL, kNoticeWidth) : 0.f) <= ListTop(mList[NP_LOBBY]) - 6.f)
-				y = Lines(standing, y + 8.f, kGrey);
+			const char *note = PlayerPages() ? (mNoticeBoxed ? "" : mNotice) : (mNotice[0] ? mNotice : s.notice);
+			// What happens when the games disagree, and how to leave, is in the README, not standing prose on the page.
 			Lines(note, y + 8.f, kWarn, FONT_SMALL, kNoticeWidth);
 			break;
 		}
@@ -1438,16 +1898,43 @@ public:
 				Lines("Offer parcels contain temporary credentials. Use a confidential authenticated channel: base64 is not encryption. A local export is not delivery. Copy each file completely before import. Keep filenames and files private. Another connection attempt or mission needs fresh folders and a relaunch. No files are sent automatically. Internet play has not been verified.", y, kGrey, FONT_SMALL, kHelpWidth);
 				break;
 			}
-			y = Lines(CE_LOBBY_HELP_LABEL, y, kWarn, FONT_SMALL, kHelpWidth) + 6.f;
+			// Four short paragraphs in cream, a blank line between them, ending well above Back (list centre 440).
+			y = Lines(kHelpNetwork, y + 16.f, kCream, FONT_SMALL, kPageWidth) + 14.f;
 			snprintf(t, sizeof t, kHelpForward, (unsigned)CE_LobbyPort());
-			y = Lines(t, y, kWhite, FONT_SMALL, kHelpWidth) + 4.f;
-			y = Lines(kHelpFirewall, y, kWhite, FONT_SMALL, kHelpWidth) + 4.f;
-			y = Lines(kHelpAddress, y, kWhite, FONT_SMALL, kHelpWidth) + 8.f;
-			y = Lines(kHelpPrivate, y, kGrey, FONT_SMALL, kHelpWidth) + 4.f;
-			Lines(kHelpUntested, y, kGrey, FONT_SMALL, kHelpWidth);
+			y = Lines(t, y, kCream, FONT_SMALL, kPageWidth) + 14.f;
+			y = Lines(kHelpAddress, y, kCream, FONT_SMALL, kPageWidth) + 14.f;
+			Lines(kHelpFirewall, y, kCream, FONT_SMALL, kPageWidth);
 			break;
 		}
 		}
+	}
+
+	// The focused row's hint, under Back (house style L5: 28 pixels below the top of Back, wrapped to 420, ending by y 449).
+	void	DrawHint()
+	{
+		if (FEMESSBOX.BeingDisplayed() || RelayRequested() || SignalingSelected())
+			return;
+		CMenuOptionsList *list = mList[mPage];
+		const int n = list->mItems.Size();
+		if (n < 1 || list->mSelected < 0 || list->mSelected >= n)
+			return;
+		CMenuItem *item = list->mItems.At(list->mSelected);
+		const char *hint = item->mId == CNetItem::ID ? RowHint(((CNetItem *)item)->mAction) : NULL;
+		if (item == mJoinBack && mTrying)
+			hint = "Stops trying to connect.";
+		// While the Address row has the focus, a value that can never become an address says so at once, in the hint's
+		// place (review R2 polish 3); a value still being typed ("192.168.") is not scolded.
+		if (item == mAddress && AddressImpossible(mAddress->mValue))
+			hint = "That is not an address. Check it with your friend.";
+		if (!hint)
+			return;
+		float height = 0.f;
+		for (int i = 0; i < n; i++)
+			height += float(list->mItems.At(i)->GetHeight());
+		const float back = list->mY - height * 0.5f - 15.f + height - float(list->mItems.At(n - 1)->GetHeight());
+		// Drawn after the list, whose row stage doubles text colours (measured: the plain cream drew white), so the hint
+		// gives cream at half strength, as the CE page's own hints do (FIXLIST rule 6; 253,221,189 on the screen).
+		Lines(hint, back + 28.f, kCreamAfterList, FONT_SMALL, kPageWidth);
 	}
 
 	// CPauseMenu::Render for an options-style page, as the CE page draws its own (ce_frontend.cpp).
@@ -1471,7 +1958,16 @@ public:
 		LT.SRS(D3DRS_ZWRITEENABLE, FALSE);
 		LT.SRS(D3DRS_ZENABLE, FALSE);
 		RENDERINFO.Apply();
-		if (PLATFORM.GetSysTimeFloat() - mOpenTime > 0.2f)
+		// The message box is translucent: nothing of the page is drawn behind it (as the CE page's own lists).
+		// A click on the box's OK must not also reach the row under it (review R2 note 4): the clicks of the moment after a
+		// box closes are the box's.
+		const bool box = FEMESSBOX.BeingDisplayed() != 0;
+		if (mBoxWasUp && !box)
+			mSwallowClicksUntil = PLATFORM.GetSysTimeFloat() + 0.25f;
+		mBoxWasUp = box;
+		if (!box && PLATFORM.GetSysTimeFloat() < mSwallowClicksUntil)
+			(void)MouseClickedInRect(0.f, 0.f, 640.f, 480.f);
+		if (PLATFORM.GetSysTimeFloat() - mOpenTime > 0.2f && !box)
 		{
 			// Commit the intent only after the mission row has been rendered.
 			mCampaignMissionKnown = mPage == NP_LOBBY && mCampaignMissionPendingKnown;
@@ -1480,7 +1976,11 @@ public:
 			CE_LobbyStatus s;
 			CE_LobbyStatusGet(&s);
 			if (s.state != CE_LOBBY_STARTING)
+			{
+				PointerOnTrappedPage();
 				mLists.At(mPage)->Render(this);
+				DrawHint();
+			}
 		}
 		LT.SRS(D3DRS_ZWRITEENABLE, TRUE);
 		LT.SRS(D3DRS_ZENABLE, TRUE);
@@ -1489,6 +1989,7 @@ public:
 	bool mConnectionSelected, mConnectionRelay;
     bool mSignalApproved, mSignalBegan;
     int mSignalAction, mSignalReturnPage;
+    bool mProceedWasReady = false;
     char mSignalOrigin[512];
     CE_InvitationView mInvitation;
     uint32_t mInvitationRole;
@@ -1501,12 +2002,14 @@ public:
     CNetItem *mSignalContinue, *mSignalAccept, *mSignalProceed, *mSignalRetry, *mSignalClose;
 
 
-	CNetItem *mLocalItem, *mOnlineItem, *mBrowseItem;
 
 	CMenuOptionsList *mList[NP_COUNT];
-	CNetItem	*mHostItem, *mJoinItem, *mConnect, *mMap, *mStart;
-	CNetItem *mPasteCode, *mPasteAddress, *mClearFields;
-    CNetItem *mHostAddress, *mHostBegin;
+	CNetItem	*mHostItem, *mJoinItem, *mConnect, *mStart;
+	CNetItem *mPasteCode, *mPasteAddress, *mClearFields, *mJoinBack;
+	CNetItem *mRoomCopy, *mRoomBack;
+	CNetValue	*mMap;
+	bool		mTrying = false;			// a join is trying: the Join page shows the code and Cancel only
+    CNetValue *mHostAddress;
     CNetItem *mCampaignStart;
     uint32_t mCampaignMission;
     uint32_t mCampaignMissionPending;
@@ -1518,24 +2021,35 @@ public:
 
 	CNetField	*mCode, *mAddress;
 	char		mNotice[320], mOutcome[256];
+	bool		mNoticeBoxed = false;			// mNotice is shown in the message box, not on the page
+	char		mLastLobbyNotice[320] = "";		// the lobby notice last shown on a page that stays up
+	int			mPointerX = -1, mPointerY = -1;	// the pointer at the last frame (PointerOnTrappedPage)
+	float		mHostLineBottom = 0.f;			// where the host page's words ended at the last frame (a check reads it)
+	bool		mBoxWasUp = false;				// a message box was up at the last frame
+	float		mSwallowClicksUntil = 0.f;		// clicks until then were the closed box's
+	bool		mTried = false;					// Connect was chosen with the code mTriedCode, which was not complete
+	char		mTriedCode[CE_INVITATION_ORIGIN_BYTES] = "";
 	int			mOutcomeGood;
+	bool mReturningRoom;
 	float		mStartingAt;
 	bool		mQuitPosted;
 };
 
 // The join page's keyboard: typing into the selected field, Ctrl+V pasting into it, and the page's own keys (with a key
 // trap set, the game's key bindings do not reach the menus: CFEPVirtualKeyboard's name entry works the same way).
-void	NetKeyTrap(WORD key, KeyEventType event)
+// The game also asks the key trap about every mouse button (src/mouse.cpp MOUSE_TRAP: a true answer swallows the button),
+// so like the name entry's VKKeyTrap it returns false: the pointer's clicks still reach the page.
+bool	NetKeyTrap(WORD key, KeyEventType event)
 {
-	if (!sMenu || !sActive)
-		return;
+	if (!sMenu || !sActive || (event != KEY_EVENT_DOWN && event != KEY_EVENT_UP && event != KEY_EVENT_CHAR))
+		return false;
 	if (key == DIK_LCONTROL || key == DIK_RCONTROL)
 	{
 		if (event == KEY_EVENT_DOWN)
 			sCtrl = true;
 		else if (event == KEY_EVENT_UP)
 			sCtrl = false;
-		return;
+		return false;
 	}
 	CMenuOptionsList *list = sMenu->mList[sMenu->mPage];
 	CMenuItem *item = list->mItems.At(list->mSelected);
@@ -1565,6 +2079,7 @@ void	NetKeyTrap(WORD key, KeyEventType event)
 		char c[2] = {(char)key, 0};
 		field->Add(c);
 	}
+	return false;
 }
 
 }
@@ -1575,21 +2090,33 @@ bool	PortCeNetOffered()
 {
 	if (!CE_NETWORK_ENABLED || !PortCeMenus())
 		return false;
-	static const char *const names[] = {"BEA_PORT_CLOCK", "BEA_PORT_TAPE", "BEA_PORT_PROBES", "BEA_PORT_RECORD",
-		"BEA_PORT_PILOT", "BEA_PORT_AUTOPILOT", "BEA_RECORD", "BEA_NET_HOST", "BEA_NET_JOIN",
-		"BEA_LOCKSTEP_HOST", "BEA_LOCKSTEP_JOIN"};
-	for (const char *n : names)
-	{
-		const char *v = getenv(n);
-		if (v && *v)
-			return false;
-	}
+	// The run mode (runmode.h) decides from the environment, once: no recording, replay, engineering session or other test
+	// run offers Host and Join; ordinary play and a test-kit journey (driven by the player's input, on any clock) do.
+	if (!PortRunOffersNetworkPages())
+		return false;
 	return !CLIPARAMS.mRecordDemo && !CLIPARAMS.mPlaybackDemo && !CLIPARAMS.mAutoConfigTest;
 }
 
 bool	PortCeNetActive()
 {
 	return sActive && sMenu;
+}
+
+// The title bar of each page names that page, one level down, as the original's do ("Sound Options" under OPTIONS); the
+// row that opens a page and its title match word for word (ce_frontend.cpp draws it).
+WCHAR	*PortCeNetTitle()
+{
+	static WCHAR network[] = L"Network Game", host[] = L"Host Game", join[] = L"Join Game", help[] = L"" CE_LOBBY_HELP_LABEL;
+	if (!sMenu)
+		return network;
+	switch (sMenu->mPage)
+	{
+	case NP_HOST:
+	case NP_HOST_ADDRESS:	return host;
+	case NP_JOIN:			return join;
+	case NP_HELP:			return help;
+	default:				return network;
+	}
 }
 
 void	PortCeNetOpen()
@@ -1604,12 +2131,18 @@ void	PortCeNetOpen()
 	sMenu->mNotice[0] = 0;
 	char text[256];
 	int good = 1;
-	if (CE_LobbyTakeOutcome(text, sizeof text, &good))
+	const int rematch = CE_LobbyResumeMatch();
+	const bool outcome = CE_LobbyTakeOutcome(text, sizeof text, &good) != 0;
+	if (outcome)
 	{
 		snprintf(sMenu->mOutcome, sizeof sMenu->mOutcome, "%s", text);
 		sMenu->mOutcomeGood = good;
 	}
-	sMenu->Show(NP_MENU);
+	sMenu->mReturningRoom = outcome && rematch != 0;
+	sMenu->Show(rematch == 1 ? NP_HOST : rematch == 2 ? NP_JOIN : NP_MENU);
+	// Back from a network game: what happened, in the message box over the first page (house style E1).
+	if (outcome && !rematch)
+		Box(sMenu->mOutcome);
 }
 
 void	PortCeNetButton(SINT button, float val)

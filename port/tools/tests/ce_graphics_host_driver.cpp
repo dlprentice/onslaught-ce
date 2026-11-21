@@ -6,13 +6,15 @@
 #include "portlog.h"
 #include <algorithm>
 
+// The game's own initial values, but for the depth path: these cases select it (the game starts it clear; "float-unused" clears it
+// again), which ce_graphics_policy_tests.py names as the one authored departure.
 CTweakSLONG GEFORCE_FX_POWER("legacy eligibility", 0), EXTRA_GEFORCE_FX_FEATURES("extras", 1), R32F_WORKS("float target", 0);
 CTweakSLONG MY_READABLE_Z_BUFFER("selected depth path", 1);
 namespace { unsigned policyReads, capabilityBeforeObjects, errors, policyLogs; }
 bool PortCeLayer() { return true; }
 void PortCeGraphicsApplyFreshDefaults() {}
 int PortUserFileState(const char *) { return 1; }	// the host cases never open the options file
-extern "C" int CE_SettingGetBool(const char *, int fallback) { ++policyReads; return fallback; }
+extern "C" int CE_SettingGetBool(const char *, int) { ++policyReads; return 1; }	// a saved Yes: without one only a new profile asks for the extra features
 extern "C" int CE_SettingSet(const char *, int) { return 1; }
 extern "C" int CE_FullModelsRequest(int) { ++errors; return 0; }	// the fresh defaults are never taken in the host cases
 extern "C" int CE_TerrainDetailRequest(int) { ++errors; return 0; }

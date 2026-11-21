@@ -115,13 +115,13 @@ static inline int ce_box_wrap(const char *in, char *out, size_t n, unsigned cols
 	"Choose the folder that contains BEA.exe (the game's Steam or disc install folder). Onslaught CE only reads from it."
 
 #define CE_BOX_RECORD \
-	"Session recording is on. A recording keeps your keyboard and mouse input and copies some files from your CE user folder, " \
-	"which can help reproduce a reported problem.\n\n" \
-	"Direct gamepad and flight-stick controls are unavailable while recording; use the keyboard and mouse. " \
-	"By default the game runs at 30 frames a second with the original menus, so the Onslaught CE menu and cheats are hidden.\n\n" \
+	"Session recording is on.\n\n" \
+	"A recording keeps your keyboard and mouse input and copies of some files from your user folder, to help reproduce a problem. " \
+	"While recording, gamepads and flight sticks do not work, the game runs at 30 frames a second, " \
+	"and the Onslaught CE menu and cheats are hidden.\n\n" \
 	"Record: record this session.\n" \
-	"Not this time: play without recording; you will be asked again next time.\n" \
-	"Stop recording: play without recording, and turn session recording off."
+	"Not this time: play without recording. You will be asked again next time.\n" \
+	"Turn recording off: play without recording, and do not ask again."
 
 #define CE_BOX_UPDATE_AGAIN "Nothing was changed, and this version is starting now. You will be offered the update again next time."
 #define CE_BOX_UPDATE_DOWNLOAD_FAILED "The update could not be downloaded.\n\n" CE_BOX_UPDATE_AGAIN
@@ -148,8 +148,7 @@ static inline int ce_box_text_bad_folder(char *out, size_t n, const char *why)
 
 static inline int ce_box_text_report(char *out, size_t n, int opened, const char *folder)
 {
-	int k = snprintf(out, n, "%s\n\nPlease attach the logs that exist: onslaught-ce.log, onslaught-ce.old.log, "
-		"onslaught-ce.concurrent-1.log and onslaught-ce.concurrent-2.log from this folder:\n%s",
+	int k = snprintf(out, n, "%s\n\nPlease describe what happened, and attach the file onslaught-ce.log from this folder:\n%s",
 		opened ? "The problem report page is open in your browser." : "Your browser could not be opened.", folder);
 	return k > 0 && (size_t)k < n;
 }

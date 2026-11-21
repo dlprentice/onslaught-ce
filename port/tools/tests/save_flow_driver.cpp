@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "ce_hooks_host_stubs.h"
 
 #define PC 1
 #define XBOX 2
@@ -74,8 +75,9 @@ struct CareerBoundary
     void SaveAndMarkInProgress(char *dest) { memcpy(dest, careerBytes, careerSize); }
 } CAREER;
 
-struct FrontendBoundary
+class CFrontEnd
 {
+public:
     enum { AUTO_SAVE_NOT, AUTO_SAVE_NORMAL, AUTO_SAVE_PRETEND };
     int autosave = AUTO_SAVE_NOT;
     TextBoundary mFrontEndText;
@@ -93,7 +95,7 @@ struct FrontendBoundary
     void PlaySound(int) {}
     static const char *PageName(int page) { return page == FEP_SUCCESS_PAGE ? "success" : page == FEP_VIRTUAL_KEYBOARD ? "keyboard" : page == FEP_MAIN ? "main" : "other"; }
 } FRONTEND;
-typedef FrontendBoundary CFrontEnd;
+typedef CFrontEnd FrontendBoundary;
 #define FET FRONTEND.mFrontEndText
 
 struct MessboxBoundary

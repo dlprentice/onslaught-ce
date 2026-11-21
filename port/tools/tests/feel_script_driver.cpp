@@ -163,8 +163,22 @@ static void TestShots()
 	CHECK(bad.rejected.size() == 4 && bad.shotsCount == 0, "malformed shots lines add nothing");
 }
 
+static void TestButtons()
+{
+	feel::Script s;
+	s.Parse("arm present 0\nbutton 300 u 0\nbutton 100 d 0\nbutton 150 d 1\nbutton 400 u 1\nbutton 50 d 3\n");
+	CHECK(s.ButtonsHeld(5 * kMs) == 0, "no button before arm");
+	s.PresentArm(0, 1000 * kMs);
+	CHECK(s.ButtonsHeld(1050 * kMs) == 0, "nothing held before the first step");
+	CHECK(s.ButtonsHeld(1100 * kMs) == 1, "the left button held from its down step");
+	CHECK(s.ButtonsHeld(1200 * kMs) == 3, "and the right one with it");
+	CHECK(s.ButtonsHeld(1300 * kMs) == 2, "the left let go at its up step, whatever the order written");
+	CHECK(s.ButtonsHeld(1500 * kMs) == 0, "both let go");
+}
+
 int main()
 {
+	TestButtons();
 	TestShots();
 	TestPace();
 	TestParse();

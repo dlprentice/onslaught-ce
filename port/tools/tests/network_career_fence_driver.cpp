@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include "ce_hooks_host_stubs.h"
 
 typedef wchar_t WCHAR;
 typedef int BOOL;

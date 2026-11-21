@@ -89,7 +89,9 @@ def main():
     start_update=update.index('static bool gDumpConfigReady');end_update=update.index('\nextern "C" void CE_NetUpdateAutomationPrepare',start_update)
     pace_start=replay.index('\tif (!gPacingObserved)',replay.index('void PortReplayFrame('));pace_end=replay.index('\n\tif (gRecording)',pace_start)
     clock=net(ROOT/'port/platform/common/clock.cpp')
-    owners={'/* CLOCK_MODE */':body(clock,'int Mode()'),'/* CLOCK_IDLE */':body(clock,'extern "C" int CE_NetClockOrdinary('),'/* WINDOW_STATE_AND_PREP */':window[start:end], '/* WINDOW_IDLE */':body(window,'extern "C" int CE_NetWindowAutomationIdle('),
+    # the clock modes as clock.cpp declares them (a copied list went stale when the fixed-step clock was added)
+    clock_enum=re.search(r'^enum \{ REAL = 0[^}]*\};',clock,re.M).group(0)
+    owners={'/* CLOCK_ENUM */':clock_enum,'/* CLOCK_MODE */':body(clock,'int Mode()'),'/* CLOCK_IDLE */':body(clock,'extern "C" int CE_NetClockOrdinary('),'/* WINDOW_STATE_AND_PREP */':window[start:end], '/* WINDOW_IDLE */':body(window,'extern "C" int CE_NetWindowAutomationIdle('),
             '/* WINDOW_PREFIX */':window_prefix(window),'/* ORIGINAL_WINDOW_PREFIX */':window_prefix(oldwindow),
             '/* UPDATE_STATE_AND_PREP */':update[start_update:end_update],'/* UPDATE_IDLE */':body(update,'extern "C" int CE_NetUpdateAutomationIdle('),
             '/* UPDATE_PREFIX */':update_prefix(update),'/* ORIGINAL_UPDATE_PREFIX */':update_prefix(oldupdate),

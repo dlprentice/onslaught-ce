@@ -139,6 +139,7 @@ void SetControlWord(unsigned short) {}
 #endif
 @DESKTOP@
 @RESET@
+@REPLAY_STACK@
 @CREATE@
 int main(int argc, char **argv) {
     if (argc != 7) return 2;
@@ -185,6 +186,8 @@ def generate(source: str, layer: str, mutant: str | None = None) -> str:
     guard = extract(source, r"^struct CeCursorBeforeModeChange\n\{\n.*?^\};")
     desktop = extract(source, r"^void DesktopFullscreen\(HWND focus, D3DPRESENT_PARAMETERS \*pp\)\n\{\n.*?^\}")
     reset = extract(source, r"^HRESULT STDMETHODCALLTYPE Reset\(IDirect3DDevice9 \*device, D3DPRESENT_PARAMETERS \*pp\)\n\{\n.*?^\}")
+    replay_stack = (extract(source, r"^static bool ReplayingOrRecording\(\)\n\{\n.*?^\}") + "\n" +
+                    extract(source, r"^static void __attribute__\(\(noinline\)\) ClearStackAfterDeviceCreation\(\)\n\{\n.*?^\}"))
     create = extract(source, r"^HRESULT STDMETHODCALLTYPE CreateDevice\(IDirect3D9 \*d3d,.*?^\}")
     if mutant == "reset":
         assert reset.count("cursorBefore.RestoreIfFailed(hr);") == 1
@@ -200,7 +203,8 @@ def generate(source: str, layer: str, mutant: str | None = None) -> str:
         guard = guard.replace("!windowId ||", "/* deliberate test mutant */")
     result = HARNESS
     for key, value in (("@LAYER@", extract(layer, r"^bool PortCeLayer\(\)\n\{\n.*?^\}")),
-                       ("@CURSOR_GUARD@", guard), ("@DESKTOP@", desktop), ("@RESET@", reset), ("@CREATE@", create)):
+                       ("@CURSOR_GUARD@", guard), ("@DESKTOP@", desktop), ("@RESET@", reset),
+                       ("@REPLAY_STACK@", replay_stack), ("@CREATE@", create)):
         result = result.replace(key, value)
     return result
 

@@ -213,6 +213,9 @@ void CeMusic::Clear()
 
 const char *CeMusic::Now() { return custom && at >= 0 && at < count ? tracks[at] : NULL; }
 const char *CeMusic::Folder() { return folder; }
+void CeMusic::Prepare() { if (Allowed()) Load(); }
+const char *CeMusic::Track(int index) { return index >= 0 && index < count ? tracks[index] : NULL; }
+unsigned CeMusic::Random() { return Draw(); }
 
 char *PortCeMusicPlay(char *gameFile, int selection)
 {

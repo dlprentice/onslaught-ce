@@ -1,36 +1,7 @@
-// SPDX-License-Identifier: GPL-3.0-only
-// port/game/ce_dodge_assist_rules.h: the rules of the Dodge Button, with no game types, so that a test runs exactly the code the
-// game runs (ce_dodge_assist.cpp reads the game and calls these; ce_dodge_assist_tests.py runs them on their own and beside the
-// game's own strafe code).
-//
-// What the game's dodge is. CBattleEngineWalkerPart::StrafeLeft and StrafeRight keep the last strafe value they were given
-// (mLastMoveXVal), when each side's full push began (mLastStartHard{Left,Right}Time) and whether a dash is under way. A push to a
-// side "begins" when the last value had not reached g_dash_start (0.9) toward that side and this one is beyond it. A push beyond
-// g_dash_end (0.8) toward a side, from a last value short of that, dashes that way when the OTHER side's full push began more than
-// half and less than the whole of g_dash_time (0.2 s) ago, by the game's own clock (EVENT_MANAGER.GetTime()). They do nothing in
-// the air or during a dash. The player's strafe action reaches them only when an input sends it, so the last value stays what it
-// was while nothing is pressed.
-//
-// The Dodge Button does not dash, move or time a dash itself. When the player presses it together with a left or right push of
-// their own, it sends the two strafe actions of a double tap through the game's own controller path, as keys would send them: a
-// full push to the other side, then, between 0.55 and 0.95 of g_dash_time later, a full push to the chosen side. The game's
-// StrafeLeft and StrafeRight decide, with their own code, and the dash is the original one. While the double tap runs, the
-// player's own strafe actions are not passed on, so that they cannot join or break it.
-//
-// Two facts of that code shape the rules. The first push is itself a push beyond g_dash_end, so it dashes the other way at once
-// when the chosen side's push began between half and the whole of g_dash_time earlier (a player who presses D and, 0.15 s later,
-// the Dodge Button): the first push waits until that has passed. And it counts as the beginning of a push only when the last
-// value was not already full that way (a player who strafed left, let go, and now dodges right would have the first push ignored
-// by the game, as the same double tap typed by hand is): a neutral strafe action, which the game handles as no input, comes first
-// when the last value was.
-//
-// Both facts need the walker's memory, which the assist cannot read (it is private to the walker), so it keeps a copy: the last
-// value and when each side's full push began. The copy is right only if it sees exactly the actions the walker takes. So it takes
-// every action of the player's own that the walker accepts (Real, and Follow while the assist is idle: after a pause, say), none that the
-// walker refuses (in the air or during a dash: the assist's own second push included, whose update says whether the walker takes it,
-// Update::mAccepts), and starts again when the game's clock runs backwards (a new level, a new walker) or when the glue says the walker
-// it followed is gone (a Battle Engine that is dying or another one: the game's clock runs on when a lost player is respawned). A copy
-// that missed a begin would let the first push go out too early and the walker's own code dash toward the other side.
+// A single axis follows the walker's ordinary opposite-push gesture. Keep
+// its input history through pauses, refuse a second dash while one is active,
+// and send both pushes only through the existing walker input actions.
+// PlanarAssist arbitrates between axes so a held diagonal remains one request.
 #ifndef PORT_CE_DODGE_ASSIST_RULES_H
 #define PORT_CE_DODGE_ASSIST_RULES_H
 
@@ -102,6 +73,8 @@ public:
 	}
 
 	// The player's own strafe actions are not passed on while this is true.
+	int InputDirection() const { return Seen(); }
+	bool HasInput() const { return mSeen[0] > Direction() || mSeen[1] > Direction(); }
 	bool Owning() const { return mOwning; }
 	bool Waiting() const { return mWaiting; }
 	int Side() const { return mSide; }
@@ -257,6 +230,69 @@ private:
 	float	mWantAt, mFirstAt, mLastX, mLastNow;
 	float	mStart[2];			// when each side's full push began (0 left, 1 right), by the game's clock
 	float	mSeen[2];			// how far the player pushed toward each side during this update
+};
+// Each axis has its own real input history. Only one may synthesize a gesture
+// at a time; a diagonal held across frames does not turn into a second dodge.
+class PlanarAssist : public Assist
+{
+public:
+	void Reset()
+	{
+		Assist::Reset();
+		mFore.Reset();
+		mAxis = mLastAxis = 0;
+		mChord = false;
+	}
+	bool Waiting() const { return Assist::Waiting() || mFore.Waiting(); }
+	bool Owning() const { return Assist::Owning() || mFore.Owning(); }
+	int Side() const { return mLastAxis == 2 ? 2 * mFore.Side() : Assist::Side(); }
+	bool Real(int direction, float value, float now, const Walker &walker, bool accepted)
+	{
+		return direction == -2 || direction == 2
+			? mFore.Real(direction / 2, value, now, walker, accepted)
+			: Assist::Real(direction, value, now, walker, accepted);
+	}
+	void Follow(int direction, float value, float now, const Walker &walker, bool accepted)
+	{
+		if (direction == -2 || direction == 2)
+			mFore.Follow(direction / 2, value, now, walker, accepted);
+		else
+			Assist::Follow(direction, value, now, walker, accepted);
+	}
+	int Step(const Update &u, Tap *out)
+	{
+		const int lateral = InputDirection(), depthSide = mFore.InputDirection();
+		const bool hasX = HasInput(), hasY = mFore.HasInput();
+		const bool ambiguous = (hasX && hasY) || (hasX && !lateral) || (hasY && !depthSide);
+		if (!u.mEligible || !u.mDodgeDown || (!hasX && !hasY)) {
+			mAxis = 0; mChord = false;
+		} else if (ambiguous) {
+			// Finish an already chosen direction. With no first edge there is no choice.
+			mChord = true;
+		} else if (!mChord) {
+			mAxis = hasX ? 1 : 2;
+		}
+		// Finish the pending pair even if the player releases the modifier.
+		const int axis = Assist::Waiting() ? 1 : mFore.Waiting() ? 2 : mAxis;
+		Update x = u, y = u;
+		x.mDodgeDown = u.mDodgeDown && axis == 1;
+		y.mDodgeDown = u.mDodgeDown && axis == 2;
+		Tap depth[kMaxTaps];
+		const int lateralCount = Assist::Step(x, out);
+		const int depthCount = mFore.Step(y, depth);
+		if (depthCount) {
+			for (int i = 0; i < depthCount; ++i)
+				out[i] = Tap{2 * depth[i].mSide, depth[i].mHard};
+			mLastAxis = 2;
+			return depthCount;
+		}
+		if (lateralCount) mLastAxis = 1;
+		return lateralCount;
+	}
+private:
+	Assist mFore;
+	int mAxis = 0, mLastAxis = 0;
+	bool mChord = false;
 };
 }
 

@@ -325,7 +325,7 @@ def swap(old, new):
 def drop_row(label):
     """The page's row with this label taken out of the table."""
     def mutate(text):
-        text, n = re.subn(r'\t\{L"%s: ".*?CEAF_\w+, [01]\},\n' % re.escape(label), "", text, count=1, flags=re.S)
+        text, n = re.subn(r'\t\{L"%s:".*?CEAF_\w+, [01]\},\n' % re.escape(label), "", text, count=1, flags=re.S)
         if n != 1:
             raise Fail("the row %s is not in the table" % label)
         return text
@@ -342,11 +342,11 @@ MUTANTS = (
      swap('CE_SettingGetBool("sharp_ui", 0)', 'CE_SettingGetBool("sharp_ui", 1)'), {"sharp_ui"},
      "sharp_ui: the row's default is 0, the consumer's is 1"),
     ("a table default is changed", FRONTEND,
-     swap('{L"Sharper Text: ", "sharp_ui", CE_CHOICES(kNoYes), 0,', '{L"Sharper Text: ", "sharp_ui", CE_CHOICES(kNoYes), 1,'),
+     swap('{L"Sharper Text:", "sharp_ui", CE_CHOICES(kNoYes), 0,', '{L"Sharper Text:", "sharp_ui", CE_CHOICES(kNoYes), 1,'),
      {"sharp_ui"}, "sharp_ui: the row's default is 1, the consumer's is 0"),
     ("a text row's default is changed", FRONTEND,
-     swap('{L"Console Text: ", "console_theme", CE_CHOICES(kConsoleTexts), 0,',
-          '{L"Console Text: ", "console_theme", CE_CHOICES(kConsoleTexts), 1,'), {"console_theme"},
+     swap('{L"Console Text:", "console_theme", CE_CHOICES(kConsoleTexts), 0,',
+          '{L"Console Text:", "console_theme", CE_CHOICES(kConsoleTexts), 1,'), {"console_theme"},
      "console_theme: the default green is not what the consumer takes otherwise (yellow)"),
     ("a key is mistyped", FRONTEND, swap('"hud_anchor", CE_CHOICES(kHudLayouts)', '"hud_ancor", CE_CHOICES(kHudLayouts)'), set(),
      "row hud_ancor has no consumer"),
@@ -374,9 +374,9 @@ MUTANTS = (
      swap("while (end < n && line[end] != '\\r') ++end;", "while (end < n && line[end] != '\\n') ++end;"), {"update_check"},
      "update_check: the page shows"),
     ("a row has no consumer", FRONTEND,
-     swap('\t{L"Record Play for Bug Reports: "',
-          '\t{L"Unread Row: ", "unread_key", CE_CHOICES(kNoYes), 0,\n\t {L"A row nothing reads.", kNextStart}, CEAF_NONE, 0},\n'
-          '\t{L"Record Play for Bug Reports: "'), set(), "row unread_key has no consumer"),
+     swap('\t{L"Session Recording:"',
+          '\t{L"Unread Row:", "unread_key", CE_CHOICES(kNoYes), 0,\n\t {L"A row nothing reads.", kNextStart}, CEAF_NONE, 0},\n'
+          '\t{L"Session Recording:"'), set(), "row unread_key has no consumer"),
     ("a consumer has no row", FRONTEND, drop_row("Sharper Text"), set(), "the consumer of sharp_ui has no row"),
     ("the console row says the next start", FRONTEND,
      swap('developer text.", kNextConsole}', 'developer text.", kNextStart}'), set(),

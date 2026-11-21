@@ -1,0 +1,11 @@
+--- a/DXEngine.cpp
++++ b/DXEngine.cpp
+@@ -1201,2 +1201,3 @@
++#include "ce_hooks.h"	// Port: the CE hook points (port/game/ce_hooks.h)
+ HRESULT	CDXEngine::PostRender(CViewport *viewport)	// FUNCTION: 0x0053ecc0
+ {
+@@ -1384,3 +1385,4 @@
++	if (!gMirrorPass) ce_hook_draw_overlay();	// CE hook point (port/game/ce_hooks.h): over the CE overlays
+ 	PLATFORM.EndScene();
+ 
+ 	mFirstFrame=FALSE;

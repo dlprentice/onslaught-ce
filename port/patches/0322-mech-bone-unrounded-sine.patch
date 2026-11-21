@@ -1,0 +1,24 @@
+--- a/MCMech.cpp
++++ b/MCMech.cpp
+@@ -908,7 +908,11 @@
+ 				footbase->GetWorldTransforms(0, 0, 0, mThing, &o, &p, false, false, false);
+ 				FVector	d = p - foot;
+ 
+-				d *= (float)sin((mLegC[i] * 3.14f) * 0.0055555557f /* retail 005db54c: / 180.0f */);
++				{	// Port (patch 0227): retail multiplies X by the unrounded fsin and Y by the rounded one (0049a2c7..0049a2d9)
++					long double s = bea_x87_fsinl((mLegC[i] * 3.14f) * 0.0055555557f /* retail 005db54c: / 180.0f */);
++					d.X = (float)(d.X * s);
++					d.Y = d.Y * (float)s;
++				}
+ 				if (d.X > 5.0f)
+ 					d.X = 5.0f;
+ 				if (d.Y > 5.0f)
+@@ -966,7 +970,7 @@
+ 			{
+ 				mLegPos[*leg - 1] += v * (float)mLegC[*leg - 1] * 0.0055555557f /* retail 005db54c: / 180.0f */;
+ 				mLegA[*leg - 1] = 0;
+-				mLegB[*leg - 1] = -(float)sin((mLegC[*leg - 1] * 3.14f) * 0.0055555557f /* retail 005db54c: / 180.0f */) * mParamD;
++				mLegB[*leg - 1] = -(float)(bea_x87_fsinl((mLegC[*leg - 1] * 3.14f) * 0.0055555557f /* retail 005db54c: / 180.0f */) * mParamD);	// Port (patch 0227): retail multiplies the unrounded fsin (0049a9e1..0049a9e8)
+ 			}
+ 		}
+ 		else

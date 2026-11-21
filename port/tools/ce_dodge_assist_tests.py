@@ -78,7 +78,7 @@ def pieces(patched, with_patch):
     structs = controller_h[controller_h.index('struct SControlInput'):controller_h.index('class CController\n')]
     constructors = controller[controller.index('SControlBinding::SControlBinding(bool'):controller.index('HRESULT InitMouse()')]
     rows = []
-    for name in ('BUTTON_MECH_STRAFE_LEFT', 'BUTTON_MECH_STRAFE_RIGHT', 'BUTTON_MECH_LANDING_JETS', 'BUTTON_MECH_MORPH'):
+    for name in ('BUTTON_MECH_STRAFE_LEFT', 'BUTTON_MECH_STRAFE_RIGHT', 'BUTTON_MECH_FORWARD', 'BUTTON_MECH_BACKWARD', 'BUTTON_MECH_LANDING_JETS', 'BUTTON_MECH_MORPH'):
         found = [l.strip() for l in pc.splitlines() if re.match(r'SControlBinding\(1, ' + name + r',', l.strip())]
         assert len(found) == 1, name
         rows.extend(found)
@@ -107,7 +107,7 @@ def pieces(patched, with_patch):
         'console_find.inc': body(console_h, r'CConsoleVar\s*\*FindVariable\(char \*name\)'),
         'walker.inc': '\n'.join(re.search(r'^(?:float|int) CBattleEngineWalkerPart::' + n + r'\s*=.*?;', walker, re.M).group(0)
                                 for n in ('mDashTime', 'mDashStart', 'mDashEnd', 'mDashLength', 'mDashVelocity')) + '\n' +
-                      body(walker, r'^void\s+CBattleEngineWalkerPart::StrafeLeft\(') + body(walker, r'^void\s+CBattleEngineWalkerPart::StrafeRight\('),
+                      body(walker, r'^void\s+CBattleEngineWalkerPart::Forward\(') + body(walker, r'^void\s+CBattleEngineWalkerPart::Backward\(') + body(walker, r'^void\s+CBattleEngineWalkerPart::StrafeLeft\(') + body(walker, r'^void\s+CBattleEngineWalkerPart::StrafeRight\('),
         'gamepad.inc': gamepad,
         'analog_dead_zone.inc': '\n'.join(re.findall(r'^#define ANALOGUE_DEAD_ZONE(?:_SCALE)?\s+[^\n]+', controller, re.M)) + '\n',
         'mapped_input.inc': body(controller, r'^float\s+CController::GetMappedInputValue\('),
@@ -120,7 +120,7 @@ def pieces(patched, with_patch):
     }
 
 
-MODES = ['key-right', 'key-left', 'pad-right', 'pad-left', 'tap-and-hold-alike', 'typed-equals-assisted', 'sweep', 'hazard', 'chain',
+MODES = ['four-directions', 'chord-order', 'rebound-fore-aft', 'fore-aft-controls', 'binding-owners', 'key-right', 'key-left', 'pad-right', 'pad-left', 'tap-and-hold-alike', 'typed-equals-assisted', 'sweep', 'hazard', 'chain',
          'old-history', 'hitch', 'slow', 'dash-time', 'pause-mid', 'pause-memory', 'two-players', 'ini-reload',
          'air-refusal', 'idle-begin', 'air-retry', 'chaos', 'chaos-air', 'clock-restart', 'new-level', 'new-walker', 'typed-sweep', 'switch', 'buffer',
          'stick-threshold', 'window', 'rules', 'pause-want', 'other-actions', 'env-empty', 'dash-time-change', 'dash-time-range', 'dash-start', 'dash-start-retail', 'no-console-vars',
@@ -208,6 +208,10 @@ def main():
         # The rules: a stand-in for each statement and number, one at a time
         R, G, M = 'ce_dodge_assist_rules.h', 'dodge_glue.inc', 'mapping.inc'
         mutants = [
+            ('fore-and-aft-swapped', G, 'taps[k].mSide == -2 ? BUTTON_MECH_FORWARD : taps[k].mSide == 2 ? BUTTON_MECH_BACKWARD',
+             'taps[k].mSide == -2 ? BUTTON_MECH_BACKWARD : taps[k].mSide == 2 ? BUTTON_MECH_FORWARD', 1, 'four-directions'),
+            ('no-fore-aft-modifier', R, 'y.mDodgeDown = u.mDodgeDown && axis == 2;', 'y.mDodgeDown = false;', 1, 'four-directions'),
+            ('chord-drifts-to-second-axis', R, 'else if (!mChord) {', 'else {', 1, 'four-directions'),
             # (name, piece, old, new, count, a mode that must notice[, more edits as (piece, old, new, count) for a mutant of several places])
             ('keeps-players-strafe', R, 'if (mOwning)\n\t\t\treturn true;', 'if (false)\n\t\t\treturn true;', 1, 'key-right'),
             ('owning-neutral-passes', R, 'if (mOwning)\n\t\t\treturn true;', 'if (mOwning && value != 0.f)\n\t\t\treturn true;', 1, 'rules'),
@@ -291,7 +295,7 @@ def main():
             ('setting-read-every-update', G, 'if (gSettingStale)\n\t{', 'gSettingStale = true;\n\tif (gSettingStale)\n\t{', 1, 'ini-reload'),
             ('cue-asks-ce-ini', G, 'return (gSetting >= 0 ? gSetting != 0 : SettingOn());', 'return SettingOn();', 1, 'ini-reload'),
             ('setting-never-read-again', G, 'if (!engine) gSettingStale = true;', '', 1, 'ini-reload'),
-            ('bound-key-used', G, 'return PortCeDodgeAssistKeyFree() ? DIK_LCONTROL : 0;', 'return DIK_LCONTROL;', 1, 'gate-bound-key'),
+            ('bound-key-used', G, 'return PortCeDodgeAssistKeyFree() ? PortCeDodgeBindingKey() : 0;', 'return PortCeDodgeBindingKey();', 1, 'gate-bound-key'),
             ('key-bound-once-used', G, 'b->mInput[i].mType == KEY_ON || b->mInput[i].mType == KEY_ONCE || b->mInput[i].mType == KEY_RELEASE',
              'b->mInput[i].mType == KEY_ON || b->mInput[i].mType == KEY_RELEASE', 1, 'gate-bound-key-once'),
             ('key-bound-release-used', G, 'b->mInput[i].mType == KEY_ON || b->mInput[i].mType == KEY_ONCE || b->mInput[i].mType == KEY_RELEASE',
@@ -310,7 +314,7 @@ def main():
             ('acts-in-flight', G, 'engine->GetState() == BATTLE_ENGINE_STATE_WALKER ? engine->GetWalkerPart() : NULL', 'engine ? engine->GetWalkerPart() : NULL', 1, 'gate-jet'),
             ('acts-unpowered', G, 'engine && !engine->IsDying() && engine->GetIsPoweredUp()', 'engine && !engine->IsDying()', 1, 'gate-unpowered'),
             ('keytrap-ignored', G, ' || LT.GetKeytrap()) return 0;', ') return 0;', 1, 'gate-keytrap'),
-            ('filters-every-action', G, 'if ((button != BUTTON_MECH_STRAFE_LEFT && button != BUTTON_MECH_STRAFE_RIGHT) || pad < 0 || pad >= kPads) return 0;',
+            ('filters-every-action', G, 'if ((button != BUTTON_MECH_STRAFE_LEFT && button != BUTTON_MECH_STRAFE_RIGHT &&\n\t     button != BUTTON_MECH_FORWARD && button != BUTTON_MECH_BACKWARD) || pad < 0 || pad >= kPads) return 0;',
              'if (pad < 0 || pad >= kPads) return 0;', 1, 'other-actions'),
             ('wrong-pad-button', 'ce_dodge_assist.h', 'CE_DODGE_PAD_BUTTON = 0', 'CE_DODGE_PAD_BUTTON = 1', 1, 'key-right'),
             ('one-state-for-every-pad', G, 'if (pad < 0 || pad >= kPads) return 0;\n\tState &s = gState[pad];\n\tCeDodge::Update u',

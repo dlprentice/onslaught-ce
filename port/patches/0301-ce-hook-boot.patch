@@ -1,0 +1,11 @@
+--- a/ltshell.cpp
++++ b/ltshell.cpp
+@@ -606,2 +606,3 @@
++#include "ce_hooks.h"	// Port: the CE hook points (port/game/ce_hooks.h)
+ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow)	// FUNCTION: 0x00512130
+ {
+@@ -690,3 +691,4 @@
+ 	LT.mhInstance=hInstance;
++	ce_hook_boot();	// CE hook point (port/game/ce_hooks.h)
+ 
+ 	// the saved options (a career-shaped file: Load applies its key bindings and options, then the career is wiped)

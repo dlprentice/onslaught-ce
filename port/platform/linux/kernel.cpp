@@ -135,6 +135,12 @@ static ULONGLONG MonotonicNs()
 }
 
 static const ULONGLONG kStartNs = MonotonicNs();
+#ifndef CE_NETWORK_OFF
+#ifdef CE_NET_TEST_AUTOMATION
+extern "C" unsigned long long CE_LockstepTestClockJitterNs(void);
+#define GameNs GameNsReal
+#endif
+#endif
 // The real clock the game reads: the operating system's, less the time the game waited for its minimized window (common/clock.cpp: the CE layer only, never in the virtual clocks).
 static ULONGLONG GameNs()
 {
@@ -147,6 +153,24 @@ static ULONGLONG GameNs()
 	}
 }
 
+#ifndef CE_NETWORK_OFF
+#ifdef CE_NET_TEST_AUTOMATION
+#undef GameNs
+// Test (BEA_LOCKSTEP_TEST_CLOCK_JITTER, port/game/ce_network_lockstep.cpp): this peer's clock reads land a little later, by a random amount, never backwards on a thread.
+static ULONGLONG GameNs()
+{
+	ULONGLONG value = GameNsReal();
+	if (const ULONGLONG j = CE_LockstepTestClockJitterNs())
+	{
+		static thread_local ULONGLONG last;
+		value += j;
+		if (value < last) value = last;
+		last = value;
+	}
+	return value;
+}
+#endif
+#endif
 extern "C" void WINAPI Sleep(DWORD ms)
 {
 	PortClockSleep(ms);

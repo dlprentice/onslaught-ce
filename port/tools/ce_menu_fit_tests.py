@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-only
-"""Check the value fit of the options-style lists (port/game/ce_menu_fit.cpp, patch 0212).
+"""Check the value fit, the drop-down window and the Video Options row pitch of the options-style lists (port/game/ce_menu_fit.cpp,
+patches 0212 and 0215).
 
-The production helper is compiled against a font that measures nine units a character; the game's actual patched
-CMenuMenuItem::RenderList is read as text to prove the patch reaches exactly the value draw, keeps the game's own
-arguments, leaves the label and the dropdown alone, and does not move a line of the file. Authored mutants of the helper
-and of the patched draw must each be caught."""
+The production helpers are compiled against a font that measures nine units a character and a set clock; the game's actual
+patched CMenuMenuItem::RenderList and CMenuOptionsList::Render are read as text to prove the patches reach exactly the value
+draw, the dropdown's entries, its window and the list's row pitch, keep the game's own arguments wherever the helpers answer
+"the original's layout", and do not move a line of either file. The row positions the pitch gives Video Options are computed
+from the header's constants and the original's centring. Authored mutants of the helpers and of the patched text must each be
+caught."""
 from __future__ import annotations
 import argparse
 import hashlib
@@ -20,8 +23,47 @@ ROOT = Path(__file__).resolve().parents[2]
 PORT = ROOT / "port"
 SUPPORT = PORT / "tools/tests"
 CASES = ("fits", "exact", "adapter", "squeeze-limit", "just-inside-limit", "no-room", "layer-off", "extent-fails", "null", "repeat",
-         "list-fits", "list-cut", "list-layer-off", "list-extent-fails")
+         "list-fits", "list-cut", "list-layer-off", "list-extent-fails", "window-limits", "window-fits", "window-sizes", "window-follows",
+         "window-forget", "window-edge", "window-page", "window-layer-off", "pitch")
 PATCH = "0212-ce-menu-value-fit.patch"
+PITCH_PATCH = "0215-ce-video-options-row-pitch.patch"
+# The front end's page numbers the helper names (src/FrontEndPage.h: FEP_MAIN, FEP_OPTIONS, and FEP_LANGUAGE_TEST, the slot of
+# Onslaught CE's own page), written beside the driver so that no game header is compiled.
+FRONT_END_PAGE = """// Written by ce_menu_fit_tests.py: the page numbers of src/FrontEndPage.h the menu fit helper names.
+#ifndef MENU_FIT_FRONTENDPAGE_H
+#define MENU_FIT_FRONTENDPAGE_H
+enum EFrontEndPage { FEP_MAIN = 0, FEP_OPTIONS = 17, FEP_LANGUAGE_TEST = 21 };
+#endif
+"""
+# Every line patch 0212 changes in RenderList to lay out a list as a window, beside the line it was: on the original's path
+# (PortCeListWindow answering 0) each computes what the original computed, with the original's calls. The value fit's own lines
+# are held by check_patched_draw.
+WINDOW_LINES = (
+    ("{ extern WCHAR *PortCeValueFit(WCHAR *, float, float *); extern WCHAR *PortCeListFit(WCHAR *, float);",
+     "{ extern WCHAR *PortCeValueFit(WCHAR *, float, float *); extern WCHAR *PortCeListFit(WCHAR *, float); "
+     "extern int PortCeListWindow(const void *, float, long, int, int, int, float *, int *, int *); extern void PortCeListHover(int);"),
+    ("\t\tint\t\tn = GetNumChoices();",
+     "\t\tint\t\tn = GetNumChoices(); int ceFirst = 0; const int ceWindow = PortCeListWindow(this, y, size.cy, n, mSelection, "
+     "FRONTEND.GetCurrentPage(), &ly, &ceFirst, &n);"),
+    ("\t\t\t\t\t\t\t\t\t(widest + 3) / 16.f, (GetNumChoices() * size.cy) * yscale / 16.f, 0.f, 1.f, 0.f, 1.f);",
+     "\t\t\t\t\t\t\t\t\t(widest + 3) / 16.f, ((ceWindow ? n : GetNumChoices()) * size.cy) * yscale / 16.f, 0.f, 1.f, 0.f, 1.f);"),
+    ("\t\tfor (i = 0; i < n; i++)", "\t\tfor (i = ceFirst; i < ceFirst + n; i++)"),
+    ("\t\t\t\tmSelection = i;\n\n\t\t\tPLATFORM.Font", "\t\t\t\t{ mSelection = i; if (ceWindow) PortCeListHover(i); }\n\n\t\t\tPLATFORM.Font"),
+)
+# Every line patch 0215 changes in CMenuOptionsList::Render, beside the line it was: with cePitch 0 (any list without CE's Video
+# Options rows, and every list outside the ordinary CE menus) each is the original's own expression.
+PITCH_LINES = (
+    ("WCHAR\t*CMenuOptionsList::Render(CPauseMenu *menu)\n{\n",
+     "WCHAR\t*CMenuOptionsList::Render(CPauseMenu *menu)\n{ extern int PortCeCompactPitch(const void *); extern float PortCeCompactShift(int, bool); "
+     "int cePitch = 0; { CMenuItem *ceItem; FOR_ALL_ITEMS_IN(mItems, ceItem) if (!cePitch) cePitch = PortCeCompactPitch(ceItem); }\n"),
+    ("\tfloat\ty = mY;\n", "\tfloat\ty = mY + PortCeCompactShift(cePitch, options_page);\n"),
+    ("\t\theight += item->GetHeight();\n", "\t\theight += cePitch ? cePitch : item->GetHeight();\n"),
+    ("if (CMenuItem::IsMouseInRect(0.f, ty, 640.f, ty + item->GetHeight()))",
+     "if (CMenuItem::IsMouseInRect(0.f, ty, 640.f, ty + (cePitch ? cePitch : item->GetHeight())))"),
+    ("if (CMenuItem::MouseClickedInRect(0.f, ty, 640.f, ty + item->GetHeight()))",
+     "if (CMenuItem::MouseClickedInRect(0.f, ty, 640.f, ty + (cePitch ? cePitch : item->GetHeight())))"),
+    ("\t\tty += item->GetHeight();\n", "\t\tty += cePitch ? cePitch : item->GetHeight();\n"),
+)
 
 
 def module(name, path):
@@ -66,6 +108,78 @@ def calls_of(body, callee):
             i += 1
         calls.append(re.sub(r"\s+", " ", body[found.end():i - 1]).strip())
     return calls
+
+
+def check_lines(patched, original, lines, what):
+    """`patched` is `original` with exactly these replacements, each made once, and no line moved."""
+    if patched.count("\n") != original.count("\n"):
+        raise AssertionError(what + ": the patch moved a line")
+    expected = original
+    for old, new in lines:
+        if expected.count(old) != 1:
+            raise AssertionError(what + ": the original line the patch changes is not the one the test knows: " + old[:60])
+        expected = expected.replace(old, new)
+    if patched != expected:
+        raise AssertionError(what + ": the patch changes more, or other, than the reviewed lines")
+
+
+def check_window(patched, before_window):
+    """RenderList's window lines: exactly the reviewed ones, on top of the value fit."""
+    check_lines(patched, before_window, WINDOW_LINES, "RenderList's window")
+    body = render_list(patched)
+    # ly is set before the window call writes it, and the original's clamps and height read the window's count after it
+    order = [body.index(s) for s in ("float\tly = float(top);", "PortCeListWindow(this", "float\theight = float(n * size.cy);",
+                                      "if (ly < 0.f)", "for (i = ceFirst;")]
+    if order != sorted(order):
+        raise AssertionError("the window must be laid out after the original's top and before its clamps and its entries")
+
+
+def check_pitch(patched, original):
+    """CMenuOptionsList::Render's pitch lines: exactly the reviewed ones; GetMenuPanelSize and the rest of the file are the game's."""
+    check_lines(patched, original, PITCH_LINES, "the options list's pitch")
+    found = re.search(r"^WCHAR\s*\*CMenuOptionsList::Render\s*\(", patched, flags=re.M)
+    body = block(patched, found.start())
+    if "item->GetHeight()" in body.replace("(cePitch ? cePitch : item->GetHeight())", "").replace("cePitch ? cePitch : item->GetHeight()", ""):
+        raise AssertionError("every row height Render uses must follow the list's pitch")
+
+
+def rows(pitch, shift, count, centre, title):
+    """The tops of a CMenuOptionsList's rows (src/MenuOptionsList.cpp Render): `count` rows `pitch` apart centred on centre + shift,
+    after the list's own title (30 units) when it draws one (a level's Pause Menu)."""
+    height = count * pitch
+    ty = (centre + shift) - height * 0.5 - 15.0
+    if title:
+        ty += 30.0
+    return [ty + pitch * i for i in range(count)]
+
+
+def check_capacity(header):
+    """The window's entry count is an integer division of whole units: the game's units convert floats to integers by rounding
+    (/QIfist), so a float quotient such as 348 / 16 = 21.75 would give 22 entries there while the host driver truncates to 21
+    (observed 2026-11-12: a 22-entry list at 5120 x 2880 drew 22 and ended under the help line)."""
+    body = header[header.index("inline bool PortCeListPlace("):]
+    body = body[:body.index("\n}\n")]
+    if "int capacity = int(bottomLimit - topLimit) / int(room);" not in body or re.search(r"int\([^()]*\([^()]*\)\s*/", body):
+        raise AssertionError("the window's capacity must be an integer division, not a float quotient converted to int")
+
+
+def check_rows(header):
+    """Video Options at CE's pitch: the front end's first row where the original's fourteen rows put theirs, every row above the help
+    line; in a level, Back above the message bar where 20 units drew it across the bar."""
+    pitch = int(re.search(r"kCeCompactPitch = (\d+);", header).group(1))
+    shift = float(re.search(r"kCeCompactFrontShift = ([0-9.]+)f;", header).group(1))
+    original = rows(20, 0, 14, 300, False)
+    front = rows(pitch, shift, 17, 300, False)
+    before = rows(20, 0, 17, 300, False)
+    if front[0] != original[0] or front[0] != 145:
+        raise AssertionError(f"the front end's first row is at {front[0]}, the original's at {original[0]}")
+    if not (front[-1] + 16 <= 452 and front[-1] <= before[-1]):
+        raise AssertionError("Back must end above the help line, no lower than before")
+    pause, pause_before = rows(pitch, 0, 17, 240, True), rows(20, 0, 17, 240, True)
+    if not (pause[-1] + 16 <= 406 < pause_before[-1] + 16):
+        raise AssertionError(f"in a level Back must end above the message bar (y 406): {pause[-1] + 16}, was {pause_before[-1] + 16}")
+    return {"front_first": front[0], "front_back_end": front[-1] + 16, "pause_first": pause[0], "pause_back_end": pause[-1] + 16,
+            "pause_back_end_at_20": pause_before[-1] + 16}
 
 
 def check_patched_draw(patched, original):
@@ -114,11 +228,24 @@ def main():
     build = module("menu_fit_build", PORT / "build.py")
     patched = build.patched_text(["MenuItem.cpp"])["MenuItem.cpp"]
     original = build.patched_text(["MenuItem.cpp"], skip=(PATCH,))["MenuItem.cpp"]
-    check_patched_draw(patched, original)
+    # The value fit's lines alone (the window's undone): check_patched_draw holds them against the original as before.
+    before_window = patched
+    for old, new in WINDOW_LINES:
+        before_window = before_window.replace(new, old)
+    check_patched_draw(before_window, original)
+    check_window(patched, before_window)
+    listed = build.patched_text(["MenuOptionsList.cpp"])["MenuOptionsList.cpp"]
+    list_original = build.patched_text(["MenuOptionsList.cpp"], skip=(PITCH_PATCH,))["MenuOptionsList.cpp"]
+    check_pitch(listed, list_original)
+    positions = check_rows((PORT / "game/ce_menu_fit.h").read_text())
+    check_capacity((PORT / "game/ce_menu_fit.h").read_text())
     helper = PORT / "game/ce_menu_fit.cpp"
     header = PORT / "game/ce_menu_fit.h"
     driver = SUPPORT / "ce_menu_fit_driver.cpp"
-    flags = ["clang++", "-std=c++14", "-Wall", "-Werror", "-I", SUPPORT / "menu_fit", "-I", PORT / "game"]
+    (out / "stand-in").mkdir(exist_ok=True)
+    (out / "stand-in/FrontEndPage.h").write_text(FRONT_END_PAGE)
+    flags = ["clang++", "-std=c++14", "-Wall", "-Werror", '-DCE_VERSION="menu-fit"', "-I", out / "stand-in", "-I", SUPPORT / "menu_fit",
+             "-I", PORT / "game"]
 
     def compile_one(directory, source=helper, include=PORT / "game"):
         directory.mkdir(parents=True, exist_ok=True)
@@ -144,11 +271,34 @@ def main():
                                        "if (!font) return text;\n    if (!font->GetTextExtent(text, &size)) size.cx = 4000;\n    const float room = kCeValueRight - x;\n    float fit", "extent-fails"),
             "list-ignores-failed-measure": (text, "if (!font || !font->GetTextExtent(text, &size) || size.cx <= 0) return text;\n    const float room = kCeValueRight - x;\n    if ((float)size.cx <= room) return text;",
                                             "if (!font) return text;\n    if (!font->GetTextExtent(text, &size)) size.cx = 4000;\n    const float room = kCeValueRight - x;\n    if ((float)size.cx <= room) return text;", "list-extent-fails"),
+            "window-no-layer-gate": (text, "if (!owner || !PortCeQualityOptionsAvailable()) return 0;", "if (!owner) return 0;", "window-layer-off"),
+            "window-recentres-every-frame": (text, "open ? gWindow.first : -1", "-1", "window-follows"),
+            "window-never-forgets": (text, "gWindow.owner == owner && Within(now, gWindow.seen, kCeListForget)", "gWindow.owner == owner", "window-forget"),
+            "window-shared-by-lists": (text, "gWindow.owner == owner && Within(now, gWindow.seen, kCeListForget)", "Within(now, gWindow.seen, kCeListForget)", "window-forget"),
+            "no-edge-scroll": (text, "const int step = PortCeListEdgeStep(place.first, place.shown, count, hovered);", "const int step = 0 * hovered;", "window-edge"),
+            "edge-scroll-unthrottled": (text, "if (step && !Within(now, gWindow.scrolled, kCeListScrollEvery))", "if (step)", "window-edge"),
+            "hover-kept-forever": (text, "    gWindow.hovered = -1;\n", "\n", "window-edge"),
+            "front-limits-everywhere": (text, "return PortCeAsOptions((EFrontEndPage)page) == FEP_OPTIONS;", "return true;", "window-page"),
+            "ce-page-as-pause": (text, "return PortCeAsOptions((EFrontEndPage)page) == FEP_OPTIONS;", "return page == FEP_OPTIONS;", "window-page"),
+            "pitch-ungated": (text, "return (PortCeQualityRow(item) && PortCeQualityOptionsAvailable()) ? kCeCompactPitch : 0;", "return PortCeQualityRow(item) ? kCeCompactPitch : 0;", "pitch"),
+            "pitch-every-list": (text, "return (PortCeQualityRow(item) && PortCeQualityOptionsAvailable()) ? kCeCompactPitch : 0;", "return PortCeQualityOptionsAvailable() ? kCeCompactPitch : 0;", "pitch"),
+            "shift-in-pause": (text, "return (pitch && options_page) ? kCeCompactFrontShift : 0.f;", "return pitch ? kCeCompactFrontShift : 0.f;", "pitch"),
         }
         header_mutants = {
             "no-smallest-scale": (head, "kCeValueMinScale = 0.75f;", "kCeValueMinScale = 0.01f;", "squeeze-limit"),
             "wrong-edge": (head, "kCeValueRight = 600.f;", "kCeValueRight = 700.f;", "adapter"),
             "squeezes-fitting-text": (head, "if (!(width > 0.f) || width <= room) return 1.f;", "if (!(width > 0.f)) return 1.f;", "fits"),
+            "window-always": (head, "if ((float)top >= topLimit && (float)top + (float)(count * rowh) <= bottomLimit) return false;", "(void)top;", "window-fits"),
+            "window-squeezed-capacity": (head, "const int shown = count < capacity ? count : capacity;", "const int shown = count + 0 * capacity;", "window-sizes"),
+            "window-not-centred": (head, "if (first < 0) first = selection - shown / 2;", "if (first < 0) first = selection;", "window-sizes"),
+            "window-not-following": (head, "else if (selection >= first + shown) first = selection - shown + 1;", "", "window-follows"),
+            "window-past-end": (head, "if (first > count - shown) first = count - shown;", "", "window-sizes"),
+            "window-over-title": (head, "if (placed < topLimit) placed = topLimit;", "", "window-sizes"),
+            "window-under-help": (head, "if (placed + room * (float)shown > bottomLimit) placed = bottomLimit - room * (float)shown;", "", "window-sizes"),
+            "window-front-top": (head, "kCeListFrontTop = 104.f;", "kCeListFrontTop = 80.f;", "window-limits"),
+            "window-sized-by-font": (head, "const float room = (float)rowh > kCeListEntryRoom ? (float)rowh : kCeListEntryRoom;", "const float room = (float)rowh;", "window-sizes"),
+            "edge-step-unbounded": (head, "if (hovered == first && first > 0) return -1;", "if (hovered == first) return -1;", "window-edge"),
+            "pitch-twenty": (head, "kCeCompactPitch = 18;", "kCeCompactPitch = 20;", "pitch"),
         }
         for label, (original_text, old, new, case) in {**helper_mutants, **header_mutants}.items():
             if original_text.count(old) != 1:
@@ -169,23 +319,68 @@ def main():
             "list-draw-unfitted": ("c, PortCeListFit(GetChoiceText(i), lx + K),", "c, GetChoiceText(i),"),
             "list-wrong-column": ("PortCeListFit(GetChoiceText(i), lx + K), &s)", "PortCeListFit(GetChoiceText(i), lx), &s)"),
         }
-        column = re.search(r"DrawTextWithShadow\(\s*lx\s*\+\s*([0-9.]+f?)\s*,", patched).group(1)
+        column = re.search(r"DrawTextWithShadow\(\s*lx\s*\+\s*([0-9.]+f?)\s*,", before_window).group(1)
         for label, (old, new) in draw_mutants.items():
             old, new = old.replace("lx + K", "lx + " + column), new.replace("lx + K", "lx + " + column)
-            if patched.count(old) != 1:
+            if before_window.count(old) != 1:
                 raise AssertionError("nonunique causal anchor: " + label)
             try:
-                check_patched_draw(patched.replace(old, new), original)
+                check_patched_draw(before_window.replace(old, new), original)
             except AssertionError:
                 controls[label] = "detected"
             else:
                 raise AssertionError("the structural check missed the mutant " + label)
+        # the window's and the pitch's lines: each of these must break their structural checks
+        text_mutants = {
+            "window-loop-from-zero": ("MenuItem", "for (i = ceFirst; i < ceFirst + n; i++)", "for (i = 0; i < n; i++)"),
+            "window-box-full-height": ("MenuItem", "((ceWindow ? n : GetNumChoices()) * size.cy)", "(GetNumChoices() * size.cy)"),
+            "window-box-always-window": ("MenuItem", "((ceWindow ? n : GetNumChoices()) * size.cy)", "(n * size.cy)"),
+            "window-hover-unrecorded": ("MenuItem", "{ mSelection = i; if (ceWindow) PortCeListHover(i); }", "{ mSelection = i; }"),
+            "window-hover-always": ("MenuItem", "{ mSelection = i; if (ceWindow) PortCeListHover(i); }", "{ mSelection = i; PortCeListHover(i); }"),
+            "window-no-call": ("MenuItem", " const int ceWindow = PortCeListWindow(this, y, size.cy, n, mSelection, FRONTEND.GetCurrentPage(), &ly, &ceFirst, &n);", " const int ceWindow = 0;"),
+            "window-after-clamps": ("MenuItem", "\t\tif (ly < 0.f)\n", "\t\tif (ly < -1.f)\n"),
+            "pitch-mouse-at-item-height": ("MenuOptionsList", "IsMouseInRect(0.f, ty, 640.f, ty + (cePitch ? cePitch : item->GetHeight()))", "IsMouseInRect(0.f, ty, 640.f, ty + item->GetHeight())"),
+            "pitch-click-at-item-height": ("MenuOptionsList", "MouseClickedInRect(0.f, ty, 640.f, ty + (cePitch ? cePitch : item->GetHeight()))", "MouseClickedInRect(0.f, ty, 640.f, ty + item->GetHeight())"),
+            "pitch-step-at-item-height": ("MenuOptionsList", "\t\tty += cePitch ? cePitch : item->GetHeight();", "\t\tty += item->GetHeight();"),
+            "pitch-height-at-item-height": ("MenuOptionsList", "\t\theight += cePitch ? cePitch : item->GetHeight();", "\t\theight += item->GetHeight();"),
+            "pitch-no-shift": ("MenuOptionsList", "\tfloat\ty = mY + PortCeCompactShift(cePitch, options_page);", "\tfloat\ty = mY;"),
+            "pitch-panel-too": ("MenuOptionsList", "\t\tph += item->GetHeight();", "\t\tph += 18;"),
+        }
+        for label, (which, old, new) in text_mutants.items():
+            text_now = patched if which == "MenuItem" else listed
+            if text_now.count(old) != 1:
+                raise AssertionError("nonunique causal anchor: " + label)
+            try:
+                if which == "MenuItem":
+                    check_window(text_now.replace(old, new), before_window)
+                else:
+                    check_pitch(text_now.replace(old, new), list_original)
+            except AssertionError:
+                controls[label] = "detected"
+            else:
+                raise AssertionError("the structural check missed the mutant " + label)
+        try:
+            check_capacity(head.replace("int capacity = int(bottomLimit - topLimit) / int(room);", "int capacity = int((bottomLimit - topLimit) / room);"))
+        except AssertionError:
+            controls["capacity-float-quotient"] = "detected"
+        else:
+            raise AssertionError("the capacity check missed the float quotient")
+        for label, (old, new) in {"rows-first-moved": ("kCeCompactFrontShift = 13.f;", "kCeCompactFrontShift = 9.f;"),
+                                  "rows-pitch-twenty": ("kCeCompactPitch = 18;", "kCeCompactPitch = 20;")}.items():
+            try:
+                check_rows(head.replace(old, new))
+            except AssertionError:
+                controls[label] = "detected"
+            else:
+                raise AssertionError("the row check missed the mutant " + label)
     receipt = {"helper_sha256": hashlib.sha256(helper.read_bytes()).hexdigest(), "header_sha256": hashlib.sha256(header.read_bytes()).hexdigest(),
                "patch_sha256": hashlib.sha256((PORT / "patches" / PATCH).read_bytes()).hexdigest(),
-               "observations": observations, "controls": controls,
-               "limits": "The production helper with a nine-units-a-character font; the patched RenderList as text. Not a rendered frame."}
+               "pitch_patch_sha256": hashlib.sha256((PORT / "patches" / PITCH_PATCH).read_bytes()).hexdigest(),
+               "observations": observations, "controls": controls, "video_options_rows": positions,
+               "limits": "The production helpers with a nine-units-a-character font and a set clock; the patched RenderList and "
+                         "CMenuOptionsList::Render as text; row positions computed, not drawn. Not a rendered frame."}
     (out / "receipt.private.json").write_text(json.dumps(receipt, indent=2) + "\n")
-    print(f"menu fit: {len(observations)} cases passed; patched draw checked; {len(controls)} causal controls detected")
+    print(f"menu fit: {len(observations)} cases passed; patched draw, window and pitch checked; {len(controls)} causal controls detected")
 
 
 if __name__ == "__main__":

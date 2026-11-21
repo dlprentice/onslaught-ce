@@ -12,11 +12,25 @@
 extern "C" bool PortCeMuseumVisitBegin(void);
 extern "C" bool PortCeMuseumVisitActive(void);
 extern "C" int PortCeMuseumVisitLevel(void);
+// The model provider is an installed archive; only an installed Museum visit owns a CE map.
+extern "C" bool PortCeMuseumAuthoredSource(void);
+extern "C" void PortCeMuseumAuthoredInstall(void);
+extern "C" bool PortCeMuseumAuthoredMap(void);
+extern "C" void PortCeMuseumAuthoredBackdrop(void);
 extern "C" const char *PortCeMuseumVisitMessage(void);
 extern "C" bool PortCeMuseumVisitAfterLoad(void);
 extern "C" void PortCeMuseumVisitLevelEnd(void);
 extern "C" void PortCeMuseumVisitCancel(void);
 extern "C" bool PortCeMuseumVisitTakeReturn(void);
+
+// A refused load. When anything in a visit's load is refused (a world that is not the pair, no usable exhibit, no dry ground, resources that
+// changed, a generator that failed) the original ends the process with a fatal "Error loading level". RunLevel (patch 0207) asks this first:
+// true means the visit was active, so the level ends as a quit to the front end instead; the front end then takes the visit's return as for any
+// other way out. The sentence that says what happened is kept for the Onslaught CE page (PortCeMuseumVisitTakeNotice).
+extern "C" bool PortCeMuseumVisitLoadRefused(void);
+// After the front end took the visit's return: true once, and the sentence to show on the Onslaught CE page, or NULL for a visit that ended
+// as the player chose. The page then opens on the museum's own row.
+extern "C" bool PortCeMuseumVisitTakeNotice(const char **sentence);
 
 // Tri-state, at the world-reader boundary: 0 ordinary play, 1 an immutable
 // decoded body, -1 a refused visit. Never fall back to a campaign body after
@@ -42,10 +56,16 @@ bool PrepareInstalled(unsigned carrier);
 bool Activate();
 void Clear();
 void Refuse(const char *message);
+// Test switch for the player's log and the route tests: BEA_PORT_MUSEUM_REFUSE names one refusal to force while a visit is loading
+// (exhibits, site, binding, generate, changed, world, afterload). Absent in every ordinary run.
+bool ForcedRefusal(const char *which);
+// The front end took the visit's return (the engine adapter's TakeReturn): the next PortCeMuseumVisitTakeNotice answers once.
+void MarkReturned();
 bool CheckInstalledSource();
 bool AcceptInstalled(unsigned baseId, const void *base, unsigned baseLength,
                      const void *real, unsigned realLength);
 bool GenerateInstalled();
+void ApplyAuthoredIdentity();
 
 // The engine resolves each definition against the installed carrier before
 // calling this writer. Display labels are never model identities. This boundary
@@ -88,9 +108,15 @@ struct SitePlan {
     float heightRange;
     unsigned visible;
     unsigned dryRing;
+    float yaw;      // the direction the visitor faces toward the exhibits, radians (0 is +Y; the world's own yaw)
 };
 bool PlanSite(const ExhibitFootprint *footprints, unsigned count, int gridWidth, int gridHeight, GroundHeight ground, void *context,
               SitePlan *plan);
+// The same site search for a visitor who looks along one of the four axes: heading 0 looks toward +Y (what PlanSite does), 1 toward +X, 2 toward -Y
+// and 3 toward -X. The row of exhibits and the visitor are turned together, so the hall is the same hall seen from another side; plan->yaw is the
+// visitor's yaw for the heading. A heading above 3 is refused.
+bool PlanSiteFacing(const ExhibitFootprint *footprints, unsigned count, int gridWidth, int gridHeight, GroundHeight ground, void *context,
+                    unsigned heading, SitePlan *plan);
 
 // Only the installed carrier's small header/context prefix is needed. This is
 // deliberately not a campaign script or actor decoder. A base source must have
@@ -143,10 +169,10 @@ static_assert(sizeof(ExhibitFootprint) == 12 && alignof(ExhibitFootprint) == 4 &
               __builtin_offsetof(ExhibitFootprint, width) == 0 && __builtin_offsetof(ExhibitFootprint, depth) == 4 &&
               __builtin_offsetof(ExhibitFootprint, height) == 8,
               "ExhibitFootprint layout changed");
-static_assert(sizeof(SitePlan) == 216 && alignof(SitePlan) == 4 &&
+static_assert(sizeof(SitePlan) == 220 && alignof(SitePlan) == 4 &&
               __builtin_offsetof(SitePlan, visitor) == 0 && __builtin_offsetof(SitePlan, centres) == 12 &&
               __builtin_offsetof(SitePlan, heightRange) == 204 && __builtin_offsetof(SitePlan, visible) == 208 &&
-              __builtin_offsetof(SitePlan, dryRing) == 212,
+              __builtin_offsetof(SitePlan, dryRing) == 212 && __builtin_offsetof(SitePlan, yaw) == 216,
               "SitePlan layout changed");
 static_assert(sizeof(CarrierPrefix) == 136 && alignof(CarrierPrefix) == 4 &&
               __builtin_offsetof(CarrierPrefix, playerConfiguration) == 0 &&

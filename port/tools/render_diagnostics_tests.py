@@ -100,7 +100,8 @@ def main():
         current = build('ce', ['-DCE_VERSION="test"'])
         private = build('private')
         run(private, 'disabled')
-        for key in ('BEA_PORT_CLOCK', 'BEA_PORT_TAPE', 'BEA_PORT_PROBES', 'BEA_PORT_RECORD', 'TEST_CE_OFF'):
+        # BEA_PORT_CLOCK no longer turns the session log off (the test kit keeps it on under test clocks; session_log_tests.py)
+        for key in ('BEA_PORT_TAPE', 'BEA_PORT_PROBES', 'BEA_PORT_RECORD', 'TEST_CE_OFF'):
             run(current, 'disabled', {key: '1'})
         for case in ('water-shader', 'water-fixed', 'water-multi', 'water-f1', 'water-method1', 'water-method0', 'water-fallback', 'water-accepted', 'water-limit',
                      'context-bands', 'context-grid', 'context-mirror-view', 'context-nonfinite', 'context-change', 'context-limit', 'sky', 'sky-limit', 'shared-limit'):

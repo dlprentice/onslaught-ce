@@ -70,8 +70,8 @@ MUTANTS = [
     ("host-leaves-without-flush", "Close(L.host);", "Close(false);", "GO is queued first, then the lobby leaves gracefully"),
     ("host-ack-number-unchecked", "if (!memcmp(nonce, L.nonce, 16))\n\t\t\t{\n\t\t\t\tBeginRestart();\t\t\t\t// the handoff, then GO",
      "if (true)\n\t\t\t{\n\t\t\t\tBeginRestart();\t\t\t\t// the handoff, then GO", "an acknowledgement with another start number is ignored"),
-    ("host-late-ack-accepted", 'L.startSent = false;\n\t\tText(L.st.notice, sizeof L.st.notice, "The other player did not answer the start. Try Start again.");',
-     'Text(L.st.notice, sizeof L.st.notice, "The other player did not answer the start. Try Start again.");', "a late acknowledgement of an expired attempt is ignored"),
+    ("host-late-ack-accepted", 'L.startSent = false;\n\t\tText(L.st.notice, sizeof L.st.notice, "Your friend\'s game did not answer the start. Choose Start again.");',
+     'Text(L.st.notice, sizeof L.st.notice, "Your friend\'s game did not answer the start. Choose Start again.");', "a late acknowledgement of an expired attempt is ignored"),
     ("host-start-file-kept-after-refused-go", cleanup_anchor, cleanup_anchor.replace('ClearPendingHandoff();', '(void)0;', 1), "GO refused by the transport"),
     ("host-start-refusal-ignored", '\tif (!Send(L.campaign ? MSG_CAMPAIGN_START : MSG_START, extra, sizeof extra))\n\t\treturn 0;', '\tSend(L.campaign ? MSG_CAMPAIGN_START : MSG_START, extra, sizeof extra);', "a START the transport refused"),
     # the relation of the two waits (the guest's outlasts the host's plus the answer's way back): a guest that gives up before a GO the host can still send, and one that never gives up

@@ -1,0 +1,11 @@
+--- a/BattleEngine.cpp
++++ b/BattleEngine.cpp
+@@ -3188,7 +3188,7 @@
+ 			FMatrix cam_ori = mPlayer->GetCurrentViewOrientation() ;
+ 			FVector					endPoint=cam_pos+(cam_ori*autoAimMatrix*FVector(0.0f,200.0f,0.0f));
+ 			CLine					targetLine(cam_pos,endPoint);	
+-			float					pitch=-PI/4;
++			volatile float					pitch=-PI/4;	// Port: a stored float, as retail stores the desired pitch (0040cea9)
+ 			FVector					hitPoint;
+ 
+ 			if (mWlcr.mHitType!=kCollideNothing)

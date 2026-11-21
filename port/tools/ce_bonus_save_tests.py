@@ -19,6 +19,7 @@ import tempfile
 import unittest
 
 import ce_bonus_tests
+from ce_editor_lifecycle_tests import definition
 import save_flow_tests
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -59,6 +60,12 @@ class BonusSaveTests(unittest.TestCase):
                      (front, r"^bool\s+PortCeCareerSaving\(")]
         (cls.out / "native_policy.inc").write_text("\n".join(save_flow_tests.function(s, p) for s, p in fragments))
         (cls.out / "native_resume.inc").write_text(cls.resume)
+        # Compile the editor save fence used by the same career serializer as the bonus filter.
+        editor = (PORT / "game/ce_editor.cpp").read_text()
+        editor_parts = ("EditorCopyCareerOptions", "PortCeEditorFilterSave")
+        (cls.out / "native_editor_filter.inc").write_text(
+            "\n".join(definition(editor, name) for name in editor_parts))
+
         console = (PORT / "game/ce_console_game.cpp").read_text()
         jump = save_flow_tests.function(console, r"^void\s+JumpToLevel\(int level\)")
         take = save_flow_tests.function(console, r"^int\s+PortCeConsoleTakeLevel\(\)")
@@ -75,7 +82,7 @@ class BonusSaveTests(unittest.TestCase):
         (cls.out / "native_jump_loop.inc").write_text(cls.jump_loop if jump_loop is None else jump_loop)
         result = subprocess.run([os.environ.get("CXX", "g++"), "-std=c++14", "-m32", "-O1", "-fwrapv",
                                  "-fno-strict-aliasing", "-Wall", "-Wextra", "-Werror", "-Wno-unused-parameter",
-                                 *(['-DCE_VERSION="test"'] if public else []), "-I", str(cls.out),
+                                 *(['-DCE_VERSION="test"'] if public else []), "-I", str(cls.out), "-I", str(PORT / "game"),
                                  str(bonus), str(DRIVER), "-o", str(cls.out / label)],
                                 capture_output=True, text=True, timeout=90)
         if result.returncode:
@@ -97,6 +104,11 @@ class BonusSaveTests(unittest.TestCase):
         for level in ce_bonus_tests.LEVELS:
             with self.subTest(level=level):
                 self.passed(self.actual, "bonus", level)
+
+    def test_editor_snapshot_and_museum_pause_keep_the_career_protected(self):
+        for mode in ("editor-save", "museum-resume"):
+            with self.subTest(mode=mode):
+                self.passed(self.actual, mode)
 
     def test_normal_different_and_repeated_levels(self):
         for mode in ("regular", "no-snapshot", "different-game", "different-selected", "other-object", "repeat"):

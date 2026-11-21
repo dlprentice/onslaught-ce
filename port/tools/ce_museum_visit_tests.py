@@ -13,9 +13,11 @@ import json
 from pathlib import Path
 import re
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
+import zlib
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'port'))
@@ -42,11 +44,32 @@ def definition(text: str, name: str, owner: str = 'CDXMemBuffer') -> str:
     raise ValueError('unclosed reader method ' + name)
 
 
+def packed(*blocks: bytes) -> bytes:
+    """An authored packed level archive: each block a little-endian length and its zlib data, as the game's reader takes them."""
+    out = b''
+    for block in blocks:
+        z = zlib.compress(block)
+        out += struct.pack('<I', len(z)) + z
+    return out
+
+
+# Each damage the visit's own look at the carrier archive must catch before the game's reader would end the process.
+ARCHIVE_DAMAGE = {
+    'archive-cut': lambda a: a[:len(a) - 5],
+    'archive-cut-header': lambda a: a + b'\x07\x00',
+    'archive-trailing': lambda a: a + b'\x00',
+    'archive-garbage': lambda a: b'authored museum carrier archive fixture',
+    'archive-flipped': lambda a: a[:12] + bytes([a[12] ^ 0xff]) + a[13:],
+    'archive-empty': lambda a: b'',
+    'archive-block-too-big': lambda a: packed(b'x' * ((1 << 20) + 1)),
+}
+
+
 def fixture(folder: Path, change: str = '') -> tuple[Path, Path]:
     user, game = folder / 'user', folder / 'game'
     (user / 'museum').mkdir(parents=True)
     (game / 'data/resources').mkdir(parents=True)
-    archive = b'authored museum carrier archive fixture'
+    archive = packed(b'authored museum carrier archive fixture', b'a second block of the authored archive')
     base, real = b'authored museum base bytes', b'authored museum exhibit bytes'
     h = lambda value: hashlib.sha256(value).hexdigest()
     text = ('Onslaught CE museum cache 1\n'
@@ -74,6 +97,8 @@ def fixture(folder: Path, change: str = '') -> tuple[Path, Path]:
     if change == 'changed-body': (user / 'museum/world073.body').write_bytes(b'x' * len(real))
     if change == 'empty-body': (user / 'museum/world073.body').write_bytes(b'')
     if change == 'changed-carrier': (game / 'data/resources/073_res_PC.aya').write_bytes(b'other authored archive')
+    if change in ARCHIVE_DAMAGE:
+        (game / 'data/resources/100_res_PC.aya').write_bytes(ARCHIVE_DAMAGE[change](archive))
     if change == 'body-directory':
         # Build this distinct fixture without creating a body at the target.
         (user / 'museum/world073.body').rename(user / 'museum/retained-original.body')
@@ -122,14 +147,14 @@ def main() -> int:
                    '-DCE_MUSEUM_VISIT_HOST_FIXTURE=1',
                    '-I' + str(headers), '-I' + str(ROOT / 'port/game'),
                    *(['-DCE_VERSION="museum-test"'] if version else []),
-                   str(driver), str(provider_path), str(engine_path), str(hash_object), '-o', str(binary)]
+                   str(driver), str(provider_path), str(engine_path), str(hash_object), '-lz', '-o', str(binary)]
         assert run(folder.name + '-compile', command)
         return binary
 
     ordinary = compile_host(out / 'public')
     default = compile_host(out / 'default', False)
     modes = ['valid', 'retained', 'restart', 'restart-after-failure', 'restart-unfinished', 'missing-world', 'wrong-world', 'alias-world', 'long-world', 'null-output', 'allocation-failures',
-             'native', 'native-changed', 'native-refused',
+             'native', 'native-changed', 'native-refused', 'forced-world', 'forced-afterload', 'forced-inactive',
              'guard-menus', 'guard-frontend', 'guard-policy', 'guard-editor', 'guard-gallery']
     for mode in modes:
         user, game = fixture(out / ('fixture-' + mode))
@@ -142,6 +167,9 @@ def main() -> int:
     for change in invalid:
         user, game = fixture(out / ('fixture-' + change), change)
         run('refuse-' + change, [str(ordinary), 'refuse', str(user), str(game)])
+    for change in ARCHIVE_DAMAGE:
+        user, game = fixture(out / ('fixture-' + change), change)
+        run('refuse-' + change, [str(ordinary), 'refuse-native', str(user), str(game)])
 
     mutations = [
         ('restore-lost', 'engine', 'std::memcpy(&CAREER, gMuseumCareer, sizeof(CCareer));', '(void)0;', 'valid', ''),
@@ -157,6 +185,16 @@ def main() -> int:
         ('input-handle-leak', 'provider', 'if (value) std::fclose(value);', '(void)0;', 'allocation-failures', ''),
         ('native-cache-selected', 'engine', 'bool PortCeMuseumVisitBegin(void) { return Begin(false); }',
          'bool PortCeMuseumVisitBegin(void) { return Begin(true); }', 'native', ''),
+        ('return-notice-lost', 'engine', 'CeMuseumVisit::MarkReturned();', '(void)0;', 'native-refused', ''),
+        ('refusal-not-caught', 'provider', 'if (!gVisit.active) return false;\n    // A load that failed', 'return false;\n    // A load that failed', 'native-refused', ''),
+        ('refusal-without-sentence', 'provider', 'gNotice = gVisit.failed ? gMessage : kOpenFailed;', 'gNotice = NULL;', 'native-refused', ''),
+        ('forced-world-ignored', 'provider', 'CeMuseumVisit::ForcedRefusal("world")', 'false', 'forced-world', ''),
+        ('forced-afterload-ignored', 'provider', 'CeMuseumVisit::ForcedRefusal("afterload")', 'false', 'forced-afterload', ''),
+        ('forced-outside-a-visit', 'provider', 'if (!gVisit.active || !which) return false;', 'if (!which) return false;', 'forced-inactive', ''),
+        ('archive-look-lost', 'provider', 'if (!PackedArchiveReadable(candidate.archivePath)) {', 'if (false) {', 'refuse-native', 'archive-cut'),
+        ('archive-trailing-bytes-allowed', 'provider', 'if (got == 0 && !std::ferror(f)) break;', 'if (got < sizeof head && !std::ferror(f)) break;', 'refuse-native', 'archive-trailing'),
+        ('archive-unpack-skipped', 'provider', 'if (uncompress(unpacked.data(), &size, packed.data(), length) != 0 || !size || size > kBlock) return false;', '(void)size;', 'refuse-native', 'archive-flipped'),
+        ('archive-block-size-ignored', 'provider', '|| !size || size > kBlock) return false;', '|| !size) return false;', 'refuse-native', 'archive-block-too-big'),
         ('native-source-check-lost', 'provider', 'if (!CheckInstalledSource()) return false;', '(void)0;', 'native-changed', ''),
     ]
     for label, which, old, new, mode, changed in mutations:
@@ -226,6 +264,30 @@ def main() -> int:
         assert run(label + '-compile', command)
         run(label, [str(folder / 'driver')], 2)
 
+    # The engine's exhibit definition, cut from its source and run: an exhibit nothing can destroy. The function sits behind the
+    # host fixture guard, so it is taken out of the shipped file whole; a mutant without the invincibility line must fail.
+    engine_text = engine.read_text()
+    found = re.search(r'^CFeatureData \*MakeExhibitDefinition\(const char \*name, const char \*mesh\) \{.*?^\}\n', engine_text, re.M | re.S)
+    exhibit_definition = found.group(0) if found else ''
+    records.append(dict(label='exhibit-definition-found', passed=bool(exhibit_definition)))
+    (out / 'museum_exhibit_definition.inc').write_text(exhibit_definition + '\n')
+    definition_binary = out / 'exhibit-definition-driver'
+    definition_command = ['g++', '-std=c++14', '-O1', '-g', '-Wall', '-Wextra', '-Werror', '-fsanitize=address',
+                          '-DCE_MUSEUM_DEFINITION_FIXTURE=1', '-I' + str(out), str(driver), '-o', str(definition_binary)]
+    if exhibit_definition and run('exhibit-definition-compile', definition_command):
+        run('exhibit-definition', [str(definition_binary)])
+        old = 'feature->mInvincible = TRUE;'
+        if exhibit_definition.count(old) == 1:
+            folder = out / 'exhibit-definition-destructible'; folder.mkdir()
+            (folder / 'museum_exhibit_definition.inc').write_text(exhibit_definition.replace(old, '(void)0;') + '\n')
+            command = definition_command.copy()
+            command[command.index('-I' + str(out))] = '-I' + str(folder)
+            command[-1] = str(folder / 'driver')
+            if run('exhibit-definition-destructible-compile', command):
+                run('exhibit-definition-destructible', [str(folder / 'driver')], 2)
+        else:
+            records.append(dict(label='exhibit-definition-mutant-site', passed=False))
+
     generator_out = out / 'generated-room'; generator_out.mkdir()
     generator_binary = out / 'generator-driver'
     generator_command = ['g++', '-std=c++14', '-O1', '-g', '-Wall', '-Wextra', '-Werror',
@@ -238,7 +300,12 @@ def main() -> int:
             ('site-view-ignored', 'if (eyeZ + dz * t >= ground - 0.3f) return false;', 'if (eyeZ + dz * t >= ground - 0.3f && false) return false;'),
             ('site-ring-ignored', 'const int ring = kRings[tier];', 'const int ring = 0;'),
             ('site-visible-count-lost', 'if (visible < bestVisible || (visible == bestVisible && range >= bestRange)) continue;',
-             'if (range >= bestRange) continue;')]:
+             'if (range >= bestRange) continue;'),
+            ('site-heading-lost', 'switch (heading) {\n    case 1:', 'switch (heading & 0) {\n    case 1:'),
+            ('site-yaw-lost', 'result.yaw = HeadingYaw(heading);', 'result.yaw = 0.0f;'),
+            ('site-heading-range-ignored', 'if (heading > 3 || !footprints', 'if (!footprints'),
+            ('site-turn-extent-lost', 'const int spanX = Cell(turned ? totalDepth : blockWidth), spanY = Cell(turned ? blockWidth : totalDepth);',
+             'const int spanX = Cell(turned ? blockWidth : blockWidth), spanY = Cell(turned ? totalDepth : totalDepth);')]:
         text = generator.read_text(); assert text.count(old_text) == 1
         folder = out / label; folder.mkdir()
         mutant = folder / 'ce_museum_visit_generate.cpp'; mutant.write_text(text.replace(old_text, new_text))
@@ -300,19 +367,56 @@ def main() -> int:
     # campaign films and automatic commands. Runtime acceptance is still needed.
     game_source = (build.MIRROR / 'game.cpp').read_text()
     frontend_source = (build.MIRROR / 'FrontEnd.cpp').read_text()
+    palette_text = (ROOT / 'port/game/ce_palette.cpp').read_text()
     scopes = {name: definition(game_source, name, 'CGame') for name in
               ('RunIntroFMV', 'RunOutroFMV', 'PostLoadProcess', 'ShutdownRestartLoop',
-               'RestartLoopRunLevel', 'PreRun', 'MainLoop')}
+               'RestartLoopRunLevel', 'RunLevel', 'PreRun', 'MainLoop')}
     hook_checks = {
         'intro-suppressed': 'if (PortCeEditorActive() || PortCeMuseumVisitActive()) return;' in scopes['RunIntroFMV'],
         'outro-suppressed': 'if (PortCeEditorActive() || PortCeMuseumVisitActive()) return;' in scopes['RunOutroFMV'],
         'load-refusal': 'if (PortCeMuseumVisitActive() && !PortCeMuseumVisitAfterLoad()) return FALSE;' in scopes['PostLoadProcess'],
+        'refused-load-leaves-for-the-front-end': 'if (PortCeMuseumVisitLoadRefused())' in scopes['RunLevel'] and 'mQuit = QT_QUIT_TO_FRONTEND;' in scopes['RunLevel'],
         'level-end-guard': 'PortCeMuseumVisitLevelEnd();' in scopes['ShutdownRestartLoop'],
         'automatic-commands-suppressed': 'const bool ceEditorAuthoring = PortCeEditorActive() || PortCeMuseumVisitActive();' in scopes['RestartLoopRunLevel'],
+        'continue-skips-career-write-in-a-visit': 'mSaveGameName[0] && !PortCeMuseumVisitActive())' in definition((build.MIRROR / 'PauseMenu.cpp').read_text(), 'Resume', 'CPauseMenu'),
+        'console-map-win-lose-refused-in-a-visit': all(('if (MuseumRefuses("%s")) return;' % what) in palette_text for what in ('other level', 'level to win', 'level to lose')),
         'warmup-remains-enabled': 'PortCeMuseumVisit' not in scopes['PreRun'],
         'movement-remains-enabled': 'PortCeMuseumVisit' not in scopes['MainLoop'],
         'frontend-returns-before-progression': 'if (PortCeEditorTakeReturn() || PortCeMuseumVisitTakeReturn())' in frontend_source,
     }
+    # The engine adapter's end of a visit hands the game's definition list back as it found it: no test reaches that code (it sits behind the host fixture
+    # guard), so the source scope is read, and the route judge (ce_museum_run_tests.py same_every_visit) checks the effect on a log of two visits.
+    engine_text = engine.read_text()
+    cancel = re.search(r'extern "C" void PortCeMuseumVisitCancel\(void\) \{.*?\n\}\n', engine_text, re.S)
+    drop = re.search(r'void DropExhibitDefinitions\(\) \{.*?\n\}\n', engine_text, re.S)
+
+    def ends_clean(text: str) -> bool:
+        return bool(text) and 'DropExhibitDefinitions();' in text and 'PortCeMuseumLabelsClear();' in text and 'CeMuseumVisit::Clear();' in text
+
+    def drops_only_ours(text: str) -> bool:
+        return bool(text) and 'std::strncmp(item->mName, "ce.museum.", 10)' in text and 'UPhysicsManager::mFeatures->Remove(item);' in text and 'delete item;' in text
+
+    hook_checks['visit-end-drops-the-exhibit-definitions'] = ends_clean(cancel.group(0) if cancel else '')
+    hook_checks['the-drop-removes-only-the-museums-definitions'] = drops_only_ours(drop.group(0) if drop else '')
+    for label, text, rule in (('the-visit-end-without-the-drop', (cancel.group(0) if cancel else '').replace('DropExhibitDefinitions();', ''), ends_clean),
+                              ('the-visit-end-without-the-label-clear', (cancel.group(0) if cancel else '').replace('PortCeMuseumLabelsClear();', ''), ends_clean),
+                              ('a-drop-that-removes-every-definition', (drop.group(0) if drop else '').replace('std::strncmp(item->mName, "ce.museum.", 10)', 'true'), drops_only_ours),
+                              ('a-drop-that-keeps-the-definition', (drop.group(0) if drop else '').replace('delete item;', ''), drops_only_ours)):
+        records.append(dict(label='control-' + label + '-is-seen', passed=not rule(text), kind='source-scope control'))
+    # Options changed in the pause menu during a visit are the visitor's: the end of a visit keeps them, restores the career record as it was at entry and then
+    # puts them back. What the keep and restore do is checked by behaviour in ce_museum_options_tests.py (the code is ce_museum_options.h, run on a stand-in
+    # career, with mutants); here the end of a visit is checked to call them in that order, the whole-record restore in between.
+    def keeps_options(cancel_text: str) -> bool:
+        order = [cancel_text.find(x) for x in ('const CeMuseumKeptOptions kept = CeMuseumKeepOptions(CAREER);', 'std::memcpy(&CAREER, gMuseumCareer, sizeof(CCareer));',
+                                               'CeMuseumRestoreOptions(CAREER, kept);')]
+        return bool(cancel_text) and all(i >= 0 for i in order) and order == sorted(order)
+
+    cancel_text = cancel.group(0) if cancel else ''
+    hook_checks['visit-end-keeps-the-options-changed-in-it'] = keeps_options(cancel_text)
+    for label, text in (('the-restore-before-the-options-are-kept', cancel_text.replace('CeMuseumRestoreOptions(CAREER, kept);', '')),
+                        ('the-record-restored-without-the-options-kept', cancel_text.replace('const CeMuseumKeptOptions kept = CeMuseumKeepOptions(CAREER);', '')),
+                        ('the-options-kept-after-the-record-is-restored', cancel_text.replace('const CeMuseumKeptOptions kept = CeMuseumKeepOptions(CAREER);', '').replace('std::memcpy(&CAREER, gMuseumCareer, sizeof(CCareer));', 'std::memcpy(&CAREER, gMuseumCareer, sizeof(CCareer)); const CeMuseumKeptOptions kept = CeMuseumKeepOptions(CAREER);'))):
+        records.append(dict(label='control-' + label + '-is-seen', passed=not keeps_options(text), kind='source-scope control'))
     (out / 'lifecycle-hooks.private.json').write_text(json.dumps(hook_checks, indent=2) + '\n')
     for label, passed in hook_checks.items():
         records.append(dict(label='hook-' + label, passed=passed, kind='source-scope assertion'))

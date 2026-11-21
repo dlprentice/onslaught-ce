@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // port/platform/linux/main.cpp: the Linux entry point. It sets up the path layer and SDL, then runs the game's own
 // WinMain (src/ltshell.cpp) with the command line rebuilt from argv, as Windows would pass it.
+#include "../common/runmode.h"
 #include "handles.h"
 #include "../common/mods.h"
 #include "../common/platform.h"
@@ -78,6 +79,7 @@ int main(int argc, char **argv)
 	else
 		fprintf(stderr, PORT_LOG_PREFIX "game folder %s, writable folder %s\n", PortGameDir(), PortUserDir());
 	unsetenv("BEA_CE_GAME_FOLDER_LOGGED");
+	PortRunModeNow();	// the run mode is decided once, here, and logged (runmode.h)
 	int rc = WinMain(GetModuleHandleA(NULL), NULL, cmdline, SW_SHOWNORMAL);
 #ifdef CE_VERSION
 	// The game's shell drops CSystem::Run's result and returns its last message's value, whichever way the level ended.

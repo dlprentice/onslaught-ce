@@ -106,6 +106,26 @@ void Folder(void*,const char* const* files,int filter) {
     ++callbacks; Check(filter==0,"ordinary-folder-filter"); folder=files && files[0] ? files[0] : "";
 }
 const char* self=nullptr;
+void TypedFields() {
+    Channel();
+    Send(Record(3,PORT_PRIVATE_UI_ORIGIN,5,"safe-origin"));
+    Pump(4); char out[32] = "untouched";
+    Check(!PortPrivateUiFieldWaiting(PORT_PRIVATE_UI_ORIGIN),"field waits for due frame");
+    Pump(5);
+    Check(gHead==gTail && PortPrivateUiFieldWaiting(PORT_PRIVATE_UI_ORIGIN),"no field is a keyboard event");
+    Check(!PortPrivateUiTakeField(PORT_PRIVATE_UI_JOIN_CODE,out,sizeof(out)) &&
+          !strcmp(out,"untouched"),"wrong form cannot take value");
+    Check(!PortPrivateUiTakeField(PORT_PRIVATE_UI_ORIGIN,out,2) &&
+          PortPrivateUiTakeField(PORT_PRIVATE_UI_ORIGIN,out,sizeof(out)) &&
+          !strcmp(out,"safe-origin"),"full field consumed once");
+    Check(!PortPrivateUiFieldWaiting(PORT_PRIVATE_UI_ORIGIN),"no second field delivery");
+    Send(Record(3,PORT_PRIVATE_UI_JOIN_CODE,0,"example-code")); Pump(6); Pump(7);
+    Check(gHead==gTail && PortPrivateUiFieldWaiting(PORT_PRIVATE_UI_JOIN_CODE) &&
+          !PortPrivateUiFieldWaiting(PORT_PRIVATE_UI_ORIGIN),"code stays exclusively for the code field");
+    Check(PortPrivateUiTakeField(PORT_PRIVATE_UI_JOIN_CODE,out,sizeof(out)) && !strcmp(out,"example-code"),"code delivered once");
+    Send(Record(3,99,0,"never")); Pump(8);
+    Check(PortPrivateUiStatus()==PORT_PRIVATE_UI_REFUSED && gHead==gTail,"unknown field refuses channel"); close(writer);
+}
 void Disabled() {
     unsetenv("BEA_PORT_UI_INPUT_FD");
     Check(!PortPrivateUiConfigured() && PortPrivateUiStatus()==PORT_PRIVATE_UI_DISABLED,"disabled-default");
@@ -262,7 +282,7 @@ int main(int argc,char** argv) {
         return fcntl(std::atoi(argv[2]),F_GETFD)<0 && errno==EBADF && !getenv("BEA_PORT_UI_INPUT_FD") ? 0 : 42;
     self=argv[0];
     struct Case { const char* name; void (*run)(); };
-    const Case cases[]={{"disabled",Disabled},{"text",Text},{"backpressure",Backpressure},
+    const Case cases[]={{"typed-fields",TypedFields},{"disabled",Disabled},{"text",Text},{"backpressure",Backpressure},
       {"partial",Partial},{"folder",FolderChoice},{"cancel",Cancel},{"malformed",Malformed},
       {"truncated",Truncated},{"invalid-text",InvalidText},{"permissions",Permissions},
       {"recording",Recording},{"privacy",Privacy},{"exec",Exec},

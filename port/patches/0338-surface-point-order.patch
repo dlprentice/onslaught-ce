@@ -1,0 +1,15 @@
+--- a/rtmesh.cpp
++++ b/rtmesh.cpp
+@@ -489,7 +489,11 @@
+ 		FMatrix	ori;
+ 		FVector	offset;
+ 		part->GetWorldTransforms(frame, frame, 0, mThing, &ori, &offset, 0, TRUE, 0);
+-		FVector	result = ori * vertex + offset;
++		// Port: retail's row orders (004dd440..004dd4b4): X (Z + Y) + X, Y and Z (X + Z) + Y
++		FVector	result(
++			(((ori.Row[0].Z * vertex.Z) + (ori.Row[0].Y * vertex.Y)) + (ori.Row[0].X * vertex.X)) + offset.X,
++			(((ori.Row[1].X * vertex.X) + (ori.Row[1].Z * vertex.Z)) + (ori.Row[1].Y * vertex.Y)) + offset.Y,
++			(((ori.Row[2].X * vertex.X) + (ori.Row[2].Z * vertex.Z)) + (ori.Row[2].Y * vertex.Y)) + offset.Z);
+ #ifndef CE_NETWORK_OFF
+ 		{	// port (lockstep co-op, tests): the chosen vertex, the part's transform and the point they give, for the per-tick trace
+ 			float v[3] = {vertex.X, vertex.Y, vertex.Z}, o[9] = {ori.Row[0].X, ori.Row[0].Y, ori.Row[0].Z, ori.Row[1].X, ori.Row[1].Y, ori.Row[1].Z, ori.Row[2].X, ori.Row[2].Y, ori.Row[2].Z};

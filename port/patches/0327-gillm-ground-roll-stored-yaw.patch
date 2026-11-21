@@ -1,0 +1,10 @@
+--- a/GillM.cpp
++++ b/GillM.cpp
+@@ -186,6 +186,7 @@
+ {
+ 	FMatrix	ym;
+ 	ym.MakeRotationYawF(mCurrentOrientation.mYaw);
++	__asm__ __volatile__("" : : "r"(&ym) : "memory");	// Port: rows stored as floats, as retail uses them (0047a0d0, 0047a0de)
+ 	FVector	forward = ym * FVector(0.0f, 1.0f, 0.0f);
+ 	FVector	normal = MAP.Normal(mPos);
+ 	FVector	side = forward ^ normal;

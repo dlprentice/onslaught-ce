@@ -1,0 +1,11 @@
+--- a/BattleEngine.cpp
++++ b/BattleEngine.cpp
+@@ -1234,7 +1234,7 @@
+ 		FVector cross_yaw_and_normal = yv ^ map_normal;
+ 
+ 		FVector p = cross_yaw_and_normal ^ map_normal;
+-		p.Normalise();  // not needed 
++		p.NormaliseXZY();  // not needed	// Port: retail sums (X*X + Z*Z) + Y*Y here (00407c22..00407c3c) 
+ 		float	groundPitch=-p.Z;
+ 		
+ 		if (MouseLookActive(this))

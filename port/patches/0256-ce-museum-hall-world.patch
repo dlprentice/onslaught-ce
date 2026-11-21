@@ -1,0 +1,20 @@
+--- a/DXEngine.cpp
++++ b/DXEngine.cpp
+@@ -10,6 +10,7 @@
+ #ifdef CE_VERSION
+ extern "C" void PortCeWorldViewCapture();
+ extern "C" void PortCeMuseumViewCapture();
++extern "C" void PortCeMuseumHallDraw();
+ #endif
+ #ifdef CE_VERSION
+ extern "C" int PortCePlayUnitShowsBattleline(int viewpoint) __attribute__((weak));	// patch 0240: ce_playunit.cpp, a driven unit keeps the radio and the battle line
+@@ -853,6 +854,9 @@
+ 			ReallySetDefaultMaterial();
+ 		}
+ 		SHADOWS.TestDraw();
++#ifdef CE_VERSION
++		PortCeMuseumHallDraw();	// the hall is opaque world geometry: drawn with the world's view and projection, before the machines and particles test against it
++#endif
+ 
+ 		// retail PC: the water draws here unless OLD_WATER_TIMING asks for after the world, and never in the
+ 		// reflection pass (0053e6b4, 0053e7cb)

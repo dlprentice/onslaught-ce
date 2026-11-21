@@ -98,6 +98,8 @@ extern "C" {
 char LT[0x331e4], GAME[0x400], EVENT_MANAGER[0x20], END_LEVEL_DATA[0x5cc], FRONTEND[0xbe20];
 float gFrontEndFrameStep;
 bool gInFrontEnd;
+int CE_BootRequested(void) { return 0; }
+int CE_LockstepRequested(void) { return 0; }
 unsigned PortPresentCount() { return present; }
 void PortCrtRandState(unsigned *calls, unsigned *hold) { *calls = *hold = 0; }
 int PortBackBuffer(unsigned *w, unsigned *h) { *w = backWidth; *h = backHeight; return 1; }

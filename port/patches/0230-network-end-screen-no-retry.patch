@@ -1,0 +1,15 @@
+--- a/game.cpp
++++ b/game.cpp
+@@ -2286,6 +2286,12 @@
+ 				GAMEINTERFACE.SetNotAvailable(1);
+ 				GAMEINTERFACE.SetNotAvailable(2);
+ 				GAMEINTERFACE.SetNotAvailable(5);
++#ifndef CE_NETWORK_OFF
++				// Port (patch 0230): in a network game Retry would restart this player alone, so the end screen offers Quit only
++				// (an action that cannot work is absent, not a trap); ce_network_lockstep.cpp turns a retry into a return anyway.
++				if (CE_SessionActive())
++					GAMEINTERFACE.SetNotAvailable(3);
++#endif
+ 				GAMEINTERFACE.SetRenderBackgroud(false);
+ 				GAMEINTERFACE.SetYBoxoffset(70);
+ 				if (IsFreeCameraOn(0)==TRUE) ToggleFreeCameraOff(0) ;

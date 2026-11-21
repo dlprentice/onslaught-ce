@@ -1,7 +1,7 @@
 # Onslaught CE
 
 Status: preview. From 0.1.8 on it updates itself; from 0.1.7 or earlier, download the latest release once by hand.
-Last updated: 2026-11-11
+Last updated: 2026-11-14
 Summary: the native Battle Engine Aquila port: how to install, play, update, report a problem and build it, and where the project's other repositories are.
 
 This README follows this source branch, which can describe work that is not in the latest download. The README
@@ -11,6 +11,10 @@ describe the version you installed. Versions 0.1.8 and later have a signed-updat
 [0.1.13](https://github.com/dlprentice/onslaught-ce/releases/tag/v0.1.13) or
 [0.1.12](https://github.com/dlprentice/onslaught-ce/releases/tag/v0.1.12) release notes for their 32-bit
 dependency caveat.
+
+The published release is **0.1.13**. The newer source features described here have not been released as a new
+package. Experimental features remain opt-in; a source build or an isolated test does not establish that every
+feature works on both platforms.
 
 Onslaught CE is a native port of *Battle Engine Aquila* (Lost Toys, 2003) for Linux (i686) and Windows (i686), built
 from the game's source code. You need your own copy of the game.
@@ -23,7 +27,8 @@ from the game's source code. You need your own copy of the game.
 - **Already have Onslaught CE?** [Getting the latest version](#getting-the-latest-version-one-download-by-hand-then-it-updates-itself),
   [update, move and uninstall](#update-move-and-uninstall), [updates and privacy](#updates-and-privacy).
 - **Settings and features:** [screen modes and widescreen](#screen-modes-and-widescreen),
-  [Video Options](#video-options-new-profile-defaults-window-mode-and-extended-terrain), [mods](#mods-experimental).
+  [Video Options](#video-options-new-profile-defaults-window-mode-and-extended-terrain), [Catalogue](#catalogue),
+  [mods](#mods-experimental).
 - **Problems and accuracy:** [report a problem](#report-a-problem),
   [record a session](#help-make-onslaught-ce-more-faithful), [how faithful it is](#how-faithful-is-it),
   [known limitations](#known-limitations).
@@ -46,7 +51,7 @@ Keep the program and its user folder separate from the original game. Careers an
 `%APPDATA%\Onslaught CE` (Windows) by default. Keep recovery copies of your careers before changing save locations
 or removing any program folder.
 
-This is an early preview. The main menu and `onslaught-ce --version` show your version and build. The
+This is an early preview. The Main Menu and `onslaught-ce --version` show your version and build. The
 [latest release notes](https://github.com/dlprentice/onslaught-ce/releases/latest) list the checks made and the
 remaining limits; the source here may include changes that are not in that download.
 
@@ -78,8 +83,9 @@ several places, folders you are unsure of): follow the
 
 ## In the game
 
-- **Main menu > Onslaught CE:** a page with **Bonus Levels**, **CE Settings**, **Cheats**, **Help & Info** and
-  **Report a Problem**. Each row has a hint under the list. The Options page is the original's.
+- **Main Menu > Onslaught CE (this source branch):** a page with **Bonus Levels**, **Mods**, **Catalogue**,
+  **CE Settings**, **Cheats**, **Help & Info** and **Report a Problem**. Each row has a hint under the list.
+  Experimental rows depend on the features enabled. The Options page is the original's.
 - **Bonus Levels:** Aquila Prototype, Building Defence, and Race Challenge 1 to 5 (each below). None of them
   advances career progress. A bonus level started here comes back to this list with its row highlighted.
 - **CE Settings:** a list of choices, each written to `ce.ini` in your user folder when you make it. The page is not on
@@ -88,41 +94,51 @@ several places, folders you are unsure of): follow the
     [Screen modes and widescreen](#screen-modes-and-widescreen)), **Sharper Text** (experimental), **End-of-Level Stats**,
     **Controller Rumble**, **Dodge Button** (see [Dodging](#dodging)), **Developer Information**, **Your Music** (shows the
     folder `ce.ini` sets: see **Your own music** below), **Music Order**, **Console Text**, **Check for Updates at Start** and
-    **Record Play for Bug Reports** (see [Help make Onslaught CE more faithful](#help-make-onslaught-ce-more-faithful)).
+    **Session Recording** (see [Help make Onslaught CE more faithful](#help-make-onslaught-ce-more-faithful)).
   - Choosing: Select opens a row's list of choices, and so do Left and Right, which also move to the choice before or
     after; in the list they move as Up and Down do. Nothing is written until Select picks a choice other than the one
     shown, and Escape closes the list unchanged.
   - When a change applies: the row's hint says. It is from the next level for the two HUD rows and Dodge Button, the next
-    time the console opens for Console Text (the developer information text keeps its colour until the next start),
+    time the console opens for Console Text (the developer text keeps its colour until the next start),
     otherwise the next time you start the game.
-  - If `ce.ini` cannot be written, a message says so and the row keeps its old choice.
+  - If `ce.ini` cannot be written, a message says so and the row keeps its old choice. A `ce.ini` you have made read-only is
+    never replaced (0.1.13 on Linux did replace it): the rows keep their choices, and the launcher's **Skip this version** and
+    **Turn recording off** say that the choice could not be saved and ask again the next time you start.
 - **Unfinished features:** they are listed, switched off, under `[Experimental]` in `ce.ini`; they are unsupported and liable to change.
-- **Help & Info:** Controls & Tips (dodge, zoom, photo mode and screenshots, the console and the free camera), What's Coming (planned features and their current limits; its entries do not start those features),
-  Updates & Rollback (whether CE Settings has update checks on, how to roll back, where `ce.ini` is), About Onslaught CE (version, licence
+  A line you set in an earlier version is kept, but what it turns on has changed: with `commander=1` from 0.1.13,
+  **Commander** (M by default) now opens a live view for ordering squads. The battle keeps running while your Battle
+  Engine stands without your control and the HUD is hidden. Press Commander again or Escape to close it. The paused
+  map on V requires the additional test setting `commander_tactical_map=1`. See the
+  [adjustable controls](port/controller-input.md#adjustable-keyboard-actions-development-build). With
+  `museum=1`, a Museum Prototype visit is kept out of your career: nothing is saved during it, so with a named career the
+  game's save error message appears each time you leave its Pause Menu. Nothing is wrong: the career is as it was when the
+  visit ends.
+- **Help & Info:** Controls & Tips (dodge, zoom, Photo Mode and screenshots, the console and the free camera), What's Coming (planned features and their current limits; its entries do not start those features),
+  Updates (whether CE Settings has update checks on, how to roll back, where `ce.ini` is), About Onslaught CE (version, licence
   and links) and Special Thanks.
 - **Aquila Prototype:** level 201, the original's playable-demo level, which the full game never offers. It does
   not advance career progress and returns to the Bonus Levels list. Settings can still be saved, including into a
   career file.
-- **Building Defence:** a two-player co-op map (level 856) that the original's Multiplayer page leaves out: together,
+- **Building Defence:** a two-player Co-Op map (level 856) that the original's Multiplayer page leaves out: together,
   defend the island's buildings against the landing craft. The original ships this scenario twice, as levels 856 and 858,
   which are the same map, so the list has one entry. Both players share this PC, in split screen, as in the original's
   multiplayer: each picks a Battle Engine on the Multiplayer start page; player 2 uses the second set of keys in
   Controller Options, or a second gamepad. Like the other bonus levels it does not advance career progress and comes
   back to the Bonus Levels list; settings can still be saved.
-- **Race Challenge 1 to 5:** the original's five one-player time trials (levels 901 to 905): three laps against the
-  clock in the Racer Battle Engine. The original opens them from the Goodies page, in the five cells that follow the
+- **Race Challenge 1 to 5:** the original's five single-player time trials (levels 901 to 905): three laps against the
+  clock in the Racer Battle Engine. The original opens them from the Goodies screen, in the five cells that follow the
   first eight of its top row: Race Challenge 1 once you have a grade of C or better in 26 campaign levels, and each
   later race when the one before it is finished fast enough (under 145, 195, 150 and 105 seconds for races 1 to 4; the
   fifth opens nothing more). The Unlock All Goodies cheat opens all five at once (see [Cheats](#cheats)). Those routes
   save your career as the original does. The five rows on the Bonus Levels list start the races with none of that.
   Like the other bonus levels, a race does not advance career progress; when it ends (finished, lost or quit from the
-  pause menu) nothing is saved and you are back on the Bonus Levels list, with that race highlighted. Settings can still
+  Pause Menu) nothing is saved and you are back on the Bonus Levels list, with that race highlighted. Settings can still
   be saved during play, including into a career file; bonus-level progress is left out.
 - **Cheats:** the original game's cheats as On/Off switches, on the Onslaught CE page; see [Cheats](#cheats).
-- **The console:** the original's developer console, back for solo play; press the `` ` `` (grave) key, left of 1 on a US
+- **The console:** the original's developer console, back for single-player levels; press the `` ` `` (grave) key, left of 1 on a US
   keyboard. See [The console](#the-console).
-- **Controllers:** gamepads and flight sticks have menu controls and default play controls for solo, local two-player
-  split screen (one pad for each player) and bonus co-op when joystick bindings have not been customized. Controllers
+- **Controllers:** gamepads and flight sticks have menu controls and default play controls for single-player levels, local two-player
+  split screen (one pad for each player) and bonus Co-Op when joystick bindings have not been customized. Controllers
   can be plugged in while the game runs; for two players, plug both in before starting. See
   [port/controller-input.md](port/controller-input.md).
 - **Keyboard:** the port releases held keys on focus loss and attempts to repair delayed releases. Typed characters
@@ -135,23 +151,25 @@ several places, folders you are unsure of): follow the
 
 ### Dodging
 
-In walker mode, with your Battle Engine on the ground and not already dodging, the original dodge is a double tap of the
+In Walker mode, with your Battle Engine on the ground and not already dodging, the original dodge is a double tap of the
 strafe keys. With the default US keyboard bindings:
 
 - **Dodge right:** tap **A**, then **D**.
 - **Dodge left:** tap **D**, then **A**.
 
-**Dodge Button.** Onslaught CE adds one press for it. Hold **Left Ctrl** and press **A** or **D** (or press the direction
-while holding **Left Ctrl**), or, on a gamepad, hold **B** (the right face button on an Xbox-style pad; the tutorial cue calls
-it the right button) and push the left stick left or right. The game then makes the two taps itself, through its own controls,
+**Dodge Button.** Hold the **Dodge modifier** (default **Left Ctrl**) and press one movement control: **W** forward,
+**S** back, **A** left or **D** right on the default keyboard layout. Use your own movement bindings if you changed them.
+On a gamepad hold **B** (the right face button on an Xbox-style pad) and push the left stick fully in one direction.
+The movement control or the modifier can come first; a diagonal does not start a new dodge. To change the modifier,
+pause and open **Controller Options → Dodge modifier**, then press a free key; Escape cancels. The game makes the two taps itself,
 and the dodge is the original one: the same speed, length and cost. For the instant it takes, about 0.15 seconds (three of the
-game's twenty updates a second), your own left and right are held back so that they cannot spoil it. If you pushed the same
+game's twenty updates a second), your inputs on that movement axis are held back so that they cannot spoil it. If you pushed the same
 direction just before (0.1 to 0.2 seconds earlier), the first tap waits a moment, because the game would otherwise dash the other
-way. It follows whatever inputs you use to strafe, so a remapped layout works too. For the next dodge, let go and press again, or
+way. For the next dodge, let go and press again, or
 change direction with the button still held; a press made early in a dodge (it lasts about three quarters of a second) is
 dropped, one made in its last 0.35 seconds follows it at once. A key or button you have bound to a control of your own is not
 used, and flight sticks have no Dodge Button. It is on by default (**Dodge Button: On** on CE Settings, `dodge_button=0` in
-`ce.ini` turns it off, from the next level), and it is off in session recordings and replays, demos and network games. The
+`ce.ini` turns it off, from the next level), and it is off in session recordings and replays and in demos. The
 double tap below works as before, with it on or off.
 
 Try releasing the first key before pressing the other. Aim for about 0.15 game seconds between presses: with the
@@ -159,7 +177,7 @@ default timing, the second press must be more than 0.1 and less than 0.2 game se
 too slow will not trigger a dodge. If you changed the bindings or use a different keyboard layout, check the
 left and right movement inputs in **Controller Options** and use those instead.
 
-In eligible ordinary solo play, the English tutorial can show a contextual dodge cue when the radio message starts.
+In eligible ordinary single-player levels, the English tutorial can show a contextual dodge cue when the radio message starts.
 The cue is off during session recording and replay; use this guide while recording. The same keyboard sequence and
 timing apply.
 
@@ -168,22 +186,22 @@ timing apply.
 With the default mouse binding, scroll the wheel down to zoom in and up to zoom out. With the default gamepad
 bindings in eligible ordinary play, the right bumper zooms in and the left bumper zooms out. You can change the
 bindings in **Controller Options**. Manual zoom only works with weapons that support it; some weapons zoom while
-charging instead. The English tutorial can show a zoom cue in eligible ordinary solo play, but not in recordings
+charging instead. The English tutorial can show a zoom cue in eligible ordinary single-player levels, but not in recordings
 or replays.
 
 ### Cheats
 
-Onslaught CE > Cheats, in the main menu, turns the original game's cheats on and off. They are kept in `ce.ini` in your user folder and apply
+Onslaught CE > Cheats, in the Main Menu, turns the original game's cheats on and off. They are kept in `ce.ini` in your user folder and apply
 to every career. Typing a code into a career's name works too, as in the original. The Cheats page's switches are off
 while a session is being recorded and in replays; a code typed into a career's name still works then, as in the
 original.
 
 | Cheat | Original code | What it does |
 | --- | --- | --- |
-| Unlock All Levels | TURKEY | Every level shows as open in the level select. Your career's real progress is not changed. In the console it also allows `map`, `win` and `lose`. |
-| Unlock All Goodies | MALLOY | Every goodie on the Goodies page is open. Nothing is written to your career. |
-| Goodie Hints | latête | The Goodies page shows the available unlock hints. While it is on, goodies cannot be opened, even with Unlock All Goodies. |
-| God Mode Option | Maladim | Adds **God** to Controller Options (in the pause menu, applying at once, and in Options, from the next level). God on: no damage and energy that never runs out. Set this way it is kept in `ce.ini`, not in your career. Turning the cheat off ends god mode. |
+| Unlock All Levels | TURKEY | Every level shows as open on the Select Level screen. Your career's real progress is not changed. In the console it also allows `map`, `win` and `lose`. |
+| Unlock All Goodies | MALLOY | Every goodie on the Goodies screen is open. Nothing is written to your career. |
+| Goodie Hints | latête | The Goodies screen shows the available unlock hints. While it is on, goodies cannot be opened, even with Unlock All Goodies. |
+| God Mode Option | Maladim | Adds **God** to Controller Options (in the Pause Menu, applying at once, and in Options, from the next level). God on: no damage and energy that never runs out. Set this way it is kept in `ce.ini`, not in your career. Turning the cheat off ends god mode. |
 | Free Camera | Aurore | In a level, **F** detaches the camera so you can fly around the battle. In the console it also allows `camera` and the remote camera. |
 
 These are default keyboard bindings. In ordinary play, Space changes the Battle Engine
@@ -198,7 +216,7 @@ Free Camera controls:
 - **Arrow keys**: turn left and right, look up and down. There is no up or down key and no speed key: look up or
   down, then fly, at one fixed speed.
 - **Esc**: freeze or unfreeze the battle without a menu. The camera still flies while the battle is frozen, so you can
-  line up a screenshot. With photo mode (F11) the view is clear of the HUD, and F12 saves it.
+  line up a screenshot. With Photo Mode (F11) the view is clear of the HUD, and F12 saves it.
 
 The battle keeps going while you look around unless you freeze it, and your Battle Engine can be hit.
 
@@ -210,7 +228,7 @@ and Windows.
 
 ### The console
 
-The original game has a developer console that the PC release never showed. Onslaught CE brings it back for solo play:
+The original game has a developer console that the PC release never showed. Onslaught CE brings it back for single-player levels:
 press the `` ` `` (grave) key, left of 1 on a US keyboard, during a level. It drops down over the top of the screen, as a
 dark panel with the game's own log (what it loaded, and what commands print), and takes a command line. It never runs
 the original's command interpreter: it has its own list of commands, and never runs script files or key binds (so an
@@ -223,7 +241,7 @@ the original's command interpreter: it has its own list of commands, and never r
   `set <variable> <value>` (views, weather, hit-flash colours and the console's own `cg_consolealpha`, each checked
   against its range), `cg_whatami` (graphics card), `listatmospherics`, `navmapon` and `navmapoff` (the landscape's
   navigation map), `setgammabias <0 to 0.005>` (full screen only), `fmv_play` (lists the game's films: the cutscenes
-  1-33, `GILL_M_on_a_fork` and `UsTheMovie` play from the Goodies page, `ltlogo` and `openingfmv` when the game
+  1-33, `GILL_M_on_a_fork` and `UsTheMovie` play from the Goodies screen, `ltlogo` and `openingfmv` when the game
   starts; none plays during a battle), `playsound <name>` (a sound the level has
   already loaded) and `splitscreen horizontal|vertical` (for the next two-player game).
 - **Developer information:** `devstats` (or `devstats on`/`off`) shows the original developers' information text in
@@ -237,7 +255,7 @@ the original's command interpreter: it has its own list of commands, and never r
   skips to your next track; `music clear` goes back to the game's music. These are the original's playlist commands
   (`m_adddir`, `m_playtype`), which the PC release never registered. They last for the session; `ce.ini` keeps the
   settings (below).
-- **Photo mode:** `photo` (or `photo on`/`off`) hides the HUD for pictures, as F11 does, and closes the console; F12
+- **Photo Mode:** `photo` (or `photo on`/`off`) hides the HUD for pictures, as F11 does, and closes the console; F12
   saves a screenshot (below).
 - **With Free Camera on:** `camera` (as the F key), `remotecameraon` (views from whatever is under the crosshair) and
   `remotecameraoff`.
@@ -246,15 +264,15 @@ the original's command interpreter: it has its own list of commands, and never r
 - **Put back at the end of each level:** every variable `set` changed, the navigation map, the gamma bias and the
   remote camera.
 - **Not available:** `exec`, `bind`, `memstats`, `dumpmem`, `dumptextures` and the original's other developer
-  commands that write files or run scripts; `quit` points you at the pause menu. The console is closed in multiplayer,
-  in network games, in demos, and while a session is recorded or replayed.
+  commands that write files or run scripts; `quit` points you at the Pause Menu. The console is closed in multiplayer,
+  in demos, and while a session is recorded or replayed.
 - **Console Text: Green** on CE Settings (`console_theme=green` in `ce.ini`) draws the text in green, from the next time the console
   opens (the console reads the line each time it opens). This is an Onslaught CE choice: nothing shows that the original's console was green.
 
-### Photo mode and screenshots
+### Photo Mode and screenshots
 
 - **F11** (or the console's `photo`, `photo on`/`off`) hides the HUD for pictures: the cockpit, the HUD and its radio
-  messages, the battle line and the developer information. Menus, the pause menu, the message log and the end-of-level
+  messages, the battle line and the developer information. Menus, the Pause Menu, the message log and the end-of-level
   screens are still drawn, since they take your input. F11 again, or the end of the level, brings everything back. It
   needs no cheat: it only hides drawing, and the battle plays out as it would without it. To fly the camera around the
   battle, and to freeze it while you frame a shot (Esc), use the Free Camera cheat (above) with it.
@@ -262,19 +280,19 @@ the original's command interpreter: it has its own list of commands, and never r
   (`onslaught-ce-20261029-153012.png`, then `-2`, `-3` ... in the same second). It never replaces a file. A note at the
   bottom of the screen says it was saved; the note is never in the picture. The folder holds up to 2000 files: move
   some out when it says it is full.
-- **Photo Mode in the pause menu:** in a single-player level the pause menu has a **Photo Mode** row, between the
+- **Photo Mode in the Pause Menu:** in a single-player level the Pause Menu has a **Photo Mode** row, between the
   options rows and Retry, so a gamepad can reach it. Choosing it closes the menu, resumes the battle and turns photo
-  mode on, as F11 does, and writes nothing (not a career, not your settings). While photo mode is on the row reads
-  **End Photo Mode**: open the pause menu again and choose it to bring everything back. In multiplayer, a
-  network game, a demo, a recording or a replay the row is not drawn and cannot be chosen.
-- F11 and F12 work in single-player levels, but not while a session is recorded or replayed, in multiplayer, a network
-  game or a demo. A key-capturing menu or the console can take these keys first. Photo mode is tested on Linux;
+  mode on, as F11 does, and writes nothing (not a career, not your settings). While Photo Mode is on the row reads
+  **End Photo Mode**: open the Pause Menu again and choose it to bring everything back. In multiplayer, a demo, a
+  recording or a replay the row is not drawn and cannot be chosen.
+- F11 and F12 work in single-player levels, but not while a session is recorded or replayed, in multiplayer
+  or a demo. A key-capturing menu or the console can take these keys first. Photo Mode is tested on Linux;
   Windows testing of it is limited (see the release notes).
 
 ### Your own music, end-of-level statistics and rumble
 
 Three things the original team built that the PC release left switched off. Each is an Onslaught CE option, a row of CE Settings or
-a line in `ce.ini` in your user folder, and none of them is ever on while a session is recorded or replayed, in a network game or in a
+a line in `ce.ini` in your user folder, and none of them is ever on while a session is recorded or replayed or in a
 demo.
 
 - **Your own music** (`music_dir`, `music_playtype`): `music_dir=` the full path of a folder of `.ogg` tracks plays
@@ -291,7 +309,7 @@ demo.
   game pauses for about three seconds between tracks, as it does between its own. The console's `music` commands
   change it for the session.
 - **End-of-level statistics** (**End-of-Level Stats** on CE Settings, `debrief_stats`; on unless set to 0): the victory and defeat screens list your mission
-  time, time in jet and walker mode, rounds fired, accuracy (once you have fired) and damage taken, in the original's
+  time, time in jet and Walker mode, rounds fired, accuracy (once you have fired) and damage taken, in the original's
   own words and layout, and "CHEATER!" in red when god mode was on. The game kept counting these; the PC release left
   the panel commented out.
 - **Gamepad rumble** (**Controller Rumble** on CE Settings, `rumble`; on unless set to 0): CE requests a rumble when your Battle Engine is hit or shaken
@@ -329,7 +347,7 @@ the previous file as it was. Saving over a name that already exists asks once: Y
 folder (also when the name belongs to a career in the original game's `savegames` folder, which is never written), No changes
 nothing. If the game or the computer stops in the middle of a save, a hidden temporary file named `.ce-write-<number>-<number>`
 (on Windows with `.tmp` added) can be left in the `savegames` folder. It is not a career and the game does not list it; you may
-delete it. From 0.1.11, two of the game's automatic saves say so when they fail: after the pause menu's Continue the game's own save error
+delete it. From 0.1.11, two of the game's automatic saves say so when they fail: after the Pause Menu's Continue the game's own save error
 message ("An error occurred during saving." in English, and in the language you chose) appears for a few seconds at the bottom of
 the screen, and after a language change in the front end it appears in the usual message box. The career you had is unchanged. Its other automatic saves of
 settings (leaving the Options page, after loading a career, a display reset) stay quiet. Recordings and replays show neither.
@@ -446,7 +464,7 @@ report any problems; see Known limitations and the release notes for the routes 
 
 1. Extract the zip and run the `onslaught-ce.exe` launcher. The zip also contains `bea.exe` and the SDL3, FFmpeg and
    zlib DLLs.
-2. You need Windows 10 or newer, for its built-in UCRT. User and game folders whose names have
+2. You need Windows 10 or newer. User and game folders whose names have
    characters outside your Windows language's character set work from Windows 10 version 1903 on (the UTF-8 setting
    the programs use is ignored by earlier versions).
 3. The executable is unsigned, so SmartScreen may show a warning. Choose **More info**, then **Run anyway**.
@@ -510,7 +528,7 @@ the launcher, and asks before installing. **Update** downloads the package, chec
 signed feed, and unpacks it into `versions/` inside the Onslaught CE folder; that folder's own files and everything
 beside it are left alone, and the version you had stays for `--rollback`. Careers and settings are not changed.
 `--update-only` checks now without starting the game; `BEA_NO_UPDATE_CHECK=1`, **Check for Updates at Start: No** on CE Settings (`update_check=0` in `ce.ini`) or
-`--no-update-check` turn checking off; **Onslaught CE > Help & Info > Updates & Rollback** in the game says whether that setting has turned checking off, and where
+`--no-update-check` turn checking off; **Onslaught CE > Help & Info > Updates** in the game says whether that setting has turned checking off, and where
 `ce.ini` is.
 On Linux the launcher downloads with the system `curl` (https only); without `curl` the check finds nothing and says so
 only in the log. Releases never carry the old `latest.json` feed that launchers 0.1.0–0.1.6 fetch, and the legacy
@@ -529,10 +547,10 @@ your version and OS in its address; nothing is posted until you submit it.
 Onslaught CE starts at your desktop's resolution, and Video Options lists your monitor's sizes, widescreen ones
 included. On a widescreen monitor the 3D view shows more to the sides (the original's vertical view is kept); the menus,
 loading pictures and films keep their original 4:3 shape, centred with black bars. To get the original's 4:3-only list
-and 640 x 480 start back, set `BEA_PORT_WIDESCREEN=0`. The pause menu, the message and briefing logs and the end-of-level menus read the mouse inside that
+and 640 x 480 start back, set `BEA_PORT_WIDESCREEN=0`. The Pause Menu, the message and briefing logs and the end-of-level menus read the mouse inside that
 centred picture too, so the pointer and the items under it agree at any window size, and a click acts on the item it was made on even when the pointer had not moved first.
 
-In eligible ordinary single-player play with widescreen modes enabled, the HUD (radar, portrait, messages, compass,
+In eligible ordinary single-player levels with widescreen modes enabled, the HUD (radar, portrait, messages, compass,
 reticle, and the markers it draws on targets and objectives) scales up when the screen is wider than 640 and taller
 than 480 pixels, keeping the size it has at 640 x 480 relative to the screen: at 3840 x 2160 it is 4.5 times as large.
 Each marker grows about its own target. Choose **HUD Size: Original** on CE Settings (`hud_scale=0` in `ce.ini`) for the
@@ -541,15 +559,13 @@ first level starts: restart the game after changing it); or set `BEA_PORT_HUD_SC
 below in the 4:3 columns. A `BEA_PORT_HUD_SCALE` that is set and not empty decides the size instead of `ce.ini`: a value that
 starts with 0 (`0`, `00`, `05` ...) gives the original's, with the corner groups in the 4:3 columns, and any other value the
 larger HUD; the HUD Size row still shows what `ce.ini` says. Scaling is off in recordings and replays, in split-screen
-multiplayer, and when `BEA_PORT_WIDESCREEN=0`; a two-player game on the Network Game page of an experimental network
-build (below) scales the HUD as single-player play does. The developer information text (`devstats`) is not part of
+multiplayer, and when `BEA_PORT_WIDESCREEN=0`. The developer text (`devstats`) is not part of
 this: it grows with the window, as the CE console does, whatever `hud_scale` or `BEA_PORT_HUD_SCALE` says.
 
 In the same play the HUD's corner groups (the target panel, objectives, radar, weapon and ammunition readouts and the
 radio portrait) sit in the corners of the screen, where the original's HUD sits at 4:3, while the radio messages,
 warnings, compass and reticle stay in the middle. On a very wide screen the corners are far apart: choose **HUD Layout: 4:3 Columns** on CE Settings
-(`hud_anchor=0` in `ce.ini`) to keep them in the columns a 4:3 picture would have, as `BEA_PORT_HUD_SCALE=0` does. In split-screen
-multiplayer the HUD stays in the 4:3 columns.
+(`hud_anchor=0` in `ce.ini`) to keep them in the columns a 4:3 picture would have, as `BEA_PORT_HUD_SCALE=0` does. Split screen keeps the 4:3 columns.
 
 Sharper text is off by default: the menus' and HUD's text keeps the original's soft look, as the rest of the picture
 does. Choose **Sharper Text: Yes** on CE Settings (`sharp_ui=1` in `ce.ini`) to turn it on from the next start: with widescreen modes enabled on a non-4:3 picture, bitmap text
@@ -570,35 +586,54 @@ between visual effects and play, so a wider view can change the details of a fig
 ### Video Options: new-profile defaults, Window mode and Extended terrain
 
 **A new profile starts at the best the game offers, except one costly row.** The first time you start with no saved options of your own (a new install,
-or a profile that only has the old game folder's file), Video Options (Main menu > Options > Video Options) starts every quality row at its highest choice (except Full models, below),
+or a profile that only has the old game folder's file), Video Options (Main Menu > Options > Video Options) starts every quality row at its highest choice (except Full models, below),
 **anti-aliasing at the highest level your graphics device lists**, and **extra graphical features On** where your device passes the capability test.
-**Full models** starts **Off**: it draws every model in full detail at any distance and is by far the largest cost in frame rate (on the developer's laptop, a graphics card of the RTX 4060 class, turning it On took level 200
-from 383 to 67 frames a second with the same terrain setting), so turn it **On** in Video Options if your computer has the room. **Terrain detail distance** starts at **Extended**, which draws the terrain
-further away (see below); choose **Normal** for the original's distance. Anything you have saved before is kept as it was: the new defaults apply once, to a
+**Full models** starts at **No**. Choose **Yes** to keep full-detail models instead of distant stand-ins and remove their distance fade.
+This can be costly: on a laptop with an RTX 4060, level 200 fell from 383 to 67 frames a second with the same terrain setting.
+**Terrain detail distance** starts at **Extended**: it keeps finer ground detail up to twice as far away. The visible range and fog stay the same.
+Choose **Normal** for the original terrain detail. Anything you have saved before is kept as it was: the new defaults apply once, to a
 profile that has no options of its own, and every row can be changed afterwards. The adapter name and the long choices on the page now fit the screen.
 
-**Windowed or Fullscreen without a restart.** Video Options has a **Window mode** row (Windowed or Fullscreen), also in the paused game: choose and press
-Apply, and the window changes at once; the choice is saved (`windowed` in `ce.ini`) and used at the next start. If the change cannot be made, the
-previous mode comes back and the row says so; if it was made but could not be saved, the row says that too. It is off in session recordings and replays.
+**Windowed or Fullscreen without a restart.** In Video Options, including from a paused game, choose a **Window mode** and press **Apply**.
+This switches the running game and saves your choice for the next start. **Screen mode** selects the resolution; **Video adapter** selects the graphics device.
+If Window mode says **not changed**, the game kept its previous mode. **Not saved** means the switch worked for this session only.
+If the row says **restart the game**, restart to recover the display or input. Window mode is off in session recordings and replays.
+Live switching has been tested on Linux. The Windows build includes the same control. A 0.1.14 candidate switched both ways in a
+software-rendered Windows VM; the switch in this version has not been verified on Windows or on a physical monitor.
 
-**Extended terrain and its reserve.** Extended draws the terrain further than the original's memory pools hold. When you first use it in a level, CE sets
-aside a small reserve of extra terrain memory (a few megabytes at most, created once and used only after the original pools run out), so the far terrain
-is drawn with the memory it needs on the one-player levels we measured (levels 100 and 200 ran without a failed terrain request). **The two-player split-screen level (860) still runs
-short:** about 200 terrain requests a frame find no free memory even with the reserve, all of them in the nearest tier; we do not know what the game does with a failed request, and in the one frame we looked at the
-ground was drawn. Its frame rate with Extended (170 and 210 in two runs) and with Normal (215, one run) was too noisy to tell apart. If the reserve cannot be made, the row says
-**Extended (using Normal)** and the game draws the original's distance. You can always choose **Normal**. The figures for the costs of these choices are in the [release notes](https://github.com/dlprentice/onslaught-ce/releases).
+**Extended terrain and its reserve.** Finer detail on distant ground can need more memory. When you first use Extended in a level, CE sets
+aside a small reserve of extra terrain memory (8 MiB at most across all three terrain tiers, used only after the original pools run out).
+The one-player levels we measured (levels 100 and 200) ran without a failed terrain request, and so did **two-player split screen** in the runs made,
+where the frame rate with the reserve was within the variation between runs.
+These are counts of memory requests on Linux: nobody has compared how the terrain looks or moves in split screen over a longer game, and none of it has run on Windows. If the reserve cannot be made, the row says
+**Extended (using Normal)** and the game uses the original terrain detail. You can always choose **Normal**. The figures for the costs of these choices are in the [release notes](https://github.com/dlprentice/onslaught-ce/releases).
+
+## Catalogue
+
+In this source branch, open **Onslaught CE → Catalogue**, then **Models** or **Textures**, to browse the files
+available in your installed game. Choose an item for its details; texture entries also have a preview. Model
+entries show information, not a playable unit or a new 3D model viewer. Browsing does not modify the game files.
+
+Choose **Find by name**, type part of a filename and choose **Find**. The filter ignores letter case and remembers
+a separate query for Models and Textures. Escape cancels the text edit; **Clear filter** on the results page shows
+all entries again. A search with no matches stays on the results page so you can change or clear it. The text field
+currently accepts up to 32 ASCII characters.
+
+The native Linux menu has been exercised. Windows compilation checks do not demonstrate the Windows menu or
+its text entry. Catalogue browsing uses your installed resources; it does not download or redistribute them.
 
 ## Mods (experimental)
 
 Onslaught CE can read replacement game files, such as textures, from mods on Linux. This is an early test of the
 feature: a mod can replace files the game already has, supply a level's world file and add the archive of a multiplayer
-level the game has none for (both below), and there is no mod menu yet. Mods are disabled on Windows until path handling
+level the game has none for (both below). In this source branch, **Onslaught CE → Mods** lists installed mods and lets
+you enable, disable and order them. Changes apply when you next start the game. Mods are disabled on Windows until path handling
 is safe and tested there: on Windows a `mods=` line in `ce.ini` is ignored, and the log says so.
 
 - A mod is a folder in the `mods` folder of your user folder: `~/.local/share/onslaught-ce/mods/<id>` on Linux.
   It holds a `mod.json` and the replacement files at the paths the game
   uses, for example `data/resources/dxtntextures/meshtex%BE_texA.tga(0)A1R5G5B5.aya`.
-- With the game closed, back up `ce.ini` and add one line naming the mods in order: `mods=first-mod,second-mod`.
+- You can also edit the list by hand: with the game closed, back up `ce.ini` and add one line naming the mods in order: `mods=first-mod,second-mod`.
   When two mods replace the same file, the later one wins. Remove an id (or the line) to turn a mod off.
 - Nothing in the game folder or in a mod's folder is ever changed. A file you put in your user folder yourself still
   wins over a mod.
@@ -648,7 +683,7 @@ is safe and tested there: on Windows a `mods=` line in `ce.ini` is ignored, and 
   The log says which check refused it.
 - A mod's files are read by the game itself. The checks above cover where a file is and what it contains at the byte
   level, not what a texture, archive or world inside it does, so install mods only from people you trust.
-- Mods are always off whenever a run is meant to be reproducible or shared, so those stay the same for everyone: replays and recordings (and the developer settings behind them: a deterministic clock, input tapes, probes, pilots and autopilot) and network play (host, join or handoff). A test that should load a mod must run live on the real clock.
+- Mods are always off whenever a run is meant to be reproducible or shared, so those stay the same for everyone: replays and recordings (and the developer settings behind them: a deterministic clock, input tapes, probes, pilots and autopilot) and, in an experimental network source build, network play (host, join or handoff). A test that should load a mod must run live on the real clock.
 
 `mod.json` looks like this (`id` is the folder's name; optional `ce_min` and `ce_max`, such as `"0.2"`, limit
 the Onslaught CE versions it loads in):
@@ -670,7 +705,7 @@ the size has been tested), but its unpacked file must stay under 5 MiB, the game
 
 ## Report a problem
 
-1. In 0.1.7 or later, choose **Onslaught CE > Report a Problem** in the main menu, or run `onslaught-ce --report`
+1. In 0.1.7 or later, choose **Onslaught CE > Report a Problem** in the Main Menu, or run `onslaught-ce --report`
    (Windows: `onslaught-ce.exe --report`, from a Command Prompt in the program folder or a shortcut with `--report`
    added). Do not start a 0.1.0–0.1.6 launcher to report a problem, by either route; use the
    [Issues](https://github.com/dlprentice/onslaught-ce/issues) page instead and give the version you downloaded.
@@ -682,7 +717,7 @@ the size has been tested), but its unpacked file must stay under 5 MiB, the game
    and nonempty, otherwise `~/.local/share/onslaught-ce` on Linux; `%APPDATA%\Onslaught CE` on Windows). The usual
    file is `onslaught-ce.log`. If you ran multiple copies at once, the affected run may instead be in
    `onslaught-ce.concurrent-1.log` or `onslaught-ce.concurrent-2.log`. Check the start time in the log to find the
-   affected run and save it promptly; later launches can replace log files. In ordinary, unrecorded play it includes
+   affected run and save it promptly; later starts can replace log files. In ordinary, unrecorded play it includes
    the launcher and game identities, the game executable's SHA-256, graphics and audio configuration, every display
    (size, refresh rate, scaling, which one the game used),
    the keyboards, mice, controllers and audio playback devices by the names your system gives them, the Onslaught CE
@@ -708,10 +743,10 @@ problem.
 The goal is a game that behaves exactly like the original. We check that by replaying recorded input
 in both and comparing them, and recordings of real play find differences our own test runs miss.
 
-- Record one session with `onslaught-ce --record`, or every session with **Onslaught CE > CE Settings > Record Play for Bug
-  Reports** in the main menu. That starts the next time you launch Onslaught CE (quit the game, then start it again); it puts
-  `record_sessions=1` in `ce.ini` in your user folder. While it is on, each start asks whether to record: **Stop
-  recording** there (or starting with `onslaught-ce --no-record`) turns it off again.
+- Record one session with `onslaught-ce --record`, or every session with **Onslaught CE > CE Settings > Session
+  Recording** in the Main Menu. That starts the next time you start Onslaught CE (quit the game, then start it again); it puts
+  `record_sessions=1` in `ce.ini` in your user folder. While it is on, each start asks whether to record: **Turn
+  recording off** there (or starting with `onslaught-ce --no-record`) turns it off again.
 - By default, recording targets 30 frames a second for play and uses the replay clock. Its menus take the keyboard
   and mouse, and you can type a career's name. Direct gamepad and flight-stick input is disabled during recording and
   replay because the tape does not record it; use the keyboard and mouse. An older tape made with live controller
@@ -796,15 +831,24 @@ its win and debrief. This covers one recorded route; it does not establish compl
   also exercised. These checks do not validate a physical audio device, listening quality or every race schedule.
   Music starts that could survive a stop request are corrected (0.1.5). Menu music that played twice, reported on
   Windows after a sound option (quality, hardware sound, device or 3D sound) had been changed, is corrected (0.1.12).
+  A Linux build can start silently when its selected audio backend cannot load, even with Sound and Music on.
+  Backend initialization alone does not prove audible playback; include the launch log when reporting silence.
 - Videos are decoded with FFmpeg's Bink decoders. Compared with the game's own Bink decoder under Wine, 333 of the
   48,627 frames of its 66 videos differ byte for byte, in five videos. The video sound has no listening check, and its
   timing against the picture is not checked.
 - Complete tutorial parity with the original has not yet been established.
-- Gamepad and flight-stick defaults cover menus, solo play and bonus co-op ([how](port/controller-input.md)); only
+- Gamepad and flight-stick defaults cover menus, single-player levels and bonus Co-Op ([how](port/controller-input.md)); only
   virtual devices have been tested so far.
 - Widescreen play is not compared with the original (the original has no widescreen); ordinary replays and recordings use 4:3.
-- Planned, not in this version yet: Internet multiplayer, mods on Windows and additional HUD options. On Linux, mods
-  are an early test ([Mods (experimental)](#mods-experimental)).
+- Release 0.1.13 does not offer Internet multiplayer. This source branch has opt-in two-player network test builds;
+  that does not establish a released Internet service. Mods on Windows and additional HUD options remain planned.
+  On Linux, mods are an early test ([Mods (experimental)](#mods-experimental)).
+- The native prototypes remain incomplete. Commander has squad selection and orders, but the intended native-model
+  RTS view, individual-unit and structure workflows are not complete. Taking a friendly unit is not a finished
+  first-person infantry mode: camera and weapon presentation still need work. The Museum has a walkable room and
+  a film screen, with reported close-up exhibit disappearance and scene-composition defects. The editor can move
+  existing objects and play a draft with F5/F6, but a player-start workflow and reported interaction lag remain
+  unresolved. These limits do not remove the existing draft, save and preview controls.
 - On Windows, 0.1.12 could select the wrong pause-menu item at some display sizes and could leave the system
   cursor visible in fullscreen. 0.1.13 changes both. The pointer fix was checked on Linux (1920x1080 and 1024x768)
   and in a Windows 11 virtual machine, and the fullscreen cursor fix in that virtual machine; neither has been seen on
@@ -894,7 +938,10 @@ launch the game or open an audio device.
 The default `--public` build defines `CE_NETWORK_OFF` and leaves networking out. Use a separate clean Git checkout
 or worktree for each experimental flavour so its objects and build receipts stay together. Add `--with-network` to
 the public build commands above for the experimental two-player Network Game page and direct-IP transport. Direct-IP
-sessions contact the other player's UDP address; the game has no matchmaking server.
+sessions contact the other player's UDP address; the game has no matchmaking server. The downloads have no network
+game, so the sections above do not name one; in a network game of such a build the Dodge Button, the console, photo
+mode and F12 screenshots, your own music, the end-of-level statistics and rumble are off, as they are in a recording,
+and its HUD scales as it does in single-player levels.
 
 The further `--with-ice` opt-in compiles the experimental relay client. Prepare the ordinary dependencies first, then
 run these commands in that flavour's checkout, using the same dependency cache and the default pinned `sniper` profile:
@@ -975,7 +1022,7 @@ The source has three parts:
 - **The upstream GPL Onslaught source** ([stuart73/Onslaught](https://github.com/stuart73/Onslaught)).
 - **A byte-matching decompilation** that reconstructs more of the PC code
   ([onslaught-decomp](https://github.com/dlprentice/onslaught-decomp)), which records its measured matching coverage
-  and reconstruction concessions. The native port uses a different compiler and replacement platform code.
+  and stated reconstruction limits. The native port uses a different compiler and replacement platform code.
 - **A platform layer**: SDL3, with dxvk-native on Linux and the system's Direct3D 9 on Windows.
 
 | Folder | What it holds |

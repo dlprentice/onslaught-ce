@@ -65,9 +65,11 @@ int main() {
     if ((failure = expect(automatic == parsed_address(first), 21))) return failure;
 
     if ((failure = expect(CE_LobbyHostAt(NULL) != 0, 5))) return failure;
+    if ((failure = expect(std::string(test_create_ipv4) == "0.0.0.0", 29))) return failure;
     if ((failure = expect(hosted_address() == automatic, 6))) return failure;
     CE_LobbyLeave();
     if ((failure = expect(CE_LobbyHostAt(first.c_str()) != 0, 7))) return failure;
+    if ((failure = expect(test_create_ipv4 == first, 28))) return failure;
     if ((failure = expect(hosted_address() == automatic, 8))) return failure;
     CE_LobbyLeave();
 
@@ -75,6 +77,8 @@ int main() {
     const uint32_t selected = hosted_address();
     if ((failure = expect(selected != 0 && selected != automatic, 10))) return failure;
     if ((failure = expect(selected == parsed_address(second), 22))) return failure;
+    // the transport must be asked to listen on the chosen address; an empty one makes CE_NetCreate fail
+    if ((failure = expect(test_create_ipv4 == second, 27))) return failure;
     CE_LobbyStatus previous;
     CE_LobbyStatusGet(&previous);
     const int before_create = test_create_count;

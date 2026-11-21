@@ -2,8 +2,8 @@
 // port/game/ce_frontend.cpp: the CE layer's front-end additions (patch 0050): an "Onslaught CE" action on the main menu
 // opening a page of the game's own options-style lists: Bonus Levels, CE Settings, Cheats (switches kept in ce.ini, patch
 // 0051 at IsCheatActive, that work as the cheat codes do in a career's name), Help & Info (Controls & Tips, What's Coming,
-// Updates & Rollback, About, Special Thanks), Report a Problem and the Goodies Gallery (the Goodies gallery as a visitor,
-// ce_museum.h, patch 0199). Every row has a hint under the list. The
+// Updates & Rollback, About, Special Thanks), Report a Problem and the Museum (a page of its own: a hall of the game's
+// machines, ce_museum_visit.h, and the Goodies gallery as a visitor, ce_museum.h, patch 0199). Every row has a hint under the list. The
 // pause menu's Photo Mode item (patch 0138) is made here too. Built as a game file (port/build.py) so it uses the game's
 // menu classes; public builds only.
 //
@@ -30,6 +30,15 @@
 #include "ce_museum.h"
 #include "ce_photo.h"
 #include "ce_editor.h"
+#include "ce_dodge_assist.h"
+#include "ce_dodge_binding.h"
+#include "ce_tutorial_pad.h"
+#include "ce_extras.h"
+#include "ce_modspage.h"
+#include "ce_catalogue_menu.h"
+#include "ce_catalogue_preview.h"
+#include "ce_catalogue_sounds.h"
+extern "C" int CE_SettingGetBool(const char *, int);
 #include "hud_scale.h"
 
 #include <stdio.h>
@@ -48,6 +57,7 @@ extern "C" int	CE_OpenReportPage(void);
 extern "C" int	CE_SettingIs(const char *key, const char *value);
 extern "C" int	CE_SettingLauncherIs(const char *key, const char *value);
 extern "C" int	CE_SettingGetText(const char *key, char *out, int n);
+extern "C" int	CE_SettingGetBool(const char *key, int def);
 extern "C" int	CE_SettingSetText(const char *key, const char *value);
 extern "C" int	CE_TrySettingGet(const char *key, int def, int *out);
 extern "C" int	CE_SettingSet(const char *key, int value);
@@ -63,6 +73,7 @@ extern "C" bool	PortCeMuseumOpen(void);				// the Goodies Gallery row (below, ne
 extern "C" bool PortCeMuseumVisitBegin(void);
 extern "C" int PortCeMuseumVisitLevel(void);
 extern "C" const char *PortCeMuseumVisitMessage(void);
+extern "C" bool PortCeMuseumVisitTakeNotice(const char **sentence);
 
 #define CE_LINKS	"github.com/dlprentice/onslaught-ce"
 
@@ -76,6 +87,7 @@ void	PortCeNetProcess();
 void	PortCeNetDraw();
 void	PortCeNetShutdown();
 bool	PortCeNetOpenOnEntry();
+WCHAR	*PortCeNetTitle();					// the network page's own title
 
 #endif
 //*********************************************************************************
@@ -115,7 +127,10 @@ int		PortCeMainAction(int row)
 
 int		PortCeMainRows(int rows)
 {
-	return PortCeMenus() ? rows + 1 : rows;
+	if (!PortCeMenus())
+		return rows;
+	PortCeModsPageMainMenu();		// the main menu asks this as it is drawn: the Mods page's once-a-start notice (ce_modspage.cpp)
+	return rows + 1;
 }
 
 WCHAR	*PortCeMainText()
@@ -143,10 +158,14 @@ static int	Shown(int c)
 // The CE folder in the font's characters (CE_UserDirForDialog, ce.cpp), with sub ("/tapes") after it, or "the sub
 // folder in" before a folder given in words; then how to open it: on Linux, a note naming the first hidden folder on the
 // way (a name that starts with a dot; "." and ".." name no folder of their own, and ce_user_dir keeps them as they were
-// typed), on Windows, Explorer's address bar (AppData is hidden there). A path's spaces are kNoBreak, so WrapLines never
+// typed), on Windows, Explorer's address bar: the path is to be typed there, as text on a game screen cannot be copied, and the
+// note names AppData as hidden only for a path that goes through it or ends in it (a folder BEA_USER_DIR chose need not; the
+// separators are forward slashes, ce_forward_slashes). A path's spaces are
+// kNoBreak, so WrapLines never
 // breaks "Onslaught CE" at its space. A path longer than kFolderShown characters (a folder BEA_USER_DIR chose, say) is
-// shown as "..." and its last ones, and on Windows the note then says that only its end is shown, as what is shown cannot
-// be pasted; a hidden folder's name longer than kHiddenShown is shown as its first ones and "...". So every message naming
+// shown as "..." and its last ones, and on Windows the note then says that only its end is shown and where all of it can be
+// read (the launcher's --report names the folder), as what is shown is not the path to
+// type; a hidden folder's name longer than kHiddenShown is shown as its first ones and "...". So every message naming
 // the folder still ends on the screen (ShowMessage). dir is as large as CE_UserDirForDialog's own buffer, so the last
 // characters shown are the folder's own, however long it is. Returns out.
 #define kNoBreak	'\xa0'
@@ -177,9 +196,14 @@ static char	*FolderText(char *out, int n, const char *sub)
 			break;
 		}
 #else
+		bool appdata = !strncmp(dir, "%APPDATA%", 9);
+		for (const char *c = dir; *c && !appdata; c++)
+			appdata = (c[0] == '/') && ((c[1] | 0x20) == 'a') && ((c[2] | 0x20) == 'p') && ((c[3] | 0x20) == 'p') && ((c[4] | 0x20) == 'd') &&
+					  ((c[5] | 0x20) == 'a') && ((c[6] | 0x20) == 't') && ((c[7] | 0x20) == 'a') && ((c[8] == '/') || !c[8]);
 		snprintf(note, sizeof(note), "%s", (length > kFolderShown) ?
-				 "\n(Only its end is shown. To open it, paste the whole path into File Explorer's address bar.)" :
-				 "\n(To open it, paste this into File Explorer's address bar: AppData is a hidden folder.)");
+				 "\n(Only its end is shown. Starting Onslaught CE with --report shows the whole path.)" :
+				 appdata ? "\n(To open it, type this into File Explorer's address bar: AppData is a hidden folder.)" :
+				 "\n(To open it, type this into File Explorer's address bar.)");
 #endif
 		if (length > kFolderShown)
 		{
@@ -291,12 +315,18 @@ static int	WrapLines(SWordWrapFill *fill, const WCHAR *text, CDXBitmapFont *font
 	return lines ? lines : 1;
 }
 
-// The game's message box with a Continue button, as the save page uses for its errors; '\n' starts a line. y is its
-// centre: the Cheats page's list stays drawn behind the box, so its message goes below the list.
-static void	ShowMessage(const char *text, float y = 240.f)
+// Set by ShowMessage while the box it made is up: the front end then lets Esc and gamepad B close it as Select does
+// (PortCeMessageButton, patch 0050). CFEPCe::Process clears it once the box is gone.
+static bool	sCeBox = false;
+
+// The game's message box with a Continue button, as the save page uses for its errors; '\n' starts a line. y is its centre. The
+// page's list is not drawn while the box is up (the box is translucent), so the box floats mid-page. A message of three lines or
+// fewer is the original's 400 pixels wide, a longer one 440 (the original's boxes are 300, 350 and 400 wide).
+static void	ShowMessage(const char *text, float y = 240.f, float top_least = 122.f)
 {
 	static WCHAR msg[2048];
 	static WCHAR blank[] = L" ";
+	static SWordWrapFill probe;
 	Widen(msg, 2048, text);
 	CDXBitmapFont *font = PLATFORM.Font(FONT_SMALL);
 	// every CE message is written in the font's characters (FolderText); one that is not would show a box for it
@@ -306,23 +336,35 @@ static void	ShowMessage(const char *text, float y = 240.f)
 			fprintf(stderr, PORT_LOG_PREFIX "message character 0x%02x is not in the game's font\n", (unsigned)*c);
 			break;
 		}
+	const float width = (WrapLines(&probe, msg, font, 400.f - 16.f) <= 3) ? 400.f : 440.f;
 	FEMESSBOX.Kill();
-	FEMESSBOX.Create(320.f, y, 440.f, FO(100), blank, font, 0, 10, FALSE, FEMB_OPTION_A_CONTINUE, 0);
+	FEMESSBOX.Create(320.f, y, width, FO(100), blank, font, 0, 10, FALSE, FEMB_OPTION_A_CONTINUE, 0);
 	// Create's own layout (CFEMessBox::Create): the lines, then a line of the normal font for the button
 	for (int l = 0; l < 40; l++)
 		FEMESSBOX.mLines.c[l][0] = 0;
-	FEMESSBOX.mNumLines = WrapLines(&FEMESSBOX.mLines, msg, font, 440.f - 16.f);
+	FEMESSBOX.mNumLines = WrapLines(&FEMESSBOX.mLines, msg, font, width - 16.f);
 	FEMESSBOX.mHeight = float(FEMESSBOX.mLineHeight) * FEMESSBOX.mNumLines + 16.f + float(PLATFORM.Font(FONT_NORMAL)->GetHeight());
-	// centred on y, or lower for a tall message so it starts below the page's title bar (it ends above y 104); a message that
+	// centred on y, or lower for a tall message so it starts below the page's title bar and its emblem (at y 122); a message that
 	// would then pass the foot of the screen (a long folder) is raised to end at y 476, over the title bar (the box is drawn
 	// after the page), so its button stays in view
 	const float top = y - FEMESSBOX.mHeight * 0.5f;
-	float placed = (top < 104.f) ? 104.f : top;
+	float placed = (top < top_least) ? top_least : top;
 	if (placed + FEMESSBOX.mHeight > 476.f)
 		placed = 476.f - FEMESSBOX.mHeight;
 	if (placed != top)
 		FEMESSBOX.mY = placed + FEMESSBOX.mHeight * 0.5f;
 	FEMESSBOX.SetOnDismiss(FEP_NONE, 0);
+	sCeBox = true;
+}
+
+// The front end's redirect hands a button to the message box while it is up (CFrontEnd::ButtonPressed, patch 0050 calls this): on the
+// Onslaught CE page, for a box ShowMessage made, Esc and gamepad B (BUTTON_FRONTEND_MENU_BACK) are the box's Select, so they close it as
+// OK does. A box of the original's (a Yes/No question, a one-line notice) and any other page keep the original's input.
+SINT	PortCeMessageButton(SINT button, EFrontEndPage page)
+{
+	if ((button == BUTTON_FRONTEND_MENU_BACK) && (page == FEP_CE) && sCeBox && PortCeMenus())
+		return BUTTON_FRONTEND_MENU_SELECT;
+	return button;
 }
 
 //*********************************************************************************
@@ -341,6 +383,80 @@ public:
 };
 
 // A Yes/No switch with its own label (the game's Yes and No, as its other switches).
+// Empty catalogue slots occupy no space and cannot take the keyboard or mouse focus.
+class CCeCatalogueRow : public CCeMenuItem
+{
+public:
+	CCeCatalogueRow(int action) : CCeMenuItem(mLabel, action), mShown(false) { mLabel[0] = 0; }
+	void Bind(const char *text) { Widen(mLabel, int(sizeof(mLabel)/sizeof(*mLabel)), text); mShown = *text != 0; }
+	void BindWide(const WCHAR *text) { wcsncpy(mLabel, text, sizeof(mLabel)/sizeof(*mLabel) - 1); mLabel[sizeof(mLabel)/sizeof(*mLabel) - 1] = 0; mShown = *text != 0; }
+	virtual BOOL IsEnabled() { return mShown; }
+	virtual int GetHeight() { return mShown ? 20 : 0; }
+	virtual void Render(float x, float y, BOOL selected) { if (mShown) CMenuItem::Render(x,y,selected); }
+	WCHAR mLabel[100];
+	bool mShown;
+	// The items page: the twelve item rows, the page turn, then Find. A row's text is nearly as wide as the Service
+	// Record's list box gives a row (ce_scroll_list.h: 370), centred, and kept clear of the emblem at the top left.
+	enum { kFindRow = CE_CATALOGUE_SLOTS + 1, kRowWidth = 340 };
+	static int TextWidth(const WCHAR *text)
+	{
+		WCHAR copy[100];
+		wcsncpy(copy, text, 99); copy[99] = 0;
+		SIZE size;
+		PLATFORM.Font(FONT_SMALL)->GetTextExtent(copy, &size);
+		return int(size.cx);
+	}
+	// Cut to the width and mark the cut as the list box does, then end with tail (" (tag)") when there is one.
+	static void Fit(WCHAR *out, int n, const char *text, const char *tail)
+	{
+		WCHAR end[48];
+		Widen(end, int(sizeof(end) / sizeof(*end)), tail ? tail : "");
+		const int room = kRowWidth - (*end ? TextWidth(end) : 0);
+		Widen(out, n, text);
+		int length = int(wcslen(out));
+		while (TextWidth(out) > room && length > 4)
+		{
+			length--;
+			out[length - 3] = '.'; out[length - 2] = '.'; out[length - 1] = '.'; out[length] = 0;
+		}
+		if (*end && int(wcslen(out) + wcslen(end)) < n)
+			wcscat(out, end);
+	}
+};
+
+// The same native character trap and small-face cursor as the join-code and
+// career-name fields. Only this page owns text; gameplay bindings never see it.
+class CCeCatalogueField : public CCeCatalogueRow
+{
+public:
+	CCeCatalogueField(int action) : CCeCatalogueRow(action) { Set(""); }
+	void Set(const char *value) { snprintf(mValue, sizeof mValue, "%s", value); Refresh(); }
+	void Refresh() { char text[44]; snprintf(text, sizeof text, "Name: %s", mValue); Bind(text); }
+	void Backspace() { const size_t n = strlen(mValue); if (n) mValue[n-1] = 0; Refresh(); }
+	void Add(WORD character)
+	{
+		if (character == '_') character = ' ';
+		const size_t n = strlen(mValue);
+		if (n >= CE_CATALOGUE_QUERY_MAX || character < 32 || character > 126 ||
+			!PLATFORM.Font(FONT_SMALL)->CanDisplay(character)) return;
+		mValue[n] = char(character); mValue[n+1] = 0; Refresh();
+	}
+	void Render(float x, float y, BOOL selected)
+	{
+		CCeCatalogueRow::Render(x, y, selected);
+		if (selected && fmod(PLATFORM.GetSysTimeFloat(), 1.f) < .5f) {
+			CDXBitmapFont *font = PLATFORM.Font(FONT_SMALL); SIZE extent;
+			font->GetTextExtent(mLabel, &extent);
+			static WCHAR cursor[] = L"I";
+			font->DrawTextWithShadow(x + float(extent.cx) * .5f + 1.f, y, 0xff00c0ff, cursor, 0, 0, 1.f, 1.f);
+		}
+	}
+	char mValue[CE_CATALOGUE_QUERY_MAX + 1];
+};
+bool CatalogueKeyTrap(WORD key, KeyEventType event);
+pKeyTrapper CatalogueTrap() { return (pKeyTrapper)(void (*)(void))CatalogueKeyTrap; }
+void CatalogueTextEnd() { if (LT.GetKeytrap() == CatalogueTrap()) LT.SetKeytrap(NULL); }
+
 class CCeSwitch : public CBOOLMenuItem
 {
 public:
@@ -472,9 +588,9 @@ public:
 		if (!CE_CheatSet(mCheat, value))
 		{
 			if (CE_CheatRestartRequired(mCheat))
-				ShowMessage("Your settings could not be read. Restart Onslaught CE to retry this cheat.", 415.f);
+				ShowMessage("Your settings could not be read. Restart Onslaught CE to retry this cheat.");
 			else
-				ShowMessage("Your settings could not be read or saved, so this was not changed.", 415.f);
+				ShowMessage("Your settings could not be read or saved, so this was not changed.");
 			return;
 		}
 		if (mCheat == PORT_CE_GOD_CHEAT)
@@ -490,7 +606,7 @@ public:
 				int saved = 0;
 				if (!CE_TrySettingGet(PORT_CE_GOD_KEY, 0, &saved) ||
 					(saved && !CE_SettingSet(PORT_CE_GOD_KEY, 0)))
-					ShowMessage("The Maladim switch is off, but the God setting could not be cleared. Check your settings before enabling it again.", 415.f);
+					ShowMessage("The Maladim switch is off, but the God setting could not be cleared. Check your settings before enabling it again.");
 			}
 			SyncGodItem();
 		}
@@ -512,9 +628,9 @@ public:
 };
 
 //*********************************************************************************
-// Under each page's list the page says what the highlighted row does: a line in white, and for some rows a second line in
-// grey (a cheat's original code, or when a setting is used). The texts are in the tables below, one hint a row; the list's
-// last item, Back, draws them.
+// Under each page's list the page says what the highlighted row does: a line in cream, as the original's Multiplayer page words
+// its description, and for some rows a second line in grey (a cheat's original code, or when a setting is used). The texts are in the
+// tables below, one hint a row; the list's last item, Back, draws them.
 struct SCeHint
 {
 	const WCHAR	*mHelp;
@@ -534,30 +650,39 @@ struct SCeCheat
 };
 
 static const SCeCheat	kCheats[] = {
-	{L"Unlock All Levels: ", 1, {L"Every level shows as open in the level select. Your career's own progress is not changed.",
+	{L"Unlock All Levels:", 1, {L"Every level is open on the Select Level screen. Your own progress is kept.",
 	 L"Original code: TURKEY"}},
-	{L"Unlock All Goodies: ", 0, {L"Every goodie on the Goodies page is open. Nothing is saved to your career.",
+	{L"Unlock All Goodies:", 0, {L"Every goodie on the Goodies screen is open. Nothing is saved to your career.",
 	 L"Original code: MALLOY"}},
-	{L"Goodie Hints: ", 5, {L"The Goodies page shows the available unlock hints. Goodies cannot be opened, even if Unlock All "
-							L"Goodies is on.", L"Original code: lat\u00eate"}},
-	{L"God Mode Option: ", PORT_CE_GOD_CHEAT, {L"Adds God to Controller Options. God on: no damage, endless energy. Kept in "
-											   L"ce.ini, not in your career.", L"Original code: Maladim"}},
-	{L"Free Camera (F Key): ", 4, {L"F: free camera. W/S fly, A/D slide, arrows look. Esc freezes the battle; F returns. You "
-								   L"can still be hit.", L"Original code: Aurore"}},
+	{L"Goodie Hints:", 5, {L"The Goodies screen shows its unlock hints. While on, goodies cannot be opened.",
+						   L"Original code: lat\u00eate"}},
+	{L"God Mode Option:", PORT_CE_GOD_CHEAT, {L"Adds a God row to Controller Options. God ON: no damage and endless energy.",
+											  L"Original code: Maladim"}},
+	{L"Free Camera:", 4, {L"F: free camera, F returns. W/S fly, A/D slide, arrows look. You can still be hit.",
+						  L"Original code: Aurore"}},
 };
 #define CE_NUM_CHEATS	int(sizeof(kCheats) / sizeof(kCheats[0]))
-static WCHAR	kCheatsNote[] = L"Cheats apply to all careers and are off when recording. Wins count as usual.";
+static WCHAR	kCheatsNote[] = L"Cheats apply to every career and are off while recording. Wins still count.";
+
+// Where a hint's second line ends when it is anchored (CCeBack::EXTRA_FOOT): the page's note ends at 449, this a little above it.
+static const float	kCeFootEnd = 441.f;
 
 // The page's Back item, the list's last: after drawing itself (the list draws its items in order, so this comes after
 // the others) it draws, below the list, the highlighted row's hint (hints[row], stride bytes apart, count of them: Back
 // itself has none) and the page's standing note, if it has one, in the small font's normal text with its shadow as the
 // options pages draw their rows (the list's disabled grey is for what cannot be chosen). Nothing is drawn while a message
-// box is shown over the list.
+// box is shown over the list. The hint is cream and the rest grey, so that white in the row font keeps meaning "you can choose
+// this": a white hint under the list read as two more rows.
 class CCeBack : public CMenuItem
 {
 public:
-	CCeBack(CMenuOptionsList *list, const SCeHint *hints, int stride, int count, const WCHAR *note)
-		: CMenuItem((DWORD)GI_BACK, 3), mList(list), mHints(hints), mStride(stride), mCount(count), mNote(note) {}
+	// Where a hint's second line (grey) goes: straight under the hint's own lines (EXTRA_FOLLOW), two lines under the hint's first
+	// line, the same place on every row of a page whose hints are two lines each (EXTRA_FIXED: the Cheats page's original codes),
+	// or ending at the same place above the page's help bar however many lines the hint has (EXTRA_FOOT: CE Settings' "applies" line).
+	enum { EXTRA_FOLLOW = 0, EXTRA_FIXED = 1, EXTRA_FOOT = 2 };
+
+	CCeBack(CMenuOptionsList *list, const SCeHint *hints, int stride, int count, const WCHAR *note, int extra = EXTRA_FOLLOW)
+		: CMenuItem((DWORD)GI_BACK, 3), mList(list), mHints(hints), mStride(stride), mCount(count), mNote(note), mExtra(extra) {}
 
 	virtual void	Render(float x, float y, BOOL selected)
 	{
@@ -566,14 +691,21 @@ public:
 			return;
 		CDXBitmapFont *font = PLATFORM.Font(FONT_SMALL);
 		float line = float(font->GetHeight());
-		// what the highlighted row does, in white, then (for a cheat) its original code, as trivia, in the note's grey
+		// what the highlighted row does, in cream, then (for a cheat or a setting) its second line, in the note's grey
 		if ((mList->mSelected >= 0) && (mList->mSelected < mCount))
 		{
 			const SCeHint &hint = *(const SCeHint *)((const char *)mHints + mList->mSelected * mStride);
-			float ty = y + 20.f + line * 0.5f;
-			ty += line * Lines(font, hint.mHelp, ty, 0xffffffff);
+			const float first = y + 20.f + line * 0.5f;
+			float ty = first + line * Lines(font, hint.mHelp, first, kCream);
 			if (hint.mExtra)
-				Lines(font, hint.mExtra, ty, kGrey);
+			{
+				if ((mExtra == EXTRA_FIXED) && (ty < first + line * 2.f))
+					ty = first + line * 2.f;
+				if (mExtra == EXTRA_FOOT)
+					Lines(font, hint.mExtra, kCeFootEnd, kGrey, true, ty);
+				else
+					Lines(font, hint.mExtra, ty, kGrey);
+			}
 		}
 		// the note ends a little above the page's help bar (CFEPCommon::RenderHelpText draws it at y 455)
 		if (mNote)
@@ -581,12 +713,13 @@ public:
 	}
 
 	// 0xa8 on the screen: text colours are authored for a doubling colour stage (StageColour in port/platform/public/DXFont.cpp), so
-	// the colour given is half of it. A channel of 0x80 or more doubles past 255, and 0xa8 here would draw the same white as the hint.
+	// the colour given is half of it. A channel of 0x80 or more doubles past 255, and 0xa8 here would draw the same white as the rows.
 	static const DWORD	kGrey = 0xff545454;
-
+	// the original's description text (FEPMultiplayer.cpp), 0xfe, 0xde, 0xbe on the screen: cream
+	static const DWORD	kCream = 0xff7f6f5f;
 	// The text in lines wrapped to the space between the page's side borders, each centred on the page, from y down (or
-	// ending at y, when up); returns the number of lines.
-	static int	Lines(CDXBitmapFont *font, const WCHAR *text, float y, DWORD colour, bool up = false)
+	// ending at y, when up, and not above floor); returns the number of lines.
+	static int	Lines(CDXBitmapFont *font, const WCHAR *text, float y, DWORD colour, bool up = false, float floor = 0.f)
 	{
 		static SWordWrapFill fill;
 		static WCHAR buf[400];
@@ -595,7 +728,11 @@ public:
 		int n = font->WordWrap(&fill, buf, 420.f);
 		float line = float(font->GetHeight());
 		if (up)
+		{
 			y -= line * n;
+			if (y < floor)
+				y = floor;
+		}
 		for (int l = 0; l < n; l++)
 		{
 			SIZE size;
@@ -609,13 +746,13 @@ public:
 	const SCeHint		*mHints;
 	int					mStride, mCount;
 	const WCHAR			*mNote;
+	int					mExtra;
 };
 
 //*********************************************************************************
 // The CE page's menu: a CPauseMenu without the pause menu's lists (patch 0050's constructor), so the list draws and
 // takes input exactly as the options page's do.
 static const char kSpecialThanks[] =
-	"Special Thanks\n\n"
 	"Lost Toys - original game.\n"
 	"Stuart Gillam\n"
 	"Help, insight, guidance.\n\n"
@@ -624,7 +761,7 @@ static const char kSpecialThanks[] =
 	"Onslaught CE contributors,\n"
 	"including work made with\ntheir own coding agents.\n"
 	"BEA community and\npreservation projects.\n\n"
-	"Original game credits: Credits.";
+	"The original game's credits\nare in Options > Credits.";
 
 // What a row does when chosen. The first values are the old page's, kept; the plans are CEA_PLAN_FIRST + their index, the
 // five Race Challenges CEA_RACE_FIRST + 0..4 (levels 901-905, ce_bonus.cpp), the Goodies Gallery CEA_MUSEUM (ce_museum.h), the pages
@@ -643,11 +780,16 @@ enum ECeAction
 	CEA_RACE_FIRST = 100,
 	CEA_MUSEUM = 110,
 	CEA_MUSEUM_VISIT,
+	CEA_EXTRAS,
+	CEA_MODS,
+	CEA_CATALOGUE = 300, CEA_CAT_MODELS, CEA_CAT_TURN = CEA_CAT_MODELS + CE_CATALOGUE_GROUPS, CEA_CAT_ENTRY,
+	CEA_CAT_FIND = CEA_CAT_ENTRY + CE_CATALOGUE_SLOTS, CEA_CAT_CLEAR, CEA_CAT_FIELD, CEA_CAT_APPLY, CEA_CAT_ERASE,
 	CEA_PAGE_BONUS = 120,
 	CEA_PAGE_SETTINGS,
 	CEA_PAGE_CHEATS,
 	CEA_PAGE_HELP,
 	CEA_PAGE_EDITOR,
+	CEA_PAGE_MUSEUM = 126,
 	CEA_EDITOR_FIRST = 200,
 #ifdef CE_NETWORK_OFF
 	CEA_TIPS = 125
@@ -668,11 +810,18 @@ enum ECePage
 	CEP_HELP,
 	CEP_PLANS,
 	CEP_EDITOR,
+	CEP_MUSEUM,
+	CEP_CATALOGUE,
+	CEP_CATALOGUE_ITEMS,
+	CEP_CATALOGUE_FIND,
 	CEP_COUNT
 };
-static const int	kCeParent[CEP_COUNT] = {-1, CEP_HUB, CEP_HUB, CEP_HUB, CEP_HUB, CEP_HELP, CEP_HUB};
-static WCHAR		kCeTitles[CEP_COUNT][24] = {L"Onslaught CE", L"Bonus Levels", L"CE Settings", L"Cheats", L"Help & Info",
-												L"What's Coming", L"Map Editor"};
+static const int	kCeParent[CEP_COUNT] = {-1, CEP_HUB, CEP_HUB, CEP_HUB, CEP_HUB, CEP_HELP, CEP_HUB, CEP_HUB, CEP_HUB, CEP_CATALOGUE, CEP_CATALOGUE_ITEMS};
+// The title bar's text while one of Help & Info's boxes is up, in the order of CEBT_*.
+enum { CEBT_TIPS = 1, CEBT_UPDATES, CEBT_ABOUT, CEBT_THANKS };
+static WCHAR		kBoxTitles[4][24] = {L"Controls & Tips", L"Updates", L"About Onslaught CE", L"Special Thanks"};
+static WCHAR		kCeTitles[CEP_COUNT][24] = {L"ONSLAUGHT CE", L"Bonus Levels", L"CE Settings", L"Cheats", L"Help & Info",
+												L"What's Coming", L"Map Editor", L"Museum", L"Catalogue", L"Catalogue", L"Find by name"};
 
 // A row: its label, what it does, and its hint (the font has no underscore, so a setting's
 // ce.ini name is left to the README).
@@ -685,43 +834,62 @@ struct SCeRow
 
 static const SCeRow	kHubRows[] = {
 #ifndef CE_NETWORK_OFF
-	{L"Network Game", CEA_NETWORK, {L"Experimental Host and Join for two players.", 0}},
+	{L"Network Game", CEA_NETWORK, {L"Play a mission together with a friend on another PC.", 0}},
 #endif
-	{L"Bonus Levels", CEA_PAGE_BONUS, {L"Extra levels. None of them changes your career progress.", 0}},
-	{L"CE Settings", CEA_PAGE_SETTINGS, {L"Options that Onslaught CE adds. They are kept in ce.ini.", 0}},
+	{L"Bonus Levels", CEA_PAGE_BONUS, {L"Extra levels, outside your career.", 0}},
+	{L"Extras", CEA_EXTRAS, {L"Your service record and the game's music.", 0}},
+	{L"Mods", CEA_MODS, {L"Turn the mods in your mods folder on or off, and put them in order.", 0}},
+	{L"Catalogue", CEA_CATALOGUE, {L"Browse the models, textures and sounds installed with the game.", 0}},
+	{L"CE Settings", CEA_PAGE_SETTINGS, {L"The options Onslaught CE adds to the game.", 0}},
 	{L"Cheats", CEA_PAGE_CHEATS, {L"The original game's cheats as switches. They apply to every career.", 0}},
 	{L"Help & Info", CEA_PAGE_HELP, {L"Controls and tips, what is coming, updates, about and thanks.", 0}},
 	{L"Report a Problem", CEA_REPORT, {L"Opens a problem report in your browser. Nothing is sent until you submit it.", 0}},
-	{L"Map Editor", CEA_PAGE_EDITOR, {L"Experimental. Move named placements in a paused 3D scene and save CE projects.", 0}},
-	{L"Museum Prototype", CEA_MUSEUM_VISIT, {L"Experimental. Walk through a small exhibition, outside your career.", 0}},
-	{L"Goodies Gallery", CEA_MUSEUM, {L"Browse Goodies pictures and models. Nothing is saved to your career.", 0}},
+	{L"Map Editor", CEA_PAGE_EDITOR, {L"Move a level's objects and play your changes.", 0}},
+	{L"Museum", CEA_PAGE_MUSEUM, {L"See machines, art and films.", L"Your career is not changed."}},
 };
+
+// The Museum page (the hub's one museum row): a hall to walk in and the Goodies wall for a visitor. Each is a way into a visit that leaves the career as it
+// was; the page is reached only through its hub row, which is offered only with the museum switched on.
+static const SCeRow	kMuseumRows[] = {
+	{L"Units", CEA_MUSEUM_VISIT, {L"Walk among the game's machines.", L"Your career is not changed."}},
+	{L"Art and Movies", CEA_MUSEUM, {L"Pictures, models and movies from the game.", L"Your career is not changed."}},
+};
+static const int kMuseumRowCount = int(sizeof(kMuseumRows) / sizeof(kMuseumRows[0]));
 
 // The first native authoring slice offers a bounded set of installed single-player maps.
 // A missing map or unsupported placement set is refused during load and returns here without career writes.
 static const int kEditorLevels[] = {221, 100, 110, 201};
 static const SCeRow kEditorRows[] = {
-    {L"Open Installed Map 221", CEA_EDITOR_FIRST + 0, {L"Inspect and move the map's named placements in the actual game scene.", L"The simulation is paused. Save makes a new CE project revision."}},
-    {L"Open Installed Map 100", CEA_EDITOR_FIRST + 1, {L"Open the tutorial map for paused authoring, without tutorial progression.", L"Existing map data and career progress are kept."}},
-    {L"Open Installed Map 110", CEA_EDITOR_FIRST + 2, {L"Inspect the installed map's named placements; scripts do not advance.", L"Open a saved project after choosing its matching map."}},
-    {L"Open Installed Map 201", CEA_EDITOR_FIRST + 3, {L"Open the installed prototype map for paused authoring.", L"Map availability depends on your installed game resources."}},
+    {L"Open Installed Map 221", CEA_EDITOR_FIRST + 0, {L"Move objects and play your changes.", L"Your careers are not changed."}},
+    {L"Open Installed Map 100", CEA_EDITOR_FIRST + 1, {L"Move objects and play your changes.", L"Your careers are not changed."}},
+    {L"Open Installed Map 110", CEA_EDITOR_FIRST + 2, {L"Move objects and play your changes.", L"Your careers are not changed."}},
+    {L"Open Installed Map 201", CEA_EDITOR_FIRST + 3, {L"Move objects and play your changes.", L"Your careers are not changed."}},
 };
 static const int kEditorMapCount = int(sizeof(kEditorLevels) / sizeof(kEditorLevels[0]));
 
 // The rows and pages that are unfinished features: offered, and acted on, only with the feature's ce.ini line set to 1 under [Experimental]
-// (PortCeExperimental): map_editor for the Map Editor and its map pages, museum for the Museum Prototype and the Goodies Gallery.
+// (PortCeExperimental): map_editor for the Map Editor and its map pages, museum for the Museum and its two ways in.
 static const char	*ExperimentalMode(int action)
 {
 	if ((action == CEA_PAGE_EDITOR) || ((action >= CEA_EDITOR_FIRST) && (action < CEA_EDITOR_FIRST + kEditorMapCount)))
 		return "map_editor";
-	if ((action == CEA_MUSEUM) || (action == CEA_MUSEUM_VISIT))
+	if ((action == CEA_MUSEUM) || (action == CEA_MUSEUM_VISIT) || (action == CEA_PAGE_MUSEUM))
 		return "museum";
 	return NULL;
 }
 
-// Whether the row or page of this action is offered: every action that is not an unfinished feature, and each of those with its line on.
+// Optional pages own their menu entry and lifetime; ordinary careers keep their normal flow.
 static bool	ExperimentalOffered(int action)
 {
+	if (action == CEA_EXTRAS)
+		return PortCeExtrasOffered();
+	if (action >= CEA_CATALOGUE && action <= CEA_CAT_ERASE)
+	{
+		static const bool catalogue = CE_SettingGetBool("catalogue", 0) == 1;
+		return catalogue;
+	}
+	if (action == CEA_MODS)
+		return PortCeModsPageOffered();
 	const char *mode = ExperimentalMode(action);
 	return !mode || PortCeExperimental(mode);
 }
@@ -729,14 +897,15 @@ static bool	ExperimentalOffered(int action)
 // Levels 201, 856 and 901-905 (ce_bonus.cpp), in the order of the list; a bonus level returns here, its row highlighted. The original
 // ships the building-defence scenario twice (levels 856 and 858 are the same map), so the list has it once.
 static const SCeRow	kBonusRows[] = {
-	{L"Aquila Prototype", CEA_BONUS, {L"1 player. The original's demo level. Career progress is not changed.", 0}},
-	{L"Building Defence", CEA_COOP, {L"2 players on this PC, in split screen. Career progress is not changed.", 0}},
-	{L"Race Challenge 1", CEA_RACE_FIRST + 0, {L"1 player. Three laps against the clock. Career progress is not changed.", 0}},
-	{L"Race Challenge 2", CEA_RACE_FIRST + 1, {L"1 player. Three laps against the clock. Career progress is not changed.", 0}},
-	{L"Race Challenge 3", CEA_RACE_FIRST + 2, {L"1 player. Three laps against the clock. Career progress is not changed.", 0}},
-	{L"Race Challenge 4", CEA_RACE_FIRST + 3, {L"1 player. Three laps against the clock. Career progress is not changed.", 0}},
-	{L"Race Challenge 5", CEA_RACE_FIRST + 4, {L"1 player. Three laps against the clock. Career progress is not changed.", 0}},
+	{L"Aquila Prototype", CEA_BONUS, {L"1 player. Interception, from the original's demo.", 0}},
+	{L"Building Defence", CEA_COOP, {L"2 players on this PC, in split screen.", 0}},
+	{L"Race Challenge 1", CEA_RACE_FIRST + 0, {L"1 player. Three laps against the clock.", 0}},
+	{L"Race Challenge 2", CEA_RACE_FIRST + 1, {L"1 player. Three laps against the clock.", 0}},
+	{L"Race Challenge 3", CEA_RACE_FIRST + 2, {L"1 player. Three laps against the clock.", 0}},
+	{L"Race Challenge 4", CEA_RACE_FIRST + 3, {L"1 player. Three laps against the clock.", 0}},
+	{L"Race Challenge 5", CEA_RACE_FIRST + 4, {L"1 player. Three laps against the clock.", 0}},
 };
+static WCHAR	kBonusNote[] = L"Bonus levels do not change your career.";
 #define CE_NUM_BONUS	int(sizeof(kBonusRows) / sizeof(kBonusRows[0]))
 
 // CE Settings: a row for each ce.ini line the page sets, in the page's order, one table for the labels, the choices, the hints and
@@ -767,7 +936,8 @@ enum ECeAfter
 
 struct SCeSetting
 {
-	const WCHAR		*mLabel;				// with its colon and space: the list draws it before the choice
+	const WCHAR		*mLabel;				// with its colon, and no space after it: the list draws the choice from its own gap
+											// (CMenuMenuItem::RenderList right-aligns the label at x 320 and starts the choice at 322)
 	const char		*mKey;					// the line's name in ce.ini
 	const SCeChoice	*mChoices;				// NULL for a line the page only shows
 	int				mCount;
@@ -780,7 +950,6 @@ struct SCeSetting
 #define CE_CHOICES(array)	array, int(sizeof(array) / sizeof(array[0]))
 
 static const SCeChoice	kNoYes[] = {{L"No", "0"}, {L"Yes", "1"}};
-static const SCeChoice	kOffOn[] = {{L"Off", "0"}, {L"On", "1"}};
 static const SCeChoice	kHudSizes[] = {{L"Original", "0"}, {L"Larger", "1"}};
 static const SCeChoice	kHudLayouts[] = {{L"Corners", "1"}, {L"4:3 Columns", "0"}};
 static const SCeChoice	kMusicOrders[] = {{L"In Order", "linear"}, {L"Shuffle", "random"}, {L"One Track", "single"}};
@@ -788,35 +957,36 @@ static const SCeChoice	kConsoleTexts[] = {{L"Yellow", "yellow"}, {L"Green", "gre
 
 static const WCHAR		kNextLevel[] = L"Applies from the next level.";
 static const WCHAR		kNextStart[] = L"Applies the next time you start the game.";
-static const WCHAR		kNextConsole[] = L"The console uses it when it next opens, the information text from the next start.";
+static const WCHAR		kNextConsole[] = L"Console: when it next opens. Developer text: from the next start.";
+static const WCHAR		kNextRead[] = L"Set in ce.ini. Read when the game starts.";
 
 static const SCeSetting	kSettings[] = {
-	{L"HUD Size: ", "hud_scale", CE_CHOICES(kHudSizes), 1,
+	{L"HUD Size:", "hud_scale", CE_CHOICES(kHudSizes), 1,
 	 {L"Larger scales the HUD up on big screens. Original keeps it at its fixed size.", kNextLevel}, CEAF_HUD, 0},
-	{L"HUD Layout: ", "hud_anchor", CE_CHOICES(kHudLayouts), 0,
-	 {L"On wide screens the HUD's corner groups sit in the corners or in 4:3 columns.", kNextLevel}, CEAF_HUD, 0},
-	{L"Sharper Text: ", "sharp_ui", CE_CHOICES(kNoYes), 0,
-	 {L"Experimental. Sharper fonts for large text on wide screens.", kNextStart}, CEAF_NONE, 0},
-	{L"End-of-Level Stats: ", "debrief_stats", CE_CHOICES(kNoYes), 1,
+	{L"HUD Layout:", "hud_anchor", CE_CHOICES(kHudLayouts), 0,
+	 {L"Wide screens: radar and readouts in the screen's corners, or nearer the middle.", kNextLevel}, CEAF_HUD, 0},
+	{L"Sharper Text:", "sharp_ui", CE_CHOICES(kNoYes), 0,
+	 {L"Experimental. Sharper large text on wide screens.", kNextStart}, CEAF_NONE, 0},
+	{L"End-of-Level Stats:", "debrief_stats", CE_CHOICES(kNoYes), 1,
 	 {L"Shows your mission statistics on the victory and defeat screens.", kNextStart}, CEAF_NONE, 0},
-	{L"Controller Rumble: ", "rumble", CE_CHOICES(kNoYes), 1,
+	{L"Controller Rumble:", "rumble", CE_CHOICES(kNoYes), 1,
 	 {L"Rumbles a gamepad when your Battle Engine is hit or shaken. Not flight sticks.", kNextStart}, CEAF_NONE, 0},
-	{L"Dodge Button: ", "dodge_button", CE_CHOICES(kOffOn), 1,
-	 {L"Hold Left Ctrl, or gamepad B, and push left or right to dodge.", kNextLevel}, CEAF_NONE, 0},
-	{L"Commander Map: ", "commander", CE_CHOICES(kNoYes), 0,
-	 {L"Experimental map (M) for ordering friendly squads in solo levels.", kNextStart}, CEAF_NONE, 0},
-	{L"Developer Information: ", "dev_stats", CE_CHOICES(kNoYes), 0,
-	 {L"Shows the developers' information text in the top left of every level.", kNextStart}, CEAF_NONE, 0},
-	{L"Your Music: ", "music_dir", NULL, 0, 0,
-	 {L"Read only. The folder is set in ce.ini.", kNextStart}, CEAF_NONE, 0},
-	{L"Music Order: ", "music_playtype", CE_CHOICES(kMusicOrders), 0,
+	{L"Dodge Button:", "dodge_button", CE_CHOICES(kNoYes), 1,
+	 {L"Ground: hold Dodge and move. Pick a key in Controls.", kNextLevel}, CEAF_NONE, 0},
+	{L"Commander Map:", "commander", CE_CHOICES(kNoYes), 0,
+	 {L"Live squad view (solo). Set the key in Controls.", kNextStart}, CEAF_NONE, 0},
+	{L"Your Music:", "music_dir", NULL, 0, 0,
+	 {L"Your own music's folder. Select to see it.", kNextRead}, CEAF_NONE, 0},
+	{L"Music Order:", "music_playtype", CE_CHOICES(kMusicOrders), 0,
 	 {L"How your own music plays: in order, shuffled, or one track and then quiet.", kNextStart}, CEAF_NONE, 0},
-	{L"Console Text: ", "console_theme", CE_CHOICES(kConsoleTexts), 0,
+	{L"Developer Information:", "dev_stats", CE_CHOICES(kNoYes), 0,
+	 {L"Shows the original developers' text at the top left of every level.", kNextStart}, CEAF_NONE, 0},
+	{L"Console Text:", "console_theme", CE_CHOICES(kConsoleTexts), 0,
 	 {L"Colour of the console and developer text.", kNextConsole}, CEAF_NONE, 0},
-	{L"Check for Updates at Start: ", "update_check", CE_CHOICES(kNoYes), 1,
-	 {L"Looks for a signed update when the game starts, and asks before installing it.", kNextStart}, CEAF_NONE, 1},
-	{L"Record Play for Bug Reports: ", "record_sessions", CE_CHOICES(kNoYes), 0,
-	 {L"Records your play for bug reports. Each start then asks whether to record.", kNextStart}, CEAF_RECORD, 1},
+	{L"Check for Updates at Start:", "update_check", CE_CHOICES(kNoYes), 1,
+	 {L"Looks for a new version when the game starts, and asks before installing it.", kNextStart}, CEAF_NONE, 1},
+	{L"Session Recording:", "record_sessions", CE_CHOICES(kNoYes), 0,
+	 {L"Records your play for a problem report. Each start then asks whether to record.", kNextStart}, CEAF_RECORD, 1},
 };
 #define CE_NUM_SETTINGS	int(sizeof(kSettings) / sizeof(kSettings[0]))
 
@@ -828,72 +998,109 @@ static const SCeSetting	kSettings[] = {
 static const float		kCeListY = 300.f, kCeSettingsY = 260.f;
 
 static const SCeRow	kHelpRows[] = {
-	{L"Controls & Tips", CEA_TIPS, {L"Dodge, zoom, photo mode, screenshots, the console, the free camera and the commander map.", 0}},
-	{L"What's Coming", CEA_PLANS, {L"Plans and ideas. Nothing there starts a feature.", 0}},
-	{L"Updates & Rollback", CEA_UPDATES, {L"How updates work, and how to go back to the version before.", 0}},
-	{L"About Onslaught CE", CEA_ABOUT, {L"The version, the licence, and where the source and reports are.", 0}},
-	{L"Special Thanks", CEA_THANKS, {L"The people and projects behind the game and this port.", 0}},
+	{L"Controls & Tips", CEA_TIPS, {L"Dodge, zoom, Photo Mode, screenshots, the console, the free camera and the commander view.", 0}},
+	{L"What's Coming", CEA_PLANS, {L"Plans and ideas for later versions.", 0}},
+	{L"Updates", CEA_UPDATES, {L"How updates work, and how to roll back.", 0}},
+	{L"About Onslaught CE", CEA_ABOUT, {L"Version, licence and project links.", 0}},
+	{L"Special Thanks", CEA_THANKS, {L"The people behind the game and this port.", 0}},
 };
 
-// The Controls & Tips note: eight lines at most in the game's font (about 47 characters a line in the message box), so the lines
+// The Controls & Tips note (no heading: the title bar names it while the box is up): eight lines at most in the game's font (about 47 characters a line in the message box), so the lines
 // are broken here rather than left to the wrap. Only what exists: the dodge and the zoom as README's Dodging and Zooming say
-// them, F11, F12 and the console (solo levels), the free camera with its cheat, and the commander map (experimental: it exists only with
-// commander=1 under [Experimental] in ce.ini, so the line is shown only when the map is already on). The font has no backquote, so the console's key is named in words.
-static const char kControlsTips[] =
-	"Controls & Tips\n"
-	"Dodge, in walker mode: hold Left Ctrl or pad B\nwith A or D, or tap A then D, or D then A.\n"
-	"Zoom: mouse wheel, or the gamepad bumpers.\n"
-	"Solo levels: F11 photo mode, F12 screenshot,\nthe grave key (left of 1) opens the console.\n"
-	"F: free camera, with the Free Camera cheat on.";
-// The commander map's line, added to the note only with commander=1 under [Experimental] in ce.ini, that is, only when the map is on:
-// it names the key and gives no step to take. (The Commander Map row of CE Settings is listed under the same condition.)
-static const char kControlsTipsCommander[] = "\nM: commander map.";
+// them, F11, F12 and the console (single-player levels), the free camera with its cheat, and the commander view (experimental: it exists only with
+// commander=1 under [Experimental] in ce.ini, so the line is shown only when Commander is already on). The font has no backquote, so the console's key is named in words.
+// The dodge's two lines name the Dodge Button only where it works now, by the feature's own conditions (ce_dodge_assist.cpp): the
+// key while the CE Settings row is On and no control is bound to Left Ctrl, the gamepad button while the row is On and a connected
+// gamepad (not a flight stick) has B free. The hint names each available control, using the current bindings; with neither, the note
+// gives the double tap alone, which always works.
 
-// These are descriptions, not controls. The separate Godot project and early concepts are labelled as such.
+static const char kTipsRest[] =
+	"Zoom: mouse wheel, or the gamepad bumpers.\n"
+	"Single-player levels: F11 Photo Mode, F12\nscreenshot, the grave key (left of 1): console.\n"
+	"F: free camera, with the Free Camera cheat on.";
+// The commander view's line, added to the note only with commander=1 under [Experimental] in ce.ini, that is, only when Commander is on:
+// it names the keys and gives no step to take, and says that the view M opens does not pause the battle (0.1.13's M opened the paused
+// map, which is now V inside the view). (The Commander Map row of CE Settings is listed under the same condition.)
+static const char kControlsTipsCommander[] = "\n%s: commander view, the battle runs on. V: map.";
+
+// Whether a connected gamepad can use the Dodge Button now: a gamepad, not a flight stick, with button B bound to no control
+// (PortCeDodgeAssistPadFree). An empty slot is no gamepad (PortCeTutorialPadInfo answers 0 for it).
+static bool	DodgePadUsable()
+{
+	for (int pad = 0; (pad < LT.mJoypads) && (pad < MAX_JOYPADS); pad++)
+	{
+		CeTutorialPadInfo info = {};
+		if (LT.mUnknown33474[pad] && PortCeTutorialPadInfo(LT.pJoystick[pad], &info) && (info.kind == CE_TUTORIAL_GAMEPAD) &&
+			PortCeDodgeAssistPadFree(pad))
+			return true;
+	}
+	return false;
+}
+
+// The note as it reads now. The Dodge Button's row is asked of ce.ini itself, with the feature's own reader and default: the value
+// the feature keeps (PortCeDodgeAssistOn) was read in a level and is not asked again in the front end, so it would still say On
+// after the row on CE Settings, one page away, was set to Off.
+static void	ControlsTips(char *out, int n, bool commander)
+{
+	const bool on = CE_SettingGetBool("dodge_button", 1) != 0;
+    const bool key=on && PortCeDodgeAssistKeyFree(), pad=on && DodgePadUsable();
+    char name[32]{},left[32]{},right[32]{},dodge[256]{};
+    PortCeDodgeStrafeNames(left,sizeof(left),right,sizeof(right));
+    if(key) PortCeDodgeBindingName(PortCeDodgeBindingKey(),name,sizeof(name));
+    if(name[0] || pad) {
+        snprintf(dodge,sizeof(dodge),"Dodge (Walker): hold %s%s%s.\nPress a movement direction.\n",
+            name,name[0] && pad?" or ":"",pad?"gamepad B":"");
+    }
+    char gesture[160];
+    snprintf(gesture,sizeof(gesture),"%sTap %.18s then %.18s, or %.18s then %.18s.\n",
+        name[0] || pad?"":"Dodge (Walker): ",left,right,right,left);
+    if(n<=0)return;
+    out[0]=0;
+    char commanderLine[128] = {};
+	if (commander && !PortCeActionConflict(CeControlAction::Commander, PortCeActionKey(CeControlAction::Commander)))
+		snprintf(commanderLine, sizeof(commanderLine), kControlsTipsCommander, PortCeActionName(CeControlAction::Commander));
+	const char *sections[]={dodge,gesture,kTipsRest,commanderLine};
+    size_t used=0;
+    for(const char *part:sections) {
+        size_t len=strlen(part);
+        if(len>static_cast<size_t>(n-1)-used) len=static_cast<size_t>(n-1)-used;
+        memcpy(out+used,part,len);used+=len;out[used]=0;
+    }
+}
+
+// These are descriptions, not controls. Each plan is one of three grades: it works today, it is in development, or it is an idea; the
+// separate Godot project and early concepts are labelled as such.
 struct SCePlan { const WCHAR *mLabel; const char *mText; };
 static const SCePlan kCePlans[] = {
 #ifdef CE_NETWORK_OFF
-	{L"Online play", "Internet Host and Join, versus, skirmish and cross-platform play are in development and not available yet. "
-	 "Larger matches are a future idea. For two players on one PC, use Multiplayer on the main menu."},
-	{L"Campaign co-op", "Playing the campaign together online is experimental and not available yet. Local co-op bonus "
-	 "levels are on the Onslaught CE page."},
+	{L"Online Play", "Playing over the Internet is in development and not available yet: hosting and joining games, versus and skirmish, "
+	 "between Windows and Linux. Larger matches are an idea. For two players on one PC, use Multiplayer on the Main Menu."},
+	{L"Campaign Co-Op", "Playing the campaign together online is planned and not available yet. For two players on one PC, Building "
+	 "Defence is in Onslaught CE > Bonus Levels, and the original's Co-Op Mode is in Multiplayer on the Main Menu."},
 #else
-	{L"Online play", "Host and Join (Onslaught CE > Network Game) plays the building defence or the tutorial with one other player. It is "
+	{L"Online Play", "Host and Join (Onslaught CE > Network Game) plays the building defence or the tutorial with one other player. It is "
 	 "experimental and has not been tested across the Internet. Versus, skirmish, matchmaking and larger matches are not available. For "
-	 "two players on one PC, use Multiplayer on the main menu."},
-	{L"Campaign co-op", "Playing the campaign together online is not available yet. Network game offers the building defence and the "
+	 "two players on one PC, use Multiplayer on the Main Menu."},
+	{L"Campaign Co-Op", "Playing the campaign together online is not available yet. Network game offers the building defence and the "
 	 "tutorial; local co-op bonus levels are on the Onslaught CE page."},
 #endif
-	{L"Battle Engine / mods", "Mods are experimental and work on Linux only. A mods= line in ce.ini turns on mods from the mods folder "
-	 "beside it; Windows ignores the line and logs why. Each mod file is checked at start. A mod can replace game files such "
-	 "as textures or supply a level's world file. There is no mod menu (see Mods in the project README). Online Battle "
-	 "Engine customization is not available."},
-	{L"Map and mission tools", "The experimental native Map Editor opens installed scenes inside CE. Select a supported map, "
+	{L"Mods", "The Mods page (Onslaught CE > Mods) lists the mods in your mods folder. Turn each on or off and put them in "
+	 "order there; a change applies the next time you start the game. A mod can replace game files such as textures or change a level, "
+	 "and each mod file is checked at start. Mods are off in recordings, replays and network games, and on Windows for "
+	 "now. Online Battle Engine customization is not available."},
+	{L"Map and Mission Tools", "The experimental native Map Editor opens installed scenes inside CE. Select a supported map, "
      "move named placements, undo changes and save or open a CE project. Terrain shaping, new object creation and mission-script editing "
      "are still being developed. Saved projects refer to your installed game resources; no original map data is overwritten."},
-#ifdef CE_NETWORK_OFF
-	{L"HUD and display", "On a wide screen the solo HUD's corner groups sit in the screen's corners, and HUD Layout in CE Settings "
-	 "keeps them in the 4:3 columns instead. Parts of the HUD can also scale at higher resolutions, and HUD Size in CE Settings "
-	 "can keep the original size. Both are off in recordings, replays and multiplayer. Sharper Text in CE Settings (experimental, "
-	 "off by default) can sharpen bitmap text drawn at least twice as large horizontally or vertically on a non-4:3 picture. "
-	 "It is normally off in recordings and replays or when widescreen modes are off. Window mode in Video Options "
-	 "switches between Windowed and Fullscreen when you choose Apply, without a restart."},
-#else
-	{L"HUD and display", "On a wide screen the solo and network co-op HUD's corner groups sit in the screen's corners, and HUD Layout in CE Settings "
-	 "keeps them in the 4:3 columns instead. Parts of the HUD can also scale at higher resolutions, and HUD Size in CE Settings "
-	 "can keep the original size. Both are off in recordings, replays and local split-screen. Sharper Text in CE Settings (experimental, "
-	 "off by default) can sharpen bitmap text drawn at least twice as large horizontally or vertically on a non-4:3 picture. "
-	 "It is normally off in recordings and replays or when widescreen modes are off. Window mode in Video Options "
-	 "switches between Windowed and Fullscreen when you choose Apply, without a restart."},
-#endif
-	{L"Controls and tutorial", "More dodge and zoom guidance, control options and controller refinements are planned. "
-	 "Solo gamepad defaults and English tutorial cues already exist."},
-	{L"CE features in recordings", "Session recordings use original-style menus today. Controller input is not recorded and "
-	 "many CE additions are off. More recording support is being explored."},
-	{L"Full photo mode", "Photo mode already hides the HUD for pictures (F11), and F12 saves a screenshot in single-player levels. "
-	 "A fuller photo mode with camera tools is an idea, not a feature yet."},
-	{L"Godot and commander ideas", "The separate Godot rebuild is in development. Commander mode (experimental): an optional map "
-	 "for ordering friendly squads in single-player missions. A second player "
+	{L"HUD and Display", "On wide screens the HUD's size and placement, and Sharper Text, are in CE Settings today. Window mode is in "
+	 "Video Options. More HUD and display options are planned."},
+	{L"Controls and Tutorial", "More help with dodging and zooming, more control options and better gamepad support are planned. "
+	 "Gamepads already work in single-player levels, and the tutorial's dodge and zoom tips name your own controls (English only)."},
+	{L"CE Features in Recordings", "While a session is recorded the menus are the original's, gamepads are not recorded and most "
+	 "Onslaught CE additions are off. Recording more of them is an idea."},
+	{L"Full Photo Mode", "In single-player levels, F11 hides the HUD and F12 takes a screenshot. "
+	 "A future Photo Mode could add camera\xa0tools."},
+	{L"Other Projects and Ideas", "The separate Godot rebuild is in development. Commander mode (experimental): an optional live view "
+	 "and paused map for ordering friendly squads in single-player missions. A second player "
 	 "taking the commander seat online is an idea, not available."}
 };
 #define CE_NUM_PLANS int(sizeof(kCePlans) / sizeof(kCePlans[0]))
@@ -901,41 +1108,47 @@ static const SCePlan kCePlans[] = {
 // The same topics as the list shows them: in Title Case like the original's pages (kCePlans' own labels are the topics'
 // names, kept as they were), each with its hint. A test checks the two tables name the same topics.
 static const WCHAR	*const kPlanLabels[CE_NUM_PLANS] = {
-	L"Online Play", L"Campaign Co-op", L"Battle Engine / Mods", L"Map and Mission Tools", L"HUD and Display",
-	L"Controls and Tutorial", L"CE Features in Recordings", L"Full Photo Mode", L"Godot and Commander Ideas"};
+	L"Online Play", L"Campaign Co-Op", L"Mods", L"Map and Mission Tools", L"HUD and Display",
+	L"Controls and Tutorial", L"CE Features in Recordings", L"Full Photo Mode", L"Other Projects and Ideas"};
 static const SCeHint	kPlanHints[CE_NUM_PLANS] = {
 #ifdef CE_NETWORK_OFF
 	{L"In development. Not available yet.", 0},
-	{L"Experimental. Not available yet.", 0},
+	{L"Planned. Not available yet.", 0},
 #else
 	{L"Experimental Host and Join for two players.", 0},
 	{L"The tutorial is experimental. Campaign co-op is planned.", 0},
 #endif
-	{L"Experimental, and on Linux only. There is no mod menu.", 0},
+	{L"Mods are on the Mods page. Battle Engine customization is an idea.", 0},
 	{L"Experimental Map Editor inside CE; mission tools remain planned.", 0},
-	{L"Some of it works today. More is being explored.", 0},
+	{L"Some of it works today. More is planned.", 0},
 	{L"Some of it works today. More is planned.", 0},
 	{L"Recordings use the original's menus today.", 0},
 	{L"An idea. F11 and F12 work today.", 0},
-	{L"The Godot rebuild is in development. The commander map is experimental.", 0},
+	{L"The Godot rebuild is in development. Commander mode is experimental.", 0},
 };
 
 // Without a feature's ce.ini line the Help pages do not describe it as a thing this version has: without commander=1 Controls & Tips
-// drops the commander map's line (kControlsTipsCommander) and says so in its hint, and the two plans that name the Map Editor (map_editor)
+// drops the commander view's line (kControlsTipsCommander) and says so in its hint, and the two plans that name the Map Editor (map_editor)
 // and Commander (commander) say that they are in development. Indexes are kCePlans'.
-static const WCHAR	kControlsHintPlain[] = L"Dodge, zoom, photo mode, screenshots, the console and the free camera.";
-enum { CEPL_TOOLS = 3, CEPL_GODOT = 8 };
+static const WCHAR	kControlsHintPlain[] = L"Dodge, zoom, Photo Mode, screenshots, the console and the free camera.";
+enum { CEPL_MODS = 2, CEPL_TOOLS = 3, CEPL_GODOT = 8 };
+// The mods entry where the Mods page is not offered (its ce.ini line is off, or the build cannot load a mod): no page is described.
+static const char	kPlanModsPlain[] = "Mods are experimental and work on Linux only in this version. A mod can replace game files such as textures. There is "
+									   "no mod menu yet: the README says how to turn a mod on, under Mods.";
+static const WCHAR	kPlanModsPlainHint[] = L"Experimental, and on Linux only. There is no mod menu yet.";
 struct SCePlanPlain { int mIndex; const char *mMode; const char *mText; const WCHAR *mHint; };
 static const SCePlanPlain kPlanPlain[] = {
 	{CEPL_TOOLS, "map_editor", "A map and mission editor is in development. This version does not offer it.",
 	 L"In development. Not available yet."},
-	{CEPL_GODOT, "commander", "The separate Godot rebuild is in development. Ordering friendly squads from a map, and a second player taking "
-	 "that seat online, are ideas. This version offers neither.", L"The Godot rebuild is in development."},
+	{CEPL_GODOT, "commander", "A separate rebuild of the game in the Godot engine is in development. A map for ordering friendly squads, "
+	 "and a second player commanding online, are ideas. This version offers neither.", L"A separate project and ideas. Not included."},
 };
 
 // The text a Help & Info plan shows: kCePlans' own, or, with its feature's line off, the plain one.
 static const char	*PlanText(int index)
 {
+	if ((index == CEPL_MODS) && !PortCeModsPageOffered())
+		return kPlanModsPlain;
 	for (const SCePlanPlain &plain : kPlanPlain)
 		if ((plain.mIndex == index) && !PortCeExperimental(plain.mMode))
 			return plain.mText;
@@ -944,6 +1157,7 @@ static const char	*PlanText(int index)
 
 bool	PortCeBonusStart(int level);		// ce_bonus.cpp
 int		PortCeBonusTakeReturn();			// ce_bonus.cpp: the bonus level the front end has just come back from, or 0
+int		PortCeBonusTakeModReturn();			// ce_bonus.cpp: the level a mod adds that the front end has just come back from, or 0
 
 // The level a Bonus Levels row starts (ce_bonus.cpp), or 0 for any other action.
 static int	BonusLevel(int action)
@@ -958,20 +1172,18 @@ static int	BonusLevel(int action)
 }
 
 //*********************************************************************************
-// Record Play for Bug Reports, after a good write: what the choice means. The launcher reads record_sessions from ce.ini as it
+// Session Recording, after a good write: what the choice means. The launcher reads record_sessions from ce.ini as it
 // starts the game, which is when it takes effect.
 static void	RecordNote(bool on)
 {
 	char folder[1024], text[2048];
 	if (on)
-		snprintf(text, sizeof(text), "Session recording is on from the next time you start Onslaught CE. Each start asks "
-				 "whether to record. Stop recording there turns it off.\n\nA recording keeps your keyboard and mouse "
-				 "input and copies some files from your CE folder to help reproduce a problem. Gamepads and flight sticks "
-				 "are not recorded and are unavailable while recording. An older tape made with one can replay "
-				 "differently. Saved in:\n%s\n\nWhile recording, the game runs at 30 frames a second with the original "
-				 "menus. The Onslaught CE menu and cheats are hidden.", FolderText(folder, sizeof(folder), "tapes"));
+		snprintf(text, sizeof(text), "Session recording starts the next time you start Onslaught CE. Each start then asks whether "
+				 "to record.\n\nWhile recording, gamepads and flight sticks do not work, the game runs at 30 frames a second, and "
+				 "the Onslaught CE menu and cheats are hidden.\n\nRecordings are saved in:\n%s",
+				 FolderText(folder, sizeof(folder), "tapes"));
 	else
-		snprintf(text, sizeof(text), "Session recording is now off, from the next time you launch Onslaught CE.");
+		snprintf(text, sizeof(text), "Session recording is off from the next time you start Onslaught CE.");
 	ShowMessage(text);
 }
 
@@ -987,7 +1199,8 @@ static void	InFontCharacters(char *text)
 }
 
 // The name Your Music shows for the folder path: its last part (a path ending in a separator loses it first), in the font's
-// characters, 14 at most, or its first 11 and "..." when it is longer. out holds 15 bytes at least.
+// characters, 24 at most, or its first 21 and "..." when it is longer (the list then fits what is still too wide to its row,
+// PortCeValueFit). out holds 25 bytes at least.
 static void	MusicFolderName(const char *path, char *out, int n)
 {
 	int end = int(strlen(path));
@@ -998,12 +1211,15 @@ static void	MusicFolderName(const char *path, char *out, int n)
 		start--;
 	if (start == end)
 		start = 0;						// nothing but separators: all of it
-	char name[16];
+	char name[28];
 	int length = end - start;
-	if (length > 14)
+	if (length > 24)
 	{
-		memcpy(name, path + start, 11);
-		strcpy(name + 11, "...");
+		int shown = 21;
+		while (shown && path[start + shown - 1] == ' ')
+			--shown;
+		memcpy(name, path + start, shown);
+		strcpy(name + shown, "...");
 	}
 	else
 	{
@@ -1018,9 +1234,9 @@ static void	MusicFolderName(const char *path, char *out, int n)
 // refuse the folder (not an absolute folder it can list, or one with no track it can play: Ogg Vorbis, stereo, 44100 Hz), and
 // then the game's music plays and the log says what it found. So the dialog names the folder ce.ini sets (60 characters of it
 // at most, the last ones when it is longer), which tracks can play and where to read how to change it, or says that it is off
-// and how to add a folder for one session (the console's music adddir changes nothing in ce.ini). A leading ~/, which the music
+// and how to name a folder in ce.ini. A leading ~/, which the music
 // player takes as the home folder on Linux when HOME is set, is named in words: the font has no tilde. Eight lines at most in
-// the game's font; no-break spaces keep 44100 Hz and the console command on one line, and two words or more on the last line of
+// the game's font; no-break spaces keep 44100 Hz on one line, and two words or more on the last line of
 // each paragraph of words.
 static void	ShowMusicFolder(const char *key)
 {
@@ -1042,12 +1258,12 @@ static void	ShowMusicFolder(const char *key)
 		else
 			memcpy(shown, path, size_t(length) + 1);
 		InFontCharacters(shown);
-		snprintf(text, sizeof(text), "ce.ini sets your own music folder to:\n%s\n\nOnly its Ogg Vorbis tracks (stereo, 44100\xa0"
-				 "Hz) can play in place of the level music. Your own music in the README says how to change\xa0" "it.", shown);
+		snprintf(text, sizeof(text), "ce.ini sets your own music folder to:\n%s\n\nTracks must be Ogg Vorbis, stereo, 44100\xa0"
+				 "Hz. They play in place of the level music. The README says how to change the folder, under Your own\xa0" "music.", shown);
 	}
 	else
-		snprintf(text, sizeof(text), "Your own music is off, so the game's own music\xa0" "plays.\n\nTo use your own, set a folder in ce.ini "
-				 "(see Your own music in the README). For this session only, the console's music\xa0" "adddir adds\xa0" "one.");
+		snprintf(text, sizeof(text), "Your own music is off, so the game's music\xa0" "plays.\n\nTo use your own, name a folder of Ogg Vorbis "
+				 "tracks in ce.ini. The README says how, under Your own\xa0" "music.");
 	ShowMessage(text);
 }
 
@@ -1109,7 +1325,7 @@ public:
 };
 
 // Your Music: read only, because the folder is a path and the page cannot take one. It shows the folder's own name (the last part
-// of music_dir, 14 characters at most) or Off, drawn as the other rows are; choosing it says which folder it is and where to set it.
+// of music_dir, 24 characters at most) or Not set, drawn as the other rows are; choosing it says which folder it is and where to set it.
 // It has nothing to choose, so it never opens a list of choices, and writes nothing.
 class CCeMusicItem : public CMenuMenuItem
 {
@@ -1123,7 +1339,7 @@ public:
 		if (!mRead)
 		{
 			mRead = true;
-			char dir[256], name[16] = "Off";
+			char dir[256], name[28] = "Not set";
 			if (CE_SettingGetText(mSetting->mKey, dir, int(sizeof(dir))))
 				MusicFolderName(dir, name, int(sizeof(name)));
 			Widen(mShown, int(sizeof(mShown) / sizeof(mShown[0])), name);
@@ -1147,7 +1363,7 @@ public:
 	}
 
 	const SCeSetting	*mSetting;
-	WCHAR				mShown[16];
+	WCHAR				mShown[28];
 	bool				mRead;
 };
 
@@ -1167,12 +1383,12 @@ CPauseMenu::CPauseMenu(EPortCeNoLists) : mActive(FALSE), mPage(0), mCloseTime(-1
 class CCeMenu : public CPauseMenu
 {
 public:
-	CCeMenu() : CPauseMenu(PORT_CE_NO_LISTS), mPageOpened(false)
+	CCeMenu() : CPauseMenu(PORT_CE_NO_LISTS), mPageOpened(false), mBoxTitle(0)
 	{
 		// Each page is a list of its rows and, last, Back, which draws the highlighted row's hint (CCeBack); the lists are
 		// in ECePage's order.
 		// Each unfinished feature is offered only with its own ce.ini line set to 1 under [Experimental] (read once, ce.cpp): without
-		// map_editor the hub has no Map Editor row, without museum no Museum Prototype or Goodies Gallery row, without commander CE
+		// map_editor the hub has no Map Editor row, without museum no Museum row, without commander CE
 		// Settings has no Commander Map row, and the Help pages say that feature is not here.
 		const bool commander = PortCeExperimental("commander");
 		const int hubCount = int(sizeof(kHubRows) / sizeof(kHubRows[0]));
@@ -1188,7 +1404,7 @@ public:
 				mHubRows[mHubCount++] = kHubRows[i];
 		}
 		AddPage(CEP_HUB, mHubRows, mHubCount);
-		AddPage(CEP_BONUS, kBonusRows, CE_NUM_BONUS);
+		AddPage(CEP_BONUS, kBonusRows, CE_NUM_BONUS, kBonusNote);
 		// CE Settings is its table, a row each (kSettings; the Commander Map row only with commander on), centred higher than
 		// the other pages for its fourteen items.
 		mSettingCount = 0;
@@ -1203,12 +1419,12 @@ public:
 			else
 				list->AddItem(new (MEMTYPE_MENUITEM) CCeMusicItem(mSettings[i]));
 		}
-		list->AddItem(new (MEMTYPE_MENUITEM) CCeBack(list, &mSettings[0].mHint, int(sizeof(SCeSetting)), mSettingCount, NULL));
+		list->AddItem(new (MEMTYPE_MENUITEM) CCeBack(list, &mSettings[0].mHint, int(sizeof(SCeSetting)), mSettingCount, NULL, CCeBack::EXTRA_FOOT));
 		mLists.Append(list);
 		list = NewList(CEP_CHEATS);
 		for (const SCeCheat &cheat : kCheats)
 			list->AddItem(new (MEMTYPE_MENUITEM) CCeCheatSwitch(cheat.mLabel, cheat.mCheat));
-		list->AddItem(new (MEMTYPE_MENUITEM) CCeBack(list, &kCheats[0].mHint, int(sizeof(SCeCheat)), CE_NUM_CHEATS, kCheatsNote));
+		list->AddItem(new (MEMTYPE_MENUITEM) CCeBack(list, &kCheats[0].mHint, int(sizeof(SCeCheat)), CE_NUM_CHEATS, kCheatsNote, CCeBack::EXTRA_FIXED));
 		mLists.Append(list);
 		const int helpCount = int(sizeof(kHelpRows) / sizeof(kHelpRows[0]));
 		for (int i = 0; i < helpCount; i++)
@@ -1221,12 +1437,39 @@ public:
 		for (const SCePlanPlain &plain : kPlanPlain)
 			if (!PortCeExperimental(plain.mMode))
 				mPlanHints[plain.mIndex].mHelp = plain.mHint;
+		if (!PortCeModsPageOffered())
+			mPlanHints[CEPL_MODS].mHelp = kPlanModsPlainHint;
 		list = NewList(CEP_PLANS);
 		for (int i = 0; i < CE_NUM_PLANS; i++)
 			list->AddItem(new (MEMTYPE_MENUITEM) CCeMenuItem(kPlanLabels[i], CEA_PLAN_FIRST + i));
 		list->AddItem(new (MEMTYPE_MENUITEM) CCeBack(list, mPlanHints, int(sizeof(SCeHint)), CE_NUM_PLANS, NULL));
 		mLists.Append(list);
 		AddPage(CEP_EDITOR, kEditorRows, kEditorMapCount);		// reached only from the Map Editor row, which the hub offers only on yes
+		AddPage(CEP_MUSEUM, kMuseumRows, kMuseumRowCount);		// reached only from the Museum row, which the hub offers only with the museum on
+		if (ExperimentalOffered(CEA_CATALOGUE))
+		{
+			CMenuOptionsList *groups = NewList(CEP_CATALOGUE);
+			for (int i = 0; i < CE_CATALOGUE_GROUPS; ++i)
+				groups->AddItem(mCategory[i] = new (MEMTYPE_MENUITEM) CCeCatalogueRow(CEA_CAT_MODELS + i));
+			groups->AddItem(new (MEMTYPE_MENUITEM) CCeBack(groups, mCategoryHints, sizeof(SCeHint), CE_CATALOGUE_GROUPS, NULL));
+			mLists.Append(groups);
+			CMenuOptionsList *items = NewList(CEP_CATALOGUE_ITEMS, kCeSettingsY + 15.f);	// sixteen rows: the first below the emblem
+			// What the player came for first: the items, then the page turn and Find, Back last.
+			for (int i = 0; i < CE_CATALOGUE_SLOTS; ++i)
+				items->AddItem(mCatalogRows[i] = new (MEMTYPE_MENUITEM) CCeCatalogueRow(CEA_CAT_ENTRY + i));
+			items->AddItem(mCatalogMore = new (MEMTYPE_MENUITEM) CCeCatalogueRow(CEA_CAT_TURN));
+			items->AddItem(new (MEMTYPE_MENUITEM) CCeMenuItem(L"Find by name", CEA_CAT_FIND));
+			items->AddItem(mCatalogClear = new (MEMTYPE_MENUITEM) CCeCatalogueRow(CEA_CAT_CLEAR));
+			items->AddItem(new (MEMTYPE_MENUITEM) CCeBack(items, NULL, 0, 0, NULL));
+			mLists.Append(items);
+			CMenuOptionsList *find = NewList(CEP_CATALOGUE_FIND);
+			find->AddItem(mCatalogField = new (MEMTYPE_MENUITEM) CCeCatalogueField(CEA_CAT_FIELD));
+			find->AddItem(new (MEMTYPE_MENUITEM) CCeMenuItem(L"Find", CEA_CAT_APPLY));
+			find->AddItem(new (MEMTYPE_MENUITEM) CCeMenuItem(L"Clear text", CEA_CAT_ERASE));
+			find->AddItem(new (MEMTYPE_MENUITEM) CCeBack(find, NULL, 0, 0,
+				L"Type a name. Enter finds; Esc cancels.\nSpaces also match underscores."));
+			mLists.Append(find);
+		}
 	}
 
 	// The pages' rows as this process offers them (the constructor fills them in).
@@ -1237,18 +1480,128 @@ public:
 	SCeRow		mHelpRows[sizeof(kHelpRows) / sizeof(kHelpRows[0])];
 	SCeHint		mPlanHints[CE_NUM_PLANS];
 
+	CCeCatalogueRow *mCategory[CE_CATALOGUE_GROUPS], *mCatalogRows[CE_CATALOGUE_SLOTS], *mCatalogMore, *mCatalogClear;
+	CCeCatalogueField *mCatalogField;
+	SCeHint mCategoryHints[CE_CATALOGUE_GROUPS]; int mCatalogueGroupChosen;	// the category row a CEA_CAT_MODELS action came from
+	void ReadCatalogue()
+	{
+		PortCeCatalogueOpen();
+		for (int i = 0; i < CE_CATALOGUE_GROUPS; ++i)
+		{
+			char label[40], text[44];
+			const unsigned count = PortCeCatalogueCount(i);
+			PortCeCatalogueGroupLabel(i, label, sizeof label);
+			if (*label) snprintf(text, sizeof text, "%s (%u)", label, count);
+			else text[0] = 0;
+			mCategory[i]->Bind(text);
+			mCategoryHints[i].mHelp = i == 2 ? (count ? L"The game's sound effects for its language. Choose one to hear it." : L"No sound effects are loaded in this session.")
+				: i > 2 ? (PortCeCatalogueGroupWorded(i) ? L"The radio messages' spoken lines in this language. Choose one to hear it."
+					: L"Spoken lines in this language, named by their files: the game has no text for them.")
+				: (count ? L"Choose an item to see its details." : L"No matching files were found in your game folder.");
+			mCategoryHints[i].mExtra = i >= 2 ? L"Music is in Extras > Music Player." : NULL;
+		}
+	}
+	void BindCatalogueItems()
+	{
+		char titles[CE_CATALOGUE_SLOTS][100];
+		WCHAR shown[CE_CATALOGUE_SLOTS][100];
+		for (int i = 0; i < CE_CATALOGUE_SLOTS; ++i)
+		{
+			PortCeCatalogueTitle(i, titles[i], sizeof titles[i]);
+			CCeCatalogueRow::Fit(shown[i], 100, titles[i], NULL);
+		}
+		for (int i = 0; i < CE_CATALOGUE_SLOTS; ++i)
+		{
+			// Rows that would read the same end with their file's own name, so each can be told apart.
+			bool same = false;
+			for (int j = 0; j < CE_CATALOGUE_SLOTS && !same && *titles[i]; ++j)
+				same = j != i && !wcscmp(shown[i], shown[j]);
+			char tag[40], tail[44] = {};
+			if (same)
+			{
+				PortCeCatalogueRowTag(i, tag, sizeof tag);
+				if (*tag) snprintf(tail, sizeof tail, " (%s)", tag);
+			}
+			WCHAR label[100];
+			if (*tail) CCeCatalogueRow::Fit(label, 100, titles[i], tail);
+			else wcscpy(label, shown[i]);
+			mCatalogRows[i]->BindWide(label);
+		}
+		char more[44] = {};
+		const int page = PortCeCataloguePageNumber(), pages = PortCeCataloguePageCount();
+		if (pages > 1)
+			snprintf(more, sizeof more, "%s (%d of %d)", page == pages ? "First page" : "Next page", page, pages);
+		mCatalogMore->Bind(more);
+		mCatalogClear->Bind(*PortCeCatalogueQuery() ? "Clear filter" : "");
+	}
+	void CatalogueSelect()
+	{
+		if (mPage != CEP_CATALOGUE_ITEMS) return;
+		const int row = mLists.At(mPage)->mSelected;
+		if (row >= 0 && row < CE_CATALOGUE_SLOTS) PortCeCatalogueSelect(unsigned(row));
+	}
+	// The sound list box for the collection being browsed, on its selected item (or its first).
+	void OpenCatalogueSounds()
+	{
+		char title[40]; PortCeCatalogueGroupLabel(PortCeCatalogueCategory(), title, sizeof title);
+		PortCeCatalogueListTitle(title);
+		const int at = PortCeCatalogueSelectedIndex();
+		PortCeExtrasOpenPage(XP_SOUNDS, at >= 0 ? at : 0);
+	}
+	// Find, chosen in a sound list: this page's Find page, and back to the list when it is done.
+	void CatalogueFindFromList()
+	{
+		PortCeExtrasHide();
+		mPage = CEP_CATALOGUE;
+		mCatalogField->Set(PortCeCatalogueQuery());
+		OpenPage(CEP_CATALOGUE_FIND); LT.SetKeytrap(CatalogueTrap()); mPageOpened = true;
+	}
+	void CatalogueResult()
+	{
+		if (PortCeCatalogueBrowsingSounds())
+		{
+			CatalogueTextEnd();
+			mPage = CEP_CATALOGUE;
+			OpenCatalogueSounds();
+			return;
+		}
+		CatalogueTextEnd(); BindCatalogueItems(); OpenPage(CEP_CATALOGUE_ITEMS);
+		mLists.At(mPage)->mSelected = PortCeCatalogueVisible() ? int(PortCeCatalogueSelectedSlot()) : CCeCatalogueRow::kFindRow;
+	}
+	void CatalogueKeys(WORD key, KeyEventType event)
+	{
+		if (!mActive || mPage != CEP_CATALOGUE_FIND || FEMESSBOX.BeingDisplayed()) return;
+		CMenuOptionsList *list = mLists.At(mPage);
+		if (event == KEY_EVENT_DOWN) {
+			if (key == DIK_ESCAPE) Back();
+			else if (key == DIK_UP) list->ReceiveButtonAction(NULL, BUTTON_FRONTEND_MENU_UP, 1.f);
+			else if (key == DIK_DOWN || key == DIK_TAB) list->ReceiveButtonAction(NULL, BUTTON_FRONTEND_MENU_DOWN, 1.f);
+			else if (key == DIK_RETURN || key == DIK_NUMPADENTER) Choose(list->mItems.At(list->mSelected));
+			else if (key == DIK_BACK && list->mSelected == 0) mCatalogField->Backspace();
+		} else if (event == KEY_EVENT_CHAR && list->mSelected == 0) mCatalogField->Add(key);
+	}
+	void CatalogueStatus()
+	{
+		if (mPage != CEP_CATALOGUE_ITEMS) return;
+		char text[128]; const unsigned n = PortCeCatalogueMatches();
+		if (*PortCeCatalogueQuery()) snprintf(text, sizeof text, "%u match%s for %s", n, n==1?"":"es", PortCeCatalogueQuery());
+		else snprintf(text, sizeof text, "%u items. Find searches this whole collection.", n);
+		WCHAR wide[128]; Widen(wide, 128, text); CDXBitmapFont *font = PLATFORM.Font(FONT_SMALL); SIZE size;
+		font->GetTextExtent(wide, &size); font->DrawTextWithShadow(320.f-float(size.cx)*.5f, 436.f, 0xffffffff, wide, 0, 0, 1.f, 1.f);
+	}
+
 	static CMenuOptionsList	*NewList(int page, float y = kCeListY)
 	{
 		return new (MEMTYPE_MENUITEM) CMenuOptionsList(kCeTitles[page], 320.f, y, FALSE, 0xb0000000);
 	}
 
-	// A page of plain rows: each its own row, then Back.
-	void	AddPage(int page, const SCeRow *rows, int count)
+	// A page of plain rows: each its own row, then Back, and the page's standing note under the hint if it has one.
+	void	AddPage(int page, const SCeRow *rows, int count, const WCHAR *note = NULL)
 	{
 		CMenuOptionsList *list = NewList(page);
 		for (int i = 0; i < count; i++)
 			list->AddItem(new (MEMTYPE_MENUITEM) CCeMenuItem(rows[i].mLabel, rows[i].mAction));
-		list->AddItem(new (MEMTYPE_MENUITEM) CCeBack(list, &rows[0].mHint, int(sizeof(SCeRow)), count, NULL));
+		list->AddItem(new (MEMTYPE_MENUITEM) CCeBack(list, &rows[0].mHint, int(sizeof(SCeRow)), count, note));
 		mLists.Append(list);
 	}
 
@@ -1258,12 +1611,22 @@ public:
 	// front end select until the next update (CFEPCe::Process), whatever the order.
 	bool	mPageOpened;
 
+	// While one of Help & Info's own boxes is up (the one text it shows, with no heading of its own) the title bar names it: 0 for none,
+	// else the index into kBoxTitles, kept until the box is gone.
+	int		mBoxTitle;
+
 	virtual void	ReceiveButtonAction(CController *from_controller, int button, float val)
 	{
 		if (PLATFORM.GetSysTimeFloat() - mOpenTime < 0.4f)
 			return;
 		if ((button == BUTTON_FRONTEND_MENU_SELECT) && mPageOpened)
 			return;
+		CatalogueSelect();
+		if (PortCeExtrasActive())
+		{
+			PortCeExtrasButton(button, val);		// an Extras page is showing (ce_extras.cpp): the input is its own
+			return;
+		}
 		CMenuOptionsList *list = mLists.At(mPage);
 		if (list->PassToSelected(from_controller, button, val))
 			return;
@@ -1288,6 +1651,7 @@ public:
 
 	void	Leave()
 	{
+		CatalogueTextEnd();
 		DeActivate(FALSE);
 		CFrontEnd::PlaySound(FES_BACK);
 	}
@@ -1295,10 +1659,14 @@ public:
 	// Back goes to the page above (the hub leaves the Onslaught CE page, to the main menu).
 	void	Back()
 	{
+		CatalogueSelect();
+		if (mPage == CEP_CATALOGUE_FIND) { CatalogueResult(); return; }
 		if (mPage == CEP_HUB)
 			Leave();
 		else
 		{
+			if (mPage == CEP_CATALOGUE)
+				PortCeCatalogueClose();
 			mPage = kCeParent[mPage];
 			CFrontEnd::PlaySound(FES_BACK);
 		}
@@ -1307,6 +1675,7 @@ public:
 	// A page opens with its first row highlighted.
 	void	OpenPage(int page)
 	{
+		if (page != CEP_CATALOGUE_FIND) CatalogueTextEnd();
 		mPage = page;
 		mLists.At(mPage)->Reset();
 	}
@@ -1320,13 +1689,31 @@ public:
 				mLists.At(mPage)->mSelected = row;
 	}
 
+	// A museum hall or the Goodies Gallery has just been left and the Onslaught CE page is open again: the Museum page, the way the player chose highlighted
+	// (CEA_MUSEUM_VISIT or CEA_MUSEUM). Back from it goes to the hub, on the Museum row.
+	void	ShowMuseum(int action = CEA_MUSEUM_VISIT)
+	{
+		OpenPage(CEP_HUB);
+		for (int row = 0; row < mHubCount; row++)
+			if (mHubRows[row].mAction == CEA_PAGE_MUSEUM)
+				mLists.At(CEP_HUB)->mSelected = row;
+		OpenPage(CEP_MUSEUM);
+		for (int row = 0; row < kMuseumRowCount; row++)
+			if (kMuseumRows[row].mAction == action)
+				mLists.At(CEP_MUSEUM)->mSelected = row;
+	}
+
 	WCHAR	*PageTitle()
 	{
-		return kCeTitles[mPage];
+		if (mBoxTitle && FEMESSBOX.BeingDisplayed())
+			return kBoxTitles[mBoxTitle - 1];
+		mBoxTitle = 0;
+		return PortCeExtrasActive() ? PortCeExtrasTitle() : kCeTitles[mPage];
 	}
 
 	void	Choose(CMenuItem *item)
 	{
+		mBoxTitle = 0;
 		if (item->mText == GI_BACK)
 		{
 			Back();
@@ -1335,9 +1722,27 @@ public:
 		if ((item->mId != CCeMenuItem::ID) || !item->IsEnabled())
 			return;
 		char text[1536];
-		const int action = ((CCeMenuItem *)item)->mAction;
+		int action = ((CCeMenuItem *)item)->mAction;
 		if (!ExperimentalOffered(action))
 			return;							// not offered, so not reached; a second line behind the rows that are left out
+		if (action >= CEA_CAT_ENTRY && action < CEA_CAT_ENTRY + CE_CATALOGUE_SLOTS)
+		{
+			const unsigned slot = action - CEA_CAT_ENTRY;
+			PortCeCatalogueSelect(slot);
+			PortCeCatalogueDetails(slot, text, sizeof text);
+			if (*text) {
+				// (a sound is never a row here: the sound lists are list boxes, ce_catalogue_list.cpp)
+				if (PortCeCatalogueIsTexture(slot) && PortCeCataloguePreviewOpen(slot))
+					ShowMessage(text, 329.f);
+				else {
+					if (PortCeCatalogueIsTexture(slot))
+						strncat(text, "\nPicture unavailable.", sizeof text - strlen(text) - 1);
+					ShowMessage(text);
+				}
+				CFrontEnd::PlaySound(FES_SELECT);
+			}
+			return;
+		}
 		if ((action >= CEA_PLAN_FIRST) && (action < CEA_PLAN_FIRST + CE_NUM_PLANS))
 		{
 			ShowMessage(PlanText(action - CEA_PLAN_FIRST));
@@ -1363,10 +1768,20 @@ public:
 				ShowMessage(level >= 901 ? "The race could not be started." : "The bonus level could not be started.");
 			return;
 		}
+		// Every category row is one action, told apart by the row (its number is not a case label of its own).
+		mCatalogueGroupChosen = 0;
+		if (action > CEA_CAT_MODELS && action < CEA_CAT_MODELS + CE_CATALOGUE_GROUPS)
+		{
+			mCatalogueGroupChosen = action - CEA_CAT_MODELS;
+			action = CEA_CAT_MODELS;
+		}
 		switch (action)
 		{
 		case CEA_PAGE_EDITOR:
 			OpenPage(CEP_EDITOR);
+			break;
+		case CEA_PAGE_MUSEUM:
+			OpenPage(CEP_MUSEUM);
 			break;
 		case CEA_PAGE_BONUS:
 			OpenPage(CEP_BONUS);
@@ -1383,18 +1798,74 @@ public:
 		case CEA_PLANS:
 			OpenPage(CEP_PLANS);
 			break;
+		case CEA_EXTRAS:
+			// The Extras pages take this page's input, drawing and title until their own Back; the select that opened them is not theirs.
+			PortCeExtrasOpen();
+			mPageOpened = true;
+			break;
 		case CEA_TIPS:
 		{
-			char tips[sizeof(kControlsTips) + sizeof(kControlsTipsCommander)];
-			snprintf(tips, sizeof(tips), "%s%s", kControlsTips, PortCeExperimental("commander") ? kControlsTipsCommander : "");
+			char tips[512];
+			ControlsTips(tips, sizeof(tips), PortCeExperimental("commander"));
 			ShowMessage(tips);
+			mBoxTitle = CEBT_TIPS;
 			break;
 		}
 		case CEA_MUSEUM:
 			// The Goodies gallery as a visitor (ce_museum.h). A second Select while the first is still opening it finds the visit under
 			// way and says nothing.
 			if (!PortCeMuseumOpen() && !PortCeMuseumActive())
-				ShowMessage("The Goodies Gallery could not be opened.");
+				ShowMessage("The gallery could not be opened.");
+			break;
+		case CEA_CATALOGUE:
+			ReadCatalogue();
+			OpenPage(CEP_CATALOGUE);
+			break;
+		case CEA_CAT_MODELS:
+		{
+			const int category = mCatalogueGroupChosen;
+			if (!PortCeCatalogueCount(category))
+				ShowMessage(category == 2 ? "No sound effects are loaded in this session." : category > 2 ? "No spoken lines were found in this language's folder." : (category ? "No textures were found in your game folder." : "No models were found in your game folder."));
+			else if (category >= 2)
+			{
+				// Sound effects and every language's speech are a list box (ce_catalogue_list.cpp): whole lines, scrolled, the
+				// playing row marked. Its Back returns here, to the groups.
+				PortCeCatalogueBrowse(category);
+				OpenCatalogueSounds();
+				mPageOpened = true;
+			}
+			else
+			{
+				PortCeCatalogueBrowse(category);
+				char title[40]; PortCeCatalogueGroupLabel(category, title, sizeof title);
+				Widen(kCeTitles[CEP_CATALOGUE_ITEMS], 24, title);
+				BindCatalogueItems();
+				OpenPage(CEP_CATALOGUE_ITEMS);
+				mLists.At(mPage)->mSelected = PortCeCatalogueVisible() ? int(PortCeCatalogueSelectedSlot()) : CCeCatalogueRow::kFindRow;
+			}
+			break;
+		}
+		case CEA_CAT_TURN:
+			PortCeCatalogueTurn();
+			BindCatalogueItems();
+			mLists.At(CEP_CATALOGUE_ITEMS)->mSelected = 0;
+			break;
+		case CEA_CAT_FIND:
+			CatalogueSelect(); mCatalogField->Set(PortCeCatalogueQuery());
+			OpenPage(CEP_CATALOGUE_FIND); LT.SetKeytrap(CatalogueTrap()); mPageOpened = true;
+			break;
+		case CEA_CAT_FIELD:
+		case CEA_CAT_APPLY:
+			PortCeCatalogueFilter(mCatalogField->mValue); CatalogueResult(); mPageOpened = true;
+			break;
+		case CEA_CAT_ERASE:
+			mCatalogField->Set(""); mLists.At(CEP_CATALOGUE_FIND)->mSelected = 0;
+			break;
+		case CEA_CAT_CLEAR:
+			PortCeCatalogueFilter(""); CatalogueResult();
+			break;
+		case CEA_MODS:
+			PortCeModsPageOpen();
 			break;
 		case CEA_MUSEUM_VISIT:
 			// Native input can deliver its second Select after this page has already dispatched the visit.
@@ -1405,8 +1876,12 @@ public:
 				FRONTEND.SetQuit(PortCeMuseumVisitLevel());
 				Leave();
 			}
-			else
-				ShowMessage(PortCeMuseumVisitMessage());
+			else if (const char *why = PortCeMuseumVisitMessage())
+			{
+				// A refusal a player can act on has a sentence; one they cannot (the visit is already opening) has none and shows no box.
+				if (*why)
+					ShowMessage(why);
+			}
 			break;
 #ifndef CE_NETWORK_OFF
 		case CEA_NETWORK:
@@ -1420,36 +1895,34 @@ public:
 					 "from the game's source code to run natively on today's computers. It plays the game files of your "
 					 "own copy of the game.\n\nAn unofficial fan project, not affiliated with or endorsed by the game's "
 					 "developer, publisher or rights holders. Free software under the GNU General Public License, version 3, with no "
-					 "warranty.\n\nConsole: press the grave key (left of 1) in a solo level, then type help.\n\nSource code, new versions and problem reports:\n"
+					 "warranty.\n\nSource code, new versions and problem reports:\n"
 					 CE_LINKS, CE_VERSION,
 					 *build ? ", build " : "", build);
 			ShowMessage(text);
+			mBoxTitle = CEBT_ABOUT;
 			break;
 		}
 		case CEA_UPDATES:
 		{
-			char folder[1024];
-			FolderText(folder, sizeof(folder), "");
 			// ce.ini turns the launcher's checks off when update_check is exactly 0, read as the launcher reads it. The page reads only
 			// ce.ini (an environment variable, a launcher switch and a development build turn checking off too), so "on" is the
 			// setting's part. The game font has no underscore, so the row of CE Settings that sets the line is named instead. The
-			// folder comes in the first paragraph and the text is short, so that with a usual folder the box ends above the help bar.
-			// The folder named there is the user folder (on Windows itself named Onslaught CE), so the folder an update goes into is
-			// named as the one Onslaught CE was extracted to: the updater's installation (ce_update_v2.h), as README.txt's "this
-			// folder" is.
+			// folder is not named here (CE Settings has the row; Report a Problem names the folder).
 			const bool on = !CE_SettingLauncherIs("update_check", "0");
-			snprintf(text, sizeof(text), "%s ce.ini is in:\n%s\n\nAn update goes into the versions folder where you extracted "
-					 "Onslaught CE. Careers and settings are not changed. To go back to the version before it, run the launcher with "
-					 "--rollback (see Updates in the README).\n\nNever start a 0.1.0-0.1.6 launcher.",
-					 on ? "Check for Updates at Start is Yes in CE Settings (No turns it off): unless checking is turned off another "
-					 "way, Onslaught CE looks for a signed update when it starts and asks before installing it." :
-					 "Check for Updates at Start is No in CE Settings (Yes turns it on), so Onslaught CE does not look for updates "
-					 "when it starts.", folder);
+			snprintf(text, sizeof(text), "%s\n\nUpdates keep your careers, settings and the previous version. "
+					 "To go back, follow the steps under Updates in the\xa0README.\n\nIf you still have Onslaught CE 0.1.6 or older, do not "
+					 "start its launcher. See the README.",
+					 on ? "Onslaught CE looks for a new version when it starts, and asks before installing it. Check for Updates at "
+					 "Start in CE Settings turns this off." :
+					 "Onslaught CE does not look for new versions when it starts. Check for Updates at Start in CE Settings turns "
+					 "this on.");
 			ShowMessage(text);
+			mBoxTitle = CEBT_UPDATES;
 			break;
 		}
 		case CEA_THANKS:
 			ShowMessage(kSpecialThanks);
+			mBoxTitle = CEBT_THANKS;
 			break;
 		case CEA_REPORT:
 		{
@@ -1499,8 +1972,13 @@ public:
 			mFirstRenderTime = PLATFORM.GetSysTimeFloat();
 		float fade = mActive ? PLATFORM.GetSysTimeFloat() - mOpenTime : (mCloseTime + 0.4f) - PLATFORM.GetSysTimeFloat();
 		WCHAR *title = NULL;
-		if (fade > 0.4f)
+		if ((fade > 0.4f) && PortCeExtrasActive())
+			PortCeExtrasDraw();
+		else if (fade > 0.4f)
+		{
 			title = mLists.At(mPage)->Render(this);
+			CatalogueSelect(); CatalogueStatus();
+		}
 		LT.SRS(D3DRS_ZWRITEENABLE, TRUE);
 		LT.SRS(D3DRS_ZENABLE, TRUE);
 		return title;
@@ -1516,13 +1994,15 @@ public:
 	CFEPCe() : mMenu(NULL) {}
 
 #ifdef CE_NETWORK_OFF
-	void	Shutdown() { SAFE_DELETE(mMenu); }
+	void	Shutdown() { CatalogueTextEnd(); PortCeCataloguePreviewClose(); PortCeCatalogueClose(); PortCeExtrasShutdown(); PortCeModsPageShutdown(); SAFE_DELETE(mMenu); }
 #else
-	void	Shutdown() { PortCeNetShutdown(); SAFE_DELETE(mMenu); }
+	void	Shutdown() { CatalogueTextEnd(); PortCeCataloguePreviewClose(); PortCeCatalogueClose(); PortCeExtrasShutdown(); PortCeModsPageShutdown(); PortCeNetShutdown(); SAFE_DELETE(mMenu); }
 #endif
 
 	void	ButtonPressed(SINT button, float val)
 	{
+		if (PortCeModsPageButton(button, val))
+			return;							// the Mods page (ce_modspage.cpp) is open and took it
 #ifdef CE_NETWORK_OFF
 		if (mMenu)
 #else
@@ -1538,6 +2018,13 @@ public:
 		// a new update: a page the last one's select opened takes the front end's select again (CCeMenu::mPageOpened)
 		if (mMenu)
 			mMenu->mPageOpened = false;
+		PortCeExtrasProcess(state == FEPS_ACTIVE);
+		PortCeModsPageProcess();
+		if (sCeBox && !FEMESSBOX.BeingDisplayed())
+		{
+			PortCeCataloguePictureClose();	// a sound plays on after its box: another choice or leaving the list stops it
+			sCeBox = false;
+		}				// the box ShowMessage made is gone: Esc and B are the page's again
 #ifndef CE_NETWORK_OFF
 		if (state == FEPS_ACTIVE)
 			PortCeNetProcess();
@@ -1553,10 +2040,12 @@ public:
 
 	void	Render(float transition, EFrontEndPage dest)
 	{
+		if (PortCeModsPageRender(transition, dest))
+			return;							// the Mods page is open: it drew itself in this page's frame
 #ifdef CE_NETWORK_OFF
-		static WCHAR title[] = L"Onslaught CE";
+		static WCHAR title[] = L"ONSLAUGHT CE";
 #else
-		static WCHAR title[] = L"Onslaught CE", network[] = L"Network game";
+		static WCHAR title[] = L"ONSLAUGHT CE";
 #endif
 		FRONTEND.DrawSlidingTextBordersAndMask(transition, dest);
 		// the message box is translucent: the list is not drawn behind it
@@ -1569,10 +2058,12 @@ public:
 		else if (mMenu && !FEMESSBOX.BeingDisplayed())
 #endif
 			mMenu->Draw();
+		if (sCeBox && FEMESSBOX.BeingDisplayed())
+			PortCeCataloguePreviewDraw(FEMESSBOX.mY - FEMESSBOX.mHeight * 0.5f);
 #ifdef CE_NETWORK_OFF
 		FRONTEND.DrawTitleBar(mMenu ? mMenu->PageTitle() : title, transition, dest);
 #else
-		FRONTEND.DrawTitleBar(net ? network : (mMenu ? mMenu->PageTitle() : title), transition, dest);
+		FRONTEND.DrawTitleBar(net ? PortCeNetTitle() : (mMenu ? mMenu->PageTitle() : title), transition, dest);
 #endif
 		FRONTEND.GetCommonPage()->RenderHelpText(1, transition);
 		FRONTEND.GetCommonPage()->RenderSmallBEALogo(RangeTransition(transition, 0.75f, 1.f));
@@ -1585,15 +2076,34 @@ public:
 		CPauseMenu::mOptionsPage = true;
 		mMenu->Activate(0);
 		// A bonus level has just ended: the page opens on the Bonus Levels list, that level's row highlighted (ce_bonus.cpp).
-		if (int level = PortCeBonusTakeReturn())
+		// A level a mod adds, started from the Mods page, has just ended: that page opens again with the mod's row highlighted instead.
+		const int modLevel = PortCeBonusTakeModReturn();
+		if (modLevel && PortCeModsPageReturn(modLevel))
+		{
+		}
+		else if (int level = PortCeBonusTakeReturn())
 			mMenu->ShowBonus(level);
+		// A museum visit has just ended (the player left it, or its load was refused): the hub on the museum's row, and the reason if it was
+		// refused (ce_museum_visit.h).
+		{
+			const char *sentence = NULL;
+			if (PortCeMuseumVisitTakeNotice(&sentence))
+			{
+				mMenu->ShowMuseum();
+				if (sentence)
+					ShowMessage(sentence);
+			}
+			else if (from == FEP_GOODIES)
+				mMenu->ShowMuseum(CEA_MUSEUM);		// back from the gallery (its Back is answered with this page): its own row
+		}
         if (int level = PortCeEditorMenuReturn())
         {
             mMenu->OpenPage(CEP_EDITOR);
             for (int row = 0; row < kEditorMapCount; ++row)
                 if (kEditorLevels[row] == level)
                     mMenu->mLists.At(CEP_EDITOR)->mSelected = row;
-            ShowMessage(PortCeEditorMessage());
+            if (PortCeEditorMessage()[0])	// a refusal's sentence; a player's own leave has none
+                ShowMessage(PortCeEditorMessage());
         }
 #ifndef CE_NETWORK_OFF
 		// back from a network game (ce_netpages.cpp PortCeNetIntro): its pages, with the outcome
@@ -1607,9 +2117,47 @@ public:
 
 static CFEPCe	sCePage;
 
+// The Catalogue's sound lists (ce_catalogue_list.cpp) are list boxes on the Extras host; they show their details in this page's own
+// box (Esc closes it, as on every Catalogue page) and use this page's Find.
+void	PortCeCatalogueListDetails(const char *text)
+{
+	ShowMessage(text);
+}
+void	PortCeCatalogueListFind()
+{
+	if (sCePage.mMenu)
+		sCePage.mMenu->CatalogueFindFromList();
+}
+
+bool CatalogueKeyTrap(WORD key, KeyEventType event)
+{
+	if (sCePage.mMenu && LT.GetKeytrap() == CatalogueTrap()) sCePage.mMenu->CatalogueKeys(key, event);
+	// Mouse buttons also consult the trap. The normal list keeps pointer ownership.
+	return false;
+}
+
 CFrontEndPage	*PortCePage()
 {
 	return &sCePage;
+}
+
+// The Mods page starts a level: this page closes as it does for a bonus level (ce_modspage.cpp).
+void	PortCeLeaveCePage()
+{
+	if (sCePage.mMenu)
+		sCePage.mMenu->Leave();
+}
+
+// The game's message box with a Continue button, for a page drawn inside this one (ce_modspage.cpp).
+void	PortCeShowMessage(const char *text, float top_least)
+{
+	ShowMessage(text, 240.f, top_least);
+}
+
+// The user folder, or a folder in it, as this page's own boxes name it (the Mods page's Open Mods Folder).
+char	*PortCeFolderText(char *out, int n, const char *sub)
+{
+	return FolderText(out, n, sub);
 }
 
 void	PortCeOpenPage()
@@ -1656,6 +2204,37 @@ public:
 CMenuItem	*PortCePhotoItem()
 {
 	return new (MEMTYPE_MENUITEM) CCePhotoItem();
+}
+
+// The pause menu's way out of a museum visit (patch 0207, PauseMenu.cpp): the game's own Quit item, so the choice, the "Are you sure?" and the way back to the
+// front end are the game's, worded for the place. The visit has no Retry and no mission rows.
+class CCeLeaveMuseumItem : public CMenuItem
+{
+public:
+	explicit CCeLeaveMuseumItem(DWORD quit) : CMenuItem(quit, 2) {}
+
+	virtual WCHAR	*GetText()
+	{
+		static WCHAR leave[] = L"Leave Museum";
+		return leave;
+	}
+};
+
+CMenuItem	*PortCeMuseumLeaveItem(DWORD quit)
+{
+	return new (MEMTYPE_MENUITEM) CCeLeaveMuseumItem(quit);
+}
+
+// ---- The test kit's adapter for the Onslaught CE page (ce_testkit.h): its pages as the player sees them -------------------
+// Plain reads of the Onslaught CE page (ce_frontend.h), for the test kit (ce_frontend_testkit.cpp). They change nothing.
+bool	PortCeFrontendMenuShown() { return sCePage.mMenu && sCePage.mMenu->mActive; }
+int		PortCeFrontendPage() { return sCePage.mMenu ? sCePage.mMenu->mPage : -1; }
+int		PortCeFrontendPageCount() { return CEP_COUNT; }
+const WCHAR	*PortCeFrontendPageTitle(int page) { return page >= 0 && page < CEP_COUNT ? kCeTitles[page] : NULL; }
+CMenuOptionsList	*PortCeFrontendRows()
+{
+	CCeMenu *menu = sCePage.mMenu;
+	return menu && menu->mPage >= 0 && menu->mPage < menu->mLists.Size() ? menu->mLists.At(menu->mPage) : NULL;
 }
 
 #endif

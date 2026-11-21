@@ -17,10 +17,10 @@ enum { CE_DODGE_PAD_BUTTON = 0 };
 // for it, or the player has bound the key to a control of their own.
 int PortCeDodgeAssistKey(int pad);
 
-// A strafe action the player's own inputs sent through CController::SendButtonAction. 1: do not pass it on.
+// Return nonzero when this movement input is owned by an in-flight gesture.
 int PortCeDodgeAssistFilter(CController *controller, int pad, int button, float value);
 
-// The end of a controller update. keyDown: whether the key PortCeDodgeAssistKey named is held. Writes the strafe actions to send
+// Finish this update and return the ordinary movement actions to deliver.
 // now (ids: BUTTON_MECH_STRAFE_LEFT or _RIGHT; hard: 1 a full push as a key sends it, 0 a neutral 0) and returns how many, at
 // most CeDodge::kMaxTaps.
 int PortCeDodgeAssistEnd(CController *controller, int pad, int keyDown, int *ids, int *hard);

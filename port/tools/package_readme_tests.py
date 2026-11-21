@@ -25,6 +25,23 @@ spec.loader.exec_module(package)
 
 
 class PackageReadmeTests(unittest.TestCase):
+    def test_generated_guide_describes_current_menu_routes_and_prototype_limits(self):
+        for windows in (False, True):
+            with self.subTest(windows=windows):
+                guide = " ".join(package.readme("source-doc-check", windows).decode().split())
+                for wording in ("Onslaught CE > Catalogue", "Find by name", "Clear filter",
+                                "Models and Textures remember separate filters",
+                                "Onslaught CE > Mods", "enable, disable and order",
+                                "commander_tactical_map=1", "Commander and Take Unit",
+                                "Native-model RTS", "Museum exhibits can disappear up close",
+                                "player-start workflow and reported interaction lag remain unresolved",
+                                "Windows compilation does not demonstrate its UI or text entry",
+                                "Audio backend initialization alone does not demonstrate audible playback"):
+                    self.assertIn(wording, guide)
+                for obsolete in ("There is no mod menu yet", "V there switches to the paused map and back",
+                                 "general mod support"):
+                    self.assertNotIn(obsolete, guide)
+
     def assert_player_guide(self, content, windows):
         text = content.decode("utf-8")
         flat = " ".join(text.split())
@@ -32,7 +49,7 @@ class PackageReadmeTests(unittest.TestCase):
         self.assertNotIn("\r", text)
         self.assertLessEqual(max(map(len, text.splitlines())), package.README_WIDTH)
         for phrase in (
-            "Main menu > Onslaught CE: Bonus Levels, CE Settings, Cheats, Help & Info and Report a Problem",
+            "Main Menu > Onslaught CE: Bonus Levels, Mods, Catalogue, CE Settings, Cheats, Help & Info and Report a Problem",
             "Each row has a hint under the list", "The Options page is the original's",
             "What's Coming (planned features and their limits; it does not start those features)",
             "it does not start those features", "Aquila Prototype is the original playable-demo level (201)",
@@ -40,10 +57,10 @@ class PackageReadmeTests(unittest.TestCase):
             "each comes back to this list with its row highlighted",
             "Race Challenge 1 to 5", "Special Thanks", "The game's Credits remain separate",
             "CE Settings: a list of choices, each written to ce.ini in your user folder when you make it",
-            "Help & Info: Controls & Tips", "Updates & Rollback",
+            "Help & Info: Controls & Tips", "Updates (how updating works and how to turn the checks off)",
             "Onslaught CE > Cheats: the game's own cheats as On/Off switches", "Unlock All Levels (original code TURKEY)",
-            "the pause menu also has a Photo Mode row", "The row then reads End Photo Mode",
-            "one-player time trials (levels 901 to 905)", "those routes save your career as the original does",
+            "the Pause Menu also has a Photo Mode row", "The row then reads End Photo Mode",
+            "single-player time trials (levels 901 to 905)", "those routes save your career as the original does",
             "Race Challenge 1 after grades of C or better in 26 campaign levels",
             "each later race when the one before it is finished fast enough",
             "(under 145, 195, 150 and 105 seconds for races 1 to 4; the fifth opens nothing more)",
@@ -51,12 +68,12 @@ class PackageReadmeTests(unittest.TestCase):
             "two-player local split-screen defence map (level 856)", "Multiplayer start page", "player 2 uses the second set of keys",
             "Plug in both gamepads before starting",
             "Settings can still be saved during play, including into a career file; bonus-level progress is left out",
-            "Console: during an eligible solo level, press the grave key", "type help and press Enter",
+            "Console: during an eligible single-player level, press the grave key", "type help and press Enter",
             "Esc or grave closes it; the game does not pause", "unavailable in multiplayer, demos, recordings and replays",
             "Video Options > Window mode offers Windowed or Fullscreen", "Choose Apply to switch without restarting",
-            "the menu says the change is for this session only", "-forcewindowed game argument takes priority",
+            "the row reads (not saved) and the change is for this session only", "-forcewindowed game argument takes priority",
             "saved display-mode choice is ignored while recording or replaying",
-            "eligible ordinary single-player play with widescreen modes enabled", "HUD automatically scales up",
+            "eligible ordinary single-player levels with widescreen modes enabled", "HUD automatically scales up",
             "BEA_PORT_HUD_SCALE=0", "off in recordings and replays, split-screen multiplayer, and when BEA_PORT_WIDESCREEN=0",
             "These switches are off in recordings and replays", "Typing a code into a career's name still works",
             "wheel down zooms in and wheel up zooms out", "right bumper zooms in and left bumper out",
@@ -64,7 +81,7 @@ class PackageReadmeTests(unittest.TestCase):
             "An older tape made with live controller input cannot recover it and may replay differently",
             "By default, recording targets 30 frames a second for play and uses the replay clock", "The larger HUD, console",
             "the saved display mode are off", "tapes folder beside ce.ini", ".tape and a .tape.json",
-            "encoded copies of some CE user-folder files", "game options, careers and possibly other files",
+            "encoded copies of some user-folder files", "game options, careers and possibly other files",
             "Session recording does not capture video, game audio or microphone audio",
             "Both files can contain personal information; review them before sharing", ".incomplete file",
             "BEA_USER_DIR can select another folder", "it puts record_sessions=1 in ce.ini in your user folder",
@@ -73,7 +90,7 @@ class PackageReadmeTests(unittest.TestCase):
             "Only virtual devices have been tested; physical controllers and Windows drivers remain open",
             "Windows reparse-point behaviour is unmeasured",
             "Mods (experimental): on Linux, Onslaught CE can read replacement game files",
-            "On Windows mods are not active in this release: a mods= line is ignored and the log says so",
+            "On Windows mods are not active: a mods= line is ignored and the log says so",
             "A save that fails now says so", "An error occurred during saving.",
             "after a language change in the front end it appears in the usual message box",
             "Sharper text is off by default: the menus' and HUD's text keeps the original's soft look",
@@ -90,14 +107,14 @@ class PackageReadmeTests(unittest.TestCase):
             "Music Order in CE Settings (music_playtype) sets how they play",
             "Both lines are read once a session, so a change applies the next time you start the game",
             "the console command music adddir <folder> adds a folder's tracks without changing ce.ini",
-            "Your own music is off in recordings, replays, network games and demos",
+            "Your own music is off in recordings, replays and demos",
             "the next time the console opens for Console Text",
         ):
             with self.subTest(phrase=phrase, windows=windows):
                 self.assertIn(phrase, flat)
         # The photo-mode contexts are the public README's, word for word (the 0.1.10 reviewers found the three texts differing).
-        self.assertIn("Both work in single-player levels, but not while a session is recorded or replayed, in multiplayer, "
-                      "a network game or a demo.", flat)
+        self.assertIn("Both work in single-player levels, but not while a session is recorded or replayed, in multiplayer "
+                      "or a demo.", flat)
         # The sharper text is off unless sharp_ui=1 (0.1.13); no text may still promise it on wide screens by default.
         self.assertNotIn("Onslaught CE draws it from a sharper copy", flat)
         if windows:
@@ -129,12 +146,59 @@ class PackageReadmeTests(unittest.TestCase):
             for library in ("libXrandr.so.2", "libXcursor.so.1", "libXi.so.6", "libXfixes.so.3"):
                 self.assertIn(library, x11, f"the preflight notes {library} on an X11 session")
                 self.assertNotIn(library, wayland)
-            for phrase in ("a filename whose in-game name exceeds 31 16-bit units is omitted from the list",
-                           "emits one name-free diagnostic, normally captured in a launcher log, but shows no on-screen warning",
-                           "If a career is missing, keep its file and ask for help",
+            for phrase in ("A career whose name is longer than 31 characters is left out of the Load Game list. Keep its file and ask for help.",
                            "the older spelling can be chosen from the original folder; keep both"):
                 self.assertIn(phrase, flat)
         return text
+
+    def test_the_dodge_instructions_wrap_as_one_bullet(self):
+        for windows in (False, True):
+            with self.subTest(windows=windows):
+                lines = package.readme("0.1.14", windows).decode().splitlines()
+                start = next(i for i, line in enumerate(lines) if line.startswith("- Dodging in Walker mode"))
+                end = next(i for i in range(start + 1, len(lines)) if lines[i].startswith("  Dodge Button:"))
+                paragraph = lines[start:end]
+                self.assertIn("tap A then D for right, or D then A for left.", " ".join(" ".join(paragraph).split()))
+                self.assertTrue(all(len(line.split()) > 1 for line in paragraph))
+
+    def test_the_first_screen_says_what_it_is_how_to_start_and_where_the_upgrade_warning_is(self):
+        """Fix 5 of the 0.1.14 polish list: the first 24 lines hold the title, what Onslaught CE is, the quick start, where the port's
+        pages and the player's careers are, and a pointer to the upgrade warning; the warnings themselves are all still there, under
+        their own heading, and the retired wording is gone."""
+        for windows in (False, True):
+            with self.subTest(windows=windows):
+                text = package.readme("0.1.14", windows).decode()
+                first = " ".join(" ".join(text.splitlines()[:24]).split())
+                for phrase in ("Onslaught CE V0.1.14", "you need your own copy of the game",
+                               "1. Extract the download into a new, empty folder of its own, not inside the game's folder.",
+                               "3. It finds your Steam copy of Battle Engine Aquila by itself, or asks once where it is.",
+                               "In the game, Main Menu > Onslaught CE holds what this port adds: Bonus Levels, Mods, Catalogue, CE Settings, Cheats, Help & Info and Report a Problem.",
+                               "apart from the original game's folder.",
+                               "Upgrading from Onslaught CE 0.1.0 to 0.1.6? Do not start the old launcher again. "
+                               'Read "Upgrading from 0.1.0-0.1.6" below first.'):
+                    self.assertIn(phrase, first)
+                self.assertIn(("%APPDATA%\\Onslaught CE" if windows else "~/.local/share/onslaught-ce"), first)
+                self.assertNotIn("BEA_", first, "no environment variable on the first screen")
+                self.assertNotIn("launcher safety hold", text)
+                after = text.split("\nUpgrading from 0.1.0-0.1.6\n", 1)[1].split("\nAdvanced\n", 1)[0]
+                flat = " ".join(after.split())
+                for warning in ("Do not start an Onslaught CE 0.1.0-0.1.6 launcher at all, not even to check its version or update it",
+                                "startup cleanup can delete neighbouring <program folder>.old-* paths",
+                                "On Linux it has followed a matching directory link into its target",
+                                "Windows reparse-point behaviour is unmeasured",
+                                "Keep the old installation and every .old-*, .download-* and .unpack-* path untouched",
+                                "Locate and preserve both launcher and game user-data folders",
+                                "Copy each whole folder to an independent backup; verify the copies and careers",
+                                "If the locations or conflicting files are unclear, do not merge or overwrite them; seek help first",
+                                "This release's launcher removes no neighbouring paths"):
+                    self.assertIn(warning, flat)
+                advanced = text.split("\nAdvanced\n", 1)[1].split("\nIn the game\n", 1)[0]
+                for phrase in ("BEA_GAME_DIR", "BEA_USER_DIR", "--update-only", "BEA_NO_UPDATE_CHECK=1"):
+                    self.assertIn(phrase, advanced)
+                for retired in ("--apply is refused", "for its built-in UCRT", "Record Play for Bug Reports", "Stop recording",
+                                "Updates & Rollback", "Developer Information, Your\n", "on a non-4:3 picture,\n", "solo", "Main menu",
+                                "pause menu", "Goodies page", "level select", "launch Onslaught CE"):
+                    self.assertNotIn(retired, text)
 
     def test_report_log_selection_and_user_folder_fallback(self):
         for windows in (False, True):
@@ -149,7 +213,7 @@ class PackageReadmeTests(unittest.TestCase):
                     "If multiple copies ran at once, the affected run may be in "
                     "onslaught-ce.concurrent-1.log or onslaught-ce.concurrent-2.log",
                     "Check its start time to identify the run and save it promptly; "
-                    "later launches can replace log files",
+                    "later starts can replace log files",
                     "Nothing is posted until you submit the issue",
                     "look the file over before sharing it",
                     "You can share it directly with someone helping you",
@@ -160,7 +224,7 @@ class PackageReadmeTests(unittest.TestCase):
                 if windows:
                     self.assertNotIn("$XDG_DATA_HOME", whole)
                 else:
-                    self.assertEqual(whole.count("when unset or empty"), 3)
+                    self.assertEqual(whole.count("when unset or empty"), 2)
 
     def test_readme_names_the_experimental_block_and_the_new_profile_video_defaults(self):
         """What a player finds without asking: the [Experimental] block the first start writes into ce.ini, and Full models Off with
@@ -173,20 +237,25 @@ class PackageReadmeTests(unittest.TestCase):
         self.assertIn('Unfinished features, off in this release. They may change or break. Set a line to 1 to try one.', ce)
         public = " ".join(PROJECT_README.read_text().split())
         self.assertIn("under `[Experimental]` in `ce.ini`", public)
-        self.assertIn("**Full models** starts **Off**", public)
+        self.assertIn("**Full models** starts at **No**", public)
         self.assertIn("**Terrain detail distance** starts at **Extended**", public)
+        self.assertIn("The visible range and fog stay the same.", public)
+        self.assertIn("**Screen mode** selects the resolution; **Video adapter** selects the graphics device.", public)
         phrases = (
             "Video Options on a new profile: the first time you start with no saved options of your own",
             "every quality row starts at its highest choice except Full models",
             "anti-aliasing starts at the highest level your graphics device lists",
-            "Full models starts Off",
+            "Full models starts at No",
             "is the largest cost in frame rate",
             "Terrain detail distance starts at Extended",
-            "choose Normal for the original's distance",
+            "keeps finer ground detail up to twice as far away. The visible range and fog stay the same.",
+            "Choose Normal for the original terrain detail",
+            "Screen mode selects the resolution; Video adapter selects the graphics device.",
+            "If the row says (restart the game), restart to recover the display or input.",
             "Anything you saved before is kept as it was",
             "Unfinished features: the first start adds an [Experimental] block to ce.ini that lists them, each set to 0 (off).",
             "They are unsupported and may change or break; a line set to 1 turns that feature on from the next start.",
-            "A line you already set in an earlier version (0.1.13 or before) is kept as it is.",
+            "A line set in an earlier version is kept, but what it turns on has changed:",
         )
         for windows in (False, True):
             with self.subTest(windows=windows):
@@ -203,42 +272,52 @@ class PackageReadmeTests(unittest.TestCase):
                     # pages' tables (a label and its action) and the cheat switches' labels.
                     front_end = (ROOT / "port/game/ce_frontend.cpp").read_text()
                     labels = set(re.findall(r'\{L"([^"]+)", CEA_', front_end))
-                    cheats = {re.sub(r" \(.*", "", name) for name in re.findall(r'\{L"([^"]+): ", \w+, \{', front_end)}
+                    cheats = {re.sub(r" \(.*", "", name) for name in re.findall(r'\{L"([^"]+?):\s?", \w+, \{', front_end)}
                     self.assertEqual(len(cheats), 5)
                     flat = " ".join(text.split())
                     for label in ("Bonus Levels", "CE Settings", "Cheats", "Help & Info", "Report a Problem", "Aquila Prototype",
                                   "Building Defence", "Race Challenge 1", "Controls & Tips",
-                                  "What's Coming", "Updates & Rollback", "About Onslaught CE", "Special Thanks"):
-                        self.assertIn(label, labels)
+                                  "What's Coming", "Updates", "About Onslaught CE", "Special Thanks"):
+                        # the page's row is "Updates & Rollback" until the CE pages carry the new name (lane A's fix 20)
+                        self.assertTrue(label in labels or label + " & Rollback" in labels, label)
                         self.assertIn(label, flat)
                     for label in cheats:
                         self.assertIn(label, flat)
                     # CE Settings is its table: every row's label is named in the generated README, and so is each place its
                     # line is described (the keys the README gives for a hand edit are the table's own)
                     table = front_end[front_end.index("static const SCeSetting\tkSettings[]"):front_end.index("#define CE_NUM_SETTINGS")]
-                    rows = re.findall(r'^\t\{L"([^"]+): ", "(\w+)"', table, re.M)
+                    rows = re.findall(r'^\t\{L"([^"]+?):\s?", "(\w+)"', table, re.M)     # "Label: " or "Label:" (the colon touches the value)
                     self.assertTrue(rows)
                     # the Commander Map row is behind the commander line under [Experimental] in ce.ini (off by default): the README does not offer it
                     for label, key in rows:
+                        label = {"Record Play for Bug Reports": "Session Recording"}.get(label, label)    # the name the README uses
                         if key == "commander":
                             self.assertNotIn(label, flat)
                             continue
                         self.assertIn(label, flat)
-                    self.assertNotIn("ommander", flat)
+                    # Commander is named only where the README says what an older commander=1 line now does (the Unfinished features
+                    # item), never as something this version offers
+                    unfinished = flat[flat.index("- Unfinished features:"):flat.index("- Console:")]
+                    self.assertNotIn("ommander", flat.replace(unfinished, ""))
+                    self.assertIn("Commander (M by default)", unfinished)
+                    self.assertIn("commander_tactical_map=1", unfinished)
+                    self.assertIn("unsupported", unfinished)
                     for key in ("hud_scale", "hud_anchor", "sharp_ui", "update_check", "record_sessions", "music_dir",
                                 "music_playtype"):
                         self.assertIn(key, [row[1] for row in rows])
                         self.assertIn(key, flat)
-                    self.assertIn("Record Play for Bug Reports", flat)
+                    self.assertIn("Session Recording", flat)
+                    self.assertNotIn("Record Play for Bug Reports", flat)
 
     def test_the_game_s_readme_pointers_name_parts_of_the_readmes(self):
-        """The game's dialogs send the player to a part of the README by its name ("see Your own music in the README"). The README is
-        README.txt, the one in the download: on both systems it has that part, as a list item's or a line's lead ("Your own music:");
-        "the project README" is public/README.md, where the part is a heading. The game's font has no underscore, so the names are the
-        only way the dialogs can point at a ce.ini line."""
-        source = re.sub(r'"\s*"', "", (ROOT / "port/game/ce_frontend.cpp").read_text())     # adjacent string literals joined
+        """A named part of the README must exist on both platforms; project pointers must reach the public guide."""
+        source = re.sub(r'"\s*"', "", (ROOT / "port/game/ce_frontend.cpp").read_text())
+        # Menu text uses protected spaces and manual line breaks. Read the words as the player sees them.
+        source = source.replace(r"\xa0", " ").replace(r"\n", " ")
         named = set(re.findall(r'([A-Z][a-z]+(?: [a-z]+)*) in the (project )?README', source))
-        self.assertTrue({("Your own music", ""), ("Updates", ""), ("Mods", "project ")} <= named, named)
+        for project, name in re.findall(r'\b(project )?README\b[^."\n]{0,90}?\bunder ([A-Z][a-z]+(?: [a-z]+)*)[.]', source):
+            named.add((name, project))
+        self.assertTrue({("Your own music", ""), ("Updates", ""), ("Mods", "")} <= named, named)
         public = PROJECT_README.read_text()
         for name, project in sorted(named):
             with self.subTest(name=name):
@@ -247,7 +326,7 @@ class PackageReadmeTests(unittest.TestCase):
                     continue
                 for windows in (False, True):
                     text = package.readme("0.1.10", windows).decode("utf-8")
-                    self.assertRegex(text, r"(?m)^(?:- )?" + re.escape(name) + r":", "README.txt has the part the game names")
+                    self.assertRegex(text, r"(?m)^(?:- )?" + re.escape(name) + r"(?: \([^)]+\))?:", "README.txt has the part the game names")
         # and the dialog's own part says what the dialog leaves out: the line, the folder's form and the tracks that can play
         for windows in (False, True):
             flat = " ".join(package.readme("0.1.10", windows).decode("utf-8").split())
@@ -259,15 +338,16 @@ class PackageReadmeTests(unittest.TestCase):
     # What the Network game page says, as the README.txt of the build that offers it must repeat: the label, the requirements, what a mismatch does,
     # the missing matchmaking server, what was not tested and what the game contacts.
     NETWORK_PHRASES = (
-        "Network game (experimental)", "Main menu > Onslaught CE > Network Game", "new and unfinished", "expect problems",
+        "Network game (experimental)", "Main Menu > Onslaught CE > Network Game", "new and unfinished", "expect problems",
         "the same Onslaught CE version and their own copy of the game", "If the two games ever disagree, the game ends with a message.",
         "A network game does not change your careers.", "There is no matchmaking server",
         "the host forwards a UDP port on its router (net_port in ce.ini, default 27652)",
         "Not tested: play through routers over the real internet, more than two players, Windows on real hardware.",
         "contacts no server", "on Windows that asks the system to look up this PC's own name",
-        "Planned, not in this version yet: matchmaking, versus play, general mod support and additional HUD options.")
-    PLANNED_DEFAULT = "- Planned, not in this version yet: Internet multiplayer, general mod support and additional HUD options."
-    PLANNED_NETWORK = "- Planned, not in this version yet: matchmaking, versus play, general mod support and additional HUD options."
+        "Your own music, the Dodge Button, Photo Mode and F12 screenshots are off in a network game.",
+        "Planned, not in this version yet: matchmaking, versus play, mods on Windows and additional HUD options.")
+    PLANNED_DEFAULT = "- Planned, not in this version yet: Internet multiplayer, mods on Windows and additional HUD options."
+    PLANNED_NETWORK = "- Planned, not in this version yet: matchmaking, versus play, mods on Windows and additional HUD options."
 
     def test_network_flavour_readme_carries_the_network_game_labels_and_warnings(self):
         # The page's strings as the compiler joins them (adjacent literals), so the two texts are compared sentence by sentence.
@@ -276,11 +356,16 @@ class PackageReadmeTests(unittest.TestCase):
         not_tested = "Not tested: play through routers over the real internet, more than two players, Windows on real hardware"
         mismatch = "If the two games ever disagree, the game ends with a message."
         careers = "does not change your careers."
-        self.assertIn("EXPERIMENTAL: co-op over a network is new and unfinished. Expect problems.", page)
-        self.assertIn("There is no matchmaking server", page)
-        self.assertIn(not_tested + ".", page)
-        self.assertIn(mismatch, page)
-        self.assertIn("A co-op game " + careers, page)
+        # The page says what a player needs and keeps test words off it (house style W3); the README of this build keeps
+        # the experimental warning and what was not tested.
+        # The lobby no longer carries standing prose (house style: unfinished limits are not apologised for on a page);
+        # the README of the build keeps it.
+        self.assertNotIn(mismatch, page)
+        self.assertIn(mismatch.rstrip("."), project)
+        self.assertIn("A network game " + careers, page)
+        self.assertIn('#define CE_LOBBY_HELP_LABEL\t"Connection Help"', (ROOT / "port/platform/common/ce_netlobby.h").read_text())
+        self.assertIn('row "Connection Help"', " ".join(package.NETWORK_GAME_LINES))
+        self.assertNotIn("Not tested", page)
         self.assertIn(not_tested, project)
         for windows in (False, True):
             with self.subTest(windows=windows), patch.object(package, "NETWORK", True):
@@ -297,6 +382,147 @@ class PackageReadmeTests(unittest.TestCase):
                 for phrase in ("Network game (experimental)", "matchmaking", "Not tested: play through routers"):
                     self.assertNotIn(phrase, flat)
                 self.assertIn(self.PLANNED_DEFAULT, flat)
+
+    # What only the build with the network compiled in has, by any of the names the READMEs have used for it. The default
+    # download has no such page, key or mode, so its README.txt must not send a player looking for one: the 0.1.14 candidate's
+    # README.txt said three features were off "in network games" (the reading before the freeze, finding S3).
+    # The pattern names the thing as well as the old phrases, so a reworded mention ("online co-op", "over the internet") is caught too:
+    # nothing in the default build is online, so the words online, internet and LAN are not in its README outside the planned line.
+    COMPILED_OUT = re.compile(r"network(?:ed)?\s+(?:game|games|play|co-op|session)|\bhost(?:s|ing)?\s+(?:a|or)\b|\bjoin(?:s|ing)?\s+a\s+game|"
+                              r"matchmaking|net_port|\bENet\b|\blobby\b|direct-IP|\bUDP\b|\bonline\b|\binternet\b|\bLAN\b|"
+                              r"\bover\s+(?:a|the)\s+network\b|\bremote\s+players?\b|peer-to-peer|\bIP\s+address", re.I)
+
+    def test_default_readme_names_nothing_that_is_compiled_out_of_the_default_build(self):
+        front_end = (ROOT / "port/game/ce_frontend.cpp").read_text()
+        # the rows the menu has only with the network compiled in, as the file guards them: their labels are checked too
+        guarded = re.findall(r"#ifndef CE_NETWORK_OFF\n((?:(?!#endif|#else).*\n)*?)#endif", front_end)
+        labels = {label for block in guarded for label in re.findall(r'\{L"([^"]+)", CEA_', block)}
+        self.assertEqual(labels, {"Network Game"}, "the rows ce_frontend.cpp offers only with the network compiled in")
+        self.assertRegex("It is off in network games.", self.COMPILED_OUT)
+        self.assertRegex("a network game or a demo", self.COMPILED_OUT)
+        for reworded in ("Photo mode is also off in online co-op.", "It is off over the internet.", "with a player on your LAN"):
+            self.assertRegex(reworded, self.COMPILED_OUT)
+        for windows in (False, True):
+            with self.subTest(windows=windows):
+                text = package.readme("0.1.10", windows).decode()
+                planned = [line for line in text.splitlines() if line.startswith("- Planned, not in this version yet:")]
+                self.assertEqual(planned, [self.PLANNED_DEFAULT], "the one line that may name what is not in this build")
+                flat = " ".join(text.replace(self.PLANNED_DEFAULT, "").split())
+                self.assertEqual(self.COMPILED_OUT.findall(flat), [])
+                for label in labels:
+                    self.assertNotIn(label.lower(), flat.lower())
+                # and the control: the same text with the network compiled in is caught by the same pattern
+                with patch.object(package, "NETWORK", True):
+                    self.assertTrue(self.COMPILED_OUT.findall(" ".join(package.readme("0.1.10", windows).decode().split())))
+        # The project README is for players of the download first: before its build sections it names no network game either
+        # (what is off in one is said once, under "Experimental network source builds").
+        public = PROJECT_README.read_text()
+        players, builders = public.split("\n## Building from source\n", 1)
+        self.assertEqual(re.findall(r"(?i)network\s+games?", players), [])
+        # by the same pattern, outside the line that lists what is planned and the lines that say they are about an experimental
+        # network source build (the Mods section names what such a build switches off)
+        unplanned = " ".join(line for line in players.splitlines()
+                             if not line.startswith("- Planned, not in this version yet:") and "experimental network source build" not in line)
+        source_notice = "- Release 0.1.13 does not offer Internet multiplayer. This source branch has opt-in two-player network test builds; that does not establish a released Internet service. Mods on Windows and additional HUD options remain planned."
+        unplanned = " ".join(unplanned.split())
+        self.assertIn(source_notice, unplanned)
+        unplanned = unplanned.replace(source_notice, "")
+        self.assertEqual(self.COMPILED_OUT.findall(" ".join(unplanned.split())), [])
+        self.assertIn("### Experimental network source builds", builders)
+        section = " ".join(builders.split("### Experimental network source builds", 1)[1].split("\n### ", 1)[0].split())
+        self.assertIn("in a network game of such a build the Dodge Button, the console, photo mode and F12 screenshots, your own "
+                      "music, the end-of-level statistics and rumble are off", section)
+
+    @unittest.skipUnless((ROOT / "port/PARITY.md").is_file(), "the parity log is not in the public tree; the maintainer's checkout runs this")
+    def test_readme_measurements_follow_parity_s_latest_entries(self):
+        """A README paragraph that quotes a measurement says what port/PARITY.md's latest entry says. The 0.1.14 candidate's
+        project README still said two-player split screen "runs short" of terrain memory with Extended, which the reserve
+        correction of 2026-11-08 had ended (finding S2)."""
+        parity = (ROOT / "port/PARITY.md").read_text()
+        correction = re.search(r"^\*\*Terrain reserve correction \(\d{4}-\d\d-\d\d\)\.\*\*.*(?:\n(?!\n\n).*)*", parity, re.M).group(0)
+        self.assertIn("all three terrain tiers", correction)
+        budget = re.search(r"fixed (\d+) MiB logical budget", correction).group(1)
+        reserve = (ROOT / "port/game/ce_terrain_reserve.cpp").read_text()
+        self.assertIn(f"constexpr std::size_t maximumOwnedBytes = {budget}u * 1024u * 1024u;", reserve, "PARITY's budget is the code's")
+        self.assertRegex(correction, r"split-screen controls, the earlier roughly \d+ failed requests per frame fell to zero")
+        self.assertIn("throughput overlapped the baseline variation", correction)
+        self.assertIn("appearance, motion and native Windows execution remain unobserved", correction)
+        public = PROJECT_README.read_text()
+        paragraph = " ".join(re.search(r"^\*\*Extended terrain and its reserve\.\*\*.*(?:\n(?!\n).*)*", public, re.M).group(0).split())
+        for superseded in ("runs short", "find no free memory", "nearest tier", "170 and 210", "215, one run", "a few megabytes"):
+            with self.subTest(superseded=superseded):
+                self.assertNotIn(superseded, paragraph)
+        self.assertIn(f"({budget} MiB at most across all three terrain tiers", paragraph)
+        self.assertIn("ran without a failed terrain request, and so did **two-player split screen** in the runs made", paragraph)
+        self.assertIn("the frame rate with the reserve was within the variation between runs", paragraph)
+        self.assertIn("nobody has compared how the terrain looks or moves in split screen", paragraph)
+        self.assertIn("none of it has run on Windows", paragraph)
+        # A stale figure in other words ("ran about 400 requests a frame short") is caught by what the paragraph may quote at all: its
+        # only numbers are the budget and the two one-player levels measured, and the only failure it names is the one that did not happen.
+        rest = paragraph.replace("(levels 100 and 200)", "", 1).replace("without a failed terrain request", "", 1)
+        self.assertEqual(re.findall(r"\d+(?:\.\d+)?", rest), [budget], "the paragraph quotes no figure but the budget and the levels measured")
+        self.assertEqual(re.findall(r"(?i)\bshort\b|\bfail\w*|\brequests?\s+(?:a|per)\s+frame|\bno\s+free\s+memory|\bran\s+out\b", rest), [])
+        # Full models: the two figures the README quotes are one matched pair of PARITY's (the same level and terrain setting)
+        quoted = re.search(r"level (\d+) fell from (\d+) to (\d+) frames a second with the same terrain setting", public)
+        self.assertIsNotNone(quoted, "the README quotes one measured pair for Full models")
+        level, off, on = quoted.groups()
+        matched = re.search(r"on level " + level + r" it was: Full models On with Extended on ran at ([\d.]+) \([\d.]+ ms\) with 0\.0 failed "
+                            r"allocations a frame, against (\d+) with Full models Off", parity)
+        self.assertIsNotNone(matched, "PARITY holds the matched pair for that level")
+        self.assertEqual((off, on), (matched.group(2), str(round(float(matched.group(1))))))
+        for windows in (False, True):
+            flat = " ".join(package.readme("0.1.10", windows).decode().split())
+            for superseded in ("runs short", "find no free memory", "nearest tier"):
+                self.assertNotIn(superseded, flat)
+
+    def test_readmes_say_what_a_read_only_ce_ini_does(self):
+        """0.1.14 refuses to replace a ce.ini whose owner made it read-only, where 0.1.13 on Linux replaced it (finding S7): the
+        READMEs say so, with what the player then sees, and the launcher has the words they promise."""
+        writer = (ROOT / "port/updater/ce_report.h").read_text()
+        self.assertIn("readonly = !(st.st_mode & S_IWUSR);", writer)
+        self.assertIn("readonly = (info.dwFileAttributes & FILE_ATTRIBUTE_READONLY) != 0;", writer)
+        self.assertIn("if (readonly) { free(t); ce_settings_dir_close(&dir); ce_ini_refusal = CE_INI_REFUSED_READONLY; return 0; }", writer)
+        launcher = (ROOT / "port/updater/ce_launch.c").read_text()
+        for words in ("could not remember to skip this version, so it will offer the update again the next time it starts.",
+                      "Session recording could not be turned off, so Onslaught CE will ask about it again the next time it starts.",
+                      "is read-only, and Onslaught CE does not change a read-only file."):
+            self.assertIn(words, launcher)
+        says = ("A ce.ini you have made read-only is never replaced (0.1.13 on Linux did replace it): the rows keep their choices, and the "
+                "launcher's Skip this version and Turn recording off say that the choice could not be saved and ask again the next time you start.")
+        for windows in (False, True):
+            self.assertIn(says, " ".join(package.readme("0.1.10", windows).decode().split()))
+        self.assertIn(says, " ".join(PROJECT_README.read_text().replace("`", "").replace("**", "").split()))
+
+    def test_readmes_say_what_an_older_commander_line_and_a_museum_visit_now_do(self):
+        """What the READMEs say about the two unfinished features a player can already have met is what the code does: with
+        commander=1 the M key opens the live view (the battle is not paused), where 0.1.13's opened the paused map; and a museum
+        visit refuses every save, which the pause menu reports on each resume of a named career (findings S11 and S14)."""
+        commander = (ROOT / "port/game/ce_cmdmap.cpp").read_text()
+        key = commander[commander.index("bool PortCeCmdKey(unsigned key, bool repeat)"):]
+        key = key[:key.index("\n}\n") + 3]
+        self.assertIn("\tOpen(true);\n", key, "M opens the live view")
+        opening = commander[commander.index("void Open(bool strategic)"):]
+        self.assertIn("if (!strategic) { GAME.Pause(); }", opening, "only the map pauses the game")
+        self.assertIn('} else if (!repeat && key == DIK_V && TacticalMapAllowed()) {\n                SwitchView(false);', commander)
+        gate = (ROOT / "port/game/ce_project.cpp").read_text()
+        self.assertRegex(gate, r"bool PortCeProjectCareerAllowed\(\) noexcept \{\n[^}]*!\(PortCeMuseumVisitActive && PortCeMuseumVisitActive\(\)\);")
+        saves = "".join(path.read_text() for path in sorted((ROOT / "port/patches").glob("0139-*.patch")))
+        self.assertGreaterEqual(saves.count("+    if (!PortCeProjectCareerAllowed()) return MCE_FAILURE;"), 3)
+        commander_says = ("The paused map on V requires the additional test setting commander_tactical_map=1.")
+        museum_says = ("With museum=1, a Museum Prototype visit is kept out of your career: nothing is saved during it, so with a named "
+                       "career the game's save error message appears each time you leave its Pause Menu. Nothing is wrong: the career is "
+                       "as it was when the visit ends.")
+        for windows in (False, True):
+            with self.subTest(windows=windows):
+                flat = " ".join(package.readme("0.1.10", windows).decode().split())
+                self.assertIn(commander_says, flat)
+                self.assertIn(museum_says, flat)
+        public = " ".join(PROJECT_README.read_text().replace("`", "").replace("**", "").split())
+        self.assertIn(commander_says, public)
+        self.assertIn(museum_says, public)
+        developer = " ".join((ROOT / "port/README.md").read_text().split())
+        self.assertNotIn("the CE Settings row Commander Map: Yes) keeps the Commander map on", developer, "0.1.13 had no such row")
+        self.assertIn("Now Commander opens the live view: the battle keeps running", developer)
 
     def test_the_network_flavour_changes_only_the_network_game_lines(self):
         for windows in (False, True):

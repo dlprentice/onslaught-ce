@@ -16,6 +16,7 @@
 #ifdef __linux__
 #include <sys/prctl.h>
 #endif
+#include "ce_hooks_host_stubs.h"	// the patched originals call the CE hook points; their host no-ops
 using WCHAR = wchar_t;
 using SINT = int;
 using BOOL = int;
@@ -262,6 +263,11 @@ void PortCePadForget(void *) {}
 enum { CE_DODGE_PAD_BUTTON = 0 };
 static bool dodgeOn = false, dodgeKeyFree = true, dodgePadFree = true;
 bool PortCeDodgeAssistOn() { return dodgeOn; }
+int fixtureDodgeKey=0x1d;
+int PortCeDodgeBindingKey() { return fixtureDodgeKey; }
+bool PortCeDodgeBindingName(int key,char *out,int size) {
+    std::snprintf(out,size,"%s",key==0x1d?"Left Ctrl":"K"); return true;
+}
 bool PortCeDodgeAssistKeyFree() { return dodgeKeyFree; }
 bool PortCeDodgeAssistPadFree(int) { return dodgePadFree; }
 #include "guidance.inc"
@@ -279,7 +285,8 @@ int PortCeDodgeAssistEnd(void *, int, int, int *, int *) { return 0; }
 static void *sMouse = nullptr;
 struct { bool mReleased; } MOUSE_BUTTONS[3] = {};
 static bool MOUSE_HELD[3] = {};
-struct MappingProbe {
+// A CController to the hook point the mapping loop calls (ce_hook_input_actions takes the controller it flushed).
+struct MappingProbe : CController {
 	int mPadNumber = 0, mNumMappings = 4; bool mPlaying = false, mRecording = false, mPausedBeforeMap = false;
 	float mLastRepeatTime = 0, mNextDelayTime = 0;
 	bool set[128] = {}; float sent[128] = {}; int count[128] = {};
@@ -347,6 +354,7 @@ int main(int argc, char **argv)
 	if (argc != 2)
 		return 1;
 	const char *mode = argv[1];
+	if (Is(mode, "dodge-keys")) fixtureDodgeKey=37;
 	const char *envs[] = {"BEA_PORT_CE_LAYER", "BEA_PORT_CLOCK", "BEA_PORT_TAPE", "BEA_PORT_PROBES", "BEA_PORT_RECORD", "BEA_NET_HOST", "BEA_NET_JOIN"};
 	for (const char *e : envs)
 		unsetenv(e);
@@ -665,13 +673,13 @@ int main(int argc, char **argv)
 		Check(dodge == (timingUnknown ? L"Ground dodge: fully strafe one way, then the other. Timing varies." :
 			L"Ground dodge: fully strafe one way, then the other 101-199ms apart."), "unsupported movement binding uses the generic text");
 	else if (Is(mode, "dodge-keys"))
-		Check(dodge == L"Ground dodge: hold Left Ctrl and press A or D. Or tap A then D 101-199ms apart.", "the Dodge Button's key first, then the double tap with the actual keys");
+		Check(dodge == L"Ground dodge: hold K and press a movement direction. Or tap A then D 101-199ms apart.", "the Dodge Button's key first, then the double tap with the actual keys");
 	else if (Is(mode, "dodge-both"))
-		Check(dodge == L"Ground dodge: hold Left Ctrl or right button and strafe left or right.", "the key and the gamepad button; the double tap does not fit and is left out");
+		Check(dodge == L"Ground dodge: hold Left Ctrl or right button and press a movement direction.", "the key and the gamepad button; the double tap does not fit and is left out");
 	else if (Is(mode, "dodge-pad"))
-		Check(dodge == L"Ground dodge: hold right button and push left stick left or right. Or tap A then D 101-199ms apart.", "the gamepad button alone, with the stick");
+		Check(dodge == L"Ground dodge: hold right button and press a movement direction. Or tap A then D 101-199ms apart.", "the gamepad button alone, with the stick");
 	else if (Is(mode, "dodge-pad-bound") || Is(mode, "dodge-stick"))
-		Check(dodge == L"Ground dodge: hold Left Ctrl and press A or D. Or tap A then D 101-199ms apart.", "no gamepad button when it is bound to another control, or on a flight stick");
+		Check(dodge == L"Ground dodge: hold Left Ctrl and press a movement direction. Or tap A then D 101-199ms apart.", "no gamepad button when it is bound to another control, or on a flight stick");
 	else if (Is(mode, "dodge-key-bound") || Is(mode, "dodge-off"))
 		Check(dodge == L"Ground dodge right: A, then D 101-199ms apart. Reverse for left.", "without a usable Dodge Button the cue is the one built from the bindings");
 	else if (Is(mode, "pad-timing-change"))
@@ -791,7 +799,7 @@ int main(int argc, char **argv)
 			"available controller zoom remains named when keys cannot be named");
 	else if (Is(mode, "wheel-held") || Is(mode, "unbound") || Is(mode, "duplicate") || Is(mode, "keyboard-player-two") || Is(mode, "dodge-player-two") || Is(mode, "no-controller") ||
 		Is(mode, "pad-mouse-zoom") || Is(mode, "pad-mouse-player-two"))
-		Check(zoom == L"Zoom: see Zoom In and Zoom Out in Controller Configuration. Not every weapon zooms.", "unsupported zoom binding uses the generic text");
+		Check(zoom == L"Zoom: see Zoom In and Out in Controller Options. Not every weapon zooms.", "unsupported zoom binding uses the generic text");
 	else if (Is(mode, "long-labels") || Is(mode, "long-names"))
 		Check(zoom == L"Zoom in: Middle mouse button. Zoom out: Right mouse button. Not every weapon zooms.", "mouse-button zoom named");
 	else

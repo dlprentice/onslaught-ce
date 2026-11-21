@@ -103,6 +103,8 @@ class CeTankCamera;
 static CeTankCamera *gCamera=nullptr;
 static CUnit *gUnit=nullptr, *gHeld=nullptr;
 static bool gDriving=false, gAllowed=true;
+static bool gOnFoot=false, gFootFirstPerson=false;
+static const CCamera *gFootRenderedView=nullptr;
 static int gLevel=27;
 struct Game {
     CCamera *camera=nullptr; CPlayer *primary=nullptr; int level=27;
@@ -123,6 +125,9 @@ static void NextFrame(double ms) { ++gPresentNow; gClockNs+=(unsigned long long)
 #include "ce_playunit_camera_class.inc"
 #include "ce_playunit_view_state.inc"
 #include "ce_playunit_view_adapter.inc"
+// The look camera (ce_playunit_look.h) is the module's own and is checked by the rules section: here it only marks where the frame would be the look's.
+static unsigned gLookShown=0;
+static void LookShown(CUnit *, CGenericCamera *) { ++gLookShown; }
 #include "ce_playunit_render_adapter.inc"
 static unsigned failures=0, checks=0;
 static void CheckCamera(bool good,const char *label) {
@@ -353,6 +358,7 @@ int main() {
 #include <string.h>
 
 #include "ce_playunit_rules.h"
+#include "ce_playunit_look.h"
 
 static int gChecks, gFailed;
 
@@ -481,14 +487,416 @@ static void Handback()
 	{ auto f = normal; f.currentSquad = true; f.originalSquadLive = false; Check(CePlayUnitChooseReturn(f) == CE_PLAYUNIT_RETURN_EXTERNAL, "return: a newer owner precedes the orphan fallback"); }
 }
 
+// ---- the class table ----
+static bool AnyShape(const CePlayUnitFacts &) { return true; }
+static bool NoShape(const CePlayUnitFacts &) { return false; }
+
+static void Table()
+{
+	const CePlayUnitClassRow *rows = CePlayUnitClasses();
+	Check(rows[CE_PLAYUNIT_CLASS_TANK].enabled, "table: the tank row is on");
+	Check(!rows[CE_PLAYUNIT_CLASS_JEEP].enabled, "table: the jeep row is off");
+	int on = 0;
+	for (int i = 0; i < CE_PLAYUNIT_CLASS_COUNT; ++i) on += rows[i].enabled ? 1 : 0;
+	Check(on == 2, "only the tank and ordinary infantry rows are enabled");
+	CePlayUnitFacts foot = Tank(); foot.vehicle = false; foot.groundUnit = false; foot.normalSquad = false;
+	foot.ordinaryFoot = true; foot.family = CE_PLAYUNIT_FAMILY_INFANTRY;
+	Check(CePlayUnitClassFor(foot) == CE_PLAYUNIT_CLASS_INFANTRY, "ordinary independent soldier is eligible");
+	foot.scripted = true; Check(CePlayUnitClassFor(foot) < 0, "script-owned soldier is retained");
+	foot.scripted = false; foot.ordinaryFoot = false;
+	Check(CePlayUnitClassFor(foot) < 0, "another foot unit or another assignment is retained");
+	Check(CePlayUnitClassFor(Tank()) == CE_PLAYUNIT_CLASS_TANK, "table: a tank is the tank class");
+	{ CePlayUnitFacts f = Tank(); f.groundUnit = false; Check(CePlayUnitClassFor(f) == -1 && !CePlayUnitTankEligible(f), "table: a jeep is refused while its row is off"); }
+	{ CePlayUnitFacts f = Tank(); f.vehicle = false; Check(CePlayUnitClassFor(f) == -1, "table: a non-vehicle fits no row"); }
+	const CePlayUnitLaw &t = rows[CE_PLAYUNIT_CLASS_TANK].law;
+	Check(Near(t.reach, 40.f) && Near(t.pivotReach, 6.f) && Near(t.turnRate, 1.4f) && Near(t.maxLead, 1.2f) && Near(t.nearRadius, 8.f) && Near(t.pivotNear, 2.f) && t.reissue == 6u && t.pivotReissue == 2u,
+		  "table: the tank's control law is the one measured");
+	Check(t.freeFire, "table: the tank has free fire");
+	Check(!rows[CE_PLAYUNIT_CLASS_JEEP].law.freeFire, "table: the jeep has no free fire");
+	// A row of a test's own, that fits any shape, must not loosen what every class refuses.
+	const CePlayUnitClassRow any = {"any", true, AnyShape, rows[CE_PLAYUNIT_CLASS_TANK].law};
+	const CePlayUnitClassRow extra[3] = {rows[CE_PLAYUNIT_CLASS_TANK], any, any};		// the third is beyond the two rows the table has
+	{ CePlayUnitFacts f = Tank(); f.vehicle = false; Check(CePlayUnitClassIn(extra, 2, f) == 1, "table: a row with a wider shape takes what its shape takes"); }
+	for (int row = 0; row < 2; ++row)
+	{
+		CePlayUnitFacts base = Tank();
+		Check(CePlayUnitEligibleIn(extra, 2, row, base), "table: the plain tank fits each row");
+		{ CePlayUnitFacts f = base; f.friendly = false; Check(!CePlayUnitEligibleIn(extra, 2, row, f), "table: an enemy is refused by every row"); }
+		{ CePlayUnitFacts f = base; f.alive = false; Check(!CePlayUnitEligibleIn(extra, 2, row, f), "table: a dying unit is refused by every row"); }
+		{ CePlayUnitFacts f = base; f.scripted = true; Check(!CePlayUnitEligibleIn(extra, 2, row, f), "table: a scripted unit is refused by every row"); }
+		{ CePlayUnitFacts f = base; f.objective = true; Check(!CePlayUnitEligibleIn(extra, 2, row, f), "table: an objective is refused by every row"); }
+		{ CePlayUnitFacts f = base; f.deploys = true; Check(!CePlayUnitEligibleIn(extra, 2, row, f), "table: a deploying unit is refused by every row"); }
+		{ CePlayUnitFacts f = base; f.normalSquad = false; Check(!CePlayUnitEligibleIn(extra, 2, row, f), "table: a unit outside a normal squad is refused by every row"); }
+		{ CePlayUnitFacts f = base; f.spawned = true; Check(!CePlayUnitEligibleIn(extra, 2, row, f), "table: a spawned unit is refused by every row"); }
+		{ CePlayUnitFacts f = base; f.armed = false; Check(!CePlayUnitEligibleIn(extra, 2, row, f), "table: an unarmed unit is refused by every row"); }
+	}
+	CePlayUnitClassRow off[1] = {rows[CE_PLAYUNIT_CLASS_TANK]};
+	off[0].enabled = false;
+	Check(!CePlayUnitEligibleIn(off, 1, 0, Tank()), "table: a row that is off takes nothing");
+	off[0].enabled = true;
+	off[0].shape = NoShape;
+	Check(!CePlayUnitEligibleIn(off, 1, 0, Tank()), "table: a shape that fits nothing takes nothing");
+	off[0].shape = NULL;
+	Check(!CePlayUnitEligibleIn(off, 1, 0, Tank()), "table: a row with no shape takes nothing");
+	Check(!CePlayUnitEligibleIn(extra, 2, 2, Tank()) && !CePlayUnitEligibleIn(extra, 2, -1, Tank()) && !CePlayUnitEligibleIn(NULL, 0, 0, Tank()), "table: a row that is not there takes nothing");
+}
+
+// ---- free fire ----
+static float Flat(void *, float, float) { return 0.f; }
+static float Slope(void *, float x, float) { return -0.1f * x; }		// the ground rises (z falls) as x grows
+static float Ridge(void *, float x, float) { return (x > 4.f && x < 6.f) ? -20.f : 0.f; }
+static float Bump(void *, float x, float) { return (x > 4.f && x < 6.f) ? -0.8f : 0.f; }
+
+static void FreeFire()
+{
+	const CePlayUnitGate base = Baseline();
+	Check(CePlayUnitFreeFireAllowed(base, true, false), "free fire: the plain game with the option on is allowed");
+	Check(!CePlayUnitFreeFireAllowed(base, false, false), "free fire: a class without it is refused");
+	Check(!CePlayUnitFreeFireAllowed(base, true, true), "free fire: open Commander view is refused");
+	{ CePlayUnitGate g = base; g.proof = true; Check(!CePlayUnitFreeFireAllowed(g, true, false), "free fire: the proof switch does not lift the replay fences for it"); }
+	{ CePlayUnitGate g = base; g.optionOn = false; Check(!CePlayUnitFreeFireAllowed(g, true, false), "free fire: the option off is refused"); }
+	{ CePlayUnitGate g = base; g.ceLayer = false; Check(!CePlayUnitFreeFireAllowed(g, true, false), "free fire: no CE layer (a tape, probes or a virtual clock) is refused"); }
+	{ CePlayUnitGate g = base; g.recording = true; Check(!CePlayUnitFreeFireAllowed(g, true, false), "free fire: a recording is refused"); }
+	{ CePlayUnitGate g = base; g.fencedEnv = true; Check(!CePlayUnitFreeFireAllowed(g, true, false), "free fire: a fenced variable is refused"); }
+	{ CePlayUnitGate g = base; g.networkBoot = true; Check(!CePlayUnitFreeFireAllowed(g, true, false), "free fire: a network session is refused"); }
+	{ CePlayUnitGate g = base; g.players = 2; Check(!CePlayUnitFreeFireAllowed(g, true, false), "free fire: a second player is refused"); }
+
+	const float down[3] = {0.70710678f, 0.f, 0.70710678f}, eye[3] = {0.f, 0.f, -10.f};
+	float hit[3] = {0.f, 0.f, 0.f};
+	Check(CePlayUnitViewGround(eye, down, 400.f, 1.5f, Flat, NULL, hit) && Near(hit[0], 10.f, 0.01f) && Near(hit[1], 0.f, 0.01f) && Near(hit[2], 0.f, 0.01f), "view: the ray reaches flat ground where the geometry says");
+	Check(CePlayUnitViewGround(eye, down, 400.f, 1.5f, Slope, NULL, hit) && Near(hit[0], 10.f / 1.1f, 0.01f) && Near(hit[2], -0.1f * hit[0], 0.01f), "view: the ray reaches rising ground where the geometry says");
+	{ const float up[3] = {0.70710678f, 0.f, -0.70710678f}; Check(!CePlayUnitViewGround(eye, up, 400.f, 1.5f, Flat, NULL, hit), "view: looking at the sky gives no point"); }
+	{ const float level[3] = {1.f, 0.f, 0.f}; Check(!CePlayUnitViewGround(eye, level, 400.f, 1.5f, Flat, NULL, hit), "view: a level look gives no point"); }
+	Check(!CePlayUnitViewGround(eye, down, 5.f, 1.5f, Flat, NULL, hit), "view: ground beyond the reach gives no point");
+	{ const float under[3] = {0.f, 0.f, 2.f}; Check(!CePlayUnitViewGround(under, down, 400.f, 1.5f, Flat, NULL, hit), "view: an eye under the ground gives no point"); }
+	{ const float bad[3] = {NAN, 0.f, 1.f}; Check(!CePlayUnitViewGround(eye, bad, 400.f, 1.5f, Flat, NULL, hit), "view: a direction that is not a number gives no point"); }
+	Check(!CePlayUnitViewGround(eye, down, 400.f, 0.f, Flat, NULL, hit) && !CePlayUnitViewGround(eye, down, 0.f, 1.5f, Flat, NULL, hit) && !CePlayUnitViewGround(eye, down, 400.f, 1.5f, NULL, NULL, hit), "view: no step, no reach or no map gives no point");
+	Check(CePlayUnitViewGround(eye, down, 400.f, 40.f, Flat, NULL, hit) && Near(hit[0], 10.f, 0.01f), "view: a coarse search is narrowed to the same point");
+
+	const float from[3] = {0.f, 0.f, 0.f}, to[3] = {30.f, 40.f, 0.f};
+	float c[3];
+	Check(CePlayUnitRange(from, to, 5.f, 100.f, c) == CE_PLAYUNIT_RANGE_OK && Near(c[0], 30.f) && Near(c[1], 40.f), "range: a point within reach is kept");
+	Check(CePlayUnitRange(from, to, 5.f, 25.f, c) == CE_PLAYUNIT_RANGE_TOO_FAR && Near(c[0], 15.f) && Near(c[1], 20.f) && Near(c[2], 0.f), "range: a far point is clamped to the weapon's range on the same line");
+	Check(CePlayUnitRange(from, to, 60.f, 100.f, c) == CE_PLAYUNIT_RANGE_TOO_NEAR && Near(c[0], 36.f) && Near(c[1], 48.f), "range: a near point is clamped to the weapon's minimum on the same line");
+	Check(CePlayUnitRange(from, to, 50.f, 50.f, c) == CE_PLAYUNIT_RANGE_OK, "range: the limits are in reach");
+	Check(CePlayUnitRange(from, to, 5.f, 0.f, c) == CE_PLAYUNIT_RANGE_NONE && CePlayUnitRange(from, to, 0.f, 0.f, c) == CE_PLAYUNIT_RANGE_NONE && CePlayUnitRange(from, to, 5.f, NAN, c) == CE_PLAYUNIT_RANGE_NONE, "range: no positive range is none");
+	Check(CePlayUnitRange(from, to, 90.f, 80.f, c) == CE_PLAYUNIT_RANGE_NONE, "range: a minimum above the maximum is none");
+	Check(CePlayUnitRange(from, from, 0.f, 80.f, c) == CE_PLAYUNIT_RANGE_NONE, "range: the unit's own place has no direction");
+
+	const float muzzle[3] = {0.f, 0.f, -1.f}, mark[3] = {10.f, 0.f, 0.f};
+	Check(CePlayUnitLineClear(muzzle, mark, 24, 0.6f, Flat, NULL), "line: flat ground is open");
+	Check(!CePlayUnitLineClear(muzzle, mark, 24, 0.6f, Ridge, NULL), "line: a ridge across the line blocks it");
+	Check(CePlayUnitLineClear(muzzle, mark, 24, 0.6f, Bump, NULL), "line: a rise within the tolerance does not");
+	Check(!CePlayUnitLineClear(muzzle, mark, 24, 0.1f, Bump, NULL), "line: a rise past a smaller tolerance does");
+	Check(!CePlayUnitLineClear(muzzle, mark, 24, 0.6f, NULL, NULL), "line: no map is not open");
+
+	// the reticle
+	const int R = CE_PLAYUNIT_RANGE_OK;
+	Check(CePlayUnitFireStateOf(false, true, R, true, true, false, false) == CE_PLAYUNIT_FIRE_NONE, "state: no weapon says nothing");
+	Check(CePlayUnitFireStateOf(true, false, R, true, true, false, false) == CE_PLAYUNIT_FIRE_OUT_OF_RANGE, "state: no ground under the view is out of range");
+	Check(CePlayUnitFireStateOf(true, true, CE_PLAYUNIT_RANGE_TOO_FAR, true, true, false, false) == CE_PLAYUNIT_FIRE_READY, "state: a far point is fired at the weapon's reach");
+	Check(CePlayUnitFireStateOf(true, true, CE_PLAYUNIT_RANGE_TOO_NEAR, true, true, false, false) == CE_PLAYUNIT_FIRE_OUT_OF_RANGE, "state: a near point is out of range");
+	Check(CePlayUnitFireStateOf(true, true, CE_PLAYUNIT_RANGE_NONE, true, true, false, false) == CE_PLAYUNIT_FIRE_OUT_OF_RANGE, "state: no range is out of range");
+	Check(CePlayUnitFireStateOf(true, true, R, false, true, false, false) == CE_PLAYUNIT_FIRE_BLOCKED, "state: a blocked line says so");
+	Check(CePlayUnitFireStateOf(true, true, CE_PLAYUNIT_RANGE_TOO_NEAR, false, true, false, false) == CE_PLAYUNIT_FIRE_OUT_OF_RANGE, "state: range comes before the line");
+	Check(CePlayUnitFireStateOf(true, true, R, true, true, false, true) == CE_PLAYUNIT_FIRE_ARMING, "state: arming");
+	Check(CePlayUnitFireStateOf(true, true, R, true, true, true, true) == CE_PLAYUNIT_FIRE_READY, "state: armed and ready is ready");
+	Check(CePlayUnitFireStateOf(true, true, R, true, false, false, false) == CE_PLAYUNIT_FIRE_RECOVERING, "state: between shots is recovering");
+	Check(CePlayUnitFireStateOf(true, true, R, true, false, false, true) == CE_PLAYUNIT_FIRE_ARMING, "state: arming comes before recovering");
+	Check(CePlayUnitFireStateOf(true, true, R, true, true, false, false) == CE_PLAYUNIT_FIRE_READY, "state: nothing in the way is ready");
+
+	for (int state = CE_PLAYUNIT_FIRE_NONE; state <= CE_PLAYUNIT_FIRE_BLOCKED; ++state)
+	{
+		const bool native = state == CE_PLAYUNIT_FIRE_READY || state == CE_PLAYUNIT_FIRE_ARMING || state == CE_PLAYUNIT_FIRE_RECOVERING;
+		Check(CePlayUnitFireActs(true, state) == native, "fire: held fire gives the native calls only where there is something to ask");
+		Check(!CePlayUnitFireActs(false, state), "fire: no held input, no native calls");
+		Check(CePlayUnitFireAims(true, state) == (state != CE_PLAYUNIT_FIRE_NONE), "fire: held fire turns the gun wherever there is a weapon");
+		Check(!CePlayUnitFireAims(false, state), "fire: no held input, the gun is not turned");
+	}
+}
+
+// Taking a unit by key: why a unit is refused, where the view looks, which unit a press means, and the key's edges.
+static bool NoRowShape(const CePlayUnitFacts &) { return false; }
+
+static void Taking()
+{
+	// Every combination of the facts: a unit is refused exactly when no class takes it, and the first question that applies is the one asked.
+	int combos = 0, agree = 0, order = 0;
+	for (unsigned bits = 0; bits < (1u << 10); ++bits)
+	{
+		CePlayUnitFacts f;
+		memset(&f, 0, sizeof(f));
+		f.friendly = bits & 1; f.alive = bits & 2; f.vehicle = bits & 4; f.groundUnit = bits & 8; f.scripted = bits & 16;
+		f.objective = bits & 32; f.deploys = bits & 64; f.normalSquad = bits & 128; f.spawned = bits & 256; f.armed = bits & 512;
+		++combos;
+		const int r = CePlayUnitRefusalFor(f);
+		if ((r == CE_PLAYUNIT_TAKE_OK) == (CePlayUnitClassFor(f) >= 0)) ++agree;
+		int expect = CE_PLAYUNIT_TAKE_OK;
+		if (CePlayUnitClassFor(f) < 0)
+		{
+			if (!f.friendly) expect = CE_PLAYUNIT_REFUSE_ENEMY;
+			else if (!f.alive) expect = CE_PLAYUNIT_REFUSE_DYING;
+			else if (f.scripted || f.objective) expect = CE_PLAYUNIT_REFUSE_MISSION;
+			else if (f.deploys) expect = CE_PLAYUNIT_REFUSE_DEPLOYS;
+			else if (!(f.vehicle && f.groundUnit)) expect = CE_PLAYUNIT_REFUSE_KIND;
+			else if (!f.normalSquad || f.spawned) expect = CE_PLAYUNIT_REFUSE_SQUAD;
+			else expect = CE_PLAYUNIT_REFUSE_UNARMED;
+		}
+		if (r == expect) ++order;
+	}
+	Check(combos == 1024 && agree == combos, "refusal: refused exactly when no class takes the unit");
+	Check(order == combos, "refusal: the first question that applies is the one asked");
+	{ CePlayUnitFacts f = Tank(); f.vehicle = false; f.normalSquad = false; f.family = CE_PLAYUNIT_FAMILY_INFANTRY;
+	  Check(CePlayUnitRefusalFor(f) == CE_PLAYUNIT_REFUSE_KIND, "refusal: a soldier is refused for what it is, not for its squad"); }
+	{ CePlayUnitFacts f = Tank(); f.friendly = false; f.deploys = true; Check(CePlayUnitRefusalFor(f) == CE_PLAYUNIT_REFUSE_ENEMY, "refusal: an enemy is an enemy before anything else"); }
+	{ CePlayUnitFacts f = Tank(); f.objective = true; Check(CePlayUnitRefusalFor(f) == CE_PLAYUNIT_REFUSE_MISSION, "refusal: an objective belongs to the mission"); }
+	{ CePlayUnitFacts f = Tank(); f.spawned = true; Check(CePlayUnitRefusalFor(f) == CE_PLAYUNIT_REFUSE_SQUAD, "refusal: a squad that follows its lead keeps its unit"); }
+	// A table with no row on refuses every unit for its kind once the common questions pass.
+	{
+		const CePlayUnitClassRow none[1] = {{"none", true, NoRowShape, CePlayUnitClasses()[0].law}};
+		Check(CePlayUnitRefusalIn(none, 1, Tank()) == CE_PLAYUNIT_REFUSE_KIND, "refusal: a shape no row has is refused for its kind");
+	}
+	// Every refusal has a sentence that ends with a full stop and uses only what the game's small face draws; every family's kind sentence differs from the plain one.
+	bool sentences = true, kinds = true;
+	for (int r = CE_PLAYUNIT_REFUSE_ENEMY; r < CE_PLAYUNIT_REFUSE_COUNT; ++r)
+		for (int fam = 0; fam < CE_PLAYUNIT_FAMILY_COUNT; ++fam)
+		{
+			const char *t = CePlayUnitRefusalSentence(r, fam);
+			const size_t n = t ? strlen(t) : 0;
+			if (!n || t[n - 1] != '.' || n > 60 || strpbrk(t, "$@[\\]^_{|}~`")) sentences = false;
+		}
+	for (int fam = CE_PLAYUNIT_FAMILY_GROUND_VEHICLE; fam < CE_PLAYUNIT_FAMILY_COUNT; ++fam)
+		if (!strcmp(CePlayUnitRefusalSentence(CE_PLAYUNIT_REFUSE_KIND, fam), CePlayUnitRefusalSentence(CE_PLAYUNIT_REFUSE_KIND, CE_PLAYUNIT_FAMILY_OTHER))) kinds = false;
+	Check(sentences, "refusal: each sentence ends with a full stop, fits and uses only what the small face draws");
+	Check(kinds, "refusal: each kind of unit is named in its sentence");
+	Check(!strcmp(CePlayUnitRefusalSentence(CE_PLAYUNIT_REFUSE_KIND, CE_PLAYUNIT_FAMILY_INFANTRY), "This soldier cannot be taken."), "refusal: only the unsupported soldier is refused");
+	Check(!strcmp(CePlayUnitRefusalName(CE_PLAYUNIT_TAKE_OK), "ok") && !strcmp(CePlayUnitRefusalName(CE_PLAYUNIT_REFUSE_UNARMED), "unarmed") && !strcmp(CePlayUnitRefusalName(99), "?"), "refusal: the census names");
+
+	// The picture: a 640x480 frame, places in its pixels.
+	float score = -2.f;
+	const float reach = 320.f, W = 640.f, H = 480.f;
+	const CePlayUnitScreenPlace middle = {320, 240, 0, 50, 50}, aside = {352, 240, 0, 50, 50}, big = {352, 240, 40, 50, 50}, sized = {352, 240, 16, 50, 50};
+	const CePlayUnitScreenPlace left = {-1, 240, 0, 50, 50}, right = {641, 240, 0, 50, 50}, top = {320, -1, 0, 50, 50}, bottom = {320, 481, 0, 50, 50};
+	const CePlayUnitScreenPlace corner = {640, 480, 0, 50, 50}, behind = {320, 240, 0, -5, 50}, nearPlane = {320, 240, 0, 0.5f, 0.5f}, far = {320, 240, 0, 400, 400};
+	const CePlayUnitScreenPlace review = {391, 243, 9, 15, 15.6f};		// the unit a review found taken: in the picture, 71 pixels right of the reticle
+	Check(CePlayUnitAtScreen(middle, W, H, reach, &score) && Near(score, 0.f), "sight: a unit at the middle of the picture scores nothing");
+	Check(CePlayUnitAtScreen(aside, W, H, reach, &score) && Near(score, 0.1f), "sight: the distance from the middle in half-widths of the 4:3 frame");
+	Check(CePlayUnitAtScreen(sized, W, H, reach, &score) && Near(score, 0.05f), "sight: the unit's size brings its edge nearer the middle");
+	Check(CePlayUnitAtScreen(big, W, H, reach, &score) && Near(score, 0.f), "sight: a unit that covers the middle scores nothing");
+	Check(!CePlayUnitAtScreen(left, W, H, reach, &score) && !CePlayUnitAtScreen(right, W, H, reach, &score) && CePlayUnitAtScreen(corner, W, H, reach, &score), "sight: the frame's side edges");
+	Check(!CePlayUnitAtScreen(top, W, H, reach, &score) && !CePlayUnitAtScreen(bottom, W, H, reach, &score), "sight: the frame's top and bottom edges");
+	Check(!CePlayUnitAtScreen(behind, W, H, reach, &score), "sight: behind the eye is out of sight");
+	Check(!CePlayUnitAtScreen(far, W, H, reach, &score), "sight: beyond reach is out of sight");
+	Check(!CePlayUnitAtScreen(nearPlane, W, H, reach, &score), "sight: nearer than the near plane is out of sight");
+	Check(CePlayUnitAtScreen(review, W, H, reach, &score) && score > kCePlayUnitSightReticle, "sight: a near unit beside the line is not at the reticle");
+	{
+		// a wide frame keeps the 4:3 frame's scale: 32 pixels at 480 high is a tenth of its half-width whatever the width
+		const CePlayUnitScreenPlace wide = {544, 240, 0, 50, 50};
+		Check(CePlayUnitAtScreen(wide, 1024.f, 480.f, reach, &score) && Near(score, 0.1f), "sight: a wide screen is measured in the 4:3 frame's half-widths");
+		const CePlayUnitScreenPlace tall = {240, 432, 0, 50, 50};
+		Check(CePlayUnitAtScreen(tall, 480.f, 800.f, reach, &score) && Near(score, 32.f / 240.f), "sight: a tall screen is measured across its width");
+		const CePlayUnitScreenPlace nanv = {NAN, 240, 0, 50, 50};
+		Check(!CePlayUnitAtScreen(middle, 0.f, H, reach, &score) && !CePlayUnitAtScreen(nanv, W, H, reach, &score), "sight: no frame or a number that is not one sees nothing");
+	}
+
+	// A switch's wait: a unit found and ready is taken; one that is gone or no longer takeable gives up at once; one not ready waits, and the wait ends.
+	{
+		unsigned wait = 0;
+		Check(CePlayUnitSwitchStep(&wait, true, true, true) == CE_PLAYUNIT_SWITCH_IDLE, "switch: no wait, no switch");
+		wait = 3;
+		Check(CePlayUnitSwitchStep(&wait, true, true, true) == CE_PLAYUNIT_SWITCH_TAKE && wait == 0, "switch: found and ready is taken");
+		wait = 3;
+		Check(CePlayUnitSwitchStep(&wait, false, false, false) == CE_PLAYUNIT_SWITCH_GIVE_UP && wait == 0, "switch: a unit that is gone gives up at once");
+		wait = 3;
+		Check(CePlayUnitSwitchStep(&wait, true, true, false) == CE_PLAYUNIT_SWITCH_GIVE_UP && wait == 0, "switch: a unit no longer takeable gives up at once");
+		wait = kCePlayUnitSwitchWait;
+		unsigned steps = 0;
+		int last = CE_PLAYUNIT_SWITCH_WAIT;
+		while (last == CE_PLAYUNIT_SWITCH_WAIT && steps < 1000) { last = CePlayUnitSwitchStep(&wait, true, false, false); ++steps; }
+		Check(last == CE_PLAYUNIT_SWITCH_GIVE_UP && steps == kCePlayUnitSwitchWait && wait == 0, "switch: a unit never ready gives up when the wait is over");
+		wait = 2;
+		Check(CePlayUnitSwitchStep(&wait, true, false, true) == CE_PLAYUNIT_SWITCH_WAIT && CePlayUnitSwitchStep(&wait, true, true, true) == CE_PLAYUNIT_SWITCH_TAKE, "switch: a wait that becomes ready takes");
+	}
+
+	// Which unit a press means.
+	{
+		const CePlayUnitSighted s[4] = {{0.05f, CE_PLAYUNIT_REFUSE_KIND}, {0.10f, CE_PLAYUNIT_TAKE_OK}, {0.08f, CE_PLAYUNIT_TAKE_OK}, {-1.f, CE_PLAYUNIT_TAKE_OK}};
+		int why = -5;
+		Check(CePlayUnitChoose(s, 4, &why) == 2 && why == CE_PLAYUNIT_TAKE_OK, "choose: the takeable unit nearest the middle, over a nearer one that is refused");
+	}
+	{
+		const CePlayUnitSighted s[3] = {{0.09f, CE_PLAYUNIT_REFUSE_UNARMED}, {0.02f, CE_PLAYUNIT_REFUSE_KIND}, {-1.f, CE_PLAYUNIT_TAKE_OK}};
+		int why = -5;
+		Check(CePlayUnitChoose(s, 3, &why) == -1 && why == CE_PLAYUNIT_REFUSE_KIND, "choose: with none takeable, the reason of the unit nearest the middle");
+	}
+	{
+		const CePlayUnitSighted s[2] = {{-1.f, CE_PLAYUNIT_TAKE_OK}, {-1.f, CE_PLAYUNIT_REFUSE_KIND}};
+		int why = -5;
+		Check(CePlayUnitChoose(s, 2, &why) == -1 && why == CE_PLAYUNIT_REFUSE_COUNT && CePlayUnitChoose(NULL, 0, &why) == -1 && why == CE_PLAYUNIT_REFUSE_COUNT, "choose: nothing in sight says so");
+	}
+
+	// The key's edges: one take per press, none for a held key, none while a press may not count, and none when that ends with the key still held.
+	{
+		CePlayUnitKey k = {false};
+		const bool a = CePlayUnitPressed(&k, true, true), b = CePlayUnitPressed(&k, true, true), c = CePlayUnitPressed(&k, false, true), d = CePlayUnitPressed(&k, true, true);
+		Check(a && !b && !c && d, "key: one take for each press, none while it is held");
+		CePlayUnitKey m = {false};
+		const bool e = CePlayUnitPressed(&m, true, false), f = CePlayUnitPressed(&m, true, true), g = CePlayUnitPressed(&m, false, true), h = CePlayUnitPressed(&m, true, true);
+		Check(!e && !f && !g && h, "key: a press made while it may not count is not taken later");
+	}
+	Check(kCePlayUnitSightReach > 0.f && kCePlayUnitSightReticle > 0.f && kCePlayUnitSightReticle < 0.3f && kCePlayUnitSwitchWait > 0u, "sight: the reach, the reticle and the switch's wait are sane");
+}
+
+// The look camera (ce_playunit_look.h): its axes, where it hangs, and how the mouse turns it.
+static void Look()
+{
+	const CePlayUnitLookLaw &law = CePlayUnitTankLook();
+	float r[3], f[3], d[3];
+	CePlayUnitLookAxes(0.f, 0.f, r, f, d);
+	Check(Near(r[0], 1.f) && Near(f[1], 1.f) && Near(d[2], 1.f), "look: at rest the axes are the world's (right x, forward y, down z)");
+	CePlayUnitLookAxes(1.5707963f, 0.f, r, f, d);
+	Check(Near(f[0], -1.f) && Near(f[1], 0.f) && Near(r[1], 1.f), "look: a quarter turn of yaw faces -x, as the game's yaw turns its forward axis");
+	CePlayUnitLookAxes(0.f, 0.3f, r, f, d);
+	Check(f[2] > 0.25f && Near(f[1], cosf(0.3f)), "look: a positive pitch looks down (the world's z is down)");
+	bool unit = true;
+	for (float y = -3.f; y <= 3.f; y += 0.7f)
+		for (float pt = -0.5f; pt <= 0.6f; pt += 0.25f)
+		{
+			CePlayUnitLookAxes(y, pt, r, f, d);
+			const float rr = r[0] * r[0] + r[1] * r[1] + r[2] * r[2], ff = f[0] * f[0] + f[1] * f[1] + f[2] * f[2], dd = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+			const float rf = r[0] * f[0] + r[1] * f[1] + r[2] * f[2], rd = r[0] * d[0] + r[1] * d[1] + r[2] * d[2], fd = f[0] * d[0] + f[1] * d[1] + f[2] * d[2];
+			if (!Near(rr, 1.f) || !Near(ff, 1.f) || !Near(dd, 1.f) || !Near(rf, 0.f) || !Near(rd, 0.f) || !Near(fd, 0.f) || r[2] != 0.f) unit = false;
+		}
+	Check(unit, "look: the axes are of unit length, square to each other, and the right axis stays level");
+	const float place[3] = {10.f, 20.f, -5.f};
+	float eye[3];
+	CePlayUnitLookEye(place, 0.f, 0.f, law, eye);
+	Check(Near(eye[0], 10.f) && Near(eye[1], 20.f - law.distance) && Near(eye[2], -5.f - law.lift), "look: the eye is behind the pivot by the distance, the pivot above the place by the lift");
+	CePlayUnitLookEye(place, 0.f, 0.4f, law, eye);
+	Check(eye[2] < -5.f - law.lift, "look: looking down raises the eye behind the unit");
+	// the pivot is on the look's line: the eye plus the forward axis times the distance is the pivot
+	CePlayUnitLookAxes(0.8f, 0.2f, r, f, d);
+	CePlayUnitLookEye(place, 0.8f, 0.2f, law, eye);
+	Check(Near(eye[0] + f[0] * law.distance, 10.f) && Near(eye[1] + f[1] * law.distance, 20.f) && Near(eye[2] + f[2] * law.distance, -5.f - law.lift), "look: the reticle's line passes through the pivot");
+	float yaw = 0.f, pitch = 0.f;
+	CePlayUnitLookTurn(&yaw, &pitch, 100.f, 0.f, law);
+	CePlayUnitLookAxes(yaw, pitch, r, f, d);
+	Check(f[0] > 0.2f && Near(yaw, -100.f * law.perCount), "look: the mouse to the right turns the look right (toward +x from +y)");
+	yaw = 0.f; pitch = 0.f;
+	CePlayUnitLookTurn(&yaw, &pitch, 0.f, 40.f, law);
+	Check(pitch > 0.f && Near(pitch, 40.f * law.perCount), "look: the mouse moved down tilts the look down");
+	CePlayUnitLookTurn(&yaw, &pitch, 0.f, 100000.f, law);
+	Check(Near(pitch, law.pitchDown), "look: the tilt down stops at its limit");
+	CePlayUnitLookTurn(&yaw, &pitch, 0.f, -100000.f, law);
+	Check(Near(pitch, law.pitchUp), "look: the tilt up stops at its limit");
+	yaw = 3.1f; pitch = 0.f;
+	CePlayUnitLookTurn(&yaw, &pitch, -100.f, 0.f, law);
+	Check(yaw <= 3.1415927f && yaw >= -3.1415927f && Near(CePlayUnitLookWrap(3.1f + 100.f * law.perCount), yaw), "look: the yaw stays within a turn");
+	yaw = 0.5f; pitch = 0.1f;
+	CePlayUnitLookTurn(&yaw, &pitch, NAN, 3.f, law);
+	Check(Near(yaw, 0.5f) && Near(pitch, 0.1f), "look: a movement that is not a number turns nothing");
+	Check(Near(CePlayUnitLookYawOf(0.f, 1.f), 0.f) && Near(CePlayUnitLookYawOf(-1.f, 0.f), 1.5707963f) && Near(CePlayUnitLookYawOf(1.f, 0.f), -1.5707963f), "look: the yaw of a heading");
+	{
+		float ry[3], ff[3], dd[3];
+		const float hx = 0.6f, hy = -0.8f;
+		CePlayUnitLookAxes(CePlayUnitLookYawOf(hx, hy), 0.f, ry, ff, dd);
+		Check(Near(ff[0], hx) && Near(ff[1], hy), "look: a take looks along the unit's heading");
+	}
+	Check(law.distance > 4.f && law.lift > 0.f && law.pitchUp < 0.f && law.pitchDown > 0.f && law.perCount > 0.f, "look: the tank's law is sane");
+	// at the lowest look the point under the reticle on flat ground is beyond the hull and the gun's least range (the round-2 review: the reticle sat on the driven tank)
+	Check(law.lift / tanf(law.pitchDown) >= kCePlayUnitLookAimFloor, "look: at the lowest look the reticle is beyond the driven unit");
+	{
+		// the same, measured: the ray from the eye along the look at the lowest tilt meets flat ground (z = 0, the unit's place) this far ahead of the place
+		const float at[3] = {0.f, 0.f, 0.f};
+		float e[3], rr[3], fw[3], dw[3];
+		CePlayUnitLookEye(at, 0.f, law.pitchDown, law, e);
+		CePlayUnitLookAxes(0.f, law.pitchDown, rr, fw, dw);
+		const float k = -e[2] / fw[2];
+		Check(fw[2] > 0.f && e[1] + fw[1] * k >= kCePlayUnitLookAimFloor - 0.01f, "look: the lowest look's ground point, traced, is beyond the floor");
+	}
+	yaw = 0.f; pitch = 0.f;
+	CePlayUnitLookStick(&yaw, &pitch, 1.f, 0.f, 1.f, law);
+	Check(Near(yaw, -law.stickRate, 1e-3f) && Near(pitch, 0.f), "look: a stick held right for a second turns the look right at the stick's rate");
+	yaw = 0.f; pitch = 0.f;
+	CePlayUnitLookStick(&yaw, &pitch, 0.f, 0.5f, 0.1f, law);
+	Check(Near(pitch, 0.5f * law.stickRate * 0.1f, 1e-4f) && Near(yaw, 0.f), "look: a stick pushed down tilts the look down");
+	CePlayUnitLookStick(&yaw, &pitch, 0.f, 9.f, 100.f, law);
+	Check(Near(pitch, law.pitchDown), "look: a stick tilts no further than the mouse may");
+	yaw = 0.2f; pitch = 0.1f;
+	CePlayUnitLookStick(&yaw, &pitch, NAN, 1.f, 0.1f, law);
+	CePlayUnitLookStick(&yaw, &pitch, 1.f, 1.f, -0.1f, law);
+	Check(Near(yaw, 0.2f) && Near(pitch, 0.1f), "look: a stick that is not a number, or no time, turns nothing");
+}
+
+// The direct law (CePlayUnitTankMotionOf, CePlayUnitTankGuard) and the notice that is replaced while shown.
+static void Motion()
+{
+	const CePlayUnitLaw &law = CePlayUnitClasses()[CE_PLAYUNIT_CLASS_TANK].law;
+	const float y0 = 0.4f;
+	CePlayUnitTankMotion m = CePlayUnitTankMotionOf(y0, 1.f, 0.f, 0.f, law.steerLead, law.reverseShare, law.turnSlow);
+	Check(Near(m.share, 1.f) && Near(m.yaw, y0), "drive: W drives forward at the top speed, straight on");
+	m = CePlayUnitTankMotionOf(y0, 0.5f, 0.f, 0.f, law.steerLead, law.reverseShare, law.turnSlow);
+	Check(Near(m.share, 0.5f), "drive: half a stick is half the speed");
+	m = CePlayUnitTankMotionOf(y0, 0.f, 1.f, 0.f, law.steerLead, law.reverseShare, law.turnSlow);
+	Check(Near(m.share, -law.reverseShare) && law.reverseShare > 0.f && law.reverseShare <= 1.f && Near(m.yaw, y0), "drive: S backs up, slower than forward");
+	m = CePlayUnitTankMotionOf(y0, 1.f, 1.f, 0.f, law.steerLead, law.reverseShare, law.turnSlow);
+	Check(Near(m.share, 0.f), "drive: W and S together hold still");
+	m = CePlayUnitTankMotionOf(y0, 0.f, 0.f, 0.f, law.steerLead, law.reverseShare, law.turnSlow);
+	Check(Near(m.share, 0.f) && Near(m.yaw, y0), "drive: nothing held, nothing moves");
+	m = CePlayUnitTankMotionOf(y0, 1.f, 0.f, 1.f, law.steerLead, law.reverseShare, law.turnSlow);
+	Check(m.share > 0.5f && Near(m.share, 1.f - law.turnSlow) && Near(m.yaw, y0 - law.steerLead), "drive: W and D steer right while moving, a little slower");
+	m = CePlayUnitTankMotionOf(y0, 1.f, 0.f, -1.f, law.steerLead, law.reverseShare, law.turnSlow);
+	Check(m.share > 0.5f && Near(m.yaw, y0 + law.steerLead), "drive: W and A steer left while moving");
+	m = CePlayUnitTankMotionOf(y0, 0.f, 0.f, 1.f, law.steerLead, law.reverseShare, law.turnSlow);
+	Check(Near(m.share, 0.f) && Near(m.yaw, y0 - law.steerLead), "drive: D alone turns on the spot");
+	m = CePlayUnitTankMotionOf(y0, 0.f, 1.f, 1.f, law.steerLead, law.reverseShare, law.turnSlow);
+	Check(m.share < 0.f && Near(m.yaw, y0 - law.steerLead), "drive: S and D back up turning the hull right");
+	m = CePlayUnitTankMotionOf(3.1f, 1.f, 0.f, -1.f, law.steerLead, law.reverseShare, law.turnSlow);
+	Check(m.yaw > -3.1415927f && m.yaw <= 3.1415927f && Near(m.yaw, CePlayUnitWrap(3.1f + law.steerLead)), "drive: the heading wraps past a half turn");
+	m = CePlayUnitTankMotionOf(y0, NAN, NAN, NAN, law.steerLead, law.reverseShare, law.turnSlow);
+	Check(Near(m.share, 0.f) && Near(m.yaw, y0), "drive: input that is not a number is none");
+	m = CePlayUnitTankMotionOf(y0, 5.f, 0.f, 7.f, law.steerLead, law.reverseShare, law.turnSlow);
+	Check(Near(m.share, 1.f - law.turnSlow) && Near(m.yaw, y0 - law.steerLead), "drive: input past full is full");
+	Check(law.steerLead > 0.1f && law.steerLead < 1.f && law.turnSlow >= 0.f && law.turnSlow < 0.5f, "drive: the tank's direct law is sane");
+	Check(Near(CePlayUnitTankGuard(1.f, true, false, true), 0.f), "guard: forward into a closed cell stops");
+	Check(Near(CePlayUnitTankGuard(-0.6f, true, true, false), 0.f), "guard: reverse into a closed cell stops");
+	Check(Near(CePlayUnitTankGuard(-0.6f, true, false, true), -0.6f), "guard: reverse away from a closed cell ahead goes");
+	Check(Near(CePlayUnitTankGuard(1.f, true, true, false), 1.f), "guard: forward away from a closed cell behind goes");
+	Check(Near(CePlayUnitTankGuard(1.f, false, false, false), 1.f), "guard: a unit already off open ground is not held there");
+	Check(Near(CePlayUnitTankGuard(0.f, true, false, false), 0.f), "guard: standing still is standing still");
+	// the notice: 350 ms of opening (caps and body), a notice of 4000 ms
+	Check(CePlayUnitNoticeAgeOnReplace(0, 0, 350) == 0 && CePlayUnitNoticeAgeOnReplace(4000, 4000, 350) == 0, "notice: with none shown a new one opens from the start");
+	Check(CePlayUnitNoticeAgeOnReplace(120, 4000, 350) == 120, "notice: one opening goes on opening");
+	Check(CePlayUnitNoticeAgeOnReplace(2000, 4000, 350) == 350, "notice: one open stays open");
+	Check(CePlayUnitNoticeAgeOnReplace(3900, 4000, 350) == 100, "notice: one closing opens again from the width it had");
+	{
+		// a press every 250 ms for two seconds: once open, the capsule never shows its opening again
+		unsigned long long age = 0, shown = 0;
+		bool reopened = false, opened = false;
+		for (int ms = 0; ms <= 2000; ms += 50)
+		{
+			if (ms % 250 == 0) { age = CePlayUnitNoticeAgeOnReplace(age, shown, 350); shown = 4000; }
+			if (age >= 350) opened = true;
+			else if (opened) reopened = true;
+			age += 50;
+		}
+		Check(opened && !reopened, "notice: a key pressed again and again keeps the capsule open");
+	}
+}
+
 int main()
 {
+	Look();
+	Motion();
 	Handback();
 	Gate();
 	Eligibility();
 	Angles();
 	Points();
 	Reissue();
+	Table();
+	FreeFire();
+	Taking();
 	printf("checks %d failed %d\n", gChecks, gFailed);
 	return gFailed ? 1 : 0;
 }
@@ -508,13 +916,17 @@ struct FVector { float X,Y,Z; FVector(float x=0,float y=0,float z=0):X(x),Y(y),Z
 struct Orientation { FVector GetColumnY() const { return FVector(1,0,0); } };
 struct Clock { float time; float GetTime() const { return time; } } EVENT_MANAGER;
 unsigned gTick,gLastIssue; float gDesired,gLastAngle,gLastTime; bool gMoving,gHaveTime; FVector gLastPoint;
+struct Unit;
+struct FakeDriveGuide { Unit *GetUnit() { return nullptr; } };
+FakeDriveGuide *gDriveGuide = nullptr;
 struct Unit {
-    unsigned calls=0; float issued=0; std::vector<unsigned> ticks;
+    unsigned calls=0; float issued=0; std::vector<unsigned> ticks; FakeDriveGuide *mGuide=nullptr;
     FVector GetPos() const { return FVector(); }
     Orientation GetOrientation() const { return Orientation(); }
     void GoToPoint(FVector p,int) { ++calls; issued=atan2f(p.Y,p.X); ticks.push_back(gTick); }
 };
 FVector Ground(float x,float y) { return FVector(x,y,0); }
+
 void ResetFixture() {gTick=gLastIssue=0;gDesired=gLastAngle=gLastTime=0;gMoving=gHaveTime=false;gLastPoint=FVector();EVENT_MANAGER.time=0;}
 
 #include "ce_playunit_guide_constants.inc"
@@ -528,7 +940,7 @@ int main() {
   ResetFixture();Unit unit;unsigned stale=0;float largest=0;
   for(unsigned frame=1;frame<=unsigned(hz/2);++frame) {
    ++gTick;EVENT_MANAGER.time=float(frame)/hz;
-   CePlayUnitDrive input={1,0,1,false,false}; Step(&unit,input);
+   CePlayUnitDrive input={1,0,1,false,false,0,0}; Step(&unit,input);
    float gap=fabsf(CePlayUnitWrap(gDesired-unit.issued));
    if(gap>0.05001f)++stale;
    if(gap>largest)largest=gap;
@@ -537,12 +949,12 @@ int main() {
   total+=stale;
  }
  ResetFixture();Unit straight;
- for(unsigned frame=1;frame<=25;++frame) {++gTick;EVENT_MANAGER.time=float(frame)/60;CePlayUnitDrive input={1,0,0,false,false};Step(&straight,input);}
+ for(unsigned frame=1;frame<=25;++frame) {++gTick;EVENT_MANAGER.time=float(frame)/60;CePlayUnitDrive input={1,0,0,false,false,0,0};Step(&straight,input);}
  if(straight.ticks!=std::vector<unsigned>({1,7,13,19,25}))return 3;
- ++gTick;EVENT_MANAGER.time=float(gTick)/60;CePlayUnitDrive stop={0,0,0,false,false};Step(&straight,stop);
+ ++gTick;EVENT_MANAGER.time=float(gTick)/60;CePlayUnitDrive stop={0,0,0,false,false,0,0};Step(&straight,stop);
  unsigned stopped=straight.calls;
  ++gTick;EVENT_MANAGER.time=float(gTick)/60;Step(&straight,stop);if(straight.calls!=stopped)return 4;
- ++gTick;EVENT_MANAGER.time=float(gTick)/60;CePlayUnitDrive restart={1,0,0,false,false};Step(&straight,restart);if(straight.calls!=stopped+1)return 5;
+ ++gTick;EVENT_MANAGER.time=float(gTick)/60;CePlayUnitDrive restart={1,0,0,false,false,0,0};Step(&straight,restart);if(straight.calls!=stopped+1)return 5;
  printf("{\"straight_schedule\":true,\"single_stop\":true,\"restart\":true}\n");
  return total?2:0;
 }

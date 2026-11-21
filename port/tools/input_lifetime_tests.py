@@ -59,7 +59,7 @@ CASES = (
     "menu-click-left", "menu-click-motion", "menu-click-move-away", "menu-click-focus", "menu-click-right", "menu-click-middle",
          "menu-click-hidpi", "menu-click-43-hidpi", "menu-click-geometry-change", "menu-click-active", "menu-click-map", "menu-click-editor", "menu-click-frontend", "menu-click-off",
          "menu-click-record", "menu-click-tape", "menu-click-trap", "menu-click-trap-pass", "menu-click-late-motion", "menu-click-late-motion-off", "menu-click-late-motion-tape", "menu-mouse", "menu-mouse-off", "menu-mouse-active",
-         "window-mode-pointer-still", "window-mode-pointer-moves", "window-mode-pointer-display", "window-mode-pointer-none", "pad-acquire", "pad-reacquire", "pad-properties", "pad-axes", "pad-limit", "pad-quick-tap", "pad-edge-order", "pad-edge-chord", "pad-edge-chord-pulses",
+         "window-mode-pointer-still", "window-mode-pointer-moves", "window-mode-pointer-display", "window-mode-pointer-none", "window-mode-pointer-frontend-click", "pad-acquire", "pad-reacquire", "pad-properties", "pad-axes", "pad-limit", "pad-quick-tap", "pad-edge-order", "pad-edge-chord", "pad-edge-chord-pulses",
          "pad-edge-overflow", "pad-edge-event-overflow", "pad-edge-overflow-focus", "pad-edge-focus", "pad-edge-stale-focus", "pad-edge-hotplug", "pad-edge-hotplug-two",
          "pad-edge-two", "pad-edge-cross-binding", "pad-edge-two-consumers", "pad-edge-repeat-consumer", "pad-edge-split-two",
          "pad-edge-no-poll-held", "pad-edge-duplicate-binding", "pad-edge-no-watch", "pad-edge-missing-focus-event",
@@ -217,6 +217,8 @@ def main():
                 mapping_source += "\n" + found[0] + "\n"
             receipt["controller_mapping_sha256"] = sha(mapping_source.encode())
         driver = driver.replace("GAMEPAD_MAPPING_FUNCTIONS", mapping_source)
+        # The patched originals call the CE hook points: their host no-ops, once, ahead of the extracted code (the shared driver stays as it is).
+        driver = '#include "ce_hooks_host_stubs.h"\n' + driver
         cpp = out / "driver.cpp"
         cpp.write_text(driver)
         receipt["driver_sha256"] = sha(cpp.read_bytes())
@@ -226,7 +228,7 @@ def main():
                    "-fms-extensions", "-fno-autolink", "-w", "-O2" if args.optimize else "-O0",
                    *([] if args.faithful else ['-DCE_VERSION="input-test"']), *(['-DCE_EDGE_TESTS'] if edge_test else []), f"-DPOINTER_HOLD_API={int(pointer_hold)}",
                    f"-I{deps.PORT / 'include'}", f"-I{deps.PORT / 'include/linux'}", f"-I{deps.DATA / 'dxvk-native/usr/include/dxvk'}",
-                   f"-I{deps.PREFIX / 'include'}", f"-I{args.source_root / 'port/platform/common'}",
+                   f"-I{deps.PREFIX / 'include'}", f"-I{args.source_root / 'port/platform/common'}", f"-I{ROOT / 'port/game'}",
                    str(cpp), f"-L{deps.PREFIX / 'lib'}", "-lSDL3", f"-Wl,-rpath,{deps.PREFIX / 'lib'}", "-o", str(binary)]
         result = subprocess.run(command + private_ui_compile_args(args.source_root / "port"), capture_output=True, text=True, timeout=60,
                                 env=dict(os.environ, TMPDIR=str(out)))

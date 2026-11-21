@@ -344,12 +344,55 @@ static void handoffs(const char *dir)
 	CHECK(parse(launchText(now - 100), now, &h, &why) == 0 && !strstr(why, "0011"), "refusal words");
 }
 
+// A completed direct match may rotate into one lobby without exposing its key.
+// No ordinary error outcome, launch record, or mixed campaign may opt in.
+static void rematchReturns()
+{
+    CE_Handoff h = {}, read = {};
+    h.kind = CE_HANDOFF_OUTCOME;
+    h.good = 1;
+    h.created = CE_HandoffNow();
+    snprintf(h.text, sizeof(h.text), "%s", "The network game has ended.");
+    CE_JoinCode route = {9, 0x7f000001u, 30000};
+    char ordinary[CE_HANDOFF_MAX_BYTES+1], bytes[CE_HANDOFF_MAX_BYTES+1];
+    size_t base = CE_HandoffFormat(&h, ordinary, sizeof(ordinary));
+    CHECK(base && !strstr(ordinary, "rematch="), "ordinary outcome changed");
+    CHECK(CE_CodeEncode(&route, h.rematch_code, sizeof(h.rematch_code)), "cannot build test route");
+    h.rematch_role = 1; h.rematch_level = 1;
+    const char *why = NULL;
+    for (int role = 1; role <= 2; ++role) {
+        h.rematch_role = role;
+        size_t n = CE_HandoffFormat(&h, bytes, sizeof(bytes));
+        CHECK(n > base && !memcmp(ordinary, bytes, base), "return changed the ordinary prefix");
+        CHECK(CE_HandoffParse(bytes, n, h.created, &read, &why) && read.rematch_role == role &&
+              read.rematch_level == h.rematch_level && !strcmp(read.rematch_code, h.rematch_code),
+              "ordinary rematch could not round trip for role %d", role);
+        std::string repeated(bytes, n); repeated += bytes+base;
+        CHECK(!parse(repeated, h.created, &read, &why), "duplicate rematch accepted");
+        std::string irregular(bytes, n); irregular.insert(irregular.find(',',base)+1, "0");
+        CHECK(!parse(irregular, h.created, &read, &why), "noncanonical rematch level accepted");
+        CHECK(!CE_HandoffParse(bytes, n-1, h.created, &read, &why), "truncated rematch accepted");
+    }
+    h.good = 0; CHECK(!CE_HandoffFormat(&h, bytes, sizeof(bytes)), "failed session offered a rematch"); h.good = 1;
+    h.kind = CE_HANDOFF_LAUNCH; CHECK(!CE_HandoffFormat(&h, bytes, sizeof(bytes)), "launch offered a rematch");
+    h.kind = CE_HANDOFF_OUTCOME; h.rematch_role = 3;
+    CHECK(!CE_HandoffFormat(&h, bytes, sizeof(bytes)), "third player rematch accepted");
+    h.rematch_role = 1; h.rematch_level = 0;
+    CHECK(!CE_HandoffFormat(&h, bytes, sizeof(bytes)), "missing mission accepted");
+    h.rematch_level = 1; h.campaign.version = 1;
+    CHECK(!CE_HandoffFormat(&h, bytes, sizeof(bytes)), "mixed campaign rematch accepted");
+    h.campaign.version = 0; h.rematch_code[0] = '!';
+    CHECK(!CE_HandoffFormat(&h, bytes, sizeof(bytes)), "malformed invitation accepted");
+    CE_CodeWipe(&h, sizeof(h)); CE_CodeWipe(&read, sizeof(read)); CE_CodeWipe(bytes, sizeof(bytes));
+}
+
 int main(int argc, char **argv)
 {
 	if (argc < 2) { fprintf(stderr, "usage: driver SCRATCH\n"); return 2; }
 	codes();
 	secrets();
 	handoffs(argv[1]);
+    rematchReturns();
 	if (failures) { fprintf(stderr, "%d failure(s)\n", failures); return 1; }
 	printf("PASS\n");
 	return 0;

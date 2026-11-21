@@ -1,3 +1,5 @@
+#include "ce_hud_reservation.h"
+#include "ce_commander_transition.h"
 // SPDX-FileCopyrightText: Onslaught CE contributors
 // SPDX-License-Identifier: GPL-3.0-only
 
@@ -270,6 +272,7 @@ int main() {
 
 #include "ce_commander_camera.h"
 #include "ce_photo.h"
+#include <cstdio>
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -284,12 +287,45 @@ int main() {
 using WORD = unsigned short;
 using DWORD = unsigned long;
 using SINT = int;
-enum {
-    DIK_A = 1, DIK_D, DIK_W, DIK_S, DIK_Q, DIK_E, DIK_R, DIK_F,
-    DIK_UP, DIK_DOWN, DIK_ESCAPE, DIK_M, DIK_V, DIK_LEFT, DIK_RIGHT,
-    DIK_TAB, DIK_LSHIFT, DIK_RSHIFT, DIK_C, DIK_H, DIK_X, DIK_NEXT, DIK_PRIOR,
-    KEY_EVENT_UP = 41, KEY_EVENT_DOWN
-};
+#include "camera_platform_keys.inc"
+enum { KEY_EVENT_UP = 41, KEY_EVENT_DOWN };
+#include "ce_dodge_binding.h"
+#include "ce_cmdproduction.h"
+#include "ce_playunit.h"
+// Unavailable-delivery fixture declarations also support the CE-off negative build.
+bool CePlayUnitCanTakeDelivery();
+bool CePlayUnitTakeDelivery();
+
+// Boundaries for the production key preference and conflict readers. The action
+// key lookup, default, setting validation and conflict decisions are not simulated.
+std::string camera_commander_setting;
+extern "C" int CE_SettingGetText(const char* name, char* out, int capacity) {
+    if (std::strcmp(name, "commander_key") || camera_commander_setting.empty() ||
+            capacity <= static_cast<int>(camera_commander_setting.size())) return 0;
+    std::snprintf(out, capacity, "%s", camera_commander_setting.c_str());
+    return 1;
+}
+extern "C" int CE_SettingSetText(const char* name, const char* value) {
+    if (std::strcmp(name, "commander_key")) return 0;
+    camera_commander_setting = value;
+    return 1;
+}
+extern "C" int PortCeTutorialPrintableKey(int key, char* out, int capacity) {
+    if (capacity < 2 || (key != DIK_M && key != DIK_T)) return 0;
+    out[0] = key == DIK_T ? 'T' : 'M';
+    out[1] = '\0';
+    return 1;
+}
+int CE_SettingGetBool(const char*, int fallback) { return fallback; }
+bool PortCeExperimental(const char* mode) { return !std::strcmp(mode, "commander"); }
+enum { KEY_ON, KEY_ONCE, KEY_RELEASE, BUTTON_MECH_STRAFE_LEFT, BUTTON_MECH_STRAFE_RIGHT,
+    BUTTON_MECH_FORWARD, BUTTON_MECH_BACKWARD, BUTTON_MECH_FIRE_GUN_POD,
+    BUTTON_MECH_CHARGE_GUN_POD, BUTTON_MECH_MORPH, BUTTON_MECH_CHANGE_WEAPON };
+struct SControlInput { int mPad, mKey, mType; };
+struct SControlBinding { int mId; SControlInput mInput[2]; };
+SControlBinding CONTROL_BINDINGS[] = {{-1, {}}, {-1, {}}};
+#include "camera_binding_conflicts.inc"
+void CameraFactoryWorld(bool enabled, bool hasTankMount);
 // The disabled-presentation-hook control still exercises the authored UI
 // adapter. Import its real public descriptor types without enabling that hook.
 #if !defined(CE_VERSION)
@@ -297,7 +333,16 @@ enum {
 #define CE_VERSION "authored-types"
 #endif
 #include "ce_commander.h"
+#include "ce_cmdview.h"
+#include "ce_command_selection.h"
+#include "ce_cmdorders.h"
+#include "ce_cmdpointer.h"
 #include "ce_world_view.h"
+#include "ce_cmdsel.h"
+#include "ce_cmdgroup.h"
+#include "ce_cmdoutcome.h"
+#include "ce_cmdmatch.h"
+#include "ce_cmdrules.h"
 #if defined(CE_CAMERA_TEST_TEMPORARY_VERSION)
 #undef CE_VERSION
 #undef CE_CAMERA_TEST_TEMPORARY_VERSION
@@ -322,19 +367,35 @@ bool SamePosition(const FVector& a, const FVector& b) {
 bool Near(float a, float b) { return std::fabs(a - b) < 0.001f; }
 struct FMatrix {
     float yaw = 0, pitch = 0;
-    void MakeRotationYawF(float y) { yaw = y; pitch = 0; }
-    void MakeRotationF(float y, float p, float) { yaw = y; pitch = p; }
+    void MakeRotationYawF(float y) { yaw = y; pitch = 0;  SyncRows(); }
+    void MakeRotationF(float y, float p, float) { yaw = y; pitch = p;  SyncRows(); }
     FVector operator*(const FVector& p) const {
         const float forward = std::cos(pitch)*p.Y - std::sin(pitch)*p.Z;
         return FVector(std::cos(yaw)*p.X - std::sin(yaw)*forward,
                        std::sin(yaw)*p.X + std::cos(yaw)*forward,
                        std::sin(pitch)*p.Y + std::cos(pitch)*p.Z);
     }
+
+    FVector Row[3] = {FVector(1,0,0), FVector(0,1,0), FVector(0,0,1)};
+    void SyncRows() {
+        FVector f = (*this) * FVector(0,1,0);
+        const float length = sqrtf(f.X*f.X+f.Y*f.Y+f.Z*f.Z);
+        if (length > 0.0f) { f.X/=length; f.Y/=length; f.Z/=length; }
+        FVector right(f.Y,-f.X,0.0f);
+        const float horizontal = sqrtf(right.X*right.X+right.Y*right.Y);
+        if (horizontal > 0.00001f) { right.X/=horizontal; right.Y/=horizontal; }
+        else right = FVector(cosf(yaw),sinf(yaw),0.0f);
+        const FVector up(right.Y*f.Z-right.Z*f.Y, right.Z*f.X-right.X*f.Z, right.X*f.Y-right.Y*f.X);
+        Row[0]=FVector(right.X,f.X,up.X); Row[1]=FVector(right.Y,f.Y,up.Y); Row[2]=FVector(right.Z,f.Z,up.Z);
+    }
 };
 struct CCamera {
     virtual ~CCamera() {}
     virtual float GetZoom() { return 1; }
     virtual float GetYaw() { return 0; }
+
+    virtual FVector GetPos() const { return FVector(); }
+    virtual FMatrix GetOrientation() const { return FMatrix(); }
 };
 struct CGenericCamera : CCamera {
     FVector mPos;
@@ -342,6 +403,9 @@ struct CGenericCamera : CCamera {
     float mZoom = 1;
     float GetZoom() override { return mZoom; }
     float GetYaw() override { return mOrientation.yaw; }
+
+    FVector GetPos() const override { return mPos; }
+    FMatrix GetOrientation() const override { return mOrientation; }
 };
 struct CBattleEngine {
     FVector position;
@@ -358,10 +422,10 @@ struct CPlayer {
 using KeyTrap = void (*)(WORD, int);
 using pKeyTrapper = KeyTrap;
 const bool FALSE = false;
-const WORD kOpenKey = DIK_M;
+unsigned gCloseKey = 0;
 const int kMouseUp=3, kMouseDown=4;
 int MOUSE_X=400, MOUSE_Y=300;
-struct AuthoredMap { int mGridWidth=1000,mGridHeight=1000; float height=0,slopeX=0,slopeY=0; float Collide(const FVector& p){return height+slopeX*p.X+slopeY*p.Y;} } MAP;
+struct AuthoredMap { int mGridWidth=1000,mGridHeight=1000; float height=0,slopeX=0,slopeY=0; float water=1000.f; /* Z grows downward: water far below the ground */ float GetWaterLevel(){return water;} float Collide(const FVector& p){return height+slopeX*p.X+slopeY*p.Y;} } MAP;
 struct CCONTROLLER {
     KeyTrap trap = NULL;
     void* target = NULL;
@@ -373,6 +437,7 @@ struct CCONTROLLER {
     void SetToControl(void* t) { previous = target; target = t; ++target_changes; }
     void RelinquishControl() { target = previous; ++target_changes; }
 };
+enum { GAME_STATE_PLAYING = 3 };
 struct Game {
     bool paused = false, ordinary = true;
     int pause_calls = 0, level = 7, simulation_ticks = 0;
@@ -386,6 +451,7 @@ struct Game {
     CCONTROLLER& GetController() { return controller; }
     CCONTROLLER* GetController(int) { return &controller; }
     int GetCurrentLevel() { return level; }
+    int GetGameState() { return 3; }		// the game's playing state
     void Tick() {
         if (!paused) { ++simulation_ticks; player->pilot->life -= 1; }
     }
@@ -403,10 +469,47 @@ int GameAccess::pause_field_reads = 0;
 int mouse_starts = 0, mouse_stops = 0, draw_starts = 0, draw_ends = 0;
 void InitMouse() { ++mouse_starts; }
 void ShutdownMouse() { ++mouse_stops; }
+// The live view's own pointer (ce_cmdmap.cpp, outside the block): its start as the view opens is counted; the scope that holds MOUSE_X and MOUSE_Y
+// at that pointer for one entry does nothing here, where the authored pointer is written to them directly.
+int live_pointer_starts = 0;
+void LivePointerStart() { ++live_pointer_starts; }
+struct LivePointer { LivePointer() {} };
+// The Commander match's level end (ce_cmdmatch.cpp): counted.
+int match_level_ends = 0;
+void CeCmdMatchLevelEnd() { ++match_level_ends; }
 struct Sink {} gSink;
 bool gOpen = false, gOpening = false, gShift = false, gLayoutLogged = false;
 bool gEscClosed = false, gDown[256] = {};
 int gArmed = 0, gSelected = 0, gHover=-1, gCount = 0, gKeptLevel = -1;
+// The selection and the numbered groups (ce_cmdmap.cpp's own records; the functions that keep them are the real ones, extracted).
+CeCmdSel gSel = {};
+CeCmdGroups gGroups = {};
+// The Commander match (ce_cmdmatch.h): the battle as the live view's header shows it, and the match's own step after each frame, counted (it is
+// ce_cmdmap.cpp's MatchFrame, outside the extracted text; its rules are the match runner's to show in a game).
+CeCmdMatchState gMatch = {};
+bool gReopen = false, gLiveLast = false, gPlayerClosed = false;
+// The paused tactical map is a tester's page (ce.ini's commander_tactical_map): the fixture says whether it is allowed.
+bool tactical_allowed = true;
+bool TacticalMapAllowed() { return tactical_allowed; }
+bool MatchBase(float*, float*, float*, float*) { return false; }	// no Commander match in this fixture: no base to fit
+// When the last order was given (the view draws its line growing from then).
+unsigned long long gOrderNs = 0;
+int match_frames = 0;
+void MatchFrame() { ++match_frames; }
+// The guidance line is said on a level's first open only; the live view's bounds are its own (SetView); a match's first view is fitted to the base
+// (FitLiveToBase, outside the extracted text: no match here, so the small move up the screen is made). The open key's answer while the engine is down is
+// a match's (CeCmdMatch, PilotUp and NoteMay: a fixture's match and engine).
+bool gToldInFight = false, gLooseBounds = false;
+int fit_calls = 0;
+bool FitLiveToBase() { ++fit_calls; return false; }
+bool fixture_match = false, fixture_pilot_up = true;
+bool CeCmdMatch() { return fixture_match; }
+bool PilotUp() { return fixture_pilot_up; }
+bool NoteMay() { return GAME.ordinary; }
+void SelectOnly(int ordinal);
+void SelectToggle(int ordinal);
+void SelectAll();
+void GroupKey(int number, bool keep, bool add);
 unsigned gFrames = 0;
 double gMsTotal = 0, gMsMax = 0, fake_ms = 0;
 unsigned long long gMapLastNs = 0;
@@ -419,12 +522,21 @@ bool gTerrainDirty = false;
 float gKeptCentreX = 0, gKeptCentreY = 0, gKeptSpan = 0;
 char gNote[256] = {};
 unsigned gNoteUntil = 0;
+unsigned gNoteAtUntil = 0;
+bool StrategicLive();
+float gNoteAtX = -1.f, gNoteAtY = -1.f;
 bool gNoteNotYet = false;
 const unsigned kNoteLength = 240;
 const int kMaxSquads = 8;
 const DWORD kPick = 0xffd0e8b0, kText=0xffeeeeee, kQuiet=0xff999999, kFriend=0xff00ff00, kEnemy=0xffff0000, kAdvanceColour=0xffeeaa00, kMoveColour=0xff00eeff;
+const DWORD kPilot = 0xffffff00;
+const DWORD kFriendDim = 0xff445566, kFocus = 0xffffff00, kOrderLine = 0x99ffffff, kPanel = 0xaf000000, kEdge = 0xff7f7f7f;
 CeCmdSquad gSquads[kMaxSquads];
 std::vector<CeCmdSquad> live_squads;
+std::vector<CeCmdViewUnitMark> drawn_members;
+const CeCmdViewUnitMark *CeCmdViewUnitMarks(unsigned &count) {
+    count = static_cast<unsigned>(drawn_members.size()); return drawn_members.data();
+}
 int gUntracked = 0, list_reads = 0, issue_attempts = 0, accepted_orders = 0, last_ordered = -1;
 bool refuse_next_order = false;
 struct Layout { float s = 1, w = 800, h = 600; } L;
@@ -437,6 +549,10 @@ int draws_dropped = 0;
 bool PortCePhotoOn() { return photo_on; }
 void PortCeDrawHooks(bool on) { draw_filter = on; if (!on) draws_dropped = 0; }
 void PortCeDrawsDropped(int delta) { draws_dropped += delta; }
+bool unit_owns_pilot = false;
+unsigned unit_map_boundaries = 0;
+bool CePlayUnitOwnsPilot() { return unit_owns_pilot; }
+void CePlayUnitMapBoundary() { ++unit_map_boundaries; }
 void CePlayUnitLevelEnd() {}		// the play-as-a-unit module's call in PortCeCmdLevelEnd: no unit is driven here
 CCamera* PortCePlayUnitRenderCamera(CCamera* camera, CPlayer*) { return camera; } // no tank possession in this fixture
 unsigned long long PortClockRawNs() {
@@ -448,9 +564,41 @@ bool PortClockVirtual() { return fake_virtual_clock; }
 int fake_platform_keys[256];
 extern "C" int PortKeyHeldNow(unsigned dik) { return dik < 256 ? fake_platform_keys[dik] : -1; }
 bool Allowed() { return GAME.ordinary; }
+// Real controller contracts over synthetic current native identities.
+static uint64_t fixture_unit_world=1;
+static int fixture_mouse[3]={0,0,0};
+extern "C" int PortMouseHeldNow(unsigned b){return b<3?fixture_mouse[b]:-1;}
+bool PortCeCmdMapOpen(){return gOpen;}
+bool CeCmdUnitOrdersEligible(){return GAME.ordinary;}
+uint64_t CeCmdUnitWorld(){return fixture_unit_world;}
+void CeCmdUnitOrdersWorldEnd(){++fixture_unit_world;}
+uint64_t CePlayUnitSelectionWorld(){return fixture_unit_world;}
+bool CePlayUnitCanTakeSelection(uint64_t,CUnit*,int,const char**){return false;}
+bool CePlayUnitTakeSelection(uint64_t,CUnit*,int,const char**){return false;}
+bool CeCmdUnitVisit(const CeCommandLifetimeKey&,bool(*)(CUnit*,int,void*),void*){return false;}
+bool CeCmdUnitMove(const CeCommandLifetimeKey&,float,float){return false;}
+bool CeCmdUnitHold(const CeCommandLifetimeKey&){return false;}
+bool CeCmdUnitReturnAI(const CeCommandLifetimeKey&){return false;}
+int CeCmdUnitCollect(CeCmdUnitSnapshot* out,int cap,bool* complete){
+ int n=0;*complete=true;
+ for(const auto& sq:live_squads){if(!sq.friendly)continue;for(int m=0;m<sq.members;++m){
+  if(n==cap){*complete=false;return n;}
+  auto& u=out[n++];u=CeCmdUnitSnapshot{};u.key={fixture_unit_world,uint64_t(sq.ordinal*10+m),1};
+  u.squadKey={fixture_unit_world,uint64_t(10000+sq.ordinal),1};u.ordinal=sq.ordinal;u.members=sq.members;
+  u.friendly=sq.friendly;u.commandable=sq.commandable;u.groundPoint=true;u.position[0]=sq.x;u.position[1]=sq.y;
+  std::snprintf(u.name,sizeof(u.name),"Authored unit %d",m);
+ }}return n;
+}
+
 bool NotYet(){return false;}
 bool CeCmdMapOn(){return GAME.ordinary;}
 bool World() { return true; }
+struct FixtureViewport {
+    int width = 640, height = 480;
+    int GetWindowWidth() const { return width; }
+    int GetWindowHeight() const { return height; }
+} PLATFORM;
+
 void Lay() {}
 unsigned PortPresentCount() { return static_cast<unsigned>(fake_ms); }
 int CeCmdList(CeCmdSquad* out, int capacity) {
@@ -462,32 +610,63 @@ int CeCmdList(CeCmdSquad* out, int capacity) {
 int CeCmdUntracked() { return 0; }
 float last_order_x=0,last_order_y=0;
 int last_order_verb=0;
+struct IssuedOrder { int ordinal, verb; float x, y; };
+std::vector<IssuedOrder> issued;
+// Authored coast for checking the group's spread on a shore.
+static bool shorelineFixture;
+static float wetSlotX, wetSlotY;
+bool CeCmdMarchLand(float x, float y) {
+    return !shorelineFixture || x != wetSlotX || y != wetSlotY;
+}
+
 bool CeCmdIssue(int ordinal, int verb, float x, float y, const char** why) {
-    last_order_x=x;last_order_y=y;last_order_verb=verb;
+    last_order_x=x;last_order_y=y;last_order_verb=verb;issued.push_back(IssuedOrder{ordinal, verb, x, y});
     ++issue_attempts;
     if (refuse_next_order) { refuse_next_order = false; *why = "Squad no longer takes orders."; return false; }
     for (CeCmdSquad& s : live_squads) {
         if (s.ordinal == ordinal && s.commandable) {
-            s.verb = verb; ++accepted_orders; last_ordered = ordinal; return true;
+            // the goal the order layer keeps: a march's point; a Fall back given no point goes to the authored safe point (300, 300)
+            s.verb = verb; ++accepted_orders; last_ordered = ordinal;
+            if (verb == CE_CMD_FALLBACK && x == 0 && y == 0) { s.gx = 300; s.gy = 300; } else { s.gx = x; s.gy = y; }
+            return true;
         }
     }
     *why = "Squad disappeared."; return false;
 }
-void Text(float, float y, DWORD, const char* message, float) { messages.push_back(message); text_y.push_back(y); }
+void Text(float, float y, DWORD, const char* message, float = 0.f, bool = false) { messages.push_back(message); text_y.push_back(y); }
+// The small font's measure: eight units a character, and a line twelve high.
+float TextWidth(const char* text, float scale) { return float(std::strlen(text)) * 8.f * scale; }
+float LineHeight() { return 12.f * L.s; }
+float CeCmdViewTextWidth(const char* text){return float(std::strlen(text))*8.f;}
+float CeCmdViewTextHeight(){return 12.f;}
+void CeCmdViewBox(float,float,float,float,unsigned){}
+void CeCmdViewText(float x,float y,unsigned c,const char* text,float scale){Text(x,y,c,text,scale);}
+
 void Box(float, float, float width, float height, DWORD) { VERIFY(width > 0 && height > 0); }
 void Outline(float,float,float,float,float,DWORD){}
 void Dots(float,float,float,float,float,DWORD){}
+void Seg(float,float,float,float,float,DWORD){}
+void CapsuleBar(float,float,float,float,float = 1.f,bool = false){}
+void CeCmdViewCountFrame(){}
+const DWORD kCapsuleCap = 0xff38c8e8;
 int cursor_draws=0;
 void DrawCursor(){++cursor_draws;}
+// The live view's picture (ce_cmdview.cpp behind ce_cmdmap.cpp's StrategicPictureBegin and StrategicPictureEnd): an authored double that
+// counts the frames, gives back an authored view, and can be told that no picture can be made. The entry and the leaving are counted too.
 CeWorldViewSample authored_view={};
-bool authored_view_valid=false;
-void CeWorldViewInvalidate(CeWorldViewOwner){authored_view_valid=false;}
-bool CeWorldViewRead(CeWorldViewOwner owner,std::uint64_t token,CeWorldViewSample* out){
-    if(!authored_view_valid || owner!=CeWorldViewOwner::Commander || !token || token!=PortCeCmdWorldViewToken())return false;
-    *out=authored_view;return true;
+bool picture_available=true;
+int entered_calls=0, left_calls=0;
+const void* pictured_camera=NULL;
+void StrategicEntered() { ++entered_calls; }
+void StrategicLeft() { ++left_calls; }
+bool StrategicPictureBegin(const CGenericCamera& camera, CeWorldViewSample* view) {
+    pictured_camera=&camera;
+    if(!picture_available)return false;
+    ++draw_starts; *view=authored_view; return true;
 }
-void BeginDraw() { ++draw_starts; }
-void EndDraw() { ++draw_ends; }
+void StrategicPictureEnd() { ++draw_ends; }
+void BeginDraw() { VERIFY(false); }		// the paused map's drawing state: the live view never asks for it
+void EndDraw() { VERIFY(false); }
 bool Trap(WORD key, int event);
 
 // The Linux Windows compatibility headers expose these function macros.
@@ -505,6 +684,9 @@ bool Trap(WORD key, int event);
 #if defined(__GNUC__) && !defined(__clang__)
 #pragma GCC diagnostic pop
 #endif
+// Stubs for the map's order-goal and pointer-note reads (the camera block calls them; this driver has no order layer).
+bool StrategicLive() { return false; }
+bool CeCmdUnitOrderRead(const CeCommandLifetimeKey&, CeCmdUnitOrderView*) { return false; }
 #undef min
 #undef max
 
@@ -518,6 +700,17 @@ CBattleEngine pilot;
 CPlayer player;
 CGenericCamera original_camera;
 void Fixture() {
+    CancelNativeReturn();
+    gNativeEntering = gNativeEntrySeeded = gNativePresented = false;
+    PLATFORM.width = 640; PLATFORM.height = 480;
+    CameraFactoryWorld(false, true);
+    camera_commander_setting.clear();
+    PortCeDodgeBindingReload();
+    CONTROL_BINDINGS[0].mId = -1;
+    gCloseKey = 0;
+    unit_owns_pilot=false; unit_map_boundaries=0;
+    drawn_members.clear(); gUnitUi.Reset(); fixture_unit_world=1;
+    fixture_mouse[0]=fixture_mouse[1]=fixture_mouse[2]=0;
     gStrategicOwner.Reset(); gOpen = false; gStrategic = false;
     GAME = Game(); pilot = CBattleEngine(); player.pilot = &pilot;
     original_camera = CGenericCamera(); original_camera.mPos = FVector(3, 5, 7);
@@ -544,7 +737,8 @@ void Fixture() {
     mouse_starts = mouse_stops = draw_starts = draw_ends = 0;
     GameAccess::pause_field_reads = 0; messages.clear(); text_y.clear();
     photo_on = draw_filter = editor_hud = false; draws_dropped = 0;
-    MAP=AuthoredMap();authored_view_valid=false;cursor_draws=0;
+    MAP=AuthoredMap();StrategicViewInvalidate();cursor_draws=0;
+    picture_available=true;entered_calls=left_calls=0;pictured_camera=NULL;L=Layout();
     last_order_x=last_order_y=0;last_order_verb=0;MOUSE_X=400;MOUSE_Y=300;
 }
 void OtherTrap(WORD, int) {}
@@ -569,7 +763,7 @@ float Travel(const FVector& a, const FVector& b) {
 }
 
 void RenderTimeCamera() {
-    Fixture(); Open(true); gDown[kOpenKey] = false;
+    Fixture(); Open(true); gDown[gCloseKey] = false;
     VERIFY(gStrategic && gStrategicOwner.Active());
     gStrategicTickOnly = false;
     gStrategicAdvancedAt = ~0u;
@@ -580,7 +774,7 @@ void RenderTimeCamera() {
     float steps[10];
     for (int i = 0; i < 10; ++i) {
         fake_ms += 1000.0 / 60;
-        VERIFY(PortCeCmdRenderCamera(&original_camera, &player) == &gStrategicCamera);
+        VERIFY(StrategicFrameCamera() == &gStrategicCamera);
         steps[i] = Travel(gStrategicCamera.mPos, last);
         last = gStrategicCamera.mPos;
         VERIFY(steps[i] > 0.01f);                                 // it moved on this frame
@@ -589,29 +783,29 @@ void RenderTimeCamera() {
     // another view in the same frame (a reflection) keeps the camera the first one used
     const FVector held = gStrategicCamera.mPos;
     fake_ms = std::floor(fake_ms) + 0.999;                          // a little later, still the same Present
-    VERIFY(PortCeCmdRenderCamera(&original_camera, &player) == &gStrategicCamera && SamePosition(gStrategicCamera.mPos, held));
+    VERIFY(StrategicFrameCamera() == &gStrategicCamera && SamePosition(gStrategicCamera.mPos, held));
     // an update in the same pass moves it only by the time since the frame's own move, and the next frame carries on from there
     fake_ms += 1000.0 / 60; PortCeCmdFrame();
     const FVector after_update = gStrategicCamera.mPos;
     VERIFY(Travel(after_update, held) > 0.01f);
-    fake_ms += 1.0; PortCeCmdRenderCamera(&original_camera, &player);
+    fake_ms += 1.0; StrategicFrameCamera();
     VERIFY(Travel(gStrategicCamera.mPos, after_update) < steps[0] * 0.2f);
     // the earlier, update-stepped camera, for the comparison
     gStrategicTickOnly = true;
     fake_ms += 1000.0 / 60;
     const FVector before_frame = gStrategicCamera.mPos;
-    VERIFY(PortCeCmdRenderCamera(&original_camera, &player) == &gStrategicCamera && SamePosition(gStrategicCamera.mPos, before_frame));
+    VERIFY(StrategicFrameCamera() == &gStrategicCamera && SamePosition(gStrategicCamera.mPos, before_frame));
     fake_ms += 50; PortCeCmdFrame();
     VERIFY(!SamePosition(gStrategicCamera.mPos, before_frame));
     gStrategicTickOnly = false;
     // keys up: it rests, frame after frame
     Trap(DIK_RIGHT, KEY_EVENT_UP);
-    fake_ms += 1000.0 / 60; PortCeCmdRenderCamera(&original_camera, &player);
+    fake_ms += 1000.0 / 60; StrategicFrameCamera();
     const FVector rest = gStrategicCamera.mPos;
-    for (int i = 0; i < 5; ++i) { fake_ms += 1000.0 / 60; PortCeCmdRenderCamera(&original_camera, &player); VERIFY(SamePosition(gStrategicCamera.mPos, rest)); }
+    for (int i = 0; i < 5; ++i) { fake_ms += 1000.0 / 60; StrategicFrameCamera(); VERIFY(SamePosition(gStrategicCamera.mPos, rest)); }
     // the view that is not the live one is not advanced
     Close();
-    VERIFY(PortCeCmdRenderCamera(&original_camera, &player) == &original_camera);
+    VERIFY(StrategicFrameCamera() == NULL);
     // under a virtual clock the map's time is the frames' own: 1/30 s a Present, whatever the real clock says
     fake_virtual_clock = true;
     fake_ms = 90; VERIFY(Ns() == 90ull * 33333333ull);
@@ -622,11 +816,11 @@ void RenderTimeCamera() {
 
 // The camera reads the keyboard as it is held now, not as the game's last batch of key messages left it (the messages come once for every update).
 void KeysAsHeldNow() {
-    Fixture(); Open(true); gDown[kOpenKey] = false;
+    Fixture(); Open(true); gDown[gCloseKey] = false;
     gStrategicTickOnly = false; gStrategicAdvancedAt = ~0u;
     fake_ms = 1000; gStrategicLastNs = PortClockRawNs();
     FVector last = gStrategicCamera.mPos;
-    auto frame = [&]() { fake_ms += 1000.0 / 60; PortCeCmdRenderCamera(&original_camera, &player);
+    auto frame = [&]() { fake_ms += 1000.0 / 60; StrategicFrameCamera();
                          const bool moved = !SamePosition(gStrategicCamera.mPos, last); last = gStrategicCamera.mPos; return moved; };
     VERIFY(!frame());                                   // nothing held: it rests
     // pressed, and the trap has heard nothing yet: it moves on this very frame
@@ -675,12 +869,13 @@ void KeysAsHeldNow() {
 // Each camera key moves the view the way it did before the camera read the keyboard's state: the five axes the camera is given, the camera's answer to
 // three of them, and the paused map's pan (frame-feel review: the sign of the orbit, tilt and vertical keys was not pinned by any check).
 void KeyDirections() {
-    Fixture(); Open(true); gDown[kOpenKey] = false;
+    Fixture(); Open(true); gDown[gCloseKey] = false;
     gStrategicTickOnly = false; gStrategicAdvancedAt = ~0u;
     fake_ms = 1000; gStrategicLastNs = PortClockRawNs();
     struct KeyAxis { WORD key; double CeCommanderCameraInput::*axis; double sign; };
     const KeyAxis table[] = {
         {DIK_RIGHT, &CeCommanderCameraInput::pan_horizontal, +1}, {DIK_LEFT, &CeCommanderCameraInput::pan_horizontal, -1},
+        {DIK_D, &CeCommanderCameraInput::pan_horizontal, +1}, {DIK_A, &CeCommanderCameraInput::pan_horizontal, -1},
         {DIK_UP, &CeCommanderCameraInput::pan_vertical, +1}, {DIK_W, &CeCommanderCameraInput::pan_vertical, +1},
         {DIK_DOWN, &CeCommanderCameraInput::pan_vertical, -1}, {DIK_S, &CeCommanderCameraInput::pan_vertical, -1},
         {DIK_E, &CeCommanderCameraInput::orbit_horizontal, +1}, {DIK_Q, &CeCommanderCameraInput::orbit_horizontal, -1},
@@ -711,12 +906,12 @@ void KeyDirections() {
     VERIFY(both.orbit_horizontal == 0 && both.orbit_vertical == 0);
     // the camera's answer, over six frames at 60 a second: E turns it one way and Q the other, PgDn tilts it down and PgUp up, R brings it in
     auto answer = [&](WORD key, const float& quantity) {
-        Fixture(); Open(true); gDown[kOpenKey] = false;
+        Fixture(); Open(true); gDown[gCloseKey] = false;
         gStrategicTickOnly = false; gStrategicAdvancedAt = ~0u;
         fake_ms = 1000; gStrategicLastNs = PortClockRawNs();
         const float before = quantity;
         fake_platform_keys[key] = 1;
-        for (int i = 0; i < 6; ++i) { fake_ms += 1000.0 / 60; PortCeCmdRenderCamera(&original_camera, &player); }
+        for (int i = 0; i < 6; ++i) { fake_ms += 1000.0 / 60; StrategicFrameCamera(); }
         fake_platform_keys[key] = -1;
         return quantity - before;
     };
@@ -745,7 +940,7 @@ void TwoDaysOfUptime() {
     for (unsigned long long base : {36000000000000ull, 70000123456789ull, 177578900000000ull, 300000000000000ull, 900000123456789ull}) {
         fake_base_ns = base;
         for (double frame_ms : {1000.0 / 144, 1000.0 / 60, 1000.0 / 240}) {
-            Fixture(); Open(true); gDown[kOpenKey] = false;
+            Fixture(); Open(true); gDown[gCloseKey] = false;
             gStrategicTickOnly = false; gStrategicAdvancedAt = ~0u;
             fake_ms = 1000; gStrategicLastNs = PortClockRawNs();
             Trap(DIK_RIGHT, KEY_EVENT_DOWN);
@@ -753,7 +948,7 @@ void TwoDaysOfUptime() {
             float first = 0, total = 0;
             for (int i = 0; i < 60; ++i) {
                 fake_ms += frame_ms;
-                VERIFY(PortCeCmdRenderCamera(&original_camera, &player) == &gStrategicCamera);
+                VERIFY(StrategicFrameCamera() == &gStrategicCamera);
                 const float step = Travel(gStrategicCamera.mPos, last);
                 last = gStrategicCamera.mPos;
                 if (i == 0) first = step;
@@ -845,42 +1040,299 @@ void MapPanTiming() {
 }
 
 void AuthoredWorldView(){
+    PLATFORM.width = L.w; PLATFORM.height = L.h;
     authored_view=CeWorldViewSample();
     for(int i=0;i<4;++i)authored_view.view[i*4+i]=1;
     authored_view.view[12]=-200;authored_view.view[13]=-220;authored_view.view[14]=100;
     authored_view.projection[0]=.01f;authored_view.projection[5]=-1.f/75.f;
     authored_view.projection[10]=.005f;authored_view.projection[15]=1;
-    authored_view.viewport={0,0,800,600,0,1};authored_view_valid=true;
+    authored_view.viewport={0,0,800,600,0,1};StrategicViewSet(authored_view);
 }
 void ClickWorld(int button,int x,int y){MOUSE_X=x;MOUSE_Y=y;Trap(WORD(button),kMouseDown);Trap(WORD(button),kMouseUp);}
+// Several squads: a Shift click adds and takes out, a drag picks a box, Ctrl and A picks every squad that takes orders, a digit keeps and picks a group,
+// one order reaches every picked squad at places of their own, and B, Delete and H go to each of them.
+void PressWorld(int button,int x,int y){MOUSE_X=x;MOUSE_Y=y;Trap(WORD(button),kMouseDown);}
+void ReleaseWorld(int button,int x,int y){MOUSE_X=x;MOUSE_Y=y;Trap(WORD(button),kMouseUp);}
+void ReboundCommanderInput() {
+    Fixture();
+    VERIFY(OpenKey() == DIK_M && PortCeActionStore(CeControlAction::Commander, DIK_T));
+    PortCeDodgeBindingReload();  // the game reopens the saved preference
+    VERIFY(OpenKey() == DIK_T && !PortCeCmdKey(DIK_M, false) && !gOpen);
+    CONTROL_BINDINGS[0] = {BUTTON_MECH_MORPH, {{0, DIK_T, KEY_ONCE}, {-1, 0, KEY_ON}}};
+    VERIFY(!PortCeCmdKey(DIK_T, false) && !gOpen);
+    CONTROL_BINDINGS[0].mId = -1;
+    VERIFY(PortCeCmdKey(DIK_T, false) && gOpen && gStrategic && gCloseKey == DIK_T);
+    VERIFY(Trap(DIK_T, KEY_EVENT_DOWN) && gOpen); // held opener cannot immediately close
+    Trap(DIK_T, KEY_EVENT_UP);
+    TapLiveKey(DIK_M);
+    VERIFY(gOpen);
+    // A preference reload cannot strand a map already open under T.
+    VERIFY(PortCeActionStore(CeControlAction::Commander, DIK_M));
+    TapLiveKey(DIK_M);
+    VERIFY(gOpen);
+    TapLiveKey(DIK_T);
+    VERIFY(!gOpen && !PortCeCmdKey(DIK_T, false));
+
+    VERIFY(PortCeActionStore(CeControlAction::Commander, DIK_T));
+    Open(false);
+    VERIFY(gOpen && !gStrategic && GAME.paused);
+    Trap(DIK_T, KEY_EVENT_UP);
+    TapLiveKey(DIK_M);
+    VERIFY(gOpen);
+    TapLiveKey(DIK_T);
+    VERIFY(!gOpen && !GAME.paused);
+}
+
+void FactoryCardInput() {
+    Fixture();
+    Open(true);
+    AuthoredWorldView();
+    L.s = 1;
+    CeFactoryView view = {};
+    VERIFY(!CeFactoryRead(view) && FactoryCardAt(20, 62) == -1);
+    PressWorld(0, 20, 62); ReleaseWorld(0, 20, 62);
+    VERIFY(!CeFactorySelect() && !CeFactoryQueue());
+    CameraFactoryWorld(true, false);  // enabled, but this building has no compatible mount
+    VERIFY(!CeFactoryRead(view) && FactoryCardAt(20, 62) == -1);
+    CameraFactoryWorld(true, true);
+    VERIFY(CeFactoryRead(view) && view.available && !view.selected && view.stage == CE_FACTORY_IDLE);
+    VERIFY(FactoryCardAt(20, 62) == 1 && FactoryCardAt(20, 116) == -1);
+    PressWorld(0, 20, 62); ReleaseWorld(0, 20, 62);
+    VERIFY(CeFactoryRead(view) && view.selected && !gSel.n && gFocusTrip.squad == kFactoryFocus);
+    VERIFY(FactoryCardAt(20, 116) == 2);
+    PressWorld(0, 20, 116); ReleaseWorld(0, 20, 116);
+    VERIFY(CeFactoryRead(view) && view.stage == CE_FACTORY_QUEUED && FactoryCardAt(20, 138) == 3);
+    PressWorld(0, 20, 138); ReleaseWorld(0, 20, 138);
+    VERIFY(CeFactoryRead(view) && view.stage == CE_FACTORY_CANCELLED && FactoryCardAt(20, 138) == 4);
+    PressWorld(0, 20, 138); ReleaseWorld(0, 20, 138);
+    VERIFY(CeFactoryRead(view) && !view.selected && FactoryCardAt(20, 116) == -1);
+    PressWorld(0, 20, 62); ReleaseWorld(0, 20, 62);
+    Close();
+    VERIFY(!gOpen && CeFactoryRead(view) && !view.selected);
+}
+void VisibleRouteBearing() {
+    Fixture(); Open(); AuthoredWorldView(); Refresh();
+    CeCmdSquad squad = {};
+    squad.x = 200; squad.y = 220;
+    for (int small = 0; small != 2; ++small) {
+        const int width = small ? 640 : 1280, height = small ? 480 : 720;
+        L.w = float(width); L.h = float(height); L.s = float(height)/480;
+        authored_view.viewport.width = float(width); authored_view.viewport.height = float(height);
+        CeViewPoint origin = {}, tip = {}, onScreen = {};
+        VERIFY(StrategicPixel(authored_view,squad.x,squad.y,&origin));
+        squad.gx = 330; squad.gy = squad.y;
+        VERIFY(!StrategicPixel(authored_view,squad.gx,squad.gy,&onScreen));
+        VERIFY(StrategicRouteBearing(authored_view,squad,origin,1,tip));
+        VERIFY(tip.x > width-13 && tip.x < width-9 && fabs(tip.y-origin.y)<1);
+        squad.gx = 70;
+        VERIFY(StrategicRouteBearing(authored_view,squad,origin,1,tip));
+        VERIFY(tip.x > 9 && tip.x < 13 && fabs(tip.y-origin.y)<1);
+        squad.gx = squad.x; squad.gy = 345;
+        VERIFY(StrategicRouteBearing(authored_view,squad,origin,1,tip));
+        VERIFY(tip.y > height*.80f && tip.y < height-42*L.s && fabs(tip.x-origin.x)<1);
+        // A route leaving beside the squad must not draw an arrow on top of it.
+        squad.x = 294; squad.y=220; squad.gx=390; squad.gy=squad.y;
+        VERIFY(StrategicPixel(authored_view,squad.x,squad.y,&origin));
+        if (small) VERIFY(!StrategicRouteBearing(authored_view,squad,origin,1,tip));
+        squad.x=200; squad.y=220;
+        squad.gx=330; squad.gy=220;
+        VERIFY(StrategicPixel(authored_view,squad.x,squad.y,&origin));
+        authored_view.projection[2]=0.02f;
+        VERIFY(!StrategicRouteBearing(authored_view,squad,origin,1,tip));
+        authored_view.projection[2]=0;
+        CeViewPoint outside = {-1,origin.y,origin.z};
+        VERIFY(!StrategicRouteBearing(authored_view,squad,outside,1,tip));
+    }
+}
+
+void CameraReacquiresSquad() {
+    Fixture(); Open(true); AuthoredWorldView(); Refresh();
+    TapLiveKey(DIK_TAB); VERIFY(gSelected == 5);
+    const float span = gViewSpan, yaw = gStrategicYaw, pitch = gStrategicPitch;
+    const float originalHeight = gStrategicFocusZ;
+    MAP.height = originalHeight + 24;
+    SetView(live_squads[0].x + 50, live_squads[0].y + 55, span);
+    const float fromX = gViewX + gViewSpan * 0.5f;
+    const float fromY = gViewY + gViewSpan * 0.5f;
+    TapLiveKey(DIK_C);
+    for (int i=1; i<=4; ++i) {
+        fake_ms += 80; StrategicFrameCamera();
+        const float phase = i / 4.f, ease = phase * phase * (3.f - 2.f * phase);
+        VERIFY(Near(gViewX + gViewSpan * 0.5f, fromX + (live_squads[0].x-fromX)*ease));
+        VERIFY(Near(gViewY + gViewSpan * 0.5f, fromY + (live_squads[0].y-fromY)*ease));
+        VERIFY(Near(gStrategicFocusZ, originalHeight + 24*ease));
+    }
+    VERIFY(Near(gViewSpan,span) && Near(gStrategicYaw,yaw) && Near(gStrategicPitch,pitch));
+    live_squads[0].x += 20; Refresh();
+    fake_ms += 100; StrategicFrameCamera();
+    VERIFY(!Near(gViewX + gViewSpan * 0.5f, live_squads[0].x)); // this is not a permanent chase
+    TapLiveKey(DIK_C); fake_ms += 50; StrategicFrameCamera();
+    Trap(DIK_RIGHT,KEY_EVENT_DOWN); fake_ms += 33; StrategicFrameCamera(); Trap(DIK_RIGHT,KEY_EVENT_UP);
+    const float afterPan = gViewX;
+    fake_ms += 400; StrategicFrameCamera();
+    VERIFY(Near(gViewX,afterPan) && gFocusTrip.squad < 0 && accepted_orders==0);
+    TapLiveKey(DIK_C); fake_ms += 60; StrategicFrameCamera();
+    TapLiveKey(DIK_ESCAPE); VERIFY(!gOpen && GAME.controller.target==&pilot);
+}
+
+void DrawnMemberInteractions() {
+    Fixture();
+    VERIFY(PortCeCmdKey(DIK_M, false) && gOpen && gStrategic);
+    AuthoredWorldView(); Refresh();
+    drawn_members = {{5,670,200,5,{1,50,1},0,0,0,0,0}, {5,674,206,4,{1,51,1},0,0,0,0,0},
+                     {17,691,205,6,{1,170,1},0,0,0,0,0}, {999,725,200,5,{1,9990,1},0,0,0,0,0}};
+    ClickWorld(0,670,200); VERIFY(gUnitUi.SelectionCount()==1 && gUnitUi.IsSelected({1,50,1}) && gSel.n==0);
+    ClickWorld(0,655,200); VERIFY(gUnitUi.SelectionCount()==0);
+    ClickWorld(0,691,205); VERIFY(gUnitUi.IsSelected({1,170,1}));
+    ClickWorld(0,725,200); VERIFY(gUnitUi.SelectionCount()==0);
+    PressWorld(0,661,190); ReleaseWorld(0,703,219);
+    VERIFY(gUnitUi.SelectionCount()==3);
+    live_squads[1].commandable=false; Refresh();
+    PressWorld(0,661,190); ReleaseWorld(0,703,219);
+    VERIFY(gUnitUi.SelectionCount()==3); // Inspection keeps units whose orders are unavailable.
+    live_squads.erase(live_squads.begin()); Refresh();
+    ClickWorld(0,670,200); VERIFY(gUnitUi.SelectionCount()==0);
+    TapLiveKey(DIK_ESCAPE); VERIFY(!gOpen);
+}
+
+void LiveSelectionInteractions(){
+    Fixture();
+    live_squads.push_back(live_squads[0]);live_squads[2].ordinal=30;live_squads[2].x=200;live_squads[2].y=300;
+    live_squads.push_back(live_squads[0]);live_squads[3].ordinal=40;live_squads[3].commandable=false;live_squads[3].why=CE_WHY_SPAWNED;
+    VERIFY(PortCeCmdKey(DIK_M,false) && gOpen && gStrategic);
+    AuthoredWorldView();Refresh();
+    // Legacy squad selection remains available through Tab and the tactical map.
+    // Unit pointer selection is exercised separately through the real controller.
+    SelectOnly(5);VERIFY(gSelected==5 && gSel.n==1);
+    SelectToggle(17);VERIFY(gSel.n==2 && gSelected==5 && CeSelHas(gSel,17));
+    SelectToggle(5);VERIFY(gSel.n==1 && gSelected==17);SelectToggle(5);VERIFY(gSel.n==2);
+    SelectOnly(17);VERIFY(gSel.n==1 && gSelected==17);
+    SelectOnly(-1);VERIFY(gSel.n==0 && gSelected==-1);
+    SelectOnly(5);SelectToggle(17);
+    issued.clear();ClickWorld(2,480,340);
+    VERIFY(issued.size()==2 && issued[0].verb==CE_CMD_ADVANCE && issued[1].verb==CE_CMD_ADVANCE && issued[0].ordinal!=issued[1].ordinal);
+    VERIFY(std::fabs(issued[0].x-issued[1].x)+std::fabs(issued[0].y-issued[1].y)>10.f);
+    for(const IssuedOrder& o:issued)VERIFY(std::fabs(o.x-220)<=21.f && std::fabs(o.y-230)<=21.f);
+    const float coastX = 220, coastY = 230;
+    issued.clear(); Order(CE_CMD_ADVANCE, coastX, coastY);
+    const std::vector<IssuedOrder> inland = issued;
+    VERIFY(inland.size() == 2);
+    wetSlotX = inland[0].x; wetSlotY = inland[0].y;
+    VERIFY(wetSlotX != coastX || wetSlotY != coastY);
+    shorelineFixture = true;
+    issued.clear(); Order(CE_CMD_ADVANCE, coastX, coastY);
+    VERIFY(issued.size() == inland.size());
+    bool keptDry = false, usedCentre = false;
+    for (size_t i = 0; i < issued.size() && i < inland.size(); ++i) {
+        if (inland[i].x == wetSlotX && inland[i].y == wetSlotY) {
+            usedCentre = true; VERIFY(issued[i].x == coastX && issued[i].y == coastY);
+        } else {
+            keptDry = true; VERIFY(issued[i].x == inland[i].x && issued[i].y == inland[i].y);
+        }
+    }
+    VERIFY(usedCentre && keptDry);
+    // An offshore click must reach the order layer as offshore for every squad, never as a spread onto land.
+    wetSlotX = coastX + 1.f; wetSlotY = coastY;
+    issued.clear(); Order(CE_CMD_MOVE, wetSlotX, wetSlotY);
+    VERIFY(issued.size() == inland.size());
+    for (const IssuedOrder& o : issued) VERIFY(o.x == coastX + 1.f && o.y == coastY);
+
+    for (auto &sq : live_squads)
+        if (sq.ordinal == inland[0].ordinal) sq.crossesWater = true;
+    Refresh();
+    issued.clear(); Order(CE_CMD_ADVANCE, wetSlotX, wetSlotY);
+    VERIFY(issued.size() == 2);
+    for (const auto &o : issued) {
+        const bool atClick = o.x == wetSlotX && o.y == wetSlotY;
+        VERIFY(atClick == (o.ordinal != inland[0].ordinal));
+    }
+    for (auto &sq : live_squads) sq.crossesWater = false;
+    Refresh();
+    shorelineFixture = false;
+
+    // Hold, Fall back and Release reach each picked squad.
+    issued.clear();TapLiveKey(DIK_H);VERIFY(issued.size()==2 && issued[0].verb==CE_CMD_HOLD && issued[1].verb==CE_CMD_HOLD);
+    // A Fall back: each squad to its own safe point first; the two that chose the same one are then given places of their own round it.
+    issued.clear();TapLiveKey(DIK_B);
+    VERIFY(issued.size()==4 && issued[0].verb==CE_CMD_FALLBACK && issued[1].verb==CE_CMD_FALLBACK && issued[0].x==0 && issued[1].y==0);
+    VERIFY(issued[2].verb==CE_CMD_FALLBACK && issued[3].verb==CE_CMD_FALLBACK && issued[2].ordinal!=issued[3].ordinal);
+    VERIFY(std::hypot(issued[2].x-issued[3].x, issued[2].y-issued[3].y)>=15.f);
+    for(size_t k=2;k<4;++k)VERIFY(std::fabs(issued[k].x-300)<=21.f && std::fabs(issued[k].y-300)<=21.f);
+    issued.clear();TapLiveKey(DIK_DELETE);VERIFY(issued.size()==2 && issued[0].verb==CE_CMD_RELEASE);
+    // Tactical-map group operations keep the legacy squad bookmarks.
+    GroupKey(1,true,false);SelectAll();VERIFY(gSel.n==3 && CeSelHas(gSel,30) && !CeSelHas(gSel,40));
+    GroupKey(1,false,false);VERIFY(gSel.n==2 && !CeSelHas(gSel,30));
+    GroupKey(2,false,false);VERIFY(gSel.n==2);
+    live_squads[1].commandable=false;Refresh();VERIFY(gSel.n==1 && gSelected==5);
+    SelectOnly(-1);GroupKey(1,false,false);VERIFY(gSel.n==1 && gSelected==5);
+    // Tab picks one squad alone; a squad picked by setting the lead (the paused map's way) is the whole selection.
+    live_squads[1].commandable=true;Refresh();GroupKey(1,false,false);VERIFY(gSel.n==2);
+    TapLiveKey(DIK_TAB);VERIFY(gSel.n==1);
+    gSelected=30;Refresh();VERIFY(gSel.n==1 && gSelected==30);
+    // the level's end forgets the selection and the groups
+    Trap(DIK_LCONTROL,KEY_EVENT_DOWN);TapLiveKey(DIK_3);Trap(DIK_LCONTROL,KEY_EVENT_UP);
+    PortCeCmdLevelEnd();VERIFY(gSel.n==0 && gSelected==-1 && gGroups.group[3].n==0);
+}
+
 void LivePointerInteractions(){
     Fixture();VERIFY(PortCeCmdKey(DIK_M,false));
     VERIFY(gOpen && gStrategic && !GAME.paused && GAME.pause_calls==0);
     AuthoredWorldView();
-    ClickWorld(0,320,300);VERIFY(gSelected==5);
-    ClickWorld(2,480,340);VERIFY(accepted_orders==1 && last_order_verb==CE_CMD_MOVE);
+    SelectOnly(5);VERIFY(gSelected==5);
+
+    // Camera letters must be consumed before action shortcuts or the pilot key path.
+    const int camera_orders_before = accepted_orders;
+    const int camera_selected_before = gSelected;
+    const int camera_selection_before = gSel.n;
+    const bool camera_arm_before = gArmed;
+    VERIFY(Trap(DIK_A, KEY_EVENT_DOWN));
+    VERIFY(StrategicInput().pan_horizontal < 0);
+    VERIFY(Trap(DIK_A, KEY_EVENT_UP));
+    VERIFY(StrategicInput().pan_horizontal == 0);
+    VERIFY(Trap(DIK_D, KEY_EVENT_DOWN));
+    VERIFY(StrategicInput().pan_horizontal > 0);
+    VERIFY(Trap(DIK_D, KEY_EVENT_UP));
+    VERIFY(StrategicInput().pan_horizontal == 0);
+    VERIFY(gOpen && gStrategic && GAME.controller.target == &pilot);
+    VERIFY(accepted_orders == camera_orders_before && gArmed == camera_arm_before);
+    VERIFY(gSelected == camera_selected_before && gSel.n == camera_selection_before);
+    // A right click sends the picked squad to fight its way there; Ctrl and a right click is the quiet march.
+    ClickWorld(2,480,340);VERIFY(accepted_orders==1 && last_order_verb==CE_CMD_ADVANCE);
     VERIFY(Near(last_order_x,220) && Near(last_order_y,230));
-    TapLiveKey(DIK_A);VERIFY(gArmed);
+    Trap(DIK_LCONTROL,KEY_EVENT_DOWN);ClickWorld(2,480,340);Trap(DIK_LCONTROL,KEY_EVENT_UP);
+    VERIFY(accepted_orders==2 && last_order_verb==CE_CMD_MOVE);accepted_orders=1;
+    StrategicArm(CE_CMD_ADVANCE);VERIFY(gArmed);
     ClickWorld(0,500,360);VERIFY(accepted_orders==2 && last_order_verb==CE_CMD_ADVANCE && !gArmed);
     const int before=accepted_orders;
     ClickWorld(2,480,570);VERIFY(accepted_orders==before); // panel cannot issue a world order
-    ClickWorld(0,12+2*112+20,600-43+10);VERIFY(accepted_orders==before+1 && last_order_verb==CE_CMD_HOLD);
-    ClickWorld(0,12+20,600-43+10);VERIFY(gArmed && gStrategicClickOrder==CE_CMD_MOVE);
+    // the buttons under the card (8 units in, 56, 80, 56 and 96 wide, 6 apart, their row 34 units above the foot): Hold is the third, Move the first
+    ClickWorld(0,8+56+6+80+6+20,600-34+10);VERIFY(accepted_orders==before+1 && last_order_verb==CE_CMD_HOLD);
+    VERIFY(StrategicButtonAt(8+56+3,600-34+10)<0 && StrategicButtonAt(8+3,600-34+10)==0);	// the gap between two buttons is no button
+    ClickWorld(0,8+20,600-34+10);VERIFY(gArmed && gStrategicClickOrder==CE_CMD_MOVE);
     ClickWorld(0,520,350);VERIFY(last_order_verb==CE_CMD_MOVE && !gArmed);
     // Armed commands and pointer selection must revalidate after world changes.
     live_squads.erase(live_squads.begin());const int attempts=issue_attempts;
     ClickWorld(2,480,340);VERIFY(gSelected==-1 && issue_attempts==attempts);
-    ClickWorld(0,560,460);VERIFY(gSelected==17);
-    authored_view_valid=false;ClickWorld(2,480,340);VERIFY(issue_attempts==attempts);
+    SelectOnly(17);VERIFY(gSelected==17);
+    StrategicViewInvalidate();ClickWorld(2,480,340);VERIFY(issue_attempts==attempts);
+    // The view the pointer picks from is the one the picture was last drawn with: not one a frame older than the last, not one from a window
+    // of another size, not one from an earlier entry into the view.
+    AuthoredWorldView();{CeWorldViewSample read;VERIFY(StrategicViewRead(&read) && read.viewport.width==800);}
+    fake_ms+=1;{CeWorldViewSample read;VERIFY(StrategicViewRead(&read));}
+    fake_ms+=1;{CeWorldViewSample read;VERIFY(!StrategicViewRead(&read));}ClickWorld(2,480,340);VERIFY(issue_attempts==attempts);
+    AuthoredWorldView();L.w=1024;{CeWorldViewSample read;VERIFY(!StrategicViewRead(&read));}L.w=800;
+    {CeWorldViewSample read;VERIFY(StrategicViewRead(&read));}
+    ++gStrategicViewSession;{CeWorldViewSample read;VERIFY(!StrategicViewRead(&read));}--gStrategicViewSession;
+    {CeWorldViewSample read;VERIFY(StrategicViewRead(&read));VERIFY(!StrategicViewRead(NULL));}
     AuthoredWorldView();live_squads[0].ordinal=90;ClickWorld(2,480,340);
     VERIFY(gSelected==-1 && issue_attempts==attempts);
-    ClickWorld(0,560,460);VERIFY(gSelected==90);
+    SelectOnly(90);VERIFY(gSelected==90);
     live_squads[0].friendly=live_squads[0].commandable=false;ClickWorld(2,480,340);
     VERIFY(gSelected==-1 && issue_attempts==attempts);
 
-    Fixture();Open(true);AuthoredWorldView();ClickWorld(0,320,300);
+    Fixture();Open(true);AuthoredWorldView();SelectOnly(5);
     pilot.life=0;ClickWorld(2,480,340);VERIFY(!gOpen && accepted_orders==0);
-    Fixture();Open(true);AuthoredWorldView();ClickWorld(0,320,300);
+    Fixture();Open(true);AuthoredWorldView();SelectOnly(5);
     ++pilot.creation_number;ClickWorld(2,480,340);VERIFY(!gOpen && accepted_orders==0);
     Fixture();Open(true);AuthoredWorldView();
     CeViewPoint hit={};
@@ -893,14 +1345,14 @@ void LivePointerInteractions(){
     VERIFY(!StrategicGround(sky,480,340,&hit)); // forward ray stays below surface
     VERIFY(!StrategicGround(authored_view,-1,340,&hit));
     const std::uint64_t oldSession=gStrategicViewSession;
-    Close();Open(true);VERIFY(gStrategicViewSession!=oldSession && !authored_view_valid);
+    Close();Open(true);VERIFY(gStrategicViewSession!=oldSession && !gStrategicSampleValid);
     TapLiveKey(DIK_ESCAPE);VERIFY(!gOpen && !GAME.paused);
 }
 
 void LiveSquadInteractions() {
     Fixture();
     VERIFY(!Trap(DIK_TAB, KEY_EVENT_DOWN) && accepted_orders == 0 && list_reads == 0);
-    Open(true);
+    Open(true); AuthoredWorldView();
     Trap(DIK_TAB, KEY_EVENT_DOWN);
     VERIFY(gSelected == 5);
     const int read_after_pick = list_reads;
@@ -912,12 +1364,20 @@ void LiveSquadInteractions() {
     VERIFY(gSelected == 5);
     Trap(DIK_RSHIFT, KEY_EVENT_DOWN); TapLiveKey(DIK_TAB); Trap(DIK_RSHIFT, KEY_EVENT_UP);
     VERIFY(gSelected == 17);
+    const float start_x = gViewX + gViewSpan * 0.5f;
     TapLiveKey(DIK_C);
+    VERIFY(Near(gViewX + gViewSpan * 0.5f, start_x));
+    fake_ms += 160; StrategicFrameCamera();
+    const float middle_x = gViewX + gViewSpan * 0.5f;
+    VERIFY(Near(middle_x, (start_x + live_squads[1].x) * 0.5f));
+    fake_ms += 180; StrategicFrameCamera();
     VERIFY(Near(gViewX + gViewSpan * 0.5f, live_squads[1].x));
     VERIFY(Near(gViewY + gViewSpan * 0.5f, live_squads[1].y));
     VERIFY(!GAME.paused && GAME.controller.target == &pilot);
+    AuthoredWorldView(); // Refresh the displayed input surface after simulated camera frames.
     Trap(DIK_H, KEY_EVENT_DOWN);
     VERIFY(accepted_orders == 1 && last_ordered == 17 && live_squads[1].verb == CE_CMD_HOLD);
+    AuthoredWorldView(); // Refresh the displayed input surface after simulated camera frames.
     Trap(DIK_H, KEY_EVENT_DOWN);
     VERIFY(issue_attempts == 1 && accepted_orders == 1);
     Trap(DIK_H, KEY_EVENT_UP); TapLiveKey(DIK_X);
@@ -925,30 +1385,30 @@ void LiveSquadInteractions() {
     live_squads[1].members = 2;
     PortCeCmdFrame(); messages.clear(); text_y.clear(); StrategicRenderPrefix();
     VERIFY(std::any_of(messages.begin(), messages.end(), [](const std::string& s) {
-        return s.find("Squad 17 | Authored squad 1 | 2 units") != std::string::npos;
+        return s.find("Authored squad 1   2 units") != std::string::npos;
     }));
     VERIFY(std::any_of(messages.begin(), messages.end(), [](const std::string& s) {
-        return s.find("Order: Holding") != std::string::npos;
+        return s.find("Order:Holding") != std::string::npos;
     }));
     live_squads.pop_back(); PortCeCmdFrame();
     VERIFY(gSelected == -1);
     messages.clear(); StrategicRenderPrefix();
-    VERIFY(std::find(messages.begin(), messages.end(), "No squad selected") != messages.end());
+    VERIFY(std::find(messages.begin(), messages.end(), "No Unit or Squad Picked") != messages.end());
 
     // The display is stale on purpose. Every action must obtain a new list,
     // not rely on a render or frame happening between world change and input.
-    Fixture(); Open(true); TapLiveKey(DIK_TAB);
+    Fixture(); Open(true); AuthoredWorldView(); TapLiveKey(DIK_TAB);
     live_squads.erase(live_squads.begin()); TapLiveKey(DIK_H);
     VERIFY(gSelected == -1 && issue_attempts == 0 && accepted_orders == 0);
     VERIFY(std::string(gNote) == "Pick a squad first.");
 
-    Fixture(); Open(true); TapLiveKey(DIK_TAB);
+    Fixture(); Open(true); AuthoredWorldView(); TapLiveKey(DIK_TAB);
     // A new squad in the same list slot has a new lifetime ordinal. The
     // adapter must not silently transfer the previous selection to it.
     live_squads[0].ordinal = 89; TapLiveKey(DIK_H);
     VERIFY(gSelected == -1 && issue_attempts == 0 && accepted_orders == 0);
 
-    Fixture(); Open(true); TapLiveKey(DIK_TAB);
+    Fixture(); Open(true); AuthoredWorldView(); TapLiveKey(DIK_TAB);
     live_squads[0].friendly = live_squads[0].commandable = false;
     TapLiveKey(DIK_H);
     VERIFY(gSelected == -1 && issue_attempts == 0);
@@ -959,22 +1419,22 @@ void LiveSquadInteractions() {
     VERIFY(gSelected == -1 && Near(gViewX, before_x) && Near(gViewY, before_y));
     TapLiveKey(DIK_TAB); VERIFY(gSelected == -1 && issue_attempts == 0);
 
-    Fixture(); Open(true); TapLiveKey(DIK_TAB); refuse_next_order = true;
+    Fixture(); Open(true); AuthoredWorldView(); TapLiveKey(DIK_TAB); refuse_next_order = true;
     TapLiveKey(DIK_H);
     VERIFY(issue_attempts == 1 && accepted_orders == 0);
     VERIFY(std::string(gNote) == "Squad no longer takes orders.");
     VERIFY(live_squads[0].verb == CE_CMD_NONE);
 
-    Fixture(); Open(true); TapLiveKey(DIK_TAB); pilot.life = 0;
+    Fixture(); Open(true); AuthoredWorldView(); TapLiveKey(DIK_TAB); pilot.life = 0;
     TapLiveKey(DIK_H);
     VERIFY(!gOpen && accepted_orders == 0 && issue_attempts == 0);
-    Fixture(); Open(true); TapLiveKey(DIK_TAB); GAME.ordinary = false;
+    Fixture(); Open(true); AuthoredWorldView(); TapLiveKey(DIK_TAB); GAME.ordinary = false;
     TapLiveKey(DIK_H);
     VERIFY(!gOpen && accepted_orders == 0 && issue_attempts == 0);
-    Fixture(); Open(true); TapLiveKey(DIK_TAB); LT.SetKeytrap(OtherTrap);
+    Fixture(); Open(true); AuthoredWorldView(); TapLiveKey(DIK_TAB); LT.SetKeytrap(OtherTrap);
     TapLiveKey(DIK_H);
     VERIFY(!gOpen && LT.GetKeytrap() == OtherTrap && issue_attempts == 0);
-    Fixture(); Open(true); TapLiveKey(DIK_TAB); ++pilot.creation_number;
+    Fixture(); Open(true); AuthoredWorldView(); TapLiveKey(DIK_TAB); ++pilot.creation_number;
     TapLiveKey(DIK_H);
     VERIFY(!gOpen && accepted_orders == 0 && issue_attempts == 0);
 }
@@ -991,10 +1451,187 @@ void SetX87SinglePrecision() {
 }
 #endif
 
+void SessionGestureCleanup() {
+    Fixture(); Open(true); VERIFY(gOpen && gStrategic);
+    const auto dirty = [] {
+        gBoxing = true; gBoxX = 11; gBoxY = 17;
+        gStrategicDragging = true; gStrategicDragX = 7; gStrategicDragY = -9;
+        gStrategicWheel = 2; gArmed = true;
+    };
+    const auto clean = [] {
+        VERIFY(!gBoxing && !gStrategicDragging && gStrategicWheel == 0);
+        VERIFY(gBoxX == 0 && gBoxY == 0 && gStrategicDragX == 0 && gStrategicDragY == 0);
+        VERIFY(!gArmed);
+    };
+    dirty(); Close(); VERIFY(!gOpen); clean();
+    dirty(); Open(true); VERIFY(gOpen && gStrategic); clean();
+    AuthoredWorldView();
+    const int before = accepted_orders;
+    VERIFY(Trap(WORD(0), KEY_EVENT_UP));
+    VERIFY(Trap(WORD(1), KEY_EVENT_UP));
+    VERIFY(accepted_orders == before && !gBoxing && !gStrategicDragging);
+    dirty(); SwitchView(false); VERIFY(gOpen && !gStrategic); clean();
+    dirty(); SwitchView(true); VERIFY(gOpen && gStrategic); clean();
+    dirty(); PortCeCmdLevelEnd(); VERIFY(!gOpen); clean();
+}
+
+void DialogueLayoutAndInput() {
+    Fixture(); Open(true);
+    const int before_ready = accepted_orders;
+    TapLiveKey(DIK_H);
+    VERIFY(accepted_orders == before_ready && !StrategicUiReady());
+    AuthoredWorldView(); SelectOnly(gSquads[0].ordinal);
+    VERIFY(StrategicUiReady() && StrategicUiBottom() == L.h);
+    const auto hold_point = [](int &x, int &y) {
+        for (y = 0; y < L.h; y += 2)
+            for (x = 0; x < L.w; x += 2)
+                if (StrategicButtonAt(float(x), float(y)) == 2) return true;
+        return false;
+    };
+    int old_x = 0, old_y = 0;
+    VERIFY(hold_point(old_x, old_y));
+    const float caption_top = float(L.h) * 0.72f;
+    {
+        CeHudReservationScope caption(gStrategicViewSession, PortPresentCount(), L.w, L.h);
+        CeHudReservationQuad(0, caption_top, float(L.w), caption_top,
+            0, float(L.h), float(L.w), float(L.h), 0xffffffffu);
+    }
+    AuthoredWorldView();
+    VERIFY(gStrategicUi.hasDialogue && StrategicUiBottom() < caption_top);
+    int new_x = 0, new_y = 0;
+    VERIFY(hold_point(new_x, new_y) && new_y < old_y);
+    VERIFY(StrategicButtonAt(float(old_x), float(old_y)) == -1);
+    VERIFY(!StrategicWorldArea(float(old_x), float(old_y)));
+    const int before = accepted_orders;
+    ClickWorld(0, old_x, old_y); VERIFY(accepted_orders == before);
+    ClickWorld(0, new_x, new_y);
+    VERIFY(accepted_orders == before + 1 && last_order_verb == CE_CMD_HOLD);
+    StrategicViewInvalidate();
+    ClickWorld(0, new_x, new_y); TapLiveKey(DIK_H);
+    VERIFY(accepted_orders == before + 1 && !StrategicUiReady());
+    AuthoredWorldView();
+    ++PLATFORM.width; VERIFY(!StrategicUiReady());
+    ClickWorld(0, new_x, new_y); VERIFY(accepted_orders == before + 1);
+    --PLATFORM.width;
+    ++L.w; VERIFY(!StrategicUiReady());
+    ClickWorld(0, new_x, new_y); VERIFY(accepted_orders == before + 1);
+    --L.w;
+    fake_ms += 1000; AuthoredWorldView();
+    VERIFY(!gStrategicUi.hasDialogue && StrategicUiBottom() == L.h);
+    Close(); VERIFY(!StrategicUiReady());
+}
+
+
+static void NativePresentationJourney() {
+    Fixture();
+    const FVector pilot_before = pilot.position;
+    const float life_before = pilot.life;
+    const FVector cockpit_before = original_camera.mPos;
+    Open(true);
+    VERIFY(PortCeCmdRenderCamera(&original_camera, &player) == &gStrategicPresentedCamera);
+    VERIFY(SamePosition(gStrategicPresentedCamera.mPos, cockpit_before));
+    fake_ms += 100;
+    VERIFY(PortCeCmdRenderCamera(&original_camera, &player) == &gStrategicPresentedCamera);
+    VERIFY(!SamePosition(gStrategicPresentedCamera.mPos, cockpit_before));
+    VERIFY(!SamePosition(gStrategicPresentedCamera.mPos, gStrategicCamera.mPos));
+    const FVector intermediate = gStrategicPresentedCamera.mPos;
+    PortCeCmdRenderCamera(&original_camera, &player);
+    VERIFY(SamePosition(gStrategicPresentedCamera.mPos, intermediate));
+    fake_ms += 400;
+    PortCeCmdRenderCamera(&original_camera, &player);
+    VERIFY(SamePosition(gStrategicPresentedCamera.mPos, gStrategicCamera.mPos));
+    VERIFY(SamePosition(pilot.position, pilot_before) && pilot.life == life_before);
+    VERIFY(SamePosition(original_camera.mPos, cockpit_before));
+    const FVector strategic = gStrategicPresentedCamera.mPos;
+    const int orders_before = accepted_orders;
+    Close();
+    VERIFY(!gOpen && !gStrategicOwner.Active() && GAME.controller.target == &pilot);
+    VERIFY(gNativeReturning);
+    const CeCommanderCameraContext return_context = StrategicContext();
+    VERIFY(return_context.admitted_ordinary_solo);
+    VERIFY(return_context.live_pilot);
+    VERIFY(return_context.camera_available);
+    VERIFY(LT.GetKeytrap() == NULL);
+    VERIFY(SameCameraBinding(return_context.binding, gNativeReturnBinding));
+    VERIFY(GAME.GetCurrentCamera(0) == gNativeReturnOriginal);
+    VERIFY(PortCeCmdHideCockpit());
+    VERIFY(PortCeCmdWorldViewToken() == 0);
+    VERIFY(PortCeCmdRenderCamera(&original_camera, &player) == &gStrategicPresentedCamera);
+    VERIFY(SamePosition(gStrategicPresentedCamera.mPos, strategic));
+    CGenericCamera secondary;
+    VERIFY(PortCeCmdRenderCamera(&secondary, &player) == &secondary && gNativeReturning);
+    original_camera.mPos.X += 12.0f;
+    pilot.life -= 1.0f;
+    fake_ms += 100;
+    VERIFY(PortCeCmdRenderCamera(&original_camera, &player) == &gStrategicPresentedCamera);
+    VERIFY(!SamePosition(gStrategicPresentedCamera.mPos, strategic));
+    VERIFY(!SamePosition(gStrategicPresentedCamera.mPos, original_camera.mPos));
+    VERIFY(pilot.life == life_before - 1.0f && SamePosition(pilot.position, pilot_before));
+    fake_ms += 400;
+    VERIFY(PortCeCmdRenderCamera(&original_camera, &player) == &original_camera);
+    VERIFY(!gNativeReturning && !PortCeCmdHideCockpit());
+    VERIFY(accepted_orders == orders_before);
+
+    Fixture(); Open(true); PortCeCmdRenderCamera(&original_camera, &player);
+    fake_ms += 400; PortCeCmdRenderCamera(&original_camera, &player); Close();
+    fake_ms += 100; PortCeCmdRenderCamera(&original_camera, &player);
+    const FVector returning = gStrategicPresentedCamera.mPos;
+    Open(true);
+    VERIFY(PortCeCmdRenderCamera(&original_camera, &player) == &gStrategicPresentedCamera);
+    VERIFY(SamePosition(gStrategicPresentedCamera.mPos, returning) && !gNativeReturning);
+    Close();
+
+    Fixture();
+    original_camera.mOrientation.Row[0] = FVector(0,0,0);
+    Open(true);
+    VERIFY(PortCeCmdRenderCamera(&original_camera, &player) == &gStrategicPresentedCamera);
+    VERIFY(SamePosition(gStrategicPresentedCamera.mPos, gStrategicCamera.mPos));
+    VERIFY(!gNativeEntering && gStrategicOwner.Active());
+    gStrategicCamera.mOrientation.Row[0] = FVector(0,0,0);
+    VERIFY(NativeStrategicPresentation(&original_camera) == &original_camera);
+    VERIFY(!gStrategicOwner.Active() && !gNativePresented && !gStrategicRender);
+    Close();
+
+    for (int invalidation = 0; invalidation < 6; ++invalidation) {
+        Fixture(); Open(true); PortCeCmdRenderCamera(&original_camera, &player);
+        fake_ms += 400; PortCeCmdRenderCamera(&original_camera, &player); Close();
+        VERIFY(gNativeReturning);
+        CGenericCamera replacement;
+        if (invalidation == 0) unit_owns_pilot = true;
+        if (invalidation == 1) ++gMissionLifetime;
+        if (invalidation == 2) pilot.life = 0.0f;
+        if (invalidation == 3) GAME.camera = &replacement;
+        if (invalidation == 4) { PortCeCmdLevelEnd(); VERIFY(!gNativeReturning); }
+        if (invalidation == 5) LT.SetKeytrap(OtherTrap);
+        CCamera* current = GAME.camera;
+        VERIFY(PortCeCmdRenderCamera(current, &player) == current);
+        VERIFY(!gNativeReturning && !PortCeCmdHideCockpit());
+    }
+}
+
 int main() {
 #ifdef CE_X87_SINGLE_PRECISION
     SetX87SinglePrecision();
 #endif
+    ReboundCommanderInput();
+    FactoryCardInput();
+    Fixture();
+    // Possession and the return-to-pilot transition both keep the map from stealing control.
+    unit_owns_pilot=true;
+    VERIFY(!PortCeCmdKey(DIK_M,false) && !gOpen && !gStrategic && !unit_map_boundaries);
+    VERIFY(std::string(gNote) == "Return to your Battle Engine to command.");
+    gNote[0] = 0;
+    VERIFY(!PortCeCmdKey(DIK_M,true) && !gOpen && !gStrategic && !unit_map_boundaries);
+    VERIFY(!gNote[0]);
+    Open(true);
+    VERIFY(!gOpen && !unit_map_boundaries && GAME.controller.target == &pilot);
+    unit_owns_pilot=false;
+    VERIFY(PortCeCmdKey(DIK_M,true) && !gOpen && !unit_map_boundaries);
+    VERIFY(PortCeCmdKey(DIK_M,false) && gOpen && gStrategic && unit_map_boundaries==1);
+    Close();
+    VERIFY(!gOpen && unit_map_boundaries==2 && GAME.controller.target==&pilot);
+    Close();
+    VERIFY(unit_map_boundaries==2);
     Fixture();
 #ifdef CE_CAMERA_EDITOR_HUD_QUERY
     VERIFY(!PortCePhotoOn() && !PortCeCmdSuppressFlightHud());
@@ -1010,18 +1647,19 @@ int main() {
     editor_hud = false;
     { CePhotoDrawScope restored; VERIFY(draws_dropped == 0); }
 #endif
-    VERIFY(PortCeCmdRenderCamera(&original_camera, &player) == &original_camera);
+    VERIFY(StrategicFrameCamera() == NULL && PortCeCmdRenderCamera(&original_camera, &player) == &original_camera);
     VERIFY(PresentationCamera(&original_camera, &player) == &original_camera);
     VERIFY(!PortCeCmdSuppressFlightHud() && !draw_filter);
     VERIFY(!Trap(DIK_V, KEY_EVENT_DOWN) && !gOpen);
     GAME.ordinary = false;
-    VERIFY(PortCeCmdRenderCamera(&original_camera, &player) == &original_camera);
+    VERIFY(StrategicFrameCamera() == NULL && PortCeCmdRenderCamera(&original_camera, &player) == &original_camera);
     GAME.ordinary = true;
     Open();
     VERIFY(gOpen && !gStrategic && GAME.paused && GAME.pause_calls == 1);
     VERIFY(!PortCeCmdSuppressFlightHud() && !draw_filter);
     VERIFY(GAME.controller.target == &gSink);
-    VERIFY(PortCeCmdRenderCamera(&original_camera, &player) == &original_camera);
+    VERIFY(StrategicFrameCamera() == NULL && PortCeCmdRenderCamera(&original_camera, &player) == &original_camera);
+    VERIFY(entered_calls == 0);
     const FVector before = original_camera.mPos;
     const float fitted_x = gViewX, fitted_y = gViewY, fitted_span = gViewSpan;
     VERIFY(Trap(DIK_V, KEY_EVENT_DOWN));
@@ -1029,14 +1667,13 @@ int main() {
     VERIFY(!GAME.paused && GAME.pause_calls == 1);
     VERIFY(GAME.controller.target == &pilot && pilot.life == 10);
     VERIFY(SamePosition(original_camera.mPos, before));
-    VERIFY(PortCeCmdSuppressFlightHud() && draw_filter && !PortCePhotoOn());
+    // The live view leaves the game's frame alone: it asks for no draw filter and drops no draw (its own picture covers a frame the game drew whole).
+    VERIFY(!PortCeCmdSuppressFlightHud() && !draw_filter && !PortCePhotoOn() && entered_calls == 1 && left_calls == 0);
+    VERIFY(PortCeCmdWorldViewToken() == gStrategicViewSession && PortCeCmdWorldViewToken() != 0);
     {
         CePhotoDrawScope cockpit_or_flight_overlay;
-        VERIFY(draws_dropped == 1);
-        { CePhotoDrawScope nested; VERIFY(draws_dropped == 2); }
-        VERIFY(draws_dropped == 1);
+        VERIFY(draws_dropped == 0);
     }
-    VERIFY(draws_dropped == 0); // Message-box draws outside the flight scope remain visible.
     VERIFY(Near(gViewX, fitted_x) && Near(gViewY, fitted_y) && Near(gViewSpan, fitted_span));
     const FVector initial_view = gStrategicCamera.mPos;
     for (int i = 0; i < 120; ++i) { fake_ms += 16; PortCeCmdFrame(); }
@@ -1047,9 +1684,12 @@ int main() {
                 fitted_x + fitted_span * 0.5f));
     VERIFY(Near(gStrategicCamera.mPos.Y + forward.Y * gViewSpan * 0.8f,
                 fitted_y + fitted_span * 0.5f));
-    VERIFY(PortCeCmdRenderCamera(&original_camera, &player) == &gStrategicCamera);
+    VERIFY(StrategicFrameCamera() == &gStrategicCamera);
+    // The engine is never given the strategic camera: with the view live, the presentation hook (patch 0200's lines, as the engine calls them)
+    // hands back the camera it was given, in the CE build and in the faithful one alike.
+    VERIFY(PortCeCmdRenderCamera(&original_camera, &player) == &gStrategicPresentedCamera);
 #if defined(CE_VERSION)
-    VERIFY(PresentationCamera(&original_camera, &player) == &gStrategicCamera);
+    VERIFY(PresentationCamera(&original_camera, &player) == &gStrategicPresentedCamera);
 #else
     VERIFY(PresentationCamera(&original_camera, &player) == &original_camera);
 #endif
@@ -1062,6 +1702,10 @@ int main() {
     VERIFY(GAME.simulation_ticks == 1 && pilot.life == 9);
     Trap(DIK_V, KEY_EVENT_DOWN); // held entry key does not bounce back to the map
     VERIFY(gStrategic);
+    // The paused map is a tester's page: without its ce.ini switch V does nothing in the live view.
+    Trap(DIK_V, KEY_EVENT_UP); tactical_allowed = false; Trap(DIK_V, KEY_EVENT_DOWN); Trap(DIK_V, KEY_EVENT_UP);
+    VERIFY(gOpen && gStrategic && gStrategicOwner.Active() && !GAME.paused);
+    tactical_allowed = true;		// and with it V goes to the paused map (below)
     Trap(DIK_W, KEY_EVENT_DOWN); fake_ms += 50;
     const FVector strategic_before = gStrategicCamera.mPos;
     PortCeCmdFrame();
@@ -1069,12 +1713,37 @@ int main() {
     VERIFY(gViewY > fitted_y && Near(gViewX, fitted_x));
     VERIFY(SamePosition(original_camera.mPos, before));
     VERIFY(GAME.controller.target == &pilot && !GAME.paused);
+    StrategicViewInvalidate(); authored_view.viewport = {0, 0, 800, 600, 0, 1};
     StrategicRenderPrefix();
-    VERIFY(draw_starts == 1 && draw_ends == 1);
-    VERIFY(std::any_of(messages.begin(), messages.end(), [](const std::string& m) {
-        return m.find("Esc pilot") != std::string::npos;
-    }));
-    VERIFY(cursor_draws==1 && !text_y.empty() && text_y[0]==8*L.s);
+    // One frame of the picture: drawn from the strategic camera, its view kept for the pointer, the map's text and cursor over it.
+    VERIFY(draw_starts == 1 && draw_ends == 1 && pictured_camera == &gStrategicCamera && gStrategicSampleValid);
+    // The prompt line names the way back to the cockpit, and the title panel's "Commander" is drawn in the top left group.
+    // (each prompt's key and what it does are drawn as two words: the key white, the action grey)
+    {
+        const auto esc = std::find(messages.begin(), messages.end(), std::string("Esc"));
+        VERIFY(esc != messages.end() && std::find(esc, messages.end(), std::string("Cockpit")) != messages.end());
+    }
+    {
+        const auto title = std::find(messages.begin(), messages.end(), std::string("Commander"));
+        VERIFY(title != messages.end() && text_y[title - messages.begin()] == 10 * L.s);
+    }
+    VERIFY(cursor_draws==1 && !text_y.empty());
+    // F1 held shows the full list of keys, and only while it is held
+    VERIFY(std::find(messages.begin(), messages.end(), std::string("Delete")) == messages.end());
+    Trap(DIK_F1, KEY_EVENT_DOWN); messages.clear(); StrategicViewInvalidate(); StrategicRenderPrefix();
+    VERIFY(std::find(messages.begin(), messages.end(), std::string("Delete")) != messages.end() &&
+           std::find(messages.begin(), messages.end(), std::string("Back to their own orders")) != messages.end());
+    Trap(DIK_F1, KEY_EVENT_UP); messages.clear(); StrategicViewInvalidate(); StrategicRenderPrefix();
+    VERIFY(std::find(messages.begin(), messages.end(), std::string("Delete")) == messages.end());
+    draw_starts = draw_ends = 1; cursor_draws = 1;		// as the frame above left them, for the checks that follow
+    // A faded colour keeps its full alpha at full strength, half at half, none at none, whatever way the unit rounds 255.5.
+    VERIFY((Faded(0xffeef2f6, 1.f) >> 24) == 0xff && (Faded(0xffeef2f6, 1.f) & 0xffffff) == 0xeef2f6);
+    VERIFY((Faded(0xff000000, 0.5f) >> 24) == 0x80 && (Faded(0xaf000000, 0.f) >> 24) == 0 && (Faded(0xaf000000, 2.f) >> 24) == 0xaf);
+    // Where no picture can be made nothing is drawn, and the pointer is left without a view to pick from.
+    picture_available = false; messages.clear();
+    StrategicRenderPrefix();
+    VERIFY(draw_starts == 1 && draw_ends == 1 && !gStrategicSampleValid && messages.empty() && cursor_draws == 1);
+    picture_available = true;
     Trap(DIK_W, KEY_EVENT_UP);
     const float pan_centre_x = gViewX + gViewSpan * 0.5f;
     const float pan_centre_y = gViewY + gViewSpan * 0.5f;
@@ -1090,9 +1759,10 @@ int main() {
     VERIFY(SamePosition(gStrategicCamera.mPos, panned_view));
     Trap(DIK_V, KEY_EVENT_UP); Trap(DIK_V, KEY_EVENT_DOWN);
     VERIFY(gOpen && !gStrategic && GAME.paused && GAME.pause_calls == 2);
-    VERIFY(PortCeCmdRenderCamera(&original_camera, &player) == &original_camera);
+    VERIFY(StrategicFrameCamera() == NULL && PortCeCmdRenderCamera(&original_camera, &player) == &original_camera);
     VERIFY(PresentationCamera(&original_camera, &player) == &original_camera);
-    VERIFY(!PortCeCmdSuppressFlightHud() && !draw_filter && draws_dropped == 0);
+    VERIFY(!PortCeCmdSuppressFlightHud() && !draw_filter && draws_dropped == 0 && left_calls == 1);
+    VERIFY(PortCeCmdWorldViewToken() == 0);
     VERIFY(Near(gViewX, panned_x) && Near(gViewY, panned_y));
     Close(); Open(true); // The map's key-up handler is outside this extracted input fragment.
     VERIFY(gStrategic && Near(gViewX, panned_x) && Near(gViewY, panned_y));
@@ -1103,21 +1773,21 @@ int main() {
     // M after V: a switch keeps the trap's record of held keys, so the first M after a V closes the view the V opened,
     // while an M still held from the press that opened the map stays a repeat.
     Fixture(); Open();
-    VERIFY(gOpen && !gStrategic && gDown[kOpenKey]); // the M that opened the map from the battle may repeat
-    gDown[kOpenKey] = false; // its release: the paused map's key-up handler is outside this extracted fragment
+    VERIFY(gOpen && !gStrategic && gDown[gCloseKey]); // the M that opened the map from the battle may repeat
+    gDown[gCloseKey] = false; // its release: this camera-switch case starts from an unheld opener
     VERIFY(Trap(DIK_V, KEY_EVENT_DOWN) && gOpen && gStrategic && gDown[DIK_V]);
     Trap(DIK_V, KEY_EVENT_UP);
     VERIFY(Trap(DIK_M, KEY_EVENT_DOWN)); // the first M after the V
     VERIFY(!gOpen && !gStrategic && !gStrategicOwner.OwnsCapture() && !GAME.paused);
     VERIFY(GAME.controller.target == &pilot);
 
-    Fixture(); Open(); gDown[kOpenKey] = false;
+    Fixture(); Open(); gDown[gCloseKey] = false;
     VERIFY(Trap(DIK_V, KEY_EVENT_DOWN) && gStrategic);
     Trap(DIK_V, KEY_EVENT_UP);
     VERIFY(Trap(DIK_V, KEY_EVENT_DOWN) && gOpen && !gStrategic && GAME.paused);
     // Back on the paused map, its own key handler (outside this fragment) takes a key-down as a press when this record
     // says the key is up: the next M closes.
-    VERIFY(gDown[DIK_V] && !gDown[kOpenKey]);
+    VERIFY(gDown[DIK_V] && !gDown[gCloseKey]);
 
     Fixture(); Open(); // M still held from the press that opened the map
     VERIFY(Trap(DIK_V, KEY_EVENT_DOWN) && gStrategic);
@@ -1131,18 +1801,20 @@ int main() {
     Trap(DIK_ESCAPE, KEY_EVENT_DOWN);
     VERIFY(!gOpen && !gStrategicOwner.OwnsCapture() && gEscClosed);
     VERIFY(GameAccess::pause_field_reads == 0 && GAME.controller.target_changes == 0);
-    VERIFY(PortCeCmdRenderCamera(&original_camera, &player) == &original_camera);
+    VERIFY(StrategicFrameCamera() == NULL && PortCeCmdRenderCamera(&original_camera, &player) == &original_camera);
+    VERIFY(entered_calls == 1 && left_calls == 1);
 
     Fixture(); Open(true); GAME.ordinary = false;
     PortCeCmdFrame();
     VERIFY(!gOpen && !gStrategicOwner.OwnsCapture());
     VERIFY(!GAME.paused && GAME.controller.target == &pilot);
     VERIFY(!PortCeCmdSuppressFlightHud() && !draw_filter);
-    VERIFY(PortCeCmdRenderCamera(&original_camera, &player) == &original_camera);
+    VERIFY(StrategicFrameCamera() == NULL && PortCeCmdRenderCamera(&original_camera, &player) == &original_camera);
 
+    // Photo mode's draw filter is photo mode's alone: the live view neither takes it nor gives it back.
     Fixture(); Open(true); photo_on = true;
     Close();
-    VERIFY(!PortCeCmdSuppressFlightHud() && draw_filter && PortCePhotoOn());
+    VERIFY(!PortCeCmdSuppressFlightHud() && !draw_filter && PortCePhotoOn());
 
     Fixture(); Open(true);
     CBattleEngine replacement_pilot; CPlayer replacement_player;
@@ -1150,19 +1822,19 @@ int main() {
     CGenericCamera replacement_camera;
     GAME.player = &replacement_player; GAME.camera = &replacement_camera;
     GAME.controller.target = &replacement_pilot;
-    VERIFY(PortCeCmdRenderCamera(&replacement_camera, &replacement_player) == &replacement_camera);
+    VERIFY(StrategicFrameCamera() == NULL && PortCeCmdRenderCamera(&replacement_camera, &replacement_player) == &replacement_camera);
     StrategicRenderPrefix();
     VERIFY(!gOpen && !gStrategicOwner.OwnsCapture());
     VERIFY(GAME.controller.target == &replacement_pilot && !GAME.paused);
 
     Fixture(); Open(true); ++pilot.creation_number;
-    VERIFY(PortCeCmdRenderCamera(&original_camera, &player) == &original_camera);
+    VERIFY(StrategicFrameCamera() == NULL);
     StrategicRenderPrefix();
     VERIFY(!gOpen && !gStrategicOwner.OwnsCapture());
     VERIFY(GAME.controller.target == &pilot && !GAME.paused);
 
     Fixture(); Open(true); pilot.life = 0;
-    VERIFY(PortCeCmdRenderCamera(&original_camera, &player) == &original_camera);
+    VERIFY(StrategicFrameCamera() == NULL);
     StrategicRenderPrefix();
     VERIFY(!gOpen && !gStrategicOwner.OwnsCapture());
     VERIFY(GAME.controller.target == &pilot && !GAME.paused);
@@ -1177,14 +1849,21 @@ int main() {
     PortCeCmdLevelEnd();
     VERIFY(!gOpen && !gStrategicOwner.OwnsCapture() && gMissionLifetime != mission_before);
     VERIFY(!GAME.paused && GAME.controller.target == &pilot);
-    VERIFY(PortCeCmdRenderCamera(&original_camera, &player) == &original_camera);
+    VERIFY(StrategicFrameCamera() == NULL && PortCeCmdRenderCamera(&original_camera, &player) == &original_camera);
     LiveSquadInteractions();
     LivePointerInteractions();
+    SessionGestureCleanup();
+    DialogueLayoutAndInput();
+    VisibleRouteBearing();
+    CameraReacquiresSquad();
+    DrawnMemberInteractions();
+    LiveSelectionInteractions();
     MapPanTiming();
     RenderTimeCamera();
     TwoDaysOfUptime();
     KeysAsHeldNow();
     KeyDirections();
+    NativePresentationJourney();
     std::cout << "source-bound commander camera integration controls passed"
 #ifdef CE_X87_SINGLE_PRECISION
               << " (x87 unit at single precision)"

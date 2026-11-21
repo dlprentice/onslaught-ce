@@ -269,7 +269,7 @@ class MessageBox(unittest.TestCase):
 
     @unittest.skipUnless(Path(INSTALL, "data").is_dir(), "no game install (BEA_GAME_DIR)")
     def test_terminal_answers_when_the_box_cannot(self):
-        # The session-recording question on the terminal: after a crashed box, and with no display; 3 = Stop recording.
+        # The session-recording question on the terminal: after a crashed box, and with no display; 3 = Turn recording off.
         for display, crash in ((True, True), (False, False)):
             with self.subTest(display=display, crash=crash):
                 (self.dir / "user/ce.ini").write_text("record_sessions=1\n")

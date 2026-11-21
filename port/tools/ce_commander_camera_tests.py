@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-FileCopyrightText: Onslaught CE contributors
 # SPDX-License-Identifier: GPL-3.0-only
-"""Exercise only the CE camera owner with an authored consumer.
+"""Exercise the CE camera and its production keybinding and factory consumers with an authored world.
 
 No original game source, assets, engine process, display or network is used.
 Compiler and control output stays in an ignored repo-local run directory.
@@ -80,6 +80,17 @@ def marked(source: str, begin: str, end: str) -> str:
     return source.split(begin, 1)[1].split(end, 1)[0]
 
 
+def native_scene_owner_token(text):
+    marker = "uint64_t PortCeCmdWorldViewToken()"
+    start = text.index(marker)
+    opening = text.index("{", start)
+    depth, end = 1, opening + 1
+    while depth:
+        depth += (text[end] == "{") - (text[end] == "}")
+        end += 1
+    return text[start:end] + "\n"
+
+
 def integration_fragment(source: str) -> str:
     block = marked(source, "// CE_STRATEGIC_CAMERA_BEGIN:", "// CE_STRATEGIC_CAMERA_END")
     # The marker's description is a comment, not part of the translation unit.
@@ -89,23 +100,26 @@ def integration_fragment(source: str) -> str:
                          definition(source, "Trap"))
     if len(release) != 1:
         raise ValueError("paused map key-release path unavailable")
+    paused_keys = marked(definition(source, "Trap"), release[0], "switch (key)")
     render = marked(source, "// CE_STRATEGIC_RENDER_BEGIN", "// CE_STRATEGIC_RENDER_END")
     navigation = marked(source, "// CE_MAP_PAN_BEGIN", "// CE_MAP_PAN_END")
-    return "\n".join([
+    return ("\n".join([
+        definition(source, "OpenKey"), definition(source, "Ns"), definition(source, "SecondsBetween"),
         definition(source, "Note"), definition(source, "ByOrdinal"),
         definition(source, "Refresh"), definition(source, "CommandableCount"),
-        definition(source, "Cycle"), definition(source, "WhyText"), definition(source, "OrderName"), definition(source, "Order"),
-        definition(source, "Ns"), definition(source, "SecondsBetween"), definition(source, "FullSpan"), definition(source, "SetView"),
+        definition(source, "Cycle"), definition(source, "WhyText"), definition(source, "OrderName"), definition(source, "SpreadRound"), definition(source, "Order"),
+        definition(source, "SelectOnly"), definition(source, "SelectToggle"), definition(source, "SelectAll"), definition(source, "GroupKey"),
+        definition(source, "FullSpan"), definition(source, "SetView"),
         definition(source, "FitView"), definition(source, "Pan"), block,
         definition(source, "PanMapFrame"), definition(source, "Close"), definition(source, "Open"),
-        "bool Trap(WORD key, int event) {\n" + trap + "\n" + release[0] + "\nreturn false;\n}",
+        "bool Trap(WORD key, int event) {\n" + trap + "\n" + release[0] + paused_keys + "\nreturn false;\n}",
         definition(source, "PortCeCmdFrame"), definition(source, "PortCeCmdLevelEnd"),
-        definition(source, "PortCeCmdWorldViewToken"), definition(source, "PortCeCmdKey"),
+        definition(source, "PortCeCmdKey"),
         definition(source, "PortCeCmdRenderCamera"),
-        definition(source, "PortCeCmdSuppressFlightHud"),
+        definition(source, "PortCeCmdSuppressFlightHud") + "\n\n" + definition(source, "PortCeCmdHideCockpit"),
         "void StrategicRenderPrefix() {\n" + render + "\n}",
         "void MapRenderNavigation() {\n" + navigation + "\n}",
-    ])
+    ])) + "\n" + native_scene_owner_token(source)
 
 
 X87_FLAGS = ["-m32", "-mfpmath=387", "-mno-sse"]
@@ -131,6 +145,27 @@ def integration_controls(repo: Path, compiler: str, logs: Path) -> bool:
     public_flag = public_ce_define(repo)
     public_macro = public_flag[2:].split("=", 1)[0]
     source = (repo / "port" / "game" / "ce_cmdmap.cpp").read_text()
+    # The key store and the whole factory owner are compiled below. Only the stock
+    # settings, engine objects and physical input table are supplied by the host fixture.
+    support = logs / "authored-engine"
+    support.mkdir()
+    for header_name in ("common.h", "game.h", "world.h", "unit.h", "thing.h",
+                        "SpawnerThng.h", "WorldPhysicsManager.h"):
+        (support / header_name).write_text("// The authored factory world precedes the production source.\n")
+    policy = (repo / "port/game/ce_dodge_assist.cpp").read_text()
+    policy_part = "\n".join(definition(policy, name) for name in
+                            ("KeyBound", "PortCeActionEnabled", "PortCeActionConflict"))
+    (support / "camera_binding_conflicts.inc").write_text(policy_part + "\n")
+    driver = (repo / "port/tools/ce_commander_camera_tests.cpp").read_text()
+    scancodes = (repo / "port/include/linux/dinput.h").read_text()
+    used = sorted(set(re.findall(r"\bDIK_[A-Z0-9_]+\b", source + policy_part + driver)))
+    labels = []
+    for key in used:
+        matched = re.findall(r"(?m)^#define[ \t]+" + key + r"[ \t]+(0[xX][0-9a-fA-F]+)\b", scancodes)
+        if len(matched) != 1:
+            raise ValueError("no unique platform scan code: " + key)
+        labels.append(f"constexpr unsigned short {key} = {matched[0]};")
+    (support / "camera_platform_keys.inc").write_text("\n".join(labels) + "\n")
     # build.py compiles port/game with the game's rule, whose include list has no SDL directory on Windows (a Linux
     # build finds SDL's headers in the sysroot, so only a Windows build shows it): the map's wall clock is the port's.
     if re.search(r'(?m)^[ \t]*#[ \t]*include[ \t]*[<"]SDL', source) or "PortClockRawNs()" not in definition(source, "Ns"):
@@ -159,10 +194,14 @@ def integration_controls(repo: Path, compiler: str, logs: Path) -> bool:
     (logs / "ce_photo.h").write_text(header)
     executable = logs / "camera-integration-controls"
     command = [
-        compiler, "-std=c++11", "-Wall", "-Wextra", "-Werror", "-pedantic",
+        compiler, "-std=c++17", "-Wall", "-Wextra", "-Werror", "-pedantic",
         "-DCE_COMMANDER_CAMERA_INTEGRATION", public_flag, "-I", str(logs),
-        "-I", str(repo / "port" / "game"),
-        str(repo / "port" / "game" / "ce_commander_camera.cpp"),
+        "-I", str(repo / "port" / "game"), "-I", str(support),
+        str(repo / "port" / "game" / "ce_commander_camera.cpp"), str(repo / "port" / "game" / "ce_hud_reservation.cpp"),
+        str(repo / "port" / "game" / "ce_dodge_binding.cpp"),
+        str(repo / "port" / "game" / "ce_command_selection.cpp"),
+        str(repo / "port" / "game" / "ce_command_panel.cpp"),
+        str(repo / "port" / "tools" / "tests" / "ce_commander_camera_factory.cpp"),
         str(repo / "port" / "tools" / "ce_commander_camera_tests.cpp"),
         "-o", str(executable),
     ]
@@ -188,10 +227,46 @@ def integration_controls(repo: Path, compiler: str, logs: Path) -> bool:
         if len(lines) != 1:
             raise ValueError("causal guard unavailable")
         mutations[name] = source.replace(lines[0], lines[0].replace("!strategic", "true"), 1)
-    closed = "if (!gOpen || !gStrategic || !gStrategicRender || !gStrategicOwner.Active()) return camera;"
+    closed = "if (!gOpen || !gStrategic || !gStrategicRender || !gStrategicOwner.Active()) return NULL;"
     if source.count(closed) != 1:
         raise ValueError("closed-view guard unavailable")
-    mutations["closed_render"] = source.replace(closed, closed.replace("return camera", "return &gStrategicCamera"))
+    mutations["closed_render"] = source.replace(closed, closed.replace("return NULL", "return &gStrategicCamera"))
+    # The live view leaves the game's frame alone. The engine's presentation hook is given the strategic camera again (the view's first
+    # form); the flight HUD's draws are dropped again; the view takes the device's draw filter; each must be caught.
+    inert_camera = definition(source, 'PortCeCmdRenderCamera')
+    if definition(source, "PortCeCmdRenderCamera").count(inert_camera) != 1:
+        raise ValueError("inert presentation hook unavailable")
+    mutations["engine_given_the_strategic_camera"] = source.replace(
+        inert_camera, inert_camera[:inert_camera.index("{") + 1] + "    (void)player;\n    return gOpen && gStrategic ? &gStrategicCamera : camera;\n}", 1)
+    inert_hud = definition(source, "PortCeCmdSuppressFlightHud")
+    if inert_hud.count("return false;") != 1:
+        raise ValueError("inert flight-scope query unavailable")
+    mutations["flight_hud_dropped_again"] = source.replace(inert_hud, inert_hud.replace("return false;", "return gOpen && gStrategic;", 1), 1)
+    begin = "        gStrategicRender = true;\n        return UpdateStrategicView"
+    if source.count(begin) != 1 or "PortCeDrawHooks" in source or "PortCeDrawsDropped" in source:
+        raise ValueError("the live view must not name the draw filter")
+    mutations["live_view_takes_the_draw_filter"] = source.replace(
+        begin, "        gStrategicRender = true;\n        PortCeDrawHooks(true);\n        return UpdateStrategicView", 1)
+    # The view the pointer picks from: its age, its window and its entry are each checked, and a frame with no picture leaves none.
+    read = definition(source, "StrategicViewRead")
+    for name, clause in (("stale_view_sample", "PortPresentCount() - gStrategicSample.present > 1 || "),
+                         ("view_sample_from_another_window", "gStrategicSampleWidth != L.w || "),
+                         ("view_sample_from_another_entry", "gStrategicSampleSession != gStrategicViewSession ||")):
+        if read.count(clause) != 1:
+            raise ValueError("view-sample guard unavailable")
+        mutations[name] = source.replace(read, read.replace(clause, "", 1), 1)
+    failed = "        } else StrategicViewInvalidate();"
+    if source.count(failed) != 1:
+        raise ValueError("picture-failure anchor unavailable")
+    mutations["picture_failure_keeps_the_view"] = source.replace(failed, "        }", 1)
+    hints = "            DrawStrategicHints();\n            StrategicPictureEnd();"
+    if source.count(hints) != 1:
+        raise ValueError("picture frame anchor unavailable")
+    mutations["picture_never_ended"] = source.replace(hints, "            DrawStrategicHints();", 1)
+    left = "        gStrategicRender = false; gStrategicOriginal = NULL;\n        StrategicLeft();"
+    if source.count(left) != 1:
+        raise ValueError("picture release anchor unavailable")
+    mutations["picture_kept_after_leaving"] = source.replace(left, "        gStrategicRender = false; gStrategicOriginal = NULL;", 1)
     entry = "if (gOpen && key == DIK_V && event == KEY_EVENT_DOWN)"
     if source.count(entry) != 1:
         raise ValueError("explicit entry guard unavailable")
@@ -203,37 +278,31 @@ def integration_controls(repo: Path, compiler: str, logs: Path) -> bool:
         raise ValueError("view-switch key record unavailable")
     mutations["switch_marks_m_held"] = source.replace(carried, "(void)held; gDown[DIK_V] = true;", 1)
     mutations["switch_forgets_a_held_m"] = source.replace(
-        carried, "(void)held; gDown[DIK_V] = true; gDown[kOpenKey] = false;", 1)
-    centre_x = "const float centreX = gViewX + gViewSpan * 0.5f;"
-    centre_y = "const float centreY = gViewY + gViewSpan * 0.5f;"
+        carried, "(void)held; gDown[DIK_V] = true; gDown[gCloseKey] = false;", 1)
+    centre_x = "float centreX = gViewX + gViewSpan * 0.5f;"
+    centre_y = "float centreY = gViewY + gViewSpan * 0.5f;"
     if source.count(centre_x) != 1 or source.count(centre_y) != 1:
         raise ValueError("map-centre conversion unavailable")
-    mutations["idle_focus_drift"] = source.replace(centre_x, "const float centreX = gViewX;", 1).replace(
-        centre_y, "const float centreY = gViewY;", 1)
+    mutations["idle_focus_drift"] = source.replace(centre_x, "float centreX = gViewX;", 1).replace(
+        centre_y, "float centreY = gViewY;", 1)
     focus = "FVector(gViewX + gViewSpan * 0.5f,\n                                      gViewY + gViewSpan * 0.5f, gStrategicFocusZ)"
     if source.count(focus) != 1:
         raise ValueError("strategic map focus unavailable")
     mutations["corner_as_focus"] = source.replace(focus, "FVector(gViewX, gViewY, gStrategicFocusZ)", 1)
-    if source.count("PortCeDrawHooks(true);") != 1:
-        raise ValueError("live draw-filter entry unavailable")
-    mutations["live_filter_disabled"] = source.replace("PortCeDrawHooks(true);", "PortCeDrawHooks(false);", 1)
-    if source.count("PortCeDrawHooks(PortCePhotoOn());") != 1:
-        raise ValueError("live draw-filter restoration unavailable")
-    mutations["live_filter_not_restored"] = source.replace("PortCeDrawHooks(PortCePhotoOn());", "PortCeDrawHooks(true);", 1)
     action = definition(source, "StrategicSquadAction")
     if action.count("Refresh();") != 1 or action.count("!c.live_pilot") != 1:
         raise ValueError("live squad action revalidation unavailable")
     mutations["stale_live_selection"] = source.replace(action, action.replace("    Refresh();\n", "", 1), 1)
     mutations["dead_pilot_order"] = source.replace(action, action.replace(" || !c.live_pilot", "", 1), 1)
-    live_keys = "!repeat && (key == DIK_TAB || key == DIK_C || key == DIK_H || key == DIK_X || key == DIK_A)"
+    live_keys = "!repeat && (key == DIK_TAB || key == DIK_C || key == DIK_H || key == DIK_X || key == DIK_A || key == DIK_B || key == DIK_DELETE"
     if source.count(live_keys) != 1:
         raise ValueError("live order repeat guard unavailable")
     mutations["repeated_live_order"] = source.replace(live_keys, live_keys.replace("!repeat && ", ""), 1)
     pointer = definition(source, "StrategicPointer")
-    if pointer.count("Refresh();") != 1 or pointer.count("if (!StrategicCanAct()) return;") != 1:
+    if pointer.count("Refresh();") != 2 or pointer.count("if (!StrategicCanAct()) { gUnitUi.Cancel(); return; }") != 1:
         raise ValueError("live pointer authority anchors unavailable")
-    mutations["stale_pointer_selection"] = source.replace(pointer, pointer.replace("    Refresh();", "    (void)0;", 1), 1)
-    mutations["pointer_skips_context"] = source.replace(pointer, pointer.replace("if (!StrategicCanAct()) return;", "if (false) return;", 1), 1)
+    mutations["stale_pointer_selection"] = source.replace(pointer, pointer.replace("    Refresh();", "    (void)0;", 2), 1)
+    mutations["pointer_skips_context"] = source.replace(pointer, pointer.replace("if (!StrategicCanAct()) { gUnitUi.Cancel(); return; }", "if (false) return;", 1), 1)
     entry_key = definition(source, "PortCeCmdKey")
     if entry_key.count("Open(true);") != 1:
         raise ValueError("direct live entry anchor unavailable")
@@ -275,8 +344,8 @@ def integration_controls(repo: Path, compiler: str, logs: Path) -> bool:
         pan_keys, pan_keys.replace("CameraKeyDown(DIK_RIGHT)", "gDown[DIK_RIGHT]", 1), 1)
     # Which way each key moves the view (the sign of every axis the camera is given, and of the paused map's pan): a pair of keys swapped, or two axes exchanged.
     key_table = {
-        "pan_horizontal_keys_swapped": ("double(CameraKeyDown(DIK_RIGHT)) - double(CameraKeyDown(DIK_LEFT))",
-                                        "double(CameraKeyDown(DIK_LEFT)) - double(CameraKeyDown(DIK_RIGHT))"),
+        "pan_horizontal_keys_swapped": ('double((CameraKeyDown(DIK_RIGHT) || CameraKeyDown(DIK_D))) - double((CameraKeyDown(DIK_LEFT) || (CameraKeyDown(DIK_A) && !CameraKeyDown(DIK_LCONTROL) && !CameraKeyDown(DIK_RCONTROL))))',
+                                        '-( double((CameraKeyDown(DIK_RIGHT) || CameraKeyDown(DIK_D))) - double((CameraKeyDown(DIK_LEFT) || (CameraKeyDown(DIK_A) && !CameraKeyDown(DIK_LCONTROL) && !CameraKeyDown(DIK_RCONTROL)))) )'),
         "pan_vertical_keys_swapped": ("double(CameraKeyDown(DIK_UP) || CameraKeyDown(DIK_W)) - double(CameraKeyDown(DIK_DOWN) || CameraKeyDown(DIK_S))",
                                       "double(CameraKeyDown(DIK_DOWN) || CameraKeyDown(DIK_S)) - double(CameraKeyDown(DIK_UP) || CameraKeyDown(DIK_W))"),
         "orbit_keys_swapped": ("double(CameraKeyDown(DIK_E)) - double(CameraKeyDown(DIK_Q))", "double(CameraKeyDown(DIK_Q)) - double(CameraKeyDown(DIK_E))"),
@@ -318,6 +387,42 @@ def integration_controls(repo: Path, compiler: str, logs: Path) -> bool:
     if source.count(release) != 1:
         raise ValueError("map navigation release anchor unavailable")
     mutations["map_pan_held_after_release"] = source.replace(release, "if (key < 256) (void)key;", 1)
+    for name, before, after in (
+        ("fixed_commander_open_key", "return (unsigned)PortCeActionKey(CeControlAction::Commander);",
+         "return DIK_M;"),
+        ("occupied_commander_key_opens", " || PortCeActionConflict(CeControlAction::Commander, (int)key)", ""),
+        ("strategic_close_reloads_key", "key == DIK_ESCAPE || key == gCloseKey",
+         "key == DIK_ESCAPE || key == OpenKey()"),
+        ("paused_close_uses_fixed_m", "if (key == gCloseKey) { Close(); return true; }",
+         "if (key == DIK_M) { Close(); return true; }"),
+        ("factory_card_when_absent", "if (!CeFactoryRead(f)) return -1;",
+         "if (!CeFactoryRead(f)) return 1;"),
+        ("factory_button_does_not_queue", "else if (factoryButton == 2) CeFactoryQueue();",
+         "else if (factoryButton == 2) CeFactoryCancel();"),
+        ("factory_button_does_not_cancel", "else if (factoryButton == 3) CeFactoryCancel();",
+         "else if (factoryButton == 3) CeFactoryQueue();"),
+    ):
+        if source.count(before) != 1:
+            raise ValueError("combined input control no longer names one source operation: " + name)
+        mutations[name] = source.replace(before, after, 1)
+    presentation_cases = (
+        ("return_not_started", "Close", "BeginNativeReturn();", "CancelNativeReturn();"),
+        ("return_target_stale", "NativeReturnPresentation", "const CeCommanderPresentedPose target = NativeCameraPose(original);", "const CeCommanderPresentedPose target = gNativeReturnFrom;"),
+        ("return_ignores_unit_owner", "NativeReturnEligible", "CePlayUnitOwnsPilot() ||", "false ||"),
+        ("return_ignores_world", "NativeReturnEligible", "!SameCameraBinding(context.binding, gNativeReturnBinding)", "false"),
+        ("return_overrides_secondary_camera", "NativeReturnPresentation", "original != gNativeReturnOriginal ||", "false ||"),
+        ("presentation_moves_pilot_camera", "NativeStrategicPresentation", "NativePresentPose(shown);", "static_cast<CGenericCamera*>(original)->mPos = FVector(shown.pos[0], shown.pos[1], shown.pos[2]); NativePresentPose(shown);"),
+        ("return_survives_level_end", "PortCeCmdLevelEnd", "CancelNativeReturn();", "(void)gNativeReturning;"),
+        ("reopen_snaps_to_pilot", "PrepareNativeEntry", "gNativeEntrySeeded = NativeReturnEligible();", "gNativeEntrySeeded = false;"),
+        ("entry_has_no_flight", "NativeStrategicPresentation", "gNativeEntering = true;", "gNativeEntering = false;"),
+        ("cockpit_drawn_during_return", "PortCeCmdHideCockpit", " || NativeReturnEligible()", ""),
+    )
+    for name, function_name, before, after in presentation_cases:
+        body = definition(source, function_name)
+        if body.count(before) != 1:
+            raise RuntimeError("presentation mutation anchor unavailable: " + name)
+        mutations[name] = source.replace(body, body.replace(before, after, 1), 1)
+
     results = {}
     for name, changed in mutations.items():
         folder = logs / name
@@ -348,44 +453,8 @@ def integration_controls(repo: Path, compiler: str, logs: Path) -> bool:
     (logs / "macro-compatibility.json").write_text(json.dumps({
         "safe_consumer_compiled": True, "unsafe_calls_rejected": macro_rejected,
     }, indent=2) + "\n")
-    guard_folder = logs / "compiled-out-hook-control"
-    guard_folder.mkdir()
-    (guard_folder / "ce_commander_strategic_actual.inc").write_text(integration_fragment(source))
-    (guard_folder / "ce_commander_strategic_hook.inc").write_text(
-        hook.replace(f"#ifdef {public_macro}", "#ifdef BEA_PORT_CE_LAYER", 1)
-    )
-    guard_command = [str(guard_folder) if item == str(logs) else item for item in command]
-    guard_command[-1] = str(guard_folder / "controls")
-    guard_compiled = run_command(guard_command, guard_folder, "compile")
-    guard_rejected = False
-    if guard_compiled:
-        result = subprocess.run([guard_command[-1]], capture_output=True, timeout=60, check=False)
-        (guard_folder / "controls.stdout").write_bytes(result.stdout)
-        (guard_folder / "controls.stderr").write_bytes(result.stderr)
-        guard_rejected = result.returncode == 1 and b"authored integration control failed" in result.stderr
-    (logs / "production-guard.json").write_text(json.dumps({
-        "production_macro": public_macro,
-        "compiled_out_variant_compiled": guard_compiled,
-        "compiled_out_variant_rejected": guard_rejected,
-    }, indent=2) + "\n")
-    hud_folder = logs / "flight-hud-scope-control"
-    hud_folder.mkdir()
-    (hud_folder / "ce_commander_strategic_actual.inc").write_text(integration_fragment(source))
-    (hud_folder / "ce_commander_strategic_hook.inc").write_text(hook)
-    (hud_folder / "ce_photo.h").write_text(header.replace(query, "PortCePhotoOn()", 1))
-    hud_command = [str(hud_folder) if item == str(logs) else item for item in command]
-    hud_command[-1] = str(hud_folder / "controls")
-    hud_compiled = run_command(hud_command, hud_folder, "compile")
-    hud_rejected = False
-    if hud_compiled:
-        result = subprocess.run([hud_command[-1]], capture_output=True, timeout=60, check=False)
-        (hud_folder / "controls.stdout").write_bytes(result.stdout)
-        (hud_folder / "controls.stderr").write_bytes(result.stderr)
-        hud_rejected = result.returncode == 1 and b"authored integration control failed" in result.stderr
-    (logs / "flight-hud.json").write_text(json.dumps({
-        "photo_only_scope_compiled": hud_compiled,
-        "photo_only_scope_rejected": hud_rejected,
-    }, indent=2) + "\n")
+    # The presentation hook hands back the camera it is given in every build, so there is no compiled-out control of it any more; the
+    # flight scope is photo mode's and the editor's, so there is no photo-only control either (the editor's own control is below).
     editor_scope_passed = True
     if has_editor_scope:
         editor_folder = logs / "editor-flight-hud-scope-control"
@@ -407,7 +476,7 @@ def integration_controls(repo: Path, compiler: str, logs: Path) -> bool:
             "editor_query_present": True, "missing_editor_scope_compiled": editor_compiled,
             "missing_editor_scope_rejected": editor_rejected,
         }, indent=2) + "\n")
-    return macro_rejected and guard_compiled and guard_rejected and hud_compiled and hud_rejected and editor_scope_passed and all(
+    return macro_rejected and editor_scope_passed and all(
         result["compiled"] and result["rejected"] for result in results.values()
     )
 
@@ -448,9 +517,9 @@ def main() -> int:
         return 1
     executable = logs / "camera-owner-controls"
     command = [
-        compiler, "-std=c++11", "-Wall", "-Wextra", "-Werror", "-pedantic",
+        compiler, "-std=c++17", "-Wall", "-Wextra", "-Werror", "-pedantic",
         "-I", str(repo / "port" / "game"),
-        str(repo / "port" / "game" / "ce_commander_camera.cpp"),
+        str(repo / "port" / "game" / "ce_commander_camera.cpp"), str(repo / "port" / "game" / "ce_hud_reservation.cpp"),
         str(repo / "port" / "tools" / "ce_commander_camera_tests.cpp"),
         "-o", str(executable),
     ]

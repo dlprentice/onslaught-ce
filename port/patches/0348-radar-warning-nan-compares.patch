@@ -1,0 +1,22 @@
+--- a/RadarWarningReceiver.cpp
++++ b/RadarWarningReceiver.cpp
+@@ -68,7 +68,8 @@
+ 			facing -= PI * 2;
+ 		else if ((yaw > PI / 2) && (facing < -PI / 2))
+ 			facing += PI * 2;
+-		if ((float)fabs(yaw - facing) < PI / 4)
++		// Port (patch 0254): retail's compare (004d6905..004d6910) takes a NaN bearing as ahead.
++		if (!((float)fabs(yaw - facing) >= PI / 4))
+ 			((CBattleEngine *)attached)->PlayIncommingMissileSound();
+ 	}
+ }
+@@ -97,7 +98,8 @@
+ 	for (CRound *r = (CRound *)rounds.First(); r; r = (CRound *)rounds.Next())
+ 	{
+ 		FVector	d = r->GetPos() - GetPrimaryPosition();
+-		if ((d.MagnitudeYZX() <= mScanDistance) && (r->mUnknownE8.ToRead() == (CThing *)mAttachedTo) && (r->mData->mUnknown1C > 0))
++		// Port (patch 0254): retail's compare (004d676f..004d6777) takes a NaN distance as in range.
++		if (!(d.MagnitudeYZX() > mScanDistance) && (r->mUnknownE8.ToRead() == (CThing *)mAttachedTo) && (r->mData->mUnknown1C > 0))
+ 		{
+ 			t = FindThreat(&mThreats, r);
+ 

@@ -247,6 +247,7 @@ void PortWideBackBuffer(unsigned w, unsigned h)
 }
 
 int PortWideActive() { return gActive; }
+void PortWideBackBufferSize(unsigned *w, unsigned *h) { *w = gW; *h = gH; }	// a plain read (the test kit's hud.* keys)
 float PortWideX() { return gX; }
 float PortWideY() { return gY; }
 float PortUiScale() { return gScale; }

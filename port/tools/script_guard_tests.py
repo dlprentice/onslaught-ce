@@ -4,7 +4,7 @@
 
     python3 port/tools/script_guard_tests.py
 
-The guard decides, for a script notification (`startedDying` or `died`) that is entered while the mission script VM is still running, whether it waits a frame: yes only in a
+The guard decides, for a script notification (`startedDying` or `died`) that is entered while the mission script VM is still running, whether it is deferred a frame: yes only in a
 level an active mod supplies (the level's archive, data/resources/NNN_res_PC.aya, or its world file, data/worlds/worldNNN.wrd), no for every level the game ships, and it counts
 and logs each entry once. This suite builds the actual ce_script_guard.cpp with the driver port/tools/tests/ce_script_guard_driver.cpp on the host (g++), whose two fakes are
 PortModHas (yes for the game paths named before `--`) and PortSessionLog (prints what it is given), and asks it the questions below; it then checks the text of the patch
@@ -29,7 +29,16 @@ SRC = ROOT / "src/MissionScript"
 MINGW = "llvm-mingw/bin/i686-w64-mingw32-clang++"               # under BEA_PORT_DATA (port/tools/deps.py): the toolchain the Windows build uses
 CXX = os.environ.get("CXX", "g++")
 
-LOG = "LOG 0 1 script %s entered while the script VM was running (level %d is a mod's): it waits for the next frame"
+LOG_LINE = "LOG 0 1 script %s entered while the script VM was running (level %d is a mod's): "
+
+
+class Log:
+    """LOG % (entry, level): the guard's one log line for that entry (a Died is dropped; every other entry waits a frame)."""
+    def __mod__(self, args):
+        return LOG_LINE % args + ("it is dropped (its script is deleted before the next frame)" if args[0] == "died" else "it waits for the next frame")
+
+
+LOG = Log()
 
 # name: (game paths a mod supplies, questions "LEVEL:ENTRY", the driver's exact output)
 CASES = {
@@ -73,7 +82,8 @@ GUARD_MUTANTS = {
     "a yes is logged every time": ("\t\tsLogged[which] = true;\n", "\t\t;\n"),
     "a yes is never logged": ("\tif (!sLogged[which])", "\tif (false)"),
     "the log line is not an error": ("PortSessionLog(PORT_SESSION_GAME, true,", "PortSessionLog(PORT_SESSION_GAME, false,"),
-    "the log line names no level": ("(level %d is a mod's)", "(level is a mod's)"),
+    "the log says a dropped Died waits for the next frame": ('which ? "it is dropped', '!which ? "it is dropped'),
+    "the log line names no level": ("(level %d is a mod's): %s\", entry, level,", "(level is a mod's): %s\", entry,"),
 }
 
 

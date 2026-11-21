@@ -1,0 +1,21 @@
+# Catalogue speech: play English line 1, close its box, play line 2 while it may still speak, close, and leave the list:
+# leaving stops the sound. The earlier key route, by name (the network build's extra hub row no longer matters).
+wait ticks 600
+key RETURN
+wait page fe:main within 900
+go "Onslaught CE" > Catalogue > "Speech: English"
+wait page xp:sounds
+select row #1
+wait page box
+assert catalogue.playing=yes
+select row Continue
+wait page xp:sounds
+select row #2
+wait page box
+assert catalogue.playing=yes
+select row Continue
+wait page xp:sounds
+back
+wait page ce:catalogue
+assert catalogue.playing=no
+dump left

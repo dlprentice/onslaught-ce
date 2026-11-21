@@ -1,0 +1,17 @@
+--- a/ltshell.cpp
++++ b/ltshell.cpp
+@@ -571,2 +571,3 @@
++#include "ce_hooks.h"	// Port: the CE hook points (port/game/ce_hooks.h)
+ void ExitCode()	// FUNCTION: 0x00512070
+ {
+@@ -585,3 +586,4 @@
+ 	TRACE("cleaning up last minute stuff that needs memory manager");
++	ce_hook_exit(CE_EXIT_ATEXIT);	// CE hook point (port/game/ce_hooks.h): every exit(), heaps still up
+ 	PATCHMANAGER.FreeData();
+ 	RECONNECT_INTERFACE[0].Shutdown();
+@@ -764,4 +766,5 @@
+     DestroyMenu( GetMenu(LT.GetHWnd()) );
+     DestroyWindow( LT.GetHWnd() );
++	ce_hook_exit(CE_EXIT_SHELL);	// CE hook point (port/game/ce_hooks.h): the shell's normal end
+ 
+ //	if ( _CrtDumpMemoryLeaks() )

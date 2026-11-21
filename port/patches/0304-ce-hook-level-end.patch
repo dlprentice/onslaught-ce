@@ -1,0 +1,10 @@
+--- a/game.cpp
++++ b/game.cpp
+@@ -575,2 +575,3 @@
++#include "ce_hooks.h"	// Port: the CE hook points (port/game/ce_hooks.h)
+ void	CGame::ShutdownRestartLoop()	// FUNCTION: 0x0046ca70
+ {
+@@ -596,2 +597,3 @@
++	ce_hook_level_end(mCurrentLevel, (int)mQuit);	// CE hook point (port/game/ce_hooks.h): before anything is freed
+ 	extern bool pause_for_showing_controls;
+ 	if (mQuit == QT_RESTART_LEVEL && PLAYABLE_DEMO)

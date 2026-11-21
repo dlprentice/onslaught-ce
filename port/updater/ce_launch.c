@@ -15,7 +15,7 @@
  * Session recording (--record, or record_sessions=1 in ce.ini): the game records its input to <user folder>/tapes/
  * YYYYMMDD-HHMMSS-PID-SERIAL.tape (port/platform/common/replay.cpp's record mode, on the shim clock at 30 Presents a
  * second) with a .json beside it naming the version, build, OS, date and game arguments; never during replay. While
- * record_sessions=1, each start asks first (Record, Not this time, Stop recording), because a recorded session hides the
+ * record_sessions=1, each start asks first (Record, Not this time, Turn recording off), because a recorded session hides the
  * game's CE page where the setting was switched on; --no-record also sets record_sessions=0 and starts unrecorded.
  * --report opens the pre-filled "Report a problem" page (ce_report.h) and prints the log folder.
  *
@@ -810,11 +810,51 @@ static int ini_get(const char *key, char *out, size_t n)
 	return found;
 }
 
+/* What the player is told when a choice made in one of the launcher's questions could not be kept in ce.ini: what will happen
+ * (the question comes back), then why. A ce.ini its owner made read-only is refused (ce_report.h), where 0.1.13 on Linux replaced
+ * it, and without these words "Skip this version" and "Turn recording off" came back at every start with no sign of the reason. */
+#define CE_BOX_UNSAVED_SKIP "Onslaught CE could not remember to skip this version, so it will offer the update again the next time it starts."
+#define CE_BOX_UNSAVED_RECORD "Session recording could not be turned off, so Onslaught CE will ask about it again the next time it starts."
+#define CE_BOX_INI_READONLY \
+	"The settings file ce.ini in your Onslaught CE user folder is read-only, and Onslaught CE does not change a read-only file. " \
+	"To let it save choices like this one, make ce.ini writable again."
+#define CE_BOX_INI_UNWRITABLE \
+	"The settings file ce.ini in your Onslaught CE user folder could not be written. Check that the folder and the file can be " \
+	"written and that the disk is not full. Starting Onslaught CE with --report shows where the folder is."
+
+static int sIniQuiet;	/* the write was asked for by a command-line switch: no box, as nobody may be there to close it */
+
+/* Says it once a start for each of the two choices, in a box; where the answer came from a switch or from a test's environment
+ * variable, or no box can be shown, the same words go to the terminal and the log. Other keys (the game folder the launcher found by
+ * itself) are no choice the player made at this start: they keep the one log line. */
+static void ini_tell_unsaved(const char *key)
+{
+	static int told_skip, told_record;
+	int skip = !strcmp(key, "skip_version"), record = !strcmp(key, "record_sessions");
+	if (!skip && !record) return;
+	int *told = skip ? &told_skip : &told_record;
+	if (*told) return;
+	*told = 1;
+	char text[1024];
+	snprintf(text, sizeof text, "%s\n\n%s", skip ? CE_BOX_UNSAVED_SKIP : CE_BOX_UNSAVED_RECORD,
+			 ce_ini_refusal == CE_INI_REFUSED_READONLY ? CE_BOX_INI_READONLY : CE_BOX_INI_UNWRITABLE);
+	/* BEA_RECORD_ANSWER answers the recording question in every build (ask_record); BEA_UPDATE_ANSWER is honoured only in the
+	 * updater tests' builds (ce_update_v2.h), so elsewhere it gives no answer and the player still gets the box. */
+	const char *record_answer = getenv("BEA_RECORD_ANSWER"), *update_answer = NULL;
+#ifdef CE_UPDATER_TESTING
+	update_answer = getenv("BEA_UPDATE_ANSWER");
+#endif
+	if (sIniQuiet || (record_answer && *record_answer) || (update_answer && *update_answer)) say("%s", text);
+	else tell_box(SDL_MESSAGEBOX_WARNING, text);
+}
+
 /* ce_ini_write (ce_report.h): written whole beside ce.ini and renamed over it, so a failed write leaves it as it was. */
 static int ini_set(const char *key, const char *value)
 {
 	if (ce_ini_write(sIni, key, value)) return 1;
-	say("could not write %s to ce.ini; it is unchanged", key);
+	say("could not write %s to ce.ini; it is unchanged%s", key,
+		ce_ini_refusal == CE_INI_REFUSED_READONLY ? " (the file is read-only)" : "");
+	ini_tell_unsaved(key);
 	return 0;
 }
 
@@ -875,7 +915,7 @@ static int install_problem(const char *dir, char *why, size_t n)
 		if (!sha256_file(p, got))
 			return snprintf(why, n, "its %s could not be read", GAME_FILES[i].name), 1;
 		if (!hex_to(GAME_FILES[i].sha256, want, 32) || memcmp(got, want, 32))
-			return snprintf(why, n, "its %s differs from the supported edition's (hash mismatch)", GAME_FILES[i].name), 1;
+			return snprintf(why, n, "its %s is a different edition from the one Onslaught CE supports", GAME_FILES[i].name), 1;
 	}
 	return 0;
 }
@@ -1307,12 +1347,12 @@ static int finish_recording(int game_status)
 
 /* record_sessions=1: whether to record this start. The game's CE page, where the player switched recording on, is hidden
  * in a recorded session (its menus are the original game's, so the tape can be replayed), so the way to switch it off is
- * here. Returns 1 to record; "Stop recording" also sets record_sessions=0. No dialog (no display): record, as set. */
+ * here. Returns 1 to record; "Turn recording off" also sets record_sessions=0. No dialog (no display): record, as set. */
 static int ask_record(void)
 {
 	const SDL_MessageBoxButtonData buttons[] = {{SDL_MESSAGEBOX_BUTTON_RETURNKEY_DEFAULT, 1, "Record"},
 												{SDL_MESSAGEBOX_BUTTON_ESCAPEKEY_DEFAULT, 0, "Not this time"},
-												{0, 2, "Stop recording"}};
+												{0, 2, "Turn recording off"}};
 	const SDL_MessageBoxData box = {SDL_MESSAGEBOX_INFORMATION, NULL, "Onslaught CE", CE_BOX_RECORD, 3, buttons, NULL};
 	int which = 1;
 	const char *answer = getenv("BEA_RECORD_ANSWER");   /* tests: record, once or stop, without a dialog */
@@ -1570,10 +1610,14 @@ int main(int argc, char **argv)
 #ifdef _WIN32
 		if (!console)
 		{
-			char text[PATHN + 256], shown[PATHN + 256];
-			ce_box_text_report(text, sizeof text, opened, sUser);
-			SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_INFORMATION, "Onslaught CE",
-									 ce_box_wrap(text, shown, sizeof shown, CE_BOX_COLUMNS) ? shown : text, NULL);
+			/* Only the sentence is wrapped; the folder follows it whole, on a line of its own. Wrapping the whole text broke a folder
+			 * longer than a line at one of its spaces (ce_box_wrap turns a space into a line feed), and this box is the one place a
+			 * player without a console is shown the folder, to be read back exactly. */
+			char text[PATHN + 256], shown[2 * PATHN + 512];
+			ce_box_text_report(text, sizeof text, opened, "");
+			if (!ce_box_wrap(text, shown, sizeof shown, CE_BOX_COLUMNS)) snprintf(shown, sizeof shown, "%s", text);
+			snprintf(shown + strlen(shown), sizeof shown - strlen(shown), "%s", sUser);
+			SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_INFORMATION, "Onslaught CE", shown, NULL);
 		}
 #endif
 		return 0;
@@ -1623,7 +1667,9 @@ int main(int argc, char **argv)
 	int ini_record = ini_get("record_sessions", opt, sizeof opt) && !strcmp(opt, "1");
 	if (norecord)
 	{
+		sIniQuiet = 1;	/* --no-record: a failed write is said on the terminal and in the log, not in a box */
 		if (ini_record && ini_set("record_sessions", "0")) say("session recording switched off (record_sessions=0 in ce.ini)");
+		sIniQuiet = 0;
 	}
 	else if (record || (ini_record && (sReplay || ask_record())))	/* a replay: start_recording says why not */
 	{

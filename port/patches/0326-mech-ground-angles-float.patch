@@ -1,0 +1,15 @@
+--- a/MCMech.cpp
++++ b/MCMech.cpp
+@@ -894,9 +894,9 @@
+ 		else
+ 		{
+ 			float	yaw = ((CUnit *)thing)->GetCurrentOrientation().mYaw;
+-			float	pitch = Unknown11();
+-			float	roll = Unknown12();
+-			FMatrix	r(yaw, pitch, roll);
++			volatile float	pitch = Unknown11();	// Port: retail stores both as floats (0049a091, 0049a097)
++			volatile float	roll = Unknown12();
++			FMatrix	r(yaw, pitch, roll); __asm__ __volatile__("" : : "r"(&r) : "memory");	// Port: rows stored as floats, as retail's out-of-line constructor leaves them (004062d0)
+ 			FVector scaledBodyUp = PublishMechBodyUp(r);
+ 
+ 			up = scaledBodyUp;

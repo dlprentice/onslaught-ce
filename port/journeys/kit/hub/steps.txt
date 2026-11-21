@@ -1,0 +1,7 @@
+# The Onslaught CE hub as each build shows it (the network build adds Network Game).
+wait ticks 600
+key RETURN
+wait page fe:main within 900
+go "Onslaught CE"
+wait page ce:hub
+dump hub

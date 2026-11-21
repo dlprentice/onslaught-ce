@@ -39,6 +39,35 @@
 // sends game files' fopen through the path layer, which refuses absolute paths).
 #undef fopen
 
+#ifdef CE_MARKER_TEST
+// The faithfulness gate's marker sweep (port/tools/marker_sweep.py; test builds only, --marker-test): BEA_PORT_MARKER_STACK=B
+// fills the dead stack below the game's update with the byte B before every update, as the co-op stack poison does for a
+// session, so the update's frames start from the marker instead of whatever the last frames left. Two runs with different
+// markers then differ wherever the simulation reads a value it never wrote (the unset contact normals of patch 0280 were one).
+namespace
+{
+__attribute__((noinline)) void MarkerFill(unsigned char byte)
+{
+	volatile unsigned char fill[96 * 1024];
+	memset((void *)fill, byte, sizeof fill);
+	__asm__ volatile("" : : "r"(fill) : "memory");	// its address escapes, so the fill is not removed
+}
+void MarkerStack()
+{
+	static int byte = -2;
+	if (byte == -2)
+	{
+		const char *v = getenv("BEA_PORT_MARKER_STACK");
+		byte = (v && *v) ? (int)(strtoul(v, NULL, 0) & 0xff) : -1;
+		if (byte >= 0)
+			fprintf(stderr, "onslaught-ce: marker sweep: the stack below each update is filled with %02x\n", (unsigned)byte);
+	}
+	if (byte >= 0)
+		MarkerFill((unsigned char)byte);
+}
+}
+#endif
+
 extern int RANDOM_MULTIPLIER;
 extern int RANDOM_MODULUS;
 unsigned long long PortClockFrames();
@@ -180,6 +209,9 @@ void PortUpdateHook()
 		}
 		PortFeelTick(GAME.GetCurrentLevel(), GAME.GetGameState(), GAME.IsPaused(), Bits(EVENT_MANAGER.GetTime()));
 	}
+#ifdef CE_MARKER_TEST
+	MarkerStack();				// the marker sweep (test builds only): the stack the update's callees start from
+#endif
 #ifndef CE_NETWORK_OFF
 	CE_LockstepUpdateEntry();	// lockstep co-op test automation: the stack the update's callees start from (BEA_LOCKSTEP_POISON_STACK)
 #endif

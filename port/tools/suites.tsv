@@ -1,7 +1,7 @@
 # Every *_tests.py under port/: path, style (script|module), args, needs, class, time limit in seconds (- = the runner's default), note. See run_suites.py.
 # path	style	args	needs	class	timeout	note
 port/network/tests/close_drain_tests.py	script	--enet-source {data}/src/enet-5a9c537fd464b3c6d3c55e1d3bd47588faf71b42	deps	optional	-	
-port/network/tests/run_tests.py	script	-	deps	quarantined	-	test_pre_connection_silent_host: the no-poll control receives a datagram because the close path now notifies the peer (cf1ce6f1, enet_peer_disconnect_now); whether silence is still required is the multiplayer owner's decision; 27 of 28 tests pass
+port/network/tests/run_tests.py	script	-	deps	optional	-	
 port/network/tests/terminal_close_tests.py	script	--enet-source {data}/src/enet-5a9c537fd464b3c6d3c55e1d3bd47588faf71b42	deps	optional	-	
 port/tools/audio_eof_tests.py	script	-	deps	release	-	
 port/tools/audio_lifecycle_tests.py	script	-	deps	release	-	
@@ -14,22 +14,56 @@ port/tools/audio_refill_overlap_tests.py	script	-	deps	release	-
 port/tools/audio_refill_tests.py	script	-	deps	release	-	
 port/tools/background_clear_tests.py	script	-	none	release	-	
 port/tools/build_tests.py	script	-	deps	release	-	
+port/tools/ce_backup_preview_page_tests.py	script	-	none	release	-	restore lane; host build with the system compiler
+port/tools/ce_backup_preview_tests.py	script	-	none	release	-	restore lane; host build with the system compiler
+port/tools/ce_backup_preview_windows_tests.py	script	-	deps+wine	release	-	restore lane; runs a Windows build under Wine (not run at the r8 integration)
 port/tools/ce_bonus_save_tests.py	script	-	none	release	-	
 port/tools/ce_bonus_tests.py	script	-	none	release	-	
+port/tools/ce_career_backup_tests.py	script	-	none	release	-	restore lane; host build with the system compiler
+port/tools/ce_career_restore_names_tests.py	script	-	none	release	-	restore lane; host build with the system compiler
+port/tools/ce_career_restore_ui_tests.py	script	-	none	release	-	restore lane; host build with the system compiler
+port/tools/ce_full_backup_ui_tests.py	script	-	none	release	-	full backup set lane; host build with the system compiler
+port/tools/ce_catalogue_filter_tests.py	script	-	none	release	-	catalogue lane; host build with the system compiler
+port/tools/ce_catalogue_sounds_tests.py	script	-	none	release	-	catalogue lane; host build with the system compiler
 port/tools/ce_cheats_help_tests.py	script	-	none	release	-	
 port/tools/ce_clock_interleave_tests.py	script	-	deps	release	-	
+port/tools/ce_cmddelivery_tests.py	script	-	none	release	-	Commander lane; host build with the system compiler
 port/tools/ce_cmdmap_terrain_tests.py	script	-	none	release	-	
+port/tools/ce_cmdorders_tests.py	script	-	none	release	-	
+port/tools/ce_cmdunit_authority_tests.py	script	-	none	release	-	Commander lane; host build with the system compiler
+port/tools/ce_cmdunit_consumer_tests.py	script	-	none	release	-	Commander lane; host build with the system compiler
+port/tools/ce_cmdunit_orders_tests.py	script	-	none	release	-	Commander lane; host build with the system compiler
+port/tools/ce_cmdunit_pointer_tests.py	script	-	none	release	-	Commander lane; host build with the system compiler
+port/tools/ce_cmdunit_roster_tests.py	script	-	none	release	-	Commander lane; host build with the system compiler
+port/tools/ce_cmdunit_scope_tests.py	script	-	none	release	-	Commander lane; host build with the system compiler
+port/tools/ce_cmdunit_take_tests.py	script	-	none	release	-	Commander lane; host build with the system compiler
+port/tools/ce_command_lifetime_tests.py	script	-	none	release	-	Commander lane; host build with the system compiler
+port/tools/ce_command_panel_tests.py	script	-	none	release	-	Commander lane; host build with the system compiler
+port/tools/ce_command_selection_tests.py	script	-	none	release	-	Commander lane; host build with the system compiler
 port/tools/ce_commander_camera_tests.py	script	-	none	release	-	
+port/tools/ce_commander_isolation_run_tests.py	script	-	none	release	-	
+port/tools/ce_commander_match_run_tests.py	script	-	none	release	-	
+port/tools/ce_commander_mouse_state_tests.py	script	-	none	release	-	Commander lane; host build with the system compiler
+port/tools/ce_commander_pointer_tests.py	script	-	none	release	-	Commander lane; host build with the system compiler
 port/tools/ce_commander_tests.py	script	-	deps	release	-	
+port/tools/ce_commander_transition_tests.py	script	-	none	release	-	Commander lane; host build with the system compiler
 port/tools/ce_console_bind_tests.py	script	-	none	release	-	
 port/tools/ce_debrief_tests.py	script	-	deps	release	-	
 port/tools/ce_detail_level_tests.py	script	--causal-controls	none	release	-	
 port/tools/ce_display_mode_tests.py	script	-	deps	release	-	
+port/tools/ce_dodge_assist_split_screen_tests.py	script	-	deps	release	-	two controllers on the Dodge Button fixture: ce.ini reads while one player waits to come back
 port/tools/ce_dodge_assist_tests.py	script	-	deps	release	-	
+port/tools/ce_dodge_binding_tests.py	script	-	none	release	-	controls lane; host build with the system compiler
 port/tools/ce_editor_document_tests.py	script	-	none	release	-	
 port/tools/ce_editor_lifecycle_tests.py	script	-	deps	release	-	
+port/tools/ce_editor_player_start_tests.py	script	--out {fresh} --causal-controls	none	release	-	editor lane; host build with the system compiler
+port/tools/ce_editor_playtest_tests.py	script	--causal-controls	deps	release	-	saved-revision play test and return; causal controls on
+port/tools/ce_editor_save_tests.py	script	--causal-controls	deps	release	-	career serialization fence through the production serializers; causal controls on
+port/tools/ce_editor_state_tests.py	script	-	none	release	-	editor lane; host build with the system compiler
 port/tools/ce_editor_storage_tests.py	script	-	none	release	-	
+port/tools/ce_editor_ui_tests.py	script	-	none	release	-	map editor furniture at four window shapes, its hit tests and its words
 port/tools/ce_editor_tests.py	script	-	none	release	-	
+port/tools/ce_experimental_fence_tests.py	script	-	none	release	-	the first menu's question with the actual ce.cpp under each faithful fence; needs g++
 port/tools/ce_experimental_modes_tests.py	script	-	none	release	-	
 port/tools/ce_gamepad_edge_tests.py	script	-	deps	release	-	
 port/tools/ce_gamepad_network_tests.py	script	-	deps	optional	-	
@@ -38,45 +72,81 @@ port/tools/ce_graphics_defaults_tests.py	script	--causal-controls	none	release	-
 port/tools/ce_graphics_policy_tests.py	script	--causal-controls	none	release	-	
 port/tools/ce_handoff_recovery_tests.py	script	-	none	release	-	
 port/tools/ce_handoff_writer_safety_tests.py	script	-	none	release	-	
+port/tools/ce_hooks_tests.py	script	-	none	release	-	CE hook points table, dispatch modes, mode registry and site patch independence
+port/tools/ce_hud_reservation_tests.py	script	-	none	release	-	Commander lane; host build with the system compiler
 port/tools/ce_menu_fit_tests.py	script	--causal-controls	none	release	-	
 port/tools/ce_menu_mouse_tests.py	script	-	deps	release	-	
+port/tools/ce_asset_catalog_tests.py	script	-	none	release	120	read-only catalogue scanner and native menu data on authored installations
+port/tools/ce_modspage_tests.py	script	-	none	release	1800	the Mods page's model on the actual loader; builds its drivers with the host compiler and zlib
 port/tools/ce_mouse_fraction_tests.py	script	-	deps	release	-	
+port/tools/ce_museum_authored_world_tests.py	script	-	none	release	-	museum lane; host build with the system compiler
+port/tools/ce_museum_cinema_catalogue_tests.py	script	-	none	release	-	museum lane; host build with the system compiler
+port/tools/ce_museum_cinema_console_tests.py	script	-	none	release	-	museum lane; host build with the system compiler
+port/tools/ce_museum_cinema_tests.py	script	-	none	release	-	museum lane; host build with the system compiler
+port/tools/ce_museum_exhibition_host_tests.py	script	-	none	release	-	museum lane; host build with the system compiler
+port/tools/ce_museum_exhibition_tests.py	script	-	none	release	-	museum lane; host build with the system compiler
+port/tools/ce_museum_label_tests.py	script	-	none	release	-	
+port/tools/ce_museum_options_tests.py	script	-	none	release	-	
+port/tools/ce_museum_run_tests.py	script	-	none	release	-	
 port/tools/ce_museum_tests.py	script	-	deps	release	-	
 port/tools/ce_museum_visit_build_tests.py	script	-	deps	release	-	
 port/tools/ce_museum_visit_tests.py	script	-	deps	release	-	
+port/tools/ce_career_view_tests.py	script	-	game	release	-	the Service Record's reading of the careers in the game folder (and the Toolkit's, when beside), against a second reader; needs g++
+port/tools/ce_career_cross_tests.py	script	-	game	release	-	the Service Record's cross-check against the game's own reading of a career, compiled as the game compiles it on stand-ins for the career and the memory card, with skewed answers and mutants; needs g++
+port/tools/ce_extras_tour_tests.py	script	-	none	release	-	the check that a tour of the Extras pages leaves the player's files as they were, with its negative controls
+port/tools/ce_extras_tests.py	script	-	none	release	-	the Extras list box against a model, and the rules the Extras sources keep; needs g++
+port/tools/ce_goodie_rules_tests.py	script	-	none	release	-	the Goodies Catalogue's rule table against hand-written rules, the font and the forbidden words, regenerated from the Toolkit's tables with generator mutants when that checkout is beside (else those two are reported skipped)
+port/tools/ce_jukebox_tests.py	script	-	game	release	-	the Music Player's state machine against a model, the Ogg length reader against ffprobe on the soundtrack; needs g++, ffmpeg
+port/tools/ce_lore_tests.py	script	-	none	release	-	the Lore pages: the reading panel's scroll math against a model, the pack generator on a markdown file written by the test with mutants, the committed pack's characters and words, regenerated from the Toolkit's lore when that checkout is beside (else that one check is reported skipped); needs g++
 port/tools/ce_music_tests.py	script	-	deps	release	-	
 port/tools/ce_music_transition_tests.py	script	-	deps	release	-	
 port/tools/ce_netcode_tests.py	script	-	none	optional	-	
 port/tools/ce_notice_tests.py	script	-	deps	release	-	
 port/tools/ce_palette_tests.py	script	-	deps	release	-	
+port/tools/ce_fixed_clock_tests.py	script	-	deps	release	-	
 port/tools/ce_pause_clock_tests.py	script	-	deps	release	-	
 port/tools/ce_pause_photo_tests.py	script	-	deps	release	-	
 port/tools/ce_photo_tests.py	script	-	deps	release	-	
+port/tools/ce_playunit_aim_tests.py	script	-	none	release	-	unit control lane; host build with the system compiler
+port/tools/ce_playunit_camera_adapter_tests.py	script	-	none	release	-	unit control lane; host build with the system compiler
+port/tools/ce_playunit_camera_tests.py	script	-	none	release	-	unit control lane; host build with the system compiler
+port/tools/ce_playunit_drive_tests.py	script	-	none	release	-	the look's mouse, the poll's call and the direct law's guide with fakes
+port/tools/ce_playunit_entry_tests.py	script	-	none	release	-	
+port/tools/ce_playunit_fire_tests.py	script	-	none	optional	-	free fire fixture; the option is off by default
+port/tools/ce_playunit_firstperson_tests.py	script	-	none	release	-	unit control lane; host build with the system compiler
+port/tools/ce_playunit_selection_tests.py	script	-	none	release	-	unit control lane; host build with the system compiler
+port/tools/ce_playunit_sight_tests.py	script	-	none	release	-	the take key's sight and switch regions with fake units
 port/tools/ce_playunit_tests.py	script	-	none	release	-	
+port/tools/ce_project_empty_variable_tests.py	script	-	none	release	-	the actual ce_project.cpp with BEA_CE_PROJECT unset, empty and set; needs g++
 port/tools/ce_project_tests.py	script	-	deps+game	release	-	
 port/tools/ce_quality_options_tests.py	script	-	none	release	-	
 port/tools/ce_race_branch_tests.py	script	-	deps	release	-	
 port/tools/ce_rumble_tests.py	script	-	deps	release	-	
 port/tools/ce_setting_text_tests.py	script	-	none	release	-	
 port/tools/ce_settings_tests.py	script	-	none	release	-	
+port/tools/ce_surf_coordinates_tests.py	script	--causal-controls	deps	release	-	
 port/tools/ce_tutorial_guidance_tests.py	script	-	deps+game	release	-	builds its own scratch mirror (premirror.py); about 2 to 7 minutes
 port/tools/ce_view_projection_tests.py	script	-	none	release	-	
 port/tools/ce_world_view_tests.py	script	-	none	release	-	
 port/tools/cli_windowed_tests.py	script	-	none	release	-	
 port/tools/close_caller_tests.py	script	-	deps	release	-	
 port/tools/compose_bundle_tests.py	script	-	none	release	-	
+port/tools/coop_pair_run_tests.py	script	-	none	optional	-	the pair runner's judge and key scripts; the pair itself is coop_pair_run.py (two offscreen games)
 port/tools/cursor_mode_failure_tests.py	script	-	none	release	-	
+port/tools/deps_root_tests.py	script	-	none	release	-	a build reads one dependency root and records it; a missing or outside receipt stops it (no fallback)
 port/tools/deps_tests.py	script	-	deps	release	-	
 port/tools/device_loss_tests.py	script	-	none	release	-	
 port/tools/devstats_layout_tests.py	script	-	none	release	-	
 port/tools/diagnostic_mouse_tests.py	script	-	deps	release	-	
 port/tools/dinput_property_tests.py	script	-	deps	release	-	
 port/tools/display_mode_tests.py	script	-	none	release	-	
+port/tools/env_allowlist_tests.py	script	-	none	release	-	public binary BEA_* env allowlist and forbidden test-switch check (binary check skips where no binary is built)
 port/tools/feel_tests.py	script	-	deps	release	-	
 port/tools/ffmpeg_shared_tests.py	script	-	deps	release	-	
 port/tools/files_tests.py	script	-	deps+game	release	-	
 port/tools/font_crisp_tests.py	script	-	deps	release	-	
 port/tools/fullscreen_window_tests.py	script	-	none	release	-	
+port/tools/goodies_mesh_turn_tests.py	script	-	deps	release	-	compiles the patched mesh turn with the build's flags, runs 61 variants and checks the call site's text (15 to 30 seconds)
 port/tools/hud_anchor_tests.py	script	-	deps	release	-	
 port/tools/hud_scale_tests.py	script	-	deps	release	-	
 port/tools/ice_bridge_diagnostics_tests.py	script	-	fixture	optional	-	needs the pinned libjuice and ENet archives (--juice-archive, --enet-archive), which the dependency cache does not hold
@@ -95,7 +165,9 @@ port/tools/input_lifetime_tests.py	script	-	deps	release	-
 port/tools/inventory_tests.py	script	-	none	release	-	
 port/tools/jeppi_fkey_focus_permissions_tests.py	script	-	none	release	-	
 port/tools/jeppi_fkey_focus_tests.py	script	-	deps	release	-	
+port/tools/lockstep_active_observer_tests.py	script	-	none	optional	-	
 port/tools/lockstep_contact_init_tests.py	script	-	deps	optional	-	
+port/tools/lockstep_fake_pad_tests.py	script	-	none	optional	-	
 port/tools/lockstep_particle_draw_tests.py	script	-	deps	optional	-	
 port/tools/lockstep_production_shape_tests.py	script	-	none	optional	-	
 port/tools/lockstep_start_deadline_tests.py	script	-	none	optional	-	
@@ -107,6 +179,7 @@ port/tools/mod_user_path_tests.py	script	-	none	release	-
 port/tools/model_quality_tests.py	script	-	none	release	-	
 port/tools/mods_tests.py	script	-	game	release	5400	
 port/tools/mods_tool_safety_tests.py	script	-	none	release	-	
+port/tools/mods_author_tests.py	script	-	none	release	900	the mod author's commands (new, check) and port/MODS.md against the loader; builds the validator with the host compiler and zlib
 port/tools/mods_windows_conversion_tests.py	script	-	none	release	-	
 port/tools/mods_windows_disabled_tests.py	script	-	none	release	-	
 port/tools/mods_windows_readonly_tests.py	script	--cxx {data}/llvm-mingw/bin/i686-w64-mingw32-clang++ --cc {data}/llvm-mingw/bin/i686-w64-mingw32-clang --out {scratch}	deps	release	-	
@@ -132,7 +205,7 @@ port/tools/network_chat_ui_tests.py	script	-	deps	optional	-
 port/tools/network_compatibility_admission_tests.py	script	-	deps+game	optional	-	
 port/tools/network_compatibility_hooks_tests.py	script	-	deps+game	optional	-	
 port/tools/network_compatibility_tests.py	script	-	deps+game	optional	-	
-port/tools/network_connection_entry_tests.py	script	--output-dir {fresh}	none	optional	-	
+port/tools/network_connection_entry_tests.py	script	--output-dir {fresh}	none	quarantined	-	its --output-dir must be a fresh folder below the checkout's own local-data; run_suites' {fresh} lies under OUT, so it refuses there (owner: co-op line)
 port/tools/network_default_text_tests.py	script	-	deps	release	-	proves the --public build compiles the network out (port/README.md)
 port/tools/network_departure_tests.py	script	-	deps	optional	-	
 port/tools/network_ground_aim_tests.py	script	-	none	optional	-	
@@ -160,8 +233,9 @@ port/tools/network_lockstep_voice_tests.py	script	-	none	optional	-
 port/tools/network_native_stat_tests.py	script	-	deps	optional	-	
 port/tools/network_objective_tests.py	script	-	deps	optional	-	
 port/tools/network_optional_dump_tests.py	script	--mirror {mirror}	deps+mirror	optional	-	
+port/tools/network_page_geometry_tests.py	script	-	none	optional	-	
 port/tools/network_page_words_tests.py	script	-	none	optional	-	
-port/tools/network_player_menu_tests.py	script	-	none	quarantined	-	the driver predates the ICE invitation and signaling menu: 70 compile errors (CeIceSignalStatus, SignalingView, invitation states); needs a new driver, not a one-line repair
+port/tools/network_player_menu_tests.py	script	-	none	optional	-	
 port/tools/network_prerun_flags_tests.py	script	-	deps	optional	-	
 port/tools/network_public_off_tests.py	script	-	deps	release	-	proves the --public build compiles the network out (port/README.md)
 port/tools/network_public_source_tests.py	script	-	deps	release	-	proves the --public build compiles the network out (port/README.md)
@@ -180,30 +254,37 @@ port/tools/network_state_order_tests.py	script	-	fixture	optional	-	needs a froz
 port/tools/network_test_automation_tests.py	script	-	deps	optional	-	
 port/tools/network_tutorial_gates_tests.py	script	-	none	optional	-	
 port/tools/network_world_tests.py	script	-	deps+game	optional	-	
+port/tools/normal_quit_status_tests.py	script	-	none	release	-	quit status lane; host build with the system compiler
 port/tools/package_flavour_tests.py	script	-	none	release	-	
 port/tools/package_ice_optin_tests.py	script	-	deps	optional	-	
 port/tools/package_ice_reconstruction_tests.py	script	-	deps	optional	-	
 port/tools/package_ice_tests.py	script	-	deps	optional	-	
 port/tools/package_readme_tests.py	script	-	none	release	-	
 port/tools/package_signaling_tests.py	script	-	none	optional	-	
+port/tools/package_test_build_tests.py	script	-	none	release	-	
 port/tools/packed_buffer_tests.py	script	--mirror {mirror}	deps+mirror	release	-	
+port/tools/pair_lock_wait_tests.py	script	-	none	optional	-	
 port/tools/patch_control_body_tests.py	script	-	none	release	-	
 port/tools/patch_indentation_tests.py	script	-	deps+game	release	-	compiles every game unit of four mirrors syntax-only with only -Wmisleading-indentation; about a minute on 16 threads
+port/tools/patch_shape_tests.py	script	-	none	release	-	walks every hunk of the queue over the sources and compares the result with the patch program's
 port/tools/photo_draw_filter_tests.py	script	-	none	release	-	
 port/tools/private_ui_input_tests.py	script	-	none	release	-	
 port/tools/public_d3dapp_tests.py	script	-	none	release	-	
 port/tools/public_device_recovery_tests.py	script	--mutants	deps	release	-	
+port/tools/qifist_tests.py	script	-	none	release	-	
 port/tools/quiet_crash_tests.py	script	-	none	release	-	
 port/tools/relay_access_policy_tests.py	script	-	none	optional	-	
 port/tools/render_contract_tests.py	script	-	none	release	-	
 port/tools/render_diagnostics_tests.py	script	-	none	release	-	
 port/tools/replay_stop_tests.py	script	-	deps	release	-	
+port/tools/replay_reads_tests.py	script	-	deps	release	-	
 port/tools/runtime_display_mode_tests.py	script	-	none	release	-	
 port/tools/save_cp1252_tests.py	script	-	deps	release	-	
 port/tools/save_flow_tests.py	script	-	deps+game	release	-	
 port/tools/save_name_tests.py	script	-	deps	release	-	
 port/tools/save_replace_tests.py	script	-	deps+game	release	-	
 port/tools/save_replace_windows_tests.py	script	-	deps+game+wine	release	-	runs a Windows build under Wine; skips without Wine
+port/tools/script_guard_died_tests.py	script	-	none	release	-	builds a host driver from the game's own text of the deferral chain; needs g++ and patch
 port/tools/script_guard_tests.py	script	-	deps	release	-	
 port/tools/session_log_tests.py	script	-	none	release	-	
 port/tools/signaling_api_contract_tests.py	script	-	fixture	optional	-	needs a compiled crypto library and its SHA-256 (--crypto-library, --crypto-sha256)
@@ -216,6 +297,7 @@ port/tools/static_shadow_unbound_tests.py	script	-	none	release	-
 port/tools/terrain_buffer_lifetime_tests.py	script	-	none	release	-	
 port/tools/terrain_quality_tests.py	script	-	none	release	-	
 port/tools/terrain_reserve_tests.py	script	-	none	release	-	
+port/tools/test_cc_tests.py	script	-	none	release	-	shared host driver compiler and cached weak-stub archive (ce_weak_stubs.cpp)
 port/tools/text_chat_owner_tests.py	script	-	none	optional	-	
 port/tools/text_chat_tests.py	script	-	none	optional	-	
 port/tools/text_chat_transport_tests.py	script	-	deps	optional	-	
@@ -223,14 +305,23 @@ port/tools/turn_operator_issue_tests.py	script	-	none	optional	-
 port/tools/typeinfo_bridge_tests.py	script	-	deps	release	-	
 port/tools/vbuf_persistence_tests.py	script	-	none	release	-	
 port/tools/wav_lifetime_tests.py	script	--mirror {mirror}	deps+mirror	release	-	
+port/tools/weapon_spawn_order_tests.py	script	-	deps	release	-	compiles the patched spawn operators with the build's flags and runs 38 variants (about a minute)
 port/tools/window_tests.py	script	-	deps	release	-	
+port/tools/window_topmost_tests.py	script	-	none	release	-	
+port/tools/windows_weak_link_tests.py	script	-	deps	release	-	reads the built Windows program (BEA_WINDOWS_EXE or this checkout's build); that one test is skipped, not passed, where none is built
 port/updater/tests/box_text_tests.py	script	-	none	release	-	
 port/updater/tests/ce_ini_tests.py	script	-	deps	release	-	
+port/updater/tests/ini_unsaved_tests.py	script	-	deps	release	-	
 port/updater/tests/launch_rules_tests.py	script	-	none	release	-	
 port/updater/tests/launcher_tests.py	script	-	deps+game+launcher	release	-	
 port/updater/tests/log_concurrency_tests.py	script	-	fixture	witness	-	reproduces the old log loss against the frozen pre-lease launcher source (--source-dir), so it cannot pass on current source; log_lease_tests imports its helper classes
 port/updater/tests/log_lease_tests.py	script	-	deps	release	-	
 port/updater/tests/messagebox_tests.py	script	-	deps+game+launcher+xvfb	release	-	needs XVFB (the lab's Xvfb) and BEA_LAUNCHER; 4 cases that need the 32-bit libXrandr skip where it is absent
 port/updater/tests/recording_publication_tests.py	script	-	deps	release	-	
+port/updater/tests/report_box_tests.py	script	-	none	release	-	
 port/updater/tests/update_restart_tests.py	script	-	none	release	-	
 port/updater/tests/updater_v2_tests.py	script	--platform linux	deps+game+bwrap+clone	release	-	needs a local clone of the public onslaught-ce tags at local-data/updater-v2-tests/onslaught-ce.git (git clone --bare of any clone that has the v0.1.* tags); the Windows half needs Wine and is not run by --platform linux
+port/tools/dump_diff_tests.py	script	-	none	release	-	the first difference between two per-update dumps, truncated dumps and stored hashes, on authored dumps
+port/tools/runmode_tests.py	script	-	none	release	-	the run mode each environment gives, and that only a test-kit build can be in test-kit mode; needs a C++ compiler
+port/tools/shot_diff_tests.py	script	-	none	release	-	frame comparison: changed share, box, tolerance, region, sizes, missing frames; needs Pillow
+port/tools/test_kit_tests.py	script	-	none	release	-	the test kit's core on the host against an authored menu (every verb, refusals, determinism); needs a C++ compiler

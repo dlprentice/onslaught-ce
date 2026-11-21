@@ -27,6 +27,7 @@
 //   mouse FROM_MS TO_MS VX VY     a relative mouse moving at VX,VY counts per second between the two times, delivered to the
 //                                 game's DirectInput mouse polls as the movement since the last poll (a steady stream, as a real
 //                                 mouse's many small reports are)
+//   button MS d|u N               mouse button N (0 left, 1 right, 2 middle) held from its d step to its u step, as the real button
 //   shots MS COUNT DIR            write COUNT consecutive frames from the first Present at or after MS as DIR/shot-NNNNN.ppm
 //   quit MS                       end the game, as closing its window does
 // What the game's own polls received is in the log, so the input a run was given is known exactly.
@@ -67,6 +68,7 @@ void PortFeelMousePoll(long dx, long dy, unsigned buttons) PORT_FEEL_WEAK;
 // Authored input from the script: the mouse counts due since the last call (added to the poll's own), and the next key step
 // that is due, if any (returns 1 and fills the step). Both return nothing until the script's arm has happened.
 void PortFeelMouseTake(long *dx, long *dy) PORT_FEEL_WEAK;
+unsigned PortFeelMouseButtons(void) PORT_FEEL_WEAK;	// the mouse buttons the feel script holds now (bit 0 left, 1 right, 2 middle); 0 without one
 int PortFeelKeyDue(unsigned *scancode, unsigned *raw, int *down) PORT_FEEL_WEAK;
 // 1 when this Present's frame (Present number `present`, counted from 1) is to be written, from the script's shots verb or BEA_PORT_FEEL_SHOTS, with
 // the folder in `dir` (at most `size` bytes).

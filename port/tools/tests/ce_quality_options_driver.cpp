@@ -145,7 +145,7 @@ static void wording(List &list, const std::string &scenario)
     check(same(terrain->GetChoiceText(1), failing ? L"Extended (using Normal, not saved)" : L"Extended (using Normal)"),
           "requested Extended is not shown as active after a resource fallback");
     check(same(terrain->GetChoiceText(0), failing ? L"Normal (not saved)" : L"Normal"), "the other choice is not annotated");
-    check(same(item(list, 0)->GetChoiceText(1), L"On"), "the models row is untouched: not requested, not saved, not annotated");
+    check(same(item(list, 0)->GetChoiceText(1), L"Yes"), "the models row is untouched: not requested, not saved, not annotated");
     terrainReady = true;
     frame();
     check(CE_TerrainDetailStatus() == CE_TERRAIN_DETAIL_ACTIVE && CeTerrainGeometryDistanceSquared(16.f) == 4.f, "recovered");
@@ -180,9 +180,19 @@ int main(int argc,char **argv)
         frame();live(retained,retained);
     } else {
         check(list.mItems.size()==2,"exactly two native quality rows");
-        check(!wcscmp(item(list,0)->GetText(),L"Full models: "),"full models row name");
-        check(!wcscmp(item(list,1)->GetText(),L"Terrain detail distance: "),"terrain row name");
-        check(!wcscmp(item(list,0)->GetChoiceText(0),L"Off")&&!wcscmp(item(list,0)->GetChoiceText(1),L"On"),"model choices");
+        // "Label:value" as the original's rows, with no space after the colon; two-way values on an options page are No and Yes.
+        check(!wcscmp(item(list,0)->GetText(),L"Full models:"),"full models row name");
+        check(!wcscmp(item(list,1)->GetText(),L"Terrain detail distance:"),"terrain row name");
+        check(!wcscmp(item(list,0)->GetChoiceText(0),L"No")&&!wcscmp(item(list,0)->GetChoiceText(1),L"Yes"),"model choices");
+        // The list holding these rows is drawn at Onslaught CE's row pitch while they exist (ce_menu_fit.cpp, patch 0215), and only then.
+        check(PortCeQualityRow(item(list,0))&&PortCeQualityRow(item(list,1))&&!PortCeQualityRow(nullptr)&&!PortCeQualityRow(&list),"live rows are known");
+        {
+            List other;NativeRows(&other);const void *gone=other.mItems.at(0);
+            check(PortCeQualityRow(gone),"a second pair is known too");
+            for(auto p:other.mItems) delete p;
+            other.mItems.clear();
+            check(!PortCeQualityRow(gone)&&PortCeQualityRow(item(list,0)),"a deleted row is forgotten; the others stay known");
+        }
         check(!wcscmp(item(list,1)->GetChoiceText(0),L"Normal")&&!wcscmp(item(list,1)->GetChoiceText(1),L"Extended"),"terrain choices");
         if(scenario=="stored") {
             check(item(list,0)->GetValue()==1&&item(list,1)->GetValue()==1,"existing preferences load");
@@ -204,7 +214,10 @@ int main(int argc,char **argv)
                 check(item(list,0)->GetValue()==0&&item(list,1)->GetValue()==0,"invalid values refused");
                 check(item(list,0)->mSelection==0&&item(list,1)->mSelection==0,"native commit remains coherent after refusal");
                 check(ini()==before&&notices==0,"invalid value does not reach settings writer");
-                check(wcsstr(item(list,0)->GetText(),L"not applied"),"refusal is visible");
+                check(!wcscmp(item(list,0)->GetText(),L"Full models:"),"the label does not change on a refusal");
+                check(same(item(list,0)->GetChoiceText(item(list,0)->GetValue()),L"No (not changed)"),"refusal is visible after the value in effect");
+                check(same(item(list,0)->GetChoiceText(1),L"Yes"),"the choice not in effect carries no state");
+                check(same(item(list,1)->GetChoiceText(0),L"Normal (not changed)"),"the terrain refusal reads the same way");
             } else {
                 if(scenario=="keyboard") {
                     for(unsigned i=0;i<2;++i) {

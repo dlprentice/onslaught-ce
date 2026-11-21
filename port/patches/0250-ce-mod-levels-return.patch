@@ -1,0 +1,23 @@
+--- a/FrontEnd.cpp
++++ b/FrontEnd.cpp
+@@ -46,6 +46,7 @@
+ bool	PortCeBonusReturning();
+ bool	PortCeBonusRaceReturning();		// patch 0116: the race that ended was a CE bonus race
+ bool	PortCeBonusCoopReturning();		// patch 0116: the multiplayer map that ended was a CE bonus co-op map
++bool	PortCeBonusModLevelPending();		// patch 0250: the level that ended was a level a mod adds, started from the Mods page
+ #endif
+ 
+ #ifdef CE_VERSION
+@@ -316,7 +317,11 @@
+ 				mActivePage = FEP_GOODIES;
+ 			}
+ 		}
+-		else if ((mSelectedLevel >= 850) && (mSelectedLevel < 880))
++		else if (((mSelectedLevel >= 850) && (mSelectedLevel < 880))
++#ifdef CE_VERSION
++				 || ((mSelectedLevel >= 880) && (mSelectedLevel < 900) && PortCeBonusModLevelPending())	// patch 0250: a level a mod adds, started from the Mods page
++#endif
++				 )
+ 		{
+ 			mActivePage = FEP_MULTIPLAYER;
+ #ifdef CE_VERSION

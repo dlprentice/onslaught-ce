@@ -1,0 +1,20 @@
+--- a/MCGroundVehicle.cpp
++++ b/MCGroundVehicle.cpp
+@@ -40,7 +40,16 @@
+ 	{
+ 		FMatrix	old_ori(unit->mUnknownE4, 0, 0);
+ 		FMatrix	new_ori(unit->mUnknownE0, 0, 0);
+-		*ori = *ori * (old_ori + (new_ori - old_ori) * frac);
++		// Port: retail expands this product inline (00496c90..00496dcc), each cell (k0 + k2) + k1; maths.h follows the
++		// out-of-line copy (0040d320) that the barrel branch calls.
++		FMatrix	l = old_ori + (new_ori - old_ori) * frac;
++		FMatrix	a = *ori;
++		for (int i = 0; i < 3; i++)
++		{
++			ori->Row[i].X = ((a.Row[i].X * l.Row[0].X) + (a.Row[i].Z * l.Row[2].X)) + (a.Row[i].Y * l.Row[1].X);
++			ori->Row[i].Y = ((a.Row[i].X * l.Row[0].Y) + (a.Row[i].Z * l.Row[2].Y)) + (a.Row[i].Y * l.Row[1].Y);
++			ori->Row[i].Z = ((a.Row[i].X * l.Row[0].Z) + (a.Row[i].Z * l.Row[2].Z)) + (a.Row[i].Y * l.Row[1].Z);
++		}
+ 		ori->Normalise();
+ 	}
+ 	else if (!strncmp(part->mName, "barrel", 6))

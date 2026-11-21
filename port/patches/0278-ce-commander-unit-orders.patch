@@ -1,0 +1,52 @@
+--- a/Guide.cpp
++++ b/Guide.cpp
+@@ -2,6 +2,7 @@
+ // unit towards the point its AI picks: it keeps the destination and how it should get there.
+ 
+ #include "common.h"
++#include "ce_cmdorders.h"
+ #include "unit.h"
+ #include "UnitAI.h"
+ #include "weapon.h"
+@@ -21,6 +22,7 @@
+ //******************************************************************************************
+ void CGuide::GoToPoint(FVector point, BOOL inOverride)	// FUNCTION: 0x0047e2d0
+ {
++    if (!PortCeCmdGuidePoint(this, inOverride != FALSE)) return;
+ 	if ((!inOverride) && (mUnit->mAI->mAIMode == 2))
+ 		return;
+ 	mMode = 1;
+--- a/thing.cpp
++++ b/thing.cpp
+@@ -1,4 +1,5 @@
+ #include "common.h"
++#include "ce_cmdorders.h"
+ #include "mesh.h"			// ########
+ #include "thing.h"
+ #include "scheduledevent.h"
+@@ -119,6 +120,7 @@
+ //******************************************************************************************
+ CThing::~CThing()	// FUNCTION: 0x004f3640
+ {
++    PortCeCmdThingGone(this);
+ #ifndef CE_NETWORK_OFF
+ 	CE_WorldLifecycleDestroyed(this);
+ #endif
+--- a/Unit.cpp
++++ b/Unit.cpp
+@@ -1,6 +1,7 @@
+ // unit.cpp: reconstructed from unit.obj (004f7da0..004fe61f); Stuart's release has no unit.cpp. CUnit's layout
+ // and slots are in unit.h.
+ #include "common.h"
++#include "ce_cmdorders.h"
+ #include "SpawnerThng.h"
+ #include "unit.h"
+ #include "Script.h"
+@@ -536,6 +537,7 @@
+ //******************************************************************************************
+ void CUnit::Shutdown()	// FUNCTION: 0x004f95d0
+ {
++    PortCeCmdThingGone(this);
+ 	SOUND.KillSamplesForThing(this);
+ 
+ 	mCurrentWeapon = NULL;

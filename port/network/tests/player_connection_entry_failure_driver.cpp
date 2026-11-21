@@ -4,6 +4,8 @@
 #include "player_connection_entry_driver.cpp"
 #undef main
 
+static std::wstring ToWide(const char *text) { return std::wstring(text, text + strlen(text)); }
+
 static void FailureStatus(decltype(fixture_status.state) state, bool host,
                           const char *notice)
 {
@@ -31,7 +33,8 @@ static void HostFailureUpdates()
               "host failure does not create another connection");
         fixture_drawn.clear();
         sMenu->DrawText();
-        Check(DrawnContains(cause), "the retained host cause reaches the draw boundary");
+        Check(DrawnContains(ToWide(cause)) || (!fixture_boxes.empty() && fixture_boxes.back() == ToWide(cause)),
+              "the retained host cause reaches the draw boundary or the message box");
         sMenu->Update();
         Check(sMenu->mPage == NP_MENU && std::string(sMenu->mNotice) == cause,
               "later idle update retains the failure notice");

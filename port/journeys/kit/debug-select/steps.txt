@@ -1,0 +1,11 @@
+# Diagnostic: the Catalogue's first speech line chosen after a long settle, with dumps around it.
+wait ticks 600
+key RETURN
+wait page fe:main within 900
+go "Onslaught CE" > Catalogue > "Speech: English"
+wait page xp:sounds
+wait ticks 120
+dump before
+key RETURN
+wait ticks 60
+dump after-return

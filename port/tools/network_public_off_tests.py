@@ -36,6 +36,7 @@ OFFER_DRIVER = """
 #include "%(header)s"
 #include <stdlib.h>
 static bool PortCeMenus() { return true; }
+static bool PortRunOffersNetworkPages() { return true; }
 static struct { bool mRecordDemo = false, mPlaybackDemo = false, mAutoConfigTest = false; } CLIPARAMS;
 %(body)s
 int main() { return PortCeNetOffered() ? 1 : 0; }
@@ -51,7 +52,7 @@ def role_statement(path, reader):
 
 def build_py_defines_network_off(text):
     """--public's block defines CE_NETWORK_OFF; --test-automation's does not."""
-    public = text[text.index("    if a.public:\n"):text.index("    sources = build_mirror()")]
+    public = text[text.index("    if a.public:\n"):text.index("    sources = build_mirror(")]
     private = text[text.index("    if a.test_automation:\n"):text.index("    if a.system_clang:")]
     return "-DCE_NETWORK_OFF=1" in public and "CE_NETWORK_OFF" not in private
 

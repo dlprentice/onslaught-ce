@@ -1,0 +1,14 @@
+--- a/game.cpp
++++ b/game.cpp
+@@ -1321,4 +1321,5 @@
+ //******************************************************************************************
+ 
++#include "ce_hooks.h"	// Port: the CE hook points (port/game/ce_hooks.h)
+ EQuitType	CGame::RestartLoopRunLevel(SINT aLevel)	// FUNCTION: 0x0046dc30
+ {
+@@ -1508,4 +1509,5 @@
+ 		mController[0]->Flush();	// retail (0046e021)
+ 	}
++	ce_hook_level_begin(aLevel);	// CE hook point (port/game/ce_hooks.h): per attempt, before the pre-run ticks
+ 
+ #ifdef CE_NETWORK_OFF

@@ -1,0 +1,11 @@
+--- a/DXEngine.cpp
++++ b/DXEngine.cpp
+@@ -620,2 +620,3 @@
++#include "ce_hooks.h"	// Port: the CE hook points (port/game/ce_hooks.h)
+ static void draw_fairly_late_stuff(CPlayer *player, int viewpoint)
+ {
+@@ -626,3 +627,4 @@
+ 	RENDERINFO.GetProjection(&ENGINE.mProjectionMatrices[viewpoint]);
++	ce_hook_draw_world(player, viewpoint);	// CE hook point (port/game/ce_hooks.h): the world's matrices, before the cockpit
+ 
+ 	//*****************************************

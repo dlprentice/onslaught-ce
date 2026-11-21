@@ -1,0 +1,32 @@
+# The map editor's Player Start on land (an earlier key route, by name and state instead of times): open map 100, choose the
+# Player Start, a click on water is refused, a click on dry land places it, play it, come back, undo and redo, save.
+# The three clicks are window points at 1280x720. Steps are INPUT only.
+wait ticks 600
+key RETURN
+wait page fe:main within 900
+go "Onslaught CE" > "Map Editor" > "Open Installed Map 100"
+wait page ed:map within 1800
+wait ticks 60
+dump opened
+click 108 438
+wait state editor.selected=player-start within 120
+click 640 560
+wait notice "Choose dry ground" within 120
+dump refused
+click 1080 400
+wait ticks 30
+dump placed
+key F5
+wait state editor.phase=playing within 900
+wait ticks 300
+assert game.level=100
+dump playing
+key F5
+wait page ed:map within 900
+dump back
+key LCTRL+Z hold 14
+key LCTRL+Y hold 14
+key LCTRL+S hold 14
+wait notice "Saved as" within 300
+assert file projects/level-0100-000001.ceproject exists
+dump saved

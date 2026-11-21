@@ -14,6 +14,7 @@
 #include "resource.h"
 #include "D3DRes.h"
 #include "DXUtil.h"
+#include "../platform/common/portlog.h"
 #endif
 
 extern CTweakSLONG SCREEN_SHAPE, TEXTURE_RES_LOSS_SHIFT, TEXTURE_ALLOW_32_BIT;
@@ -48,6 +49,10 @@ BOOL presentationRecoveryReady;
 CD3DApplication *recoveryOwner;
 BOOL recoveryReady;
 bool recoveryAttempt;
+// One device change at a time. A release or restore callback can present a wait screen, and whatever runs after a
+// present (the frame-end window request, a message pump) must find the change still open and stay out of it.
+bool deviceChanging;
+unsigned refusedEntries;
 unsigned physicalAdapter[10], mappedAdapterCount;
 struct WindowModeState
 {
@@ -60,6 +65,21 @@ CD3DApplication *modeOwner;
 IDirect3D9 *modeFactory;
 const DWORD noSelection = ~DWORD(0);
 template<class T> void Drop(T *&object) { if (object) { object->Release(); object = NULL; } }
+struct DeviceChange
+{
+    DeviceChange() { deviceChanging = true; }
+    ~DeviceChange() { deviceChanging = false; }
+};
+HRESULT RefuseNestedChange(const char *entry)
+{
+    ++refusedEntries;
+#ifndef BEA_PUBLIC_D3DAPP_TEST
+    PortSessionLog(PORT_SESSION_VIDEO, true, "device change refused: %s entered while another device change was running", entry);
+#else
+    (void)entry;
+#endif
+    return D3DERR_DEVICELOST;
+}
 bool Colour32(D3DFORMAT format)
 {
     return format == D3DFMT_R8G8B8 || format == D3DFMT_X8R8G8B8 || format == D3DFMT_A8R8G8B8;
@@ -263,6 +283,16 @@ extern "C" unsigned PortPublicAdapterOrdinal(unsigned logicalAdapter)
     // Keep invalid indices invalid: never turn a bad logical selection into a valid physical primary adapter.
     return logicalAdapter < mappedAdapterCount ? physicalAdapter[logicalAdapter] : logicalAdapter;
 }
+
+// The frame-end window request (ce_video_options.cpp) asks this before it starts. It must wait while another device
+// change is running, whose wait screens present frames, and while released objects wait for the shell's recovery.
+extern "C" int PortPublicDeviceBusy(void)
+{
+    return deviceChanging || presentationTransition || recoveryAttempt || recoveryOwner || presentationFailureOwner;
+}
+
+// Refused nested entries so far (each also leaves a session log line): none is expected in play.
+extern "C" unsigned PortPublicRefusedDeviceChanges(void) { return refusedEntries; }
 
 D3DDeviceInfo::D3DDeviceInfo()
 {
@@ -669,8 +699,10 @@ HRESULT CD3DApplication::Resize3DEnvironment()
 {
     if (presentationFailureOwner == this) return D3DERR_DEVICELOST;
     if (DeviceRecoveryPending()) return D3DERR_DEVICELOST;
+    if (deviceChanging) return RefuseNestedChange("Resize3DEnvironment");
     WindowModeState *window = CurrentWindowState(*this);
     if (!window || (!m_bWindowed && window->only)) return E_FAIL;
+    DeviceChange running;
     ModeChange change(*this, *window);
     if (m_bWindowed && (!window->valid || !PublishWindowMode(*this, *window, true))) return E_FAIL;
     if (m_bWindowed)
@@ -693,14 +725,26 @@ HRESULT CD3DApplication::Reset3DEnvironment(BOOL skipPicker, bool showProgress)
     // The game's two callers pass TRUE. The retired sample picker is deliberately unsupported by the public host.
     if (!skipPicker) return E_NOTIMPL;
     if (recoveryOwner == this || recoveryAttempt) return D3DERR_DEVICELOST;
+    if (deviceChanging) return RefuseNestedChange("Reset3DEnvironment");
+    DeviceChange running;
     BOOL wasReady = presentationFailureOwner == this ? presentationRecoveryReady : m_bReady;
     m_bReady = FALSE;
-    HRESULT result = ReleaseDeviceObjects(showProgress);
+    // An earlier failed change has already released the objects and may have dropped the device, which the
+    // shell's release uses without a test. Release only what is live.
+    HRESULT result = deviceObjectsLive ? ReleaseDeviceObjects(showProgress) : S_OK;
     if (SUCCEEDED(result)) { deviceObjectsLive = false; result = Initialize3DEnvironment(true); }
     if (SUCCEEDED(result))
     {
         if (presentationFailureOwner == this) presentationFailureOwner = NULL;
         m_bReady = wasReady && pauseDepth == 0;
+    }
+    else if (!presentationTransition && !deviceObjectsLive)
+    {
+        // The options reset at the end of a frame does not test this result. Own the failure here, so that nothing
+        // admits a frame on released objects and the shell's recovery retries the reset or closes the game.
+        // A window switch owns its own failure after its rollback.
+        presentationFailureOwner = this;
+        presentationRecoveryReady = wasReady || pauseDepth != 0;
     }
     if (SUCCEEDED(result) && !m_bFrameMoving) { m_bSingleStep = TRUE; DXUtil_Timer(TIMER_START); DXUtil_Timer(TIMER_STOP); }
     return result;
@@ -712,6 +756,7 @@ HRESULT CD3DApplication::RecoverLostDevice()
 {
     if ((!m_pd3dDevice && presentationFailureOwner != this) || (recoveryOwner && recoveryOwner != this)) return E_FAIL;
     if (recoveryAttempt) return D3DERR_DEVICELOST;
+    if (deviceChanging) return RefuseNestedChange("RecoverLostDevice");
     struct Attempt
     {
         Attempt() { recoveryAttempt = true; }
@@ -752,6 +797,7 @@ HRESULT CD3DApplication::AdjustWindowForChange()
 
 HRESULT CD3DApplication::ForceWindowed(BOOL windowed)
 {
+    if (deviceChanging) return RefuseNestedChange("ForceWindowed");
     if (presentationFailureOwner == this) return D3DERR_DEVICELOST;
     if (DeviceRecoveryPending()) return D3DERR_DEVICELOST;
     WindowModeState *state = CurrentWindowState(*this);
@@ -817,6 +863,7 @@ HRESULT CD3DApplication::ForceWindowed(BOOL windowed)
 
 HRESULT CD3DApplication::ToggleFullscreen()
 {
+    if (deviceChanging) return RefuseNestedChange("ToggleFullscreen");
     if (DeviceRecoveryPending()) return D3DERR_DEVICELOST;
     WindowModeState *state = CurrentWindowState(*this);
     if (!state || (m_bWindowed && state->only)) return E_FAIL;
@@ -919,8 +966,10 @@ VOID CD3DApplication::Cleanup3DEnvironment()
 
 HRESULT CD3DApplication::DisplayErrorMsg(HRESULT error, DWORD kind)
 {
-    char text[128];
-    snprintf(text, sizeof(text), "Graphics operation failed (0x%08lx).", static_cast<unsigned long>(error));
+    char text[256];
+    snprintf(text, sizeof(text), "Onslaught CE could not set up its graphics (error 0x%08lx).\n\n"
+             "Update your graphics driver and try again. If it keeps happening, run onslaught-ce.exe --report.",
+             static_cast<unsigned long>(error));
     SETUP_HISTORY.AddMessage("%s", text);
     MessageBox(m_hWnd, text, TEXT("Onslaught CE"), MB_OK | MB_ICONERROR);
     if (kind == 1) SendMessage(m_hWnd, WM_CLOSE, 0, 0);

@@ -1,0 +1,11 @@
+--- a/DropshipGuide.cpp
++++ b/DropshipGuide.cpp
+@@ -65,7 +65,7 @@
+ 		float	height = ground - pos.Z;
+ 
+ 		FVector	d = GetDestination() - GetUnit()->GetPos();
+-		float	heading = d.Azimuth();
++		volatile float	azimuth = d.Azimuth(); float	heading = azimuth;	// Port: retail stores the heading as a float (00448a2b)
+ 		float	pitch = 0;
+ 		float	roll = 0;
+ 		FVector	velocity(0, 0, 0);

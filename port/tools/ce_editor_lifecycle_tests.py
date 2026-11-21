@@ -25,20 +25,28 @@ import build
 import quiet_crash
 
 
-def definition(text, name):
-    pattern = r'(?m)^[A-Za-z_][^\n;{}]*\b' + re.escape(name) + r'\s*\('
-    match = re.search(pattern, text)
-    if not match:
-        raise ValueError('Missing definition: ' + name)
-    first = text.index('{', match.end())
-    masked = re.sub(r'//[^\n]*|/\*.*?\*/|"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'',
-                    lambda m: ''.join('\n' if c == '\n' else ' ' for c in m[0]), text, flags=re.S)
-    end = first + 1
+def definition(text: str, name: str) -> str:
+    # Ignore declarations and literal braces when extracting a production owner.
+    masked = re.sub(
+        r"//[^\n]*|/\*[\s\S]*?\*/|\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'",
+        lambda match: re.sub(r"[^\n]", " ", match.group(0)),
+        text,
+    )
+    match = re.search(
+        r"(?m)^[^;\n{}()=]*\b" + re.escape(name)
+        + r"\s*\([^;{}]*\)\s*(?:const\s*)?(?:noexcept\s*)?\{",
+        masked,
+    )
+    if match is None:
+        raise ValueError(f"missing production definition: {name}")
+    cursor = match.end()
     depth = 1
-    while depth:
-        depth += (masked[end] == '{') - (masked[end] == '}')
-        end += 1
-    return text[match.start():end]
+    while cursor < len(masked) and depth:
+        depth += (masked[cursor] == "{") - (masked[cursor] == "}")
+        cursor += 1
+    if depth:
+        raise ValueError(f"unterminated production definition: {name}")
+    return text[match.start():cursor]
 
 
 MASK = re.compile(r'//[^\n]*|/\*.*?\*/|"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'', re.S)
@@ -76,10 +84,11 @@ def main():
     start = source.index('struct EditorGameAccess : CGame')
     end = source.index('bool EditorTrap(WORD key, int event);', start) + len('bool EditorTrap(WORD key, int event);')
     declarations = source[start:end]
-    names = ('SourceName', 'EditorNote', 'Point', 'Vector', 'NativePosition', 'LiveActor', 'ApplyOne', 'EditorExit',
-             'PortCeEditorActive', 'PortCeEditorWorldViewToken', 'PortCeEditorMessage', 'PortCeEditorMousePixels',
+    names = ('SamePoint', 'SourceName', 'EditorNote', 'EditorNoticeSettle', 'EditorToolEnabled', 'EditorRefuse', 'Point', 'Vector', 'EditorBounds', 'EditorStandAbove', 'EditorStartClearance', 'EditorPlayerStartFit', 'EditorPlayerStartSupported', 'EditorStartRefusal', 'NativePosition', 'LiveActor', 'ApplyOne', 'EditorExit', 'EditorLeave',
+             'EditorCopyCareerOptions', 'EditorRestoreCareer', 'EditorPrepareReload', 'EditorReturnToAuthoring', 'EditorApplyDocument', 'PortCeEditorPlaying', 'PortCeEditorResolveQuit',
+             'PortCeEditorActive', 'PortCeEditorFilterSave', 'PortCeEditorWorldViewToken', 'PortCeEditorMessage', 'PortCeEditorMousePixels',
              'PortCeEditorSuppressFlightHud', 'PortCeEditorDrawPosition', 'PortCeEditorBegin', 'PortCeEditorBeginWorld',
-             'PortCeEditorObserveWorldObject', 'PortCeEditorEndWorld', 'PortCeEditorAfterLoad', 'PortCeEditorFrame',
+             'PortCeEditorApplyPlayerStart', 'PortCeEditorObserveWorldObject', 'PortCeEditorApplyWorldObject', 'PortCeEditorEndWorld', 'EditorParkRefusal', 'PortCeEditorAfterLoad', 'EditorReachEntry', 'EditorUpdateReach', 'PortCeEditorFrame',
              'PortCeEditorLevelEnd', 'PortCeEditorCancel', 'PortCeEditorTakeReturn', 'PortCeEditorMenuReturn')
     functions = '\n'.join(definition(source, name) for name in names)
     texts = build.patched_text(('game.cpp', 'FrontEnd.cpp', 'actor.cpp', 'DXEngine.cpp'))
@@ -87,10 +96,11 @@ def main():
     pre_run = definition(texts['game.cpp'], 'CGame::PreRun')
     entry = pre_run[pre_run.index('{') + 1:]
     guard = 'if (PortCeEditorActive()) return;'
+    prerun_guard = 'if (PortCeEditorActive() && !PortCeEditorPlaying()) return;'
     # The guard may share its block with other CE tools, but only as extra OR-alternatives: an '&&' or any other term could
     # disable it, so nothing but '|| Name()' is accepted after the editor test.
     guard_re = re.escape('if (PortCeEditorActive()') + r'(?:\s*\|\|\s*[A-Za-z_][A-Za-z_0-9]*\(\))*\) return;'
-    if not re.match(r'\s*#ifdef CE_VERSION\s*' + guard_re, entry):
+    if not re.match(r'\s*#ifdef CE_VERSION\s*' + re.escape(prerun_guard), entry):
         raise ValueError('Editor warmup fence is absent or after work.')
     for name, required in (('CGame::MainLoop', 'PortCeEditorFrame();'),
                            ('CGame::ShutdownRestartLoop', 'PortCeEditorLevelEnd();'),
@@ -109,6 +119,8 @@ def main():
     automatic = definition(texts['game.cpp'], 'CGame::RestartLoopRunLevel')
     if automatic.count('CONSOLE.Exec(') != 2 or automatic.count('(ceEditorAuthoring ? (void)0 : CONSOLE.Exec(') != 2:
         raise ValueError('An automatic startup command can run during authoring.')
+    if not re.search(r'mQuit = static_cast<EQuitType>\(PortCeEditorResolveQuit\(mQuit\)\);\s*#endif\s*return mQuit\s*;', automatic):
+        raise ValueError('The editor does not resolve the level result before the next-level choice.')
     # The actor's render-position getter answers with the current translation for bound placements: one guarded block that is the
     # getter's first statement, composed exactly as the mirror holds it. Every consumer of the getter (the pose renderer, a
     # component placed from its parent) then sees the same translation.
@@ -140,7 +152,7 @@ def main():
     (out / 'editor-render-translation.private.inc').write_text(translation)
     (out / 'editor-declarations.private.inc').write_text(declarations + '\n')
     (out / 'editor-lifecycle.private.inc').write_text(functions + '\n')
-    (out / 'editor-prerun.private.inc').write_text(guard + '\n')
+    (out / 'editor-prerun.private.inc').write_text(prerun_guard + '\n')
     compiler = shutil.which('clang++') or shutil.which('g++')
     if not compiler:
         raise SystemExit('A C++ compiler is required.')
@@ -177,12 +189,14 @@ def main():
     ordinary = compile_run(ordinary_folder, project, snippet_ce=False)
     query_gate = 'if (!thing || !position || !gEditorRequested || !PortCeEditorWorldViewToken() || !GAME.IsPaused()) return false;'
     variants = {
-        'warmup-unguarded': ('editor-prerun.private.inc', guard, '(void)0;'),
+        'restart-keeps-route-stage': ('editor-lifecycle.private.inc', 'gEditorReachStage=0; gEditorSecondNeedsExit=false;', 'gEditorSecondNeedsExit = false;'),
+        'warmup-unguarded': ('editor-prerun.private.inc', prerun_guard, '(void)0;'),
         'career-snapshot-omitted': ('editor-lifecycle.private.inc', 'memcpy(gEditorCareer, &CAREER, sizeof(CCareer));', '(void)0;'),
-        'career-restoration-omitted': ('editor-lifecycle.private.inc', 'if (gEditorCareer) memcpy(&CAREER, gEditorCareer, sizeof(CCareer));', '(void)0;'),
+        'career-restoration-omitted': ('editor-lifecycle.private.inc', 'memcpy(&CAREER, &restored, sizeof(CAREER));', '(void)0;'),
         'camera-restores-over-new-owner': ('editor-lifecycle.private.inc', 'gEditorCamera && GAME.GetCurrentCamera(0) == gEditorCamera && gEditorPreviousCamera', 'gEditorPreviousCamera && GAME.GetCurrentCamera(0) != gEditorPreviousCamera'),
         'teardown-releases-career-too-soon': ('editor-lifecycle.private.inc', 'gEditorReady = false;', 'gEditorRequested=false;gEditorReady = false;'),
         'init-offset-lost': ('editor-lifecycle.private.inc', 'actor.x + object->position.x - initial.x', 'object->position.x'),
+        'move-collision-stale': ('editor-lifecycle.private.inc', '    EditorRefreshCollision(actor);\n    return true;', '    return true;'),
         # The draw correction. The first two are the behaviour before it: the actor's ordinary render position for a moved actor.
         'draw-hook-disabled': ('editor-render-translation.private.inc', 'PortCeEditorDrawPosition(this, &ceEditorPosition)', 'false'),
         'draw-hook-result-ignored': ('editor-render-translation.private.inc', 'return ceEditorPosition;', '(void)ceEditorPosition;'),
@@ -201,6 +215,13 @@ def main():
         # The answer does not depend on the editor's own state: a move in progress and a saved session draw at the current translation too.
         'draw-off-during-move': ('editor-lifecycle.private.inc', query_gate, query_gate + ' if (gEditorState.Moving()) return false;'),
         'draw-off-in-saved-session': ('editor-lifecycle.private.inc', query_gate, query_gate + ' if (!gEditorState.Dirty()) return false;'),
+        # Refusals (E1): the engine's load is never failed, the level parks paused, and the first frame leaves for the page.
+        'refusal-fails-engine-load': ('editor-lifecycle.private.inc', 'gEditorPhase = Refused;\n    }\n    return true;', 'gEditorPhase = Refused;\n    }\n    return false;'),
+        'refusal-never-leaves': ('editor-lifecycle.private.inc', 'if (gEditorRequested && gEditorPhase == Refused) {\n        EditorExit();', 'if (gEditorRequested && gEditorPhase == Refused) {\n        (void)0;'),
+        'refusal-unparked': ('editor-lifecycle.private.inc', '    GAME.*EditorGameAccess::PauseField() = TRUE;\n    GAME.*EditorGameAccess::StateField() = GAME_STATE_PLAYING;\n    return true;',
+                             '    GAME.*EditorGameAccess::StateField() = GAME_STATE_PLAYING;\n    return true;'),
+        'refusal-pause-kept': ('editor-lifecycle.private.inc', '    } else if (gEditorRefusalParked && GAME.GetCurrentLevel() == gEditorLevel)\n        GAME.*EditorGameAccess::PauseField() = gEditorOriginalPause ? TRUE : FALSE;',
+                               '    }'),
     }
     default_text_variants = {
         # The default build's text must never consult the editor: lifting the guard must be caught by the ordinary compile.

@@ -13,6 +13,7 @@ extern "C" int PortCeDisplayWindowBegin(HWND, int, unsigned, unsigned);
 extern "C" int PortCeDisplayWindowReady();
 extern "C" int PortCeDisplayInputReady();
 extern "C" int PortCeDisplayWindowEnd(int);
+extern "C" int PortPublicDeviceBusy(void);	// the public graphics host: a device change is running or waiting to be retried
 namespace
 {
     int pendingMode = -1;
@@ -22,8 +23,13 @@ namespace
 
 // Menu Apply visits every item before returning. Reset only after that traversal and the frame's Present,
 // so device-object callbacks cannot run while an item is being committed or drawn.
+// One Apply can also ask for the options reset (Screen mode, anti-aliasing and the other reset rows). That reset
+// draws wait screens, and each of their presents ends in this call: the request then stays queued for the present
+// that started the reset, so the window is prepared from the mode that reset installed. After a reset that failed
+// it stays queued until the shell has recovered the device and a frame is presented again.
 void PortCeApplyPendingDisplayMode()
 {
+    if (pendingMode >= 0 && PortPublicDeviceBusy()) return;
     const int requested = pendingMode;
     pendingMode = -1;
     if (requested < 0 || !CE_DisplayModeAvailable()) return;
@@ -61,21 +67,30 @@ class CCeDisplayModeItem : public CMenuMenuItem
     bool failed;
 public:
     CCeDisplayModeItem() : CMenuMenuItem((EPCText)0,3,true), failed(false) { Refresh(); }
-    WCHAR *GetText() override {
-#if defined(CE_VERSION) && defined(BEA_PUBLIC_GRAPHICS_HOST)
-        const WCHAR *text = L"Window mode: ";
-        if (displayResult == DisplayRefused) text = L"Window mode (not applied): ";
-        else if (displayResult == DisplayNotSaved) text = L"Window mode (applied; not saved): ";
-        else if (displayResult == DisplayInputFailed) text = L"Window mode (input restore failed): ";
-        else if (displayResult == DisplayRestoreFailed) text = L"Window mode (restore failed): ";
-        return const_cast<WCHAR *>(text);
-#else
-        return const_cast<WCHAR *>(failed ? L"Display mode (restart required; not saved): " : L"Display mode (restart required): ");
-#endif
-    }
+    // The label never changes, as the original's never do ("Label:value", no space): a state follows the value in effect.
+    WCHAR *GetText() override { return const_cast<WCHAR *>(L"Window mode:"); }
     int GetNumChoices() override { return 2; }
     WCHAR *GetChoiceText(int value) override {
-        return const_cast<WCHAR *>(value == 1 ? L"Windowed" : L"Fullscreen");
+        const bool windowed = value == 1;
+        if (value == GetValue())
+        {
+#if defined(CE_VERSION) && defined(BEA_PUBLIC_GRAPHICS_HOST)
+            // Refused: the window is as it was. Not saved: switched for this session only. The two restore failures leave the window
+            // or the mouse in a state only a new start puts right (the mouse's repair is retried, but the choice was not saved either).
+            if (displayResult == DisplayRefused) return const_cast<WCHAR *>(windowed ? L"Windowed (not changed)" : L"Fullscreen (not changed)");
+            if (displayResult == DisplayNotSaved) return const_cast<WCHAR *>(windowed ? L"Windowed (not saved)" : L"Fullscreen (not saved)");
+            if (displayResult == DisplayInputFailed || displayResult == DisplayRestoreFailed)
+                return const_cast<WCHAR *>(windowed ? L"Windowed (restart the game)" : L"Fullscreen (restart the game)");
+#else
+            // This build changes the mode at the next start only; a refused save leaves the saved choice as it was.
+            if (failed) return const_cast<WCHAR *>(windowed ? L"Windowed (not changed)" : L"Fullscreen (not changed)");
+#endif
+        }
+#if defined(CE_VERSION) && defined(BEA_PUBLIC_GRAPHICS_HOST)
+        return const_cast<WCHAR *>(windowed ? L"Windowed" : L"Fullscreen");
+#else
+        return const_cast<WCHAR *>(windowed ? L"Windowed (next start)" : L"Fullscreen (next start)");
+#endif
     }
     int GetValue() override {
 #if defined(CE_VERSION) && defined(BEA_PUBLIC_GRAPHICS_HOST)

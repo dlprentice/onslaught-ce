@@ -231,7 +231,7 @@ class Launcher(unittest.TestCase):
         self.assertIn("env: rec= clock=", r.stderr, "no record_sessions line: not recording")
 
     def test_record_prompt_and_no_record(self):
-        # record_sessions=1 asks each start: Not this time records nothing and keeps the setting; Stop recording and
+        # record_sessions=1 asks each start: Not this time records nothing and keeps the setting; Turn recording off and
         # --no-record set record_sessions=0 (every other line kept, written through ce.ini.tmp, none left behind)
         self.user.mkdir()
         ini = self.user / "ce.ini"
@@ -432,7 +432,7 @@ class Launcher(unittest.TestCase):
         cases = [(self.fake_install("empty", msl=False, stf=None), "it has no data/MissionScripts/onsldef.msl"),
                  (self.fake_install("nostf", stf=None), "it has no data/MissionScripts/text/text.stf"),
                  (self.fake_install("other", stf=b"another edition"),
-                  "its data/MissionScripts/text/text.stf differs from the supported edition's (hash mismatch)")]
+                  "its data/MissionScripts/text/text.stf is a different edition from the one Onslaught CE supports")]
         unreadable = self.fake_install("unreadable")
         stf = next(unreadable.rglob("text.stf"))
         stf.chmod(0)

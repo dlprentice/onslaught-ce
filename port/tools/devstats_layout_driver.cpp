@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <vector>
 
 using DWORD = uint32_t;
@@ -18,9 +19,10 @@ struct CDXBitmapFont
 {
 	void DrawTextScaled(float x, float y, float, float sx, float sy, DWORD colour, WCHAR *, int, DWORD *)
 	{ draws.push_back({x, y, sx, sy, colour}); }
+	int GetHeight() { return 16; }
 };
 struct Platform { int w = 640, h = 480; int GetWindowWidth() { return w; } int GetWindowHeight() { return h; } } PLATFORM;
-static char sDevStats[8] = "stats";
+static char sDevStats[128];
 static WCHAR wideStats[8];
 static WCHAR *ToWCHAR(const char *) { return wideStats; }
 static bool green = false;
@@ -33,6 +35,7 @@ static void Layout(int windowWidth, int windowHeight, float widest)
 	PLATFORM.h = windowHeight;
 	CDXBitmapFont face, *font = &face;
 	draws.clear();
+	if (!sDevStats[0]) std::strcpy(sDevStats, "stats");
 #include "devstats_layout.inc"
 }
 
@@ -122,6 +125,32 @@ int main()
 			++cases;
 		}
 	}
+	// Six lines, as the developer text is: each its own pair of draws (the shadow first), a line apart (the font's 16 pixels at the
+	// factor, and two window pixels at the factor, or at 1 below 640 x 480), never one call for the block, never on top of the next.
+	const struct { int w, h; float factor; } block[] = {{640, 480, 1.f}, {1280, 720, 1.5f}, {1920, 1080, 2.25f}, {800, 600, 1.25f}};
+	green = false;
+	for (const auto &b : block)
+	{
+		std::strcpy(sDevStats, "World 100\n 60 FPS \n Health = 20\n Aug Bar = 0\nDEFAULT Heap\n   Used");
+		Layout(b.w, b.h, 100.f);
+		if (draws.size() != 12)
+			fail("six lines are not twelve draws", b.w, b.h, 100.f);
+		for (int i = 0; i < 6; ++i)
+		{
+			const Draw &shadow = draws[2 * i], &text = draws[2 * i + 1];
+			const float pitch = 16.f * b.factor + 2.f * b.factor;
+			if (shadow.colour != kShadow || text.colour != kYellow)
+				fail("a line's shadow is not drawn before its text", b.w, b.h, 100.f);
+			if (!near(text.x, 40.f * b.factor) || !near(text.y, 30.f * b.factor + float(i) * pitch))
+				fail("a line is not a pitch below the one before", b.w, b.h, 100.f);
+			if (!near(shadow.x, text.x + b.factor) || !near(shadow.y, text.y + b.factor))
+				fail("a line's shadow is not the factor down and right of it", b.w, b.h, 100.f);
+			if (i && text.y - draws[2 * i - 1].y < 16.f * b.factor + 1.f)
+				fail("a line touches the one before", b.w, b.h, 100.f);
+		}
+		++cases;
+	}
+	sDevStats[0] = 0;
 	printf("devstats layout: %d cases hold\n", cases);
 	return 0;
 }

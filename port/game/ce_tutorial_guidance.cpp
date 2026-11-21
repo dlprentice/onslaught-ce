@@ -14,6 +14,7 @@
 #include "ltshell.h"
 #include "ce_tutorial_pad.h"
 #include "ce_dodge_assist.h"
+#include "ce_dodge_binding.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -33,7 +34,7 @@ const int kTutorialDodge = 667656903;
 //   pressed fully after more than half and less than all of g_dash_time (default 0.2 game seconds); a right then left
 //   flick dashes left, left then right dashes right; repeating one direction does nothing.
 // - CBattleEngine::ZoomIn: zoom only changes when the current weapon has the normal zoom mode.
-const char kZoomFallback[] = "Zoom: see Zoom In and Zoom Out in Controller Configuration. Not every weapon zooms.";
+const char kZoomFallback[] = "Zoom: see Zoom In and Out in Controller Options. Not every weapon zooms.";
 // The native WordWrap writes into 100-WCHAR lines; keep even an unwrapped cue within one line buffer.
 const int kBufferSize = 100;
 WCHAR sText[MAX_HELP_TEXT_MESSAGES][kBufferSize];
@@ -309,26 +310,24 @@ bool DodgeButtonName(CDXBitmapFont *font, char *out, int size)
 // The cue when the Dodge Button is on (CE Settings) and this player can use it: the key and the gamepad button, then the old double tap
 // with the actual keys when there is room. The Dodge Button works with whatever strafe inputs the player has, so it says "strafe".
 // False when it is off or unusable here: the cue is then the one built from the bindings alone.
-bool DodgeAssistLine(CDXBitmapFont *font, bool keys, const char *left, const char *right, bool pad, const char *padLeft, const char *padRight,
+bool DodgeAssistLine(CDXBitmapFont *font, bool keys, const char *left, const char *right,
 	bool timingKnown, const char *timing, char *line, int size)
 {
-	char button[32] = {};
+	char button[32] = {}, dodgeKey[32] = {};
 	const bool on = PortCeDodgeAssistOn();
-	const bool key = on && PlayerPad() == 0 && PortCeDodgeAssistKeyFree();
+	const bool key = on && PlayerPad() == 0 && PortCeDodgeAssistKeyFree() &&
+        PortCeDodgeBindingName(PortCeDodgeBindingKey(),dodgeKey,sizeof(dodgeKey));
 	const bool padButton = on && DodgeButtonName(font, button, sizeof(button));
 	if (!key && !padButton) return false;
-	char hold[96], strafe[96] = "strafe left or right", old[96] = "", either[64] = "";
-	if (key && padButton) snprintf(hold, sizeof(hold), "hold Left Ctrl or %s", button);
-	else if (key) snprintf(hold, sizeof(hold), "hold Left Ctrl");
+	char hold[96], old[96] = "";
+	if (key && padButton) snprintf(hold, sizeof(hold), "hold %s or %s", dodgeKey, button);
+	else if (key) snprintf(hold, sizeof(hold), "hold %s", dodgeKey);
 	else snprintf(hold, sizeof(hold), "hold %s", button);
-	if (pad) PadEither(padLeft, padRight, either, sizeof(either));
-	if (key && !padButton && keys) snprintf(strafe, sizeof(strafe), "press %s or %s", left, right);
-	else if (!key && padButton && pad) snprintf(strafe, sizeof(strafe), "push %s", either);
 	if (keys) snprintf(old, sizeof(old), " Or tap %s then %s%s%s.", left, right, timingKnown ? " " : "", timingKnown ? timing : "");
 	if (keys && timingKnown) snprintf(old, sizeof(old), " Or tap %s then %s %s apart.", left, right, timing);
 	for (int form = 0; form < 2; ++form)
 	{
-		snprintf(line, size, "Ground dodge: %s and %s.%s", hold, strafe, form == 0 ? old : "");
+		snprintf(line, size, "Ground dodge: %s and press a movement direction.%s", hold, form == 0 ? old : "");
 		if (strlen(line) < (size_t)kBufferSize && Printable(font, line)) return true;
 	}
 	return false;
@@ -366,7 +365,7 @@ bool Build(int kind, WCHAR *out)
 		bool pad = PadPair(BUTTON_MECH_STRAFE_LEFT, BUTTON_MECH_STRAFE_RIGHT, font, padLeft, padRight);
 		char sequence[64] = {};
 		if (pad) PadSequence(padLeft, padRight, sequence, sizeof(sequence));
-		if (DodgeAssistLine(font, keys, left, right, pad, padLeft, padRight, timingKnown, timing, line, sizeof(line)))
+		if (DodgeAssistLine(font, keys, left, right, timingKnown, timing, line, sizeof(line)))
 			;
 		else if (pad && keys)
 		{

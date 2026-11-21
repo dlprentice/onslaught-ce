@@ -41,7 +41,7 @@ class IceOptInTests(unittest.TestCase):
         self.write_archive()
         self.pin = dict(name="libjuice", version="authored", licence="MPL-2.0", sha=sha(self.archive.read_bytes()),
                         url="https://example.invalid/libjuice/authored-revision")
-        self.patch_bytes = b"# SPDX-License-Identifier: MPL-2.0\n# authored source modification\n"
+        self.patch_bytes = b"# SPDX-License-" b"Identifier: MPL-2.0\n# authored source modification\n"
         self.source_patch = dict(name="libjuice-relay-only.patch", licence="MPL-2.0", sha256=sha(self.patch_bytes))
         self.patched_source = self.root / "patched-source"
         self.patched_source.mkdir()

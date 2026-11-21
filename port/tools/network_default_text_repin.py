@@ -11,8 +11,19 @@ does not have is an error.
     python3 port/tools/network_default_text_repin.py port/platform/common/mods.cpp port/platform/common/mods.h
     python3 port/tools/network_default_text_tests.py
 
+At a merge, `--changed-since BASE` (BASE = the integration head before the merge) re-pins exactly the pinned or newly default-built
+files that both fail network_default_text_tests and differ from BASE, removes the pin of a file the merge deleted, resolves a path
+the union merge left pinned twice by re-pinning it from the merged file (when the merge changed that file), puts each pin file
+back in path order (the union merge of .gitattributes appends the other side's lines), and touches nothing else: a failing file the merge did not change is printed and the exit code is 1, for the integrator to look at.
+
+    python3 port/tools/network_default_text_repin.py --changed-since BASE
+
+Git no longer stops on a conflicting pin (the pin files union-merge), so this step is not optional: tools/merge_slice.py runs
+it, then network_default_text_tests (which refuses a doubled or out-of-order pin), before it commits a merge.
+
 Writes only port/network/MAIN-TEXT.sha256 and port/network/MAIN-SOURCES.sha256. A merge receipt names this step and the files it re-pinned.
 No game data, device or network is used."""
+import subprocess
 import sys
 from pathlib import Path
 
@@ -39,7 +50,83 @@ def repin(pin_path, name, want):
     return "added"
 
 
+def unpin(pin_path, name):
+    """Removes every line of `name` from the pin file; returns 'removed' or 'absent'."""
+    lines = pin_path.read_text().splitlines()
+    kept = [l for l in lines if not (l.strip() and not l.startswith("#") and l.split(None, 1)[1].strip() == name)]
+    if len(kept) == len(lines):
+        return "absent"
+    pin_path.write_text("\n".join(kept) + "\n")
+    return "removed"
+
+
+def failing_names():
+    """The paths network_default_text_tests would report, from its own checks on the checkout."""
+    found = N.problems(N.checkout_texts(), N.read_pins(N.PINS))
+    found += N.source_problems(N.checkout_sources(), N.read_pins(N.SOURCE_PINS), N.listed_network_patches())
+    return sorted({line.split(":", 1)[0] for line in found})
+
+
+def changed_since(base):
+    """Paths that differ between BASE and the checkout (committed or not), and the untracked ones git does not ignore."""
+    run = lambda *a: subprocess.run(["git", "-C", str(N.ROOT), *a], capture_output=True, text=True, check=True).stdout.split("\n")
+    names = run("diff", "--name-only", base) + run("ls-files", "--others", "--exclude-standard")
+    return {n for n in names if n}
+
+
+def sort_pins(pin_path):
+    """Puts the pin lines back in path order (a union merge appends the other side's lines after ours); returns 'sorted' or ''."""
+    lines = pin_path.read_text().splitlines()
+    head = [l for l in lines if not l.strip() or l.startswith("#")]
+    body = [l for l in lines if l.strip() and not l.startswith("#")]
+    ordered = sorted(body, key=lambda l: l.split(None, 1)[1].strip())
+    if ordered == body:
+        return ""
+    pin_path.write_text("\n".join(head + ordered) + "\n")
+    return "sorted"
+
+
+def merge_repin(base):
+    changed = changed_since(base)
+    status = 0
+    resolved = False
+    for pins in (N.PINS, N.SOURCE_PINS):
+        # a union merge keeps both sides' pins of a file; the merged file decides (git stops on the file itself if it conflicts)
+        for name in N.pin_duplicates(pins.read_text()):
+            if name in changed and (N.ROOT / name).is_file():
+                unpin(pins, name)
+                print(f"{name}: pinned twice after the merge; both lines dropped and re-pinned from the merged file")
+                resolved = True
+                status = max(status, main([name]))
+            else:
+                print(f"{name}: pinned twice and not changed since {base}; not resolved (look at it)")
+                status = 1
+        if sort_pins(pins):
+            print(f"{pins.relative_to(N.ROOT)}: lines put back in path order")
+    failing = failing_names()
+    for name in failing:
+        if name not in changed:
+            print(f"{name}: fails the pins but did not change since {base}; not re-pinned (look at it)")
+            status = 1
+            continue
+        if not (N.ROOT / name).is_file():
+            pins = N.SOURCE_PINS if N.is_source_path(name) else N.PINS
+            print(f"{name}: {unpin(pins, name)} (deleted since {base})")
+            continue
+        rc = main([name])
+        if rc:
+            status = rc
+    if not failing and status == 0 and not resolved:
+        print("nothing to re-pin")
+    return status
+
+
 def main(argv):
+    if argv[:1] == ["--changed-since"]:
+        if len(argv) != 2:
+            print(__doc__)
+            return 2
+        return merge_repin(argv[1])
     names = [("port/" + a if not a.startswith(("port/", "src/", "linklib/")) else a) for a in argv]
     if not names:
         print(__doc__)

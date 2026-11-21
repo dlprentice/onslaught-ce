@@ -1,19 +1,6 @@
-// SPDX-License-Identifier: GPL-3.0-only
-// port/game/ce_dodge_assist.cpp: the Dodge Button (patch 0220 at CController::DoMappings and CController::SendButtonAction).
-//
-// The game's ground dodge is a double tap: two full strafe pushes in opposite directions, the second between half and the whole
-// of g_dash_time (0.2 s) after the first (README, Dodging; ce_dodge_assist_rules.h has the game's code in words). Players find the
-// window hard. The Dodge Button gives them one press for it: hold Left Ctrl (a gamepad: B) while pushing left or right, or push
-// left or right while holding it, and the controller update sends those two strafe actions itself, through the game's own path,
-// as keys would. StrafeLeft and StrafeRight then dash with their own code: the dodge is the original one, the same speed, the same
-// length, the same cost; only the typing of it is done for the player. The A then D (D then A) double tap keeps working as before.
-//
-// Ordinary CE play only. The assist is off, and the controller update is exactly the original's, in a replay, a recording, under
-// probes or the virtual clocks, for a test pilot, in a demo or an attract loop, in a network game (the lockstep samples this
-// peer's controls and its copy of the other peer would have to make the same two pushes at the same game times, which nothing here
-// has been run to show), where the CE layer is off, and when ce.ini says dodge_button=0 (the CE Settings row Dodge Button). It
-// adds an input and takes none away: a key or button the player has bound to a control of their own is not a Dodge Button, and
-// without a press of it the player's strafe actions pass exactly as they did.
+// Optional keyboard and gamepad shortcut for the walker's four ground
+// dodges. Movement comes from the player's actual bindings. The shortcut
+// sends ordinary actions through the controller; the walker decides to dash.
 #ifdef CE_VERSION
 
 #include "common.h"
@@ -27,6 +14,8 @@
 #include "BattleEngine.h"
 #include "BattleEngineWalkerPart.h"
 #include "ce_dodge_assist.h"
+#include "ce_dodge_binding.h"
+#include <initializer_list>
 #include "../platform/common/portlog.h"
 
 #include <stdio.h>
@@ -39,6 +28,7 @@
 extern "C" int CE_BootRequested(void) __attribute__((weak));
 extern "C" int CE_SessionActive(void) __attribute__((weak));
 extern "C" int CE_SettingGetBool(const char *key, int def);
+bool PortCeExperimental(const char *mode);
 bool PortCeLayer();
 bool PortRecording();
 int PortCeGamepadOn(int pad, int button);		// ce_gamepad.cpp
@@ -51,7 +41,7 @@ const char *const kFenced[] = {"BEA_PORT_CLOCK", "BEA_PORT_TAPE", "BEA_PORT_PROB
 
 struct State
 {
-	CeDodge::Assist	mAssist;
+	CeDodge::PlanarAssist mAssist;
 	CeDodge::Walker	mWalker;
 	const void		*mOf;									// the walker the assist's copy of the walker's memory is of
 	bool			mActive;								// the last update found the assist eligible for this pad
@@ -60,8 +50,14 @@ struct State
 	int				mSide;
 };
 State gState[kPads];
-int gSetting = -1;											// ce.ini dodge_button, read when the game is next in a level
-bool gSettingStale = true;
+int gSetting = -1;											// ce.ini dodge_button, as last read (-1: never)
+// Each pad asks ce.ini when it next drives a Battle Engine after an update in which it drove none: on the way into a level, as the CE Settings page is only in
+// the front end. The flag is the pad's own. In split screen one player's controller drives nothing while that player waits to come back and the other's is in the
+// game: a flag the four pads shared was raised by the first and answered by the second in every controller update of that wait, each answer a read of the whole
+// of ce.ini. gSettingStale is the flag of the pad whose controller update is running; both hooks say which before anything asks.
+bool gStale[kPads] = {true, true, true, true};
+int gPad = 0;
+#define gSettingStale gStale[gPad]
 
 bool Present(const char *name)
 {
@@ -81,7 +77,7 @@ bool OrdinaryPlay()
 	return true;
 }
 
-// The ce.ini line, read when the game was last out of a level (the CE Settings page is only in the front end), not every frame.
+// The ce.ini line, read when this pad was last out of a level (the CE Settings page is only in the front end), not every frame.
 bool SettingOn()
 {
 	if (gSettingStale)
@@ -194,7 +190,72 @@ bool PadDodgeDown(int pad)
 }
 }
 
-bool PortCeDodgeAssistKeyFree() { return !KeyBound(DIK_LCONTROL); }
+bool PortCeDodgeBindingAvailable() { return OrdinaryPlay(); }
+
+bool PortCeActionEnabled(CeControlAction action)
+{
+	if (action == CeControlAction::TakeUnit) return PortCeExperimental("play_unit");
+	if (action == CeControlAction::Commander) return PortCeExperimental("commander");
+	return CE_SettingGetBool("dodge_button", 1) != 0;
+}
+
+const char *PortCeDodgeBindingConflict(int key) { return PortCeActionConflict(CeControlAction::Dodge, key); }
+
+const char *PortCeActionConflict(CeControlAction action, int key)
+{
+	for (auto other : {CeControlAction::Dodge, CeControlAction::TakeUnit, CeControlAction::Commander}) {
+		if (other == action) continue;
+		// Disabled optional modes do not occupy their default key.
+		if (PortCeActionKey(other) == key && PortCeActionEnabled(other))
+			return other == CeControlAction::TakeUnit ? "Infantry takeover" : other == CeControlAction::Commander ? "Commander view" : "Dodge modifier";
+	}
+	// Keep Commander navigation and orders usable after a custom assignment.
+	if (action == CeControlAction::Commander) {
+		switch (key) {
+		case DIK_TAB: case DIK_A: case DIK_C: case DIK_W: case DIK_S: case DIK_D:
+		case DIK_Q: case DIK_E: case DIK_R: case DIK_F: case DIK_V: case DIK_SPACE:
+		case DIK_B: case DIK_H: case DIK_X: case DIK_HOME: case DIK_DELETE:
+		case DIK_UP: case DIK_LEFT: case DIK_RIGHT: case DIK_DOWN:
+		case DIK_LSHIFT: case DIK_RSHIFT: case DIK_LCONTROL: case DIK_RCONTROL:
+			return "Commander controls";
+		}
+		if (key >= DIK_1 && key <= DIK_0) return "Commander groups";
+	}
+	if (key == 0x29) return "Console";
+	if (!KeyBound(key)) return nullptr;
+    for (SControlBinding *b=CONTROL_BINDINGS;b->mId!=-1;++b)
+        for (int i=0;i<2;++i) {
+            const SControlInput &in=b->mInput[i];
+            if(in.mPad==-1 || in.mKey!=key || (in.mType!=KEY_ON && in.mType!=KEY_ONCE && in.mType!=KEY_RELEASE))continue;
+            switch(b->mId) {
+            case BUTTON_MECH_STRAFE_LEFT: return "Strafe Left";
+            case BUTTON_MECH_STRAFE_RIGHT: return "Strafe Right";
+            case BUTTON_MECH_FORWARD: return "Move Forward";
+            case BUTTON_MECH_BACKWARD: return "Move Backward";
+            case BUTTON_MECH_FIRE_GUN_POD: case BUTTON_MECH_CHARGE_GUN_POD: return "Fire";
+            case BUTTON_MECH_MORPH: return "Morph";
+            case BUTTON_MECH_CHANGE_WEAPON: return "Change Weapon";
+            default: break;
+            }
+        }
+    return "another control";
+}
+void PortCeDodgeStrafeNames(char *left,int leftSize,char *right,int rightSize) {
+    const int id[]={BUTTON_MECH_STRAFE_LEFT,BUTTON_MECH_STRAFE_RIGHT};
+    char *out[]={left,right}; int cap[]={leftSize,rightSize};
+    for(int side=0;side<2;++side) {
+        if(!out[side]||cap[side]<2)continue;
+        snprintf(out[side],cap[side],"%s",side?"strafe right":"strafe left");
+        SControlBinding *b=FindControlBinding(id[side]);
+        if(!b)continue;
+        for(int i=0;i<2;++i) {
+            const auto &in=b->mInput[i];char name[32]{};
+            if(in.mPad!=-1 && (in.mType==KEY_ON||in.mType==KEY_ONCE||in.mType==KEY_RELEASE) &&
+                PortCeDodgeBindingName(in.mKey,name,sizeof(name))) { snprintf(out[side],cap[side],"%s",name);break; }
+        }
+    }
+}
+bool PortCeDodgeAssistKeyFree() { return !PortCeDodgeBindingConflict(PortCeDodgeBindingKey()); }
 
 bool PortCeDodgeAssistPadFree(int pad)
 {
@@ -212,13 +273,15 @@ int PortCeDodgeAssistKey(int pad)
 {
 	// Only controller 0 reads the keyboard bindings (CController::DoMappings), so only it has the key; and none while text is typed.
 	if (pad != 0 || !gState[0].mActive || LT.GetKeytrap()) return 0;
-	return PortCeDodgeAssistKeyFree() ? DIK_LCONTROL : 0;
+	return PortCeDodgeAssistKeyFree() ? PortCeDodgeBindingKey() : 0;
 }
 
 int PortCeDodgeAssistFilter(CController *controller, int pad, int button, float value)
 {
-	if ((button != BUTTON_MECH_STRAFE_LEFT && button != BUTTON_MECH_STRAFE_RIGHT) || pad < 0 || pad >= kPads) return 0;
+	if ((button != BUTTON_MECH_STRAFE_LEFT && button != BUTTON_MECH_STRAFE_RIGHT &&
+	     button != BUTTON_MECH_FORWARD && button != BUTTON_MECH_BACKWARD) || pad < 0 || pad >= kPads) return 0;
 	State &s = gState[pad];
+	gPad = pad;
 	const bool active = s.mActive;
 	CBattleEngine *engine = NULL;
 	if (active)
@@ -238,7 +301,8 @@ int PortCeDodgeAssistFilter(CController *controller, int pad, int button, float 
 		ReadWalker(&s.mWalker);
 		s.mHaveWalker = true;
 	}
-	const int side = button == BUTTON_MECH_STRAFE_LEFT ? -1 : 1;
+	const int side = button == BUTTON_MECH_FORWARD ? -2 : button == BUTTON_MECH_BACKWARD ? 2 :
+		button == BUTTON_MECH_STRAFE_LEFT ? -1 : 1;
 	if (!active)
 	{
 		s.mAssist.Follow(side, value, EVENT_MANAGER.GetTime(), s.mWalker, CanDodge(engine));
@@ -252,10 +316,11 @@ int PortCeDodgeAssistEnd(CController *controller, int pad, int keyDown, int *ids
 	if (pad < 0 || pad >= kPads) return 0;
 	State &s = gState[pad];
 	CeDodge::Update u = {};
+	gPad = pad;
 	const bool ordinary = OrdinaryPlay();
 	CBattleEngine *engine = ordinary ? Driven(controller) : NULL;
 	if (engine) OfThisWalker(s, engine);
-	if (!engine) gSettingStale = true;								// out of a level: the next one asks ce.ini again
+	if (!engine) gSettingStale = true;								// this pad is out of a level (or its player is waiting to come back): it asks ce.ini again when it next drives
 	// Out of the running game altogether (the front end, loading, the end screens; a pause is not that) the walker is gone and the next level's is
 	// new: the assist's copy of what it remembered goes too, not only the clock running backwards, which a quick level start could miss.
 	if (ordinary && GAME.GetGameState() != GAME_STATE_PLAYING)
@@ -284,7 +349,8 @@ int PortCeDodgeAssistEnd(CController *controller, int pad, int keyDown, int *ids
 	const int count = s.mAssist.Step(u, taps);
 	for (int k = 0; k < count; ++k)
 	{
-		ids[k] = taps[k].mSide < 0 ? BUTTON_MECH_STRAFE_LEFT : BUTTON_MECH_STRAFE_RIGHT;
+		ids[k] = taps[k].mSide == -2 ? BUTTON_MECH_FORWARD : taps[k].mSide == 2 ? BUTTON_MECH_BACKWARD :
+			taps[k].mSide < 0 ? BUTTON_MECH_STRAFE_LEFT : BUTTON_MECH_STRAFE_RIGHT;
 		hard[k] = taps[k].mHard ? 1 : 0;
 	}
 	if (count && s.mAssist.Waiting())
@@ -293,7 +359,7 @@ int PortCeDodgeAssistEnd(CController *controller, int pad, int keyDown, int *ids
 		s.mSide = s.mAssist.Side();
 	}
 	else if (count)
-		PortSessionLog(PORT_SESSION_GAME, false, "dodge button: dodge %s, %d ms between the two pushes", s.mSide < 0 ? "left" : "right",
+		PortSessionLog(PORT_SESSION_GAME, false, "dodge button: dodge %s, %d ms between the two pushes", s.mSide == -2 ? "forward" : s.mSide == 2 ? "backward" : s.mSide < 0 ? "left" : "right",
 			(int)((u.mNow - s.mFirstAt) * 1000.f + 0.5f));
 	return count;
 }

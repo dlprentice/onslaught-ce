@@ -72,6 +72,21 @@ def main():
                 dest.write_bytes(build.network_view(src.read_bytes().decode('latin-1'), off=True).encode('latin-1'))
             else:
                 shutil.copyfile(src, dest)
+    # A later Commander presentation patch inserts preprocessor declarations
+    # between the UI includes and this tutorial hook. Ignore only those neighboring
+    # declarations when reversing/reapplying this hook in the private scratch mirror.
+    boxfile=mirror/'MessageBox.cpp'
+    box=boxfile.read_text()
+    neighboring=""
+    match=re.search(r'^#include\s+"game\.h"[^\n]*',box,re.M)
+    point=match.start() if match else -1
+    directive=box.find('#ifdef CE_VERSION',match.end()) if point>=0 else -1
+    if directive>=0 and not box[match.end():directive].strip():
+        end=box.find('#endif',directive)
+        if end>=0 and 'PortCeOneScreenMatch' in box[directive:end] and 'PortCeTutorial' not in box[directive:end]:
+            end=box.index('\n',end)+1
+            neighboring=box[directive:end]
+            boxfile.write_text(box[:directive]+box[end:])
     patch = ROOT / 'port/patches/0090-ce-tutorial-guidance-IScript.patch'
     # A mirror from port/build.py already carries this patch: take it back out of the copy first.
     reverse = subprocess.run(['patch', '--batch', '--fuzz=0', '-R', '-p1', '--dry-run', '-i', str(patch)], cwd=mirror,
@@ -95,6 +110,10 @@ def main():
     (out / 'patch.log').write_text(result.stdout + result.stderr)
     if result.returncode:
         raise RuntimeError('patch did not apply without fuzz: ' + str(out / 'patch.log'))
+    if neighboring:
+        transformed=boxfile.read_text()
+        at=re.search(r'^#include\s+"game\.h"[^\n]*\n',transformed,re.M).end()
+        boxfile.write_text(transformed[:at]+neighboring+transformed[at:])
     script = (mirror / 'MissionScript/IScript.cpp').read_text()
     help_source = (mirror / 'HelpText.cpp').read_text()
     box_source = (mirror / 'MessageBox.cpp').read_text()
@@ -174,7 +193,7 @@ def main():
     def compile_case(folder, version=True):
         binary = folder / 'fixture'
         cmd = [args.compiler, '-std=c++14', '-O1', '-g', '-Wall', '-Wextra', '-Wno-unused-parameter',
-               '-fsanitize=address,undefined', '-fno-omit-frame-pointer', '-I'+str(folder), '-I'+str(SDL_INCLUDE),
+               '-fsanitize=address,undefined', '-fno-omit-frame-pointer', '-I'+str(folder), '-I'+str(SDL_INCLUDE), '-I'+str(ROOT / 'port/game'),
                *(['-DCE_VERSION="fixture"'] if version else []), str(driver), '-o', str(binary)]
         run = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
         (folder / 'build.log').write_text(run.stdout+run.stderr)

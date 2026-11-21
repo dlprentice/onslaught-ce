@@ -1,0 +1,20 @@
+--- a/thing.cpp
++++ b/thing.cpp
+@@ -133,4 +133,8 @@
+ void CThing::Render(DWORD flags)	// FUNCTION: 0x004f36d0
+ {
++#ifdef CE_VERSION
++	extern bool PortCePlayUnitHidesOwnMesh(const CThing *);
++	if (PortCePlayUnitHidesOwnMesh(this)) return;
++#endif
+ 	if ((mFlags & TF_INVISIBLE) !=0) return ;
+ 
+@@ -150,4 +154,8 @@
+ void CThing::RenderImposter()	// FUNCTION: 0x004f3710
+ {
++#ifdef CE_VERSION
++	extern bool PortCePlayUnitHidesOwnMesh(const CThing *);
++	if (PortCePlayUnitHidesOwnMesh(this)) return;
++#endif
+ 	if ((mRenderThing) && (!(mFlags & TF_DONT_RENDER)))
+ 	{

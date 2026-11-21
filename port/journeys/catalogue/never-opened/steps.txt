@@ -1,0 +1,10 @@
+# Isolation: the Catalogue switched on and never opened; the same steps as base-off (to the Onslaught CE page and back).
+wait ticks 600
+key RETURN
+wait page fe:main within 900
+go "Onslaught CE"
+wait page ce:hub
+dump hub
+back
+wait page fe:main
+dump end

@@ -1,0 +1,32 @@
+# The HUD in a running level at 1920x1080 (widescreen forced on offscreen at that size): the view, the 4:3 interface box
+# and the HUD's columns asserted from state (values from the widescreen rules: scale = height / 480, left and inset =
+# (width - 4/3 height) / 2), and one frame for a pixel diff against a base run (port/tools/shot_diff.py --label hud).
+wait ticks 600
+key RETURN
+wait page fe:main within 900
+go "Load Game"
+wait page fe:directory within 900
+select row Gold
+wait page fe:level-select within 900
+wait ticks 60
+key RETURN
+wait page fe:briefing within 600
+wait ticks 60
+key RETURN
+wait page fe:be-config within 600
+wait ticks 60
+key RETURN
+wait page fe:wingmen within 600
+wait ticks 60
+key RETURN
+wait ticks 240
+key RETURN
+wait state game.level=* within 2400
+wait ticks 300
+assert hud.buffer=1920x1080
+assert hud.wide=on
+assert hud.ui=2.2500,240.0,0.0
+assert hud.view=1.3333,1.0000
+assert hud.inset=240.0
+dump hud
+shot hud

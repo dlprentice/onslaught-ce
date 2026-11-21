@@ -143,7 +143,69 @@ def write_if_changed(path: Path, data: bytes):
         path.write_bytes(data)
 
 
-def build_mirror():
+# The switches that make a program a test build, never to be shipped, by the define each adds: test probes, proof switches and god mode
+# (--commander-test, --play-unit-test) or a loader that releases keep off (--mods-windows-test).
+TEST_BUILD_SWITCHES = (("-DCE_COMMANDER_TEST", "commander-test"), ("-DCE_PLAYUNIT_TEST", "play-unit-test"),
+                       ("-DPORT_MODS_WINDOWS_ON", "mods-windows-test"), ("-DCE_MARKER_TEST", "marker-test"))
+
+
+def test_build_switches(defines) -> list:
+    """The test switches among a build's defines, by their command-line names."""
+    return [name for define, name in TEST_BUILD_SWITCHES if any(flag.startswith(define) for flag in defines)]
+
+
+def flavour_marker(existing: str, word: str, mark=(), clear=(), switches=()) -> bytes:
+    """The text of the build folder's flavour.txt, which the packager reads: the flavour word on the first line, then a line
+    "test-build TARGET: SWITCH ..." for each target whose program was last built with a test switch, so that package.py can refuse it
+    (a test build's flavour word is the release's own). `existing` is the file's text so far: a target neither marked nor cleared now
+    keeps its line, because its program is still the one that earlier build made. `mark` are the targets about to be built with
+    `switches`; `clear` are targets whose build without a test switch has just succeeded. A test line this cannot read is kept as it is."""
+    kept, unread = {}, []
+    for line in existing.splitlines()[1:]:
+        found = re.fullmatch(r"test-build (linux|windows): ([a-z]+(?:-[a-z]+)*(?: [a-z]+(?:-[a-z]+)*)*)", line)
+        if found:
+            kept[found.group(1)] = found.group(2)
+        elif line.strip():
+            unread.append(line)
+    for target in mark:
+        kept[target] = " ".join(switches)
+    for target in clear:
+        kept.pop(target, None)
+    return "".join([word + "\n"] + [f"test-build {target}: {kept[target]}\n" for target in ("linux", "windows") if target in kept] +
+                   [line + "\n" for line in unread]).encode()
+
+
+def write_flavour_marker(word=None, mark=(), clear=(), switches=()):
+    path = BUILD / "flavour.txt"
+    existing = path.read_text() if path.exists() else ""
+    write_if_changed(path, flavour_marker(existing, word or (existing.splitlines() or ["public"])[0], mark, clear, switches))
+
+
+def _sha256_bytes(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def _mirror_stamp_matches(stamp_path: Path, manifest: str) -> bool:
+    if not stamp_path.is_file() or not MIRROR_ROOT.is_dir():
+        return False
+    try:
+        stamp = json.loads(stamp_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    if stamp.get("manifest") != manifest:
+        return False
+    expected = stamp.get("files")
+    if not isinstance(expected, dict):
+        return False
+    actual = {}
+    for p in MIRROR_ROOT.rglob("*"):
+        if p.is_file():
+            st = p.stat()
+            actual[p.relative_to(MIRROR_ROOT).as_posix()] = [st.st_size, st.st_mtime_ns]
+    return actual == expected
+
+
+def build_mirror(resolve_off=False):
     SYSTEM_NAMES.update(system_header_names())
     files = tracked_sources()
     rel = [f.relative_to(ROOT) for f in files]            # src/... and linklib/...
@@ -155,10 +217,12 @@ def build_mirror():
                 files.append(PORT / "platform/public" / name)
                 rel.append(Path("src") / name)
     data_rows = [l.split(maxsplit=1) for l in (ROOT / "config/game-data.sha256").read_text().splitlines() if l.strip()]
-    targets = [MIRROR_ROOT / r for r in rel] + [MIRROR / r for _, r in data_rows] + [MIRROR / "data/NVShaderFragments.inc"]
-    index = CaseIndex(targets)
-    search = [MIRROR, MIRROR / "MissionScript"]
+    resolved_sources = []
     unreplaced = []
+    h = hashlib.sha256()
+    h.update(f"mirror-v1\0{int(PUBLIC)}\0{int(resolve_off)}\0{NV_FRAGMENTS_SIZE}\0".encode())
+    for k, v in sorted(SYSTEM_NAMES.items()):
+        h.update(f"sys:{k}={v}\0".encode())
     for src, r in zip(files, rel):
         if PUBLIC and r.parent == Path("src") and r.name in PUBLIC_REPLACEMENTS:
             if (PORT / "platform/public" / r.name).exists():
@@ -166,40 +230,93 @@ def build_mirror():
             else:
                 unreplaced.append(r.name)
         raw = src.read_bytes()
-        if src.suffix.lower() in (".c", ".cpp", ".h", ".inc", ".hpp"):
-            text = raw.decode("latin-1")
-            raw = normalise(text, (MIRROR_ROOT / r).parent, index, search).encode("latin-1")
-        write_if_changed(MIRROR_ROOT / r, raw)
+        resolved_sources.append((src, r, raw))
+        h.update(f"src:{r.as_posix()}={_sha256_bytes(raw)}\0".encode())
+    data_blobs = []
     for digest, r in data_rows:
         source = GAME / r
         if not source.is_file():
             source = next((p for p in GAME.rglob("*") if str(p.relative_to(GAME)).lower() == r.lower()), source)
         blob = source.read_bytes()
-        if hashlib.sha256(blob).hexdigest() != digest:
+        if _sha256_bytes(blob) != digest:
             raise SystemExit(f"{source}: differs from config/game-data.sha256 (set BEA_GAME_DIR to the game's folder)")
-        write_if_changed(MIRROR / r, blob)
-    write_if_changed(MIRROR / "data/NVShaderFragments.inc",
-                     (",\n".join(", ".join(["0x00"] * 16) for _ in range(NV_FRAGMENTS_SIZE // 16)) + "\n").encode())
-    # Files no longer in src/ leave the mirror.
-    keep = {str(t) for t in targets}
-    for p in sorted(MIRROR_ROOT.rglob("*"), reverse=True):
-        if p.is_file() and str(p) not in keep:
-            p.unlink()
-    if PUBLIC:
-        # package.py refuses a build that still compiled a file the public build must replace.
-        if unreplaced:
-            print(f"build: --public without replacements for {', '.join(unreplaced)}: not shippable", file=sys.stderr)
-        write_if_changed(MIRROR_ROOT / "public-unreplaced.txt", "".join(n + "\n" for n in unreplaced).encode())
+        data_blobs.append((r, blob))
+        h.update(f"data:{r}={digest}\0".encode())
+    patches = []
     for patch in sorted((PORT / "patches").glob("*.patch")):
         if PUBLIC and PUBLIC_SKIPPED_PATCHES.get(patch.name) not in (None, *unreplaced):
             continue
-        r = subprocess.run(["patch", "-p1", "-d", str(MIRROR), "-i", str(patch), "--forward", "-r", "-"],
-                           capture_output=True, text=True)
-        fuzz = [line for line in r.stdout.splitlines() if "fuzz" in line]
-        if r.returncode or fuzz:
-            # A hunk applied with fuzz may have landed beside its intended lines: refresh the patch's context.
-            raise SystemExit(f"build: {patch.name} does not apply cleanly:\n{r.stdout}{r.stderr}")
+        patches.append(patch)
+        h.update(f"patch:{patch.name}={_sha256_bytes(patch.read_bytes())}\0".encode())
+    manifest = h.hexdigest()
+    stamp_path = MIRROR_ROOT.parent / f".{MIRROR_ROOT.name}.stamp.json"
+    if _mirror_stamp_matches(stamp_path, manifest):
+        if PUBLIC and unreplaced:
+            print(f"build: --public without replacements for {', '.join(unreplaced)}: not shippable", file=sys.stderr)
+        return [MIRROR_ROOT / r for r in rel if r.suffix.lower() in (".c", ".cpp")]
+
+    # Stage normalised, patched (and, for default public builds, CE_NETWORK_OFF-resolved) files outside MIRROR_ROOT,
+    # then sync only bytes that actually changed. That keeps unchanged patched files' mtimes stable across builds.
+    stage_root = MIRROR_ROOT.parent / f".{MIRROR_ROOT.name}.stage"
+    if stage_root.exists():
+        shutil.rmtree(stage_root)
+    stage_src = stage_root / "src"
+    stage_targets = [stage_root / r for r in rel] + [stage_src / r for _, r in data_rows] + [stage_src / "data/NVShaderFragments.inc"]
+    index = CaseIndex(stage_targets)
+    search = [stage_src, stage_src / "MissionScript"]
+    try:
+        for src, r, raw in resolved_sources:
+            if src.suffix.lower() in (".c", ".cpp", ".h", ".inc", ".hpp"):
+                text = raw.decode("latin-1")
+                raw = normalise(text, (stage_root / r).parent, index, search).encode("latin-1")
+            dst = stage_root / r
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            dst.write_bytes(raw)
+        for r, blob in data_blobs:
+            dst = stage_src / r
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            dst.write_bytes(blob)
+        nv = stage_src / "data/NVShaderFragments.inc"
+        nv.parent.mkdir(parents=True, exist_ok=True)
+        nv.write_bytes((",\n".join(", ".join(["0x00"] * 16) for _ in range(NV_FRAGMENTS_SIZE // 16)) + "\n").encode())
+        for patch in patches:
+            r = subprocess.run(["patch", "-p1", "-d", str(stage_src), "-i", str(patch), "--forward", "-r", "-"],
+                               capture_output=True, text=True)
+            fuzz = [line for line in r.stdout.splitlines() if "fuzz" in line]
+            if r.returncode or fuzz:
+                # A hunk applied with fuzz may have landed beside its intended lines: refresh the patch's context.
+                raise SystemExit(f"build: {patch.name} does not apply cleanly:\n{r.stdout}{r.stderr}")
+        if resolve_off:
+            resolve_network_off(sorted(stage_root.rglob("*")))
+        if PUBLIC:
+            # package.py refuses a build that still compiled a file the public build must replace.
+            if unreplaced:
+                print(f"build: --public without replacements for {', '.join(unreplaced)}: not shippable", file=sys.stderr)
+            (stage_root / "public-unreplaced.txt").write_bytes("".join(n + "\n" for n in unreplaced).encode())
+        staged = {p.relative_to(stage_root): p for p in sorted(stage_root.rglob("*")) if p.is_file()}
+        for rel_p, staged_p in staged.items():
+            write_if_changed(MIRROR_ROOT / rel_p, staged_p.read_bytes())
+        # Files no longer in src/ leave the mirror.
+        keep = {MIRROR_ROOT / rel_p for rel_p in staged}
+        if MIRROR_ROOT.is_dir():
+            for p in sorted(MIRROR_ROOT.rglob("*"), reverse=True):
+                if p.is_file() and p not in keep:
+                    p.unlink()
+        file_stats = {}
+        for rel_p in staged:
+            st = (MIRROR_ROOT / rel_p).stat()
+            file_stats[rel_p.as_posix()] = [st.st_size, st.st_mtime_ns]
+        stamp_tmp = stamp_path.with_suffix(".tmp")
+        stamp_tmp.parent.mkdir(parents=True, exist_ok=True)
+        stamp_tmp.write_text(json.dumps({"manifest": manifest, "files": file_stats}, sort_keys=True), encoding="utf-8")
+        stamp_tmp.replace(stamp_path)
+    finally:
+        if stage_root.exists():
+            shutil.rmtree(stage_root)
     return [MIRROR_ROOT / r for r in rel if r.suffix.lower() in (".c", ".cpp")]
+
+
+_BUILD_MIRROR = build_mirror
 
 
 NVTRISTRIP = "NvTriStrip-c40ad04c7fec77be6af9d4ebc0c64da80241984f/NvTriStrip"
@@ -395,6 +512,32 @@ def native_signaling_dependency(target):
     return path
 
 
+def write_deps_record(target):
+    """Record, privately (local-data only, never packaged), the dependency root this build read and the receipt of each
+    library it linked from there. A build never falls back to another root: every receipt named here must lie inside
+    deps.DATA, or the build stops; tools that take a build (the private-kit packager, the integrator's flavour builds)
+    refuse one whose record names a root other than the one they declare."""
+    def digest(path):
+        with Path(path).open("rb") as stream:
+            return hashlib.file_digest(stream, "sha256").hexdigest()
+    root = Path(deps.DATA).resolve()
+    receipts = {"sdl3": deps.sdl_prefix(target) / ".bea-sdl3-build.json"}
+    if WITH_ICE:
+        receipts["libjuice"] = ice_deps.prefix(target) / ".bea-ice-build.json"
+    libraries = {}
+    for name, path in receipts.items():
+        real = Path(path).resolve()
+        if not real.is_file():
+            raise SystemExit(f"{path}: the {name} receipt is missing from the dependency root {root}; nothing else is used")
+        if root not in real.parents:
+            raise SystemExit(f"{name}: its receipt {real} lies outside the dependency root {root}; nothing else is used")
+        libraries[name] = dict(receipt=str(real), sha256=digest(real))
+    record = dict(schema=1, target=target, dependency_root=str(root),
+                  root_from="BEA_PORT_DATA" if os.environ.get("BEA_PORT_DATA") else "default", fallback=None,
+                  libraries=libraries)
+    deps.write_cache_file(BUILD / target / ".bea-deps.private.json", (json.dumps(record, sort_keys=True, indent=1) + "\n").encode())
+
+
 def write_ice_link_receipt(target):
     """Record the successful optional game/launcher link without private paths or repository identifiers."""
     if not (PUBLIC and WITH_NETWORK and WITH_ICE):
@@ -425,7 +568,7 @@ def write_ice_link_receipt(target):
                    build_recipe_sha256=digest(Path(__file__)), marker=ICE_BINARY_TAG,
                    system_clang=SYSTEM_CLANG, sysroot_name=deps.SYSROOT_NAME,
                    test_build=any(flag.startswith(("-DCE_NET_TEST_AUTOMATION", "-DCE_COMMANDER_TEST", "-DCE_PLAYUNIT_TEST"))
-                                  for flag in CE_DEFINES),
+                                  for flag in CE_DEFINES) or TEST_KIT,
                    libjuice=dict(name=row["name"], version=row["version"], licence=row["licence"],
                                  source_sha256=row["sha"], source_url=row["url"],
                                  build_receipt_sha256=digest(install / ".bea-ice-build.json"),
@@ -468,14 +611,21 @@ def port_sources(target):
                 if not (d == "common" and s.name in replaced)]
     # Game-object hooks keep the game's flags and allocator renames. HOST_BUFFER_GAME_MODULES (below) are the standalone
     # units beside them that own host STL buffers and native handles: they are compiled as port code and never see those renames.
-    # The chat overlay is a game-object hook that also handles SDL events; the Windows toolchain has no SDL of its own.
-    game_extra = {"ce_network_chat_ui.cpp": f"-I{cc_path(deps.PREFIX_WIN / 'include')}"} if target == "windows" else {}
+    # The chat overlay and the network mission's ring are game-object hooks that also handle SDL events; the Windows
+    # toolchain has no SDL of its own.
+    game_extra = {name: f"-I{cc_path(deps.PREFIX_WIN / 'include')}" for name in ("ce_network_chat_ui.cpp", "ce_network_ring.cpp")} \
+        if target == "windows" else {}
     # The museum's room writer takes two class identifiers from the game's oids.h, a header that holds only an enumeration.
     # -iquote lets the mirror answer quoted includes and nothing else: as -I it would also stand before the system directories
     # for every <angle> include of the standard library.
     host_extra = {"ce_museum_visit_generate.cpp": f"-iquote{MIRROR}"}
     out += [(s, 'pcxx' if s.name in HOST_BUFFER_GAME_MODULES else 'qcxx', host_extra.get(s.name, game_extra.get(s.name, "")))
             for s in sorted((PORT / "game").glob("*.cpp"))]
+    # The test kit's own files (any port file named *testkit*) are compiled only by --test-kit. Every other object is the same
+    # compile as the candidate's: the kit reaches the game through testhooks.h and the features' plain accessors, so no
+    # production file is compiled differently (the object receipt, write_object_receipt, shows it).
+    if not TEST_KIT:
+        out = [o for o in out if "testkit" not in Path(str(o[0])).name]
     if PUBLIC:
         # The default public build has no network (CE_NETWORK_OFF, defined below): none of its modules or hooks are compiled.
         # --with-network leaves those modules and hooks in, as a private build has them.
@@ -571,7 +721,7 @@ GAME_ALLOCATOR = {"_Znwj": "bea_game_new", "_Znaj": "bea_game_new_array", "_ZdlP
 # room writer and cache provider are two of them; its engine adapter (ce_museum_visit_engine.cpp) reads game objects and keeps the game
 # rule. Only plain records and callbacks cross between them, and ce_museum_visit.h asserts their layout under both rules.
 HOST_BUFFER_GAME_MODULES = frozenset(("ce_network_boot_authority.cpp", "ce_network_invitation.cpp", "ce_project.cpp",
-                                      "ce_museum_visit.cpp", "ce_museum_visit_generate.cpp"))
+                                      "ce_museum_visit.cpp", "ce_museum_visit_generate.cpp", "ce_asset_catalog.cpp", "ce_catalogue_menu.cpp", "ce_catalogue_sounds.cpp"))
 
 
 def network_compiled_in():
@@ -594,6 +744,7 @@ WITH_NATIVE_SIGNALING = False  # explicit HTTPS profile layered on the optional 
 WITH_TEXT_CHAT = False  # optional bounded network text transport and UI; never part of the default build
 NETWORK_SOURCE_ID = None
 TEST_AUTOMATION = False  # build.py --test-automation (private network test builds; never with --public)
+TEST_KIT = False  # build.py --test-kit: the test kit's own files are compiled in (Linux; port/journeys/README.md)
 CE_DEFINES = []   # the public build's CE_VERSION (game files: the CE layer of patch 0037; unset in private builds)
 # The public build replaces these src/ files (derived from Microsoft's DirectX SDK samples, which cannot ship) with the
 # port's own versions in port/platform/public/, same names and interfaces, compiled as game files; the patches below
@@ -760,6 +911,23 @@ def census(log: str):
     print("  files:", ", ".join(f"{f} {n}" for f, n in files.most_common(25)))
 
 
+def select_sources(sources, requested):
+    """Resolve positional source names without silently dropping requests."""
+    if not requested:
+        return sources
+    requested_names = [(name, name.lower().replace("\\", "/").removeprefix("src/"))
+                       for name in requested]
+    available = [(source, str(source.relative_to(MIRROR) if source.is_relative_to(MIRROR)
+                              else source.relative_to(MIRROR_ROOT)).lower())
+                 for source in sources]
+    matched = {normalized for _, normalized in available}
+    missing = [name for name, normalized in requested_names if normalized not in matched]
+    if missing:
+        raise ValueError("source selectors did not match compiled sources: " + ", ".join(missing))
+    wanted = {normalized for _, normalized in requested_names}
+    return [source for source, normalized in available if normalized in wanted]
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--target", default="linux", choices=["linux", "windows", "all"])
@@ -793,9 +961,17 @@ def main():
     ap.add_argument("--play-unit-test", action="store_true",
                     help="adds the play-as-a-unit option's test machinery (a probe, a proof switch, god mode for the Battle Engine and a control) to a build: for tests, never shipped;\n"
                          "use a separate worktree, as its objects differ")
+    ap.add_argument("--marker-test", action="store_true",
+                    help="the faithfulness gate's marker sweep (port/tools/marker_sweep.py): BEA_PORT_MARKER_STACK=B fills the dead stack below each game\n"
+                         "update with the byte B, so a value the simulation reads without writing differs between two markers; for tests, never shipped;\n"
+                         "use a separate worktree, as its objects differ")
     ap.add_argument("--mods-windows-test", action="store_true",
                     help="the Windows build with the mod loader switched ON (PORT_MODS_WINDOWS_ON): for the gate's mods cases and the Wine tests, never shipped while mods are\n"
                          "off on Windows; use a separate worktree, as its objects differ")
+    ap.add_argument("--test-kit", action="store_true",
+                    help="adds the test kit's verb channel (CE_TEST_KIT: journeys driven by named steps, port/journeys/README.md) to a\n"
+                         "Linux build, public or with the network: for the journey runner's twin of a candidate, never shipped (package.py\n"
+                         "refuses a binary that carries it); use a separate worktree, as its objects differ")
     ap.add_argument("files", nargs="*")
     a = ap.parse_args()
     if a.with_native_signaling and not (a.public and a.with_network and a.with_ice):
@@ -804,6 +980,11 @@ def main():
         raise SystemExit("--with-network is for the public build: a private build has the network already")
     if a.with_ice and not (a.public and a.with_network):
         raise SystemExit("--with-ice requires --public --with-network")
+    if a.test_kit:
+        if a.target != "linux":
+            raise SystemExit("--test-kit is for Linux builds")
+        global TEST_KIT
+        TEST_KIT = True
     if a.test_automation:
         if a.public:
             raise SystemExit("--test-automation is for private network test builds; it cannot be combined with --public")
@@ -853,6 +1034,10 @@ def main():
         CE_DEFINES.append("-DCE_PLAYUNIT_TEST=1")
     if a.mods_windows_test:
         CE_DEFINES.append("-DPORT_MODS_WINDOWS_ON=1")
+    if a.marker_test:
+        CE_DEFINES.append("-DCE_MARKER_TEST=1")
+    if test_build_switches(CE_DEFINES):
+        CE_DEFINES.append("-DCE_TEST_BUILD=1")    # any test switch: the CE hook points' handler guard (port/game/ce_hooks_dispatch.h)
     if a.with_text_chat:
         if not network_compiled_in():
             raise SystemExit("--with-text-chat requires networking compiled in")
@@ -862,20 +1047,28 @@ def main():
     if WITH_NATIVE_SIGNALING:
         for target in (["linux", "windows"] if a.target == "all" else [a.target]):
             native_signaling_dependency(target)
-    sources = build_mirror()
+    sources = build_mirror(resolve_off=default_flavour()) if build_mirror is _BUILD_MIRROR else build_mirror()
     if default_flavour():
-        resolve_network_off(sorted(MIRROR_ROOT.rglob("*")))
+        if build_mirror is not _BUILD_MIRROR:
+            resolve_network_off(sorted(MIRROR_ROOT.rglob("*")))
         build_port_view()
-    configure_network_identity()
+    if network_compiled_in():
+        configure_network_identity()
+    else:
+        global NETWORK_SOURCE_ID
+        NETWORK_SOURCE_ID = None
+    # --test-kit has no define (no production file is compiled differently); it is recorded by name
+    switches = test_build_switches(CE_DEFINES) + (["test-kit"] if TEST_KIT else [])
     if PUBLIC and not a.syntax and not a.files:
-        # which public flavour this build folder holds: the packager reads it to carry (or refuse) ENet's licence and notice
-        write_if_changed(BUILD / "flavour.txt", b"public-network-ice\n" if WITH_ICE else
-                         b"public-network\n" if WITH_NETWORK else b"public\n")
-    if a.files:
-        want = {f.lower().replace("\\", "/").removeprefix("src/") for f in a.files}
-        # linklib/ sources are outside MIRROR (src/): compare those by their path under MIRROR_ROOT only.
-        sources = [s for s in sources if (s.is_relative_to(MIRROR) and str(s.relative_to(MIRROR)).lower() in want)
-                   or str(s.relative_to(MIRROR_ROOT)).lower() in want]
+        # which public flavour this build folder holds: the packager reads it to carry (or refuse) ENet's licence and notice, and to
+        # refuse a program built with a test switch. A test switch is recorded before the build starts (a build that fails part way may
+        # already have replaced objects) and taken off only when that target's build without one has succeeded (below).
+        write_flavour_marker("public-network-ice" if WITH_ICE else "public-network" if WITH_NETWORK else "public",
+                             mark=(["linux", "windows"] if a.target == "all" else [a.target]) if switches else (), switches=switches)
+    try:
+        sources = select_sources(sources, a.files)
+    except ValueError as error:
+        ap.error(str(error))
     rc = 0
     for target in (["linux", "windows"] if a.target == "all" else [a.target]):
         check_compiler(target)
@@ -903,6 +1096,8 @@ def main():
                     print("build failed outside the compiler:\n" + "\n".join(
                         l for l in log.strip().splitlines() if "error" in l and "LNK4217" not in l)[-2000:])
             rc = rc or r.returncode
+            if full_public and r.returncode == 0 and not switches:
+                write_flavour_marker(clear=[target])		# this target's program is no test build (any longer)
             if full_public and r.returncode == 0:
                 launcher_rc = build_launcher(target, a.ce_version)
                 rc = rc or launcher_rc
@@ -912,7 +1107,25 @@ def main():
                                           (json.dumps(receipt, sort_keys=True) + "\n").encode())
                     if WITH_ICE:
                         write_ice_link_receipt(target)
+                    write_deps_record(target)
+                    write_object_receipt(target, nf)
     return rc
+
+
+def write_object_receipt(target, ninja):
+    """.bea-objects.json beside the program: the sha256 of every object this build's ninja file names (not other objects left
+    in the folder by an earlier build), and whether it was a --test-kit build. port/tools/journey.py compares a test-kit twin's
+    receipt with the candidate's: every object but the kit's own files must be the same compile."""
+    objects = {}
+    for line in Path(ninja).read_text().splitlines():
+        found = re.match(r"build (\S+\.o):", line)
+        if found:
+            path = Path(found.group(1).replace("$ ", " ").replace("$:", ":"))
+            path = path if path.is_absolute() else BUILD / target / path
+            if path.is_file():
+                objects[str(path.relative_to(BUILD / target))] = hashlib.sha256(path.read_bytes()).hexdigest()
+    receipt = {"schema": 1, "test_kit": TEST_KIT, "objects": dict(sorted(objects.items()))}
+    deps.write_cache_file(BUILD / target / ".bea-objects.json", (json.dumps(receipt, indent=0) + "\n").encode())
 
 
 def source_commit():

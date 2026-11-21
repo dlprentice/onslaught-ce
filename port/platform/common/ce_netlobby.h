@@ -25,7 +25,7 @@ extern "C" {
 
 #define CE_LOBBY_DEFAULT_PORT	27652
 #define CE_LOBBY_DEFAULT_LEVEL	856		// the map a new lobby starts on; the co-op levels are 856, 858 and 100 (compatibility.h)
-#define CE_LOBBY_HELP_LABEL	"How to connect over the Internet"		// the row of the Network game page that opens the help page, and what the notices call it
+#define CE_LOBBY_HELP_LABEL	"Connection Help"		// the row of the Network Game page that opens the help page, and what the notices call it
 
 enum CE_LobbyState {
 	CE_LOBBY_OFF = 0,
@@ -81,6 +81,8 @@ int CE_LobbyCtrlHeld(void);
 
 // The outcome the front end was started with (once): returns 1 and fills text, good.
 int CE_LobbyTakeOutcome(char *text, size_t size, int *good);
+/* Resume one confirmed direct match; 1 for host, 2 for guest, 0 otherwise. */
+int CE_LobbyResumeMatch(void);
 int CE_LobbyOutcomePending(void);
 // Called by the game shell as WinMain returns (patch 0140): the exit code and whether the player closed the window.
 void CE_LobbyShellExit(int code, int native_quit);

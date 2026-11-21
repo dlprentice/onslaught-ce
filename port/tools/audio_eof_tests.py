@@ -134,7 +134,7 @@ def main():
             shutil.copyfile(source / 'crtfile.inc', folder / 'crtfile.inc')
             receipt['pins']['reader/' + label] = sha(folder / 'reader.inc')
             cmd = [cxx, *flags, '-fsanitize=address', '-fno-sanitize-link-runtime', '-std=c++17', '-pthread', '-DCE_VERSION=1',
-                   *(['-DFIXTURE_PRIVATE_READER=1'] if label == 'private' else []), '-I' + str(folder),
+                   *(['-DFIXTURE_PRIVATE_READER=1'] if label == 'private' else []), '-I' + str(folder), '-I' + str(ROOT / 'port/game'),
                    ROOT / 'port/tools/tests/audio_eof_driver.cpp', out / 'vc6crt.o', data / 'vorbis/lib/linux/libvorbis_vc6.a',
                    '-lm', '-no-pie', '--ld-path=' + str(data / 'llvm-mingw/bin/ld.lld'),
                    '-L' + str(data / 'sysroot-sniper/usr/lib/i386-linux-gnu'),

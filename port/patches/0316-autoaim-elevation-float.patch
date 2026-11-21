@@ -1,0 +1,12 @@
+--- a/BattleEngine.cpp
++++ b/BattleEngine.cpp
+@@ -2561,7 +2561,8 @@
+ 			FVector		diff=op-(GetPos()+GetVelocity());
+ 
+ 			mDesiredAutoAimYawOffset=-AngleDifference(currentYaw,diff.Azimuth());
+-			mDesiredAutoAimPitchOffset=-AngleDifference(currentPitch,diff.Elevation());
++			volatile float elevation=diff.Elevation();	// Port: retail stores the arcsine as a float before the out-of-line AngleDifference (0040b5bb)
++			mDesiredAutoAimPitchOffset=-AngleDifference(currentPitch,elevation);
+ 			mTrackingActive=FALSE;
+ 		}
+ 	}

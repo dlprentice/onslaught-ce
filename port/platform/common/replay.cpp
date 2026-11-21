@@ -13,6 +13,13 @@
 //                           lines are counted and ignored.
 //   BEA_PORT_PROBES=PATH    probe lines `P <frame> <NAME> <hex>`, every BEA_PORT_PROBE_EVERY (50) Presents
 //   BEA_PORT_REPLAY_MAX=N   after frame N's probes, post WM_CLOSE (the game's own shutdown)
+//   BEA_PORT_REPLAY_CHEAT=1 with BEA_PORT_TAPE only: replays a tape recorded with the retail test harness's cheat, so a
+//                           level the player could not finish by hand still replays to its end. From the first Present
+//                           with the game playing (GAME +0x28 == 3), after each Present's probes and input, the player's
+//                           battle engine keeps the highest health, energy and ammunition it has had, and weapons that
+//                           heat up are kept cool, as the harness did. Refused in a network session. While it is set, no
+//                           career or options file is written (save_replace.cpp). The log says so when the replay starts
+//                           and when it ends, so a cheat replay cannot pass for a plain one.
 //   (with BEA_PORT_PROBES) FE: in the front end, its frame step, page, transition and counter (28 bytes) each probe
 //   (with BEA_PORT_PROBES) ELD: END_LEVEL_DATA's bytes at the first Present and whenever they change
 //   BEA_PORT_PROBE_OBJECTS=1  also BEO/BEW/BEJ: the whole battle engine (0x63c bytes) and its walker (+0x578, 0x4c bytes)
@@ -60,6 +67,7 @@
 #include <SDL3/SDL.h>
 
 #include "platform.h"
+#include "replay_cheat.h"
 extern "C" void PortCrtRandState(unsigned int *calls, unsigned int *hold);	// crtrand.cpp
 extern "C" int PortBackBuffer(unsigned *w, unsigned *h);	// d3d9hooks.cpp: the game's back buffer (0 before the device)
 extern "C" BOOL WINAPI PortTryPostMessageA(HWND, UINT, WPARAM, LPARAM);	// window.cpp: bounded recorder delivery
@@ -77,7 +85,7 @@ struct Event
 {
 	unsigned frame;
 	bool prepared;		// recording delivery deferred by a full window queue; do not rewrite its ownership/coordinates
-	char kind;			// 'K', 'M', 'W' or 'C' (0: dropped); C: vk is the character, scan its key's
+	char kind;			// 'K', 'M', 'W', 'C' or 'R' (0: dropped); C: vk is the character, scan its key's
 	bool down;
 	unsigned vk, scan;
 	int dx, dy, wheel, buttons;
@@ -113,6 +121,11 @@ long gReplaySleepUs;
 #endif
 long gMouseX, gMouseY, gMouseZ;
 int gButtons;
+// R lines (the original game's public replay harness writes them, its BEA_TAPE_OUT): one per DirectInput mouse read in
+// their frame, in order. A frame with R lines gives its k-th mouse read the k-th line and leaves that frame's M line
+// out, as the harness's BEA_TAPE_IN does, so a frame whose motion the original read in two parts replays the same here.
+Event gReads[16];
+int gReadCount, gReadNext;
 FILE *gRecord;
 bool gRecording, gRecordFailed, gRecordFinalized;
 const char *gRecordDest;
@@ -306,6 +319,8 @@ void Load(const char *path)
 		}
 		else if (line[0] == 'M' && sscanf(line, "M %u %d %d %d %d", &e.frame, &e.dx, &e.dy, &e.wheel, &e.buttons) == 5)
 			e.kind = 'M';
+		else if (line[0] == 'R' && sscanf(line, "R %u %d %d %d %d", &e.frame, &e.dx, &e.dy, &e.wheel, &e.buttons) == 5)
+			e.kind = 'R';
 		else
 		{
 			unknown++;
@@ -734,8 +749,100 @@ static void EldAtExit()
 	}
 }
 
+// BEA_PORT_REPLAY_CHEAT (see the top of this file). The retail harness's cheat, at the same offsets: GAME +0x28 the game
+// state, +0x2a4 the player (+0x1c the battle engine, +0x20 mIsGod); the battle engine's health +0xf8 and energy +0xfc,
+// and for each of its six weapon slots the value +0x52c+4i (ammunition when the slot type +0x55c+4i is 0, heat otherwise)
+// and the overheated flag +0x544+4i. Like the retail harness, the cheat holds nothing while mIsGod is set: the harness
+// took its offsets, and that test, from the game's debug readout (0x4714c0), and the original's probes were made with it.
+static bool gCheat;			// on for this replay
+static bool gCheatUsed;		// it was on at some point (the exit line says so)
+static bool gCheatChecked;	// the switch was read
+static bool gCheatStarted;	// the game has been playing
+static char *gCheatBe;		// the battle engine the maxima belong to
+static float gCheatMax[8];	// the six slots' ammunition, then health and energy
+static void CheatAtExit();
+#ifndef CE_NETWORK_OFF
+extern "C" int CE_BootRequested(void);
+extern "C" int CE_LockstepRequested(void);
+#endif
+
+static void CheatCheck()
+{
+	gCheatChecked = true;
+	if (!gActive || !PortReplayCheatRequested())
+		return;
+	const char *net[] = {"BEA_NET_HOST", "BEA_NET_JOIN", "BEA_NET_HANDOFF_FILE", "BEA_LOCKSTEP_HOST", "BEA_LOCKSTEP_JOIN"};
+	for (const char *name : net)
+		if (getenv(name))
+		{
+			fprintf(stderr, PORT_LOG_PREFIX "replay: BEA_PORT_REPLAY_CHEAT refused: %s is set (a network session)\n", name);
+			fflush(stderr);
+			return;
+		}
+	gCheat = gCheatUsed = true;
+	atexit(CheatAtExit);
+	fprintf(stderr, PORT_LOG_PREFIX "replay: CHEAT REPLAY (BEA_PORT_REPLAY_CHEAT=1): the player's health, energy and ammunition "
+		"are held and weapon heat is cleared; no career or options file is written\n");
+	fflush(stderr);
+}
+
+static void Cheat()
+{
+#ifndef CE_NETWORK_OFF
+	if (CE_BootRequested() || CE_LockstepRequested())
+	{
+		gCheat = false;
+		fprintf(stderr, PORT_LOG_PREFIX "replay: BEA_PORT_REPLAY_CHEAT turned off: a network session was requested\n");
+		fflush(stderr);
+		return;
+	}
+#endif
+	if (!gCheatStarted && At<int>(GAME, 0x28) == 3)
+		gCheatStarted = true;
+	char *player = gCheatStarted ? At<char *>(GAME, 0x2a4) : NULL;
+	char *be = player && At<int>(player, 0x20) == 0 ? At<char *>(player, 0x1c) : NULL;	// +0x20 mIsGod (see above)
+	if (!be)
+		return;
+	if (be != gCheatBe)
+	{
+		gCheatBe = be;
+		for (float &m : gCheatMax)
+			m = -1e30f;
+	}
+	float *held[8];
+	for (int i = 0; i < 6; i++)
+		held[i] = At<int>(be, 0x55c + 4 * i) == 0 ? (float *)(be + 0x52c + 4 * i) : NULL;
+	held[6] = (float *)(be + 0xf8);
+	held[7] = (float *)(be + 0xfc);
+	for (int i = 0; i < 8; i++)
+	{
+		if (!held[i])
+		{
+			*(float *)(be + 0x52c + 4 * i) = 0.0f;	// a weapon that heats up: cool, and not overheated
+			*(int *)(be + 0x544 + 4 * i) = 0;
+		}
+		else if (*held[i] > gCheatMax[i])
+			gCheatMax[i] = *held[i];
+		else
+			*held[i] = gCheatMax[i];
+	}
+}
+
+// The closing line: from exit()'s handlers (registered when the switch starts) or from PortReplayAtExit (Linux's main),
+// whichever comes first.
+static void CheatAtExit()
+{
+	static bool done;
+	if (!gCheatUsed || done)
+		return;
+	done = true;
+	fprintf(stderr, PORT_LOG_PREFIX "replay: ended; this was a CHEAT REPLAY (BEA_PORT_REPLAY_CHEAT=1)\n");
+	fflush(stderr);
+}
+
 void PortReplayAtExit()
 {
+	CheatAtExit();
 	EldAtExit();
 	FinalizeRecord();
 }
@@ -776,11 +883,24 @@ void PortReplayFrame(unsigned frame, HWND window)
 		Probe(frame);
 	if (gProbes)
 		EldProbe(frame);
+	bool reads = false;
+	for (size_t k = gNext; k < gCount && gEvents[k].frame <= frame; k++)
+		if (gEvents[k].frame == frame && gEvents[k].kind == 'R')
+			reads = true;
+	gReadCount = gReadNext = 0;
 	for (; gNext < gCount && gEvents[gNext].frame <= frame; gNext++)
 	{
 		const Event &e = gEvents[gNext];
 		if (e.frame < frame)
 			continue;	// before the first Present the hook saw: not deliverable
+		if (e.kind == 'R')
+		{
+			if (gReadCount < 16)
+				gReads[gReadCount++] = e;
+			continue;
+		}
+		if (e.kind == 'M' && reads)
+			continue;
 		if (e.kind != 'M')
 			Deliver(window, e);
 		else
@@ -791,6 +911,10 @@ void PortReplayFrame(unsigned frame, HWND window)
 			gButtons = e.buttons;
 		}
 	}
+	if (!gCheatChecked)
+		CheatCheck();
+	if (gCheat)
+		Cheat();
 	if (gMax && frame == gMax)
 	{
 		fprintf(stderr, PORT_LOG_PREFIX "replay: frame %u reached, WM_CLOSE posted\n", frame);
@@ -804,6 +928,14 @@ bool PortReplayMouse(long *dx, long *dy, long *dz, int *buttons)
 		Init();
 	if (!gActive)
 		return false;
+	if (gReadNext < gReadCount)
+	{
+		const Event &r = gReads[gReadNext++];
+		gMouseX += r.dx;
+		gMouseY += r.dy;
+		gMouseZ += r.wheel;
+		gButtons = r.buttons;
+	}
 	*dx = gMouseX;
 	*dy = gMouseY;
 	*dz = gMouseZ;

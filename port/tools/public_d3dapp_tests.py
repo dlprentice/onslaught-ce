@@ -35,7 +35,7 @@ WINDOWED = ("desktop-only", "desktop-secondary", "explicit-client", "fullscreen-
             "client-height-limit", "client-zero", "client-negative", "desktop-unavailable", "window-only-escape",
             "ref-window-only", "physical-fullscreen", "window-rebuild", "failed-hal-slot", "owner-reuse", "mode-capacity", "client-shape", "resize-shape")
 PUBLICATION = ("query", "caps", "depth", "size", "pending-index", "reset", "fullscreen-reset", "create", "finish", "init", "resize-reset", "resize-restore")
-PRESENTATION = ("roundtrip", "paused", "reset-rollback", "logical-rollback", "init-rollback", "rollback-refused", "invalid-client",
+PRESENTATION = ("roundtrip", "paused", "reset-rollback", "logical-rollback", "init-rollback", "finish-rollback", "rollback-refused", "invalid-client",
                 "logical-rollback-refused", "paused-rollback-refused", "windowed-rollback-refused", "rollback-retry", "paused-rollback-retry",
                 "cooperative-rollback-retry", "cooperative-rollback-refused")
 
@@ -182,6 +182,7 @@ def main():
     parser.add_argument("--publication-before-ref", help="prove failed publication persistence negatives from this frozen public host")
     parser.add_argument("--presentation-before-ref", help="prove runtime mode transaction failures from this frozen public host")
     parser.add_argument("--rollback-before-ref", help="prove persistent-restoration failures from this frozen public host")
+    parser.add_argument("--release-before-ref", help="prove the release of a dropped device from this frozen public host")
     args = parser.parse_args()
     scratch = ROOT / "local-data/public-d3dapp-tests"
     scratch.mkdir(parents=True, exist_ok=True)
@@ -191,6 +192,7 @@ def main():
     binary = scratch / "public-driver"
     instrumentation = ["-fsanitize=address,undefined", "-fno-omit-frame-pointer"] if args.sanitizers else []
     command(common + instrumentation + ["-DBEA_PUBLIC_PRESENTATION_RECOVERY", "-I", scratch / "recovery", PUBLIC / "d3dapp.cpp", SUPPORT / "public_d3dapp_driver.cpp", "-o", binary])
+    command([binary, "graphics-error"])
     results = {name: command([binary, name]) for name in CASES}
     expected = {"boot": ("size=640x480", "modes=3"), "wide": ("size=1920x1080", "presets=4,4,4"),
                 "saved": ("size=1024x768",), "depth": ("depth=77",), "fallback": ("creates=2",),
@@ -237,6 +239,22 @@ def main():
     print(f"publication: {len(PUBLICATION)} actual Flip/key-writer failure and stage-rollback controls passed")
     presentation = {name: command([binary, 'presentation-control', name]) for name in PRESENTATION}
     print(f"presentation: {len(PRESENTATION)} runtime transaction, rollback, pause and geometry controls passed")
+    # The natural wrong form of the reset's release guard tests the device instead of the live flag. After a refused
+    # reset that kept the device, its rollback then releases the shell's objects a second time; the live-period check
+    # in the rollback controls must refuse that.
+    mutant = scratch / 'release-mutant'
+    mutant.mkdir(exist_ok=True)
+    host = (PUBLIC / 'd3dapp.cpp').read_text()
+    guard = 'deviceObjectsLive ? ReleaseDeviceObjects(showProgress) : S_OK'
+    if host.count(guard) != 1: raise AssertionError("the reset's release guard is not in the host exactly once")
+    (mutant / 'd3dapp.cpp').write_text(host.replace(guard, 'm_pd3dDevice ? ReleaseDeviceObjects(showProgress) : S_OK'))
+    command(common + ["-DBEA_PUBLIC_PRESENTATION_RECOVERY", "-I", scratch / "recovery", mutant / "d3dapp.cpp",
+                      SUPPORT / "public_d3dapp_driver.cpp", "-o", mutant / "driver"])
+    for name in ('reset-rollback', 'logical-rollback'):
+        proc = subprocess.run([str(mutant / 'driver'), 'presentation-control', name], text=True, capture_output=True, timeout=10)
+        if proc.returncode != 1 or "FAIL: the shell's objects are released once per live period" not in proc.stdout:
+            raise AssertionError(f'{name}: the device-tested release guard was not refused\n{proc.stdout}{proc.stderr}')
+    print("presentation: the device-tested release guard is refused by both kept-device rollback controls")
     receipt = {"host_sha256": hashlib.sha256((PUBLIC / 'd3dapp.cpp').read_bytes()).hexdigest(),
                "driver_sha256": hashlib.sha256((SUPPORT / 'public_d3dapp_driver.cpp').read_bytes()).hexdigest(),
                "caller_sha256": hashlib.sha256((scratch / 'recovery/public_d3dapp_callers.h').read_bytes()).hexdigest(),
@@ -283,6 +301,27 @@ def main():
                 raise AssertionError(f'{name}: expected persistent-restoration negative missing\n{proc.stdout}{proc.stderr}')
             receipt['rollback_negatives'][name] = proc.stdout
         print(f'presentation: {len(receipt["rollback_negatives"])} frozen persistent-restoration negatives reproduced')
+    if args.release_before_ref:
+        # A window switch whose failed attempt dropped the device: the frozen host's rollback asked the shell to release
+        # again, and the shell's release uses the device without a test.
+        before = scratch / 'release-before'
+        recovery_source(before, True)
+        source = before / 'd3dapp.cpp'
+        source.write_text(command(['git', '-C', ROOT, 'show', f'{args.release_before_ref}:port/platform/public/d3dapp.cpp']))
+        negative = before / 'driver'
+        command(common + ['-I', before, source, SUPPORT / 'public_d3dapp_driver.cpp', '-o', negative])
+        receipt['release_before_ref'] = args.release_before_ref
+        receipt['release_negatives'] = {}
+        # A refused reset that kept the device: the frozen host's rollback released the shell's objects a second time.
+        for name, label in (('init-rollback', "the shell's release is never asked to use a dropped device"),
+                            ('finish-rollback', "the shell's release is never asked to use a dropped device"),
+                            ('reset-rollback', "the shell's objects are released once per live period"),
+                            ('logical-rollback', "the shell's objects are released once per live period")):
+            proc = subprocess.run([str(negative), 'presentation-control', name], text=True, capture_output=True, timeout=10)
+            if proc.returncode != 1 or f"FAIL: {label}" not in proc.stdout:
+                raise AssertionError(f'{name}: expected release negative missing\n{proc.stdout}{proc.stderr}')
+            receipt['release_negatives'][name] = proc.stdout
+        print(f'frozen {args.release_before_ref}: both dropped-device and both second-release negatives reproduced')
     if args.publication_before_ref:
         before = scratch / 'publication-before'
         recovery_source(before, True)

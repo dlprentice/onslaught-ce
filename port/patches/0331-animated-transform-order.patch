@@ -1,0 +1,25 @@
+--- a/MeshRenderer.cpp
++++ b/MeshRenderer.cpp
+@@ -152,8 +152,20 @@
+ 
+ 	if ((!thing) || (thing->RenderUseHierarchy(part->mPartNumber)))
+ 	{
+-		*pos += *ori * p;
+-		*ori = *ori * o;
++		// Port: retail's own term orders for this inline product (004b57e0..004b5994); maths.h's differ.
++		FMatrix	a = *ori;
++		pos->X += ((a.Row[0].X * p.X) + (a.Row[0].Z * p.Z)) + (a.Row[0].Y * p.Y);
++		pos->Y += ((a.Row[1].Y * p.Y) + (a.Row[1].Z * p.Z)) + (a.Row[1].X * p.X);
++		pos->Z += ((a.Row[2].X * p.X) + (a.Row[2].Y * p.Y)) + (a.Row[2].Z * p.Z);
++		ori->Row[0].X = ((a.Row[0].X * o.Row[0].X) + (a.Row[0].Z * o.Row[2].X)) + (a.Row[0].Y * o.Row[1].X);
++		ori->Row[0].Y = ((a.Row[0].Z * o.Row[2].Y) + (a.Row[0].Y * o.Row[1].Y)) + (a.Row[0].X * o.Row[0].Y);
++		ori->Row[0].Z = ((a.Row[0].Z * o.Row[2].Z) + (a.Row[0].Y * o.Row[1].Z)) + (a.Row[0].X * o.Row[0].Z);
++		ori->Row[1].X = ((a.Row[1].Y * o.Row[1].X) + (a.Row[1].Z * o.Row[2].X)) + (a.Row[1].X * o.Row[0].X);
++		ori->Row[1].Y = ((a.Row[1].X * o.Row[0].Y) + (a.Row[1].Y * o.Row[1].Y)) + (a.Row[1].Z * o.Row[2].Y);
++		ori->Row[1].Z = ((a.Row[1].X * o.Row[0].Z) + (a.Row[1].Y * o.Row[1].Z)) + (a.Row[1].Z * o.Row[2].Z);
++		ori->Row[2].X = ((a.Row[2].X * o.Row[0].X) + (a.Row[2].Y * o.Row[1].X)) + (a.Row[2].Z * o.Row[2].X);
++		ori->Row[2].Y = ((a.Row[2].X * o.Row[0].Y) + (a.Row[2].Y * o.Row[1].Y)) + (a.Row[2].Z * o.Row[2].Y);
++		ori->Row[2].Z = ((a.Row[2].X * o.Row[0].Z) + (a.Row[2].Y * o.Row[1].Z)) + (a.Row[2].Z * o.Row[2].Z);
+ 	}
+ 	else
+ 	{

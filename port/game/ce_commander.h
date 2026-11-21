@@ -24,14 +24,16 @@ bool	CeCommanderNoMerge(const void *squad);
 int		CeCommanderRelaxed(void *squad, FVector *pos);
 
 // What the commander map (ce_cmdmap.cpp) asks of the order layer. The verbs are the ones measured to hold against the squads' own AI on the game's levels: Move and Fall
-// back keep their goal and stay passive (on the way and after arriving, until the squad is given another order), Advance fights on the way, Hold stays and fires.
+// back keep their goal and stay passive on the way, Advance fights on the way, Hold stays and fires. Every march the map gives ends in Hold: a squad that has
+// arrived stays where it is and defends itself. Release gives the squad back to its own AI.
 enum CeCmdVerb
 {
 	CE_CMD_NONE = 0,
-	CE_CMD_MOVE,		// passive march: AI_OFF and a go-to-point; the squad stays passive once it has arrived, until its next order
-	CE_CMD_ADVANCE,		// the march that fights on the way: AI_ONF and a go-to-point
+	CE_CMD_MOVE,		// passive march: AI_OFF and a go-to-point; Hold once it has arrived
+	CE_CMD_ADVANCE,		// the march that fights on the way: AI_ONF and a go-to-point; it holds its goal once there
 	CE_CMD_HOLD,		// stay where the members are and fire: AI_ONF at the members' centre
-	CE_CMD_FALLBACK		// a passive march to the nearest own-side safe point, passive on arrival too
+	CE_CMD_FALLBACK,	// a passive march to the nearest own-side safe point; Hold once it has arrived
+	CE_CMD_RELEASE		// forget the map's order: the squad's own AI state and goal from before its first order are put back
 };
 
 // Why a friendly squad takes no orders from the map (CE_WHY_NONE: it does).
@@ -53,6 +55,7 @@ struct CeCmdSquad
 	bool commandable;		// friendly, with live units, and why == CE_WHY_NONE
 	int why;				// CeCmdWhy
 	bool deploys;			// its units deploy before they fire (artillery): they take Hold only
+	bool crossesWater;     // Every live member can march over water.
 	char unit[28];			// the first live unit's type name
 	bool visible;			// a friendly squad, or an enemy one with a unit the game reports as detectable (CUnit::OnScanner: most units; the HUD radar adds a range of about 220 world units, this does not)
 	int members;			// live units
@@ -61,16 +64,28 @@ struct CeCmdSquad
 	int verb;				// the standing order (CeCmdVerb), CE_CMD_NONE when it has none
 	bool arrived;			// a march whose members' centre has come to the goal
 	float gx, gy;			// the goal of a standing march
+	int outcome;			// what it is doing under the map's order (CeCmdOutcome, ce_cmdoutcome.h): CE_OUT_NONE without one
+	bool selected;			// the map's own mark (ce_cmdmap.cpp fills it): the squad is in the selection; the order layer leaves it false
 };
 
 // Whether the map may be offered here: the ce.ini key "commander" is on and none of the replay, recording, probe or network switches is set (a test build's
 // proof switch is the one way past those).
 bool	CeCmdMapOn();
+// The current map owns input while open or opening; enabling its option does not reserve the pilot.
+bool PortCeCmdMapOpen();
 // Every squad with live units (up to max), after a fresh look at the world's squad list; returns how many. The order layer's table holds a fixed number of
 // squads in a level: CeCmdUntracked says how many it had to leave out (they are neither listed nor given orders).
 int		CeCmdList(CeCmdSquad *out, int max);
+// Valid only for the single unshared, live squad of the exercise delivery.
+int CeCmdDeliveredSquad();
 int		CeCmdUntracked();
+
+// Resolve a drawn member without keeping a live pointer in the battlefield picture.
+class CSquad;
+int CeCmdDrawnSquad(const CSquad *squad);
 // One order for a squad. x and y are the goal of a march. False, with the reason in *why, when it is refused.
+// Ground squads can march only to land within the battlefield.
+bool	CeCmdMarchLand(float x, float y);
 bool	CeCmdIssue(int ordinal, int verb, float x, float y, const char **why);
 
 #ifdef CE_COMMANDER_TEST
@@ -82,9 +97,22 @@ void	CeCmdWorldHash(CeCmdHash *out);
 void	CeCmdWorldDump(const char *path);
 // A line in the probe (when there is one) naming what the player did on the map.
 void	CeCmdNote(const char *fmt, ...);
+// The order tape's `ui` verb (ce_cmdmap.cpp): what the player does on the open map, done with an exact pointer. word and its count numbers are the tape's;
+// said receives one word for the probe's O line ("ok ..." or "refused: ...").
+void	CeCmdTestUi(const char *word, const float *numbers, int count, char *said, unsigned room);
 #else
 inline void	CeCmdNote(const char *, ...) {}
 #endif
+
+class CUnit;
+struct CeCmdUnitAuthority;
+struct CeCmdUnitNativeRecord;
+// Fresh native membership is resolved before any candidate pointer is read.
+bool CeCmdUnitAuthorityNow(CUnit*, CeCmdUnitAuthority*);
+// Pointer-only invalidation before native storage can be reused.
+void CeCmdSquadGone(const void*);
+int CeCmdUnitCollectNative(CeCmdUnitNativeRecord*, int capacity, bool* complete);
+bool CeCmdUnitGroundPoint(float x, float y, float out[3]);
 
 #endif
 

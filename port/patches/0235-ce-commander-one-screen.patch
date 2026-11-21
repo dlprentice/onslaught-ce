@@ -1,0 +1,413 @@
+--- a/Hud.cpp
++++ b/Hud.cpp
+@@ -54,6 +54,12 @@
+ 
+ extern UINT		MESH_SURFACE_DETAIL;			// 00630130 (MeshRenderer.cpp; 100 unless a mesh is being drawn)
+ #include	<math.h>
++#ifdef CE_VERSION
++bool PortCeOneScreenMatch();	// patch 0235: port/game/ce_cmdmatch.cpp, a Commander match shown on one screen
++#define CE_SPLIT_HUD() (GAME.IsMultiplayer() && !PortCeOneScreenMatch())	// the HUD of a split screen: not a match's one screen
++#else
++#define CE_SPLIT_HUD() GAME.IsMultiplayer()
++#endif
+ 
+ // FUNCTION: 0x00481310 init:ZERO_FVECTOR
+ // FUNCTION: 0x00481330 init:ID_FMATRIX
+@@ -1097,9 +1103,9 @@
+ 	SetOverlayRenderStates();
+ 	{
+ #ifdef CE_NETWORK_OFF
+-		CeHudScope scope(!GAME.IsMultiplayer() && ENGINE.GetNumViewpoints() == 1, mViewportWidth, mViewportHeight,
++		CeHudScope scope(!CE_SPLIT_HUD() && ENGINE.GetNumViewpoints() == 1, mViewportWidth, mViewportHeight,
+ #else
+-		CeHudScope scope((CE_LockstepRequested() || (!GAME.IsMultiplayer() && ENGINE.GetNumViewpoints() == 1)), mViewportWidth, mViewportHeight,
++		CeHudScope scope((CE_LockstepRequested() || (!CE_SPLIT_HUD() && ENGINE.GetNumViewpoints() == 1)), mViewportWidth, mViewportHeight,
+ #endif
+ 			float(PLATFORM.GetWindowWidth()) * 0.5f, float(PLATFORM.GetWindowHeight()) * 0.5f);
+ 		mCompass->Render(mBattleEngine);
+@@ -1120,9 +1126,9 @@
+ 		pos = mBattleEngine->GetInterpolatedTrackingPos();
+ 		RENDERINFO.Project((D3DXVECTOR3 *)&screen, (D3DXVECTOR3 *)&pos, mViewport);
+ #ifdef CE_NETWORK_OFF
+-		CeHudScope scope(!GAME.IsMultiplayer() && ENGINE.GetNumViewpoints() == 1, mViewportWidth, mViewportHeight,
++		CeHudScope scope(!CE_SPLIT_HUD() && ENGINE.GetNumViewpoints() == 1, mViewportWidth, mViewportHeight,
+ #else
+-		CeHudScope scope((CE_LockstepRequested() || (!GAME.IsMultiplayer() && ENGINE.GetNumViewpoints() == 1)), mViewportWidth, mViewportHeight,
++		CeHudScope scope((CE_LockstepRequested() || (!CE_SPLIT_HUD() && ENGINE.GetNumViewpoints() == 1)), mViewportWidth, mViewportHeight,
+ #endif
+ 			screen.X, screen.Y);
+ 		CSPRITERENDERER::DrawSprite(screen.X, screen.Y, 0.01f, mCrosshairPredictor, SA_CENTRE, SPT_NONE, 1.f, 0.f, 0xffffffff, 1.f, 1.f, 0.f, 1.f, 0.f, 1.f);
+@@ -1211,9 +1217,9 @@
+ 		turn = (1.f - mUnknown0d4[mViewpoint]) * 0.5f;
+ 	{
+ #ifdef CE_NETWORK_OFF
+-		CeHudScope scope(!GAME.IsMultiplayer() && ENGINE.GetNumViewpoints() == 1, mViewportWidth, mViewportHeight,
++		CeHudScope scope(!CE_SPLIT_HUD() && ENGINE.GetNumViewpoints() == 1, mViewportWidth, mViewportHeight,
+ #else
+-		CeHudScope scope((CE_LockstepRequested() || (!GAME.IsMultiplayer() && ENGINE.GetNumViewpoints() == 1)), mViewportWidth, mViewportHeight,
++		CeHudScope scope((CE_LockstepRequested() || (!CE_SPLIT_HUD() && ENGINE.GetNumViewpoints() == 1)), mViewportWidth, mViewportHeight,
+ #endif
+ 			screen.X, screen.Y);
+ 		CSPRITERENDERER::DrawSprite(screen.X, screen.Y, 0.011f, mCrosshairPrimary, SA_CENTRE, SPT_NONE, 1.f, turn + mUnknown0f4[mViewpoint], col2, scale, scale * (LT.mScreenShapeScale + zero), 0.f, 1.f, 0.f, 1.f);	// STAND-IN (see above)
+@@ -1246,9 +1252,9 @@
+ 		{
+ 			RENDERINFO.Project((D3DXVECTOR3 *)&screen, (D3DXVECTOR3 *)&pos, mViewport);
+ #ifdef CE_NETWORK_OFF
+-			CeHudScope scope(!GAME.IsMultiplayer() && ENGINE.GetNumViewpoints() == 1, mViewportWidth, mViewportHeight, screen.X, screen.Y);	// Port (patch 0190)
++			CeHudScope scope(!CE_SPLIT_HUD() && ENGINE.GetNumViewpoints() == 1, mViewportWidth, mViewportHeight, screen.X, screen.Y);	// Port (patch 0190)
+ #else
+-			CeHudScope scope((CE_LockstepRequested() || (!GAME.IsMultiplayer() && ENGINE.GetNumViewpoints() == 1)), mViewportWidth, mViewportHeight, screen.X, screen.Y);	// Port (patch 0190)
++			CeHudScope scope((CE_LockstepRequested() || (!CE_SPLIT_HUD() && ENGINE.GetNumViewpoints() == 1)), mViewportWidth, mViewportHeight, screen.X, screen.Y);	// Port (patch 0190)
+ #endif
+ 			float	aspect = LT.mScreenShapeScale;
+ 			CSPRITERENDERER::DrawSprite(screen.X, screen.Y, 0.011f, mSpeakers[(SINT)floorf(mUnknown190[mViewpoint])], SA_CENTRE, SPT_NONE, 1.f, 0.f, 0xffffff00, 1.f, aspect, 0.f, 1.f, 0.f, 1.f);
+@@ -1301,9 +1307,9 @@
+ {
+ 	SetOverlayRenderStates();
+ #ifdef CE_NETWORK_OFF
+-	float	cy = (((GAME.IsMultiplayer()) && (mViewpoint == 0)) ? HUD.mViewportHeight + HUD_OFFSET_Y : HUD.mViewportHeight) + HUD.mViewportY - 44.f - HUD_OFFSET_Y;
++	float	cy = (((CE_SPLIT_HUD()) && (mViewpoint == 0)) ? HUD.mViewportHeight + HUD_OFFSET_Y : HUD.mViewportHeight) + HUD.mViewportY - 44.f - HUD_OFFSET_Y;
+ #else
+-	float	cy = ((((GAME.IsMultiplayer() && !CE_WorldActive())) && (mViewpoint == 0)) ? HUD.mViewportHeight + HUD_OFFSET_Y : HUD.mViewportHeight) + HUD.mViewportY - 44.f - HUD_OFFSET_Y;
++	float	cy = ((((CE_SPLIT_HUD() && !CE_WorldActive())) && (mViewpoint == 0)) ? HUD.mViewportHeight + HUD_OFFSET_Y : HUD.mViewportHeight) + HUD.mViewportY - 44.f - HUD_OFFSET_Y;
+ #endif
+ 
+ 	FVector	centre = mBattleEngine->GetRenderPos();
+@@ -1570,9 +1576,9 @@
+ inline float	CHud::GetBottom(float offset)
+ {
+ #ifdef CE_NETWORK_OFF
+-	if (GAME.IsMultiplayer())
++	if (CE_SPLIT_HUD())
+ #else
+-	if ((GAME.IsMultiplayer() && !CE_WorldActive()))
++	if ((CE_SPLIT_HUD() && !CE_WorldActive()))
+ #endif
+ 	{
+ 		if (mBattleEngine->GetPlayer()->GetNumber() == 1)
+@@ -1681,9 +1687,9 @@
+ 		}
+ 
+ #ifdef CE_NETWORK_OFF
+-		if (GAME.IsMultiplayer())
++		if (CE_SPLIT_HUD())
+ #else
+-		if ((GAME.IsMultiplayer() && !CE_WorldActive()))
++		if ((CE_SPLIT_HUD() && !CE_WorldActive()))
+ #endif
+ 		{
+ 			SINT	lives = GAME.GetPlayerLives(mBattleEngine->GetPlayer()->GetNumber());
+@@ -1775,9 +1781,9 @@
+ 	{
+ 		float	y;
+ #ifdef CE_NETWORK_OFF
+-		if (GAME.IsMultiplayer())
++		if (CE_SPLIT_HUD())
+ #else
+-		if ((GAME.IsMultiplayer() && !CE_WorldActive()))
++		if ((CE_SPLIT_HUD() && !CE_WorldActive()))
+ #endif
+ 		{
+ 			if (mBattleEngine->GetPlayer()->GetNumber() == 1)
+@@ -1833,9 +1839,9 @@
+ 	{
+ 		float	y;
+ #ifdef CE_NETWORK_OFF
+-		if (GAME.IsMultiplayer())
++		if (CE_SPLIT_HUD())
+ #else
+-		if ((GAME.IsMultiplayer() && !CE_WorldActive()))
++		if ((CE_SPLIT_HUD() && !CE_WorldActive()))
+ #endif
+ 		{
+ 			if (mBattleEngine->GetPlayer()->GetNumber() == 1)
+@@ -2139,9 +2145,9 @@
+ 	RENDERINFO.SRS(D3DRS_ALPHATESTENABLE, FALSE);
+ 
+ #ifdef CE_NETWORK_OFF
+-	const int portHudEligible = !GAME.IsMultiplayer() && ENGINE.GetNumViewpoints() == 1;
++	const int portHudEligible = !CE_SPLIT_HUD() && ENGINE.GetNumViewpoints() == 1;
+ #else
+-	const int portHudEligible = (CE_LockstepRequested() || (!GAME.IsMultiplayer() && ENGINE.GetNumViewpoints() == 1));
++	const int portHudEligible = (CE_LockstepRequested() || (!CE_SPLIT_HUD() && ENGINE.GetNumViewpoints() == 1));
+ #endif
+ 	{
+ 		// Port (patch 0190): a marker stays where its target is and scales about that point, so each sets its own anchor as it is projected.
+@@ -2243,9 +2249,9 @@
+ 
+ 	float y, y2;
+ #ifdef CE_NETWORK_OFF
+-	if (GAME.IsMultiplayer())
++	if (CE_SPLIT_HUD())
+ #else
+-	if ((GAME.IsMultiplayer() && !CE_WorldActive()))
++	if ((CE_SPLIT_HUD() && !CE_WorldActive()))
+ #endif
+ 	{
+ 		y = PLATFORM.GetWindowHeight() * 0.5f + 78.f;
+@@ -2260,9 +2266,9 @@
+ 	RENDERINFO.SetFogEnabled(false);
+ 	RENDERINFO.SetLightingEnabled(false);
+ #ifdef CE_NETWORK_OFF
+-	const int portHudEligible = !GAME.IsMultiplayer() && ENGINE.GetNumViewpoints() == 1;
++	const int portHudEligible = !CE_SPLIT_HUD() && ENGINE.GetNumViewpoints() == 1;
+ #else
+-	const int portHudEligible = (CE_LockstepRequested() || (!GAME.IsMultiplayer() && ENGINE.GetNumViewpoints() == 1));
++	const int portHudEligible = (CE_LockstepRequested() || (!CE_SPLIT_HUD() && ENGINE.GetNumViewpoints() == 1));
+ #endif
+ 	{
+ 		CeHudScope scope(portHudEligible, mViewportWidth, mViewportHeight,
+--- a/Compass.cpp
++++ b/Compass.cpp
+@@ -16,6 +16,12 @@
+ #include "BattleEngine.h"
+ #include "RadarWarningReceiver.h"
+ #include "player.h"
++#ifdef CE_VERSION
++bool PortCeOneScreenMatch();	// patch 0235: port/game/ce_cmdmatch.cpp, a Commander match shown on one screen
++#define CE_SPLIT_HUD() (GAME.IsMultiplayer() && !PortCeOneScreenMatch())	// the HUD of a split screen: not a match's one screen
++#else
++#define CE_SPLIT_HUD() GAME.IsMultiplayer()
++#endif
+ 
+ // FUNCTION: 0x00426ff0 init:ZERO_FVECTOR
+ // FUNCTION: 0x00427010 init:ID_FMATRIX
+@@ -99,9 +105,9 @@
+ 	int		view = 0;
+ 	float	a;
+ #ifdef CE_NETWORK_OFF
+-	if (GAME.IsMultiplayer())
+-#else
+-	if ((GAME.IsMultiplayer() && !CE_WorldActive()))
++	if (CE_SPLIT_HUD())
++#else
++	if ((CE_SPLIT_HUD() && !CE_WorldActive()))
+ #endif
+ 	{
+ 		if (be->GetPlayer()->GetNumber() == 1)
+@@ -163,9 +169,9 @@
+ 				while (a > PI_M2)
+ 					a -= PI_M2;
+ #ifdef CE_NETWORK_OFF
+-				float	radius = GAME.IsMultiplayer() ? 95.0f : 111.5f;
+-#else
+-				float	radius = (GAME.IsMultiplayer() && !CE_WorldActive()) ? 95.0f : 111.5f;
++				float	radius = CE_SPLIT_HUD() ? 95.0f : 111.5f;
++#else
++				float	radius = (CE_SPLIT_HUD() && !CE_WorldActive()) ? 95.0f : 111.5f;
+ #endif
+ 				CDXSpriteRenderer::DrawSprite((float)sin(a) * radius + cx, cy - ((float)cos(a) * radius) * LT.mScreenShapeScale, 0.001f,
+ 											  mThreatFlash, SA_CENTRE, SPT_NONE, 1.0f, a, 0xff000000 - SINT((m->mTime / 20.0f) * -255.0f) * 0x10101,
+@@ -184,9 +190,9 @@
+ 		while (a > PI_M2)
+ 			a -= PI_M2;
+ #ifdef CE_NETWORK_OFF
+-		float	radius = GAME.IsMultiplayer() ? 80.0f : 96.0f;
+-#else
+-		float	radius = (GAME.IsMultiplayer() && !CE_WorldActive()) ? 80.0f : 96.0f;
++		float	radius = CE_SPLIT_HUD() ? 80.0f : 96.0f;
++#else
++		float	radius = (CE_SPLIT_HUD() && !CE_WorldActive()) ? 80.0f : 96.0f;
+ #endif
+ 		float	t = EVENT_MANAGER.GetTime() - d->mStartTime;
+ 		if (t < 0)
+@@ -201,9 +207,9 @@
+ 	FASTVB.Render();
+ 
+ #ifdef CE_NETWORK_OFF
+-	float	radius = GAME.IsMultiplayer() ? 100.0f : 110.0f;
+-#else
+-	float	radius = (GAME.IsMultiplayer() && !CE_WorldActive()) ? 100.0f : 110.0f;
++	float	radius = CE_SPLIT_HUD() ? 100.0f : 110.0f;
++#else
++	float	radius = (CE_SPLIT_HUD() && !CE_WorldActive()) ? 100.0f : 110.0f;
+ #endif
+ 	float	life = be->GetLife();
+ 	float	initialLife = be->GetInitialLife();
+@@ -253,9 +259,9 @@
+ 		FVector	d = tp - be->GetRenderPos();
+ 		a = be->GetInterpolatedEulerOrientation().mYaw - d.Azimuth();
+ #ifdef CE_NETWORK_OFF
+-		float	r = GAME.IsMultiplayer() ? 82.0f : 98.0f;
+-#else
+-		float	r = (GAME.IsMultiplayer() && !CE_WorldActive()) ? 82.0f : 98.0f;
++		float	r = CE_SPLIT_HUD() ? 82.0f : 98.0f;
++#else
++		float	r = (CE_SPLIT_HUD() && !CE_WorldActive()) ? 82.0f : 98.0f;
+ #endif
+ 		while (a < 0)
+ 			a += PI_M2;
+--- a/DXCompass.cpp
++++ b/DXCompass.cpp
+@@ -24,6 +24,12 @@
+ #include	"Hud.h"
+ #include	"engine.h"
+ #include	"mathsconst.h"	// FUNCTION: 0x0053bc40 init:ZERO_FVECTOR
++#ifdef CE_VERSION
++bool PortCeOneScreenMatch();	// patch 0235: port/game/ce_cmdmatch.cpp, a Commander match shown on one screen
++#define CE_SPLIT_HUD() (GAME.IsMultiplayer() && !PortCeOneScreenMatch())	// the HUD of a split screen: not a match's one screen
++#else
++#define CE_SPLIT_HUD() GAME.IsMultiplayer()
++#endif
+ 						// FUNCTION: 0x0053bc60 init:ID_FMATRIX
+ 
+ // FUNCTION: 0x0053bd30 init:SQUARE_TEXTURES_ONLY
+@@ -344,9 +350,9 @@
+ 	RENDERINFO.SetWorld(pos, m);
+ 
+ #ifdef CE_NETWORK_OFF
+-	if (GAME.IsMultiplayer())
++	if (CE_SPLIT_HUD())
+ #else
+-	if ((GAME.IsMultiplayer() && !CE_WorldActive()))
++	if ((CE_SPLIT_HUD() && !CE_WorldActive()))
+ #endif
+ 		RENDERINFO.SetProjection(0.5f, 100.0f, PLATFORM.GetWindowWidth() * 0.00093750004f, PLATFORM.GetWindowHeight() * 0.00046666668f);
+ 	else if (CeHudScaleActive())
+@@ -364,9 +370,9 @@
+ 
+ 	int		which;
+ #ifdef CE_NETWORK_OFF
+-	if (GAME.IsMultiplayer())
++	if (CE_SPLIT_HUD())
+ #else
+-	if ((GAME.IsMultiplayer() && !CE_WorldActive()))
++	if ((CE_SPLIT_HUD() && !CE_WorldActive()))
+ #endif
+ 		which = 0;
+ 	else
+@@ -412,9 +418,9 @@
+ 	CCompass::Render(be);
+ 
+ #ifdef CE_NETWORK_OFF
+-	if (GAME.IsMultiplayer())
++	if (CE_SPLIT_HUD())
+ #else
+-	if ((GAME.IsMultiplayer() && !CE_WorldActive()))
++	if ((CE_SPLIT_HUD() && !CE_WorldActive()))
+ #endif
+ 		mUnknown3c10 = 0;
+ 	else
+--- a/DXBattleLine.cpp
++++ b/DXBattleLine.cpp
+@@ -20,6 +20,12 @@
+ #include	"SpriteRenderer.h"
+ #include	"eventmanager.h"
+ #include	"mathsconst.h"	// FUNCTION: 0x00539e10 init:ZERO_FVECTOR
++#ifdef CE_VERSION
++bool PortCeOneScreenMatch();	// patch 0235: port/game/ce_cmdmatch.cpp, a Commander match shown on one screen
++#define CE_SPLIT_HUD() (GAME.IsMultiplayer() && !PortCeOneScreenMatch())	// the HUD of a split screen: not a match's one screen
++#else
++#define CE_SPLIT_HUD() GAME.IsMultiplayer()
++#endif
+ 						// FUNCTION: 0x00539e30 init:ID_FMATRIX
+ 
+ extern CTweakSLONG	SQUARE_TEXTURES_ONLY;		// 0089c918 (DXCompass.cpp)
+@@ -430,7 +436,7 @@
+ 	LT.SRS(D3DRS_ZENABLE, FALSE);
+ 
+ 	float	y;
+-	if (GAME.IsMultiplayer())
++	if (CE_SPLIT_HUD())
+ 		y = PLATFORM.GetWindowHeight() * 0.5f + 62.f;
+ 	else
+ 		y = HUD.mViewportY + HUD.mViewportHeight - HUD_OFFSET_Y;
+@@ -651,7 +657,7 @@
+ 	LT.SRS(D3DRS_POINTSCALEENABLE, FALSE);
+ 
+ 	float	top;
+-	if (GAME.IsMultiplayer())
++	if (CE_SPLIT_HUD())
+ 		top = PLATFORM.GetWindowHeight() * 0.5f + 62.f;
+ 	else
+ 		top = HUD.mViewportY + HUD.mViewportHeight - HUD_OFFSET_Y;
+--- a/MessageBox.cpp
++++ b/MessageBox.cpp
+@@ -25,6 +25,12 @@
+ #include	"text.h"
+ #include	"Hud.h"
+ #include	"game.h"
++#ifdef CE_VERSION
++bool PortCeOneScreenMatch();	// patch 0235: port/game/ce_cmdmatch.cpp, a Commander match shown on one screen
++#define CE_SPLIT_HUD() (GAME.IsMultiplayer() && !PortCeOneScreenMatch())	// the HUD of a split screen: not a match's one screen
++#else
++#define CE_SPLIT_HUD() GAME.IsMultiplayer()
++#endif
+ 
+ #ifdef CE_VERSION
+ void PortCeTutorialRadioStart(int id);
+@@ -882,7 +888,7 @@
+ 	}
+ 
+ 	float	y;
+-	if (GAME.IsMultiplayer())
++	if (CE_SPLIT_HUD())
+ 		y = PLATFORM.GetWindowHeight() * 0.5f + 5.0f;
+ 	else
+ 		y = (HUD.mViewportBottom + 16.0f - HUD_OFFSET_Y - 128.0f + 48.0f) + gMessageBoxY;
+@@ -898,7 +904,7 @@
+ 		WCHAR	lines[8][0x56];
+ 		mCurrent->WordWrap(lines[0], gMessageWrapWidth, mUnknown1bc);
+ 
+-		if (GAME.IsMultiplayer())
++		if (CE_SPLIT_HUD())
+ 			y = PLATFORM.GetWindowHeight() * 0.5f + 5.0f;
+ 		else
+ 			y = (HUD.mViewportBottom + 16.0f - HUD_OFFSET_Y - 128.0f + 48.0f) + gMessageBoxY;
+--- a/game.cpp
++++ b/game.cpp
+@@ -276,6 +276,12 @@
+ }
+ 
+ #include "cylinder.h"
++#ifdef CE_VERSION
++bool PortCeOneScreenMatch();	// patch 0235: port/game/ce_cmdmatch.cpp, a Commander match shown on one screen
++#define CE_ONE_SCREEN() PortCeOneScreenMatch()
++#else
++#define CE_ONE_SCREEN() false
++#endif
+ 
+ 
+ 
+@@ -4155,8 +4161,11 @@
+ 			SIZE	s;
+ 			PLATFORM.Font(FONT_NORMAL)->GetTextExtent(TEXT_DB.GetString(FETX_VICTORY), &s);
+ 			PLATFORM.Font(FONT_NORMAL)->DrawTextShadowed(320.f - float(s.cx) * 0.5f, 50, 0xffffffff, TEXT_DB.GetString(FETX_VICTORY));
+-			PLATFORM.Font(FONT_NORMAL)->GetTextExtent(TEXT_DB.GetString(FETX_DEFEAT), &s);
+-			PLATFORM.Font(FONT_NORMAL)->DrawTextShadowed(320.f - float(s.cx) * 0.5f, 245, 0xffffffff, TEXT_DB.GetString(FETX_DEFEAT));
++			if (!CE_ONE_SCREEN())	// patch 0235: a Commander match is one person's screen: player 1's title alone
++			{
++				PLATFORM.Font(FONT_NORMAL)->GetTextExtent(TEXT_DB.GetString(FETX_DEFEAT), &s);
++				PLATFORM.Font(FONT_NORMAL)->DrawTextShadowed(320.f - float(s.cx) * 0.5f, 245, 0xffffffff, TEXT_DB.GetString(FETX_DEFEAT));
++			}
+ 		}
+ 
+ #ifdef CE_NETWORK_OFF
+@@ -4170,8 +4179,11 @@
+ 			SIZE	s;
+ 			PLATFORM.Font(FONT_NORMAL)->GetTextExtent(TEXT_DB.GetString(FETX_DEFEAT), &s);
+ 			PLATFORM.Font(FONT_NORMAL)->DrawTextShadowed(320.f - float(s.cx) * 0.5f, 50, 0xffffffff, TEXT_DB.GetString(FETX_DEFEAT));
+-			PLATFORM.Font(FONT_NORMAL)->GetTextExtent(TEXT_DB.GetString(FETX_VICTORY), &s);
+-			PLATFORM.Font(FONT_NORMAL)->DrawTextShadowed(320.f - float(s.cx) * 0.5f, 245, 0xffffffff, TEXT_DB.GetString(FETX_VICTORY));
++			if (!CE_ONE_SCREEN())	// patch 0235: a Commander match is one person's screen: player 1's title alone
++			{
++				PLATFORM.Font(FONT_NORMAL)->GetTextExtent(TEXT_DB.GetString(FETX_VICTORY), &s);
++				PLATFORM.Font(FONT_NORMAL)->DrawTextShadowed(320.f - float(s.cx) * 0.5f, 245, 0xffffffff, TEXT_DB.GetString(FETX_VICTORY));
++			}
+ 		}
+ 
+ #ifdef CE_NETWORK_OFF
+@@ -4185,8 +4197,11 @@
+ 			SIZE	s;
+ 			PLATFORM.Font(FONT_NORMAL)->GetTextExtent(TEXT_DB.GetString(JCL_DRAW), &s);
+ 			PLATFORM.Font(FONT_NORMAL)->DrawTextShadowed(320.f - float(s.cx) * 0.5f, 50, 0xffffffff, TEXT_DB.GetString(FETX_DEFEAT));
+-			PLATFORM.Font(FONT_NORMAL)->GetTextExtent(TEXT_DB.GetString(JCL_DRAW), &s);
+-			PLATFORM.Font(FONT_NORMAL)->DrawTextShadowed(320.f - float(s.cx) * 0.5f, 245, 0xffffffff, TEXT_DB.GetString(FETX_VICTORY));
++			if (!CE_ONE_SCREEN())	// patch 0235: a Commander match is one person's screen: player 1's title alone
++			{
++				PLATFORM.Font(FONT_NORMAL)->GetTextExtent(TEXT_DB.GetString(JCL_DRAW), &s);
++				PLATFORM.Font(FONT_NORMAL)->DrawTextShadowed(320.f - float(s.cx) * 0.5f, 245, 0xffffffff, TEXT_DB.GetString(FETX_VICTORY));
++			}
+ 		}
+ 	
+ 		if (((mGameState==GAME_STATE_LEVEL_LOST) || (mGameState==GAME_STATE_LEVEL_WON)))

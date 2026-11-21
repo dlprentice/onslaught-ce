@@ -180,6 +180,8 @@ extern "C" int PortCeDisplayWindowEnd(int commit) {
 }
 extern "C" int PortCeDisplayWindowReady() { if(!strcmp(fault,"input"))runtimeInputPending=true;return strcmp(fault,"input")!=0; }
 extern "C" int PortCeDisplayInputReady() { return !runtimeInputPending; }
+static int runtimeDeviceBusy;	// the host's answer: another device change is running or its recovery is pending
+extern "C" int PortPublicDeviceBusy(void) { return runtimeDeviceBusy; }
 #else
 struct Shell { int m_bWindowed = 0; } LT;
 #endif
@@ -228,7 +230,7 @@ static void SetFixtureCheatName()
 }
 static void SyncGodItem() {}
 static const char *message;
-static void ShowMessage(const char *s, float) { message = s; }
+static void ShowMessage(const char *s, float = 240.f) { message = s; }
 #include "native_cheat_switch.inc"
 
 static bool menus = true;
@@ -250,6 +252,10 @@ static void check(bool ok, const char *reason)
 {
     if (!ok) { fprintf(stderr, "FAIL: %s\n", reason); exit(2); }
 }
+// What the Window mode row reads after its label: the value in effect, and the state that follows it.
+static const WCHAR *Shown(CMenuMenuItem *item) { return item->GetChoiceText(item->GetValue()); }
+// The label is the original's form, "Label:value" with no space, and never changes: a state goes after the value.
+static bool Label(CMenuMenuItem *item) { return !wcscmp(item->GetText(), L"Window mode:"); }
 
 int main(int argc, char **argv)
 {
@@ -616,9 +622,9 @@ int main(int argc, char **argv)
         List list; NativeVideoRow(&list);
         check(list.mItems.size() == 1, "row admitted");
         CMenuMenuItem *item = static_cast<CMenuMenuItem *>(list.mItems[0]);
-        check(item->GetNumChoices() == 2 && !wcscmp(item->GetChoiceText(0), L"Fullscreen") &&
-              !wcscmp(item->GetChoiceText(1), L"Windowed"), "choice labels");
-        check(wcsstr(item->GetText(), L"restart required") != nullptr, "restart label");
+        check(item->GetNumChoices() == 2 && !wcscmp(item->GetChoiceText(0), L"Fullscreen (next start)") &&
+              !wcscmp(item->GetChoiceText(1), L"Windowed (next start)"), "choice labels say the change comes at the next start");
+        check(Label(item), "constant label");
         int before = item->GetValue(), live = LT.m_bWindowed;
         int next = 1 - before;
         item->SetSelection(next);
@@ -633,12 +639,13 @@ int main(int argc, char **argv)
         check(item->mValue == item->GetValue() && item->mSelection == item->GetValue() && !item->HasPendingChange(),
               "native commit and refusal retain consistent selection");
         check(LT.m_bWindowed == live, "live window unchanged");
-        check((wcsstr(item->GetText(), L"not saved") != nullptr) == failed, "failure label");
+        check(Label(item) && (wcsstr(Shown(item), L"(not changed)") != nullptr) == failed, "a refused save says the value did not change");
+        if (failed) check(wcsstr(item->GetChoiceText(1 - item->GetValue()), L"(not changed)") == nullptr, "only the value in effect carries the state");
         if (failed)
         {
             item->SetSelection(next); apply.ReceiveButtonAction(nullptr, BUTTON_FRONTEND_MENU_SELECT, 1.f);
-            check(item->GetValue() == next && !item->HasPendingChange() &&
-                  !wcsstr(item->GetText(), L"not saved"), "retry persists and clears failure label");
+            check(item->GetValue() == next && !item->HasPendingChange() && Label(item) &&
+                  !wcsstr(Shown(item), L"(not changed)"), "retry persists and clears failure label");
         }
         delete item;
         puts("menu pass");
@@ -652,7 +659,7 @@ int main(int argc, char **argv)
         List list;NativeVideoRow(&list);
         check(list.mItems.size()==1,"runtime row admitted");
         CMenuMenuItem *item=static_cast<CMenuMenuItem *>(list.mItems[0]);
-        check(!wcscmp(item->GetText(),L"Window mode: "),"short runtime label");
+        check(Label(item),"short runtime label, no space after the colon");
         check(!wcscmp(item->GetChoiceText(0),L"Fullscreen") && !wcscmp(item->GetChoiceText(1),L"Windowed"),"explicit choices");
         check(item->GetValue()==before,"current mode overrides stale saved preference");
         item->SetSelection(next);CApplyMenuItem apply{&list};
@@ -671,10 +678,14 @@ int main(int argc, char **argv)
         else check(runtimeEnds==1 && runtimeCommit==!rejected,"SDL transaction disposition");
         item->FixtureRenderSync();
         check(item->GetValue()==LT.m_bWindowed && item->mValue==LT.m_bWindowed && item->mSelection==LT.m_bWindowed,"render refresh reports actual mode after refusal");
-        check((wcsstr(item->GetText(),L"not saved")!=nullptr)==saveFailure,"save refusal is visible");
-        check((wcsstr(item->GetText(),L"input restore failed")!=nullptr)==inputFailure,"input failure is visible");
-        if(!strcmp(argv[3],"window-rollback"))check(wcsstr(item->GetText(),L"restore failed")!=nullptr,"failed initial preparation rollback is visible");
-        check((wcsstr(item->GetText(),L"applied; not saved")!=nullptr)==saveFailure,"session-only change is explicit");
+        check(Label(item),"the label stays the same in every result");
+        const bool restartNeeded=inputFailure || !strcmp(argv[3],"window-rollback");
+        const bool refused=!strcmp(argv[3],"window") || !strcmp(argv[3],"device");
+        check((wcsstr(Shown(item),L"(not saved)")!=nullptr)==saveFailure,"save refusal is visible after the value");
+        check((wcsstr(Shown(item),L"(restart the game)")!=nullptr)==restartNeeded,"input and restore failures say to restart");
+        check((wcsstr(Shown(item),L"(not changed)")!=nullptr)==refused,"a refused switch says the window did not change");
+        check(!wcscmp(Shown(item),LT.m_bWindowed?L"Windowed":L"Fullscreen")==(!saveFailure && !restartNeeded && !refused),"a clean switch is the plain value");
+        check(!wcschr(item->GetChoiceText(1-LT.m_bWindowed),L'('),"the other choice carries no state");
         if(inputFailure){
             item->ReceiveButtonAction(nullptr,BUTTON_FRONTEND_MENU_SELECT,1.f);check(item->mExpanded,"input refusal does not prevent keyboard selection");
             item->ReceiveButtonAction(nullptr,BUTTON_FRONTEND_MENU_BACK,1.f);check(!item->mExpanded,"keyboard Back remains usable");
@@ -682,6 +693,29 @@ int main(int argc, char **argv)
         const int resetCount=runtimeResets,beginCount=runtimeBegins;
         PortCeApplyPendingDisplayMode();check(runtimeResets==resetCount && runtimeBegins==beginCount,"no repeated frame-end transaction");
         delete item;puts("runtime-menu pass");
+    }
+    else if (!strcmp(what,"runtime-busy"))
+    {
+        // The request is made while another device change is running (the options reset of the same Apply presents
+        // wait screens, and each present ends in the frame-end call): it must wait, untouched, for the first call
+        // that finds the host free, and then run once.
+        if(argc!=3)return 3;
+        const int before=atoi(argv[2]),next=1-before;
+        LT.m_bWindowed=before;
+        List list;NativeVideoRow(&list);CMenuMenuItem *item=static_cast<CMenuMenuItem *>(list.mItems[0]);
+        item->SetSelection(next);CApplyMenuItem apply{&list};
+        apply.ReceiveButtonAction(nullptr,BUTTON_FRONTEND_MENU_SELECT,1.f);
+        runtimeDeviceBusy=1;
+        for(int n=0;n<3;++n)PortCeApplyPendingDisplayMode();
+        check(runtimeBegins==0 && runtimeResets==0 && runtimeEnds==0 && LT.m_bWindowed==before,"a busy host starts no window transaction");
+        item->FixtureRenderSync();
+        check(item->GetValue()==next && Label(item) && !wcscmp(Shown(item),next?L"Windowed":L"Fullscreen"),"the queued choice is still shown, with no failure state");
+        runtimeDeviceBusy=0;
+        PortCeApplyPendingDisplayMode();
+        check(runtimeBegins==1 && runtimeResets==1 && runtimeEnds==1 && runtimeCommit==1 && LT.m_bWindowed==next,"the queued request runs once when the host is free");
+        PortCeApplyPendingDisplayMode();
+        check(runtimeBegins==1 && runtimeResets==1,"and only once");
+        delete item;puts("runtime-busy pass");
     }
     else if (!strcmp(what,"runtime-fence"))
     {
@@ -695,7 +729,7 @@ int main(int argc, char **argv)
         if(argc!=3)return 3;
         CCeDisplayModeItem item;
         item.SetValue(1);fault=argv[2];PortCeApplyPendingDisplayMode();fault="";
-        check(wcsstr(item.GetText(),L"restore failed")!=nullptr,"failed initial device rollback is visible");
+        check(Label(&item) && wcsstr(Shown(&item),L"(restart the game)")!=nullptr,"failed initial device rollback is visible");
         check(runtimeEnds==1 && runtimeCommit==0,"physical rollback attempted even after backend refusal");
         puts("runtime-restore-failure pass");
     }
@@ -716,7 +750,7 @@ int main(int argc, char **argv)
         item->SetSelection(1);apply.ReceiveButtonAction(nullptr,BUTTON_FRONTEND_MENU_SELECT,1.f);
         PortCeApplyPendingDisplayMode();item->FixtureRenderSync();
         check(runtimeResets==1&&LT.m_bWindowed==1,"coalesced same-mode request needs no graphics work");
-        check(wcsstr(item->GetText(),L"input restore failed")!=nullptr,"pending repair keeps its failure feedback");
+        check(wcsstr(Shown(item),L"(restart the game)")!=nullptr,"pending repair keeps its failure feedback");
         delete item;puts("runtime-pending-same-mode pass");
     }
     else if (!strcmp(what,"runtime-ready-same-mode"))
@@ -726,7 +760,7 @@ int main(int argc, char **argv)
         item->SetSelection(1-mode);apply.ReceiveButtonAction(nullptr,BUTTON_FRONTEND_MENU_SELECT,1.f);
         item->SetSelection(mode);apply.ReceiveButtonAction(nullptr,BUTTON_FRONTEND_MENU_SELECT,1.f);PortCeApplyPendingDisplayMode();item->FixtureRenderSync();
         check(runtimeResets==0&&runtimeBegins==0&&LT.m_bWindowed==mode,"ready same-mode preference needs no graphics transaction");
-        check(!wcscmp(item->GetText(),L"Window mode: "),"ready same-mode preference clears failure status");
+        check(Label(item) && !wcschr(Shown(item),L'('),"ready same-mode preference clears failure status");
         delete item;puts("runtime-ready-same-mode pass");
     }
     else if (!strcmp(what,"runtime-pending-changed-mode"))
@@ -737,7 +771,7 @@ int main(int argc, char **argv)
         check(LT.m_bWindowed==1&&runtimeInputPending,"first switch leaves pending input repair");
         item->SetSelection(0);apply.ReceiveButtonAction(nullptr,BUTTON_FRONTEND_MENU_SELECT,1.f);PortCeApplyPendingDisplayMode();item->FixtureRenderSync();
         check(runtimeResets==2&&LT.m_bWindowed==0,"second explicit switch uses one new graphics transaction");
-        check(wcsstr(item->GetText(),L"input restore failed")!=nullptr,"a newer snapshot cannot hide prior pending input repair");
+        check(wcsstr(Shown(item),L"(restart the game)")!=nullptr,"a newer snapshot cannot hide prior pending input repair");
         delete item;puts("runtime-pending-changed-mode pass");
     }
 #endif

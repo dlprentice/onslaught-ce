@@ -25,11 +25,25 @@
 // two views can make to what a created effect lets the simulation do), BEA_LOCKSTEP_EXTRA_RENDERS=K makes it draw at least K+1
 // frames between two ticks (the widest difference in how often the two views are redrawn), BEA_LOCKSTEP_POISON_STACK=B fills the stack below the
 // update's first call with the byte B at every update (two peers poisoned differently read different values from any local the simulation never wrote);
-// BEA_LOCKSTEP_TEST_UNINIT_READ=1 adds the deliberate bug that makes such a read matter (the control of that gate).
+// BEA_LOCKSTEP_TEST_UNINIT_READ=1 adds the deliberate bug that makes such a read matter (the control of that gate; it reaches the pre-run only: =2 puts the read inside the shared tick),
+// BEA_LOCKSTEP_TEST_FRAME_READ=T adds the deliberate bug of the frame-rate gate: the tick draws from the generator when the frames this peer drew since the last update
+// exceed T (a simulation decision that follows the frame rate; two peers that draw different numbers of frames must go out of step), and every test-automation session
+// reports how many frames it drew between its updates, BEA_LOCKSTEP_TEST_CLOCK_READ=1 adds the deliberate bug of the clock gate (the tick draws from the generator on a bit of the real clock),
+// BEA_LOCKSTEP_TEST_FRAME_SLEEP_MS=M makes every frame of this peer cost M ms more (a slower graphics card: fewer frames between two updates than the other peer draws),
+// BEA_LOCKSTEP_TEST_X87_STATUS=1 reports which ticks raised an x87 invalid-operation, denormal, zero-divide, overflow or underflow flag,
+// BEA_LOCKSTEP_TEST_CLOCK_JITTER=M[,US] (Linux, M=1: inside the update only, M=2: everywhere) adds a random 0..US microseconds
+// (default 4000) to every real-clock read of this peer (QueryPerformanceCounter, timeGetTime, GetTickCount), kept monotonic per thread: what a game that reads the clock
+// inside the simulation would see on a peer whose reads land a little later.
 #include "ce_network_lockstep.h"
 #include "ce_network_chat_ui.h"
+// ce_network_ring.cpp; weak, so the session checks that compile this file without the game need no stand-in
+extern "C" int PortCeNetRingCapturing(void) __attribute__((weak));
 #include <algorithm>
 #include <limits>
+#ifdef CE_NET_TEST_AUTOMATION
+#include <chrono>	// test: BEA_LOCKSTEP_TEST_FRAME_SLEEP_MS
+#include <thread>
+#endif
 #ifndef CE_NETWORK_OFF
 #if defined(CE_NETWORK_TEXT)
 #include "../network/text_chat_owner.h"
@@ -40,6 +54,9 @@
 #include "ce_network_session.h"
 #include "../network/network.h"
 #include "../network/ice_game.h"
+#if defined(CE_NETWORK_ICE)
+#include "../network/ice_route_status.h"
+#endif
 #include "ce_network_boot.h"
 #include "common.h"
 #include "game.h"
@@ -109,6 +126,10 @@ struct Lockstep {
 	bool admission_required = false; // fixed at configuration; a lost boot flag must not become an automation exemption
 	bool host = false, peer_ready = false, ready_sent = false, outcome_error = false;
 	bool connection_established = false; // only connection attempts, not later readiness waits, may retry
+#if defined(CE_NETWORK_ICE)
+    bool missionRouteWasRelay = false;
+    int lostRelayRole = 0;
+#endif
 	bool start_ack_received = false;
 	bool prerun_ack_sent = false, prerun_ack_received = false, prerun_finished = false;
 	bool shown = false;					// a co-op level is up: one view, the local player's, until its world shuts down
@@ -116,6 +137,11 @@ struct Lockstep {
 	bool test_uninit_read = false;		// test: BEA_LOCKSTEP_TEST_UNINIT_READ=1 makes the update read a poisoned local into the generator (the deliberate bug the stack gate must catch)
 	bool counts_reported = false;		// the transport's counts were printed (once per session)
 	int poison_stack = -1;				// test: the byte the stack below the update is filled with at every tick start (-1: off)
+#ifdef CE_NET_TEST_AUTOMATION	// the audit's switches exist only in test-automation builds
+	bool test_uninit_tick = false;		// test: BEA_LOCKSTEP_TEST_UNINIT_READ=2, the poisoned local is read inside the shared tick only (not at the update hook, where the pre-run reaches it too)
+	bool test_clock_read = false;		// test: BEA_LOCKSTEP_TEST_CLOCK_READ=1, the tick draws from the generator on a bit of the real clock (the clock gate's deliberate bug)
+	int test_frame_read = -1;			// test: BEA_LOCKSTEP_TEST_FRAME_READ=T, the update draws from the generator when the last tick drew more than T frames (the frame-rate gate's deliberate bug; -1: off)
+#endif
 	uint32_t tick = 0;					// the next tick to run (0 = the first after the start barrier)
 	bool applied[2] = {}, sampled = false, ran = false;
 	uint8_t pre_run_slots[MAX_CAREER_SLOTS*8] = {}; // local script-visible flags before the pre-run
@@ -140,6 +166,9 @@ struct Lockstep {
 	FILE *dump = NULL;
 	CE_NetConfig config = {}; char ip[16] = {};
 } L;
+#ifdef CE_NET_TEST_AUTOMATION
+namespace { unsigned frame_acc, upd_n, upd_sum, upd_max, upd_min = ~0u; unsigned frame_sleep_ms; thread_local bool tl_in_update; unsigned long jittered_reads; bool x87_monitor; unsigned x87_ticks[5], x87_first[5]; }	// test: frames this peer drew between two executed updates (CE_LockstepTestExtraRender's final call of each render loop adds that loop's frames; an update takes the sum)
+#endif
 bool requested_checked, requested;
 // Muzzle effects to place after this tick's update (CE_LockstepDeferEmitter).
 void *deferred_weapons[64]; int deferred_orientate[64]; unsigned deferred_count; bool placing;
@@ -483,6 +512,11 @@ void FinalComplete() {
         return;
     }
 	L.final_confirmed = true;
+#ifdef CE_NET_TEST_AUTOMATION
+	fprintf(stderr, "onslaught-ce: co-op test frames between updates: %u updates, %u frames, fewest %u, most %u; clock reads perturbed: %lu\n", upd_n, upd_sum, upd_n ? upd_min : 0u, upd_max, jittered_reads);
+	if (x87_monitor) fprintf(stderr, "onslaught-ce: co-op test x87 flags, ticks that raised: invalid %u (first %u), denormal %u (first %u), zero-divide %u (first %u), overflow %u (first %u), underflow %u (first %u)\n",
+		x87_ticks[0], x87_first[0], x87_ticks[1], x87_first[1], x87_ticks[2], x87_first[2], x87_ticks[3], x87_first[3], x87_ticks[4], x87_first[4]);
+#endif
 	if (L.final_mission) {
 		// The selected simulation state is compared, not every objective or persistence field.
 		fprintf(stderr, "onslaught-ce: co-op mission selected state confirmed at tick %u, hash %016llx, %u scheduled hashes compared\n",
@@ -707,6 +741,21 @@ void ChatPump() {
 
 }
 #endif
+#if defined(CE_NETWORK_ICE)
+// Observe the selected route while the session is live. Closed sessions no longer report it.
+void RememberMissionRoute()
+{
+    if (L.stage == RUNNING && L.net)
+        L.missionRouteWasRelay = CE_NetIceUsesRelay(L.net) != 0;
+}
+bool TransportFail(const CE_NetStatus &status, const char *message)
+{
+    if (L.stage == RUNNING && !L.final_confirmed && L.missionRouteWasRelay &&
+        status.phase == CE_NET_FAILED && CE_NetIceRouteInterrupted(L.net))
+        L.lostRelayRole = L.host ? CE_NET_HOST : CE_NET_GUEST;
+    return Fail(message);
+}
+#endif
 bool Poll() {
 	if (!AdmissionCurrent()) return false;
 	if (L.stage == FINISHED) {	// the level is over: the connection only reports that the other player has gone
@@ -723,7 +772,12 @@ bool Poll() {
 	if (!L.net) return false;
 	CE_NetPoll(L.net, CE_NetNowMs(), 64);
 	CE_NetStatus status; CE_NetGetStatus(L.net, &status);
+#if defined(CE_NETWORK_ICE)
+    if (status.phase == CE_NET_ACTIVE) RememberMissionRoute();
+    if (status.phase == CE_NET_FAILED && CE_NetGameProblem(L.net)[0]) return TransportFail(status, CE_NetGameProblem(L.net));
+#else
 	if (status.phase == CE_NET_FAILED && CE_NetGameProblem(L.net)[0]) return Fail(CE_NetGameProblem(L.net));
+#endif
 	if (status.phase == CE_NET_CLOSED && status.error == CE_NET_PEER_LEFT) {
 		if (!Receive() || L.stage == FAILED) return false;
 		if (L.stage == STARTING) return Fail("the other player left before confirming the co-op start");
@@ -760,7 +814,11 @@ bool Poll() {
 		}
 		// A connection that never came up (a wrong invite, no host) is told as the wait tells it, whichever gives up first, the transport's handshake or the wait's own deadline.
 		if (!L.connection_established && L.stage == STARTING && connect_why[0]) return Fail(connect_why);
+#if defined(CE_NETWORK_ICE)
+        return TransportFail(status, status.error == CE_NET_TIMEOUT ? "the other player stopped responding" : "the connection to the other player failed");
+#else
 		return Fail(status.error == CE_NET_TIMEOUT ? "the other player stopped responding" : "the connection to the other player failed");
+#endif
 	}
 	const bool chat_poll_result = (status.phase != CE_NET_ACTIVE || Receive());
 #if defined(CE_NETWORK_TEXT)
@@ -861,6 +919,11 @@ int CE_LockstepConfigureLevel(uint32_t level) {
 #ifdef CE_NET_TEST_AUTOMATION
 	L.delay = EnvU("BEA_LOCKSTEP_DELAY", 3); L.hash_every = EnvU("BEA_LOCKSTEP_HASH_EVERY", 20); L.skew_at = EnvU("BEA_LOCKSTEP_SKEW_AT", 0); L.quit_at = EnvU("BEA_LOCKSTEP_QUIT_AT", 0); L.stall_every = EnvU("BEA_LOCKSTEP_STALL_EVERY", 0); L.stall_at = EnvU("BEA_LOCKSTEP_STALL_AT", 0); L.stall_from = EnvU("BEA_LOCKSTEP_STALL_FROM", 0); L.flip_cw_at = EnvU("BEA_LOCKSTEP_FLIP_CW_AT", 0); L.stall_ms = EnvU("BEA_LOCKSTEP_STALL_MS", 300);
 	L.poison_stack = Env("BEA_LOCKSTEP_POISON_STACK") ? (int)(EnvU("BEA_LOCKSTEP_POISON_STACK", 0) & 255) : -1;
+	L.test_clock_read = Env("BEA_LOCKSTEP_TEST_CLOCK_READ");
+	frame_sleep_ms = EnvU("BEA_LOCKSTEP_TEST_FRAME_SLEEP_MS", 0) > 200 ? 200 : EnvU("BEA_LOCKSTEP_TEST_FRAME_SLEEP_MS", 0);
+	x87_monitor = Env("BEA_LOCKSTEP_TEST_X87_STATUS");
+	L.test_uninit_tick = Env("BEA_LOCKSTEP_TEST_UNINIT_READ") && *getenv("BEA_LOCKSTEP_TEST_UNINIT_READ") == '2';
+	L.test_frame_read = Env("BEA_LOCKSTEP_TEST_FRAME_READ") ? (int)(EnvU("BEA_LOCKSTEP_TEST_FRAME_READ", 0) & 0xffff) : -1;
 	L.test_uninit_read = Env("BEA_LOCKSTEP_TEST_UNINIT_READ");
 #endif
 	if (L.delay < 1 || L.delay > 16 || L.hash_every < 1 || L.hash_every > 600) return Fail("co-op delay or hash spacing is out of range");
@@ -985,6 +1048,9 @@ int CE_LockstepPreparePlay(void) {
 		"the other player did not acknowledge the co-op start in time")) return 0;
 	if (!AdmissionCurrent()) return 0;
 	L.stage = RUNNING; L.tick = 0; L.waiting_since = 0; L.shown = true;
+#if defined(CE_NETWORK_ICE)
+    RememberMissionRoute();
+#endif
 	CE_SessionGameRebaseRenderClock();
 	fprintf(stderr, "onslaught-ce: co-op started (you are player %d); start state %016llx\n", L.host ? 1 : 2, (unsigned long long)start);
 	return 1;
@@ -993,13 +1059,15 @@ int CE_LockstepPreparePlay(void) {
 // Test (BEA_LOCKSTEP_POISON_STACK): the port's hook, first in every CGame::Update (updatedump.cpp), fills the stack below it with one byte, so the update's own callees
 // start from it instead of what the draw loop and the last frames left there; the first time, it says what a local no one wrote reads from a frame at that depth.
 void CE_LockstepUpdateEntry(void) {
-	if (L.poison_stack < 0 || !CE_LockstepSharing()) return;
+	if (!CE_LockstepSharing()) return;
+	tl_in_update = true;
+	if (L.poison_stack < 0) return;
 	PoisonStack((unsigned char)L.poison_stack);
 	static bool probed;
 	if (!probed) { probed = true; unsigned seen = StackProbe(); fprintf(stderr, "onslaught-ce: co-op test: stack poison %02x, a local no one wrote reads %02x in the update's first frame\n", (unsigned)L.poison_stack, seen); }
 	// The deliberate bug: a decision made on a local no one wrote. Two peers poisoned alike decide alike; poisoned differently, one of them draws a value the other does not,
 	// and the generator, so every hash after it, differs.
-	if (L.test_uninit_read && StackProbe() >= 0x80) (void)GAME.Random();
+	if (L.test_uninit_read && !L.test_uninit_tick && StackProbe() >= 0x80) (void)GAME.Random();
 }
 #endif
 int CE_LockstepBeforeUpdate(void) {
@@ -1026,7 +1094,7 @@ int CE_LockstepBeforeUpdate(void) {
 		if (waited >= kWaitNoticeMs) {
 			uint32_t left = (uint32_t)((kGiveUpMs - waited + 999) / 1000);
 			bool first = !L.notice[0];
-			snprintf(L.notice, sizeof L.notice, "Waiting for the other player... (%u s)", left);
+			snprintf(L.notice, sizeof L.notice, "Waiting for your friend... %u", left);
 			if (first) fprintf(stderr, "onslaught-ce: waiting for the other player at tick %u\n", t);
 		}
 		return 0;
@@ -1047,9 +1115,39 @@ int CE_LockstepBeforeUpdate(void) {
 			SetControlWord(kControlWord);
 	}
 	if (L.dump) gPortCrtTrace = TraceRand;
+#ifdef CE_NET_TEST_AUTOMATION
+	// The frame-rate gate's deliberate bug (BEA_LOCKSTEP_TEST_FRAME_READ): a simulation decision that follows how many frames this peer drew since the last update. It sits here, after
+	// RestoreRandom, because the generator is put back to the shared state at this point: a draw made earlier in the update hook (as BEA_LOCKSTEP_TEST_UNINIT_READ's is) is overwritten
+	// and cannot reach a shared tick. A peer that draws more frames draws a value the other does not, and the generator, so every hash after it, differs.
+	{	// frames this peer drew since the previous executed update (the first update also holds the load's frames and is left out of the statistics)
+		const unsigned frames = frame_acc; frame_acc = 0;
+		static bool first = true;
+		if (!first) { upd_n++; upd_sum += frames; if (frames < upd_min) upd_min = frames; if (frames > upd_max) upd_max = frames; }
+		first = false;
+		if (L.test_frame_read >= 0 && frames > (unsigned)L.test_frame_read) {
+			static unsigned fired; if (fired++ < 3) fprintf(stderr, "onslaught-ce: co-op test: frame-read fault at tick %u (%u frames drawn since the last update, limit %d)\n", L.tick, frames, L.test_frame_read);
+			(void)GAME.Random();
+		}
+	}
+	// The stack gate's deliberate bug at tick time (BEA_LOCKSTEP_TEST_UNINIT_READ=2): the same poisoned local, read where the draw survives into the hash (the update hook's draw is overwritten above).
+	if (L.test_uninit_tick && StackProbe() >= 0x80) (void)GAME.Random();
+	// The x87 status monitor (BEA_LOCKSTEP_TEST_X87_STATUS=1): the exception flags are sticky, so clearing them here and reading them after the update says which ticks raised an invalid operation,
+	// a denormal operand, a division by zero, an overflow or an underflow (the places where a NaN compare or the extended exponent range could make two builds differ). They are not condition codes: nothing else reads them.
+	if (x87_monitor) __asm__ volatile("fnclex");
+	// The clock gate's deliberate bug: a decision on a bit of the real clock (7 ms steps), which two peers read at different moments.
+	if (L.test_clock_read && ((CE_NetNowMs() / 7) & 1)) (void)GAME.Random();
+#endif
 	return 1;
 }
 void CE_LockstepAfterUpdate(void) {
+#ifdef CE_NET_TEST_AUTOMATION
+	tl_in_update = false;
+	if (x87_monitor && L.stage == RUNNING && L.ran) {
+		unsigned short sw; __asm__ volatile("fnstsw %0" : "=a"(sw));
+		static const unsigned short bit[5] = {0x01, 0x02, 0x04, 0x08, 0x10};
+		for (int i = 0; i < 5; i++) if (sw & bit[i]) { if (!x87_ticks[i]++) x87_first[i] = L.tick; }
+	}
+#endif
 	if (L.stage != RUNNING || !L.ran) return;
 	L.ran = false; gPortCrtTrace = NULL;
 	if (!AdmissionLive()) return;
@@ -1109,6 +1207,10 @@ void CE_LockstepAfterUpdate(void) {
 }
 void CE_LockstepBeforeRender(void) {
 	if (L.stage == RUNNING || L.stage == STOPPING) Poll();
+#ifdef CE_NET_TEST_AUTOMATION
+	// Test (BEA_LOCKSTEP_TEST_FRAME_SLEEP_MS=M): every frame of this peer costs M ms more, as a slower graphics card makes it: fewer frames between two updates than the other peer draws.
+	if (frame_sleep_ms && CE_LockstepSharing()) std::this_thread::sleep_for(std::chrono::milliseconds(frame_sleep_ms));
+#endif
 }
 int CE_LockstepBeginTeardown(int quit) {
     CampaignCaptureReturn();
@@ -1150,6 +1252,10 @@ void CE_LockstepAfterWorldShutdown(void) {
 }
 const char *CE_LockstepNotice(void) { return L.notice; }
 const char *CE_LockstepError(void) { return last_error; }
+#if defined(CE_NETWORK_ICE)
+extern "C" int PortCeMissionRelayLossRole(void) { return L.lostRelayRole; }
+#endif
+extern "C" int PortCeNetConfirmedMatch(void) { return L.final_confirmed && !L.outcome_error; }
 int CE_LockstepExitCode(int native_code, int native_quit_seen) {
 	// A native WM_QUIT can arrive while a terminal error is being reported. Keep a native nonzero code, but never
 	// allow native zero to turn a failed co-op session into a successful process result.
@@ -1166,6 +1272,7 @@ int CE_LockstepControllerFlush(uint32_t controller) {
 		L.sampled = true;
 		Slot &s = L.mine[(t + L.delay) % kRing];
 		CE_WorldInput sample = {}; CE_WorldLockstepSample(local, &sample);
+		if (PortCeNetRingCapturing && PortCeNetRingCapturing()) std::memset(&sample, 0, sizeof(sample));	// the ring is open: this player's controls are still
 
 #if defined(CE_NETWORK_TEXT)
     if (PortCeChatCapturingInput()) std::memset(&sample, 0, sizeof(sample));
@@ -1252,7 +1359,24 @@ int CE_LockstepSoundRand(void) {
 #ifdef CE_NET_TEST_AUTOMATION
 int CE_LockstepTestNoLoss(void) { static int no_loss = Env("BEA_LOCKSTEP_NO_LOSS") ? 1 : 0; return L.stage == RUNNING && no_loss; }
 int CE_LockstepTestNoParticles(void) { static int none = Env("BEA_LOCKSTEP_NO_PARTICLES") ? 1 : 0; return CE_LockstepSharing() && none; }
-int CE_LockstepTestExtraRender(int rendered) { static uint32_t extra = EnvU("BEA_LOCKSTEP_EXTRA_RENDERS", 0); return CE_LockstepSharing() && extra && rendered < (int)(extra > 200 ? 200 : extra) + 1; }
+// Test (BEA_LOCKSTEP_TEST_CLOCK_JITTER): called by the Linux platform layer on every real-clock read; the nanoseconds to add (0: none).
+unsigned long long CE_LockstepTestClockJitterNs(void) {
+	static const unsigned mode = Env("BEA_LOCKSTEP_TEST_CLOCK_JITTER") ? (unsigned)(EnvU("BEA_LOCKSTEP_TEST_CLOCK_JITTER", 0) & 3) : 0;
+	if (!mode || !CE_LockstepSharing() || (mode == 1 && !tl_in_update)) return 0;
+	static const char *spec = getenv("BEA_LOCKSTEP_TEST_CLOCK_JITTER");
+	static const unsigned long long span = (spec && strchr(spec, ',') ? strtoull(strchr(spec, ',') + 1, NULL, 10) : 4000ull) * 1000ull;
+	thread_local unsigned long long x = 88172645463325252ull ^ (unsigned long long)(uintptr_t)&x;
+	x ^= x << 13; x ^= x >> 7; x ^= x << 17;
+	__atomic_fetch_add(&jittered_reads, 1ul, __ATOMIC_RELAXED);
+	return span ? x % span : 0;
+}
+int CE_LockstepTestExtraRender(int rendered) {
+	static uint32_t extra = EnvU("BEA_LOCKSTEP_EXTRA_RENDERS", 0);
+	if (!CE_LockstepSharing()) return 0;
+	if (extra && rendered < (int)(extra > 200 ? 200 : extra) + 1) return 1;
+	frame_acc += rendered > 0 ? (unsigned)rendered : 0;
+	return 0;
+}
 void CE_LockstepTraceCollision(const float *a, const float *b, float ra, float rb, float speed, float time) {
 	if (!L.dump || L.stage != RUNNING || !L.ran) return;
 	float v[10] = {a[0], a[1], a[2], b[0], b[1], b[2], ra, rb, speed, time}; uint32_t bits[10]; memcpy(bits, v, sizeof bits);

@@ -1,0 +1,11 @@
+--- a/game.cpp
++++ b/game.cpp
+@@ -2020,2 +2020,3 @@
++#include "ce_hooks.h"	// Port: the CE hook points (port/game/ce_hooks.h)
+ void CGame::Update()	// FUNCTION: 0x0046e910
+ { PORT_UPDATE_HOOK();
+@@ -2029,3 +2030,4 @@
++	ce_hook_tick_pre();	// CE hook point (port/game/ce_hooks.h)
+ /*#if TARGET == PS2
+ #ifndef _DEBUG
+ 	extern UINT g_OldSP;

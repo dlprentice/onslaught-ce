@@ -192,18 +192,18 @@ static void guest_cases() {
 
     prepare_guest(false, false, CE_NET_FAILED, CE_NET_AUTH);
     direct_update();
-    check(Page().state == CE_LOBBY_FAILED && strstr(Page().notice, "No game answered at ") &&
-          strstr(Page().notice, "router or firewall") && !strstr(Page().notice, "private lobby") &&
-          !L.net && factory_calls == 0, "direct guest admission retains its address guidance");
+    check(Page().state == CE_LOBBY_FAILED && strstr(Page().notice, "No game accepted this code.") &&
+          strstr(Page().notice, "Check it with your friend") && !strstr(Page().notice, "private lobby") &&
+          !L.net && factory_calls == 0, "direct guest admission keeps the direct connection's guidance");
     prepare_guest(false, true, CE_NET_FAILED, CE_NET_TIMEOUT);
     direct_update();
     check(Page().state == CE_LOBBY_FAILED &&
-          !strcmp(Page().notice, "The connection to the host was lost. Check that the host is still waiting, then join again.") &&
+          !strcmp(Page().notice, "The connection to your friend was lost. Check that they are still hosting, then join again.") &&
           !L.net && !N.exists && N.destroyCalls == 1 && N.closeCalls == 0 && factory_calls == 0,
           "direct ready guest timeout reports lost connection and retires its transport");
     prepare_guest(false, false, CE_NET_CLOSED, CE_NET_PEER_LEFT);
     direct_update();
-    check(Page().state == CE_LOBBY_LEFT && !strcmp(Page().notice, "The host closed the game."),
+    check(Page().state == CE_LOBBY_LEFT && !strcmp(Page().notice, "Your friend closed their game."),
           "direct guest closed connection behavior is unchanged");
     prepare_guest(false, false, CE_NET_FAILED, CE_NET_INCOMPATIBLE);
     Text(N.peerVersion, sizeof N.peerVersion, "9.9.9");
@@ -245,12 +245,12 @@ int main() {
     prepare(false, true, CE_NET_CLOSED, CE_NET_PEER_LEFT);
     direct_update();
     check(Page().state == CE_LOBBY_HOST_WAITING && L.net && N.exists && factory_calls == 1 &&
-          !strcmp(Page().notice, "The other player left.") && !strcmp(Page().code, "authored-code") &&
+          !strcmp(Page().notice, "Your friend left. The same code still works.") && !strcmp(Page().code, "authored-code") &&
           L.key == 123, "direct host still listens again with the same code after departure");
     prepare(false, false, CE_NET_FAILED, CE_NET_AUTH);
     direct_update();
     check(Page().state == CE_LOBBY_HOST_WAITING && L.net && factory_calls == 1 &&
-          !strcmp(Page().notice, "Five attempts failed, so this game has a new code. Give the other player the new code.") &&
+          !strcmp(Page().notice, "This game has a new code. Give your friend the new code.") &&
           L.key != 123, "direct host retains its bounded failed-admission retry and code rotation");
     guest_cases();
     std::printf("RELAY_DEPARTURE_COMPLETE failures=%d\n", gFailures);

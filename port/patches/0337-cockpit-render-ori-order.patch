@@ -1,0 +1,30 @@
+--- a/Cockpit.cpp
++++ b/Cockpit.cpp
+@@ -315,10 +315,26 @@
+ 	return old + ((pos - old) * GAME.GetFrameRenderFraction());
+ }
+ 
++// Port: the current product in retail's inline term orders (00425505..004255fa); the old product calls the
++// out-of-line FMatrix::operator* (0040d320), whose orders maths.h has.
++static inline FMatrix CockpitCurrentProduct(const FMatrix &a, const FMatrix &b)
++{
++	return FMatrix(
++		FVector((((a.Row[0].Y * b.Row[1].X) + (a.Row[0].X * b.Row[0].X)) + (a.Row[0].Z * b.Row[2].X)),
++			(((a.Row[0].Z * b.Row[2].Y) + (a.Row[0].Y * b.Row[1].Y)) + (a.Row[0].X * b.Row[0].Y)),
++			(((a.Row[0].Z * b.Row[2].Z) + (a.Row[0].Y * b.Row[1].Z)) + (a.Row[0].X * b.Row[0].Z))),
++		FVector((((a.Row[1].Y * b.Row[1].X) + (a.Row[1].Z * b.Row[2].X)) + (a.Row[1].X * b.Row[0].X)),
++			(((a.Row[1].Z * b.Row[2].Y) + (a.Row[1].Y * b.Row[1].Y)) + (a.Row[1].X * b.Row[0].Y)),
++			(((a.Row[1].Z * b.Row[2].Z) + (a.Row[1].Y * b.Row[1].Z)) + (a.Row[1].X * b.Row[0].Z))),
++		FVector((((a.Row[2].Y * b.Row[1].X) + (a.Row[2].X * b.Row[0].X)) + (a.Row[2].Z * b.Row[2].X)),
++			(((a.Row[2].X * b.Row[0].Y) + (a.Row[2].Z * b.Row[2].Y)) + (a.Row[2].Y * b.Row[1].Y)),
++			(((a.Row[2].Z * b.Row[2].Z) + (a.Row[2].Y * b.Row[1].Z)) + (a.Row[2].X * b.Row[0].Z))));
++}
++
+ // FUNCTION: 0x004254f0
+ FMatrix CCockpit::GetRenderOrientation()
+ {
+-	FMatrix ori = mBattleEngine->GetOrientation() * mOrientation;
++	FMatrix ori = CockpitCurrentProduct(mBattleEngine->GetOrientation(), mOrientation);
+ 	FMatrix old = mBattleEngine->GetOldOrientation() * mOldOrientation;
+ 	FMatrix r = old + ((ori - old) * GAME.GetFrameRenderFraction());
+ 	r.Normalise();

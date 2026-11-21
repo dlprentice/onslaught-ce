@@ -1,9 +1,10 @@
 # Controller input in the native port
 
-Status: CE gamepad and flight-stick support, released in 0.1.9; physical-controller acceptance remains open
-Last updated: 2026-11-11
-Summary: how the native port finds controllers, what a gamepad or flight stick does without any setup, how hotplug
-works, the Dodge Button, where all of it is switched off, and what has and has not been checked.
+Status: CE gamepad and flight-stick support was released in 0.1.9. The adjustable CE keyboard actions and Dodge Button
+below describe a development build; they are not a claim about a published release. Physical-controller acceptance remains open.
+Last updated: 2026-11-13
+Summary: how the native port finds controllers, the default gamepad and flight-stick inputs, adjustable keyboard actions,
+the Dodge Button, where they are switched off, and what has and has not been checked.
 
 ## Devices
 
@@ -56,7 +57,7 @@ install the event watch. For sampled inputs, an unusually short tap between samp
 The triggers can also be bound by hand: select an action in the controls editor and press the trigger while it is
 capturing. A saved binding that already names button 16 or 17 responds to that trigger.
 
-The English Level 100 help shows the connected controller's available, active dodge and zoom inputs alongside keyboard
+In the development build, the English Level 100 help shows the connected controller's available, active dodge and zoom inputs alongside keyboard
 or mouse controls when both fit. It reads the actual bindings and the CE defaults; a customized joystick disables those
 defaults. Unavailable, unrecognized or potentially blocked secondary inputs are not named. Flight-stick button hints
 count the SDL inputs from 1; the controls editor displays the game's internal button numbers, which can differ. Dodging
@@ -66,39 +67,65 @@ controller being connected or removed. If a description will not fit, the cue us
 languages and the faithful, tape and network paths keep their existing behaviour. These changes have focused tests; a
 player-facing tutorial run and a physical controller check remain open.
 
-## The Dodge Button
+## Adjustable keyboard actions (development build)
 
-The walker's ground dodge is a double tap: two full strafe pushes in opposite directions, the second between half and the
-whole of `g_dash_time` (0.2 s, so 0.1 to 0.2 s) after the first (README, Dodging). Two facts of the game's own code make that
-harder than it sounds: the first push counts only when the last strafe value the game was given was not already full that way
-(so a dodge to the right after strafing left, with nothing in between, loses its first push), and the second push dashes the
-*other* way if the first side's push began between half and the whole of `g_dash_time` earlier.
+Open **Options → Controls** and select a keyboard action to change these CE bindings:
 
-[`game/ce_dodge_assist.cpp`](game/ce_dodge_assist.cpp) (rules in [`game/ce_dodge_assist_rules.h`](game/ce_dodge_assist_rules.h),
-hooks in patch 0220 at `CController::DoMappings` and `CController::SendButtonAction`) gives the player one press for it. Hold
-**Left Ctrl** on the keyboard (controller 0 only, as the keyboard bindings are) or **B** on a gamepad (game button 0; the right
-face button on an Xbox-layout pad, which the tutorial cue, naming buttons by position, calls the right button) and push left or right with whatever inputs strafe (A or D, the left stick, or the player's
-own bindings), in either order or together. At the end of that controller update the assist sends the two strafe actions of a
-double tap through the game's own path, as keys would send them: a full push to the other side, then, 0.55 to 0.95 of
-`g_dash_time` later by the game's own clock (`EVENT_MANAGER.GetTime()`), a full push to the chosen side. In ordinary play the
+| Action | Default key | What it does |
+| --- | --- | --- |
+| **Dodge modifier** | Left Ctrl | Hold with a movement direction to use the Dodge Button. |
+| **Take Unit** | E | Take an eligible friendly unit in your sights. |
+| **Commander** | M | Open or leave the Commander view. |
+
+Select a row, press Enter and then press an unused keyboard key. Escape cancels and keeps the previous binding. The
+controls screen refuses keys already used by an original control, the console or another enabled CE action; it does not
+silently replace the old binding. It also refuses assigning an original control to a key already owned by an enabled CE
+action. You can assign Take Unit or Commander before enabling its feature; it does not reserve its key while that feature
+is off in CE Settings. If an older setting later conflicts with an original control when a feature is enabled, the
+original control keeps its key and the CE shortcut is unavailable until the conflict is resolved in Controls.
+
+**Take Unit** requires **Play as a Unit** in CE Settings. While controlling a unit, use your bound **Morph** action
+(Space by default) to return to the Battle Engine; pressing Take Unit instead tries to take another eligible target.
+**Commander** requires **Commander Map** in CE Settings and an eligible mission. Press its key again, or Escape, to
+close the view. Both features can be enabled together: close Commander before taking a unit, and return to the Battle
+Engine before opening Commander.
+
+## The Dodge Button (development build)
+
+The original walker's ground dodge uses two full movement inputs in opposite directions on the same axis: first away from
+the desired direction, then toward it, with the second between half and the whole of `g_dash_time` (0.2 s, so 0.1 to
+0.2 s) after the first. With default keys, A then D dodges right and S then W dodges forward. Repeating the same direction
+is not the gesture. The first push counts only when the previous value on that axis was not already full in that direction,
+so it must register as a fresh push. This original gesture remains available with or without the Dodge Button.
+
+**To dodge:** with the walker on the ground, hold the **Dodge modifier** (default **Left Ctrl**) and press one movement
+input: **W** forward, **S** back, **A** left or **D** right on the default keyboard layout. Use your own movement bindings
+if you changed them. On a gamepad, hold **B** (the right face button on an Xbox-layout pad) and push the left stick
+fully in one of those four directions. The movement input or the modifier can come first. A diagonal or simultaneous
+opposite directions do not start a new dodge, and adding a second direction to a chosen one does not start another.
+Change the modifier in **Options → Controls** as described above.
+
+[`game/ce_dodge_assist.cpp`](game/ce_dodge_assist.cpp) and its [rules](game/ce_dodge_assist_rules.h) send the two
+pushes on the chosen movement axis: first away from the chosen direction, then toward it. The second push is 0.55 to
+0.95 of `g_dash_time` later by the game's own clock (`EVENT_MANAGER.GetTime()`). In ordinary play the
 game's logic steps that clock 0.05 s at a time (twenty updates a second), so three updates, 0.15 s, is the centre of the window (0.1 s,
 0.2 s) and what the assist sends (its log line says 150 or 151 ms); two and four updates sit on the window's edges, where the
-rounding of the game's float clock decides, and a double tap by hand lands at two, three or four. `StrafeLeft` and `StrafeRight` decide with their own code: the dash is the original one, the same speed,
-length and cost; only the typing of it is done. While the double tap runs the player's own strafe actions are held back, so they
-cannot join or break it, and they pass again after it; a press kept for 0.35 s waits for the walker to be ready (a dash under
+rounding of the game's float clock decides, and the original gesture by hand lands at two, three or four. The walker's own
+movement code decides whether to dodge. While the assist supplies those two pushes, the player's inputs on that axis
+cannot join or break the sequence. A press kept for 0.35 s waits for the walker to be ready (a dash under
 way, or a push of the player's own that the first push would complete the wrong way: the first push then waits until that has
-passed, about 0.1 s at worst). A slow frame that carries the second push past the window starts the double tap once more, with
-a neutral strafe action first when the game would not count the first push, unless the walker would not take it. Holding both keys
+passed, about 0.1 s at worst). A slow frame that carries the second push past the window starts the sequence once more, with
+a neutral action on the chosen axis first when the game would not count the first push, unless the walker would not take it. Holding both keys
 dodges once; for the next, let go of either and press again, or change direction (D to A, say) with the button still held. A press
 made during the first part of a dash (a dash lasts 0.75 s) is dropped; one made in its last 0.35 s dodges when it is over. Flight sticks have no Dodge Button; a key or button the player has bound to a control of their own is
-not one; the A then D (D then A) double tap works as before.
+not one; the original opposite-direction gesture works as before.
 
 It is on by default in ordinary CE play: CE Settings, Dodge Button (`dodge_button` in `ce.ini`, 1 or absent on, 0 off; read when
 a level is entered, so a change applies from the next level). It adds an input and takes none away: without a press of the
 button what reaches the player is, update for update, what the controller sent before. It is off, and the controller update is
 the original's, in a recording or replay, under probes or the virtual clock, for a test pilot, in a demo or attract loop, and in
 network play and its boot: the lockstep samples this peer's controls as semantic actions and applies them at the same tick on
-both peers, and nothing here has been run on two peers to show that the assisted double tap would be the same on both, so
+both peers, and nothing here has been run on two peers to show that the assisted sequence would be the same on both, so
 it stays off there. Tutorial level 100's dodge cue names the Dodge Button first when it is on and usable.
 
 ## Where it is off
@@ -132,14 +159,19 @@ pad's disconnect does not discard the other pad's quick tap, and that a replacem
 press. It opens no game window. SDL initialization may still discover host joystick devices; the test does not isolate
 `/sys` or `/run` itself. These virtual-device checks do not establish physical-controller or native Windows behavior.
 
-`port/tools/ce_dodge_assist_tests.py` runs the Dodge Button's rules and glue beside the game's own `DoMappings`, `StrafeLeft` and
-`StrafeRight` (see its header for what it checks and its mutants); it opens no game window and uses no device.
+`port/tools/ce_dodge_assist_tests.py` checks all four directions, a held chord and a diagonal alongside the game's
+movement mapping. It opens no game window and uses no physical device.
+
+[`tools/ce_dodge_binding_tests.py`](tools/ce_dodge_binding_tests.py) checks the keyboard binding and Controls rows with
+authored inputs, including conflicts and cancellation. Automated solo Linux play on earlier development builds exercised
+all four Dodge Button directions and, separately, remapped Take Unit and Commander keys. Those runs did not exercise
+the combined development build's two remapped actions, a physical controller or native Windows gameplay.
 
 Offscreen runs of the Linux build on level 100 (authored key events and `BEA_PORT_FAKE_PAD`, the frames read) showed the keyboard
 and the gamepad each making six dodges, left and right, with one session-log line apiece (`dodge button: dodge right, 151 ms
 between the two pushes`), no dodge with `dodge_button=0`, and, of seven different spacings typed by hand through the same events, one landing (three
 of the ten attempts of that run were mislabelled and ran at about 25 Presents, so they are not counted as separate spacings); a
-review's read-only trace saw hand double taps of two and three updates land. The figures are in `port/PARITY.md`, The Dodge Button (a file of the maintainers' working source, not in this tree). Authored events and a virtual gamepad are not a hand on a keyboard or a
+review's read-only trace saw hand-entered opposite-direction pairs of two and three updates land. The figures are in `port/PARITY.md`, The Dodge Button (a file of the maintainers' working source, not in this tree). Authored events and a virtual gamepad are not a hand on a keyboard or a
 physical pad.
 
 Run these three checks separately on the exact candidate tree. Use an isolated private HOME and XDG

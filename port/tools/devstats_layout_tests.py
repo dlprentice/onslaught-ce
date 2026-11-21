@@ -21,7 +21,12 @@ MUTANTS = (
     ("the margin stays 48 pixels", "const float room = width - 48.f * layout;", "const float room = width - 48.f;"),
     ("a block's width is compared at the font's own size", "(widest * layout > room", "(widest > room"),
     ("the block keeps the font's own size", "? room / widest : layout;", "? room / widest : 1.f;"),
-    ("the shadow stays one pixel off", "DrawTextScaled(x + layout, y + layout,", "DrawTextScaled(x + 1.f, y + 1.f,"),
+    ("the lines are drawn on top of each other", "lineY += pitch;", "lineY += pitch * 0.f;"),
+    ("the line pitch forgets its two pixels", "float(font->GetHeight()) * scale + 2.f * layout;", "float(font->GetHeight()) * scale;"),
+    ("the line pitch ignores the font's height", "float(font->GetHeight()) * scale + 2.f * layout;", "2.f * layout;"),
+    ("the shadow is drawn after the text", "font->DrawTextScaled(x + layout, lineY + layout, 0.0f, scale, scale, 0xff000000, w, 0, NULL);\n\t\tfont->DrawTextScaled(x, lineY, 0.0f, scale, scale, colour, w, 0, NULL);",
+     "font->DrawTextScaled(x, lineY, 0.0f, scale, scale, colour, w, 0, NULL);\n\t\tfont->DrawTextScaled(x + layout, lineY + layout, 0.0f, scale, scale, 0xff000000, w, 0, NULL);"),
+    ("the shadow stays one pixel off", "DrawTextScaled(x + layout, lineY + layout,", "DrawTextScaled(x + 1.f, lineY + 1.f,"),
 )
 
 

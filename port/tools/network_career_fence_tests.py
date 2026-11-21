@@ -109,7 +109,7 @@ def main():
         (folder / "options_writer.inc").write_text(options_text)
         binary = folder / "driver"
         cmd = ["g++", "-std=c++14", "-O1", "-Wall", "-Wextra", "-Werror", "-Wno-unused-parameter",
-               '-DCE_VERSION="fixture"', *defines, "-I" + str(folder), str(DRIVER), "-o", str(binary)]
+               '-DCE_VERSION="fixture"', *defines, "-I" + str(folder), "-I" + str(ROOT / "port/game"), str(DRIVER), "-o", str(binary)]
         p = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
         (folder / "build.log").write_text(p.stdout + p.stderr)
         case(label + " compiles", p.returncode == 0)
@@ -138,7 +138,7 @@ def main():
         binary = folder / "driver"
         cmd = ["g++", "-std=c++14", "-O1", "-Wall", "-Wextra", "-Werror", "-Wno-unused-parameter",
                "-Wno-unused-function", "-Wno-unused-variable", *(['-DCE_VERSION="fixture"'] if ce_version else []), *defines,
-               "-I" + str(folder), str(FULL_DRIVER), "-o", str(binary)]
+               "-I" + str(folder), "-I" + str(ROOT / "port/game"), str(FULL_DRIVER), "-o", str(binary)]
         p = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
         (folder / "build.log").write_text(p.stdout + p.stderr)
         case(label + " compiles", p.returncode == 0)

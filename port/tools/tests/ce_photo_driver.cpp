@@ -5,6 +5,7 @@
 // saved. Photo mode never touches the developer -killhud field: the HUD routines run, only their draw calls are dropped.
 #include "ce_palette_fake.h"
 #include "ce_photo.h"
+#include <cmath>
 #include <cstdio>
 #include <string>
 
@@ -39,6 +40,8 @@ void PortCeDrawsDropped(int delta) { dropped += delta; if (dropped < 0) dropped 
 bool PortCeCmdKey(unsigned, bool) { return false; }
 // The native editor's key hook (patch 0206); no editor session exists here, so it takes no key. ce_editor_tests.py runs the real one.
 bool PortCeEditorKey(unsigned, bool) { return false; }
+// The CE hook point key_capture (patch 0308, port/game/ce_hooks.h): no handler is registered, so it takes no key.
+bool ce_hook_key_capture(unsigned char, bool) { return false; }
 bool PortCeEditorSuppressFlightHud() { return false; }	// the paused editor scene owns the draw scopes; none is open here
 static bool strategic_hud = false;
 bool PortCeCmdSuppressFlightHud() { return strategic_hud; }
@@ -58,9 +61,13 @@ static void clearKeys() { for (int i = 0; i < 256; ++i) LT.KeyDown[i] = LT.KeyWa
 static int otherDown = 0;
 static void OtherTrap(WORD, KeyEventType event) { if (event == KEY_EVENT_DOWN) ++otherDown; }
 static void render() { draws.clear(); sprites.clear(); PortCePhotoRender(); }
+// A note fades in over 200 milliseconds (ce_overlay_box.h): a frame at the very moment it came shows none of it.
+static void settled() { ticks += 200; render(); }
+// The note's lines as drawn (a long note is broken at a space into two lines), joined by a space.
 static bool drew(const wchar_t *text) {
-    for (const auto &d : draws) if (d.text.find(text) != std::wstring::npos) return true;
-    return false;
+    std::wstring all;
+    for (const auto &d : draws) all += (all.empty() ? L"" : L" ") + d.text;
+    return all.find(text) != std::wstring::npos;
 }
 // What a frame does: the between-frames hook, the drawing, then the Present asks whether to save it.
 static bool frame() { PortCePhotoFrame(); render(); ++presents; return PortCePhotoShotWanted(); }
@@ -79,7 +86,10 @@ static void keys() {
     up(DIK_F11);
     check(!LT.KeyDown[DIK_F11], "F11's release leaves no key down");
     render();
-    check(drew(L"Photo mode: HUD hidden. F11 returns, F12 saves a screenshot."), "photo mode says how to leave it");
+    check(draws.empty() && sprites.empty(), "a note has faded in by nothing at the moment it comes");
+    settled();
+    check(drew(L"Photo Mode: HUD hidden. F11 ends it. F12 saves a screenshot."), "photo mode says how to leave it");
+    check(std::fabs(sprites[0].y + sprites[0].h - (PLATFORM.h - 40.f + 8.f)) < 0.01f, "with the HUD hidden the note keeps its low place");
     for (const auto &d : draws) check(d.x >= 0 && d.y >= 0 && d.x + float(d.text.size() * 8) * d.sx <= PLATFORM.w + 0.01f, "the note fits");
     press(DIK_F11);
     check(!PortCePhotoOn() && !filtered && dropped == 0 && CLIPARAMS.mKillHUD == FALSE, "F11 again ends photo mode and the draw filter");
@@ -91,7 +101,8 @@ static void keys() {
     check(PortCePhotoAvailable(), "the pause menu's item is offered in an ordinary solo level");
     check(PortCePhotoMenuSet(true) && PortCePhotoOn() && filtered && CLIPARAMS.mKillHUD == FALSE, "the pause menu's item turns it on");
     render();
-    check(drew(L"Photo mode: HUD hidden. Pause menu or F11 returns; F12 saves a screenshot."), "its note names the pause menu");
+    settled();
+    check(drew(L"Photo Mode: HUD hidden. F11 or the Pause Menu ends it. F12 saves a screenshot."), "its note names the Pause Menu");
     for (const auto &d : draws) check(d.x >= 0 && d.y >= 0 && d.x + float(d.text.size() * 8) * d.sx <= PLATFORM.w + 0.01f, "that note fits");
     check(PortCePhotoMenuSet(false) && !PortCePhotoOn() && !filtered && dropped == 0, "and the same item turns it off");
     render();
@@ -104,8 +115,8 @@ static void keys() {
     // F12 asks for the next Present; the note is never drawn in that frame; one request is one picture.
     clearKeys();
     press(DIK_F11);
-    render();
-    check(drew(L"Photo mode: HUD hidden."), "the photo mode note is showing");
+    settled();
+    check(drew(L"Photo Mode: HUD hidden."), "the photo mode note is showing");
     press(DIK_F12);
     check(!LT.KeyDown[DIK_F12] && !LT.KeyWasDown[DIK_F12], "F12 is not a game key down");
     render();
@@ -113,26 +124,64 @@ static void keys() {
     check(PortCePhotoShotWanted(), "the Present after F12 is saved");
     check(!PortCePhotoShotWanted(), "one F12, one screenshot");
     render();
-    check(drew(L"Photo mode: HUD hidden."), "the note is back in the next frame");
+    check(drew(L"Photo Mode: HUD hidden."), "the note is back in the next frame");
     down(DIK_F12, true);
     check(!PortCePhotoShotWanted(), "a held F12 takes one screenshot");
     up(DIK_F12);
     PortCePhotoShotDone(CE_SHOT_SAVED, "onslaught-ce-20261029-120000.png");
-    render();
-    check(drew(L"Saved screenshot onslaught-ce-20261029-120000.png"), "the note names the file");
-    check(sprites.size() == 1 && sprites[0].x >= 0 && sprites[0].y + sprites[0].h <= PLATFORM.h, "the note sits inside the window");
-    ticks += 2400; render(); check(!draws.empty(), "the note stays a moment");
+    settled();
+    check(drew(L"Screenshot saved: onslaught-ce-20261029-120000.png"), "the note names the file");
+    // The message box's look: one panel (0xaf000000) and four outline strips (0xff7f7f7f), the strips on the panel's edges, 8 pixels of
+    // padding round the text, inside the window.
+    check(sprites.size() == 5 && sprites[0].colour == 0xaf000000, "the note is the message box's panel");
+    for (int i = 1; i < 5; ++i) check(sprites[i].colour == 0xff7f7f7f, "and its outline");
+    check(sprites[0].x >= 0 && sprites[0].y + sprites[0].h <= PLATFORM.h && sprites[0].x + sprites[0].w <= PLATFORM.w, "the note sits inside the window");
+    check(std::fabs(sprites[1].x - sprites[0].x) < 0.01f && std::fabs(sprites[1].w - sprites[0].w) < 0.01f && std::fabs(sprites[1].h - 2.f) < 0.01f &&
+          std::fabs(sprites[2].y + sprites[2].h - (sprites[0].y + sprites[0].h)) < 0.01f &&
+          std::fabs(sprites[3].x - sprites[0].x) < 0.01f && std::fabs(sprites[4].x + sprites[4].w - (sprites[0].x + sprites[0].w)) < 0.01f &&
+          std::fabs(sprites[3].w - 2.f) < 0.01f, "the outline is two pixels wide on the panel's four edges");
+    check(draws[0].x - sprites[0].x >= 8.f - 0.01f && std::fabs(draws[0].y - sprites[0].y - 8.f) < 0.01f &&
+          std::fabs(sprites[0].y + sprites[0].h - (draws.back().y + 16.f * draws.back().sy + 8.f)) < 0.01f, "with 8 pixels of padding round the text");
+    ticks += 2200; render(); check(!draws.empty() && sprites[0].colour != 0xaf000000, "the note stays a moment and fades out");
     ticks += 200; render(); check(draws.empty(), "and then goes");
-    PortCePhotoShotDone(CE_SHOT_FULL, ""); render();
+    PortCePhotoShotDone(CE_SHOT_FULL, ""); settled();
     check(drew(L"Screenshot not saved: the screenshots folder is full."), "a full folder is said so");
-    PortCePhotoShotDone(CE_SHOT_WRITE, ""); render();
-    check(drew(L"Screenshot not saved (error 6)."), "a failed write is said so");
+    PortCePhotoShotDone(CE_SHOT_FOLDER, ""); settled();
+    check(drew(L"Screenshot not saved: there is no screenshots folder."), "a missing folder is said so");
+    PortCePhotoShotDone(CE_SHOT_WRITE, ""); settled();
+    check(drew(L"Screenshot not saved: the file could not be written."), "a failed write is said so, without an error number");
+    ticks += 10000;
+    // The fade in: half way is half the alpha.
+    PortCePhotoShotDone(CE_SHOT_SAVED, "a.png"); ticks += 100; render();
+    check(sprites.size() == 5 && sprites[0].colour == 0x57000000 && sprites[1].colour == 0x7f7f7f7f, "a note half faded in is half as dark");
     ticks += 10000;
     // Screenshots without photo mode too: the frame as the player sees it.
     press(DIK_F11);
     check(!PortCePhotoOn(), "photo mode off");
     press(DIK_F12); check(frame(), "F12 works without photo mode");
     check(!frame(), "and only once");
+    // With the HUD drawn (photo mode off) the box clears the HUD's message bar, which reaches 75 pixels up from the bottom of 640 x 480.
+    PortCePhotoShotDone(CE_SHOT_SAVED, "b.png"); settled();
+    check(drew(L"Screenshot saved: b.png") && sprites.size() == 5, "the note shows without photo mode");
+    check(sprites[0].y + sprites[0].h <= PLATFORM.h - 75.f - 4.f, "outside photo mode the note sits above the HUD's message bar");
+    check(sprites[0].y + sprites[0].h > PLATFORM.h - 100.f, "and not far above it");
+	// A saved name that fits the full screen on one line but not between the two HUD rings.
+	const char *longShot = "onslaught-ce-2026-11-13-12-34-56.png";
+	const wchar_t *longMessage = L"Screenshot saved: onslaught-ce-2026-11-13-12-34-56.png";
+	PortCePhotoShotDone(CE_SHOT_SAVED, longShot); settled();
+	check(sprites.size() == 5 && sprites[0].x >= 120.f && sprites[0].x + sprites[0].w <= PLATFORM.w - 120.f,
+	      "the visible-HUD screenshot note stays between the instrument rings at 640");
+	check(draws.size() == 2 && draws[0].y < draws[1].y && drew(longMessage),
+	      "the complete filename wraps with the HUD visible");
+
+	PLATFORM.w = 1280; PLATFORM.h = 720; render();
+	check(draws.size() == 1 && drew(longMessage) && sprites[0].x >= 180.f,
+	      "the same filename stays on one line when the widescreen HUD has the room");
+	PLATFORM.w = 640; PLATFORM.h = 480;
+	PortCePhotoSet(true); PortCePhotoShotDone(CE_SHOT_SAVED, longShot); settled();
+	check(draws.size() == 1 && drew(longMessage) && sprites[0].w > 400.f,
+	      "hiding the HUD restores the full note width");
+	PortCePhotoSet(false);
 }
 
 static void scope() {
@@ -338,11 +387,12 @@ static void proofNote() {
     presents = 0;
     int noted = 0, quiet = 0;
     for (int i = 1; i <= 16; ++i) {
+        ticks += 50;
         PortCePhotoFrame();
         render();
         const bool savedNow = (presents + 1) % 4 == 0;
         if (savedNow) check(draws.empty() && sprites.empty(), "nothing of a note is in a frame the proof switch saves");
-        else if (i > 4) { check(drew(L"Saved screenshot proof.png"), "the note of the picture before is in the frames between"); ++noted; }
+        else if (i > 4) { check(drew(L"Screenshot saved: proof.png"), "the note of the picture before is in the frames between"); ++noted; }
         else ++quiet;
         ++presents;
         if (PortCePhotoShotWanted()) PortCePhotoShotDone(CE_SHOT_SAVED, "proof.png");

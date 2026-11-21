@@ -51,6 +51,7 @@ void PortUpdateHook();
 #ifdef __cplusplus
 int PortWideModes();				// the mode list and the default mode may offer the desktop's sizes
 int PortWideActive();				// this back buffer takes the wide paths
+void PortWideBackBufferSize(unsigned *w, unsigned *h);	// the back buffer the wide answers are for
 int PortSharpUi();					// and ce.ini's sharp_ui=1 asks for the sharper UI (off by default; ask after the other terms)
 float PortWideX();					// the 3D view's horizontal widening (Hor+), 1 when narrower than 4:3
 float PortWideY();					// its vertical extension (Vert+, narrower than 4:3), else 1
@@ -209,6 +210,11 @@ int port_findclose(intptr_t h);
 #include <stdint.h>
 #include <wchar.h>
 #include <stdio.h>
+#include <stdlib.h>
+// Game objects call bea_crt_rand() (port/platform/common/crtrand.cpp, VC6's 15-bit LCG: 0..0x7fff), so RAND_MAX
+// must match VC6's 0x7fff rather than glibc's 0x7fffffff.
+#undef RAND_MAX
+#define RAND_MAX 0x7fff
 #define stricmp strcasecmp
 #define _stricmp strcasecmp
 #define strcmpi strcasecmp
@@ -282,6 +288,11 @@ unsigned int _controlfp(unsigned int newval, unsigned int mask);
 #if defined(CE_VERSION) && defined(__cplusplus)
 int PortGamePrintf(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 #define printf PortGamePrintf
+#endif
+
+// The contact normals a collision report does not set, as the original leaves them (patch 0280, every build).
+#ifdef __cplusplus
+#include "ce_contact_leftover.h"
 #endif
 
 #endif

@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <initializer_list>
 #include <cwchar>
 #include <string>
 #include <vector>
@@ -23,6 +24,7 @@ static std::vector<Draw> draws;
 
 struct CDXBitmapFont {
     int advance = 8;
+    bool CanDisplay(WCHAR) { return true; }
     int GetHeight() { return 16; }
     void GetTextExtent(WCHAR *text, SIZE *size) { size->cx = int(wcslen(text)) * advance; size->cy = GetHeight(); }
     int WordWrap(SWordWrapFill *fill, WCHAR *text, float width);
@@ -45,10 +47,24 @@ struct Platform {
     CDXBitmapFont font;
     CDXBitmapFont *Font(int) { return &font; }
 } PLATFORM;
+constexpr int FONT_NORMAL = 1, FEP_NONE = 0, FEMB_OPTION_A_CONTINUE = 0, FALSE = 0;
+#define FO(value) (value)
+#define PORT_LOG_PREFIX ""
 struct MessageBox {
     bool open = false;
+    SWordWrapFill mLines{};
+    int mLineHeight = 0, mNumLines = 0;
+    float mHeight = 0, mY = 0;
     bool BeingDisplayed() { return open; }
+    void Kill() { open = false; }
+    void Create(float, float y, float, int, WCHAR*, CDXBitmapFont* font, int, int, BOOL, int, int) {
+        open = true; mY = y; mLineHeight = font->GetHeight();
+    }
+    void SetOnDismiss(int, int) {}
 } FEMESSBOX;
+static bool sCeBox = false;
+#include "message.inc"
+
 struct CMenuOptionsList { int mSelected = 0; };
 struct CMenuItem {
     CMenuItem(DWORD, int) {}
@@ -56,10 +72,75 @@ struct CMenuItem {
     virtual void Render(float, float, BOOL) {}
 };
 // ce.cpp's switches for the unfinished features: the page tables that follow hold their rows too (the help text is measured for all of them).
-bool PortCeExperimental(const char *) { return true; }
+static bool experimentalOn = true;
+static bool optionalPages = false;
+bool PortCeExperimental(const char*) { return experimentalOn; }
+// Controls & Tips (in the extracted tables) asks the Dodge Button's conditions; this driver measures the note's lines, not those
+// conditions (ce_frontend_tests.py does), so the stand-ins give no pad and a free key.
+#define MAX_JOYPADS 4
+enum { CE_TUTORIAL_GAMEPAD = 1, CE_TUTORIAL_STICK = 2 };
+struct CeTutorialPadInfo { int kind; unsigned axes, buttons; };
+struct { int mJoypads = 0; bool mUnknown33474[MAX_JOYPADS] = {}; void *pJoystick[MAX_JOYPADS] = {}; } LT;
+extern "C" int CE_SettingGetBool(const char* key, int def)
+{
+    return !std::strcmp(key, "catalogue") ? optionalPages : def;
+}
+extern "C" int PortCeTutorialPadInfo(void *, CeTutorialPadInfo *) { return 0; }
+bool PortCeDodgeAssistKeyFree() { return true; }
+bool PortCeDodgeAssistPadFree(int) { return true; }
+#include "../game/ce_catalogue_menu.h"
+#include "../game/ce_dodge_binding.h"
+
+bool PortCeExtrasOffered() { return optionalPages; }
+bool PortCeModsPageOffered() { return optionalPages; }
+#include "binding_keys.inc"
+// Test profile storage and the physical keyboard layout are the external boundaries.
+static std::string savedCommander;
+extern "C" int CE_SettingGetText(const char* key, char* out, int n) {
+    if (std::strcmp(key, "commander_key") || savedCommander.empty()) return 0;
+    std::snprintf(out, n, "%s", savedCommander.c_str());
+    return 1;
+}
+extern "C" int CE_SettingSetText(const char* key, const char* value) {
+    if (std::strcmp(key, "commander_key")) return 0;
+    savedCommander = value;
+    return 1;
+}
+extern "C" int PortCeTutorialPrintableKey(int key, char* out, int n) {
+    const char* text = key == DIK_M ? "M" : key == DIK_T ? "T" : key == DIK_E ? "E" : nullptr;
+    if (!text || n < 2) return 0;
+    std::snprintf(out, n, "%s", text);
+    return 1;
+}
+enum { KEY_ON = 1, KEY_ONCE, KEY_RELEASE };
+struct SControlInput { int mPad, mKey, mType; };
+struct SControlBinding { int mId; SControlInput mInput[2]; };
+// One ordinary control can claim a saved key; the production table ends with id -1.
+static SControlBinding CONTROL_BINDINGS[] = {{BUTTON_MECH_MORPH, {}}, {-1, {}}};
+#include "binding_conflict.inc"
+void PortCeDodgeStrafeNames(char* left, int leftSize, char* right, int rightSize)
+{
+    std::snprintf(left, leftSize, "%s", "A");
+    std::snprintf(right, rightSize, "%s", "D");
+}
 #include "cheats_help.inc"
-// The tables' two helpers for the experimental modes belong to the menu this driver does not build; named here so that they count as used.
-static const bool tablesHelpersLinked = (ExperimentalOffered(0) || PlanText(0) != nullptr);
+// Use the same offered-row policy as the hub. A disabled row need not be at the end.
+struct HubRows {
+    SCeRow rows[sizeof(kHubRows) / sizeof(kHubRows[0])]{};
+    int count = 0;
+};
+static HubRows visibleHub(bool network, bool experimental)
+{
+    HubRows hub;
+    experimentalOn = experimental;
+    for (const SCeRow& row : kHubRows) {
+#ifndef CE_NETWORK_OFF
+        if (row.mAction == CEA_NETWORK && !network) continue;
+#endif
+        if (ExperimentalOffered(row.mAction)) hub.rows[hub.count++] = row;
+    }
+    return hub;
+}
 
 // Run the real camera input handler with an identity transform and a fake pause boundary.
 // This checks key actions, not the game's camera maths or rendering.
@@ -111,7 +192,74 @@ static int lines(const WCHAR *text) {
     return PLATFORM.font.WordWrap(&fill, copy, 420.f);
 }
 
-int main() {
+static std::wstring displayedTips(bool commander)
+{
+    experimentalOn = commander;
+    constexpr int CEBT_TIPS = 1;
+    int mBoxTitle = 0;
+    sCeBox = false;
+    switch (CEA_TIPS) {
+#include "tips_action.inc"
+    default: break;
+    }
+    check(sCeBox && FEMESSBOX.open && mBoxTitle == CEBT_TIPS, "Controls & Tips opens its message");
+    std::wstring result;
+    for (int i = 0; i < FEMESSBOX.mNumLines; ++i) {
+        if (!result.empty()) result += L" ";
+        result += FEMESSBOX.mLines.c[i];
+    }
+    FEMESSBOX.Kill();
+    return result;
+}
+
+static void checkCommanderHelp()
+{
+    const auto action = CeControlAction::Commander;
+    const auto absent = [](const std::wstring& text) {
+        return text.find(L"Zoom:") != std::wstring::npos && text.find(L"commander view") == std::wstring::npos;
+    };
+    const auto describes = [](const std::wstring& text, const wchar_t* key) {
+        return text.find(std::wstring(key) + L": commander view, the battle runs on.") != std::wstring::npos;
+    };
+    savedCommander.clear();
+    PortCeDodgeBindingReload();
+    check(describes(displayedTips(true), L"M"), "default Commander key reaches the message box");
+    check(absent(displayedTips(false)), "disabled Commander has no key instructions");
+    check(PortCeActionStore(action, DIK_T), "the normal action stores a different key");
+    PortCeDodgeBindingReload();
+    const auto rebound = displayedTips(true);
+    check(describes(rebound, L"T") && !describes(rebound, L"M"), "the saved replacement reaches the message box");
+    check(absent(displayedTips(false)), "disabled rebound Commander has no key instructions");
+    CONTROL_BINDINGS[0].mInput[0] = {0, DIK_T, KEY_ON};
+    check(absent(displayedTips(true)), "an occupied saved key must not be advertised");
+    CONTROL_BINDINGS[0].mInput[0] = {};
+    check(describes(displayedTips(true), L"T"), "releasing the key restores the saved instructions");
+}
+
+int main(int argc, char** argv) {
+    if (argc == 2 && !std::strcmp(argv[1], "commander-bindings")) {
+        checkCommanderHelp();
+        std::puts("Commander bindings: six displayed help states passed");
+        return 0;
+    }
+    check(argc == 2 && (!std::strcmp(argv[1], "optional-on") ||
+                        !std::strcmp(argv[1], "optional-off")), "select the optional page policy");
+    optionalPages = !std::strcmp(argv[1], "optional-on");
+    check(PlanText(0) != nullptr, "the first plan still has a description");
+    const HubRows all = visibleHub(true, true), plain = visibleHub(true, false);
+#ifndef CE_NETWORK_OFF
+    const HubRows noNetwork = visibleHub(false, true);
+    const int net = 1;
+#else
+    const int net = 0;
+#endif
+    experimentalOn = true;
+    check(plain.count == 5 + net + (optionalPages ? 3 : 0) &&
+          all.count == plain.count + 2, "hub shows only enabled pages");
+#ifndef CE_NETWORK_OFF
+    check(noNetwork.count == all.count - 1, "network availability hides its row");
+#endif
+
     CControllableCamera camera;
     camera.ReceiveButtonAction(nullptr, BUTTON_CAMERA_MOVE_FORAWRD, -1.f);
     check(camera.mTempPos.y == 1.f, "forward key moves camera forward in the fixture");
@@ -135,33 +283,39 @@ int main() {
     check(CE_NUM_CHEATS == 5, "five supported player-facing cheats");
     const int ids[] = {1, 0, 5, 3, 4};
     for (int i = 0; i < CE_NUM_CHEATS; ++i) check(kCheats[i].mCheat == ids[i], "cheat identity and order");
-    for (const WCHAR *key : {L"F:", L"W/S fly", L"A/D slide", L"arrows look", L"Esc freezes", L"F returns", L"still be hit"})
+    for (const WCHAR *key : {L"F:", L"W/S fly", L"A/D slide", L"arrows look", L"F returns", L"still be hit"})
         check(std::wcsstr(kCheats[4].mHint.mHelp, key) != nullptr, "free-camera keys are discoverable");
     for (const WCHAR *missing : {L"speed", L"up/down", L"Space", L"Shift", L"mouse"})
         check(std::wcsstr(kCheats[4].mHint.mHelp, missing) == nullptr, "no free-camera key the game does not have");
-    check(std::wcsstr(kCheats[0].mHint.mHelp, L"progress is not changed") != nullptr, "level unlock writes nothing");
+    check(std::wcsstr(kCheats[0].mHint.mHelp, L"Select Level screen") != nullptr && std::wcsstr(kCheats[0].mHint.mHelp, L"progress is kept") != nullptr,
+          "level unlock names the screen it opens and writes nothing");
     check(std::wcsstr(kCheats[1].mHint.mHelp, L"Nothing is saved") != nullptr, "goodie unlock writes nothing");
-    check(std::wcsstr(kCheats[3].mHint.mHelp, L"not in your career") != nullptr, "god mode is kept out of careers");
-    check(std::wcsstr(kCheats[2].mHint.mHelp, L"available unlock hints") != nullptr,
-          "hints do not promise descriptions for every goodie");
-    // the hint names the switch as its row does
-    check(std::wcsstr(kCheats[2].mHint.mHelp, L"even if Unlock All Goodies is on") != nullptr
-              && std::wcscmp(kCheats[1].mLabel, L"Unlock All Goodies: ") == 0,
-          "hint priority is discoverable, and names the switch as its row does");
+    check(std::wcsstr(kCheats[3].mHint.mHelp, L"God row") != nullptr && std::wcsstr(kCheats[3].mHint.mHelp, L"God ON: no damage and endless energy") != nullptr,
+          "god mode says what it adds and what God ON does, as the game's own God ON / God OFF read");
+    check(std::wcsstr(kCheats[2].mHint.mHelp, L"unlock hints") != nullptr && std::wcsstr(kCheats[2].mHint.mHelp, L"each goodie") == nullptr,
+          "hints do not promise a hint for every goodie");
+    // the hint says what the cheat does to the other, and the row's label ends in the colon the list draws the value after
+    check(std::wcsstr(kCheats[2].mHint.mHelp, L"While on, goodies cannot be opened.") != nullptr
+              && std::wcscmp(kCheats[1].mLabel, L"Unlock All Goodies:") == 0,
+          "hint priority is discoverable, and the labels end in a colon with no space after it");
+    for (int i = 0; i < CE_NUM_CHEATS; ++i)
+        check(std::wcslen(kCheats[i].mLabel) > 2 && kCheats[i].mLabel[std::wcslen(kCheats[i].mLabel) - 1] == L':', "a cheat's label ends in a colon, and no space");
     const WCHAR *codes[] = {L"Original code: TURKEY", L"Original code: MALLOY", nullptr, L"Original code: Maladim", L"Original code: Aurore"};
     for (int i = 0; i < CE_NUM_CHEATS; ++i) {
         check(kCheats[i].mHint.mExtra != nullptr && std::wcsstr(kCheats[i].mHint.mExtra, L"Original code: ") == kCheats[i].mHint.mExtra,
               "each cheat's hint carries its original code");
         if (codes[i]) check(std::wcscmp(kCheats[i].mHint.mExtra, codes[i]) == 0, "the original codes");
     }
-    check(std::wcscmp(kCheatsNote, L"Cheats apply to all careers and are off when recording. Wins count as usual.") == 0,
+    check(std::wcscmp(kCheatsNote, L"Cheats apply to every career and are off while recording. Wins still count.") == 0,
           "the Cheats page's standing note");
     for (int page = 0; page < CEP_COUNT; ++page) check(std::wcslen(kCeTitles[page]) > 0 && std::wcslen(kCeTitles[page]) < 24, "page titles");
+    for (int box = 0; box < 4; ++box) check(std::wcslen(kBoxTitles[box]) > 0 && std::wcslen(kBoxTitles[box]) < 24, "the titles Help & Info's boxes give the title bar");
+    check(std::wcscmp(kCeTitles[CEP_HUB], L"ONSLAUGHT CE") == 0, "the hub's title is in capitals, as every page reached from the Main Menu is");
 
     // MenuOptionsList::Render centres N rows of 20 px (Back is the last) on the page's y (the page has no title row): the first row
     // is at y-10N-15 and Back at y+10N-35. Most pages are centred on 300; CE Settings, with thirteen rows, is centred on 260. Every
     // page's hints, for every row, must fit between Back and the help bar, and every first row must be below the title bar.
-    struct Page { const char *name; const SCeHint *hints; int stride; int count; const WCHAR *note; float centre; };
+    struct Page { const char *name; const SCeHint *hints; int stride; int count; const WCHAR *note; float centre; int extra; };
     // The Help and plan hints as the page shows them without the experimental modes (the hints that replace the ones naming the commander map
     // and the Map Editor), and the settings without the Commander Map row: all measured here as well.
     static SCeRow plainHelp[sizeof(kHelpRows) / sizeof(kHelpRows[0])];
@@ -174,30 +328,23 @@ int main() {
     int plainCount = 0;
     for (const SCeSetting &setting : kSettings) if (std::strcmp(setting.mKey, "commander")) plainSettings[plainCount++] = setting;
     const Page pages[] = {
-        {"hub", &kHubRows[0].mHint, int(sizeof(SCeRow)), int(sizeof(kHubRows) / sizeof(kHubRows[0])), nullptr, kCeListY},
-        {"bonus levels", &kBonusRows[0].mHint, int(sizeof(SCeRow)), CE_NUM_BONUS, nullptr, kCeListY},
-        {"settings", &kSettings[0].mHint, int(sizeof(SCeSetting)), CE_NUM_SETTINGS, nullptr, kCeSettingsY},
-        {"cheats", &kCheats[0].mHint, int(sizeof(SCeCheat)), CE_NUM_CHEATS, kCheatsNote, kCeListY},
-        {"help", &kHelpRows[0].mHint, int(sizeof(SCeRow)), int(sizeof(kHelpRows) / sizeof(kHelpRows[0])), nullptr, kCeListY},
-        {"plans", kPlanHints, int(sizeof(SCeHint)), CE_NUM_PLANS, nullptr, kCeListY},
-        {"help without the experimental modes", &plainHelp[0].mHint, int(sizeof(SCeRow)), int(sizeof(kHelpRows) / sizeof(kHelpRows[0])), nullptr, kCeListY},
-        {"plans without the experimental modes", plainPlans, int(sizeof(SCeHint)), CE_NUM_PLANS, nullptr, kCeListY},
-        {"settings without the Commander Map row", &plainSettings[0].mHint, int(sizeof(SCeSetting)), plainCount, nullptr, kCeSettingsY},
-        {"hub without the experimental rows", &kHubRows[0].mHint, int(sizeof(SCeRow)), 5, nullptr, kCeListY},
+        {"hub", &all.rows[0].mHint, int(sizeof(SCeRow)), all.count, nullptr, kCeListY, CCeBack::EXTRA_FOLLOW},
+        {"bonus levels", &kBonusRows[0].mHint, int(sizeof(SCeRow)), CE_NUM_BONUS, kBonusNote, kCeListY, CCeBack::EXTRA_FOLLOW},
+        {"settings", &kSettings[0].mHint, int(sizeof(SCeSetting)), CE_NUM_SETTINGS, nullptr, kCeSettingsY, CCeBack::EXTRA_FOOT},
+        {"cheats", &kCheats[0].mHint, int(sizeof(SCeCheat)), CE_NUM_CHEATS, kCheatsNote, kCeListY, CCeBack::EXTRA_FIXED},
+        {"help", &kHelpRows[0].mHint, int(sizeof(SCeRow)), int(sizeof(kHelpRows) / sizeof(kHelpRows[0])), nullptr, kCeListY, CCeBack::EXTRA_FOLLOW},
+        {"plans", kPlanHints, int(sizeof(SCeHint)), CE_NUM_PLANS, nullptr, kCeListY, CCeBack::EXTRA_FOLLOW},
+        {"help without the experimental modes", &plainHelp[0].mHint, int(sizeof(SCeRow)), int(sizeof(kHelpRows) / sizeof(kHelpRows[0])), nullptr, kCeListY, CCeBack::EXTRA_FOLLOW},
+        {"plans without the experimental modes", plainPlans, int(sizeof(SCeHint)), CE_NUM_PLANS, nullptr, kCeListY, CCeBack::EXTRA_FOLLOW},
+        {"settings without the Commander Map row", &plainSettings[0].mHint, int(sizeof(SCeSetting)), plainCount, nullptr, kCeSettingsY, CCeBack::EXTRA_FOOT},
+        {"hub without the experimental rows", &plain.rows[0].mHint, int(sizeof(SCeRow)), plain.count, nullptr, kCeListY, CCeBack::EXTRA_FOLLOW},
 #ifndef CE_NETWORK_OFF
-        {"hub with network unavailable", &kHubRows[1].mHint, int(sizeof(SCeRow)), int(sizeof(kHubRows) / sizeof(kHubRows[0])) - 1, nullptr, kCeListY},
+        {"hub with network unavailable", &noNetwork.rows[0].mHint, int(sizeof(SCeRow)), noNetwork.count, nullptr, kCeListY, CCeBack::EXTRA_FOLLOW},
 #endif
     };
-    // The hub's rows: Bonus Levels, CE Settings, Cheats, Help & Info, Report a Problem, and the three experimental ones (Map Editor, Museum
-    // Prototype, Goodies Gallery); with the network compiled in, Network Game is the first.
-#ifdef CE_NETWORK_OFF
-    const int hub_count = 8;
-#else
-    const int hub_count = 9;
-    check(pages[10].count == 8, "the hub without an offered network row");
-#endif
-    check(pages[0].count == hub_count && pages[1].count == 7 && pages[2].count == 13 && pages[4].count == 5 && pages[5].count == 9 &&
-          pages[8].count == 12 && pages[7].count == 9 && pages[6].count == 5, "every page's rows");
+    check(pages[1].count == 7 && pages[2].count == 13 && pages[4].count == 5 &&
+          pages[5].count == 9 && pages[8].count == 12 && pages[7].count == 9 &&
+          pages[6].count == 5, "every page's rows");
     for (const Page &page : pages) {
         current_page = page.name;
         const float first_y = page.centre - 10.f * float(page.count + 1) - 15.f;
@@ -213,7 +360,7 @@ int main() {
                 // the last selection is Back itself, which has no hint
                 CMenuOptionsList list;
                 list.mSelected = i;
-                CCeBack back(&list, page.hints, page.stride, page.count, page.note);
+                CCeBack back(&list, page.hints, page.stride, page.count, page.note, page.extra);
                 draws.clear();
                 back.Render(320.f, back_y, 0);
                 const SCeHint *hint = i < page.count ? (const SCeHint *)((const char *)page.hints + i * page.stride) : nullptr;
@@ -224,7 +371,20 @@ int main() {
                     check(drawn(0, help) == compact(hint->mHelp), "help survives word wrapping");
                     if (hint->mExtra) check(drawn(help, code) == compact(hint->mExtra), "code survives word wrapping");
                     check(draws[0].y >= back_y + 20.f, "the hint starts below Back");
-                    check(draws[0].colour == 0xffffffff, "the hint is white");
+                    check(draws[0].colour == CCeBack::kCream && draws[0].colour != 0xffffffff, "the hint is cream, not the white of the rows");
+                    for (int l = 1; l < help; ++l) check(draws[l].colour == CCeBack::kCream, "every line of the hint is cream");
+                    if (hint->mExtra) for (int l = help; l < help + code; ++l) check(draws[l].colour == CCeBack::kGrey, "the second line is grey");
+                    // no hint ends on a single word, in the game's widths
+#ifdef CE_NETWORK_OFF
+                    const bool exempt = false;
+#else
+                    const bool exempt = !std::strncmp(page.name, "plans", 5);		// the network flavour's own wordings are not the default build's
+#endif
+                    if (width == 8 && !exempt) {
+                        const std::wstring last = draws[help - 1].text;
+                        check(last.find(L' ') != std::wstring::npos, "a hint does not end on a single word");
+                        if (hint->mExtra) check(draws[help + code - 1].text.find(L' ') != std::wstring::npos, "a second line does not end on a single word");
+                    }
                 }
                 if (page.note) check(drawn(help + code, bottom) == compact(page.note), "note survives word wrapping");
                 for (const Draw &line : draws) check(line.width < 420, "line fits help width");
@@ -234,6 +394,14 @@ int main() {
                     check(draws[help + code - 1].y + 16.f <= 449.f, "help stays above the help bar");
                 }
                 if (bottom) check(draws.back().y + 16.f <= 449.f, "note stays above help bar");
+                if (hint && hint->mExtra && page.extra == CCeBack::EXTRA_FIXED && width <= 9) {
+                    // the Cheats page: two lines of hint at the game's widths, the original code two lines below the first line, at one place on every row
+                    check(help == 2, "a cheat's hint is two lines");
+                    check(draws[help].y == draws[0].y + 2 * 16.f, "the original code is two lines below the hint's first line, on every row");
+                    check(draws[help + code - 1].y + 16.f < draws[help + code].y, "a clear line stands between the code and the note");
+                }
+                if (hint && hint->mExtra && page.extra == CCeBack::EXTRA_FOOT && width <= 9 && help <= 2)
+                    check(draws[help + code - 1].y + 16.f == kCeFootEnd, "the settings' second line ends at one place above the help bar");
                 check(help + code <= 5, "a hint is five lines at most");
             }
         }

@@ -1,0 +1,18 @@
+--- a/DXEngine.cpp
++++ b/DXEngine.cpp
+@@ -9,6 +9,7 @@
+ 
+ #ifdef CE_VERSION
+ extern "C" void PortCeWorldViewCapture();
++extern "C" void PortCeMuseumViewCapture();
+ #endif
+ #ifdef CE_VERSION
+ extern "C" int PortCePlayUnitShowsBattleline(int viewpoint) __attribute__((weak));	// patch 0240: ce_playunit.cpp, a driven unit keeps the radio and the battle line
+@@ -826,6 +827,7 @@
+ 		RENDERINFO.SetProjection(mNearZ,howfar,mNearZ*zoom,mNearZ*zoom*mCamera[mCurrentViewpoint]->GetAspectRatio());
+ #ifdef CE_VERSION
+     PortCeWorldViewCapture();
++    PortCeMuseumViewCapture();
+ #endif
+ 
+ 		if (mRenderLandscape)

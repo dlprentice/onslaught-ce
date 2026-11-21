@@ -75,13 +75,17 @@ def integration(source, output):
     loop = body(world, "CWorld::LoadWorld")
     if not loop.index(apply) < loop.index("things[i]->Init(init)") < loop.index(end):
         raise ValueError("Placement must precede the actual object Init and completion check.")
+    # Execute the complete production block, including its unit/type check and the assignment consumed by Init.
+    active = re.search(r"if \(PortCeProjectPlacementActive\(\)\) \{[^{}]+?\n\s*\}", loop)
+    if not active or apply not in active[0] or active.end() > loop.index("things[i]->Init(init)"):
+        raise ValueError("Unit-side override must belong to the opt-in block before object initialization.")
     startup = body(source["System.cpp"], "CSystem::Run")
     prefix = startup[:startup.index("if (CLIPARAMS.mStressTest")]
     for required in ("PortCeProjectRequested()", "PortCeProjectLaunchLevel()", "if (level < 0) return -1;", "GAME.RunLevel(level);", "return PortCeProjectLoaded() ? 0 : -1;"):
         if required not in prefix:
             raise ValueError("The isolated project launch is missing an early boundary.")
     parts = ["bool LoadAuthoredWorld(int level,CInitThing** inits,CThing** things,int num,BOOL base) {", begin,
-             "for (int i=0;i<num;++i) { CInitThing* init=inits[i];", apply, "things[i]->Init(init); }", end, "return TRUE; }"]
+             "for (int i=0;i<num;++i) { CInitThing* init=inits[i];", active[0], "things[i]->Init(init); }", end, "return TRUE; }"]
     mutators = [("Career.cpp", name) for name in ("CCareerNode::SetBaseThingExistTo", "CCareer::Update", "CCareer::UpdateThingsKilled", "CCareer::UpdateGoodieStates", "CCareer::SetSlot")]
     mutators += [("Career.h", "SetGoodieState"), ("Career.h", "SetInProgress")]
     for index, (path, name) in enumerate(mutators):
@@ -242,7 +246,7 @@ def main():
         shutil.copyfile(args.project, project)
     else:
         project.write_text(json.dumps(expected, ensure_ascii=False, indent=2) + "\n")
-    pins = {str(path.relative_to(ROOT)): digest(path) for path in (ROOT / "port/game/ce_project.cpp", ROOT / "port/game/ce_project.h", ROOT / "port/patches/0139-ce-project-launch-and-storage-hooks.patch", ROOT / "port/patches/0202-ce-project-linked-placement.patch", ROOT / "port/tools/ce_project_tests.py", ROOT / "port/tools/tests/ce_project_driver.cpp", ROOT / "port/tools/tests/ce_project_profile_driver.cpp", ROOT / "port/platform/linux/paths.cpp", ROOT / "port/platform/linux/main.cpp", ROOT / "port/platform/linux/handles.h") }
+    pins = {str(path.relative_to(ROOT)): digest(path) for path in (ROOT / "port/game/ce_project.cpp", ROOT / "port/game/ce_project.h", ROOT / "port/patches/0139-ce-project-launch-and-storage-hooks.patch", ROOT / "port/patches/0202-ce-project-linked-placement.patch", ROOT / "port/patches/0245-ce-project-unit-side.patch", ROOT / "port/tools/ce_project_tests.py", ROOT / "port/tools/tests/ce_project_driver.cpp", ROOT / "port/tools/tests/ce_project_profile_driver.cpp", ROOT / "port/platform/linux/paths.cpp", ROOT / "port/platform/linux/main.cpp", ROOT / "port/platform/linux/handles.h") }
     before = {str(path): digest(path) for path in (project, game / "asset.authored", user / "career.authored")}
     compiler = os.environ.get("CXX", "c++")
     common = [compiler, "-std=c++14", "-O0", "-Wall", "-Wextra", "-Werror", "-I" + str(ROOT / "port/game"), "-I" + str(output), str(ROOT / "port/tools/tests/ce_project_driver.cpp")]
@@ -268,6 +272,12 @@ def main():
     binary = output / "project-driver"; compile_owner(ROOT / "port/game/ce_project.cpp", binary)
     for scenario in ("off", "load", "missing", "duplicate", "near-miss", "base-only", "base-and-level", "wrong-map", "network", "no-map"):
         run(binary, project, scenario)
+
+    sided = json.loads(json.dumps(expected)); sided["version"] = 3; sided["placements"][0]["side"] = "muspell"
+    side_project = output / "authored-side.ceproject"; side_project.write_text(json.dumps(sided))
+    for scenario in ("unit-side", "nonunit-side"):
+        run(binary, side_project, scenario)
+
     # A binding that no placement uses is accepted and moves nothing: its object is never looked up, absent or present.
     for name, unplaced in (("unplaced-absent", "UnplacedObject"), ("unplaced-present", "UnrelatedObject")):
         value = json.loads(json.dumps(expected)); value["map"]["bindings"].append(dict(definition="authored.unplaced", source_object=unplaced))
@@ -282,6 +292,8 @@ def main():
     changed("bad-coordinate", lambda v: v["placements"][0].update(position=[1048577,0,0]))
     changed("missing-source", lambda v: v.update(entry_script="absent"))
     changed("unknown-field", lambda v: v.update(unreviewed=True))
+    # Reach missions must open in the Map Editor until the standalone launcher can display and administer their result.
+    changed("reach-needs-editor", lambda v: v.update(version=4, objective={"type":"reach-point", "position":[40,70,-5]}))
     changed("legacy-project", lambda v: (v.update(version=1),v.pop("map")))
     changed("invalid-map", lambda v: v["map"].update(level=0))
     changed("unicode-control", lambda v: v.update(name="bad\u0085name"))

@@ -1,6 +1,6 @@
 --- a/FrontEnd.cpp
 +++ b/FrontEnd.cpp
-@@ -27,6 +27,12 @@
+@@ -27,6 +27,13 @@
  
  #include	"game.h"
  
@@ -8,12 +8,13 @@
 +bool			PortCeMenus();				// Port (patch 0050): port/game/ce_frontend.cpp
 +CFrontEndPage	*PortCePage();
 +EFrontEndPage	PortCeAsOptions(EFrontEndPage page);	// the CE page's slot reads as FEP_OPTIONS while the CE menus are on
++SINT			PortCeMessageButton(SINT button, EFrontEndPage page);	// Esc and gamepad B close a box the CE page made
 +#endif
 +
  //*********************************************************************************
  extern SINT performing_stress_test;				// 0083d454
  extern char	gAllCheatsEnabled;					// 00679ec1
-@@ -160,6 +166,12 @@
+@@ -160,6 +167,12 @@
  
  	mPages[FEP_E3_LEVEL_SELECT]		= &mFEPE3LevelSelect;
  	mPages[FEP_LANGUAGE_TEST]		= &mFEPLanguageTest;
@@ -26,7 +27,18 @@
  	
  	mPages[FEP_DEMOMAIN]			= &mFEPDemoMain;
  
-@@ -694,6 +706,11 @@
+@@ -443,6 +456,10 @@
+ 	else if (FEMESSBOX.IsInteractive())
+ 	{
+ 		// If a message box is being displayed, then redirect the input into that
++#ifdef CE_VERSION
++		// Port (patch 0050): on the Onslaught CE page Esc and gamepad B close one of its information boxes as OK does
++		button = PortCeMessageButton(button, mActivePage);
++#endif
+ 		FEMESSBOX.ButtonPressed(button, val);
+ 	}
+ 	else
+@@ -694,6 +711,11 @@
  		if (check_draw_twice(from, dest))
  			return;
  	}
@@ -38,7 +50,7 @@
  
  	float tr, scale, yaw;
  	SINT alpha;
-@@ -721,7 +738,11 @@
+@@ -721,7 +743,11 @@
  	// Draw inside bracket
  	col = 0xffffffff;
  	alpha = 0xff;

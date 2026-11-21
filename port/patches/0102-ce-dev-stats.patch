@@ -20,7 +20,7 @@
 +	// left out.
 +	if (PortCeDevStatsOn())
 +	{
-+		PortCeDevStatsOut("World %d,  Time = %2.2f, Event list size = %d(%d) (proc last frame=%d), Num Things = %d, ",GetCurrentLevel(), EVENT_MANAGER.GetTime(), EVENT_MANAGER.TotalEvents(), CScheduledEvent::GetNumCreated(), EVENT_MANAGER.GetNumEventsProcessedInLastUpdate(), WORLD.GetThingNB().Size());
++		PortCeDevStatsOut("World %d,  Time = %2.2f, Event list size = %d(%d) (proc last frame=%d), Num Things = %d",GetCurrentLevel(), EVENT_MANAGER.GetTime(), EVENT_MANAGER.TotalEvents(), CScheduledEvent::GetNumCreated(), EVENT_MANAGER.GetNumEventsProcessedInLastUpdate(), WORLD.GetThingNB().Size());
 +		if (mFixedFrameRate)
 +			PortCeDevStatsOut(", (fixed rate gc) %2.2f FPS ", PLATFORM.GetFPS());
 +		else

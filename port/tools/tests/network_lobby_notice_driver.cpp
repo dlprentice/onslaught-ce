@@ -309,7 +309,7 @@ void HostNotices()
 		snprintf(N.peerVersion, sizeof N.peerVersion, "%s", kOtherLabel);
 		Step();
 		CE_LobbyStatus st = Page();
-		check(Says(st.notice, Want("A player with Onslaught CE %s tried to join: both players need the same version.", kOtherLabel)) && L.state == CE_LOBBY_HOST_WAITING && st.failed == 1 && N.exists,
+		check(Says(st.notice, Want("Your friend has Onslaught CE %s. You both need the same version.", kOtherLabel)) && L.state == CE_LOBBY_HOST_WAITING && st.failed == 1 && N.exists,
 			  "A1 host: a joiner with another version label is named and the host keeps waiting");
 	}
 	else
@@ -322,13 +322,13 @@ void HostNotices()
 		N.error = CE_NET_INCOMPATIBLE;
 		snprintf(N.peerVersion, sizeof N.peerVersion, "%s", kVersion);
 		Step();
-		check(Says(Page().notice, Want("A player with another Onslaught CE build (both say %s) tried to join: both players need the same download.", kVersion)),
+		check(Says(Page().notice, "Your friend has a different Onslaught CE download. You both need the same one."),
 			  "A1 host: a joiner with the same label but another build is told to get the same download");
 	}
 	else
 		check(false, "A1 host: a joiner with the same label but another build is told to get the same download");
 
-	// A4: failed attempts are counted out loud, and the fifth makes a new code
+	// A4: failed attempts are counted (the words stay the same, so the host's page keeps one line), and the fifth makes a new code
 	if (HostWaiting())
 	{
 		const std::string first = Page().code;
@@ -338,18 +338,18 @@ void HostNotices()
 			N.phase = CE_NET_FAILED;
 			N.error = CE_NET_AUTH;
 			Step();
-			counted = counted && Says(Page().notice, Want("A connection attempt failed (%d of %d). A wrong code, or the player gave up.", i, kMaxFailed));
+			counted = counted && Page().failed == i && Says(Page().notice, "Your friend could not join. Check that they have this code.");
 		}
-		check(counted, "A4 host: attempts 1 to 4 of 5 are counted in the notice (a wrong code, or the player gave up)");
+		check(counted, "A4 host: attempts 1 to 4 of 5 are counted, each told in the same words");
 		N.phase = CE_NET_FAILED;
 		N.error = CE_NET_AUTH;
 		Step();
 		CE_LobbyStatus st = Page();
-		check(Says(st.notice, "Five attempts failed, so this game has a new code. Give the other player the new code.") && first != st.code,
+		check(Says(st.notice, "This game has a new code. Give your friend the new code.") && first != st.code,
 			  "A4 host: the fifth failed attempt makes a new code and says so");
 	}
 	else
-		check(false, "A4 host: attempts 1 to 4 of 5 are counted in the notice (a wrong code, or the player gave up)");
+		check(false, "A4 host: attempts 1 to 4 of 5 are counted, each told in the same words");
 
 	// A15: nobody has reached the host for 45 seconds: it is told what the game cannot know, once, and never over a failed attempt's words
 	if (HostWaiting())
@@ -357,9 +357,8 @@ void HostNotices()
 		Step(44999);
 		const bool early = Page().notice[0] == 0;
 		Step(1);
-		check(early && Says(Page().notice, Want("Nobody has reached this PC yet. The game cannot tell why: the other player may not have joined yet, may have typed the code or address wrongly, "
-												"or a router or firewall may be blocking UDP port %u. See How to connect over the Internet.", (unsigned)CE_LobbyPort())),
-			  "A15 host: after 45 seconds with nobody there the host is told what the game cannot know, and not before");
+		check(early && Says(Page().notice, "Nobody has joined yet. If your friend cannot connect, see Connection Help."),
+			  "A15 host: after 45 seconds with nobody there the host is told where to look, and not before");
 		N.phase = CE_NET_AUTHENTICATING;
 		Step();
 		check(L.state == CE_LOBBY_HOST_CONNECTING && Page().notice[0] == 0, "A15 host: a player who starts connecting takes the note away");
@@ -376,7 +375,7 @@ void HostNotices()
 		Step();
 		const std::string failed = Page().notice;
 		Step(120000);
-		const bool kept = failed == Want("A connection attempt failed (1 of %d). A wrong code, or the player gave up.", kMaxFailed) && Page().notice == failed;
+		const bool kept = failed == "Your friend could not join. Check that they have this code." && Page().notice == failed;
 		L.st.notice[0] = 0;		// whatever else took those words away: an attempt DID reach this PC, so "nobody has reached it" would be false
 		Step(120000);
 		check(kept && Page().notice[0] == 0, "A15 host: a host whose attempt failed keeps that attempt's words, and is never told that nobody has come");
@@ -391,7 +390,7 @@ void HostNotices()
 		N.error = CE_NET_PEER_LEFT;
 		Step();
 		CE_LobbyStatus st = Page();
-		check(Says(st.notice, "The other player left.") && L.state == CE_LOBBY_HOST_WAITING && st.failed == 0,
+		check(Says(st.notice, "Your friend left. The same code still works.") && L.state == CE_LOBBY_HOST_WAITING && st.failed == 0,
 			  "A6 host: the other player leaving the lobby is told, and it is not counted as a failed attempt");
 	}
 	else
@@ -400,7 +399,7 @@ void HostNotices()
 	// A5: the host cannot listen
 	Reset();
 	N.createFails = true;
-	check(CE_LobbyHost() == 0 && Says(Page().notice, Want("This PC could not listen on UDP port %u: is another game using it?", (unsigned)CE_LobbyPort())),
+	check(CE_LobbyHost() == 0 && Says(Page().notice, "Could not host a game. Another copy of the game may be running. Close it, then choose Host Game again."),
 		  "A5 host: a taken port is named with its number");
 	if (HostReady())
 	{
@@ -434,7 +433,7 @@ void HostNotices()
 	if (HostReady() && CE_LobbyStart() == 1)
 	{
 		Step(3000 + 200);
-		check(Says(Page().notice, "The other player did not answer the start. Try Start again."), "A7 host: no acknowledgement within the wait is told in full");
+		check(Says(Page().notice, "Your friend's game did not answer the start. Choose Start again."), "A7 host: no acknowledgement within the wait is told in full");
 	}
 	else
 		check(false, "A7 host: no acknowledgement within the wait is told in full");
@@ -446,7 +445,7 @@ void HostNotices()
 		N.refuseNext = 1;
 		Deliver(Msg(WIRE_ACK, nonce));
 		Step();
-		check(Says(Page().notice, "The other player could not be told to start. Try Start again.") && L.state == CE_LOBBY_READY, "A9 host: a GO the transport refused is told, and the lobby stays open");
+		check(Says(Page().notice, "Your friend's game could not be told to start. Choose Start again.") && L.state == CE_LOBBY_READY, "A9 host: a GO the transport refused is told, and the lobby stays open");
 	}
 	else
 		check(false, "A9 host: a GO the transport refused is told, and the lobby stays open");
@@ -519,10 +518,8 @@ void GuestNotices()
 		N.error = CE_NET_TIMEOUT;
 		Step();
 		check(L.state == CE_LOBBY_FAILED &&
-				  Says(Page().notice, Want("No game answered at 127.0.0.1, port %u. The game cannot tell why: the code or address may be wrong, the host may not be waiting (a host makes a new code "
-										   "after five failed attempts), or a router or firewall may be blocking UDP port %u. See How to connect over the Internet.",
-										   (unsigned)CE_LobbyPort(), (unsigned)CE_LobbyPort())),
-			  "A3 guest: no answer names the address and port, says the game cannot tell why and lists the causes");
+				  Says(Page().notice, "No game accepted this code. Check it with your friend, then choose Connect again."),
+			  "A3 guest: no answer says what to do");
 	}
 	if (GuestJoining())
 	{
@@ -530,13 +527,11 @@ void GuestNotices()
 		N.error = CE_NET_AUTH;
 		Step();
 		check(L.state == CE_LOBBY_FAILED &&
-				  Says(Page().notice, Want("No game answered at 127.0.0.1, port %u. The game cannot tell why: the code or address may be wrong, the host may not be waiting (a host makes a new code "
-										   "after five failed attempts), or a router or firewall may be blocking UDP port %u. See How to connect over the Internet.",
-										   (unsigned)CE_LobbyPort(), (unsigned)CE_LobbyPort())),
+				  Says(Page().notice, "No game accepted this code. Check it with your friend, then choose Connect again."),
 			  "silent-host-auth");
 	}
 	else
-		check(false, "A3 guest: no answer names the address and port, says the game cannot tell why and lists the causes");
+		check(false, "A3 guest: no answer says what to do");
 
 	// A6: the host leaves, or has closed the game before the guest was ready
 	if (GuestReady())
@@ -544,7 +539,7 @@ void GuestNotices()
 		N.phase = CE_NET_CLOSED;
 		N.error = CE_NET_PEER_LEFT;
 		Step();
-		check(L.state == CE_LOBBY_LEFT && Says(Page().notice, "The host left the game."), "A6 guest: the host leaving a lobby the guest was ready in is told");
+		check(L.state == CE_LOBBY_LEFT && Says(Page().notice, "Your friend left the game."), "A6 guest: the host leaving a lobby the guest was ready in is told");
 	}
 	else
 		check(false, "A6 guest: the host leaving a lobby the guest was ready in is told");
@@ -553,7 +548,7 @@ void GuestNotices()
 		N.phase = CE_NET_CLOSED;
 		N.error = CE_NET_PEER_LEFT;
 		Step();
-		check(L.state == CE_LOBBY_LEFT && Says(Page().notice, "The host closed the game."), "A6 guest: the host closing the game before the guest was ready is told");
+		check(L.state == CE_LOBBY_LEFT && Says(Page().notice, "Your friend closed their game."), "A6 guest: the host closing the game before the guest was ready is told");
 	}
 	else
 		check(false, "A6 guest: the host closing the game before the guest was ready is told");
@@ -564,7 +559,7 @@ void GuestNotices()
 		Deliver(Msg(WIRE_START, Cat(Be32(856), Nonce(4))));
 		Step();
 		Step(5000 + 500);
-		check(Says(Page().notice, "The host did not start the game. Wait for the host to try again."), "A8 guest: no GO within the wait is told in full");
+		check(Says(Page().notice, "Your friend's game did not start. Wait for them to choose Start again."), "A8 guest: no GO within the wait is told in full");
 	}
 	else
 		check(false, "A8 guest: no GO within the wait is told in full");
@@ -591,7 +586,7 @@ void DirectConnectionLoss()
 			Step();
 			const auto status = Page();
 			check(status.state == CE_LOBBY_HOST_WAITING && status.failed == 0 && code == status.code &&
-				  Says(status.notice, "The connection to the other player was lost. Waiting for another player with the same code.") &&
+				  Says(status.notice, "The connection to your friend was lost. The same code still works.") &&
 				  L.net && N.exists && N.createCalls == created + 1 && N.destroyCalls == destroyed + 1 &&
 				  N.closeCalls == closed && !CE_LobbyRestartDue(), loss.host);
 		}
@@ -603,7 +598,7 @@ void DirectConnectionLoss()
 			Step();
 			const auto status = Page();
 			check(status.state == CE_LOBBY_FAILED &&
-				  Says(status.notice, "The connection to the host was lost. Check that the host is still waiting, then join again.") &&
+				  Says(status.notice, "The connection to your friend was lost. Check that they are still hosting, then join again.") &&
 				  !L.net && !N.exists && N.createCalls == created && N.destroyCalls == destroyed + 1 &&
 				  N.closeCalls == closed && !CE_LobbyRestartDue(), loss.guest);
 		}

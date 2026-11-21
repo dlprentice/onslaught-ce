@@ -111,13 +111,22 @@ void PortCeGraphicsBeginDevice(unsigned pixelVersion, unsigned vertexVersion, bo
     if (!PortCeGraphicsPolicyActive()) return;
     if (!initialized)
     {
-        requested = CE_SettingGetBool("extra_graphics", freshOptionsPending || EXTRA_GEFORCE_FX_FEATURES.mValue != 0) != 0;
+        // A valid extra_graphics line is the player's saved choice. With none, only a new profile asks for the extra paths: a profile that
+        // already has options of its own keeps them off until the player chooses Yes, as it was before this row could be offered. The game's
+        // own tweak is no evidence either way (it starts set, the options file does not hold it, and the game clears it only after the first
+        // device exists). The options file does not hold the row, so the new profile's choice is written once, like the two rows above, or its
+        // next start would find saved options and no line; an unwritable ce.ini leaves the choice for this session only.
+        const int saved = CE_SettingGetBool("extra_graphics", -1);
+        requested = saved >= 0 ? saved != 0 : freshOptionsPending;
+        if (saved < 0 && freshOptionsPending) CE_SettingSet("extra_graphics", 1);
         initialized = true;
     }
     // These are the shader models used by the existing optional shaders; format support is queried on the
     // actual provider and adapter. Resource creation can still fail and is reported independently below.
     capable = (pixelVersion & 0xffffu) >= 0x0200u && (vertexVersion & 0xffffu) >= 0x0101u && formats;
     seenResources = failedResources = 0;
+    // The capability tweak follows the device alone, whether or not the extra paths are asked for: the row is offered by it, and the game
+    // lays the shore surf out by it when a level loads, so it has to hold one value from a level's load to its end.
     GEFORCE_FX_POWER.Set(capable ? 1.f : 0.f);
     if (capable) R32F_WORKS.Set(float32 ? 1.f : 0.f);
     EXTRA_GEFORCE_FX_FEATURES.Set(capable && requested ? 1.f : 0.f);
@@ -134,6 +143,11 @@ bool PortCeGraphicsRequested()
     return PortCeGraphicsPolicyActive() && initialized && capable && requested;
 }
 
+bool PortCeGraphicsRequestFailed()
+{
+    return PortCeGraphicsRequested() && failedResources != 0;
+}
+
 void PortCeGraphicsResourceOutcome(unsigned resource, bool ready)
 {
     if (!PortCeGraphicsRequested()) return;
@@ -145,7 +159,7 @@ void PortCeGraphicsResourceOutcome(unsigned resource, bool ready)
     if (!ready)
     {
         failedResources |= resource;
-        GEFORCE_FX_POWER.Set(0.f);
+        // As the original does on a refused resource: the feature tweak alone. The capability tweak stays as the device set it (above).
         EXTRA_GEFORCE_FX_FEATURES.Set(0.f);
     }
     // A later success does not revive an incomplete generation. Retry only after a complete device rebuild.
@@ -162,8 +176,10 @@ void PortCeGraphicsFinishDevice(bool ready)
 bool PortCeGraphicsStoreRequest(int enabled)
 {
     if (!PortCeGraphicsPolicyActive()) return true;
-    if ((enabled != 0 && enabled != 1) || !CE_SettingSet("extra_graphics", enabled)) return false;
+    if (enabled != 0 && enabled != 1) return false;
+    // The choice holds for this session whether or not ce.ini can keep it, as Full models and Terrain detail distance do; false tells the
+    // row that it was not saved.
     requested = enabled != 0;
     initialized = true;
-    return true;
+    return CE_SettingSet("extra_graphics", enabled) != 0;
 }

@@ -1,0 +1,11 @@
+--- a/CarrierGuide.cpp
++++ b/CarrierGuide.cpp
+@@ -114,7 +114,7 @@
+ 	if (diff > PI / 8)
+ 		diff = PI / 8;
+ 	float	roll;	// STAND-IN (budget): an if/else, see above
+-	if ((right * d) < 0.0)
++	if ((((right.Z * d.Z) + (right.Y * d.Y)) + (right.X * d.X)) < 0.0)	// Port: retail sums (Z + Y) + X (004221a7)
+ 		roll = diff;
+ 	else
+ 		roll = -diff;

@@ -1,0 +1,19 @@
+--- a/Career.cpp
++++ b/Career.cpp
+@@ -70,6 +70,7 @@
+ bool	PortCeCareerSaving(CCareer *career);
+ extern "C" void PortCeEditorFilterSave(CCareer *career, void *dest); // Keep playtest progress out of career saves.
+ void	PortCeBonusFilterSave(CCareer *career, void *dest);	// Port (patch 0181): port/game/ce_bonus.cpp
++extern "C" void PortCeMuseumVisitFilterSave(CCareer *career, void *dest);	// Port (patch 0279): port/game/ce_museum_visit_engine.cpp
+ #endif
+ void	ApplyControlPreset(int preset);		// 00453780
+ void	ReinitialiseSound(bool restore_music);	// 004cddf0
+@@ -1501,6 +1502,8 @@
+ #ifdef CE_VERSION
+ 	PortCeEditorFilterSave(this, dest);
+ 	PortCeBonusFilterSave(this, dest);
++	// Port (patch 0279): while a museum visit holds the player's career, a save writes that, so nothing the visit changes reaches a file
++	PortCeMuseumVisitFilterSave(this, dest);
+ 	SetIsGod(0, portGod0);
+ 	SetIsGod(1, portGod1);
+ #endif

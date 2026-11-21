@@ -130,7 +130,12 @@ class AllTheTexts(Driver):
         t = {name: original for name, (original, _) in self.texts().items()}
         self.assertIn("Choose the folder that contains BEA.exe", t["game-missing"])
         self.assertIn("Record: record this session.", t["record"])
-        self.assertIn("Stop recording: play without recording, and turn session recording off.", t["record"])
+        self.assertIn("Turn recording off: play without recording, and do not ask again.", t["record"])
+        self.assertIn("Not this time: play without recording. You will be asked again next time.", t["record"])
+        self.assertIn("copies of some files from your user folder", t["record"])
+        for retired in ("Stop recording", "CE user folder", "session recording off", "direct gamepad", "Direct gamepad"):
+            self.assertNotIn(retired, t["record"])
+        self.assertTrue(t["record"].startswith("Session recording is on.\n\n"), "the heading line stands alone")
         self.assertIn("Onslaught CE V0.1.14 is available (you have V0.1.13).", t["update-offer"])
         self.assertIn("(35.2 MB)", t["update-offer"])
         self.assertIn("do not ask about V0.1.14 again", t["update-offer"], "the same V as the first line")
@@ -169,9 +174,12 @@ class Sources(unittest.TestCase):
         self.assertIn("ask_terminal(box, which)", body, "the terminal keeps the text as written")
 
     def test_the_one_simple_box_wraps_its_text_too(self):
+        # its sentence is wrapped and the folder follows it whole, on a line of its own (report_box_tests.py runs these statements)
         self.assertEqual(1, self.launch.count("SDL_ShowSimpleMessageBox("))
         i = self.launch.index("SDL_ShowSimpleMessageBox(")
-        self.assertIn("ce_box_wrap(text, shown, sizeof shown, CE_BOX_COLUMNS) ? shown : text", self.launch[i:i + 300])
+        self.assertIn('if (!ce_box_wrap(text, shown, sizeof shown, CE_BOX_COLUMNS)) snprintf(shown, sizeof shown, "%s", text);',
+                      self.launch[i - 400:i])
+        self.assertIn('SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_INFORMATION, "Onslaught CE", shown, NULL);', self.launch[i:i + 120])
 
     def test_no_box_carries_a_literal_text_of_its_own(self):
         for source in (self.launch, self.update):

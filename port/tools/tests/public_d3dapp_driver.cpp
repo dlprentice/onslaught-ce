@@ -31,6 +31,10 @@ bool windowAllowed=true,fullAllowed=true,windowColourSamples=true,windowDepthSam
 bool desktopDepth=true,formatCaps=false,refWindowOnly=false;
 bool capsAvailable=true,rejectRef=false,resetFails=false,createFails=false,finishFails=false,initFails=false,restoreFails=false;
 unsigned initFailuresRemaining;
+unsigned finishFailuresRemaining;	// the next device-caps reads after a reset or creation fail
+unsigned releaseWithoutDevice;	// the game shell's release uses the device without a test: it must never be asked to with none
+bool shellObjectsLive;	// the shell's objects, from InitDeviceObjects until their release or deletion
+unsigned releaseNotLive;	// releases or deletions of objects already released: the shell must release once per live period
 bool nativeWindowOverride;
 int vpPolicy=0;
 D3DDISPLAYMODE desktop={1920,1080,60,D3DFMT_X8R8G8B8};
@@ -57,7 +61,7 @@ HRESULT IDirect3DSurface9::GetDesc(D3DSURFACE_DESC *p){p->Width=nativeParameters
 unsigned IDirect3DSurface9::Release(){if(!refs)throw std::runtime_error("surface double release");if(!--refs)DeviceRelease(owner);return refs;}
 HRESULT IDirect3DDevice9::Reset(D3DPRESENT_PARAMETERS *p){++resetCount;events.push_back("reset");if(nativeWindowOverride)p->Windowed=TRUE;last=*p;HRESULT h=resetFails?E_FAIL:Outcome();if(SUCCEEDED(h))nativeParameters=*p;return h;}
 HRESULT IDirect3DDevice9::TestCooperativeLevel(){++cooperativeQueries;if(cooperativeLevels.empty())return cooperativeLevel;HRESULT h=cooperativeLevels.front();cooperativeLevels.pop_front();return h;}
-HRESULT IDirect3DDevice9::GetDeviceCaps(D3DCAPS9 *p){*p=D3DCAPS9();p->PixelShaderVersion=actualPixelVersion;p->VertexShaderVersion=actualVertexVersion;return finishFails?E_FAIL:S_OK;}
+HRESULT IDirect3DDevice9::GetDeviceCaps(D3DCAPS9 *p){*p=D3DCAPS9();p->PixelShaderVersion=actualPixelVersion;p->VertexShaderVersion=actualVertexVersion;if(finishFailuresRemaining){--finishFailuresRemaining;return E_FAIL;}return finishFails?E_FAIL:S_OK;}
 HRESULT IDirect3DDevice9::GetBackBuffer(UINT,UINT,int,IDirect3DSurface9 **p){surface.refs=1;surface.owner=this;++refs;*p=&surface;return S_OK;}
 HRESULT IDirect3DDevice9::CreateQuery(int,IDirect3DQuery9 **p){queries.emplace_back(new IDirect3DQuery9);*p=queries.back().get();(*p)->refs=1;(*p)->owner=this;++refs;events.push_back("query-create");return S_OK;}
 BOOL IDirect3DDevice9::ShowCursor(BOOL b){return b;}
@@ -87,7 +91,9 @@ BOOL SetWindowPos(HWND,HWND,int,int,int,int,UINT){return TRUE;} LONG GetClassLon
 LRESULT DefWindowProc(HWND,UINT,WPARAM,LPARAM){return 0;}
 LRESULT SendMessage(HWND h,UINT m,WPARAM w,LPARAM l){return dispatch?dispatch(h,m,w,l):0;}
 HCURSOR SetCursor(HCURSOR p){return p;} BOOL GetCursorPos(POINT *p){*p={0,0};return TRUE;}
-BOOL ScreenToClient(HWND,POINT *){return TRUE;} int MessageBox(HWND,const char *,const char *,UINT){return 0;}
+BOOL ScreenToClient(HWND,POINT *){return TRUE;}
+static std::string dialogBody;
+int MessageBox(HWND,const char *text,const char *,UINT){dialogBody=text;return 0;}
 void Sleep(unsigned ms){sleepDurations.push_back(ms);events.push_back("sleep");}
 FLOAT DXUtil_Timer(TIMER_COMMAND c){if(c==TIMER_START)events.push_back("timer-start");if(c==TIMER_STOP)events.push_back("timer-stop");return c==TIMER_GETELAPSEDTIME?elapsedAppTime:0;}
 int PortWideModes(){return wide;} int PortWideDefaultSize(unsigned *w,unsigned *h){*w=1920;*h=1080;return wide;}
@@ -98,11 +104,11 @@ void SetSetupMessage(int){}
 struct Application : CD3DApplication {
     IDirect3DDevice9 *callbackDevice=nullptr;
     HRESULT ConfirmDevice(D3DCAPS9 *,DWORD flags,D3DFORMAT colour) override{if(vpPolicy&&colour==desktop.Format&&flags!=D3DCREATE_SOFTWARE_VERTEXPROCESSING)return E_FAIL;if(vpPolicy==2&&colour!=desktop.Format&&flags==D3DCREATE_SOFTWARE_VERTEXPROCESSING)return E_FAIL;return rejectHardware&&(flags&D3DCREATE_HARDWARE_VERTEXPROCESSING)?E_FAIL:S_OK;}
-    HRESULT InitDeviceObjects() override{events.push_back("init");if(countedCallbacks){callbackDevice=m_pd3dDevice;++callbackDevice->refs;}if(initFailuresRemaining){--initFailuresRemaining;return E_FAIL;}return initFails?E_FAIL:S_OK;}
+    HRESULT InitDeviceObjects() override{events.push_back("init");shellObjectsLive=true;if(countedCallbacks){callbackDevice=m_pd3dDevice;++callbackDevice->refs;}if(initFailuresRemaining){--initFailuresRemaining;return E_FAIL;}return initFails?E_FAIL:S_OK;}
     HRESULT RestoreDeviceObjects() override{events.push_back("restore");return restoreFails?E_FAIL:S_OK;}
     HRESULT InvalidateDeviceObjects() override{events.push_back("invalidate");return S_OK;}
-    HRESULT DeleteDeviceObjects() override{events.push_back("delete");if(callbackDevice){DeviceRelease(callbackDevice);callbackDevice=nullptr;}return S_OK;}
-    HRESULT ReleaseDeviceObjects(bool progress) override{events.push_back(progress?"release-progress":"release");if(callbackDevice){DeviceRelease(callbackDevice);callbackDevice=nullptr;}return S_OK;}
+    HRESULT DeleteDeviceObjects() override{events.push_back("delete");if(!shellObjectsLive)++releaseNotLive;shellObjectsLive=false;if(callbackDevice){DeviceRelease(callbackDevice);callbackDevice=nullptr;}return S_OK;}
+    HRESULT ReleaseDeviceObjects(bool progress) override{events.push_back(progress?"release-progress":"release");if(!m_pd3dDevice)++releaseWithoutDevice;if(!shellObjectsLive)++releaseNotLive;shellObjectsLive=false;if(callbackDevice){DeviceRelease(callbackDevice);callbackDevice=nullptr;}return S_OK;}
     HRESULT FinalCleanup() override{events.push_back("final");return S_OK;}
 };
 #include "public_d3dapp_recovery.h"
@@ -142,13 +148,14 @@ int PresentationControl(const std::string &name)
     check(SUCCEEDED(app.Create(nullptr))&&app.m_bWindowed==startsWindowed,"precondition chosen logical mode starts");
     const RECT oldClient=app.m_rcWindowClient,oldBounds=app.m_rcWindowBounds;
     const unsigned oldCreateCount=createCount;
-    const bool rollback=name=="reset-rollback"||name=="logical-rollback"||name=="init-rollback"||persistent;
+    const bool rollback=name=="reset-rollback"||name=="logical-rollback"||name=="init-rollback"||name=="finish-rollback"||persistent;
     if(name=="logical-rollback")app.m_d3dpp.Windowed=TRUE; // Native desktop fullscreen presents a D3D window.
     if(paused)app.Pause(TRUE);
     client={0,0,1024,768}; // Prepared by the owning window transaction, independent of stale startup rectangles.
     if(name=="invalid-client")client={0,0,0,768};
     if(name=="reset-rollback"||name=="logical-rollback")attempts={E_FAIL,S_OK};
     if(name=="init-rollback")initFailuresRemaining=1;
+    if(name=="finish-rollback")finishFailuresRemaining=1;	// the reset succeeds and the device's caps cannot be read: the host drops the device
     if(persistent)resetFails=true;
     const HRESULT result=app.ForceWindowed(!startsWindowed);
     if(rollback||name=="invalid-client")
@@ -162,7 +169,7 @@ int PresentationControl(const std::string &name)
         else check(app.m_bReady&&app.m_pd3dDevice&&DeviceRefs()>0,"successful rollback restores live resources and readiness");
         if(name=="reset-rollback"||name=="logical-rollback")
             check(createCount==oldCreateCount&&resetCount==2,"recoverable reset refusal retains one device and restores it once");
-        if(name=="init-rollback")check(createCount==oldCreateCount+1,"failed optional presentation initialization rebuilds old provider");
+        if(name=="init-rollback"||name=="finish-rollback")check(createCount==oldCreateCount+1,"failed optional presentation initialization rebuilds old provider");
     }
     else
     {
@@ -206,6 +213,8 @@ int PresentationControl(const std::string &name)
 #endif
     }
     app.Cleanup3DEnvironment();
+    check(releaseWithoutDevice==0,"the shell's release is never asked to use a dropped device");
+    check(releaseNotLive==0&&!shellObjectsLive,"the shell's objects are released once per live period");
     check(DeviceRefs()==0&&QueryRefs()==0&&d3d.refs==0,"transaction cleanup releases all native ownership");
     std::cout<<"presentation="<<name<<" checks="<<checks<<" failures="<<failures<<"\n";
     return failures?1:0;
@@ -442,6 +451,13 @@ int main(int argc,char **argv)
     if(argc==3&&std::string(argv[1])=="window-control")return WindowControl(argv[2]);
     if(argc!=2)return 2;
     std::string name=argv[1];
+    if(name=="graphics-error") {
+        Application app;
+        HRESULT result=app.DisplayErrorMsg(static_cast<HRESULT>(42),0);
+        const std::string expected="Onslaught CE could not set up its graphics (error 0x0000002a).\n\n"
+                                   "Update your graphics driver and try again. If it keeps happening, run onslaught-ce.exe --report.";
+        return result==42 && dialogBody==expected ? 0 : 1;
+    }
     bool ownership=name=="owned-reset-ref"||name=="owned-query-reset-ref"||name=="owned-reset-ref-fail"||name=="owned-failed-create";
     bool mapping=name=="physical-secondary"||name=="physical-recovery"||name=="physical-primary";
     if(ownership)countedCallbacks=true;

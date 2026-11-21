@@ -24,6 +24,7 @@ inline uint64_t PaceTarget(uint64_t now, uint64_t grid, uint64_t period)
 }
 
 struct KeyStep { double ms; unsigned sc, raw; bool down, done; };
+struct ButtonStep { double ms; unsigned button; bool down; };
 struct MouseSeg { double from, until, vx, vy; };
 
 enum ArmMode { ARM_NONE, ARM_PRESENT, ARM_STATE };
@@ -34,6 +35,7 @@ class Script
 {
 public:
 	std::vector<KeyStep> keys;
+	std::vector<ButtonStep> buttons;	// "button MS d|u N": mouse button N (0 left, 1 right, 2 middle) held from a d step to its u
 	std::vector<MouseSeg> mouse;
 	std::vector<std::string> accepted, rejected;
 	ArmMode armMode = ARM_NONE;
@@ -132,6 +134,23 @@ public:
 	}
 
 	// The earliest key step that is due and not yet taken.
+	// The mouse buttons the script holds now: bit N for button N, from the latest of its steps at or before now (none before arm).
+	unsigned ButtonsHeld(uint64_t nowNs) const
+	{
+		if (!armed) return 0;
+		const double nowMs = Ms(nowNs);
+		unsigned held = 0;
+		for (unsigned b = 0; b < 3; ++b)
+		{
+			double latest = -1.0;
+			bool down = false;
+			for (const ButtonStep &s : buttons)
+				if (s.button == b && s.ms <= nowMs && s.ms >= latest) { latest = s.ms; down = s.down; }
+			if (down) held |= 1u << b;
+		}
+		return held;
+	}
+
 	bool KeyDue(uint64_t nowNs, KeyStep *out)
 	{
 		if (!armed) return false;
@@ -194,6 +213,11 @@ private:
 		if (sscanf(s, "key %lf %c %u %x %c", &ms, &ud, &sc, &raw, &tail) == 4 && (ud == 'd' || ud == 'u') && ms >= 0)
 		{
 			keys.push_back({ms, sc, raw, ud == 'd', false});
+			return true;
+		}
+		if (sscanf(s, "button %lf %c %u %c", &ms, &ud, &n, &tail) == 3 && (ud == 'd' || ud == 'u') && ms >= 0 && n < 3)
+		{
+			buttons.push_back({ms, n, ud == 'd'});
 			return true;
 		}
 		if (sscanf(s, "mouse %lf %lf %lf %lf %c", &ms, &until, &vx, &vy, &tail) == 4 && until >= ms && ms >= 0)

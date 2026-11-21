@@ -1,0 +1,17 @@
+--- a/PCMusicStream.cpp
++++ b/PCMusicStream.cpp
+@@ -25,2 +25,3 @@
++#include "ce_hooks.h"	// Port: the CE hook points (port/game/ce_hooks.h)
+ bool						MUSIC_STREAM_FINISHED;	// 0089beac: the track ran out (CPCMusic::DeviceGetTrackFinished)
+ 
+@@ -33,4 +34,5 @@
+ bool GetMusicStreamFinished()
+ {
++	ce_hook_audio_clock(CE_AUDIO_FINISHED_POLL, 0);	// CE hook point (port/game/ce_hooks.h)
+ 	return __atomic_load_n(&MUSIC_STREAM_FINISHED, __ATOMIC_ACQUIRE);
+ }
+@@ -378,3 +380,4 @@
+ 			sBytesStreamed += size1;
++			ce_hook_audio_clock(CE_AUDIO_REFILL, size1);	// CE hook point (port/game/ce_hooks.h): inside the stream guard, any thread
+ 			break;
+ 

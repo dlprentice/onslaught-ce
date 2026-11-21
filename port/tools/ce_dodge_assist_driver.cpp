@@ -18,6 +18,7 @@
 #include <algorithm>
 #include <strings.h>
 #include <cstdarg>
+#include "ce_hooks_host_stubs.h"
 #ifdef __linux__
 #include <sys/prctl.h>
 #endif
@@ -71,6 +72,8 @@ struct CBattleEngineWalkerPart
 	WalkerMain *mMainPart; float mLastStartHardRightTime = -10, mLastStartHardLeftTime = -10, mLastMoveXVal = 0; int mDoingDashCount = 0;
 	static float mDashTime, mDashStart, mDashEnd, mDashVelocity; static int mDashLength;
 	explicit CBattleEngineWalkerPart(WalkerMain *p) : mMainPart(p) {} float GetCurrentAccleration() { return 1; } void LoseWeaponCharge() {}
+	void Forward(float); void Backward(float);
+	float mLastMoveYVal = 0.f, mLastStartHardForwardTime = -1e9f, mLastStartHardBackwardTime = -1e9f;
 	void StrafeLeft(float); void StrafeRight(float); int GetDashCount() { return mDoingDashCount; }
 	void EndOfFrame() { if (mDoingDashCount > 0) --mDoingDashCount; }	// the walker's own Move counts a dash down once an update
 };
@@ -127,7 +130,7 @@ void PortCePadForget(void *) {}
 #include "analog_dead_zone.inc"
 struct CController
 {
-	int mPadNumber = 0, mNumMappings = 4; bool mPlaying = false, mRecording = false, mPausedBeforeMap = false;
+	int mPadNumber = 0, mNumMappings = 6; bool mPlaying = false, mRecording = false, mPausedBeforeMap = false;
 	float mLastRepeatTime = 0, mNextDelayTime = 0;
 	IController *toControl = nullptr; bool keys[256] = {}, keysBefore[256] = {};
 	bool set[128] = {};
@@ -180,23 +183,35 @@ static void Reach(CController &c, int button, float value)
 	int before = w.mDoingDashCount;
 	if (button == BUTTON_MECH_STRAFE_LEFT) w.StrafeLeft(value);
 	else if (button == BUTTON_MECH_STRAFE_RIGHT) w.StrafeRight(value);
+	else if (button == BUTTON_MECH_FORWARD) w.Forward(value);
+	else if (button == BUTTON_MECH_BACKWARD) w.Backward(value);
 	if (w.mDoingDashCount > 1 && before <= 1)
 	{
 		Dash &d = dashes[c.player];
-		if (d.frame < 0) { d.frame = (int)c.update; d.side = button == BUTTON_MECH_STRAFE_LEFT ? -1 : 1; }
-		++d.count; d.sides.push_back(button == BUTTON_MECH_STRAFE_LEFT ? -1 : 1);
-		if (sCeDodgeSending) causes.push_back(Cause{c.update, button == BUTTON_MECH_STRAFE_LEFT ? -1 : 1, AssistSide(c.mPadNumber)});
+		if (d.frame < 0) { d.frame = (int)c.update; d.side = (button == BUTTON_MECH_FORWARD ? -2 : button == BUTTON_MECH_BACKWARD ? 2 : button == BUTTON_MECH_STRAFE_LEFT ? -1 : 1); }
+		++d.count; d.sides.push_back((button == BUTTON_MECH_FORWARD ? -2 : button == BUTTON_MECH_BACKWARD ? 2 : button == BUTTON_MECH_STRAFE_LEFT ? -1 : 1));
+		if (sCeDodgeSending) causes.push_back(Cause{c.update, (button == BUTTON_MECH_FORWARD ? -2 : button == BUTTON_MECH_BACKWARD ? 2 : button == BUTTON_MECH_STRAFE_LEFT ? -1 : 1), AssistSide(c.mPadNumber)});
 	}
 }
 #include "send.inc"
 #define private public			// the tests read the assist's copy of the walker's memory
+static int fixtureDodgeKey=DIK_LCONTROL;
+static bool fixtureTakeover,fixtureCommander;
+bool PortCeExperimental(const char *s) { return !strcmp(s,"play_unit")?fixtureTakeover:!strcmp(s,"commander")&&fixtureCommander; }
+#include "ce_dodge_binding.h"
+int PortCeActionKey(CeControlAction action) { return action == CeControlAction::TakeUnit ? 0x12 : action == CeControlAction::Commander ? 0x32 : fixtureDodgeKey; }
+int PortCeDodgeBindingKey() { return fixtureDodgeKey; }
+bool PortCeDodgeBindingName(int key,char *out,int size) {
+    if (key<=0 || size<2) return false;
+    std::snprintf(out,size,"%s",key==DIK_LCONTROL?"Left Ctrl":"K");return true;
+}
 #include "ce_dodge_assist.h"
 #include "dodge_glue.inc"
 #undef private
 static int AssistSide(int pad) { return gState[pad].mAssist.Side(); }
 
 // ---- scripts -----------------------------------------------------------------------------------------------------------------------
-struct Step { bool ctrl = false, a = false, d = false, padB = false, extra = false; float stick = 0; float dt = 1.f / 60; };
+struct Step { bool ctrl = false, a = false, d = false, padB = false, extra = false; float stick = 0; float dt = 1.f / 60; bool w=false, s=false, j=false, k=false, x=false; };
 static void Reset(CController &c)
 {
 	for (int p = 0; p < 2; ++p) { players[p] = CPlayer(); dashes[p] = Dash(); }
@@ -215,7 +230,7 @@ static void RunStep(CController &c, const Step &s, unsigned index)
 {
 	EVENT_MANAGER.time += s.dt; ++EVENT_MANAGER.frame; c.update = index;
 	memcpy(c.keysBefore, c.keys, sizeof c.keys);
-	c.keys[DIK_A] = s.a; c.keys[DIK_D] = s.d; c.keys[DIK_LCONTROL] = s.ctrl; c.keys[DIK_LSHIFT] = s.extra;
+	c.keys[DIK_A] = s.a; c.keys[DIK_D] = s.d; c.keys[DIK_W] = s.w; c.keys[DIK_S] = s.s; c.keys[DIK_J]=s.j; c.keys[DIK_K]=s.k; c.keys[DIK_X]=s.x; c.keys[DIK_LCONTROL] = s.ctrl; c.keys[DIK_LSHIFT] = s.extra;
 	gPadButtons[c.mPadNumber] = s.padB ? 1u : 0; gPadAxis[c.mPadNumber] = s.stick;		// the pad's game button 0 is B
 	c.Flush();
 	players[0].engine.part.EndOfFrame();
@@ -356,12 +371,88 @@ int main(int argc, char **argv)
 #endif
 	if (argc != 2) return 1;
 	const char *mode = argv[1];
+    if(Is(mode,"binding-owners")) {
+        fixtureDodgeKey=0x12;
+        Check(PortCeDodgeAssistKeyFree(),"normal profile can choose an otherwise unused key");
+        fixtureTakeover=true;
+        Check(!strcmp(PortCeDodgeBindingConflict(0x12),"Infantry takeover") && !PortCeDodgeAssistKeyFree(),"infantry keeps E even if Dodge was assigned it earlier");
+        fixtureCommander=true;fixtureDodgeKey=0x32;
+        Check(!strcmp(PortCeDodgeBindingConflict(0x32),"Commander view") && !PortCeDodgeAssistKeyFree(),"Commander keeps M with both features enabled");
+        fixtureDodgeKey=0x16;
+        Check(PortCeDodgeAssistKeyFree(),"another ordinary key stays available with both features enabled");
+        return 0;
+    }
 	Check(CE_DODGE_PAD_BUTTON == 0, "the Dodge Button is the pad's game button 0 (B, after retail's rotation of the face buttons)");
 	const char *envs[] = {"BEA_PORT_CLOCK", "BEA_PORT_TAPE", "BEA_PORT_PROBES", "BEA_PORT_RECORD", "BEA_PORT_PILOT", "BEA_PORT_AUTOPILOT", "BEA_NET_HOST", "BEA_NET_JOIN"};
 	for (const char *e : envs) unsetenv(e);
 	CBattleEngineWalkerPart::mDashStart = 0.9f; CBattleEngineWalkerPart::mDashEnd = 0.8f;
 
-	if (Is(mode, "key-right")) KeyDodge(false);
+	if(Is(mode,"four-directions"))
+	{
+		for (int asked : {-2, 2, -1, 1}) {
+			Reset(gC);
+			Play(gC, Frames(48, [=](int i, Step &s) {
+				s.ctrl = i >= 5; const bool move = i >= 9;
+				s.w = move && asked == -2; s.s = move && asked == 2;
+				s.a = move && asked == -1; s.d = move && asked == 1;
+			}));
+			Check(dashes[0].count == 1 && dashes[0].side == asked, "one held press dodges exactly once in its chosen direction");
+		}
+		for (int diagonal : {0, 1}) {
+			Reset(gC);
+			Play(gC, Frames(60, [=](int i, Step &s) {
+				s.ctrl = i >= 4; s.w = i >= 8; s.a = i >= (diagonal ? 8 : 10) && i < 43;
+			}));
+			Check(dashes[0].count == (diagonal ? 0 : 1), "a simultaneous diagonal has no chosen direction, while a later second axis cannot steal an existing dodge");
+		}
+	}
+	else if(Is(mode,"chord-order"))
+	{
+		for (bool later : {false, true}) {
+			Reset(gC);
+			Play(gC, Frames(64, [=](int i, Step &s) {
+				s.s = i >= 4 && (!later || i < 28 || i >= 36); s.ctrl = i >= 9;
+			}));
+			Check(dashes[0].count == (later ? 2 : 1), "either key order starts a dodge; a new press after recovery starts another");
+		}
+		Reset(gC);
+		Play(gC, Frames(65, [](int i, Step &s) {
+			s.ctrl = i >= 4; s.a = i >= 9 && i < 34; s.d = i >= 9 && i < 49;
+		}));
+		Check(!dashes[0].count, "simultaneous opposite keys and releasing one half do not choose a dodge");
+	}
+	else if(Is(mode,"rebound-fore-aft"))
+	{
+		for (bool back : {false,true}) {
+			Reset(gC);
+			FindControlBinding(BUTTON_MECH_FORWARD)->mInput[0].mKey=DIK_J;
+			FindControlBinding(BUTTON_MECH_BACKWARD)->mInput[0].mKey=DIK_K;
+			fixtureDodgeKey=DIK_X;
+			Play(gC, Frames(60, [=](int i, Step &s) {
+				s.ctrl = i>=2 && i<20; s.w = !back && i>=5 && i<15;
+				s.s = back && i>=5 && i<15; s.x=i>=27; s.j=!back && i>=31; s.k=back && i>=31;
+			}));
+			if (!(dashes[0].count==1 && dashes[0].side==(back?2:-2) && dashes[0].frame>=31))
+				std::fprintf(stderr, "remap context: one=%d direction=%d new_frame=%d selected_input=%d shortcuts=%d keyfree=%d\n",
+				 dashes[0].count==1,dashes[0].side==(back?2:-2),dashes[0].frame>=31,
+				 !Real(back?BUTTON_MECH_BACKWARD:BUTTON_MECH_FORWARD).empty(),Taps()!=0,PortCeDodgeAssistKeyFree());
+			Check(dashes[0].count==1 && dashes[0].side==(back?2:-2) && dashes[0].frame>=31,
+				"only the newly assigned modifier and forward/back keys activate their own direction");
+		}
+	}
+	else if(Is(mode,"fore-aft-controls"))
+	{
+		for (int asked : {-2, 2}) {
+			Reset(gC);
+			Play(gC, Frames(42, [=](int i, Step &s) { s.w = asked < 0 && i >= 6; s.s = asked > 0 && i >= 6; }));
+			Check(dashes[0].count == 0 && Taps() == 0 && !Real(asked<0?BUTTON_MECH_FORWARD:BUTTON_MECH_BACKWARD).empty(), "a movement key alone retains ordinary movement");
+			Reset(gC);
+			players[0].engine.walker = false;
+			Play(gC, Frames(42, [=](int i, Step &s) { s.ctrl = i >= 3; s.w = asked < 0 && i >= 6; s.s = asked > 0 && i >= 6; }));
+			Check(Taps() == 0 && !Real(asked<0?BUTTON_MECH_FORWARD:BUTTON_MECH_BACKWARD).empty(), "aircraft receives normal fore and aft controls");
+		}
+	}
+	else if (Is(mode, "key-right")) KeyDodge(false);
 	else if (Is(mode, "key-left")) KeyDodge(true);
 	else if (Is(mode, "pad-right")) PadDodge(false);
 	else if (Is(mode, "pad-left")) PadDodge(true);

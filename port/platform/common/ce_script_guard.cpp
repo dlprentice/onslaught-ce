@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
-// port/platform/common/ce_script_guard.cpp: whether a script notification that nests in the script VM waits a frame
+// port/platform/common/ce_script_guard.cpp: whether a script notification that nests in the script VM is deferred a frame
 // (ce_script_guard.h; patch 0176 calls it from IScript::StartedDying and IScript::Died).
 #include "ce_script_guard.h"
 #include "mods.h"
@@ -29,7 +29,8 @@ bool PortCeScriptDeferNested(int level, const char *entry)
 	if (!sLogged[which])
 	{
 		sLogged[which] = true;
-		PortSessionLog(PORT_SESSION_GAME, true, "script %s entered while the script VM was running (level %d is a mod's): it waits for the next frame", entry, level);
+		PortSessionLog(PORT_SESSION_GAME, true, "script %s entered while the script VM was running (level %d is a mod's): %s", entry, level,
+					   which ? "it is dropped (its script is deleted before the next frame)" : "it waits for the next frame");
 	}
 	return true;
 }

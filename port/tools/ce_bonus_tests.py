@@ -87,6 +87,7 @@ extern FakeGame GAME;
 DRIVER = r"""// SPDX-License-Identifier: GPL-3.0-only
 // Calls the production CE bonus module against authored in-memory objects. No .bes files or game data.
 #include "ce_bonus_fake.h"
+#include <initializer_list>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -96,6 +97,17 @@ FakeFrontend FRONTEND;
 FakeGame GAME;
 static bool menus = true;
 bool PortCeMenus() { return menus; }
+static int modLevel = 0;		// the level an active mod supplies an archive for (mods.cpp, PortModHas): none when 0
+bool PortModHas(const char *path)
+{
+	char want[64];
+	std::snprintf(want, sizeof want, "data/resources/%03d_res_PC.aya", modLevel);
+	return modLevel && std::strcmp(path, want) == 0;
+}
+bool PortCeBonusStartModLevel(int level);
+bool PortCeBonusModLevelAvailable(int level);
+bool PortCeBonusModLevelPending();
+int PortCeBonusTakeModReturn();
 bool PortCeBonusStart(int level);
 bool PortCeBonusCoopRunning();
 bool PortCeBonusLevelEnd();
@@ -168,6 +180,55 @@ int main(int argc, char **argv)
 		return 0;
 	}
 
+	if (std::strcmp(mode, "mod-level") == 0)
+	{
+		// a level an active mod adds, started from the Mods page (patch 0250 takes it back to the CE page)
+		check(!PortCeBonusModLevelAvailable(level) && !PortCeBonusStartModLevel(level), "no mod supplies the level: it cannot start");
+		check(FRONTEND.pageCalls == 0 && FRONTEND.quitCalls == 0, "a refused start leaves the front end alone");
+		modLevel = level;
+		check(PortCeBonusModLevelAvailable(level), "a mod supplies the level");
+		check(!PortCeBonusStart(level), "the CE page's own bonus rows never start a level a mod adds");
+		menus = false;
+		check(!PortCeBonusModLevelAvailable(level) && !PortCeBonusStartModLevel(level), "disabled CE menus must not start it");
+		menus = true;
+		check(FRONTEND.pageCalls == 0 && FRONTEND.quitCalls == 0, "refusals leave the front end alone");
+		CCareer original = CAREER;
+		check(PortCeBonusStartModLevel(level), "the level starts");
+		check(FRONTEND.mSelectedLevel == level && FRONTEND.quitCalls == 0 && FRONTEND.pageCalls == 1 && FRONTEND.page == FEP_MULTIPLAYER_START && FRONTEND.delay == 30,
+		      "through the two-player start page");
+		check(!PortCeBonusModLevelPending(), "nothing is pending before the level ends");
+		GAME.level = level;
+		check(PortCeBonusCoopRunning(), "the level runs as a co-op level (the gamepad defaults)");
+		CAREER.progress = 4321;
+		CAREER.SetMusicVolume(0.75f);
+		spoilUnrelatedState();
+		original.SetMusicVolume(0.75f);
+		FRONTEND.mSelectedLevel = level;
+		check(PortCeBonusLevelEnd(), "the end restores the career");
+		check(std::memcmp(&CAREER, &original, sizeof(CAREER)) == 0, "the career is as it was before the level (the settings kept)");
+		check(!PortCeBonusReturning() && !PortCeBonusRaceReturning(), "not a debrief or a race");
+		check(PortCeBonusModLevelPending() && PortCeBonusModLevelPending(), "pending until the front end's branch consumes it (asked without consuming)");
+		check(PortCeBonusCoopReturning() && !PortCeBonusModLevelPending(), "the multiplayer branch takes it once");
+		check(PortCeBonusTakeModReturn() == level, "the CE page opens the Mods page for this level");
+		check(PortCeBonusTakeModReturn() == 0 && PortCeBonusTakeReturn() == 0, "once, and the Bonus Levels list is not opened for it");
+		// an ordinary bonus level afterwards inherits nothing of it
+		check(PortCeBonusStart(856), "a bonus co-op map starts");
+		FRONTEND.mSelectedLevel = 856;
+		check(PortCeBonusLevelEnd(), "and ends");
+		check(!PortCeBonusModLevelPending() && PortCeBonusTakeModReturn() == 0 && PortCeBonusTakeReturn() == 856, "it is the bonus list's, not the Mods page's");
+		// only 850 to 899
+		for (int other : {849, 900, 100, 0, 1000})
+		{
+			modLevel = other;
+			check(!PortCeBonusStartModLevel(other), "a level outside 850 to 899 never starts");
+		}
+		for (int edge : {850, 899})
+		{
+			modLevel = edge;
+			check(PortCeBonusStartModLevel(edge), "the first and last level a mod may add start");
+		}
+		return 0;
+	}
 	const bool race = level >= 901 && level <= 905;
 	const bool coop = level == 856 || level == 858;
 	check(level == 201 || coop || race, "invalid authored level");
@@ -361,6 +422,10 @@ class BonusSettingsTests(unittest.TestCase):
                     result = self.run_case(self.actual, mode, level)
                     self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
+    def test_a_level_a_mod_adds_starts_from_the_mods_page_and_returns_to_it(self):
+        result = self.run_case(self.actual, "mod-level", 888)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_a_debrief_is_shown_once_and_never_inherited(self):
         result = self.run_case(self.actual, "debrief-stale-end", 201)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -388,8 +453,8 @@ class BonusSettingsTests(unittest.TestCase):
              "bool PortCeBonusLevelEnd()\n{\n\tsReturning = false;\n", "race-stale-end", 0, 903),
             # every bonus level comes back to the list it was started from (the CE menus' return rule)
             ("lost-list-return", "\tsReturnLevel = sLevel;", "\tsReturnLevel = 0;", "setting", 0, 856),
-            ("list-return-sticks", "\tconst int level = sReturnLevel;\n\tsReturnLevel = 0;\n\treturn level;",
-             "\tconst int level = sReturnLevel;\n\treturn level;", "setting", 0, 201),
+            ("list-return-sticks", "int PortCeBonusTakeReturn()\n{\n\tconst int level = sReturnLevel;\n\tsReturnLevel = 0;\n\treturn level;",
+             "int PortCeBonusTakeReturn()\n{\n\tconst int level = sReturnLevel;\n\treturn level;", "setting", 0, 201),
             ("list-return-outlives-its-entry", "bool PortCeBonusLevelEnd()\n{\n\tsReturning = false;\n\tsRaceReturning = false;\n\tsCoopReturning = false;\n\tsReturnLevel = 0;\n",
              "bool PortCeBonusLevelEnd()\n{\n\tsReturning = false;\n\tsRaceReturning = false;\n\tsCoopReturning = false;\n", "race-stale-end", 0, 903),
             ("list-return-inherited", "\tsCoopReturning = false;\n\tsReturnLevel = 0;\n\tFRONTEND.mSelectedLevel = level;",
@@ -399,8 +464,18 @@ class BonusSettingsTests(unittest.TestCase):
             ("coop-return-sticks", "\tconst bool returning = sCoopReturning;\n\tsCoopReturning = false;\n\treturn returning;",
              "\tconst bool returning = sCoopReturning;\n\treturn returning;", "setting", 0, 856),
             ("debrief-to-main", "FRONTEND.SetPage(FEP_LANGUAGE_TEST, 30);", "FRONTEND.SetPage(FEP_MAIN, 30);", "setting", 0, 201),
-            ("race-as-coop", "bool IsCoop(int level) { return level == 856 || level == 858; }",
+            ("race-as-coop", "bool IsCoop(int level) { return level == 856 || level == 858 || sModLevel; }	// sModLevel is set only for a level ModLevel has admitted",
              "bool IsCoop(int level) { return level != kBonusLevel; }", "setting", 0, 903),
+            # the levels a mod adds (patch 0250)
+            ("mod-level-without-a-mod", "return level >= 850 && level <= 899 && PortModHas(path);", "return level >= 850 && level <= 899;", "mod-level", 0, 888),
+            ("mod-level-range-low", "return level >= 850 && level <= 899 && PortModHas(path);", "return level >= 849 && level <= 899 && PortModHas(path);", "mod-level", 0, 888),
+            ("mod-level-range-high", "return level >= 850 && level <= 899 && PortModHas(path);", "return level >= 850 && level <= 900 && PortModHas(path);", "mod-level", 0, 888),
+            ("mod-level-no-return", "\treturn sCoopReturning && sModLevel;", "\treturn false;", "mod-level", 0, 888),
+            ("mod-level-pending-for-any-coop", "\treturn sCoopReturning && sModLevel;", "\treturn sCoopReturning;", "mod-level", 0, 888),
+            ("mod-level-return-sticks", "\tconst int level = sReturnLevel;\n\tsReturnLevel = 0;\n\treturn level;\n}\n\n// A bonus co-op level is being played", "\tconst int level = sReturnLevel;\n\treturn level;\n}\n\n// A bonus co-op level is being played", "mod-level", 0, 888),
+            ("mod-level-opens-the-bonus-list", "\tif (!sModLevel || !sReturnLevel)\n\t\treturn 0;", "\tif (!sReturnLevel)\n\t\treturn 0;", "mod-level", 0, 888),
+            ("mod-level-sticks-to-the-next-start", "static bool Start(int level, bool mod)\n{\n\tsModLevel = mod;\n", "static bool Start(int level, bool mod)\n{\n\tsModLevel = sModLevel || mod;\n", "mod-level", 0, 888),
+            ("mod-level-through-the-bonus-rows", "bool PortCeBonusStart(int level)\n{\n\treturn Start(level, false);", "bool PortCeBonusStart(int level)\n{\n\treturn Start(level, true);", "mod-level", 0, 888),
             ("race-on-start-page", "if (level == kBonusLevel || IsRace(level))", "if (level == kBonusLevel)", "setting", 0, 903),
             ("race-refused", "!IsCoop(level) && !IsRace(level)", "!IsCoop(level)", "setting", 0, 903),
             ("race-wrong-range", "level >= kRaceFirst && level <= kRaceLast", "level > kRaceFirst && level <= kRaceLast", "setting", 0, 901),

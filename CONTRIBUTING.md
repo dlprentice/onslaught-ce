@@ -99,6 +99,10 @@ Commander, Video Options, camera feel and the planned network play, map editor a
 maintainers' working source has unreleased changes in these areas that this repository does not show yet. Open an issue
 before starting larger work in them, so the change is not made against code that is about to move.
 
+If your pull request adds new files under `port/patches/`, prefer numbers in the **`0800–0899`** range (reserved for
+public pull requests) so they do not collide with active maintainer patch slots; the maintainer assigns final canonical
+numbers when importing.
+
 ## Related repositories
 
 The project's public repositories are listed in [Where to contribute](#where-to-contribute). Onslaught CE is not a

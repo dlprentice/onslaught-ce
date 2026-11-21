@@ -77,18 +77,28 @@
  #endif
  
  	CONSOLE.SetLoadingFraction(0.7f);
-@@ -2300,6 +2324,10 @@
+@@ -1626,6 +1650,9 @@
+ 		SAFE_DELETE(mCurrentCamera[i]);
+ 	}
+ 
++#ifdef CE_VERSION
++	mQuit = static_cast<EQuitType>(PortCeEditorResolveQuit(mQuit));
++#endif
+ 	return mQuit ;
+ }
+ 
+@@ -2300,6 +2327,10 @@
  //******************************************************************************************
  void	CGame::PreRun()
  {
 +#ifdef CE_VERSION
-+	if (PortCeEditorActive()) return;
++	if (PortCeEditorActive() && !PortCeEditorPlaying()) return;
 +#endif
 +
  	if (!CLIPARAMS.mBuildResources)
  	{
  		// runs the game for a defined time ( in mPreRunTime attribute )
-@@ -2313,6 +2341,10 @@
+@@ -2313,6 +2344,10 @@
  //******************************************************************************************
  void	CGame::MainLoop()	// FUNCTION: 0x0046eee0
  {
@@ -131,7 +141,7 @@
  #ifndef CE_NETWORK_OFF
  #include "ce_network_boot.h"
  #endif
-@@ -1448,7 +1451,8 @@
+@@ -1449,7 +1452,8 @@
  		{
  			gKeyPressed = true;
  #ifdef CE_VERSION

@@ -54,7 +54,9 @@ def main():
     assert 'CE_LockstepCampaignOutcome(' not in disabled, 'network-disabled game gained a runtime dependency'
     patch = (ROOT / 'port/patches' / PATCH).read_text()
     assert all(not line.startswith('-') or line.startswith('---') for line in patch.splitlines())
-    assert all(not line.startswith(' ') for line in patch.splitlines()), 'original context leaked into authored patch'
+    # Each call is placed by the game's own lines round it (three each way); only the include, at the head of the file, has none.
+    assert not re.search(r'(?m)^@@ -[1-9][0-9]*,0 \+', patch), 'a hunk with no context line is placed by its line number alone'
+    assert sum(line.startswith(' ') for line in patch.splitlines()) == 12, 'each call keeps three lines of context each way'
     missing = enabled.replace('CE_LockstepCampaignOutcome(CE_CAMPAIGN_OUTCOME_WIN);', '', 1)
     assert not valid(missing), 'missing-notification control was not caught'
     pattern = r'(\b\w+\s*=\s*GAME_STATE_LEVEL_WON\s*;)\s*(CE_LockstepCampaignOutcome\(CE_CAMPAIGN_OUTCOME_WIN\);)'

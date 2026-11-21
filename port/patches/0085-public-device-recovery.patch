@@ -1,10 +1,48 @@
 --- a/ltshell.cpp
 +++ b/ltshell.cpp
-@@ -776,6 +776,24 @@
- 			cant_proc =	FALSE;
+@@ -767,6 +767,28 @@
+ {
++#if defined(BEA_PUBLIC_GRAPHICS_HOST)
++	// Every FALSE return hands the caller a game or front-end pass, and that pass reads the pads. It can come while the
++	// device objects are released (a recovery still pending, a reset that failed, a quit or a session's end meanwhile),
++	// and their release freed every pad's state: give that pass idle pads. InitDeviceObjects frees them again.
++	auto lastPass = [this]() -> BOOL
++	{
++		if (!mD3DActive)
++		{
++			for (int i=0;i<MAX_JOYPADS;i++)
++			{
++				if (!mJoyState[i]) mJoyState[i] = new( MEMTYPE_UNKNOWN ) DIJOYSTATE2;
++				if (!mOldJoyState[i]) mOldJoyState[i] = new( MEMTYPE_UNKNOWN ) DIJOYSTATE2;
++				memset(mJoyState[i],0,sizeof(DIJOYSTATE2));
++				memset(mOldJoyState[i],0,sizeof(DIJOYSTATE2));
++			}
++		}
++		return FALSE;
++	};
++#define PORT_STEP_RESULT(result) ((result) ? TRUE : lastPass())
++#else
++#define PORT_STEP_RESULT(result) (result)
++#endif
+ #if defined(CE_VERSION)
+ 	// TriggerQuit has already set the normal game/frontend flags. Let their caller consume them even if this
+ 	// window is inactive or its device is lost; another blocking GetMessage would otherwise strand shutdown.
+-	if (sPortQuitRequested) return FALSE;
++	if (sPortQuitRequested) return PORT_STEP_RESULT(FALSE);
+ #endif
+@@ -790,7 +812,7 @@
+     if (bGotMsg && CE_SessionActive() && mMsg.message == WM_QUIT)
+     {
+         CE_SessionGameSetQuit(QT_QUIT_TO_SYSTEM);
+-        return FALSE;
++        return PORT_STEP_RESULT(FALSE);
+     }
+ #endif
+     if( bGotMsg )
+@@ -812,6 +834,24 @@
          }
      }
-+
+ 
 +#if defined(BEA_PUBLIC_GRAPHICS_HOST)
 +	// Recovery keeps rendering disabled until resources are restored. Drain ordinary messages first;
 +	// never dispatch a nested pump while invalidation/reset callbacks are running.
@@ -22,10 +60,11 @@
 +		cant_proc = TRUE;
 +	}
 +#endif
- 
++
  	if(!cant_proc) // stuff from top of Render3DEnvironment()
  	{
-@@ -826,7 +844,12 @@
+ 
+@@ -853,7 +893,12 @@
  					m_d3dpp.BackBufferFormat = pAdapterInfo->d3ddmDesktop.Format;
  				}
  
@@ -38,12 +77,64 @@
  				{
  		            SendMessage( LT.GetHWnd(), WM_CLOSE, 0, 0 );
  					cant_proc = TRUE;
-@@ -847,4 +870,8 @@
+@@ -870,7 +915,11 @@
+ #else
+ 		if( ( 0.0f == fElapsedAppTime ) && m_bFrameMoving && !CE_SessionActive() )
+ #endif
 +#if defined(BEA_PUBLIC_GRAPHICS_HOST)
-+			return cant_proc; // A zero clock delta must not turn unavailable resources into a runnable frame.
++			return PORT_STEP_RESULT(cant_proc); // A zero clock delta must not turn unavailable resources into a runnable frame.
 +#else
  			return S_OK;
 +#endif
  
  
  // Not sure about this shite
+@@ -894,10 +943,19 @@
+ 
+ // process joystick
+ 
++#if defined(BEA_PUBLIC_GRAPHICS_HOST)
++	// A reset that failed or was put off returns here with the device objects still released, and their release
++	// freed every pad's state. Poll the pads again once InitDeviceObjects has made that state anew.
++	if (mD3DActive)
++	{
++#endif
+ 	for (int i=0;i<MAX_JOYPADS;i++)
+ 	{
+ 		UpdateJoystick(i, first);
+ 	}
++#if defined(BEA_PUBLIC_GRAPHICS_HOST)
++	}
++#endif
+ 
+ 	// a new frame: no key has been read yet
+ 	spKeysRead = sKeysRead;
+@@ -922,10 +980,15 @@
+     {
+         int service = CE_SessionSystemService(m_bActive && m_bReady, session_device_state);
+-        if (service == CE_SESSION_EXIT) return FALSE;
++        if (service == CE_SESSION_EXIT) return PORT_STEP_RESULT(FALSE);
+         if (service == CE_SESSION_WAIT) cant_proc = TRUE;
+         if (cant_proc) Sleep(10); // Bound an inactive/device-lost network loop without inventing a message.
+     }
+ #endif
++#if defined(BEA_PUBLIC_GRAPHICS_HOST)
++	return PORT_STEP_RESULT(cant_proc);
++#else
+ 	return	cant_proc;
++#endif
++#undef PORT_STEP_RESULT
+ }
+ //-----------------------------------------------------------------------------
+@@ -1099,6 +1162,11 @@
+ 
+ 	for (int i=0;i<MAX_JOYPADS;i++)
+ 	{
++#if defined(BEA_PUBLIC_GRAPHICS_HOST)
++		// idle pads that a last pass was given while the objects were released (HandlingSystemStuff)
++		SAFE_DELETE(mJoyState[i]);
++		SAFE_DELETE(mOldJoyState[i]);
++#endif
+ #line 1152
+ 		mJoyState[i]	= new( MEMTYPE_UNKNOWN ) DIJOYSTATE2;
+ 		mOldJoyState[i]	= new( MEMTYPE_UNKNOWN ) DIJOYSTATE2;

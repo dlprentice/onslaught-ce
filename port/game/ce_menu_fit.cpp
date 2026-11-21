@@ -5,6 +5,11 @@
 #include "ce_menu_fit.h"
 
 bool PortCeQualityOptionsAvailable();	// ce_quality_options.cpp: the ordinary CE menus (never a faithful reference run)
+bool PortCeQualityRow(const void *item);	// ce_quality_options.cpp: one of the Video Options rows Onslaught CE adds
+#ifdef CE_VERSION
+#include "FrontEndPage.h"
+EFrontEndPage PortCeAsOptions(EFrontEndPage page);	// ce_frontend.cpp: Onslaught CE's own pages are options pages too
+#endif
 
 namespace
 {
@@ -67,4 +72,82 @@ WCHAR *PortCeListFit(WCHAR *text, float x)
     const float room = kCeValueRight - x;
     if ((float)size.cx <= room) return text;
     return Cut(font, text, room, 1.f, &size);
+}
+
+namespace
+{
+// The one expanded list's window: lists open one at a time.
+struct SListWindow
+{
+    const void *owner;	// the item whose list it is
+    int first;			// its first entry drawn
+    int hovered;		// the entry the pointer rested on when it was last drawn, else -1
+    float seen;			// when it was last drawn
+    float scrolled;		// when the pointer last moved it
+};
+SListWindow gWindow = { 0, -1, -1, -1.f, -1.f };
+
+// The front end's options pages (Options and Onslaught CE's own) show their title bar above a list; a level's Pause Menu does not.
+bool OptionsPage(int page)
+{
+#ifdef CE_VERSION
+    return PortCeAsOptions((EFrontEndPage)page) == FEP_OPTIONS;
+#else
+    (void)page;
+    return false;
+#endif
+}
+
+bool Within(float now, float since, float limit) { return since >= 0.f && now >= since && now - since < limit; }
+}
+
+// RenderList (patch 0212) for an expanded list of `count` entries `rowh` apart at the row y, on the front end's page `page`: 0 when the
+// list keeps the original's layout (it fits inside its page's limits, or this is not the ordinary CE menus); else 1, with where its first
+// entry is drawn, which entry that is and how many are drawn.
+int PortCeListWindow(const void *owner, float y, long rowh, int count, int selection, int page, float *top, int *first, int *shown)
+{
+    if (!owner || !PortCeQualityOptionsAvailable()) return 0;
+    const bool front = OptionsPage(page);
+    const float now = PLATFORM.GetSysTimeFloat();
+    const bool open = gWindow.owner == owner && Within(now, gWindow.seen, kCeListForget);
+    const int hovered = open ? gWindow.hovered : -1;
+    gWindow.hovered = -1;
+    SCeListPlace place;
+    if (!PortCeListPlace(y, rowh, count, selection, open ? gWindow.first : -1, front ? kCeListFrontTop : kCeListPauseTop,
+                         front ? kCeListFrontBottom : kCeListPauseBottom, &place))
+    {
+        gWindow.owner = 0;
+        return 0;
+    }
+    const int step = PortCeListEdgeStep(place.first, place.shown, count, hovered);
+    if (step && !Within(now, gWindow.scrolled, kCeListScrollEvery))
+    {
+        place.first += step;
+        gWindow.scrolled = now;
+    }
+    gWindow.owner = owner;
+    gWindow.first = place.first;
+    gWindow.seen = now;
+    *top = place.top;
+    *first = place.first;
+    *shown = place.shown;
+    return 1;
+}
+
+// RenderList: the pointer rests on entry `entry` of the window PortCeListWindow laid out this frame.
+void PortCeListHover(int entry)
+{
+    gWindow.hovered = entry;
+}
+
+// CMenuOptionsList::Render (patch 0215): the row pitch of a list holding `item`, 0 for the list's own item heights.
+int PortCeCompactPitch(const void *item)
+{
+    return (PortCeQualityRow(item) && PortCeQualityOptionsAvailable()) ? kCeCompactPitch : 0;
+}
+
+// How far that list's centre moves down: only in the front end, where the page shows no title of the list's own (`options_page`).
+float PortCeCompactShift(int pitch, bool options_page)
+{
+    return (pitch && options_page) ? kCeCompactFrontShift : 0.f;
 }

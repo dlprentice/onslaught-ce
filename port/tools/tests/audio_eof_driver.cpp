@@ -12,6 +12,7 @@
 #include <fcntl.h>
 #include <cerrno>
 #include <mutex>
+#include "ce_hooks_host_stubs.h"
 using HRESULT=int;using UINT=unsigned;using BYTE=unsigned char;using CHAR=char;using BOOL=int;using DWORD=uint32_t;
 #define S_OK 0
 #define S_FALSE 1

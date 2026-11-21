@@ -68,7 +68,7 @@ def trial(root: Path, label: str, text: str, m32: bool,
     cases.mkdir()
     definitions = []
     names = {"userdir": "UserDir", "handoffpath": "HandoffPath",
-             "dotted": "Dotted", "beginrestart": "BeginRestart",
+             "parseip": "ParseIp", "dotted": "Dotted", "beginrestart": "BeginRestart",
              "setenv": "SetEnv", "hex": "Hex",
              "scrubenvironment": "ScrubEnvironment",
              "returntofrontend": "ReturnToFrontEnd", "boot": "Boot",
@@ -121,7 +121,7 @@ def trial(root: Path, label: str, text: str, m32: bool,
                      "write-failure-direct-host", "write-failure-direct-guest",
                      "write-failure-direct-host-listener-failed")
     modes = (failure_modes if write_failure_only else
-             (None, "shutdown-host", "shutdown-guest", "cancel-host", "cancel-guest", "shutdown-idle"))
+             (None, "shutdown-host", "shutdown-guest", "cancel-host", "cancel-guest", "shutdown-idle", "mission-relay-host", "mission-relay-guest", "mission-voluntary-leave", "mission-finished", "mission-untyped-error"))
     if not write_failure_only and expected is None:
         modes += failure_modes
     for mode in modes:

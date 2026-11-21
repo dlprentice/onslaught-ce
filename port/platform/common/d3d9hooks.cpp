@@ -23,6 +23,7 @@
 #include <cmath>
 
 #include "platform.h"
+#include "testhooks.h"
 #include "feel.h"
 
 #include <SDL3/SDL.h>
@@ -1283,6 +1284,26 @@ HRESULT STDMETHODCALLTYPE Present(IDirect3DDevice9 *dev, const RECT *src, const 
 	if (PortCePhotoShotWanted())
 		TakeCeShot(dev);
 #endif
+	// testhooks.h: a frame a test harness asked for, and its end (closed as the player closes the window). Null in every
+	// build but a --test-kit one.
+	if (gPortTestHooks)
+	{
+		if (const char *hookShot = gPortTestHooks->shotPath())
+		{
+			snprintf(gShotPath, sizeof gShotPath, "%s", hookShot);
+			WriteShot(dev);
+			gPortTestHooks->shotDone();
+		}
+		static bool hookQuitPosted;
+		if (!hookQuitPosted && gPortTestHooks->wantsQuit())
+		{
+			D3DDEVICE_CREATION_PARAMETERS cp;
+			if (SUCCEEDED(dev->GetCreationParameters(&cp)))
+				PortPostMessageA(cp.hFocusWindow, WM_CLOSE, 0, 0);
+			hookQuitPosted = true;
+			fprintf(stderr, PORT_LOG_PREFIX "frame %u: WM_CLOSE posted (test hook)\n", gFrames);
+		}
+	}
 	if (gQuitFrame && gFrames == gQuitFrame)
 	{
 		// As if the player closed the window: the game's own shutdown path (BEA_PORT_QUIT=FRAME).
@@ -1318,6 +1339,27 @@ HRESULT STDMETHODCALLTYPE Present(IDirect3DDevice9 *dev, const RECT *src, const 
 	D3DDEVICE_CREATION_PARAMETERS cp;
 	PortReplayFrame(gFrames, SUCCEEDED(dev->GetCreationParameters(&cp)) ? cp.hFocusWindow : w);
 	return hr;
+}
+
+// A replay or a recording clears the main thread's stack below this hook once the device is made. The driver leaves its
+// own data there, and CE's stack starts at a different offset every run (the retail exe's does not), so whether a later
+// stack object of the game lies over that data changed from run to run. One does reach the game: CWorld::Load's stack
+// CUnitInitThing, whose string tails Copy() takes into a heap init thing whose block a dive bomber's AI later gets, and
+// that AI reads its timer (+0x70) before setting it, as retail does; retail read zero there. 128 KB covers what the
+// device creation uses (about 56 KB on Windows with an NVIDIA driver). The hook checks ReplayingOrRecording() before the
+// call, so normal play never enters the 128 KB frame: the compiler sets up the whole frame (and Windows' page probes) on
+// entry, before anything in the function runs.
+static bool ReplayingOrRecording()
+{
+	const char *tape = getenv("BEA_PORT_TAPE"), *record = getenv("BEA_PORT_RECORD");
+	return (tape && *tape) || (record && *record);
+}
+
+static void __attribute__((noinline)) ClearStackAfterDeviceCreation()
+{
+	volatile unsigned char below[128 * 1024];
+	for (size_t i = 0; i < sizeof(below); i++)
+		below[i] = 0;
 }
 
 HRESULT STDMETHODCALLTYPE CreateDevice(IDirect3D9 *d3d, UINT adapter, D3DDEVTYPE type, HWND focus, DWORD flags,
@@ -1360,6 +1402,8 @@ HRESULT STDMETHODCALLTYPE CreateDevice(IDirect3D9 *d3d, UINT adapter, D3DDEVTYPE
 		fprintf(stderr, PORT_LOG_PREFIX "CreateDevice asks %ux%u format %d windowed %d refresh %u\n", pp->BackBufferWidth,
 				pp->BackBufferHeight, (int)pp->BackBufferFormat, (int)pp->Windowed, pp->FullScreen_RefreshRateInHz);
 	HRESULT hr = gCreateDevice(d3d, adapter, type, focus, flags, pp, out);
+	if (ReplayingOrRecording())
+		ClearStackAfterDeviceCreation();
 	unsigned short after = ControlWord();
 #ifdef CE_VERSION
 	cursorBefore.RestoreIfFailed(hr);

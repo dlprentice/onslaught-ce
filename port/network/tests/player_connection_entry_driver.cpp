@@ -138,6 +138,8 @@ void CE_LobbyLeave(void) {
  ++fixture_leave_calls; fixture_status.state = CE_LOBBY_OFF;  if (fixture_clear_notice_on_leave) fixture_status.notice[0] = 0; }
 void CE_LobbyShutdown() { fixture_status.state = CE_LOBBY_OFF; }
 int CE_LobbyRestartDue(void) { return 0; }
+// These cases start at connection entry. The returned-room driver supplies and checks both returning roles.
+int CE_LobbyResumeMatch(void) { return 0; }
 int CE_LobbyCopy(const char* text) { fixture_clipboard = text; return 1; }
 int CE_LobbyPaste(char* out, size_t size) {
     ++fixture_clipboard_reads;
@@ -179,8 +181,6 @@ void OpenEntry(bool relay = false) {
 static void OpenJoin(bool relay=false)
 {
     OpenEntry(relay);
-    sMenu->Choose(relay ? sMenu->mOnlineItem : sMenu->mLocalItem);
-    sMenu->Update();
     sMenu->Choose(sMenu->mJoinItem);
     sMenu->Update();
 }
@@ -360,7 +360,7 @@ void RequestedRelayPresentation() {
     Check(DrawnContains(L"Two-player relay pilot") && !DrawnContains(L"This PC:") &&
           !DrawnContains(L"forward UDP"), "relay-host-page-shows-real-code-without-direct-routing-instructions");
     sMenu->Back();
-    sMenu->Choose(sMenu->mList[NP_CONNECTION]->mItems.At(2));
+    ChooseAction(NA_HELP);
     fixture_drawn.clear(); sMenu->DrawText();
     Check(sMenu->mPage == NP_HELP && DrawnContains(L"Copy each file completely") &&
           DrawnContains(L"matching game folders") && DrawnContains(L"Keep filenames and files private") &&
@@ -371,8 +371,7 @@ void RequestedRelayPresentation() {
         DrawnContains(L"has not been verified"),
         "pilot-help-requires-operator-setup-and-keeps-internet-acceptance-unverified");
 #else
-    Check(sMenu->mPage == NP_MENU && !sMenu->mHostItem->IsEnabled() &&
-          !sMenu->mJoinItem->IsEnabled() && fixture_host_calls == 0 && fixture_join_calls == 0,
+    Check(sMenu->mPage == NP_MENU && !sMenu->mConnectionSelected && fixture_host_calls == 0 && fixture_join_calls == 0,
           "disabled-build-refuses-explicit-relay-request-without-direct-fallback");
     CNetItem host("Fixture host action", NA_HOST), join("Fixture join action", NA_JOIN);
     sMenu->Choose(&host); sMenu->Choose(&join);
@@ -387,39 +386,23 @@ void RequestedRelayPresentation() {
 
 static void ConnectionModeEntry()
 {
+    // Host Game and Join Game take the launch's connection: nothing is selected or started before one is chosen.
     OpenEntry(false);
-    Check(sMenu->mPage == NP_MENU && !sMenu->mConnectionSelected, "mode entry starts without membership");
-    Check(sMenu->mLocalItem->IsEnabled() && !sMenu->mOnlineItem->IsEnabled()
-        && !sMenu->mBrowseItem->IsEnabled(), "only configured direct route is enabled");
+    Check(sMenu->mPage == NP_MENU && !sMenu->mConnectionSelected, "the first page starts without a connection");
+    Check(sMenu->mHostItem->IsEnabled() && sMenu->mJoinItem->IsEnabled() && fixture_host_calls == 0 && fixture_join_calls == 0,
+        "the first page offers Host Game and Join Game and starts nothing");
     ChooseAction(NA_HELP);
     sMenu->Back();
     Check(sMenu->mPage == NP_MENU && !sMenu->mConnectionSelected,
-        "help from mode entry returns to mode entry");
-    ChooseAction(NA_ONLINE);
-    Check(sMenu->mPage == NP_MENU && fixture_host_calls == 0 && fixture_join_calls == 0,
-        "unconfigured online route cannot fall back");
-    ChooseAction(NA_BROWSE);
-    Check(sMenu->mPage == NP_MENU && fixture_host_calls == 0 && fixture_join_calls == 0
-        && std::string(sMenu->mNotice).find("unavailable") != std::string::npos,
-        "unavailable public browser makes no request");
-    ChooseAction(NA_HOST);
-    Check(sMenu->mPage == NP_MENU && fixture_host_calls == 0, "stale host action requires mode selection");
-    ChooseAction(NA_LOCAL);
-    Check(sMenu->mPage == NP_CONNECTION && fixture_host_calls == 0 && fixture_join_calls == 0,
-        "mode selection alone starts no provider operation");
-    ChooseAction(NA_HELP);
-    sMenu->Back();
-    Check(sMenu->mPage == NP_CONNECTION && sMenu->mConnectionSelected,
-        "help from Host Join returns to the selected connection");
+        "help from the first page returns to it");
     ChooseAction(NA_JOIN);
+    Check(sMenu->mPage == NP_JOIN && sMenu->mConnectionSelected && !sMenu->mConnectionRelay && fixture_join_calls == 0,
+        "Join Game selects the direct connection and connects nothing yet");
     const std::string code = FixtureCode(17);
     sMenu->mCode->Add(code.c_str());
-    ChooseAction(NA_LOCAL);
-    Check(sMenu->mPage == NP_JOIN && std::string(sMenu->mCode->mValue) == code,
-        "stale mode action cannot abandon the current join page");
-    ChooseAction(NA_HOST_BEGIN);
-    Check(fixture_host_calls == 0 && sMenu->mPage == NP_JOIN,
-        "host submission cannot arrive from another page");
+    ChooseAction(NA_HOST);
+    Check(sMenu->mPage == NP_JOIN && std::string(sMenu->mCode->mValue) == code && fixture_host_calls == 0,
+        "a host action from another page cannot abandon the join page");
     fixture_available = false;
     ChooseAction(NA_CONNECT);
     Check(fixture_join_calls == 0 && std::string(sMenu->mCode->mValue) == code,
@@ -438,41 +421,32 @@ static void ConnectionModeEntry()
         "explicit retry submits preserved code once");
 
     OpenEntry(false);
-    ChooseAction(NA_LOCAL); ChooseAction(NA_HOST);
-    Check(sMenu->mPage == NP_HOST_CHOOSE, "direct hosting still offers its address choice");
     fixture_available = false;
-    ChooseAction(NA_HOST_BEGIN);
-    Check(fixture_host_calls == 0 && sMenu->mPage == NP_HOST_CHOOSE,
-        "final host availability is rechecked");
+    ChooseAction(NA_HOST);
+    Check(fixture_host_calls == 0 && sMenu->mPage == NP_MENU && sMenu->mNotice[0],
+        "host availability is checked at the press and the reason is shown");
     fixture_available = true;
-    setenv("BEA_NET_ICE_DIRECTORY", "1", 1);
-    ChooseAction(NA_HOST_BEGIN);
-    Check(fixture_host_calls == 0, "host submission rejects a changed startup route");
-    unsetenv("BEA_NET_ICE_DIRECTORY");
-    ChooseAction(NA_HOST_BEGIN);
-    Check(fixture_host_calls == 1, "explicit host retry starts once");
+    ChooseAction(NA_HOST);
+    Check(fixture_host_calls == 1 && (sMenu->mPage == NP_HOST || sMenu->mPage == NP_HOST_ADDRESS),
+        "Host Game hosts with one press");
+    sMenu->Back();
+    Check(sMenu->mPage == NP_MENU && !sMenu->mConnectionSelected && fixture_leave_calls >= 1,
+        "Back from hosting leaves the lobby and clears the selection");
 
     OpenEntry(true);
 #if defined(CE_NETWORK_ICE)
-    Check(!sMenu->mLocalItem->IsEnabled() && sMenu->mOnlineItem->IsEnabled(),
-        "relay launch enables only online entry");
-    ChooseAction(NA_LOCAL);
-    Check(sMenu->mPage == NP_MENU && fixture_host_calls == 0, "relay selection cannot start direct hosting");
-    ChooseAction(NA_ONLINE);
-    Check(sMenu->mPage == NP_CONNECTION && fixture_host_calls == 0, "online entry is separate from hosting");
     ChooseAction(NA_HOST);
-    Check(sMenu->mPage == NP_HOST && fixture_host_calls == 1, "online host uses existing manual relay owner");
+    Check(sMenu->mPage == NP_HOST && fixture_host_calls == 1 && sMenu->mConnectionRelay,
+        "a relay launch hosts on its manual relay owner");
 #else
-    Check(!sMenu->mLocalItem->IsEnabled() && !sMenu->mOnlineItem->IsEnabled(),
-        "missing relay capability cannot enable a direct fallback");
-    ChooseAction(NA_ONLINE);
+    ChooseAction(NA_HOST);
+    ChooseAction(NA_JOIN);
     Check(sMenu->mPage == NP_MENU && fixture_host_calls == 0 && fixture_join_calls == 0,
-        "missing relay capability starts no owner operation");
+        "missing relay capability starts no owner operation and offers no direct fallback");
 #endif
     sMenu->Back();
-    if (sMenu->mPage == NP_CONNECTION) sMenu->Back();
     Check(sMenu->mPage == NP_MENU && !sMenu->mConnectionSelected,
-        "returning to mode entry clears the previous selection");
+        "returning to the first page clears the previous selection");
 }
 
 
@@ -489,7 +463,6 @@ void NativeEntry(bool join = false)
     fixture_signal_status = CeIceSignalStatus::Unavailable;
     fixture_signal_pair_expiry = CE_HandoffNow() + 600;
     fixture_signal_setup_expiry = CE_HandoffNow() + 120;
-    ChooseAction(NA_ONLINE); sMenu->Update();
     if (join) {
         ChooseAction(NA_JOIN); sMenu->Update();
         const std::string code = FixtureCode(77);

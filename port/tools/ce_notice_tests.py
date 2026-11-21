@@ -32,8 +32,10 @@ from ce_photo_tests import patched, faithful  # noqa: E402
 ROOT = Path(__file__).resolve().parents[2]
 PATCH_NAME = "0137-ce-save-failed-notice.patch"
 # Patches whose hunks are written against this patch's (0138's PauseMenu.cpp declarations follow its own; 0201's chat overlay is drawn between photo mode's note and this notice): left out with it.
-BUILT_ON_NOTICE = ("0138-ce-pause-photo-mode.patch", "0201-network-text-chat-overlay.patch")
+BUILT_ON_NOTICE = ("0138-ce-pause-photo-mode.patch", "0201-network-text-chat-overlay.patch",
+                 '0207-ce-museum-visit-lifecycle.patch')
 NOTICE = ROOT / "port/game/ce_notice.cpp"
+OVERLAY_H = ROOT / "port/game/ce_overlay_box.h"
 NOTICE_H = ROOT / "port/game/ce_notice.h"
 PHOTO_H = ROOT / "port/game/ce_photo.h"
 FAKE = ROOT / "port/tools/ce_palette_fake.h"
@@ -56,7 +58,18 @@ def check_structure(files):
     pause = function(files["PauseMenu.cpp"], "void\tCPauseMenu::Resume(")
     assert "\t\tCAREER.Save(buffer);\n#ifdef CE_VERSION\n\t\tbool\tsaveFailed = false;" in pause, "the pause menu keeps its result"
     assert "\t\t\tint save;\n#ifdef CE_VERSION\n" + WRITES in pause, "the pause menu's writes are the retail ones in the retail order"
-    assert "\t\tPortCeTakeOptionsFailure();\n#endif\n\n\t\tif (FRONTEND.mFEPSaveGame.mSaveGameName[0])" in pause, "a stale options failure is cleared before the writes"
+    # A museum visit protects the campaign save in the CE branch; the faithful branch still writes it.
+    without_comments = '\n'.join(line for line in pause.splitlines() if not line.lstrip().startswith('//'))
+    clear = '\t\tPortCeTakeOptionsFailure();\n#endif\n\n'
+    write = '\t\tif (FRONTEND.mFEPSaveGame.mSaveGameName[0])'
+    visit_guard = (
+        '#ifdef CE_VERSION\n'
+        '\t\tif (FRONTEND.mFEPSaveGame.mSaveGameName[0] && !PortCeMuseumVisitActive())\n'
+        '#else\n'
+        '\t\tif (FRONTEND.mFEPSaveGame.mSaveGameName[0])\n'
+        '#endif'
+    )
+    assert clear + write in without_comments or clear + visit_guard in without_comments, 'a stale options failure is cleared before the writes'
     assert "WriteDefaultOptionsFile(buffer, size);\n#ifdef CE_VERSION\n\t\tif (PortCeTakeOptionsFailure() || saveFailed)\n\t\t\tPortCeSaveFailedNotice();\n#endif\n\t\tdelete [] buffer;" in pause, \
         "the pause menu tells the player after the options write, before the buffer goes"
     assert pause.index("PortCeSaveFailedNotice();") < pause.index("DeActivate(TRUE)"), "and before the menu is gone"
@@ -191,12 +204,13 @@ class NoticeTests(unittest.TestCase):
                     check_structure(broken)
 
     # ---- the module -------------------------------------------------------------------------------------------------------
-    def logic(self, name, notice=None, ce=True, must_build=True):
+    def logic(self, name, notice=None, ce=True, must_build=True, overlay=None):
         folder = self.out / name
         folder.mkdir(parents=True)
         (folder / "ce_layer.inc").write_text(function((ROOT / "port/platform/common/ce.cpp").read_text(), "bool PortCeLayer()"))
         (folder / "ce_notice.cpp").write_text(notice if notice is not None else NOTICE.read_text())
         shutil.copy(NOTICE_H, folder)
+        (folder / "ce_overlay_box.h").write_text(overlay if overlay is not None else OVERLAY_H.read_text())
         shutil.copy(PHOTO_H, folder)
         shutil.copy(FAKE, folder)
         for header in ("common.h", "game.h", "frontend.h", "CLIParams.h", "ltshell.h", "Hud.h", "SpriteRenderer.h", "renderinfo.h", "Texture.h"):
@@ -242,18 +256,35 @@ class NoticeTests(unittest.TestCase):
             ("no-layer-check", "\tif (!PortCeLayer()) return false;\n", "", "denied"),
             ("take-keeps-flag", "\tconst bool failed = optionsFailed;\n\toptionsFailed = false;\n\treturn failed;", "\tconst bool failed = optionsFailed;\n\treturn failed;", "ordinary"),
             ("failure-not-recorded", "void PortCeOptionsWriteFailed() { optionsFailed = true; }", "void PortCeOptionsWriteFailed() { }", "ordinary"),
-            ("never-expires", "CE_ScreenshotTicks() >= noteUntil", "false", "ordinary"),
             ("expires-early", "const unsigned long long kShownMs = 6000;", "const unsigned long long kShownMs = 5000;", "ordinary"),
-            ("clock-not-reset", "\tnoteUntil = CE_ScreenshotTicks() + kShownMs;", "\tif (!noteUntil) noteUntil = CE_ScreenshotTicks() + kShownMs;", "ordinary"),
+            ("clock-not-reset", "\tnoteFrom = CE_ScreenshotTicks();\n\tnoteUntil = noteFrom + kShownMs;", "\tif (!noteUntil) { noteFrom = CE_ScreenshotTicks(); noteUntil = noteFrom + kShownMs; }", "ordinary"),
             ("note-in-saved-frame", "|| PortCePhotoSavedNext()) return;", ") return;", "ordinary"),
             ("no-hyphens", "text[n++] = font->CanDisplay(*c) ? *c : L'-';", "text[n++] = *c;", "ordinary"),
-            ("no-fit", "if (float(extent.cx) * textScale > w - 32.f * scale && extent.cx > 0) textScale = (w - 32.f * scale) / float(extent.cx);", "", "ordinary"),
-            ("off-centre", "x = (w - tw) * 0.5f", "x = (w - tw) * 0.25f", "ordinary"),
             ("copy-unterminated", "\tout[i] = 0;\n\treturn true;", "\treturn true;", "ordinary"),
             ("copy-overruns", "for (; text[i] && i < n - 1; ++i)", "for (; text[i] && i < n; ++i)", "ordinary"),
             ("empty-line-accepted", "if (!text || !text[0]) return false;", "if (!text) return false;", "ordinary"),
-            ("no-font-check", "if (!font || !white ||", "if (!white ||", "ordinary"),
-            ("no-window-check", "\tif (w <= 0.f || h <= 0.f) return;\n", "", "ordinary"),
+            ("no-font-check", "\tif (!font) return;\n\tWCHAR text[kChars];", "\tWCHAR text[kChars];", "ordinary"),
+            ("note-ignores-photo-mode", "noteUntil), !PortCePhotoOn());", "noteUntil), true);", "ordinary"),
+            ("note-over-the-bar", "noteUntil), !PortCePhotoOn());", "noteUntil), false);", "ordinary"),
+            ("note-never-fades", "PortCeNoteFade(CE_ScreenshotTicks(), noteFrom, noteUntil)", "1.f", "ordinary"),
+            ("fade-from-the-wrong-moment", "\tnoteFrom = CE_ScreenshotTicks();\n\tnoteUntil = noteFrom + kShownMs;", "\tnoteUntil = CE_ScreenshotTicks() + kShownMs;", "ordinary"),
+        ]
+        overlay = OVERLAY_H.read_text()
+        overlay_mutants = [
+            ("no-fit", "if (widest * textScale > room && widest > 0.f) textScale = room / widest;", ""),
+            ("off-centre", "(w - float(sizes[i].cx) * textScale) * 0.5f", "(w - float(sizes[i].cx) * textScale) * 0.25f"),
+            ("no-window-check", "\tif (w <= 0.f || h <= 0.f) return;\n", ""),
+            ("no-backing-check", "|| !white ||", "|| "),
+            ("thin-outline", "(2.f * scale > 1.f) ? 2.f * scale : 1.f", "1.f"),
+            ("panel-colour", "PortCeNoteColour(0xaf000000, fade)", "PortCeNoteColour(0xb4000000, fade)"),
+            ("outline-colour", "PortCeNoteColour(0xff7f7f7f, fade)", "PortCeNoteColour(0xffffffff, fade)"),
+            ("never-expires", "if (now >= until || now < from) return 0.f;", "if (now < from) return 0.f;"),
+            ("no-padding", "const float pad = 8.f * scale", "const float pad = 0.f * scale"),
+            ("fade-never-out", "if (until - now < kCeNoteFadeMs", "if (false && until - now < kCeNoteFadeMs"),
+            ("fade-never-in", "if (now - from < kCeNoteFadeMs)", "if (false && now - from < kCeNoteFadeMs)"),
+            ("alpha-can-wrap", "\tif (scale > 256) scale = 256;\n", ""),
+            ("alpha-from-a-float-sum", "const unsigned alpha = ((colour >> 24) * unsigned(scale)) >> 8;", "const unsigned alpha = unsigned(float(colour >> 24) * fade * 1.0039f) + 0u * unsigned(scale);"),
+            ("text-alpha-not-faded", "PortCeNoteColour(0xffffffff, fade)", "0xffffffff"),
         ]
         for name, old, new, mode in mutants:
             with self.subTest(mutant=name):
@@ -261,6 +292,12 @@ class NoticeTests(unittest.TestCase):
                 exe = self.logic("mutant-" + name, notice=source.replace(old, new))
                 ran = self.run_logic(exe, mode, {"BEA_PORT_CLOCK": "1"} if mode == "denied" else None)
                 self.assertNotEqual(ran.returncode, 0, f"mutant {name} survived:\n{ran.stdout}{ran.stderr}")
+        for name, old, new in overlay_mutants:
+            with self.subTest(overlay_mutant=name):
+                self.assertEqual(overlay.count(old), 1, name)
+                exe = self.logic("overlay-mutant-" + name, overlay=overlay.replace(old, new))
+                ran = self.run_logic(exe, "ordinary")
+                self.assertNotEqual(ran.returncode, 0, f"overlay mutant {name} survived:\n{ran.stdout}{ran.stderr}")
 
 
 if __name__ == "__main__":

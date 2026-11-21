@@ -1,0 +1,26 @@
+--- a/SpawnerThng.cpp
++++ b/SpawnerThng.cpp
+@@ -2,4 +2,5 @@
+ #include "common.h"
+ #include "SpawnerThng.h"
++#include "ce_cmdproduction.h"
+ #include "squad.h"
+ #include "eventmanager.h"
+@@ -271,4 +272,5 @@
+ BOOL CSpawner::DoSpawn()	// FUNCTION: 0x004e3c60
+ {
++	if (!CeFactoryMayStart(this)) return FALSE;
+ 	if ((!mEnabled) || (mUnknown3EC) || (!(EVENT_MANAGER.GetTime() > mUnknown3E0)) || (Unknown4e4430()) ||
+ 		(mUnitIndex == -1) || (!mData))
+@@ -387,9 +389,10 @@
+ 				strcpy(init.mScript, mInit.mSpawnScript);
+ 			thing->Init(&init);
++			CeFactoryProduced(this, thing);
+ 			((CUnit *)thing)->SetStateTimer(mData->mSeekDelay);
+ 			if (mSquad.ToRead())
+ 				mSquad->Unknown67((CUnit *)thing, 0, 0);
+ 			mUnknown0C++;
+-			if (mUnknown0C >= mData->mSquadSize)
++			if (mUnknown0C >= mData->mSquadSize || CeFactorySingleBatch(this))
+ 			{
+ 				if (mSquad.ToRead())

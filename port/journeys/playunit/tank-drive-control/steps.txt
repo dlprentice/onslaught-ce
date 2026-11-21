@@ -1,0 +1,13 @@
+# The tank drive's control: unit control off, the same take route. The take is refused and nothing is driven.
+# Needs unit control's plain accessors (CePlayUnitDrivingNow and the rest in ce_playunit.h), its kit file
+# ce_playunit_testkit.cpp, and its fence asking the run mode; until those merge it ends as skipped.
+require playunit.available=yes
+wait state game.state=3 within 2400
+wait ticks 20
+# unit control's own route waits 3 s after arming before it turns
+wait ticks 180
+mouse-move -600 0 over 600 background
+repeat 26 every 15 do key E
+mouse-stop
+assert playunit.driving=0
+dump control

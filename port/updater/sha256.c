@@ -45,7 +45,7 @@ void sha256_init(SHA256_CTX *c)
 
 void sha256_update(SHA256_CTX *c, const void *data, size_t len)
 {
-	const uint8_t *p = data;
+	const uint8_t *p = (const uint8_t *)data;
 	c->len += len;
 	while (len)
 	{

@@ -1,0 +1,10 @@
+--- a/unit.h
++++ b/unit.h
+@@ -372,4 +372,7 @@
+ DECLARE_UNIT_CLASS(CGroundVehicle, CGroundUnit)						// 0x264, vtable 005e297c
+ 	virtual void	Init(CInitThing *init);									// 9 (0047cfd0)
++#ifdef CE_VERSION
++	virtual float	GetMoveMultiplier();
++#endif
+ 	virtual float	GetMaxVelocity() { return 3.5f; }						// 15
+ 	virtual	void	SetThingType(ULONG t) { SUPERTYPE::SetThingType(t | THING_TYPE_VEHICLE); }	// 38

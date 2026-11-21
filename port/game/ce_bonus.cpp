@@ -31,6 +31,11 @@
 // career (a race's script also changes goodie states, which the snapshot below puts back in memory). With a CE race the
 // branch skips the autosave and opens the Onslaught CE page instead.
 //
+// A level a mod adds (an archive for a level from 850 to 899 in an active mod, data/resources/NNN_res_PC.aya) is started from the Mods
+// page the same way as 856: PortCeBonusStartModLevel opens retail's Multiplayer start page, the career is kept out of it, and
+// after it the front end comes back to the Onslaught CE page, which opens the Mods page (patch 0250 lets levels 880 to 899 take
+// the co-op return too; a level a mod adds at 850 to 879 already did).
+//
 // Every bonus level comes back to the list it was started from, with its entry highlighted: the CE page asks
 // PortCeBonusTakeReturn() when it opens, once.
 //
@@ -45,10 +50,12 @@
 #include "Career.h"
 #include "game.h"
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 bool	PortCeMenus();
+bool	PortModHas(const char *game_path);	// port/platform/common/mods.h: an active mod supplies this game path
 
 namespace
 {
@@ -61,15 +68,25 @@ bool		sReturning;		// the front end is showing its debriefing
 bool		sRaceReturning;	// the front end is back after a race (patch 0116 asks once)
 bool		sCoopReturning;	// the front end is back after a bonus co-op map (patch 0116 asks once)
 int			sReturnLevel;	// the bonus level the front end has come back from, for the CE page's list (0: none)
+bool		sModLevel;		// the level started is one an active mod adds (PortCeBonusStartModLevel)
 
 bool IsRace(int level) { return level >= kRaceFirst && level <= kRaceLast; }
-bool IsCoop(int level) { return level == 856 || level == 858; }
+bool IsCoop(int level) { return level == 856 || level == 858 || sModLevel; }	// sModLevel is set only for a level ModLevel has admitted
+
+// Whether an active mod supplies the level's archive (an added level: the archives of the levels the game ships are never "added").
+bool ModLevel(int level)
+{
+	char path[64];
+	snprintf(path, sizeof path, "data/resources/%03d_res_PC.aya", level);
+	return level >= 850 && level <= 899 && PortModHas(path);
+}
 }
 
 // Starts a bonus level from the front end: 201 or a race (901-905) at once; 856 or 858 through the Multiplayer start page.
 // False when it cannot start (the CE menus are off, or no memory).
-bool PortCeBonusStart(int level)
+static bool Start(int level, bool mod)
 {
+	sModLevel = mod;
 	if (!PortCeMenus() || (level != kBonusLevel && !IsCoop(level) && !IsRace(level)))
 		return false;
 	if (!sCareer)
@@ -89,6 +106,41 @@ bool PortCeBonusStart(int level)
 	else
 		FRONTEND.SetPage(FEP_MULTIPLAYER_START, 30);
 	return true;
+}
+
+bool PortCeBonusStart(int level)
+{
+	return Start(level, false);
+}
+
+// Whether an active mod supplies the level's archive: the page asks before it closes the CE page.
+bool PortCeBonusModLevelAvailable(int level)
+{
+	return PortCeMenus() && ModLevel(level);
+}
+
+// Starts a level an active mod adds (850 to 899) from the Mods page: through the Multiplayer start page, outside every career. False
+// when no active mod supplies the level, or the CE menus are off.
+bool PortCeBonusStartModLevel(int level)
+{
+	return ModLevel(level) && Start(level, true);
+}
+
+// The level that has just ended was a level a mod adds, started from the Mods page (a non-consuming question for patch 0250's
+// range test; PortCeBonusCoopReturning then consumes the answer): the front end is back and this module has put the career back.
+bool PortCeBonusModLevelPending()
+{
+	return sCoopReturning && sModLevel;
+}
+
+// The CE page has opened after such a level: its number, or 0 (once). The page opens the Mods page and not the Bonus Levels list.
+int PortCeBonusTakeModReturn()
+{
+	if (!sModLevel || !sReturnLevel)
+		return 0;
+	const int level = sReturnLevel;
+	sReturnLevel = 0;
+	return level;
 }
 
 // A bonus co-op level is being played (the CE gamepad defaults run in it as in a solo level).

@@ -33,6 +33,7 @@ DRIVER = r"""// SPDX-License-Identifier: GPL-3.0-only
 #include <new>
 #include <string>
 #include <vector>
+#include "ce_hooks_host_stubs.h"
 typedef int BOOL;
 typedef unsigned DWORD;
 typedef int EPCText;
@@ -61,6 +62,9 @@ bool PortCePhotoOn() { return photo_on; }
 bool PortCePhotoMenuSet(bool on) { calls += on ? "Photo(1) " : "Photo(0) "; photo_on = on; return true; }
 bool PortCeTakeOptionsFailure() { calls += "TakeOptionsFailure "; return false; }
 void PortCeSaveFailedNotice() { calls += "SaveFailedNotice "; }
+// This fixture opens the campaign pause page; a museum visit supplies its own return item.
+bool PortCeMuseumVisitActive() { return false; }
+CMenuItem *PortCeMuseumLeaveItem(DWORD) { return nullptr; }
 CMenuItem *PortCePhotoItem() { return new CMenuItem((EPCText)PORT_CE_PHOTO_PCTEXT, 3); }
 void InitMouse() { calls += "InitMouse "; }
 
@@ -85,22 +89,6 @@ static std::string Describe(const CMenuItem *item)
 	}
 	if (item->mPCText == PORT_CE_PHOTO_PCTEXT) return "PhotoMode";
 	return "pc" + std::to_string(item->mPCText);
-}
-
-static std::string Build(bool options_page)
-{
-	CMenuOptionsList *list = new CMenuOptionsList;
-	{
-#include "build.inc"
-	}
-	std::string out;
-	for (CMenuItem *item : list->items)
-	{
-		out += (out.empty() ? "" : ",") + Describe(item);
-		delete item;
-	}
-	delete list;
-	return out;
 }
 
 struct Lists
@@ -131,7 +119,26 @@ struct CPauseMenu
 		}
 		sound = back_sound != FALSE;
 	}
+	std::string Build(bool options_page);
 };
+
+// a member, as in PauseMenu.cpp: the build's hook point passes this menu
+std::string CPauseMenu::Build(bool options_page)
+{
+	CMenuOptionsList *list = new CMenuOptionsList;
+	{
+#include "build.inc"
+	}
+	std::string out;
+	for (CMenuItem *item : list->items)
+	{
+		out += (out.empty() ? "" : ",") + Describe(item);
+		delete item;
+	}
+	delete list;
+	return out;
+}
+static std::string Build(bool options_page) { CPauseMenu menu; return menu.Build(options_page); }
 
 static void check(bool ok, const char *message)
 {
@@ -264,7 +271,7 @@ class PausePhotoTests(unittest.TestCase):
         (folder / "driver.cpp").write_text(DRIVER)
         exe = folder / "driver"
         r = subprocess.run([os.environ.get("CXX", "g++"), "-std=c++17", "-Wall", "-Wextra", "-Werror", '-DCE_VERSION="test"',
-                            "-Wno-unused-function", "-Wno-implicit-fallthrough", "-I", str(folder), str(folder / "driver.cpp"),
+                            "-Wno-unused-function", "-Wno-implicit-fallthrough", "-I", str(folder), "-I", str(ROOT / "port/game"), str(folder / "driver.cpp"),
                             "-o", str(exe)], capture_output=True, text=True, timeout=120, preexec_fn=no_core)
         self.assertEqual(r.returncode, 0, f"{name}: {r.stderr}")
         return subprocess.run([str(exe)], capture_output=True, text=True, timeout=10, preexec_fn=no_core)

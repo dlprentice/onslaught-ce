@@ -1,0 +1,12 @@
+--- a/ltshell.cpp
++++ b/ltshell.cpp
+@@ -1477,2 +1477,3 @@
++#include "ce_hooks.h"	// Port: the CE hook points (port/game/ce_hooks.h)
+ LRESULT PCLTShell::MsgProc( HWND hWnd, UINT uMsg, WPARAM wParam,	// FUNCTION: 0x00512e40
+                                     LPARAM lParam )
+@@ -1508,3 +1509,5 @@
++			if (ce_hook_key_capture(key, (lParam & 0x40000000) != 0)) {}	// CE hook point (port/game/ce_hooks.h): a consumed key goes no further
++			else
+ 			if (mCurrentKeytrap)
+ 			{
+ 				mCurrentKeytrap(key,KEY_EVENT_DOWN);

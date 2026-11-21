@@ -17,7 +17,7 @@ import subprocess
 ROOT = Path(__file__).resolve().parents[2]
 PORT = ROOT / "port"
 SUPPORT = PORT / "tools/tests"
-CASES = ("supported", "pixel-old", "vertex-old", "formats-missing", "float-fallback", "opt-out", "legacy-disabled",
+CASES = ("row-refused", "row-recovered", "row-opt-out", "row-low-caps", "supported", "pixel-old", "vertex-old", "formats-missing", "float-fallback", "opt-out", "legacy-disabled", "upgraded", "new-profile",
          "pixel-create-failed", "vertex-create-failed", "vertex-native-failed", "landscape-failed", "particles-failed",
          "landscape-portable", "landscape-readable-surface", "landscape-readable-texture",
          "landscape-pixel-failed", "landscape-texture-failed", "landscape-float-failed", "landscape-depth-failed", "device-failed", "save-refused", "save-off", "layer-off", "fence-CLOCK", "fence-TAPE", "fence-PROBES", "fence-RECORD")
@@ -53,12 +53,18 @@ def main():
     texts = build.patched_text(["DXWater.cpp", "DXLandscape.cpp", "PauseMenu.cpp"])
     actual = helpers.function(texts["DXWater.cpp"], r"^HRESULT\s+CDXWater::InitDeviceObjects\s*\(") + "\n"
     actual += helpers.function(texts["DXLandscape.cpp"], r"^HRESULT\s+CDXLandscape::InitDeviceObjects\s*\(") + "\n"
-    actual += helpers.function(texts["PauseMenu.cpp"], r"^void\s+CnVidia::SetValue\s*\(") + "\n"
+    for declaration in (r"^int\s+CnVidia::GetNumChoices", r"^WCHAR\s*\*\s*CnVidia::GetChoiceText",
+                        r"^int\s+CnVidia::GetValue", r"^void\s+CnVidia::SetValue"):
+        actual += helpers.function(texts["PauseMenu.cpp"], declaration + r"\s*\(") + "\n"
     (out / "ce_graphics_actual.inc").write_text(actual)
     common = ["clang++", "-std=c++14", "-DBEA_GRAPHICS_POLICY_TEST", "-I", SUPPORT, "-I", PORT / "game",
               "-I", PORT / "platform/common", "-I", out]
     policy = PORT / "game/ce_graphics_policy.cpp"
     driver = SUPPORT / "ce_graphics_policy_driver.cpp"
+    defaults = module("graphics_defaults", PORT / "tools/ce_graphics_defaults_tests.py")
+    stand_ins = {"policy": defaults.check_stand_ins(build, driver),
+                 # the host cases select the depth path, which the game starts clear
+                 "host": defaults.check_stand_ins(build, SUPPORT / "ce_graphics_host_driver.cpp", authored=("MY_READABLE_Z_BUFFER",))}
     binary = out / "driver"
     run(common + ["-DCE_VERSION=1", policy, driver, "-o", binary])
     observations = {name: run([binary, name]) for name in CASES}
@@ -80,7 +86,16 @@ def main():
             "ignore-capabilities": ("capable = (pixelVersion & 0xffffu) >= 0x0200u && (vertexVersion & 0xffffu) >= 0x0101u && formats;", "capable = true;", "formats-missing"),
             "ignore-resource-failure": ("EXTRA_GEFORCE_FX_FEATURES.Set(0.f);", "/* authored control: leave incomplete resources enabled */", "pixel-create-failed"),
             "ignore-faithful-fence": ("if (value && *value) return false;", "/* authored control: admit faithful graphics policy */", "fence-CLOCK"),
-            "ignore-opt-out": ('CE_SettingGetBool("extra_graphics", freshOptionsPending || EXTRA_GEFORCE_FX_FEATURES.mValue != 0) != 0', "true", "opt-out"),
+            "ignore-opt-out": ("requested = saved >= 0 ? saved != 0 : freshOptionsPending;", "requested = true;", "opt-out"),
+            "game-tweak-decides-an-upgraded-profile": ("requested = saved >= 0 ? saved != 0 : freshOptionsPending;",
+                                                       "requested = saved >= 0 ? saved != 0 : freshOptionsPending || EXTRA_GEFORCE_FX_FEATURES.mValue != 0;", "upgraded"),
+            "new-profile-choice-not-written": ('if (saved < 0 && freshOptionsPending) CE_SettingSet("extra_graphics", 1);',
+                                               "/* authored control: the new profile's choice is not kept */", "new-profile"),
+            "failure-clears-the-capability-tweak": ("failedResources |= resource;", "failedResources |= resource; GEFORCE_FX_POWER.Set(0.f);", "pixel-create-failed"),
+            "landscape-failure-clears-the-capability-tweak": ("failedResources |= resource;", "failedResources |= resource; GEFORCE_FX_POWER.Set(0.f);", "landscape-depth-failed"),
+            "unsaved-choice-not-taken": ('requested = enabled != 0;\n    initialized = true;\n    return CE_SettingSet("extra_graphics", enabled) != 0;',
+                                         'if (!CE_SettingSet("extra_graphics", enabled)) return false;\n    requested = enabled != 0;\n    initialized = true;\n    return true;',
+                                         "save-refused"),
         }
         for name, (old, new, case) in changes.items():
             if source.count(old) != 1:
@@ -101,6 +116,23 @@ def main():
         altered = common[:-2] + ["-I", directory]
         run(altered + ["-DCE_VERSION=1", policy, driver, "-o", executable])
         controls["no-water-observer"] = run([executable, "pixel-create-failed"], expected=1)
+        # The row's own setter: one that returns before the game's setter when ce.ini refuses the write leaves the choice unapplied.
+        menu_controls = {
+            "failed-request-reports-off": ("if (PortCeGraphicsRequestFailed()) return 1;", "", "row-refused"),
+            "failed-request-reports-active": ('L"Yes (not active)"', 'L"Yes"', "row-refused"),
+            "refused-save-snaps-the-row-back": ("PortCeSaveFailedNotice();", "{ PortCeSaveFailedNotice(); return; }", "save-refused"),
+            "refused-save-unreported": ("PortCeSaveFailedNotice();", "/* authored control: no notice */;", "save-refused"),
+        }
+        for label, (old, new, case) in menu_controls.items():
+            if actual.count(old) != 1:
+                raise AssertionError("nonunique menu setter anchor: " + label)
+            directory = out / label
+            directory.mkdir(exist_ok=True)
+            (directory / "ce_graphics_actual.inc").write_text(actual.replace(old, new))
+            executable = directory / "driver"
+            altered = common[:-2] + ["-I", directory]
+            run(altered + ["-DCE_VERSION=1", policy, driver, "-o", executable])
+            controls[label] = run([executable, case], expected=1)
         landscape_controls = {
             "require-unused-floating-target": ("(!MY_READABLE_Z_BUFFER.mValue || mUnknown08)", "mUnknown08", "landscape-portable"),
             "ignore-required-floating-target": ("(!MY_READABLE_Z_BUFFER.mValue || mUnknown08)", "true", "landscape-float-failed"),
@@ -125,7 +157,7 @@ def main():
         run(host_common + [changed, policy, SUPPORT / "ce_graphics_host_driver.cpp",
                            SUPPORT / "public_display_mode_stubs.cpp", "-o", executable])
         controls["no-host-capability-hook"] = run([executable, "modern"], expected=1)
-    receipt = {"policy_sha256": hashlib.sha256(policy.read_bytes()).hexdigest(),
+    receipt = {"policy_sha256": hashlib.sha256(policy.read_bytes()).hexdigest(), "stand_in_tweaks": stand_ins,
                "actual_sha256": hashlib.sha256(actual.encode()).hexdigest(),
                "observations": observations, "controls": controls,
                "limits": "Production policy and actual selected resource/menu callers with synthetic D3D/settings boundaries; no GPU evidence."}

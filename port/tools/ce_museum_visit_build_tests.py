@@ -35,7 +35,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import build
 
 HOST_UNITS = ("ce_museum_visit.cpp", "ce_museum_visit_generate.cpp")
-GAME_UNITS = ("ce_museum_visit_engine.cpp", "ce_museum.cpp")
+GAME_UNITS = ("ce_museum.cpp", "ce_museum_hall.cpp", "ce_museum_hall_layout.cpp",
+              "ce_museum_label.cpp", "ce_museum_visit_engine.cpp")
+# These helpers own their buffers and pass plain records, handles or caller-owned text across the game boundary.
+# Keep this review independent of build.py: a new exception to the game allocator needs an explicit decision.
+NETWORK_HOST = frozenset(("ce_network_boot_authority.cpp", "ce_network_invitation.cpp"))
+REVIEWED_HOST = NETWORK_HOST | {*HOST_UNITS, "ce_asset_catalog.cpp", "ce_catalogue_menu.cpp", "ce_project.cpp"}
 HEADER = build.PORT / "game/ce_museum_visit.h"
 CALLING_CONVENTION_FLAGS = ("-mrtd", "-mregparm", "-fdefault-calling-conv")
 
@@ -59,6 +64,22 @@ def graph_problems(rows, mirror):
     tokens = found.get("ce_museum_visit_generate.cpp", ("", ""))[1].split()
     if tokens != [f"-iquote{mirror}"]:
         problems.append(f"ce_museum_visit_generate.cpp: its oids.h route must be exactly -iquote on the mirror, got {tokens}")
+    return problems
+
+
+def generated_rule_problems(text, network):
+    edges = dict(re.findall(r"^build \S+/port/game/([^/ ]+\.cpp)\.o: (\w+) ", text, re.M))
+    problems = []
+    required_host = REVIEWED_HOST if network else REVIEWED_HOST - NETWORK_HOST
+    for name in sorted(required_host | set(GAME_UNITS)):
+        if name not in edges:
+            problems.append(f"{name}: missing generated edge")
+    for name, rule in edges.items():
+        if not network and name in NETWORK_HOST:
+            problems.append(f"{name}: network helper in a network-disabled build")
+        wanted = "pcxx" if name in required_host else "qcxx"
+        if rule != wanted:
+            problems.append(f"{name}: generated {rule}, want {wanted}")
     return problems
 
 
@@ -100,9 +121,7 @@ class Fixture(unittest.TestCase):
 
 class BuildGraphTests(Fixture):
     def test_host_buffer_set_is_exactly_the_reviewed_one(self):
-        self.assertEqual(frozenset(("ce_network_boot_authority.cpp", "ce_network_invitation.cpp", "ce_project.cpp",
-                                    "ce_museum_visit.cpp", "ce_museum_visit_generate.cpp")),
-                         build.HOST_BUFFER_GAME_MODULES)
+        self.assertEqual(REVIEWED_HOST, build.HOST_BUFFER_GAME_MODULES)
 
     def test_helpers_are_host_modules_and_adapter_keeps_the_game_rule_in_every_flavour(self):
         for network in (True, False):
@@ -146,15 +165,11 @@ class BuildGraphTests(Fixture):
 
     def test_generated_edges_and_rules(self):
         for target in ("linux", "windows"):
-            with self.subTest(target=target):
+            with self.subTest(target=target, network=False), patch.object(build, "WITH_NETWORK", False):
+                self.assertEqual([], generated_rule_problems(self.ninja(target), False))
+            with self.subTest(target=target, network=True):
                 text = self.ninja(target)
-                edges = {}
-                for line in text.splitlines():
-                    found = re.match(r"build \S+/port/game/(ce_museum\w*\.cpp)\.o: (\w+) ", line)
-                    if found:
-                        edges[found.group(1)] = found.group(2)
-                self.assertEqual({"ce_museum.cpp": "qcxx", "ce_museum_visit.cpp": "pcxx",
-                                  "ce_museum_visit_engine.cpp": "qcxx", "ce_museum_visit_generate.cpp": "pcxx"}, edges)
+                self.assertEqual([], generated_rule_problems(text, True))
                 host, game = rule_command(text, "pcxx"), rule_command(text, "qcxx")
                 self.assertNotIn("--redefine-syms", host)
                 self.assertNotIn("-include ", host)
@@ -169,6 +184,14 @@ class BuildGraphTests(Fixture):
                 self.assertIn(f"{prefix}_ZdlPv {prefix}bea_game_delete", syms)
                 generator = next(l for l in text.splitlines() if "ce_museum_visit_generate.cpp.o:" in l)
                 self.assertIn(f"\n  extra = -iquote{self.mirror}", text[text.index(generator):].split("\nbuild ")[0])
+
+    def test_generated_rules_reject_a_gameplay_unit_on_the_host_allocator(self):
+        # Inject the error into the real generator's input, independent of the Python rows checked above.
+        for target in ("linux", "windows"):
+            for name in ("ce_museum_hall.cpp", "ce_playunit.cpp"):
+                with self.subTest(target=target, name=name), patch.object(
+                        build, "HOST_BUFFER_GAME_MODULES", build.HOST_BUFFER_GAME_MODULES | {name}):
+                    self.assertIn(f"{name}: generated pcxx, want qcxx", generated_rule_problems(self.ninja(target), True))
 
     def test_host_rule_names_no_game_include_folder(self):
         for target in ("linux", "windows"):

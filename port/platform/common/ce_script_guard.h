@@ -8,8 +8,10 @@
 // or goes on running the other script's handler in its place. No shipped content reaches the first, and one shipped script
 // reaches the second (a level's own unit damaging itself inside its handler, which the original executes in place), so the
 // original's behaviour is kept for every level the game ships. A level a mod supplies is another matter: its scripts are new,
-// and a script that damages a unit must not be able to crash the game. There the notification waits for the next frame, when the
-// VM is idle, and runs then (IScript::HandleEvent re-enters it); if the unit's script is gone by then it is dropped (by code reading; no run shows it).
+// and a script that damages a unit must not be able to crash the game. There the notification is deferred to the next frame, when
+// the VM is idle. StartedDying then runs (IScript::HandleEvent re-enters it). Died never does: every caller of IScript::Died deletes
+// the script in its next statement, which clears the event's target, and the event manager skips an event that has none, so a
+// nested Died handler is dropped (port/tools/script_guard_died_tests.py runs that chain on the host; no level was run).
 #ifndef PORT_CE_SCRIPT_GUARD_H
 #define PORT_CE_SCRIPT_GUARD_H
 

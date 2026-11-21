@@ -13,6 +13,10 @@ extern "C" unsigned PortSaveNameUtf16(const char *filename, void *name16, unsign
 // Windows save namespace only. Equality is ordinal, ignoring case through the OS uppercase table, never linguistic
 // normalization. -1 is a refused/failed comparison; 0 differs; 1 is equal. Global CRT comparisons stay unchanged.
 extern "C" int PortSaveNamesEqual(const void *a16, const void *b16);
+#ifdef _WIN32
+// Returns the actual listed filename after the normal backend identity check.
+extern "C" unsigned PortSaveLookupFileUtf16(const void *name16, char *leaf, unsigned capacity);
+#endif
 extern "C" unsigned PortSaveLookupUtf16(const void *name16, int *index);
 extern "C" unsigned PortSaveReserveUtf8(const char *path);
 // A synchronous overwrite YES retry gets one bounded, name-keyed approval. Every consume clears it first.

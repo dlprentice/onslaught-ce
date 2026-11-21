@@ -1,0 +1,24 @@
+--- a/DXEngine.cpp
++++ b/DXEngine.cpp
+@@ -10,6 +10,9 @@
+ #ifdef CE_VERSION
+ extern "C" void PortCeWorldViewCapture();
+ #endif
++#ifdef CE_VERSION
++extern "C" int PortCePlayUnitShowsBattleline(int viewpoint) __attribute__((weak));	// patch 0240: ce_playunit.cpp, a driven unit keeps the radio and the battle line
++#endif
+ #include "common.h"
+ #ifdef CE_VERSION
+ #include "../game/ce_photo.h"	// patch 0133: CE photo mode drops the HUD routines' draw calls
+@@ -1200,6 +1203,11 @@
+ 					render=TRUE;
+ 			}
+ 		}
++#ifdef CE_VERSION
++		// patch 0240: a unit's view shows no HUD, but while the player drives one the radio and the battle line stay
++		if (!render && PortCePlayUnitShowsBattleline && PortCePlayUnitShowsBattleline(0))
++			render=TRUE;
++#endif
+ 
+ 		if (render)
+ #ifdef CE_VERSION

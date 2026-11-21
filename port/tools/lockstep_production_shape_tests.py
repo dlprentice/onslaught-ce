@@ -19,7 +19,7 @@ SOURCE = ROOT / "port/game/ce_network_lockstep.cpp"
 INCLUDES = ["-I", str(ROOT / "port/tools/tests/lockstep_stubs"), "-I", str(ROOT / "port/game"), "-I", str(ROOT / "port/network")]
 # What must not exist in the production text: a switch name, any way to SET a test field (reads of fields that stay zero are inert and remain), the dump opened, the poison, the probe,
 # the simulation-identity digest of the test-automation admission.
-TEST_ONLY_WORDS = re.compile(r"BEA_LOCKSTEP_|\bL\.(?:dump|skew_at|quit_at|stall_every|stall_at|stall_from|stall_ms|flip_cw_at|poison_stack|test_uninit_read)\s*=(?!=)(?!\s*(?:NULL|__null|nullptr)\b)"
+TEST_ONLY_WORDS = re.compile(r"BEA_LOCKSTEP_|\bL\.(?:dump|skew_at|quit_at|stall_every|stall_at|stall_from|stall_ms|flip_cw_at|poison_stack|test_uninit_read|test_frame_read|test_clock_read|test_uninit_tick)\s*=(?!=)(?!\s*(?:NULL|__null|nullptr)\b)"
                              r"|fopen\(path|PoisonStack|StackProbe|CE_CompatibilityLockstepDigest")
 
 

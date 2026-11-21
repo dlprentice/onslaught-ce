@@ -1,0 +1,214 @@
+--- a/PCMemoryCard.cpp
++++ b/PCMemoryCard.cpp
+@@ -177,8 +177,115 @@
+ 	return(MCE_SUCCESS);
+ }
+ 
++#include "../platform/common/replay_cheat.h"	// port 0352: PortReplayCheatRequested
++#include "../platform/common/portlog.h"	// port 0352: PORT_LOG_PREFIX
++// Port (patch 0352): a cheat replay (BEA_PORT_REPLAY_CHEAT, replay.cpp) keeps the careers in memory and touches no career
++// file. Its first card call takes the list from disk; from then on GetNumSaves, GetSaveName, CreateSave, ReadSave,
++// WriteSave and DeleteSave answer from that list, so the front end goes the way it went when the tape was recorded. A
++// career's bytes are its file's until the replay writes it.
++struct SCheatCareer
++{
++	WCHAR	name[256];
++	BOOL	held;		// data/size are the career (created or written in this replay); otherwise its file is
++	char	*data;
++	int		size;
++};
++static SCheatCareer	*sCheatCareers;
++static int			sCheatCount, sCheatRoom;
++static BOOL			sCheatListed, sCheatListing;
++
++// Whether a card call answers from the list: a cheat replay, and not the card's own listing that fills it.
++static BOOL CheatCareers()
++{
++	return PortReplayCheatRequested() && !sCheatListing;
++}
++
++static int CheatFind(const WCHAR *name)
++{
++	if (!name)
++		return -1;
++	for (int k = 0; k < sCheatCount; k++)
++		if (_wcsicmp(sCheatCareers[k].name, name) == 0)
++			return k;
++	return -1;
++}
++
++static BOOL CheatInsert(int at, const WCHAR *name)
++{
++	if (sCheatCount == sCheatRoom)
++	{
++		int room = sCheatRoom ? sCheatRoom * 2 : 16;
++		SCheatCareer *grown = (SCheatCareer *)realloc(sCheatCareers, room * sizeof(SCheatCareer));
++		if (!grown)
++			return FALSE;
++		sCheatCareers = grown;
++		sCheatRoom = room;
++	}
++	memmove(sCheatCareers + at + 1, sCheatCareers + at, (sCheatCount - at) * sizeof(SCheatCareer));
++	SCheatCareer *c = sCheatCareers + at;
++	int n = 0;
++	for (; n < 255 && name[n]; n++)
++		c->name[n] = name[n];
++	c->name[n] = 0;
++	c->held = FALSE;
++	c->data = NULL;
++	c->size = 0;
++	sCheatCount++;
++	return TRUE;
++}
++
++static void CheatList(CPCMemoryCard *card, int number)
++{
++	if (sCheatListed)
++		return;
++	sCheatListed = sCheatListing = TRUE;
++	int count = 0;
++	card->GetNumSaves(number, &count);
++	for (int k = 0; k < count; k++)
++	{
++		WCHAR name[256];
++		if (card->GetSaveName(number, k, name) == MCE_SUCCESS && CheatFind(name) < 0)
++			CheatInsert(sCheatCount, name);
++	}
++	sCheatListing = FALSE;
++	fprintf(stderr, PORT_LOG_PREFIX "replay: cheat replay: careers kept in memory (%d on disk)\n", sCheatCount);
++	fflush(stderr);
++}
++
++// CreateSave: an existing career is admitted as the card admits it; a new one goes in at the place the card would list it,
++// empty, as the card's new file is.
++static int CheatCreateSave(CPCMemoryCard *card, int number, WCHAR *name, int *save, BOOL allowed_overwrite)
++{
++	if (save) *save = -1;
++	if (!name)
++		return MCE_FAILURE;
++	CheatList(card, number);
++	int k = CheatFind(name);
++	if (k >= 0)
++	{
++		if (save) *save = k;
++		return allowed_overwrite ? MCE_SUCCESS : MCE_FILEEXISTS;
++	}
++	int at = 0;
++	for (k = 0; k < sCheatCount; k++)
++		if (_wcsicmp(sCheatCareers[k].name, name) < 0)
++			at++;
++	if (!CheatInsert(at, name))
++		return MCE_FAILURE;
++	sCheatCareers[at].held = TRUE;
++	if (save) *save = at;
++	return MCE_SUCCESS;
++}
++
+ int CPCMemoryCard::GetNumSaves(int card,int *num)	// FUNCTION: 0x005149c0
+ {
++	// Port (patch 0352): a cheat replay counts the careers it keeps.
++	if (CheatCareers())
++	{
++		CheatList(this, card);
++		*num = sCheatCount;
++		return MCE_SUCCESS;
++	}
+ 	*num=0;
+ 	if (FirstSave())
+ 	{
+@@ -192,6 +299,16 @@
+ 
+ int CPCMemoryCard::GetSaveName(int card,int save,WCHAR *name)	// FUNCTION: 0x00514a80
+ {
++	// Port (patch 0352): a cheat replay names the careers it keeps. A name the load page's 32-unit buffer cannot hold fails,
++	// as on the card.
++	if (CheatCareers())
++	{
++		CheatList(this, card);
++		if (save < 0 || save >= sCheatCount || wcslen(sCheatCareers[save].name) >= 32)
++			return MCE_FAILURE;
++		wcscpy(name, sCheatCareers[save].name);
++		return MCE_SUCCESS;
++	}
+ #ifndef _WIN32
+ 	char	buffer[256];
+ #endif
+@@ -247,6 +364,9 @@
+ #ifdef CE_VERSION
+     if (!PortCeProjectCareerAllowed()) return MCE_FAILURE;
+ #endif
++	// Port (patch 0352): a cheat replay makes no file; the career goes in the list it keeps.
++	if (PortReplayCheatRequested())
++		return CheatCreateSave(this, card, name, save, allowed_overwrite);
+ 
+ #ifdef _WIN32
+ 	if (save) *save = -1;
+@@ -351,6 +471,18 @@
+ #ifdef CE_VERSION
+     if (!PortCeProjectCareerAllowed()) return MCE_FAILURE;
+ #endif
++	// Port (patch 0352): a cheat replay deletes no file; the career leaves the list it keeps.
++	if (PortReplayCheatRequested())
++	{
++		CheatList(this, card);
++		int k = CheatFind(name);
++		if (k < 0)
++			return 1;
++		free(sCheatCareers[k].data);
++		memmove(sCheatCareers + k, sCheatCareers + k + 1, (sCheatCount - k - 1) * sizeof(SCheatCareer));
++		sCheatCount--;
++		return MCE_SUCCESS;
++	}
+ 
+ 	char	path[MAX_PATH];
+ 
+@@ -377,6 +509,26 @@
+ #ifdef CE_VERSION
+     if (!PortCeProjectCareerAllowed()) return MCE_FAILURE;
+ #endif
++	// Port (patch 0352): a cheat replay writes no file; it keeps a copy of the career, which later reads give back. As on the
++	// card, only an admitted career is written, and never with nothing.
++	if (PortReplayCheatRequested())
++	{
++		CheatList(this, card);
++		int k = CheatFind(name);
++		if (k < 0)
++			return MCE_FAILURE;
++		char *copy = data && datasize > 0 ? (char *)malloc(datasize) : NULL;
++		if (!copy)
++			return 1;
++		memcpy(copy, data, datasize);
++		free(sCheatCareers[k].data);
++		sCheatCareers[k].data = copy;
++		sCheatCareers[k].size = datasize;
++		sCheatCareers[k].held = TRUE;
++		fprintf(stderr, PORT_LOG_PREFIX "replay: cheat replay: career not written (kept in memory)\n");
++		fflush(stderr);
++		return MCE_SUCCESS;
++	}
+ 
+ 	char	path[MAX_PATH];
+ 
+@@ -400,6 +552,22 @@
+ #ifdef CE_VERSION
+     if (!PortCeProjectCareerAllowed()) return MCE_FAILURE;
+ #endif
++	// Port (patch 0352): a cheat replay reads the careers it keeps: the bytes it wrote or created, else the file below.
++	if (PortReplayCheatRequested())
++	{
++		CheatList(this, card);
++		int k = CheatFind(name);
++		if (k < 0)
++			return 1;
++		if (sCheatCareers[k].held)
++		{
++			int n = sCheatCareers[k].size < datasize ? sCheatCareers[k].size : datasize;
++			if (n > 0)
++				memcpy(data, sCheatCareers[k].data, n);
++			*bytesread = n;
++			return n == datasize ? MCE_SUCCESS : 1;
++		}
++	}
+ 
+ 	char	path[MAX_PATH];
+ 

@@ -1,0 +1,4 @@
+{"files": {
+  "ce.ini": {"text": "career_backup_folder=@BACKUPS@\nextras=1\n"},
+  "savegames/Gold.bes": {"fixture": "gold_career_save.bin", "sha256": "0c17e47db9d666e9b26ef88d43d0a25e7cbfbf4f88c8005cc748965050e506fb"}
+}}

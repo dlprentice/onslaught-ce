@@ -42,3 +42,5 @@
 0185-network-career-write-fence.patch
 0189-network-campaign-outcomes.patch
 0201-network-text-chat-overlay.patch
+0230-network-end-screen-no-retry.patch
+0231-network-mission-ring.patch

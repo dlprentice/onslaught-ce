@@ -1,0 +1,14 @@
+--- a/ltshell.cpp
++++ b/ltshell.cpp
+@@ -772,9 +772,9 @@
+ #endif
+ 	PortSessionSummary();
+ #ifdef CE_NETWORK_OFF
+-	return LT.MsgInfo();
++	return (mMsg.message == WM_QUIT ? LT.MsgInfo() : 0);
+ #else
+-	return PortLobbyShellExit(CE_SessionExitCode(LT.MsgInfo(), LT.WantsToQuit()), LT.WantsToQuit());
++	return PortLobbyShellExit(CE_SessionExitCode((mMsg.message == WM_QUIT ? LT.MsgInfo() : 0), LT.WantsToQuit()), LT.WantsToQuit());
+ #endif
+ }
+ 

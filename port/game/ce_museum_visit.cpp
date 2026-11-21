@@ -13,6 +13,7 @@
 #endif
 extern "C" {
 #include "../updater/sha256.h"
+int uncompress(unsigned char *dest, unsigned long *destLen, const unsigned char *source, unsigned long sourceLen);	// zlib, linked for the game's unpacking
 }
 
 const char *PortUserDir();
@@ -43,7 +44,12 @@ struct Visit {
     Visit() : active(false), loaded(false), ended(false), failed(false), installed(false), generated(false), level(-1), readMask(0) {}
 };
 Visit gVisit;
-const char *gMessage = "The museum room is not prepared yet.";
+const char *gMessage = "The museum could not be opened. Your careers are unchanged.";
+// What a load says when the generator refused without a reason of its own, and what the Onslaught CE page says for a load that failed elsewhere.
+const char kOpenFailed[] = "The museum could not be opened. Your careers are unchanged.";
+// What a refused load tells the player on the Onslaught CE page, once, after the front end took the visit's return (a literal, or NULL).
+const char *gNotice = NULL;
+bool gReturned = false;
 
 std::string Join(const char *root, const std::string &tail) {
     if (!root || !*root) return std::string();
@@ -103,6 +109,31 @@ bool ReadBounded(const std::string &path, size_t limit,
     }
     return true;
 }
+// What the original's reader needs of a packed level archive (CDXMemBuffer::ReadBlock): a run of blocks, each a four-byte length and that many bytes of
+// zlib data that unpack to at most one block of the reader's buffer, and no byte after the last. A damaged or cut archive fails the original's own read
+// with a fatal error that ends the game, in the middle of a load nothing can step back from, so the museum looks first, while the front end can still
+// say why. The whole archive is unpacked and thrown away: the cost is a few hundred milliseconds on the largest level.
+const unsigned long kPackBuffer = 0x102927ul, kBlock = 0x100000ul;
+bool PackedArchiveReadable(const std::string &path) {
+    FILE *f = OpenRead(path);
+    if (!f) return false;
+    ReadHandle owned(f);
+    std::vector<unsigned char> packed(kPackBuffer), unpacked(kPackBuffer);
+    unsigned blocks = 0;
+    for (;;) {
+        unsigned char head[4];
+        const size_t got = std::fread(head, 1, sizeof head, f);
+        if (got == 0 && !std::ferror(f)) break;			// a clean end, after at least one block
+        if (got != sizeof head) return false;
+        const unsigned long length = head[0] | head[1] << 8 | head[2] << 16 | static_cast<unsigned long>(head[3]) << 24;
+        if (!length || length > kPackBuffer) return false;
+        if (std::fread(packed.data(), 1, length, f) != length) return false;
+        unsigned long size = kPackBuffer;
+        if (uncompress(unpacked.data(), &size, packed.data(), length) != 0 || !size || size > kBlock) return false;
+        ++blocks;
+    }
+    return blocks != 0;
+}
 bool HashText(const std::string &text) {
     if (text.size() != 64) return false;
     for (char c : text) if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return false;
@@ -132,10 +163,10 @@ bool Row(const std::string &line, const char *key, Body *body, bool sized) {
 bool PrepareData(Visit *visit) {
     std::vector<unsigned char> manifest;
     if (!ReadBounded(Join(PortUserDir(), "museum/room.cache"), 512, &manifest, NULL)) {
-        gMessage = "The museum room is not prepared yet."; return false;
+        gMessage = "The museum could not read your game files. Check that the game is installed, then try again."; return false;
     }
     for (unsigned char c : manifest) if (c != '\n' && (c < 32 || c > 126)) {
-        gMessage = "The museum room description is invalid."; return false;
+        gMessage = "The museum could not read your game files. Check that the game is installed, then try again."; return false;
     }
     std::istringstream input(std::string(manifest.begin(), manifest.end()));
     std::string version, carrierLine, baseLine, realLine, extra;
@@ -145,16 +176,16 @@ bool PrepareData(Visit *visit) {
         std::getline(input, extra) || !Row(carrierLine, "carrier", &carrier, false) ||
         !Row(baseLine, "base", &visit->base, true) || !Row(realLine, "real", &visit->real, true) ||
         carrier.id >= 850 || visit->real.id != carrier.id || visit->base.id == visit->real.id) {
-        gMessage = "The museum room description is invalid."; return false;
+        gMessage = "The museum could not read your game files. Check that the game is installed, then try again."; return false;
     }
     std::string actual;
     if (!ReadBounded(Join(PortGameDir(), ArchiveName(carrier.id)), kArchiveLimit, NULL, &actual) || actual != carrier.hash) {
-        gMessage = "The museum room was prepared for different game resources."; return false;
+        gMessage = "The museum could not read your game files. Check that the game is installed, then try again."; return false;
     }
     for (Body *body : {&visit->base, &visit->real}) {
         if (!ReadBounded(Join(PortUserDir(), BodyName(body->id)), kBodyLimit, &body->bytes, &actual) ||
             body->bytes.size() != body->expectedSize || actual != body->hash) {
-            gMessage = "The museum room data is missing or has changed. Prepare the room again."; return false;
+            gMessage = "The museum could not read your game files. Check that the game is installed, then try again."; return false;
         }
     }
     visit->level = static_cast<int>(carrier.id);
@@ -175,16 +206,15 @@ std::string Canonical(const char *path) {
 
 bool CeMuseumVisit::Prepare() {
 #ifndef CE_VERSION
-    gMessage = "The museum room is unavailable in this build."; return false;
+    gMessage = ""; return false;
 #else
-    if (gVisit.active) { gMessage = "The museum room is already opening."; return false; }
+    if (gVisit.active) { gMessage = ""; return false; }
     gVisit = Visit();
     Visit candidate;
     try {
         if (!PrepareData(&candidate)) return false;
         gVisit = std::move(candidate);
-    } catch (...) { gMessage = "The museum room could not be prepared."; return false; }
-    gMessage = "Museum construction test: existing terrain and static exhibits.";
+    } catch (...) { gMessage = kOpenFailed; return false; }
     return true;
 #endif
 }
@@ -196,25 +226,27 @@ bool CeMuseumVisit::Activate() {
 bool CeMuseumVisit::PrepareInstalled(unsigned carrier) {
 #ifndef CE_VERSION
     (void)carrier;
-    gMessage = "The museum room is unavailable in this build."; return false;
+    gMessage = ""; return false;
 #else
-    if (gVisit.active) { gMessage = "The museum room is already opening."; return false; }
+    if (gVisit.active) { gMessage = ""; return false; }
     gVisit = Visit();
-    if (carrier >= 850) { gMessage = "The museum carrier is unsupported."; return false; }
+    if (carrier >= 850) { gMessage = ""; return false; }
     try {
         Visit candidate;
         candidate.archivePath = Join(PortGameDir(), ArchiveName(carrier));
         size_t bytes = 0;
         if (!ReadBounded(candidate.archivePath, kArchiveLimit, NULL, &candidate.archiveHash, &bytes) || !bytes) {
-            gMessage = "The museum could not read its installed game resources."; return false;
+            gMessage = "The museum could not read your game files. Check that the game is installed, then try again."; return false;
+        }
+        if (!PackedArchiveReadable(candidate.archivePath)) {
+            gMessage = "The museum could not read your game files. Check that the game is installed, then try again."; return false;
         }
         candidate.level = static_cast<int>(carrier);
         candidate.installed = true;
         gVisit = std::move(candidate);
-        gMessage = "Preparing a museum visit from your installed game resources.";
         return true;
     } catch (...) {
-        gMessage = "The museum could not prepare its installed resources."; return false;
+        gMessage = kOpenFailed; return false;
     }
 #endif
 }
@@ -224,7 +256,7 @@ bool CeMuseumVisit::CheckInstalledSource() {
         std::string actual;
         if (ReadBounded(gVisit.archivePath, kArchiveLimit, NULL, &actual) && actual == gVisit.archiveHash) return true;
     } catch (...) {}
-    gMessage = "The installed museum resources changed while opening the room.";
+    gMessage = "Your game files changed while the museum was opening. Try again.";
     return false;
 }
 bool CeMuseumVisit::AcceptInstalled(unsigned baseId, const void *base, unsigned baseLength,
@@ -241,16 +273,22 @@ bool CeMuseumVisit::AcceptInstalled(unsigned baseId, const void *base, unsigned 
         if (!CheckInstalledSource()) return false;
         gVisit.base = std::move(baseBody); gVisit.real = std::move(realBody);
         gVisit.generated = true;
-        gMessage = "Museum prototype: explore the installed static exhibits; exit returns without campaign progress.";
         return true;
     } catch (...) {
-        gMessage = "The museum room could not retain its generated worlds.";
+        gMessage = kOpenFailed;
         return false;
     }
 }
 void CeMuseumVisit::Clear() { gVisit = Visit(); }
+bool CeMuseumVisit::ForcedRefusal(const char *which) {
+    if (!gVisit.active || !which) return false;
+    const char *forced = std::getenv("BEA_PORT_MUSEUM_REFUSE");
+    return forced && !std::strcmp(forced, which);
+}
+void CeMuseumVisit::MarkReturned() { gReturned = true; }
 void CeMuseumVisit::Refuse(const char *message) { gMessage = message; }
 extern "C" bool PortCeMuseumVisitActive(void) { return gVisit.active; }
+extern "C" bool PortCeMuseumAuthoredSource(void) { return gVisit.active && gVisit.installed; }
 extern "C" int PortCeMuseumVisitLevel(void) { return gVisit.active ? gVisit.level : -1; }
 extern "C" const char *PortCeMuseumVisitMessage(void) { return gMessage; }
 extern "C" int PortCeMuseumVisitReadWorld(const char *name, const void **bytes, unsigned *length) {
@@ -261,31 +299,50 @@ extern "C" int PortCeMuseumVisitReadWorld(const char *name, const void **bytes, 
     // is asked for again. A visit that failed (the latch below) and any other world (the name check) stay refused.
     if (gVisit.ended && gVisit.loaded) { gVisit.ended = false; gVisit.loaded = false; gVisit.readMask = 0; }
     if (!bytes || !length || gVisit.ended || gVisit.failed) {
-        gVisit.failed = true; gMessage = "The museum room cannot load another world."; return -1;
+        gVisit.failed = true; gMessage = kOpenFailed; return -1;
     }
     try {
-        if (gVisit.installed && !gVisit.generated && !CeMuseumVisit::GenerateInstalled()) {
+        if (gVisit.installed && !gVisit.generated && (gMessage = kOpenFailed, !CeMuseumVisit::GenerateInstalled())) {
             gVisit.failed = true;
             return -1;
         }
         const std::string path = Canonical(name);
         Body *body = path == gVisit.base.logical ? &gVisit.base : path == gVisit.real.logical ? &gVisit.real : NULL;
-        if (!body || body->bytes.empty() || body->bytes.size() > kBodyLimit) {
+        if (!body || body->bytes.empty() || body->bytes.size() > kBodyLimit || CeMuseumVisit::ForcedRefusal("world")) {
             gVisit.failed = true;
-            gMessage = "The museum room requested an unexpected world. The campaign was not loaded."; return -1;
+            gMessage = kOpenFailed; return -1;
         }
         *bytes = body->bytes.data(); *length = static_cast<unsigned>(body->bytes.size());
         gVisit.readMask |= body == &gVisit.base ? 1u : 2u;
         return 1;
     } catch (...) {
-        gVisit.failed = true; gMessage = "The museum world could not be read."; return -1;
+        gVisit.failed = true; gMessage = kOpenFailed; return -1;
     }
 }
 extern "C" bool PortCeMuseumVisitAfterLoad(void) {
     if (!gVisit.active) return true;
-    if (gVisit.readMask != 3 || gVisit.ended || gVisit.failed) {
-        gVisit.failed = true; gMessage = "The museum room did not load both prepared worlds."; return false;
+    if (gVisit.readMask != 3 || gVisit.ended || gVisit.failed || CeMuseumVisit::ForcedRefusal("afterload")) {
+        gVisit.failed = true; gMessage = kOpenFailed; return false;
     }
+#if defined(CE_VERSION) && !defined(CE_MUSEUM_VISIT_HOST_FIXTURE)
+    CeMuseumVisit::ApplyAuthoredIdentity();
+#endif
     gVisit.loaded = true; return true;
 }
 extern "C" void PortCeMuseumVisitLevelEnd(void) { if (gVisit.active) gVisit.ended = true; }
+
+extern "C" bool PortCeMuseumVisitLoadRefused(void) {
+    if (!gVisit.active) return false;
+    // A load that failed on a refusal already says why (gMessage); any other failed load says the general sentence.
+    gNotice = gVisit.failed ? gMessage : kOpenFailed;
+    gVisit.failed = true;
+    return true;
+}
+extern "C" bool PortCeMuseumVisitTakeNotice(const char **sentence) {
+    if (sentence) *sentence = NULL;
+    if (!gReturned) return false;
+    gReturned = false;
+    if (sentence) *sentence = gNotice;
+    gNotice = NULL;
+    return true;
+}

@@ -1,0 +1,16 @@
+--- a/weapon.cpp
++++ b/weapon.cpp
+@@ -1182,11 +1182,11 @@
+ 		float distance = delta.MagnitudeXY();
+ 		for (float angle = angleB; angle < angleA; angle += 0.02f)
+ 		{
+-			float vertical = (float)sin(angle) * speed;
++			float vertical = (float)(bea_x87_fsinl(angle) * speed);	// Port: retail multiplies the unrounded fsin/fcos by the speed (005095c4..005095f3)
+ 			float discriminant = vertical * vertical + 2 * gravity * height;
+ 			if (discriminant > 0)
+ 			{
+-				float range = ((float)sqrt(discriminant) - vertical) / gravity * ((float)cos(angle) * speed);
++				float range = ((float)sqrt(discriminant) - vertical) / gravity * (float)(bea_x87_fcosl(angle) * speed);
+ 				if (range > 0)
+ 				{
+ 					float error = (float)fabs(range - distance);

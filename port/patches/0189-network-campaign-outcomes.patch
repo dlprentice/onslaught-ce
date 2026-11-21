@@ -4,11 +4,23 @@
 +#ifndef CE_NETWORK_OFF
 +#include "ce_network_lockstep.h"
 +#endif
-@@ -2657,0 +2661,3 @@
+@@ -2655,6 +2658,9 @@
+ 	}
+ 
+ 	mGameState = GAME_STATE_LEVEL_WON ;
 +#ifndef CE_NETWORK_OFF
 +    CE_LockstepCampaignOutcome(CE_CAMPAIGN_OUTCOME_WIN);
 +#endif
-@@ -2733,0 +2740,3 @@
+ 
+ 	if (mCurrentLevel != 741 && mCurrentLevel != 742 )
+ 	{
+@@ -2731,6 +2737,9 @@
+ 	if (mGameState > GAME_STATE_PLAYING) return ;
+ 	
+ 	mGameState = GAME_STATE_LEVEL_LOST ;
 +#ifndef CE_NETWORK_OFF
 +    CE_LockstepCampaignOutcome(CE_CAMPAIGN_OUTCOME_LOSS);
 +#endif
+ 	mEndLevelCount = GAME_COUNT_WHEN_LOST_OR_DRAW ;
+ 
+ 	// Turn off the rumble on all the controllers

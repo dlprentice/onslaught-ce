@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-only
-"""No patch puts a new statement where it takes the body of an unbraced if, else, for or while.
+"""No patch puts a new statement where it takes the body of an unbraced if, else, for or while, and no hunk is placed
+by its line number alone.
 
 Patch 0208 once added a counter call between an unchanged `if (...)` and its unchanged one-line body. The call became
 the condition's body and the old body ran every time. The compiler gives no error, and the game's own warnings are
@@ -12,6 +13,13 @@ statement inserted there is. Two nearby shapes are also reported, by indentation
 replaced by two or more statements indented alike without braces, and an added statement straight after an unchanged
 one-statement body, indented as that body is (it looks guarded and is not). Known findings owned elsewhere are listed in
 KNOWN with their reason; one that is no longer found fails as stale.
+
+A hunk that names no unchanged line (`@@ -N,0 +M,K @@` and only added lines) is also reported. The patch program puts
+such a hunk at line N whatever is there: it cannot fail, cannot report an offset or fuzz, and an earlier patch that adds
+or removes a line above it moves it silently, possibly under an unbraced condition. Patch 0189 once placed its two
+campaign outcome calls that way. A hunk that inserts at the head of a file (old range 0,0) is the one exception, because
+nothing can move the head. Whether a hunk's unchanged lines name ONE place is patch_shape_tests.py's question (it needs
+the sources; this file reads the patches alone).
 
     python3 -I port/tools/patch_control_body_tests.py            # the queue, then the controls
     python3 -I port/tools/patch_control_body_tests.py --scan DIR # report the patches in DIR; exit 1 on a finding
@@ -138,6 +146,19 @@ def is_control(text):
 BETWEEN = "an added statement takes the body of an unchanged control line"
 SEVERAL = "a one-statement body was replaced by several statements without braces"
 AFTER = "an added statement after an unchanged body is indented as part of it"
+NO_CONTEXT = "a hunk names no unchanged line: it is placed by its line number alone"
+HEADER = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
+
+
+def old_range(header):
+    """(first line, line count) of the hunk header's old side; a missing count is 1."""
+    m = HEADER.match(header)
+    return (int(m[1]), 1 if m[2] is None else int(m[2])) if m else (None, None)
+
+
+def placed_by_number(header, body):
+    """True when the hunk has no context line, unless it inserts at the head of the file (old range 0,0)."""
+    return not any(mark == " " for mark, _, _ in body) and old_range(header) != (0, 0)
 
 
 def plain_statement(text):
@@ -192,9 +213,18 @@ def scan(folder):
     """[(patch name, file, line in the patch, reason)] for every patch in folder."""
     out = []
     for patch in sorted(Path(folder).glob("*.patch")):
-        for name, _, body in hunks(patch.read_text(encoding="latin-1")):
-            for line, reason in findings_of_hunk(body):
-                out.append((patch.name, name, line, reason))
+        out += [(patch.name, name, line, reason) for name, line, reason in findings_of_text(patch.read_text(encoding="latin-1"))]
+    return out
+
+
+def findings_of_text(text):
+    """[(file, line in the patch, reason)] for one patch's text: the control-body shapes, then the hunks without context."""
+    lines = text.split("\n")
+    out = []
+    for name, start, body in hunks(text):
+        out += [(name, line, reason) for line, reason in findings_of_hunk(body)]
+        if placed_by_number(lines[start - 1], body):
+            out.append((name, start, NO_CONTEXT))
     return out
 
 
@@ -325,6 +355,94 @@ CONTROLS = [
 ]
 
 
+# Authored patches (made-up code) for the context rule: (label, expected findings, patch text).
+CONTEXT_CONTROLS = [
+    ("an insertion with no context line", 1, """--- a/made_up.cpp
++++ b/made_up.cpp
+@@ -40,0 +41,2 @@
++\tcount();
++\tdraw();
+"""),
+    ("a replacement with no context line", 1, """--- a/made_up.cpp
++++ b/made_up.cpp
+@@ -40 +40 @@
+-\tdraw(1);
++\tdraw(2);
+"""),
+    ("an insertion at the head of the file with no context line", 0, """--- a/made_up.cpp
++++ b/made_up.cpp
+@@ -0,0 +1,2 @@
++#include "made_up.h"
++#include "other.h"
+"""),
+    ("the same insertion with context", 0, """--- a/made_up.cpp
++++ b/made_up.cpp
+@@ -38,4 +38,6 @@
+ \tbegin();
+ \tstate = 2;
++\tcount();
++\tdraw();
+ 
+ \tend();
+"""),
+    ("two hunks, the second without context", 1, """--- a/made_up.cpp
++++ b/made_up.cpp
+@@ -1,3 +1,4 @@
++#include "made_up.h"
+ void f()
+ {
+ \tbegin();
+@@ -40,0 +42,1 @@
++\tcount();
+"""),
+]
+
+
+def strip_context(text):
+    """The patch with every context line taken away and each hunk header rewritten to match: what `diff -U0` would have
+    written. The added and removed lines and their order are unchanged; a hunk that held several separate changes becomes
+    one hunk per change, as the patch program needs when nothing lies between them."""
+    out = []
+    lines = text.split("\n")
+    i = 0
+    while i < len(lines):
+        m = HEADER.match(lines[i])
+        if not m:
+            out.append(lines[i])
+            i += 1
+            continue
+        old, new = int(m[1]), int(m[3])
+        if m[2] == "0":
+            old += 1                # an insertion's old line is the line BEFORE it
+        if m[4] == "0":
+            new += 1
+        i += 1
+        removed, added = [], []
+
+        def flush():
+            if removed or added:
+                o = f"{old - len(removed)},{len(removed)}" if removed else f"{old - 1},0"
+                n = f"{new - len(added)},{len(added)}" if added else f"{new - 1},0"
+                out.append(f"@@ -{o} +{n} @@")
+                out.extend(removed + added)
+        while i < len(lines) and lines[i][:1] in (" ", "+", "-", "\\") and not lines[i].startswith(("--- ", "+++ ")):
+            mark = lines[i][:1]
+            if mark == " ":
+                flush()
+                removed, added = [], []
+                old += 1
+                new += 1
+            elif mark == "-":
+                removed.append(lines[i])
+                old += 1
+            elif mark == "+":
+                added.append(lines[i])
+                new += 1
+            i += 1
+        flush()
+    return "\n".join(out)
+
+
 def main():
     if "--scan" in sys.argv:
         found = scan(sys.argv[sys.argv.index("--scan") + 1])
@@ -351,12 +469,28 @@ def main():
         print(f"FAIL the queue looks empty ({len(patches)} patches, {count} hunks)")
         failures += 1
     elif not failures:
-        print(f"PASS {len(patches)} patches, {count} hunks: no added statement takes a body or hides behind one")
+        print(f"PASS {len(patches)} patches, {count} hunks: no added statement takes a body or hides behind one, "
+              "and no hunk is placed by its line number alone")
     for label, expected, text in CONTROLS:
         got = len(findings_of_hunk(hunk(text)))
         ok = got == expected
         failures += not ok
         print(("PASS " if ok else "FAIL ") + f"control: {label} ({got} findings, {expected} expected)")
+    for label, expected, text in CONTEXT_CONTROLS:
+        got = [reason for _, _, reason in findings_of_text(text)]
+        ok = got == [NO_CONTEXT] * expected
+        failures += not ok
+        print(("PASS " if ok else "FAIL ") + f"control: {label} ({len(got)} findings, {expected} expected)")
+    # Patch 0189 as it once was: its two campaign outcome calls with no context line (its include at the head of the file
+    # is the exception). The mutant is the patch itself with its context taken away, so it must apply as `diff -U0` output.
+    name = "0189-network-campaign-outcomes.patch"
+    mutant = strip_context((PATCHES / name).read_text(encoding="latin-1"))
+    got = [(file, reason) for file, _, reason in findings_of_text(mutant)]
+    heads = sum(1 for _, start, body in hunks(mutant) if old_range(mutant.split("\n")[start - 1]) == (0, 0))
+    ok = got == [("game.cpp", NO_CONTEXT)] * 2 and heads == 1 and not any(line.startswith(" ") for line in mutant.split("\n"))
+    failures += not ok
+    print(("PASS " if ok else "FAIL ") + f"control: patch 0189 without its context lines ({len(got)} findings, 2 expected; "
+          f"{heads} insertion at the head of the file, 1 expected)")
     # The defects this check exists for: patch 0208 with the braces round its tree imposter counter taken away, and patch
     # 0206 with the braces round the commander map and editor overlay calls taken away (each as it once was).
     for name, marker, label in (("0208-ce-full-models.patch", "CE_MODEL_TREE_IMPOSTOR", "the tree imposter counter"),

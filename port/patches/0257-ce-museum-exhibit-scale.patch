@@ -1,0 +1,111 @@
+--- a/feature.h
++++ b/feature.h
+@@ -8,6 +8,10 @@
+ #include "actor.h"
+ #include "WorldPhysicsManager.h"
+ 
++#ifdef CE_VERSION
++extern "C" float PortCeMuseumFeatureScale(const void *definition) __attribute__((weak));	// patch 0257: port/game/ce_museum_visit_engine.cpp
++#endif
++
+ DECLARE_THING_CLASS(CFeature, CActor)
+ public:
+ 	virtual	void			Shutdown();												// 0044cbe0
+@@ -28,6 +32,11 @@
+ 	virtual	void			DeclareOnGround();										// 0044d1f0
+ 	virtual BOOL			IsLockable()					{ return mData->mUnknown14; }	// 71: HandleAutoAim calls +0x11c at 0040bbbc
+ 			// IsLockable is the existing slot 71, not a separate nonvirtual method.
++#ifdef CE_VERSION
++	// Port (patch 0257): a museum visit's enlarged exhibit is drawn at its factor (port/game/ce_museum_visit_engine.cpp decides, by this
++	// feature's definition, and only while a visit is open); every other feature answers 1, as CThing's does.
++	virtual float			GetRenderScale()				{ return PortCeMuseumFeatureScale ? PortCeMuseumFeatureScale(mData) : 1.0f; }
++#endif
+ 			SINT			GetAllegiance() { return mAllegiance; }		// 0040bbca: +0xec
+ 
+ #ifdef FEATURE_CPP	// feature.cpp's view; the other objects keep theirs (declaration counts)
+--- a/MeshRenderer.cpp
++++ b/MeshRenderer.cpp
+@@ -13,6 +13,9 @@
+ #include "engine.h"
+ #include "renderinfo.h"
+ #include "PolyBucket.h"
++#ifdef CE_VERSION
++#include "ltshell.h"	// Port (patch 0257): normals stay unit length on a scaled thing
++#endif
+ 
+ // FUNCTION: 0x004b5130 init:ZERO_FVECTOR
+ // FUNCTION: 0x004b5150 init:ID_FMATRIX
+@@ -195,8 +198,16 @@
+ 	SINT		f = b;
+ 	if ((!part->mParent) && (thing))
+ 	{
++#ifdef CE_VERSION
++		// Port (patch 0257): a thing drawn larger than its model (GetRenderScale; only a museum's enlarged exhibit) scales from its origin.
++		const float scale = thing->GetRenderScale();
++		const FMatrix turn = scale != 1.0f ? thing->GetRenderOrientation() * scale : thing->GetRenderOrientation();
++		pos = turn * pos + thing->GetRenderPos();
++		ori = turn * ori;
++#else
+ 		pos = thing->GetRenderOrientation() * pos + thing->GetRenderPos();
+ 		ori = thing->GetRenderOrientation() * ori;
++#endif
+ 	}
+ 	CMeshPart::EvaluateAnimatedTransform(thing, &pos, &ori, part, &draw, &f);
+ 	RenderPart(&pos, &ori, draw, thing, rt, a, b);
+@@ -212,8 +223,16 @@
+ 	if (!pose)
+ 		return;
+ 
++#ifdef CE_VERSION
++	// Port (patch 0257): as RenderPart, a scaled thing's pose scales from its origin.
++	const float scale = thing->GetRenderScale();
++	const FMatrix turn = scale != 1.0f ? thing->GetRenderOrientation() * scale : thing->GetRenderOrientation();
++	pos = turn * pos + thing->GetRenderPos();
++	ori = turn * ori;
++#else
+ 	pos = thing->GetRenderOrientation() * pos + thing->GetRenderPos();
+ 	ori = thing->GetRenderOrientation() * ori;
++#endif
+ 	for (SINT i = 0; i < mesh->mNumParts; i++)
+ 	{
+ 		if (pose->mParents[i] != -1)
+@@ -365,7 +384,17 @@
+ 		CMotionController	*mc = NULL;
+ 		if (thing)
+ 			mc = thing->GetMotionController();
++#ifdef CE_VERSION
++		// Port (patch 0257): a scaled thing's world matrix scales its normals too; the lit parts keep them unit length while it draws.
++		const bool scaled = thing && thing->GetRenderScale() != 1.0f;
++		if (scaled)
++			LT.SRS(D3DRS_NORMALIZENORMALS, TRUE);
+ 		RenderMeshCore(*pos, ori, part, thing, rt, a, b, mc, collision);
++		if (scaled)
++			LT.SRS(D3DRS_NORMALIZENORMALS, FALSE);
++#else
++		RenderMeshCore(*pos, ori, part, thing, rt, a, b, mc, collision);
++#endif
+ 		return;
+ 	}
+ 
+--- a/rtmesh.cpp
++++ b/rtmesh.cpp
+@@ -279,6 +279,9 @@
+ 	pos = pos - thing_pos;
+ 	float	dist = pos.MagnitudeSq();
+ 	float	radius = GetBoundingBox()->mRadius;
++#ifdef CE_VERSION
++	radius *= mThing->GetRenderScale();	// Port (patch 0257): an enlarged exhibit picks its detail and imposter by the size it is drawn at
++#endif
+ 	float	lod = (dist = (float)sqrt(dist)) / radius * mThing->GetRenderImposterBias() * MESH_LOD_BIAS * zoom;
+ 
+ 	BOOL	near_enough = ce_full_models || (((!FORCE_OBJECT_IMPOSTERS) && (lod < IMPOSTER_FADE_END)));
+@@ -342,6 +345,9 @@
+ 	pos = pos - thing_pos;
+ 	float	dist = pos.MagnitudeSq();
+ 	float	radius = GetBoundingBox()->mRadius;
++#ifdef CE_VERSION
++	radius *= mThing->GetRenderScale();	// Port (patch 0257): an enlarged exhibit picks its detail and imposter by the size it is drawn at
++#endif
+ 	float	lod = (dist = (float)sqrt(dist)) / radius * mThing->GetRenderImposterBias() * MESH_LOD_BIAS * zoom;
+ 	if (mImposter)
+ 	{

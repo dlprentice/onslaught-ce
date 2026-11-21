@@ -9,11 +9,15 @@
 enum { CE_LOBBY_ADDRESS_CHOICES = 32, CE_LOBBY_HOST_WAITING = 1 };
 static const char kVersion[] = "test";
 #define LOBBY_LOG ""
+struct CE_JoinCode { uint64_t key; uint32_t ipv4; uint16_t port; };
+static void CE_CodeLobbySecret(uint64_t, uint8_t *) {}
+static int CE_CodeEncode(const CE_JoinCode *, char *, size_t) { return 1; }
 struct FakeStatus {
     char code[64], local_version[64], notice[256];
     int host, port;
 };
 struct FakeLobby {
+    uint64_t key; uint8_t secret[32];
     FakeStatus st;
     bool host, nobodyTold;
     uint32_t ip;
@@ -90,6 +94,6 @@ int main() {
     if (int r = failed_if(L.st.code[0] != 0, 14)) return r;
     backend_problem = "";
     if (int r = failed_if(CE_LobbyHost() != 0 || active || problem_reads != 2, 15)) return r;
-    if (int r = failed_if(std::strstr(L.st.notice, "could not listen on UDP port") == NULL || L.st.code[0], 16)) return r;
+    if (int r = failed_if(std::strstr(L.st.notice, "Could not host a game.") == NULL || L.st.code[0], 16)) return r;
     return 0;
 }

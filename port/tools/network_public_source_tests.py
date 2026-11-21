@@ -27,26 +27,31 @@ MANIFEST = ROOT / "port/network/PATCHES.txt"
 # Reviewed public replacements that the network guards touch, through host 1863f816 (update after review). 0.1.14: the device recovery code of d3dapp.* is no longer
 # behind CE_NETWORK_OFF (patch 0085 applies in the default build), so these are the default build's text of the files.
 MAIN_REPLACEMENTS = {
-    "d3dapp.cpp": "d0338c119452316b940edcfb9ec6020230f6acd47b292e6c795feda03a9f59f5",
+    "d3dapp.cpp": "67431acbb33a083efd1e278114b966007d7cde13d3cf12a1c78be870fdb4d7bd",
     "d3dapp.h": "cc0b7513d58804631fdc3ebce96864ba9d9087a48252ee28e4d1ec23a29c84f1",
 }
 CODE = (".c", ".cpp", ".h", ".hpp", ".inl", ".inc")
 # Guarded network patches whose lines are the context of default patches: 0190's hunks need 0157's HUD context, and the hunks of the lane patches of
 # 0.1.14 (the graphics policy 0204, the editor and museum lifecycles 0206 and 0207 and the patches built on them) sit beside lines that 0065, 0067,
 # 0076, 0082, 0121, 0129, 0146, 0151 and 0189 add inside their CE_NETWORK_OFF guards (the include block and message-loop lines of ltshell.cpp, the
-# startup-script and level-start lines of game.cpp). The reference tree applies them first as context only; applying each must leave every resolved
+# startup-script and level-start lines of game.cpp). Commander 0235 uses the optional projection guards of 0150 in DXCompass.cpp.
+# The reference tree applies these patches first as context only; applying each must leave every resolved
 # public file unchanged (patched_tree checks that). The set is the smallest that lets every default patch apply, found by removing one patch at a time
 # from the whole network queue. This is not an optional-patch classification.
 PUBLIC_CONTEXT_PATCHES = frozenset(("0065-network-world.patch", "0067-network-session.patch", "0076-network-graceful-departure-exit.patch",
-                                    "0082-compatibility-hooks.patch", "0121-lockstep-message-timing.patch", "0129-lockstep-particle-draws.patch",
-                                    "0146-network-boot-script.patch", "0151-network-teardown-gate.patch", "0157-network-hud-scale-coop.patch",
-                                    "0189-network-campaign-outcomes.patch"))
+                                    "0079-network-compact-lifecycle.patch", "0082-compatibility-hooks.patch", "0121-lockstep-message-timing.patch",
+                                    "0122-lockstep-event-trace.patch", "0129-lockstep-particle-draws.patch", "0140-network-lobby-return.patch", "0146-network-boot-script.patch",
+                                    "0150-network-compass-projection.patch", "0151-network-teardown-gate.patch", "0154-lockstep-spawn-trace.patch",
+                                    "0157-network-hud-scale-coop.patch", "0189-network-campaign-outcomes.patch"))
 # The mandatory public HUD feature also guards its calls into the optional network layer.
 # Device recovery (0085) is mandatory in the public build as well: its recovery block and its changed reset and zero-delta lines are not guarded; only the lines
 # that touch the network session (the observation the session service reads, and the yield an active session leaves to its own boundary) are.
+# Commander (0235, 0278), play-unit HUD (0285), quit status (0262), hook level-begin (0303), and surface-point order (0338) retain existing network guards as context.
 # The editor and museum lifecycles (0206, 0207), Full models (0208) and the Dodge Button (0220) guard their calls into the network session the same way.
 PUBLIC_GUARDED_PATCHES = frozenset(("0190-ce-hud-4k.patch", "0085-public-device-recovery.patch", "0206-native-editor-lifecycle.patch",
-                                    "0207-ce-museum-visit-lifecycle.patch", "0208-ce-full-models.patch", "0220-ce-dodge-assist.patch"))
+                                    "0207-ce-museum-visit-lifecycle.patch", "0208-ce-full-models.patch", "0220-ce-dodge-assist.patch",
+                                    "0235-ce-commander-one-screen.patch", "0262-ce-normal-quit-status.patch", "0278-ce-commander-unit-orders.patch",
+                                    "0285-ce-playunit-hud.patch", "0303-ce-hook-level-begin.patch", "0338-surface-point-order.patch"))
 
 
 def strip(text):
@@ -185,9 +190,11 @@ def main():
         check("the default build's mirror, resolved as build.py resolves it, is main's byte for byte (%d files compared)" %
               sum(1 for f in network.rglob("*") if f.is_file()), not moved)
         source = (build.PORT / "build.py").read_text()
-        check("a default build resolves the mirror's guards and builds the port view, and build_mirror itself leaves the network's hooks in",
-              re.search(r"if default_flavour\(\):\n\s+resolve_network_off\(sorted\(MIRROR_ROOT\.rglob\(\"\*\"\)\)\)\n\s+build_port_view\(\)", source) is not None
-              and "resolve_network_off(" not in source[source.index("def build_mirror():"):source.index("NVTRISTRIP =")])
+        check("a default build resolves the mirror's guards and builds the port view, and build_mirror() by default leaves the network's hooks in",
+              re.search(r"def build_mirror\(resolve_off=False\):", source) is not None
+              and re.search(r"if resolve_off:\n\s+resolve_network_off\(", source[source.index("def build_mirror("):source.index("NVTRISTRIP =")]) is not None
+              and re.search(r"build_mirror\(resolve_off=default_flavour\(\)\)", source) is not None
+              and re.search(r"if default_flavour\(\):\n\s+if build_mirror is not _BUILD_MIRROR:\n\s+resolve_network_off\(sorted\(MIRROR_ROOT\.rglob\(\"\*\"\)\)\)\n\s+build_port_view\(\)", source) is not None)
         check("mutant: left unresolved (the preprocessor alone), game.cpp is not main's byte for byte",
               unresolved != (main_tree / "game.cpp").read_bytes() and unresolved.count(b"\n") > (main_tree / "game.cpp").read_bytes().count(b"\n"))
     print("network public-source controls: " + ("OK" if ok else "FAILED"))

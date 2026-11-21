@@ -87,6 +87,44 @@ def guarded(text, marker):
     return text[begin:end + len("#endif")]
 
 
+# The wall's grid function as the patched mirror has it, run on every cell: outside a visit it is the original's; inside one the five race levels (goodie numbers 66 to
+# 70) are not on the wall, the cells after them close up, and every other exhibit is still on it exactly once.
+GRID_DRIVER = r'''
+#define CE_VERSION "test"
+#include <cstdio>
+#include <set>
+typedef int SINT;
+static bool visitor = false;
+extern "C" bool PortCeMuseumActive(void) { return visitor; }
+@GRID@
+int main() {
+    std::set<int> ordinary, visit;
+    int gaps = 0;
+    for (int pass = 0; pass != 2; ++pass) {
+        visitor = pass != 0;
+        for (int y = 0; y != 5; ++y) {
+            bool ended = false;
+            for (int x = 0; x != 130; ++x) {
+                const int n = get_goodie_number(x, y);
+                if (n == -1) { ended = true; continue; }
+                if (ended && pass) ++gaps;			// a cell after the row's end: a gap
+                (pass ? visit : ordinary).insert(n);
+            }
+        }
+    }
+    int levels = 0;
+    for (int n = 66; n <= 70; ++n) { levels += (int)ordinary.count(n); }
+    if (levels != 5) { std::fprintf(stderr, "the ordinary wall lacks its five levels\n"); return 1; }
+    for (int n : ordinary) if (n < 66 || n > 70) { if (!visit.count(n)) { std::fprintf(stderr, "a visitor's wall lost exhibit %d\n", n); return 2; } }
+    for (int n : visit) if (n >= 66 && n <= 70) { std::fprintf(stderr, "a visitor's wall shows level %d\n", n); return 3; }
+    if (gaps) { std::fprintf(stderr, "a visitor's wall has a gap\n"); return 4; }
+    if (ordinary.size() != 230 || visit.size() != 225) { std::fprintf(stderr, "counts %d %d\n", (int)ordinary.size(), (int)visit.size()); return 5; }
+    std::puts("grid ok");
+    return 0;
+}
+'''
+
+
 # The bridge: authored stand-ins around the real text. @NAME@ marks where the real text goes.
 BRIDGE = r'''
 #define CE_VERSION "test"
@@ -235,12 +273,12 @@ static int visit() {
     CHECK(entry_frontend.mActivePage == FEP_GOODIES);
     CHECK(shutdowns == 0);
 
-    // Every exhibit kind, with the unlock cheats on and off: a picture and a model read as viewed and load; a video, a level and a cheat
+    // Every exhibit kind, with the unlock cheats on and off: a picture, a model and a movie read as viewed and load; a level and a cheat
     // read as unavailable and never load; an unlock write reaches nothing.
     for (int cheats = 0; cheats < 2; ++cheats) {
         ischeatactive = ischeat5active = cheats != 0;
         for (int n = 0; n < MAX_NUM_GOODIES; ++n) {
-            const bool visual = n < 2;
+            const bool visual = n < 3;
             CHECK(get_goodie_state(n, 0) == (visual ? GS_OLD : GS_UNKNOWN));
             set_goodie_state(n, 0, GS_OLD);
             asset_loads = 0; mCX = n; mCY = 0;
@@ -528,6 +566,7 @@ def main(argv=None):
     # the hooks (the text patch 0199 puts in the gallery and the front end)
     bridge_mutant("hook-get-filter-off", "if (PortCeMuseumActive())\n\t\treturn ce_museum_visual_state", "if (false)\n\t\treturn ce_museum_visual_state", "visit")
     bridge_mutant("hook-get-bounds-off", "if (goodie_num < 0 || goodie_num >= MAX_NUM_GOODIES)\n\t\treturn GS_UNKNOWN;", "if (false)\n\t\treturn GS_UNKNOWN;", "visit")
+    bridge_mutant("hook-get-movies-hidden", "type == GT_IMAGE || type == GT_MESH || type == GT_FMV", "type == GT_IMAGE || type == GT_MESH", "visit")
     bridge_mutant("hook-get-meshes-hidden", "type == GT_IMAGE || type == GT_MESH", "type == GT_IMAGE", "visit")
     bridge_mutant("hook-get-everything-visible", "type == GT_IMAGE || type == GT_MESH", "true", "visit")
     bridge_mutant("hook-set-writes", "if (PortCeMuseumCanChangeUnlocks())", "if (true)", "visit")
@@ -573,14 +612,50 @@ def main(argv=None):
     bridge_mutant("layer-ignores-record", ', "BEA_PORT_RECORD"', "", "record")
 
     # 3. the patch's text itself: the title names the visit and the hooks are CE-only
-    title_ok = 'FRONTEND.DrawTitleBar(PortCeMuseumActive() ? ToWCHAR("Goodies Gallery") : (FET.GetText(FEX_GOODIES2)), transition, dest);' in sources["FEPGoodies.cpp"]
+    title_ok = 'FRONTEND.DrawTitleBar(PortCeMuseumActive() ? ToWCHAR("Art and Movies") : (FET.GetText(FEX_GOODIES2)), transition, dest);' in sources["FEPGoodies.cpp"]
     records.append({"name": "title-names-the-visit", "pass": title_ok})
-    hooks_ce_only = all(only_in_ce_version(text, ("PortCeMuseum", "ce_museum_visual_state", "Goodies Gallery")) for text in sources.values())
+    hooks_ce_only = all(only_in_ce_version(text, ("PortCeMuseum", "ce_museum_visual_state", "Art and Movies")) for text in sources.values())
     records.append({"name": "hooks-are-ce-only", "pass": hooks_ce_only})
-    for row in records[-2:]:
+    # 4. the words a visitor reads over each cell of the wall (patch 0199): what a picture or a model is, and why a dark cell is dark, never "Unlocked!"
+    def words_ok(text):
+        return ('if (PortCeMuseumActive() && which_goodie >= 0)\n\t\tce_museum_words(which_goodie, title_text, body_text);' in text and
+                'if ((PortCeMuseumActive() && which_goodie >= 0) || get_goodie_state(mCX,mCY)!=GS_UNKNOWN)' in text and
+                'if (type == GT_MESH)\n\t\twcscpy(title, ToWCHAR("Model"));' in text and 'wcscpy(title, ToWCHAR("Movie"));' in text and
+                '"Concept art"' in text and '"Cutscene %d"' in text)
+    gallery = sources["FEPGoodies.cpp"]
+    records.append({"name": "visitor-reads-what-each-cell-is", "pass": words_ok(gallery)})
+    for name, old_text, new_text in (
+            ("words-never-chosen", "ce_museum_words(which_goodie, title_text, body_text);", "(void)0;"),
+            ("cells-stay-silent", "if ((PortCeMuseumActive() && which_goodie >= 0) || ", "if ("),
+            ("concept-art-unnamed", '"Concept art"', '""'),
+            ("cutscenes-unnamed", '"Cutscene %d"', '""'),
+            ("movies-read-as-pictures", 'wcscpy(title, ToWCHAR("Movie"));', 'wcscpy(title, ToWCHAR("Picture"));'),
+            ("models-read-as-pictures", 'if (type == GT_MESH)\n\t\twcscpy(title, ToWCHAR("Model"));', 'if (false)\n\t\twcscpy(title, ToWCHAR("Model"));')):
+        assert gallery.count(old_text) == 1, name
+        records.append({"name": "control-" + name + "-is-seen", "pass": not words_ok(gallery.replace(old_text, new_text))})
+    for row in records[-8:]:
         if not row["pass"]:
             stop.append(row["name"])
             print("museum control failed: " + row["name"], file=sys.stderr)
+
+    # 5. the wall's grid, run: a visitor's wall has no level cell (the five race levels close up, no gap is left) and every other exhibit is where the original puts it
+    grid_function, _ = function(gallery, r"(?m)^[ \t]*static\s+SINT\s+get_goodie_number\s*\([^{};]*\)\s*\{")
+    for flavour, body in (("grid", grid_function),
+                          ("grid-shows-levels", grid_function.replace("x+=5;", ";")),
+                          ("grid-gap-left", grid_function.replace("x+=5;", "x=-1;")),
+                          ("grid-shifted-for-all", grid_function.replace("if (y==0 && x>=8 && PortCeMuseumActive())", "if (y==0 && x>=8)")),
+                          ("grid-hides-for-all-rows", grid_function.replace("if (y==0 && x>=8 && PortCeMuseumActive())", "if (x>=8 && PortCeMuseumActive())"))):
+        source = out / (flavour + ".cpp")
+        source.write_text(GRID_DRIVER.replace("@GRID@", body))
+        built = subprocess.run([compiler, "-std=c++14", "-O1", "-o", str(out / flavour), str(source)], capture_output=True)
+        passed = False
+        if built.returncode == 0:
+            ran = subprocess.run([str(out / flavour)], capture_output=True)
+            passed = ran.returncode == 0
+        records.append({"name": flavour if flavour == "grid" else "control-" + flavour + "-is-seen", "pass": passed if flavour == "grid" else not passed})
+        if not records[-1]["pass"]:
+            stop.append(records[-1]["name"])
+            print("museum control failed: " + records[-1]["name"], file=sys.stderr)
 
     receipt = {
         "status": "pass" if all(row["pass"] for row in records) else "fail",

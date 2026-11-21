@@ -193,6 +193,7 @@ struct CE_NetSession {
     void *iceExchange = nullptr;
     CE_NetIceExchangeCallbacks iceCallbacks{};
     char iceProblem[160]{};
+    bool routeInterrupted{};
 #endif
     uint8_t secret[32]{}, compatibility[32]{}, clientNonce[32]{}, hostNonce[32]{}, session[16]{}, key[32]{};
     char version[CE_NET_VERSION_BYTES]{}, peerVersion[CE_NET_VERSION_BYTES + 1]{};
@@ -296,6 +297,17 @@ void Fail(CE_NetSession *s, uint32_t error)
     ClearMessages(s);
     crypto_wipe(s->key, sizeof(s->key));
 }
+
+#if defined(CE_NETWORK_ICE)
+void FailRoute(CE_NetSession *s, uint32_t error)
+{
+    s->routeInterrupted = s->status.phase == CE_NET_ACTIVE &&
+        (error == CE_NET_IO || error == CE_NET_TIMEOUT || error == CE_NET_PEER_LEFT);
+    Fail(s, error);
+}
+#else
+#define FailRoute Fail
+#endif
 void FreePacket(ENetPacket *p)
 {
     auto *s = static_cast<CE_NetSession *>(p->userData);
@@ -862,6 +874,10 @@ int CE_NetIceReady(const CE_NetSession *s)
     return s && s->ice && s->status.phase != CE_NET_CLOSED && s->status.phase != CE_NET_FAILED &&
         s->ice->Ready() ? 1 : 0;
 }
+int CE_NetIceRouteInterrupted(const CE_NetSession *s)
+{
+    return s && s->status.phase == CE_NET_FAILED && s->routeInterrupted;
+}
 int CE_NetIceUsesRelay(const CE_NetSession *s)
 {
     return s && s->ice && s->status.phase != CE_NET_CLOSED && s->status.phase != CE_NET_FAILED &&
@@ -976,7 +992,7 @@ void CE_NetPoll(CE_NetSession *s, uint64_t now, uint32_t budget)
         if (!s->ice) return;
         if (!s->ice->Pump()) {
             std::snprintf(s->iceProblem, sizeof(s->iceProblem), "%s", "experimental relay connection failed");
-            Fail(s, CE_NET_IO); return;
+            FailRoute(s, CE_NET_IO); return;
         }
         if (s->iceWaiting) {
             if (!s->ice->Ready()) return;
@@ -1000,7 +1016,7 @@ void CE_NetPoll(CE_NetSession *s, uint64_t now, uint32_t budget)
         CE_NetSession *previous = gPolling; gPolling = s;
         int result = enet_host_service(s->host, &e, 0);
         gPolling = previous;
-        if (result < 0) { Fail(s, s->interceptError ? s->interceptError : CE_NET_IO); return; }
+        if (result < 0) { FailRoute(s, s->interceptError ? s->interceptError : CE_NET_IO); return; }
         if (result == 0) break;
         if (e.type == ENET_EVENT_TYPE_CONNECT) {
             s->peer = e.peer; s->status.phase = CE_NET_AUTHENTICATING; s->started = now;
@@ -1015,7 +1031,7 @@ void CE_NetPoll(CE_NetSession *s, uint64_t now, uint32_t budget)
         } else if (e.type == ENET_EVENT_TYPE_RECEIVE) {
             if (e.peer == s->peer) ReceivePacket(s, e.packet->data, uint32_t(e.packet->dataLength), e.channelID, now);
             enet_packet_destroy(e.packet);
-        } else if (e.type == ENET_EVENT_TYPE_DISCONNECT) { Fail(s, CE_NET_PEER_LEFT); return; }
+        } else if (e.type == ENET_EVENT_TYPE_DISCONNECT) { FailRoute(s, CE_NET_PEER_LEFT); return; }
         if (s->status.phase == CE_NET_FAILED || s->status.phase == CE_NET_CLOSED) return;
     }
     TimingAfterService(s, now);
@@ -1030,7 +1046,7 @@ void CE_NetPoll(CE_NetSession *s, uint64_t now, uint32_t budget)
         if (now - s->started >= s->handshakeMs) Fail(s, s->status.error ? s->status.error : CE_NET_AUTH);
         return;
     }
-    if (now - s->lastAuthenticated >= s->silenceMs) { Fail(s, CE_NET_TIMEOUT); return; }
+    if (now - s->lastAuthenticated >= s->silenceMs) { FailRoute(s, CE_NET_TIMEOUT); return; }
     if (now - s->lastPing >= std::min(1000u, s->silenceMs / 3)) {
         if (!SendInternal(s, kPing)) { Fail(s, CE_NET_CAPACITY); return; }
         s->lastPing = now;

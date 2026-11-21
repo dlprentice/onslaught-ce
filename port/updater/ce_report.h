@@ -405,8 +405,26 @@ static inline int ce_ini_has_key(const char *t, size_t len, const char *key)
  * A write replaces the file with one that has the same permission bits (a new file is private to its owner), and refuses a file its
  * owner cannot write (no owner write bit; on Windows the read-only attribute): the player made it read-only, so it is left as it is
  * and the call returns 0. The result is never longer than CE_INI_MAX_BYTES, the size every reader of ce.ini accepts: a write that
- * would grow the file past it is refused and the file is left as it is. */
+ * would grow the file past it is refused and the file is left as it is.
+ * After a call that returned 0, ce_ini_refusal says why, for a caller that tells the player: CE_INI_REFUSED_READONLY for the read-only
+ * file above (the one refusal a player causes on purpose and can undo), CE_INI_REFUSED_OTHER for everything else. It is 0 after a call
+ * that returned 1. Each program that includes this file has its own copy. */
+enum { CE_INI_REFUSED_NONE = 0, CE_INI_REFUSED_READONLY = 1, CE_INI_REFUSED_OTHER = 2 };
+static int ce_ini_refusal;
+
+static inline int ce_ini_edit_file(const char *ini, const char *key, const char *value, const char *section_header,
+	const char *section_note, const char *const *section_keys, int section_count);
+
 static inline int ce_ini_edit(const char *ini, const char *key, const char *value, const char *section_header,
+	const char *section_note, const char *const *section_keys, int section_count)
+{
+	ce_ini_refusal = CE_INI_REFUSED_OTHER;	/* until the edit says otherwise: the read-only refusal names itself */
+	int ok = ce_ini_edit_file(ini, key, value, section_header, section_note, section_keys, section_count);
+	if (ok) ce_ini_refusal = CE_INI_REFUSED_NONE;
+	return ok;
+}
+
+static inline int ce_ini_edit_file(const char *ini, const char *key, const char *value, const char *section_header,
 	const char *section_note, const char *const *section_keys, int section_count)
 {
 	char parent[4200], name[256];
@@ -504,7 +522,7 @@ static inline int ce_ini_edit(const char *ini, const char *key, const char *valu
 	/* The block is only ever added: a file that has its header needs no write, so it is left whole (and keeps its inode and mode). */
 	if (!key && t && ce_ini_find_header(t, len, section_header) < len) { free(t); ce_settings_dir_close(&dir); return 1; }
 	/* A write replaces the file, which a read-only file's owner has asked us not to do. */
-	if (readonly) { free(t); ce_settings_dir_close(&dir); return 0; }
+	if (readonly) { free(t); ce_settings_dir_close(&dir); ce_ini_refusal = CE_INI_REFUSED_READONLY; return 0; }
 	char tmp[320];
 	FILE *o = NULL;
 #ifdef _WIN32

@@ -9,6 +9,8 @@
 #endif
 
 #if defined(_WIN32)
+bool PortPrivateUiFieldWaiting(unsigned) noexcept { return false; }
+bool PortPrivateUiTakeField(unsigned, char *, unsigned) noexcept { return false; }
 bool PortPrivateUiConfigured() noexcept { return false; }
 int PortPrivateUiStatus() noexcept { return PORT_PRIVATE_UI_DISABLED; }
 void PortPrivateUiPump(uint64_t,PortPrivateUiChar,void*) noexcept {}
@@ -99,18 +101,19 @@ uint32_t U32(const unsigned char* p) {
 }
 bool Header() {
     const unsigned char* p=state.bytes;
-    if (memcmp(p,"CEUI",4) || p[4]!=1 || (p[5]!=1 && p[5]!=2)) return false;
+    if (memcmp(p,"CEUI",4) || p[4]!=1 || (p[5]!=1 && p[5]!=2 && p[5]!=3)) return false;
     state.kind=p[5]; state.tag=unsigned(p[6]) | unsigned(p[7])<<8;
     state.due=U32(p+8); state.length=U32(p+12);
     if ((state.kind==1 && (state.tag || !state.length || state.length>512)) ||
-        (state.kind==2 && (!state.tag || state.length>4096))) return false;
+        (state.kind==2 && (!state.tag || state.length>4096)) ||
+        (state.kind==3 && ((state.tag!=PORT_PRIVATE_UI_ORIGIN && state.tag!=PORT_PRIVATE_UI_JOIN_CODE) || !state.length || state.length>512))) return false;
     state.need=16+state.length; return true;
 }
 bool Payload() {
     const unsigned char* p=state.bytes+16;
     if (state.kind==2 && state.length && p[0]!='/') return false;
     for (size_t i=0;i<state.length;++i)
-        if (p[i]<32 || p[i]==127 || (state.kind==1 && p[i]>126)) return false;
+        if (p[i]<32 || p[i]==127 || (state.kind!=2 && p[i]>126)) return false;
     state.bytes[state.need]=0; return true;
 }
 void ReadRecord() {
@@ -142,6 +145,16 @@ void CompleteFolder(const char* path) {
 }
 }
 
+bool PortPrivateUiFieldWaiting(unsigned field) noexcept {
+    Initialize();
+    return state.configured && state.ready && !state.cancelled && state.kind==3 && state.tag==field &&
+        state.pumped && state.lastPresent>=state.due;
+}
+bool PortPrivateUiTakeField(unsigned field, char *out, unsigned capacity) noexcept {
+    if (!out || !PortPrivateUiFieldWaiting(field) || capacity<=state.length) return false;
+    memcpy(out,state.bytes+16,state.length); out[state.length]='\0';
+    ClearRecord(); return true;
+}
 bool PortPrivateUiConfigured() noexcept { Initialize(); return state.configured; }
 int PortPrivateUiStatus() noexcept { Initialize(); return state.status; }
 bool PortPrivateUiChooseFolder(PortPrivateUiFolderCallback callback, void* context) noexcept {
@@ -171,6 +184,7 @@ void PortPrivateUiPump(uint64_t present, PortPrivateUiChar deliver, void* contex
     ReadRecord();
     if (state.cancelled) { CompleteFolder(nullptr); return; }
     if (!state.ready || present<state.due) return;
+    if (state.kind==3) return; // Only the matching form may consume a typed value.
     if (state.kind==2) {
         if (!state.folder) return;
         if (state.tag!=state.chooser) { Refuse(); CompleteFolder(nullptr); return; }

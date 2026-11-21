@@ -4,12 +4,13 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include "ce_hooks_host_stubs.h"
 
 typedef wchar_t WCHAR;
 typedef int BOOL;
 typedef unsigned long DWORD;
 enum { MAX_PATH = 260, MCE_SUCCESS = 0, MCE_FAILURE = 1, MCE_FILEEXISTS = 2, ERROR_FILE_EXISTS = 3,
-       ERROR_ALREADY_EXISTS = 4, ERROR_FILE_NOT_FOUND = 5 };
+       ERROR_ALREADY_EXISTS = 4, ERROR_FILE_NOT_FOUND = 5, FALSE = 0, TRUE = 1 };
 static const char SAVE_DIRECTORY[] = "authored/";
 static const char SAVE_EXTENSION[] = ".bes";
 static int boot_requested, lockstep_requested, creates, writes, deletes, options, option_failure, lookups, operation;
@@ -21,6 +22,18 @@ extern "C" int CE_LockstepRequested() { return lockstep_requested; }
 // The CE project loader's storage guard (patch 0139) follows the network guard in these methods. No project is selected
 // in this fixture, so it admits every call and the network guard alone decides.
 static bool PortCeProjectCareerAllowed() { return true; }
+// Patch 0352 (cheat replay in-memory career overlay) sits after 0139; off in this fence fixture.
+struct SCheatCareer { WCHAR name[256]; BOOL held; char *data; int size; };
+static SCheatCareer *sCheatCareers;
+static int sCheatCount;
+static bool PortReplayCheatRequested() { return false; }
+class CPCMemoryCard;
+static void CheatList(CPCMemoryCard *, int) {}
+static int CheatFind(const WCHAR *) { return -1; }
+static int CheatCreateSave(CPCMemoryCard *, int, WCHAR *, int *, BOOL) { return MCE_FAILURE; }
+#ifndef PORT_LOG_PREFIX
+#define PORT_LOG_PREFIX "[fence-test] "
+#endif
 static char *PortSaveFile(WCHAR *) { static char name[] = "authored"; return name; }
 static WCHAR *PortSaveWide(char *) { static WCHAR name[] = L"authored"; return name; }
 static WCHAR *ToWCHAR(char *) { static WCHAR name[] = L"authored"; return name; }

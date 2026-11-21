@@ -37,6 +37,17 @@ namespace
     enum QualityResult { QualitySaved, QualitySessionOnly, QualityRefused };
     // Keep a session-only notice truthful after leaving and reopening Video Options.
     QualityResult results[QualityCount] = { QualitySaved, QualitySaved };
+    // The rows alive now (the front end's Options and a level's Pause Menu may each hold a pair): their list is drawn at CE's row pitch.
+    const void *liveRows[8];
+    void Track(const void *row, bool alive)
+    {
+        for (unsigned i = 0; i < sizeof(liveRows) / sizeof(liveRows[0]); ++i)
+            if (liveRows[i] == (alive ? 0 : row))
+            {
+                liveRows[i] = alive ? row : 0;
+                return;
+            }
+    }
 
     class QualityItem : public CMenuMenuItem
     {
@@ -45,20 +56,27 @@ namespace
         explicit QualityItem(QualityKind value) : CMenuMenuItem((EPCText)0, 3, true), kind(value)
         {
             Refresh();
+            Track(this, true);
         }
+        ~QualityItem() override { Track(this, false); }
+        // The label never changes, as the original's never do ("Label:value", no space): a state follows the value.
         WCHAR *GetText() override
         {
-            if (kind == FullModels)
-                return const_cast<WCHAR *>(results[kind] == QualityRefused ? L"Full models (not applied): " : L"Full models: ");
-            return const_cast<WCHAR *>(results[kind] == QualityRefused ? L"Terrain detail distance (not applied): " : L"Terrain detail distance: ");
+            return const_cast<WCHAR *>(kind == FullModels ? L"Full models:" : L"Terrain detail distance:");
         }
         int GetNumChoices() override { return 2; }
         WCHAR *GetChoiceText(int value) override
         {
+            // A refused change leaves the row on the choice still in effect, and says that it did not change.
+            if (results[kind] == QualityRefused && value == GetValue())
+            {
+                if (kind == FullModels) return const_cast<WCHAR *>(value == 1 ? L"Yes (not changed)" : L"No (not changed)");
+                return const_cast<WCHAR *>(value == 1 ? L"Extended (not changed)" : L"Normal (not changed)");
+            }
             const bool unsaved = results[kind] == QualitySessionOnly;
             if (kind == FullModels)
                 return const_cast<WCHAR *>(value == 1 ?
-                    (unsaved ? L"On (not saved)" : L"On") : (unsaved ? L"Off (not saved)" : L"Off"));
+                    (unsaved ? L"Yes (not saved)" : L"Yes") : (unsaved ? L"No (not saved)" : L"No"));
             // The frame draws what it reports, not always what was asked. Only a completed resource check that
             // refused Extended says so; a request not yet sampled, or a level that has not started, is simply the choice.
             if (value == 1 && CE_TerrainDetailChoice() == 1 && CE_TerrainDetailStatus() == TerrainResourceFallback)
@@ -105,6 +123,14 @@ namespace
             if (!saved) PortCeSaveFailedNotice();
         }
     };
+}
+
+bool PortCeQualityRow(const void *item)
+{
+    if (!item) return false;
+    for (unsigned i = 0; i < sizeof(liveRows) / sizeof(liveRows[0]); ++i)
+        if (liveRows[i] == item) return true;
+    return false;
 }
 
 CMenuItem *PortCeFullModelsItem() { return new((EMemoryType)0x80) QualityItem(FullModels); }

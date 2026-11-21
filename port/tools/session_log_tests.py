@@ -385,11 +385,19 @@ class SessionLog(unittest.TestCase):
         self.assertEqual(self.run_case("disabled", public=False), "")
 
     def test_faithful_replay_recording_and_ce_drawing_override_stay_disabled(self):
-        for name in ("BEA_PORT_CLOCK", "BEA_PORT_TAPE", "BEA_PORT_PROBES", "BEA_PORT_RECORD"):
+        # BEA_PORT_CLOCK is not here: the log stays on under the test clocks (the test kit's runs need it; its stamp is the
+        # host's clock, which no game clock counts). See test_the_log_stays_on_under_a_test_clock.
+        for name in ("BEA_PORT_TAPE", "BEA_PORT_PROBES", "BEA_PORT_RECORD"):
             for force in ("", "1"):
                 with self.subTest(name=name, force=force):
                     self.assertEqual(self.run_case("disabled", **{name: "selected", "BEA_PORT_CE_LAYER": force}), "")
         self.assertEqual(self.run_case("disabled", BEA_PORT_CE_LAYER="0"), "")
+
+    def test_the_log_stays_on_under_a_test_clock(self):
+        for clock in ("fixed", "present", "shim"):
+            with self.subTest(clock=clock):
+                # a test clock leaves the CE layer off unless it is forced on, as the journey runner does; the log follows the layer
+                self.assertNotEqual(self.run_case("basic", BEA_PORT_CLOCK=clock, BEA_PORT_CE_LAYER="1"), "")
 
     def test_error_reserve_saturation_and_final_summary_survive_event_flood(self):
         text = self.run_case("limits")

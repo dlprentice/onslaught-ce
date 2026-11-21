@@ -1,0 +1,51 @@
+# Unit control's tank drive, a feel journey (INPUT only, fixed clock): take a tank, drive, turn, stop, fire at three marks,
+# hand back. Level 211 from a direct start, as unit control's own runs do; its control (tank-drive-control) is the same route
+# with unit control off, where the take must be refused and nothing driven. Firing is shown by the fire state: READY, then
+# RECOVERING once a shot has gone (impacts are kept only by unit control's test-build probe, so no key here reads them).
+# Needs unit control's plain accessors (CePlayUnitDrivingNow and the rest in ce_playunit.h), its kit file
+# ce_playunit_testkit.cpp, and its fence asking the run mode; until those merge it ends as skipped.
+require playunit.available=yes
+wait state game.state=3 within 2400
+wait ticks 20
+# unit control's own route waits 3 s after arming before it turns
+wait ticks 180
+# the take: turn left slowly while pressing E, until a unit is driven
+mouse-move -600 0 over 600 background
+until playunit.driving=1 every 15 do key E within 700
+mouse-stop
+assert "playunit.unit=AV-14B Sabre Pulse Tank"
+dump taken
+# drive forward one second, then let go: the tank gets up to speed and stops
+press W
+wait ticks 60
+assert playunit.pose[3]>1.2
+dump driving
+release W
+wait ticks 25
+assert playunit.pose[3]<0.1
+# three marks: tilt the view, wait for a valid aim and READY, hold fire until the shot goes (RECOVERING)
+mouse-move 0 200 over 30
+wait state playunit.aim[0]=valid within 300
+wait state playunit.aim[4]=READY within 300
+mouse-down
+wait state playunit.aim[4]=RECOVERING within 300
+mouse-up
+dump near
+mouse-move 0 -60 over 30
+wait state playunit.aim[0]=valid within 300
+wait state playunit.aim[4]=READY within 300
+mouse-down
+wait state playunit.aim[4]=RECOVERING within 300
+mouse-up
+dump mid
+mouse-move 0 -100 over 30
+wait state playunit.aim[0]=valid within 300
+wait state playunit.aim[4]=READY within 300
+mouse-down
+wait state playunit.aim[4]=RECOVERING within 300
+mouse-up
+dump far
+# hand back: Morph (Space)
+key SPACE
+wait state playunit.driving=0 within 120
+dump returned

@@ -1,0 +1,40 @@
+# Career restore: the gold career backed up by the game's own Back Up Now, the set previewed and verified, restored as a
+# new career, and the new career loaded from Load Game. Inputs only (no TESTWRITE verb).
+wait ticks 600
+key RETURN
+wait page fe:main within 900
+go "Onslaught CE" > Extras > "Service Record" > Gold > "Back Up Career"
+wait page xp:backup
+select row "Back Up Now"
+wait state backup.state=ok within 900
+back
+wait page xp:record
+back
+wait page xp:careers
+back
+wait page xp:hub
+go "Backup Preview"
+wait page xp:backup-preview
+select row #1
+wait state preview.verified=yes within 900
+dump verified
+select row "Restore as New"
+wait state restore.phase=confirm within 900
+dump confirm
+select row "Restore as New"
+wait state restore.outcome=complete within 900
+assert "restore.target=Gold restored.bes"
+assert file savegames/Gold.bes sha256=0c17e47db9d666e9b26ef88d43d0a25e7cbfbf4f88c8005cc748965050e506fb
+assert file "savegames/Gold restored.bes" sha256=0c17e47db9d666e9b26ef88d43d0a25e7cbfbf4f88c8005cc748965050e506fb
+dump outcome
+back
+wait page xp:hub
+back
+wait page ce:hub
+back
+wait page fe:main
+go "Load Game"
+wait page fe:directory within 900
+select row "Gold restored"
+wait page fe:level-select within 900
+dump loaded

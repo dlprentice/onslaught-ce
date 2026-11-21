@@ -1,0 +1,1 @@
+{"clock": "fixed", "timeout": 400, "args": "-level 211 -skipfmv -forcewindowed -res 1280 720", "env": {"BEA_PORT_PLAYUNIT_TAKE_ONCE": "1"}, "update_dump": {"things": false}, "control": {"journey": "playunit/tank-drive-control", "equal": ["ce.ini"]}, "files": [], "dt": "0.016667"}

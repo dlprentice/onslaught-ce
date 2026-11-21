@@ -153,6 +153,23 @@
  #else
  	const bool ceEditorAuthoring = false;
  #endif
+@@ -1640,6 +1643,16 @@
+ 		}
+ 		else if (mQuit == QT_LOAD_ERROR)
+ 		{
++#ifdef CE_VERSION
++			// A refused museum load (no usable exhibit, no dry ground, changed resources) is not fatal: the visit ends as a quit to the front
++			// end, which restores the career and says why on the Onslaught CE page. Any other load error keeps the original's fatal path.
++			if (PortCeMuseumVisitLoadRefused())
++			{
++				mQuit = QT_QUIT_TO_FRONTEND;
++				play_level = FALSE;
++			}
++			else
++#endif
+ 			CONSOLE.FatalError(FALSE, 0xf5, -1);	// retail (0046e443)
+ 		}
+ 		else
 --- a/FrontEnd.cpp
 +++ b/FrontEnd.cpp
 @@ -1,5 +1,6 @@
@@ -214,3 +231,105 @@
  //******************************************************************************************
  float CMesh::GetFrameIncrement(EAnimMode am, int *realindex)	// FUNCTION: 0x004aa7e0
  {
+--- a/PauseMenu.cpp
++++ b/PauseMenu.cpp
+@@ -35,6 +35,8 @@
+ #ifdef CE_VERSION
+ bool PortCeTakeOptionsFailure();	// patch 0137: port/game/ce_notice.cpp
+ void PortCeSaveFailedNotice();
++extern "C" bool PortCeMuseumVisitActive(void);	// patch 0207: port/game/ce_museum_visit.cpp
++CMenuItem *PortCeMuseumLeaveItem(DWORD text);	// patch 0207: port/game/ce_frontend.cpp
+ #endif
+ #ifdef CE_VERSION
+ CMenuItem *PortCePhotoItem();		// patch 0138: the Photo Mode item (port/game/ce_frontend.cpp)
+@@ -524,8 +526,16 @@
+ 	{
+ #line 1341
+ 		list->AddItem(new (MEMTYPE_MENUITEM) CMenuItem((DWORD)GI_CONTINUE, 2));
++#ifdef CE_VERSION
++		// patch 0207: a museum visit has no mission, so no message log and no briefing
++		if (!PortCeMuseumVisitActive())
++		{
++#endif
+ 		list->AddItem(new (MEMTYPE_MENUITEM) CMenuItem((DWORD)GI_MESSAGE_LOG, 2));
+ 		list->AddItem(new (MEMTYPE_MENUITEM) CMenuItem((DWORD)GI_BRIEFING, 2));
++#ifdef CE_VERSION
++		}
++#endif
+ 	}
+ #line 1346
+ 	list->AddItem(new (MEMTYPE_MENUITEM) CMenuItem((EPCText)3, 3));
+@@ -542,9 +552,19 @@
+ 		if (PortCeMenus())
+ 			list->AddItem(PortCePhotoItem());		// patch 0138: Photo Mode, a row only in a solo level
+ #endif
++#ifdef CE_VERSION
++		// patch 0207: a visit has nothing to retry; its way out is Leave Museum (the Quit item, worded for the place, with the same "Are you sure?")
++		if (PortCeMuseumVisitActive())
++			list->AddItem(PortCeMuseumLeaveItem((DWORD)GI_QUIT));
++		else
++		{
++#endif
+ #line 1358
+ 		list->AddItem(new (MEMTYPE_MENUITEM) CMenuItem((DWORD)GI_RETRY, 2));
+ 		list->AddItem(new (MEMTYPE_MENUITEM) CMenuItem((DWORD)GI_QUIT, 2));
++#ifdef CE_VERSION
++		}
++#endif
+ 	}
+ 	mLists.Append(list);
+ 
+@@ -1535,7 +1555,12 @@
+ 		PortCeTakeOptionsFailure();
+ #endif
+ 
++#ifdef CE_VERSION
++		// patch 0207: a museum visit has no career of its own to save; Continue skips the career write instead of failing it and warning
++		if (FRONTEND.mFEPSaveGame.mSaveGameName[0] && !PortCeMuseumVisitActive())
++#else
+ 		if (FRONTEND.mFEPSaveGame.mSaveGameName[0])
++#endif
+ 		{
+ 			int save;
+ #ifdef CE_VERSION
+--- a/Hud.cpp
++++ b/Hud.cpp
+@@ -8,6 +8,8 @@
+ #endif
+ #ifdef CE_VERSION
+ #include "../game/ce_photo.h"	// patch 0133: CE photo mode drops the HUD overlay's draw calls
++#include "../game/ce_museum_label.h"	// patch 0207: the museum's hall and exhibit names, drawn as the radio messages' capsule
++extern "C" bool PortCeMuseumVisitActive(void);	// patch 0207: port/game/ce_museum_visit.cpp
+ #endif
+ 
+ #include	"Hud.h"
+@@ -2169,11 +2171,19 @@
+ 		CeHudScope scope(portHudEligible, mViewportWidth, mViewportHeight,
+ 			mViewportX + HUD_OFFSET_X, mViewportBottom - HUD_OFFSET_Y);
+ 		RenderWeaponPanel();
++#ifdef CE_VERSION
++		// patch 0207: a museum has nothing to fight with, so the current weapon and the weapon's gauge stay down (the radar and the portrait stay)
++		if (!PortCeMuseumVisitActive())
++#endif
+ 		Render00485d50();
+ 	}
+ 	{
+ 		CeHudScope scope(portHudEligible, mViewportWidth, mViewportHeight,
+ 			mViewportRight - HUD_OFFSET_X, mViewportBottom - HUD_OFFSET_Y);
++#ifdef CE_VERSION
++		// patch 0207: a museum has nothing to fight with, so the current weapon and the weapon's gauge stay down (the radar and the portrait stay)
++		if (!PortCeMuseumVisitActive())
++#endif
+ 		Render00486940();
+ 	}
+ 	{
+@@ -2278,6 +2288,9 @@
+ 	}
+ 	else
+ 	GAME.GetMessageBox()->RenderOverlay(7);
++#ifdef CE_VERSION
++	PortCeMuseumLabelsRender();		// patch 0207: in the radio messages' place and capsule, inside the same HUD scope; draws only in a museum visit
++#endif
+ 	}
+ 
+ 	CeHudScope battleScope(portHudEligible, mViewportWidth, mViewportHeight,

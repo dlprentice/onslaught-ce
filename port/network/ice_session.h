@@ -3,6 +3,7 @@
 #define CE_ICE_SESSION_H
 #if defined(CE_NETWORK_ICE)
 #include "network.h"
+#include "ice_route_status.h"
 #include <juice/juice.h>
 #ifdef __cplusplus
 extern "C" {
@@ -33,7 +34,6 @@ int CE_NetIceSetRemoteDescription(CE_NetSession *, const char *, uint32_t size);
 
 // ICE readiness is not CE admission. Only CE_NET_ACTIVE admits application data.
 int CE_NetIceReady(const CE_NetSession *);
-int CE_NetIceUsesRelay(const CE_NetSession *);
 
 // Read-only progress of the session's ICE agent, for the exchange's private trace: gathering finished (0 or 1),
 // the number of relay candidates in the local description so far, and the agent's state index (libjuice's

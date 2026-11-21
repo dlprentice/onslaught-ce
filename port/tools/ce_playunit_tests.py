@@ -33,6 +33,7 @@ HEADER = PORT / "game/ce_playunit.h"
 RULES = PORT / "game/ce_playunit_rules.h"
 DRIVER = PORT / "tools/ce_playunit_driver.cpp"
 VIEW = PORT / "game/ce_playunit_view.h"
+LOOK = PORT / "game/ce_playunit_look.h"
 UPDATE = PORT / "game/updatedump.cpp"
 MAP = PORT / "game/ce_cmdmap.cpp"
 BUILD = PORT / "build.py"
@@ -77,11 +78,12 @@ def swap(old, new):
     return mutate
 
 
-def run_driver(rules_text, scratch, name):
+def run_driver(rules_text, scratch, name, look_text=None):
     """The driver compiled against rules_text and run; (exit status, its lines)."""
     folder = Path(scratch) / name
     folder.mkdir()
     (folder / "ce_playunit_rules.h").write_text(rules_text)
+    (folder / "ce_playunit_look.h").write_text(look_text if look_text is not None else LOOK.read_text())
     binary = folder / "driver"
     done = subprocess.run(["g++", "-std=c++14", "-O0", "-g", "-Wall", "-Wextra", "-Wno-unused-parameter", "-Werror", "-I", str(folder), str(DRIVER), "-o", str(binary)],
                           capture_output=True, text=True, timeout=120)
@@ -113,11 +115,11 @@ MUTANTS = (
      "gate: the proof switch does not lift the network fence"),
     ("the proof switch lifts nothing", swap("	if (g.proof) return true;\n", ""), "gate: the proof switch lifts the replay fences"),
     ("an enemy is eligible", swap("f.friendly && f.alive", "f.alive"), "eligible: an enemy is refused"),
-    ("a dying unit is eligible", swap("f.alive && f.vehicle", "f.vehicle"), "eligible: a dying unit is refused"),
+    ("a dying unit is eligible", swap("f.alive && !f.scripted", "!f.scripted"), "eligible: a dying unit is refused"),
     ("a scripted unit is eligible", swap("!f.scripted && ", ""), "eligible: a unit a mission script runs is refused"),
     ("an objective is eligible", swap("!f.objective && ", ""), "eligible: an objective is refused"),
     ("artillery is eligible", swap("!f.deploys && ", ""), "eligible: artillery is refused"),
-    ("a unit outside a normal squad is eligible", swap("f.normalSquad && ", ""), "eligible: a unit outside a normal squad is refused"),
+    ("a unit outside a normal squad is eligible", swap("(f.normalSquad || f.ordinaryFoot) && ", ""), "eligible: a unit outside a normal squad is refused"),
     ("a spawned squad's unit is eligible", swap("!f.spawned && ", ""), "eligible: a squad that follows its lead unit is refused"),
     ("an unarmed unit is eligible", swap(" && f.armed;", ";"), "eligible: an unarmed unit is refused"),
     ("a jeep is eligible", swap("f.vehicle && f.groundUnit", "f.vehicle"), "eligible: a jeep, mech or aircraft is refused"),
@@ -136,6 +138,112 @@ MUTANTS = (
     ("the interval is one too long", swap("tick - lastTick >= interval", "tick - lastTick > interval"), "reissue: the interval is over"),
     ("a changed wish is not enough", swap("return changed || ", "return "), "reissue: the wishes changed"),
     ("nearness is not asked", swap(" || distanceToPoint < nearRadius", ""), "reissue: the unit is near the last point"),
+
+    # the class table
+    ("a later row skips what every class refuses", swap("return CePlayUnitCommonEligible(f) && rows[row].shape(f);", "return rows[row].shape(f) && (row == 0 ? CePlayUnitCommonEligible(f) : true);"),
+     "table: a scripted unit is refused by every row"),
+    ("the common guard is gone", swap("return CePlayUnitCommonEligible(f) && rows[row].shape(f);", "return rows[row].shape(f);"), "table: an enemy is refused by every row"),
+    ("a row that is off takes units", swap("|| !rows[row].enabled", ""), "table: a row that is off takes nothing"),
+    ("a row with no shape takes units", swap("|| !rows[row].shape) return false;\n	return CePlayUnitCommonEligible(f) && rows[row].shape(f);", ") return false;\n	return CePlayUnitCommonEligible(f) && (!rows[row].shape || rows[row].shape(f));"), "table: a row with no shape takes nothing"),
+    ("a row beyond the table is read", swap("row < 0 || row >= n || ", ""), "table: a row that is not there takes nothing"),
+    ("the jeep row is on", swap('{"jeep", false,', '{"jeep", true,'), "table: the jeep row is off"),
+    ("the tank row is off", swap('{"tank", true,', '{"tank", false,'), "table: the tank row is on"),
+    ("the tank's law moves", swap("{40.f, 6.f, 1.4f, 1.2f, 8.f, 2.f, 6u, 2u, true,", "{41.f, 6.f, 1.4f, 1.2f, 8.f, 2.f, 6u, 2u, true,"), "table: the tank's control law is the one measured"),
+    ("the tank has no free fire", swap("{40.f, 6.f, 1.4f, 1.2f, 8.f, 2.f, 6u, 2u, true,", "{40.f, 6.f, 1.4f, 1.2f, 8.f, 2.f, 6u, 2u, false,"), "table: the tank has free fire"),
+    # free fire: the gate
+    ("free fire runs for a class without it", swap("if (!classFreeFire || commanderOpen || g.proof) return false;", "if (commanderOpen || g.proof) return false;"), "free fire: a class without it is refused"),
+    ("free fire runs while commanding", swap("if (!classFreeFire || commanderOpen || g.proof) return false;", "if (!classFreeFire || g.proof) return false;"), "free fire: open Commander view is refused"),
+    ("free fire runs under the proof switch", swap("if (!classFreeFire || commanderOpen || g.proof) return false;", "if (!classFreeFire || commanderOpen) return false;"), "free fire: the proof switch does not lift the replay fences for it"),
+    ("free fire skips the option's gate", swap("	return CePlayUnitAllowed(g);\n}\n\n// The ground's height", "	return true;\n}\n\n// The ground's height"), "free fire: a second player is refused"),
+    # free fire: the aim point
+    ("the ray's hit is not narrowed", swap("for (int i = 0; i < 12; ++i)", "for (int i = 0; i < 0; ++i)"), "view: a coarse search is narrowed to the same point"),
+    ("the ray starts under the ground", swap("if (!isfinite(start) || start <= 0.f) return false;", "if (!isfinite(start)) return false;"), "view: an eye under the ground gives no point"),
+    ("the hit's height is the eye's", swap("hit[2] = height(context, hit[0], hit[1]);", "hit[2] = eye[2];"), "view: the ray reaches flat ground where the geometry says"),
+    ("the ground is judged from below", swap("const float above = height(context, eye[0] + look[0] * t, eye[1] + look[1] * t) - (eye[2] + look[2] * t);", "const float above = (eye[2] + look[2] * t) - height(context, eye[0] + look[0] * t, eye[1] + look[1] * t);"),
+     "view: the ray reaches flat ground where the geometry says"),
+    ("the reach is not asked", swap("		if (t >= maxDist) return false;\n", "		if (t >= maxDist) { hit[0] = eye[0]; hit[1] = eye[1]; hit[2] = eye[2]; return true; }\n"), "view: ground beyond the reach gives no point"),
+    ("the sky has a point", swap("		if (t >= maxDist) return false;\n", "		if (t >= maxDist) { hit[0] = eye[0] + look[0] * t; hit[1] = eye[1] + look[1] * t; hit[2] = eye[2] + look[2] * t; return true; }\n"), "view: looking at the sky gives no point"),
+    # free fire: the range
+    ("the range is not clamped", swap("		const float k = maxRange / d;", "		const float k = 1.f;"), "range: a far point is clamped to the weapon's range on the same line"),
+    ("a far point is in reach", swap("	if (d > maxRange)\n	{", "	if (d > maxRange * 2.f)\n	{"), "range: a far point is clamped to the weapon's range on the same line"),
+    ("a near point is in reach", swap("	if (d < minRange)\n	{", "	if (d < 0.f)\n	{"), "range: a near point is clamped to the weapon's minimum on the same line"),
+    ("the minimum is clamped to the maximum's side", swap("		const float k = minRange / d;", "		const float k = maxRange / d;"), "range: a near point is clamped to the weapon's minimum on the same line"),
+    ("a range of nothing is a range", swap("!(maxRange > 0.f) || minRange > maxRange)", "minRange > maxRange)"), "range: no positive range is none"),
+    ("a minimum above the maximum is a range", swap("|| minRange > maxRange)", ")"), "range: a minimum above the maximum is none"),
+    ("the unit's own place has a direction", swap("	if (!(d > 0.f)) return CE_PLAYUNIT_RANGE_NONE;\n", ""), "range: the unit's own place has no direction"),
+    ("the limit is out of reach", swap("	if (d > maxRange)\n	{", "	if (d >= maxRange)\n	{"), "range: the limits are in reach"),
+    # free fire: the line of fire
+    ("the ground never blocks", swap("ground + tolerance < z", "ground + tolerance < z - 100.f"), "line: a ridge across the line blocks it"),
+    ("the tolerance is not used", swap("ground + tolerance < z", "ground < z"), "line: a rise within the tolerance does not"),
+    ("only the first sample is looked at", swap("for (int i = 1; i <= samples; ++i)", "for (int i = 1; i <= 1; ++i)"), "line: a ridge across the line blocks it"),
+    # free fire: the state, the held-input gate, and the case of no target
+    ("no ground still has a state", swap("if (!haveGround || range == CE_PLAYUNIT_RANGE_NONE", "if (range == CE_PLAYUNIT_RANGE_NONE"), "state: no ground under the view is out of range"),
+    ("range is not asked", swap("if (!haveGround || range == CE_PLAYUNIT_RANGE_NONE || range == CE_PLAYUNIT_RANGE_TOO_NEAR)", "if (!haveGround)"), "state: a near point is out of range"),
+    ("a far point is out of range", swap("range == CE_PLAYUNIT_RANGE_NONE || range == CE_PLAYUNIT_RANGE_TOO_NEAR)", "range != CE_PLAYUNIT_RANGE_OK)"), "state: a far point is fired at the weapon's reach"),
+    ("too near is in range", swap(" || range == CE_PLAYUNIT_RANGE_TOO_NEAR) return CE_PLAYUNIT_FIRE_OUT_OF_RANGE;", ") return CE_PLAYUNIT_FIRE_OUT_OF_RANGE;"), "state: a near point is out of range"),
+    ("the line is not asked", swap("	if (!lineClear) return CE_PLAYUNIT_FIRE_BLOCKED;\n", ""), "state: a blocked line says so"),
+    ("recovering is ready", swap("	if (!weaponReady) return CE_PLAYUNIT_FIRE_RECOVERING;\n", ""), "state: between shots is recovering"),
+    ("arming is not told", swap("	if (arming && !armed) return CE_PLAYUNIT_FIRE_ARMING;\n", ""), "state: arming"),
+    ("an armed unit is still arming", swap("if (arming && !armed)", "if (arming)"), "state: armed and ready is ready"),
+    ("fire is given without a hold", swap("	return held && (state == CE_PLAYUNIT_FIRE_READY", "	return (state == CE_PLAYUNIT_FIRE_READY"), "fire: no held input, no native calls"),
+    ("fire is given out of range", swap("|| state == CE_PLAYUNIT_FIRE_RECOVERING);", "|| state == CE_PLAYUNIT_FIRE_RECOVERING || state == CE_PLAYUNIT_FIRE_OUT_OF_RANGE);"), "fire: held fire gives the native calls only where there is something to ask"),
+    ("fire is given with no weapon", swap("|| state == CE_PLAYUNIT_FIRE_RECOVERING);", "|| state == CE_PLAYUNIT_FIRE_RECOVERING || state == CE_PLAYUNIT_FIRE_NONE);"), "fire: held fire gives the native calls only where there is something to ask"),
+    ("the gun turns without a hold", swap("	return held && state != CE_PLAYUNIT_FIRE_NONE;", "	return state != CE_PLAYUNIT_FIRE_NONE;"), "fire: no held input, the gun is not turned"),
+    ("the gun does not turn out of range", swap("	return held && state != CE_PLAYUNIT_FIRE_NONE;", "	return held && state != CE_PLAYUNIT_FIRE_NONE && state != CE_PLAYUNIT_FIRE_OUT_OF_RANGE;"), "fire: held fire turns the gun wherever there is a weapon"),
+    # taking a unit by key (ce_playunit_rules.h: CePlayUnitRefusalIn, CePlayUnitAtScreen, CePlayUnitChoose, CePlayUnitSwitchStep, CePlayUnitPressed)
+    ("a takeable unit is refused", swap("	if (CePlayUnitClassIn(rows, n, f) >= 0) return CE_PLAYUNIT_TAKE_OK;\n", ""), "refusal: refused exactly when no class takes the unit"),
+    ("a soldier is refused for its squad", swap("	if (!shaped) return CE_PLAYUNIT_REFUSE_KIND;\n	if ((!f.normalSquad && !f.ordinaryFoot) || f.spawned) return CE_PLAYUNIT_REFUSE_SQUAD;\n",
+                                                 "	if ((!f.normalSquad && !f.ordinaryFoot) || f.spawned) return CE_PLAYUNIT_REFUSE_SQUAD;\n	if (!shaped) return CE_PLAYUNIT_REFUSE_KIND;\n"),
+     "refusal: a soldier is refused for what it is, not for its squad"),
+    ("an objective is not the mission's", swap("if (f.scripted || f.objective) return CE_PLAYUNIT_REFUSE_MISSION;", "if (f.scripted) return CE_PLAYUNIT_REFUSE_MISSION;"), "refusal: an objective belongs to the mission"),
+    ("a following squad is not asked", swap("if ((!f.normalSquad && !f.ordinaryFoot) || f.spawned) return CE_PLAYUNIT_REFUSE_SQUAD;", "if (!f.normalSquad) return CE_PLAYUNIT_REFUSE_SQUAD;"), "refusal: a squad that follows its lead keeps its unit"),
+    ("the frame's side is not asked", swap("if (p.x < 0.f || p.x > w || p.y < 0.f", "if (p.y < 0.f"), "sight: the frame's side edges"),
+    ("the frame's bottom is not asked", swap("|| p.y < 0.f || p.y > h) return false;", "|| p.y < 0.f) return false;"), "sight: the frame's top and bottom edges"),
+    ("a unit behind the eye is seen", swap("if (!(p.depth > kCePlayUnitSightNear) || p.distance > reach)", "if (!(fabsf(p.depth) > kCePlayUnitSightNear) || p.distance > reach)"), "sight: behind the eye is out of sight"),
+    ("the reach is ignored", swap("|| p.distance > reach) return false;", ") return false;"), "sight: beyond reach is out of sight"),
+    ("the near plane is ignored", swap("if (!(p.depth > kCePlayUnitSightNear) ||", "if (!(p.depth > 0.f) ||"), "sight: nearer than the near plane is out of sight"),
+    ("the wide screen stretches the scale", swap("const float half = (w < h * 4.f / 3.f ? w : h * 4.f / 3.f) * 0.5f;", "const float half = w * 0.5f;"), "sight: a wide screen is measured in the 4:3 frame's half-widths"),
+    ("the tall screen is measured by its height", swap("const float half = (w < h * 4.f / 3.f ? w : h * 4.f / 3.f) * 0.5f;", "const float half = h * 4.f / 3.f * 0.5f;"), "sight: a tall screen is measured across its width"),
+    ("the size is ignored", swap("- (p.radius > 0.f ? p.radius : 0.f)) / half;", ") / half;"), "sight: the unit's size brings its edge nearer the middle"),
+    ("the height is ignored", swap("const float r = (sqrtf(dx * dx + dy * dy)", "const float r = (sqrtf(dx * dx + 0.f * dy)"), "sight: a tall screen is measured across its width"),
+    ("the reticle admits half the screen", swap("const float kCePlayUnitSightReticle = 0.12f;", "const float kCePlayUnitSightReticle = 0.5f;"), "sight: a near unit beside the line is not at the reticle"),
+    ("a switch never gives up", swap("|| !*wait) { *wait = 0; return CE_PLAYUNIT_SWITCH_GIVE_UP; }", ") { *wait = 0; return CE_PLAYUNIT_SWITCH_GIVE_UP; }"), "switch: a unit never ready gives up when the wait is over"),
+    ("a switch takes an untakeable unit", swap("if (found && ready && takeable) {", "if (found && ready) {"), "switch: a unit no longer takeable gives up at once"),
+    ("a switch waits for a unit that is gone", swap("if (!found || (ready && !takeable)", "if ((ready && !takeable)"), "switch: a unit that is gone gives up at once"),
+    ("the nearest unit is taken even when refused", swap("if (s[i].refusal == CE_PLAYUNIT_TAKE_OK && (best < 0", "if ((best < 0"), "choose: the takeable unit nearest the middle, over a nearer one that is refused"),
+    ("the reason is the first unit's", swap("? s[nearest].refusal", "? s[0].refusal"), "choose: with none takeable, the reason of the unit nearest the middle"),
+    ("a held key takes again", swap("const bool edge = down && !k->wasDown;", "const bool edge = down;"), "key: one take for each press, none while it is held"),
+    ("reverse drives forward", swap("float share = f - b * CePlayUnitClamp(reverseShare, 0.f, 1.f);", "float share = f + b * CePlayUnitClamp(reverseShare, 0.f, 1.f);"), "drive: S backs up, slower than forward"),
+    ("W and S together drive", swap("	if (f > 0.f && b > 0.f) share = 0.f;\n", ""), "drive: W and S together hold still"),
+    ("steering stops the tank", swap("share *= 1.f - CePlayUnitClamp(turnSlow, 0.f, 1.f) * fabsf(s);", "share *= fabsf(s) > 0.05f ? 0.f : 1.f;"), "drive: W and D steer right while moving, a little slower"),
+    ("steering is mirrored", swap("- s * CePlayUnitClamp(steerLead, 0.f, 1.5f));", "+ s * CePlayUnitClamp(steerLead, 0.f, 1.5f));"), "drive: W and D steer right while moving, a little slower"),
+    ("the heading is not wrapped", swap("m.yaw = CePlayUnitWrap((isfinite(yaw) ? yaw : 0.f) - s", "m.yaw = ((isfinite(yaw) ? yaw : 0.f) - s"), "drive: the heading wraps past a half turn"),
+    ("the guard ignores what is ahead", swap("	if (share > 0.f && !aheadOpen) return 0.f;\n", ""), "guard: forward into a closed cell stops"),
+    ("the guard looks ahead in reverse", swap("	if (share < 0.f && !behindOpen) return 0.f;\n", "	if (share < 0.f && !aheadOpen) return 0.f;\n"), "guard: reverse into a closed cell stops"),
+    ("a replaced notice restarts", swap("	if (age >= shown) return 0;\n", "	if (age < shown + 1) return 0;\n"), "notice: a key pressed again and again keeps the capsule open"),
+    ("a closing notice jumps open", swap("const unsigned long long phase = age < left ? age : left;", "const unsigned long long phase = age < left ? age : age;"), "notice: one closing opens again from the width it had"),
+    ("a press in a menu is taken later", swap("	k->wasDown = down;\n	return edge && mayCount;", "	if (mayCount) k->wasDown = down;\n	return edge && mayCount;"),
+     "key: a press made while it may not count is not taken later"),
+)
+
+
+# the look camera's mutants (ce_playunit_look.h): (name, the change, what the driver must say failed)
+LOOK_MUTANTS = (
+    ("the mouse turns the look left", swap("*yaw = CePlayUnitLookWrap(*yaw - dx * law.perCount);", "*yaw = CePlayUnitLookWrap(*yaw + dx * law.perCount);"), "look: the mouse to the right turns the look right (toward +x from +y)"),
+    ("the mouse tilts the look up", swap("float p = *pitch + dy * law.perCount;", "float p = *pitch - dy * law.perCount;"), "look: the mouse moved down tilts the look down"),
+    ("the tilt down has no limit", swap("	if (p > law.pitchDown) p = law.pitchDown;\n", ""), "look: the tilt down stops at its limit"),
+    ("the tilt up has no limit", swap("	if (p < law.pitchUp) p = law.pitchUp;\n", ""), "look: the tilt up stops at its limit"),
+    ("the yaw is not wrapped", swap("*yaw = CePlayUnitLookWrap(*yaw - dx * law.perCount);", "*yaw = *yaw - dx * law.perCount;"), "look: the yaw stays within a turn"),
+    ("a pitch looks up", swap("forward[2] = sp;", "forward[2] = -sp;"), "look: a positive pitch looks down (the world's z is down)"),
+    ("the eye is in front", swap("eye[1] = place[1] - f[1] * law.distance;", "eye[1] = place[1] + f[1] * law.distance;"), "look: the eye is behind the pivot by the distance, the pivot above the place by the lift"),
+    ("the pivot is the place", swap("eye[2] = place[2] - law.lift - f[2] * law.distance;", "eye[2] = place[2] - f[2] * law.distance;"), "look: the eye is behind the pivot by the distance, the pivot above the place by the lift"),
+    ("the right axis tilts", swap("right[0] = cy; right[1] = sy; right[2] = 0.f;", "right[0] = cy * cp; right[1] = sy * cp; right[2] = sp;"), "look: the axes are of unit length, square to each other, and the right axis stays level"),
+    ("the yaw of a heading is mirrored", swap("return atan2f(-hx, hy);", "return atan2f(hx, hy);"), "look: a take looks along the unit's heading"),
+    ("the lowest look sits on the unit", swap("{10.f, 3.5f, -0.35f, 0.3f, 0.0025f, 1.5f}", "{10.f, 2.5f, -0.35f, 0.6f, 0.0025f, 1.5f}"), "look: at the lowest look the reticle is beyond the driven unit"),
+    ("the stick turns the look left", swap("CePlayUnitLookTurn(yaw, pitch, sx * counts, sy * counts, law);", "CePlayUnitLookTurn(yaw, pitch, -sx * counts, sy * counts, law);"), "look: a stick held right for a second turns the look right at the stick's rate"),
+    ("the stick cannot tilt", swap("CePlayUnitLookTurn(yaw, pitch, sx * counts, sy * counts, law);", "CePlayUnitLookTurn(yaw, pitch, sx * counts, 0.f, law);"), "look: a stick pushed down tilts the look down"),
+    ("the stick ignores no time", swap("|| !(seconds > 0.f) ", ""), "look: a stick that is not a number, or no time, turns nothing"),
+    ("a movement that is not a number turns", swap("	if (!isfinite(dx) || !isfinite(dy)) return;\n", ""), "look: a movement that is not a number turns nothing"),
 )
 
 
@@ -161,6 +269,14 @@ class Rules(unittest.TestCase):
         self.assertEqual(len(summary), 1)
         self.assertGreaterEqual(int(summary[0].split()[1]), 50, "too few checks ran")
 
+    def test_each_look_mutant_is_caught(self):
+        look = LOOK.read_text()
+        for number, (name, mutate, said) in enumerate(LOOK_MUTANTS):
+            with self.subTest(mutant=name):
+                status, lines = run_driver(self.rules, self.scratch, f"look-mutant-{number}", mutate(look))
+                self.assertNotEqual(status, 0, "the driver passed the mutant")
+                self.assertTrue(any(l.startswith("FAIL " + said) for l in lines), f"the driver did not say {said!r}: {[l for l in lines if l.startswith('FAIL')][:3]}")
+
     def test_each_mutant_is_caught(self):
         for number, (name, mutate, said) in enumerate(MUTANTS):
             with self.subTest(mutant=name):
@@ -182,13 +298,11 @@ class GuideCommands(unittest.TestCase):
         start = cls.module.index("\tconst FVector pos = u->GetPos();", cls.module.index("void Drive("))
         end = cls.module.index("#ifdef CE_PLAYUNIT_TEST\n\tif (gFireFrom", start)
         cls.region = cls.module[start:end]
-        constants = []
-        for name in ("kReach", "kPivotReach", "kTurnRate", "kMaxLead", "kReissue", "kNear"):
-            found = re.search(r"(?m)^const (?:float|unsigned) " + name + r" = [^;]+;", cls.module)
-            if found is None:
-                raise AssertionError("missing guide constant: " + name)
-            constants.append(found.group())
-        (cls.scratch / "ce_playunit_guide_constants.inc").write_text("\n".join(constants) + "\n")
+        # The control law comes from the class table in the rules (the module's gLaw points at the driven class's row); the fixture drives the tank's.
+        assert re.search(r"(?m)^const CePlayUnitLaw \*gLaw;", cls.module)
+        for name in ("gLaw->reach", "gLaw->pivotReach", "gLaw->turnRate", "gLaw->maxLead", "gLaw->reissue", "gLaw->pivotReissue", "gLaw->nearRadius", "gLaw->pivotNear"):
+            assert name in cls.region, "the drive region does not read " + name
+        (cls.scratch / "ce_playunit_guide_constants.inc").write_text("static const CePlayUnitLaw *gLaw = &CePlayUnitClasses()[CE_PLAYUNIT_CLASS_TANK].law;\n")
 
     @classmethod
     def tearDownClass(cls):
@@ -247,8 +361,15 @@ class CameraFrame(unittest.TestCase):
         # the displayed camera's state and its helpers, which the adapter calls
         start = source.index("enum { kViewSmooth")
         end = source.index("void ViewReset();\n", start) + len("void ViewReset();\n")
-        cls.view_state = source[start:end]
-        start = source.index("unsigned long long ViewNs()")
+        reset_start = source.index("CePlayUnitCameraRig gUnitViewRig")
+        reset_end = source.index("bool MakeUnitView(", reset_start)
+        cls.view_state = ('#include "ce_playunit_look.h"\n'
+                          '#include "ce_playunit_camera.h"\n' +
+                          source[reset_start:reset_end] + source[start:end])
+        hide_start = source.index("bool UnitViewHidesBody()")
+        hide_end = source.index("\n}", hide_start) + len("\n}")
+        cls.view_state += source[hide_start:hide_end]
+        start = re.search(r"unsigned long long ViewNs\(\)\s*\{", source).start()
         end = source.index("\n}\n", source.index("void SmoothView(", start)) + len("\n}\n")
         cls.view_adapter = source[start:end]
         cls.view_header = VIEW.read_text()
@@ -263,6 +384,8 @@ class CameraFrame(unittest.TestCase):
         (self.scratch / "ce_playunit_view_adapter.inc").write_text(view_adapter or self.view_adapter)
         (self.scratch / "ce_playunit_render_adapter.inc").write_text(adapter)
         (self.scratch / "ce_playunit_view.h").write_text(view_header or self.view_header)
+        for name in ("ce_playunit_look.h", "ce_playunit_camera.h"):
+            (self.scratch / name).write_text((PORT / "game" / name).read_text())
         binary = self.scratch / name
         compiled = subprocess.run(
             ["g++", "-std=c++14", "-O2", "-Wall", "-Wextra", "-Werror",
@@ -281,9 +404,9 @@ class CameraFrame(unittest.TestCase):
         self.assertGreaterEqual(int(re.search(r"camera checks=(\d+)", output).group(1)), 90)
 
     def test_omitting_the_presentation_adapter_is_detected(self):
-        old = "    return &view;\n"
+        old = "\n    return &view;\n"
         self.assertEqual(self.adapter.count(old), 1)
-        mutant = self.adapter.replace(old, "    return original;\n", 1)
+        mutant = self.adapter.replace(old, "\n    return original;\n", 1)
         status, output = self.run_camera(mutant, "camera-no-adapter")
         self.assertEqual(status, 2)
         self.assertIn("position follows displayed pose", output)
@@ -372,7 +495,7 @@ class Fences(unittest.TestCase):
             self.assertIn("#ifdef CE_VERSION", text, f"{name} is wrapped in CE_VERSION")
         self.assertIn('PortCeExperimental("play_unit")', self.module, "the option is the ini line play_unit (1, or the older tank), read once in ce.cpp")
         self.assertEqual(self.module.count('PortCeExperimental("'), 1, "one read of the ini line")
-        self.assertIn('gWanted = !fenced && PortCeExperimental("play_unit") && !CeCmdMapOn();', self.module, "the ini is read only where no fenced variable is set")
+        self.assertIn('gWanted = !fenced && PortCeExperimental("play_unit");', self.module, "the ini is read only where no fenced variable is set")
         self.assertIn("const bool fenced = FencedEnv() && !gProof;", self.module)
         self.assertLess(self.module.index("const bool fenced = FencedEnv()"), self.module.index('PortCeExperimental("play_unit")'), "the fence is asked before the ini")
 
@@ -384,7 +507,7 @@ class Fences(unittest.TestCase):
         self.assertEqual(sorted(listed), sorted(FENCED_ENV), "the fence names exactly the variables photo mode and commander name")
 
     def test_the_gate_is_filled_from_the_game_and_every_field_is_set(self):
-        gate = self.module[self.module.index("bool Allowed(bool optionOn)"):self.module.index("void ReadConfiguration()")]
+        gate = self.module[self.module.index("CePlayUnitGate FillGate(bool optionOn)"):self.module.index("void ReadConfiguration()")]
         for field in GATE_FIELDS:
             self.assertRegex(gate, r"\bg\.%s = " % field, f"the gate's field {field} is set")
         for clause in GATE_CLAUSES:
@@ -392,6 +515,7 @@ class Fences(unittest.TestCase):
         fields = re.search(r"struct CePlayUnitGate\n\{(.*?)\n\};", self.rules, re.S).group(1)
         self.assertEqual(sorted(re.findall(r"^\t(?:bool|int) (\w+);", fields, re.M)), sorted(GATE_FIELDS), "the gate holds exactly the fields the module fills")
         self.assertIn("return CePlayUnitAllowed(g);", gate)
+        self.assertIn("return g;", gate)
 
     def test_the_take_over_waits_for_a_standing_engine(self):
         ready = self.module[self.module.index("bool Ready("):self.module.index("// The gate, filled from the game")]
@@ -405,7 +529,7 @@ class Fences(unittest.TestCase):
             self.assertNotIn(word, shipped, f"a plain build compiles {word}")
         for name in ("BEA_PORT_PLAYUNIT_PROOF", "BEA_PORT_PLAYUNIT_PROBE", "BEA_PORT_PLAYUNIT_GOD", "BEA_PORT_PLAYUNIT_KEEPAI"):
             self.assertIn(name, self.module, f"the test build has {name}")
-        self.assertEqual(len(re.findall(r"CE_PLAYUNIT_TEST", self.build)), 2, "build.py names the define in its flag and in the receipt's list of test builds")
+        self.assertEqual(self.build.count("-DCE_PLAYUNIT_TEST=1"), 1, "the test define is enabled only by the opt-in flag")
         self.assertIn('if a.play_unit_test:\n        CE_DEFINES.append("-DCE_PLAYUNIT_TEST=1")', self.build, "only build.py's flag defines it")
         users = sorted(str(p.relative_to(ROOT)) for p in PORT.rglob("*")
                        if p.is_file() and p.suffix in (".cpp", ".h", ".c") and "CE_PLAYUNIT_TEST" in p.read_text(errors="ignore"))
@@ -417,8 +541,17 @@ class Fences(unittest.TestCase):
             if banned in (" new ", "delete "):
                 continue
             self.assertNotIn(banned, self.code, f"the module uses {banned!r}")
-        self.assertEqual(len(re.findall(r"\bnew \(MEMTYPE_CAMERA\)", comments_off(without_test(self.module)))), 1, "the production allocation is the tank camera, owned by the game")
-        self.assertNotIn("delete ", comments_off(without_test(self.module)), "the game owns camera deletion; the module must not double-delete or free a borrowed view")
+        shipped = comments_off(without_test(self.module))
+        self.assertEqual(len(re.findall(r"\bnew \(MEMTYPE_CAMERA\)", shipped)), 1, "the production allocation is the driven unit's camera, owned by the game")
+        # the direct law's guide is the one other allocation, and its region the only place that deletes: the guide itself at the release, and the unit's own guide
+        # it keeps when the unit is shut down with it inside (the unit deletes its guide, CUnit::Shutdown)
+        plain = without_test(self.module)
+        begin, end = plain.index("// ---- the direct law's guide (begin)"), plain.index("// ---- the direct law's guide (end)")
+        guide, rest = comments_off(plain[begin:end]), comments_off(plain[:begin] + plain[end:])
+        self.assertEqual(len(re.findall(r"\bnew \(MEMTYPE_GUIDE\) CeDriveGuide\(", guide)), 1, "one drive guide is made, in its region")
+        self.assertEqual(len(re.findall(r"\bnew \(", rest)), 1, "nothing else is allocated")
+        self.assertNotIn("delete ", comments_off(rest), "the game owns camera deletion; the module must not double-delete or free a borrowed view")
+        self.assertEqual(comments_off(guide).count("delete "), 2, "the drive guide deletes the kept guide once, and is deleted once at the release")
         self.assertIn("union PilotHolder", self.code, "the driver is built once in static storage and never destroyed")
         self.assertIn("~PilotHolder() {}", self.code)
         for patch in (PORT / "patches").glob("*.patch"):
@@ -432,9 +565,44 @@ class Fences(unittest.TestCase):
                 self.assertEqual(hook.count("PortCePlayUnitRenderCamera"), 2)
                 self.assertLess(hook.index("camera = PortCeCmdRenderCamera"),
                                 hook.index("camera = PortCePlayUnitRenderCamera"))
+            elif patch.name == "0241-ce-infantry-first-person.patch":
+                additions = [line[1:].strip() for line in text.splitlines() if line.startswith("+") and not line.startswith("+++")]
+                visible_guard = "if (PortCePlayUnitHidesOwnMesh(this)) return;"
+                declaration = "extern bool PortCePlayUnitHidesOwnMesh(const CThing *);"
+                self.assertEqual(additions.count(visible_guard), 2)
+                self.assertEqual(additions.count(declaration), 2)
+                # each pair sits inside CE_VERSION: a private build (no CE_VERSION) has no play-unit module to ask
+                self.assertEqual(additions.count("#ifdef CE_VERSION"), 2)
+                self.assertEqual(additions.count("#endif"), 2)
+                self.assertEqual(set(additions), {visible_guard, declaration, "#ifdef CE_VERSION", "#endif"})
+                self.assertIn("CThing::Render(", text)
+                self.assertIn("CThing::RenderImposter(", text)
+            elif patch.name == "0240-ce-playunit-battleline.patch":
+                # the battle line's pass also draws while a unit is driven: one weak declaration and one guarded call, inside CE_VERSION, after the cameras' own answer
+                self.assertEqual(text.count("PortCePlayUnitShowsBattleline"), 3)
+                self.assertNotIn("CePlayUnit", text.replace("PortCePlayUnitShowsBattleline", ""))
+                self.assertIn('+extern "C" int PortCePlayUnitShowsBattleline(int viewpoint) __attribute__((weak));', text)
+                self.assertIn("+		if (!render && PortCePlayUnitShowsBattleline && PortCePlayUnitShowsBattleline(0))\n+			render=TRUE;", text)
+                self.assertEqual(len([l for l in text.splitlines() if l.startswith("-") and not l.startswith("---")]), 0, "the patch only adds lines")
+            elif patch.name == "0275-ce-playunit-native-aim.patch":
+                aim_additions = "\n".join(line[1:] for line in text.splitlines()
+                                          if line.startswith("+") and not line.startswith("+++"))
+                self.assertEqual(aim_additions.count("CePlayUnit"), 2)
+                self.assertEqual(aim_additions.count("PortCePlayUnitAimPoint"), 2)
+            elif patch.name == "0285-ce-playunit-hud.patch":
+                # the HUD's focus and overlay while a unit is driven: only additions, inside CE_VERSION, naming only the focus, its reader and the overlay
+                hud_additions = "\n".join(line[1:] for line in text.splitlines() if line.startswith("+") and not line.startswith("+++"))
+                removed = [l for l in text.splitlines() if l.startswith("-") and not l.startswith("---")]
+                self.assertEqual(len(removed), 2, "the patch only adds lines, but for the energy arc's two visibility reads")
+                self.assertTrue(all("HUD.IsComponentVisible(1)" in l for l in removed))
+                names = set(re.findall(r"CePlayUnit\w*", hud_additions))
+                self.assertEqual(names, {"CePlayUnitHudFocus", "CePlayUnitHudFocusOf", "CePlayUnitHudOverlay"})
+                self.assertEqual(hud_additions.count("#ifdef CE_VERSION"), hud_additions.count("#endif"))
             else:
-                self.assertNotIn("CePlayUnit", text,
-                                 f"{patch.name} unexpectedly hooks the tank module")
+                # Context in a later patch may contain an existing hook. Inspect the changed code.
+                changed = "\n".join(line[1:] for line in text.splitlines()
+                                    if line.startswith(("+", "-")) and not line.startswith(("+++", "---")))
+                self.assertNotIn("CePlayUnit", changed, f"{patch.name} unexpectedly changes a tank hook")
         for name in ("rand", "Rand"):
             self.assertNotIn(name, self.rules)
 
@@ -459,7 +627,7 @@ class Fences(unittest.TestCase):
         ready = self.code[self.code.index("bool Ready("):self.code.index("bool Allowed(")]
         for clause in ("gCamera ||", "GAME.mRemoteCamera", "GAME.mOldRemoteCamera"):
             self.assertIn(clause, ready)
-        self.assertIn("!CeCmdMapOn()", self.code, "commander and tank possession are mutually exclusive in this prototype")
+        self.assertIn("PortCeCmdMapOpen()", self.code, "the active Commander view owns input, not its configuration setting")
         reset = self.code[self.code.index("void Reset()"):self.code.index("void FinishBorrow(")]
         self.assertNotIn("gCamera =", reset, "level bookkeeping must not drop a borrowed camera")
 
@@ -484,7 +652,7 @@ class Fences(unittest.TestCase):
         self.assertIn('#ifdef CE_VERSION\n#include "ce_playunit.h"\n#endif', self.update)
         self.assertEqual(self.map.count("CePlayUnitLevelEnd();"), 1)
         level_end = self.map[self.map.index("void PortCeCmdLevelEnd()"):]
-        self.assertTrue(level_end.startswith("void PortCeCmdLevelEnd()\n{\n    CePlayUnitLevelEnd();\n"), "the level's end gives the controls back first")
+        self.assertLess(level_end.index("CePlayUnitLevelEnd();"), level_end.index("gStrategicOwner.Reset();"), "the level's end gives the controls back before resetting camera ownership")
 
     def test_the_driver_stands_aside_for_everything_it_does_not_use(self):
         self.assertIn("player->ReceiveButtonAction(from, button, val);", self.code, "pause, help and the menus go on to the player")

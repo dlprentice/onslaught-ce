@@ -1,0 +1,11 @@
+--- a/weapon.cpp
++++ b/weapon.cpp
+@@ -1200,7 +1200,7 @@
+ 		}
+ 	}
+ 	else
+-		pitch = delta.Elevation();
++		{ float m = delta.MagnitudeXZY(); pitch = (m > 0.f) ? asinf(delta.Z / m) : 0.f; }	// Port: retail sums (X + Z) + Y here (00509649..00509667)
+ 	return pitch;
+ }
+ 

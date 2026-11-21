@@ -1,0 +1,60 @@
+--- a/MessageBox.cpp
++++ b/MessageBox.cpp
+@@ -1,3 +1,10 @@
++#include "ce_hud_reservation.h"
++extern "C" unsigned PortPresentCount(void);
++#ifdef CE_VERSION
++extern "C" std::uint64_t PortCeCmdWorldViewToken();
++#else
++#define PortCeCmdWorldViewToken() ((std::uint64_t)0)
++#endif
+ // MessageBox.cpp: the in-game message box, the radio messages shown with the speaker's portrait while their voice
+ // plays (reconstructed from MessageBox.obj, 004b6bb0..004b8cda; Stuart's release has no copy). A message's voice is
+ // an .ogg file read on a worker thread (COggLoader) and played when the load finishes.
+@@ -659,6 +666,12 @@
+ 
+ void	CMessageBox::RenderBattleLinePulse(float x, float y, int a)	// FUNCTION: 0x004b82b0
+ {
++    const std::uint64_t ceDialogueOwner = PortCeCmdWorldViewToken();
++    CeHudReservationScope ceDialogueBounds(ceDialogueOwner,
++        ceDialogueOwner ? PortPresentCount() : 0,
++        ceDialogueOwner ? PLATFORM.GetWindowWidth() : 0,
++        ceDialogueOwner ? PLATFORM.GetWindowHeight() : 0);
++
+ 	if (mCurrent)
+ 	{
+ 		int		seed = mRandom.mValue;
+@@ -806,6 +819,12 @@
+ // two byte stores.
+ void	CMessageBox::RenderOverlay(int a)	// FUNCTION: 0x004b8850
+ {
++    const std::uint64_t ceDialogueOwner = PortCeCmdWorldViewToken();
++    CeHudReservationScope ceDialogueBounds(ceDialogueOwner,
++        ceDialogueOwner ? PortPresentCount() : 0,
++        ceDialogueOwner ? PLATFORM.GetWindowWidth() : 0,
++        ceDialogueOwner ? PLATFORM.GetWindowHeight() : 0);
++
+ 	if (GAME.IsGameFinished())
+ 	{
+ 		StopCurrentPlayingSound();
+--- a/DXSpriteRenderer.cpp
++++ b/DXSpriteRenderer.cpp
+@@ -1,3 +1,4 @@
++#include "ce_hud_reservation.h"
+ // DXSpriteRenderer.cpp: the PC sprite renderer (CDXSpriteRenderer, CSPRITERENDERER to the platform-independent code).
+ // Not in Stuart's release; reconstructed from the retail code (00555be0..00556420). A sprite is one textured quad in
+ // screen space, drawn through the shared screen-quad buffer.
+@@ -204,6 +205,13 @@
+ 		if (!mBatch)
+ 		{
+ 			memcpy(out, verts, sizeof(verts));
++    if (gCeHudReservationCollecting) {
++        CeHudReservationQuad(verts[0].p.x, verts[0].p.y,
++                             verts[1].p.x, verts[1].p.y,
++                             verts[2].p.x, verts[2].p.y,
++                             verts[3].p.x, verts[3].p.y,
++                             verts[0].color);
++    }
+ 			FASTVB.RenderStrip();
+ 		}
+ 		else

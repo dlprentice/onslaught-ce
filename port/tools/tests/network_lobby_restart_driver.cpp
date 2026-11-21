@@ -62,6 +62,7 @@ static void Text(char *out, size_t n, const char *fmt, const char *a = "", const
 
 #include ACTUAL_USERDIR
 #include ACTUAL_HANDOFFPATH
+#include ACTUAL_PARSEIP
 #include ACTUAL_DOTTED
 static const uint8_t MSG_START = 2;
 static const uint8_t MSG_CAMPAIGN_START = 101;
@@ -104,6 +105,15 @@ extern "C" int CE_BootCampaignAdmit(const CE_Handoff *h) {
     ++campaignAdmissions;
     return CE_HandoffCampaignValid(h);
 }
+static char gRematchCode[CE_CODE_TEXT] = {};
+static int gRematchRole = 0;
+static uint32_t gRematchLevel = 0;
+static int missionRelayRole=0;
+static bool voluntaryMissionLeave=false, confirmedMissionEnd=false;
+static const char *missionError="";
+static int PortCeMissionRelayLossRole() { return missionRelayRole; }
+static int PortCeNetRingLeft() { return voluntaryMissionLeave; }
+static int PortCeNetConfirmedMatch() { return confirmedMissionEnd; }
 #include ACTUAL_RETURNTOFRONTEND
 static void TestExit(int) { throw 1; }
 #define _exit TestExit
@@ -146,10 +156,17 @@ bool gShellNativeQuit = false;
 bool gLevelToSystem = false;
 int gShellCode = 0;
 static int PortCeQuitRequested() { return 0; }
-static const char *CE_SessionError() { return ""; }
+static const char *CE_SessionError() { return missionError; }
 static const char *CE_BootError() { return ""; }
 static void SDL_Quit() {}
+// Exercise the production relay outcome in this callback without a signaling provider.
+// These setup-only paths are never selected by the restart fixture.
+#define CE_NETWORK_ICE 1
+static bool gSignalSelected=false;
+static struct { int PrepareExec() { return -1; } } gSignalDescriptor;
+static void SignalTerminal() {}
 #include ACTUAL_AFTEREXIT
+#undef CE_NETWORK_ICE
 
 static long file_size(const std::string &path) {
     struct stat st;
@@ -335,10 +352,37 @@ static int menu_shutdown_case(const char *mode) {
     return failures ? 1 : 0;
 }
 
+static int mission_return_case(const char *root,const char *mode) {
+    const bool host=!strcmp(mode,"mission-relay-host");
+    const bool guest=!strcmp(mode,"mission-relay-guest");
+    const bool natural=!strcmp(mode,"mission-finished");
+    const bool explicitLeave=!strcmp(mode,"mission-voluntary-leave");
+    const bool direct=!strcmp(mode,"mission-untyped-error");
+    if (!host && !guest && !natural && !explicitLeave && !direct) return 2;
+    fixture(host); gLaunched=true; gShellExited=true; gShellNativeQuit=false; gLevelToSystem=false; gShellCode=0;
+    if (host || guest || direct) missionError="fixture: connection disappeared";
+    missionRelayRole=host?CE_NET_HOST:guest?CE_NET_GUEST:0;
+    voluntaryMissionLeave=explicitLeave;confirmedMissionEnd=natural;
+    snprintf(gReturnArgs,sizeof(gReturnArgs),"--fixture-room");simulateReturnBoot=true;
+    CE_LobbyAfterExit();simulateReturnBoot=false;
+    check(gOutcomeReady,"role receives the actual return-to-menu outcome");
+    if (host || guest) {
+        check(!gOutcome.good && strstr(gOutcome.text,"Connection lost"),"running relay failure reported as loss");
+        check(!strcmp(gOutcome.text,host ? "Connection lost. Host a new game to play again." :
+                     "Connection lost. Ask the host to start a new game."),"next action fits the affected role");
+        check(!strstr(gOutcome.text,"invitation") && !strstr(gOutcome.text,"code"),"manual relay does not invent an invitation or code");
+        check(!gOutcome.role,"failed mission cannot resume the old room");
+    } else {
+        check(!!gOutcome.good==(natural||explicitLeave),"clean and failed mission outcomes stay distinct");
+        check(!strstr(gOutcome.text,"Connection lost"),"non-relay outcomes never claim relay loss");
+    }
+    (void)root;return failures?1:0;
+}
 int main(int argc, char **argv) {
     if (argc != 2 && argc != 3) return 2;
     setenv("BEA_USER_DIR", argv[1], 1);
     if (argc == 3) {
+        if (!strncmp(argv[2],"mission-",8)) return mission_return_case(argv[1],argv[2]);
         if (strncmp(argv[2], "write-failure-", 14) == 0)
             return handoff_write_failure_case(argv[2], argv[1]);
         return menu_shutdown_case(argv[2]);

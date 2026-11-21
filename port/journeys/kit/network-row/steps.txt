@@ -1,0 +1,15 @@
+# The hub's Network Game row, which shifts every row below it by one, and a route by name past it.
+# The row shows only on a build with the network (build.network=yes) and only in a run mode that offers the online pages
+# (port/platform/common/runmode.h): ordinary play, or a test-kit journey on any clock. On a public build the journey ends as
+# skipped.
+require build.network=yes
+wait ticks 600
+key RETURN
+wait page fe:main within 900
+go "Onslaught CE"
+wait page ce:hub
+dump hub
+focus row "Network Game"
+go Extras > "Service Record"
+wait page xp:careers
+dump past-the-row

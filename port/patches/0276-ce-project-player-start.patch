@@ -1,0 +1,27 @@
+--- a/Start.cpp
++++ b/Start.cpp
+@@ -10,6 +10,7 @@
+ #include "map.h"
+ #include "mapwho.h"
+ #include "ParticleManager.h"
++#include "ce_project.h"
+ CStart::CStart()	// FUNCTION: 0x004eacc0
+ {
+ 	mPlayerObject = NULL;
+@@ -26,7 +27,15 @@
+ 	mFlags &= ~TF_IN_MAP_WHO;
+ 	if (MAP.Collide(init->mPos) < init->mPos.Z)
+ 		init->mPos.Z = MAP.Collide(init->mPos);
+-	SUPERTYPE::Init(init);
++	CStartInitThing* authoredStart = static_cast<CStartInitThing*>(init);
++    if (PortCeProjectApplyPlayerStart(authoredStart->mPlayerNumber,
++                                     GAME.GetFrontEndSettings()->mInvertSides != FALSE,
++                                     init->mPos.X, init->mPos.Y, init->mPos.Z, authoredStart->mPlaneMode != FALSE)) {
++        if (MAP.Collide(init->mPos) < init->mPos.Z)
++		init->mPos.Z = MAP.Collide(init->mPos);
++        authoredStart->mPlaneMode = FALSE;
++    }
++    SUPERTYPE::Init(init);
+ 	WORLD.GetStartNB().Add(this);
+ 	mPlayerNumber = ((CStartInitThing *)init)->mPlayerNumber;
+ 	if (GAME.GetFrontEndSettings()->mInvertSides)

@@ -1,24 +1,53 @@
 --- a/FEPGoodies.cpp
 +++ b/FEPGoodies.cpp
-@@ -1472,7 +1472,20 @@
+@@ -1320,6 +1320,38 @@
+ float	GOODIES_SCROLL_LEFT = 90.f;		// 006292e4
+ float	GOODIES_SCROLL_RIGHT = 570.f;	// 006292e8
+ 
++// Port (patch 0130): retail compiles the goodies mesh viewer's turn inline in CFEPGoodies::ButtonPressed (pristine
++// 74154bfa, 0045d376..0045d56a): the rotation by (yaw, pitch, roll) and its product with the mesh's orientation, with
++// this copy's own choices, not those of the out-of-line copies (004062d0 and 0040d320) that MakeRotationF and
++// FMatrix::operator* follow with patches 0007 and 0094.
++// The rotation: the three cosines, sin(yaw) and sin(roll) are stored as floats, and fsin(pitch) stays on the x87 stack
++// at full precision (the transcendentals ignore the precision control). Rows 0 and 1 are stored as floats. Row 2 is
++// never stored: -(cp * sr) and cp * cr are products, which the game's control word has already rounded to 24 bits,
++// and between them is the unrounded sine, which every row 2 cell of the product multiplies as it is.
++// The product: each cell adds the bracketed pair first, then the last term. Name ours.
++static FMatrix	GoodiesMeshTurn(float yaw, float pitch, float roll, const FMatrix &m)
++{
++	volatile float cy = cosf(yaw), sy = sinf(yaw);
++	volatile float cr = cosf(roll), sr = sinf(roll);
++	volatile float cp = cosf(pitch);
++	long double sp = bea_x87_fsinl(pitch);
++	long double spsr = sp * sr;
++	volatile float spcr = (float)(sp * cr);
++	const FVector A((float)((long double)cr * cy - spsr * sy), (float)(-((long double)cp * sy)), (float)((long double)sr * cy + (long double)spcr * sy));
++	const FVector B((float)((long double)cr * sy + spsr * cy), (float)((long double)cp * cy), (float)((long double)sr * sy - (long double)spcr * cy));
++	const float cx = (float)(-((long double)cp * sr)), cz = (float)((long double)cp * cr);	// row 2's X and Z; its Y is sp
++	return FMatrix(
++		FVector(((A.X * m.Row[0].X) + (A.Z * m.Row[2].X)) + (A.Y * m.Row[1].X),
++			((A.Y * m.Row[1].Y) + (A.Z * m.Row[2].Y)) + (A.X * m.Row[0].Y),
++			((A.X * m.Row[0].Z) + (A.Z * m.Row[2].Z)) + (A.Y * m.Row[1].Z)),
++		FVector(((B.Z * m.Row[2].X) + (B.X * m.Row[0].X)) + (B.Y * m.Row[1].X),
++			((B.X * m.Row[0].Y) + (B.Y * m.Row[1].Y)) + (B.Z * m.Row[2].Y),
++			((B.Z * m.Row[2].Z) + (B.X * m.Row[0].Z)) + (B.Y * m.Row[1].Z)),
++		FVector((float)(((sp * m.Row[1].X) + (cz * m.Row[2].X)) + (cx * m.Row[0].X)),
++			(float)(((cx * m.Row[0].Y) + (cz * m.Row[2].Y)) + (sp * m.Row[1].Y)),
++			(float)(((sp * m.Row[1].Z) + (cz * m.Row[2].Z)) + (cx * m.Row[0].Z))));
++}
++
+ void	CFEPGoodies::ButtonPressed(SINT button, float val)	// FUNCTION: 0x0045cde0
+ {
+ 	if ((!mDisplayGoody) && (mImageZoom==0.0f))
+@@ -1470,9 +1502,8 @@
+ 
+ 				if ((dx!=0) || (dy!=0))
  				{
- 					FMatrix delta;
- 					delta.MakeRotationF(dx*0.1f /* retail 005d85c0: / 10.0f */,dy*0.1f /* retail 005d85c0: / 10.0f */,0);
+-					FMatrix delta;
+-					delta.MakeRotationF(dx*0.1f /* retail 005d85c0: / 10.0f */,dy*0.1f /* retail 005d85c0: / 10.0f */,0);
 -					mMeshOri=delta * mMeshOri;
-+					// Port (patch 0130): retail compiles this product inline with its own cell orders (pristine 74154bfa,
-+					// 0045d44a..0045d4e2), not the out-of-line copy's (0040d320) that FMatrix::operator* follows with patch 0094.
-+					// Each cell: the bracketed pair first, then the last term; delta's row 2 is held in registers.
-+					const FVector &A = delta.Row[0], &B = delta.Row[1], &C = delta.Row[2];
-+					const FMatrix m = mMeshOri;
-+					mMeshOri = FMatrix(FVector(((A.X * m.Row[0].X) + (A.Z * m.Row[2].X)) + (A.Y * m.Row[1].X),
-+												 ((A.Y * m.Row[1].Y) + (A.Z * m.Row[2].Y)) + (A.X * m.Row[0].Y),
-+												 ((A.X * m.Row[0].Z) + (A.Z * m.Row[2].Z)) + (A.Y * m.Row[1].Z)),
-+										FVector(((B.Z * m.Row[2].X) + (B.X * m.Row[0].X)) + (B.Y * m.Row[1].X),
-+												 ((B.X * m.Row[0].Y) + (B.Y * m.Row[1].Y)) + (B.Z * m.Row[2].Y),
-+												 ((B.Z * m.Row[2].Z) + (B.X * m.Row[0].Z)) + (B.Y * m.Row[1].Z)),
-+										FVector(((C.Y * m.Row[1].X) + (C.Z * m.Row[2].X)) + (C.X * m.Row[0].X),
-+												 ((C.X * m.Row[0].Y) + (C.Z * m.Row[2].Y)) + (C.Y * m.Row[1].Y),
-+												 ((C.Y * m.Row[1].Z) + (C.Z * m.Row[2].Z)) + (C.X * m.Row[0].Z)));
++					// Port (patch 0130): the rotation and the product as retail compiles them inline here (GoodiesMeshTurn above).
++					mMeshOri = GoodiesMeshTurn(dx*0.1f /* retail 005d8c1c: / 10.0f */, dy*0.1f /* retail 005d8c1c: / 10.0f */, 0, mMeshOri);
  				}
  
  				mMeshDistance+=dz*0.1f;

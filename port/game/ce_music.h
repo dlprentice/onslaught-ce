@@ -26,6 +26,9 @@ bool		Next();									// the next track now, when the player's music is playing
 void		Clear();								// back to the game's music
 const char	*Now();									// the player's track playing now, or NULL
 const char	*Folder();								// the last folder added, or ""
+void		Prepare();								// reads ce.ini's music_dir now if it has not been read (the Music Player page lists the tracks)
+const char	*Track(int index);						// the player's track number index (by name order), or NULL
+unsigned	Random();								// the playlist's own random numbers, never the game's rand()
 }
 
 #endif

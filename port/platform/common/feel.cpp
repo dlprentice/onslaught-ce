@@ -634,6 +634,12 @@ extern "C" void PortFeelMouseTake(long *dx, long *dy)
 	gScript.Take(Now(), dx, dy);
 }
 
+extern "C" unsigned PortFeelMouseButtons(void)
+{
+	if (!PortFeelOn() || !gScriptLoaded) return 0;
+	return gScript.ButtonsHeld(Now());
+}
+
 extern "C" int PortFeelShotDue(char *dir, unsigned size, unsigned present)
 {
 	if (!PortFeelOn() || !dir || !size) return 0;

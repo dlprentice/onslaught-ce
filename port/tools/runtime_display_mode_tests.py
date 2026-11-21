@@ -52,6 +52,12 @@ class RuntimeDisplayTests(unittest.TestCase):
                 self.ini.write_bytes(b'unknown=retained\nwindowed='+str(1-before).encode()+b'\n')
                 self.assertEqual(self.call('runtime','runtime-menu',str(before),'none'),'runtime-menu pass')
                 self.assertEqual(self.ini.read_bytes(),b'unknown=retained\nwindowed='+str(1-before).encode()+b'\n')
+    def test_request_waits_while_the_host_is_busy_and_then_runs_once(self):
+        for before in (0,1):
+            with self.subTest(before=before):
+                self.ini.write_bytes(b'unknown=retained\nwindowed='+str(before).encode()+b'\n')
+                self.assertEqual(self.call('runtime','runtime-busy',str(before)),'runtime-busy pass')
+                self.assertEqual(self.ini.read_bytes(),b'unknown=retained\nwindowed='+str(1-before).encode()+b'\n')
     def test_refused_window_or_device_keeps_current_mode_and_file(self):
         for before in (0,1):
             for fault in ('window','window-rollback','device'):
@@ -107,6 +113,7 @@ class RuntimeDisplayTests(unittest.TestCase):
     def test_causal_controls(self):
         cases=[
             ('queue-discarded','video','pendingMode = value;','pendingMode = -1;',('runtime-menu','0','none'),False),
+            ('busy-host-ignored','video','if (pendingMode >= 0 && PortPublicDeviceBusy()) return;','/* injected: the busy host is not asked */',('runtime-busy','0'),False),
             ('saved-before-device','video','pendingMode = value;','CE_DisplayModeStore(value); pendingMode = value;',('runtime-menu','0','device'),True),
             ('second-graphics-transaction','video','const bool saved = inputReady && CE_DisplayModeStore(requested);','const bool saved = inputReady && CE_DisplayModeStore(requested); if (!saved) LT.ForceWindowed(previous);',('runtime-menu','0','short'),False),
             ('failed-host-rollback-hidden','video','LT.m_bReady && windowRestored','windowRestored',('runtime-restore-failure','backend-rollback'),False),

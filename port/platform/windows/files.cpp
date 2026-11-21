@@ -513,7 +513,7 @@ unsigned PortResolveUserPath(const char *game_path, char *out, unsigned n)
 	return Resolve(game_path, WRITE, out, n) == 0 ? 0 : ERROR_INVALID_NAME;
 }
 
-unsigned PortSaveLookupUtf16(const void *name, int *index)
+static unsigned LookupSave(const void *name, int *index, char *leaf, unsigned capacity)
 {
 	*index = -1;
 	char path[MAX_PATH];
@@ -546,8 +546,28 @@ unsigned PortSaveLookupUtf16(const void *name, int *index)
 			error = ERROR_NOT_SUPPORTED;
 		else error = SaveNativeSameFile(native, canonicalNative);
 	}
+    if (!error && *index != -1 && leaf)
+    {
+        const char *listed = strrchr(canonicalPath, '\\');
+        if (!listed || strlen(++listed) >= capacity) error = ERROR_INSUFFICIENT_BUFFER;
+        else memcpy(leaf, listed, strlen(listed) + 1);
+    }
 	if (error) { *index = -1; SetLastError(error); }
 	return error;
+}
+
+unsigned PortSaveLookupUtf16(const void *name, int *index)
+{
+    return LookupSave(name,index,nullptr,0);
+}
+
+unsigned PortSaveLookupFileUtf16(const void *name, char *leaf, unsigned capacity)
+{
+    if (!leaf || !capacity) return ERROR_INVALID_PARAMETER;
+    *leaf=0;
+    int index=-1;
+    unsigned error=LookupSave(name,&index,leaf,capacity);
+    return error ? error : (index >= 0 ? 0 : ERROR_FILE_NOT_FOUND);
 }
 
 unsigned PortSaveReserveUtf8(const char *path)

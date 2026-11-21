@@ -1,13 +1,13 @@
 --- a/FEPGoodies.cpp
 +++ b/FEPGoodies.cpp
-@@ -16,6 +16,26 @@
+@@ -16,6 +16,54 @@
  #include	"mouse.h"
  #include	"Credits.h"
  #include	"tweak.h"
 +
 +#ifdef CE_VERSION
-+// patch 0199 (port/game/ce_museum.h): during the Museum Preview's visit the gallery reads a picture or a model as viewed, whatever the
-+// career holds, and a video, a level or a cheat as unavailable; it starts no other load and writes no unlock.
++// patch 0199 (port/game/ce_museum.h): during a visit the gallery reads a picture, a model or a movie as viewable, whatever the career holds, and shows no level;
++// it starts no other load and writes no unlock.
 +extern "C" bool PortCeMuseumActive(void);
 +extern "C" void PortCeMuseumEnd(void);
 +extern "C" bool PortCeMuseumCanLoad(bool visual);
@@ -15,19 +15,59 @@
 +extern "C" int PortCeMuseumReadUnlock(int ordinary, bool visual, int viewed, int unavailable);
 +static EGoodieType get_goodie_type_hack(SINT goodie_num);
 +
++// What a visitor reads over a cell of the wall, in place of "Unlocked!" (a visitor has unlocked nothing, and says nothing of it): a picture, a model or a movie is
++// named for what it is. title is the line above, body the one under it; it already holds the exhibit's own title for the first 78, and for the concept art and
++// the film clips, which the original gave no title, it says what they are.
++static void ce_museum_words(SINT goodie_num, WCHAR *title, WCHAR *body)
++{
++	const EGoodieType type = (goodie_num >= 0 && goodie_num < MAX_NUM_GOODIES) ? get_goodie_type_hack(goodie_num) : GT_LEVEL;
++	if (type == GT_MESH)
++		wcscpy(title, ToWCHAR("Model"));
++	else if (type == GT_FMV)
++		wcscpy(title, ToWCHAR("Movie"));
++	else if (type == GT_IMAGE)
++		wcscpy(title, ToWCHAR("Picture"));
++	else
++	{
++		wcscpy(title, ToWCHAR(""));
++		wcscpy(body, ToWCHAR(""));
++		return;
++	}
++	if (goodie_num >= 78 && type == GT_IMAGE)
++		wcscpy(body, ToWCHAR("Concept art"));
++	else if (goodie_num >= 201 && type == GT_FMV)
++	{
++		char text[32];
++		sprintf(text, "Cutscene %d", (int)(goodie_num == 232 ? 33 : goodie_num - 200));
++		wcscpy(body, ToWCHAR(text));
++	}
++}
++
 +static EGoodieState ce_museum_visual_state(SINT goodie_num)
 +{
 +	if (goodie_num < 0 || goodie_num >= MAX_NUM_GOODIES)
 +		return GS_UNKNOWN;
 +	const EGoodieType type = get_goodie_type_hack(goodie_num);
-+	return (EGoodieState)PortCeMuseumReadUnlock(GS_UNKNOWN, type == GT_IMAGE || type == GT_MESH, GS_OLD, GS_UNKNOWN);
++	return (EGoodieState)PortCeMuseumReadUnlock(GS_UNKNOWN, type == GT_IMAGE || type == GT_MESH || type == GT_FMV, GS_OLD, GS_UNKNOWN);
 +}
 +#endif
 +
  // the number of complete rows of goodies
  #define	NUM_GOODIES_X	123
  
-@@ -443,6 +463,12 @@
+@@ -393,6 +441,11 @@
+ //*********************************************************************************
+ static SINT	get_goodie_number(SINT x, SINT y)	// FUNCTION: 0x0045cb80
+ {
++#ifdef CE_VERSION
++	// patch 0199: a visitor has no race levels on the wall (a level is not an exhibit); the cells after them close the gap
++	if (y==0 && x>=8 && PortCeMuseumActive())
++		x+=5;
++#endif
+ 	if (y==0)
+ 	{
+ 		// Row 1
+@@ -443,6 +496,12 @@
  //*********************************************************************************
  static EGoodieState	get_goodie_state(SINT x, SINT y)
  {
@@ -40,7 +80,7 @@
  	int num=get_goodie_number(x, y);
  
  	if (num==-1)
-@@ -460,6 +486,9 @@
+@@ -460,6 +519,9 @@
  	int num=get_goodie_number(x, y);
  
  	if (num!=-1)
@@ -50,7 +90,7 @@
  		CAREER.SetGoodieState(get_goodie_number(x, y), s);
  }
  
-@@ -1204,12 +1233,21 @@
+@@ -1204,12 +1266,21 @@
  //*********************************************************************************
  void	CFEPGoodies::Shutdown()	// FUNCTION: 0x0045c9e0
  {
@@ -72,7 +112,7 @@
  	// reset some stuff
  	mImageX = 0;
  	mImageY = 0;
-@@ -1407,6 +1445,13 @@
+@@ -1407,6 +1478,13 @@
  		case BUTTON_FRONTEND_MENU_BACK:
  			FRONTEND.PlaySound(FES_BACK);
  			FreeUpGoodyResources();  // just in case they're still here...
@@ -86,12 +126,26 @@
  			CFEPOptions::SaveDefaultOptions(false);
  			break;
  		};
-@@ -2451,7 +2496,11 @@
+@@ -2043,7 +2121,13 @@
+ 		wcscpy(body_text,ToWCHAR("")); // No text for later ones
+ 	}
+ 
++#ifdef CE_VERSION
++	if (PortCeMuseumActive() && which_goodie >= 0)
++		ce_museum_words(which_goodie, title_text, body_text);		// patch 0199: a visitor is told what each cell is, not what it takes to unlock it
++	if ((PortCeMuseumActive() && which_goodie >= 0) || get_goodie_state(mCX,mCY)!=GS_UNKNOWN)
++#else
+ 	if (get_goodie_state(mCX,mCY)!=GS_UNKNOWN)
++#endif
+ 	{
+ 		// draw the "to unlock" or "unlocked"
+ 		PLATFORM.Font( FONT_NORMAL )->DrawTextDynamic(STATE_NAME_X, STATE_NAME_Y  , FO(150), 0.7f, 1.f, col, title_text, PLATFORM.GetSysTimeFloat() - mTimerGoody);
+@@ -2451,7 +2535,11 @@
  	//** Title Bar
  
  	if (mGoodyState != GOODY_LOADED)
 +#ifdef CE_VERSION
-+		FRONTEND.DrawTitleBar(PortCeMuseumActive() ? ToWCHAR("Goodies Gallery") : (FET.GetText(FEX_GOODIES2)), transition, dest);	// patch 0199
++		FRONTEND.DrawTitleBar(PortCeMuseumActive() ? ToWCHAR("Art and Movies") : (FET.GetText(FEX_GOODIES2)), transition, dest);	// patch 0199
 +#else
  		FRONTEND.DrawTitleBar(FET.GetText(FEX_GOODIES2), transition, dest);
 +#endif

@@ -12,6 +12,13 @@
 //   base + (DWORD)(n * dt * 1000.0), file time at base + (uint64)(n * dt * 1e7), where n counts Presents plus one
 //   "spin escape" per 2,000,000 clock reads (any thread) since the last Present. dt comes from BEA_PORT_CLOCK_DT exactly
 //   as the shim's BEA_REPLAY_DT (atof). Not deterministic before the first frame, as in the shim.
+// - fixed: the fixed-step clock of the original game's public replay harness (deten/battle-engine-aquila-rebuild,
+//   src/bea/platform/test_harness.cpp, BEA_FIXEDSTEP without BEA_CECLOCK), so tapes recorded in the original on that
+//   clock replay here in step: seconds = Presents * BEA_PORT_CLOCK_DT + reads * 1e-7, where reads counts each thread's
+//   own performance-counter and timeGetTime reads (so background audio/render threads do not shift the main thread's
+//   clock); the counter runs at 10 MHz plus one second, timeGetTime in milliseconds plus 1,000. GetTickCount, the file
+//   time and sleeps do not move it (the harness leaves them real; here they read the same seconds without counting, so
+//   runs stay deterministic).
 #include <atomic>
 #include <stdio.h>
 #include <stdlib.h>
@@ -26,7 +33,7 @@
 
 namespace
 {
-enum { REAL = 0, PRESENT = 1, SHIM = 2 };
+enum { REAL = 0, PRESENT = 1, SHIM = 2, FIXED_STEP = 3 };
 std::atomic<int> gMode{ -1 };
 double gDt = 1.0 / 30;
 unsigned long long gDtNs = 1000000000ull / 30;
@@ -39,6 +46,9 @@ thread_local int tIsMain = -1;
 thread_local unsigned tReads = 0;
 const unsigned long long kEpochFiletime = 126921456000000000ull;	// 2003-03-14 12:00:00 UTC
 const unsigned long long kEpochNs = 1000000000000ull;				// 1,000 s: differences never go negative
+
+// fixed (per-thread read counter so background threads never shift the main loop's clock)
+thread_local unsigned long long tFixedReads = 0;
 
 // shim
 std::atomic<long> gShimFrames{ 0 };
@@ -171,7 +181,8 @@ int Mode()
 	if (m < 0)
 	{
 		const char *c = getenv("BEA_PORT_CLOCK");
-		m = !c ? REAL : strcmp(c, "present") == 0 ? PRESENT : (strcmp(c, "shim") == 0 || strcmp(c, "present-c") == 0) ? SHIM : REAL;
+		m = !c ? REAL : strcmp(c, "present") == 0 ? PRESENT : (strcmp(c, "shim") == 0 || strcmp(c, "present-c") == 0) ? SHIM :
+			strcmp(c, "fixed") == 0 ? FIXED_STEP : REAL;
 		if (const char *dt = getenv("BEA_PORT_CLOCK_DT"))
 			if (double s = atof(dt); s > 0)
 				gDt = s;
@@ -198,6 +209,13 @@ unsigned long long PresentNs()
 	if (tIsMain == 1 && ++tReads % 4096 == 0)
 		gEscapesMs.fetch_add(1);
 	return kEpochNs + gFrames.load() * gDtNs + gEscapesMs.load() * 1000000ull;
+}
+
+// fixed: the harness's fixed_seconds(); count says whether this read is one of the counted ones.
+long double FixedSeconds(bool count)
+{
+	const unsigned long long c = count ? ++tFixedReads : tFixedReads;
+	return (long double)gFrames.load() * (long double)gDt + (long double)c * 1e-7L;
 }
 
 // shim: n, as the shim's VPolls() (each read counts toward a spin escape).
@@ -244,13 +262,12 @@ bool PortClockStandsBetweenPresents()
 // the frame due (BinkWait), so films still show one frame per Present.
 bool PortClockFilmFrameWaits()
 {
-	static long sLastFrames = -1;
+	static std::atomic<long> sLastFrames{ -1 };
 	if (!PortClockStandsBetweenPresents())
 		return false;
 	long frames = gShimFrames.load();
-	if (frames == sLastFrames)
+	if (sLastFrames.exchange(frames) == frames)
 		return false;
-	sLastFrames = frames;
 	return true;
 }
 
@@ -261,6 +278,9 @@ void PortClockFrame()
 	case PRESENT:
 		gFrames.fetch_add(1);
 		tReads = 0;
+		break;
+	case FIXED_STEP:
+		gFrames.fetch_add(1);
 		break;
 	case SHIM:
 		if (gShimFrames.fetch_add(1) + 1 == 1)
@@ -338,6 +358,7 @@ unsigned long long PortClockPeekNs()
 	switch (Mode())
 	{
 	case PRESENT: return kEpochNs + gFrames.load() * gDtNs + gEscapesMs.load() * 1000000ull;
+	case FIXED_STEP: return kEpochNs + (unsigned long long)(FixedSeconds(false) * 1e9L);
 	case SHIM: return gShimVirtual.load() ? (unsigned long long)(gShimFrames.load() + gSpinEsc.load()) * gDtNs +
 								 gShimSleepMs.load() * 1000000ull : 0;
 	default: return 0;
@@ -352,6 +373,7 @@ long long PortClockQpf()
 	{
 	case PRESENT: return 1000000000ll;
 	case SHIM: return 10000000ll;
+	case FIXED_STEP: return 10000000ll;
 	default: return 0;		// real: the caller's own frequency
 	}
 }
@@ -361,6 +383,7 @@ long long PortClockQpc()
 	switch (Mode())
 	{
 	case PRESENT: return (long long)PresentNs();
+	case FIXED_STEP: return (long long)(FixedSeconds(true) * 10000000.0L) + 10000000ll;
 	case SHIM: return gShimVirtual.load() ? gQpcBase + (long long)ShimN() * gQpcDt + (long long)gShimSleepMs.load() * 10000
 										  : (long long)(RealNs() / 100);
 	default: return 0;
@@ -372,6 +395,7 @@ unsigned long PortClockMs()
 	switch (Mode())
 	{
 	case PRESENT: return (unsigned long)(PresentNs() / 1000000ull);
+	case FIXED_STEP: return (unsigned long)(FixedSeconds(true) * 1000.0L) + 1000;
 	case SHIM:
 		return gShimVirtual.load() ? gMsBase + (unsigned long)((double)ShimN() * gDt * 1000.0) + (unsigned long)gShimSleepMs.load()
 								   : (unsigned long)((RealNs() - kStartRealNs) / 1000000ull);
@@ -384,6 +408,7 @@ unsigned long long PortClockFiletime()
 	switch (Mode())
 	{
 	case PRESENT: return kEpochFiletime + (PresentNs() - kEpochNs) / 100;
+	case FIXED_STEP: return kEpochFiletime + (unsigned long long)(FixedSeconds(false) * 10000000.0L);
 	case SHIM: return gShimVirtual.load() ? gFtBase + (unsigned long long)((double)ShimN() * gDt * 10000000.0) +
 										  gShimSleepMs.load() * 10000ull : RealFiletime();
 	default: return RealFiletime();

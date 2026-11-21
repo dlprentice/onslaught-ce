@@ -1344,6 +1344,36 @@ int main(int argc, char **argv) {
         } else {
             CHECK(MOUSE_X == 111 && MOUSE_Y == 222);						// the game's own mouse is on (a walker's mouse look): its accumulated position is left alone
         }
+    } else if (!strcmp(test, "window-mode-pointer-frontend-click")) {
+        // The front end judges a click at the last pointer position it was told (it does not take the click's own, as
+        // the in-game menus do). After a Window mode switch the report of the pointer's new place in the window is
+        // held back while the pointer rests, so a click made without moving must itself end the hold and tell the game
+        // where the pointer is, before the button message.
+        Device *mouse = Make<Device>(MOUSE, 0);
+        mouse->SetCooperativeLevel(MainWindow(), DISCL_EXCLUSIVE | DISCL_FOREGROUND);
+        CHECK(SUCCEEDED(mouse->Acquire())); sMouse = mouse;
+        CHECK(SUCCEEDED(ShutdownMouse()));
+        Drain();
+        gMenuMouse = 1; FRONTEND.running = true;
+        PushMouseAt(SDL_EVENT_MOUSE_MOTION, 900, 500); Drain();			// where a report from the new place puts the game's pointer
+        const int newX = MOUSE_X, newY = MOUSE_Y;
+        PushMouseAt(SDL_EVENT_MOUSE_MOTION, 640, 360); Drain();			// the player's last real move, before the switch
+        const int oldX = MOUSE_X, oldY = MOUSE_Y;
+        CHECK(sMouseMoved && (oldX != newX || oldY != newY));
+        sMouseMoved = false;
+#if POINTER_HOLD_API && defined(CE_VERSION)
+        PortHoldPointerForWindowChange(false); PortHoldPointerForWindowChange(true);	// the switch, the pointer at rest
+#endif
+        PushMouseAt(SDL_EVENT_MOUSE_MOTION, 900, 500); Drain();			// the window moved under it: held
+        CHECK(!sMouseMoved && MOUSE_X == oldX && MOUSE_Y == oldY);
+        PushMouseAt(SDL_EVENT_MOUSE_BUTTON_DOWN, 900, 500, SDL_BUTTON_LEFT); Drain();	// a click with no move
+        CHECK(MOUSE_BUTTONS[0].mDown);
+        CHECK(MOUSE_X == newX && MOUSE_Y == newY);						// judged where the pointer is, not where it was before the switch
+        PushMouseAt(SDL_EVENT_MOUSE_BUTTON_UP, 900, 500, SDL_BUTTON_LEFT); Drain();
+        CHECK(MOUSE_X == newX && MOUSE_Y == newY && MOUSE_BUTTONS[0].mReleased);
+        sMouseMoved = false;
+        PushMouseAt(SDL_EVENT_MOUSE_MOTION, 902, 500); Drain();			// the hold has ended: the next report is a move again
+        CHECK(sMouseMoved);
     } else if (!strncmp(test, "window-mode-pointer", 19)) {
         // CE's Window mode switch moves and resizes the window under a pointer the player has not touched. The window
         // system then reports a move (the pointer's position in the window changed; the native Windows rehearsal showed

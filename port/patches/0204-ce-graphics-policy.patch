@@ -188,6 +188,20 @@
  	return S_OK;
  }
  
+@@ -930,7 +936,13 @@
+ 		LT.GetDevice()->SetTransform(D3DTS_TEXTURE0, &gTextureMatrix);
+ 		LT.STS(0, D3DTSS_TEXTURETRANSFORMFLAGS, D3DTTFF_COUNT2);
+ 		LT.SRS(D3DRS_FOGENABLE, FALSE);
++#ifdef CE_VERSION
++		// The strips hold their wave coordinates in the set the capability tweak put first when the level loaded (DXSurf.cpp);
++		// ordinary CE sets that tweak on every capable device, so this pass takes the set by it as the finest method does.
++		LT.STS(0, D3DTSS_TEXCOORDINDEX, GEFORCE_FX_POWER.mValue ? 0 : 1);
++#else
+ 		LT.STS(0, D3DTSS_TEXCOORDINDEX, 1);
++#endif
+ 		LT.SRS(D3DRS_ZWRITEENABLE, FALSE);
+ 		SURF.Render(false);
+ 		LT.SRS(D3DRS_ZWRITEENABLE, TRUE);
 --- a/PauseMenu.cpp
 +++ b/PauseMenu.cpp
 @@ -1,7 +1,13 @@
@@ -209,18 +223,38 @@
  void	CnVidia::SetValue(int value)
  {
 +#ifdef CE_VERSION
++	// The choice applies for this session even when ce.ini cannot keep it, as Full models and Terrain detail
++	// distance do; the notice then says it was not saved, and the next start reads what ce.ini holds.
 +	if (!PortCeGraphicsStoreRequest(value))
 +	{
-+		mSelection = mValue = GetValue();
 +		PortCeSaveFailedNotice();
-+		return;
 +	}
 +#endif
 +
  	EXTRA_GEFORCE_FX_FEATURES.Set(float(value));
  	DisplaySettingChanged();
  }
-@@ -2050,3 +2065,25 @@
+@@ -1260,6 +1275,9 @@
+ // FUNCTION: 0x004cfd30
+ int		CnVidia::GetValue()
+ {
++#ifdef CE_VERSION
++    if (PortCeGraphicsRequestFailed()) return 1;
++#endif
+ 	return (GetNumChoices() == 2) ? EXTRA_GEFORCE_FX_FEATURES.mValue : 0;
+ }
+ 
+@@ -1274,6 +1292,9 @@
+ // FUNCTION: 0x004cfd70
+ WCHAR	*CnVidia::GetChoiceText(int n)
+ {
++#ifdef CE_VERSION
++    if (n == 1 && PortCeGraphicsRequestFailed()) return const_cast<WCHAR *>(L"Yes (not active)");
++#endif
+ 	if (GEFORCE_FX_POWER.mValue && (LT.m_d3dCaps.PixelShaderVersion >= D3DPS_VERSION(2, 0)))
+ 		return CBOOLMenuItem::GetChoiceText(n);
+ 	return Localization_GetStringById(0xf8);
+@@ -2050,3 +2071,25 @@
  // FUNCTION: 0x00418410 ?GetHeight@CJoystickEnableItem@@UAEHXZ
  // FUNCTION: 0x00466120 ??0CMonitor@@QAE@XZ
  // FUNCTION: 0x00505d00 ??0?$SPtrSet@VCMenuEvent@@@@QAE@XZ

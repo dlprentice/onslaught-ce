@@ -86,6 +86,10 @@ typedef struct CE_Handoff {
 	char args[1024];			// launch: the front end's own arguments, for the return
     // Nonzero on nonce-bound launches or confirmed, versioned outcome returns.
     CE_CampaignLaunch campaign;
+    /* One-use invitation for a completed, confirmed direct match only. */
+    char rematch_code[CE_CODE_TEXT];
+    int rematch_role;
+    uint32_t rematch_level;
 } CE_Handoff;
 
 // Text form (no secret in error messages). Returns the byte count, or 0 when it does not fit.

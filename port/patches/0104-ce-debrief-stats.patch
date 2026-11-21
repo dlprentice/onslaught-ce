@@ -8,7 +8,7 @@
  #endif
  
  //******************************************************************************************
-@@ -4181,6 +4182,66 @@
+@@ -4181,6 +4182,70 @@
  			//		PLATFORM.Font( FONT_NORMAL )->DrawTextShadowed((float) x,(float) y, 0x00FF0000,ToWCHAR("CHEATER!"));
  			//		y+=16;
  			//	}		
@@ -25,6 +25,7 @@
 +					WCHAR			*ceLabel[CE_DEBRIEF_MAX_ROWS];
 +					char			ceValue[CE_DEBRIEF_MAX_ROWS][32];
 +					CeDebriefPanel	cePanel;
++					SIZE			ceCheat;
 +					int				ceRows = 0;
 +					ceLabel[ceRows] = TEXT_DB.GetString(TOTAL_MISSION_TIME);
 +					sprintf(ceValue[ceRows++],"%.2fs",((float) p->GetStat(PS_TIMEASJET)+p->GetStat(PS_TIMEASWALKER))/20.0f);
@@ -52,6 +53,9 @@
 +					cePanel.nc = nc;
 +					cePanel.rowStep = 16.f;
 +					cePanel.cheatHeight = (float) ceH;
++					PLATFORM.Font( FONT_NORMAL )->GetTextExtent(ToWCHAR("CHEATER!"), &ceCheat);
++					cePanel.cheatWidth = (float) ceCheat.cx;
++					cePanel.cheatX = (float) x + 330.f;		// the status words of the objectives above (CGame's end screen: x + 330)
 +					cePanel.rows = ceRows;
 +					cePanel.cheat = p->GetStat(PS_CHEATED)>0 || p->IsGod();
 +					for (int ceRow = 0; ceRow < ceRows; ceRow ++)

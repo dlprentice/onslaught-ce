@@ -7,10 +7,10 @@ enum { CE_DEBRIEF_MAX_ROWS = 6 };
 
 // One panel in the end screen's 640 x 480 layout: where it starts, the edges it must stay inside, how far it may rise
 // into the gap above it, the value column (nc, measured by the retail label loop), each row's value width, and the
-// CHEATER! line.
+// CHEATER! line (its height and width, and cheatX, the column the objectives' status words use, where it goes beside the rows).
 struct CeDebriefPanel
 {
-	float	x, y, bottom, right, rise, nc, rowStep, cheatHeight;
+	float	x, y, bottom, right, rise, nc, rowStep, cheatHeight, cheatWidth, cheatX;
 	float	valueWidth[CE_DEBRIEF_MAX_ROWS];
 	int		rows;
 	bool	cheat;

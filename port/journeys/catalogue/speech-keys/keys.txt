@@ -1,0 +1,21 @@
+# The Catalogue's speech list by keys alone, on the exact candidate binary (no verb channel): the public build's menu rows,
+# The key route's timings at 60 Presents a second. Title, Onslaught CE, Catalogue, Speech: English, play line 1, close, line 2, leave.
+200 RETURN
+480 DOWN
+600 DOWN
+720 DOWN
+840 DOWN
+960 DOWN
+1080 RETURN
+1200 DOWN
+1320 RETURN
+1440 DOWN
+1560 DOWN
+1680 DOWN
+1800 RETURN
+1920 RETURN
+1980 RETURN
+2000 DOWN
+2120 RETURN
+2180 RETURN
+2200 ESC

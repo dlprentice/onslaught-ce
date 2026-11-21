@@ -29,7 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import build  # noqa: E402
 
 HOST = ("ce_museum_visit.cpp", "ce_museum_visit_generate.cpp")
-GAME = ("ce_museum_visit_engine.cpp", "ce_museum.cpp")
+GAME = ("ce_museum_visit_engine.cpp", "ce_museum.cpp", "ce_museum_label.cpp")
 UNITS = HOST + GAME
 CALLBACKS = ("_GLOBAL__N_1", ("7Receive", "10ReadSource"))
 RENAMES = set(build.GAME_ALLOCATOR.values()) | set(build.GAME_MATH.values()) | set(build.GAME_CRT.values())

@@ -30,6 +30,7 @@
 #include "renderinfo.h"
 #include "Texture.h"
 #include "ce_photo.h"
+#include "ce_overlay_box.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -51,7 +52,7 @@ const char *const kFenced[] = {"BEA_PORT_CLOCK", "BEA_PORT_TAPE", "BEA_PORT_PROB
 bool photo;						// photo mode on (the draw calls of the HUD, battle line and cockpit routines are dropped)
 bool shotPending;				// F12 asked: the next Present is saved; the note is not drawn in that frame
 char note[96];
-unsigned long long noteUntil;
+unsigned long long noteFrom, noteUntil;
 
 bool Present(const char *name)
 {
@@ -103,7 +104,8 @@ bool SavedNext()
 void Note(const char *text)
 {
 	snprintf(note, sizeof(note), "%s", text);
-	noteUntil = CE_ScreenshotTicks() + kNoteMs;
+	noteFrom = CE_ScreenshotTicks();
+	noteUntil = noteFrom + kNoteMs;
 }
 
 // Photo mode on or off, and the device's draw entries filtered or as the device came; asking again re-applies them, which
@@ -133,8 +135,8 @@ bool SetPhoto(bool on, bool fromMenu)
 {
 	if (!(fromMenu ? AllowedInLevel() : Allowed())) { Switch(false); return false; }
 	Switch(on);
-	if (on) Note(fromMenu ? "Photo mode: HUD hidden. Pause menu or F11 returns; F12 saves a screenshot."
-						  : "Photo mode: HUD hidden. F11 returns, F12 saves a screenshot.");
+	if (on) Note(fromMenu ? "Photo Mode: HUD hidden. F11 or the Pause Menu ends it. F12 saves a screenshot."
+						  : "Photo Mode: HUD hidden. F11 ends it. F12 saves a screenshot.");
 	else noteUntil = 0;
 	return true;
 }
@@ -189,56 +191,28 @@ void PortCePhotoShotDone(int status, const char *name)
 	char text[96];
 	switch (status)
 	{
-	case CE_SHOT_SAVED: snprintf(text, sizeof(text), "Saved screenshot %s", name ? name : ""); break;
+	case CE_SHOT_SAVED: snprintf(text, sizeof(text), "Screenshot saved: %s", name ? name : ""); break;
 	case CE_SHOT_FULL: snprintf(text, sizeof(text), "Screenshot not saved: the screenshots folder is full."); break;
-	case CE_SHOT_FOLDER: snprintf(text, sizeof(text), "Screenshot not saved: no screenshots folder."); break;
-	default: snprintf(text, sizeof(text), "Screenshot not saved (error %d).", -status); break;
+	case CE_SHOT_FOLDER: snprintf(text, sizeof(text), "Screenshot not saved: there is no screenshots folder."); break;
+	default: snprintf(text, sizeof(text), "Screenshot not saved: the file could not be written."); break;
 	}
 	Note(text);
 }
 
-// After the console (CDXEngine::PostRender): the note, bottom centre, never in a frame being saved.
+// After the console (CDXEngine::PostRender): the note, in the message box's look (ce_overlay_box.h), never in a frame being
+// saved. With the HUD drawn (the screenshot's note outside photo mode) it sits above the HUD's message bar; with the HUD hidden
+// it keeps the low place.
 void PortCePhotoRender()
 {
-	if (SavedNext() || !note[0] || CE_ScreenshotTicks() >= noteUntil || !Allowed()) return;
+	if (SavedNext() || !note[0] || !Allowed()) return;
 	CDXBitmapFont *font = PLATFORM.Font(FONT_SMALL);
-	CDXTexture *white = HUD.GetWhiteTexture();
-	if (!font || !white || white->GetRealWidth() <= 0 || white->GetRealHeight() <= 0 || font->GetHeight() <= 0) return;
-	const float w = float(PLATFORM.GetWindowWidth()), h = float(PLATFORM.GetWindowHeight());
-	if (w <= 0.f || h <= 0.f) return;
-	const float scale = (w / 640.f < h / 480.f) ? w / 640.f : h / 480.f;
+	if (!font) return;
 	WCHAR text[96];
 	unsigned n = 0;
 	for (const char *c = note; *c && n < 95; ++c)
 		text[n++] = font->CanDisplay(WCHAR((unsigned char)*c)) ? WCHAR((unsigned char)*c) : L'-';
 	text[n] = 0;
-	SIZE extent;
-	font->GetTextExtent(text, &extent);
-	float textScale = scale;
-	if (float(extent.cx) * textScale > w - 32.f * scale && extent.cx > 0) textScale = (w - 32.f * scale) / float(extent.cx);
-	const float tw = float(extent.cx) * textScale, th = float(font->GetHeight()) * textScale;
-	const float pad = 6.f * scale, x = (w - tw) * 0.5f, y = h - 40.f * scale - th;
-	RENDERINFO.SetFogEnabled(false);
-	RENDERINFO.SetLightingEnabled(false);
-	LT.SRS(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
-	LT.SRS(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
-	LT.STS(0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
-	LT.STS(0, D3DTSS_COLORARG2, D3DTA_DIFFUSE);
-	LT.STS(0, D3DTSS_COLOROP, D3DTOP_MODULATE);
-	LT.SRS(D3DRS_ALPHATESTENABLE, TRUE);
-	LT.SRS(D3DRS_ALPHAREF, 8);
-	LT.SRS(D3DRS_ALPHABLENDENABLE, TRUE);
-	LT.SRS(D3DRS_ZWRITEENABLE, FALSE);
-	LT.SRS(D3DRS_ZENABLE, FALSE);
-	LT.SRS(D3DRS_ZFUNC, D3DCMP_ALWAYS);
-	RENDERINFO.Apply();
-	CSPRITERENDERER::DrawColouredSprite(x - pad, y - pad, 0.001f, white, 0xb4000000, (tw + 2.f * pad) / white->GetRealWidth(),
-									   (th + 2.f * pad) / white->GetRealHeight());
-	font->DrawTextWithShadow(x, y, 0xffffffff, text, 0, 0.f, textScale, textScale);
-	LT.SRS(D3DRS_ZFUNC, D3DCMP_LESSEQUAL);
-	LT.SRS(D3DRS_ZWRITEENABLE, TRUE);
-	LT.SRS(D3DRS_ZENABLE, TRUE);
-	RENDERINFO.Apply();
+	PortCeNoteDraw(text, PortCeNoteFade(CE_ScreenshotTicks(), noteFrom, noteUntil), !photo);
 }
 
 #endif

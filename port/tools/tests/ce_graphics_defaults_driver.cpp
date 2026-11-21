@@ -10,7 +10,9 @@
 #include <string>
 #include <vector>
 
-CTweakSLONG GEFORCE_FX_POWER(0), EXTRA_GEFORCE_FX_FEATURES(0), R32F_WORKS(0), MY_READABLE_Z_BUFFER(0);
+// The four tweaks the policy reads start at the game's own initial values (the feature tweak starts set and no options file holds
+// it); ce_graphics_defaults_tests.py compares every stand-in on this line with the game's definition.
+CTweakSLONG GEFORCE_FX_POWER(0), EXTRA_GEFORCE_FX_FEATURES(1), R32F_WORKS(0), MY_READABLE_Z_BUFFER(0);
 namespace {
 bool layer = true, opened, rowsAccepted = true, iniWritable = true;
 int openError = ENOENT, reads, writes, logs, failures, displayChanges;
@@ -88,9 +90,19 @@ int HighestSamples(unsigned mask)
 
 int main(int argc, char **argv)
 {
-    if (argc != 2) return 2;
+    if (argc < 2) return 2;
     const std::string name = argv[1];
-    if (name == "existing" || name == "retail-leftover" || name == "profile-unknown" || name == "retail-leftover-opt-out") opened = true;
+    // Further arguments are valid lines this start finds in ce.ini (key=0 or key=1): what an earlier start of the same profile wrote.
+    for (int i = 2; i < argc; ++i) {
+        const std::string line = argv[i];
+        const std::string::size_type cut = line.find('=');
+        if (cut == std::string::npos || cut + 2 != line.size() || (line[cut + 1] != '0' && line[cut + 1] != '1')) return 2;
+        ini[line.substr(0, cut)] = line[cut + 1] - '0';
+    }
+    if (name == "existing" || name == "existing-saved-on" || name == "existing-saved-off" || name == "retail-leftover" || name == "profile-unknown" ||
+        name == "retail-leftover-opt-out") opened = true;
+    if (name == "existing-saved-on") ini["extra_graphics"] = 1;	// the player chose Yes in an earlier session
+    if (name == "existing-saved-off") ini["extra_graphics"] = 0;
     if (name == "retail-leftover" || name == "retail-leftover-opt-out") userFile = 0;	// the read was served by the game folder's file
     if (name == "profile-unknown") userFile = -1;
     if (name == "permission") openError = EACCES;
@@ -111,11 +123,24 @@ int main(int argc, char **argv)
     if (name.compare(0, 6, "fence-") == 0) setenv(("BEA_PORT_" + name.substr(6)).c_str(), "1", 1);
     if (name != "no-observation") OpenNativeOptions();
     if (name == "subsequent-existing") { opened = true; OpenNativeOptions(); }
-    PortCeGraphicsBeginDevice(name == "unsupported" ? 0x0104u : 0x0200u, 0x0101u, true, true);
+    // The Extra graphical features choice this start finds in ce.ini (-1: no valid line), read before the policy can write one.
+    const int extrasSaved = ini.count("extra_graphics") ? ini["extra_graphics"] : -1;
+    const bool capableDevice = name != "unsupported";
+    PortCeGraphicsBeginDevice(capableDevice ? 0x0200u : 0x0104u, 0x0101u, true, true);
     const bool faithful = name == "private" || name == "layer-off" || name.compare(0, 6, "fence-") == 0;
-    const bool fresh = !faithful && name != "existing" && name != "permission" && name != "io-error" &&
-                       name != "unclassified" && name != "no-observation" && name != "subsequent-existing" &&
+    const bool fresh = !faithful && name != "existing" && name != "existing-saved-on" && name != "existing-saved-off" && name != "permission" &&
+                       name != "io-error" && name != "unclassified" && name != "no-observation" && name != "subsequent-existing" &&
                        name != "profile-unknown";
+    // Extra graphical features: a valid ce.ini line is the saved choice; with none only a new profile asks for them. The device decides
+    // whether the request can run; the capability tweak follows the device alone. A faithful run leaves both tweaks as the game made them.
+    if (faithful)
+        Check(GEFORCE_FX_POWER.mValue == 0 && EXTRA_GEFORCE_FX_FEATURES.mValue == 1, "a faithful run leaves both tweaks at the game's initial values");
+    else {
+        const bool wanted = extrasSaved >= 0 ? extrasSaved == 1 : fresh;
+        Check(GEFORCE_FX_POWER.mValue == (capableDevice ? 1 : 0), "the capability tweak follows the device, whatever the profile asks for");
+        Check(EXTRA_GEFORCE_FX_FEATURES.mValue == (capableDevice && wanted ? 1 : 0),
+              "the extra features follow the saved choice, and with none are on for a new profile only: the game's own tweak decides nothing");
+    }
     if (fresh) {
         CShadowDetail shadows(AuthoredText, 0); CTreeDetail geometry(AuthoredText, 0);
         CLandscapeRes landscape(AuthoredText, 0); CTrilinear filtering(AuthoredText, 0);
@@ -140,6 +165,7 @@ int main(int argc, char **argv)
               "fresh colour selection respects the current native mode support");
         Check(EXTRA_GEFORCE_FX_FEATURES.mValue == (name != "opt-out" && name != "retail-leftover-opt-out" && name != "unsupported"),
               "fresh supported extras default on while saved opt-out and capability refusal win");
+        Check((extrasSaved < 0) == (name != "opt-out" && name != "retail-leftover-opt-out"), "only the opt-out cases start with an extra_graphics line");
         // texture and colour always ask the device to reset; anti-aliasing does too when it was changed
         const int changes = antialiasing.GetNumChoices() > 1 ? 3 : 2;
         // The beyond-retail rows: a valid line of ce.ini is a saved choice, requested as it stands and never written again; no line asks
@@ -149,7 +175,10 @@ int main(int argc, char **argv)
         const bool terrainSaved = name == "rows-saved-off" || name == "rows-saved-on";
         const int wantFull = name == "rows-refused" ? -1 : name == "rows-saved-on" ? 1 : 0;
         const int wantTerrain = name == "rows-refused" ? -1 : name == "rows-saved-off" ? 0 : 1;
+        // The options file holds none of the three rows, so a new profile's choice of the extra features is written once as well (before
+        // the two rows, whatever the device can do), or its second start would find saved options, no line, and switch them off.
         std::vector<std::string> wantWrites;
+        if (extrasSaved < 0) wantWrites.push_back("extra_graphics=1");
         if (name != "rows-refused") {
             if (!fullSaved) wantWrites.push_back("full_models=0");
             if (!terrainSaved) wantWrites.push_back("terrain_detail_distance=1");
@@ -157,7 +186,7 @@ int main(int argc, char **argv)
         Check(fullModels == wantFull && terrainDetail == wantTerrain && fullCalls == 1 && terrainCalls == 1,
               "a fresh profile asks for Full models and Terrain detail distance once, at the saved choice or the fresh one (Full models Off, Terrain detail distance Extended)");
         Check(written == wantWrites && writes == (int)wantWrites.size(),
-              "a fresh profile writes only the beyond-retail rows ce.ini has no valid line for, with the fresh choice");
+              "a fresh profile writes only the rows ce.ini has no valid line for (extra features, Full models, Terrain detail distance), with the fresh choice");
         Check(displayChanges == changes, "native setters retain reset side effects");
         quality = -9;
         PortCeGraphicsBeginDevice(0x0200u, 0x0101u, true, true);
@@ -176,6 +205,9 @@ int main(int argc, char **argv)
     const bool somethingOpened = opened && name != "no-observation";
     Check(userFileAsks == (faithful || !somethingOpened ? 0 : 1),
           "the profile's own file is asked about once, only after a successful open, and never by faithful runs");
+    // What this start asked ce.ini to keep, in order, and the tweaks it left: the test starts the same profile again from these lines.
+    for (const std::string &line : written) std::cout << "wrote " << line << '\n';
+    std::cout << "state capable=" << GEFORCE_FX_POWER.mValue << " extras=" << EXTRA_GEFORCE_FX_FEATURES.mValue << '\n';
     std::cout << "graphics-defaults " << name << " failures=" << failures << '\n';
     return failures ? 1 : 0;
 }

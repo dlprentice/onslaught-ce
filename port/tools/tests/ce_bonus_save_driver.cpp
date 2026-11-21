@@ -9,6 +9,7 @@
 #include <cstring>
 #include <new>
 #include <vector>
+#include "ce_hooks_host_stubs.h"
 
 typedef std::int16_t SWORD;
 typedef std::uint32_t DWORD;
@@ -40,6 +41,7 @@ struct { int mNextLevel; } SYSTEM;
 bool PortCeExperimental(const char *) { return false; }	// ce.cpp: the ce.ini [Experimental] lines; PortCeMenus asks each once and no save path here depends on the answer
 void PortCeExperimentalBlock() {}	// ce.cpp: adds the [Experimental] lines to ce.ini; no save path here depends on it
 #include "native_policy.inc"
+bool PortModHas(const char *) { return false; }	// mods.cpp: the Mods page's levels are not exercised here
 bool PortCeBonusStart(int);
 bool PortCeBonusLevelEnd();
 bool PortCeBonusCoopRunning();
@@ -49,6 +51,13 @@ bool PortCeBonusCoopReturning();
 int PortCeBonusTakeReturn();
 void PortCeBonusBeforeConsoleLevel();
 void PortCeBonusFilterSave(CCareer *, void *);
+
+static bool gEditorRequested = false;
+static CCareer* gEditorCareer = nullptr;
+static bool museumVisit = false;
+bool PortCeMuseumVisitActive(void) { return museumVisit; }
+extern "C" void PortCeMuseumVisitFilterSave(CCareer *, void *) {}	// patch 0279: no visit holds a career in this driver
+#include "native_editor_filter.inc"
 
 // The actual console jump action and the actual System.cpp loop from the patched source. The target RunLevel is an
 // authored boundary which records the career it receives; it changes no progress on its own.
@@ -186,6 +195,33 @@ int main(int argc, char **argv)
  check(argc == 3, "mode and level required");
  const char *mode = argv[1]; int level = std::atoi(argv[2]);
  initial();
+#ifdef CE_VERSION
+    if (!std::strcmp(mode, "editor-save"))
+    {
+        CCareer entry = CAREER;
+        changeLive();
+        const CCareer live = CAREER;
+        gEditorCareer = &entry;
+        verifyBytes(directSave(CAREER), live);
+        gEditorRequested = true;
+        verifyBytes(directSave(CAREER), expectedFiltered(entry, live, false));
+        check(!std::memcmp(&CAREER, &live, sizeof(live)), "editor save preserves the live career");
+        return 0;
+    }
+    if (!std::strcmp(mode, "museum-resume"))
+    {
+        museumVisit = true;
+        changeLive();
+        const CCareer live = CAREER;
+        CPauseMenu pause{};
+        pause.Resume(nullptr);
+        check(!creates && !writes && careerBytes.empty(), "Museum Continue must not write a career");
+        check(defaultWrites == 1 && GAME.unpauses == 1, "Museum Continue writes options and resumes");
+        verifyBytes(defaultBytes, live);
+        check(!std::memcmp(&CAREER, &live, sizeof(live)), "Museum Continue preserves the live career");
+        return 0;
+    }
+#endif
  if (std::strcmp(mode, "autoconfig") == 0) CLIPARAMS.mAutoConfigTest = 1;
  if (std::strcmp(mode, "demo") == 0) PLAYABLE_DEMO = 1;
  const bool gates = std::strcmp(mode, "gates") == 0 || std::strcmp(mode, "autoconfig") == 0 || std::strcmp(mode, "demo") == 0;

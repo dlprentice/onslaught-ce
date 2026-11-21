@@ -1,27 +1,38 @@
 // SPDX-License-Identifier: GPL-3.0-only
-// Optional Commander controls: M enters the live 3D battlefield without pausing.
-// The pilot remains present and vulnerable. Left click selects a ground-squad
-// marker, right click orders a passive Move, A then a terrain click orders an
-// Advance, and H holds. The command panel exposes those actions and Fall back.
-// Arrows or middle-button dragging pan, wheel/R/F zoom, Q/E turn, and PgUp/PgDn
-// tilt. M/Esc return to the pilot; V optionally opens the paused tactical map.
+// Optional Commander controls: M enters the live view of the battlefield without pausing.
+// The pilot remains present and vulnerable. A click picks a squad, a drag picks the
+// squads inside its box, Shift adds or takes away, Ctrl and A picks every squad, Ctrl
+// and a digit keeps the picked squads as a group and the digit picks them again. A
+// right click orders an Advance (it fights on the way), Ctrl and a right click a
+// Move (it holds its fire on the way), H holds, B falls back, and Delete gives the
+// squads back to their own orders; a Move or a Fall back holds where it arrives. The
+// buttons at the foot of the view give the same four orders. Arrows or middle-button
+// dragging pan, wheel/R/F zoom, Q/E turn, and PgUp/PgDn tilt. M/Esc return to the
+// pilot. V opens the paused tactical map, a tester's page, only with ce.ini's
+// commander_tactical_map=1 (TacticalMapAllowed).
 //
-// The live pointer uses the actual world-render camera matrices and viewport,
-// captured before HUD drawing, and intersects its forward ray with the map's
+// The live view never renders the world: the game draws the pilot's frame as it
+// does when the view is closed, and the view's own picture (ce_cmdview.cpp) is
+// drawn over it from read-only queries. The live pointer uses the matrices and
+// viewport that picture was drawn with, and intersects its forward ray with the map's
 // heightfield. Every action refreshes squad identities and rechecks the current
 // local camera owner. Orders still pass through ce_commander's authority gates.
 // The paused overview retains its own input sink, view, zoom and ordering path.
 //
 // Never in faithful play: off where the CE layer is off, in a replay, a recording, under probes or the virtual clocks, for a test pilot or a
-// network game, in multiplayer, demos and the front end, and unless ce.ini says commander=1 (a test build's proof switch, BEA_PORT_COMMANDER_PROOF=1
+// network game, in multiplayer (but for a Commander match, ce_cmdmatch.h: a versus level one person plays), demos and the front end, and unless ce.ini says commander=1 (a test build's proof switch, BEA_PORT_COMMANDER_PROOF=1
 // with BEA_PORT_COMMANDER_MAP=1 and BEA_PORT_CE_LAYER=1, lets it run under a virtual clock: ce_commander.cpp). It draws only with the game's own
-// sprite and font calls, allocates nothing but the controller stack entry the pause menu also makes, and draws no random number. Squads that follow
+// sprite and font calls (the paused map) or through the device alone (the live view), allocates nothing in the game's heaps but the controller stack entry the
+// pause menu also makes and the paused map's texture, and draws no random number. Squads that follow
 // mission scripts, aircraft and objectives are drawn but take no orders.
 #ifdef CE_VERSION
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
+#include "ce_dodge_binding.h"
 #include "ce_world_view.h"
+#include "ce_cmdproduction.h"
 
 #include "common.h"
 #include "game.h"
@@ -40,10 +51,21 @@
 #include "renderinfo.h"
 #include "Texture.h"
 #include "ce_commander.h"
+#include "ce_cmdorders.h"
+#include "ce_command_selection.h"
+#include "ce_cmdpointer.h"
 #include "ce_commander_camera.h"
-#include "ce_photo.h"
+#include "ce_cmdview.h"
+#include "ce_hud_reservation.h"
+#include "ce_commander_transition.h"
+#include "ce_cmdmatch.h"
+#include "ce_cmdsel.h"
+#include "ce_cmdgroup.h"
+#include "ce_cmdoutcome.h"
+#include "ce_cmdrules.h"
 #include "ce_playunit.h"
 #include "Camera.h"
+#include "DXEngine.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -56,6 +78,7 @@
 extern "C" int CE_BootRequested(void) __attribute__((weak));
 extern "C" unsigned PortPresentCount(void);		// d3d9hooks.cpp
 bool PortClockVirtual();						// clock.cpp: a virtual clock (a replay, a recording, probes, or a test build's proof run)
+extern "C" int PortMouseHeldNow(unsigned button);
 extern "C" int PortKeyHeldNow(unsigned dik);	// window.cpp: 1 a key is held, 0 it is not, -1 the platform cannot say
 // clock.cpp: the operating system's monotonic clock in nanoseconds. This file is built by the game's rule, whose include list has no SDL
 // directory on Windows, so its wall clock comes from the port and not from an SDL header.
@@ -63,9 +86,15 @@ unsigned long long PortClockRawNs();
 bool PortCeLayer();
 bool PortRecording();
 
+#if defined(CE_COMMANDER_TEST) && defined(__linux__)
+// A test build keeps this file's own records in sections of their own, which the live view's footprint audit leaves out (ce_cmdview_audit.cpp).
+#pragma clang section bss = "cecmdb" data = "cecmdd"
+#endif
+
 namespace
 {
-const unsigned kOpenKey = DIK_M;
+unsigned OpenKey() { return (unsigned)PortCeActionKey(CeControlAction::Commander); }
+unsigned gCloseKey = 0;
 const int kMouseUp = 3, kMouseDown = 4;			// mouse.cpp: what the key trap is told of a button (key 0 left, 1 middle, 2 right; 3 and 4 the wheel)
 const int kMaxSquads = 512, kGrid = 128;
 const unsigned kNoteLength = 240;				// Presents a note stays up
@@ -92,16 +121,31 @@ bool gArmed;			// A was pressed: the next click is an Advance
 bool gShift;
 bool gDown[256];		// keys the trap has seen go down and not up (a held key's repeats are not fresh presses)
 bool gEscClosed;		// the Esc that closed the map is still held: the game never saw its press, so it must not see its repeats (they would open the pause menu)
-int gSelected = -1;		// the picked squad's ordinal
+int gSelected = -1;		// the picked squad's ordinal: the selection's lead (code that picks one squad sets it, and Refresh makes that the selection)
+CeCmdSel gSel;			// the picked squads, the lead first (ce_cmdsel.h)
+CeCmdGroups gGroups;	// the numbered groups of this level (Ctrl and a digit keeps the selection, the digit picks it again)
+CeCmdMatchState gMatch;	// how a Commander match stands (ce_cmdmatch.h), read once an update while the live view is open (MatchFrame); the view's header shows it
+bool gReopen;			// a Commander match: the live view closed when the commander's Battle Engine went down, and opens again when it is back
+bool gPlayerClosed;		// the player closed the live view (M or Esc): a Battle Engine going down in the same update does not bring it back
+bool gToldInFight;		// this level has said "Your Battle Engine is still in the fight." (once, on the first open)
+bool gLiveShown;		// the live view's pointer has moved since the view opened: it is drawn only then (the game's pointer shows once the mouse moves)
+bool gLooseBounds;		// the live view: its centre may reach the world's edge and its span half again the world's (it looks at a slant, and the sea is drawn)
+CeCmdAlertState gAlert;		// the match's alerts (ce_cmdrules.h), from the updates the live view is open in
 int gHover = -1;
 CeCmdSquad gSquads[kMaxSquads];
 int gCount;
 char gNote[112];
 unsigned gNoteUntil;
+// A refusal of an order given with a click is shown where the click was ("Choose land for ground units." beside the pointer, not at the foot of the
+// screen): the note's end Present names which note it belongs to.
+unsigned gNoteAtUntil;
+float gNoteAtX = -1.f, gNoteAtY = -1.f;
 bool gNoteNotYet;			// the note on show is "the battle has not started yet": it goes when the battle does
 bool gLayoutLogged;
 int gUntracked;				// squads the order layer's table had no room for, or this one: not shown, not commandable
 #ifdef CE_COMMANDER_TEST
+unsigned long long gPeriodNs[2];	// frame periods, [1] the live view's frames and [0] the level's others, and how many of each (diagnostics)
+unsigned gPeriods[2];
 unsigned gFrames;			// frames drawn while open, and the milliseconds they took the processor to issue (diagnostics, never read by the game)
 double gMsTotal, gMsMax;
 #endif
@@ -151,16 +195,34 @@ struct Layout
 CDXBitmapFont *gFont;
 CDXTexture *gWhite;
 
+extern "C" int CE_SettingGetBool(const char *key, int def);		// ce.cpp: a ce.ini line read as yes or no
+
+// The paused tactical map is a tester's page (it has neither the live view's look nor all of its orders): V opens it only with ce.ini's
+// commander_tactical_map=1, and in a test build with BEA_PORT_COMMANDER_TACTICAL=1 too. Read once, the first time V is pressed in the view.
+bool TacticalMapAllowed()
+{
+	static int allowed = -1;
+	if (allowed < 0)
+	{
+		allowed = CE_SettingGetBool("commander_tactical_map", 0) == 1 ? 1 : 0;
+#ifdef CE_COMMANDER_TEST
+		if (const char *v = getenv("BEA_PORT_COMMANDER_TACTICAL")) if (!strcmp(v, "1")) allowed = 1;
+#endif
+	}
+	return allowed == 1;
+}
+
 // ---- the gate ----------------------------------------------------------------------------------------------------------------------
 
-// Where the map may exist at all: the feature is on, and this is a single-player level of the player's own game (not a recording, a demo, the front end or a network game).
+// Where the map may exist at all: the feature is on, and this is a single-player level of the player's own game (not a recording, a demo, the front end or a network game),
+// or a Commander match (a versus level one person plays: ce_cmdmatch.h holds the one admission rule, which the order layer asks too).
 bool Eligible()
 {
 	if (!CeCmdMapOn() || !PortCeLayer() || PortRecording()) return false;
 	if (CE_BootRequested && CE_BootRequested()) return false;
 	if (PLAYABLE_DEMO || CLIPARAMS.mAutoConfigTest || CLIPARAMS.mRecordDemo || CLIPARAMS.mPlaybackDemo || CLIPARAMS.mStressTest ||
 		CLIPARAMS.mAttractMode || FRONTEND.IsRunning()) return false;
-	return !GAME.IsMultiplayer() && GAME.GetNPlayers() == 1;
+	return CeCmdAdmits(!GAME.IsMultiplayer() && GAME.GetNPlayers() == 1);
 }
 
 // The font and the white texture the map draws with, and a window to draw in.
@@ -191,6 +253,15 @@ bool NotYet()
 	return state == GAME_STATE_PRE_RUNNING || state == GAME_STATE_PANNING;
 }
 
+// The cockpit may show a note: a level the map belongs to, playing, with no menu over it and the drawing ready. The commander's Battle Engine may be down
+// (the note that says so, and the open key's answer then, show while it is).
+bool NoteMay()
+{
+	if (!Eligible() || GAME.GetGameState() != GAME_STATE_PLAYING || GAMEINTERFACE.IsMenuUp() || GAMEINTERFACE.mShowJoypad) return false;
+	if (!GAME.GetPauseMenu() || GAME.GetPauseMenu()->mActive) return false;
+	return DrawingReady();
+}
+
 void Note(const char *text)
 {
 	snprintf(gNote, sizeof(gNote), "%s", text);
@@ -208,12 +279,16 @@ const CeCmdSquad *ByOrdinal(int ordinal)
 	return NULL;
 }
 
+// A fresh look at the squads. A squad picked by setting gSelected (Tab, the paused map) becomes the whole selection; squads that are gone or take no orders
+// any more leave it; each listed squad says whether it is picked.
 void Refresh()
 {
 	gCount = CeCmdList(gSquads, kMaxSquads);
 	gUntracked = CeCmdUntracked();
-	const CeCmdSquad *picked = ByOrdinal(gSelected);
-	if (!picked || !picked->commandable) gSelected = -1;
+	if (gSelected != CeSelLead(gSel)) CeSelOnly(gSel, gSelected);
+	CeSelPrune(gSel, [](int id) { const CeCmdSquad *s = ByOrdinal(id); return s != NULL && s->commandable; });
+	gSelected = CeSelLead(gSel);
+	for (int i = 0; i < gCount; ++i) gSquads[i].selected = CeSelHas(gSel, gSquads[i].ordinal);
 }
 
 int CommandableCount()
@@ -223,6 +298,8 @@ int CommandableCount()
 		if (gSquads[i].commandable) ++n;
 	return n;
 }
+
+void SelectOnly(int ordinal);		// below, with the orders
 
 // The next (step +1) or previous (-1) squad that takes orders, after the picked one.
 void Cycle(int step)
@@ -234,7 +311,7 @@ void Cycle(int step)
 	for (int n = 1; n <= gCount; ++n)
 	{
 		const int i = ((at < 0 ? (step > 0 ? -1 : 0) : at) + step * n % gCount + gCount) % gCount;
-		if (gSquads[i].commandable) { gSelected = gSquads[i].ordinal; CeCmdNote("map select %d", gSelected); return; }
+		if (gSquads[i].commandable) { SelectOnly(gSquads[i].ordinal); return; }
 	}
 }
 
@@ -245,21 +322,29 @@ const char *WhyText(int why)
 	{
 	case CE_WHY_SCRIPTED: return "That squad follows a mission script.";
 	case CE_WHY_SPAWNED: return "That squad follows its lead unit.";
-	case CE_WHY_AIRCRAFT: return "Only ground squads take orders from the map.";
+	case CE_WHY_AIRCRAFT: return "Only ground squads take orders.";
 	case CE_WHY_OBJECTIVE: return "That squad is a mission objective.";
-	default: return "That squad takes no orders from the map.";
+	default: return "That squad takes no orders.";
 	}
 }
 
 const char *OrderName(const CeCmdSquad &s)
 {
+	// What the squad is doing under the map's order, as the order layer follows it (ce_cmdoutcome.h); then the order's own word.
+	switch (s.outcome)
+	{
+	case CE_OUT_FIGHTING: return "Fighting";
+	case CE_OUT_ARRIVED: return "Arrived";
+	case CE_OUT_STUCK: return "Stuck";
+	default: break;
+	}
 	switch (s.verb)
 	{
-	case CE_CMD_MOVE: return s.arrived ? "Moved" : "Moving";
-	case CE_CMD_ADVANCE: return s.arrived ? "Advanced" : "Advancing";
+	case CE_CMD_MOVE: return s.arrived ? "Arrived" : "Moving";
+	case CE_CMD_ADVANCE: return s.arrived ? "Arrived" : "Advancing";
 	case CE_CMD_HOLD: return "Holding";
-	case CE_CMD_FALLBACK: return s.arrived ? "Fell back" : "Falling back";
-	default: return "No order";
+	case CE_CMD_FALLBACK: return s.arrived ? "Arrived" : "Falling back";
+	default: return "None";		// no order of the map's: the squad follows its own
 	}
 }
 
@@ -302,12 +387,17 @@ float FullSpan()
 }
 
 // The window onto the world is a square of this span, kept inside the world's own square.
+// The live view (gLooseBounds) looks at a slant, so the near part of its square falls off the foot of the window: its centre may come to the world's edge
+// and its span reach half again the world's, so that the island's near shore can be brought into sight; the sea beyond the edge is drawn.
 void SetView(float centreX, float centreY, float span)
 {
-	const float full = FullSpan();
-	if (span > full) span = full;
-	if (span < 48.f) span = 48.f;
-	const float midX = (gBoundsX0 + gBoundsX1) * 0.5f, midY = (gBoundsY0 + gBoundsY1) * 0.5f, slack = (full - span) * 0.5f;
+	// The live view stops zooming out where the ground still reads (past about 260 units the haze turns it into a dark plan: the R7 'map' again).
+	const float full = FullSpan(), most = gLooseBounds ? (std::min)(full * 1.5f, 260.f) : full;
+	if (span > most) span = most;
+	const float least = gLooseBounds ? 16.f : 48.f;	// the live view may come closer than the paused map (its framing: kLiveOpenSpan)
+	if (span < least) span = least;
+	const float midX = (gBoundsX0 + gBoundsX1) * 0.5f, midY = (gBoundsY0 + gBoundsY1) * 0.5f;
+	const float slack = (span < full ? (full - span) * 0.5f : 0.f) + (gLooseBounds ? (std::min)(span, full) * 0.5f : 0.f);
 	if (centreX < midX - slack) centreX = midX - slack;
 	if (centreX > midX + slack) centreX = midX + slack;
 	if (centreY < midY - slack) centreY = midY - slack;
@@ -318,8 +408,19 @@ void SetView(float centreX, float centreY, float span)
 	gTerrainDirty = true;
 }
 
-// The window on the action: the player's squads, the enemy squads within 80 units of them, and the pilot when he is that
-// near, with a margin, never tighter than 128 units.
+// In a Commander match, the rectangle round the commander's base (his side's live buildings): the view opens with it in sight.
+bool MatchBase(float *x0, float *y0, float *x1, float *y1)
+{
+	if (!CeCmdMatch()) return false;
+	CeCmdMatchState m;
+	CeCmdMatchRead(&m);
+	if (m.buildings[0] <= 0) return false;
+	*x0 = m.baseX0; *y0 = m.baseY0; *x1 = m.baseX1; *y1 = m.baseY1;
+	return true;
+}
+
+// The window on the action: the player's squads, the enemy squads within 80 units of them, the pilot when he is that
+// near and, in a match, the player's base, with a margin, never tighter than 128 units.
 void FitView()
 {
 	float x0 = 1e30f, y0 = 1e30f, x1 = -1e30f, y1 = -1e30f;
@@ -342,6 +443,8 @@ void FitView()
 			const float ex = engine->GetPos().X, ey = engine->GetPos().Y;
 			if (ex >= ax0 && ex <= ax1 && ey >= ay0 && ey <= ay1) add(ex, ey);
 		}
+		float bx0, by0, bx1, by1;
+		if (MatchBase(&bx0, &by0, &bx1, &by1)) { add(bx0, by0); add(bx1, by1); }
 	}
 	if (x1 < x0) { SetView((gBoundsX0 + gBoundsX1) * 0.5f, (gBoundsY0 + gBoundsY1) * 0.5f, FullSpan()); return; }
 	float span = ((x1 - x0) > (y1 - y0) ? (x1 - x0) : (y1 - y0)) * 1.35f + 24.f;
@@ -451,6 +554,7 @@ void BuildTerrain()
 void Box(float x, float y, float w, float h, DWORD colour)
 {
 	if (w <= 0.f || h <= 0.f) return;
+	if (CeCmdViewDrawing()) { CeCmdViewBox(x, y, w, h, colour); return; }		// the live view's picture: the device alone, none of the game's drawing
 	CSPRITERENDERER::DrawColouredSprite(x, y, 0.001f, gWhite, colour, w / gWhite->GetRealWidth(), h / gWhite->GetRealHeight());
 }
 
@@ -460,6 +564,41 @@ void Outline(float x, float y, float w, float h, float t, DWORD colour)
 	Box(x, y + h - t, w, t, colour);
 	Box(x, y, t, h, colour);
 	Box(x + w - t, y, t, h, colour);
+}
+
+// The HUD's own capsule (the objective bar the radio messages and the museum's labels use): a dark translucent body between the cyan end caps,
+// drawn by the HUD's routine and filling the rectangle (the caps stand half a height beyond the body). Lit draws a second, brighter body over it: a
+// button that is pressed or an order that waits for its click. The text drawn on it needs the map's own render states again (BeginDraw). Without the
+// HUD's art (or while the device-only picture draws), a drawn stand-in: the same body and two cyan ends.
+const DWORD kCapsuleBody = 0xb0040a14, kCapsuleCap = 0xff38c8e8, kCapsuleLit = 0x8038c8e8;
+void BeginDraw();
+void CapsuleBar(float x, float y, float w, float h, float alpha = 1.f, bool lit = false)
+{
+	if (w <= 0.f || h <= 0.f || alpha <= 0.f) return;
+	const auto fade = [alpha](DWORD c) { return (DWORD((float(c >> 24) * (alpha > 1.f ? 1.f : alpha)) + 0.5f) << 24) | (c & 0xffffff); };
+	if (!CeCmdViewDrawing() && HUD.mObjectiveLeft && HUD.mObjectiveRight && HUD.mObjectiveInnerLeft && HUD.mObjectiveInnerCentre && HUD.mObjectiveInnerRight)
+	{
+		HUD.RenderObjectiveBar(x + w * 0.5f, y + h * 0.5f, w > h ? w - h : 0.f, h, alpha >= 1.f ? 1.f : 0.5f + 0.5f * alpha);
+		BeginDraw();
+	}
+	else
+	{
+		const float cap = (std::max)(2.f, 2.f * L.s);
+		Box(x + h * 0.25f, y, w - h * 0.5f, h, fade(kCapsuleBody));
+		Box(x, y + h * 0.15f, cap, h * 0.7f, fade(kCapsuleCap));
+		Box(x + w - cap, y + h * 0.15f, cap, h * 0.7f, fade(kCapsuleCap));
+	}
+	if (lit) Box(x + h * 0.5f, y + h * 0.18f, w - h, h * 0.64f, fade(kCapsuleLit));
+}
+
+// A solid line t pixels wide from one window point to another: the sprite renderer's quad, turned along the line (the map editor's line).
+void Seg(float x0, float y0, float x1, float y1, float t, DWORD colour)
+{
+	const float dx = x1 - x0, dy = y1 - y0, length = sqrtf(dx * dx + dy * dy);
+	if (length <= 0.f) return;
+	if (CeCmdViewDrawing()) { Box(x0 - t * 0.5f, y0 - t * 0.5f, t, t, colour); Box(x1 - t * 0.5f, y1 - t * 0.5f, t, t, colour); return; }
+	CSPRITERENDERER::DrawColouredSprite((x0 + x1) * 0.5f - length * 0.5f, (y0 + y1) * 0.5f - t * 0.5f, 0.001f, gWhite, colour, length / gWhite->GetRealWidth(),
+									   t / gWhite->GetRealHeight(), SA_TOP_LEFT, SPT_NONE, 1.f, atan2f(dy, dx));
 }
 
 // A dotted line from one point to another, square dots t wide every 2.5 t.
@@ -483,8 +622,19 @@ unsigned Convert(const char *text, WCHAR *out, unsigned room)
 	return n;
 }
 
+// The live view draws its own text from the font's cell table (ce_cmdview.cpp): the game's text routines are not called while its picture is drawn.
+// The same substitution for a character the font lacks.
+void LiveText(const char *text, char *out, unsigned room)
+{
+	unsigned n = 0;
+	for (const char *c = text; *c && n + 1 < room; ++c)
+		out[n++] = gFont->CanDisplay(WCHAR((unsigned char)*c)) ? *c : '-';
+	out[n] = 0;
+}
+
 float TextWidth(const char *text, float scale)
 {
+	if (CeCmdViewDrawing()) { char live[160]; LiveText(text, live, sizeof live); return floorf(CeCmdViewTextWidth(live)) * scale; }
 	WCHAR w[160];
 	Convert(text, w, 160);
 	SIZE extent;
@@ -495,6 +645,17 @@ float TextWidth(const char *text, float scale)
 // One line of the small font; wider than maxWidth (when given) it is narrowed to fit.
 void Text(float x, float y, DWORD colour, const char *text, float maxWidth = 0.f, bool centred = false)
 {
+	if (CeCmdViewDrawing())
+	{
+		char live[160];
+		LiveText(text, live, sizeof live);
+		const float width = floorf(CeCmdViewTextWidth(live));
+		float scale = L.s;
+		if (maxWidth > 0.f && width * scale > maxWidth && width > 0.f) scale = maxWidth / width;
+		if (centred) x -= width * scale * 0.5f;
+		CeCmdViewText(x, y, colour, live, scale);
+		return;
+	}
 	WCHAR w[160];
 	Convert(text, w, 160);
 	SIZE extent;
@@ -533,8 +694,13 @@ void EndDraw()
 	RENDERINFO.Apply();
 }
 
-const DWORD kFriend = 0xff62d862, kFriendDim = 0xff3f7a3f, kEnemy = 0xffe45656, kPilot = 0xff70e0ff, kPick = 0xfffff070, kText = 0xffeef2f6,
-			kQuiet = 0xff9aa6b2, kMoveColour = 0xff58f0c0, kAdvanceColour = 0xffffa23c, kFallbackColour = 0xffffe466;
+// The colours, each with one meaning (the interface guide's palette): the friendly side in the green and the enemy in the red the live picture marks
+// their units with (ce_cmdview.cpp), white for content and for what is picked, yellow for the one thing under the pointer or armed (focus), grey for notes and for what cannot be used.
+// An order's line and goal are one quiet white: the squad's card says which order it is.
+const DWORD kFriend = 0xff62d862, kFriendDim = 0xff3f7a3f, kEnemy = 0xffe45656, kPilot = 0xff70e0ff, kPick = 0xffffffff, kFocus = 0xffffff00, kText = 0xffeef2f6,
+			kQuiet = 0xffa8a8a8, kOrderLine = 0x99ffffff, kMoveColour = kOrderLine, kAdvanceColour = kOrderLine, kFallbackColour = kOrderLine;
+// The game's message box panel and its edge (CFEMessBox's colours), for every panel the view draws.
+const DWORD kPanel = 0xaf000000, kEdge = 0xff7f7f7f;
 
 float BoxHalf(const CeCmdSquad &s)
 {
@@ -714,8 +880,8 @@ void DrawSquads()
 		if (const char *letter = OrderLetter(s.verb)) Text(x, y - LineHeight() * 0.5f, OrderColour(s.verb), letter, 0.f, true);
 		else if (s.vehicles) Box(x - h * 0.45f, y - t, h * 0.9f, 2.f * t, colour);	// a bar across a vehicle squad, a dot for infantry
 		else Box(x - t, y - t, 2.f * t, 2.f * t, colour);
-		if (s.ordinal == gSelected) Outline(x - h - 3.f * t, y - h - 3.f * t, 2.f * (h + 3.f * t), 2.f * (h + 3.f * t), 2.f * t, kPick);
-		else if (s.ordinal == gHover) Outline(x - h - 2.f * t, y - h - 2.f * t, 2.f * (h + 2.f * t), 2.f * (h + 2.f * t), t, 0xffffffff);
+		if (s.selected) Outline(x - h - 3.f * t, y - h - 3.f * t, 2.f * (h + 3.f * t), 2.f * (h + 3.f * t), 2.f * t, kPick);		// every picked squad, not the lead alone
+		if (s.ordinal == gHover) Outline(x - h - 5.f * t, y - h - 5.f * t, 2.f * (h + 5.f * t), 2.f * (h + 5.f * t), t, kFocus);
 	}
 	// the counts, each where it covers neither a box nor another count (the places are tried in the order below)
 	struct Rect { float x0, y0, x1, y1; } taken[2 * kMaxSquads];
@@ -773,78 +939,49 @@ void DrawPanel()
 {
 	const float x = L.panelX, pad = 8.f * L.s, line = LineHeight() + 3.f * L.s;
 	float y = L.mapY;
-	Box(x, y, L.panelW, L.mapSide, 0xb0101820);
-	Outline(x, y, L.panelW, L.mapSide, floorf(L.s) > 1.f ? floorf(L.s) : 1.f, 0xff3a4654);
+	Box(x, y, L.panelW, L.mapSide, kPanel);
+	Outline(x, y, L.panelW, L.mapSide, floorf(L.s) > 1.f ? floorf(L.s) : 1.f, kEdge);
 	y += pad;
 	const float room = L.panelW - 2.f * pad;
 	const CeCmdSquad *s = ByOrdinal(gSelected);
+	char text[96];
 	if (!s)
 	{
-		Text(x + pad, y, kText, "No squad picked", room);
+		Text(x + pad, y, kText, "No Squad Picked", room);
 		y += line * 1.5f;
-		char text[64];
-		snprintf(text, sizeof(text), "%d squads take orders", CommandableCount());
+		snprintf(text, sizeof(text), "%d squads take orders.", CommandableCount());
 		Text(x + pad, y, kQuiet, text, room);
 		y += line * 1.5f;
-		Text(x + pad, y, kQuiet, "Click a box to pick it,", room);
+		Text(x + pad, y, kQuiet, "Click a squad of yours,", room);
 		y += line;
 		Text(x + pad, y, kQuiet, "or press Tab.", room);
 		y += line * 2.f;
 		if (const CeCmdSquad *h = ByOrdinal(gHover))
 		{
-			snprintf(text, sizeof(text), "Pointing at squad %d", h->ordinal);
-			Text(x + pad, y, kText, text, room);
+			Text(x + pad, y, kText, h->unit[0] ? h->unit : (h->vehicles ? "Vehicles" : "Infantry"), room);
 			y += line;
-			if (h->unit[0])
-			{
-				Text(x + pad, y, kQuiet, h->unit, room);
-				y += line;
-			}
 			snprintf(text, sizeof(text), "%d unit%s%s", h->members, h->members == 1 ? "" : "s", h->commandable ? "" : ", no orders");
 			Text(x + pad, y, h->commandable ? kQuiet : kEnemy, text, room);
 		}
 		return;
 	}
-	char text[96];
-	snprintf(text, sizeof(text), "Squad %d", s->ordinal);
-	Text(x + pad, y, kPick, text, room);
-	y += line * 1.4f;
-	if (s->unit[0])
+	// the picked squads: how many, then the lead's card (the squads ordered together are the selection, as in the live view)
+	if (gSel.n > 1)
 	{
-		Text(x + pad, y, kText, s->unit, room);
-		y += line;
+		snprintf(text, sizeof(text), "%d squads picked", gSel.n);
+		Text(x + pad, y, kText, text, room);
+		y += line * 1.4f;
 	}
+	Text(x + pad, y, kText, s->unit[0] ? s->unit : (s->vehicles ? "Vehicles" : "Infantry"), room);
+	y += line;
 	if (s->peak > s->members) snprintf(text, sizeof(text), "%s, %d of %d units", s->vehicles ? "Vehicles" : "Infantry", s->members, s->peak);
 	else snprintf(text, sizeof(text), "%s, %d unit%s", s->vehicles ? "Vehicles" : "Infantry", s->members, s->members == 1 ? "" : "s");
-	Text(x + pad, y, kText, text, room);
+	Text(x + pad, y, kQuiet, text, room);
 	y += line * 1.4f;
-	if (s->deploys)
-	{
-		Text(x + pad, y, kQuiet, "Deploys: hold only", room);
-		y += line * 1.2f;
-	}
-	Text(x + pad, y, kQuiet, "Order", room);
-	y += line;
-	Text(x + pad, y, s->verb ? OrderColour(s->verb) : kText, OrderName(*s), room);
-	y += line;
-	if (s->verb == CE_CMD_MOVE || s->verb == CE_CMD_ADVANCE || s->verb == CE_CMD_FALLBACK)
-	{
-		snprintf(text, sizeof(text), "to %.0f, %.0f", s->gx, s->gy);
-		Text(x + pad, y, kQuiet, text, room);
-		y += line;
-	}
-	if (s->verb == CE_CMD_MOVE || s->verb == CE_CMD_FALLBACK)
-	{
-		Text(x + pad, y, kQuiet, "Passive: it holds fire", room);
-		y += line;
-		Text(x + pad, y, kQuiet, "until the next order", room);
-		y += line;
-	}
-	y += line * 0.5f;
-	Text(x + pad, y, kQuiet, "Position", room);
-	y += line;
-	snprintf(text, sizeof(text), "%.0f, %.0f", s->x, s->y);
+	snprintf(text, sizeof(text), "Order:%s", OrderName(*s));
 	Text(x + pad, y, kText, text, room);
+	y += line;
+	if (s->deploys) Text(x + pad, y, kQuiet, "Hold only", room);
 }
 
 void DrawLegend()
@@ -870,8 +1007,6 @@ void DrawLegend()
 	Box(x2 + m - t, y + 1.f + m - t, 2.f * t, 2.f * t, kFriend);
 	Text(x2 + 3.f * m, y, kQuiet, "infantry", room * 0.5f - 3.f * m);
 	y += line;
-	Text(x, y, kQuiet, "marks on a box, not keys:", room);
-	y += line;
 	Text(x, y, kQuiet, "M move  A advance", room);
 	y += line;
 	Text(x, y, kQuiet, "H hold  F fall back", room);
@@ -891,8 +1026,9 @@ void DrawHints()
 {
 	const float line = LineHeight() + 2.f * L.s, y = L.h - 40.f * L.s;
 	const float room = L.w - 24.f * L.s;
-	Text(12.f * L.s, y, kQuiet, "V: live 3D view | Left click: pick   Right click: move, passive   A, then click: advance, fights   H, X: hold, fires   R: fall back, passive", room);
-	Text(12.f * L.s, y + line, kQuiet, "Tab: next squad   Wheel, Q, E, arrows: zoom, pan   Space: to you   C: to squad   Home: all   Esc: cancel, close   M: close", room);
+	// A tester's page (TacticalMapAllowed): the same orders and keys as the live view, listed in full.
+	Text(12.f * L.s, y, kQuiet, "Right click: advance, fights   Ctrl right click: move   A, then click: advance   H, X: hold, fires   B: fall back   Delete: release   V: live view", room);
+	Text(12.f * L.s, y + line, kQuiet, "Click, Shift click: pick   Ctrl A: all   Ctrl 1 to 9: keep a group   Tab: next   Wheel, Q, E, arrows: zoom, pan   Space: to you   Esc, M: close", room);
 }
 
 // The last thing the map told the player, in the title bar, to the right.
@@ -903,13 +1039,27 @@ void DrawNote()
 	Text(L.w - 12.f * L.s - w, 8.f * L.s, kPick, gNote, room);
 }
 
+// The pointer: an arrow whose tip is the point a click acts on, white with a dark edge, yellow while an order waits for its click. (The game's own ship pointer is a
+// sprite; the live view draws only through the device, so its shape is drawn here in rows, as a sprite of it would be.)
+bool StrategicLive();			// the live view is open (below)
 void DrawCursor()
 {
-	const float t = floorf(L.s) > 1.f ? floorf(L.s) : 1.f, a = 7.f * L.s, x = float(MOUSE_X), y = float(MOUSE_Y);
-	Box(x - a - t, y - t * 1.5f, 2.f * a + 2.f * t, t * 3.f, 0xff000000);
-	Box(x - t * 1.5f, y - a - t, t * 3.f, 2.f * a + 2.f * t, 0xff000000);
-	Box(x - a, y - t * 0.5f, 2.f * a, t, gArmed ? kAdvanceColour : 0xffffffff);
-	Box(x - t * 0.5f, y - a, t, 2.f * a, gArmed ? kAdvanceColour : 0xffffffff);
+	if (StrategicLive() && !gLiveShown) return;		// the live view's pointer shows once the mouse has moved (after a reopen it would sit in a corner)
+	const float p = L.s > 1.f ? L.s : 1.f, x = float(MOUSE_X), y = float(MOUSE_Y);
+	const DWORD fill = gArmed ? kFocus : 0xffffffff;
+	const int rows = 14;
+	for (int r = 0; r < rows; ++r)
+	{
+		const float w = r < 10 ? float(r) * 0.6f : float(rows - r) * 1.2f + 1.f;		// widening to the shoulder, then the notch towards the tail
+		Box(x - p, y + float(r) * p - p, (w + 2.f) * p, 3.f * p, 0xc0000000);
+	}
+	for (int r = 1; r < rows - 1; ++r)
+	{
+		const float w = r < 10 ? float(r) * 0.6f : float(rows - r) * 1.2f + 1.f;
+		Box(x, y + float(r) * p, w * p, p, fill);
+	}
+	Box(x + 3.f * p, y + 10.f * p, 2.f * p, 7.f * p, 0xc0000000);		// the tail
+	Box(x + 3.5f * p, y + 10.f * p, p, 6.f * p, fill);
 }
 
 // ---- the pointer ---------------------------------------------------------------------------------------------------------------------
@@ -932,20 +1082,204 @@ int PickAt(float px, float py)
 	return best;
 }
 
+// The map's order for every picked squad. A march sends each squad to its own place round the point (ce_cmdgroup.h: a cluster kSpread apart, the farthest
+// squad choosing first, the whole cluster kept inside the map), so that they do not stand on each other; Hold and Release go to each squad alone. A Fall back
+// goes to each squad's own nearest safe point, which the order layer chooses: the squads that chose the same one are then given places round it the same way.
+std::uint64_t gOrderNs;		// when the last accepted order was given (Ns): the view draws its line growing and its goal settling from then (M5)
+
+// Several squads sent to one point: each to its own place round it, and true; false (each to the point itself) when they cannot be placed inside the map.
+bool SpreadRound(int n, const float *sx, const float *sy, float wx, float wy, float *tx, float *ty)
+{
+	const float kSpread = 20.f;		// world units between two squads' places
+	float gx[kCeSelMax], gy[kCeSelMax];
+	int slotOf[kCeSelMax];
+	if (!CeCmdSlotsInBounds(n, wx, wy, kSpread, gBoundsX0, gBoundsY0, gBoundsX1, gBoundsY1, gx, gy) || !CeCmdAssign(n, sx, sy, gx, gy, wx, wy, slotOf)) return false;
+	for (int k = 0; k < n; ++k) { tx[k] = gx[slotOf[k]]; ty[k] = gy[slotOf[k]]; }
+	return true;
+}
+
 void Order(int verb, float wx, float wy)
 {
-	const CeCmdSquad *s = ByOrdinal(gSelected);
-	if (!s) { Note("Pick a squad first."); return; }
-	const char *why = NULL;
-	if (!CeCmdIssue(gSelected, verb, wx, wy, &why)) { Note(why ? why : "Refused."); CeCmdNote("map refused %d %d %s", gSelected, verb, why ? why : "-"); return; }
-	CeCmdNote("map order %d %d %.1f %.1f", gSelected, verb, wx, wy);
+	if (!ByOrdinal(gSelected)) { Note("Pick a squad first."); return; }
+	int ids[kCeSelMax], n = 0;
+	float sx[kCeSelMax], sy[kCeSelMax], tx[kCeSelMax], ty[kCeSelMax];
+	bool landOnly[kCeSelMax], anyGround = false;
+	for (int i = 0; i < gSel.n && n < kCeSelMax; ++i)
+		if (const CeCmdSquad *s = ByOrdinal(gSel.ids[i])) { landOnly[n] = !s->crossesWater; anyGround |= landOnly[n]; ids[n] = s->ordinal; sx[n] = s->x; sy[n] = s->y; tx[n] = wx; ty[n] = wy; ++n; }
+	if (verb != CE_CMD_FALLBACK && CeCmdSpreads(verb, n)) {
+		const bool dryClick = !anyGround || CeCmdMarchLand(wx, wy);
+		SpreadRound(n, sx, sy, wx, wy, tx, ty);
+		for (int k = 0; k < n; ++k) {
+			if (landOnly[k] && (!dryClick || !CeCmdMarchLand(tx[k], ty[k]))) { tx[k] = wx; ty[k] = wy; }
+		}
+	}
+	int given = 0, refused = 0;
+	bool ok[kCeSelMax];
+	const char *refusal = NULL;
+	for (int k = 0; k < n; ++k)
+	{
+		const char *why = NULL;
+		ok[k] = CeCmdIssue(ids[k], verb, tx[k], ty[k], &why);
+		if (!ok[k])
+		{
+			++refused;
+			if (!refusal) refusal = why ? why : "Refused.";
+			CeCmdNote("map refused %d %d %s", ids[k], verb, why ? why : "-");
+			continue;
+		}
+		++given;
+		CeCmdNote("map order %d %d %.1f %.1f", ids[k], verb, tx[k], ty[k]);
+	}
 	Refresh();
-	static const char *const word[] = {"", "Moving", "Advancing", "Holding", "Falling back"};
-	char text[64];
-	// a squad that is moved or falls back holds fire on the way and once it has arrived, until it is given another order (the panel says so in full; the note is short so that it clears the title)
-	snprintf(text, sizeof(text), "Squad %d: %s%s.", gSelected, word[verb], (verb == CE_CMD_MOVE || verb == CE_CMD_FALLBACK) ? ", passive" : "");
+	if (verb == CE_CMD_FALLBACK && CeCmdSpreads(verb, given))
+	{
+		// The squads that fell back to one safe point: each to its own place round it (the order layer keeps a finite point a Fall back is given).
+		bool done[kCeSelMax] = {};
+		for (int a = 0; a < n; ++a)
+		{
+			const CeCmdSquad *lead = ok[a] && !done[a] ? ByOrdinal(ids[a]) : NULL;
+			if (!lead) continue;
+			int members[kCeSelMax], m = 0;
+			float mx[kCeSelMax], my[kCeSelMax], px[kCeSelMax], py[kCeSelMax];
+			for (int b = a; b < n; ++b)
+			{
+				const CeCmdSquad *s = ok[b] && !done[b] ? ByOrdinal(ids[b]) : NULL;
+				if (!s || s->verb != CE_CMD_FALLBACK || fabsf(s->gx - lead->gx) > 0.5f || fabsf(s->gy - lead->gy) > 0.5f) continue;
+				done[b] = true;
+				members[m] = ids[b]; mx[m] = sx[b]; my[m] = sy[b]; ++m;
+			}
+			if (m < 2 || !SpreadRound(m, mx, my, lead->gx, lead->gy, px, py)) continue;
+			for (int k = 0; k < m; ++k)
+				if (CeCmdIssue(members[k], CE_CMD_FALLBACK, px[k], py[k], NULL)) CeCmdNote("map order %d %d %.1f %.1f", members[k], verb, px[k], py[k]);
+		}
+		Refresh();
+	}
+	const bool already = verb == CE_CMD_RELEASE && refusal && !strcmp(refusal, "Already on its own orders.");	// Delete on squads under no order of the map's
+	if (!given)
+	{
+		Note(already && refused > 1 ? "Already on their own orders." : refusal ? refusal : "Refused.");
+		if (StrategicLive() && (verb == CE_CMD_MOVE || verb == CE_CMD_ADVANCE)) { gNoteAtX = float(MOUSE_X); gNoteAtY = float(MOUSE_Y); gNoteAtUntil = gNoteUntil; }
+		return;
+	}
+	gOrderNs = Ns();
+	static const char *const one[] = {"", "Moving.", "Advancing.", "Holding.", "Falling back.", "Released."};
+	static const char *const several[] = {"", "moving", "advancing", "holding", "falling back", "released"};
+	char text[112];
+	if (given == 1) snprintf(text, sizeof(text), "%s", one[verb]);
+	else snprintf(text, sizeof(text), "%d squads %s.", given, several[verb]);
+	if (refused && !already) snprintf(text + strlen(text), sizeof(text) - strlen(text), " %s", refusal);
 	Note(text);
 }
+
+// The selection as one squad, or with one squad more or less (a Shift click), or as every squad that takes orders (Ctrl and A).
+void SelectOnly(int ordinal)
+{
+	CeSelOnly(gSel, ordinal);
+	gSelected = CeSelLead(gSel);
+	Refresh();
+	CeCmdNote("map select %d", gSelected);
+}
+
+void SelectToggle(int ordinal)
+{
+	CeSelToggle(gSel, ordinal);
+	gSelected = CeSelLead(gSel);
+	Refresh();
+	CeCmdNote("map select %d toggle %d count %d", gSelected, ordinal, gSel.n);
+}
+
+void SelectAll()
+{
+	CeSelClear(gSel);
+	for (int i = 0; i < gCount; ++i)
+		if (gSquads[i].commandable) CeSelAdd(gSel, gSquads[i].ordinal);
+	gSelected = CeSelLead(gSel);
+	Refresh();
+	CeCmdNote("map select all %d", gSel.n);
+	char text[64];
+	if (gSel.n) snprintf(text, sizeof(text), "%d squads picked.", gSel.n);
+	else snprintf(text, sizeof(text), "There are no squads here to command.");
+	Note(text);
+}
+
+// A digit: with Ctrl the selection is kept under it, alone it picks that group again, with Shift it adds the group to the selection.
+void GroupKey(int number, bool keep, bool add)
+{
+	char text[64];
+	if (keep)
+	{
+		CeGroupStore(gGroups, number, gSel);
+		CeCmdNote("map group %d keep %d", number, gSel.n);
+		if (gSel.n) snprintf(text, sizeof(text), "Group %d: %d squad%s.", number, gSel.n, gSel.n == 1 ? "" : "s");
+		else snprintf(text, sizeof(text), "Group %d cleared.", number);
+		Note(text);
+		return;
+	}
+	CeCmdSel group;
+	if (!CeGroupRecall(gGroups, number, group))
+	{
+		snprintf(text, sizeof(text), "Group %d is empty. Ctrl and %d keeps the squads you picked.", number, number);
+		Note(text);
+		return;
+	}
+	if (!add) CeSelClear(gSel);
+	for (int i = 0; i < group.n; ++i) CeSelAdd(gSel, group.ids[i]);
+	gSelected = CeSelLead(gSel);
+	Refresh();
+	CeCmdNote("map group %d pick %d", number, gSel.n);
+	if (gSel.n) snprintf(text, sizeof(text), "Group %d: %d squad%s.", number, gSel.n, gSel.n == 1 ? "" : "s");
+	else snprintf(text, sizeof(text), "Group %d has no squads left.", number);
+	Note(text);
+}
+
+// ---- the live view's pointer ---------------------------------------------------------------------------------------------------------
+//
+// In a running level the game takes MOUSE_X and MOUSE_Y as a movement: each frame it turns the pilot's walker by their distance from the window's
+// centre and puts them back on the centre (the walker's mouse look, called by the game's render). With the mouse released, as it is while the view
+// is open, a window message would write the pointer's place there: the pilot would be turned by wherever the pointer is, and the view's own
+// pointer would be drawn at the centre however the mouse moved (a scripted click asked at one point landed at another). So the live view keeps a
+// pointer of its own, from the window layer's record of the points it mapped (PortPointerNow), and the game is told its own mouse is active for
+// as long as the view is open: window messages then leave MOUSE_X alone, and it stays on the centre, where it turns nothing.
+// The view's code reads MOUSE_X and MOUSE_Y as before: a LivePointer in scope holds them at the view's pointer for the length of one entry (a
+// key or button, the frame's drawing, the camera's update) and puts back what the game had.
+extern "C" int PortPointerNow(int *x, int *y);		// window.cpp
+
+int gLiveX, gLiveY;				// the live view's pointer, in window pixels
+int gLiveMapped;				// how many points the window layer had mapped when the pointer was last taken from it
+bool gLiveForced;				// a test tape's ui verb holds the pointer where its action needs it
+
+// As the live view opens, after the mouse was released (ShutdownMouse left the released pointer's place in MOUSE_X and MOUSE_Y).
+void LivePointerStart()
+{
+	int x = 0, y = 0;
+	gLiveMapped = PortPointerNow(&x, &y);
+	gLiveShown = false;
+	gLiveX = MOUSE_X;
+	gLiveY = MOUSE_Y;
+	SetMouseInputActive(TRUE);
+	MOUSE_X = PLATFORM.GetWindowWidth() / 2;
+	MOUSE_Y = PLATFORM.GetWindowHeight() / 2;
+}
+
+bool StrategicLive();			// the live view is open (below)
+
+struct LivePointer
+{
+	bool on;
+	int keptX, keptY;
+	LivePointer() : on(StrategicLive()), keptX(MOUSE_X), keptY(MOUSE_Y)
+	{
+		if (!on) return;
+		int x = 0, y = 0;
+		const int mapped = PortPointerNow(&x, &y);
+		if (!gLiveForced && mapped && mapped != gLiveMapped) { gLiveX = x; gLiveY = y; gLiveShown = true; }
+		gLiveMapped = mapped;
+		MOUSE_X = gLiveX;
+		MOUSE_Y = gLiveY;
+	}
+	// A view that closed, or changed to the paused map, inside the scope set the game's pointer itself: that stands.
+	~LivePointer() { if (on && StrategicLive()) { MOUSE_X = keptX; MOUSE_Y = keptY; } }
+};
 
 // ---- opening and closing ------------------------------------------------------------------------------------------------------------
 
@@ -971,7 +1305,17 @@ bool StrategicTrap(WORD key, int event);
 
 bool gStrategic = false;
 bool gStrategicRender = false;
+// The strategic camera is the Commander's own: the engine is never given it (the game renders the pilot's frame from the pilot's camera while the
+// view is open, exactly as it does when it is closed). The live view's picture is drawn from it, over that frame (PortCeCmdRender).
 CGenericCamera gStrategicCamera;
+CGenericCamera gStrategicPresentedCamera;
+CeCommanderPresentedPose gNativeEntryFrom = {}, gNativeLastPose = {}, gNativeReturnFrom = {};
+CeCommanderCameraBinding gNativeReturnBinding = {};
+CCamera* gNativeReturnOriginal = NULL;
+std::uint64_t gNativeEntryStartNs = 0, gNativeReturnStartNs = 0;
+bool gNativeEntrySeeded = false, gNativeEntering = false;
+bool gNativePresented = false, gNativeReturning = false;
+
 CCamera* gStrategicOriginal = NULL;
 CPlayer* gObservedPlayer = NULL;
 CBattleEngine* gObservedPilot = NULL;
@@ -979,17 +1323,189 @@ SINT gObservedPilotNumber = 0;
 CCamera* gObservedCamera = NULL;
 std::uint64_t gMissionLifetime = 1, gPilotLifetime = 1, gCameraLifetime = 1;
 CeCommanderCameraBinding gStrategicBinding;
-float gStrategicYaw = 0, gStrategicPitch = 1.15f, gStrategicFocusZ = 0;
+// The live view's battlefield framing (R7: the view read as a map). Pitch 0.85 (about 49 degrees down) shows the ground in perspective with the
+// horizon's haze at the top of the window instead of a plan from above; 30 world units of span puts the camera about 24 units from what it looks at,
+// where a tank is about thirty pixels long at 1280 x 720 and infantry can be told from vehicles (56 left tanks at fifteen, 96 at five). The live
+// view may come in to 16 (the paused map keeps its 48). The wheel and R/F still zoom out to the whole island.
+const float kLivePitch = 0.85f, kLiveOpenSpan = 30.f, kLiveWideSpan = 120.f;
+// Z: one step between the battlefield and the wide view, eased (the wheel and R/F still zoom freely). The close span Z goes back to is the one it left.
+struct StrategicZoomTrip { bool on = false; float from = 0, to = 0; std::uint64_t start = 0; } gZoomTrip;
+float gZoomBack = 30.f;
+float gStrategicYaw = 0, gStrategicPitch = kLivePitch, gStrategicFocusZ = 0;
 std::uint64_t gStrategicLastNs = 0;
+// C frames one squad. Normal controls immediately take the camera back; this is not a follow mode.
+struct StrategicFocusTrip {
+    int squad = -1;
+    float fromX = 0, fromY = 0, fromZ = 0;
+    std::uint64_t start = 0;
+} gFocusTrip;
 std::uint64_t gStrategicViewSession = 1;
 bool gStrategicDragging = false;
 float gStrategicDragX = 0, gStrategicDragY = 0;
+// The left button held on the battlefield: a click when it is let go where it went down, a box of squads when it was dragged at least kBoxSlack pixels.
+bool gBoxing = false;
+float gBoxX = 0, gBoxY = 0;
+const float kBoxSlack = 6.f;
+namespace UnitPanel = ce_command_panel;
+namespace UnitControl = ce_command_selection;
+UnitControl::SelectionController gUnitUi;
+CeCmdUnitSnapshot gUnitNative[UnitControl::kMaxUnits];
+UnitControl::UnitSnapshot gUnitRows[UnitControl::kMaxUnits];
+int gUnitNativeCount = 0;
+bool gUnitSnapshotComplete = false;
+uint32_t gUnitSnapshotGeneration = 0, gUnitContextGeneration = 1;
+CeCommandLifetimeKey gUnitFocusKeys[UnitControl::kMaxRequestKeys];
+unsigned gUnitFocusCount = 0;
+constexpr int kUnitFocus = 0x3ffffffe;
+CeCmdPointerFence gUnitPointerFence;
+bool gUnitPointerAvailable = false;
+void RefreshUnitFrame();
+bool UnitPanelAt(float, float);
+bool UnitFocusPosition(float*, float*);
+void UnitPointerObserve();
+
 int gStrategicWheel = 0;
 int gStrategicClickOrder = CE_CMD_ADVANCE;
 
+// The view the live picture was last drawn with: the pointer picks from it. It is the Commander's own record (no world-view capture of the game's
+// render serves this view: there is no render of the game's from this camera). Refused once it is older than a Present, from another entry into
+// the view, or from a window of another size.
+CeWorldViewSample gStrategicSample;
+bool gStrategicSampleValid = false;
+std::uint64_t gStrategicSampleSession = 0;
+float gStrategicSampleWidth = 0, gStrategicSampleHeight = 0;
+struct StrategicUiFrame {
+    bool valid = false;
+    bool hasDialogue = false;
+    unsigned present = 0;
+    std::uint64_t session = 0;
+    int width = 0, height = 0;
+    float bottom = 0;
+    CeHudReservation dialogue{};
+};
+StrategicUiFrame gStrategicUi;
+
+void StrategicUiPrepare() {
+    gStrategicUi = StrategicUiFrame{};
+    gStrategicUi.present = PortPresentCount();
+    gStrategicUi.session = gStrategicViewSession;
+    gStrategicUi.width = L.w; gStrategicUi.height = L.h;
+    gStrategicUi.bottom = float(L.h);
+    gStrategicUi.hasDialogue = CeHudReservationRead(gStrategicViewSession,
+        gStrategicUi.present, L.w, L.h, &gStrategicUi.dialogue);
+    if (gStrategicUi.hasDialogue)
+        gStrategicUi.bottom = (std::max)(0.0f, gStrategicUi.dialogue.top - 8.0f * L.s);
+    gStrategicUi.valid = true;
+}
+
+bool StrategicUiReady() {
+    return gStrategicUi.valid && gStrategicUi.session == gStrategicViewSession &&
+        gStrategicUi.width == L.w && gStrategicUi.height == L.h &&
+        gStrategicUi.width == PLATFORM.GetWindowWidth() &&
+        gStrategicUi.height == PLATFORM.GetWindowHeight() &&
+        unsigned(PortPresentCount() - gStrategicUi.present) <= 1;
+}
+
+bool StrategicDialogueAt(float x, float y) {
+    return gStrategicUi.hasDialogue &&
+        x >= gStrategicUi.dialogue.left && x <= gStrategicUi.dialogue.right &&
+        y >= gStrategicUi.dialogue.top && y <= gStrategicUi.dialogue.bottom;
+}
+
+float StrategicUiBottom() { return gStrategicUi.bottom; }
+
+void StrategicViewInvalidate() {
+    gStrategicUi.valid = false; gStrategicSampleValid = false; }
+void StrategicViewSet(const CeWorldViewSample& view) {
+    gStrategicSample = view; gStrategicSample.present = PortPresentCount();
+    gStrategicSampleSession = gStrategicViewSession; gStrategicSampleWidth = L.w; gStrategicSampleHeight = L.h;
+    gStrategicSampleValid = true;
+    StrategicUiPrepare();
+}
+bool StrategicViewRead(CeWorldViewSample* out) {
+    if (!out || !gStrategicSampleValid || !gStrategicSampleSession || gStrategicSampleSession != gStrategicViewSession ||
+        PortPresentCount() - gStrategicSample.present > 1 || gStrategicSampleWidth != L.w || gStrategicSampleHeight != L.h) return false;
+    *out = gStrategicSample; return true;
+}
+void StrategicEntered();        // the eased entry starts from the view the pilot had (below the block)
+void StrategicLeft();           // the picture's device objects are freed (below the block)
+
 bool StrategicCanAct();
+
+// The view's furniture, in the layer's units (L.s, one unit a pixel at 640 x 480), anchored to the window's corners as the HUD's groups are: the title
+// panel top left, the squad card and the four order buttons bottom left, the prompt line bottom right. The battlefield is everything else: a mark is
+// drawn and can be clicked wherever no panel covers it. Drawing and the pointer share these.
+const float kCardW = 440.f, kCardH = 46.f, kRowH = 20.f;
+const float kButtonW[4] = {56.f, 80.f, 56.f, 96.f}, kButtonGap = 6.f;
+void StrategicTitle(char* out, unsigned room) {
+    if (gMatch.match && gMatch.nodes > 0)
+        snprintf(out, room, "Commander   Battle Line %d of %d   Bases %d to %d", gMatch.held, gMatch.nodes, gMatch.buildings[0], gMatch.buildings[1]);
+    else snprintf(out, room, "Commander");
+}
+// The prompt line for the keyboard and mouse: at most five actions, as many as fit right of the buttons, the most needed first; never narrowed.
+void StrategicPrompt(char* out, unsigned room) {
+    const char* const action[5] = {gUnitUi.SelectionCount() ? "Right Click Move" : "Right Click Advance", "H Hold", "C Focus", "F1 Keys", "Esc Cockpit"};
+    static const int need[5] = {4, 3, 0, 1, 2};		// the order they are given room in: Esc, the key list (which names every other key), Advance, the rest
+    float left = 8.f;
+    if (!gUnitUi.SelectionCount()) for (int i = 0; i < 4; ++i) left += kButtonW[i] + kButtonGap;
+    const float free = L.w - (left + 8.f + 16.f) * L.s;
+    bool in[5] = {false, false, false, false, false};
+    for (int k = 0; k < 5; ++k) {
+        in[need[k]] = true;
+        char trial[160] = "";
+        for (int i = 0; i < 5; ++i) if (in[i]) snprintf(trial + strlen(trial), sizeof trial - strlen(trial), "%s%s", trial[0] ? "   " : "", action[i]);
+        if (TextWidth(trial, L.s) > free) { in[need[k]] = false; break; }
+    }
+    out[0] = 0;
+    for (int i = 0; i < 5; ++i) if (in[i]) snprintf(out + strlen(out), room - strlen(out), "%s%s", out[0] ? "   " : "", action[i]);
+}
+// The squad card's two lines, and its width: as wide as the longer line needs, never narrower than the four buttons under it, nor wider than kCardW.
+void StrategicCardLines(char* first, char* second, unsigned room) {
+    const CeCmdSquad* squad = ByOrdinal(gSelected);
+    if (!squad) {
+        snprintf(first, room, "No Unit or Squad Picked");
+        snprintf(second, room, "Click a unit. Ctrl Click picks its squad.");
+        return;
+    }
+    snprintf(first, room, "%s   %d unit%s", squad->unit[0] ? squad->unit : (squad->vehicles ? "Vehicles" : "Infantry"), squad->members, squad->members == 1 ? "" : "s");
+    if (gSel.n > 1) snprintf(first + strlen(first), room - strlen(first), "   +%d squad%s", gSel.n - 1, gSel.n == 2 ? "" : "s");
+    snprintf(second, room, "Order:%s%s", OrderName(*squad), squad->deploys ? "   Hold only" : "");
+}
+float StrategicCardWidth() {
+    char first[160], second[160];
+    StrategicCardLines(first, second, sizeof first);
+    float buttons = 0.f;
+    for (int i = 0; i < 4; ++i) buttons += kButtonW[i] + (i ? kButtonGap : 0.f);
+    const float words = ((std::max)(TextWidth(first, L.s), TextWidth(second, L.s)) / L.s) + 16.f;
+    return (std::min)(kCardW, (std::max)(buttons, words)) * L.s;
+}
+constexpr int kFactoryFocus = 0x3fffffff;
+int FactoryCardAt(float x, float y) {
+    CeFactoryView f;
+    if (!CeFactoryRead(f)) return -1;
+    const float u=L.s, left=8*u, top=56*u, width=196*u;
+    const int height = !f.selected ? 24 : (f.stage == CE_FACTORY_READY ? 122 : 99);
+    if (x<left || x>=left+width || y<top || y>=top+height*u) return -1;
+    if (!f.selected) return 1;
+    const float row=(y-top)/u;
+    if (row >= 52 && row < 73) return f.stage == CE_FACTORY_READY ? 5 : 2;
+    if (row >= 74 && row < 96) return f.stage == CE_FACTORY_READY ? 6 : f.stage == CE_FACTORY_QUEUED ? 3 : 4;
+    if (f.stage == CE_FACTORY_READY && row >= 97 && row < 119) return 4;
+    return 0;
+}
+bool StrategicPanelAt(float x, float y) {
+    if (FactoryCardAt(x,y) >= 0 || UnitPanelAt(x,y)) return true;
+    const float u = L.s;
+    char text[160];
+    StrategicTitle(text, sizeof text);
+    if (y < 30.f * u && x < 24.f * u + TextWidth(text, u)) return true;
+    if (!gUnitUi.SelectionCount() && y >= StrategicUiBottom() - (40.f + kCardH) * u && x < 8.f * u + StrategicCardWidth()) return true;
+    StrategicPrompt(text, sizeof text);
+    if (y >= StrategicUiBottom() - 34.f * u && x >= L.w - (24.f * u + TextWidth(text, u))) return text[0] != 0;
+    return false;
+}
 bool StrategicWorldArea(float x, float y) {
-    return x >= 0 && y >= 62.f * L.s && x < L.w && y < L.h - 112.f * L.s;
+    return x >= 0 && y >= 0 && x < L.w && y < L.h && !StrategicPanelAt(x,y) && !StrategicDialogueAt(x,y);
 }
 
 bool StrategicHeight(float x, float y, float* height) {
@@ -1001,12 +1517,100 @@ bool StrategicHeight(float x, float y, float* height) {
     *height = h; return true;
 }
 
+void StartStrategicFocus(const CeCmdSquad &squad) {
+    gFocusTrip.squad = squad.ordinal;
+    gFocusTrip.fromX = gViewX + gViewSpan * 0.5f;
+    gFocusTrip.fromY = gViewY + gViewSpan * 0.5f;
+    gFocusTrip.fromZ = gStrategicFocusZ;
+    gFocusTrip.start = Ns();
+}
+
+void StepStrategicFocus(const CeCommanderCameraInput &input, float &centreX, float &centreY) {
+    if (gFocusTrip.squad < 0) return;
+    const CeCmdSquad *squad = ByOrdinal(gFocusTrip.squad);
+    CeFactoryView factory;
+    const bool focusFactory = gFocusTrip.squad == kFactoryFocus && CeFactoryRead(factory) && factory.selected;
+    float unitX = 0, unitY = 0;
+    const bool focusUnit = gFocusTrip.squad == kUnitFocus && UnitFocusPosition(&unitX, &unitY);
+    if (input.pan_horizontal || input.pan_vertical || input.orbit_horizontal || input.orbit_vertical || input.zoom ||
+        (!focusFactory && !focusUnit && (gSelected != gFocusTrip.squad || !squad || !squad->friendly || !squad->members))) {
+        gFocusTrip.squad = -1;
+        return;
+    }
+    const float targetX = focusUnit ? unitX : focusFactory ? factory.x : squad->x;
+    const float targetY = focusUnit ? unitY : focusFactory ? factory.y : squad->y;
+    const float phase = static_cast<float>((std::min)(1.0, SecondsBetween(gFocusTrip.start, Ns()) / 0.32));
+    const float ease = phase * phase * (3.f - 2.f * phase);
+    float height;
+    if (!StrategicHeight(targetX, targetY, &height)) height = gFocusTrip.fromZ;
+    centreX = gFocusTrip.fromX + (targetX - gFocusTrip.fromX) * ease;
+    centreY = gFocusTrip.fromY + (targetY - gFocusTrip.fromY) * ease;
+    gStrategicFocusZ = gFocusTrip.fromZ + (height - gFocusTrip.fromZ) * ease;
+    if (phase >= 1.f) gFocusTrip.squad = -1;
+}
+
 bool StrategicPixel(const CeWorldViewSample& view, float x, float y, CeViewPoint* pixel) {
     float height;
     if (!StrategicHeight(x, y, &height)) return false;
     const CeViewPoint world = {x, y, height};
     return CeViewProject(view.view, view.projection, view.viewport, world, pixel);
 }
+
+// Keep a live order readable when its destination leaves the picture. Only the
+// visible squad's forward segment can supply a bearing; never mirror a point
+// behind the camera onto the opposite side of the screen.
+bool StrategicRouteBearing(const CeWorldViewSample &view, const CeCmdSquad &squad,
+                          const CeViewPoint &from, float t, CeViewPoint &tip) {
+    if (!StrategicWorldArea(from.x, from.y)) return false;
+    const float arm = 8.0f * t;
+    const float inset = 3.0f + arm;
+    const float left = inset, right = L.w - inset;
+    const float top = 32.0f * L.s + inset, bottom = L.h - 42.0f * L.s - inset;
+    if (from.x < left || from.x > right || from.y < top || from.y > bottom) return false;
+    float firstZ, lastZ;
+    if (!StrategicHeight(squad.x, squad.y, &firstZ) ||
+        !StrategicHeight(squad.gx, squad.gy, &lastZ)) return false;
+    float low = 0, high = 1;
+    tip = from;
+    for (int step = 0; step < 14; ++step) {
+        const float f = (low + high) * 0.5f;
+        const CeViewPoint p = {squad.x + (squad.gx - squad.x) * f,
+                               squad.y + (squad.gy - squad.y) * f,
+                               firstZ + (lastZ - firstZ) * f};
+        CeViewPoint out;
+        if (CeViewProject(view.view, view.projection, view.viewport, p, &out) &&
+            out.x >= left && out.x <= right && out.y >= top && out.y <= bottom) {
+            low = f;
+            tip = out;
+        } else high = f;
+    }
+    // A depth boundary with no nearby screen edge is not an off-screen bearing.
+    const float edgeTolerance = 2.0f * t;
+    if (tip.x > left + edgeTolerance && tip.x < right - edgeTolerance &&
+        tip.y > top + edgeTolerance && tip.y < bottom - edgeTolerance) return false;
+    const float dx = tip.x - from.x, dy = tip.y - from.y;
+    return dx*dx + dy*dy >= (4.0f * arm) * (4.0f * arm);
+}
+
+void DrawRouteArrow(const CeViewPoint &from, const CeViewPoint &tip, float t) {
+    const float dx = tip.x - from.x, dy = tip.y - from.y;
+    const float len = sqrtf(dx*dx + dy*dy);
+    if (!(len > 0)) return;
+    const float ux = dx / len, uy = dy / len, wing = 4.5f * t, back = 7.0f * t;
+    Dots(from.x, from.y, tip.x - ux * back, tip.y - uy * back, t, kOrderLine);
+    // Short solid strokes read as an open arrowhead, unlike the square goal pin.
+    const int steps = int(ceilf(back));
+    for (int side = -1; side <= 1; side += 2) {
+        for (int j = 0; j <= steps; ++j) {
+            if (side == 1 && j == 0) continue;
+            const float f = float(j) / float(steps);
+            const float x = tip.x + (-ux * back - side * uy * wing) * f;
+            const float y = tip.y + (-uy * back + side * ux * wing) * f;
+            Box(floorf(x + 0.5f), floorf(y + 0.5f), t, t, kOrderLine);
+        }
+    }
+}
+
 
 bool StrategicClipAxis(double start, double delta, double lo, double hi, double* first, double* last) {
     if (std::fabs(delta) < 1e-12) return start >= lo && start <= hi;
@@ -1062,6 +1666,358 @@ bool StrategicGround(const CeWorldViewSample& view, float px, float py, CeViewPo
     return false;
 }
 
+// The panel owns intent and exact keys; only these native callbacks issue orders.
+
+bool UnitRequestHas(const UnitControl::Request* request, const CeCommandLifetimeKey& key) {
+    if (!request) return gUnitUi.IsSelected(key);
+    for (unsigned i = 0; i < request->key_count; ++i)
+        if (UnitControl::SameKey(request->keys[i], key)) return true;
+    return false;
+}
+
+bool UnitWholeSquad(int ordinal, const UnitControl::Request* request = NULL) {
+    const CeCmdSquad* squad = ByOrdinal(ordinal);
+    if (!gUnitSnapshotComplete || !squad || !squad->commandable || squad->members <= 0) return false;
+    int members = 0;
+    for (int i = 0; i < gUnitNativeCount; ++i) {
+        const CeCmdUnitSnapshot& unit = gUnitNative[i];
+        if (unit.ordinal != ordinal) continue;
+        if (!unit.commandable || !UnitRequestHas(request, unit.key)) return false;
+        ++members;
+    }
+    // A filtered, missing, transferred or new native member cannot be ordered
+    // merely because all of an older UI selection is still present.
+    return members == squad->members;
+}
+
+struct UnitTakeContext { const char* reason; };
+bool UnitCanTake(CUnit* unit, int number, void* user) {
+    UnitTakeContext* context = static_cast<UnitTakeContext*>(user);
+    return CePlayUnitCanTakeSelection(CePlayUnitSelectionWorld(), unit, number, &context->reason);
+}
+bool UnitTake(CUnit* unit, int number, void* user) {
+    UnitTakeContext* context = static_cast<UnitTakeContext*>(user);
+    return CePlayUnitTakeSelection(CePlayUnitSelectionWorld(), unit, number, &context->reason);
+}
+
+UnitPanel::TextSize UnitMeasure(void*, const char* text, float scale) {
+    return {CeCmdViewTextWidth(text) * scale, CeCmdViewTextHeight() * scale};
+}
+void UnitFill(void*, UnitPanel::Rect rect, uint32_t colour) {
+    CeCmdViewBox(rect.x, rect.y, rect.w, rect.h, colour);
+}
+void UnitLine(void*, float x0, float y0, float x1, float y1, uint32_t colour) {
+    CeCmdViewBox((std::min)(x0, x1), (std::min)(y0, y1),
+        (std::max)(1.f, std::fabs(x1-x0)), (std::max)(1.f, std::fabs(y1-y0)), colour);
+}
+void UnitText(void*, float x, float y, const char* text, float scale, uint32_t colour) {
+    CeCmdViewText(x, y, colour, text, scale);
+}
+
+void RefreshUnitFrame() {
+    gUnitNativeCount = CeCmdUnitCollect(gUnitNative, UnitControl::kMaxUnits, &gUnitSnapshotComplete);
+    unsigned markCount = 0;
+    const CeCmdViewUnitMark* marks = CeCmdViewUnitMarks(markCount);
+    for (int i = 0; i < gUnitNativeCount; ++i) {
+        const CeCmdUnitSnapshot& native = gUnitNative[i];
+        UnitControl::UnitSnapshot& row = gUnitRows[i];
+        row = UnitControl::UnitSnapshot{};
+        row.key = native.key;
+        UnitControl::UnitFacts& facts = row.facts;
+        facts.kind = UnitPanel::EntityKind::Unit;
+        facts.relation = native.friendly ? UnitPanel::TeamRelation::Friendly : UnitPanel::TeamRelation::Unknown;
+        facts.control = native.commandable ? UnitPanel::ControlOwner::CommandAI :
+            native.scripted ? UnitPanel::ControlOwner::Scripted : UnitPanel::ControlOwner::IndependentAI;
+        facts.availability = UnitPanel::Availability::Available;
+        facts.selectable = native.friendly;
+        facts.capabilities = UnitPanel::ActionBit(UnitPanel::Action::Focus);
+        if (native.commandable && native.groundPoint)
+            facts.capabilities |= UnitPanel::ActionBit(UnitPanel::Action::Move) | UnitPanel::ActionBit(UnitPanel::Action::Hold);
+        if (native.orderOwned) facts.capabilities |= UnitPanel::ActionBit(UnitPanel::Action::ReturnToAI);
+        const CeCmdSquad* squad = ByOrdinal(native.ordinal);
+        if (squad && UnitWholeSquad(native.ordinal)) {
+            facts.capabilities |= UnitPanel::ActionBit(UnitPanel::Action::Hold);
+            if (!squad->deploys)
+                facts.capabilities |= UnitPanel::ActionBit(UnitPanel::Action::Move) |
+                    UnitPanel::ActionBit(UnitPanel::Action::Advance) | UnitPanel::ActionBit(UnitPanel::Action::FallBack);
+            if (squad->verb != CE_CMD_NONE)
+                facts.capabilities |= UnitPanel::ActionBit(UnitPanel::Action::ReturnToAI);
+        }
+        if (gUnitUi.SelectionCount() == 1 && gUnitUi.IsSelected(native.key)) {
+            UnitTakeContext take = {};
+            if (CeCmdUnitVisit(native.key, UnitCanTake, &take))
+                facts.capabilities |= UnitPanel::ActionBit(UnitPanel::Action::TakeControl);
+        }
+        UnitPanel::EntityKey squadKey = {};
+        if (!UnitControl::ToPanelKey(native.squadKey, &squadKey)) gUnitSnapshotComplete = false;
+        else {
+            facts.squad.present = true;
+            facts.squad.squad_id = squadKey.id;
+            facts.squad.squad_generation = squadKey.generation;
+            facts.squad.has_member_count = native.members >= 0 && native.members <= 65535;
+            facts.squad.member_count = facts.squad.has_member_count ? uint16_t(native.members) : 0;
+            snprintf(facts.squad.name, sizeof(facts.squad.name), "Squad %d", native.ordinal + 1);
+        }
+        snprintf(facts.name, sizeof(facts.name), "%s", native.name);
+        for (unsigned m = 0; m < markCount; ++m) {
+            if (!UnitControl::SameKey(marks[m].key, native.key)) continue;
+            row.screen = {marks[m].x, marks[m].y, marks[m].radius + 4.f * L.s,
+                marks[m].x >= 0 && marks[m].x < L.w && marks[m].y >= 30.f * L.s &&
+                marks[m].y < StrategicUiBottom() && !StrategicDialogueAt(marks[m].x, marks[m].y) &&
+                !StrategicPanelAt(marks[m].x, marks[m].y)};
+            break;
+        }
+    }
+    UnitControl::Frame frame = {};
+    frame.world = CeCmdUnitWorld();
+    frame.snapshot_generation = ++gUnitSnapshotGeneration;
+    frame.context_generation = gUnitContextGeneration;
+    frame.targeted_actions = UnitPanel::ActionBit(UnitPanel::Action::Move) | UnitPanel::ActionBit(UnitPanel::Action::Advance);
+    frame.complete = gUnitSnapshotComplete && StrategicUiReady() && gUnitPointerAvailable && !gDown[DIK_F1];
+    frame.units = gUnitRows;
+    frame.unit_count = gUnitNativeCount;
+    gUnitUi.BeginFrame(frame);
+    gUnitUi.SetDragThreshold(kBoxSlack * L.s);
+    UnitPanel::LayoutInput layout = {};
+    layout.scale = L.s;
+    layout.safe = {8.f * L.s, 36.f * L.s, (std::max)(0.f, L.w-16.f*L.s),
+        (std::max)(0.f, StrategicUiBottom()-78.f*L.s)};
+    layout.measure = UnitMeasure;
+    CeFactoryView factory;
+    if (CeFactoryRead(factory))
+        layout.reservations[layout.reservation_count++] = {8.f*L.s, 56.f*L.s, 196.f*L.s,
+            (!factory.selected ? 24.f : factory.stage == CE_FACTORY_READY ? 122.f : 99.f) * L.s};
+    gUnitUi.UpdateLayout(layout);
+}
+
+bool UnitPanelAt(float x, float y) {
+    const UnitPanel::PanelLayout& layout = gUnitUi.Panel().Layout();
+    return layout.visible && x >= layout.panel.x && x < layout.panel.x + layout.panel.w &&
+        y >= layout.panel.y && y < layout.panel.y + layout.panel.h;
+}
+
+bool UnitFocusPosition(float* x, float* y) {
+    static CeCmdUnitSnapshot current[UnitControl::kMaxUnits];
+    bool complete = false;
+    const int count = CeCmdUnitCollect(current, UnitControl::kMaxUnits, &complete);
+    if (!complete || !gUnitFocusCount) return false;
+    double totalX = 0, totalY = 0;
+    for (unsigned k = 0; k < gUnitFocusCount; ++k) {
+        bool found = false;
+        if (!gUnitUi.IsSelected(gUnitFocusKeys[k])) return false;
+        for (int i = 0; i < count; ++i) {
+            if (!UnitControl::SameKey(current[i].key, gUnitFocusKeys[k])) continue;
+            totalX += current[i].position[0]; totalY += current[i].position[1]; found = true; break;
+        }
+        if (!found) return false;
+    }
+    *x = float(totalX / gUnitFocusCount); *y = float(totalY / gUnitFocusCount);
+    return std::isfinite(*x) && std::isfinite(*y);
+}
+
+// A refusal of a click on the battlefield, shown beside the pointer where the click was.
+void NoteHere(const char* text, float x, float y) {
+    Note(text);
+    gNoteAtX = x; gNoteAtY = y; gNoteAtUntil = gNoteUntil;
+}
+
+void DispatchUnitRequest(const UnitControl::Request& request) {
+    if (!StrategicCanAct() || !CeCmdUnitOrdersEligible() || request.world != CeCmdUnitWorld() ||
+        request.context_generation != gUnitContextGeneration ||
+        request.selection_revision != gUnitUi.Panel().SelectionRevision() || !request.key_count ||
+        request.key_count > UnitControl::kMaxRequestKeys) { Note("Unit command is no longer available."); return; }
+    if (request.has_point && (!std::isfinite(request.point.x) || !std::isfinite(request.point.y) || !std::isfinite(request.point.z))) {
+        Note("Point at the ground."); return;
+    }
+    // Refresh both native cohort membership and each unit's lifetime before any
+    // command. Every low-level dispatch below resolves its key again as well.
+    Refresh();
+    RefreshUnitFrame();
+    if (!gUnitSnapshotComplete || !gUnitUi.FrameUsable() || request.world != CeCmdUnitWorld() ||
+        request.selection_revision != gUnitUi.Panel().SelectionRevision()) {
+        Note("Unit selection is unavailable. No order issued."); return;
+    }
+    if (request.action == UnitPanel::Action::TakeControl) {
+        if (request.key_count != 1 || request.selected_count != 1) return;
+        UnitTakeContext take = {};
+        if (!CeCmdUnitVisit(request.keys[0], UnitCanTake, &take)) {
+            Note(take.reason ? take.reason : "Unit is no longer available."); return;
+        }
+        Close();
+        if (!PortCeCmdMapOpen() && CeCmdUnitVisit(request.keys[0], UnitTake, &take)) return;
+        Note(take.reason ? take.reason : "Unit control is no longer available.");
+        return;
+    }
+    if (request.action == UnitPanel::Action::Focus) {
+        gUnitFocusCount = request.key_count;
+        for (unsigned i = 0; i < request.key_count; ++i) gUnitFocusKeys[i] = request.keys[i];
+        float x, y;
+        if (!UnitFocusPosition(&x, &y)) { gUnitFocusCount = 0; return; }
+        gFocusTrip.squad = kUnitFocus;
+        gFocusTrip.fromX = gViewX + gViewSpan * .5f;
+        gFocusTrip.fromY = gViewY + gViewSpan * .5f;
+        gFocusTrip.fromZ = gStrategicFocusZ;
+        gFocusTrip.start = Ns();
+        return;
+    }
+    int applied = 0, refused = 0, units = 0;      // units: the selected units whose order (their own or their squad's) was taken
+    int issued[UnitControl::kMaxRequestKeys], issuedCount = 0;
+    bool issuedOk[UnitControl::kMaxRequestKeys] = {};
+    for (unsigned i = 0; i < request.key_count; ++i) {
+        if (!StrategicCanAct() || !CeCmdUnitOrdersEligible() || request.world != CeCmdUnitWorld() ||
+            request.context_generation != gUnitContextGeneration ||
+            request.selection_revision != gUnitUi.Panel().SelectionRevision()) { ++refused; break; }
+        const CeCommandLifetimeKey& key = request.keys[i];
+        const CeCmdUnitSnapshot* native = NULL;
+        for (int n = 0; n < gUnitNativeCount; ++n)
+            if (UnitControl::SameKey(gUnitNative[n].key, key)) { native = &gUnitNative[n]; break; }
+        if (!native || !native->commandable) { ++refused; continue; }
+        const CeCmdSquad* squad = ByOrdinal(native->ordinal);
+        const bool whole = UnitWholeSquad(native->ordinal, &request);
+        const bool squadAction = request.action == UnitPanel::Action::Advance ||
+            request.action == UnitPanel::Action::FallBack ||
+            (whole && (request.action == UnitPanel::Action::Move || request.action == UnitPanel::Action::Hold)) ||
+            (request.action == UnitPanel::Action::ReturnToAI && whole && squad && squad->verb != CE_CMD_NONE);
+        if (squadAction) {
+            bool already = false;
+            for (int n = 0; n < issuedCount; ++n) if (issued[n] == native->ordinal) { already = true; if (issuedOk[n]) ++units; }
+            if (already) continue;
+            issuedOk[issuedCount] = false;
+            issued[issuedCount++] = native->ordinal;
+            if (!whole || !squad || ((request.action == UnitPanel::Action::Advance || request.action == UnitPanel::Action::Move) && !request.has_point)) { ++refused; continue; }
+            const int ordinal = native->ordinal;
+            const int verb = request.action == UnitPanel::Action::Move ? CE_CMD_MOVE :
+                request.action == UnitPanel::Action::Hold ? CE_CMD_HOLD :
+                request.action == UnitPanel::Action::Advance ? CE_CMD_ADVANCE :
+                request.action == UnitPanel::Action::FallBack ? CE_CMD_FALLBACK : CE_CMD_RELEASE;
+            // An earlier native callback may change another cohort or the world.
+            Refresh(); RefreshUnitFrame();
+            if (!StrategicCanAct() || request.world != CeCmdUnitWorld() || !CeCmdUnitOrdersEligible() ||
+                !gUnitUi.FrameUsable() || request.context_generation != gUnitContextGeneration ||
+                request.selection_revision != gUnitUi.Panel().SelectionRevision() ||
+                !UnitWholeSquad(ordinal, &request)) { ++refused; continue; }
+            const char* why = NULL;
+            if (CeCmdIssue(ordinal, verb, request.point.x, request.point.y, &why)) { ++applied; ++units; issuedOk[issuedCount - 1] = true; }
+            else ++refused;
+            continue;
+        }
+        bool accepted = false;
+        if (request.action == UnitPanel::Action::Move && request.has_point)
+            accepted = CeCmdUnitMove(key, request.point.x, request.point.y);
+        else if (request.action == UnitPanel::Action::Hold) accepted = CeCmdUnitHold(key);
+        else if (request.action == UnitPanel::Action::ReturnToAI) accepted = CeCmdUnitReturnAI(key);
+        if (accepted) { ++applied; ++units; } else ++refused;
+    }
+    // A failed callback may have superseded an earlier order; display the
+    // observed current owner, never an optimistic request result.
+    Refresh(); RefreshUnitFrame();
+    // What happened, in the player's words: "9 units moving.", not how many commands were accepted.
+    const char* doing = request.action == UnitPanel::Action::Move ? "moving" : request.action == UnitPanel::Action::Hold ? "holding" :
+        request.action == UnitPanel::Action::Advance ? "advancing" : request.action == UnitPanel::Action::FallBack ? "falling back" :
+        request.action == UnitPanel::Action::ReturnToAI ? "back on their own orders" : "ordered";
+    char message[96];
+    if (!applied) { Note("No selected unit can take that order."); return; }
+    if (units == 1) snprintf(message, sizeof(message), "1 unit %s.", doing);
+    else snprintf(message, sizeof(message), "%d units %s.", units, doing);
+    if (refused) snprintf(message + strlen(message), sizeof(message) - strlen(message), " %d could not.", refused);
+    Note(message);
+}
+
+void DrainUnitRequest() {
+    UnitControl::Request request = {};
+    if (gUnitUi.TakeRequest(&request)) DispatchUnitRequest(request);
+}
+
+void UnitTargetAt(float x, float y, uint64_t targetToken) {
+    CeWorldViewSample view;
+    CeViewPoint target;
+    if (!StrategicWorldArea(x, y) || !StrategicViewRead(&view) || !StrategicGround(view, x, y, &target)) {
+        NoteHere("Point at the ground.", x, y); return;
+    }
+    UnitControl::Request request = {};
+    if (gUnitUi.SubmitTarget(targetToken, {target.x, target.y, target.z}, &request) == UnitControl::TargetStatus::Submitted)
+        DispatchUnitRequest(request);
+}
+
+void UnitAction(UnitPanel::Action action) {
+    const UnitControl::ArmStatus status = gUnitUi.ArmAction(action);
+    if (status == UnitControl::ArmStatus::Queued) DrainUnitRequest();
+    else if (status == UnitControl::ArmStatus::Armed) Note("Choose a point on the ground.");
+    else Note("That action is unavailable for this selection.");
+}
+
+// A ring on the ground round a world point (x, y at height z), r world units across its radius: what is selected and where an order goes stand on the
+// battlefield, not in the window. Drawn in pieces; a piece with an end off the picture or under a panel is left out.
+void GroundRing(const CeWorldViewSample& view, float x, float y, float z, float r, float t, DWORD colour) {
+    const int n = 28; CeViewPoint prev = {}; bool have = false;
+    for (int i = 0; i <= n; ++i) {
+        const float a = 6.2831853f * float(i) / float(n);
+        CeViewPoint p = {};
+        const CeViewPoint world = {x + r * cosf(a), y + r * sinf(a), z};
+        const bool ok = CeViewProject(view.view, view.projection, view.viewport, world, &p) && StrategicWorldArea(p.x, p.y);
+        if (ok && have) Seg(prev.x, prev.y, p.x, p.y, t, colour);
+        prev = p; have = ok;
+    }
+}
+// The height an order's goal stands at: the ground, or the water over the sea.
+float GoalHeight(float x, float y, float fallback) {
+    float z;
+    if (!StrategicHeight(x, y, &z)) return fallback;
+    return (std::min)(z, MAP.GetWaterLevel());     // the game's Z grows downward: the higher of ground and water is the smaller
+}
+const DWORD kRingPicked = 0xffffffff, kRingSquad = 0xc0ffffff, kGoalDim = 0x60ffffff;
+
+void DrawUnitSelection() {
+    gUnitUi.PointerMove(float(MOUSE_X), float(MOUSE_Y));
+    unsigned count = 0;
+    const CeCmdViewUnitMark* marks = CeCmdViewUnitMarks(count);
+    CeWorldViewSample ringView;
+    const bool haveRingView = StrategicViewRead(&ringView);
+    const float rt = (std::max)(1.5f, 1.5f * L.s);
+    // Unit orders on the ground: a dotted line from each unit to where it was sent and one ring at each goal, until the unit is there.
+    float goals[64][2]; int nGoals = 0;
+    for (unsigned i = 0; i < count && haveRingView; ++i) {
+        CeCmdUnitOrderView order = {};
+        if (!CeCmdUnitOrderRead(marks[i].key, &order) || order.order != CE_UNIT_ORDER_MOVE || !order.owned) continue;
+        const float gx = order.destination[0], gy = order.destination[1], dx = gx - marks[i].wx, dy = gy - marks[i].wy;
+        if (dx * dx + dy * dy < 16.f) continue;      // there (within four units)
+        const float gz = GoalHeight(gx, gy, order.destination[2]);
+        const DWORD colour = gUnitUi.IsSelected(marks[i].key) ? kOrderLine : kGoalDim;
+        CeViewPoint goal = {};
+        const CeViewPoint world = {gx, gy, gz};
+        if (CeViewProject(ringView.view, ringView.projection, ringView.viewport, world, &goal) && StrategicWorldArea(marks[i].x, marks[i].y) &&
+            StrategicWorldArea(goal.x, goal.y)) Dots(marks[i].x, marks[i].y, goal.x, goal.y, rt, colour);
+        bool known = false;
+        for (int k = 0; k < nGoals && !known; ++k) known = fabsf(goals[k][0] - gx) < 1.5f && fabsf(goals[k][1] - gy) < 1.5f;
+        if (known || nGoals >= 64) continue;
+        goals[nGoals][0] = gx; goals[nGoals][1] = gy; ++nGoals;
+        GroundRing(ringView, gx, gy, gz, 1.8f, rt, colour);
+    }
+    // What is selected: a ring on the ground under each unit, sized to its kind; the members of a picked squad wear a fainter one.
+    for (unsigned i = 0; i < count; ++i) {
+        const CeCmdViewUnitMark& m = marks[i];
+        const CeCmdSquad* squad = ByOrdinal(m.squad);
+        const bool unitPicked = gUnitUi.IsSelected(m.key), squadPicked = squad && squad->selected;
+        if (!unitPicked && !squadPicked) continue;
+        if (haveRingView && m.worldRadius > 0.f) GroundRing(ringView, m.wx, m.wy, m.wz, m.worldRadius, rt, unitPicked ? kRingPicked : kRingSquad);
+        else if (unitPicked && StrategicWorldArea(m.x, m.y)) {
+            const float r = m.radius + 5.f*L.s;
+            Outline(m.x-r, m.y-r, 2*r, 2*r, (std::max)(1.f,L.s), kPick);
+        }
+    }
+    UnitPanel::Rect drag = {};
+    if (gUnitUi.DragRect(&drag)) Outline(drag.x, drag.y, drag.w, drag.h, (std::max)(1.f,L.s), kPick);
+    UnitPanel::Palette palette = {};
+    palette.background = 0xe8121820; palette.border = kEdge; palette.separator = 0xff44505a;
+    palette.text = kText; palette.text_dim = kQuiet; palette.text_disabled = 0xff75818b;
+    palette.button = 0xff26323d; palette.button_hover = 0xff344a57; palette.button_pressed = 0xff3e5964;
+    palette.button_disabled = 0xff202830; palette.button_border = 0xff657783;
+    palette.accent = kFriend; palette.human = kPilot; palette.structure = 0xffe1c680;
+    palette.muted = kQuiet; palette.warning = kEnemy;
+    const UnitPanel::DrawCallbacks draw = {NULL, UnitFill, UnitLine, UnitText};
+    gUnitUi.Panel().Paint(draw, palette);
+}
+
 int StrategicPick(const CeWorldViewSample& view, float px, float py) {
     int best = -1; float distance = 1e30f;
     for (int i = 0; i < gCount; ++i) {
@@ -1073,57 +2029,192 @@ int StrategicPick(const CeWorldViewSample& view, float px, float py) {
         const float radius = 18.f * L.s;
         if (d <= radius * radius && d < distance) { best = squad.ordinal; distance = d; }
     }
+    // Retain the generous target around a squad centre. A closer drawn member
+    // wins where the player is pointing; selecting either always picks the squad.
+    unsigned count;
+    const CeCmdViewUnitMark *marks = CeCmdViewUnitMarks(count);
+    for (unsigned i = 0; i < count; ++i) {
+        const CeCmdViewUnitMark &mark = marks[i];
+        const float dx = mark.x - px, dy = mark.y - py, d = dx * dx + dy * dy;
+        const float radius = mark.radius + 3.f * L.s;
+        if (d > radius * radius || (best >= 0 && d >= distance) || !StrategicWorldArea(mark.x, mark.y)) continue;
+        const CeCmdSquad *squad = ByOrdinal(mark.squad);
+        if (squad && squad->friendly) { best = mark.squad; distance = d; }
+    }
     return best;
 }
+
+// The squads that take orders whose marks lie inside the dragged rectangle: the selection, or added to it with Shift.
+struct StrategicBoxPoint { float x, y; };
+void StrategicBoxMembers(const CeWorldViewSample& view, float x0, float y0, float x1, float y1, CeCmdSel& result, StrategicBoxPoint* hits = nullptr) {
+    for (int i = 0; i < gCount; ++i) {
+        const CeCmdSquad& squad = gSquads[i];
+        CeViewPoint pixel;
+        if (!squad.commandable || !StrategicPixel(view, squad.x, squad.y, &pixel) || !StrategicWorldArea(pixel.x, pixel.y)) continue;
+        if (CeBoxHas(x0, y0, x1, y1, pixel.x, pixel.y) && CeSelAdd(result, squad.ordinal) && hits)
+            hits[result.n-1] = {pixel.x, pixel.y};
+    }
+    unsigned count;
+    const CeCmdViewUnitMark *marks = CeCmdViewUnitMarks(count);
+    for (unsigned i = 0; i < count; ++i) {
+        const CeCmdViewUnitMark &mark = marks[i];
+        if (!CeBoxHas(x0, y0, x1, y1, mark.x, mark.y) || !StrategicWorldArea(mark.x, mark.y)) continue;
+        const CeCmdSquad *squad = ByOrdinal(mark.squad);
+        if (squad && squad->commandable && CeSelAdd(result, mark.squad) && hits)
+            hits[result.n-1] = {mark.x, mark.y};
+    }
+}
+
+void StrategicBox(const CeWorldViewSample& view, float x0, float y0, float x1, float y1, bool add) {
+    if (!add) CeSelClear(gSel);
+    StrategicBoxMembers(view, x0, y0, x1, y1, gSel);
+    gSelected = CeSelLead(gSel);
+    Refresh();
+    CeCmdNote("map drag %d %d %d %d count %d", int(x0), int(y0), int(x1), int(y1), gSel.n);
+    char text[64];
+    if (gSel.n > 1) snprintf(text, sizeof(text), "%d squads picked.", gSel.n);
+    else if (gSel.n == 0) snprintf(text, sizeof(text), "No squad of yours there.");
+    else return;		// one squad: its card says so
+    Note(text);
+}
+
+std::uint64_t gButtonPressedNs[4];		// when each order button was last clicked: it shows pressed for a moment (DrawStrategicHints)
 
 void StrategicArm(int verb) {
     if (!ByOrdinal(gSelected)) { Note("Pick a squad first."); return; }
     gArmed = true; gStrategicClickOrder = verb;
-    Note(verb == CE_CMD_ADVANCE ? "Advance: click the terrain. Squad will fight." : "Move: click the terrain. Squad will hold fire.");
+    Note(verb == CE_CMD_ADVANCE ? "Advance: click the ground." : "Move: click the ground.");
 }
 
 // The bottom command panel owns its clicks; no click on a button also reaches
 // the battlefield. Button geometry is shared by drawing and hit testing.
 int StrategicButtonAt(float x, float y) {
-    const float left = 12.f * L.s, top = L.h - 43.f * L.s;
-    if (y < top || y >= top + 29.f * L.s || x < left) return -1;
-    const int index = int((x - left) / (112.f * L.s));
-    if (index < 0 || index >= 4 || x >= left + index * 112.f * L.s + 104.f * L.s) return -1;
-    return index;
+    const float top = StrategicUiBottom() - 34.f * L.s;
+    if (y < top || y >= top + kRowH * L.s) return -1;
+    float left = 8.f * L.s;
+    for (int i = 0; i < 4; ++i) {
+        if (x >= left && x < left + kButtonW[i] * L.s) return i;
+        left += (kButtonW[i] + kButtonGap) * L.s;
+    }
+    return -1;
+}
+
+void UnitPointerSeed() {
+    const int held[3] = {PortMouseHeldNow(0), PortMouseHeldNow(1), PortMouseHeldNow(2)};
+    gUnitPointerFence.Begin(held);
+    gUnitPointerAvailable = held[0] >= 0 && held[1] >= 0 && held[2] >= 0;
+    if (gUnitPointerFence.Blocked(0)) gUnitUi.SuppressUntilRelease();
+}
+void UnitPointerObserve() {
+    const int held[3] = {PortMouseHeldNow(0), PortMouseHeldNow(1), PortMouseHeldNow(2)};
+    const CeCmdPointerObservation result = gUnitPointerFence.Observe(held);
+    gUnitPointerAvailable = result.available;
+    if (!result.available) {
+        gUnitUi.Cancel(); gUnitUi.SuppressUntilRelease();
+        gBoxing = false; gStrategicDragging = false; gStrategicWheel = 0;
+    } else if (result.released & 1u) {
+        // A positively observed release ends suppression even when focus loss
+        // prevented the native trap from delivering its release message.
+        gUnitUi.PointerUp(float(MOUSE_X), float(MOUSE_Y), UnitControl::ClickModifiers{});
+    }
 }
 
 void StrategicPointer(WORD key, int event) {
-    if (!StrategicCanAct()) return;
     const float px = float(MOUSE_X), py = float(MOUSE_Y);
+    if (key <= 2 && event == kMouseDown && !gUnitPointerFence.Press(key)) return;
+    if (key <= 2 && event == kMouseUp && !gUnitPointerFence.Release(key)) {
+        if (key == 0) { gUnitUi.Cancel(); gUnitUi.PointerUp(px, py, UnitControl::ClickModifiers{}); }
+        if (key == 1) gStrategicDragging = false;
+        return;
+    }
+    if (!StrategicUiReady() || !gUnitPointerAvailable) {
+        gUnitUi.Cancel(); gBoxing = false; gStrategicDragging = false;
+        gStrategicDragX = gStrategicDragY = gStrategicWheel = 0;
+        return;
+    }
+    if (!StrategicCanAct()) { gUnitUi.Cancel(); return; }
     if (event == kMouseUp && key == 1) { gStrategicDragging = false; return; }
     if (event == kMouseUp && (key == 3 || key == 4)) {
         if (StrategicWorldArea(px, py)) gStrategicWheel += key == 3 ? 1 : -1;
         return;
     }
-    if (event != kMouseDown || key > 2) return;
-    Refresh(); // Input may arrive after destruction/replacement and before another frame.
-    const int button = key == 0 ? StrategicButtonAt(px, py) : -1;
+    const bool shift = gDown[DIK_LSHIFT] || gDown[DIK_RSHIFT];
+    const bool ctrl = gDown[DIK_LCONTROL] || gDown[DIK_RCONTROL];
+    const bool leftUp = event == kMouseUp && key == 0;
+    if (!leftUp && (event != kMouseDown || key > 2)) return;
+    Refresh(); RefreshUnitFrame();
+    const int factoryButton=FactoryCardAt(px,py);
+    if (key == 0 && factoryButton >= 0 && event == kMouseDown) {
+        if (event == kMouseDown) {
+            gUnitUi.ClearSelection(); gUnitUi.Cancel();
+            if (factoryButton == 1 && CeFactorySelect()) {
+                SelectOnly(-1);
+                CeCmdSquad focus = {}; focus.ordinal=kFactoryFocus; StartStrategicFocus(focus);
+            } else if (factoryButton == 2) CeFactoryQueue();
+            else if (factoryButton == 3) CeFactoryCancel();
+            else if (factoryButton == 4) CeFactoryLeaveSelection();
+            else if (factoryButton == 5) {
+                Refresh();
+                const int ordinal = CeCmdDeliveredSquad();
+                const CeCmdSquad *tank = ordinal >= 0 ? ByOrdinal(ordinal) : nullptr;
+                if (tank) {
+                    SelectOnly(ordinal);
+                    StartStrategicFocus(*tank);
+                    Note("Your tank selected.");
+                } else Note("Tank unavailable. No order issued.");
+            } else if (factoryButton == 6) {
+                const int ordinal = CeCmdDeliveredSquad();
+                if (ordinal < 0) Note("Tank unavailable.");
+                else if (gSel.n != 1 || gSelected != ordinal) Note("Select the tank first.");
+                else if (!CePlayUnitCanTakeDelivery()) Note("Unit control is unavailable.");
+                else { Close(); CePlayUnitTakeDelivery(); }
+            }
+        }
+        return;
+    }
+    if (leftUp) {
+        if (!StrategicWorldArea(px, py) && !UnitPanelAt(px, py)) {
+            const float invalid = (std::numeric_limits<float>::quiet_NaN)();
+            gUnitUi.PointerUp(invalid, invalid, {shift, ctrl});
+            return;
+        }
+        const UnitControl::GestureResult gesture = gUnitUi.PointerUp(px, py, {shift, ctrl});
+        if (gesture.outcome == UnitControl::GestureOutcome::TargetPoint)
+            UnitTargetAt(gesture.x, gesture.y, gesture.target_token);
+        else if (gesture.outcome == UnitControl::GestureOutcome::Click || gesture.outcome == UnitControl::GestureOutcome::Box) {
+            SelectOnly(-1); gArmed = false; CeFactoryLeaveSelection();
+            if (gesture.outcome == UnitControl::GestureOutcome::Click && !gesture.selection.picked && !shift) {
+                CeWorldViewSample view; CeFactoryView factory; CeViewPoint point;
+                if (StrategicViewRead(&view) && CeFactoryRead(factory) && StrategicPixel(view, factory.x, factory.y, &point) &&
+                    std::fabs(point.x-px) <= 14*L.s && std::fabs(point.y-py) <= 14*L.s) {
+                    gUnitUi.ClearSelection(); CeFactorySelect();
+                }
+            }
+            RefreshUnitFrame();
+        }
+        DrainUnitRequest();
+        return;
+    }
+    if (key == 0 && UnitPanelAt(px, py)) { gUnitUi.PointerDown(px, py); return; }
+    const int button = key == 0 && !gUnitUi.SelectionCount() ? StrategicButtonAt(px, py) : -1;
     if (button >= 0) {
+        gButtonPressedNs[button] = Ns();
         if (button < 2) StrategicArm(button == 0 ? CE_CMD_MOVE : CE_CMD_ADVANCE);
         else { gArmed = false; Order(button == 2 ? CE_CMD_HOLD : CE_CMD_FALLBACK, 0, 0); }
         return;
     }
     if (!StrategicWorldArea(px, py)) return;
     if (key == 1) { gStrategicDragging = true; gStrategicDragX = px; gStrategicDragY = py; return; }
-    CeWorldViewSample view;
-    if (!CeWorldViewRead(CeWorldViewOwner::Commander, gStrategicViewSession, &view)) {
-        Note("The view changed; try again after it redraws."); return;
-    }
-    if (key == 0 && !gArmed) {
-        const int hit = StrategicPick(view, px, py);
-        const CeCmdSquad* squad = ByOrdinal(hit);
-        if (squad && !squad->commandable) Note(WhyText(squad->why));
-        else { gSelected = hit; if (hit >= 0) Note("Squad selected. Right click terrain to move."); }
+    if (key == 0 && !gArmed) { gUnitUi.PointerDown(px, py); return; }
+    if (key == 2 && gUnitUi.SelectionCount()) {
+        if (gUnitUi.ArmAction(UnitPanel::Action::Move) == UnitControl::ArmStatus::Armed)
+            UnitTargetAt(px, py, gUnitUi.TargetToken());
+        else Note("Move is unavailable for this selection.");
         return;
     }
-    CeViewPoint target;
-    if (!StrategicGround(view, px, py, &target)) { Note("Point at visible ground inside the map."); return; }
-    const int verb = key == 0 && gArmed ? gStrategicClickOrder : CE_CMD_MOVE;
+    CeWorldViewSample view; CeViewPoint target;
+    if (!StrategicViewRead(&view) || !StrategicGround(view, px, py, &target)) { NoteHere("Point at the ground.", px, py); return; }
+    const int verb = key == 0 && gArmed ? gStrategicClickOrder : (ctrl ? CE_CMD_MOVE : CE_CMD_ADVANCE);
     gArmed = false; Order(verb, target.x, target.y);
 }
 
@@ -1170,21 +2261,26 @@ public:
         CeCommanderCameraContext c = StrategicContext();
         if (!c.admitted_ordinary_solo || !c.live_pilot || !c.camera_available ||
             c.competing_camera_owner || !SameCameraBinding(c.binding, binding)) return false;
+        gFocusTrip.squad = -1;
         AdvanceCameraLifetime(gStrategicViewSession);
         if (!gStrategicViewSession) return false;
-        CeWorldViewInvalidate(CeWorldViewOwner::Commander);
-        gStrategicDragging = false; gStrategicWheel = 0;
+        StrategicViewInvalidate();
+        gStrategicDragging = false; gStrategicWheel = 0; gBoxing = false;
         gStrategicBinding = binding;
         gStrategicOriginal = GAME.GetCurrentCamera(0);
         gStrategicCamera.mZoom = gStrategicOriginal->GetZoom();
         gStrategicYaw = gStrategicOriginal->GetYaw();
-        gStrategicPitch = 1.15f;
+        gStrategicPitch = kLivePitch;
         gStrategicFocusZ = GAME.GetPlayer(0)->GetBattleEngine()->GetPos().Z;
+        float terrainHeight = 0.0f;
+        if (StrategicHeight(gViewX + gViewSpan * 0.5f,
+                            gViewY + gViewSpan * 0.5f, &terrainHeight))
+            gStrategicFocusZ = terrainHeight;
+        StrategicEntered();
         return true;
     }
     bool BeginStrategicView(const CeCommanderCameraBinding& binding) noexcept override {
         gStrategicRender = true;
-        PortCeDrawHooks(true);
         return UpdateStrategicView(binding, CeCommanderCameraInput());
     }
     bool UpdateStrategicView(const CeCommanderCameraBinding& binding,
@@ -1201,10 +2297,28 @@ public:
                                       static_cast<float>(input.pan_vertical), 0);
         const float speed = gViewSpan * dt;
         // The map stores its lower-left corner; SetView accepts its centre.
-        const float centreX = gViewX + gViewSpan * 0.5f;
-        const float centreY = gViewY + gViewSpan * 0.5f;
-        SetView(centreX + step.X * speed, centreY + step.Y * speed,
-                gViewSpan * std::exp(-static_cast<float>(input.zoom) * dt));
+        float centreX = gViewX + gViewSpan * 0.5f;
+        float centreY = gViewY + gViewSpan * 0.5f;
+        StepStrategicFocus(input, centreX, centreY);
+        float span = gViewSpan * std::exp(-static_cast<float>(input.zoom) * dt);
+        if (gZoomTrip.on) {
+            if (input.zoom != 0.0) gZoomTrip.on = false;     // the player's own zoom takes over
+            else {
+                const float phase = static_cast<float>((std::min)(1.0, SecondsBetween(gZoomTrip.start, Ns()) / 0.4));
+                const float ease = phase * phase * (3.f - 2.f * phase);
+                span = gZoomTrip.from * powf(gZoomTrip.to / gZoomTrip.from, ease);
+                if (phase >= 1.f) gZoomTrip.on = false;
+            }
+        }
+        SetView(centreX + step.X * speed, centreY + step.Y * speed, span);
+        // The point looked at rides on the ground under the centre, eased over about a fifth of a second, so a pan across a ridge or down to the
+        // shore keeps the same distance to the ground (a camera held at the height it opened at went into the hills when close) and never jumps.
+        // A focus trip sets the height itself.
+        float ground;
+        if (gFocusTrip.squad < 0 && dt > 0.f && StrategicHeight(gViewX + gViewSpan * 0.5f, gViewY + gViewSpan * 0.5f, &ground)) {
+            ground = (std::min)(ground, MAP.GetWaterLevel());     // over the sea the point looked at is the water, not the sea bed (Z grows downward)
+            gStrategicFocusZ += (ground - gStrategicFocusZ) * (std::min)(1.f, dt * 5.f);
+        }
         gStrategicCamera.mOrientation.MakeRotationF(gStrategicYaw, gStrategicPitch, 0);
         const FVector forward = gStrategicCamera.mOrientation * FVector(0, 1, 0);
         gStrategicCamera.mPos = FVector(gViewX + gViewSpan * 0.5f,
@@ -1216,14 +2330,15 @@ public:
         const CeCommanderCameraContext c = StrategicContext();
         if (!c.admitted_ordinary_solo || !c.live_pilot || !c.camera_available ||
             c.competing_camera_owner || !SameCameraBinding(c.binding, binding)) return false;
-        Abandon(binding); // The simulation camera was never modified.
+        Abandon(binding); // Nothing of the game's was changed: there is nothing to put back.
         return true;
     }
     void Abandon(const CeCommanderCameraBinding&) noexcept override {
-        CeWorldViewInvalidate(CeWorldViewOwner::Commander);
-        gStrategicDragging = false; gStrategicWheel = 0;
+        gFocusTrip.squad = -1;
+        StrategicViewInvalidate();
+        gStrategicDragging = false; gStrategicWheel = 0; gBoxing = false;
         gStrategicRender = false; gStrategicOriginal = NULL;
-        PortCeDrawHooks(PortCePhotoOn());
+        StrategicLeft();
     }
 };
 StrategicCameraConsumer gStrategicConsumer;
@@ -1248,7 +2363,7 @@ CeCommanderCameraInput StrategicInput() {
     CeCommanderCameraInput input;
     input.elapsed_seconds = SecondsBetween(gStrategicLastNs, now);
     gStrategicLastNs = now;
-    input.pan_horizontal = double(CameraKeyDown(DIK_RIGHT)) - double(CameraKeyDown(DIK_LEFT));
+    input.pan_horizontal = double((CameraKeyDown(DIK_RIGHT) || CameraKeyDown(DIK_D))) - double((CameraKeyDown(DIK_LEFT) || (CameraKeyDown(DIK_A) && !CameraKeyDown(DIK_LCONTROL) && !CameraKeyDown(DIK_RCONTROL))));
     input.pan_vertical = double(CameraKeyDown(DIK_UP) || CameraKeyDown(DIK_W)) - double(CameraKeyDown(DIK_DOWN) || CameraKeyDown(DIK_S));
     input.orbit_horizontal = double(CameraKeyDown(DIK_E)) - double(CameraKeyDown(DIK_Q));
     input.orbit_vertical = double(CameraKeyDown(DIK_NEXT)) - double(CameraKeyDown(DIK_PRIOR));
@@ -1276,7 +2391,7 @@ void StrategicFrame() {
         Refresh(); // The battle runs here: a displayed squad may have died or changed allegiance.
 }
 
-// Once for each rendered frame, as the frame's camera is chosen (SelectStrategicCamera): the camera moves by the time since it last moved, whichever
+// Once for each rendered frame, as the frame's picture is drawn (StrategicFrameCamera): the camera moves by the time since it last moved, whichever
 // call that was. StrategicFrame runs once for each game update, and on its own it moved the camera in steps of one update, 20 a second: the frame-feel
 // log showed the world view change on 37 of the 40 frames that held an update and on none of the others, at 60 and at 144 frames a second alike. A
 // lost context or a failed update is left to the next update, which closes the view. BEA_PORT_COMMANDER_VIEW=ticks (read by PortCeCmdRender)
@@ -1303,6 +2418,11 @@ bool StrategicCanAct() {
 // Recheck the live context and squad identities at the key event, not merely at
 // the previous rendered frame. The order layer remains the authority for Hold.
 void StrategicSquadAction(WORD key) {
+    if (!StrategicUiReady()) {
+        Note("Commander view is not ready");
+        return;
+    }
+
     const CeCommanderCameraContext c = StrategicContext();
     if (!gOpen || !gStrategic || !gStrategicOwner.Active() ||
         !c.admitted_ordinary_solo || !c.live_pilot || !c.camera_available ||
@@ -1310,16 +2430,57 @@ void StrategicSquadAction(WORD key) {
         Close(); return;
     }
     Refresh();
+    const bool shift = gDown[DIK_LSHIFT] || gDown[DIK_RSHIFT], ctrl = gDown[DIK_LCONTROL] || gDown[DIK_RCONTROL];
+    RefreshUnitFrame();
+    if (key == DIK_A && ctrl) {
+        gArmed = false; SelectOnly(-1); CeFactoryLeaveSelection();
+        const auto selected = gUnitUi.SelectAll();
+        RefreshUnitFrame();
+        Note(selected.result.rejected_capacity ? "Selection limit reached. Select a smaller group for more units." : "Units selected.");
+        return;
+    }
+    if (key >= DIK_1 && key <= DIK_8) {
+        const int slot = int(key - DIK_1);
+        if (ctrl && gUnitUi.SelectionCount()) {
+            gUnitUi.SaveSet(slot); Note("Unit selection saved."); return;
+        }
+        if (!ctrl && gUnitUi.SetCount(slot)) {
+            gUnitUi.RecallSet(slot, shift); SelectOnly(-1); CeFactoryLeaveSelection();
+            RefreshUnitFrame(); return;
+        }
+    }
+    if (key == DIK_TAB) { gUnitUi.ClearSelection(); gUnitUi.Cancel(); }
+    else if (gUnitUi.SelectionCount()) {
+        gArmed = false;
+        if (key == DIK_C) UnitAction(UnitPanel::Action::Focus);
+        else if (key == DIK_H || key == DIK_X) UnitAction(UnitPanel::Action::Hold);
+        else if (key == DIK_B) UnitAction(UnitPanel::Action::FallBack);
+        else if (key == DIK_DELETE) UnitAction(UnitPanel::Action::ReturnToAI);
+        return;
+    }
     if (key == DIK_TAB) {
-        Cycle(gDown[DIK_LSHIFT] || gDown[DIK_RSHIFT] ? -1 : 1);
+        Cycle(shift ? -1 : 1);
         if (gSelected < 0) Note("There are no squads here to command.");
+        else if (const CeCmdSquad *s = ByOrdinal(gSelected)) {
+            // A squad picked off the picture is brought into it with the eased move C makes (the 2D map's Reveal moves a view this camera does not use).
+            CeWorldViewSample view; CeViewPoint pixel;
+            if (!StrategicViewRead(&view) || !StrategicPixel(view, s->x, s->y, &pixel) || !StrategicWorldArea(pixel.x, pixel.y)) StartStrategicFocus(*s);
+        }
     } else if (key == DIK_C) {
-        if (const CeCmdSquad *s = ByOrdinal(gSelected)) SetView(s->x, s->y, gViewSpan);
+        if (const CeCmdSquad *s = ByOrdinal(gSelected)) StartStrategicFocus(*s);
         else Note("Pick a squad first.");
+    } else if (key == DIK_A && ctrl) {
+        gArmed = false; SelectAll();
     } else if (key == DIK_A) {
         StrategicArm(CE_CMD_ADVANCE);
     } else if (key == DIK_H || key == DIK_X) {
         gArmed = false; Order(CE_CMD_HOLD, 0.f, 0.f);
+    } else if (key == DIK_B) {
+        gArmed = false; Order(CE_CMD_FALLBACK, 0.f, 0.f);
+    } else if (key == DIK_DELETE) {
+        gArmed = false; Order(CE_CMD_RELEASE, 0.f, 0.f);
+    } else if (key >= DIK_1 && key <= DIK_0) {
+        gArmed = false; GroupKey(key == DIK_0 ? 0 : int(key - DIK_1) + 1, ctrl, shift && !ctrl);
     }
 }
 
@@ -1327,6 +2488,21 @@ void StrategicSquadAction(WORD key) {
 // Open() alone would build a new record from the game's key state, which a key trap stops updating, and would mark M held, as it is
 // for the press that opens the map from the battle: the first M after a V would then do nothing, and a key held across the V would
 // repeat as a press.
+void ResetStrategicGesture() {
+    gUnitUi.Cancel(); gUnitPointerFence.Cancel(); gUnitPointerAvailable = false;
+    if (++gUnitContextGeneration == 0) ++gUnitContextGeneration;
+    gUnitFocusCount = 0;
+    gStrategicUi.valid = false;
+    CeHudReservationReset();
+    gBoxing = false;
+    gBoxX = gBoxY = 0;
+    gStrategicDragging = false;
+    gStrategicDragX = gStrategicDragY = 0;
+    gStrategicWheel = 0;
+    gArmed = false;
+    gStrategicClickOrder = CE_CMD_MOVE;
+}
+
 void SwitchView(bool strategic) {
     bool held[sizeof(gDown)];
     memcpy(held, gDown, sizeof(gDown));
@@ -1341,12 +2517,28 @@ bool StrategicTrap(WORD key, int event) {
         if (event == KEY_EVENT_UP) { gDown[key] = false; return true; }
         if (event == KEY_EVENT_DOWN) {
             const bool repeat = gDown[key]; gDown[key] = true;
-            if (!repeat && (key == DIK_ESCAPE || key == DIK_M)) {
+            if (!repeat && key == DIK_ESCAPE && (gArmed || gUnitUi.HasArmedTarget())) {
+                // an order that waits for its click is called off first, as on the paused map; the next Esc goes back to the cockpit
+                gArmed = false; gUnitUi.CancelArmedTarget();
+                Note(gStrategicClickOrder == CE_CMD_MOVE ? "Move cancelled." : "Advance cancelled.");
+            } else if (!repeat && (key == DIK_ESCAPE || key == gCloseKey)) {
                 if (key == DIK_ESCAPE) gEscClosed = true;
+                gPlayerClosed = true;
                 Close();
-            } else if (!repeat && key == DIK_V) {
+            } else if (!repeat && key == DIK_Z) {
+                const bool wide = gViewSpan > (kLiveOpenSpan + kLiveWideSpan) * 0.5f;
+                if (!wide) gZoomBack = gViewSpan;
+                gZoomTrip.from = gViewSpan; gZoomTrip.to = wide ? gZoomBack : kLiveWideSpan; gZoomTrip.start = Ns(); gZoomTrip.on = true;
+            } else if (!repeat && key == DIK_V && TacticalMapAllowed()) {
                 SwitchView(false);
-            } else if (!repeat && (key == DIK_TAB || key == DIK_C || key == DIK_H || key == DIK_X || key == DIK_A)) {
+            } else if (!repeat && (key == DIK_TAB || key == DIK_C || key == DIK_H || key == DIK_X || key == DIK_A || key == DIK_B || key == DIK_DELETE ||
+                                   (key >= DIK_1 && key <= DIK_0))) {
+    // Ctrl+A remains select-all; plain A/D belong only to camera pan.
+    if (key == DIK_A && (gDown[DIK_LCONTROL] || gDown[DIK_RCONTROL])) {
+        StrategicSquadAction(key);
+        return true;
+    }
+    if (key == DIK_A || key == DIK_D) return true;
                 StrategicSquadAction(key);
             }
         }
@@ -1354,79 +2546,507 @@ bool StrategicTrap(WORD key, int event) {
     return true;
 }
 
-CCamera* SelectStrategicCamera(CCamera* camera, CPlayer* player) {
-    if (!gOpen || !gStrategic || !gStrategicRender || !gStrategicOwner.Active()) return camera;
+// The camera this frame's picture is drawn from, moved by the time since it last moved; NULL when the view is not live. It is read by the
+// Commander's own drawing only: nothing hands it to the engine.
+const CGenericCamera* StrategicFrameCamera() {
+    if (!gOpen || !gStrategic || !gStrategicRender || !gStrategicOwner.Active()) return NULL;
     const CeCommanderCameraContext c = StrategicContext();
     if (!c.admitted_ordinary_solo || !c.live_pilot || !c.camera_available ||
         c.competing_camera_owner || !SameCameraBinding(c.binding, gStrategicBinding)) {
-        gStrategicOwner.Reset(); return camera;
+        gStrategicOwner.Reset(); return NULL;
     }
-    if (player != GAME.GetPlayer(0) || camera != gStrategicOriginal) return camera;
     StrategicAdvance();
     return &gStrategicCamera;
 }
 
+CeCommanderPresentedPose NativeCameraPose(CCamera* camera)
+{
+    CeCommanderPresentedPose pose = {};
+    if (!camera) return pose;
+    const FVector position = camera->GetPos();
+    const FMatrix orientation = camera->GetOrientation();
+    pose.pos[0] = position.X; pose.pos[1] = position.Y; pose.pos[2] = position.Z;
+    for (int row = 0; row < 3; ++row) {
+        pose.rows[row*3] = orientation.Row[row].X;
+        pose.rows[row*3+1] = orientation.Row[row].Y;
+        pose.rows[row*3+2] = orientation.Row[row].Z;
+    }
+    pose.zoom = camera->GetZoom();
+    return pose;
+}
+
+void NativePresentPose(const CeCommanderPresentedPose& pose)
+{
+    gStrategicPresentedCamera.mPos = FVector(pose.pos[0], pose.pos[1], pose.pos[2]);
+    for (int row = 0; row < 3; ++row)
+        gStrategicPresentedCamera.mOrientation.Row[row] =
+            FVector(pose.rows[row*3], pose.rows[row*3+1], pose.rows[row*3+2]);
+    gStrategicPresentedCamera.mZoom = pose.zoom;
+    gNativeLastPose = pose;
+}
+
+void CancelNativeReturn()
+{
+    gNativeReturning = false;
+    gNativeReturnOriginal = NULL;
+}
+
+bool NativeReturnEligible()
+{
+    if (!gNativeReturning) return false;
+    const CeCommanderCameraContext context = StrategicContext();
+    if (!context.admitted_ordinary_solo || !context.live_pilot ||
+        !context.camera_available || LT.GetKeytrap() != NULL ||
+        CePlayUnitOwnsPilot() || !SameCameraBinding(context.binding, gNativeReturnBinding) ||
+        GAME.GetCurrentCamera(0) != gNativeReturnOriginal) {
+        CancelNativeReturn();
+        return false;
+    }
+    return true;
+}
+
+void PrepareNativeEntry()
+{
+    gNativeEntrySeeded = NativeReturnEligible();
+    if (gNativeEntrySeeded) gNativeEntryFrom = gNativeLastPose;
+    CancelNativeReturn();
+    gNativeEntering = false;
+    gNativePresented = false;
+}
+
+void BeginNativeReturn()
+{
+    if (!gOpen || !gStrategic || !gStrategicOwner.Active() || !gNativePresented) return;
+    const CeCommanderCameraContext context = StrategicContext();
+    if (!context.admitted_ordinary_solo || !context.live_pilot ||
+        !context.camera_available || context.competing_camera_owner || CePlayUnitOwnsPilot() ||
+        !SameCameraBinding(context.binding, gStrategicBinding)) return;
+    gNativeReturnFrom = gNativeLastPose;
+    gNativeReturnBinding = gStrategicBinding;
+    gNativeReturnOriginal = gStrategicOriginal;
+    gNativeReturnStartNs = Ns();
+    gNativeEntering = false;
+    gNativeReturning = true;
+}
+
+CCamera* NativeStrategicPresentation(CCamera* original)
+{
+    const std::uint64_t now = Ns();
+    if (!gNativePresented) {
+        if (!gNativeEntrySeeded) gNativeEntryFrom = NativeCameraPose(original);
+        gNativeEntryStartNs = now;
+        gNativeEntering = true;
+    }
+    const CeCommanderPresentedPose target = NativeCameraPose(&gStrategicCamera);
+    CeCommanderPresentedPose shown = target;
+    const double weight = gNativeEntering ?
+        CeCommanderCameraEase(SecondsBetween(gNativeEntryStartNs, now), 0.35) : 1.0;
+    if (!CeCommanderBlendPresentedPose(gNativeEntryFrom, target, weight, &shown)) {
+        // An unavailable transition must not present the pilot under world controls.
+        if (!ce_commander_transition_detail::Valid(target)) {
+            gStrategicOwner.Reset();
+            gNativePresented = false;
+            return original;
+        }
+        shown = target;
+        gNativeEntering = false;
+    }
+    NativePresentPose(shown);
+    gNativePresented = true;
+    if (weight >= 1.0) gNativeEntering = false;
+    return &gStrategicPresentedCamera;
+}
+
+CCamera* NativeReturnPresentation(CCamera* original, CPlayer* player)
+{
+    if (!NativeReturnEligible() || original != gNativeReturnOriginal ||
+        player != GAME.GetPlayer(0)) return NULL;
+    const double weight = CeCommanderCameraEase(SecondsBetween(gNativeReturnStartNs, Ns()), 0.35);
+    if (weight >= 1.0) { CancelNativeReturn(); return NULL; }
+    const CeCommanderPresentedPose target = NativeCameraPose(original);
+    CeCommanderPresentedPose shown = target;
+    if (!CeCommanderBlendPresentedPose(gNativeReturnFrom, target, weight, &shown)) {
+        CancelNativeReturn();
+        return NULL;
+    }
+    NativePresentPose(shown);
+    return &gStrategicPresentedCamera;
+}
+
+
+// A colour with its alpha scaled (0 to 1).
+// The game's x87 unit may round a conversion to the nearest integer rather than cut it: 255.5 becomes 256, which shifted into the top byte is 0, a
+// colour with no alpha at all (a note's text and edge vanished at full strength, frame by frame). So the result is held to 255.
+DWORD Faded(DWORD colour, float alpha) {
+    alpha = alpha < 0.f ? 0.f : (alpha > 1.f ? 1.f : alpha);
+    DWORD a = DWORD(float(colour >> 24) * alpha + 0.5f);
+    if (a > 255) a = 255;
+    return (a << 24) | (colour & 0x00ffffff);
+}
+
+// A panel as the game's message box draws one: its dark glass and a grey edge (t units wide), faded by alpha.
+void StrategicPanel(float x, float y, float w, float h, float t, float alpha) {
+    Box(x, y, w, h, Faded(kPanel, alpha));
+    Outline(x, y, w, h, (std::max)(1.f, floorf(t * L.s)), Faded(kEdge, alpha));
+    // the HUD's cyan at both ends, as its capsules have: the card, the key list and the factory's card read as the same furniture as the capsules
+    const float cap = (std::max)(2.f, 2.f * L.s), inset = h > 12.f * L.s ? 4.f * L.s : h * 0.2f;
+    Box(x + cap, y + inset, cap, h - 2.f * inset, Faded(kCapsuleCap, alpha));
+    Box(x + w - 2.f * cap, y + inset, cap, h - 2.f * inset, Faded(kCapsuleCap, alpha));
+}
+
+// How far a note is into its time on screen, as the alpha it is drawn with: it fades in and out over 12 Presents (0.2 s at 60 a second).
+float NoteAlpha() {
+    const unsigned now = PortPresentCount();
+    if (!gNote[0] || now >= gNoteUntil) return 0.f;
+    const unsigned shown = now + kNoteLength - gNoteUntil, left = gNoteUntil - now;
+    const float in = float(shown) / 12.f, out = float(left) / 12.f;
+    return (std::min)(1.f, (std::min)(in, out));
+}
+
+#ifdef CE_COMMANDER_TEST
+// Optional readout of the same projection the selected mark uses, once per drawn view.
+void TraceStrategicFocus(const CeWorldViewSample &view) {
+    static int enabled = -1;
+    if (enabled < 0) enabled = getenv("BEA_PORT_COMMANDER_CAMERA_TRACE") ? 1 : 0;
+    if (!enabled) return;
+    const CeCmdSquad *squad = ByOrdinal(gSelected);
+    CeViewPoint pixel;
+    if (squad && StrategicPixel(view, squad->x, squad->y, &pixel)) {
+        CeCmdNote("map camera-pick %d %.2f %.2f %.3f %.3f %.3f %.3f %.3f %.3f", squad->ordinal,
+                  pixel.x, pixel.y, gViewX + gViewSpan * .5f, gViewY + gViewSpan * .5f,
+                  gStrategicFocusZ, gViewSpan, gStrategicYaw, gStrategicPitch);
+    }
+}
+#endif
+
 void DrawStrategicHints() {
+    Refresh(); RefreshUnitFrame();
     CeWorldViewSample view;
-    const bool haveView = CeWorldViewRead(CeWorldViewOwner::Commander, gStrategicViewSession, &view);
-    const float line = 20.f * L.s;
+    const bool haveView = StrategicViewRead(&view);
+#ifdef CE_COMMANDER_TEST
+    if (haveView) TraceStrategicFocus(view);
+#endif
+    const float u = L.s, line = kRowH * u, t = (std::max)(1.f, floorf(u));
+    const float dragX = float(MOUSE_X), dragY = float(MOUSE_Y);
+    const bool showBox = gBoxing && CeBoxIsDrag(gBoxX, gBoxY, dragX, dragY, kBoxSlack * u);
+    CeCmdSel inBox = {};
+    StrategicBoxPoint boxHits[kCeSelMax];
+    if (showBox && haveView) StrategicBoxMembers(view, gBoxX, gBoxY, dragX, dragY, inBox, boxHits);
     gHover = haveView && StrategicWorldArea(float(MOUSE_X), float(MOUSE_Y))
         ? StrategicPick(view, float(MOUSE_X), float(MOUSE_Y)) : -1;
+    // The squads: one mark each, the same size for all; a picked squad wears a white ring outside its mark, the one under the pointer a yellow one. The
+    // orders of the picked squads are drawn first, under the marks: a line that grows from the squad to its goal and a goal that settles as it arrives.
+    const float sinceOrder = float(SecondsBetween(gOrderNs, Ns()));
+    const float grow = (std::min)(1.f, sinceOrder / 0.2f), settle = (std::min)(1.f, sinceOrder / 0.3f);
     if (haveView) for (int i = 0; i < gCount; ++i) {
         const CeCmdSquad& squad = gSquads[i];
+        if (!squad.friendly || !CeCmdMarches(squad.verb) || squad.arrived) continue;     // every march on the map until it arrives; the unpicked ones fainter
+        const DWORD lineColour = squad.selected ? kOrderLine : kGoalDim;
+        CeViewPoint pixel, target;
+        if (!StrategicPixel(view, squad.x, squad.y, &pixel) || !StrategicWorldArea(pixel.x, pixel.y)) {
+            // The squad is off the picture but its goal may not be: the goal's ring, and its line from the goal toward the squad as far as the picture
+            // goes (walked in world steps, so it leaves the window the way the squad lies).
+            if (!StrategicPixel(view, squad.gx, squad.gy, &target) || !StrategicWorldArea(target.x, target.y)) continue;
+            CeViewPoint last = target;
+            for (int k = 1; k <= 40; ++k) {
+                const float f = float(k) / 40.f;
+                CeViewPoint p;
+                if (!StrategicPixel(view, squad.gx + (squad.x - squad.gx) * f, squad.gy + (squad.y - squad.gy) * f, &p) || !StrategicWorldArea(p.x, p.y)) break;
+                last = p;
+            }
+            Dots(target.x, target.y, last.x, last.y, t, lineColour);
+            GroundRing(view, squad.gx, squad.gy, GoalHeight(squad.gx, squad.gy, gStrategicFocusZ), 3.f, (std::max)(1.5f, t), lineColour);
+            continue;
+        }
+        if (!StrategicPixel(view, squad.gx, squad.gy, &target) || !StrategicWorldArea(target.x, target.y)) {
+            if (StrategicRouteBearing(view, squad, pixel, t, target)) DrawRouteArrow(pixel, target, t);
+            continue;
+        }
+        const float tx = pixel.x + (target.x - pixel.x) * grow, ty = pixel.y + (target.y - pixel.y) * grow, g = (12.f + 6.f * (1.f - settle)) * u;
+        Dots(pixel.x, pixel.y, tx, ty, t, lineColour);
+        (void)g;
+        GroundRing(view, squad.gx, squad.gy, GoalHeight(squad.gx, squad.gy, gStrategicFocusZ), 3.f + 2.f * (1.f - settle), (std::max)(1.5f, t), lineColour);
+        Box(target.x - u, target.y - u, 2.f * u, 2.f * u, lineColour);
+    }
+    // The marks first (the picked and the hovered last, on top), then the counts: a count is printed right of its mark only where it touches no other mark
+    // and stands at least a space clear of every count already printed (the picked and the hovered print theirs first), so that two never read as one
+    // number.
+    struct Rect { float x0, y0, x1, y1; } marks[kMaxSquads], taken[kMaxSquads];
+    int who[kMaxSquads], nMarks = 0, nTaken = 0;
+    const float half = 8.f * u, gap = 4.f * u;
+    for (int pass = 0; pass < 2 && haveView; ++pass) for (int i = 0; i < gCount && nMarks < kMaxSquads; ++i) {
+        const CeCmdSquad& squad = gSquads[i];
         if (!squad.visible && !squad.friendly) continue;
+        const bool first = squad.selected || squad.ordinal == gHover;
+        if (!first) continue; // Native models carry the scene; marks explain selection and hover.
+        if (first != (pass == 1)) continue;
         CeViewPoint pixel;
         if (!StrategicPixel(view, squad.x, squad.y, &pixel) || !StrategicWorldArea(pixel.x, pixel.y)) continue;
-        const float half = (squad.ordinal == gSelected ? 12.f : 8.f) * L.s;
-        const DWORD color = squad.ordinal == gSelected ? kPick : (squad.friendly ? (squad.commandable ? kFriend : kQuiet) : kEnemy);
-        Outline(pixel.x - half, pixel.y - half, half * 2, half * 2, (std::max)(1.f, L.s), color);
+        const DWORD colour = squad.friendly ? (squad.commandable ? kFriend : kFriendDim) : kEnemy;
+        Box(pixel.x - half, pixel.y - half, half * 2, half * 2, Faded(colour, 0.35f));
+        Outline(pixel.x - half, pixel.y - half, half * 2, half * 2, t, colour);
+        if (squad.selected) Outline(pixel.x - half - 3.f * u, pixel.y - half - 3.f * u, (half + 3.f * u) * 2, (half + 3.f * u) * 2, t, kPick);
+        if (squad.ordinal == gHover) Outline(pixel.x - half - 5.f * u, pixel.y - half - 5.f * u, (half + 5.f * u) * 2, (half + 5.f * u) * 2, t, kFocus);
+        marks[nMarks] = {pixel.x - half, pixel.y - half, pixel.x + half, pixel.y + half};
+        who[nMarks++] = i;
+    }
+    for (int pass = 0; pass < 2; ++pass) for (int m = nMarks - 1; m >= 0; --m) {
+        const CeCmdSquad& squad = gSquads[who[m]];
+        const bool first = squad.selected || squad.ordinal == gHover;
+        if (first != (pass == 0)) continue;
         char count[24]; snprintf(count, sizeof(count), "%d", squad.members);
-        Text(pixel.x + half + 3 * L.s, pixel.y - half, color, count, 36 * L.s);
-        if (squad.ordinal == gSelected && (squad.verb == CE_CMD_MOVE || squad.verb == CE_CMD_ADVANCE)) {
-            CeViewPoint target;
-            if (StrategicPixel(view, squad.gx, squad.gy, &target) && StrategicWorldArea(target.x, target.y)) {
-                const DWORD orderColor = squad.verb == CE_CMD_ADVANCE ? kAdvanceColour : kMoveColour;
-                Outline(target.x - 6 * L.s, target.y - 6 * L.s, 12 * L.s, 12 * L.s, (std::max)(1.f, L.s), orderColor);
-                Dots(pixel.x, pixel.y, target.x, target.y, (std::max)(1.f, L.s), orderColor);
-            }
-        }
+        const float cx = marks[m].x1 + 6.f * u, cy = (marks[m].y0 + marks[m].y1) * 0.5f - LineHeight() * 0.5f, cw = TextWidth(count, u), ch = LineHeight();
+        bool clear = nTaken < kMaxSquads;
+        for (int k = 0; k < nMarks && clear; ++k)
+            if (k != m && cx < marks[k].x1 && cx + cw > marks[k].x0 && cy < marks[k].y1 && cy + ch > marks[k].y0) clear = false;
+        for (int k = 0; k < nTaken && clear; ++k)
+            if (cx - gap < taken[k].x1 && cx + cw + gap > taken[k].x0 && cy < taken[k].y1 && cy + ch > taken[k].y0) clear = false;
+        if (!clear) continue;		// a neighbour's mark or count is there: this count is left out rather than printed against it
+        taken[nTaken++] = {cx, cy, cx + cw, cy + ch};
+        Text(cx, cy, kText, count);
     }
-    Box(0, 0, L.w, 62.f * L.s, 0xd0101820);
-    Text(12 * L.s, 8 * L.s, kText, "COMMANDER | Battle running; pilot vulnerable | Esc pilot", L.w - 24 * L.s);
-    Text(12 * L.s, 8 * L.s + line, kQuiet, "Arrows / middle drag: pan   Wheel: zoom   Q/E: turn   PgUp/PgDn: tilt", L.w - 24 * L.s);
-    if (gNote[0] && PortPresentCount() < gNoteUntil)
-        Text(12 * L.s, 8 * L.s + 2 * line, kPick, gNote, L.w - 24 * L.s);
-    else Text(12 * L.s, 8 * L.s + 2 * line, kQuiet, "Click squad | Right click: move | A then click: advance | H: hold", L.w - 24 * L.s);
+    // Mark one enclosed point per squad. A visible member may be inside while its centre is not.
+    for (int i = 0; i < inBox.n; ++i) {
+        const StrategicBoxPoint& hit = boxHits[i];
+        const float r = half + 6.0f * u, leg = (std::max)(3.0f, 4.0f * u);
+        const float stroke = (std::max)(2.0f, 1.5f*u);
+        Box(hit.x-r, hit.y-r, leg, stroke, kPick);
+        Box(hit.x-r, hit.y-r, stroke, leg, kPick);
+        Box(hit.x+r-leg, hit.y+r-stroke, leg, stroke, kPick);
+        Box(hit.x+r-stroke, hit.y+r-leg, stroke, leg, kPick);
+    }
+    if (showBox)
+        Outline((std::min)(gBoxX, float(MOUSE_X)), (std::min)(gBoxY, float(MOUSE_Y)), std::fabs(float(MOUSE_X) - gBoxX), std::fabs(float(MOUSE_Y) - gBoxY), t, kPick);
 
-    const CeCmdSquad* squad = ByOrdinal(gSelected);
-    const float x = 12 * L.s, y = L.h - 102 * L.s, width = L.w - 24 * L.s;
-    Box(0, L.h - 112 * L.s, L.w, 112 * L.s, 0xe0101820);
+    // the title panel, top left
     char text[160];
-    if (!squad) {
-        Text(x, y, kText, "No squad selected", width);
-        Text(x, y + line, kQuiet, "Click a green marker or press Tab. C centers the selected squad.", width);
-    } else {
-        snprintf(text, sizeof(text), "Squad %d | %s | %d unit%s", squad->ordinal,
-                 squad->unit[0] ? squad->unit : (squad->vehicles ? "Vehicles" : "Infantry"),
-                 squad->members, squad->members == 1 ? "" : "s");
-        Text(x, y, kPick, text, width);
-        snprintf(text, sizeof(text), "Order: %s%s", OrderName(*squad), squad->deploys ? " | Deploys: hold only" : "");
-        Text(x, y + line, kText, text, width);
+    StrategicTitle(text, sizeof text);
+    // the title in the HUD's capsule, top left: "Commander" in white, the battle's state after it in grey
+    CapsuleBar(8.f * u, 6.f * u, TextWidth(text, u) + 32.f * u, 24.f * u);
+    {
+        char head[24] = "Commander";
+        const float headW = TextWidth(head, u);
+        Text(24.f * u, 10.f * u, kText, head);
+        if (strlen(text) > strlen(head)) Text(24.f * u + headW, 10.f * u, kQuiet, text + strlen(head));
     }
-    static const char* const labels[] = {"Move", "Advance [A]", "Hold [H]", "Fall back"};
+
+    DrawUnitSelection();
+
+    // the squad card, bottom left: as wide as its words
+    const CeCmdSquad* squad = ByOrdinal(gSelected);
+    const float cardY = StrategicUiBottom() - (40.f + kCardH) * u, cardW = StrategicCardWidth(), room = cardW - 16.f * u;
+    const float top = StrategicUiBottom() - 34.f * u;
+    if (!gUnitUi.SelectionCount()) {
+    StrategicPanel(8.f * u, cardY, cardW, kCardH * u, 1.f, 1.f);
+    {
+        char second[160];
+        StrategicCardLines(text, second, sizeof text);
+        Text(16.f * u, cardY + 6.f * u, kText, text, room);
+        Text(16.f * u, cardY + 6.f * u + line, squad ? kText : kQuiet, second, room);
+    }
+
+    // the four orders, under the card: white, yellow when under the pointer or armed, grey when the picked squad cannot take them
+    static const char* const labels[] = {"Move", "Advance", "Hold", "Fall Back"};
     const int hover = StrategicButtonAt(float(MOUSE_X), float(MOUSE_Y));
+    float left = 8.f * u;
     for (int i = 0; i < 4; ++i) {
-        const float left = x + i * 112.f * L.s, top = L.h - 43.f * L.s;
         const bool available = squad && (!squad->deploys || i == 2);
         const bool armed = gArmed && ((i == 0 && gStrategicClickOrder == CE_CMD_MOVE) || (i == 1 && gStrategicClickOrder == CE_CMD_ADVANCE));
-        Box(left, top, 104 * L.s, 29 * L.s, armed ? 0xff344c4c : (hover == i && available ? 0xff314050 : 0xff1a2632));
-        Outline(left, top, 104 * L.s, 29 * L.s, (std::max)(1.f, L.s), available ? kFriend : kQuiet);
-        Text(left + 6 * L.s, top + 7 * L.s, available ? kText : kQuiet, labels[i], 92 * L.s);
+        // a capsule each: lit while its order waits for its click (Move, Advance) or for a moment after it was given (Hold, Fall Back); the word yellow
+        // under the pointer (focus), grey and the capsule faint where the picked squad cannot take it
+        const bool pressed = armed || (SecondsBetween(gButtonPressedNs[i], Ns()) < 0.25);
+        CapsuleBar(left, top, kButtonW[i] * u, kRowH * u, 1.f, available && pressed);	// (a faded HUD bar half-closes over its word: grey says unavailable)
+        Text(left + kButtonW[i] * u * 0.5f, top + 2.f * u, !available ? kQuiet : (hover == i ? kFocus : kText), labels[i], 0.f, true);
+        left += (kButtonW[i] + kButtonGap) * u;
     }
-    Text(470 * L.s, L.h - 36 * L.s, kQuiet, "V: tactical map", L.w - 482 * L.s);
+
+    }
+
+    // the prompt line, bottom right
+    StrategicPrompt(text, sizeof text);
+    if (text[0]) {
+        const float w = TextWidth(text, u);
+        // one line of prompts in the HUD's capsule: each key in white, what it does in grey (the editor's prompt line)
+        CapsuleBar(L.w - w - 32.f * u, top, w + 24.f * u, kRowH * u);
+        float px = L.w - w - 20.f * u;
+        for (char* item = text; *item; ) {
+            char* end = strstr(item, "   ");
+            char one[64];
+            const size_t n = end ? size_t(end - item) : strlen(item);
+            snprintf(one, sizeof one, "%.*s", int(n < sizeof one ? n : sizeof one - 1), item);
+            char* space = strrchr(one, ' ');
+            if (space) {
+                *space = 0;
+                Text(px, top + 2.f * u, kText, one); px += TextWidth(one, u);
+                Text(px, top + 2.f * u, kQuiet, " "); px += TextWidth(" ", u);
+                Text(px, top + 2.f * u, kQuiet, space + 1); px += TextWidth(space + 1, u);
+            } else { Text(px, top + 2.f * u, kText, one); px += TextWidth(one, u); }
+            if (!end) break;
+            Text(px, top + 2.f * u, kQuiet, "   "); px += TextWidth("   ", u);
+            item = end + 3;
+        }
+    }
+
+    // the full list of keys, while F1 is held (the prompt line names it): two columns, the key in white and what it does in grey
+    if (gDown[DIK_F1]) {
+        static const char* const keys[][2] = {
+            {"Click", "Pick an individual unit"}, {"Drag", "Pick units in the box"}, {"Shift Click", "Add or take away a unit"}, {"Ctrl Click", "Pick its whole squad"}, {"Ctrl A", "Pick available units"},
+            {"Ctrl 1 to 8", "Save the unit selection"}, {"1 to 8", "Recall a unit selection"}, {"Tab", "Select a native squad"},
+            {"Right Click", "Move selected units"}, {"Whole squad", "Advance and Fall Back on its panel"}, {"H", "Hold selected units"},
+            {"B", "Fall back to a safe place"}, {"Delete", "Back to their own orders"}, {"WASD", "Pan"}, {"Q, E", "Turn"},
+            {"Page Up, Page Down", "Tilt"}, {"Wheel", "Zoom"}};
+        const int rows = int(sizeof keys / sizeof keys[0]);
+        float keyW = 0.f, whatW = 0.f;
+        for (int i = 0; i < rows; ++i) { keyW = (std::max)(keyW, TextWidth(keys[i][0], u)); whatW = (std::max)(whatW, TextWidth(keys[i][1], u)); }
+        const float w = keyW + whatW + 40.f * u, h = rows * line + 16.f * u, x0 = floorf((L.w - w) * 0.5f), y0 = floorf(36.f * u + ((StrategicUiBottom() - 128.f * u) - h) * 0.5f);
+        StrategicPanel(x0, y0, w, h, 2.f, 1.f);
+        for (int i = 0; i < rows; ++i) {
+            Text(x0 + 12.f * u, y0 + 8.f * u + i * line, kText, keys[i][0]);
+            Text(x0 + 28.f * u + keyW, y0 + 8.f * u + i * line, kQuiet, keys[i][1]);
+        }
+    }
+
+    // the last note, in a panel of its own at the foot of the battlefield, above the card, fading in and out
+    const float alpha = gDown[DIK_F1] ? 0.f : NoteAlpha();		// the key list has the middle of the screen to itself
+    if (alpha > 0.f) {
+        const float noteBase = gUnitUi.Panel().Layout().visible ? gUnitUi.Panel().Layout().panel.y : cardY;
+        const float w = (std::min)(TextWidth(gNote, u), L.w - 32.f * u);
+        float x = floorf((L.w - w) * 0.5f), y = (std::max)(36.f * u, noteBase - 32.f * u - LineHeight());
+        if (gNoteAtUntil == gNoteUntil && gNoteAtX >= 0.f) {      // a refused click: beside the pointer
+            x = floorf((std::min)((std::max)(16.f * u, gNoteAtX + 18.f * u), L.w - w - 16.f * u));
+            y = floorf((std::min)((std::max)(36.f * u, gNoteAtY - LineHeight() - 18.f * u), noteBase - LineHeight() - 16.f * u));
+        }
+        // the HUD's capsule opens and closes with the note; its words show only once it is nearly open (they would spill past a narrow one)
+        CapsuleBar(x - 16.f * u, y - 6.f * u, w + 32.f * u, LineHeight() + 12.f * u, alpha);
+        const float words = (std::max)(0.f, (alpha - 0.8f) / 0.2f);
+        if (words > 0.f) Text(x, y, Faded(kText, words), gNote);
+    }
+    CeFactoryView factory;
+    if (CeFactoryRead(factory)) {
+        CeViewPoint pos;
+        if (haveView && StrategicPixel(view,factory.x,factory.y,&pos) && StrategicWorldArea(pos.x,pos.y)) {
+            const float r=10*u;
+            Outline(pos.x-r,pos.y-r,2*r,2*r,2*u,factory.selected?kPick:kFriend);
+            Box(pos.x-5*u,pos.y-3*u,10*u,6*u,kFriend);
+        }
+        const float x=8*u, y=56*u, width=196*u;
+        const bool delivered = factory.stage == CE_FACTORY_READY;
+        const int deliveredSquad = factory.selected && delivered ? CeCmdDeliveredSquad() : -1;
+        const bool selectedTank = deliveredSquad >= 0 && gSel.n == 1 && gSelected == deliveredSquad;
+        StrategicPanel(x,y,width,(factory.selected?(delivered?122:99):24)*u,2*u,1);
+        Text(x+8*u,y+5*u,kFriend,"Friendly vehicle factory",width-16*u);
+        if (factory.selected) {
+            const char* status="Ready to build";
+            char progress[64];
+            if (factory.stage == CE_FACTORY_QUEUED) {
+                snprintf(progress,sizeof(progress),"Building tank: %d%%",factory.percent); status=progress;
+            } else if (factory.stage == CE_FACTORY_LAUNCHING) status="Waiting for a clear exit";
+            else if (factory.stage==CE_FACTORY_READY) status=deliveredSquad<0 ? "Tank unavailable" : selectedTank ? "Your tank selected" : "Friendly tank produced";
+            else if (factory.stage == CE_FACTORY_CANCELLED) status="Request cancelled";
+            else if (factory.stage == CE_FACTORY_BLOCKED || !factory.available) status="Factory unavailable";
+            Text(x+8*u,y+24*u,kText,status,width-16*u);
+            if (factory.stage == CE_FACTORY_QUEUED) {
+                Box(x+8*u,y+44*u,width-16*u,3*u,kQuiet);
+                Box(x+8*u,y+44*u,(width-16*u)*factory.percent/100.0f,3*u,kFriend);
+            }
+            const bool canRequest=factory.available && (factory.stage==CE_FACTORY_IDLE || factory.stage==CE_FACTORY_CANCELLED || factory.stage==CE_FACTORY_BLOCKED);
+            const bool firstEnabled = delivered ? deliveredSquad >= 0 : canRequest;
+            StrategicPanel(x+6*u,y+52*u,width-12*u,21*u,u,firstEnabled?1:.5f);
+            Text(x+12*u,y+55*u,firstEnabled?kText:kQuiet,delivered?"Select tank":"Request vehicle",width-24*u);
+            if (delivered) {
+                const bool cockpit = selectedTank && CePlayUnitCanTakeDelivery();
+                StrategicPanel(x+6*u,y+74*u,width-12*u,21*u,u,cockpit?1:.5f);
+                Text(x+12*u,y+77*u,cockpit?kText:kQuiet,"Take cockpit",width-24*u);
+                Text(x+12*u,y+100*u,kText,"Close card",width-24*u);
+            } else Text(x+12*u,y+77*u,kText,factory.stage==CE_FACTORY_QUEUED?"Cancel request":"Close card",width-24*u);
+        }
+    }
     DrawCursor();
 }
 // CE_STRATEGIC_CAMERA_END
+
+bool StrategicLive() { return gOpen && gStrategic; }
+
+// CE_STRATEGIC_PICTURE_BEGIN
+// The live view's picture (ce_cmdview.cpp), drawn over the frame the game made for the pilot. The game's frame is not touched: the engine keeps
+// the pilot's camera, every routine of an ordinary frame runs, the HUD is drawn, and nothing is dropped. The picture then covers it, through the
+// device alone, and the device's state is put back after it. So an update that follows a frame of the live view reads what an ordinary frame left.
+
+// The eased entry: for its first kTransitionSeconds the picture is drawn from a camera that moves from the pilot's last view to the strategic
+// camera, and is blended in over the pilot's frame.
+const double kTransitionSeconds = 0.4;
+std::uint64_t gTransitionSession = 0, gTransitionStartNs = 0;
+bool gTransitionFrom = false;
+CeCmdViewCamera gTransitionCamera;
+
+void CameraNumbers(const FVector& pos, const FMatrix& orientation, float zoom, CeCmdViewCamera* out) {
+    out->pos[0] = pos.X; out->pos[1] = pos.Y; out->pos[2] = pos.Z;
+    for (int r = 0; r < 3; ++r) { out->rows[r][0] = orientation.Row[r].X; out->rows[r][1] = orientation.Row[r].Y; out->rows[r][2] = orientation.Row[r].Z; }
+    out->zoom = zoom;
+}
+
+// At the strategic camera's capture (StrategicCameraConsumer::Capture): the pilot's view as the last frame drew it, the copy the engine keeps for
+// the viewpoint (read only: a camera's position, orientation and zoom).
+void StrategicEntered() {
+    gTransitionSession = gStrategicViewSession; gTransitionStartNs = Ns(); gTransitionFrom = false;
+    CCamera* shown = ENGINE.GetCameraForViewpoint(0);
+    if (!shown) return;
+    CameraNumbers(shown->GetPos(), shown->GetOrientation(), shown->GetZoom(), &gTransitionCamera);
+    gTransitionFrom = std::isfinite(gTransitionCamera.pos[0]) && std::isfinite(gTransitionCamera.pos[1]) && std::isfinite(gTransitionCamera.pos[2]) &&
+                      gTransitionCamera.zoom > 0.f;
+}
+
+void StrategicLeft() { CeCmdViewRelease(); }
+
+float TransitionWeight(std::uint64_t now) {
+    if (gTransitionSession != gStrategicViewSession || !gTransitionFrom) return 1.f;
+    float t = float(SecondsBetween(gTransitionStartNs, now) / kTransitionSeconds);
+    t = t < 0.f ? 0.f : (t > 1.f ? 1.f : t);
+    return t * t * (3.f - 2.f * t);		// smoothstep: no jump at either end
+}
+
+// `to` moved back toward the pilot's view by 1 - t: the place and zoom blended, the orientation's rows blended and made orthonormal again.
+void TransitionBlend(float t, CeCmdViewCamera* to) {
+    const CeCmdViewCamera& from = gTransitionCamera;
+    for (int i = 0; i < 3; ++i) to->pos[i] = from.pos[i] + (to->pos[i] - from.pos[i]) * t;
+    to->zoom = from.zoom + (to->zoom - from.zoom) * t;
+    float rows[3][3];
+    for (int r = 0; r < 3; ++r) for (int c = 0; c < 3; ++c) rows[r][c] = from.rows[r][c] + (to->rows[r][c] - from.rows[r][c]) * t;
+    for (int r = 0; r < 3; ++r) {
+        for (int k = 0; k < r; ++k) {
+            const float d = rows[r][0] * rows[k][0] + rows[r][1] * rows[k][1] + rows[r][2] * rows[k][2];
+            for (int c = 0; c < 3; ++c) rows[r][c] -= rows[k][c] * d;
+        }
+        const float n = sqrtf(rows[r][0] * rows[r][0] + rows[r][1] * rows[r][1] + rows[r][2] * rows[r][2]);
+        if (n < 1e-5f) return;		// degenerate: the strategic camera as it is
+        for (int c = 0; c < 3; ++c) rows[r][c] /= n;
+    }
+    memcpy(to->rows, rows, sizeof rows);
+}
+
+int PilotAllegiance(const void** pilot) {
+    CPlayer* player = GAME.GetPlayer(0);
+    CBattleEngine* engine = player ? player->GetBattleEngine() : NULL;
+    *pilot = engine;
+    return engine ? (int)engine->GetAllegiance() : -1;
+}
+
+// One frame's picture from the camera: the world (terrain, water, the units by side), with the device ready for the map's boxes and text over it.
+// The view it was drawn with is given back for the pointer. False where no picture can be made (nothing is drawn or changed then).
+bool StrategicPictureBegin(const CGenericCamera& camera, CeWorldViewSample* view) {
+    (void)camera;
+    if(!CeWorldViewRead(CeWorldViewOwner::Commander,gStrategicViewSession,view) || !DrawingReady()) return false;
+    const void* pilot=NULL;
+    const int friendly=PilotAllegiance(&pilot);
+    CeCmdViewCollectUnits(*view,friendly,pilot);
+    BeginDraw();
+    return true;
+}
+
+void StrategicPictureEnd() {
+    EndDraw();
+}
+// CE_STRATEGIC_PICTURE_END
 
 void PanMapFrame()
 {
@@ -1442,23 +3062,38 @@ void PanMapFrame()
 		Pan((float(right) - float(left)) * distance, (float(down) - float(up)) * distance);
 }
 
+#ifdef CE_COMMANDER_TEST
+unsigned gTestFrameCount = 0, gTestOpenedAt = 0;		// frames seen by PortCeCmdFrame, and the frame the view last opened at
+#endif
 void Close()
 {
+    BeginNativeReturn();
+    ResetStrategicGesture();
+    CeFactoryLeaveSelection();
     const bool wasStrategic = gStrategic;
     const bool ownedStrategicInput = LT.GetKeytrap() == (pKeyTrapper)Trap;
     if (gOpen && wasStrategic) {
         if (gStrategicOwner.Leave(StrategicContext()) == CeCommanderCameraResult::RestorePending) {
-            Note("Camera restoration pending. Press Esc to retry."); return;
+            Note("Press Esc again."); return;
         }
     }
 
 	if (!gOpen) return;
+	CePlayUnitMapBoundary();
 	gOpen = false;
+	gNote[0] = 0;		// a note about the view goes with it: the cockpit shows only the notes given after the close (the Battle Engine down, the battle not started)
 	gKeptLevel = GAME.GetCurrentLevel();
 	gKeptCentreX = gViewX + gViewSpan * 0.5f;
 	gKeptCentreY = gViewY + gViewSpan * 0.5f;
 	gKeptSpan = gViewSpan;
 	gArmed = false;
+#ifdef CE_COMMANDER_TEST
+	// The proof's mutant (BEA_PORT_COMMANDER_MUTANT_KEEP_TRAP): a view open for under forty frames leaves its key trap set when it closes;
+	// the rapid arm's close judge must fail it.
+	static int keepTrap = -1;
+	if (keepTrap < 0) keepTrap = getenv("BEA_PORT_COMMANDER_MUTANT_KEEP_TRAP") ? 1 : 0;
+	if (!(keepTrap && gTestFrameCount - gTestOpenedAt < 40))
+#endif
 	if (LT.GetKeytrap() == (pKeyTrapper)Trap) LT.SetKeytrap(NULL);
 	if (CCONTROLLER *controller = GAME.GetController(0))
 		if (!wasStrategic) { if (controller->GetToControl() == &gSink) controller->RelinquishControl(); }
@@ -1470,6 +3105,13 @@ void Close()
 		CeCmdWorldHash(&h);
 		CeCmdNote("map close world %08x solid %08x things %u components %u time %08x frames %u avg %.2f ms max %.2f ms", h.all, h.withoutComponents,
 				  h.things, h.components, h.eventTime, gFrames, gFrames ? gMsTotal / double(gFrames) : 0.0, gMsMax);
+		CeCmdViewStats view;
+		CeCmdViewGetStats(&view);
+		CeCmdNote("view picture frames %u pieces %u marks %u vertices %u texels %u mixer %d", view.frames, view.terrainChunks, view.markers, view.vertices,
+				  view.texels, view.mixer ? 1 : 0);
+		CeCmdNote("view periods live %u avg %.3f ms other %u avg %.3f ms", gPeriods[1], gPeriods[1] ? double(gPeriodNs[1]) / gPeriods[1] * 1e-6 : 0.0,
+				  gPeriods[0], gPeriods[0] ? double(gPeriodNs[0]) / gPeriods[0] * 1e-6 : 0.0);
+		CeCmdViewAuditReport();
 		DumpWorld("close");
 	}
 #endif
@@ -1478,7 +3120,12 @@ void Close()
 
 void Open(bool strategic)
 {
-	if (GAME.IsPaused()) return;
+#ifdef CE_COMMANDER_TEST
+	gTestOpenedAt = gTestFrameCount;
+#endif
+    ResetStrategicGesture();
+    PrepareNativeEntry();
+	if (GAME.IsPaused() || CePlayUnitOwnsPilot()) return;
 	Refresh();
 	if (!CommandableCount())
 	{
@@ -1491,26 +3138,33 @@ void Open(bool strategic)
 	}
 	if (!strategic) { GAME.Pause(); }
 	if (!strategic) { if (!GAME.IsPaused()) return; }
+    if (strategic) UnitPointerSeed();
 	gOpening = true;
 	ShutdownMouse();		// the pointer it starts from stays in window pixels, which the map reads (PortCeCmdMapOpen)
+	if (strategic) LivePointerStart();	// the live view keeps its own pointer; the game's stays on the centre
 	gOpening = false;
 	if (!strategic) { GAME.GetController(0)->SetToControl(&gSink); }
 	LT.SetKeytrap((pKeyTrapper)Trap);
 	// A key that is already held when the map opens is not a new press when it repeats (the window layer posts every auto-repeat as a key-down): the game's own
 	// key state knows which ones those are, because it is not updated while a key trap is installed but cleared by every key-up.
 	for (int k = 0; k < 256; ++k) gDown[k] = LT.KeyDown[k] != 0;
-	gDown[kOpenKey] = true;		// the press that opened the map may repeat; its release clears this
+	gCloseKey = OpenKey();
+	gDown[gCloseKey] = true;		// the press that opened the map may repeat; its release clears this
 	gShift = false;
 	gArmed = false;
+	gPlayerClosed = false;
 	gOpen = true;
+	CePlayUnitMapBoundary();
 	gLayoutLogged = false;
 #ifdef CE_COMMANDER_TEST
 	gFrames = 0;
 	gMsTotal = gMsMax = 0.0;
 #endif
 	gNote[0] = 0;
+	gLooseBounds = strategic;		// the live view's own bounds (SetView)
 	World();
-	if (gKeptLevel == GAME.GetCurrentLevel()) SetView(gKeptCentreX, gKeptCentreY, gKeptSpan);
+	const bool fitted = gKeptLevel != GAME.GetCurrentLevel();
+	if (!fitted) SetView(gKeptCentreX, gKeptCentreY, gKeptSpan);
 	else FitView();
 	Lay();		// the layout exists before the first frame draws it: a zoom or a pan in the same batch of messages as the open key works on it
 	gMapLastNs = Ns(); // Reopening or leaving the live view starts a fresh pan interval.
@@ -1523,10 +3177,28 @@ void Open(bool strategic)
 	}
 #endif
     gStrategic = strategic;
+    if (strategic && fitted) {
+        // The first live view of a level opens on the battlefield the player commands, close enough to tell what things are (R7): the commandable
+        // squad nearest the pilot's Battle Engine, or the Battle Engine itself. Fitting the base and every squad into one view put the centre on empty
+        // ground between them and the units below a pixel. Tab and C go to the others; the wheel zooms out to all of it. A reopened view keeps its own.
+        float fx = gViewX + gViewSpan * 0.5f, fy = gViewY + gViewSpan * 0.5f;
+        CBattleEngine *engine = GAME.GetPlayer(0) ? GAME.GetPlayer(0)->GetBattleEngine() : NULL;
+        const float ex = engine ? engine->GetPos().X : fx, ey = engine ? engine->GetPos().Y : fy;
+        float best = 1e30f;
+        if (engine) { fx = ex; fy = ey; }
+        for (int i = 0; i < gCount; ++i) {
+            if (!gSquads[i].commandable || gSquads[i].members <= 0) continue;
+            const float d = (gSquads[i].x - ex) * (gSquads[i].x - ex) + (gSquads[i].y - ey) * (gSquads[i].y - ey);
+            if (d < best) { best = d; fx = gSquads[i].x; fy = gSquads[i].y; }
+        }
+        SetView(fx, fy, kLiveOpenSpan);
+        gZoomTrip.on = false; gZoomBack = kLiveOpenSpan;
+        CeCmdNote("map live focus %s %.1f %.1f", best < 1e30f ? "squad" : engine ? "engine" : "view", fx, fy);
+    }
     if (strategic) {
         const CeCommanderCameraResult result = gStrategicOwner.Enter(StrategicContext());
         if (result != CeCommanderCameraResult::Entered) {
-            Note("The live camera could not start."); Close(); return;
+            Close(); Note("The view could not open."); return;
         }
         gStrategicLastNs = Ns();
     }
@@ -1535,6 +3207,7 @@ void Open(bool strategic)
 // Keys and mouse buttons while the map is open. The mouse module reads a trap's return value (true: the button was taken).
 bool Trap(WORD key, int event)
 {
+	LivePointer pointer;	// the live view's keys and buttons read its own pointer
     // CE_STRATEGIC_TRAP_BEGIN
     if (gStrategic) return StrategicTrap(key, event);
     if (gOpen && key == DIK_V && event == KEY_EVENT_DOWN) {
@@ -1548,20 +3221,22 @@ bool Trap(WORD key, int event)
 	if (event == kMouseDown && key <= 2)
 	{
 		const float px = float(MOUSE_X), py = float(MOUSE_Y);
+		// the live view's orders and picking (ce_cmdsel.h's selection is the one both views order)
+		const bool ctrl = gDown[DIK_LCONTROL] || gDown[DIK_RCONTROL];
 		if (key == 0 && gArmed && OnMap(px, py)) { gArmed = false; Order(CE_CMD_ADVANCE, WorldX(px), WorldY(py)); }
 		else if (key == 0)
 		{
 			const int hit = PickAt(px, py);
 			const CeCmdSquad *s = ByOrdinal(hit);
 			if (s && !s->commandable) Note(WhyText(s->why));
-			else if (s) { gSelected = hit; CeCmdNote("map select %d", hit); }
-			else if (OnMap(px, py)) { if (gSelected >= 0) CeCmdNote("map select -1"); gSelected = -1; }
+			else if (s && gShift) SelectToggle(hit);
+			else if (s) SelectOnly(hit);
+			else if (OnMap(px, py) && !gShift) SelectOnly(-1);
 		}
 		else if (key == 2 && OnMap(px, py))
 		{
-			const bool advance = gArmed;
 			gArmed = false;
-			Order(advance ? CE_CMD_ADVANCE : CE_CMD_MOVE, WorldX(px), WorldY(py));
+			Order(ctrl ? CE_CMD_MOVE : CE_CMD_ADVANCE, WorldX(px), WorldY(py));
 		}
 		return true;
 	}
@@ -1572,12 +3247,12 @@ bool Trap(WORD key, int event)
 	if (key == DIK_LSHIFT || key == DIK_RSHIFT) { gShift = true; gDown[key] = true; return true; }
 	if (gDown[key]) return true;
 	gDown[key] = true;
+	if (key == gCloseKey) { Close(); return true; }
 	switch (key)
 	{
-	case DIK_M: Close(); break;
 	case DIK_ESCAPE:
 		if (gArmed) { gArmed = false; Note("Advance cancelled."); }
-		else if (gSelected >= 0) { gSelected = -1; CeCmdNote("map select -1"); }
+		else if (gSelected >= 0) SelectOnly(-1);
 		else { gEscClosed = true; Close(); }
 		break;
 	case DIK_TAB: Cycle(gShift ? -1 : 1); Reveal(gSelected); break;
@@ -1591,13 +3266,22 @@ bool Trap(WORD key, int event)
 		if (const CeCmdSquad *c = ByOrdinal(gSelected)) SetView(c->x, c->y, gViewSpan);
 		break;
 	case DIK_A:
-		if (ByOrdinal(gSelected)) { gArmed = true; Note("Advance: click where the squad is to go."); }
+		if (gDown[DIK_LCONTROL] || gDown[DIK_RCONTROL]) { gArmed = false; SelectAll(); }
+		else if (ByOrdinal(gSelected)) { gArmed = true; Note("Advance: click the ground."); }
 		else Note("Pick a squad first.");
 		break;
 	case DIK_H: Order(CE_CMD_HOLD, 0.f, 0.f); break;
 	case DIK_X: Order(CE_CMD_HOLD, 0.f, 0.f); break;
-	case DIK_R: Order(CE_CMD_FALLBACK, 0.f, 0.f); break;
-	default: break;
+	case DIK_B: gArmed = false; Order(CE_CMD_FALLBACK, 0.f, 0.f); break;
+	case DIK_DELETE: gArmed = false; Order(CE_CMD_RELEASE, 0.f, 0.f); break;
+	default:
+		if (key >= DIK_1 && key <= DIK_0)
+		{
+			const bool ctrl = gDown[DIK_LCONTROL] || gDown[DIK_RCONTROL];
+			gArmed = false;
+			GroupKey(key == DIK_0 ? 0 : int(key - DIK_1) + 1, ctrl, gShift && !ctrl);
+		}
+		break;
 	}
 	return true;
 }
@@ -1610,29 +3294,154 @@ void LogLayout()
 			CeCmdNote("map box %d %.0f %.0f %d %d why %d deploys %d %c %s", gSquads[i].ordinal, Px(gSquads[i].x), Py(gSquads[i].y), gSquads[i].members,
 					  gSquads[i].commandable ? 1 : 0, gSquads[i].why, gSquads[i].deploys ? 1 : 0, gSquads[i].vehicles ? 'N' : 'R', gSquads[i].unit[0] ? gSquads[i].unit : "-");
 }
+
+#ifdef CE_COMMANDER_TEST
+// ---- the order tape's ui verb -------------------------------------------------------------------------------------------------------------
+// What the player does on the open map, done through the map's own trap with the pointer held exactly where the action needs it: a script cannot
+// know beforehand where a squad's mark will be drawn, and the map can. The window point comes from the same view the picking uses.
+
+// The window point of a world point on the open map; false when the map cannot say (no fresh view, or the point is off the screen).
+bool UiPoint(float wx, float wy, float *px, float *py)
+{
+	if (!gStrategic) { *px = Px(wx); *py = Py(wy); return OnMap(*px, *py); }
+	CeWorldViewSample view;
+	CeViewPoint pixel;
+	if (!StrategicViewRead(&view) || !StrategicPixel(view, wx, wy, &pixel) || !StrategicWorldArea(pixel.x, pixel.y)) return false;
+	*px = pixel.x;
+	*py = pixel.y;
+	return true;
 }
 
-// Whether the map is open (or is opening: the pointer ShutdownMouse starts it from is a window pixel too): while it is, the pointer stays in window pixels (the map reads them), not the virtual screen's that
-// the game's in-game menus use (widescreen.cpp).
+// One button press and release at a window point, as the mouse module would hand them to the trap.
+void UiPress(int button, float px, float py)
+{
+	const int x = int(px + 0.5f), y = int(py + 0.5f);
+	if (gStrategic) { gLiveX = x; gLiveY = y; gLiveForced = true; gLiveShown = true; }
+	else { MOUSE_X = x; MOUSE_Y = y; }
+	CeCmdNote("map pointer %d %d %d", button, x, y);
+	Trap(WORD(button), kMouseDown);
+	Trap(WORD(button), kMouseUp);
+	gLiveForced = false;
+}
+
+void UiKey(WORD key)
+{
+	Trap(key, KEY_EVENT_DOWN);
+	Trap(key, KEY_EVENT_UP);
+}
+
+// The left button down at one window point and up at another: a box on the live view.
+void UiDrag(float x0, float y0, float x1, float y1)
+{
+	if (!gStrategic) return;
+	gLiveX = int(x0 + 0.5f); gLiveY = int(y0 + 0.5f); gLiveForced = true;
+	CeCmdNote("map pointer 0 %d %d", gLiveX, gLiveY);
+	Trap(0, kMouseDown);
+	gLiveX = int(x1 + 0.5f); gLiveY = int(y1 + 0.5f);
+	CeCmdNote("map pointer 0 %d %d up", gLiveX, gLiveY);
+	Trap(0, kMouseUp);
+	gLiveForced = false;
+}
+#endif
+}
+
+#ifdef CE_COMMANDER_TEST
+void CeCmdTestUi(const char *word, const float *n, int count, char *said, unsigned room)
+{
+	if (!gOpen || LT.GetKeytrap() != (pKeyTrapper)Trap) { snprintf(said, room, "refused: the map is not open"); return; }
+	Lay();
+	Refresh();
+	float px = 0, py = 0;
+	if (!strcmp(word, "marks"))
+	{
+		CeWorldViewSample view;
+		if (!StrategicViewRead(&view)) { snprintf(said, room, "refused: no fresh view"); return; }
+		unsigned count;
+		const CeCmdViewUnitMark *marks = CeCmdViewUnitMarks(count);
+		for (unsigned i = 0; i < count; ++i) {
+			const CeCmdViewUnitMark &m = marks[i];
+			const CeCmdSquad *s = ByOrdinal(m.squad);
+			if (s && StrategicWorldArea(m.x, m.y))
+				CeCmdNote("map unit-mark %d %.1f %.1f %.1f %d", m.squad, m.x, m.y, m.radius, int(s->commandable));
+		}
+		snprintf(said, room, "read %u drawn members", count);
+		return;
+	}
+	if (!strcmp(word, "click") || !strcmp(word, "shiftclick"))
+	{
+		const CeCmdSquad *s = count >= 1 ? ByOrdinal(int(n[0])) : NULL;
+		if (!s) { snprintf(said, room, "refused: no such squad"); return; }
+		if (!UiPoint(s->x, s->y, &px, &py)) { snprintf(said, room, "refused: the squad is not on the screen"); return; }
+		const bool shift = word[0] == 's';
+		if (shift) { gDown[DIK_LSHIFT] = true; gShift = true; }
+		UiPress(0, px, py);
+		if (shift) { gDown[DIK_LSHIFT] = false; gShift = false; }
+	}
+	else if (!strcmp(word, "order") || !strcmp(word, "advance") || !strcmp(word, "move"))
+	{
+		if (count < 2) { snprintf(said, room, "refused: arguments"); return; }
+		if (!UiPoint(n[0], n[1], &px, &py)) { snprintf(said, room, "refused: the point is not on the screen"); return; }
+		if (word[0] == 'a') { UiKey(DIK_A); UiPress(0, px, py); }
+		else if (word[0] == 'm') { gDown[DIK_LCONTROL] = true; UiPress(2, px, py); gDown[DIK_LCONTROL] = false; }	// Ctrl and a right click
+		else UiPress(2, px, py);
+	}
+	else if (!strcmp(word, "box"))
+	{
+		// Two world corners; the box is dragged between the window points they are drawn at.
+		float qx = 0, qy = 0;
+		if (count < 4) { snprintf(said, room, "refused: arguments"); return; }
+		if (!UiPoint(n[0], n[1], &px, &py) || !UiPoint(n[2], n[3], &qx, &qy)) { snprintf(said, room, "refused: the box is not on the screen"); return; }
+		UiDrag(px, py, qx, qy);
+		snprintf(said, room, "ok at %d %d to %d %d", int(px + 0.5f), int(py + 0.5f), int(qx + 0.5f), int(qy + 0.5f));
+		return;
+	}
+	else if (!strcmp(word, "at"))
+	{
+		if (count < 3 || n[2] < 0 || n[2] > 2) { snprintf(said, room, "refused: arguments"); return; }
+		px = n[0];
+		py = n[1];
+		UiPress(int(n[2]), px, py);
+	}
+	else { snprintf(said, room, "refused: no such action"); return; }
+	snprintf(said, room, "ok at %d %d", int(px + 0.5f), int(py + 0.5f));
+}
+#endif
+
+// Two entries other code still names, both inert: the live view never gives the engine a camera and never hides the game's frame by dropping
+// its draws (it draws its own picture over a frame the game made whole; see CE_STRATEGIC_PICTURE above).
+// - Patch 0200's line in CEngine::SetViewpoint (shared with the play-as-a-unit view's): the camera comes back as it was given, always.
+// - The photo and editor draw scopes' query (ce_photo.h): never.
 CCamera* PortCeCmdRenderCamera(CCamera* camera, CPlayer* player)
 {
-    return SelectStrategicCamera(camera, player);
+    if (!gOpen && gNativeReturning) {
+        CCamera* returning = NativeReturnPresentation(camera, player);
+        if (returning) return returning;
+    }
+#ifdef CE_COMMANDER_TEST
+    if(camera!=gStrategicOriginal || !gOpen || !gStrategic || !gStrategicRender || !gStrategicOwner.Active()) return camera;
+#else
+    if(camera!=gStrategicOriginal || !gOpen || !gStrategic || !gStrategicRender || !gStrategicOwner.Active() || player!=GAME.GetPlayer(0)) return camera;
+#endif
+    if(!StrategicFrameCamera()) return camera;
+    return NativeStrategicPresentation(camera);
 }
 
-extern "C" std::uint64_t PortCeCmdWorldViewToken()
+uint64_t PortCeCmdWorldViewToken()
 {
-    if (!gOpen || !gStrategic || !gStrategicRender || !gStrategicOwner.Active()) return 0;
-    const CeCommanderCameraContext context = StrategicContext();
-    return context.admitted_ordinary_solo && context.live_pilot && context.camera_available &&
-        !context.competing_camera_owner && SameCameraBinding(context.binding, gStrategicBinding)
-        ? gStrategicViewSession : 0;
+    return gOpen && gStrategic && gStrategicRender &&
+        gStrategicOwner.Active() ? gStrategicViewSession : 0;
 }
 
 bool PortCeCmdSuppressFlightHud()
 {
-    return gOpen && gStrategic && gStrategicRender && gStrategicOwner.Active();
+    return false;
 }
 
+bool PortCeCmdHideCockpit()
+{ return PortCeCmdWorldViewToken() != 0 || NativeReturnEligible(); }
+
+// Whether the map is open (or is opening: the pointer ShutdownMouse starts it from is a window pixel too): while it is, the pointer stays in window pixels (the map reads them), not the virtual screen's that
+// the game's in-game menus use (widescreen.cpp).
 bool PortCeCmdMapOpen() { return gOpen || gOpening; }
 
 // The paused map's window on the world (lower-left corner and span), for the frame-feel log (feel.h) at each Present: reads fields only. 0 when the map is
@@ -1648,6 +3457,8 @@ extern "C" int CeCmdFeelView(float *out)
 
 // The end of the CE key chain in the window procedure (ltshell.cpp), after photo mode's and the console's keys and before the key trap: the open key, in a level
 // where the map may open; it stands aside for any key trap that is installed (the console typing, the pause menu).
+bool PilotUp();		// below, with the match's frame
+
 bool PortCeCmdKey(unsigned key, bool repeat)
 {
 	if (key == DIK_ESCAPE && gEscClosed)	// the press that closed the map was the map's; its auto-repeats are too, until a fresh press (the key-down message's repeat flag is clear)
@@ -1655,7 +3466,23 @@ bool PortCeCmdKey(unsigned key, bool repeat)
 		if (!repeat) gEscClosed = false;
 		else if (!LT.GetKeytrap()) return true;
 	}
-	if (key != kOpenKey || LT.GetKeytrap() || !CeCmdMapOn()) return false;
+	if (LT.GetKeytrap() || !CeCmdMapOn() || key != OpenKey() || PortCeActionConflict(CeControlAction::Commander, (int)key)) return false;
+	if (CePlayUnitOwnsPilot() && NoteMay())
+	{
+		if (!repeat) Note("Return to your Battle Engine to command.");
+		// Commander stays closed; this key can be bound to a unit action.
+		return false;
+	}
+	// In a match, while the commander's Battle Engine is down, the key answers: it asks for the view when the engine is back, or stops asking (ce_cmdrules.h).
+	if (CeCmdMatch() && GAME.GetGameState() == GAME_STATE_PLAYING && NoteMay() && !PilotUp())
+	{
+		if (!repeat && CeCmdReopenKey(gReopen, true, PilotUp()))
+		{
+			Note(gReopen ? "The view opens when your Battle Engine is back." : "The view stays closed.");
+			CeCmdNote("map reopen ask %d", gReopen ? 1 : 0);
+		}
+		return true;
+	}
 	if (NotYet())
 	{
 		if (!repeat) { Note("The battle has not started yet."); gNoteNotYet = true; }
@@ -1664,6 +3491,7 @@ bool PortCeCmdKey(unsigned key, bool repeat)
 	if (!Allowed()) return false;
 	if (repeat) return true;
 	Open(true);
+	if (gOpen && !gToldInFight) { gToldInFight = true; Note("Your Battle Engine is still in the fight."); }		// the one line of guidance, on the level's first open
 	return true;
 }
 
@@ -1716,24 +3544,99 @@ static void TestFrame()
 }
 #endif
 
+// A Commander match, once an update (from PortCeCmdFrame): how the battle stands while the live view is open, and the view again after the commander's
+// Battle Engine is back in the field (a versus level gives unlimited lives) when it closed because the engine went down. It opens only where the open
+// key could open it and nothing else holds the keys (the pause menu, the console).
+bool PilotUp()
+{
+	CPlayer *player = GAME.GetPlayer(0);
+	CBattleEngine *engine = player ? player->GetBattleEngine() : NULL;
+	return engine && engine->GetLife() > 0.f && !engine->IsDying();
+}
+
+bool gLiveLast;			// the live view was open at the end of the last update
+void MatchFrame()
+{
+	if (!CeCmdMapOn()) return;		// the Commander is off: nothing here runs
+	const bool match = CeCmdMatch() && GAME.GetGameState() == GAME_STATE_PLAYING;
+	// the view's return after the engine went down (ce_cmdrules.h: CeCmdReopenStep decides; this does what it says)
+	const bool up = PilotUp();
+	switch (CeCmdReopenStep(gReopen, gLiveLast, gOpen, match, up, gPlayerClosed, !gOpen && up && !LT.GetKeytrap() && Allowed()))
+	{
+	case CE_REOPEN_WAIT:
+		Note("Your Battle Engine is down. The view comes back with it.");
+		CeCmdNote("map reopen wait");
+		break;
+	case CE_REOPEN_OPEN:
+		Open(true);
+		if (gOpen) { Note("Your Battle Engine is back in the field."); CeCmdNote("map reopen"); }
+		break;
+	default: break;
+	}
+	if (gOpen && gStrategic && match)
+	{
+		CeCmdMatchRead(&gMatch);
+		static unsigned updates;
+		static const char *const said[] = {"", "A building of your base is down.", "Your Battle Engine is badly hurt. Esc takes you back.",
+										   "Your base is under attack.", "Your Battle Engine is hurt."};
+		const int alert = CeCmdAlertStep(gAlert, gMatch.buildings[0], gMatch.baseLife, gMatch.life, gMatch.lifeFull, ++updates);	// the quiet time is the rule's
+		if (alert > CE_ALERT_NONE && alert <= CE_ALERT_ENGINE_HURT) { Note(said[alert]); CeCmdNote("map alert %d", alert); }
+	}
+	else { gMatch.match = false; CeCmdAlertReset(gAlert); }
+	gLiveLast = gOpen && gStrategic;
+}
+
 // Between frames (CGame::MainLoop): the map closes where it is no longer allowed.
 void PortCeCmdFrame()
 {
-    if (gOpen && gStrategic) StrategicFrame();
+	LivePointer pointer;	// the camera's update reads the pointer (a grabbed view follows it)
+    if (gOpen && gStrategic) { UnitPointerObserve(); StrategicFrame(); }
 	if (gOpen && (!Allowed() || LT.GetKeytrap() != (pKeyTrapper)Trap)) Close();
+	MatchFrame();
 #ifdef CE_COMMANDER_TEST
 	TestFrame();
+	// Nothing of the view's is left once it has closed (the isolation proof's toggle and rapid arms read it). Every close is judged at the first
+	// frame the view is shut ("now": the cockpit's camera is the game's, no view token or key trap is held, and the cockpit and HUD are shown
+	// unless the eased return to the cockpit that a close begins is still running); a close that stays shut is judged again thirty frames on
+	// ("settled": the return has finished too). The settled note is skipped when the pilot has handed over to a taken unit in the meantime.
+	{
+		static bool wasOpen = false;
+		static CCamera* openedFrom = NULL;
+		static int sinceClose = -1;
+		++gTestFrameCount;
+		if (gOpen && !wasOpen) { openedFrom = GAME.GetCurrentCamera(0); sinceClose = -1; }
+		const char* when = NULL;
+		if (!gOpen && wasOpen) { sinceClose = 0; when = "now"; }
+		else if (!gOpen && sinceClose >= 0 && ++sinceClose == 30) { when = CePlayUnitOwnsPilot() ? NULL : "settled"; sinceClose = -1; }
+		wasOpen = gOpen;
+		if (when)
+			CeCmdNote("map closed %s camera %d cockpit %d token %d keytrap %d squads %d units %d returning %d", when,
+					  GAME.GetCurrentCamera(0) == openedFrom ? 1 : 0, PortCeCmdHideCockpit() ? 0 : 1, PortCeCmdWorldViewToken() == 0 ? 0 : 1,
+					  LT.GetKeytrap() == (pKeyTrapper)Trap ? 1 : 0, gSel.n, gUnitUi.SelectionCount(), gNativeReturning ? 1 : 0);
+	}
 #endif
 }
 
 // The level is ending (CGame::ShutdownRestartLoop): put back what opening changed.
 void PortCeCmdLevelEnd()
 {
+    gUnitUi.Reset();
+    CeCmdUnitOrdersWorldEnd();
     CePlayUnitLevelEnd();
     gStrategicOwner.Reset();
 	Close();
+    CancelNativeReturn();
+    gNativePresented = false;
+    gNativeEntering = false;
+	CeCmdMatchLevelEnd();	// a Commander match gives the screen back as it found it
 	gKeptLevel = -1;
 	gSelected = -1;
+	CeSelClear(gSel);
+	CeGroupsClear(gGroups);
+	gReopen = false;
+	gLiveLast = false;
+	gToldInFight = false;
+	gMatch.match = false;
 	gNote[0] = 0;
     AdvanceCameraLifetime(gMissionLifetime);
     gObservedPlayer = NULL; gObservedPilot = NULL; gObservedCamera = NULL;
@@ -1742,6 +3645,17 @@ void PortCeCmdLevelEnd()
 // After the console and the photo note (CDXEngine::PostRender): the map when it is open, else the note that says why it did not open.
 void PortCeCmdRender()
 {
+#ifdef CE_COMMANDER_TEST
+	// Frame periods by the processor's own clock (never the game's), apart for frames of the live view and for the level's other frames: a proof
+	// run made without the frame sleep reads the cost of the open view from them (the map's close note).
+	{
+		static unsigned long long last = 0;
+		const unsigned long long now = PortClockRawNs();
+		const bool playing = Allowed();
+		if (last && playing) { const int live = gOpen && gStrategic ? 1 : 0; gPeriodNs[live] += now - last; ++gPeriods[live]; }
+		last = playing ? now : 0;
+	}
+#endif
 	// The paused map's terrain texture lives only while the map is open.
 	if (!gOpen) FreeTerrainTexture();
 	static bool viewSwitchRead = false;
@@ -1752,22 +3666,55 @@ void PortCeCmdRender()
 		gStrategicTickOnly = mode && !strcmp(mode, "ticks");
 		gStrategicMessageKeys = mode && (!strcmp(mode, "ticks") || !strcmp(mode, "messages"));
 	}
+	LivePointer pointer;	// the live frame's hover and its drawn pointer
     // CE_STRATEGIC_RENDER_BEGIN
     if (gOpen && gStrategic) {
         if (!Allowed() || !gStrategicOwner.Active()) { Close(); return; }
-        Lay(); BeginDraw(); DrawStrategicHints(); EndDraw(); return;
+#ifdef CE_COMMANDER_TEST
+        // The test build's footprint audit: the game's heaps and data copied before the view's own work of this frame (its camera's step when the
+        // frame's render did not take it, its overlay) and compared after it (ce_cmdview_audit.cpp; BEA_PORT_COMMANDER_AUDIT=1). The isolation proof's
+        // control (BEA_PORT_COMMANDER_CONTROL=1) changes the battle once, on purpose, while the view is open: the pilot's Battle Engine moved a hundredth
+        // of a unit, so the comparison is shown to see a view that changes the battle.
+        CeCmdViewAuditBefore();
+        {
+            static int control = -1;
+            static bool controlled = false;
+            if (control < 0) control = getenv("BEA_PORT_COMMANDER_CONTROL") ? 1 : 0;
+            CBattleEngine *engine = GAME.GetPlayer(0) ? GAME.GetPlayer(0)->GetBattleEngine() : NULL;
+            if (control && !controlled && engine) { FVector moved = engine->GetPos(); moved.X += 0.01f; engine->SetPos(moved); controlled = true; }
+        }
+#endif
+        Lay();
+        const CGenericCamera* camera = StrategicFrameCamera();
+        CeWorldViewSample view;
+        if (camera && StrategicPictureBegin(*camera, &view)) {
+            StrategicViewSet(view);
+            DrawStrategicHints();
+            StrategicPictureEnd();
+#ifdef CE_COMMANDER_TEST
+            CeCmdViewCountFrame();		// a frame of the native picture: the isolation proof's evidence that the view was open
+#endif
+        } else StrategicViewInvalidate();
+#ifdef CE_COMMANDER_TEST
+        CeCmdViewAuditAfter();
+#endif
+        return;
     }
     // CE_STRATEGIC_RENDER_END
 
 	if (gNoteNotYet && !NotYet()) { gNote[0] = 0; gNoteNotYet = false; }	// the battle has started: the note that it had not is stale
 	if (!gOpen && !(gNote[0] && PortPresentCount() < gNoteUntil)) return;
-	if (!Allowed() && !(!gOpen && NotYet() && DrawingReady())) { Close(); return; }	// the note that the battle has not started is drawn before the level can host the map
+	// the note that the battle has not started is drawn before the level can host the map, and the cockpit's notes while the Battle Engine is down
+	if (!Allowed() && !(!gOpen && ((NotYet() && DrawingReady()) || NoteMay()))) { Close(); return; }
 	Lay();
 	BeginDraw();
 	if (!gOpen)
 	{
-		const float w = TextWidth(gNote, L.s), pad = 6.f * L.s, x = (L.w - w) * 0.5f, y = L.h - 40.f * L.s - LineHeight();
-		Box(x - pad, y - pad, w + 2.f * pad, LineHeight() + 2.f * pad, 0xb4000000);
+		// The note on the cockpit: the message box's panel and edge, above the HUD's message bar (whose top is about 89 units above the foot of the screen).
+		const float w = TextWidth(gNote, L.s), pad = 8.f * L.s, x = floorf((L.w - w) * 0.5f), y = L.h - 89.f * L.s - LineHeight() - pad;
+		const float edge = floorf(2.f * L.s) > 1.f ? floorf(2.f * L.s) : 1.f;
+		Box(x - pad, y - pad, w + 2.f * pad, LineHeight() + 2.f * pad, kPanel);
+		Outline(x - pad, y - pad, w + 2.f * pad, LineHeight() + 2.f * pad, edge, kEdge);
 		Text(x, y, 0xffffffff, gNote);
 		EndDraw();
 		return;
@@ -1784,7 +3731,7 @@ void PortCeCmdRender()
 	if (gTerrainDirty) BuildTerrain();
 	Box(0.f, 0.f, L.w, L.h, 0xfa0a1018);
 	char title[64];
-	snprintf(title, sizeof(title), "COMMANDER    battle paused    level %d", GAME.GetCurrentLevel());
+	snprintf(title, sizeof(title), "Commander   Paused");
 	Text(12.f * L.s, 8.f * L.s, kText, title, L.w * 0.42f);
 	DrawTerrain();
 	DrawGrid();
@@ -1801,6 +3748,10 @@ void PortCeCmdRender()
 	gMsTotal += took;
 	if (took > gMsMax) gMsMax = took;
 #endif
+}
+
+bool CeCmdUnitOrdersEligible() {
+    return Eligible() && GAME.GetGameState() == GAME_STATE_PLAYING;
 }
 
 #endif

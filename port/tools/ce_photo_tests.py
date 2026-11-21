@@ -41,9 +41,16 @@ DEPENDENT = ("0149-network-hud-view-player.patch", "0157-network-hud-scale-coop.
 BUILT_ON_PHOTO = ("0137-ce-save-failed-notice.patch", "0162-commander-map-hooks.patch", "0190-ce-hud-4k.patch",
                   "0206-native-editor-lifecycle.patch",  # its DXEngine.cpp hunk anchors on the photo draw scope (0133) and its key hook on the photo key chain (0108)
                   "0207-ce-museum-visit-lifecycle.patch",  # written on top of 0206's game.cpp
-                  "0209-ce-world-view-snapshot.patch")  # its declaration hunk anchors on the photo header; full-stack checks keep it
+                  "0209-ce-world-view-snapshot.patch",
+                  "0235-ce-commander-one-screen.patch",
+                  "0240-ce-playunit-battleline.patch",
+                  "0255-ce-museum-exhibit-marker.patch",  # the marker declaration anchors on the photo header
+                  "0256-ce-museum-hall-world.patch",
+                  "0265-ce-authored-exhibition-world.patch",  # its declaration needs the marker; the full render stack is checked below
+                  "0285-ce-playunit-hud.patch")  # its Hud.cpp hunk anchors on 0133's CePhotoDrawScope block
 PHOTO = ROOT / "port/game/ce_photo.cpp"
 PHOTO_H = ROOT / "port/game/ce_photo.h"
+OVERLAY_H = ROOT / "port/game/ce_overlay_box.h"
 WRITER = ROOT / "port/platform/common/ce_screenshot.cpp"
 FAKE = ROOT / "port/tools/ce_palette_fake.h"
 LOGIC = ROOT / "port/tools/tests/ce_photo_driver.cpp"
@@ -68,6 +75,10 @@ def patched(out, names, skip=()):
         (mirror / name).write_bytes(build.normalise(source, mirror, index, [mirror, mirror / "MissionScript"]).encode("latin-1"))
     for patch in sorted(PATCHES.glob("*.patch")):
         if patch.name in skip:
+            continue
+        # A tree with patches left out also leaves out the CE hook point site patches (0300-0319, port/game/ce_hooks.h): their
+        # include hunks rest on the whole queue's lines, and with no handler registered they change nothing a suite compares.
+        if skip and re.match(r"03[01][0-9]-ce-hook-", patch.name):
             continue
         parts = sections(patch.read_text(encoding="latin1"))
         for name in names:
@@ -137,6 +148,17 @@ def placed_in(files):
         "F11 and F12 are offered to photo mode before the console"
     engine = files["DXEngine.cpp"]
     late = function(engine, "static void draw_fairly_late_stuff(")
+    # The hall is world geometry. Its UP primitives must see this viewport's camera, whether or not it has a cockpit;
+    # moving them into the cockpit draw scope drops the hall along with the instruments in photo mode. Patch 0256 draws it in
+    # the world pass of CDXEngine::Render (after the shadows' test draw, before the machines and particles test against it).
+    hall = "PortCeMuseumHallDraw();"
+    render = function(engine, "HRESULT CDXEngine::Render(")
+    assert late.count(hall) == 0 and render.count(hall) == 1, "the hall is drawn once per view, in the world pass"
+    world = re.search(r"#ifdef CE_VERSION\n[ \t]*PortCeMuseumHallDraw\(\);[^\n]*\n#endif", render)
+    assert world, "the hall's draw is CE's own, in the world pass"
+    before = render[:world.start()]
+    assert "RENDERINFO.SetView(" in before and "RENDERINFO.SetProjection(" in before, "world geometry draws after the view is set"
+    assert "CePhotoDrawScope" not in before, "the hall is outside every photo draw scope: photo mode keeps the world"
     assert "#ifdef DEV_VERSION\n\tif(!CLIPARAMS.mKillHUD)\n#endif\n" in late, "the cockpit keeps the developer build's own -killhud test, as src/ has it"
     assert "CE_VERSION)" not in late.split("be->GetCockpit()")[0].split("Render Cockpit")[1], "photo mode does not open the cockpit's -killhud test"
     cockpit = re.search(r"\(player->ShouldRenderInternalCockpit\(\) == TRUE\)\)\n(.*?)be->GetCockpit\(\)->Render\(\) ;\n\t+RENDERQUEUE\.Render\(\);", late, re.S)
@@ -159,8 +181,9 @@ def placed_in(files):
     hud = function(files["Hud.cpp"], "void\tCHud::Render()")
     assert "CLIPARAMS" not in hud, "the HUD no longer reads -killhud"
     # the condition is main's (GetShowHUD())) or, with the network layer (patch 0149), the viewed player's (a longer line ending in GetShowHUD()))
+    playunit_hud = r"(?:\n\t\telse if \(player\)\n\t\t\{\n\t\t\tCePhotoDrawScope photoDraw;\n\t\t\tCePlayUnitHudOverlay\(player, i\);[^\n]*\n\t\t\})?"
     assert re.search(r"GetShowHUD\(\)\)+\n#ifdef CE_VERSION\n\t\t\{\n\t\t\tCePhotoDrawScope photoDraw;[^\n]*\n#endif\n\t\t\tRenderOverlayForViewpoint\(player, i\);"
-                     r"\n#ifdef CE_VERSION\n\t\t\}\n#endif", hud), "the HUD overlay runs inside a draw scope"
+                     r"\n#ifdef CE_VERSION\n\t\t\}" + playunit_hud + r"\n#endif", hud), "the HUD overlay runs inside a draw scope"
     assert hud.index("mFlash =") < hud.index("RenderOverlayForViewpoint"), "the HUD's own bookkeeping still runs"
     for name in ("Hud.cpp", "DXEngine.cpp"):
         assert '#ifdef CE_VERSION\n#include "../game/ce_photo.h"' in files[name], f"{name} includes the scope's header only in CE builds"
@@ -288,6 +311,22 @@ class PhotoTests(unittest.TestCase):
                 with self.assertRaises(AssertionError, msg=f"mutant {name} survived"):
                     check_structure(broken)
 
+    def test_world_draw_cannot_inherit_the_cockpit_photo_filter(self):
+        files = patched(self.out / "world-order", FILES)
+        check_structure(files)
+        engine = files["DXEngine.cpp"]
+        call = re.search(r"(?m)^#ifdef CE_VERSION\n[ \t]*PortCeMuseumHallDraw\(\);[^\n]*\n#endif\n", engine)
+        self.assertIsNotNone(call)
+        world = call.group()
+        cockpit = "be->GetCockpit()->Render() ;\n"
+        self.assertEqual(engine.count(cockpit), 1)
+        for label, altered in (("inside cockpit suppression", engine.replace(world, "").replace(cockpit, cockpit + world)),
+                               ("missing world", engine.replace(world, "")),
+                               ("duplicate world", engine.replace(world, world + world))):
+            with self.subTest(label=label):
+                with self.assertRaisesRegex(AssertionError, "world geometry|hall is drawn"):
+                    check_structure(dict(files, **{"DXEngine.cpp": altered}))
+
     def test_structure_mutants_are_caught(self):
         # The mutants' anchors are main's lines, so they mutate the text a public build compiles; the network's view is checked unmutated above.
         files = {name: build.network_view(text, off=True) for name, text in patched(self.out / "with", FILES).items()}
@@ -315,7 +354,7 @@ class PhotoTests(unittest.TestCase):
                     check_structure(broken)
 
     # ---- photo mode's logic ---------------------------------------------------------------------------------------------
-    def logic(self, name, photo=None, network=False, ce=True, driver=LOGIC):
+    def logic(self, name, photo=None, network=False, ce=True, driver=LOGIC, overlay=None):
         folder = self.out / name
         folder.mkdir(parents=True)
         shell = patched(folder, ["ltshell.cpp"])["ltshell.cpp"]
@@ -325,6 +364,7 @@ class PhotoTests(unittest.TestCase):
             (folder / "photo_command.inc").write_text(function((ROOT / "port/game/ce_palette.cpp").read_text(), "void CmdPhoto("))
         (folder / "ce_photo.cpp").write_text(photo if photo is not None else PHOTO.read_text())
         shutil.copy(PHOTO_H, folder)
+        (folder / "ce_overlay_box.h").write_text(overlay if overlay is not None else OVERLAY_H.read_text())
         shutil.copy(FAKE, folder)
         for header in ("common.h", "game.h", "frontend.h", "CLIParams.h", "ltshell.h", "Hud.h", "SpriteRenderer.h",
                        "renderinfo.h", "Texture.h"):
@@ -401,10 +441,15 @@ class PhotoTests(unittest.TestCase):
             ("fence-keeps-shot", "if (!Allowed()) { Switch(false); shotPending = false; return; }", "if (!Allowed()) { Switch(false); return; }", "ordinary", None),
             ("set-ignores-fence", "if (!(fromMenu ? AllowedInLevel() : Allowed())) { Switch(false); return false; }", "", "ordinary", None),
             ("menu-item-ignores-fence", "bool PortCePhotoAvailable() { return AllowedInLevel(); }", "bool PortCePhotoAvailable() { return true; }", "ordinary", None),
-            ("menu-note-is-f11s", "fromMenu ? \"Photo mode: HUD hidden. Pause menu or F11 returns; F12 saves a screenshot.\"",
-             "!fromMenu ? \"Photo mode: HUD hidden. Pause menu or F11 returns; F12 saves a screenshot.\"", "ordinary", None),
+            ("menu-note-is-f11s", "fromMenu ? \"Photo Mode: HUD hidden. F11 or the Pause Menu ends it. F12 saves a screenshot.\"",
+             "!fromMenu ? \"Photo Mode: HUD hidden. F11 or the Pause Menu ends it. F12 saves a screenshot.\"", "ordinary", None),
+            ("note-over-the-bar", "noteUntil), !photo);", "noteUntil), false);", "ordinary", None),
+            ("note-in-photo-mode-high", "noteUntil), !photo);", "noteUntil), true);", "ordinary", None),
+            ("note-never-fades", "PortCeNoteFade(CE_ScreenshotTicks(), noteFrom, noteUntil)", "1.f", "ordinary", None),
+            ("note-fades-from-the-wrong-moment", "\tnoteFrom = CE_ScreenshotTicks();\n\tnoteUntil = noteFrom + kNoteMs;", "\tnoteUntil = CE_ScreenshotTicks() + kNoteMs;", "ordinary", None),
+            ("old-saved-words", "\"Screenshot saved: %s\"", "\"Saved screenshot %s\"", "ordinary", None),
+            ("error-number-in-note", "\"Screenshot not saved: the file could not be written.\"", "\"Screenshot not saved (error %d).\", -status", "ordinary", None),
             ("menu-item-never-on", "bool PortCePhotoMenuSet(bool on) { return SetPhoto(on, true); }", "bool PortCePhotoMenuSet(bool on) { return SetPhoto(on && false, true); }", "ordinary", None),
-            ("note-forever", "CE_ScreenshotTicks() >= noteUntil || ", "", "ordinary", None),
             ("multiplayer", "return !GAME.IsMultiplayer() && GAME.GetNPlayers() == 1", "return GAME.GetNPlayers() >= 1", "ordinary", None),
             ("front-end", "return !FRONTEND.IsRunning() && AllowedInLevel();", "return AllowedInLevel();", "ordinary", None),
             ("menu-item-asks-the-front-end", "bool PortCePhotoAvailable() { return AllowedInLevel(); }", "bool PortCePhotoAvailable() { return Allowed(); }", "ordinary", None),
@@ -420,6 +465,21 @@ class PhotoTests(unittest.TestCase):
                 self.assertNotEqual(ran.returncode, 0, f"mutant {name} survived: {ran.stdout}")
                 caught.append(name)
         self.assertEqual(len(caught), len(mutants))
+        # The note's look and clock are the shared overlay header's (ce_overlay_box.h): the photo driver must see them go wrong too.
+        overlay = OVERLAY_H.read_text()
+        for name, old, new in (
+                ("note-forever", "if (now >= until || now < from) return 0.f;", "if (now < from) return 0.f;"),
+                ("note-never-fades-out", "if (until - now < kCeNoteFadeMs", "if (false && until - now < kCeNoteFadeMs"),
+                ("note-never-fades-in", "if (now - from < kCeNoteFadeMs)", "if (false && now - from < kCeNoteFadeMs)"),
+                ("note-panel-colour", "PortCeNoteColour(0xaf000000, fade)", "PortCeNoteColour(0xb4000000, fade)"),
+                ("note-outline-colour", "PortCeNoteColour(0xff7f7f7f, fade)", "PortCeNoteColour(0xffffffff, fade)"),
+                ("note-no-outline", "(2.f * scale > 1.f) ? 2.f * scale : 1.f", "0.f"),
+                ("note-no-padding", "const float pad = 8.f * scale", "const float pad = 0.f * scale")):
+            with self.subTest(overlay_mutant=name):
+                self.assertEqual(overlay.count(old), 1, name)
+                exe = self.logic("overlay-" + name, overlay=overlay.replace(old, new))
+                ran = self.run_logic(exe, "ordinary", None)
+                self.assertNotEqual(ran.returncode, 0, f"overlay mutant {name} survived: {ran.stdout}")
 
     # ---- the writer -----------------------------------------------------------------------------------------------------
     def writer(self, name, source=None):

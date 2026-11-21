@@ -1,0 +1,26 @@
+--- a/CarverGuide.cpp
++++ b/CarverGuide.cpp
+@@ -102,7 +102,9 @@
+ 		float	diff = (float)fabs(AngleDifference(course, heading));
+ 		if (diff > PI / 2)
+ 			diff = PI / 2;
+-		float	roll = ((right * d) < 0) ? diff : -diff;
++		// Port (patch 0253): retail sums right * d as (Z + Y) + X (00423304..0042331e), and its compare takes a NaN as
++		// below zero.
++		float	roll = !((((right.Z * d.Z) + (right.Y * d.Y)) + (right.X * d.X)) >= 0) ? diff : -diff;
+ 
+ 		if (fabsf(roll) > 0.1f)
+ 			unit->SetUnknown174(1.0f);
+--- a/DiveBomberGuide.cpp
++++ b/DiveBomberGuide.cpp
+@@ -101,7 +101,9 @@
+ 		float	diff = (float)fabs(AngleDifference(course, heading));
+ 		if (diff > PI / 2)
+ 			diff = PI / 2;
+-		float	roll = ((right * d) < 0) ? diff : -diff;
++		// Port (patch 0253): retail sums right * d as (Z + Y) + X (00446b64..00446b7e), and its compare takes a NaN as
++		// below zero.
++		float	roll = !((((right.Z * d.Z) + (right.Y * d.Y)) + (right.X * d.X)) >= 0) ? diff : -diff;
+ 
+ 		if (fabsf(roll) > 0.1f)
+ 			unit->SetUnknown174(1.0f);

@@ -1,0 +1,11 @@
+--- a/weapon.cpp
++++ b/weapon.cpp
+@@ -1085,7 +1085,7 @@
+ 			float	speed = WeaponRound_mSpeed(RoundOf(WeaponModeOf(this)));
+ 			FVector	vel = GetPrimaryOrientation() * FVector(0, speed, 0);
+ 			float	dz = pos.Z - GetPrimaryPosition().Z;
+-			float	pitch; // Pinned VC6 slot-reuse concession; see the function comment above.
++			float	pitch = dz;	// Port (patch 0247): retail passes dz when no pitch wins (the two share a stack slot, 00509208/0050939a); uninitialized here, the port aimed level instead
+ 			float	v = WeaponRound_mSpeed(RoundOf(WeaponModeOf(this))) * 0.05f /* retail 005d8584: / 20.0f */;
+ 			float	g = WeaponRound_mGravity(RoundOf(WeaponModeOf(this))) * 0.025f;
+ 			float	dist = d.MagnitudeXY();

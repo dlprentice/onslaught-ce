@@ -25,6 +25,8 @@ void PortCeGraphicsBeginDevice(unsigned pixelVersion, unsigned vertexVersion, bo
 void PortCeGraphicsResourceOutcome(unsigned resource, bool ready);
 void PortCeGraphicsFinishDevice(bool ready);
 bool PortCeGraphicsRequested();
+// A supported device could not start an optional effect the player enabled.
+bool PortCeGraphicsRequestFailed();
 bool PortCeGraphicsStoreRequest(int enabled);
 // The Overall Detail level of the ordinary CE menus (patch 0213) reads the rows as their setters leave them. The game's presets were
 // written for the graphics cards of 2003: the landscape preset names a level beyond the row's last choice on a card with more, and

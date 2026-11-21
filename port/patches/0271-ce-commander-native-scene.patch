@@ -1,0 +1,40 @@
+--- a/DXEngine.cpp
++++ b/DXEngine.cpp
+@@ -612,6 +612,11 @@
+ 
+ 
+ // This is stuff that can be drawn during the VBLANK if you get really silly.
++#ifdef CE_VERSION
++bool PortCeCmdHideCockpit();
++#else
++#define PortCeCmdHideCockpit() false
++#endif
+ static void draw_fairly_late_stuff(CPlayer *player, int viewpoint)
+ {
+ 	//***********************************************************************
+@@ -634,7 +639,7 @@
+ 		{
+ 			CBattleEngine *be = player->GetBattleEngine();
+ 			
+-			if (be && (!be->IsDying()) && (player->ShouldRenderInternalCockpit() == TRUE))
++			if (!PortCeCmdHideCockpit() && be && (!be->IsDying()) && (player->ShouldRenderInternalCockpit() == TRUE))
+ 			{
+ 				// Turn the z-buffer back on for the sake of the sun visibility tester.
+ #if TARGET == XBOX
+--- a/Hud.cpp
++++ b/Hud.cpp
+@@ -2053,8 +2053,14 @@
+ }
+ 
+ //******************************************************************************************
++#ifdef CE_VERSION
++bool PortCeCmdHideCockpit();
++#else
++#define PortCeCmdHideCockpit() false
++#endif
+ void	CHud::RenderOverlayForViewpoint(CPlayer *player, int viewpoint)	// FUNCTION: 0x004879e0
+ {
++    if (PortCeCmdHideCockpit()) return;
+ 	CBattleEngine *be = player->GetBattleEngine();
+ 	if ((!be) || be->IsDying())
+ 		return;

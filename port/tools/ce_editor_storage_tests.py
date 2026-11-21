@@ -37,6 +37,17 @@ def main() -> int:
     first=run('first-save',0,user,'save',payload);second=run('second-save',0,user,'save',payload)
     folder=user/'projects';results.append({'name':'exclusive-revisions','passed':first!=second and (folder/first).read_bytes()==payload.read_bytes() and (folder/second).read_bytes()==payload.read_bytes()})
     out=owner/'readback';run('readback',0,user,'read',first,out);results.append({'name':'exact-readback','passed':out.read_bytes()==payload.read_bytes()})
+    # A gap in the numbers (an earlier save removed by hand) and another level's higher number: the next save still takes
+    # the number after this level's highest, so the newest save is always the highest.
+    (folder/first).rename(owner/'moved-away.ceproject')
+    (folder/'level-0778-000050.ceproject').write_bytes(payload.read_bytes())
+    third=run('save-after-gap',0,user,'save',payload)
+    results.append({'name':'new-save-after-highest','passed':third=='level-0777-000003.ceproject','got':third})
+    (folder/'level-0777-000040.ceproject').write_bytes(payload.read_bytes())
+    fourth=run('save-after-dropped-in',0,user,'save',payload)
+    results.append({'name':'new-save-after-dropped-in-file','passed':fourth=='level-0777-000041.ceproject','got':fourth})
+    for leaf in ('level-0778-000050.ceproject','level-0777-000040.ceproject',third,fourth):(folder/leaf).unlink()
+    (owner/'moved-away.ceproject').rename(folder/first)
     run('list-two',0,user,'list');run('bounded-list-refusal',1,user,'list','1')
     run('parent-traversal',1,user,'read','../authored.json');run('absolute-path',1,user,'read',payload)
     run('hidden-file',1,user,'read','.hidden.ceproject');run('unsupported-extension',1,user,'read','file.txt')

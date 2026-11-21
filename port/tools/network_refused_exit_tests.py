@@ -20,6 +20,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 DRIVER = r"""
 #include <cstdio>
+#include "ce_hooks_host_stubs.h"
 struct STICKYKEYS { unsigned cbSize, dwFlags; };
 struct TOGGLEKEYS { unsigned cbSize, dwFlags; };
 struct FILTERKEYS { unsigned cbSize, dwFlags; };
@@ -83,7 +84,7 @@ def main():
         if not compiler:
             raise SystemExit("a host C++ compiler is required")
         exe = tmp / "driver"
-        subprocess.run([compiler, "-std=c++17", "-Wall", "-Wno-unused-function", str(src), "-o", str(exe)], check=True)
+        subprocess.run([compiler, "-std=c++17", "-Wall", "-Wno-unused-function", "-I" + str(ROOT / "port/game"), str(src), "-o", str(exe)], check=True)
         for mode in ("refused", "started"):
             r = subprocess.run([str(exe), mode], capture_output=True, text=True, timeout=30)
             print(("PASS" if r.returncode == 0 else "FAIL") + " ExitCode after a %s start: %s" % (mode, r.stdout.strip()))

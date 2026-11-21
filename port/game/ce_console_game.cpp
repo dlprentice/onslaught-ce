@@ -300,9 +300,22 @@ void PortCeDevStatsDraw()
 	const float x = 40.f * layout, y = 30.f * layout;
 	const float room = width - 48.f * layout;
 	const float scale = (widest * layout > room && room > 0.f) ? room / widest : layout;
-	WCHAR *w = ToWCHAR(sDevStats);
-	font->DrawTextScaled(x + layout, y + layout, 0.0f, scale, scale, 0xff000000, w, 0, NULL);
-	font->DrawTextScaled(x, y, 0.0f, scale, scale, PortCeDevStatsGreen() ? 0xff40ff40 : 0xffffff80, w, 0, NULL);
+	// One line at a time, a line apart from the one before (the font's height as drawn, and two window pixels): the whole
+	// block in one call drew each line over the next. The black shadow first, then the text in its colour.
+	const DWORD colour = PortCeDevStatsGreen() ? 0xff40ff40 : 0xffffff80;
+	const float pitch = float(font->GetHeight()) * scale + 2.f * layout;
+	float lineY = y;
+	for (char *line = sDevStats; *line;)
+	{
+		char *end = strchr(line, '\n');
+		if (end) *end = 0;
+		WCHAR *w = ToWCHAR(line);
+		font->DrawTextScaled(x + layout, lineY + layout, 0.0f, scale, scale, 0xff000000, w, 0, NULL);
+		font->DrawTextScaled(x, lineY, 0.0f, scale, scale, colour, w, 0, NULL);
+		lineY += pitch;
+		if (!end) break;
+		line = end + 1;
+	}
 }
 
 // The front end's loop (patch 0100, System.cpp): the level a console jump asked for, once.

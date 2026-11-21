@@ -1,0 +1,52 @@
+--- a/MenuOptionsList.cpp
++++ b/MenuOptionsList.cpp
+@@ -126,19 +126,19 @@ static inline void GetMenuPanelSize(CMenuOptionsList *list, float &pw, float &fh
+ 
+ // FUNCTION: 0x004a4810
+ WCHAR	*CMenuOptionsList::Render(CPauseMenu *menu)
+-{
++{ extern int PortCeCompactPitch(const void *); extern float PortCeCompactShift(int, bool); int cePitch = 0; { CMenuItem *ceItem; FOR_ALL_ITEMS_IN(mItems, ceItem) if (!cePitch) cePitch = PortCeCompactPitch(ceItem); }
+ 	CMenuMenuItem::ClearDeferredRender();
+ 
+ 	bool	options_page = CPauseMenu::mOptionsPage;
+ 	RENDERINFO.SetFogEnabled(false);
+ 
+ 	float	x = mX;
+-	float	y = mY;
++	float	y = mY + PortCeCompactShift(cePitch, options_page);
+ 
+ 	CMenuItem	*item;
+ 	int		height = 32;
+ 	FOR_ALL_ITEMS_IN(mItems, item)
+-		height += item->GetHeight();
++		height += cePitch ? cePitch : item->GetHeight();
+ 	height -= 32;
+ 
+ 	float	ty = y - height * 0.5f - 15.f;
+@@ -180,7 +180,7 @@ WCHAR	*CMenuOptionsList::Render(CPauseMenu *menu)
+ 		{
+ 			if (!mItems.At(mSelected)->TakesInput())
+ 			{
+-				if (CMenuItem::IsMouseInRect(0.f, ty, 640.f, ty + item->GetHeight()))
++				if (CMenuItem::IsMouseInRect(0.f, ty, 640.f, ty + (cePitch ? cePitch : item->GetHeight())))
+ 					mSelected = n;
+ 			}
+ 		}
+@@ -195,7 +195,7 @@ WCHAR	*CMenuOptionsList::Render(CPauseMenu *menu)
+ 		{
+ 			if (!mItems.At(mSelected)->TakesInput())
+ 			{
+-				if (CMenuItem::MouseClickedInRect(0.f, ty, 640.f, ty + item->GetHeight()))
++				if (CMenuItem::MouseClickedInRect(0.f, ty, 640.f, ty + (cePitch ? cePitch : item->GetHeight())))
+ 				{
+ 					clicked = true;
+ 					mSelected = n;
+@@ -206,7 +206,7 @@ WCHAR	*CMenuOptionsList::Render(CPauseMenu *menu)
+ 		if (item->HasPendingChange())
+ 			gMenuChangesPending = true;
+ 
+-		ty += item->GetHeight();
++		ty += cePitch ? cePitch : item->GetHeight();
+ 		n++;
+ 	}
+ 

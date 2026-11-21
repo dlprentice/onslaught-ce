@@ -10,6 +10,11 @@ What these tests hold, without a game:
   define comes only from build.py's --commander-test, and a build without it compiles no environment switch, file or probe of the commander's (the one
   environment read left is the fence's list of the switches that mean "not a plain game").
 - The order layer and the map draw no random number and allocate nothing in the game's heap; the map reaches the squads only through the order layer's face.
+- The live view cannot change the battle by construction: its picture (ce_cmdview.cpp) names only the game facilities on its list of reads, calls none of the
+  game's drawing, allocation, random or clock routines, and takes its memory from the C library; the map sends its own boxes and text to that picture while it
+  is drawn and asks for none of the game's drawing state; the engine's presentation hook hands back the camera it is given; and no patch gives the Commander
+  an entry into the game's render beyond the five it has (a new one must be put on the list here on purpose). The runs that measure it (the update dumps of a
+  run with the view open against one that never opened it, and the footprint audit) are made with port/tools/ce_commander_isolation_run.py.
 - The layout the order layer reads by hand (the squad member record) is checked at compile time; the table of squads says when it is full.
 - The map's gate names every fence, and the switch reads ce.ini only where no fenced switch is set.
 - The tape grammar and the probe columns in the order layer's header comment are the ones the code reads and writes.
@@ -35,11 +40,24 @@ PATCHES = ("0160-commander-relaxed-goal.patch", "0161-commander-merge-guard.patc
 # faithful comparison; their own patches' suites check them.
 # Patches whose hunks anchor on lines the commander patches add (the native editor's lifecycle hooks sit beside the commander map's in game.cpp and ltshell.cpp, and the
 # museum visit's beside the editor's): in the tree without the commander patches they cannot apply. They are left out of both trees as well, and their own suites check them.
-BUILT_ON_COMMANDER = ("0206-native-editor-lifecycle.patch", "0207-ce-museum-visit-lifecycle.patch")
-POSITIONAL = ("0189-network-campaign-outcomes.patch",)
-LEFT_OUT = (*POSITIONAL, *BUILT_ON_COMMANDER)
+BUILT_ON_COMMANDER = (
+    "0206-native-editor-lifecycle.patch",
+    "0207-ce-museum-visit-lifecycle.patch",
+    # The exhibition render hunk also needs the editor lifecycle's context in DXEngine.cpp.
+    "0265-ce-authored-exhibition-world.patch",
+)
+POSITIONAL = ()    # none since patch 0189 carries context (port/tools/patch_control_body_tests.py refuses a hunk without any)
+# The CE hook points (patches 0300-0319, port/game/ce_hooks.h): each adds one call into an empty, ordered table, and their
+# include hunks rest on the exact lines of the whole queue, so in the tree without the commander patches they cannot apply.
+# They change nothing the commander's faithful comparison measures (no handler is registered); ce_hooks_tests.py checks them.
+HOOK_SITES = tuple(sorted(p.name for p in (Path(__file__).resolve().parents[1] / "patches").glob("03[01][0-9]-ce-hook-*.patch")))
+LEFT_OUT = (*POSITIONAL, *BUILT_ON_COMMANDER, *HOOK_SITES)
+OVERLAY_HOOK = r"(?:\tif \(!gMirrorPass\) ce_hook_draw_overlay\(\);[^\n]*\n)?"   # the optional CE hook point line (patch 0311)
 MODULE = ROOT / "port/game/ce_commander.cpp"
 MAP = ROOT / "port/game/ce_cmdmap.cpp"
+VIEW = ROOT / "port/game/ce_cmdview.cpp"
+VIEW_HEADER = ROOT / "port/game/ce_cmdview.h"
+VIEW_AUDIT = ROOT / "port/game/ce_cmdview_audit.cpp"
 HEADER = ROOT / "port/game/ce_commander.h"
 UPDATE = ROOT / "port/game/updatedump.cpp"
 BUILD = ROOT / "port/build.py"
@@ -63,6 +81,7 @@ def comments_off(text):
 def without_nonallocating_std(text):
     # Scalar IDs and these math functions allocate no objects. All other std
     # facilities remain subject to the existing namespace/allocation ban.
+    text = text.replace("std::numeric_limits<float>::quiet_NaN", "")
     return re.sub(r"\bstd::(?:min|max|exp|ceil|fabs|isfinite|log|uint64_t)\b", "", text)
 
 
@@ -76,6 +95,121 @@ def map_resource_violations(text):
     if re.search(r"\bnew\s*[A-Za-z_\[(]", text):
         found.append("new")
     return found
+
+
+# ---- the live view's picture (ce_cmdview.cpp) ----------------------------------------------------------------------------------------------------------------
+# Everything the picture may take from the game, by the object it is read through: the members named here only read. The file's own READS comment is held to
+# the same list.
+VIEW_READS = {
+    "MAP": {"mGridWidth", "mGridHeight", "GetHeight", "Collide", "GetWaterLevel", "GetHFProperties", "GetFog", "mColors"},
+    "MIXERMAP": {"mSlots", "mMap"},
+    "STATICSHADOWS": {"mGrid"},
+    "ENGINE": {"GetMapTex"},
+    "WORLD": {"GetThingNB"},
+    "PLATFORM": {"Font"},
+    "LT": {"GetDevice"},
+    "GAME": {"GetCurrentLevel"},
+}
+# Calls made through a pointer or a reference to one of the game's objects (a thing, a unit, the font, a texture): each only reads.
+VIEW_GAME_CALLS = {"GetThingType", "GetFlags", "GetPos", "GetOrientation", "GetAllegiance", "RemapChar", "GetTexture", "GetHeight"}
+# Calls made on the Direct3D device and on the picture's own device objects.
+VIEW_DEVICE_OBJECTS = ("device", "gDevice", "gTerrainVb", "gTerrainIb", "gTerrainTex", "gKept", "object")
+# What the picture must never name: the game's drawing and its render records, its allocator, its random numbers and clocks, the routines of the engine's
+# render, and the two readers of the height field that write as they read (the extents are measured into the map object, the lit texel routine fills its
+# scratch buffer).
+VIEW_FORBIDDEN = ("CSPRITERENDERER", "FASTVB", "RENDERINFO", "RENDERQUEUE", "STATE.", "LT.SRS", "LT.STS", "LT.SSS", "LT.D3D_", "CVBufTexture", "DrawText", "GetTextExtent",
+                  "InitFromTexture", "InitFromSysFont", "CanDisplay", "MEMTYPE_", "MEM_MANAGER", "FloatRandom", "IntRandom", "rand(", "srand(", "Random(", "GetSysTime",
+                  "PortClock", "clock_gettime", "EVENT_MANAGER", "GetRenderFrameLength", "PARTICLE_MANAGER", "SHADOWS.", "CIMPOSTER", "TREES.", "CRTMesh", "CMeshRenderer",
+                  "CAtmospherics", "CDebris", "MAP_WHO", "SetViewpoint", "SelectViewpoint", "GetExtents", "Unknown47eff0", "GetCacheTexels", "SetPos(", "SetFlags(",
+                  "MakeVisible", "MakeInvisible", "SetAllegiance", "ListIterator", ".First()", ".Next()", "getenv", "fopen", "std::")
+
+
+def view_violations(text):
+    """Every way the picture's source steps outside its list of reads (an empty list: none)."""
+    text = comments_off(text)
+    found = [f"names {word}" for word in VIEW_FORBIDDEN if re.search((r"\b" if re.match(r"\w", word) else "") + re.escape(word), text)]
+    if re.search(r"\bnew\b", text):
+        found.append("uses operator new (the game's allocator in a game file)")
+    if re.search(r"\bdelete\b", text):
+        found.append("uses operator delete")
+    # the game's objects: every upper-case object named with a member must be on the list, with a member on its list
+    for name, member in re.findall(r"\b([A-Z][A-Z_]{1,})\s*\.\s*([A-Za-z_]\w*)", text):
+        if name not in VIEW_READS:
+            found.append(f"reads through {name}")
+        elif member not in VIEW_READS[name]:
+            found.append(f"reads {name}.{member}")
+    # calls through pointers: the device's and the picture's own objects, or a reading call of the game's
+    for owner, call in re.findall(r"\b([A-Za-z_]\w*)\s*->\s*([A-Za-z_]\w*)\s*\(", text):
+        # The unit's squad reader only exposes its current pointer; drawing keeps the ordinal.
+        if owner == "unit" and call == "GetSquad":
+            continue
+        if owner in VIEW_DEVICE_OBJECTS:
+            continue
+        if call not in VIEW_GAME_CALLS:
+            found.append(f"calls {owner}->{call}")
+    for owner, call in re.findall(r"\b([a-z]\w*)\s*\.\s*([A-Z]\w*)\s*\(", text):
+        if call not in VIEW_GAME_CALLS and call not in ("MakeRotationPitchF", "TransposeInPlace"):
+            found.append(f"calls {owner}.{call}")
+    return sorted(set(found))
+
+
+def view_reads_documented(text):
+    """The READS comment at the top of the picture's source names every object and member on the list, and no object that is not on it."""
+    block = text[text.index("// READS ("):text.index("namespace\n{")]
+    missing = [f"{name}.{member}" for name, members in VIEW_READS.items() for member in members
+               if not re.search(r"//\s+" + name + r"\b", block) or member not in block]
+    listed = set(re.findall(r"(?m)^//   ([A-Z][A-Z_]+)\s", block))
+    return missing + sorted(f"lists {name}" for name in listed - set(VIEW_READS))
+
+
+def marked_block(text, begin, end):
+    assert text.count(begin) == 1 and text.count(end) == 1, f"the markers {begin} .. {end} are not there once each"
+    return text[text.index(begin):text.index(end)]
+
+
+# The game's drawing and render state, which the live view's frame in the map must not ask for.
+MAP_GAME_DRAWING = ("BeginDraw", "EndDraw", "CSPRITERENDERER", "FASTVB", "RENDERINFO", "LT.SRS", "LT.STS", "gFont->Draw", "GetTextExtent", "SetViewpoint", "ENGINE.Render",
+                    "PortCeDrawHooks", "PortCeDrawsDropped", "CePhotoDrawScope")
+
+
+def map_live_view_violations(text):
+    text = comments_off(text)
+    picture = function(text, "bool StrategicPictureBegin")
+    hook = function(text, "CCamera* PortCeCmdRenderCamera")
+    token = function(text, "uint64_t PortCeCmdWorldViewToken")
+    photo = function(text, "bool PortCeCmdSuppressFlightHud")
+    failures = []
+    if "CeWorldViewRead(" not in picture:
+        failures.append("native world snapshot is missing")
+    if "CeCmdViewCollectUnits(" not in picture:
+        failures.append("native member selection projection is missing")
+    if "CeCmdViewBegin(" in picture or "CeCmdViewWorld(" in picture:
+        failures.append("replacement scenery paints over the native scene")
+    for guard in ("camera!=gStrategicOriginal", "gOpen", "gStrategicRender", "gStrategicOwner.Active()", "player!=GAME.GetPlayer(0)"):
+        if guard not in hook:
+            failures.append("native camera lacks an ownership guard")
+    if "StrategicFrameCamera()" not in hook:
+        failures.append("native renderer receives a stale camera")
+    if "gStrategicOwner.Active()" not in token or "gStrategicViewSession" not in token:
+        failures.append("native snapshot owner is not bound to its session")
+    if "return false;" not in photo:
+        failures.append("generic photo draw filtering became active")
+    return failures
+
+
+
+# The Commander's entries into the game's own code, by patch: the key, the drawing after the frame, the frame and level-end calls, and the presentation hook
+# that hands its camera back. A patch that gives it another (an entry into the render above all) fails here until this list is changed on purpose.
+COMMANDER_ENTRIES = {'PortCeCmdFrame', 'PortCeCmdHideCockpit', 'PortCeCmdKey', 'PortCeCmdLevelEnd', 'PortCeCmdRender', 'PortCeCmdRenderCamera', 'PortCeCmdWorldViewToken', 'PortCeCmdThingGone', 'PortCeCmdGuidePoint'}
+
+
+def commander_entries(patch_texts):
+    names = set()
+    for text in patch_texts:
+        for line in text.split("\n"):
+            if line.startswith("+") and not line.startswith("+++"):
+                names.update(re.findall(r"\b(PortCeCmd[A-Za-z0-9_]*|CeCmdView[A-Za-z0-9_]*|CeCmd(?:Save|Restore)[A-Za-z0-9_]*)\b", line))
+    return names
 
 
 def without_test(text):
@@ -161,11 +295,11 @@ def check_keys(map_text):
     opened = function(map_text, 'void Open(bool strategic)')
     assert "for (int k = 0; k < 256; ++k) gDown[k] = LT.KeyDown[k] != 0;" in opened and "memset(gDown" not in opened, \
         "a key that is already held when the map opens is held, not a new press when it repeats"
-    assert opened.index("gDown[k] = LT.KeyDown[k]") < opened.index("gDown[kOpenKey] = true;"), "the open key stays held whatever the game's state says"
+    assert opened.index("gDown[k] = LT.KeyDown[k]") < opened.index("gCloseKey = OpenKey();") < opened.index("gDown[gCloseKey] = true;"), "the open key stays held whatever the game's state says"
     assert "\tLay();" in opened and opened.index("else FitView();") < opened.index("\tLay();"), "the layout exists once the view is set, before the first frame: a zoom in the same batch as the open key works on it"
     assert "else { gEscClosed = true; Close(); }" in map_text, "the Esc that closes the map is remembered"
     hook = function(map_text, "bool PortCeCmdKey(unsigned key, bool repeat)")
-    assert hook.index("if (key == DIK_ESCAPE && gEscClosed)") < hook.index("if (key != kOpenKey"), "the repeats of that Esc are looked at before the open key's test"
+    assert hook.index("if (key == DIK_ESCAPE && gEscClosed)") < hook.index("key != OpenKey()"), "the repeats of that Esc are looked at before the open key's test"
     assert "if (!repeat) gEscClosed = false;" in hook and "else if (!LT.GetKeytrap()) return true;" in hook, \
         "its auto-repeats do not reach the game (they would open the pause menu), and a new press does"
 
@@ -189,7 +323,9 @@ def check_placement(files):
         "the map's open key is taken after photo mode's and the console's and before the key trap"
     assert keys.count("PortCeCmdKey(") == 2, "one declaration and one call"
     engine = files["DXEngine.cpp"]
-    assert re.search(r"\t\}\n\n" + RENDER_BLOCK + r"\tPLATFORM\.EndScene\(\);", engine), \
+    # The CE hook point draw_overlay (patch 0311, port/game/ce_hooks.h) may sit between the map and EndScene: it runs after
+    # every CE overlay, the map included, by design (HOOK-MAP section 2.9).
+    assert re.search(r"\t\}\n\n" + RENDER_BLOCK + OVERLAY_HOOK + r"\tPLATFORM\.EndScene\(\);", engine), \
         "the map is drawn after everything the frame's interface block drew, outside the mirror pass, inside the scene"
     assert engine.count("PortCeCmdRender(") == 2, "one declaration and one call"
     game = files["game.cpp"]
@@ -200,15 +336,18 @@ def check_placement(files):
 
 # The ICE link receipt (build.py, write_ice_link_receipt) marks a test build by reading the defines the build was given; it names this module's among the test builds' and defines nothing.
 RECEIPT_READ = re.compile(r'test_build=any\(flag\.startswith\(\([^)]*"-DCE_COMMANDER_TEST"[^)]*\)\)\s+for flag in CE_DEFINES\)')
+# The packager's table of test switches (build.py, TEST_BUILD_SWITCHES) also reads the defines a build was given, to mark the build folder as a test build; it defines nothing.
+SWITCH_TABLE_READ = re.compile(r'(?m)^TEST_BUILD_SWITCHES = \(\("-DCE_COMMANDER_TEST", "commander-test"\)')
 
 
 def check_define_sites(build):
-    """Where build.py names CE_COMMANDER_TEST (raises AssertionError): its --commander-test flag is the one place that defines it, and the ICE link receipt reads the defines to mark a test build; no
-    other line mentions it."""
+    """Where build.py names CE_COMMANDER_TEST (raises AssertionError): its --commander-test flag is the one place that defines it, and the ICE link receipt reads the defines to mark a test build, and
+    the packager's table of test switches reads them to refuse a test build; no other line mentions it."""
     assert build.count("-DCE_COMMANDER_TEST=") == 1 and build.count('CE_DEFINES.append("-DCE_COMMANDER_TEST=1")') == 1, "only build.py's flag defines it"
     assert 'if a.commander_test:\n        CE_DEFINES.append("-DCE_COMMANDER_TEST=1")' in build, "and only where --commander-test was given"
-    assert len(RECEIPT_READ.findall(build)) == 1, "the one other mention is the ICE receipt's test of the defines it was given"
-    assert len(re.findall(r"CE_COMMANDER_TEST", build)) == 2, "the flag's definition and the receipt's test are every mention"
+    assert len(RECEIPT_READ.findall(build)) == 1, "one other mention is the ICE receipt's test of the defines it was given"
+    assert len(SWITCH_TABLE_READ.findall(build)) == 1, "the packager's table of test switches names it once"
+    assert len(re.findall(r"CE_COMMANDER_TEST", build)) == 3, "the flag's definition, the receipt's test and the switch table are every mention"
 
 
 def faithful_differences(alone, without):
@@ -261,8 +400,22 @@ class Static(unittest.TestCase):
         check_define_sites(BUILD.read_text())
         users = sorted(str(p.relative_to(ROOT)) for p in (ROOT / "port").rglob("*")
                        if p.is_file() and p.suffix in (".cpp", ".h", ".py", ".patch", ".c") and "CE_COMMANDER_TEST" in p.read_text(errors="ignore"))
-        self.assertEqual(users, ["port/build.py", "port/game/ce_cmdmap.cpp", "port/game/ce_commander.cpp", "port/game/ce_commander.h",
-                                 "port/tools/ce_commander_tests.py"])
+        self.assertEqual(users, ["port/build.py", "port/game/ce_cmdmap.cpp", "port/game/ce_cmdorders.cpp", "port/game/ce_cmdview.cpp", "port/game/ce_cmdview.h", "port/game/ce_cmdview_audit.cpp",
+                                 "port/game/ce_commander.cpp", "port/game/ce_commander.h", "port/game/ce_render_fence.cpp", "port/tools/ce_commander_tests.py"])
+        # The audit is a test build's alone: nothing of it is compiled without the define.
+        audit = VIEW_AUDIT.read_text()
+        code = [l for l in audit.split("\n") if l.strip() and not l.lstrip().startswith("//")]
+        self.assertTrue(all("defined(CE_COMMANDER_TEST)" in l for l in code if l.startswith("#if")), "every conditional of the audit asks for the test define")
+        self.assertTrue(code[0].startswith("#if defined(CE_VERSION) && defined(CE_COMMANDER_TEST)") and code[-1] == "#endif")
+        depth, outside = 0, []
+        for l in code:
+            if l.startswith("#if"):
+                depth += 1
+            elif l.startswith("#endif"):
+                depth -= 1
+            elif depth == 0:
+                outside.append(l)
+        self.assertEqual(outside, [], "the audit has code outside its test conditionals")
 
     def test_a_plain_build_has_no_commander_environment_switch_file_or_probe(self):
         module = without_test(comments_off(MODULE.read_text()))
@@ -288,8 +441,8 @@ class Static(unittest.TestCase):
         self.assertEqual(map_resource_violations(MAP.read_text()), [], "the map names a forbidden allocation/random facility")
 
     def test_scalar_math_exception_keeps_allocation_and_random_controls(self):
-        self.assertEqual(map_resource_violations("std::ceil(x); std::fabs(x); std::isfinite(x); std::log(x);"), [])
-        for text in ("std::vector<float> values;", "std::string text;", "std::make_unique<X>();", "std::logarithm(x);",
+        self.assertEqual(map_resource_violations("std::ceil(x); std::fabs(x); std::isfinite(x); std::log(x); (std::numeric_limits<float>::quiet_NaN)();"), [])
+        for text in ("std::vector<float> values;", "std::string text;", "std::make_unique<X>();", "std::logarithm(x);", "std::numeric_limits<X>::allocate();",
                      "new X;", "new\tX[2];", "new (p) X;", "malloc(4);", "calloc(1,4);", "realloc(p,4);", "delete p;",
                      "rand();", "srand(1);", "FloatRandom();", "IntRandom();", "Random();", "MEM_MANAGER;", "#include <new>"):
             with self.subTest(control=text):
@@ -300,6 +453,98 @@ class Static(unittest.TestCase):
 
     def test_the_map_gate_names_every_fence(self):
         check_gates(MAP.read_text(), MODULE.read_text())
+
+    def test_the_live_view_picture_only_reads_the_game(self):
+        text = VIEW.read_text()
+        body = [l for l in text.split("\n") if l.strip() and not l.lstrip().startswith("//")]
+        self.assertEqual(body[0].strip(), "#ifdef CE_VERSION")
+        self.assertEqual(body[-1].strip(), "#endif")
+        self.assertEqual(view_violations(text), [], "the live view's picture steps outside its list of reads")
+        self.assertEqual(view_reads_documented(text), [], "the picture's READS comment and the list here differ")
+        # every object on the list is in fact used (a list wider than the code hides a later addition)
+        code = comments_off(text)
+        for name, members in VIEW_READS.items():
+            for member in members:
+                self.assertRegex(code, r"\b" + name + r"\s*\.\s*" + member + r"\b", f"{name}.{member} is on the list and not read")
+        # its memory is the C library's, and it draws through the device with a state block around the picture
+        for word in ("malloc(", "realloc(", "free(", "CreateStateBlock(D3DSBT_ALL", "gKept->Apply()", "DrawPrimitiveUP", "DrawIndexedPrimitive"):
+            self.assertIn(word, code)
+        begin = function(code, "bool CeCmdViewBegin(const CeWorldViewSample &view, float fade)")
+        self.assertLess(begin.index("CreateStateBlock"), begin.index("SetViewport"), "the device's state is kept before the picture changes any of it")
+        self.assertLess(begin.index("if (!Ready(device)) return false;"), begin.index("CreateStateBlock"), "a picture that cannot be made changes nothing")
+        end = function(code, "void CeCmdViewEnd()")
+        self.assertLess(end.index("Flush(gDevice);"), end.index("gKept->Apply()"), "the state goes back after the last draw")
+
+    def test_the_view_scan_catches_what_it_guards(self):
+        text = VIEW.read_text()
+        self.assertEqual(view_violations(text), [])
+        for name, addition in (("the game's sprite", "\tCSPRITERENDERER::DrawColouredSprite(0, 0, 0, NULL, 0, 1, 1);\n"),
+                               ("the game's vertex buffer", "\tFASTVB.Render();\n"),
+                               ("the render-state cache", "\tLT.SRS(D3DRS_ZENABLE, FALSE);\n"),
+                               ("the font's own draw", "\tfont->DrawTextWithShadow(0, 0, 0, NULL);\n"),
+                               ("the font's lazy texture", "\tfont->InitFromTexture();\n"),
+                               ("the game's allocator", "\tCDXTexture *t = new (MEMTYPE_TEXTURE) CDXTexture;\n"),
+                               ("plain new", "\tint *p = new int[4];\n"),
+                               ("a random number", "\tint r = rand();\n"),
+                               ("a clock", "\tfloat now = PLATFORM.GetSysTimeFloat();\n"),
+                               ("an unlisted member", "\tMAP.mHeightScale = 1.f;\n"),
+                               ("an unlisted object", "\tHUD.Render();\n"),
+                               ("the extents cache", "\tMAP.GetExtents();\n"),
+                               ("the lit texel routine", "\tMAP.Unknown47eff0(0, NULL, NULL, 0, 0, 5, 0, 0, 8, 8);\n"),
+                               ("the set's own iterator", "\tWORLD.GetThingNB().First();\n"),
+                               ("a write to a thing", "\tthing->SetFlags(0);\n"),
+                               ("an unlisted call", "\tthing->Hit(NULL, NULL);\n"),
+                               ("the engine's render", "\tENGINE.Render(0);\n"),
+                               ("the particle step", "\tPARTICLE_MANAGER.Process(0.f, FALSE);\n"),
+                               ("the shadow manager", "\tSHADOWS.ResetShads();\n"),
+                               ("an environment switch", "\tif (getenv(\"X\")) return;\n")):
+            anchor = "void CeCmdViewWorld(int friendlyAllegiance, const void *pilot)\n{\n"
+            self.assertEqual(text.count(anchor), 1)
+            with self.subTest(mutant=name):
+                self.assertTrue(view_violations(text.replace(anchor, anchor + addition, 1)), f"{name} in the picture was not caught")
+        self.assertTrue(view_reads_documented(text.replace("//   STATICSHADOWS   mGrid", "//   STATICSHADOW    mGrid", 1)), "an object missing from the READS comment")
+        self.assertTrue(view_reads_documented(text.replace("//   LT              GetDevice", "//   LT              GetDevice\n//   HUD             Render", 1)),
+                        "an object the READS comment lists and the list here does not")
+
+    def test_the_map_leaves_the_frame_behind_the_live_view_alone(self):
+        text = MAP.read_text()
+        self.assertEqual(map_live_view_violations(text), [])
+        mutations = {
+            "unbound camera": text.replace("camera!=gStrategicOriginal || ", ""),
+            "missing native snapshot": text.replace("CeWorldViewRead(", "MissingNativeView("),
+            "missing actual member picks": text.replace("CeCmdViewCollectUnits(", "MissingMemberPicks("),
+            "replacement scenery": text.replace("CeCmdViewCollectUnits(*view,friendly,pilot);", "CeCmdViewWorld(friendly,pilot);"),
+        }
+        for label, changed in mutations.items():
+            with self.subTest(label=label):
+                self.assertNotEqual(text, changed)
+                self.assertTrue(map_live_view_violations(changed))
+
+
+    def test_no_patch_gives_the_commander_another_entry_into_the_game(self):
+        patches = sorted((ROOT / "port/patches").glob("*.patch"))
+        texts = [p.read_text(encoding="latin1") for p in patches]
+        self.assertEqual(commander_entries(texts), COMMANDER_ENTRIES)
+        self.assertFalse([p.name for p in patches if "render-fence" in p.name], "the render fence's patch is gone")
+        # the presentation hook's line is the shared one in CEngine::SetViewpoint, and nothing else of the Commander's is in the engine's or the renderer's files
+        owners = {}
+        for patch, text in zip(patches, texts):
+            for name, body in sections(text).items():
+                for entry in commander_entries([body]):
+                    owners.setdefault(entry, set()).add(name)
+        self.assertEqual(owners["PortCeCmdRenderCamera"], {"engine.cpp"})
+        self.assertEqual(owners["PortCeCmdRender"], {"DXEngine.cpp"})
+        self.assertEqual(owners["PortCeCmdHideCockpit"], {"DXEngine.cpp", "Hud.cpp"})
+        self.assertEqual(owners["PortCeCmdWorldViewToken"], {"MessageBox.cpp"})
+        self.assertEqual(owners["PortCeCmdThingGone"], {"thing.cpp", "Unit.cpp"})
+        self.assertEqual(owners["PortCeCmdGuidePoint"], {"Guide.cpp"})
+        self.assertEqual({name for names in owners.values() for name in names}, {'DXEngine.cpp', 'Hud.cpp', 'MessageBox.cpp', 'engine.cpp', 'game.cpp', 'ltshell.cpp', 'thing.cpp', 'Unit.cpp', 'Guide.cpp'})
+        with self.subTest(mutant="a hook in the render"):
+            self.assertNotEqual(commander_entries(texts + ["+\tif (!PortCeCmdStrategicPass())\n"]), COMMANDER_ENTRIES)
+        with self.subTest(mutant="the picture called from a patch"):
+            self.assertNotEqual(commander_entries(texts + ["+\tCeCmdViewWorld(0, NULL);\n"]), COMMANDER_ENTRIES)
+        with self.subTest(mutant="a keep and put back around a render"):
+            self.assertNotEqual(commander_entries(texts + ["+\tCeCmdSaveRenderCaches();\n"]), COMMANDER_ENTRIES)
 
     def test_the_map_reaches_the_squads_only_through_the_order_layer(self):
         text = MAP.read_text()
@@ -388,7 +633,8 @@ class Mutants(unittest.TestCase):
 
     def test_map_drawn_after_the_scene_ends(self):
         block = self.render_block()
-        files = self.mutate("DXEngine.cpp", block + "\tPLATFORM.EndScene();\n", "\tPLATFORM.EndScene();\n" + block)
+        end = re.match(OVERLAY_HOOK + r"\tPLATFORM\.EndScene\(\);\n", self.files["DXEngine.cpp"][self.files["DXEngine.cpp"].index(block) + len(block):]).group(0)
+        files = self.mutate("DXEngine.cpp", block + end, end + block)
         with self.assertRaises((AssertionError, ValueError)):
             check_placement(files)
 
@@ -449,7 +695,8 @@ class Mutants(unittest.TestCase):
             "a second definition": build.replace(anchor, '    CE_DEFINES.append("-DCE_COMMANDER_TEST=1")\n' + anchor),
             "the definition outside its flag": build.replace('if a.commander_test:\n        CE_DEFINES.append("-DCE_COMMANDER_TEST=1")',
                                                               'CE_DEFINES.append("-DCE_COMMANDER_TEST=1")'),
-            "a third mention": build + "\n# CE_COMMANDER_TEST\n",
+            "a fourth mention": build + "\n# CE_COMMANDER_TEST\n",
+            "the switch table's entry lost": build.replace('(("-DCE_COMMANDER_TEST", "commander-test"), ', '('),
             "the receipt's test lost": build.replace('"-DCE_NET_TEST_AUTOMATION", "-DCE_COMMANDER_TEST"', '"-DCE_NET_TEST_AUTOMATION"'),
         }
         for name, text in mutants.items():
@@ -610,8 +857,15 @@ class CommandBoundary(unittest.TestCase):
             records.append(match.group(0))
         (cls.directory / "ce_commander_boundary_records.inc").write_text(
             "\n".join(records))
-        cls.production = "\n\n".join(cls.definition(cls.source, name) for name in
-            ("Ground", "SetMembers", "Plant", "Hold", "CeCmdIssue"))
+        scope = re.search(r"bool gExplicitUnitReplacement = false;\n"
+                          r"struct ExplicitUnitReplacement \{.*?\n\};", cls.source, re.S)
+        if not scope:
+            raise AssertionError("production explicit-order scope missing")
+        # This fixture observes native state/destination delivery. The actual
+        # token adapter and release timing have their own source-coupled driver.
+        cls.production = scope.group(0) + "\n"
+        cls.production += "\n\n".join(cls.definition(cls.source, name) for name in
+            ("Ground", "ReleaseMemberOrders", "SetMembers", "Plant", "Hold", "CeCmdMarchLand", "CeCmdIssue"))
 
     @classmethod
     def tearDownClass(cls):
@@ -642,6 +896,27 @@ class CommandBoundary(unittest.TestCase):
         self.assertEqual(self.execute("production", self.production), 0,
                          "boundary execution failed; private logs: " +
                          str(self.logs))
+
+    def test_explicit_scope_precedes_native_consumers(self):
+        original = self.definition(self.production, "CeCmdIssue")
+        self.assertEqual(original.count("ExplicitUnitReplacement replacingUnits;"), 1)
+        late = original.replace("    ExplicitUnitReplacement replacingUnits;\n", "")
+        final_return = late.rfind("\treturn true;")
+        self.assertGreater(final_return, 0)
+        late = late[:final_return] + "    ExplicitUnitReplacement replacingUnits;\n" + late[final_return:]
+        mutant = self.production.replace(original, late, 1)
+        self.assertEqual(self.execute("late-explicit-scope", mutant), 1)
+        self.assertIn("explicit scope precedes native state",
+                      (self.logs / "late-explicit-scope.stderr").read_text())
+
+    def test_routine_point_cannot_claim_native_override(self):
+        original = self.definition(self.production, "Hold")
+        self.assertIn("n->GoToPoint(goal, FALSE)", original)
+        changed = original.replace("n->GoToPoint(goal, FALSE)", "n->GoToPoint(goal, true)", 1)
+        mutant = self.production.replace(original, changed, 1)
+        self.assertEqual(self.execute("routine-native-override", mutant), 1)
+        self.assertIn("routine setter cannot claim native override",
+                      (self.logs / "routine-native-override.stderr").read_text())
 
     def test_nonfinite_guard_is_causal(self):
         guard = re.compile(r"if \(!isfinite\(x\) \|\| "

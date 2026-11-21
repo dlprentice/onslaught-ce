@@ -3,6 +3,8 @@
 #endif
 #ifndef CE_NETWORK_OFF
 #include "../../game/ce_network_chat_ui.h"
+// port/game/ce_network_ring.cpp; weak, so the input checks that compile this file alone need no stand-in
+extern "C" int PortCeNetRingEvent(const union SDL_Event *event) __attribute__((weak));
 #endif
 // SPDX-License-Identifier: GPL-3.0-only
 // port/platform/common/window.cpp: the game's window and message loop on SDL3, on both targets. The game registers a
@@ -25,6 +27,7 @@
 
 #include "platform.h"
 #include "feel.h"
+#include "testhooks.h"
 #ifndef CE_NETWORK_OFF
 #include "../../game/ce_network_session.h"
 #include "input_activity.h"
@@ -179,7 +182,8 @@ void PostMouseMove(HWND h, WPARAM w, LPARAM l)
 // until the pointer really moves, a move report is not passed on while the pointer's desktop position is one held at
 // the switch (before it, and after it in case the display mode moved the pointer). The first report from anywhere else
 // ends the hold and goes through. Where SDL has no desktop position (Wayland), the position it gives moves with the
-// window, so the report goes through as before.
+// window, so the report goes through as before. A button press or release ends the hold too, and tells the game where
+// the pointer is first: the front end judges a click at the last position it was told, not at the click's own.
 bool gPointerHeld;
 float gPointerHeldX[2], gPointerHeldY[2];
 unsigned gPointerHeldReports;
@@ -398,6 +402,9 @@ extern "C" int PortMapMouse(float *x, float *y);	// d3d9hooks.cpp: window to gam
 
 // SDL's mouse positions are in points; the client rectangle (PortGetClientRect) is in pixels. With widescreen modes on,
 // the window has pixel density (HiDPI), so outside desktop fullscreen a position is scaled by the window's density.
+#ifdef CE_VERSION
+static int gPointerNow[3];	// PortPointerNow, below: x, y, and how many points were mapped so far
+#endif
 LPARAM MouseLParam(float x, float y)
 {
 	if (!PortMapMouse(&x, &y) && PortWideModes() && gNumWindows)
@@ -411,8 +418,34 @@ LPARAM MouseLParam(float x, float y)
 	}
 	if (x < 0) x = 0;
 	if (y < 0) y = 0;
+#ifdef CE_VERSION
+	gPointerNow[0] = (int)x; gPointerNow[1] = (int)y; if (++gPointerNow[2] <= 0) gPointerNow[2] = 1;
+#endif
 	return MAKELPARAM((int)x, (int)y);
 }
+
+#ifdef CE_VERSION
+// The window point last mapped above (for a movement, a button, the wheel, or the pointer a released mouse starts from), for CE code that keeps a
+// pointer of its own while the game's MOUSE_X is not the pointer's place: with the mouse released in a running level the game takes MOUSE_X as a
+// movement to steer by and puts it back on the window's centre every frame. The Commander's live view reads this (ce_cmdmap.cpp). Returns how
+// many points were mapped so far (a caller sees a new one by the count), 0 before any, when *x and *y are left alone. It records only; nothing
+// here changes what the game is sent.
+extern "C" int PortPointerNow(int *x, int *y)
+{
+	if (!gPointerNow[2]) return 0;
+	*x = gPointerNow[0]; *y = gPointerNow[1];
+	return gPointerNow[2];
+}
+#endif
+#ifndef CE_NETWORK_OFF
+extern "C" void PortCeNetRingMousePoint(float x, float y, int *menuX, int *menuY)
+{
+	const LPARAM point = MouseLParam(x, y);
+	*menuX = int(LOWORD(point));
+	*menuY = int(HIWORD(point));
+	PortUiMouseMenuPoint(menuX, menuY);
+}
+#endif
 
 WPARAM MouseButtons()
 {
@@ -754,8 +787,10 @@ void FeelScriptedKeys()
 	}
 }
 
+
 void Pump()
 {
+	if (gPortTestHooks) gPortTestHooks->frame();		// testhooks.h: null in every build but a --test-kit one
 	if (PORT_FEEL_ON()) PortFeelPump();		// frame-feel measurement (feel.h): the first pump after a Present starts a pass
 #ifndef CE_NETWORK_OFF
 #if defined(CE_NETWORK_TEXT)
@@ -1018,6 +1053,7 @@ void Pump()
 		else if (!SDL_PollEvent(&e))
 			break;
 #ifndef CE_NETWORK_OFF
+		if (PortCeNetRingEvent && PortCeNetRingEvent(&e)) continue;	// a network mission's ring: Escape or Start, and its own keys while open
 #if defined(CE_NETWORK_TEXT)
         if (PortCeChatEvent(&e)) continue;
 #endif
@@ -1150,6 +1186,14 @@ void Pump()
 #endif
 				break;
 #ifndef CE_NETWORK_OFF
+			}
+#endif
+#ifdef CE_VERSION
+			if (gPointerHeld)
+			{
+				// the player's own act, with the pointer's true place: the hold ends and the game learns that place
+				gPointerHeld = false;
+				PostMouseMove(h, MouseButtons(), MouseLParam(e.button.x, e.button.y));
 			}
 #endif
 			bool down = e.type == SDL_EVENT_MOUSE_BUTTON_DOWN;
@@ -1450,12 +1494,51 @@ extern "C" BOOL WINAPI PortGetWindowRect(HWND h, LPRECT r)
 extern "C" BOOL WINAPI PortAdjustWindowRect(LPRECT, DWORD, BOOL) { return TRUE; }
 extern "C" BOOL WINAPI PortAdjustWindowRectEx(LPRECT, DWORD, BOOL, DWORD) { return TRUE; }
 
+#ifdef CE_VERSION
+// Between PortHoldPointerForWindowChange's two calls the game's window calls belong to a live Window mode switch.
+static bool gWindowModeSwitch;
+
+#if defined(_WIN32)
+// A live switch out of exclusive fullscreen re-applies the place the window had while it was fullscreen, which is
+// the display's corner when Direct3D put it there. SDL places the client area at that point, so the title bar the
+// window has just been given would lie above the display, out of reach. Move the place down until the bar is inside
+// the display's usable area. Only a window with a border is moved, and only when its bar would be cut off.
+static void KeepTitleBarOnDisplay(SDL_Window *w, int *y)
+{
+	int top = 0, left = 0, bottom = 0, right = 0;
+	SDL_Rect usable;
+	if (!w || (SDL_GetWindowFlags(w) & (SDL_WINDOW_BORDERLESS | SDL_WINDOW_FULLSCREEN)) ||
+		!SDL_GetWindowBordersSize(w, &top, &left, &bottom, &right) ||
+		!SDL_GetDisplayUsableBounds(SDL_GetDisplayForWindow(w), &usable))
+		return;
+	if (*y - top < usable.y)
+	{
+		PortSessionLog(PORT_SESSION_WINDOW, false, "window mode change: window top moved from %d to %d to keep its title bar on the display",
+			*y, usable.y + top);
+		*y = usable.y + top;
+	}
+}
+#endif
+#endif
+
 extern "C" BOOL WINAPI PortSetWindowPos(HWND h, HWND after, int x, int y, int cx, int cy, UINT flags)
 {
 	WIN32_PASSTHROUGH(SetWindowPos(h, after, x, y, cx, cy, flags))
-	(void)after;
 	if (!Find(h))
 		return FALSE;
+#if defined(_WIN32)
+	// The game hands its window back to the desktop with HWND_NOTOPMOST after it leaves exclusive fullscreen, where
+	// Direct3D keeps the window in front of everything. SDL moves and sizes a window but never changes its place in
+	// front of or behind other windows, so that part of the request is made on the window itself.
+	if ((after == HWND_NOTOPMOST || after == HWND_TOPMOST) && !(flags & SWP_NOZORDER))
+		SetWindowPos(h, after, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+#ifdef CE_VERSION
+	if (gWindowModeSwitch && !(flags & SWP_NOMOVE))
+		KeepTitleBarOnDisplay(Sdl(h), &y);
+#endif
+#else
+	(void)after;
+#endif
 	if (!(flags & SWP_NOMOVE))
 		SDL_SetWindowPosition(Sdl(h), x, y);
 	if (!(flags & SWP_NOSIZE) && cx > 0 && cy > 0)
@@ -1540,6 +1623,7 @@ extern "C" int WINAPI PortShowCursor(BOOL show)
 // SDL's video is running. See PointerStillSinceWindowChange.
 void PortHoldPointerForWindowChange(bool after)
 {
+	gWindowModeSwitch = !after;
 	if (after && !gPointerHeld)
 		return;		// no hold to extend: the pointer has moved since the switch began
 	float x = 0, y = 0;
@@ -1631,6 +1715,21 @@ void PortPumpInput()
 // second, CGame::MainLoop), so a key's press and release reach the key trap and KeyDown[] up to 50 ms after they happened, while SDL's state is
 // refreshed with every frame's DirectInput polls. `dik` is the game's key code, the scan code of ltshell.cpp's MsgProc with the extended keys 0x80
 // higher. 1: held; 0: not; -1: the platform cannot say (the key has no SDL scancode here). SDL's state is refreshed at most once for a Present.
+// Current pointer buttons for a command-mode boundary, before mouse capture
+// changes. The native trap numbers buttons left, middle, right. An unfocused
+// or absent main window cannot supply a trustworthy release sample.
+extern "C" int PortMouseHeldNow(unsigned button)
+{
+    if (button > 2) return -1;
+    SDL_Window* window = PortMainSdlWindow();
+    if (!window) return -1;
+    const SDL_WindowFlags flags = SDL_GetWindowFlags(window);
+    if (!(flags & SDL_WINDOW_INPUT_FOCUS) ||
+        (flags & (SDL_WINDOW_MINIMIZED | SDL_WINDOW_HIDDEN))) return -1;
+    const SDL_MouseButtonFlags masks[] = {SDL_BUTTON_LMASK, SDL_BUTTON_MMASK, SDL_BUTTON_RMASK};
+    return (SDL_GetMouseState(NULL, NULL) & masks[button]) ? 1 : 0;
+}
+
 extern "C" int PortKeyHeldNow(unsigned dik)
 {
 	static unsigned short sdlOfPc[0x200];
@@ -1691,3 +1790,7 @@ extern "C" int CE_NetWindowAutomationIdle(void)
 }
 
 #endif
+
+// testhooks.h: null unless a --test-kit build's own files set it; the held-key table as a plain read.
+PortTestHooks *gPortTestHooks = nullptr;
+bool *PortWindowFakeHeld() { return gFakeHeld; }

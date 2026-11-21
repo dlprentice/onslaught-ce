@@ -24,6 +24,7 @@ sys.path.insert(0, str(ROOT / "port"))
 import build  # noqa: E402
 
 PATCH = ROOT / "port/patches/0116-ce-bonus-race.patch"
+PATCH_MOD = ROOT / "port/patches/0250-ce-mod-levels-return.patch"
 
 DRIVER = r"""// SPDX-License-Identifier: GPL-3.0-only
 // Authored boundaries for CFrontEnd::Init's page choice (the block is the build's patched FrontEnd.cpp text).
@@ -47,10 +48,11 @@ char gAllCheatsEnabled = 0;
 struct { int mAutoConfigTest = 0; int mAttractMode = 0; } CLIPARAMS;
 static int demo = 0;
 #define PLAYABLE_DEMO demo
-static bool pendingRace = false, pendingDebrief = false, pendingCoop = false;
+static bool pendingRace = false, pendingDebrief = false, pendingCoop = false, pendingMod = false;
 static int raceAsked = 0, debriefAsked = 0, coopAsked = 0;
 bool PortCeBonusReturning() { ++debriefAsked; return pendingDebrief; }
 bool PortCeBonusRaceReturning() { ++raceAsked; const bool r = pendingRace; pendingRace = false; return r; }
+bool PortCeBonusModLevelPending() { return pendingCoop && pendingMod; }
 bool PortCeBonusCoopReturning() { ++coopAsked; const bool r = pendingCoop; pendingCoop = false; return r; }
 
 struct CFrontEnd
@@ -80,9 +82,9 @@ void CFrontEnd::Branch(EFrontEndEntry entry)
 
 int main(int argc, char **argv)
 {
-	if (argc != 8)
+	if (argc != 8 && argc != 9)
 		return 1;
-	// level autosave(0 not, 1 normal, 2 pretend) race-pending debrief-pending coop-pending entry demo
+	// level autosave(0 not, 1 normal, 2 pretend) race-pending debrief-pending coop-pending entry demo [mod-level-started 0|1]
 	FRONTEND.mSelectedLevel = std::atoi(argv[1]);
 	FRONTEND.mAutoSave = std::atoi(argv[2]);
 	pendingRace = std::atoi(argv[3]) != 0;
@@ -90,6 +92,7 @@ int main(int argc, char **argv)
 	pendingCoop = std::atoi(argv[5]) != 0;
 	const int entry = std::atoi(argv[6]);
 	demo = std::atoi(argv[7]);
+	pendingMod = argc == 9 && std::atoi(argv[8]) != 0;
 	FRONTEND.Branch((EFrontEndEntry)entry);
 	std::printf("page=%s calls=[%s] raceAsked=%d debriefAsked=%d coopAsked=%d\n", name(FRONTEND.mActivePage),
 	            FRONTEND.calls.empty() ? "" : FRONTEND.calls.substr(0, FRONTEND.calls.size() - 1).c_str(), raceAsked, debriefAsked,
@@ -114,11 +117,11 @@ def mirror_text(name):
                            [build.MIRROR, build.MIRROR / "MissionScript"]).encode("latin-1")
 
 
-def patched_frontend(out, patch_text=None):
+def patched_frontend(out, patch_text=None, mod_text=None):
     """The mirror's FrontEnd.cpp with every port patch's FrontEnd.cpp section applied in the build's order, at fuzz 0."""
     (out / "FrontEnd.cpp").write_bytes(mirror_text("FrontEnd.cpp"))
     for patch in sorted((ROOT / "port/patches").glob("*.patch")):
-        text = patch_text if patch == PATCH and patch_text is not None else patch.read_text(encoding="latin1")
+        text = patch_text if patch == PATCH and patch_text is not None else mod_text if patch == PATCH_MOD and mod_text is not None else patch.read_text(encoding="latin1")
         for m in re.finditer(r"(?ms)^--- a/FrontEnd\.cpp\n\+\+\+ b/FrontEnd\.cpp\n.*?(?=^--- a/|\Z)", text):
             (out / "section.patch").write_text(m.group(0), encoding="latin1")
             r = subprocess.run(["patch", "--batch", "--fuzz=0", "-p1", "-i", "section.patch"], cwd=out,
@@ -167,6 +170,15 @@ CASES = {
     (201, NORMAL, 0, 1, 0, 0, 0): want("DEBRIEFING", debrief=1),
     (903, NORMAL, 1, 0, 0, 2, 0): want("UNKNOWN", "SetPage(MAIN,0)"),
     (856, NORMAL, 0, 0, 1, 2, 0): want("UNKNOWN", "SetPage(MAIN,0)"),
+    # a level a mod adds (880 to 899), started from the Mods page (patch 0250): the Onslaught CE page, asked once; played any other way it is as before
+    (888, NORMAL, 0, 0, 1, 0, 0, 1): want("LANGUAGE_TEST", coop=1),
+    (880, PRETEND, 0, 0, 1, 0, 0, 1): want("LANGUAGE_TEST", coop=1),
+    (899, NORMAL, 0, 0, 1, 0, 0, 1): want("LANGUAGE_TEST", coop=1),
+    (888, NORMAL, 0, 0, 1, 0, 0, 0): want("UNKNOWN", SAVE % "DEBRIEFING", debrief=1),
+    (888, NORMAL, 0, 0, 0, 0, 0, 1): want("UNKNOWN", SAVE % "DEBRIEFING", debrief=1),
+    (900, NORMAL, 0, 0, 1, 0, 0, 1): want("UNKNOWN", SAVE % "DEBRIEFING", debrief=1),
+    (888, NORMAL, 0, 0, 1, 2, 0, 1): want("UNKNOWN", "SetPage(MAIN,0)"),
+    (860, NORMAL, 0, 0, 1, 0, 0, 1): want("LANGUAGE_TEST", coop=1),
 }
 
 
@@ -180,10 +192,10 @@ class RaceBranchTests(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def build(self, name, patch_text=None):
+    def build(self, name, patch_text=None, mod_text=None):
         folder = self.out / name
         folder.mkdir()
-        block = branch_block(patched_frontend(folder, patch_text))
+        block = branch_block(patched_frontend(folder, patch_text, mod_text))
         (folder / "branch.inc").write_text(block)
         (folder / "driver.cpp").write_text(DRIVER)
         exe = folder / "driver"
@@ -207,7 +219,7 @@ class RaceBranchTests(unittest.TestCase):
 
     def test_the_hook_sits_in_the_race_branch_before_the_autosave(self):
         block = branch_block(patched_frontend(self.out))
-        race = block[block.index("// Race levels"):block.index("else if ((mSelectedLevel >= 850)")]
+        race = block[block.index("// Race levels"):block.index("else if (((mSelectedLevel >= 850)")]
         self.assertEqual(block.count("PortCeBonusRaceReturning()"), 1)
         self.assertEqual(block.count("PortCeBonusCoopReturning()"), 1)
         self.assertLess(race.index("PortCeBonusRaceReturning()"), race.index("SetSaveMode"))
@@ -240,10 +252,23 @@ class RaceBranchTests(unittest.TestCase):
             ("coop-hook-asked-twice", "\t\t\tif (PortCeBonusCoopReturning())",
              "\t\t\tif (PortCeBonusCoopReturning() | PortCeBonusCoopReturning())"),
         )
+        mod = PATCH_MOD.read_text()
+        mod_mutants = (
+            ("mod-range-never", "&& PortCeBonusModLevelPending())", "&& false)"),
+            ("mod-range-always", "&& PortCeBonusModLevelPending())", "&& true)"),
+            ("mod-range-wide", "(mSelectedLevel < 900) &&", "(mSelectedLevel < 1000) &&"),
+            ("mod-range-includes-900", "(mSelectedLevel < 900) &&", "(mSelectedLevel <= 900) &&"),
+        )
         for name, old, new in mutants:
             with self.subTest(mutant=name):
                 self.assertEqual(patch.count(old), 1, name)
                 exe = self.build(name, patch.replace(old, new))
+                failed = [case for case, want in CASES.items() if self.run_case(exe, case).stdout.strip() != want]
+                self.assertTrue(failed, f"mutant {name} survived every case")
+        for name, old, new in mod_mutants:
+            with self.subTest(mutant=name):
+                self.assertEqual(mod.count(old), 1, name)
+                exe = self.build(name, None, mod.replace(old, new))
                 failed = [case for case, want in CASES.items() if self.run_case(exe, case).stdout.strip() != want]
                 self.assertTrue(failed, f"mutant {name} survived every case")
 

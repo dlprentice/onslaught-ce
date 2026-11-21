@@ -98,6 +98,7 @@ def main():
                           "-I", str(repo / "port/network/tests"),
                           "-I", str(repo / "port/platform/common"),
                           "-I", str(repo / "port/network"),
+                          "-I", str(repo / "port/game"),
                           str(repo / ("port/network/tests/player_connection_entry_failure_driver.cpp"
                      if args.terminal_state_only else "port/network/tests/player_connection_entry_driver.cpp")),
                           str(repo / "port/platform/common/ce_netcode.cpp"), str(sha),
