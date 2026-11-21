@@ -76,8 +76,8 @@ static void PlacementCardChecks(const CeEditorUiModel& source) {
 // The card never hides what it describes: a selected mark (or the start with its name) where the bottom-right card would
 // stand sends the card to the top right, clear of the mark and of every other piece of furniture.
 static void CardDockChecks() {
-    static const char* tools[8] = {"Save", "Open", "Undo", "Redo", "Play draft", "Change Side", "Reach Point", "Exit"};
-    static const CeEditorUiPrompt chosen[] = {{"Drag", "Move"}, {"Page Up", "Raise"}, {"F5", "Play draft"}, {"F1", "Keys"}};
+    static const char* tools[8] = {"Save", "Open", "Undo", "Redo", "Play Draft", "Change Side", "Reach Point", "Exit"};
+    static const CeEditorUiPrompt chosen[] = {{"Drag", "Move"}, {"Page Up", "Raise"}, {"F5", "Play Draft"}, {"F1", "Keys"}};
     const float shapes[3][2] = {{640, 480}, {1280, 720}, {1920, 1080}};
     for (const auto& shape : shapes) for (int start = 0; start < 2; ++start) {
         CeEditorUiModel m; std::memset(&m, 0, sizeof(m));

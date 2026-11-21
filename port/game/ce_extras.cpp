@@ -421,7 +421,18 @@ public:
 			case BUTTON_FRONTEND_MENU_LEFT:		moved = CeListPage(list, -1);	break;
 			case BUTTON_FRONTEND_MENU_RIGHT:	moved = CeListPage(list, 1);	break;
 			case BUTTON_PAUSE_MENU_SELECT:		SelectRow(page, list);			break;
-			case BUTTON_FRONTEND_MENU_BACK:		Back();							break;
+			case BUTTON_FRONTEND_MENU_BACK:
+				if (sPage == XP_BACKUP_PREVIEW)
+				{
+					const int step = PortCeBackupPreviewStepBack();
+					if (step > 0)
+						CFrontEnd::PlaySound(FES_BACK);
+					else if (step == 0)
+						Back();
+				}
+				else
+					Back();
+				break;
 			}
 			if (moved)
 				CFrontEnd::PlaySound(FES_MOVE);

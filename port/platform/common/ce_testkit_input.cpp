@@ -46,9 +46,11 @@ void PortTestKitMouse(int kind, float x, float y)
 	if (kind == 0) { f.type = SDL_EVENT_MOUSE_MOTION; f.motion.x = x; f.motion.y = y; }
 	else
 	{
-		f.type = kind == 1 ? SDL_EVENT_MOUSE_BUTTON_DOWN : SDL_EVENT_MOUSE_BUTTON_UP;
-		f.button.button = SDL_BUTTON_LEFT;
-		f.button.down = kind == 1;
+		const bool right = (kind == 6 || kind == 7);
+		const bool down = (kind == 1 || kind == 6);
+		f.type = down ? SDL_EVENT_MOUSE_BUTTON_DOWN : SDL_EVENT_MOUSE_BUTTON_UP;
+		f.button.button = right ? SDL_BUTTON_RIGHT : SDL_BUTTON_LEFT;
+		f.button.down = down;
 		f.button.x = x;
 		f.button.y = y;
 	}

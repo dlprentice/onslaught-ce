@@ -1,7 +1,7 @@
 # Contributing
 
 Status: active
-Last updated: 2026-11-11
+Last updated: 2026-11-21
 Summary: where each kind of work goes, what a first contribution needs and runs, how a pull request on this generated repository is taken in, the areas still changing quickly, and the evidence boundaries.
 
 Thank you for your interest. Please read this before opening an issue or a pull request.
@@ -125,9 +125,10 @@ What helps most:
 Changes to `src/` are held to a stricter rule: its files keep their line counts and the game's original build output,
 so a change there needs the matching check, which this tree cannot run. The
 [public decompilation](https://github.com/dlprentice/onslaught-decomp#reproducing-the-match) documents that
-function-check route using your own pinned game and toolchain inputs; propose `src/` changes there. The matching
-milestone retains documented concessions and does not establish complete gameplay parity or completion of planned CE
-features.
+function-check route using your own pinned game and toolchain inputs; propose `src/` changes there. Every annotated
+function matches purely from C++ source with zero post-compile object-patch concessions (`config/object-patches.tsv`
+is empty; only labelled source and link-layout stand-ins remain); that matching milestone does not by itself establish
+complete gameplay parity or completion of planned CE features.
 
 ## Licence of contributions
 

@@ -15,4 +15,4 @@
 +	else
  	if (FRONTEND.IsRunning())
  	{
- 		x = PLATFORM.GetWindowWidth() * x * 0.0015625f /* retail 005db3a4: / 640.f */;
+ 		x = PLATFORM.GetWindowWidth() * x / 640.f;

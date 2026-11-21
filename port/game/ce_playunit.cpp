@@ -1504,8 +1504,8 @@ void UnitKeyName(char *out, int n, int action, const char *fallback)
         case DIK_SLASH: name = "/"; break;
         case DIK_SEMICOLON: name = ";"; break;
         case DIK_APOSTROPHE: name = "'"; break;
-        case DIK_LBRACKET: name = "["; break;
-        case DIK_RBRACKET: name = "]"; break;
+        case DIK_LBRACKET: name = "Left Bracket"; break;
+        case DIK_RBRACKET: name = "Right Bracket"; break;
         case DIK_BACKSLASH: name = "Backslash"; break;
         case DIK_GRAVE: name = "Backtick"; break;
         case DIK_HOME: name = "Home"; break;
@@ -1556,10 +1556,10 @@ void UnitViewHelp(char *out, int n)
     MorphKeyName(back, sizeof(back));
     const char *views = gOnFoot ? "Wide/Close/First" : "Wide/Close";
     if (TakeKeyFree())
-        snprintf(out, n, "%s/%s: %s | %s: Return | %s: Take", closer, wider,
+        snprintf(out, n, "%s/%s: %s   %s: Return   %s: Take", closer, wider,
                  views, back, PortCeActionName(CeControlAction::TakeUnit));
     else
-        snprintf(out, n, "%s/%s: %s | %s: Return", closer, wider, views, back);
+        snprintf(out, n, "%s/%s: %s   %s: Return", closer, wider, views, back);
 }
 
 // The standing prompt while a unit is held: "AV-14B Sabre Pulse Tank | Space: Return | Wheel: Wide/Close". The two zoom keys are named once when they are one
@@ -1970,7 +1970,7 @@ void Probe(CUnit *u, CBattleEngine *engine)
                     CLine around(sample, sample + FVector(8.f*cosf(bearing), 8.f*sinf(bearing), 0.f));
                     CWorldLineColReport found;
                     nearbySolid = WORLD.FindFirstThingToHitLine(around, u, &found) != kCollideNothing &&
-                        found.mHitThing && found.mHitThing->GetThingType() != THING_TYPE_UNIT;
+                        found.mHitThing && !(found.mHitThing->GetThingType() & THING_TYPE_UNIT);
                 }
             }
             Note("first view: centered=%d clearance=%.4f line_contact=%d world_object=%d ground_contact=%d common_origin=%d solid_nearby=%d",
@@ -2549,7 +2549,7 @@ static CUnit* SelectionUnit(uint64_t world, CUnit* candidate, int expectedNumber
     ListIterator<CThing> it(&WORLD.GetThingNB());
     for (CThing* thing = it.First(); thing; thing = it.Next()) {
         if (thing != candidate) continue;
-        if (thing->GetThingType() != THING_TYPE_UNIT ||
+        if (!(thing->GetThingType() & THING_TYPE_UNIT) ||
             thing->GetThingNumber() != expectedNumber) return NULL;
         return static_cast<CUnit*>(thing);
     }

@@ -1,7 +1,7 @@
 # Onslaught CE
 
 Status: preview. From 0.1.8 on it updates itself; from 0.1.7 or earlier, download the latest release once by hand.
-Last updated: 2026-11-14
+Last updated: 2026-11-21
 Summary: the native Battle Engine Aquila port: how to install, play, update, report a problem and build it, and where the project's other repositories are.
 
 This README follows this source branch, which can describe work that is not in the latest download. The README
@@ -12,9 +12,9 @@ describe the version you installed. Versions 0.1.8 and later have a signed-updat
 [0.1.12](https://github.com/dlprentice/onslaught-ce/releases/tag/v0.1.12) release notes for their 32-bit
 dependency caveat.
 
-The published release is **0.1.13**. The newer source features described here have not been released as a new
-package. Experimental features remain opt-in; a source build or an isolated test does not establish that every
-feature works on both platforms.
+The published release is **0.1.13**. Upcoming releases follow an incremental `0.1.14`–`0.1.19` cadence leading up to
+**0.2.0**; the newer source features described here have not yet shipped in a published package. Experimental features
+remain opt-in; a source build or an isolated test does not establish that every feature works on both platforms.
 
 Onslaught CE is a native port of *Battle Engine Aquila* (Lost Toys, 2003) for Linux (i686) and Windows (i686), built
 from the game's source code. You need your own copy of the game.
@@ -109,8 +109,8 @@ several places, folders you are unsure of): follow the
 - **Unfinished features:** they are listed, switched off, under `[Experimental]` in `ce.ini`; they are unsupported and liable to change.
   A line you set in an earlier version is kept, but what it turns on has changed: with `commander=1` from 0.1.13,
   **Commander** (M by default) now opens a live view for ordering squads. The battle keeps running while your Battle
-  Engine stands without your control and the HUD is hidden. Press Commander again or Escape to close it. The paused
-  map on V requires the additional test setting `commander_tactical_map=1`. See the
+  Engine stands without your control and the HUD is hidden. Press Commander again or Escape to close it. Press V for the paused
+  tactical map (enable `commander_tactical_map=1` in `ce.ini`). See the
   [adjustable controls](port/controller-input.md#adjustable-keyboard-actions-development-build). With
   `museum=1`, a Museum Prototype visit is kept out of your career: nothing is saved during it, so with a named career the
   game's save error message appears each time you leave its Pause Menu. Nothing is wrong: the career is as it was when the
@@ -1030,7 +1030,7 @@ The source has three parts:
 | Folder | What it holds |
 | --- | --- |
 | `src/` | the game's C++ source, from the decompilation of the original; its line counts are fixed because the game's own build depends on them |
-| `linklib/` | extra definitions and second names for symbols the link needs, kept apart from `src/` |
+| `linklib/` | provisional link-only definitions kept apart from `src/` (`linklib/aliases.tsv` is empty: 0 link aliases) |
 | `port/` | the native port: the build script, the Linux and Windows platform layer, the launcher and updater, patches applied to a generated copy of `src/`, replacement libraries and the checks ([port/README.md](port/README.md)) |
 | `config/` | SHA-256 pins for inputs the build verifies: the two game files it reads and the original compiler's files used to rebuild one library |
 | `LICENSES/` | the licence texts that [REUSE.toml](REUSE.toml) names |
@@ -1074,5 +1074,5 @@ The **Onslaught CE → Special Thanks** menu carries these acknowledgements in t
 - [onslaught-preservation](https://github.com/dlprentice/onslaught-preservation): documentation of the game, its
   formats, behaviours and history.
 - [Onslaught-Career-Editor](https://github.com/dlprentice/Onslaught-Career-Editor): companion app for saves, settings
-  and lore; to be renamed onslaught-companion.
+  and lore (its player capabilities are moving into Onslaught CE).
 - [stuart73/Onslaught](https://github.com/stuart73/Onslaught): upstream GPL source for the game.

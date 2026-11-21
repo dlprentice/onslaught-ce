@@ -65,8 +65,8 @@
 -	if (mMainPart->GetVelocity().MagnitudeSq()>0.01f*0.01f)
 +	if (mMainPart->GetVelocity().MagnitudeSqXZY()>0.01f*0.01f)
  	{
- 		float	yawRate=(vx*mMainPart->mConfiguration->mAirTurnRate*0.010638298f /* retail 005d8c94: / 94.0f */) *mMainPart->ZoomModifier(mMainPart->mZoom);
- 		float	rollRate=(vx*0.008547009f /* retail 005d8c90: / 117.0f */)  *mMainPart->ZoomModifier(mMainPart->mZoom);
+ 		float	yawRate=(vx*mMainPart->mConfiguration->mAirTurnRate/94.0f) *mMainPart->ZoomModifier(mMainPart->mZoom);
+ 		float	rollRate=(vx/117.0f)  *mMainPart->ZoomModifier(mMainPart->mZoom);
 --- a/Camera.cpp
 +++ b/Camera.cpp
 @@ -537,8 +537,8 @@
@@ -289,7 +289,7 @@
 -			vel.Y = (pos - mPos).Magnitude();
 +			vel.Y = (pos - mPos).MagnitudeYZX();
  		else
- 			vel.Y = round->mData->mSpeed * 0.05f /* retail 005d8584: / 20.0f */;
+ 			vel.Y = round->mData->mSpeed / 20.0f;
  
 @@ -932,7 +932,7 @@
  			init.mPos.Z = ground;

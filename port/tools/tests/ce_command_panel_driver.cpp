@@ -765,7 +765,7 @@ void TestMixedCounts() {
         CHECK_STR(L.controls[ri].detail, "Skips 1 n/a, 3 unable");
     }
     CHECK(L.has_detail_row);
-    CHECK_STR(L.detail_legend, "x/y: can act / selected");
+    CHECK_STR(L.detail_legend, "Counts: ready / selected");
     CHECK(LayoutFits(L, in, font));
 
     // The intent names exactly the entities that can comply.

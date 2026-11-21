@@ -584,13 +584,13 @@ void	Act(int row, int action)
 		const int level = sModel.PlayLevel(row, action);
 		if (!level || !PortCeBonusModLevelAvailable(level))
 			PortCeShowMessage(kCeModsNoLevel);
-		else
+		else if (PortCeBonusStartModLevel(level))
 		{
 			PortCeLeaveCePage();
 			sActive = false;
-			if (!PortCeBonusStartModLevel(level))
-				PortCeShowMessage(kCeModsNoLevel);
 		}
+		else
+			PortCeShowMessage(kCeModsNoLevel);
 		return;
 	}
 	if (result == CEMR_FULL)

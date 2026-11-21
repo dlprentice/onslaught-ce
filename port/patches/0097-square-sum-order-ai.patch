@@ -47,7 +47,7 @@
 @@ -130,7 +130,7 @@
  		GetUnit()->SetUnknown174(0);
  
- 	FVector	forward(0, (GetUnit()->GetMaxVelocity() * 0.05f /* retail 005d8584: / 20.0f */) * 4.0f, 0);
+ 	FVector	forward(0, (GetUnit()->GetMaxVelocity() / 20.0f) * 4.0f, 0);
 -	FMatrix	ori(d.Azimuth(), d.Elevation(), 0);
 +	FMatrix	ori(d.Azimuth(), d.ElevationYZX(), 0);
  	forward = ori * forward;
@@ -330,7 +330,7 @@
 -		float	distanceSq = d.MagnitudeSq();
 +		float	distanceSq = d.MagnitudeSqYZX();
  		CUnitData	*data = mForUnit->mUnitData;
- 		float	range = (1.0f - unit->GetStealth() * 0.01f /* retail 005d85fc: / 100.0f */) * data->mMaxTargetRange;
+ 		float	range = (1.0f - unit->GetStealth() / 100.0f) * data->mMaxTargetRange;
  		if (!(distanceSq < range * range))
 @@ -510,12 +510,12 @@
  			FVector	d = pos - mForUnit->GetPos();

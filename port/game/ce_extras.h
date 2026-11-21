@@ -137,6 +137,7 @@ const SCeListPage *PortCeRecordSettingsPage();
 const SCeListPage *PortCeRecordBackupPage();
 const SCeListPage *PortCeBackupPreviewPage();
 void PortCeBackupPreviewBack();
+int PortCeBackupPreviewStepBack();
 const SCeListPage *PortCeBackupAllPage();
 void PortCeBackupAllBack();
 void PortCeRecordBackupBack();

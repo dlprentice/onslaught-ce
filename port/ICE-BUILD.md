@@ -1,10 +1,10 @@
 # Optional ICE build
 
 Status: experimental build support; no release or player acceptance
-Last updated: 2026-11-02
+Last updated: 2026-11-21
 Summary: explicitly build the pinned, relay-patched libjuice client and bind the CE binaries to its corresponding source.
 
-Prepare the ordinary pinned dependencies with [deps.py](tools/deps.py), using a separate worktree and private dependency cache for this flavour:
+Prepare the ordinary pinned dependencies with [deps.py](tools/deps.py), using a separate checkout or worktree and an isolated dependency cache for this flavour:
 
 ```sh
 python3 port/tools/ice_deps.py build all

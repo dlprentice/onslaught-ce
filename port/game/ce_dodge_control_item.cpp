@@ -31,7 +31,7 @@ public:
         PortCeDodgeBindingName(PortCeActionKey(action),key,sizeof(key));
         switch(prompt) {
         case Waiting: snprintf(line,sizeof(line),"%s: press a key (Esc cancels)", PortCeActionLabel(action)); break;
-        case Conflict: snprintf(line,sizeof(line),"%s: %s. Try a key or Esc.",attempt,conflict); break;
+        case Conflict: snprintf(line,sizeof(line),"%s is used by %s. Try another key or Esc.",attempt,conflict); break;
         case Unsupported: snprintf(line,sizeof(line),"%s: choose another key (Esc cancels)", PortCeActionLabel(action)); break;
         case SaveFailed: snprintf(line,sizeof(line),"%s: could not save. Press Enter to retry.", PortCeActionLabel(action)); break;
         default: {
@@ -52,11 +52,13 @@ public:
         CMenuItem::Render(x,y,selected);
         char key[32]{},hint[94]{};
         PortCeDodgeBindingName(PortCeActionKey(action),key,sizeof(key));
-        if(owner == this || (reverseConflict && reverseOwner == action))
+        if(owner == this)
             snprintf(hint,sizeof(hint),"Esc keeps %s.",key);
+        else if(reverseConflict && reverseOwner == action)
+            snprintf(hint,sizeof(hint),"Press Esc to keep your previous key.");
         else if(!assist)
-            snprintf(hint,sizeof(hint),action==CeControlAction::Dodge ? "Turn on Dodge Button in CE Settings to use it." :
-				action==CeControlAction::TakeUnit ? "Turn on Play as a Unit in CE Settings to use it." : "Turn on Commander in CE Settings to use it.");
+            snprintf(hint,sizeof(hint),"%s",action==CeControlAction::Dodge ? "Turn on Dodge Button in CE Settings to use it." :
+				"Enable this experimental feature in ce.ini to use it.");
         else if(const char *used=PortCeActionConflict(action, PortCeActionKey(action)))
             snprintf(hint,sizeof(hint),"%s uses this key. Choose another for %s.", used, PortCeActionLabel(action));
         else
@@ -107,7 +109,7 @@ void capture(WORD key,KeyEventType event) { if(owner)owner->key(key,event); }
 bool PortCeDodgeReserveFromControls(int key) {
 	if (!PortCeDodgeBindingAvailable()) return false;
 	for (auto action : {CeControlAction::Dodge, CeControlAction::TakeUnit, CeControlAction::Commander}) {
-		if (PortCeActionKey(action) == key && (action == CeControlAction::Dodge || PortCeActionEnabled(action)) && !PortCeActionConflict(action, key)) {
+		if (PortCeActionKey(action) == key && PortCeActionEnabled(action) && !PortCeActionConflict(action, key)) {
 			reverseOwner=action; reverseConflict=true; return true;
 		}
 	}
@@ -116,7 +118,8 @@ bool PortCeDodgeReserveFromControls(int key) {
 void PortCeDodgeControlsAdd(CMenuOptionsList *list) {
 	if (!list || !PortCeDodgeBindingAvailable()) return;
 	for (auto action : {CeControlAction::Dodge, CeControlAction::TakeUnit, CeControlAction::Commander})
-		list->AddItem(new ((EMemoryType)0x80) DodgeKeyItem(action));
+		if (action == CeControlAction::Dodge || PortCeActionEnabled(action))
+			list->AddItem(new ((EMemoryType)0x80) DodgeKeyItem(action));
 }
 bool PortCeDodgeControlsSelect(CMenuItem *item) {
 	if (!item || item->mId < bindingId || item->mId > bindingId+2) return false;

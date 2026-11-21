@@ -599,7 +599,7 @@ static void photo() {
     check(!photoOn && printed("Photo Mode is unavailable here."), "photo mode refused here is said so");
     photoAvailable = true;
     clear(); command("help photo");
-    check(printed("photo [on|off]") && printed("F12 saves a screenshot"), "help photo names the keys");
+    check(printed("photo (on/off)") && printed("F12 saves a screenshot"), "help photo names the keys");
     command("devstats off"); closePalette();
     check(photoKeys > 0, "the message handler offers keys to photo mode first");
     PortCeConsoleLevelEnd();
@@ -623,7 +623,7 @@ static void music() {
     clear(); command("music playtype SINGLE");
     check(musicType == CE_MUSIC_SINGLE && printed("Play type single"), "playtype ignores case");
     clear(); command("music playtype shuffle");
-    check(musicType == CE_MUSIC_SINGLE && printed("Usage: music playtype single|linear|random."), "an unknown play type changes nothing");
+    check(musicType == CE_MUSIC_SINGLE && printed("Usage: music playtype single/linear/random."), "an unknown play type changes nothing");
     clear(); command("music playtype random please");
     check(musicType == CE_MUSIC_SINGLE && printed("Usage: music playtype"), "a play type with extra words is refused");
     clear(); command("music next");

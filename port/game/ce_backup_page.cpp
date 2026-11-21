@@ -63,7 +63,7 @@ void row(int i,SCeListRow *value) {
     SCeListRow &out=*value;
     const int a=act(i);
     if(a==R_FOLDER) {char text[160];folderText(text,sizeof(text));
-        PortCeExtrasWidenName(out.mLeft,80,text);out.mTone=CE_TONE_DIM;return;}
+        PortCeExtrasWidenName(out.mLeft,80,text);PortCeExtrasInFont(out.mLeft);out.mTone=CE_TONE_DIM;return;}
     const char *label=a==R_BACK?"Back":a==R_CHOOSE?"Choose Folder":a==R_NOW?"Back Up Now":"";
     PortCeExtrasWiden(out.mLeft,80,label);
     if((a==R_NOW||a==R_CHOOSE) && (view.state==CE_BACKUP_WORKING||view.state==CE_BACKUP_OTHER||view.state==CE_BACKUP_PICKING))out.mDim=true;

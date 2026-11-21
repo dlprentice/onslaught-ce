@@ -1,7 +1,7 @@
 # Native port (Linux and Windows)
 
 Status: active (both targets build, link and run; measured scope and limits are summarized in the public CE README's Known limitations; native Windows acceptance uses a software-rendered VM, not physical-GPU validation)
-Last updated: 2026-11-18
+Last updated: 2026-11-21
 Summary: a second build of the decompilation's sources as native i686 Linux and Windows programs; layout, ownership,
 commands and rules.
 
@@ -13,8 +13,9 @@ inputs, measured matching coverage and stated reconstruction limits. The public 
 the port's [known limitations](https://github.com/dlprentice/onslaught-ce#known-limitations) and
 [public setup](https://github.com/dlprentice/onslaught-ce#building-from-source).
 
-This guide follows the source branch. The published package is 0.1.13; newer native menus and opt-in prototypes
-described here are not a new release. Build support, isolated execution and ordinary player experience are
+This guide follows the source branch. The published package is 0.1.13; upcoming releases follow an incremental
+0.1.14–0.1.19 cadence leading up to 0.2.0, and newer native menus and opt-in prototypes described here are not yet in a
+published release. Build support, isolated execution and ordinary player experience are
 different checks. In particular, a Windows compile or Wine fixture does not demonstrate a native Windows UI,
 and a Linux audio initialization check does not establish audible output.
 
@@ -78,7 +79,7 @@ again (`tools/sign_release.py` is retired: running it only prints a refusal and 
 
 The default `--public` build also defines `CE_NETWORK_OFF`: the network (Host / Join, the world and session layers, the lockstep Co-Op prototype) is compiled out until enabled explicitly with `--with-network`. build.py compiles none of its modules in the default flavour (`network_module`: `port/network/`, `game/ce_network_*.cpp`, `game/ce_netpages.cpp`, `platform/common/ce_netlobby.cpp` and `ce_netcode.cpp`, monocypher) and links no ENet; the shared SHA-256 used by mod checks is still compiled. The hooks the network added to shared files of the port are inside the same guards. Every hunk of every patch listed in `network/PATCHES.txt` sits inside `CE_NETWORK_OFF` guards (an insertion in `#ifndef`, a rewrite in `#ifdef` original `#else` new `#endif`), so a default public build patches `src/` to exactly what main's patches alone produce: `tools/network_public_source_tests.py` builds both trees and requires them equal once the guards are resolved. `game/ce_network_boot.h`'s `CE_NETWORK_ENABLED` also hides the Network game entry and the `BEA_NET_*` roles in the modules a private build compiles (`tools/network_public_off_tests.py`). Private builds and `--test-automation` builds are unaffected.
 
-`--public --with-network` is the same public build with the network compiled in (the experimental Co-Op build): it does not define `CE_NETWORK_OFF`, compiles the network modules, links ENet (`-lenet`, and `-lws2_32` on Windows) and writes `flavour.txt` (`public-network`) beside the objects, so that `tools/package.py` carries ENet's licence file and notice row and refuses a package whose build folder and program disagree (ENet in the default flavour, none in this one). It is refused without `--public` (a private build has the network already) and with `--test-automation`. Its objects differ from the default public build's: build it in a separate worktree. The default `--public` build is unchanged by it.
+`--public --with-network` is the same public build with the network compiled in (the experimental Co-Op build): it does not define `CE_NETWORK_OFF`, compiles the network modules, links ENet (`-lenet`, and `-lws2_32` on Windows) and writes `flavour.txt` (`public-network`) beside the objects, so that `tools/package.py` carries ENet's licence file and notice row and refuses a package whose build folder and program disagree (ENet in the default flavour, none in this one). It is refused without `--public` (non-`--public` developer builds already include networking) and with `--test-automation`. Its objects differ from the default public build's: build it in a separate worktree. The default `--public` build is unchanged by it.
 
 The default public build (no `--with-network`) is intended to compile the same source as the selected CE hub. Byte-identical output on a newly composed head still requires a clean build comparison; source checks alone do not establish it. Every difference the network made to a file of main is inside a `CE_NETWORK_OFF` guard, and the default build compiles main's text itself, not the guarded file: the preprocessor would skip the network's lines but still count them, which moves every `__LINE__` (the game's `new` passes one to the allocator), every line table, and with them the PDB GUID that the linker derives from the unstripped image and that the stripped `bea.exe` still carries. So `build.py` resolves the guards of the mirror (`resolve_network_off`) and compiles a copy of the port's code with them resolved (`build_port_view`, under `build/resolved/port`, mapped to `.` in the debug names and `__FILE__`), and the network's directory and the tools are not in that copy. `tools/network_default_text_tests.py` pins the result: `network/MAIN-TEXT.sha256` holds the sha-256 of main's text of every port file a default build can compile or include, `network/MAIN-SOURCES.sha256` that of every file of `src/` and `linklib/` and every patch of main's queue (the network's own patches are the ones `network/PATCHES.txt` lists); the suite fails if any resolved file differs, if a file that main lacks is compiled or included by the default build, or if a patch of main's queue is edited. After merging the selected CE hub, refresh the pins with `python3 port/tools/network_default_text_tests.py --pin <hub ref>`; a changed pin names a file whose guards need another look. To show it on a build, make the default flavour of this tree and of main in two worktrees with the same `--ce-version` and compare them object by object and program by program (`llvm-strip --strip-all` is what the packager does to `bea`); golden tapes replayed with probes at every Present remain the check that nothing else moved.
 
@@ -117,7 +118,7 @@ its earlier rows.
 
 The first page offers **Host Game**, **Join Game** and **Connection Help**, and both use the connection the launch was prepared for (direct, or the relay pilot when the launch selected it). Host Game hosts at once on this PC's first address (a private LAN address when there is one) and shows the join code; on a PC with several addresses the host's page has an Address row, and changing it hosts again there with a new code. Join Game opens the code page (Code, Address, Connect, Paste Code, Paste Address, Clear); while a join is trying the page shows only the code and Cancel. Each page is titled by its name (Network Game, Host Game, Join Game, Connection Help). Under each row a hint says what it does. A failure, a lobby notice (a friend who left, nobody joining) and the end of a network game open the game's message box, so no sentence is dropped for room. The pointer works on every page, the Join page included (its key trap answers the game's mouse question with false). The lobby shows Player 1 and Player 2 as You and Your Friend, Ready in green, and the mission by name; the host has Mission, Start and Leave, the guest sees the mission and Leave only. Campaign co-op is not offered to players: its lobby row appears only with `BEA_NET_LOBBY_CAMPAIGN=1`, for testers. A `--with-ice` build adds **Import Online Invitation** (an offline import with a public preview, then an explicit Use invitation), and its Host or Join opens a network disclosure before anything contacts the signaling service, then asks for pair consent. A build without the relay refuses a launch prepared for it and starts nothing. `tools/network_player_menu_tests.py` compiles these pages both ways and checks those decisions; it runs no game, socket or service. `tools/coop_pair_run.py` plays one co-op game through these menus with two offscreen games on one machine, to the mission's end and back, or with `--ending leave` until the guest closes its window during the mission (see its own help); in both, each player's careers and options must be byte-equal afterwards.
 
-What has been seen of play on this line, and its limits: on one Linux machine, two native Linux processes joined through these ordinary menus, both players moved and fired in a lockstep game, and the guest's window close took the host back to its front end (an independent run on 2026-11-08 at a3c83dc8, 501 shared observations). On the 0.2 line, `tools/coop_pair_run.py` repeated it through the menus to the end of level 856 (both peers agreed on the end tick and state hash; the mission was lost, not won). Nothing has been run with a Windows host, between two machines, over the Internet or a relay with a real partner, or in campaign co-op, and no person has played it.
+What has been seen of play on this line, and its limits: on one Linux machine, two native Linux processes joined through these ordinary menus, both players moved and fired in a lockstep game, and the guest's window close took the host back to its front end (an independent run on 2026-11-08, 501 shared observations). On the current development line (incremental 0.1.14–0.1.19 releases leading to 0.2.0), `tools/coop_pair_run.py` repeated it through the menus to the end of level 856 (both peers agreed on the end tick and state hash; the mission was lost, not won). Nothing has been run with a Windows host, between two machines, over the Internet or a relay with a real partner, or in campaign co-op, and no person has played it.
 
 The instructions below describe direct-IP Host / Join, including LAN play and router forwarding. An optional build with `--with-ice` can select a TURN relay path; its setup and endpoints are described in [ICE-BRIDGE.md](network/ICE-BRIDGE.md) and [RELAY-ACCESS.md](network/RELAY-ACCESS.md). Direct-IP instructions do not establish relay availability or successful online gameplay.
 
@@ -186,7 +187,7 @@ sentences against the page's text); a release that offers the page repeats it in
 - **Session** (`game/ce_network_lockstep.cpp`, patches 0129 and 0152 to 0156): both games run the same simulation
   from the same inputs (20 ticks a second, an input delay of 3 ticks), exchange a state hash every 20 ticks and stop
   with the message above when the hashes differ. A session that fails or whose other player leaves ends the level and returns to the front end, where the Network game page shows the
-  reason (a game the lobby started leaves for the front end; a test-automation pair has no lobby and quits to the system). While a session is requested the game's own allocations start as
+  reason (a game started through the lobby returns to the front end; a direct automated session started without a lobby exits to the system). While a session is requested the game's own allocations start as
   zeros (`PARITY.md`, "Co-op sessions"). The controller takes its role and secret from the handoff and its content
   digest from the admission; every `BEA_LOCKSTEP_*` switch, the dump, stalls, skews and probes exist only in a
   `--test-automation` build (`tools/lockstep_production_shape_tests.py` pins that split).
@@ -236,7 +237,7 @@ sentences against the page's text); a release that offers the page repeats it in
 
 ## Environment variables
 
-The variables a player sets are in the [README](https://github.com/dlprentice/onslaught-ce#readme) (`BEA_GAME_DIR`,
+The variables a player sets are in the [README](https://github.com/dlprentice/onslaught-ce) (`BEA_GAME_DIR`,
 `BEA_USER_DIR` and the settings it lists). Build and development variables:
 
 | Variable | Used by | Meaning |
@@ -408,7 +409,7 @@ Commander's live view renders the native 3D scene inside `CeRenderFence` (`game/
   last two to equal the first, update by update; it runs a control that must differ, and the footprint audit and its own control. Its judging is
   checked without a game by `tools/ce_commander_isolation_run_tests.py`.
 
-      python3 port/build.py --target linux --public --commander-test --ce-version 0.2.0-rc0 -j 8
+      python3 port/build.py --target linux --public --commander-test --ce-version 0.1.14-rc0 -j 8
       python3 port/tools/ce_commander_isolation_run.py --exe local-data/port/build/linux/bea --out local-data/commander-isolation --level 110:330 --level 201:400
 
 A test build's switches for these runs (none is compiled into a build without `--commander-test`): `BEA_PORT_COMMANDER_AUDIT=1` copies the game's

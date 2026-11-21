@@ -392,9 +392,9 @@ void	GoodiesHint(int index, WCHAR *help, WCHAR *extra, int n)
 	const char *what = (state == CE_GOODIE_NEW) ? "Found, not viewed yet." : (state == CE_GOODIE_VIEWED) ? "Found and viewed." : "Locked.";
 	snprintf(text, sizeof(text), "%s. %s", name, what);
 	Text(help, n, text);
-	// how it is earned, and how far the evidence for that goes (ce_goodie_rules.h)
+	// how it is earned (ce_goodie_rules.h)
 	const SCeGoodieRule &rule = kCeGoodieRules[slot];
-	snprintf(text, sizeof(text), "%s %s", rule.mRule, kCeGoodieEvidence[rule.mEvidence]);
+	snprintf(text, sizeof(text), "%s", rule.mRule);
 	Text(extra, n, text);
 	// a rule that starts by unlocking another Goodie names it as the list does when the career has it: by its title
 	int length = 0;

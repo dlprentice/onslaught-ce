@@ -634,14 +634,11 @@ bool CeCmdIssue(int ordinal, int verb, float x, float y, const char** why) {
     }
     *why = "Squad disappeared."; return false;
 }
-void Text(float, float y, DWORD, const char* message, float = 0.f, bool = false) { messages.push_back(message); text_y.push_back(y); }
+void Text(float, float y, DWORD, const char* message, float = 0.f, bool = false, float = 0.f) { messages.push_back(message); text_y.push_back(y); }
 // The small font's measure: eight units a character, and a line twelve high.
 float TextWidth(const char* text, float scale) { return float(std::strlen(text)) * 8.f * scale; }
 float LineHeight() { return 12.f * L.s; }
-float CeCmdViewTextWidth(const char* text){return float(std::strlen(text))*8.f;}
 float CeCmdViewTextHeight(){return 12.f;}
-void CeCmdViewBox(float,float,float,float,unsigned){}
-void CeCmdViewText(float x,float y,unsigned c,const char* text,float scale){Text(x,y,c,text,scale);}
 
 void Box(float, float, float width, float height, DWORD) { VERIFY(width > 0 && height > 0); }
 void Outline(float,float,float,float,float,DWORD){}
@@ -1320,9 +1317,9 @@ void LivePointerInteractions(){
     ClickWorld(0,500,360);VERIFY(accepted_orders==2 && last_order_verb==CE_CMD_ADVANCE && !gArmed);
     const int before=accepted_orders;
     ClickWorld(2,480,570);VERIFY(accepted_orders==before); // panel cannot issue a world order
-    // the buttons under the card (8 units in, 56, 80, 56 and 96 wide, 6 apart, their row 34 units above the foot): Hold is the third, Move the first
-    ClickWorld(0,8+56+6+80+6+20,600-34+10);VERIFY(accepted_orders==before+1 && last_order_verb==CE_CMD_HOLD);
-    VERIFY(StrategicButtonAt(8+56+3,600-34+10)<0 && StrategicButtonAt(8+3,600-34+10)==0);	// the gap between two buttons is no button
+    // the buttons under the card (8 units in, kButtonW[0..3] wide, kButtonGap apart, their row 34 units above the foot): Hold is the third, Move the first
+    ClickWorld(0,8+kButtonW[0]+kButtonGap+kButtonW[1]+kButtonGap+20,600-34+10);VERIFY(accepted_orders==before+1 && last_order_verb==CE_CMD_HOLD);
+    VERIFY(StrategicButtonAt(8+kButtonW[0]+kButtonGap*0.5f,600-34+10)<0 && StrategicButtonAt(8+3,600-34+10)==0);	// the gap between two buttons is no button
     ClickWorld(0,8+20,600-34+10);VERIFY(gArmed && gStrategicClickOrder==CE_CMD_MOVE);
     ClickWorld(0,520,350);VERIFY(last_order_verb==CE_CMD_MOVE && !gArmed);
     // Armed commands and pointer selection must revalidate after world changes.
@@ -1403,7 +1400,7 @@ void LiveSquadInteractions() {
         return s.find("Authored squad 1   2 units") != std::string::npos;
     }));
     VERIFY(std::any_of(messages.begin(), messages.end(), [](const std::string& s) {
-        return s.find("Order:Holding") != std::string::npos;
+        return s.find("Order: Holding") != std::string::npos;
     }));
     live_squads.pop_back(); PortCeCmdFrame();
     VERIFY(gSelected == -1);

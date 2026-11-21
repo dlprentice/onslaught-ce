@@ -166,7 +166,7 @@ void PortCeChatRender(void) {
     for (unsigned i = first; i < view.history_count && i < CE_CHAT_HISTORY; ++i)
         Plain(rows, font, view.history[i].local_transport_accepted ? "You (local): " : "Peer: ",
               view.history[i].utf8, view.history[i].size, width - 40.f * scale, scale);
-    const char *hint = view.composing ? "Enter send | Esc cancel | F6 mute | F7 clear"
+    const char *hint = view.composing ? "Enter: send   Esc: cancel   F6: mute   F7: clear"
                                      : "Enter: text chat (best effort)";
     Plain(rows, font, "", reinterpret_cast<const uint8_t*>(hint),
           static_cast<uint32_t>(std::strlen(hint)), width - 40.f * scale, scale);

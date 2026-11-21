@@ -9,6 +9,7 @@ native rendering and physical input acceptance need separate isolated runs.
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
 import os
@@ -24,6 +25,16 @@ from ce_editor_lifecycle_tests import definition
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'port'))
 import build
+
+
+def default_jobs() -> int:
+    env = os.environ.get('BEA_MUTANT_JOBS', '').strip()
+    if env:
+        value = int(env)
+        if value < 1:
+            raise ValueError(f'BEA_MUTANT_JOBS must be >= 1, got {value}')
+        return value
+    return min(6, os.cpu_count() or 1)
 
 
 def fixture(out: Path):
@@ -73,7 +84,11 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--out', type=Path)
     parser.add_argument('--causal-controls', action='store_true')
+    parser.add_argument('-j', '--jobs', type=int, default=None, help='max parallel compiles/runs (default: BEA_MUTANT_JOBS or min(6, cpu_count))')
     args = parser.parse_args()
+    jobs = default_jobs() if args.jobs is None else args.jobs
+    if jobs < 1:
+        raise SystemExit(f'--jobs must be >= 1, got {jobs}')
     resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
     parent = ROOT / 'local-data/native-editor-playtest-tests'
     parent.mkdir(parents=True, exist_ok=True)
@@ -85,23 +100,50 @@ def main() -> int:
         raise SystemExit('A C++ compiler is required.')
     driver = ROOT / 'port/tools/tests/ce_editor_playtest_driver.cpp'
     environment = {k: v for k, v in os.environ.items() if not k.startswith(('BEA_', 'ONSLAUGHT_'))}
+    base_flags = [compiler, '-std=c++14', '-Wall', '-Wextra', '-Werror', '-Wno-unused-variable',
+                  '-Wno-unused-function', '-DDRIVER_CE_SNIPPET', '-DDRIVER_EDITOR_VIEW']
+    shared_dir = out / 'shared-objs'
+    shared_dir.mkdir(exist_ok=True)
+    editor_obj = shared_dir / 'ce_editor.o'
+    project_obj = shared_dir / 'ce_project.o'
+    driver_obj = shared_dir / 'driver.o'
 
-    def compile_run(folder: Path, project: Path) -> dict:
+    def compile_obj(src: Path, obj: Path, inc_dir: Path | None = None) -> subprocess.CompletedProcess:
+        cmd = [*base_flags, *(['-I' + str(inc_dir)] if inc_dir else []), '-I' + str(ROOT / 'port/game'), '-c', str(src), '-o', str(obj)]
+        return subprocess.run(cmd, capture_output=True, timeout=90, check=False)
+
+    def link_and_run(folder: Path, inputs: list[str], inc_dir: Path | None = None, link_only: bool = False) -> dict:
         binary = folder / 'playtest-check'
-        command = [compiler, '-std=c++14', '-Wall', '-Wextra', '-Werror', '-Wno-unused-variable',
-                   '-Wno-unused-function', '-DDRIVER_CE_SNIPPET', '-DDRIVER_EDITOR_VIEW', '-I' + str(folder),
-                   '-I' + str(ROOT / 'port/game'), str(driver), str(source_path), str(project), '-o', str(binary)]
+        if link_only:
+            command = [compiler, *inputs, '-o', str(binary)]
+        else:
+            command = [*base_flags, *(['-I' + str(inc_dir)] if inc_dir else []), '-I' + str(ROOT / 'port/game'), *inputs, '-o', str(binary)]
         built = subprocess.run(command, capture_output=True, timeout=90, check=False)
         (folder / 'compile.stdout').write_bytes(built.stdout)
         (folder / 'compile.stderr').write_bytes(built.stderr)
         if built.returncode:
             return {'compiled': False, 'exit': None}
-        result = subprocess.run([str(binary)], env=environment, capture_output=True, timeout=15, check=False)
+        result = subprocess.run([str(binary)], env=environment, capture_output=True, timeout=30, check=False)
         (folder / 'run.stdout').write_bytes(result.stdout)
         (folder / 'run.stderr').write_bytes(result.stderr)
         return {'compiled': True, 'exit': result.returncode}
 
-    baseline = compile_run(out, project_path)
+    shared_tasks = [
+        (source_path, editor_obj, None),
+        (project_path, project_obj, None),
+        (driver, driver_obj, out),
+    ]
+    if jobs == 1:
+        shared_built = [compile_obj(*task) for task in shared_tasks]
+    else:
+        with ThreadPoolExecutor(max_workers=min(len(shared_tasks), jobs)) as pool:
+            shared_built = list(pool.map(lambda t: compile_obj(*t), shared_tasks))
+    if any(r.returncode for r in shared_built):
+        (out / 'compile.stdout').write_bytes(b''.join(r.stdout for r in shared_built))
+        (out / 'compile.stderr').write_bytes(b''.join(r.stderr for r in shared_built))
+        baseline = {'compiled': False, 'exit': None}
+    else:
+        baseline = link_and_run(out, [str(driver_obj), str(editor_obj), str(project_obj)], link_only=True)
     controls = {}
     if args.causal_controls and baseline == {'compiled': True, 'exit': 0}:
         variants = {
@@ -181,22 +223,38 @@ def main() -> int:
             'refusal-overwritten-by-welcome': ('editor-lifecycle.private.inc', '    else\n        EditorNote(returning ?', '    EditorNote(returning ?'),
             'late-refusal-forgets-reason': ('editor-lifecycle.private.inc', 'EditorNote(EditorStartRefusal(EditorStartFit(gEditorStartRejectedFit)), NoticeRefusal);', 'EditorNote("Unsafe start.", NoticeRefusal);'),
         }
+        project_text = project_path.read_text()
+        inc_files = [(p.name, p.read_text()) for p in out.glob('*.inc')]
+        prepared = []
         for name, (file, before, after) in variants.items():
             folder = out / name
             folder.mkdir()
-            for include in out.glob('*.inc'):
-                shutil.copyfile(include, folder / include.name)
-            project = project_path
-            target = project_path.read_text() if file == 'project.cpp' else (folder / file).read_text()
+            for inc_name, inc_text in inc_files:
+                (folder / inc_name).write_text(inc_text)
+            target = project_text if file == 'project.cpp' else (folder / file).read_text()
             if target.count(before) != 1:
                 raise ValueError('Causal-control anchor changed: ' + name)
             if file == 'project.cpp':
                 project = folder / file
                 project.write_text(target.replace(before, after, 1))
+                prepared.append((name, folder, [str(driver_obj), str(editor_obj), str(project)], None))
             else:
                 (folder / file).write_text(target.replace(before, after, 1))
-            result = compile_run(folder, project)
-            controls[name] = dict(result, rejected=result == {'compiled': True, 'exit': 1})
+                prepared.append((name, folder, [str(driver), str(editor_obj), str(project_obj)], folder))
+
+        def eval_variant(item):
+            name, folder, inputs, inc_dir = item
+            result = link_and_run(folder, inputs, inc_dir=inc_dir)
+            return name, dict(result, rejected=result == {'compiled': True, 'exit': 1})
+
+        if jobs == 1:
+            for item in prepared:
+                name, rec = eval_variant(item)
+                controls[name] = rec
+        else:
+            with ThreadPoolExecutor(max_workers=jobs) as pool:
+                for name, rec in pool.map(eval_variant, prepared):
+                    controls[name] = rec
     passed = baseline == {'compiled': True, 'exit': 0} and all(v['rejected'] for v in controls.values())
     receipt = {'passed': passed, 'scope': __doc__, 'baseline': baseline, 'causal_controls': controls,
                'sha256': {str(p.relative_to(ROOT)): hashlib.sha256(p.read_bytes()).hexdigest()

@@ -1637,8 +1637,8 @@ public:
             if (mInvitationEntry && !RelayRequested()) {
 #if defined(CE_NETWORK_ICE) && !defined(_WIN32)
                 if (PortPrivateUiFieldWaiting(PORT_PRIVATE_UI_ORIGIN)) {
-                    y += Lines("Local practice: you fly with an automated host.", y, kWhite);
-                    y += Lines("Choose Import Online Invitation, then Choose Join invite. You decide whether to accept.", y, kGrey);
+                    y = Lines("Local practice: you fly with an automated host.", y, kWhite);
+                    y = Lines("Choose Import Online Invitation, then Choose Join invite. You decide whether to accept.", y, kGrey);
                     break;
                 }
 #endif

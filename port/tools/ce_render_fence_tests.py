@@ -267,6 +267,10 @@ class RenderFenceTests(unittest.TestCase):
         self.assertIn("if (CeRenderFenceSave()) {", cmdmap)
         self.assertIn("CeRenderFenceRestore();", cmdmap)
         self.assertIn("extern \"C\" bool PortCeWorldViewCaptureSuspended()", cmdmap)
+        render_world = cmdmap[cmdmap.index("bool PortCeCmdRenderWorld("):cmdmap.index("bool PortCeCmdMapOpen()")]
+        self.assertLess(render_world.index("gCockpitPass = true;"), render_world.index("if (CeRenderFenceSave()) {"))
+        self.assertIn("D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER", render_world)
+        self.assertNotIn("D3DRS_COLORWRITEENABLE", render_world)
         fence = FENCE_CPP.read_text()
         self.assertIn("SaveShadows();", fence)
         self.assertIn("RestoreShadows();", fence)

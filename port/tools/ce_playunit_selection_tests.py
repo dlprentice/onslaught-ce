@@ -34,7 +34,7 @@ def main():
         "stale-world": ("world != gSelectionWorld", "false"),
         "wrong-number": ("thing->GetThingNumber() != expectedNumber", "(expectedNumber, false)"),
         "missing-registry": ("if (thing != candidate) continue;", "if (false) continue;"),
-        "wrong-type": ("thing->GetThingType() != THING_TYPE_UNIT", "false"),
+        "wrong-type": ("!(thing->GetThingType() & THING_TYPE_UNIT)", "false"),
         "missing-ready": ("if (!Ready(player, engine, controller))", "if (Ready(player, engine, controller) && false)"),
         "missing-gate": ("!gWanted || !Allowed(gWanted)", "!gWanted"),
         "human-owner": ("if (CePlayUnitOwnsPilot())", "if (false)"),

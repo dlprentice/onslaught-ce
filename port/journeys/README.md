@@ -185,7 +185,7 @@ reach the same outcome by INPUT verbs alone at least once.
 | `select row "TEXT"` / `select row #N` | INPUT | moves the cursor there with real keys, then Return |
 | `focus row "TEXT"` / `#N` | INPUT | moves the cursor only |
 | `back` | INPUT | Esc |
-| `key NAME[+NAME] [hold N]` | INPUT | one raw key or a chord (`LCTRL+Z`): RETURN, ESC, arrows, PGUP, PGDN, TAB, F1, F5, LCTRL, LSHIFT, A to Z, ... |
+| `key NAME[+NAME] [hold N]` | INPUT | one raw key or a chord (`LCTRL+Z`): RETURN, ESC, arrows, PGUP, PGDN, TAB, GRAVE, F1 to F12, 0 to 9, LCTRL, LSHIFT, LALT, A to Z, ... |
 | `wait page ID` / `wait notice "TEXT"` / `wait state KEY=VALUE` / `wait ticks N` | INPUT | holds until true |
 | `assert KEY=VALUE` / `assert file PATH sha256=HEX` / `assert file PATH exists` / `assert page ID` | INPUT | fails the journey if not true |
 | `dump [LABEL]` | INPUT | page id, title, rows, focused row, box text, tick and every state key that applies |
@@ -193,7 +193,7 @@ reach the same outcome by INPUT verbs alone at least once.
 | `press NAME[+NAME]` / `release NAME[+NAME]` | INPUT | hold keys down across later steps (drive while turning); a journey's end lets them all go |
 | `mouse-move DX DY [over N]` | INPUT | a relative movement (the mouse in a level), spread over N ticks so the parts add up exactly |
 | `mouse-down` / `mouse-up` | INPUT | the left button where the pointer is (held fire) |
-| `click X Y` / `drag X1 Y1 X2 Y2 [over N]` | INPUT | the left button at window points, through the player's mouse path |
+| `click X Y` / `rclick X Y` / `hover X Y` / `drag X1 Y1 X2 Y2 [over N]` | INPUT | pointer events at window points (left/right click, hover, drag), through the player's mouse path |
 | `test-dirty PATH` | TESTWRITE | appends a line to a profile file: only the isolation proof's control uses it |
 | `editor-pose X Y [DISTANCE [YAW [PITCH]]]` | TESTWRITE | puts the map editor's view over a map point (registered in `ce_editor.cpp`) |
 | `until KEY=VALUE every N do STEP` | INPUT | repeats a step every N ticks until the state test holds (a take: press E while turning) |
@@ -309,6 +309,41 @@ Each of these has cost a run. A journey that walks into one should say so in a c
   (`port/platform/common/runmode.h`); a hand-made run with a probe, tape or recording switch will not see them.
 - **The mouse in a level is relative.** Turning and aiming in a level read relative movement (`mouse-move`); `click` and
   `drag` move the pointer to window points, which the menus and the editor read.
+
+## Agent play & visual inspection gallery
+
+`port/tools/agent_play.py` drives Onslaught CE completely offscreen (`SDL_VIDEO_DRIVER=offscreen`,
+`SDL_AUDIO_DRIVER=dummy`, desktop/session environment variables stripped, `xdg-open` shimmed, isolated per-run user
+folder, and optional `flock` GPU serialization via `--gpu-lock` or `GODOT_GPU_LOCK`). It never opens a desktop window
+or touches a player profile.
+
+Run an ad-hoc step script (on a `--test-kit` twin) with inline steps or a file, custom `ce.ini` switches, PNG captures,
+and extracted `telemetry.json`:
+
+    python3 port/tools/agent_play.py --exe <twin>/bea --out local-data/play-out \
+        --ce-ini commander=1 --level 110 --clock real \
+        --step "wait state game.state=3 within 2400" --step "wait ticks 350" \
+        --step "key M hold 15" --step "wait ticks 160" --step "shot commander"
+
+Run an exact-binary key route (no test kit) using `--keys` / `--fake-keys` and `--shot-at` / `--quit-at`:
+
+    python3 port/tools/agent_play.py --exe <candidate>/bea --out local-data/play-exact \
+        --keys route.txt --shot-at 900 --quit-at 960
+
+Capture the full repeatable 1280x720 visual inspection gallery (Main Menu, CE Hub, CE Settings, Video Options, Extras,
+Asset Catalogue, Mods Menu, Level 100/110 Walker & Jet HUD, Photo Mode, Commander Live View + unit panel, Play Any Unit,
+Museum Hall & Cinema, and Map Editor) plus `manifest.json` and per-scene `telemetry/*.json`:
+
+    python3 port/tools/agent_play.py --gallery --exe <twin>/bea \
+        --fixtures <folder with gold_career_save.bin> --out local-data/gallery
+    python3 port/tools/agent_play.py --list-gallery
+
+**Clock rule for live-play modes:** `BEA_PORT_CLOCK` fences Photo Mode (`F11`), Commander Live View (`M`), Play Any Unit
+(`E`), Mods loading, and CE Video Options rows. Pass `--clock fixed` (default, 60 Hz) for deterministic menu/catalogue/
+flight/editor journeys, and `--clock real` (leaves `BEA_PORT_CLOCK` unset) whenever driving fenced CE modes. Because
+offscreen `--clock real` runs without vsync at 150-400 FPS while gameplay polls at 20 Hz, hold gameplay keys for 10-15
+ticks on `--clock real`. Widescreen offscreen captures set `BEA_PORT_WIDE_TEST=WxH` automatically from `--res`
+(default `1280x720`).
 
 ## A base's known failures
 

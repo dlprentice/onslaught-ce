@@ -88,8 +88,10 @@ void PortCeExtrasWiden(WCHAR* out, int n, const char* in) {
 }
 std::string list_details;
 unsigned list_finds;
+int list_shown_page = -1, list_shown_start = -1;
 void PortCeCatalogueListDetails(const char* text) { list_details = text; }
 void PortCeCatalogueListFind() { ++list_finds; }
+void PortCeExtrasShow(int page, int startRow) { list_shown_page = page; list_shown_start = startRow; }
 
 void PortPathsNamesOnly() {}
 const char* PortGameDir() { return root; }
@@ -583,7 +585,9 @@ static void TestList() {
     PortCeCatalogueFilter("bells");
     Check(page->mCount() == 4 && Narrow(ListRow(page, 3).mLeft) == "Show all" && ListHint(page, 0).find("Item 1 of 2 found.") != std::string::npos,
           "a search lists what it found, then Find and Show all");
-    Check(page->mSelect(3) && *PortCeCatalogueQuery() == 0 && page->mCount() == 4, "Show all ends the search");
+    list_shown_page = -1; list_shown_start = -1;
+    Check(page->mSelect(3) && *PortCeCatalogueQuery() == 0 && page->mCount() == 4 &&
+          list_shown_page == XP_SOUNDS && list_shown_start == 0, "Show all ends the search and resets cursor");
     fake.refuse = true;
     Check(page->mSelect(1) && list_details.find("Bells: ring\nSound effects, item 2 of 3.\n") == 0 && !fake.active,
           "a sound that does not start says so in its details");
@@ -631,6 +635,14 @@ static void TestList() {
           r2.find("western") != std::string::npos, "rows that would read the same after the cut keep the word that tells them apart");
     const std::string r3 = Narrow(ListRow(page, 3).mLeft);
     Check(r3 == "Calls: you have two primary controls...", "a cut after a sentence's stop shows three dots, not four");
+    PortCeCatalogueClose();
+    // Regression: a short title matching a neighbour's EndCut must not underflow size_t or read past its end.
+    fake = Fake();
+    fake.loaded = {"a...", "a........................................................end"};
+    PortCeCatalogueOpen();
+    PortCeCatalogueBrowse(2);
+    Check(Narrow(ListRow(page, 0).mLeft) == "a..." && Narrow(ListRow(page, 1).mLeft).find("end") != std::string::npos,
+          "a short title matching a long neighbour's cut stays whole without underflow");
     PortCeCatalogueClose();
 }
 }

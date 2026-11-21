@@ -10,6 +10,7 @@ in its scratch folder (premirror.py, which needs BEA_GAME_DIR as every mirror do
 artificial font metrics and does not establish visual acceptance.
 """
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
 import os
@@ -25,6 +26,16 @@ sys.path.insert(0, str(ROOT / 'port'))
 import build
 import quiet_crash
 import premirror
+
+
+def default_jobs():
+    env = os.environ.get('BEA_MUTANT_JOBS', '').strip()
+    if env:
+        value = int(env)
+        if value < 1:
+            raise ValueError(f'BEA_MUTANT_JOBS must be >= 1, got {value}')
+        return value
+    return min(6, os.cpu_count() or 1)
 
 
 def sha(path):
@@ -54,7 +65,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--mirror', type=Path, help="port/build.py's mirror (local-data/port/mirror/src); default: build a full one in the scratch folder")
     parser.add_argument('--compiler', default='g++')
+    parser.add_argument('-j', '--jobs', type=int, default=None, help='max parallel compiles/runs (default: BEA_MUTANT_JOBS or min(6, cpu_count))')
     args = parser.parse_args()
+    jobs = default_jobs() if args.jobs is None else args.jobs
+    if jobs < 1:
+        raise SystemExit(f'--jobs must be >= 1, got {jobs}')
     parent = ROOT / 'local-data/port/ce-tutorial-guidance-tests'
     parent.mkdir(parents=True, exist_ok=True)
     out = Path(tempfile.mkdtemp(prefix='run-', dir=parent))
@@ -195,22 +210,31 @@ def main():
         cmd = [args.compiler, '-std=c++14', '-O1', '-g', '-Wall', '-Wextra', '-Wno-unused-parameter',
                '-fsanitize=address,undefined', '-fno-omit-frame-pointer', '-I'+str(folder), '-I'+str(SDL_INCLUDE), '-I'+str(ROOT / 'port/game'),
                *(['-DCE_VERSION="fixture"'] if version else []), str(driver), '-o', str(binary)]
-        run = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        run = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
         (folder / 'build.log').write_text(run.stdout+run.stderr)
-        commands.append(cmd)
         if run.returncode:
             raise RuntimeError('fixture compilation failed: '+str(folder / 'build.log'))
-        return binary
+        return binary, cmd
 
-    def check(binary, mode, wanted=0, message=''):
+    def run_check(binary, mode, wanted=0, message=''):
         env = dict(os.environ, ASAN_OPTIONS='detect_leaks=1:abort_on_error=1', UBSAN_OPTIONS='halt_on_error=1')
-        p = quiet_crash.run([str(binary), mode], capture_output=True, text=True, env=env, timeout=10)
+        p = quiet_crash.run([str(binary), mode], capture_output=True, text=True, env=env, timeout=30)
         ok = p.returncode == wanted and (not message or message in p.stderr)
-        cases.append({'mode': mode, 'binary': binary.parent.name, 'expected': wanted, 'exit': p.returncode,
-                      'stdout': p.stdout, 'stderr': p.stderr, 'passed': ok})
-        print(('PASS ' if ok else 'FAIL ') + binary.parent.name + ' ' + mode, flush=True)
+        case = {'mode': mode, 'binary': binary.parent.name, 'expected': wanted, 'exit': p.returncode,
+                'stdout': p.stdout, 'stderr': p.stderr, 'passed': ok}
+        return case, ('PASS ' if ok else 'FAIL ') + binary.parent.name + ' ' + mode
 
-    binary = compile_case(out)
+    def variant(name, edits):
+        folder = out / name
+        folder.mkdir()
+        for file, value in pieces.items():
+            for target, old, new, count in edits:
+                if file == target:
+                    assert value.count(old) == count, (name, target, old, value.count(old))
+                    value = value.replace(old, new)
+            (folder / file).write_text(value)
+        return folder
+
     modes = ['normal', 'expire', 'refresh', 'yield', 'slots', 'layer-force', 'empty-tape',
              # the radio queue: the cue starts with the message, never at enqueue, and never for a dropped message
              'queue-busy', 'queue-blocked', 'dead-queued', 'deleted-queued', 'dead-before-start',
@@ -229,33 +253,17 @@ def main():
              'layer-off', 'demo', 'autoconfig', 'record-demo', 'play-demo', 'multiplayer', 'other-level', 'language',
              'font-missing', 'font-invalid', 'event-exhausted', 'box-missing', 'help-missing']
     modes += ['forced-'+name for name in ('BEA_PORT_CLOCK', 'BEA_PORT_TAPE', 'BEA_PORT_PROBES', 'BEA_PORT_RECORD', 'BEA_NET_HOST', 'BEA_NET_JOIN')]
-    for mode in modes:
-        check(binary, mode)
-
-    def variant(name, edits):
-        folder = out / name
-        folder.mkdir()
-        for file, value in pieces.items():
-            for target, old, new, count in edits:
-                if file == target:
-                    assert value.count(old) == count, (name, target, old, value.count(old))
-                    value = value.replace(old, new)
-            (folder / file).write_text(value)
-        return folder
 
     # Key names (24 characters, the longest admitted) that overflow the native line together: the cue must use the
     # generic text, still under 100.
     long_name = [('guidance.inc', '"Right arrow"', '"Right arrow on keypad 6X"', 1), ('guidance.inc', '"Right Shift"', '"Right Shift (left side)X"', 1)]
-    check(compile_case(variant('long-names', long_name)), 'long-names')
-    check(compile_case(variant('long-names-unbounded', long_name + [('guidance.inc', 'const int kBufferSize = 100;', 'const int kBufferSize = 192;', 1)])),
-          'long-names', 2, 'cue fits the native 100-character line')
+    long_dir = variant('long-names', long_name)
+    long_unbounded_dir = variant('long-names-unbounded', long_name + [('guidance.inc', 'const int kBufferSize = 100;', 'const int kBufferSize = 192;', 1)])
     private = out / 'private'
     private.mkdir()
     for name, value in pieces.items():
         (private / name).write_text(value)
-    faithful = compile_case(private, False)	# no CE_VERSION: the faithful build never shows a cue
-    for mode in ('normal', 'queue-busy', 'refresh', 'layout-azerty'):
-        check(faithful, mode)
+
     mutants = [
         # each must be caught: (name, edits, mode, the failing check)
         ('cue-at-enqueue', [('message.inc', 'PortCeTutorialRadioStart(mCurrent->mStringId);', '', 1),
@@ -334,10 +342,15 @@ def main():
          'the key and the gamepad button; the double tap does not fit and is left out'),
         ('displace-help', [('guidance.inc', 'return;\t\t// never displace the game\'s own help', '{ help->mMessages[0].mActive = FALSE; }', 1)], 'slots', 'never overwrite'),
     ]
-    for name, edits, mode, message in mutants:
-        check(compile_case(variant(name, edits)), mode, 2, message)
-    syntax = []
+    mutant_folders = [(variant(name, edits), mode, message) for name, edits, mode, message in mutants]
+
+    def run_mutant(folder, mode, message):
+        m_bin, cmd = compile_case(folder)
+        case, line = run_check(m_bin, mode, 2, message)
+        return cmd, case, line
+
     toolchains = {}
+    alloc_syms = {}
     GAME_SOURCES = (ROOT/'port/game/ce_tutorial_guidance.cpp', ROOT/'port/game/ce_gamepad.cpp',
                     mirror/'HelpText.cpp', mirror/'MissionScript/IScript.cpp', mirror/'MessageBox.cpp')
     for platform in ('linux', 'windows'):
@@ -347,76 +360,158 @@ def main():
         if platform == 'linux' and not version.startswith(build.LINUX_CLANG_VERSION):
             raise RuntimeError('wrong Linux compiler: '+version)
         toolchains[platform] = {'version': version, 'binary_sha256': sha(compiler)}
-        includes = [build.PORT/'d3dx/include', build.PORT/'include', build.PORT/'game', *target['includes'], mirror, mirror/'MissionScript']
-        for source in GAME_SOURCES:
-            cmd = [*target['cxx'], '-std=gnu++14', *build.MSCXX, *build.COMMON, *build.X87, *build.NO_MATH_BUILTINS,
-                   '-DCE_VERSION="fixture"', '-fsyntax-only', '-include', str(build.PORT/'include/port.h'),
-                   *['-I'+str(p) for p in includes], str(source)]
-            p = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
-            name = platform+'-'+source.name+'.log'
-            (out / name).write_text(p.stdout+p.stderr)
-            syntax.append({'platform':platform, 'source':source.name, 'exit':p.returncode, 'command':cmd, 'log':name})
-            print(('PASS ' if not p.returncode else 'FAIL ')+platform+' syntax '+source.name, flush=True)
-    # Match the production game-file pipeline, including /QIfist rewriting and symbol renames.
-    objects = []
-    for platform in ('linux', 'windows'):
+        sym_dir = out / f'syms-{platform}'
+        sym_dir.mkdir()
+        alloc_syms[platform] = build.allocator_syms(platform, sym_dir)
+
+    def run_syntax(platform, source):
         target = build.TARGETS[platform]
         includes = [build.PORT/'d3dx/include', build.PORT/'include', build.PORT/'game', *target['includes'], mirror, mirror/'MissionScript']
-        names = {'ce_tutorial_guidance.cpp': ('PortCeTutorialHelpCue(int)', 'PortCeTutorialRadioStart(int)', 'PortCeTutorialYield(CHelpTextDisplay*)',
-                                              'PortCeTutorialRefresh(CHelpTextDisplay*)', 'PortCeTutorialPrintableKey'),
-                 'ce_gamepad.cpp': ('PortCeGamepadInputs(int, int, SControlInput*)',),
-                 'IScript.cpp': ('PortCeTutorialHelpCue(int)', 'PortCeTutorialYield(CHelpTextDisplay*)'),
-                 'HelpText.cpp': ('PortCeTutorialRefresh(CHelpTextDisplay*)',),
-                 'MessageBox.cpp': ('PortCeTutorialRadioStart(int)',)}
-        for public in (True, False):
-            for source in GAME_SOURCES:
-                tag = platform + ('-ce-' if public else '-faithful-') + source.stem
-                ir, obj = out/(tag+'.ll'), out/(tag+'.o')
-                cmds = [
-                    [*target['cxx'], '-std=gnu++14', *build.MSCXX, *build.COMMON, *build.X87, *build.NO_MATH_BUILTINS,
-                     *(['-DCE_VERSION="fixture"'] if public else []), '-include', str(build.PORT/'include/port.h'),
-                     *['-I'+str(p) for p in includes], '-S', '-emit-llvm', '-Xclang', '-disable-llvm-passes', '-o', str(ir), str(source)],
-                    [sys.executable, str(build.PORT/'tools/qifist.py'), str(ir)],
-                    [*target['cxx'], *build.COMMON, *build.X87, '-c', '-o', str(obj), str(ir)],
-                    [build.objcopy(platform), '--redefine-syms='+str(build.allocator_syms(platform, out)), str(obj)],
-                ]
-                logs = []
-                for cmd in cmds:
-                    p = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-                    logs.append(p.stdout+p.stderr)
-                    if p.returncode:
-                        break
-                (out/(tag+'.log')).write_text(''.join(logs))
-                if p.returncode:
-                    raise RuntimeError('production object pipeline failed: '+str(out/(tag+'.log')))
-                nm = build.deps.DATA / ('llvm/bin/llvm-nm' if platform == 'linux' else 'llvm-mingw/bin/llvm-nm')
-                symbols = subprocess.run([str(nm), '-C', str(obj)], capture_output=True, text=True, check=True).stdout
-                expected = names[source.name] if public else ()
-                good = all(n in symbols for n in expected) and (public or 'PortCeTutorial' not in symbols)
-                objects.append({'platform':platform, 'ce':public, 'source':source.name, 'sha256':sha(obj), 'symbols_ok':good, 'commands':cmds})
-                print(('PASS ' if good else 'FAIL ')+tag+' production object symbols', flush=True)
-    # dinput.cpp is port code: build it with the production pcxx rule (not the game file's QIfist pipeline).
+        cmd = [*target['cxx'], '-std=gnu++14', *build.MSCXX, *build.COMMON, *build.X87, *build.NO_MATH_BUILTINS,
+               '-DCE_VERSION="fixture"', '-fsyntax-only', '-include', str(build.PORT/'include/port.h'),
+               *['-I'+str(p) for p in includes], str(source)]
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+        name = platform+'-'+source.name+'.log'
+        (out / name).write_text(p.stdout+p.stderr)
+        rec = {'platform': platform, 'source': source.name, 'exit': p.returncode, 'command': cmd, 'log': name}
+        return rec, ('PASS ' if not p.returncode else 'FAIL ') + platform + ' syntax ' + source.name
+
+    obj_names = {
+        'ce_tutorial_guidance.cpp': ('PortCeTutorialHelpCue(int)', 'PortCeTutorialRadioStart(int)', 'PortCeTutorialYield(CHelpTextDisplay*)',
+                                     'PortCeTutorialRefresh(CHelpTextDisplay*)', 'PortCeTutorialPrintableKey'),
+        'ce_gamepad.cpp': ('PortCeGamepadInputs(int, int, SControlInput*)',),
+        'IScript.cpp': ('PortCeTutorialHelpCue(int)', 'PortCeTutorialYield(CHelpTextDisplay*)'),
+        'HelpText.cpp': ('PortCeTutorialRefresh(CHelpTextDisplay*)',),
+        'MessageBox.cpp': ('PortCeTutorialRadioStart(int)',),
+    }
+
+    def run_game_obj(platform, public, source):
+        target = build.TARGETS[platform]
+        includes = [build.PORT/'d3dx/include', build.PORT/'include', build.PORT/'game', *target['includes'], mirror, mirror/'MissionScript']
+        tag = platform + ('-ce-' if public else '-faithful-') + source.stem
+        ir, obj = out/(tag+'.ll'), out/(tag+'.o')
+        cmds = [
+            [*target['cxx'], '-std=gnu++14', *build.MSCXX, *build.COMMON, *build.X87, *build.NO_MATH_BUILTINS,
+             *(['-DCE_VERSION="fixture"'] if public else []), '-include', str(build.PORT/'include/port.h'),
+             *['-I'+str(p) for p in includes], '-S', '-emit-llvm', '-Xclang', '-disable-llvm-passes', '-o', str(ir), str(source)],
+            [sys.executable, str(build.PORT/'tools/qifist.py'), str(ir)],
+            [*target['cxx'], *build.COMMON, *build.X87, '-c', '-o', str(obj), str(ir)],
+            [build.objcopy(platform), '--redefine-syms='+str(alloc_syms[platform]), str(obj)],
+        ]
+        logs = []
+        for cmd in cmds:
+            p = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+            logs.append(p.stdout+p.stderr)
+            if p.returncode:
+                break
+        (out/(tag+'.log')).write_text(''.join(logs))
+        if p.returncode:
+            raise RuntimeError('production object pipeline failed: '+str(out/(tag+'.log')))
+        nm = build.deps.DATA / ('llvm/bin/llvm-nm' if platform == 'linux' else 'llvm-mingw/bin/llvm-nm')
+        symbols = subprocess.run([str(nm), '-C', str(obj)], capture_output=True, text=True, check=True).stdout
+        expected = obj_names[source.name] if public else ()
+        good = all(n in symbols for n in expected) and (public or 'PortCeTutorial' not in symbols)
+        rec = {'platform': platform, 'ce': public, 'source': source.name, 'sha256': sha(obj), 'symbols_ok': good, 'commands': cmds}
+        return rec, ('PASS ' if good else 'FAIL ') + tag + ' production object symbols'
+
     layout = ['-std=gnu++17', '-DNOMINMAX', '-fms-extensions', '-fno-autolink', '-fno-strict-aliasing',
               '-fwrapv', '-mms-bitfields', '-fshort-wchar', '-g', '-O2', '-w']
-    for platform in ('linux', 'windows'):
+
+    def run_dinput_obj(platform, public):
         target = build.TARGETS[platform]
         prefix = build.deps.PREFIX if platform == 'linux' else build.deps.PREFIX_WIN
         includes = [build.PORT/'d3dx/include', build.PORT/'include', *target['includes'], prefix/'include']
-        for public in (True, False):
-            tag = platform + ('-ce-' if public else '-faithful-') + 'dinput'
-            obj = out/(tag+'.o')
-            cmd = [*target['cxx'], *layout, *(['-DCE_VERSION="fixture"'] if public else []),
-                   *['-I'+str(p) for p in includes], '-c', '-o', str(obj), str(ROOT/'port/platform/common/dinput.cpp')]
-            p = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-            (out/(tag+'.log')).write_text(p.stdout+p.stderr)
-            if p.returncode:
-                raise RuntimeError('production port-object build failed: '+str(out/(tag+'.log')))
-            nm = build.deps.DATA / ('llvm/bin/llvm-nm' if platform == 'linux' else 'llvm-mingw/bin/llvm-nm')
-            symbols = subprocess.run([str(nm), '-C', str(obj)], capture_output=True, text=True, check=True).stdout
-            good = ('PortCeTutorialPadInfo' in symbols) == public
-            objects.append({'platform':platform, 'ce':public, 'source':'dinput.cpp', 'sha256':sha(obj),
-                            'symbols_ok':good, 'commands':[cmd]})
-            print(('PASS ' if good else 'FAIL ')+tag+' production port-object symbols', flush=True)
+        tag = platform + ('-ce-' if public else '-faithful-') + 'dinput'
+        obj = out/(tag+'.o')
+        cmd = [*target['cxx'], *layout, *(['-DCE_VERSION="fixture"'] if public else []),
+               *['-I'+str(p) for p in includes], '-c', '-o', str(obj), str(ROOT/'port/platform/common/dinput.cpp')]
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+        (out/(tag+'.log')).write_text(p.stdout+p.stderr)
+        if p.returncode:
+            raise RuntimeError('production port-object build failed: '+str(out/(tag+'.log')))
+        nm = build.deps.DATA / ('llvm/bin/llvm-nm' if platform == 'linux' else 'llvm-mingw/bin/llvm-nm')
+        symbols = subprocess.run([str(nm), '-C', str(obj)], capture_output=True, text=True, check=True).stdout
+        good = ('PortCeTutorialPadInfo' in symbols) == public
+        rec = {'platform': platform, 'ce': public, 'source': 'dinput.cpp', 'sha256': sha(obj), 'symbols_ok': good, 'commands': [cmd]}
+        return rec, ('PASS ' if good else 'FAIL ') + tag + ' production port-object symbols'
+
+    syntax_tasks = [(platform, source) for platform in ('linux', 'windows') for source in GAME_SOURCES]
+    game_obj_tasks = [(platform, public, source) for platform in ('linux', 'windows') for public in (True, False) for source in GAME_SOURCES]
+    dinput_tasks = [(platform, public) for platform in ('linux', 'windows') for public in (True, False)]
+    faithful_modes = ('normal', 'queue-busy', 'refresh', 'layout-azerty')
+    syntax, objects = [], []
+
+    if jobs == 1:
+        binary, base_cmd = compile_case(out)
+        commands.append(base_cmd)
+        for mode in modes:
+            case, line = run_check(binary, mode)
+            cases.append(case); print(line, flush=True)
+        long_bin, long_cmd = compile_case(long_dir)
+        commands.append(long_cmd)
+        case, line = run_check(long_bin, 'long-names')
+        cases.append(case); print(line, flush=True)
+        long_ub_bin, long_ub_cmd = compile_case(long_unbounded_dir)
+        commands.append(long_ub_cmd)
+        case, line = run_check(long_ub_bin, 'long-names', 2, 'cue fits the native 100-character line')
+        cases.append(case); print(line, flush=True)
+        faithful, faithful_cmd = compile_case(private, False)
+        commands.append(faithful_cmd)
+        for mode in faithful_modes:
+            case, line = run_check(faithful, mode)
+            cases.append(case); print(line, flush=True)
+        for folder, mode, message in mutant_folders:
+            cmd, case, line = run_mutant(folder, mode, message)
+            commands.append(cmd); cases.append(case); print(line, flush=True)
+        for st in syntax_tasks:
+            rec, line = run_syntax(*st)
+            syntax.append(rec); print(line, flush=True)
+        for gt in game_obj_tasks:
+            rec, line = run_game_obj(*gt)
+            objects.append(rec); print(line, flush=True)
+        for dt in dinput_tasks:
+            rec, line = run_dinput_obj(*dt)
+            objects.append(rec); print(line, flush=True)
+    else:
+        with ThreadPoolExecutor(max_workers=jobs) as pool:
+            f_base = pool.submit(compile_case, out, True)
+            f_long = pool.submit(compile_case, long_dir, True)
+            f_long_ub = pool.submit(compile_case, long_unbounded_dir, True)
+            f_faithful = pool.submit(compile_case, private, False)
+            mutant_futures = [pool.submit(run_mutant, folder, mode, message) for folder, mode, message in mutant_folders]
+            syntax_futures = [pool.submit(run_syntax, *st) for st in syntax_tasks]
+            game_obj_futures = [pool.submit(run_game_obj, *gt) for gt in game_obj_tasks]
+            dinput_futures = [pool.submit(run_dinput_obj, *dt) for dt in dinput_tasks]
+
+            binary, base_cmd = f_base.result()
+            long_bin, long_cmd = f_long.result()
+            long_ub_bin, long_ub_cmd = f_long_ub.result()
+            faithful, faithful_cmd = f_faithful.result()
+            commands.extend([base_cmd, long_cmd, long_ub_cmd, faithful_cmd])
+
+            mode_futures = [pool.submit(run_check, binary, mode) for mode in modes]
+            f_long_check = pool.submit(run_check, long_bin, 'long-names')
+            f_long_ub_check = pool.submit(run_check, long_ub_bin, 'long-names', 2, 'cue fits the native 100-character line')
+            faithful_futures = [pool.submit(run_check, faithful, mode) for mode in faithful_modes]
+
+            for future in mode_futures:
+                case, line = future.result()
+                cases.append(case); print(line, flush=True)
+            for future in (f_long_check, f_long_ub_check, *faithful_futures):
+                case, line = future.result()
+                cases.append(case); print(line, flush=True)
+            for future in mutant_futures:
+                cmd, case, line = future.result()
+                commands.append(cmd); cases.append(case); print(line, flush=True)
+            for future in syntax_futures:
+                rec, line = future.result()
+                syntax.append(rec); print(line, flush=True)
+            for future in game_obj_futures:
+                rec, line = future.result()
+                objects.append(rec); print(line, flush=True)
+            for future in dinput_futures:
+                rec, line = future.result()
+                objects.append(rec); print(line, flush=True)
     inputs = [patch, driver, ROOT/'port/game/ce_tutorial_guidance.cpp', ROOT/'port/game/ce_gamepad.cpp',
               ROOT/'port/include/ce_tutorial_pad.h', ROOT/'src/Controller.h',
               ROOT/'src/Controller.cpp', ROOT/'src/PCController.cpp', ROOT/'src/game.cpp', ROOT/'src/console.h', ROOT/'src/MissionScript/IScript.cpp',

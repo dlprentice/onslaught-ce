@@ -248,6 +248,4 @@ static const SCeGoodieRule	kCeGoodieRules[233] = {
 	{"Watch Cutscene 33 during normal play.", 2},	// 232
 };
 
-static const char	*const kCeGoodieEvidence[5] = {"Seen in play.", "Matches the game's code.", "From the developers' source.", "Never shown.", "Reserved."};
-
 #endif

@@ -86,7 +86,10 @@ extern "C" int CE_SettingGetText(const char *, char *out, int n) {
 }
 void PortCeBackupPreviewBack() {}
 void PortCeExtrasShow(int, int) {}
-void PortCeExtrasInFont(WCHAR *) {}
+void PortCeExtrasInFont(WCHAR *text) {
+    if (!text) return;
+    for (; *text; ++text) if (*text == L'_') *text = L'-';
+}
 void PortCeExtrasWiden(WCHAR *out, int n, const char *in) {
     if (n <= 0) return;
     int i = 0;
@@ -162,5 +165,25 @@ int main() {
     for (int i = 0; i < page.mCount(); ++i) page.mSelect(i);
     check(chooseCalls == 0 && againCalls == 0 && setCalls == 0 && beginCalls == 0 &&
           confirmCalls == 0 && cancelCalls == 0 && acknowledgeCalls == 0);
+    // Esc/B steps back one restore sub-state instead of exiting straight to Extras Hub.
+    check(PortCeBackupPreviewStepBack() == -1 && cancelCalls == 0 && acknowledgeCalls == 0);
+    suppliedRestore.phase = CE_RESTORE_CONFIRM;
+    process(); resetCalls();
+    check(PortCeBackupPreviewStepBack() == 1 && cancelCalls == 1);
+    suppliedRestore.phase = CE_RESTORE_PROPOSING;
+    process(); resetCalls();
+    check(PortCeBackupPreviewStepBack() == 1 && cancelCalls == 1);
+    suppliedRestore.phase = CE_RESTORE_DONE;
+    process(); resetCalls();
+    check(PortCeBackupPreviewStepBack() == 1 && acknowledgeCalls == 1);
+    suppliedRestore.phase = CE_RESTORE_IDLE;
+    suppliedPreview.careers = 2;
+    std::strcpy(suppliedPreview.name, "Pilot_One.bes");
+    process();
+    check(findRow("Pilot-One.bes") >= 0);
+    check(PortCeBackupPreviewStepBack() == 0);
+    page.mSelect(findRow("Restore as New"));
+    check(PortCeBackupPreviewStepBack() == 1);
+    check(PortCeBackupPreviewStepBack() == 0);
     std::printf("{\"ok\":true,\"checks\":%u}\n", checks);
 }

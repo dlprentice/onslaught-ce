@@ -11,18 +11,19 @@
 // pilot. V opens the paused tactical map, a tester's page, only with ce.ini's
 // commander_tactical_map=1 (TacticalMapAllowed).
 //
-// The live view never renders the world: the game draws the pilot's frame as it
-// does when the view is closed, and the view's own picture (ce_cmdview.cpp) is
-// drawn over it from read-only queries. The live pointer uses the matrices and
-// viewport that picture was drawn with, and intersects its forward ray with the map's
-// heightfield. Every action refreshes squad identities and rechecks the current
-// local camera owner. Orders still pass through ce_commander's authority gates.
-// The paused overview retains its own input sink, view, zoom and ordering path.
+// The live view renders the native 3D scene from the strategic camera inside
+// CeRenderFence (ce_render_fence.h), so the battle gets only the pilot frame's
+// render side effects. Friendly unit marks are projected read-only onto the
+// captured world view (ce_cmdview.cpp), and the live pointer intersects its
+// forward ray with the map's heightfield. Every action refreshes squad identities
+// and rechecks the current local camera owner. Orders still pass through
+// ce_commander's authority gates. The paused overview retains its own input sink,
+// view, zoom and ordering path.
 //
 // Never in faithful play: off where the CE layer is off, in a replay, a recording, under probes or the virtual clocks, for a test pilot or a
 // network game, in multiplayer (but for a Commander match, ce_cmdmatch.h: a versus level one person plays), demos and the front end, and unless ce.ini says commander=1 (a test build's proof switch, BEA_PORT_COMMANDER_PROOF=1
-// with BEA_PORT_COMMANDER_MAP=1 and BEA_PORT_CE_LAYER=1, lets it run under a virtual clock: ce_commander.cpp). It draws only with the game's own
-// sprite and font calls (the paused map) or through the device alone (the live view), allocates nothing in the game's heaps but the controller stack entry the
+// with BEA_PORT_COMMANDER_MAP=1 and BEA_PORT_CE_LAYER=1, lets it run under a virtual clock: ce_commander.cpp). It draws with the game's own
+// sprite and font calls, allocates nothing in the game's heaps but the controller stack entry the
 // pause menu also makes and the paused map's texture, and draws no random number. Squads that follow
 // mission scripts, aircraft and objectives are drawn but take no orders.
 #ifdef CE_VERSION
@@ -555,7 +556,6 @@ void BuildTerrain()
 void Box(float x, float y, float w, float h, DWORD colour)
 {
 	if (w <= 0.f || h <= 0.f) return;
-	if (CeCmdViewDrawing()) { CeCmdViewBox(x, y, w, h, colour); return; }		// the live view's picture: the device alone, none of the game's drawing
 	CSPRITERENDERER::DrawColouredSprite(x, y, 0.001f, gWhite, colour, w / gWhite->GetRealWidth(), h / gWhite->GetRealHeight());
 }
 
@@ -570,14 +570,14 @@ void Outline(float x, float y, float w, float h, float t, DWORD colour)
 // The HUD's own capsule (the objective bar the radio messages and the museum's labels use): a dark translucent body between the cyan end caps,
 // drawn by the HUD's routine and filling the rectangle (the caps stand half a height beyond the body). Lit draws a second, brighter body over it: a
 // button that is pressed or an order that waits for its click. The text drawn on it needs the map's own render states again (BeginDraw). Without the
-// HUD's art (or while the device-only picture draws), a drawn stand-in: the same body and two cyan ends.
+// HUD's art, a drawn stand-in: the same body and two cyan ends.
 const DWORD kCapsuleBody = 0xb0040a14, kCapsuleCap = 0xff38c8e8, kCapsuleLit = 0x8038c8e8;
 void BeginDraw();
 void CapsuleBar(float x, float y, float w, float h, float alpha = 1.f, bool lit = false)
 {
 	if (w <= 0.f || h <= 0.f || alpha <= 0.f) return;
 	const auto fade = [alpha](DWORD c) { return (DWORD((float(c >> 24) * (alpha > 1.f ? 1.f : alpha)) + 0.5f) << 24) | (c & 0xffffff); };
-	if (!CeCmdViewDrawing() && HUD.mObjectiveLeft && HUD.mObjectiveRight && HUD.mObjectiveInnerLeft && HUD.mObjectiveInnerCentre && HUD.mObjectiveInnerRight)
+	if (HUD.mObjectiveLeft && HUD.mObjectiveRight && HUD.mObjectiveInnerLeft && HUD.mObjectiveInnerCentre && HUD.mObjectiveInnerRight)
 	{
 		HUD.RenderObjectiveBar(x + w * 0.5f, y + h * 0.5f, w > h ? w - h : 0.f, h, alpha >= 1.f ? 1.f : 0.5f + 0.5f * alpha);
 		BeginDraw();
@@ -597,7 +597,6 @@ void Seg(float x0, float y0, float x1, float y1, float t, DWORD colour)
 {
 	const float dx = x1 - x0, dy = y1 - y0, length = sqrtf(dx * dx + dy * dy);
 	if (length <= 0.f) return;
-	if (CeCmdViewDrawing()) { Box(x0 - t * 0.5f, y0 - t * 0.5f, t, t, colour); Box(x1 - t * 0.5f, y1 - t * 0.5f, t, t, colour); return; }
 	CSPRITERENDERER::DrawColouredSprite((x0 + x1) * 0.5f - length * 0.5f, (y0 + y1) * 0.5f - t * 0.5f, 0.001f, gWhite, colour, length / gWhite->GetRealWidth(),
 									   t / gWhite->GetRealHeight(), SA_TOP_LEFT, SPT_NONE, 1.f, atan2f(dy, dx));
 }
@@ -623,19 +622,8 @@ unsigned Convert(const char *text, WCHAR *out, unsigned room)
 	return n;
 }
 
-// The live view draws its own text from the font's cell table (ce_cmdview.cpp): the game's text routines are not called while its picture is drawn.
-// The same substitution for a character the font lacks.
-void LiveText(const char *text, char *out, unsigned room)
-{
-	unsigned n = 0;
-	for (const char *c = text; *c && n + 1 < room; ++c)
-		out[n++] = gFont->CanDisplay(WCHAR((unsigned char)*c)) ? *c : '-';
-	out[n] = 0;
-}
-
 float TextWidth(const char *text, float scale)
 {
-	if (CeCmdViewDrawing()) { char live[160]; LiveText(text, live, sizeof live); return floorf(CeCmdViewTextWidth(live)) * scale; }
 	WCHAR w[160];
 	Convert(text, w, 160);
 	SIZE extent;
@@ -644,26 +632,16 @@ float TextWidth(const char *text, float scale)
 }
 
 // One line of the small font; wider than maxWidth (when given) it is narrowed to fit.
-void Text(float x, float y, DWORD colour, const char *text, float maxWidth = 0.f, bool centred = false)
+void Text(float x, float y, DWORD colour, const char *text, float maxWidth = 0.f, bool centred = false, float baseScale = 0.f)
 {
-	if (CeCmdViewDrawing())
-	{
-		char live[160];
-		LiveText(text, live, sizeof live);
-		const float width = floorf(CeCmdViewTextWidth(live));
-		float scale = L.s;
-		if (maxWidth > 0.f && width * scale > maxWidth && width > 0.f) scale = maxWidth / width;
-		if (centred) x -= width * scale * 0.5f;
-		CeCmdViewText(x, y, colour, live, scale);
-		return;
-	}
 	WCHAR w[160];
 	Convert(text, w, 160);
 	SIZE extent;
 	gFont->GetTextExtent(w, &extent);
-	float scale = L.s;
+	float scale = baseScale > 0.f ? baseScale : L.s;
 	if (maxWidth > 0.f && float(extent.cx) * scale > maxWidth && extent.cx > 0) scale = maxWidth / float(extent.cx);
 	if (centred) x -= float(extent.cx) * scale * 0.5f;
+	LT.STS(0, D3DTSS_COLOROP, D3DTOP_MODULATE);
 	gFont->DrawTextWithShadow(x, y, colour, w, 0, 0.f, scale, scale);
 }
 
@@ -979,7 +957,7 @@ void DrawPanel()
 	else snprintf(text, sizeof(text), "%s, %d unit%s", s->vehicles ? "Vehicles" : "Infantry", s->members, s->members == 1 ? "" : "s");
 	Text(x + pad, y, kQuiet, text, room);
 	y += line * 1.4f;
-	snprintf(text, sizeof(text), "Order:%s", OrderName(*s));
+	snprintf(text, sizeof(text), "Order: %s", OrderName(*s));
 	Text(x + pad, y, kText, text, room);
 	y += line;
 	if (s->deploys) Text(x + pad, y, kQuiet, "Hold only", room);
@@ -1437,7 +1415,7 @@ bool StrategicCanAct();
 // panel top left, the squad card and the four order buttons bottom left, the prompt line bottom right. The battlefield is everything else: a mark is
 // drawn and can be clicked wherever no panel covers it. Drawing and the pointer share these.
 const float kCardW = 440.f, kCardH = 46.f, kRowH = 20.f;
-const float kButtonW[4] = {56.f, 80.f, 56.f, 96.f}, kButtonGap = 6.f;
+const float kButtonW[4] = {60.f, 82.f, 60.f, 98.f}, kButtonGap = 18.f;
 void StrategicTitle(char* out, unsigned room) {
     if (gMatch.match && gMatch.nodes > 0)
         snprintf(out, room, "Commander   Battle Line %d of %d   Bases %d to %d", gMatch.held, gMatch.nodes, gMatch.buildings[0], gMatch.buildings[1]);
@@ -1470,7 +1448,7 @@ void StrategicCardLines(char* first, char* second, unsigned room) {
     }
     snprintf(first, room, "%s   %d unit%s", squad->unit[0] ? squad->unit : (squad->vehicles ? "Vehicles" : "Infantry"), squad->members, squad->members == 1 ? "" : "s");
     if (gSel.n > 1) snprintf(first + strlen(first), room - strlen(first), "   +%d squad%s", gSel.n - 1, gSel.n == 2 ? "" : "s");
-    snprintf(second, room, "Order:%s%s", OrderName(*squad), squad->deploys ? "   Hold only" : "");
+    snprintf(second, room, "Order: %s%s", OrderName(*squad), squad->deploys ? "   Hold only" : "");
 }
 float StrategicCardWidth() {
     char first[160], second[160];
@@ -1708,12 +1686,12 @@ void UnitFill(void*, UnitPanel::Rect rect, uint32_t colour) {
     if (rect.w > 0.f && rect.h > 0.f) Box(rect.x, rect.y, rect.w, rect.h, colour);
 }
 void UnitLine(void*, float x0, float y0, float x1, float y1, uint32_t colour) {
-    Box((std::min)(x0, x1), (std::min)(y0, y1),
-        (std::max)(1.f, std::fabs(x1-x0)), (std::max)(1.f, std::fabs(y1-y0)), colour);
+    const float t = (std::max)(1.f, floorf(L.s));
+    const float w = std::fabs(x1 - x0), h = std::fabs(y1 - y0);
+    Box((std::min)(x0, x1), (std::min)(y0, y1), w > 0.f ? w + t : t, h > 0.f ? h + t : t, colour);
 }
 void UnitText(void*, float x, float y, const char* text, float scale, uint32_t colour) {
-    (void)scale;
-    Text(x, y, colour, text);
+    Text(x, y, colour, text, 0.f, false, scale);
 }
 
 void RefreshUnitFrame() {
@@ -2521,8 +2499,11 @@ bool StrategicTrap(WORD key, int event) {
             const bool repeat = gDown[key]; gDown[key] = true;
             if (!repeat && key == DIK_ESCAPE && (gArmed || gUnitUi.HasArmedTarget())) {
                 // an order that waits for its click is called off first, as on the paused map; the next Esc goes back to the cockpit
+                UnitPanel::Action unitAction = UnitPanel::Action::Move;
+                const bool unitArmed = gUnitUi.ArmedAction(&unitAction);
+                const bool isAdvance = unitArmed ? (unitAction == UnitPanel::Action::Advance) : (gStrategicClickOrder == CE_CMD_ADVANCE);
                 gArmed = false; gUnitUi.CancelArmedTarget();
-                Note(gStrategicClickOrder == CE_CMD_MOVE ? "Move cancelled." : "Advance cancelled.");
+                Note(isAdvance ? "Advance cancelled." : "Move cancelled.");
             } else if (!repeat && (key == DIK_ESCAPE || key == gCloseKey)) {
                 if (key == DIK_ESCAPE) gEscClosed = true;
                 gPlayerClosed = true;
@@ -2889,22 +2870,55 @@ void DrawStrategicHints() {
         }
     }
 
-    // the full list of keys, while F1 is held (the prompt line names it): two columns, the key in white and what it does in grey
+    // the full list of keys, while F1 is held (the prompt line names it): two side-by-side groups so the panel stays clear of the title bar and radio dialogue
     if (gDown[DIK_F1]) {
-        static const char* const keys[][2] = {
-            {"Click", "Pick an individual unit"}, {"Drag", "Pick units in the box"}, {"Shift Click", "Add or take away a unit"}, {"Ctrl Click", "Pick its whole squad"}, {"Ctrl A", "Pick available units"},
-            {"Ctrl 1 to 8", "Save the unit selection"}, {"1 to 8", "Recall a unit selection"}, {"Tab", "Select a native squad"},
-            {"Right Click", "Move selected units"}, {"Whole squad", "Advance and Fall Back on its panel"}, {"H", "Hold selected units"},
-            {"B", "Fall back to a safe place"}, {"Delete", "Back to their own orders"}, {"WASD", "Pan"}, {"Q, E", "Turn"},
-            {"Page Up, Page Down", "Tilt"}, {"Wheel", "Zoom"}};
-        const int rows = int(sizeof keys / sizeof keys[0]);
-        float keyW = 0.f, whatW = 0.f;
-        for (int i = 0; i < rows; ++i) { keyW = (std::max)(keyW, TextWidth(keys[i][0], u)); whatW = (std::max)(whatW, TextWidth(keys[i][1], u)); }
-        const float w = keyW + whatW + 40.f * u, h = rows * line + 16.f * u, x0 = floorf((L.w - w) * 0.5f), y0 = floorf(36.f * u + ((StrategicUiBottom() - 128.f * u) - h) * 0.5f);
-        StrategicPanel(x0, y0, w, h, 2.f, 1.f);
+        static const char* const leftKeys[][2] = {
+            {"Click", "Pick an individual unit"},
+            {"Drag", "Pick units in the box"},
+            {"Shift Click", "Add or remove a unit"},
+            {"Ctrl Click", "Select full squad (Advance / Fall Back)"},
+            {"Ctrl A", "Pick available units"},
+            {"Ctrl 1 to 8", "Save the unit selection"},
+            {"1 to 8", "Recall a unit selection"},
+            {"Tab", "Cycle friendly squads"},
+            {"Right Click", "Move selected units"}};
+        static const char* const rightKeys[][2] = {
+            {"H", "Hold selected units"},
+            {"B", "Fall back to a safe place"},
+            {"Delete", "Back to their own orders"},
+            {"WASD, Arrows", "Pan"},
+            {"Q, E", "Turn"},
+            {"Page Up, Page Down", "Tilt"},
+            {"Wheel, R, F", "Zoom"},
+            {"C, Z", "Focus selection, Zoom wide"},
+            {"M, Esc", "Close Commander"}};
+        const int rows = int(sizeof leftKeys / sizeof leftKeys[0]);
+        float lKeyW = 0.f, lWhatW = 0.f, rKeyW = 0.f, rWhatW = 0.f;
         for (int i = 0; i < rows; ++i) {
-            Text(x0 + 12.f * u, y0 + 8.f * u + i * line, kText, keys[i][0]);
-            Text(x0 + 28.f * u + keyW, y0 + 8.f * u + i * line, kQuiet, keys[i][1]);
+            lKeyW = (std::max)(lKeyW, TextWidth(leftKeys[i][0], u));
+            lWhatW = (std::max)(lWhatW, TextWidth(leftKeys[i][1], u));
+            rKeyW = (std::max)(rKeyW, TextWidth(rightKeys[i][0], u));
+            rWhatW = (std::max)(rWhatW, TextWidth(rightKeys[i][1], u));
+        }
+        const float colGap = 24.f * u, keyGap = 12.f * u, padX = 12.f * u;
+        const float helpLine = LineHeight() + 1.5f * u;
+        const float naturalW = lKeyW + keyGap + lWhatW + colGap + rKeyW + keyGap + rWhatW + 2.f * padX;
+        const float maxW = (std::max)(160.f * u, L.w - 16.f * u);
+        const float fit = naturalW > maxW ? maxW / naturalW : 1.f;
+        const float w = floorf(naturalW * fit), h = floorf(rows * helpLine + 14.f * u);
+        const float safeTop = 34.f * u;
+        const float lowerClear = gUnitUi.Panel().Layout().visible ? gUnitUi.Panel().Layout().panel.y - 6.f * u : cardY - 6.f * u;
+        const float safeBot = lowerClear - safeTop >= h ? lowerClear : (std::max)(safeTop + h, StrategicUiBottom() - 38.f * u);
+        const float x0 = floorf((L.w - w) * 0.5f);
+        const float y0 = floorf((std::max)(safeTop, safeTop + ((safeBot - safeTop) - h) * 0.5f));
+        StrategicPanel(x0, y0, w, h, 2.f, 1.f);
+        const float rx0 = x0 + (padX + lKeyW + keyGap + lWhatW + colGap) * fit;
+        for (int i = 0; i < rows; ++i) {
+            const float ry = y0 + 7.f * u + i * helpLine;
+            Text(x0 + padX * fit, ry, kText, leftKeys[i][0], lKeyW * fit);
+            Text(x0 + (padX + lKeyW + keyGap) * fit, ry, kQuiet, leftKeys[i][1], lWhatW * fit);
+            Text(rx0, ry, kText, rightKeys[i][0], rKeyW * fit);
+            Text(rx0 + (rKeyW + keyGap) * fit, ry, kQuiet, rightKeys[i][1], rWhatW * fit);
         }
     }
 
@@ -2921,7 +2935,7 @@ void DrawStrategicHints() {
         // the HUD's capsule opens and closes with the note; its words show only once it is nearly open (they would spill past a narrow one)
         CapsuleBar(x - 16.f * u, y - 6.f * u, w + 32.f * u, LineHeight() + 12.f * u, alpha);
         const float words = (std::max)(0.f, (alpha - 0.8f) / 0.2f);
-        if (words > 0.f) Text(x, y, Faded(kText, words), gNote);
+        if (words > 0.f) Text(x, y, Faded(kText, words), gNote, w);
     }
     CeFactoryView factory;
     if (CeFactoryRead(factory)) {
@@ -2970,61 +2984,10 @@ void DrawStrategicHints() {
 bool StrategicLive() { return gOpen && gStrategic; }
 
 // CE_STRATEGIC_PICTURE_BEGIN
-// The live view's picture (ce_cmdview.cpp), drawn over the frame the game made for the pilot. The game's frame is not touched: the engine keeps
-// the pilot's camera, every routine of an ordinary frame runs, the HUD is drawn, and nothing is dropped. The picture then covers it, through the
-// device alone, and the device's state is put back after it. So an update that follows a frame of the live view reads what an ordinary frame left.
-
-// The eased entry: for its first kTransitionSeconds the picture is drawn from a camera that moves from the pilot's last view to the strategic
-// camera, and is blended in over the pilot's frame.
-const double kTransitionSeconds = 0.4;
-std::uint64_t gTransitionSession = 0, gTransitionStartNs = 0;
-bool gTransitionFrom = false;
-CeCmdViewCamera gTransitionCamera;
-
-void CameraNumbers(const FVector& pos, const FMatrix& orientation, float zoom, CeCmdViewCamera* out) {
-    out->pos[0] = pos.X; out->pos[1] = pos.Y; out->pos[2] = pos.Z;
-    for (int r = 0; r < 3; ++r) { out->rows[r][0] = orientation.Row[r].X; out->rows[r][1] = orientation.Row[r].Y; out->rows[r][2] = orientation.Row[r].Z; }
-    out->zoom = zoom;
-}
-
-// At the strategic camera's capture (StrategicCameraConsumer::Capture): the pilot's view as the last frame drew it, the copy the engine keeps for
-// the viewpoint (read only: a camera's position, orientation and zoom).
-void StrategicEntered() {
-    gTransitionSession = gStrategicViewSession; gTransitionStartNs = Ns(); gTransitionFrom = false;
-    CCamera* shown = ENGINE.GetCameraForViewpoint(0);
-    if (!shown) return;
-    CameraNumbers(shown->GetPos(), shown->GetOrientation(), shown->GetZoom(), &gTransitionCamera);
-    gTransitionFrom = std::isfinite(gTransitionCamera.pos[0]) && std::isfinite(gTransitionCamera.pos[1]) && std::isfinite(gTransitionCamera.pos[2]) &&
-                      gTransitionCamera.zoom > 0.f;
-}
-
+// The live view's overlay over the native 3D scene rendered inside CeRenderFence (ce_render_fence.h).
+// Native entry and return easing live in NativeStrategicPresentation/NativeReturnPresentation.
+void StrategicEntered() {}
 void StrategicLeft() { CeCmdViewRelease(); }
-
-float TransitionWeight(std::uint64_t now) {
-    if (gTransitionSession != gStrategicViewSession || !gTransitionFrom) return 1.f;
-    float t = float(SecondsBetween(gTransitionStartNs, now) / kTransitionSeconds);
-    t = t < 0.f ? 0.f : (t > 1.f ? 1.f : t);
-    return t * t * (3.f - 2.f * t);		// smoothstep: no jump at either end
-}
-
-// `to` moved back toward the pilot's view by 1 - t: the place and zoom blended, the orientation's rows blended and made orthonormal again.
-void TransitionBlend(float t, CeCmdViewCamera* to) {
-    const CeCmdViewCamera& from = gTransitionCamera;
-    for (int i = 0; i < 3; ++i) to->pos[i] = from.pos[i] + (to->pos[i] - from.pos[i]) * t;
-    to->zoom = from.zoom + (to->zoom - from.zoom) * t;
-    float rows[3][3];
-    for (int r = 0; r < 3; ++r) for (int c = 0; c < 3; ++c) rows[r][c] = from.rows[r][c] + (to->rows[r][c] - from.rows[r][c]) * t;
-    for (int r = 0; r < 3; ++r) {
-        for (int k = 0; k < r; ++k) {
-            const float d = rows[r][0] * rows[k][0] + rows[r][1] * rows[k][1] + rows[r][2] * rows[k][2];
-            for (int c = 0; c < 3; ++c) rows[r][c] -= rows[k][c] * d;
-        }
-        const float n = sqrtf(rows[r][0] * rows[r][0] + rows[r][1] * rows[r][1] + rows[r][2] * rows[r][2]);
-        if (n < 1e-5f) return;		// degenerate: the strategic camera as it is
-        for (int c = 0; c < 3; ++c) rows[r][c] /= n;
-    }
-    memcpy(to->rows, rows, sizeof rows);
-}
 
 int PilotAllegiance(const void** pilot) {
     CPlayer* player = GAME.GetPlayer(0);
@@ -3033,8 +2996,8 @@ int PilotAllegiance(const void** pilot) {
     return engine ? (int)engine->GetAllegiance() : -1;
 }
 
-// One frame's picture from the camera: the world (terrain, water, the units by side), with the device ready for the map's boxes and text over it.
-// The view it was drawn with is given back for the pointer. False where no picture can be made (nothing is drawn or changed then).
+// Prepare one frame's live overlay from the captured native world view: project friendly unit marks and set up 2D drawing state.
+// Returns the captured view for the pointer; false when no snapshot or font is ready.
 bool StrategicPictureBegin(const CGenericCamera& camera, CeWorldViewSample* view) {
     (void)camera;
     if(!CeWorldViewRead(CeWorldViewOwner::Commander,gStrategicViewSession,view) || !DrawingReady()) return false;
@@ -3453,9 +3416,10 @@ bool PortCeCmdHideCockpit()
 // In the original, drawing writes simulation state: CComponent::RefreshCachedTransform updates a component's cached position and orientation from
 // its parent's mesh at most once a render frame, drawing rebuilds mesh pose caches and advances motion-controller poses, and SHADOWS picks the
 // nearest units to the drawing camera so the next frame's SHADOWS.RenderTextures refreshes those units. While the Commander view is open or easing
-// back to the cockpit, draw the view's pass first inside the render fence (components, motion controllers, mesh pose caches and shadow manager
-// saved and restored, with the battle marked paused so once-a-frame battle side-effects do not double-run), then draw the cockpit's own pass last
-// with colour writes off (suspending world-view snapshot capture so the displayed Commander snapshot stays intact) and clear its depth.
+// back to the cockpit, draw the cockpit's own pass first (suspending world-view snapshot capture so the displayed Commander snapshot stays intact)
+// so every simulation-facing render side-effect runs identically to ordinary play, then clear colour and depth and draw the Commander view's pass
+// last inside the render fence (components, motion controllers, mesh pose caches and shadow manager saved and restored, with the battle marked
+// paused so once-a-frame battle side-effects do not double-run).
 bool PortCeCmdRenderWorld(int viewpoint)
 {
     static bool inside = false;
@@ -3465,7 +3429,12 @@ bool PortCeCmdRenderWorld(int viewpoint)
     if (!player || !cockpit) return false;
     inside = true;
     CViewport viewport = *ENGINE.GetViewportForViewpoint(0);
+    gCockpitPass = true;
+    ENGINE.SetViewpoint(0, cockpit, &viewport, player);
+    ENGINE.Render(0);
+    gCockpitPass = false;
     if (CeRenderFenceSave()) {
+        LT.D3D_Clear(0, NULL, D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER, 0x00607080, 1.0f, 0L);
         ENGINE.SetViewpoint(0, cockpit, &viewport, player);
         const BOOL paused = GAME.*GameAccess::PauseField();
         GAME.*GameAccess::PauseField() = TRUE;
@@ -3475,16 +3444,6 @@ bool PortCeCmdRenderWorld(int viewpoint)
     } else {
         CeWorldViewInvalidate(CeWorldViewOwner::Commander);
     }
-    static unsigned char renderInfo[sizeof(RENDERINFO)];
-    memcpy(renderInfo, (const void*)&RENDERINFO, sizeof(RENDERINFO));
-    gCockpitPass = true;
-    ENGINE.SetViewpoint(0, cockpit, &viewport, player);
-    LT.SRS(D3DRS_COLORWRITEENABLE, 0);
-    ENGINE.Render(0);
-    LT.SRS(D3DRS_COLORWRITEENABLE, 0xf);
-    gCockpitPass = false;
-    LT.D3D_Clear(0, NULL, D3DCLEAR_ZBUFFER | D3DCLEAR_STENCIL, 0, 1.0f, 0L);
-    memcpy((void*)&RENDERINFO, renderInfo, sizeof(RENDERINFO));
     inside = false;
     return true;
 }

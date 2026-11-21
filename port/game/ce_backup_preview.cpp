@@ -465,7 +465,8 @@ void row(int index, SCeListRow *out) {
     char leaf[201]{}, shown[201]{};
     if (CePreviewDisplaySetName(unsigned(set), leaf, sizeof(leaf)))
       setLabel(shown, sizeof(shown), leaf);
-    plain(out->mLeft, 80, shown);
+    PortCeExtrasWidenName(out->mLeft, 80, shown);
+    PortCeExtrasInFont(out->mLeft);
     char word[24], line[96];
     const char *extra = "";
     holds(unsigned(set), word, sizeof(word), line, sizeof(line), &extra);
@@ -502,6 +503,7 @@ void row(int index, SCeListRow *out) {
     break;
   case K_CAREER:
     PortCeExtrasWidenName(out->mLeft, 80, view.name);
+    PortCeExtrasInFont(out->mLeft);
     if (view.careers > 1)
       snprintf(detail, sizeof(detail), "%d of %d", current + 1,
                int(view.careers));
@@ -675,6 +677,30 @@ const SCeListPage page = {
     draw,              0.78f, 0};
 } // namespace
 const SCeListPage *PortCeBackupPreviewPage() { return &page; }
+int PortCeBackupPreviewStepBack() {
+  sync();
+  if (!allowed || screen == S_BROWSE)
+    return 0;
+  switch (screen) {
+  case S_PICK:
+    picking = false;
+    sync();
+    return 1;
+  case S_LOOKUP:
+  case S_CONFIRM:
+    CeRestoreUiCancel();
+    sync();
+    return 1;
+  case S_WORK:
+    return -1;
+  case S_DONE:
+    CeRestoreUiAcknowledge();
+    sync();
+    return 1;
+  default:
+    return 0;
+  }
+}
 // ---- The test kit's state keys for Restore as New (ce_testkit.h): what the page last read from the controller -------------
 // Plain reads for the test kit (ce_extras.h). They change nothing.
 bool PortCeRestoreShown() { return allowed; }

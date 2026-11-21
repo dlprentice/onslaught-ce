@@ -16,15 +16,15 @@ const CeEditorUiPrompt kCeEditorUiHelp[] = {
     {"Drag", "Move the Object"},
     {"Page Up, Page Down", "Raise, Lower"},
     {"T", "Change Side"},
+    {"R, H", "Reach Point, Hold Area"},
+    {"Delete", "Reset Start or Remove Stop"},
     {"Tab", "Next Object"},
     {"C", "Centre on the Object"},
     {"Home", "See All Objects"},
-    {"Up and Down", "Choose a Tool"},
-    {"Enter", "Use the Tool"},
+    {"Up, Down, Enter", "Choose, Use a Tool"},
     {"Ctrl+S, Ctrl+O", "Save, Open"},
     {"Ctrl+Z, Ctrl+Y", "Undo, Redo"},
-    {"F5", "Play Draft or Back to Editor"},
-    {"F6", "Reset Draft"},
+    {"F5, F6", "Play Draft, Reset Draft"},
     {"Esc", "Cancel or Leave"},
     {0, 0},
 };
@@ -32,7 +32,7 @@ const char *const kCeEditorUiButtons[2] = {"No", "Yes"};
 // One short sentence a command, in the command set's order. Play never saves and Save is the only command that does; the
 // player start is a place of its own, which no object carries with it.
 const char *const kCeEditorUiToolNotes[CeEditorUiToolMax] = {
-    "Keep the draft as the project.",
+    "Save your changes as a new project.",
     "Load a saved project.",
     "Take back the last change.",
     "Restore the change taken back.",
@@ -43,7 +43,7 @@ const char *const kCeEditorUiToolNotes[CeEditorUiToolMax] = {
     "Where you begin. It moves with a deck it is on.",
     "Leave the editor.",
 };
-const char *const kCeEditorUiStartLabel = "Player start";
+const char *const kCeEditorUiStartLabel = "Player Start";
 
 namespace {
 const char *const kHelpTitle = "Keys";
@@ -258,7 +258,9 @@ void CeEditorUiLay(const CeEditorUiModel &m, CeEditorUiMeasure measure, void *co
             // the focused one. A sentence too long for the window is left out, never squeezed.
             const int armed = CeEditorUiActiveTool(m), told = armed >= 0 ? armed : m.toolFocus;
             if (rail && told >= 0 && told < CeEditorUiToolMax && m.tools[told] && m.tools[told][0]) {
-                const float hw = (Measure(measure, context, CeEditorUiSmall, m.tools[told]) + kKeyGap +
+                char keyLabel[CeEditorUiTextMax];
+                snprintf(keyLabel, sizeof(keyLabel), "%s:", m.tools[told]);
+                const float hw = (Measure(measure, context, CeEditorUiSmall, keyLabel) + kKeyGap +
                                   Measure(measure, context, CeEditorUiSmall, kCeEditorUiToolNotes[told])) * k + 2.f * capEnd;
                 if (hw <= m.width - 2.f * l.margin) {
                     l.hint = Rect((m.width - hw) * 0.5f, lane, hw, capH);
@@ -721,8 +723,10 @@ bool CeEditorUiRender(const CeEditorUiModel &m, CeEditorUiLayout *out) {
         // sentence as a note.
         if (shown.hint && l.hint.w > 0.f && l.hintTool >= 0 && l.hintTool < CeEditorUiToolMax) {
             Capsule(l.hint);
+            char keyLabel[CeEditorUiTextMax];
+            snprintf(keyLabel, sizeof(keyLabel), "%s:", m.tools[l.hintTool]);
             float hx = l.hint.x + l.capsuleText;
-            PromptPair(hx, l.hint.y + ty, m.tools[l.hintTool], kCeEditorUiToolNotes[l.hintTool]);
+            PromptPair(hx, l.hint.y + ty, keyLabel, kCeEditorUiToolNotes[l.hintTool]);
         }
     }
     if (m.objective[0] && (shown.title || shown.banner) && !shown.dialog && !shown.help) {

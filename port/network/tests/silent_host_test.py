@@ -1,7 +1,7 @@
 """Authored pre-connection silent-host transport control.
 
 A guest that is never polled sends nothing while it waits; destroying it sends exactly one datagram, ENet's disconnect
-notice (the close path notifies the peer that authentication was cancelled, cf1ce6f1). The driver says when it is about to
+notice (the close path notifies the peer that authentication was cancelled). The driver says when it is about to
 be destroyed and waits for the test, so a datagram is counted before or after close by when it was sent, not by when it
 was read. A guest polled once (poll-once) is the negative control: its connection request must be seen before close.
 """

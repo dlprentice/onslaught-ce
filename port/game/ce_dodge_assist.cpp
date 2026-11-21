@@ -207,7 +207,7 @@ const char *PortCeActionConflict(CeControlAction action, int key)
 		if (other == action) continue;
 		// Disabled optional modes do not occupy their default key.
 		if (PortCeActionKey(other) == key && PortCeActionEnabled(other))
-			return other == CeControlAction::TakeUnit ? "Infantry takeover" : other == CeControlAction::Commander ? "Commander view" : "Dodge modifier";
+			return other == CeControlAction::TakeUnit ? "Take Unit" : other == CeControlAction::Commander ? "Commander view" : "Dodge modifier";
 	}
 	// Keep Commander navigation and orders usable after a custom assignment.
 	if (action == CeControlAction::Commander) {

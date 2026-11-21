@@ -1,7 +1,7 @@
 # Third-party components
 
 Status: active
-Last updated: 2026-11-02
+Last updated: 2026-11-21
 Summary: the licences and purposes of components built into or shipped with Onslaught CE.
 
 Onslaught CE's own code is GPL-3.0-only (`COPYING`). The build fetches the components below at the versions
@@ -37,8 +37,8 @@ in this repository except where a file says so. Release packages carry each ship
 
 ## Only in a build with the network compiled in
 
-The default public build leaves the network out (`CE_NETWORK_OFF`, see `port/README.md`) and contains none of this. The public build made with `--with-network` (the experimental
-co-op source build) and a private network or test-automation build also use the rows below; the package of a `--with-network` build carries ENet's licence file and a notice row
+The default public build leaves the network out (`CE_NETWORK_OFF`, see `port/README.md`) and contains none of this. Source builds with networking enabled (`--with-network`, the experimental
+co-op source build, or `--test-automation` builds) also use the rows below; the package of a `--with-network` build carries ENet's licence file and a notice row
 for each, and `port/tools/package.py` refuses a package whose build folder names one flavour and whose program is the other:
 
 | Component | Version | Licence | How it is used |

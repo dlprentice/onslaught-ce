@@ -27,11 +27,11 @@
  
  	if ((current->mPitchVariance!=0) && (CPCSoundManager::GetPitchVarianceEnabled()))	// PC (004e19bb)
  	{
--		float rpitch=((float) (rand() % current->mPitchVariance))*0.01f /* retail 005d85fc: / 100.0f */;
+-		float rpitch=((float) (rand() % current->mPitchVariance))/100.0f;
 +#ifdef CE_NETWORK_OFF
-+		float rpitch=((float) (rand() % current->mPitchVariance))*0.01f /* retail 005d85fc: / 100.0f */;
++		float rpitch=((float) (rand() % current->mPitchVariance))/100.0f;
 +#else
-+		float rpitch=((float) (CE_LockstepSoundRand() % current->mPitchVariance))*0.01f /* retail 005d85fc: / 100.0f */;
++		float rpitch=((float) (CE_LockstepSoundRand() % current->mPitchVariance))/100.0f;
 +#endif
  		
  		pitch=pitch+rpitch;

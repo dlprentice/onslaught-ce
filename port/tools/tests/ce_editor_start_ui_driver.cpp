@@ -39,9 +39,9 @@ float MidY(const CeEditorUiRect &r) { return r.y + r.h * 0.5f; }
 bool Same(const CeEditorUiRect &a, const CeEditorUiRect &b) { return a.x == b.x && a.y == b.y && a.w == b.w && a.h == b.h; }
 
 // The command set, at its fixed indexes.
-const char *const kTools[CeEditorUiToolMax] = {"Save", "Open", "Undo", "Redo", "Play draft", "Change Side",
+const char *const kTools[CeEditorUiToolMax] = {"Save", "Open", "Undo", "Redo", "Play Draft", "Change Side",
                                                "Reach Point", "Hold Area", "Player Start", "Exit"};
-const CeEditorUiPrompt kIdle[] = {{"Click", "Select"}, {"Tab", "Next Object"}, {"F5", "Play draft"}, {"F1", "Keys"}};
+const CeEditorUiPrompt kIdle[] = {{"Click", "Select"}, {"Tab", "Next Object"}, {"F5", "Play Draft"}, {"F1", "Keys"}};
 const char *const kShortNote = "Moves with the deck it is on.";
 const char *const kLongNote = "Moves with the deck it is on: moving a carrier takes it along.";
 
@@ -73,7 +73,7 @@ void ObjectCard(CeEditorUiModel &m) {
 void StartCard(CeEditorUiModel &m, const char *note) {
     ObjectCard(m);
     m.playerStartSelected = true;
-    std::snprintf(m.cardName, sizeof(m.cardName), "%s", "Player start");
+    std::snprintf(m.cardName, sizeof(m.cardName), "%s", "Player Start");
     std::snprintf(m.cardKind, sizeof(m.cardKind), "%s", "Battle Engine walker");
     std::snprintf(m.cardNote, sizeof(m.cardNote), "%s", note);
 }
@@ -148,7 +148,7 @@ void FurnitureChecks(float width, float height, const std::string &where) {
     StartCard(m, kLongNote);
     std::snprintf(m.objective, sizeof(m.objective), "%s", "Reach Point then Hold Area");
     m.toolFocus = CeEditorUiToolPlay;
-    Describe(m, true, false, false, false, "Select: Player start", where);
+    Describe(m, true, false, false, false, "Select: Player Start", where);
     CeEditorUiLayout l;
     CeEditorUiLay(m, StandIn, nullptr, &l);
     const CeEditorUiShown shown = CeEditorUiWhatShows(m);
@@ -238,7 +238,7 @@ void FocusChecks(float width, float height, const std::string &where) {
     for (int focus = -1; focus < CeEditorUiToolMax; ++focus) {
         m.toolFocus = focus;
         const std::string at = where + ": the start selected, focus " + std::to_string(focus);
-        Describe(m, true, false, false, false, "Select: Player start", at);
+        Describe(m, true, false, false, false, "Select: Player Start", at);
         Check(CeEditorUiActiveTool(m) == -1, at + ": selecting the start arms nothing");
     }
     m.placingPlayerStart = true;
@@ -271,7 +271,7 @@ void InspectorChecks(float width, float height, const std::string &where) {
     for (int v = 0; v < 2; ++v) {
         const std::string at = where + (v ? ": a long note" : ": a short note");
         StartCard(m, notes[v]);
-        Describe(m, true, false, false, false, "Select: Player start", at);
+        Describe(m, true, false, false, false, "Select: Player Start", at);
         CeEditorUiLayout l;
         CeEditorUiLay(m, StandIn, nullptr, &l);
         const float s = l.scale;

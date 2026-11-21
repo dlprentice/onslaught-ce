@@ -1,7 +1,7 @@
 # Recording CE features: design and acceptance
 
 Status: Proposed; the CE-aware recording mode described here is not implemented.
-Last updated: 2026-11-01
+Last updated: 2026-11-21
 Summary: How to add recordings of selected CE features without changing the existing faithful reference tapes,
 and what must be demonstrated before a new recording can be relied on.
 
@@ -11,9 +11,9 @@ The existing reference recorder and player use a line-oriented tape and a virtua
 capture is for keyboard and mouse; controller input and CE's added controller defaults are not captured as a
 playable controller session. Recording also fences off some CE additions to preserve the reference run. The
 [recorder and player](platform/common/replay.cpp), [mapped-input fence](patches/0115-ce-tape-mapped-input.patch)
-and [controller guide](controller-input.md) own the current behavior. The existing
-[queue tests](tools/record_queue_tests.py) exercise the reference path; a recording-session log check alone is
-not proof that a tape can replay a controller or a CE feature.
+and [controller guide](controller-input.md) own the current behavior. The existing queue tests
+(`tools/replay_stop_tests.py`, plus the maintainer-only `tools/record_queue_tests.py`) exercise the reference path; a
+recording-session log check alone is not proof that a tape can replay a controller or a CE feature.
 
 The maintainer wants a second way to record CE behavior, while keeping reference recordings useful for measuring the
 original game. This document describes an intended direction and test gate. It does not choose a final tape

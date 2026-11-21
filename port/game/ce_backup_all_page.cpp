@@ -166,19 +166,31 @@ void row(int i, SCeListRow *out) {
     PortCeBackupWhen(when, sizeof(when), flow.set, false);
     snprintf(text, sizeof(text), "Set %s", when);
     PortCeExtrasWidenName(out->mLeft, 80, text);
+    PortCeExtrasInFont(out->mLeft);
     out->mTone = CE_TONE_DIM;
     plain(out->mRight, 24, l.right);
   } else if (l.folder) {
     // The chosen folder, labelled like the rows under it: "Folder" on the left, its name (or "Not chosen") on the right,
     // so a refusal for want of a folder never comes as a surprise. A name too long for the column ends in "...".
-    char name[24];
     const char *leaf = folderView.folder[0] ? leafOf(folderView.folder) : "Not chosen";
-    if (strlen(leaf) < sizeof(name))
-      snprintf(name, sizeof(name), "%s", leaf);
-    else
-      snprintf(name, sizeof(name), "%.*s...", int(sizeof(name) - 4), leaf);
+    WCHAR wide[160];
+    PortCeExtrasWidenName(wide, 160, leaf);
+    PortCeExtrasInFont(wide);
+    int len = 0;
+    while (wide[len])
+      ++len;
+    if (len < 24) {
+      for (int k = 0; k <= len; ++k)
+        out->mRight[k] = wide[k];
+    } else {
+      for (int k = 0; k < 20; ++k)
+        out->mRight[k] = wide[k];
+      out->mRight[20] = L'.';
+      out->mRight[21] = L'.';
+      out->mRight[22] = L'.';
+      out->mRight[23] = 0;
+    }
     plain(out->mLeft, 80, "Folder");
-    plain(out->mRight, 24, name);
   } else {
     plain(out->mLeft, 80, l.left);
     plain(out->mRight, 24, l.right);

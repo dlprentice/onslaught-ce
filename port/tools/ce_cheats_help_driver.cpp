@@ -413,5 +413,13 @@ int main(int argc, char** argv) {
     FEMESSBOX.open = true;
     back.Render(320.f, 325.f, 0);
     check(draws.empty(), "message box suppresses help behind it");
+    FEMESSBOX.open = false;
+    // A multi-line note with explicit '\n' (Catalogue Find) renders every line above y=449 without overlapping.
+    CCeBack findBack(&list, nullptr, 0, 0, L"Type a name. Enter finds, Esc cancels.\nSpaces also match underscores.");
+    draws.clear();
+    findBack.Render(320.f, 325.f, 0);
+    check(draws.size() == 2 && draws[0].y + 16.f <= draws[1].y && draws[1].y + 16.f <= 449.f &&
+          draws[0].text == L"Type a name. Enter finds, Esc cancels." && draws[1].text == L"Spaces also match underscores.",
+          "multi-line note splits on newline and stays above the help bar");
     std::puts("CE cheat help: every page's hints, wrapping, spacing and message box passed");
 }

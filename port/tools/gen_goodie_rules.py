@@ -25,7 +25,6 @@ FILES = ("GoodieUnlockRequirementService.cs", "GoodieFacts.cs")
 SLOTS = 233                      # the game's own table: slots 0 to 232
 # the wall's kinds: the first slot of each (the same table the Service Record's Goodies page uses)
 KINDS = ((0, "Biography"), (8, "Unit"), (66, "Race Level"), (74, "Extra"), (78, "Concept Art"), (201, "Cutscene"))
-EVIDENCE = ("Seen in play.", "Matches the game's code.", "From the developers' source.", "Never shown.", "Reserved.")
 
 
 def find_source():
@@ -99,7 +98,7 @@ def build(directory):
              "static const SCeGoodieRule\tkCeGoodieRules[233] = {"]
     for s in range(SLOTS):
         lines.append(f'\t{{"{words(rules[s])}", {evidence(s)}}},\t// {s}')
-    lines += ["};", "", "static const char\t*const kCeGoodieEvidence[5] = {" + ", ".join(f'"{e}"' for e in EVIDENCE) + "};", "", "#endif", ""]
+    lines += ["};", "", "#endif", ""]
     return "\n".join(lines)
 
 

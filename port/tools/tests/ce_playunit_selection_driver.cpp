@@ -8,10 +8,16 @@
 #include "ce_playunit_rules.h"
 #include "selection_facts.inc"
 
-enum { THING_TYPE_UNIT = 7, THING_TYPE_OTHER = 9 };
+enum {
+    THING_TYPE_THING = 1 << 0,
+    THING_TYPE_COMPLEX_THING = 1 << 1,
+    THING_TYPE_UNIT = 1 << 2,
+    THING_TYPE_VEHICLE = 1 << 3,
+    THING_TYPE_OTHER = THING_TYPE_THING | THING_TYPE_COMPLEX_THING
+};
 struct CThing {
     int number = 1;
-    int type = THING_TYPE_UNIT;
+    int type = THING_TYPE_THING | THING_TYPE_COMPLEX_THING | THING_TYPE_UNIT;
     mutable int reads = 0;
     int GetThingType() const { ++reads; return type; }
     int GetThingNumber() const { ++reads; return number; }
@@ -66,7 +72,7 @@ int main() {
     mapOpen = false;
     CHECK(CePlayUnitTakeSelection(epoch, &selected, selected.number, &reason));
     CHECK(takes == 1 && taken == &selected && reason == nullptr);
-    const int committed = takes;
+    int committed = takes;
     CHECK(!CePlayUnitCanTakeSelection(epoch, nullptr, 8, &reason));
     CUnit absent; absent.number = selected.number;
     CHECK(!CePlayUnitCanTakeSelection(epoch, &absent, absent.number, &reason));
@@ -76,6 +82,11 @@ int main() {
     CHECK(!CePlayUnitCanTakeSelection(epoch + 1, &selected, selected.number, &reason));
     selected.type = THING_TYPE_OTHER;
     CHECK(!CePlayUnitCanTakeSelection(epoch, &selected, selected.number, &reason));
+    selected.type = THING_TYPE_THING | THING_TYPE_COMPLEX_THING | THING_TYPE_UNIT | THING_TYPE_VEHICLE;
+    CHECK(CePlayUnitCanTakeSelection(epoch, &selected, selected.number));
+    CHECK(CePlayUnitTakeSelection(epoch, &selected, selected.number, &reason));
+    CHECK(takes == committed + 1 && taken == &selected && reason == nullptr);
+    committed = takes;
     selected.type = THING_TYPE_UNIT;
     CHECK(CePlayUnitCanTakeSelection(epoch, &selected, selected.number));
     selected.facts.alive = false;

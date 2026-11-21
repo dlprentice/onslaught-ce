@@ -1198,7 +1198,7 @@ void CommandPanel::BuildLayout(const LayoutInput& input, PanelLayout* out) const
     legend[0] = '\0';
     float legend_w = 0.0f;
     if (any_fraction) {
-        CopyText(legend, kTextCapacity, "x/y: can act / selected");
+        CopyText(legend, kTextCapacity, "Counts: ready / selected");
         legend_w = FitText(m, legend, kTextCapacity, inner_max);
     }
 

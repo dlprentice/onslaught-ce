@@ -17,7 +17,10 @@ Then mutants: each removes one behaviour from a copy of mods.cpp or of the model
 
     python3 port/tools/ce_modspage_tests.py            # the tests, then the mutants
     python3 port/tools/ce_modspage_tests.py --no-mutants
+    python3 port/tools/ce_modspage_tests.py --mutants-only [-j N]
 """
+import atexit
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
 import os
@@ -26,6 +29,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 
@@ -44,6 +48,12 @@ BUILD = Path(os.environ.get("CE_MODSPAGE_BUILD") or ROOT / "local-data/port/ce-m
 VERSION = "0.2.0"
 TEX, SND, OTHER = mods_tests.TEX, mods_tests.SND, "data/other.bin"
 BUILT = {}
+_BUILD_LOCK = threading.Lock()
+_BUILD_KEY_LOCKS = {}
+_OBJ_CACHE = {}
+_OBJ_LOCK = threading.Lock()
+_OBJ_KEY_LOCKS = {}
+_RUN_BUILD = None
 
 # PortModWhy, as mods.h numbers it (test_the_kinds_are_the_headers checks the names against the header).
 WHY = ("NONE", "MISSING", "LINK", "NAME", "PACKED", "INFO", "RENAMED", "NEWER", "OLDER", "LIST", "NOT_IN_GAME", "FILE_MISSING", "DAMAGED", "FORMAT",
@@ -56,42 +66,113 @@ FORBIDDEN = ("ce.ini", "mod.json", ".json", ".aya", "README", "--", "mods=", "Ex
 NOT_IN_FACE = "$@[\\]^_`{|}~"
 
 
+def _default_jobs():
+    env = os.environ.get("BEA_MUTANT_JOBS", "").strip()
+    if env:
+        value = int(env)
+        if value < 1:
+            raise ValueError(f"BEA_MUTANT_JOBS must be >= 1, got {value}")
+        return value
+    return min(6, os.cpu_count() or 1)
+
+
+def _run_build_dir():
+    global _RUN_BUILD
+    with _BUILD_LOCK:
+        if _RUN_BUILD is None:
+            BUILD.mkdir(parents=True, exist_ok=True)
+            _RUN_BUILD = Path(tempfile.mkdtemp(prefix=f"run-{os.getpid()}-", dir=BUILD))
+            atexit.register(shutil.rmtree, _RUN_BUILD, True)
+        return _RUN_BUILD
+
+
+def _stage_common(base):
+    for folder in ("port/game", "port/platform/common"):
+        (base / folder).mkdir(parents=True, exist_ok=True)
+    for folder in ("network", "updater"):
+        link = base / "port" / folder
+        if not link.exists():
+            os.symlink(PORT / folder, link)
+    for name in ("mods.h", "portlog.h"):
+        shutil.copy(PORT / "platform/common" / name, base / "port/platform/common" / name)
+
+
+def _cached_obj(kind, key_material, builder):
+    digest = hashlib.sha256(key_material.encode()).hexdigest()[:16]
+    ckey = (kind, digest)
+    with _OBJ_LOCK:
+        if ckey in _OBJ_CACHE:
+            return _OBJ_CACHE[ckey]
+        lock = _OBJ_KEY_LOCKS.setdefault(ckey, threading.Lock())
+    with lock:
+        with _OBJ_LOCK:
+            if ckey in _OBJ_CACHE:
+                return _OBJ_CACHE[ckey]
+        obj_dir = _run_build_dir() / f"obj-{kind}-{digest}"
+        obj_dir.mkdir(parents=True, exist_ok=True)
+        obj_path, cmd = builder(obj_dir)
+        done = subprocess.run(cmd, capture_output=True, text=True, timeout=300, preexec_fn=mods_tests.no_core)
+        if done.returncode:
+            raise RuntimeError(done.stderr)
+        with _OBJ_LOCK:
+            _OBJ_CACHE[ckey] = obj_path
+        return obj_path
+
+
 def driver(mods_text=None, model_text=None, ce_text=None):
     """Builds the driver from mods.cpp, the model and ce.cpp (or a mutant's text of any), once per set of texts."""
     mods_text = mods_text if mods_text is not None else MODS_CPP.read_text()
     model_text = model_text if model_text is not None else MODEL.read_text()
     ce_text = ce_text if ce_text is not None else CE_CPP.read_text()
-    key = hashlib.sha256((mods_text + "\0" + model_text + "\0" + ce_text).encode()).hexdigest()[:16]
-    if key in BUILT:
-        return BUILT[key]
-    out = BUILD / f"driver2-{key}"
-    # the model includes "../platform/common/mods.h", mods.cpp "../../updater/sha256.h" and ce.cpp the network and updater headers: the copies sit as
-    # the sources do
-    for folder in ("port/game", "port/platform/common"):
-        (out / folder).mkdir(parents=True, exist_ok=True)
-    for folder in ("network", "updater"):
-        if not (out / "port" / folder).exists():
-            os.symlink(PORT / folder, out / "port" / folder)
-    (out / "port/platform/common/mods.cpp").write_text(mods_text)
-    (out / "port/platform/common/ce.cpp").write_text(ce_text)
-    (out / "port/game/ce_modspage_model.h").write_text(model_text)
-    for name in ("mods.h", "portlog.h"):
-        shutil.copy(PORT / "platform/common" / name, out / "port/platform/common" / name)
     cxx, cc = os.environ.get("CXX", "g++"), os.environ.get("CC", "gcc")
-    steps = [
-        [cc, "-O2", "-c", str(PORT / "updater/sha256.c"), "-o", str(out / "sha256.o")],
-        # ce.cpp's ce.ini reader and writer do not depend on the version (with CE_VERSION it would also need SDL)
-        [cxx, "-std=gnu++17", "-O1", "-w", "-c", "-I", str(out / "port/platform/common"), str(out / "port/platform/common/ce.cpp"), "-o", str(out / "ce.o")],
-        [cxx, "-std=gnu++17", "-O1", "-Wall", "-Wextra", "-Werror", "-Wno-format-truncation", f'-DCE_VERSION="{VERSION}"', "-I", str(out / "port/game"),
-         "-I", str(out / "port/platform/common"), "-I", str(out / "port/updater"), str(DRIVER), str(out / "port/platform/common/mods.cpp"),
-         str(out / "ce.o"), str(out / "sha256.o"), "-lz", "-o", str(out / "driver")],
-    ]
-    for step in steps:
-        done = subprocess.run(step, capture_output=True, text=True, timeout=300, preexec_fn=mods_tests.no_core)
+    key = hashlib.sha256((cxx + "\0" + cc + "\0" + mods_text + "\0" + model_text + "\0" + ce_text).encode()).hexdigest()[:16]
+    with _BUILD_LOCK:
+        if key in BUILT:
+            return BUILT[key]
+        lock = _BUILD_KEY_LOCKS.setdefault(key, threading.Lock())
+    with lock:
+        with _BUILD_LOCK:
+            if key in BUILT:
+                return BUILT[key]
+        sha_o = _cached_obj(
+            "sha256", cc,
+            lambda d: (d / "sha256.o", [cc, "-O2", "-c", str(PORT / "updater/sha256.c"), "-o", str(d / "sha256.o")]),
+        )
+
+        def build_ce(d):
+            _stage_common(d)
+            (d / "port/platform/common/ce.cpp").write_text(ce_text)
+            # ce.cpp's ce.ini reader and writer do not depend on the version (with CE_VERSION it would also need SDL)
+            return d / "ce.o", [cxx, "-std=gnu++17", "-O1", "-w", "-c", "-I", str(d / "port/platform/common"),
+                                str(d / "port/platform/common/ce.cpp"), "-o", str(d / "ce.o")]
+
+        def build_mods(d):
+            _stage_common(d)
+            (d / "port/platform/common/mods.cpp").write_text(mods_text)
+            return d / "mods.o", [cxx, "-std=gnu++17", "-O1", "-Wall", "-Wextra", "-Werror", "-Wno-format-truncation",
+                                  f'-DCE_VERSION="{VERSION}"', "-c", "-I", str(d / "port/platform/common"),
+                                  "-I", str(d / "port/updater"), str(d / "port/platform/common/mods.cpp"), "-o", str(d / "mods.o")]
+
+        def build_driver(d):
+            _stage_common(d)
+            (d / "port/game/ce_modspage_model.h").write_text(model_text)
+            return d / "driver.o", [cxx, "-std=gnu++17", "-O1", "-Wall", "-Wextra", "-Werror", "-Wno-format-truncation",
+                                    f'-DCE_VERSION="{VERSION}"', "-c", "-I", str(d / "port/game"),
+                                    "-I", str(d / "port/platform/common"), "-I", str(d / "port/updater"), str(DRIVER), "-o", str(d / "driver.o")]
+
+        ce_o = _cached_obj("ce", cxx + "\0" + ce_text, build_ce)
+        mods_o = _cached_obj("mods", cxx + "\0" + mods_text, build_mods)
+        driver_o = _cached_obj("driver", cxx + "\0" + model_text, build_driver)
+        out = _run_build_dir() / f"driver2-{key}"
+        out.mkdir(parents=True, exist_ok=True)
+        exe = out / "driver"
+        done = subprocess.run([cxx, "-std=gnu++17", "-O1", str(driver_o), str(mods_o), str(ce_o), str(sha_o), "-lz", "-o", str(exe)],
+                              capture_output=True, text=True, timeout=300, preexec_fn=mods_tests.no_core)
         if done.returncode:
             raise RuntimeError(done.stderr)
-    BUILT[key] = out / "driver"
-    return BUILT[key]
+        with _BUILD_LOCK:
+            BUILT[key] = exe
+        return exe
 
 
 class House(mods_tests.Fixture):
@@ -829,42 +910,87 @@ MODEL_MUTANTS = [
 ]
 
 
-def run_mutants():
-    failures = 0
+def _eval_mutant(which, source, name, old, new, test):
+    if source.count(old) != 1:
+        return False, f"mutant {name}: its text is not in {which} exactly once"
+    try:
+        mutated = source.replace(old, new)
+        exe = driver(mutated) if which == "mods.cpp" else driver(None, None, mutated) if which == "ce.cpp" else driver(None, mutated)
+    except RuntimeError as error:
+        return False, f"mutant {name}: does not build: {error}"
+    case = ModsPageTests(test)
+    case.exe = exe
+    with open(os.devnull, "w") as devnull:
+        result = unittest.TextTestRunner(stream=devnull, verbosity=0).run(case)
+    caught = not result.wasSuccessful()
+    return caught, f"mutant {name}: {'caught by ' + test if caught else 'NOT CAUGHT by ' + test}"
+
+
+def run_mutants(jobs=None):
+    # Pre-build the baseline driver once so all worker threads share immutable .o files.
+    driver()
+    tasks = []
     for which, table in (("mods.cpp", MODS_MUTANTS), ("ce.cpp", CE_MUTANTS), ("the model", MODEL_MUTANTS)):
         source = {"mods.cpp": MODS_CPP, "ce.cpp": CE_CPP, "the model": MODEL}[which].read_text()
         for name, old, new, test in table:
-            if source.count(old) != 1:
-                print(f"mutant {name}: its text is not in {which} exactly once")
-                failures += 1
-                continue
-            try:
-                mutated = source.replace(old, new)
-                exe = driver(mutated) if which == "mods.cpp" else driver(None, None, mutated) if which == "ce.cpp" else driver(None, mutated)
-            except RuntimeError as error:
-                print(f"mutant {name}: does not build: {error}")
-                failures += 1
-                continue
-            ModsPageTests.exe = exe
-            result = unittest.TextTestRunner(stream=open(os.devnull, "w"), verbosity=0).run(ModsPageTests(test))
-            ModsPageTests.exe = None
-            caught = not result.wasSuccessful()
-            print(f"mutant {name}: {'caught by ' + test if caught else 'NOT CAUGHT by ' + test}")
+            tasks.append((which, source, name, old, new, test))
+    workers = _default_jobs() if jobs is None else jobs
+    failures = 0
+    if workers <= 1 or len(tasks) <= 1:
+        for task in tasks:
+            caught, line = _eval_mutant(*task)
+            print(line, flush=True)
+            failures += not caught
+        return failures
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = [pool.submit(_eval_mutant, *task) for task in tasks]
+        for future in futures:
+            caught, line = future.result()
+            print(line, flush=True)
             failures += not caught
     return failures
 
 
+def _parse_cli(argv):
+    no_mutants = False
+    mutants_only = False
+    jobs = None
+    rest = []
+    i = 1
+    while i < len(argv):
+        a = argv[i]
+        if a == "--no-mutants":
+            no_mutants = True
+        elif a == "--mutants-only":
+            mutants_only = True
+        elif a in ("-j", "--jobs"):
+            if i + 1 >= len(argv):
+                raise SystemExit(f"{a} requires a positive integer")
+            jobs = int(argv[i + 1])
+            i += 1
+        elif a.startswith("--jobs="):
+            jobs = int(a.split("=", 1)[1])
+        elif a.startswith("-j") and a[2:].isdigit():
+            jobs = int(a[2:])
+        else:
+            rest.append(a)
+        i += 1
+    if jobs is not None and jobs < 1:
+        raise SystemExit(f"--jobs must be >= 1, got {jobs}")
+    return no_mutants, mutants_only, jobs, rest
+
+
 if __name__ == "__main__":
-    args = [a for a in sys.argv[1:] if a not in ("--no-mutants", "--mutants-only")]
+    no_mutants, mutants_only, jobs, args = _parse_cli(sys.argv)
     status = 0
-    if "--mutants-only" not in sys.argv:
+    if not mutants_only:
         program = unittest.main(argv=[sys.argv[0], *args], exit=False, defaultTest="ModsPageTests")
         status = 0 if program.result.wasSuccessful() else 1
         skipped = len(program.result.skipped)
-        print(f"tests: {program.result.testsRun} run, {len(program.result.failures) + len(program.result.errors)} failed, {skipped} skipped")
-    if "--no-mutants" not in sys.argv and not args and status == 0:
-        failed = run_mutants()
+        print(f"tests: {program.result.testsRun} run, {len(program.result.failures) + len(program.result.errors)} failed, {skipped} skipped", flush=True)
+    if not no_mutants and not args and status == 0:
+        failed = run_mutants(jobs=jobs)
         counted = len(MODS_MUTANTS) + len(CE_MUTANTS) + len(MODEL_MUTANTS)
-        print(f"mutants: {counted} run, {failed} not caught or not applied")
+        print(f"mutants: {counted} run, {failed} not caught or not applied", flush=True)
         status = status or (1 if failed else 0)
     sys.exit(status)

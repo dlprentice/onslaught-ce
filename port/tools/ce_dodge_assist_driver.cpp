@@ -375,7 +375,7 @@ int main(int argc, char **argv)
         fixtureDodgeKey=0x12;
         Check(PortCeDodgeAssistKeyFree(),"normal profile can choose an otherwise unused key");
         fixtureTakeover=true;
-        Check(!strcmp(PortCeDodgeBindingConflict(0x12),"Infantry takeover") && !PortCeDodgeAssistKeyFree(),"infantry keeps E even if Dodge was assigned it earlier");
+        Check(!strcmp(PortCeDodgeBindingConflict(0x12),"Take Unit") && !PortCeDodgeAssistKeyFree(),"infantry keeps E even if Dodge was assigned it earlier");
         fixtureCommander=true;fixtureDodgeKey=0x32;
         Check(!strcmp(PortCeDodgeBindingConflict(0x32),"Commander view") && !PortCeDodgeAssistKeyFree(),"Commander keeps M with both features enabled");
         fixtureDodgeKey=0x16;

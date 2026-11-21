@@ -148,7 +148,7 @@ def run_driver(cxx, driver, headers, strict=True):
 FORBIDDEN = set("$@[\\]^_{|}~`")
 SHOWN = (r'\bNote\(\s*"((?:[^"\\]|\\.)*)"', r'\bText\([^;]*?"((?:[^"\\]|\\.)*)"', r'\*why\s*=\s*"((?:[^"\\]|\\.)*)"', r'\breturn\s+"((?:[^"\\]|\\.)*)"')
 LISTS = (r"labels\[\]\s*=\s*\{([^}]*)\}", r"action\[5\]\s*=\s*\{([^}]*)\}", r"one\[\]\s*=\s*\{([^}]*)\}", r"several\[\]\s*=\s*\{([^}]*)\}")
-SHOWN_FORMATS = ("Commander   Battle Line", "Order:%s", "%s   %d unit", "squad%s", "%d squads %s.", "Group %d")
+SHOWN_FORMATS = ("Commander   Battle Line", "Order: %s", "%s   %d unit", "squad%s", "%d squads %s.", "Group %d")
 
 
 def shown_strings(text):

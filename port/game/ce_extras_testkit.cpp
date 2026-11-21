@@ -14,7 +14,7 @@ int		CeTestKitMenuRows(CMenuOptionsList *list, CeTestRow *out, int max);
 namespace
 {
 const char *const kXpPages[] = {"hub", "careers", "record", "missions", "goodies", "music", "catalogue", "lore", "article",
-								"contents", "stored-settings", "backup", "backup-preview", "sounds"};
+								"contents", "stored-settings", "backup", "backup-preview", "sounds", "backup-all"};
 static_assert(sizeof kXpPages / sizeof kXpPages[0] == XP_COUNT, "one page name per ECeExtrasPage");
 
 bool	XpActive() { return PortCeExtrasActive(); }

@@ -95,10 +95,10 @@ void	Row(int index, SCeListRow *row)
 			same = same || !strcmp(text, other);
 			alike = alike || (strcmp(text, other) && !strcmp(cut, otherCut));
 		}
-	if (alike)
+	const size_t length = strlen(text);
+	if (alike && length > kRowChars)
 	{
 		// its start, then its own end: the words that tell it from the rows that begin the same, each cut at a space
-		const size_t length = strlen(text);
 		size_t head = 17, from = length - (kRowChars - 20);
 		while (head > 8 && text[head] != ' ')
 			head--;
@@ -163,7 +163,11 @@ bool	Select(int index)
 			PortCeCatalogueListFind();
 		}
 		else
+		{
 			PortCeCatalogueFilter("");
+			const int at = PortCeCatalogueSelectedIndex();
+			PortCeExtrasShow(XP_SOUNDS, at >= 0 ? at : 0);
+		}
 		return true;
 	}
 	const unsigned slot = Slot(index);

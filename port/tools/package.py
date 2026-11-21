@@ -397,8 +397,9 @@ def readme(version: str, windows: bool) -> bytes:
         "A native source port of Battle Engine Aquila (2003). It contains no game files: you need your own copy of the game",
         "(for example from Steam).", f"Project page, source and releases: {PUBLIC_REPO}", "",
         *quick_start(windows), "",
-        *textwrap.wrap("In the game, Main Menu > Onslaught CE holds what this port adds: Bonus Levels, Mods, Catalogue, CE Settings, Cheats, Help & Info and "
-                       f"Report a Problem. Your careers and settings are kept in {user}, apart from the original game's folder.",
+        *textwrap.wrap("In the game, Main Menu > Onslaught CE holds what this port adds: Bonus Levels, CE Settings, Cheats, Help & Info and "
+                       "Report a Problem (plus optional Extras, Catalogue and, on Linux, Mods). Your careers and settings are kept in "
+                       f"{user}, apart from the original game's folder.",
                        README_WIDTH, break_on_hyphens=False), "",
         *textwrap.wrap('Upgrading from Onslaught CE 0.1.0 to 0.1.6? Do not start the old launcher again. Read "Upgrading from '
                        '0.1.0-0.1.6" below first.', README_WIDTH, break_on_hyphens=False), ""]
@@ -486,9 +487,10 @@ def _item(text: str) -> list:
 # NETWORK_GAME_LINES, which only the build that offers the page carries (package_readme_tests.py holds the default text to that).
 IN_THE_GAME = [
     "In the game",
-    "- Main Menu > Onslaught CE: Bonus Levels, Mods, Catalogue, CE Settings, Cheats, Help & Info and Report a Problem.",
-    "  Each row has a hint under the list. Experimental rows depend on the features enabled. The Options page is the",
-    "  original's. The game's Credits remain separate.",
+    "- Main Menu > Onslaught CE: Bonus Levels, CE Settings, Cheats, Help & Info and Report a Problem (plus optional",
+    "  Extras with extras=1, Catalogue with catalogue=1, and Mods on Linux with mods_menu=1 in ce.ini). Each row has",
+    "  a hint under the list. Experimental rows depend on the features enabled. The Options page is the original's.",
+    "  The game's Credits remain separate.",
     "- Bonus Levels: Aquila Prototype, Building Defence and Race Challenge 1 to 5. None of them advances career",
     "  progress, and each comes back to this list with its row highlighted.",
     "  Aquila Prototype is the original playable-demo level (201).",
@@ -545,8 +547,8 @@ IN_THE_GAME = [
     "  version is kept, but what it turns on has changed: with commander=1 from 0.1.13, Commander (M by default)",
     "  opens a live view for squad orders. The battle keeps running while your Battle Engine stands without your",
     "  control and the HUD is hidden. Press Commander again or Escape to close it.",
-    "  The paused map on V requires the additional test setting commander_tactical_map=1.",
-    "  Commander and Take Unit (E by default) can be rebound in Options > Controls.",
+    "  Press V for the paused tactical map (enable commander_tactical_map=1 in ce.ini).",
+    "  Commander and Take Unit (E by default) can be rebound in Controller Options.",
     "  Close Commander before taking a unit; use your bound Morph action to return before opening Commander again.",
     "  With museum=1, a Museum Prototype visit is kept out of your career: nothing is saved during it, so with",
     "  a named career the game's save error message appears each time you leave its Pause Menu. Nothing is",
@@ -596,19 +598,22 @@ IN_THE_GAME = [
     "  or a demo. Tested on Linux; Windows testing of it is limited (see the release notes).",
     "  In a single-player level the Pause Menu also has a Photo Mode row, so a gamepad can reach it: it closes the",
     "  menu and turns Photo Mode on, as F11 does, and writes nothing. The row then reads End Photo Mode.",
-    "- Catalogue: open Onslaught CE > Catalogue, then Models or Textures, to browse your installed files.",
-    "  Choose an item for its details; texture entries also have a preview. Model entries show information,",
-    "  not a playable unit or a new 3D model viewer. Browsing does not change or redistribute the game files.",
-    "  Find by name accepts part of a filename (up to 32 ASCII characters) and ignores letter case. Choose Find",
-    "  to apply it. Models and Textures remember separate filters. Escape cancels the text edit; Clear filter",
-    "  on the results page shows every entry again. No matches leaves Find and Clear filter available.",
-    "  Native Linux menus have been exercised; Windows compilation does not demonstrate its UI or text entry.",
-    "- Mods (experimental): on Linux, Onslaught CE can read replacement game files, such as textures, from mods in the",
-    "  mods folder of your user folder. Onslaught CE > Mods lets you enable, disable and order installed mods;",
-    "  changes apply the next time you start the game. You can also edit the mods= line in ce.ini with the game closed.",
-    "  Every file is checked against the mod's mod.json at start; a mod with a problem is not loaded. The log says why.",
-    "  On Windows mods are not active: a mods= line is ignored and the log says so. See Mods (experimental) in the",
-    "  project README.",
+    *_item("Extras (optional): set extras=1 in ce.ini to show Main Menu > Onslaught CE > Extras, which opens Service "
+           "Record, Goodies Catalogue, Music Player, Lore, Back Up All Careers and Backup Preview. Reading records and "
+           "previews leaves your careers unchanged."),
+    *_item("Catalogue (optional): set catalogue=1 in ce.ini to show Onslaught CE > Catalogue, then browse installed "
+           "Models, Textures, Sound effects and Speech. Choose an item for its details; texture entries also have a "
+           "preview and sound entries play on selection. Model entries show information, not a playable unit or a new "
+           "3D model viewer. Browsing does not change or redistribute the game files. Find by name accepts part of a "
+           "filename (up to 32 ASCII characters) and ignores letter case. Choose Find to apply it. Collections remember "
+           "separate filters. Escape cancels the text edit; Clear filter or Show all shows every entry again. Native "
+           "Linux menus have been exercised; Windows compilation does not demonstrate its UI or text entry."),
+    *_item("Mods (experimental): on Linux only, Onslaught CE can read replacement game files, such as textures, from "
+           "mods in the mods folder of your user folder. Set mods_menu=1 in ce.ini to show Onslaught CE > Mods, which "
+           "lets you enable, disable and order installed mods; changes apply the next time you start the game. You can "
+           "also edit the mods= line in ce.ini with the game closed. Every file is checked against the mod's mod.json at "
+           "start; a mod with a problem is not loaded. The log says why. On Windows mods are not active: mods_menu=1 "
+           "and mods= are ignored and the log says so. See Mods (experimental) in the project README."),
     "- A save that fails now says so: after the Pause Menu's Continue, the game's own save error message (\"An error",
     "  occurred during saving.\" in English, and in the language you chose) appears for a few seconds at the bottom of",
     "  the screen, and after a language change in the front end it appears in the usual message box. The career you",

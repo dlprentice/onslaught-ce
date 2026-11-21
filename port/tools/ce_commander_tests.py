@@ -97,23 +97,17 @@ def map_resource_violations(text):
     return found
 
 
-# ---- the live view's picture (ce_cmdview.cpp) ----------------------------------------------------------------------------------------------------------------
-# Everything the picture may take from the game, by the object it is read through: the members named here only read. The file's own READS comment is held to
+# ---- the live view's unit projection helper (ce_cmdview.cpp) ------------------------------------------------------------------------------------------------
+# Everything ce_cmdview.cpp may take from the game, by the object it is read through: the members named here only read. The file's own READS comment is held to
 # the same list.
 VIEW_READS = {
-    "MAP": {"mGridWidth", "mGridHeight", "GetHeight", "Collide", "GetWaterLevel", "GetHFProperties", "GetFog", "mColors"},
-    "MIXERMAP": {"mSlots", "mMap"},
-    "STATICSHADOWS": {"mGrid"},
-    "ENGINE": {"GetMapTex"},
     "WORLD": {"GetThingNB"},
     "PLATFORM": {"Font"},
-    "LT": {"GetDevice"},
-    "GAME": {"GetCurrentLevel"},
 }
-# Calls made through a pointer or a reference to one of the game's objects (a thing, a unit, the font, a texture): each only reads.
-VIEW_GAME_CALLS = {"GetThingType", "GetFlags", "GetPos", "GetOrientation", "GetAllegiance", "RemapChar", "GetTexture", "GetHeight"}
-# Calls made on the Direct3D device and on the picture's own device objects.
-VIEW_DEVICE_OBJECTS = ("device", "gDevice", "gTerrainVb", "gTerrainIb", "gTerrainTex", "gKept", "object")
+# Calls made through a pointer or a reference to one of the game's objects (a thing, a unit, the font): each only reads.
+VIEW_GAME_CALLS = {"GetThingType", "GetFlags", "GetPos", "GetAllegiance", "GetHeight"}
+# Direct3D device objects are no longer touched by ce_cmdview.cpp (Commander renders the native 3D scene inside CeRenderFence).
+VIEW_DEVICE_OBJECTS = ()
 # What the picture must never name: the game's drawing and its render records, its allocator, its random numbers and clocks, the routines of the engine's
 # render, and the two readers of the height field that write as they read (the extents are measured into the map object, the lit texel routine fills its
 # scratch buffer).
@@ -472,14 +466,17 @@ class Static(unittest.TestCase):
         for name, members in VIEW_READS.items():
             for member in members:
                 self.assertRegex(code, r"\b" + name + r"\s*\.\s*" + member + r"\b", f"{name}.{member} is on the list and not read")
-        # its memory is the C library's, and it draws through the device with a state block around the picture
-        for word in ("malloc(", "realloc(", "free(", "CreateStateBlock(D3DSBT_ALL", "gKept->Apply()", "DrawPrimitiveUP", "DrawIndexedPrimitive"):
+        # its memory is the C library's, and the retired replacement terrain/device renderer is gone
+        for word in ("realloc(", "free("):
             self.assertIn(word, code)
-        begin = function(code, "bool CeCmdViewBegin(const CeWorldViewSample &view, float fade)")
-        self.assertLess(begin.index("CreateStateBlock"), begin.index("SetViewport"), "the device's state is kept before the picture changes any of it")
-        self.assertLess(begin.index("if (!Ready(device)) return false;"), begin.index("CreateStateBlock"), "a picture that cannot be made changes nothing")
-        end = function(code, "void CeCmdViewEnd()")
-        self.assertLess(end.index("Flush(gDevice);"), end.index("gKept->Apply()"), "the state goes back after the last draw")
+        header_code = comments_off(VIEW_HEADER.read_text())
+        for retired in ("CeCmdViewBegin", "CeCmdViewWorld", "CeCmdViewEnd", "CeCmdViewMatrices", "CeCmdViewBox", "CeCmdViewText(", "CeCmdViewTextWidth",
+                        "CeCmdViewDrawing", "CeCmdViewCamera", "CreateStateBlock", "DrawPrimitiveUP", "DrawIndexedPrimitive"):
+            self.assertNotIn(retired, code, f"retired replacement renderer symbol {retired!r} remains in ce_cmdview.cpp")
+            self.assertNotIn(retired, header_code, f"retired replacement renderer symbol {retired!r} remains in ce_cmdview.h")
+        collect = function(code, "void CeCmdViewCollectUnits(const CeWorldViewSample& sample, int friendlyAllegiance, const void *pilot)")
+        self.assertLess(collect.index("CeViewDetail::Valid("), collect.index("WORLD.GetThingNB()"))
+        self.assertLess(collect.index("CeViewDetail::Combined("), collect.index("WORLD.GetThingNB()"))
 
     def test_the_view_scan_catches_what_it_guards(self):
         text = VIEW.read_text()
@@ -504,12 +501,16 @@ class Static(unittest.TestCase):
                                ("the particle step", "\tPARTICLE_MANAGER.Process(0.f, FALSE);\n"),
                                ("the shadow manager", "\tSHADOWS.ResetShads();\n"),
                                ("an environment switch", "\tif (getenv(\"X\")) return;\n")):
-            anchor = "void CeCmdViewWorld(int friendlyAllegiance, const void *pilot)\n{\n"
+            anchor = "void CeCmdViewCollectUnits(const CeWorldViewSample& sample, int friendlyAllegiance, const void *pilot)\n{\n"
             self.assertEqual(text.count(anchor), 1)
             with self.subTest(mutant=name):
-                self.assertTrue(view_violations(text.replace(anchor, anchor + addition, 1)), f"{name} in the picture was not caught")
-        self.assertTrue(view_reads_documented(text.replace("//   STATICSHADOWS   mGrid", "//   STATICSHADOW    mGrid", 1)), "an object missing from the READS comment")
-        self.assertTrue(view_reads_documented(text.replace("//   LT              GetDevice", "//   LT              GetDevice\n//   HUD             Render", 1)),
+                self.assertTrue(view_violations(text.replace(anchor, anchor + addition, 1)), f"{name} in ce_cmdview.cpp was not caught")
+        world_doc = "//   WORLD           GetThingNB"
+        platform_doc = "//   PLATFORM        Font(FONT_SMALL): GetHeight"
+        self.assertEqual(text.count(world_doc), 1)
+        self.assertEqual(text.count(platform_doc), 1)
+        self.assertTrue(view_reads_documented(text.replace(world_doc, "//   WORLDS          GetThingNB", 1)), "an object missing from the READS comment")
+        self.assertTrue(view_reads_documented(text.replace(platform_doc, platform_doc + "\n//   HUD             Render", 1)),
                         "an object the READS comment lists and the list here does not")
 
     def test_the_map_leaves_the_frame_behind_the_live_view_alone(self):

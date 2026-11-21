@@ -85,9 +85,14 @@ class TableTests(unittest.TestCase):
         return [float(x) for x in done.stdout.split()]
 
     def hints(self):
-        for slot, (rule, evidence) in self.rows.items():
+        for slot, (rule, _) in self.rows.items():
             if slot <= 232 and not 71 <= slot <= 73:
-                yield slot, f"{rule} {gen.EVIDENCE[evidence]}"
+                yield slot, rule
+
+    def test_no_internal_provenance_strings_in_table(self):
+        text = TABLE.read_text()
+        for phrase in ("Seen in play.", "Matches the game's code.", "From the developers' source.", "kCeGoodieEvidence"):
+            self.assertNotIn(phrase, text)
 
     def balance_problem(self, binary, face):
         """None when every shown Goodie's hint, broken as the page breaks it (CeBreakAt, by the face's widths), is as even as any break

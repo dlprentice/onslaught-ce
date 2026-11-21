@@ -21,13 +21,22 @@ struct State { std::mutex lock; CeBackupStatus view{}; unsigned long page=0,job=
 State &state() { static State *s=new State; return *s; }
 struct Ticket { unsigned long serial; };
 void note(CeBackupStatus &v,CeBackupState kind,const char *s){v.state=kind;snprintf(v.message,sizeof(v.message),"%s",s);}
+bool validFolderPath(const char *path) {
+    if (!path || !path[0]) return false;
+#ifdef _WIN32
+    const bool drive=((path[0]>='A' && path[0]<='Z') || (path[0]>='a' && path[0]<='z'));
+    return drive && path[1]==':' && (path[2]=='\\' || path[2]=='/');
+#else
+    return path[0]=='/';
+#endif
+}
 void SDLCALL picked(void *context,const char *const *files,int) {
     const unsigned long id=static_cast<Ticket*>(context)->serial;delete static_cast<Ticket*>(context);
     State &s=state();std::lock_guard<std::mutex> hold(s.lock);
     if(!s.open||s.page!=id||s.view.state!=CE_BACKUP_PICKING)return;
     if(!files){note(s.view,CE_BACKUP_ERROR,"The folder chooser could not open.");return;}
     if(!files[0]){note(s.view,CE_BACKUP_IDLE,"No new folder chosen.");return;}
-    if(files[1] || files[0][0]!='/' || strnlen(files[0],sizeof(s.view.folder))>=sizeof(s.view.folder)){
+    if(files[1] || !validFolderPath(files[0]) || strnlen(files[0],sizeof(s.view.folder))>=sizeof(s.view.folder)){
         note(s.view,CE_BACKUP_ERROR,"Choose one local folder.");return;
     }
     snprintf(s.view.folder,sizeof(s.view.folder),"%s",files[0]);note(s.view,CE_BACKUP_IDLE,"Ready when you are.");

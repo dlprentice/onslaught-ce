@@ -11,12 +11,24 @@ from __future__ import annotations
 
 import argparse
 import ast
+from concurrent.futures import ThreadPoolExecutor
 import json
+import os
 from pathlib import Path
 import re
 import shutil
 import subprocess
 import tempfile
+
+
+def default_jobs() -> int:
+    env = os.environ.get("BEA_MUTANT_JOBS", "").strip()
+    if env:
+        value = int(env)
+        if value < 1:
+            raise ValueError(f"BEA_MUTANT_JOBS must be >= 1, got {value}")
+        return value
+    return min(6, os.cpu_count() or 1)
 
 
 def run_command(command: list[str], logs: Path, name: str) -> bool:
@@ -141,7 +153,7 @@ def x87_flags(compiler: str, logs: Path) -> list:
         return []
 
 
-def integration_controls(repo: Path, compiler: str, logs: Path) -> bool:
+def integration_controls(repo: Path, compiler: str, logs: Path, jobs: int) -> bool:
     public_flag = public_ce_define(repo)
     public_macro = public_flag[2:].split("=", 1)[0]
     source = (repo / "port" / "game" / "ce_cmdmap.cpp").read_text()
@@ -197,35 +209,79 @@ def integration_controls(repo: Path, compiler: str, logs: Path) -> bool:
         raise ValueError("strategic flight-scope activation unavailable")
     (logs / "ce_photo.h").write_text(header)
     executable = logs / "camera-integration-controls"
-    command = [
-        compiler, "-std=c++17", "-Wall", "-Wextra", "-Werror", "-pedantic",
-        "-DCE_COMMANDER_CAMERA_INTEGRATION", public_flag, "-I", str(logs),
-        "-I", str(repo / "port" / "game"), "-I", str(support),
-        str(repo / "port" / "game" / "ce_commander_camera.cpp"), str(repo / "port" / "game" / "ce_hud_reservation.cpp"),
-        str(repo / "port" / "game" / "ce_dodge_binding.cpp"),
-        str(repo / "port" / "game" / "ce_command_selection.cpp"),
-        str(repo / "port" / "game" / "ce_command_panel.cpp"),
-        str(repo / "port" / "game" / "ce_hooks.cpp"),
-        str(repo / "port" / "game" / "ce_modes.cpp"),
-        str(repo / "port" / "tools" / "tests" / "ce_commander_camera_factory.cpp"),
-        str(repo / "port" / "tools" / "ce_commander_camera_tests.cpp"),
-        "-o", str(executable),
+    shared_sources = [
+        repo / "port" / "game" / "ce_commander_camera.cpp",
+        repo / "port" / "game" / "ce_hud_reservation.cpp",
+        repo / "port" / "game" / "ce_dodge_binding.cpp",
+        repo / "port" / "game" / "ce_command_selection.cpp",
+        repo / "port" / "game" / "ce_command_panel.cpp",
+        repo / "port" / "game" / "ce_hooks.cpp",
+        repo / "port" / "game" / "ce_modes.cpp",
+        repo / "port" / "tools" / "tests" / "ce_commander_camera_factory.cpp",
     ]
-    if has_editor_scope:
-        command.insert(1, "-DCE_CAMERA_EDITOR_HUD_QUERY")
+    driver_source = repo / "port" / "tools" / "ce_commander_camera_tests.cpp"
     x87 = x87_flags(compiler, logs)
     (logs / "x87-single-precision.json").write_text(json.dumps({"single_precision_x87_build": bool(x87), "flags": x87}) + "\n")
-    command[1:1] = x87
-    if not run_command(command, logs, "integration-compile") or not run_command(
-        [str(executable)], logs, "integration-controls"
-    ):
+    common_flags = [
+        compiler, *x87,
+        *(["-DCE_CAMERA_EDITOR_HUD_QUERY"] if has_editor_scope else []),
+        "-std=c++17", "-Wall", "-Wextra", "-Werror", "-pedantic",
+        "-DCE_COMMANDER_CAMERA_INTEGRATION",
+    ]
+    shared_dir = logs / "shared-objs"
+    shared_dir.mkdir()
+
+    def compile_shared_obj(src: Path) -> tuple[bool, Path]:
+        obj = shared_dir / (src.stem + ".o")
+        cmd = [
+            *common_flags, public_flag,
+            "-I", str(logs), "-I", str(repo / "port" / "game"), "-I", str(support),
+            "-c", str(src), "-o", str(obj),
+        ]
+        return run_command(cmd, shared_dir, src.stem), obj
+
+    if jobs == 1:
+        shared_results = [compile_shared_obj(src) for src in shared_sources]
+    else:
+        with ThreadPoolExecutor(max_workers=jobs) as pool:
+            shared_results = list(pool.map(compile_shared_obj, shared_sources))
+    if not all(ok for ok, _ in shared_results):
         return False
-    faithful = [item for item in command if item != public_flag]
-    faithful[-1] = str(logs / "camera-hook-disabled-controls")
-    if not run_command(faithful, logs, "hook-disabled-compile") or not run_command(
-        [faithful[-1]], logs, "hook-disabled-controls"
-    ):
-        return False
+    shared_objs = [str(obj) for _, obj in shared_results]
+
+    def link_driver_cmd(inc_dir: Path, out_exe: Path) -> list[str]:
+        return [
+            *common_flags, public_flag,
+            "-I", str(inc_dir), "-I", str(repo / "port" / "game"), "-I", str(support),
+            str(driver_source), *shared_objs, "-o", str(out_exe),
+        ]
+
+    faithful = [
+        *common_flags,
+        "-I", str(logs), "-I", str(repo / "port" / "game"), "-I", str(support),
+        *(str(src) for src in shared_sources), str(driver_source),
+        "-o", str(logs / "camera-hook-disabled-controls"),
+    ]
+
+    def run_baseline() -> bool:
+        return run_command(link_driver_cmd(logs, executable), logs, "integration-compile") and run_command(
+            [str(executable)], logs, "integration-controls"
+        )
+
+    def run_hook_disabled() -> bool:
+        return run_command(faithful, logs, "hook-disabled-compile") and run_command(
+            [faithful[-1]], logs, "hook-disabled-controls"
+        )
+
+    if jobs == 1:
+        if not run_baseline() or not run_hook_disabled():
+            return False
+    else:
+        with ThreadPoolExecutor(max_workers=min(2, jobs)) as pool:
+            f_base = pool.submit(run_baseline)
+            f_disabled = pool.submit(run_hook_disabled)
+            if not (f_base.result() and f_disabled.result()):
+                return False
     mutations = {}
     for name, token in (("simulation_pause", "GAME.Pause("), ("pilot_control", "SetToControl(")):
         lines = [line for line in definition(source, "Open").splitlines()
@@ -429,14 +485,16 @@ def integration_controls(repo: Path, compiler: str, logs: Path) -> bool:
             raise RuntimeError("presentation mutation anchor unavailable: " + name)
         mutations[name] = source.replace(body, body.replace(before, after, 1), 1)
 
-    results = {}
-    for name, changed in mutations.items():
+    unsafe = source.replace("(std::min)(", "std::min(")
+    if unsafe == source:
+        raise ValueError("macro compatibility control unavailable")
+
+    def eval_mutation(name: str, changed: str) -> dict:
         folder = logs / name
         folder.mkdir()
         (folder / "ce_commander_strategic_actual.inc").write_text(integration_fragment(changed))
         (folder / "ce_commander_strategic_hook.inc").write_text(hook)
-        variant = [str(folder) if item == str(logs) else item for item in command]
-        variant[-1] = str(folder / "controls")
+        variant = link_driver_cmd(folder, folder / "controls")
         compiled = run_command(variant, folder, "compile")
         rejected = False
         if compiled:
@@ -444,32 +502,23 @@ def integration_controls(repo: Path, compiler: str, logs: Path) -> bool:
             (folder / "controls.stdout").write_bytes(result.stdout)
             (folder / "controls.stderr").write_bytes(result.stderr)
             rejected = result.returncode == 1 and b"authored integration control failed" in result.stderr
-        results[name] = {"compiled": compiled, "rejected": rejected}
-    (logs / "integration-causal.json").write_text(json.dumps(results, indent=2) + "\n")
-    macro_folder = logs / "legacy-macro-control"
-    macro_folder.mkdir()
-    unsafe = source.replace("(std::min)(", "std::min(")
-    if unsafe == source:
-        raise ValueError("macro compatibility control unavailable")
-    (macro_folder / "ce_commander_strategic_actual.inc").write_text(integration_fragment(unsafe))
-    (macro_folder / "ce_commander_strategic_hook.inc").write_text(hook)
-    macro_command = [str(macro_folder) if item == str(logs) else item for item in command]
-    macro_command[-1] = str(macro_folder / "controls")
-    macro_rejected = not run_command(macro_command, macro_folder, "compile")
-    (logs / "macro-compatibility.json").write_text(json.dumps({
-        "safe_consumer_compiled": True, "unsafe_calls_rejected": macro_rejected,
-    }, indent=2) + "\n")
-    # The presentation hook hands back the camera it is given in every build, so there is no compiled-out control of it any more; the
-    # flight scope is photo mode's and the editor's, so there is no photo-only control either (the editor's own control is below).
-    editor_scope_passed = True
-    if has_editor_scope:
+        return {"compiled": compiled, "rejected": rejected}
+
+    def eval_macro() -> bool:
+        macro_folder = logs / "legacy-macro-control"
+        macro_folder.mkdir()
+        (macro_folder / "ce_commander_strategic_actual.inc").write_text(integration_fragment(unsafe))
+        (macro_folder / "ce_commander_strategic_hook.inc").write_text(hook)
+        macro_command = link_driver_cmd(macro_folder, macro_folder / "controls")
+        return not run_command(macro_command, macro_folder, "compile")
+
+    def eval_editor_scope() -> tuple[bool, bool]:
         editor_folder = logs / "editor-flight-hud-scope-control"
         editor_folder.mkdir()
         (editor_folder / "ce_commander_strategic_actual.inc").write_text(integration_fragment(source))
         (editor_folder / "ce_commander_strategic_hook.inc").write_text(hook)
         (editor_folder / "ce_photo.h").write_text(header.replace(editor_query, "", 1))
-        editor_command = [str(editor_folder) if item == str(logs) else item for item in command]
-        editor_command[-1] = str(editor_folder / "controls")
+        editor_command = link_driver_cmd(editor_folder, editor_folder / "controls")
         editor_compiled = run_command(editor_command, editor_folder, "compile")
         editor_rejected = False
         if editor_compiled:
@@ -477,7 +526,35 @@ def integration_controls(repo: Path, compiler: str, logs: Path) -> bool:
             (editor_folder / "controls.stdout").write_bytes(result.stdout)
             (editor_folder / "controls.stderr").write_bytes(result.stderr)
             editor_rejected = result.returncode == 1 and b"authored integration control failed" in result.stderr
-        editor_scope_passed = editor_compiled and editor_rejected
+        return editor_compiled, editor_rejected
+
+    results = {}
+    editor_scope_passed = True
+    if jobs == 1:
+        for name, changed in mutations.items():
+            results[name] = eval_mutation(name, changed)
+        macro_rejected = eval_macro()
+        if has_editor_scope:
+            editor_compiled, editor_rejected = eval_editor_scope()
+            editor_scope_passed = editor_compiled and editor_rejected
+    else:
+        with ThreadPoolExecutor(max_workers=jobs) as pool:
+            mut_futures = [(name, pool.submit(eval_mutation, name, changed)) for name, changed in mutations.items()]
+            macro_future = pool.submit(eval_macro)
+            editor_future = pool.submit(eval_editor_scope) if has_editor_scope else None
+            for name, future in mut_futures:
+                results[name] = future.result()
+            macro_rejected = macro_future.result()
+            if editor_future is not None:
+                editor_compiled, editor_rejected = editor_future.result()
+                editor_scope_passed = editor_compiled and editor_rejected
+    (logs / "integration-causal.json").write_text(json.dumps(results, indent=2) + "\n")
+    (logs / "macro-compatibility.json").write_text(json.dumps({
+        "safe_consumer_compiled": True, "unsafe_calls_rejected": macro_rejected,
+    }, indent=2) + "\n")
+    # The presentation hook hands back the camera it is given in every build, so there is no compiled-out control of it any more; the
+    # flight scope is photo mode's and the editor's, so there is no photo-only control either (the editor's own control is below).
+    if has_editor_scope:
         (logs / "editor-flight-hud.json").write_text(json.dumps({
             "editor_query_present": True, "missing_editor_scope_compiled": editor_compiled,
             "missing_editor_scope_rejected": editor_rejected,
@@ -512,7 +589,11 @@ def public_ce_define(repo: Path) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cxx", default="c++", help="Native C++ compiler executable")
+    parser.add_argument("-j", "--jobs", type=int, default=None, help="max parallel compiles/runs (default: BEA_MUTANT_JOBS or min(6, cpu_count))")
     args = parser.parse_args()
+    jobs = default_jobs() if args.jobs is None else args.jobs
+    if jobs < 1:
+        raise SystemExit(f"--jobs must be >= 1, got {jobs}")
     repo = Path(__file__).resolve().parents[2]
     artifact_root = repo / "local-data" / "commander-camera-tests"
     artifact_root.mkdir(parents=True, exist_ok=True)
@@ -531,7 +612,7 @@ def main() -> int:
     ]
     compiled = run_command(command, logs, "compile")
     owner_passed = compiled and run_command([str(executable)], logs, "controls")
-    integrated = owner_passed and integration_controls(repo, compiler, logs)
+    integrated = owner_passed and integration_controls(repo, compiler, logs, jobs)
     passed = owner_passed and integrated
     print(json.dumps({
         "result": "passed" if passed else "failed",

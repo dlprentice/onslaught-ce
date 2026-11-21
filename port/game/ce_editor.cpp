@@ -1424,6 +1424,7 @@ void EditorToolbar(int item) {
         if (gEditorState.ChangeSide(next == original ? -1 : next)) EditorCue(CueSelect);
     } else if (item == 6) {
         if (gEditorState.Moving()) { EditorNote("Finish moving the object first.", NoticeUntilMoveEnds); return; }
+        gEditorChoosingPlayerStart = false;
         if (!gEditorState.HasReach()) EditorPlaceStop(0);
         else { gEditorChoosingReach = false; gEditorRouteRow = 0; gEditorDialog = DialogRoute; }
         EditorCue(CueSelect);
@@ -1528,7 +1529,7 @@ bool EditorTrap(WORD key, int event) {
             }
             if (gEditorState.SetPlayerStart(point)) {
                 gEditorChoosingPlayerStart = false; EditorCue(CueSelect);
-                EditorNote("Player Start placed. Play draft to try it; Save keeps it.");
+                EditorNote("Player Start placed. Play Draft to try it; Save keeps it.");
             }
             return true;
         }
@@ -1543,7 +1544,7 @@ bool EditorTrap(WORD key, int event) {
             if (changed && gEditorPlaceHold) {
                 EditorHoldInspect(gEditorPlaceIndex); EditorNote("Hold Area placed. Set its duration and radius."); return true;
             }
-            EditorNote(!changed ? "Stop unchanged." : adding ? (gEditorPlaceIndex ? "Stop 2 added. Play the draft with F5." : "Reach Point set. Play draft with F5.") : "Stop moved. Save your project to keep it.");
+            EditorNote(!changed ? "Stop unchanged." : adding ? (gEditorPlaceIndex ? "Stop 2 added. Play the draft with F5." : "Reach Point set. Play Draft with F5.") : "Stop moved. Save your project to keep it.");
             return true;
         }
         if (hit.furniture) {
@@ -1710,7 +1711,7 @@ CeEditorUiModel gEditorModel;
 CeEditorUiLayout gEditorLayout;
 CeEditorUiMarker gEditorMarkers[CeEditorState::ObjectLimit];
 char gEditorRows[CeEditorUiRowMax][CeEditorUiTextMax];
-const char *const kEditorTools[10] = {"Save", "Open", "Undo", "Redo", "Play draft", "Change Side", "Reach Point", "Hold Area", "Player Start", "Exit"};
+const char *const kEditorTools[10] = {"Save", "Open", "Undo", "Redo", "Play Draft", "Change Side", "Reach Point", "Hold Area", "Player Start", "Exit"};
 EditorHitResult EditorHit(float x, float y) {
     EditorHitResult result = {-1, -1, -1, false, 0};
     if (!gEditorLayoutValid) return result;
@@ -1897,7 +1898,7 @@ void EditorBuildModel(CeEditorUiModel &m) {
             snprintf(m.cardSide, sizeof(m.cardSide), "%s", sides[object->side]);
         }
         snprintf(m.cardPosition, sizeof(m.cardPosition), "X %.1f  Y %.1f m", Tenth(object->position.x), Tenth(object->position.y));
-        snprintf(m.cardHeight, sizeof(m.cardHeight), "%.1f m", Tenth(object->position.z));
+        snprintf(m.cardHeight, sizeof(m.cardHeight), "%.1f m", Tenth(-object->position.z));
     }
     m.placingPlayerStart = gEditorChoosingPlayerStart;
     m.playerStartSelected = gEditorState.PlayerStartSelected();
@@ -1907,12 +1908,12 @@ void EditorBuildModel(CeEditorUiModel &m) {
     }
     if (m.playerStartSelected) {
         m.card = true;
-        snprintf(m.cardName, sizeof(m.cardName), "Player start");
+        snprintf(m.cardName, sizeof(m.cardName), "Player Start");
         snprintf(m.cardKind, sizeof(m.cardKind), "Battle Engine walker");
         snprintf(m.cardSide, sizeof(m.cardSide), "Player");
         const CeEditorPoint start = gEditorState.PlayerStart();
         snprintf(m.cardPosition, sizeof(m.cardPosition), "X %.1f  Y %.1f m", Tenth(start.x), Tenth(start.y));
-        snprintf(m.cardHeight, sizeof(m.cardHeight), "%.1f m", Tenth(start.z));
+        snprintf(m.cardHeight, sizeof(m.cardHeight), "%.1f m", Tenth(-start.z));
         snprintf(m.cardNote, sizeof(m.cardNote), "Where the Battle Engine begins. It moves with the deck it is on.");
     } else if (m.card) {
         const int side = selected >= 0 ? gEditorSources[selected].installedSide : -1;
@@ -1946,16 +1947,19 @@ void EditorBuildModel(CeEditorUiModel &m) {
     m.markerCount = markers;
     if (gEditorDialog == DialogNone && !gEditorHelp) {
         // At most five actions; every other key is behind the held F1 (I2).
-        static const CeEditorUiPrompt idle[] = {{"Click", "Select"}, {"Tab", "Next Object"}, {"F5", "Play draft"}, {"F1", "Keys"}};
-        static const CeEditorUiPrompt chosen[] = {{"Drag", "Move"}, {"Page Up", "Raise"}, {"C", "Centre"}, {"F5", "Play draft"},
+        static const CeEditorUiPrompt idle[] = {{"Click", "Select"}, {"Tab", "Next Object"}, {"F5", "Play Draft"}, {"F1", "Keys"}};
+        static const CeEditorUiPrompt chosen[] = {{"Drag", "Move"}, {"Page Up", "Raise"}, {"C", "Centre"}, {"F5", "Play Draft"},
                                                   {"F1", "Keys"}};
         static const CeEditorUiPrompt start[] = {{"Drag", "Move"}, {"Page Up", "Raise"}, {"Delete", "Original start"},
-                                                 {"F5", "Play draft"}, {"F1", "Keys"}};
+                                                 {"F5", "Play Draft"}, {"F1", "Keys"}};
         static const CeEditorUiPrompt moving[] = {{"Release", "Place"}, {"Esc", "Cancel"}};
         const bool startChosen = gEditorState.PlayerStartSelected();
         const CeEditorUiPrompt *set = gEditorState.Moving() ? moving : startChosen ? start : selected >= 0 ? chosen : idle;
         m.promptCount = gEditorState.Moving() ? 2 : (startChosen || selected >= 0) ? 5 : 4;
         for (int i = 0; i < m.promptCount; ++i) m.prompts[i] = set[i];
+    }
+    if (gEditorChoosingPlayerStart && gEditorDialog == DialogNone && !gEditorHelp) {
+        m.promptCount = 2; m.prompts[0] = {"Click", "Place Start"}; m.prompts[1] = {"Esc", "Cancel"};
     }
     if (gEditorChoosingReach && gEditorDialog == DialogNone && !gEditorHelp) {
         m.promptCount=2; m.prompts[0]={"Click","Place Point"}; m.prompts[1]={"Esc","Cancel"};
@@ -1971,8 +1975,8 @@ void EditorBuildModel(CeEditorUiModel &m) {
     } else if (gEditorDialog == DialogHoldInspector) {
         const CeHoldSettings h=gEditorState.Hold(gEditorHoldIndex);
         snprintf(gHoldTitle,sizeof(gHoldTitle),"Hold Area - Stop %d",gEditorHoldIndex+1);
-        snprintf(gHoldAction[0],sizeof(gHoldAction[0]),"Duration: %d s   [change]",h.seconds);
-        snprintf(gHoldAction[1],sizeof(gHoldAction[1]),"Radius: %d m   [change]",h.radius);
+        snprintf(gHoldAction[0],sizeof(gHoldAction[0]),"Duration: %d s   (change)",h.seconds);
+        snprintf(gHoldAction[1],sizeof(gHoldAction[1]),"Radius: %d m   (change)",h.radius);
         m.dialog=CeEditorUiList; m.dialogTitle=gHoldTitle; m.dialogNote="Leaving the area restarts the timer";
         m.rowCount=3; m.rowFocus=gEditorRouteRow; m.rows[0]=gHoldAction[0]; m.rows[1]=gHoldAction[1]; m.rows[2]="Done";
     } else if (gEditorDialog == DialogRoute) {

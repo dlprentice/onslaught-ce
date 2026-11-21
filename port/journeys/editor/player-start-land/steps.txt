@@ -4,7 +4,7 @@
 wait ticks 600
 key RETURN
 wait page fe:main within 900
-go "Onslaught CE" > "Map Editor" > "Open Installed Map 100"
+go "Onslaught CE" > "Map Editor" > "1.00"
 wait page ed:map within 1800
 wait ticks 60
 dump opened

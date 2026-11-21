@@ -470,7 +470,7 @@ const char *Leaf(const char *path)
 
 void MusicUsage()
 {
-	Out("Usage: music, music adddir <folder>, music playtype single|linear|random,");
+	Out("Usage: music, music adddir <folder>, music playtype single/linear/random,");
 	Out("  music next or music clear.");
 }
 
@@ -521,7 +521,7 @@ void CmdMusic(int argc, Arg *argv)
 										   : "Play type random: your tracks shuffled.");
 				return;
 			}
-		Out("Usage: music playtype single|linear|random.");
+		Out("Usage: music playtype single/linear/random.");
 		return;
 	}
 	if (Same(argv[1], "next") && argc == 2)
@@ -543,7 +543,7 @@ void CmdMusic(int argc, Arg *argv)
 void CmdPhoto(int argc, Arg *argv)
 {
 	bool on = !PortCePhotoOn();
-	if (argc > 2 || (argc == 2 && !ParseBool(argv[1], &on))) { Out("Usage: photo [on|off]."); return; }
+	if (argc > 2 || (argc == 2 && !ParseBool(argv[1], &on))) { Out("Usage: photo (on/off)."); return; }
 	if (!PortCePhotoSet(on)) { Out("Photo Mode is unavailable here."); return; }
 	Out(on ? "Photo Mode on: HUD hidden. F11 or photo ends it; F12 saves a screenshot." : "Photo Mode off.");
 	if (on) Close();
@@ -554,7 +554,7 @@ void CmdDevStats(int argc, Arg *argv)
 	if (argc == 1) devStats = PortCeDevStatsOn() ? 0 : 1;
 	else if (argc == 2 && (Same(argv[1], "on") || Same(argv[1], "1"))) devStats = 1;
 	else if (argc == 2 && (Same(argv[1], "off") || Same(argv[1], "0"))) devStats = 0;
-	else { Out("Usage: devstats [on|off]."); return; }
+	else { Out("Usage: devstats (on/off)."); return; }
 	Out(devStats ? "Developer text on." : "Developer text off.");
 }
 
@@ -572,10 +572,10 @@ const Command kCommands[] = {
 	{"setgammabias", "<0 to 0.005>", "Darkens the gamma ramp (full screen only); reset when the level ends.", -1, CmdGamma},
 	{"fmv_play", "<film>", "Lists the game's films (none plays during a battle).", -1, CmdFilm},
 	{"playsound", "<name>", "Plays a sound this level has loaded.", -1, CmdSound},
-	{"music", "[adddir|playtype|next|clear]", "Your own .ogg folder in place of the level music; music alone says more.", -1, CmdMusic},
-	{"photo", "[on|off]", "Hides the HUD for pictures (F11). F12 saves a screenshot in your screenshots folder.", -1, CmdPhoto},
-	{"devstats", "[on|off]", "The original developers' text: level, time, events, FPS, health.", -1, CmdDevStats},
-	{"splitscreen", "horizontal|vertical", "Sets how the next two-player game splits the screen.", -1, CmdSplit},
+	{"music", "(adddir/playtype/next/clear)", "Your own .ogg folder in place of the level music; music alone says more.", -1, CmdMusic},
+	{"photo", "(on/off)", "Hides the HUD for pictures (F11). F12 saves a screenshot in your screenshots folder.", -1, CmdPhoto},
+	{"devstats", "(on/off)", "The original developers' text: level, time, events, FPS, health.", -1, CmdDevStats},
+	{"splitscreen", "horizontal/vertical", "Sets how the next two-player game splits the screen.", -1, CmdSplit},
 	{"camera", "", "Free camera on or off, as the F key.", kCheatCamera, CmdCamera},
 	{"remotecameraon", "", "Views from what is under the crosshair.", kCheatCamera, CmdRemoteOn},
 	{"remotecameraoff", "", "Returns from the remote camera.", kCheatCamera, CmdRemoteOff},

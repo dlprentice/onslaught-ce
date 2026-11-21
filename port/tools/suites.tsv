@@ -3,6 +3,7 @@
 port/network/tests/close_drain_tests.py	script	--enet-source {data}/src/enet-5a9c537fd464b3c6d3c55e1d3bd47588faf71b42	deps	optional	-	
 port/network/tests/run_tests.py	script	-	deps	optional	-	
 port/network/tests/terminal_close_tests.py	script	--enet-source {data}/src/enet-5a9c537fd464b3c6d3c55e1d3bd47588faf71b42	deps	optional	-	
+port/tools/agent_play_tests.py	script	-	none	release	-	offscreen agent-play harness and gallery preset unit tests
 port/tools/audio_eof_tests.py	script	-	deps	release	-	
 port/tools/audio_lifecycle_tests.py	script	-	deps	release	-	
 port/tools/audio_media_race_tests.py	script	-	deps	release	-	

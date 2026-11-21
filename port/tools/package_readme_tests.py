@@ -30,7 +30,8 @@ class PackageReadmeTests(unittest.TestCase):
             with self.subTest(windows=windows):
                 guide = " ".join(package.readme("source-doc-check", windows).decode().split())
                 for wording in ("Onslaught CE > Catalogue", "Find by name", "Clear filter",
-                                "Models and Textures remember separate filters",
+                                "Collections remember separate filters",
+                                "extras=1", "catalogue=1", "mods_menu=1", "Controller Options",
                                 "Onslaught CE > Mods", "enable, disable and order",
                                 "commander_tactical_map=1", "Commander and Take Unit",
                                 "Native-model RTS", "Museum exhibits can disappear up close",
@@ -49,7 +50,7 @@ class PackageReadmeTests(unittest.TestCase):
         self.assertNotIn("\r", text)
         self.assertLessEqual(max(map(len, text.splitlines())), package.README_WIDTH)
         for phrase in (
-            "Main Menu > Onslaught CE: Bonus Levels, Mods, Catalogue, CE Settings, Cheats, Help & Info and Report a Problem",
+            "Main Menu > Onslaught CE: Bonus Levels, CE Settings, Cheats, Help & Info and Report a Problem (plus optional Extras with extras=1, Catalogue with catalogue=1, and Mods on Linux with mods_menu=1 in ce.ini)",
             "Each row has a hint under the list", "The Options page is the original's",
             "What's Coming (planned features and their limits; it does not start those features)",
             "it does not start those features", "Aquila Prototype is the original playable-demo level (201)",
@@ -89,8 +90,8 @@ class PackageReadmeTests(unittest.TestCase):
             "Physical audio devices and listening quality have not been validated",
             "Only virtual devices have been tested; physical controllers and Windows drivers remain open",
             "Windows reparse-point behaviour is unmeasured",
-            "Mods (experimental): on Linux, Onslaught CE can read replacement game files",
-            "On Windows mods are not active: a mods= line is ignored and the log says so",
+            "Mods (experimental): on Linux only, Onslaught CE can read replacement game files",
+            "On Windows mods are not active: mods_menu=1 and mods= are ignored and the log says so",
             "A save that fails now says so", "An error occurred during saving.",
             "after a language change in the front end it appears in the usual message box",
             "Sharper text is off by default: the menus' and HUD's text keeps the original's soft look",
@@ -172,7 +173,7 @@ class PackageReadmeTests(unittest.TestCase):
                 for phrase in ("Onslaught CE V0.1.14", "you need your own copy of the game",
                                "1. Extract the download into a new, empty folder of its own, not inside the game's folder.",
                                "3. It finds your Steam copy of Battle Engine Aquila by itself, or asks once where it is.",
-                               "In the game, Main Menu > Onslaught CE holds what this port adds: Bonus Levels, Mods, Catalogue, CE Settings, Cheats, Help & Info and Report a Problem.",
+                               "In the game, Main Menu > Onslaught CE holds what this port adds: Bonus Levels, CE Settings, Cheats, Help & Info and Report a Problem (plus optional Extras, Catalogue and, on Linux, Mods).",
                                "apart from the original game's folder.",
                                "Upgrading from Onslaught CE 0.1.0 to 0.1.6? Do not start the old launcher again. "
                                'Read "Upgrading from 0.1.0-0.1.6" below first.'):
@@ -508,7 +509,7 @@ class PackageReadmeTests(unittest.TestCase):
         self.assertRegex(gate, r"bool PortCeProjectCareerAllowed\(\) noexcept \{\n[^}]*!\(PortCeMuseumVisitActive && PortCeMuseumVisitActive\(\)\);")
         saves = "".join(path.read_text() for path in sorted((ROOT / "port/patches").glob("0139-*.patch")))
         self.assertGreaterEqual(saves.count("+    if (!PortCeProjectCareerAllowed()) return MCE_FAILURE;"), 3)
-        commander_says = ("The paused map on V requires the additional test setting commander_tactical_map=1.")
+        commander_says = ("Press V for the paused tactical map (enable commander_tactical_map=1 in ce.ini).")
         museum_says = ("With museum=1, a Museum Prototype visit is kept out of your career: nothing is saved during it, so with a named "
                        "career the game's save error message appears each time you leave its Pause Menu. Nothing is wrong: the career is "
                        "as it was when the visit ends.")

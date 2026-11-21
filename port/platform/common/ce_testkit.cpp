@@ -391,8 +391,12 @@ struct KeyName { const char *name; unsigned sdl, raw; };
 const KeyName kKeys[] = {
 	{"RETURN", 40, 0x1c}, {"ESC", 41, 0x01}, {"BACKSPACE", 42, 0x0e}, {"TAB", 43, 0x0f}, {"SPACE", 44, 0x39},
 	{"RIGHT", 79, 0x14d}, {"LEFT", 80, 0x14b}, {"DOWN", 81, 0x150}, {"UP", 82, 0x148}, {"PGUP", 75, 0x149},
-	{"PGDN", 78, 0x151}, {"HOME", 74, 0x147}, {"END", 77, 0x14f}, {"DELETE", 76, 0x153}, {"F1", 58, 0x3b},
-	{"F5", 62, 0x3f}, {"F6", 63, 0x40}, {"LCTRL", 224, 0x1d}, {"LSHIFT", 225, 0x2a},
+	{"PGDN", 78, 0x151}, {"HOME", 74, 0x147}, {"END", 77, 0x14f}, {"DELETE", 76, 0x153}, {"GRAVE", 53, 0x29},
+	{"F1", 58, 0x3b}, {"F2", 59, 0x3c}, {"F3", 60, 0x3d}, {"F4", 61, 0x3e}, {"F5", 62, 0x3f}, {"F6", 63, 0x40},
+	{"F7", 64, 0x41}, {"F8", 65, 0x42}, {"F9", 66, 0x43}, {"F10", 67, 0x44}, {"F11", 68, 0x57}, {"F12", 69, 0x58},
+	{"LCTRL", 224, 0x1d}, {"LSHIFT", 225, 0x2a}, {"LALT", 226, 0x38},
+	{"1", 30, 0x02}, {"2", 31, 0x03}, {"3", 32, 0x04}, {"4", 33, 0x05}, {"5", 34, 0x06},
+	{"6", 35, 0x07}, {"7", 36, 0x08}, {"8", 37, 0x09}, {"9", 38, 0x0a}, {"0", 39, 0x0b},
 	// letters: SDL scancodes 4 to 29, DirectInput's PC scan codes
 	{"A", 4, 0x1e}, {"B", 5, 0x30}, {"C", 6, 0x2e}, {"D", 7, 0x20}, {"E", 8, 0x12}, {"F", 9, 0x21}, {"G", 10, 0x22},
 	{"H", 11, 0x23}, {"I", 12, 0x17}, {"J", 13, 0x24}, {"K", 14, 0x25}, {"L", 15, 0x26}, {"M", 16, 0x32}, {"N", 17, 0x31},
@@ -751,6 +755,32 @@ CeTestResult VerbClick(CeTestArgs &a, CeTestReply &r)
 	}
 	return MouseDone(a);
 }
+CeTestResult VerbRClick(CeTestArgs &a, CeTestReply &r)
+{
+	if (a.count < 3) { CeTestReplyf(r, "usage: rclick X Y"); return CE_TEST_FAILED; }
+	if (!a.scratch[0])
+	{
+		const float x = float(atof(a.word[1])), y = float(atof(a.word[2]));
+		QueueMouse(MouseStep{K.tick, 0, x, y});
+		QueueMouse(MouseStep{K.tick + 2, 6, x, y});
+		QueueMouse(MouseStep{K.tick + 6, 7, x, y});
+		a.scratch[0] = 1;
+		CeTestReplyf(r, "rclick %.0f %.0f", x, y);
+	}
+	return MouseDone(a);
+}
+CeTestResult VerbHover(CeTestArgs &a, CeTestReply &r)
+{
+	if (a.count < 3) { CeTestReplyf(r, "usage: hover X Y"); return CE_TEST_FAILED; }
+	if (!a.scratch[0])
+	{
+		const float x = float(atof(a.word[1])), y = float(atof(a.word[2]));
+		QueueMouse(MouseStep{K.tick, 0, x, y});
+		a.scratch[0] = 1;
+		CeTestReplyf(r, "hover %.0f %.0f", x, y);
+	}
+	return MouseDone(a);
+}
 CeTestResult VerbDrag(CeTestArgs &a, CeTestReply &r)
 {
 	if (a.count < 5) { CeTestReplyf(r, "usage: drag X1 Y1 X2 Y2 [over N]"); return CE_TEST_FAILED; }
@@ -973,6 +1003,8 @@ CE_TEST_VERB("key", "key NAME[+NAME] [hold N]: a raw key or chord (LCTRL+Z) thro
 CE_TEST_VERB("wait", "wait page ID | notice TEXT | state KEY=VALUE | ticks N", CE_TEST_INPUT, VerbWait);
 CE_TEST_VERB("assert", "assert KEY=VALUE | file PATH sha256=HEX|exists | page ID", CE_TEST_INPUT, VerbAssert);
 CE_TEST_VERB("click", "click X Y: the left button at a window point", CE_TEST_INPUT, VerbClick);
+CE_TEST_VERB("rclick", "rclick X Y: the right button at a window point", CE_TEST_INPUT, VerbRClick);
+CE_TEST_VERB("hover", "hover X Y: move the pointer to a window point", CE_TEST_INPUT, VerbHover);
 CE_TEST_VERB("drag", "drag X1 Y1 X2 Y2 [over N]: press, move over N ticks (20), release", CE_TEST_INPUT, VerbDrag);
 CE_TEST_VERB("test-dirty", "test-dirty PATH: append a line to a user file (the isolation proof's control)", CE_TEST_TESTWRITE, VerbTestDirty);
 CE_TEST_VERB("press", "press NAME[+NAME]: hold keys down across later steps", CE_TEST_INPUT, VerbPress);

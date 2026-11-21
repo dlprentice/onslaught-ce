@@ -18,7 +18,8 @@ struct Loop {Trap trap=nullptr;Trap GetKeytrap(){return trap;}void SetKeytrap(Tr
 auto&PLATFORM=LT;
 enum { FES_BACK,FES_SELECT };
 struct CFrontEnd {static void PlaySound(int){}};
-struct CMenuItem {explicit CMenuItem(EPCText,int id):mId(id){}virtual ~CMenuItem()=default;virtual WCHAR*GetText(){return nullptr;}void Render(float,float,BOOL){}void Render(float,float,BOOL,DWORD,WCHAR*){}int mId;};
+std::wstring lastHint;
+struct CMenuItem {explicit CMenuItem(EPCText,int id):mId(id){}virtual ~CMenuItem()=default;virtual WCHAR*GetText(){return nullptr;}virtual void Render(float,float,BOOL){}void Render(float,float,BOOL,DWORD,WCHAR*text){lastHint=text?text:L"";}int mId;};
 struct CMenuOptionsList {
 	CMenuItem *item=nullptr,*rows[3]={}; int count=0;
 	~CMenuOptionsList(){for(int i=0;i<count;++i)delete rows[i];}
@@ -37,7 +38,7 @@ bool PortCeActionEnabled(CeControlAction a){return a==CeControlAction::Dodge ? e
 const char *PortCeActionConflict(CeControlAction a,int code) {
  if (code==0x1e) return "Strafe Left";
  if(a!=CeControlAction::Dodge && enabled && PortCeActionKey(CeControlAction::Dodge)==code)return "Dodge modifier";
- if(a!=CeControlAction::TakeUnit && (mixed||unitOn) && PortCeActionKey(CeControlAction::TakeUnit)==code)return "Infantry takeover";
+ if(a!=CeControlAction::TakeUnit && (mixed||unitOn) && PortCeActionKey(CeControlAction::TakeUnit)==code)return "Take Unit";
  if(a!=CeControlAction::Commander && commanderOn && PortCeActionKey(CeControlAction::Commander)==code)return "Commander view";
  return nullptr;
 }
@@ -46,14 +47,18 @@ void send(int code){assert(LT.trap);LT.trap(code,KEY_EVENT_DOWN);if(LT.trap)LT.t
 bool has(CMenuItem*p,const wchar_t*text){return std::wcsstr(p->GetText(),text)!=nullptr;}
 int main(){
     ordinary=false;CMenuOptionsList denied;PortCeDodgeControlsAdd(&denied);assert(!denied.item);
-    ordinary=true;CMenuOptionsList list;PortCeDodgeControlsAdd(&list);auto item=list.item;assert(item&&has(item,L"Dodge modifier: Left Ctrl"));
-    assert(PortCeDodgeControlsSelect(item)&&LT.trap);send(30);assert(LT.trap&&has(item,L"Strafe Left")&&!writes);
+    ordinary=true;CMenuOptionsList list;PortCeDodgeControlsAdd(&list);auto item=list.item;assert(list.count==1&&item&&has(item,L"Dodge modifier: Left Ctrl"));
+    assert(PortCeDodgeControlsSelect(item)&&LT.trap);send(30);assert(LT.trap&&has(item,L"is used by Strafe Left. Try another key or Esc.")&&!writes);
+    item->Render(0,0,1);assert(lastHint==L"Esc keeps Left Ctrl.");
     send(1);assert(!LT.trap&&has(item,L"Left Ctrl")&&!writes);
     PortCeDodgeControlsSelect(item);send(18);assert(!LT.trap&&stored=="18"&&has(item,L"Dodge modifier: E"));
     PortCeDodgeControlsSelect(item);send(1);assert(!LT.trap&&has(item,L"E")&&writes==1);
-    LT.trap=[](WORD,KeyEventType){};assert(PortCeDodgeReserveFromControls(18)&&has(item,L"E is Dodge"));LT.trap=nullptr;assert(has(item,L"Dodge modifier: E"));
-    mixed=true;assert(!PortCeDodgeReserveFromControls(18)&&has(item,L"in use"));PortCeDodgeControlsSelect(item);send(18);assert(LT.trap&&has(item,L"Infantry takeover"));send(1);
-    enabled=false;CMenuOptionsList off;PortCeDodgeControlsAdd(&off);assert(has(off.item,L"(Off)"));PortCeDodgeControlsSelect(off.item);writable=false;send(22);assert(!LT.trap&&has(off.item,L"could not save")&&stored=="18");
+    LT.trap=[](WORD,KeyEventType){};assert(PortCeDodgeReserveFromControls(18)&&has(item,L"E is Dodge"));
+    item->Render(0,0,1);assert(lastHint==L"Press Esc to keep your previous key.");
+    LT.trap=nullptr;assert(has(item,L"Dodge modifier: E"));
+    mixed=true;assert(!PortCeDodgeReserveFromControls(18)&&has(item,L"in use"));PortCeDodgeControlsSelect(item);send(18);assert(LT.trap&&has(item,L"is used by Take Unit. Try another key or Esc."));send(1);
+    mixed=false;enabled=false;assert(!PortCeDodgeReserveFromControls(18));
+    CMenuOptionsList off;PortCeDodgeControlsAdd(&off);assert(off.count==1&&has(off.item,L"(Off)"));PortCeDodgeControlsSelect(off.item);writable=false;send(22);assert(!LT.trap&&has(off.item,L"could not save")&&stored=="18");
     PortCeDodgeControlsSelect(off.item);writable=true;send(22);assert(!LT.trap&&stored=="22"&&has(off.item,L"U (Off)"));
     PortCeDodgeControlsSelect(off.item);assert(LT.trap);ordinary=false;send(22);assert(!LT.trap&&writes==2);
     ordinary=true; writable=true; enabled=true; mixed=false; unitOn=true; commanderOn=true;

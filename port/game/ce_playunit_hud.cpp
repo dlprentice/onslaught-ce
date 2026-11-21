@@ -44,9 +44,9 @@ const unsigned kWhite = 0xffffffff, kNote = 0xffc0c0c0, kAlert = 0xffdc3c3c;
 // state that passes (low energy recharging). A driven unit's gun says its state in the same face and colours.
 const unsigned kWeaponFault = 0xffff3020, kWeaponWait = 0xff30ff20;
 // The prompt's pairs as the editor's prompt line draws them (ce_editor_ui.cpp, PromptPair): the key white, the action grey, a small gap between, a wider one
-// between pairs; the unit's name first, white, in the HUD's normal face.
+// between pairs; the unit's name first, white, in the HUD's small face so name, armour, and control hints stay balanced and visible together.
 const unsigned kPromptKey = 0xfff4f4f4, kPromptAction = 0xffa8a8a8;
-const float kKeyGap = 8.f, kPairGap = 22.f;
+const float kKeyGap = 6.f, kPairGap = 16.f;
 WCHAR gLine[2][kChars];
 unsigned long long gShown, gAge, gLast;		// the notice's length, how long it has been drawn, the clock at its last frame
 int gDrawnAtTop = -1;						// where the notice was last drawn (1 the top, 0 the bottom, -1 not yet): a notice that moves opens afresh where it now is
@@ -268,14 +268,12 @@ float Width(CDXBitmapFont *font, WCHAR *text)
 	return float(e.cx);
 }
 
-// The prompt line "name | key: action | key: action": the name in the normal face, then each pair, key white and action grey, as the editor's prompt line. A
-// piece without a key (no ": ") is drawn as an action.
+// The prompt line "name | key: action | key: action": all drawn in the HUD's small face so the unit name, armour, and control pairs
+// fit cleanly together without stripping hints. A piece without a key (no ": ") is drawn as an action.
 void Prompt(CDXBitmapFont *font, float w, float h, bool atTop)
 {
 	Advance(&gPromptAge, &gPromptLast);
 	const float s = HudScale(w, h);
-	CDXBitmapFont *large = PLATFORM.Font(FONT_NORMAL);
-	if (!large || large->GetHeight() <= 0) large = font;
 	// split the line as written ("|" is not in the HUD's face), then make each piece drawable
 	WCHAR piece[4][2][kChars];
 	int pieces = 0;
@@ -303,7 +301,7 @@ void Prompt(CDXBitmapFont *font, float w, float h, bool atTop)
 		for (int j = 0; j < 2; ++j)
 		{
 			WCHAR shown[kChars];
-			Displayable(j == 1 && i == 0 ? large : font, piece[i][j], shown);
+			Displayable(font, piece[i][j], shown);
 			memcpy(piece[i][j], shown, sizeof(shown));
 		}
 	// the driven unit's armour after its name: the word as a key, the share in the Battle Engine's weapon-state colours (green, red when low)
@@ -331,29 +329,29 @@ void Prompt(CDXBitmapFont *font, float w, float h, bool atTop)
 		if (life < 0.3f) armourColour = kWeaponFault;
 	}
 	const float barW = health ? Width(font, armourKey) + kKeyGap + Width(font, armourValue) : 0.f;
-	float width = Width(large, piece[0][1]) + (health ? kPairGap + barW : 0.f);
+	float width = Width(font, piece[0][1]) + (health ? kPairGap + barW : 0.f);
 	for (int i = 1; i < pieces; ++i)
 		width += kPairGap + (piece[i][0][0] ? Width(font, piece[i][0]) + kKeyGap : 0.f) + Width(font, piece[i][1]);
-	// the line keeps the unit's name and armour; key pairs go from the end while it does not fit beside the objective box, then what is left is squeezed
-	const float room = CapsuleRoom(w, HudScale(w, h)) < kMaxWidth + 120.f ? CapsuleRoom(w, HudScale(w, h)) : kMaxWidth + 120.f;
-	while (pieces > 1 && width > room)
+	const float sh = float(font->GetHeight());
+	const float height = (sh + 14.f > 30.f ? sh + 14.f : 30.f) * s;
+	float cy = atTop ? kTopY * s : h - (480.f - kPromptY) * s;
+	const float below = ObjectiveBottom(s);
+	const bool besideObjective = atTop && below > 0.f && (cy - height * 0.5f) < below;
+	const float fullWide = w / s - 64.f > 160.f ? w / s - 64.f : 160.f;
+	float room = besideObjective ? CapsuleRoom(w, s) : fullWide;
+	// If the prompt overlaps the objective box vertically and needs more room for its hints, drop cleanly under the box instead of stripping controls.
+	if (besideObjective && width > room && fullWide > room)
+	{
+		cy = below + height * 0.5f + 12.f * s;
+		room = fullWide;
+	}
+	// Keep unit name, armour, and key hints; allow mild horizontal squeeze down to 0.85 before dropping trailing hints.
+	while (pieces > 1 && width * 0.85f > room)
 	{
 		--pieces;
 		width -= kPairGap + (piece[pieces][0][0] ? Width(font, piece[pieces][0]) + kKeyGap : 0.f) + Width(font, piece[pieces][1]);
 	}
-	const float lh = float(large->GetHeight()), sh = float(font->GetHeight());
-	const float height = (lh + 14.f > 31.f ? lh + 14.f : 31.f) * s;
-	float cy = atTop ? kTopY * s : h - (480.f - kPromptY) * s;
-	float squeeze = width > room ? room / width : 1.f;
-	// too tight beside the objective box (the name and armour would be squeezed): the capsule goes down under the box instead, where the width is free
-	const float below = ObjectiveBottom(s);
-	if (atTop && squeeze < 0.9f && below > 0.f)
-	{
-		cy = below + height * 0.5f + 12.f * s;
-		float wide = w / s - 60.f;
-		if (wide > kMaxWidth + 120.f) wide = kMaxWidth + 120.f;
-		squeeze = width > wide ? wide / width : 1.f;
-	}
+	const float squeeze = width > room ? room / width : 1.f;
 	const float full = (width * squeeze + 16.f) * s;
 	const float cx = w * 0.5f;
 	OverlayStates();
@@ -362,9 +360,9 @@ void Prompt(CDXBitmapFont *font, float w, float h, bool atTop)
 	HUD.RenderObjectiveBar(cx, cy, full, height, 1.f);
 	OverlayStates();
 	float x = cx - full * 0.5f + 8.f * s;
-	large->DrawTextWithShadow(x, cy - lh * 0.5f * s, kWhite, piece[0][1], 0, 0.f, s * squeeze, s);
-	x += Width(large, piece[0][1]) * s * squeeze;
 	const float y = cy - sh * 0.5f * s;
+	font->DrawTextWithShadow(x, y, kWhite, piece[0][1], 0, 0.f, s * squeeze, s);
+	x += Width(font, piece[0][1]) * s * squeeze;
 	if (health)
 	{
 		x += kPairGap * s * squeeze;

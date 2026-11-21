@@ -669,7 +669,7 @@ HRESULT	CDXBitmapFont::DrawText(float x, float y, DWORD colour, WCHAR *text, int
 }
 
 // The text's width (its widest line) and height in pixels at scale 1, converted with the current rounding. A newline
-// starts a new line and is also measured, as the game measures it; '\r' is skipped.
+// starts a new line without measuring a glyph; '\r' is skipped.
 BOOL	CDXBitmapFont::GetTextExtent(WCHAR *text, SIZE *size)
 {
 	if (!text || !size)
@@ -688,6 +688,7 @@ BOOL	CDXBitmapFont::GetTextExtent(WCHAR *text, SIZE *size)
 		{
 			line = 0.0f;
 			total += lineHeight;
+			continue;
 		}
 		else if (c == '\r')
 			continue;

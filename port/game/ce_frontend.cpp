@@ -382,6 +382,34 @@ public:
 	int			mAction;
 };
 
+// An installed Map Editor map row: asks the game's level text table for its localized mission name with level code
+// (2.01 keeps its own prototype title, since retail aliases 201 to 200's text).
+class CCeEditorMapItem : public CCeMenuItem
+{
+public:
+	CCeEditorMapItem(const WCHAR *fallback, int action, int level) : CCeMenuItem(fallback, action), mLevel(level) { mShown[0] = 0; }
+
+	virtual WCHAR	*GetText()
+	{
+		if (mLevel == 201)
+			return CCeMenuItem::GetText();
+		const WCHAR *name = CFrontEndText::GetLevelName(mLevel);
+		if (!name || !*name)
+			return CCeMenuItem::GetText();
+		int len = 0;
+		while (name[len] && len < 63)
+		{
+			mShown[len] = name[len];
+			++len;
+		}
+		mShown[len] = 0;
+		return mShown;
+	}
+
+	int		mLevel;
+	WCHAR	mShown[64];
+};
+
 // A Yes/No switch with its own label (the game's Yes and No, as its other switches).
 // Empty catalogue slots occupy no space and cannot take the keyboard or mouse focus.
 class CCeCatalogueRow : public CCeMenuItem
@@ -723,23 +751,42 @@ public:
 	{
 		static SWordWrapFill fill;
 		static WCHAR buf[400];
-		wcsncpy(buf, text, 399);
-		buf[399] = 0;
-		int n = font->WordWrap(&fill, buf, 420.f);
+		static WCHAR wrapped[40][100];
+		int total = 0;
+		const WCHAR *p = text;
+		while (total < 40)
+		{
+			const WCHAR *nl = wcschr(p, L'\n');
+			size_t len = nl ? size_t(nl - p) : wcslen(p);
+			if (len > 399)
+				len = 399;
+			memcpy(buf, p, len * sizeof(WCHAR));
+			buf[len] = 0;
+			int n = font->WordWrap(&fill, buf, 420.f);
+			for (int l = 0; (l < n) && (total < 40); l++)
+			{
+				wcsncpy(wrapped[total], fill.c[l], 99);
+				wrapped[total][99] = 0;
+				total++;
+			}
+			if (!nl)
+				break;
+			p = nl + 1;
+		}
 		float line = float(font->GetHeight());
 		if (up)
 		{
-			y -= line * n;
+			y -= line * total;
 			if (y < floor)
 				y = floor;
 		}
-		for (int l = 0; l < n; l++)
+		for (int l = 0; l < total; l++)
 		{
 			SIZE size;
-			font->GetTextExtent(fill.c[l], &size);
-			font->DrawTextWithShadow(320.f - float(size.cx / 2), y + line * l, colour, fill.c[l], 0, 0, 1.f, 1.f);
+			font->GetTextExtent(wrapped[l], &size);
+			font->DrawTextWithShadow(320.f - float(size.cx / 2), y + line * l, colour, wrapped[l], 0, 0, 1.f, 1.f);
 		}
-		return n;
+		return total;
 	}
 
 	CMenuOptionsList	*mList;
@@ -860,10 +907,10 @@ static const int kMuseumRowCount = int(sizeof(kMuseumRows) / sizeof(kMuseumRows[
 // A missing map or unsupported placement set is refused during load and returns here without career writes.
 static const int kEditorLevels[] = {221, 100, 110, 201};
 static const SCeRow kEditorRows[] = {
-    {L"Open Installed Map 221", CEA_EDITOR_FIRST + 0, {L"Move objects and play your changes.", L"Your careers are not changed."}},
-    {L"Open Installed Map 100", CEA_EDITOR_FIRST + 1, {L"Move objects and play your changes.", L"Your careers are not changed."}},
-    {L"Open Installed Map 110", CEA_EDITOR_FIRST + 2, {L"Move objects and play your changes.", L"Your careers are not changed."}},
-    {L"Open Installed Map 201", CEA_EDITOR_FIRST + 3, {L"Move objects and play your changes.", L"Your careers are not changed."}},
+    {L"Map 2.21", CEA_EDITOR_FIRST + 0, {L"Move objects and play your changes.", L"Your careers are not changed."}},
+    {L"Map 1.00", CEA_EDITOR_FIRST + 1, {L"Move objects and play your changes.", L"Your careers are not changed."}},
+    {L"Map 1.10", CEA_EDITOR_FIRST + 2, {L"Move objects and play your changes.", L"Your careers are not changed."}},
+    {L"2.01 - Aquila Prototype", CEA_EDITOR_FIRST + 3, {L"Move objects and play your changes.", L"Your careers are not changed."}},
 };
 static const int kEditorMapCount = int(sizeof(kEditorLevels) / sizeof(kEditorLevels[0]));
 
@@ -972,9 +1019,9 @@ static const SCeSetting	kSettings[] = {
 	{L"Controller Rumble:", "rumble", CE_CHOICES(kNoYes), 1,
 	 {L"Rumbles a gamepad when your Battle Engine is hit or shaken. Not flight sticks.", kNextStart}, CEAF_NONE, 0},
 	{L"Dodge Button:", "dodge_button", CE_CHOICES(kNoYes), 1,
-	 {L"Ground: hold Dodge and move. Pick a key in Controls.", kNextLevel}, CEAF_NONE, 0},
+	 {L"Ground: hold Dodge and move. Pick a key in Controller Options.", kNextLevel}, CEAF_NONE, 0},
 	{L"Commander Map:", "commander", CE_CHOICES(kNoYes), 0,
-	 {L"Live squad view (solo). Set the key in Controls.", kNextStart}, CEAF_NONE, 0},
+	 {L"Live squad view for solo play. Pick a key in Controller Options.", kNextStart}, CEAF_NONE, 0},
 	{L"Your Music:", "music_dir", NULL, 0, 0,
 	 {L"Your own music's folder. Select to see it.", kNextRead}, CEAF_NONE, 0},
 	{L"Music Order:", "music_playtype", CE_CHOICES(kMusicOrders), 0,
@@ -1021,7 +1068,8 @@ static const char kTipsRest[] =
 // The commander view's line, added to the note only with commander=1 under [Experimental] in ce.ini, that is, only when Commander is on:
 // it names the keys and gives no step to take, and says that the view M opens does not pause the battle (0.1.13's M opened the paused
 // map, which is now V inside the view). (The Commander Map row of CE Settings is listed under the same condition.)
-static const char kControlsTipsCommander[] = "\n%s: commander view, the battle runs on. V: map.";
+static const char kControlsTipsCommander[] = "\n%s: commander view, the battle runs on.";
+static const char kControlsTipsCommanderMap[] = "\n%s: commander view, the battle runs on. V: map.";
 
 // Whether a connected gamepad can use the Dodge Button now: a gamepad, not a flight stick, with button B bound to no control
 // (PortCeDodgeAssistPadFree). An empty slot is no gamepad (PortCeTutorialPadInfo answers 0 for it).
@@ -1052,13 +1100,16 @@ static void	ControlsTips(char *out, int n, bool commander)
             name,name[0] && pad?" or ":"",pad?"gamepad B":"");
     }
     char gesture[160];
-    snprintf(gesture,sizeof(gesture),"%sTap %.18s then %.18s, or %.18s then %.18s.\n",
-        name[0] || pad?"":"Dodge (Walker): ",left,right,right,left);
+    snprintf(gesture,sizeof(gesture),"%s %.18s then %.18s, or %.18s then %.18s.\n",
+        name[0] || pad?"Or tap":"Dodge (Walker): tap",left,right,right,left);
     if(n<=0)return;
     out[0]=0;
     char commanderLine[128] = {};
 	if (commander && !PortCeActionConflict(CeControlAction::Commander, PortCeActionKey(CeControlAction::Commander)))
-		snprintf(commanderLine, sizeof(commanderLine), kControlsTipsCommander, PortCeActionName(CeControlAction::Commander));
+	{
+		const bool map = CE_SettingGetBool("commander_tactical_map", 0) == 1;
+		snprintf(commanderLine, sizeof(commanderLine), map ? kControlsTipsCommanderMap : kControlsTipsCommander, PortCeActionName(CeControlAction::Commander));
+	}
 	const char *sections[]={dodge,gesture,kTipsRest,commanderLine};
     size_t used=0;
     for(const char *part:sections) {
@@ -1133,9 +1184,9 @@ static const SCeHint	kPlanHints[CE_NUM_PLANS] = {
 static const WCHAR	kControlsHintPlain[] = L"Dodge, zoom, Photo Mode, screenshots, the console and the free camera.";
 enum { CEPL_MODS = 2, CEPL_TOOLS = 3, CEPL_GODOT = 8 };
 // The mods entry where the Mods page is not offered (its ce.ini line is off, or the build cannot load a mod): no page is described.
-static const char	kPlanModsPlain[] = "Mods are experimental and work on Linux only in this version. A mod can replace game files such as textures. There is "
-									   "no mod menu yet: the README says how to turn a mod on, under Mods.";
-static const WCHAR	kPlanModsPlainHint[] = L"Experimental, and on Linux only. There is no mod menu yet.";
+static const char	kPlanModsPlain[] = "Mods are experimental and work on Linux only in this version. Turn on the Mods page in ce.ini, as described in "
+									   "the README under Mods. Windows support is planned.";
+static const WCHAR	kPlanModsPlainHint[] = L"Available on Linux (see the README). Windows support is planned.";
 struct SCePlanPlain { int mIndex; const char *mMode; const char *mText; const WCHAR *mHint; };
 static const SCePlanPlain kPlanPlain[] = {
 	{CEPL_TOOLS, "map_editor", "A map and mission editor is in development. This version does not offer it.",
@@ -1444,7 +1495,11 @@ public:
 			list->AddItem(new (MEMTYPE_MENUITEM) CCeMenuItem(kPlanLabels[i], CEA_PLAN_FIRST + i));
 		list->AddItem(new (MEMTYPE_MENUITEM) CCeBack(list, mPlanHints, int(sizeof(SCeHint)), CE_NUM_PLANS, NULL));
 		mLists.Append(list);
-		AddPage(CEP_EDITOR, kEditorRows, kEditorMapCount);		// reached only from the Map Editor row, which the hub offers only on yes
+		list = NewList(CEP_EDITOR);		// reached only from the Map Editor row, which the hub offers only on yes
+		for (int i = 0; i < kEditorMapCount; i++)
+			list->AddItem(new (MEMTYPE_MENUITEM) CCeEditorMapItem(kEditorRows[i].mLabel, kEditorRows[i].mAction, kEditorLevels[i]));
+		list->AddItem(new (MEMTYPE_MENUITEM) CCeBack(list, &kEditorRows[0].mHint, int(sizeof(SCeRow)), kEditorMapCount, NULL));
+		mLists.Append(list);
 		AddPage(CEP_MUSEUM, kMuseumRows, kMuseumRowCount);		// reached only from the Museum row, which the hub offers only with the museum on
 		if (ExperimentalOffered(CEA_CATALOGUE))
 		{
@@ -1467,7 +1522,7 @@ public:
 			find->AddItem(new (MEMTYPE_MENUITEM) CCeMenuItem(L"Find", CEA_CAT_APPLY));
 			find->AddItem(new (MEMTYPE_MENUITEM) CCeMenuItem(L"Clear text", CEA_CAT_ERASE));
 			find->AddItem(new (MEMTYPE_MENUITEM) CCeBack(find, NULL, 0, 0,
-				L"Type a name. Enter finds; Esc cancels.\nSpaces also match underscores."));
+				L"Type a name. Enter finds, Esc cancels.\nSpaces also match underscores."));
 			mLists.Append(find);
 		}
 	}
@@ -1498,7 +1553,7 @@ public:
 				: i > 2 ? (PortCeCatalogueGroupWorded(i) ? L"The radio messages' spoken lines in this language. Choose one to hear it."
 					: L"Spoken lines in this language, named by their files: the game has no text for them.")
 				: (count ? L"Choose an item to see its details." : L"No matching files were found in your game folder.");
-			mCategoryHints[i].mExtra = i >= 2 ? L"Music is in Extras > Music Player." : NULL;
+			mCategoryHints[i].mExtra = (i >= 2 && PortCeExtrasOffered()) ? L"Music is in Extras > Music Player." : NULL;
 		}
 	}
 	void BindCatalogueItems()
@@ -1660,7 +1715,7 @@ public:
 	void	Back()
 	{
 		CatalogueSelect();
-		if (mPage == CEP_CATALOGUE_FIND) { CatalogueResult(); return; }
+		if (mPage == CEP_CATALOGUE_FIND) { CatalogueResult(); CFrontEnd::PlaySound(FES_BACK); return; }
 		if (mPage == CEP_HUB)
 			Leave();
 		else
@@ -1763,8 +1818,9 @@ public:
 			// The playable demo's level, the two co-op maps the Multiplayer grid leaves out (two players on one PC) or one
 			// of the original's five Race Challenges (levels 901-905), played outside every career: nothing they do is
 			// kept, and the front end comes back to this list with the level's row highlighted (ce_bonus.cpp, patch 0116).
-			Leave();
-			if (!PortCeBonusStart(level))
+			if (PortCeBonusStart(level))
+				Leave();
+			else
 				ShowMessage(level >= 901 ? "The race could not be started." : "The bonus level could not be started.");
 			return;
 		}

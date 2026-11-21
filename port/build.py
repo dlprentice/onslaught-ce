@@ -750,8 +750,7 @@ CE_DEFINES = []   # the public build's CE_VERSION (game files: the CE layer of p
 # port's own versions in port/platform/public/, same names and interfaces, compiled as game files; the patches below
 # touch only a replaced file, whose replacement carries the change itself.
 PUBLIC_REPLACEMENTS = ("wavread.cpp", "WavRead.h", "dxutil.cpp", "d3dutil.cpp", "DXFont.cpp", "d3dapp.cpp", "d3dapp.h")
-PUBLIC_SKIPPED_PATCHES = {"0034-constant-divisions-DXFont.patch": "DXFont.cpp",
-                          "0042-widescreen-virtual-ui-DXFont.patch": "DXFont.cpp",
+PUBLIC_SKIPPED_PATCHES = {"0042-widescreen-virtual-ui-DXFont.patch": "DXFont.cpp",
                           "0041-widescreen-screen-shape.patch": "d3dapp.cpp",
                           "0045-widescreen-mode-gate.patch": "d3dapp.cpp",
                           "0046-widescreen-native-default.patch": "d3dapp.cpp"}
