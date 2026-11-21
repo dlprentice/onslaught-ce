@@ -48,6 +48,35 @@ inline bool Seat(float side,float depth) {
     }
     return false;
 }
+enum class InputDevice { None, Kbm, Pad };
+// Tracks whether a connected gamepad is actively driving input rather than keyboard and mouse.
+inline bool UpdatePadActive(bool padActive, bool anyPadConnected, bool padInput, bool kbmInput) {
+    if (!anyPadConnected) return false;
+    if (padInput && !kbmInput) return true;
+    if (kbmInput && !padInput) return false;
+    return padActive;
+}
+// Picks which binding slot (0 or 1, or -1 for fallback) to show in the projector prompt.
+// KBM players never see a pad button when no gamepad is actively driving the cursor.
+inline int PickFireSlot(const InputDevice slots[2], bool padActive) {
+    if (padActive) {
+        for (int i = 0; i < 2; ++i) if (slots[i] == InputDevice::Pad) return i;
+        for (int i = 0; i < 2; ++i) if (slots[i] == InputDevice::Kbm) return i;
+        return -1;
+    }
+    for (int i = 0; i < 2; ++i) if (slots[i] == InputDevice::Kbm) return i;
+    return -1;
+}
+// Steps the screening room's house lights (1 = full idle lights, 0 = dimmed for a film) by 'steps' Presents.
+// Held constant while the game is paused so the room does not darken or brighten behind the pause menu.
+inline float StepHouseLight(float current, float target, unsigned steps, bool paused, float stepSize = 1.0f / 45.0f) {
+    if (paused) return current;
+    if (steps > 90u) steps = 90u;
+    const float move = stepSize * float(steps);
+    if (current < target) return current + move < target ? current + move : target;
+    if (current > target) return current - move > target ? current - move : target;
+    return current;
+}
 }
 
 extern "C" bool PortCeMuseumCinemaFire(bool release,float value);

@@ -126,12 +126,35 @@ int main() {
     other.scale=2; check(MakeUnitView(held)&&near(gUnitViewRig.span,2*span),"render scale contributes to extents");
     CePlayUnitLookLaw law=UnitLookLaw(); check(law.pitchUp<-1.2f&&law.pitchDown>1.2f,"infantry may look up and down naturally");
     acquire(tank,false); tank.box.mOrigin=FVector(0,0,-.5f); tank.box.mAxes=FVector(1,1.5f,.5f);
-    check(MakeUnitView(held)&&!gUnitViewRig.firstPerson,"vehicle without eye cannot claim first person");
+    check(MakeUnitView(held)&&gUnitViewRig.firstPerson,"vehicle with valid bounds gets turret first person");
+    check(near(gUnitViewRig.eye[2],-0.90f),"vehicle eye sits near top of turret bounds");
     check(gUnitViewState.view==kCePlayUnitCameraWide,"vehicle starts wide");
     Zoom(held,true,false); check(gUnitViewState.view==kCePlayUnitCameraClose&&!gFootFirstPerson,"vehicle zoom reaches close");
+    p=tick(75); check(!p.hideBody&&!UnitViewHidesBody(),"vehicle close view keeps hull visible");
+    Zoom(held,true,false); check(gUnitViewState.view==kCePlayUnitCameraFirst&&gFootFirstPerson,"vehicle zoom reaches first person");
+    check(!UnitViewHidesBody(),"vehicle first request does not hide before entering hull");
+    p=tick(75);
+    check(p.hideBody&&UnitViewHidesBody(),"vehicle hides own hull at turret eye");
+    check(near(p.eye[2],-0.90f,.001f),"vehicle first view reaches turret eye");
+    check(same(FireEye(held),gCamera->GetPos()),"vehicle first fire uses camera origin");
     int count=notices; Zoom(held,true,false);
-    check(gUnitViewState.view==kCePlayUnitCameraClose&&notices==count,"vehicle unsupported eye saturates quietly");
+    check(gUnitViewState.view==kCePlayUnitCameraFirst&&notices==count,"vehicle first person saturates quietly");
+    Zoom(held,false,true); check(gUnitViewState.view==kCePlayUnitCameraClose&&!gFootFirstPerson,"vehicle zoom out leaves first person");
+    p=tick(75); check(!p.hideBody&&!UnitViewHidesBody(),"vehicle hull returns at close clearance");
     Zoom(held,false,true); check(gUnitViewState.view==kCePlayUnitCameraWide,"vehicle zoom returns wide");
+    // Direct toggle remembers third-person view (Wide <-> First and Close <-> First)
+    check(CePlayUnitCameraToggleFirst(&gUnitViewState,gUnitViewRig,&gUnitViewThird)==kCePlayUnitCameraFirst,"toggle from wide enters first");
+    check(CePlayUnitCameraToggleFirst(&gUnitViewState,gUnitViewRig,&gUnitViewThird)==kCePlayUnitCameraWide,"toggle from first restores wide");
+    Zoom(held,true,false);
+    check(CePlayUnitCameraToggleFirst(&gUnitViewState,gUnitViewRig,&gUnitViewThird)==kCePlayUnitCameraFirst,"toggle from close enters first");
+    check(CePlayUnitCameraToggleFirst(&gUnitViewState,gUnitViewRig,&gUnitViewThird)==kCePlayUnitCameraClose,"toggle from first restores close");
+    // A degenerate flat vehicle box with zero height cannot claim first person and saturates at close
+    CUnit flat; flat.box.mOrigin=FVector(0,0,0); flat.box.mAxes=FVector(1,1.5f,0);
+    acquire(flat,false);
+    check(MakeUnitView(held)&&!gUnitViewRig.firstPerson,"flat vehicle without height cannot claim first person");
+    Zoom(held,true,false); check(gUnitViewState.view==kCePlayUnitCameraClose,"flat vehicle reaches close");
+    count=notices; Zoom(held,true,false);
+    check(gUnitViewState.view==kCePlayUnitCameraClose&&notices==count,"flat vehicle saturates quietly at close");
     law=UnitLookLaw(); const CePlayUnitLookLaw original=CePlayUnitTankLook();
     check(near(law.pitchUp,original.pitchUp)&&near(law.pitchDown,original.pitchDown),"tank pitch remains native possession law");
     acquire(foot,true); gViewMode=0;

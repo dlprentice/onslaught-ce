@@ -8,7 +8,7 @@
 // twenty degrees of where the visitor faces (the cosine of the angle from the heading). A label already shown is kept a little beyond both, so one at the
 // edge does not flicker as the walker rocks or turns. Of the exhibits that qualify the most central one wins, not the nearest: a machine at the side of
 // the view never names itself over the one in the crosshair.
-static const float kCeMuseumLabelRange = 30.0f, kCeMuseumLabelKeep = 36.0f;
+static const float kCeMuseumLabelRange = 14.0f, kCeMuseumLabelKeep = 17.0f;
 static const float kCeMuseumLabelFront = 0.94f, kCeMuseumLabelFrontKeep = 0.88f;
 // How much more central another exhibit must be, as a share of the squared cosine, to take the label from the one shown.
 static const float kCeMuseumLabelHold = 0.03f;
@@ -50,6 +50,16 @@ inline int CeMuseumNearestLabel(const float (*xy)[2], unsigned count, float px, 
 		}
 	}
 	return best;
+}
+
+// Which exhibit card to show (an index, or -1). In a hall of numbered displays (signs) a card is the display's own: only the display whose sign the visitor
+// stands at and faces (sign, from the hall) names itself, so a machine seen down the hall from the entrance never puts its card up before the visitor reaches
+// it. The in-view rule (nearest, CeMuseumNearestLabel) is for a hall without signs.
+inline int CeMuseumCardLabel(bool signs, int sign, int nearest)
+{
+	if (sign >= 0)
+		return sign;
+	return signs ? -1 : nearest;
 }
 
 // The threshold measures from the near face of a large exhibit, not just its centre.
@@ -126,6 +136,22 @@ inline float CeMuseumCapsuleOpen(unsigned long long now, unsigned long long sinc
 	return open < 0.0f ? 0.0f : open > 1.0f ? 1.0f : open;
 }
 
+// How far the hall's title capsule (a place's name at the top of the view) is open: it grows over `grow` ms from `since` and goes at once when its `shown`
+// ms are up (a bar shrinking shut has already lost its words). It also goes at once when the visitor has walked out of the places a title names, into the
+// screening room or its doorway (elsewhere): the projector's console panel takes the top of the view there, and a title is about the hall, not the cinema.
+inline float CeMuseumTitleOpen(unsigned long long now, unsigned long long since, unsigned long long shown, unsigned long long grow, bool elsewhere)
+{
+	if (elsewhere || now < since || now - since >= shown)
+		return 0.0f;
+	return CeMuseumCapsuleOpen(now, since, shown, grow, false);
+}
+
+// Whether the visitor is away from what the title names: in the screening room or its doorway (cinema), or, for a place's name (wayfinding: the entrance
+// or a numbered display), outside that place (inPlace false). The hall's own name and the put-back note are not places and only the cinema ends them early.
+inline bool CeMuseumTitleElsewhere(bool cinema, bool wayfinding, bool inPlace)
+{
+	return cinema || (wayfinding && !inPlace);
+}
 
 // A definition's own name as a label reads it: Title Case words, the separators the small face lacks ( _ - . ) and every other character it lacks as spaces,
 // a word written in capitals lowered after its first letter (a capital after a lower case letter, as in ForsetiTank, is kept), and a number that ends the

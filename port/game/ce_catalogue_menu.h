@@ -50,3 +50,10 @@ int PortCeCatalogueSelectedIndex();
 bool PortCeCatalogueBrowsingSounds();
 // The collection being browsed (a group number, as PortCeCatalogueGroupLabel takes).
 int PortCeCatalogueCategory();
+// A row's group and its name alone, for lists that show each group once as a heading ("Bosses", then "Warspite");
+// an empty group for lists without groups (speech).
+void PortCeCatalogueItemParts(unsigned slot, char* group, unsigned group_size, char* name, unsigned name_size);
+// A texture's size in pixels and whether its format keeps transparency; false for anything else or an unreadable header.
+bool PortCeCatalogueTextureSize(unsigned slot, unsigned* width, unsigned* height, bool* transparency);
+// The goodie whose model a Models row is (the Catalogue can turn it in its pane), or -1.
+int PortCeCatalogueModelGoodie(unsigned slot);

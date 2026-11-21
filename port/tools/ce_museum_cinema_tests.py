@@ -37,11 +37,34 @@ int main(){
  check(edge(true,true)==FireIntent::Ordinary,"second release cannot operate");
  check(edge(false,true)==FireIntent::Consume&&edge(true,false)==FireIntent::Consume,"leave or pause after press swallows only its own release");
  check(edge(false,false)==FireIntent::Ordinary&&edge(true,false)==FireIntent::Ordinary,"ordinary controls restored");
+ using CeCinemaRoom::InputDevice;
+ check(!CeCinemaRoom::UpdatePadActive(true,false,true,false),"disconnected pad clears active pad mode");
+ check(CeCinemaRoom::UpdatePadActive(false,true,true,false),"connected pad input activates pad mode");
+ check(!CeCinemaRoom::UpdatePadActive(true,true,false,true),"kbm input switches back to kbm mode");
+ check(CeCinemaRoom::UpdatePadActive(true,true,false,false)&&!CeCinemaRoom::UpdatePadActive(false,true,false,false),"idle preserves active device");
+ const InputDevice padFirst[2]={InputDevice::Pad,InputDevice::Kbm};
+ const InputDevice padOnly[2]={InputDevice::Pad,InputDevice::None};
+ const InputDevice kbmFirst[2]={InputDevice::Kbm,InputDevice::Pad};
+ check(CeCinemaRoom::PickFireSlot(padFirst,false)==1,"kbm skips pad in slot 0 and picks kbm slot 1");
+ check(CeCinemaRoom::PickFireSlot(padOnly,false)==-1,"kbm never displays pad button when only pad is bound");
+ check(CeCinemaRoom::PickFireSlot(kbmFirst,true)==1,"active pad picks pad slot 1 over kbm slot 0");
+ check(CeCinemaRoom::PickFireSlot(padFirst,true)==0,"active pad picks pad slot 0");
+ check(CeCinemaRoom::StepHouseLight(0.5f,0.0f,30,true)==0.5f,"paused game holds house lights constant");
+ check(CeCinemaRoom::StepHouseLight(1.0f,0.0f,45,false)==0.0f,"playing dims house lights to 0 over 45 frames");
+ check(CeCinemaRoom::StepHouseLight(0.0f,1.0f,45,false)==1.0f,"stopping brightens house lights back to 1 over 45 frames");
  std::printf("%u/%u authored circulation, seating and action checks passed\n",total-failed,total);
  return failed?1:0;
 }
 """
 if __name__=='__main__':
+ cinema=(ROOT/'port/game/ce_museum_cinema.inc').read_text()
+ if 'Through this doorway: use the projector to watch game films.' not in cinema:
+  raise SystemExit('FAIL: expected doorway copy missing in ce_museum_cinema.inc')
+ if 'lastAim' in cinema or 'PortMouseActivitySeq()' not in cinema:
+  raise SystemExit('FAIL: CinemaTrackDevice must use PortMouseActivitySeq without aim-dot heuristic')
+ hall=(ROOT/'port/game/ce_museum_hall.cpp').read_text()
+ if 'HouseLightReset();' not in hall or 'StepHouseLight(gHouseLight, target, steps, GAME.IsPaused()' not in hall:
+  raise SystemExit('FAIL: CeMuseumHallClear must reset house lights and HouseLight must hold while paused')
  out=ROOT/'local-data'/'museum-cinema-tests';out.mkdir(exist_ok=True,parents=True)
  with tempfile.TemporaryDirectory(dir=out) as root:
   d=Path(root);(d/'test.cpp').write_text(TEST)

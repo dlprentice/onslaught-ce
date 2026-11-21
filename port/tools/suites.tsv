@@ -14,6 +14,7 @@ port/tools/audio_refill_order_tests.py	script	-	deps	release	-
 port/tools/audio_refill_overlap_tests.py	script	-	deps	release	-	
 port/tools/audio_refill_tests.py	script	-	deps	release	-	
 port/tools/background_clear_tests.py	script	-	none	release	-	
+port/tools/bink_pause_tests.py	script	-	deps	release	-	port/bink PortBinkPause and video clock against ended-sound pause fault, with mutants
 port/tools/build_tests.py	script	-	deps	release	-	
 port/tools/ce_backup_preview_page_tests.py	script	-	none	release	-	restore lane; host build with the system compiler
 port/tools/ce_backup_preview_tests.py	script	-	none	release	-	restore lane; host build with the system compiler
@@ -86,7 +87,9 @@ port/tools/ce_museum_cinema_console_tests.py	script	-	none	release	-	museum lane
 port/tools/ce_museum_cinema_tests.py	script	-	none	release	-	museum lane; host build with the system compiler
 port/tools/ce_museum_exhibition_host_tests.py	script	-	none	release	-	museum lane; host build with the system compiler
 port/tools/ce_museum_exhibition_tests.py	script	-	none	release	-	museum lane; host build with the system compiler
+port/tools/ce_museum_film_tests.py	script	-	none	release	-	museum cinema film playback level, crossfade, frame order and pause hold, with mutants
 port/tools/ce_museum_label_tests.py	script	-	none	release	-	
+port/tools/ce_museum_music_duck_tests.py	script	-	none	release	-	museum cinema music duck arithmetic, mutants and patch 0258 wiring
 port/tools/ce_museum_options_tests.py	script	-	none	release	-	
 port/tools/ce_museum_run_tests.py	script	-	none	release	-	
 port/tools/ce_museum_tests.py	script	-	deps	release	-	

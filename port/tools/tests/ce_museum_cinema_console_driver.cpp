@@ -417,6 +417,12 @@ void TestDisplayChangesLooksNotFaces() {
     CHECK(Console::MaterialColour(Console::kMaterialLampUnavailable).a == 255);
     CHECK(Console::StyleColour(Console::kStylePanel).a < 255);
     CHECK(Console::StyleColour(Console::kStyleHint).a == 255);
+    // Projector panel note styles stay bright and readable on dark capsules (matching bottom capsule contrast).
+    const Console::Style notes[] = {Console::kStyleHeading, Console::kStyleFilmCount, Console::kStyleStatus, Console::kStyleHint};
+    for (unsigned i = 0; i < sizeof(notes) / sizeof(notes[0]); ++i) {
+        const Console::Rgba c = Console::StyleColour(notes[i]);
+        CHECK(c.a == 255 && c.r >= 204 && c.r < 240 && c.r == c.g && c.g == c.b);
+    }
 }
 
 // ---------------------------------------------------------------------------

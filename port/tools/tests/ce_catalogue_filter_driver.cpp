@@ -19,7 +19,7 @@ int main(int argc,char** argv) {
     Check(PortCeCatalogueCount(1)==39 && PortCeCataloguePageCount()==4,"all installed textures initially visible");
     PortCeCatalogueTurn(); PortCeCatalogueTurn();
     PortCeCatalogueSelect(4); const std::string chosen=Title(4);
-    Check(chosen=="Panel 28","known authored item on third page");
+    Check(chosen=="Textures: Panel 28","known authored item on third page");
     PortCeCatalogueFilter("pAnEl");
     Check(PortCeCatalogueMatches()==36,"case insensitive search across every page");
     Check(PortCeCataloguePageNumber()==3 && PortCeCatalogueSelectedSlot()==4 && Title(4)==chosen,"selection identity retained by filter");
@@ -38,11 +38,11 @@ int main(int argc,char** argv) {
     PortCeCatalogueBrowse(0);
     Check(PortCeCatalogueCount(0)==3 && PortCeCatalogueMatches()==3 && !*PortCeCatalogueQuery(),"model collection independently unfiltered");
     PortCeCatalogueFilter("scout");
-    Check(PortCeCatalogueMatches()==1 && Title(0)=="Scout","native model search");
+    Check(PortCeCatalogueMatches()==1 && Title(0)=="Models: Scout","native model search");
     PortCeCatalogueBrowse(1);
     Check(std::string(PortCeCatalogueQuery())=="panel 3" && PortCeCatalogueSelectedSlot()==4 && Title(4)==later,"collection return keeps its own query and selected asset");
     char detail[1024];PortCeCatalogueDetails(4,detail,sizeof detail);
-    Check(std::strstr(detail,"Panel 34.tga(0).aya")!=nullptr,"details correspond to selected filtered source");
+    Check(std::strncmp(detail,"Panel 34\n",9)==0,"details correspond to selected filtered source");
     PortCeCatalogueFilter("reticle.tga(1)");
     Check(PortCeCatalogueMatches()==1,"stored full filename is searchable");
     Check(PortCeCatalogueIsTexture(0) && !PortCeCatalogueIsTexture(1),"filtered detail slots bounded");

@@ -30,6 +30,7 @@ extern float gMessageBoxX, gMessageBoxY, gMessageBoxWidth, gMessageTextY;	// Hud
 extern "C" unsigned long long CE_ScreenshotTicks(void);		// ce_screenshot.cpp: SDL's milliseconds
 extern "C" bool PortCeMuseumVisitActive(void);				// ce_museum_visit.cpp
 extern "C" void PortCeMuseumVisitFrame(void);				// ce_museum_visit_engine.cpp: the visitor's safety, once a frame
+extern "C" bool PortCeMuseumCinemaCue(char *, unsigned, char *, unsigned);	// ce_museum_hall.cpp: the screening room's card, while the visitor is in it or its doorway
 
 namespace {
 const int kChars = 96;
@@ -37,8 +38,9 @@ const unsigned long long kTitleMs = 5200, kGrowMs = 350;
 // The same title asked for again this soon after it was put up keeps its own clock: a visitor stepping on and off a zone's edge
 // would otherwise restart it every few frames, and a capsule that keeps restarting is a bar that keeps growing with no words in it.
 const unsigned long long kTitleRepeatMs = kTitleMs + 3000;
-// The text stage doubles a colour's channels (a channel of 0x80 or more is full white), so the note's grey is the half the notes' own grey is written as.
-const DWORD kWhite = 0xffffffff, kGrey = 0xff545454;
+// HUD.RenderObjectiveBar leaves stage 0 at LT.SetModulate(0) (D3DTOP_MODULATE2X when USE_MODULATE_2X is on, else DXFont::StageColour doubles channels),
+// so channels >= 0x80 saturate to pure white. 0xff6c6c6c doubles to 0xd8 (216), giving a crisp readable light grey on translucent radio capsules.
+const DWORD kWhite = 0xffffffff, kGrey = 0xff6c6c6c;
 
 struct Label
 {
@@ -51,6 +53,8 @@ unsigned gCount;
 Label gTitle;
 bool gHasTitle;
 bool gWayfinding;
+bool gInPlace = true;								// the visitor stands in the place the wayfinding title names (the visit's own zone test)
+bool gSigns;										// the hall has numbered displays: a card is only ever a sign's own
 bool gExitShown;
 unsigned long long gExitSince;
 bool gInspecting;
@@ -224,6 +228,8 @@ extern "C" void PortCeMuseumViewCapture()
 extern "C" void PortCeMuseumLabelsClear(void)
 {
 	gCount = 0;
+	gSigns = false;
+	gInPlace = true;
 	gExitShown = false;
 	gExitSince = 0;
 	gInspecting = false;
@@ -284,6 +290,16 @@ extern "C" bool PortCeMuseumLabelsAdd(const char *name, const char *line, const 
 	return true;
 }
 
+extern "C" void PortCeMuseumLabelsPlace(bool inPlace)
+{
+	gInPlace = inPlace;
+}
+
+extern "C" void PortCeMuseumLabelsSigns(bool signs)
+{
+	gSigns = signs;
+}
+
 extern "C" bool PortCeMuseumLabelsNote(unsigned index, const char *note)
 {
 	return index < gCount && Copy(gLabels[index].note, note);
@@ -299,7 +315,6 @@ extern "C" int PortCeMuseumLabelsNearest(float x, float y, float forwardX, float
 	return CeMuseumNearestLabel(gAt, gCount, x, y, forwardX, forwardY, gShown);
 }
 
-extern "C" bool PortCeMuseumCinemaCue(char *,unsigned,char *,unsigned);
 extern "C" void PortCeMuseumLabelsRender(void)
 {
 	if (!PortCeMuseumVisitActive())
@@ -310,13 +325,19 @@ extern "C" void PortCeMuseumLabelsRender(void)
 		return;
 	const unsigned long long now = CE_ScreenshotTicks();
 	const float cx = HUD.mViewportX + HUD.mViewportWidth * 0.5f;
+	// In the screening room or its doorway the cinema's own card is the one shown, and its console panel has the top of the view.
+	char cinemaTitle[48] = {}, cinemaLine[96] = {};
+	const bool cinema = PortCeMuseumCinemaCue(cinemaTitle, sizeof cinemaTitle, cinemaLine, sizeof cinemaLine);
 	if (gHasTitle)
 	{
 		if (!gTitleSince)
 			gTitleSince = now;
-		// The title grows open as the radio's bar does, then goes at once when its time is up: a bar shrinking shut has already lost
-		// its words (they show only on a nearly open bar), so it would read as an empty capsule.
-		const float open = now - gTitleSince >= kTitleMs ? 0.0f : CeMuseumCapsuleOpen(now, gTitleSince, kTitleMs, kGrowMs, false);
+		// The title grows open as the radio's bar does, then goes at once when its time is up, when the visitor walks out of the place it names, or into
+		// the cinema (CeMuseumTitleOpen). Its clock is SDL's, a real five seconds whatever the frame rate; leaving the place ends it whatever is left.
+		const bool elsewhere = CeMuseumTitleElsewhere(cinema, gWayfinding, gInPlace);
+		const float open = CeMuseumTitleOpen(now, gTitleSince, kTitleMs, kGrowMs, elsewhere);
+		if (elsewhere)
+			gHasTitle = false;							// gone for good: the hall names a place again when the visitor walks into it
 		if (open > 0.0f)
 		{
 			// The scope the exhibit labels draw in is anchored at the bottom of the view; the title hangs from the top, so it opens its own, as the HUD's
@@ -331,8 +352,7 @@ extern "C" void PortCeMuseumLabelsRender(void)
 	CBattleEngine *engine = player ? player->GetBattleEngine() : NULL;
 	if (!engine)
 		return;
-    char cinemaTitle[48]={},cinemaLine[96]={};
-    if (PortCeMuseumCinemaCue(cinemaTitle,sizeof cinemaTitle,cinemaLine,sizeof cinemaLine)) {
+    if (cinema) {
         Label card={}; Copy(card.name,cinemaTitle); Copy(card.line,cinemaLine);
         ExhibitCapsule(card,card.line,1.0f); return;
     }
@@ -347,7 +367,9 @@ extern "C" void PortCeMuseumLabelsRender(void)
 	                  CeMuseumHallFacesExit(position.X, position.Y, heading.X, heading.Y, gExitShown);
 	if (exit && !gExitShown) gExitSince = now;
 	gExitShown = exit;
-	const int nearest = atSign ? sign : (level && !exit ? PortCeMuseumLabelsNearest(position.X, position.Y, heading.X, heading.Y) : -1);
+	// In a hall of numbered displays only a sign names a machine: the in-view rule would put a far display's card up from the entrance.
+	const int nearest = CeMuseumCardLabel(gSigns, atSign ? sign : -1,
+	                                      level && !exit ? PortCeMuseumLabelsNearest(position.X, position.Y, heading.X, heading.Y) : -1);
 	if (nearest != gShown)
 	{
 		gInspecting = false;

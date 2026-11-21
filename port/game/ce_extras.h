@@ -32,7 +32,7 @@ enum ECeExtrasPage
 	XP_STORED_SETTINGS,	// read-only details of the selected career
 	XP_BACKUP,
 	XP_BACKUP_PREVIEW,
-	XP_SOUNDS,			// the Catalogue's sound lists (ce_catalogue_list.cpp): opened from the Catalogue, Back returns there
+	XP_CATALOGUE_LIST,	// the Catalogue's lists (ce_catalogue_list.cpp): opened from the Catalogue, Back returns there
 	XP_BACKUP_ALL,		// Back Up All Careers (ce_backup_all_page.cpp): one verified set of every career and the options
 	XP_COUNT
 };
@@ -82,6 +82,15 @@ struct SCeListPage
 	// pixels the box reaches further right than the Load Game page's (its track and bar move with it), for a list of long lines;
 	// the Catalogue's 20 keep it clear of the right arc (nearest at x 563 beside the rows); 0 for every other page
 	float		mWiden;
+	// rows in view (0: the Load Game page's ten) and where the box starts (0: kCeListTop), for a page with a taller box
+	int			mRows;
+	float		mTopY;
+	// right edge of the box when it shares the width with a pane beside it (0: kCeListRight + mWiden)
+	float		mBoxRight;
+	// true for a group heading row: drawn in the heading colour, never highlighted, skipped by the keys and wheel; may be left empty
+	bool		(*mHeading)(int index);
+	// drawing beside the box for the highlighted row (the Catalogue's picture and model), in the rectangle given
+	void		(*mPane)(int index, float left, float top, float right, float bottom);
 };
 
 // A reading page: one article in a panel (ce_reading.h). The page draws itself, including the hint under its panel; the host hands it the
@@ -149,9 +158,10 @@ const CeBackupOrigin *PortCeBackupWindowsOrigin();
 #endif
 bool PortCeCareerReadSnapshot(const WCHAR *name, SCeCareerView *view, unsigned char *copy);
 const SCeListPage	*PortCeCataloguePage();
-// The Catalogue's sound lists (ce_catalogue_list.cpp) and their title (a group label such as "Speech: French").
-const SCeListPage	*PortCeCatalogueSoundsListPage();
+// The Catalogue's lists (ce_catalogue_list.cpp) and their title (a group label such as "Models" or "Speech: French").
+const SCeListPage	*PortCeCatalogueListPage();
 void	PortCeCatalogueListTitle(const char *label);
+int		PortCeCatalogueListRowOf(int match);
 bool	PortCeGoodiesFromCatalogue();					// the Goodies page was opened from the catalogue, so Back returns there
 enum { CE_RECORD_ROWS = 8 };						// the record page's label and value rows
 const WCHAR	*PortCeRecordLabel(int row);

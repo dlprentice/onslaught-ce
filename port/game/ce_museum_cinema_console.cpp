@@ -875,10 +875,10 @@ Rgba StyleColour(Style style) {
     case kStyleKeyPressed: return MakeRgba(56, 200, 232, 112);
     case kStyleKeyDisabled: return MakeRgba(24, 26, 30, 150);
     case kStyleBindingCap: return MakeRgba(56, 200, 232, 80);
-    case kStyleHeading: return MakeRgba(168, 168, 168, 255);
-    case kStyleFilmCount: return MakeRgba(168, 168, 168, 255);
+    case kStyleHeading: return MakeRgba(212, 212, 212, 255);
+    case kStyleFilmCount: return MakeRgba(212, 212, 212, 255);
     case kStyleTitle: return MakeRgba(246, 246, 246, 255);
-    case kStyleStatus: return MakeRgba(168, 168, 168, 255);
+    case kStyleStatus: return MakeRgba(212, 212, 212, 255);
     case kStylePlaying: return MakeRgba(46, 176, 48, 255);
     case kStyleWarning: return MakeRgba(220, 60, 60, 255);
     case kStyleKeyLabel: return MakeRgba(232, 232, 232, 255);
@@ -886,7 +886,7 @@ Rgba StyleColour(Style style) {
     case kStyleKeyLabelDim: return MakeRgba(104, 104, 104, 255);
     case kStyleBinding: return MakeRgba(246, 246, 246, 255);
     case kStyleAction: return MakeRgba(246, 246, 246, 255);
-    case kStyleHint: return MakeRgba(168, 168, 168, 255);
+    case kStyleHint: return MakeRgba(212, 212, 212, 255);
     }
     return MakeRgba(255, 0, 255, 255);
 }

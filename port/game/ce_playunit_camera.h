@@ -36,6 +36,7 @@ const float kCePlayUnitCameraMaxStep = 0.25f;		// s: a frame longer than this (o
 const float kCePlayUnitCameraDone = 0.002f;			// of one step of the rail: this near, the move is over and the camera is exactly at rest
 const float kCePlayUnitCameraSpanRadius = 1.4f;		// a footprint counts toward a unit's span as this many times its radius about the root axis
 const float kCePlayUnitCameraFootEyeHeight = 0.93f;	// a standing figure's eye, as a part of its height above its sole
+const float kCePlayUnitCameraVehicleEyeHeight = 0.90f;	// a vehicle's turret optic, as a part of its height above its base
 
 inline bool CePlayUnitCameraFinite(float v) { return v >= -FLT_MAX && v <= FLT_MAX; }
 
@@ -114,6 +115,18 @@ inline bool CePlayUnitCameraFootEye(const float *lo, const float *hi, float *eye
 	return true;
 }
 
+// A vehicle's turret/weapon vantage from its bounds: on the root's vertical (clamped into the horizontal footprint if asymmetric), near the top of the turret bounds.
+// False when the bounds are no use or have no height.
+inline bool CePlayUnitCameraVehicleEye(const float *lo, const float *hi, float *eye)
+{
+	float height, radius, span;
+	if (!CePlayUnitCameraMeasure(lo, hi, &height, &radius, &span) || !(height > 0.f)) return false;
+	eye[0] = 0.f < lo[0] ? lo[0] : (0.f > hi[0] ? hi[0] : 0.f);
+	eye[1] = 0.f < lo[1] ? lo[1] : (0.f > hi[1] ? hi[1] : 0.f);
+	eye[2] = hi[2] - kCePlayUnitCameraVehicleEyeHeight * height;
+	return true;
+}
+
 // The camera of a unit with these bounds under this law. `eye` is the caller's validated first-person eye in the unit's local axes, or null for a unit that has none:
 // first person exists only when it is given, finite and inside the bounds (an eye above or outside the model is refused, and the two shoulder views remain). False,
 // with a rig that is not valid, when the bounds or the law are no use: the caller then keeps the camera it had before this header.
@@ -187,6 +200,33 @@ inline int CePlayUnitCameraZoom(CePlayUnitCameraState *s, const CePlayUnitCamera
 	if (view > top) view = top;
 	s->view = view;
 	return view;
+}
+
+// One toggle press between third-person and first-person (or between Wide and Close on a unit without a validated eye).
+// Remembers the last third-person view in *savedThird so returning from first person lands back where the player left.
+inline int CePlayUnitCameraToggleFirst(CePlayUnitCameraState *s, const CePlayUnitCameraRig &rig, int *savedThird)
+{
+	if (s->identity == 0 || !rig.valid) return s->view;
+	const int top = CePlayUnitCameraTop(rig);
+	if (top == kCePlayUnitCameraFirst)
+	{
+		if (s->view == kCePlayUnitCameraFirst)
+		{
+			int back = savedThird ? *savedThird : (int)kCePlayUnitCameraWide;
+			if (back < kCePlayUnitCameraWide || back > kCePlayUnitCameraClose) back = kCePlayUnitCameraWide;
+			s->view = back;
+		}
+		else
+		{
+			if (savedThird) *savedThird = s->view;
+			s->view = kCePlayUnitCameraFirst;
+		}
+	}
+	else
+	{
+		s->view = (s->view == kCePlayUnitCameraWide) ? kCePlayUnitCameraClose : kCePlayUnitCameraWide;
+	}
+	return s->view;
 }
 
 // A frame's time passes: the rail settles toward the view asked for. The settling is the closed form of a critically damped spring, so a long frame and several short

@@ -146,37 +146,37 @@ class CatalogueTests(unittest.TestCase):
             self.file(1, "mustbe_Anchor%02d.tga(0).aya" % i)
         source = self.file(1, "mustbe_Coral_Plate.tga(0).aya", member(h[:57]) + member(h[57:]))
         view = self.browse(1, 2, 0)
-        self.assertEqual((view["name"], view["page"], view["pages"]), ("Coral Plate", 2, 2))
+        self.assertEqual((view["name"], view["page"], view["pages"]), ("Textures: Coral Plate", 2, 2))
         self.assertIn("64 x 32 pixels", view["detail"])
-        self.assertIn("DDS: DXT5, 4 mip levels", view["detail"])
-        self.assertIn(source.name.replace("_", " ") + "\n", view["detail"])
+        self.assertIn("64 x 32 pixels, with transparency", view["detail"])
+        self.assertNotIn(source.name, view["detail"])
         self.assertEqual(view, self.browse(1, 2, 0))
         exact = bytes(h)
         struct.pack_into("<I", h, 8, 0x1007)
         struct.pack_into("<7I", h, 80, 0x41, 0, 32, 0xff0000, 0xff00, 0xff, 0xff000000)
         source.write_bytes(member(h))
-        self.assertIn("DDS: A8R8G8B8, 1 mip level", self.browse(1, 2, 0)["detail"])
+        self.assertIn("with transparency", self.browse(1, 2, 0)["detail"])
         short = bytearray(exact); struct.pack_into("<I", short, 28, 99)
         for bad in [member(b"not a DDS"), member(short), b"\xff\xff\xff\x7f" + b"bad", member(b"x" * (2**20 + 1)), member(exact)[:-2]]:
             source.write_bytes(bad)
             v = self.browse(1, 2, 0)
-            self.assertEqual(v["name"], "Coral Plate")
-            self.assertIn(source.name.replace("_", " ") + "\n", v["detail"])
-            self.assertNotIn("DDS:", v["detail"])
-            self.assertIn("Texture header unavailable.", v["detail"])
+            self.assertEqual(v["name"], "Textures: Coral Plate")
+            self.assertNotIn(source.name, v["detail"])
+            self.assertNotIn("mip level", v["detail"])
+            self.assertIn("Its size could not be read.", v["detail"])
 
     def test_native_list_identifies_texture_source_and_names_from_the_install(self) -> None:
         self.file(1, "mustbe_Solar_Hull.tga(0).aya")
         self.file(2, "Solar_Hull.tga(0).aya")
         game, interface = (self.browse(1, 1, slot) for slot in (0, 1))
-        self.assertEqual([game["name"], interface["name"]], ["Solar Hull"] * 2)
-        self.assertIn("Source: resources/dxtntextures", game["detail"])
-        self.assertIn("Source: resources/textures", interface["detail"])
-        self.assertIn("mustbe Solar Hull.tga(0).aya\n", game["detail"])
-        self.assertIn("\nSolar Hull.tga(0).aya\n", interface["detail"])
-        self.assertNotIn("underscore", game["detail"] + interface["detail"])
-        self.assertIn("Texture header unavailable.", game["detail"])
-        self.assertNotIn("DDS:", game["detail"])
+        self.assertEqual([game["name"], interface["name"]], ["Textures: Solar Hull", "Interface: Solar Hull"])
+        # a player reads a name, its group and place, and the size: never the file, its folder or its encoding
+        self.assertTrue(game["detail"].startswith("Solar Hull\nTextures, item 1 of 2."))
+        self.assertTrue(interface["detail"].startswith("Solar Hull\nInterface, item 2 of 2."))
+        for text in (game["detail"], interface["detail"]):
+            for machine in ("Source", "resources", ".aya", "(0)", "mustbe", "%", "underscore", "DDS:"):
+                self.assertNotIn(machine, text)
+        self.assertIn("Its size could not be read.", game["detail"])
         self.assertNotIn(str(self.install), game["detail"] + interface["detail"])
 
     def test_picture_reads_only_the_selected_file_and_passes_its_pixels_to_the_loader(self) -> None:
@@ -211,15 +211,15 @@ class CatalogueTests(unittest.TestCase):
             self.assertEqual(picture(slot,group=group), [0,0,0,0])
         self.assertIn("4 x 4 pixels", self.browse(1,1,2)["detail"])  # a broken payload can still have a readable header
 
-    def test_file_names_are_shown_plainly(self) -> None:
-        # A player reads the file's name as words: underscores become spaces, nothing is escaped and no legend is added.
-        for source, shown in [("B_Panel_2.aya", "B Panel 2.aya"), ("D%2A-normal.aya", "D%2A-normal.aya"),
-                              ("C" * 30 + "_x.aya", "C" * 30 + " x.aya")]:
+    def test_details_name_the_item_not_its_file(self) -> None:
+        # a texture's first line is its name as words: no file name, extension, format or encoding
+        for source, shown in [("B_Panel_2.aya", "B Panel 2"), ("D%2A-normal.aya", "2A Normal"),
+                              ("C" * 30 + "_x.aya", "C" * 30 + " X")]:
             created = self.file(1, source)
             detail = self.browse(1, 1, 0)["detail"]
-            self.assertEqual(detail.splitlines()[2], shown)
+            self.assertEqual(detail.splitlines()[0], shown)
+            self.assertNotIn(".aya", detail)
             self.assertNotIn("underscore", detail)
-            self.assertNotIn("UTF-8", detail)
             created.unlink()
 
     def test_native_paging_and_full_identifying_name(self) -> None:
@@ -228,10 +228,10 @@ class CatalogueTests(unittest.TestCase):
         self.file(0, "m_Zed_" + "x" * 38 + ".msh.aya")
         last = self.browse(0, 2, 1)
         self.assertEqual((last["page"], last["pages"], last["visible"]), (2, 2, 2))
-        self.assertEqual(last["name"], "Zed " + "x" * 30)
-        self.assertIn("Zed " + "x" * 38, last["detail"])
-        self.assertIn("Item 14 of 14 in Models.", last["detail"])
-        self.assertEqual(self.browse(0, 3, 1)["name"], "Flight 01")
+        self.assertEqual(last["name"], ("Models: Zed X" + "x" * 37)[:34])
+        self.assertIn("Zed X" + "x" * 37, last["detail"])
+        self.assertIn("Models, item 14 of 14.", last["detail"])
+        self.assertEqual(self.browse(0, 3, 1)["name"], "Models: Flight 01")
         self.assertEqual(self.browse(0, 2, 2)["detail"], "")
 
     def test_excluded_sound_banks_are_not_opened(self) -> None:

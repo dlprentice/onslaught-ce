@@ -1595,15 +1595,14 @@ public:
 		const int row = mLists.At(mPage)->mSelected;
 		if (row >= 0 && row < CE_CATALOGUE_SLOTS) PortCeCatalogueSelect(unsigned(row));
 	}
-	// The sound list box for the collection being browsed, on its selected item (or its first).
-	void OpenCatalogueSounds()
+	// The list box for the collection being browsed, on its selected item (or its first).
+	void OpenCatalogueList()
 	{
 		char title[40]; PortCeCatalogueGroupLabel(PortCeCatalogueCategory(), title, sizeof title);
 		PortCeCatalogueListTitle(title);
-		const int at = PortCeCatalogueSelectedIndex();
-		PortCeExtrasOpenPage(XP_SOUNDS, at >= 0 ? at : 0);
+		PortCeExtrasOpenPage(XP_CATALOGUE_LIST, PortCeCatalogueListRowOf(PortCeCatalogueSelectedIndex()));
 	}
-	// Find, chosen in a sound list: this page's Find page, and back to the list when it is done.
+	// Find, chosen in a catalogue list: this page's Find page, and back to the list when it is done.
 	void CatalogueFindFromList()
 	{
 		PortCeExtrasHide();
@@ -1611,17 +1610,12 @@ public:
 		mCatalogField->Set(PortCeCatalogueQuery());
 		OpenPage(CEP_CATALOGUE_FIND); LT.SetKeytrap(CatalogueTrap()); mPageOpened = true;
 	}
+	// Find is done: back to the list it came from, on the selected item.
 	void CatalogueResult()
 	{
-		if (PortCeCatalogueBrowsingSounds())
-		{
-			CatalogueTextEnd();
-			mPage = CEP_CATALOGUE;
-			OpenCatalogueSounds();
-			return;
-		}
-		CatalogueTextEnd(); BindCatalogueItems(); OpenPage(CEP_CATALOGUE_ITEMS);
-		mLists.At(mPage)->mSelected = PortCeCatalogueVisible() ? int(PortCeCatalogueSelectedSlot()) : CCeCatalogueRow::kFindRow;
+		CatalogueTextEnd();
+		mPage = CEP_CATALOGUE;
+		OpenCatalogueList();
 	}
 	void CatalogueKeys(WORD key, KeyEventType event)
 	{
@@ -1882,22 +1876,13 @@ public:
 			const int category = mCatalogueGroupChosen;
 			if (!PortCeCatalogueCount(category))
 				ShowMessage(category == 2 ? "No sound effects are loaded in this session." : category > 2 ? "No spoken lines were found in this language's folder." : (category ? "No textures were found in your game folder." : "No models were found in your game folder."));
-			else if (category >= 2)
-			{
-				// Sound effects and every language's speech are a list box (ce_catalogue_list.cpp): whole lines, scrolled, the
-				// playing row marked. Its Back returns here, to the groups.
-				PortCeCatalogueBrowse(category);
-				OpenCatalogueSounds();
-				mPageOpened = true;
-			}
 			else
 			{
+				// Every group is a list box (ce_catalogue_list.cpp): whole names, scrolled, Select opening the row's preview or
+				// details as before. Its Back returns here, to the groups.
 				PortCeCatalogueBrowse(category);
-				char title[40]; PortCeCatalogueGroupLabel(category, title, sizeof title);
-				Widen(kCeTitles[CEP_CATALOGUE_ITEMS], 24, title);
-				BindCatalogueItems();
-				OpenPage(CEP_CATALOGUE_ITEMS);
-				mLists.At(mPage)->mSelected = PortCeCatalogueVisible() ? int(PortCeCatalogueSelectedSlot()) : CCeCatalogueRow::kFindRow;
+				OpenCatalogueList();
+				mPageOpened = true;
 			}
 			break;
 		}
@@ -2178,6 +2163,11 @@ static CFEPCe	sCePage;
 void	PortCeCatalogueListDetails(const char *text)
 {
 	ShowMessage(text);
+}
+// A texture's details with its picture: the box placed low, as the items page placed it, so the picture has room above.
+void	PortCeCatalogueListPicture(const char *text)
+{
+	ShowMessage(text, 329.f);
 }
 void	PortCeCatalogueListFind()
 {

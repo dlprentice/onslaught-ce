@@ -16,6 +16,24 @@ ROOT = Path(__file__).resolve().parents[2]
 GAME = ROOT / "port/game"
 RULES = GAME / "ce_museum_label_rules.h"
 DRIVER = ROOT / "port/tools/tests/ce_museum_label_driver.cpp"
+# The production label code and the visit's place tracking, run frame by frame against a faked game boundary.
+LABEL = GAME / "ce_museum_label.cpp"
+PLACES = GAME / "ce_museum_visit_places.h"
+VISIT_ENGINE = GAME / "ce_museum_visit_engine.cpp"
+VISIT_DRIVER = ROOT / "port/tools/tests/ce_museum_label_visit_driver.cpp"
+FAKE_HEADERS = ("common.h", "game.h", "player.h", "BattleEngine.h", "ltshell.h", "Hud.h", "renderinfo.h", "Texture.h", "DXEngine.h")
+# Mutants in the behaviour (the label code and the place tracking the visit engine runs), each with the frame check that kills it.
+BEHAVIOUR_MUTANTS = (
+    ("signs-never-armed", PLACES, "\tPortCeMuseumLabelsSigns(true);\n", "", "arriving shows no card"),
+    ("signs-call-ignored", LABEL, "\tgSigns = signs;", "\t(void)signs;", "arriving shows no card"),
+    ("card-rule-not-applied", LABEL, "CeMuseumCardLabel(gSigns, ", "CeMuseumCardLabel(false, ", "arriving shows no card"),
+    ("leave-never-told", PLACES, "\tPortCeMuseumLabelsPlace(places->place >= 0);\n", "", "walking out of the entrance closes"),
+    ("place-call-ignored", LABEL, "{\n\tgInPlace = inPlace;", "{\n\t(void)inPlace;", "walking out of the entrance closes"),
+    ("place-not-applied", LABEL, "CeMuseumTitleElsewhere(cinema, gWayfinding, gInPlace)", "CeMuseumTitleElsewhere(cinema, gWayfinding, true)", "walking out of the entrance closes"),
+    ("title-not-latched", LABEL, "\t\tif (elsewhere)\n\t\t\tgHasTitle = false;", "", "it stays shut until the hall names"),
+    ("cinema-not-applied", LABEL, "CeMuseumTitleElsewhere(cinema, gWayfinding, gInPlace)", "CeMuseumTitleElsewhere(false, gWayfinding, gInPlace)", "in the screening room the title closes"),
+    ("edge-without-keep", PLACES, "previous == 0 ? kCeMuseumArrivalKeep : 0.0f", "0.0f", "a step past the edge keeps"),
+)
 
 # Words and characters a player never reads (the guide's W3 and T2). "test" is matched as a word.
 FORBIDDEN = ("ce.ini", "readme", "experimental", "prototype", "carrier", "best effort", "construction", "bounded", "identity", "signaling",
@@ -143,6 +161,12 @@ def main():
             ("trailing-space-kept", "while (n > 0 && out[n - 1] == ' ')", "while (false)"),
             ("scale-note-wrong-word", "kWords[factor - 2]", "kWords[factor < 8 ? factor - 1 : 0]"),
             ("scale-note-cut-not-dropped", "\t\t\t\tout[0] = 0;\n\t\t\t\treturn false;", "\t\t\t\tout[n] = 0;\n\t\t\t\treturn false;"),
+            ("card-from-view-in-a-hall-of-signs", "return signs ? -1 : nearest;", "return nearest;"),
+            ("card-ignores-the-sign", "\tif (sign >= 0)\n\t\treturn sign;\n\treturn signs", "\treturn signs"),
+            ("title-rides-into-the-cinema", "if (elsewhere || now < since", "if (now < since"),
+            ("title-never-times-out", "|| now - since >= shown)\n\t\treturn 0.0f;\n\treturn CeMuseumCapsuleOpen", ")\n\t\treturn 0.0f;\n\treturn CeMuseumCapsuleOpen"),
+            ("title-outlives-its-place", "return cinema || (wayfinding && !inPlace);", "return cinema;"),
+            ("every-title-a-place", "return cinema || (wayfinding && !inPlace);", "return cinema || !inPlace;"),
             ("no-growth", "float open = age >= grow ? 1.0f : static_cast<float>(age) / static_cast<float>(grow);", "float open = 1.0f;"),
         ]
         text = RULES.read_text()
@@ -160,14 +184,61 @@ def main():
             caught, _ = run([str(mutant / "driver")], 2)
             check("mutant " + label + " is caught", caught)
 
-    # The second line of a label is the notes' grey: the same colour the front end's own grey lines use (a label whose grey drifts reads white or dim beside them).
+    # The label code and the place tracking, frame by frame (the behaviour, not only the rules).
+    with tempfile.TemporaryDirectory() as folder:
+        folder = Path(folder)
+
+        def visit_frames(name, label_text, places_text):
+            work = folder / name
+            work.mkdir()
+            (work / LABEL.name).write_text(label_text)
+            (work / PLACES.name).write_text(places_text)
+            for header in FAKE_HEADERS:
+                (work / header).write_text('#include "ce_museum_label_fake.h"\n')
+            (work / "ce_museum_cinema_panel.inc").write_text("namespace {\nvoid CinemaPanelDraw() {}\n}\n")
+            built, out = run(["g++", "-std=c++17", "-O1", "-g", "-Wall", "-Wextra", "-Werror", "-DCE_VERSION=1", "-I" + str(work),
+                              "-I" + str(ROOT / "port/tools/tests"), "-I" + str(GAME), "-I" + str(ROOT / "port/include"),
+                              str(VISIT_DRIVER), str(work / LABEL.name), "-o", str(work / "driver")])
+            if not built:
+                return None, out
+            result = subprocess.run([str(work / "driver")], cwd=ROOT, capture_output=True, text=True)
+            return result.returncode, result.stdout + result.stderr
+
+        label_text, places_text = LABEL.read_text(), PLACES.read_text()
+        code, out = visit_frames("good", label_text, places_text)
+        check("the label code and place tracking build against the fake boundary", code is not None, out)
+        check("arrival, leaving a place, its edge and the cinema draw as they should", code == 0, out)
+        for name, path, old, new, killer in BEHAVIOUR_MUTANTS:
+            text = path.read_text()
+            if text.count(old) != 1:
+                check("behaviour mutant " + name + " applies", False, "source text not found once in " + path.name + ": " + old)
+                continue
+            mutated = text.replace(old, new)
+            code, out = visit_frames(name, mutated if path == LABEL else label_text, mutated if path == PLACES else places_text)
+            check("behaviour mutant " + name + " is killed by '" + killer + "'", code == 2 and ("FAIL: " + killer) in out, out)
+    # The visit engine runs the place tracking: armed when the hall of displays is built, stepped once a visit frame, dropped at the end.
+    engine = VISIT_ENGINE.read_text()
+    frame = engine[engine.find("extern \"C\" void PortCeMuseumVisitFrame(void)"):engine.find("bool CeMuseumVisit::GenerateInstalled()")]
+    check("the visit frame steps the place tracking once", frame.count("CeMuseumVisitPlacesStep(&gPlaces, here.X, here.Y);") == 1)
+    check("the built hall arms the place tracking", engine.count("CeMuseumVisitPlacesArm(&gPlaces, exhibition);") == 1)
+    check("the visit's end and a new hall drop it", engine.count("CeMuseumVisitPlacesDrop(&gPlaces);") == 2)
+
+    # The second line of a label sits on translucent HUD radio capsules under MODULATE2X / StageColour doubling:
+    # brighter than the front end's dim 0xff545454 grey, and strictly below 0x80 per channel so doubling stays a crisp light grey instead of white.
     label_grey = re.search(r"\bkGrey\s*=\s*(0x[0-9a-fA-F]+)", (GAME / "ce_museum_label.cpp").read_text())
     frontend_grey = re.search(r"static const DWORD\s+kGrey\s*=\s*(0x[0-9a-fA-F]+)", (GAME / "ce_frontend.cpp").read_text())
     check("the label's grey and the front end's grey were found", bool(label_grey and frontend_grey))
     if label_grey and frontend_grey:
-        check("the label's second line is the front end's grey (the text stage doubles it)", int(label_grey.group(1), 16) == int(frontend_grey.group(1), 16),
-              "label %s, front end %s" % (label_grey.group(1), frontend_grey.group(1)))
-        check("the grey check bites: a label drawn in the old grey fails it", int("0xffa8a8a8", 16) != int(frontend_grey.group(1), 16))
+        grey = int(label_grey.group(1), 16)
+        fe_grey = int(frontend_grey.group(1), 16)
+        ch = (grey >> 16) & 0xff
+        fe_ch = (fe_grey >> 16) & 0xff
+        neutral = (grey >> 24) == 0xff and ch == ((grey >> 8) & 0xff) == (grey & 0xff)
+        check("the label's second line is a crisp neutral light grey under doubling (brighter than front end grey, below 0x80 saturation)",
+              neutral and fe_ch < ch < 0x80,
+              "label %s (ch=%#x), front end %s (ch=%#x)" % (label_grey.group(1), ch, frontend_grey.group(1), fe_ch))
+        check("the grey check bites: both dim front-end grey and saturating 0xffa8a8a8 fail it",
+              not (fe_ch < fe_ch < 0x80) and not (fe_ch < 0xa8 < 0x80))
 
     strings = player_strings()
     check("the museum's player strings were found", len(strings) >= 10, "found %d" % len(strings))

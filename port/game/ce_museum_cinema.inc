@@ -20,22 +20,69 @@ struct State {
     bool viewValid;
     unsigned viewPresent;
     float eye[3], aim[3];
+    bool padActive, mouseSeen, mouseSeqSeen;
+    int lastMouseX, lastMouseY;
+    unsigned lastMouseSeq;
     State() : film(0), texture(0), bitmapW(0), bitmapH(0), frame(0),
         phase(Idle), inRoom(false), atConsole(false), captured(false),
         inDoorway(false), exhausted(false), fireHeld(false),
         catalogueLoaded(false), firstPlayable(true), playing(-1), controls(), output(),
         hit(CinemaConsole::NoHit()),
-        viewValid(false), viewPresent(0), eye{0,0,0}, aim{0,0,0} { CinemaControls::Reset(&controls); }
+        viewValid(false), viewPresent(0), eye{0,0,0}, aim{0,0,0},
+        padActive(false), mouseSeen(false), mouseSeqSeen(false),
+        lastMouseX(0), lastMouseY(0), lastMouseSeq(0) { CinemaControls::Reset(&controls); }
 } s;
 const DWORD kFloorDark=0xff39444b,kCarpet=0xff4b3539,kUpholstery=0xff913f43,kSeatCap=0xffb16961;
 const DWORD kBronze=0xffb99262,kStone=0xff69767a,kProscenium=0xff1c272d,kIdleScreen=0xff91a3a3;
 }
 
 extern "C" int PortCeTutorialPrintableKey(int key,char *out,int size);
+extern "C" int PortMouseHeldNow(unsigned button);
+extern "C" unsigned PortMouseActivitySeq(void);
+
+// Film sound and playback (ce_museum_film.h holds the behaviour: the level, the crossfade with the music, the frame
+// order and the hold while paused; this file forwards the game's Bink calls to it). The music duck is applied by patch
+// 0258 (ce_museum_music_duck.h). Leaving the Museum drops the duck at once.
+namespace Cinema {
+CeMuseumMusicDuck::State duck = CeMuseumMusicDuck::Off();
+CeMuseumFilm::Film film = CeMuseumFilm::None();
+}
+extern "C" int PortBinkHasSound(HBINK bink) __attribute__((weak));	// port/bink: whether the film's track was loaded
+extern "C" int PortBinkPause(HBINK bink, int pause) __attribute__((weak));	// port/bink: hold a film, sound and clock
+double CinemaClock() {
+    LARGE_INTEGER now, rate;
+    QueryPerformanceCounter(&now); QueryPerformanceFrequency(&rate);
+    return rate.QuadPart ? double(now.QuadPart) / double(rate.QuadPart) : 0.0;
+}
+extern "C" long PortCeMuseumMusicDuck(void) {
+    if (!PortCeMuseumVisitActive()) { Cinema::duck = CeMuseumMusicDuck::Off(); return 0; }
+    const double now = CinemaClock();
+    CeMuseumMusicDuck::Settle(&Cinema::duck, now);
+    return CeMuseumMusicDuck::Hundredths(CeMuseumMusicDuck::Gain(Cinema::duck, now));
+}
+CeMuseumFilm::Calls CinemaFilmCalls() {
+    CeMuseumFilm::Calls c = {};
+    c.user = Cinema::s.film;
+    c.setVolume = [](void *b, long v) { BinkSetVolume(static_cast<HBINK>(b), 0, (S32)v); };
+    c.doFrame = [](void *b) { BinkDoFrame(static_cast<HBINK>(b)); };
+    c.nextFrame = [](void *b) { BinkNextFrame(static_cast<HBINK>(b)); };
+    c.wait = [](void *b) { return (int)BinkWait(static_cast<HBINK>(b)); };
+    c.pause = nullptr;
+    if (PortBinkPause) c.pause = [](void *b, int hold) { return PortBinkPause(static_cast<HBINK>(b), hold); };
+    c.frameNum = [](void *b) { return (unsigned)static_cast<HBINK>(b)->FrameNum; };
+    c.frames = [](void *b) { return (unsigned)static_cast<HBINK>(b)->Frames; };
+    return c;
+}
+void CinemaFilmFade() {
+    if (Cinema::s.film) CeMuseumFilm::Fade(&Cinema::film, CinemaFilmCalls(), CinemaClock());
+}
 
 void CinemaClose(Cinema::Phase next) {
     using namespace Cinema;
-    if (s.film) { BinkClose(s.film);s.film=0; }
+    if (s.film) {
+        BinkClose(s.film);s.film=0;
+        CeMuseumFilm::Closed(&film, CinemaClock(), &duck);
+    }
     if (s.texture) { s.texture->Release();s.texture=0; }
     s.frame=0;s.bitmapW=s.bitmapH=0;s.exhausted=false;s.phase=next;
     s.playing = -1;
@@ -43,6 +90,8 @@ void CinemaClose(Cinema::Phase next) {
 void CinemaReset() {
     const CinemaControls::State retained = Cinema::s.controls;
     CinemaClose(Cinema::Idle);
+    Cinema::duck = CeMuseumMusicDuck::Off();
+    Cinema::film = CeMuseumFilm::None();
     Cinema::s = Cinema::State();
     Cinema::s.controls = retained;
 }
@@ -74,17 +123,39 @@ void CinemaShell(bool planned, float floor, float height) {
     }
     // The screen wall needs 8.9 m; a roofed theater rises at least that far everywhere.
     const float roof = planned && height > 0 ? (height > 8.9f ? height : 8.9f) : 0;
+    // The theater's walls, roof, screen frame and projector post have materials of
+    // their own, so the house lights dim them and not the hall's.
+    g.current = kMatCinemaWall;
     box(kRight,(kFront+kBack)*.5f,.33f,(kBack-kFront)*.5f,0,roof ? roof : 6.8f,kWall,kWallCap);
     box((kLeft+kRight)*.5f,kFront,(kRight-kLeft)*.5f,.32f,0,roof ? roof : 7.1f,kWall,kWallCap);
+    g.current = kMatAuto;
     box((kLeft+kRight)*.5f,kBack,(kRight-kLeft)*.5f,.32f,0,roof ? roof : 8.9f,kProscenium,kBronze);
     if (roof) {
         // Above the hall's roof, the shared wall continues up to the theater's roof.
         const float wall = CeMuseumExhibition::kWallHalf;
+        g.current = kMatCinemaWall;
         if (roof > height) box(kLeft,(kFront+kBack)*.5f,wall,(kBack-kFront)*.5f+.32f,height,roof-height,kWall,kWallCap);
-        Ceiling(floor,kLeft+wall,kFront-.32f,kRight+.33f,kBack+.32f,roof);
+        g.current = kMatAuto;
+        Ceiling(floor,kLeft+wall,kFront-.32f,kRight+.33f,kBack+.32f,roof,kMatCinemaCeiling);
     }
+    // The screen's frame is the hall's dressed stone, darker, not a swirled bronze.
+    g.current = kMatScreenFrame;
     box(kScreenX,kScreenY+.20f,kScreenHalfW+.42f,.17f,-(kScreenZ+kScreenHalfH)-.32f,2*kScreenHalfH+.64f,kBronze,kStone);
-    box(kScreenX,kScreenY+.10f,kScreenHalfW,.10f,-(kScreenZ+kScreenHalfH),2*kScreenHalfH,kIdleScreen,kIdleScreen);
+    // A stopped screen is dark glass: near-black, with the faintest sheen falling from
+    // its upper left. A film is drawn just in front of it.
+    g.current = kMatScreenIdle;
+    box(kScreenX,kScreenY+.10f,kScreenHalfW,.10f,-(kScreenZ+kScreenHalfH),2*kScreenHalfH,0xff0e1016,0xff0e1016);
+    {
+        const CeHallPoint centre=Offset(o,kScreenX,kScreenY-.006f);
+        float ground=0;
+        if (g.ground(centre.x,centre.y,&ground)) {
+            const float bottom=ground+(kScreenZ+kScreenHalfH),top=bottom-2*kScreenHalfH;
+            const CeHallPoint left=Offset(centre,-kScreenHalfW,0),right=Offset(centre,kScreenHalfW,0);
+            Quad(Point(left,bottom,0xff0f1218),Point(right,bottom,0xff0c0e13),
+                 Point(right,top,0xff141820),Point(left,top,0xff1e242e));
+        }
+    }
+    g.current = kMatAuto;
     // The seats and tiers rise away from the screen. The center aisle is level,
     // continuous and walkable; occupied seat rectangles share the visitor boundary.
     for(unsigned row=0;row<3;++row) {
@@ -98,8 +169,16 @@ void CinemaShell(bool planned, float floor, float height) {
             }
         }
     }
+    // The projector stands on the piers' stone: a base course and floor line, the
+    // post, and a lighter cap.
+    g.current = kMatCinemaBase;
+    box(kConsoleX,kConsoleY,.45f,.35f,0,.035f,kSlate,kSlate);
+    box(kConsoleX,kConsoleY,.43f,.33f,.035f,.30f,kSlate,kSlate);
+    g.current = kMatCinemaPost;
     box(kConsoleX,kConsoleY,.38f,.28f,0,1.15f,kSlate,kBronze);
+    g.current = kMatCinemaCap;
     box(kConsoleX,kConsoleY,.47f,.34f,1.15f,.22f,kBronze,kLight);
+    g.current = kMatAuto;
     // Small aisle lights point to the screen, even when the projector is off.
     for(unsigned i=0;i<3;++i)
         box(kWallX+5.9f,3.0f+2.2f*i,.16f,.36f,.02f,.10f,kLight,kLight);
@@ -146,8 +225,10 @@ bool CinemaStartFilm(void *, const CeMuseumCinemaCatalogue::Entry &entry) {
     if (!CinemaFilmPath(entry.stem, path, sizeof(path))) return false;
     s.film = BinkOpen(path, BINKPRELOADALL);
     if (!s.film) return false;
-    BinkSetVolume(s.film, 0, 0); // The in-world screening room is silent.
+    BinkSetVolume(s.film, 0, 0);	// silent until CeMuseumFilm::Start
     if (!s.film->Frames || !s.film->Width || !s.film->Height || s.film->Width>2048 || s.film->Height>2048 || !CinemaProjectionTarget()) { CinemaClose(Missing); return false; }
+    const bool track = PortBinkHasSound ? PortBinkHasSound(s.film) != 0 : true;
+    CeMuseumFilm::Start(&film, CinemaFilmCalls(), CAREER.GetSoundVolume(), track, CinemaClock(), &duck);
     s.phase = Playing;
     return true;
 }
@@ -249,6 +330,41 @@ void CinemaConsoleGeometry(IDirect3DDevice9 *dev) {
         dev->DrawPrimitiveUP(D3DPT_TRIANGLELIST, used / 3, vertices, sizeof(Vertex));
     }
 }
+bool CinemaPadConnected(int pad, CeTutorialPadInfo *info) {
+    if (pad < 0 || pad >= LT.mJoypads || pad >= MAX_JOYPADS || !LT.mUnknown33474[pad]) return false;
+    CeTutorialPadInfo local = {};
+    if (!PortCeTutorialPadInfo(LT.pJoystick[pad], &local)) return false;
+    if (info) *info = local;
+    return true;
+}
+void CinemaTrackDevice() {
+    Cinema::State &s = Cinema::s;
+    bool anyPad = false, padInput = false;
+    for (int pad = 0; pad < LT.mJoypads && pad < MAX_JOYPADS; ++pad) {
+        if (!CinemaPadConnected(pad, 0)) continue;
+        anyPad = true;
+        const DIJOYSTATE2 *j = LT.mJoyState[pad];
+        if (!j) continue;
+        for (int b = 0; b < 32; ++b)
+            if (j->rgbButtons[b] & 0x80) { padInput = true; break; }
+        if ((j->rgdwPOV[0] & 0xFFFFu) != 0xFFFFu) padInput = true;
+        if (std::abs(j->lX) > 250 || std::abs(j->lY) > 250 || std::abs(j->lZ) > 250 || std::abs(j->lRz) > 250)
+            padInput = true;
+    }
+    bool kbmInput = LT.mMouseButtons != 0 || PortMouseHeldNow(0) == 1 || PortMouseHeldNow(1) == 1 || PortMouseHeldNow(2) == 1;
+    if (!kbmInput) {
+        for (int k = 0; k < 256; ++k)
+            if (LT.KeyDown[k] || LT.KeyWasDown[k]) { kbmInput = true; break; }
+    }
+    if (s.mouseSeen && (LT.mMouseX != s.lastMouseX || LT.mMouseY != s.lastMouseY))
+        kbmInput = true;
+    s.lastMouseX = LT.mMouseX; s.lastMouseY = LT.mMouseY; s.mouseSeen = true;
+    const unsigned mouseSeq = PortMouseActivitySeq();
+    if (s.mouseSeqSeen && mouseSeq != s.lastMouseSeq)
+        kbmInput = true;
+    s.lastMouseSeq = mouseSeq; s.mouseSeqSeen = true;
+    s.padActive = CeCinemaRoom::UpdatePadActive(s.padActive, anyPad, padInput, kbmInput);
+}
 void CinemaVisitor(float x,float y) {
     using namespace Cinema;using namespace CeCinemaRoom;
     const float side=x-CeMuseumWorld::kEntranceX,depth=y-CeMuseumWorld::kEntranceY;
@@ -256,32 +372,75 @@ void CinemaVisitor(float x,float y) {
     if(s.inRoom && !room) CinemaClose(Idle);
     s.inRoom=room;s.atConsole = false;
     s.inDoorway=PortCeMuseumAuthoredMap() && Range(side,kDoorX-3.0f,kDoorX+.7f) && Range(depth,kDoorY-3.5f,kDoorY+3.5f);
+    CinemaTrackDevice();
     CinemaStep();
+    CinemaFilmFade();
 }
 bool CinemaAction(bool release, float value) {
     Cinema::s.fireHeld = !release && value > 0.0f;
     return CinemaStep();
 }
+bool CinemaFormatKbmInput(const SControlInput &input, char *out, unsigned cap) {
+    if (input.mType == MOUSE_BUTTON_ON || input.mType == MOUSE_BUTTON_ONCE || input.mType == MOUSE_BUTTON_RELEASE) {
+        const char *m[] = {"Left mouse","Right mouse","Middle mouse","Wheel up","Wheel down"};
+        if (input.mKey >= 0 && input.mKey < 5) { std::snprintf(out, cap, "%s", m[input.mKey]); return true; }
+    }
+    if (input.mType == KEY_ON || input.mType == KEY_ONCE || input.mType == KEY_RELEASE) {
+        const int special[] = {DIK_TAB,DIK_RETURN,DIK_SPACE,DIK_LEFT,DIK_RIGHT,DIK_UP,DIK_DOWN,DIK_LSHIFT,DIK_RSHIFT,DIK_LCONTROL,DIK_RCONTROL,DIK_LMENU,DIK_RMENU};
+        const char *names[] = {"Tab","Enter","Space","Left arrow","Right arrow","Up arrow","Down arrow","Left Shift","Right Shift","Left Ctrl","Right Ctrl","Left Alt","Right Alt"};
+        for (unsigned k = 0; k < sizeof(special)/sizeof(special[0]); ++k)
+            if (input.mKey == special[k]) { std::snprintf(out, cap, "%s", names[k]); return true; }
+        if (PortCeTutorialPrintableKey(input.mKey, out, cap)) return true;
+        std::snprintf(out, cap, "Key %d", int(input.mKey)); return true;
+    }
+    return false;
+}
+bool CinemaFormatPadInput(const SControlInput &input, char *out, unsigned cap) {
+    if (input.mType != BUTTON_ON && input.mType != BUTTON_ONCE && input.mType != BUTTON_RELEASE && input.mType != BUTTON_REPEAT)
+        return false;
+    CeTutorialPadInfo info = {};
+    if (!CinemaPadConnected(input.mPad, &info)) return false;
+    if (info.kind == CE_TUTORIAL_GAMEPAD) {
+        if (input.mKey == 17) { std::snprintf(out, cap, "Right trigger"); return true; }
+        if (input.mKey == 16) { std::snprintf(out, cap, "Left trigger"); return true; }
+    } else if (info.kind == CE_TUTORIAL_STICK && input.mKey == 3) {
+        std::snprintf(out, cap, "Stick trigger"); return true;
+    }
+    std::snprintf(out, cap, "Pad button %d", int(input.mKey) + 1);
+    return true;
+}
 void CinemaFireName(char *out,unsigned cap) {
     if(!out||!cap)return;
     SControlBinding *binding=FindControlBinding(BUTTON_MECH_FIRE_GUN_POD);
-    if(binding) for(unsigned i=0;i<2;++i) {
-        const SControlInput &input=binding->mInput[i];
-        if(input.mPad<0)continue;
-        if(input.mType==MOUSE_BUTTON_ON||input.mType==MOUSE_BUTTON_ONCE||input.mType==MOUSE_BUTTON_RELEASE) {
-            const char *m[]={"Left mouse","Right mouse","Middle mouse","Wheel up","Wheel down"};
-            if(input.mKey>=0&&input.mKey<5) {std::snprintf(out,cap,"%s",m[input.mKey]);return;}
+    CeCinemaRoom::InputDevice slots[2] = {CeCinemaRoom::InputDevice::None, CeCinemaRoom::InputDevice::None};
+    if (binding) {
+        for (unsigned i = 0; i < 2; ++i) {
+            const SControlInput &input = binding->mInput[i];
+            if (input.mPad < 0) continue;
+            if (input.mType == MOUSE_BUTTON_ON || input.mType == MOUSE_BUTTON_ONCE || input.mType == MOUSE_BUTTON_RELEASE ||
+                input.mType == KEY_ON || input.mType == KEY_ONCE || input.mType == KEY_RELEASE)
+                slots[i] = CeCinemaRoom::InputDevice::Kbm;
+            else if ((input.mType == BUTTON_ON || input.mType == BUTTON_ONCE || input.mType == BUTTON_RELEASE || input.mType == BUTTON_REPEAT) &&
+                     CinemaPadConnected(input.mPad, 0))
+                slots[i] = CeCinemaRoom::InputDevice::Pad;
         }
-        if(input.mType==KEY_ON||input.mType==KEY_ONCE||input.mType==KEY_RELEASE) {
-            const int special[]={DIK_TAB,DIK_RETURN,DIK_SPACE,DIK_LEFT,DIK_RIGHT,DIK_UP,DIK_DOWN,DIK_LSHIFT,DIK_RSHIFT,DIK_LCONTROL,DIK_RCONTROL,DIK_LMENU,DIK_RMENU};
-            const char *names[]={"Tab","Enter","Space","Left arrow","Right arrow","Up arrow","Down arrow","Left Shift","Right Shift","Left Ctrl","Right Ctrl","Left Alt","Right Alt"};
-            for(unsigned k=0;k<sizeof(special)/sizeof(special[0]);++k) if(input.mKey==special[k]) {std::snprintf(out,cap,"%s",names[k]);return;}
-            if(PortCeTutorialPrintableKey(input.mKey,out,cap))return;
-            std::snprintf(out,cap,"Key %d",int(input.mKey));return;
+    }
+    if (Cinema::s.padActive) {
+        const int picked = CeCinemaRoom::PickFireSlot(slots, true);
+        if (picked >= 0 && slots[picked] == CeCinemaRoom::InputDevice::Pad &&
+            CinemaFormatPadInput(binding->mInput[picked], out, cap)) return;
+        for (int pad = 0; pad < LT.mJoypads && pad < MAX_JOYPADS; ++pad) {
+            CeTutorialPadInfo info = {};
+            if (!CinemaPadConnected(pad, &info)) continue;
+            SControlInput extra[2];
+            const int count = ::PortCeGamepadInputs(BUTTON_MECH_FIRE_GUN_POD, pad, extra);
+            for (int e = 0; e < count; ++e)
+                if (CinemaFormatPadInput(extra[e], out, cap)) return;
         }
-        if(input.mType==BUTTON_ON||input.mType==BUTTON_ONCE||input.mType==BUTTON_RELEASE||input.mType==BUTTON_REPEAT) {
-            std::snprintf(out,cap,"Pad button %d",int(input.mKey)+1);return;
-        }
+        if (picked >= 0 && CinemaFormatKbmInput(binding->mInput[picked], out, cap)) return;
+    } else {
+        const int picked = CeCinemaRoom::PickFireSlot(slots, false);
+        if (picked >= 0 && CinemaFormatKbmInput(binding->mInput[picked], out, cap)) return;
     }
     std::snprintf(out,cap,"Fire");
 }
@@ -322,7 +481,7 @@ bool CinemaCue(char *title, unsigned titleCap, char *line, unsigned lineCap) {
     }
     if (s.inDoorway) {
         std::snprintf(title, titleCap, "Screening room");
-        std::snprintf(line, lineCap, "Through this doorway: the projector chooses a film.");
+        std::snprintf(line, lineCap, "Through this doorway: use the projector to watch game films.");
         return true;
     }
     return false;
@@ -330,15 +489,16 @@ bool CinemaCue(char *title, unsigned titleCap, char *line, unsigned lineCap) {
 void CinemaScreen(IDirect3DDevice9 *dev) {
     using namespace Cinema;using namespace CeCinemaRoom;
     if(!s.inRoom || s.phase!=Playing || !s.texture || !s.film)return;
-    // Keep the last projected image on the wall while the normal pause menu is open.
-    if(!GAME.IsPaused() && !BinkWait(s.film)) {
-        if(s.exhausted) { CinemaClose(Finished);return; }
-        BinkDoFrame(s.film);
+    // The last projected image stays on the wall while the normal pause menu is open; the film is held with it.
+    const CeMuseumFilm::Calls calls=CinemaFilmCalls();
+    const CeMuseumFilm::Step step=CeMuseumFilm::Tick(&film,calls,GAME.IsPaused(),CinemaClock());
+    if(step==CeMuseumFilm::kEnded) { CinemaClose(Finished);return; }
+    if(step==CeMuseumFilm::kShow) {
         D3DLOCKED_RECT image={};
         if(FAILED(s.texture->LockRect(0,&image,0,0))||!image.pBits) {CinemaClose(Missing);return;}
         BinkCopyToBuffer(s.film,image.pBits,image.Pitch,s.bitmapH,0,0,BINKSURFACE32A|BINKCOPYNOSCALING|BINKCOPYALL);
-        s.texture->UnlockRect(0);s.frame=s.film->FrameNum;
-        s.exhausted=s.frame>=s.film->Frames;BinkNextFrame(s.film);
+        s.texture->UnlockRect(0);
+        CeMuseumFilm::Shown(&film,calls);s.frame=film.shown;
     }
     if(!s.frame)return;
     const float aspect=float(s.bitmapW)/s.bitmapH,box=kScreenHalfW/kScreenHalfH;

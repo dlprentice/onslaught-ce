@@ -103,7 +103,7 @@ class CeTankCamera;
 static CeTankCamera *gCamera=nullptr;
 static CUnit *gUnit=nullptr, *gHeld=nullptr;
 static bool gDriving=false, gAllowed=true;
-static bool gOnFoot=false, gFootFirstPerson=false;
+static bool gFootFirstPerson=false;
 static const CCamera *gFootRenderedView=nullptr;
 static int gLevel=27;
 struct Game {

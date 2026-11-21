@@ -876,12 +876,12 @@ shot 09_extras_music_player
         },
         {
             "name": "03_asset_catalogue",
-            "description": "Asset Catalogue: Models list, Textures DDS preview, and Speech list",
+            "description": "Asset Catalogue: Models 3D preview, Textures DDS preview, and Speech list",
             "clock": "fixed",
             "ce_ini": {"catalogue": "1"},
             "shots_meta": {
-                "10_catalogue_models": "Asset Catalogue > Models list",
-                "11_catalogue_texture_dds_preview": "Asset Catalogue > Textures DDS preview box",
+                "10_catalogue_models": "Asset Catalogue > Models list and 3D preview",
+                "11_catalogue_texture_dds_preview": "Asset Catalogue > Textures DDS preview pane",
                 "12_catalogue_speech": "Asset Catalogue > Speech: English list",
             },
             "steps": """
@@ -891,21 +891,17 @@ wait page fe:main within 900
 go "Onslaught CE" > Catalogue
 wait page ce:catalogue within 600
 select row Models
-wait page ce:catalogue-items within 600
+wait page xp:sounds within 600
 wait ticks 45
 dump catalogue_models
 shot 10_catalogue_models
 back
 wait page ce:catalogue within 600
 select row Textures
-wait page ce:catalogue-items within 600
-select row #1
-wait page box within 600
+wait page xp:sounds within 600
 wait ticks 45
 dump catalogue_texture_preview
 shot 11_catalogue_texture_dds_preview
-select row Continue
-wait page ce:catalogue-items within 600
 back
 wait page ce:catalogue within 600
 select row "Speech: English"

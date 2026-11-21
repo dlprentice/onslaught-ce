@@ -343,24 +343,24 @@ class ListBoxTests(unittest.TestCase):
     def test_mutants_are_caught(self):
         source = (GAME / "ce_scroll_list.h").read_text()
         mutants = (
-            ("list->mCursor = (list->mCursor > list->mTop) ? list->mTop : list->mCursor - kCeListRows;",
-             "list->mCursor = list->mCursor - kCeListRows;", "a page up goes to the view's edge first"),
-            ("list->mCursor = (list->mCursor < foot) ? foot : list->mCursor + kCeListRows;",
-             "list->mCursor = list->mCursor + kCeListRows;", "a page down goes to the view's edge first"),
-            ("if (list->mTop + kCeListRows <= list->mCursor)", "if (list->mTop + kCeListRows < list->mCursor)", "the cursor never leaves the view"),
+            ("list->mCursor = (list->mCursor > list->mTop) ? list->mTop : list->mCursor - CeListRowsOf(list);",
+             "list->mCursor = list->mCursor - CeListRowsOf(list);", "a page up goes to the view's edge first"),
+            ("list->mCursor = (list->mCursor < foot) ? foot : list->mCursor + CeListRowsOf(list);",
+             "list->mCursor = list->mCursor + CeListRowsOf(list);", "a page down goes to the view's edge first"),
+            ("if (list->mTop + CeListRowsOf(list) <= list->mCursor)", "if (list->mTop + CeListRowsOf(list) < list->mCursor)", "the cursor never leaves the view"),
             ("if (list->mTop > list->mCursor)\n\t\tlist->mTop = list->mCursor;", "", "the view follows the cursor up"),
-            ("const int last = (list->mCount > kCeListRows) ? list->mCount - kCeListRows : 0;\n\tif (list->mTop > last)",
+            ("const int last = (list->mCount > CeListRowsOf(list)) ? list->mCount - CeListRowsOf(list) : 0;\n\tif (list->mTop > last)",
              "const int last = list->mCount;\n\tif (list->mTop > last)", "the view stops at the last page"),
             ("if (list->mCursor < top)\n\t\tlist->mCursor = top;", "", "the wheel keeps the cursor in view"),
-            ("const int row = int((y - kCeListTop) / kCeListPitch);", "const int row = int((y - kCeListTop) / (kCeListPitch + 1.f));", "a row is 24 high"),
+            ("const int row = int((y - CeListTopOf(list)) / kCeListPitch);", "const int row = int((y - CeListTopOf(list)) / (kCeListPitch + 1.f));", "a row is 24 high"),
             ("(list->mTop + row >= list->mCount)", "(list->mTop + row > list->mCount)", "no row below the last"),
-            ("return CeListBottom() - kCeListTop - 10.f;", "return CeListBottom() - kCeListTop - 4.f;", "the bar sits inside its track"),
+            ("return CeListBottom(list) - CeListTopOf(list) - 10.f;", "return CeListBottom(list) - CeListTopOf(list) - 4.f;", "the bar sits inside its track"),
             ("return (length < kCeListPitch) ? kCeListPitch : length;", "return length;", "the bar is never shorter than a row"),
-            ("*top += (CeListTrackLength() - length) * float(list->mTop) / float(last);", "*top += CeListTrackLength() * float(list->mTop) / float(last + kCeListRows);",
+            ("*top += (CeListTrackLength(list) - length) * float(list->mTop) / float(last);", "*top += CeListTrackLength(list) * float(list->mTop) / float(last + CeListRowsOf(list));",
              "the bar reaches the foot of its track with the last rows"),
-            ("const float share = (y - length * 0.5f - kCeListTop - 5.f) / travel;", "const float share = (y - kCeListTop - 5.f) / travel;", "the bar's middle is under the pointer"),
-            ("return kCeListTop + kCeListPitch * kCeListRows + 7.f;", "return kCeListTop + kCeListPitch * kCeListRows + 8.f;", "the box's foot"),
-            ("const int top = int(share * float(list->mCount - kCeListRows) + 0.5f);", "const int top = int(share * float(list->mCount - kCeListRows));", "the drag rounds to the nearest row"),
+            ("const float share = (y - length * 0.5f - CeListTopOf(list) - 5.f) / travel;", "const float share = (y - CeListTopOf(list) - 5.f) / travel;", "the bar's middle is under the pointer"),
+            ("return CeListTopOf(list) + kCeListPitch * CeListRowsOf(list) + 7.f;", "return CeListTopOf(list) + kCeListPitch * CeListRowsOf(list) + 8.f;", "the box's foot"),
+            ("const int top = int(share * float(list->mCount - CeListRowsOf(list)) + 0.5f);", "const int top = int(share * float(list->mCount - CeListRowsOf(list)));", "the drag rounds to the nearest row"),
         )
         for n, (old, new, what) in enumerate(mutants):
             self.assertEqual(source.count(old), 1, f"{what}: the text to change must occur once")

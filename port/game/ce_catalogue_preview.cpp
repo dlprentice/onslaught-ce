@@ -20,7 +20,6 @@
 
 namespace {
 IDirect3DTexture9* picture;
-IDirect3DStateBlock9* saved;
 unsigned sourceW, sourceH;
 struct Vertex { float x, y, z, rhw; float u, v; };
 
@@ -36,10 +35,6 @@ int Upload(const unsigned char* dds, size_t bytes, const CeAssetTextureHeader* h
         if (candidate) candidate->Release();
         return 0;
     }
-    if (FAILED(device->CreateStateBlock(D3DSBT_ALL, &saved)) || !saved) {
-        candidate->Release();
-        return 0;
-    }
     picture = candidate;
     sourceW = h->width; sourceH = h->height;
     return 1;
@@ -52,7 +47,6 @@ void PortCeCataloguePreviewClose() {
 }
 
 void PortCeCataloguePictureClose() {
-    if (saved) { saved->Release(); saved = NULL; }
     if (picture) { picture->Release(); picture = NULL; }
     sourceW = sourceH = 0;
 }
@@ -65,18 +59,11 @@ bool PortCeCataloguePreviewOpen(unsigned slot) {
     return ok;
 }
 
-void PortCeCataloguePreviewDraw(float above) {
-    if (!picture || !saved) return;
+namespace {
+// The picture at x, y, w by h on the front end's virtual 640 by 480 plane (the wide-screen box included).
+void DrawPicture(float x, float y, float w, float h) {
     IDirect3DDevice9* device = LT.GetDevice();
-    if (!device) return;
-    const float foot = above - 5.f, top = foot - 118.f > 106.f ? foot - 118.f : 106.f;
-    if (foot - top < 12.f) return;
-    float w = 228.f, h = w * sourceH / sourceW;
-    if (h > foot - top - 8.f) { h = foot - top - 8.f; w = h * sourceW / sourceH; }
-    float x = 320.f - w * 0.5f, y = (top + foot - h) * 0.5f;
-    FRONTEND.DrawPanel(202.f, top, 438.f, foot, 0.55f, 0xe0000000);
-    FRONTEND.DrawBox(202.f, top, 438.f, foot, 0xff807664, 1.f, 0.5f);
-    // Match the front end's virtual 640 by 480 plane, including the centred wide-screen box.
+    if (!device || !picture) return;
     D3DVIEWPORT9 vp;
     if (FAILED(device->GetViewport(&vp))) return;
     float sx = vp.Width / 640.f, sy = vp.Height / 480.f, left = float(vp.X), up = float(vp.Y);
@@ -85,7 +72,9 @@ void PortCeCataloguePreviewDraw(float above) {
     const float y0 = up + y*sy - 0.5f, y1 = up + (y+h)*sy - 0.5f;
     const Vertex quad[4] = {{x0,y0,0.f,1.f,0.f,0.f},{x1,y0,0.f,1.f,1.f,0.f},
                             {x0,y1,0.f,1.f,0.f,1.f},{x1,y1,0.f,1.f,1.f,1.f}};
-    if (FAILED(saved->Capture())) return;
+    IDirect3DStateBlock9* state = NULL;
+    if (FAILED(device->CreateStateBlock(D3DSBT_ALL, &state)) || !state) return;
+    if (FAILED(state->Capture())) { state->Release(); return; }
     device->SetVertexShader(NULL); device->SetPixelShader(NULL);
     device->SetFVF(D3DFVF_XYZRHW | D3DFVF_TEX1);
     device->SetRenderState(D3DRS_ZENABLE, FALSE); device->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
@@ -104,8 +93,88 @@ void PortCeCataloguePreviewDraw(float above) {
     device->SetTextureStageState(1,D3DTSS_COLOROP,D3DTOP_DISABLE); device->SetTextureStageState(1,D3DTSS_ALPHAOP,D3DTOP_DISABLE);
     device->SetTexture(0, picture);
     device->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, quad, sizeof(Vertex));
-    saved->Apply();
+    state->Apply();
+    state->Release();
 }
+}
+
+void PortCeCataloguePreviewDraw(float above) {
+    if (!picture || !LT.GetDevice()) return;
+    const float foot = above - 5.f, top = foot - 118.f > 106.f ? foot - 118.f : 106.f;
+    if (foot - top < 12.f) return;
+    float w = 228.f, h = w * sourceH / sourceW;
+    if (h > foot - top - 8.f) { h = foot - top - 8.f; w = h * sourceW / sourceH; }
+    float x = 320.f - w * 0.5f, y = (top + foot - h) * 0.5f;
+    FRONTEND.DrawPanel(202.f, top, 438.f, foot, 0.55f, 0xe0000000);
+    FRONTEND.DrawBox(202.f, top, 438.f, foot, 0xff807664, 1.f, 0.5f);
+    DrawPicture(x, y, w, h);
+}
+
+// The picture as large as the rectangle allows with its shape kept, on a subtle checkerboard when it has transparency;
+// the rectangle's own panel and outline match the list box beside it. False when there is no picture to draw.
+bool PortCeCataloguePreviewDrawIn(float left, float top, float right, float bottom, bool with_picture, bool checker) {
+    FRONTEND.DrawPanel(left, top, right, bottom, 0.55f, 0xa0000000);
+    FRONTEND.DrawBox(left, top, right, bottom, 0x80ffffff, 2.f, 0.5f);
+    if (!with_picture || !picture || !LT.GetDevice() || !sourceW || !sourceH) return false;
+    const float room_w = right - left - 12.f, room_h = bottom - top - 12.f;
+    float w = room_w, h = w * sourceH / sourceW;
+    if (h > room_h) { h = room_h; w = h * sourceW / sourceH; }
+    const float x = (left + right - w) * 0.5f, y = (top + bottom - h) * 0.5f;
+    FRONTEND.DrawPanel(x, y, x + w, y + h, 0.55f, 0xff404040);
+    if (checker)
+    {
+        // a subtle checkerboard of two greys behind a picture with transparency, so both white and dark translucent textures read
+        const float cell = 8.f;
+        for (int row = 0; y + row * cell < y + h; ++row)
+        {
+            const float cy = y + row * cell;
+            const float cy1 = cy + cell < y + h ? cy + cell : y + h;
+            for (int col = 0; x + col * cell < x + w; ++col)
+            {
+                if (!((row + col) & 1)) continue;
+                const float cx = x + col * cell;
+                const float cx1 = cx + cell < x + w ? cx + cell : x + w;
+                FRONTEND.DrawPanel(cx, cy, cx1, cy1, 0.55f, 0xff626262);
+            }
+        }
+    }
+    DrawPicture(x, y, w, h);
+    return true;
+}
+
+// One or two lines of the smaller face, centred between left and right, from y down.
+void PortCeCataloguePaneText(const char* first, const char* second, float left, float right, float y) {
+    CDXBitmapFont* font = PLATFORM.Font(FONT_SMALL);
+    const char* lines[2] = {first, second};
+    for (int i = 0; i < 2; i++) {
+        if (!lines[i] || !*lines[i]) continue;
+        WCHAR wide[128]; int n = 0;
+        for (; lines[i][n] && n < 127; n++) wide[n] = WCHAR((unsigned char)lines[i][n]);
+        wide[n] = 0;
+        // a line wider than the pane wraps at its last space that fits, so the whole text shows (two lines at most)
+        WCHAR* start = wide;
+        for (int part = 0; part < 2 && *start; part++) {
+            SIZE size; font->GetTextExtent(start, &size);
+            WCHAR* rest = NULL;
+            if (part == 0 && float(size.cx) > right - left) {
+                WCHAR* end = start; while (*end) end++;
+                for (WCHAR* at = end; at > start; at--) {
+                    if (*at != WCHAR(' ')) continue;
+                    *at = 0; font->GetTextExtent(start, &size);
+                    if (float(size.cx) <= right - left) { rest = at + 1; break; }
+                    *at = WCHAR(' ');
+                }
+                if (!rest) font->GetTextExtent(start, &size);
+            }
+            font->DrawTextWithShadow((left + right - float(size.cx)) * 0.5f, y, i ? 0xff808080 : 0xffffffff, start, 0, 0, 1.f, 1.f);
+            y += float(font->GetHeight()) + 2.f;
+            if (!rest) break;
+            start = rest;
+        }
+    }
+}
+
+float PortCeCatalogueNow() { return PLATFORM.GetSysTimeFloat(); }
 
 // The native sound adapter needs the same CE-only headers as the rest of this file.
 #include "ce_catalogue_sound_engine.inc"
@@ -288,9 +357,141 @@ bool PortCeCatalogueSpeechLine(const char* folder, const char* stem, char* utf8,
     return n != 0;
 }
 
+// The Goodies' own names (patch 0251): each model goodie's model file and each picture goodie's picture file, with its title.
+extern "C" bool PortCeGoodieFiles(int goodie, const char **mesh, const char **picture, WCHAR *title);
+namespace
+{
+bool SameFold(const char* a, const char* b, size_t n)
+{
+    for (size_t i = 0; i < n; i++)
+    {
+        char x = a[i], y = b[i];
+        if (x == '\\') x = '%';
+        if (y == '\\') y = '%';
+        if (x >= 'A' && x <= 'Z') x = char(x - 'A' + 'a');
+        if (y >= 'A' && y <= 'Z') y = char(y - 'A' + 'a');
+        if (x != y) return false;
+    }
+    return true;
+}
+void Utf8(const WCHAR* text, char* utf8, unsigned size)
+{
+    unsigned n = 0;
+    for (; *text && n + 4 < size; ++text)
+    {
+        unsigned c = *text;
+        if (c < 0x80) utf8[n++] = char(c);
+        else if (c < 0x800) { utf8[n++] = char(0xc0 | (c >> 6)); utf8[n++] = char(0x80 | (c & 63)); }
+        else { utf8[n++] = char(0xe0 | (c >> 12)); utf8[n++] = char(0x80 | ((c >> 6) & 63)); utf8[n++] = char(0x80 | (c & 63)); }
+    }
+    utf8[n] = 0;
+}
+}
+
+int PortCeCatalogueGoodieModel(const char* file)
+{
+    if (!file) return -1;
+    const size_t length = strlen(file);
+    for (int goodie = 0; goodie < 78; goodie++)
+    {
+        const char *mesh = NULL, *picture = NULL;
+        WCHAR title[256];
+        if (!PortCeGoodieFiles(goodie, &mesh, &picture, title) || !mesh) continue;
+        const size_t n = strlen(mesh);
+        if (length == n + 6 && SameFold(file, "m_", 2) && SameFold(file + 2, mesh, n) && SameFold(file + 2 + n, ".aya", 4))
+            return goodie;
+    }
+    return -1;
+}
+
+// The model pane (patch 0251: the Goodies page's own loading and lighting), for ce_catalogue_list.cpp.
+extern "C" bool PortCeGoodieModelLoad(int goodie);
+extern "C" void PortCeGoodieModelFree();
+extern "C" bool PortCeGoodieModelDraw(float left, float top, float right, float bottom, float yaw);
+
+bool PortCeCatalogueModelLoad(int goodie)
+{
+    return PortCeGoodieModelLoad(goodie);
+}
+void PortCeCatalogueModelFree()
+{
+    PortCeGoodieModelFree();
+}
+bool PortCeCatalogueModelDraw(float left, float top, float right, float bottom, float yaw)
+{
+    FRONTEND.DrawPanel(left, top, right, bottom, 0.55f, 0xb80e1522);
+    FRONTEND.DrawBox(left, top, right, bottom, 0x80ffffff, 2.f, 0.5f);
+    return PortCeGoodieModelDraw(left + 3.f, top + 3.f, right - 3.f, bottom - 3.f, yaw);
+}
+
+void PortCeCatalogueTextWords(void (*add)(const char* word, void* context), void* context)
+{
+    if (!add || !TEXT.mLoaded || !TEXT.mFile) return;
+    for (SINT n = 0; n < TEXT.mNumEntries; n++)
+    {
+        const WCHAR* text = TEXT.GetStringById(TEXT.mFile->mEntries[n].mID);
+        char word[32]; unsigned length = 0;
+        for (; text; ++text)
+        {
+            const WCHAR c = *text;
+            const bool letter = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+            if (letter && length < sizeof(word) - 1) { word[length++] = char(c >= 'A' && c <= 'Z' ? c - 'A' + 'a' : c); continue; }
+            if (!letter && length >= 3) { word[length] = 0; add(word, context); }
+            if (!letter) length = 0;
+            if (!c) break;
+        }
+    }
+}
+
+bool PortCeCatalogueGoodieName(int kind, const char* file, char* utf8, unsigned size)
+{
+    if (!file || !utf8 || size < 8 || !TEXT.mLoaded) return false;
+    const size_t length = strlen(file);
+    for (int goodie = 0; goodie < 78; goodie++)		// the goodies with titles (get_goodie_title)
+    {
+        const char *mesh = NULL, *picture = NULL;
+        WCHAR title[256];
+        if (!PortCeGoodieFiles(goodie, &mesh, &picture, title) || !title[0]) continue;
+        bool match = false;
+        if (kind == 0 && mesh)
+        {
+            // a model file is "m_" + the mesh's name + ".aya"
+            const size_t n = strlen(mesh);
+            match = length == n + 6 && SameFold(file, "m_", 2) && SameFold(file + 2, mesh, n) && SameFold(file + 2 + n, ".aya", 4);
+        }
+        else if (kind == 1 && picture)
+        {
+            // a picture file is its path with "%" for each folder mark, then "(n)" and its format
+            const size_t n = strlen(picture);
+            match = length > n && file[n] == '(' && SameFold(file, picture, n);
+        }
+        if (!match) continue;
+        Utf8(title, utf8, size);
+        return utf8[0] != 0;
+    }
+    return false;
+}
+
 void PortCeCatalogueSpeechLinesEnd()
 {
     free(sLines); sLines = NULL; sLineCount = 0; sLinesTable = NULL; sLinesLanguage = -1;
     sOtherText.Shutdown(); sOtherText.Init(); sOtherLanguage = -1;
 }
+#else
+// A private build has no Catalogue (it is a CE page); these let ce_catalogue_menu.cpp and ce_catalogue_sounds.cpp link there.
+#include "ce_catalogue_sounds.h"
+void PortCeCatalogueSoundVisit(CeCatalogueSoundVisitor, void*) {}
+bool PortCeCatalogueSoundStart(const char*) { return false; }
+void PortCeCatalogueSoundStop() {}
+bool PortCeCatalogueSoundActive() { return false; }
+bool PortCeCatalogueSpeechStart(const char*, char* why, unsigned why_size) { if (why && why_size) why[0] = 0; return false; }
+const char* PortCeCatalogueLanguage() { return ""; }
+bool PortCeCatalogueSpeechLine(const char*, const char*, char*, unsigned) { return false; }
+void PortCeCatalogueSpeechLinesEnd() {}
+bool PortCeCatalogueGoodieName(int, const char*, char*, unsigned) { return false; }
+void PortCeCatalogueTextWords(void (*)(const char*, void*), void*) {}
+int PortCeCatalogueGoodieModel(const char*) { return -1; }
+bool PortCeCatalogueModelLoad(int) { return false; }
+void PortCeCatalogueModelFree() {}
+bool PortCeCatalogueModelDraw(float, float, float, float, float) { return false; }
 #endif

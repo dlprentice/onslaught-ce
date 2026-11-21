@@ -150,7 +150,7 @@ const SCeListPage	*ListPage(int page)
 	case XP_BACKUP_ALL: return PortCeBackupAllPage();
 	case XP_MUSIC:		return PortCeJukeboxPage();
 	case XP_CATALOGUE:	return PortCeCataloguePage();
-	case XP_SOUNDS:		return PortCeCatalogueSoundsListPage();
+	case XP_CATALOGUE_LIST:	return PortCeCatalogueListPage();
 	case XP_LORE:		return PortCeLoreListPage();
 		case XP_CONTENTS: return PortCeLoreContentsPage();
 	}
@@ -344,6 +344,30 @@ public:
 		return mLists.At((page == XP_RECORD) ? LIST_RECORD : LIST_HUB);
 	}
 
+	// A page's own shape (rows in view, top) on its list.
+	static void	Shape(const SCeListPage *page, SCeScrollList *list)
+	{
+		list->mRows = page->mRows;
+		list->mY = page->mTopY;
+	}
+
+	// The cursor never rests on a group's heading: it goes on the way it was moving, or back when there is nothing that way.
+	static void	SkipHeadings(const SCeListPage *page, SCeScrollList *list, int direction)
+	{
+		if (!page->mHeading || list->mCount <= 0)
+			return;
+		const int start = list->mCursor;
+		for (int pass = 0; pass < 2 && page->mHeading(list->mCursor); pass++, direction = -direction)
+		{
+			int at = start;
+			while (at >= 0 && at < list->mCount && page->mHeading(at))
+				at += direction;
+			if (at >= 0 && at < list->mCount)
+				list->mCursor = at;
+		}
+		CeListClamp(list);
+	}
+
 	// Opens a page with its first row highlighted.
 	void	Show(int page, int startRow = -1)
 	{
@@ -355,9 +379,11 @@ public:
 		{
 			if (list->mOpen)
 				list->mOpen();
+			Shape(list, &sLists[page]);
 			CeListReset(&sLists[page], list->mCount());
 			sLists[page].mCursor = startRow >= 0 ? startRow : list->mStart;
 			CeListClamp(&sLists[page]);
+			SkipHeadings(list, &sLists[page], 1);
 		}
 		else if (const SCeReadPage *read = ReadPage(page))
 			read->mOpen();
@@ -399,7 +425,7 @@ public:
 	// Select on a list box's highlighted row.
 	void	SelectRow(const SCeListPage *page, SCeScrollList *list)
 	{
-		if (!SelectAllowed() || (list->mCursor < 0) || (list->mCursor >= list->mCount))
+		if (!SelectAllowed() || (list->mCursor < 0) || (list->mCursor >= list->mCount) || (page->mHeading && page->mHeading(list->mCursor)))
 			return;
 		if (page->mSelect(list->mCursor))
 			CFrontEnd::PlaySound(FES_SELECT);
@@ -412,14 +438,15 @@ public:
 		if (const SCeListPage *page = ListPage(sPage))
 		{
 			SCeScrollList *list = &sLists[sPage];
+			Shape(page, list);
 			list->mCount = page->mCount();
 			bool moved = false;
 			switch (button)
 			{
-			case BUTTON_FRONTEND_MENU_UP:		moved = CeListMove(list, -1);	break;
-			case BUTTON_FRONTEND_MENU_DOWN:		moved = CeListMove(list, 1);	break;
-			case BUTTON_FRONTEND_MENU_LEFT:		moved = CeListPage(list, -1);	break;
-			case BUTTON_FRONTEND_MENU_RIGHT:	moved = CeListPage(list, 1);	break;
+			case BUTTON_FRONTEND_MENU_UP:		moved = CeListMove(list, -1);	SkipHeadings(page, list, -1);	break;
+			case BUTTON_FRONTEND_MENU_DOWN:		moved = CeListMove(list, 1);	SkipHeadings(page, list, 1);	break;
+			case BUTTON_FRONTEND_MENU_LEFT:		moved = CeListPage(list, -1);	SkipHeadings(page, list, -1);	break;
+			case BUTTON_FRONTEND_MENU_RIGHT:	moved = CeListPage(list, 1);	SkipHeadings(page, list, 1);	break;
 			case BUTTON_PAUSE_MENU_SELECT:		SelectRow(page, list);			break;
 			case BUTTON_FRONTEND_MENU_BACK:
 				if (sPage == XP_BACKUP_PREVIEW)
@@ -476,14 +503,16 @@ public:
 	// right of each row and the highlighted row's hint under the box.
 	void	DrawListBox(const SCeListPage *page, SCeScrollList *list)
 	{
-		const float bottom = CeListBottom();
-		const float track = kCeListTrack + page->mWiden, edge = kCeListRight + page->mWiden;	// the box's right part, widened for its page
+		Shape(page, list);
+		const float bottom = CeListBottom(list), boxTop = CeListTopOf(list);
+		const float edge = (page->mBoxRight > 0.f) ? page->mBoxRight : kCeListRight + page->mWiden;
+		const float track = edge - (kCeListRight - kCeListTrack);	// the box's right part: its track inside the edge
 		const DWORD box = 0x80ffffff;
 		CDXBitmapFont *font = PLATFORM.Font(page->mSmallFace ? FONT_SMALL : FONT_NORMAL);
 		// the smaller face sits in the middle of a row made for the larger
 		const float lift = page->mSmallFace ? (float(PLATFORM.Font(FONT_NORMAL)->GetHeight()) - float(font->GetHeight())) * 0.5f : 0.f;
-		FRONTEND.DrawPanel(kCeListLeft - 4.f, kCeListTop, edge, bottom, 0.55f, 0xa0000000);
-		FRONTEND.DrawBox(kCeListLeft - 4.f, kCeListTop, edge, bottom, box, 2.f, 0.5f);
+		FRONTEND.DrawPanel(kCeListLeft - 4.f, boxTop, edge, bottom, 0.55f, 0xa0000000);
+		FRONTEND.DrawBox(kCeListLeft - 4.f, boxTop, edge, bottom, box, 2.f, 0.5f);
 
 		list->mCount = page->mCount();
 		CeListClamp(list);
@@ -496,8 +525,9 @@ public:
 				MOUSE_WHEEL = 0;
 				CeListScroll(list, -notches * 3);
 			}
-			if (FRONTEND.GetCursorStateInRect(track, kCeListTop, edge, bottom) && MOUSE_HELD[0])
+			if (FRONTEND.GetCursorStateInRect(track, boxTop, edge, bottom) && MOUSE_HELD[0])
 				CeListDrag(list, float(MOUSE_Y));
+			SkipHeadings(page, list, 1);		// the wheel and the bar move the view, and the cursor with it
 		}
 
 		const float now = PLATFORM.GetSysTimeFloat();
@@ -505,11 +535,12 @@ public:
 		sPointerX = MOUSE_X;
 		sPointerY = MOUSE_Y;
 		int clicked = -1;
-		for (int i = list->mTop; (i < list->mCount) && (i < list->mTop + kCeListRows); i++)
+		for (int i = list->mTop; (i < list->mCount) && (i < list->mTop + CeListRowsOf(list)); i++)
 		{
 			const float y = CeListRowY(list, i);
-			// the pointer highlights the row it moves onto and chooses the row it clicks
-			if (pointerMoved && FRONTEND.MouseOverRect(kCeListLeft, y, track, y + kCeListPitch) && (list->mCursor != i))
+			const bool heading = page->mHeading && page->mHeading(i);
+			// the pointer highlights the row it moves onto and chooses the row it clicks (a group's heading is neither)
+			if (!heading && pointerMoved && FRONTEND.MouseOverRect(kCeListLeft, y, track, y + kCeListPitch) && (list->mCursor != i))
 			{
 				list->mCursor = i;
 				if (now - sMoveTime > 0.1f)
@@ -518,7 +549,7 @@ public:
 					sMoveTime = now;
 				}
 			}
-			if (FRONTEND.MouseClickedInRect(kCeListLeft, y, track, y + kCeListPitch))
+			if (!heading && FRONTEND.MouseClickedInRect(kCeListLeft, y, track, y + kCeListPitch))
 			{
 				list->mCursor = i;
 				clicked = i;
@@ -527,8 +558,8 @@ public:
 			static SCeListRow row;
 			memset(&row, 0, sizeof(row));
 			page->mRow(i, &row);
-			const bool focus = (i == list->mCursor);
-			DWORD colour = row.mDim ? kRowDim : kRowGrey;
+			const bool focus = !heading && (i == list->mCursor);
+			DWORD colour = heading ? kCream : row.mDim ? kRowDim : kRowGrey;
 			if (focus)
 			{
 				// the Load Game list's highlight: white, pulsing
@@ -577,19 +608,21 @@ public:
 			static WCHAR empty[160];
 			wcsncpy(empty, page->mEmpty(), 159);
 			empty[159] = 0;
-			Lines(empty, kCeListTop + kCeListPitch * 4.f, kWhite);
+			Lines(empty, boxTop + kCeListPitch * 4.f, kWhite);
 		}
 		else
 		{
 			float top, foot;
 			CeListBar(list, &top, &foot);
-			FRONTEND.DrawBox(track, kCeListTop, edge, bottom, box, 2.f, 0.5f);
+			FRONTEND.DrawBox(track, boxTop, edge, bottom, box, 2.f, 0.5f);
 			FRONTEND.DrawBox(track + 5.f, top, edge - 5.f, foot, 0xffffffff, 5.f, 0.5f);
 
 			static WCHAR help[200], extra[200];
 			help[0] = extra[0] = 0;
 			page->mHint(list->mCursor, help, extra, 200);
 			const float next = Lines(extra, Lines(help, bottom + 12.f, kCream), kGrey);
+			if (page->mPane)
+				page->mPane(list->mCursor, edge + 10.f, boxTop, 556.f, bottom);
 			if (page->mDraw)
 				page->mDraw(next + 4.f);
 		}

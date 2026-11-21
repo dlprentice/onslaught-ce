@@ -129,6 +129,9 @@ struct Video
 	LARGE_INTEGER start;
 	bool started = false;
 	U32 played = 0;
+	bool paused = false;			// PortBinkPause: the clock held, and the sound stopped where it was if it was playing
+	bool pausedPlaying = false;		// the sound was still playing when the video was held (so it resumes)
+	LARGE_INTEGER pausedAt;
 
 };
 
@@ -145,24 +148,34 @@ double Clock(Video *v)
 {
 	if (!v->started)
 		return 0;
+	// the time since the first frame, held while the video is paused
+	double wall;
+	if (v->paused)
+	{
+		LARGE_INTEGER f;
+		QueryPerformanceFrequency(&f);
+		wall = (double)(v->pausedAt.QuadPart - v->start.QuadPart) / (double)f.QuadPart;
+	}
+	else
+		wall = Seconds(v->start);
 	if (v->sound)
 	{
 		DWORD play = 0, status = 0;
 		v->sound->GetStatus(&status);
-		if (status & DSBSTATUS_PLAYING)
+		// held while its sound was playing: the sound's cursor, where it stopped
+		if ((status & DSBSTATUS_PLAYING) || (v->paused && v->pausedPlaying))
 		{
 			v->sound->GetCurrentPosition(&play, NULL);
 			return (double)play / v->soundBlock / v->soundRate;
 		}
-		// the sound has finished: carry on from its length
+		// the sound has finished (an ended buffer's cursor is back at 0): carry on from its length
 		DSBCAPS caps;
 		caps.dwSize = sizeof(caps);
 		v->sound->GetCaps(&caps);
 		double len = (double)caps.dwBufferBytes / v->soundBlock / v->soundRate;
-		double wall = Seconds(v->start);
 		return wall > len ? wall : len;
 	}
-	return Seconds(v->start);
+	return wall;
 }
 
 bool ReadFileAll(const char *name, std::vector<unsigned char> &out)
@@ -514,6 +527,46 @@ HBINK __stdcall BinkOpen(const char *name, U32 flags)
 			(unsigned long)v->pub.Frames, (unsigned long)v->pub.Width, (unsigned long)v->pub.Height, (int)(v->fps * 1000 + 0.5),
 			v->sound ? 1 : 0, name);
 	return &v->pub;
+}
+
+// Port only (not a RAD entry point): whether the film's sound track was loaded into a buffer. The Museum cinema asks, to
+// duck the music to silence under a film with sound and to a low bed under one without.
+int PortBinkHasSound(HBINK bink)
+{
+	const Video *v = (const Video *)bink;
+	return v && v->sound ? 1 : 0;
+}
+
+// Port only: holds a started video where it is (its sound stopped at its cursor, its clock held) and lets it go on.
+// The Museum cinema holds its film while the game is paused, so picture and sound stay together.
+int PortBinkPause(HBINK bink, int pause)
+{
+	Video *v = (Video *)bink;
+	if (!v || !v->started || (pause != 0) == v->paused)
+		return 0;
+	LARGE_INTEGER now;
+	QueryPerformanceCounter(&now);
+	if (pause)
+	{
+		DWORD status = 0;
+		if (v->sound)
+			v->sound->GetStatus(&status);
+		v->paused = true;
+		v->pausedPlaying = (status & DSBSTATUS_PLAYING) != 0;
+		v->pausedAt = now;
+		if (v->pausedPlaying)
+			v->sound->Stop();
+	}
+	else
+	{
+		v->paused = false;
+		v->start.QuadPart += now.QuadPart - v->pausedAt.QuadPart;
+		// only a sound that was still playing goes on: an ended one would start again from its beginning
+		if (v->pausedPlaying)
+			v->sound->Play(0, 0, 0);
+		v->pausedPlaying = false;
+	}
+	return 1;
 }
 
 void __stdcall BinkSetVolume(HBINK bink, U32, S32 volume)

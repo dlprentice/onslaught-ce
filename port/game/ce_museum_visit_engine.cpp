@@ -8,6 +8,7 @@
 #include "ce_museum_label.h"
 #include "ce_museum_hall.h"
 #include "ce_museum_exhibition_host.h"
+#include "ce_museum_visit_places.h"
 #include "ce_museum_world.h"
 #include "ce_museum_label_rules.h"
 #include "ce_museum_options.h"
@@ -82,6 +83,8 @@ void DropExhibitDefinitions();
 
 bool gHaveStart;
 bool gAuthoredMap;
+// The visitor's place in the hall of numbered displays (ce_museum_visit_places.h): it tells the labels when a place's name at the top is left.
+CeMuseumVisitPlaces gPlaces;
 FVector gStartPosition;
 FMatrix gStartOrientation;
 }
@@ -138,6 +141,7 @@ extern "C" void PortCeMuseumVisitCancel(void) {
     if (gAuthoredMap) { MAP.mGeometryLoaded=FALSE; MAP.mPropertiesLoaded=FALSE; gAuthoredMap=false; }
     DropExhibitDefinitions();
     gHaveStart = false;
+    CeMuseumVisitPlacesDrop(&gPlaces);
 #endif
 }
 
@@ -547,6 +551,7 @@ extern "C" void PortCeMuseumVisitFrame(void) {
         here=gLastViewingPosition;
     } else gLastViewingPosition=here;
     CeMuseumHallVisitor(here.X, here.Y);
+    CeMuseumVisitPlacesStep(&gPlaces, here.X, here.Y);
     const bool sea = CeMuseumInSeaReach(here.Z, MAP.GetWaterLevel(), kSea);
     const bool edge = CeMuseumPastHallEdge(here.X, here.Y, gStartPosition.X, gStartPosition.Y, kCeMuseumHallRadius);
     if (sea || edge) {
@@ -620,6 +625,7 @@ bool CeMuseumVisit::GenerateInstalled() {
     }
     // The words: the hall's name, and each exhibit's name where it stands (ce_museum_label.h). Dropped with the visit.
     PortCeMuseumLabelsClear();
+    CeMuseumVisitPlacesDrop(&gPlaces);
     PortCeMuseumLabelsTitle("Units", "Face a machine. Walk closer to inspect it.");
 
     for (unsigned n = 0; n != shown; ++n) {
@@ -644,6 +650,7 @@ bool CeMuseumVisit::GenerateInstalled() {
     CeHallTour tour;
     if (CeMuseumExhibitionHost::Tour(exhibition, &tour)) {
         CeMuseumHallSetExhibition(tour, GalleryGround, exhibition);
+        CeMuseumVisitPlacesArm(&gPlaces, exhibition);
         PortCeMuseumLabelsTitle("Units", "Face a display at its brass sign to inspect it.");
     }
     const unsigned baseId = CeMuseumWorld::kBase;

@@ -343,7 +343,7 @@ int main(int argc, char **argv)
 	}
 	if (argc >= 3 && !strcmp(argv[1], "list"))
 	{
-		SCeScrollList list;
+		SCeScrollList list = {};
 		CeListReset(&list, atoi(argv[2]));
 		Print(list);
 		for (int i = 3; i < argc; i++)

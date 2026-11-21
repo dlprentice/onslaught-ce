@@ -66,11 +66,11 @@ def main() -> int:
     engine_driver_control = out / "foreign-owner-driver.cpp"
     engine_driver_control.write_text(driver_source)
     list_source = (ROOT / "port/game/ce_catalogue_list.cpp").read_text()
-    list_needle = "\tPortCeCatalogueSoundsStop();\n}"
+    list_needle = "\tPortCeCatalogueSoundsStop();\n\tPaneClose();"
     if list_source.count(list_needle) != 1:
         raise SystemExit("the sound list's Close is not where this check expects it")
     list_control = out / "list-leave-keeps-playing.cpp"
-    list_control.write_text(list_source.replace(list_needle, "\t(void)0;\n}", 1))
+    list_control.write_text(list_source.replace(list_needle, "\t(void)0;\n\tPaneClose();", 1))
     rows = []
     cases = [
         ("controller-menu", ["port/game/ce_asset_catalog.cpp", "port/game/ce_catalogue_menu.cpp",

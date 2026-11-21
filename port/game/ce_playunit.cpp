@@ -69,7 +69,9 @@
 #include "Camera.h"
 #include "DXEngine.h"
 #include "viewport.h"
+#define DXCOMPASS_CPP	// CDXCompass::Render: draws both rings and CCompass's markers, as Hud.cpp calls it
 #include "Compass.h"
+#undef DXCOMPASS_CPP
 #include "frontend.h"
 #include "ltshell.h"
 #include "Hud.h"
@@ -80,6 +82,7 @@
 #include "WorldPhysicsManager.h"
 #include "eventmanager.h"
 #include "ce_playunit.h"
+#include "hud_scale.h"
 #include "ce_cmdorders.h"
 #include "ce_cmdproduction.h"
 #include "ce_playunit_rules.h"
@@ -118,6 +121,10 @@ bool PortRecording();
 bool PortCePhotoOn();													// ce_photo.cpp: photo mode hides the HUD
 bool PortCePhotoSavedNext();											// ce_photo.cpp: the next frame is saved as a picture
 extern "C" int PortKeyHeldNow(unsigned dik);							// window.cpp: 1 a key is held, 0 it is not, -1 the platform cannot say
+int PortCeGamepadEdge(int pad, int button, bool release);				// ce_gamepad.cpp
+int PortCeGamepadOn(int pad, int button);								// ce_gamepad.cpp
+bool PortCeGamepadIsStick(int pad);										// ce_gamepad.cpp
+int PortCeGamepadInputs(int id, int pad, SControlInput *out);			// ce_gamepad.cpp
 
 namespace
 {
@@ -161,6 +168,9 @@ bool gObserveDone;						// the observing probe found nothing to follow and stopp
 #endif
 CePlayUnitKey gTakeKey;					// the take key as the frames saw it
 bool gTakePressed;						// a press of the take key that the next tick answers
+CePlayUnitKey gViewToggleKey;			// the view toggle key (V) as the frames saw it
+bool gViewTogglePressed;				// a press of the view toggle key that the next tick answers
+bool gUsedGamepad;						// true once a gamepad input drives the unit; selects gamepad hints in the prompt banner
 CUnit *gSwitchUnit;						// a unit the player switched to from the one driven: taken as soon as the Battle Engine's own view is back
 int gSwitchThing = -1;
 unsigned gSwitchWait;					// ticks the switch may still wait
@@ -680,6 +690,7 @@ void ClearInput()
 {
 	memset(&gIn, 0, sizeof(gIn));
 	gFootZoomIn = gFootZoomOut = false;
+	gViewTogglePressed = false;
 }
 
 // The game can delete a camera when another view replaces it. A virtual destructor notification records that ownership transfer without dereferencing a stale pointer.
@@ -722,6 +733,7 @@ FMatrix LookOrientation()
 CePlayUnitCameraRig gUnitViewRig = {};
 CePlayUnitCameraState gUnitViewState = {};
 bool gUnitViewMade = false, gUnitViewHideBody = false;
+int gUnitViewThird = kCePlayUnitCameraWide;
 unsigned long long gUnitViewFrame = 0, gUnitViewNs = 0;
 unsigned long long ViewNs();
 
@@ -729,6 +741,7 @@ void ResetUnitView() {
     gUnitViewRig = CePlayUnitCameraRig();
     CePlayUnitCameraReset(&gUnitViewState, 0, kCePlayUnitCameraWide);
     gUnitViewMade = gUnitViewHideBody = false;
+    gUnitViewThird = kCePlayUnitCameraWide;
     gUnitViewFrame = gUnitViewNs = 0;
 }
 
@@ -747,7 +760,7 @@ bool MakeUnitView(CUnit *unit) {
         lo[i] = (origin[i] - axes[i]) * scale;
         hi[i] = (origin[i] + axes[i]) * scale;
     }
-    const bool haveEye = gOnFoot && CePlayUnitCameraFootEye(lo, hi, eye);
+    const bool haveEye = gOnFoot ? CePlayUnitCameraFootEye(lo, hi, eye) : CePlayUnitCameraVehicleEye(lo, hi, eye);
     if (!CePlayUnitCameraBuild(&gUnitViewRig, lo, hi,
             gOnFoot ? CePlayUnitCameraFootLaw() : CePlayUnitCameraVehicleLaw(),
             haveEye ? eye : NULL)) return false;
@@ -755,6 +768,7 @@ bool MakeUnitView(CUnit *unit) {
     CePlayUnitCameraReset(&gUnitViewState, identity, kCePlayUnitCameraWide);
     gUnitViewMade = true;
     gUnitViewHideBody = false;
+    gUnitViewThird = kCePlayUnitCameraWide;
     gUnitViewFrame = gUnitViewNs = 0;
     return true;
 }
@@ -784,7 +798,7 @@ bool UnitViewPose(const FVector &place, CePlayUnitCameraPose &pose) {
             gLookYaw, gLookPitch, NULL, NULL, &pose)) return false;
     const FVector eye = ClampUnitViewGround(FVector(pose.eye[0], pose.eye[1], pose.eye[2]));
     pose.eye[0] = eye.X; pose.eye[1] = eye.Y; pose.eye[2] = eye.Z;
-    gUnitViewHideBody = gOnFoot && pose.hideBody;
+    gUnitViewHideBody = pose.hideBody;
     return true;
 }
 
@@ -800,7 +814,8 @@ CePlayUnitLookLaw UnitLookLaw() {
 
 const char *UnitViewName(int view) {
     if (view == kCePlayUnitCameraFirst) return "First person";
-    return view == kCePlayUnitCameraClose ? "Close shoulder" : "Wide shoulder";
+    if (gOnFoot) return view == kCePlayUnitCameraClose ? "Close shoulder" : "Wide shoulder";
+    return view == kCePlayUnitCameraClose ? "Close view" : "Wide view";
 }
 
 FVector FootAimEye(const FVector &place)
@@ -1463,6 +1478,7 @@ void Release(const char *why, const char *notice = NULL, const char *hint = NULL
 	gOnFoot = false; gDeliveryAssigned = false;
 	gFootFirstPerson = false;
 	gFootRenderedView = NULL;
+	gUsedGamepad = false;
 	gMoving = false;
 	gFireState = CE_PLAYUNIT_FIRE_NONE;
 	ClearInput();
@@ -1554,7 +1570,8 @@ void UnitViewHelp(char *out, int n)
     UnitKeyName(closer, sizeof(closer), BUTTON_MECH_CHANGE_ZOOM_IN, "Zoom In");
     UnitKeyName(wider, sizeof(wider), BUTTON_MECH_CHANGE_ZOOM_OUT, "Zoom Out");
     MorphKeyName(back, sizeof(back));
-    const char *views = gOnFoot ? "Wide/Close/First" : "Wide/Close";
+    const bool first = (gUnitViewMade && gUnitViewRig.valid) ? gUnitViewRig.firstPerson : true;
+    const char *views = first ? "Wide/Close/First" : "Wide/Close";
     if (TakeKeyFree())
         snprintf(out, n, "%s/%s: %s   %s: Return   %s: Take", closer, wider,
                  views, back, PortCeActionName(CeControlAction::TakeUnit));
@@ -1562,7 +1579,71 @@ void UnitViewHelp(char *out, int n)
         snprintf(out, n, "%s/%s: %s   %s: Return", closer, wider, views, back);
 }
 
-// The standing prompt while a unit is held: "AV-14B Sabre Pulse Tank | Space: Return | Wheel: Wide/Close". The two zoom keys are named once when they are one
+// Whether V is free to toggle between third-person and first-person while driving a unit.
+bool ViewToggleKeyFree()
+{
+    for (SControlBinding *b = CONTROL_BINDINGS; b->mId != -1; b++)
+        if (b->mConfigurable)
+            for (int i = 0; i < 2; ++i)
+            {
+                const SControlInput &in = b->mInput[i];
+                if (in.mPad != -1 && (in.mType == KEY_ON || in.mType == KEY_ONCE || in.mType == KEY_RELEASE) && in.mKey == DIK_V)
+                    return false;
+            }
+    return PortCeActionKey(CeControlAction::TakeUnit) != DIK_V
+        && PortCeActionKey(CeControlAction::Dodge) != DIK_V
+        && PortCeActionKey(CeControlAction::Commander) != DIK_V;
+}
+
+bool GamepadDefaultActive()
+{
+    if (PortCeGamepadIsStick(0)) return false;
+    SControlInput extra[2];
+    return PortCeGamepadInputs(BUTTON_MECH_CHANGE_ZOOM_IN, 0, extra) > 0;
+}
+
+// Gamepad Y (bound to cloak under default gamepad layout, unused by driven units) toggles 3rd-person <-> 1st-person.
+bool GamepadViewToggleEdge()
+{
+    if (LT.GetKeytrap() || PortCeCmdMapOpen() || GAME.IsFreeCameraOn(0) || GAME.IsPaused() || GAME.GetGameState() != GAME_STATE_PLAYING || PortCeGamepadIsStick(0))
+        return false;
+    SControlInput extra[2];
+    const int n = PortCeGamepadInputs(BUTTON_MECH_CLOAK, 0, extra);
+    for (int i = 0; i < n; ++i)
+        if (extra[i].mType == BUTTON_ONCE && PortCeGamepadEdge(0, extra[i].mKey, false) > 0)
+            return true;
+    return false;
+}
+
+bool GamepadActionActive(int actionId)
+{
+    SControlInput extra[2];
+    const int n = PortCeGamepadInputs(actionId, 0, extra);
+    for (int i = 0; i < n; ++i)
+        if (PortCeGamepadOn(0, extra[i].mKey) > 0 || PortCeGamepadEdge(0, extra[i].mKey, false) > 0)
+            return true;
+    return false;
+}
+
+bool GamepadDrivingActive()
+{
+    if (!GamepadDefaultActive()) return false;
+    if (LT.mJoypads > 0 && LT.JoyState(0))
+    {
+        const DIJOYSTATE2 *js = LT.JoyState(0);
+        const float lx = float(js->lX) / 1000.f;
+        const float ly = float(js->lY) / 1000.f;
+        const float rx = float(js->lZ) / 1000.f;
+        const float ry = LT.mJoypadHasRz[0] ? float(js->lRz) / 1000.f : 0.f;
+        if (fabsf(lx) > 0.25f || fabsf(ly) > 0.25f || fabsf(rx) > 0.25f || fabsf(ry) > 0.25f)
+            return true;
+    }
+    return GamepadActionActive(BUTTON_MECH_CHANGE_ZOOM_IN)
+        || GamepadActionActive(BUTTON_MECH_CHANGE_ZOOM_OUT)
+        || GamepadActionActive(BUTTON_MECH_CHARGE_GUN_POD);
+}
+
+// The standing prompt while a unit is held: "AV-14B Sabre Pulse Tank | Space: Return | Wheel: Zoom | V: View". The two zoom keys are named once when they are one
 // control's two ways (a wheel, a pad's shoulder pair: the same first word), else both.
 void UnitPromptLine(char *out, int n, const char *name)
 {
@@ -1574,7 +1655,33 @@ void UnitPromptLine(char *out, int n, const char *name)
     const size_t word = gap ? (size_t)(gap - closer) : 0;
     if (word && !strncmp(closer, wider, word) && wider[word] == ' ') snprintf(zoom, sizeof(zoom), "%.*s", (int)word, closer);
     else snprintf(zoom, sizeof(zoom), "%s/%s", closer, wider);
-    snprintf(out, n, "%s | %s: Return | %s: %s", name, back, zoom, gOnFoot ? "Wide/Close/First" : "Wide/Close");
+    const bool first = (gUnitViewMade && gUnitViewRig.valid) ? gUnitViewRig.firstPerson : true;
+    const char *views = "Zoom";
+    if (gUsedGamepad && GamepadDefaultActive())
+    {
+        snprintf(out, n, "%s | A: Return | RB/LB: %s", name, views);
+        if (first)
+        {
+            const size_t len = strlen(out);
+            snprintf(out + len, n > (int)len ? n - (int)len : 0, " | Y: View");
+        }
+        return;
+    }
+    snprintf(out, n, "%s | %s: Return | %s: %s", name, back, zoom, views);
+    if (first && ViewToggleKeyFree())
+    {
+        const size_t len = strlen(out);
+        snprintf(out + len, n > (int)len ? n - (int)len : 0, " | V: View");
+    }
+}
+
+void RefreshUnitPrompt(CUnit *u)
+{
+    if (!gDriving || !u) return;
+    const char *name = u->GetUnitData() && u->GetUnitData()->mName ? u->GetUnitData()->mName : (gOnFoot ? "soldier" : "tank");
+    char standing[160];
+    UnitPromptLine(standing, sizeof(standing), name);
+    CePlayUnitPrompt(standing);
 }
 
 bool Take(CPlayer *player, CBattleEngine *engine, CCONTROLLER *controller, CUnit *u, int kind)
@@ -1638,8 +1745,16 @@ bool Take(CPlayer *player, CBattleEngine *engine, CCONTROLLER *controller, CUnit
 	PutCameraOn(u);
 	ViewReset();
 	gDriving = true;
+	MakeUnitView(u);
+	gViewTogglePressed = false;
+	gViewToggleKey.wasDown = PortKeyHeldNow(DIK_V) > 0;
+	gUsedGamepad = false;
 	const char *name = u->GetUnitData() && u->GetUnitData()->mName ? u->GetUnitData()->mName : (gOnFoot ? "soldier" : "tank");
 	Log("driving unit %d, a %s", (int)gThing, name);
+#ifdef CE_PLAYUNIT_TEST
+	Note("unit stats: life %.3f full %.3f shields %.3f max %.3f regeneration %.5f energy %.3f", u->GetLife(), u->GetMaxLife(), u->mShields,
+		u->mMaxShields, u->mShieldRegeneration, u->GetEnergy());
+#endif
 	// what the player is told: the unit, and the way back and on (the Battle Engine's own Morph key, as the player has it bound)
 	char first[96], second[96], key[24];
 	snprintf(first, sizeof(first), gOnFoot ? "On foot: %s" : "You are driving: %s", name);
@@ -1767,6 +1882,7 @@ void Reset()
 	gOnFoot = false; gDeliveryAssigned = false;
 	gFootFirstPerson = false;
 	gFootRenderedView = NULL;
+	gUsedGamepad = false;
 	gThing = -1;
 	gPreviousSquad = NULL;
 	gPreviousSquadNumber = -1;
@@ -2127,6 +2243,12 @@ void Drive(CUnit *u, CPlayer *player, CBattleEngine *engine)
 	(void)engine;
 	CePlayUnitDrive in = gIn;
 	bool zoomIn = gFootZoomIn, zoomOut = gFootZoomOut;
+	const bool padToggle = gViewMode == kViewLook && GamepadViewToggleEdge();
+	const bool keyToggle = gViewTogglePressed;
+	const bool toggleView = keyToggle || padToggle;
+	const bool padActive = padToggle || GamepadDrivingActive();
+	if (padActive && !gUsedGamepad) { gUsedGamepad = true; RefreshUnitPrompt(u); }
+	else if ((keyToggle || (!padActive && (in.forward > 0.f || in.back > 0.f || in.turn != 0.f || zoomIn || zoomOut))) && gUsedGamepad) { gUsedGamepad = false; RefreshUnitPrompt(u); }
 #ifdef CE_PLAYUNIT_TEST
 	// BEA_PORT_PLAYUNIT_ZOOM=+T,-T,...: Zoom In (+) or Zoom Out (-) on tick T, as the wheel's press arrives (a feel script has no wheel)
 	if (const char *z = getenv("BEA_PORT_PLAYUNIT_ZOOM"))
@@ -2151,8 +2273,10 @@ void Drive(CUnit *u, CPlayer *player, CBattleEngine *engine)
 	// after it.
 	if (gViewMode == kViewLook)
 	{
+		if (gMouseQuiet == 0 && !padActive && gUsedGamepad) { gUsedGamepad = false; RefreshUnitPrompt(u); }
 		if (gMouseQuiet < kLookStickQuiet) ++gMouseQuiet;
-		if (gMouseQuiet >= kLookStickQuiet && (in.look != 0.f || in.pitch != 0.f)) CePlayUnitLookStick(&gLookYaw, &gLookPitch, in.look, in.pitch, kLookTickSeconds, UnitLookLaw());
+		if (gMouseQuiet >= kLookStickQuiet && (in.look != 0.f || in.pitch != 0.f))
+			CePlayUnitLookStick(&gLookYaw, &gLookPitch, in.look, in.pitch, kLookTickSeconds, UnitLookLaw());
 	}
 	if (in.leave)
 	{
@@ -2181,7 +2305,22 @@ void Drive(CUnit *u, CPlayer *player, CBattleEngine *engine)
         const int view = ready ? CePlayUnitCameraZoom(&gUnitViewState, gUnitViewRig, zoomIn, zoomOut) :
             (gOnFoot ? (zoomIn ? kCePlayUnitCameraFirst : kCePlayUnitCameraClose) : previous);
         if (view != previous) {
-            gFootFirstPerson = gOnFoot && view == kCePlayUnitCameraFirst;
+            if (view != kCePlayUnitCameraFirst) gUnitViewThird = view;
+            gFootFirstPerson = view == kCePlayUnitCameraFirst;
+            gFootRenderedView = NULL;
+            char tip[96];
+            UnitViewHelp(tip, sizeof(tip));
+            CePlayUnitNotice(UnitViewName(view), tip, true);
+        }
+    }
+    else if (gViewMode == kViewLook && toggleView) {
+        const bool ready = MakeUnitView(u);
+        const int previous = ready ? gUnitViewState.view :
+            (gFootFirstPerson ? kCePlayUnitCameraFirst : kCePlayUnitCameraClose);
+        const int view = ready ? CePlayUnitCameraToggleFirst(&gUnitViewState, gUnitViewRig, &gUnitViewThird) :
+            (gOnFoot ? (gFootFirstPerson ? kCePlayUnitCameraClose : kCePlayUnitCameraFirst) : previous);
+        if (view != previous) {
+            gFootFirstPerson = view == kCePlayUnitCameraFirst;
             gFootRenderedView = NULL;
             char tip[96];
             UnitViewHelp(tip, sizeof(tip));
@@ -2323,7 +2462,7 @@ bool DrawnFromFootEye()
 bool PortCePlayUnitHidesOwnMesh(const CThing *thing)
 {
 #ifdef CE_PLAYUNIT_TEST
-    if (thing && thing == gUnit && gDriving && gOnFoot)
+    if (thing && thing == gUnit && gDriving)
     {
         ++gHideCalls;
         const int fail = gMirrorPass ? 0 : !UnitViewHidesBody() ? 1 : !gCamera ? 2 : !gFootRenderedView ? 3 : !DrawnFromFootEye() ? 4 :
@@ -2331,7 +2470,7 @@ bool PortCePlayUnitHidesOwnMesh(const CThing *thing)
         if (fail < 0) ++gHideTrue; else ++gHideFail[fail];
     }
 #endif
-    return !gMirrorPass && gDriving && gOnFoot && UnitViewHidesBody() && thing && thing == gUnit &&
+    return !gMirrorPass && gDriving && UnitViewHidesBody() && thing && thing == gUnit &&
         gCamera && gFootRenderedView && DrawnFromFootEye() &&
 	    GAME.GetCamera(0) == gCamera && GAME.GetCurrentLevel() == gLevel && !GAME.IsFreeCameraOn(0);
 }
@@ -2354,7 +2493,7 @@ CCamera *PortCePlayUnitRenderCamera(CCamera *original, CPlayer *player) {
     if (gViewMode == kViewLook)
     {
         LookShown(unit, &view);
-        gFootRenderedView = gOnFoot && UnitViewHidesBody() ? &view : NULL;
+        gFootRenderedView = UnitViewHidesBody() ? &view : NULL;
         return &view;
     }
     const FVector rawPos = unit->GetPos();
@@ -2472,31 +2611,49 @@ bool CePlayUnitHudOverlay(CPlayer *player, int viewpoint)
 	HUD.mSafeRight = HUD.mSafeX + HUD.mSafeWidth;
 	HUD.SetOverlayRenderStates();
 	RENDERINFO.SRS(D3DRS_ALPHATESTENABLE, FALSE);
-	HUD.Render00483530();				// the objective panel
-	HUD.SetOverlayRenderStates();
-	RENDERINFO.SRS(D3DRS_ZFUNC, D3DCMP_ALWAYS);	// the ring is drawn as geometry: over the world, as the Battle Engine's view leaves the state for it
-	RENDERINFO.SRS(D3DRS_ZENABLE, FALSE);
-	RENDERINFO.SRS(D3DRS_CULLMODE, D3DCULL_NONE);
-	RENDERINFO.Apply();
-	HUD.mCompass->Render(be);			// the ring round the reticle, its health arc and marker the unit's (the focus)
-	// the radar's panel as CHud::RenderWeaponPanel draws it (its backing, outline and north pointer) without the Battle Engine's weapon charge, turned with the look
-	HUD.SetOverlayRenderStates();
-	RENDERINFO.SRS(D3DRS_ZFUNC, D3DCMP_ALWAYS);
-	RENDERINFO.SRS(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
-	RENDERINFO.SRS(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
-	RENDERINFO.Apply();
-	const float x = HUD.mViewportX + HUD_OFFSET_X + 17.f, y = HUD.mViewportBottom + 16.f - HUD_OFFSET_Y;
-	CSPRITERENDERER::DrawSprite(x, y, 0.001f, HUD.mRadioView, (ESpriteAlignment)2, SPT_NONE, 1.f, 0.f, 0x6fffffff, 1.f, 1.f, 0.f, 1.f, 0.f, 1.f);
-	if (HUD.IsComponentVisible(HP_RADAR))
+	// Each part inside the HUD scale scope the Battle Engine's overlay gives it (CHud::RenderOverlayForViewpoint, patches 0089 and 0190).
+	const int eligible = !GAME.IsMultiplayer() && ENGINE.GetNumViewpoints() == 1;
 	{
-		HUD.SetAdditive();
-		CSPRITERENDERER::DrawSprite(x, y, 0.001f, HUD.mRadarOutline, (ESpriteAlignment)2, SPT_NONE, 1.f, 0.f, 0xff6f8faf, 1.f, 1.f, 0.f, 1.f, 0.f, 1.f);
+		// Projected world target & objective markers (mScreenMarker diamonds), scaled about each marker's own screen position.
+		CeHudScope scope(eligible, HUD.mViewportWidth, HUD.mViewportHeight, 0.f, 0.f);
+		HUD.RenderWorldTargets();
+	}
+	{
+		CeHudScope scope(eligible, HUD.mViewportWidth, HUD.mViewportHeight, HUD.mViewportRight - HUD_OFFSET_X, HUD.mViewportY + HUD_OFFSET_Y);
+		HUD.Render00483530();				// the objective panel
+	}
+	HUD.SetOverlayRenderStates();
+	{
+		CeHudScope scope(eligible, HUD.mViewportWidth, HUD.mViewportHeight, float(PLATFORM.GetWindowWidth()) * 0.5f, float(PLATFORM.GetWindowHeight()) * 0.5f);
+		// CDXCompass::Render (declared via DXCOMPASS_CPP) draws the inner armour arc ring, the outer rotating compass dial, bar ticks and objective dots.
+		RENDERINFO.SRS(D3DRS_CULLMODE, D3DCULL_NONE);
+		RENDERINFO.Apply();
+		HUD.mCompass->Render(be);
+		RENDERINFO.SRS(D3DRS_CULLMODE, D3DCULL_CCW);
+		RENDERINFO.Apply();
+	}
+	{
+		CeHudScope scope(eligible, HUD.mViewportWidth, HUD.mViewportHeight, HUD.mViewportX + HUD_OFFSET_X, HUD.mViewportBottom - HUD_OFFSET_Y);
+		// the radar's panel as CHud::RenderWeaponPanel draws it (its backing, outline and north pointer) without the Battle Engine's weapon charge, turned with the look
+		HUD.SetOverlayRenderStates();
+		RENDERINFO.SRS(D3DRS_ZFUNC, D3DCMP_ALWAYS);
+		RENDERINFO.SRS(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
+		RENDERINFO.SRS(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
+		RENDERINFO.Apply();
+		const float x = HUD.mViewportX + HUD_OFFSET_X + 17.f, y = HUD.mViewportBottom + 16.f - HUD_OFFSET_Y;
+		CSPRITERENDERER::DrawSprite(x, y, 0.001f, HUD.mRadioView, (ESpriteAlignment)2, SPT_NONE, 1.f, 0.f, 0x6fffffff, 1.f, 1.f, 0.f, 1.f, 0.f, 1.f);
+		if (HUD.IsComponentVisible(HP_RADAR))
+		{
+			HUD.SetAdditive();
+			CSPRITERENDERER::DrawSprite(x, y, 0.001f, HUD.mRadarOutline, (ESpriteAlignment)2, SPT_NONE, 1.f, 0.f, 0xff6f8faf, 1.f, 1.f, 0.f, 1.f, 0.f, 1.f);
+		}
+		HUD.SetAlphaBlend();
+		const float sn = sinf(focus.yaw), cs = cosf(focus.yaw);
+		RENDERINFO.SRS(D3DRS_ZENABLE, FALSE);
+		CSPRITERENDERER::DrawSprite(x + 48.f + sn * 45.f, (y - 128.f + 48.f) - cs * 45.f, 0.001f, HUD.mRadioNorth, SA_CENTRE, SPT_NONE, 1.f, focus.yaw, 0xff5f7fff, 1.f, 1.f, 0.f, 1.f, 0.f, 1.f);
+		HUD.RenderRadar(96.f);				// the radar, centred on the unit and turned with the look (the focus)
 	}
 	HUD.SetAlphaBlend();
-	const float sn = sinf(focus.yaw), cs = cosf(focus.yaw);
-	RENDERINFO.SRS(D3DRS_ZENABLE, FALSE);
-	CSPRITERENDERER::DrawSprite(x + 48.f + sn * 45.f, (y - 128.f + 48.f) - cs * 45.f, 0.001f, HUD.mRadioNorth, SA_CENTRE, SPT_NONE, 1.f, focus.yaw, 0xff5f7fff, 1.f, 1.f, 0.f, 1.f, 0.f, 1.f);
-	HUD.RenderRadar(96.f);				// the radar, centred on the unit and turned with the look (the focus)
 	return true;
 }
 
@@ -2662,6 +2819,8 @@ void CePlayUnitMapBoundary()
 	if (!gConfigured || !gWanted) return;
 	gTakePressed = false;
 	gTakeKey.wasDown = PortKeyHeldNow(TakeKey()) > 0;
+	gViewTogglePressed = false;
+	gViewToggleKey.wasDown = PortKeyHeldNow(DIK_V) > 0;
 }
 
 // Every frame (ce_notice.cpp's render hook, after the console; weakly, so a program without this module has none): the take key is read, and the reticle and the notice
@@ -2674,7 +2833,9 @@ void CePlayUnitRenderState()
 	const bool mapOpen = PortCeCmdMapOpen();
 	const bool mayCount = !mapOpen && GAME.GetGameState() == GAME_STATE_PLAYING && !GAME.IsPaused() && !LT.GetKeytrap() && !GAME.IsFreeCameraOn(0) && TakeKeyFree();
 	if (CePlayUnitPressed(&gTakeKey, held > 0, mayCount)) gTakePressed = true;
-	if (mapOpen) { gTakePressed = false; return; }
+	const bool viewMayCount = !LT.GetKeytrap() && !mapOpen && gDriving && gViewMode == kViewLook && GAME.GetGameState() == GAME_STATE_PLAYING && !GAME.IsPaused() && !GAME.IsFreeCameraOn(0) && ViewToggleKeyFree();
+	if (CePlayUnitPressed(&gViewToggleKey, gDriving && gViewMode == kViewLook && PortKeyHeldNow(DIK_V) > 0, viewMayCount)) gViewTogglePressed = true;
+	if (mapOpen) { gTakePressed = false; gViewTogglePressed = false; return; }
 	if (PortCePhotoOn() || PortCePhotoSavedNext() || GAME.IsPaused() || GAME.GetGameState() != GAME_STATE_PLAYING) return;
 	CCamera *camera = GAME.GetCurrentCamera(0);
 	const bool reticle = gDriving && gCamera && camera == gCamera;

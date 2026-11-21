@@ -2,11 +2,14 @@
 #ifdef CE_VERSION	// a CE layer file: a private build (no CE_VERSION) has none of it, as it has none of its callers
 #include "ce_asset_catalog.h"
 #include "ce_catalogue_menu.h"
+#include "ce_catalogue_english.h"
 #include "ce_catalogue_sounds.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <cstring>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -59,6 +62,8 @@ std::string SearchName(const char* text) {
 }
 void Name(const char* utf8, char* out, unsigned size);
 std::string EffectTitle(const char* raw);
+std::string AssetRow(size_t i);
+std::string Tidy(const std::string& raw);
 const char* SoundName(size_t i) {
     const char* name = PortCeCatalogueSoundsName(static_cast<unsigned>(i));
     return name ? name : "";
@@ -93,7 +98,8 @@ void MatchCollection() {
         }
         const char* path = PortCeAssetCatalogPath(catalog, i);
         const char* base = path ? std::strrchr(path, '/') : nullptr;
-        if (needle.empty() || SearchName(PortCeAssetCatalogTitle(catalog, i)).find(needle) != std::string::npos ||
+        if (needle.empty() || SearchName(AssetRow(i).c_str()).find(needle) != std::string::npos ||
+            SearchName(PortCeAssetCatalogTitle(catalog, i)).find(needle) != std::string::npos ||
             SearchName(base ? base + 1 : path).find(needle) != std::string::npos)
             c.matches.push_back(i);
     }
@@ -130,6 +136,356 @@ void Name(const char* utf8, char* out, unsigned size) {
     out[n] = 0;
     if (!n) std::snprintf(out, size, "%s", "Unnamed item");
 }
+// Models and textures as a player reads them: a group and a name, made from the file's own name by fixed rules (the
+// game's folders and the makers' prefixes), never shown as the file. A goodie's title from the game's text replaces the
+// made name when the game has one for that file (PortCeCatalogueGoodieName).
+struct SPrefix { const char* code; const char* group; };
+// Texture folders, as the game's resources keep them.
+const SPrefix kTextureFolders[] = {
+    {"meshtex", "Model skins"}, {"goodies", "Goodies"}, {"cubes", "Sky boxes"}, {"frontend", "Front end"},
+    {"particle", "Particles"}, {"hud", "HUD"}, {"messagebox", "Message box"}, {"mixers", "Terrain blends"},
+    {"messagelog", "Message log"}, {"atmospherics", "Weather"}, {"screenfx", "Screen effects"}, {"pausemenu", "Pause menu"},
+    {"interface", "Interface"}, {"clouds", "Clouds"}};
+// Model name prefixes, longest first: the makers' codes for side and kind.
+const SPrefix kModelPrefixes[] = {
+    {"fa", "Forseti aircraft"}, {"fb", "Forseti buildings"}, {"fs", "Forseti ships"}, {"ft", "Forseti turrets"},
+    {"mt", "Muspell turrets"}, {"mb", "Muspell buildings"}, {"boss", "Bosses"}, {"be", "Battle Engine"}, {"f", "Forseti"}, {"m", "Muspell"}};
+// Words of a goodies subfolder ("ca_f_units"): the side letters spelled out.
+const SPrefix kSideWords[] = {{"f", "Forseti"}, {"m", "Muspell"}, {"be", "Battle Engine"}};
+
+bool SameWord(const char* a, size_t n, const char* b) {
+    if (std::strlen(b) != n) return false;
+    for (size_t i = 0; i < n; ++i)
+        if (std::tolower(static_cast<unsigned char>(a[i])) != std::tolower(static_cast<unsigned char>(b[i]))) return false;
+    return true;
+}
+// A word of letters then digits ("av14", "xf24", "a15b") is a designation: capitals and a hyphen ("AV-14").
+std::string Word(const char* w, size_t n) {
+    size_t letters = 0;
+    while (letters < n && std::isalpha(static_cast<unsigned char>(w[letters]))) ++letters;
+    const bool code = letters >= 1 && letters <= 3 && letters < n && std::isdigit(static_cast<unsigned char>(w[letters]));
+    std::string out;
+    for (size_t i = 0; i < n; ++i) {
+        if (code && i == letters) out += '-';
+        out += code ? static_cast<char>(std::toupper(static_cast<unsigned char>(w[i]))) : w[i];
+    }
+    return out;
+}
+// The words of a name part: split at underscores, hyphens between letters stay; leading codes dropped as asked.
+std::vector<std::string> Words(const std::string& part) {
+    std::vector<std::string> out;
+    size_t at = 0;
+    while (at < part.size()) {
+        while (at < part.size() && (part[at] == '_' || part[at] == ' ')) ++at;
+        size_t end = at;
+        while (end < part.size() && part[end] != '_' && part[end] != ' ') ++end;
+        if (end > at) out.push_back(part.substr(at, end - at));
+        at = end;
+    }
+    return out;
+}
+// The words of every model and texture file's name, lower case, with the game's own words: known words for splitting run-together ones.
+std::set<std::string> vocabulary;
+std::set<std::string> text_words;		// words of the game's own text in the running language
+void AddTextWord(const char* word, void*) { text_words.insert(word); vocabulary.insert(word); }
+bool AllAlpha(const std::string& w) {
+    for (char c : w) if (!std::isalpha(static_cast<unsigned char>(c))) return false;
+    return !w.empty();
+}
+std::string Lower(std::string w) { for (char& c : w) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c))); return w; }
+std::string Upper(std::string w) { for (char& c : w) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c))); return w; }
+bool English(const std::string& low) {
+    static const std::set<std::string> words(std::begin(kCeCatalogueEnglish), std::end(kCeCatalogueEnglish));
+    return words.count(low) > 0;
+}
+// A known word: one of the game's own words or file-name words (vocabulary), or an ordinary English word; three letters or more.
+bool Known(const std::string& low) { return low.size() >= 3 && (vocabulary.count(low) || English(low)); }
+// A plain word: the game's own text or the English list, never a file name's word; `least` letters or more.
+bool Plain(const std::string& low, size_t least) { return low.size() >= least && (text_words.count(low) || English(low)); }
+// low as exactly `pieces` words of `least` letters or more, the longest first piece first; cuts gets where each later piece
+// starts. Plain: only the game's text words and English words count, not a file name's own words.
+bool Segment(const std::string& low, int pieces, std::vector<size_t>* cuts, size_t least, bool plain) {
+    auto ok = [&](const std::string& w) { return plain ? Plain(w, least) : w.size() >= least && Known(w); };
+    if (pieces == 1) return ok(low);
+    for (size_t cut = low.size() >= least ? low.size() - least : 0; cut >= least; --cut) {
+        if (!ok(low.substr(0, cut))) continue;
+        std::vector<size_t> rest;
+        if (!Segment(low.substr(cut), pieces - 1, &rest, least, plain)) continue;
+        cuts->push_back(cut);
+        for (size_t r : rest) cuts->push_back(cut + r);
+        return true;
+    }
+    return false;
+}
+// low as `fewest` to three words, the fewest pieces that read. Two pieces may be any known words; three, or any beside a code,
+// only plain ones.
+bool KnownWords(const std::string& low, int fewest, std::vector<size_t>* cuts, bool beside_code) {
+    for (int n = fewest; n <= 3; ++n) {
+        cuts->clear();
+        if (Segment(low, n, cuts, beside_code ? 4 : 3, beside_code || n > 2)) return true;
+    }
+    return false;
+}
+// Codes are read only in model files' names: their stems are the makers' run-together codes, where textures' names are mostly
+// ordinary English that a short list cannot know ("spark" is no "S Park"). AssetName sets it while it names a model.
+bool sModelCodes = false;
+// A run-together word as the pieces it reads as. Every piece is a known word of three letters or more; failing that, known words
+// with the makers' own code of one to three letters before or after them, kept as written in capitals ("Thunder B", "HC Bridge")
+// and never read as a meaning. An ordinary English ending is not a code. A word the game's text or the English list knows whole
+// is left whole.
+bool SplitWord(const std::string& p, std::vector<std::string>* out) {
+    const std::string low = Lower(p);
+    if (!AllAlpha(p) || text_words.count(low) || English(low)) return false;
+    std::vector<size_t> cuts;
+    if (low.size() >= 6 && KnownWords(low, 2, &cuts, false)) {
+        // each piece read again: a file name's own word may itself be a word and a code ("mtank" in "mtanklight")
+        cuts.push_back(p.size());
+        size_t at = 0;
+        for (size_t c : cuts) {
+            const std::string piece = p.substr(at, c - at);
+            std::vector<std::string> again;
+            if (SplitWord(piece, &again)) out->insert(out->end(), again.begin(), again.end());
+            else out->push_back(piece);
+            at = c;
+        }
+        return true;
+    }
+    static const char* const endings[] = {"s", "es", "ed", "er", "ers", "ly", "al", "en", "ic", "y", "ing", "ion", "ner", "ter", "est", "ies",
+                                          "ous", "ful", "ity", "ist", "ism", "per", "ted", "ent", "age", "ish", "let"};
+    static const char* const starts[] = {"a", "un", "re", "de", "in", "ex", "pre", "dis", "non", "sub", "mis", "out", "over", "anti"};
+    if (!sModelCodes || low.size() < 4) return false;
+    for (size_t total = 1; total <= 6; ++total)				// the shortest code first
+        for (size_t head = 0; head <= 3 && head <= total; ++head) {
+            const size_t tail = total - head;
+            if (tail > 3 || head + tail + 3 > low.size()) continue;
+            const std::string front = low.substr(0, head), back = low.substr(low.size() - tail), middle = low.substr(head, low.size() - head - tail);
+            bool plain = true;
+            for (const char* e : endings) plain = plain && !(tail && back == e);
+            for (const char* s : starts) plain = plain && !(head && front == s);
+            // a code at one end; at both only a single letter before and one or two after ("F Boss BD"); a lone vowel is no code
+            if (head && tail && (head != 1 || tail > 2)) continue;
+            if (tail == 1 && std::strchr("aeiou", back[0])) continue;
+            int vowels = 0;									// a code of three letters is a cluster, not a syllable ("ura")
+            for (char c : front + back) vowels += std::strchr("aeiou", c) != nullptr;
+            if ((head == 3 || tail == 3) && vowels > 1) continue;
+            if (!plain || (head && Known(front)) || (tail && Known(back))) continue;
+            std::vector<size_t> mid;
+            if (!KnownWords(middle, 1, &mid, true)) continue;
+            if (head) out->push_back(Upper(p.substr(0, head)));
+            size_t at = 0;
+            for (size_t c : mid) { out->push_back(p.substr(head + at, c - at)); at = c; }
+            out->push_back(p.substr(head + at, middle.size() - at));
+            if (tail) out->push_back(Upper(p.substr(p.size() - tail)));
+            return true;
+        }
+    return false;
+}
+// One word's pieces: camel case split ("LeftArm"), and a trailing counter split off a longer word ("craft05" -> "craft", "5").
+void Pieces(const std::string& w, std::vector<std::string>* out) {
+    std::string piece;
+    for (size_t i = 0; i < w.size(); ++i) {
+        const unsigned char c = static_cast<unsigned char>(w[i]);
+        if (i && std::isupper(c) && std::islower(static_cast<unsigned char>(w[i - 1]))) { out->push_back(piece); piece.clear(); }
+        piece += w[i];
+    }
+    if (piece.empty()) return;
+    size_t letters = 0;
+    while (letters < piece.size() && std::isalpha(static_cast<unsigned char>(piece[letters]))) ++letters;
+    bool digits = letters < piece.size();
+    for (size_t i = letters; i < piece.size(); ++i) digits = digits && std::isdigit(static_cast<unsigned char>(piece[i]));
+    if (digits && letters >= 4) {
+        out->push_back(piece.substr(0, letters));
+        std::string number = piece.substr(letters);
+        while (number.size() > 1 && number[0] == '0') number.erase(0, 1);
+        out->push_back(number);
+        return;
+    }
+    out->push_back(piece);
+}
+// A name made by rule, as the game writes its own titles: words in title case (the small ones lower), designations in
+// capitals ("AV-14"), a hyphen kept only beside a letter or two ("Gill-M"), run-together words split by the vocabulary.
+std::string Tidy(const std::string& raw) {
+    static const char* const small[] = {"a", "an", "and", "at", "for", "in", "of", "on", "the", "to"};
+    std::vector<std::string> words;
+    std::string token;
+    auto flush = [&]() {
+        if (token.empty()) return;
+        // hyphenated parts: joined when one side is a letter or two, else separate words
+        std::vector<std::string> parts;
+        size_t at = 0;
+        while (true) { const size_t dash = token.find('-', at); parts.push_back(token.substr(at, dash == std::string::npos ? std::string::npos : dash - at)); if (dash == std::string::npos) break; at = dash + 1; }
+        std::string joined;
+        bool joined_short = false;	// the word so far already took a short part ("gill-m")
+        for (size_t i = 0; i < parts.size(); ++i) {
+            if (parts[i].empty()) continue;
+            const bool short_part = parts[i].size() <= 2 && AllAlpha(parts[i]);
+            if (!joined.empty() && short_part && !joined_short) { joined += "-" + parts[i]; joined_short = true; continue; }
+            if (!joined.empty()) words.push_back(joined);
+            joined = parts[i];
+            joined_short = false;
+        }
+        if (!joined.empty()) words.push_back(joined);
+        token.clear();
+    };
+    for (char c : raw) { if (c == ' ' || c == '_') flush(); else token += c; }
+    flush();
+    std::vector<std::string> split;
+    for (const std::string& w : words) {
+        if (w.find('-') != std::string::npos) { split.push_back(w); continue; }
+        std::vector<std::string> pieces;
+        Pieces(w, &pieces);
+        for (const std::string& p : pieces) {
+            std::vector<std::string> shown;
+            if (SplitWord(p, &shown)) split.insert(split.end(), shown.begin(), shown.end());
+            else split.push_back(p);
+        }
+    }
+    std::string out;
+    for (size_t i = 0; i < split.size(); ++i) {
+        std::string w = Word(split[i].c_str(), split[i].size());
+        bool lower = false;
+        for (const char* s : small) lower = lower || (i && Lower(w) == s && w.size() > 1 && w != Upper(w));	// "AT", a code, stays
+        if (lower) w = Lower(w);
+        else {
+            // each hyphenated part capitalised ("Gill-M"); the rest of the word as written
+            for (size_t k = 0; k < w.size(); ++k)
+                if (k == 0 || w[k - 1] == '-') w[k] = static_cast<char>(std::toupper(static_cast<unsigned char>(w[k])));
+        }
+        if (!out.empty()) out += ' ';
+        out += w;
+    }
+    return out;
+}
+std::string Join(const std::vector<std::string>& words, size_t from) {
+    std::string raw;
+    for (size_t i = from; i < words.size(); ++i) { if (!raw.empty()) raw += ' '; raw += words[i]; }
+    return Tidy(raw);
+}
+// A goodies subfolder: "ca_f_units" -> "Forseti units", "ca_be_aquila" -> "Battle Engine aquila" -> "Battle Engine Aquila".
+std::string Subfolder(const std::string& part) {
+    std::vector<std::string> words = Words(part);
+    size_t from = (!words.empty() && SameWord(words[0].c_str(), words[0].size(), "ca")) ? 1 : 0;
+    std::string out;
+    for (size_t i = from; i < words.size(); ++i) {
+        const std::string& w = words[i];
+        if (w.size() >= 2 && (w[0] == 'v' || w[0] == 'V') && std::isdigit(static_cast<unsigned char>(w[1]))) continue;	// a version folder
+        std::string shown = Word(w.c_str(), w.size());
+        for (const SPrefix& side : kSideWords) if (SameWord(w.c_str(), w.size(), side.code)) shown = side.group;
+        if (!out.empty()) out += ' ';
+        out += shown;
+    }
+    if (!out.empty()) out[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(out[0])));
+    return Tidy(out);
+}
+// A texture file's stem: no ".aya", no "(0)A8R8G8B8", no ".tga", no "mustbe_" (the game's mark for textures it keeps).
+std::string TextureStem(const char* file) {
+    std::string s = file ? file : "";
+    if (s.size() > 4 && SameWord(s.c_str() + s.size() - 4, 4, ".aya")) s.resize(s.size() - 4);
+    const size_t open = s.rfind('(');
+    if (open != std::string::npos && s.find(')', open) != std::string::npos) s.resize(open);
+    if (s.size() > 4 && (SameWord(s.c_str() + s.size() - 4, 4, ".tga") || SameWord(s.c_str() + s.size() - 4, 4, ".bmp"))) s.resize(s.size() - 4);
+    if (s.size() > 7 && SameWord(s.c_str(), 7, "mustbe_")) s = s.substr(7);
+    return s;
+}
+void AssetName(int kind, const char* file, bool interface_texture, std::string* group, std::string* name) {
+    if (kind == 0) {
+        // "m_" marks every model file; then the makers' side and kind prefix, if any
+        std::string s = file ? file : "";
+        if (s.size() > 8 && SameWord(s.c_str() + s.size() - 8, 8, ".msh.aya")) s.resize(s.size() - 8);
+        if (s.size() > 2 && SameWord(s.c_str(), 2, "m_")) s = s.substr(2);
+        std::vector<std::string> words = Words(s);
+        *group = "Models";
+        size_t from = 0;
+        if (!words.empty()) {
+            std::string first = words[0];
+            const size_t dash = first.find('-');
+            const std::string code = dash == std::string::npos ? first : first.substr(0, dash);
+            for (const SPrefix& p : kModelPrefixes)
+                if (SameWord(code.c_str(), code.size(), p.code)) {
+                    *group = p.group;
+                    if (dash == std::string::npos) from = 1;
+                    else words[0] = first.substr(dash + 1);
+                    break;
+                }
+        }
+        sModelCodes = true;
+        *name = Join(words, from);
+        if (name->empty()) *name = Join(words, 0);
+        sModelCodes = false;
+        return;
+    }
+    std::string stem = TextureStem(file);
+    std::vector<std::string> parts;
+    size_t at = 0;
+    while (true) {
+        const size_t sep = stem.find('%', at);
+        parts.push_back(stem.substr(at, sep == std::string::npos ? std::string::npos : sep - at));
+        if (sep == std::string::npos) break;
+        at = sep + 1;
+    }
+    *group = interface_texture ? "Interface" : "Textures";
+    size_t first = 0;
+    if (parts.size() > 1) {
+        *group = Join(Words(parts[0]), 0);
+        for (const SPrefix& f : kTextureFolders) if (SameWord(parts[0].c_str(), parts[0].size(), f.code)) *group = f.group;
+        first = 1;
+    }
+    std::string sub;
+    for (size_t i = first; i + 1 < parts.size(); ++i) {
+        const std::string s = Subfolder(parts[i]);
+        if (s.empty()) continue;
+        if (!sub.empty()) sub += ", ";
+        sub += s;
+    }
+    std::vector<std::string> words = Words(parts.back());
+    size_t from = 0;
+    // a goodies picture's own codes repeat its folder ("ca_fu_tank_av14" in "ca_f_units"): leave them out
+    if (!sub.empty()) {
+        static const char* const codes[] = {"ca", "fu", "mu", "fc", "mc", "fa", "ma", "fl", "ml", "be", "bea", "boss", "loc"};
+        while (from + 1 < words.size()) {
+            bool code = false;
+            for (const char* c : codes) code = code || SameWord(words[from].c_str(), words[from].size(), c);
+            if (!code) break;
+            ++from;
+        }
+    }
+    const std::string leaf = Join(words, from);
+    auto SameSingular = [](const std::string& a, const std::string& b) {
+        if (a.size() == b.size() && SameWord(a.c_str(), a.size(), b.c_str())) return true;
+        const std::string& longer = a.size() > b.size() ? a : b;
+        const std::string& shorter = a.size() > b.size() ? b : a;
+        if (longer.size() == shorter.size() + 1 && (longer.back() == 's' || longer.back() == 'S') &&
+            SameWord(longer.c_str(), shorter.size(), shorter.c_str())) return true;
+        if (longer.size() == shorter.size() + 2 && SameWord(longer.c_str() + shorter.size(), 2, "es") &&
+            SameWord(longer.c_str(), shorter.size(), shorter.c_str())) return true;
+        return false;
+    };
+    if (!sub.empty() && !leaf.empty() && SameSingular(leaf, sub)) { *name = leaf; return; }
+    *name = sub.empty() ? leaf : leaf.empty() ? sub : sub + ", " + leaf;
+    if (name->empty()) *name = leaf.empty() ? std::string("Unnamed item") : leaf;
+}
+// "Group: name" for a row, and the parts for the details; the game's own title for a goodie wins over the made name.
+void AssetTitle(size_t i, std::string* group, std::string* name) {
+    const char* path = PortCeAssetCatalogPath(catalog, i);
+    const char* base = path ? std::strrchr(path, '/') : nullptr;
+    const char* file = base ? base + 1 : path;
+    const char* catalog_group = PortCeAssetCatalogGroup(catalog, i);
+    const int kind = PortCeAssetCatalogKind(catalog, i) == CE_ASSET_TEXTURE ? 1 : 0;
+    AssetName(kind, file, catalog_group && !std::strcmp(catalog_group, "Interface textures"), group, name);
+    char words[160];
+    if (file && PortCeCatalogueGoodieName(kind, file, words, sizeof words)) {
+        char shown[160]; Name(words, shown, sizeof shown);
+        *name = shown;
+        if (kind == 0) *group = "Units";		// a goodie's model is one of the game's units, whatever its file's prefix
+    }
+    char clean[200]; Name(name->c_str(), clean, sizeof clean); *name = clean;
+}
+std::string AssetRow(size_t i) {
+    std::string group, name;
+    AssetTitle(i, &group, &name);
+    return group + ": " + name;
+}
+
 // A file's name as a player reads it: underscores and path marks become spaces, as in every other name here.
 std::string PlainFile(const char* name) {
     char text[100]; Name(name, text, sizeof text);
@@ -149,9 +505,9 @@ std::string EffectTitle(const char* raw) {
         if (at > 2 && at < leaf.size() && leaf[at] == '_') leaf = leaf.substr(at + 1);
     }
     char words[CE_CATALOGUE_SOUND_NAME_MAX + 1]; Name(leaf.c_str(), words, sizeof words);
-    if (folder.empty()) return words;
+    if (folder.empty()) return Tidy(words);
     char group[CE_CATALOGUE_SOUND_NAME_MAX + 1]; Name(folder.c_str(), group, sizeof group);
-    return std::string(group) + ": " + words;
+    return Tidy(group) + ": " + Tidy(words);
 }
 size_t Entry(unsigned slot) {
     const Collection& c = collection[category];
@@ -193,6 +549,24 @@ void PortCeCatalogueClose() {
 void PortCeCatalogueOpen() {
     PortCeCatalogueClose(); PortPathsNamesOnly();
     char error[128]; catalog = PortCeAssetCatalogOpenKinds(PortGameDir(), CE_ASSET_MODEL | CE_ASSET_TEXTURE | CE_ASSET_SPEECH, error, sizeof error);
+    vocabulary.clear();
+    text_words.clear();
+    PortCeCatalogueTextWords(AddTextWord, nullptr);
+    for (size_t i = 0; i < PortCeAssetCatalogCount(catalog); ++i) {
+        const int kind = PortCeAssetCatalogKind(catalog, i);
+        if (kind != CE_ASSET_MODEL && kind != CE_ASSET_TEXTURE) continue;
+        const char* path = PortCeAssetCatalogPath(catalog, i);
+        const char* base = path ? std::strrchr(path, '/') : nullptr;
+        std::string word;
+        for (const char* p = base ? base + 1 : (path ? path : ""); ; ++p) {
+            const unsigned char c = static_cast<unsigned char>(*p);
+            if (c && std::isalpha(c) && !(std::isupper(c) && !word.empty() && std::islower(static_cast<unsigned char>(word.back())))) { word += static_cast<char>(c); continue; }
+            if (word.size() >= 3) vocabulary.insert(Lower(word));
+            word.clear();
+            if (!c) break;
+            if (std::isalpha(c)) word += static_cast<char>(c);
+        }
+    }
     // Speech collections: the running language's folder first, the others in the catalogue's order.
     const std::string running = SearchName(PortCeCatalogueLanguage());
     for (int pass = 0; pass < 2; ++pass)
@@ -310,7 +684,8 @@ void PortCeCatalogueTitle(unsigned slot, char* out, unsigned size) {
     const size_t i = Entry(slot); out[0] = 0;
     if (i == static_cast<size_t>(-1)) return;
     if (category == 2) std::snprintf(out, size, "%s", EffectTitle(SoundName(i)).c_str());
-    else Name(SpeechCategory(category) ? SpeechTitle(i) : PortCeAssetCatalogTitle(catalog, i), out, size);
+    else if (SpeechCategory(category)) Name(SpeechTitle(i), out, size);
+    else std::snprintf(out, size, "%s", AssetRow(i).c_str());
 }
 void PortCeCatalogueDetails(unsigned slot, char* out, unsigned size) {
     if (!size) return;
@@ -333,25 +708,20 @@ void PortCeCatalogueDetails(unsigned slot, char* out, unsigned size) {
                       collection[category].page * CE_CATALOGUE_SLOTS + slot + 1, PortCeCatalogueMatches());
         return;
     }
-    char name[100]; Name(PortCeAssetCatalogTitle(catalog, i), name, sizeof name);
-    const char* group = PortCeAssetCatalogGroup(catalog, i);
-    const char* type = !category ? "Installed model" : group && !std::strcmp(group, "Interface textures") ? "Installed interface texture" : "Installed game texture";
+    // the name, its group and place; for a texture its size, and its format on the last line
+    std::string group, name;
+    AssetTitle(i, &group, &name);
+    const unsigned place = collection[category].page * CE_CATALOGUE_SLOTS + slot + 1;
     if (category) {
-        const char* path = PortCeAssetCatalogPath(catalog, i);
-        const char* base = path ? std::strrchr(path, '/') : nullptr;
-        const std::string filename = PlainFile(base ? base + 1 : path);
-        char details[90];
-        CeAssetTextureHeader header;
-        if (PortCeAssetCatalogTextureHeader(catalog, i, &header))
-            std::snprintf(details, sizeof details, "%u x %u pixels\nDDS: %s, %u mip level%s",
-                          unsigned(header.width), unsigned(header.height), header.format, unsigned(header.levels), header.levels == 1 ? "" : "s");
-        else std::snprintf(details, sizeof details, "Texture header unavailable.");
-        std::snprintf(out, size, "%s\nSource: %s\n%s\n%s", name,
-                      group && !std::strcmp(group, "Interface textures") ? "resources/textures" : "resources/dxtntextures", filename.c_str(), details);
+        unsigned w = 0, h = 0; bool alpha = false;
+        char size_line[96];
+        if (PortCeCatalogueTextureSize(slot, &w, &h, &alpha))
+            std::snprintf(size_line, sizeof size_line, "%u x %u pixels%s", w, h, alpha ? ", with transparency" : "");
+        else std::snprintf(size_line, sizeof size_line, "Its size could not be read.");
+        std::snprintf(out, size, "%s\n%s, item %u of %u.\n%s", name.c_str(), group.c_str(), place, PortCeCatalogueMatches(), size_line);
         return;
     }
-    std::snprintf(out, size, "%s\n\n%s.\nItem %u of %u in %s.", name, type,
-                  collection[category].page * CE_CATALOGUE_SLOTS + slot + 1, PortCeCatalogueMatches(), category ? "Textures" : "Models");
+    std::snprintf(out, size, "%s\n%s, item %u of %u.", name.c_str(), group.c_str(), place, PortCeCatalogueMatches());
 }
 
 bool PortCeCatalogueIsTexture(unsigned slot) {
@@ -388,5 +758,41 @@ int PortCeCatalogueSelectedIndex() {
     return at == c.matches.end() ? -1 : static_cast<int>(at - c.matches.begin());
 }
 int PortCeCatalogueCategory() { return category; }
+void PortCeCatalogueItemParts(unsigned slot, char* group, unsigned group_size, char* name, unsigned name_size) {
+    if (group_size) group[0] = 0;
+    if (name_size) name[0] = 0;
+    const size_t i = Entry(slot);
+    if (i == static_cast<size_t>(-1) || !group_size || !name_size) return;
+    if (category == 2) {
+        // an effect's "Group: words"
+        const std::string title = EffectTitle(SoundName(i));
+        const size_t colon = title.find(": ");
+        if (colon == std::string::npos) std::snprintf(name, name_size, "%s", title.c_str());
+        else { std::snprintf(group, group_size, "%s", title.substr(0, colon).c_str()); std::snprintf(name, name_size, "%s", title.substr(colon + 2).c_str()); }
+        return;
+    }
+    if (SpeechCategory(category)) { Name(SpeechTitle(i), name, name_size); return; }
+    std::string g, n;
+    AssetTitle(i, &g, &n);
+    std::snprintf(group, group_size, "%s", g.c_str());
+    std::snprintf(name, name_size, "%s", n.c_str());
+}
+int PortCeCatalogueModelGoodie(unsigned slot) {
+    const size_t i = Entry(slot);
+    if (category != 0 || i == static_cast<size_t>(-1)) return -1;
+    const char* path = PortCeAssetCatalogPath(catalog, i);
+    const char* base = path ? std::strrchr(path, '/') : nullptr;
+    return PortCeCatalogueGoodieModel(base ? base + 1 : path);
+}
+bool PortCeCatalogueTextureSize(unsigned slot, unsigned* width, unsigned* height, bool* transparency) {
+    const size_t i = Entry(slot);
+    CeAssetTextureHeader header;
+    if (category != 1 || i == static_cast<size_t>(-1) || !PortCeAssetCatalogTextureHeader(catalog, i, &header)) return false;
+    *width = header.width; *height = header.height;
+    // formats that keep an alpha channel: the "A..." pixel layouts and DXT2 to DXT5
+    const char* f = header.format;
+    *transparency = f[0] == 'A' || (!std::strncmp(f, "DXT", 3) && f[3] >= '2' && f[3] <= '5');
+    return true;
+}
 bool PortCeCatalogueBrowsingSounds() { return opened && (category == 2 || SpeechCategory(category)); }
 #endif

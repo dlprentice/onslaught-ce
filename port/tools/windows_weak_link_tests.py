@@ -52,6 +52,9 @@ OBJECTS = None      # --objects
 REQUIRED = {
     "_PortCeEditorActive": "the save fence asks it: no career write during a map editor session",
     "_PortCeMuseumVisitActive": "the save fence asks it: no career write during a museum visit",
+    "_PortCeMuseumMusicDuck": "patch 0258 asks it: the museum cinema ducks hall music while a film plays",
+    "_PortBinkHasSound": "the museum cinema asks it: duck music to silence under a film with audio, bed without",
+    "_PortBinkPause": "the museum cinema calls it: hold film sound and clock while the game is paused",
     "_PortCeCmdWorldViewToken": "the world view asks it for the commander's picture",
     "_PortCeEditorWorldViewToken": "the world view asks it for the editor's picture; the editor calls it directly",
     "_PortFeelOn": "the platform layer asks it before every frame-feel call",

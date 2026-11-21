@@ -1,0 +1,812 @@
+--- a/FEPGoodies.cpp
++++ b/FEPGoodies.cpp
+@@ -571,175 +571,186 @@
+ 	return TRUE;
+ }
+ 
+-#ifdef RESBUILDER
++#if defined(RESBUILDER) || defined(CE_VERSION)	// CE (patch 0251): the Catalogue reads the goodie tables' names
++#ifdef CE_VERSION
++// CE (patch 0251): the Catalogue asks the two goodie tables below for file names only, loading nothing.
++static bool			sCeGoodieNamesOnly = false;
++static const char	*sCeGoodieFile = NULL;
++#define CE_GOODIE_MESH(name)						(sCeGoodieNamesOnly ? (sCeGoodieFile = (name), (CMESH *)NULL) : CMESH::GetMesh(name))
++#define CE_GOODIE_TEXTURE(name, format, type, mips)	(sCeGoodieNamesOnly ? (sCeGoodieFile = (name), (CTEXTURE *)NULL) : CTEXTURE::GetTextureByName(name, format, type, mips))
++#else
++#define CE_GOODIE_MESH(name)						CMESH::GetMesh(name)
++#define CE_GOODIE_TEXTURE(name, format, type, mips)	CTEXTURE::GetTextureByName(name, format, type, mips)
++#endif
++
+ static CTEXTURE *get_goodie_texture_hack(SINT goodie_num)
+ {
+ 	switch (goodie_num)
+ 	{
+ 		default:
+-		case 0:		return CTEXTURE::GetTextureByName("goodies\\ca_f_characters\\ca_fc_hawk.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1);
+-		case 1:		return CTEXTURE::GetTextureByName("goodies\\ca_f_characters\\ca_fc_tatianna.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1);
+-		case 2:		return CTEXTURE::GetTextureByName("goodies\\ca_f_characters\\ca_fc_kramer.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1);
+-		case 3:		return CTEXTURE::GetTextureByName("goodies\\ca_f_characters\\ca_fc_lorenzo.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1);
+-		case 4:		return CTEXTURE::GetTextureByName("goodies\\ca_f_characters\\ca_fc_tara.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1);
+-		case 5:		return CTEXTURE::GetTextureByName("goodies\\ca_f_characters\\ca_fc_billy.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1);
+-		case 6:		return CTEXTURE::GetTextureByName("goodies\\ca_f_characters\\ca_fc_carver.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1);
+-		case 7:		return CTEXTURE::GetTextureByName("goodies\\ca_m_characters\\ca_mc_surt.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1);
+-		case 12:	return CTEXTURE::GetTextureByName("goodies\\ca_f_characters\\ca_fc_trooper01.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1);
+-		case 13:	return CTEXTURE::GetTextureByName("goodies\\ca_f_characters\\ca_fc_early_trooper.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1);
+-		case 24:	return CTEXTURE::GetTextureByName("goodies\\ca_f_units\\ca_fu_venturer.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1);
+-		case 33:	return CTEXTURE::GetTextureByName("goodies\\ca_m_characters\\ca_mc_grunt.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1);
+-		case 34:	return CTEXTURE::GetTextureByName("goodies\\ca_m_characters\\ca_mc_firebreather.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1);
+-		case 35:	return CTEXTURE::GetTextureByName("goodies\\ca_m_characters\\ca_mc_commando.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1);
+-		case 58:	return CTEXTURE::GetTextureByName("goodies\\ca_bosses\\ca_boss_thunderhead.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1);
+-		case 59:	return CTEXTURE::GetTextureByName("goodies\\ca_bosses\\ca_boss_warspite.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1);
+-		case 60:	return CTEXTURE::GetTextureByName("goodies\\ca_bosses\\ca_boss_sub.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1);
+-		case 61:	return CTEXTURE::GetTextureByName("goodies\\ca_bosses\\ca_boss_hivev02.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1);
+-		case 62:	return CTEXTURE::GetTextureByName("goodies\\ca_bosses\\ca_boss_gill-m.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1);
+-		case 63:	return CTEXTURE::GetTextureByName("goodies\\ca_m_units\\ca_mu_carvers_plane.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1);
+-		case 64:	return CTEXTURE::GetTextureByName("goodies\\ca_bosses\\ca_boss_fenrir.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1);
+-		case 65:	return CTEXTURE::GetTextureByName("goodies\\ca_bosses\\ca_boss_sentinel_01.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1);
+-
+-		case 71:	return CTEXTURE::GetTextureByName("goodies\\ca_be_aquila\\ca_be_final01.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 			
+-		case 72:	return CTEXTURE::GetTextureByName("goodies\\ca_be_aquila\\ca_be_final02.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 			
+-		case 73:	return CTEXTURE::GetTextureByName("goodies\\ca_be_aquila\\ca_bea_battle_pic.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 			
++		case 0:		return CE_GOODIE_TEXTURE("goodies\\ca_f_characters\\ca_fc_hawk.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1);
++		case 1:		return CE_GOODIE_TEXTURE("goodies\\ca_f_characters\\ca_fc_tatianna.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1);
++		case 2:		return CE_GOODIE_TEXTURE("goodies\\ca_f_characters\\ca_fc_kramer.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1);
++		case 3:		return CE_GOODIE_TEXTURE("goodies\\ca_f_characters\\ca_fc_lorenzo.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1);
++		case 4:		return CE_GOODIE_TEXTURE("goodies\\ca_f_characters\\ca_fc_tara.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1);
++		case 5:		return CE_GOODIE_TEXTURE("goodies\\ca_f_characters\\ca_fc_billy.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1);
++		case 6:		return CE_GOODIE_TEXTURE("goodies\\ca_f_characters\\ca_fc_carver.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1);
++		case 7:		return CE_GOODIE_TEXTURE("goodies\\ca_m_characters\\ca_mc_surt.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1);
++		case 12:	return CE_GOODIE_TEXTURE("goodies\\ca_f_characters\\ca_fc_trooper01.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1);
++		case 13:	return CE_GOODIE_TEXTURE("goodies\\ca_f_characters\\ca_fc_early_trooper.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1);
++		case 24:	return CE_GOODIE_TEXTURE("goodies\\ca_f_units\\ca_fu_venturer.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1);
++		case 33:	return CE_GOODIE_TEXTURE("goodies\\ca_m_characters\\ca_mc_grunt.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1);
++		case 34:	return CE_GOODIE_TEXTURE("goodies\\ca_m_characters\\ca_mc_firebreather.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1);
++		case 35:	return CE_GOODIE_TEXTURE("goodies\\ca_m_characters\\ca_mc_commando.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1);
++		case 58:	return CE_GOODIE_TEXTURE("goodies\\ca_bosses\\ca_boss_thunderhead.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1);
++		case 59:	return CE_GOODIE_TEXTURE("goodies\\ca_bosses\\ca_boss_warspite.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1);
++		case 60:	return CE_GOODIE_TEXTURE("goodies\\ca_bosses\\ca_boss_sub.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1);
++		case 61:	return CE_GOODIE_TEXTURE("goodies\\ca_bosses\\ca_boss_hivev02.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1);
++		case 62:	return CE_GOODIE_TEXTURE("goodies\\ca_bosses\\ca_boss_gill-m.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1);
++		case 63:	return CE_GOODIE_TEXTURE("goodies\\ca_m_units\\ca_mu_carvers_plane.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1);
++		case 64:	return CE_GOODIE_TEXTURE("goodies\\ca_bosses\\ca_boss_fenrir.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1);
++		case 65:	return CE_GOODIE_TEXTURE("goodies\\ca_bosses\\ca_boss_sentinel_01.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1);
++
++		case 71:	return CE_GOODIE_TEXTURE("goodies\\ca_be_aquila\\ca_be_final01.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 			
++		case 72:	return CE_GOODIE_TEXTURE("goodies\\ca_be_aquila\\ca_be_final02.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 			
++		case 73:	return CE_GOODIE_TEXTURE("goodies\\ca_be_aquila\\ca_bea_battle_pic.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 			
+ 			
+-		case 74:	return CTEXTURE::GetTextureByName("goodies\\ashley.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1);
+-		case 76:	return CTEXTURE::GetTextureByName("goodies\\team.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
++		case 74:	return CE_GOODIE_TEXTURE("goodies\\ashley.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1);
++		case 76:	return CE_GOODIE_TEXTURE("goodies\\team.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
+ 
+-		case 78:	return CTEXTURE::GetTextureByName("goodies\\ca_be_aquila\\ca_be_v1.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
+-		case 79:	return CTEXTURE::GetTextureByName("goodies\\ca_be_aquila\\ca_be_v2_bluprint01.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
+-		case 80:	return CTEXTURE::GetTextureByName("goodies\\ca_be_aquila\\ca_be_v2_bluprint02.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
+-		case 81:	return CTEXTURE::GetTextureByName("goodies\\ca_be_aquila\\ca_be_v2_pg01.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
+-		case 82:	return CTEXTURE::GetTextureByName("goodies\\ca_be_aquila\\ca_be_v2_pg02.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
+-		case 83:	return CTEXTURE::GetTextureByName("goodies\\ca_be_aquila\\ca_be_v3.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
+-		case 84:	return CTEXTURE::GetTextureByName("goodies\\ca_be_aquila\\ca_be_v4&5.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
+-		case 85:	return CTEXTURE::GetTextureByName("goodies\\ca_be_aquila\\ca_be_v6.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
+-		case 86:	return CTEXTURE::GetTextureByName("goodies\\ca_be_aquila\\ca_be_v7.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
+-
+-		case 87:	return CTEXTURE::GetTextureByName("goodies\\ca_bosses\\ca_boss_sentinel_02.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1);
+-		case 88:	return CTEXTURE::GetTextureByName("goodies\\ca_bosses\\ca_boss_sentinel_03.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 			
+-		case 89:	return CTEXTURE::GetTextureByName("goodies\\ca_bosses\\ca_boss_sentinel_04.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
+-		case 90:	return CTEXTURE::GetTextureByName("goodies\\ca_bosses\\ca_boss_hivev02.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
+-		case 91:	return CTEXTURE::GetTextureByName("goodies\\ca_bosses\\ca_boss_kraken.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
+-
+-		case 92:	return CTEXTURE::GetTextureByName("goodies\\ca_cutscene_locations\\ca_cl_f_briefing_room.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
+-		case 93:	return CTEXTURE::GetTextureByName("goodies\\ca_cutscene_locations\\ca_cl_f_bunk_room.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
+-		case 94:	return CTEXTURE::GetTextureByName("goodies\\ca_cutscene_locations\\ca_cl_f_cell.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
+-		case 95:	return CTEXTURE::GetTextureByName("goodies\\ca_cutscene_locations\\ca_cl_f_command_room_interior.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
+-		case 96:	return CTEXTURE::GetTextureByName("goodies\\ca_cutscene_locations\\ca_cl_f_docks_exterior.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
+-		case 97:	return CTEXTURE::GetTextureByName("goodies\\ca_cutscene_locations\\ca_cl_f_docks_interior.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
+-		case 98:	return CTEXTURE::GetTextureByName("goodies\\ca_cutscene_locations\\ca_cl_f_fighter_cockpit.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
+-		case 99:	return CTEXTURE::GetTextureByName("goodies\\ca_cutscene_locations\\ca_cl_f_hanger_interior.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
+-		case 100:	return CTEXTURE::GetTextureByName("goodies\\ca_cutscene_locations\\ca_cl_f_lifter_cockpit.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
+-		case 101:	return CTEXTURE::GetTextureByName("goodies\\ca_cutscene_locations\\ca_cl_f_loader_mech.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
+-		case 102:	return CTEXTURE::GetTextureByName("goodies\\ca_cutscene_locations\\ca_cl_f_marshall_bridge.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
+-		case 103:	return CTEXTURE::GetTextureByName("goodies\\ca_cutscene_locations\\ca_cl_f_research_compound.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
+-		case 104:	return CTEXTURE::GetTextureByName("goodies\\ca_cutscene_locations\\ca_cl_f_venturer_bridge.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
+-		case 105:	return CTEXTURE::GetTextureByName("goodies\\ca_cutscene_locations\\ca_cl_m_cell.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
+-		case 106:	return CTEXTURE::GetTextureByName("goodies\\ca_cutscene_locations\\ca_cl_m_fenrir_bridge01.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
+-		case 107:	return CTEXTURE::GetTextureByName("goodies\\ca_cutscene_locations\\ca_cl_m_fenrir_bridge02.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
+-		case 108:	return CTEXTURE::GetTextureByName("goodies\\ca_cutscene_locations\\ca_cl_m_staging_area.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
+-
+-		case 109:	return CTEXTURE::GetTextureByName("goodies\\ca_f_architecture\\ca_fa_f_buildings01.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
+-		case 110:	return CTEXTURE::GetTextureByName("goodies\\ca_f_architecture\\ca_fa_f_buildings02.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
+-		case 111:	return CTEXTURE::GetTextureByName("goodies\\ca_f_architecture\\ca_fa_f_buildings03.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
+-		case 112:	return CTEXTURE::GetTextureByName("goodies\\ca_f_architecture\\ca_fa_f_buildings04.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
+-		case 113:	return CTEXTURE::GetTextureByName("goodies\\ca_f_architecture\\ca_fa_f_buildings05.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
+-		case 114:	return CTEXTURE::GetTextureByName("goodies\\ca_f_architecture\\ca_fa_f_buildings06.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
+-		case 115:	return CTEXTURE::GetTextureByName("goodies\\ca_f_architecture\\ca_fa_f_buildings07.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
+-		case 116:	return CTEXTURE::GetTextureByName("goodies\\ca_f_architecture\\ca_fa_f_buildings08.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
+-
+-		case 117:	return CTEXTURE::GetTextureByName("goodies\\ca_f_characters\\ca_fc_characters.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
+-		case 118:	return CTEXTURE::GetTextureByName("goodies\\ca_f_characters\\ca_fc_general.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
+-		case 119:	return CTEXTURE::GetTextureByName("goodies\\ca_f_characters\\ca_fc_trooper02.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
+-
+-		case 120:	return CTEXTURE::GetTextureByName("goodies\\ca_f_units\\CA_FU_ forseti forces.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 			
+-		case 121:	return CTEXTURE::GetTextureByName("goodies\\ca_f_units\\ca_fu_a15_ground_attack.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 			
+-		case 122:	return CTEXTURE::GetTextureByName("goodies\\ca_f_units\\ca_fu_av6_rhino_apc.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 			
+-		case 123:	return CTEXTURE::GetTextureByName("goodies\\ca_f_units\\ca_fu_early_craft01.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 			
+-		case 124:	return CTEXTURE::GetTextureByName("goodies\\ca_f_units\\ca_fu_early_craft02.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 			
+-		case 125:	return CTEXTURE::GetTextureByName("goodies\\ca_f_units\\ca_fu_early_craft03.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 			
+-		case 126:	return CTEXTURE::GetTextureByName("goodies\\ca_f_units\\ca_fu_early_craft04.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 			
+-		case 127:	return CTEXTURE::GetTextureByName("goodies\\ca_f_units\\ca_fu_early_craft05.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 			
+-		case 128:	return CTEXTURE::GetTextureByName("goodies\\ca_f_units\\ca_fu_early_craft06.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 			
+-		case 129:	return CTEXTURE::GetTextureByName("goodies\\ca_f_units\\ca_fu_f24.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 			
+-		case 130:	return CTEXTURE::GetTextureByName("goodies\\ca_f_units\\ca_fu_heavy_bomber.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 			
+-		case 131:	return CTEXTURE::GetTextureByName("goodies\\ca_f_units\\ca_fu_heavy_lifter.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 			
+-		case 132:	return CTEXTURE::GetTextureByName("goodies\\ca_f_units\\ca_fu_sat_launcher.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 			
+-		case 133:	return CTEXTURE::GetTextureByName("goodies\\ca_f_units\\ca_fu_style.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 			
+-		case 134:	return CTEXTURE::GetTextureByName("goodies\\ca_f_units\\ca_fu_tank_av14.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 			
+-		case 135:	return CTEXTURE::GetTextureByName("goodies\\ca_f_units\\ca_fu_tank_av18.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 			
+-		case 136:	return CTEXTURE::GetTextureByName("goodies\\ca_f_units\\ca_fu_tank_m1.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 			
+-		case 137:	return CTEXTURE::GetTextureByName("goodies\\ca_f_units\\ca_fu_tank_m112.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 			
+-		case 138:	return CTEXTURE::GetTextureByName("goodies\\ca_f_units\\ca_fu_tanks.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 			
+-		case 139:	return CTEXTURE::GetTextureByName("goodies\\ca_f_units\\ca_fu_truck.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 			
+-		case 140:	return CTEXTURE::GetTextureByName("goodies\\ca_f_units\\ca_fu_wildcard_plane.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 			
+-		case 141:	return CTEXTURE::GetTextureByName("goodies\\ca_f_units\\ca_fu_xf24-venom_fighter.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1);
++		case 78:	return CE_GOODIE_TEXTURE("goodies\\ca_be_aquila\\ca_be_v1.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
++		case 79:	return CE_GOODIE_TEXTURE("goodies\\ca_be_aquila\\ca_be_v2_bluprint01.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
++		case 80:	return CE_GOODIE_TEXTURE("goodies\\ca_be_aquila\\ca_be_v2_bluprint02.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
++		case 81:	return CE_GOODIE_TEXTURE("goodies\\ca_be_aquila\\ca_be_v2_pg01.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
++		case 82:	return CE_GOODIE_TEXTURE("goodies\\ca_be_aquila\\ca_be_v2_pg02.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
++		case 83:	return CE_GOODIE_TEXTURE("goodies\\ca_be_aquila\\ca_be_v3.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
++		case 84:	return CE_GOODIE_TEXTURE("goodies\\ca_be_aquila\\ca_be_v4&5.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
++		case 85:	return CE_GOODIE_TEXTURE("goodies\\ca_be_aquila\\ca_be_v6.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
++		case 86:	return CE_GOODIE_TEXTURE("goodies\\ca_be_aquila\\ca_be_v7.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
++
++		case 87:	return CE_GOODIE_TEXTURE("goodies\\ca_bosses\\ca_boss_sentinel_02.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1);
++		case 88:	return CE_GOODIE_TEXTURE("goodies\\ca_bosses\\ca_boss_sentinel_03.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 			
++		case 89:	return CE_GOODIE_TEXTURE("goodies\\ca_bosses\\ca_boss_sentinel_04.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
++		case 90:	return CE_GOODIE_TEXTURE("goodies\\ca_bosses\\ca_boss_hivev02.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
++		case 91:	return CE_GOODIE_TEXTURE("goodies\\ca_bosses\\ca_boss_kraken.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
++
++		case 92:	return CE_GOODIE_TEXTURE("goodies\\ca_cutscene_locations\\ca_cl_f_briefing_room.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
++		case 93:	return CE_GOODIE_TEXTURE("goodies\\ca_cutscene_locations\\ca_cl_f_bunk_room.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
++		case 94:	return CE_GOODIE_TEXTURE("goodies\\ca_cutscene_locations\\ca_cl_f_cell.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
++		case 95:	return CE_GOODIE_TEXTURE("goodies\\ca_cutscene_locations\\ca_cl_f_command_room_interior.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
++		case 96:	return CE_GOODIE_TEXTURE("goodies\\ca_cutscene_locations\\ca_cl_f_docks_exterior.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
++		case 97:	return CE_GOODIE_TEXTURE("goodies\\ca_cutscene_locations\\ca_cl_f_docks_interior.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
++		case 98:	return CE_GOODIE_TEXTURE("goodies\\ca_cutscene_locations\\ca_cl_f_fighter_cockpit.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
++		case 99:	return CE_GOODIE_TEXTURE("goodies\\ca_cutscene_locations\\ca_cl_f_hanger_interior.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
++		case 100:	return CE_GOODIE_TEXTURE("goodies\\ca_cutscene_locations\\ca_cl_f_lifter_cockpit.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
++		case 101:	return CE_GOODIE_TEXTURE("goodies\\ca_cutscene_locations\\ca_cl_f_loader_mech.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
++		case 102:	return CE_GOODIE_TEXTURE("goodies\\ca_cutscene_locations\\ca_cl_f_marshall_bridge.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
++		case 103:	return CE_GOODIE_TEXTURE("goodies\\ca_cutscene_locations\\ca_cl_f_research_compound.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
++		case 104:	return CE_GOODIE_TEXTURE("goodies\\ca_cutscene_locations\\ca_cl_f_venturer_bridge.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
++		case 105:	return CE_GOODIE_TEXTURE("goodies\\ca_cutscene_locations\\ca_cl_m_cell.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
++		case 106:	return CE_GOODIE_TEXTURE("goodies\\ca_cutscene_locations\\ca_cl_m_fenrir_bridge01.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
++		case 107:	return CE_GOODIE_TEXTURE("goodies\\ca_cutscene_locations\\ca_cl_m_fenrir_bridge02.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
++		case 108:	return CE_GOODIE_TEXTURE("goodies\\ca_cutscene_locations\\ca_cl_m_staging_area.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
++
++		case 109:	return CE_GOODIE_TEXTURE("goodies\\ca_f_architecture\\ca_fa_f_buildings01.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
++		case 110:	return CE_GOODIE_TEXTURE("goodies\\ca_f_architecture\\ca_fa_f_buildings02.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
++		case 111:	return CE_GOODIE_TEXTURE("goodies\\ca_f_architecture\\ca_fa_f_buildings03.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
++		case 112:	return CE_GOODIE_TEXTURE("goodies\\ca_f_architecture\\ca_fa_f_buildings04.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
++		case 113:	return CE_GOODIE_TEXTURE("goodies\\ca_f_architecture\\ca_fa_f_buildings05.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
++		case 114:	return CE_GOODIE_TEXTURE("goodies\\ca_f_architecture\\ca_fa_f_buildings06.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
++		case 115:	return CE_GOODIE_TEXTURE("goodies\\ca_f_architecture\\ca_fa_f_buildings07.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
++		case 116:	return CE_GOODIE_TEXTURE("goodies\\ca_f_architecture\\ca_fa_f_buildings08.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
++
++		case 117:	return CE_GOODIE_TEXTURE("goodies\\ca_f_characters\\ca_fc_characters.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
++		case 118:	return CE_GOODIE_TEXTURE("goodies\\ca_f_characters\\ca_fc_general.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
++		case 119:	return CE_GOODIE_TEXTURE("goodies\\ca_f_characters\\ca_fc_trooper02.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
++
++		case 120:	return CE_GOODIE_TEXTURE("goodies\\ca_f_units\\CA_FU_ forseti forces.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 			
++		case 121:	return CE_GOODIE_TEXTURE("goodies\\ca_f_units\\ca_fu_a15_ground_attack.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 			
++		case 122:	return CE_GOODIE_TEXTURE("goodies\\ca_f_units\\ca_fu_av6_rhino_apc.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 			
++		case 123:	return CE_GOODIE_TEXTURE("goodies\\ca_f_units\\ca_fu_early_craft01.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 			
++		case 124:	return CE_GOODIE_TEXTURE("goodies\\ca_f_units\\ca_fu_early_craft02.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 			
++		case 125:	return CE_GOODIE_TEXTURE("goodies\\ca_f_units\\ca_fu_early_craft03.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 			
++		case 126:	return CE_GOODIE_TEXTURE("goodies\\ca_f_units\\ca_fu_early_craft04.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 			
++		case 127:	return CE_GOODIE_TEXTURE("goodies\\ca_f_units\\ca_fu_early_craft05.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 			
++		case 128:	return CE_GOODIE_TEXTURE("goodies\\ca_f_units\\ca_fu_early_craft06.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 			
++		case 129:	return CE_GOODIE_TEXTURE("goodies\\ca_f_units\\ca_fu_f24.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 			
++		case 130:	return CE_GOODIE_TEXTURE("goodies\\ca_f_units\\ca_fu_heavy_bomber.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 			
++		case 131:	return CE_GOODIE_TEXTURE("goodies\\ca_f_units\\ca_fu_heavy_lifter.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 			
++		case 132:	return CE_GOODIE_TEXTURE("goodies\\ca_f_units\\ca_fu_sat_launcher.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 			
++		case 133:	return CE_GOODIE_TEXTURE("goodies\\ca_f_units\\ca_fu_style.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 			
++		case 134:	return CE_GOODIE_TEXTURE("goodies\\ca_f_units\\ca_fu_tank_av14.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 			
++		case 135:	return CE_GOODIE_TEXTURE("goodies\\ca_f_units\\ca_fu_tank_av18.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 			
++		case 136:	return CE_GOODIE_TEXTURE("goodies\\ca_f_units\\ca_fu_tank_m1.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 			
++		case 137:	return CE_GOODIE_TEXTURE("goodies\\ca_f_units\\ca_fu_tank_m112.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 			
++		case 138:	return CE_GOODIE_TEXTURE("goodies\\ca_f_units\\ca_fu_tanks.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 			
++		case 139:	return CE_GOODIE_TEXTURE("goodies\\ca_f_units\\ca_fu_truck.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 			
++		case 140:	return CE_GOODIE_TEXTURE("goodies\\ca_f_units\\ca_fu_wildcard_plane.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 			
++		case 141:	return CE_GOODIE_TEXTURE("goodies\\ca_f_units\\ca_fu_xf24-venom_fighter.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1);
+ 			
+-		case 142:	return CTEXTURE::GetTextureByName("goodies\\ca_m_architecture\\ca_ma_airfighterfactory.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
+-		case 143:	return CTEXTURE::GetTextureByName("goodies\\ca_m_architecture\\ca_ma_barracks.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
+-		case 144:	return CTEXTURE::GetTextureByName("goodies\\ca_m_architecture\\ca_ma_mech_factory.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
+-		case 145:	return CTEXTURE::GetTextureByName("goodies\\ca_m_architecture\\ca_ma_muspell architecture.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
+-		case 146:	return CTEXTURE::GetTextureByName("goodies\\ca_m_architecture\\ca_ma_tankfactory.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
++		case 142:	return CE_GOODIE_TEXTURE("goodies\\ca_m_architecture\\ca_ma_airfighterfactory.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
++		case 143:	return CE_GOODIE_TEXTURE("goodies\\ca_m_architecture\\ca_ma_barracks.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
++		case 144:	return CE_GOODIE_TEXTURE("goodies\\ca_m_architecture\\ca_ma_mech_factory.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
++		case 145:	return CE_GOODIE_TEXTURE("goodies\\ca_m_architecture\\ca_ma_muspell architecture.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
++		case 146:	return CE_GOODIE_TEXTURE("goodies\\ca_m_architecture\\ca_ma_tankfactory.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
+ 		
+-		case 147:	return CTEXTURE::GetTextureByName("goodies\\ca_m_characters\\ca_mc_4eyes.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
+-		case 148:	return CTEXTURE::GetTextureByName("goodies\\ca_m_characters\\ca_mc_early_grunt.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
+-		case 149:	return CTEXTURE::GetTextureByName("goodies\\ca_m_characters\\ca_mc_early_surt.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
+-		case 150:	return CTEXTURE::GetTextureByName("goodies\\ca_m_characters\\ca_mc_hunter.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
+-		case 151:	return CTEXTURE::GetTextureByName("goodies\\ca_m_characters\\ca_mc_muspell characters.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
+-
+-		case 152:	return CTEXTURE::GetTextureByName("goodies\\ca_m_units\\ca_mu__crab_mech.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
+-		case 153:	return CTEXTURE::GetTextureByName("goodies\\ca_m_units\\ca_mu_apc.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
+-		case 154:	return CTEXTURE::GetTextureByName("goodies\\ca_m_units\\ca_mu_artillery.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
+-		case 155:	return CTEXTURE::GetTextureByName("goodies\\ca_m_units\\ca_mu_asx9_tactical_advanced.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
+-		case 156:	return CTEXTURE::GetTextureByName("goodies\\ca_m_units\\ca_mu_bomber.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
+-		case 157:	return CTEXTURE::GetTextureByName("goodies\\ca_m_units\\ca_mu_carvers_plane.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
+-		case 158:	return CTEXTURE::GetTextureByName("goodies\\ca_m_units\\ca_mu_craft05.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
+-		case 159:	return CTEXTURE::GetTextureByName("goodies\\ca_m_units\\ca_mu_early_craft01.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
+-		case 160:	return CTEXTURE::GetTextureByName("goodies\\ca_m_units\\ca_mu_early_craft02.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
+-		case 161:	return CTEXTURE::GetTextureByName("goodies\\ca_m_units\\ca_mu_early_craft03.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
+-		case 162:	return CTEXTURE::GetTextureByName("goodies\\ca_m_units\\ca_mu_early_craft04.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
+-		case 163:	return CTEXTURE::GetTextureByName("goodies\\ca_m_units\\ca_mu_early_forces.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
+-		case 164:	return CTEXTURE::GetTextureByName("goodies\\ca_m_units\\ca_mu_early_forces01.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
+-		case 165:	return CTEXTURE::GetTextureByName("goodies\\ca_m_units\\ca_mu_early_sam site.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
+-		case 166:	return CTEXTURE::GetTextureByName("goodies\\ca_m_units\\ca_mu_ground_attack.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
+-		case 167:	return CTEXTURE::GetTextureByName("goodies\\ca_m_units\\ca_mu_heavy_lifter.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
+-		case 168:	return CTEXTURE::GetTextureByName("goodies\\ca_m_units\\ca_mu_interceptor.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
+-		case 169:	return CTEXTURE::GetTextureByName("goodies\\ca_m_units\\ca_mu_mech.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
+-		case 170:	return CTEXTURE::GetTextureByName("goodies\\ca_m_units\\ca_mu_mobile_outpost.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
+-		case 171:	return CTEXTURE::GetTextureByName("goodies\\ca_m_units\\ca_mu_rifle_mech.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
+-		case 172:	return CTEXTURE::GetTextureByName("goodies\\ca_m_units\\ca_mu_rocket_launcher.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
+-		case 173:	return CTEXTURE::GetTextureByName("goodies\\ca_m_units\\ca_mu_tank.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
+-		case 174:	return CTEXTURE::GetTextureByName("goodies\\ca_m_units\\ca_mu_truck.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
++		case 147:	return CE_GOODIE_TEXTURE("goodies\\ca_m_characters\\ca_mc_4eyes.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
++		case 148:	return CE_GOODIE_TEXTURE("goodies\\ca_m_characters\\ca_mc_early_grunt.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
++		case 149:	return CE_GOODIE_TEXTURE("goodies\\ca_m_characters\\ca_mc_early_surt.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
++		case 150:	return CE_GOODIE_TEXTURE("goodies\\ca_m_characters\\ca_mc_hunter.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
++		case 151:	return CE_GOODIE_TEXTURE("goodies\\ca_m_characters\\ca_mc_muspell characters.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
++
++		case 152:	return CE_GOODIE_TEXTURE("goodies\\ca_m_units\\ca_mu__crab_mech.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
++		case 153:	return CE_GOODIE_TEXTURE("goodies\\ca_m_units\\ca_mu_apc.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
++		case 154:	return CE_GOODIE_TEXTURE("goodies\\ca_m_units\\ca_mu_artillery.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
++		case 155:	return CE_GOODIE_TEXTURE("goodies\\ca_m_units\\ca_mu_asx9_tactical_advanced.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
++		case 156:	return CE_GOODIE_TEXTURE("goodies\\ca_m_units\\ca_mu_bomber.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
++		case 157:	return CE_GOODIE_TEXTURE("goodies\\ca_m_units\\ca_mu_carvers_plane.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
++		case 158:	return CE_GOODIE_TEXTURE("goodies\\ca_m_units\\ca_mu_craft05.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
++		case 159:	return CE_GOODIE_TEXTURE("goodies\\ca_m_units\\ca_mu_early_craft01.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
++		case 160:	return CE_GOODIE_TEXTURE("goodies\\ca_m_units\\ca_mu_early_craft02.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
++		case 161:	return CE_GOODIE_TEXTURE("goodies\\ca_m_units\\ca_mu_early_craft03.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
++		case 162:	return CE_GOODIE_TEXTURE("goodies\\ca_m_units\\ca_mu_early_craft04.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
++		case 163:	return CE_GOODIE_TEXTURE("goodies\\ca_m_units\\ca_mu_early_forces.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
++		case 164:	return CE_GOODIE_TEXTURE("goodies\\ca_m_units\\ca_mu_early_forces01.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
++		case 165:	return CE_GOODIE_TEXTURE("goodies\\ca_m_units\\ca_mu_early_sam site.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
++		case 166:	return CE_GOODIE_TEXTURE("goodies\\ca_m_units\\ca_mu_ground_attack.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
++		case 167:	return CE_GOODIE_TEXTURE("goodies\\ca_m_units\\ca_mu_heavy_lifter.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
++		case 168:	return CE_GOODIE_TEXTURE("goodies\\ca_m_units\\ca_mu_interceptor.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
++		case 169:	return CE_GOODIE_TEXTURE("goodies\\ca_m_units\\ca_mu_mech.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
++		case 170:	return CE_GOODIE_TEXTURE("goodies\\ca_m_units\\ca_mu_mobile_outpost.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
++		case 171:	return CE_GOODIE_TEXTURE("goodies\\ca_m_units\\ca_mu_rifle_mech.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
++		case 172:	return CE_GOODIE_TEXTURE("goodies\\ca_m_units\\ca_mu_rocket_launcher.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
++		case 173:	return CE_GOODIE_TEXTURE("goodies\\ca_m_units\\ca_mu_tank.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
++		case 174:	return CE_GOODIE_TEXTURE("goodies\\ca_m_units\\ca_mu_truck.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
+ 			
+-		case 175:	return CTEXTURE::GetTextureByName("goodies\\ca_m_language\\ca_ml_graphics01.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
+-		case 176:	return CTEXTURE::GetTextureByName("goodies\\ca_m_language\\ca_ml_graphics02.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
+-		case 177:	return CTEXTURE::GetTextureByName("goodies\\ca_m_language\\ca_ml_graphics03.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
+-		case 178:	return CTEXTURE::GetTextureByName("goodies\\ca_m_language\\ca_ml_graphics04.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
+-		case 179:	return CTEXTURE::GetTextureByName("goodies\\ca_m_language\\ca_ml_insignia 01.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
+-		case 180:	return CTEXTURE::GetTextureByName("goodies\\ca_m_language\\ca_ml_insigina 02.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
+-		case 181:	return CTEXTURE::GetTextureByName("goodies\\ca_m_language\\ca_ml_insigina 03.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
+-		case 182:	return CTEXTURE::GetTextureByName("goodies\\ca_m_language\\ca_ml_numbers01.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
+-		case 183:	return CTEXTURE::GetTextureByName("goodies\\ca_m_language\\ca_ml_numbers02.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
+-		case 184:	return CTEXTURE::GetTextureByName("goodies\\ca_m_language\\ca_ml_numbers03.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
+-		case 185:	return CTEXTURE::GetTextureByName("goodies\\ca_m_language\\ca_ml_numbers04.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
+-		case 186:	return CTEXTURE::GetTextureByName("goodies\\ca_m_language\\ca_ml_ss00.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
+-		case 187:	return CTEXTURE::GetTextureByName("goodies\\ca_m_language\\ca_ml_ss01.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
+-		case 188:	return CTEXTURE::GetTextureByName("goodies\\ca_m_language\\ca_ml_ss02.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
+-		case 189:	return CTEXTURE::GetTextureByName("goodies\\ca_m_language\\ca_ml_ss03.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
+-		case 190:	return CTEXTURE::GetTextureByName("goodies\\ca_m_language\\ca_ml_ss04.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
+-		case 191:	return CTEXTURE::GetTextureByName("goodies\\ca_m_language\\ca_ml_ss05.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
+-
+-		case 192:	return CTEXTURE::GetTextureByName("goodies\\ca_f_language\\ca_fl_01.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 			
+-		case 193:	return CTEXTURE::GetTextureByName("goodies\\ca_f_language\\ca_fl_02.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 			
+-		case 194:	return CTEXTURE::GetTextureByName("goodies\\ca_f_language\\ca_fl_03.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 			
+-		case 195:	return CTEXTURE::GetTextureByName("goodies\\ca_f_language\\ca_fl_04.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 			
+-		case 196:	return CTEXTURE::GetTextureByName("goodies\\ca_f_language\\ca_fl_05.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 			
+-		case 197:	return CTEXTURE::GetTextureByName("goodies\\ca_f_language\\ca_fl_06.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 			
+-		case 198:	return CTEXTURE::GetTextureByName("goodies\\ca_f_language\\ca_fl_07.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 			
+-		case 199:	return CTEXTURE::GetTextureByName("goodies\\ca_f_language\\ca_fl_08.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 			
+-		case 200:	return CTEXTURE::GetTextureByName("goodies\\ca_f_language\\ca_fl_09.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1);
++		case 175:	return CE_GOODIE_TEXTURE("goodies\\ca_m_language\\ca_ml_graphics01.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
++		case 176:	return CE_GOODIE_TEXTURE("goodies\\ca_m_language\\ca_ml_graphics02.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
++		case 177:	return CE_GOODIE_TEXTURE("goodies\\ca_m_language\\ca_ml_graphics03.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
++		case 178:	return CE_GOODIE_TEXTURE("goodies\\ca_m_language\\ca_ml_graphics04.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
++		case 179:	return CE_GOODIE_TEXTURE("goodies\\ca_m_language\\ca_ml_insignia 01.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
++		case 180:	return CE_GOODIE_TEXTURE("goodies\\ca_m_language\\ca_ml_insigina 02.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
++		case 181:	return CE_GOODIE_TEXTURE("goodies\\ca_m_language\\ca_ml_insigina 03.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
++		case 182:	return CE_GOODIE_TEXTURE("goodies\\ca_m_language\\ca_ml_numbers01.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
++		case 183:	return CE_GOODIE_TEXTURE("goodies\\ca_m_language\\ca_ml_numbers02.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
++		case 184:	return CE_GOODIE_TEXTURE("goodies\\ca_m_language\\ca_ml_numbers03.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
++		case 185:	return CE_GOODIE_TEXTURE("goodies\\ca_m_language\\ca_ml_numbers04.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
++		case 186:	return CE_GOODIE_TEXTURE("goodies\\ca_m_language\\ca_ml_ss00.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
++		case 187:	return CE_GOODIE_TEXTURE("goodies\\ca_m_language\\ca_ml_ss01.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
++		case 188:	return CE_GOODIE_TEXTURE("goodies\\ca_m_language\\ca_ml_ss02.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
++		case 189:	return CE_GOODIE_TEXTURE("goodies\\ca_m_language\\ca_ml_ss03.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
++		case 190:	return CE_GOODIE_TEXTURE("goodies\\ca_m_language\\ca_ml_ss04.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
++		case 191:	return CE_GOODIE_TEXTURE("goodies\\ca_m_language\\ca_ml_ss05.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 
++
++		case 192:	return CE_GOODIE_TEXTURE("goodies\\ca_f_language\\ca_fl_01.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 			
++		case 193:	return CE_GOODIE_TEXTURE("goodies\\ca_f_language\\ca_fl_02.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 			
++		case 194:	return CE_GOODIE_TEXTURE("goodies\\ca_f_language\\ca_fl_03.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 			
++		case 195:	return CE_GOODIE_TEXTURE("goodies\\ca_f_language\\ca_fl_04.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 			
++		case 196:	return CE_GOODIE_TEXTURE("goodies\\ca_f_language\\ca_fl_05.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 			
++		case 197:	return CE_GOODIE_TEXTURE("goodies\\ca_f_language\\ca_fl_06.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 			
++		case 198:	return CE_GOODIE_TEXTURE("goodies\\ca_f_language\\ca_fl_07.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 			
++		case 199:	return CE_GOODIE_TEXTURE("goodies\\ca_f_language\\ca_fl_08.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1); 			
++		case 200:	return CE_GOODIE_TEXTURE("goodies\\ca_f_language\\ca_fl_09.tga",TEXFMT_A8R8G8B8,TEX_NORMAL,1);
+ 	};
+ }
+ 
+@@ -749,61 +760,62 @@
+ 	switch (goodie_num)
+ 	{
+ 		default:
+-		case 8:			return CMESH::GetMesh("f_be1.msh");
+-		case 9:			return CMESH::GetMesh("f_be1.msh");
+-		case 10:		return CMESH::GetMesh("f_be1.msh");
+-		case 11:		return CMESH::GetMesh("f_be1.msh");
++		case 8:			return CE_GOODIE_MESH("f_be1.msh");
++		case 9:			return CE_GOODIE_MESH("f_be1.msh");
++		case 10:		return CE_GOODIE_MESH("f_be1.msh");
++		case 11:		return CE_GOODIE_MESH("f_be1.msh");
+ 		case 12:
+ 		case 13:
+-		case 14:		return CMESH::GetMesh("fpulsetank.msh");
+-		case 15:		return CMESH::GetMesh("f_battletank.msh");
+-		case 16:		return CMESH::GetMesh("fbeamtank.msh");
+-		case 17:		return CMESH::GetMesh("fplasmatank.msh");
+-		case 18:		return CMESH::GetMesh("f_truck.msh");
+-		case 19:		return CMESH::GetMesh("fa_f24.msh");
+-		case 20:		return CMESH::GetMesh("fa_xf24.msh");
+-		case 21:		return CMESH::GetMesh("fa_heavy_bomber.msh");
+-		case 22:		return CMESH::GetMesh("fa_a15b.msh");
+-		case 23:		return CMESH::GetMesh("f_lifter.msh");
++		case 14:		return CE_GOODIE_MESH("fpulsetank.msh");
++		case 15:		return CE_GOODIE_MESH("f_battletank.msh");
++		case 16:		return CE_GOODIE_MESH("fbeamtank.msh");
++		case 17:		return CE_GOODIE_MESH("fplasmatank.msh");
++		case 18:		return CE_GOODIE_MESH("f_truck.msh");
++		case 19:		return CE_GOODIE_MESH("fa_f24.msh");
++		case 20:		return CE_GOODIE_MESH("fa_xf24.msh");
++		case 21:		return CE_GOODIE_MESH("fa_heavy_bomber.msh");
++		case 22:		return CE_GOODIE_MESH("fa_a15b.msh");
++		case 23:		return CE_GOODIE_MESH("f_lifter.msh");
+ 		case 24:		
+-		case 25:		return CMESH::GetMesh("flander.msh");
+-		case 26:		return CMESH::GetMesh("fs_marshall.msh");
+-		case 27:		return CMESH::GetMesh("fs_cargo.msh");
+-		case 28:		return CMESH::GetMesh("ft_sam.msh");
+-		case 29:		return CMESH::GetMesh("ft_beam.msh");
+-		case 30:		return CMESH::GetMesh("ft_pulse.msh");
+-		case 31:		return CMESH::GetMesh("ft_artillery.msh");
+-		case 32:		return CMESH::GetMesh("ft_blaster.msh");
++		case 25:		return CE_GOODIE_MESH("flander.msh");
++		case 26:		return CE_GOODIE_MESH("fs_marshall.msh");
++		case 27:		return CE_GOODIE_MESH("fs_cargo.msh");
++		case 28:		return CE_GOODIE_MESH("ft_sam.msh");
++		case 29:		return CE_GOODIE_MESH("ft_beam.msh");
++		case 30:		return CE_GOODIE_MESH("ft_pulse.msh");
++		case 31:		return CE_GOODIE_MESH("ft_artillery.msh");
++		case 32:		return CE_GOODIE_MESH("ft_blaster.msh");
+ 		case 33:
+ 		case 34:
+ 		case 35:
+-		case 36:		return CMESH::GetMesh("muspfite.msh");
+-		case 37:		return CMESH::GetMesh("m_atf.msh");
+-		case 38:		return CMESH::GetMesh("m_bomber.msh");
+-		case 39:		return CMESH::GetMesh("m_groundat.msh");
+-		case 40:		return CMESH::GetMesh("dropship.msh");
+-		case 41:		return CMESH::GetMesh("m_dropship.msh");
+-		case 42:		return CMESH::GetMesh("mtanklight.msh");
+-		case 43:		return CMESH::GetMesh("mtank.msh");
+-		case 44:		return CMESH::GetMesh("m_samlauncher.msh");
+-		case 45:		return CMESH::GetMesh("m_artillery.msh");
+-		case 46:		return CMESH::GetMesh("m_truck.msh");
+-		case 47:		return CMESH::GetMesh("gunwalker.msh");
+-		case 48:		return CMESH::GetMesh("gunwalker2.msh");
+-		case 49:		return CMESH::GetMesh("guncrab.msh");
+-		case 50:		return CMESH::GetMesh("gnat.msh");
+-		case 51:		return CMESH::GetMesh("arachnid.msh");
+-		case 52:		return CMESH::GetMesh("m_battleship.msh");	
+-		case 53:		return CMESH::GetMesh("mt_sam.msh");
+-		case 54:		return CMESH::GetMesh("mt_laser.msh");
+-		case 55:		return CMESH::GetMesh("mt_machinegun.msh");
+-		case 56:		return CMESH::GetMesh("mt_artillery.msh");
+-		case 57:		return CMESH::GetMesh("mt_flak.msh");
+-		case 76:		return CMESH::GetMesh("panorama.msh");
++		case 36:		return CE_GOODIE_MESH("muspfite.msh");
++		case 37:		return CE_GOODIE_MESH("m_atf.msh");
++		case 38:		return CE_GOODIE_MESH("m_bomber.msh");
++		case 39:		return CE_GOODIE_MESH("m_groundat.msh");
++		case 40:		return CE_GOODIE_MESH("dropship.msh");
++		case 41:		return CE_GOODIE_MESH("m_dropship.msh");
++		case 42:		return CE_GOODIE_MESH("mtanklight.msh");
++		case 43:		return CE_GOODIE_MESH("mtank.msh");
++		case 44:		return CE_GOODIE_MESH("m_samlauncher.msh");
++		case 45:		return CE_GOODIE_MESH("m_artillery.msh");
++		case 46:		return CE_GOODIE_MESH("m_truck.msh");
++		case 47:		return CE_GOODIE_MESH("gunwalker.msh");
++		case 48:		return CE_GOODIE_MESH("gunwalker2.msh");
++		case 49:		return CE_GOODIE_MESH("guncrab.msh");
++		case 50:		return CE_GOODIE_MESH("gnat.msh");
++		case 51:		return CE_GOODIE_MESH("arachnid.msh");
++		case 52:		return CE_GOODIE_MESH("m_battleship.msh");	
++		case 53:		return CE_GOODIE_MESH("mt_sam.msh");
++		case 54:		return CE_GOODIE_MESH("mt_laser.msh");
++		case 55:		return CE_GOODIE_MESH("mt_machinegun.msh");
++		case 56:		return CE_GOODIE_MESH("mt_artillery.msh");
++		case 57:		return CE_GOODIE_MESH("mt_flak.msh");
++		case 76:		return CE_GOODIE_MESH("panorama.msh");
+ 	};
+ }
+ 
+ //*********************************************************************************
++#ifdef RESBUILDER
+ static CTEXTURE *get_goodie_background_hack(SINT goodie_num)
+ {
+ 	switch (goodie_num)
+@@ -860,6 +872,7 @@
+ 	};
+ }
+ #endif
++#endif
+ //*********************************************************************************
+ static EGoodieType get_goodie_type_hack(SINT goodie_num)
+ {
+@@ -959,6 +972,39 @@
+ 	wcscpy(buffer,TEXT_DB.GetFollowingString(GOODIE_TEXT_1_TITLE,stringnumber));
+ }
+ 
++#ifdef CE_VERSION
++// CE (patch 0251): a goodie's model file (a model goodie), picture file (a picture goodie) and title, read from the tables above
++// without loading anything; the Catalogue names its models and pictures with them (port/game/ce_catalogue_preview.cpp).
++extern "C" bool PortCeGoodieFiles(int goodie, const char **mesh, const char **picture, WCHAR *title)
++{
++	*mesh = NULL;
++	*picture = NULL;
++	title[0] = 0;
++	if (goodie < 0 || goodie >= MAX_NUM_GOODIES)
++		return false;
++	const EGoodieType type = get_goodie_type_hack(goodie);
++	sCeGoodieNamesOnly = true;
++	sCeGoodieFile = NULL;
++	if (type == GT_MESH)
++	{
++		get_goodie_mesh_hack(goodie);
++		*mesh = sCeGoodieFile;
++	}
++	else if (type == GT_IMAGE)
++	{
++		get_goodie_texture_hack(goodie);
++		*picture = sCeGoodieFile;
++	}
++	sCeGoodieNamesOnly = false;
++	get_goodie_title(title, goodie);
++	return true;
++}
++
++// CE (patch 0251): while Goodies is inactive and the Catalogue holds a preview model in these slots, Process must not free it.
++static bool	sCeCatalogueModelHeld = false;
++static int	sCeCatalogueModelGoodie = -1;
++#endif
++
+ //*********************************************************************************
+ 
+ static void get_goodie_text(WCHAR *buffer,SINT goodie_num,SINT text_num)
+@@ -1267,6 +1313,10 @@
+ void	CFEPGoodies::Shutdown()	// FUNCTION: 0x0045c9e0
+ {
+ #ifdef CE_VERSION
++	sCeCatalogueModelHeld = false;		// patch 0251: front-end shutdown drops any held preview model
++	sCeCatalogueModelGoodie = -1;
++#endif
++#ifdef CE_VERSION
+ 	PortCeMuseumEnd();		// patch 0199: the gallery is closing
+ #endif
+ 	FreeUpGoodyResources();
+@@ -1383,6 +1433,10 @@
+ 	}
+ 
+ 	mGoodyState = NO_GOODY;
++#ifdef CE_VERSION
++	sCeCatalogueModelHeld = false;		// patch 0251: resources are gone; never stay marked held
++	sCeCatalogueModelGoodie = -1;
++#endif
+ }
+ 
+ //*********************************************************************************
+@@ -1781,7 +1835,20 @@
+ 		if (mSelectFade == 1.f || mImageZoom == 0.f)
+ 		{
+ 			// delete resources
++#ifdef CE_VERSION
++			// CE (patch 0251): keep the Catalogue's preview model alive while Goodies is inactive.
++			if (state != FEPS_INACTIVE)
++			{
++				sCeCatalogueModelHeld = false;
++				sCeCatalogueModelGoodie = -1;
++			}
++			if (!sCeCatalogueModelHeld)
++			{
++				FreeUpGoodyResources();
++			}
++#else
+ 			FreeUpGoodyResources();
++#endif
+ 
+ 			FEMouseEdgeSlide(state, &mXPos, 5100.f);
+ 		}
+@@ -1905,6 +1972,249 @@
+ #endif
+ 
+ // the mesh renderer's untextured mode (CMeshRenderer's static at 00704e48; CFEPGoodies::Render 0045f237)
++#ifdef CE_VERSION
++// CE (patch 0251): the Catalogue's rotating 3D model preview (port/game/ce_catalogue_list.cpp).
++// Uses this page's goodie slots while Goodies is inactive: Load reads one model goodie's mesh and textures via
++// ReadResources, Free releases them, and Draw renders the mesh lit as Goodies lights it, centered on its bounding
++// sphere and framed inside a virtual 640x480 rectangle with full D3D9 state-block, RENDERINFO and Z-buffer restoration.
++#include	"ltshell.h"
++
++bool	CFEPGoodies::CeCatalogueLoad(int goodie)
++{
++	FreeUpGoodyResources();
++	if (goodie < 0 || goodie >= MAX_NUM_GOODIES || get_goodie_type_hack(goodie) != GT_MESH)
++		return false;
++	CResourceAccumulator::ReadResources(-1000 - goodie);
++	if (!mCurrentGoodyMesh || mCurrentGoodyMesh->mNumParts <= 0 || !mCurrentGoodyMesh->mBoundingBox)
++	{
++		FreeUpGoodyResources();
++		return false;
++	}
++	sCeCatalogueModelHeld = true;
++	sCeCatalogueModelGoodie = goodie;
++	return true;
++}
++
++void	CFEPGoodies::CeCatalogueFree()
++{
++	FreeUpGoodyResources();
++}
++
++bool	CFEPGoodies::CeCatalogueDraw(float left, float top, float right, float bottom, float yaw)
++{
++	IDirect3DDevice9	*device = LT.GetDevice();
++	if (!sCeCatalogueModelHeld || !mCurrentGoodyMesh || mCurrentGoodyMesh->mNumParts <= 0 || !mCurrentGoodyMesh->mBoundingBox || !device || right - left < 8.f || bottom - top < 8.f)
++		return false;
++	const float	radius = mCurrentGoodyMesh->mBoundingBox->mRadius;
++	if (!(radius > 1e-4f) || !(radius < 1e6f))
++		return false;
++
++	D3DVIEWPORT9	whole, pane;
++	if (FAILED(device->GetViewport(&whole)))
++		return false;
++	float	sx = whole.Width / 640.f, sy = whole.Height / 480.f, ox = float(whole.X), oy = float(whole.Y);
++	if (PortWideActive())
++	{
++		sx = sy = PortUiScale();
++		ox = PortUiLeft();
++		oy = PortUiTop();
++	}
++	int	px0 = int(ox + left * sx + 0.5f), py0 = int(oy + top * sy + 0.5f);
++	int	px1 = int(ox + right * sx + 0.5f), py1 = int(oy + bottom * sy + 0.5f);
++	const int	wx0 = int(whole.X), wy0 = int(whole.Y);
++	const int	wx1 = int(whole.X + whole.Width), wy1 = int(whole.Y + whole.Height);
++	if (px0 < wx0) px0 = wx0;
++	if (py0 < wy0) py0 = wy0;
++	if (px1 > wx1) px1 = wx1;
++	if (py1 > wy1) py1 = wy1;
++	if (px1 - px0 < 4 || py1 - py0 < 4)
++		return false;
++	pane = whole;
++	pane.X = DWORD(px0);
++	pane.Y = DWORD(py0);
++	pane.Width = DWORD(px1 - px0);
++	pane.Height = DWORD(py1 - py0);
++	pane.MinZ = 0.0f;
++	pane.MaxZ = 1.0f;
++
++	// Capture every D3D9 device state locally (never held across frames, so device Reset stays safe)
++	IDirect3DStateBlock9	*savedState = NULL;
++	if (FAILED(device->CreateStateBlock(D3DSBT_ALL, &savedState)) || !savedState)
++		return false;
++	if (FAILED(savedState->Capture()))
++	{
++		savedState->Release();
++		return false;
++	}
++	if (FAILED(device->SetViewport(&pane)))
++	{
++		savedState->Release();
++		return false;
++	}
++	device->Clear(0, NULL, D3DCLEAR_ZBUFFER, 0, 1.0f, 0);
++
++	// Save RENDERINFO's software-cached matrices, lighting, ambient and fog alongside the D3D9 state block
++	D3DMATRIX	savedProj, savedWorld;
++	RENDERINFO.GetProjection(&savedProj);
++	RENDERINFO.GetWorld(&savedWorld);
++	const FVector	savedCamPos = FED.mCamera.mPos;
++	const FMatrix	savedCamOri = FED.mCamera.mOrientation;
++	const DWORD	savedAmbient = RENDERINFO.mAmbient;
++	const bool	savedLighting = RENDERINFO.mUnknown2ed;
++	const bool	savedFog = RENDERINFO.mFogEnabled;
++	CLight	savedLights[8];
++	bool	savedLightEnable[8];
++	for (SINT li = 0; li < 8; li++)
++	{
++		savedLights[li] = RENDERINFO.mLights[li];
++		savedLightEnable[li] = RENDERINFO.mLightEnable[li];
++	}
++
++	const float	distance = radius * 1.42f;
++	float	near_plane = 0.2f;
++	if (distance * 0.05f < near_plane)
++		near_plane = distance * 0.05f;
++	if (near_plane < 0.02f)
++		near_plane = 0.02f;
++	float	far_plane = 700.f;
++	if (distance * 4.f + radius * 4.f > far_plane)
++		far_plane = distance * 4.f + radius * 4.f;
++	const float	aspect = float(pane.Height) / float(pane.Width);
++
++	if (sCeCatalogueModelGoodie == 76)
++	{
++		const float	half = near_plane * 0.5f;
++		if (aspect >= 1.f)
++			RENDERINFO.SetProjection(near_plane, far_plane, half, half * aspect);
++		else
++			RENDERINFO.SetProjection(near_plane, far_plane, half / aspect, half);
++		FED.mCamera.mPos = FVector(0.0f, 0.0f, 0.0f);
++		FED.mCamera.mOrientation.MakeRotationF(0.0f, 0.0f, 0.0f);
++	}
++	else
++	{
++		const float	half = near_plane * 0.75f;
++		if (aspect >= 1.f)
++			RENDERINFO.SetProjection(near_plane, far_plane, half, half * aspect);
++		else
++			RENDERINFO.SetProjection(near_plane, far_plane, half / aspect, half);
++		// Camera at (0, -d, -0.7*d) aimed directly at the origin (atan2(0.7, 1.0) ~= 0.61 rad) to centre the model in the pane.
++		FED.mCamera.mPos = FVector(0.0f, -distance, -(distance * 0.7f));
++		FED.mCamera.mOrientation.MakeRotationF(0.0f, 0.61f, 0.0f);
++	}
++	FRONTEND.UpdateCamera();
++
++	FMatrix	ori;
++	ori.MakeRotationF(yaw, 0.0f, 0.0f);
++	const FVector	middle = mCurrentGoodyMesh->mBoundingBox->mOrigin;
++	FVector	pos = (sCeCatalogueModelGoodie == 76) ? -middle : -(ori * middle);
++
++	// Three-point warm/cool/fill studio lighting with gentle ambient so dark hulls remain readable against the dark panel
++	CLight	light;
++	RENDERINFO.SetAmbient(0x00484e5a);
++	FVector	sunlight = FVector(-5000.f, 5000.f, 1500.0f);
++	sunlight.Normalise();
++	FVector3	col1 = FVector3(0.85f, 0.55f, 0.35f), col2 = FVector3(0.35f, 0.55f, 0.90f), col3 = FVector3(0.55f, 0.55f, 0.55f);
++	col1 *= 0.85f;
++	col2 *= 0.85f;
++	col3 *= 0.75f;
++	light.Init(LIGHT_DIRECTIONAL, sunlight, col1.X, col1.Y, col1.Z);
++	RENDERINFO.SetLight(0, &light);
++	RENDERINFO.SetLightEnable(0, TRUE);
++	sunlight.X = -sunlight.X;
++	light.Init(LIGHT_DIRECTIONAL, sunlight, col2.X, col2.Y, col2.Z);
++	RENDERINFO.SetLight(1, &light);
++	RENDERINFO.SetLightEnable(1, TRUE);
++	sunlight = FVector(0.f, 1000.f, 200.f);
++	sunlight.Normalise();
++	light.Init(LIGHT_DIRECTIONAL, sunlight, col3.X, col3.Y, col3.Z);
++	RENDERINFO.SetLight(2, &light);
++	RENDERINFO.SetLightEnable(2, TRUE);
++	for (SINT li = 3; li < 8; li++)
++		RENDERINFO.SetLightEnable(li, FALSE);
++	RENDERINFO.SetLightingEnabled(TRUE);
++	RENDERINFO.SetFogEnabled(false);
++
++	// Restore full 3D mesh render states (the 2D menu pass disables Z-write/Z-test and uses CLAMP + MODULATE)
++	LT.D3D_SetMaterial(STATE.GetDefaultMaterial());
++	LT.SRS(D3DRS_ZENABLE, D3DZB_TRUE);
++	LT.SRS(D3DRS_ZWRITEENABLE, TRUE);
++	LT.SRS(D3DRS_ZFUNC, D3DCMP_LESSEQUAL);
++	LT.SRS(D3DRS_CULLMODE, D3DCULL_CCW);
++	LT.SRS(D3DRS_FILLMODE, D3DFILL_SOLID);
++	LT.SRS(D3DRS_ALPHATESTENABLE, TRUE);
++	LT.SetAlphaRef(8);
++	LT.SRS(D3DRS_ALPHAFUNC, D3DCMP_GREATEREQUAL);
++	LT.SRS(D3DRS_ALPHABLENDENABLE, TRUE);
++	LT.SRS(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
++	LT.SRS(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
++	LT.SRS(D3DRS_COLORVERTEX, TRUE);
++	LT.SRS(D3DRS_DIFFUSEMATERIALSOURCE, D3DMCS_COLOR1);
++	LT.SRS(D3DRS_AMBIENTMATERIALSOURCE, D3DMCS_COLOR1);
++	LT.STS(0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
++	LT.STS(0, D3DTSS_COLORARG2, D3DTA_DIFFUSE);
++	LT.SetModulate(0);
++	LT.STS(0, D3DTSS_ALPHAOP, D3DTOP_MODULATE);
++	LT.STS(0, D3DTSS_ALPHAARG1, D3DTA_TEXTURE);
++	LT.STS(0, D3DTSS_ALPHAARG2, D3DTA_DIFFUSE);
++	LT.STS(1, D3DTSS_COLOROP, D3DTOP_DISABLE);
++	LT.STS(1, D3DTSS_ALPHAOP, D3DTOP_DISABLE);
++	RENDERINFO.STS(0, TSS_ADDRESSU, TADDRESS_WRAP);
++	RENDERINFO.STS(0, TSS_ADDRESSV, TADDRESS_WRAP);
++	RENDERINFO.Apply();
++
++	const SINT	alpha_was = CMESHRENDERER::GetRenderAlpha();
++	const ERenderMode	mode_was = CMESHRENDERER::GetRenderMode();
++	CMESHRENDERER::SetRenderAlpha(255);
++	CMESHRENDERER::SetRenderMode(R_Normal);
++	CMESHRENDERER::Render(&pos, &ori, mCurrentGoodyMesh, NULL, NULL, 0, FALSE, 0);
++	CMESHRENDERER::SetRenderAlpha(alpha_was);
++	CMESHRENDERER::SetRenderMode(mode_was);
++
++	// Put the pane's Z-buffer back to panel depth (0.55f < 0.998f) so CFEPCommon::RenderSmallBEALogo's shine pass
++	// (drawn at z=0.998 with ZFUNC=LESSEQUAL) is Z-rejected over the model pane, as CFEPGoodies::Render does.
++	device->Clear(0, NULL, D3DCLEAR_ZBUFFER, 0, 0.55f, 0);
++
++	// Restore every D3D9 state from the state block, resync LT's shadow cache, and restore RENDERINFO's cached state
++	savedState->Apply();
++	savedState->Release();
++	LT.InvalidateAllStates();
++	RENDERINFO.SetAmbient(savedAmbient);
++	for (SINT li = 0; li < 8; li++)
++	{
++		RENDERINFO.SetLight(li, &savedLights[li]);
++		RENDERINFO.SetLightEnable(li, savedLightEnable[li]);
++	}
++	RENDERINFO.SetLightingEnabled(savedLighting);
++	RENDERINFO.SetFogEnabled(savedFog);
++	RENDERINFO.mProjection = *(SRenderMatrix *)&savedProj;
++	RENDERINFO.mProjectionChanged = true;
++	RENDERINFO.mWorld = *(SRenderMatrix *)&savedWorld;
++	RENDERINFO.mWorldChanged = true;
++	FED.mCamera.mPos = savedCamPos;
++	FED.mCamera.mOrientation = savedCamOri;
++	FRONTEND.UpdateCamera();
++	RENDERINFO.Apply();
++	device->SetViewport(&whole);
++	return true;
++}
++
++extern "C" bool	PortCeGoodieModelLoad(int goodie)
++{
++	return FRONTEND.mFEPGoodies.CeCatalogueLoad(goodie);
++}
++
++extern "C" void	PortCeGoodieModelFree()
++{
++	FRONTEND.mFEPGoodies.CeCatalogueFree();
++}
++
++extern "C" bool	PortCeGoodieModelDraw(float left, float top, float right, float bottom, float yaw)
++{
++	return FRONTEND.mFEPGoodies.CeCatalogueDraw(left, top, right, bottom, yaw);
++}
++#endif
++
+ #define	R_NoTexture		((ERenderMode)8)
+ 
+ // the help line Render asks for (CFEPCommon::RenderHelpText's argument, 0045fef6; Stuart's FEH_GO_BACK)
+--- a/FEPgoodies.h
++++ b/FEPgoodies.h
+@@ -75,6 +75,12 @@
+ 	static void BuildAllResources(int iPlatform);
+ 	static void Serialise(class CChunker *c, class CResourceAccumulator *ra);
+ 			void	Deserialise(class CChunkReader *c);
++#ifdef CE_VERSION
++	// CE (patch 0251): the Catalogue's rotating 3D model preview (FEPGoodies.cpp)
++	bool	CeCatalogueLoad(int goodie);
++	void	CeCatalogueFree();
++	bool	CeCatalogueDraw(float left, float top, float right, float bottom, float yaw);
++#endif
+ 
+ protected:
+ 	void	EvaluateDest();

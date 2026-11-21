@@ -315,10 +315,11 @@ class SharedPilotInputTests(unittest.TestCase):
             src = d / "input.cpp"
             src.write_text('''#include "ce_playunit_rules.h"
 #include <cassert>
-bool gDriving, gControllerPending, gConfigured, gWanted, gTakePressed;
+enum { DIK_V = 47 };
+bool gDriving, gControllerPending, gConfigured, gWanted, gTakePressed, gViewTogglePressed;
 void *gCamera;
 unsigned gSwitchWait;
-CePlayUnitKey gTakeKey = {};
+CePlayUnitKey gTakeKey = {}, gViewToggleKey = {};
 int TakeKey(){ return 1; }
 int held, polls;
 int PortKeyHeldNow(int) { ++polls; return held; }
@@ -326,14 +327,18 @@ int PortKeyHeldNow(int) { ++polls; return held; }
 int main() {
     held=1; CePlayUnitMapBoundary(); assert(polls==0);
     gConfigured=true; CePlayUnitMapBoundary(); assert(polls==0);
-    gWanted=true; gTakePressed=true; CePlayUnitMapBoundary();
-    assert(!gTakePressed && !CePlayUnitPressed(&gTakeKey,true,false));
+    gWanted=true; gTakePressed=true; gViewTogglePressed=true; CePlayUnitMapBoundary();
+    assert(!gTakePressed && !gViewTogglePressed && !CePlayUnitPressed(&gTakeKey,true,false));
+    assert(!CePlayUnitPressed(&gViewToggleKey,true,true));
+    assert(!CePlayUnitPressed(&gViewToggleKey,false,true));
+    assert(CePlayUnitPressed(&gViewToggleKey,true,true));
     CePlayUnitMapBoundary();
     assert(!CePlayUnitPressed(&gTakeKey,true,true));
     assert(!CePlayUnitPressed(&gTakeKey,false,true));
     assert(CePlayUnitPressed(&gTakeKey,true,true));
     held=0; CePlayUnitMapBoundary();
     assert(CePlayUnitPressed(&gTakeKey,true,true));
+    assert(CePlayUnitPressed(&gViewToggleKey,true,true));
     assert(!CePlayUnitOwnsPilot());
     gDriving=true; assert(CePlayUnitOwnsPilot()); gDriving=false;
     gControllerPending=true; assert(CePlayUnitOwnsPilot()); gControllerPending=false;
@@ -370,7 +375,8 @@ enum { BUTTON_MECH_MORPH=1, BUTTON_MECH_CHANGE_ZOOM_IN, BUTTON_MECH_CHANGE_ZOOM_
 struct SControlInput { int mPad, mType, mKey, mVKey; };
 struct SControlBinding { int mId; SControlInput mInput[4]; };
 SControlBinding CONTROL_BINDINGS[5];
-bool gFootDrive, gVehicleDrive, gOnFoot, takeFree;
+bool gFootDrive, gVehicleDrive, gOnFoot, takeFree, gUnitViewMade;
+struct { bool valid, firstPerson; } gUnitViewRig = { false, false };
 const int kViewLook=1; int gViewMode=kViewLook;
 const char *takeName="P";
 bool TakeKeyFree() { return takeFree; }
@@ -398,6 +404,7 @@ void Fresh() {
     Bind(1,BUTTON_MECH_CHANGE_ZOOM_IN,KEY_ONCE,999,'R');
     Bind(2,BUTTON_MECH_CHANGE_ZOOM_OUT,KEY_RELEASE,999,'F');
     gFootDrive=true; gVehicleDrive=false; gOnFoot=true; takeFree=true;
+    gUnitViewMade=false; gUnitViewRig={false,false};
 }
 int main() {
     char out[96], name[24]; Fresh(); Prompt(out);
@@ -406,8 +413,11 @@ int main() {
     EXPECT(std::strstr(out,"P: Take")!=0);
     EXPECT(std::strstr(out,"Zoom In")==0);
     gFootDrive=false; gVehicleDrive=true; gOnFoot=false; Prompt(out);
-    EXPECT(std::strstr(out,"R/F: Wide/Close")!=0);
-    EXPECT(std::strstr(out,"First")==0);
+    EXPECT(std::strstr(out,"R/F: Wide/Close/First")!=0);
+    gUnitViewMade=true; gUnitViewRig={true,false}; Prompt(out);
+    EXPECT(std::strstr(out,"R/F: Wide/Close ")!=0 && std::strstr(out,"First")==0);
+    gUnitViewRig={true,true}; Prompt(out);
+    EXPECT(std::strstr(out,"R/F: Wide/Close/First")!=0);
     takeFree=false; Prompt(out);
     EXPECT(std::strstr(out,": Take")==0);
     EXPECT(std::strstr(out,"B: Return")!=0);
@@ -437,8 +447,8 @@ int main() {
 """
         variants = {
             "normal": driver,
-            "vehicle-first-person": driver.replace(
-                'gOnFoot ? "Wide/Close/First"', 'true ? "Wide/Close/First"'),
+            "drop-first-person": driver.replace(
+                '"Wide/Close/First"', '"Wide/Close"'),
             "ignore-saved-zoom": driver.replace(
                 'BUTTON_MECH_CHANGE_ZOOM_OUT, "Zoom Out"',
                 'BUTTON_MECH_CHANGE_ZOOM_IN, "Zoom Out"'),

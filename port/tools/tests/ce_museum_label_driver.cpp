@@ -10,43 +10,43 @@ static void Need(bool value, const char *message) {
 int main() {
     // three exhibits in a row along X at Y 100, the visitor south of them looking north (+Y)
     const float at[3][2] = {{0, 100}, {20, 100}, {40, 100}};
-    Need(CeMuseumNearestLabel(at, 3, 20, 80, 0, 1, -1) == 1, "the exhibit in front, in range, is shown");
-    Need(CeMuseumNearestLabel(at, 3, 20, 20, 0, 1, -1) == -1, "nothing is shown from far away");
-    Need(CeMuseumNearestLabel(at, 3, 20, 130, 0, 1, -1) == -1, "an exhibit behind the visitor is not shown");
-    Need(CeMuseumNearestLabel(at, 3, 20, 120, 0, -1, -1) == 1, "turning round shows it");
-    Need(CeMuseumNearestLabel(at, 3, 3, 80, 0, 1, -1) == 0, "the exhibit in the crosshair is shown, not the one beside it");
+    Need(CeMuseumNearestLabel(at, 3, 20, 90, 0, 1, -1) == 1, "the exhibit in front, in range, is shown");
+    Need(CeMuseumNearestLabel(at, 3, 20, 75, 0, 1, -1) == -1, "nothing is shown from across the hall (25m away)");
+    Need(CeMuseumNearestLabel(at, 3, 20, 110, 0, 1, -1) == -1, "an exhibit behind the visitor is not shown");
+    Need(CeMuseumNearestLabel(at, 3, 20, 110, 0, -1, -1) == 1, "turning round shows it");
+    Need(CeMuseumNearestLabel(at, 3, 2, 90, 0, 1, -1) == 0, "the exhibit in the crosshair is shown, not the one beside it");
     Need(CeMuseumNearestLabel(at, 3, 100, 100, 0, 0, -1) == -1 && CeMuseumNearestLabel(at, 3, 35, 100, 0, 0, -1) == 2,
          "with no heading the nearest in range is shown, and none out of range");
     Need(CeMuseumNearestLabel(at, 0, 0, 0, 0, 1, -1) == -1, "an empty hall shows nothing");
     // the one the visitor looks at wins, not the one that is nearest
-    const float pair[2][2] = {{0, 25}, {6, 10}};
+    const float pair[2][2] = {{0, 13}, {5, 6}};
     Need(CeMuseumNearestLabel(pair, 2, 0, 0, 0, 1, -1) == 0, "a nearer machine off to the side does not name itself over the one ahead");
-    const float cone[2][2] = {{1, 25}, {3, 10}};
+    const float cone[2][2] = {{0.5f, 13}, {2.0f, 7}};
     Need(CeMuseumNearestLabel(cone, 2, 0, 0, 0, 1, -1) == 0, "of two in the view the more central wins though it is farther");
     Need(CeMuseumNearestLabel(cone, 2, 0, 0, 1, 0, -1) == -1, "looking sideways away from both shows none");
     Need(CeMuseumNearestLabel(cone, 2, 0, 0, 0, 10, -1) == 0 && CeMuseumNearestLabel(cone, 2, 0, 0, 0, 0.1f, -1) == 0, "the heading's length does not matter");
     // on the same line of sight the nearer machine is named (the exhibits hide one another)
-    const float line[2][2] = {{0, 25}, {0, 12}};
+    const float line[2][2] = {{0, 13}, {0, 6}};
     Need(CeMuseumNearestLabel(line, 2, 0, 0, 0, 1, -1) == 1, "of two machines on one line of sight the nearer is named");
     // the width of the view: a machine about 19 degrees to one side is named, one 31 degrees to the side is not
-    const float near_axis[1][2] = {{7.0f, 20.0f}}, wide[1][2] = {{12.0f, 20.0f}};		// 19.3 and 31 degrees
+    const float near_axis[1][2] = {{3.5f, 10.0f}}, wide[1][2] = {{6.0f, 10.0f}};		// 19.3 and 31 degrees
     Need(CeMuseumNearestLabel(near_axis, 1, 0, 0, 0, 1, -1) == 0, "a machine within the view is named");
     Need(CeMuseumNearestLabel(wide, 1, 0, 0, 0, 1, -1) == -1, "a machine well outside the view is not");
-    // the held label survives a step out of the cone (20 to 28 degrees) and out of range (30 to 36), a new one does not
+    // the held label survives a step out of the cone (20 to 28 degrees) and out of range (14 to 17), a new one does not
     const float edge[1][2] = {{0, 100}};
-    Need(CeMuseumNearestLabel(edge, 1, 0, 100 - 33, 0, 1, -1) == -1, "just outside the range a label is not taken");
-    Need(CeMuseumNearestLabel(edge, 1, 0, 100 - 33, 0, 1, 0) == 0, "a label already shown is kept a little beyond the range");
-    Need(CeMuseumNearestLabel(edge, 1, 0, 100 - 40, 0, 1, 0) == -1, "and is dropped well beyond it");
-    const float glance[1][2] = {{8.3f, 18.2f}};		// 24.5 degrees off the heading, 20 units away
+    Need(CeMuseumNearestLabel(edge, 1, 0, 100 - 15.5f, 0, 1, -1) == -1, "just outside the range a label is not taken");
+    Need(CeMuseumNearestLabel(edge, 1, 0, 100 - 15.5f, 0, 1, 0) == 0, "a label already shown is kept a little beyond the range");
+    Need(CeMuseumNearestLabel(edge, 1, 0, 100 - 20.0f, 0, 1, 0) == -1, "and is dropped well beyond it");
+    const float glance[1][2] = {{4.15f, 9.1f}};		// 24.5 degrees off the heading, 10 units away
     Need(CeMuseumNearestLabel(glance, 1, 0, 0, 0, 1, -1) == -1, "a machine a little past the view's edge is not taken");
     Need(CeMuseumNearestLabel(glance, 1, 0, 0, 0, 1, 0) == 0, "but a label already shown is kept a little past it");
-    const float sideways[1][2] = {{20, 20}};			// 45 degrees
+    const float sideways[1][2] = {{9, 9}};			// 45 degrees
     Need(CeMuseumNearestLabel(sideways, 1, 0, 0, 0, 1, 0) == -1, "and dropped well past it");
     // two almost equally central machines: the one shown keeps the label
-    const float twin[2][2] = {{0, 20}, {1, 20}};
+    const float twin[2][2] = {{0, 10}, {0.5f, 10}};
     Need(CeMuseumNearestLabel(twin, 2, 0, 0, 0, 1, -1) == 0, "of two equally central machines the first is taken");
     Need(CeMuseumNearestLabel(twin, 2, 0, 0, 0, 1, 1) == 1, "the label shown stays on its machine when another is barely more central");
-    const float own[2][2] = {{5, 25}, {5, 5}};
+    const float own[2][2] = {{5, 13}, {5, 5}};
     Need(CeMuseumNearestLabel(own, 2, 5, 5, 0, 1, -1) == 1, "standing on an exhibit shows it before one ahead");
     const float nan[1][2] = {{__builtin_nanf(""), 0}};
     Need(CeMuseumNearestLabel(nan, 1, 0, 0, 0, 1, -1) == -1, "a position that is not a number is never shown");
@@ -112,6 +112,36 @@ int main() {
     Need(name[0] == 0, "a one byte buffer holds only the terminator");
     CeMuseumPrettyName(NULL, 4, "x"); CeMuseumPrettyName(name, 0, "x");
     std::puts("PASS label choice, capsule timing and names");
+    // Arrival in a hall of numbered displays: at the entrance, facing a nearby display's machine in view and in close-inspection range,
+    // the in-view rule names it, but the visitor stands at no sign. No card may show until a sign is reached; the sign's own card shows there.
+    {
+        const float hall[2][2] = {{-6.0f, 10.0f}, {1.0f, 11.0f}};		// display 1 off to the left, a nearby machine ahead in range
+        const int inView = CeMuseumNearestLabel(hall, 2, 0, 0, 0, 1, -1);
+        Need(inView == 1, "the arrival case is real: the in-view rule names the nearby machine");
+        Need(CeMuseumCardLabel(true, -1, inView) == -1, "arriving in a hall of signs shows no card for a machine merely in view");
+        Need(CeMuseumCardLabel(true, 0, inView) == 0 && CeMuseumCardLabel(true, 1, -1) == 1, "at a sign its own card shows");
+        Need(CeMuseumCardLabel(false, -1, inView) == 1 && CeMuseumCardLabel(false, 0, 1) == 0, "a hall without signs still names what is in view");
+    }
+    // The hall's title (the R8 fault): "Gallery Entrance" went up at the entrance and was still up over the projector's console panel. A place's name
+    // closes when the visitor walks into the screening room, however much of its time is left; in its own place it grows, holds and goes on time.
+    {
+        const unsigned long long since = 10000, shown = 5200, grow = 350;
+        Need(CeMuseumTitleOpen(since + 175, since, shown, grow, false) == 0.5f, "a title grows open as the radio's bar does");
+        Need(CeMuseumTitleOpen(since + 3000, since, shown, grow, false) == 1.0f, "in its own place a title stays up within its time");
+        Need(CeMuseumTitleOpen(since + 3000, since, shown, grow, true) == 0.0f, "walking into the screening room closes it at once, time left or not");
+        Need(CeMuseumTitleOpen(since + 100, since, shown, grow, true) == 0.0f, "even while it is still growing");
+        Need(CeMuseumTitleOpen(since + 5200, since, shown, grow, false) == 0.0f && CeMuseumTitleOpen(since + 5000, since, shown, grow, false) == 1.0f,
+             "its time up, it goes at once rather than shrinking empty");
+        Need(CeMuseumTitleOpen(since - 1, since, shown, grow, false) == 0.0f, "before it starts it is shut");
+        // Walking up the runner past the entrance (R8: "Gallery Entrance" still up beside displays 2 and 5): a place's name ends when its place is left.
+        Need(CeMuseumTitleElsewhere(false, true, false), "a place's name is elsewhere once the visitor has left that place");
+        Need(!CeMuseumTitleElsewhere(false, true, true), "and stays while the visitor is in it");
+        Need(CeMuseumTitleElsewhere(true, true, true) && CeMuseumTitleElsewhere(true, false, true), "the screening room ends any title");
+        Need(!CeMuseumTitleElsewhere(false, false, false), "the hall's own name is not a place's and runs its time");
+        Need(CeMuseumTitleOpen(since + 3000, since, shown, grow, CeMuseumTitleElsewhere(false, true, false)) == 0.0f,
+             "so the entrance's name is gone up the runner with time left");
+    }
+    std::puts("PASS arrival card and title place");
     Need(!CeMuseumInspectionNear(10.0f, 0, 2.0f, false), "a distant label is not an inspection");
     Need(CeMuseumInspectionNear(8.0f, 0, 2.0f, false), "reaching the exhibit reveals its card");
     Need(CeMuseumInspectionNear(0, -9.0f, 2.0f, true), "one step back keeps the card");

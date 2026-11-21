@@ -72,6 +72,16 @@ int main(int argc, char** argv)
         std::cout << "[" << int(accepted) << "," << c.calls << "," << c.bytes << "," << c.signature << "]";
         PortCeCatalogueClose(); return 0;
     }
+    if (argc == 4 && !std::strcmp(argv[1], "names")) {
+        // every row title of one collection, one per line (for reading the made names over a real install)
+        game_dir = argv[2]; PortCeCatalogueOpen(); PortCeCatalogueBrowse(std::atoi(argv[3]));
+        for (unsigned i = 0; i < PortCeCatalogueMatches(); ++i) {
+            char title[200], file[200] = ""; PortCeCatalogueShowItem(i); PortCeCatalogueTitle(i % CE_CATALOGUE_SLOTS, title, sizeof title);
+            PortCeCatalogueRowTag(i % CE_CATALOGUE_SLOTS, file, sizeof file);
+            std::cout << title << "\t" << file << "\n";
+        }
+        PortCeCatalogueClose(); return 0;
+    }
     if (argc == 6 && !std::strcmp(argv[1], "browse")) {
         game_dir = argv[2]; PortCeCatalogueOpen(); PortCeCatalogueBrowse(std::atoi(argv[3]));
         for (int i = 1; i < std::atoi(argv[4]); ++i) PortCeCatalogueTurn();

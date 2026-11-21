@@ -12,10 +12,13 @@
 #include "ce_museum_cinema.h"
 #include "ce_museum_cinema_catalogue.h"
 #include "ce_museum_cinema_view.h"
+#include "ce_museum_music_duck.h"
+#include "ce_museum_film.h"
 #include "ce_photo.h"
 #include "binkapi.h"
 #include "game.h"
 #include "Controller.h"
+#include "ce_tutorial_pad.h"
 #include <cstdio>
 #include <cstring>
 #include "ce_museum_visit.h"
@@ -28,6 +31,7 @@ extern "C" unsigned PortPresentCount();
 
 extern "C" bool PortCeMuseumVisitActive(void);
 extern bool gMirrorPass;
+int PortCeGamepadInputs(int id, int pad, SControlInput *out);
 
 namespace {
 struct Vertex { float x, y, z; DWORD colour; };
@@ -38,11 +42,16 @@ const DWORD kBrass = 0xffd4a654, kLight = 0xffe6cb88;
 enum Material {
     kMatAuto, kMatFlat, kMatFloor, kMatInlay, kMatWall, kMatPier, kMatHeader, kMatDoor,
     kMatPlinth, kMatStand, kMatRail, kMatTrim, kMatNumeral, kMatCeiling,
-    kMatStone, kMatCarpet, kMatSeat, kMatPlinthTop, kMatSmallPlinth, kMatSmallTop, kMatCount
+    kMatStone, kMatCarpet, kMatSeat, kMatPlinthTop, kMatSmallPlinth, kMatSmallTop,
+    kMatScreenFrame, kMatCinemaWall, kMatCinemaCeiling, kMatCinemaPost,
+    kMatPierCap, kMatPierBase, kMatPierLine, kMatCinemaCap, kMatCinemaBase, kMatScreenIdle, kMatCount
 };
 // texture: a loaded game texture (none: plain colour). repeat: metres per tile.
 // tint: the vertex colour, or 0 to keep the piece's own colour. glow: emissive share.
-struct MaterialSpec { const char *texture; float repeat; DWORD tint; float glow; };
+// quiet: the share of the plain lit colour mixed over the texture (0: the texture at
+// full contrast), so a busy texture becomes the fine grain of one calm stone.
+// lift: percent a piece's own colour is raised by under its texture (0: as it is).
+struct MaterialSpec { const char *texture; float repeat; DWORD tint; float glow; float quiet; unsigned lift; };
 // Atlas pages (the hangar "bits", building pages, pads) do not tile and are not used.
 // The level's ambient light leans green, so the grey chrome's tints hold green back.
 const MaterialSpec kMaterials[kMatCount] = {
@@ -51,7 +60,11 @@ const MaterialSpec kMaterials[kMatCount] = {
     {"meshtex\\docks_floor.tga", 1.5f, 0xffffffff, 0},         // floor: deck plate
     {"meshtex\\M_panel005.tga", 2.0f, 0, 0},                   // inlay: a runner, tinted
     {"meshtex\\FB_hangertop01.tga", 4.0f, 0xffffffff, 0},      // wall: Forseti hangar band
-    {"meshtex\\FB_TChromeForsetti.tga", 2.0f, 0xff9a88ad, 0},  // pier and jamb
+    // Piers and jambs are one dressed stone: the chrome's swirls, fine and mostly
+    // washed out by the lit colour, read as grain, not marble. The tint is a cool
+    // blue-grey a little darker than the wall panels once the green-leaning light
+    // has shaded it; a lighter cap and a darker base course dress each one.
+    {"meshtex\\FB_TChromeForsetti.tga", 0.6f, 0xff7e7494, 0, 0.62f}, // pier and jamb: cool grey cut stone
     {"meshtex\\FB_hangertop02.tga", 3.0f, 0xffffffff, 0},      // header over the portal
     {"meshtex\\FB_TChromeForsetti.tga", 2.0f, 0xff7f789b, 0},  // door
     {"meshtex\\FB_TChromeForsetti.tga", 0.5f, 0xffd2b3dc, 0},  // plinth sides: fine grain, not broad swirls
@@ -60,13 +73,34 @@ const MaterialSpec kMaterials[kMatCount] = {
     {"meshtex\\FB_TChromeForsetti.tga", 1.0f, 0, 0.10f},       // trim: brass and skirting, tinted
     {0, 1.0f, 0, 0.25f},                                       // numeral: lit plate that glows
     {"meshtex\\FB_hangertop02b.tga", 5.0f, 0xffa8b0b8, 0},     // ceiling: hangar roof panels
-    {"meshtex\\FB_hangertop01.tga", 4.0f, 0, 0},               // theater's dark screen wall, tinted
-    {"meshtex\\M_panel005.tga", 2.0f, 0, 0},                   // carpet and dark floor, tinted
-    {"meshtex\\M_panel005.tga", 1.0f, 0, 0},                   // upholstery, tinted
+    // The theater's own colours are deep, and their textures darken them further:
+    // they are raised so the room reads plainly with the house lights up.
+    {"meshtex\\FB_hangertop01.tga", 4.0f, 0, 0, 0, 260},       // theater's dark screen wall, tinted
+    {"meshtex\\M_panel005.tga", 2.0f, 0, 0, 0, 230},           // carpet and dark floor, tinted
+    {"meshtex\\M_panel005.tga", 1.0f, 0, 0, 0, 170},           // upholstery, tinted
     {"meshtex\\docks_floor.tga", 0.75f, 0xffb4c0cc, 0},       // plinth top: a finer, cooler deck plate than the floor
     {"meshtex\\FB_TChromeForsetti.tga", 0.5f, 0xffd2b3dc, 0.12f}, // a small object's plinth: lit a little
     {"meshtex\\docks_floor.tga", 0.75f, 0xffb4c0cc, 0.18f},   // and its top, where the object stands
+    // The theater's own pieces; the house lights dim them while a film plays.
+    {"meshtex\\FB_TChromeForsetti.tga", 0.6f, 0xff69607c, 0, 0.62f}, // screen frame: the piers' stone, darker
+    {"meshtex\\FB_hangertop01.tga", 4.0f, 0xffffffff, 0},      // theater side walls: the hall's band
+    {"meshtex\\FB_hangertop02b.tga", 5.0f, 0xffa8b0b8, 0},     // theater ceiling
+    {"meshtex\\FB_TChromeForsetti.tga", 0.6f, 0xff7e7494, 0, 0.62f}, // the projector's post: the piers' stone
+    {"meshtex\\FB_TChromeForsetti.tga", 0.6f, 0xffa393b6, 0, 0.62f}, // a pier's cap: the stone, lighter
+    {"meshtex\\FB_TChromeForsetti.tga", 0.6f, 0xff3f384d, 0, 0.62f}, // a pier's base course: the stone, darker
+    {"meshtex\\FB_TChromeForsetti.tga", 0.6f, 0xff221f2a, 0, 0.62f}, // the thin line where a pier meets the floor
+    {"meshtex\\FB_TChromeForsetti.tga", 0.6f, 0xffa393b6, 0, 0.62f}, // the projector's cap, as a pier's
+    {"meshtex\\FB_TChromeForsetti.tga", 0.6f, 0xff3f384d, 0, 0.62f}, // the projector's base course, as a pier's
+    {0, 1.0f, 0, 0},                                           // a stopped screen: near-black glass, its own colours
 };
+// The theater's materials take the house lights; everything else keeps the hall's.
+bool CinemaMaterial(unsigned m) {
+    switch (m) {
+    case kMatStone: case kMatCarpet: case kMatSeat: case kMatScreenFrame: case kMatCinemaWall:
+    case kMatCinemaCeiling: case kMatCinemaPost: case kMatCinemaCap: case kMatCinemaBase: return true;
+    default: return false;   // the stopped screen keeps its own dark look
+    }
+}
 struct LitVertex { float x, y, z, nx, ny, nz; DWORD colour; float u, v; };
 enum { kLitCapacity = 9600 + CeMuseumExhibition::kMaxBoxes * CeMuseumExhibition::kBoxVertices + 2 * 40 * 40 * 6 };
 struct Gallery {
@@ -133,6 +167,14 @@ void Triangle(const Vertex &a, const Vertex &b, const Vertex &c) {
     auto colour = [&](DWORD source) -> DWORD {
         if (!g.texture[m]) return CeMuseumExhibition::Shade(source, 60);
         if (tint) return tint;
+        if (kMaterials[m].lift) {
+            const unsigned lift = kMaterials[m].lift;
+            auto raise = [&](unsigned shift) {
+                const unsigned c = ((source >> shift) & 255u) * lift / 100u;
+                return (c > 255u ? 255u : c) << shift;
+            };
+            source = (source & 0xff000000u) | raise(16) | raise(8) | raise(0);
+        }
         const DWORD green = ((source >> 8) & 255u) * 82u / 100u;
         return (source & 0xffff00ffu) | (green << 8);
     };
@@ -281,11 +323,11 @@ void ExhibitionShell() {
     }
 }
 // A downward-facing ceiling over a rectangle (local coordinates), height above the floor.
-void Ceiling(float floor, float x0, float y0, float x1, float y1, float height) {
+void Ceiling(float floor, float x0, float y0, float x1, float y1, float height, Material material = kMatCeiling) {
     const CeHallPoint a = CeMuseumExhibitionHost::World({x0, y0}), b = CeMuseumExhibitionHost::World({x1, y0});
     const CeHallPoint c = CeMuseumExhibitionHost::World({x1, y1}), d = CeMuseumExhibitionHost::World({x0, y1});
     const float z = floor - height;
-    g.current = kMatCeiling; g.hasCentre = true;
+    g.current = material; g.hasCentre = true;
     g.centre[0] = (a.x + c.x) * 0.5f; g.centre[1] = (a.y + c.y) * 0.5f; g.centre[2] = z - 1.0f;
     // Panels of about 2 m, so the per-vertex lighting has no long diagonal seam.
     const unsigned across = unsigned(std::ceil((x1 - x0) / 2.0f)), along = unsigned(std::ceil((y1 - y0) / 2.0f));
@@ -386,6 +428,37 @@ static Material PurposeMaterial(CeMuseumExhibition::Purpose purpose) {
     return kMatFlat;
 }
 
+// One plan box (plan coordinates, height upward) in one material, outside the plan.
+static void PlanBox(const CeMuseumExhibition::Box &box, float floor, Material material) {
+    CeMuseumExhibition::Vertex authored[CeMuseumExhibition::kBoxVertices];
+    const unsigned count = CeMuseumExhibition::EmitBox(box, authored);
+    const CeHallPoint middle = CeMuseumExhibitionHost::World({(box.min.x + box.max.x) * 0.5f, (box.min.y + box.max.y) * 0.5f});
+    g.hasCentre = true; g.current = material;
+    g.centre[0] = middle.x; g.centre[1] = middle.y; g.centre[2] = floor - (box.min.z + box.max.z) * 0.5f;
+    for (unsigned i = 0; i + 2 < count; i += 3) {
+        Vertex native[3];
+        for (unsigned j = 0; j < 3; ++j)
+            native[j] = Point(CeMuseumExhibitionHost::World({authored[i + j].x, authored[i + j].y}),
+                              floor - authored[i + j].z, box.colour);
+        Triangle(native[0], native[1], native[2]);
+    }
+    g.hasCentre = false; g.current = kMatAuto;
+}
+// A pier is built, not dropped in: a thin dark line where it meets the floor, a
+// darker base course standing a little proud, and a lighter cap at the top.
+static void DressPier(const CeMuseumExhibition::Box &pier, float floor) {
+    auto band = [&](float grow, float bottom, float top, Material material) {
+        CeMuseumExhibition::Box b = pier;
+        b.min.x -= grow; b.min.y -= grow; b.max.x += grow; b.max.y += grow;
+        b.min.z = bottom; b.max.z = top;
+        PlanBox(b, floor, material);
+    };
+    const float base = pier.min.z, top = pier.max.z;
+    band(0.07f, base, base + 0.035f, kMatPierLine);
+    band(0.05f, base + 0.035f, base + 0.42f, kMatPierBase);
+    band(0.025f, top - 0.30f, top, kMatPierCap);
+}
+
 static void PlannedExhibition(const CeMuseumExhibition::Plan& plan, float floor) {
     for (unsigned box = 0; box < plan.boxCount; ++box) {
         const CeMuseumExhibition::Box &piece = plan.boxes[box];
@@ -412,8 +485,18 @@ static void PlannedExhibition(const CeMuseumExhibition::Plan& plan, float floor)
             const bool top = own == kMatPlinth && authored[i].z == piece.max.z && authored[i + 1].z == piece.max.z &&
                              authored[i + 2].z == piece.max.z;
             g.current = top ? (small ? kMatSmallTop : kMatPlinthTop) : small ? kMatSmallPlinth : own;
+            // The hall's wall shared with the theater: its theater face (every corner beyond
+            // the wall's line, on a piece reaching into the theater's depth) takes the house
+            // lights as a whole; its cap and ends stay the hall's. Beyond the theater's
+            // depth that face is outside both rooms, so it is never seen.
+            if (own == kMatWall && piece.max.y > CeCinemaRoom::kFront && piece.min.y < CeCinemaRoom::kBack) {
+                bool beyond = true;
+                for (unsigned j = 0; j < 3; ++j) beyond = beyond && authored[i + j].x > CeCinemaRoom::kLeft;
+                if (beyond) g.current = kMatCinemaWall;
+            }
             Triangle(native[0], native[1], native[2]);
         }
+        if (own == kMatPier) DressPier(piece, floor);
     }
     g.hasCentre = false; g.current = kMatAuto;
     // The roof sits on the walls' outer faces; the theater has its own at its height.
@@ -492,10 +575,12 @@ static int ExhibitionZone(float x, float y, int previous) {
            local.y >= arrival->min.y && local.y <= arrival->max.y ? 0 : -1;
 }
 
+static void HouseLightReset();
 void CeMuseumHallClear() {
     gExhibition = CeMuseumExhibition::Plan{};
     gExhibitionVisitor = CeMuseumExhibition::Vec2{};
     ReleaseMaterials();
+    HouseLightReset();
  CinemaReset(); g.valid=false; g.used=0; g.zone=-1; g.ground=0; g.current=kMatAuto; g.hasCentre=false; g.overflowReason=0; }
 static void HallFailed(const char *why) {
     PortSessionLog(PORT_SESSION_GAME, false, "museum: the hall was not built: %s", why);
@@ -640,6 +725,36 @@ extern "C" void PortCeMuseumAuthoredBackdrop() {
         dev->Clear(0,0,D3DCLEAR_TARGET,kRoofShadow,1.0f,0);
 }
 
+// The theater's house lights: full while no film plays, so the seats, the aisle and
+// the projector are plain to see; down over about a second and a half while a film
+// plays, and up again when it stops. They step once per Present and only read the
+// projector's state. The walls and roof go darkest; the floor, seats, screen frame and
+// projector post keep more, so the seats and aisle stay readable (dim, never black).
+// The screen and the projector's panel are unlit and keep their own brightness.
+static const float kHouseStep = 1.0f / 45.0f;
+static float gHouseLight = 1.0f;     // 1: house lights up; 0: fully down
+static float HouseShade(unsigned m, float house) {
+    const float down = m == kMatCinemaWall || m == kMatCinemaCeiling || m == kMatStone ? 0.34f : 0.62f;
+    return down + (1.0f - down) * house;
+}
+static unsigned gHousePresent = 0;
+static bool gHouseStarted = false;
+static void HouseLightReset() {
+    gHouseLight = 1.0f;
+    gHousePresent = 0;
+    gHouseStarted = false;
+}
+static float HouseLight() {
+    const bool film = Cinema::s.inRoom && Cinema::s.phase == Cinema::Playing;
+    const float target = film ? 0.0f : 1.0f;
+    const unsigned present = PortPresentCount();
+    if (!gHouseStarted) { gHouseLight = target; gHousePresent = present; gHouseStarted = true; return gHouseLight; }
+    const unsigned steps = present - gHousePresent;
+    gHousePresent = present;
+    gHouseLight = CeCinemaRoom::StepHouseLight(gHouseLight, target, steps, GAME.IsPaused(), kHouseStep);
+    return gHouseLight;
+}
+
 extern "C" void PortCeMuseumHallDraw() {
     if (!g.valid || gMirrorPass || !PortCeMuseumVisitActive()) return;
     IDirect3DDevice9 *dev=LT.GetDevice();
@@ -680,6 +795,7 @@ extern "C" void PortCeMuseumHallDraw() {
     dev->SetTextureStageState(1,D3DTSS_ALPHAOP,D3DTOP_DISABLE);
     dev->SetTexture(1,0);
     dev->SetFVF(D3DFVF_XYZ|D3DFVF_NORMAL|D3DFVF_DIFFUSE|D3DFVF_TEX1);
+    const float house = HouseLight();
     for (unsigned m = 0; m < kMatCount; ++m) {
         if (!g.count[m]) continue;
         IDirect3DTexture9 *texture = g.texture[m] ? g.texture[m]->GetTexture() : 0;
@@ -687,6 +803,32 @@ extern "C" void PortCeMuseumHallDraw() {
         dev->SetTextureStageState(0,D3DTSS_COLOROP,texture ? D3DTOP_MODULATE : D3DTOP_SELECTARG1);
         dev->SetTextureStageState(0,D3DTSS_COLORARG1,texture ? D3DTA_TEXTURE : D3DTA_DIFFUSE);
         dev->SetTextureStageState(0,D3DTSS_COLORARG2,D3DTA_DIFFUSE);
+        // Later stages, each only where it is needed: a quiet stone mixes the lit
+        // colour back over its texture (by the factor's alpha), then the house lights
+        // scale a theater piece (by the factor's colour). The state block restores all.
+        const float quiet = texture ? kMaterials[m].quiet : 0.0f;
+        const float light = CinemaMaterial(m) ? HouseShade(m, house) : 1.0f;
+        const unsigned shade = unsigned(light * 255.0f + 0.5f), keep = unsigned((1.0f - quiet) * 255.0f + 0.5f);
+        dev->SetRenderState(D3DRS_TEXTUREFACTOR,D3DCOLOR_ARGB(keep,shade,shade,shade));
+        unsigned stage = 1;
+        if (quiet > 0.0f) {
+            dev->SetTextureStageState(stage,D3DTSS_COLOROP,D3DTOP_BLENDFACTORALPHA);
+            dev->SetTextureStageState(stage,D3DTSS_COLORARG1,D3DTA_CURRENT);
+            dev->SetTextureStageState(stage,D3DTSS_COLORARG2,D3DTA_DIFFUSE);
+            dev->SetTextureStageState(stage,D3DTSS_ALPHAOP,D3DTOP_SELECTARG1);
+            dev->SetTextureStageState(stage,D3DTSS_ALPHAARG1,D3DTA_CURRENT);
+            ++stage;
+        }
+        if (shade < 255) {
+            dev->SetTextureStageState(stage,D3DTSS_COLOROP,D3DTOP_MODULATE);
+            dev->SetTextureStageState(stage,D3DTSS_COLORARG1,D3DTA_CURRENT);
+            dev->SetTextureStageState(stage,D3DTSS_COLORARG2,D3DTA_TFACTOR);
+            dev->SetTextureStageState(stage,D3DTSS_ALPHAOP,D3DTOP_SELECTARG1);
+            dev->SetTextureStageState(stage,D3DTSS_ALPHAARG1,D3DTA_CURRENT);
+            ++stage;
+        }
+        dev->SetTextureStageState(stage,D3DTSS_COLOROP,D3DTOP_DISABLE);
+        dev->SetTextureStageState(stage,D3DTSS_ALPHAOP,D3DTOP_DISABLE);
         material.Emissive.r = material.Emissive.g = material.Emissive.b = kMaterials[m].glow;
         dev->SetMaterial(&material);
         // Inlays lie 12 mm over the floor: pull them forward so far ones never flicker.
@@ -695,6 +837,8 @@ extern "C" void PortCeMuseumHallDraw() {
         dev->SetRenderState(D3DRS_SLOPESCALEDEPTHBIAS,*reinterpret_cast<const DWORD *>(&slope));
         dev->DrawPrimitiveUP(D3DPT_TRIANGLELIST,g.count[m],g.sorted + g.first[m],sizeof(LitVertex));
     }
+    dev->SetTextureStageState(1,D3DTSS_COLOROP,D3DTOP_DISABLE);
+    dev->SetTextureStageState(1,D3DTSS_ALPHAOP,D3DTOP_DISABLE);
     const float none = 0.0f;
     dev->SetRenderState(D3DRS_DEPTHBIAS,*reinterpret_cast<const DWORD *>(&none));
     dev->SetRenderState(D3DRS_SLOPESCALEDEPTHBIAS,*reinterpret_cast<const DWORD *>(&none));

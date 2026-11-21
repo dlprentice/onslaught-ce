@@ -69,7 +69,9 @@ int main() {
     GAME.camera=&simulation; GAME.free=true; if (PortCePlayUnitHidesOwnMesh(&soldier)) return 4;
     GAME.free=false; gDriving=false; if (PortCePlayUnitHidesOwnMesh(&soldier)) return 5;
     gDriving=true; gFootFirstPerson=false; if (PortCePlayUnitHidesOwnMesh(&soldier)) return 6;
-    gFootFirstPerson=true; gOnFoot=false; if (PortCePlayUnitHidesOwnMesh(&soldier)) return 7;
+    gFootFirstPerson=true; gOnFoot=false; if (!PortCePlayUnitHidesOwnMesh(&soldier) || PortCePlayUnitHidesOwnMesh(&observer)) return 7;
+    gMirrorPass=true; if (PortCePlayUnitHidesOwnMesh(&soldier)) return 15;
+    gMirrorPass=false;
     gOnFoot=true; GAME.level++; if (PortCePlayUnitHidesOwnMesh(&soldier)) return 8;
     GAME.level=gLevel; gFootRenderedView=nullptr; if (PortCePlayUnitHidesOwnMesh(&soldier)) return 9;
     const float at[3]={3.f,-3.f,8.f}; float e[3]; CePlayUnitFootFirstEye(at,e);

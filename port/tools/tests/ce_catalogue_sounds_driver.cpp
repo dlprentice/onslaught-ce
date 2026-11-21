@@ -14,6 +14,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -92,6 +93,43 @@ int list_shown_page = -1, list_shown_start = -1;
 void PortCeCatalogueListDetails(const char* text) { list_details = text; }
 void PortCeCatalogueListFind() { ++list_finds; }
 void PortCeExtrasShow(int page, int startRow) { list_shown_page = page; list_shown_start = startRow; }
+std::string list_picture;
+int preview_slot = -1;
+bool preview_ok = true;
+bool preview_checker = false;
+void PortCeCatalogueListPicture(const char* text) { list_picture = text; }
+bool PortCeCataloguePreviewOpen(unsigned slot) { preview_slot = int(slot); return preview_ok; }
+unsigned preview_closes;
+void PortCeCataloguePreviewClose() { ++preview_closes; }
+bool PortCeCataloguePreviewDrawIn(float, float, float, float, bool with_picture, bool checker) {
+    preview_checker = checker;
+    return with_picture && preview_slot >= 0 && preview_ok;
+}
+std::string pane_first, pane_second;
+std::vector<std::string> pane_lines;
+void PortCeCataloguePaneText(const char* first, const char* second, float, float, float) {
+    pane_first = first ? first : ""; pane_second = second ? second : "";
+    pane_lines.push_back(pane_first); pane_lines.push_back(pane_second);
+}
+float fake_now;
+float PortCeCatalogueNow() { return fake_now; }
+// The Goodies' models: one model here is a goodie the pane can turn.
+int PortCeCatalogueGoodieModel(const char* file) { return file && !std::strcmp(file, "Zulu_Tank.msh.aya") ? 14 : -1; }
+int model_loaded = -1; unsigned model_loads, model_frees, model_draws;
+bool PortCeCatalogueModelLoad(int goodie) { ++model_loads; model_loaded = goodie; return true; }
+void PortCeCatalogueModelFree() { ++model_frees; model_loaded = -1; }
+bool PortCeCatalogueModelDraw(float, float, float, float, float) { ++model_draws; return model_loaded >= 0; }
+// The game's own words: a few, as the running language's text gives them.
+void PortCeCatalogueTextWords(void (*add)(const char*, void*), void* context) {
+    for (const char* w : {"tank", "trap", "dome", "commando", "the", "base"}) add(w, context);
+}
+// The Goodies' own titles: one model and one picture are goodies here.
+bool PortCeCatalogueGoodieName(int kind, const char* file, char* utf8, unsigned size) {
+    const std::string f = file ? file : "";
+    if (kind == 0 && f == "Zulu_Tank.msh.aya") { std::snprintf(utf8, size, "%s", "ZT-9 Zulu Tank"); return true; }
+    if (kind == 1 && f.find("ca_fu_tank_av14") != std::string::npos) { std::snprintf(utf8, size, "%s", "AV-14 Sabre Light Tank"); return true; }
+    return false;
+}
 
 void PortPathsNamesOnly() {}
 const char* PortGameDir() { return root; }
@@ -256,7 +294,7 @@ void TestMenu() {
     PortCeCatalogueBrowse(2);
     Check(PortCeCatalogueMatches() == 30 && PortCeCataloguePageCount() == 3 && PortCeCataloguePageNumber() == 1 &&
           PortCeCatalogueVisible() == 12, "loaded sounds page like the other collections");
-    Check(Title(0) == "Chimes: Soft" && Title(1) == "deep hum" && Title(11) == "pulse 09" && Title(12).empty(),
+    Check(Title(0) == "Chimes: Soft" && Title(1) == "Deep Hum" && Title(11) == "Pulse 09" && Title(12).empty(),
           "rows show cleaned titles in list order");
     Check(PortCeCatalogueIsSound(0) && PortCeCatalogueIsSound(11) && !PortCeCatalogueIsSound(12) && !PortCeCatalogueIsTexture(0),
           "visible rows are sounds and not textures");
@@ -271,29 +309,29 @@ void TestMenu() {
     PortCeCatalogueSelect(3);
     Check(PortCeCataloguePlaySound(3) && fake.started == "pulse_01" && !fake.overlaps, "a newly selected row replaces the preview");
     PortCeCatalogueTurn();
-    Check(PortCeCataloguePageNumber() == 2 && PortCeCatalogueSelectedSlot() == 0 && Title(0) == "pulse 10" &&
+    Check(PortCeCataloguePageNumber() == 2 && PortCeCatalogueSelectedSlot() == 0 && Title(0) == "Pulse 10" &&
           PortCeCataloguePlaySound(0) && fake.started == "pulse_10", "the second page plays its own rows");
     PortCeCatalogueTurn();
     PortCeCatalogueSelect(5);
-    Check(PortCeCatalogueVisible() == 6 && Title(5) == "relay click 2" && PortCeCataloguePlaySound(5) &&
+    Check(PortCeCatalogueVisible() == 6 && Title(5) == "Relay Click 2" && PortCeCataloguePlaySound(5) &&
           fake.started == "relay~click[2]" && !PortCeCatalogueIsSound(6) && !PortCeCataloguePlaySound(6) &&
           fake.started == "relay~click[2]", "the short last page is bounded");
 
     const std::string detail = Details(5);
-    Check(detail == "relay click 2\nSound effects, item 30 of 30.",
+    Check(detail == "Relay Click 2\nSound effects, item 30 of 30.",
           "details give the effect's name and place in plain words, with no encoding marks");
     Check(detail.find("Installed") == std::string::npos && detail.find("resources") == std::string::npos,
           "details do not present a loaded sound as an installed file");
     Check(Details(6).empty(), "no details past the last row");
 
     PortCeCatalogueFilter("relay click 2");
-    Check(PortCeCatalogueMatches() == 1 && Title(0) == "relay click 2", "search finds the title as displayed");
+    Check(PortCeCatalogueMatches() == 1 && Title(0) == "Relay Click 2", "search finds the title as displayed");
     PortCeCatalogueFilter("~CLICK[2]");
-    Check(PortCeCatalogueMatches() == 1 && Title(0) == "relay click 2", "search finds raw-name punctuation without case");
+    Check(PortCeCatalogueMatches() == 1 && Title(0) == "Relay Click 2", "search finds raw-name punctuation without case");
     PortCeCatalogueFilter("deep hum");
     const unsigned spaced = PortCeCatalogueMatches();
     PortCeCatalogueFilter("DEEP  HUM");
-    Check(spaced == 1 && PortCeCatalogueMatches() == 1 && Title(0) == "deep hum", "search finds a name through either spacing");
+    Check(spaced == 1 && PortCeCatalogueMatches() == 1 && Title(0) == "Deep Hum", "search finds a name through either spacing");
     PortCeCatalogueFilter("chimes soft");
     Check(PortCeCatalogueMatches() == 1 && Title(0) == "Chimes: Soft", "search finds an effect by its group and words");
     PortCeCatalogueFilter("n_fe_soft");
@@ -304,7 +342,7 @@ void TestMenu() {
     PortCeCatalogueTurn();
     PortCeCatalogueSelect(2);
     PortCeCatalogueFilter("pulse 1");
-    Check(PortCeCatalogueMatches() == 10 && PortCeCatalogueSelectedSlot() == 4 && Title(4) == "pulse 14",
+    Check(PortCeCatalogueMatches() == 10 && PortCeCatalogueSelectedSlot() == 4 && Title(4) == "Pulse 14",
           "the selected sound keeps its identity through a narrower search");
     Check(PortCeCataloguePlaySound(4) && fake.started == "pulse_14" && !fake.overlaps, "a filtered row plays the sound it shows");
     unsigned starts = fake.starts;
@@ -315,7 +353,7 @@ void TestMenu() {
           fake.starts == starts, "an empty result plays nothing");
     PortCeCatalogueTurn();
     PortCeCatalogueFilter("");
-    Check(PortCeCataloguePageNumber() == 2 && PortCeCatalogueSelectedSlot() == 4 && Title(4) == "pulse 14",
+    Check(PortCeCataloguePageNumber() == 2 && PortCeCatalogueSelectedSlot() == 4 && Title(4) == "Pulse 14",
           "clearing a search with no match returns to the selected sound");
     Check(fake.visits == 1, "browsing, paging and searching never re-read the session list");
 
@@ -334,7 +372,7 @@ void TestMenu() {
     Check(PortCeCatalogueCount(2) == snapshot_before_leave, "leaving a collection preserves its snapshot until reopen");
     PortCeCatalogueBrowse(2);
     Check(std::string(PortCeCatalogueQuery()) == "pulse 1" && PortCeCatalogueMatches() == 10 && PortCeCatalogueSelectedSlot() == 4 &&
-          Title(4) == "pulse 14", "returning keeps the collection's own search and selected sound although rows moved");
+          Title(4) == "Pulse 14", "returning keeps the collection's own search and selected sound although rows moved");
     Check(!fake.active && fake.starts == starts, "returning does not resume a preview");
     Check(PortCeCataloguePlaySound(4) && fake.started == "pulse_14", "the selected sound still plays under its own name");
 
@@ -343,7 +381,7 @@ void TestMenu() {
     Check(!fake.active && !PortCeCatalogueSoundsPlaying(), "reopening the catalogue ends the preview");
     PortCeCatalogueBrowse(2);
     Check(PortCeCatalogueCount(2) == 30 && !*PortCeCatalogueQuery() && PortCeCataloguePageNumber() == 1 &&
-          PortCeCatalogueSelectedSlot() == 0 && Title(0) == "aaa new tone", "a reopened catalogue lists the session as it is now");
+          PortCeCatalogueSelectedSlot() == 0 && Title(0) == "Aaa New Tone", "a reopened catalogue lists the session as it is now");
     starts = fake.starts;
     PortCeCatalogueFilter("pulse 14");
     Check(!PortCeCatalogueMatches() && !PortCeCataloguePlaySound(0) && fake.starts == starts,
@@ -388,7 +426,7 @@ void TestFrontendLeave() {
     Check(PortCeCataloguePlaySound(4) && fake.started == "pulse_14" && fake.active, "a sound on the second page is playing");
     PortCeCatalogueSoundsClose(); // the frontend's own call when the player leaves the sound
     Check(!fake.active && !PortCeCatalogueSoundsPlaying(), "the frontend's close ends the preview");
-    Check(PortCeCataloguePageNumber() == 2 && PortCeCatalogueSelectedSlot() == 4 && Title(4) == "pulse 14" &&
+    Check(PortCeCataloguePageNumber() == 2 && PortCeCatalogueSelectedSlot() == 4 && Title(4) == "Pulse 14" &&
           PortCeCatalogueCount(2) == 30, "the open catalogue lists the session again with the same sound selected");
     for (int frame = 0; frame < 50; ++frame) Frame();
     Check(fake.visits == 2 && fake.starts == 1 && !fake.active, "that took one new snapshot, not one per frame, and resumed nothing");
@@ -398,7 +436,7 @@ void TestFrontendLeave() {
     PortCeCatalogueSoundsClose();
     Check(!fake.active, "the frontend's close ends the second preview");
     Check(PortCeCatalogueVisible() == 1 && PortCeCataloguePageNumber() == 1 && PortCeCatalogueSelectedSlot() == 0 &&
-          Title(0) == "solo tone" && !PortCeCatalogueIsSound(1) && !PortCeCataloguePlaySound(4), "rows of the old snapshot are gone");
+          Title(0) == "Solo Tone" && !PortCeCatalogueIsSound(1) && !PortCeCataloguePlaySound(4), "rows of the old snapshot are gone");
     Check(PortCeCataloguePlaySound(0) && fake.started == "solo_tone", "only a sound of the current session plays");
 
     fake.loaded.clear();
@@ -424,7 +462,8 @@ void TestDetailsAndEmpty() {
     PortCeCatalogueBrowse(2);
     Check(PortCeCatalogueCount(2) == 1 && PortCeCatalogueVisible() == 1, "only the name inside the length bound is listed");
     // The front end's message box breaks a word wider than the box (ce_frontend.cpp WrapLines), so the name is whole here.
-    Check(Details(0) == full + "\nSound effects, item 1 of 1.", "details give the complete name and its place in the list");
+    std::string shown = full; shown[0] = 'A';	// a made name starts with a capital, as the game's titles do
+    Check(Details(0) == shown + "\nSound effects, item 1 of 1.", "details give the complete name and its place in the list");
     Check(PortCeCataloguePlaySound(0) && fake.started == full, "the longest listed name plays in full");
     PortCeCatalogueClose();
     Check(!fake.active, "closing ends the long name's preview");
@@ -553,43 +592,52 @@ std::string ListHint(const SCeListPage* page, int index) {
 }
 
 // The sound list box: whole titles, Find at the end, the playing row marked, look-alike rows told apart, a long list whole.
+static int RowOf(const SCeListPage* page, const std::string& text) {
+    for (int r = 0; r < page->mCount(); ++r) if (Narrow(ListRow(page, r).mLeft) == text) return r;
+    return -1;
+}
+
 static void TestList() {
     fake = Fake();
     fake.loaded = {"Bells\\N_A_ring", "Bells\\N_HUD_ring", "Chimes\\N_FE_Soft"};
     PortCeCatalogueOpen();
     PortCeCatalogueBrowse(2);
     PortCeCatalogueListTitle("Sound effects");
-    const SCeListPage* page = PortCeCatalogueSoundsListPage();
-    Check(page && Narrow(page->mTitle) == "Sound effects" && page->mCount() == 4, "the list has every effect and Find");
-    Check(Narrow(ListRow(page, 3).mLeft) == "Find by name", "Find is the row after the items");
-    const SCeListRow first = ListRow(page, 0), second = ListRow(page, 1), third = ListRow(page, 2);
-    Check(Narrow(first.mLeft) == "Bells: ring" && Narrow(second.mLeft) == "Bells: ring" && Narrow(third.mLeft) == "Chimes: Soft",
-          "rows show whole titles");
-    Check(Narrow(first.mRight) == "N A ring" && Narrow(second.mRight) == "N HUD ring" && first.mTone == CE_TONE_DIM && !third.mRight[0],
-          "only rows that read the same carry a grey tag, and it tells them apart");
-    Check(page->mSelect(0) && fake.started == "Bells\\N_A_ring" && fake.active &&
-          list_details == "Bells: ring\nSound effects, item 1 of 3.", "choosing a row plays it and shows its details");
-    Check(Narrow(ListRow(page, 0).mRight) == "Playing" && ListRow(page, 0).mTone == CE_TONE_GOOD, "the playing row is marked");
-    Check(ListHint(page, 0) == "Bells: ring | Item 1 of 3. Playing: choose another, or go back to stop it.",
-          "the hint gives the whole line, its place in the list and that it is playing");
-    Check(page->mSmallFace && page->mWiden == 20.f, "the rows are in the smaller face, in a box widened toward the right arc");
+    const SCeListPage* page = PortCeCatalogueListPage();
+    // Bells (heading), ring, ring, Chimes (heading), Soft, Actions (heading), Find by name
+    Check(page && Narrow(page->mTitle) == "Sound effects" && page->mCount() == 7, "the list has every effect, its groups' headings, Actions heading, and Find");
+    Check(page->mHeading(0) && page->mHeading(3) && page->mHeading(5) && !page->mHeading(1) && !page->mHeading(4) && Narrow(ListRow(page, 0).mLeft) == "Bells" &&
+          Narrow(ListRow(page, 3).mLeft) == "Chimes" && Narrow(ListRow(page, 5).mLeft) == "Actions", "each group and Actions is named once, as a heading row");
+    Check(Narrow(ListRow(page, 6).mLeft) == "Find by name" && !page->mHeading(6), "Find is the row after the Actions heading");
+    const SCeListRow first = ListRow(page, 1), second = ListRow(page, 2), third = ListRow(page, 4);
+    Check(Narrow(first.mLeft) == "Ring 1" && Narrow(second.mLeft) == "Ring 2" && Narrow(third.mLeft) == "Soft" && !first.mRight[0],
+          "rows carry the name alone; rows that read the same are numbered in the name, never by a file's name");
+    Check(!page->mSelect(0) && !page->mSelect(5) && !fake.starts, "a heading is not a choice");
+    Check(page->mSelect(1) && fake.started == "Bells\\N_A_ring" && fake.active &&
+          list_details == "Bells: Ring\nSound effects, item 1 of 3.", "choosing a row plays it and shows its details");
+    Check(Narrow(ListRow(page, 1).mRight) == "Playing" && ListRow(page, 1).mTone == CE_TONE_GOOD, "the playing row is marked");
+    Check(ListHint(page, 1) == "Bells: Ring | Item 1 of 3. Playing: choose another, or go back to stop it.",
+          "the hint gives group and name whole, the place among the items and that it is playing");
+    Check(page->mSmallFace && page->mRows == 11 && page->mTopY == 130.f && !page->mPane && page->mBoxRight == 0.f,
+          "sound lists use the page's height in the smaller face, full width");
     const unsigned stops = fake.stops;
-    Check(page->mSelect(2) && fake.started == "Chimes\\N_FE_Soft" && fake.stops == stops + 1 && !fake.overlaps,
+    Check(page->mSelect(4) && fake.started == "Chimes\\N_FE_Soft" && fake.stops == stops + 1 && !fake.overlaps,
           "choosing another stops the first");
-    Check(Narrow(ListRow(page, 2).mRight) == "Playing" && Narrow(ListRow(page, 0).mRight) == "N A ring", "the mark follows the sound");
+    Check(Narrow(ListRow(page, 4).mRight) == "Playing" && !ListRow(page, 1).mRight[0], "the mark follows the sound");
     page->mClose();
     Check(!fake.active, "leaving the list stops its sound");
     const unsigned finds = list_finds;
-    Check(page->mSelect(0) && fake.active, "a row plays before Find is opened");
-    Check(page->mSelect(3) && list_finds == finds + 1 && !fake.active, "Find by name opens the page's Find and stops the sound");
+    Check(page->mSelect(1) && fake.active, "a row plays before Find is opened");
+    Check(page->mSelect(6) && list_finds == finds + 1 && !fake.active, "Find by name opens the page's Find and stops the sound");
     PortCeCatalogueFilter("bells");
-    Check(page->mCount() == 4 && Narrow(ListRow(page, 3).mLeft) == "Show all" && ListHint(page, 0).find("Item 1 of 2 found.") != std::string::npos,
-          "a search lists what it found, then Find and Show all");
+    Check(page->mCount() == 6 && page->mHeading(3) && Narrow(ListRow(page, 3).mLeft) == "Actions" &&
+          Narrow(ListRow(page, 5).mLeft) == "Show all" && ListHint(page, 1).find("Item 1 of 2 found.") != std::string::npos,
+          "a search lists what it found under its heading, then Actions, Find and Show all");
     list_shown_page = -1; list_shown_start = -1;
-    Check(page->mSelect(3) && *PortCeCatalogueQuery() == 0 && page->mCount() == 4 &&
-          list_shown_page == XP_SOUNDS && list_shown_start == 0, "Show all ends the search and resets cursor");
+    Check(page->mSelect(5) && *PortCeCatalogueQuery() == 0 && page->mCount() == 7 &&
+          list_shown_page == XP_CATALOGUE_LIST && list_shown_start == 1, "Show all ends the search and restores cursor");
     fake.refuse = true;
-    Check(page->mSelect(1) && list_details.find("Bells: ring\nSound effects, item 2 of 3.\n") == 0 && !fake.active,
+    Check(page->mSelect(2) && list_details.find("Bells: Ring\nSound effects, item 2 of 3.\n") == 0 && !fake.active,
           "a sound that does not start says so in its details");
     fake.refuse = false;
     PortCeCatalogueClose();
@@ -599,51 +647,226 @@ static void TestList() {
     for (unsigned i = 0; i < 700; ++i) { char name[24]; std::snprintf(name, sizeof name, "Long\\N_A_line_%03u", i); fake.loaded.push_back(name); }
     PortCeCatalogueOpen();
     PortCeCatalogueBrowse(2);
-    Check(page->mCount() == 701 && Narrow(ListRow(page, 650).mLeft) == "Long: line 650" && ListHint(page, 699).find("Item 700 of 700.") != std::string::npos,
-          "a 700-row list keeps every row and its place");
-    Check(page->mSelect(650) && fake.started == "Long\\N_A_line_650" && Narrow(ListRow(page, 650).mRight) == "Playing", "a row far down plays and is marked");
+    Check(page->mCount() == 703 && page->mHeading(0) && page->mHeading(701) && Narrow(ListRow(page, 651).mLeft).find("650") != std::string::npos &&
+          ListHint(page, 700).find("Item 700 of 700.") != std::string::npos, "a 700-row list keeps every row and its place");
+    Check(page->mSelect(651) && fake.started == "Long\\N_A_line_650" && Narrow(ListRow(page, 651).mRight) == "Playing", "a row far down plays and is marked");
     page->mClose();
     PortCeCatalogueClose();
 
-    // Long titles that begin the same keep their start and their own end, so that each row reads differently.
+    // More than 256 distinct groups: every group and match is preserved without truncation.
+    fake = Fake();
+    for (unsigned i = 0; i < 270; ++i) { char name[32]; std::snprintf(name, sizeof name, "Group%u\\N_A_tone", 100u + i); fake.loaded.push_back(name); }
+    PortCeCatalogueOpen();
+    PortCeCatalogueBrowse(2);
+    Check(page->mCount() == 270 * 2 + 2 && Narrow(ListRow(page, 270 * 2 - 2).mLeft) == "Group 369" &&
+          PortCeCatalogueListRowOf(269) == 270 * 2 - 1, "lists with more than 256 groups keep every group and map rows cleanly");
+    page->mClose();
+    PortCeCatalogueClose();
+
+    // Long names that begin the same keep their start and their own end, so that each row reads differently.
     fake = Fake();
     fake.loaded = {"Calls\\N_A_muspell_ground_forces_are_closing_in_on_the_east_of_the_base",
                    "Calls\\N_A_muspell_ground_forces_are_closing_in_on_the_west_of_the_base", "Calls\\N_A_short"};
     PortCeCatalogueOpen();
     PortCeCatalogueBrowse(2);
-    const std::string east = Narrow(ListRow(page, 0).mLeft), west = Narrow(ListRow(page, 1).mLeft), brief = Narrow(ListRow(page, 2).mLeft);
-    Check(east == "Calls: muspell... the east of the base" && west == "Calls: muspell... the west of the base" &&
-          east.size() <= 42 && brief == "Calls: short" && !ListRow(page, 0).mRight[0],
+    const std::string east = Narrow(ListRow(page, RowOf(page, "Calls") + 1).mLeft), west = Narrow(ListRow(page, RowOf(page, "Calls") + 2).mLeft);
+    Check(east != west && east.find("East of the Base") != std::string::npos && west.find("West of the Base") != std::string::npos &&
+          east.size() <= 42 && east.find("...") != std::string::npos && RowOf(page, "Short") > 0,
           "long rows that begin the same show their own ends; short rows are whole");
-    Check(ListHint(page, 1).rfind("Calls: muspell ground forces are closing in on the west of the base |", 0) == 0,
-          "the hint has the highlighted row's whole line");
+    Check(ListHint(page, RowOf(page, west)).find("West of the Base |") != std::string::npos, "the hint has the highlighted row's whole line");
     PortCeCatalogueClose();
     fake = Fake();
     fake.loaded = {"Calls\\N_A_enemy_forces_are_breaching_the_eastern_defences_now", "Calls\\N_A_other"};
     PortCeCatalogueOpen();
     PortCeCatalogueBrowse(2);
-    Check(Narrow(ListRow(page, 0).mLeft) == "Calls: enemy forces are breaching the...", "a long row is cut at a space, then marked");
+    const std::string cut = Narrow(ListRow(page, RowOf(page, "Calls") + 1).mLeft);
+    Check(cut.size() <= 42 && cut.size() > 3 && cut.compare(cut.size() - 3, 3, "...") == 0 && cut[cut.size() - 4] != ' ', "a long row is cut at a space, then marked");
     PortCeCatalogueClose();
-    // Titles that differ only after the cut (the word that tells them apart would be dropped), and a sentence's own stop.
+    // Names that differ only after the cut (the word that tells them apart would be dropped), and a sentence's own stop.
     fake = Fake();
-    fake.loaded = {"Calls\\N_A_muspell_still_attacking_the_eastern_defences", "Calls\\N_A_muspell_still_attacking_the_southern_defences",
-                   "Calls\\N_A_muspell_still_attacking_the_western_defences", "Calls\\N_B_you_have_two_primary_controls. Movementandfirestogether"};
+    fake.loaded = {"Calls\\N_A_muspell_still_attacking_the_eastern_defences_of_the_firebase", "Calls\\N_A_muspell_still_attacking_the_southern_defences_of_the_firebase",
+                   "Calls\\N_A_muspell_still_attacking_the_western_defences_of_the_firebase", "Calls\\N_B_you_have_two_primary_controls. Movementandfirestogether"};
     PortCeCatalogueOpen();
     PortCeCatalogueBrowse(2);
-    const std::string r0 = Narrow(ListRow(page, 0).mLeft), r1 = Narrow(ListRow(page, 1).mLeft), r2 = Narrow(ListRow(page, 2).mLeft);
-    Check(r0 != r1 && r1 != r2 && r0 != r2 && r0.find("eastern") != std::string::npos && r1.find("southern") != std::string::npos &&
-          r2.find("western") != std::string::npos, "rows that would read the same after the cut keep the word that tells them apart");
-    const std::string r3 = Narrow(ListRow(page, 3).mLeft);
-    Check(r3 == "Calls: you have two primary controls...", "a cut after a sentence's stop shows three dots, not four");
+    std::vector<std::string> rows;
+    for (int r = 1; r < page->mCount() - 1; ++r) rows.push_back(Narrow(ListRow(page, r).mLeft));
+    int found = 0;
+    for (const std::string& r : rows) found += r.find("Eastern") != std::string::npos || r.find("Southern") != std::string::npos || r.find("Western") != std::string::npos;
+    Check(found == 3, "rows that would read the same after the cut keep the word that tells them apart");
+    Check(RowOf(page, "You Have Two Primary Controls...") > 0, "a cut after a sentence's stop shows three dots, not four");
     PortCeCatalogueClose();
     // Regression: a short title matching a neighbour's EndCut must not underflow size_t or read past its end.
     fake = Fake();
     fake.loaded = {"a...", "a........................................................end"};
     PortCeCatalogueOpen();
     PortCeCatalogueBrowse(2);
-    Check(Narrow(ListRow(page, 0).mLeft) == "a..." && Narrow(ListRow(page, 1).mLeft).find("end") != std::string::npos,
+    Check(Narrow(ListRow(page, 0).mLeft) == "A..." && Narrow(ListRow(page, 1).mLeft).find("end") != std::string::npos,
           "a short title matching a long neighbour's cut stays whole without underflow");
     PortCeCatalogueClose();
+}
+}
+
+namespace {
+// Models and Textures in the same list box: grouped names; a model's rotating pane; a texture's picture in the pane beside the list.
+static void TestAssetList() {
+    namespace fs = std::filesystem;
+    const fs::path base = fs::path(root) / "data/resources";
+    fs::remove_all(base);
+    auto touch = [](const fs::path& file) { fs::create_directories(file.parent_path()); std::ofstream(file) << "x"; };
+    touch(base / "meshes/Alpha_Walker.msh.aya");
+    touch(base / "meshes/Zulu_Tank.msh.aya");
+    touch(base / "meshes/m_fa_heavy_bomber.msh.aya");
+    touch(base / "meshes/m_m_heavy_artillery_emplacement.msh.aya");
+    touch(base / "meshes/m_m_heavy_artillery_transporter.msh.aya");
+    touch(base / "dxtntextures/Panel_1.tga(0).aya");
+    touch(base / "dxtntextures/Atmospherics%Clouds%Cloud.tga(0)A8R8G8B8.aya");
+    touch(base / "dxtntextures/goodies%ca_f_units%ca_fu_tank_f24.tga(0)A8R8G8B8.aya");
+    touch(base / "dxtntextures/goodies%ca_f_units%ca_fu_tank_av14.tga(0)A8R8G8B8.aya");
+    touch(base / "dxtntextures/goodies%ca_m_architecture%ca_ma_muspell_architecture.tga(0)A8.aya");
+    fake = Fake();
+    PortCeCatalogueOpen();
+    const SCeListPage* page = PortCeCatalogueListPage();
+    PortCeCatalogueBrowse(0);
+    PortCeCatalogueListTitle("Models");
+    std::vector<std::string> models;
+    for (int r = 0; r < page->mCount(); ++r) models.push_back(Narrow(ListRow(page, r).mLeft));
+    Check(models.size() == 11 && models[0] == "Units" && models[1] == "ZT-9 Zulu Tank" &&
+          models[2] == "Forseti aircraft" && models[3] == "Heavy Bomber" &&
+          models[4] == "Muspell" && models[5] != models[6] &&
+          models[5].find("Emplacement") != std::string::npos && models[6].find("Transporter") != std::string::npos &&
+          models[5].size() <= 19 && models[6].size() <= 19 &&
+          models[7] == "Models" && models[8] == "Alpha Walker" && models[9] == "Actions" && models[10] == "Find by name",
+          "models are grouped with Actions separated, goodie titles win, and colliding long names middle-cut cleanly inside 19 chars");
+    const int zulu = 1;
+    // Matches sort by filename: 0=Alpha_Walker (row 8 under Models), 1=m_fa_heavy_bomber (row 3), 4=Zulu_Tank (row 1 under Units).
+    Check(PortCeCatalogueListRowOf(0) == 8 && PortCeCatalogueListRowOf(1) == 3 && PortCeCatalogueListRowOf(4) == 1 && PortCeCatalogueListRowOf(-1) == 1,
+          "PortCeCatalogueListRowOf maps unsorted match index to exact grouped row and skips headings");
+    Check(ListHint(page, zulu) == " | Item 1 of 5. Up and Down to look through them.",
+          "the foot carries the place and the keys; the name is in the pane's caption");
+    Check(!ListRow(page, zulu).mRight[0] && page->mPane && page->mBoxRight == 372.f,
+          "models have their pane beside a narrower list without gutter marks");
+    fake_now = 20.f; model_loads = model_frees = model_draws = 0;
+    page->mPane(zulu, 372.f, 130.f, 556.f, 403.f);
+    Check(!model_loads, "a model is not read while the cursor has only just arrived");
+    fake_now = 20.3f; pane_lines.clear();
+    page->mPane(zulu, 372.f, 130.f, 556.f, 403.f);
+    Check(model_loads == 1 && model_loaded == 14 && model_draws == 1 && pane_first == "ZT-9 Zulu Tank" && pane_second == "Units" &&
+          PortCeCatalogueListRowOf(PortCeCatalogueSelectedIndex()) == zulu,
+          "once the cursor has rested, the unit's model is read, drawn turning, selected and named under it");
+    pane_lines.clear();
+    page->mPane(3, 372.f, 130.f, 556.f, 403.f);
+    Check(model_frees == 1 && model_loaded == -1 && std::count(pane_lines.begin(), pane_lines.end(), "This model is loaded with its level.") == 1 &&
+          pane_first == "Heavy Bomber" && PortCeCatalogueListRowOf(PortCeCatalogueSelectedIndex()) == zulu,
+          "moving briefly past another row frees the model without overwriting the settled selection");
+    list_details.clear(); preview_slot = -1;
+    Check(page->mSelect(zulu) && list_details.empty() && preview_slot == -1 && !fake.starts && model_loads == 2 && model_loaded == 14,
+          "Select on a model opens no box and loads a turnable model immediately");
+    // Opening Find frees any loaded model preview immediately.
+    const unsigned frees_before_find = model_frees;
+    Check(page->mSelect(10) && model_frees == frees_before_find + 1 && model_loaded == -1,
+          "Find by name frees any loaded preview model");
+    // Empty filter maps cleanly to Find by name (row 0, no Actions heading when empty).
+    PortCeCatalogueFilter("no such model");
+    Check(page->mCount() == 2 && Narrow(ListRow(page, 0).mLeft) == "Find by name" && PortCeCatalogueListRowOf(-1) == 0,
+          "empty filter omits Actions heading and maps to Find by name");
+    PortCeCatalogueFilter("");
+    Check(page->mSelect(zulu) && model_loaded == 14, "re-selecting loads the model again");
+    const unsigned frees = model_frees;
+    page->mClose();
+    Check(model_frees == frees + 1 && model_loaded == -1, "leaving the page lets the loaded model go");
+    PortCeCatalogueListTitle("Models");
+    PortCeCatalogueBrowse(1);
+    PortCeCatalogueListTitle("Textures");
+    std::vector<std::string> textures;
+    for (int r = 0; r < page->mCount(); ++r) textures.push_back(Narrow(ListRow(page, r).mLeft));
+    Check(page->mPane && page->mBoxRight == 344.f, "textures have their picture pane beside a narrower list");
+    Check(textures.size() == 10 && textures[0] == "Goodies" && textures[4] == "Weather" && textures[5] == "Cloud" &&
+          textures[6] == "Textures" && textures[7] == "Panel 1" && textures[8] == "Actions" && textures[9] == "Find by name" &&
+          std::count(textures.begin(), textures.end(), "AV-14...Light Tank") == 1 && std::count(textures.begin(), textures.end(), "Muspell Architecture") == 1,
+          "textures are grouped with plural dedupe (Weather -> Cloud), designations, goodie titles, and Actions heading");
+    const int panel = 7;
+    preview_slot = -1; fake_now = 10.f; pane_lines.clear();
+    page->mPane(panel, 344.f, 130.f, 556.f, 403.f);
+    Check(preview_slot == -1, "the picture is not read while the cursor has only just arrived");
+    fake_now = 10.3f; preview_ok = true;
+    page->mPane(panel, 344.f, 130.f, 556.f, 403.f);
+    Check(preview_slot >= 0 && pane_lines.size() == 2 && pane_lines[0] == "Panel 1" && pane_lines[1].rfind("Textures", 0) == 0,
+          "once the cursor has rested, the picture is read: its name under it, then one line of its group and size");
+    list_picture.clear(); list_details.clear(); preview_slot = -1;
+    Check(page->mSelect(panel) && preview_slot >= 0 && list_picture.empty() && list_details.empty(), "Select shows the picture at once, without a box");
+    const unsigned closes_before_find = preview_closes;
+    Check(page->mSelect(9) && preview_closes == closes_before_find + 1, "Find by name closes any open texture preview");
+    page->mClose();
+    PortCeCatalogueClose();
+    fs::remove_all(base);
+}
+}
+
+namespace {
+// The naming rule over run-together words: up to three known words (the game's own words or the English list), and in a model's
+// name a word with the makers' code beside it, kept in capitals; ordinary words and anything a rule cannot read stay as written.
+static void TestNames() {
+    namespace fs = std::filesystem;
+    const fs::path base = fs::path(root) / "data/resources";
+    fs::remove_all(base);
+    auto touch = [](const fs::path& file) { fs::create_directories(file.parent_path()); std::ofstream(file) << "x"; };
+    for (const char* stem : {"m_shipgunbig", "m_towerb", "M_HCbridge", "m_fbossbd", "m_tanktrap", "m_innerwreckage", "m_groundat",
+                             "m_gunner", "m_ventura", "m_fbossmea", "m_commando", "m_warehouse"})
+        touch(base / (std::string("meshes/m_") + stem + ".msh.aya"));
+    touch(base / "meshes/m_pine0.msh.aya");
+    touch(base / "meshes/m_mtanklight.msh.aya");
+    touch(base / "dxtntextures/spark.tga(0).aya");
+    touch(base / "dxtntextures/firetruck.tga(0).aya");
+    PortCeCatalogueOpen();
+    std::set<std::string> names;
+    for (int category : {0, 1}) {
+        PortCeCatalogueBrowse(category);
+        for (unsigned i = 0; i < PortCeCatalogueMatches(); ++i) {
+            char group[64], name[160];
+            PortCeCatalogueShowItem(i);
+            PortCeCatalogueItemParts(i % CE_CATALOGUE_SLOTS, group, sizeof group, name, sizeof name);
+            names.insert(std::string(group) + ": " + name);
+        }
+    }
+    PortCeCatalogueClose();
+    auto has = [&](const char* n) { return names.count(n) > 0; };
+    Check(has("Muspell: Ship Gun Big") && has("Muspell: Tank Trap") && has("Muspell: Inner Wreckage") && has("Textures: Fire Truck"),
+          "a run-together word splits into two or three known words, English or the game's own");
+    Check(has("Muspell: Tower B") && has("Muspell: HC Bridge") && has("Muspell: F Boss BD") && has("Muspell: Ground AT") &&
+          has("Models: M Tank Light"), "in a model's name a word keeps the makers' code beside it, in capitals, in their order");
+    Check(has("Muspell: Gunner") && has("Muspell: Ventura") && has("Models: Pine 0") && has("Muspell: Warehouse") &&
+          has("Muspell: Fbossmea") && has("Muspell: Commando") && has("Textures: Spark"),
+          "an English ending, a syllable or a lone vowel is no code; a known word stays whole; textures are never read as codes");
+    fs::remove_all(base);
+}
+}
+
+namespace {
+// Textures rows a player can tell apart: a run sharing a prefix up to a comma shows it once, then what differs; a name still too long
+// for the row is cut in its middle, so the end that differs stays.
+static void TestRowsDiffer() {
+    namespace fs = std::filesystem;
+    const fs::path base = fs::path(root) / "data/resources";
+    fs::remove_all(base);
+    auto touch = [](const fs::path& file) { fs::create_directories(file.parent_path()); std::ofstream(file) << "x"; };
+    for (const char* leaf : {"ml_graphics01", "ml_graphics02", "ml_numbers01"})
+        touch(base / (std::string("dxtntextures/goodies%ca_m_language%ca_") + leaf + ".tga(0)A8R8G8B8.aya"));
+    touch(base / "dxtntextures/goodies%ca_m_units%ca_mu_heavy_artillery_emplacement.tga(0)A8R8G8B8.aya");
+    touch(base / "dxtntextures/goodies%ca_m_units%ca_mu_heavy_artillery_transporter.tga(0)A8R8G8B8.aya");
+    PortCeCatalogueOpen();
+    const SCeListPage* page = PortCeCatalogueListPage();
+    PortCeCatalogueBrowse(1);
+    PortCeCatalogueListTitle("Textures");
+    std::vector<std::string> rows;
+    for (int r = 0; r < page->mCount(); ++r) rows.push_back(Narrow(ListRow(page, r).mLeft));
+    Check(rows.size() == 8 && rows[1] == "Muspell...Graphics 1" && rows[2] == "Graphics 2" && rows[3] == "Numbers 1" && rows[6] == "Actions",
+          "a run sharing a prefix shows it on its first row only, then what differs");
+    Check(rows[4] != rows[5] && rows[4].find("Emplacement") != std::string::npos && rows[5].find("Transporter") != std::string::npos &&
+          rows[4].size() <= 21 && rows[5].size() <= 21, "a name too long for the row is cut in its middle and keeps the end that differs");
+    Check(ListHint(page, 2).rfind(" | Item 2 of 5.", 0) == 0, "the foot keeps its place; the whole name is in the caption");
+    page->mClose();
+    PortCeCatalogueClose();
+    fs::remove_all(base);
 }
 }
 
@@ -658,6 +881,9 @@ int main(int argc, char** argv) {
     TestDetailsAndEmpty();
     TestSpeech();
     TestList();
+    TestAssetList();
+    TestNames();
+    TestRowsDiffer();
     std::printf("%u/%u loaded-sound controller and catalogue checks passed\n", checks, checks);
     return 0;
 }

@@ -18,6 +18,10 @@ extern "C" void PortCeMuseumLabelsTitle(const char *title, const char *line);
 extern "C" void PortCeMuseumLabelsWayfinding(const char *title, const char *guide);
 // One exhibit: its name, one line about it, and where it stands on the ground plane (world X and Y). False when the table is full or a text is unusable.
 extern "C" bool PortCeMuseumLabelsAdd(const char *name, const char *line, const char *detail, float x, float y, float top, float radius);
+// Whether the visitor stands in a place the hall names (the entrance or a numbered display): a place's name at the top closes when it is left.
+extern "C" void PortCeMuseumLabelsPlace(bool inPlace);
+// Whether the hall has numbered displays at brass signs: then an exhibit's card shows only at its own sign, never for a machine merely in view.
+extern "C" void PortCeMuseumLabelsSigns(bool signs);
 // A third line for one labelled exhibit (its index), shown under the others whenever its label is: what a visitor must know to read it
 // right (an enlarged exhibit says so). False for no such label or an unusable text.
 extern "C" bool PortCeMuseumLabelsNote(unsigned index, const char *note);

@@ -1,0 +1,29 @@
+--- a/PCMusicStream.cpp
++++ b/PCMusicStream.cpp
+@@ -621,6 +621,12 @@
+ }
+ 
+ //******************************************************************************************
++#ifdef CE_VERSION
++// Port (patch 0258): the Museum cinema lowers the music under a film (port/game/ce_museum_music_duck.h): an extra gain in
++// hundredths of a decibel, 0 whenever no Museum visit is active. Weak, so a build or test without the Museum links.
++extern "C" long PortCeMuseumMusicDuck(void) __attribute__((weak));
++#endif
++
+ void	SetMusicStreamVolume(float volume)	// FUNCTION: 0x005285e0
+ {
+ #ifdef CE_VERSION
+@@ -638,6 +644,13 @@
+ 			v = 0.f;
+ 		else if (v > 1.f)
+ 			v = 1.f;
++#ifdef CE_VERSION
++		long portVolume = int(v * 10000.f - 10000.f);
++		if (PortCeMuseumMusicDuck)
++			portVolume += PortCeMuseumMusicDuck();
++		sBuffer->SetVolume(portVolume < -10000 ? -10000 : portVolume);
++#else
+ 		sBuffer->SetVolume(int(v * 10000.f - 10000.f));
++#endif
+ 	}
+ }

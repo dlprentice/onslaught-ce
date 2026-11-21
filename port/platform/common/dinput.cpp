@@ -49,6 +49,7 @@ namespace
 {
 HWND gMouseWindow;	// the window of the game's acquired mouse (relative mode is re-asserted for it each frame)
 Uint64 gMouseReleasedAt;	// SDL event timestamp cutoff: queued captured events must not become menu input on release
+unsigned gMouseActivitySeq;	// incremented on any non-zero DirectInput mouse poll (relative motion, wheel, or button)
 
 #ifdef CE_VERSION
 // SDL event watches can run on a producer thread. They copy only bounded records here; the main thread resolves
@@ -994,6 +995,9 @@ struct Device : public IDirectInputDevice8A
 				m->rgbButtons[3] = (b & SDL_BUTTON_X1MASK) ? 0x80 : 0;
 				m->rgbButtons[4] = (b & SDL_BUTTON_X2MASK) ? 0x80 : 0;
 			}
+			if (m->lX || m->lY || m->lZ || m->rgbButtons[0] || m->rgbButtons[1] || m->rgbButtons[2] ||
+			    (size >= sizeof(DIMOUSESTATE2) && (m->rgbButtons[3] || m->rgbButtons[4])))
+				++gMouseActivitySeq;
 #ifndef CE_NETWORK_OFF
 			if (m->lX || m->lY || m->lZ || b) PortInputActivity::Count(PortInputActivity::NONZERO_POLL);
 #endif
@@ -1667,6 +1671,11 @@ void PortDinputDiagnosticMouseEnd(SDL_Window *source)
 // Each frame (window.cpp's pump): while the game holds the mouse and its window has keyboard focus, relative mode must be on.
 // A compositor can refuse it (the window not yet focused at acquire) or drop it (a focus change); without it the pointer
 // stops at the screen's edges and the battle engine stops turning or pitching (recorded play, 2026-10-16).
+extern "C" unsigned PortMouseActivitySeq(void)
+{
+	return gMouseActivitySeq;
+}
+
 void PortMouseKeepRelative()
 {
 	if (!gMouseWindow)

@@ -22,11 +22,23 @@ struct SCeScrollList
 	int		mCount;			// rows in the list
 	int		mCursor;		// the highlighted row
 	int		mTop;			// the first row in view
+	int		mRows;			// rows in view; 0: kCeListRows (a page's own height, SCeListPage::mRows)
+	float	mY;				// the box's top; 0: kCeListTop
 };
 
-inline float	CeListBottom()
+inline int		CeListRowsOf(const SCeScrollList *list)
 {
-	return kCeListTop + kCeListPitch * kCeListRows + 7.f;
+	return (list && (list->mRows > 0)) ? list->mRows : kCeListRows;
+}
+
+inline float	CeListTopOf(const SCeScrollList *list)
+{
+	return (list && (list->mY > 0.f)) ? list->mY : kCeListTop;
+}
+
+inline float	CeListBottom(const SCeScrollList *list = NULL)
+{
+	return CeListTopOf(list) + kCeListPitch * CeListRowsOf(list) + 7.f;
 }
 
 // Brings the cursor into the list and the view onto the cursor, a whole row at a time.
@@ -38,15 +50,15 @@ inline void	CeListClamp(SCeScrollList *list)
 		list->mCursor = list->mCount - 1;
 	if (list->mCursor < 0)
 		list->mCursor = 0;
-	const int last = (list->mCount > kCeListRows) ? list->mCount - kCeListRows : 0;
+	const int last = (list->mCount > CeListRowsOf(list)) ? list->mCount - CeListRowsOf(list) : 0;
 	if (list->mTop > last)
 		list->mTop = last;
 	if (list->mTop < 0)
 		list->mTop = 0;
 	if (list->mTop > list->mCursor)
 		list->mTop = list->mCursor;
-	if (list->mTop + kCeListRows <= list->mCursor)
-		list->mTop = list->mCursor - kCeListRows + 1;
+	if (list->mTop + CeListRowsOf(list) <= list->mCursor)
+		list->mTop = list->mCursor - CeListRowsOf(list) + 1;
 }
 
 inline void	CeListReset(SCeScrollList *list, int count)
@@ -71,11 +83,11 @@ inline bool	CeListPage(SCeScrollList *list, int direction)
 {
 	const int was = list->mCursor;
 	if (direction < 0)
-		list->mCursor = (list->mCursor > list->mTop) ? list->mTop : list->mCursor - kCeListRows;
+		list->mCursor = (list->mCursor > list->mTop) ? list->mTop : list->mCursor - CeListRowsOf(list);
 	else
 	{
-		const int foot = list->mTop + kCeListRows - 1;
-		list->mCursor = (list->mCursor < foot) ? foot : list->mCursor + kCeListRows;
+		const int foot = list->mTop + CeListRowsOf(list) - 1;
+		list->mCursor = (list->mCursor < foot) ? foot : list->mCursor + CeListRowsOf(list);
 	}
 	CeListClamp(list);
 	return list->mCursor != was;
@@ -86,15 +98,15 @@ inline bool	CeListScroll(SCeScrollList *list, int delta)
 {
 	const int was = list->mTop;
 	int top = list->mTop + delta;
-	const int last = (list->mCount > kCeListRows) ? list->mCount - kCeListRows : 0;
+	const int last = (list->mCount > CeListRowsOf(list)) ? list->mCount - CeListRowsOf(list) : 0;
 	if (top > last)
 		top = last;
 	if (top < 0)
 		top = 0;
 	if (list->mCursor < top)
 		list->mCursor = top;
-	if (list->mCursor > top + kCeListRows - 1)
-		list->mCursor = top + kCeListRows - 1;
+	if (list->mCursor > top + CeListRowsOf(list) - 1)
+		list->mCursor = top + CeListRowsOf(list) - 1;
 	list->mTop = top;
 	CeListClamp(list);
 	return list->mTop != was;
@@ -103,10 +115,10 @@ inline bool	CeListScroll(SCeScrollList *list, int delta)
 // The row at screen y, or -1 when y is outside the rows in view or below the list's last row.
 inline int	CeListRowAt(const SCeScrollList *list, float y)
 {
-	if (y < kCeListTop)
+	if (y < CeListTopOf(list))
 		return -1;
-	const int row = int((y - kCeListTop) / kCeListPitch);
-	if ((row < 0) || (row >= kCeListRows) || (list->mTop + row >= list->mCount))
+	const int row = int((y - CeListTopOf(list)) / kCeListPitch);
+	if ((row < 0) || (row >= CeListRowsOf(list)) || (list->mTop + row >= list->mCount))
 		return -1;
 	return list->mTop + row;
 }
@@ -114,46 +126,46 @@ inline int	CeListRowAt(const SCeScrollList *list, float y)
 // The top of a row in view.
 inline float	CeListRowY(const SCeScrollList *list, int index)
 {
-	return kCeListTop + kCeListPitch * float(index - list->mTop);
+	return CeListTopOf(list) + kCeListPitch * float(index - list->mTop);
 }
 
 // The scroll bar inside its track, as the Load Game page places it: the track less 5 at each end, the bar covering the rows in view as
 // a share of the rows. A list that fits has a bar the whole length. A long list's bar is never shorter than one row, so that it stays
 // a bar and not a small square; it then travels the track less its own length, from the top end with the first rows in view to the
 // bottom end with the last.
-inline float	CeListTrackLength()
+inline float	CeListTrackLength(const SCeScrollList *list = NULL)
 {
-	return CeListBottom() - kCeListTop - 10.f;
+	return CeListBottom(list) - CeListTopOf(list) - 10.f;
 }
 
 inline float	CeListBarLength(const SCeScrollList *list)
 {
-	const float track = CeListTrackLength();
-	if (list->mCount <= kCeListRows)
+	const float track = CeListTrackLength(list);
+	if (list->mCount <= CeListRowsOf(list))
 		return track;
-	const float length = track * float(kCeListRows) / float(list->mCount);
+	const float length = track * float(CeListRowsOf(list)) / float(list->mCount);
 	return (length < kCeListPitch) ? kCeListPitch : length;
 }
 
 inline void	CeListBar(const SCeScrollList *list, float *top, float *bottom)
 {
 	const float length = CeListBarLength(list);
-	const int last = list->mCount - kCeListRows;
-	*top = kCeListTop + 5.f;
+	const int last = list->mCount - CeListRowsOf(list);
+	*top = CeListTopOf(list) + 5.f;
 	if (last > 0)
-		*top += (CeListTrackLength() - length) * float(list->mTop) / float(last);
+		*top += (CeListTrackLength(list) - length) * float(list->mTop) / float(last);
 	*bottom = *top + length;
 }
 
 // The pointer held in the track at screen y: the view goes where the bar's middle would be under the pointer.
 inline void	CeListDrag(SCeScrollList *list, float y)
 {
-	if (list->mCount <= kCeListRows)
+	if (list->mCount <= CeListRowsOf(list))
 		return;
 	const float length = CeListBarLength(list);
-	const float travel = CeListTrackLength() - length;
-	const float share = (y - length * 0.5f - kCeListTop - 5.f) / travel;
-	const int top = int(share * float(list->mCount - kCeListRows) + 0.5f);
+	const float travel = CeListTrackLength(list) - length;
+	const float share = (y - length * 0.5f - CeListTopOf(list) - 5.f) / travel;
+	const int top = int(share * float(list->mCount - CeListRowsOf(list)) + 0.5f);
 	CeListScroll(list, top - list->mTop);
 }
 

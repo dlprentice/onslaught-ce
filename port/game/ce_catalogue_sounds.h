@@ -34,4 +34,12 @@ const char* PortCeCatalogueLanguage();
 bool PortCeCatalogueSpeechLine(const char* folder, const char* stem, char* utf8, unsigned size);
 // Frees the other languages' text the titles were read from.
 void PortCeCatalogueSpeechLinesEnd();
+// Native: the title the game's Goodies give the model (kind 0) or picture (kind 1) in this resource file, as UTF-8; false when
+// the file is not a goodie's (patch 0251 hands the Goodies page's own table to the Catalogue).
+bool PortCeCatalogueGoodieName(int kind, const char* file, char* utf8, unsigned size);
+// Native: each word (letters only, three or more, lower case) of the game's own text in the running language, once or more;
+// the Catalogue splits a run-together asset name only into words like these.
+void PortCeCatalogueTextWords(void (*add)(const char* word, void* context), void* context);
+// Native: the goodie whose model is this resource file (the Goodies page can show it), or -1.
+int PortCeCatalogueGoodieModel(const char* file);
 #endif

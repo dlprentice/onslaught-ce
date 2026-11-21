@@ -33,7 +33,7 @@ const unsigned long long kShownLongMs = 6000;	// a take's notice, which also say
 const unsigned long long kCapsMs = 150;		// the caps turning in, then the box with its text, then the same backwards at the end
 const unsigned long long kGrowMs = 200;		// how long a replaced notice may count as still opening (CePlayUnitNoticeAgeOnReplace)
 const unsigned long long kStepMs = 100;		// the most one drawn frame adds to a notice's age (a frame after a pause adds no more than this)
-const int kChars = 96;
+const int kChars = 160;
 // Where the capsule sits on the HUD's 640x480 frame: where the radio's capsule is (bottom centre) while the unit's view has no HUD, and at the top centre, clear of
 // the radio, the HUD's alert words, its corner groups, the objective counter at the top right and the reticle's ring, while the Battle Engine's HUD is up; the
 // widest the text may be, and the narrowest a line may be squeezed before it is cut (the menus' rule, kCeValueMinScale).
@@ -45,8 +45,8 @@ const unsigned kWhite = 0xffffffff, kNote = 0xffc0c0c0, kAlert = 0xffdc3c3c;
 const unsigned kWeaponFault = 0xffff3020, kWeaponWait = 0xff30ff20;
 // The prompt's pairs as the editor's prompt line draws them (ce_editor_ui.cpp, PromptPair): the key white, the action grey, a small gap between, a wider one
 // between pairs; the unit's name first, white, in the HUD's small face so name, armour, and control hints stay balanced and visible together.
-const unsigned kPromptKey = 0xfff4f4f4, kPromptAction = 0xffa8a8a8;
-const float kKeyGap = 6.f, kPairGap = 16.f;
+const unsigned kPromptKey = 0xfff4f4f4, kPromptAction = 0xffd4d4d4;
+const float kKeyGap = 5.f, kPairGap = 12.f, kPromptMaxWidth = 600.f;
 WCHAR gLine[2][kChars];
 unsigned long long gShown, gAge, gLast;		// the notice's length, how long it has been drawn, the clock at its last frame
 int gDrawnAtTop = -1;						// where the notice was last drawn (1 the top, 0 the bottom, -1 not yet): a notice that moves opens afresh where it now is
@@ -73,7 +73,7 @@ float ObjectiveBottom(float s)
 	CDXBitmapFont *small = PLATFORM.Font(FONT_SMALL);
 	float total = 5.f;
 	for (int i = 0; i < 4; ++i) total += (small ? float(small->GetHeight()) : 10.f) * HUD.mUnknown064[i].mFadeIn;
-	return (total * 0.6f + 40.f + total * 0.5f + 8.f) * s;
+	return (total * 0.6f + 40.f + total * 0.5f + 14.f) * s;
 }
 
 float CapsuleRoom(float w, float s)
@@ -200,9 +200,11 @@ void Capsule(CDXBitmapFont *font, const WCHAR *first, const WCHAR *second, unsig
 	else text[1][0] = 0;
 	const int lines = text[1][0] ? 2 : 1;
 	float squeeze[2] = {1.f, 1.f};
-	// at the top the capsule keeps clear of the objective box (CapsuleRoom); at the radio's place below it has the whole width
+	// at the top the capsule keeps clear of the objective box when vertically beside it (CapsuleRoom); below it or at the radio's place it has kMaxWidth
+	const float below = ObjectiveBottom(s);
+	const bool besideObjective = cy < 200.f * s && below > 0.f && (cy - height * 0.5f) < below;
 	const float top = CapsuleRoom(cx * 2.f, s);
-	const float most = cy < 200.f * s && top < kMaxWidth ? top : kMaxWidth;
+	const float most = besideObjective && top < kMaxWidth ? top : kMaxWidth;
 	const float a = Fit(font, text[0], &squeeze[0], most);
 	const float b = lines == 2 ? Fit(font, text[1], &squeeze[1], most) : 0.f;
 	float textWidth = a > b ? a : b;
@@ -337,16 +339,17 @@ void Prompt(CDXBitmapFont *font, float w, float h, bool atTop)
 	float cy = atTop ? kTopY * s : h - (480.f - kPromptY) * s;
 	const float below = ObjectiveBottom(s);
 	const bool besideObjective = atTop && below > 0.f && (cy - height * 0.5f) < below;
-	const float fullWide = w / s - 64.f > 160.f ? w / s - 64.f : 160.f;
+	const float screenWide = w / s - 64.f > 160.f ? w / s - 64.f : 160.f;
+	const float fullWide = screenWide < kPromptMaxWidth ? screenWide : kPromptMaxWidth;
 	float room = besideObjective ? CapsuleRoom(w, s) : fullWide;
 	// If the prompt overlaps the objective box vertically and needs more room for its hints, drop cleanly under the box instead of stripping controls.
 	if (besideObjective && width > room && fullWide > room)
 	{
-		cy = below + height * 0.5f + 12.f * s;
+		cy = below + height * 0.5f + 4.f * s;
 		room = fullWide;
 	}
-	// Keep unit name, armour, and key hints; allow mild horizontal squeeze down to 0.85 before dropping trailing hints.
-	while (pieces > 1 && width * 0.85f > room)
+	// Keep unit name, armour, and key hints; allow horizontal squeeze down to kMinSqueeze before dropping trailing hints.
+	while (pieces > 1 && width * kMinSqueeze > room)
 	{
 		--pieces;
 		width -= kPairGap + (piece[pieces][0][0] ? Width(font, piece[pieces][0]) + kKeyGap : 0.f) + Width(font, piece[pieces][1]);
@@ -403,13 +406,18 @@ void CePlayUnitNoticeClear()
 	gShown = gAge = 0;
 	gDrawnAtTop = -1;
 	gPrompt[0] = 0;
+	gPromptAge = 0;
 }
 
 void CePlayUnitPrompt(const char *line)
 {
+	const bool hadPrompt = gPrompt[0] != 0;
 	Copy(gPrompt, line);
-	gPromptAge = 0;
-	gPromptLast = CE_ScreenshotTicks();
+	if (!gPrompt[0] || !hadPrompt)
+	{
+		gPromptAge = 0;
+		gPromptLast = CE_ScreenshotTicks();
+	}
 }
 
 void CePlayUnitHudRender(bool reticle, int fireState, bool hudShown)
