@@ -299,10 +299,13 @@ void	Toggle()
 
 } // namespace
 
+extern "C" int PortCeNetWaitEvent(const union SDL_Event *event);	// ce_network_wait.cpp: the co-op start's waiting screen
 extern "C" int PortCeNetRingEvent(const union SDL_Event *event)
 {
 	if (!event)
 		return 0;
+	if (PortCeNetWaitEvent(event))
+		return 1;	// the start's waiting screen is up and took it
 	if (event->type == SDL_EVENT_KEY_UP && event->key.scancode == gReleaseKey)
 	{
 		gReleaseKey = SDL_SCANCODE_UNKNOWN;
@@ -393,7 +396,7 @@ extern "C" int PortCeNetRingCapturing(void)
 
 extern "C" int PortCeNetRingLeft(void)
 {
-	return gLeft ? 1 : 0;
+	return (gLeft || CE_LockstepLeftWaiting()) ? 1 : 0;	// the ring's Leave Game, or Leave on the start's waiting screen
 }
 
 void PortCeNetRingRender()

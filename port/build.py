@@ -146,7 +146,9 @@ def write_if_changed(path: Path, data: bytes):
 # The switches that make a program a test build, never to be shipped, by the define each adds: test probes, proof switches and god mode
 # (--commander-test, --play-unit-test) or a loader that releases keep off (--mods-windows-test).
 TEST_BUILD_SWITCHES = (("-DCE_COMMANDER_TEST", "commander-test"), ("-DCE_PLAYUNIT_TEST", "play-unit-test"),
-                       ("-DPORT_MODS_WINDOWS_ON", "mods-windows-test"), ("-DCE_MARKER_TEST", "marker-test"))
+                       ("-DPORT_MODS_WINDOWS_ON", "mods-windows-test"), ("-DCE_MARKER_TEST", "marker-test"),
+                       ("-DCE_LOCKSTEP_FENCE_CONTROL", "lockstep-fence-control"),
+                       ("-DCE_NET_TEST_AUTOMATION", "test-automation"))
 
 
 def test_build_switches(defines) -> list:
@@ -209,7 +211,8 @@ def build_mirror(resolve_off=False):
     SYSTEM_NAMES.update(system_header_names())
     files = tracked_sources()
     rel = [f.relative_to(ROOT) for f in files]            # src/... and linklib/...
-    if PUBLIC:
+    use_public_host = PUBLIC or TEST_AUTOMATION
+    if use_public_host:
         # A checkout without the replaced files (the public export leaves them out) still gets the replacements, under
         # the same src/ names, so includes and the object list resolve.
         for name in PUBLIC_REPLACEMENTS:
@@ -220,11 +223,11 @@ def build_mirror(resolve_off=False):
     resolved_sources = []
     unreplaced = []
     h = hashlib.sha256()
-    h.update(f"mirror-v1\0{int(PUBLIC)}\0{int(resolve_off)}\0{NV_FRAGMENTS_SIZE}\0".encode())
+    h.update(f"mirror-v1\0{int(use_public_host)}\0{int(resolve_off)}\0{NV_FRAGMENTS_SIZE}\0".encode())
     for k, v in sorted(SYSTEM_NAMES.items()):
         h.update(f"sys:{k}={v}\0".encode())
     for src, r in zip(files, rel):
-        if PUBLIC and r.parent == Path("src") and r.name in PUBLIC_REPLACEMENTS:
+        if use_public_host and r.parent == Path("src") and r.name in PUBLIC_REPLACEMENTS:
             if (PORT / "platform/public" / r.name).exists():
                 src = PORT / "platform/public" / r.name    # the public build's own version (PUBLIC_REPLACEMENTS)
             else:
@@ -244,7 +247,7 @@ def build_mirror(resolve_off=False):
         h.update(f"data:{r}={digest}\0".encode())
     patches = []
     for patch in sorted((PORT / "patches").glob("*.patch")):
-        if PUBLIC and PUBLIC_SKIPPED_PATCHES.get(patch.name) not in (None, *unreplaced):
+        if use_public_host and PUBLIC_SKIPPED_PATCHES.get(patch.name) not in (None, *unreplaced):
             continue
         patches.append(patch)
         h.update(f"patch:{patch.name}={_sha256_bytes(patch.read_bytes())}\0".encode())
@@ -567,7 +570,8 @@ def write_ice_link_receipt(target):
                    source_patches=dependency["source_patches"], source_tree_sha256=dependency["source_tree_sha256"],
                    build_recipe_sha256=digest(Path(__file__)), marker=ICE_BINARY_TAG,
                    system_clang=SYSTEM_CLANG, sysroot_name=deps.SYSROOT_NAME,
-                   test_build=any(flag.startswith(("-DCE_NET_TEST_AUTOMATION", "-DCE_COMMANDER_TEST", "-DCE_PLAYUNIT_TEST"))
+                   test_build=any(flag.startswith(("-DCE_NET_TEST_AUTOMATION", "-DCE_COMMANDER_TEST", "-DCE_PLAYUNIT_TEST",
+                                                   "-DCE_LOCKSTEP_FENCE_CONTROL"))
                                   for flag in CE_DEFINES) or TEST_KIT,
                    libjuice=dict(name=row["name"], version=row["version"], licence=row["licence"],
                                  source_sha256=row["sha"], source_url=row["url"],
@@ -611,9 +615,9 @@ def port_sources(target):
                 if not (d == "common" and s.name in replaced)]
     # Game-object hooks keep the game's flags and allocator renames. HOST_BUFFER_GAME_MODULES (below) are the standalone
     # units beside them that own host STL buffers and native handles: they are compiled as port code and never see those renames.
-    # The chat overlay and the network mission's ring are game-object hooks that also handle SDL events; the Windows
+    # The chat overlay, the network mission's ring and the co-op start's waiting screen are game-object hooks that also handle SDL events; the Windows
     # toolchain has no SDL of its own.
-    game_extra = {name: f"-I{cc_path(deps.PREFIX_WIN / 'include')}" for name in ("ce_network_chat_ui.cpp", "ce_network_ring.cpp")} \
+    game_extra = {name: f"-I{cc_path(deps.PREFIX_WIN / 'include')}" for name in ("ce_network_chat_ui.cpp", "ce_network_ring.cpp", "ce_network_wait.cpp")} \
         if target == "windows" else {}
     # The museum's room writer takes two class identifiers from the game's oids.h, a header that holds only an enumeration.
     # -iquote lets the mirror answer quoted includes and nothing else: as -I it would also stand before the system directories
@@ -674,7 +678,7 @@ def link_flags(target):
     # import library/shared object cannot silently select a static archive from a later -L directory.
     ffmpeg = ""
     if any((PORT / "bink").glob("*.cpp")):
-        ffmpeg = " ".join(shlex.quote(str(path)) for path in deps.require_ffmpeg_shared(target)) if PUBLIC else "-lavformat -lavcodec -lavutil"
+        ffmpeg = " ".join(shlex.quote(str(path)) for path in deps.require_ffmpeg_shared(target)) if (PUBLIC or TEST_AUTOMATION) else "-lavformat -lavcodec -lavutil"
     if target == "windows":
         # COFF's weak alias (/alternatename); i686 MinGW symbols carry a leading underscore.
         defsyms = " ".join(f"-Wl,-Xlink=-alternatename:_{a}=_{b}" for a, b in aliases)
@@ -967,6 +971,9 @@ def main():
     ap.add_argument("--mods-windows-test", action="store_true",
                     help="the Windows build with the mod loader switched ON (PORT_MODS_WINDOWS_ON): for the gate's mods cases and the Wine tests, never shipped while mods are\n"
                          "off on Windows; use a separate worktree, as its objects differ")
+    ap.add_argument("--lockstep-fence-control", action="store_true",
+                    help="with networking: the co-op tick fence does NOT put components back between ticks (the negative control of\n"
+                         "lockstep_fence_pair_tests.py: such a pair must go out of step); a test build, never shipped; use a separate worktree")
     ap.add_argument("--test-kit", action="store_true",
                     help="adds the test kit's verb channel (CE_TEST_KIT: journeys driven by named steps, port/journeys/README.md) to a\n"
                          "Linux build, public or with the network: for the journey runner's twin of a candidate, never shipped (package.py\n"
@@ -987,9 +994,13 @@ def main():
     if a.test_automation:
         if a.public:
             raise SystemExit("--test-automation is for private network test builds; it cannot be combined with --public")
+        if not re.fullmatch(r"[0-9A-Za-z.+-]+", a.ce_version):
+            raise SystemExit(f"--ce-version {a.ce_version!r}: letters, digits and . + - only")
         global TEST_AUTOMATION
         TEST_AUTOMATION = True
         CE_DEFINES.append("-DCE_NET_TEST_AUTOMATION=1")
+        CE_DEFINES.append(f"'-DCE_VERSION=\"{a.ce_version}-test-automation\"'")
+        CE_DEFINES.append("-DBEA_PUBLIC_GRAPHICS_HOST=1")
     if a.system_clang:
         use_system_clang()
     if a.public:
@@ -1035,6 +1046,10 @@ def main():
         CE_DEFINES.append("-DPORT_MODS_WINDOWS_ON=1")
     if a.marker_test:
         CE_DEFINES.append("-DCE_MARKER_TEST=1")
+    if a.lockstep_fence_control:
+        if not network_compiled_in():
+            raise SystemExit("--lockstep-fence-control requires networking compiled in")
+        CE_DEFINES.append("-DCE_LOCKSTEP_FENCE_CONTROL=1")
     if test_build_switches(CE_DEFINES):
         CE_DEFINES.append("-DCE_TEST_BUILD=1")    # any test switch: the CE hook points' handler guard (port/game/ce_hooks_dispatch.h)
     if a.with_text_chat:
@@ -1064,6 +1079,10 @@ def main():
         # already have replaced objects) and taken off only when that target's build without one has succeeded (below).
         write_flavour_marker("public-network-ice" if WITH_ICE else "public-network" if WITH_NETWORK else "public",
                              mark=(["linux", "windows"] if a.target == "all" else [a.target]) if switches else (), switches=switches)
+    elif TEST_AUTOMATION and not a.syntax and not a.files:
+        # Never leave a stale public flavour.txt in a shared build folder: mark every built target as test-automation.
+        write_flavour_marker("test-automation",
+                             mark=["linux", "windows"] if a.target == "all" else [a.target], switches=switches)
     try:
         sources = select_sources(sources, a.files)
     except ValueError as error:

@@ -38,3 +38,17 @@
  	CBattleEngine *be = player->GetBattleEngine();
  	if ((!be) || be->IsDying())
  		return;
+@@ -2236,6 +2242,13 @@
+ 	PortCeMuseumLabelsRender();		// patch 0207: in the radio messages' place and capsule, inside the same HUD scope; draws only in a museum visit
+ #endif
+ 	}
++
++	if (PortCeCmdHideCockpit() && !GAME.GetMessageBox()->mCurrent)
++	{
++		if (!INFLUENCEMAP->IsEmpty())
++			mBattleLine->Update();
++		return;
++	}
+ 
+ 	CeHudScope battleScope(portHudEligible, mViewportWidth, mViewportHeight,
+ 		mViewportX + mViewportWidth - HUD_OFFSET_X, mViewportY + mViewportHeight - HUD_OFFSET_Y);

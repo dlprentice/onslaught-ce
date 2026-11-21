@@ -47,7 +47,11 @@ static bool mutate_on_placement=false;
 enum { IDLE_NONE, IDLE_MATCH, IDLE_MISMATCH, IDLE_TIMEOUT, IDLE_CLOSE, IDLE_FAIL, IDLE_DELAY_READY, IDLE_FAIL_UNREADY, IDLE_CANCEL,
        IDLE_PREHASH, IDLE_ACK_DELAY, IDLE_ACK_TIMEOUT, IDLE_ACK_CLOSE, IDLE_ACK_MISMATCH, IDLE_ACK_DUP,
        IDLE_ACK_EARLY, IDLE_ACK_SAMEPOLL, IDLE_ACK_DUP_LATE, IDLE_ACK_BAD_TICK, IDLE_ACK_BAD_ENVELOPE, IDLE_ACK_SHORT,
-       IDLE_PRERUN_CLOSE, IDLE_PRERUN_TIMEOUT, IDLE_PRERUN_CHANGE, IDLE_PRERUN_CHANGE_EARLY };
+       IDLE_PRERUN_CLOSE, IDLE_PRERUN_TIMEOUT, IDLE_PRERUN_CHANGE, IDLE_PRERUN_CHANGE_EARLY, IDLE_LIVENESS };
+// IDLE_LIVENESS (the lobby route's start liveness): a quarter second a pass; the joining game's current attempt sends its CONNECT
+// as it opens and ENet resends it 0.5, 1.5, 3.5, 7.5 and 15.5 s later, then gives up at 30 s; the host takes the first CONNECT
+// sent at or after its own game opened (liveness_host_opens, 0: never), and this player then leaves (a cancellation ends the start).
+static uint64_t liveness_host_opens=0,liveness_attempt=0;
 static int fake_idle_mode=IDLE_NONE,fake_idle_count=0,fake_pump_count=0,fake_created=0;
 static bool fake_reentrant_blocked=true,fake_retry=false;
 static bool fake_sent_ack_before_match=false;
@@ -64,6 +68,9 @@ void PortCrtRandSet(unsigned c,unsigned h){fake_calls=c;fake_hold=h;}
 int CE_CompatibilityLockstepDigest(uint32_t,uint8_t out[32]){memset(out,1,32);return 1;}
 static int fake_boot_lockstep=0;	// 1: this process was started by the lobby and admitted by the boot (the shipped route)
 int CE_BootLockstep(void){return fake_boot_lockstep;}
+int CE_BootRequested(void){return fake_boot_lockstep;}
+static const char *fake_automation_refusal=nullptr;	// the automation owners' answer (ce_network_world.cpp); a fixture sets a reason to refuse
+const char *CE_NetAutomationRefusal(void){return fake_automation_refusal;}
 #ifdef CE_LOCKSTEP_REAL_ADMISSION
 int CE_BootPrepared(CE_CompatibilityResult *result,char *error,size_t size){return CE_CompatibilityPrepared(result,error,size);}
 #else
@@ -83,6 +90,14 @@ void CE_SessionGamePreRun(){++fake_prerun_calls;fake_prerun_admitted=L.stage==PR
 int CE_SessionGamePump(){if(fake_idle_mode!=IDLE_NONE){++fake_pump_count;if(CE_LockstepBeforeUpdate()!=0)fake_reentrant_blocked=false;if(fake_mutate_rng){++fake_calls;++fake_hold;++fake_rng_value;++fake_rng_seed;}if(fake_idle_mode==IDLE_CANCEL)quit_code=QT_QUIT_TO_SYSTEM;}return 0;}
 void CE_SessionGameIdle(){
  if(fake_idle_mode==IDLE_NONE)return;
+ if(fake_idle_mode==IDLE_LIVENESS){
+  ++fake_idle_count;now_ms+=250;
+  if(mock_status.phase!=CE_NET_CONNECTING)return;
+  static const uint64_t resend[]={0,500,1500,3500,7500,15500};
+  for(uint64_t r:resend){const uint64_t sent_at=liveness_attempt+r;if(liveness_host_opens&&sent_at>=liveness_host_opens&&sent_at<=now_ms){mock_status.phase=CE_NET_ACTIVE;quit_code=QT_QUIT_TO_FRONTEND;return;}}
+  if(now_ms-liveness_attempt>=30000){mock_status.phase=CE_NET_FAILED;mock_status.error=CE_NET_TIMEOUT;}
+  return;
+ }
  ++fake_idle_count;now_ms+=(fake_idle_mode==IDLE_TIMEOUT||(fake_idle_mode==IDLE_ACK_TIMEOUT&&fake_idle_count>=3))?30001:(fake_idle_mode==IDLE_PRERUN_TIMEOUT?60001:1);
  if(fake_idle_mode==IDLE_DELAY_READY && fake_idle_count==2)ready_packet();
  if((fake_idle_count==2 && (fake_idle_mode==IDLE_MATCH||fake_idle_mode==IDLE_MISMATCH||fake_idle_mode==IDLE_ACK_DELAY||
@@ -117,8 +132,9 @@ void CE_SessionGameIdle(){
 int CE_SessionGameQuitCode(){return quit_code;}
 void CE_SessionGameSetQuit(int v){quit_code=v;}
 void CE_SessionGameRebaseRenderClock(){}
+int CE_SessionGameWaitFrame(int){return 0;}
 uint64_t CE_NetNowMs(){return now_ms;}
-CE_NetSession *CE_NetCreate(const CE_NetConfig *){++fake_created;if(fake_retry&&fake_created==2){mock_status.phase=CE_NET_ACTIVE;mock_status.error=CE_NET_OK;}return &mock_net;}
+CE_NetSession *CE_NetCreate(const CE_NetConfig *){++fake_created;if(fake_idle_mode==IDLE_LIVENESS){liveness_attempt=now_ms;mock_status.phase=CE_NET_CONNECTING;mock_status.error=CE_NET_OK;}if(fake_retry&&fake_created==2){mock_status.phase=CE_NET_ACTIVE;mock_status.error=CE_NET_OK;}return &mock_net;}
 void CE_NetDestroy(CE_NetSession *s){if(s)++destroys;}
 void CE_NetClose(CE_NetSession *){++closes;if(mock_status.phase==CE_NET_ACTIVE||mock_status.phase==CE_NET_SYNCING){++graceful_leaves;for(const auto &p:sent)if(p.type==MSG_DESYNC)close_saw_desync=true;}}
 void CE_NetPoll(CE_NetSession *,uint64_t,uint32_t){}
@@ -363,6 +379,22 @@ static void pre_ack_packet(){uint8_t data[16];CE_NetWriter w;CE_NetWriterInit(&w
 static void start_init(bool host,int idle_mode){
  init(host);L.stage=LOADED;L.hash_every=20;L.hashes_compared=0;L.quit_at=0;L.ran=false;L.net=nullptr;L.peer_ready=false;
  fake_idle_mode=idle_mode;fake_idle_count=0;if(idle_mode!=IDLE_DELAY_READY&&idle_mode!=IDLE_FAIL_UNREADY)ready_packet();
+}
+static uint64_t liveness_start(uint64_t host_after){
+ start_init(false,IDLE_LIVENESS);last_error[0]=0;connect_why[0]=0;
+ L.net=CE_NetCreate(&L.config);L.opened_at=L.attempt_at=now_ms;liveness_host_opens=host_after?now_ms+host_after:0;
+ return now_ms;
+}
+static void liveness_controls(){
+ uint64_t t0=liveness_start(0);int result=CE_LockstepPreparePlay();
+ check(!result&&L.stage==FAILED&&!std::strcmp(last_error,"the other player's game did not answer after the start was agreed")&&now_ms-t0<=31000,
+       "a friend whose game never answers is told within the never-heard window");
+ for(uint64_t later:{1000ull,10000ull,16000ull,20000ull,26000ull}){
+  t0=liveness_start(later);result=CE_LockstepPreparePlay();
+  char name[96];std::snprintf(name,sizeof name,"a live host whose game opens %llu s after the guest's is found",(unsigned long long)(later/1000));
+  check(!result&&L.connection_established&&!last_error[0]&&now_ms-t0<kNeverHeardMs,name);
+ }
+ fake_idle_mode=IDLE_NONE;quit_code=0;
 }
 static void start_controls(){
  start_init(true,IDLE_MATCH);int result=CE_LockstepPreparePlay();
@@ -818,7 +850,7 @@ int main(){
     content_failure_peer_close_controls();
     setvbuf(stdout, NULL, _IONBF, 0);
     campaign_configure_controls();
-    campaign_controls();failure_teardown_controls();shipped_leaves_for_the_front_end();prerun_admission_controls();start_ack_controls();start_controls();prerun_controls();slot_hash_controls();gate_hash_controls();host();guest();mismatch();truncated();early();premature_ack();timeout_case();remote_first();wrong_tick();duplicate();bad_receipt();unaligned();hash_window();early_local_teardown();peer_final_local_teardown();natural_aligned();natural_deferred();natural_peer_first();natural_aligned_exchange(true);natural_aligned_exchange(false);natural_outcome_mismatch();native_quit_error();natural_host();natural_guest();natural_guest_done_lost();natural_guest_done_timeout();natural_guest_done_and_close();natural_completed_near_timeout();natural_divergent();natural_scheduled_mismatch();natural_wrong_tick();natural_truncated();natural_late_error();natural_host_delivery_ack();natural_host_ack_missing(true);natural_host_ack_missing(false);natural_host_ack_and_close();invalid_delivery_ack();natural_guest_delivery_ack();natural_guest_unsendable_ack();synthetic_host_delivery_ack();synthetic_guest_no_done_close();peer_ends_early();input_controls();return failures?1:0;}
+    campaign_controls();failure_teardown_controls();shipped_leaves_for_the_front_end();prerun_admission_controls();start_ack_controls();liveness_controls();start_controls();prerun_controls();slot_hash_controls();gate_hash_controls();host();guest();mismatch();truncated();early();premature_ack();timeout_case();remote_first();wrong_tick();duplicate();bad_receipt();unaligned();hash_window();early_local_teardown();peer_final_local_teardown();natural_aligned();natural_deferred();natural_peer_first();natural_aligned_exchange(true);natural_aligned_exchange(false);natural_outcome_mismatch();native_quit_error();natural_host();natural_guest();natural_guest_done_lost();natural_guest_done_timeout();natural_guest_done_and_close();natural_completed_near_timeout();natural_divergent();natural_scheduled_mismatch();natural_wrong_tick();natural_truncated();natural_late_error();natural_host_delivery_ack();natural_host_ack_missing(true);natural_host_ack_missing(false);natural_host_ack_and_close();invalid_delivery_ack();natural_guest_delivery_ack();natural_guest_unsendable_ack();synthetic_host_delivery_ack();synthetic_guest_no_done_close();peer_ends_early();input_controls();return failures?1:0;}
 
 #endif
 extern "C" int CE_BootCampaignGet(CE_CampaignLaunch *out, int *host) {

@@ -8,7 +8,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from network_world_tests import actual_body
+from network_source_extract import actual_body
 import deps
 ROOT=Path(__file__).resolve().parents[2]
 parent=ROOT/'local-data/port/lockstep-terminal-tests'
@@ -53,6 +53,8 @@ mutants=(
  ('overwrite-remote-ring','if (h.local != h.remote) return Fail("a state hash would replace an unmatched comparison");','if (false) return Fail("a state hash would replace an unmatched comparison");','remote hash cannot overwrite an unmatched ring slot'),
  ('overwrite-local-ring','if (h.local != h.remote) { Fail("a local state hash would replace an unmatched comparison"); return; }','if (false) { Fail("a local state hash would replace an unmatched comparison"); return; }','local hash cannot overwrite an unmatched ring slot'),
  ('accept-local-incomplete','(L.stage == RUNNING && (L.quit_at || L.final_peer))','false','local test teardown before endpoint is incomplete'),
+ ('never-heard-off','if (L.opened_at && !L.heard && CE_NetNowMs() - L.opened_at > kNeverHeardMs) { Fail(kNeverHeard); return false; }','if (false) { Fail(kNeverHeard); return false; }','a friend whose game never answers is told within the never-heard window'),
+ ('guest-waits-for-enet','return st.phase == CE_NET_FAILED || (L.opened_at && st.phase == CE_NET_CONNECTING && now - L.attempt_at >= kGuestAttemptMs);','return st.phase == CE_NET_FAILED;','a live host whose game opens 20 s after the guest\'s is found'),
  ('skip-natural-barrier','if (natural_end) {\n\t\t// A naturally ended mission','if (natural_end) { L.stage = FINISHED; return; }\n\tif (false) {\n\t\t// A naturally ended mission','natural end waits and publishes a separate final hash'),
  ('drop-final-done','if (!SendFinal(MSG_FINAL_DONE, L.final_hash)) return false;','if (false) return false;','natural host sends DONE but waits for delivery acknowledgement'),
  ('discard-finished-messages','if (!Receive()) return false; // never discard a delayed mismatch or malformed control after mission confirmation','if (false) return false; // negative: discard finished messages','natural end does not silently discard later invalid messages'),

@@ -22,7 +22,7 @@ import sys
 import tempfile
 import threading
 
-from network_world_tests import actual_body
+from network_source_extract import actual_body
 import deps
 
 ROOT=Path(__file__).resolve().parents[2]

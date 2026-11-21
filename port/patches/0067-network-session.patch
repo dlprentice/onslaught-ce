@@ -56,7 +56,17 @@
 +	if (!CE_SessionConfigureLevel(aLevel)) { CE_SessionAfterWorldShutdown(); return QT_LOAD_ERROR; }
 +#endif
  	mRestarting = FALSE ;
-@@ -1674,6 +1674,8 @@
+@@ -1567,6 +1593,9 @@
+ 	if( !Init() )
+ 	{
+ 		Shutdown();
++#ifndef CE_NETWORK_OFF
++		CE_SessionAfterWorldShutdown();
++#endif
+ 		return QT_LOAD_ERROR;
+ 	}	
+ 
+@@ -1674,6 +1703,8 @@
  void CGame::Render( SINT num_renders )	// FUNCTION: 0x0046e460
  {
  #ifndef CE_NETWORK_OFF
@@ -65,13 +75,7 @@
  	if (!CE_WorldCanRender()) return;
  #endif
  	// retail: with the extra GeForce FX features on, a single-player frame first renders the landscape's reflection
-@@ -1998,2 +2028,5 @@
- 		EVENT_MANAGER.Flush() ;
-+#ifndef CE_NETWORK_OFF
-+		CE_SessionAfterFlush();
-+#endif
- 		PROFILE_END(TotalEventManager) ;
-@@ -4374 +4407,50 @@
+@@ -4374 +4405,50 @@
  // FUNCTION: 0x00472890 ?ReceiveButtonAction@CGameCreditControlHandler@@UAEXPAVCController@@HM@Z
 +#ifndef CE_NETWORK_OFF
 +

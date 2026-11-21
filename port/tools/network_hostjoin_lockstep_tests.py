@@ -14,7 +14,8 @@ import tempfile
 from network_lobby_restart_handoff_tests import function
 
 ROOT=Path(__file__).resolve().parents[2]
-files={'offer':ROOT/'port/game/ce_netpages.cpp','scrub':ROOT/'port/platform/common/ce_netlobby.cpp',
+files={'offer':ROOT/'port/game/ce_netpages.cpp','runmode':ROOT/'port/platform/common/runmode.cpp',
+       'scrub':ROOT/'port/platform/common/ce_netlobby.cpp',
        'driver':ROOT/'port/tools/tests/network_hostjoin_lockstep_driver.cpp',
        'extractor':ROOT/'port/tools/network_lobby_restart_handoff_tests.py',
        'owner_header':ROOT/'port/platform/common/ce_netcode.h'}
@@ -26,6 +27,7 @@ def definition(text, name):
 
 
 sources={'offer':definition(files['offer'].read_text(),'PortCeNetOffered'),
+         'runmode':definition(files['runmode'].read_text(),'Decide'),
          'setenv':definition(files['scrub'].read_text(),'SetEnv'),
          'scrub':definition(files['scrub'].read_text(),'ScrubEnvironment'),
          'clear_pending':definition(files['scrub'].read_text(),'ClearPendingHandoff'),
@@ -41,7 +43,7 @@ out=Path(tempfile.mkdtemp(prefix='run-',dir=parent));compiler=shutil.which('clan
 if not compiler:raise RuntimeError('clang++ is required; no downloads')
 variants=[('actual',None,None,None,None)]
 for key in ('BEA_LOCKSTEP_HOST','BEA_LOCKSTEP_JOIN'):
-    variants.append(('offer-'+key,'offer','"'+key+'"','"REMOVED_'+key+'"','configured '+key+' hides the network entry'))
+    variants.append(('offer-'+key,'runmode','"'+key+'"','"REMOVED_'+key+'"','configured '+key+' hides the network entry'))
     variants.append(('admission-'+key,'available','"'+key+'"','"REMOVED_'+key+'"','configured '+key+' refuses direct lobby admission'))
 for key in ('BEA_LOCKSTEP_HOST','BEA_LOCKSTEP_JOIN','BEA_LOCKSTEP_SECRET','BEA_LOCKSTEP_DELAY','BEA_LOCKSTEP_HASH_EVERY',
             'BEA_LOCKSTEP_SKEW_AT','BEA_LOCKSTEP_DUMP','BEA_LOCKSTEP_QUIT_AT','BEA_LOCKSTEP_STALL_EVERY','BEA_LOCKSTEP_STALL_AT',
@@ -58,6 +60,8 @@ variants += [
      'failed launch dispatch clears the pending owned record'),
     ('omit-receipt-wipe','clear_pending','CE_CodeWipe(gHandoffReceipt, sizeof(gHandoffReceipt));','(void)0;',
      'failed launch clears pending owner and receipt buffers'),
+    ('fixed-handoff-kind','scrub','SetEnv("BEA_NET_HANDOFF", handoff);','SetEnv("BEA_NET_HANDOFF", "launch");',
+     'outcome scrub replaces a launch handoff'),
     ('omit-file-publication','scrub','SetEnv("BEA_NET_HANDOFF_FILE", gHandoffName[0] ? gHandoffName : NULL);',
      'SetEnv("BEA_NET_HANDOFF_FILE", NULL);','restart publishes the pending handoff name'),
     ('omit-owner-publication','scrub','SetEnv("BEA_NET_HANDOFF_OWNER", gHandoffReceipt[0] ? gHandoffReceipt : NULL);',

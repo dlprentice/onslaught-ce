@@ -39,7 +39,13 @@
 // ce_network_ring.cpp; weak, so the session checks that compile this file without the game need no stand-in
 extern "C" int PortCeNetRingCapturing(void) __attribute__((weak));
 #include <algorithm>
+#include <atomic>
 #include <limits>
+#include <chrono>
+#include <thread>
+#ifndef _WIN32
+#include <pthread.h>
+#endif
 #ifdef CE_NET_TEST_AUTOMATION
 #include <chrono>	// test: BEA_LOCKSTEP_TEST_FRAME_SLEEP_MS
 #include <thread>
@@ -133,6 +139,7 @@ struct Lockstep {
 	bool start_ack_received = false;
 	bool prerun_ack_sent = false, prerun_ack_received = false, prerun_finished = false;
 	bool shown = false;					// a co-op level is up: one view, the local player's, until its world shuts down
+	bool left_waiting = false;			// this player chose Leave on the start's waiting screen
 	uint32_t level = 0, delay = 3, hash_every = 20, skew_at = 0, quit_at = 0, stall_every = 0, stall_at = 0, stall_from = 0, stall_ms = 300, flip_cw_at = 0;
 	bool test_uninit_read = false;		// test: BEA_LOCKSTEP_TEST_UNINIT_READ=1 makes the update read a poisoned local into the generator (the deliberate bug the stack gate must catch)
 	bool counts_reported = false;		// the transport's counts were printed (once per session)
@@ -154,6 +161,9 @@ struct Lockstep {
 	unsigned crt_calls = 0, crt_hold = 0;	// the simulation's rand state at the end of the last update
 	int rng_value = 0, rng_seed = 0;
 	uint64_t waiting_since = 0;
+	uint64_t attempt_at = 0;			// when a joining game's current connection attempt opened (a lobby-started direct session)
+	uint64_t opened_at = 0;				// when a lobby-started session opened its connection, before its load (0: opened after the load)
+	bool heard = false;					// the other player's game has answered in this game (the connection was up once)
 	uint32_t hashes_compared = 0;
 	// Test-only endpoint: both peers must compare the final state and acknowledge before teardown.
 	bool final_local = false, final_peer = false, final_ack_sent = false, final_ack_received = false;
@@ -210,8 +220,79 @@ uint32_t ChatResult(CeTextChat::Result result) {
 void ChatRetire() {}
 #endif
 int LeaveCode() { return (L.admission_required || CE_BootLockstep()) ? QT_QUIT_TO_FRONTEND : QT_QUIT_TO_SYSTEM; }
+// Gone or still loading. After the agreed start both games restart into the level and load it on their own; a game that is
+// loading runs no message pump, so while the connection opened only after the load, a friend still loading and a friend
+// whose game had stopped looked the same on the wire (no answer), and the start could only give up at kStartMs. A session
+// the lobby started on the direct route therefore opens its connection before its load (CE_LockstepConfigureLevel), and a
+// small thread keeps that connection serviced while this game loads: the transport's handshake and pings only, through
+// CE_NetPoll (application messages stay queued for the start barriers), and a joining game's attempt made again as the
+// connect barrier makes it. The main thread takes the connection back (KeeperStop, which joins the thread) before it
+// touches it again. So a friend whose game is loading answers within a second, and one that has not answered kNeverHeardMs
+// after this game's own connection opened never opened its own: its game stopped at or after the agreed start. That window
+// covers only the difference between the two games' restarts, not their loads (7 to 8 s from Start to the connection for
+// both roles in the pair runs measured; a load can differ by far more, 45 s on a loaded machine, which is why kStartMs stays
+// three minutes). Once heard, the other game's silence ends the start at the transport's own limit (kGiveUpMs). Relay
+// sessions and the test-automation pairs open after the load, as before.
+const uint64_t kNeverHeardMs = 30000;
+const char kNeverHeard[] = "the other player's game did not answer after the start was agreed";
+// A joining game's attempt sends its CONNECT as it opens, and ENet resends it 0.5, 1.5, 3.5, 7.5 and 15.5 s later and then
+// sends nothing until it gives up at 30 s: a host whose game opened its port in that gap (more than about 15.5 s after this
+// game's) heard nothing before kNeverHeardMs. So an attempt still unanswered (CONNECTING: the host has not taken it) after
+// kGuestAttemptMs is replaced by a new one, whose CONNECT goes at once; one the host answered is left to finish. A host that
+// opens up to kNeverHeardMs - kGuestAttemptMs (27 s) after this game is then always found in time.
+const uint64_t kGuestAttemptMs = 3000;
+bool GuestAttemptDue(const CE_NetStatus &st, uint64_t now) {
+	if (L.host || L.heard || st.error == CE_NET_AUTH || st.error == CE_NET_INCOMPATIBLE) return false;
+	return st.phase == CE_NET_FAILED || (L.opened_at && st.phase == CE_NET_CONNECTING && now - L.attempt_at >= kGuestAttemptMs);
+}
+std::atomic<bool> keeper_stop(false);
+bool keeper_running = false;
+void KeeperRun() {
+	while (!keeper_stop.load(std::memory_order_acquire)) {
+		if (L.net) {
+			CE_NetPoll(L.net, CE_NetNowMs(), 32);
+			CE_NetStatus st; CE_NetGetStatus(L.net, &st);
+			if (st.phase == CE_NET_ACTIVE) L.heard = true;
+			const uint64_t now = CE_NetNowMs();
+			if (GuestAttemptDue(st, now)) {
+				// Create the replacement before destroying the old session so gUsers never drops to 0 mid-load
+				// (avoiding enet_deinitialize / WSACleanup on Windows) and a transient failure preserves retries.
+				if (CE_NetSession *next = CE_NetCreateGame(&L.config)) {
+					CE_NetDestroy(L.net); L.net = next; L.attempt_at = now;
+				}
+			}
+		}
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+}
+// The thread is the platform's own (a game object's std::thread would put its state on the game's heap, freed by the C++
+// runtime's): no allocation of this file runs on it, and the transport it calls allocates from the host heap.
+#ifdef _WIN32
+HANDLE keeper_thread = NULL;
+DWORD WINAPI KeeperMain(LPVOID) { KeeperRun(); return 0; }
+bool KeeperSpawn() { keeper_thread = CreateThread(NULL, 0, KeeperMain, NULL, 0, NULL); return keeper_thread != NULL; }
+void KeeperJoin() { WaitForSingleObject(keeper_thread, INFINITE); CloseHandle(keeper_thread); keeper_thread = NULL; }
+#else
+pthread_t keeper_thread;
+void *KeeperMain(void *) { KeeperRun(); return NULL; }
+bool KeeperSpawn() { return pthread_create(&keeper_thread, NULL, KeeperMain, NULL) == 0; }
+void KeeperJoin() { pthread_join(keeper_thread, NULL); }
+#endif
+bool KeeperStart() {
+	if (keeper_running || !L.net) return keeper_running;
+	keeper_stop.store(false, std::memory_order_release);
+	keeper_running = KeeperSpawn();
+	return keeper_running;
+}
+void KeeperStop() {
+	if (!keeper_running) return;
+	keeper_stop.store(true, std::memory_order_release);
+	KeeperJoin();
+	keeper_running = false;
+}
 static void CampaignStop(CeCampaignStop reason);
 bool Fail(const char *message, bool desync_queued = false) {
+	KeeperStop();
     CampaignStop(CE_CAMPAIGN_STOP_FAILURE);
 	if (L.stage != FAILED) { fprintf(stderr, "onslaught-ce: co-op session stopped: %s\n", message); if (!last_error[0]) snprintf(last_error, sizeof last_error, "%s", message); }
 	L.stage = FAILED; L.outcome_error = true; L.notice[0] = 0;
@@ -239,6 +320,15 @@ bool AdmissionCurrent() {
 	if (CE_BootPrepared(&current, why, sizeof why) == 1 &&
 		!memcmp(current.digest, L.config.compatibility, sizeof current.digest)) return true;
 	return AdmissionLost(why[0] ? why : "the prepared context changed");
+}
+// The lobby-admitted (shipped) session asks the automation owners (ce_network_world.cpp):
+// an ordinary clock and no authored input, pacing or state dump. A test-automation build counts its authored window input as
+// idle there; the BEA_LOCKSTEP_* route, which exists only in such builds, has no admission to ask.
+bool AutomationIdle() {
+	if (!L.admission_required) return true;
+	const char *why = CE_NetAutomationRefusal();
+	if (!why) return true;
+	char text[200]; snprintf(text, sizeof text, "co-op admission refused: %.170s", why); return Fail(text);
 }
 bool AdmissionLive() {
 	if(!L.admission_required||AdmissionRetired())return true;
@@ -757,6 +847,7 @@ bool TransportFail(const CE_NetStatus &status, const char *message)
 }
 #endif
 bool Poll() {
+	KeeperStop();
 	if (!AdmissionCurrent()) return false;
 	if (L.stage == FINISHED) {	// the level is over: the connection only reports that the other player has gone
 		if (!L.net) return true;
@@ -829,7 +920,17 @@ bool Poll() {
 #endif
 
 }
-template<class Ready> bool Block(Ready ready, uint64_t limit, const char *what) {
+// The player chose Leave on the start's waiting screen: back to the front end as the ring's Leave Game goes (the teardown
+// closes the connection, so a friend already connected is told at once), and the lobby says "You left the game.".
+bool LeaveWaiting() {
+	fprintf(stderr, "onslaught-ce: co-op: this player left while waiting for the start\n");
+	L.left_waiting = true;
+	if (!CE_SessionGameQuitCode()) CE_SessionGameSetQuit(LeaveCode());
+	return false;
+}
+// A start barrier. Nothing else draws while it waits, so each pass draws a frame of the waiting screen (ce_netpages.cpp), which
+// offers Leave from its first frame; the screen's key trap goes when a barrier stops the start.
+template<class Ready> bool BlockWait(Ready ready, uint64_t limit, const char *what) {
 	uint64_t start = CE_NetNowMs();
 	for (;;) {
 		if (!AdmissionCurrent()) return false;
@@ -837,8 +938,14 @@ template<class Ready> bool Block(Ready ready, uint64_t limit, const char *what) 
 		if (CE_SessionGameQuitCode() || !Poll() || L.stage == FAILED || L.stage == ENDED) return false;
 		if (CE_NetNowMs() - start > limit) return Fail(what);
 		if (CE_SessionGamePump() || CE_SessionGameQuitCode()) return false;
+		if (CE_SessionGameWaitFrame(L.connection_established ? CE_WAIT_STARTING : CE_WAIT_FRIEND)) return LeaveWaiting();
 		CE_SessionGameIdle();
 	}
+}
+template<class Ready> bool Block(Ready ready, uint64_t limit, const char *what) {
+	if (BlockWait(ready, limit, what)) return true;
+	CE_SessionGameWaitFrame(CE_WAIT_END);
+	return false;
 }
 void TraceRand(void *caller) { if (L.dump) fprintf(L.dump, "r %u %p\n", L.tick, caller); }
 unsigned short ControlWord() { unsigned short cw; __asm__ volatile("fnstcw %0" : "=m"(cw)); return cw; }
@@ -897,6 +1004,7 @@ int CE_LockstepActive(void) { return L.shown; }
 int CE_LockstepTicking(void) { return L.stage == RUNNING; }
 int CE_LockstepSharing(void) { return L.stage == CONNECTING || L.stage == LOADED || L.stage == STARTING || L.stage == PRERUN || L.stage == RUNNING || L.stage == STOPPING; }
 uint32_t CE_LockstepLocalPlayer(void) { return L.host ? 0u : 1u; }
+uint32_t CE_LockstepLevel(void) { return L.stage != OFF ? L.level : 0u; }
 int CE_LockstepConfigureLevel(uint32_t level) {
 	if (L.stage != OFF) return Fail("a co-op session can run one level per process");
 	// A session started from the lobby (the shipped route) comes with the process's admission: the roles, endpoint and secret in the BEA_NET_* variables the lobby's handoff set,
@@ -907,8 +1015,8 @@ int CE_LockstepConfigureLevel(uint32_t level) {
 #else
 	const char *host_name = "BEA_NET_HOST", *join_name = "BEA_NET_JOIN", *secret_name = "BEA_NET_SECRET";
 #endif
-	bool host = Env(host_name), join = Env(join_name);
-	if (host == join) return Fail("select exactly one co-op role");
+	bool host = CE_NETWORK_ENABLED && Env(host_name), guest = CE_NETWORK_ENABLED && Env(join_name);
+	if (host == guest) return Fail("select exactly one co-op role");
 	if (!CE_CompatibilityLockstepLevel(level)) return Fail("lockstep co-op admits the defence levels 856 and 858 and the tutorial (100)");
 	const char *disabled[] = {"BEA_PORT_CLOCK", "BEA_PORT_TAPE", "BEA_PORT_RECORD", "BEA_PORT_PROBES", "BEA_RECORD", "BEA_NET_HOST", "BEA_NET_JOIN"};
 	for (const char *name : disabled) {
@@ -971,28 +1079,51 @@ int CE_LockstepConfigureLevel(uint32_t level) {
 		level, host ? "host (player 1)" : "joining (player 2)", L.delay, L.hash_every);
 #endif
 	if (!CampaignConfigure()) return 0;
+	if (admitted) CE_SessionGameWaitFrame(CE_WAIT_PREPARE);	// the lobby's kept frame, read while nothing loads (ce_network_wait.cpp)
+	if (admitted && !CE_NetGameIceRequested()) {	// a lobby-started direct session: open now and keep it answered through the load (KeeperRun)
+		L.net = CE_NetCreateGame(&L.config);
+		if (!L.net) return Fail(CE_NetGameProblem(NULL)[0] ? CE_NetGameProblem(NULL) : "the co-op connection could not be created");
+		L.opened_at = L.attempt_at = CE_NetNowMs();
+		if (!KeeperStart()) { (ChatRetire(), CE_NetDestroy(L.net)); L.net = NULL; L.opened_at = 0; }	// no thread: open after the load, as before
+	}
     return 1;
 }
 int CE_LockstepAfterLoad(void) {
 	if (L.stage != CONNECTING) return 0;
-	if (!AdmissionCurrent()) return 0;
+	if (!AdmissionCurrent() || !AutomationIdle()) return 0;
 	if (CE_SessionGameQuitCode()) return 0;
 	if (GAME.GetNPlayers() != 2 || !GAME.GetPlayer(0) || !GAME.GetPlayer(1)) return Fail("the level did not load two players");
 	L.stage = LOADED; return 1;
 }
+static int PreparePlay(void);
+// The waiting screen's key trap never outlives the start, however the start ends.
 int CE_LockstepPreparePlay(void) {
+	const int ok = PreparePlay();
+	if (!ok) CE_SessionGameWaitFrame(CE_WAIT_END);
+	return ok;
+}
+static int PreparePlay(void) {
 	if (L.stage != LOADED) return 0;
-	if (!AdmissionCurrent()) return 0;
+	if (!AdmissionCurrent() || !AutomationIdle()) return 0;
 	// Compare script-visible flags before pre-run. Only their digest is exchanged; no save file is sent.
 	if (!CapturePreRunSlots()) return Fail("co-op pre-run flags could not be captured");
 	unsigned pre_calls=0,pre_hold=0; int pre_value=0,pre_seed=0;
 	PortCrtRandState(&pre_calls,&pre_hold); CE_WorldLockstepRandom(1,&pre_value,&pre_seed);
 	// Block re-entrant updates while the message pump connects the peers and compares their initial state.
 	L.stage = STARTING;
-	// The connection opens once this peer has loaded: nothing polls it while a level loads. The two peers can finish
-	// loading far apart (a slow disk, a software renderer), so a joining peer whose attempt gave up tries again until
-	// the start deadline; the invite secret is wiped once connected.
-	L.net = CE_NetCreateGame(&L.config);
+	// A relay or test-automation connection opens once this peer has loaded: nothing polls it while a level loads. The two
+	// peers can finish loading far apart (a slow disk, a software renderer), so a joining peer whose attempt gave up tries
+	// again until the start deadline; the invite secret is wiped once connected. A lobby-started direct session opened its
+	// connection before the load (KeeperRun): this thread takes it back here.
+	KeeperStop();
+	if (L.opened_at) {
+		if (!L.net) return Fail(CE_NetGameProblem(NULL)[0] ? CE_NetGameProblem(NULL) : "the co-op connection could not be created");
+		CE_NetStatus st; CE_NetGetStatus(L.net, &st);
+		// Heard while this game loaded, and gone since: the other game stopped answering or left before the start.
+		if (L.heard && st.phase == CE_NET_FAILED) return Fail(st.error == CE_NET_TIMEOUT ? "the other player stopped responding" : "the connection to the other player failed");
+		if (L.heard && st.phase == CE_NET_CLOSED) return Fail("the other player left before confirming the co-op start");
+	}
+	if (!L.net) L.net = CE_NetCreateGame(&L.config);
 	if (!L.net) return Fail(CE_NetGameProblem(NULL)[0] ? CE_NetGameProblem(NULL) : "the co-op connection could not be created");
 	// What a player is told when nobody connects. A wrong invite secret looks like an absent peer: the host answers the guest's hello, the guest cannot verify the answer (it holds
 	// another secret) and refuses it, and the host never receives the guest's proof, so the host refuses nothing and only the guest has anything to say. The guest's text
@@ -1001,12 +1132,14 @@ int CE_LockstepPreparePlay(void) {
 		"the other player did not connect in time (no answer from the host: check the invite code and that the host is waiting)");
 	if (!Block([] {
 			CE_NetStatus st; CE_NetGetStatus(L.net, &st);
+			if (st.phase == CE_NET_ACTIVE) L.heard = true;
+			if (L.opened_at && !L.heard && CE_NetNowMs() - L.opened_at > kNeverHeardMs) { Fail(kNeverHeard); return false; }
 			if (L.host && st.rejected_packets)
 				snprintf(connect_why, sizeof connect_why, "the other player did not connect in time (%u packets were refused: check the invite code)", (unsigned)st.rejected_packets);
 			if (L.host && st.error == CE_NET_INCOMPATIBLE)	// the transport refused a hello from a game that differs (files, build or level): it is told to that player, and here
 				snprintf(connect_why, sizeof connect_why, "the other player did not connect in time (a game whose files, Onslaught CE build or level differ tried to join)");
-			if (st.phase == CE_NET_FAILED && !L.host && st.error != CE_NET_AUTH && st.error != CE_NET_INCOMPATIBLE && !CE_NetGameIceRequested()) {
-				(ChatRetire(), CE_NetDestroy(L.net)); L.net = CE_NetCreateGame(&L.config);
+			if (GuestAttemptDue(st, CE_NetNowMs()) && !CE_NetGameIceRequested()) {
+				(ChatRetire(), CE_NetDestroy(L.net)); L.net = CE_NetCreateGame(&L.config); L.attempt_at = CE_NetNowMs();
 				if (!L.net) { Fail(CE_NetGameProblem(NULL)[0] ? CE_NetGameProblem(NULL) : "the co-op connection could not be created"); return false; }
 				return false;
 			}
@@ -1028,6 +1161,7 @@ int CE_LockstepPreparePlay(void) {
 	// Transport and message pumping may consume random values; restore the pre-connection simulation streams.
 	PortCrtRandSet(pre_calls,pre_hold); CE_WorldLockstepRandom(0,&pre_value,&pre_seed);
 	L.stage = PRERUN;
+	CE_SessionGameWaitFrame(CE_WAIT_PRERUN);
 	CE_SessionGamePreRun();
 	if (CE_SessionGameQuitCode()) return 0;
 	if (!AdmissionCurrent()) return 0;
@@ -1046,6 +1180,7 @@ int CE_LockstepPreparePlay(void) {
 	if (!SendStartAck(start)) return 0;
 	if (!Block([] { return L.start_ack_received; }, kStartMs,
 		"the other player did not acknowledge the co-op start in time")) return 0;
+	CE_SessionGameWaitFrame(CE_WAIT_END);
 	if (!AdmissionCurrent()) return 0;
 	L.stage = RUNNING; L.tick = 0; L.waiting_since = 0; L.shown = true;
 #if defined(CE_NETWORK_ICE)
@@ -1213,6 +1348,7 @@ void CE_LockstepBeforeRender(void) {
 #endif
 }
 int CE_LockstepBeginTeardown(int quit) {
+	KeeperStop();
     CampaignCaptureReturn();
     if (L.campaign && !L.final_confirmed) CampaignStop(CE_CAMPAIGN_STOP_CANCEL);
 
@@ -1241,6 +1377,7 @@ int CE_LockstepBeginTeardown(int quit) {
 	return quit;
 }
 void CE_LockstepAfterWorldShutdown(void) {
+	KeeperStop();
     CampaignCaptureReturn();
 	L.shown = false;
 	ReportNetworkCounts(L.net);
@@ -1252,6 +1389,7 @@ void CE_LockstepAfterWorldShutdown(void) {
 }
 const char *CE_LockstepNotice(void) { return L.notice; }
 const char *CE_LockstepError(void) { return last_error; }
+int CE_LockstepLeftWaiting(void) { return L.left_waiting ? 1 : 0; }
 #if defined(CE_NETWORK_ICE)
 extern "C" int PortCeMissionRelayLossRole(void) { return L.lostRelayRole; }
 #endif
@@ -1543,3 +1681,54 @@ extern "C" void CE_LockstepChatCopyView(CE_ChatView *out) {
 }
 #endif
 #endif
+
+extern "C" {
+int CE_SessionConfigureLevel(uint32_t level) {
+    if (CE_BootRequested() && !CE_BootLockstep())
+        return Fail("this network start was not admitted for lockstep co-op");
+    if (!CE_LockstepRequested()) return 1;
+    return CE_LockstepConfigureLevel(level);
+}
+int CE_SessionAfterLoad(void) {
+    return CE_LockstepRequested() ? CE_LockstepAfterLoad() : 1;
+}
+int CE_SessionPreparePlay(void) {
+    if (CE_LockstepRequested()) return CE_LockstepPreparePlay();
+    CE_SessionGamePreRun();
+    return 1;
+}
+int CE_SessionBeforeUpdate(void) {
+    return CE_LockstepRequested() ? CE_LockstepBeforeUpdate() : 1;
+}
+void CE_SessionAfterUpdate(void) {
+    if (CE_LockstepRequested()) CE_LockstepAfterUpdate();
+}
+void CE_SessionBeforeRender(void) {
+    if (CE_LockstepRequested()) CE_LockstepBeforeRender();
+}
+int CE_SessionSystemService(int native_ready, int device_state) {
+    (void)native_ready;
+    if (!CE_LockstepActive()) return CE_SESSION_NATIVE;
+    if (CE_SessionGameQuitCode()) return CE_SESSION_EXIT;
+    if (device_state == 2) return CE_SESSION_WAIT;
+    return CE_SESSION_NATIVE;
+}
+int CE_SessionBeginTeardown(int quit) {
+    return CE_LockstepRequested() ? CE_LockstepBeginTeardown(quit) : quit;
+}
+void CE_SessionAfterWorldShutdown(void) {
+    if (CE_LockstepRequested()) CE_LockstepAfterWorldShutdown();
+}
+const char *CE_SessionError(void) {
+    return CE_LockstepError();
+}
+const char *CE_SessionNotice(void) {
+    return CE_LockstepRequested() ? CE_LockstepNotice() : "";
+}
+int CE_SessionActive(void) {
+    return CE_LockstepActive();
+}
+int CE_SessionExitCode(int native_code, int native_quit_seen) {
+    return CE_LockstepRequested() ? CE_LockstepExitCode(native_code, native_quit_seen) : native_code;
+}
+}

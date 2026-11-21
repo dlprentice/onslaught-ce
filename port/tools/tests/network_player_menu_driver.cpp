@@ -185,6 +185,7 @@ struct Shell {
 } LT;
 int PostMessage(HWND, unsigned message, uintptr_t, intptr_t) { if (message == WM_CLOSE) ++postClose; return 1; }
 bool PortCeMenus() { return !menusOff; }
+bool PortRunOffersNetworkPages() { return true; }
 static CE_LobbyStatus status{};
 static std::vector<std::string> addresses = {"192.0.2.10", "192.0.2.11"};
 static unsigned hostAutomatic, hostSelected, leaveCalls, startCalls, joinCalls;
@@ -212,6 +213,8 @@ static const char* signalOrigin = "https://signal.example.test";
 
 extern "C" {
 int CE_LobbyAvailable(char* why, size_t size) { if (why && size) why[0] = 0; return 1; }
+static int cheatOn = -1;	// the one Cheats-page switch the case turns on (-1: none)
+extern "C" int CE_CheatOn(int n) { return n == cheatOn; }
 int CE_LobbyAddresses(char out[][16], int max) {
   int count = std::min(max, int(addresses.size()));
   for (int i = 0; i < count; ++i) std::snprintf(out[i], 16, "%s", addresses[size_t(i)].c_str());
@@ -511,6 +514,16 @@ static int RunEntry(const std::string& name) {
     CHECK(sMenu->mPage == NP_MENU && !sMenu->mConnectionSelected && hostAutomatic == 0 && hostSelected == 0 && joinCalls == 0);
     return 0;
   }
+  if (name == "cheats-refused") {
+    // A cheat on: Host and Join say to turn it off, and nothing is hosted or joined.
+    cheatOn = 3;
+    PortCeNetOpen(); MenuFrame();
+    CHECK(SelectAction(NA_HOST));
+    CHECK(sMenu->mPage == NP_MENU && std::string(sMenu->mNotice) == "Network games need every cheat off. Turn them off on the Cheats page, then try again.");
+    CHECK(SelectAction(NA_JOIN));
+    CHECK(sMenu->mPage == NP_MENU && hostAutomatic == 0 && hostSelected == 0 && joinCalls == 0);
+    return 0;
+  }
   if (name == "help-back") {
     PortCeNetOpen(); MenuFrame();
     CHECK(SelectAction(NA_HELP) && sMenu->mPage == NP_HELP);
@@ -687,7 +700,7 @@ static int Run(const std::string& name) {
   if (name == "offered-guard") {
     menusOff = true; PortCeNetOpen(); CHECK(!PortCeNetActive() && !sMenu); return 0;
   }
-  if (name == "entry-direct" || name == "relay-unavailable" || name == "help-back") return RunEntry(name);
+  if (name == "entry-direct" || name == "relay-unavailable" || name == "help-back" || name == "cheats-refused") return RunEntry(name);
 #if defined(CE_NETWORK_ICE)
   if (name.rfind("ice-", 0) == 0) return RunIce(name);
 #endif
@@ -737,6 +750,22 @@ static int Run(const std::string& name) {
     CHECK(sMenu->mPage == NP_JOIN && sMenu->mNoticeBoxed && !LT.trap);
     Dismiss(); MenuFrame();
     CHECK(LT.trap && boxes.size() == 1);
+    return 0;
+  }
+  if (name == "refused-box-version") {
+    // A refused join says both versions in the player's words, or that the downloads differ when both say the same label.
+    OpenJoin(); Type("ABC"); NetKeyTrap(DIK_RETURN, KEY_EVENT_DOWN);
+    CHECK(joinCalls == 1);
+    status.state = CE_LOBBY_REFUSED;
+    std::snprintf(status.local_version, sizeof status.local_version, "%s", "0.2.0-coop");
+    std::snprintf(status.peer_version, sizeof status.peer_version, "%s", "0.2.0-other");
+    MenuFrame();
+    CHECK(BoxSays("You have Onslaught CE 0.2.0-coop and your friend has 0.2.0-other. You both need the same version. Update, then join again."));
+    Dismiss(); sMenu->Show(NP_JOIN); status.state = CE_LOBBY_JOIN_CONNECTING; MenuFrame();
+    status.state = CE_LOBBY_REFUSED;
+    std::snprintf(status.peer_version, sizeof status.peer_version, "%s", "0.2.0-coop");
+    MenuFrame();
+    CHECK(BoxSays("You and your friend have different Onslaught CE downloads. You both need the same one. Update, then join again."));
     return 0;
   }
   if (name == "notice-line-host") {
@@ -819,11 +848,11 @@ static int Run(const std::string& name) {
     CHECK(sMenu && sMenu->mPage == (host ? NP_HOST : NP_JOIN) && boxes.empty());
     drawnText.clear(); MenuFrame();
     CHECK(Drawn(host ? L"Waiting for your friend to return." : L"Rejoining your friend..."));
-    CHECK(!Drawn(L"Back in the lobby together.") && !Drawn(L"Your Join Code") && !Drawn(L"Type your friend's code"));
+    CHECK(!Drawn(L"Back in the lobby together.") && !Drawn(L"Your friend starts the next mission.") && !Drawn(L"Your Join Code") && !Drawn(L"Type your friend's code"));
     if (name == "rematch-guest-cancel")
     {
       BackButton(); drawnText.clear(); MenuFrame();
-      CHECK(!Drawn(L"Rejoining your friend...") && !Drawn(L"Back in the lobby together."));
+      CHECK(!Drawn(L"Rejoining your friend...") && !Drawn(L"Back in the lobby together.") && !Drawn(L"Your friend starts the next mission."));
       CHECK(Drawn(L"Type your friend's code"));
       return 0;
     }
@@ -833,20 +862,20 @@ static int Run(const std::string& name) {
       std::snprintf(status.notice, sizeof(status.notice), "%s", "The host left the game.");
       sMenu->Update(); drawnText.clear(); MenuFrame();
       CHECK(BoxSays("The host left the game."));
-      CHECK(!Drawn(L"Back in the lobby together.") && !Drawn(L"Rejoining your friend..."));
+      CHECK(!Drawn(L"Back in the lobby together.") && !Drawn(L"Your friend starts the next mission.") && !Drawn(L"Rejoining your friend..."));
       return 0;
     }
     status.state = CE_LOBBY_READY;
     sMenu->Update(); drawnText.clear(); MenuFrame();
-    CHECK(sMenu->mPage == NP_LOBBY && boxes.empty() && Drawn(L"Back in the lobby together."));
-    CHECK(Drawn(host ? L"Choose a mission and select Start." : L"Your friend can start the next mission."));
+    CHECK(sMenu->mPage == NP_LOBBY && boxes.empty() && Drawn(host ? L"Back in the lobby together." : L"Your friend starts the next mission."));
+    CHECK(!Drawn(host ? L"Your friend starts the next mission." : L"Back in the lobby together."));
     CHECK(!Drawn(L"The network game has ended.") && !Drawn(L"Rejoining your friend...") && !Drawn(L"Waiting for your friend to return."));
     if (name == "rematch-host-lost")
     {
       status.state = CE_LOBBY_HOST_WAITING;
       std::snprintf(status.notice, sizeof(status.notice), "%s", "Your friend left. The same code still works.");
       sMenu->Update(); drawnText.clear(); MenuFrame();
-      CHECK(!Drawn(L"Back in the lobby together.") && !Drawn(L"Waiting for your friend to return."));
+      CHECK(!Drawn(L"Back in the lobby together.") && !Drawn(L"Your friend starts the next mission.") && !Drawn(L"Waiting for your friend to return."));
       CHECK(Drawn(L"Your Join Code"));
       return 0;
     }

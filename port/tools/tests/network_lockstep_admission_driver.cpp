@@ -44,7 +44,7 @@ void PortSetLastError(DWORD) {}
 int main(int argc, char **argv) {
     if (!FixtureGuard() || argc != 2) return 2;
     const std::string mode = argv[1], game = std::getenv("BEA_GAME_DIR");
-    const bool automation = mode == "automation", absent = mode == "absent-voice";
+    const bool automation = mode == "automation" || mode == "exempt-automation-route", absent = mode == "absent-voice";
     const char *logical = absent ? "data/dialogue/never-present.ogg" : "data/dialogue/fixture.ogg";
     char why[160] = {}; CE_CompatibilityResult admission = {};
     PortPathsInit();
@@ -52,6 +52,30 @@ int main(int argc, char **argv) {
     fake_boot_lockstep = automation ? 0 : 1;
     check(CE_LockstepConfigureLevel(856) && L.admission_required == !automation,
           "real configuration retains genuine admission requirement or explicit automation exemption");
+
+    // The automation owners' answer (CE_NetAutomationRefusal): a lobby-admitted co-op asks it after the load and before the start, as
+    // the level-852 route does, and stops before any message to the other player; the test-only BEA_LOCKSTEP_* route has none to ask.
+    if (mode == "refused-after-load" || mode == "refused-before-start" || mode == "exempt-automation-route") {
+        const char *reason = "native input, pacing or data automation is configured or was used";
+        if (mode == "refused-before-start") check(CE_LockstepAfterLoad() && L.stage == LOADED, "actual loaded boundary accepts idle automation");
+        fake_automation_refusal = reason;
+        // A start that wrongly went on would wait for its peer; the fixture's pump then cancels it (no endless wait), which is not this refusal.
+        if (mode == "refused-before-start") fake_idle_mode = IDLE_CANCEL;
+        const size_t before_sent = sent.size();
+        if (mode == "exempt-automation-route") {
+            check(CE_LockstepAfterLoad() && L.stage == LOADED, "the test-only lockstep route has no admission to ask");
+        } else {
+            const bool refused = mode == "refused-after-load" ? !CE_LockstepAfterLoad() : !CE_LockstepPreparePlay();
+            check(refused && L.stage == FAILED && L.outcome_error && sent.size() == before_sent &&
+                  std::strstr(CE_LockstepError(), "co-op admission refused: ") && std::strstr(CE_LockstepError(), reason),
+                  mode == "refused-after-load" ? "admitted co-op refuses configured automation after the load, sending nothing"
+                                               : "admitted co-op refuses automation before the start, sending nothing");
+            check(quit_code == QT_QUIT_TO_FRONTEND && !graceful_leaves, "a refused co-op start returns to the front end with its reason");
+        }
+        fake_automation_refusal = nullptr;
+        AdmissionComplete(mode.c_str());
+        return failures ? 1 : 0;
+    }
 
     if(mode=="retired-finished"||mode=="retired-ended"||mode=="retired-cancelled"||
        mode=="retired-failed"||mode=="retired-reconfigure") {

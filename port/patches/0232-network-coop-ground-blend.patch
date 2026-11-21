@@ -1,0 +1,46 @@
+--- a/Map.cpp
++++ b/Map.cpp
+@@ -10,6 +10,10 @@
+ #include "mixermap.h"
+ #include "landscape.h"
+ #include "chunker.h"
++#ifndef CE_NETWORK_OFF
++#include "../game/ce_network_ground.h"	// patch 0232: the Building Defence ground in a co-op game
++#include "../game/ce_network_lockstep.h"
++#endif
+ 
+ // The map and level directories: retail's object starts its .data with these (0062d948, 0062d954) and nothing in
+ // the executable reads them. The names are ours.
+@@ -210,6 +214,12 @@
+ 
+ 	CHeightField::Load(c);
+ 	MIXERMAP.Init(c);
++#ifndef CE_NETWORK_OFF
++	// A co-op session replaces the unfinished blend and light map of levels 856 and 858 (flat ground) with CE's and draws
++	// their water plane, which lies at the ground's height, a little below it (DXWater.cpp); drawing only.
++	CeGroundSetApplied(CeGroundEligible(CE_LockstepSharing(), CE_LockstepLevel(), mHeightData) &&
++		CeGroundRewrite(MIXERMAP.mSlots, MIXER_MAP_SLOTS, MIXERMAP.mMap));
++#endif
+ 	ENGINE.SetKempyCube(mHFP.mUnknown18[0]);
+ 	ENGINE.Unknown452b60(mHFP.mUnknown18[1]);
+ 	ENGINE.LoadMixers(mUnknown1030[0]);
+--- a/DXWater.cpp
++++ b/DXWater.cpp
+@@ -447,8 +447,17 @@
+ //   scheduling region, which then ends after `push gTextureMatrix` as retail's does, so SetTransform's other two
+ //   pushes follow the stores (0055c889) and TEXTURE1 is scheduled in one region. With (float)sin/cos in the stores:
+ //   10/10.
++#ifndef CE_NETWORK_OFF
++float CeGroundWaterDrop();	// patch 0232 (game/ce_network_ground.cpp)
++#endif
+ void CDXWater::Render(float wlevel)	// FUNCTION: 0x0055b6c0
+ {
++#ifndef CE_NETWORK_OFF
++	// The Building Defence ground in a co-op game lies at the water level, and the water plane drawn there z-fights with it into
++	// hard-edged smooth patches; patch 0232 draws it a little lower, under the ground, so the sea still shows beyond the map's
++	// edge. Drawing only: the water level and everything that reads it stay.
++	wlevel += CeGroundWaterDrop();
++#endif
+ 	static float	scroll2 = 0, angle2 = 0;			// 009cc224, 009cc228
+ 	static float	sunangle = 0;					// 009cc22c
+ 	static float	scroll1 = 0, angle1 = 0;			// 009cc230, 009cc234

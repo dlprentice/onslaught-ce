@@ -16,7 +16,7 @@ public:
     CSquad* squad=nullptr; bool dying=false,shutting=false; float life=100; int allegiance=1;
     const void* script=nullptr; int number=42; unsigned kind=1; CUnitData data; FVector position;
     CSquad* GetSquad(){if(shutting)Require(false,"shutdown reader rejected before squad query");return squad;} bool IsShuttingDown(){return shutting;} bool IsDying(){return dying;}
-    float GetLife(){return life;} int GetAllegiance(){return allegiance;}
+    float GetLife(){return life;} float GetMaxLife(){return 100.f;} int GetAllegiance(){return allegiance;}
     const void* GetMissionScript(){return script;} int GetThingNumber(){return number;}
     unsigned GetThingType(){return kind;} FVector GetPos(){return position;}
     const CUnitData* GetUnitData(){return &data;}

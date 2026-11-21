@@ -3,12 +3,9 @@
 # patches alone produce; port/tools/network_public_source_tests.py proves it. A new network patch is listed here in the same change.
 0065-network-world.patch
 0067-network-session.patch
-0075-pending-replica-mission-vm.patch
 0076-network-graceful-departure-exit.patch
 0079-network-compact-lifecycle.patch
-0081-network-pulse-round-lifecycle.patch
 0082-compatibility-hooks.patch
-0083-loaded-admission.patch
 0084-network-optional-memory-dump.patch
 0120-lockstep-after-update.patch
 0121-lockstep-message-timing.patch
@@ -44,3 +41,5 @@
 0201-network-text-chat-overlay.patch
 0230-network-end-screen-no-retry.patch
 0231-network-mission-ring.patch
+0232-network-coop-ground-blend.patch
+0233-lockstep-hit-effect-fence.patch

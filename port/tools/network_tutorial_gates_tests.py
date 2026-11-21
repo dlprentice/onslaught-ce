@@ -13,7 +13,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from network_world_tests import actual_body
+from network_source_extract import actual_body
 
 ROOT=Path(__file__).resolve().parents[2]
 parent=ROOT/'local-data/port/network-tutorial-gates-tests'

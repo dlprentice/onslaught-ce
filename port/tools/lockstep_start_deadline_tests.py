@@ -53,7 +53,10 @@ def hints_ok(text):
     host = re.search(r'L\.host && st\.rejected_packets\)\s*snprintf\(connect_why, sizeof connect_why, "the other player did not connect in time \(%u packets were refused: check the invite code\)"', text)
     wired = re.search(r"\}, kStartMs, connect_why\)\) return 0;", text)
     # a transport that gives up before the wait's own deadline says the same (the two timers are 180 s each and which fires first is a matter of milliseconds)
-    same = re.search(r"if \(!L\.connection_established && L\.stage == STARTING && connect_why\[0\]\) return Fail\(connect_why\);\s*return Fail\(status\.error == CE_NET_TIMEOUT", text)
+    # (an ICE build reports the generic failure through TransportFail; both variants follow the connect_why line)
+    same = re.search(r"if \(!L\.connection_established && L\.stage == STARTING && connect_why\[0\]\) return Fail\(connect_why\);\s*"
+                     r"(?:#if defined\(CE_NETWORK_ICE\)\s*return TransportFail\(status, status\.error == CE_NET_TIMEOUT[^\n]*\n\s*#else\s*)?"
+                     r"return Fail\(status\.error == CE_NET_TIMEOUT", text)
     return bool(guest and host and wired and same)
 
 

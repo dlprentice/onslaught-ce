@@ -17,7 +17,7 @@ import subprocess
 import tempfile
 
 import deps
-from network_world_tests import actual_body
+from network_source_extract import actual_body
 
 ROOT = Path(__file__).resolve().parents[2]
 WORK = ROOT / "local-data/port/lockstep-resilience-tests"
@@ -43,7 +43,8 @@ CONTROLS = (
     ("admit-update-after-failure", "if (L.stage != RUNNING) return 0;",
      "if (L.stage == FAILED) return 1; if (L.stage != RUNNING) return 0;",
      "late controls cannot reopen a failed update gate"),
-    ("discard-relay-reason", "if (status.phase == CE_NET_FAILED && CE_NetGameProblem(L.net)[0]) return Fail(CE_NetGameProblem(L.net));",
+    # the fixture builds the ICE controller, whose relay reason goes through TransportFail
+    ("discard-relay-reason", "if (status.phase == CE_NET_FAILED && CE_NetGameProblem(L.net)[0]) return TransportFail(status, CE_NetGameProblem(L.net));",
      "/* control: discard relay-specific failure */", "relay expiry reason survives to the frontend before another tick"),
 )
 

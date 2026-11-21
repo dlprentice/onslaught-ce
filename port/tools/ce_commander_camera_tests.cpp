@@ -291,6 +291,10 @@ using SINT = int;
 enum { KEY_EVENT_UP = 41, KEY_EVENT_DOWN };
 #include "ce_dodge_binding.h"
 #include "ce_cmdproduction.h"
+#include "ce_cmd_hud.h"
+#include "ce_cmd_voice.h"
+void CeCmdVoicePlay(CeCmdVoiceCue, std::uint64_t) {}
+void CeCmdVoiceStop() {}
 #include "ce_playunit.h"
 // Unavailable-delivery fixture declarations also support the CE-off negative build.
 bool CePlayUnitCanTakeDelivery();
@@ -1317,10 +1321,18 @@ void LivePointerInteractions(){
     ClickWorld(0,500,360);VERIFY(accepted_orders==2 && last_order_verb==CE_CMD_ADVANCE && !gArmed);
     const int before=accepted_orders;
     ClickWorld(2,480,570);VERIFY(accepted_orders==before); // panel cannot issue a world order
-    // the buttons under the card (8 units in, kButtonW[0..3] wide, kButtonGap apart, their row 34 units above the foot): Hold is the third, Move the first
-    ClickWorld(0,8+kButtonW[0]+kButtonGap+kButtonW[1]+kButtonGap+20,600-34+10);VERIFY(accepted_orders==before+1 && last_order_verb==CE_CMD_HOLD);
-    VERIFY(StrategicButtonAt(8+kButtonW[0]+kButtonGap*0.5f,600-34+10)<0 && StrategicButtonAt(8+3,600-34+10)==0);	// the gap between two buttons is no button
-    ClickWorld(0,8+20,600-34+10);VERIFY(gArmed && gStrategicClickOrder==CE_CMD_MOVE);
+    // the RTS Command Card buttons (Move = 0, Attack = 1, Hold = 2): clicking Hold issues Hold, clicking Move arms Move, and gaps hit nothing
+    const CeCmdHudLayout hudLay = CeCmdHudComputeLayout(L.w, L.h, L.s, StrategicUiBottom(), gHudPlacardCount, gHudPage);
+    VERIFY(hudLay.valid);
+    const CeCmdHudRect& moveBtn = hudLay.buttonRects[0];
+    const CeCmdHudRect& atkBtn = hudLay.buttonRects[1];
+    const CeCmdHudRect& holdBtn = hudLay.buttonRects[2];
+    ClickWorld(0, int(holdBtn.x + holdBtn.w * 0.5f), int(holdBtn.y + holdBtn.h * 0.5f));
+    VERIFY(accepted_orders == before + 1 && last_order_verb == CE_CMD_HOLD);
+    VERIFY(StrategicButtonAt(moveBtn.x + moveBtn.w + (atkBtn.x - (moveBtn.x + moveBtn.w)) * 0.5f, moveBtn.y + moveBtn.h * 0.5f) < 0 &&
+           StrategicButtonAt(moveBtn.x + 3.f, moveBtn.y + 3.f) == 0);
+    ClickWorld(0, int(moveBtn.x + moveBtn.w * 0.5f), int(moveBtn.y + moveBtn.h * 0.5f));
+    VERIFY(gArmed && gStrategicClickOrder == CE_CMD_MOVE);
     ClickWorld(0,520,350);VERIFY(last_order_verb==CE_CMD_MOVE && !gArmed);
     // Armed commands and pointer selection must revalidate after world changes.
     live_squads.erase(live_squads.begin());const int attempts=issue_attempts;

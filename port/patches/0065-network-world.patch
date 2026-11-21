@@ -1,16 +1,6 @@
 --- a/BattleEngine.cpp
 +++ b/BattleEngine.cpp
-@@ -883,6 +883,9 @@
- void	CBattleEngine::LockHit(	// FUNCTION: 0x00407140
- 	CThing		*inUnit)
- {
-+#ifndef CE_NETWORK_OFF
-+	if (CE_WorldReplica()) return;
-+#endif
- 	if (inUnit)
- 	{
- 		for (CLockInfo *item=mFiredLocks.First(); item; item=mFiredLocks.Next())
-@@ -1116,6 +1119,9 @@
+@@ -1116,6 +1116,9 @@
  
  void	CBattleEngine::UpdateMouseLookAngles()	// FUNCTION: 0x00407540
  {
@@ -20,7 +10,7 @@
  	static int	frame = 0;				// 006601f8
  	static int	last_frame = 2;		// 00622f0c
  
-@@ -3297,7 +3303,11 @@
+@@ -3297,7 +3300,11 @@
  
  	// only render battle engine when we are not in first person view
  #ifndef EDITORBUILD2
@@ -268,18 +258,6 @@
  	{
  		y = PLATFORM.GetWindowHeight() * 0.5f + 78.f;
  		y2 = (PLATFORM.GetWindowHeight() * 0.5f + 78.f - 16.f);
---- a/MCMech.cpp
-+++ b/MCMech.cpp
-@@ -160,6 +160,9 @@
- // Rebuild the bones: each frame when something asked for a transform, else every few frames.
- void CMCMech::ProcessMovement(BOOL force, BOOL fixed_step)	// FUNCTION: 0x004988b0
- {
-+#ifndef CE_NETWORK_OFF
-+	if (CE_WorldReplica()) return;
-+#endif
- 	mWasUsed = mUsed;
- 	if ((!mUsed) && (GAME.GetGameState() >= GAME_STATE_PANNING) && (!force) && (mProcessCount >= 5))
- 		return;
 --- a/Player.cpp
 +++ b/Player.cpp
 @@ -328,10 +328,18 @@
@@ -369,50 +347,6 @@
  
  							~CActor() ;
  	virtual void			Init(CInitThing* init)	;
---- a/eventmanager.cpp
-+++ b/eventmanager.cpp
-@@ -169,6 +169,9 @@
- 
- void CEventManager::AddEvent(const int event_num, CMonitor* to_call, const float& time, const int start_or_end, CMonitor* data, CScheduledEvent* re_use_event)	// FUNCTION: 0x0044b370 ?AddEvent@CEventManager@@QAEXHPAVCMonitor@@ABMH0PAVCScheduledEvent@@@Z
- {
-+#ifndef CE_NETWORK_OFF
-+	if (CE_WorldReplica()) return;
-+#endif
- //	PROFILE_START(AddEvent) ;
- 
- 	if (mValid == FALSE)
-@@ -292,6 +295,9 @@
- // advance time to the next game code time
- void CEventManager::AdvanceTime()	// FUNCTION: 0x0044b600
- {
-+#ifndef CE_NETWORK_OFF
-+	if (CE_WorldReplica()) return;
-+#endif
- 	mFrameCount++ ;
- 	mTime = mFrameCount * CLOCK_TICK ;
- 
-@@ -310,6 +316,9 @@
- 
- void CEventManager::Flush()	// FUNCTION: 0x0044b640
- {
-+#ifndef CE_NETWORK_OFF
-+	if (CE_WorldReplica()) return;
-+#endif
- 
- #ifdef GENERATE_DEBUG_REPORT
- 	// do debug stuff
---- a/eventmanager.h
-+++ b/eventmanager.h
-@@ -42,6 +42,9 @@
- 
- class CEventManager
- {
-+#ifndef CE_NETWORK_OFF
-+	friend class CENetworkWorldAdapter;
-+#endif
- public:
- 					CEventManager();
- 	virtual			~CEventManager();
 --- a/game.cpp
 +++ b/game.cpp
 @@ -1673,6 +1673,9 @@
@@ -487,20 +421,7 @@
  				mController[i]->Flush();
  		}
  	}
-@@ -3861,7 +3883,11 @@
- 		}
- 		lLastTime = time;
- 
--		mWinLoseScreenAlpha+=step;
-+#ifdef CE_NETWORK_OFF
-+		mWinLoseScreenAlpha+=step;
-+#else
-+		if (!CE_WorldReplica()) mWinLoseScreenAlpha+=step;
-+#endif
- 		if (mWinLoseScreenAlpha>max) mWinLoseScreenAlpha=max;
- 	
- 		DWORD alpha=mWinLoseScreenAlpha<<24;
-@@ -3875,8 +3901,23 @@
+@@ -3875,8 +3897,23 @@
  
  		RENDERINFO.SetFogEnabled(false);
  
@@ -525,7 +446,7 @@
  		{
  			draw_end_level_darkener(alpha);
  
-@@ -3887,7 +3928,11 @@
+@@ -3887,7 +3924,11 @@
  			PLATFORM.Font(FONT_NORMAL)->DrawTextShadowed(320.f - float(s.cx) * 0.5f, 245, 0xffffffff, TEXT_DB.GetString(FETX_DEFEAT));
  		}
  
@@ -538,7 +459,7 @@
  		{
  			draw_end_level_darkener(alpha);
  
-@@ -3898,7 +3943,11 @@
+@@ -3898,7 +3939,11 @@
  			PLATFORM.Font(FONT_NORMAL)->DrawTextShadowed(320.f - float(s.cx) * 0.5f, 245, 0xffffffff, TEXT_DB.GetString(FETX_VICTORY));
  		}
  
@@ -575,18 +496,6 @@
  public:
  					CPlayer(int number);
  	virtual			~CPlayer();
---- a/thing.cpp
-+++ b/thing.cpp
-@@ -101,6 +101,9 @@
- //******************************************************************************************
- void CThing::Shutdown()	// FUNCTION: 0x004f3600
- {
-+#ifndef CE_NETWORK_OFF
-+	CE_WorldForget(this);
-+#endif
- 	WORLD.RemoveThing(this);
- 	if ((mFlags & TF_IS_BIG_THING) != 0)
- 	{	
 --- a/thing.h
 +++ b/thing.h
 @@ -93,6 +93,9 @@
@@ -620,18 +529,6 @@
 +#endif
  	CUnit();																// 004f7e90
  	virtual			~CUnit();												// 004f84e0
- 
---- a/Round.cpp
-+++ b/Round.cpp
-@@ -822,6 +822,9 @@
- // inv * vector and Normalise (README, how a value is read); a plain local, brackets or no reference leave 6 instructions off.
- void CRound::Unknown4dac90(CScheduledEvent *reuse)	// FUNCTION: 0x004dac90
- {
-+#ifndef CE_NETWORK_OFF
-+	if (CE_WorldReplica()) return;
-+#endif
- 	if (mData->mUnknown48 != 1)
- 		return;
  
 --- a/Controller.h
 +++ b/Controller.h
@@ -673,92 +570,3 @@
  	if ((type == MOUSE_AXIS_MINUS_ANY) || (type == MOUSE_AXIS_PLUS_ANY))
  		mult = 1.7f;
  	else
---- a/collisionseekingthing.cpp
-+++ b/collisionseekingthing.cpp
-@@ -76,6 +76,9 @@
- // for both response and callback admission reproduces retail's shared CMP at 004267ce.
- void CCollisionSeekingThing::Unknown6(CCollisionSeekingThing *other)	// FUNCTION: 0x004264a0
- {
-+#ifndef CE_NETWORK_OFF
-+	if (CE_WorldReplica()) return;
-+#endif
- 	if (!(mCollisionFlags & 0x400)) return;
- 	if (mIgnoreThing == other->mForThing || other->mIgnoreThing == mForThing) return;
- 	if (other->mForThing->GetFlags() & TF_INVISIBLE) return;
---- a/Unit.cpp
-+++ b/Unit.cpp
-@@ -2151,6 +2151,10 @@
- //******************************************************************************************
- int CUnit::GetShouldDoHitEffect(SINT part)	// FUNCTION: 0x004fd5e0
- {
-+#ifndef CE_NETWORK_OFF
-+	int replicated;
-+	if (CE_WorldUnitHitEffect(this,part,&replicated)) return replicated;
-+#endif
- 	if (mSegments)
- 	{
- 		if (EVENT_MANAGER.GetTime() - mSegments->GetLastDamageTime(part) < 1.0f)
---- a/Cockpit.cpp
-+++ b/Cockpit.cpp
-@@ -134,6 +134,9 @@
- {
- 	mOldShakePos = mShakePos;
- 	mOldOrientation = mOrientation;
-+#ifndef CE_NETWORK_OFF
-+	CE_WorldCockpitInitialized(this);
-+#endif
- 
- 	if (!mBattleEngine || mBattleEngine->IsDying())
- 		return;
---- a/explosion.cpp
-+++ b/explosion.cpp
-@@ -42,6 +42,9 @@
- {
- 	CExplosionInitThing	*i = (CExplosionInitThing *)init;
- 
-+#ifndef CE_NETWORK_OFF
-+	CE_WorldExplosionBirth(this,init);
-+#endif
- 	mOriginator.SetReader(i->mOriginator);
- 
- 	if (MAP.GetWaterLevel() + 1.5f > i->mPos.Z)
-@@ -78,6 +81,9 @@
- 		else
- 			mCurrentRadius = 0;
- 
-+#ifndef CE_NETWORK_OFF
-+		CE_WorldExplosionReady(this,init);
-+#endif
- 		SUPERTYPE::Init(init);
- 
- 		CParticleDescriptor	*pd = NULL;
-@@ -194,5 +200,8 @@
- void	CExplosion::Hit(CThing *other_thing, CCollisionReport *report)	// FUNCTION: 0x0044bf10
- {
-+#ifndef CE_NETWORK_OFF
-+	if (CE_WorldReplica()) return;
-+#endif
- 	if (mCurrentRadius <= 0)
- 		return;
- 
-@@ -247,5 +256,8 @@
- void	CExplosion::Unknown66()	// FUNCTION: 0x0044c0f0
- {
-+#ifndef CE_NETWORK_OFF
-+	if (CE_WorldReplica()) return;
-+#endif
- 	mCurrentRadius += mRadius / float(mBehaviour->mTime);
- 	if (mCurrentRadius >= mRadius)
- 		AddShutdownEvent();
---- a/WorldPhysicsManager.cpp
-+++ b/WorldPhysicsManager.cpp
-@@ -289,6 +289,9 @@
- #line 259
- CExplosion *UPhysicsManager::SpawnExplosion(SINT index)	// FUNCTION: 0x0050ff10
- {
-+#ifndef CE_NETWORK_OFF
-+	if (!CE_WorldExplosionSpawnAllowed()) return NULL;
-+#endif
- 	if (MEM_MANAGER.GetThingHeap()->GetFreeSize() < 204800)
- 		return NULL;
- 	if (index <= -1)

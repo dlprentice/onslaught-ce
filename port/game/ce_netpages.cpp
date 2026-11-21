@@ -101,8 +101,18 @@ const char *const kHelpFirewall = "If Windows asks about the firewall, choose Al
 
 bool RelayRequested() { return CE_NetGameIceRequested() != 0; }
 
+extern "C" int CE_CheatOn(int n);	// port/platform/common/ce.cpp: the Cheats page's switches
+
 bool MenuAvailable(char *why, size_t size)
 {
+	// A cheat changes the battle on one side only, and the restarted network game refuses to start with one on
+	// (ce_network_boot.cpp); say so here, before anything is hosted or joined, in the player's words.
+	for (int cheat = 0; cheat < 6; cheat++)
+		if (CE_CheatOn(cheat))
+		{
+			snprintf(why, size, "%s", "Network games need every cheat off. Turn them off on the Cheats page, then try again.");
+			return false;
+		}
 #if !defined(CE_NETWORK_ICE)
     if (RelayRequested())
     {
@@ -197,10 +207,29 @@ void	Box(const char *text)
 {
 	if (!text || !*text)
 		return;
-	static WCHAR wide[400];
+	static WCHAR wide[400], probe[400];
 	Widen(wide, 400, text);
+	// House rule 6 for the box too: it wraps at its width less 16 (FEMessBox.cpp), so the box narrows in steps (to 70% at most)
+	// while that leaves one word alone on its last line, and keeps its width when narrowing would add a line instead.
+	CDXBitmapFont *font = PLATFORM.Font(FONT_SMALL);
+	static SWordWrapFill fill;
+	float width = 400.f;
+	memcpy(probe, wide, sizeof probe);
+	int n = font->WordWrap(&fill, probe, width - 16.f);
+	for (float w = width - 16.f; n >= 2 && w >= 400.f * 0.7f; w -= 16.f)
+	{
+		bool alone = true;
+		for (const WCHAR *c = fill.c[n - 1]; *c && alone; c++)
+			alone = *c != ' ';
+		if (!alone)
+			break;
+		memcpy(probe, wide, sizeof probe);
+		if (font->WordWrap(&fill, probe, w - 16.f) != n)
+			break;
+		width = w;
+	}
 	FEMESSBOX.Kill();
-	FEMESSBOX.Create(320.f, 240.f, 400.f, FO(100), wide, PLATFORM.Font(FONT_SMALL), 0, 10, FALSE, FEMB_OPTION_A_CONTINUE, 0);
+	FEMESSBOX.Create(320.f, 240.f, width, FO(100), wide, font, 0, 10, FALSE, FEMB_OPTION_A_CONTINUE, 0);
 	if (FEMESSBOX.mY - FEMESSBOX.mHeight * 0.5f < 122.f)
 		FEMESSBOX.mY = 122.f + FEMESSBOX.mHeight * 0.5f;
 	FEMESSBOX.SetOnDismiss(FEP_NONE, 0);
@@ -1512,8 +1541,14 @@ public:
 				Show(NP_LOBBY);
 				if (s.state == CE_LOBBY_REFUSED && PlayerPages())
 				{
-					char refused[sizeof s.compat + 96];
-					snprintf(refused, sizeof refused, "%s. You both need the same Onslaught CE download. Leave, update, and join again.", s.compat);
+					// Both versions in the player's words when they differ; one download label for two builds otherwise.
+					char refused[sizeof s.local_version + sizeof s.peer_version + 160];
+					if (s.peer_version[0] && strcmp(s.peer_version, "unknown") && strcmp(s.peer_version, s.local_version))
+						snprintf(refused, sizeof refused, "You have Onslaught CE %s and your friend has %s. You both need the same version. "
+						         "Update, then join again.", s.local_version, s.peer_version);
+					else
+						snprintf(refused, sizeof refused, "You and your friend have different Onslaught CE downloads. You both need the same "
+						         "one. Update, then join again.");
 					LobbyNotice(refused);
 				}
 			}
@@ -1825,6 +1860,21 @@ public:
 		{
 			if (s.state == CE_LOBBY_STARTING)
 			{
+				// The first moment of the start shows the page with its two player slots and no words: that frame is kept as
+				// the background of the restarted game's waiting screen (ce_network_wait.cpp; ce_frontend.cpp writes it). Then
+				// "Starting..." until the game quits.
+				if (mStartingAt < 0.f || PLATFORM.GetSysTimeFloat() - mStartingAt < 0.05f)
+				{
+					if (PlayerPages())
+						for (int slot = 0; slot < 2; slot++)
+						{
+							const float sx = slot ? kSlotRightX : kSlotLeftX;
+							PortCeNetDrawSlot(sx, kSlotY, true);	// the kept frame's slots
+							LinesAt(slot ? "Player 2" : "Player 1", sx, kSlotY - 38.f, kGrey);
+							LinesAt((slot == 0) == (s.host != 0) ? "You" : "Your Friend", sx, kSlotY + 26.f, kWhite);
+						}
+					break;
+				}
 				Lines("Starting...", 220.f, kWhite, FONT_NORMAL);
 				break;
 			}
@@ -1856,9 +1906,11 @@ public:
 					Lines(mNotice, y + 10.f, kWhite, FONT_SMALL, kPageWidth);
 				else if (mReturningRoom && ready)
 				{
-					y = Lines("Back in the lobby together.", y + 10.0f, kWhite, FONT_SMALL, kPageWidth);
-					Lines(s.host ? "Choose a mission and select Start." : "Your friend can start the next mission.",
-					      y + 4.0f, kCream, FONT_SMALL, kPageWidth);
+					// One line: the host's rows (Mission, Start, Leave) begin at y 275 and the guest's Leave at y 295, so a
+					// second line ran into them at 640x480. The host's rows say what to do; the guest, whose page already
+					// names the mission, is told who starts it (a longer guest line wrapped into Leave).
+					Lines(s.host ? "Back in the lobby together." : "Your friend starts the next mission.",
+					      y + 10.0f, kWhite, FONT_SMALL, kPageWidth);
 				}
 				else if (mOutcome[0] && mOutcomeGood)
 					Lines(mOutcome, y + 10.f, kWhite, FONT_SMALL, kPageWidth);

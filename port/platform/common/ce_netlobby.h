@@ -89,6 +89,9 @@ void CE_LobbyShellExit(int code, int native_quit);
 // After the game has shut down (Linux: main, after SDL_Quit; Windows: at exit): starts the process again when due.
 // Returns only when nothing is due or the restart failed.
 void CE_LobbyAfterExit(void);
+// The lobby page's last frame for the restarted game's waiting screen: its private path, and the frame read and removed (PPM RGB).
+int CE_LobbyWaitingFramePath(char *out, size_t size);
+int CE_LobbyWaitingFrameTake(unsigned *width, unsigned *height, unsigned char **rgb);
 
 typedef enum CE_LobbyCampaignStartResult {
     CE_LOBBY_CAMPAIGN_START_QUEUED,

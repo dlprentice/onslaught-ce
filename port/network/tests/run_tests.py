@@ -78,9 +78,9 @@ def build(enet, windows=False):
         obj = out / (source.stem + ".o")
         run([cxx, *flags, "-std=c++17", "-Wall", "-Wextra", "-Werror", "-O2", *includes, "-c", source, "-o", obj])
         objects.append(obj)
-    for fixture in ("codec_tests", "protocol_tests", "peer", "state_peer", "silent_host_driver"):
+    for fixture in ("codec_tests", "protocol_tests", "peer", "silent_host_driver"):
         exe = out / (fixture + (".exe" if windows else ""))
-        linked = objects if fixture not in ("protocol_tests", "state_peer") else [x for x in objects if x.stem != "transport"]
+        linked = objects if fixture != "protocol_tests" else [x for x in objects if x.stem != "transport"]
         run([cxx, *flags, "-std=c++17", "-Wall", "-Wextra", "-Werror", "-O2", *includes,
              NETWORK / f"tests/{fixture}.cpp", *linked, *link, "-o", exe])
     return out / "peer"
@@ -311,37 +311,6 @@ class TransportTests(unittest.TestCase):
         result = self.check_pair(scenario="ordered-input", impairment=True)
         self.assertIn("input=300", result["host"]["out"])
         self.assertIn("backpressure=1", result["guest"]["out"])
-
-    def check_state(self, scenario, size=2501, poll_budget=32, **kwargs):
-        result=pair(scenario=scenario,executable=PEER.parent/"state_peer",extra=(size,poll_budget),**kwargs)
-        for role in ("host","guest"):
-            self.assertEqual(0,result[role]["rc"],result)
-            self.assertEqual("",result[role]["err"],result)
-        self.assertEqual(0,result["proxy"]["state_reliable"],result)
-        self.assertGreater(result["proxy"]["state_unsequenced"],0,result)
-        self.assertLessEqual(result["proxy"]["max_datagram"],1200,result)
-        self.assertEqual(0,result["proxy"]["plaintext_pattern"],result)
-        self.assertEqual(0,result["proxy"]["nonce_collisions"],result)
-        return result
-
-    def test_missing_old_STATE_fragment_does_not_block_newer(self):
-        result=self.check_state("gap",drop_state_part=True,latency_ms=100)
-        self.assertEqual(1,result["proxy"]["targeted_fragments"],result)
-        self.assertEqual(1,result["proxy"]["targeted_dropped"],result)
-
-    def test_late_retired_STATE_fragment_cannot_resurrect(self):
-        result=self.check_state("late",late_state_part=True,latency_ms=300)
-        self.assertEqual(1,result["proxy"]["targeted_delayed"],result)
-
-    def test_delta_sized_STATE_20Hz_delay_loss_reorder(self):
-        for size,latency in ((2501,100),(5239,300),(10393,300)):
-            with self.subTest(size=size,latency=latency):
-                result=self.check_state("stream",size=size,latency_ms=latency,impairment=True)
-                self.assertGreater(result["proxy"]["dropped"],0,result)
-                self.assertGreater(result["proxy"]["reordered"],0,result)
-
-    def test_raw_STATE_overload_then_lower_rate_recovery(self):
-        self.check_state("raw",size=18001,latency_ms=300)
 
     def test_wrong_invite_never_admits(self):
         result = self.check_pair(scenario="bad-key")

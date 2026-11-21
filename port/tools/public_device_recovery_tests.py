@@ -50,8 +50,8 @@ NEGATIVE=('loss-1','loss-6','loss-7','loss-8','restore','repeated-restore','mini
           'cooperative-ok-pending','presentation-caller-null-device','options-reset-refused','options-reset-recovers',
           'toggle-refused','window-switch-messages-first','reset-reentrant','apply-to-window','apply-to-fullscreen',
           'apply-reset-refused')
-NETWORK_CASES=('net-zero-ready','net-shared-wait','net-inactive','net-wmquit','net-admission-error',
-               'net-recovery','net-close','net-device-sticky','initial-cooperative-error',
+NETWORK_CASES=('net-zero-ready','net-inactive','net-wmquit',
+               'net-recovery','net-close','initial-cooperative-error',
                'zero-healthy','initial-cooperative-lost-zero',
                # the session's own FALSE returns (a WM_QUIT, the session's end) while the device objects are released
                'net-wmquit-released','net-exit-released')
@@ -180,7 +180,7 @@ def shell_prefix(out,helpers,omit_pending=False,omit_zero_guard=False,network_mu
     (out/'public_d3dapp_flip.h').write_text('\n'.join(line for line in flip.splitlines() if not line.startswith('#line'))+'\n')
     for name in ('common.h','MenuItem.h','ltshell.h'):
         (out/name).write_text('// Test boundary definitions are in the driver.\n')
-    session=(ROOT/'port/game/ce_network_session.cpp').read_text()
+    session=(ROOT/'port/game/ce_network_lockstep.cpp').read_text()
     service=helpers.function(session,r'^int CE_SessionSystemService\s*\(').replace(
         'int CE_SessionSystemService(', 'int ActualSessionSystemService(',1)
     active=helpers.function(session,r'^int CE_SessionActive\s*\(')
@@ -189,7 +189,7 @@ def shell_prefix(out,helpers,omit_pending=False,omit_zero_guard=False,network_mu
     (out/'public_device_recovery_service.h').write_text(service+'\n'+active+'\n')
     platform=(ROOT/'src/Platform.h').read_text()
     declarations=[]
-    for name,text in (('Stage',session),('WaitPhase',session),('EQuitType',platform)):
+    for name,text in (('EQuitType',platform),):
         match=re.search(r'\benum '+name+r'\s*\{[^}]+\};',text,re.S)
         if not match:raise AssertionError(f'actual enum missing: {name}')
         declarations.append(match.group())
@@ -372,7 +372,7 @@ def main():
         mutations['omit-zero-delta-guard']={'case':'zero-elapsed','exit':observed.returncode,
                                           'stdout':observed.stdout,'stderr':observed.stderr}
         for name,case in (('zero-delta-bypasses-service','net-zero-ready'),
-                          ('omit-device-observation','net-device-sticky'),
+                          ('omit-device-observation','net-recovery'),
                           ('omit-session-service','net-zero-ready'),
                           ('session-always-active','net-zero-ready'),
                           ('session-always-offline','net-zero-ready')):

@@ -725,6 +725,9 @@ unsigned gShotEvery;		// BEA_PORT_SHOT_EVERY=N:DIR writes DIR/shot-NNNNN.ppm eve
 char gShotDir[1024];
 unsigned gQuitFrame;
 char gShotPath[1024];
+#ifndef CE_NETWORK_OFF
+bool gShotQuiet;
+#endif
 
 void WriteShot(IDirect3DDevice9 *dev)
 {
@@ -783,8 +786,14 @@ void WriteShot(IDirect3DDevice9 *dev)
 				}
 			}
 			fclose(f);
+#ifdef CE_NETWORK_OFF
 			fprintf(stderr, PORT_LOG_PREFIX "frame %u written to %s (%ux%u, format %d)\n", gFrames, gShotPath, d.Width, d.Height,
 					(int)d.Format);
+#else
+			if (!gShotQuiet)
+				fprintf(stderr, PORT_LOG_PREFIX "frame %u written to %s (%ux%u, format %d)\n", gFrames, gShotPath, d.Width, d.Height,
+						(int)d.Format);
+#endif
 		}
 		copy->UnlockRect();
 	}
@@ -1254,6 +1263,28 @@ void NoteDeviceTable(void **table)
 }
 #endif
 
+#ifndef CE_NETWORK_OFF	// the frame drawn so far (mid-scene is allowed: a read-back, not a draw) written to path as PPM, as the shots are: the
+// network lobby's page frame kept for the restarted game's waiting screen (ce_network_wait.cpp). Returns 1 when the file was written.
+extern "C" int PortWriteFrameTo(IDirect3DDevice9 *dev, const char *path)
+{
+	if (!dev || !path || !*path || strlen(path) >= sizeof gShotPath)
+		return 0;
+	char saved[sizeof gShotPath];
+	memcpy(saved, gShotPath, sizeof saved);
+	snprintf(gShotPath, sizeof gShotPath, "%s", path);
+	remove(path);
+	const bool savedQuiet = gShotQuiet;
+	gShotQuiet = true;
+	WriteShot(dev);
+	gShotQuiet = savedQuiet;
+	memcpy(gShotPath, saved, sizeof saved);
+	FILE *f = fopen(path, "rb");
+	if (!f)
+		return 0;
+	fclose(f);
+	return 1;
+}
+#endif
 HRESULT STDMETHODCALLTYPE Present(IDirect3DDevice9 *dev, const RECT *src, const RECT *dst, HWND w, const RGNDATA *dirty)
 {
 	if (PORT_FEEL_ON()) PortFeelPresentBegin(dev);		// frame-feel measurement (feel.h): one test when off

@@ -276,6 +276,31 @@ def controls():
                 row[name]=max(row[name],number)
         result[str(player+1)]=row
     return result
+class FinishShot(gdb.FinishBreakpoint):
+    def __init__(self,frame,weapon):
+        super().__init__(frame,internal=True);self.weapon=weapon
+    def _pop(self):
+        if not shot_stack or shot_stack[-1][0]!=self.weapon: fail('native_shot_end_observation_failed:RuntimeError:shot scope')
+        else: shot_stack.pop()
+    def stop(self):
+        self._pop();return False
+    def out_of_scope(self):
+        self._pop()
+class FinishRound(gdb.FinishBreakpoint):
+    def __init__(self,frame,player,tick,present,round_ptr):
+        super().__init__(frame,internal=True);self.player=player;self.tick=tick;self.present=present;self.round_ptr=round_ptr
+    def stop(self):
+        try:
+            if not is_running(): return False
+            if len(state['shots'])>=MAX_SHOTS: raise RuntimeError('shot bound')
+            native=self.round_ptr.dereference()
+            key=(self.player,self.tick);ordinal=shot_ordinals.get(key,0)+1;shot_ordinals[key]=ordinal
+            state['shots'].append(dict(player=self.player,tick=self.tick,ordinal=ordinal,present=self.present,
+                kind=int(native['mThingType'])&0xffffffff,position=vector(native['mPos']),velocity=vector(native['mVelocity'])))
+            flush()
+        except Exception as e:
+            fail('native_round_observation_failed:'+type(e).__name__+(':'+str(e)[:40] if type(e) is RuntimeError else ''))
+        return False
 class Observe(gdb.Breakpoint):
     def __init__(self,name,kind):
         super().__init__(name,internal=True);self.kind=kind
@@ -297,20 +322,12 @@ class Observe(gdb.Breakpoint):
                 state['rows'].append(dict(tick=tick,present=present,players=poses,controls=applied))
                 if len(state['rows'])%10==0: flush()
             elif self.kind=='shot_begin':
-                _,owners=players();weapon=frame.read_var('weapon')
+                _,owners=players();weapon=frame.read_var('this')
                 if len(shot_stack)>=8: raise RuntimeError('shot nesting')
                 shot_stack.append((int(weapon),owners.get(int(weapon.dereference()['mAttachedTo']))))
-            elif self.kind=='shot_end':
-                weapon=int(frame.read_var('weapon'))
-                if not shot_stack or shot_stack[-1][0]!=weapon: raise RuntimeError('shot scope')
-                shot_stack.pop()
+                FinishShot(frame,int(weapon))
             elif self.kind=='round' and shot_stack and shot_stack[-1][1]:
-                if len(state['shots'])>=MAX_SHOTS: raise RuntimeError('shot bound')
-                player=shot_stack[-1][1];native=frame.read_var('round').dereference()
-                key=(player,tick);ordinal=shot_ordinals.get(key,0)+1;shot_ordinals[key]=ordinal
-                state['shots'].append(dict(player=player,tick=tick,ordinal=ordinal,present=present,
-                    kind=int(native['mThingType'])&0xffffffff,position=vector(native['mPos']),velocity=vector(native['mVelocity'])))
-                flush()
+                FinishRound(frame,shot_stack[-1][1],tick,present,frame.read_var('this'))
         except Exception as e:    # the label names the failure class and, for the observer's own refusals, its fixed words
             fail('native_'+self.kind+'_observation_failed:'+type(e).__name__+(':'+str(e)[:40] if type(e) is RuntimeError else ''))
         return False
@@ -320,8 +337,8 @@ def exited(event):
     flush()
 gdb.events.exited.connect(exited)
 try:
-    for name,kind in (('CE_LockstepAfterUpdate','tick'),('CE_WorldShotBegin','shot_begin'),
-                      ('CE_WorldShotEnd','shot_end'),('CE_WorldRoundInitialized','round')):
+    for name,kind in (('CE_LockstepAfterUpdate','tick'),('CWeapon::SpawnRound','shot_begin'),
+                      ('CRound::Init(CInitThing*)','round')):
         Observe(name,kind)
     gdb.execute('starti')
     state['inferior_pid']=gdb.selected_inferior().pid

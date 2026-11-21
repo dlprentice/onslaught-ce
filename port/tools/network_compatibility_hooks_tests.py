@@ -28,6 +28,19 @@ import deps
 from network_compatibility_tests import FILES
 
 
+# The authored-input switches a network start refuses by name in any build without CE_NET_TEST_AUTOMATION (ce_network_boot.cpp).
+INJECTED = ("BEA_PORT_FAKE_PAD", "BEA_PORT_FAKE_PAD2", "BEA_PORT_FAKE_PAD_KIND", "BEA_PORT_FAKE_PAD_LATE", "BEA_PORT_FAKE_PAD_GAME",
+            "BEA_PORT_FAKE_PAD_END", "BEA_PORT_FAKE_KEYS", "BEA_PORT_FAKE_KEYS_GAME", "BEA_PORT_FAKE_CLICK", "BEA_PORT_FEEL_SCRIPT",
+            "BEA_PORT_UI_INPUT_FD", "BEA_PORT_QUIT", "BEA_PORT_REPLAY_MAX", "BEA_PORT_REPLAY_SLEEP_US", "BEA_PORT_UPDATE_DUMP")
+INJECT_CASES = ["inject:" + name for name in INJECTED] + ["offline-inject:" + name for name in INJECTED]
+
+
+def injected_in_source(text):
+    """The names of the boot's injected[] array, in order, so this list and the source cannot drift apart."""
+    start = text.index("const char *injected[] = {")
+    return tuple(re.findall(r'"(BEA_PORT_[A-Z0-9_]+)"', text[start:text.index("};", start)]))
+
+
 def sha(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
@@ -54,7 +67,7 @@ def execute(command, out, label, *, env=None, timeout=50, expected=0):
 def snapshot(out):
     product = out / "product"
     names = ["port/game/ce_network_boot.cpp", "port/game/ce_network_boot.h",
-        "port/game/ce_project.cpp", "port/game/ce_project.h", "port/game/ce_network_stl.h", "port/platform/common/ce_netcode.h", "port/network/network.h", "port/network/compatibility.cpp", "port/network/native_posix_stat.cpp", "port/network/native_posix_stat.h",
+        "port/game/ce_project.cpp", "port/game/ce_project.h", "port/game/ce_hold.h", "port/game/ce_network_stl.h", "port/platform/common/ce_netcode.h", "port/network/network.h", "port/network/compatibility.cpp", "port/network/native_posix_stat.cpp", "port/network/native_posix_stat.h",
              "port/network/compatibility.h", "port/platform/linux/files.cpp", "port/platform/linux/paths.cpp",
              "port/platform/linux/handles.h", "port/platform/linux/mmio.cpp", "port/platform/common/crtfile.cpp",
              "port/platform/common/ce.cpp", "port/platform/common/platform.h", "port/platform/windows/files.cpp",
@@ -106,7 +119,7 @@ def snapshot(out):
     return product, {str(p.relative_to(out)): sha(p) for p in out.rglob("*") if p.is_file()}
 
 
-def host(out, product, *, negative=None, fake_windows=False):
+def host(out, product, *, negative=None, fake_windows=False, test_automation=False):
     # The pinned production compiler does not ship an i386 sanitizer runtime. Host controls use the installed
     # system compiler/runtime; separate complete-target syntax keeps the production compiler boundary explicit.
     compiler = Path(shutil.which("clang++"))
@@ -133,13 +146,17 @@ def host(out, product, *, negative=None, fake_windows=False):
                "-I" + str(product / "port/include"), "-I" + str(deps.DATA / "dxvk-native/usr/include/dxvk"), "-I" + str(mc)]
     if fake_windows:
         command.append("-DBOOT_TEST_WINDOWS")
+    if test_automation:	# the private test build: authored input stays admitted (build.py --test-automation)
+        command += ["-DCE_NET_TEST_AUTOMATION=1", "-DTEST_AUTOMATION_BUILD=1"]
     binary = out / "hooks"
     command += [*map(str, sources), "-o", str(binary)]
     records.append(execute(command, out, "host-build"))
-    cases = ["boot", "lockstep-boot", "offline", "bad-level", "bad-options", "cardid-absolute", "build", "demo", "both-roles",
+    cases = ["boot", "lockstep-boot", "retired-852", "offline", "bad-level", "bad-options", "cardid-absolute", "build", "demo", "both-roles",
              "supplied-context", "forced-layer-off", "automation", "root-invalid", "console", "variable", "script",
              "auto-nonempty", "cheat", "role-removed", "role-switched", "crt-mutate", "native-mutate", "direct-mutate",
-             "write", "native-write", "unknown", "mmio", "native-wide", "local-invalid", "local-hardlink", "local-symlink", "retire"]
+             "write", "native-write", "unknown", "mmio", "native-wide", "local-invalid", "local-hardlink", "local-symlink", "retire",
+             *INJECT_CASES]
+    if test_automation: cases = ["boot", "lockstep-boot", "retired-852", *INJECT_CASES]
     if negative: cases = [negative[0]]
     results = []
     for case in cases:
@@ -150,8 +167,7 @@ def host(out, product, *, negative=None, fake_windows=False):
             path = game / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(data)
-        if case == "lockstep-boot":
-            (game / "data/resources/856_res_pc.aya").write_bytes(b"lockstep level archive sentinel")
+        (game / "data/resources/856_res_pc.aya").write_bytes(b"lockstep level archive sentinel")
         (user / "defaultoptions.bea").write_bytes(b"OPTIONS!")
         (user / "ce.ini").write_bytes(b"record_sessions=1\n")
         (game / "cardid.txt").write_text("Vendor:1234\nDevice:5678\nTweak:DISABLE_SNOW 1\nTweak:FORCE_VSYNC 1\nTweak:future_ignored 5\n")
@@ -179,6 +195,13 @@ def controls(out):
         ("direct-open-proof", "product/port/platform/common/crtfile.cpp", "file && !writes && !CE_CompatibilityValidateOpenedFile", "false && file && !writes && !CE_CompatibilityValidateOpenedFile", "direct-mutate", "direct CRT opened object proof refuses changed bytes", False),
         ("windows-init-order", "product/port/game/ce_network_boot.cpp", "if (!CE_CompatibilityValidateLauncherRoots(error, sizeof error)) return Refuse(error);", "PortInitializeContentRoots();\n    if (!CE_CompatibilityValidateLauncherRoots(error, sizeof error)) return Refuse(error);", "root-invalid", "early refusal precedes native initialization and automation preparation", True),
     ]
+    # Each refused switch: dropping its name from the boot's list must let a co-op start with it through.
+    for index, name in enumerate(INJECTED):
+        specs.append(("inject-" + name, "product/port/game/ce_network_boot.cpp", '"%s"' % name, '"BEA_PORT_MUTANT_%d"' % index,
+                      "inject:" + name, "early refusal precedes native initialization and automation preparation", False))
+    # The whole check: a player's build that obeys every switch again.
+    specs.append(("inject-loop", "product/port/game/ce_network_boot.cpp", "        if (getenv(name)) {", "        if (false) {",
+                  "inject:BEA_PORT_FAKE_PAD_GAME", "early refusal precedes native initialization and automation preparation", False))
     rows = []
     for label, relative, old, new, case, message, windows in specs:
         folder = out / label; folder.mkdir()
@@ -273,7 +296,7 @@ def targets(out):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--phase", choices=("host", "windows-order", "windows-writes", "windows-controls", "targets", "controls"), default="host")
+    parser.add_argument("--phase", choices=("host", "test-automation", "windows-order", "windows-writes", "windows-controls", "targets", "controls"), default="host")
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
     resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
@@ -286,10 +309,14 @@ def main():
     receipt = {"phase": args.phase, "limits": __doc__, "pass": False}
     try:
         product, receipt["source_pins"] = snapshot(out)
+        listed = injected_in_source((product / "port/game/ce_network_boot.cpp").read_text())
+        if listed != INJECTED:
+            raise RuntimeError("the boot's refused switches differ from this test's list: %r" % (listed,))
         if args.phase == "controls": receipt["result"] = controls(out)
         elif args.phase == "targets": receipt["result"] = targets(out)
         elif args.phase == "windows-writes": receipt["result"] = windows_writes(out, product)
         elif args.phase == "windows-controls": receipt["result"] = windows_controls(out, product)
+        elif args.phase == "test-automation": receipt["result"] = host(out, product, test_automation=True)
         else: receipt["result"] = host(out, product, fake_windows=args.phase == "windows-order")
         receipt["pass"] = True
     finally:

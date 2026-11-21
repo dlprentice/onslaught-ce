@@ -30,6 +30,7 @@ struct CeEditorUiModel {
     char objective[CeEditorUiTextMax];
     bool reachMarker; float reachX, reachY;
     bool secondMarker; float secondX, secondY; int routeLength;
+    bool reachHold, secondHold;          // whether Stop 1 / Stop 2 is a Hold Area rather than a Reach Point
     bool playing;                        // a play test: only its banner and the notice
     bool gameScreen;                     // in a play test, the game's own pause menu or debrief is up: nothing is drawn
     char level[CeEditorUiTextMax];       // the game's own name for the level (Latin-1), or empty
@@ -65,6 +66,7 @@ struct CeEditorUiModel {
     bool playerStartSelected;            // the start is what the card describes
     bool placingPlayerStart;             // the next click on the map sets the start
     char cardNote[CeEditorUiTextMax];    // a sentence under the card's rows, or empty
+    bool gamepad;                        // true when a connected gamepad drove the editor most recently
 };
 
 // Width of text at the 640 x 480 scale (the caller multiplies by the screen's scale).
@@ -84,6 +86,7 @@ struct CeEditorUiLayout {
     CeEditorUiRect note;
     int noteBreak;
     CeEditorUiRect start;
+    CeEditorUiRect stopLabel[2];         // compact map badges for Reach Point / Hold Area stops
 };
 
 // What one frame draws. An open list or question, or the held help, is the only thing the player is reading: the markers,
@@ -129,3 +132,8 @@ bool CeEditorUiRender(const CeEditorUiModel &model, CeEditorUiLayout *layout);
 // Derive editing labels from the caller's existing state; never changes the draft.
 void CeEditorUiDescribeEditing(CeEditorUiModel &model, bool dirty,
                               bool placing, bool holdArea, bool moving);
+// Tracks whether a connected gamepad is actively driving the editor rather than keyboard and mouse.
+bool CeEditorUiUpdateDevice(bool padActive, bool anyPad, bool padInput, bool kbmInput);
+// Fill the bottom prompt bar (at most CeEditorUiPromptMax pairs) for the current editing state and input device.
+void CeEditorUiFillPrompts(CeEditorUiModel &model, bool moving, bool placingStart, bool placingReach,
+                           bool canRemoveReach, bool startSelected, bool objectSelected);

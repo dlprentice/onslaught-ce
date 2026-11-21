@@ -209,6 +209,8 @@ int CeCmdUnitCollect(CeCmdUnitSnapshot* out, int capacity, bool* complete) {
         for (unsigned j = 0; j < 3; ++j) result.position[j] = item.position[j];
         for (unsigned j = 0; j < sizeof(result.name); ++j) result.name[j] = item.name[j];
         result.name[sizeof(result.name) - 1] = 0;
+        result.life = item.life;
+        result.maxLife = item.maxLife;
         UnitOrder* order = Find(result.key);
         if (order && (!authority.commandable || !Current(*order, item.unit))) {
             Clear(*order); order = NULL;

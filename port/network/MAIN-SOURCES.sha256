@@ -154,7 +154,7 @@ c2b7c8c401eeaa7cb5c1bbf487de3ef9878b0a109e4517110c7ed253f4ba5160  port/patches/0
 566bbe2b5e04f814df892e68a4d3fabd6552deb174cfb7b817b4a0590cdd9fdf  port/patches/0265-ce-authored-exhibition-world.patch
 629cd491a65d0ff30a4fe38f447aecb09019a4dd8c297cfa467b1b37a044379d  port/patches/0266-ce-museum-projector.patch
 ed9a89aa22f59e1af4076d85b26e9888c8ad1b376ca0a44aff9a696b12b799b8  port/patches/0270-ce-commander-factory-exercise.patch
-1b02526b246ccafff56733c7749dda2814ae4ee238f60e0d1513591069156b4f  port/patches/0271-ce-commander-native-scene.patch
+8e6ef2940bfbc856da8dc815501de8502a1e252186469d08cd0db12d3ad1ae31  port/patches/0271-ce-commander-native-scene.patch
 130582b67ed7577e4eca42b666e38bd7004af5b86bf805a42a915cb522e1b368  port/patches/0275-ce-playunit-native-aim.patch
 cc9a6c53b0c763667fadb30f5aa064923125df7cde0c3a902a17ca300fe063ab  port/patches/0276-ce-project-player-start.patch
 ca593c1bbc28d2827181d2d4a49d9820d474f9023df2d07d6fd89a51888cc663  port/patches/0277-ce-hud-reservation.patch

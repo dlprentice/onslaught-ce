@@ -16,7 +16,7 @@ const CeEditorUiPrompt kCeEditorUiHelp[] = {
     {"Drag", "Move the Object"},
     {"Page Up, Page Down", "Raise, Lower"},
     {"T", "Change Side"},
-    {"R, H", "Reach Point, Hold Area"},
+    {"R, H, P", "Reach, Hold, Player Start"},
     {"Delete", "Reset Start or Remove Stop"},
     {"Tab", "Next Object"},
     {"C", "Centre on the Object"},
@@ -24,7 +24,7 @@ const CeEditorUiPrompt kCeEditorUiHelp[] = {
     {"Up, Down, Enter", "Choose, Use a Tool"},
     {"Ctrl+S, Ctrl+O", "Save, Open"},
     {"Ctrl+Z, Ctrl+Y", "Undo, Redo"},
-    {"F5, F6", "Play Draft, Reset Draft"},
+    {"F5, F6", "Play Draft, Reset Playtest"},
     {"Esc", "Cancel or Leave"},
     {0, 0},
 };
@@ -48,18 +48,20 @@ const char *const kCeEditorUiStartLabel = "Player Start";
 namespace {
 const char *const kHelpTitle = "Keys";
 const char *const kCardLabels[4] = {"Kind", "Side", "Position", "Height"};
-const char *const kBannerTitle = "Playing draft";
+const char *const kBannerTitle = "Playtest";
 const char *const kResetKey = "F6";
 const char *const kResetAction = "Reset";
 const char *const kBannerKey = "F5";
-const char *const kBannerAction = "Back to editor";
-const float kScrollBand = 14.f, kKeyGap = 8.f, kPairGap = 22.f, kHudRight = 290.f;
+const char *const kBannerAction = "Back to Editor";
+const float kScrollBand = 14.f, kKeyGap = 8.f, kPairGap = 22.f, kBannerGap = 14.f,
+            kHudLeft = 82.f, kHudRight = 290.f, kCapOverhang = 6.f;
 // The widest position the card shows, so its value column never changes width while an object moves.
 const char *const kWidestPosition = "X -9999.9  Y -9999.9 m";
 const float kMargin = 12.f, kRowPitch = 20.f, kPanelPadX = 10.f, kPanelPadY = 6.f, kCapsulePad = 6.f, kGap = 8.f;
 // Two capsules, one above the other, stand this far apart (the HUD's caps reach a little beyond the bar); the space and
 // thin rule between two groups of the command rail; a mark's reach from its centre (the selected ring with its ticks).
 const float kCapsuleGap = 12.f, kGroupGap = 6.f, kMarkReach = 16.f;
+const float kBadgePadX = 5.f, kBadgePadY = 2.f, kStopDiamond = 11.f;
 const char *const kPlacePrefix = "Place: ";
 
 // The command rail is the whole command set and nothing else.
@@ -134,7 +136,83 @@ void NoteLines(const char *note, int first, char *one, char *two) {
     one[n] = 0;
     snprintf(two, CeEditorUiTextMax, "%s", note + n + (n ? 1 : 0));
 }
+bool InWindow(const CeEditorUiModel &m, const CeEditorUiRect &r) {
+    return r.w > 0.f && r.h > 0.f && r.x >= 0.f && r.y >= 0.f && r.x + r.w <= m.width && r.y + r.h <= m.height;
+}
+const char *StopBadgeLabel(const CeEditorUiModel &m, int stop) {
+    const bool hold = stop ? m.secondHold : m.reachHold;
+    if (m.routeLength == 2) return stop ? (hold ? "2: Hold" : "2: Reach") : (hold ? "1: Hold" : "1: Reach");
+    return hold ? "Hold Area" : "Reach Point";
+}
+// Count how many on-map object rings, stop diamonds or the player start brackets intersect r.
+// skipStop: -1 when placing the player start's own badge (skips start itself); 0 or 1 when placing a stop badge.
+int MarkerOverlaps(const CeEditorUiModel &m, const CeEditorUiLayout &l, const CeEditorUiRect &r, int skipStop) {
+    int hits = 0;
+    const float k = l.scale;
+    for (int i = 0; m.markers && i < m.markerCount; ++i) {
+        const CeEditorUiMarker &mk = m.markers[i];
+        const float rad = (mk.selected ? kMarkReach : 8.f) * k + 8.f * k;
+        if (Cross(r, Rect(mk.x - rad, mk.y - rad, 2.f * rad, 2.f * rad))) ++hits;
+    }
+    if (skipStop >= 0 && m.playerStartMarker) {
+        const float rad = (kMarkReach + 2.f) * k;
+        if (Cross(r, Rect(m.playerStartX - rad, m.playerStartY - rad, 2.f * rad, 2.f * rad))) ++hits;
+    }
+    for (int stop = 0; stop < 2; ++stop) {
+        if (stop == skipStop) continue;
+        const bool vis = stop ? m.secondMarker : m.reachMarker;
+        if (!vis) continue;
+        const float cx = stop ? m.secondX : m.reachX, cy = stop ? m.secondY : m.reachY;
+        const float rad = (kStopDiamond + 2.f) * k;
+        if (Cross(r, Rect(cx - rad, cy - rad, 2.f * rad, 2.f * rad))) ++hits;
+    }
+    return hits;
+}
 } // namespace
+
+bool CeEditorUiUpdateDevice(bool padActive, bool anyPad, bool padInput, bool kbmInput) {
+    if (!anyPad) return false;
+    if (padInput && !kbmInput) return true;
+    if (kbmInput && !padInput) return false;
+    return padActive;
+}
+
+void CeEditorUiFillPrompts(CeEditorUiModel &m, bool moving, bool placingStart, bool placingReach,
+                           bool canRemoveReach, bool startSelected, bool objectSelected) {
+    if (placingStart) {
+        m.promptCount = 2;
+        m.prompts[0] = m.gamepad ? CeEditorUiPrompt{"A", "Place Start"} : CeEditorUiPrompt{"Click", "Place Start"};
+        m.prompts[1] = m.gamepad ? CeEditorUiPrompt{"B", "Cancel"} : CeEditorUiPrompt{"Esc", "Cancel"};
+        return;
+    }
+    if (placingReach) {
+        m.promptCount = 2;
+        m.prompts[0] = m.gamepad ? CeEditorUiPrompt{"A", "Place Point"} : CeEditorUiPrompt{"Click", "Place Point"};
+        m.prompts[1] = m.gamepad ? CeEditorUiPrompt{"B", "Cancel"} : CeEditorUiPrompt{"Esc", "Cancel"};
+        if (canRemoveReach) {
+            m.prompts[2] = m.gamepad ? CeEditorUiPrompt{"Back", "Remove Point"} : CeEditorUiPrompt{"Delete", "Remove Point"};
+            m.promptCount = 3;
+        }
+        return;
+    }
+    if (m.gamepad) {
+        static const CeEditorUiPrompt padIdle[] = {{"Stick", "Pan"}, {"RB", "Next Object"}, {"A", "Use Tool"}, {"Start", "Play Draft"}};
+        static const CeEditorUiPrompt padChosen[] = {{"X", "Raise"}, {"Y", "Lower"}, {"RB", "Next"}, {"Start", "Play Draft"}};
+        static const CeEditorUiPrompt padStart[] = {{"X", "Raise"}, {"Y", "Lower"}, {"Back", "Reset Start"}, {"Start", "Play Draft"}};
+        static const CeEditorUiPrompt padMoving[] = {{"A", "Place"}, {"B", "Cancel"}};
+        const CeEditorUiPrompt *set = moving ? padMoving : startSelected ? padStart : objectSelected ? padChosen : padIdle;
+        m.promptCount = moving ? 2 : 4;
+        for (int i = 0; i < m.promptCount; ++i) m.prompts[i] = set[i];
+        return;
+    }
+    static const CeEditorUiPrompt idle[] = {{"Click", "Select"}, {"Tab", "Next Object"}, {"F5", "Play Draft"}, {"F1", "Keys"}};
+    static const CeEditorUiPrompt chosen[] = {{"Drag", "Move"}, {"Page Up", "Raise"}, {"C", "Centre"}, {"F5", "Play Draft"}, {"F1", "Keys"}};
+    static const CeEditorUiPrompt start[] = {{"Drag", "Move"}, {"Page Up", "Raise"}, {"Delete", "Reset"}, {"F5", "Play Draft"}, {"F1", "Keys"}};
+    static const CeEditorUiPrompt dragging[] = {{"Release", "Place"}, {"Esc", "Cancel"}};
+    const CeEditorUiPrompt *set = moving ? dragging : startSelected ? start : objectSelected ? chosen : idle;
+    m.promptCount = moving ? 2 : (startSelected || objectSelected) ? 5 : 4;
+    for (int i = 0; i < m.promptCount; ++i) m.prompts[i] = set[i];
+}
 
 void CeEditorUiDescribeEditing(CeEditorUiModel &m, bool dirty,
                               bool placing, bool holdArea, bool moving) {
@@ -200,14 +278,18 @@ void CeEditorUiLay(const CeEditorUiModel &m, CeEditorUiMeasure measure, void *co
     l.hintTool = -1;
     if (m.playing) {
         const float actions = (Measure(measure, context, CeEditorUiSmall, kResetKey) + kKeyGap +
-            Measure(measure, context, CeEditorUiSmall, kResetAction) + kPairGap +
+            Measure(measure, context, CeEditorUiSmall, kResetAction) + kBannerGap +
             Measure(measure, context, CeEditorUiSmall, kBannerKey) + kKeyGap +
             Measure(measure, context, CeEditorUiSmall, kBannerAction)) * k + 2.f * capEnd;
-        const float withTitle = actions + (Measure(measure, context, CeEditorUiSmall, kBannerTitle) + kPairGap) * k;
-        l.bannerTitle = withTitle <= m.width - kHudRight * k - l.margin;
+        const float withTitle = actions + (Measure(measure, context, CeEditorUiSmall, kBannerTitle) + kBannerGap) * k;
+        const float inset = m.width > m.height * (4.f / 3.f) ? (m.width - m.height * (4.f / 3.f)) * 0.5f : 0.f;
+        const float leftSafe = Max(l.margin, inset + kHudLeft * k);
+        const float rightSafe = m.width - kHudRight * k;
+        l.bannerTitle = withTitle <= rightSafe - leftSafe;
         const float w = l.bannerTitle ? withTitle : actions;
-        float x = (m.width - w) * 0.5f;
-        // Clear of the HUD's top-right group (it starts about 270 units from the right edge).
+        float x = (leftSafe + rightSafe - w) * 0.5f;
+        // Clear of both the top-left target/escort icon and the top-right HUD group (~270 units from the right edge).
+        if (x < leftSafe) x = leftSafe;
         if (x + w > m.width - kHudRight * k) x = m.width - kHudRight * k - w;
         if (x < l.margin) x = l.margin;
         l.banner = Rect(x, l.margin, w, capH);
@@ -224,9 +306,10 @@ void CeEditorUiLay(const CeEditorUiModel &m, CeEditorUiMeasure measure, void *co
         const float pw = (Measure(measure, context, CeEditorUiSmall, m.project) + state) * k + 2.f * capEnd;
         // The HUD's caps stand a little above and below the bar: the gaps keep two capsules' caps apart.
         l.project = Rect(l.margin, l.title.y + l.title.h + 12.f * k, pw, capH);
+        const float rightEdge = m.width - l.margin - kCapOverhang * k;
         if (m.mode[0]) {
             const float ow=Measure(measure,context,CeEditorUiSmall,m.mode)*k+2.f*capEnd;
-            l.mode=Rect(m.width-l.margin-ow,l.margin,ow,capH);
+            l.mode=Rect(rightEdge-ow,l.margin,ow,capH);
             // A long name beside a long level name: the readout drops to the project's row rather than cross the title.
             CeEditorUiRect reach = Rect(l.mode.x - kGap * k, l.mode.y, l.mode.w + kGap * k, l.mode.h);
             if (Cross(reach, l.title)) {
@@ -236,8 +319,8 @@ void CeEditorUiLay(const CeEditorUiModel &m, CeEditorUiMeasure measure, void *co
         }
     if (m.objective[0]) {
             const float ow=Measure(measure,context,CeEditorUiSmall,m.objective)*k+2.f*capEnd;
-            l.objective=Rect(m.width-l.margin-ow,l.margin,ow,capH);
-            if (l.mode.h > 0.f) l.objective.y = l.mode.y + l.mode.h + 3.f * k;
+            l.objective=Rect(rightEdge-ow,l.margin,ow,capH);
+            if (l.mode.h > 0.f) l.objective.y = l.mode.y + l.mode.h + kCapsuleGap * k;
     }
         // The tool list: a short column on a panel at the left edge. The command set stands in its groups, a little space
         // and a thin rule between two of them; a row's place is its command's index, whatever the spacing.
@@ -311,20 +394,70 @@ void CeEditorUiLay(const CeEditorUiModel &m, CeEditorUiMeasure measure, void *co
             if (noteH > 0.f)
                 l.note = Rect(l.card.x + kPanelPadX * k, l.card.y + cardH, w - 2.f * kPanelPadX * k, noteH - 2.f * k);
         }
-        // The player start's label, under its mark.
-        if (m.playerStartMarker) {
-            const float lw = Measure(measure, context, CeEditorUiSmall, kCeEditorUiStartLabel) * k;
-            l.start = Rect(m.playerStartX - lw * 0.5f, m.playerStartY + (kMarkReach + 1.f) * k, lw, l.lineHeight);
-        }
     }
     // A passing notice: one place, a capsule centred right above the prompt line, under the card. In a play test the bottom
-    // of the screen belongs to the game's radio messages, so the notice sits under the play-test banner.
+    // of the screen belongs to the game's radio messages, so the notice sits under the play-test banner (and under any active
+    // objective bar, separated by kCapsuleGap so their cyan end caps never touch).
     if (m.notice && m.notice[0]) {
         const float w = Measure(measure, context, CeEditorUiSmall, m.notice) * k + 2.f * capEnd;
         float x = (m.width - w) * 0.5f;
         if (x < l.margin) x = l.margin;
-        const float y = m.playing ? l.banner.y + l.banner.h + 40.f * k : lane;
+        const float playTop = l.objective.h > 0.f ? l.objective.y + l.objective.h : l.banner.y + l.banner.h;
+        const float y = m.playing ? playTop + kCapsuleGap * k : lane;
         l.notice = Rect(x, y, w, capH);
+    }
+    if (!m.playing) {
+        // The player start's label badge: defaults centred below its brackets, but flips above (or to a clear side)
+        // whenever a nearby object ring or stop diamond would collide with the below slot.
+        if (m.playerStartMarker) {
+            const float lw = Measure(measure, context, CeEditorUiSmall, kCeEditorUiStartLabel) * k;
+            const float bw = lw + 2.f * kBadgePadX * k, bh = l.lineHeight + 2.f * kBadgePadY * k;
+            const CeEditorUiRect below = Rect(m.playerStartX - bw * 0.5f, m.playerStartY + (kMarkReach + 3.f) * k, bw, bh);
+            l.start = below;
+            int bestHits = MarkerOverlaps(m, l, below, -1);
+            if (bestHits > 0) {
+                const CeEditorUiRect candidates[3] = {
+                    Rect(m.playerStartX - bw * 0.5f, m.playerStartY - (kMarkReach + 3.f) * k - bh, bw, bh),
+                    Rect(m.playerStartX + (kMarkReach + 4.f) * k, m.playerStartY - bh * 0.5f, bw, bh),
+                    Rect(m.playerStartX - (kMarkReach + 4.f) * k - bw, m.playerStartY - bh * 0.5f, bw, bh),
+                };
+                for (int c = 0; c < 3 && bestHits > 0; ++c) {
+                    if (!InWindow(m, candidates[c]) || Covered(l, m, candidates[c])) continue;
+                    const int hits = MarkerOverlaps(m, l, candidates[c], -1);
+                    if (hits < bestHits) {
+                        l.start = candidates[c];
+                        bestHits = hits;
+                    }
+                }
+            }
+        }
+        // Compact map badges for Reach Point / Hold Area stops: placed only where they cross no furniture, no marker
+        // and no earlier badge, so stops stay unmistakably labelled without cluttering nearby objects.
+        if (m.objective[0]) {
+            for (int stop = 0; stop < 2; ++stop) {
+                const bool visible = stop ? m.secondMarker : m.reachMarker;
+                if (!visible) continue;
+                const float cx = stop ? m.secondX : m.reachX, cy = stop ? m.secondY : m.reachY;
+                const char *tag = StopBadgeLabel(m, stop);
+                const float bw = Measure(measure, context, CeEditorUiSmall, tag) * k + 2.f * kBadgePadX * k;
+                const float bh = l.lineHeight + 2.f * kBadgePadY * k;
+                const CeEditorUiRect candidates[4] = {
+                    Rect(cx - bw * 0.5f, cy + (kStopDiamond + 3.f) * k, bw, bh),
+                    Rect(cx - bw * 0.5f, cy - (kStopDiamond + 3.f) * k - bh, bw, bh),
+                    Rect(cx + (kStopDiamond + 4.f) * k, cy - bh * 0.5f, bw, bh),
+                    Rect(cx - (kStopDiamond + 4.f) * k - bw, cy - bh * 0.5f, bw, bh),
+                };
+                for (int c = 0; c < 4; ++c) {
+                    const CeEditorUiRect &r = candidates[c];
+                    if (!InWindow(m, r) || Covered(l, m, r)) continue;
+                    if (m.playerStartMarker && l.start.w > 0.f && Cross(r, l.start)) continue;
+                    if (stop == 1 && l.stopLabel[0].w > 0.f && Cross(r, l.stopLabel[0])) continue;
+                    if (MarkerOverlaps(m, l, r, stop) > 0) continue;
+                    l.stopLabel[stop] = r;
+                    break;
+                }
+            }
+        }
     }
     // Held help: every key in two columns on a centred panel.
     if (m.help) {
@@ -456,14 +589,14 @@ bool CeEditorUiOverFurniture(const CeEditorUiLayout &l, const CeEditorUiModel &m
 #include "mouse.h"
 
 namespace {
-// Colours (T4): white content, yellow focus, grey notes, the panel and its edge, the HUD's cyan caps, the box's green.
-// Text drawn after a panel goes through the sprite renderer's doubling stage: grey is authored at half, as CE's other
-// notes are (0xff545454 shows as about 166, measured at 1920x1080). Text drawn on a capsule follows Prepare(), which
-// draws at one times: its grey is authored as it should show (0xffa8a8a8, about 168; at 0x6c it showed 105, too dark on
-// the sky). Sprite colours are drawn as written.
-const DWORD kWhite = 0xfff4f4f4, kFocus = 0xffffff00, kGrey = 0xff545454, kPanel = 0xd007070f, kEdge = 0xff767879,
-            kCapsule = 0xb0040a14, kCap = 0xff38c8e8, kGreen = 0xff2eb030, kRing = 0xd0ffffff,
-            kCapsuleGrey = 0xffa8a8a8;   // a note on a capsule (after Prepare, one times): about 168 on screen, as the panels' grey
+// Colours: every text draw follows Prepare() (1x D3DTOP_MODULATE) so colours render as authored across both panels and
+// capsules: crisp white primary content, yellow focus, high-contrast silver-grey secondary notes/labels (kGrey), muted
+// grey for unavailable tools/rows (kDisabled), translucent dark panels with a grey edge, cyan caps, amber hold stops,
+// and dark halos/badges so on-map markers read cleanly over bright ship hulls, water glare or snow.
+const DWORD kWhite = 0xfff4f4f4, kFocus = 0xffffff00, kGrey = 0xffc8c8c8, kDisabled = 0xff888888,
+            kPanel = 0xd007070f, kEdge = 0xff767879, kCapsule = 0xb0040a14, kCap = 0xff38c8e8,
+            kHold = 0xffffb838, kGreen = 0xff2eb030, kRing = 0xd8ffffff,
+            kMarkShadow = 0xd8040a14, kBadge = 0xd807070f, kCapsuleGrey = 0xffc8c8c8;
 CDXBitmapFont *gSmall, *gLarge;
 CDXTexture *gWhite;
 float gScale = 1.f;
@@ -502,6 +635,7 @@ void Arc(float cx, float cy, float r, float from, float to, int segments, float 
         Line(cx + r * cosf(a), cy + r * sinf(a), cx + r * cosf(b), cy + r * sinf(b), t, colour);
     }
 }
+void Prepare();
 void Panel(const CeEditorUiRect &r) {
     const float e = gScale > 1.5f ? 2.f : 1.f;
     Box(r.x, r.y, r.w, r.h, kPanel);
@@ -509,8 +643,22 @@ void Panel(const CeEditorUiRect &r) {
     Box(r.x, r.y + r.h - e, r.w, e, kEdge);
     Box(r.x, r.y, e, r.h, kEdge);
     Box(r.x + r.w - e, r.y, e, r.h, kEdge);
+    Prepare();
 }
-void Prepare();
+void Badge(const CeEditorUiRect &r, const char *text, DWORD border, DWORD colour, float lineHeight) {
+    if (r.w <= 0.f || r.h <= 0.f || !text || !text[0]) return;
+    const float e = gScale > 1.5f ? 1.5f : 1.f;
+    Box(r.x, r.y, r.w, r.h, kBadge);
+    Box(r.x, r.y, r.w, e, border);
+    Box(r.x, r.y + r.h - e, r.w, e, border);
+    Box(r.x, r.y, e, r.h, border);
+    Box(r.x + r.w - e, r.y, e, r.h, border);
+    Prepare();
+    const float tw = FontMeasure(0, CeEditorUiSmall, text) * gScale;
+    WCHAR wide[256];
+    Widen(text, wide, 256, gSmall);
+    gSmall->DrawTextWithShadow(r.x + (r.w - tw) * 0.5f, r.y + (r.h - lineHeight) * 0.5f, colour, wide, 0, 0.f, gScale, gScale);
+}
 // The HUD's own capsule, drawn by the HUD's own routine (the objective panel and the radio messages use it): a dark
 // translucent body between the cyan end caps, which stand half a height beyond each end of the body. Open below 1 is the
 // HUD's own closing: the body goes and the caps turn and fade at the centre. Without the HUD's art, a drawn stand-in.
@@ -605,37 +753,57 @@ bool CeEditorUiRender(const CeEditorUiModel &m, CeEditorUiLayout *out) {
         float x = l.banner.x + l.capsuleText;
         if (l.bannerTitle) {
             x = Text(x, l.banner.y + ty, kBannerTitle, kWhite);
-            x += kPairGap * k;
+            x += kBannerGap * k;
         }
         PromptPair(x, l.banner.y + ty, kResetKey, kResetAction);
-        x += kPairGap * k;
+        x += kBannerGap * k;
         PromptPair(x, l.banner.y + ty, kBannerKey, kBannerAction);
     } else {
         // Markers: thin HUD rings on every object that can be picked; the selected one larger, yellow, with four ticks.
+        // A dark shadow halo behind each mark keeps rings and brackets crisp against bright decks, snow or water glare.
         // A ring that would cross a panel or capsule is not drawn: the furniture never has the level's marks across it.
         for (int i = 0; shown.markers && i < m.markerCount; ++i) {
             const CeEditorUiMarker &marker = m.markers[i];
             if (!CeEditorUiMarkerClear(l, m, marker)) continue;
             if (marker.selected) {
-                const float r = 10.f * k, t = 2.f * k;
+                const float r = 10.f * k, t = 2.f * k, st = t + 2.f * k;
+                Arc(marker.x, marker.y, r, 0.f, 2.f * pi, 24, st, kMarkShadow);
+                for (int q = 0; q < 4; ++q) {
+                    const float a = q * pi * 0.5f;
+                    Line(marker.x + (r + 2.f * k) * cosf(a), marker.y + (r + 2.f * k) * sinf(a), marker.x + (r + 6.f * k) * cosf(a),
+                         marker.y + (r + 6.f * k) * sinf(a), st, kMarkShadow);
+                }
                 Arc(marker.x, marker.y, r, 0.f, 2.f * pi, 24, t, kFocus);
                 for (int q = 0; q < 4; ++q) {
                     const float a = q * pi * 0.5f;
                     Line(marker.x + (r + 2.f * k) * cosf(a), marker.y + (r + 2.f * k) * sinf(a), marker.x + (r + 6.f * k) * cosf(a),
                          marker.y + (r + 6.f * k) * sinf(a), t, kFocus);
                 }
-            } else
-                Arc(marker.x, marker.y, 6.f * k, 0.f, 2.f * pi, 16, k > 1.5f ? 2.f : 1.f, kRing);
+            } else {
+                const float t = k > 1.5f ? 2.f : 1.f;
+                Arc(marker.x, marker.y, 6.f * k, 0.f, 2.f * pi, 16, t + 2.f * k, kMarkShadow);
+                Arc(marker.x, marker.y, 6.f * k, 0.f, 2.f * pi, 16, t, kRing);
+            }
         }
-        // The player start: four corner brackets round a small white pad, cyan as the HUD's caps, with its name under it.
-        // Selected it is yellow, larger and ticked, as a selected object's ring. It is a place of its own: nothing is
-        // drawn between it and any object. Where it would cross the furniture it is not drawn, as a ring is not.
+        // The player start: four corner brackets round a small white pad, cyan as the HUD's caps, with a crisp dark-backed
+        // label badge placed clear of nearby object markers. Selected it is yellow, larger and ticked.
         const CeEditorUiStartShown start = CeEditorUiStartShows(l, m);
         if (start.marker) {
             const bool chosen = m.playerStartSelected;
             const DWORD colour = chosen ? kFocus : kCap;
             const float cx = m.playerStartX, cy = m.playerStartY, half = (chosen ? 11.f : 9.f) * k, arm = 5.f * k,
-                        t = chosen ? 2.f * k : k > 1.5f ? 2.f : 1.5f, pad = 2.f * k;
+                        t = chosen ? 2.f * k : k > 1.5f ? 2.f : 1.5f, st = t + 2.f * k, pad = 2.f * k, spad = pad + 1.f * k;
+            for (int q = 0; q < 4; ++q) {
+                const float sx = q & 1 ? 1.f : -1.f, sy = q & 2 ? 1.f : -1.f;
+                Line(cx + sx * half, cy + sy * half, cx + sx * (half - arm), cy + sy * half, st, kMarkShadow);
+                Line(cx + sx * half, cy + sy * half, cx + sx * half, cy + sy * (half - arm), st, kMarkShadow);
+            }
+            Box(cx - spad, cy - spad, 2.f * spad, 2.f * spad, kMarkShadow);
+            for (int q = 0; chosen && q < 4; ++q) {
+                const float a = q * pi * 0.5f;
+                Line(cx + (half + 2.f * k) * cosf(a), cy + (half + 2.f * k) * sinf(a), cx + (kMarkReach * k) * cosf(a),
+                     cy + (kMarkReach * k) * sinf(a), st, kMarkShadow);
+            }
             for (int q = 0; q < 4; ++q) {
                 const float sx = q & 1 ? 1.f : -1.f, sy = q & 2 ? 1.f : -1.f;
                 Line(cx + sx * half, cy + sy * half, cx + sx * (half - arm), cy + sy * half, t, colour);
@@ -647,11 +815,17 @@ bool CeEditorUiRender(const CeEditorUiModel &m, CeEditorUiLayout *out) {
                 Line(cx + (half + 2.f * k) * cosf(a), cy + (half + 2.f * k) * sinf(a), cx + (kMarkReach * k) * cosf(a),
                      cy + (kMarkReach * k) * sinf(a), t, colour);
             }
-            if (start.label) {
-                Prepare();   // the name is drawn at one times, as text on a capsule is
-                Text(l.start.x, l.start.y, kCeEditorUiStartLabel, chosen ? kFocus : kWhite);
-                Prepare();
-            }
+            if (start.label) Badge(l.start, kCeEditorUiStartLabel, colour, chosen ? kFocus : kWhite, l.lineHeight);
+        }
+        // In gamepad placement mode, show a subtle centre crosshair where A places the point.
+        if (m.gamepad && !shown.dialog && !shown.help &&
+            (m.placingPlayerStart || CeEditorUiActiveTool(m) == CeEditorUiToolReach || CeEditorUiActiveTool(m) == CeEditorUiToolHold)) {
+            const float mx = m.width * 0.5f, my = m.height * 0.5f, arm = 9.f * k, gap = 3.f * k, t = 1.5f * k, st = t + 2.f * k;
+            const DWORD accent = CeEditorUiActiveTool(m) == CeEditorUiToolHold ? kHold : kCap;
+            Line(mx - arm, my, mx - gap, my, st, kMarkShadow); Line(mx + gap, my, mx + arm, my, st, kMarkShadow);
+            Line(mx, my - arm, mx, my - gap, st, kMarkShadow); Line(mx, my + gap, mx, my + arm, st, kMarkShadow);
+            Line(mx - arm, my, mx - gap, my, t, accent); Line(mx + gap, my, mx + arm, my, t, accent);
+            Line(mx, my - arm, mx, my - gap, t, accent); Line(mx, my + gap, mx, my + arm, t, accent);
         }
         Capsule(l.title);
         float x = l.title.x + l.capsuleText;
@@ -678,9 +852,10 @@ bool CeEditorUiRender(const CeEditorUiModel &m, CeEditorUiLayout *out) {
             const int armed = CeEditorUiActiveTool(m);
             if (armed >= 0 && armed < CeEditorUiToolMax && l.tool[armed].w > 0.f)
                 Box(l.tool[armed].x + 3.f * k, l.tool[armed].y + (l.rowPitch - l.lineHeight) * 0.5f, 3.f * k, l.lineHeight, kCap);
+            Prepare();
             for (int i = 0; i < m.toolCount && i < CeEditorUiToolMax; ++i) {
                 // The focus always shows, even on a tool that cannot be used just now (it is refused with a sentence).
-                const DWORD colour = i == m.toolFocus && !shown.dialog ? kFocus : !m.toolEnabled[i] ? kGrey : kWhite;
+                const DWORD colour = i == m.toolFocus && !shown.dialog ? kFocus : !m.toolEnabled[i] ? kDisabled : kWhite;
                 Text(l.tool[i].x + kPanelPadX * k, l.tool[i].y + (l.rowPitch - l.lineHeight) * 0.5f, m.tools[i], colour);
             }
         }
@@ -702,6 +877,7 @@ bool CeEditorUiRender(const CeEditorUiModel &m, CeEditorUiLayout *out) {
             if (l.note.h > 0.f && m.cardNote[0]) {
                 const float edge = k > 1.5f ? 2.f : 1.f;
                 Box(l.note.x, l.note.y - 3.f * k, l.note.w, edge, kEdge);
+                Prepare();
                 if (l.noteBreak) {
                     char one[CeEditorUiTextMax], two[CeEditorUiTextMax];
                     NoteLines(m.cardNote, l.noteBreak, one, two);
@@ -734,10 +910,19 @@ bool CeEditorUiRender(const CeEditorUiModel &m, CeEditorUiLayout *out) {
             const bool visible = stop ? m.secondMarker : m.reachMarker;
             const float cx = stop ? m.secondX : m.reachX, cy = stop ? m.secondY : m.reachY;
             if (!visible || m.playing || !CeEditorUiMarkerClear(l, m, {cx, cy, false})) continue;
-            const float r = 11.f*k, t = 2.f*k;
-            Line(cx,cy-r,cx+r,cy,t,kCap); Line(cx+r,cy,cx,cy+r,t,kCap);
-            Line(cx,cy+r,cx-r,cy,t,kCap); Line(cx-r,cy,cx,cy-r,t,kCap);
-            if (m.routeLength == 2) Centred(cx,cy - l.lineHeight*.5f,stop ? "2" : "1",kWhite);
+            const bool hold = stop ? m.secondHold : m.reachHold;
+            const DWORD accent = hold ? kHold : kCap;
+            const float r = kStopDiamond * k, t = 2.f * k, st = t + 2.f * k;
+            Line(cx, cy - r, cx + r, cy, st, kMarkShadow); Line(cx + r, cy, cx, cy + r, st, kMarkShadow);
+            Line(cx, cy + r, cx - r, cy, st, kMarkShadow); Line(cx - r, cy, cx, cy - r, st, kMarkShadow);
+            Line(cx, cy - r, cx + r, cy, t, accent); Line(cx + r, cy, cx, cy + r, t, accent);
+            Line(cx, cy + r, cx - r, cy, t, accent); Line(cx - r, cy, cx, cy - r, t, accent);
+            if (m.routeLength == 2) {
+                Prepare();
+                Centred(cx, cy - l.lineHeight * 0.5f, stop ? "2" : "1", kWhite);
+            }
+            if (l.stopLabel[stop].w > 0.f)
+                Badge(l.stopLabel[stop], StopBadgeLabel(m, stop), accent, kWhite, l.lineHeight);
         }
         Capsule(l.objective); Text(l.objective.x+l.capsuleText,l.objective.y+ty,m.objective,kWhite);
     }
@@ -766,7 +951,7 @@ bool CeEditorUiRender(const CeEditorUiModel &m, CeEditorUiLayout *out) {
         const float cx = l.dialog.x + l.dialog.w * 0.5f;
         Centred(cx, l.dialog.y + kPanelPadY * k, m.dialogTitle, kWhite, CeEditorUiLarge);
         for (int i = 0; i < m.rowCount && i < CeEditorUiRowMax; ++i)
-            Centred(cx, l.row[i].y + (l.rowPitch - l.lineHeight) * 0.5f, m.rows[i], i == m.rowFocus ? kFocus : m.rowGrey[i] ? kGrey : kWhite);
+            Centred(cx, l.row[i].y + (l.rowPitch - l.lineHeight) * 0.5f, m.rows[i], i == m.rowFocus ? kFocus : m.rowGrey[i] ? kDisabled : kWhite);
         // More rows: a small chevron in the band above or below, pointing the way the list goes on.
         for (int i = 0; i < 2; ++i) {
             const CeEditorUiRect &r = l.scroll[i];
@@ -776,6 +961,7 @@ bool CeEditorUiRender(const CeEditorUiModel &m, CeEditorUiLayout *out) {
             Line(mx - half, my - rise, mx, my + rise, t, kWhite);
             Line(mx, my + rise, mx + half, my - rise, t, kWhite);
         }
+        Prepare();
         Centred(cx, l.dialog.y + l.dialog.h - (kPanelPadY + 2.f) * k - l.lineHeight, m.dialogNote, kGrey);
     } else if (m.dialog == CeEditorUiQuestion) {
         Panel(l.dialog);
@@ -797,7 +983,7 @@ bool CeEditorUiRender(const CeEditorUiModel &m, CeEditorUiLayout *out) {
         }
         for (int i = 0; i < 2; ++i) {
             const CeEditorUiRect &b = l.button[i];
-            if (i == m.buttonFocus) Box(b.x, b.y, b.w, b.h, kGreen);
+            if (i == m.buttonFocus) { Box(b.x, b.y, b.w, b.h, kGreen); Prepare(); }
             Centred(b.x + b.w * 0.5f, b.y + (b.h - l.largeHeight) * 0.5f, kCeEditorUiButtons[i], kWhite, CeEditorUiLarge);
         }
     }

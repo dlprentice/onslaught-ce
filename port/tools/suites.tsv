@@ -50,6 +50,7 @@ port/tools/ce_commander_isolation_run_tests.py	script	-	none	release	-
 port/tools/ce_commander_match_run_tests.py	script	-	none	release	-	
 port/tools/ce_commander_mouse_state_tests.py	script	-	none	release	-	Commander lane; host build with the system compiler
 port/tools/ce_commander_pointer_tests.py	script	-	none	release	-	Commander lane; host build with the system compiler
+port/tools/ce_commander_rts_ui_tests.py	script	-	none	release	-	Commander RTS HUD layout, placards, glyph safety and retail voice gate; host build with the system compiler
 port/tools/ce_commander_tests.py	script	-	deps	release	-	
 port/tools/ce_commander_transition_tests.py	script	-	none	release	-	Commander lane; host build with the system compiler
 port/tools/ce_console_bind_tests.py	script	-	none	release	-	
@@ -108,6 +109,7 @@ port/tools/ce_lore_tests.py	script	-	none	release	-	the Lore pages: the reading 
 port/tools/ce_music_tests.py	script	-	deps	release	-	
 port/tools/ce_music_transition_tests.py	script	-	deps	release	-	
 port/tools/ce_netcode_tests.py	script	-	none	optional	-	
+port/tools/ce_network_ground_tests.py	script	-	none	optional	-	patch 0232: the co-op Building Defence ground blend and light map, compiled at several optimisation levels against an independent reference; no game data
 port/tools/ce_notice_tests.py	script	-	deps	release	-	
 port/tools/ce_palette_tests.py	script	-	deps	release	-	
 port/tools/ce_fixed_clock_tests.py	script	-	deps	release	-	
@@ -182,7 +184,6 @@ port/tools/lockstep_start_deadline_tests.py	script	-	none	optional	-
 port/tools/lockstep_zero_alloc_tests.py	script	-	deps	optional	-	
 port/tools/manual_update_package_tests.py	script	-	none	release	-	
 port/tools/media_profile_tests.py	script	--monocypher-source {data}/src/monocypher-4.0.2/src	deps	release	-	
-port/tools/mission_vm_fence_tests.py	script	-	none	release	-	
 port/tools/mod_user_path_tests.py	script	-	none	release	-	
 port/tools/model_quality_tests.py	script	-	none	release	-	
 port/tools/mods_tests.py	script	-	game	release	5400	
@@ -216,14 +217,9 @@ port/tools/network_compatibility_hooks_tests.py	script	-	deps+game	optional	-
 port/tools/network_compatibility_tests.py	script	-	deps+game	optional	-	
 port/tools/network_connection_entry_tests.py	script	--output-dir {fresh}	none	optional	-	connection menu host driver
 port/tools/network_default_text_tests.py	script	-	deps	release	-	proves the --public build compiles the network out (port/README.md)
-port/tools/network_departure_tests.py	script	-	deps	optional	-	
-port/tools/network_ground_aim_tests.py	script	-	none	optional	-	
 port/tools/network_hostjoin_lockstep_tests.py	script	-	none	optional	-	
 port/tools/network_invitation_tests.py	script	-	deps	optional	-	
 port/tools/network_joincode_whitespace_tests.py	script	-	none	optional	-	
-port/tools/network_lifecycle_native_tests.py	script	-	fixture	optional	-	needs a frozen run folder (--fixture) of a network build that this tree does not hold
-port/tools/network_lifecycle_tests.py	script	-	fixture	optional	-	needs a frozen run folder (--fixture) of a network build that this tree does not hold
-port/tools/network_loaded_admission_tests.py	script	-	deps	optional	-	
 port/tools/network_lobby_addresses_tests.py	script	-	game	optional	-	
 port/tools/network_lobby_notice_tests.py	script	-	deps	optional	-	
 port/tools/network_lobby_preserve_tests.py	script	-	none	optional	-	
@@ -240,7 +236,6 @@ port/tools/network_lockstep_terminal_tests.py	script	-	deps	optional	-
 port/tools/network_lockstep_transport_tests.py	script	-	fixture	optional	-	needs the object folder of a network build (--build-dir: built transport, codec and monocypher objects)
 port/tools/network_lockstep_voice_tests.py	script	-	none	optional	-	
 port/tools/network_native_stat_tests.py	script	-	deps	optional	-	
-port/tools/network_objective_tests.py	script	-	deps	optional	-	
 port/tools/network_optional_dump_tests.py	script	--mirror {mirror}	deps+mirror	optional	-	
 port/tools/network_page_geometry_tests.py	script	-	none	optional	-	
 port/tools/network_page_words_tests.py	script	-	none	optional	-	
@@ -249,20 +244,12 @@ port/tools/network_prerun_flags_tests.py	script	-	deps	optional	-
 port/tools/network_public_off_tests.py	script	-	deps	release	-	proves the --public build compiles the network out (port/README.md)
 port/tools/network_public_source_tests.py	script	-	deps	release	-	proves the --public build compiles the network out (port/README.md)
 port/tools/network_refused_exit_tests.py	script	-	deps	optional	-	
-port/tools/network_round_norm_tests.py	script	-	deps	optional	-	
-port/tools/network_session_caller_tests.py	script	-	none	optional	-	
-port/tools/network_session_delivery_tests.py	script	-	none	optional	-	
-port/tools/network_session_lifecycle_tests.py	script	-	none	optional	-	
-port/tools/network_session_tests.py	script	-	deps	optional	-	
-port/tools/network_session_world_tests.py	script	-	fixture	optional	-	needs a frozen run folder (--fixture) of a network build that this tree does not hold
 port/tools/network_shell_tests.py	script	-	deps	optional	-	
 port/tools/network_signaling_boot_tests.py	script	-	none	optional	-	
 port/tools/network_signaling_handoff_tests.py	script	-	none	optional	-	
 port/tools/network_source_id_tests.py	script	-	deps+game	optional	-	
-port/tools/network_state_order_tests.py	script	-	fixture	optional	-	needs a frozen run folder (--fixture) of a network build that this tree does not hold
 port/tools/network_test_automation_tests.py	script	-	deps	optional	-	
 port/tools/network_tutorial_gates_tests.py	script	-	none	optional	-	
-port/tools/network_world_tests.py	script	-	deps+game	optional	-	
 port/tools/normal_quit_status_tests.py	script	-	none	release	-	quit status lane; host build with the system compiler
 port/tools/package_flavour_tests.py	script	-	none	release	-	
 port/tools/package_ice_optin_tests.py	script	-	deps	optional	-	
@@ -300,8 +287,6 @@ port/tools/signaling_api_contract_tests.py	script	-	fixture	optional	-	needs a c
 port/tools/signaling_pair_bindings_tests.py	script	-	fixture	optional	-	needs a compiled crypto library and its SHA-256 (--crypto-library, --crypto-sha256)
 port/tools/signaling_worker_http_tests.py	script	-	fixture	optional	-	needs the worker inputs folder (--inputs)
 port/tools/signaling_worker_invitation_export_tests.py	script	--output {fresh}	none	optional	-	
-port/tools/state_delivery_tests.py	script	-	deps	optional	-	
-port/tools/state_delta_tests.py	script	-	deps	optional	-	
 port/tools/static_shadow_unbound_tests.py	script	-	none	release	-	
 port/tools/terrain_buffer_lifetime_tests.py	script	-	none	release	-	
 port/tools/terrain_quality_tests.py	script	-	none	release	-	

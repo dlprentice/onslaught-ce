@@ -51,8 +51,8 @@ def main():
         common = out / "port/platform/common"
         adapter = out / "port/game/ce_network_world.cpp"
         text = adapter.read_text()
-        if text.count("PortTypeInfoEqual(typeid(") != 16 or text.count("dynamic_cast<") < 2:    # the exact-type guards of the co-op line (tutorial gates, engine ownership, selected player and weapon)
-            raise RuntimeError("adapter lost an exact-type or dynamic_cast guard")
+        if text.count("dynamic_cast<") < 2:    # the lockstep adapter guards (camera, unit/actor, motion controllers)
+            raise RuntimeError("adapter lost a dynamic_cast guard")
         def run(command, label, expected=0):
             receipt["commands"].append([str(value) for value in command])
             result = subprocess.run(list(map(str, command)), capture_output=True, text=True, timeout=90,
@@ -115,8 +115,8 @@ def main():
                 obj = game_object(target,adapter,target+"-actual-network",mirror=args.game_mirror)
                 nm = build.deps.DATA / ("llvm/bin/llvm-nm" if target=="linux" else "llvm-mingw/bin/llvm-nm")
                 symbols = run([nm,"-u","-C",obj],target+"-actual-network-undefined")
-                if "std::type_info::operator==" in symbols.stdout or "PortTypeInfoEqual" not in symbols.stdout:
-                    raise RuntimeError("actual adapter still requests the unsupported equality symbol or lost bridge calls")
+                if "std::type_info::operator==" in symbols.stdout:
+                    raise RuntimeError("actual adapter still requests the unsupported equality symbol")
         receipt["passed"] = True
     except (OSError, RuntimeError, subprocess.TimeoutExpired) as error:
         receipt["error"] = str(error)

@@ -198,7 +198,7 @@ static void guest_cases() {
     prepare_guest(false, true, CE_NET_FAILED, CE_NET_TIMEOUT);
     direct_update();
     check(Page().state == CE_LOBBY_FAILED &&
-          !strcmp(Page().notice, "The connection to your friend was lost. Check that they are still hosting, then join again.") &&
+          !strcmp(Page().notice, "The connection to your friend was lost. Check that your friend is still hosting, then join again.") &&
           !L.net && !N.exists && N.destroyCalls == 1 && N.closeCalls == 0 && factory_calls == 0,
           "direct ready guest timeout reports lost connection and retires its transport");
     prepare_guest(false, false, CE_NET_CLOSED, CE_NET_PEER_LEFT);

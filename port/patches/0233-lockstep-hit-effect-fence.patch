@@ -1,0 +1,36 @@
+--- a/Unit.cpp
++++ b/Unit.cpp
+@@ -9,6 +9,9 @@
+ #include "component.h"
+ #include "squad.h"
+ #include "eventmanager.h"
++#ifndef CE_NETWORK_OFF
++#include "ce_network_lockstep.h"
++#endif
+ #include "game.h"
+ #include "music.h"
+ #include "mathsconst.h"
+@@ -2158,6 +2161,23 @@
+ 		if (EVENT_MANAGER.GetTime() - mSegments->GetLastDamageTime(part) < 1.0f)
+ 		{
+ 			float	amount = mSegments->GetLastDamageAmount(part);
++#ifndef CE_NETWORK_OFF
++			// Port (lockstep co-op): GetShouldDoHitEffect runs during rendering (CMeshRenderer), so calling Unknown107
++			// here schedules UNIT_EVENT_4005 into EVENT_MANAGER only on a peer whose camera sees the damaged building.
++			// Compute the flash level directly from the segment's last damage without mutating simulation state.
++			if (CE_LockstepSharing())
++			{
++				SINT	hit = (SINT)(amount * 100.0f);
++				if (hit > 100)
++					hit = 100;
++				SINT	level = hit - (SINT)((EVENT_MANAGER.GetTime() - mSegments->GetLastDamageTime(part)) * 20.0f) * 10;
++				if (level < 0)
++					return 0;
++				if (level > 100)
++					return 100;
++				return level;
++			}
++#endif
+ 			Unknown107(amount);
+ 			mUnknown21C = 10;
+ 			SINT	level = mUnknown218 - (SINT)((EVENT_MANAGER.GetTime() - mSegments->GetLastDamageTime(part)) * 20.0f) * mUnknown21C;

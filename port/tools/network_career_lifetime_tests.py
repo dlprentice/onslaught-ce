@@ -21,7 +21,7 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[2]
 GUARD = ROOT / "port/patches/0185-network-career-write-fence.patch"
 BOOT = ROOT / "port/game/ce_network_boot.cpp"
-SESSION = ROOT / "port/game/ce_network_session.cpp"
+SESSION = ROOT / "port/game/ce_network_lockstep.cpp"
 
 
 def require(condition, message):
@@ -116,38 +116,29 @@ def extract_boot(source, getter):
 
 
 def extract_shutdown(source, lockstep_getter):
-    shutdown, body = function_body(source, r"[A-Za-z_]\w*shutdown\w*")
+    shutdown, body = function_body(source, r"CE_SessionAfterWorldShutdown")
     clean = without_comments_and_strings(body)
     require("#" not in clean and "::" not in clean, "shutdown shape changed")
-    pairs = re.findall(r"\b([A-Za-z_]\w*)\s*\.\s*([A-Za-z_]\w*)", clean)
-    require(pairs and len({base for base, _ in pairs}) == 1, "shutdown state shape changed")
-    state = pairs[0][0]
-    fields = sorted({field for _, field in pairs})
-    require(not re.search(r"\b" + re.escape(state) + r"\s*\.\s*\w+\s*(?:->|\.|\[)", clean),
-            "shutdown state needs a richer fake")
-    reset = re.findall(r"\b" + re.escape(state) + r"\s*=\s*([A-Za-z_]\w*)\s*\(\s*\)", clean)
-    require(len(reset) == 1, "shutdown state reset shape changed")
     names = set(re.findall(r"\b([A-Za-z_]\w*)\s*\(", clean))
     names -= {"if", "while", "for", "switch", "return", "sizeof"}
     require(lockstep_getter in names, "shutdown no longer reads lockstep request")
     endings = [n for n in names if "lockstep" in n.lower() and
                any(word in n.lower() for word in ("end", "shutdown", "stop", "close", "reset", "destroy", "cleanup", "cancel", "abort"))]
     require(len(endings) == 1, "lockstep teardown call changed")
-    return shutdown, body, state, fields, names, endings[0], reset[0]
+    return shutdown, body, names, endings[0]
 
 
 def make_fixture(broken_guard=False, broken_lifetime=False):
     names, blocks, pointer, reset_value = extract_guards(GUARD.read_text(encoding="utf-8"))
     boot, lockstep = names
     variable, getter_body, store = extract_boot(BOOT.read_text(encoding="utf-8"), boot)
-    _shutdown, shutdown_body, state, fields, calls, end_call, reset_call = extract_shutdown(
+    _shutdown, shutdown_body, calls, end_call = extract_shutdown(
         SESSION.read_text(encoding="utf-8"), lockstep)
     if broken_guard:
         blocks = [[line.replace("||", "&&", 1) if i == 0 else line
                    for i, line in enumerate(block)] for block in blocks]
-    field_decls = "\n".join("    int " + name + " = 1;" for name in fields)
-    stubs = ["static FakeSession " + reset_call + "(void) { return FakeSession{}; }"]
-    for name in sorted(calls - {lockstep, reset_call}):
+    stubs = []
+    for name in sorted(calls - {lockstep}):
         action = "++fake_calls;"
         if name == end_call:
             action += " ++fake_end_calls; fake_lockstep = 0;"
@@ -163,10 +154,6 @@ static int fake_writes[3] = {0, 0, 0};
 static int __BOOT_GETTER__(void) { __BOOT_BODY__ }
 static int __LOCKSTEP_GETTER__(void) { return fake_lockstep; }
 static void fake_boot_start(void) { __BOOT_STORE__ }
-struct FakeSession {
-__FIELDS__
-};
-static FakeSession __STATE__;
 __STUBS__
 static void actual_shutdown_body(void) { __SHUTDOWN_BODY__ }
 static int fake_create(int *__POINTER__) {
@@ -215,8 +202,8 @@ int main(int argc, char **argv) {
 }
 '''.replace("__BOOT_VARIABLE__", variable).replace("__BOOT_GETTER__", boot).replace(
         "__BOOT_BODY__", getter_body).replace("__LOCKSTEP_GETTER__", lockstep).replace(
-        "__BOOT_STORE__", store).replace("__FIELDS__", field_decls).replace("__STATE__", state).replace(
-        "__STUBS__", "\n".join(stubs)).replace("__SHUTDOWN_BODY__", shutdown_body).replace(
+        "__BOOT_STORE__", store).replace("__STUBS__", "\n".join(stubs)).replace(
+        "__SHUTDOWN_BODY__", shutdown_body).replace(
         "__POINTER__", pointer).replace("__CREATE_GUARD__", "\n".join(blocks[0])).replace(
         "__WRITE_GUARD__", "\n".join(blocks[1])).replace("__DELETE_GUARD__", "\n".join(blocks[2])).replace(
         "__RESET_VALUE__", reset_value)

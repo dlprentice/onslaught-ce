@@ -7,7 +7,7 @@ compatibility, test a network, or prove full-state equality.
 """
 import hashlib,json,os,shutil,subprocess,tempfile
 from pathlib import Path
-from network_world_tests import actual_body
+from network_source_extract import actual_body
 ROOT=Path(__file__).resolve().parents[2]
 parent=ROOT/'local-data/port/network-lockstep-gate-hash-tests';parent.mkdir(parents=True,exist_ok=True)
 out=Path(tempfile.mkdtemp(prefix='run-',dir=parent))

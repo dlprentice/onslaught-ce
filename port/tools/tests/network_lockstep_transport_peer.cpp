@@ -27,6 +27,8 @@ void PortCrtRandState(unsigned *calls,unsigned *hold){*calls=0;*hold=1;}
 void PortCrtRandSet(unsigned,unsigned){}
 int CE_CompatibilityLockstepDigest(uint32_t,uint8_t out[32]){std::memset(out,1,32);return 1;}
 int CE_BootLockstep(void){return fixture_shipped?1:0;}
+int CE_BootRequested(void){return fixture_shipped?1:0;}
+const char *CE_NetAutomationRefusal(void){return nullptr;}	// the automation owners are idle in these fixtures
 int CE_BootPrepared(CE_CompatibilityResult *,char *,size_t){return 0;}	// the admission is the lobby's: these fixtures drive the controller from the test-automation variables
 int CE_CompatibilityAdmissionLive(char *,size_t){return 0;}	// this transport fixture has no genuine admission
 void CE_WorldLockstepSample(uint32_t,CE_WorldInput *out){*out=CE_WorldInput{};}
@@ -44,6 +46,7 @@ void CE_SessionGameIdle(){}
 int CE_SessionGameQuitCode(){return quit_code;}
 void CE_SessionGameSetQuit(int value){quit_code=value;}
 void CE_SessionGameRebaseRenderClock(){}
+int CE_SessionGameWaitFrame(int){return 0;}
 
 int __real_CE_NetSend(CE_NetSession *,uint32_t,uint32_t,const uint8_t *,uint32_t);
 void __real_CE_NetGetStatus(const CE_NetSession *,CE_NetStatus *);

@@ -6,7 +6,7 @@
 enum {
     DIK_ESCAPE=1, DIK_RETURN, DIK_X, DIK_S, DIK_UP, DIK_DOWN, DIK_LCONTROL, DIK_RCONTROL,
     DIK_O, DIK_Z, DIK_Y, DIK_TAB, DIK_LSHIFT, DIK_RSHIFT, DIK_C, DIK_HOME, DIK_PRIOR,
-    DIK_NEXT, DIK_F5, DIK_F6, DIK_W, DIK_F1, DIK_LEFT, DIK_RIGHT, DIK_T, DIK_R, DIK_H, DIK_DELETE, KEY_EVENT_UP=100, KEY_EVENT_DOWN
+    DIK_NEXT, DIK_F5, DIK_F6, DIK_W, DIK_F1, DIK_LEFT, DIK_RIGHT, DIK_T, DIK_R, DIK_H, DIK_P, DIK_DELETE, KEY_EVENT_UP=100, KEY_EVENT_DOWN
 };
 static std::string savedRevision;
 static unsigned saves, reads;
@@ -702,6 +702,55 @@ int main() {
           "the map start's refusal names its reason and keeps the draft");
     PortCeEditorLevelEnd(); PortCeEditorTakeReturn(); fixturePrimaryStart=false;
     fixtureSupportExists=true; fixtureSupportMesh=false;
+
+    {   // P shortcut, Delete refusal/restore cues, Esc cancel cues, and reload-window F5/F6 consumption.
+        ResetFixture(); fixturePrimaryStart=true; fixtureSupportExists=true; fixtureSupportMesh=true; fixtureSupportZ=0;
+        Check(BeginEditor() && Reload(), "shortcut regression enters authoring with editable player start");
+        PortCeEditorFrame();
+        auto press=[&](unsigned k){const unsigned before=cues; PortCeEditorKey(k,false); EditorTrap(WORD(k),KEY_EVENT_UP); return cues>before;};
+        Check(press(DIK_R) && gEditorChoosingReach, "R arms Reach Point with a cue");
+        Check(press(DIK_P) && gEditorChoosingPlayerStart && !gEditorChoosingReach && gEditorState.PlayerStartSelected(),
+              "P arms Player Start, disarms Reach Point, selects start and plays a cue");
+        Check(press(DIK_ESCAPE) && !gEditorChoosingPlayerStart && !gEditorNote[0],
+              "Esc cancels Player Start placement with a cue");
+        Check(press(DIK_DELETE) && !std::strcmp(gEditorNote, "Player Start is already at its original place."),
+              "Delete on an unedited Player Start refuses with a cue and clear notice");
+        Check(gEditorState.SetPlayerStart({22,30,-1}) && gEditorState.PlayerStartEdited(), "edit Player Start before reset");
+        // Modal dialogs and F1 help must block Delete from mutating the selected Player Start behind them.
+        gEditorDialog = DialogFiles;
+        (void)PortCeEditorKey(DIK_DELETE, false); EditorTrap(WORD(DIK_DELETE), KEY_EVENT_UP);
+        Check(gEditorState.PlayerStartEdited(), "Delete behind Open Project dialog never resets Player Start");
+        gEditorDialog = DialogNone; gEditorHelp = true;
+        (void)PortCeEditorKey(DIK_DELETE, false); EditorTrap(WORD(DIK_DELETE), KEY_EVENT_UP);
+        Check(gEditorState.PlayerStartEdited(), "Delete behind F1 Keys never resets Player Start");
+        gEditorHelp = false;
+        // In Reach Point move mode while Player Start is selected, Delete removes the stop rather than resetting Player Start.
+        const CeEditorPoint stopPt{45, 70, 0};
+        Check(gEditorState.SetReachAt(0, &stopPt) && gEditorState.ReachCount() == 1, "add Stop 1 while Player Start is edited");
+        gEditorState.Select(CeEditorState::PlayerStartSelection);
+        gEditorChoosingReach = true; gEditorPlaceIndex = 0;
+        Check(press(DIK_DELETE) && !gEditorChoosingReach && gEditorState.ReachCount() == 0 && gEditorState.PlayerStartEdited(),
+              "Delete during Reach Point move removes the stop without resetting selected Player Start");
+        Check(press(DIK_DELETE) && !gEditorState.PlayerStartEdited() &&
+              !std::strcmp(gEditorNote, "Original Player Start restored. Undo restores your edit."),
+              "Delete on an edited Player Start restores original with cue and clear notice");
+        Check(press(DIK_R) && gEditorChoosingReach && press(DIK_ESCAPE) && !gEditorChoosingReach,
+              "Esc cancels Reach Point placement with a cue");
+        gEditorPadActive = true;
+        Check(PortCeEditorKey(DIK_F5,false) && gEditorPhase==LoadPlaytest && !gEditorPadActive,
+              "F5 enters LoadPlaytest transition and clears gamepad mode");
+        Check(PortCeEditorKey(DIK_F5,false) && PortCeEditorKey(DIK_F6,false) && !PortCeEditorKey(DIK_W,false),
+              "F5 and F6 are consumed during LoadPlaytest reload while ordinary keys are not");
+        gEditorPadActive = true;
+        PortCeEditorLevelEnd(); PortCeEditorTakeReturn();
+        Check(!gEditorPadActive, "PortCeEditorCancel clears gamepad mode on session exit");
+        fixturePrimaryStart=false; fixtureSupportMesh=false;
+        ResetFixture(); StartEditor();
+        Check(press(DIK_P) && !gEditorChoosingPlayerStart &&
+              !std::strcmp(gEditorNote, "This map has no editable Player Start."),
+              "P on a map without editable Player Start refuses cleanly with a cue");
+        PortCeEditorLevelEnd(); PortCeEditorTakeReturn();
+    }
 
     ResetFixture();GAME.SetCurrentCamera(0,nullptr,true);std::free(gEditorCareer);gEditorCareer=nullptr;
     std::printf("native editor play test: %u checks, %u failures\n",checks,failures);

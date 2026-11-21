@@ -19,7 +19,7 @@ import tempfile
 
 import deps
 from network_compatibility_tests import FILES
-from network_world_tests import actual_body
+from network_source_extract import actual_body
 
 
 EXPECTED_PASSES = {
@@ -53,6 +53,18 @@ EXPECTED_PASSES = {
     ),
     "automation": (
         "non-admitted automation permits normal tick completion after content loss",
+    ),
+    "refused-after-load": (
+        "admitted co-op refuses configured automation after the load, sending nothing",
+        "a refused co-op start returns to the front end with its reason",
+    ),
+    "refused-before-start": (
+        "actual loaded boundary accepts idle automation",
+        "admitted co-op refuses automation before the start, sending nothing",
+        "a refused co-op start returns to the front end with its reason",
+    ),
+    "exempt-automation-route": (
+        "the test-only lockstep route has no admission to ask",
     ),
     "network-disabled": (
         "actual network-disabled reader retains ordinary failed-open behavior",
@@ -164,7 +176,7 @@ def main():
                 env = {key: value for key, value in os.environ.items() if not key.startswith(("BEA_", "ADMISSION_", "COMPAT_TEST_")) and
                        key not in ("DISPLAY", "WAYLAND_DISPLAY", "DBUS_SESSION_BUS_ADDRESS")}
                 env.update(HOME=str(root), BEA_GAME_DIR=str(game), BEA_USER_DIR=str(user))
-                role = "BEA_LOCKSTEP_" if mode == "automation" else "BEA_NET_"
+                role = "BEA_LOCKSTEP_" if mode in ("automation", "exempt-automation-route") else "BEA_NET_"
                 env.update({role + "HOST": "127.0.0.1:27600", role + "SECRET": "11" * 32})
                 proc = subprocess.run([str(binary), mode], env=env, cwd=root, capture_output=True, text=True, timeout=15)
                 label = binary.name + "-" + mode
@@ -198,6 +210,9 @@ def main():
             "retired-cancelled",
             "retired-failed",
             "retired-reconfigure",
+            "refused-after-load",
+            "refused-before-start",
+            "exempt-automation-route",
         ):
             scenario(binary, mode)
         offline = out / "network-disabled"
@@ -233,7 +248,30 @@ def main():
             '#include "../../game/ce_network_lockstep.cpp"', '#include "' + str(changed) + '"'))
         scenario(compile_fixture("recheck-retired-admission", terminal_source=terminal_mutant),
                  "retired-finished", "retired terminal admission does not query its destroyed context")
-        receipt["mutations"] = ["ignore-reader-failure", "ignore-session-failure", "recheck-retired-admission"]
+        # Each new automation question, removed in turn, must let its case through.
+        automation_mutants = [
+            ("no-after-load-automation", "\tif (L.stage != CONNECTING) return 0;\n\tif (!AdmissionCurrent() || !AutomationIdle()) return 0;",
+             "\tif (L.stage != CONNECTING) return 0;\n\tif (!AdmissionCurrent()) return 0;", "refused-after-load",
+             "admitted co-op refuses configured automation after the load, sending nothing"),
+            ("no-start-automation", "\tif (L.stage != LOADED) return 0;\n\tif (!AdmissionCurrent() || !AutomationIdle()) return 0;",
+             "\tif (L.stage != LOADED) return 0;\n\tif (!AdmissionCurrent()) return 0;", "refused-before-start",
+             "admitted co-op refuses automation before the start, sending nothing"),
+            ("automation-asked-without-admission", "\tif (!L.admission_required) return true;\n\tconst char *why = CE_NetAutomationRefusal();",
+             "\tconst char *why = CE_NetAutomationRefusal();", "exempt-automation-route",
+             "the test-only lockstep route has no admission to ask"),
+        ]
+        for label, old, new, mode, assertion in automation_mutants:
+            original = controller.read_text()
+            if original.count(old) != 1:
+                raise RuntimeError(label + ": mutation anchor changed")
+            changed = out / ("lockstep-" + label + ".cpp")
+            changed.write_text(original.replace(old, new, 1))
+            terminal_mutant = out / ("terminal-" + label + ".cpp")
+            terminal_mutant.write_text(terminal.read_text().replace(
+                '#include "../../game/ce_network_lockstep.cpp"', '#include "' + str(changed) + '"', 1))
+            scenario(compile_fixture(label, terminal_source=terminal_mutant), mode, assertion)
+        receipt["mutations"] = ["ignore-reader-failure", "ignore-session-failure", "recheck-retired-admission",
+                                *[m[0] for m in automation_mutants]]
         receipt["source_sha256"] = {str(path.relative_to(port)): hashlib.sha256(path.read_bytes()).hexdigest()
                                     for path in (controller, compatibility, driver, terminal)}
         print("PASS focused authored-reader/lockstep admission controls")

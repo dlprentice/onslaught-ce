@@ -1,12 +1,11 @@
 --- a/game.cpp
 +++ b/game.cpp
-@@ -1906,6 +1906,10 @@
+@@ -1906,6 +1906,9 @@
  
  void CGame::Update()	// FUNCTION: 0x0046e910
  { PORT_UPDATE_HOOK();
 +#ifndef CE_NETWORK_OFF
 +	if (!CE_SessionBeforeUpdate()) return;
-+	if (CE_WorldReplica()) { CE_WorldPollLocalInput(); return; }
 +#endif
  /*#if TARGET == PS2
  #ifndef _DEBUG

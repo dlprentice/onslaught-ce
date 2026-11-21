@@ -24,6 +24,10 @@ extern "C" CE_NetSession *CE_NetCreateLobby(const CE_NetConfig *config) {
 extern "C" const char *CE_NetGameProblem(const CE_NetSession *) {
     return relay_problem;
 }
+// The controller observes its ICE route (port/network/ice_route_status.h); these cases script a direct route that is never
+// reported interrupted. The relay-loss role is controlled by the terminal fixture's CE_MISSION_RELAY_FIXTURE cases.
+extern "C" int CE_NetIceUsesRelay(const CE_NetSession *) { return 0; }
+extern "C" int CE_NetIceRouteInterrupted(const CE_NetSession *) { return 0; }
 
 static void running(bool host) {
     init(host);

@@ -12,7 +12,6 @@
 extern "C" int CE_DisplayModeUseSavedSize(){return 0;}
 int PortWideStartSizeOnDesktop(unsigned,unsigned,int,unsigned,unsigned,unsigned *,unsigned *){return 0;}
 extern "C" int CE_LockstepRequested(void){return 0;}
-extern "C" int CE_LockstepActive(void){return 0;}
 
 namespace {
 struct MSG { HWND hwnd; UINT message; WPARAM wParam; LPARAM lParam; };
@@ -374,7 +373,7 @@ int main(int argc,char **argv)
         }
         else if(network)
         {
-            s.requested=true;s.stage=RUNNING;
+            lockstepActive=true;
             cooperativeLevel=S_OK;
             if(name=="net-wmquit")
             {
@@ -397,8 +396,8 @@ int main(int argc,char **argv)
                 }
                 else
                 {
-                    serviceAdmission=false;
-                    check(step()==FALSE&&serviceFailures==1&&serviceObservations.back().result==CE_SESSION_EXIT,
+                    serviceQuit=QT_USER_QUIT_TO_FRONTEND;
+                    check(step()==FALSE&&serviceObservations.back().result==CE_SESSION_EXIT,
                           "the session's end reaches the caller");
                 }
                 bool made=!app.mD3DActive;
@@ -407,64 +406,40 @@ int main(int argc,char **argv)
             }
             else if(name=="net-inactive")
             {
-                app.m_bActive=FALSE;serviceWindowReasons=CE_SESSION_MINIMIZED;
+                app.m_bActive=FALSE;
                 for(unsigned n=0;n<100;++n)
-                {serviceNow+=10;check(step()==TRUE,"inactive active session keeps servicing");}
+                    check(step()==TRUE,"inactive active session keeps servicing");
                 check(getReads==0&&peekReads==100&&cooperativeQueries==0,"network inactivity never blocks or touches device");
-                check(serviceObservations.size()==100&&servicePolls==100&&s.native_unready,
+                check(serviceObservations.size()==100&&serviceObservations.back().ready==0,
                       "actual service observes every inactive wait");
                 serviceQuit=QT_USER_QUIT_TO_FRONTEND;
-                check(step()==FALSE&&serviceObservations.size()==101,"genuine session quit reaches inactive outer caller");
+                check(step()==FALSE&&serviceObservations.size()==101&&serviceObservations.back().result==CE_SESSION_EXIT,
+                      "genuine session quit reaches inactive outer caller");
             }
-            else if(name=="net-shared-wait")
-            {
-                s.host=true;s.shared_wait=true;s.wait_phase=WAIT_HELD;
-                check(step()==TRUE&&serviceObservations.size()==1&&serviceObservations.back().result==CE_SESSION_WAIT,
-                      "zero clock delta cannot bypass actual shared wait");
-                check(servicePolls==1&&serviceAvailability==1&&serviceWaits==1,"shared wait still performs bounded service");
-                s.shared_wait=false;
-                check(step()==FALSE&&serviceObservations.size()==2,"released shared wait permits healthy game work");
-            }
-            else if(name=="net-admission-error")
-            {
-                serviceAdmission=false;
-                check(step()==FALSE&&serviceQuit==QT_USER_QUIT_TO_FRONTEND&&serviceFailures==1,
-                      "actual service failure exits even on zero clock delta");
-            }
-            else if(name=="net-recovery"||name=="net-close"||name=="net-device-sticky")
+            else if(name=="net-recovery"||name=="net-close")
             {
                 cooperativeLevel=D3DERR_DEVICENOTRESET;
                 unsigned losses=name=="net-recovery"?8:1;
                 attempts.assign(losses,D3DERR_DEVICELOST);attempts.push_back(S_OK);
                 check(step()==TRUE&&app.DeviceRecoveryPending()&&!app.m_bReady,"network reset starts deferred recovery");
                 check(serviceObservations.size()==1&&serviceObservations.back().ready==0&&
-                      serviceObservations.back().device==2&&s.device_unready,"first unavailable observation reaches service");
+                      serviceObservations.back().device==2&&serviceObservations.back().result==CE_SESSION_WAIT,
+                      "first unavailable observation reaches service");
                 if(name=="net-close")
                 {
                     Queue(app,WM_CLOSE);
-                    check(step()==FALSE&&quitCount==1&&serviceObservations.size()==2,"close reaches actual session quit service");
+                    check(step()==FALSE&&quitCount==1&&serviceObservations.size()==2&&
+                          serviceObservations.back().result==CE_SESSION_EXIT,"close reaches actual session quit service");
                     check(resetCount==1,"close does not attempt another reset");
                 }
                 else
                 {
-                    if(name=="net-device-sticky")
-                    {
-                        app.m_bActive=FALSE;serviceWindowReasons=CE_SESSION_MINIMIZED;
-                        check(step()==TRUE&&serviceObservations.back().device==0&&s.device_unready,
-                              "unknown inactive device cannot clear previously observed loss");
-                        Queue(app,WM_SIZE,SIZE_RESTORED);serviceWindowReasons=0;
-                        check(step()==TRUE&&serviceObservations.back().device==0&&s.device_unready,
-                              "focus restore alone cannot publish device readiness");
-                    }
-                    if(name=="net-recovery")
-                    {
-                        cooperativeLevel=D3DERR_DEVICELOST;
-                        for(unsigned n=0;n<3;++n)check(step()==TRUE,"lost cooperative state keeps servicing network");
-                        check(resetCount==1,"lost cooperative state cannot reset");
-                        cooperativeLevel=D3DERR_DEVICENOTRESET;
-                    }
+                    cooperativeLevel=D3DERR_DEVICELOST;
+                    for(unsigned n=0;n<3;++n)check(step()==TRUE,"lost cooperative state keeps servicing network");
+                    check(resetCount==1,"lost cooperative state cannot reset");
+                    cooperativeLevel=D3DERR_DEVICENOTRESET;
                     for(unsigned n=0;n<losses;++n)check(step()==TRUE,"network pending recovery is one service step");
-                    check(!app.DeviceRecoveryPending()&&app.m_bReady&&!s.device_unready&&s.device_ready_seen,
+                    check(!app.DeviceRecoveryPending()&&app.m_bReady,
                           "successful reset explicitly restores device readiness at same service boundary");
                     check(serviceObservations.back().device==1&&serviceObservations.back().ready==1,
                           "actual success carries known device/host readiness");
@@ -478,17 +453,15 @@ int main(int argc,char **argv)
             {
                 check(step()==FALSE&&serviceObservations.size()==1&&serviceObservations.back().device==1,
                       "healthy active session services even with zero clock delta");
-                s.requested=false;
+                lockstepActive=false;
                 check(step()==FALSE&&serviceObservations.size()==1,"dynamic session retirement restores offline path");
-                s.requested=true;s.stage=OFF;
-                check(step()==FALSE&&serviceObservations.size()==1,"OFF stage is not an active session");
             }
             for(unsigned ms:sleepDurations)check(ms==10,"network suspension uses only ten-millisecond boundary yields");
-            unsigned waiting=0;
-            for(auto observation:serviceObservations)if(observation.result==CE_SESSION_WAIT)++waiting;
-            // A successful reset deliberately cancels its own frame, with one additional bounded yield.
-            unsigned recovered=(name=="net-recovery"||name=="net-device-sticky")?1:0;
-            check(sleepDurations.size()==waiting+recovered,"network wait yields exactly once per canceled service step");
+            unsigned expectedSleeps=0;
+            if(name=="net-inactive")expectedSleeps=100;
+            else if(name=="net-wmquit-released"||name=="net-exit-released"||name=="net-close")expectedSleeps=1;
+            else if(name=="net-recovery")expectedSleeps=1+3+8;
+            check(sleepDurations.size()==expectedSleeps,"network wait yields exactly once per canceled service step");
         }
         else if(name=="initial-cooperative-error")
         {

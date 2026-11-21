@@ -34,6 +34,8 @@
 #include "ce_dodge_binding.h"
 #include "ce_world_view.h"
 #include "ce_cmdproduction.h"
+#include "ce_cmd_hud.h"
+#include "ce_cmd_voice.h"
 
 #include "common.h"
 #include "game.h"
@@ -1141,6 +1143,14 @@ void Order(int verb, float wx, float wy)
 		return;
 	}
 	gOrderNs = Ns();
+	if (StrategicLive())
+	{
+		const CeCmdVoiceCue cue = verb == CE_CMD_ADVANCE ? CE_VOICE_ATTACK :
+		                          verb == CE_CMD_MOVE ? CE_VOICE_MOVE :
+		                          verb == CE_CMD_HOLD ? CE_VOICE_HOLD :
+		                          verb == CE_CMD_FALLBACK ? CE_VOICE_FALLBACK : CE_VOICE_CANCEL;
+		CeCmdVoicePlay(cue, gOrderNs);
+	}
 	static const char *const one[] = {"", "Moving.", "Advancing.", "Holding.", "Falling back.", "Released."};
 	static const char *const several[] = {"", "moving", "advancing", "holding", "falling back", "released"};
 	char text[112];
@@ -1411,39 +1421,363 @@ void StrategicLeft();           // the picture's device objects are freed (below
 
 bool StrategicCanAct();
 
-// The view's furniture, in the layer's units (L.s, one unit a pixel at 640 x 480), anchored to the window's corners as the HUD's groups are: the title
-// panel top left, the squad card and the four order buttons bottom left, the prompt line bottom right. The battlefield is everything else: a mark is
-// drawn and can be clicked wherever no panel covers it. Drawing and the pointer share these.
+// The view's furniture, in the layer's units (L.s, one unit a pixel at 640 x 480): compact top title capsule,
+// cohesive bottom Forseti RTS Command Bar (Unit/Squad/Structure placards + right-docked C&C Command Card),
+// and compact top-right help hint. Drawing and the pointer share gHudLayout.
 const float kCardW = 440.f, kCardH = 46.f, kRowH = 20.f;
 const float kButtonW[4] = {60.f, 82.f, 60.f, 98.f}, kButtonGap = 18.f;
+constexpr int kFactoryFocus = 0x3fffffff;
+constexpr int kStructureFocus = 0x3ffffffd;
+CeCmdPlacard gHudPlacards[kCeHudMaxPlacards];
+int gHudPlacardCount = 0;
+int gHudPage = 0;
+CeCmdHudLayout gHudLayout = {};
+CeCmdCardModel gHudCard = {};
+CeCmdClickTracker gHudClick = {};
+std::uint64_t gHudBtnFlashNs[kCeHudCardButtons] = {};
+int gHudFollowSquad = -1;
+int gStructFocusThing = -1;
+
+void RtsHudBox(float x, float y, float w, float h, uint32_t c) { Box(x, y, w, h, c); }
+void RtsHudOutline(float x, float y, float w, float h, float t, uint32_t c) { Outline(x, y, w, h, t, c); }
+void RtsHudText(float x, float y, uint32_t c, const char* s, float maxW, bool centred, float sc) {
+    Text(x, y, c, s, maxW, centred, sc);
+}
+float RtsHudTextWidth(const char* s, float sc) { return TextWidth(s, sc); }
+float RtsHudLineHeight(float sc) { return L.s > 0.f ? (LineHeight() / L.s) * sc : CeCmdViewTextHeight() * sc; }
+bool UnitWholeSquad(int ordinal, const UnitControl::Request* request = NULL);
+
+int SquadGroupTag(int ordinal) {
+    for (int k = 1; k <= 9; ++k) if (CeSelHas(gGroups.group[k], ordinal)) return k;
+    if (CeSelHas(gGroups.group[0], ordinal)) return 0;
+    return -1;
+}
+
+bool CanTakeSelectedSquadUnit(CeCommandLifetimeKey* outKey) {
+    if (gSel.n != 1 || gSelected < 0) return false;
+    for (int i = 0; i < gUnitNativeCount; ++i) {
+        if (gUnitNative[i].ordinal != gSelected || !gUnitNative[i].friendly) continue;
+        struct TakeCheck { const char* reason; } chk = {};
+        if (CeCmdUnitVisit(gUnitNative[i].key, [](CUnit* unit, int number, void* user) -> bool {
+            TakeCheck* c = static_cast<TakeCheck*>(user);
+            return CePlayUnitCanTakeSelection(CePlayUnitSelectionWorld(), unit, number, &c->reason);
+        }, &chk)) {
+            if (outKey) *outKey = gUnitNative[i].key;
+            return true;
+        }
+    }
+    return false;
+}
+
+void BuildRtsHudModel(char* summaryOut, unsigned summaryRoom) {
+    gHudPlacardCount = 0;
+    CeCmdStructureView structs[kCeMaxStructures];
+    const int structCount = CeCmdStructureList(structs, kCeMaxStructures);
+
+    // 1. Currently selected individual units (when picked directly in 3D).
+    const int selUnits = gUnitUi.SelectionCount();
+    int addedUnits = 0;
+    for (int i = 0; i < gUnitNativeCount && addedUnits < 4 && gHudPlacardCount < kCeHudMaxPlacards; ++i) {
+        if (!gUnitUi.IsSelected(gUnitNative[i].key)) continue;
+        CeCmdPlacard& pl = gHudPlacards[gHudPlacardCount++];
+        pl = CeCmdPlacard{};
+        pl.kind = CE_PLACARD_UNIT;
+        pl.id = int(gUnitNative[i].key.id);
+        snprintf(pl.name, sizeof(pl.name), "%s", gUnitNative[i].name);
+        CeCmdHudShortName(gUnitNative[i].name, false, false, pl.shortName, sizeof(pl.shortName));
+        pl.count = 1;
+        pl.armourRatio = CeCmdHudArmourRatio(gUnitNative[i].life, gUnitNative[i].maxLife, 1, 1);
+        CeCmdUnitOrderView ov = {};
+        if (CeCmdUnitOrderRead(gUnitNative[i].key, &ov) && ov.owned) {
+            if (ov.order == CE_UNIT_ORDER_MOVE) { snprintf(pl.orderBadge, sizeof(pl.orderBadge), "MOVE"); pl.orderTone = CE_TONE_ACTIVE; }
+            else if (ov.order == CE_UNIT_ORDER_HOLD) { snprintf(pl.orderBadge, sizeof(pl.orderBadge), "HOLD"); pl.orderTone = CE_TONE_HOLD; }
+            else { snprintf(pl.orderBadge, sizeof(pl.orderBadge), "AI"); pl.orderTone = CE_TONE_NEUTRAL; }
+        } else {
+            snprintf(pl.orderBadge, sizeof(pl.orderBadge), "AI");
+            pl.orderTone = CE_TONE_NEUTRAL;
+        }
+        pl.groupTag = -1;
+        pl.selected = true;
+        pl.commandable = gUnitNative[i].commandable;
+        pl.worldX = gUnitNative[i].position[0];
+        pl.worldY = gUnitNative[i].position[1];
+        ++addedUnits;
+    }
+
+    // 2. Friendly production structures/factories (always immediately visible on page 1).
+    for (int i = 0; i < structCount && gHudPlacardCount < kCeHudMaxPlacards; ++i) {
+        const CeCmdStructureView& s = structs[i];
+        CeCmdPlacard& pl = gHudPlacards[gHudPlacardCount++];
+        pl = CeCmdPlacard{};
+        pl.kind = CE_PLACARD_STRUCTURE;
+        pl.id = s.thingNumber;
+        snprintf(pl.name, sizeof(pl.name), "%s", s.name);
+        CeCmdHudShortName(s.name, false, true, pl.shortName, sizeof(pl.shortName));
+        pl.count = 0;
+        pl.armourRatio = CeCmdHudArmourRatio(s.life, s.maxLife, 1, 1);
+        pl.groupTag = -1;
+        pl.selected = s.selected;
+        pl.commandable = true;
+        pl.worldX = s.x;
+        pl.worldY = s.y;
+        if (s.stage == CE_FACTORY_QUEUED) {
+            snprintf(pl.orderBadge, sizeof(pl.orderBadge), "BUILD %d%%", s.percent);
+            pl.orderTone = CE_TONE_ACTIVE;
+            pl.isBuilding = true;
+            pl.buildPercent = s.percent;
+        } else if (s.stage == CE_FACTORY_LAUNCHING) {
+            snprintf(pl.orderBadge, sizeof(pl.orderBadge), "LAUNCH");
+            pl.orderTone = CE_TONE_ACTIVE;
+            pl.isBuilding = true;
+            pl.buildPercent = 100;
+        } else if (s.stage == CE_FACTORY_READY) {
+            snprintf(pl.orderBadge, sizeof(pl.orderBadge), "READY");
+            pl.orderTone = CE_TONE_HOLD;
+        } else if (s.stage == CE_FACTORY_BLOCKED) {
+            snprintf(pl.orderBadge, sizeof(pl.orderBadge), "BLOCKED");
+            pl.orderTone = CE_TONE_ALERT;
+        } else {
+            bool anyReady = false, anySpawning = false, anyEnabled = false;
+            for (int k = 0; k < s.optionCount; ++k) {
+                if (s.options[k].ready) anyReady = true;
+                if (s.options[k].spawning) anySpawning = true;
+                if (s.options[k].enabled) anyEnabled = true;
+            }
+            if (anyReady) { snprintf(pl.orderBadge, sizeof(pl.orderBadge), "READY"); pl.orderTone = CE_TONE_HOLD; }
+            else if (anySpawning) { snprintf(pl.orderBadge, sizeof(pl.orderBadge), "ACTIVE"); pl.orderTone = CE_TONE_ACTIVE; }
+            else if (anyEnabled) { snprintf(pl.orderBadge, sizeof(pl.orderBadge), "EMPTY"); pl.orderTone = CE_TONE_NEUTRAL; }
+            else { snprintf(pl.orderBadge, sizeof(pl.orderBadge), "OFFLINE"); pl.orderTone = CE_TONE_NEUTRAL; }
+        }
+    }
+
+    // 3. Friendly squads (commandable first, then other friendly squads).
+    int friendlySquads = 0;
+    for (int pass = 0; pass < 2; ++pass) {
+        for (int i = 0; i < gCount && gHudPlacardCount < kCeHudMaxPlacards; ++i) {
+            const CeCmdSquad& sq = gSquads[i];
+            if (!sq.friendly || sq.members <= 0) continue;
+            if (pass == 0) ++friendlySquads;
+            if ((pass == 0) != sq.commandable) continue;
+            CeCmdPlacard& pl = gHudPlacards[gHudPlacardCount++];
+            pl = CeCmdPlacard{};
+            pl.kind = CE_PLACARD_SQUAD;
+            pl.id = sq.ordinal;
+            snprintf(pl.name, sizeof(pl.name), "%s", sq.unit[0] ? sq.unit : (sq.vehicles ? "Vehicles" : "Infantry"));
+            CeCmdHudShortName(pl.name, sq.members != 1, false, pl.shortName, sizeof(pl.shortName));
+            pl.count = sq.members;
+            pl.armourRatio = CeCmdHudArmourRatio(sq.life, sq.maxLife, sq.members, sq.peak);
+            pl.groupTag = SquadGroupTag(sq.ordinal);
+            pl.selected = sq.selected;
+            pl.commandable = sq.commandable;
+            pl.worldX = sq.x;
+            pl.worldY = sq.y;
+            if (sq.outcome == CE_OUT_FIGHTING) { snprintf(pl.orderBadge, sizeof(pl.orderBadge), "FIGHT"); pl.orderTone = CE_TONE_ALERT; }
+            else if (sq.outcome == CE_OUT_STUCK) { snprintf(pl.orderBadge, sizeof(pl.orderBadge), "STUCK"); pl.orderTone = CE_TONE_ALERT; }
+            else if (sq.outcome == CE_OUT_ARRIVED) { snprintf(pl.orderBadge, sizeof(pl.orderBadge), "ARRIVED"); pl.orderTone = CE_TONE_HOLD; }
+            else if (sq.verb == CE_CMD_ADVANCE && gHudFollowSquad == sq.ordinal && !sq.arrived) { snprintf(pl.orderBadge, sizeof(pl.orderBadge), "FOLLOW"); pl.orderTone = CE_TONE_ACTIVE; }
+            else if (sq.verb == CE_CMD_ADVANCE) { snprintf(pl.orderBadge, sizeof(pl.orderBadge), "ATTACK"); pl.orderTone = CE_TONE_ACTIVE; }
+            else if (sq.verb == CE_CMD_MOVE) { snprintf(pl.orderBadge, sizeof(pl.orderBadge), "MOVE"); pl.orderTone = CE_TONE_ACTIVE; }
+            else if (sq.verb == CE_CMD_HOLD) { snprintf(pl.orderBadge, sizeof(pl.orderBadge), "HOLD"); pl.orderTone = CE_TONE_HOLD; }
+            else if (sq.verb == CE_CMD_FALLBACK) { snprintf(pl.orderBadge, sizeof(pl.orderBadge), "FALLBACK"); pl.orderTone = CE_TONE_ACTIVE; }
+            else if (!sq.commandable) { snprintf(pl.orderBadge, sizeof(pl.orderBadge), "SCRIPT"); pl.orderTone = CE_TONE_NEUTRAL; }
+            else { snprintf(pl.orderBadge, sizeof(pl.orderBadge), "AI"); pl.orderTone = CE_TONE_NEUTRAL; }
+        }
+    }
+
+    if (summaryOut && summaryRoom > 0) {
+        if (selUnits > 0)
+            snprintf(summaryOut, summaryRoom, "%d unit%s selected", selUnits, selUnits == 1 ? "" : "s");
+        else if (structCount > 0)
+            snprintf(summaryOut, summaryRoom, "%d squad%s  %d factor%s", friendlySquads, friendlySquads == 1 ? "" : "s",
+                     structCount, structCount == 1 ? "y" : "ies");
+        else
+            snprintf(summaryOut, summaryRoom, "%d squad%s", friendlySquads, friendlySquads == 1 ? "" : "s");
+    }
+
+    gHudLayout = CeCmdHudComputeLayout(L.w, L.h, L.s, StrategicUiBottom(), gHudPlacardCount, gHudPage);
+    gHudPage = gHudLayout.pageIndex;
+
+    // ---- Right Dock Command Card Model ----
+    gHudCard = CeCmdCardModel{};
+    CeCmdStructureView selStruct = {};
+    if (CeCmdStructureSelected(&selStruct)) {
+        gHudCard.hasSelection = true;
+        gHudCard.isStructure = true;
+        gHudCard.hasArmour = true;
+        gHudCard.armourRatio = CeCmdHudArmourRatio(selStruct.life, selStruct.maxLife, 1, 1);
+        CeCmdHudShortName(selStruct.name, false, true, gHudCard.title, sizeof(gHudCard.title));
+        char prodShort[20] = "Unit";
+        if (selStruct.queuedOption >= 0 && selStruct.queuedOption < selStruct.optionCount)
+            CeCmdHudShortName(selStruct.options[selStruct.queuedOption].unitName, false, false, prodShort, sizeof(prodShort));
+        else if (selStruct.lastProductName[0])
+            CeCmdHudShortName(selStruct.lastProductName, false, false, prodShort, sizeof(prodShort));
+        if (selStruct.stage == CE_FACTORY_QUEUED) {
+            gHudCard.showProgress = true;
+            gHudCard.progressPercent = selStruct.percent;
+            snprintf(gHudCard.progressLabel, sizeof(gHudCard.progressLabel), "Building %s %d%%", prodShort, selStruct.percent);
+        } else if (selStruct.stage == CE_FACTORY_LAUNCHING) {
+            gHudCard.showProgress = true;
+            gHudCard.progressPercent = 100;
+            snprintf(gHudCard.progressLabel, sizeof(gHudCard.progressLabel), "Launching %s", prodShort);
+        } else if (selStruct.stage == CE_FACTORY_READY) {
+            snprintf(gHudCard.subtitle, sizeof(gHudCard.subtitle), "Ready - %s deployed", prodShort);
+        } else if (selStruct.stage == CE_FACTORY_CANCELLED) {
+            snprintf(gHudCard.subtitle, sizeof(gHudCard.subtitle), "Build order cancelled");
+        } else if (selStruct.stage == CE_FACTORY_BLOCKED) {
+            snprintf(gHudCard.subtitle, sizeof(gHudCard.subtitle), "Blocked or offline");
+        } else {
+            bool anyReady = false, anySpawning = false, anyEnabled = false;
+            int firstRem = -1;
+            for (int k = 0; k < selStruct.optionCount; ++k) {
+                if (selStruct.options[k].ready) {
+                    if (!anyReady) firstRem = selStruct.options[k].remaining;
+                    anyReady = true;
+                }
+                if (selStruct.options[k].spawning) anySpawning = true;
+                if (selStruct.options[k].enabled) anyEnabled = true;
+            }
+            if (anyReady && firstRem > 0)
+                snprintf(gHudCard.subtitle, sizeof(gHudCard.subtitle), "Ready - %d batch%s available", firstRem, firstRem == 1 ? "" : "es");
+            else if (anyReady)
+                snprintf(gHudCard.subtitle, sizeof(gHudCard.subtitle), "Idle - Select build order");
+            else if (anySpawning)
+                snprintf(gHudCard.subtitle, sizeof(gHudCard.subtitle), "Deploying active wave");
+            else if (anyEnabled)
+                snprintf(gHudCard.subtitle, sizeof(gHudCard.subtitle), "Reserve depleted");
+            else
+                snprintf(gHudCard.subtitle, sizeof(gHudCard.subtitle), "Factory offline");
+        }
+        const bool busy = selStruct.stage == CE_FACTORY_QUEUED || selStruct.stage == CE_FACTORY_LAUNCHING ||
+                          (selStruct.isExercise && selStruct.stage == CE_FACTORY_READY);
+        for (int k = 0; k < selStruct.optionCount && k < 4; ++k) {
+            CeCmdCardButton& b = gHudCard.buttons[k];
+            b.action = CeCmdCardAction(CE_CARD_BUILD_0 + k);
+            char unitShort[14];
+            CeCmdHudShortName(selStruct.options[k].unitName, false, false, unitShort, sizeof(unitShort));
+            snprintf(b.label, sizeof(b.label), "Build %s", unitShort);
+            snprintf(b.hotkey, sizeof(b.hotkey), k == 0 ? "U" : "");
+            b.enabled = !busy && selStruct.options[k].ready;
+            b.active = (selStruct.stage == CE_FACTORY_QUEUED || selStruct.stage == CE_FACTORY_LAUNCHING) && selStruct.queuedOption == k;
+        }
+        if (selStruct.isExercise && selStruct.stage == CE_FACTORY_READY) {
+            const int delOrd = CeCmdDeliveredSquad();
+            gHudCard.buttons[4].action = CE_CARD_SELECT_DELIVERED;
+            snprintf(gHudCard.buttons[4].label, sizeof(gHudCard.buttons[4].label), "Select Tank");
+            gHudCard.buttons[4].enabled = delOrd >= 0;
+            gHudCard.buttons[5].action = CE_CARD_TAKE_DELIVERED;
+            snprintf(gHudCard.buttons[5].label, sizeof(gHudCard.buttons[5].label), "Take Ctrl");
+            snprintf(gHudCard.buttons[5].hotkey, sizeof(gHudCard.buttons[5].hotkey), "Ent");
+            gHudCard.buttons[5].enabled = delOrd >= 0 && gSel.n == 1 && gSelected == delOrd && CePlayUnitCanTakeDelivery();
+        } else {
+            gHudCard.buttons[5].action = CE_CARD_CANCEL_BUILD;
+            snprintf(gHudCard.buttons[5].label, sizeof(gHudCard.buttons[5].label), "Cancel");
+            gHudCard.buttons[5].hotkey[0] = 0;
+            gHudCard.buttons[5].enabled = selStruct.stage == CE_FACTORY_QUEUED;
+        }
+        return;
+    }
+
+    // Unit or Squad Command Card
+    const CeCmdSquad* sq = ByOrdinal(gSelected);
+    bool canMove = false, canAttack = false, canHold = false, canFollow = false, canTake = false, canReturn = false;
+    bool armedMove = false, armedAttack = false;
+    if (selUnits > 0) {
+        gHudCard.hasSelection = true;
+        gHudCard.isMulti = selUnits > 1;
+        float lifeSum = 0.f, maxSum = 0.f;
+        const CeCmdUnitSnapshot* firstUnit = NULL;
+        int ownedCount = 0;
+        for (int i = 0; i < gUnitNativeCount; ++i) {
+            if (!gUnitUi.IsSelected(gUnitNative[i].key)) continue;
+            if (!firstUnit) firstUnit = &gUnitNative[i];
+            if (gUnitNative[i].life > 0.f) lifeSum += gUnitNative[i].life;
+            if (gUnitNative[i].maxLife > 0.f) maxSum += gUnitNative[i].maxLife;
+            if (gUnitNative[i].commandable && gUnitNative[i].groundPoint) { canMove = true; canHold = true; canFollow = true; }
+            if (gUnitNative[i].orderOwned) { ++ownedCount; canReturn = true; }
+            if (UnitWholeSquad(gUnitNative[i].ordinal)) {
+                const CeCmdSquad* usq = ByOrdinal(gUnitNative[i].ordinal);
+                if (usq && !usq->deploys) { canMove = true; canAttack = true; canFollow = true; }
+                if (usq) canHold = true;
+                if (usq && usq->verb != CE_CMD_NONE) canReturn = true;
+            }
+        }
+        gHudCard.hasArmour = true;
+        gHudCard.armourRatio = CeCmdHudArmourRatio(lifeSum, maxSum, selUnits, selUnits);
+        if (selUnits == 1 && firstUnit) {
+            CeCmdHudShortName(firstUnit->name, false, false, gHudCard.title, sizeof(gHudCard.title));
+            CeCmdUnitOrderView ov = {};
+            const char* ordStr = "AI";
+            if (CeCmdUnitOrderRead(firstUnit->key, &ov) && ov.owned)
+                ordStr = ov.order == CE_UNIT_ORDER_MOVE ? "Moving" : ov.order == CE_UNIT_ORDER_HOLD ? "Holding" : "AI";
+            snprintf(gHudCard.subtitle, sizeof(gHudCard.subtitle), "Order: %s", ordStr);
+            struct TakeCheck { const char* reason; } chk = {};
+            canTake = CeCmdUnitVisit(firstUnit->key, [](CUnit* unit, int number, void* user) -> bool {
+                TakeCheck* c = static_cast<TakeCheck*>(user);
+                return CePlayUnitCanTakeSelection(CePlayUnitSelectionWorld(), unit, number, &c->reason);
+            }, &chk);
+        } else {
+            snprintf(gHudCard.title, sizeof(gHudCard.title), "%d Units Selected", selUnits);
+            snprintf(gHudCard.subtitle, sizeof(gHudCard.subtitle), ownedCount ? "Order: Active" : "Order: Squad AI");
+        }
+        UnitPanel::Action armedAct = UnitPanel::Action::Move;
+        if (gUnitUi.ArmedAction(&armedAct)) {
+            armedMove = armedAct == UnitPanel::Action::Move;
+            armedAttack = armedAct == UnitPanel::Action::Advance;
+        }
+    } else if (sq) {
+        gHudCard.hasSelection = true;
+        gHudCard.isMulti = gSel.n > 1;
+        gHudCard.hasArmour = true;
+        gHudCard.armourRatio = CeCmdHudArmourRatio(sq->life, sq->maxLife, sq->members, sq->peak);
+        if (gSel.n > 1)
+            snprintf(gHudCard.title, sizeof(gHudCard.title), "%.24s   %d units +%d", sq->unit[0] ? sq->unit : "Squad", sq->members, gSel.n - 1);
+        else
+            snprintf(gHudCard.title, sizeof(gHudCard.title), "%.28s   %d unit%s", sq->unit[0] ? sq->unit : (sq->vehicles ? "Vehicles" : "Infantry"), sq->members, sq->members == 1 ? "" : "s");
+        snprintf(gHudCard.subtitle, sizeof(gHudCard.subtitle), "Order: %s%s", OrderName(*sq), sq->deploys ? "   Hold only" : "");
+        canMove = !sq->deploys;
+        canAttack = !sq->deploys;
+        canHold = true;
+        canFollow = !sq->deploys;
+        canTake = CanTakeSelectedSquadUnit(NULL);
+        canReturn = sq->verb != CE_CMD_NONE;
+        if (!canReturn) {
+            for (int i = 0; i < gSel.n; ++i)
+                if (const CeCmdSquad* ms = ByOrdinal(gSel.ids[i])) if (ms->verb != CE_CMD_NONE) canReturn = true;
+        }
+        armedMove = gArmed && gStrategicClickOrder == CE_CMD_MOVE;
+        armedAttack = gArmed && gStrategicClickOrder == CE_CMD_ADVANCE;
+    } else {
+        snprintf(gHudCard.title, sizeof(gHudCard.title), "No Unit or Squad Picked");
+        snprintf(gHudCard.subtitle, sizeof(gHudCard.subtitle), "Click a unit, squad or placard");
+    }
+
+    static const char* const labels[] = {"Move", "Advance", "Hold", "Fall Back"};
+    (void)labels;
+    gHudCard.buttons[0] = {CE_CARD_MOVE,         "Move",      "RMB", canMove,   armedMove};
+    gHudCard.buttons[1] = {CE_CARD_ATTACK,       "Attack",    "G",   canAttack, armedAttack};
+    gHudCard.buttons[2] = {CE_CARD_HOLD,         "Hold",      "H",   canHold,   false};
+    gHudCard.buttons[3] = {CE_CARD_FOLLOW_BE,    "Follow BE", "Spc", canFollow, false};
+    gHudCard.buttons[4] = {CE_CARD_TAKE_CONTROL, "Take Ctrl", "Ent", canTake,   false};
+    gHudCard.buttons[5] = {CE_CARD_RETURN_AI,    "Return AI", "Del", canReturn, false};
+}
+
 void StrategicTitle(char* out, unsigned room) {
     if (gMatch.match && gMatch.nodes > 0)
         snprintf(out, room, "Commander   Battle Line %d of %d   Bases %d to %d", gMatch.held, gMatch.nodes, gMatch.buildings[0], gMatch.buildings[1]);
     else snprintf(out, room, "Commander");
 }
-// The prompt line for the keyboard and mouse: at most five actions, as many as fit right of the buttons, the most needed first; never narrowed.
+// Compact top-right utility prompt (keeps full bottom bar clear for RTS placards and command card).
 void StrategicPrompt(char* out, unsigned room) {
-    const char* const action[5] = {gUnitUi.SelectionCount() ? "Right Click Move" : "Right Click Advance", "H Hold", "C Focus", "F1 Keys", "Esc Cockpit"};
-    static const int need[5] = {4, 3, 0, 1, 2};		// the order they are given room in: Esc, the key list (which names every other key), Advance, the rest
-    float left = 8.f;
-    if (!gUnitUi.SelectionCount()) for (int i = 0; i < 4; ++i) left += kButtonW[i] + kButtonGap;
-    const float free = L.w - (left + 8.f + 16.f) * L.s;
-    bool in[5] = {false, false, false, false, false};
-    for (int k = 0; k < 5; ++k) {
-        in[need[k]] = true;
-        char trial[160] = "";
-        for (int i = 0; i < 5; ++i) if (in[i]) snprintf(trial + strlen(trial), sizeof trial - strlen(trial), "%s%s", trial[0] ? "   " : "", action[i]);
-        if (TextWidth(trial, L.s) > free) { in[need[k]] = false; break; }
-    }
-    out[0] = 0;
-    for (int i = 0; i < 5; ++i) if (in[i]) snprintf(out + strlen(out), room - strlen(out), "%s%s", out[0] ? "   " : "", action[i]);
+    const char* const action[5] = {"Right Click Move", "H Hold", "C Focus", "F1 Help", "Esc Cockpit"};
+    (void)action;
+    snprintf(out, room, "F1 Help   Esc Cockpit");
 }
-// The squad card's two lines, and its width: as wide as the longer line needs, never narrower than the four buttons under it, nor wider than kCardW.
+// Legacy two-line squad summary kept for callers and tests.
 void StrategicCardLines(char* first, char* second, unsigned room) {
     const CeCmdSquad* squad = ByOrdinal(gSelected);
     if (!squad) {
         snprintf(first, room, "No Unit or Squad Picked");
-        snprintf(second, room, "Click a unit. Ctrl Click picks its squad.");
+        snprintf(second, room, "Click a unit, squad or placard");
         return;
     }
     snprintf(first, room, "%s   %d unit%s", squad->unit[0] ? squad->unit : (squad->vehicles ? "Vehicles" : "Infantry"), squad->members, squad->members == 1 ? "" : "s");
@@ -1451,14 +1785,8 @@ void StrategicCardLines(char* first, char* second, unsigned room) {
     snprintf(second, room, "Order: %s%s", OrderName(*squad), squad->deploys ? "   Hold only" : "");
 }
 float StrategicCardWidth() {
-    char first[160], second[160];
-    StrategicCardLines(first, second, sizeof first);
-    float buttons = 0.f;
-    for (int i = 0; i < 4; ++i) buttons += kButtonW[i] + (i ? kButtonGap : 0.f);
-    const float words = ((std::max)(TextWidth(first, L.s), TextWidth(second, L.s)) / L.s) + 16.f;
-    return (std::min)(kCardW, (std::max)(buttons, words)) * L.s;
+    return gHudLayout.valid ? gHudLayout.barRect.w : kCardW * L.s;
 }
-constexpr int kFactoryFocus = 0x3fffffff;
 int FactoryCardAt(float x, float y) {
     CeFactoryView f;
     if (!CeFactoryRead(f)) return -1;
@@ -1478,9 +1806,10 @@ bool StrategicPanelAt(float x, float y) {
     char text[160];
     StrategicTitle(text, sizeof text);
     if (y < 30.f * u && x < 24.f * u + TextWidth(text, u)) return true;
-    if (!gUnitUi.SelectionCount() && y >= StrategicUiBottom() - (40.f + kCardH) * u && x < 8.f * u + StrategicCardWidth()) return true;
     StrategicPrompt(text, sizeof text);
-    if (y >= StrategicUiBottom() - 34.f * u && x >= L.w - (24.f * u + TextWidth(text, u))) return text[0] != 0;
+    if (y < 30.f * u && x >= L.w - (32.f * u + TextWidth(text, u))) return text[0] != 0;
+    const CeCmdHudLayout lay = CeCmdHudComputeLayout(L.w, L.h, L.s, StrategicUiBottom(), gHudPlacardCount, gHudPage);
+    if (CeCmdHudHitTest(lay, x, y).kind != CE_HUD_HIT_NONE) return true;
     return false;
 }
 bool StrategicWorldArea(float x, float y) {
@@ -1509,15 +1838,23 @@ void StepStrategicFocus(const CeCommanderCameraInput &input, float &centreX, flo
     const CeCmdSquad *squad = ByOrdinal(gFocusTrip.squad);
     CeFactoryView factory;
     const bool focusFactory = gFocusTrip.squad == kFactoryFocus && CeFactoryRead(factory) && factory.selected;
+    CeCmdStructureView focusStructData = {};
+    bool focusStruct = false;
+    if (gFocusTrip.squad == kStructureFocus && gStructFocusThing >= 0) {
+        CeCmdStructureView allStructs[kCeMaxStructures];
+        const int nStructs = CeCmdStructureList(allStructs, kCeMaxStructures);
+        for (int i = 0; i < nStructs; ++i)
+            if (allStructs[i].thingNumber == gStructFocusThing) { focusStructData = allStructs[i]; focusStruct = true; break; }
+    }
     float unitX = 0, unitY = 0;
     const bool focusUnit = gFocusTrip.squad == kUnitFocus && UnitFocusPosition(&unitX, &unitY);
     if (input.pan_horizontal || input.pan_vertical || input.orbit_horizontal || input.orbit_vertical || input.zoom ||
-        (!focusFactory && !focusUnit && (gSelected != gFocusTrip.squad || !squad || !squad->friendly || !squad->members))) {
+        (!focusFactory && !focusUnit && !focusStruct && (gSelected != gFocusTrip.squad || !squad || !squad->friendly || !squad->members))) {
         gFocusTrip.squad = -1;
         return;
     }
-    const float targetX = focusUnit ? unitX : focusFactory ? factory.x : squad->x;
-    const float targetY = focusUnit ? unitY : focusFactory ? factory.y : squad->y;
+    const float targetX = focusUnit ? unitX : focusStruct ? focusStructData.x : focusFactory ? factory.x : squad->x;
+    const float targetY = focusUnit ? unitY : focusStruct ? focusStructData.y : focusFactory ? factory.y : squad->y;
     const float phase = static_cast<float>((std::min)(1.0, SecondsBetween(gFocusTrip.start, Ns()) / 0.32));
     const float ease = phase * phase * (3.f - 2.f * phase);
     float height;
@@ -1654,7 +1991,7 @@ bool UnitRequestHas(const UnitControl::Request* request, const CeCommandLifetime
     return false;
 }
 
-bool UnitWholeSquad(int ordinal, const UnitControl::Request* request = NULL) {
+bool UnitWholeSquad(int ordinal, const UnitControl::Request* request) {
     const CeCmdSquad* squad = ByOrdinal(ordinal);
     if (!gUnitSnapshotComplete || !squad || !squad->commandable || squad->members <= 0) return false;
     int members = 0;
@@ -1681,17 +2018,6 @@ bool UnitTake(CUnit* unit, int number, void* user) {
 
 UnitPanel::TextSize UnitMeasure(void*, const char* text, float scale) {
     return {TextWidth(text, scale), (L.s > 0.f ? LineHeight() / L.s : CeCmdViewTextHeight()) * scale};
-}
-void UnitFill(void*, UnitPanel::Rect rect, uint32_t colour) {
-    if (rect.w > 0.f && rect.h > 0.f) Box(rect.x, rect.y, rect.w, rect.h, colour);
-}
-void UnitLine(void*, float x0, float y0, float x1, float y1, uint32_t colour) {
-    const float t = (std::max)(1.f, floorf(L.s));
-    const float w = std::fabs(x1 - x0), h = std::fabs(y1 - y0);
-    Box((std::min)(x0, x1), (std::min)(y0, y1), w > 0.f ? w + t : t, h > 0.f ? h + t : t, colour);
-}
-void UnitText(void*, float x, float y, const char* text, float scale, uint32_t colour) {
-    Text(x, y, colour, text, 0.f, false, scale);
 }
 
 void RefreshUnitFrame() {
@@ -1758,15 +2084,12 @@ void RefreshUnitFrame() {
     frame.unit_count = gUnitNativeCount;
     gUnitUi.BeginFrame(frame);
     gUnitUi.SetDragThreshold(kBoxSlack * L.s);
+    // The unified bottom Forseti RTS bar owns all panel/card hit-testing; keep the legacy
+    // UnitPanel layout empty so invisible legacy buttons never intercept battlefield drag releases.
     UnitPanel::LayoutInput layout = {};
     layout.scale = L.s;
-    layout.safe = {8.f * L.s, 36.f * L.s, (std::max)(0.f, L.w-16.f*L.s),
-        (std::max)(0.f, StrategicUiBottom()-78.f*L.s)};
+    layout.safe = {0.f, 0.f, 0.f, 0.f};
     layout.measure = UnitMeasure;
-    CeFactoryView factory;
-    if (CeFactoryRead(factory))
-        layout.reservations[layout.reservation_count++] = {8.f*L.s, 56.f*L.s, 196.f*L.s,
-            (!factory.selected ? 24.f : factory.stage == CE_FACTORY_READY ? 122.f : 99.f) * L.s};
     gUnitUi.UpdateLayout(layout);
 }
 
@@ -1987,15 +2310,6 @@ void DrawUnitSelection() {
     }
     UnitPanel::Rect drag = {};
     if (gUnitUi.DragRect(&drag)) Outline(drag.x, drag.y, drag.w, drag.h, (std::max)(1.f,L.s), kPick);
-    UnitPanel::Palette palette = {};
-    palette.background = 0xe8121820; palette.border = kEdge; palette.separator = 0xff44505a;
-    palette.text = kText; palette.text_dim = kQuiet; palette.text_disabled = 0xff75818b;
-    palette.button = 0xff26323d; palette.button_hover = 0xff344a57; palette.button_pressed = 0xff3e5964;
-    palette.button_disabled = 0xff202830; palette.button_border = 0xff657783;
-    palette.accent = kFriend; palette.human = kPilot; palette.structure = 0xffe1c680;
-    palette.muted = kQuiet; palette.warning = kEnemy;
-    const UnitPanel::DrawCallbacks draw = {NULL, UnitFill, UnitLine, UnitText};
-    gUnitUi.Panel().Paint(draw, palette);
 }
 
 int StrategicPick(const CeWorldViewSample& view, float px, float py) {
@@ -2066,16 +2380,275 @@ void StrategicArm(int verb) {
     Note(verb == CE_CMD_ADVANCE ? "Advance: click the ground." : "Move: click the ground.");
 }
 
-// The bottom command panel owns its clicks; no click on a button also reaches
+void RtsHudResetState() {
+    gHudLayout = CeCmdHudLayout{};
+    gHudClick.Reset();
+    gHudFollowSquad = -1;
+    gStructFocusThing = -1;
+    for (int i = 0; i < kCeHudCardButtons; ++i) gHudBtnFlashNs[i] = 0;
+}
+
+bool RtsHudFindBattleEngineRally(float* outX, float* outY) {
+    CBattleEngine* engine = GAME.GetPlayer(0) ? GAME.GetPlayer(0)->GetBattleEngine() : NULL;
+    if (!engine) return false;
+    const float ex = engine->GetPos().X, ey = engine->GetPos().Y;
+    if (CeCmdMarchLand(ex, ey)) { *outX = ex; *outY = ey; return true; }
+    static const float kDirs[8][2] = {{1,0},{-1,0},{0,1},{0,-1},{0.707f,0.707f},{-0.707f,0.707f},{0.707f,-0.707f},{-0.707f,-0.707f}};
+    for (float rad = 12.f; rad <= 36.f; rad += 12.f) {
+        for (int d = 0; d < 8; ++d) {
+            const float cx = ex + kDirs[d][0] * rad, cy = ey + kDirs[d][1] * rad;
+            if (CeCmdMarchLand(cx, cy)) { *outX = cx; *outY = cy; return true; }
+        }
+    }
+    return false;
+}
+
+void RtsHudOrderFollowBe() {
+    float rx = 0.f, ry = 0.f;
+    if (!RtsHudFindBattleEngineRally(&rx, &ry)) { Note("Fly near land so ground units can follow."); return; }
+    if (gUnitUi.SelectionCount()) {
+        if (gUnitUi.ArmAction(UnitPanel::Action::Move) == UnitControl::ArmStatus::Armed) {
+            float rz = 0.f;
+            if (!StrategicHeight(rx, ry, &rz)) rz = 0.f;
+            UnitControl::Request req = {};
+            if (gUnitUi.SubmitTarget(gUnitUi.TargetToken(), {rx, ry, rz}, &req) == UnitControl::TargetStatus::Submitted) {
+                DispatchUnitRequest(req);
+                CeCmdVoicePlay(CE_VOICE_FOLLOW, Ns());
+                return;
+            }
+        }
+        Note("Follow is unavailable for this selection.");
+        return;
+    }
+    if (!ByOrdinal(gSelected)) { Note("Pick a squad first."); return; }
+    gHudFollowSquad = gSelected;
+    Order(CE_CMD_ADVANCE, rx, ry);
+    CeCmdVoicePlay(CE_VOICE_FOLLOW, Ns());
+}
+
+void RtsHudTakeControl() {
+    if (gUnitUi.SelectionCount() == 1) {
+        UnitAction(UnitPanel::Action::TakeControl);
+        return;
+    }
+    CeCommandLifetimeKey key = {};
+    if (CanTakeSelectedSquadUnit(&key)) {
+        UnitTakeContext take = {};
+        if (!CeCmdUnitVisit(key, UnitCanTake, &take)) {
+            Note(take.reason ? take.reason : "Unit control is unavailable.");
+            return;
+        }
+        Close();
+        if (!PortCeCmdMapOpen() && CeCmdUnitVisit(key, UnitTake, &take)) return;
+        Note(take.reason ? take.reason : "Unit control is unavailable.");
+        return;
+    }
+    Note("Select an eligible tank or soldier to take control.");
+}
+
+void RtsHudReturnAi() {
+    gHudFollowSquad = -1;
+    if (gUnitUi.SelectionCount()) {
+        UnitAction(UnitPanel::Action::ReturnToAI);
+        CeCmdVoicePlay(CE_VOICE_CANCEL, Ns());
+        return;
+    }
+    if (!ByOrdinal(gSelected)) { Note("Pick a squad first."); return; }
+    Order(CE_CMD_RELEASE, 0.f, 0.f);
+}
+
+void RtsHudExecuteCardAction(int btnIdx) {
+    if (btnIdx < 0 || btnIdx >= kCeHudCardButtons) return;
+    const CeCmdCardButton& btn = gHudCard.buttons[btnIdx];
+    if (btn.action == CE_CARD_NONE) return;
+    if (!btn.enabled) {
+        if (gHudCard.isStructure) Note("Build order is currently unavailable.");
+        else Note("Select a commandable unit or squad first.");
+        return;
+    }
+    gHudBtnFlashNs[btnIdx] = Ns();
+    CeCmdStructureView selStruct = {};
+    if (btn.action >= CE_CARD_BUILD_0 && btn.action <= CE_CARD_BUILD_3) {
+        const int opt = int(btn.action - CE_CARD_BUILD_0);
+        if (CeCmdStructureSelected(&selStruct) && CeCmdStructureQueue(selStruct.thingNumber, opt)) {
+            char unitShort[20];
+            CeCmdHudShortName(selStruct.options[opt].unitName, false, false, unitShort, sizeof(unitShort));
+            char msg[64];
+            snprintf(msg, sizeof(msg), "Building %s.", unitShort);
+            Note(msg);
+            CeCmdVoicePlay(CE_VOICE_BUILD_QUEUE, Ns());
+        } else {
+            Note("Factory cannot start that build now.");
+        }
+        return;
+    }
+    if (btn.action == CE_CARD_CANCEL_BUILD) {
+        if (CeCmdStructureSelected(&selStruct) && CeCmdStructureCancel(selStruct.thingNumber)) {
+            Note("Build order cancelled.");
+            CeCmdVoicePlay(CE_VOICE_CANCEL, Ns());
+        }
+        return;
+    }
+    if (btn.action == CE_CARD_SELECT_DELIVERED) {
+        const int ordinal = CeCmdDeliveredSquad();
+        const CeCmdSquad* tank = ordinal >= 0 ? ByOrdinal(ordinal) : NULL;
+        if (tank) {
+            CeCmdStructureClearSelection();
+            SelectOnly(ordinal);
+            StartStrategicFocus(*tank);
+            Note("Your tank selected.");
+            CeCmdVoicePlay(CE_VOICE_SELECT_UNIT, Ns());
+        } else Note("Tank unavailable. No order issued.");
+        return;
+    }
+    if (btn.action == CE_CARD_TAKE_DELIVERED) {
+        const int ordinal = CeCmdDeliveredSquad();
+        if (ordinal < 0) Note("Tank unavailable.");
+        else if (gSel.n != 1 || gSelected != ordinal) Note("Select the tank first.");
+        else if (!CePlayUnitCanTakeDelivery()) Note("Unit control is unavailable.");
+        else { Close(); CePlayUnitTakeDelivery(); }
+        return;
+    }
+    if (btn.action == CE_CARD_MOVE) {
+        if (gUnitUi.SelectionCount()) UnitAction(UnitPanel::Action::Move);
+        else StrategicArm(CE_CMD_MOVE);
+        return;
+    }
+    if (btn.action == CE_CARD_ATTACK) {
+        if (gUnitUi.SelectionCount()) UnitAction(UnitPanel::Action::Advance);
+        else StrategicArm(CE_CMD_ADVANCE);
+        return;
+    }
+    if (btn.action == CE_CARD_HOLD) {
+        gArmed = false;
+        gHudFollowSquad = -1;
+        if (gUnitUi.SelectionCount()) {
+            UnitAction(UnitPanel::Action::Hold);
+            CeCmdVoicePlay(CE_VOICE_HOLD, Ns());
+        } else Order(CE_CMD_HOLD, 0.f, 0.f);
+        return;
+    }
+    if (btn.action == CE_CARD_FOLLOW_BE) {
+        gArmed = false;
+        RtsHudOrderFollowBe();
+        return;
+    }
+    if (btn.action == CE_CARD_TAKE_CONTROL) {
+        gArmed = false;
+        RtsHudTakeControl();
+        return;
+    }
+    if (btn.action == CE_CARD_RETURN_AI) {
+        gArmed = false;
+        RtsHudReturnAi();
+        return;
+    }
+}
+
+void RtsHudFocusStructure(int thingNumber) {
+    gStructFocusThing = thingNumber;
+    CeCmdSquad focus = {};
+    focus.ordinal = kStructureFocus;
+    StartStrategicFocus(focus);
+}
+
+bool RtsHudPointerDown(float px, float py, bool shift) {
+    BuildRtsHudModel(NULL, 0);
+    const CeCmdHudHit hit = CeCmdHudHitTest(gHudLayout, px, py);
+    if (hit.kind == CE_HUD_HIT_NONE) return false;
+    if (hit.kind == CE_HUD_HIT_PREV_PAGE) {
+        if (gHudPage > 0) --gHudPage;
+        return true;
+    }
+    if (hit.kind == CE_HUD_HIT_NEXT_PAGE) {
+        if (gHudPage + 1 < gHudLayout.totalPages) ++gHudPage;
+        return true;
+    }
+    if (hit.kind == CE_HUD_HIT_CARD_BUTTON) {
+        RtsHudExecuteCardAction(hit.index);
+        return true;
+    }
+    if (hit.kind == CE_HUD_HIT_PLACARD && hit.index >= 0 && hit.index < gHudPlacardCount) {
+        const CeCmdPlacard& pl = gHudPlacards[hit.index];
+        const std::uint64_t now = Ns();
+        const bool dbl = gHudClick.RegisterClick(pl.kind, pl.id, now);
+        gArmed = false;
+        if (pl.kind == CE_PLACARD_STRUCTURE) {
+            gUnitUi.ClearSelection(); gUnitUi.Cancel();
+            SelectOnly(-1);
+            if (CeCmdStructureSelect(pl.id)) {
+                CeCmdVoicePlay(CE_VOICE_SELECT_STRUCTURE, now);
+                if (dbl) RtsHudFocusStructure(pl.id);
+            }
+            return true;
+        }
+        if (pl.kind == CE_PLACARD_SQUAD) {
+            const CeCmdSquad* sq = ByOrdinal(pl.id);
+            if (!sq) return true;
+            if (!sq->commandable) {
+                Note(WhyText(sq->why));
+                if (dbl) StartStrategicFocus(*sq);
+                return true;
+            }
+            gUnitUi.ClearSelection(); gUnitUi.Cancel();
+            CeFactoryLeaveSelection();
+            if (shift) SelectToggle(pl.id);
+            else SelectOnly(pl.id);
+            CeCmdVoicePlay(CE_VOICE_SELECT_UNIT, now);
+            if (dbl) StartStrategicFocus(*sq);
+            return true;
+        }
+        if (pl.kind == CE_PLACARD_UNIT && pl.id > 0) {
+            int foundIdx = -1;
+            for (int i = 0; i < gUnitNativeCount; ++i) {
+                if (gUnitNative[i].key.id == uint32_t(pl.id)) { foundIdx = i; break; }
+            }
+            if (foundIdx >= 0) {
+                if (dbl) {
+                    gUnitFocusCount = 1;
+                    gUnitFocusKeys[0] = gUnitNative[foundIdx].key;
+                    CeCmdSquad focus = {};
+                    focus.ordinal = kUnitFocus;
+                    StartStrategicFocus(focus);
+                } else {
+                    CeCmdVoicePlay(CE_VOICE_SELECT_UNIT, now);
+                }
+            }
+            return true;
+        }
+    }
+    return true;
+}
+
+bool RtsHudPickStructureWorld(float px, float py) {
+    CeWorldViewSample view;
+    if (!StrategicViewRead(&view)) return false;
+    CeCmdStructureView structs[kCeMaxStructures];
+    const int count = CeCmdStructureList(structs, kCeMaxStructures);
+    int bestThing = -1;
+    float bestDist = 1e30f;
+    const float reach = 18.f * L.s;
+    for (int i = 0; i < count; ++i) {
+        CeViewPoint pt;
+        if (!StrategicPixel(view, structs[i].x, structs[i].y, &pt) || !StrategicWorldArea(pt.x, pt.y)) continue;
+        const float dx = pt.x - px, dy = pt.y - py, d = dx * dx + dy * dy;
+        if (d <= reach * reach && d < bestDist) { bestDist = d; bestThing = structs[i].thingNumber; }
+    }
+    if (bestThing >= 0 && CeCmdStructureSelect(bestThing)) {
+        gUnitUi.ClearSelection();
+        SelectOnly(-1);
+        CeCmdVoicePlay(CE_VOICE_SELECT_STRUCTURE, Ns());
+        return true;
+    }
+    return false;
+}
+
+// The bottom RTS command card owns its clicks; no click on a button also reaches
 // the battlefield. Button geometry is shared by drawing and hit testing.
 int StrategicButtonAt(float x, float y) {
-    const float top = StrategicUiBottom() - 34.f * L.s;
-    if (y < top || y >= top + kRowH * L.s) return -1;
-    float left = 8.f * L.s;
-    for (int i = 0; i < 4; ++i) {
-        if (x >= left && x < left + kButtonW[i] * L.s) return i;
-        left += (kButtonW[i] + kButtonGap) * L.s;
-    }
+    const CeCmdHudLayout lay = CeCmdHudComputeLayout(L.w, L.h, L.s, StrategicUiBottom(), gHudPlacardCount, gHudPage);
+    const CeCmdHudHit hit = CeCmdHudHitTest(lay, x, y);
+    if (hit.kind == CE_HUD_HIT_CARD_BUTTON && hit.index >= 0 && hit.index < 4) return hit.index;
     return -1;
 }
 
@@ -2163,11 +2736,16 @@ void StrategicPointer(WORD key, int event) {
             UnitTargetAt(gesture.x, gesture.y, gesture.target_token);
         else if (gesture.outcome == UnitControl::GestureOutcome::Click || gesture.outcome == UnitControl::GestureOutcome::Box) {
             SelectOnly(-1); gArmed = false; CeFactoryLeaveSelection();
+            if (gesture.selection.picked || gUnitUi.SelectionCount() > 0)
+                CeCmdVoicePlay(CE_VOICE_SELECT_UNIT, Ns());
             if (gesture.outcome == UnitControl::GestureOutcome::Click && !gesture.selection.picked && !shift) {
                 CeWorldViewSample view; CeFactoryView factory; CeViewPoint point;
                 if (StrategicViewRead(&view) && CeFactoryRead(factory) && StrategicPixel(view, factory.x, factory.y, &point) &&
                     std::fabs(point.x-px) <= 14*L.s && std::fabs(point.y-py) <= 14*L.s) {
                     gUnitUi.ClearSelection(); CeFactorySelect();
+                    CeCmdVoicePlay(CE_VOICE_SELECT_STRUCTURE, Ns());
+                } else {
+                    RtsHudPickStructureWorld(px, py);
                 }
             }
             RefreshUnitFrame();
@@ -2175,6 +2753,7 @@ void StrategicPointer(WORD key, int event) {
         DrainUnitRequest();
         return;
     }
+    if (key == 0 && RtsHudPointerDown(px, py, shift)) return;
     if (key == 0 && UnitPanelAt(px, py)) { gUnitUi.PointerDown(px, py); return; }
     const int button = key == 0 && !gUnitUi.SelectionCount() ? StrategicButtonAt(px, py) : -1;
     if (button >= 0) {
@@ -2187,8 +2766,10 @@ void StrategicPointer(WORD key, int event) {
     if (key == 1) { gStrategicDragging = true; gStrategicDragX = px; gStrategicDragY = py; return; }
     if (key == 0 && !gArmed) { gUnitUi.PointerDown(px, py); return; }
     if (key == 2 && gUnitUi.SelectionCount()) {
-        if (gUnitUi.ArmAction(UnitPanel::Action::Move) == UnitControl::ArmStatus::Armed)
+        if (gUnitUi.ArmAction(UnitPanel::Action::Move) == UnitControl::ArmStatus::Armed) {
             UnitTargetAt(px, py, gUnitUi.TargetToken());
+            CeCmdVoicePlay(CE_VOICE_MOVE, Ns());
+        }
         else Note("Move is unavailable for this selection.");
         return;
     }
@@ -2348,6 +2929,15 @@ CeCommanderCameraInput StrategicInput() {
     input.orbit_horizontal = double(CameraKeyDown(DIK_E)) - double(CameraKeyDown(DIK_Q));
     input.orbit_vertical = double(CameraKeyDown(DIK_NEXT)) - double(CameraKeyDown(DIK_PRIOR));
     input.zoom = double(CameraKeyDown(DIK_R)) - double(CameraKeyDown(DIK_F));
+    // Shift+A/E/F issue RTS orders (Attack / Take Control / Follow BE) and must not move the camera.
+    if (CameraKeyDown(DIK_LSHIFT) || CameraKeyDown(DIK_RSHIFT)) {
+        if (CameraKeyDown(DIK_A) && !CameraKeyDown(DIK_LEFT) && !CameraKeyDown(DIK_RIGHT) && !CameraKeyDown(DIK_D))
+            input.pan_horizontal = 0.0;
+        if (CameraKeyDown(DIK_E) && !CameraKeyDown(DIK_Q))
+            input.orbit_horizontal = 0.0;
+        if (CameraKeyDown(DIK_F) && !CameraKeyDown(DIK_R))
+            input.zoom = 0.0;
+    }
     const double bounded = (std::min)(input.elapsed_seconds, .1);
     if (bounded > 0) {
         input.zoom += double(gStrategicWheel) * std::log(1.25) / bounded;
@@ -2481,6 +3071,7 @@ void ResetStrategicGesture() {
     gStrategicWheel = 0;
     gArmed = false;
     gStrategicClickOrder = CE_CMD_MOVE;
+    RtsHudResetState();
 }
 
 void SwitchView(bool strategic) {
@@ -2521,8 +3112,40 @@ bool StrategicTrap(WORD key, int event) {
         StrategicSquadAction(key);
         return true;
     }
+    if (key == DIK_A && (gDown[DIK_LSHIFT] || gDown[DIK_RSHIFT])) {
+        if (StrategicCanAct() && StrategicUiReady()) {
+            Refresh(); RefreshUnitFrame();
+            if (gUnitUi.SelectionCount()) UnitAction(UnitPanel::Action::Advance);
+            else StrategicArm(CE_CMD_ADVANCE);
+        }
+        return true;
+    }
+    if (key == DIK_X && (gDown[DIK_LSHIFT] || gDown[DIK_RSHIFT])) {
+        if (StrategicCanAct() && StrategicUiReady()) { Refresh(); RefreshUnitFrame(); RtsHudReturnAi(); }
+        return true;
+    }
     if (key == DIK_A || key == DIK_D) return true;
                 StrategicSquadAction(key);
+            } else if (!repeat && (key == DIK_G || key == DIK_SPACE || key == DIK_RETURN ||
+                                   ((gDown[DIK_LSHIFT] || gDown[DIK_RSHIFT]) && (key == DIK_F || key == DIK_E)) ||
+                                   (key == DIK_U && !(gDown[DIK_LSHIFT] || gDown[DIK_RSHIFT])))) {
+                if (StrategicCanAct() && StrategicUiReady()) {
+                    Refresh(); RefreshUnitFrame();
+                    if (key == DIK_G) {
+                        if (gUnitUi.SelectionCount()) UnitAction(UnitPanel::Action::Advance);
+                        else StrategicArm(CE_CMD_ADVANCE);
+                    } else if (key == DIK_SPACE || key == DIK_F) {
+                        gArmed = false; RtsHudOrderFollowBe();
+                    } else if (key == DIK_RETURN || key == DIK_E) {
+                        gArmed = false; RtsHudTakeControl();
+                    } else if (key == DIK_U) {
+                        CeCmdStructureView selStruct = {};
+                        if (CeCmdStructureSelected(&selStruct) && selStruct.optionCount > 0) {
+                            BuildRtsHudModel(NULL, 0);
+                            RtsHudExecuteCardAction(0);
+                        }
+                    }
+                }
             }
         }
     }
@@ -2709,7 +3332,7 @@ void DrawStrategicHints() {
 #ifdef CE_COMMANDER_TEST
     if (haveView) TraceStrategicFocus(view);
 #endif
-    const float u = L.s, line = kRowH * u, t = (std::max)(1.f, floorf(u));
+    const float u = L.s, t = (std::max)(1.f, floorf(u));
     const float dragX = float(MOUSE_X), dragY = float(MOUSE_Y);
     const bool showBox = gBoxing && CeBoxIsDrag(gBoxX, gBoxY, dragX, dragY, kBoxSlack * u);
     CeCmdSel inBox = {};
@@ -2813,44 +3436,11 @@ void DrawStrategicHints() {
         if (strlen(text) > strlen(head)) Text(24.f * u + headW, 10.f * u, kQuiet, text + strlen(head));
     }
 
-    DrawUnitSelection();
-
-    // the squad card, bottom left: as wide as its words
-    const CeCmdSquad* squad = ByOrdinal(gSelected);
-    const float cardY = StrategicUiBottom() - (40.f + kCardH) * u, cardW = StrategicCardWidth(), room = cardW - 16.f * u;
-    const float top = StrategicUiBottom() - 34.f * u;
-    if (!gUnitUi.SelectionCount()) {
-    StrategicPanel(8.f * u, cardY, cardW, kCardH * u, 1.f, 1.f);
-    {
-        char second[160];
-        StrategicCardLines(text, second, sizeof text);
-        Text(16.f * u, cardY + 6.f * u, kText, text, room);
-        Text(16.f * u, cardY + 6.f * u + line, squad ? kText : kQuiet, second, room);
-    }
-
-    // the four orders, under the card: white, yellow when under the pointer or armed, grey when the picked squad cannot take them
-    static const char* const labels[] = {"Move", "Advance", "Hold", "Fall Back"};
-    const int hover = StrategicButtonAt(float(MOUSE_X), float(MOUSE_Y));
-    float left = 8.f * u;
-    for (int i = 0; i < 4; ++i) {
-        const bool available = squad && (!squad->deploys || i == 2);
-        const bool armed = gArmed && ((i == 0 && gStrategicClickOrder == CE_CMD_MOVE) || (i == 1 && gStrategicClickOrder == CE_CMD_ADVANCE));
-        // a capsule each: lit while its order waits for its click (Move, Advance) or for a moment after it was given (Hold, Fall Back); the word yellow
-        // under the pointer (focus), grey and the capsule faint where the picked squad cannot take it
-        const bool pressed = armed || (SecondsBetween(gButtonPressedNs[i], Ns()) < 0.25);
-        CapsuleBar(left, top, kButtonW[i] * u, kRowH * u, 1.f, available && pressed);	// (a faded HUD bar half-closes over its word: grey says unavailable)
-        Text(left + kButtonW[i] * u * 0.5f, top + 2.f * u, !available ? kQuiet : (hover == i ? kFocus : kText), labels[i], 0.f, true);
-        left += (kButtonW[i] + kButtonGap) * u;
-    }
-
-    }
-
-    // the prompt line, bottom right
+    // compact top-right utility hint (F1 Help / Esc Cockpit)
     StrategicPrompt(text, sizeof text);
     if (text[0]) {
         const float w = TextWidth(text, u);
-        // one line of prompts in the HUD's capsule: each key in white, what it does in grey (the editor's prompt line)
-        CapsuleBar(L.w - w - 32.f * u, top, w + 24.f * u, kRowH * u);
+        CapsuleBar(L.w - w - 32.f * u, 6.f * u, w + 24.f * u, 24.f * u);
         float px = L.w - w - 20.f * u;
         for (char* item = text; *item; ) {
             char* end = strstr(item, "   ");
@@ -2860,38 +3450,79 @@ void DrawStrategicHints() {
             char* space = strrchr(one, ' ');
             if (space) {
                 *space = 0;
-                Text(px, top + 2.f * u, kText, one); px += TextWidth(one, u);
-                Text(px, top + 2.f * u, kQuiet, " "); px += TextWidth(" ", u);
-                Text(px, top + 2.f * u, kQuiet, space + 1); px += TextWidth(space + 1, u);
-            } else { Text(px, top + 2.f * u, kText, one); px += TextWidth(one, u); }
+                Text(px, 10.f * u, kText, one); px += TextWidth(one, u);
+                Text(px, 10.f * u, kQuiet, " "); px += TextWidth(" ", u);
+                Text(px, 10.f * u, kQuiet, space + 1); px += TextWidth(space + 1, u);
+            } else { Text(px, 10.f * u, kText, one); px += TextWidth(one, u); }
             if (!end) break;
-            Text(px, top + 2.f * u, kQuiet, "   "); px += TextWidth("   ", u);
+            Text(px, 10.f * u, kQuiet, "   "); px += TextWidth("   ", u);
             item = end + 3;
         }
     }
 
-    // the full list of keys, while F1 is held (the prompt line names it): two side-by-side groups so the panel stays clear of the title bar and radio dialogue
+    DrawUnitSelection();
+
+    // Friendly production structures: tactical 3D battlefield markers with armour and build progress bars
+    if (CeCmdStructureConsumeReady()) {
+        CeCmdVoicePlay(CE_VOICE_BUILD_READY, Ns());
+        Note("Unit production complete.");
+    }
+    {
+        CeCmdStructureView structs[kCeMaxStructures];
+        const int structCount = CeCmdStructureList(structs, kCeMaxStructures);
+        const CeCmdHudPalette hudPal = CeCmdHudDefaultPalette();
+        for (int i = 0; i < structCount && haveView; ++i) {
+            const CeCmdStructureView& s = structs[i];
+            CeViewPoint pos;
+            if (!StrategicPixel(view, s.x, s.y, &pos) || !StrategicWorldArea(pos.x, pos.y)) continue;
+            const float r = 11.f * u;
+            const DWORD edge = s.selected ? hudPal.goldAccent : hudPal.cyanAccent;
+            Outline(pos.x - r, pos.y - r, 2.f * r, 2.f * r, s.selected ? 2.f * t : t, edge);
+            const float barW = 24.f * u, barH = (3.f * u) > 2.f ? floorf(3.f * u) : 2.f;
+            const float ratio = CeCmdHudArmourRatio(s.life, s.maxLife, 1, 1);
+            Box(pos.x - barW * 0.5f, pos.y - r - barH - 2.f * u, barW, barH, hudPal.armourTrack);
+            if (barW * ratio > 0.5f)
+                Box(pos.x - barW * 0.5f, pos.y - r - barH - 2.f * u, barW * ratio, barH, CeCmdHudArmourColor(ratio, hudPal));
+            if (s.stage == CE_FACTORY_QUEUED || s.stage == CE_FACTORY_LAUNCHING) {
+                Box(pos.x - barW * 0.5f, pos.y + r + 2.f * u, barW, barH, hudPal.armourTrack);
+                const float pctW = barW * (float(s.percent) / 100.f);
+                if (pctW > 0.5f) Box(pos.x - barW * 0.5f, pos.y + r + 2.f * u, pctW, barH, hudPal.cyanAccent);
+            }
+        }
+    }
+
+    // Unified Forseti Bottom RTS Command Bar (Unit/Squad/Structure Placards + Right-Docked Command Card)
+    char forcesSummary[64] = "";
+    BuildRtsHudModel(forcesSummary, sizeof forcesSummary);
+    {
+        const CeCmdHudDrawOps ops = {RtsHudBox, RtsHudOutline, RtsHudText, RtsHudTextWidth, RtsHudLineHeight};
+        CeCmdHudDrawBar(ops, gHudLayout, gHudPlacards, gHudPlacardCount, gHudCard, forcesSummary,
+                        float(MOUSE_X), float(MOUSE_Y), gHudBtnFlashNs, Ns());
+    }
+    const float cardY = gHudLayout.valid ? gHudLayout.barRect.y : (StrategicUiBottom() - (40.f + kCardH) * u);
+
+    // the full list of keys, while F1 is held (compact two-column Forseti reference panel above the RTS bar)
     if (gDown[DIK_F1]) {
         static const char* const leftKeys[][2] = {
-            {"Click", "Pick an individual unit"},
-            {"Drag", "Pick units in the box"},
-            {"Shift Click", "Add or remove a unit"},
-            {"Ctrl Click", "Select full squad (Advance / Fall Back)"},
-            {"Ctrl A", "Pick available units"},
-            {"Ctrl 1 to 8", "Save the unit selection"},
-            {"1 to 8", "Recall a unit selection"},
-            {"Tab", "Cycle friendly squads"},
-            {"Right Click", "Move selected units"}};
+            {"Click, Shift Click", "Select unit, squad or placard"},
+            {"Double Click Card", "Center camera on unit or factory"},
+            {"Drag Box", "Select units in box"},
+            {"Ctrl A", "Select all available units"},
+            {"Ctrl 1 to 8 / 1 to 8", "Save or recall control group"},
+            {"Right Click", "Move or Attack selected forces"},
+            {"G / Shift A", "Attack-move to ground point"},
+            {"H", "Hold current position"},
+            {"Space / Shift F", "Follow Battle Engine"}};
         static const char* const rightKeys[][2] = {
-            {"H", "Hold selected units"},
-            {"B", "Fall back to a safe place"},
+            {"Enter / Shift E", "Take control of selected unit"},
             {"Delete", "Back to their own orders"},
-            {"WASD, Arrows", "Pan"},
-            {"Q, E", "Turn"},
-            {"Page Up, Page Down", "Tilt"},
-            {"Wheel, R, F", "Zoom"},
-            {"C, Z", "Focus selection, Zoom wide"},
-            {"M, Esc", "Close Commander"}};
+            {"B", "Fall back to safe point"},
+            {"U (Factory)", "Build primary unit"},
+            {"Tab / C / Z", "Cycle squad / Focus / Wide zoom"},
+            {"WASD, Arrows, MMB", "Pan battlefield camera"},
+            {"Q, E / PgUp, PgDn", "Orbit / Tilt camera"},
+            {"Wheel, R, F", "Zoom camera"},
+            {"M, Esc", "Close Commander view"}};
         const int rows = int(sizeof leftKeys / sizeof leftKeys[0]);
         float lKeyW = 0.f, lWhatW = 0.f, rKeyW = 0.f, rWhatW = 0.f;
         for (int i = 0; i < rows; ++i) {
@@ -2907,27 +3538,32 @@ void DrawStrategicHints() {
         const float fit = naturalW > maxW ? maxW / naturalW : 1.f;
         const float w = floorf(naturalW * fit), h = floorf(rows * helpLine + 14.f * u);
         const float safeTop = 34.f * u;
-        const float lowerClear = gUnitUi.Panel().Layout().visible ? gUnitUi.Panel().Layout().panel.y - 6.f * u : cardY - 6.f * u;
+        const float lowerClear = cardY - 6.f * u;
         const float safeBot = lowerClear - safeTop >= h ? lowerClear : (std::max)(safeTop + h, StrategicUiBottom() - 38.f * u);
         const float x0 = floorf((L.w - w) * 0.5f);
         const float y0 = floorf((std::max)(safeTop, safeTop + ((safeBot - safeTop) - h) * 0.5f));
-        StrategicPanel(x0, y0, w, h, 2.f, 1.f);
+        const CeCmdHudPalette helpPal = CeCmdHudDefaultPalette();
+        const float bt = floorf(u) > 1.f ? floorf(u) : 1.f;
+        Box(x0, y0, w, h, 0xe806101c);
+        Outline(x0, y0, w, h, bt, helpPal.barBorder);
+        Box(x0 + bt, y0 + bt, w - 2.f * bt, bt, helpPal.barTopBevel);
+        const DWORD helpDesc = 0xffd6e4ee;
         const float rx0 = x0 + (padX + lKeyW + keyGap + lWhatW + colGap) * fit;
         for (int i = 0; i < rows; ++i) {
             const float ry = y0 + 7.f * u + i * helpLine;
-            Text(x0 + padX * fit, ry, kText, leftKeys[i][0], lKeyW * fit);
-            Text(x0 + (padX + lKeyW + keyGap) * fit, ry, kQuiet, leftKeys[i][1], lWhatW * fit);
-            Text(rx0, ry, kText, rightKeys[i][0], rKeyW * fit);
-            Text(rx0 + (rKeyW + keyGap) * fit, ry, kQuiet, rightKeys[i][1], rWhatW * fit);
+            Text(x0 + padX * fit, ry, helpPal.textCyan, leftKeys[i][0], lKeyW * fit);
+            Text(x0 + (padX + lKeyW + keyGap) * fit, ry, helpDesc, leftKeys[i][1], lWhatW * fit);
+            Text(rx0, ry, helpPal.textCyan, rightKeys[i][0], rKeyW * fit);
+            Text(rx0 + (rKeyW + keyGap) * fit, ry, helpDesc, rightKeys[i][1], rWhatW * fit);
         }
     }
 
-    // the last note, in a panel of its own at the foot of the battlefield, above the card, fading in and out
+    // the last note, in a panel of its own at the foot of the battlefield, above the RTS bar, fading in and out
     const float alpha = gDown[DIK_F1] ? 0.f : NoteAlpha();		// the key list has the middle of the screen to itself
     if (alpha > 0.f) {
-        const float noteBase = gUnitUi.Panel().Layout().visible ? gUnitUi.Panel().Layout().panel.y : cardY;
+        const float noteBase = cardY;
         const float w = (std::min)(TextWidth(gNote, u), L.w - 32.f * u);
-        float x = floorf((L.w - w) * 0.5f), y = (std::max)(36.f * u, noteBase - 32.f * u - LineHeight());
+        float x = floorf((L.w - w) * 0.5f), y = (std::max)(36.f * u, noteBase - 26.f * u - LineHeight());
         if (gNoteAtUntil == gNoteUntil && gNoteAtX >= 0.f) {      // a refused click: beside the pointer
             x = floorf((std::min)((std::max)(16.f * u, gNoteAtX + 18.f * u), L.w - w - 16.f * u));
             y = floorf((std::min)((std::max)(36.f * u, gNoteAtY - LineHeight() - 18.f * u), noteBase - LineHeight() - 16.f * u));
@@ -2939,12 +3575,8 @@ void DrawStrategicHints() {
     }
     CeFactoryView factory;
     if (CeFactoryRead(factory)) {
-        CeViewPoint pos;
-        if (haveView && StrategicPixel(view,factory.x,factory.y,&pos) && StrategicWorldArea(pos.x,pos.y)) {
-            const float r=10*u;
-            Outline(pos.x-r,pos.y-r,2*r,2*r,2*u,factory.selected?kPick:kFriend);
-            Box(pos.x-5*u,pos.y-3*u,10*u,6*u,kFriend);
-        }
+        // The generalized structure loop above already draws the 3D marker, armour bar,
+        // and build progress strip for this building; keep the Level 231 exercise card only.
         const float x=8*u, y=56*u, width=196*u;
         const bool delivered = factory.stage == CE_FACTORY_READY;
         const int deliveredSquad = factory.selected && delivered ? CeCmdDeliveredSquad() : -1;
@@ -3035,6 +3667,7 @@ void Close()
     BeginNativeReturn();
     ResetStrategicGesture();
     CeFactoryLeaveSelection();
+    CeCmdVoiceStop();
     const bool wasStrategic = gStrategic;
     const bool ownedStrategicInput = LT.GetKeytrap() == (pKeyTrapper)Trap;
     if (gOpen && wasStrategic) {
@@ -3628,6 +4261,8 @@ void PortCeCmdFrame()
 // The level is ending (CGame::ShutdownRestartLoop): put back what opening changed.
 void PortCeCmdLevelEnd()
 {
+    CeCmdVoiceStop();
+    CeFactoryReset();
     gUnitUi.Reset();
     CeCmdUnitOrdersWorldEnd();
     CePlayUnitLevelEnd();

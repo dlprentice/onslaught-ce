@@ -12,7 +12,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from network_world_tests import actual_body
+from network_source_extract import actual_body
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -49,9 +49,18 @@ def main():
     refused = p.returncode != 0 and "cannot be combined with --public" in p.stdout + p.stderr
     print(("PASS" if refused else "FAIL") + " build.py refuses --test-automation with --public (exit %d)" % p.returncode)
     ok &= refused
+    # 1b. --test-automation validates --ce-version just as --public does, and registers as a test build switch.
+    p_bad = subprocess.run([sys.executable, str(ROOT / "port/build.py"), "--test-automation", "--ce-version", "bad;ver", "--syntax", "x.cpp"],
+                           capture_output=True, text=True, timeout=60)
+    bad_refused = p_bad.returncode != 0 and "--ce-version" in p_bad.stdout + p_bad.stderr
+    print(("PASS" if bad_refused else "FAIL") + " build.py validates --ce-version with --test-automation (exit %d)" % p_bad.returncode)
+    ok &= bad_refused
     # 2. A test-automation build carries its own network identity, never the public one of the same source.
     sys.path.insert(0, str(ROOT / "port"))
     import build
+    switch_ok = build.test_build_switches(["-DCE_NET_TEST_AUTOMATION=1"]) == ["test-automation"]
+    print(("PASS" if switch_ok else "FAIL") + " TEST_BUILD_SWITCHES records -DCE_NET_TEST_AUTOMATION")
+    ok &= switch_ok
     if build.deps.SYSROOT_NAME == "sniper":
         build.PUBLIC, build.TEST_AUTOMATION = True, False
         build.configure_network_identity()

@@ -52,11 +52,12 @@ onslaught-ce: co-op mission selected state confirmed at tick 1584, hash 3ea4a8ae
 onslaught-ce: network lobby: returning to the front end (the game ended); the player is told: The network game has ended.
 onslaught-ce: session pid=202 t_ms=87990 P=290 game: frontend page=23 requested=12 transition_ticks=0
 """
-# --ending leave, from a real run (2026-11-12): the guest's window closed 20 s into the mission.
+# --ending leave, from a real run (2026-11-12): the guest's window closed 20 s into the mission. The told line is the
+# current lobby's wording (ce_netlobby.cpp, the network game stopped: "Your friend left the game.").
 HOST_LEAVE = HOST.split("onslaught-ce: co-op tick 1000", 1)[0] + """\
 onslaught-ce: co-op session stopped: the other player left the co-op game
 onslaught-ce: co-op network: 446 messages sent, 446 received, 0 packets rejected
-onslaught-ce: network lobby: returning to the front end (the game stopped); the player is told: The network game stopped: the other player left the co-op game.
+onslaught-ce: network lobby: returning to the front end (the game stopped); the player is told: Your friend left the game.
 onslaught-ce: session pid=101 t_ms=1611 P=4 game: frontend page=23 requested=12 transition_ticks=0
 """
 GUEST_LEAVE = GUEST.split("onslaught-ce: co-op tick 1000", 1)[0] + """\
@@ -143,6 +144,10 @@ CASES = [
     ("a leave passes", dict(ending="leave"), None),
     ("the host is not told", dict(ending="leave", host=without(HOST_LEAVE, "the other player left the co-op game\n")),
      [("host", "friend left")]),
+    ("the host is told something else", dict(ending="leave", host=swap(HOST_LEAVE, "told: Your friend left the game.", "told: The network game stopped. You can host or join again.")),
+     [("host", "returned after the leave"), ("host", "trouble")]),
+    ("the end is told in other words", dict(host=swap(HOST, "told: The network game has ended.", "told: The network game ended with an error.")),
+     [("host", "returned")]),
     ("a desync instead of a leave", dict(ending="leave", host=swap(HOST_LEAVE, "co-op session stopped: the other player left the co-op game\n",
                                                                  "co-op session stopped: the two games went out of step at tick 400 (this game 0011223344556677, the other 7766554433221100)\n")),
      [("host", "friend left"), ("host", "trouble")]),
@@ -289,6 +294,87 @@ def main():
     report(run.stage_of(HOST.split("co-op started", 1)[0], "host") == "start agreed", "a log cut before the game is labelled start agreed")
     report(not run.CODE_LIKE.search("onslaught-ce: co-op tick 1000 in step (50 hashes compared)") and
            run.CODE_LIKE.search("PZD2-SP19-RDBH-R2M0-1E3C-0G8") is not None, "join codes are recognised for redaction and log lines are not")
+    # Failed joins (lines from real pair runs on 2026-11-17, the address replaced by a documentation one).
+    L = run.LOBBY
+    nh = L + "hosting on UDP port 28461\n" + L + "join code written for the test harness (offscreen run)\n"
+    ng = L + "joining\n"
+    stale_h = nh + L + "an admission attempt failed (1 of 5)\n"
+    stale_g = ng + L + "could not join: no game answered at 192.0.2.10, port 28461 (transport error 3)\n"
+    lobby = L + "both players are in the lobby (guest)\n"
+    vanish_g = ng + lobby + L + "connection to the host lost\n"
+    mism_g = ng + L + "refused: a different build (yours 0.2.0-other, theirs 0.2.0-coop)\n"
+    files = {"host": dict(FILES), "guest": dict(FILES)}
+    agreed = L + "both players are in the lobby (0.2.0-coop, 0.2.0-coop)\n" + L + "start agreed (level 856, %s); restarting into the game\n"
+    AGREED_H = nh + agreed % "host"
+    AGREED_G = ng + agreed % "guest"
+    wait = ("onslaught-ce: co-op (experimental), level 856, joining (player 2), input delay 3 ticks, hash every 20 ticks\n"
+            "onslaught-ce: co-op: the lobby's last frame is kept for the waiting screen (640x480)\n"
+            "onslaught-ce: session pid=202 t_ms=7652 P=15 game: post-load level=856 ready players=2\n"
+            "onslaught-ce: co-op: the waiting screen is shown (waiting for the other player)\n")
+    stopped = ("onslaught-ce: co-op session stopped: the other player's game did not answer after the start was agreed\n"
+               "onslaught-ce: co-op network: 0 messages sent, 0 received, 0 packets rejected\n"
+               "onslaught-ce: session pid=202 t_ms=35815 P=737 game: leave level=856 phase=9 quit=1\n"
+               + L + "the network game stopped: the other player's game did not answer after the start was agreed\n"
+               + L + "returning to the front end (the game stopped); the player is told: The network game stopped. You can host or join again.\n"
+               "onslaught-ce: session pid=202 t_ms=1696 P=4 game: frontend page=23 requested=12 transition_ticks=0\n")
+    WAIT_G = AGREED_G + wait + stopped
+    WAIT_H = AGREED_H + wait + stopped
+    LEAVE_G = AGREED_G + wait + ("onslaught-ce: co-op: this player left while waiting for the start\n"
+                                 "onslaught-ce: co-op ended at tick 0; final state was not confirmed\n"
+                                 "onslaught-ce: session pid=202 t_ms=10900 P=104 game: leave level=856 phase=9 quit=1\n"
+                                 + L + "the player left the network game\n"
+                                 + L + "returning to the front end (the game ended); the player is told: You left the game.\n"
+                                 "onslaught-ce: session pid=202 t_ms=1696 P=4 game: frontend page=23 requested=12 transition_ticks=0\n")
+
+    def neg(ending, host, guest, exits=None, extra=None):
+        ok, rows = run.judge({"host": host, "guest": guest}, files, files, exits or {"host": 0, "guest": 0}, ending, extra)
+        return ok, sorted({(r["role"], r["stage"]) for r in rows if not r["ok"]})
+    for name, args, want in (
+        ("stale code passes", ("stale-code", stale_h, stale_g), []),
+        ("stale code: the host never heard of it", ("stale-code", nh, stale_g), [("host", "host told of a failed join")]),
+        ("stale code: a game started", ("stale-code", stale_h, stale_g + L + "start agreed (level 856, guest); restarting into the game\n"),
+         [("guest", "trouble")]),
+        ("mismatch passes", ("mismatch", stale_h, mism_g), []),
+        ("mismatch: not refused", ("mismatch", stale_h, ng), [("guest", "refused: another version")]),
+        ("wrong code passes", ("wrong-code", nh, "onslaught-ce: session pid=101 t_ms=30000 P=1800 game: frontend page=21 requested=0 transition_ticks=0\n"), []),
+        ("wrong code: an empty guest log proves nothing", ("wrong-code", nh, ""), [("guest", "no join attempted")]),
+        ("wrong code: a join was attempted", ("wrong-code", nh, ng), [("guest", "no join attempted")]),
+        ("host vanished passes", ("host-vanished", nh + L + "both players are in the lobby (host)\n", vanish_g, {"host": -9, "guest": 0},
+                                  {"vanish_notice_s": 10.2}), []),
+        ("host vanished: told too late", ("host-vanished", nh + L + "both players are in the lobby (host)\n", vanish_g, {"host": -9, "guest": 0},
+                                          {"vanish_notice_s": 60.0}), [("guest", "told within 45 s")]),
+        ("host vanished: never told", ("host-vanished", nh + L + "both players are in the lobby (host)\n", ng + lobby, {"host": -9, "guest": 0}, {}),
+         [("guest", "told the host is gone"), ("guest", "told within 45 s")]),
+        # A start agreed and then one game gone (lines from the real pair run of 2026-11-17, b1-host-vanished-at-start): the
+        # waiting game draws its screen, is told the other game never answered, and returns with the plain message.
+        ("host vanished at start passes", ("host-vanished-at-start", AGREED_H, WAIT_G, {"host": -9, "guest": 0}, {"vanish_notice_s": 36.3}), []),
+        ("host vanished at start: a frozen wait", ("host-vanished-at-start", AGREED_H, WAIT_G.replace("P=737 game: leave", "P=17 game: leave"),
+                                                   {"host": -9, "guest": 0}, {"vanish_notice_s": 36.3}),
+         [("guest", "the wait drew frames (at least 5 a second)")]),
+        ("host vanished at start: told after the three-minute deadline",
+         ("host-vanished-at-start", AGREED_H, WAIT_G, {"host": -9, "guest": 0},
+          {"vanish_notice_s": 196.3}),
+         [("guest", "back with its message within 50 s of the kill")]),
+        ("guest vanished at start passes", ("guest-vanished-at-start", WAIT_H, AGREED_G, {"host": 0, "guest": -9}, {"vanish_notice_s": 36.0}), []),
+        ("guest vanished at start: the host never told", ("guest-vanished-at-start", WAIT_H.split("onslaught-ce: co-op session stopped", 1)[0],
+                                                          AGREED_G, {"host": 0, "guest": -9}, {}),
+         [("host", "back with its message within 50 s of the kill"), ("host", "front end"),
+          ("host", "the wait drew frames (at least 5 a second)"), ("host", "told plainly"), ("host", "told the other game did not answer")]),
+        ("leave while waiting passes", ("leave-while-waiting", AGREED_H, LEAVE_G, {"host": -9, "guest": 0}, {"vanish_notice_s": 12.0}), []),
+        ("host vanished at start: the lobby frame was not kept", ("host-vanished-at-start", AGREED_H,
+         WAIT_G.replace("the lobby's last frame is kept for the waiting screen (640x480)", "no lobby frame was kept; the waiting screen draws on black"),
+         {"host": -9, "guest": 0}, {"vanish_notice_s": 36.3}),
+         [("guest", "lobby frame kept")]),
+        ("leave while waiting by mouse passes", ("leave-while-waiting-mouse", AGREED_H, LEAVE_G, {"host": -9, "guest": 0}, {"vanish_notice_s": 12.0}), []),
+        ("leave while waiting by mouse: never left", ("leave-while-waiting-mouse", AGREED_H, AGREED_G + wait, {"host": -9, "guest": 0}, {}),
+         [("guest", "back with its message within 25 s of the kill"), ("guest", "front end"), ("guest", "left while waiting"),
+          ("guest", "the wait drew frames (at least 5 a second)"), ("guest", "told they left")]),
+        ("leave while waiting: the window ended the wait, not Leave",
+         ("leave-while-waiting", AGREED_H, LEAVE_G, {"host": -9, "guest": 0}, {"vanish_notice_s": 36.3}),
+         [("guest", "back with its message within 25 s of the kill")]),
+    ):
+        ok, failed = neg(*args)
+        report(ok == (not want) and failed == sorted(want), "%s%s" % (name, "" if not failed else ": fails at %r" % failed))
     ok = all(results)
     print("co-op pair runner: " + ("OK" if ok else "FAILED"), "(%d checks)" % len(results))
     return 0 if ok else 1

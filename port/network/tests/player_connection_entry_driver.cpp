@@ -118,6 +118,7 @@ int CE_LobbyAddresses(char (*out)[16], int max) {
     std::snprintf(out[0], 16, "%s", "127.0.0.1"); return 1;
 }
 uint16_t CE_LobbyPort(void) { return 27652; }
+int CE_CheatOn(int) { return 0; }	// no Cheats-page switch on (the menu refuses network play while one is)
 int CE_LobbyHost(void) {
     ++fixture_host_calls; fixture_status.state = CE_LOBBY_HOST_WAITING;
     fixture_status.host = 1; return 1;

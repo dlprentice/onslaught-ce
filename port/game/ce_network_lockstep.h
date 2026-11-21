@@ -13,7 +13,8 @@ int CE_LockstepActive(void);            // a lockstep world is shown (views and 
 int CE_LockstepTicking(void);           // its ticks are shared: input travels in samples and the simulation fences apply
 int CE_LockstepSharing(void);           // from configuring the level to its end: load, pre-run and ticks are the same on both peers
 uint32_t CE_LockstepLocalPlayer(void);  // 0 on the host, 1 on the joining peer
-// Session bridge (ce_network_session.cpp forwards here while CE_LockstepRequested()).
+uint32_t CE_LockstepLevel(void);        // the level CE_LockstepConfigureLevel admitted while the session is configured or runs, else 0
+// Session bridge (CE_Session* entry points in ce_network_lockstep.cpp forward here while CE_LockstepRequested()).
 int CE_LockstepConfigureLevel(uint32_t level);
 int CE_LockstepAfterLoad(void);
 int CE_LockstepPreparePlay(void);
@@ -24,6 +25,7 @@ int CE_LockstepBeginTeardown(int quit);
 void CE_LockstepAfterWorldShutdown(void);
 const char *CE_LockstepNotice(void);
 const char *CE_LockstepError(void);	// why the session stopped, in words for the player (empty when it did not fail): the lobby shows it
+int CE_LockstepLeftWaiting(void);	// the player chose Leave on the start's waiting screen (the lobby then says "You left the game.")
 int CE_LockstepExitCode(int native_code, int native_quit_seen);
 // Controller bridge (ce_network_world.cpp's hooks forward here while CE_LockstepActive()).
 int CE_LockstepControllerFlush(uint32_t controller);

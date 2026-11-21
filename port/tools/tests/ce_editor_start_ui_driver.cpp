@@ -378,6 +378,15 @@ void MarkerChecks(float width, float height, const std::string &where) {
     // An object's ring keeps the same rule it had.
     const CeEditorUiMarker open = {ox, oy, true}, hidden = {MidX(l.tools), MidY(l.tools), true};
     Check(CeEditorUiMarkerClear(l, m, open) && !CeEditorUiMarkerClear(l, m, hidden), where + ": an object's ring shows in the level and not over the rail");
+    // When an object ring sits directly beneath Player Start, the label moves clear of the ring instead of colliding.
+    const CeEditorUiMarker below = {ox, oy + 26.f * s, false};
+    m.markers = &below; m.markerCount = 1;
+    CeEditorUiLayout moved;
+    shown = StartAt(m, ox, oy, &moved);
+    const CeEditorUiRect belowBox = {below.x - 10.f * s, below.y - 10.f * s, 20.f * s, 20.f * s};
+    Check(shown.marker && shown.label && Apart(moved.start, belowBox) && moved.start.y < oy,
+          where + ": an overlapping object ring under Player Start flips the label above the brackets");
+    m.markers = nullptr; m.markerCount = 0;
 }
 } // namespace
 

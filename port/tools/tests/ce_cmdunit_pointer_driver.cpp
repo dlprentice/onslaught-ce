@@ -5,6 +5,11 @@
 #undef RefreshUnitFrame
 #undef main
 #include "ce_cmdpointer.h"
+#include "ce_cmd_voice.h"
+void CeCmdVoicePlay(CeCmdVoiceCue, std::uint64_t) {}
+static bool RtsHudPointerDown(float, float, bool) { return false; }
+static bool RtsHudPickStructureWorld(float, float) { return false; }
+static void RtsHudResetState() {}
 using WORD=unsigned;
 static const int kMouseDown=1,kMouseUp=2;
 static const int DIK_LSHIFT=0,DIK_RSHIFT=1,DIK_LCONTROL=2,DIK_RCONTROL=3;

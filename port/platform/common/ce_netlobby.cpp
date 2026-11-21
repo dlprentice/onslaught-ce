@@ -36,7 +36,7 @@
 
 extern "C" int CE_SettingGet(const char *key, int def);	// ce.cpp
 extern "C" const char *CE_BootError(void);					// port/game/ce_network_boot.cpp
-extern "C" const char *CE_SessionError(void);				// port/game/ce_network_session.cpp
+extern "C" const char *CE_SessionError(void);				// port/game/ce_network_lockstep.cpp
 extern "C" int PortCeNetConfirmedMatch(void) __attribute__((weak));
 extern "C" int PortCeNetRingLeft(void) __attribute__((weak));	// port/game/ce_network_ring.cpp: the player chose Leave Game
 #if defined(CE_NETWORK_ICE)
@@ -838,7 +838,7 @@ void GuestFailure(const CE_NetStatus &s)
 	if (was)
 	{
 		L.state = CE_LOBBY_FAILED;
-		Text(L.st.notice, sizeof L.st.notice, "The connection to your friend was lost. Check that they are still hosting, then join again.");
+		Text(L.st.notice, sizeof L.st.notice, "The connection to your friend was lost. Check that your friend is still hosting, then join again.");
 		fprintf(stderr, LOBBY_LOG "connection to the host lost\n");
 		return;
 	}
@@ -1655,6 +1655,38 @@ Boot gBoot;
 void AtExit() { CE_LobbyAfterExit(); }
 struct RegisterAtExit { RegisterAtExit() { atexit(AtExit); } } gRegisterAtExit;
 #endif
+}
+
+// The lobby page's last frame (its background, borders, emblem, title bar and the two player slots, without words), kept for the
+// restarted game's waiting screen: written by the page as the start begins (ce_network_wait.cpp), read and removed by the game
+// before its level loads. A private file of the user folder, never part of a career or the options.
+extern "C" int CE_LobbyWaitingFramePath(char *out, size_t size)
+{
+	return HandoffPath(out, size, "ce-network-waiting-frame.ppm") ? 1 : 0;
+}
+
+// Reads that frame (binary PPM, 8-bit RGB) into a buffer the caller frees with free(), and removes the file. 0 when there is none.
+extern "C" int CE_LobbyWaitingFrameTake(unsigned *width, unsigned *height, unsigned char **rgb)
+{
+	char path[4096];
+	*width = *height = 0; *rgb = NULL;
+	if (!CE_LobbyWaitingFramePath(path, sizeof path))
+		return 0;
+	FILE *f = fopen(path, "rb");
+	if (!f)
+		return 0;
+	unsigned w = 0, h = 0, depth = 0;
+	unsigned char *data = NULL;
+	if (fscanf(f, "P6 %u %u %u", &w, &h, &depth) == 3 && depth == 255 && w >= 64 && h >= 48 && w <= 8192 && h <= 8192 &&
+		fgetc(f) != EOF && (data = (unsigned char *)malloc(size_t(w) * h * 3)) != NULL &&
+		fread(data, 1, size_t(w) * h * 3, f) == size_t(w) * h * 3)
+	{
+		*width = w; *height = h; *rgb = data; data = NULL;
+	}
+	free(data);
+	fclose(f);
+	remove(path);
+	return *rgb != NULL;
 }
 
 extern "C" void CE_LobbyAfterExit(void)

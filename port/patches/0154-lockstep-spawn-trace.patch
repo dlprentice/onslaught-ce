@@ -40,9 +40,9 @@
  
  // The per-file maths constants from maths.h come first:
  // FUNCTION: 0x0044b840 init:ZERO_FVECTOR
-@@ -42,6 +45,12 @@
- 	CE_WorldExplosionBirth(this,init);
- #endif
+@@ -39,6 +42,12 @@
+ 	CExplosionInitThing	*i = (CExplosionInitThing *)init;
+ 
  	mOriginator.SetReader(i->mOriginator);
 +#ifndef CE_NETWORK_OFF
 +	{	// port (lockstep co-op, tests): where an explosion starts and who asked, for the per-tick trace

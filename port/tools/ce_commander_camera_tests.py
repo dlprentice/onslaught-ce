@@ -217,6 +217,7 @@ def integration_controls(repo: Path, compiler: str, logs: Path, jobs: int) -> bo
         repo / "port" / "game" / "ce_command_panel.cpp",
         repo / "port" / "game" / "ce_hooks.cpp",
         repo / "port" / "game" / "ce_modes.cpp",
+        repo / "port" / "game" / "ce_cmd_hud.cpp",
         repo / "port" / "tools" / "tests" / "ce_commander_camera_factory.cpp",
     ]
     driver_source = repo / "port" / "tools" / "ce_commander_camera_tests.cpp"

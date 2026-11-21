@@ -110,16 +110,34 @@ def main():
         return {'compiled': True, 'exit': ran.returncode}
 
     baseline = compile_run(out, UI)
+    start_driver = ROOT / 'port/tools/tests/ce_editor_start_ui_driver.cpp'
+    start_bin = out / 'start-ui-check'
+    start_built = subprocess.run([compiler, '-std=c++14', '-Wall', '-Wextra', '-Werror', '-I' + str(ROOT / 'port/game'),
+                                  str(start_driver), str(UI), '-o', str(start_bin)], capture_output=True, timeout=90, check=False)
+    (out / 'start-compile.stderr').write_bytes(start_built.stderr)
+    if start_built.returncode:
+        start_baseline = {'compiled': False, 'exit': None}
+    else:
+        start_ran = subprocess.run([str(start_bin)], capture_output=True, timeout=30, check=False)
+        (out / 'start-run.stdout').write_bytes(start_ran.stdout)
+        (out / 'start-run.stderr').write_bytes(start_ran.stderr)
+        start_baseline = {'compiled': True, 'exit': start_ran.returncode}
     variants = {
         'card-over-prompt': ('l.card = Rect(m.width - l.margin - w, cardBottom - cardH - noteH, w, cardH + noteH);', 'l.card = Rect(m.width - l.margin - w, cardBottom + (m.height - l.margin - cardBottom) - cardH - noteH, w, cardH + noteH);'),
         'tool-hit-shifted': ('if (l.tool[i].Contains(x, y)) return i;', 'if (l.tool[i].Contains(x, y)) return i + 1 < m.toolCount ? i + 1 : i;'),
         'tools-clicked-behind-dialog': ('if (m.playing || m.dialog != CeEditorUiNoDialog || m.help) return -1;', 'if (m.playing) return -1;'),
         'world-is-furniture': ('if (m.dialog != CeEditorUiNoDialog || m.help) return true;\n    return l.title', 'if (m.dialog != CeEditorUiNoDialog || m.help || x >= -1e30f) return true;\n    return l.title'),
         'card-not-furniture': ('l.tools.Contains(x, y) || (CeEditorUiWhatShows(m).card && l.card.Contains(x, y))', 'l.tools.Contains(x, y)'),
-        'notice-moves-with-card': ('const float y = m.playing ? l.banner.y + l.banner.h + 40.f * k : lane;', 'const float y = m.playing ? l.banner.y + l.banner.h + 40.f * k : (m.card ? l.card.y : lane) - kGap * k - capH;'),
+        'notice-moves-with-card': ('const float y = m.playing ? playTop + kCapsuleGap * k : lane;', 'const float y = m.playing ? playTop + kCapsuleGap * k : (m.card ? l.card.y : lane) - kGap * k - capH;'),
+        'start-label-ignores-marker': ('int bestHits = MarkerOverlaps(m, l, below, -1);', 'int bestHits = 0;'),
+        'play-notice-overlaps-objective': ('const float playTop = l.objective.h > 0.f ? l.objective.y + l.objective.h : l.banner.y + l.banner.h;', 'const float playTop = l.banner.y + l.banner.h;'),
+        'top-right-caps-collide': ('if (l.mode.h > 0.f) l.objective.y = l.mode.y + l.mode.h + kCapsuleGap * k;', 'if (l.mode.h > 0.f) l.objective.y = l.mode.y + l.mode.h + 3.f * k;'),
+        'gamepad-prompt-ignored': ('if (m.gamepad) {', 'if (false && m.gamepad) {'),
         'card-follows-prompt': ('const float cardBottom = lane - kGap * k;', 'const float cardBottom = m.promptCount > 0 ? l.prompt.y - kGap * k : lane - kGap * k;'),
         'card-follows-value': ('values = Measure(measure, context, CeEditorUiSmall, kWidestPosition);', 'values = Measure(measure, context, CeEditorUiSmall, kWidestPosition) * 0.f;'),
-        'compact-preview-hides-heading-on-wide-screen': ('l.bannerTitle = withTitle <= m.width - kHudRight * k - l.margin;', 'l.bannerTitle = false;'),
+        'compact-preview-hides-heading-on-wide-screen': ('l.bannerTitle = withTitle <= rightSafe - leftSafe;', 'l.bannerTitle = false;'),
+        'banner-over-left-hud': ('const float leftSafe = Max(l.margin, inset + kHudLeft * k);', 'const float leftSafe = Max(l.margin, (inset + kHudLeft * k) * 0.f);'),
+        'top-right-cap-clipped': ('const float rightEdge = m.width - l.margin - kCapOverhang * k;', 'const float rightEdge = m.width - l.margin - kCapOverhang * 0.f * k;'),
         'banner-under-hud': ('if (x + w > m.width - kHudRight * k) x = m.width - kHudRight * k - w;', '(void)kHudRight;'),
         'text-off-capsule': ('l.textDrop = (capH - l.lineHeight) * 0.5f;', 'l.textDrop = (l.title.h - l.lineHeight) * 0.5f;'),
         'unscaled': ('l.scale = s > 0.f ? s : 1.f;', 'l.scale = s > 0.f ? 1.f : 1.f;'),
@@ -153,11 +171,13 @@ def main():
     problems = lint(player_strings(editor, ui) + notices + page)
     # The lint must see: a mutant string with a missing character and one with a forbidden word are caught.
     lint_controls = {'missing-character': bool(lint(['Press [Enter]'])), 'forbidden-word': bool(lint(['Saved a new revision.']))}
-    passed = baseline == {'compiled': True, 'exit': 0} and all(v['rejected'] for v in controls.values()) and not problems and \
+    passed = baseline == {'compiled': True, 'exit': 0} and start_baseline == {'compiled': True, 'exit': 0} and \
+        all(v['rejected'] for v in controls.values()) and not problems and \
         all(lint_controls.values()) and len(notices) > 10 and len(page) > 5
-    receipt = {'passed': passed, 'scope': __doc__, 'baseline': baseline, 'causal_controls': controls, 'lint_problems': problems,
+    receipt = {'passed': passed, 'scope': __doc__, 'baseline': baseline, 'start_baseline': start_baseline,
+               'causal_controls': controls, 'lint_problems': problems,
                'lint_controls': lint_controls, 'notices': len(notices), 'page_messages': len(page),
-               'sha256': {str(p.relative_to(ROOT)): hashlib.sha256(p.read_bytes()).hexdigest() for p in (UI, EDITOR, DRIVER, Path(__file__).resolve())}}
+               'sha256': {str(p.relative_to(ROOT)): hashlib.sha256(p.read_bytes()).hexdigest() for p in (UI, EDITOR, DRIVER, start_driver, Path(__file__).resolve())}}
     (out / 'RESULT.private.json').write_text(json.dumps(receipt, indent=2) + '\n')
     for problem in problems:
         print('FAIL', problem)

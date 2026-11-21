@@ -85,6 +85,7 @@ void	PortCeNetOpen();
 void	PortCeNetButton(SINT button, float val);
 void	PortCeNetProcess();
 void	PortCeNetDraw();
+void	PortCeNetKeepStartFrame();			// ce_network_wait.cpp
 void	PortCeNetShutdown();
 bool	PortCeNetOpenOnEntry();
 WCHAR	*PortCeNetTitle();					// the network page's own title
@@ -2108,6 +2109,10 @@ public:
 #endif
 		FRONTEND.GetCommonPage()->RenderHelpText(1, transition);
 		FRONTEND.GetCommonPage()->RenderSmallBEALogo(RangeTransition(transition, 0.75f, 1.f));
+#ifndef CE_NETWORK_OFF
+		if (net)
+			PortCeNetKeepStartFrame();	// the first frame of a network start, before the pointer: the waiting screen's background
+#endif
 	}
 
 	void	TransitionNotification(EFrontEndPage from)

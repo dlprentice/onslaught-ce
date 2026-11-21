@@ -776,6 +776,44 @@ class SamplingRuleTests(unittest.TestCase):
         got = self.breakpoint([(0, False), (0, True), (2, False), (2, False), (3, True), (3, True), (4, False)])
         self.assertEqual(got, [2, 3, 4])
 
+    def test_native_shot_observer_uses_live_weapon_and_round_symbols(self):
+        for retired in ('CE_WorldShotBegin', 'CE_WorldShotEnd', 'CE_WorldRoundInitialized'):
+            self.assertNotIn(retired, GDB_BODY)
+        self.assertIn('CWeapon::SpawnRound', GDB_BODY)
+        self.assertIn('CRound::Init(CInitThing*)', GDB_BODY)
+        tree = ast.parse(GDB_BODY)
+        nodes = [n for n in tree.body if isinstance(n, ast.ClassDef) and n.name in ('FinishShot', 'FinishRound', 'Observe')]
+        finishes = []
+        class FakeBreakpoint:
+            def __init__(self, name, internal=False): pass
+        class FakeFinish:
+            def __init__(self, frame, internal=False): finishes.append(self)
+        class FakePtr:
+            def __init__(self, addr, obj): self._addr = addr; self._obj = obj
+            def __int__(self): return self._addr
+            def dereference(self): return self._obj
+        weapon_ptr = FakePtr(0x1000, {'mAttachedTo': 0x2000})
+        round_ptr = FakePtr(0x3000, {'mThingType': 7, 'mPos': [1., 2., 3.], 'mVelocity': [4., 5., 6.]})
+        debugger = mock.Mock(Breakpoint=FakeBreakpoint, FinishBreakpoint=FakeFinish)
+        scope = dict(gdb=debugger, MAX_TICK=1200, MAX_ROWS=700, MAX_SHOTS=64, last_tick=-1, shot_stack=[], shot_ordinals={},
+                     state=dict(rows=[], shots=[], failures=[]), flush=lambda: None, fail=mock.Mock(),
+                     is_running=lambda: True, ticket=lambda: (10, 30), vector=lambda v: list(v),
+                     players=lambda: ({'1': [0., 0., 0.], '2': [1., 1., 1.]}, {0x2000: '1'}))
+        exec(compile(ast.Module(body=nodes, type_ignores=[]), '<authored-shot-control>', 'exec'), scope)
+        debugger.newest_frame.return_value = mock.Mock(read_var=lambda n: weapon_ptr if n == 'this' else None)
+        self.assertFalse(scope['Observe']('CWeapon::SpawnRound', 'shot_begin').stop())
+        self.assertEqual(len(scope['shot_stack']), 1)
+        debugger.newest_frame.return_value = mock.Mock(read_var=lambda n: round_ptr if n == 'this' else None)
+        self.assertFalse(scope['Observe']('CRound::Init(CInitThing*)', 'round').stop())
+        self.assertEqual(len(finishes), 2)
+        self.assertFalse(finishes[1].stop())  # FinishRound
+        self.assertFalse(finishes[0].stop())  # FinishShot
+        self.assertEqual(scope['shot_stack'], [])
+        self.assertEqual(len(scope['state']['shots']), 1)
+        self.assertEqual(scope['state']['shots'][0]['player'], '1')
+        self.assertEqual(scope['state']['shots'][0]['velocity'], [4., 5., 6.])
+        scope['fail'].assert_not_called()
+
 
 if __name__ == '__main__':
     unittest.main()

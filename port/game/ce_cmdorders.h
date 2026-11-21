@@ -30,6 +30,8 @@ struct CeCmdUnitNativeRecord {
     int members;
     float position[3];
     char name[32];
+    float life;
+    float maxLife;
 };
 
 // Outbound UI facts contain no native addresses. Both the unit and its squad
@@ -47,6 +49,8 @@ struct CeCmdUnitSnapshot {
     bool commandable;
     bool groundPoint;
     bool orderOwned;
+    float life;
+    float maxLife;
 };
 
 enum CeCmdUnitOrderKind {

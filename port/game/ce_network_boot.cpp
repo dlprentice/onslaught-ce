@@ -20,7 +20,7 @@ int requested;
 int started;
 int prepared;
 int role;
-int lockstep;	// admitted for the two-player lockstep co-op (levels 100, 856, 858), not the level-852 engineering route
+int lockstep;	// admitted for two-player lockstep co-op (levels 100, 856, 858)
 char failure[192];
 bool Present(const char *name) { const char *value = getenv(name); return value && *value; }
 int Refuse(const char *message) {
@@ -32,7 +32,7 @@ int Refuse(const char *message) {
     return 0;
 }
 bool OrdinaryRoute() {
-    return (CLIPARAMS.mLevelNo == 852 || CE_CompatibilityLockstepLevel((uint32_t)CLIPARAMS.mLevelNo)) && CLIPARAMS.mConfigurationNo == 0 && !E3_BUILD && !PLAYABLE_DEMO &&
+    return CE_CompatibilityLockstepLevel((uint32_t)CLIPARAMS.mLevelNo) && CLIPARAMS.mConfigurationNo == 0 && !E3_BUILD && !PLAYABLE_DEMO &&
         !CLIPARAMS.mDeveloperMode && !CLIPARAMS.mArtistTest && !CLIPARAMS.mBuildResources &&
         !CLIPARAMS.mBuildPCResources && !CLIPARAMS.mBuildPS2Resources && !CLIPARAMS.mBuildXBOXResources &&
         !CLIPARAMS.mNoBaseResources && !CLIPARAMS.mBuildModelInfo && !CLIPARAMS.mBuildGoodies &&
@@ -55,12 +55,32 @@ extern "C" int CE_BootStart(void) {
     if (started++) return Refuse("network startup cannot be repeated in this process");
     if (host == guest) return Refuse("select exactly one network role");
     role = host ? 1 : 2;
-    if (!OrdinaryRoute()) return Refuse("networking requires the ordinary route to level 852 or a co-op level (100, 856, 858) and the default options file");
-    lockstep = CLIPARAMS.mLevelNo != 852;
+    if (!OrdinaryRoute()) return Refuse("networking requires the ordinary route to a co-op level (100, 856, 858) and the default options file");
+    lockstep = 1;
     if (Present("BEA_NET_COMPAT")) return Refuse("network compatibility is computed locally, not supplied by the caller");
     const char *automation[] = {"BEA_PORT_CLOCK", "BEA_PORT_TAPE", "BEA_PORT_RECORD", "BEA_PORT_PROBES", "BEA_PORT_PILOT"};
     for (const char *name : automation)
         if (Present(name)) return Refuse("networking requires ordinary live input and time");
+#ifndef CE_NET_TEST_AUTOMATION
+    // Only a --test-automation build (private, never --public) may drive network play by authored input (window.cpp). In any
+    // other build a network start, level 852 or co-op, refuses each of these by name, set even to an empty value: the
+    // scripted pads (BEA_PORT_FAKE_PAD, BEA_PORT_FAKE_PAD2, BEA_PORT_FAKE_PAD_KIND, BEA_PORT_FAKE_PAD_LATE,
+    // BEA_PORT_FAKE_PAD_GAME, BEA_PORT_FAKE_PAD_END), the scripted keys and click (BEA_PORT_FAKE_KEYS,
+    // BEA_PORT_FAKE_KEYS_GAME, BEA_PORT_FAKE_CLICK), the feel script's keys and mouse (BEA_PORT_FEEL_SCRIPT), typed text
+    // (BEA_PORT_UI_INPUT_FD), the authored departures (BEA_PORT_QUIT, BEA_PORT_REPLAY_MAX), the frame pacing
+    // (BEA_PORT_REPLAY_SLEEP_US) and the state dump (BEA_PORT_UPDATE_DUMP). A game with none of them set (single-player,
+    // tools, tapes) never reaches this: the check runs only once BEA_NET_HOST or BEA_NET_JOIN asked for a network start.
+    const char *injected[] = {"BEA_PORT_FAKE_PAD", "BEA_PORT_FAKE_PAD2", "BEA_PORT_FAKE_PAD_KIND", "BEA_PORT_FAKE_PAD_LATE",
+        "BEA_PORT_FAKE_PAD_GAME", "BEA_PORT_FAKE_PAD_END", "BEA_PORT_FAKE_KEYS", "BEA_PORT_FAKE_KEYS_GAME", "BEA_PORT_FAKE_CLICK",
+        "BEA_PORT_FEEL_SCRIPT", "BEA_PORT_UI_INPUT_FD", "BEA_PORT_QUIT", "BEA_PORT_REPLAY_MAX", "BEA_PORT_REPLAY_SLEEP_US",
+        "BEA_PORT_UPDATE_DUMP"};
+    for (const char *name : injected)
+        if (getenv(name)) {
+            char text[192];
+            snprintf(text, sizeof text, "networking takes only the player's own input in this build: %s is set (authored input needs a --test-automation build)", name);
+            return Refuse(text);
+        }
+#endif
     char error[192] = {};
     if (!CE_CompatibilityValidateLauncherRoots(error, sizeof error)) return Refuse(error);
 #ifdef _WIN32
@@ -75,7 +95,7 @@ extern "C" int CE_BootStart(void) {
     if (!CE_CheatCachedStatus(&cheats)) return Refuse("Onslaught CE could not read its settings to check that no cheat is on (a settings folder reached through a link is refused; under Wine keep the user folder on C:)");
     if (cheats) return Refuse("disable gameplay cheats before starting a network process");
     CE_CompatibilityResult result = {};
-    if (!CE_CompatibilityPrepare(lockstep ? CE_COMPAT_LOCKSTEP_PROTOCOL1 : CE_COMPAT_LEVEL852_WORLD11_INPUT5_CONTROL5, (uint32_t)CLIPARAMS.mLevelNo, &result, error, sizeof error))
+    if (!CE_CompatibilityPrepare(CE_COMPAT_LOCKSTEP_PROTOCOL1, (uint32_t)CLIPARAMS.mLevelNo, &result, error, sizeof error))
         return Refuse(error);
 #ifndef CE_NETWORK_OFF
 #if defined(CE_NETWORK_ICE)

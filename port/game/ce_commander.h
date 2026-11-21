@@ -66,6 +66,8 @@ struct CeCmdSquad
 	float gx, gy;			// the goal of a standing march
 	int outcome;			// what it is doing under the map's order (CeCmdOutcome, ce_cmdoutcome.h): CE_OUT_NONE without one
 	bool selected;			// the map's own mark (ce_cmdmap.cpp fills it): the squad is in the selection; the order layer leaves it false
+	float life;				// summed live members' armour/health
+	float maxLife;			// summed live members' maximum armour/health
 };
 
 // Whether the map may be offered here: the ce.ini key "commander" is on and none of the replay, recording, probe or network switches is set (a test build's

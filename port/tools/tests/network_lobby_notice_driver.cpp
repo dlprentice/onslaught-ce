@@ -598,7 +598,7 @@ void DirectConnectionLoss()
 			Step();
 			const auto status = Page();
 			check(status.state == CE_LOBBY_FAILED &&
-				  Says(status.notice, "The connection to your friend was lost. Check that they are still hosting, then join again.") &&
+				  Says(status.notice, "The connection to your friend was lost. Check that your friend is still hosting, then join again.") &&
 				  !L.net && !N.exists && N.createCalls == created && N.destroyCalls == destroyed + 1 &&
 				  N.closeCalls == closed && !CE_LobbyRestartDue(), loss.guest);
 		}

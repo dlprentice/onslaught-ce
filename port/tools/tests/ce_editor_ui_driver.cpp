@@ -279,6 +279,10 @@ int main(int argc, char** argv) {
     if (m.width >= 1280 && m.width > m.height * 1.7f) Check(e.bannerTitle, where + ": wide preview identifies its mode with the keys");
     Check(e.banner.w > 0 && e.banner.x + e.banner.w <= m.width - 290.f * e.scale + 0.01f && e.banner.x >= e.margin - 0.01f,
               where + ": the play-test banner keeps clear of the HUD's top-right group");
+        const float inset = m.width > m.height * (4.f / 3.f) ? (m.width - m.height * (4.f / 3.f)) * 0.5f : 0.f;
+        if (m.width >= 1280)
+            Check(e.banner.x >= inset + 82.f * e.scale - 0.01f,
+                  where + ": the play-test banner keeps clear of the HUD's top-left target icon");
         Check(e.textDrop >= 0.f && e.textDrop + e.lineHeight <= e.banner.h + 0.01f && e.textDrop + e.lineHeight <= e.notice.h + 0.01f &&
               e.notice.y >= e.banner.y + e.banner.h, where + ": in a play test the banner's and the notice's text lie inside them, the notice under the banner");
         Check(Inside(e.objective,m) && e.objective.h>0 && Apart(e.objective,e.banner) && Apart(e.objective,e.notice),
@@ -314,6 +318,80 @@ int main(int argc, char** argv) {
     // Every help line fits its column at 640 x 480.
     int n = 0; while (kCeEditorUiHelp[n].key) ++n;
     Check(n >= 12 && n <= 22, "the help panel lists every key, and no more than fits");
+
+    // Polish regression checks: top-right & playtest capsule gaps, Player Start marker collision avoidance,
+    // stop badge clearance, and device-aware KBM/gamepad prompts across all resolutions.
+    for (const auto& shape : shapes) {
+        CeEditorUiModel m; std::memset(&m, 0, sizeof(m));
+        m.width = shape[0]; m.height = shape[1];
+        const std::string where = std::to_string(int(m.width)) + "x" + std::to_string(int(m.height));
+        std::snprintf(m.level, sizeof(m.level), "%s", "2.21 - Escort Duty");
+        std::snprintf(m.project, sizeof(m.project), "%s", "Project 1");
+        std::snprintf(m.mode, sizeof(m.mode), "%s", "Select: Transport 2");
+        std::snprintf(m.objective, sizeof(m.objective), "%s", "Reach Point then Hold Area");
+        m.toolCount = 10;
+        static const char* fullTools[10] = {"Save", "Open", "Undo", "Redo", "Play Draft", "Change Side",
+                                            "Reach Point", "Hold Area", "Player Start", "Exit"};
+        for (int i = 0; i < 10; ++i) { m.tools[i] = fullTools[i]; m.toolEnabled[i] = true; }
+        m.playerStartMarker = true;
+        m.playerStartX = m.width * 0.5f;
+        m.playerStartY = m.height * 0.45f;
+        CeEditorUiLayout clear; CeEditorUiLay(m, StandIn, nullptr, &clear);
+        const float s = clear.scale;
+        Check(clear.objective.y >= clear.mode.y + clear.mode.h + 12.f * s - 0.01f,
+              where + ": top-right mode and objective capsules stay at least 12u apart for cyan end caps");
+        Check(clear.mode.x + clear.mode.w <= m.width - clear.margin - 6.f * s + 0.01f &&
+              clear.objective.x + clear.objective.w <= m.width - clear.margin - 6.f * s + 0.01f,
+              where + ": top-right capsules leave symmetric right margin for cyan end-cap overhang");
+        // Place an unselected object ring directly under the default below-slot of Player Start (Level 2.21 deck case).
+        CeEditorUiMarker belowMark = {m.playerStartX, clear.start.y + clear.start.h * 0.5f, false};
+        m.markers = &belowMark; m.markerCount = 1;
+        CeEditorUiLayout avoided; CeEditorUiLay(m, StandIn, nullptr, &avoided);
+        const CeEditorUiStartShown shown = CeEditorUiStartShows(avoided, m);
+        const float r = 10.f * s;
+        const CeEditorUiRect markBox = {belowMark.x - r, belowMark.y - r, 2.f * r, 2.f * r};
+        Check(shown.marker && shown.label && Inside(avoided.start, m) && Apart(avoided.start, markBox),
+              where + ": Player Start label relocates clear of an overlapping object marker");
+        // Two-stop mixed route badges: inside window, apart from furniture, Player Start badge and each other.
+        m.routeLength = 2; m.reachMarker = true; m.secondMarker = true;
+        m.reachHold = false; m.secondHold = true;
+        m.reachX = m.width * 0.38f; m.reachY = m.height * 0.35f;
+        m.secondX = m.width * 0.62f; m.secondY = m.height * 0.55f;
+        CeEditorUiLayout stops; CeEditorUiLay(m, StandIn, nullptr, &stops);
+        Check(Inside(stops.stopLabel[0], m) && Inside(stops.stopLabel[1], m) &&
+              Apart(stops.stopLabel[0], stops.stopLabel[1]) &&
+              Apart(stops.stopLabel[0], stops.start) && Apart(stops.stopLabel[1], stops.start),
+              where + ": Reach/Hold stop badges stay inside the window and clear of Player Start and each other");
+        // Playtest objective + notice clearance (cyan end caps never touch).
+        m.playing = true;
+        std::snprintf(m.objective, sizeof(m.objective), "%s", "Stop 2: Holding  0.0 / 3 s  (18 m)");
+        m.notice = "Stop 1 reached. Next: Stop 2.";
+        m.noticeAlpha = 1.f;
+        CeEditorUiLayout play; CeEditorUiLay(m, StandIn, nullptr, &play);
+        Check(play.notice.y >= play.objective.y + play.objective.h + 12.f * play.scale - 0.01f,
+              where + ": playtest notice sits at least 12u below the active objective bar");
+        // Device-aware prompts fit inside the window across KBM and Gamepad states.
+        m.playing = false; m.notice = nullptr;
+        for (int gp = 0; gp < 2; ++gp) {
+            m.gamepad = gp != 0;
+            for (int mode = 0; mode < 7; ++mode) {
+                CeEditorUiFillPrompts(m, mode == 1, mode == 2, mode == 3 || mode == 4, mode == 4, mode == 5, mode == 6);
+                Check(m.promptCount >= 2 && m.promptCount <= CeEditorUiPromptMax,
+                      where + ": prompt set is populated");
+                if (gp && mode == 0) Check(!std::strcmp(m.prompts[0].key, "Stick"), where + ": gamepad idle prompt names Stick");
+                if (!gp && mode == 0) Check(!std::strcmp(m.prompts[0].key, "Click"), where + ": KBM idle prompt names Click");
+                if (gp && mode == 2) Check(!std::strcmp(m.prompts[0].key, "A"), where + ": gamepad start placement names A");
+                CeEditorUiLayout pl; CeEditorUiLay(m, StandIn, nullptr, &pl);
+                Check(Inside(pl.prompt, m), where + ": filled prompt capsule fits inside the window");
+            }
+        }
+    }
+    Check(!CeEditorUiUpdateDevice(true, false, true, false), "disconnected pad clears gamepad mode");
+    Check(CeEditorUiUpdateDevice(false, true, true, false), "pad input switches to gamepad mode");
+    Check(!CeEditorUiUpdateDevice(true, true, false, true), "keyboard or mouse input switches back to KBM");
+    Check(CeEditorUiUpdateDevice(true, true, false, false), "idle frame preserves gamepad mode");
+    Check(!CeEditorUiUpdateDevice(false, true, false, false), "idle frame preserves KBM mode");
+
     std::printf("map editor furniture: %u checks, %u failures\n", checks, failures);
     return failures ? 1 : 0;
 }

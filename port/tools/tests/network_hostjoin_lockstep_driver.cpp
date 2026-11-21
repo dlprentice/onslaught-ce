@@ -5,8 +5,15 @@
 #include <cstring>
 #include <initializer_list>
 #include "../../platform/common/ce_netcode.h"
+#include "../../platform/common/runmode.h"
+#include "../../platform/common/testhooks.h"
 #define LOBBY_LOG "authored lobby fixture: "
 #define CE_NETWORK_ENABLED 1	// authored network-capable build; no transport is created
+PortTestHooks *gPortTestHooks = nullptr;
+static bool Set(const char *name) { const char *v = getenv(name); return v && *v; }
+static bool AnySet(const char *const *names, int count) { for (int i = 0; i < count; ++i) if (Set(names[i])) return true; return false; }
+#include ACTUAL_RUNMODE
+bool PortRunOffersNetworkPages() { const PortRunMode m = Decide(); return m == PORT_RUN_PLAY || m == PORT_RUN_TEST_KIT; }
 static bool menus=true;
 static bool PortCeMenus() { return menus; }
 struct Parameters { bool mRecordDemo=false, mPlaybackDemo=false, mAutoConfigTest=false; } CLIPARAMS;
@@ -33,7 +40,10 @@ static void Exec(const char *) { ++calls_to_exec; }
 static bool PortCeQuitRequested() { return false; }
 static const char *CE_SessionError() { return ""; }
 static const char *CE_BootError() { return ""; }
-static void ReturnToFrontEnd(bool,const char *) { ++calls_to_return; }
+static void ReturnToFrontEnd(bool,const char *,bool=false) { ++calls_to_return; }
+// The rematch hooks the after-exit path reads (weak in production; ce_network_ring.cpp and ce_network_lockstep.cpp): no mission ran here.
+static int PortCeNetRingLeft() { return 0; }
+static int PortCeNetConfirmedMatch() { return 0; }
 #include ACTUAL_OFFER
 #include ACTUAL_SETENV
 #include ACTUAL_SCRUB
@@ -101,7 +111,8 @@ int main(int argc,char **argv) {
     check(getenv("BEA_NET_HANDOFF")&&!std::strcmp(getenv("BEA_NET_HANDOFF"),"launch"),"restart sets its requested handoff kind");
     check(getenv("BEA_NET_HANDOFF_FILE")&&!std::strcmp(getenv("BEA_NET_HANDOFF_FILE"),"authored-name"),"restart publishes the pending handoff name");
     check(getenv("BEA_NET_HANDOFF_OWNER")&&!std::strcmp(getenv("BEA_NET_HANDOFF_OWNER"),"authored-owner"),"restart publishes the pending handoff owner");
-    ScrubEnvironment(nullptr);check(!getenv("BEA_NET_HANDOFF"),"null handoff removes the previous handoff kind");
+    // The two kinds ce_netlobby.cpp passes: a later "outcome" scrub replaces the "launch" handoff kind set above.
+    ScrubEnvironment("outcome");check(getenv("BEA_NET_HANDOFF")&&!std::strcmp(getenv("BEA_NET_HANDOFF"),"outcome"),"outcome scrub replaces a launch handoff");
     check(PortLobbyShellExit(27,1)==27&&gShellExited&&gShellCode==27&&gShellNativeQuit==1,"shell wrapper preserves return code and records the native quit");
     check(PortLobbyLevelQuit(13,99)==13&&!gLevelToSystem,"level wrapper preserves ordinary quit");
     check(PortLobbyLevelQuit(99,99)==99&&gLevelToSystem,"level wrapper preserves system quit");

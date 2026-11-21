@@ -45,7 +45,7 @@ def main() -> int:
          'l.objective.Contains(x, y)'),
         ("marker-over-tool-text", 'Cross(r, l.mode)',
          'false'),
-        ("tool-and-route-overlap", 'l.objective.y = l.mode.y + l.mode.h + 3.f * k;',
+        ("tool-and-route-overlap", 'l.objective.y = l.mode.y + l.mode.h + kCapsuleGap * k;',
          'l.objective.y += 0.f;'),
         ("height-row-unmeasured", ' + (lh + 2.f) * k;', ';'),
     ]

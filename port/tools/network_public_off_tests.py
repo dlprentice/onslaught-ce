@@ -14,7 +14,7 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
-from network_world_tests import actual_body
+from network_source_extract import actual_body
 
 ROOT = Path(__file__).resolve().parents[2]
 GAME = ROOT / "port/game"
@@ -24,7 +24,8 @@ ROLES = re.compile(r"^[ \t]*bool host = [^;\n]*guest = [^;\n]*;", re.M)
 ROLE_DRIVER = """
 #include "%(header)s"
 static bool Present(const char *) { return true; }
-static bool EnvPresent(const char *) { return true; }
+static bool Env(const char *) { return true; }
+static const char *host_name = "BEA_NET_HOST", *join_name = "BEA_NET_JOIN";
 int main()
 {
 	%(statement)s
@@ -82,7 +83,7 @@ def main():
     # A public build compiles none of the network modules; every other port file stays in.
     sys.path.insert(0, str(ROOT / "port"))
     import build
-    modules = [build.PORT / "network" / "codec.cpp", build.PORT / "network" / "compatibility.cpp", build.PORT / "game" / "ce_network_session.cpp",
+    modules = [build.PORT / "network" / "codec.cpp", build.PORT / "network" / "compatibility.cpp", build.PORT / "game" / "ce_network_world.cpp",
                build.PORT / "game" / "ce_network_lockstep.cpp", build.PORT / "game" / "ce_netpages.cpp", build.PORT / "platform/common/ce_netlobby.cpp",
                build.PORT / "platform/common/ce_netcode.cpp", Path("/x/monocypher-4.0.2/src/monocypher.c")]
     others = [build.PORT / "game" / "ce_frontend.cpp", build.PORT / "platform/common/window.cpp", build.PORT / "platform/common/ce.cpp",
@@ -110,10 +111,10 @@ def main():
         raise SystemExit("a C++ compiler is required")
     header = "ce_network_boot.h"
     boot = role_statement(GAME / "ce_network_boot.cpp", 'Present("BEA_NET_HOST")')
-    session = role_statement(GAME / "ce_network_session.cpp", 'EnvPresent("BEA_NET_HOST")')
+    session = role_statement(GAME / "ce_network_lockstep.cpp", 'Env(host_name)')
     offer = actual_body((GAME / "ce_netpages.cpp").read_text(), "bool\tPortCeNetOffered()")
     with tempfile.TemporaryDirectory(prefix="ce-network-off-") as tmp:
-        for label, statement in (("CE_BootStart roles", boot), ("CE_SessionConfigureLevel roles", session)):
+        for label, statement in (("CE_BootStart roles", boot), ("CE_LockstepConfigureLevel roles", session)):
             for define, want in ((False, 3), (True, 0)):
                 got = run(compiler, tmp, "roles", ROLE_DRIVER % {"header": header, "statement": statement}, define)
                 check("%s in a %s build: exit %d, want %d" % (label, "public" if define else "private", got, want), got == want)

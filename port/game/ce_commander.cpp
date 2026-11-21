@@ -1074,7 +1074,7 @@ void Describe(int index, Rec &r, int allegiance, CeCmdSquad &s)
 	const int n = Units(r, units, 256);
 	bool scripted = r.squad->GetMissionScript() != NULL, objective = false, scanner = false, unmarchable = false, deploys = false;
 	bool crossesWater = n > 0;
-	float cx = 0, cy = 0;
+	float cx = 0, cy = 0, lifeSum = 0.f, maxLifeSum = 0.f;
 	for (int k = 0; k < n; ++k)
 	{
 		if (units[k]->GetMissionScript()) scripted = true;
@@ -1085,6 +1085,10 @@ void Describe(int index, Rec &r, int allegiance, CeCmdSquad &s)
 		if (const CUnitData *d = units[k]->GetUnitData()) if (d->mUnknown108 || (d->mName && strstr(d->mName, "Artillery"))) deploys = true;	// artillery keeps its place while its squad's centre jumps to the goal
 		cx += units[k]->GetPos().X;
 		cy += units[k]->GetPos().Y;
+		const float uLife = units[k]->GetLife();
+		const float uMax = units[k]->GetMaxLife();
+		if (uLife > 0.f) lifeSum += uLife;
+		if (uMax > 0.f) maxLifeSum += uMax;
 	}
 	if (n > r.peak) r.peak = n;
 	s.ordinal = index;
@@ -1111,6 +1115,8 @@ void Describe(int index, Rec &r, int allegiance, CeCmdSquad &s)
 				(FVector(s.x, s.y, 0) - FVector(s.gx, s.gy, 0)).MagnitudeXY() < ArriveRadius(r);
 	s.outcome = r.ordered && r.fromMap ? r.outcome : CE_OUT_NONE;
 	s.selected = false;
+	s.life = lifeSum;
+	s.maxLife = maxLifeSum;
 }
 }
 
@@ -1448,6 +1454,8 @@ int CeCmdUnitCollectNative(CeCmdUnitNativeRecord* out, int capacity, bool* compl
             const CUnitData* data = unit->GetUnitData();
             snprintf(item.name, sizeof(item.name), "%s",
                 data && data->mName ? data->mName : "Unit");
+            item.life = unit->GetLife();
+            item.maxLife = unit->GetMaxLife();
         }
     }
     *complete = all;

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
-// Explicit engineering admission for the bounded two-peer level-852 route. No menu/discovery or campaign support.
+// Game-loop session bridge for two-player lockstep co-op.
 #ifndef CE_NETWORK_SESSION_H
 #define CE_NETWORK_SESSION_H
 #include <stdint.h>
@@ -9,27 +9,20 @@ extern "C" {
 #endif
 int CE_SessionConfigureLevel(uint32_t level);
 int CE_SessionAfterLoad(void);
-int CE_SessionPreparePlay(void); // calls genuine PreRun offline and on the host; never on a replica
-// Schema-5 controls fence CSD1 STATE application behind its admitted lifecycle prefix and exact whole-Apply ACKs.
-// Repairs use an acknowledged quiet shared-WAIT transaction, a READY receipt and a separate reliable raw image.
-// Lifecycle Send0 retains the exact front; neither lifecycle nor state bases retire merely because time elapsed.
+int CE_SessionPreparePlay(void); // calls genuine PreRun offline and after lockstep start barriers
 int CE_SessionBeforeUpdate(void);
-void CE_SessionAfterFlush(void);
 void CE_SessionAfterUpdate(void); // MainLoop, after its one Update (lockstep co-op ends the tick here)
 void CE_SessionBeforeRender(void);
 int CE_SessionBeginTeardown(int original_quit);
 void CE_SessionAfterWorldShutdown(void);
 const char *CE_SessionError(void);
-// The current player-facing connection notice ("Connection lost, waiting... (N s)", short enough for the game screen), or "".
+// The current player-facing connection notice ("Waiting for your friend... N", short enough for the game screen), or "".
 const char *CE_SessionNotice(void);
 int CE_SessionActive(void);
-// Validated local JOIN role, from before world load through native world destruction; never runs admission.
-int CE_SessionMissionVMBlocked(void);
 // Retained terminal network outcome after world retirement; ordinary/offline exits keep their code. A failed
 // lockstep outcome cannot be converted to success by a concurrent native WM_QUIT with code zero.
 int CE_SessionExitCode(int native_code, int native_quit_seen);
-// Window service never applies/captures a world or lifecycle record, or runs a controller/event/render callback.
-// Both peers report local unavailability; the host's acknowledged shared wait owns release of simulation.
+// Window service never applies/captures a world record, or runs a controller/event/render callback.
 // Return EXIT only to let the genuine caller consume its already-set quit code; never synthesize WM_QUIT.
 enum CE_SessionSystemResult { CE_SESSION_NATIVE = 0, CE_SESSION_WAIT = 1, CE_SESSION_EXIT = 2 };
 enum CE_SessionWindowReason { CE_SESSION_UNFOCUSED = 1, CE_SESSION_MINIMIZED = 2,
@@ -46,6 +39,13 @@ void CE_SessionGameSetQuit(int quit);
 uint32_t CE_SessionGameTick(void);
 void CE_SessionGameRebaseRenderClock(void);
 int CE_SessionGameAbortLoad(void);
+// The co-op start's waiting screen (ce_netpages.cpp): one frame of it while a start barrier waits, at most 30 a second.
+// FRIEND: the other player is not connected yet; STARTING: connected, the start is being agreed (both offer Leave, and
+// return 1 once when the player chose it); PRERUN: one frame without Leave, drawn before this game's own pre-run;
+// END: the wait is over (the screen's key trap is removed).
+// PREPARE: before the level loads, the lobby's kept frame is read for the screen's background.
+enum CE_SessionWaitMode { CE_WAIT_END = 0, CE_WAIT_FRIEND = 1, CE_WAIT_STARTING = 2, CE_WAIT_PRERUN = 3, CE_WAIT_PREPARE = 4 };
+int CE_SessionGameWaitFrame(int mode);
 #ifdef __cplusplus
 }
 #endif

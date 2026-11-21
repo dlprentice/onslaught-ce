@@ -8,7 +8,11 @@ namespace {
 enum { THING_TYPE_UNIT = 1, THING_TYPE_BUILDING = 2, kForsetiAllegiance = 1 };
 struct Position { float X, Y; };
 struct UnitData { const char* mName; };
-struct MountData { const char* mThingName; };
+struct MountData {
+    const char* mThingName = nullptr;
+    int mAmount = 4;
+    int mInfinite = 1;
+};
 }
 
 class CSpawner;
@@ -21,13 +25,15 @@ public:
 class CUnit : public CThing {
 public:
     bool IsDying() const { return false; }
+    bool IsShuttingDown() const { return false; }
     int allegiance = kForsetiAllegiance;
     UnitData data = {};
     Position position = {};
     std::vector<CSpawner*> mSpawners;
     UnitData* GetUnitData() { return &data; }
     int GetAllegiance() const { return allegiance; }
-    int GetLife() const { return 1; }
+    int GetLife() const { return 100; }
+    int GetMaxLife() const { return 100; }
     const Position& GetPos() const { return position; }
 };
 // This camera fixture contains no available delivered vehicle.
@@ -39,8 +45,12 @@ class CSpawner {
 public:
     CUnit* mOwner = nullptr;
     MountData* mData = nullptr;
-    bool mEnabled = true, ready = true;
+    bool mEnabled = true, ready = true, spawning = false, exhausted = false;
+    int mUnknown3D8 = 0;
+    float mUnknown3E0 = 0.f;
     bool Unknown4e43d0() const { return ready; }
+    bool Unknown4e4420() const { return spawning; }
+    bool Unknown4e4430() const { return exhausted; }
     int DoSpawn() { return 0; }  // This camera fixture does not create game units.
 };
 
@@ -82,6 +92,7 @@ void CameraFactoryWorld(bool enabled, bool hasTankMount) {
     building.data.mName = kFactoryType;
     building.position = {217, 223};
     mount = CSpawner();
+    mount_data = MountData();
     mount_data.mThingName = hasTankMount ? kVehicleType : "Authored different mount";
     mount.mOwner = &building;
     mount.mData = &mount_data;

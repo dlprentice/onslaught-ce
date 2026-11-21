@@ -39,7 +39,7 @@ extern "C" void CE_NetWindowAutomationPrepare(void) { ++automation_prepare; }
 extern "C" void CE_NetUpdateAutomationPrepare(void) { ++automation_prepare; }
 extern "C" void PortInitializeContentRoots(void) { ++automation_prepare; PortPathsInit(); }
 CCLIParams::CCLIParams() {
-    std::memset(static_cast<void *>(this), 0, sizeof *this); mLevelNo = 852; mGoStraightToDeviceSelectScreen = -1;
+    std::memset(static_cast<void *>(this), 0, sizeof *this); mLevelNo = 856; mGoStraightToDeviceSelectScreen = -1;
     std::strcpy(mSampleBankRoot, ".");
 }
 void CCLIParams::GetParams(char *) { ++params_calls; }
@@ -161,11 +161,23 @@ int main(int argc, char **argv) {
 #else
     // The Windows-order model substitutes Linux readers. Their root initialization is eager offline,
     // whereas the real Windows Resolve owner initializes lazily; online init stays inside BootStart.
-    if (mode == "offline") PortPathsInit();
+    if (mode == "offline" || mode.rfind("offline-inject:", 0) == 0) PortPathsInit();
 #endif
     if (mode == "offline") { unsetenv("BEA_NET_HOST"); unsetenv("BEA_NET_JOIN"); }
-    if (mode == "bad-level") CLIPARAMS.mLevelNo = 851;	// neither the level-852 route nor a co-op level
+    if (mode == "bad-level") CLIPARAMS.mLevelNo = 851;	// not an admitted co-op level
+    if (mode == "retired-852") CLIPARAMS.mLevelNo = 852;	// retired snapshot level must be refused at boot
     if (mode == "lockstep-boot") CLIPARAMS.mLevelNo = 856;	// a co-op level: admitted with the lockstep contract (its archive is in this case's content)
+    // inject:NAME, a co-op start with one authored-input switch set: refused by name in a player's build, admitted in a --test-automation one
+    // (TEST_AUTOMATION_BUILD); offline-inject:NAME, the same switch in a game with no network role: the ordinary route, untouched.
+    const bool inject = mode.rfind("inject:", 0) == 0, offline_inject = mode.rfind("offline-inject:", 0) == 0;
+    const std::string injected = inject ? mode.substr(7) : offline_inject ? mode.substr(15) : std::string();
+    if (inject || offline_inject) { setenv(injected.c_str(), "1", 1); CLIPARAMS.mLevelNo = 856; }
+    if (offline_inject) { unsetenv("BEA_NET_HOST"); unsetenv("BEA_NET_JOIN"); }
+#ifdef TEST_AUTOMATION_BUILD
+    const bool inject_refused = false;
+#else
+    const bool inject_refused = inject;
+#endif
     if (mode == "bad-options") std::strcpy(DEFAULT_OPTIONS_NAME, "data/default physics.dat");
     if (mode == "cardid-absolute") CLIPARAMS.mCardID = true;
     if (mode == "build") CLIPARAMS.mBuildResources = true;
@@ -175,25 +187,28 @@ int main(int argc, char **argv) {
     if (mode == "forced-layer-off") setenv("BEA_PORT_CE_LAYER", "0", 1);
     if (mode == "automation") setenv("BEA_PORT_TAPE", "not-opened", 1);
     if (mode == "root-invalid") setenv("BEA_USER_DIR", (user + "/absent").c_str(), 1);
-    char commandline[] = "-level 852"; int entry = Entry(commandline);
-    bool denied = mode == "bad-level" || mode == "bad-options" || mode == "cardid-absolute" || mode == "build" ||
+    char commandline[] = "-level 856"; int entry = Entry(commandline);
+    bool denied = mode == "bad-level" || mode == "retired-852" || mode == "bad-options" || mode == "cardid-absolute" || mode == "build" ||
         mode == "demo" || mode == "both-roles" || mode == "supplied-context" || mode == "forced-layer-off" ||
-        mode == "automation" || mode == "root-invalid";
+        mode == "automation" || mode == "root-invalid" || inject_refused;
     Check(params_calls == 1, "actual post-parser hook runs once");
     if (denied) {
         if (mode != "forced-layer-off")
             Check(!automation_prepare, "early refusal precedes native initialization and automation preparation");
         Check(entry == 1 && !loaded && !blanked, "entry refusal precedes local options and native load");
+        if (inject_refused)
+            Check(std::strstr(CE_BootError(), injected.c_str()) && std::strstr(CE_BootError(), "--test-automation") &&
+                  !std::strstr(CE_BootError(), "cannot be repeated"), "a co-op start in a player's build refuses authored input, naming the switch");
         Context(false); Check(!CE_BootStart(), "failed startup cannot retry");
     } else {
         Check(entry == 0 && loaded == 1 && blanked == 1, "ordinary native options route preserved");
-        if (mode == "offline") {
+        if (mode == "offline" || offline_inject) {
             Check(!CE_BootRequested() && CE_BootAutomaticScript() == 1, "offline script remains native");
             CConsoleCommand c{const_cast<char *>("count"), CountCommand, nullptr}; CONSOLE.mCommands = &c;
             char line[] = "count"; CONSOLE.ExecuteCommand(line); Check(callbacks == 1, "offline console dispatch preserved");
         } else {
             Context(true); Check(CE_BootRequested() && automation_prepare >= 2, "actual role and automation owners prepared");
-            Check(CE_BootLockstep() == (mode == "lockstep-boot" ? 1 : 0), "the admitted contract is the level's: lockstep on a co-op level, the level-852 route otherwise");
+            Check(CE_BootLockstep() == 1, "every admitted network boot uses the lockstep co-op contract");
             Check(CE_CheatCachedStatus(&mask) && mask == 0, "actual settings cache warmed before Prepare");
             FILE *f = CE_BootOpenLocal(CE_BOOT_OPTIONS, "defaultoptions.bea", "rb");
             Check(f && std::fgetc(f) == 'O' && bea_crt_fclose(f) == 0 && bea_crt_fclose(f) == EOF, "local stream retains one close owner");
@@ -238,7 +253,7 @@ int main(int argc, char **argv) {
                 Check(Bytes(game + "/data/default physics.dat") == before, "local rejection preserves linked authored bytes");
             } else if (mode == "retire") {
                 CE_CompatibilityRetire(); Context(false); CE_CompatibilityResult r{};
-                Check(!CE_CompatibilityPrepare(CE_COMPAT_LEVEL852_WORLD11_INPUT5_CONTROL5, 852, &r, error, sizeof error), "retired process cannot rearm");
+                Check(!CE_CompatibilityPrepare(CE_COMPAT_LOCKSTEP_PROTOCOL1, 856, &r, error, sizeof error), "retired process cannot rearm");
             } else {
                 Check(Automatic() == 0 && !script_opens, "known-empty automatic script has no native execution");
                 FILE *data = port_fopen(".\\data\\default physics.dat", "rb"); Check(data, "stock single-dot path admitted");
