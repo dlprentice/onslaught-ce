@@ -47,8 +47,9 @@ extern "C" void	PortCeMuseumVisitFilterSave(CCareer *career, void *dest);	// ce_
 CCamera			*PortCeCmdRenderCamera(CCamera *camera, CPlayer *player);	// ce_cmdmap.cpp (render_camera)
 CCamera			*PortCePlayUnitRenderCamera(CCamera *camera, CPlayer *player); // ce_playunit.cpp (render_camera)
 
-// Optional gated Multi-BE prototype handlers (port/game/ce_multibe.cpp): weak references so standalone host drivers
-// that compile ce_hooks.cpp without ce_multibe.cpp link cleanly; full game builds always link strong definitions.
+// Optional / loosely coupled handlers: weak references so standalone host drivers that compile ce_hooks.cpp without
+// every feature module link cleanly; full game builds always link strong definitions (checked by windows_weak_link_tests.py).
+extern "C" void				PortCePlayUnitDrawWorld(int viewpoint) __attribute__((weak));
 extern "C" void				PortCeMultiBeLevelBegin(int level) __attribute__((weak));
 extern "C" void				PortCeMultiBeLevelEnd(int level, int quit) __attribute__((weak));
 extern "C" void				PortCeMultiBeTickPre() __attribute__((weak));
@@ -69,6 +70,7 @@ static bool CeHookPhotoKey(unsigned char key, bool repeat) { return PortCePhotoK
 static bool CeHookPaletteSuppressDown(unsigned char key, bool) { return PortCePaletteSuppressDown(key); }
 static bool CeHookPaletteOpen(unsigned char key, bool repeat) { return PortCePaletteOpen(key, repeat); }
 static bool CeHookCmdKey(unsigned char key, bool repeat) { return PortCeCmdKey(key, repeat); }
+static void CeHookPlayUnitDrawWorld(CPlayer *, int viewpoint) { if (PortCePlayUnitDrawWorld) PortCePlayUnitDrawWorld(viewpoint); }
 static void CeHookEditorRender() { PortCeEditorRender(); }
 static void CeHookEditorSave(CeHookSaveTarget target, CCareer *career, char *dest, int)
 {
@@ -174,6 +176,7 @@ static constexpr CeHookRow<CeHookKeyFn> kKeyCapture[] = {
 };
 CE_HOOK_CHECK(kKeyCapture, CE_HOOK_RENDER, CE_DISPATCH_FIRST_MATCH, "key_capture");
 static constexpr CeHookRow<CeHookViewFn> kDrawWorld[] = {
+	{10, "playunit_draw_world", CE_HOOK_RENDER, CE_GATE_VERSION, CE_MODE_NONE, CeHookPlayUnitDrawWorld},
 	CE_HOOK_END
 };
 CE_HOOK_CHECK(kDrawWorld, CE_HOOK_RENDER, CE_DISPATCH_ORDERED_BROADCAST, "draw_world");

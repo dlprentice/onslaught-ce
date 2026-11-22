@@ -22,6 +22,7 @@ port/tools/ce_backup_preview_windows_tests.py	script	-	deps+wine	release	-	resto
 port/tools/ce_bonus_save_tests.py	script	-	none	release	-	
 port/tools/ce_bonus_tests.py	script	-	none	release	-	
 port/tools/ce_career_backup_tests.py	script	-	none	release	-	restore lane; host build with the system compiler
+port/tools/ce_career_custody_ntfs_tests.py	script	--out {scratch}	deps+wine	release	-	cross-compiles standalone Windows Career Custody NTFS fixture (ce-career-custody-ntfs.exe) and verifies core cases and honest UNSUPPORTED_OR_DENIED reporting under Wine
 port/tools/ce_career_edit_tests.py	script	-	none	release	-	pure-byte career editor header and causal mutants; host build with the system compiler
 port/tools/ce_career_publish_tests.py	script	-	deps+wine	release	-	non-destructive career publish-as-new behind CeCareerTakeFullSet and external .bes reader; host Linux + Windows/Wine builds
 port/tools/ce_career_restore_names_tests.py	script	-	none	release	-	restore lane; host build with the system compiler
@@ -83,6 +84,7 @@ port/tools/ce_hud_reservation_tests.py	script	-	none	release	-	Commander lane; h
 port/tools/ce_menu_fit_tests.py	script	--causal-controls	none	release	-	
 port/tools/ce_menu_mouse_tests.py	script	-	deps	release	-	
 port/tools/ce_asset_catalog_tests.py	script	-	none	release	120	read-only catalogue scanner and native menu data on authored installations
+port/tools/ce_mod_starter_e2e_tests.py	script	-	deps+game	release	180	example mod starter end-to-end check: bea --check-mods positive/mutant and live offscreen Mods UI load
 port/tools/ce_modspage_tests.py	script	-	none	release	1800	the Mods page's model on the actual loader; builds its drivers with the host compiler and zlib
 port/tools/ce_mouse_fraction_tests.py	script	-	deps	release	-	
 port/tools/ce_museum_authored_world_tests.py	script	-	none	release	-	museum lane; host build with the system compiler

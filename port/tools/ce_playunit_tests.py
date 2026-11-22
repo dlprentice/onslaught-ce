@@ -594,7 +594,6 @@ class Fences(unittest.TestCase):
                 self.assertEqual(names, {"CePlayUnitHudFocus", "CePlayUnitHudFocusOf", "CePlayUnitHudOverlay"})
                 self.assertEqual(hud_additions.count("#ifdef CE_VERSION"), hud_additions.count("#endif"))
             elif patch.name in ("0356-ce-playunit-firstperson-parts.patch",
-                                "0357-ce-playunit-world-draw.patch",
                                 "0358-ce-playunit-class-hooks.patch",
                                 "0359-ce-playunit-muspell-side.patch"):
                 additions = "\n".join(line[1:] for line in text.splitlines() if line.startswith("+") and not line.startswith("+++"))

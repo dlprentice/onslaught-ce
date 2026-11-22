@@ -275,6 +275,7 @@ bool PortCePhotoKey(unsigned key, bool) { gCalls += "photo_key;"; return key == 
 bool PortCePaletteSuppressDown(unsigned key) { gCalls += "pal_sup;"; return key == gConsumeKey && key == 2; }
 bool PortCePaletteOpen(unsigned key, bool) { gCalls += "pal_open;"; return key == gConsumeKey && key == 3; }
 bool PortCeCmdKey(unsigned key, bool) { gCalls += "cmd_key;"; return key == gConsumeKey && key == 4; }
+extern "C" void PortCePlayUnitDrawWorld(int) { gCalls += "playunit_world;"; }
 void PortCeEditorRender() { gCalls += "editor_overlay;"; }
 extern "C" void PortCeEditorFilterSave(CCareer *, void *) { gCalls += "editor_save;"; }
 void PortCeBonusFilterSave(CCareer *, void *) { gCalls += "bonus_save;"; }
@@ -306,7 +307,7 @@ int main() {
 #ifdef CE_VERSION
     static_assert(CE_HOOKS_API_VERSION == 0x0200u, "version 2.0");
     static_assert(CE_HOOKS_POINT_COUNT == 21u, "21 points");
-    if (gCalls != "palette_end;console_end;photo_end;cmd_end;gamepad;editor_overlay;editor_save;bonus_save;museum_save;photo_key;pal_sup;pal_open;cmd_key;cmd_cam;playunit_cam;") return 10;
+    if (gCalls != "palette_end;console_end;photo_end;cmd_end;gamepad;playunit_world;editor_overlay;editor_save;bonus_save;museum_save;photo_key;pal_sup;pal_open;cmd_key;cmd_cam;playunit_cam;") return 10;
     gCalls.clear(); gConsumeKey = 2;
     if (!ce_hook_key_capture(2, false) || gCalls != "photo_key;pal_sup;") return 11;
     if (!ce_hook_command_push(command)) return 6;
@@ -378,6 +379,7 @@ class SiteTests(unittest.TestCase):
         self.assertEqual([h[1] for h in rows["save_gate"][2]], ["editor_save", "bonus_save", "museum_visit_save"])
         self.order("ltshell.cpp", "PortCeEditorKey(key", "ce_hook_key_capture(", "mCurrentKeytrap(key,KEY_EVENT_DOWN)")
         self.assertEqual([h[1] for h in rows["key_capture"][2]], ["photo_key", "palette_suppress_down", "palette_open", "commander_key"])
+        self.assertEqual([h[1] for h in rows["draw_world"][2]], ["playunit_draw_world"])
         self.order("ltshell.cpp", "CE_BootStart()", "MEM_MANAGER.Init(", "LT.mhInstance=hInstance;", "ce_hook_boot();", "PortCeGraphicsOptionsOpened(")
         self.order("ltshell.cpp", "if (!sMemoryManagerReady)", "ce_hook_exit(CE_EXIT_ATEXIT)", "PATCHMANAGER.FreeData();")
         self.order("ltshell.cpp", "ce_hook_exit(CE_EXIT_SHELL)", "PortSessionSummary();\n#ifdef CE_NETWORK_OFF")

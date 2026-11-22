@@ -116,6 +116,14 @@ def main() -> int:
     out = args.out or Path(tempfile.mkdtemp(prefix="run-", dir=parent))
     out.mkdir(parents=True, exist_ok=True)
     source, project, _ = fixture(out)
+    # ce_hooks.h forward-declares `class CUnit;`; convert the lifecycle fixture's type alias into a subclass
+    # of CThing so the production serializer driver compiles cleanly against CE Hooks v2.0.
+    engine_inc = out / "editor-playtest-engine.private.inc"
+    engine_inc.write_text(replace_once(
+        engine_inc.read_text(),
+        "using CUnit=CThing;",
+        "class CUnit : public CThing { public: using CThing::CThing; };",
+    ))
     driver_source = (ROOT / "port/tools/tests/ce_editor_playtest_driver.cpp").read_text()
     driver_prefix = re.split(r"^int main\(", driver_source, maxsplit=1, flags=re.M)[0]
     editor = (ROOT / "port/game/ce_editor.cpp").read_text()

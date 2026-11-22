@@ -217,7 +217,6 @@ bcbde1fd085c879865c85ea7ba0ddb998de4e44d79f93d71d5538b4f9cba79ea  port/patches/0
 8a126af974a19079b7774e4f4561ee43814a0d37d8ad232821ada11b6541bb73  port/patches/0354-ce-terrain-textures.patch
 727d7815c260d16eb7da66016f2125b1b325bad174cc8667a14e77325baf1a32  port/patches/0355-ce-anisotropic-filtering.patch
 c967cd3508943d569560f84fa4d3f1234355bccd9414faddad7e8222b72c6b41  port/patches/0356-ce-playunit-firstperson-parts.patch
-adf685590eef975e23fa64181dd70eafefb26a053d91bdcabecd60481d1f842d  port/patches/0357-ce-playunit-world-draw.patch
 c28bb8a91685f3dd9c676beb77b661060f8fc17c58c530d29bca0410c8e6bf93  port/patches/0358-ce-playunit-class-hooks.patch
 8ea506b648e48fa355bbcb8fc48c9cb053c728167d529aa1929fae00cf6574fd  port/patches/0359-ce-playunit-muspell-side.patch
 f301e870f34912cc1fc3f23c2feed84746bc6c58a755df7b0916ca6c0cb763e8  port/patches/0360-ce-hook-hud-focus.patch

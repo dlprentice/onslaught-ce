@@ -92,7 +92,7 @@ def build_fixture(
     sha_obj = out / "sha256.o"
     if not sha_obj.is_file():
         r = subprocess.run(
-            [str(cc), "-O2", "-c", str(SHA256_C), "-o", str(sha_obj)],
+            [str(cc), "-O2", "-fno-ident", f"-ffile-prefix-map={ROOT}=.", "-c", str(SHA256_C), "-o", str(sha_obj)],
             capture_output=True, text=True, timeout=120, preexec_fn=no_core,
         )
         if r.returncode:
@@ -113,15 +113,20 @@ def build_fixture(
     driver_obj = out / f"driver-{tag}.o"
     exe = out / name
     defines = ['-DCE_VERSION="0.2.0"'] + (["-DPORT_MODS_WINDOWS_ON=1"] if windows_on else [])
+    common = [
+        "-std=gnu++17", "-O1", "-Wall", "-Wextra", "-Werror", "-fno-ident",
+        f"-ffile-prefix-map={ROOT}=.", *defines,
+        "-I", str(PORT / "platform/common"), "-I", str(PORT / "updater"),
+    ]
+    link_flags = [
+        "-static", "-Wl,--dynamicbase", "-Wl,--nxcompat", "-Wl,--large-address-aware",
+        "-Wl,--no-insert-timestamp", "-Wl,--build-id=none", "-s",
+    ]
 
     steps = [
-        [str(cxx), "-std=gnu++17", "-O1", "-Wall", "-Wextra", "-Werror", *defines,
-         "-I", str(PORT / "platform/common"), "-I", str(PORT / "updater"),
-         "-c", str(MODS_CPP), "-o", str(mods_obj)],
-        [str(cxx), "-std=gnu++17", "-O1", "-Wall", "-Wextra", "-Werror", *defines,
-         "-I", str(PORT / "platform/common"), "-I", str(PORT / "updater"),
-         "-c", str(DRIVER), "-o", str(driver_obj)],
-        [str(cxx), "-static", str(driver_obj), str(mods_obj), str(sha_obj), str(res_obj),
+        [str(cxx), *common, "-c", str(MODS_CPP), "-o", str(mods_obj)],
+        [str(cxx), *common, "-c", str(DRIVER), "-o", str(driver_obj)],
+        [str(cxx), *link_flags, str(driver_obj), str(mods_obj), str(sha_obj), str(res_obj),
          str(zlib_static), "-lshell32", "-ladvapi32", "-o", str(exe)],
     ]
     for cmd in steps:
@@ -129,6 +134,24 @@ def build_fixture(
         if r.returncode:
             raise RuntimeError(f"build step failed ({cmd[0]}):\n{r.stdout}\n{r.stderr}")
     return exe
+
+
+def build_reproducible(target: Path, cxx: Path, cc: Path, windres: Path, zlib_static: Path) -> dict[str, object]:
+    with tempfile.TemporaryDirectory(prefix="ce-mods-ntfs-repro-") as tmp:
+        a = build_fixture(Path(tmp) / "a", cxx, cc, windres, zlib_static, windows_on=True, name=target.name)
+        b = build_fixture(Path(tmp) / "b", cxx, cc, windres, zlib_static, windows_on=True, name=target.name)
+        sha_a, sha_b = sha256_file(a), sha256_file(b)
+        if sha_a != sha_b:
+            raise RuntimeError(f"{target.name}: non-reproducible build ({sha_a} != {sha_b})")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(a, target)
+    return {
+        "name": target.name,
+        "path": str(target),
+        "sha256": sha256_file(target),
+        "bytes": target.stat().st_size,
+        "reproducible": True,
+    }
 
 
 def clean_wine_env(prefix: Path) -> dict[str, str]:
@@ -339,12 +362,18 @@ def main() -> int:
     ap.add_argument("--wine", type=Path, default=Path(shutil.which("wine")) if shutil.which("wine") else None)
     ap.add_argument("--bwrap", type=Path, default=Path(shutil.which("bwrap")) if shutil.which("bwrap") else None)
     ap.add_argument("--build-only", action="store_true", help="only cross-compile and verify standalone PE; do not invoke Wine")
+    ap.add_argument("--emit-exe", type=Path, default=None, help="reproducibly build twice and write standalone executable to this path")
     args, rest = ap.parse_known_args()
 
     missing = [str(p) for p in (args.cxx, args.cc, args.windres, args.zlib_static) if not p.is_file()]
     if missing:
         print(f"SKIP: missing pinned win32 build dependency: {', '.join(missing)}", file=sys.stderr)
         return 1
+
+    if args.emit_exe is not None:
+        info = build_reproducible(args.emit_exe.resolve(), args.cxx, args.cc, args.windres, args.zlib_static)
+        print(json.dumps(info, indent=1, sort_keys=True))
+        return 0
 
     ModsWindowsNtfsFixtureTests.cfg = {
         "cxx": args.cxx,
