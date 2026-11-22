@@ -139,6 +139,25 @@ def duplicates_collapse_to_one_line(s):
     expect(rc == 0 and after == b"a=1\nconsole_theme=yellow\nb=2\n", "duplicate lines collapse into the one written: %r" % after)
 
 
+def replaces_spaced_key_in_place_and_reads_spaced_lines(s):
+    rc, _, _, after, left, _ = s.run("set", "music_playtype", "random",
+                                     ini=b"a=1\n  music_playtype = linear\r\nb=2\nmusic_playtype=single\n")
+    expect(rc == 0 and after == b"a=1\nmusic_playtype=random\nb=2\n" and not left,
+           "spaced lines are replaced in place and mixed duplicates collapse: %r" % after)
+    spaced = b"  music_playtype\t=\tSingle \r\n  music_dir = /tmp/my music \r\n  hud_anchor = 1\n"
+    expect(s.run("is", "music_playtype", "single", ini=spaced)[0] == 0, "CE_SettingIs reads a spaced key")
+    rc, out, *_ = s.run("text", "music_dir", "64", ini=spaced)
+    expect(rc == 0 and out == "/tmp/my music", "CE_SettingGetText reads a spaced key: %r" % out)
+    expect(s.run("bool", "hud_anchor", "0", ini=spaced)[1] == "1", "CE_SettingGetBool reads a spaced key")
+    dup = b"music_dir = /a\nmusic_dir=/b\nhud_anchor = 1\nhud_anchor=0\n"
+    rc, out, *_ = s.run("text", "music_dir", "64", ini=dup)
+    expect(rc == 1 and out == "", "mixed-spacing text duplicates fail closed: %r" % out)
+    expect(s.run("bool", "hud_anchor", "0", ini=dup)[1] == "0", "mixed-spacing bool duplicates fall back to default")
+    ignored = b"; music_dir = /a\n# hud_anchor = 1\nHUD_ANCHOR = 1\nhud_anchor_x = 1\n"
+    expect(s.run("text", "music_dir", "64", ini=ignored)[0] == 1, "commented spaced text key is ignored")
+    expect(s.run("bool", "hud_anchor", "0", ini=ignored)[1] == "0", "commented/wrong-case/prefix spaced bool key is ignored")
+
+
 def a_longer_key_is_not_the_line(s):
     rc, _, _, after, _, _ = s.run("set", "hud_scale", "0", ini=b"hud_scale_extra=5\nxhud_scale=3\n")
     expect(rc == 0 and after == b"hud_scale_extra=5\nxhud_scale=3\nhud_scale=0\n",
@@ -227,7 +246,8 @@ def odd_files_are_refused(s):
 
 
 SCENARIOS = (adds_to_a_missing_file, replaces_the_line_and_keeps_every_other_byte, adds_a_new_line_at_the_end,
-             duplicates_collapse_to_one_line, a_longer_key_is_not_the_line, the_same_value_again_changes_nothing,
+             duplicates_collapse_to_one_line, replaces_spaced_key_in_place_and_reads_spaced_lines,
+             a_longer_key_is_not_the_line, the_same_value_again_changes_nothing,
              what_is_written_reads_back_through_the_readers, a_value_that_is_not_one_line_is_refused,
              a_key_that_is_not_one_word_is_refused, null_arguments_are_refused,
              a_failed_write_says_so_and_leaves_the_file, odd_files_are_refused)

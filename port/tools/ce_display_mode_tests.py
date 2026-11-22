@@ -93,6 +93,7 @@ def prepare(out):
              public_d3dapp_tests.function(report, r'^static inline void ce_settings_dir_close\('),
              public_d3dapp_tests.function(report, r'^static inline int ce_settings_dir_open_ex\('),
              public_d3dapp_tests.function(report, r'^static inline int ce_settings_dir_open\('),
+             public_d3dapp_tests.function(report, r'^static inline int ce_ini_match_key\('),
              public_d3dapp_tests.function(ce, r'^static FILE \*ce_ini_open_regular\('),
              public_d3dapp_tests.function(ce, r'^static char \*ce_ini_read\('),
              public_d3dapp_tests.function(ce, r'^static int ce_ini_value\('),

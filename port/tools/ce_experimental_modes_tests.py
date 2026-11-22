@@ -100,6 +100,10 @@ CASES = (
     ("all-on", b"map_editor=1\nmuseum=1\ncommander=1\nplay_unit=1\n", "1 1 1 1"),
     ("one-crlf", b"museum=1\r\n", "0 1 0 0"),
     ("one-blanks", b"museum= 1 \n", "0 1 0 0"),
+    ("museum-spaces-around-eq", b"museum = 1\n", "0 1 0 0"),
+    ("commander-leading-spaces-tabs", b"  commander\t=\t1 \r\n", "0 0 1 0"),
+    ("play-unit-spaces-tank", b"play_unit = tank\n", "0 0 0 1"),
+    ("all-on-spaced", b" map_editor = 1\n\tmuseum\t=\t1\n  commander = 1 \r\nplay_unit = Tank\n", "1 1 1 1"),
     ("one-among-others", b"hud_scale=1\nmuseum=1\ncommander=0\n", "0 1 0 0"),
     ("two", b"museum=2\n", "0 0 0 0"),
     ("word", b"museum=yes\n", "0 0 0 0"),
@@ -108,8 +112,15 @@ CASES = (
     ("negative", b"museum=-1\n", "0 0 0 0"),
     ("twice-same", b"museum=1\nmuseum=1\n", "0 0 0 0"),
     ("twice-differ", b"museum=1\nmuseum=0\n", "0 0 0 0"),
+    ("twice-spaced-differ", b"museum = 1\nmuseum=0\n", "0 0 0 0"),
+    ("twice-spaced-same", b"museum = 1\n  museum\t=\t1\n", "0 0 0 0"),
+    ("twice-spaced-tank", b"play_unit = tank\nplay_unit=1\n", "0 0 0 0"),
     ("other-key-prefix", b"museum_extra=1\nmap_editor_x=1\n", "0 0 0 0"),
+    ("prefix-suffix-spaced", b"museum_x = 1\nx_museum = 1\n", "0 0 0 0"),
+    ("wrong-case-spaced", b"MUSEUM = 1\nCommander = 1\n", "0 0 0 0"),
+    ("cr-before-eq", b"museum\r=1\n\rmuseum=1\n", "0 0 0 0"),
     ("comment", b"# museum=1\n; commander=1\n", "0 0 0 0"),
+    ("comment-spaced", b"; museum = 1\n# commander = 1\n", "0 0 0 0"),
     ("the-retired-switch", b"experimental_modes=1\n", "0 0 0 0"),
     ("block-as-written", BLOCK.encode(), "0 0 0 0"),
     ("block-with-one-on", BLOCK.replace("museum=0", "museum=1").encode(), "0 1 0 0"),
@@ -183,8 +194,8 @@ class Lines(unittest.TestCase):
             self.assertEqual(drive(self.binary, ini(self.base, f"once-b-{mode}", f"{mode}=1\n".encode()), "once", mode), "1 1")
 
     def test_the_legacy_integer_reader_is_not_confused_by_the_block(self):
-        # CE_SettingGet (atoi on the first line that starts with the key) sees a key under the header, and no key for the header or the warning
-        folder = ini(self.base, "legacy", b"hud_scale=1\n\n" + BLOCK.replace("commander=0", "commander=1").encode())
+        # CE_SettingGet (atoi on the first line that sets the key) sees a key under the header, and no key for the header or the warning
+        folder = ini(self.base, "legacy", b"hud_scale = 1\n\n" + BLOCK.replace("commander=0", "  commander\t=\t1").encode())
         self.assertEqual(drive(self.binary, folder, "get", "commander"), "1")
         self.assertEqual(drive(self.binary, folder, "get", "museum"), "0")
         self.assertEqual(drive(self.binary, folder, "get", "hud_scale"), "1")
@@ -193,30 +204,39 @@ class Lines(unittest.TestCase):
 
     def test_mutants_of_the_lines_are_caught(self):
         text = CE_CPP.read_text()
+        report = CE_REPORT.read_text()
         mutants = {
-            "default-on": ('CE_SettingGetBool(mode, 0) == 1', 'CE_SettingGetBool(mode, 1) == 1'),
-            "tank-for-every-mode": ('(i == 3 && CE_SettingIs(mode, "tank"))', '(i >= 0 && CE_SettingIs(mode, "tank"))'),
-            "tank-lost": ('|| (i == 3 && CE_SettingIs(mode, "tank"))', ''),
-            "read-every-time": ("\t\tif (on[i] < 0)\n\t\t\ton[i] =", "\t\tif (true)\n\t\t\ton[i] ="),
-            "one-cache-for-all": ("static int on[4] = {-1, -1, -1, -1};\n\tfor (int i = 0; mode && i < 4; i++)\n\t{\n\t\tif (strcmp(mode, kExperimentalKeys[i]))\n\t\t\tcontinue;\n\t\tif (on[i] < 0)\n\t\t\ton[i] = ",
+            "default-on": ("ce", 'CE_SettingGetBool(mode, 0) == 1', 'CE_SettingGetBool(mode, 1) == 1'),
+            "tank-for-every-mode": ("ce", '(i == 3 && CE_SettingIs(mode, "tank"))', '(i >= 0 && CE_SettingIs(mode, "tank"))'),
+            "tank-lost": ("ce", '|| (i == 3 && CE_SettingIs(mode, "tank"))', ''),
+            "read-every-time": ("ce", "\t\tif (on[i] < 0)\n\t\t\ton[i] =", "\t\tif (true)\n\t\t\ton[i] ="),
+            "one-cache-for-all": ("ce", "static int on[4] = {-1, -1, -1, -1};\n\tfor (int i = 0; mode && i < 4; i++)\n\t{\n\t\tif (strcmp(mode, kExperimentalKeys[i]))\n\t\t\tcontinue;\n\t\tif (on[i] < 0)\n\t\t\ton[i] = ",
                                   "static int on[4] = {-1, -1, -1, -1};\n\tfor (int i = 0; mode && i < 4; i++)\n\t{\n\t\tif (strcmp(mode, kExperimentalKeys[i]))\n\t\t\tcontinue;\n\t\tif (on[i] < 0 && on[0] < 0)\n\t\t\ton[i] = "),
-            "key-renamed": ('"map_editor", "museum"', '"map_editor_", "museum"'),
-            "keys-swapped": ('"map_editor", "museum", "commander", "play_unit"};\n\nbool', '"map_editor", "museum", "play_unit", "commander"};\n\nbool'),
+            "key-renamed": ("ce", '"map_editor", "museum"', '"map_editor_", "museum"'),
+            "keys-swapped": ("ce", '"map_editor", "museum", "commander", "play_unit"};\n\nbool', '"map_editor", "museum", "play_unit", "commander"};\n\nbool'),
             # the parser before the 0.2 review: a NUL byte or an open section header did not stop a line turning a feature on
-            "the-old-parser": ("on[i] = ce_ini_well_formed_for_experimental() && (", "on[i] = ("),
-            "nul-bytes-allowed": ("bool good = ok != 0 && !memchr(t, 0, len);", "bool good = ok != 0;"),
-            "open-header-allowed": ("if (n - first < 2 || line[n - 1] != ']') good = false;", "(void)first;"),
-            "indented-header-not-seen": ("while (first < n && (line[first] == ' ' || line[first] == '\\t')) ++first;\n\t\tif (first == n || line[first] != '[') continue;",
+            "the-old-parser": ("ce", "on[i] = ce_ini_well_formed_for_experimental() && (", "on[i] = ("),
+            "nul-bytes-allowed": ("ce", "bool good = ok != 0 && !memchr(t, 0, len);", "bool good = ok != 0;"),
+            "open-header-allowed": ("ce", "if (n - first < 2 || line[n - 1] != ']') good = false;", "(void)first;"),
+            "indented-header-not-seen": ("ce", "while (first < n && (line[first] == ' ' || line[first] == '\\t')) ++first;\n\t\tif (first == n || line[first] != '[') continue;",
                                          "if (first == n || line[first] != '[') continue;"),
-            "any-name-counts": ("\tfor (int i = 0; mode && i < 4; i++)\n\t{\n\t\tif (strcmp(mode, kExperimentalKeys[i]))\n\t\t\tcontinue;", "\tfor (int i = 0; mode && i < 4; i++)\n\t{\n\t\tif (false)\n\t\t\tcontinue;"),
+            "any-name-counts": ("ce", "\tfor (int i = 0; mode && i < 4; i++)\n\t{\n\t\tif (strcmp(mode, kExperimentalKeys[i]))\n\t\t\tcontinue;", "\tfor (int i = 0; mode && i < 4; i++)\n\t{\n\t\tif (false)\n\t\t\tcontinue;"),
+            "no-leading-blanks-before-key": ("report", "while (p < len && (line[p] == ' ' || line[p] == '\\t')) ++p;\n\tif (len - p <= key_len", "if (len - p <= key_len"),
+            "no-blanks-before-eq": ("report", "p += key_len;\n\twhile (p < len && (line[p] == ' ' || line[p] == '\\t')) ++p;", "p += key_len;"),
+            "bool-rejects-spaced-key": ("ce", "size_t eq = 0;\n\t\tif (!ce_ini_match_key(line, n, key, size, &eq)) continue;\n\t\tif (seen) { value = def; break; }\n\t\tseen = true;\n\t\tsize_t pos = eq + 1;",
+                                        "if (n <= size || memcmp(line, key, size) || line[size] != '=') continue;\n\t\tif (seen) { value = def; break; }\n\t\tseen = true;\n\t\tsize_t pos = size + 1;"),
+            "is-rejects-spaced-key": ("ce", "size_t eq = 0;\n\t\tif (!ce_ini_match_key(line, n, key, size, &eq)) continue;\n\t\tif (seen) { match = 0; break; }\n\t\tseen = true;\n\t\tsize_t pos = eq + 1, end = n;",
+                                      "if (n <= size || memcmp(line, key, size) || line[size] != '=') continue;\n\t\tif (seen) { match = 0; break; }\n\t\tseen = true;\n\t\tsize_t pos = size + 1, end = n;"),
         }
-        for name, (old, new) in mutants.items():
+        for name, (which, old, new) in mutants.items():
             with self.subTest(mutant=name):
-                self.assertEqual(text.count(old), 1, name)
+                src = text if which == "ce" else report
+                self.assertEqual(src.count(old), 1, name)
                 folder = self.base / ("mutant-" + name)
                 folder.mkdir()
                 try:
-                    binary = build(folder, text.replace(old, new))
+                    binary = build(folder, text.replace(old, new) if which == "ce" else text,
+                                   report.replace(old, new) if which == "report" else None)
                     results = [answers(binary, ini(self.base, f"m-{name}-{c}", t)) for c, t, _ in CASES]
                     expected = [w for _, _, w in CASES]
                     for mode in MODES:
@@ -294,6 +314,21 @@ class Block(unittest.TestCase):
         folder = self.folder(before.encode())
         drive(self.binary, folder, "block")
         self.assertEqual(drive(self.binary, folder, "all"), "0 0 1 1", "commander=1 and play_unit=tank still turn their features on")
+
+    def test_a_spaced_value_the_player_set_is_not_repeated_and_updates_in_place(self):
+        before = "update_check = 1\ncommander = 1\n  play_unit\t=\ttank\nrumble = 0\n"
+        got = self.written(before.encode())
+        self.assertEqual(got, before + "\n[Experimental]\n" + WARNING + "map_editor=0\nmuseum=0\n")
+        self.assertNotIn("commander=0", got)
+        self.assertNotIn("play_unit=0", got)
+        folder = self.folder(before.encode())
+        drive(self.binary, folder, "block")
+        self.assertEqual(drive(self.binary, folder, "all"), "0 0 1 1")
+        # updating commander replaces "commander = 1" in place with canonical "commander=0"
+        self.assertEqual(drive(self.binary, folder, "set", "commander", "0"), "1")
+        updated = (folder / "ce.ini").read_text()
+        self.assertEqual(updated, "update_check = 1\ncommander=0\n  play_unit\t=\ttank\nrumble = 0\n\n[Experimental]\n" + WARNING + "map_editor=0\nmuseum=0\n")
+        self.assertEqual(drive(self.binary, folder, "all"), "0 0 0 1")
 
     def test_every_other_line_is_kept_byte_for_byte(self):
         before = b"# the player's note\xc3\xa9\nupdate_check=0\n  indented=1\nhud_scale=2\r\nmods=x\n\n\nlast=1"
@@ -489,9 +524,12 @@ class Block(unittest.TestCase):
             "key-below-the-header": (report, "if (key && !has_key && !written && at == header_at && fprintf(o, \"%s=%s\\n\", key, value) < 0) ok = 0;\n\t\tif (key && !has_key && at == header_at) written = 1;", ""),
             "key-above-even-if-present": (report, "int has_key = key && t ? ce_ini_has_key(t, len, key) : 0;", "int has_key = 0;"),
             "drops-other-lines": (report, "else if (fwrite(l, 1, n, o) != n || (!nl && fputc('\\n', o) == EOF))", "else if (key && (fwrite(l, 1, n, o) != n || (!nl && fputc('\\n', o) == EOF)))"),
+            "has-key-rejects-spaced-key": (report, "if (ce_ini_match_key(t + at, n, key, k, NULL)) return 1;", "if (n > k && !memcmp(t + at, key, k) && t[at + k] == '=') return 1;"),
+            "edit-rejects-spaced-key": (report, "if (key && ce_ini_match_key(l, line_len, key, k, NULL))", "if (key && line_len > k && !memcmp(l, key, k) && l[k] == '=')"),
             "keys-forgotten": (ce_text, "kExperimentalKeys, 4))", "kExperimentalKeys, 3))"),
         }
-        probes = [(None, "n"), (b"update_check=0\n", "u"), (b"commander=1\nplay_unit=tank\n", "c"), (BLOCK.encode(), "b"), (b"a=1\r\n[Experimental]\r\nmuseum=1\r\n", "r"),
+        probes = [(None, "n"), (b"update_check=0\n", "u"), (b"commander=1\nplay_unit=tank\n", "c"),
+                  (b"commander = 1\n  play_unit\t=\ttank\n", "cs"), (BLOCK.encode(), "b"), (b"a=1\r\n[Experimental]\r\nmuseum=1\r\n", "r"),
                   (b"; see [Experimental]\n", "s"), (b"x=1\nno-newline", "e"), (b"[Experimental]x\n", "p"), (b"[Experimental]\r\nmuseum=1\r\n", "q")]
         for name, (source, old, new) in mutants.items():
             with self.subTest(mutant=name):
@@ -509,7 +547,7 @@ class Block(unittest.TestCase):
                     twice = self.written(text, 2, binary)
                     if mutant != good or twice != mutant:
                         caught = True
-                for text in (b"a=1\nb=2\n", BLOCK.encode()):
+                for text in (b"a=1\nb=2\n", BLOCK.encode(), BLOCK.replace("museum=0", "  museum = 0").encode()):
                     folder2 = self.folder(text)
                     drive(self.binary, folder2, "block")
                     reference = self.folder(text)

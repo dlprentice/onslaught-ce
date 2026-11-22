@@ -82,6 +82,53 @@ int main() {
     Check(std::strcmp(CeMultiBeModeToIni(CE_MULTIBE_CHOICE_THREE), "3") == 0, "three -> 3");
     Check(std::strcmp(CeMultiBeModeToIni(CE_MULTIBE_CHOICE_FOUR), "4") == 0, "four -> 4");
 
+    // 1b. Solo Skirmish config parsing, activation rules, MP start status formatting, and Walker pitch aim
+    Check(CeMultiBeParseSoloSkirmish(nullptr) == CE_SOLO_SKIRMISH_SPLITSCREEN, "solo null -> splitscreen");
+    Check(CeMultiBeParseSoloSkirmish("") == CE_SOLO_SKIRMISH_SPLITSCREEN, "solo empty -> splitscreen");
+    Check(CeMultiBeParseSoloSkirmish("0") == CE_SOLO_SKIRMISH_SPLITSCREEN, "solo 0 -> splitscreen");
+    Check(CeMultiBeParseSoloSkirmish("off") == CE_SOLO_SKIRMISH_SPLITSCREEN, "solo off -> splitscreen");
+    Check(CeMultiBeParseSoloSkirmish("splitscreen") == CE_SOLO_SKIRMISH_SPLITSCREEN, "solo splitscreen -> splitscreen");
+    Check(CeMultiBeParseSoloSkirmish("bogus") == CE_SOLO_SKIRMISH_SPLITSCREEN, "solo bogus -> splitscreen");
+    Check(CeMultiBeParseSoloSkirmish("1") == CE_SOLO_SKIRMISH_SOLO_AI, "solo 1 -> solo ai");
+    Check(CeMultiBeParseSoloSkirmish("ON") == CE_SOLO_SKIRMISH_SOLO_AI, "solo ON -> solo ai");
+    Check(CeMultiBeParseSoloSkirmish("true") == CE_SOLO_SKIRMISH_SOLO_AI, "solo true -> solo ai");
+    Check(CeMultiBeParseSoloSkirmish("solo") == CE_SOLO_SKIRMISH_SOLO_AI, "solo keyword -> solo ai");
+    Check(std::strcmp(CeMultiBeSoloSkirmishIniValue(CE_SOLO_SKIRMISH_SPLITSCREEN), "0") == 0, "ini 0");
+    Check(std::strcmp(CeMultiBeSoloSkirmishIniValue(CE_SOLO_SKIRMISH_SOLO_AI), "1") == 0, "ini 1");
+
+    Check(CeMultiBeEffectiveTargetCount(0, false, 851) == 0, "default MP stays inactive");
+    Check(CeMultiBeEffectiveTargetCount(0, true, 110) == 0, "solo skirmish never activates on campaign level");
+    Check(CeMultiBeEffectiveTargetCount(0, true, 849) == 0, "solo skirmish lower bound 850");
+    Check(CeMultiBeEffectiveTargetCount(0, true, 900) == 0, "solo skirmish upper bound 899");
+    Check(CeMultiBeEffectiveTargetCount(0, true, 850) == 2, "solo skirmish 1v1 on 850");
+    Check(CeMultiBeEffectiveTargetCount(0, true, 851) == 2, "solo skirmish 1v1 on 851");
+    Check(CeMultiBeEffectiveTargetCount(0, true, 899) == 2, "solo skirmish 1v1 on 899");
+    Check(CeMultiBeEffectiveTargetCount(3, true, 851) == 3, "solo skirmish + 3 BEs");
+    Check(CeMultiBeEffectiveTargetCount(4, true, 850) == 4, "solo skirmish + 4 BEs (2v2)");
+    Check(CeMultiBeEffectiveTargetCount(4, false, 110) == 4, "multi_be=4 works on campaign");
+
+    char mpStatus[128] = {};
+    Check(!CeMultiBeFormatMpStartStatus(false, CE_MULTIBE_SIDE_FORSETI, CE_MULTIBE_CHOICE_STANDARD, mpStatus, sizeof(mpStatus)),
+          "retail default prints no status line");
+    Check(CeMultiBeFormatMpStartStatus(true, CE_MULTIBE_SIDE_FORSETI, CE_MULTIBE_CHOICE_STANDARD, mpStatus, sizeof(mpStatus)) &&
+          std::strstr(mpStatus, "Solo vs AI") != nullptr && std::strstr(mpStatus, "Forseti") != nullptr &&
+          std::strstr(mpStatus, "Standard (2)") != nullptr && std::strchr(mpStatus, '|') == nullptr,
+          "solo default status line");
+    Check(CeMultiBeFormatMpStartStatus(true, CE_MULTIBE_SIDE_MUSPELL, CE_MULTIBE_CHOICE_FOUR, mpStatus, sizeof(mpStatus)) &&
+          std::strstr(mpStatus, "Solo vs AI") != nullptr && std::strstr(mpStatus, "Muspell") != nullptr &&
+          std::strstr(mpStatus, "4 BEs (2v2)") != nullptr,
+          "solo muspell 2v2 status line");
+    Check(CeMultiBeFormatMpStartStatus(false, CE_MULTIBE_SIDE_MUSPELL, CE_MULTIBE_CHOICE_THREE, mpStatus, sizeof(mpStatus)) &&
+          std::strstr(mpStatus, "Solo vs AI") == nullptr && std::strstr(mpStatus, "Muspell") != nullptr &&
+          std::strstr(mpStatus, "3 BEs") != nullptr,
+          "splitscreen muspell 3 BEs status line");
+
+    Check(CeMultiBeComputeWalkerPitchInput(0.0f, 0.02f) == 0.0f, "walker pitch deadband");
+    Check(CeMultiBeComputeWalkerPitchInput(0.0f, 0.25f) < -0.1f, "positive pitch error gives negative vy to pitch +");
+    Check(CeMultiBeComputeWalkerPitchInput(0.0f, -0.25f) > 0.1f, "negative pitch error gives positive vy to pitch -");
+    Check(CeMultiBeComputeWalkerPitchInput(0.0f, 1.5f) >= -0.75f && CeMultiBeComputeWalkerPitchInput(0.0f, -1.5f) <= 0.75f,
+          "walker pitch clamped to [-0.75, 0.75]");
+
     Check(CeMultiBeParseHudSlot(nullptr) == -1, "hud null -> -1");
     Check(CeMultiBeParseHudSlot("") == -1, "hud empty -> -1");
     Check(CeMultiBeParseHudSlot("0") == 0, "hud 0 -> 0");
@@ -254,8 +301,10 @@ def resolve_runtime_libs():
     return []
 
 
-def run_bea_offscreen(exe, game_dir, run_dir, level, quit_frames, ce_ini_text=None, ce_layer=True, shot_at=None):
-    """Runs `bea` 100% offscreen with isolated user dir, returning CompletedProcess."""
+def run_bea_offscreen(exe, game_dir, run_dir, level, quit_frames, ce_ini_text=None, ce_layer=True, shot_at=None, fake_keys=None, extra_env=None):
+    """Runs `bea` 100% offscreen with isolated user dir, returning CompletedProcess.
+    When `level` is None, boots through the real Front-End (no `-level` CLI arg) paced at 30 Hz
+    so wall-clock menu transitions and title timeouts match Present counts deterministically."""
     user_dir = run_dir / "user"
     for sub in (user_dir, run_dir / "cache", run_dir / "runtime"):
         sub.mkdir(parents=True, exist_ok=True)
@@ -271,25 +320,58 @@ def run_bea_offscreen(exe, game_dir, run_dir, level, quit_frames, ce_ini_text=No
         "BEA_REPORT_NO_OPEN": "1",
         "BROWSER": "/bin/true",
         "DXVK_WSI_DRIVER": "SDL3",
-        "DXVK_LOG_PATH": str(run_dir),
+        "DXVK_LOG_LEVEL": "none",
         "XDG_CACHE_HOME": str(run_dir / "cache"),
         "XDG_RUNTIME_DIR": str(run_dir / "runtime"),
         "BEA_USER_DIR": str(user_dir),
         "BEA_GAME_DIR": str(game_dir),
         "BEA_NO_UPDATE_CHECK": "1",
-        "BEA_PORT_CLOCK": "fixed",
-        "BEA_PORT_CLOCK_DT": "0.05",
         "BEA_PORT_QUIT": str(quit_frames),
     }
-    if ce_layer:
-        env["BEA_PORT_CE_LAYER"] = "1"
+    if level is None:
+        env["BEA_PORT_FEEL_LOG"] = str(run_dir / "feel.log")
+        env["BEA_PORT_FEEL_PACE_HZ"] = "30"
+    else:
+        env["BEA_PORT_CLOCK"] = "fixed"
+        env["BEA_PORT_CLOCK_DT"] = "0.05"
+        if ce_layer:
+            env["BEA_PORT_CE_LAYER"] = "1"
     if shot_at is not None:
         env["BEA_PORT_SHOT"] = f"{shot_at[0]}:{shot_at[1]}"
+    if fake_keys is not None:
+        env["BEA_PORT_FAKE_KEYS"] = fake_keys
+    if extra_env:
+        env.update(extra_env)
     libs = resolve_runtime_libs()
     if libs:
         env["LD_LIBRARY_PATH"] = ":".join(libs)
-    cmd = [str(exe), "-level", str(level), "-skipfmv", "-forcewindowed", "-res", "1280", "720"]
+    cmd = [str(exe)]
+    if level is not None:
+        cmd += ["-level", str(level)]
+    cmd += ["-skipfmv", "-forcewindowed", "-res", "1280", "720"]
     return subprocess.run(cmd, cwd=str(game_dir), env=env, capture_output=True, text=True, timeout=180)
+
+
+def build_fake_keys(taps):
+    """Builds a BEA_PORT_FAKE_KEYS string from [(present, key_name), ...] taps."""
+    key_map = {
+        "RETURN": (40, 0x1C),
+        "ESC": (41, 0x01),
+        "SPACE": (44, 0x39),
+        "RIGHT": (79, 0x14D),
+        "LEFT": (80, 0x14B),
+        "DOWN": (81, 0x150),
+        "UP": (82, 0x148),
+        "M": (16, 0x32),
+        "E": (8, 0x12),
+    }
+    tokens = []
+    for present, name in taps:
+        sdl, pc = key_map[name]
+        tokens.append((present, len(tokens), f"{present}:{sdl}:{pc:x}:d"))
+        tokens.append((present + 2, len(tokens), f"{present + 2}:{sdl}:{pc:x}:u"))
+    tokens.sort(key=lambda item: (item[0], item[1]))
+    return ",".join(tok for _, _, tok in tokens)
 
 
 class HostHelperTests(unittest.TestCase):
@@ -359,6 +441,26 @@ class HostHelperTests(unittest.TestCase):
                 "if (slotTeam[slot] == CE_MULTIBE_SIDE_MUSPELL)\n\t\t\tforsetiKills++;",
                 "if (slotTeam[slot] == CE_MULTIBE_SIDE_FORSETI)\n\t\t\tforsetiKills++;",
             ),
+            "solo skirmish defaults on": (
+                "\treturn CE_SOLO_SKIRMISH_SPLITSCREEN;\n}\n\ninline const char *CeMultiBeSoloSkirmishIniValue",
+                "\treturn CE_SOLO_SKIRMISH_SOLO_AI;\n}\n\ninline const char *CeMultiBeSoloSkirmishIniValue",
+            ),
+            "solo skirmish activates on campaign": (
+                "\tif (soloSkirmish && level >= 850 && level <= 899)\n\t\treturn 2;",
+                "\tif (soloSkirmish)\n\t\treturn 2;",
+            ),
+            "solo skirmish fails to activate 1v1": (
+                "\tif (soloSkirmish && level >= 850 && level <= 899)\n\t\treturn 2;",
+                "\tif (soloSkirmish && level >= 850 && level <= 899)\n\t\treturn 0;",
+            ),
+            "mp status draws on retail default": (
+                "\tif (!soloSkirmish && playSide == CE_MULTIBE_SIDE_FORSETI && modeChoice == CE_MULTIBE_CHOICE_STANDARD)",
+                "\tif (false)",
+            ),
+            "walker pitch sign inverted": (
+                "\treturn CeMultiBeClamp(-pitchErr * 1.6f, -0.75f, 0.75f);",
+                "\treturn CeMultiBeClamp(pitchErr * 1.6f, -0.75f, 0.75f);",
+            ),
         }
         for name, (old, new) in s_mutants.items():
             with self.subTest(mutant=name):
@@ -369,10 +471,15 @@ class HostHelperTests(unittest.TestCase):
 
 class GateAuditTests(unittest.TestCase):
     def test_no_new_bea_env_vars_and_spdx_present(self):
+        allowed_fence_envs = {"BEA_PORT_PILOT", "BEA_PORT_AUTOPILOT"}
         for rel in ("game/ce_multibe.h", "game/ce_multibe_state.h", "game/ce_multibe.cpp"):
             text = (PORT / rel).read_text(encoding="utf-8")
             self.assertIn("SPDX-License-Identifier: GPL-3.0-only", text[:200], rel)
-            self.assertIsNone(re.search(r"BEA_[A-Z0-9_]+", text), f"{rel} must not reference BEA_* env vars")
+            found = set(re.findall(r"BEA_[A-Z0-9_]+", text))
+            if rel == "game/ce_multibe.cpp":
+                self.assertEqual(found, allowed_fence_envs, f"{rel} may only reference pilot fence env vars, got {found}")
+            else:
+                self.assertEqual(found, set(), f"{rel} must not reference BEA_* env vars, got {found}")
 
     def test_hooks_are_layer_gated(self):
         hooks = (PORT / "game/ce_hooks.cpp").read_text(encoding="utf-8")
@@ -387,7 +494,23 @@ class GateAuditTests(unittest.TestCase):
         src = (PORT / "game/ce_multibe.cpp").read_text(encoding="utf-8")
         for sym in ("CE_BootRequested", "CE_SessionActive", "CE_LockstepRequested", "CE_LockstepSharing", "PortCeNetActive"):
             self.assertIn(sym, src, f"missing weak network/lockstep guard symbol {sym}")
-        self.assertIn("if (NetworkOrLockstepActive())", src, "PortCeMultiBeLevelBegin must gate on NetworkOrLockstepActive()")
+        self.assertIn("if (MultiBeFenced())", src, "PortCeMultiBeLevelBegin and PortCeSoloSkirmishActive must share MultiBeFenced()")
+        for fence_term in ("PLAYABLE_DEMO", "CLIPARAMS.mAutoConfigTest", "CLIPARAMS.mRecordDemo",
+                           "CLIPARAMS.mPlaybackDemo", "CLIPARAMS.mStressTest", "CLIPARAMS.mAttractMode",
+                           "BEA_PORT_PILOT", "BEA_PORT_AUTOPILOT"):
+            self.assertIn(fence_term, src, f"MultiBeFenced() must guard against {fence_term}")
+        # Verify PortCeSoloSkirmishActive uses cached/latched state (zero per-frame ce.ini disk I/O)
+        solo_fn = src[src.index('extern "C" int PortCeSoloSkirmishActive('):src.index('extern "C" void PortCeMultiBeDrawMpStartStatus(')]
+        self.assertIn("MultiBeFenced()", solo_fn, "PortCeSoloSkirmishActive must check MultiBeFenced()")
+        self.assertIn("gLatchedSoloSkirmish", solo_fn, "PortCeSoloSkirmishActive must return latched in-level state")
+        self.assertNotIn("CE_SettingGetText", solo_fn, "PortCeSoloSkirmishActive must not read ce.ini per frame")
+        self.assertNotIn("CE_SettingIs", solo_fn, "PortCeSoloSkirmishActive must not read ce.ini per frame")
+        read_solo_fn = src[src.index("int ReadSoloSkirmishSetting()"):src.index("// Native clickable")]
+        self.assertIn("gCachedSoloSkirmish", read_solo_fn, "ReadSoloSkirmishSetting must cache ce.ini value")
+        self.assertNotIn("CE_SettingGetText", read_solo_fn, "ReadSoloSkirmishSetting must lazy-load via cache, not read disk unconditionally")
+        self.assertIn("gCachedSoloSkirmish = choice;", src, "CCeSoloSkirmishItem::SetValue must update cache synchronously")
+        self.assertIn("gCachedPlaySide = side;", src, "CCePlaySideItem::SetValue must update cache synchronously")
+        self.assertIn("gCachedMultiBeChoice = choice;", src, "CCeBattleEnginesItem::SetValue must update cache synchronously")
         self.assertNotIn("GetUnitNB().First()", src, "must not call WORLD.GetUnitNB().First(); use ListIterator<CUnit>")
         self.assertNotIn("GetUnitNB().Next()", src, "must not call WORLD.GetUnitNB().Next(); use ListIterator<CUnit>")
         self.assertGreaterEqual(src.count("ListIterator<CUnit>"), 3, "all three unit scans must use stack-local ListIterator<CUnit>")
@@ -397,7 +520,26 @@ class GateAuditTests(unittest.TestCase):
         self.assertIn("PortRecording()", src, "must guard start slot and side inversion against PortRecording()")
         self.assertIn("PortCeMultiBeAllowTeamKills", src, "must provide CE-layer gate for Muspell ConfirmedKill")
         self.assertIn('L"Play side: "', src, "clickable Play side menu row missing")
+        self.assertIn('L"Skirmish mode: "', src, "clickable Skirmish mode menu row missing")
         self.assertIn('L"Battle Engines: "', src, "clickable Battle Engines menu row missing")
+        self.assertIn("PortCeSoloSkirmishActive", src, "PortCeSoloSkirmishActive definition missing")
+        self.assertIn("SyncSoloP2Engine", src, "Solo Skirmish P2 respawn synchronization missing")
+        self.assertIn("CeCmdMatchUpdate()", src, "Solo Skirmish must invoke CeCmdMatchUpdate() even when commander=0")
+        self.assertIn("CeCmdMatchLevelEnd()", src, "Solo Skirmish must restore mFullscreenMultiplayer on level_end")
+        patch_0375 = (PORT / "patches/0375-ce-solo-skirmish.patch").read_text(encoding="latin-1")
+        self.assertIn("PortCeSoloSkirmishActive", patch_0375, "patch 0375 must wire PortCeSoloSkirmishActive")
+        self.assertIn(
+            "if (GAME.IsMultiplayer() && (this == GAME.GetController(1)) && PortCeSoloSkirmishActive && PortCeSoloSkirmishActive())",
+            patch_0375,
+            "patch 0375 must short-circuit Controller.cpp on GAME.IsMultiplayer() && controller 1 first",
+        )
+        self.assertIn(
+            "if (!GAME.IsMultiplayer() || !(PortCeSoloSkirmishActive && PortCeSoloSkirmishActive()))",
+            patch_0375,
+            "patch 0375 must short-circuit game.cpp Render on !GAME.IsMultiplayer() first",
+        )
+        patch_0373 = (PORT / "patches/0373-ce-multibe-unit-sound-particles.patch").read_text(encoding="latin-1")
+        self.assertIn("PortCeOneScreenMatch()", patch_0373, "patch 0373 must pin 3D audio listener to camera 0 in one-screen matches")
 
 
 class LiveEngineTests(unittest.TestCase):
@@ -506,6 +648,150 @@ class LiveEngineTests(unittest.TestCase):
             self.assertGreaterEqual(final.get("ticks", 0), 200, final)
             self.assertEqual(final.get("nan"), 0, final)
             self.assertGreater(final.get("aux_shots", 0), 0, final)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_solo_skirmish_1v1_forseti_fullscreen_ai_live(self):
+        """1v1 Solo Skirmish (commander=0, multi_be=2, solo_skirmish=1): 1 fullscreen viewport + active AI P2."""
+        tmp = Path(tempfile.mkdtemp(prefix="multibe-solo-1v1-f-", dir=SCRATCH))
+        try:
+            ini = "[Experimental]\nsolo_skirmish=1\nmulti_be=2\nplay_side=forseti\n"
+            proc = run_bea_offscreen(self.exe, self.game_dir, tmp, level=851, quit_frames=650, ce_ini_text=ini)
+            self.assertEqual(proc.returncode, 0, proc.stderr[-2000:])
+            rows = parse_telemetry(proc.stderr)
+            self.assertGreaterEqual(len(rows), 3, proc.stderr[-1500:])
+            mid = next((r for r in rows if r.get("phase") == "tick200"), None)
+            self.assertIsNotNone(mid, rows)
+            self.assertEqual(mid.get("onescreen"), 1, f"Solo Skirmish must enable fullscreen even with commander=0: {mid}")
+            self.assertEqual(mid.get("viewpoints"), 1, f"expected 1 fullscreen viewpoint (zero splitscreen): {mid}")
+            final = rows[-1]
+            self.assertEqual(final.get("phase"), "end", final)
+            self.assertEqual(final.get("onescreen"), 0, f"mFullscreenMultiplayer must restore cleanly on level_end: {final}")
+            self.assertEqual(final.get("solo"), 1, final)
+            self.assertEqual(final.get("viewpoints"), 1, final)
+            self.assertEqual(final.get("target"), 2, final)
+            self.assertEqual(final.get("spawned"), 0, f"1v1 Solo Skirmish should spawn 0 auxiliary BEs: {final}")
+            self.assertEqual(final.get("side"), "forseti", final)
+            self.assertGreaterEqual(final.get("ticks", 0), 200, final)
+            self.assertEqual(final.get("nan"), 0, final)
+            self.assertEqual(final.get("p2_moved"), 1, f"AI-piloted P2 must actively move: {final}")
+            self.assertGreater(final.get("p2_shots", 0), 0, f"AI-piloted P2 must actively fire: {final}")
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_solo_skirmish_1v1_muspell_fullscreen_ai_live(self):
+        """1v1 Solo Skirmish as Muspell (solo_skirmish=1, multi_be=2, play_side=muspell)."""
+        tmp = Path(tempfile.mkdtemp(prefix="multibe-solo-1v1-m-", dir=SCRATCH))
+        try:
+            ini = "[Experimental]\nsolo_skirmish=1\nmulti_be=2\nplay_side=muspell\n"
+            proc = run_bea_offscreen(self.exe, self.game_dir, tmp, level=851, quit_frames=650, ce_ini_text=ini)
+            self.assertEqual(proc.returncode, 0, proc.stderr[-2000:])
+            rows = parse_telemetry(proc.stderr)
+            self.assertGreaterEqual(len(rows), 3, proc.stderr[-1500:])
+            mid = next((r for r in rows if r.get("phase") == "tick200"), None)
+            self.assertIsNotNone(mid, rows)
+            self.assertEqual(mid.get("onescreen"), 1, mid)
+            self.assertEqual(mid.get("viewpoints"), 1, mid)
+            final = rows[-1]
+            self.assertEqual(final.get("onescreen"), 0, f"mFullscreenMultiplayer must restore cleanly on level_end: {final}")
+            self.assertEqual(final.get("solo"), 1, final)
+            self.assertEqual(final.get("viewpoints"), 1, final)
+            self.assertEqual(final.get("target"), 2, final)
+            self.assertEqual(final.get("spawned"), 0, final)
+            self.assertEqual(final.get("side"), "muspell", final)
+            self.assertGreaterEqual(final.get("ticks", 0), 200, final)
+            self.assertEqual(final.get("nan"), 0, final)
+            self.assertEqual(final.get("p2_moved"), 1, final)
+            self.assertGreater(final.get("p2_shots", 0), 0, final)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_solo_skirmish_2v2_muspell_frontend_launch_with_commander_and_playunit(self):
+        """Front-End launch WITHOUT -level: Title -> Main -> Multiplayer -> Level 851 (Versus) -> Select Config -> Play 2v2
+        Solo vs AI as Muspell with Commander (M) and Play Any Unit (E) enabled, proving zero P2 binding block & 1 fullscreen view."""
+        tmp = Path(tempfile.mkdtemp(prefix="multibe-solo-fe-2v2-", dir=SCRATCH))
+        try:
+            ini = "[Experimental]\nsolo_skirmish=1\nmulti_be=4\nplay_side=muspell\ncommander=1\nplay_unit=1\n"
+            # Title (FEP_INTRO): RETURN -> Main Menu (FEP_MAIN): clamp to row 7 (Quit) via 8x DOWN,
+            # then 4x UP to row 3 (Multiplayer) -> RETURN -> FEPMultiplayer: DOWN to (0,1)=851 (Versus) -> RETURN
+            # -> FEPMultiplayerStart -> RETURN (starts immediately with zero P2 input or binding prompt!)
+            # In-game: tap M to open Commander Mode, tap M again to close, tap E for Play Any Unit.
+            keys = build_fake_keys([
+                (105, "RETURN"),
+                (195, "DOWN"), (205, "DOWN"), (215, "DOWN"), (225, "DOWN"),
+                (235, "DOWN"), (245, "DOWN"), (255, "DOWN"), (265, "DOWN"),
+                (278, "UP"), (288, "UP"), (298, "UP"), (308, "UP"),
+                (322, "RETURN"),
+                (430, "DOWN"),
+                (445, "RETURN"),
+                (520, "RETURN"),
+                (760, "M"),
+                (820, "M"),
+                (860, "E"),
+            ])
+            proc = run_bea_offscreen(self.exe, self.game_dir, tmp, level=None, quit_frames=960, ce_ini_text=ini, fake_keys=keys)
+            self.assertEqual(proc.returncode, 0, proc.stderr[-2000:])
+            rows = parse_telemetry(proc.stderr)
+            self.assertGreaterEqual(len(rows), 3, f"Front-End launch did not enter Solo Skirmish level 851:\n{proc.stderr[-1500:]}")
+            mid = next((r for r in rows if r.get("phase") == "tick200"), None)
+            self.assertIsNotNone(mid, rows)
+            self.assertEqual(mid.get("onescreen"), 1, mid)
+            self.assertEqual(mid.get("viewpoints"), 1, mid)
+            final = rows[-1]
+            self.assertEqual(final.get("level"), 851, final)
+            self.assertEqual(final.get("solo"), 1, final)
+            self.assertEqual(final.get("onescreen"), 0, final)
+            self.assertEqual(final.get("viewpoints"), 1, final)
+            self.assertEqual(final.get("target"), 4, final)
+            self.assertEqual(final.get("spawned"), 2, final)
+            self.assertEqual(final.get("side"), "muspell", final)
+            self.assertGreaterEqual(final.get("ticks", 0), 200, final)
+            self.assertEqual(final.get("nan"), 0, final)
+            self.assertEqual(final.get("p2_moved"), 1, final)
+            self.assertGreater(final.get("p2_shots", 0), 0, final)
+            self.assertGreater(final.get("aux_shots", 0), 0, final)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_pilot_env_fence_disables_solo_skirmish_and_multibe(self):
+        """BEA_PORT_PILOT=1 must fence Solo Skirmish and Multi-BE completely off even with BEA_PORT_CE_LAYER=1."""
+        tmp = Path(tempfile.mkdtemp(prefix="multibe-pilot-fence-", dir=SCRATCH))
+        try:
+            ini = "[Experimental]\nsolo_skirmish=1\nmulti_be=4\nplay_side=muspell\n"
+            proc = run_bea_offscreen(
+                self.exe, self.game_dir, tmp, level=851, quit_frames=520,
+                ce_ini_text=ini, ce_layer=True, extra_env={"BEA_PORT_PILOT": "1"},
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr[-1500:])
+            rows = parse_telemetry(proc.stderr)
+            self.assertEqual(rows, [], f"MultiBeFenced() must disable Solo Skirmish/Multi-BE under BEA_PORT_PILOT: {rows}")
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_solo_skirmish_coop_level_850_ai_wingman_live(self):
+        """Solo Skirmish on Co-op map Level 850 (solo_skirmish=1, multi_be=2): P1 fullscreen + Forseti AI wingman P2."""
+        tmp = Path(tempfile.mkdtemp(prefix="multibe-solo-850-", dir=SCRATCH))
+        try:
+            ini = "[Experimental]\nsolo_skirmish=1\nmulti_be=2\nplay_side=forseti\n"
+            proc = run_bea_offscreen(self.exe, self.game_dir, tmp, level=850, quit_frames=650, ce_ini_text=ini)
+            self.assertEqual(proc.returncode, 0, proc.stderr[-2000:])
+            rows = parse_telemetry(proc.stderr)
+            self.assertGreaterEqual(len(rows), 3, proc.stderr[-1500:])
+            mid = next((r for r in rows if r.get("phase") == "tick200"), None)
+            self.assertIsNotNone(mid, rows)
+            self.assertEqual(mid.get("onescreen"), 1, mid)
+            self.assertEqual(mid.get("viewpoints"), 1, mid)
+            final = rows[-1]
+            self.assertEqual(final.get("level"), 850, final)
+            self.assertEqual(final.get("solo"), 1, final)
+            self.assertEqual(final.get("onescreen"), 0, final)
+            self.assertEqual(final.get("viewpoints"), 1, final)
+            self.assertEqual(final.get("target"), 2, final)
+            self.assertEqual(final.get("spawned"), 0, final)
+            self.assertGreaterEqual(final.get("ticks", 0), 200, final)
+            self.assertEqual(final.get("nan"), 0, final)
+            self.assertEqual(final.get("p2_moved"), 1, final)
+            self.assertGreater(final.get("p2_shots", 0), 0, final)
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 

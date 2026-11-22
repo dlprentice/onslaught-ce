@@ -790,22 +790,32 @@ static int hex_to(const char *h, uint8_t *out, size_t n)
 	return 1;
 }
 
-/* ce.ini: key=value lines in the user folder. */
+/* ce.ini: key=value lines in the user folder (optional spaces or tabs before key or '='). */
 static int ini_get(const char *key, char *out, size_t n)
 {
+	if (!key || !*key) return 0;
 	char *t = read_all(sIni, NULL);
 	if (!t) return 0;
 	size_t k = strlen(key);
 	int found = 0;
 	for (char *l = t; l && *l; l = strchr(l, '\n') ? strchr(l, '\n') + 1 : NULL)
-		if (!strncmp(l, key, k) && l[k] == '=')
+	{
+		char *p = l;
+		while (*p == ' ' || *p == '\t') p++;
+		if (!strncmp(p, key, k))
 		{
-			char *e = l + k + 1;
-			size_t m = strcspn(e, "\r\n");
-			snprintf(out, n, "%.*s", (int)m, e);
-			found = 1;
-			break;
+			char *eq = p + k;
+			while (*eq == ' ' || *eq == '\t') eq++;
+			if (*eq == '=')
+			{
+				char *e = eq + 1;
+				size_t m = strcspn(e, "\r\n");
+				snprintf(out, n, "%.*s", (int)m, e);
+				found = 1;
+				break;
+			}
 		}
+	}
 	free(t);
 	return found;
 }

@@ -289,12 +289,18 @@ static int ce_ini_value(const char *t, const char *key, int def)
 {
 	size_t k = strlen(key);
 	int v = def;
-	for (const char *l = t; l && *l; l = strchr(l, '\n') ? strchr(l, '\n') + 1 : NULL)
-		if (!strncmp(l, key, k) && l[k] == '=')
+	for (const char *l = t; l && *l;)
+	{
+		const char *nl = strchr(l, '\n');
+		size_t n = nl ? (size_t)(nl - l) : strlen(l);
+		size_t eq = 0;
+		if (ce_ini_match_key(l, n, key, k, &eq))
 		{
-			v = atoi(l + k + 1);
+			v = atoi(l + eq + 1);
 			break;
 		}
+		l = nl ? nl + 1 : NULL;
+	}
 	return v;
 }
 
@@ -308,7 +314,8 @@ static int ce_ini_value_span(const char *t, size_t len, const char *key, int def
 		const char *line = t + at;
 		const char *nl = (const char *)memchr(line, '\n', len - at);
 		size_t n = nl ? (size_t)(nl - line) : len - at;
-		if (n > k && !memcmp(line, key, k) && line[k] == '=') return atoi(line + k + 1);
+		size_t eq = 0;
+		if (ce_ini_match_key(line, n, key, k, &eq)) return atoi(line + eq + 1);
 		at += n + (nl ? 1 : 0);
 	}
 	return def;
@@ -365,10 +372,11 @@ extern "C" int CE_SettingGetBool(const char *key, int def)
 		const char *nl = (const char *)memchr(line, '\n', len - at);
 		size_t n = nl ? (size_t)(nl - line) : len - at;
 		at += n + (nl ? 1 : 0);
-		if (n <= size || memcmp(line, key, size) || line[size] != '=') continue;
+		size_t eq = 0;
+		if (!ce_ini_match_key(line, n, key, size, &eq)) continue;
 		if (seen) { value = def; break; }
 		seen = true;
-		size_t pos = size + 1;
+		size_t pos = eq + 1;
 		while (pos < n && (line[pos] == ' ' || line[pos] == '\t')) ++pos;
 		if (pos == n || (line[pos] != '0' && line[pos] != '1')) { value = def; continue; }
 		int parsed = line[pos++] - '0';
@@ -513,10 +521,11 @@ extern "C" int CE_SettingIs(const char *key, const char *value)
 		const char *nl = (const char *)memchr(line, '\n', len - at);
 		size_t n = nl ? (size_t)(nl - line) : len - at;
 		at += n + (nl ? 1 : 0);
-		if (n <= size || memcmp(line, key, size) || line[size] != '=') continue;
+		size_t eq = 0;
+		if (!ce_ini_match_key(line, n, key, size, &eq)) continue;
 		if (seen) { match = 0; break; }
 		seen = true;
-		size_t pos = size + 1, end = n;
+		size_t pos = eq + 1, end = n;
 		if (end > pos && line[end - 1] == '\r') --end;
 		while (pos < end && (line[pos] == ' ' || line[pos] == '\t')) ++pos;
 		while (end > pos && (line[end - 1] == ' ' || line[end - 1] == '\t')) --end;
@@ -563,10 +572,11 @@ extern "C" int CE_SettingGetText(const char *key, char *out, int n)
 		const char *nl = (const char *)memchr(line, '\n', len - at);
 		size_t n2 = nl ? (size_t)(nl - line) : len - at;
 		at += n2 + (nl ? 1 : 0);
-		if (n2 <= size || memcmp(line, key, size) || line[size] != '=') continue;
+		size_t eq = 0;
+		if (!ce_ini_match_key(line, n2, key, size, &eq)) continue;
 		if (seen) { ambiguous = true; break; }
 		seen = true;
-		size_t pos = size + 1, end = n2;
+		size_t pos = eq + 1, end = n2;
 		if (end > pos && line[end - 1] == '\r') --end;
 		while (pos < end && (line[pos] == ' ' || line[pos] == '\t')) ++pos;
 		while (end > pos && (line[end - 1] == ' ' || line[end - 1] == '\t')) --end;
@@ -622,8 +632,9 @@ extern "C" int CE_SettingLauncherIs(const char *key, const char *value)
 		const char *nl = (const char *)memchr(line, '\n', len - at);
 		size_t n = nl ? (size_t)(nl - line) : len - at;
 		at += n + (nl ? 1 : 0);
-		if (n <= size || memcmp(line, key, size) || line[size] != '=') continue;
-		size_t pos = size + 1, end = pos;
+		size_t eq = 0;
+		if (!ce_ini_match_key(line, n, key, size, &eq)) continue;
+		size_t pos = eq + 1, end = pos;
 		while (end < n && line[end] != '\r') ++end;
 		match = end - pos == want && !memcmp(line + pos, value, want);
 		break;

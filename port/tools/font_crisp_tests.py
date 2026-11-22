@@ -433,10 +433,11 @@ int main(int argc, char **argv)
 SHARP_CASES = [
     (None, "off"), ("", "off"), ("rumble=1\nhud_anchor=0\n", "off"), ("sharp_ui=0\n", "off"),
     ("sharp_ui=1\n", "on"), ("rumble=0\r\nsharp_ui=1\r\n", "on"), ("sharp_ui= 1 \n", "on"), ("hud_anchor=1\nsharp_ui=1", "on"),
+    ("sharp_ui =1\n", "on"), ("sharp_ui = 1\n", "on"), ("  sharp_ui\t=\t1\r\n", "on"),
     # values that are not exactly 0 or 1, a second line, and other keys: the default
     ("sharp_ui=yes\n", "off"), ("sharp_ui=2\n", "off"), ("sharp_ui=1x\n", "off"), ("sharp_ui=on\n", "off"), ("sharp_ui=\n", "off"),
-    ("sharp_ui=-1\n", "off"), ("sharp_ui=1\nsharp_ui=1\n", "off"), ("sharp_ui =1\n", "off"), ("Sharp_UI=1\n", "off"),
-    ("sharp_ui_x=1\n", "off"),
+    ("sharp_ui=-1\n", "off"), ("sharp_ui=1\nsharp_ui=1\n", "off"), ("sharp_ui = 1\nsharp_ui=0\n", "off"), ("Sharp_UI=1\n", "off"),
+    ("; sharp_ui = 1\n", "off"), ("sharp_ui x=1\n", "off"), ("sharp_ui_x=1\n", "off"),
 ]
 # Causal mutants of the switch (widescreen.cpp) and of the gate's use of it (DXFont.cpp), run on every case.
 SHARP_MUTANTS = [
@@ -494,6 +495,7 @@ def sharp_program(wide=None, font=None):
     reader = "".join([definition(report, "static inline void ce_user_dir("), report[start:end] + "\n",
                       definition(report, "static inline void ce_settings_dir_close("),
                       definition(report, "static inline int ce_settings_dir_open_ex("),
+                      definition(report, "static inline int ce_ini_match_key("),
                       definition(ce, "static FILE *ce_ini_open_regular("), definition(ce, "static char *ce_ini_read("),
                       definition(ce, "static int ce_ini_value("), definition(ce, 'extern "C" int CE_SettingGet('),
                       definition(ce, 'extern "C" int CE_SettingGetBool(')])

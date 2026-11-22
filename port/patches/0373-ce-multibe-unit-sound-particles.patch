@@ -17,12 +17,18 @@
  				{
 --- a/SoundManager.cpp
 +++ b/SoundManager.cpp
-@@ -1012,6 +1012,25 @@
+@@ -1012,6 +1012,31 @@
  					rcori=camori2;
  				}
  			}
 +#ifdef CE_VERSION
-+			if (GAME.GetNPlayers() > 2)
++			extern bool PortCeOneScreenMatch();
++			if (PortCeOneScreenMatch())
++			{
++				rcpos = campos1;
++				rcori = camori1;
++			}
++			else if (GAME.GetNPlayers() > 2)
 +			{
 +				float bestDist = (se->mPos - rcpos).MagnitudeSq();
 +				for (SINT ceCamIdx = 2; ceCamIdx < GAME.GetNPlayers() && ceCamIdx < MAX_PLAYERS; ceCamIdx++)

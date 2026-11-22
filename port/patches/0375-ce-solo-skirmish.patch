@@ -1,0 +1,206 @@
+--- a/FEPMultiplayer.cpp
++++ b/FEPMultiplayer.cpp
+@@ -14,6 +14,9 @@
+ extern int	gControlPreset;						// 00677d70 (the controls page's ApplyControlPreset)
+ void		ApplyControlPreset(int preset);		// 00453780
+ bool		AllControlBindingsSet(int index);	// 00456650 (FEPControls.cpp): FALSE while a configurable control has no input
++#ifdef CE_VERSION
++extern "C" int PortCeSoloSkirmishActive(void) __attribute__((weak));
++#endif
+ 
+ // FUNCTION: 0x0051c980 init:ZERO_FVECTOR
+ // FUNCTION: 0x0051c9a0 init:ID_FMATRIX
+@@ -192,7 +195,11 @@
+ 	}
+ 
+ 	// the second player needs every control bound
++#ifdef CE_VERSION
++	if ((state == FEPS_ACTIVE) && (!AllControlBindingsSet(1)) && !(PortCeSoloSkirmishActive && PortCeSoloSkirmishActive()))
++#else
+ 	if ((state == FEPS_ACTIVE) && (!AllControlBindingsSet(1)))
++#endif
+ 	{
+ 		if (gControlPreset == 1)
+ 		{
+--- a/FEPMultiplayerStart.cpp
++++ b/FEPMultiplayerStart.cpp
+@@ -25,6 +25,9 @@
+ // FUNCTION: 0x0051dab0 init:ZERO_FVECTOR
+ // FUNCTION: 0x0051dad0 init:ID_FMATRIX
+ 
++#ifdef CE_VERSION
++extern "C" int PortCeSoloSkirmishActive(void) __attribute__((weak));
++#endif
+ //*********************************************************************************
+ // FUNCTION: 0x0051dba0
+ BOOL	CFEPMultiplayerStart::Init()
+@@ -120,7 +123,11 @@
+ // FUNCTION: 0x0051de60
+ void	CFEPMultiplayerStart::ButtonPressed(SINT button, float val)
+ {
++#ifdef CE_VERSION
++	if (!(PortCeSoloSkirmishActive && PortCeSoloSkirmishActive()) && (RECONNECT_INTERFACE[1].GetState() != CReconnectInterface::OK))
++#else
+ 	if (RECONNECT_INTERFACE[1].GetState() != CReconnectInterface::OK)
++#endif
+ 		return;
+ 
+ 	SINT	player = -1;
+@@ -438,5 +445,9 @@
+ 	}
+ 
++#ifdef CE_VERSION
++	if ((mPort[1] != -1) && !(PortCeSoloSkirmishActive && PortCeSoloSkirmishActive()))
++#else
+ 	if (mPort[1] != -1)
++#endif
+ 		RECONNECT_INTERFACE[1].Render(NULL, FRONTEND.GetController(mPort[1]), TRUE);
+ 
+--- a/FrontEnd.cpp
++++ b/FrontEnd.cpp
+@@ -31,6 +31,9 @@
+ #include	"PCController.h"
+ #define CCONTROLLER CPCController
+ #include	"ParticleManager.h"
++#ifdef CE_VERSION
++extern "C" int PortCeSoloSkirmishActive(void) __attribute__((weak));
++#endif
+ #include	"DebugLog.h"
+ #include	"mouse.h"
+ 
+@@ -628,7 +631,11 @@
+ 		if (!RECONNECT_INTERFACE[0].Process(mControllers[mPlayer0ControllerPort], false) && RECONNECT_INTERFACE[0].GetState() != CReconnectInterface::OK)
+ 			unconnected = TRUE;
+ 
++#ifdef CE_VERSION
++		if ((mActivePage == FEP_MULTIPLAYER_START) && !(PortCeSoloSkirmishActive && PortCeSoloSkirmishActive()))
++#else
+ 		if (mActivePage == FEP_MULTIPLAYER_START)
++#endif
+ 		{
+ 			int port = mFEPMultiplayerStart.GetPlayer1ControllerPort();
+ 			if (port != -1)
+--- a/PauseMenu.cpp
++++ b/PauseMenu.cpp
+@@ -90,6 +90,9 @@
+ static CMenuMenuItem	*sShadowDetail;	static CMenuMenuItem	*sTreeDetail;	// 0082b48c, 0082b488 (the constructor sets them)
+ // FUNCTION: 0x004cddc0 init:SCREEN_SHAPE
+ // FUNCTION: 0x004cdde0 exit:SCREEN_SHAPE
++#ifdef CE_VERSION
++extern "C" int PortCeSoloSkirmishActive(void) __attribute__((weak));
++#endif
+ CTweakSLONG	SCREEN_SHAPE("SCREEN_SHAPE", 0);
+ 
+ // FUNCTION: 0x004cddf0
+@@ -1808,8 +1811,13 @@
+ {
+ 	if (!AllControlBindingsSet(0))
+ 		return Localization_GetStringById(0xe8);
++#ifdef CE_VERSION
++	if ((GAME.GetGameState() >= GAME_STATE_PRE_RUNNING) && (GAME.GetGameState() < GAME_STATE_QUIT) && GAME.IsMultiplayer() &&
++		!(PortCeSoloSkirmishActive && PortCeSoloSkirmishActive()) && (!AllControlBindingsSet(1)))
++#else
+ 	if ((GAME.GetGameState() >= GAME_STATE_PRE_RUNNING) && (GAME.GetGameState() < GAME_STATE_QUIT) && GAME.IsMultiplayer() &&
+ 		(!AllControlBindingsSet(1)))
++#endif
+ 		return Localization_GetStringById(0xe9);
+ 	return NULL;
+ }
+--- a/Controller.cpp
++++ b/Controller.cpp
+@@ -35,6 +35,9 @@
+ 
+ float CController::mLastTimeAnythingPressed = 0.f;
+ bool CController::mNonInteractiveSection = false;
++#ifdef CE_VERSION
++extern "C" int PortCeSoloSkirmishActive(void) __attribute__((weak));
++#endif
+ 
+ #define ANALOGUE_DEAD_ZONE 0.15f		// retail: one dead zone for every axis (Stuart's Xbox used 0.36)
+ #define ANALOGUE_DEAD_ZONE_SCALE ((float)(1.0 / (1.0 - 0.15)))	// retail's constant is 1/0.85 rounded once
+@@ -389,6 +392,10 @@
+ 
+ 
+ 	// get platform specific child to fill in virtual buttons
++#ifdef CE_VERSION
++	if (GAME.IsMultiplayer() && (this == GAME.GetController(1)) && PortCeSoloSkirmishActive && PortCeSoloSkirmishActive())
++		return;
++#endif
+ 	DoMappings() ;
+ }
+ 
+--- a/game.cpp
++++ b/game.cpp
+@@ -277,6 +277,9 @@
+ 
+ 	mLevelStartTime=0.0f;
+ }
++#ifdef CE_VERSION
++extern "C" int PortCeSoloSkirmishActive(void) __attribute__((weak));
++#endif
+ // FUNCTION: 0x0046c2b0 ??_GCGame@@UAEPAXI@Z
+ //******************************************************************************************
+ CGame::~CGame()	// FUNCTION: 0x0046c2d0
+@@ -2027,7 +2030,12 @@
+ 
+ 		// We have to draw the "help your controller's unplugged" messages on top of everything.
+ 		RECONNECT_INTERFACE[0].Render(ENGINE.GetViewportForViewpoint(0), mController[0], FALSE);
++#ifdef CE_VERSION
++		if (!GAME.IsMultiplayer() || !(PortCeSoloSkirmishActive && PortCeSoloSkirmishActive()))
++			RECONNECT_INTERFACE[1].Render(ENGINE.GetViewportForViewpoint(1), mController[1], FALSE);
++#else
+ 		RECONNECT_INTERFACE[1].Render(ENGINE.GetViewportForViewpoint(1), mController[1], FALSE);
++#endif
+ #ifdef CE_VERSION
+ 		for (SINT ceRecIdx = 2; ceRecIdx < mPlayers && ceRecIdx < MAX_PLAYERS; ceRecIdx++)
+ 		{
+@@ -2147,17 +2155,28 @@
+ 		for (int i=0;i<mPlayers;i++)
+ 		{
+ 			if (!mController[i]) continue;
++#ifdef CE_VERSION
++			if (i == 1 && PortCeSoloSkirmishActive && PortCeSoloSkirmishActive())
++				continue;
++#endif
+ 
+ 			if (RECONNECT_INTERFACE[i].Process(mController[i], true))
+ 				something_reconnected = true;
+ 		}
+ 
+ 		// If we've just reconnected something, we could unpause the game. Unless we're in the pause menu of course.
+ 		if (something_reconnected && mController[0]->GetToControl() == mPlayer[0] && IsPaused() &&
++#ifdef CE_VERSION
++			RECONNECT_INTERFACE[0].GetState() == CReconnectInterface::OK &&
++			((PortCeSoloSkirmishActive && PortCeSoloSkirmishActive()) || RECONNECT_INTERFACE[1].GetState() == CReconnectInterface::OK))
++		{
++			if (GAME.IsMultiplayer() && !(PortCeSoloSkirmishActive && PortCeSoloSkirmishActive()))
++#else
+ 			RECONNECT_INTERFACE[0].GetState() == CReconnectInterface::OK &&
+ 			RECONNECT_INTERFACE[1].GetState() == CReconnectInterface::OK)
+ 		{
+ 			if (GAME.IsMultiplayer() )
++#endif
+ 			{
+ 				if (mController[1]->GetToControl() == mPlayer[1])
+ 				{
+@@ -2194,4 +2214,8 @@
+ 		for (int i=0;i<mPlayers;i++)
+ 		{
++#ifdef CE_VERSION
++			if (i == 1 && PortCeSoloSkirmishActive && PortCeSoloSkirmishActive())
++				continue;
++#endif
+ 			if (mController[i])
+ 			{
+@@ -2288,7 +2312,11 @@
+ 		// retail: the count holds while a controller is disconnected (0046ec88)
+ 		if ((mEndLevelCount <= CLOCK_TICK) &&
+ 			((RECONNECT_INTERFACE[0].GetState() != CReconnectInterface::OK) ||
++#ifdef CE_VERSION
++			 (GAME.IsMultiplayer() && !(PortCeSoloSkirmishActive && PortCeSoloSkirmishActive()) && (RECONNECT_INTERFACE[1].GetState() != CReconnectInterface::OK))))
++#else
+ 			 (GAME.IsMultiplayer() && (RECONNECT_INTERFACE[1].GetState() != CReconnectInterface::OK))))
++#endif
+ 			mEndLevelCount = CLOCK_TICK;
+ 
+ 		if (mCurrentLevel == 741 || mCurrentLevel == 742 || mEndLevelCount < 0)

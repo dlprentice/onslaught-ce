@@ -337,8 +337,9 @@ static inline int ce_make_settings_dirs(const char *path)
 }
 
 /* The header of the block that lists the unfinished features (ce_ini_add_section). Every reader of ce.ini takes lines that
- * begin with "key=", so this header and the ";" comment lines under it are skipped as they always were. A key that is not in
- * the file yet is added above the header, so the block stays at the end and the keys under it are its own. */
+ * set "key=" (optional spaces or tabs before key or "="), so this header and the ";" comment lines under it are skipped as
+ * they always were. A key that is not in the file yet is added above the header, so the block stays at the end and the keys
+ * under it are its own. */
 #define CE_INI_EXPERIMENTAL_HEADER "[Experimental]"
 
 /* The largest ce.ini the game's readers (ce.cpp) accept; they refuse a longer file and use their defaults. The writer never
@@ -378,7 +379,22 @@ static inline size_t ce_ini_insert_before(const char *t, size_t header_at)
 	return header_at;
 }
 
-/* Whether some line of t begins with key and "=". */
+/* Whether the line at line (len bytes, without its newline) sets key (key_len bytes): optional leading spaces or tabs,
+ * exact case-sensitive key, optional spaces or tabs, then '='. When eq_pos is given, *eq_pos receives the index of '='. */
+static inline int ce_ini_match_key(const char *line, size_t len, const char *key, size_t key_len, size_t *eq_pos)
+{
+	if (!key || !key_len) return 0;
+	size_t p = 0;
+	while (p < len && (line[p] == ' ' || line[p] == '\t')) ++p;
+	if (len - p <= key_len || memcmp(line + p, key, key_len) != 0) return 0;
+	p += key_len;
+	while (p < len && (line[p] == ' ' || line[p] == '\t')) ++p;
+	if (p >= len || line[p] != '=') return 0;
+	if (eq_pos) *eq_pos = p;
+	return 1;
+}
+
+/* Whether some line of t sets key (optional spaces or tabs before key or "="). */
 static inline int ce_ini_has_key(const char *t, size_t len, const char *key)
 {
 	size_t k = strlen(key);
@@ -386,7 +402,7 @@ static inline int ce_ini_has_key(const char *t, size_t len, const char *key)
 	{
 		const char *nl = (const char *)memchr(t + at, '\n', len - at);
 		size_t n = nl ? (size_t)(nl - (t + at)) : len - at;
-		if (n > k && !memcmp(t + at, key, k) && t[at + k] == '=') return 1;
+		if (ce_ini_match_key(t + at, n, key, k, NULL)) return 1;
 		at += n + (nl ? 1 : 0);
 	}
 	return 0;
@@ -568,10 +584,11 @@ static inline int ce_ini_edit_file(const char *ini, const char *key, const char 
 	{
 		char *l = t + at;
 		char *nl = (char *)memchr(l, '\n', len - at);
-		size_t n = nl ? (size_t)(nl - l + 1) : len - at;
+		size_t line_len = nl ? (size_t)(nl - l) : len - at;
+		size_t n = line_len + (nl ? 1 : 0);
 		if (key && !has_key && !written && at == header_at && fprintf(o, "%s=%s\n", key, value) < 0) ok = 0;
 		if (key && !has_key && at == header_at) written = 1;
-		if (key && n > k && !memcmp(l, key, k) && l[k] == '=')
+		if (key && ce_ini_match_key(l, line_len, key, k, NULL))
 		{
 			if (!written && fprintf(o, "%s=%s\n", key, value) < 0) ok = 0;
 			written = 1;

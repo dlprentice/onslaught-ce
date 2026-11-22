@@ -26,6 +26,7 @@
 #error The commander match requires weak symbol support for the network boot boundary
 #endif
 extern "C" int CE_BootRequested(void) __attribute__((weak));
+extern "C" int PortCeSoloSkirmishActive(void) __attribute__((weak));
 
 namespace
 {
@@ -47,8 +48,9 @@ CBattleEngine *Engine()
 
 bool CeCmdMatch()
 {
-	// A versus level with its two Battle Engines, started by the command line's -level: one person at the controls (the rule: ce_cmdrules.h).
-	return CeCmdMatchRule(CE_BootRequested && CE_BootRequested(), GAME.IsMultiplayer() != FALSE, GAME.GetNPlayers(), CLIPARAMS.mLevelNo, GAME.GetCurrentLevel());
+	// A versus/skirmish level with its two Battle Engines, played by one person (either via -level or Solo Skirmish vs AI; the rule: ce_cmdrules.h).
+	const bool solo = (PortCeSoloSkirmishActive && PortCeSoloSkirmishActive()) != 0;
+	return CeCmdMatchRule(CE_BootRequested && CE_BootRequested(), GAME.IsMultiplayer() != FALSE, GAME.GetNPlayers(), CLIPARAMS.mLevelNo, GAME.GetCurrentLevel(), solo);
 }
 
 void CeCmdMatchUpdate()

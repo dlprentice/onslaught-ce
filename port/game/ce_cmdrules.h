@@ -29,12 +29,14 @@ inline bool CeCmdHoldsOnArrival(int verb, bool arrived) { return arrived && (ver
 // has no place.
 inline bool CeCmdSpreads(int verb, int squads) { return squads > 1 && CeCmdMarches(verb); }
 
-// A Commander match (ce_cmdmatch.h): a versus level (the game reports a multiplayer level with its two players) that one person started straight from the
-// command line's -level, so that nobody else is at the controls; never a network game. A versus level chosen in the game's own Multiplayer menu has no -level
-// (cliLevel is -1) and is two people's game.
-inline bool CeCmdMatchRule(bool network, bool multiplayer, int players, int cliLevel, int level)
+// A Commander / one-screen match (ce_cmdmatch.h): a versus/skirmish level (the game reports a multiplayer level with its two players) that one person
+// plays alone — either started straight from the command line's -level, or via Solo Skirmish vs AI (levels 850..899); never a network game.
+// A versus level chosen in the game's own Multiplayer menu without soloSkirmish has no -level (cliLevel is -1) and is two people's splitscreen game.
+inline bool CeCmdMatchRule(bool network, bool multiplayer, int players, int cliLevel, int level, bool soloSkirmish = false)
 {
-	return !network && multiplayer && players == 2 && cliLevel >= 0 && cliLevel == level;
+	const bool cliMatch = cliLevel >= 0 && cliLevel == level;
+	const bool soloMatch = soloSkirmish && level >= 850 && level <= 899;
+	return !network && multiplayer && players == 2 && (cliMatch || soloMatch);
 }
 
 // The match's alerts (ce_cmdmap.cpp's MatchFrame, once an update while the live view is open): what the commander is told when the battle turns

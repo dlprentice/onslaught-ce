@@ -40,7 +40,9 @@
 #include "MenuItem.h"
 #include "MenuOptionsList.h"
 #include "DXEngine.h"
+#include "CLIParams.h"
 #include "ce_photo.h"
+#include "ce_cmdmatch.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -74,7 +76,39 @@ bool NetworkOrLockstepActive()
 	       (PortCeNetActive && PortCeNetActive());
 }
 
-int ReadPlaySideSetting()
+bool PilotEnvPresent()
+{
+	static int cached = -1;
+	if (cached < 0)
+	{
+		const char *pilot = getenv("BEA_PORT_PILOT");
+		const char *autopilot = getenv("BEA_PORT_AUTOPILOT");
+		cached = ((pilot && pilot[0]) || (autopilot && autopilot[0])) ? 1 : 0;
+	}
+	return cached != 0;
+}
+
+bool MultiBeFenced()
+{
+	if (!PortCeLayer() || PortRecording() || NetworkOrLockstepActive())
+		return true;
+	if (PLAYABLE_DEMO || CLIPARAMS.mAutoConfigTest || CLIPARAMS.mRecordDemo ||
+	    CLIPARAMS.mPlaybackDemo || CLIPARAMS.mStressTest || CLIPARAMS.mAttractMode)
+		return true;
+	if (PilotEnvPresent())
+		return true;
+	return false;
+}
+
+// Cached ce.ini settings (-1 = uninitialized) so per-frame Front-End / gameplay checks perform zero disk I/O.
+// Refreshed on Options build and level begin, and updated synchronously when toggled in Front-End Options.
+int gCachedPlaySide = -1;
+int gCachedSoloSkirmish = -1;
+int gCachedMultiBeChoice = -1;
+bool gInLevel = false;
+bool gLatchedSoloSkirmish = false;
+
+int LoadPlaySideFromIni()
 {
 	char buf[32] = {0};
 	if (!CE_SettingGetText("play_side", buf, (int)sizeof(buf)))
@@ -82,12 +116,48 @@ int ReadPlaySideSetting()
 	return CeMultiBeParsePlaySide(buf);
 }
 
-int ReadMultiBeChoiceSetting()
+int LoadMultiBeChoiceFromIni()
 {
 	char buf[32] = {0};
 	if (!CE_SettingGetText("multi_be", buf, (int)sizeof(buf)))
 		return CE_MULTIBE_CHOICE_STANDARD;
 	return CeMultiBeModeFromIni(buf);
+}
+
+int LoadSoloSkirmishFromIni()
+{
+	char buf[32] = {0};
+	if (!CE_SettingGetText("solo_skirmish", buf, (int)sizeof(buf)))
+		return CE_SOLO_SKIRMISH_SPLITSCREEN;
+	return CeMultiBeParseSoloSkirmish(buf);
+}
+
+void RefreshCachedSettings()
+{
+	gCachedPlaySide = LoadPlaySideFromIni();
+	gCachedSoloSkirmish = LoadSoloSkirmishFromIni();
+	gCachedMultiBeChoice = LoadMultiBeChoiceFromIni();
+}
+
+int ReadPlaySideSetting()
+{
+	if (gCachedPlaySide < 0)
+		gCachedPlaySide = LoadPlaySideFromIni();
+	return gCachedPlaySide;
+}
+
+int ReadMultiBeChoiceSetting()
+{
+	if (gCachedMultiBeChoice < 0)
+		gCachedMultiBeChoice = LoadMultiBeChoiceFromIni();
+	return gCachedMultiBeChoice;
+}
+
+int ReadSoloSkirmishSetting()
+{
+	if (gCachedSoloSkirmish < 0)
+		gCachedSoloSkirmish = LoadSoloSkirmishFromIni();
+	return gCachedSoloSkirmish;
 }
 
 // Native clickable Front-End Options rows (auto-fitted by ce_menu_fit at 640x480 & 1280x720).
@@ -124,8 +194,47 @@ public:
 	void SetValue(int value) override
 	{
 		const int side = (value == CE_MULTIBE_SIDE_MUSPELL) ? CE_MULTIBE_SIDE_MUSPELL : CE_MULTIBE_SIDE_FORSETI;
+		gCachedPlaySide = side;
 		if (PortCeMenus())
 			CE_SettingSetText("play_side", CeMultiBePlaySideIniValue(side));
+	}
+};
+
+class CCeSoloSkirmishItem : public CMenuMenuItem
+{
+public:
+	CCeSoloSkirmishItem() : CMenuMenuItem((EPCText)78, 3, false)
+	{
+		Refresh();
+	}
+
+	WCHAR *GetText() override
+	{
+		return const_cast<WCHAR *>(L"Skirmish mode: ");
+	}
+
+	int GetNumChoices() override
+	{
+		return 2;
+	}
+
+	WCHAR *GetChoiceText(int n) override
+	{
+		return const_cast<WCHAR *>(n == CE_SOLO_SKIRMISH_SOLO_AI ? L"Solo vs AI" : L"Splitscreen");
+	}
+
+	int GetValue() override
+	{
+		return ReadSoloSkirmishSetting();
+	}
+
+	void SetValue(int value) override
+	{
+		const int choice = (value == CE_SOLO_SKIRMISH_SOLO_AI)
+			? CE_SOLO_SKIRMISH_SOLO_AI : CE_SOLO_SKIRMISH_SPLITSCREEN;
+		gCachedSoloSkirmish = choice;
+		if (PortCeMenus())
+			CE_SettingSetText("solo_skirmish", CeMultiBeSoloSkirmishIniValue(choice));
 	}
 };
 
@@ -165,6 +274,7 @@ public:
 	{
 		const int choice = (value >= CE_MULTIBE_CHOICE_STANDARD && value <= CE_MULTIBE_CHOICE_FOUR)
 			? value : CE_MULTIBE_CHOICE_STANDARD;
+		gCachedMultiBeChoice = choice;
 		if (PortCeMenus())
 			CE_SettingSetText("multi_be", CeMultiBeModeToIni(choice));
 	}
@@ -227,6 +337,7 @@ CeMultiBeExtraSlotPrefs	gExtraSlotPrefs = {};
 CeMultiBeMatchState		gMatchState = {};
 CeMultiBeConfig			gConfig = {0, false, -1};
 bool					gActive = false;
+bool					gSoloSkirmish = false;
 bool					gSpawned = false;
 bool					gReportedMilestone = false;
 int						gLevel = 0;
@@ -237,6 +348,8 @@ int						gSimTicks = 0;
 int						gNanCount = 0;
 int						gTotalShots = 0;
 int						gAuxShots = 0;
+int						gP2Shots = 0;
+bool					gP2Moved = false;
 int						gAiTargetedCount = 0;
 int						gHudFocusCalls = 0;
 int						gUnitSpawnEvents = 0;
@@ -244,6 +357,7 @@ int						gUnitDestroyedEvents = 0;
 
 CBattleEngine			*gEngines[CE_MULTIBE_MAX] = {NULL, NULL, NULL, NULL};
 bool					gIsAux[CE_MULTIBE_MAX] = {false, false, false, false};
+bool					gIsAiControlled[CE_MULTIBE_MAX] = {false, false, false, false};
 CPlayer					*gAuxPlayers[CE_MULTIBE_MAX] = {NULL, NULL, NULL, NULL};
 CCamera					*gAuxCameras[CE_MULTIBE_MAX] = {NULL, NULL, NULL, NULL};
 FVector					gStartPos[CE_MULTIBE_MAX];
@@ -332,12 +446,14 @@ void EmitTelemetry(const char *phase)
 {
 	RefreshMatchStateCounts();
 	fprintf(stderr,
-	        "ce-multibe: phase=%s level=%d target=%d active=%d spawned=%d ticks=%d nan=%d shots=%d aux_shots=%d ai_targeted=%d hud_focus=%d moved=%d morphs=%d respawns=%d forseti_kills=%d muspell_kills=%d side=%s spawns=%d destroyed=%d\n",
+	        "ce-multibe: phase=%s level=%d target=%d active=%d spawned=%d ticks=%d nan=%d shots=%d aux_shots=%d ai_targeted=%d hud_focus=%d moved=%d morphs=%d respawns=%d forseti_kills=%d muspell_kills=%d side=%s solo=%d onescreen=%d viewpoints=%d p2_shots=%d p2_moved=%d spawns=%d destroyed=%d\n",
 	        phase, gLevel, gConfig.target_count, CountLiveEngines(), gAuxSpawned,
 	        gSimTicks, gNanCount, gTotalShots, gAuxShots, gAiTargetedCount,
 	        gHudFocusCalls, CountMovedEngines(), gMatchState.totalMorphs, gMatchState.totalRespawns,
 	        gMatchState.forsetiKills, gMatchState.muspellKills,
-	        CeMultiBePlaySideIniValue(gPlayerSide), gUnitSpawnEvents, gUnitDestroyedEvents);
+	        CeMultiBePlaySideIniValue(gPlayerSide), gSoloSkirmish ? 1 : 0,
+	        PortCeOneScreenMatch() ? 1 : 0, ENGINE.GetNumViewpoints(),
+	        gP2Shots, gP2Moved ? 1 : 0, gUnitSpawnEvents, gUnitDestroyedEvents);
 	fflush(stderr);
 }
 
@@ -357,6 +473,7 @@ void ResetState()
 		}
 		gEngines[i] = NULL;
 		gIsAux[i] = false;
+		gIsAiControlled[i] = false;
 		gMoved[i] = false;
 		gStartYaw[i] = 0.0f;
 		gTicksSinceMorph[i] = 0;
@@ -364,6 +481,7 @@ void ResetState()
 	}
 	gMatchState.Reset();
 	gActive = false;
+	gSoloSkirmish = false;
 	gSpawned = false;
 	gReportedMilestone = false;
 	gLevel = 0;
@@ -374,6 +492,8 @@ void ResetState()
 	gNanCount = 0;
 	gTotalShots = 0;
 	gAuxShots = 0;
+	gP2Shots = 0;
+	gP2Moved = false;
 	gAiTargetedCount = 0;
 	gHudFocusCalls = 0;
 	gUnitSpawnEvents = 0;
@@ -448,7 +568,7 @@ CUnit *FindNearestHostile(CBattleEngine *self)
 		return NULL;
 	const FVector myPos = self->GetPos();
 	CUnit *best = NULL;
-	float bestScoreSq = 340.0f * 340.0f;
+	float bestScoreSq = 640.0f * 640.0f;
 	ListIterator<CUnit> it(&WORLD.GetUnitNB());
 	for (CUnit *u = it.First(); u; u = it.Next())
 	{
@@ -544,6 +664,7 @@ bool SpawnAuxEngineInSlot(int idx, const FVector &spawnPos, float yaw, EAllegian
 
 	gEngines[idx] = be;
 	gIsAux[idx] = true;
+	gIsAiControlled[idx] = true;
 	gStartPos[idx] = be->GetPos();
 	gStartYaw[idx] = yaw;
 	gTicksSinceMorph[idx] = 0;
@@ -570,19 +691,36 @@ void SpawnAuxiliaryBattleEngines()
 	{
 		CPlayer *pl = GAME.GetPlayer(i);
 		CBattleEngine *be = pl ? pl->GetBattleEngine() : NULL;
-		if (!be)
+		if (!be && !(gSoloSkirmish && i == 1))
 			continue;
 		const int slot = gEngineCount++;
-		const int team = (be->GetAllegiance() == kMuspellAllegiance) ? CE_MULTIBE_SIDE_MUSPELL : CE_MULTIBE_SIDE_FORSETI;
+		const bool soloP2 = (gSoloSkirmish && slot == 1);
 		gEngines[slot] = be;
 		gIsAux[slot] = false;
-		gStartPos[slot] = be->GetPos();
-		gStartYaw[slot] = be->GetCurrentEulerOrientation().mYaw;
-		gMatchState.RegisterSlotTeam(slot, team);
-		if (team == CE_MULTIBE_SIDE_MUSPELL)
-			muspellCount++;
+		gIsAiControlled[slot] = soloP2;
+		if (be)
+		{
+			const int team = (be->GetAllegiance() == kMuspellAllegiance) ? CE_MULTIBE_SIDE_MUSPELL : CE_MULTIBE_SIDE_FORSETI;
+			gStartPos[slot] = be->GetPos();
+			gStartYaw[slot] = be->GetCurrentEulerOrientation().mYaw;
+			gMatchState.RegisterSlotTeam(slot, team);
+			if (team == CE_MULTIBE_SIDE_MUSPELL)
+				muspellCount++;
+			else
+				forsetiCount++;
+			// Ensure Solo Skirmish AI-piloted P2 owns a live first-person aiming camera tracking its Battle Engine.
+			if (soloP2 && pl && (!pl->GetIsInFPV() || !GAME.GetCurrentCamera(1)))
+				pl->GotoFPView();
+		}
 		else
-			forsetiCount++;
+		{
+			const int fallbackTeam = (gPlayerSide == CE_MULTIBE_SIDE_MUSPELL) ? CE_MULTIBE_SIDE_FORSETI : CE_MULTIBE_SIDE_MUSPELL;
+			gMatchState.RegisterSlotTeam(slot, fallbackTeam);
+			if (fallbackTeam == CE_MULTIBE_SIDE_MUSPELL)
+				muspellCount++;
+			else
+				forsetiCount++;
+		}
 	}
 
 	gPlayerSide = (anchor->GetAllegiance() == kMuspellAllegiance) ? CE_MULTIBE_SIDE_MUSPELL : CE_MULTIBE_SIDE_FORSETI;
@@ -722,17 +860,66 @@ void RespawnAuxiliaryBattleEngine(int idx)
 		gMatchState.totalRespawns++;
 }
 
-void FireAuxWeapon(int idx, CBattleEngine *be)
+void SyncSoloP2Engine()
 {
-	if (!be || idx < 0 || idx >= MAX_PLAYERS || !gAuxCameras[idx])
+	if (!gSoloSkirmish || gEngineCount < 2)
 		return;
-	CCamera *savedCam = MultiBeGameAccess::CameraSlot(idx);
-	MultiBeGameAccess::CameraSlot(idx) = gAuxCameras[idx];
-	be->FireWeapon();
-	MultiBeGameAccess::CameraSlot(idx) = savedCam;
+	CPlayer *p1 = GAME.GetPlayer(1);
+	CBattleEngine *live = p1 ? p1->GetBattleEngine() : NULL;
+	if (live && UnitExistsInWorld(live) && !live->IsDying())
+	{
+		if (gEngines[1] != live)
+		{
+			gEngines[1] = live;
+			gIsAux[1] = false;
+			gIsAiControlled[1] = true;
+			gStartPos[1] = live->GetPos();
+			gStartYaw[1] = live->GetCurrentEulerOrientation().mYaw;
+			gTicksSinceMorph[1] = 0;
+			gTicksSinceWeaponSwitch[1] = 0;
+			const int team = (live->GetAllegiance() == kMuspellAllegiance)
+				? CE_MULTIBE_SIDE_MUSPELL : CE_MULTIBE_SIDE_FORSETI;
+			gMatchState.RegisterSlotTeam(1, team);
+		}
+		if (!p1->GetIsInFPV() || !GAME.GetCurrentCamera(1))
+			p1->GotoFPView();
+	}
+	else
+	{
+		gEngines[1] = NULL;
+	}
 }
 
-void DriveAuxiliaryEngine(int idx)
+void FireAiWeapon(int idx, CBattleEngine *be)
+{
+	if (!be || idx < 0 || idx >= MAX_PLAYERS)
+		return;
+	if (gIsAux[idx])
+	{
+		if (!gAuxCameras[idx])
+			return;
+		CCamera *savedCam = MultiBeGameAccess::CameraSlot(idx);
+		MultiBeGameAccess::CameraSlot(idx) = gAuxCameras[idx];
+		be->FireWeapon();
+		MultiBeGameAccess::CameraSlot(idx) = savedCam;
+		return;
+	}
+	// Real Player 2 slot in Solo Skirmish: GAME owns mCurrentCamera[1] (CThingCamera via GotoFPView),
+	// so never stash or delete it in gAuxCameras[1].
+	if (idx == 1 && gSoloSkirmish)
+	{
+		CPlayer *p1 = GAME.GetPlayer(1);
+		if (!p1 || p1->GetBattleEngine() != be)
+			return;
+		if (!p1->GetIsInFPV() || !GAME.GetCurrentCamera(1))
+			p1->GotoFPView();
+		if (!GAME.GetCurrentCamera(1))
+			return;
+		be->FireWeapon();
+	}
+}
+
+void DriveAiEngine(int idx)
 {
 	CBattleEngine *be = gEngines[idx];
 	if (!be || !UnitExistsInWorld(be) || be->IsDying())
@@ -819,7 +1006,7 @@ void DriveAuxiliaryEngine(int idx)
 		jet->Thrust(thrustVy);
 
 		if (cmd.fire && (gSimTicks + idx * 5) % 8 == 0)
-			FireAuxWeapon(idx, be);
+			FireAiWeapon(idx, be);
 		return;
 	}
 
@@ -848,11 +1035,14 @@ void DriveAuxiliaryEngine(int idx)
 	{
 		if (target && horizDist > 1.0f)
 		{
+			const CEulerAngles curEuler = be->GetCurrentEulerOrientation();
 			const float desiredYaw = toGoal.Azimuth();
-			const float curYaw = be->GetCurrentEulerOrientation().mYaw;
-			const float diff = CeMultiBeWrapAngle(desiredYaw - curYaw);
+			const float diff = CeMultiBeWrapAngle(desiredYaw - curEuler.mYaw);
 			if (fabsf(diff) > 0.07f)
 				walker->Rotate(diff > 0.0f ? -0.68f : 0.68f);
+			const float pitchInput = CeMultiBeComputeWalkerPitchInput(curEuler.mPitch, toGoal.Elevation());
+			if (pitchInput != 0.0f)
+				walker->Pitch(pitchInput);
 		}
 		else
 		{
@@ -908,7 +1098,7 @@ void DriveAuxiliaryEngine(int idx)
 	}
 
 	if ((gSimTicks + idx * 7) % 12 == 0)
-		FireAuxWeapon(idx, be);
+		FireAiWeapon(idx, be);
 }
 
 void ProbeAiTargeting()
@@ -948,16 +1138,21 @@ void CopyDrawableWide(WCHAR *out, size_t cap, const char *ascii, CDXBitmapFont *
 extern "C" void PortCeMultiBeLevelBegin(int level)
 {
 	ResetState();
-	// Never activate inside an online network or lockstep session (preserves strict multiplayer parity).
-	if (NetworkOrLockstepActive())
+	gInLevel = true;
+	gLatchedSoloSkirmish = false;
+	// Never activate inside an online network/lockstep session, recording, demo, attract, or pilot run.
+	if (MultiBeFenced())
 		return;
+	RefreshCachedSettings();
 	char buf[32] = {0};
-	if (!CE_SettingGetText("multi_be", buf, (int)sizeof(buf)))
+	const int count = CE_SettingGetText("multi_be", buf, (int)sizeof(buf)) ? CeMultiBeParseCount(buf) : 0;
+	const bool solo = (ReadSoloSkirmishSetting() == CE_SOLO_SKIRMISH_SOLO_AI);
+	const bool soloThisLevel = solo && (level >= 850 && level <= 899);
+	gLatchedSoloSkirmish = soloThisLevel;
+	const int effectiveTarget = CeMultiBeEffectiveTargetCount(count, solo, level);
+	if (effectiveTarget <= 0)
 		return;
-	const int count = CeMultiBeParseCount(buf);
-	if (count < 3)
-		return;
-	gConfig.target_count = count;
+	gConfig.target_count = effectiveTarget;
 	gConfig.panoramic_cam = CE_SettingIs("multi_be_cam", "1") != 0;
 	char hudBuf[16] = {0};
 	gConfig.hud_focus_slot = CE_SettingGetText("multi_be_hud_slot", hudBuf, (int)sizeof(hudBuf))
@@ -965,13 +1160,21 @@ extern "C" void PortCeMultiBeLevelBegin(int level)
 		: -1;
 	gLevel = level;
 	gPlayerSide = ReadPlaySideSetting();
+	gSoloSkirmish = soloThisLevel;
 	gActive = true;
+	// Enable single-screen fullscreen immediately (before opening pan renders), even when commander=0.
+	if (gSoloSkirmish)
+		CeCmdMatchUpdate();
 }
 
 extern "C" void PortCeMultiBeLevelEnd(int, int)
 {
+	gInLevel = false;
+	gLatchedSoloSkirmish = false;
 	if (!gActive)
 		return;
+	if (gSoloSkirmish)
+		CeCmdMatchLevelEnd();
 	EmitTelemetry("end");
 	ResetState();
 }
@@ -980,6 +1183,9 @@ extern "C" void PortCeMultiBeTickPre()
 {
 	if (!gActive)
 		return;
+
+	if (gSoloSkirmish && !PortCeOneScreenMatch())
+		CeCmdMatchUpdate();
 
 	const EGameState state = GAME.GetGameState();
 	if (state == GAME_STATE_PANNING && gConfig.panoramic_cam)
@@ -1011,6 +1217,10 @@ extern "C" void PortCeMultiBeTickPre()
 			return;
 	}
 
+	// Keep Solo Skirmish Player 2 pointer synchronized across retail deaths & respawns (never dangle!).
+	if (gSoloSkirmish)
+		SyncSoloP2Engine();
+
 	gSimTicks++;
 
 	// Advance auxiliary BE respawn timers and redeploy any slot whose 5-second cooldown finished.
@@ -1022,7 +1232,7 @@ extern "C" void PortCeMultiBeTickPre()
 				RespawnAuxiliaryBattleEngine(i);
 	}
 
-	// Validate positions & drive auxiliary Battle Engines.
+	// Validate positions & drive AI-controlled Battle Engines (Solo Skirmish P2 + auxiliary BEs).
 	for (int i = 0; i < gEngineCount; i++)
 	{
 		CBattleEngine *be = gEngines[i];
@@ -1032,10 +1242,14 @@ extern "C" void PortCeMultiBeTickPre()
 		if (!CeMultiBeIsFinitePos(pos.X, pos.Y, pos.Z))
 			gNanCount++;
 		else if ((pos - gStartPos[i]).MagnitudeSq() > 0.25f)
+		{
 			gMoved[i] = true;
+			if (i == 1)
+				gP2Moved = true;
+		}
 
-		if (gIsAux[i])
-			DriveAuxiliaryEngine(i);
+		if (gIsAiControlled[i])
+			DriveAiEngine(i);
 	}
 
 	if (gSimTicks % 10 == 0)
@@ -1077,7 +1291,7 @@ extern "C" CBattleEngine *PortCeMultiBeHudFocus(CBattleEngine *be, CPlayer *play
 
 extern "C" void PortCeMultiBeDrawHud(CPlayer *, int viewpoint)
 {
-	if (!gActive || !gSpawned || viewpoint != 0)
+	if (!gActive || !gSpawned || viewpoint != 0 || gConfig.target_count < 3)
 		return;
 	if (PortCePhotoOn() || PortCePhotoSavedNext() || GAME.GetGameState() != GAME_STATE_PLAYING)
 		return;
@@ -1112,7 +1326,7 @@ extern "C" void PortCeMultiBeDrawHud(CPlayer *, int viewpoint)
 	}
 	const float height = float(font->GetHeight()) + 14.0f;
 
-	CeHudScope topScope(!GAME.IsMultiplayer() && ENGINE.GetNumViewpoints() == 1,
+	CeHudScope topScope((!GAME.IsMultiplayer() || PortCeOneScreenMatch()) && ENGINE.GetNumViewpoints() == 1,
 	                    HUD.mViewportWidth, HUD.mViewportHeight, cx, HUD.mViewportY + HUD_OFFSET_Y);
 	RENDERINFO.SetFogEnabled(false);
 	RENDERINFO.SetLightingEnabled(false);
@@ -1131,11 +1345,12 @@ extern "C" void PortCeMultiBeMenuRows(CeMenuEvent event, CeMenuPage *page)
 {
 	if (event != CE_MENU_BUILD || !page || page->site != CE_MENU_PAUSE_LIST || !page->list)
 		return;
-	if (!CPauseMenu::mOptionsPage || !PortCeMenus() || NetworkOrLockstepActive())
+	if (!CPauseMenu::mOptionsPage || !PortCeMenus() || MultiBeFenced())
 		return;
 
+	RefreshCachedSettings();
 	CMenuOptionsList *list = page->list;
-	// Insert Play side & Battle Engines cleanly right before Credits (the only mId==1 item on the Options root list).
+	// Insert Play side, Skirmish mode & Battle Engines cleanly right before Credits (the only mId==1 item on the Options root list).
 	CMenuItem *credits = NULL;
 	if (list->mItems.Size() > 0)
 	{
@@ -1147,6 +1362,7 @@ extern "C" void PortCeMultiBeMenuRows(CeMenuEvent event, CeMenuPage *page)
 		}
 	}
 	list->AddItem(new (kMultiBeMenuMem) CCePlaySideItem());
+	list->AddItem(new (kMultiBeMenuMem) CCeSoloSkirmishItem());
 	list->AddItem(new (kMultiBeMenuMem) CCeBattleEnginesItem());
 	if (credits)
 		list->AddItem(credits);
@@ -1185,6 +1401,8 @@ extern "C" void PortCeMultiBeWeaponFire(CWeapon *, CUnit *owner, CRound *)
 		gTotalShots++;
 		if (gIsAux[idx])
 			gAuxShots++;
+		if (idx == 1 && gIsAiControlled[1])
+			gP2Shots++;
 	}
 }
 
@@ -1192,7 +1410,7 @@ extern "C" void PortCeMultiBeWeaponFire(CWeapon *, CUnit *owner, CRound *)
 
 extern "C" void PortCeMultiBeApplyStartSlot(int *playerNumber, int retailInvert)
 {
-	if (!playerNumber || !PortCeLayer() || PortRecording() || NetworkOrLockstepActive())
+	if (!playerNumber || MultiBeFenced())
 		return;
 	const int level = GAME.GetCurrentLevel();
 	const bool isVersus = (level >= 850 && level <= 899);
@@ -1203,7 +1421,7 @@ extern "C" void PortCeMultiBeApplyStartSlot(int *playerNumber, int retailInvert)
 
 extern "C" int PortCeMultiBeAllowTeamKills(void)
 {
-	return (PortCeLayer() && !PortRecording() && !NetworkOrLockstepActive()) ? 1 : 0;
+	return MultiBeFenced() ? 0 : 1;
 }
 
 extern "C" int PortCeMultiBeSelectStartConfig(int playerNumber, int p1Config, int p2Config)
@@ -1262,18 +1480,30 @@ extern "C" int PortCeMultiBeActive(void)
 
 extern "C" int PortCeMultiBePlaySideIsMuspell(void)
 {
-	if (!PortCeLayer() || PortRecording() || NetworkOrLockstepActive())
+	if (MultiBeFenced())
 		return 0;
 	return (ReadPlaySideSetting() == CE_MULTIBE_SIDE_MUSPELL) ? 1 : 0;
 }
 
+extern "C" int PortCeSoloSkirmishActive(void)
+{
+	if (MultiBeFenced())
+		return 0;
+	if (gInLevel)
+		return gLatchedSoloSkirmish ? 1 : 0;
+	return (ReadSoloSkirmishSetting() == CE_SOLO_SKIRMISH_SOLO_AI) ? 1 : 0;
+}
+
 extern "C" void PortCeMultiBeDrawMpStartStatus(float transition)
 {
-	if (!PortCeLayer() || !PortCeMenus() || PortRecording() || NetworkOrLockstepActive())
+	if (!PortCeMenus() || MultiBeFenced())
 		return;
+	const bool solo = (ReadSoloSkirmishSetting() == CE_SOLO_SKIRMISH_SOLO_AI);
 	const int side = ReadPlaySideSetting();
 	const int mode = ReadMultiBeChoiceSetting();
-	if (side == CE_MULTIBE_SIDE_FORSETI && mode == CE_MULTIBE_CHOICE_STANDARD)
+
+	char ascii[128] = {0};
+	if (!CeMultiBeFormatMpStartStatus(solo, side, mode, ascii, sizeof(ascii)))
 		return;
 
 	CDXBitmapFont *font = PLATFORM.Font(FONT_SMALL);
@@ -1283,22 +1513,21 @@ extern "C" void PortCeMultiBeDrawMpStartStatus(float transition)
 	if (vis < 0.1f)
 		return;
 
-	char ascii[96] = {0};
-	const char *modeLabel = (mode == CE_MULTIBE_CHOICE_FOUR) ? "4 BEs (2v2)"
-	                      : (mode == CE_MULTIBE_CHOICE_THREE) ? "3 BEs" : "Standard (2)";
-	snprintf(ascii, sizeof(ascii), "Play side: %s  -  Battle Engines: %s",
-	         side == CE_MULTIBE_SIDE_MUSPELL ? "Muspell" : "Forseti", modeLabel);
-
-	WCHAR wide[96] = {0};
-	CopyDrawableWide(wide, 96, ascii, font);
+	WCHAR wide[128] = {0};
+	CopyDrawableWide(wide, 128, ascii, font);
 	SIZE extent = {0, 0};
 	font->GetTextExtent(wide, &extent);
 	if (extent.cx <= 0)
 		return;
 
+	float scaleX = 1.0f;
+	const float maxLogicalWidth = 580.0f;
+	if (float(extent.cx) > maxLogicalWidth)
+		scaleX = maxLogicalWidth / float(extent.cx);
+
 	const DWORD alpha = static_cast<DWORD>(vis * 235.0f) & 0xffu;
 	const DWORD col = (alpha << 24) | 0x00d8e8ffu;
-	font->DrawTextWithShadow(320.0f - float(extent.cx) * 0.5f, 418.0f, col, wide, 0, 0, 1.0f, 1.0f);
+	font->DrawTextWithShadow(320.0f - float(extent.cx) * scaleX * 0.5f, 418.0f, col, wide, 0, 0, scaleX, 1.0f);
 }
 
 #else	// private build: completely inert
@@ -1322,6 +1551,7 @@ extern "C" void PortCeMultiBeOnConfirmedKill(void *, void *) {}
 extern "C" int PortCeMultiBeHandleDeath(void *) { return 0; }
 extern "C" int PortCeMultiBeActive(void) { return 0; }
 extern "C" int PortCeMultiBePlaySideIsMuspell(void) { return 0; }
+extern "C" int PortCeSoloSkirmishActive(void) { return 0; }
 extern "C" void PortCeMultiBeDrawMpStartStatus(float) {}
 
 #endif

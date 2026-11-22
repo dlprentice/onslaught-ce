@@ -145,6 +145,12 @@ static void rules()
 	expect(!CeCmdMatchRule(false, false, 2, 232, 232), "nor a level the game does not call multiplayer, whatever its player count");
 	expect(!CeCmdMatchRule(false, true, 1, 851, 851) && !CeCmdMatchRule(false, true, 3, 851, 851), "a match has the level's two players");
 	expect(CeCmdMatchRule(false, true, 2, 0, 0), "level 0 counts as a level");
+	expect(CeCmdMatchRule(false, true, 2, -1, 851, true), "a menu-chosen versus level with Solo Skirmish is a one-screen match");
+	expect(CeCmdMatchRule(false, true, 2, -1, 850, true) && CeCmdMatchRule(false, true, 2, -1, 899, true), "Solo Skirmish admits the full 850..899 range");
+	expect(!CeCmdMatchRule(false, true, 2, -1, 849, true) && !CeCmdMatchRule(false, true, 2, -1, 900, true), "Solo Skirmish stays within 850..899");
+	expect(!CeCmdMatchRule(true, true, 2, -1, 851, true), "a network game is never a Solo Skirmish match");
+	expect(!CeCmdMatchRule(false, false, 2, -1, 851, true), "a non-multiplayer level is never a Solo Skirmish match");
+	expect(!CeCmdMatchRule(false, true, 1, -1, 851, true), "Solo Skirmish requires a 2-player multiplayer level");
 }
 
 // The match's alerts: one at a time, the gravest first, each mark of the engine's life once, "under attack" at most once in the quiet time, which is

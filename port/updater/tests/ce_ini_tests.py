@@ -59,6 +59,22 @@ class SettingsWriter(unittest.TestCase):
         self.assertEqual(self.ini.read_bytes(), b"before=\xff\x00bytes\r\nrecord_sessions=0\nlast=no-newline\n")
         self.assertEqual(list(self.user.glob("ce.ini.tmp-*")), [])
 
+    def test_replace_matches_spaced_key_in_place_and_collapses_mixed_duplicates(self):
+        self.ini.write_bytes(b"record_sessions = 1\nunknown=retain\n")
+        self.assertEqual(self.write().returncode, 0)
+        self.assertEqual(self.ini.read_bytes(), b"record_sessions=0\nunknown=retain\n")
+        self.ini.write_bytes(b"  record_sessions\t=\t1\r\nunknown=retain\nrecord_sessions=1\n\trecord_sessions = 0\n")
+        self.assertEqual(self.write().returncode, 0)
+        self.assertEqual(self.ini.read_bytes(), b"record_sessions=0\nunknown=retain\n")
+        self.ini.write_bytes(b"a=1\n\n[Experimental]\n  museum = 0\n")
+        self.assertEqual(self.key("museum", "1").returncode, 0)
+        self.assertEqual(self.ini.read_bytes(), b"a=1\n\n[Experimental]\nmuseum=1\n")
+        non_matches = (b"; record_sessions = 1\n# record_sessions = 1\nRECORD_SESSIONS = 1\n"
+                       b"record_sessions_x = 1\nx_record_sessions = 1\nrecord_sessions\r=1\n")
+        self.ini.write_bytes(non_matches)
+        self.assertEqual(self.write().returncode, 0)
+        self.assertEqual(self.ini.read_bytes(), non_matches + b"record_sessions=0\n")
+
     def test_create_missing_parents(self):
         path = self.root / "new" / "nested" / "ce.ini"
         self.assertEqual(self.write(path).returncode, 0)
@@ -202,6 +218,16 @@ class SettingsWriter(unittest.TestCase):
         self.assertEqual(self.add_block().returncode, 0)
         self.assertEqual(self.ini.read_bytes(),
                          b"commander=1\nplay_unit=tank\r\nlast=no-newline\n\n[Experimental]\n; Unfinished features, off in this release.\nmap_editor=0\nmuseum=0\n")
+
+    def test_block_recognizes_spaced_keys_without_duplicating(self):
+        self.ini.write_bytes(b"commander = 1\n  play_unit\t=\ttank\r\nlast=no-newline")
+        self.assertEqual(self.add_block().returncode, 0)
+        self.assertEqual(self.ini.read_bytes(),
+                         b"commander = 1\n  play_unit\t=\ttank\r\nlast=no-newline\n\n[Experimental]\n; Unfinished features, off in this release.\nmap_editor=0\nmuseum=0\n")
+        ignored = b"; commander = 1\n# museum = 1\nCOMMANDER = 1\ncommander_x = 1\n"
+        self.ini.write_bytes(ignored)
+        self.assertEqual(self.add_block().returncode, 0)
+        self.assertEqual(self.ini.read_bytes(), ignored + b"\n" + self.BLOCK)
 
     def test_block_with_a_header_already_there_changes_nothing(self):
         for header in (b"[Experimental]\n", b"[Experimental]\r\n", b"[Experimental]  \n"):

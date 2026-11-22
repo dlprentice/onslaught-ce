@@ -26,6 +26,12 @@ enum CeMultiBeModeChoice
 	CE_MULTIBE_CHOICE_FOUR = 2		// "4" (4 BEs / 2v2)
 };
 
+enum CeSoloSkirmishChoice
+{
+	CE_SOLO_SKIRMISH_SPLITSCREEN = 0,	// "0" (retail 2P splitscreen default)
+	CE_SOLO_SKIRMISH_SOLO_AI = 1		// "1" (fullscreen solo vs AI)
+};
+
 enum CeMultiBeCareerPrefKind
 {
 	CE_PREF_IS_GOD = 0,
@@ -81,6 +87,56 @@ inline const char *CeMultiBeModeToIni(int choice)
 	if (choice == CE_MULTIBE_CHOICE_FOUR)
 		return "4";
 	return "2";
+}
+
+// Parses ce.ini `solo_skirmish` value. Fails closed to Splitscreen (0) on absent/off/invalid values.
+inline int CeMultiBeParseSoloSkirmish(const char *text)
+{
+	if (!text || !*text)
+		return CE_SOLO_SKIRMISH_SPLITSCREEN;
+	if (CeMultiBeStateStrEqCase(text, "1") || CeMultiBeStateStrEqCase(text, "on") ||
+	    CeMultiBeStateStrEqCase(text, "true") || CeMultiBeStateStrEqCase(text, "solo"))
+		return CE_SOLO_SKIRMISH_SOLO_AI;
+	return CE_SOLO_SKIRMISH_SPLITSCREEN;
+}
+
+inline const char *CeMultiBeSoloSkirmishIniValue(int choice)
+{
+	return (choice == CE_SOLO_SKIRMISH_SOLO_AI) ? "1" : "0";
+}
+
+// Returns the active Battle Engine target count for ce_multibe:
+// - 3 or 4 when `multi_be` explicitly requests 3..4 BEs (any level);
+// - 2 (1v1 Solo Skirmish) when `solo_skirmish=1` on a multiplayer/skirmish level (850..899);
+// - 0 (inactive) otherwise, keeping retail 1P/2P runs completely untouched.
+inline int CeMultiBeEffectiveTargetCount(int multiBeCount, bool soloSkirmish, int level)
+{
+	if (multiBeCount >= 3)
+		return (multiBeCount > CE_MULTIBE_SLOTS) ? CE_MULTIBE_SLOTS : multiBeCount;
+	if (soloSkirmish && level >= 850 && level <= 899)
+		return 2;
+	return 0;
+}
+
+// Formats the FEPMultiplayerStart status summary line using only BEA-drawable glyphs (no pipe/underscore/brackets).
+// Returns false when all settings are retail defaults (Forseti, Splitscreen, Standard 2).
+inline bool CeMultiBeFormatMpStartStatus(bool soloSkirmish, int playSide, int modeChoice, char *out, size_t cap)
+{
+	if (!out || cap == 0)
+		return false;
+	if (!soloSkirmish && playSide == CE_MULTIBE_SIDE_FORSETI && modeChoice == CE_MULTIBE_CHOICE_STANDARD)
+	{
+		out[0] = 0;
+		return false;
+	}
+	const char *sideLabel = (playSide == CE_MULTIBE_SIDE_MUSPELL) ? "Muspell" : "Forseti";
+	const char *modeLabel = (modeChoice == CE_MULTIBE_CHOICE_FOUR) ? "4 BEs (2v2)"
+	                      : (modeChoice == CE_MULTIBE_CHOICE_THREE) ? "3 BEs" : "Standard (2)";
+	if (soloSkirmish)
+		snprintf(out, cap, "Solo vs AI  -  Play side: %s  -  Battle Engines: %s", sideLabel, modeLabel);
+	else
+		snprintf(out, cap, "Play side: %s  -  Battle Engines: %s", sideLabel, modeLabel);
+	return true;
 }
 
 // Computes the final 1-based player number for CStart / CSpawnPoint after retail mInvertSides and 0359's
@@ -314,6 +370,17 @@ inline CeMultiBeJetCommand CeMultiBeComputeJetControl(
 	if (hasHostile && posZ <= floorDangerZ && horizDist > 16.0f && horizDist < 220.0f && fabsf(yawErr) < 0.36f)
 		cmd.fire = true;
 	return cmd;
+}
+
+// Pure Walker pitch aiming command for CBattleEngineWalkerPart::Pitch(vy), which subtracts vy/117 from mPitchvel.
+// Positive desiredPitch - curPitch means nose must pitch UP (+mPitch), requiring a negative vy input.
+inline float CeMultiBeComputeWalkerPitchInput(float curPitch, float desiredPitch)
+{
+	const float clampedDesired = CeMultiBeClamp(desiredPitch, -0.55f, 0.55f);
+	const float pitchErr = CeMultiBeWrapAngle(clampedDesired - curPitch);
+	if (fabsf(pitchErr) <= 0.04f)
+		return 0.0f;
+	return CeMultiBeClamp(-pitchErr * 1.6f, -0.75f, 0.75f);
 }
 
 // Team combat tracker: tracks active Battle Engines, Walker/Jet split, team kills, and per-slot respawn timers.

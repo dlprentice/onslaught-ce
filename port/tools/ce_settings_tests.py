@@ -248,6 +248,7 @@ def ini_variants(key, values):
     texts = list(values) + ["2", "", "yes", "00", "01"]
     for text in texts:
         for form in ("%s=%s\n", "%s=%s", "%s=%s\r\n", "%s= %s \t\n", "%s= %s\n", "%s=%s \n", "%s=%s\rjunk\n",
+                     "%s =%s\n", "%s = %s\n", "  %s\t=%s\n", "  %s\t=\t%s \r\n",
                      "other=1\n%s=%s\nlast=2\n",
                      # the [Experimental] block of the shipped ce.ini: a header and a comment line before and after the line, and the block's own lines
                      "[Experimental]\n; Unfinished features, off in this release. They may change or break. Set a line to 1 to try one.\n%s=%s\nmuseum=0\n",
@@ -257,8 +258,12 @@ def ini_variants(key, values):
     for a in values:
         for b in values:
             cases.append(("%s=%s\n%s=%s\n" % (key, a, key, b)).encode())
+            cases.append(("%s = %s\n%s=%s\n" % (key, a, key, b)).encode())
+            cases.append(("  %s\t=%s\n%s=%s\n" % (key, a, key, b)).encode())
     cases += [("%sx=%s\n" % (key, values[0])).encode(), ("x%s=%s\n" % (key, values[0])).encode(),
-              ("%s =%s\n" % (key, values[0])).encode(), ("%s=%s\n" % (key.upper(), values[0])).encode()]
+              ("%s_x = %s\n" % (key, values[0])).encode(), ("x_%s = %s\n" % (key, values[0])).encode(),
+              ("; %s = %s\n" % (key, values[0])).encode(), ("# %s = %s\n" % (key, values[0])).encode(),
+              ("%s=%s\n" % (key.upper(), values[0])).encode(), ("%s = %s\n" % (key.upper(), values[0])).encode()]
     cases += [b"a=\x00b\n" + ("%s=%s\n" % (key, value)).encode() for value in values]
     return cases
 
@@ -365,9 +370,17 @@ MUTANTS = (
           "\t\tmatch = end - pos == want && !memcmp(line + pos, value, want);\n"), {"update_check"},
      "update_check: the page shows"),
     ("the launcher-style reader trims blanks", CE_CPP,
-     swap("\t\tsize_t pos = size + 1, end = pos;\n\t\twhile (end < n && line[end] != '\\r') ++end;\n",
-          "\t\tsize_t pos = size + 1, end;\n\t\twhile (pos < n && (line[pos] == ' ' || line[pos] == '\\t')) ++pos;\n\t\tend = pos;\n"
+     swap("\t\tsize_t pos = eq + 1, end = pos;\n\t\twhile (end < n && line[end] != '\\r') ++end;\n",
+          "\t\tsize_t pos = eq + 1, end;\n\t\twhile (pos < n && (line[pos] == ' ' || line[pos] == '\\t')) ++pos;\n\t\tend = pos;\n"
           "\t\twhile (end < n && line[end] != '\\r') ++end;\n"), {"update_check"}, "update_check: the page shows"),
+    ("the launcher-style reader rejects blanks before =", CE_CPP,
+     swap("\t\tsize_t eq = 0;\n\t\tif (!ce_ini_match_key(line, n, key, size, &eq)) continue;\n\t\tsize_t pos = eq + 1, end = pos;\n",
+          "\t\tif (n <= size || memcmp(line, key, size) || line[size] != '=') continue;\n\t\tsize_t pos = size + 1, end = pos;\n"),
+     {"update_check"}, "update_check: the page shows"),
+    ("the launcher rejects blanks before =", "port/updater/ce_launch.c",
+     swap("\t\t\tchar *eq = p + k;\n\t\t\twhile (*eq == ' ' || *eq == '\\t') eq++;\n",
+          "\t\t\tchar *eq = p + k;\n"),
+     {"update_check"}, "update_check: the page shows"),
     ("the launcher-style reader sees past a NUL byte", CE_CPP,
      swap("\ttext[len] = 0;\n\tlen = strlen(text);\n", "\ttext[len] = 0;\n"), {"update_check"}, "update_check: the page shows"),
     ("the launcher-style reader runs a value to the end of the line", CE_CPP,
@@ -464,6 +477,63 @@ class SettingsAgree(unittest.TestCase):
                 (folder / "ce.ini").write_bytes(b"a=b\n")
                 self.assertEqual(ask(binary, "set", str(folder), key, value).strip(), "1")
                 self.assertEqual(ask(launcher, str(folder / "ce.ini"), kind).strip(), "1", "without it the launcher reads the write")
+
+    def test_spaced_keys_are_read_consistently_and_replaced_in_place(self):
+        reads = literal_reads(self.texts)
+        binary, launcher = build(self.out, self.texts, reads, "spaced")
+        rows = {row["key"]: row for row in compiled_table(binary)}
+        scratch = self.out / "spaced-ini"
+        scratch.mkdir()
+
+        def shown(folder, key):
+            page = dict(line.split("\t") for line in ask(binary, "page", str(folder)).splitlines())
+            return rows[key]["values"][int(page[key])]
+
+        # Bool and text rows accept optional spaces/tabs before the key and around '='.
+        folder = scratch / "game-spaced"
+        folder.mkdir()
+        (folder / "ce.ini").write_bytes(b"hud_scale = 0\n  rumble\t=\t0 \r\n  console_theme = Green \r\n\tmusic_playtype\t=\tsingle\n")
+        self.assertEqual(shown(folder, "hud_scale"), "0")
+        self.assertEqual(ask(binary, "bool", str(folder), "hud_scale", "1").strip(), "0")
+        self.assertEqual(shown(folder, "rumble"), "0")
+        self.assertEqual(ask(binary, "bool", str(folder), "rumble", "1").strip(), "0")
+        self.assertEqual(shown(folder, "console_theme"), "green")
+        self.assertEqual(ask(binary, "is", str(folder), "console_theme", "green").strip(), "1")
+        self.assertEqual(shown(folder, "music_playtype"), "single")
+        self.assertEqual(ask(binary, "is", str(folder), "music_playtype", "single").strip(), "1")
+
+        # Mixed-spacing duplicates still fail closed to the default.
+        dup = scratch / "dup-spaced"
+        dup.mkdir()
+        (dup / "ce.ini").write_bytes(b"rumble = 0\nrumble=0\n  console_theme = green\nconsole_theme=yellow\n")
+        self.assertEqual(shown(dup, "rumble"), "1")
+        self.assertEqual(ask(binary, "bool", str(dup), "rumble", "1").strip(), "1")
+        self.assertEqual(shown(dup, "console_theme"), "yellow")
+        self.assertEqual(ask(binary, "is", str(dup), "console_theme", "green").strip(), "0")
+
+        # Launcher rows accept optional spaces/tabs before key and '=', while keeping exact value matching after '='.
+        l1 = scratch / "launcher-before-eq"
+        l1.mkdir()
+        (l1 / "ce.ini").write_bytes(b"  update_check \t=0\r\nrecord_sessions =1\n")
+        self.assertEqual(shown(l1, "update_check"), "0")
+        self.assertEqual(ask(launcher, str(l1 / "ce.ini"), "off0").strip(), "1")
+        self.assertEqual(shown(l1, "record_sessions"), "1")
+        self.assertEqual(ask(launcher, str(l1 / "ce.ini"), "on1").strip(), "1")
+
+        l2 = scratch / "launcher-after-eq"
+        l2.mkdir()
+        (l2 / "ce.ini").write_bytes(b"update_check = 0\nrecord_sessions = 1\n")
+        self.assertEqual(shown(l2, "update_check"), "1")
+        self.assertEqual(ask(launcher, str(l2 / "ce.ini"), "off0").strip(), "0")
+        self.assertEqual(shown(l2, "record_sessions"), "0")
+        self.assertEqual(ask(launcher, str(l2 / "ce.ini"), "on1").strip(), "0")
+
+        # Writing replaces a spaced line in place and collapses mixed-spacing duplicates cleanly.
+        edit = scratch / "edit-spaced"
+        edit.mkdir()
+        (edit / "ce.ini").write_bytes(b"  rumble = 0\nother=1\nrumble=0\n")
+        self.assertEqual(ask(binary, "set", str(edit), "rumble", "1").strip(), "1")
+        self.assertEqual((edit / "ce.ini").read_bytes(), b"rumble=1\nother=1\n")
 
     def test_each_mutant_is_caught(self):
         for number, (name, source, mutate, only, said) in enumerate(MUTANTS):
