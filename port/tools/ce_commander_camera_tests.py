@@ -569,19 +569,25 @@ def public_ce_define(repo: Path) -> str:
     """Bind the authored engine hook to the production CE build definition."""
     tree = ast.parse((repo / "port" / "build.py").read_text())
     definitions = []
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+    for block in ast.walk(tree):
+        if not isinstance(block, ast.If):
             continue
-        if node.func.attr != "append" or not isinstance(node.func.value, ast.Name):
+        if not (isinstance(block.test, ast.Attribute) and block.test.attr == "public"):
             continue
-        if node.func.value.id != "CE_DEFINES":
-            continue
-        for argument in node.args:
-            for value in ast.walk(argument):
-                if isinstance(value, ast.Constant) and isinstance(value.value, str):
-                    match = re.search(r"-D(CE_VERSION)=", value.value)
-                    if match:
-                        definitions.append(match.group(1))
+        for stmt in block.body:
+            for node in ast.walk(stmt):
+                if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+                    continue
+                if node.func.attr != "append" or not isinstance(node.func.value, ast.Name):
+                    continue
+                if node.func.value.id != "CE_DEFINES":
+                    continue
+                for argument in node.args:
+                    for value in ast.walk(argument):
+                        if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                            match = re.search(r"-D(CE_VERSION)=", value.value)
+                            if match:
+                                definitions.append(match.group(1))
     if definitions != ["CE_VERSION"]:
         raise ValueError("production CE definition unavailable or ambiguous")
     return "-D" + definitions[0] + '=\"authored-camera-controls\"'

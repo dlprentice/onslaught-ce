@@ -1,0 +1,355 @@
+--- a/DXEngine.cpp
++++ b/DXEngine.cpp
+@@ -92,6 +92,9 @@
+ // FUNCTION: 0x0053d340 init:ENGINE
+ // FUNCTION: 0x0053d390 exit:ENGINE
+ bool			gMirrorPass = false;		// 0089d680: a mirrored pass (engine.h; CGame::Render sets it)
++#ifdef CE_VERSION
++#include "../platform/common/reflection_quality.h"
++#endif
+     //=============================================-===--==---=---- ---  --   -
+    //
+   // Engine
+@@ -220,6 +223,9 @@
+ 	CONSOLE.RegisterVariable("cg_renderreflections","Should water reflections be rendered",CVar_bool,&mRenderReflections);
+ 	CONSOLE.RegisterVariable("cg_texturereflections","Should render to texture be used for reflections",CVar_bool,&mTextureReflections);
+ 
++#ifdef CE_VERSION
++	CeRenderTargetQualitySetHardwareCaps(LT.m_d3dCaps.MaxTextureWidth, LT.m_d3dCaps.MaxTextureHeight);
++#endif
+ 	PATCHMANAGER.Init(800,300,90);
+ //	PATCHMANAGER.Init(1000,400,120);
+ //	PATCHMANAGER.Init(2000,800,300);
+--- a/DXLandscape.cpp
++++ b/DXLandscape.cpp
+@@ -20,6 +20,9 @@
+ #include	"map.h"
+ #include	"game.h"
+ #include	"console.h"
++#ifdef CE_VERSION
++#include "../platform/common/reflection_quality.h"
++#endif
+ #include	"tweak.h"
+ #include	"ltshell.h"
+ #include	"vbuffer.h"
+@@ -193,8 +196,118 @@
+ // FUNCTION: 0x00544a40 ??_GCDXLandscape@@UAEPAXI@Z
+ 
+ //******************************************************************************************
++#ifdef CE_VERSION
++static bool CeCreateMirrorTargetsAt(unsigned res, bool readableZ, bool zAsTex,
++	IDirect3DTexture9 **outMirror, IDirect3DTexture9 **outDepthTex, IDirect3DSurface9 **outDepthSurf)
++{
++	*outMirror = NULL;
++	*outDepthTex = NULL;
++	*outDepthSurf = NULL;
++	const unsigned depthRes = (readableZ && res < 512u) ? 512u : res;
++	if (FAILED(LT.D3D_CreateTextureNoCheck(res, res, 1, D3DUSAGE_RENDERTARGET, D3DFMT_R5G6B5, D3DPOOL_DEFAULT, outMirror)) || !*outMirror)
++	{
++		SAFE_RELEASE(*outMirror);
++		return false;
++	}
++	HRESULT dhr = E_FAIL;
++	if (zAsTex)
++	{
++		dhr = LT.D3D_CreateTextureNoCheck(depthRes, depthRes, 1, D3DUSAGE_DEPTHSTENCIL, D3DFMT_D16, D3DPOOL_DEFAULT, outDepthTex);
++		if (SUCCEEDED(dhr) && *outDepthTex)
++			dhr = (*outDepthTex)->GetSurfaceLevel(0, outDepthSurf);
++	}
++	else
++		dhr = LT.GetDevice()->CreateDepthStencilSurface(depthRes, depthRes, D3DFMT_D16, D3DMULTISAMPLE_NONE, 0, TRUE, outDepthSurf, NULL);
++	if (FAILED(dhr) || !*outDepthSurf)
++	{
++		SAFE_RELEASE(*outDepthSurf);
++		SAFE_RELEASE(*outDepthTex);
++		SAFE_RELEASE(*outMirror);
++		return false;
++	}
++	return true;
++}
++
++void CeLandscapeSyncWaterReflection(CDXLandscape *land)
++{
++	if (!land || !land->mMirrorTexture || GAME.IsMultiplayer() || !EXTRA_GEFORCE_FX_FEATURES.mValue)
++		return;
++	CeRenderTargetQualitySetHardwareCaps(LT.m_d3dCaps.MaxTextureWidth, LT.m_d3dCaps.MaxTextureHeight);
++	if (!CeWaterReflectionNeedsRebuild())
++		return;
++	const unsigned attempt = CeWaterReflectionTargetRes();
++	unsigned res = attempt;
++	IDirect3DTexture9 *newMirror = NULL;
++	IDirect3DTexture9 *newDepthTex = NULL;
++	IDirect3DSurface9 *newDepthSurf = NULL;
++	while (res >= 256u)
++	{
++		if (CeCreateMirrorTargetsAt(res, MY_READABLE_Z_BUFFER.mValue != 0, OTHER_ZBUFFER_AS_TEXTURE.mValue != 0,
++			&newMirror, &newDepthTex, &newDepthSurf))
++		{
++			SAFE_RELEASE(land->mDepthSurface);
++			SAFE_RELEASE(land->mDepthTexture);
++			SAFE_RELEASE(land->mMirrorTexture);
++			land->mMirrorTexture = newMirror;
++			land->mDepthTexture = newDepthTex;
++			land->mDepthSurface = newDepthSurf;
++			CeWaterReflectionSetAllocatedRes(res, attempt);
++			return;
++		}
++		res = CeWaterReflectionNextFallback(res);
++	}
++	CeWaterReflectionSetAllocatedRes(CeWaterReflectionActiveRes(), attempt);
++}
++
++class CeLandscapeMirrorDeviceHook : public DeviceObject
++{
++public:
++	CDXLandscape *mOwner;
++	CeLandscapeMirrorDeviceHook() : mOwner(NULL) {}
++	void Attach(CDXLandscape *owner)
++	{
++		if (mOwner == owner) return;
++		if (mOwner) LT.RemoveDeviceObject(this);
++		mOwner = owner;
++		if (mOwner) LT.AddDeviceObject(this);
++	}
++	void Detach(CDXLandscape *owner)
++	{
++		if (mOwner != owner) return;
++		LT.RemoveDeviceObject(this);
++		mOwner = NULL;
++	}
++	HRESULT InvalidateDeviceObjects()
++	{
++		if (mOwner)
++		{
++			SAFE_RELEASE(mOwner->mUnknown08);
++			SAFE_RELEASE(mOwner->mDepthTexture);
++			SAFE_RELEASE(mOwner->mDepthSurface);
++			SAFE_RELEASE(mOwner->mMirrorTexture);
++			CeWaterReflectionResetAllocated();
++		}
++		return S_OK;
++	}
++	HRESULT RestoreDeviceObjects()
++	{
++		if (mOwner && mOwner->mPixelShader && !mOwner->mMirrorTexture &&
++			GEFORCE_FX_POWER.mValue && !GAME.IsMultiplayer() && EXTRA_GEFORCE_FX_FEATURES.mValue)
++		{
++			CeRenderTargetQualitySetHardwareCaps(LT.m_d3dCaps.MaxTextureWidth, LT.m_d3dCaps.MaxTextureHeight);
++			LT.D3D_Release((IUnknown **)&mOwner->mPixelShader);
++			mOwner->InitDeviceObjects();
++		}
++		return S_OK;
++	}
++};
++static CeLandscapeMirrorDeviceHook sCeMirrorDeviceHook;
++#endif
+ CDXLandscape::~CDXLandscape()	// FUNCTION: 0x00544a60
+ {
++#ifdef CE_VERSION
++	sCeMirrorDeviceHook.Detach(this);
++#endif
+ 	LT.RemoveDeviceObject(this);
+ 	if (mVertexShader)
+ 	{
+@@ -229,6 +342,10 @@
+ 
+ 	LT.m_bTextureCompressionDisabled = oldmode;
+ 	LT.AddDeviceObject(this);
++#ifdef CE_VERSION
++	sCeMirrorDeviceHook.Attach(this);
++	CeRenderTargetQualitySetHardwareCaps(LT.m_d3dCaps.MaxTextureWidth, LT.m_d3dCaps.MaxTextureHeight);
++#endif
+ 	InitDeviceObjects();
+ 
+ 	if (mPixelShader && mUnknown08 && mDepthSurface)
+@@ -282,9 +399,50 @@
+ 			return S_OK;
+ 		}
+ 
++#ifdef CE_VERSION
++		CeWaterReflectionBeginFrame();
++		const unsigned ceMirrorAttempt = CeWaterReflectionTargetRes();
++		unsigned ceMirrorRes = ceMirrorAttempt;
++		bool ceMirrorAllocated = false;
++		while (ceMirrorRes > 256u)
++		{
++			const unsigned ceDepthRes = (MY_READABLE_Z_BUFFER.mValue && ceMirrorRes < 512u) ? 512u : ceMirrorRes;
++			HRESULT ceMirrorHr = LT.D3D_CreateTextureNoCheck(ceMirrorRes, ceMirrorRes, 1, D3DUSAGE_RENDERTARGET, D3DFMT_R5G6B5, D3DPOOL_DEFAULT, &mMirrorTexture);
++			bool ceDepthOk = false;
++			if (SUCCEEDED(ceMirrorHr) && mMirrorTexture)
++			{
++				if (OTHER_ZBUFFER_AS_TEXTURE.mValue)
++				{
++					HRESULT ceTexHr = LT.D3D_CreateTextureNoCheck(ceDepthRes, ceDepthRes, 1, D3DUSAGE_DEPTHSTENCIL, D3DFMT_D16, D3DPOOL_DEFAULT, &mDepthTexture);
++					if (SUCCEEDED(ceTexHr) && mDepthTexture)
++						ceDepthOk = SUCCEEDED(mDepthTexture->GetSurfaceLevel(0, &mDepthSurface)) && mDepthSurface != NULL;
++				}
++				else
++					ceDepthOk = SUCCEEDED(LT.GetDevice()->CreateDepthStencilSurface(ceDepthRes, ceDepthRes, D3DFMT_D16, D3DMULTISAMPLE_NONE, 0, TRUE, &mDepthSurface, NULL)) && mDepthSurface != NULL;
++			}
++			if (ceDepthOk)
++			{
++				CeWaterReflectionSetAllocatedRes(ceMirrorRes, ceMirrorAttempt);
++				ceMirrorAllocated = true;
++				break;
++			}
++			if (mDepthSurface) { mDepthSurface->Release(); mDepthSurface = NULL; }
++			if (mDepthTexture) { mDepthTexture->Release(); mDepthTexture = NULL; }
++			if (mMirrorTexture) { mMirrorTexture->Release(); mMirrorTexture = NULL; }
++			ceMirrorRes = CeWaterReflectionNextFallback(ceMirrorRes);
++		}
++		HRESULT	hr = S_OK;
++		if (!mMirrorTexture)
++		{
++			hr = LT.D3D_CreateTextureNoCheck(256, 256, 1, D3DUSAGE_RENDERTARGET, D3DFMT_R5G6B5, D3DPOOL_DEFAULT, &mMirrorTexture);
++			if (FAILED(hr))
++				SETUP_HISTORY.AddMessage("ReflectionsDestination disallowed for %s", DXGetErrorString9(hr));
++		}
++#else
+ 		HRESULT	hr = LT.D3D_CreateTextureNoCheck(256, 256, 1, D3DUSAGE_RENDERTARGET, D3DFMT_R5G6B5, D3DPOOL_DEFAULT, &mMirrorTexture);
+ 		if (FAILED(hr))
+ 			SETUP_HISTORY.AddMessage("ReflectionsDestination disallowed for %s", DXGetErrorString9(hr));
++#endif
+ 
+ 		if (MY_READABLE_Z_BUFFER.mValue)
+ 		{
+@@ -293,6 +451,10 @@
+ 			if (FAILED(hr))
+ 				SETUP_HISTORY.AddMessage("FakeBackBuffer disallowed for %s", DXGetErrorString9(hr));
+ 
++#ifdef CE_VERSION
++			if (!mDepthSurface)
++			{
++#endif
+ 			if (OTHER_ZBUFFER_AS_TEXTURE.mValue)
+ 			{
+ 				hr = LT.D3D_CreateTextureNoCheck(512, 512, 1, D3DUSAGE_DEPTHSTENCIL, D3DFMT_D16, D3DPOOL_DEFAULT, &mDepthTexture);
+@@ -303,9 +465,16 @@
+ 				hr = LT.GetDevice()->CreateDepthStencilSurface(512, 512, D3DFMT_D16, D3DMULTISAMPLE_NONE, 0, TRUE, &mDepthSurface, NULL);
+ 			if (FAILED(hr))
+ 				SETUP_HISTORY.AddMessage("FakeZBuffer disallowed for %s", DXGetErrorString9(hr));
++#ifdef CE_VERSION
++			}
++#endif
+ 		}
+ 		else
+ 		{
++#ifdef CE_VERSION
++			if (!mDepthSurface)
++			{
++#endif
+ 			if (OTHER_ZBUFFER_AS_TEXTURE.mValue)
+ 			{
+ 				hr = LT.D3D_CreateTextureNoCheck(256, 256, 1, D3DUSAGE_DEPTHSTENCIL, D3DFMT_D16, D3DPOOL_DEFAULT, &mDepthTexture);
+@@ -316,7 +485,14 @@
+ 				hr = LT.GetDevice()->CreateDepthStencilSurface(256, 256, D3DFMT_D16, D3DMULTISAMPLE_NONE, 0, TRUE, &mDepthSurface, NULL);
+ 			if (FAILED(hr))
+ 				SETUP_HISTORY.AddMessage("FakeZBuffer disallowed for %s", DXGetErrorString9(hr));
+-		}
++#ifdef CE_VERSION
++			}
++#endif
++		}
++#ifdef CE_VERSION
++		if (!ceMirrorAllocated)
++			CeWaterReflectionSetAllocatedRes((mMirrorTexture && mDepthSurface) ? 256u : 0u, ceMirrorAttempt);
++#endif
+ 	}
+ 	#ifdef CE_VERSION
+ 	if (ceExtraRequested) PortCeGraphicsResourceOutcome(CE_GRAPHICS_LANDSCAPE, mPixelShader && mMirrorTexture && mDepthSurface &&
+@@ -347,12 +523,18 @@
+ 	SAFE_RELEASE(mDepthSurface);
+ 	SAFE_RELEASE(mMirrorTexture);
+ 	LT.D3D_Release((IUnknown **)&mPixelShader);
++#ifdef CE_VERSION
++	CeWaterReflectionResetAllocated();
++#endif
+ 	return S_OK;
+ }
+ 
+ //******************************************************************************************
+ void CDXLandscape::ShutDown()	// FUNCTION: 0x00544f10
+ {
++#ifdef CE_VERSION
++	sCeMirrorDeviceHook.Detach(this);
++#endif
+ 	DeleteDeviceObjects();
+ 	LT.RemoveDeviceObject(this);
+ 	CLandscapeTexture::ResetUpdateQueue();
+--- a/DXWater.cpp
++++ b/DXWater.cpp
+@@ -24,6 +24,9 @@
+ #include "water.h"				// FUNCTION: 0x0055af90 init:ZERO_FVECTOR
+ #include "mathsconst.h"			// FUNCTION: 0x0055afb0 init:ID_FMATRIX
+ #include	"CLIParams.h"
++#ifdef CE_VERSION
++#include "../platform/common/reflection_quality.h"
++#endif
+ 
+ CRenderMethod	WATER_METHOD("water_method", 3);		// 009cc1c0
+ // FUNCTION: 0x0055b080 init:WATER_METHOD
+@@ -610,7 +613,21 @@
+ 			pc[0] = ((col >> 16) & 0xff) * (1.0f / 255);
+ 			pc[1] = ((col >> 8) & 0xff) * (1.0f / 255);
+ 			pc[2] = (col & 0xff) * (1.0f / 255);
++#ifdef CE_VERSION
++			if (CeWaterReflectionActiveRes() != 256u)
++			{
++				float cePs[8][4];
++				memcpy(cePs, WATER_PS_CONSTANTS, sizeof(cePs));
++				const float ceTap = CeWaterReflectionTapOffset();
++				cePs[5][0] = ceTap; cePs[5][1] = ceTap;
++				cePs[6][0] = -ceTap; cePs[6][1] = ceTap;
++				LT.GetDevice()->SetPixelShaderConstantF(0, &cePs[0][0], 8);
++			}
++			else
++				LT.GetDevice()->SetPixelShaderConstantF(0, &WATER_PS_CONSTANTS[0][0], 8);
++#else
+ 			LT.GetDevice()->SetPixelShaderConstantF(0, &WATER_PS_CONSTANTS[0][0], 8);
++#endif
+ 			LT.GetDevice()->SetPixelShaderConstantF(9, pc, 1);
+ 			LT.SetFVF(D3DFVF_XYZ | D3DFVF_DIFFUSE | D3DFVF_TEX2);
+ 			LT.SetVertexShader(sShader);
+--- a/game.cpp
++++ b/game.cpp
+@@ -24,6 +24,10 @@
+ #include	"DebugLog.h"
+ #include	"atmospherics.h"
+ #include	"console.h"
++#ifdef CE_VERSION
++#include "../platform/common/reflection_quality.h"
++extern void CeLandscapeSyncWaterReflection(CDXLandscape *land);
++#endif
+ #include	"Hud.h"
+ #include	"renderqueue.h"
+ #include	"SoundManager.h"
+@@ -1836,9 +1840,15 @@
+ 	// Update time
+ 	float new_time=(EVENT_MANAGER.GetTime()+(GetFrameRenderFraction()*CLOCK_TICK))/CLOCK_TICK;
+ 
++#ifdef CE_VERSION
++	CeWaterReflectionBeginFrame();
++#endif
+ 	if (!IsMultiplayer() && EXTRA_GEFORCE_FX_FEATURES.mValue && ENGINE.GetLandscape() &&
+ 		ENGINE.GetLandscape()->mMirrorTexture && !gMirrorPass)
+ 	{
++#ifdef CE_VERSION
++		CeLandscapeSyncWaterReflection(ENGINE.GetLandscape());
++#endif
+ 		if (mirror.Begin(ENGINE.GetLandscape()->mMirrorTexture))
+ 		{
+ 			gMirrorPass = true;
+@@ -1869,8 +1879,13 @@
+ 		CViewport fullscreen;
+ 		CViewport viewport;
+ 
++#ifdef CE_VERSION
++		fullscreen.Width=gMirrorPass ? CeWaterReflectionActiveRes() : PLATFORM.GetWindowWidth();
++		fullscreen.Height=gMirrorPass ? CeWaterReflectionActiveRes() : PLATFORM.GetWindowHeight();
++#else
+ 		fullscreen.Width=gMirrorPass ? 256 : PLATFORM.GetWindowWidth();
+ 		fullscreen.Height=gMirrorPass ? 256 : PLATFORM.GetWindowHeight();
++#endif
+ 		fullscreen.X=0;
+ 		fullscreen.Y=0;
+ 		fullscreen.MinZ=0.0f;

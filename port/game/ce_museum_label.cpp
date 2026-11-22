@@ -31,6 +31,9 @@ extern "C" unsigned long long CE_ScreenshotTicks(void);		// ce_screenshot.cpp: S
 extern "C" bool PortCeMuseumVisitActive(void);				// ce_museum_visit.cpp
 extern "C" void PortCeMuseumVisitFrame(void);				// ce_museum_visit_engine.cpp: the visitor's safety, once a frame
 extern "C" bool PortCeMuseumCinemaCue(char *, unsigned, char *, unsigned);	// ce_museum_hall.cpp: the screening room's card, while the visitor is in it or its doorway
+extern "C" bool PortCeMuseumInteractiveAim(void) __attribute__((weak));		// ce_museum_hall.cpp: true only when aiming at a projector, turntable stud, kiosk or directory
+extern "C" bool PortCeMuseumInteractiveCard(float, float, float, float, char *, unsigned, char *, unsigned, char *, unsigned) __attribute__((weak));
+extern "C" void PortCeMuseumDrawAimDot(float cx, float cy) __attribute__((weak));
 
 namespace {
 const int kChars = 96;
@@ -321,6 +324,8 @@ extern "C" void PortCeMuseumLabelsRender(void)
 		return;
 	PortCeMuseumVisitFrame();
     CinemaPanelDraw();
+	if (PortCeMuseumInteractiveAim && PortCeMuseumInteractiveAim() && PortCeMuseumDrawAimDot)
+		PortCeMuseumDrawAimDot(HUD.mViewportX + HUD.mViewportWidth * 0.5f, HUD.mViewportY + HUD.mViewportHeight * 0.5f);
 	if (!gCount && !gHasTitle)
 		return;
 	const unsigned long long now = CE_ScreenshotTicks();
@@ -390,6 +395,20 @@ extern "C" void PortCeMuseumLabelsRender(void)
 		gInspecting = atSign || CeMuseumInspectionNear(position.X - gAt[gShown][0], position.Y - gAt[gShown][1], label.radius, gInspecting);
 		ExhibitCapsule(label, gInspecting ? label.detail : label.line, CeMuseumCapsuleOpen(now, gShownSince, 0, kGrowMs, false), atSign ? number : 0);
 		ExhibitMarker(static_cast<unsigned>(gShown));
+		return;
+	}
+	if (level && PortCeMuseumInteractiveCard)
+	{
+		char ititle[kChars] = {}, iline[kChars] = {}, inote[kChars] = {};
+		if (PortCeMuseumInteractiveCard(position.X, position.Y, heading.X, heading.Y,
+		                                ititle, sizeof ititle, iline, sizeof iline, inote, sizeof inote))
+		{
+			Label card = {};
+			Copy(card.name, ititle);
+			Copy(card.line, iline);
+			Copy(card.note, inote);
+			ExhibitCapsule(card, card.line, 1.0f);
+		}
 	}
 }
 #endif

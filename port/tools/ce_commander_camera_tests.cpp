@@ -648,7 +648,7 @@ void Box(float, float, float width, float height, DWORD) { VERIFY(width > 0 && h
 void Outline(float,float,float,float,float,DWORD){}
 void Dots(float,float,float,float,float,DWORD){}
 void Seg(float,float,float,float,float,DWORD){}
-void CapsuleBar(float,float,float,float,float = 1.f,bool = false){}
+void CapsuleBar(float,float,float,float,float = 1.f,bool = false,int = 0){}
 void CeCmdViewCountFrame(){}
 const DWORD kCapsuleCap = 0xff38c8e8;
 int cursor_draws=0;
@@ -661,6 +661,7 @@ int entered_calls=0, left_calls=0;
 const void* pictured_camera=NULL;
 void StrategicEntered() { ++entered_calls; }
 void StrategicLeft() { ++left_calls; }
+int PilotAllegiance(const void** pilot) { if (pilot) *pilot = nullptr; return 0; }
 bool StrategicPictureBegin(const CGenericCamera& camera, CeWorldViewSample* view) {
     pictured_camera=&camera;
     if(!picture_available)return false;

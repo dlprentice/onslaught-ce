@@ -329,12 +329,12 @@ int main(int argc, char **argv)
     else if (name == "pitch")
     {
         static int other;
-        Check(kCeCompactPitch == 17 && kCeCompactFrontShift == 13.f && kCeCompactPauseShift == -2.f,
+        Check(kCeCompactPitch == 15 && kCeCompactFrontShift == 8.f && kCeCompactPauseShift == -8.f,
               "the reviewed pitch and front-end/pause shifts");
-        Check(PortCeCompactPitch(&qualityRow) == 17 && PortCeCompactPitch(&other) == 0 && PortCeCompactPitch(nullptr) == 0,
+        Check(PortCeCompactPitch(&qualityRow) == 15 && PortCeCompactPitch(&other) == 0 && PortCeCompactPitch(nullptr) == 0,
               "only a list holding CE's Video Options rows is drawn at CE's pitch");
-        Check(PortCeCompactShift(17, true) == 13.f && PortCeCompactShift(17, false) == -2.f && PortCeCompactShift(0, true) == 0.f && PortCeCompactShift(0, false) == 0.f,
-              "it shifts down in the front end and slightly up in pause, and only at CE's pitch");
+        Check(PortCeCompactShift(15, true) == 8.f && PortCeCompactShift(15, false) == -8.f && PortCeCompactShift(0, true) == 0.f && PortCeCompactShift(0, false) == 0.f,
+              "it shifts down in the front end and up in pause, and only at CE's pitch");
         layerOn = false;
         Check(PortCeCompactPitch(&qualityRow) == 0, "outside the ordinary CE menus the list keeps its items' heights");
     }

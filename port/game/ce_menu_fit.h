@@ -92,13 +92,14 @@ inline int PortCeListEdgeStep(int first, int shown, int count, int hovered)
     return 0;
 }
 
-// Video Options with Onslaught CE's four rows has eighteen rows, two more than its page holds at the original's 20 units a row: its
-// first row met the emblem in the front end and Back met the spoken subtitle in a level. That one list (patch 0215,
-// CMenuOptionsList::Render) uses 17 units a row for its height, its rows' mouse areas and its steps. In the front end it is centred
-// 13 units lower (on 313, not 300), so its first row stays at y 145 where the original's fourteen rows put theirs and Back ends above
-// the help line (450 <= 452); in a level's Pause Menu it shifts 2 units higher so Back clears the message bar (405 <= 406).
-static const int kCeCompactPitch = 17;
-static const float kCeCompactFrontShift = 13.f;
-static const float kCeCompactPauseShift = -2.f;
+// Video Options with Onslaught CE's seven rows has twenty-one rows, seven more than the original's fourteen: its first row
+// would meet the emblem in the front end and Back would meet the spoken subtitle in a level at 20 units a row. That one list
+// (patch 0215, CMenuOptionsList::Render) uses 15 units a row for its height, its rows' mouse areas and its steps. In the front
+// end it is centred 8 units lower (on 308, not 300), so its first row stays cleanly below the top emblem (y 135.5 > 127) and
+// Back ends above the help line (451.5 <= 452); in a level's Pause Menu it shifts 8 units higher so Back clears the message bar
+// (405.5 <= 406).
+static const int kCeCompactPitch = 15;
+static const float kCeCompactFrontShift = 8.f;
+static const float kCeCompactPauseShift = -8.f;
 
 #endif

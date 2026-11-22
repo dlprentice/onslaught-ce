@@ -86,6 +86,8 @@ port/tools/ce_asset_catalog_tests.py	script	-	none	release	120	read-only catalog
 port/tools/ce_modspage_tests.py	script	-	none	release	1800	the Mods page's model on the actual loader; builds its drivers with the host compiler and zlib
 port/tools/ce_mouse_fraction_tests.py	script	-	deps	release	-	
 port/tools/ce_museum_authored_world_tests.py	script	-	none	release	-	museum lane; host build with the system compiler
+port/tools/ce_museum_art_tests.py	script	-	none	release	-	Grand Museum Concept Art Gallery and Early Designs Vault 512px bounds, aspect fit, VRAM cap and mutants; host build with ASan/UBSan
+port/tools/ce_museum_audio_kiosk_tests.py	script	-	none	release	-	Grand Museum Audio Kiosks OGG dispatch state, CeMuseumMusicDuck crossfade, cinema mutual exclusion and mutants; host build with ASan/UBSan
 port/tools/ce_museum_cinema_catalogue_tests.py	script	-	none	release	-	museum lane; host build with the system compiler
 port/tools/ce_museum_cinema_console_tests.py	script	-	none	release	-	museum lane; host build with the system compiler
 port/tools/ce_museum_cinema_tests.py	script	-	none	release	-	museum lane; host build with the system compiler
@@ -97,8 +99,10 @@ port/tools/ce_museum_music_duck_tests.py	script	-	none	release	-	museum cinema m
 port/tools/ce_museum_options_tests.py	script	-	none	release	-	
 port/tools/ce_museum_run_tests.py	script	-	none	release	-	
 port/tools/ce_museum_tests.py	script	-	deps	release	-	
+port/tools/ce_museum_turntable_tests.py	script	-	none	release	-	Grand Museum rotating 3D turntables, wing residency cap, stud ray-pick and mutants; host build with ASan/UBSan
 port/tools/ce_museum_visit_build_tests.py	script	-	deps	release	-	
 port/tools/ce_museum_visit_tests.py	script	-	deps	release	-	
+port/tools/ce_museum_visitor_hud_tests.py	script	-	none	release	-	Grand Museum Visitor HUD patch 0366, procedural GPL-3.0 texture generator check and Atrium Directory quick-jump walkability; host build with ASan/UBSan
 port/tools/ce_career_view_tests.py	script	-	game	release	-	the Service Record's reading of the careers in the game folder (and the Toolkit's, when beside), against a second reader; needs g++
 port/tools/ce_career_cross_tests.py	script	-	game	release	-	the Service Record's cross-check against the game's own reading of a career, compiled as the game compiles it on stand-ins for the career and the memory card, with skewed answers and mutants; needs g++
 port/tools/ce_extras_tour_tests.py	script	-	none	release	-	the check that a tour of the Extras pages leaves the player's files as they were, with its negative controls
@@ -322,4 +326,5 @@ port/tools/shot_diff_tests.py	script	-	none	release	-	frame comparison: changed 
 port/tools/test_kit_tests.py	script	-	none	release	-	the test kit's core on the host against an authored menu (every verb, refusals, determinism); needs a C++ compiler
 port/tools/ce_terrain_textures_tests.py	script	-	none	release	-	expanded toroidal terrain texture atlases, zero-wrap halo math, device loss/restore, aborted flush recovery, faithful fence and patch 0354 neutrality; needs a C++ compiler
 port/tools/ce_aniso_quality_tests.py	script	-	none	release	-	hardware anisotropic filtering policy, frame-boundary snapshot, capability caps, faithful fences, patch 0355 neutrality and causal mutants; needs a C++ compiler
+port/tools/ce_graphics_r2_tests.py	script	-	none	release	-	HD water reflections (0367) and HD dynamic unit shadows (0368): policy, hardware caps, rollback ladders, tap offsets, faithful fences, patch neutrality and causal mutants; needs a C++ compiler
 port/tools/ce_multibe_tests.py	script	-	deps+game	release	-	gated 3-4 Battle Engine prototype spike: host helper & causal mutants, gate/neutrality audit, and live offscreen 200+ tick Linux engine integration

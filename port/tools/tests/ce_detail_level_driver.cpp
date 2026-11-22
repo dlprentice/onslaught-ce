@@ -18,9 +18,12 @@ extern "C" int CE_SettingSet(const char *, int) { return 1; }
 void PortSessionLog(PortSessionCategory, bool, const char *, ...) {}
 int PortUserFileState(const char *) { return 1; }
 void PortCeGraphicsApplyFreshDefaults() {}
-extern "C" int CE_FullModelsRequest(int) { ++failures; return 0; }	// the fresh defaults are never taken here
+extern "C" int CE_FullUnitModelsRequest(int) { ++failures; return 0; }	// the fresh defaults are never taken here
+extern "C" int CE_FullTreeModelsRequest(int) { ++failures; return 0; }
 extern "C" int CE_TerrainDetailRequest(int) { ++failures; return 0; }
 extern "C" int CE_AnisoRequest(int) { ++failures; return 0; }
+extern "C" int CE_WaterReflectionRequest(int) { ++failures; return 0; }
+extern "C" int CE_DynamicShadowRequest(int) { ++failures; return 0; }
 
 typedef wchar_t WCHAR;
 typedef int EPCText;

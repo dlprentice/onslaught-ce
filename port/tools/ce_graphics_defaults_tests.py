@@ -17,7 +17,7 @@ PORT = ROOT / "port"
 SUPPORT = PORT / "tools/tests"
 CASES = ("missing", "existing", "existing-saved-on", "existing-saved-off", "retail-leftover", "retail-leftover-opt-out", "profile-unknown", "no-antialiasing", "permission", "io-error",
          "unclassified", "no-observation", "subsequent-existing", "opt-out", "unsupported", "colour16", "landscape-limited",
-         "antialiasing-levels", "antialiasing-all-levels", "rows-saved-off", "rows-saved-on", "rows-one-saved", "rows-unwritable", "rows-refused",
+         "antialiasing-levels", "antialiasing-all-levels", "rows-saved-off", "rows-saved-on", "rows-legacy-on", "rows-one-saved", "rows-unwritable", "rows-refused",
          "layer-off", "fence-CLOCK", "fence-TAPE", "fence-PROBES", "fence-RECORD")
 
 
@@ -227,14 +227,21 @@ def main():
             "antialiasing-first-level-only": ("actual", "antialiasing.SetValue(antialiasing.GetNumChoices() - 1);", "antialiasing.SetValue(1);", "antialiasing-levels"),
             "antialiasing-second-highest": ("actual", "antialiasing.SetValue(antialiasing.GetNumChoices() - 1);", "antialiasing.SetValue(antialiasing.GetNumChoices() - 2);",
                                             "antialiasing-all-levels"),
-            "omit-full-models-default": ("policy", 'FreshBeyondRetailRow("full_models", CE_FullModelsRequest, 0);', "/* authored control: omit Full models */", "missing"),
-            "full-models-fresh-on": ("policy", 'FreshBeyondRetailRow("full_models", CE_FullModelsRequest, 0);', 'FreshBeyondRetailRow("full_models", CE_FullModelsRequest, 1);', "missing"),
+            "unit-models-fresh-off": ("policy", "const int kFreshUnitModels = 1;", "const int kFreshUnitModels = 0;", "missing"),
+            "tree-models-fresh-on": ("policy", "const int kFreshTreeModels = 0;", "const int kFreshTreeModels = 1;", "missing"),
+            "legacy-full-models-ignored": ("policy", "if (savedLegacy == 1)", "if (false && savedLegacy == 1)", "rows-legacy-on"),
             "terrain-fresh-normal": ("policy", "const int kFreshTerrainDetail = 1;", "const int kFreshTerrainDetail = 0;", "missing"),
             "omit-terrain-default": ("policy", 'FreshBeyondRetailRow("terrain_detail_distance", CE_TerrainDetailRequest, kFreshTerrainDetail);',
                                      "/* authored control: omit Terrain detail distance */", "missing"),
             "aniso-fresh-four": ("policy", "const int kFreshAnisotropicFiltering = 16;", "const int kFreshAnisotropicFiltering = 4;", "missing"),
             "omit-aniso-default": ("policy", 'FreshAnisoRow("anisotropic_filtering", CE_AnisoRequest, kFreshAnisotropicFiltering);',
                                    "/* authored control: omit Anisotropic filtering */", "missing"),
+            "water-fresh-256": ("policy", "const int kFreshWaterReflectionRes = 1024;", "const int kFreshWaterReflectionRes = 256;", "missing"),
+            "omit-water-default": ("policy", 'FreshWaterReflectionRow("water_reflection_res", CE_WaterReflectionRequest, kFreshWaterReflectionRes);',
+                                   "/* authored control: omit Water reflections */", "missing"),
+            "shadow-fresh-64": ("policy", "const int kFreshDynamicShadowRes = 256;", "const int kFreshDynamicShadowRes = 64;", "missing"),
+            "omit-shadow-default": ("policy", 'FreshDynamicShadowRow("dynamic_shadow_res", CE_DynamicShadowRequest, kFreshDynamicShadowRes);',
+                                    "/* authored control: omit Dynamic shadows */", "missing"),
             "saved-rows-ignored": ("policy", "    const int saved = CE_SettingGetBool(key, -1);\n    if (saved >= 0) request(saved);", "    const int saved = CE_SettingGetBool(key, -1);\n    if (saved >= 0) request(1);", "rows-saved-off"),
             "saved-rows-rewritten": ("policy", "    const int saved = CE_SettingGetBool(key, -1);\n    if (saved >= 0) request(saved);", "    const int saved = CE_SettingGetBool(key, -1);\n    if (saved >= 0) { request(saved); CE_SettingSet(key, saved); }", "rows-saved-off"),
             "default-rows-written-wrongly": ("policy", "    const int saved = CE_SettingGetBool(key, -1);\n    if (saved >= 0) request(saved);\n    else if (request(fresh)) CE_SettingSet(key, fresh);", "    const int saved = CE_SettingGetBool(key, -1);\n    if (saved >= 0) request(saved);\n    else if (request(fresh)) CE_SettingSet(key, 1 - fresh);", "missing"),

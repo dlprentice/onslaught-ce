@@ -34,9 +34,16 @@ void PortCeSaveFailedNotice() { ++notices; }
 int PortUserFileState(const char *) { return 1; }	// these cases never open the options file
 // The hook that takes the fresh defaults is a stub below, so nothing here may ask for the beyond-retail quality rows.
 extern "C" int CE_SettingGetText(const char *, char *, int) { return 0; }
-extern "C" int CE_FullModelsRequest(int) { Check(false, "the beyond-retail rows are not requested by these cases"); return 0; }
+extern "C" int CE_FullUnitModelsRequest(int) { Check(false, "the beyond-retail rows are not requested by these cases"); return 0; }
+extern "C" int CE_FullTreeModelsRequest(int) { Check(false, "the beyond-retail rows are not requested by these cases"); return 0; }
 extern "C" int CE_TerrainDetailRequest(int) { Check(false, "the beyond-retail rows are not requested by these cases"); return 0; }
 extern "C" int CE_AnisoRequest(int) { Check(false, "the beyond-retail rows are not requested by these cases"); return 0; }
+extern "C" int CE_WaterReflectionRequest(int) { Check(false, "the beyond-retail rows are not requested by these cases"); return 0; }
+extern "C" int CE_DynamicShadowRequest(int) { Check(false, "the beyond-retail rows are not requested by these cases"); return 0; }
+void CeWaterReflectionBeginFrame() {}
+unsigned CeWaterReflectionTargetRes() { return 256u; }
+unsigned CeWaterReflectionNextFallback(unsigned) { return 0u; }
+void CeWaterReflectionSetAllocatedRes(unsigned, unsigned) {}
 void DisplaySettingChanged() { ++displayChanges; }
 #ifdef CE_VERSION
 void PortCeGraphicsApplyFreshDefaults() {}
@@ -50,8 +57,8 @@ const HRESULT S_OK = 0;
 using D3DFORMAT = unsigned;
 constexpr unsigned D3DFMT_A32B32G32R32F=1, D3DFMT_D16=2, D3DFMT_R32F=3, D3DFMT_R5G6B5=4;
 constexpr unsigned D3DMULTISAMPLE_NONE=0, D3DPOOL_DEFAULT=0, D3DUSAGE_DEPTHSTENCIL=1, D3DUSAGE_RENDERTARGET=2;
-struct Surface {} surface;
-struct Texture { HRESULT GetSurfaceLevel(unsigned, Surface **out) { *out=depthSucceeds ? &surface : nullptr; return depthSucceeds ? S_OK : -1; } } texture;
+struct Surface { void Release() {} } surface;
+struct Texture { void Release() {} HRESULT GetSurfaceLevel(unsigned, Surface **out) { *out=depthSucceeds ? &surface : nullptr; return depthSucceeds ? S_OK : -1; } } texture;
 template<class T> void AssignOutput(T) {}
 void AssignOutput(Texture **out) { *out=textureOutputSucceeds ? &texture : nullptr; }
 void AssignOutput(Surface **out) { *out=depthSucceeds ? &surface : nullptr; }

@@ -38,7 +38,7 @@ namespace CeMuseumExhibition {
 struct Vec2 { float x, y; };
 struct Vec3 { float x, y, z; };
 
-enum { kMaxBays = 6, kMaxBoxes = 224, kMaxRoute = 12, kMaxKeeps = 4, kMaxZones = 14,
+enum { kMaxBays = 6, kMaxBoxes = 1024, kMaxRoute = 12, kMaxKeeps = 4, kMaxZones = 14,
        kMaxSpans = 6, kMaxCuts = 16 };
 
 // One machine to show. stableLabel is the caller's own identity for its name,
@@ -936,6 +936,259 @@ inline unsigned EmitBox(const Box &box, Vertex *out) {
     quad(Vec3{a.x, b.y, a.z}, Vec3{a.x, a.y, a.z}, Vec3{a.x, a.y, b.z}, Vec3{a.x, b.y, b.z}, end);
     return n;
 }
+
+// ---- Grand Outdoor/Indoor Multi-Wing Complex (M1-M4 RoomGraph & Walkability) ----
+namespace Grand {
+
+enum RoomId {
+    kRoomCourtyard = 0,
+    kRoomAtrium,
+    kRoomForseti,
+    kRoomMuspell,
+    kRoomHangar,
+    kRoomConceptArt,
+    kRoomEarlyDesigns,
+    kRoomCinema,
+    kRoomCount
+};
+
+enum { kPortalCount = 7, kMaxObstacles = 128, kNativeBayCount = 6 };
+constexpr float kCinemaOffsetX = 29.0f;
+constexpr float kCinemaOffsetY = 10.0f;
+constexpr float kReturnArchY = -5.4f;
+constexpr float kReturnArchHalf = 2.6f;
+
+struct RoomBounds {
+    float minX, maxX, minY, maxY, height;
+    bool openSky;
+};
+
+struct Portal {
+    RoomId a, b;
+    bool vertical;   // true: wall along X = line (opening in Y); false: wall along Y = line (opening in X)
+    float line;
+    float lo, hi;
+    float clearHeight;
+};
+
+struct SolidBox {
+    float minX, minY, maxX, maxY, minZ, maxZ;
+    RoomId room;
+};
+
+struct NativeBaySpot {
+    float x, y, topZ, halfSize;
+    float padX, padY;
+    float facingX, facingY;
+};
+
+struct RoomGraph {
+    RoomBounds rooms[kRoomCount];
+    Portal portals[kPortalCount];
+    SolidBox obstacles[kMaxObstacles];
+    unsigned obstacleCount;
+    NativeBaySpot nativeBays[kNativeBayCount];
+};
+
+inline void PushObstacle(RoomGraph &g, float x0, float y0, float x1, float y1,
+                         float z0, float z1, RoomId room) {
+    if (g.obstacleCount >= kMaxObstacles || !(x1 > x0 && y1 > y0 && z1 > z0)) return;
+    SolidBox &b = g.obstacles[g.obstacleCount++];
+    b.minX = x0; b.minY = y0; b.maxX = x1; b.maxY = y1;
+    b.minZ = z0; b.maxZ = z1; b.room = room;
+}
+
+inline RoomGraph MakeRoomGraph() {
+    RoomGraph g = {};
+    // Eight non-overlapping architectural zones within 82 m of arrival (0, 0).
+    g.rooms[kRoomCourtyard]    = {-15.5f,  15.5f,  -6.0f,  20.0f,  0.0f, true};
+    g.rooms[kRoomAtrium]       = {-16.0f,  16.0f,  20.0f,  52.0f, 13.5f, false};
+    g.rooms[kRoomForseti]      = {-44.0f, -16.0f,  30.0f,  52.0f, 10.5f, false};
+    g.rooms[kRoomMuspell]      = { 16.0f,  44.0f,  30.0f,  52.0f, 10.5f, false};
+    g.rooms[kRoomHangar]       = {-20.0f,  20.0f,  52.0f,  78.0f, 15.5f, false};
+    g.rooms[kRoomConceptArt]   = { 16.0f,  40.0f,  10.0f,  28.0f,  8.5f, false};
+    g.rooms[kRoomEarlyDesigns] = {-40.0f, -16.0f,  10.0f,  28.0f,  8.5f, false};
+    g.rooms[kRoomCinema]       = { 40.0f,  56.0f,   7.0f,  29.0f,  9.5f, false};
+
+    // Seven wide portals connecting every room into one continuous visit.
+    g.portals[0] = {kRoomCourtyard,    kRoomAtrium,       false,  20.0f, -5.5f,  5.5f, 7.5f};
+    g.portals[1] = {kRoomAtrium,       kRoomHangar,       false,  52.0f, -5.0f,  5.0f, 8.0f};
+    g.portals[2] = {kRoomAtrium,       kRoomForseti,      true,  -16.0f, 38.0f, 44.0f, 6.0f};
+    g.portals[3] = {kRoomAtrium,       kRoomMuspell,      true,   16.0f, 38.0f, 44.0f, 6.0f};
+    g.portals[4] = {kRoomAtrium,       kRoomEarlyDesigns, true,  -16.0f, 21.5f, 26.5f, 5.0f};
+    g.portals[5] = {kRoomAtrium,       kRoomConceptArt,   true,   16.0f, 21.5f, 26.5f, 5.0f};
+    g.portals[6] = {kRoomConceptArt,   kRoomCinema,       true,   40.0f, 11.7f, 17.3f, 4.6f};
+
+    // Six Forseti Wing bay spots hosting Level 100 native exhibits (North & South alcoves).
+    const float bx[3] = {-21.5f, -29.0f, -36.5f};
+    for (unsigned i = 0; i < 3; ++i) {
+        g.nativeBays[i]     = {bx[i], 48.2f, 0.72f, 1.85f, bx[i], 44.4f, 0.0f,  1.0f};
+        g.nativeBays[i + 3] = {bx[i], 33.8f, 0.72f, 1.85f, bx[i], 37.6f, 0.0f, -1.0f};
+    }
+
+    // ---- Courtyard obstacles ----
+    // Hero Battle Engine Aquila tiered stone plinth at (0, 10.5)
+    PushObstacle(g, -2.55f, 7.95f, 2.55f, 13.05f, 0.0f, 1.35f, kRoomCourtyard);
+    // Flanking coastal reflecting pool basins
+    PushObstacle(g, -13.2f, 4.5f, -7.2f, 15.0f, 0.0f, 0.45f, kRoomCourtyard);
+    PushObstacle(g,   7.2f, 4.5f, 13.2f, 15.0f, 0.0f, 0.45f, kRoomCourtyard);
+    // Return Arch stone piers behind arrival
+    PushObstacle(g, -3.55f, -5.85f, -2.65f, -4.95f, 0.0f, 4.8f, kRoomCourtyard);
+    PushObstacle(g,  2.65f, -5.85f,  3.55f, -4.95f, 0.0f, 4.8f, kRoomCourtyard);
+
+    // ---- Grand Atrium obstacles ----
+    // Central Directory Lectern south of the brass compass rose
+    PushObstacle(g, -1.65f, 31.15f, 1.65f, 31.85f, 0.0f, 1.25f, kRoomAtrium);
+    // Four corner skylight structural columns supporting the clerestory lantern
+    const float colX[2] = {-8.2f, 8.2f}, colY[2] = {28.2f, 43.8f};
+    for (unsigned ix = 0; ix < 2; ++ix)
+        for (unsigned iy = 0; iy < 2; ++iy)
+            PushObstacle(g, colX[ix] - 0.55f, colY[iy] - 0.55f, colX[ix] + 0.55f, colY[iy] + 0.55f,
+                         0.0f, 13.5f, kRoomAtrium);
+
+    // ---- Forseti Forces Wing obstacles ----
+    for (unsigned i = 0; i < kNativeBayCount; ++i) {
+        const NativeBaySpot &nb = g.nativeBays[i];
+        PushObstacle(g, nb.x - nb.halfSize, nb.y - nb.halfSize,
+                     nb.x + nb.halfSize, nb.y + nb.halfSize, 0.0f, nb.topZ, kRoomForseti);
+    }
+    // Two featured rotating Forseti Goodie turntables in West apse
+    PushObstacle(g, -42.25f, 36.35f, -39.35f, 39.25f, 0.0f, 0.90f, kRoomForseti);
+    PushObstacle(g, -42.25f, 42.75f, -39.35f, 45.65f, 0.0f, 0.90f, kRoomForseti);
+    // Forseti Audio Kiosk
+    PushObstacle(g, -18.95f, 34.10f, -18.05f, 34.90f, 0.0f, 1.25f, kRoomForseti);
+
+    // ---- Muspell Dominion Wing obstacles ----
+    const float mx[3] = {22.0f, 30.0f, 38.0f};
+    for (unsigned i = 0; i < 3; ++i) {
+        PushObstacle(g, mx[i] - 1.85f, 47.8f - 1.85f, mx[i] + 1.85f, 47.8f + 1.85f, 0.0f, 0.90f, kRoomMuspell);
+        PushObstacle(g, mx[i] - 1.85f, 34.2f - 1.85f, mx[i] + 1.85f, 34.2f + 1.85f, 0.0f, 0.90f, kRoomMuspell);
+    }
+    // Muspell Audio Kiosk
+    PushObstacle(g, 18.05f, 34.10f, 18.95f, 34.90f, 0.0f, 1.25f, kRoomMuspell);
+
+    // ---- Aviation & Naval Hangar obstacles ----
+    // West aviation flight-pylon plinths
+    const float ay[3] = {58.0f, 65.0f, 72.0f};
+    for (unsigned i = 0; i < 3; ++i)
+        PushObstacle(g, -16.25f, ay[i] - 1.75f, -12.75f, ay[i] + 1.75f, 0.0f, 0.80f, kRoomHangar);
+    // East recessed dark-water naval basin (single continuous fenced basin with coping)
+    PushObstacle(g, 8.8f, 55.6f, 17.4f, 74.4f, 0.0f, 0.45f, kRoomHangar);
+    // North Relative Scale Alcove plinth
+    PushObstacle(g, -5.4f, 73.9f, 5.4f, 76.7f, 0.0f, 0.55f, kRoomHangar);
+    // Hangar Audio Kiosk
+    PushObstacle(g, -7.95f, 55.10f, -7.05f, 55.90f, 0.0f, 1.25f, kRoomHangar);
+
+    // ---- Concept Art Gallery obstacles ----
+    // Central low viewing bench + Audio Kiosk
+    PushObstacle(g, 24.0f, 18.4f, 32.0f, 19.6f, 0.0f, 0.55f, kRoomConceptArt);
+    PushObstacle(g, 18.55f, 14.60f, 19.45f, 15.40f, 0.0f, 1.25f, kRoomConceptArt);
+
+    // ---- Early Designs Vault obstacles ----
+    // Central archival bench + Audio Kiosk
+    PushObstacle(g, -32.0f, 18.4f, -24.0f, 19.6f, 0.0f, 0.55f, kRoomEarlyDesigns);
+    PushObstacle(g, -19.45f, 14.60f, -18.55f, 15.40f, 0.0f, 1.25f, kRoomEarlyDesigns);
+
+    // ---- Screening Room obstacles (shifted CeCinemaRoom seats & projector post) ----
+    // Projector pedestal at (kConsoleX + offsetX, kConsoleY + offsetY) = (43.5, 15.1)
+    PushObstacle(g, 43.0f, 14.7f, 44.0f, 15.5f, 0.0f, 1.40f, kRoomCinema);
+    // Six seats per row across three tiered rows (matching CeCinemaRoom::Seat)
+    for (unsigned row = 0; row < 3; ++row) {
+        const float y = (1.0f - float(row) * 1.60f) + kCinemaOffsetY;
+        for (unsigned n = 0; n < 6; ++n) {
+            const float x = (11.0f + 1.65f + float(n % 3) * 1.5f + float(n / 3) * 8.0f) + kCinemaOffsetX;
+            PushObstacle(g, x - 0.55f, y - 0.52f, x + 0.55f, y + 0.52f, 0.0f, 1.20f, kRoomCinema);
+        }
+    }
+
+    return g;
+}
+
+inline RoomId RoomAt(const RoomGraph &g, Vec2 v) {
+    if (!std::isfinite(v.x) || !std::isfinite(v.y)) return kRoomCount;
+    for (unsigned r = 0; r < kRoomCount; ++r) {
+        const RoomBounds &b = g.rooms[r];
+        if (v.x >= b.minX && v.x <= b.maxX && v.y >= b.minY && v.y <= b.maxY)
+            return static_cast<RoomId>(r);
+    }
+    return kRoomCount;
+}
+
+inline bool InPortalThroat(const RoomGraph &g, Vec2 v, float radius) {
+    const float wallReach = kWallHalf + radius + 0.15f;
+    for (unsigned i = 0; i < kPortalCount; ++i) {
+        const Portal &p = g.portals[i];
+        if (p.vertical) {
+            if (std::fabs(v.x - p.line) <= wallReach &&
+                v.y >= p.lo + radius && v.y <= p.hi - radius)
+                return true;
+        } else {
+            if (std::fabs(v.y - p.line) <= wallReach &&
+                v.x >= p.lo + radius && v.x <= p.hi - radius)
+                return true;
+        }
+    }
+    return false;
+}
+
+inline Walk WalkAt(const RoomGraph &g, Vec2 v, float radius = kVisitorRadius) {
+    if (!std::isfinite(v.x) || !std::isfinite(v.y) || !(radius >= 0.0f)) return kWalkBlocked;
+    for (unsigned i = 0; i < g.obstacleCount; ++i) {
+        const SolidBox &b = g.obstacles[i];
+        if (b.minZ >= kBodyTop) continue;
+        const float dx = detail::Max(detail::Max(b.minX - v.x, v.x - b.maxX), 0.0f);
+        const float dy = detail::Max(detail::Max(b.minY - v.y, v.y - b.maxY), 0.0f);
+        if (dx * dx + dy * dy < radius * radius) return kWalkBlocked;
+    }
+    const float margin = kWallHalf + radius;
+    for (unsigned r = 0; r < kRoomCount; ++r) {
+        const RoomBounds &b = g.rooms[r];
+        if (v.x >= b.minX + margin && v.x <= b.maxX - margin &&
+            v.y >= b.minY + margin && v.y <= b.maxY - margin)
+            return kWalkOpen;
+    }
+    if (InPortalThroat(g, v, radius)) return kWalkThroat;
+    return kWalkBlocked;
+}
+
+inline bool PathClear(const RoomGraph &g, Vec2 a, Vec2 b, float radius = kVisitorRadius) {
+    const float dx = b.x - a.x, dy = b.y - a.y;
+    const float length = std::sqrt(dx * dx + dy * dy);
+    if (!std::isfinite(length) || length > 400.0f) return false;
+    const unsigned steps = static_cast<unsigned>(length / 0.2f) + 1u;
+    for (unsigned i = 0; i <= steps; ++i) {
+        const float t = float(i) / float(steps);
+        if (WalkAt(g, Vec2{a.x + t * dx, a.y + t * dy}, radius) == kWalkBlocked) return false;
+    }
+    return true;
+}
+
+inline bool SightClear(const RoomGraph &g, Vec3 from, Vec3 to) {
+    const float o[3] = {from.x, from.y, from.z};
+    const float d[3] = {to.x - from.x, to.y - from.y, to.z - from.z};
+    for (unsigned a = 0; a < 3; ++a)
+        if (!std::isfinite(o[a]) || !std::isfinite(d[a])) return false;
+    for (unsigned i = 0; i < g.obstacleCount; ++i) {
+        const SolidBox &sb = g.obstacles[i];
+        const Box box = {Vec3{sb.minX, sb.minY, sb.minZ}, Vec3{sb.maxX, sb.maxY, sb.maxZ}, 0, kSolidPlinth, 0};
+        if (detail::SegmentMeets(box, o, d)) return false;
+    }
+    return true;
+}
+
+inline bool FacesExit(Vec2 visitor, Vec2 heading, bool held) {
+    const float h = std::sqrt(heading.x * heading.x + heading.y * heading.y);
+    if (!std::isfinite(h) || !(h > 1.0e-6f)) return false;
+    const float side = visitor.x;
+    const float gap = visitor.y - kReturnArchY;
+    if (!(std::fabs(side) <= (held ? 4.0f : 3.4f) && gap >= 0.0f &&
+          visitor.y <= (held ? 3.2f : 2.2f))) return false;
+    const float out = -heading.y / h, across = heading.x / h;
+    if (!(out >= (held ? 0.4f : 0.5f))) return false;
+    return std::fabs(side + gap * across / out) <= kReturnArchHalf + (held ? 0.25f : -0.05f);
+}
+
+} // namespace Grand
 
 } // namespace CeMuseumExhibition
 #endif

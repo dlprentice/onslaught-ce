@@ -16,9 +16,12 @@ bool PortCeLayer();
 extern "C" int CE_SettingGetBool(const char *, int);
 extern "C" int CE_SettingGetText(const char *, char *, int);
 extern "C" int CE_SettingSet(const char *, int);
-extern "C" int CE_FullModelsRequest(int);	// platform/common/model_quality.cpp
+extern "C" int CE_FullUnitModelsRequest(int);	// platform/common/model_quality.cpp
+extern "C" int CE_FullTreeModelsRequest(int);	// platform/common/model_quality.cpp
 extern "C" int CE_TerrainDetailRequest(int);	// platform/common/terrain_quality.cpp
 extern "C" int CE_AnisoRequest(int);	// platform/common/aniso_quality.cpp
+extern "C" int CE_WaterReflectionRequest(int);	// platform/common/reflection_quality.cpp
+extern "C" int CE_DynamicShadowRequest(int);	// platform/common/reflection_quality.cpp
 int PortUserFileState(const char *rel);	// port/platform/<target>: 1 the writable folder has its own copy of the file, 0 none, -1 not known
 
 namespace
@@ -26,17 +29,20 @@ namespace
 bool initialized, requested, capable, freshOptionsPending;
 unsigned seenResources, failedResources;
 
-// Video Options also holds two beyond-retail quality rows whose choices live in ce.ini, not in the options file: Full models and
-// Terrain detail distance. A new profile starts Full models one choice below its maximum (Off): it is almost all of the frame-rate cost of the
-// maximums (PARITY). Terrain detail distance starts at its maximum (Extended) like every other row: the 0.1.14 measurement found no failed terrain
-// allocation on levels 100 and 200 with the terrain reserve. Since the 2026-11-08 correction Extended reserves all three terrain tiers, and
-// bounded split-screen controls found no failed request after it (PARITY, "Terrain reserve correction"). The maintainer chose Extended for new profiles; kFreshTerrainDetail is the
-// one value to change (1 = Extended, 0 = Normal). A valid 0 or 1
-// already in ce.ini is a saved choice and is requested as it stands. With no such line the fresh choice is requested and written once,
-// so the profile keeps showing it after it has saved options of its own (the options file does not hold these rows); an unwritable
-// ce.ini leaves a request for this session only. A request the layer refuses (a faithful run) writes nothing.
+// Video Options holds six beyond-retail quality rows whose choices live in ce.ini, not in the options file:
+// High-detail units (full_unit_models=1), 3D distant trees (full_tree_models=0, opt-in because unbatched 3D
+// trees dominate frame cost on forest levels), Terrain detail distance (terrain_detail_distance=1),
+// Anisotropic filtering (anisotropic_filtering=16), Water reflections (water_reflection_res=1024), and
+// Dynamic shadows (dynamic_shadow_res=256). A valid value already in ce.ini is a saved choice and is requested
+// as it stands; legacy full_models=1 enables both unit and tree models when neither split key is saved. With
+// no saved line the fresh choice is requested and written once; an unwritable ce.ini leaves a session-only
+// request, and a refused request (faithful run) writes nothing.
+const int kFreshUnitModels = 1;
+const int kFreshTreeModels = 0;
 const int kFreshTerrainDetail = 1;
 const int kFreshAnisotropicFiltering = 16;
+const int kFreshWaterReflectionRes = 1024;
+const int kFreshDynamicShadowRes = 256;
 
 void FreshBeyondRetailRow(const char *key, int (*request)(int), int fresh)
 {
@@ -45,7 +51,7 @@ void FreshBeyondRetailRow(const char *key, int (*request)(int), int fresh)
     else if (request(fresh)) CE_SettingSet(key, fresh);
 }
 
-int SavedAnisoSetting(const char *key)
+int SavedIntSetting(const char *key)
 {
     char text[32] = {};
     if (!CE_SettingGetText(key, text, int(sizeof(text)))) return -1;
@@ -57,13 +63,44 @@ int SavedAnisoSetting(const char *key)
     if (end == p) return -1;
     while (*end == ' ' || *end == '\t' || *end == '\r') ++end;
     if (*end) return -1;
-    const int value = int(parsed);
+    return int(parsed);
+}
+
+int SavedAnisoSetting(const char *key)
+{
+    const int value = SavedIntSetting(key);
     return (value == 0 || value == 4 || value == 8 || value == 16) ? value : -1;
 }
 
 void FreshAnisoRow(const char *key, int (*request)(int), int fresh)
 {
     const int saved = SavedAnisoSetting(key);
+    if (saved >= 0) request(saved);
+    else if (request(fresh)) CE_SettingSet(key, fresh);
+}
+
+int SavedWaterReflectionSetting(const char *key)
+{
+    const int value = SavedIntSetting(key);
+    return (value == 256 || value == 512 || value == 1024) ? value : -1;
+}
+
+void FreshWaterReflectionRow(const char *key, int (*request)(int), int fresh)
+{
+    const int saved = SavedWaterReflectionSetting(key);
+    if (saved >= 0) request(saved);
+    else if (request(fresh)) CE_SettingSet(key, fresh);
+}
+
+int SavedDynamicShadowSetting(const char *key)
+{
+    const int value = SavedIntSetting(key);
+    return (value == 64 || value == 128 || value == 256) ? value : -1;
+}
+
+void FreshDynamicShadowRow(const char *key, int (*request)(int), int fresh)
+{
+    const int saved = SavedDynamicShadowSetting(key);
     if (saved >= 0) request(saved);
     else if (request(fresh)) CE_SettingSet(key, fresh);
 }
@@ -127,9 +164,25 @@ bool PortCeGraphicsTakeFreshDefaults()
 {
     if (!PortCeGraphicsPolicyActive() || !freshOptionsPending) return false;
     freshOptionsPending = false;
-    FreshBeyondRetailRow("full_models", CE_FullModelsRequest, 0);
+    const int savedUnit = CE_SettingGetBool("full_unit_models", -1);
+    const int savedTree = CE_SettingGetBool("full_tree_models", -1);
+    const int savedLegacy = (savedUnit < 0 && savedTree < 0) ? CE_SettingGetBool("full_models", -1) : -1;
+    if (savedLegacy == 1)
+    {
+        CE_FullUnitModelsRequest(1);
+        CE_FullTreeModelsRequest(1);
+    }
+    else
+    {
+        if (savedUnit >= 0) CE_FullUnitModelsRequest(savedUnit);
+        else if (CE_FullUnitModelsRequest(kFreshUnitModels)) CE_SettingSet("full_unit_models", kFreshUnitModels);
+        if (savedTree >= 0) CE_FullTreeModelsRequest(savedTree);
+        else if (CE_FullTreeModelsRequest(kFreshTreeModels)) CE_SettingSet("full_tree_models", kFreshTreeModels);
+    }
     FreshBeyondRetailRow("terrain_detail_distance", CE_TerrainDetailRequest, kFreshTerrainDetail);
     FreshAnisoRow("anisotropic_filtering", CE_AnisoRequest, kFreshAnisotropicFiltering);
+    FreshWaterReflectionRow("water_reflection_res", CE_WaterReflectionRequest, kFreshWaterReflectionRes);
+    FreshDynamicShadowRow("dynamic_shadow_res", CE_DynamicShadowRequest, kFreshDynamicShadowRes);
     return true;
 }
 
@@ -141,7 +194,7 @@ void PortCeGraphicsBeginDevice(unsigned pixelVersion, unsigned vertexVersion, bo
         // A valid extra_graphics line is the player's saved choice. With none, only a new profile asks for the extra paths: a profile that
         // already has options of its own keeps them off until the player chooses Yes, as it was before this row could be offered. The game's
         // own tweak is no evidence either way (it starts set, the options file does not hold it, and the game clears it only after the first
-        // device exists). The options file does not hold the row, so the new profile's choice is written once, like the two rows above, or its
+        // device exists). The options file does not hold the row, so the new profile's choice is written once, like the rows above, or its
         // next start would find saved options and no line; an unwritable ce.ini leaves the choice for this session only.
         const int saved = CE_SettingGetBool("extra_graphics", -1);
         requested = saved >= 0 ? saved != 0 : freshOptionsPending;
@@ -204,7 +257,7 @@ bool PortCeGraphicsStoreRequest(int enabled)
 {
     if (!PortCeGraphicsPolicyActive()) return true;
     if (enabled != 0 && enabled != 1) return false;
-    // The choice holds for this session whether or not ce.ini can keep it, as Full models and Terrain detail distance do; false tells the
+    // The choice holds for this session whether or not ce.ini can keep it, as the beyond-retail quality rows do; false tells the
     // row that it was not saved.
     requested = enabled != 0;
     initialized = true;

@@ -15,9 +15,10 @@ enum CeGraphicsResource
 bool PortCeGraphicsPolicyActive();
 bool PortCeGraphicsFloatTargetRequired();
 // Called immediately after the native options open. Only the absence of the profile's own saved options opts a fresh profile into
-// the maximum of every Video Options quality row but Full models: nothing readable at all, or only the file the retail game left in the game folder (the
-// profile has none of its own). Taking the fresh defaults also starts the two beyond-retail rows unless ce.ini names a choice:
-// Terrain detail distance Extended (kFreshTerrainDetail in ce_graphics_policy.cpp; PARITY, Terrain reserve), Full models one choice below its maximum (Off).
+// the maximum of every Video Options quality row except 3D distant trees: nothing readable at all, or only the file the retail game left in the game folder (the
+// profile has none of its own). Taking the fresh defaults also starts the beyond-retail rows unless ce.ini names a choice:
+// High-detail units On (1), 3D distant trees Off (0, opt-in), Terrain detail distance Extended (1), Anisotropic filtering 16x (16),
+// Water reflections Ultra (1024), and Dynamic shadows Ultra (256). Legacy full_models=1 enables both unit and tree models when neither split key is saved.
 void PortCeGraphicsOptionsOpened(bool opened, int error);
 bool PortCeGraphicsTakeFreshDefaults();
 void PortCeGraphicsApplyFreshDefaults();

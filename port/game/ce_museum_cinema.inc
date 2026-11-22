@@ -40,6 +40,10 @@ extern "C" int PortCeTutorialPrintableKey(int key,char *out,int size);
 extern "C" int PortMouseHeldNow(unsigned button);
 extern "C" unsigned PortMouseActivitySeq(void);
 
+// In the Grand Museum complex the Screening Room sits beyond the Concept Art Gallery's east wall.
+static inline float CinemaOffX() { return gGrandMode ? CeMuseumWorld::kGrandCinemaOffsetX : 0.0f; }
+static inline float CinemaOffY() { return gGrandMode ? CeMuseumWorld::kGrandCinemaOffsetY : 0.0f; }
+
 // Film sound and playback (ce_museum_film.h holds the behaviour: the level, the crossfade with the music, the frame
 // order and the hold while paused; this file forwards the game's Bink calls to it). The music duck is applied by patch
 // 0258 (ce_museum_music_duck.h). Leaving the Museum drops the duck at once.
@@ -58,7 +62,9 @@ extern "C" long PortCeMuseumMusicDuck(void) {
     if (!PortCeMuseumVisitActive()) { Cinema::duck = CeMuseumMusicDuck::Off(); return 0; }
     const double now = CinemaClock();
     CeMuseumMusicDuck::Settle(&Cinema::duck, now);
-    return CeMuseumMusicDuck::Hundredths(CeMuseumMusicDuck::Gain(Cinema::duck, now));
+    const long filmDuck = CeMuseumMusicDuck::Hundredths(CeMuseumMusicDuck::Gain(Cinema::duck, now));
+    const long kioskDuck = CeMuseumAudioKiosk::RuntimeMusicDuckHundredths();
+    return filmDuck < kioskDuck ? filmDuck : kioskDuck;
 }
 CeMuseumFilm::Calls CinemaFilmCalls() {
     CeMuseumFilm::Calls c = {};
@@ -100,19 +106,16 @@ void CinemaReset() {
 // theater's walls then rise to one roof with the hall, so no sky shows between them.
 void CinemaShell(bool planned, float floor, float height) {
     using namespace CeCinemaRoom; using namespace Cinema;
-    // The side walls are clad as the hall's walls are (the Forseti hangar band), so
-    // the two rooms match; the screen wall is the same band, tinted dark.
     const DWORD kWall=CeMuseumWorld::kWall,kWallCap=CeMuseumWorld::kWallCap;
-    const CeHallPoint o={CeMuseumWorld::kEntranceX,CeMuseumWorld::kEntranceY};
+    const float ox = CinemaOffX(), oy = CinemaOffY();
+    const CeHallPoint o={CeMuseumWorld::kEntranceX + ox, CeMuseumWorld::kEntranceY + oy};
     auto box=[&](float x,float y,float hw,float hd,float lift,float ht,DWORD a,DWORD b) {
         FittedBox(Offset(o,x,y),hw,hd,lift,ht,a,b);
     };
+    g.current = kMatCarpet;
     Tile(Offset(o,(kLeft+kRight)*.5f,(kFront+kBack)*.5f),(kRight-kLeft)*.5f,(kBack-kFront)*.5f,.035f,kFloorDark);
-    // A planned exhibition frames the portal itself (piers, header, accent) and its
-    // walking surface already reaches the forecourt, so only the room is built here.
+    g.current = kMatAuto;
     if (!planned) {
-        // A gold aisle branches from the nearest cross corridor. The portal's clapper
-        // has a perforated top edge and three raised bars: a cue readable in monochrome.
         Walk(Offset(o,1.4f,kDoorY),Offset(o,kDoorX+2.2f,kDoorY));
         for (int i=-1;i<=1;i+=2) {
             box(kDoorX,kDoorY+i*kDoorHalf,.56f,.34f,0,5.35f,kBronze,kEdge);
@@ -121,28 +124,29 @@ void CinemaShell(bool planned, float floor, float height) {
         box(kDoorX,kDoorY,.56f,kDoorHalf+.40f,5.05f,.69f,kProscenium,kBronze);
         for(unsigned i=0;i<5;++i) box(kDoorX-.58f,kDoorY-2.15f+1.05f*i,.08f,.17f,5.31f,.24f,kLight,kLight);
     }
-    // The screen wall needs 8.9 m; a roofed theater rises at least that far everywhere.
-    const float roof = planned && height > 0 ? (height > 8.9f ? height : 8.9f) : 0;
-    // The theater's walls, roof, screen frame and projector post have materials of
-    // their own, so the house lights dim them and not the hall's.
+    const float roof = planned && height > 0 ? (height > 9.5f ? height : 9.5f) : 0;
     g.current = kMatCinemaWall;
     box(kRight,(kFront+kBack)*.5f,.33f,(kBack-kFront)*.5f,0,roof ? roof : 6.8f,kWall,kWallCap);
     box((kLeft+kRight)*.5f,kFront,(kRight-kLeft)*.5f,.32f,0,roof ? roof : 7.1f,kWall,kWallCap);
-    g.current = kMatAuto;
+    // In Grand Mode the Concept Art Gallery covers y [10..28] while the Screening Room spans [7..29];
+    // close the short West wall extensions above and below the Concept Art Gallery footprint cleanly.
+    if (gGrandMode) {
+        box(kLeft, kFront + 1.5f, 0.32f, 1.55f, 0, roof, kWall, kWallCap);
+        box(kLeft, kBack - 0.5f,  0.32f, 0.55f, 0, roof, kWall, kWallCap);
+    }
+    g.current = kMatStone;
     box((kLeft+kRight)*.5f,kBack,(kRight-kLeft)*.5f,.32f,0,roof ? roof : 8.9f,kProscenium,kBronze);
     if (roof) {
-        // Above the hall's roof, the shared wall continues up to the theater's roof.
         const float wall = CeMuseumExhibition::kWallHalf;
         g.current = kMatCinemaWall;
         if (roof > height) box(kLeft,(kFront+kBack)*.5f,wall,(kBack-kFront)*.5f+.32f,height,roof-height,kWall,kWallCap);
         g.current = kMatAuto;
-        Ceiling(floor,kLeft+wall,kFront-.32f,kRight+.33f,kBack+.32f,roof,kMatCinemaCeiling);
+        Ceiling(floor,kLeft+wall+ox,kFront-.32f+oy,kRight+.33f+ox,kBack+.32f+oy,roof,kMatCinemaCeiling);
     }
-    // The screen's frame is the hall's dressed stone, darker, not a swirled bronze.
+    // Screen frame in refined dark stone + warm brass accent fillet
     g.current = kMatScreenFrame;
-    box(kScreenX,kScreenY+.20f,kScreenHalfW+.42f,.17f,-(kScreenZ+kScreenHalfH)-.32f,2*kScreenHalfH+.64f,kBronze,kStone);
-    // A stopped screen is dark glass: near-black, with the faintest sheen falling from
-    // its upper left. A film is drawn just in front of it.
+    box(kScreenX,kScreenY+.20f,kScreenHalfW+.48f,.17f,-(kScreenZ+kScreenHalfH)-.36f,2*kScreenHalfH+.72f,kBronze,kStone);
+    // A stopped screen is dark glass: near-black, with a subtle dark sheen.
     g.current = kMatScreenIdle;
     box(kScreenX,kScreenY+.10f,kScreenHalfW,.10f,-(kScreenZ+kScreenHalfH),2*kScreenHalfH,0xff0e1016,0xff0e1016);
     {
@@ -156,12 +160,12 @@ void CinemaShell(bool planned, float floor, float height) {
         }
     }
     g.current = kMatAuto;
-    // The seats and tiers rise away from the screen. The center aisle is level,
-    // continuous and walkable; occupied seat rectangles share the visitor boundary.
     for(unsigned row=0;row<3;++row) {
         const float y=1.0f-row*1.6f,h=.16f+row*.30f;
         for(unsigned bank=0;bank<2;++bank) {
+            g.current = kMatCarpet;
             box(SeatX(bank*3+1),y,2.35f,.73f,0,h,kCarpet,kCarpet);
+            g.current = kMatSeat;
             for(unsigned n=0;n<3;++n) {
                 const float x=SeatX(bank*3+n);
                 box(x,y,.50f,.42f,h,.35f,kUpholstery,kSeatCap);
@@ -169,8 +173,6 @@ void CinemaShell(bool planned, float floor, float height) {
             }
         }
     }
-    // The projector stands on the piers' stone: a base course and floor line, the
-    // post, and a lighter cap.
     g.current = kMatCinemaBase;
     box(kConsoleX,kConsoleY,.45f,.35f,0,.035f,kSlate,kSlate);
     box(kConsoleX,kConsoleY,.43f,.33f,.035f,.30f,kSlate,kSlate);
@@ -179,7 +181,6 @@ void CinemaShell(bool planned, float floor, float height) {
     g.current = kMatCinemaCap;
     box(kConsoleX,kConsoleY,.47f,.34f,1.15f,.22f,kBronze,kLight);
     g.current = kMatAuto;
-    // Small aisle lights point to the screen, even when the projector is off.
     for(unsigned i=0;i<3;++i)
         box(kWallX+5.9f,3.0f+2.2f*i,.16f,.36f,.02f,.10f,kLight,kLight);
 }
@@ -252,12 +253,11 @@ CinemaControls::Decoder CinemaDecoder() {
 }
 CinemaConsole::Mount CinemaConsoleMount() {
     if (!g.valid || !g.ground) return CinemaConsole::Mount{};
-    const CeHallPoint origin = {CeMuseumWorld::kEntranceX, CeMuseumWorld::kEntranceY};
+    const CeHallPoint origin = {CeMuseumWorld::kEntranceX + CinemaOffX(), CeMuseumWorld::kEntranceY + CinemaOffY()};
     const CeHallPoint centre = Offset(origin, CeCinemaRoom::kConsoleX, CeCinemaRoom::kConsoleY);
     float floor = 0;
     if (!g.ground(centre.x, centre.y, &floor)) return CinemaConsole::Mount{};
     const CinemaConsole::Vec3 at = {centre.x, centre.y, floor - 1.65f};
-    // the visitor faces the panel looking along tour.right; in this world (Z grows down) the visitor's right is then -forward
     const CinemaConsole::Vec3 right = {-g.tour.forward.x, -g.tour.forward.y, 0};
     const CinemaConsole::Vec3 up = {0, 0, -1};
     const CinemaConsole::Vec3 front = {-g.tour.right.x, -g.tour.right.y, 0};
@@ -367,7 +367,8 @@ void CinemaTrackDevice() {
 }
 void CinemaVisitor(float x,float y) {
     using namespace Cinema;using namespace CeCinemaRoom;
-    const float side=x-CeMuseumWorld::kEntranceX,depth=y-CeMuseumWorld::kEntranceY;
+    const float side = x - CeMuseumWorld::kEntranceX - CinemaOffX();
+    const float depth = y - CeMuseumWorld::kEntranceY - CinemaOffY();
     const bool room=PortCeMuseumAuthoredMap() && Interior(side,depth);
     if(s.inRoom && !room) CinemaClose(Idle);
     s.inRoom=room;s.atConsole = false;
@@ -489,7 +490,6 @@ bool CinemaCue(char *title, unsigned titleCap, char *line, unsigned lineCap) {
 void CinemaScreen(IDirect3DDevice9 *dev) {
     using namespace Cinema;using namespace CeCinemaRoom;
     if(!s.inRoom || s.phase!=Playing || !s.texture || !s.film)return;
-    // The last projected image stays on the wall while the normal pause menu is open; the film is held with it.
     const CeMuseumFilm::Calls calls=CinemaFilmCalls();
     const CeMuseumFilm::Step step=CeMuseumFilm::Tick(&film,calls,GAME.IsPaused(),CinemaClock());
     if(step==CeMuseumFilm::kEnded) { CinemaClose(Finished);return; }
@@ -503,7 +503,8 @@ void CinemaScreen(IDirect3DDevice9 *dev) {
     if(!s.frame)return;
     const float aspect=float(s.bitmapW)/s.bitmapH,box=kScreenHalfW/kScreenHalfH;
     const float wh=aspect>box?kScreenHalfW:kScreenHalfH*aspect,hh=aspect>box?kScreenHalfW/aspect:kScreenHalfH;
-    const float x=CeMuseumWorld::kEntranceX+kScreenX,y=CeMuseumWorld::kEntranceY+kScreenY-.025f,z=kScreenZ;
+    const float x=CeMuseumWorld::kEntranceX+CinemaOffX()+kScreenX;
+    const float y=CeMuseumWorld::kEntranceY+CinemaOffY()+kScreenY-.025f,z=kScreenZ;
     struct FilmVertex {float x,y,z,u,v;};
     const FilmVertex screen[]={{x-wh,y,z-hh,0,0},{x+wh,y,z-hh,1,0},{x-wh,y,z+hh,0,1},{x+wh,y,z+hh,1,1}};
     dev->SetTexture(0,s.texture);dev->SetTextureStageState(0,D3DTSS_COLOROP,D3DTOP_SELECTARG1);

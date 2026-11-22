@@ -34,6 +34,13 @@ void CeMuseumHallClear();
 void CeMuseumHallVisitor(float x, float y);
 extern "C" void PortCeMuseumHallDraw();
 
+// Grand Museum interactive visitor HUD & Atrium Directory quick-jump queries.
+extern "C" bool PortCeMuseumInteractiveAim(void);
+extern "C" bool PortCeMuseumInteractiveCard(float x, float y, float fx, float fy,
+                                            char *title, unsigned titleCap,
+                                            char *line, unsigned lineCap,
+                                            char *note, unsigned noteCap);
+extern "C" bool PortCeMuseumTakeQuickJump(float *worldX, float *worldY, float *yaw);
 
 namespace CeMuseumExhibition { struct Plan; }
 void CeMuseumHallSetExhibition(const CeHallTour& tour, CeHallGround ground,

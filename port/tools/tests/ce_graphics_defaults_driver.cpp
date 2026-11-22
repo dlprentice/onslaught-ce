@@ -20,7 +20,8 @@ int userFile = 1, userFileAsks;	// the profile's own options file: 1 present, 0 
 int quality = -1, qualityCalls;
 std::map<std::string, int> ini;	// the valid lines of this case's ce.ini: key -> value
 std::vector<std::string> written;	// "key=value" of every CE_SettingSet, in order
-int fullModels = -1, terrainDetail = -1, anisoLevel = -1, fullCalls, terrainCalls, anisoCalls;	// what the beyond-retail rows were last asked for (-1: never), and how often
+int unitModels = -1, treeModels = -1, terrainDetail = -1, anisoLevel = -1, waterRes = -1, shadowRes = -1;
+int unitCalls, treeCalls, terrainCalls, anisoCalls, waterCalls, shadowCalls;
 void Check(bool condition, const char *label) { if (!condition) { ++failures; std::cout << "FAIL " << label << '\n'; } }
 }
 bool PortCeLayer() { return layer; }
@@ -42,9 +43,12 @@ extern "C" int CE_SettingSet(const char *key, int value)
     return iniWritable ? 1 : 0;
 }
 // The layer's own refusal (a faithful run) is the only reason a request of the beyond-retail rows fails.
-extern "C" int CE_FullModelsRequest(int value) { ++fullCalls; Check(value == 0 || value == 1, "Full models is asked for 0 or 1"); if (!rowsAccepted) return 0; fullModels = value; return 1; }
+extern "C" int CE_FullUnitModelsRequest(int value) { ++unitCalls; Check(value == 0 || value == 1, "High-detail units is asked for 0 or 1"); if (!rowsAccepted) return 0; unitModels = value; return 1; }
+extern "C" int CE_FullTreeModelsRequest(int value) { ++treeCalls; Check(value == 0 || value == 1, "3D distant trees is asked for 0 or 1"); if (!rowsAccepted) return 0; treeModels = value; return 1; }
 extern "C" int CE_TerrainDetailRequest(int value) { ++terrainCalls; Check(value == 0 || value == 1, "Terrain detail distance is asked for 0 or 1"); if (!rowsAccepted) return 0; terrainDetail = value; return 1; }
 extern "C" int CE_AnisoRequest(int value) { ++anisoCalls; Check(value == 0 || value == 4 || value == 8 || value == 16, "Anisotropic filtering is asked for 0, 4, 8 or 16"); if (!rowsAccepted) return 0; anisoLevel = value; return 1; }
+extern "C" int CE_WaterReflectionRequest(int value) { ++waterCalls; Check(value == 256 || value == 512 || value == 1024, "Water reflections is asked for 256, 512 or 1024"); if (!rowsAccepted) return 0; waterRes = value; return 1; }
+extern "C" int CE_DynamicShadowRequest(int value) { ++shadowCalls; Check(value == 64 || value == 128 || value == 256, "Dynamic shadows is asked for 64, 128 or 256"); if (!rowsAccepted) return 0; shadowRes = value; return 1; }
 void PortSessionLog(PortSessionCategory, bool, const char *, ...) { ++logs; }
 void DisplaySettingChanged() { ++displayChanges; }
 int PortUserFileState(const char *name) { ++userFileAsks; Check(std::string(name) == "defaultoptions.bea", "the profile's own options file is asked for by the game's name"); return userFile; }
@@ -123,9 +127,16 @@ int main(int argc, char **argv)
     if (name == "io-error") openError = EIO;
     if (name == "unclassified") openError = 0;
     if (name == "opt-out" || name == "retail-leftover-opt-out") ini["extra_graphics"] = 0;	// the extras row alone
-    if (name == "rows-saved-off") { ini["full_models"] = 0; ini["terrain_detail_distance"] = 0; ini["anisotropic_filtering"] = 0; }
-    if (name == "rows-saved-on") { ini["full_models"] = 1; ini["terrain_detail_distance"] = 1; ini["anisotropic_filtering"] = 8; }
-    if (name == "rows-one-saved") ini["full_models"] = 0;
+    if (name == "rows-saved-off") {
+        ini["full_unit_models"] = 0; ini["full_tree_models"] = 0; ini["terrain_detail_distance"] = 0;
+        ini["anisotropic_filtering"] = 0; ini["water_reflection_res"] = 256; ini["dynamic_shadow_res"] = 64;
+    }
+    if (name == "rows-saved-on") {
+        ini["full_unit_models"] = 1; ini["full_tree_models"] = 1; ini["terrain_detail_distance"] = 1;
+        ini["anisotropic_filtering"] = 8; ini["water_reflection_res"] = 512; ini["dynamic_shadow_res"] = 128;
+    }
+    if (name == "rows-legacy-on") ini["full_models"] = 1;
+    if (name == "rows-one-saved") ini["full_unit_models"] = 0;
     if (name == "rows-unwritable") iniWritable = false;
     if (name == "rows-refused") rowsAccepted = false;
     if (name == "antialiasing-levels") mode.mUnknown10 = 0x20 | 0x80 | 0x200;	// 2x, 4x and 8x
@@ -145,8 +156,6 @@ int main(int argc, char **argv)
     const bool fresh = !faithful && name != "existing" && name != "existing-saved-on" && name != "existing-saved-off" && name != "permission" &&
                        name != "io-error" && name != "unclassified" && name != "no-observation" && name != "subsequent-existing" &&
                        name != "profile-unknown";
-    // Extra graphical features: a valid ce.ini line is the saved choice; with none only a new profile asks for them. The device decides
-    // whether the request can run; the capability tweak follows the device alone. A faithful run leaves both tweaks as the game made them.
     if (faithful)
         Check(GEFORCE_FX_POWER.mValue == 0 && EXTRA_GEFORCE_FX_FEATURES.mValue == 1, "a faithful run leaves both tweaks at the game's initial values");
     else {
@@ -180,34 +189,42 @@ int main(int argc, char **argv)
         Check(EXTRA_GEFORCE_FX_FEATURES.mValue == (name != "opt-out" && name != "retail-leftover-opt-out" && name != "unsupported"),
               "fresh supported extras default on while saved opt-out and capability refusal win");
         Check((extrasSaved < 0) == (name != "opt-out" && name != "retail-leftover-opt-out"), "only the opt-out cases start with an extra_graphics line");
-        // texture and colour always ask the device to reset; anti-aliasing does too when it was changed
         const int changes = antialiasing.GetNumChoices() > 1 ? 3 : 2;
-        // The beyond-retail rows: a valid line of ce.ini is a saved choice, requested as it stands and never written again; no line asks
-        // for the fresh choice and writes it once (Terrain detail distance: Extended, 1, with the terrain reserve behind it; Full models: Off, 0, one choice below its maximum, the cost of
-        // the maximums being almost all Full models); a refused request writes nothing; an unwritable ce.ini still leaves the session request.
-        const bool fullSaved = name == "rows-saved-off" || name == "rows-saved-on" || name == "rows-one-saved";
+        const bool legacyOn = name == "rows-legacy-on";
+        const bool unitSaved = legacyOn || name == "rows-saved-off" || name == "rows-saved-on" || name == "rows-one-saved";
+        const bool treeSaved = legacyOn || name == "rows-saved-off" || name == "rows-saved-on";
         const bool terrainSaved = name == "rows-saved-off" || name == "rows-saved-on";
         const bool anisoSaved = name == "rows-saved-off" || name == "rows-saved-on";
-        const int wantFull = name == "rows-refused" ? -1 : name == "rows-saved-on" ? 1 : 0;
+        const bool waterSaved = name == "rows-saved-off" || name == "rows-saved-on";
+        const bool shadowSaved = name == "rows-saved-off" || name == "rows-saved-on";
+        const int wantUnit = name == "rows-refused" ? -1 : (name == "rows-saved-off" || name == "rows-one-saved") ? 0 : 1;
+        const int wantTree = name == "rows-refused" ? -1 : (legacyOn || name == "rows-saved-on") ? 1 : 0;
         const int wantTerrain = name == "rows-refused" ? -1 : name == "rows-saved-off" ? 0 : 1;
         const int wantAniso = name == "rows-refused" ? -1 : name == "rows-saved-off" ? 0 : name == "rows-saved-on" ? 8 : 16;
-        // The options file holds none of the beyond-retail rows, so a new profile's choices are written once as well.
+        const int wantWater = name == "rows-refused" ? -1 : name == "rows-saved-off" ? 256 : name == "rows-saved-on" ? 512 : 1024;
+        const int wantShadow = name == "rows-refused" ? -1 : name == "rows-saved-off" ? 64 : name == "rows-saved-on" ? 128 : 256;
         std::vector<std::string> wantWrites;
         if (extrasSaved < 0) wantWrites.push_back("extra_graphics=1");
         if (name != "rows-refused") {
-            if (!fullSaved) wantWrites.push_back("full_models=0");
+            if (!unitSaved) wantWrites.push_back("full_unit_models=1");
+            if (!treeSaved) wantWrites.push_back("full_tree_models=0");
             if (!terrainSaved) wantWrites.push_back("terrain_detail_distance=1");
             if (!anisoSaved) wantWrites.push_back("anisotropic_filtering=16");
+            if (!waterSaved) wantWrites.push_back("water_reflection_res=1024");
+            if (!shadowSaved) wantWrites.push_back("dynamic_shadow_res=256");
         }
-        Check(fullModels == wantFull && terrainDetail == wantTerrain && anisoLevel == wantAniso &&
-              fullCalls == 1 && terrainCalls == 1 && anisoCalls == 1,
-              "a fresh profile asks for Full models, Terrain detail distance and Anisotropic filtering once, at the saved or fresh choice");
+        Check(unitModels == wantUnit && treeModels == wantTree && terrainDetail == wantTerrain &&
+              anisoLevel == wantAniso && waterRes == wantWater && shadowRes == wantShadow &&
+              unitCalls == 1 && treeCalls == 1 && terrainCalls == 1 && anisoCalls == 1 && waterCalls == 1 && shadowCalls == 1,
+              "a fresh profile asks for every beyond-retail quality row once, at the saved or fresh choice");
         Check(written == wantWrites && writes == (int)wantWrites.size(),
               "a fresh profile writes only the rows ce.ini has no valid line for, with the fresh choice");
         Check(displayChanges == changes, "native setters retain reset side effects");
         quality = -9;
         PortCeGraphicsBeginDevice(0x0200u, 0x0101u, true, true);
-        Check(quality == -9 && qualityCalls == 1 && displayChanges == changes && fullCalls == 1 && terrainCalls == 1 && anisoCalls == 1 && writes == (int)wantWrites.size(),
+        Check(quality == -9 && qualityCalls == 1 && displayChanges == changes &&
+              unitCalls == 1 && treeCalls == 1 && terrainCalls == 1 && anisoCalls == 1 && waterCalls == 1 && shadowCalls == 1 &&
+              writes == (int)wantWrites.size(),
               "later device resets do not reapply fresh defaults over a user change");
     } else {
         Check((int)LT.device.MultiSampleType == -1, "existing unreadable unobserved and faithful options keep the device's own anti-aliasing");
@@ -215,14 +232,13 @@ int main(int argc, char **argv)
               RENDERSTATE_DISALLOW_MIPMAPPING.mValue == 1 && USER_TEXTURE_RES_LOSS_SHIFT.mValue == 2 &&
               USER_TEXTURE_ALLOW_32_BIT.mValue == 0 && displayChanges == 0,
               "existing unreadable unobserved and faithful options retain every authored initial visual choice");
-        Check(fullCalls == 0 && terrainCalls == 0 && anisoCalls == 0 && writes == 0,
+        Check(unitCalls == 0 && treeCalls == 0 && terrainCalls == 0 && anisoCalls == 0 && waterCalls == 0 && shadowCalls == 0 && writes == 0,
               "existing unreadable unobserved and faithful options leave the beyond-retail rows and ce.ini alone");
         if (faithful) Check(reads == 0 && writes == 0 && logs == 0, "faithful mode adds no settings or log activity");
     }
     const bool somethingOpened = opened && name != "no-observation";
     Check(userFileAsks == (faithful || !somethingOpened ? 0 : 1),
           "the profile's own file is asked about once, only after a successful open, and never by faithful runs");
-    // What this start asked ce.ini to keep, in order, and the tweaks it left: the test starts the same profile again from these lines.
     for (const std::string &line : written) std::cout << "wrote " << line << '\n';
     std::cout << "state capable=" << GEFORCE_FX_POWER.mValue << " extras=" << EXTRA_GEFORCE_FX_FEATURES.mValue << '\n';
     std::cout << "graphics-defaults " << name << " failures=" << failures << '\n';

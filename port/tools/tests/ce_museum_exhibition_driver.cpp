@@ -2036,6 +2036,103 @@ void TestCinemaStream() {
     // The stream is only worth its length if it reached every kind of event.
     CHECK(swallowed > 50 && passed > 50 && selects > 20 && plays > 20 && stops > 5 && exits > 5);
 }
+
+// Grand Outdoor/Indoor Multi-Wing Museum Complex (M1-M4 RoomGraph walkability, portals,
+// obstacles, sightlines, and Return Arch checks).
+void TestGrandComplex() {
+    namespace G = Ex::Grand;
+    const G::RoomGraph g = G::MakeRoomGraph();
+    CHECK(g.obstacleCount > 30u && g.obstacleCount <= unsigned(G::kMaxObstacles));
+
+    // 1. All 8 rooms are well-formed, non-overlapping, and stay within kCeMuseumHallRadius (90 m).
+    for (unsigned r = 0; r < G::kRoomCount; ++r) {
+        const G::RoomBounds &b = g.rooms[r];
+        CHECK(b.maxX > b.minX + 10.0f && b.maxY > b.minY + 10.0f);
+        CHECK((r == G::kRoomCourtyard) == b.openSky);
+        const float corners[4][2] = {{b.minX, b.minY}, {b.maxX, b.minY}, {b.minX, b.maxY}, {b.maxX, b.maxY}};
+        for (unsigned c = 0; c < 4; ++c)
+            CHECK(std::hypot(corners[c][0], corners[c][1]) < 86.0f);
+        for (unsigned o = r + 1; o < G::kRoomCount; ++o) {
+            const G::RoomBounds &ob = g.rooms[o];
+            const bool overlapX = b.minX < ob.maxX - 1e-3f && ob.minX < b.maxX - 1e-3f;
+            const bool overlapY = b.minY < ob.maxY - 1e-3f && ob.minY < b.maxY - 1e-3f;
+            CHECK(!(overlapX && overlapY));
+        }
+    }
+
+    // 2. Arrival point is open in Courtyard, looking north sees Hero Monument clearly, looking south faces Return Arch.
+    CHECK(G::RoomAt(g, Ex::Vec2{0.0f, 0.0f}) == G::kRoomCourtyard);
+    CHECK(G::WalkAt(g, Ex::Vec2{0.0f, 0.0f}) == Ex::kWalkOpen);
+    CHECK(G::SightClear(g, Ex::Vec3{0.0f, 0.0f, 1.7f}, Ex::Vec3{0.0f, 10.5f, 3.0f}));
+    CHECK(G::FacesExit(Ex::Vec2{0.0f, 0.0f}, Ex::Vec2{0.0f, -1.0f}, false));
+    CHECK(!G::FacesExit(Ex::Vec2{0.0f, 0.0f}, Ex::Vec2{0.0f, 1.0f}, true));
+    CHECK(!G::FacesExit(Ex::Vec2{0.0f, 25.0f}, Ex::Vec2{0.0f, -1.0f}, false));
+
+    // 3. Hero Aquila plinth, reflecting pools, lectern, skylights, and audio kiosks block walking; apron around Hero is walkable.
+    CHECK(G::WalkAt(g, Ex::Vec2{0.0f, 10.5f}) == Ex::kWalkBlocked);
+    CHECK(G::WalkAt(g, Ex::Vec2{-10.0f, 10.0f}) == Ex::kWalkBlocked);
+    CHECK(G::WalkAt(g, Ex::Vec2{10.0f, 10.0f}) == Ex::kWalkBlocked);
+    CHECK(G::WalkAt(g, Ex::Vec2{0.0f, 31.5f}) == Ex::kWalkBlocked);
+    CHECK(G::PathClear(g, Ex::Vec2{0.0f, 0.0f}, Ex::Vec2{4.5f, 4.0f}));
+    CHECK(G::PathClear(g, Ex::Vec2{4.5f, 4.0f}, Ex::Vec2{4.5f, 16.5f}));
+    CHECK(G::PathClear(g, Ex::Vec2{4.5f, 16.5f}, Ex::Vec2{0.0f, 25.0f}));
+    // Walking straight through the Hero plinth is rejected.
+    CHECK(!G::PathClear(g, Ex::Vec2{0.0f, 0.0f}, Ex::Vec2{0.0f, 25.0f}));
+
+    // 4. Every portal connects its rooms cleanly (centre is walkable/throat, jambs solid).
+    for (unsigned p = 0; p < G::kPortalCount; ++p) {
+        const G::Portal &pt = g.portals[p];
+        CHECK(pt.hi - pt.lo >= 4.9f && pt.clearHeight >= 4.5f);
+        const float mid = 0.5f * (pt.lo + pt.hi);
+        if (pt.vertical) {
+            CHECK(G::WalkAt(g, Ex::Vec2{pt.line, mid}) == Ex::kWalkThroat);
+            CHECK(G::PathClear(g, Ex::Vec2{pt.line - 2.0f, mid}, Ex::Vec2{pt.line + 2.0f, mid}));
+            CHECK(G::WalkAt(g, Ex::Vec2{pt.line, pt.lo - 1.2f}) == Ex::kWalkBlocked);
+            CHECK(G::WalkAt(g, Ex::Vec2{pt.line, pt.hi + 1.2f}) == Ex::kWalkBlocked);
+        } else {
+            CHECK(G::WalkAt(g, Ex::Vec2{mid, pt.line}) == Ex::kWalkThroat);
+            CHECK(G::PathClear(g, Ex::Vec2{mid, pt.line - 2.0f}, Ex::Vec2{mid, pt.line + 2.0f}));
+            CHECK(G::WalkAt(g, Ex::Vec2{pt.lo - 1.2f, pt.line}) == Ex::kWalkBlocked);
+            CHECK(G::WalkAt(g, Ex::Vec2{pt.hi + 1.2f, pt.line}) == Ex::kWalkBlocked);
+        }
+    }
+
+    // 5. Continuous walkable route from Courtyard -> Atrium -> EVERY wing -> Screening Room.
+    // Atrium compass centre (0, 36) is open and reachable from Atrium south (0, 25) via west/east of lectern.
+    CHECK(G::PathClear(g, Ex::Vec2{0.0f, 25.0f}, Ex::Vec2{-3.5f, 31.5f}));
+    CHECK(G::PathClear(g, Ex::Vec2{-3.5f, 31.5f}, Ex::Vec2{0.0f, 36.0f}));
+    // Atrium -> Forseti Wing (all 6 native bay pads reachable)
+    CHECK(G::PathClear(g, Ex::Vec2{0.0f, 36.0f}, Ex::Vec2{-12.0f, 41.0f}));
+    CHECK(G::PathClear(g, Ex::Vec2{-12.0f, 41.0f}, Ex::Vec2{-36.5f, 41.0f}));
+    for (unsigned i = 0; i < G::kNativeBayCount; ++i) {
+        const G::NativeBaySpot &nb = g.nativeBays[i];
+        CHECK(G::WalkAt(g, Ex::Vec2{nb.x, nb.y}) == Ex::kWalkBlocked);
+        CHECK(G::WalkAt(g, Ex::Vec2{nb.padX, nb.padY}) == Ex::kWalkOpen);
+        CHECK(G::PathClear(g, Ex::Vec2{nb.padX, 41.0f}, Ex::Vec2{nb.padX, nb.padY}));
+    }
+    // Atrium -> Muspell Wing
+    CHECK(G::PathClear(g, Ex::Vec2{0.0f, 36.0f}, Ex::Vec2{12.0f, 41.0f}));
+    CHECK(G::PathClear(g, Ex::Vec2{12.0f, 41.0f}, Ex::Vec2{38.0f, 41.0f}));
+    // Atrium -> Aviation & Naval Hangar
+    CHECK(G::PathClear(g, Ex::Vec2{0.0f, 36.0f}, Ex::Vec2{0.0f, 70.0f}));
+    // Naval basin blocks walking; west & centre hangar aisle stay clear.
+    CHECK(G::WalkAt(g, Ex::Vec2{13.0f, 65.0f}) == Ex::kWalkBlocked);
+    CHECK(G::WalkAt(g, Ex::Vec2{-8.0f, 65.0f}) == Ex::kWalkOpen);
+    // Atrium -> Early Designs Vault
+    CHECK(G::PathClear(g, Ex::Vec2{0.0f, 25.0f}, Ex::Vec2{-20.0f, 24.0f}));
+    CHECK(G::PathClear(g, Ex::Vec2{-20.0f, 24.0f}, Ex::Vec2{-36.0f, 24.0f}));
+    // Atrium -> Concept Art Gallery -> Screening Room -> Cinema aisle
+    CHECK(G::PathClear(g, Ex::Vec2{0.0f, 25.0f}, Ex::Vec2{20.0f, 24.0f}));
+    CHECK(G::PathClear(g, Ex::Vec2{20.0f, 24.0f}, Ex::Vec2{36.0f, 24.0f}));
+    CHECK(G::PathClear(g, Ex::Vec2{36.0f, 24.0f}, Ex::Vec2{36.0f, 14.5f}));
+    CHECK(G::PathClear(g, Ex::Vec2{36.0f, 14.5f}, Ex::Vec2{42.0f, 14.5f}));
+    CHECK(G::PathClear(g, Ex::Vec2{42.0f, 14.5f}, Ex::Vec2{42.0f, 19.0f}));
+    CHECK(G::PathClear(g, Ex::Vec2{42.0f, 19.0f}, Ex::Vec2{47.5f, 19.0f}));
+    // Outer void and NaN are always blocked.
+    CHECK(G::WalkAt(g, Ex::Vec2{0.0f, -12.0f}) == Ex::kWalkBlocked);
+    CHECK(G::WalkAt(g, Ex::Vec2{60.0f, 15.0f}) == Ex::kWalkBlocked);
+    CHECK(G::WalkAt(g, Ex::Vec2{std::numeric_limits<float>::quiet_NaN(), 0.0f}) == Ex::kWalkBlocked);
+}
 } // namespace
 
 int main(int argc, char **argv) {
@@ -2088,6 +2185,7 @@ int main(int argc, char **argv) {
         {"cinema-edges", TestCinemaEdges},
         {"cinema-stream", TestCinemaStream},
         {"console", TestConsole},
+        {"grand-complex", TestGrandComplex},
     };
     for (unsigned i = 0; i < sizeof groups / sizeof groups[0]; ++i) {
         const int checks = gChecks, failures = gFailures;

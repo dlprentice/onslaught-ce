@@ -9,7 +9,7 @@
  // store (004dcce9). The LOD test reads mMesh, so the lower LOD is read again after the comparisons (004dcdb3).
  void CRTMesh::Render(DWORD flags)	// FUNCTION: 0x004dcba0
  {
-+	const bool ce_full_models = CeModelQualityEnabled();
++	const bool ce_full_models = CeUnitModelsQualityEnabled();
  	// move to the head of this frame's list
  	if (mNextRendered)
  		mNextRendered->mPrevRendered = mPrevRendered;
@@ -58,7 +58,7 @@
  //******************************************************************************************
  void CRTMesh::RenderImposter()	// FUNCTION: 0x004dcea0
  {
-+	if (CeModelQualityEnabled()) return;
++	if (CeUnitModelsQualityEnabled()) return;
  	FVector	pos = ENGINE.GetCamera()->GetPos();
  	float	zoom = ENGINE.GetCamera()->GetZoom();
  	if (MESH_LOD_IGNORE_ZOOM)
@@ -81,7 +81,7 @@
  //******************************************************************************************
  void CRTTree::RenderImposter()	// FUNCTION: 0x004dd850
  {
-+	if (CeModelQualityEnabled()) return;
++	if (CeTreeModelsQualityEnabled()) return;
  	FVector	cam = ENGINE.GetCamera()->GetPos();
  	FVector	pos;
  	pos = mThing->GetRenderPos();
@@ -101,7 +101,7 @@
  	BOOL	falling = (((CTree *)mThing)->mFalling != NULL);
  	BOOL	close = (beyond <= 0);
 -	if ((!close && !falling) || FORCE_OBJECT_IMPOSTERS)
-+	if (!CeModelQualityEnabled() && ((!close && !falling) || FORCE_OBJECT_IMPOSTERS))
++	if (!CeTreeModelsQualityEnabled() && ((!close && !falling) || FORCE_OBJECT_IMPOSTERS))
  		return;
  
  	FMatrix	ori;
@@ -125,7 +125,7 @@
  						{
  							float	td = TREE_MESH_DISTANCE + 10.f;
 -							if (d2 < td * td)
-+							if (CeModelQualityEnabled() || (d2 < td * td))
++							if (CeTreeModelsQualityEnabled() || (d2 < td * td))
  							{
  								while (entry)
  								{
@@ -141,7 +141,7 @@
  	if (!mVBuf)
  		Build();
 +	// Keep lazy buffers and HideTree ownership current for a later live switch back.
-+	if (CeModelQualityEnabled()) return;
++	if (CeTreeModelsQualityEnabled()) return;
 +
  
  	RENDERINFO.SetWorld(ZERO_FVECTOR, ID_FMATRIX);

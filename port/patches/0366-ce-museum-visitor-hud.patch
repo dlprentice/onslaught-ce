@@ -1,0 +1,46 @@
+--- a/DXEngine.cpp
++++ b/DXEngine.cpp
+@@ -43,6 +43,9 @@
+ #include	"profile.h"
+ #include	"ParticleManager.h"
+ #include	"ParticleSet.h"
++#ifdef CE_VERSION
++extern "C" bool PortCeMuseumVisitActive(void);
++#endif
+ #include	"Line.h"
+ #include	"UMTexture.h"
+ #include	"DXHud.h"
+@@ -644,6 +647,11 @@
+ 	if(!CLIPARAMS.mKillHUD)
+ #endif
+ 	{
++#ifdef CE_VERSION
++		// patch 0366: Clean Visitor Mode hides walker gun barrels and cockpit bezel during Museum visits
++		if (PortCeMuseumVisitActive())
++			player = NULL;
++#endif
+ 		if (player)
+ 		{
+ 			CBattleEngine *be = player->GetBattleEngine();
+--- a/Hud.cpp
++++ b/Hud.cpp
+@@ -2170,4 +2170,9 @@
+ 	mSafeRight = mSafeX + mSafeWidth;
+ 
++#ifdef CE_VERSION
++	// patch 0366: Clean Visitor Mode hides combat reticle, compass ring, and empty radar during Museum visits
++	if (PortCeMuseumVisitActive())
++		return;
++#endif
+ 	SetOverlayRenderStates();
+ 	RENDERINFO.SRS(D3DRS_ALPHATESTENABLE, FALSE);
+@@ -2343,4 +2348,9 @@
+ 	SetOverlayRenderStates();
+ 	SetAlphaBlend();
++#ifdef CE_VERSION
++	// patch 0366: keep museum placards above while hiding the combat battle-line badge in Museum visits
++	if (PortCeMuseumVisitActive())
++		return;
++#endif
+ 	CSPRITERENDERER::DrawSprite((HUD.mViewportRight - 121.f - HUD_OFFSET_X), y, 0.001f, mCircleDarkener, (ESpriteAlignment)2, SPT_NONE, 1.f, 0.f, 0x7fffffff, 1.f, 1.f, 0.f, 1.f, 0.f, 1.f);
+ 

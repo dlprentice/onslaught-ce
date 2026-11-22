@@ -10,8 +10,10 @@ extern "C" int CE_SettingGetBool(const char *key, int fallback);
 
 namespace {
 int admitted = -1;
-int requested = -1;
-bool active = false;
+int unitRequested = -1;
+int treeRequested = -1;
+bool unitActive = false;
+bool treeActive = false;
 bool diagnostics = false;
 unsigned frames = 0, reports = 0, samples = 0;
 unsigned counts[CE_MODEL_EVENTS] = {};
@@ -39,9 +41,19 @@ bool Allowed()
     return admitted != 0;
 }
 
-void InitialChoice()
+void InitialChoices()
 {
-    if (requested < 0) requested = CE_SettingGetBool("full_models", 0) ? 1 : 0;
+    if (unitRequested >= 0 && treeRequested >= 0) return;
+    const int savedUnit = unitRequested < 0 ? CE_SettingGetBool("full_unit_models", -1) : unitRequested;
+    const int savedTree = treeRequested < 0 ? CE_SettingGetBool("full_tree_models", -1) : treeRequested;
+    // Backward compatibility: honor legacy full_models=1 as enabling both when neither split key is set.
+    const int savedLegacy = (unitRequested < 0 && treeRequested < 0 && savedUnit < 0 && savedTree < 0)
+        ? CE_SettingGetBool("full_models", -1)
+        : -1;
+    if (unitRequested < 0)
+        unitRequested = savedUnit >= 0 ? (savedUnit ? 1 : 0) : 1;
+    if (treeRequested < 0)
+        treeRequested = savedTree >= 0 ? (savedTree ? 1 : 0) : (savedLegacy == 1 ? 1 : 0);
 }
 
 void Report()
@@ -62,11 +74,12 @@ void Report()
     const unsigned p95 = intervalCount ? (intervalCount*95+99)/100-1 : 0;
     const unsigned p99 = intervalCount ? (intervalCount*99+99)/100-1 : 0;
     PortSessionLog(PORT_SESSION_VIDEO, false,
-        "full-models active=%d frame=%u samples=%u mesh=%u tree=%u impostor=%u "
+        "full-models active=%d units=%d trees=%d frame=%u samples=%u mesh=%u tree=%u impostor=%u "
         "tree_impostor=%u tree_batch=%u reduced_mesh=%u dt_samples=%u "
         "median_us=%llu p95_us=%llu p99_us=%llu max_us=%llu "
         "(renderer submissions; whole-render intervals include presentation and scheduling)",
-        active ? 1 : 0, frames, samples, counts[CE_MODEL_MESH], counts[CE_MODEL_TREE],
+        (unitActive && treeActive) ? 1 : 0, unitActive ? 1 : 0, treeActive ? 1 : 0,
+        frames, samples, counts[CE_MODEL_MESH], counts[CE_MODEL_TREE],
         counts[CE_MODEL_IMPOSTOR], counts[CE_MODEL_TREE_IMPOSTOR], counts[CE_MODEL_TREE_BATCH],
         counts[CE_MODEL_REDUCED_MESH], intervalCount,
         (unsigned long long)(intervalCount ? ordered[median]/1000 : 0),
@@ -80,45 +93,87 @@ void Report()
 }
 }
 
+extern "C" int CE_FullUnitModelsChoice()
+{
+    if (!Allowed()) return 0;
+    InitialChoices();
+    return unitRequested;
+}
+
+extern "C" int CE_FullUnitModelsRequest(int value)
+{
+    if ((value != 0 && value != 1) || !Allowed()) return 0;
+    unitRequested = value;
+    return 1;
+}
+
+extern "C" int CE_FullTreeModelsChoice()
+{
+    if (!Allowed()) return 0;
+    InitialChoices();
+    return treeRequested;
+}
+
+extern "C" int CE_FullTreeModelsRequest(int value)
+{
+    if ((value != 0 && value != 1) || !Allowed()) return 0;
+    treeRequested = value;
+    return 1;
+}
+
 extern "C" int CE_FullModelsChoice()
 {
     if (!Allowed()) return 0;
-    InitialChoice();
-    return requested;
+    InitialChoices();
+    return (unitRequested == 1 && treeRequested == 1) ? 1 : 0;
 }
 
 extern "C" int CE_FullModelsRequest(int value)
 {
     if ((value != 0 && value != 1) || !Allowed()) return 0;
-    requested = value;
+    unitRequested = value;
+    treeRequested = value;
     return 1;
 }
 
 void CeModelQualityBeginFrame()
 {
     if (!Allowed()) return;
-    InitialChoice();
-    const bool next = requested == 1;
+    InitialChoices();
+    const bool nextUnits = unitRequested == 1;
+    const bool nextTrees = treeRequested == 1;
     if (diagnostics && reports < 64) {
         const Uint64 tick = SDL_GetTicksNS();
         if (previousTick && tick >= previousTick && intervalCount < 120)
             intervals[intervalCount++] = tick-previousTick;
         previousTick = tick;
     }
-    if (next != active || samples >= 120) Report();
-    if (next != active) {
-        active = next;
+    if (nextUnits != unitActive || nextTrees != treeActive || samples >= 120) Report();
+    if (nextUnits != unitActive || nextTrees != treeActive) {
+        unitActive = nextUnits;
+        treeActive = nextTrees;
         PortSessionLog(PORT_SESSION_VIDEO, false,
-            "full-models active=%d at frame boundary; visibility and fog unchanged", active ? 1 : 0);
+            "full-models units=%d trees=%d at frame boundary; visibility and fog unchanged",
+            unitActive ? 1 : 0, treeActive ? 1 : 0);
     }
     if (frames != UINT_MAX) ++frames;
     if (diagnostics && samples != UINT_MAX) ++samples;
 }
 
-bool CeModelQualityEnabled()
+bool CeUnitModelsQualityEnabled()
 {
     // The render hooks only read this snapshot, with no filesystem or environment access.
-    return active;
+    return unitActive;
+}
+
+bool CeTreeModelsQualityEnabled()
+{
+    return treeActive;
+}
+
+bool CeModelQualityEnabled()
+{
+    return unitActive && treeActive;
 }
 
 void CeModelQualityCount(CeModelQualityEvent event)

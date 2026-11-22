@@ -32,6 +32,7 @@ class QualityOptions(unittest.TestCase):
             for path in (PORT / "game/ce_quality_options.cpp", PORT / "patches/0211-ce-video-quality.patch",
                          PORT / "platform/common/ce.cpp", PORT / "platform/common/model_quality.cpp",
                          PORT / "platform/common/terrain_quality.cpp", PORT / "platform/common/aniso_quality.cpp",
+                         PORT / "platform/common/reflection_quality.cpp",
                          PORT / "tools/tests/ce_quality_options_driver.cpp",
                          PORT / "tools/ce_quality_options_tests.py", ROOT / "src/MenuItem.cpp", ROOT / "src/PauseMenu.cpp")
         }}]
@@ -80,7 +81,7 @@ class QualityOptions(unittest.TestCase):
                '-DQUALITY_SOURCE="' + str(source or PORT / "game/ce_quality_options.cpp") + '"',
                str(PORT / "tools/tests/ce_quality_options_driver.cpp"), str(PORT / "platform/common/ce.cpp"),
                str(PORT / "platform/common/model_quality.cpp"), str(PORT / "platform/common/terrain_quality.cpp"),
-               str(PORT / "platform/common/aniso_quality.cpp"),
+               str(PORT / "platform/common/aniso_quality.cpp"), str(PORT / "platform/common/reflection_quality.cpp"),
                "-o", str(binary)]
         if public:
             cmd.insert(1, '-DCE_VERSION="quality-test"')
@@ -96,8 +97,8 @@ class QualityOptions(unittest.TestCase):
         folder = Path(tempfile.mkdtemp(prefix="profile-", dir=self.out))
         if scenario != "fresh":
             folder.joinpath("ce.ini").write_text(
-                "unknown=keep\nfull_models=1\nterrain_detail_distance=1\nanisotropic_filtering=8\n" if scenario in ("stored", "fenced", "menus-off") else
-                "unknown=keep\nfull_models=0\nterrain_detail_distance=0\nanisotropic_filtering=4\n")
+                "unknown=keep\nfull_unit_models=1\nfull_tree_models=1\nterrain_detail_distance=1\nanisotropic_filtering=8\nwater_reflection_res=512\ndynamic_shadow_res=128\n" if scenario in ("stored", "fenced", "menus-off") else
+                "unknown=keep\nfull_unit_models=0\nfull_tree_models=0\nterrain_detail_distance=0\nanisotropic_filtering=4\nwater_reflection_res=256\ndynamic_shadow_res=64\n")
         environment = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(folder), "BEA_USER_DIR": str(folder)}
         environment.update(env or {})
         run = subprocess.run([str(binary or self.binaries[public]), scenario], env=environment, capture_output=True, timeout=15)
@@ -142,11 +143,11 @@ class QualityOptions(unittest.TestCase):
         mutations = [
             ("immediate-choice", "CMenuMenuItem((EPCText)0, 3, true)", "CMenuMenuItem((EPCText)0, 3, false)", "keyboard"),
             ("rollback-unsaved", "if (!saved) PortCeSaveFailedNotice();",
-             "if (!saved) { if (kind == FullModels) CE_FullModelsRequest(!value); else if (kind == TerrainDistance) CE_TerrainDetailRequest(!value); else CE_AnisoRequest(4); PortCeSaveFailedNotice(); }", "save-fails"),
+             "if (!saved) { if (kind == UnitModels) CE_FullUnitModelsRequest(!value); else if (kind == TreeModels) CE_FullTreeModelsRequest(!value); else if (kind == TerrainDistance) CE_TerrainDetailRequest(!value); else if (kind == AnisoFiltering) CE_AnisoRequest(4); else if (kind == WaterReflections) CE_WaterReflectionRequest(256); else CE_DynamicShadowRequest(64); PortCeSaveFailedNotice(); }", "save-fails"),
             ("lose-reopen-notice", "kind(value)\n        {\n            Refresh();",
              "kind(value)\n        {\n            results[kind] = QualitySaved; Refresh();", "save-fails"),
-            ("wrong-key", 'const char *key = kind == FullModels ? "full_models" :',
-             'const char *key = kind == FullModels ? "terrain_detail_distance" :', "one-row"),
+            ("wrong-key", 'const char *key = kind == UnitModels ? "full_unit_models" :',
+             'const char *key = kind == UnitModels ? "terrain_detail_distance" :', "one-row"),
             ("lose-unsaved-retry", "if (!changed && results[kind] == QualitySessionOnly)",
              "if (changed && results[kind] == QualitySessionOnly)", "retry-later"),
             ("hide-fallback", "CE_TerrainDetailStatus() == TerrainResourceFallback)", "false)", "wording"),
@@ -156,15 +157,15 @@ class QualityOptions(unittest.TestCase):
              "CE_TerrainDetailChoice() == 1 && CE_TerrainDetailStatus()", "wording"),
             ("drop-unsaved-with-fallback", 'L"Extended (using Normal, not saved)" : L"Extended (using Normal)"',
              'L"Extended (using Normal)" : L"Extended (using Normal)"', "wording-unsaved"),
-            # The 0.1.13 form: the state in the label, a space after the colon, Off and On.
-            ("label-carries-state", 'if (kind == FullModels) return const_cast<WCHAR *>(L"Full models:");',
-             'if (kind == FullModels) return const_cast<WCHAR *>(results[kind] == QualityRefused ? L"Full models (not applied): " : L"Full models: ");', "invalid"),
+            ("label-carries-state", 'if (kind == UnitModels) return const_cast<WCHAR *>(L"High-detail units:");',
+             'if (kind == UnitModels) return const_cast<WCHAR *>(results[kind] == QualityRefused ? L"High-detail units (not applied): " : L"High-detail units: ");', "invalid"),
             ("off-on-values", '(unsaved ? L"Yes (not saved)" : L"Yes") : (unsaved ? L"No (not saved)" : L"No")',
              '(unsaved ? L"On (not saved)" : L"On") : (unsaved ? L"Off (not saved)" : L"Off")', "defaults"),
             ("refusal-unmarked", "if (results[kind] == QualityRefused && value == GetValue())", "if (false)", "invalid"),
             ("refusal-on-every-choice", "if (results[kind] == QualityRefused && value == GetValue())", "if (results[kind] == QualityRefused)", "invalid"),
             ("rows-untracked", "Refresh();\n            Track(this, true);", "Refresh();", "defaults"),
             ("rows-never-forgotten", "~QualityItem() override { Track(this, false); }", "~QualityItem() override {}", "defaults"),
+            ("hide-tier-fallback", "if (isCurrent && allocated > 0 && requested > 0 && allocated < requested)", "if (false && isCurrent && allocated > 0 && requested > 0 && allocated < requested)", "wording"),
         ]
         for name, old, new, scenario in mutations:
             with self.subTest(mutant=name):

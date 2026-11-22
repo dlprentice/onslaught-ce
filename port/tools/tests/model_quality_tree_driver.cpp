@@ -26,6 +26,7 @@ static BOOL FORCE_OBJECT_IMPOSTERS = FALSE;
 static int renders, lastAlpha, lastFrame, counted, otherCounts;
 static bool fullModels;
 
+bool CeTreeModelsQualityEnabled() { return fullModels; }
 bool CeModelQualityEnabled() { return fullModels; }
 void CeModelQualityCount(CeModelQualityEvent event)
 {

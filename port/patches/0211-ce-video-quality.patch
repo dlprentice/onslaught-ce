@@ -1,6 +1,6 @@
 --- a/PauseMenu.cpp
 +++ b/PauseMenu.cpp
-@@ -593,6 +593,19 @@
+@@ -593,6 +593,25 @@
  		list->AddItem(PortCeDisplayModeItem());
  	}
  #endif
@@ -9,12 +9,18 @@
 +	extern bool PortCeQualityOptionsAvailable();
 +	if (PortCeQualityOptionsAvailable())
 +	{
-+		extern CMenuItem *PortCeFullModelsItem();
++		extern CMenuItem *PortCeUnitModelsItem();
++		extern CMenuItem *PortCeTreeModelsItem();
 +		extern CMenuItem *PortCeTerrainDetailItem();
 +		extern CMenuItem *PortCeAnisoFilteringItem();
-+		list->AddItem(PortCeFullModelsItem());
++		extern CMenuItem *PortCeWaterReflectionItem();
++		extern CMenuItem *PortCeDynamicShadowItem();
++		list->AddItem(PortCeUnitModelsItem());
++		list->AddItem(PortCeTreeModelsItem());
 +		list->AddItem(PortCeTerrainDetailItem());
 +		list->AddItem(PortCeAnisoFilteringItem());
++		list->AddItem(PortCeWaterReflectionItem());
++		list->AddItem(PortCeDynamicShadowItem());
 +	}
 +#endif
  #line 1416

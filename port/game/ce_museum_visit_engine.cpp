@@ -112,9 +112,10 @@ extern "C" void PortCeMuseumAuthoredInstall() {
     MAP.mGridShiftX=MAP.mGridShiftY=CeMuseumWorld::kGridShift;
     MAP.mHeightScale=1.0f; MAP.mWaterLevel=CeMuseumWorld::kWaterBelow;
     std::memset(&MAP.mHFP,0,sizeof(MAP.mHFP));
-    MAP.mHFP.Sun=0xffb0aaa1; MAP.mHFP.AntiSun=0xff76838c;
-    MAP.mHFP.Ambient=0xff686c72; MAP.mHFP.Fog=CeMuseumWorld::kFog;
-    MAP.mHFP.SunPosX=-48.0f; MAP.mHFP.SunPosY=-80.0f; MAP.mHFP.SunPosZ=-120.0f;
+    // Crisp sunlit coastal daylight (warm sun key, sky-blue fill, balanced neutral ambient)
+    MAP.mHFP.Sun=0xfff6ecda; MAP.mHFP.AntiSun=0xff9ab8d4;
+    MAP.mHFP.Ambient=0xff88909a; MAP.mHFP.Fog=CeMuseumWorld::kGrandSkyHorizon;
+    MAP.mHFP.SunPosX=56.0f; MAP.mHFP.SunPosY=48.0f; MAP.mHFP.SunPosZ=-95.0f;
     MAP.Unknown47e8e0();
     MAP.mMapNumber=CeMuseumWorld::kMap; MAP.mGeometryLoaded=TRUE; MAP.mPropertiesLoaded=TRUE;
     MAP.InitQuickCollisionMap(); gAuthoredMap=true;
@@ -392,26 +393,10 @@ bool GalleryGround(float x, float y, float *z) {
     return std::isfinite(*z);
 }
 
-// The collection occupies fixed, CE-authored plinths on a grid owned by the room.
-static bool ExhibitionGround(const CeMuseumExhibition::Plan& plan, unsigned input,
-                             float x, float y, float* z) {
-    const CeMuseumExhibition::Bay* bay = CeMuseumExhibitionHost::InputBay(plan, input);
-    if (!bay || !z || !GalleryGround(x, y, z)) return false;
-    *z -= bay->model.z;   // on the plinth's top: the native world counts Z down
-    return true;
-}
-
 // A model aircraft's display: how far it climbs and banks (radians), and what its lowest point keeps above the plinth. Level and
 // banked about 29 degrees, its upper side leans toward the pad by about that much (a climb would tip its belly to the visitor
-// on a three-quarter heading, undoing the bank), and the low post keeps it a little under the eye.
-const float kClimb = 0.0f, kBank = 0.50f, kPostClear = 0.15f;
-
-// A machine's heading on its plinth: its front (the model's +Y, which a yaw of y turns to (-sin y, cos y)) half way between
-// the way back to the entrance and the bay's viewing pad, so the visitor on the pad sees it three-quarters on.
-static float ExhibitYaw(const CeMuseumExhibition::Bay &bay) {
-    const float frontX = -bay.facing.x, frontY = -bay.facing.y - 1.0f;
-    return std::atan2(-frontX, frontY);
-}
+// on a three-quarter heading, undoing the bank), and the flight post keeps both wingtips cleanly above the marble plinth.
+const float kClimb = 0.0f, kBank = 0.50f, kPostClear = 0.25f;
 
 // The hall for the selected machines. On failure *why names the cause for the log and *planner is set when the
 // exhibition planner itself refused the machines (the player is told the hall has no room, not that files are missing).
@@ -444,14 +429,17 @@ static bool Layout(SelectedExhibit *selected, unsigned *count, CeMuseumVisit::Ro
                       CeMuseumExhibition::ReasonText(exhibition->reason));
         return false;
     }
-    // An aircraft stands on a post above its plinth, high enough that its nose, tail and lowered wing clear the plinth once it
-    // is turned (Layout's climb and bank below).
+    // An aircraft stands on a post above its plinth, high enough that its nose, tail and lowered wingtip clear the plinth
+    // once banked (using the major horizontal axis so whichever axis is wingspan never clips the plinth).
+    float postLifts[CeMuseumExhibition::kMaxBays] = {};
     for (unsigned n = 0; n < *count; ++n) {
         if (!selected[n].flies) continue;
-        const float length = selected[n].footprint[0] > selected[n].footprint[1] ? selected[n].footprint[0] : selected[n].footprint[1];
-        const float span = selected[n].footprint[0] < selected[n].footprint[1] ? selected[n].footprint[0] : selected[n].footprint[1];
-        const float lift = 0.5f * length * std::sin(kClimb) + 0.5f * span * std::sin(kBank) + kPostClear;
-        if (!CeMuseumExhibitionHost::RaiseOnPost(*exhibition, n, lift)) selected[n].flies = false;
+        const float major = selected[n].footprint[0] > selected[n].footprint[1] ? selected[n].footprint[0] : selected[n].footprint[1];
+        const float lift = 0.5f * major * std::sin(kBank) + kPostClear;
+        if (CeMuseumExhibitionHost::RaiseOnPost(*exhibition, n, lift))
+            postLifts[n] = lift;
+        else
+            selected[n].flies = false;
     }
 
     std::snprintf(why, whySize, "the authored museum map is not installed");
@@ -460,25 +448,26 @@ static bool Layout(SelectedExhibit *selected, unsigned *count, CeMuseumVisit::Ro
     site.visitor[0]=CeMuseumWorld::kEntranceX; site.visitor[1]=CeMuseumWorld::kEntranceY;
     std::snprintf(why, whySize, "no floor at the entrance %.0f,%.0f", site.visitor[0], site.visitor[1]);
     if (!GalleryGround(site.visitor[0],site.visitor[1],&site.visitor[2])) return false;
+    const CeMuseumExhibition::Grand::RoomGraph grandGraph = CeMuseumExhibition::Grand::MakeRoomGraph();
     for (unsigned n=0;n<*count;++n) {
         float *centre=site.centres[n];
         std::snprintf(why, whySize, "no plinth or floor for machine %u (%s)", n + 1, selected[n].name);
-        if (!CeMuseumExhibitionHost::Plinth(*exhibition, n,*count,&centre[0],&centre[1]) ||
-            !ExhibitionGround(*exhibition, n, centre[0],centre[1],&centre[2])) return false;
         SelectedExhibit &item=selected[n];
-        const CeMuseumExhibition::Bay &bay=*CeMuseumExhibitionHost::InputBay(*exhibition, n);
-        item.yaw=ExhibitYaw(bay);
+        const CeMuseumExhibition::Grand::NativeBaySpot &nb = grandGraph.nativeBays[n];
+        const CeHallPoint worldBay = CeMuseumExhibitionHost::World({nb.x, nb.y});
+        centre[0] = worldBay.x;
+        centre[1] = worldBay.y;
+        if (!GalleryGround(centre[0], centre[1], &centre[2])) return false;
+        centre[2] -= (nb.topZ + postLifts[n]);
+        // Face into the Forseti Wing central nave angled slightly East toward incoming visitors.
+        item.yaw = std::atan2(-(nb.facingX + 0.45f), -nb.facingY);
         float pitch=0.0f, roll=0.0f;
-        if (item.flies && bay.side) {
-            // Banked so its upper side turns toward the visitor on the pad: the roll whose model up
-            // (the matrix's third column, negated, as Z counts down) leans toward the pad.
+        if (item.flies && postLifts[n] > 0.0f) {
             pitch=-kClimb;
             const FMatrix right(item.yaw, pitch, kBank);
-            roll=(right.Row[0].Z*bay.facing.x+right.Row[1].Z*bay.facing.y)>0.0f ? kBank : -kBank;
+            roll=(right.Row[0].Z*nb.facingX+right.Row[1].Z*nb.facingY)>0.0f ? kBank : -kBank;
         }
         const FMatrix turn(item.yaw, pitch, roll);
-        // The model's box centre (its own axes, Z down) stands over the plinth's top (centre[2], already the top: ExhibitionGround),
-        // its underside on it, whatever the turn.
         const FVector box(item.middle[0], item.middle[1], item.lowestZ-0.5f*item.height);
         const FVector at=turn*box;
         exhibits[n].definition=item.definition->mName;
@@ -542,6 +531,16 @@ extern "C" void PortCeMuseumVisitFrame(void) {
         return;
     }
     const float kSea = 1.5f;
+    float jumpX = 0.0f, jumpY = 0.0f, jumpYaw = 0.0f;
+    if (PortCeMuseumTakeQuickJump(&jumpX, &jumpY, &jumpYaw)) {
+        float jz = gStartPosition.Z;
+        GalleryGround(jumpX, jumpY, &jz);
+        const FVector dest(jumpX, jumpY, jz);
+        engine->MoveTo(dest);
+        engine->GetOrientation().MakeRotationF(jumpYaw, 0.0f, 0.0f);
+        engine->SetVelocity(FVector(0.0f, 0.0f, 0.0f));
+        gLastViewingPosition = dest;
+    }
     FVector here = engine->GetPos();
     if (!CeMuseumHallAllowsVisitor(here.X,here.Y)) {
         // A display window is for looking through; approach it normally, then walk away.

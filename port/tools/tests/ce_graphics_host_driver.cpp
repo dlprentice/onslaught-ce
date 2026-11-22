@@ -17,9 +17,12 @@ int PortUserFileState(const char *) { return 1; }	// the host cases never open t
 extern "C" int CE_SettingGetBool(const char *, int) { ++policyReads; return 1; }	// a saved Yes: without one only a new profile asks for the extra features
 extern "C" int CE_SettingGetText(const char *, char *, int) { return 0; }
 extern "C" int CE_SettingSet(const char *, int) { return 1; }
-extern "C" int CE_FullModelsRequest(int) { ++errors; return 0; }	// the fresh defaults are never taken in the host cases
+extern "C" int CE_FullUnitModelsRequest(int) { ++errors; return 0; }	// the fresh defaults are never taken in the host cases
+extern "C" int CE_FullTreeModelsRequest(int) { ++errors; return 0; }
 extern "C" int CE_TerrainDetailRequest(int) { ++errors; return 0; }
 extern "C" int CE_AnisoRequest(int) { ++errors; return 0; }
+extern "C" int CE_WaterReflectionRequest(int) { ++errors; return 0; }
+extern "C" int CE_DynamicShadowRequest(int) { ++errors; return 0; }
 extern "C" void CeAnisoSetHardwareCaps(unsigned, bool) { ++anisoCapsUpdates; }
 void PortSessionLog(PortSessionCategory, bool, const char *, ...) { ++policyLogs; }
 struct GraphicsApplication : Application

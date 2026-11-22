@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-only
-"""Exercise the real frame-boundary full-model policy with authored configuration inputs.
+"""Exercise the real frame-boundary unit-vs-tree model policy with authored configuration inputs.
 
-These tests establish configuration fences, atomic view-to-view switching and bounded
-observations. Actual geometry, device lifetime and performance require native game runs.
+These tests establish configuration fences, legacy full_models=1 compatibility, independent
+unit/tree defaults and switching, atomic view-to-view switching and bounded observations.
+Actual geometry, device lifetime and performance require native game runs.
 """
 import os
 from pathlib import Path
@@ -62,10 +63,14 @@ class Policy(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout, "PASS\n")
 
-    def test_default_is_off(self):
+    def test_default_is_units_on_trees_off(self):
         self.passed("default")
 
-    def test_stored_choice_waits_until_frame(self):
+    def test_legacy_full_models_compat(self):
+        self.passed("legacy-on")
+        self.passed("legacy-off")
+
+    def test_stored_choices_wait_until_frame(self):
         self.passed("stored")
 
     def test_live_on_off_never_splits_views(self):
@@ -94,6 +99,18 @@ class Policy(unittest.TestCase):
     def test_diagnostics_are_bounded_and_do_not_enable_quality(self):
         self.passed("diagnostics", env={"BEA_PORT_MODEL_QUALITY_LOG": "1"})
 
+    def test_patch_splits_units_and_trees_cleanly(self):
+        patch = (ROOT / "port/patches/0208-ce-full-models.patch").read_text()
+        rtmesh = patch.split("--- a/rtmesh.cpp\n", 1)[1].split("--- a/RTTree.cpp\n", 1)[0]
+        rttree = patch.split("--- a/RTTree.cpp\n", 1)[1].split("--- a/gcgamut.cpp\n", 1)[0]
+        gamut = patch.split("--- a/gcgamut.cpp\n", 1)[1].split("--- a/DXTrees.cpp\n", 1)[0]
+        dxtrees = patch.split("--- a/DXTrees.cpp\n", 1)[1].split("--- a/game.cpp\n", 1)[0]
+        self.assertIn("CeUnitModelsQualityEnabled()", rtmesh)
+        self.assertNotIn("CeTreeModelsQualityEnabled()", rtmesh)
+        for sec_name, sec in (("RTTree.cpp", rttree), ("gcgamut.cpp", gamut), ("DXTrees.cpp", dxtrees)):
+            self.assertIn("CeTreeModelsQualityEnabled()", sec, sec_name)
+            self.assertNotIn("CeUnitModelsQualityEnabled()", sec, sec_name)
+
     def test_tree_guard_keeps_models_and_preserves_ordinary_policy(self):
         # Compile the actual overlay predicate against authored Boolean inputs.
         # This caught a native failure: treating the original early-return guard
@@ -108,20 +125,20 @@ class Policy(unittest.TestCase):
                 continue
             if match[1] == "-":
                 before.append(match[2])
-            elif "CeModelQualityEnabled" in match[2]:
+            elif "CeTreeModelsQualityEnabled" in match[2]:
                 after.append(match[2])
                 self.assertEqual(lines[i+1].strip(), "return;")
         self.assertEqual(len(before), 1)
         self.assertEqual(len(after), 1)
         original, current = before[0], after[0]
-        mutant = current.replace("!CeModelQualityEnabled() &&", "CeModelQualityEnabled() ||")
+        mutant = current.replace("!CeTreeModelsQualityEnabled() &&", "CeTreeModelsQualityEnabled() ||")
         self.assertNotEqual(mutant, current)
         for label, expression, expected in (("tree-good", current, 0), ("tree-missing-mutant", mutant, 1)):
             source = self.folder / (label + ".cpp")
             source.write_text("""
 #include <stdio.h>
 static bool full;
-bool CeModelQualityEnabled() { return full; }
+bool CeTreeModelsQualityEnabled() { return full; }
 bool old_skip(bool close, bool falling, bool FORCE_OBJECT_IMPOSTERS) { return OLD; }
 bool new_skip(bool close, bool falling, bool FORCE_OBJECT_IMPOSTERS) { return NEW; }
 int main() {
@@ -144,12 +161,6 @@ int main() {
             self.assertEqual(result.returncode, expected, label)
 
     def test_tree_imposter_takes_the_original_decisions_when_off(self):
-        # Compile the mirror's CRTTree::RenderImposter (build.patched_text) against the stand-ins of
-        # port/tools/tests/model_quality_tree_driver.cpp, and the same function without patch 0208. With Full
-        # models off the two must render the imposter in the same cases with the same arguments, set the same
-        # drawn flag, and the counter must count exactly the renders; on, nothing is rendered. This caught a
-        # defect: the counter sat between the steep-or-falling test and the render without braces, so the
-        # counter became the test's body and every distant tree drew an imposter the original does not draw.
         sys.path.insert(0, str(ROOT / "port"))
         import build
 
@@ -160,7 +171,7 @@ int main() {
         patch = "0208-ce-full-models.patch"
         patched = function(build.patched_text(["RTTree.cpp"])["RTTree.cpp"])
         original = function(build.patched_text(["RTTree.cpp"], skip=(patch,))["RTTree.cpp"])
-        self.assertNotIn("CeModelQuality", original)
+        self.assertNotIn("CeTreeModelsQuality", original)
 
         def run(label, text, *args):
             include = self.folder / (label + ".inc")
@@ -183,18 +194,16 @@ int main() {
         self.assertEqual(reference.returncode, 0)
         rows = reference.stdout.splitlines()
         self.assertEqual(len(rows), 600)
-        # The grid reaches both decisions, and the cases where the original marks the imposter drawn without drawing it.
         self.assertTrue(any("renders=1 " in row for row in rows))
         self.assertTrue(any("renders=0 " in row and row.endswith("drawn=1") for row in rows))
         off = run("patched", patched, "0")
         wrong, error = differences(off, reference)
         self.assertEqual((off.returncode, len(wrong)), (0, 0),
-                         f"Full models off: {len(wrong)} of {len(rows)} cases differ from the original (first: "
+                         f"3D trees off: {len(wrong)} of {len(rows)} cases differ from the original (first: "
                          f"{wrong[:1]}); {error}")
         on = run("patched-on", patched, "1")
         self.assertEqual(on.returncode, 0, on.stderr)
         self.assertTrue(all("renders=0 " in row and row.endswith("drawn=0") for row in on.stdout.splitlines()))
-        # The negative control: the same text with the braces round the counter and the render taken away.
         lines = patched.split("\n")
         at = [i for i, line in enumerate(lines) if "CE_MODEL_TREE_IMPOSTOR" in line]
         self.assertEqual(len(at), 1)
@@ -209,14 +218,21 @@ int main() {
     def test_causal_mutants(self):
         source = SOURCE.read_text()
         mutants = [
-            ("mid-frame", "requested = value;", "requested = value; active = value == 1;", "switch", {}),
+            ("mid-frame-units", "unitRequested = value;\n    return 1;", "unitRequested = value; unitActive = value == 1;\n    return 1;", "switch", {}),
+            ("mid-frame-trees", "extern \"C\" int CE_FullTreeModelsRequest(int value)\n{\n    if ((value != 0 && value != 1) || !Allowed()) return 0;\n    treeRequested = value;\n    return 1;",
+             "extern \"C\" int CE_FullTreeModelsRequest(int value)\n{\n    if ((value != 0 && value != 1) || !Allowed()) return 0;\n    treeRequested = value; treeActive = value == 1;\n    return 1;", "switch", {}),
             ("ignore-reference", "if (value && *value) return false;", "if (false && value && *value) return false;",
              "fenced", {"BEA_PORT_RECORD": "1", "BEA_PORT_CE_LAYER": "1"}),
-            ("default-on", 'CE_SettingGetBool("full_models", 0)', 'CE_SettingGetBool("full_models", 1)', "default", {}),
+            ("units-default-off", "unitRequested = savedUnit >= 0 ? (savedUnit ? 1 : 0) : 1;",
+             "unitRequested = savedUnit >= 0 ? (savedUnit ? 1 : 0) : 0;", "default", {}),
+            ("trees-default-on", "treeRequested = savedTree >= 0 ? (savedTree ? 1 : 0) : (savedLegacy == 1 ? 1 : 0);",
+             "{ (void)savedLegacy; treeRequested = savedTree >= 0 ? (savedTree ? 1 : 0) : 1; }", "default", {}),
+            ("ignore-legacy-on", "treeRequested = savedTree >= 0 ? (savedTree ? 1 : 0) : (savedLegacy == 1 ? 1 : 0);",
+             "{ (void)savedLegacy; treeRequested = savedTree >= 0 ? (savedTree ? 1 : 0) : 0; }", "legacy-on", {}),
         ]
         for name, old, new, scenario, env in mutants:
             with self.subTest(mutant=name):
-                self.assertEqual(source.count(old), 1)
+                self.assertEqual(source.count(old), 1, name)
                 path = self.folder / (name + ".cpp")
                 path.write_text(source.replace(old, new))
                 binary = self.build(name, path)

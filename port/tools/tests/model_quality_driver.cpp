@@ -18,7 +18,8 @@ static void Check(bool value, int line)
 #undef assert
 #define assert(value) Check((value), __LINE__)
 
-static int initialChoice, reads, layerCalls, logs;
+static int initialUnit = -1, initialTree = -1, initialLegacy = -1;
+static int reads, layerCalls, logs;
 extern "C" Uint64 SDL_GetTicksNS()
 {
     static Uint64 tick = 0;
@@ -33,10 +34,13 @@ bool PortCeLayer()
 }
 extern "C" int CE_SettingGetBool(const char *key, int fallback)
 {
-    assert(strcmp(key, "full_models") == 0);
-    assert(fallback == 0);
+    assert(fallback == -1);
     ++reads;
-    return initialChoice;
+    if (strcmp(key, "full_unit_models") == 0) return initialUnit >= 0 ? initialUnit : fallback;
+    if (strcmp(key, "full_tree_models") == 0) return initialTree >= 0 ? initialTree : fallback;
+    if (strcmp(key, "full_models") == 0) return initialLegacy >= 0 ? initialLegacy : fallback;
+    assert(false);
+    return fallback;
 }
 void PortSessionLog(PortSessionCategory, bool error, const char *format, ...)
 {
@@ -48,6 +52,8 @@ void PortSessionLog(PortSessionCategory, bool error, const char *format, ...)
     vsnprintf(message, sizeof(message), format, values);
     va_end(values);
     if (strstr(format, "dt_samples=")) {
+        assert(strstr(message, "units="));
+        assert(strstr(message, "trees="));
         assert(strstr(message, "median_us=1000 "));
         assert(strstr(message, "p95_us=1000 "));
         assert(strstr(message, "p99_us=1000 "));
@@ -61,10 +67,18 @@ int main(int argc, char **argv)
     assert(argc == 2);
     const char *scenario = argv[1];
     if (!strcmp(scenario, "fenced")) {
-        initialChoice = 1;
+        initialUnit = 1;
+        initialTree = 1;
+        initialLegacy = 1;
+        assert(!CE_FullUnitModelsRequest(1));
+        assert(!CE_FullTreeModelsRequest(1));
         assert(!CE_FullModelsRequest(1));
+        assert(CE_FullUnitModelsChoice() == 0);
+        assert(CE_FullTreeModelsChoice() == 0);
         assert(CE_FullModelsChoice() == 0);
         CeModelQualityBeginFrame();
+        assert(!CeUnitModelsQualityEnabled());
+        assert(!CeTreeModelsQualityEnabled());
         assert(!CeModelQualityEnabled());
         CeModelQualityCount(CE_MODEL_MESH);
         assert(reads == 0 && logs == 0);
@@ -72,52 +86,92 @@ int main(int argc, char **argv)
         assert(layerCalls == 0);
 #endif
     } else if (!strcmp(scenario, "default")) {
-        assert(!CeModelQualityEnabled());
+        assert(!CeUnitModelsQualityEnabled() && !CeTreeModelsQualityEnabled());
         CeModelQualityBeginFrame();
+        assert(CeUnitModelsQualityEnabled());
+        assert(!CeTreeModelsQualityEnabled());
         assert(!CeModelQualityEnabled());
+        assert(CE_FullUnitModelsChoice() == 1);
+        assert(CE_FullTreeModelsChoice() == 0);
         assert(CE_FullModelsChoice() == 0);
-        assert(reads == 1);
-        assert(logs == 0);
+        assert(reads == 3);
+        assert(logs == 1);
+    } else if (!strcmp(scenario, "legacy-on")) {
+        initialLegacy = 1;
+        assert(CE_FullUnitModelsChoice() == 1);
+        assert(CE_FullTreeModelsChoice() == 1);
+        assert(CE_FullModelsChoice() == 1);
+        assert(!CeUnitModelsQualityEnabled() && !CeTreeModelsQualityEnabled());
+        CeModelQualityBeginFrame();
+        assert(CeUnitModelsQualityEnabled());
+        assert(CeTreeModelsQualityEnabled());
+        assert(CeModelQualityEnabled());
+        assert(reads == 3);
+    } else if (!strcmp(scenario, "legacy-off")) {
+        initialLegacy = 0;
+        assert(CE_FullUnitModelsChoice() == 1);
+        assert(CE_FullTreeModelsChoice() == 0);
+        CeModelQualityBeginFrame();
+        assert(CeUnitModelsQualityEnabled());
+        assert(!CeTreeModelsQualityEnabled());
     } else if (!strcmp(scenario, "stored")) {
-        initialChoice = 1;
-        assert(CE_FullModelsChoice() == 1);
-        assert(!CeModelQualityEnabled());
-        CeModelQualityBeginFrame();
-        assert(CeModelQualityEnabled());
-        initialChoice = 0;
-        for (int i=0; i<5; ++i) CeModelQualityBeginFrame();
-        assert(CeModelQualityEnabled());
-        assert(reads == 1);
-    } else if (!strcmp(scenario, "switch")) {
-        CeModelQualityBeginFrame();
-        assert(!CeModelQualityEnabled());
-        assert(!CE_FullModelsRequest(-1));
-        assert(!CE_FullModelsRequest(2));
-        assert(CE_FullModelsRequest(1));
-        assert(CE_FullModelsChoice() == 1);
-        // The outstanding mirror and player views still share the old snapshot.
-        for (int i=0; i<4; ++i) assert(!CeModelQualityEnabled());
-        CeModelQualityBeginFrame();
-        assert(CeModelQualityEnabled());
-        assert(CE_FullModelsRequest(0));
+        initialUnit = 0;
+        initialTree = 1;
+        initialLegacy = 1;
+        assert(CE_FullUnitModelsChoice() == 0);
+        assert(CE_FullTreeModelsChoice() == 1);
         assert(CE_FullModelsChoice() == 0);
-        for (int i=0; i<4; ++i) assert(CeModelQualityEnabled());
+        assert(!CeUnitModelsQualityEnabled() && !CeTreeModelsQualityEnabled());
         CeModelQualityBeginFrame();
-        assert(!CeModelQualityEnabled());
-        assert(reads == 1);
+        assert(!CeUnitModelsQualityEnabled());
+        assert(CeTreeModelsQualityEnabled());
+        initialUnit = 1;
+        initialTree = 0;
+        for (int i=0; i<5; ++i) CeModelQualityBeginFrame();
+        assert(!CeUnitModelsQualityEnabled());
+        assert(CeTreeModelsQualityEnabled());
+        assert(reads == 2);
+    } else if (!strcmp(scenario, "switch")) {
+        initialUnit = 0;
+        initialTree = 0;
+        CeModelQualityBeginFrame();
+        assert(!CeUnitModelsQualityEnabled() && !CeTreeModelsQualityEnabled());
+        assert(!CE_FullUnitModelsRequest(-1));
+        assert(!CE_FullUnitModelsRequest(2));
+        assert(!CE_FullTreeModelsRequest(-1));
+        assert(!CE_FullTreeModelsRequest(2));
+        assert(CE_FullUnitModelsRequest(1));
+        assert(CE_FullUnitModelsChoice() == 1 && CE_FullTreeModelsChoice() == 0);
+        // The outstanding mirror and player views still share the old snapshot.
+        for (int i=0; i<4; ++i) assert(!CeUnitModelsQualityEnabled() && !CeTreeModelsQualityEnabled());
+        CeModelQualityBeginFrame();
+        assert(CeUnitModelsQualityEnabled() && !CeTreeModelsQualityEnabled());
+        assert(CE_FullTreeModelsRequest(1));
+        assert(CE_FullTreeModelsChoice() == 1);
+        for (int i=0; i<4; ++i) assert(CeUnitModelsQualityEnabled() && !CeTreeModelsQualityEnabled());
+        CeModelQualityBeginFrame();
+        assert(CeUnitModelsQualityEnabled() && CeTreeModelsQualityEnabled() && CeModelQualityEnabled());
+        assert(CE_FullUnitModelsRequest(0));
+        assert(CE_FullTreeModelsRequest(0));
+        for (int i=0; i<4; ++i) assert(CeUnitModelsQualityEnabled() && CeTreeModelsQualityEnabled());
+        CeModelQualityBeginFrame();
+        assert(!CeUnitModelsQualityEnabled() && !CeTreeModelsQualityEnabled());
+        assert(reads == 2);
     } else if (!strcmp(scenario, "queued-first")) {
-        assert(CE_FullModelsRequest(1));
-        assert(!CeModelQualityEnabled());
-        assert(CE_FullModelsChoice() == 1);
+        assert(CE_FullUnitModelsRequest(0));
+        assert(CE_FullTreeModelsRequest(1));
+        assert(!CeUnitModelsQualityEnabled() && !CeTreeModelsQualityEnabled());
+        assert(CE_FullUnitModelsChoice() == 0 && CE_FullTreeModelsChoice() == 1);
         CeModelQualityBeginFrame();
-        assert(CeModelQualityEnabled());
+        assert(!CeUnitModelsQualityEnabled() && CeTreeModelsQualityEnabled());
         assert(reads == 0);
-        assert(CE_FullModelsRequest(0));
         assert(CE_FullModelsRequest(1));
         assert(CE_FullModelsRequest(0));
         CeModelQualityBeginFrame();
-        assert(!CeModelQualityEnabled());
+        assert(!CeUnitModelsQualityEnabled() && !CeTreeModelsQualityEnabled());
     } else if (!strcmp(scenario, "diagnostics")) {
+        initialUnit = 0;
+        initialTree = 0;
         CeModelQualityBeginFrame();
         for (int i=0; i<120*100; ++i) {
             for (int event=0; event<CE_MODEL_EVENTS; ++event)
@@ -127,8 +181,8 @@ int main(int argc, char **argv)
             CeModelQualityBeginFrame();
         }
         assert(logs == 64);
-        assert(!CeModelQualityEnabled());
-        assert(reads == 1);
+        assert(!CeUnitModelsQualityEnabled() && !CeTreeModelsQualityEnabled());
+        assert(reads == 2);
     } else {
         return 2;
     }
