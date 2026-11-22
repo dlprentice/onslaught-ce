@@ -74,7 +74,7 @@ def main() -> int:
     trace_driver = (network / "tests/ice_relay_trace_driver.cpp").read_text()
     production = (network / "ice_game.cpp").read_text()
     headers = {name: (network / name).read_bytes() for name in
-               ("network.h", "ice_game.h", "ice_signaling.h", "ice_session.h")}
+               ("network.h", "ice_game.h", "ice_signaling.h", "ice_session.h", "ice_route_status.h")}
     headers["ice_exchange.h"] = exchange_bytes
     provider_headers = {name: (network / name).read_bytes() for name in ("signaling_provider.h", "signaling_https.h")}
     provider_sources = {name: repo / name for name in ("port/network/signaling_provider.cpp", "port/updater/sha256.c",

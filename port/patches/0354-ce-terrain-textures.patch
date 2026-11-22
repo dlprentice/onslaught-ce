@@ -1,0 +1,129 @@
+--- a/DXLandscape.cpp
++++ b/DXLandscape.cpp
+@@ -42,4 +42,7 @@
+ #include	"shadows.h"
+ #include	"state.h"
++#ifdef CE_VERSION
++#include "ce_terrain_textures.h"
++#endif
+ const FVector	ZERO_FVECTOR(0.0f, 0.0f, 0.0f);	// 008aa910	// FUNCTION: 0x00544360 init:ZERO_FVECTOR
+ const FMatrix	ID_FMATRIX(FVector(1.0f, 0.0f, 0.0f), FVector(0.0f, 1.0f, 0.0f), FVector(0.0f, 0.0f, 1.0f));	// 008aa8d8	// FUNCTION: 0x00544380 init:ID_FMATRIX
+@@ -351,4 +354,7 @@
+ 	LT.RemoveDeviceObject(this);
+ 	CLandscapeTexture::ResetUpdateQueue();
++#ifdef CE_VERSION
++	CeTerrainTexturesShutdown();
++#endif
+ 
+ 	if (mViews)
+@@ -440,4 +446,10 @@
+ 		SHADOWS.mShadows = true;
+ 	}
++#ifdef CE_VERSION
++	{
++		SINT ceViewLevels[2] = { mViews[0].mNumLevels, mNumViews > 1 ? mViews[1].mNumLevels : 0 };
++		CeTerrainTexturesInit(mNumViews, ceViewLevels);
++	}
++#endif
+ 
+ 	BuildVertexBuffer();
+@@ -790,4 +802,34 @@
+ 	for (SINT l = 0; l < view->mNumLevels; l++)
+ 	{
++#ifdef CE_VERSION
++		if (CeTerrainTexturesActive(viewpoint))
++		{
++			SINT	ceCount = 0;
++			const UWORD	*ceTile = CeTerrainTexturesDrawTiles(viewpoint, l, &ceCount);
++			if (ceCount > 0)
++			{
++				if (l)
++					LT.D3D_SetTexture(0, CeTerrainTexturesGetTexture(viewpoint, l));
++				float	ceScale = CeTerrainTexturesUvScale(viewpoint, l);
++				gTextureMatrix._21 = 0;
++				gTextureMatrix._12 = 0;
++				gTextureMatrix._11 = ceScale;
++				gTextureMatrix._22 = ceScale;
++				LT.GetDevice()->SetTransform(D3DTS_TEXTURE0, &gTextureMatrix);
++				for (SINT n = ceCount; n; n--)
++				{
++					SLandscapeCell	*cell = &view->mTiles[*ceTile];
++					CLandscapeIB	*ib = &PATCHMANAGER.mIBs[cell->mUnknown10 * 16 + cell->mEdges];
++					CLandscapeVB	*vb = (CLandscapeVB *)cell->mPatch;
++					LT.GetDevice()->SetIndices(ib->mIB);
++					vb->SetStreamSourceOnly(0);
++					LT.D3D_DrawIndexedPrimitive(D3DPT_TRIANGLESTRIP, 0, vb->mNumVerts, 0, ib->mCount);
++					ceTile++;
++				}
++			}
++			scale += scale;
++			continue;
++		}
++#endif
+ 		if (l)
+ 			LT.D3D_SetTexture(0, view->mTextures[l - 1].mTexture);
+@@ -1024,5 +1066,25 @@
+ 	for (SINT l = 0; l < view->mNumLevels; l++)
+ 	{
++#ifdef CE_VERSION
++		if (CeTerrainTexturesActive(viewpoint))
++		{
++			SINT	ceCount = 0;
++			const UWORD	*ceCells = CeTerrainTexturesDrawTiles(viewpoint, l, &ceCount);
++			for (SINT n = ceCount; n; n--)
++			{
++				SLandscapeCell	*cell = &view->mTiles[*ceCells];
++				CLandscapeIB	*ib = &PATCHMANAGER.mIBs[cell->mUnknown10 * 16 + cell->mEdges];
++				CLandscapeVB	*vb = (CLandscapeVB *)cell->mPatch;
++				SetLandscapeIndices(&LT, ib->mIB);
++				vb->SetStreamSourceOnly(0);
++				SINT			verts = vb->mNumVerts;
++				SINT			count = ib->mCount;
++				LT.D3D_DrawIndexedPrimitive(D3DPT_TRIANGLESTRIP, 0, verts, 0, count);
++				ceCells++;
++			}
++			continue;
++		}
++#endif
+ 		UWORD			*cells = view->mLODs[l].mData;
+ 		for (SINT n = view->mLODs[l].mUnknown08; n; n--)
+ 		{
+@@ -1377,4 +1438,7 @@
+ 	FVector	cam = view->mLastPos;
+ 	FVector	look = view->mUnknown24;
++#ifdef CE_VERSION
++	const bool ceTexActive = CeTerrainTexturesBeginView(viewpoint, pos, dir, view->mNumLevels, LANDSCAPE_MAXLEVELS_USER.mValue, gMirrorPass != 0);
++#endif
+ 
+ 	UWORD	*start;
+@@ -1493,4 +1557,13 @@
+ 					if (!inFarRing)
+ 					{
++#ifdef CE_VERSION
++						if (ceTexActive)
++						{
++							SINT	tex = CeTerrainTexturesChoose(viewpoint, view->mNumLevels, LANDSCAPE_MAXLEVELS_USER.mValue, x, y, tile->mMidHeight);
++							CeTerrainTexturesQueueTile(viewpoint, tex, (UWORD)t, tile->mUnknown10);
++							StitchLandscapeCell(tile, x, y);
++							continue;
++						}
++#endif
+ 
+ 						// its texture level, by distance ahead of the view, and the tile listed at that level
+@@ -1549,4 +1622,8 @@
+ 	}
+ 	CLandscapeTexture::FlushUpdateQueue();
++#ifdef CE_VERSION
++	if (ceTexActive)
++		CeTerrainTexturesFlush(viewpoint);
++#endif
+ }
+ 
+@@ -1564,4 +1641,7 @@
+ 		}
+ 	}
++#ifdef CE_VERSION
++	CeTerrainTexturesInvalidateTile((UWORD)tile);
++#endif
+ }
+ 

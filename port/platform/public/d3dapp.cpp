@@ -24,6 +24,7 @@ HRESULT D3DUtil_SetDeviceCursor(LPDIRECT3DDEVICE9 device, HCURSOR cursor);
 #ifndef BEA_PUBLIC_D3DAPP_TEST
 #include "ce_graphics_policy.h"
 #endif
+extern "C" void CeAnisoSetHardwareCaps(unsigned maxAnisotropy, bool supported);
 extern "C" int CE_DisplayModeUseSavedSize();
 int PortWideStartSizeOnDesktop(unsigned, unsigned, int, unsigned, unsigned, unsigned *, unsigned *);
 #endif
@@ -147,6 +148,7 @@ void GraphicsCapabilities(CD3DApplication &app)
         SUCCEEDED(app.m_pD3D->CheckDeviceFormat(adapter, type, colour, D3DUSAGE_DEPTHSTENCIL,
             D3DRTYPE_SURFACE, D3DFMT_D16));
     PortCeGraphicsBeginDevice(app.m_d3dCaps.PixelShaderVersion, app.m_d3dCaps.VertexShaderVersion, formats, float32);
+    CeAnisoSetHardwareCaps(app.m_d3dCaps.MaxAnisotropy, (app.m_d3dCaps.RasterCaps & D3DPRASTERCAPS_ANISOTROPY) != 0);
 }
 #endif
 bool ValidateMode(CD3DApplication &app, UINT physical, D3DDEVTYPE type, D3DCAPS9 &caps, D3DFORMAT colour,

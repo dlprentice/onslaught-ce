@@ -36,6 +36,8 @@ extern "C" void CE_CodeWipe(void* bytes, size_t size) {
 extern "C" void CE_CodeStartSecret(const uint8_t lobby[32], const uint8_t nonce[16], uint8_t out[32]) {
     for (size_t i = 0; i < 32; ++i) out[i] = lobby[i] ^ nonce[i % 16];
 }
+extern "C" void CE_CodeSha256(const void*, size_t, uint8_t out[32]) { std::memset(out, 0, 32); }
+extern "C" int CE_CodeEncode(const CE_JoinCode*, char*, size_t) { return 0; }
 extern "C" int64_t CE_HandoffNow() { return int64_t(signalFixture.wall); }
 extern "C" int CE_HandoffCampaignSet(CE_Handoff*) { return 0; }
 extern "C" int CE_BootCampaignAdmit(const CE_Handoff*) { return 1; }
@@ -114,7 +116,11 @@ bool gLaunched, gOutcomeReady;
 CE_Handoff gOutcome{};
 char gReturnArgs[1024]{};
 char gHandoffName[4096]{}, gHandoffReceipt[128]{};
+char gRematchCode[CE_CODE_TEXT]{};
+int gRematchRole;
+uint32_t gRematchLevel;
 
+bool ParseIp(const char*, uint32_t*) { return false; }
 void SetEnv(const char* name, const char* value) { if (value) setenv(name, value, 1); else unsetenv(name); }
 bool OwnArgs(char* out, size_t size) { return std::snprintf(out, size, "%s", "-fixture") > 0; }
 bool WriteOwnedHandoff(const char*, const CE_Handoff*) { ++diskWrites; return false; }

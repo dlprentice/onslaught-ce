@@ -1,12 +1,28 @@
 # Separate-process offline ICE flow
 
-Status: draft; separate-process build and run planned and unrun; no real-player acceptance
-Last updated: 2026-11-02
-Summary: planned checks of the unchanged CE caller and courier or sealed offline store across distinct private directories and processes; the combined build and run remain unrun.
+Status: verified on Linux i686 offline fixture and bounded Cloudflare TURN UDP relay probe; no full game-process or Windows runtime acceptance
+Last updated: 2026-11-21
+Summary: separate-process checks of the unchanged CE caller with the courier and sealed offline store across distinct private directories and processes, plus a bounded relay-only TURN allocation check.
 
-The combined fixture has not been built or executed. A shared quiet-window
-hold is outstanding. Source, local-link and public-text checks establish the
-draft's scope; no relay, admission, cleanup or traffic result is claimed yet.
+The separate-process i686 Linux fixture has been built and executed inside a
+loopback-only network namespace with a private hosts mapping. All 11 checks
+passed (`live-direct-trap-control`, `unavailable-relay-no-direct-fallback`,
+`actual-context-mismatch-refused`, `courier-lobby-real-session-traffic-and-leave`,
+`courier-game-real-session-traffic-and-leave`, `altered-courier-ciphertext-refused-by-ce`,
+`actual-request-authentication-and-role-controls`, `actual-request-store-context-refusal`,
+`sealed-store-lobby-real-session-traffic`, `sealed-store-game-real-session-traffic`,
+and `runtime-privacy-and-clean-shutdown`), with clean process collection and zero
+plaintext credential or exchange canaries in logs or SQLite storage.
+
+A separate bounded single-issuance verification (120-second TTL via
+`turn_operator_issue.py`, `Mode::Cloudflare` grant parsing, and patched libjuice
+`relay-only` enforcement) also confirmed live UDP relay allocation on
+`turn.cloudflare.com:3478` and `turn.cloudflare.com:443`, `CE_NET_ACTIVE`
+admission on both peers with `CE_NetIceUsesRelay` true, 20/20 verified
+bidirectional authenticated application messages, authenticated `CE_NET_PEER_LEFT`
+closure, zero secret leakage in outputs, and immediate shredding of temporary
+grant files. Full game-process menu/restart journeys and native Windows
+execution remain separate acceptance work.
 
 ## Planned runtime
 
@@ -124,20 +140,19 @@ python3 port/tools/ice_flow_integration_tests.py \
   --build local-data/flow-build --output local-data/flow-check
 ```
 
-The runner is configured to refuse an ordinary network namespace before
-starting any relay and to verify the recorded source, peer binary and
-crypto-library hashes before using a build. It uses fixed milestone labels
-and an ignored output directory for private records and logs. Child lifetime,
-shutdown and collection checks are also planned; none has been verified by
-executing this combined fixture.
+The runner refuses an ordinary network namespace before starting any relay and
+verifies the recorded source, peer binary and crypto-library hashes before using
+a build. It uses fixed milestone labels and an ignored output directory for
+private records and logs. Child lifetime, shutdown and collection checks passed
+in the Linux i686 offline run summarized above.
 
 ## Remaining work
 
 This integration does not supply remote transfer, authenticated confidential
-delivery, a real identity verifier, provider issuance, deployment, credential
-renewal, TURN TCP/TLS, safe Windows private-file acceptance or a player-facing
-host/join flow. The planned check aims to validate an offline join between
-real session APIs and the existing delivery components. This draft has not
-demonstrated that join. Its build and separate-process run remain unrun.
+delivery, a real identity verifier, deployment, credential renewal, TURN
+TCP/TLS, safe Windows private-file acceptance or a player-facing host/join flow.
+The offline fixture validates the join between the real session APIs and the
+existing delivery components on Linux i686, and the separate bounded probe
+validated single-issuance UDP relay traffic through `turn.cloudflare.com`.
 Real game processes, authenticated START and campaign restarts, packages, two
 machines and sustained gameplay remain separate acceptance work.

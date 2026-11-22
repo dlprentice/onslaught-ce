@@ -146,8 +146,10 @@ int PortCeCompactPitch(const void *item)
     return (PortCeQualityRow(item) && PortCeQualityOptionsAvailable()) ? kCeCompactPitch : 0;
 }
 
-// How far that list's centre moves down: only in the front end, where the page shows no title of the list's own (`options_page`).
+// How far that list's centre moves: down in the front end (so the first row stays below the emblem) and slightly up in a level's Pause Menu
+// (so Back clears the message bar).
 float PortCeCompactShift(int pitch, bool options_page)
 {
-    return (pitch && options_page) ? kCeCompactFrontShift : 0.f;
+    if (!pitch) return 0.f;
+    return options_page ? kCeCompactFrontShift : kCeCompactPauseShift;
 }

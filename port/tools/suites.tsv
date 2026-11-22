@@ -319,3 +319,5 @@ port/tools/dump_diff_tests.py	script	-	none	release	-	the first difference betwe
 port/tools/runmode_tests.py	script	-	none	release	-	the run mode each environment gives, and that only a test-kit build can be in test-kit mode; needs a C++ compiler
 port/tools/shot_diff_tests.py	script	-	none	release	-	frame comparison: changed share, box, tolerance, region, sizes, missing frames; needs Pillow
 port/tools/test_kit_tests.py	script	-	none	release	-	the test kit's core on the host against an authored menu (every verb, refusals, determinism); needs a C++ compiler
+port/tools/ce_terrain_textures_tests.py	script	-	none	release	-	expanded toroidal terrain texture atlases, zero-wrap halo math, device loss/restore, aborted flush recovery, faithful fence and patch 0354 neutrality; needs a C++ compiler
+port/tools/ce_aniso_quality_tests.py	script	-	none	release	-	hardware anisotropic filtering policy, frame-boundary snapshot, capability caps, faithful fences, patch 0355 neutrality and causal mutants; needs a C++ compiler

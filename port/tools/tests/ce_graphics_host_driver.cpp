@@ -10,14 +10,17 @@
 // again), which ce_graphics_policy_tests.py names as the one authored departure.
 CTweakSLONG GEFORCE_FX_POWER("legacy eligibility", 0), EXTRA_GEFORCE_FX_FEATURES("extras", 1), R32F_WORKS("float target", 0);
 CTweakSLONG MY_READABLE_Z_BUFFER("selected depth path", 1);
-namespace { unsigned policyReads, capabilityBeforeObjects, errors, policyLogs; }
+namespace { unsigned policyReads, capabilityBeforeObjects, errors, policyLogs, anisoCapsUpdates; }
 bool PortCeLayer() { return true; }
 void PortCeGraphicsApplyFreshDefaults() {}
 int PortUserFileState(const char *) { return 1; }	// the host cases never open the options file
 extern "C" int CE_SettingGetBool(const char *, int) { ++policyReads; return 1; }	// a saved Yes: without one only a new profile asks for the extra features
+extern "C" int CE_SettingGetText(const char *, char *, int) { return 0; }
 extern "C" int CE_SettingSet(const char *, int) { return 1; }
 extern "C" int CE_FullModelsRequest(int) { ++errors; return 0; }	// the fresh defaults are never taken in the host cases
 extern "C" int CE_TerrainDetailRequest(int) { ++errors; return 0; }
+extern "C" int CE_AnisoRequest(int) { ++errors; return 0; }
+extern "C" void CeAnisoSetHardwareCaps(unsigned, bool) { ++anisoCapsUpdates; }
 void PortSessionLog(PortSessionCategory, bool, const char *, ...) { ++policyLogs; }
 struct GraphicsApplication : Application
 {
@@ -50,8 +53,8 @@ int main(int argc, char **argv)
     check(capabilityBeforeObjects == static_cast<unsigned>(eligible), "actual device caps and formats gate resources before initialization");
     check(GEFORCE_FX_POWER.mValue == static_cast<int>(eligible), "completed host retains truthful graphics eligibility");
     check(EXTRA_GEFORCE_FX_FEATURES.mValue == static_cast<int>(eligible || name == "faithful"), "unsupported effects fall back without changing faithful settings");
-    if (name == "faithful") check(policyReads == 0 && policyLogs == 0 && renderTargetAdapters.empty(), "faithful host avoids policy queries and settings");
-    else check(policyReads == 1 && policyLogs > 0, "ordinary host completes one capability policy generation");
+    if (name == "faithful") check(policyReads == 0 && policyLogs == 0 && anisoCapsUpdates == 0 && renderTargetAdapters.empty(), "faithful host avoids policy queries and settings");
+    else check(policyReads == 1 && policyLogs > 0 && anisoCapsUpdates == 1, "ordinary host completes one capability policy generation");
     if (eligible) check(R32F_WORKS.mValue == (name != "float-fallback" && name != "float-unused"), "float target choice follows the accepted format");
     if (name == "physical-adapter") check(!renderTargetAdapters.empty() && std::all_of(renderTargetAdapters.begin(), renderTargetAdapters.end(), [](UINT a){return a == 1;}), "queries use the actual physical adapter");
     app.Cleanup3DEnvironment();

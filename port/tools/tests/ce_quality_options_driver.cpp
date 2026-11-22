@@ -14,6 +14,7 @@
 #include <vector>
 #include "model_quality.h"
 #include "terrain_quality.h"
+#include "aniso_quality.h"
 #include "portlog.h"
 
 static void check(bool okay, const char *reason)
@@ -97,11 +98,15 @@ static std::string ini()
     std::ifstream stream(iniPath());
     return std::string(std::istreambuf_iterator<char>(stream),std::istreambuf_iterator<char>());
 }
-static void frame() { CeModelQualityBeginFrame(); CeTerrainQualityBeginFrame(); }
-static void live(bool models, bool terrain)
+static void frame() { CeModelQualityBeginFrame(); CeTerrainQualityBeginFrame(); CeAnisoQualityBeginFrame(); }
+static void live(bool models, bool terrain, unsigned aniso = 4, bool anisoActive = true)
 {
     check(CeModelQualityEnabled()==models,"full-model active snapshot");
     check(CeTerrainGeometryDistanceSquared(16.f)==(terrain?4.f:16.f),"terrain active snapshot");
+    if (anisoActive)
+        check(CeAnisoEffectiveLevel(4, 16, true) == (aniso == 0 ? 1u : aniso), "aniso active snapshot");
+    else
+        check(!CeAnisoQualityActive() && CeAnisoEffectiveLevel(4, 16, true) == 4u, "fenced aniso stays retail");
 }
 static bool unsaved(CMenuMenuItem *p) { return wcsstr(p->GetChoiceText(p->GetValue()),L"not saved")!=nullptr; }
 // The real policy decides readiness from a check the terrain reserve installs when a level initialises.
@@ -177,47 +182,67 @@ int main(int argc,char **argv)
         check(ini()==before && notices==0,"fenced request does not persist or show a save notice");
         const bool retained = scenario=="menus-off";
         check(CE_FullModelsChoice()==int(retained)&&CE_TerrainDetailChoice()==int(retained),"menu availability does not override faithful or stored rendering policy");
-        frame();live(retained,retained);
+        check(CE_AnisoLevelChoice()==(retained ? 8 : 4),"aniso menu availability matches rendering policy");
+        frame();live(retained,retained,retained ? 8 : 4,retained);
     } else {
-        check(list.mItems.size()==2,"exactly two native quality rows");
+        check(list.mItems.size()==3,"exactly three native quality rows");
         // "Label:value" as the original's rows, with no space after the colon; two-way values on an options page are No and Yes.
         check(!wcscmp(item(list,0)->GetText(),L"Full models:"),"full models row name");
         check(!wcscmp(item(list,1)->GetText(),L"Terrain detail distance:"),"terrain row name");
+        check(!wcscmp(item(list,2)->GetText(),L"Anisotropic filtering:"),"aniso row name");
         check(!wcscmp(item(list,0)->GetChoiceText(0),L"No")&&!wcscmp(item(list,0)->GetChoiceText(1),L"Yes"),"model choices");
+        check(item(list,2)->GetNumChoices()==4 && !wcscmp(item(list,2)->GetChoiceText(0),L"Off") &&
+              !wcscmp(item(list,2)->GetChoiceText(1),L"4x") && !wcscmp(item(list,2)->GetChoiceText(2),L"8x") &&
+              !wcscmp(item(list,2)->GetChoiceText(3),L"16x"),"aniso choices");
         // The list holding these rows is drawn at Onslaught CE's row pitch while they exist (ce_menu_fit.cpp, patch 0215), and only then.
-        check(PortCeQualityRow(item(list,0))&&PortCeQualityRow(item(list,1))&&!PortCeQualityRow(nullptr)&&!PortCeQualityRow(&list),"live rows are known");
+        check(PortCeQualityRow(item(list,0))&&PortCeQualityRow(item(list,1))&&PortCeQualityRow(item(list,2))&&!PortCeQualityRow(nullptr)&&!PortCeQualityRow(&list),"live rows are known");
         {
             List other;NativeRows(&other);const void *gone=other.mItems.at(0);
-            check(PortCeQualityRow(gone),"a second pair is known too");
+            check(PortCeQualityRow(gone),"a second set is known too");
             for(auto p:other.mItems) delete p;
             other.mItems.clear();
             check(!PortCeQualityRow(gone)&&PortCeQualityRow(item(list,0)),"a deleted row is forgotten; the others stay known");
         }
         check(!wcscmp(item(list,1)->GetChoiceText(0),L"Normal")&&!wcscmp(item(list,1)->GetChoiceText(1),L"Extended"),"terrain choices");
         if(scenario=="stored") {
-            check(item(list,0)->GetValue()==1&&item(list,1)->GetValue()==1,"existing preferences load");
+            check(item(list,0)->GetValue()==1&&item(list,1)->GetValue()==1&&item(list,2)->GetValue()==2,"existing preferences load");
             struct stat first{},last{};check(!stat(iniPath().c_str(),&first),"existing settings inode");
             apply(list);check(!stat(iniPath().c_str(),&last),"unchanged settings inode");
             check(ini()==before&&first.st_ino==last.st_ino,"unchanged Apply preserves exact file and preferences");
-            frame();live(true,true);
+            frame();live(true,true,8);
         } else {
-            check(item(list,0)->GetValue()==0&&item(list,1)->GetValue()==0,"normal defaults");
-            frame();live(false,false);
+            const int expectAnisoChoice = scenario=="fresh" ? 3 : 1;
+            const unsigned expectAnisoLevel = scenario=="fresh" ? 16u : 4u;
+            check(item(list,0)->GetValue()==0&&item(list,1)->GetValue()==0&&item(list,2)->GetValue()==expectAnisoChoice,"normal defaults");
+            frame();live(false,false,expectAnisoLevel);
             if(scenario=="defaults" || scenario=="fresh") {
                 apply(list);check(ini()==before,"unchanged rows do not manufacture preferences");
                 if(scenario=="fresh") { struct stat state{}; check(stat(iniPath().c_str(),&state)!=0&&errno==ENOENT,"fresh default Apply creates no settings file"); }
             } else if(scenario=="wording" || scenario=="wording-unsaved" || scenario=="wording-frontend") {
                 wording(list, scenario);
+            } else if(scenario=="hw-cap-2x") {
+                CeAnisoSetHardwareCaps(2, true);
+                CMenuMenuItem *aniso = item(list, 2);
+                check(aniso->GetNumChoices()==2,"2x GPU exposes Off and 2x choices");
+                check(same(aniso->GetChoiceText(0), L"Off") && same(aniso->GetChoiceText(1), L"2x"), "2x GPU labels choice 1 honestly as 2x");
+                check(aniso->GetValue()==1,"stored 4x maps to active 2x choice on 2x GPU");
+                aniso->mSelection=0; apply(list); frame();
+                check(CE_AnisoLevelChoice()==0 && CeAnisoEffectiveLevel(4, 2, true)==1u && !CeAnisoUseAnisotropicFilter(4, 2, true), "2x GPU can switch to Off");
+                aniso->mSelection=1; apply(list); frame();
+                check(CE_AnisoLevelChoice()==4 && CeAnisoEffectiveLevel(4, 2, true)==2u && CeAnisoUseAnisotropicFilter(4, 2, true), "2x GPU restores 2x AF cleanly");
             } else if(scenario=="invalid") {
                 item(list,0)->mSelection=2;item(list,0)->Commit();
                 item(list,1)->mSelection=-1;item(list,1)->Commit();
-                check(item(list,0)->GetValue()==0&&item(list,1)->GetValue()==0,"invalid values refused");
-                check(item(list,0)->mSelection==0&&item(list,1)->mSelection==0,"native commit remains coherent after refusal");
+                item(list,2)->mSelection=4;item(list,2)->Commit();
+                check(item(list,0)->GetValue()==0&&item(list,1)->GetValue()==0&&item(list,2)->GetValue()==1,"invalid values refused");
+                check(item(list,0)->mSelection==0&&item(list,1)->mSelection==0&&item(list,2)->mSelection==1,"native commit remains coherent after refusal");
                 check(ini()==before&&notices==0,"invalid value does not reach settings writer");
                 check(!wcscmp(item(list,0)->GetText(),L"Full models:"),"the label does not change on a refusal");
                 check(same(item(list,0)->GetChoiceText(item(list,0)->GetValue()),L"No (not changed)"),"refusal is visible after the value in effect");
                 check(same(item(list,0)->GetChoiceText(1),L"Yes"),"the choice not in effect carries no state");
                 check(same(item(list,1)->GetChoiceText(0),L"Normal (not changed)"),"the terrain refusal reads the same way");
+                check(same(item(list,2)->GetChoiceText(1),L"4x (not changed)"),"the aniso refusal reads the same way");
+                check(same(item(list,2)->GetChoiceText(3),L"16x"),"non-current aniso choice carries no state");
             } else {
                 if(scenario=="keyboard") {
                     for(unsigned i=0;i<2;++i) {
@@ -227,15 +252,25 @@ int main(int argc,char **argv)
                         p->ReceiveButtonAction(nullptr,BUTTON_FRONTEND_MENU_SELECT,1.f);
                         check(p->mSelection==1,"actual keyboard selection");
                     }
+                    auto a=item(list,2);
+                    a->ReceiveButtonAction(nullptr,BUTTON_FRONTEND_MENU_SELECT,1.f);
+                    a->ReceiveButtonAction(nullptr,BUTTON_FRONTEND_MENU_RIGHT,1.f);
+                    a->ReceiveButtonAction(nullptr,BUTTON_FRONTEND_MENU_SELECT,1.f);
+                    check(a->mSelection==2,"actual aniso keyboard selection");
                 } else if(scenario=="mouse") {
                     for(unsigned i=0;i<2;++i) {
                         item(list,i)->mExpanded=true;item(list,i)->FixtureMouseSelect(1);
                         check(item(list,i)->mSelection==1,"actual mouse choice selection");
                     }
-                } else choose(list,1,scenario=="one-row"?0:1);
-                for(unsigned i=0;i<2;++i) item(list,i)->FixtureRenderSync();
+                    item(list,2)->mExpanded=true;item(list,2)->FixtureMouseSelect(3);
+                    check(item(list,2)->mSelection==3,"actual aniso mouse choice selection");
+                } else {
+                    choose(list,1,scenario=="one-row"?0:1);
+                    item(list,2)->mSelection=(scenario=="one-row"?1:3);
+                }
+                for(unsigned i=0;i<3;++i) item(list,i)->FixtureRenderSync();
                 check(item(list,0)->mSelection==1,"pending choice survives native render synchronization");
-                check(CE_FullModelsChoice()==0&&CE_TerrainDetailChoice()==0,"selection waits for Apply");
+                check(CE_FullModelsChoice()==0&&CE_TerrainDetailChoice()==0&&CE_AnisoLevelChoice()==4,"selection waits for Apply");
                 check(ini()==before,"selection alone writes no preferences");
                 CApplyMenuItem action{&list};action.ReceiveButtonAction(nullptr,0,1.f);
                 check(gMenuApplyCount==0,"unrelated button is not Apply");
@@ -243,31 +278,33 @@ int main(int argc,char **argv)
                 const bool partial=scenario=="partial-save";
                 if(allFail) failRenames=100;else if(partial) failRenames=1;
                 apply(list);failRenames=0;
-                check(gMenuApplyCount==1,"native Apply traverses both rows once");
-                check(CE_FullModelsChoice()==1&&CE_TerrainDetailChoice()==(scenario=="one-row"?0:1),"valid choices stay queued even if persistence fails");
-                live(false,false);frame();live(true,scenario!="one-row");
-                check(!item(list,0)->HasPendingChange()&&!item(list,1)->HasPendingChange(),"native commit records requested values");
+                check(gMenuApplyCount==1,"native Apply traverses all rows once");
+                const int wantAniso = scenario=="one-row" ? 4 : (scenario=="keyboard" ? 8 : 16);
+                check(CE_FullModelsChoice()==1&&CE_TerrainDetailChoice()==(scenario=="one-row"?0:1)&&CE_AnisoLevelChoice()==wantAniso,"valid choices stay queued even if persistence fails");
+                live(false,false,4);frame();live(true,scenario!="one-row",static_cast<unsigned>(wantAniso));
+                check(!item(list,0)->HasPendingChange()&&!item(list,1)->HasPendingChange()&&!item(list,2)->HasPendingChange(),"native commit records requested values");
                 if(allFail) {
-                    check(ini()==before&&notices==2,"failed writes preserve old data and issue visible feedback");
-                    check(unsaved(item(list,0))&&unsaved(item(list,1)),"both failed saves labelled");
+                    check(ini()==before&&notices==3,"failed writes preserve old data and issue visible feedback");
+                    check(unsaved(item(list,0))&&unsaved(item(list,1))&&unsaved(item(list,2)),"all failed saves labelled");
                     List reopened;NativeRows(&reopened);
                     check(item(reopened,0)->GetValue()==1&&unsaved(item(reopened,0)),"session choice and notice survive reopening");
+                    check(item(reopened,2)->GetValue()==3&&unsaved(item(reopened,2)),"aniso session choice and notice survive reopening");
                     if(scenario=="retry-later") {
-                        item(list,1)->mSelection=0;apply(list);frame();live(true,false);
-                        check(!unsaved(item(list,0))&&!unsaved(item(list,1)),"later Apply saves session preference and clears both notices");
-                        check(ini().find("full_models=1\n")!=std::string::npos&&ini().find("terrain_detail_distance=0\n")!=std::string::npos,"later saved values");
+                        item(list,1)->mSelection=0;apply(list);frame();live(true,false,16);
+                        check(!unsaved(item(list,0))&&!unsaved(item(list,1))&&!unsaved(item(list,2)),"later Apply saves session preference and clears all notices");
+                        check(ini().find("full_models=1\n")!=std::string::npos&&ini().find("terrain_detail_distance=0\n")!=std::string::npos&&ini().find("anisotropic_filtering=16\n")!=std::string::npos,"later saved values");
                     }
                 } else if(partial) {
-                    check(unsaved(item(list,0))&&!unsaved(item(list,1))&&notices==1,"save outcomes stay independent");
-                    check(ini().find("full_models=0\n")!=std::string::npos&&ini().find("terrain_detail_distance=1\n")!=std::string::npos,"second write preserves first refused preference");
+                    check(unsaved(item(list,0))&&!unsaved(item(list,1))&&!unsaved(item(list,2))&&notices==1,"save outcomes stay independent");
+                    check(ini().find("full_models=0\n")!=std::string::npos&&ini().find("terrain_detail_distance=1\n")!=std::string::npos&&ini().find("anisotropic_filtering=16\n")!=std::string::npos,"later writes preserve first refused preference");
                 } else {
-                    check(!unsaved(item(list,0))&&!unsaved(item(list,1))&&notices==0,"successful save has ordinary labels");
+                    check(!unsaved(item(list,0))&&!unsaved(item(list,1))&&!unsaved(item(list,2))&&notices==0,"successful save has ordinary labels");
                     check(ini().find("unknown=keep\n")!=std::string::npos,"unrelated preference preserved");
                     check(ini().find("full_models=1\n")!=std::string::npos,"models preference persisted");
-                    if(scenario=="one-row") check(ini().find("terrain_detail_distance=0\n")!=std::string::npos,"untouched terrain preference preserved");
+                    if(scenario=="one-row") check(ini().find("terrain_detail_distance=0\n")!=std::string::npos&&ini().find("anisotropic_filtering=4\n")!=std::string::npos,"untouched preferences preserved");
                     if(scenario=="round-trip") {
-                        choose(list,0,0);apply(list);live(true,true);frame();live(false,false);
-                        check(ini().find("full_models=0\n")!=std::string::npos&&ini().find("terrain_detail_distance=0\n")!=std::string::npos,"both options switch back live");
+                        choose(list,0,0);item(list,2)->mSelection=0;apply(list);live(true,true,16);frame();live(false,false,0);
+                        check(ini().find("full_models=0\n")!=std::string::npos&&ini().find("terrain_detail_distance=0\n")!=std::string::npos&&ini().find("anisotropic_filtering=0\n")!=std::string::npos,"all options switch back live");
                     }
                 }
             }

@@ -282,7 +282,16 @@ struct PatchList {
                             "bool reserveWitnessActive=false;int reserveReleaseCalls=0,reserveOwnerChecks=0,reserveOwnerHits=0;\n"
                             "CLandscapeVB *CeTerrainReserveAllocate(int,unsigned short){return nullptr;}\n"
                             "bool CeTerrainReserveOwns(const void*p){++reserveOwnerChecks;bool owned=reserveWitnessActive && p==&reserveWitness;if(owned)++reserveOwnerHits;return owned;}\n"
-                            "void CeTerrainReserveReleased(const void*p){if(CeTerrainReserveOwns(p))++reserveReleaseCalls;}\n" + marker, 1)
+                            "void CeTerrainReserveReleased(const void*p){if(CeTerrainReserveOwns(p))++reserveReleaseCalls;}\n"
+                            "bool gMirrorPass=false;\n"
+                            "bool CeTerrainTexturesBeginView(int,const FVector&,const FVector&,int,int,bool){return false;}\n"
+                            "bool CeTerrainTexturesActive(int){return false;}\n"
+                            "int CeTerrainTexturesChoose(int,int,int,int,int,float){return 0;}\n"
+                            "void CeTerrainTexturesQueueTile(int,int,unsigned short,int){}\n"
+                            "void CeTerrainTexturesFlush(int){}\n"
+                            "void *CeTerrainTexturesGetTexture(int,int){return nullptr;}\n"
+                            "float CeTerrainTexturesUvScale(int,int){return 1.f/512.f;}\n"
+                            "const unsigned short *CeTerrainTexturesDrawTiles(int,int,int *n){if(n)*n=0;return nullptr;}\n" + marker, 1)
         # Observe the actual texture selector's arguments and result at its call
         # boundary. A geometry extension must not scale these cache coordinates.
         selector = terrain.definition(sources["DXLandscape.cpp"], "static inline SINT ChooseLandscapeTexture(")

@@ -83,7 +83,13 @@ class Child:
             self.child = subprocess.Popen(command, cwd=directory, stdin=subprocess.PIPE,
                                           stdout=subprocess.PIPE, stderr=self.stderr)
             self.pidfd = os.pidfd_open(self.child.pid)
+            # posix_spawn(CLONE_VFORK) can return after begin_new_exec releases the old mm
+            # and before load_elf_binary populates mm->arg_start/arg_end in /proc/<pid>/cmdline.
+            deadline = time.monotonic() + 1.0
             self.identity = self._identity()
+            while not self.identity[1] and self.child.poll() is None and time.monotonic() < deadline:
+                time.sleep(0.001)
+                self.identity = self._identity()
             check(self.identity[1] == self.expected_cmdline, "exact spawned child command line")
         except BaseException:
             # A failure after Popen still owns a child and both pipe ends.

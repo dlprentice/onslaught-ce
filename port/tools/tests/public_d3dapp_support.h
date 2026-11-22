@@ -42,7 +42,8 @@ enum D3DMULTISAMPLE_TYPE { D3DMULTISAMPLE_TEST_UNSET=-1,D3DMULTISAMPLE_NONE=0,D3
     D3DMULTISAMPLE_4_SAMPLES=4,D3DMULTISAMPLE_6_SAMPLES=6,D3DMULTISAMPLE_8_SAMPLES=8 };
 const DWORD D3DCREATE_FPU_PRESERVE=2,D3DCREATE_PUREDEVICE=16,D3DCREATE_SOFTWARE_VERTEXPROCESSING=32,
     D3DCREATE_HARDWARE_VERTEXPROCESSING=64,D3DCREATE_MIXED_VERTEXPROCESSING=128,D3DCREATE_DISABLE_DRIVER_MANAGEMENT=256;
-const DWORD D3DDEVCAPS_HWTRANSFORMANDLIGHT=1,D3DDEVCAPS_PUREDEVICE=2,D3DUSAGE_DEPTHSTENCIL=2,D3DUSAGE_RENDERTARGET=1;
+const DWORD D3DDEVCAPS_HWTRANSFORMANDLIGHT=1,D3DDEVCAPS_PUREDEVICE=2,D3DUSAGE_DEPTHSTENCIL=2,D3DUSAGE_RENDERTARGET=1,
+    D3DPRASTERCAPS_ANISOTROPY=0x00020000u;
 const int D3DRTYPE_TEXTURE=3,D3DRTYPE_SURFACE=1,D3DSWAPEFFECT_DISCARD=1,D3DSWAPEFFECT_COPY=3,
     D3DPRESENT_INTERVAL_DEFAULT=0,D3DPRESENT_INTERVAL_ONE=1,D3DPRESENT_INTERVAL_IMMEDIATE=2,
     D3DPRESENTFLAG_LOCKABLE_BACKBUFFER=1,D3DBACKBUFFER_TYPE_MONO=0,D3DQUERYTYPE_RESOURCEMANAGER=5,D3D_SDK_VERSION=32;
@@ -50,8 +51,8 @@ struct POINT { LONG x=0,y=0; };
 struct RECT { LONG left=0,top=0,right=0,bottom=0; };
 inline void SetRect(RECT *r,LONG l,LONG t,LONG w,LONG h) { *r={l,t,w,h}; }
 struct MINMAXINFO { POINT ptReserved,ptMaxSize,ptMaxPosition,ptMinTrackSize,ptMaxTrackSize; };
-struct D3DCAPS9 { DWORD DevCaps=3,MaxTextureWidth=4096,MaxTextureHeight=4096,
-    PixelShaderVersion=0xffff0200u,VertexShaderVersion=0xfffe0101u; };
+struct D3DCAPS9 { DWORD DevCaps=3,RasterCaps=D3DPRASTERCAPS_ANISOTROPY,MaxTextureWidth=4096,MaxTextureHeight=4096,
+    MaxAnisotropy=16,PixelShaderVersion=0xffff0200u,VertexShaderVersion=0xfffe0101u; };
 struct D3DDISPLAYMODE { UINT Width=0,Height=0,RefreshRate=0; D3DFORMAT Format=D3DFMT_UNKNOWN; };
 struct D3DADAPTER_IDENTIFIER9 { char Driver[128]={},Description[128]={}; struct { DWORD HighPart=0,LowPart=0; } DriverVersion;
     DWORD VendorId=0,DeviceId=0,SubSysId=0,Revision=0,WHQLLevel=0; };
@@ -141,6 +142,7 @@ inline bool PortCeGraphicsPolicyActive() { return false; }
 inline bool PortCeGraphicsFloatTargetRequired() { return false; }
 inline void PortCeGraphicsBeginDevice(unsigned, unsigned, bool, bool) {}
 inline void PortCeGraphicsFinishDevice(bool) {}
+extern "C" inline void CeAnisoSetHardwareCaps(unsigned, bool) {}
 #endif
 #endif
 #endif

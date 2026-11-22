@@ -11,6 +11,10 @@ extern "C" int CE_FullModelsRequest(int);
 extern "C" int CE_TerrainDetailChoice();
 extern "C" int CE_TerrainDetailRequest(int);
 extern "C" int CE_TerrainDetailStatus();
+extern "C" int CE_AnisoChoice();
+extern "C" int CE_AnisoRequest(int);
+extern "C" int CE_AnisoChoiceToLevel(int);
+extern "C" unsigned CE_AnisoHardwareMax();
 extern "C" int CE_SettingSet(const char *, int);
 
 bool PortCeQualityOptionsAvailable()
@@ -31,14 +35,14 @@ bool PortCeQualityOptionsAvailable()
 
 namespace
 {
-    enum QualityKind { FullModels, TerrainDistance, QualityCount };
+    enum QualityKind { FullModels, TerrainDistance, AnisoFiltering, QualityCount };
     // What the frame policy reports for a requested terrain choice (terrain_quality.h).
     enum TerrainStatus { TerrainPending = 0, TerrainActive = 1, TerrainResourceFallback = 2 };
     enum QualityResult { QualitySaved, QualitySessionOnly, QualityRefused };
     // Keep a session-only notice truthful after leaving and reopening Video Options.
-    QualityResult results[QualityCount] = { QualitySaved, QualitySaved };
-    // The rows alive now (the front end's Options and a level's Pause Menu may each hold a pair): their list is drawn at CE's row pitch.
-    const void *liveRows[8];
+    QualityResult results[QualityCount] = { QualitySaved, QualitySaved, QualitySaved };
+    // The rows alive now (the front end's Options and a level's Pause Menu may each hold a set): their list is drawn at CE's row pitch.
+    const void *liveRows[12];
     void Track(const void *row, bool alive)
     {
         for (unsigned i = 0; i < sizeof(liveRows) / sizeof(liveRows[0]); ++i)
@@ -47,6 +51,32 @@ namespace
                 liveRows[i] = alive ? row : 0;
                 return;
             }
+    }
+
+    int AnisoChoiceCount()
+    {
+        const unsigned maxHw = CE_AnisoHardwareMax();
+        if (maxHw >= 16u) return 4;
+        if (maxHw >= 8u) return 3;
+        if (maxHw >= 2u) return 2;
+        return 1;
+    }
+
+    const WCHAR *AnisoChoiceLabel(int value, QualityResult state, bool isCurrent)
+    {
+        static const WCHAR *const kPlain[4] = { L"Off", L"4x", L"8x", L"16x" };
+        static const WCHAR *const kUnsaved[4] = { L"Off (not saved)", L"4x (not saved)", L"8x (not saved)", L"16x (not saved)" };
+        static const WCHAR *const kRefused[4] = { L"Off (not changed)", L"4x (not changed)", L"8x (not changed)", L"16x (not changed)" };
+        if (value < 0 || value > 3) value = 0;
+        if (value == 1 && CE_AnisoHardwareMax() < 4u)
+        {
+            if (state == QualityRefused && isCurrent) return L"2x (not changed)";
+            if (state == QualitySessionOnly) return L"2x (not saved)";
+            return L"2x";
+        }
+        if (state == QualityRefused && isCurrent) return kRefused[value];
+        if (state == QualitySessionOnly) return kUnsaved[value];
+        return kPlain[value];
     }
 
     class QualityItem : public CMenuMenuItem
@@ -62,11 +92,18 @@ namespace
         // The label never changes, as the original's never do ("Label:value", no space): a state follows the value.
         WCHAR *GetText() override
         {
-            return const_cast<WCHAR *>(kind == FullModels ? L"Full models:" : L"Terrain detail distance:");
+            if (kind == FullModels) return const_cast<WCHAR *>(L"Full models:");
+            if (kind == TerrainDistance) return const_cast<WCHAR *>(L"Terrain detail distance:");
+            return const_cast<WCHAR *>(L"Anisotropic filtering:");
         }
-        int GetNumChoices() override { return 2; }
+        int GetNumChoices() override
+        {
+            return kind == AnisoFiltering ? AnisoChoiceCount() : 2;
+        }
         WCHAR *GetChoiceText(int value) override
         {
+            if (kind == AnisoFiltering)
+                return const_cast<WCHAR *>(AnisoChoiceLabel(value, results[kind], value == GetValue()));
             // A refused change leaves the row on the choice still in effect, and says that it did not change.
             if (results[kind] == QualityRefused && value == GetValue())
             {
@@ -86,7 +123,13 @@ namespace
         }
         int GetValue() override
         {
-            return kind == FullModels ? CE_FullModelsChoice() : CE_TerrainDetailChoice();
+            if (kind == FullModels) return CE_FullModelsChoice();
+            if (kind == TerrainDistance) return CE_TerrainDetailChoice();
+            int choice = CE_AnisoChoice();
+            const int limit = AnisoChoiceCount() - 1;
+            if (choice < 0) choice = 0;
+            if (choice > limit) choice = limit;
+            return choice;
         }
         void Commit() override
         {
@@ -97,7 +140,8 @@ namespace
         }
         void SetValue(int value) override
         {
-            if (!PortCeQualityOptionsAvailable() || (value != 0 && value != 1))
+            const int choices = GetNumChoices();
+            if (!PortCeQualityOptionsAvailable() || value < 0 || value >= choices)
             {
                 results[kind] = QualityRefused;
                 mSelection = mValue = GetValue();
@@ -109,7 +153,9 @@ namespace
                 results[kind] = QualitySaved;
                 return;
             }
-            const int queued = kind == FullModels ? CE_FullModelsRequest(value) : CE_TerrainDetailRequest(value);
+            const int requestValue = kind == AnisoFiltering ? CE_AnisoChoiceToLevel(value) : value;
+            const int queued = kind == FullModels ? CE_FullModelsRequest(requestValue) :
+                kind == TerrainDistance ? CE_TerrainDetailRequest(requestValue) : CE_AnisoRequest(requestValue);
             if (!queued)
             {
                 results[kind] = QualityRefused;
@@ -118,7 +164,9 @@ namespace
             }
             // A valid request applies next complete render frame even if persistence fails.
             // The settings writer preserves the old file on refusal; never undo the working session choice.
-            const bool saved = CE_SettingSet(kind == FullModels ? "full_models" : "terrain_detail_distance", value) != 0;
+            const char *key = kind == FullModels ? "full_models" :
+                kind == TerrainDistance ? "terrain_detail_distance" : "anisotropic_filtering";
+            const bool saved = CE_SettingSet(key, requestValue) != 0;
             results[kind] = saved ? QualitySaved : QualitySessionOnly;
             if (!saved) PortCeSaveFailedNotice();
         }
@@ -135,3 +183,4 @@ bool PortCeQualityRow(const void *item)
 
 CMenuItem *PortCeFullModelsItem() { return new((EMemoryType)0x80) QualityItem(FullModels); }
 CMenuItem *PortCeTerrainDetailItem() { return new((EMemoryType)0x80) QualityItem(TerrainDistance); }
+CMenuItem *PortCeAnisoFilteringItem() { return new((EMemoryType)0x80) QualityItem(AnisoFiltering); }

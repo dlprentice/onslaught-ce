@@ -14,9 +14,11 @@
 extern CTweakSLONG GEFORCE_FX_POWER, EXTRA_GEFORCE_FX_FEATURES, R32F_WORKS, MY_READABLE_Z_BUFFER;
 bool PortCeLayer();
 extern "C" int CE_SettingGetBool(const char *, int);
+extern "C" int CE_SettingGetText(const char *, char *, int);
 extern "C" int CE_SettingSet(const char *, int);
 extern "C" int CE_FullModelsRequest(int);	// platform/common/model_quality.cpp
 extern "C" int CE_TerrainDetailRequest(int);	// platform/common/terrain_quality.cpp
+extern "C" int CE_AnisoRequest(int);	// platform/common/aniso_quality.cpp
 int PortUserFileState(const char *rel);	// port/platform/<target>: 1 the writable folder has its own copy of the file, 0 none, -1 not known
 
 namespace
@@ -34,10 +36,34 @@ unsigned seenResources, failedResources;
 // so the profile keeps showing it after it has saved options of its own (the options file does not hold these rows); an unwritable
 // ce.ini leaves a request for this session only. A request the layer refuses (a faithful run) writes nothing.
 const int kFreshTerrainDetail = 1;
+const int kFreshAnisotropicFiltering = 16;
 
 void FreshBeyondRetailRow(const char *key, int (*request)(int), int fresh)
 {
     const int saved = CE_SettingGetBool(key, -1);
+    if (saved >= 0) request(saved);
+    else if (request(fresh)) CE_SettingSet(key, fresh);
+}
+
+int SavedAnisoSetting(const char *key)
+{
+    char text[32] = {};
+    if (!CE_SettingGetText(key, text, int(sizeof(text)))) return -1;
+    const char *p = text;
+    while (*p == ' ' || *p == '\t') ++p;
+    if (!*p) return -1;
+    char *end = NULL;
+    const long parsed = strtol(p, &end, 10);
+    if (end == p) return -1;
+    while (*end == ' ' || *end == '\t' || *end == '\r') ++end;
+    if (*end) return -1;
+    const int value = int(parsed);
+    return (value == 0 || value == 4 || value == 8 || value == 16) ? value : -1;
+}
+
+void FreshAnisoRow(const char *key, int (*request)(int), int fresh)
+{
+    const int saved = SavedAnisoSetting(key);
     if (saved >= 0) request(saved);
     else if (request(fresh)) CE_SettingSet(key, fresh);
 }
@@ -103,6 +129,7 @@ bool PortCeGraphicsTakeFreshDefaults()
     freshOptionsPending = false;
     FreshBeyondRetailRow("full_models", CE_FullModelsRequest, 0);
     FreshBeyondRetailRow("terrain_detail_distance", CE_TerrainDetailRequest, kFreshTerrainDetail);
+    FreshAnisoRow("anisotropic_filtering", CE_AnisoRequest, kFreshAnisotropicFiltering);
     return true;
 }
 

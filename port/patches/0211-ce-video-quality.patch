@@ -1,6 +1,6 @@
 --- a/PauseMenu.cpp
 +++ b/PauseMenu.cpp
-@@ -593,6 +593,17 @@
+@@ -593,6 +593,19 @@
  		list->AddItem(PortCeDisplayModeItem());
  	}
  #endif
@@ -11,8 +11,10 @@
 +	{
 +		extern CMenuItem *PortCeFullModelsItem();
 +		extern CMenuItem *PortCeTerrainDetailItem();
++		extern CMenuItem *PortCeAnisoFilteringItem();
 +		list->AddItem(PortCeFullModelsItem());
 +		list->AddItem(PortCeTerrainDetailItem());
++		list->AddItem(PortCeAnisoFilteringItem());
 +	}
 +#endif
  #line 1416

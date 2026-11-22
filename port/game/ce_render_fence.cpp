@@ -22,6 +22,8 @@
 #include "RenderThing.h"
 #include "meshpose.h"
 #include "shadows.h"
+#include "engine.h"
+#include "landscape.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -181,11 +183,42 @@ void RestoreShadows()
     gShadows.valid = false;
 }
 // CE_RENDER_FENCE_SHADOWS_END
+
+struct SavedLandscapeView {
+    bool valid;
+    FVector lastPos;
+    FVector lastLook;
+};
+SavedLandscapeView gLandscapeView = {};
+
+void SaveLandscapeView()
+{
+    gLandscapeView.valid = false;
+    CLANDSCAPE* land = ENGINE.GetLandscape();
+    if (!land || !land->mViews || land->mNumViews <= 0) return;
+    CLandscapeView& v = land->mViews[0];
+    gLandscapeView.lastPos = v.mLastPos;
+    gLandscapeView.lastLook = v.mUnknown24;
+    gLandscapeView.valid = true;
+    // Snap the fenced pass's smoothed landscape focus directly to the Commander camera
+    // instead of lagging 3% per frame from the cockpit's position.
+    v.mLastPos.X = 1234567.0f;
+}
+
+void RestoreLandscapeView()
+{
+    if (!gLandscapeView.valid) return;
+    gLandscapeView.valid = false;
+    CLANDSCAPE* land = ENGINE.GetLandscape();
+    if (!land || !land->mViews || land->mNumViews <= 0) return;
+    land->mViews[0].mLastPos = gLandscapeView.lastPos;
+    land->mViews[0].mUnknown24 = gLandscapeView.lastLook;
+}
 }
 
 bool CeRenderFenceSave()
 {
-    gRegionCount = gByteCount = 0; gOverflow = false; gComponentCount = 0; gShadows.valid = false;
+    gRegionCount = gByteCount = 0; gOverflow = false; gComponentCount = 0; gShadows.valid = false; gLandscapeView.valid = false;
     ListIterator<CThing> it(&WORLD.GetThingNB());
     for (CThing* t = it.First(); t; t = it.Next()) {
         if (CMotionController* mc = t->GetMotionController()) KeepController(t, mc);
@@ -208,6 +241,7 @@ bool CeRenderFenceSave()
     }
     if (gOverflow) { gRegionCount = gByteCount = 0; gComponentCount = 0; gShadows.valid = false; return false; }
     SaveShadows();
+    SaveLandscapeView();
     return true;
 }
 
@@ -224,6 +258,7 @@ void CeRenderFenceRestore()
         CComponent* c = gComponents[i].c;
         c->GetPos() = gComponents[i].pos; c->GetOrientation() = gComponents[i].ori; c->mUnknown278 = gComponents[i].stamp;
     }
+    RestoreLandscapeView();
     RestoreShadows();
 }
 

@@ -18,22 +18,33 @@ bool layer = true, opened, rowsAccepted = true, iniWritable = true;
 int openError = ENOENT, reads, writes, logs, failures, displayChanges;
 int userFile = 1, userFileAsks;	// the profile's own options file: 1 present, 0 absent, -1 not known
 int quality = -1, qualityCalls;
-std::map<std::string, int> ini;	// the valid lines of this case's ce.ini: key -> 0 or 1
+std::map<std::string, int> ini;	// the valid lines of this case's ce.ini: key -> value
 std::vector<std::string> written;	// "key=value" of every CE_SettingSet, in order
-int fullModels = -1, terrainDetail = -1, fullCalls, terrainCalls;	// what the two beyond-retail rows were last asked for (-1: never), and how often
+int fullModels = -1, terrainDetail = -1, anisoLevel = -1, fullCalls, terrainCalls, anisoCalls;	// what the beyond-retail rows were last asked for (-1: never), and how often
 void Check(bool condition, const char *label) { if (!condition) { ++failures; std::cout << "FAIL " << label << '\n'; } }
 }
 bool PortCeLayer() { return layer; }
 extern "C" int CE_SettingGetBool(const char *key, int fallback) { ++reads; auto at = ini.find(key); return at == ini.end() ? fallback : at->second; }
+extern "C" int CE_SettingGetText(const char *key, char *out, int n)
+{
+    ++reads;
+    auto at = ini.find(key);
+    if (at == ini.end() || !out || n <= 0) return 0;
+    const std::string text = std::to_string(at->second);
+    if (static_cast<int>(text.size()) >= n) return 0;
+    std::snprintf(out, static_cast<size_t>(n), "%s", text.c_str());
+    return 1;
+}
 extern "C" int CE_SettingSet(const char *key, int value)
 {
     ++writes; written.push_back(std::string(key) + "=" + std::to_string(value));
     if (iniWritable) ini[key] = value;
     return iniWritable ? 1 : 0;
 }
-// The layer's own refusal (a faithful run) is the only reason a request of the two rows fails; a value other than 0 or 1 is never asked for.
+// The layer's own refusal (a faithful run) is the only reason a request of the beyond-retail rows fails.
 extern "C" int CE_FullModelsRequest(int value) { ++fullCalls; Check(value == 0 || value == 1, "Full models is asked for 0 or 1"); if (!rowsAccepted) return 0; fullModels = value; return 1; }
 extern "C" int CE_TerrainDetailRequest(int value) { ++terrainCalls; Check(value == 0 || value == 1, "Terrain detail distance is asked for 0 or 1"); if (!rowsAccepted) return 0; terrainDetail = value; return 1; }
+extern "C" int CE_AnisoRequest(int value) { ++anisoCalls; Check(value == 0 || value == 4 || value == 8 || value == 16, "Anisotropic filtering is asked for 0, 4, 8 or 16"); if (!rowsAccepted) return 0; anisoLevel = value; return 1; }
 void PortSessionLog(PortSessionCategory, bool, const char *, ...) { ++logs; }
 void DisplaySettingChanged() { ++displayChanges; }
 int PortUserFileState(const char *name) { ++userFileAsks; Check(std::string(name) == "defaultoptions.bea", "the profile's own options file is asked for by the game's name"); return userFile; }
@@ -92,12 +103,15 @@ int main(int argc, char **argv)
 {
     if (argc < 2) return 2;
     const std::string name = argv[1];
-    // Further arguments are valid lines this start finds in ce.ini (key=0 or key=1): what an earlier start of the same profile wrote.
+    // Further arguments are valid lines this start finds in ce.ini (key=value): what an earlier start of the same profile wrote.
     for (int i = 2; i < argc; ++i) {
         const std::string line = argv[i];
         const std::string::size_type cut = line.find('=');
-        if (cut == std::string::npos || cut + 2 != line.size() || (line[cut + 1] != '0' && line[cut + 1] != '1')) return 2;
-        ini[line.substr(0, cut)] = line[cut + 1] - '0';
+        if (cut == std::string::npos || cut + 1 >= line.size()) return 2;
+        char *end = nullptr;
+        const long parsed = std::strtol(line.c_str() + cut + 1, &end, 10);
+        if (!end || *end) return 2;
+        ini[line.substr(0, cut)] = static_cast<int>(parsed);
     }
     if (name == "existing" || name == "existing-saved-on" || name == "existing-saved-off" || name == "retail-leftover" || name == "profile-unknown" ||
         name == "retail-leftover-opt-out") opened = true;
@@ -109,8 +123,8 @@ int main(int argc, char **argv)
     if (name == "io-error") openError = EIO;
     if (name == "unclassified") openError = 0;
     if (name == "opt-out" || name == "retail-leftover-opt-out") ini["extra_graphics"] = 0;	// the extras row alone
-    if (name == "rows-saved-off") { ini["full_models"] = 0; ini["terrain_detail_distance"] = 0; }
-    if (name == "rows-saved-on") { ini["full_models"] = 1; ini["terrain_detail_distance"] = 1; }
+    if (name == "rows-saved-off") { ini["full_models"] = 0; ini["terrain_detail_distance"] = 0; ini["anisotropic_filtering"] = 0; }
+    if (name == "rows-saved-on") { ini["full_models"] = 1; ini["terrain_detail_distance"] = 1; ini["anisotropic_filtering"] = 8; }
     if (name == "rows-one-saved") ini["full_models"] = 0;
     if (name == "rows-unwritable") iniWritable = false;
     if (name == "rows-refused") rowsAccepted = false;
@@ -173,24 +187,27 @@ int main(int argc, char **argv)
         // the maximums being almost all Full models); a refused request writes nothing; an unwritable ce.ini still leaves the session request.
         const bool fullSaved = name == "rows-saved-off" || name == "rows-saved-on" || name == "rows-one-saved";
         const bool terrainSaved = name == "rows-saved-off" || name == "rows-saved-on";
+        const bool anisoSaved = name == "rows-saved-off" || name == "rows-saved-on";
         const int wantFull = name == "rows-refused" ? -1 : name == "rows-saved-on" ? 1 : 0;
         const int wantTerrain = name == "rows-refused" ? -1 : name == "rows-saved-off" ? 0 : 1;
-        // The options file holds none of the three rows, so a new profile's choice of the extra features is written once as well (before
-        // the two rows, whatever the device can do), or its second start would find saved options, no line, and switch them off.
+        const int wantAniso = name == "rows-refused" ? -1 : name == "rows-saved-off" ? 0 : name == "rows-saved-on" ? 8 : 16;
+        // The options file holds none of the beyond-retail rows, so a new profile's choices are written once as well.
         std::vector<std::string> wantWrites;
         if (extrasSaved < 0) wantWrites.push_back("extra_graphics=1");
         if (name != "rows-refused") {
             if (!fullSaved) wantWrites.push_back("full_models=0");
             if (!terrainSaved) wantWrites.push_back("terrain_detail_distance=1");
+            if (!anisoSaved) wantWrites.push_back("anisotropic_filtering=16");
         }
-        Check(fullModels == wantFull && terrainDetail == wantTerrain && fullCalls == 1 && terrainCalls == 1,
-              "a fresh profile asks for Full models and Terrain detail distance once, at the saved choice or the fresh one (Full models Off, Terrain detail distance Extended)");
+        Check(fullModels == wantFull && terrainDetail == wantTerrain && anisoLevel == wantAniso &&
+              fullCalls == 1 && terrainCalls == 1 && anisoCalls == 1,
+              "a fresh profile asks for Full models, Terrain detail distance and Anisotropic filtering once, at the saved or fresh choice");
         Check(written == wantWrites && writes == (int)wantWrites.size(),
-              "a fresh profile writes only the rows ce.ini has no valid line for (extra features, Full models, Terrain detail distance), with the fresh choice");
+              "a fresh profile writes only the rows ce.ini has no valid line for, with the fresh choice");
         Check(displayChanges == changes, "native setters retain reset side effects");
         quality = -9;
         PortCeGraphicsBeginDevice(0x0200u, 0x0101u, true, true);
-        Check(quality == -9 && qualityCalls == 1 && displayChanges == changes && fullCalls == 1 && terrainCalls == 1 && writes == (int)wantWrites.size(),
+        Check(quality == -9 && qualityCalls == 1 && displayChanges == changes && fullCalls == 1 && terrainCalls == 1 && anisoCalls == 1 && writes == (int)wantWrites.size(),
               "later device resets do not reapply fresh defaults over a user change");
     } else {
         Check((int)LT.device.MultiSampleType == -1, "existing unreadable unobserved and faithful options keep the device's own anti-aliasing");
@@ -198,7 +215,7 @@ int main(int argc, char **argv)
               RENDERSTATE_DISALLOW_MIPMAPPING.mValue == 1 && USER_TEXTURE_RES_LOSS_SHIFT.mValue == 2 &&
               USER_TEXTURE_ALLOW_32_BIT.mValue == 0 && displayChanges == 0,
               "existing unreadable unobserved and faithful options retain every authored initial visual choice");
-        Check(fullCalls == 0 && terrainCalls == 0 && writes == 0,
+        Check(fullCalls == 0 && terrainCalls == 0 && anisoCalls == 0 && writes == 0,
               "existing unreadable unobserved and faithful options leave the beyond-retail rows and ce.ini alone");
         if (faithful) Check(reads == 0 && writes == 0 && logs == 0, "faithful mode adds no settings or log activity");
     }

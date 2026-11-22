@@ -167,15 +167,16 @@ def check_rows(header):
     """Video Options at CE's pitch: the front end's first row where the original's fourteen rows put theirs, every row above the help
     line; in a level, Back above the message bar where 20 units drew it across the bar."""
     pitch = int(re.search(r"kCeCompactPitch = (\d+);", header).group(1))
-    shift = float(re.search(r"kCeCompactFrontShift = ([0-9.]+)f;", header).group(1))
+    shift = float(re.search(r"kCeCompactFrontShift = (-?[0-9.]+)f;", header).group(1))
+    pause_shift = float(re.search(r"kCeCompactPauseShift = (-?[0-9.]+)f;", header).group(1))
     original = rows(20, 0, 14, 300, False)
-    front = rows(pitch, shift, 17, 300, False)
-    before = rows(20, 0, 17, 300, False)
+    front = rows(pitch, shift, 18, 300, False)
+    before = rows(20, 0, 18, 300, False)
     if front[0] != original[0] or front[0] != 145:
         raise AssertionError(f"the front end's first row is at {front[0]}, the original's at {original[0]}")
     if not (front[-1] + 16 <= 452 and front[-1] <= before[-1]):
         raise AssertionError("Back must end above the help line, no lower than before")
-    pause, pause_before = rows(pitch, 0, 17, 240, True), rows(20, 0, 17, 240, True)
+    pause, pause_before = rows(pitch, pause_shift, 18, 240, True), rows(20, 0, 18, 240, True)
     if not (pause[-1] + 16 <= 406 < pause_before[-1] + 16):
         raise AssertionError(f"in a level Back must end above the message bar (y 406): {pause[-1] + 16}, was {pause_before[-1] + 16}")
     return {"front_first": front[0], "front_back_end": front[-1] + 16, "pause_first": pause[0], "pause_back_end": pause[-1] + 16,
@@ -282,7 +283,7 @@ def main():
             "ce-page-as-pause": (text, "return PortCeAsOptions((EFrontEndPage)page) == FEP_OPTIONS;", "return page == FEP_OPTIONS;", "window-page"),
             "pitch-ungated": (text, "return (PortCeQualityRow(item) && PortCeQualityOptionsAvailable()) ? kCeCompactPitch : 0;", "return PortCeQualityRow(item) ? kCeCompactPitch : 0;", "pitch"),
             "pitch-every-list": (text, "return (PortCeQualityRow(item) && PortCeQualityOptionsAvailable()) ? kCeCompactPitch : 0;", "return PortCeQualityOptionsAvailable() ? kCeCompactPitch : 0;", "pitch"),
-            "shift-in-pause": (text, "return (pitch && options_page) ? kCeCompactFrontShift : 0.f;", "return pitch ? kCeCompactFrontShift : 0.f;", "pitch"),
+            "shift-in-pause": (text, "return options_page ? kCeCompactFrontShift : kCeCompactPauseShift;", "return kCeCompactFrontShift;", "pitch"),
         }
         header_mutants = {
             "no-smallest-scale": (head, "kCeValueMinScale = 0.75f;", "kCeValueMinScale = 0.01f;", "squeeze-limit"),
@@ -298,7 +299,7 @@ def main():
             "window-front-top": (head, "kCeListFrontTop = 104.f;", "kCeListFrontTop = 80.f;", "window-limits"),
             "window-sized-by-font": (head, "const float room = (float)rowh > kCeListEntryRoom ? (float)rowh : kCeListEntryRoom;", "const float room = (float)rowh;", "window-sizes"),
             "edge-step-unbounded": (head, "if (hovered == first && first > 0) return -1;", "if (hovered == first) return -1;", "window-edge"),
-            "pitch-twenty": (head, "kCeCompactPitch = 18;", "kCeCompactPitch = 20;", "pitch"),
+            "pitch-twenty": (head, "kCeCompactPitch = 17;", "kCeCompactPitch = 20;", "pitch"),
         }
         for label, (original_text, old, new, case) in {**helper_mutants, **header_mutants}.items():
             if original_text.count(old) != 1:
@@ -366,7 +367,8 @@ def main():
         else:
             raise AssertionError("the capacity check missed the float quotient")
         for label, (old, new) in {"rows-first-moved": ("kCeCompactFrontShift = 13.f;", "kCeCompactFrontShift = 9.f;"),
-                                  "rows-pitch-twenty": ("kCeCompactPitch = 18;", "kCeCompactPitch = 20;")}.items():
+                                  "rows-pause-unshifted": ("kCeCompactPauseShift = -2.f;", "kCeCompactPauseShift = 0.f;"),
+                                  "rows-pitch-twenty": ("kCeCompactPitch = 17;", "kCeCompactPitch = 20;")}.items():
             try:
                 check_rows(head.replace(old, new))
             except AssertionError:

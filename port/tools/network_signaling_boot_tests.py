@@ -124,7 +124,7 @@ def main() -> int:
         root.mkdir(mode=0o700)
         (root / "tmp").mkdir(mode=0o700)
         trial_environment = environment | {"TMPDIR": str(root / "tmp")}
-        for relative in ["network.h", "ice_game.h", "ice_signaling.h", "ice_session.h", "ice_exchange.h"]:
+        for relative in ["network.h", "ice_game.h", "ice_signaling.h", "ice_session.h", "ice_route_status.h", "ice_exchange.h"]:
             data = (repo / "port/network" / relative).read_bytes()
             (root / relative).write_bytes(data)
             result["inputs"]["network/" + relative] = hashlib.sha256(data).hexdigest()

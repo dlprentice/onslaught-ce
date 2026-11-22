@@ -277,7 +277,9 @@ class LinkReceiptTests(unittest.TestCase):
                                                 (ice_deps, "install_lock", nullcontext()),
                                                 (build.deps, "require_sdl_receipt", None),
                                                 (build.deps, "sdl_receipt_sha256", "cd" * 32),
-                                                (build.deps, "sdl_link_receipt", {})):
+                                                (build.deps, "sdl_link_receipt", {}),
+                                                (build, "write_deps_record", None),
+                                                (build, "write_object_receipt", None)):
                         stack.enter_context(patch.object(module, name, return_value=value))
                     write = stack.enter_context(patch.object(build, "write_ice_link_receipt"))
                     self.assertEqual(game_rc or launcher_rc, build.main())

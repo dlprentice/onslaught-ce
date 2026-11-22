@@ -159,7 +159,7 @@ def main():
                 receipt["controls"].append({"label": label, "passed": False, "anchor_error": True})
                 continue
             variant = work / label / "network"; (variant / "tests").mkdir(parents=True)
-            for name in ("network.h", "ice_session.h", "ice_bridge.h", "media_profile.h", "text_chat.h"):
+            for name in ("network.h", "ice_session.h", "ice_route_status.h", "ice_bridge.h", "media_profile.h", "text_chat.h"):
                 shutil.copyfile(network / name, variant / name)
             (variant / "transport.cpp").write_text(original.replace(before, after, 1))
             test = variant / "tests/text_chat_transport_tests.cpp"

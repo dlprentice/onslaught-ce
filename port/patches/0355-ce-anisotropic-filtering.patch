@@ -1,0 +1,293 @@
+--- a/game.cpp
++++ b/game.cpp
+@@ -29,6 +29,9 @@
+ #include	"SoundManager.h"
+ #include	"music.h"
+ #include	"Camera.h"
++#ifdef CE_VERSION
++#include "../platform/common/aniso_quality.h"
++#endif
+ #include	"System.h"
+ #include	"ParticleManager.h"
+ #include	"ParticleSet.h"
+@@ -1826,6 +1829,9 @@
+ 	// retail: with the extra GeForce FX features on, a single-player frame first renders the landscape's reflection
+ 	// into its texture at 256x256, then renders again to the screen (0046e4bc..0046e4f2, 0046e8c5)
+ 	CRenderTargetSwap	mirror;
++#ifdef CE_VERSION
++	CeAnisoQualityBeginFrame();
++#endif
+ 
+ 	// Update time
+ 	float new_time=(EVENT_MANAGER.GetTime()+(GetFrameRenderFraction()*CLOCK_TICK))/CLOCK_TICK;
+--- a/DXEngine.cpp
++++ b/DXEngine.cpp
+@@ -82,6 +82,9 @@
+ #include	"MessageLog.h"
+ #include	"MessageBox.h"
+ //=============================================-===--==---=---- ---  --   -
++#ifdef CE_VERSION
++#include "../platform/common/aniso_quality.h"
++#endif
+ CTweakSLONG	OLD_WATER_TIMING("OLD_WATER_TIMING", 0);	// retail PC (0053d310)
+ // FUNCTION: 0x0053d310 init:OLD_WATER_TIMING
+ // FUNCTION: 0x0053d330 exit:OLD_WATER_TIMING
+@@ -220,6 +223,9 @@
+ 	PATCHMANAGER.Init(800,300,90);
+ //	PATCHMANAGER.Init(1000,400,120);
+ //	PATCHMANAGER.Init(2000,800,300);
++#ifdef CE_VERSION
++	CeAnisoSetHardwareCaps(LT.m_d3dCaps.MaxAnisotropy, (LT.m_d3dCaps.RasterCaps & D3DPRASTERCAPS_ANISOTROPY) != 0);
++#endif
+ 	
+ 	return(TRUE);
+ }
+@@ -899,8 +905,19 @@
+ 
+ 		{
+ 			SetMipFilterByGlobalToggle(0);										// retail PC (0053e728)
++#ifdef CE_VERSION
++			{
++				const bool ceAnisoSup = (LT.m_d3dCaps.RasterCaps & D3DPRASTERCAPS_ANISOTROPY) != 0;
++				CeAnisoSetHardwareCaps(LT.m_d3dCaps.MaxAnisotropy, ceAnisoSup);
++				const DWORD ceAnisoMin = CeAnisoUseAnisotropicFilter(4, LT.m_d3dCaps.MaxAnisotropy, ceAnisoSup) ? D3DTEXF_ANISOTROPIC : D3DTEXF_LINEAR;
++				const DWORD ceAnisoMax = CeAnisoEffectiveLevel(4, LT.m_d3dCaps.MaxAnisotropy, ceAnisoSup);
++				LT.SSS_NoCache(0, D3DSAMP_MINFILTER,		ceAnisoMin);
++				LT.SSS_NoCache(0, D3DSAMP_MAXANISOTROPY,	ceAnisoMax);
++			}
++#else
+ 			LT.SSS_NoCache(0, D3DSAMP_MINFILTER,		D3DTEXF_ANISOTROPIC);	// aniso on
+ 			LT.SSS_NoCache(0, D3DSAMP_MAXANISOTROPY,	4);
++#endif
+ 			float bias = -1.0f;
+ 			LT.SSS_NoCache(0, D3DSAMP_MIPMAPLODBIAS,	*((LPDWORD) (&bias)));
+ 
+--- a/DXLandscape.cpp
++++ b/DXLandscape.cpp
+@@ -37,6 +37,9 @@
+ #include	"maptex.h"
+ #include	"DXPalletizer.h"
+ #include	"gcgamut.h"
++#ifdef CE_VERSION
++#include "../platform/common/aniso_quality.h"
++#endif
+ #include	<stdio.h>
+ #include	"mathsconst.h"	// the maths pair, defined below and exported (DXKempyCube.obj uses it)
+ #include	"shadows.h"
+@@ -645,8 +648,18 @@
+ 		LT.SetModulate(3);
+ 
+ 		LT.STS(0, D3DTSS_TEXTURETRANSFORMFLAGS, D3DTTFF_COUNT2);
++#ifdef CE_VERSION
++		{
++			const bool ceAnisoSup = (LT.m_d3dCaps.RasterCaps & D3DPRASTERCAPS_ANISOTROPY) != 0;
++			const DWORD ceAnisoMin = CeAnisoUseAnisotropicFilter(4, LT.m_d3dCaps.MaxAnisotropy, ceAnisoSup) ? D3DTEXF_ANISOTROPIC : D3DTEXF_LINEAR;
++			const DWORD ceAnisoMax = CeAnisoEffectiveLevel(4, LT.m_d3dCaps.MaxAnisotropy, ceAnisoSup);
++			LT.SSS_NoCache(0, D3DSAMP_MINFILTER, ceAnisoMin);
++			LT.SSS_NoCache(0, D3DSAMP_MAXANISOTROPY, ceAnisoMax);
++		}
++#else
+ 		LT.SSS_NoCache(0, D3DSAMP_MINFILTER, D3DTEXF_ANISOTROPIC);
+ 		LT.SSS_NoCache(0, D3DSAMP_MAXANISOTROPY, 4);
++#endif
+ 		gTextureMatrix._21 = 0;
+ 		gTextureMatrix._12 = 0;
+ 		gTextureMatrix._11 = 1.0f / 512;
+@@ -657,6 +670,18 @@
+ 
+ 		LT.D3D_SetTexture(1, mMixerTexture->GetTexture());
+ 		SetMipFilterByGlobalToggle(1);
++#ifdef CE_VERSION
++		if (CeAnisoQualityActive())
++		{
++			const bool ceAnisoSup = (LT.m_d3dCaps.RasterCaps & D3DPRASTERCAPS_ANISOTROPY) != 0;
++			const DWORD ceAnisoMin = CeAnisoUseAnisotropicFilter(4, LT.m_d3dCaps.MaxAnisotropy, ceAnisoSup) ? D3DTEXF_ANISOTROPIC : D3DTEXF_LINEAR;
++			const DWORD ceAnisoMax = CeAnisoEffectiveLevel(4, LT.m_d3dCaps.MaxAnisotropy, ceAnisoSup);
++			LT.SSS_NoCache(1, D3DSAMP_MINFILTER, ceAnisoMin);
++			LT.SSS_NoCache(1, D3DSAMP_MAXANISOTROPY, ceAnisoMax);
++			LT.SSS_NoCache(3, D3DSAMP_MINFILTER, ceAnisoMin);
++			LT.SSS_NoCache(3, D3DSAMP_MAXANISOTROPY, ceAnisoMax);
++		}
++#endif
+ 		LT.STS(1, D3DTSS_TEXTURETRANSFORMFLAGS, D3DTTFF_COUNT2);
+ 		LT.STS(1, D3DTSS_TEXCOORDINDEX, 0);
+ 		gTextureMatrix._21 = 0;
+@@ -706,6 +731,12 @@
+ 			LT.STS(1, D3DTSS_TEXCOORDINDEX, 1);
+ 			LT.STS(2, D3DTSS_TEXCOORDINDEX, 2);
+ 			LT.STS(3, D3DTSS_TEXCOORDINDEX, 3);
++#ifdef CE_VERSION
++			LT.SSS_NoCache(1, D3DSAMP_MAXANISOTROPY, 1);
++			LT.SSS_NoCache(1, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
++			LT.SSS_NoCache(3, D3DSAMP_MAXANISOTROPY, 1);
++			LT.SSS_NoCache(3, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
++#endif
+ 		}
+ 		else
+ 			LANDSCAPE_METHOD.Accept();
+@@ -714,8 +745,18 @@
+ 	if (LANDSCAPE_METHOD.Try(1))
+ 	{
+ 		LT.STS(0, D3DTSS_TEXTURETRANSFORMFLAGS, D3DTTFF_COUNT2);
++#ifdef CE_VERSION
++		{
++			const bool ceAnisoSup = (LT.m_d3dCaps.RasterCaps & D3DPRASTERCAPS_ANISOTROPY) != 0;
++			const DWORD ceAnisoMin = CeAnisoUseAnisotropicFilter(4, LT.m_d3dCaps.MaxAnisotropy, ceAnisoSup) ? D3DTEXF_ANISOTROPIC : D3DTEXF_LINEAR;
++			const DWORD ceAnisoMax = CeAnisoEffectiveLevel(4, LT.m_d3dCaps.MaxAnisotropy, ceAnisoSup);
++			LT.SSS_NoCache(0, D3DSAMP_MINFILTER, ceAnisoMin);
++			LT.SSS_NoCache(0, D3DSAMP_MAXANISOTROPY, ceAnisoMax);
++		}
++#else
+ 		LT.SSS_NoCache(0, D3DSAMP_MINFILTER, D3DTEXF_ANISOTROPIC);
+ 		LT.SSS_NoCache(0, D3DSAMP_MAXANISOTROPY, 4);
++#endif
+ 		gTextureMatrix._21 = 0;
+ 		gTextureMatrix._12 = 0;
+ 		gTextureMatrix._11 = 1.0f / 512;
+@@ -734,6 +775,16 @@
+ 		LT.ForceTS(1, D3DTSS_COLORARG2, D3DTA_CURRENT);
+ 		LT.ForceTS(1, D3DTSS_ALPHAARG2, D3DTA_CURRENT);
+ 		SetMipFilterByGlobalToggle(1);
++#ifdef CE_VERSION
++		if (CeAnisoQualityActive())
++		{
++			const bool ceAnisoSup = (LT.m_d3dCaps.RasterCaps & D3DPRASTERCAPS_ANISOTROPY) != 0;
++			const DWORD ceAnisoMin = CeAnisoUseAnisotropicFilter(4, LT.m_d3dCaps.MaxAnisotropy, ceAnisoSup) ? D3DTEXF_ANISOTROPIC : D3DTEXF_LINEAR;
++			const DWORD ceAnisoMax = CeAnisoEffectiveLevel(4, LT.m_d3dCaps.MaxAnisotropy, ceAnisoSup);
++			LT.SSS_NoCache(1, D3DSAMP_MINFILTER, ceAnisoMin);
++			LT.SSS_NoCache(1, D3DSAMP_MAXANISOTROPY, ceAnisoMax);
++		}
++#endif
+ 		LT.SetModulate(1);
+ 		LT.STS(1, D3DTSS_TEXTURETRANSFORMFLAGS, D3DTTFF_COUNT2);
+ 		LT.STS(1, D3DTSS_TEXCOORDINDEX, 0);
+@@ -755,6 +806,10 @@
+ 			LT.STS(1, D3DTSS_TEXCOORDINDEX, 1);
+ 			LT.STS(1, D3DTSS_COLOROP, D3DTOP_DISABLE);
+ 			LT.STS(1, D3DTSS_ALPHAOP, D3DTOP_DISABLE);
++#ifdef CE_VERSION
++			LT.SSS_NoCache(1, D3DSAMP_MAXANISOTROPY, 1);
++			LT.SSS_NoCache(1, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
++#endif
+ 		}
+ 		else
+ 			LANDSCAPE_METHOD.Accept();
+@@ -769,8 +824,18 @@
+ 		LT.STS(0, D3DTSS_ALPHAARG1, D3DTA_TEXTURE);
+ 		LT.STS(0, D3DTSS_ALPHAARG2, D3DTA_DIFFUSE);
+ 		LT.STS(0, D3DTSS_TEXTURETRANSFORMFLAGS, D3DTTFF_COUNT2);
++#ifdef CE_VERSION
++		{
++			const bool ceAnisoSup = (LT.m_d3dCaps.RasterCaps & D3DPRASTERCAPS_ANISOTROPY) != 0;
++			const DWORD ceAnisoMin = CeAnisoUseAnisotropicFilter(4, LT.m_d3dCaps.MaxAnisotropy, ceAnisoSup) ? D3DTEXF_ANISOTROPIC : D3DTEXF_LINEAR;
++			const DWORD ceAnisoMax = CeAnisoEffectiveLevel(4, LT.m_d3dCaps.MaxAnisotropy, ceAnisoSup);
++			LT.SSS_NoCache(0, D3DSAMP_MINFILTER, ceAnisoMin);
++			LT.SSS_NoCache(0, D3DSAMP_MAXANISOTROPY, ceAnisoMax);
++		}
++#else
+ 		LT.SSS_NoCache(0, D3DSAMP_MINFILTER, D3DTEXF_ANISOTROPIC);
+ 		LT.SSS_NoCache(0, D3DSAMP_MAXANISOTROPY, 4);
++#endif
+ 		LT.STS(1, D3DTSS_COLOROP, D3DTOP_DISABLE);
+ 		LT.STS(1, D3DTSS_ALPHAOP, D3DTOP_DISABLE);
+ 		gTextureMatrix._21 = 0;
+@@ -868,6 +933,10 @@
+ 		LT.STS(2, D3DTSS_COLOROP, D3DTOP_DISABLE);
+ 		LT.STS(3, D3DTSS_ALPHAOP, D3DTOP_DISABLE);
+ 		LT.STS(3, D3DTSS_COLOROP, D3DTOP_DISABLE);
++#ifdef CE_VERSION
++		LT.SSS_NoCache(3, D3DSAMP_MAXANISOTROPY, 1);
++		LT.SSS_NoCache(3, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
++#endif
+ 	}
+ 	if (LANDSCAPE_METHOD.GetMethod() >= 1)
+ 	{
+@@ -875,6 +944,10 @@
+ 		LT.STS(1, D3DTSS_TEXCOORDINDEX, 1);
+ 		LT.STS(1, D3DTSS_COLOROP, D3DTOP_DISABLE);
+ 		LT.STS(1, D3DTSS_ALPHAOP, D3DTOP_DISABLE);
++#ifdef CE_VERSION
++		LT.SSS_NoCache(1, D3DSAMP_MAXANISOTROPY, 1);
++		LT.SSS_NoCache(1, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
++#endif
+ 	}
+ 	LT.STS(0, D3DTSS_COLORARG2, D3DTA_DIFFUSE);
+ 	LT.SSS_NoCache(0, D3DSAMP_MAXANISOTROPY, 1);
+--- a/DXWater.cpp
++++ b/DXWater.cpp
+@@ -13,6 +13,9 @@
+ #include "renderinfo.h"
+ #include "engine.h"
+ #include "Camera.h"
++#ifdef CE_VERSION
++#include "../platform/common/aniso_quality.h"
++#endif
+ #include "map.h"
+ #include "landscape.h"
+ #include "game.h"
+@@ -567,6 +570,23 @@
+ 			LT.D3D_SetTexture(1, ENGINE.GetLandscape()->mMirrorTexture);
+ 		else
+ 			LT.D3D_SetTexture(1, mCaustic->GetTexture());
++#ifdef CE_VERSION
++		if (CeAnisoQualityActive())
++		{
++			const bool ceAnisoSup = (LT.m_d3dCaps.RasterCaps & D3DPRASTERCAPS_ANISOTROPY) != 0;
++			const DWORD ceAnisoMin = CeAnisoUseAnisotropicFilter(4, LT.m_d3dCaps.MaxAnisotropy, ceAnisoSup) ? D3DTEXF_ANISOTROPIC : D3DTEXF_LINEAR;
++			const DWORD ceAnisoMax = CeAnisoEffectiveLevel(4, LT.m_d3dCaps.MaxAnisotropy, ceAnisoSup);
++			LT.SSS_NoCache(0, D3DSAMP_MINFILTER, ceAnisoMin);
++			LT.SSS_NoCache(0, D3DSAMP_MAXANISOTROPY, ceAnisoMax);
++			LT.SSS_NoCache(2, D3DSAMP_MINFILTER, ceAnisoMin);
++			LT.SSS_NoCache(2, D3DSAMP_MAXANISOTROPY, ceAnisoMax);
++			if (!WATER_USE_SHADER)
++			{
++				LT.SSS_NoCache(1, D3DSAMP_MINFILTER, ceAnisoMin);
++				LT.SSS_NoCache(1, D3DSAMP_MAXANISOTROPY, ceAnisoMax);
++			}
++		}
++#endif
+ 		gTextureMatrix._21 = 0;
+ 		gTextureMatrix._12 = 0;
+ 		RENDERINFO.SetWorld(ZERO_FVECTOR, ID_FMATRIX);
+@@ -755,12 +775,26 @@
+ 				LT.STS(2, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
+ 				LT.STS(2, D3DTSS_COLORARG1, D3DTA_TFACTOR);
+ 				LT.SRS(D3DRS_TEXTUREFACTOR, sun);
++#ifdef CE_VERSION
++				{
++					const bool ceAnisoSup = (LT.m_d3dCaps.RasterCaps & D3DPRASTERCAPS_ANISOTROPY) != 0;
++					const DWORD ceAnisoMin = CeAnisoUseAnisotropicFilter(4, LT.m_d3dCaps.MaxAnisotropy, ceAnisoSup) ? D3DTEXF_ANISOTROPIC : D3DTEXF_LINEAR;
++					const DWORD ceAnisoMax = CeAnisoEffectiveLevel(4, LT.m_d3dCaps.MaxAnisotropy, ceAnisoSup);
++					LT.SSS_NoCache(0, D3DSAMP_MINFILTER, ceAnisoMin);
++					LT.SSS_NoCache(0, D3DSAMP_MAXANISOTROPY, ceAnisoMax);
++					LT.SSS_NoCache(1, D3DSAMP_MINFILTER, ceAnisoMin);
++					LT.SSS_NoCache(1, D3DSAMP_MAXANISOTROPY, ceAnisoMax);
++					LT.SSS_NoCache(2, D3DSAMP_MINFILTER, ceAnisoMin);
++					LT.SSS_NoCache(2, D3DSAMP_MAXANISOTROPY, ceAnisoMax);
++				}
++#else
+ 				LT.SSS_NoCache(0, D3DSAMP_MINFILTER, D3DTEXF_ANISOTROPIC);
+ 				LT.SSS_NoCache(0, D3DSAMP_MAXANISOTROPY, 4);
+ 				LT.SSS_NoCache(1, D3DSAMP_MINFILTER, D3DTEXF_ANISOTROPIC);
+ 				LT.SSS_NoCache(1, D3DSAMP_MAXANISOTROPY, 4);
+ 				LT.SSS_NoCache(2, D3DSAMP_MINFILTER, D3DTEXF_ANISOTROPIC);
+ 				LT.SSS_NoCache(2, D3DSAMP_MAXANISOTROPY, 4);
++#endif
+ 				SetMipFilterByGlobalToggle(0);
+ 				SetMipFilterByGlobalToggle(1);
+ 				SetMipFilterByGlobalToggle(2);
+@@ -792,6 +826,14 @@
+ 			LT.SRS(D3DRS_ALPHATESTENABLE, TRUE);
+ 			WATER_METHOD.Accept();
+ 		}
++#ifdef CE_VERSION
++		LT.SSS_NoCache(0, D3DSAMP_MAXANISOTROPY, 1);
++		LT.SSS_NoCache(0, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
++		LT.SSS_NoCache(1, D3DSAMP_MAXANISOTROPY, 1);
++		LT.SSS_NoCache(1, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
++		LT.SSS_NoCache(2, D3DSAMP_MAXANISOTROPY, 1);
++		LT.SSS_NoCache(2, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
++#endif
+ 		if (WATER_USE_SHADER)
+ 		{
+ 			LT.SSS_NoCache(1, D3DSAMP_ADDRESSU, D3DTADDRESS_WRAP);

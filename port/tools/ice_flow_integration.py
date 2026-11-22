@@ -81,6 +81,7 @@ def build(args) -> Path:
     tracked = ["port/network/" + name for name in sources]
     tracked += ["port/network/tests/ice_flow_peer.cpp", "port/network/ice_credentials.h",
                 "port/network/ice_exchange.h", "port/network/ice_session.h",
+                "port/network/ice_route_status.h",
                 "port/network/network.h", "port/network/ice_game.h", "port/network/ice_bridge.h",
                 "port/network/tests/fixture_guard.h", "port/tools/ice_bridge_build.py",
                 "port/tools/ice_session_build.py",

@@ -215,7 +215,7 @@ def controls():
         ("receipt marker binding","if native_marker != WITH_NATIVE_SIGNALING:","if False:",ReceiptTests,"test_wrong_marker_profile_cannot_be_attested"),
         ("global define",'CE_DEFINES.append("-DCE_NETWORK_SIGNALING=1")','CE_DEFINES.append("-DAUTHORED_CONTROL=1")',CliTests,"test_native_and_chat_flags_reach_global_compile_defines"),
         ("linker marker root",'+ "ce_network_native_signaling_feature_marker "','+ ""',RegistrationTests,"test_backend_link_and_retained_symbol_are_target_specific"),
-        ("chat prerequisite","if not network_compiled_in():","if False:",CliTests,"test_default_public_chat_is_refused"),
+        ("chat prerequisite","    if a.with_text_chat:\n        if not network_compiled_in():","    if a.with_text_chat:\n        if False:",CliTests,"test_default_public_chat_is_refused"),
         ("exact HTTPS dependency",'network += shlex.quote(str(dependency)) + " "',
          'network += "-L" + shlex.quote(str(dependency.parent)) + (" -lcurl-gnutls " if target == "linux" else " -lwinhttp ")',
          RegistrationTests,"test_backend_link_and_retained_symbol_are_target_specific"),

@@ -13,12 +13,14 @@ CTweakSLONG GEFORCE_FX_POWER(0), EXTRA_GEFORCE_FX_FEATURES(0), R32F_WORKS(0), MY
 namespace { bool layer = true; int failures; }
 bool PortCeLayer() { return layer; }
 extern "C" int CE_SettingGetBool(const char *, int fallback) { return fallback; }
+extern "C" int CE_SettingGetText(const char *, char *, int) { return 0; }
 extern "C" int CE_SettingSet(const char *, int) { return 1; }
 void PortSessionLog(PortSessionCategory, bool, const char *, ...) {}
 int PortUserFileState(const char *) { return 1; }
 void PortCeGraphicsApplyFreshDefaults() {}
 extern "C" int CE_FullModelsRequest(int) { ++failures; return 0; }	// the fresh defaults are never taken here
 extern "C" int CE_TerrainDetailRequest(int) { ++failures; return 0; }
+extern "C" int CE_AnisoRequest(int) { ++failures; return 0; }
 
 typedef wchar_t WCHAR;
 typedef int EPCText;

@@ -33,8 +33,10 @@ void PortSessionLog(PortSessionCategory, bool, const char *, ...) { ++logCount; 
 void PortCeSaveFailedNotice() { ++notices; }
 int PortUserFileState(const char *) { return 1; }	// these cases never open the options file
 // The hook that takes the fresh defaults is a stub below, so nothing here may ask for the beyond-retail quality rows.
+extern "C" int CE_SettingGetText(const char *, char *, int) { return 0; }
 extern "C" int CE_FullModelsRequest(int) { Check(false, "the beyond-retail rows are not requested by these cases"); return 0; }
 extern "C" int CE_TerrainDetailRequest(int) { Check(false, "the beyond-retail rows are not requested by these cases"); return 0; }
+extern "C" int CE_AnisoRequest(int) { Check(false, "the beyond-retail rows are not requested by these cases"); return 0; }
 void DisplaySettingChanged() { ++displayChanges; }
 #ifdef CE_VERSION
 void PortCeGraphicsApplyFreshDefaults() {}

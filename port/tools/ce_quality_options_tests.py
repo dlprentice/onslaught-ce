@@ -31,7 +31,8 @@ class QualityOptions(unittest.TestCase):
             str(path.relative_to(ROOT)): hashlib.sha256(path.read_bytes()).hexdigest()
             for path in (PORT / "game/ce_quality_options.cpp", PORT / "patches/0211-ce-video-quality.patch",
                          PORT / "platform/common/ce.cpp", PORT / "platform/common/model_quality.cpp",
-                         PORT / "platform/common/terrain_quality.cpp", PORT / "tools/tests/ce_quality_options_driver.cpp",
+                         PORT / "platform/common/terrain_quality.cpp", PORT / "platform/common/aniso_quality.cpp",
+                         PORT / "tools/tests/ce_quality_options_driver.cpp",
                          PORT / "tools/ce_quality_options_tests.py", ROOT / "src/MenuItem.cpp", ROOT / "src/PauseMenu.cpp")
         }}]
         spec = importlib.util.spec_from_file_location("quality_port_build", PORT / "build.py")
@@ -79,6 +80,7 @@ class QualityOptions(unittest.TestCase):
                '-DQUALITY_SOURCE="' + str(source or PORT / "game/ce_quality_options.cpp") + '"',
                str(PORT / "tools/tests/ce_quality_options_driver.cpp"), str(PORT / "platform/common/ce.cpp"),
                str(PORT / "platform/common/model_quality.cpp"), str(PORT / "platform/common/terrain_quality.cpp"),
+               str(PORT / "platform/common/aniso_quality.cpp"),
                "-o", str(binary)]
         if public:
             cmd.insert(1, '-DCE_VERSION="quality-test"')
@@ -94,8 +96,8 @@ class QualityOptions(unittest.TestCase):
         folder = Path(tempfile.mkdtemp(prefix="profile-", dir=self.out))
         if scenario != "fresh":
             folder.joinpath("ce.ini").write_text(
-                "unknown=keep\nfull_models=1\nterrain_detail_distance=1\n" if scenario in ("stored", "fenced", "menus-off") else
-                "unknown=keep\nfull_models=0\nterrain_detail_distance=0\n")
+                "unknown=keep\nfull_models=1\nterrain_detail_distance=1\nanisotropic_filtering=8\n" if scenario in ("stored", "fenced", "menus-off") else
+                "unknown=keep\nfull_models=0\nterrain_detail_distance=0\nanisotropic_filtering=4\n")
         environment = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(folder), "BEA_USER_DIR": str(folder)}
         environment.update(env or {})
         run = subprocess.run([str(binary or self.binaries[public]), scenario], env=environment, capture_output=True, timeout=15)
@@ -111,7 +113,7 @@ class QualityOptions(unittest.TestCase):
         self.assertFalse(list(folder.glob("*.tmp-*")), "writer left temporary settings files")
 
     def test_choices_preserve_defaults_and_stored_preferences(self):
-        for scenario in ("fresh", "defaults", "stored", "invalid", "one-row"):
+        for scenario in ("fresh", "defaults", "stored", "hw-cap-2x", "invalid", "one-row"):
             with self.subTest(scenario=scenario): self.case(scenario)
 
     def test_actual_keyboard_mouse_and_apply_defer_until_frame(self):
@@ -140,11 +142,11 @@ class QualityOptions(unittest.TestCase):
         mutations = [
             ("immediate-choice", "CMenuMenuItem((EPCText)0, 3, true)", "CMenuMenuItem((EPCText)0, 3, false)", "keyboard"),
             ("rollback-unsaved", "if (!saved) PortCeSaveFailedNotice();",
-             "if (!saved) { if (kind == FullModels) CE_FullModelsRequest(!value); else CE_TerrainDetailRequest(!value); PortCeSaveFailedNotice(); }", "save-fails"),
+             "if (!saved) { if (kind == FullModels) CE_FullModelsRequest(!value); else if (kind == TerrainDistance) CE_TerrainDetailRequest(!value); else CE_AnisoRequest(4); PortCeSaveFailedNotice(); }", "save-fails"),
             ("lose-reopen-notice", "kind(value)\n        {\n            Refresh();",
              "kind(value)\n        {\n            results[kind] = QualitySaved; Refresh();", "save-fails"),
-            ("wrong-key", 'kind == FullModels ? "full_models" : "terrain_detail_distance"',
-             'kind == FullModels ? "terrain_detail_distance" : "terrain_detail_distance"', "one-row"),
+            ("wrong-key", 'const char *key = kind == FullModels ? "full_models" :',
+             'const char *key = kind == FullModels ? "terrain_detail_distance" :', "one-row"),
             ("lose-unsaved-retry", "if (!changed && results[kind] == QualitySessionOnly)",
              "if (changed && results[kind] == QualitySessionOnly)", "retry-later"),
             ("hide-fallback", "CE_TerrainDetailStatus() == TerrainResourceFallback)", "false)", "wording"),
@@ -155,8 +157,8 @@ class QualityOptions(unittest.TestCase):
             ("drop-unsaved-with-fallback", 'L"Extended (using Normal, not saved)" : L"Extended (using Normal)"',
              'L"Extended (using Normal)" : L"Extended (using Normal)"', "wording-unsaved"),
             # The 0.1.13 form: the state in the label, a space after the colon, Off and On.
-            ("label-carries-state", 'return const_cast<WCHAR *>(kind == FullModels ? L"Full models:" : L"Terrain detail distance:");',
-             'return const_cast<WCHAR *>(results[kind] == QualityRefused ? L"Full models (not applied): " : L"Full models: ");', "invalid"),
+            ("label-carries-state", 'if (kind == FullModels) return const_cast<WCHAR *>(L"Full models:");',
+             'if (kind == FullModels) return const_cast<WCHAR *>(results[kind] == QualityRefused ? L"Full models (not applied): " : L"Full models: ");', "invalid"),
             ("off-on-values", '(unsaved ? L"Yes (not saved)" : L"Yes") : (unsaved ? L"No (not saved)" : L"No")',
              '(unsaved ? L"On (not saved)" : L"On") : (unsaved ? L"Off (not saved)" : L"Off")', "defaults"),
             ("refusal-unmarked", "if (results[kind] == QualityRefused && value == GetValue())", "if (false)", "invalid"),
