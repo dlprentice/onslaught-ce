@@ -6,8 +6,8 @@
 // none of it, and the dispatch compiles the guard away.
 //
 // The stub checks RENDER handlers only, with a digest that reads, never writes: the event manager's clock, the C
-// runtime's random state and call count on this thread, the number of things in the world, and each player's Battle
-// Engine position. It catches a RENDER handler that advances the clock, draws from the runtime's random numbers, creates
+// runtime's random state and call count on this thread, the number of things and units in the world, and each player's
+// Battle Engine position. It catches a RENDER handler that advances the clock, draws from the runtime's random numbers, creates
 // or removes a thing, or moves a player. It does not catch: a write to any other state (a unit's health, an AI target,
 // the game's own seeded random stream, which cannot be read here without drawing from it); a write deferred past the
 // handler (queued and applied later); a change made and undone within the handler; render-state writes (allowed by
@@ -49,6 +49,8 @@ static unsigned long long CeHookSimDigest()
 	h = Mix(h, &hold, sizeof hold);
 	const int things = WORLD.GetThingNB().Size();
 	h = Mix(h, &things, sizeof things);
+	const int units = WORLD.GetUnitNB().Size();
+	h = Mix(h, &units, sizeof units);
 	const int players = GAME.GetNPlayers();
 	for (int i = 0; i < players && i < MAX_PLAYERS; i++)
 	{

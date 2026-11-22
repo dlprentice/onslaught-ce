@@ -117,6 +117,7 @@ port/tools/ce_pause_clock_tests.py	script	-	deps	release	-
 port/tools/ce_pause_photo_tests.py	script	-	deps	release	-	
 port/tools/ce_photo_tests.py	script	-	deps	release	-	
 port/tools/ce_playunit_aim_tests.py	script	-	none	release	-	unit control lane; host build with the system compiler
+port/tools/ce_playunit_all_classes_tests.py	script	-	none	release	-	all-class PlayUnit eligibility, 1P barrel/weapon framing, artillery ballistic arc & spotter cam, aircraft/naval controls and Forseti/Muspell HUD palettes; host build with ASan/UBSan
 port/tools/ce_playunit_camera_adapter_tests.py	script	-	none	release	-	unit control lane; host build with the system compiler
 port/tools/ce_playunit_camera_tests.py	script	-	none	release	-	unit control lane; host build with the system compiler
 port/tools/ce_playunit_drive_tests.py	script	-	none	release	-	the look's mouse, the poll's call and the direct law's guide with fakes
@@ -321,3 +322,4 @@ port/tools/shot_diff_tests.py	script	-	none	release	-	frame comparison: changed 
 port/tools/test_kit_tests.py	script	-	none	release	-	the test kit's core on the host against an authored menu (every verb, refusals, determinism); needs a C++ compiler
 port/tools/ce_terrain_textures_tests.py	script	-	none	release	-	expanded toroidal terrain texture atlases, zero-wrap halo math, device loss/restore, aborted flush recovery, faithful fence and patch 0354 neutrality; needs a C++ compiler
 port/tools/ce_aniso_quality_tests.py	script	-	none	release	-	hardware anisotropic filtering policy, frame-boundary snapshot, capability caps, faithful fences, patch 0355 neutrality and causal mutants; needs a C++ compiler
+port/tools/ce_multibe_tests.py	script	-	deps+game	release	-	gated 3-4 Battle Engine prototype spike: host helper & causal mutants, gate/neutrality audit, and live offscreen 200+ tick Linux engine integration

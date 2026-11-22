@@ -1,0 +1,28 @@
+--- a/SpawnerThng.cpp
++++ b/SpawnerThng.cpp
+@@ -95,4 +95,5 @@
+ // squad delay; it then waits again. The by-name factory and squad-state setter preserve retail's inline nesting,
+ // including the GetUnitIndex call at 004e33d0 and the two out-of-line lookup Next calls.
++#include "ce_hooks.h"	// Port: the CE hook points (port/game/ce_hooks.h)
+ void CSpawnerThing::Unknown4e3370()	// FUNCTION: 0x004e3370
+ {
+@@ -102,5 +103,7 @@
+ 	if ((mUnknown80 < EVENT_MANAGER.GetTime()) && (!mUnknownA4))
+ 	{
+-		CThing	*thing = SpawnThingByName(mSpawnUnit);
++		CeSpawnerTrigger ceTrigger = { CE_SPAWNER_ACTOR, NULL, this, NULL, mSpawnUnit, mSquadSize, mInit.mAllegiance, true };
++		ce_hook_spawner_trigger(&ceTrigger);	// CE hook point (port/game/ce_hooks.h): filter before a map spawner spawns
++		CThing	*thing = ceTrigger.allow ? SpawnThingByName(mSpawnUnit) : NULL;
+ 		if (thing)
+ 		{
+@@ -277,4 +280,10 @@
+ 		return FALSE;
+ 
++	{
++		CeSpawnerTrigger ceTrigger = { CE_SPAWNER_MONITOR, this, NULL, mOwner, mData->mThingName, mData->mSquadSize, mInit.mAllegiance, true };
++		ce_hook_spawner_trigger(&ceTrigger);	// CE hook point (port/game/ce_hooks.h): filter before a factory wave spawns
++		if (!ceTrigger.allow)
++			return FALSE;
++	}
+ 	CSquadInitThing	sinit;
+ 	mOwner->GetEmitter(mMount, mUnknown3E4, sinit.mPos, sinit.mOrientation);

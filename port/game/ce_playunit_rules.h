@@ -45,7 +45,11 @@ struct CePlayUnitFacts
 	bool spawned;		// its squad was made around one placed unit or by a script: the squad follows its lead unit every tick
 	bool armed;			// has a weapon
 	int family;
-	bool ordinaryFoot;			// what kind of unit it is (CePlayUnitFamily), for the sentence a refused unit gets; no class reads it
+	bool ordinaryFoot;	// ordinary foot soldier (CInfantryUnit, independent or in a relaxed squad)
+	bool turret;		// stationary gun emplacement or armed carrier/structure turret
+	bool aircraft;		// friendly aircraft (fighter, bomber, dropship, carrier)
+	bool naval;			// friendly naval vessel or landing craft
+	bool transport;		// carries unspawned embarked cargo (landing craft, dropship)
 };
 
 // How a class of unit is driven: the control law (what a go-to-point looks like, how fast the asked heading turns) and what the held fire does. The module reads every number
@@ -86,13 +90,20 @@ enum CePlayUnitClassId
 	CE_PLAYUNIT_CLASS_TANK,
 	CE_PLAYUNIT_CLASS_JEEP,		// off: no jeep or armed truck has been driven, so its law is the tank's, unmeasured
 	CE_PLAYUNIT_CLASS_INFANTRY,
+	CE_PLAYUNIT_CLASS_ARTILLERY,
+	CE_PLAYUNIT_CLASS_TURRET,
+	CE_PLAYUNIT_CLASS_AIRCRAFT,
+	CE_PLAYUNIT_CLASS_NAVAL,
 	CE_PLAYUNIT_CLASS_COUNT
 };
 
-inline bool CePlayUnitTankShape(const CePlayUnitFacts &f) { return f.vehicle && f.groundUnit; }
-inline bool CePlayUnitJeepShape(const CePlayUnitFacts &f) { return f.vehicle && !f.groundUnit; }
-
+inline bool CePlayUnitTankShape(const CePlayUnitFacts &f) { return f.vehicle && f.groundUnit && !f.deploys; }
+inline bool CePlayUnitJeepShape(const CePlayUnitFacts &f) { return f.vehicle && !f.groundUnit && !f.deploys; }
 inline bool CePlayUnitFootShape(const CePlayUnitFacts &f) { return f.ordinaryFoot && !f.vehicle; }
+inline bool CePlayUnitArtilleryShape(const CePlayUnitFacts &f) { return f.vehicle && f.groundUnit && f.deploys; }
+inline bool CePlayUnitTurretShape(const CePlayUnitFacts &f) { return f.turret && !f.vehicle && !f.aircraft && !f.naval; }
+inline bool CePlayUnitAircraftShape(const CePlayUnitFacts &f) { return f.aircraft; }
+inline bool CePlayUnitNavalShape(const CePlayUnitFacts &f) { return f.naval && !f.aircraft; }
 
 inline const CePlayUnitClassRow *CePlayUnitClasses()
 {
@@ -100,14 +111,24 @@ inline const CePlayUnitClassRow *CePlayUnitClasses()
 		{"tank", true, CePlayUnitTankShape, {40.f, 6.f, 1.4f, 1.2f, 8.f, 2.f, 6u, 2u, true, 400.f, 1.5f, 24, 0.6f, 1.f, 0.5f, 0.6f, 0.25f}},
 		{"jeep", false, CePlayUnitJeepShape, {40.f, 6.f, 1.4f, 1.2f, 8.f, 2.f, 6u, 2u, false, 400.f, 1.5f, 24, 0.6f, 1.f, 0.5f, 0.6f, 0.25f}},
 		{"infantry", true, CePlayUnitFootShape, {18.f, 5.f, 2.f, 0.5f, 3.f, 2.f, 12, 6, true, 480.f, 4.f, 24, 0.1f, 1.2f, 0.2f, 1.f, 0.f}},
+		{"artillery", true, CePlayUnitArtilleryShape, {40.f, 6.f, 1.0f, 1.0f, 8.f, 2.f, 6u, 2u, true, 560.f, 2.f, 24, 2.5f, 2.2f, 0.4f, 0.5f, 0.3f}},
+		{"turret", true, CePlayUnitTurretShape, {0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 6u, 2u, true, 520.f, 2.f, 24, 0.8f, 2.5f, 0.f, 0.f, 0.f}},
+		{"aircraft", true, CePlayUnitAircraftShape, {60.f, 12.f, 1.8f, 1.4f, 12.f, 4.f, 4u, 2u, true, 640.f, 3.f, 16, 4.0f, 0.f, 0.6f, 0.f, 0.15f}},
+		{"naval", true, CePlayUnitNavalShape, {48.f, 8.f, 0.9f, 1.0f, 10.f, 3.f, 6u, 2u, true, 460.f, 2.f, 24, 1.0f, 2.0f, 0.35f, 0.45f, 0.2f}},
 	};
 	return rows;
 }
 
-// What no class loosens: a friendly, living, armed unit in a normal squad that no script, objective, deployment or lead unit owns.
+inline bool CePlayUnitNeedsNormalSquad(const CePlayUnitFacts &f)
+{
+	return f.vehicle && !f.deploys && !f.ordinaryFoot && !f.turret && !f.aircraft && !f.naval;
+}
+
+// What no class loosens: a friendly, living, armed-or-transport unit that no script, objective or lead unit owns
+// (and, for ordinary non-deploying vehicles, in a normal squad).
 inline bool CePlayUnitCommonEligible(const CePlayUnitFacts &f)
 {
-	return f.friendly && f.alive && !f.scripted && !f.objective && !f.deploys && (f.normalSquad || f.ordinaryFoot) && !f.spawned && f.armed;
+	return f.friendly && f.alive && !f.scripted && !f.objective && (!CePlayUnitNeedsNormalSquad(f) || f.normalSquad) && !f.spawned && (f.armed || f.transport);
 }
 
 // Whether a unit may be taken as the class of row rows[row] (n rows): the row is on, the unit is what every class needs and has the row's shape. The table is a parameter so that a
@@ -473,13 +494,12 @@ inline int CePlayUnitRefusalIn(const CePlayUnitClassRow *rows, int n, const CePl
 	if (!f.friendly) return CE_PLAYUNIT_REFUSE_ENEMY;
 	if (!f.alive) return CE_PLAYUNIT_REFUSE_DYING;
 	if (f.scripted || f.objective) return CE_PLAYUNIT_REFUSE_MISSION;
-	if (f.deploys) return CE_PLAYUNIT_REFUSE_DEPLOYS;
 	bool shaped = false;
 	for (int i = 0; rows && i < n; ++i)
 		if (rows[i].enabled && rows[i].shape && rows[i].shape(f)) shaped = true;
-	if (!shaped) return CE_PLAYUNIT_REFUSE_KIND;
-	if ((!f.normalSquad && !f.ordinaryFoot) || f.spawned) return CE_PLAYUNIT_REFUSE_SQUAD;
-	if (!f.armed) return CE_PLAYUNIT_REFUSE_UNARMED;
+	if (!shaped) return f.deploys ? CE_PLAYUNIT_REFUSE_DEPLOYS : CE_PLAYUNIT_REFUSE_KIND;
+	if ((CePlayUnitNeedsNormalSquad(f) && !f.normalSquad) || f.spawned) return CE_PLAYUNIT_REFUSE_SQUAD;
+	if (!f.armed && !f.transport) return CE_PLAYUNIT_REFUSE_UNARMED;
 	return CE_PLAYUNIT_REFUSE_KIND;
 }
 

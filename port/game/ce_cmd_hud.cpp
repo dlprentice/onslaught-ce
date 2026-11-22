@@ -48,12 +48,12 @@ void CeCmdHudDrawBar(const CeCmdHudDrawOps &draw, const CeCmdHudLayout &layout,
                      const CeCmdPlacard *placards, int placardCount,
                      const CeCmdCardModel &card, const char *forcesSummary,
                      float mouseX, float mouseY, const std::uint64_t *buttonFlashNs,
-                     std::uint64_t nowNs)
+                     std::uint64_t nowNs, int allegiance)
 {
 	if (!layout.valid || !draw.box || !draw.outline || !draw.text || !draw.textWidth || !draw.lineHeight)
 		return;
 
-	const CeCmdHudPalette p = CeCmdHudDefaultPalette();
+	const CeCmdHudPalette p = CeCmdHudPaletteForAllegiance(allegiance);
 	const float u = layout.scale;
 	const float t = std::floor(u) > 1.f ? std::floor(u) : 1.f;
 	const CeCmdHudHit hover = CeCmdHudHitTest(layout, mouseX, mouseY);

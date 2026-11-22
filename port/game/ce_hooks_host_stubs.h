@@ -25,5 +25,10 @@ void			ce_hook_save_gate(CeHookSaveTarget, CCareer *, char *, int) {}
 void			ce_hook_audio_clock(CeHookAudioEvent, unsigned) {}
 CCamera			*ce_hook_render_camera(int, CCamera *camera, CPlayer *) { return camera; }
 CBattleEngine	*ce_hook_hud_focus(CPlayer *, CBattleEngine *be) { return be; }
+void			ce_hook_unit_spawn(CUnit *, CInitThing *) {}
+void			ce_hook_unit_destroyed(CUnit *) {}
+void			ce_hook_spawner_trigger(CeSpawnerTrigger *) {}
+void			ce_hook_weapon_fire(CWeapon *, CUnit *, CRound *) {}
+void			ce_hook_render_pass(const CeRenderPass *) {}
 
 #endif

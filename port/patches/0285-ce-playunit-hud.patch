@@ -132,7 +132,32 @@
  #include	"mathsconst.h"	// FUNCTION: 0x0053bc40 init:ZERO_FVECTOR
  #ifdef CE_VERSION
  bool PortCeOneScreenMatch();	// patch 0235: port/game/ce_cmdmatch.cpp, a Commander match shown on one screen
-@@ -238,6 +241,15 @@
+@@ -180,6 +183,24 @@
+ 	palette[1] = 0x2222;
+ 	palette[2] = 0x2444;
+ 	palette[3] = 0x2666;
++#ifdef CE_VERSION
++	CePlayUnitHudFocus ceFocus;
++	if (CePlayUnitHudFocusOf(&ceFocus))
++	{
++		if (ceFocus.allegiance == 1)
++		{
++			palette[1] = 0x5621;
++			palette[2] = 0x7b41;
++			palette[3] = 0x9f72;
++		}
++		else
++		{
++			palette[1] = 0x5146;
++			palette[2] = 0x727a;
++			palette[3] = 0x94af;
++		}
++	}
++#endif
+ 	mByteSprite->DrawFrame(0, 0, 15);
+ 
+ 	CRadarWarningReceiver *rwr = be->GetRadarWarningReceiver();
+@@ -238,6 +259,15 @@
  {
  	int		health = gCompassInnerWidth * 150 / 360 - SINT(be->GetLife() * (gCompassInnerWidth * 150 / 360 - gCompassInnerWidth * 60 / 360) / be->GetInitialLife());
  	int		energy = gCompassInnerWidth * 225 / 360 + SINT(be->GetEnergy() * (gCompassInnerWidth * 360 / 360 - gCompassInnerWidth * 225 / 360) / be->GetMaxEnergy());
@@ -148,7 +173,29 @@
  
  	D3DLOCKED_RECT	lr;
  	if (FAILED(mRingTexture2[mUnknown3c10]->GetTexture()->LockRect(0, &lr, NULL, D3DLOCK_NOSYSLOCK)))
-@@ -282,7 +294,7 @@
+@@ -251,6 +281,21 @@
+ 	SBarColour	h0 = { 3, 3, 3 };
+ 	SBarColour	e0 = { 3, 3, 3 };
+ 	SBarColour	e = { 1, 1, 8 };
++#ifdef CE_VERSION
++	if (ceFocused)
++	{
++		if (ceFocus.allegiance == 1)
++		{
++			h.r = 12; h.g = 5; h.b = 1;
++			h0.r = 4; h0.g = 2; h0.b = 2;
++		}
++		else
++		{
++			h.r = 2; h.g = 10; h.b = 12;
++			h0.r = 2; h0.g = 3; h0.b = 4;
++		}
++	}
++#endif
+ 
+ 	int		view = (be->GetPlayer()->GetNumber() != 1);
+ 	if (health < mLastHealthEnd[view])
+@@ -282,7 +327,7 @@
  
  	if (!HUD.IsComponentVisible(0))
  		h0.r = h0.g = h0.b = h.r = h.g = h.b = 0;
@@ -157,7 +204,7 @@
  		e0.r = e0.g = e0.b = e.r = e.g = e.b = 0;
  
  	for (int n = gCompassInnerHeight - 2; n; n--)
-@@ -297,7 +309,7 @@
+@@ -297,7 +342,7 @@
  			hbg += alpha;
  			hbar += alpha;
  		}
@@ -166,7 +213,7 @@
  		{
  			ebg += alpha;
  			ebar += alpha;
-@@ -386,6 +398,10 @@
+@@ -386,6 +431,10 @@
  	LT.GetDevice()->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 80);
  
  	float	yaw = -be->GetInterpolatedEulerOrientation().mYaw;

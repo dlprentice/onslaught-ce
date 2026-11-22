@@ -165,6 +165,45 @@ inline CeCmdHudPalette CeCmdHudDefaultPalette()
 	return p;
 }
 
+inline CeCmdHudPalette CeCmdHudMuspellPalette()
+{
+	CeCmdHudPalette p = {};
+	p.barFill = 0xe0160d0b;
+	p.barBorder = 0xff7a3422;
+	p.barTopBevel = 0xc8ff8830;
+	p.cyanAccent = 0xffe86028;
+	p.cyanDim = 0xff7c321c;
+	p.goldAccent = 0xffffcc44;
+	p.wellFill = 0xd01e120f;
+	p.wellBorder = 0xff5c281c;
+	p.placardFill = 0xd8281612;
+	p.placardHover = 0xe43c2018;
+	p.placardSelected = 0xec4c2418;
+	p.placardStructStripe = 0xffffc038;
+	p.placardDimStripe = 0xff7c5e56;
+	p.buttonFill = 0xe02c1814;
+	p.buttonHover = 0xec48241a;
+	p.buttonArmed = 0xec622c1c;
+	p.buttonDisabled = 0xbc1a100e;
+	p.buttonBorder = 0xff943e26;
+	p.armourTrack = 0xd40c0605;
+	p.armourGood = 0xff5ad86a;
+	p.armourWarn = 0xfff4b429;
+	p.armourCrit = 0xffff4238;
+	p.textBright = 0xfffcf2ea;
+	p.textMuted = 0xffcfa694;
+	p.textDisabled = 0xffa68a82;
+	p.textCyan = 0xffffa644;
+	p.textGold = 0xffffd868;
+	p.textAlert = 0xffff6454;
+	return p;
+}
+
+inline CeCmdHudPalette CeCmdHudPaletteForAllegiance(int allegiance)
+{
+	return allegiance == 1 ? CeCmdHudMuspellPalette() : CeCmdHudDefaultPalette();
+}
+
 // Bitmap-font safety: the game's small font lacks these glyphs and renders them as '-'.
 inline bool CeCmdHudCharForbidden(unsigned char c)
 {
@@ -533,6 +572,6 @@ void CeCmdHudDrawBar(const CeCmdHudDrawOps &draw, const CeCmdHudLayout &layout,
                      const CeCmdPlacard *placards, int placardCount,
                      const CeCmdCardModel &card, const char *forcesSummary,
                      float mouseX, float mouseY, const std::uint64_t *buttonFlashNs,
-                     std::uint64_t nowNs);
+                     std::uint64_t nowNs, int allegiance = 0);
 
 #endif

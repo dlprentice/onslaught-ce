@@ -26,6 +26,11 @@ CE_WEAK void			ce_hook_save_gate(CeHookSaveTarget, CCareer *, char *, int) {}
 CE_WEAK void			ce_hook_audio_clock(CeHookAudioEvent, unsigned) {}
 CE_WEAK CCamera			*ce_hook_render_camera(int, CCamera *camera, CPlayer *) { return camera; }
 CE_WEAK CBattleEngine	*ce_hook_hud_focus(CPlayer *, CBattleEngine *be) { return be; }
+CE_WEAK void			ce_hook_unit_spawn(CUnit *, CInitThing *) {}
+CE_WEAK void			ce_hook_unit_destroyed(CUnit *) {}
+CE_WEAK void			ce_hook_spawner_trigger(CeSpawnerTrigger *) {}
+CE_WEAK void			ce_hook_weapon_fire(CWeapon *, CUnit *, CRound *) {}
+CE_WEAK void			ce_hook_render_pass(const CeRenderPass *) {}
 
 // Common port-layer query defaults (override with strong definitions in any driver that tests them).
 CE_WEAK bool			PortCeLayer() { return true; }

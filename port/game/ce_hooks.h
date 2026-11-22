@@ -31,7 +31,12 @@
 //   audio_clock     RENDER  BROADCAST          PCMusicStream.cpp MusicStreamHandle, a refill (worker thread under a real clock, main thread
 //                                              under the virtual one, inside the stream guard); GetMusicStreamFinished, the finished poll
 //   render_camera   SIM     OVERRIDE_CHAIN     engine.cpp CEngine::SetViewpoint, after today's camera overrides
-//   hud_focus       RENDER  OVERRIDE_CHAIN     no site yet (the HUD's reads of the player's Battle Engine are not redirected in this tree)
+//   hud_focus       RENDER  OVERRIDE_CHAIN     Hud.cpp CHud::RenderOverlayForViewpoint, after player->GetBattleEngine(), before mBattleEngine
+//   unit_spawn      SIM     BROADCAST          Unit.cpp CUnit::Init, its end, after WORLD allegiance-set registration and next-frame event
+//   unit_destroyed  SIM     BROADCAST          Unit.cpp CUnit::StartDieProcess and BattleEngine.cpp CBattleEngine::StartDieProcess, before return TRUE
+//   spawner_trigger SIM     FILTER             SpawnerThng.cpp CSpawner::DoSpawn and CSpawnerThing::Unknown4e3370, before spawning a wave or unit
+//   weapon_fire     SIM     BROADCAST          weapon.cpp CWeapon::SpawnRound, after round->Init(&init)
+//   render_pass     RENDER  BROADCAST          DXEngine.cpp CDXEngine::Render, pre-world (after SetViewport) and post-world (after draw_fairly_late_stuff)
 //
 // A handler row also names a gate (CE_GATE_VERSION: whenever CE_VERSION is compiled in; CE_GATE_LAYER: only while
 // PortCeLayer() is true, so never in a replay, a recording or a probe run) and a mode (ce_modes.h: CE_MODE_NONE runs
@@ -44,6 +49,14 @@
 #ifndef PORT_CE_HOOKS_H
 #define PORT_CE_HOOKS_H
 
+// Hook API version contract: major bumps on breaking signature, enum, or dispatch changes; minor bumps on
+// backwards-compatible additions (new hook points or appended enum values). Checked at compile time in ce_hooks.cpp
+// and verified by port/tools/ce_hooks_tests.py.
+#define CE_HOOKS_API_VERSION_MAJOR 2u
+#define CE_HOOKS_API_VERSION_MINOR 0u
+#define CE_HOOKS_API_VERSION ((CE_HOOKS_API_VERSION_MAJOR << 8) | CE_HOOKS_API_VERSION_MINOR)
+#define CE_HOOKS_POINT_COUNT 21u
+
 class CPlayer;
 class CController;
 class CCareer;
@@ -52,6 +65,12 @@ class CPauseMenu;
 class CMenuOptionsList;
 class CCamera;
 class CBattleEngine;
+class CUnit;
+class CInitThing;
+class CSpawner;
+class CSpawnerThing;
+class CWeapon;
+class CRound;
 
 enum CeHookExitSite { CE_EXIT_SHELL = 0, CE_EXIT_ATEXIT = 1 };
 enum CeHookSaveTarget { CE_SAVE_CAREER = 0, CE_SAVE_OPTIONS_FILE = 1 };
@@ -97,9 +116,12 @@ void			ce_hook_draw_hud(CPlayer *player, int viewpoint);
 void			ce_hook_draw_overlay();
 void			ce_hook_menu_rows(CeMenuEvent event, CeMenuPage *page);
 // save_gate: `career` is the live career at CE_SAVE_CAREER (dest holds its copy, `size` bytes) and NULL at
-// CE_SAVE_OPTIONS_FILE (dest is the whole file about to be written). Handlers run in table order and each may rewrite
-// dest; today's three career filters (editor, bonus level, museum visit) each replace the whole copy, so with two active
-// the later one's snapshot wins (port/tools/ce_hooks_tests.py keeps that hazard as an expected failure).
+// CE_SAVE_OPTIONS_FILE (dest is the whole file about to be written). Handlers run in table order and each sees the
+// previous handler's output in `dest`. Incremental in-place edits compose freely; whole-copy replacements require
+// mutual exclusion. Today's three career filters (editor, bonus level, museum visit) each replace the whole copy, so
+// ce_modes.cpp makes CE_MODE_EDITOR, CE_MODE_BONUS_LEVEL and CE_MODE_MUSEUM_VISIT pairwise incompatible; calling two
+// raw filters concurrently would let the later snapshot win (port/tools/ce_hooks_tests.py keeps that raw-handler hazard
+// pinned as an expected failure until one owner holds the career snapshot).
 void			ce_hook_save_gate(CeHookSaveTarget target, CCareer *career, char *dest, int size);
 void			ce_hook_audio_clock(CeHookAudioEvent event, unsigned bytes);
 // render_camera (provisional contract): a handler returns the camera this viewpoint draws from, or the camera it was
@@ -108,7 +130,44 @@ void			ce_hook_audio_clock(CeHookAudioEvent event, unsigned bytes);
 // simulation sees while a CE camera is active (for example CE passes flagged as the mirror pass is, so the refresh
 // skips them) is a later change of the simulation, not part of this point.
 CCamera			*ce_hook_render_camera(int viewpoint, CCamera *camera, CPlayer *player);
-// hud_focus: the Battle Engine whose state the HUD shows for this player (today always the player's own). No site yet.
+// hud_focus: the Battle Engine whose state the HUD shows for this player (defaults to player->GetBattleEngine()).
+// Wired in Hud.cpp CHud::RenderOverlayForViewpoint; returning `be` preserves exact retail behavior.
 CBattleEngine	*ce_hook_hud_focus(CPlayer *player, CBattleEngine *be);
+
+// spawner_trigger: FILTER before CSpawner::DoSpawn (monitor/factory wave) or CSpawnerThing::Unknown4e3370 (map actor).
+// `allow` starts true; handlers run in table order and any handler may clear `allow` to veto this spawn cleanly.
+enum CeSpawnerKind { CE_SPAWNER_MONITOR = 0, CE_SPAWNER_ACTOR = 1 };
+struct CeSpawnerTrigger
+{
+	CeSpawnerKind	kind;
+	CSpawner		*spawner;		// set at CE_SPAWNER_MONITOR, else NULL
+	CSpawnerThing	*actor;			// set at CE_SPAWNER_ACTOR, else NULL
+	CUnit			*owner;			// factory/carrier unit at CE_SPAWNER_MONITOR, else NULL
+	const char		*unit_name;		// unit class name about to spawn
+	int				squad_size;		// wave squad size
+	int				allegiance;		// EAllegiance value
+	bool			allow;			// starts true; set false to veto this spawn trigger
+};
+
+// render_pass: structured pre-world and post-world scene pass hook inside CDXEngine::Render for visual overlays & mods.
+// Tagged RENDER: handlers must never mutate simulation state.
+enum CeRenderPassStage { CE_RENDER_PASS_PRE_WORLD = 0, CE_RENDER_PASS_POST_WORLD = 1 };
+struct CeRenderPass
+{
+	CeRenderPassStage	stage;
+	int					viewpoint;
+	CPlayer				*player;
+	CCamera				*camera;
+	bool				mirror_pass;
+};
+
+// unit_spawn: SIM BROADCAST at the end of CUnit::Init (fires for every spawned CUnit, including CBattleEngine).
+void			ce_hook_unit_spawn(CUnit *unit, CInitThing *init);
+// unit_destroyed: SIM BROADCAST when a unit commits to dying in CUnit::StartDieProcess or CBattleEngine::StartDieProcess.
+void			ce_hook_unit_destroyed(CUnit *unit);
+void			ce_hook_spawner_trigger(CeSpawnerTrigger *trigger);
+// weapon_fire: SIM BROADCAST in CWeapon::SpawnRound immediately after round->Init(&init).
+void			ce_hook_weapon_fire(CWeapon *weapon, CUnit *owner, CRound *round);
+void			ce_hook_render_pass(const CeRenderPass *pass);
 
 #endif

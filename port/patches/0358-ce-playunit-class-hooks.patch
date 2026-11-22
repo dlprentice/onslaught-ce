@@ -1,0 +1,96 @@
+--- a/Unit.cpp
++++ b/Unit.cpp
+@@ -36,7 +36,10 @@
+ #define UNIT_EVENT_4003	4003	// notes whether a player's camera is within 50 units
+ #define UNIT_EVENT_4004	4004	// explodes and shuts the unit down
+ #define UNIT_EVENT_4005	4005	// a unit event (Unknown107 schedules it once); the name is open
++#ifdef CE_VERSION
++extern "C" int PortCePlayUnitIsDriven(const void *unit) __attribute__((weak));
++#endif
+ 
+ SINT	CUnit::mGuideUpdateCounter = 0;	// 00854d90 (CGame::Update 0046eb31 writes it)
+ 
+ // FUNCTION: 0x004f7da0 init:ZERO_FVECTOR
+@@ -1330,8 +1333,14 @@
+ 		Unknown116();
+ 	else if (mDeployState == 4)
+ 	{
++#ifdef CE_VERSION
++		const BOOL ceDriven = (PortCePlayUnitIsDriven && PortCePlayUnitIsDriven(this)) ? TRUE : FALSE;
++		if (!ceDriven && !GetCurrentTarget())
++			StartUndeploying();
++#else
+ 		if (!GetCurrentTarget())
+ 			StartUndeploying();
++#endif
+ 	}
+ 
+ 	// the spawner's working noise
+--- a/Cannon.cpp
++++ b/Cannon.cpp
+@@ -17,6 +17,9 @@
+ #include "map.h"
+ #include "world.h"
+ #include "eventmanager.h"
++#ifdef CE_VERSION
++extern "C" int PortCePlayUnitIsDriven(const void *unit) __attribute__((weak));
++#endif
+ 
+ // FUNCTION: 0x0041b0b0 init:ZERO_FVECTOR
+ // FUNCTION: 0x0041b0d0 init:ID_FMATRIX
+@@ -55,6 +58,21 @@
+ //******************************************************************************************
+ void CCannon::Move()	// FUNCTION: 0x0041b370
+ {
++#ifdef CE_VERSION
++	if ((mActive) && PortCePlayUnitIsDriven && PortCePlayUnitIsDriven(this))
++	{
++		if ((mState != 0) && (mState != 3))
++		{
++			EAnimMode	anim = mRenderThing->GetRTMesh()->GetAnimModeByName("Activate");
++			if (anim != AM_INVALID)
++			{
++				SetAnimMode(anim, TRUE, FALSE);
++				mState = 3;
++			}
++		}
++		mLastTargetTime = EVENT_MANAGER.GetTime();
++	}
++#endif
+ 	if ((mActive) && (mAI->mTarget.ToRead()))
+ 	{
+ 		if ((mState != 0) && (mState != 3))
+--- a/Component.cpp
++++ b/Component.cpp
+@@ -16,6 +16,9 @@
+ #include "Monitor.h"
+ #include "Guide.h"
+ #include "MCComponent.h"
++#ifdef CE_VERSION
++extern "C" int PortCePlayUnitIsDriven(const void *unit) __attribute__((weak));
++#endif
+ 
+ // FUNCTION: 0x00427a90 init:ZERO_FVECTOR
+ // FUNCTION: 0x00427ab0 init:ID_FMATRIX
+@@ -129,6 +132,21 @@
+ 	}
+ 
+ 	// open up while it has a target; close a while after it loses one
++#ifdef CE_VERSION
++	if ((mActive) && PortCePlayUnitIsDriven && PortCePlayUnitIsDriven(this))
++	{
++		if ((mUnknown264 != 0) && (mUnknown264 != 3))
++		{
++			EAnimMode	anim = mRenderThing->GetRTMesh()->GetAnimModeByName("Activate");
++			if (anim != AM_INVALID)
++			{
++				SetAnimMode(anim, TRUE, FALSE);
++				mUnknown264 = 3;
++			}
++		}
++		mUnknown268 = EVENT_MANAGER.GetTime();
++	}
++#endif
+ 	if ((mActive) && (mAI->mTarget.ToRead()))
+ 	{
+ 		if ((mUnknown264 != 0) && (mUnknown264 != 3))

@@ -575,11 +575,22 @@ void Outline(float x, float y, float w, float h, float t, DWORD colour)
 // HUD's art, a drawn stand-in: the same body and two cyan ends.
 const DWORD kCapsuleBody = 0xb0040a14, kCapsuleCap = 0xff38c8e8, kCapsuleLit = 0x8038c8e8;
 void BeginDraw();
-void CapsuleBar(float x, float y, float w, float h, float alpha = 1.f, bool lit = false)
+void CapsuleBar(float x, float y, float w, float h, float alpha = 1.f, bool lit = false, int allegiance = 0)
 {
 	if (w <= 0.f || h <= 0.f || alpha <= 0.f) return;
 	const auto fade = [alpha](DWORD c) { return (DWORD((float(c >> 24) * (alpha > 1.f ? 1.f : alpha)) + 0.5f) << 24) | (c & 0xffffff); };
-	if (HUD.mObjectiveLeft && HUD.mObjectiveRight && HUD.mObjectiveInnerLeft && HUD.mObjectiveInnerCentre && HUD.mObjectiveInnerRight)
+	if (allegiance == 1)
+	{
+		const CeCmdHudPalette pal = CeCmdHudMuspellPalette();
+		const float cap = (std::max)(2.f, 2.5f * L.s);
+		const float bt = (std::max)(1.f, floorf(L.s));
+		Box(x + cap, y, w - 2.f * cap, h, fade(pal.barFill));
+		Outline(x + cap, y, w - 2.f * cap, h, bt, fade(pal.barBorder));
+		Box(x + cap + bt, y + bt, w - 2.f * (cap + bt), bt, fade(pal.barTopBevel));
+		Box(x, y + h * 0.12f, cap, h * 0.76f, fade(pal.cyanAccent));
+		Box(x + w - cap, y + h * 0.12f, cap, h * 0.76f, fade(pal.cyanAccent));
+	}
+	else if (HUD.mObjectiveLeft && HUD.mObjectiveRight && HUD.mObjectiveInnerLeft && HUD.mObjectiveInnerCentre && HUD.mObjectiveInnerRight)
 	{
 		HUD.RenderObjectiveBar(x + w * 0.5f, y + h * 0.5f, w > h ? w - h : 0.f, h, alpha >= 1.f ? 1.f : 0.5f + 0.5f * alpha);
 		BeginDraw();
@@ -2443,7 +2454,7 @@ void RtsHudTakeControl() {
         Note(take.reason ? take.reason : "Unit control is unavailable.");
         return;
     }
-    Note("Select an eligible tank or soldier to take control.");
+    Note("Select an eligible friendly unit to take control.");
 }
 
 void RtsHudReturnAi() {
@@ -3325,6 +3336,8 @@ void TraceStrategicFocus(const CeWorldViewSample &view) {
 }
 #endif
 
+int PilotAllegiance(const void** pilot);
+
 void DrawStrategicHints() {
     Refresh(); RefreshUnitFrame();
     CeWorldViewSample view;
@@ -3424,11 +3437,14 @@ void DrawStrategicHints() {
     if (showBox)
         Outline((std::min)(gBoxX, float(MOUSE_X)), (std::min)(gBoxY, float(MOUSE_Y)), std::fabs(float(MOUSE_X) - gBoxX), std::fabs(float(MOUSE_Y) - gBoxY), t, kPick);
 
+    const void* hudPilotPtr = NULL;
+    const int hudAllegiance = PilotAllegiance(&hudPilotPtr);
+
     // the title panel, top left
     char text[160];
     StrategicTitle(text, sizeof text);
     // the title in the HUD's capsule, top left: "Commander" in white, the battle's state after it in grey
-    CapsuleBar(8.f * u, 6.f * u, TextWidth(text, u) + 32.f * u, 24.f * u);
+    CapsuleBar(8.f * u, 6.f * u, TextWidth(text, u) + 32.f * u, 24.f * u, 1.f, false, hudAllegiance);
     {
         char head[24] = "Commander";
         const float headW = TextWidth(head, u);
@@ -3440,7 +3456,7 @@ void DrawStrategicHints() {
     StrategicPrompt(text, sizeof text);
     if (text[0]) {
         const float w = TextWidth(text, u);
-        CapsuleBar(L.w - w - 32.f * u, 6.f * u, w + 24.f * u, 24.f * u);
+        CapsuleBar(L.w - w - 32.f * u, 6.f * u, w + 24.f * u, 24.f * u, 1.f, false, hudAllegiance);
         float px = L.w - w - 20.f * u;
         for (char* item = text; *item; ) {
             char* end = strstr(item, "   ");
@@ -3470,7 +3486,7 @@ void DrawStrategicHints() {
     {
         CeCmdStructureView structs[kCeMaxStructures];
         const int structCount = CeCmdStructureList(structs, kCeMaxStructures);
-        const CeCmdHudPalette hudPal = CeCmdHudDefaultPalette();
+        const CeCmdHudPalette hudPal = CeCmdHudPaletteForAllegiance(hudAllegiance);
         for (int i = 0; i < structCount && haveView; ++i) {
             const CeCmdStructureView& s = structs[i];
             CeViewPoint pos;
@@ -3491,13 +3507,13 @@ void DrawStrategicHints() {
         }
     }
 
-    // Unified Forseti Bottom RTS Command Bar (Unit/Squad/Structure Placards + Right-Docked Command Card)
+    // Unified Faction-Symmetric Bottom RTS Command Bar (Unit/Squad/Structure Placards + Right-Docked Command Card)
     char forcesSummary[64] = "";
     BuildRtsHudModel(forcesSummary, sizeof forcesSummary);
     {
         const CeCmdHudDrawOps ops = {RtsHudBox, RtsHudOutline, RtsHudText, RtsHudTextWidth, RtsHudLineHeight};
         CeCmdHudDrawBar(ops, gHudLayout, gHudPlacards, gHudPlacardCount, gHudCard, forcesSummary,
-                        float(MOUSE_X), float(MOUSE_Y), gHudBtnFlashNs, Ns());
+                        float(MOUSE_X), float(MOUSE_Y), gHudBtnFlashNs, Ns(), hudAllegiance);
     }
     const float cardY = gHudLayout.valid ? gHudLayout.barRect.y : (StrategicUiBottom() - (40.f + kCardH) * u);
 
@@ -3542,12 +3558,12 @@ void DrawStrategicHints() {
         const float safeBot = lowerClear - safeTop >= h ? lowerClear : (std::max)(safeTop + h, StrategicUiBottom() - 38.f * u);
         const float x0 = floorf((L.w - w) * 0.5f);
         const float y0 = floorf((std::max)(safeTop, safeTop + ((safeBot - safeTop) - h) * 0.5f));
-        const CeCmdHudPalette helpPal = CeCmdHudDefaultPalette();
+        const CeCmdHudPalette helpPal = CeCmdHudPaletteForAllegiance(hudAllegiance);
         const float bt = floorf(u) > 1.f ? floorf(u) : 1.f;
-        Box(x0, y0, w, h, 0xe806101c);
+        Box(x0, y0, w, h, helpPal.barFill);
         Outline(x0, y0, w, h, bt, helpPal.barBorder);
         Box(x0 + bt, y0 + bt, w - 2.f * bt, bt, helpPal.barTopBevel);
-        const DWORD helpDesc = 0xffd6e4ee;
+        const DWORD helpDesc = helpPal.textBright;
         const float rx0 = x0 + (padX + lKeyW + keyGap + lWhatW + colGap) * fit;
         for (int i = 0; i < rows; ++i) {
             const float ry = y0 + 7.f * u + i * helpLine;
@@ -3569,7 +3585,7 @@ void DrawStrategicHints() {
             y = floorf((std::min)((std::max)(36.f * u, gNoteAtY - LineHeight() - 18.f * u), noteBase - LineHeight() - 16.f * u));
         }
         // the HUD's capsule opens and closes with the note; its words show only once it is nearly open (they would spill past a narrow one)
-        CapsuleBar(x - 16.f * u, y - 6.f * u, w + 32.f * u, LineHeight() + 12.f * u, alpha);
+        CapsuleBar(x - 16.f * u, y - 6.f * u, w + 32.f * u, LineHeight() + 12.f * u, alpha, false, hudAllegiance);
         const float words = (std::max)(0.f, (alpha - 0.8f) / 0.2f);
         if (words > 0.f) Text(x, y, Faded(kText, words), gNote, w);
     }

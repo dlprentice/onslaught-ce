@@ -145,8 +145,15 @@ static void CheckTextAndArmour()
 	CeCmdHudShortName("Forseti Experimental Long Name Unit", false, false, tiny, sizeof(tiny));
 	Require(std::strlen(tiny) < sizeof(tiny), "tiny buffer truncation null-terminated");
 
-	// Armour ratio, disabled text legibility, and color tier boundaries
+	// Armour ratio, disabled text legibility, faction palette symmetry, and color tier boundaries
 	const CeCmdHudPalette pal = CeCmdHudDefaultPalette();
+	const CeCmdHudPalette forseti = CeCmdHudPaletteForAllegiance(0);
+	const CeCmdHudPalette muspell = CeCmdHudPaletteForAllegiance(1);
+	Require(forseti.barFill == pal.barFill && forseti.cyanAccent == pal.cyanAccent, "allegiance 0 selects Forseti palette");
+	Require(muspell.barFill != pal.barFill && muspell.cyanAccent != pal.cyanAccent && muspell.textCyan != pal.textCyan, "allegiance 1 selects distinct Muspell amber/crimson palette");
+	Require(((muspell.cyanAccent >> 16) & 0xffu) > ((muspell.cyanAccent) & 0xffu) + 0x80u, "Muspell accent is warm red/amber");
+	Require((muspell.textDisabled & 0xffu) >= 0x80u && ((muspell.textDisabled >> 8) & 0xffu) >= 0x80u &&
+	        ((muspell.textDisabled >> 16) & 0xffu) >= 0x80u, "Muspell disabled button text keeps legible contrast");
 	Require((pal.textDisabled & 0xffu) >= 0x80u && ((pal.textDisabled >> 8) & 0xffu) >= 0x80u &&
 	        ((pal.textDisabled >> 16) & 0xffu) >= 0x80u, "disabled button text keeps legible contrast");
 	Require(std::fabs(CeCmdHudArmourRatio(60.f, 100.f, 1, 1) - 0.60f) < 1e-4f, "exact 60 percent ratio");

@@ -46,7 +46,8 @@ SCRATCH = ROOT / "local-data/port/ce-hooks-tests"
 POINTS = {  # point: tag (the header's table)
     "boot": "SIM", "exit": "SIM", "level_begin": "SIM", "level_end": "SIM", "tick_pre": "SIM", "tick_post": "SIM",
     "input_actions": "SIM", "key_capture": "RENDER", "draw_world": "RENDER", "draw_hud": "RENDER", "draw_overlay": "RENDER",
-    "menu_rows": "RENDER", "save_gate": "SIM", "audio_clock": "RENDER", "render_camera": "SIM", "hud_focus": "RENDER"}
+    "menu_rows": "RENDER", "save_gate": "SIM", "audio_clock": "RENDER", "render_camera": "SIM", "hud_focus": "RENDER",
+    "unit_spawn": "SIM", "unit_destroyed": "SIM", "spawner_trigger": "SIM", "weapon_fire": "SIM", "render_pass": "RENDER"}
 # point: (patch, [(file, function, calls)])
 SITES = {
     "boot": ("0301-ce-hook-boot", [("ltshell.cpp", "WinMain", 1)]),
@@ -64,14 +65,20 @@ SITES = {
     "save_gate": ("0313-ce-hook-save-gate", [("Career.cpp", "CCareer::Save", 1), ("FEPOptions.cpp", "CFEPOptions::WriteDefaultOptionsFile", 1)]),
     "audio_clock": ("0314-ce-hook-audio-clock", [("PCMusicStream.cpp", "GetMusicStreamFinished", 1), ("PCMusicStream.cpp", "MusicStreamHandle", 1)]),
     "render_camera": ("0315-ce-hook-render-camera", [("engine.cpp", "CEngine::SetViewpoint", 1)]),
-    "hud_focus": (None, []),
+    "hud_focus": ("0360-ce-hook-hud-focus", [("Hud.cpp", "CHud::RenderOverlayForViewpoint", 1)]),
+    "unit_spawn": ("0361-ce-hook-unit-spawn", [("Unit.cpp", "CUnit::Init", 1)]),
+    "unit_destroyed": ("0362-ce-hook-unit-destroyed", [("Unit.cpp", "CUnit::StartDieProcess", 1), ("BattleEngine.cpp", "CBattleEngine::StartDieProcess", 1)]),
+    "spawner_trigger": ("0363-ce-hook-spawner-trigger", [("SpawnerThng.cpp", "CSpawnerThing::Unknown4e3370", 1), ("SpawnerThng.cpp", "CSpawner::DoSpawn", 1)]),
+    "weapon_fire": ("0364-ce-hook-weapon-fire", [("weapon.cpp", "CWeapon::SpawnRound", 1)]),
+    "render_pass": ("0365-ce-hook-render-pass", [("DXEngine.cpp", "CDXEngine::Render", 2)]),
 }
 DISPATCH = {
     "boot": "ORDERED_BROADCAST", "exit": "ORDERED_BROADCAST", "level_begin": "ORDERED_BROADCAST", "level_end": "ORDERED_BROADCAST",
     "tick_pre": "ORDERED_BROADCAST", "tick_post": "COMMAND_APPLY", "input_actions": "ORDERED_BROADCAST", "key_capture": "FIRST_MATCH",
     "draw_world": "ORDERED_BROADCAST", "draw_hud": "ORDERED_BROADCAST", "draw_overlay": "ORDERED_BROADCAST",
     "menu_rows": "POSITIONAL_INSERT", "save_gate": "FILTER", "audio_clock": "ORDERED_BROADCAST", "render_camera": "OVERRIDE_CHAIN",
-    "hud_focus": "OVERRIDE_CHAIN"}
+    "hud_focus": "OVERRIDE_CHAIN", "unit_spawn": "ORDERED_BROADCAST", "unit_destroyed": "ORDERED_BROADCAST",
+    "spawner_trigger": "FILTER", "weapon_fire": "ORDERED_BROADCAST", "render_pass": "ORDERED_BROADCAST"}
 DEPENDS = {("0314-ce-hook-audio-clock", "0062-music-finished-poll"), ("0313-ce-hook-save-gate", "0052-ce-god-not-saved-Career")}
 SITE_FILES = sorted({f for _, sites in SITES.values() for f, _, _ in sites})
 TABLE = re.compile(r"static constexpr CeHookRow<\w+> (k\w+)\[\] = \{(.*?)\n\s*CE_HOOK_END\n\};\nCE_HOOK_CHECK\(\1, CE_HOOK_(SIM|RENDER), CE_DISPATCH_(\w+), \"(\w+)\"\);", re.S)
@@ -169,7 +176,18 @@ def compile_host(out, sources, defines=("-DCE_VERSION=\"hooks-test\"",), driver=
 
 
 STUBS = "bool PortCeLayer() { return true; }\n"
-MUTANT_FN = "static void CeHookMutant() {}\nstatic void CeHookMutant2() {}\nstatic void CeHookMutantAudio(CeHookAudioEvent, unsigned) {}\nstatic void CeHookMutantCommand(const CeHookCommand *) {}\n"
+MUTANT_FN = (
+    "static void CeHookMutant() {}\n"
+    "static void CeHookMutant2() {}\n"
+    "static void CeHookMutantAudio(CeHookAudioEvent, unsigned) {}\n"
+    "static void CeHookMutantCommand(const CeHookCommand *) {}\n"
+    "static void CeHookMutantUnitSpawn(CUnit *, CInitThing *) {}\n"
+    "static void CeHookMutantUnitDestroyed(CUnit *) {}\n"
+    "static void CeHookMutantSpawner(CeSpawnerTrigger *) {}\n"
+    "static void CeHookMutantWeapon(CWeapon *, CUnit *, CRound *) {}\n"
+    "static void CeHookMutantRenderPass(const CeRenderPass *) {}\n"
+    "static CBattleEngine *CeHookMutantFocus(CBattleEngine *be, CPlayer *) { return be; }\n"
+)
 
 
 def mutate_table(text, point, rows):
@@ -186,6 +204,12 @@ TABLE_MUTANTS = {  # name: (point, rows, the problem text expected)
                                        '\t{90, "b", CE_HOOK_SIM, CE_GATE_VERSION, CE_MODE_NONE, CeHookMutant2},', "out of order"),
     "a RENDER handler on a SIM point": ("tick_pre", '\t{90, "a", CE_HOOK_RENDER, CE_GATE_VERSION, CE_MODE_NONE, CeHookMutant},', "is RENDER on a SIM point"),
     "a SIM handler on a RENDER point": ("draw_overlay", '\t{90, "a", CE_HOOK_SIM, CE_GATE_VERSION, CE_MODE_NONE, CeHookMutant},', "is SIM on a RENDER point"),
+    "a RENDER handler on unit_spawn": ("unit_spawn", '\t{90, "a", CE_HOOK_RENDER, CE_GATE_VERSION, CE_MODE_NONE, CeHookMutantUnitSpawn},', "is RENDER on a SIM point"),
+    "a RENDER handler on unit_destroyed": ("unit_destroyed", '\t{90, "a", CE_HOOK_RENDER, CE_GATE_VERSION, CE_MODE_NONE, CeHookMutantUnitDestroyed},', "is RENDER on a SIM point"),
+    "a RENDER handler on spawner_trigger": ("spawner_trigger", '\t{90, "a", CE_HOOK_RENDER, CE_GATE_VERSION, CE_MODE_NONE, CeHookMutantSpawner},', "is RENDER on a SIM point"),
+    "a RENDER handler on weapon_fire": ("weapon_fire", '\t{90, "a", CE_HOOK_RENDER, CE_GATE_VERSION, CE_MODE_NONE, CeHookMutantWeapon},', "is RENDER on a SIM point"),
+    "a SIM handler on render_pass": ("render_pass", '\t{90, "a", CE_HOOK_SIM, CE_GATE_VERSION, CE_MODE_NONE, CeHookMutantRenderPass},', "is SIM on a RENDER point"),
+    "a SIM handler on hud_focus": ("hud_focus", '\t{90, "a", CE_HOOK_SIM, CE_GATE_VERSION, CE_MODE_NONE, CeHookMutantFocus},', "is SIM on a RENDER point"),
 }
 
 
@@ -265,11 +289,23 @@ int main() {
     char buffer[8] = {1, 2, 3, 4, 5, 6, 7, 8}; ce_hook_save_gate(CE_SAVE_CAREER, nullptr, buffer, 8);
     ce_hook_save_gate(CE_SAVE_OPTIONS_FILE, nullptr, buffer, 8);
     ce_hook_audio_clock(CE_AUDIO_REFILL, 4096);
+    ce_hook_unit_spawn(nullptr, nullptr);
+    ce_hook_unit_destroyed(nullptr);
+    CeSpawnerTrigger trigger = {CE_SPAWNER_MONITOR, nullptr, nullptr, nullptr, "TestUnit", 1, 0, true};
+    ce_hook_spawner_trigger(&trigger);
+    if (!trigger.allow) return 12;
+    ce_hook_weapon_fire(nullptr, nullptr, nullptr);
+    CeRenderPass prePass = {CE_RENDER_PASS_PRE_WORLD, 0, nullptr, nullptr, false};
+    CeRenderPass postPass = {CE_RENDER_PASS_POST_WORLD, 0, nullptr, nullptr, false};
+    ce_hook_render_pass(&prePass);
+    ce_hook_render_pass(&postPass);
     for (int i = 0; i < 8; i++) if (buffer[i] != i + 1) return 2;
     if (ce_hook_key_capture(0x57, false)) return 3;
     CCamera *camera = reinterpret_cast<CCamera *>(&page); if (ce_hook_render_camera(0, camera, nullptr) != camera) return 4;
     CBattleEngine *be = reinterpret_cast<CBattleEngine *>(buffer); if (ce_hook_hud_focus(nullptr, be) != be) return 5;
 #ifdef CE_VERSION
+    static_assert(CE_HOOKS_API_VERSION == 0x0200u, "version 2.0");
+    static_assert(CE_HOOKS_POINT_COUNT == 21u, "21 points");
     if (gCalls != "palette_end;console_end;photo_end;cmd_end;gamepad;editor_overlay;editor_save;bonus_save;museum_save;photo_key;pal_sup;pal_open;cmd_key;cmd_cam;playunit_cam;") return 10;
     gCalls.clear(); gConsumeKey = 2;
     if (!ce_hook_key_capture(2, false) || gCalls != "photo_key;pal_sup;") return 11;
@@ -346,24 +382,40 @@ class SiteTests(unittest.TestCase):
         self.order("ltshell.cpp", "if (!sMemoryManagerReady)", "ce_hook_exit(CE_EXIT_ATEXIT)", "PATCHMANAGER.FreeData();")
         self.order("ltshell.cpp", "ce_hook_exit(CE_EXIT_SHELL)", "PortSessionSummary();\n#ifdef CE_NETWORK_OFF")
         self.order("game.cpp", "\tPortCeEditorLevelEnd();\n", "\tPortCeMuseumVisitLevelEnd();\n", "ce_hook_level_end(", "\t\tMUSIC.Stop();\n\n\t// we don")
-        self.assertEqual([h[1] for h in rows["level_end"][2]], ["palette_close", "console_level_end", "photo_level_end", "commander_level_end"])
+        self.assertEqual([h[1] for h in rows["level_end"][2]], ["palette_close", "console_level_end", "photo_level_end", "commander_level_end", "multibe_level_end"])
         self.order("game.cpp", "{ PORT_UPDATE_HOOK();", "\tce_hook_tick_pre();", "\tce_hook_tick_post();", "void\tCGame::PreRun()")
-        self.assertEqual([h[1] for h in rows["tick_pre"][2]], ["gamepad_cycle"])
+        self.assertEqual([h[1] for h in rows["tick_pre"][2]], ["gamepad_cycle", "multibe_tick_pre"])
         self.order("game.cpp", "PortCeGamepadBeginCycle();\n#endif\n\t\tmController[0]->Flush();", "ce_hook_level_begin(aLevel);", "CE_SessionPreparePlay()")
+        self.assertEqual([h[1] for h in rows["level_begin"][2]], ["multibe_level_begin"])
         self.order("Controller.cpp", "PortCeDodgeAssistEnd(this", "ce_hook_input_actions(this, pad);", "RecordControllerState() ;\n\t}")
         # the hall draw runs earlier in Render than draw_fairly_late_stuff, which Render calls at its end
         self.order("DXEngine.cpp", "PortCeMuseumHallDraw();\t//", "draw_fairly_late_stuff(mPlayer[mCurrentViewpoint], viewpoint);")
         self.order("DXEngine.cpp", "RENDERINFO.GetProjection(&ENGINE.mProjectionMatrices[viewpoint]);",
                    "ce_hook_draw_world(", "be->GetCockpit()->Render()", "SCREENFX.Render();")
+        self.order("DXEngine.cpp", "PLATFORM.SetViewport(&mViewport[mCurrentViewpoint]);",
+                   "CE_RENDER_PASS_PRE_WORLD", "SwitchAllLights(TRUE);",
+                   "draw_fairly_late_stuff(mPlayer[mCurrentViewpoint], viewpoint);",
+                   "CE_RENDER_PASS_POST_WORLD", "PLATFORM.EndScene();")
         self.order("DXEngine.cpp", "PortCePaletteRender();", "PortCeNoticeRender();", "PortCeCmdRender();\t//",
                    "ce_hook_draw_overlay();", "PLATFORM.EndScene();\n\n\tmFirstFrame")
         self.assertEqual([h[1] for h in rows["draw_overlay"][2]], ["editor_overlay"])
-        self.order("Hud.cpp", "if (PortCeCmdHideCockpit()) return;", "RenderRadar(96.f);", "ce_hook_draw_hud(")
+        self.order("Hud.cpp", "if (PortCeCmdHideCockpit()) return;", "CBattleEngine *be = player->GetBattleEngine();",
+                   "be = ce_hook_hud_focus(player, be);", "mBattleEngine = be;", "RenderRadar(96.f);", "ce_hook_draw_hud(")
+        self.assertEqual([h[1] for h in rows["hud_focus"][2]], ["multibe_hud_focus"])
+        self.order("Unit.cpp", "EVENT_MANAGER.AddEvent(UNIT_EVENT_4003, this, NEXT_FRAME);", "ce_hook_unit_spawn(this, init);")
+        self.order("Unit.cpp", "ClearSpawners();", "ce_hook_unit_destroyed(this);", "void CUnit::SpawnExplosion()")
+        self.order("BattleEngine.cpp", "mSmoke.SetPos(mPos);", "ce_hook_unit_destroyed(this);", "void CBattleEngine::HandleIncomingMissle()")
+        self.order("SpawnerThng.cpp", "CE_SPAWNER_ACTOR", "ce_hook_spawner_trigger(&ceTrigger);",
+                   "ceTrigger.allow ? SpawnThingByName(mSpawnUnit) : NULL;",
+                   "if (!CeFactoryMayStart(this)) return FALSE;",
+                   "CE_SPAWNER_MONITOR", "mOwner->GetEmitter(mMount")
+        self.order("weapon.cpp", "round->SetTarget(target, FALSE);", "round->Init(&init);",
+                   "ce_hook_weapon_fire(this, GetAttachedTo(), round);")
         self.order("PauseMenu.cpp", "PortCePhotoItem()", "CMenuItem((DWORD)GI_QUIT, 2));\n#ifdef", "CE_MENU_PAUSE_LIST", "mLists.Append(list);\n\n\t// the controls",
                    "PortCeOptionsMenu(this, true);", "CE_MENU_PAUSE_OPTIONS")
         self.order("FrontEnd.cpp", "mPages[FEP_LANGUAGE_TEST] = PortCePage();", "CE_MENU_FRONTEND_PAGES", "// Initialise all pages")
         self.order("engine.cpp", "ce_hook_render_camera(", "memcpy(&mViewport[viewpoint]")
-        self.assertEqual([h[1] for h in rows["render_camera"][2]], ["commander_camera", "playunit_camera"])
+        self.assertEqual([h[1] for h in rows["render_camera"][2]], ["commander_camera", "playunit_camera", "multibe_camera"])
         self.order("PCMusicStream.cpp", "PortAudioPublishMusicHalf(", "PortRefillReport(offset,portRefillBefore);", "\t\t\tsBytesStreamed += size1;\n\t\t\tce_hook_audio_clock(CE_AUDIO_REFILL", "\t\t\tbreak;\n\n\t\t}\n\t\tcase 3:")
 
     def test_the_order_check_catches_a_moved_call(self):
@@ -608,6 +660,33 @@ class SaveHazardTests(unittest.TestCase):
                 with self.subTest(active=(first, second)):
                     self.assertIn(copy["progress"], (snapshots[first]["progress"],), f"{first}'s snapshot lost to {second}'s")
 
+    def test_mode_registry_prevents_concurrent_save_hazard_modes(self):
+        driver = r'''
+#include "ce_modes.h"
+#include <cstdio>
+int main() {
+    const CeMode modes[3] = {CE_MODE_EDITOR, CE_MODE_BONUS_LEVEL, CE_MODE_MUSEUM_VISIT};
+    for (int i = 0; i < 3; i++) {
+        for (int j = i + 1; j < 3; j++) {
+            if (CeModesCompatible(modes[i], modes[j]) || CeModesCompatible(modes[j], modes[i])) return 1;
+            if (CeModeBegin(modes[i]) != CE_MODE_BEGUN) return 2;
+            if (CeModeBegin(modes[j]) != CE_MODE_CONFLICT) return 3;
+            if (!CeModeEnd(modes[i])) return 4;
+        }
+    }
+    std::puts("save-modes-exclusive");
+    return 0;
+}
+'''
+        base = Path(tempfile.mkdtemp(prefix="save-excl-", dir=SCRATCH))
+        try:
+            rc, log = compile_host(base, [MODES], (), driver)
+            self.assertEqual(rc, 0, log)
+            run = subprocess.run([str(base / "driver")], capture_output=True, text=True)
+            self.assertEqual((run.returncode, run.stdout.strip()), (0, "save-modes-exclusive"))
+        finally:
+            shutil.rmtree(base, ignore_errors=True)
+
 
 HOOK_DECL = re.compile(r"^[A-Za-z_][\w \t\*]*?\b(ce_hook_\w+)\s*\(", re.M)
 STUB_DEF = re.compile(r"\b(ce_hook_\w+)\s*\([^;{]*\)\s*\{")
@@ -627,12 +706,17 @@ class HostStubTests(unittest.TestCase):
     def test_every_hook_has_a_stub_and_no_stub_is_stale(self):
         header = (PORT / "game" / "ce_hooks.h").read_text()
         stubs = (PORT / "game" / "ce_hooks_host_stubs.h").read_text()
+        weak = (PORT / "tools" / "tests" / "ce_weak_stubs.cpp").read_text()
         missing, stale = missing_stubs(header, stubs)
-        self.assertGreaterEqual(len(HOOK_DECL.findall(header)), 17, "the declaration pattern no longer finds the hooks")
+        self.assertEqual(len(HOOK_DECL.findall(header)), len(POINTS) + 1, "declared hooks must equal POINTS + command_push")
         self.assertEqual(missing, [], "hook points without a host stub")
         self.assertEqual(stale, [], "host stubs for hook points that no longer exist")
+        w_missing, w_stale = missing_stubs(header, weak)
+        self.assertEqual(w_missing, [], "hook points without a weak test stub in ce_weak_stubs.cpp")
+        self.assertEqual(w_stale, [], "stale weak test stubs in ce_weak_stubs.cpp")
         # mutants: drop one stub, add one hook
         self.assertEqual(missing_stubs(header, stubs.replace("void\t\t\tce_hook_draw_overlay() {}", ""))[0], ["ce_hook_draw_overlay"])
+        self.assertEqual(missing_stubs(header, stubs.replace("void\t\t\tce_hook_render_pass(const CeRenderPass *) {}", ""))[0], ["ce_hook_render_pass"])
         self.assertEqual(missing_stubs(header + "\nvoid\t\t\tce_hook_new_point(int x);\n", stubs)[0], ["ce_hook_new_point"])
 
     def test_the_stubs_compile_and_do_nothing(self):
@@ -640,12 +724,180 @@ class HostStubTests(unittest.TestCase):
             src = Path(tmp) / "stub.cpp"
             src.write_text('#include "ce_hooks_host_stubs.h"\nint main() {\n'
                            '  CCamera *c = (CCamera *)8; CBattleEngine *b = (CBattleEngine *)16;\n'
+                           '  CeSpawnerTrigger t = {CE_SPAWNER_MONITOR, 0, 0, 0, "u", 1, 0, true};\n'
+                           '  CeRenderPass p = {CE_RENDER_PASS_PRE_WORLD, 0, 0, c, false};\n'
+                           '  ce_hook_unit_spawn(0, 0); ce_hook_unit_destroyed(0);\n'
+                           '  ce_hook_spawner_trigger(&t); ce_hook_weapon_fire(0, 0, 0); ce_hook_render_pass(&p);\n'
                            '  return (ce_hook_key_capture(1, false) || ce_hook_render_camera(0, c, 0) != c\n'
-                           '          || ce_hook_hud_focus(0, b) != b) ? 1 : 0;\n}\n')
+                           '          || ce_hook_hud_focus(0, b) != b || !t.allow) ? 1 : 0;\n}\n')
             built = subprocess.run([shutil.which("g++") or "c++", "-std=gnu++14", "-Wall", "-Werror", "-I", str(PORT / "game"),
                                     str(src), "-o", str(Path(tmp) / "stub")], capture_output=True, text=True, timeout=120)
             self.assertEqual(built.returncode, 0, built.stderr)
             self.assertEqual(subprocess.run([str(Path(tmp) / "stub")], timeout=30).returncode, 0, "a stub did something")
+
+
+class ApiVersionAndNewPointTests(unittest.TestCase):
+    """API version contract and runtime positive + negative/mutant tests for hud_focus, unit_spawn, unit_destroyed,
+    spawner_trigger, weapon_fire, and render_pass (including RENDER write-fence guard enforcement)."""
+
+    def test_api_version_and_point_count_contract(self):
+        header = HEADER.read_text()
+        major = int(re.search(r"#define\s+CE_HOOKS_API_VERSION_MAJOR\s+(\d+)u", header)[1])
+        minor = int(re.search(r"#define\s+CE_HOOKS_API_VERSION_MINOR\s+(\d+)u", header)[1])
+        count = int(re.search(r"#define\s+CE_HOOKS_POINT_COUNT\s+(\d+)u", header)[1])
+        self.assertEqual((major, minor), (2, 0))
+        self.assertEqual(count, len(POINTS))
+
+    def test_new_points_dispatch_and_render_write_fence(self):
+        driver = r'''
+#include "ce_hooks.h"
+#include "ce_hooks_dispatch.h"
+#include <cstdio>
+#include <string>
+
+static bool gLayer = true;
+bool PortCeLayer() { return gLayer; }
+
+static int gSimUnits = 10;
+static int gFenceTrips = 0;
+static std::string gTrace;
+
+void CeHookGuardBefore(CeHookGuard *g) {
+    if (g->tag == CE_HOOK_RENDER) g->state = (unsigned long long)gSimUnits;
+}
+void CeHookGuardAfter(CeHookGuard *g) {
+    if (g->tag == CE_HOOK_RENDER && g->state != (unsigned long long)gSimUnits) gFenceTrips++;
+}
+
+static CBattleEngine *HudPass(CBattleEngine *be, CPlayer *) { gTrace += "hf1;"; return be; }
+static CBattleEngine *HudSwap(CBattleEngine *, CPlayer *) { gTrace += "hf2;"; return (CBattleEngine *)0x200; }
+static CBattleEngine *HudBadWrite(CBattleEngine *be, CPlayer *) { gSimUnits++; return be; }
+
+static void SpawnH(CUnit *, CInitThing *) { gTrace += "spawn;"; gSimUnits++; }
+static void DestroyH(CUnit *) { gTrace += "destroy;"; gSimUnits--; }
+static void WeaponH(CWeapon *, CUnit *, CRound *) { gTrace += "fire;"; }
+
+static void SpawnerInspect(CeSpawnerTrigger *t) { gTrace += t->allow ? "sp1:ok;" : "sp1:no;"; }
+static void SpawnerVeto(CeSpawnerTrigger *t) { gTrace += "sp2:veto;"; if (t->squad_size > 2) t->allow = false; }
+static void SpawnerObserve(CeSpawnerTrigger *t) { gTrace += t->allow ? "sp3:ok;" : "sp3:no;"; }
+
+static void PassGood(const CeRenderPass *p) { gTrace += (p->stage == CE_RENDER_PASS_PRE_WORLD) ? "pre;" : "post;"; }
+static void PassBadWrite(const CeRenderPass *) { gSimUnits += 99; }
+
+typedef CBattleEngine *(*FocusFn)(CBattleEngine *, CPlayer *);
+typedef void (*SpawnFn)(CUnit *, CInitThing *);
+typedef void (*DestroyFn)(CUnit *);
+typedef void (*SpawnerFn)(CeSpawnerTrigger *);
+typedef void (*WeaponFn)(CWeapon *, CUnit *, CRound *);
+typedef void (*PassFn)(const CeRenderPass *);
+
+static constexpr CeHookRow<FocusFn> kFocus[] = {
+    {10, "hf1", CE_HOOK_RENDER, CE_GATE_VERSION, CE_MODE_NONE, HudPass},
+    {20, "hf2", CE_HOOK_RENDER, CE_GATE_LAYER, CE_MODE_NONE, HudSwap},
+    CE_HOOK_END
+};
+CE_HOOK_CHECK(kFocus, CE_HOOK_RENDER, CE_DISPATCH_OVERRIDE_CHAIN, "hud_focus");
+
+static constexpr CeHookRow<FocusFn> kFocusBad[] = {
+    {10, "hf_bad", CE_HOOK_RENDER, CE_GATE_VERSION, CE_MODE_NONE, HudBadWrite},
+    CE_HOOK_END
+};
+CE_HOOK_CHECK(kFocusBad, CE_HOOK_RENDER, CE_DISPATCH_OVERRIDE_CHAIN, "hud_focus");
+
+static constexpr CeHookRow<SpawnFn> kSpawn[] = {
+    {10, "s1", CE_HOOK_SIM, CE_GATE_VERSION, CE_MODE_NONE, SpawnH},
+    CE_HOOK_END
+};
+CE_HOOK_CHECK(kSpawn, CE_HOOK_SIM, CE_DISPATCH_ORDERED_BROADCAST, "unit_spawn");
+
+static constexpr CeHookRow<DestroyFn> kDestroy[] = {
+    {10, "d1", CE_HOOK_SIM, CE_GATE_VERSION, CE_MODE_NONE, DestroyH},
+    CE_HOOK_END
+};
+CE_HOOK_CHECK(kDestroy, CE_HOOK_SIM, CE_DISPATCH_ORDERED_BROADCAST, "unit_destroyed");
+
+static constexpr CeHookRow<SpawnerFn> kSpawner[] = {
+    {10, "sp1", CE_HOOK_SIM, CE_GATE_VERSION, CE_MODE_NONE, SpawnerInspect},
+    {20, "sp2", CE_HOOK_SIM, CE_GATE_LAYER, CE_MODE_NONE, SpawnerVeto},
+    {30, "sp3", CE_HOOK_SIM, CE_GATE_VERSION, CE_MODE_NONE, SpawnerObserve},
+    CE_HOOK_END
+};
+CE_HOOK_CHECK(kSpawner, CE_HOOK_SIM, CE_DISPATCH_FILTER, "spawner_trigger");
+
+static constexpr CeHookRow<WeaponFn> kWeapon[] = {
+    {10, "w1", CE_HOOK_SIM, CE_GATE_VERSION, CE_MODE_NONE, WeaponH},
+    CE_HOOK_END
+};
+CE_HOOK_CHECK(kWeapon, CE_HOOK_SIM, CE_DISPATCH_ORDERED_BROADCAST, "weapon_fire");
+
+static constexpr CeHookRow<PassFn> kPassGood[] = {
+    {10, "p1", CE_HOOK_RENDER, CE_GATE_VERSION, CE_MODE_NONE, PassGood},
+    CE_HOOK_END
+};
+CE_HOOK_CHECK(kPassGood, CE_HOOK_RENDER, CE_DISPATCH_ORDERED_BROADCAST, "render_pass");
+
+static constexpr CeHookRow<PassFn> kPassBad[] = {
+    {10, "p_bad", CE_HOOK_RENDER, CE_GATE_VERSION, CE_MODE_NONE, PassBadWrite},
+    CE_HOOK_END
+};
+CE_HOOK_CHECK(kPassBad, CE_HOOK_RENDER, CE_DISPATCH_ORDERED_BROADCAST, "render_pass");
+
+int main() {
+    // 1. hud_focus override chain + layer gate + RENDER write-fence
+    CBattleEngine *orig = (CBattleEngine *)0x100;
+    if (CeHookOverride("hud_focus", kFocus, orig, (CPlayer *)0) != (CBattleEngine *)0x200) return 1;
+    if (gTrace != "hf1;hf2;" || gFenceTrips != 0) return 2;
+    gTrace.clear(); gLayer = false;
+    if (CeHookOverride("hud_focus", kFocus, orig, (CPlayer *)0) != orig) return 3;
+    if (gTrace != "hf1;" || gFenceTrips != 0) return 4;
+    gLayer = true;
+    CeHookOverride("hud_focus", kFocusBad, orig, (CPlayer *)0);
+    if (gFenceTrips != 1) return 5;
+
+    // 2. SIM hooks (unit_spawn, unit_destroyed, weapon_fire) may mutate sim state without tripping RENDER fence
+    gTrace.clear();
+    CeHookBroadcast("unit_spawn", kSpawn, (CUnit *)0, (CInitThing *)0);
+    CeHookBroadcast("weapon_fire", kWeapon, (CWeapon *)0, (CUnit *)0, (CRound *)0);
+    CeHookBroadcast("unit_destroyed", kDestroy, (CUnit *)0);
+    if (gTrace != "spawn;fire;destroy;" || gFenceTrips != 1) return 6;
+
+    // 3. spawner_trigger FILTER: chains mutation, respects CE_GATE_LAYER
+    gTrace.clear();
+    CeSpawnerTrigger big = {CE_SPAWNER_MONITOR, 0, 0, 0, "Tank", 4, 1, true};
+    CeHookFilter("spawner_trigger", kSpawner, &big);
+    if (big.allow || gTrace != "sp1:ok;sp2:veto;sp3:no;") return 7;
+    gTrace.clear();
+    CeSpawnerTrigger small = {CE_SPAWNER_ACTOR, 0, 0, 0, "Scout", 1, 0, true};
+    CeHookFilter("spawner_trigger", kSpawner, &small);
+    if (!small.allow || gTrace != "sp1:ok;sp2:veto;sp3:ok;") return 8;
+    gTrace.clear(); gLayer = false;
+    CeSpawnerTrigger gated = {CE_SPAWNER_MONITOR, 0, 0, 0, "Tank", 4, 1, true};
+    CeHookFilter("spawner_trigger", kSpawner, &gated);
+    if (!gated.allow || gTrace != "sp1:ok;sp3:ok;") return 9;
+    gLayer = true;
+
+    // 4. render_pass PRE/POST ordering + RENDER write-fence catches mutation
+    gTrace.clear();
+    CeRenderPass pre = {CE_RENDER_PASS_PRE_WORLD, 0, 0, 0, false};
+    CeRenderPass post = {CE_RENDER_PASS_POST_WORLD, 0, 0, 0, false};
+    CeHookBroadcast("render_pass", kPassGood, &pre);
+    CeHookBroadcast("render_pass", kPassGood, &post);
+    if (gTrace != "pre;post;" || gFenceTrips != 1) return 10;
+    CeHookBroadcast("render_pass", kPassBad, &pre);
+    if (gFenceTrips != 2) return 11;
+
+    std::puts("new-points-ok");
+    return 0;
+}
+'''
+        base = Path(tempfile.mkdtemp(prefix="new-points-", dir=SCRATCH))
+        try:
+            rc, log = compile_host(base, [MODES], ('-DCE_VERSION="hooks-test"', "-DCE_TEST_BUILD=1"), driver)
+            self.assertEqual(rc, 0, log)
+            run = subprocess.run([str(base / "driver")], capture_output=True, text=True)
+            self.assertEqual((run.returncode, run.stdout.strip()), (0, "new-points-ok"))
+        finally:
+            shutil.rmtree(base, ignore_errors=True)
 
 
 class TestBuildGuardTests(unittest.TestCase):

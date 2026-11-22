@@ -1,0 +1,580 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-only
+"""Host unit & causal-mutant suite for Play Any Unit (all unit classes, 1P barrel/weapon framing,
+artillery 3D ballistic arc & spotter camera, aircraft flight law, naval/dropship unload state machine,
+and Forseti vs Muspell faction HUD palettes & class readout formatting).
+
+Compiles port/game/ce_playunit_tactics.h, port/game/ce_playunit_rules.h, and port/game/ce_cmd_hud.h
+under ASan/UBSan + -Wall -Wextra -Werror with zero game assets or display required.
+"""
+from __future__ import annotations
+
+import argparse
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+import tempfile
+
+ROOT = Path(__file__).resolve().parents[2]
+RULES_H = ROOT / "port/game/ce_playunit_rules.h"
+TACTICS_H = ROOT / "port/game/ce_playunit_tactics.h"
+CMD_HUD_H = ROOT / "port/game/ce_cmd_hud.h"
+PLAYUNIT_CPP = ROOT / "port/game/ce_playunit.cpp"
+PLAYUNIT_HUD_CPP = ROOT / "port/game/ce_playunit_hud.cpp"
+PATCH_0358 = ROOT / "port/patches/0358-ce-playunit-class-hooks.patch"
+
+DRIVER = r'''// SPDX-License-Identifier: GPL-3.0-only
+#include "ce_playunit_rules.h"
+#include "ce_playunit_tactics.h"
+#include "ce_cmd_hud.h"
+
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <limits>
+
+static int gChecks = 0;
+
+static void Require(bool ok, const char *label)
+{
+	++gChecks;
+	if (!ok)
+	{
+		std::fprintf(stderr, "FAIL %s\n", label);
+		std::exit(1);
+	}
+}
+
+static bool Near(float a, float b, float eps = 1e-3f)
+{
+	return std::fabs(a - b) <= eps;
+}
+
+static float FlatGround(void *, float, float) { return 0.f; }
+static float HillGround(void *, float x, float) { return -0.15f * x; } // ground rises toward +X (BEA Z down)
+static float BasinGround(void *, float, float) { return 25.f; }        // below water level
+
+static void CheckAllClassEligibility()
+{
+	CePlayUnitFacts base = {};
+	base.friendly = true;
+	base.alive = true;
+	base.armed = true;
+
+	// Stationary Turret / Emplacement
+	{
+		CePlayUnitFacts f = base;
+		f.turret = true;
+		f.family = CE_PLAYUNIT_FAMILY_EMPLACEMENT;
+		Require(CePlayUnitClassFor(f) == CE_PLAYUNIT_CLASS_TURRET, "turret: friendly armed emplacement eligible");
+		Require(CePlayUnitRefusalFor(f) == CE_PLAYUNIT_TAKE_OK, "turret: take ok");
+		f.friendly = false;
+		Require(CePlayUnitRefusalFor(f) == CE_PLAYUNIT_REFUSE_ENEMY, "turret: enemy turret refused");
+		f.friendly = true; f.scripted = true;
+		Require(CePlayUnitRefusalFor(f) == CE_PLAYUNIT_REFUSE_MISSION, "turret: scripted turret refused");
+		f.scripted = false; f.armed = false;
+		Require(CePlayUnitRefusalFor(f) == CE_PLAYUNIT_REFUSE_UNARMED, "turret: unarmed emplacement refused");
+	}
+
+	// Aircraft: Fighter, Bomber, and unarmed Dropship transport
+	{
+		CePlayUnitFacts fighter = base;
+		fighter.aircraft = true;
+		fighter.family = CE_PLAYUNIT_FAMILY_AIRCRAFT;
+		Require(CePlayUnitClassFor(fighter) == CE_PLAYUNIT_CLASS_AIRCRAFT, "aircraft: armed fighter/bomber eligible");
+
+		CePlayUnitFacts dropship = base;
+		dropship.aircraft = true;
+		dropship.armed = false;
+		dropship.transport = true;
+		dropship.family = CE_PLAYUNIT_FAMILY_AIRCRAFT;
+		Require(CePlayUnitClassFor(dropship) == CE_PLAYUNIT_CLASS_AIRCRAFT, "aircraft: unarmed dropship with cargo eligible");
+
+		dropship.transport = false;
+		Require(CePlayUnitRefusalFor(dropship) == CE_PLAYUNIT_REFUSE_UNARMED, "aircraft: unarmed empty aircraft refused");
+	}
+
+	// Naval Vessels & Landing Craft
+	{
+		CePlayUnitFacts lander = base;
+		lander.naval = true;
+		lander.armed = false;
+		lander.transport = true;
+		lander.family = CE_PLAYUNIT_FAMILY_NAVAL;
+		Require(CePlayUnitClassFor(lander) == CE_PLAYUNIT_CLASS_NAVAL, "naval: landing craft with cargo eligible");
+
+		CePlayUnitFacts gunboat = base;
+		gunboat.naval = true;
+		gunboat.family = CE_PLAYUNIT_FAMILY_NAVAL;
+		Require(CePlayUnitClassFor(gunboat) == CE_PLAYUNIT_CLASS_NAVAL, "naval: armed naval vessel eligible");
+
+		lander.objective = true;
+		Require(CePlayUnitRefusalFor(lander) == CE_PLAYUNIT_REFUSE_MISSION, "naval: mission objective boat refused");
+	}
+
+	// Artillery (deploying ground vehicle, both in squad and standalone)
+	{
+		CePlayUnitFacts art = base;
+		art.vehicle = true;
+		art.groundUnit = true;
+		art.deploys = true;
+		art.normalSquad = false;
+		Require(CePlayUnitClassFor(art) == CE_PLAYUNIT_CLASS_ARTILLERY, "artillery: standalone deploying artillery eligible");
+		Require(!CePlayUnitTankEligible(art), "artillery: not classified as ordinary tank");
+
+		art.spawned = true;
+		Require(CePlayUnitRefusalFor(art) == CE_PLAYUNIT_REFUSE_SQUAD, "artillery: spawned-lead artillery refused");
+	}
+}
+
+static void CheckFirstPersonPartsAndWeaponView()
+{
+	// Real retail mesh part names across Forseti & Muspell tanks, artillery, turrets, and landers
+	const char *barrelParts[] = {
+		"barrel", "barrela", "barrelb", "X1 barrel", "X1 Barrel 01",
+		"cannon", "blaster", "blaster01", "blaster02",
+		"gun-lid", "gun-inside", "gun-base",
+		"TOP firer", "right firer", "left firer", "muzzle01"
+	};
+	for (unsigned i = 0; i < sizeof(barrelParts) / sizeof(barrelParts[0]); ++i)
+	{
+		Require(CePlayUnitPartIsBarrel(barrelParts[i]), "1P part filter recognizes retail barrel/gun sub-mesh");
+		Require(!CePlayUnitFirstPersonShouldSkipPart(true, barrelParts[i]), "1P barrel pass keeps barrel sub-mesh");
+		Require(!CePlayUnitFirstPersonShouldSkipPart(false, barrelParts[i]), "normal pass never skips barrel");
+	}
+
+	const char *bodyParts[] = {
+		"tankbody", "Tank_Hull", "turret", "body", "hull", "base",
+		"turretbase", "guard", "gun_support", "plough", "right door", "Object02", "forsettitrooper", ""
+	};
+	for (unsigned i = 0; i < sizeof(bodyParts) / sizeof(bodyParts[0]); ++i)
+	{
+		Require(!CePlayUnitPartIsBarrel(bodyParts[i]), "1P part filter rejects hull/turret interior part");
+		Require(CePlayUnitFirstPersonShouldSkipPart(true, bodyParts[i]), "1P barrel pass skips hull/turret interior part");
+		Require(!CePlayUnitFirstPersonShouldSkipPart(false, bodyParts[i]), "normal pass never skips hull/turret part");
+	}
+	Require(CePlayUnitFirstPersonShouldSkipPart(true, NULL), "1P barrel pass skips null part name safely");
+
+	// Tuned 1P eye offsets keep gunner above turret roof (negative Z = up in BEA)
+	float off[3];
+	CePlayUnitFirstPersonEyeAdjust(CE_PLAYUNIT_CLASS_TANK, 6.f, off);
+	Require(off[2] < -0.5f && off[1] > 0.f, "1P tank hatch offset sits slightly above turret roof");
+	CePlayUnitFirstPersonEyeAdjust(CE_PLAYUNIT_CLASS_AIRCRAFT, 10.f, off);
+	Require(off[1] > 1.5f, "1P aircraft cockpit offset sits forward at nose");
+
+	// Infantry weapon viewmodel bob & recoil animation
+	CePlayUnitWeaponViewState ws;
+	CePlayUnitWeaponViewReset(&ws);
+	CePlayUnitWeaponViewStep(&ws, 0.05f, 3.0f, 0.1f, true);
+	Require(Near(ws.recoil, 1.f) && Near(ws.flash, 1.f) && ws.bobAmp > 0.f, "infantry weapon fire triggers recoil & flash");
+	const float r0 = ws.recoil;
+	CePlayUnitWeaponViewStep(&ws, 0.05f, 3.0f, 0.0f, false);
+	Require(ws.recoil < r0 && ws.recoil > 0.f, "infantry weapon recoil decays smoothly after shot");
+	CePlayUnitWeaponViewStep(&ws, 0.05f, 0.0f, std::numeric_limits<float>::quiet_NaN(), false);
+	Require(std::isfinite(ws.swayX) && std::isfinite(ws.swayY), "infantry weapon animation tolerates NaN yaw delta");
+}
+
+static void CheckBallisticArcAndSpotter()
+{
+	// Flat ground launch at 45 degrees up (BEA pitch = -pi/4), yaw = -pi/2 (facing +X)
+	const float muzzle[3] = {0.f, 0.f, -2.f};
+	const float yaw = -1.5707963f; // forward = (-sin(-pi/2), cos(-pi/2)) = (+1, 0)
+	const float pitch = -0.78539816f;
+	CePlayUnitBallisticArc arc;
+	Require(CePlayUnitBallisticSolve(muzzle, yaw, pitch, 60.f, 1.0f, 12.f, 100.f, FlatGround, NULL, &arc),
+	        "ballistic: valid arc solved on flat ground");
+	Require(arc.valid && arc.hitsGround && arc.count >= 10 && arc.count <= kCePlayUnitArcMaxPoints,
+	        "ballistic: arc points populated within bounds");
+	Require(Near(arc.pts[0].x, muzzle[0]) && Near(arc.pts[0].z, muzzle[2]), "ballistic: starts at muzzle");
+	Require(Near(arc.impact[2], 0.f, 0.05f) && arc.impact[0] > 100.f, "ballistic: lands accurately on flat ground");
+	Require(Near(arc.elevationDeg, 45.f, 0.2f), "ballistic: elevation degrees positive upward");
+	Require(Near(arc.azimuthDeg, 90.f, 0.5f), "ballistic: east heading is 090 deg");
+	// Apex rises well above muzzle (more negative Z)
+	float minZ = muzzle[2];
+	for (int i = 0; i < arc.count; ++i)
+		if (arc.pts[i].z < minZ) minZ = arc.pts[i].z;
+	Require(minZ < muzzle[2] - 20.f, "ballistic: trajectory curves cleanly above muzzle");
+
+	// Sloped hillside shortens impact distance compared to flat ground
+	CePlayUnitBallisticArc hillArc;
+	Require(CePlayUnitBallisticSolve(muzzle, yaw, pitch, 60.f, 1.0f, 12.f, 100.f, HillGround, NULL, &hillArc),
+	        "ballistic: solved against rising slope");
+	Require(hillArc.hitsGround && hillArc.impact[0] < arc.impact[0] - 20.f,
+	        "ballistic: rising hillside intercepts shell earlier");
+	Require(Near(hillArc.impact[2], HillGround(NULL, hillArc.impact[0], hillArc.impact[1]), 0.1f),
+	        "ballistic: impact height matches slope surface");
+
+	// Water surface stops trajectory when ground is underwater basin
+	CePlayUnitBallisticArc waterArc;
+	Require(CePlayUnitBallisticSolve(muzzle, yaw, pitch, 60.f, 1.0f, 12.f, 2.0f, BasinGround, NULL, &waterArc),
+	        "ballistic: solved over water");
+	Require(waterArc.hitsGround && Near(waterArc.impact[2], 2.0f, 0.05f) && waterArc.impact[0] < arc.impact[0] + 15.f,
+	        "ballistic: trajectory impacts water surface");
+
+	// Pitch solver hits requested target accurately when re-integrated
+	float solvedPitch = 0.f;
+	const float target[3] = {180.f, 0.f, 0.f};
+	Require(CePlayUnitBallisticPitchForTarget(muzzle, target, 60.f, 1.0f, -1.25f, 0.3f, false, &solvedPitch),
+	        "ballistic: pitch solver succeeds for in-range target");
+	CePlayUnitBallisticArc verifyArc;
+	Require(CePlayUnitBallisticSolve(muzzle, yaw, solvedPitch, 60.f, 1.0f, 12.f, 100.f, FlatGround, NULL, &verifyArc),
+	        "ballistic: solved pitch integrates cleanly");
+	Require(std::fabs(verifyArc.impact[0] - target[0]) < 8.f, "ballistic: solved pitch lands within shell radius of target");
+
+	// Invalid inputs fail safely
+	Require(!CePlayUnitBallisticSolve(muzzle, yaw, pitch, 0.f, 1.0f, 12.f, 100.f, FlatGround, NULL, &arc),
+	        "ballistic: zero speed rejected");
+
+	// Spotter / Shot-Follow camera transitions
+	CePlayUnitSpotterState st;
+	CePlayUnitSpotterReset(&st);
+	Require(!st.enabled && st.mode == CE_SPOTTER_OFF, "spotter: starts off");
+	Require(CePlayUnitSpotterToggle(&st, true, verifyArc.impact), "spotter: toggle enables overwatch");
+	Require(st.enabled && st.mode == CE_SPOTTER_OVERWATCH && st.hasImpact, "spotter: enters overwatch on predicted impact");
+
+	const float s0[3] = {40.f, 0.f, -20.f}, sv[3] = {2.f, 0.f, -0.5f};
+	CePlayUnitSpotterOnShellLaunch(&st, s0, sv);
+	Require(st.mode == CE_SPOTTER_FOLLOW_SHELL && st.hasShell, "spotter: switches to shell-follow on launch");
+
+	const float s1[3] = {120.f, 0.f, -18.f};
+	CePlayUnitSpotterUpdate(&st, 0.05f, true, s1, sv, true, verifyArc.impact);
+	Require(st.mode == CE_SPOTTER_FOLLOW_SHELL && Near(st.shellPos[0], 120.f), "spotter: tracks moving shell");
+
+	// Verify spotter camera pose is valid & orthonormal while tracking shell
+	float eye[3], r[3], f[3], d[3];
+	const float unitPos[3] = {0.f, 0.f, 0.f};
+	Require(CePlayUnitSpotterCameraPose(st, unitPos, yaw, 0.f, eye, r, f, d), "spotter: valid shell-follow pose");
+	Require(eye[2] < s1[2] - 5.f, "spotter: aerial vantage sits above shell");
+	Require(Near(r[0]*r[0]+r[1]*r[1]+r[2]*r[2], 1.f) && Near(f[0]*f[0]+f[1]*f[1]+f[2]*f[2], 1.f) && Near(r[0]*f[0]+r[1]*f[1]+r[2]*f[2], 0.f),
+	        "spotter: camera axes orthonormal");
+
+	// Shell disappears -> latches impact hold for kCeSpotterHoldSeconds, then returns to overwatch
+	CePlayUnitSpotterUpdate(&st, 0.05f, false, NULL, NULL, true, verifyArc.impact);
+	Require(st.mode == CE_SPOTTER_HOLD_IMPACT && Near(st.impactPos[0], 120.f), "spotter: holds on shell impact site");
+	for (int k = 0; k < 50; ++k)
+		CePlayUnitSpotterUpdate(&st, 0.05f, false, NULL, NULL, true, verifyArc.impact);
+	Require(st.mode == CE_SPOTTER_OVERWATCH, "spotter: returns cleanly to predicted overwatch after hold");
+	Require(!CePlayUnitSpotterToggle(&st, true, verifyArc.impact) && st.mode == CE_SPOTTER_OFF, "spotter: second toggle turns off");
+}
+
+static void CheckAircraftFlightAndNavalUnload()
+{
+	// Fighter flight: turns right & banks, boost raises speed, altitude floor protects from ground crash
+	CePlayUnitFlightState fl = {};
+	const CePlayUnitFlightParams fighter = CePlayUnitFighterParams();
+	CePlayUnitFlightReset(&fl, 0.f, fighter);
+	float vCruise[3], vBoost[3];
+	CePlayUnitFlightStep(&fl, fighter, 0.05f, 0.f, 0.f, 0.f, 0.f, 0.f, false, -30.f, 0.f, vCruise);
+	Require(vCruise[1] > 0.3f, "flight: fighter maintains forward airspeed along +Y");
+	CePlayUnitFlightStep(&fl, fighter, 0.05f, 1.f, 0.f, 1.f, -0.6f, 0.f, true, -30.f, 0.f, vBoost);
+	Require(fl.speedUps > (fighter.minSpeedUps + (fighter.maxSpeedUps - fighter.minSpeedUps) * fighter.cruiseThrottle),
+	        "flight: throttle + boost increases airspeed");
+	Require(std::fabs(fl.roll) > 0.05f, "flight: turning banks wings");
+
+	// Diving into ground is stopped above minClearance
+	float z = -10.f;
+	for (int i = 0; i < 40; ++i)
+	{
+		float vDive[3];
+		CePlayUnitFlightStep(&fl, fighter, 0.05f, 1.f, 0.f, 0.f, 0.f, 0.7f, false, z, 0.f, vDive);
+		z += vDive[2];
+	}
+	Require(z <= -fighter.minClearance + 0.05f, "flight: altitude floor prevents accidental ground crash");
+	Require(fl.pitch <= 0.05f, "flight: low clearance automatically levels or pulls nose up");
+
+	// Dropship can decelerate to hover (0 speed)
+	CePlayUnitFlightState ds = {};
+	const CePlayUnitFlightParams drop = CePlayUnitDropshipParams();
+	CePlayUnitFlightReset(&ds, 0.f, drop);
+	float vDrop[3] = {0.f, 0.f, 0.f};
+	for (int i = 0; i < 60; ++i)
+		CePlayUnitFlightStep(&ds, drop, 0.05f, 0.f, 1.f, 0.f, 0.f, 0.f, false, -12.f, 0.f, vDrop);
+	Require(ds.speedUps < 0.5f, "flight: dropship decelerates smoothly to hover");
+
+	// Naval beach-unload state machine
+	Require(CePlayUnitNavalEvaluateUnload(0, false, false, false, 0.f, 0.f) == CE_NAVAL_NO_CARGO, "naval: empty craft reports no cargo");
+	Require(CePlayUnitNavalEvaluateUnload(4, false, false, false, 8.f, 0.f) == CE_NAVAL_AT_SEA, "naval: deep water reports at sea");
+	Require(CePlayUnitNavalEvaluateUnload(4, false, false, false, 1.5f, 0.f) == CE_NAVAL_READY_UNLOAD, "naval: shallow shore reports ready to unload");
+	Require(CePlayUnitNavalEvaluateUnload(4, true, true, false, -0.5f, 0.f) == CE_NAVAL_DEPLOYING, "naval: ramp animating reports deploying");
+	Require(CePlayUnitNavalEvaluateUnload(4, true, true, true, -0.5f, 0.f) == CE_NAVAL_READY_UNLOAD, "naval: open ramp with cargo stays ready");
+	Require(CePlayUnitNavalEvaluateUnload(0, true, true, true, -0.5f, 0.f) == CE_NAVAL_DEPLOYED, "naval: empty after landing reports deployed");
+
+	// Dropship cargo-drop readiness
+	Require(CePlayUnitDropshipEvaluateUnload(6, false, 45.f, -2.f, 0.f) == CE_NAVAL_AT_SEA, "dropship: high altitude not ready to drop");
+	Require(CePlayUnitDropshipEvaluateUnload(6, false, 10.f, 5.f, 0.f) == CE_NAVAL_AT_SEA, "dropship: over water not ready to drop");
+	Require(CePlayUnitDropshipEvaluateUnload(6, false, 10.f, -2.f, 0.f) == CE_NAVAL_READY_UNLOAD, "dropship: low over land ready to drop");
+}
+
+static void CheckFactionPalettesAndClassReadouts()
+{
+	// PlayUnit faction palette symmetry (Forseti cyan/slate vs Muspell fiery amber/crimson/iron)
+	const CePlayUnitHudPalette forseti = CePlayUnitHudPaletteFor(0);
+	const CePlayUnitHudPalette muspell = CePlayUnitHudPaletteFor(1);
+	Require(forseti.panelFill != muspell.panelFill && forseti.accentBright != muspell.accentBright,
+	        "hud palette: Forseti and Muspell palettes are distinct");
+	Require((forseti.accentBright & 0xffu) > ((forseti.accentBright >> 16) & 0xffu),
+	        "hud palette: Forseti accent is cool blue/cyan");
+	Require(((muspell.accentBright >> 16) & 0xffu) > (muspell.accentBright & 0xffu) + 0x80u,
+	        "hud palette: Muspell accent is fiery red/amber");
+	Require(((muspell.arcMain >> 16) & 0xffu) > (muspell.arcMain & 0xffu) + 0x80u,
+	        "hud palette: Muspell ballistic arc is fiery amber");
+
+	// Commander RTS HUD palette symmetry
+	const CeCmdHudPalette cmdF = CeCmdHudPaletteForAllegiance(0);
+	const CeCmdHudPalette cmdM = CeCmdHudPaletteForAllegiance(1);
+	Require(cmdF.cyanAccent != cmdM.cyanAccent && cmdF.barBorder != cmdM.barBorder,
+	        "commander palette: Forseti and Muspell RTS bars are distinct");
+
+	// Every class readout formats cleanly with zero forbidden bitmap-font glyphs
+	const int classes[] = {
+		CE_PLAYUNIT_CLASS_INFANTRY, CE_PLAYUNIT_CLASS_TANK, CE_PLAYUNIT_CLASS_TURRET,
+		CE_PLAYUNIT_CLASS_AIRCRAFT, CE_PLAYUNIT_CLASS_NAVAL, CE_PLAYUNIT_CLASS_ARTILLERY
+	};
+	for (unsigned i = 0; i < sizeof(classes) / sizeof(classes[0]); ++i)
+	{
+		CePlayUnitHudTelemetry t = {};
+		t.valid = true;
+		t.classId = classes[i];
+		t.allegiance = (i & 1) ? 1 : 0;
+		t.hullPct = 85;
+		t.headingDeg = 135;
+		t.speedUps = 12.f;
+		t.altitude = 32.f;
+		t.pitchDeg = 10.f;
+		t.azDeg = 210.f;
+		t.elDeg = 38.f;
+		t.rangeMeters = 240.f;
+		t.arcOn = true;
+		t.spotterMode = CE_SPOTTER_OVERWATCH;
+		t.cargoCount = 4;
+		t.unloadStatus = CE_NAVAL_READY_UNLOAD;
+		t.stance = 1;
+		std::snprintf(t.weaponName, sizeof(t.weaponName), "Pulse_Gun [A]|$");
+		char h[48], l1[64], l2[64], act[48];
+		CePlayUnitFormatClassHud(t, h, l1, l2, act);
+		Require(h[0] != 0 && l1[0] != 0 && l2[0] != 0, "class hud: header and telemetry lines populated");
+		const char *all[4] = {h, l1, l2, act};
+		for (int k = 0; k < 4; ++k)
+			for (const char *c = all[k]; *c; ++c)
+				Require(!CePlayUnitCharForbidden(static_cast<unsigned char>(*c)),
+				        "class hud: zero forbidden bitmap-font glyphs in formatted output");
+		if (classes[i] == CE_PLAYUNIT_CLASS_NAVAL)
+			Require(std::strstr(act, "UNLOAD") != NULL, "naval hud: ready landing craft shows UNLOAD prompt");
+		if (classes[i] == CE_PLAYUNIT_CLASS_ARTILLERY)
+			Require(std::strstr(l2, "ARC ON") != NULL && std::strstr(act, "SPOT CAM") != NULL,
+			        "artillery hud: shows ARC ON and SPOT CAM prompt");
+	}
+}
+
+static void CheckMultiWeaponAndPromptCapacity()
+{
+	// Standing prompt must hold at least 5 pieces (unit + Return + Zoom + View + C: Spot / U: Unload).
+	Require(kCePlayUnitPromptMaxPieces >= 6, "prompt: piece buffer holds >= 5 pieces without truncating class hints");
+
+	// Multi-weapon Turret / Aircraft selection: recovering secondary never locks out a ready primary.
+	const bool modes2[2] = {true, true};
+	const bool readyPrimaryOnly[2] = {true, false};
+	const bool readySecondaryOnly[2] = {false, true};
+	const bool noneReady[2] = {false, false};
+	Require(CePlayUnitSelectReadyWeapon(2, 1, false, modes2, readyPrimaryOnly) == 0,
+	        "multi-weapon: switches from recovering secondary to ready primary");
+	Require(CePlayUnitSelectReadyWeapon(2, 0, false, modes2, readySecondaryOnly) == 1,
+	        "multi-weapon: switches from recovering primary to ready secondary");
+	Require(CePlayUnitSelectReadyWeapon(2, 1, true, modes2, readyPrimaryOnly) == 1,
+	        "multi-weapon: preserves current mount while actively arming");
+	Require(CePlayUnitSelectReadyWeapon(2, 1, false, modes2, noneReady) == 1,
+	        "multi-weapon: keeps current weapon when all mounts recovering");
+	const bool modesFirstInvalid[2] = {false, true};
+	Require(CePlayUnitSelectReadyWeapon(2, 0, false, modesFirstInvalid, noneReady) == 1,
+	        "multi-weapon: skips mount without active weapon mode");
+	Require(CePlayUnitSelectReadyWeapon(0, 0, false, modes2, readyPrimaryOnly) == -1,
+	        "multi-weapon: empty weapon list returns -1");
+}
+
+int main()
+{
+	CheckAllClassEligibility();
+	CheckFirstPersonPartsAndWeaponView();
+	CheckBallisticArcAndSpotter();
+	CheckAircraftFlightAndNavalUnload();
+	CheckFactionPalettesAndClassReadouts();
+	CheckMultiWeaponAndPromptCapacity();
+	std::printf("checks=%d failures=0 skips=0\nPASS\n", gChecks);
+	return 0;
+}
+'''
+
+# Causal mutants proving each rule & safeguard is actively tested: (label, file_key, old, new)
+MUTANTS = (
+    ("barrel pass skips barrels too", "tactics",
+     "return !CePlayUnitPartIsBarrel(partName);",
+     "return true;"),
+    ("normal pass skips hull parts", "tactics",
+     "if (!barrelPassActive) return false;",
+     "if (false) return false;"),
+    ("ballistic gravity zeroed", "tactics",
+     "const float v0 = roundSpeedPerSec / 20.f;\n\tconst float g = roundGravity * 0.025f;",
+     "const float v0 = roundSpeedPerSec / 20.f;\n\tconst float g = 0.f;"),
+    ("ballistic water impact ignored", "tactics",
+     "const float surface = (isfinite(ground) && ground < waterLevel) ? ground : waterLevel;",
+     "const float surface = ground;"),
+    ("spotter fails to hold on impact", "tactics",
+     "st->mode = CE_SPOTTER_HOLD_IMPACT;",
+     "st->mode = CE_SPOTTER_OFF;"),
+    ("aircraft altitude floor disabled", "tactics",
+     "if (clearance < p.minClearance + 4.f)",
+     "if (false)"),
+    ("naval deep sea falsely allows unload", "tactics",
+     "if (isfinite(bowGroundZ) && isfinite(waterZ) && bowGroundZ <= waterZ + 2.4f)",
+     "if (isfinite(bowGroundZ) && isfinite(waterZ))"),
+    ("muspell hud falls back to forseti", "tactics",
+     "if (allegiance == 1)\n\t{",
+     "if (false)\n\t{"),
+    ("unarmed dropship transport refused", "rules",
+     "&& (f.armed || f.transport);",
+     "&& f.armed;"),
+    ("multi-weapon sticks on recovering secondary", "tactics",
+     "for (int i = 0; i < count; ++i)\n\t\tif (hasMode[i] && ready[i])\n\t\t\treturn i;",
+     "for (int i = 0; i < 0; ++i)\n\t\tif (hasMode[i] && ready[i])\n\t\t\treturn i;"),
+    ("multi-weapon clobbers arming weapon", "tactics",
+     "&& (ready[currentIdx] || armingCurrent)",
+     "&& ready[currentIdx]"),
+    ("prompt piece cap drops 5th class hint", "tactics",
+     "static const int kCePlayUnitPromptMaxPieces = 6;",
+     "static const int kCePlayUnitPromptMaxPieces = 4;"),
+)
+
+
+def check_source_invariants() -> list[str]:
+    errors: list[str] = []
+    hud = PLAYUNIT_HUD_CPP.read_text()
+    cpp = PLAYUNIT_CPP.read_text()
+    p0358 = PATCH_0358.read_text()
+
+    if "WCHAR piece[kCePlayUnitPromptMaxPieces][2][kChars];" not in hud or "pieces < kCePlayUnitPromptMaxPieces" not in hud:
+        errors.append("ce_playunit_hud.cpp Prompt() must size piece[] via kCePlayUnitPromptMaxPieces (>= 6)")
+
+    prompt_fn = cpp[cpp.index("void UnitPromptLine("):cpp.index("void RefreshUnitPrompt(")]
+    if "return;" in prompt_fn:
+        errors.append("UnitPromptLine() must not return early on gamepad path before appending C: Spot / U: Unload")
+    for token in ("ClassKeyFree(DIK_C)", "ClassKeyFree(DIK_U)", " | C: Spot", " | U: Unload"):
+        if token not in prompt_fn:
+            errors.append(f"UnitPromptLine() missing {token!r}")
+
+    net_fn = cpp[cpp.index("bool NetworkOrLockstepActive()"):cpp.index("CePlayUnitGate FillGate(")]
+    for token in ("CE_BootRequested", "CE_LockstepRequested", "CE_SessionActive", "PortCeNetActive", '"BEA_LOCKSTEP_"', '"BEA_NET_"'):
+        if token not in net_fn:
+            errors.append(f"NetworkOrLockstepActive() missing {token!r}")
+    fill_gate = cpp[cpp.index("CePlayUnitGate FillGate("):cpp.index("bool Allowed(")]
+    if "NetworkOrLockstepActive()" not in fill_gate:
+        errors.append("FillGate() must include NetworkOrLockstepActive() in networkBoot")
+    invert_fn = cpp[cpp.index('extern "C" int PortCePlayUnitInvertSides('):cpp.index('extern "C" int PortCePlayUnitSkipsMeshPart(')]
+    if "NetworkOrLockstepActive()" not in invert_fn:
+        errors.append("PortCePlayUnitInvertSides() must refuse when NetworkOrLockstepActive()")
+
+    unload_fn = cpp[cpp.index("bool HandleManualUnload("):cpp.index("bool UnitHasBallisticWeapon(")]
+    for token in ("boat->Unknown83()", "ship->Unknown448120()", "ship->mDoorState = 0;", '"wingflat"'):
+        if token not in unload_fn:
+            errors.append(f"HandleManualUnload() missing post-unload cleanup {token!r}")
+    naval_fn = cpp[cpp.index("void DriveNaval("):cpp.index("void DriveArtillery(")]
+    if "TransportCargoCount(u) <= 0" not in naval_fn:
+        errors.append("DriveNaval() must allow reversing off beach once cargo is empty")
+
+    fire_fn = cpp[cpp.index("void FireTick("):cpp.index("bool UpdateInput(") if "bool UpdateInput(" in cpp else len(cpp)]
+    for token in ("!w->mMode || !w->ReadyToFire()", "if (u->mUnknown168 == 1) break;", "u->mCurrentWeapon = nextReady ? nextReady : savedWeapon;"):
+        if token not in fire_fn:
+            errors.append(f"FireTick() multi-weapon loop missing {token!r}")
+
+    barrel_fn = cpp[cpp.index("void DrawFirstPersonVehicleBarrel("):cpp.index("void DrawBallisticArcWorld(")]
+    first_half = barrel_fn[:barrel_fn.index("if (gFirstPersonBarrelDrawn > 0) return;")]
+    for token in ("CreateStateBlock(D3DSBT_ALL, &saved)", "RENDERINFO.SetLightingEnabled(FALSE);\n\t\t\tRENDERINFO.Apply();", "saved->Apply();", "saved->Release();"):
+        if token not in first_half:
+            errors.append(f"DrawFirstPersonVehicleBarrel() mesh pass missing {token!r}")
+
+    render_fn = cpp[cpp.index("void CePlayUnitRenderState()"):cpp.index("void Refuse(")]
+    for token in ("ClassKeyFree(DIK_U)", "ClassKeyFree(DIK_C)"):
+        if token not in render_fn:
+            errors.append(f"CePlayUnitRenderState() missing {token!r}")
+
+    cannon_hunk = p0358[p0358.index("void CCannon::Move()"):p0358.index("--- a/Component.cpp")]
+    if "if (anim != AM_INVALID)" not in cannon_hunk:
+        errors.append("0358 CCannon::Move must guard GetAnimModeByName(\"Activate\") against AM_INVALID")
+
+    return errors
+
+
+def compile_and_run(cxx: str, files: dict[str, str], strict: bool) -> tuple[bool, bool, str]:
+    with tempfile.TemporaryDirectory() as tmp:
+        d = Path(tmp)
+        (d / "ce_playunit_rules.h").write_text(files["rules"])
+        (d / "ce_playunit_tactics.h").write_text(files["tactics"])
+        (d / "ce_cmd_hud.h").write_text(files["cmd_hud"])
+        drv = d / "driver.cpp"
+        drv.write_text(DRIVER)
+        exe = d / "check"
+        cmd = [
+            cxx, "-std=c++17", "-O1", "-g", "-Wall", "-Wextra",
+            *(["-Werror", "-fsanitize=address,undefined", "-fno-omit-frame-pointer"] if strict else ["-Wno-unused-parameter"]),
+            "-I", str(d), str(drv), "-o", str(exe),
+        ]
+        built = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        if built.returncode != 0:
+            return False, False, built.stderr[-800:]
+        env = dict(os.environ, ASAN_OPTIONS="detect_leaks=1:halt_on_error=1", UBSAN_OPTIONS="halt_on_error=1")
+        ran = subprocess.run([str(exe)], capture_output=True, text=True, timeout=30, env=env)
+        out = ran.stdout + ran.stderr
+        ok = ran.returncode == 0 and "PASS" in ran.stdout and "Sanitizer" not in out and "runtime error:" not in out
+        return True, ok, out[-800:]
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--cxx", default=shutil.which("c++") or "g++")
+    args = ap.parse_args()
+
+    files = {
+        "rules": RULES_H.read_text(),
+        "tactics": TACTICS_H.read_text(),
+        "cmd_hud": CMD_HUD_H.read_text(),
+    }
+    ok = True
+    comp, passed, out = compile_and_run(args.cxx, files, strict=True)
+    print(f"{'PASS' if comp and passed else 'FAIL'} baseline all-classes PlayUnit checks (ASan/UBSan)")
+    if not (comp and passed):
+        print(out)
+        return 1
+
+    for label, key, old, new in MUTANTS:
+        if files[key].count(old) != 1:
+            print(f"FAIL mutant {label!r}: anchor found {files[key].count(old)} times in {key}")
+            ok = False
+            continue
+        mut = dict(files)
+        mut[key] = files[key].replace(old, new, 1)
+        m_comp, m_pass, m_out = compile_and_run(args.cxx, mut, strict=False)
+        if not m_comp:
+            print(f"FAIL mutant {label!r}: compile failed\n{m_out}")
+            ok = False
+        elif m_pass:
+            print(f"FAIL mutant {label!r}: driver unexpectedly passed")
+            ok = False
+        else:
+            print(f"PASS mutant caught: {label}")
+
+    src_errs = check_source_invariants()
+    if src_errs:
+        for e in src_errs:
+            print(f"FAIL source invariant: {e}")
+        ok = False
+    else:
+        print("PASS source invariants (prompt capacity, lockstep fence, post-unload cleanup, multi-weapon volley, D3D9 stateblock, ClassKeyFree, 0358 AM_INVALID)")
+
+    print("playunit all-classes suite: " + ("OK" if ok else "FAILED"))
+    return 0 if ok else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

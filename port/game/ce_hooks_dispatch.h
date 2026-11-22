@@ -7,11 +7,13 @@
 // told the point, the handler and its tag, and may fail the run when a RENDER handler changed the simulation.
 //
 // Dispatch, one per point:
-//   ORDERED_BROADCAST  every open row, in table order (boot, exit, level_*, tick_pre, input_actions, draw_*, audio_clock)
+//   ORDERED_BROADCAST  every open row, in table order (boot, exit, level_*, tick_pre, input_actions, draw_*, audio_clock,
+//                      unit_spawn, unit_destroyed, weapon_fire, render_pass)
 //   FIRST_MATCH        rows in order until one answers true (key_capture: the first handler that consumes the key)
 //   POSITIONAL_INSERT  every open row in order; each handler names the position of what it adds (menu_rows,
 //                      CeHookPlace), so table order decides only between equal positions
-//   FILTER             rows in order, each working on the previous one's output (save_gate: the same buffer)
+//   FILTER             rows in order, each working on the previous one's output (save_gate: the same buffer;
+//                      spawner_trigger: the same CeSpawnerTrigger decision struct)
 //   COMMAND_APPLY      queued commands (CeHookCommandPush), oldest first, each given to every open row in order, then the
 //                      queue is emptied (tick_post: what input and presentation asked for reaches the simulation here)
 //   OVERRIDE_CHAIN     each open row takes the value the previous one returned (render_camera, hud_focus)

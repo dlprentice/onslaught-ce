@@ -1,0 +1,14 @@
+--- a/weapon.cpp
++++ b/weapon.cpp
+@@ -393,4 +393,5 @@
+ // STAND-IN (product rank keys): the orientation products through FSpawnOri and FSpawnTurn above, whose seven
+ // (double) conversions give retail's term orders (00506ed1..005070d3, 005070e0..005072d5) without scheduler nodes.
++#include "ce_hooks.h"	// Port: the CE hook points (port/game/ce_hooks.h)
+ BOOL CWeapon::SpawnRound()	// FUNCTION: 0x005069f0
+ {
+@@ -493,4 +494,5 @@
+ 			round->SetTarget(target, FALSE);
+ 			round->Init(&init);
++			ce_hook_weapon_fire(this, GetAttachedTo(), round);	// CE hook point (port/game/ce_hooks.h): after round initialisation
+ 
+ 			if (WeaponMode_mParticleA(mode))	// STAND-IN (reader interface): here and the found branch's CreateEffect

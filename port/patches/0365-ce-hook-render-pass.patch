@@ -1,0 +1,20 @@
+--- a/DXEngine.cpp
++++ b/DXEngine.cpp
+@@ -810,4 +810,8 @@
+ 
+ 	PLATFORM.SetViewport(&mViewport[mCurrentViewpoint]);
++	{
++		CeRenderPass cePass = { CE_RENDER_PASS_PRE_WORLD, viewpoint, mPlayer[mCurrentViewpoint], mCamera[mCurrentViewpoint], gMirrorPass != 0 };
++		ce_hook_render_pass(&cePass);	// CE hook point (port/game/ce_hooks.h): before world scene rendering
++	}
+ 
+     SwitchAllLights(TRUE);
+@@ -1048,4 +1052,8 @@
+ 
+ 	draw_fairly_late_stuff(mPlayer[mCurrentViewpoint], viewpoint);
++	{
++		CeRenderPass cePass = { CE_RENDER_PASS_POST_WORLD, viewpoint, mPlayer[mCurrentViewpoint], mCamera[mCurrentViewpoint], gMirrorPass != 0 };
++		ce_hook_render_pass(&cePass);	// CE hook point (port/game/ce_hooks.h): after world scene and late passes, before EndScene
++	}
+ 
+ 	PLATFORM.EndScene();

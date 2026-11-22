@@ -498,13 +498,17 @@ static void Table()
 	Check(!rows[CE_PLAYUNIT_CLASS_JEEP].enabled, "table: the jeep row is off");
 	int on = 0;
 	for (int i = 0; i < CE_PLAYUNIT_CLASS_COUNT; ++i) on += rows[i].enabled ? 1 : 0;
-	Check(on == 2, "only the tank and ordinary infantry rows are enabled");
+	Check(on == 6, "tank, infantry, artillery, turret, aircraft and naval rows are enabled");
 	CePlayUnitFacts foot = Tank(); foot.vehicle = false; foot.groundUnit = false; foot.normalSquad = false;
 	foot.ordinaryFoot = true; foot.family = CE_PLAYUNIT_FAMILY_INFANTRY;
 	Check(CePlayUnitClassFor(foot) == CE_PLAYUNIT_CLASS_INFANTRY, "ordinary independent soldier is eligible");
 	foot.scripted = true; Check(CePlayUnitClassFor(foot) < 0, "script-owned soldier is retained");
 	foot.scripted = false; foot.ordinaryFoot = false;
 	Check(CePlayUnitClassFor(foot) < 0, "another foot unit or another assignment is retained");
+	{ CePlayUnitFacts art = Tank(); art.deploys = true; art.normalSquad = false; Check(CePlayUnitClassFor(art) == CE_PLAYUNIT_CLASS_ARTILLERY && !CePlayUnitTankEligible(art), "table: deploying ground vehicle is artillery"); }
+	{ CePlayUnitFacts tur = Tank(); tur.vehicle = tur.groundUnit = tur.normalSquad = false; tur.turret = true; Check(CePlayUnitClassFor(tur) == CE_PLAYUNIT_CLASS_TURRET, "table: stationary turret is turret class"); }
+	{ CePlayUnitFacts air = Tank(); air.vehicle = air.groundUnit = air.normalSquad = false; air.aircraft = true; Check(CePlayUnitClassFor(air) == CE_PLAYUNIT_CLASS_AIRCRAFT, "table: aircraft is aircraft class"); }
+	{ CePlayUnitFacts nav = Tank(); nav.vehicle = nav.groundUnit = nav.normalSquad = false; nav.naval = true; nav.armed = false; nav.transport = true; Check(CePlayUnitClassFor(nav) == CE_PLAYUNIT_CLASS_NAVAL, "table: landing craft transport is naval class"); }
 	Check(CePlayUnitClassFor(Tank()) == CE_PLAYUNIT_CLASS_TANK, "table: a tank is the tank class");
 	{ CePlayUnitFacts f = Tank(); f.groundUnit = false; Check(CePlayUnitClassFor(f) == -1 && !CePlayUnitTankEligible(f), "table: a jeep is refused while its row is off"); }
 	{ CePlayUnitFacts f = Tank(); f.vehicle = false; Check(CePlayUnitClassFor(f) == -1, "table: a non-vehicle fits no row"); }
@@ -525,7 +529,6 @@ static void Table()
 		{ CePlayUnitFacts f = base; f.alive = false; Check(!CePlayUnitEligibleIn(extra, 2, row, f), "table: a dying unit is refused by every row"); }
 		{ CePlayUnitFacts f = base; f.scripted = true; Check(!CePlayUnitEligibleIn(extra, 2, row, f), "table: a scripted unit is refused by every row"); }
 		{ CePlayUnitFacts f = base; f.objective = true; Check(!CePlayUnitEligibleIn(extra, 2, row, f), "table: an objective is refused by every row"); }
-		{ CePlayUnitFacts f = base; f.deploys = true; Check(!CePlayUnitEligibleIn(extra, 2, row, f), "table: a deploying unit is refused by every row"); }
 		{ CePlayUnitFacts f = base; f.normalSquad = false; Check(!CePlayUnitEligibleIn(extra, 2, row, f), "table: a unit outside a normal squad is refused by every row"); }
 		{ CePlayUnitFacts f = base; f.spawned = true; Check(!CePlayUnitEligibleIn(extra, 2, row, f), "table: a spawned unit is refused by every row"); }
 		{ CePlayUnitFacts f = base; f.armed = false; Check(!CePlayUnitEligibleIn(extra, 2, row, f), "table: an unarmed unit is refused by every row"); }
@@ -637,9 +640,8 @@ static void Taking()
 			if (!f.friendly) expect = CE_PLAYUNIT_REFUSE_ENEMY;
 			else if (!f.alive) expect = CE_PLAYUNIT_REFUSE_DYING;
 			else if (f.scripted || f.objective) expect = CE_PLAYUNIT_REFUSE_MISSION;
-			else if (f.deploys) expect = CE_PLAYUNIT_REFUSE_DEPLOYS;
-			else if (!(f.vehicle && f.groundUnit)) expect = CE_PLAYUNIT_REFUSE_KIND;
-			else if (!f.normalSquad || f.spawned) expect = CE_PLAYUNIT_REFUSE_SQUAD;
+			else if (!(f.vehicle && f.groundUnit)) expect = f.deploys ? CE_PLAYUNIT_REFUSE_DEPLOYS : CE_PLAYUNIT_REFUSE_KIND;
+			else if ((!f.deploys && !f.normalSquad) || f.spawned) expect = CE_PLAYUNIT_REFUSE_SQUAD;
 			else expect = CE_PLAYUNIT_REFUSE_UNARMED;
 		}
 		if (r == expect) ++order;

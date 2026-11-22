@@ -56,9 +56,11 @@ const char *CePlayUnitDrivenClass();
 bool CePlayUnitDrivenPose(float pos[3], float *headingDeg, float *speedUps);
 bool CePlayUnitAimNow(float point[3], int *fireState);
 unsigned CePlayUnitRoundsNow(float lastImpact[3], float lastAim[3]);
-struct CePlayUnitHudFocus { float x, y, z, yaw, life, fullLife; };
+struct CePlayUnitHudFocus { float x, y, z, yaw, life, fullLife; int allegiance; };
 bool	CePlayUnitHudFocusOf(CePlayUnitHudFocus *out);
 bool	CePlayUnitHudOverlay(class CPlayer *player, int viewpoint);
+struct CePlayUnitHudTelemetry;
+bool	CePlayUnitHudTelemetryOf(CePlayUnitHudTelemetry *out);
 
 #endif
 

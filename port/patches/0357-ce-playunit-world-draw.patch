@@ -1,0 +1,23 @@
+--- a/DXEngine.cpp
++++ b/DXEngine.cpp
+@@ -612,6 +612,9 @@
+ 	sea_visibility_tester.MissATest = 1;
+ #endif
+ }
++#ifdef CE_VERSION
++extern "C" void PortCePlayUnitDrawWorld(int viewpoint) __attribute__((weak));
++#endif
+ 
+ 
+ // This is stuff that can be drawn during the VBLANK if you get really silly.
+@@ -635,6 +638,10 @@
+ 	//*****************************************
+ 	//** Render Cockpit
+ 
++#ifdef CE_VERSION
++	if (PortCePlayUnitDrawWorld)
++		PortCePlayUnitDrawWorld(viewpoint);
++#endif
+ #ifdef DEV_VERSION
+ 	if(!CLIPARAMS.mKillHUD)
+ #endif

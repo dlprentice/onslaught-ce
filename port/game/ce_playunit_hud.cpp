@@ -21,7 +21,9 @@
 #include "ce_playunit_hud.h"
 #include "ce_playunit.h"
 #include "ce_playunit_rules.h"
+#include "ce_playunit_tactics.h"
 
+#include <math.h>
 #include <string.h>
 
 extern "C" unsigned long long CE_ScreenshotTicks(void);		// ce_screenshot.cpp: SDL's milliseconds
@@ -154,6 +156,182 @@ void RestoreStates()
 	RENDERINFO.Apply();
 }
 
+struct CeHudQuadVertex
+{
+	float x, y, z, rhw;
+	DWORD color;
+};
+
+void HudFillRect(float x, float y, float w, float h, unsigned colour)
+{
+	if (w <= 0.f || h <= 0.f) return;
+	LPDIRECT3DDEVICE9 dev = LT.GetDevice();
+	if (!dev) return;
+	const CeHudQuadVertex v[4] = {
+		{x,     y,     0.005f, 1.f, colour},
+		{x + w, y,     0.005f, 1.f, colour},
+		{x,     y + h, 0.005f, 1.f, colour},
+		{x + w, y + h, 0.005f, 1.f, colour},
+	};
+	LT.STS(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
+	LT.STS(0, D3DTSS_COLORARG1, D3DTA_DIFFUSE);
+	LT.STS(0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
+	LT.STS(0, D3DTSS_ALPHAARG1, D3DTA_DIFFUSE);
+	LT.SRS(D3DRS_LIGHTING, FALSE);
+	LT.SRS(D3DRS_ALPHABLENDENABLE, TRUE);
+	LT.SRS(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
+	LT.SRS(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
+	LT.SRS(D3DRS_ZENABLE, FALSE);
+	LT.SRS(D3DRS_CULLMODE, D3DCULL_NONE);
+	LT.SetFVF(D3DFVF_XYZRHW | D3DFVF_DIFFUSE);
+	dev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(CeHudQuadVertex));
+	LT.STS(0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
+	LT.STS(0, D3DTSS_COLOROP, D3DTOP_MODULATE);
+	LT.STS(0, D3DTSS_ALPHAARG1, D3DTA_TEXTURE);
+	LT.STS(0, D3DTSS_ALPHAOP, D3DTOP_MODULATE);
+}
+
+void HudOutlineRect(float x, float y, float w, float h, float t, unsigned colour)
+{
+	if (w <= 0.f || h <= 0.f || t <= 0.f) return;
+	HudFillRect(x, y, w, t, colour);
+	HudFillRect(x, y + h - t, w, t, colour);
+	HudFillRect(x, y, t, h, colour);
+	HudFillRect(x + w - t, y, t, h, colour);
+}
+
+void DrawHudLineText(CDXBitmapFont *font, float x, float y, unsigned colour, const char *ascii, float s, float maxW)
+{
+	if (!font || !ascii || !ascii[0]) return;
+	WCHAR raw[kChars], shown[kChars];
+	Copy(raw, ascii);
+	Displayable(font, raw, shown);
+	float squeeze = 1.f;
+	if (maxW > 10.f) Fit(font, shown, &squeeze, maxW / s);
+	OverlayStates();
+	font->DrawTextWithShadow(x, y, colour, shown, 0, 0.f, s * squeeze, s);
+}
+
+// Compact BEA-styled class telemetry panel anchored on the upper-left margin (clear of the top prompt capsule,
+// bottom-left radar, bottom-right radio portrait / battle-line orb, and center compass), themed dynamically for Forseti (cyan/slate) or Muspell (amber/iron).
+void ClassPanel(CDXBitmapFont *font, float w, float h)
+{
+	CePlayUnitHudTelemetry tel;
+	memset(&tel, 0, sizeof(tel));
+	if (!CePlayUnitHudTelemetryOf(&tel) || !tel.valid) return;
+
+	char header[48], line1[64], line2[64], action[48];
+	CePlayUnitFormatClassHud(tel, header, line1, line2, action);
+	const CePlayUnitHudPalette pal = CePlayUnitHudPaletteFor(tel.allegiance);
+	const float s = HudScale(w, h);
+	const float t = s > 1.f ? floorf(s) : 1.f;
+	const float sh = float(font->GetHeight()) * s;
+	const bool isAir = tel.classId == CE_PLAYUNIT_CLASS_AIRCRAFT;
+	const bool hasAction = action[0] != 0;
+
+	const float panelW = floorf((isAir ? 242.f : 222.f) * s);
+	const float rowGap = floorf(3.f * s);
+	const float padX = floorf(8.f * s);
+	const float padY = floorf(6.f * s);
+	const float barH = floorf(4.f * s > 3.f ? 4.f * s : 3.f);
+	const float panelH = floorf(padY * 2.f + sh * (hasAction ? 4.f : 3.f) + rowGap * (hasAction ? 4.f : 3.f) + barH + 4.f * s);
+	const float marginX = floorf(14.f * s);
+	// Anchor cleanly on the upper-left margin, completely clear of the top prompt capsule,
+	// bottom-left radar, bottom-right radio portrait / battle-line orb, and center compass.
+	const float x0 = marginX;
+	const float y0 = floorf(132.f * s);
+	if (x0 + panelW > w - 8.f || y0 + panelH > h - 8.f) return;
+
+	OverlayStates();
+	// 1. Draw ALL untextured geometric primitives first (glass panel, bevel, end-caps, hull bar, aircraft gauges, action box).
+	HudFillRect(x0, y0, panelW, panelH, pal.panelFill);
+	HudOutlineRect(x0, y0, panelW, panelH, t, pal.panelBorder);
+	HudFillRect(x0 + t, y0 + t, panelW - 2.f * t, t, pal.bevelAccent);
+	const float capW = floorf(2.f * s > 2.f ? 2.f * s : 2.f);
+	const float capInset = floorf(5.f * s);
+	HudFillRect(x0 + capW, y0 + capInset, capW, panelH - 2.f * capInset, pal.accentBright);
+	HudFillRect(x0 + panelW - 2.f * capW, y0 + capInset, capW, panelH - 2.f * capInset, pal.accentBright);
+
+	// Aircraft visual gauges on right side of panel: vertical altitude bar + pitch horizon tick.
+	const float gaugeRoom = isAir ? floorf(28.f * s) : 0.f;
+	const float textX = x0 + padX + capW;
+	const float textMaxW = panelW - 2.f * padX - 2.f * capW - gaugeRoom;
+
+	if (isAir)
+	{
+		const float gx = x0 + panelW - padX - capW - floorf(20.f * s);
+		const float gy = y0 + padY + sh + rowGap;
+		const float gh = panelH - padY * 2.f - sh - rowGap - 2.f * s;
+		const float gw = floorf(6.f * s);
+		if (gh > 12.f)
+		{
+			// Altitude bar (0..80m)
+			HudFillRect(gx, gy, gw, gh, 0xb004080e);
+			HudOutlineRect(gx, gy, gw, gh, t, pal.accentDim);
+			float altRatio = tel.altitude / 80.f;
+			if (altRatio < 0.f) altRatio = 0.f;
+			if (altRatio > 1.f) altRatio = 1.f;
+			const float fillH = (gh - 2.f * t) * altRatio;
+			if (fillH > 0.5f)
+				HudFillRect(gx + t, gy + gh - t - fillH, gw - 2.f * t, fillH, pal.accentBright);
+
+			// Horizon pitch tick beside altitude bar
+			const float hx = gx + gw + floorf(4.f * s);
+			const float hw = floorf(10.f * s);
+			const float hmid = gy + gh * 0.5f;
+			HudFillRect(hx, hmid - t * 0.5f, hw, t, pal.accentDim);
+			float pNorm = tel.pitchDeg / 45.f;
+			if (pNorm < -1.f) pNorm = -1.f;
+			if (pNorm > 1.f) pNorm = 1.f;
+			const float py = hmid - pNorm * (gh * 0.42f);
+			HudFillRect(hx + t, py - t, hw - 2.f * t, t * 2.f, pal.highlight);
+		}
+	}
+
+	const float row0Y = y0 + padY;
+	const float hullY = row0Y + sh + rowGap;
+	const float row1Y = hullY + barH + rowGap + 1.f * s;
+	const float row2Y = row1Y + sh + rowGap;
+	const float row3Y = row2Y + sh + rowGap;
+
+	// Hull integrity mini-bar
+	const float hullW = textMaxW;
+	HudFillRect(textX, hullY, hullW, barH, 0xc004080e);
+	HudOutlineRect(textX, hullY, hullW, barH, t, pal.panelBorder);
+	float hullRatio = float(tel.hullPct) / 100.f;
+	if (hullRatio < 0.f) hullRatio = 0.f;
+	if (hullRatio > 1.f) hullRatio = 1.f;
+	const unsigned hullCol = hullRatio < 0.30f ? pal.crit : (hullRatio < 0.60f ? pal.warn : pal.ok);
+	const float hullFill = (hullW - 2.f * t) * hullRatio;
+	if (hullFill > 0.5f)
+		HudFillRect(textX + t, hullY + t, hullFill, barH - 2.f * t, hullCol);
+
+	const bool urgent = hasAction && (tel.unloadStatus == CE_NAVAL_READY_UNLOAD || tel.spotterMode != CE_SPOTTER_OFF);
+	if (urgent)
+	{
+		HudFillRect(textX - 2.f * s, row3Y - 1.f * s, textMaxW + 4.f * s, sh + 2.f * s, pal.accentDim);
+		HudOutlineRect(textX - 2.f * s, row3Y - 1.f * s, textMaxW + 4.f * s, sh + 2.f * s, t, pal.highlight);
+	}
+
+	// 2. Draw ALL bitmap-font text after geometry so texture state stays pristine across every line.
+	DrawHudLineText(font, textX, row0Y, pal.accentBright, header, s * 0.92f, textMaxW * 0.62f);
+	const char *factionTag = tel.allegiance == 1 ? "MUSPELL" : "FORSETI";
+	WCHAR fwRaw[16], fwShown[16];
+	Copy(fwRaw, factionTag);
+	Displayable(font, fwRaw, fwShown);
+	SIZE fwExt = {0, 0};
+	font->GetTextExtent(fwShown, &fwExt);
+	const float tagScale = s * 0.78f;
+	const float tagX = x0 + panelW - padX - capW - float(fwExt.cx) * tagScale;
+	OverlayStates();
+	font->DrawTextWithShadow(tagX, row0Y + sh * 0.08f, pal.highlight, fwShown, 0, 0.f, tagScale, tagScale);
+	DrawHudLineText(font, textX, row1Y, pal.textBright, line1, s * 0.84f, textMaxW);
+	DrawHudLineText(font, textX, row2Y, pal.textMuted, line2, s * 0.82f, textMaxW);
+	if (hasAction)
+		DrawHudLineText(font, textX + (urgent ? 2.f * s : 0.f), row3Y, urgent ? pal.highlight : pal.accentBright, action, s * 0.82f, textMaxW - 2.f * s);
+	RestoreStates();
+}
+
 // The held fire at the middle of the view, where the shot goes: the HUD's own reticle (its primary ring and its dot, CHud::RenderOverlayForViewpoint's textures, at the
 // HUD's scale), white while ready as the HUD draws it over open ground, grey while the gun arms or recovers, the HUD's alert red when the shot cannot be made; then, only
 // when it is not ready, the state as one of the HUD's alert words under it (ARMING, RECOVERING, OUT OF RANGE, BLOCKED), with the shadow and no box. Ready says nothing, as
@@ -191,6 +369,33 @@ void Reticle(int fireState, CDXBitmapFont *font, float w, float h)
 	RestoreStates();
 }
 
+bool IsMuspellHud()
+{
+	CePlayUnitHudFocus focus;
+	return CePlayUnitHudFocusOf(&focus) && focus.allegiance == 1;
+}
+
+void DrawFactionCapsule(float cx, float cy, float full, float height, float progress, float s)
+{
+	if (!IsMuspellHud())
+	{
+		HUD.RenderObjectiveBar(cx, cy, full, height, progress);
+		return;
+	}
+	const CePlayUnitHudPalette pal = CePlayUnitHudPaletteFor(1);
+	const float t = s > 1.f ? floorf(s) : 1.f;
+	const float capW = floorf(3.f * s > 2.f ? 3.f * s : 2.f);
+	const float span = full * (progress > 0.f ? (progress < 1.f ? progress : 1.f) : 0.f);
+	const float x0 = floorf(cx - span * 0.5f - capW * 2.f);
+	const float y0 = floorf(cy - height * 0.5f);
+	const float totalW = floorf(span + capW * 4.f);
+	HudFillRect(x0 + capW, y0, totalW - 2.f * capW, height, pal.panelFill);
+	HudOutlineRect(x0 + capW, y0, totalW - 2.f * capW, height, t, pal.panelBorder);
+	HudFillRect(x0 + capW + t, y0 + t, totalW - 2.f * (capW + t), t, pal.bevelAccent);
+	HudFillRect(x0, y0 + height * 0.12f, capW, height * 0.76f, pal.accentBright);
+	HudFillRect(x0 + totalW - capW, y0 + height * 0.12f, capW, height * 0.76f, pal.accentBright);
+}
+
 // One capsule: lines (one or two) at (cx, cy) on the screen, opened or closing by phase (ms from its start or its end); the first line in firstColour, a second as a note.
 void Capsule(CDXBitmapFont *font, const WCHAR *first, const WCHAR *second, unsigned firstColour, float cx, float cy, float height, float s, unsigned long long phase)
 {
@@ -214,7 +419,21 @@ void Capsule(CDXBitmapFont *font, const WCHAR *first, const WCHAR *second, unsig
 	OverlayStates();
 	// the caps turn in (no box yet), then the box and its text together: a box is never drawn without its text
 	if (phase < kCapsMs)
-		HUD.RenderObjectiveBar(cx, cy, full, height, 0.5f + 0.49f * float(phase) / float(kCapsMs));
+		DrawFactionCapsule(cx, cy, full, height, 0.5f + 0.49f * float(phase) / float(kCapsMs), s);
+	else if (IsMuspellHud())
+	{
+		DrawFactionCapsule(cx, cy, full, height, 1.f, s);
+		OverlayStates();
+		const float x = cx - full * 0.5f;
+		const float fh = float(font->GetHeight());
+		float y = cy - (fh + (lines - 1) * lineGap) * 0.5f * s;
+		font->DrawTextWithShadow(x, y, firstColour, text[0], 0, 0.f, s * squeeze[0], s);
+		if (lines == 2)
+		{
+			y += lineGap * s;
+			font->DrawTextWithShadow(x, y, kNote, text[1], 0, 0.f, s * squeeze[1], s);
+		}
+	}
 	else
 	{
 		HUD.RenderObjectiveBar(cx, cy, full, height, 1.f);
@@ -277,9 +496,9 @@ void Prompt(CDXBitmapFont *font, float w, float h, bool atTop)
 	Advance(&gPromptAge, &gPromptLast);
 	const float s = HudScale(w, h);
 	// split the line as written ("|" is not in the HUD's face), then make each piece drawable
-	WCHAR piece[4][2][kChars];
+	WCHAR piece[kCePlayUnitPromptMaxPieces][2][kChars];
 	int pieces = 0;
-	for (const WCHAR *c = gPrompt; *c && pieces < 4; ++pieces)
+	for (const WCHAR *c = gPrompt; *c && pieces < kCePlayUnitPromptMaxPieces; ++pieces)
 	{
 		const WCHAR *end = c;
 		while (*end && !(end[0] == L' ' && end[1] == L'|' && end[2] == L' ')) ++end;
@@ -359,8 +578,8 @@ void Prompt(CDXBitmapFont *font, float w, float h, bool atTop)
 	const float cx = w * 0.5f;
 	OverlayStates();
 	const unsigned long long phase = gPromptAge;
-	if (phase < kCapsMs) { HUD.RenderObjectiveBar(cx, cy, full, height, 0.5f + 0.49f * float(phase) / float(kCapsMs)); RestoreStates(); return; }
-	HUD.RenderObjectiveBar(cx, cy, full, height, 1.f);
+	if (phase < kCapsMs) { DrawFactionCapsule(cx, cy, full, height, 0.5f + 0.49f * float(phase) / float(kCapsMs), s); RestoreStates(); return; }
+	DrawFactionCapsule(cx, cy, full, height, 1.f, s);
 	OverlayStates();
 	float x = cx - full * 0.5f + 8.f * s;
 	const float y = cy - sh * 0.5f * s;
@@ -430,6 +649,7 @@ void CePlayUnitHudRender(bool reticle, int fireState, bool hudShown)
 	const float w = float(PLATFORM.GetWindowWidth()), h = float(PLATFORM.GetWindowHeight());
 	if (w <= 0.f || h <= 0.f) return;
 	if (reticle && fireState != CE_PLAYUNIT_FIRE_NONE) Reticle(fireState, font, w, h);
+	if (reticle) ClassPanel(font, w, h);
 	if (notice) Notice(font, w, h, hudShown);
 	else if (prompt) Prompt(font, w, h, hudShown);
 	// while a notice is up the prompt waits, and opens afresh after it

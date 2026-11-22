@@ -118,11 +118,11 @@ MUTANTS = (
     ("a dying unit is eligible", swap("f.alive && !f.scripted", "!f.scripted"), "eligible: a dying unit is refused"),
     ("a scripted unit is eligible", swap("!f.scripted && ", ""), "eligible: a unit a mission script runs is refused"),
     ("an objective is eligible", swap("!f.objective && ", ""), "eligible: an objective is refused"),
-    ("artillery is eligible", swap("!f.deploys && ", ""), "eligible: artillery is refused"),
-    ("a unit outside a normal squad is eligible", swap("(f.normalSquad || f.ordinaryFoot) && ", ""), "eligible: a unit outside a normal squad is refused"),
+    ("artillery is eligible as a tank", swap("f.vehicle && f.groundUnit && !f.deploys", "f.vehicle && f.groundUnit"), "eligible: artillery is refused"),
+    ("a unit outside a normal squad is eligible", swap("(!CePlayUnitNeedsNormalSquad(f) || f.normalSquad) && ", ""), "eligible: a unit outside a normal squad is refused"),
     ("a spawned squad's unit is eligible", swap("!f.spawned && ", ""), "eligible: a squad that follows its lead unit is refused"),
-    ("an unarmed unit is eligible", swap(" && f.armed;", ";"), "eligible: an unarmed unit is refused"),
-    ("a jeep is eligible", swap("f.vehicle && f.groundUnit", "f.vehicle"), "eligible: a jeep, mech or aircraft is refused"),
+    ("an unarmed unit is eligible", swap(" && (f.armed || f.transport);", ";"), "eligible: an unarmed unit is refused"),
+    ("a jeep is eligible", swap("f.vehicle && f.groundUnit && !f.deploys", "f.vehicle && !f.deploys"), "eligible: a jeep, mech or aircraft is refused"),
     ("steering right raises the heading", swap("desired - CePlayUnitClamp(turn, -1.f, 1.f) * rate * dt - actual", "desired + CePlayUnitClamp(turn, -1.f, 1.f) * rate * dt - actual"),
      "steer: right lowers the heading"),
     ("the request may lead without limit", swap("	if (lead > maxLead) lead = maxLead;\n", ""), "steer: the request leads by at most maxLead"),
@@ -192,11 +192,11 @@ MUTANTS = (
     ("the gun does not turn out of range", swap("	return held && state != CE_PLAYUNIT_FIRE_NONE;", "	return held && state != CE_PLAYUNIT_FIRE_NONE && state != CE_PLAYUNIT_FIRE_OUT_OF_RANGE;"), "fire: held fire turns the gun wherever there is a weapon"),
     # taking a unit by key (ce_playunit_rules.h: CePlayUnitRefusalIn, CePlayUnitAtScreen, CePlayUnitChoose, CePlayUnitSwitchStep, CePlayUnitPressed)
     ("a takeable unit is refused", swap("	if (CePlayUnitClassIn(rows, n, f) >= 0) return CE_PLAYUNIT_TAKE_OK;\n", ""), "refusal: refused exactly when no class takes the unit"),
-    ("a soldier is refused for its squad", swap("	if (!shaped) return CE_PLAYUNIT_REFUSE_KIND;\n	if ((!f.normalSquad && !f.ordinaryFoot) || f.spawned) return CE_PLAYUNIT_REFUSE_SQUAD;\n",
-                                                 "	if ((!f.normalSquad && !f.ordinaryFoot) || f.spawned) return CE_PLAYUNIT_REFUSE_SQUAD;\n	if (!shaped) return CE_PLAYUNIT_REFUSE_KIND;\n"),
-     "refusal: a soldier is refused for what it is, not for its squad"),
+    ("an unsupported vehicle is refused for its squad", swap("\tif (!shaped) return f.deploys ? CE_PLAYUNIT_REFUSE_DEPLOYS : CE_PLAYUNIT_REFUSE_KIND;\n\tif ((CePlayUnitNeedsNormalSquad(f) && !f.normalSquad) || f.spawned) return CE_PLAYUNIT_REFUSE_SQUAD;\n",
+                                                 "\tif ((CePlayUnitNeedsNormalSquad(f) && !f.normalSquad) || f.spawned) return CE_PLAYUNIT_REFUSE_SQUAD;\n\tif (!shaped) return f.deploys ? CE_PLAYUNIT_REFUSE_DEPLOYS : CE_PLAYUNIT_REFUSE_KIND;\n"),
+     "refusal: the first question that applies is the one asked"),
     ("an objective is not the mission's", swap("if (f.scripted || f.objective) return CE_PLAYUNIT_REFUSE_MISSION;", "if (f.scripted) return CE_PLAYUNIT_REFUSE_MISSION;"), "refusal: an objective belongs to the mission"),
-    ("a following squad is not asked", swap("if ((!f.normalSquad && !f.ordinaryFoot) || f.spawned) return CE_PLAYUNIT_REFUSE_SQUAD;", "if (!f.normalSquad) return CE_PLAYUNIT_REFUSE_SQUAD;"), "refusal: a squad that follows its lead keeps its unit"),
+    ("a following squad is not asked", swap("if ((CePlayUnitNeedsNormalSquad(f) && !f.normalSquad) || f.spawned) return CE_PLAYUNIT_REFUSE_SQUAD;", "if (CePlayUnitNeedsNormalSquad(f) && !f.normalSquad) return CE_PLAYUNIT_REFUSE_SQUAD;"), "refusal: a squad that follows its lead keeps its unit"),
     ("the frame's side is not asked", swap("if (p.x < 0.f || p.x > w || p.y < 0.f", "if (p.y < 0.f"), "sight: the frame's side edges"),
     ("the frame's bottom is not asked", swap("|| p.y < 0.f || p.y > h) return false;", "|| p.y < 0.f) return false;"), "sight: the frame's top and bottom edges"),
     ("a unit behind the eye is seen", swap("if (!(p.depth > kCePlayUnitSightNear) || p.distance > reach)", "if (!(fabsf(p.depth) > kCePlayUnitSightNear) || p.distance > reach)"), "sight: behind the eye is out of sight"),
@@ -593,6 +593,14 @@ class Fences(unittest.TestCase):
                 names = set(re.findall(r"CePlayUnit\w*", hud_additions))
                 self.assertEqual(names, {"CePlayUnitHudFocus", "CePlayUnitHudFocusOf", "CePlayUnitHudOverlay"})
                 self.assertEqual(hud_additions.count("#ifdef CE_VERSION"), hud_additions.count("#endif"))
+            elif patch.name in ("0356-ce-playunit-firstperson-parts.patch",
+                                "0357-ce-playunit-world-draw.patch",
+                                "0358-ce-playunit-class-hooks.patch",
+                                "0359-ce-playunit-muspell-side.patch"):
+                additions = "\n".join(line[1:] for line in text.splitlines() if line.startswith("+") and not line.startswith("+++"))
+                self.assertIn("__attribute__((weak))", additions, f"{patch.name} must use weak hooks")
+                self.assertGreaterEqual(additions.count("#ifdef CE_VERSION"), 1, f"{patch.name} must guard hooks with CE_VERSION")
+                self.assertEqual(additions.count("#ifdef CE_VERSION"), additions.count("#endif"), f"{patch.name} unbalanced CE_VERSION")
             else:
                 # Context in a later patch may contain an existing hook. Inspect the changed code.
                 changed = "\n".join(line[1:] for line in text.splitlines()

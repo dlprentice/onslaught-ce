@@ -1,0 +1,24 @@
+--- a/MeshRenderer.cpp
++++ b/MeshRenderer.cpp
+@@ -295,6 +295,10 @@
+ 	return colour;
+ }
+ 
++#ifdef CE_VERSION
++extern "C" int PortCePlayUnitSkipsMeshPart(const void *thing, const char *partName) __attribute__((weak));
++#endif
++
+ // One part at a pose. An effect emitter (type 5) moves its particle effect; the invisible types (2, 4 and 5) are drawn
+ // only as debug cuboids; a collision stand-in (type 6) draws its collision part.
+ // FUNCTION: 0x004b6350 ?RenderPart@CMeshRenderer@@SAXPAVFVector@@PAVFMatrix@@PAVCMeshPart@@PAVIRenderableThing@@PAVCRenderThing@@HH@Z
+@@ -308,6 +312,10 @@
+ 		if ((part->mNumHFrames > 1) || (part->mNumAFrames > 1))
+ 			return;
+ 	}
++#ifdef CE_VERSION
++	if (PortCePlayUnitSkipsMeshPart && PortCePlayUnitSkipsMeshPart(thing, part->mName))
++		return;
++#endif
+ 
+ 	if (part->mPartType == 5)
+ 	{

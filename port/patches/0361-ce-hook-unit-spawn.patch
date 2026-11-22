@@ -1,0 +1,14 @@
+--- a/Unit.cpp
++++ b/Unit.cpp
+@@ -218,4 +218,5 @@
+ static inline SINT MountOf(CUnitWeapon *uw) { return uw->mMount; }
+ static inline EOrientationType OrientationTypeOf(CInitThing *init) { return init->mOrientationType; }
++#include "ce_hooks.h"	// Port: the CE hook points (port/game/ce_hooks.h)
+ void CUnit::Init(CInitThing *init)	// FUNCTION: 0x004f86d0
+ {
+@@ -458,4 +459,5 @@
+ 
+ 	EVENT_MANAGER.AddEvent(UNIT_EVENT_4003, this, NEXT_FRAME);
++	ce_hook_unit_spawn(this, init);	// CE hook point (port/game/ce_hooks.h): after unit initialisation and world registration
+ }
+ //******************************************************************************************

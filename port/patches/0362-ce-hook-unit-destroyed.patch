@@ -1,0 +1,22 @@
+--- a/Unit.cpp
++++ b/Unit.cpp
+@@ -2049,4 +2049,5 @@
+ 		mMissionScript->StartedDying();
+ 	ClearSpawners();
++	ce_hook_unit_destroyed(this);	// CE hook point (port/game/ce_hooks.h): unit entering die process
+ 	return TRUE;
+ }
+--- a/BattleEngine.cpp
++++ b/BattleEngine.cpp
+@@ -2775,4 +2775,5 @@
+ 
+ //******************************************************************************************
++#include "ce_hooks.h"	// Port: the CE hook points (port/game/ce_hooks.h)
+ BOOL CBattleEngine::StartDieProcess()	// FUNCTION: 0x0040bfd0
+ {
+@@ -2807,4 +2808,5 @@
+ 	mSmoke.SetPos(mPos);
+ 
++	ce_hook_unit_destroyed(this);	// CE hook point (port/game/ce_hooks.h): Battle Engine entering die process
+ 	return TRUE;
+ }
