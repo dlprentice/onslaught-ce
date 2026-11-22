@@ -237,7 +237,41 @@ void	Box(const char *text)
 }
 
 enum EPage { NP_MENU = 0, NP_HOST_ADDRESS, NP_HOST, NP_JOIN, NP_LOBBY, NP_HELP, NP_SIGNAL_DISCLOSURE, NP_SIGNAL_STATUS, NP_INVITATION_INPUT, NP_INVITATION_PREVIEW, NP_COUNT };
-enum EAction { NA_NONE = 0, NA_HOST, NA_JOIN, NA_BACK, NA_COPY, NA_CODE, NA_ADDRESS, NA_CONNECT, NA_MAP, NA_START, NA_LEAVE, NA_HELP, NA_HOST_ADDRESS, NA_CAMPAIGN_START, NA_PASTE_CODE, NA_PASTE_ADDRESS, NA_CLEAR_FIELDS, NA_SIGNAL_DISCLOSE, NA_SIGNAL_ACCEPT, NA_SIGNAL_PROCEED, NA_SIGNAL_RETRY, NA_SIGNAL_CLOSE, NA_IMPORT_OPEN, NA_IMPORT_ORIGIN, NA_IMPORT_PASTE, NA_IMPORT_HOST, NA_IMPORT_JOIN, NA_IMPORT_USE, NA_IMPORT_CLEAR };
+enum EAction { NA_NONE = 0, NA_HOST, NA_JOIN, NA_BACK, NA_COPY, NA_CODE, NA_ADDRESS, NA_CONNECT, NA_MAP, NA_START, NA_LEAVE, NA_HELP, NA_HOST_ADDRESS, NA_CAMPAIGN_START, NA_PASTE_CODE, NA_PASTE_ADDRESS, NA_CLEAR_FIELDS, NA_SIGNAL_DISCLOSE, NA_SIGNAL_ACCEPT, NA_SIGNAL_PROCEED, NA_SIGNAL_RETRY, NA_SIGNAL_CLOSE, NA_IMPORT_OPEN, NA_IMPORT_ORIGIN, NA_IMPORT_PASTE, NA_IMPORT_HOST, NA_IMPORT_JOIN, NA_IMPORT_PROFILE_HOST, NA_IMPORT_PROFILE_JOIN, NA_IMPORT_USE, NA_IMPORT_CLEAR };
+
+const char* SignalRouteStage(CeIceSignalStatus status, int lobbyState, bool signalingSelected, bool relayRequested)
+{
+    if (!relayRequested && !signalingSelected) return "Direct LAN";
+    if (lobbyState == CE_LOBBY_READY) return "Connected via Relay";
+    if (lobbyState == CE_LOBBY_JOIN_CONNECTING || lobbyState == CE_LOBBY_HOST_CONNECTING)
+        return "Relay: Connecting via TURN";
+    if (!signalingSelected) return "Relay: Waiting for pair invitation";
+    switch (status) {
+    case CeIceSignalStatus::NeedsConsent:
+    case CeIceSignalStatus::AwaitingPairConsent:
+    case CeIceSignalStatus::AwaitingPeerRequest:
+    case CeIceSignalStatus::AwaitingPeerRecord:
+        return "Relay: Waiting for partner";
+    case CeIceSignalStatus::Admitted:
+        return lobbyState == CE_LOBBY_HOST_WAITING ? "Relay: Waiting for partner" : "Relay: Connecting via TURN";
+    case CeIceSignalStatus::Issuing:
+    case CeIceSignalStatus::Exchanging:
+    case CeIceSignalStatus::ServiceDeliveryComplete:
+        return "Relay: Connecting via TURN";
+    case CeIceSignalStatus::RateLimited:
+        return "Relay: Daily free-tier limit reached";
+    case CeIceSignalStatus::AuthenticationRequired:
+    case CeIceSignalStatus::NotAdmitted:
+        return "Relay: Pair invitation missing or invalid";
+    case CeIceSignalStatus::SetupExpired:
+    case CeIceSignalStatus::GrantExpired:
+    case CeIceSignalStatus::Expired:
+    case CeIceSignalStatus::Closed:
+        return "Relay: Pair invitation expired";
+    default:
+        return "Relay: Waiting for pair invitation";
+    }
+}
 
 const char* SignalHeading(CeIceSignalStatus status)
 {
@@ -280,7 +314,7 @@ const char* SignalDetail(CeIceSignalStatus status)
     case CeIceSignalStatus::ServiceDeliveryComplete:
         return "Record delivery is complete. CE must still establish and validate the connection before the lobby is ready.";
     case CeIceSignalStatus::RateLimited:
-        return "The service asked this player to wait. A deliberate retry keeps the original setup deadline.";
+        return "Daily free-tier relay limit or rate limit reached. Wait and retry, or try again after 00:00 UTC. Retry keeps the original setup deadline.";
     case CeIceSignalStatus::AuthenticationRequired:
         return "Approved pair admission is missing or no longer valid. Return and load a fresh approved setup.";
     case CeIceSignalStatus::NotAdmitted:
@@ -615,7 +649,7 @@ public:
 		l->AddItem(new (MEMTYPE_MENUITEM) CNetItem("Leave", NA_LEAVE));
 		l = mList[NP_HELP] = new (MEMTYPE_MENUITEM) CMenuOptionsList(title, 320.f, 440.f, FALSE, 0xb0000000);
 		l->AddItem(new (MEMTYPE_MENUITEM) CNetItem("Back", NA_BACK));
-		l = mList[NP_INVITATION_INPUT] = new (MEMTYPE_MENUITEM) CMenuOptionsList(title, 320.f, 420.f, FALSE, 0xb0000000);
+		l = mList[NP_INVITATION_INPUT] = new (MEMTYPE_MENUITEM) CMenuOptionsList(title, 320.f, 365.f, FALSE, 0xb0000000);
         l->AddItem(mImportAddressLabel = new (MEMTYPE_MENUITEM) CNetItem("Service address", NA_NONE));
         mImportAddressLabel->mEnabled = FALSE;
         mImportOriginRow = l->mItems.Size();
@@ -623,16 +657,20 @@ public:
 		l->AddItem(mImportPaste = new (MEMTYPE_MENUITEM) CNetItem("Paste address", NA_IMPORT_PASTE));
 		l->AddItem(mImportHost = new (MEMTYPE_MENUITEM) CNetItem("Choose Host invite", NA_IMPORT_HOST));
 		l->AddItem(mImportJoin = new (MEMTYPE_MENUITEM) CNetItem("Choose Join invite", NA_IMPORT_JOIN));
+		l->AddItem(mImportProfileHost = new (MEMTYPE_MENUITEM) CNetItem("Load Profile Host Invite", NA_IMPORT_PROFILE_HOST));
+		mImportProfileHost->mHidden = true;
+		l->AddItem(mImportProfileJoin = new (MEMTYPE_MENUITEM) CNetItem("Load Profile Join Invite", NA_IMPORT_PROFILE_JOIN));
+		mImportProfileJoin->mHidden = true;
 		l->AddItem(mImportClearInput = new (MEMTYPE_MENUITEM) CNetItem("Clear current pair", NA_IMPORT_CLEAR));
 		l->AddItem(new (MEMTYPE_MENUITEM) CNetItem("Cancel import", NA_BACK));
-		l = mList[NP_INVITATION_PREVIEW] = new (MEMTYPE_MENUITEM) CMenuOptionsList(title, 320.f, 440.f, FALSE, 0xb0000000);
+		l = mList[NP_INVITATION_PREVIEW] = new (MEMTYPE_MENUITEM) CMenuOptionsList(title, 320.f, 400.f, FALSE, 0xb0000000);
 		l->AddItem(mImportUse = new (MEMTYPE_MENUITEM) CNetItem("Use invitation", NA_IMPORT_USE));
 		l->AddItem(mImportClearPreview = new (MEMTYPE_MENUITEM) CNetItem("Clear current pair", NA_IMPORT_CLEAR));
 		l->AddItem(new (MEMTYPE_MENUITEM) CNetItem("Choose another folder", NA_BACK));
-		l = mList[NP_SIGNAL_DISCLOSURE] = new (MEMTYPE_MENUITEM) CMenuOptionsList(title, 320.f, 440.f, FALSE, 0xb0000000);
+		l = mList[NP_SIGNAL_DISCLOSURE] = new (MEMTYPE_MENUITEM) CMenuOptionsList(title, 320.f, 420.f, FALSE, 0xb0000000);
 		l->AddItem(mSignalContinue = new (MEMTYPE_MENUITEM) CNetItem("Continue", NA_SIGNAL_DISCLOSE));
 		l->AddItem(new (MEMTYPE_MENUITEM) CNetItem("Cancel", NA_BACK));
-		l = mList[NP_SIGNAL_STATUS] = new (MEMTYPE_MENUITEM) CMenuOptionsList(title, 320.f, 440.f, FALSE, 0xb0000000);
+		l = mList[NP_SIGNAL_STATUS] = new (MEMTYPE_MENUITEM) CMenuOptionsList(title, 320.f, 380.f, FALSE, 0xb0000000);
 		l->AddItem(mSignalAccept = new (MEMTYPE_MENUITEM) CNetItem("Accept approved pair", NA_SIGNAL_ACCEPT));
 		l->AddItem(mSignalProceed = new (MEMTYPE_MENUITEM) CNetItem("Continue", NA_SIGNAL_PROCEED));
 		l->AddItem(mSignalRetry = new (MEMTYPE_MENUITEM) CNetItem("Retry", NA_SIGNAL_RETRY));
@@ -725,7 +763,7 @@ public:
         if (page == NP_INVITATION_INPUT) mList[page]->mSelected = mImportOriginRow;
 
         RefreshSignalControls();
-        RefreshInvitationControls();
+        RefreshInvitationControls(page == NP_MENU || page == NP_INVITATION_INPUT);
         if (page == NP_SIGNAL_STATUS) {
             mList[page]->mSelected = mSignalAccept->IsEnabled() ? 0 :
                 mSignalProceed->IsEnabled() ? 1 : mSignalRetry->IsEnabled() ? 2 :
@@ -1114,7 +1152,23 @@ public:
             mInvitation.expires_at > uint64_t(now) && mInvitation.origin[0] &&
             memchr(mInvitation.origin, 0, sizeof mInvitation.origin) != NULL;
     }
-    void RefreshInvitationControls()
+    void RefreshProfileInviteCache(bool force = false)
+    {
+#if defined(CE_NETWORK_ICE)
+        const float nowSys = PLATFORM.GetSysTimeFloat();
+        if (!force && mProfileProbeTime >= 0.f && nowSys >= mProfileProbeTime && (nowSys - mProfileProbeTime) < 0.5f)
+            return;
+        mProfileProbeTime = nowSys;
+        const int64_t now = CE_HandoffNow();
+        mProfileHostAvailable = now > 0 && CE_InvitationProfileAvailable(CE_NET_HOST, uint64_t(now)) != 0;
+        mProfileJoinAvailable = now > 0 && CE_InvitationProfileAvailable(CE_NET_GUEST, uint64_t(now)) != 0;
+#else
+        (void)force;
+        mProfileHostAvailable = false;
+        mProfileJoinAvailable = false;
+#endif
+    }
+    void RefreshInvitationControls(bool forceProfile = false)
     {
 #if defined(CE_NETWORK_ICE)
         const bool available = true;
@@ -1126,6 +1180,14 @@ public:
         if (mInvitationEntry) mInvitationEntry->mEnabled = available;
         mImportOrigin->mEnabled = mImportPaste->mEnabled = available && !busy && !preview;
         mImportHost->mEnabled = mImportJoin->mEnabled = available && !busy && !preview;
+        if (available && !busy && !preview && (mPage == NP_MENU || mPage == NP_INVITATION_INPUT))
+            RefreshProfileInviteCache(forceProfile);
+        const bool profHost = available && !busy && !preview && mProfileHostAvailable;
+        const bool profJoin = available && !busy && !preview && mProfileJoinAvailable;
+        mImportProfileHost->mHidden = !profHost;
+        mImportProfileHost->mEnabled = profHost;
+        mImportProfileJoin->mHidden = !profJoin;
+        mImportProfileJoin->mEnabled = profJoin;
         mImportUse->mEnabled = available && InvitationPreviewValid() && !SignalingSelected();
         mImportClearInput->mEnabled = mImportClearPreview->mEnabled = available && !busy && SignalingSelected();
     }
@@ -1153,7 +1215,23 @@ public:
         if (mInvitation.state == CE_INVITATION_REFUSED) Notice(CE_InvitationErrorText(mInvitation.error));
         else Notice("");
 #endif
-        RefreshInvitationControls();
+        RefreshInvitationControls(true);
+    }
+    void BeginProfileInvitation(uint32_t role)
+    {
+        if (mPage != NP_INVITATION_INPUT || !mImportOrigin->IsEnabled()) return;
+        mInvitationRole = role;
+#if defined(CE_NETWORK_ICE)
+        CE_InvitationBeginProfileImport(mImportOrigin->mValue, role);
+        CE_InvitationPoll(CE_HandoffNow(), &mInvitation);
+        if (mInvitation.state == CE_INVITATION_PREVIEW_READY) {
+            Show(NP_INVITATION_PREVIEW);
+            return;
+        }
+        if (mInvitation.state == CE_INVITATION_REFUSED) Notice(CE_InvitationErrorText(mInvitation.error));
+        else Notice("");
+#endif
+        RefreshInvitationControls(true);
     }
 
     bool SignalingSelected() const
@@ -1263,6 +1341,10 @@ public:
             BeginInvitation(CE_NET_HOST); break;
         case NA_IMPORT_JOIN:
             BeginInvitation(CE_NET_GUEST); break;
+        case NA_IMPORT_PROFILE_HOST:
+            BeginProfileInvitation(CE_NET_HOST); break;
+        case NA_IMPORT_PROFILE_JOIN:
+            BeginProfileInvitation(CE_NET_GUEST); break;
         case NA_IMPORT_USE:
             if (mPage != NP_INVITATION_PREVIEW || SignalingSelected()) break;
 #if defined(CE_NETWORK_ICE)
@@ -1677,17 +1759,31 @@ public:
                     break;
                 }
 #endif
-                y = Lines("Multiplayer", y, kWhite);
-                y = Lines("Import an approved Online invitation to select native relay, or choose Local / direct. Import shows a public preview before selecting the private pair.", y, kGrey);
-                y = Lines("Public lobby browsing is unavailable.", y, kWarn);
+                const float limit = ListTop(mList[NP_MENU]) - 6.f;
+                y = Lines("Online Co-op", y, kWhite, FONT_SMALL, kPageWidth);
+                y = Lines("Direct LAN ready, or Relay: Waiting for pair invitation.", y + 4.f, kCream, FONT_SMALL, kPageWidth);
+                if (mNotice[0] && !mNoticeBoxed && y + 4.f + Height(mNotice, FONT_SMALL, kPageWidth) <= limit)
+                    y = Lines(mNotice, y + 4.f, kWarn, FONT_SMALL, kPageWidth);
+                const bool hasProfile = mProfileHostAvailable || mProfileJoinAvailable;
+                const char *summary = hasProfile
+                    ? "Private profile invitation found. Open Import Online Invitation to review it."
+                    : "Choose Host or Join for Direct LAN, or Import Online Invitation for private Cloudflare TURN relay.";
+                if (y + 4.f + Height(summary, FONT_SMALL, kPageWidth) <= limit)
+                    y = Lines(summary, y + 4.f, hasProfile ? kGood : kGrey, FONT_SMALL, kPageWidth);
+                if (y + 4.f + Height("Public lobby browsing is unavailable.", FONT_SMALL, kPageWidth) <= limit)
+                    Lines("Public lobby browsing is unavailable.", y + 4.f, kWarn, FONT_SMALL, kPageWidth);
                 break;
             }
 
             if (SignalingSelected() && RelayRequested()) {
-                y = Lines("Multiplayer", y, kWhite);
-                y = Lines("Online uses the selected approved private pair. Host or Join opens network disclosure and explicit pair consent before connecting.", y, kGrey);
-                y = Lines("Public lobby browsing is unavailable in this build.", y, kWarn);
-                if (mNotice[0]) Lines(mNotice, y, kWarn);
+                const float limit = ListTop(mList[NP_MENU]) - 6.f;
+                y = Lines("Online Co-op", y, kWhite, FONT_SMALL, kPageWidth);
+                y = Lines(SignalRouteStage(SignalingView().status, s.state, true, true), y + 4.f, kGood, FONT_SMALL, kPageWidth);
+                const char *onlineSummary = "Host Game or Join Game opens network disclosure and pair consent before connecting.";
+                if (y + 4.f + Height(onlineSummary, FONT_SMALL, kPageWidth) <= limit)
+                    y = Lines(onlineSummary, y + 4.f, kGrey, FONT_SMALL, kPageWidth);
+                if (mNotice[0] && y + 4.f + Height(mNotice, FONT_SMALL, kPageWidth) <= limit)
+                    Lines(mNotice, y + 4.f, kWarn, FONT_SMALL, kPageWidth);
                 break;
             }
 
@@ -1712,30 +1808,44 @@ public:
 		}
         case NP_INVITATION_INPUT:
         {
-            y = Lines("Online invitation", y, kWhite);
-            y = Lines("Use the address and invite folder sent to you.", y, kGrey);
-            y = Lines("Choose Host or Join, then review your invitation.", y, kGrey);
-            if (mInvitation.state == CE_INVITATION_CHOOSING)
-                y = Lines("Waiting for folder selection. Cancel import stops this attempt.", y, kWarn);
-            else y = Lines("Import stays offline. Continue later contacts the service.", y, kGrey);
-            if (mNotice[0]) Lines(mNotice, y, kWarn);
+            const float limit = ListTop(mList[NP_INVITATION_INPUT]) - 6.f;
+            y = Lines("Online Invitation", y, kWhite, FONT_SMALL, kPageWidth);
+            y = Lines("Relay: Waiting for pair invitation", y + 4.f, kCream, FONT_SMALL, kPageWidth);
+            if (mNotice[0]) {
+                y = Lines(mNotice, y + 6.f, kWarn, FONT_SMALL, kPageWidth);
+            } else {
+                const char *guide = "Enter the HTTPS service address, then choose Host or Join to review your private invitation.";
+                if (y + 4.f + Height(guide, FONT_SMALL, kPageWidth) <= limit)
+                    y = Lines(guide, y + 4.f, kGrey, FONT_SMALL, kPageWidth);
+            }
+            const bool hasProfile = mProfileHostAvailable || mProfileJoinAvailable;
+            const char *detail = (mInvitation.state == CE_INVITATION_CHOOSING)
+                ? "Waiting for folder selection. Cancel import stops this attempt."
+                : (hasProfile
+                    ? "Private profile invitation ready below. Import stays offline."
+                    : "Import stays offline. Continue later contacts the service.");
+            const DWORD detailColour = (mInvitation.state == CE_INVITATION_CHOOSING) ? kWarn
+                : (hasProfile ? kGood : kGrey);
+            if (y + 4.f + Height(detail, FONT_SMALL, kPageWidth) <= limit)
+                Lines(detail, y + 4.f, detailColour, FONT_SMALL, kPageWidth);
             break;
         }
         case NP_INVITATION_PREVIEW:
         {
-            y = Lines("Review invitation metadata", y, kWhite);
+            y = Lines("Review invitation metadata", y, kWhite, FONT_SMALL, kPageWidth);
             if (InvitationPreviewValid()) {
-                y = Lines(mInvitation.role == CE_NET_HOST ? "Role: Host" : "Role: Join", y, kWarn);
-                y = Lines(mInvitation.origin, y, kWarn);
+                y = Lines("Relay: Waiting for pair invitation", y + 4.f, kCream, FONT_SMALL, kPageWidth);
+                y = Lines(mInvitation.role == CE_NET_HOST ? "Role: Host" : "Role: Join", y + 4.f, kWarn, FONT_SMALL, kPageWidth);
+                y = Lines(mInvitation.origin, y + 2.f, kWarn, FONT_SMALL, kPageWidth);
                 const uint64_t now = CE_HandoffNow();
                 const uint64_t left = mInvitation.expires_at > now ? mInvitation.expires_at - now : 0;
                 char expiry[128];
                 snprintf(expiry, sizeof expiry, "Pair approval expires in %llu min.",
                     (unsigned long long)(left / 60 + (left % 60 != 0)));
-                y = Lines(expiry, y, kGrey);
-                y = Lines("Use invitation imports this role's private admission. The next disclosure Continue is the first service contact.", y, kGrey);
-            } else y = Lines("This preview is unavailable or expired. Choose the folder again before importing.", y, kWarn);
-            if (mNotice[0]) Lines(mNotice, y, kWarn);
+                y = Lines(expiry, y + 4.f, kGrey, FONT_SMALL, kPageWidth);
+                y = Lines("Use invitation imports this role's private admission. The next disclosure Continue is the first service contact.", y + 4.f, kGrey, FONT_SMALL, kPageWidth);
+            } else y = Lines("This preview is unavailable or expired. Export a fresh pair invitation and choose its folder again.", y + 4.f, kWarn, FONT_SMALL, kPageWidth);
+            if (mNotice[0]) Lines(mNotice, y + 4.f, kWarn, FONT_SMALL, kPageWidth);
             break;
         }
         case NP_SIGNAL_DISCLOSURE:
@@ -1757,8 +1867,14 @@ public:
         case NP_SIGNAL_STATUS:
         {
             const CeIceSignalView view = SignalingView();
-            y = Lines(SignalHeading(view.status), y, kWhite);
-            y = Lines(SignalDetail(view.status), y, kGrey);
+            const float top = ListTop(mList[NP_SIGNAL_STATUS]) - 6.f;
+            y = Lines(SignalHeading(view.status), y, kWhite, FONT_SMALL, kPageWidth);
+            const char* stage = SignalRouteStage(view.status, s.state, true, true);
+            const DWORD stageColour = view.status == CeIceSignalStatus::Admitted ? kGood : kWarn;
+            y = Lines(stage, y + 4.f, stageColour, FONT_SMALL, kPageWidth);
+            const char* detail = SignalDetail(view.status);
+            if (y + 4.f + Height(detail, FONT_SMALL, kPageWidth) <= top)
+                y = Lines(detail, y + 4.f, kGrey, FONT_SMALL, kPageWidth);
             if (view.pairExpiresAt) {
                 const uint64_t now = CE_HandoffNow();
                 const uint64_t pairLeft = view.pairExpiresAt > now ? view.pairExpiresAt - now : 0;
@@ -1766,9 +1882,11 @@ public:
                 char expiry[160];
                 snprintf(expiry, sizeof expiry, "Pair approval: %llu min remaining. Setup window: %llu sec remaining.",
                     (unsigned long long)(pairLeft / 60 + (pairLeft % 60 != 0)), (unsigned long long)setupLeft);
-                y = Lines(expiry, y, kGrey);
+                if (y + 4.f + Height(expiry, FONT_SMALL, kPageWidth) <= top)
+                    y = Lines(expiry, y + 4.f, kGrey, FONT_SMALL, kPageWidth);
             }
-            if (mNotice[0]) Lines(mNotice, y, kWarn);
+            if (mNotice[0] && y + 4.f + Height(mNotice, FONT_SMALL, kPageWidth) <= top)
+                Lines(mNotice, y + 4.f, kWarn, FONT_SMALL, kPageWidth);
             break;
         }
 		case NP_HOST:
@@ -1783,7 +1901,7 @@ public:
 			}
 			if (RelayRequested())
 			{
-				const char *head = SignalingSelected() ? SignalHeading(SignalingView().status) : ("Two-player relay pilot (experimental)");
+				const char *head = SignalingSelected() ? SignalRouteStage(SignalingView().status, s.state, true, true) : ("Two-player relay pilot (experimental)");
 				const char *label = "Join code: share only with the intended player";
 				const char *waiting = SignalingSelected() ? SignalConnectionDetail() : (s.state == CE_LOBBY_HOST_CONNECTING ? "Private connection setup in progress..." : "Waiting for private setup or the invited player...");
 				const char *explain = SignalingSelected() ? "Share the private CE code only with the approved partner. Connection records exchange through the selected service." : ("Transfer the new lobby files between both PCs. The game does not send them. The game connection uses a separate prepared folder.");
@@ -1842,7 +1960,8 @@ public:
 			char connecting[120] = "";
 			if (s.state == CE_LOBBY_JOIN_CONNECTING)
 			{
-				if (RelayRequested()) snprintf(connecting, sizeof connecting, "%s", "Waiting for lobby files and the other player...");
+				if (SignalingSelected()) snprintf(connecting, sizeof connecting, "%s", "Relay: Connecting via TURN...");
+				else if (RelayRequested()) snprintf(connecting, sizeof connecting, "%s", "Waiting for lobby files and the other player...");
 				else snprintf(connecting, sizeof connecting, "%s", "Connecting...");
 			}
 			// The words below the introduction (the code's problem, the connection, the notice) are what the player needs; the parenthesis of the introduction goes when they do not fit above the list.
@@ -1917,11 +2036,12 @@ public:
 				break;
 			}
 			const char *peer = s.peer_version[0] ? s.peer_version : "...";
+			bool ok = s.state == CE_LOBBY_READY;
+			y = Lines(ok ? "Connected via Relay" : SignalRouteStage(SignalingView().status, s.state, SignalingSelected(), RelayRequested()), y, ok ? kGood : kWarn) + 4.f;
 			snprintf(t, sizeof t, "Player 1 (host%s): Onslaught CE %s", s.host ? ", you" : "", s.host ? s.local_version : peer);
 			y = Lines(t, y, kWhite);
 			snprintf(t, sizeof t, "Player 2%s: Onslaught CE %s", s.host ? "" : " (you)", s.host ? peer : s.local_version);
 			y = Lines(t, y, kWhite);
-			bool ok = s.state == CE_LOBBY_READY;
 			y = Lines(s.compat[0] ? s.compat : "Checking...", y + 8.f, ok ? kGood : kBad);
 			if (ok && !s.host)
 				y = Lines("Waiting for the host to start.", y + 8.f, kWhite);
@@ -2048,7 +2168,7 @@ public:
     CNetField* mImportOrigin;
     CNetItem* mImportAddressLabel;
     int mImportOriginRow;
-    CNetItem *mInvitationEntry, *mImportPaste, *mImportHost, *mImportJoin, *mImportUse;
+    CNetItem *mInvitationEntry, *mImportPaste, *mImportHost, *mImportJoin, *mImportProfileHost, *mImportProfileJoin, *mImportUse;
     CNetItem *mImportClearInput, *mImportClearPreview;
 
     CNetItem *mSignalContinue, *mSignalAccept, *mSignalProceed, *mSignalRetry, *mSignalClose;
@@ -2085,6 +2205,9 @@ public:
 	bool mReturningRoom;
 	float		mStartingAt;
 	bool		mQuitPosted;
+	bool		mProfileHostAvailable = false;
+	bool		mProfileJoinAvailable = false;
+	float		mProfileProbeTime = -1.f;
 };
 
 // The join page's keyboard: typing into the selected field, Ctrl+V pasting into it, and the page's own keys (with a key

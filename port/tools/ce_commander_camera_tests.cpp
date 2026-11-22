@@ -649,6 +649,8 @@ void Outline(float,float,float,float,float,DWORD){}
 void Dots(float,float,float,float,float,DWORD){}
 void Seg(float,float,float,float,float,DWORD){}
 void CapsuleBar(float,float,float,float,float = 1.f,bool = false,int = 0){}
+bool HasHudCapsuleArt(){return false;}
+void DrawBeaCurvedPanel(float x,float y,float w,float h,float,DWORD fill,DWORD capTint,bool,float,bool = true){Box(x,y,w,h,fill);Outline(x,y,w,h,1.f,capTint);}
 void CeCmdViewCountFrame(){}
 const DWORD kCapsuleCap = 0xff38c8e8;
 int cursor_draws=0;

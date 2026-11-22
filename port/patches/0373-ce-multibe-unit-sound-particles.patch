@@ -1,0 +1,83 @@
+--- a/Unit.cpp
++++ b/Unit.cpp
+@@ -658,7 +658,14 @@
+ 		case UNIT_EVENT_4003:
+ 		{
+ 			mUnknown110 = FALSE;
++#ifdef CE_VERSION
++			SINT ceCamCount = GAME.GetNPlayers();
++			if (ceCamCount < 2) ceCamCount = 2;
++			if (ceCamCount > MAX_PLAYERS) ceCamCount = MAX_PLAYERS;
++			for (SINT i = 0; i < ceCamCount; i++)
++#else
+ 			for (SINT i = 0; i < 2; i++)
++#endif
+ 			{
+ 				if ((GAME.GetPlayer(i)) && (GAME.GetCurrentCamera(i)))
+ 				{
+--- a/SoundManager.cpp
++++ b/SoundManager.cpp
+@@ -1012,6 +1012,25 @@
+ 					rcori=camori2;
+ 				}
+ 			}
++#ifdef CE_VERSION
++			if (GAME.GetNPlayers() > 2)
++			{
++				float bestDist = (se->mPos - rcpos).MagnitudeSq();
++				for (SINT ceCamIdx = 2; ceCamIdx < GAME.GetNPlayers() && ceCamIdx < MAX_PLAYERS; ceCamIdx++)
++				{
++					CCamera *ceCam = GAME.GetCamera(ceCamIdx);
++					if (!ceCam) continue;
++					FVector cePos = ceCam->GetPos();
++					float ceDist = (se->mPos - cePos).MagnitudeSq();
++					if (ceDist < bestDist)
++					{
++						bestDist = ceDist;
++						rcpos = cePos;
++						rcori = ceCam->GetOrientation();
++					}
++				}
++			}
++#endif
+ 
+ 			se->mPos-=rcpos;
+ 			se->mPos=rcori.Transpose() * se->mPos; // Move into camera-local space			
+--- a/ParticleManager.cpp
++++ b/ParticleManager.cpp
+@@ -9,6 +9,9 @@
+ #include "Camera.h"
+ #include "map.h"
+ #include "ltshell.h"
++#ifdef CE_VERSION
++extern "C" int PortCeMultiBeActive(void) __attribute__((weak));
++#endif
+ 
+ static SINT					sLoad = 0;			// 0082b3e0: the particles in use, in thousandths of the most there can be (these six initialized: retail's .bss order, placement evidence)
+ static CFoR					*sFoRs = NULL;			// 0082b3e4
+@@ -286,7 +289,12 @@
+ 	BOOL	rejected = FALSE;
+ 	if (!mFreeParticles)
+ 	{
++#ifdef CE_VERSION
++		const int ceMaxSystems = (GAME.GetNPlayers() > 2 || (PortCeMultiBeActive && PortCeMultiBeActive())) ? 18 : (GAME.IsMultiplayer() ? 12 : 8);
++		if (sNumSystems < ceMaxSystems)
++#else
+ 		if (sNumSystems < (GAME.IsMultiplayer() ? 12 : 8))
++#endif
+ 		{
+ #line 738
+ 			new(MEMTYPE_PARTICLE) CParticleSystem;
+@@ -327,7 +335,12 @@
+ 
+ 	if (!rejected)
+ 	{
++#ifdef CE_VERSION
++		const int ceLoadSystems = (GAME.GetNPlayers() > 2 || (PortCeMultiBeActive && PortCeMultiBeActive())) ? 18 : (GAME.IsMultiplayer() ? 12 : 8);
++		sLoad = ((mNumLiveParticles + sNumAllocated) * 1000) / (ceLoadSystems * 512);
++#else
+ 		sLoad = ((mNumLiveParticles + sNumAllocated) * 1000) / ((GAME.IsMultiplayer() ? 12 : 8) * 512);
++#endif
+ 		sAllocations++;
+ 
+ 		if (!important)

@@ -39,7 +39,7 @@ const int kChars = 160;
 // Where the capsule sits on the HUD's 640x480 frame: where the radio's capsule is (bottom centre) while the unit's view has no HUD, and at the top centre, clear of
 // the radio, the HUD's alert words, its corner groups, the objective counter at the top right and the reticle's ring, while the Battle Engine's HUD is up; the
 // widest the text may be, and the narrowest a line may be squeezed before it is cut (the menus' rule, kCeValueMinScale).
-const float kRadioY = 435.f, kPromptY = 450.f, kTopY = 98.f, kMaxWidth = 420.f, kMinSqueeze = 0.75f;
+const float kRadioY = 435.f, kPromptY = 450.f, kTopY = 98.f, kMaxWidth = 540.f, kMinSqueeze = 0.72f;
 // The colours: content white, a note grey (lighter than the menus' note grey: it sits on the sky), the HUD's alert red.
 const unsigned kWhite = 0xffffffff, kNote = 0xffc0c0c0, kAlert = 0xffdc3c3c;
 // The Battle Engine's own weapon-state words (CHud::Render00485d50, FONT_NORMAL under the view's middle): red for a fault (overheated, low armour), green for a
@@ -104,18 +104,18 @@ void Displayable(CDXBitmapFont *font, const WCHAR *in, WCHAR *out)
 
 // A line fitted to the capsule's widest text (on the HUD's 640 frame): as it is when it fits, squeezed across down to kMinSqueeze when it does not, and cut with "..."
 // when even that is too wide. *squeeze is the horizontal scale to draw it with; the width returned is what it then takes.
-float Fit(CDXBitmapFont *font, WCHAR *text, float *squeeze, float maxWidth = kMaxWidth)
+float Fit(CDXBitmapFont *font, WCHAR *text, float *squeeze, float maxWidth = kMaxWidth, float minSqueeze = kMinSqueeze)
 {
 	SIZE e = {0, 0};
 	font->GetTextExtent(text, &e);
 	*squeeze = 1.f;
 	if (float(e.cx) <= maxWidth) return float(e.cx);
-	if (float(e.cx) * kMinSqueeze <= maxWidth)
+	if (float(e.cx) * minSqueeze <= maxWidth)
 	{
 		*squeeze = maxWidth / float(e.cx);
 		return maxWidth;
 	}
-	*squeeze = kMinSqueeze;
+	*squeeze = minSqueeze;
 	int n = 0;
 	while (text[n]) ++n;
 	const WCHAR dot = font->CanDisplay(L'.') ? L'.' : L'-';
@@ -130,13 +130,13 @@ float Fit(CDXBitmapFont *font, WCHAR *text, float *squeeze, float maxWidth = kMa
 		trial[m] = trial[m + 1] = trial[m + 2] = dot;
 		trial[m + 3] = 0;
 		font->GetTextExtent(trial, &e);
-		if (float(e.cx) * kMinSqueeze <= maxWidth)
+		if (float(e.cx) * minSqueeze <= maxWidth)
 		{
 			for (int i = 0; i <= m + 3; ++i) text[i] = trial[i];
-			return float(e.cx) * kMinSqueeze;
+			return float(e.cx) * minSqueeze;
 		}
 	}
-	return float(e.cx) * kMinSqueeze;
+	return float(e.cx) * minSqueeze;
 }
 
 // The HUD's own 2D states (alpha blend, no fog or lighting, clamped and filtered textures: without the clamp the capsule's textures show a hairline at their
@@ -207,13 +207,122 @@ void DrawHudLineText(CDXBitmapFont *font, float x, float y, unsigned colour, con
 	Copy(raw, ascii);
 	Displayable(font, raw, shown);
 	float squeeze = 1.f;
-	if (maxW > 10.f) Fit(font, shown, &squeeze, maxW / s);
+	if (maxW > 10.f) Fit(font, shown, &squeeze, maxW / s, 0.56f);
 	OverlayStates();
 	font->DrawTextWithShadow(x, y, colour, shown, 0, 0.f, s * squeeze, s);
 }
 
-// Compact BEA-styled class telemetry panel anchored on the upper-left margin (clear of the top prompt capsule,
-// bottom-left radar, bottom-right radio portrait / battle-line orb, and center compass), themed dynamically for Forseti (cyan/slate) or Muspell (amber/iron).
+bool HasCurvedCapsuleArt()
+{
+	return HUD.mObjectiveLeft && HUD.mObjectiveRight && HUD.mObjectiveInnerLeft && HUD.mObjectiveInnerCentre && HUD.mObjectiveInnerRight;
+}
+
+void DrawTintedCap(float x, float y, CDXTexture *tex, float turn, unsigned colour, float scaleX, float scaleY)
+{
+	if (!tex) return;
+	LT.STS(0, D3DTSS_COLORARG1, D3DTA_DIFFUSE);
+	LT.STS(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
+	LT.STS(0, D3DTSS_ALPHAARG1, D3DTA_TEXTURE);
+	LT.STS(0, D3DTSS_ALPHAARG2, D3DTA_DIFFUSE);
+	LT.STS(0, D3DTSS_ALPHAOP, D3DTOP_MODULATE);
+	CSPRITERENDERER::DrawSprite(x, y, 0.009f, tex, SA_CENTRE, SPT_NONE, 1.f, turn, colour, scaleX, scaleY, 0.f, 1.f, 0.f, 1.f);
+	LT.STS(0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
+	LT.STS(0, D3DTSS_COLOROP, D3DTOP_MODULATE);
+}
+
+// Authentic BEA curved crescent capsule using the HUD's own ObjectiveLeft/Right/Inner* artwork.
+// Supports native cyan Forseti caps (nativeCyan=true) and luminous tinted caps (Muspell amber-crimson
+// or custom highlight), plus independent horizontal cap width for multi-line pods.
+void DrawCurvedCapsuleArt(float cx, float cy, float bodyW, float height, float progress,
+                          unsigned innerFill, unsigned capTint, bool nativeCyan, float capWidthMax = 0.f)
+{
+	if (height < 10.f) height = 10.f;
+	if (bodyW < 0.f) bodyW = 0.f;
+	const float capW = (capWidthMax > 0.f && capWidthMax < height) ? capWidthMax : height;
+	const float scaleX = capW * (1.f / 64.f);
+	const float scaleY = height * (1.f / 64.f);
+
+	OverlayStates();
+	if (progress >= 1.f)
+	{
+		const float half = bodyW * 0.5f;
+		const float left = cx - half;
+		const float right = cx + half;
+
+		// Curved translucent glass body matching CHud::RenderObjectiveBar's exact tile alignment
+		CSPRITERENDERER::DrawSprite(left, cy, 0.009f, HUD.mObjectiveInnerLeft, (ESpriteAlignment)7, SPT_NONE, 1.f, 0.f, innerFill, scaleX, scaleY, 0.f, 1.f, 0.f, 1.f);
+		CSPRITERENDERER::DrawSprite(right, cy, 0.009f, HUD.mObjectiveInnerRight, SA_8, SPT_NONE, 1.f, 0.f, innerFill, scaleX, scaleY, 0.f, 1.f, 0.f, 1.f);
+		const float segment = scaleX * 64.f;
+		if (segment > 0.5f && bodyW > 0.f)
+		{
+			float n = bodyW / segment;
+			float px = left;
+			while (n >= 1.f)
+			{
+				CSPRITERENDERER::DrawSprite(px, cy, 0.009f, HUD.mObjectiveInnerCentre, SA_8, SPT_NONE, 1.f, 0.f, innerFill, scaleX, scaleY, 0.f, 1.f, 0.f, 1.f);
+				n -= 1.f;
+				px += segment;
+			}
+			if (n > 0.f)
+				CSPRITERENDERER::DrawSprite(px, cy, 0.009f, HUD.mObjectiveInnerCentre, SA_8, SPT_FILL_RIGHT, n, 0.f, innerFill, scaleX, scaleY, 0.f, 1.f, 0.f, 1.f);
+		}
+
+		// Glowing curved crescent end-caps
+		if (nativeCyan)
+		{
+			CSPRITERENDERER::DrawSprite(left, cy, 0.009f, HUD.mObjectiveLeft, SA_CENTRE, SPT_NONE, 1.f, 0.f, 0xffffffff, scaleX, scaleY, 0.f, 1.f, 0.f, 1.f);
+			CSPRITERENDERER::DrawSprite(right, cy, 0.009f, HUD.mObjectiveRight, SA_CENTRE, SPT_NONE, 1.f, 0.f, 0xffffffff, scaleX, scaleY, 0.f, 1.f, 0.f, 1.f);
+		}
+		else
+		{
+			DrawTintedCap(left, cy, HUD.mObjectiveLeft, 0.f, capTint, scaleX, scaleY);
+			DrawTintedCap(right, cy, HUD.mObjectiveRight, 0.f, capTint, scaleX, scaleY);
+			// True SRCALPHA/ONE core glow (NOT HUD.SetAdditive ONE/ONE) so edges stay rich crimson-amber while core gleams warm orange
+			LT.SRS(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
+			LT.SRS(D3DRS_DESTBLEND, D3DBLEND_ONE);
+			const unsigned glow = 0x4eff9c28;
+			DrawTintedCap(left, cy, HUD.mObjectiveLeft, 0.f, glow, scaleX, scaleY);
+			DrawTintedCap(right, cy, HUD.mObjectiveRight, 0.f, glow, scaleX, scaleY);
+			LT.SRS(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
+		}
+	}
+	else if (progress > 0.5f)
+	{
+		const float openSX = scaleX * progress;
+		const float openSY = scaleY * progress;
+		unsigned a = unsigned(progress * 255.f);
+		if (a > 255u) a = 255u;
+		const float turn = 1.f - progress;
+		if (nativeCyan)
+		{
+			const unsigned col = (a << 24) | 0x00ffffffu;
+			CSPRITERENDERER::DrawSprite(cx, cy, 0.009f, HUD.mObjectiveLeft, SA_CENTRE, SPT_NONE, 1.f, turn, col, openSX, openSY, 0.f, 1.f, 0.f, 1.f);
+			CSPRITERENDERER::DrawSprite(cx, cy, 0.009f, HUD.mObjectiveRight, SA_CENTRE, SPT_NONE, 1.f, turn, col, openSX, openSY, 0.f, 1.f, 0.f, 1.f);
+		}
+		else
+		{
+			const unsigned col = (a << 24) | (capTint & 0x00ffffffu);
+			DrawTintedCap(cx, cy, HUD.mObjectiveLeft, turn, col, openSX, openSY);
+			DrawTintedCap(cx, cy, HUD.mObjectiveRight, turn, col, openSX, openSY);
+		}
+	}
+	OverlayStates();
+}
+
+float MeasureAsciiWidth(CDXBitmapFont *font, const char *ascii)
+{
+	if (!font || !ascii || !ascii[0]) return 0.f;
+	WCHAR raw[kChars], shown[kChars];
+	Copy(raw, ascii);
+	Displayable(font, raw, shown);
+	SIZE e = {0, 0};
+	font->GetTextExtent(shown, &e);
+	return float(e.cx);
+}
+
+// Compact BEA-native curved telemetry pod anchored on the upper-left margin (clear of the top prompt capsule,
+// bottom-left radar, bottom-right radio portrait / battle-line orb, and center compass), themed dynamically
+// for Forseti (glowing cyan crescents + deep slate-navy glass) or Muspell (glowing fiery amber crescents + dark iron glass).
 void ClassPanel(CDXBitmapFont *font, float w, float h)
 {
 	CePlayUnitHudTelemetry tel;
@@ -222,6 +331,7 @@ void ClassPanel(CDXBitmapFont *font, float w, float h)
 
 	char header[48], line1[64], line2[64], action[48];
 	CePlayUnitFormatClassHud(tel, header, line1, line2, action);
+	const bool muspell = tel.allegiance == 1;
 	const CePlayUnitHudPalette pal = CePlayUnitHudPaletteFor(tel.allegiance);
 	const float s = HudScale(w, h);
 	const float t = s > 1.f ? floorf(s) : 1.f;
@@ -229,45 +339,81 @@ void ClassPanel(CDXBitmapFont *font, float w, float h)
 	const bool isAir = tel.classId == CE_PLAYUNIT_CLASS_AIRCRAFT;
 	const bool hasAction = action[0] != 0;
 
-	const float panelW = floorf((isAir ? 242.f : 222.f) * s);
+	const char *factionTag = muspell ? "MUSPELL" : "FORSETI";
+	const float hdrW = MeasureAsciiWidth(font, header) * (s * 0.92f) + 14.f * s + MeasureAsciiWidth(font, factionTag) * (s * 0.78f);
+	const float l1W = MeasureAsciiWidth(font, line1) * (s * 0.84f);
+	const float l2W = MeasureAsciiWidth(font, line2) * (s * 0.82f);
+	const float actW = hasAction ? MeasureAsciiWidth(font, action) * (s * 0.82f) + 8.f * s : 0.f;
+	float textNeedW = hdrW;
+	if (l1W > textNeedW) textNeedW = l1W;
+	if (l2W > textNeedW) textNeedW = l2W;
+	if (actW > textNeedW) textNeedW = actW;
+	CePlayUnitClassCardLayout card;
+	if (!CePlayUnitComputeClassCardLayout(w, h, s, textNeedW, isAir, &card)) return;
+
+	const float gaugeRoom = card.gaugeRoom;
 	const float rowGap = floorf(3.f * s);
-	const float padX = floorf(8.f * s);
-	const float padY = floorf(6.f * s);
+	const float padX = card.padX;
+	const float padY = floorf(7.f * s);
 	const float barH = floorf(4.f * s > 3.f ? 4.f * s : 3.f);
+	const float bodyW = card.bodyW;
 	const float panelH = floorf(padY * 2.f + sh * (hasAction ? 4.f : 3.f) + rowGap * (hasAction ? 4.f : 3.f) + barH + 4.f * s);
-	const float marginX = floorf(14.f * s);
-	// Anchor cleanly on the upper-left margin, completely clear of the top prompt capsule,
-	// bottom-left radar, bottom-right radio portrait / battle-line orb, and center compass.
-	const float x0 = marginX;
-	const float y0 = floorf(132.f * s);
-	if (x0 + panelW > w - 8.f || y0 + panelH > h - 8.f) return;
+	const float capW = card.capW;
+	const float totalW = card.totalW;
+	// Anchor cleanly on the upper-left margin, completely clear of the top prompt/notice capsule
+	// (including when a notice drops below a multi-line top-right objective box), bottom-left radar,
+	// bottom-right radio portrait / battle-line orb, and strictly left of the central compass ring.
+	const float objBottom = ObjectiveBottom(s);
+	float yHud = 166.f;
+	if (objBottom > 0.f)
+	{
+		const float needY = objBottom / s + 92.f;
+		if (needY > yHud) yHud = needY;
+		if (yHud > 218.f) yHud = 218.f;
+	}
+	const float x0 = card.x0;
+	const float y0 = floorf(yHud * s);
+	if (x0 + totalW > w - 8.f || y0 + panelH > h - 8.f) return;
+
+	const float bodyLeft = card.bodyLeft;
+	const float cx = x0 + totalW * 0.5f;
+	const float cy = y0 + panelH * 0.5f;
 
 	OverlayStates();
-	// 1. Draw ALL untextured geometric primitives first (glass panel, bevel, end-caps, hull bar, aircraft gauges, action box).
-	HudFillRect(x0, y0, panelW, panelH, pal.panelFill);
-	HudOutlineRect(x0, y0, panelW, panelH, t, pal.panelBorder);
-	HudFillRect(x0 + t, y0 + t, panelW - 2.f * t, t, pal.bevelAccent);
-	const float capW = floorf(2.f * s > 2.f ? 2.f * s : 2.f);
-	const float capInset = floorf(5.f * s);
-	HudFillRect(x0 + capW, y0 + capInset, capW, panelH - 2.f * capInset, pal.accentBright);
-	HudFillRect(x0 + panelW - 2.f * capW, y0 + capInset, capW, panelH - 2.f * capInset, pal.accentBright);
+	// 1. Draw curved BEA crescent pod background first.
+	if (HasCurvedCapsuleArt())
+	{
+		const unsigned glassFill = muspell ? 0xc01a0b08 : 0xb8051220;
+		const unsigned capTint = muspell ? 0xffe64416 : 0xffffffff;
+		DrawCurvedCapsuleArt(cx, cy, bodyW, panelH, 1.f, glassFill, capTint, !muspell, capW);
+		// Subtle horizontal translucent rim connecting the curved crescents top and bottom
+		const unsigned topRim = (pal.bevelAccent & 0x00ffffffu) | 0x44000000u;
+		const unsigned botRim = (pal.panelBorder & 0x00ffffffu) | 0x3c000000u;
+		HudFillRect(bodyLeft, y0 + t, bodyW, t, topRim);
+		HudFillRect(bodyLeft, y0 + panelH - 2.f * t, bodyW, t, botRim);
+	}
+	else
+	{
+		HudFillRect(x0, y0, totalW, panelH, pal.panelFill);
+		HudOutlineRect(x0, y0, totalW, panelH, t, pal.panelBorder);
+		HudFillRect(x0 + t, y0 + t, totalW - 2.f * t, t, pal.bevelAccent);
+	}
 
-	// Aircraft visual gauges on right side of panel: vertical altitude bar + pitch horizon tick.
-	const float gaugeRoom = isAir ? floorf(28.f * s) : 0.f;
-	const float textX = x0 + padX + capW;
-	const float textMaxW = panelW - 2.f * padX - 2.f * capW - gaugeRoom;
+	const float textX = card.textX;
+	const float textMaxW = card.textMaxW;
 
 	if (isAir)
 	{
-		const float gx = x0 + panelW - padX - capW - floorf(20.f * s);
+		const float gx = bodyLeft + bodyW - padX - floorf(18.f * s);
 		const float gy = y0 + padY + sh + rowGap;
 		const float gh = panelH - padY * 2.f - sh - rowGap - 2.f * s;
-		const float gw = floorf(6.f * s);
+		const float gw = floorf(5.f * s > 4.f ? 5.f * s : 4.f);
 		if (gh > 12.f)
 		{
-			// Altitude bar (0..80m)
-			HudFillRect(gx, gy, gw, gh, 0xb004080e);
-			HudOutlineRect(gx, gy, gw, gh, t, pal.accentDim);
+			// Sleek altitude bar (0..80m)
+			HudFillRect(gx, gy, gw, gh, 0x9804080e);
+			HudFillRect(gx, gy, gw, t, (pal.accentDim & 0x00ffffffu) | 0x94000000u);
+			HudFillRect(gx, gy + gh - t, gw, t, (pal.accentDim & 0x00ffffffu) | 0x94000000u);
 			float altRatio = tel.altitude / 80.f;
 			if (altRatio < 0.f) altRatio = 0.f;
 			if (altRatio > 1.f) altRatio = 1.f;
@@ -276,8 +422,8 @@ void ClassPanel(CDXBitmapFont *font, float w, float h)
 				HudFillRect(gx + t, gy + gh - t - fillH, gw - 2.f * t, fillH, pal.accentBright);
 
 			// Horizon pitch tick beside altitude bar
-			const float hx = gx + gw + floorf(4.f * s);
-			const float hw = floorf(10.f * s);
+			const float hx = gx + gw + floorf(3.f * s);
+			const float hw = floorf(9.f * s);
 			const float hmid = gy + gh * 0.5f;
 			HudFillRect(hx, hmid - t * 0.5f, hw, t, pal.accentDim);
 			float pNorm = tel.pitchDeg / 45.f;
@@ -294,37 +440,40 @@ void ClassPanel(CDXBitmapFont *font, float w, float h)
 	const float row2Y = row1Y + sh + rowGap;
 	const float row3Y = row2Y + sh + rowGap;
 
-	// Hull integrity mini-bar
+	// Sleek recessed hull integrity bar (soft track + clean colour fill, no harsh boxy frame)
 	const float hullW = textMaxW;
-	HudFillRect(textX, hullY, hullW, barH, 0xc004080e);
-	HudOutlineRect(textX, hullY, hullW, barH, t, pal.panelBorder);
+	HudFillRect(textX, hullY, hullW, barH, 0x9c04080e);
+	HudFillRect(textX, hullY, hullW, t > 1.f ? 1.f : t, (pal.panelBorder & 0x00ffffffu) | 0x80000000u);
 	float hullRatio = float(tel.hullPct) / 100.f;
 	if (hullRatio < 0.f) hullRatio = 0.f;
 	if (hullRatio > 1.f) hullRatio = 1.f;
 	const unsigned hullCol = hullRatio < 0.30f ? pal.crit : (hullRatio < 0.60f ? pal.warn : pal.ok);
 	const float hullFill = (hullW - 2.f * t) * hullRatio;
 	if (hullFill > 0.5f)
-		HudFillRect(textX + t, hullY + t, hullFill, barH - 2.f * t, hullCol);
+		HudFillRect(textX + t, hullY + t * 0.5f, hullFill, barH - t, hullCol);
 
 	const bool urgent = hasAction && (tel.unloadStatus == CE_NAVAL_READY_UNLOAD || tel.spotterMode != CE_SPOTTER_OFF);
 	if (urgent)
 	{
-		HudFillRect(textX - 2.f * s, row3Y - 1.f * s, textMaxW + 4.f * s, sh + 2.f * s, pal.accentDim);
-		HudOutlineRect(textX - 2.f * s, row3Y - 1.f * s, textMaxW + 4.f * s, sh + 2.f * s, t, pal.highlight);
+		const unsigned pillFill = (pal.accentDim & 0x00ffffffu) | 0x88000000u;
+		const unsigned pillTrim = (pal.highlight & 0x00ffffffu) | 0xc8000000u;
+		HudFillRect(textX - 2.f * s, row3Y - 1.f * s, textMaxW + 4.f * s, sh + 2.f * s, pillFill);
+		HudFillRect(textX - 2.f * s, row3Y - 1.f * s, textMaxW + 4.f * s, t, pillTrim);
 	}
 
 	// 2. Draw ALL bitmap-font text after geometry so texture state stays pristine across every line.
-	DrawHudLineText(font, textX, row0Y, pal.accentBright, header, s * 0.92f, textMaxW * 0.62f);
-	const char *factionTag = tel.allegiance == 1 ? "MUSPELL" : "FORSETI";
 	WCHAR fwRaw[16], fwShown[16];
 	Copy(fwRaw, factionTag);
 	Displayable(font, fwRaw, fwShown);
-	SIZE fwExt = {0, 0};
-	font->GetTextExtent(fwShown, &fwExt);
+	float tagSqueeze = 1.f;
 	const float tagScale = s * 0.78f;
-	const float tagX = x0 + panelW - padX - capW - float(fwExt.cx) * tagScale;
+	const float tagMaxW = textMaxW * 0.34f;
+	const float tagW = Fit(font, fwShown, &tagSqueeze, tagMaxW / tagScale, 0.65f) * tagScale;
+	const float tagX = textX + textMaxW - tagW;
+	const float headerMaxW = (tagX - textX - 6.f * s) > 24.f ? (tagX - textX - 6.f * s) : (textMaxW * 0.60f);
+	DrawHudLineText(font, textX, row0Y, pal.accentBright, header, s * 0.92f, headerMaxW);
 	OverlayStates();
-	font->DrawTextWithShadow(tagX, row0Y + sh * 0.08f, pal.highlight, fwShown, 0, 0.f, tagScale, tagScale);
+	font->DrawTextWithShadow(tagX, row0Y + sh * 0.08f, pal.highlight, fwShown, 0, 0.f, tagScale * tagSqueeze, tagScale);
 	DrawHudLineText(font, textX, row1Y, pal.textBright, line1, s * 0.84f, textMaxW);
 	DrawHudLineText(font, textX, row2Y, pal.textMuted, line2, s * 0.82f, textMaxW);
 	if (hasAction)
@@ -382,6 +531,11 @@ void DrawFactionCapsule(float cx, float cy, float full, float height, float prog
 		HUD.RenderObjectiveBar(cx, cy, full, height, progress);
 		return;
 	}
+	if (HasCurvedCapsuleArt())
+	{
+		DrawCurvedCapsuleArt(cx, cy, full, height, progress, 0xb41a0b08, 0xffe64416, false);
+		return;
+	}
 	const CePlayUnitHudPalette pal = CePlayUnitHudPaletteFor(1);
 	const float t = s > 1.f ? floorf(s) : 1.f;
 	const float capW = floorf(3.f * s > 2.f ? 3.f * s : 2.f);
@@ -405,17 +559,29 @@ void Capsule(CDXBitmapFont *font, const WCHAR *first, const WCHAR *second, unsig
 	else text[1][0] = 0;
 	const int lines = text[1][0] ? 2 : 1;
 	float squeeze[2] = {1.f, 1.f};
-	// at the top the capsule keeps clear of the objective box when vertically beside it (CapsuleRoom); below it or at the radio's place it has kMaxWidth
+	// Measure natural line widths first: if beside the top-right objective box and the text needs more room,
+	// drop the notice cleanly beneath the objective box so full hints render without "..." truncation.
+	SIZE e0 = {0, 0}, e1 = {0, 0};
+	font->GetTextExtent(text[0], &e0);
+	if (lines == 2) font->GetTextExtent(text[1], &e1);
+	const float naturalW = float(e0.cx > e1.cx ? e0.cx : e1.cx);
+	const float screenWide = (cx * 2.f) / s - 96.f > 160.f ? ((cx * 2.f) / s - 96.f) : 160.f;
+	const float fullWide = screenWide < kMaxWidth ? screenWide : kMaxWidth;
 	const float below = ObjectiveBottom(s);
 	const bool besideObjective = cy < 200.f * s && below > 0.f && (cy - height * 0.5f) < below;
 	const float top = CapsuleRoom(cx * 2.f, s);
-	const float most = besideObjective && top < kMaxWidth ? top : kMaxWidth;
+	float most = besideObjective && top < fullWide ? top : fullWide;
+	if (besideObjective && naturalW > most && fullWide > most)
+	{
+		cy = below + height * 0.5f + 6.f * s;
+		most = fullWide;
+	}
 	const float a = Fit(font, text[0], &squeeze[0], most);
 	const float b = lines == 2 ? Fit(font, text[1], &squeeze[1], most) : 0.f;
 	float textWidth = a > b ? a : b;
 	if (textWidth < 150.f) textWidth = 150.f;
 	const float lineGap = 15.f;							// the radio's line spacing
-	const float full = (textWidth + 8.f) * s;
+	const float full = (textWidth + 12.f) * s;
 	OverlayStates();
 	// the caps turn in (no box yet), then the box and its text together: a box is never drawn without its text
 	if (phase < kCapsMs)
@@ -424,7 +590,7 @@ void Capsule(CDXBitmapFont *font, const WCHAR *first, const WCHAR *second, unsig
 	{
 		DrawFactionCapsule(cx, cy, full, height, 1.f, s);
 		OverlayStates();
-		const float x = cx - full * 0.5f;
+		const float x = cx - full * 0.5f + 2.f * s;
 		const float fh = float(font->GetHeight());
 		float y = cy - (fh + (lines - 1) * lineGap) * 0.5f * s;
 		font->DrawTextWithShadow(x, y, firstColour, text[0], 0, 0.f, s * squeeze[0], s);
@@ -439,7 +605,7 @@ void Capsule(CDXBitmapFont *font, const WCHAR *first, const WCHAR *second, unsig
 		HUD.RenderObjectiveBar(cx, cy, full, height, 1.f);
 		OverlayStates();
 		// left-aligned inside the body, as the radio's text is: from the body's left end, the lines centred on the capsule's middle
-		const float x = cx - full * 0.5f;
+		const float x = cx - full * 0.5f + 2.f * s;
 		const float fh = float(font->GetHeight());
 		float y = cy - (fh + (lines - 1) * lineGap) * 0.5f * s;
 		font->DrawTextWithShadow(x, y, firstColour, text[0], 0, 0.f, s * squeeze[0], s);

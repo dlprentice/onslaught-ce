@@ -24,6 +24,8 @@
 #include "state.h"
 #include "renderinfo.h"
 #include "ce_network_session.h"
+#include "ce_network_stl.h"
+#include "../network/ice_game.h"
 #include "../platform/common/ce_netlobby.h"
 
 #include <SDL3/SDL.h>
@@ -225,6 +227,44 @@ void	PageStates()
 	RENDERINFO.Apply();
 }
 
+const char	*WaitRouteText(bool here, DWORD *colour)
+{
+	if (!CE_NetGameIceRequested())
+	{
+		*colour = here ? kGood : kWhite;
+		return "Direct LAN";
+	}
+	if (here)
+	{
+		*colour = kGood;
+		return "Connected via Relay";
+	}
+	*colour = kWhite;
+#if defined(CE_NETWORK_ICE)
+	if (CE_LobbySignalingSelected())
+	{
+		switch (CE_LobbySignalingView().status)
+		{
+		case CeIceSignalStatus::NeedsConsent:
+		case CeIceSignalStatus::AwaitingPairConsent:
+		case CeIceSignalStatus::AwaitingPeerRequest:
+		case CeIceSignalStatus::AwaitingPeerRecord:
+			return "Relay: Waiting for partner";
+		case CeIceSignalStatus::RateLimited:
+			return "Relay: Daily free-tier limit reached";
+		case CeIceSignalStatus::SetupExpired:
+		case CeIceSignalStatus::GrantExpired:
+		case CeIceSignalStatus::Expired:
+		case CeIceSignalStatus::Closed:
+			return "Relay: Pair invitation expired";
+		default:
+			return "Relay: Connecting via TURN";
+		}
+	}
+#endif
+	return "Relay: Connecting via TURN";
+}
+
 void	Draw(int mode, float now)
 {
 	STATE.UseDefault();
@@ -258,8 +298,11 @@ void	Draw(int mode, float now)
 														  dots[1 + int(now * 3.f) % 3], 0, 0, 1.f, 1.f);
 		}
 	}
-	Lines(here ? "Your friend is here. Starting the game." :
+	const float afterWait = Lines(here ? "Your friend is here. Starting the game." :
 		  "Waiting for your friend's game to start. On a slower PC this can take a minute.", kSlotY + 72.f, kWhite);
+	DWORD routeColour = kWhite;
+	const char *route = WaitRouteText(here, &routeColour);
+	Lines(route, afterWait + 4.f, routeColour);
 	if (mode != CE_WAIT_PRERUN)
 	{
 		const bool options = CPauseMenu::mOptionsPage;

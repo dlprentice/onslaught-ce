@@ -54,6 +54,8 @@ extern "C" void				PortCeMultiBeLevelEnd(int level, int quit) __attribute__((wea
 extern "C" void				PortCeMultiBeTickPre() __attribute__((weak));
 extern "C" CCamera			*PortCeMultiBeRenderCamera(CCamera *camera, int viewpoint, CPlayer *player) __attribute__((weak));
 extern "C" CBattleEngine	*PortCeMultiBeHudFocus(CBattleEngine *be, CPlayer *player) __attribute__((weak));
+extern "C" void				PortCeMultiBeDrawHud(CPlayer *player, int viewpoint) __attribute__((weak));
+extern "C" void				PortCeMultiBeMenuRows(CeMenuEvent event, CeMenuPage *page) __attribute__((weak));
 extern "C" void				PortCeMultiBeUnitSpawn(CUnit *unit, CInitThing *init) __attribute__((weak));
 extern "C" void				PortCeMultiBeUnitDestroyed(CUnit *unit) __attribute__((weak));
 extern "C" void				PortCeMultiBeWeaponFire(CWeapon *weapon, CUnit *owner, CRound *round) __attribute__((weak));
@@ -95,6 +97,16 @@ static CCamera *CeHookMultiBeRenderCamera(CCamera *camera, int viewpoint, CPlaye
 static CBattleEngine *CeHookMultiBeHudFocus(CBattleEngine *be, CPlayer *player)
 {
 	return PortCeMultiBeHudFocus ? PortCeMultiBeHudFocus(be, player) : be;
+}
+static void CeHookMultiBeDrawHud(CPlayer *player, int viewpoint)
+{
+	if (PortCeMultiBeDrawHud)
+		PortCeMultiBeDrawHud(player, viewpoint);
+}
+static void CeHookMultiBeMenuRows(CeMenuEvent event, CeMenuPage *page)
+{
+	if (PortCeMultiBeMenuRows)
+		PortCeMultiBeMenuRows(event, page);
 }
 static void CeHookMultiBeUnitSpawn(CUnit *unit, CInitThing *init)
 {
@@ -166,6 +178,7 @@ static constexpr CeHookRow<CeHookViewFn> kDrawWorld[] = {
 };
 CE_HOOK_CHECK(kDrawWorld, CE_HOOK_RENDER, CE_DISPATCH_ORDERED_BROADCAST, "draw_world");
 static constexpr CeHookRow<CeHookViewFn> kDrawHud[] = {
+	{10, "multibe_draw_hud", CE_HOOK_RENDER, CE_GATE_LAYER, CE_MODE_NONE, CeHookMultiBeDrawHud},
 	CE_HOOK_END
 };
 CE_HOOK_CHECK(kDrawHud, CE_HOOK_RENDER, CE_DISPATCH_ORDERED_BROADCAST, "draw_hud");
@@ -175,6 +188,7 @@ static constexpr CeHookRow<CeHookVoidFn> kDrawOverlay[] = {
 };
 CE_HOOK_CHECK(kDrawOverlay, CE_HOOK_RENDER, CE_DISPATCH_ORDERED_BROADCAST, "draw_overlay");
 static constexpr CeHookRow<CeHookMenuFn> kMenuRows[] = {
+	{10, "multibe_menu_rows", CE_HOOK_RENDER, CE_GATE_LAYER, CE_MODE_NONE, CeHookMultiBeMenuRows},
 	CE_HOOK_END
 };
 CE_HOOK_CHECK(kMenuRows, CE_HOOK_RENDER, CE_DISPATCH_POSITIONAL_INSERT, "menu_rows");

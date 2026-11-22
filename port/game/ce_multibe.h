@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-only
-// port/game/ce_multibe.h: opt-in Multi-Battle-Engine (>2 BEs, 3-4 simultaneous Battle Engines) prototype spike helpers.
-// Pure math and configuration helpers live in this header with no game-header dependencies so host tests can compile
-// and mutant-test them directly (port/tools/ce_multibe_tests.py).
+// port/game/ce_multibe.h: opt-in Multi-Battle-Engine (>2 BEs, 3-4 simultaneous Battle Engines) helpers.
+// Pure math and configuration helpers live in this header (and ce_multibe_state.h) with no game-header dependencies
+// so host tests can compile and mutant-test them directly (port/tools/ce_multibe_tests.py).
 //
-// Strictly gated behind ce.ini (`multi_be=3` or `multi_be=4`, off by default) and CE_GATE_LAYER (never runs in replays,
-// recordings, probes, or faithful perturbation sweeps).
+// Strictly gated behind ce.ini (`multi_be=3` or `multi_be=4`, off/2 by default) and CE_GATE_LAYER (never runs in
+// replays, recordings, probes, faithful perturbation sweeps, or 2P network lockstep sessions).
 #ifndef PORT_CE_MULTIBE_H
 #define PORT_CE_MULTIBE_H
+
+#include "ce_multibe_state.h"
 
 #include <math.h>
 #include <stddef.h>
@@ -36,7 +38,7 @@ inline bool CeMultiBeStrEqCase(const char *a, const char *b)
 	return *a == 0 && *b == 0;
 }
 
-// Parses ce.ini `multi_be` value. Returns 0 (off) for absent/off/invalid values, 4 for "1"/"on"/"true"/"4",
+// Parses ce.ini `multi_be` value. Returns 0 (off) for absent/off/2/invalid values, 4 for "1"/"on"/"true"/"4",
 // and 3 for "3". Fails closed (returns 0) on any unrecognised value so default 1P/2P runs are never perturbed.
 inline int CeMultiBeParseCount(const char *text)
 {

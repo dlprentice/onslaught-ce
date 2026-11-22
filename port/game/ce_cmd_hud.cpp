@@ -19,6 +19,46 @@ void SafeOutline(const CeCmdHudDrawOps &draw, float x, float y, float w, float h
 	if (w > 0.f && h > 0.f && t > 0.f) draw.outline(x, y, w, h, t, colour);
 }
 
+std::uint32_t WithAlpha(std::uint32_t colour, std::uint32_t alphaByte)
+{
+	return ((alphaByte & 0xffu) << 24) | (colour & 0x00ffffffu);
+}
+
+void DrawPanel(const CeCmdHudDrawOps &draw, float x, float y, float w, float h, float capMax,
+               float border, std::uint32_t fill, std::uint32_t capTint, bool nativeCyan,
+               float alpha = 1.f, bool withOuterCaps = false)
+{
+	if (w <= 0.f || h <= 0.f) return;
+	if (draw.curvedPanel)
+	{
+		draw.curvedPanel(x, y, w, h, capMax, fill, capTint, nativeCyan, alpha, withOuterCaps);
+		return;
+	}
+	SafeBox(draw, x, y, w, h, fill);
+	SafeOutline(draw, x, y, w, h, border, capTint);
+}
+
+void DrawInnerGlassPill(const CeCmdHudDrawOps &draw, float x, float y, float w, float h, float capMax,
+                        float border, std::uint32_t fill, std::uint32_t accent, float alpha = 1.f,
+                        bool emphasized = false)
+{
+	if (w <= 0.f || h <= 0.f) return;
+	DrawPanel(draw, x, y, w, h, capMax, border, fill, accent, false, alpha, false);
+	if (draw.curvedPanel)
+	{
+		const float inset = capMax * 0.42f;
+		const float spanW = w - 2.f * inset;
+		if (spanW > 4.f)
+		{
+			const float topH = emphasized ? (border > 1.f ? border * 1.5f : 2.f) : border;
+			SafeBox(draw, x + inset, y + border * 0.5f, spanW, topH,
+			        WithAlpha(accent, emphasized ? 0xe0u : 0x6cu));
+			SafeBox(draw, x + inset, y + h - border * 1.5f, spanW, border,
+			        WithAlpha(accent, emphasized ? 0x9cu : 0x3cu));
+		}
+	}
+}
+
 std::uint32_t BadgeColor(CeCmdOrderTone tone, const CeCmdHudPalette &p)
 {
 	switch (tone)
@@ -34,13 +74,14 @@ void DrawArmourBar(const CeCmdHudDrawOps &draw, float x, float y, float w, float
                    float border, const CeCmdHudPalette &p)
 {
 	if (w <= 2.f || h <= 1.f) return;
-	SafeBox(draw, x, y, w, h, p.armourTrack);
-	SafeOutline(draw, x, y, w, h, border, p.wellBorder);
+	SafeBox(draw, x, y, w, h, WithAlpha(p.armourTrack, 0xaa));
+	SafeBox(draw, x, y, w, border > 1.f ? 1.f : border, WithAlpha(p.wellBorder, 0x90));
 	const float clamped = ratio < 0.f ? 0.f : (ratio > 1.f ? 1.f : ratio);
-	const float innerW = (w - 2.f * border) * clamped;
-	const float innerH = h - 2.f * border;
+	const float pad = border > 1.f ? 1.f : border;
+	const float innerW = (w - 2.f * pad) * clamped;
+	const float innerH = h - 2.f * pad;
 	if (innerW > 0.5f && innerH > 0.5f)
-		SafeBox(draw, x + border, y + border, innerW, innerH, CeCmdHudArmourColor(clamped, p));
+		SafeBox(draw, x + pad, y + pad, innerW, innerH, CeCmdHudArmourColor(clamped, p));
 }
 }
 
@@ -54,23 +95,27 @@ void CeCmdHudDrawBar(const CeCmdHudDrawOps &draw, const CeCmdHudLayout &layout,
 		return;
 
 	const CeCmdHudPalette p = CeCmdHudPaletteForAllegiance(allegiance);
+	const bool isForseti = allegiance != 1;
 	const float u = layout.scale;
 	const float t = std::floor(u) > 1.f ? std::floor(u) : 1.f;
 	const CeCmdHudHit hover = CeCmdHudHitTest(layout, mouseX, mouseY);
 
-	// ---- Outer metallic Forseti dock ----
+	// ---- Outer BEA-native curved crescent dock ----
 	const CeCmdHudRect &bar = layout.barRect;
-	SafeBox(draw, bar.x, bar.y, bar.w, bar.h, p.barFill);
-	SafeOutline(draw, bar.x, bar.y, bar.w, bar.h, t, p.barBorder);
-	// Crisp BEA cyan top bevel and vertical Forseti end-cap bars
-	SafeBox(draw, bar.x + t, bar.y + t, bar.w - 2.f * t, t, p.barTopBevel);
-	const float capW = (2.f * u) > 2.f ? std::floor(2.f * u) : 2.f;
-	const float capInset = std::floor(5.f * u);
-	SafeBox(draw, bar.x + capW, bar.y + capInset, capW, bar.h - 2.f * capInset, p.cyanAccent);
-	SafeBox(draw, bar.x + bar.w - 2.f * capW, bar.y + capInset, capW, bar.h - 2.f * capInset, p.cyanAccent);
+	const float outerCap = std::floor(26.f * u);
+	const std::uint32_t dockCapCol = isForseti ? p.cyanAccent : 0xffe64416u;
+	DrawPanel(draw, bar.x, bar.y, bar.w, bar.h, outerCap, t, WithAlpha(p.barFill, 0xc8), dockCapCol, isForseti, 1.f, true);
+	// Subtle translucent top/bottom rim connecting the left and right curved crescents
+	const float rimInset = outerCap * 0.55f;
+	if (bar.w > 2.f * rimInset + 4.f)
+	{
+		SafeBox(draw, bar.x + rimInset, bar.y + t, bar.w - 2.f * rimInset, t, WithAlpha(p.barTopBevel, 0x5c));
+		SafeBox(draw, bar.x + rimInset, bar.y + bar.h - 2.f * t, bar.w - 2.f * rimInset, t, WithAlpha(p.barBorder, 0x50));
+	}
 
-	// Divider between Placard Tray and Command Card
-	SafeBox(draw, layout.dividerRect.x, layout.dividerRect.y, layout.dividerRect.w, layout.dividerRect.h, p.cyanDim);
+	// Soft glowing divider between Placard Tray and Command Card
+	SafeBox(draw, layout.dividerRect.x, layout.dividerRect.y + std::floor(4.f * u),
+	        layout.dividerRect.w, layout.dividerRect.h - std::floor(8.f * u), WithAlpha(p.cyanAccent, 0x70));
 
 	// ---- Left/Center Dock: Placard Tray Header ----
 	const float hdrScale = u * 0.85f;
@@ -91,10 +136,10 @@ void CeCmdHudDrawBar(const CeCmdHudDrawOps &draw, const CeCmdHudLayout &layout,
 		const bool nextHov = hover.kind == CE_HUD_HIT_NEXT_PAGE;
 		const bool canPrev = layout.pageIndex > 0;
 		const bool canNext = layout.pageIndex + 1 < layout.totalPages;
-		SafeBox(draw, layout.prevPageRect.x, layout.prevPageRect.y, layout.prevPageRect.w, layout.prevPageRect.h,
-		        canPrev ? (prevHov ? p.buttonHover : p.buttonFill) : p.buttonDisabled);
-		SafeOutline(draw, layout.prevPageRect.x, layout.prevPageRect.y, layout.prevPageRect.w, layout.prevPageRect.h,
-		            t, canPrev ? (prevHov ? p.goldAccent : p.buttonBorder) : p.wellBorder);
+		const float navCap = std::floor(7.f * u);
+		DrawInnerGlassPill(draw, layout.prevPageRect.x, layout.prevPageRect.y, layout.prevPageRect.w, layout.prevPageRect.h, navCap, t,
+		                   canPrev ? (prevHov ? p.buttonHover : p.buttonFill) : p.buttonDisabled,
+		                   canPrev ? (prevHov ? p.goldAccent : p.cyanAccent) : p.wellBorder, canPrev ? 0.95f : 0.65f, prevHov && canPrev);
 		draw.text(layout.prevPageRect.x + layout.prevPageRect.w * 0.5f, hdrTextY,
 		          canPrev ? (prevHov ? p.textGold : p.textBright) : p.textDisabled, "<", layout.prevPageRect.w - 2.f * u, true, hdrScale);
 
@@ -103,10 +148,9 @@ void CeCmdHudDrawBar(const CeCmdHudDrawOps &draw, const CeCmdHudLayout &layout,
 		const float midX = (layout.prevPageRect.x + layout.prevPageRect.w + layout.nextPageRect.x) * 0.5f;
 		draw.text(midX, hdrTextY, p.textMuted, pageBuf, layout.nextPageRect.x - (layout.prevPageRect.x + layout.prevPageRect.w), true, smallScale);
 
-		SafeBox(draw, layout.nextPageRect.x, layout.nextPageRect.y, layout.nextPageRect.w, layout.nextPageRect.h,
-		        canNext ? (nextHov ? p.buttonHover : p.buttonFill) : p.buttonDisabled);
-		SafeOutline(draw, layout.nextPageRect.x, layout.nextPageRect.y, layout.nextPageRect.w, layout.nextPageRect.h,
-		            t, canNext ? (nextHov ? p.goldAccent : p.buttonBorder) : p.wellBorder);
+		DrawInnerGlassPill(draw, layout.nextPageRect.x, layout.nextPageRect.y, layout.nextPageRect.w, layout.nextPageRect.h, navCap, t,
+		                   canNext ? (nextHov ? p.buttonHover : p.buttonFill) : p.buttonDisabled,
+		                   canNext ? (nextHov ? p.goldAccent : p.cyanAccent) : p.wellBorder, canNext ? 0.95f : 0.65f, nextHov && canNext);
 		draw.text(layout.nextPageRect.x + layout.nextPageRect.w * 0.5f, hdrTextY,
 		          canNext ? (nextHov ? p.textGold : p.textBright) : p.textDisabled, ">", layout.nextPageRect.w - 2.f * u, true, hdrScale);
 	}
@@ -116,10 +160,10 @@ void CeCmdHudDrawBar(const CeCmdHudDrawOps &draw, const CeCmdHudLayout &layout,
 	{
 		const CeCmdHudRect &slot0 = layout.placardRects[0];
 		const float wellW = layout.trayRect.w;
-		SafeBox(draw, slot0.x, slot0.y, wellW, slot0.h, p.wellFill);
-		SafeOutline(draw, slot0.x, slot0.y, wellW, slot0.h, t, p.wellBorder);
+		DrawInnerGlassPill(draw, slot0.x, slot0.y, wellW, slot0.h, std::floor(12.f * u), t,
+		                   WithAlpha(p.wellFill, 0xa8), p.wellBorder, 0.92f, false);
 		draw.text(slot0.x + wellW * 0.5f, slot0.y + (slot0.h - draw.lineHeight(labelScale)) * 0.5f,
-		          p.textMuted, "No friendly forces in sector", wellW - 12.f * u, true, labelScale);
+		          p.textMuted, "No friendly forces in sector", wellW - 16.f * u, true, labelScale);
 	}
 	else
 	{
@@ -131,19 +175,19 @@ void CeCmdHudDrawBar(const CeCmdHudDrawOps &draw, const CeCmdHudLayout &layout,
 			const CeCmdHudRect &r = layout.placardRects[s];
 			const bool hovered = hover.kind == CE_HUD_HIT_PLACARD && hover.index == idx;
 
-			const std::uint32_t fill = pl.selected ? p.placardSelected : (hovered ? p.placardHover : p.placardFill);
-			const std::uint32_t border = pl.selected ? p.goldAccent : (hovered ? p.cyanAccent : p.wellBorder);
+			const std::uint32_t fill = pl.selected ? WithAlpha(p.placardSelected, 0xe4) :
+			                           (hovered ? WithAlpha(p.placardHover, 0xd8) : WithAlpha(p.placardFill, 0xbc));
 			const std::uint32_t stripe = pl.selected ? p.goldAccent :
-			                             (pl.kind == CE_PLACARD_STRUCTURE ? p.placardStructStripe :
-			                              (pl.commandable ? p.cyanAccent : p.placardDimStripe));
+			                             (hovered ? p.cyanAccent :
+			                              (pl.kind == CE_PLACARD_STRUCTURE ? p.placardStructStripe :
+			                               (pl.commandable ? p.cyanAccent : p.placardDimStripe)));
 
-			SafeBox(draw, r.x, r.y, r.w, r.h, fill);
-			SafeOutline(draw, r.x, r.y, r.w, r.h, pl.selected ? (t * 1.5f) : t, border);
-			const float stripeH = (3.f * u) > 2.f ? std::floor(3.f * u) : 2.f;
-			SafeBox(draw, r.x + t, r.y + t, r.w - 2.f * t, stripeH, stripe);
+			const float plCap = std::floor(10.f * u);
+			DrawInnerGlassPill(draw, r.x, r.y, r.w, r.h, plCap, t, fill, stripe, 1.f, pl.selected || hovered);
 
-			const float padX = std::floor(5.f * u);
-			const float nameY = r.y + stripeH + std::floor(3.f * u);
+			const float stripeH = (2.f * u) > 2.f ? std::floor(2.f * u) : 2.f;
+			const float padX = std::floor(8.f * u);
+			const float nameY = r.y + stripeH + std::floor(4.f * u);
 			const float lineH = draw.lineHeight(smallScale);
 
 			// Top-right badge: control group pill + count/tag
@@ -155,8 +199,8 @@ void CeCmdHudDrawBar(const CeCmdHudDrawOps &draw, const CeCmdHudLayout &layout,
 				const float pillW = std::floor(13.f * u);
 				const float pillH = std::floor(12.f * u);
 				const float pillX = rightEdge - pillW;
-				SafeBox(draw, pillX, nameY - 1.f, pillW, pillH, 0xd82b2208);
-				SafeOutline(draw, pillX, nameY - 1.f, pillW, pillH, t, p.goldAccent);
+				DrawInnerGlassPill(draw, pillX, nameY - 1.f, pillW, pillH, std::floor(4.f * u), t,
+				                   0xd82b2208, p.goldAccent, 1.f, true);
 				draw.text(pillX + pillW * 0.5f, nameY, p.textGold, grp, pillW - 2.f, true, u * 0.72f);
 				rightEdge = pillX - std::floor(3.f * u);
 			}
@@ -185,7 +229,7 @@ void CeCmdHudDrawBar(const CeCmdHudDrawOps &draw, const CeCmdHudLayout &layout,
 
 			// Row 2: Live Armour Bar
 			const float barTop = nameY + lineH + std::floor(4.f * u);
-			const float armourH = (6.f * u) > 4.f ? std::floor(6.f * u) : 4.f;
+			const float armourH = (5.f * u) > 4.f ? std::floor(5.f * u) : 4.f;
 			DrawArmourBar(draw, r.x + padX, barTop, r.w - 2.f * padX, armourH, pl.armourRatio, t, p);
 
 			// Row 3: Order / Build Status Badge (with optional build mini-progress strip)
@@ -204,12 +248,13 @@ void CeCmdHudDrawBar(const CeCmdHudDrawOps &draw, const CeCmdHudLayout &layout,
 		}
 	}
 
-	// ---- Right Dock: Classic C&C RTS Command Card ----
+	// ---- Right Dock: Sleek Rounded BEA Glass Command Card ----
 	const CeCmdHudRect &cHdr = layout.cardHeaderRect;
-	SafeBox(draw, cHdr.x, cHdr.y, cHdr.w, cHdr.h, p.wellFill);
-	SafeOutline(draw, cHdr.x, cHdr.y, cHdr.w, cHdr.h, t, card.hasSelection ? (card.isStructure ? p.placardStructStripe : p.cyanDim) : p.wellBorder);
+	const std::uint32_t hdrCap = card.hasSelection ? (card.isStructure ? p.placardStructStripe : p.cyanAccent) : p.wellBorder;
+	DrawInnerGlassPill(draw, cHdr.x, cHdr.y, cHdr.w, cHdr.h, std::floor(9.f * u), t,
+	                   WithAlpha(p.wellFill, 0xc0), hdrCap, 1.f, card.hasSelection);
 
-	const float cPad = std::floor(5.f * u);
+	const float cPad = std::floor(8.f * u);
 	const float cardTitleScale = u * 0.74f;
 	const float cardSubScale = u * 0.60f;
 	const float titleY = cHdr.y + std::floor(1.5f * u);
@@ -232,14 +277,16 @@ void CeCmdHudDrawBar(const CeCmdHudDrawOps &draw, const CeCmdHudLayout &layout,
 		draw.text(cHdr.x + cPad, titleY, card.hasSelection ? (card.isStructure ? p.textGold : p.textBright) : p.textMuted,
 		          card.title[0] ? card.title : "Tactical Command", titleRoom, false, cardTitleScale);
 
-	const float subY = titleY + draw.lineHeight(cardTitleScale) + std::floor(0.5f * u);
+	float subY = titleY + draw.lineHeight(cardTitleScale) - std::floor(0.5f * u);
+	const float subMaxY = cHdr.y + cHdr.h - draw.lineHeight(cardSubScale) - std::floor(3.f * u);
+	if (subY > subMaxY) subY = subMaxY;
 	if (card.showProgress)
 	{
 		const CeCmdHudRect &pr = layout.cardProgressRect;
 		const float barX = pr.x + cPad;
 		const float barW = pr.w - 2.f * cPad;
 		const float progBarH = (2.f * u) > 2.f ? std::floor(2.f * u) : 2.f;
-		const float progBarY = cHdr.y + cHdr.h - progBarH - std::floor(1.5f * u);
+		const float progBarY = cHdr.y + cHdr.h - progBarH - std::floor(2.f * u);
 		if (card.progressLabel[0])
 			draw.text(barX, subY - std::floor(1.f * u), p.textCyan, card.progressLabel, barW, false, u * 0.56f);
 		SafeBox(draw, barX, progBarY, barW, progBarH, p.armourTrack);
@@ -253,7 +300,8 @@ void CeCmdHudDrawBar(const CeCmdHudDrawOps &draw, const CeCmdHudLayout &layout,
 		          card.subtitle, cHdr.w - 2.f * cPad, false, cardSubScale);
 	}
 
-	// 2x3 Metallic Command Button Grid
+	// 2x3 Sleek Rounded BEA Glass Command Button Grid (horn-free inner pills)
+	const float btnCap = std::floor(8.f * u);
 	for (int i = 0; i < kCeHudCardButtons; ++i)
 	{
 		const CeCmdCardButton &btn = card.buttons[i];
@@ -265,27 +313,24 @@ void CeCmdHudDrawBar(const CeCmdHudDrawOps &draw, const CeCmdHudLayout &layout,
 
 		if (btn.action == CE_CARD_NONE || !btn.label[0])
 		{
-			SafeBox(draw, br.x, br.y, br.w, br.h, p.wellFill);
-			SafeOutline(draw, br.x, br.y, br.w, br.h, t, p.wellBorder);
+			DrawInnerGlassPill(draw, br.x, br.y, br.w, br.h, btnCap, t, WithAlpha(p.wellFill, 0x84), p.wellBorder, 0.72f, false);
 			continue;
 		}
 
-		const std::uint32_t bg = inProgress ? p.buttonArmed : (!btn.enabled ? p.buttonDisabled : (lit ? p.buttonArmed : (hovered ? p.buttonHover : p.buttonFill)));
+		const std::uint32_t bg = inProgress ? p.buttonArmed : (!btn.enabled ? WithAlpha(p.buttonDisabled, 0x9c) : (lit ? p.buttonArmed : (hovered ? p.buttonHover : WithAlpha(p.buttonFill, 0xc8))));
 		const std::uint32_t edge = inProgress ? p.cyanAccent : (!btn.enabled ? p.wellBorder : (lit ? p.goldAccent : (hovered ? p.cyanAccent : p.buttonBorder)));
-		SafeBox(draw, br.x, br.y, br.w, br.h, bg);
-		SafeOutline(draw, br.x, br.y, br.w, br.h, (lit || inProgress) ? (t * 1.5f) : t, edge);
-		if (btn.enabled || inProgress)
-			SafeBox(draw, br.x + t, br.y + t, br.w - 2.f * t, t, inProgress ? p.cyanAccent : (lit ? p.goldAccent : p.cyanDim));
+		DrawInnerGlassPill(draw, br.x, br.y, br.w, br.h, btnCap, t, bg, edge, (btn.enabled || inProgress) ? 1.f : 0.76f, lit || hovered || inProgress);
 
 		const float keyScale = u * 0.60f;
 		const float lblScale = u * 0.72f;
+		const float btnPad = std::floor(6.f * u);
 		float hotkeyReserve = 0.f;
 		if (btn.hotkey[0])
 		{
 			const float kw = draw.textWidth(btn.hotkey, keyScale);
 			const std::uint32_t hkCol = inProgress ? p.textCyan : (btn.enabled ? (lit || hovered ? p.textGold : p.textCyan) : p.textDisabled);
-			draw.text(br.x + br.w - std::floor(4.f * u) - kw, br.y + std::floor(1.5f * u),
-			          hkCol, btn.hotkey, br.w - 6.f * u, false, keyScale);
+			draw.text(br.x + br.w - btnPad - kw, br.y + std::floor(1.5f * u),
+			          hkCol, btn.hotkey, br.w - 2.f * btnPad, false, keyScale);
 			// Reserve right-side hotkey room on compact viewports (e.g. 640x480) so label and hotkey never crowd.
 			const float keyH = draw.lineHeight(keyScale);
 			const float lblHCheck = draw.lineHeight(lblScale);
@@ -294,8 +339,8 @@ void CeCmdHudDrawBar(const CeCmdHudDrawOps &draw, const CeCmdHudLayout &layout,
 		}
 		const float lblH = draw.lineHeight(lblScale);
 		const float lblY = br.y + br.h - lblH - std::floor(2.f * u);
-		const float lblRoom = (br.w - std::floor(9.f * u) - hotkeyReserve) > 12.f * u ? (br.w - std::floor(9.f * u) - hotkeyReserve) : (br.w - std::floor(8.f * u));
+		const float lblRoom = (br.w - 2.f * btnPad - hotkeyReserve) > 12.f * u ? (br.w - 2.f * btnPad - hotkeyReserve) : (br.w - 2.f * btnPad);
 		const std::uint32_t lblCol = inProgress ? p.textCyan : (!btn.enabled ? p.textDisabled : (lit ? p.textGold : p.textBright));
-		draw.text(br.x + std::floor(4.f * u), lblY, lblCol, btn.label, lblRoom, false, lblScale);
+		draw.text(br.x + btnPad, lblY, lblCol, btn.label, lblRoom, false, lblScale);
 	}
 }

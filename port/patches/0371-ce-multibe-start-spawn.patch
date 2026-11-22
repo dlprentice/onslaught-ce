@@ -1,0 +1,74 @@
+--- a/Start.cpp
++++ b/Start.cpp
+@@ -6,6 +6,10 @@
+ #include "Start.h"
+ #include "BattleEngine.h"
+ #include "game.h"
++#ifdef CE_VERSION
++extern "C" void PortCeMultiBeApplyStartSlot(int *playerNumber, int retailInvert) __attribute__((weak));
++extern "C" int PortCeMultiBeSelectStartConfig(int playerNumber, int p1Config, int p2Config) __attribute__((weak));
++#endif
+ #include "world.h"
+ #include "map.h"
+ #include "mapwho.h"
+@@ -41,10 +45,23 @@
+ 	mInit.mPitch = init->mPitch;
+ 	mInit.mRoll = init->mRoll;
+ 	mInit.mAllegiance = init->mAllegiance;
++#ifdef CE_VERSION
++	if (PortCeMultiBeApplyStartSlot)
++	{
++		int ceSlot = (int)mPlayerNumber;
++		PortCeMultiBeApplyStartSlot(&ceSlot, GAME.GetFrontEndSettings()->mInvertSides ? 1 : 0);
++		mPlayerNumber = ceSlot;
++	}
++#endif
+ 	if (mPlayerNumber == 1)
+ 		mInit.mConfigurationId = GAME.GetFrontEndSettings()->mPlayer1Configuration;
+ 	else
+ 		mInit.mConfigurationId = GAME.GetFrontEndSettings()->mPlayer2Configuration;
++#ifdef CE_VERSION
++	if (PortCeMultiBeSelectStartConfig)
++		mInit.mConfigurationId = PortCeMultiBeSelectStartConfig((int)mPlayerNumber,
++			GAME.GetFrontEndSettings()->mPlayer1Configuration, GAME.GetFrontEndSettings()->mPlayer2Configuration);
++#endif
+ 	mInit.mPlaneMode = ((CStartInitThing *)init)->mPlaneMode;
+ 	SpawnBattleEngine(FALSE);
+ }
+--- a/SpawnPoint.cpp
++++ b/SpawnPoint.cpp
+@@ -4,6 +4,10 @@
+ #include "SpawnPoint.h"
+ #include "BattleEngine.h"
+ #include "game.h"
++#ifdef CE_VERSION
++extern "C" void PortCeMultiBeApplyStartSlot(int *playerNumber, int retailInvert) __attribute__((weak));
++extern "C" int PortCeMultiBeSelectStartConfig(int playerNumber, int p1Config, int p2Config) __attribute__((weak));
++#endif
+ #include "world.h"
+ #include "map.h"
+ #include "mapwho.h"
+@@ -30,10 +34,23 @@
+ 	mInit.mPitch = init->mPitch;
+ 	mInit.mRoll = init->mRoll;
+ 	mInit.mAllegiance = init->mAllegiance;
++#ifdef CE_VERSION
++	if (PortCeMultiBeApplyStartSlot)
++	{
++		int ceSlot = (int)mPlayerNumber;
++		PortCeMultiBeApplyStartSlot(&ceSlot, GAME.GetFrontEndSettings()->mInvertSides ? 1 : 0);
++		mPlayerNumber = ceSlot;
++	}
++#endif
+ 	if (mPlayerNumber == 1)
+ 		mInit.mConfigurationId = GAME.GetFrontEndSettings()->mPlayer1Configuration;
+ 	else
+ 		mInit.mConfigurationId = GAME.GetFrontEndSettings()->mPlayer2Configuration;
++#ifdef CE_VERSION
++	if (PortCeMultiBeSelectStartConfig)
++		mInit.mConfigurationId = PortCeMultiBeSelectStartConfig((int)mPlayerNumber,
++			GAME.GetFrontEndSettings()->mPlayer1Configuration, GAME.GetFrontEndSettings()->mPlayer2Configuration);
++#endif
+ 	mInit.mPlaneMode = ((CStartInitThing *)init)->mPlaneMode;
+ 	mActive = TRUE;
+ }

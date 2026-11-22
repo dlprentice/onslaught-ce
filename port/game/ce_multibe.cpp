@@ -1,15 +1,19 @@
 // SPDX-License-Identifier: GPL-3.0-only
-// port/game/ce_multibe.cpp: strictly opt-in gated Multi-Battle-Engine (3-4 simultaneous Battle Engines) prototype spike.
+// port/game/ce_multibe.cpp: Playable Multi-Battle-Engine (2v2 Versus & 3-4 BE Skirmish/Co-op), clickable
+// Front-End Options rows (Play side & Battle Engines), HUD squad/2v2 banner, and Phase 1 4-slot callbacks.
 //
-// Activation: ce.ini `multi_be=3` or `multi_be=4` (or `multi_be=1` for 4 BEs), plus optional `multi_be_cam=1` for an
-// elevated panoramic camera framing all 3-4 Battle Engines and `multi_be_hud_slot=0..3` to test hud_focus redirection.
-// Disabled by default and gated behind CE_GATE_LAYER in ce_hooks.cpp so faithful replays, recordings, probes,
-// perturbation_sweep.py, and standard 1P/2P sessions are completely untouched.
+// Activation:
+//   - ce.ini `multi_be=3` or `multi_be=4` (off/"2" by default; configurable in Front-End -> Options -> Battle Engines)
+//   - ce.ini `play_side=forseti` or `play_side=muspell` (default "forseti"; configurable in Front-End -> Options -> Play side)
+//   - Optional showcase helpers: `multi_be_cam=1` (elevated panoramic camera) and `multi_be_hud_slot=0..3`
 //
-// Memory-safety invariant (see docs/multi-battle-engine-architecture.md): auxiliary Battle Engines are bound to
-// dedicated CPlayer(2) instances (so mNumber - 1 == 1 remains within retail [2] CAREER and CONTROL_BINDINGS bounds)
-// with PLAYER_3RD_PERSON_VIEW active and per-BE cameras swapped transiently around FireWeapon() without mutating or
-// freeing any real player's camera.
+// Strict neutrality & safety:
+//   - Gated behind CE_GATE_LAYER / PortCeLayer() and NetworkOrLockstepActive() so faithful replays, recordings,
+//     probes, perturbation_sweep.py, and 2P network lockstep sessions are completely untouched.
+//   - Phase 1 4-slot safety (patches 0369..0373) allows auxiliary Battle Engines to bind dedicated CPlayer(slot+1)
+//     slots (mNumber 2..4) with CE-side P3/P4 career preferences (zero bytes changed in CCareer .bes saves),
+//     real combat vulnerability, full explosions, team kill tracking, and 5-second dry-land respawns without
+//     ever triggering retail 1P/2P DeclarePlayerDead loss conditions.
 #include "ce_hooks.h"
 #include "ce_multibe.h"
 
@@ -28,22 +32,38 @@
 #include "ThingType.h"
 #include "unit.h"
 #include "UnitAI.h"
+#include "Hud.h"
+#include "hud_scale.h"
+#include "ltshell.h"
+#include "renderinfo.h"
+#include "PauseMenu.h"
+#include "MenuItem.h"
+#include "MenuOptionsList.h"
+#include "DXEngine.h"
+#include "ce_photo.h"
 
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
+extern bool PortCeLayer();
+extern bool PortCeMenus();
+extern bool PortRecording();
 extern "C" int CE_SettingGetText(const char *key, char *out, int n);
+extern "C" int CE_SettingSetText(const char *key, const char *value);
 extern "C" int CE_SettingIs(const char *key, const char *value);
 extern "C" int CE_BootRequested(void) __attribute__((weak));
 extern "C" int CE_SessionActive(void) __attribute__((weak));
 extern "C" int CE_LockstepRequested(void) __attribute__((weak));
 extern "C" int CE_LockstepSharing(void) __attribute__((weak));
+extern "C" int PortCePlayUnitInvertSides(void) __attribute__((weak));
 bool PortCeNetActive() __attribute__((weak));
 
 namespace
 {
+
+static constexpr EMemoryType kMultiBeMenuMem = (EMemoryType)0x80;
 
 bool NetworkOrLockstepActive()
 {
@@ -53,6 +73,102 @@ bool NetworkOrLockstepActive()
 	       (CE_LockstepSharing && CE_LockstepSharing()) ||
 	       (PortCeNetActive && PortCeNetActive());
 }
+
+int ReadPlaySideSetting()
+{
+	char buf[32] = {0};
+	if (!CE_SettingGetText("play_side", buf, (int)sizeof(buf)))
+		return CE_MULTIBE_SIDE_FORSETI;
+	return CeMultiBeParsePlaySide(buf);
+}
+
+int ReadMultiBeChoiceSetting()
+{
+	char buf[32] = {0};
+	if (!CE_SettingGetText("multi_be", buf, (int)sizeof(buf)))
+		return CE_MULTIBE_CHOICE_STANDARD;
+	return CeMultiBeModeFromIni(buf);
+}
+
+// Native clickable Front-End Options rows (auto-fitted by ce_menu_fit at 640x480 & 1280x720).
+// Uses (EPCText)78 so CPauseMenu::ButtonPressed ignores it cleanly while CMenuMenuItem handles
+// mouse hover/click, dropdown expansion, keyboard arrows/Enter, and gamepad selection.
+class CCePlaySideItem : public CMenuMenuItem
+{
+public:
+	CCePlaySideItem() : CMenuMenuItem((EPCText)78, 3, false)
+	{
+		Refresh();
+	}
+
+	WCHAR *GetText() override
+	{
+		return const_cast<WCHAR *>(L"Play side: ");
+	}
+
+	int GetNumChoices() override
+	{
+		return 2;
+	}
+
+	WCHAR *GetChoiceText(int n) override
+	{
+		return const_cast<WCHAR *>(n == CE_MULTIBE_SIDE_MUSPELL ? L"Muspell" : L"Forseti");
+	}
+
+	int GetValue() override
+	{
+		return ReadPlaySideSetting();
+	}
+
+	void SetValue(int value) override
+	{
+		const int side = (value == CE_MULTIBE_SIDE_MUSPELL) ? CE_MULTIBE_SIDE_MUSPELL : CE_MULTIBE_SIDE_FORSETI;
+		if (PortCeMenus())
+			CE_SettingSetText("play_side", CeMultiBePlaySideIniValue(side));
+	}
+};
+
+class CCeBattleEnginesItem : public CMenuMenuItem
+{
+public:
+	CCeBattleEnginesItem() : CMenuMenuItem((EPCText)78, 3, false)
+	{
+		Refresh();
+	}
+
+	WCHAR *GetText() override
+	{
+		return const_cast<WCHAR *>(L"Battle Engines: ");
+	}
+
+	int GetNumChoices() override
+	{
+		return 3;
+	}
+
+	WCHAR *GetChoiceText(int n) override
+	{
+		if (n == CE_MULTIBE_CHOICE_THREE)
+			return const_cast<WCHAR *>(L"3 BEs");
+		if (n == CE_MULTIBE_CHOICE_FOUR)
+			return const_cast<WCHAR *>(L"4 BEs (2v2)");
+		return const_cast<WCHAR *>(L"Standard (2)");
+	}
+
+	int GetValue() override
+	{
+		return ReadMultiBeChoiceSetting();
+	}
+
+	void SetValue(int value) override
+	{
+		const int choice = (value >= CE_MULTIBE_CHOICE_STANDARD && value <= CE_MULTIBE_CHOICE_FOUR)
+			? value : CE_MULTIBE_CHOICE_STANDARD;
+		if (PortCeMenus())
+			CE_SettingSetText("multi_be", CeMultiBeModeToIni(choice));
+	}
+};
 
 struct MultiBeGameAccess : CGame
 {
@@ -93,7 +209,6 @@ public:
 		}
 		mOldPos = mPos;
 		mOldOrientation = mOrientation;
-		// Smooth damping avoids jerky framing while Battle Engines walk and turn.
 		mPos = mPos + (pos - mPos) * 0.25f;
 		mOrientation = ori;
 	}
@@ -108,11 +223,14 @@ private:
 	bool	mInitialised;
 };
 
+CeMultiBeExtraSlotPrefs	gExtraSlotPrefs = {};
+CeMultiBeMatchState		gMatchState = {};
 CeMultiBeConfig			gConfig = {0, false, -1};
 bool					gActive = false;
 bool					gSpawned = false;
 bool					gReportedMilestone = false;
 int						gLevel = 0;
+int						gPlayerSide = CE_MULTIBE_SIDE_FORSETI;
 int						gEngineCount = 0;
 int						gAuxSpawned = 0;
 int						gSimTicks = 0;
@@ -129,7 +247,10 @@ bool					gIsAux[CE_MULTIBE_MAX] = {false, false, false, false};
 CPlayer					*gAuxPlayers[CE_MULTIBE_MAX] = {NULL, NULL, NULL, NULL};
 CCamera					*gAuxCameras[CE_MULTIBE_MAX] = {NULL, NULL, NULL, NULL};
 FVector					gStartPos[CE_MULTIBE_MAX];
+float					gStartYaw[CE_MULTIBE_MAX] = {0.0f, 0.0f, 0.0f, 0.0f};
 bool					gMoved[CE_MULTIBE_MAX] = {false, false, false, false};
+int						gTicksSinceMorph[CE_MULTIBE_MAX] = {0, 0, 0, 0};
+int						gTicksSinceWeaponSwitch[CE_MULTIBE_MAX] = {0, 0, 0, 0};
 float					gAnchorFwdX = 0.0f;
 float					gAnchorFwdY = 1.0f;
 CeMultiBeOverviewCamera	gOverviewCam;
@@ -174,13 +295,49 @@ int CountMovedEngines()
 	return moved;
 }
 
+void RefreshMatchStateCounts()
+{
+	gMatchState.forsetiAlive = 0;
+	gMatchState.muspellAlive = 0;
+	gMatchState.forsetiTotal = 0;
+	gMatchState.muspellTotal = 0;
+	gMatchState.walkerCount = 0;
+	gMatchState.jetCount = 0;
+
+	for (int i = 0; i < gEngineCount; i++)
+	{
+		if (gMatchState.slotTeam[i] == CE_MULTIBE_SIDE_MUSPELL)
+			gMatchState.muspellTotal++;
+		else
+			gMatchState.forsetiTotal++;
+
+		CBattleEngine *be = gEngines[i];
+		if (be && UnitExistsInWorld(be) && !be->IsDying())
+		{
+			if (gMatchState.slotTeam[i] == CE_MULTIBE_SIDE_MUSPELL)
+				gMatchState.muspellAlive++;
+			else
+				gMatchState.forsetiAlive++;
+
+			const EBattleEngineState st = be->GetState();
+			if (st == BATTLE_ENGINE_STATE_JET || st == BATTLE_ENGINE_STATE_MORPHING_INTO_JET)
+				gMatchState.jetCount++;
+			else
+				gMatchState.walkerCount++;
+		}
+	}
+}
+
 void EmitTelemetry(const char *phase)
 {
+	RefreshMatchStateCounts();
 	fprintf(stderr,
-	        "ce-multibe: phase=%s level=%d target=%d active=%d spawned=%d ticks=%d nan=%d shots=%d aux_shots=%d ai_targeted=%d hud_focus=%d moved=%d spawns=%d destroyed=%d\n",
+	        "ce-multibe: phase=%s level=%d target=%d active=%d spawned=%d ticks=%d nan=%d shots=%d aux_shots=%d ai_targeted=%d hud_focus=%d moved=%d morphs=%d respawns=%d forseti_kills=%d muspell_kills=%d side=%s spawns=%d destroyed=%d\n",
 	        phase, gLevel, gConfig.target_count, CountLiveEngines(), gAuxSpawned,
 	        gSimTicks, gNanCount, gTotalShots, gAuxShots, gAiTargetedCount,
-	        gHudFocusCalls, CountMovedEngines(), gUnitSpawnEvents, gUnitDestroyedEvents);
+	        gHudFocusCalls, CountMovedEngines(), gMatchState.totalMorphs, gMatchState.totalRespawns,
+	        gMatchState.forsetiKills, gMatchState.muspellKills,
+	        CeMultiBePlaySideIniValue(gPlayerSide), gUnitSpawnEvents, gUnitDestroyedEvents);
 	fflush(stderr);
 }
 
@@ -201,11 +358,16 @@ void ResetState()
 		gEngines[i] = NULL;
 		gIsAux[i] = false;
 		gMoved[i] = false;
+		gStartYaw[i] = 0.0f;
+		gTicksSinceMorph[i] = 0;
+		gTicksSinceWeaponSwitch[i] = 0;
 	}
+	gMatchState.Reset();
 	gActive = false;
 	gSpawned = false;
 	gReportedMilestone = false;
 	gLevel = 0;
+	gPlayerSide = CE_MULTIBE_SIDE_FORSETI;
 	gEngineCount = 0;
 	gAuxSpawned = 0;
 	gSimTicks = 0;
@@ -219,13 +381,65 @@ void ResetState()
 	gOverviewCam.Reset();
 }
 
-float WrapAngle(float a)
+bool FindDrySpawnPosition(const FVector &anchorPos, const FVector &right, const FVector &fwd,
+                          float offRight, float offFwd, FVector *outPos)
 {
-	const float kPi = 3.14159265f;
-	const float kTwoPi = 6.28318530f;
-	while (a > kPi) a -= kTwoPi;
-	while (a < -kPi) a += kTwoPi;
-	return a;
+	if (!outPos)
+		return false;
+	const float waterZ = MAP.GetWaterLevel();
+	const float dryMargin = 0.8f;
+
+	FVector spawnPos = anchorPos + right * offRight + fwd * offFwd;
+	float groundZ = MAP.Collide(spawnPos);
+	if (CeMultiBeIsAboveWater(groundZ, waterZ, dryMargin))
+	{
+		spawnPos.Z = groundZ - 0.5f;
+		if (CeMultiBeIsFinitePos(spawnPos.X, spawnPos.Y, spawnPos.Z))
+		{
+			*outPos = spawnPos;
+			return true;
+		}
+	}
+
+	const float scales[4] = { 0.70f, 0.50f, 0.35f, 0.20f };
+	const float angles[8] = { 0.0f, 0.7854f, -0.7854f, 1.5708f, -1.5708f, 2.3562f, -2.3562f, 3.14159f };
+	for (int si = 0; si < 4; si++)
+	{
+		for (int ai = 0; ai < 8; ai++)
+		{
+			const float ca = cosf(angles[ai]), sa = sinf(angles[ai]);
+			const float r = (offRight * ca - offFwd * sa) * scales[si];
+			const float f = (offRight * sa + offFwd * ca) * scales[si];
+			FVector cand = anchorPos + right * r + fwd * f;
+			const float candGround = MAP.Collide(cand);
+			if (CeMultiBeIsAboveWater(candGround, waterZ, dryMargin))
+			{
+				cand.Z = candGround - 0.5f;
+				if (CeMultiBeIsFinitePos(cand.X, cand.Y, cand.Z))
+				{
+					*outPos = cand;
+					return true;
+				}
+			}
+		}
+	}
+	return false;
+}
+
+// Creates a dedicated CCamera for an auxiliary BE without disturbing or double-owning GAME.mCurrentCamera[slot].
+CCamera *CreateAuxCameraForSlot(CPlayer *auxPlayer, int camSlot)
+{
+	if (!auxPlayer || camSlot < 0 || camSlot >= MAX_PLAYERS)
+		return NULL;
+	CCamera *savedCam = MultiBeGameAccess::CameraSlot(camSlot);
+	const BOOL savedFreeCam = MultiBeGameAccess::FreeCameraSlot(camSlot);
+	MultiBeGameAccess::FreeCameraSlot(camSlot) = FALSE;
+	MultiBeGameAccess::CameraSlot(camSlot) = NULL;
+	auxPlayer->Goto3rdPersonView();
+	CCamera *auxCam = MultiBeGameAccess::CameraSlot(camSlot);
+	MultiBeGameAccess::CameraSlot(camSlot) = savedCam;
+	MultiBeGameAccess::FreeCameraSlot(camSlot) = savedFreeCam;
+	return auxCam;
 }
 
 CUnit *FindNearestHostile(CBattleEngine *self)
@@ -234,7 +448,7 @@ CUnit *FindNearestHostile(CBattleEngine *self)
 		return NULL;
 	const FVector myPos = self->GetPos();
 	CUnit *best = NULL;
-	float bestDistSq = 280.0f * 280.0f;
+	float bestScoreSq = 340.0f * 340.0f;
 	ListIterator<CUnit> it(&WORLD.GetUnitNB());
 	for (CUnit *u = it.First(); u; u = it.Next())
 	{
@@ -244,9 +458,14 @@ CUnit *FindNearestHostile(CBattleEngine *self)
 			continue;
 		const FVector delta = u->GetPos() - myPos;
 		const float dSq = delta.MagnitudeSq();
-		if (dSq > 4.0f && dSq < bestDistSq)
+		if (dSq <= 4.0f)
+			continue;
+		// Slightly prioritize opposing Battle Engines so 2v2 duels stay lively and engaging.
+		const float weight = u->IsA(THING_TYPE_BATTLE_ENGINE) ? 0.55f : 1.0f;
+		const float scoreSq = dSq * weight;
+		if (scoreSq < bestScoreSq)
 		{
-			bestDistSq = dSq;
+			bestScoreSq = scoreSq;
 			best = u;
 		}
 	}
@@ -263,11 +482,11 @@ void UpdateOverviewCamera()
 	int count = 0;
 	for (int i = 0; i < gEngineCount; i++)
 	{
-		if (!gEngines[i] || !UnitExistsInWorld(gEngines[i]))
+		if (!gEngines[i] || !UnitExistsInWorld(gEngines[i]) || gEngines[i]->IsDying())
 			continue;
 		const FVector p = gEngines[i]->GetPos();
-		// Keep panoramic framing locked on the local cluster around slot 0 (ignoring a far-away opposite base).
-		if (hasAnchor && i > 0 && (p - anchorPos).MagnitudeSq() > 65.0f * 65.0f)
+		// Keep panoramic framing centered on the active skirmish cluster around slot 0.
+		if (hasAnchor && i > 0 && (p - anchorPos).MagnitudeSq() > 75.0f * 75.0f)
 			continue;
 		positions[count][0] = p.X;
 		positions[count][1] = p.Y;
@@ -277,13 +496,60 @@ void UpdateOverviewCamera()
 	if (count == 0)
 		return;
 	float camArr[3], lookArr[3];
-	if (!CeMultiBeComputeOverviewCam(positions, count, gAnchorFwdX, gAnchorFwdY, 27.0f, 9.0f, camArr, lookArr))
+	if (!CeMultiBeComputeOverviewCam(positions, count, gAnchorFwdX, gAnchorFwdY, 28.0f, 9.5f, camArr, lookArr))
 		return;
 	FVector camPos(camArr[0], camArr[1], camArr[2]);
 	const float groundAtCam = MAP.Collide(camPos);
 	if (camPos.Z > groundAtCam - 4.0f)
 		camPos.Z = groundAtCam - 4.0f;
 	gOverviewCam.UpdatePose(camPos, FVector(lookArr[0], lookArr[1], lookArr[2]));
+}
+
+bool SpawnAuxEngineInSlot(int idx, const FVector &spawnPos, float yaw, EAllegiance side, bool startAsJet = false)
+{
+	if (idx < 0 || idx >= CE_MULTIBE_MAX)
+		return false;
+
+	CBattleEngine *be = (CBattleEngine *)SpawnThing(OID_CBattleEngine);
+	if (!be)
+		return false;
+
+	const int playerNum = idx + 1;	// 1-based slot 2..4 (safe under Phase 1 MAX_PLAYERS=4 patches)
+	CBattleEngineInitThing init;
+	init.mPos = spawnPos;
+	init.mYaw = yaw;
+	init.mPitch = 0.0f;
+	init.mRoll = 0.0f;
+	init.mAllegiance = side;
+	init.mConfigurationId = CeMultiBeSelectConfigId(
+		playerNum,
+		GAME.GetFrontEndSettings()->mPlayer1Configuration,
+		GAME.GetFrontEndSettings()->mPlayer2Configuration);
+	init.mPlaneMode = startAsJet ? TRUE : FALSE;
+	be->Init(&init);
+
+	if (!gAuxPlayers[idx])
+		gAuxPlayers[idx] = new(MEMTYPE_PLAYER) CPlayer(playerNum);
+	gAuxPlayers[idx]->AssignBattleEngine(be);
+	// Real combat vulnerability: CBattleEngine::StartDieProcess() routes through PortCeMultiBeHandleDeath()
+	// so auxiliary BE deaths play full explosions, award team kills, and trigger a clean 5-second respawn.
+	be->SetVulnerable(TRUE);
+
+	if (gAuxCameras[idx])
+	{
+		delete gAuxCameras[idx];
+		gAuxCameras[idx] = NULL;
+	}
+	gAuxCameras[idx] = CreateAuxCameraForSlot(gAuxPlayers[idx], idx);
+
+	gEngines[idx] = be;
+	gIsAux[idx] = true;
+	gStartPos[idx] = be->GetPos();
+	gStartYaw[idx] = yaw;
+	gTicksSinceMorph[idx] = 0;
+	gTicksSinceWeaponSwitch[idx] = 0;
+	gMatchState.RegisterSlotTeam(idx, side == kMuspellAllegiance ? CE_MULTIBE_SIDE_MUSPELL : CE_MULTIBE_SIDE_FORSETI);
+	return true;
 }
 
 void SpawnAuxiliaryBattleEngines()
@@ -293,24 +559,33 @@ void SpawnAuxiliaryBattleEngines()
 	if (!anchor || anchor->IsDying())
 		return;
 
-	// Put P1 in 3rd-person view when panoramic showcase camera is active so P1 renders its full 3D exterior mesh
-	// and does not overlay the internal first-person cockpit frame.
 	if (gConfig.panoramic_cam && p0->GetIsInFPV())
 		p0->Goto3rdPersonView();
 
-	// Register existing player Battle Engines first.
+	// Register existing real-player Battle Engines first.
 	const int nPlayers = GAME.GetNPlayers();
+	int forsetiCount = 0;
+	int muspellCount = 0;
 	for (int i = 0; i < nPlayers && i < MAX_PLAYERS && gEngineCount < gConfig.target_count; i++)
 	{
 		CPlayer *pl = GAME.GetPlayer(i);
 		CBattleEngine *be = pl ? pl->GetBattleEngine() : NULL;
 		if (!be)
 			continue;
-		gEngines[gEngineCount] = be;
-		gIsAux[gEngineCount] = false;
-		gStartPos[gEngineCount] = be->GetPos();
-		gEngineCount++;
+		const int slot = gEngineCount++;
+		const int team = (be->GetAllegiance() == kMuspellAllegiance) ? CE_MULTIBE_SIDE_MUSPELL : CE_MULTIBE_SIDE_FORSETI;
+		gEngines[slot] = be;
+		gIsAux[slot] = false;
+		gStartPos[slot] = be->GetPos();
+		gStartYaw[slot] = be->GetCurrentEulerOrientation().mYaw;
+		gMatchState.RegisterSlotTeam(slot, team);
+		if (team == CE_MULTIBE_SIDE_MUSPELL)
+			muspellCount++;
+		else
+			forsetiCount++;
 	}
+
+	gPlayerSide = (anchor->GetAllegiance() == kMuspellAllegiance) ? CE_MULTIBE_SIDE_MUSPELL : CE_MULTIBE_SIDE_FORSETI;
 
 	const FVector anchorPos = anchor->GetPos();
 	const FMatrix anchorOri = anchor->GetOrientation();
@@ -327,99 +602,134 @@ void SpawnAuxiliaryBattleEngines()
 	const bool mpLevel = GAME.IsMultiplayer() != FALSE;
 
 	// Spawn auxiliary Battle Engines up to target_count (3 or 4), strictly on dry terrain above water level.
-	// Retail DeclareInWater triggers at mPos.Z > waterLevel - 0.2f; 0.6f margin stays dry even on coastal airfields.
-	const float waterZ = MAP.GetWaterLevel();
-	const float dryMargin = 0.6f;
 	int formationSlot = 1;
 	while (gEngineCount < gConfig.target_count && gEngineCount < CE_MULTIBE_MAX)
 	{
+		// On 2v2 Versus (levels 850..899), keep teams balanced (2 Forseti vs 2 Muspell) regardless of Play side.
+		// On Campaign/Co-op levels (100..799), spawn allied Forseti BEs (f_be* mesh is guaranteed loaded).
+		EAllegiance side = kForsetiAllegiance;
+		if (mpLevel)
+		{
+			side = (forsetiCount <= muspellCount) ? kForsetiAllegiance : kMuspellAllegiance;
+			if (side == kMuspellAllegiance)
+				muspellCount++;
+			else
+				forsetiCount++;
+		}
+		else
+		{
+			forsetiCount++;
+		}
+
+		// Pick team-appropriate anchor:
+		// - Allied wingmen deploy beside P1 (slot 0).
+		// - In normal Versus play, opposing AI BEs deploy beside their own team's anchor (slot 1) and fly in.
+		// - In panoramic showcase mode, deploy opposing AI BEs on the skirmish perimeter ahead of P1 for clear combat framing.
+		FVector baseAnchor = anchorPos;
+		FVector baseRight = right;
+		FVector baseFwd = fwd;
+		float spawnYaw = anchorYaw;
 		float offRight = 0.0f, offFwd = 0.0f;
-		CeMultiBeFormationOffset(formationSlot, gConfig.target_count, 11.0f, &offRight, &offFwd);
+
+		const bool sameSideAsP0 = ((side == kMuspellAllegiance) == (gPlayerSide == CE_MULTIBE_SIDE_MUSPELL));
+		if (mpLevel && !sameSideAsP0 && !gConfig.panoramic_cam && gEngineCount >= 2 && gEngines[1] && UnitExistsInWorld(gEngines[1]))
+		{
+			baseAnchor = gEngines[1]->GetPos();
+			const FMatrix p1Ori = gEngines[1]->GetOrientation();
+			baseFwd = p1Ori * FVector(0.0f, 1.0f, 0.0f);
+			baseFwd.Z = 0.0f;
+			if (baseFwd.MagnitudeSq() < 1e-4f)
+				baseFwd = fwd * -1.0f;
+			else
+				baseFwd.Normalise();
+			baseRight = FVector(baseFwd.Y, -baseFwd.X, 0.0f);
+			spawnYaw = gEngines[1]->GetCurrentEulerOrientation().mYaw;
+			offRight = 12.0f;
+			offFwd = 6.0f;
+		}
+		else if (mpLevel && !sameSideAsP0 && gConfig.panoramic_cam)
+		{
+			// Skirmish vanguard ahead of P1 facing P1's team so 2v2 firefights happen immediately in frame.
+			offRight = (formationSlot & 1) ? 10.0f : -10.0f;
+			offFwd = 22.0f;
+			spawnYaw = CeMultiBeWrapAngle(anchorYaw + 3.14159265f);
+		}
+		else
+		{
+			CeMultiBeFormationOffset(formationSlot, gConfig.target_count, 11.5f, &offRight, &offFwd);
+		}
 		formationSlot++;
 
-		FVector spawnPos = anchorPos + right * offRight + fwd * offFwd;
-		float groundZ = MAP.Collide(spawnPos);
-		if (!CeMultiBeIsAboveWater(groundZ, waterZ, dryMargin))
+		FVector spawnPos;
+		bool startAsJet = false;
+		if (!FindDrySpawnPosition(baseAnchor, baseRight, baseFwd, offRight, offFwd, &spawnPos))
 		{
-			// Probe dry fallback positions progressively closer/rotated around the anchor so aux BEs never spawn in water.
-			bool foundDry = false;
-			const float scales[3] = { 0.65f, 0.45f, 0.30f };
-			const float angles[6] = { 0.0f, 1.0472f, -1.0472f, 2.0944f, -2.0944f, 3.14159f };
-			for (int si = 0; si < 3 && !foundDry; si++)
-			{
-				for (int ai = 0; ai < 6 && !foundDry; ai++)
-				{
-					const float ca = cosf(angles[ai]), sa = sinf(angles[ai]);
-					const float r = (offRight * ca - offFwd * sa) * scales[si];
-					const float f = (offRight * sa + offFwd * ca) * scales[si];
-					FVector cand = anchorPos + right * r + fwd * f;
-					const float candGround = MAP.Collide(cand);
-					if (CeMultiBeIsAboveWater(candGround, waterZ, dryMargin))
-					{
-						spawnPos = cand;
-						groundZ = candGround;
-						foundDry = true;
-					}
-				}
-			}
-			if (!foundDry)
+			// Oceanic / airborne maps (e.g. Level 860) start Battle Engines in Jet mode over water:
+			// spawn auxiliary BEs safely airborne in Jet mode well above water and terrain.
+			const float waterZ = MAP.GetWaterLevel();
+			spawnPos = baseAnchor + baseRight * offRight + baseFwd * offFwd;
+			const float groundZ = MAP.Collide(spawnPos);
+			const float surfaceZ = (groundZ < waterZ) ? groundZ : waterZ;
+			spawnPos.Z = (baseAnchor.Z < surfaceZ - 18.0f) ? baseAnchor.Z : (surfaceZ - 22.0f);
+			if (!CeMultiBeIsFinitePos(spawnPos.X, spawnPos.Y, spawnPos.Z))
 				break;
+			startAsJet = true;
 		}
-		spawnPos.Z = groundZ - 0.5f;
-		if (!CeMultiBeIsFinitePos(spawnPos.X, spawnPos.Y, spawnPos.Z))
+
+		const int idx = gEngineCount;
+		if (!SpawnAuxEngineInSlot(idx, spawnPos, spawnYaw, side, startAsJet))
 			break;
-
-		// On Versus multiplayer maps both Forseti (f_be*) and Muspell (m_be*) meshes are packed: spawn 2v2!
-		// On 1P campaign maps use Forseti (f_be*) so the mesh is guaranteed loaded in the level archive.
-		EAllegiance side = kForsetiAllegiance;
-		if (mpLevel && (gEngineCount & 1))
-			side = kMuspellAllegiance;
-
-		CBattleEngine *be = (CBattleEngine *)SpawnThing(OID_CBattleEngine);
-		if (!be)
-			break;
-
-		CBattleEngineInitThing init;
-		init.mPos = spawnPos;
-		init.mYaw = anchorYaw;
-		init.mPitch = 0.0f;
-		init.mRoll = 0.0f;
-		init.mAllegiance = side;
-		init.mConfigurationId = (side == kMuspellAllegiance)
-			? GAME.GetFrontEndSettings()->mPlayer2Configuration
-			: GAME.GetFrontEndSettings()->mPlayer1Configuration;
-		init.mPlaneMode = FALSE;
-		be->Init(&init);
-
-		// Bind a dedicated CPlayer(2) so mNumber - 1 == 1 stays inside retail [2] CAREER and CONTROL_BINDINGS arrays.
-		CPlayer *auxPlayer = new(MEMTYPE_PLAYER) CPlayer(2);
-		auxPlayer->AssignBattleEngine(be);
-		// Prevent lethal combat death on auxiliary BEs so CBattleEngine::StartDieProcess() cannot call
-		// GAME.DeclarePlayerDead(2) (which would NULL-deref mPlayer[1] in 1P or hijack real P2 in 2P).
-		be->SetVulnerable(FALSE);
-
-		// Enter 3rd-person view cleanly without deleting or overwriting P2's camera slot (even if free-cam is on).
-		CCamera *savedCam = MultiBeGameAccess::CameraSlot(1);
-		const BOOL savedFreeCam = MultiBeGameAccess::FreeCameraSlot(1);
-		MultiBeGameAccess::FreeCameraSlot(1) = FALSE;
-		MultiBeGameAccess::CameraSlot(1) = NULL;
-		auxPlayer->Goto3rdPersonView();
-		CCamera *auxCam = MultiBeGameAccess::CameraSlot(1);
-		MultiBeGameAccess::CameraSlot(1) = savedCam;
-		MultiBeGameAccess::FreeCameraSlot(1) = savedFreeCam;
-
-		const int idx = gEngineCount++;
-		gEngines[idx] = be;
-		gIsAux[idx] = true;
-		gAuxPlayers[idx] = auxPlayer;
-		gAuxCameras[idx] = auxCam;
-		gStartPos[idx] = be->GetPos();
+		gEngineCount++;
 		gAuxSpawned++;
 	}
 
 	gSpawned = true;
+	RefreshMatchStateCounts();
 	UpdateOverviewCamera();
 	EmitTelemetry("spawn");
+}
+
+void RespawnAuxiliaryBattleEngine(int idx)
+{
+	if (idx < 0 || idx >= gEngineCount || !gIsAux[idx])
+		return;
+	if (gEngines[idx] && UnitExistsInWorld(gEngines[idx]) && !gEngines[idx]->IsDying())
+		return;
+
+	const EAllegiance side = (gMatchState.slotTeam[idx] == CE_MULTIBE_SIDE_MUSPELL)
+		? kMuspellAllegiance : kForsetiAllegiance;
+	FVector spawnPos = gStartPos[idx];
+	FVector fwd(gAnchorFwdX, gAnchorFwdY, 0.0f);
+	if (fwd.MagnitudeSq() < 1e-4f)
+		fwd = FVector(0.0f, 1.0f, 0.0f);
+	else
+		fwd.Normalise();
+	FVector right(fwd.Y, -fwd.X, 0.0f);
+	bool startAsJet = false;
+	if (!FindDrySpawnPosition(gStartPos[idx], right, fwd, 0.0f, 0.0f, &spawnPos))
+	{
+		const float waterZ = MAP.GetWaterLevel();
+		spawnPos = gStartPos[idx];
+		const float groundZ = MAP.Collide(spawnPos);
+		const float surfaceZ = (groundZ < waterZ) ? groundZ : waterZ;
+		spawnPos.Z = surfaceZ - 22.0f;
+		if (!CeMultiBeIsFinitePos(spawnPos.X, spawnPos.Y, spawnPos.Z))
+			return;
+		startAsJet = true;
+	}
+
+	if (SpawnAuxEngineInSlot(idx, spawnPos, gStartYaw[idx], side, startAsJet))
+		gMatchState.totalRespawns++;
+}
+
+void FireAuxWeapon(int idx, CBattleEngine *be)
+{
+	if (!be || idx < 0 || idx >= MAX_PLAYERS || !gAuxCameras[idx])
+		return;
+	CCamera *savedCam = MultiBeGameAccess::CameraSlot(idx);
+	MultiBeGameAccess::CameraSlot(idx) = gAuxCameras[idx];
+	be->FireWeapon();
+	MultiBeGameAccess::CameraSlot(idx) = savedCam;
 }
 
 void DriveAuxiliaryEngine(int idx)
@@ -428,60 +738,128 @@ void DriveAuxiliaryEngine(int idx)
 	if (!be || !UnitExistsInWorld(be) || be->IsDying())
 		return;
 
-	// Enforce invulnerability and keep life positive so burst damage cannot invoke GAME.DeclarePlayerDead(2).
-	if (be->GetVulnerable())
-		be->SetVulnerable(FALSE);
-	const float maxLife = be->GetMaxLife();
-	if (maxLife > 0.0f && be->mLife < maxLife * 0.5f)
-		be->mLife = maxLife * 0.85f;
+	gTicksSinceMorph[idx]++;
+	gTicksSinceWeaponSwitch[idx]++;
 
-	CBattleEngineWalkerPart *walker = be->GetWalkerPart();
-	if (!walker || be->GetState() != BATTLE_ENGINE_STATE_WALKER)
+	const EBattleEngineState state = be->GetState();
+	if (state == BATTLE_ENGINE_STATE_MORPHING_INTO_JET || state == BATTLE_ENGINE_STATE_MORPHING_INTO_WALKER)
 		return;
 
 	const float waterZ = MAP.GetWaterLevel();
-	const float waterMargin = 0.6f;
+	const float waterMargin = 0.8f;
 	const FVector myPos = be->GetPos();
+	const float groundZ = MAP.Collide(myPos);
+	const bool groundIsDry = CeMultiBeIsAboveWater(groundZ, waterZ, 1.1f);
+	const bool nearWater = !CeMultiBeIsAboveWater(groundZ, waterZ, waterMargin) ||
+	                       !CeMultiBeIsAboveWater(myPos.Z, waterZ, waterMargin);
+
+	CUnit *target = FindNearestHostile(be);
+	FVector goalPos = target ? target->GetPos() : gStartPos[idx];
+
+	// Keep active Battle Engines well inside BEA's 512x512 map bounds (avoid boundary drag traps).
+	const bool outOfBounds = (myPos.X < 36.0f || myPos.X > 476.0f || myPos.Y < 36.0f || myPos.Y > 476.0f);
+	if (outOfBounds)
+		goalPos = FVector(256.0f, 256.0f, groundZ - 20.0f);
+
+	const FVector toGoal = goalPos - myPos;
+	const float horizDist = sqrtf(toGoal.X * toGoal.X + toGoal.Y * toGoal.Y);
+	const float targetGroundZ = target ? MAP.Collide(target->GetPos()) : groundZ;
+	const float targetAltAboveGround = target ? (targetGroundZ - target->GetPos().Z) : 0.0f;
+
+	const float maxEnergy = be->GetMaxEnergy();
+	const float energyRatio = (maxEnergy > 0.01f) ? CeMultiBeClamp(be->GetEnergy() / maxEnergy, 0.0f, 1.0f) : 1.0f;
+
+	// Combined-arms Walker <-> Jet morphing with strict never-land-in-water invariant.
+	CeMultiBeMorphInput morphIn;
+	morphIn.isJet = (state == BATTLE_ENGINE_STATE_JET);
+	morphIn.flightAllowed = true;
+	morphIn.groundIsDry = groundIsDry;
+	morphIn.nearWaterHazard = nearWater;
+	morphIn.energyRatio = energyRatio;
+	morphIn.targetDist = target ? horizDist : -1.0f;
+	morphIn.targetAltitude = targetAltAboveGround;
+	morphIn.ticksSinceMorph = gTicksSinceMorph[idx];
+	morphIn.slotIndex = idx;
+	morphIn.simTicks = gSimTicks;
+
+	if (CeMultiBeShouldMorph(morphIn))
+	{
+		const EBattleEngineState before = be->GetState();
+		be->Morph();
+		if (be->GetState() != before)
+		{
+			gTicksSinceMorph[idx] = 0;
+			gMatchState.totalMorphs++;
+			return;
+		}
+	}
+
+	// Periodically cycle primary/secondary weapons so AI wingmen & opponents use their full loadout.
+	if (gTicksSinceWeaponSwitch[idx] >= 150)
+	{
+		be->ChangeWeapon();
+		gTicksSinceWeaponSwitch[idx] = 0;
+	}
+
+	if (state == BATTLE_ENGINE_STATE_JET)
+	{
+		CBattleEngineJetPart *jet = be->GetJetPart();
+		if (!jet)
+			return;
+		const CEulerAngles euler = be->GetCurrentEulerOrientation();
+		const CeMultiBeJetCommand cmd = CeMultiBeComputeJetControl(
+			euler.mYaw, euler.mPitch, myPos.Z, groundZ, waterZ,
+			toGoal.X, toGoal.Y, toGoal.Z, target != NULL && !outOfBounds, 24.0f);
+
+		jet->Turn(cmd.turn);
+		// CBattleEngineJetPart::Pitch(vy) subtracts vy/117 from mPitchvel; positive cmd.pitch means nose UP (+mPitch).
+		jet->Pitch(-cmd.pitch);
+		// CBattleEngineJetPart::Thrust(vy) sets mThrusterValue = 0.5 - vy/2; clamp away from <-0.9/>0.8 loop trigger.
+		const float thrustVy = CeMultiBeClamp(1.0f - 2.0f * cmd.thrust, -0.82f, 0.45f);
+		jet->Thrust(thrustVy);
+
+		if (cmd.fire && (gSimTicks + idx * 5) % 8 == 0)
+			FireAuxWeapon(idx, be);
+		return;
+	}
+
+	// Walker mode combat & formation maneuvering.
+	CBattleEngineWalkerPart *walker = be->GetWalkerPart();
+	if (!walker)
+		return;
+
 	const FVector toHome = gStartPos[idx] - myPos;
 	const float homeDistSq = toHome.X * toHome.X + toHome.Y * toHome.Y;
-
-	// Stay strictly above water level: if near water or drifted far from our dry anchor, steer back toward gStartPos[idx].
-	const bool nearWater = !CeMultiBeIsAboveWater(MAP.Collide(myPos), waterZ, waterMargin) ||
-	                       !CeMultiBeIsAboveWater(myPos.Z, waterZ, waterMargin);
-	const bool returnHome = nearWater || homeDistSq > 18.0f * 18.0f;
+	const float maxWander = gConfig.panoramic_cam ? 26.0f : 140.0f;
+	const bool returnHome = nearWater || outOfBounds || (!target && homeDistSq > maxWander * maxWander);
 
 	if (returnHome && homeDistSq > 1.0f)
 	{
-		const float desiredYaw = toHome.Azimuth();
+		const FVector steer = outOfBounds ? toGoal : toHome;
+		const float desiredYaw = steer.Azimuth();
 		const float curYaw = be->GetCurrentEulerOrientation().mYaw;
-		const float diff = WrapAngle(desiredYaw - curYaw);
+		const float diff = CeMultiBeWrapAngle(desiredYaw - curYaw);
 		if (fabsf(diff) > 0.08f)
-			walker->Rotate(diff > 0.0f ? -0.7f : 0.7f);
-		if (fabsf(diff) < 0.8f)
-			walker->Forward(0.40f);
+			walker->Rotate(diff > 0.0f ? -0.75f : 0.75f);
+		if (fabsf(diff) < 0.85f)
+			walker->Forward(0.50f);
 	}
 	else
 	{
-		CUnit *target = FindNearestHostile(be);
-		if (target)
+		if (target && horizDist > 1.0f)
 		{
-			FVector toTarget = target->GetPos() - myPos;
-			if (toTarget.MagnitudeSq() > 1.0f)
-			{
-				const float desiredYaw = toTarget.Azimuth();
-				const float curYaw = be->GetCurrentEulerOrientation().mYaw;
-				const float diff = WrapAngle(desiredYaw - curYaw);
-				if (fabsf(diff) > 0.08f)
-					walker->Rotate(diff > 0.0f ? -0.6f : 0.6f);
-			}
+			const float desiredYaw = toGoal.Azimuth();
+			const float curYaw = be->GetCurrentEulerOrientation().mYaw;
+			const float diff = CeMultiBeWrapAngle(desiredYaw - curYaw);
+			if (fabsf(diff) > 0.07f)
+				walker->Rotate(diff > 0.0f ? -0.68f : 0.68f);
 		}
 		else
 		{
-			// Gentle alternating turn so idle formation patrols cleanly.
 			walker->Rotate(((gSimTicks / 45 + idx) & 1) ? 0.18f : -0.18f);
 		}
 
-		// Probe terrain 8m in the planned motion direction before stepping so aux BEs never walk into water.
+		// Probe terrain 8m ahead in the intended movement direction so walkers stay strictly on dry ground.
 		const FMatrix ori = be->GetOrientation();
 		FVector fwd = ori * FVector(0.0f, 1.0f, 0.0f);
 		FVector right = ori * FVector(1.0f, 0.0f, 0.0f);
@@ -492,33 +870,45 @@ void DriveAuxiliaryEngine(int idx)
 
 		const int phase = (gSimTicks + idx * 17) % 120;
 		FVector stepDir(0.0f, 0.0f, 0.0f);
-		if (phase < 40) stepDir = fwd;
-		else if (phase < 70) stepDir = right * -1.0f;
-		else if (phase < 100) stepDir = right;
-		else stepDir = fwd * -1.0f;
+		int moveKind = 0;	// 0=fwd, 1=left, 2=right, 3=back
+		if (target && horizDist > 42.0f)
+		{
+			stepDir = fwd;
+			moveKind = 0;
+		}
+		else if (phase < 40)
+		{
+			stepDir = fwd;
+			moveKind = 0;
+		}
+		else if (phase < 70)
+		{
+			stepDir = right * -1.0f;
+			moveKind = 1;
+		}
+		else if (phase < 100)
+		{
+			stepDir = right;
+			moveKind = 2;
+		}
+		else
+		{
+			stepDir = fwd * -1.0f;
+			moveKind = 3;
+		}
 
 		const FVector probe = myPos + stepDir * 8.0f;
 		if (CeMultiBeIsAboveWater(MAP.Collide(probe), waterZ, waterMargin))
 		{
-			if (phase < 40)
-				walker->Forward(0.35f);
-			else if (phase < 70)
-				walker->StrafeLeft(0.28f);
-			else if (phase < 100)
-				walker->StrafeRight(0.28f);
-			else
-				walker->Backward(0.25f);
+			if (moveKind == 0) walker->Forward(0.45f);
+			else if (moveKind == 1) walker->StrafeLeft(0.32f);
+			else if (moveKind == 2) walker->StrafeRight(0.32f);
+			else walker->Backward(0.28f);
 		}
 	}
 
-	// Periodically fire primary weapon using this auxiliary BE's own camera transiently in slot 1.
-	if ((gSimTicks + idx * 7) % 14 == 0 && gAuxCameras[idx])
-	{
-		CCamera *savedCam = MultiBeGameAccess::CameraSlot(1);
-		MultiBeGameAccess::CameraSlot(1) = gAuxCameras[idx];
-		be->FireWeapon();
-		MultiBeGameAccess::CameraSlot(1) = savedCam;
-	}
+	if ((gSimTicks + idx * 7) % 12 == 0)
+		FireAuxWeapon(idx, be);
 }
 
 void ProbeAiTargeting()
@@ -538,7 +928,22 @@ void ProbeAiTargeting()
 	}
 }
 
+void CopyDrawableWide(WCHAR *out, size_t cap, const char *ascii, CDXBitmapFont *font)
+{
+	if (!out || cap == 0)
+		return;
+	size_t n = 0;
+	for (; ascii && ascii[n] && n + 1 < cap; ++n)
+	{
+		const WCHAR ch = static_cast<WCHAR>(static_cast<unsigned char>(ascii[n]));
+		out[n] = (font && font->CanDisplay(ch)) ? ch : L'-';
+	}
+	out[n] = 0;
+}
+
 } // namespace
+
+// ---- Hook handlers (registered in port/game/ce_hooks.cpp) ----
 
 extern "C" void PortCeMultiBeLevelBegin(int level)
 {
@@ -559,6 +964,7 @@ extern "C" void PortCeMultiBeLevelBegin(int level)
 		? CeMultiBeParseHudSlot(hudBuf)
 		: -1;
 	gLevel = level;
+	gPlayerSide = ReadPlaySideSetting();
 	gActive = true;
 }
 
@@ -578,7 +984,6 @@ extern "C" void PortCeMultiBeTickPre()
 	const EGameState state = GAME.GetGameState();
 	if (state == GAME_STATE_PANNING && gConfig.panoramic_cam)
 	{
-		// Skip intro pan immediately in showcase mode across all active players so none linger in CPanCamera.
 		bool ready = false;
 		const int nPlayers = GAME.GetNPlayers();
 		for (int i = 0; i < nPlayers && i < MAX_PLAYERS; i++)
@@ -608,6 +1013,15 @@ extern "C" void PortCeMultiBeTickPre()
 
 	gSimTicks++;
 
+	// Advance auxiliary BE respawn timers and redeploy any slot whose 5-second cooldown finished.
+	const uint8_t readyMask = gMatchState.TickRespawnTimers();
+	if (readyMask)
+	{
+		for (int i = 0; i < gEngineCount; i++)
+			if ((readyMask & (uint8_t)(1u << i)) && gIsAux[i])
+				RespawnAuxiliaryBattleEngine(i);
+	}
+
 	// Validate positions & drive auxiliary Battle Engines.
 	for (int i = 0; i < gEngineCount; i++)
 	{
@@ -624,10 +1038,10 @@ extern "C" void PortCeMultiBeTickPre()
 			DriveAuxiliaryEngine(i);
 	}
 
-	// Periodically probe hostile AI units to observe real CUnitAI::Unknown11 targeting of auxiliary BEs.
 	if (gSimTicks % 10 == 0)
 		ProbeAiTargeting();
 
+	RefreshMatchStateCounts();
 	UpdateOverviewCamera();
 
 	if (!gReportedMilestone && gSimTicks >= 200)
@@ -654,13 +1068,88 @@ extern "C" CBattleEngine *PortCeMultiBeHudFocus(CBattleEngine *be, CPlayer *play
 		CBattleEngine *focused = gEngines[gConfig.hud_focus_slot];
 		if (focused && UnitExistsInWorld(focused) && !focused->IsDying() && focused->GetPlayer())
 		{
-			// In 2P split-screen, retail CHud/CCompass anchor widgets off mBattleEngine->GetPlayer()->GetNumber() == 1:
-			// only redirect a viewpoint when player numbers match (or in single-player full-window HUD).
 			if (GAME.GetNPlayers() <= 1 || !player || focused->GetPlayer()->GetNumber() == player->GetNumber())
 				return focused;
 		}
 	}
 	return be;
+}
+
+extern "C" void PortCeMultiBeDrawHud(CPlayer *, int viewpoint)
+{
+	if (!gActive || !gSpawned || viewpoint != 0)
+		return;
+	if (PortCePhotoOn() || PortCePhotoSavedNext() || GAME.GetGameState() != GAME_STATE_PLAYING)
+		return;
+
+	CDXBitmapFont *font = PLATFORM.Font(FONT_SMALL);
+	if (!font)
+		return;
+
+	RefreshMatchStateCounts();
+	char ascii[128] = {0};
+	const bool isVersus = (gMatchState.forsetiTotal > 0 && gMatchState.muspellTotal > 0);
+	gMatchState.FormatHudBanner(isVersus, gPlayerSide, ascii, sizeof(ascii));
+
+	WCHAR wide[128] = {0};
+	CopyDrawableWide(wide, 128, ascii, font);
+	SIZE extent = {0, 0};
+	font->GetTextExtent(wide, &extent);
+	if (extent.cx <= 0)
+		return;
+
+	const float cx = HUD.mViewportX + HUD.mViewportWidth * 0.5f;
+	const float cy = HUD.mViewportY + HUD_OFFSET_Y + 22.0f;
+	float width = float(extent.cx) + 28.0f;
+	float textScaleX = 1.0f;
+	const float maxWidth = HUD.mViewportWidth - 88.0f;
+	if (maxWidth > 80.0f && width > maxWidth)
+	{
+		width = maxWidth;
+		const float availText = width - 24.0f;
+		if (availText > 16.0f && float(extent.cx) > availText)
+			textScaleX = availText / float(extent.cx);
+	}
+	const float height = float(font->GetHeight()) + 14.0f;
+
+	CeHudScope topScope(!GAME.IsMultiplayer() && ENGINE.GetNumViewpoints() == 1,
+	                    HUD.mViewportWidth, HUD.mViewportHeight, cx, HUD.mViewportY + HUD_OFFSET_Y);
+	RENDERINFO.SetFogEnabled(false);
+	RENDERINFO.SetLightingEnabled(false);
+	RENDERINFO.Apply();
+	HUD.RenderObjectiveBar(cx, cy, width, height, 1.0f);
+	RENDERINFO.EnableLighting(false);
+	RENDERINFO.SetFogEnabled(false);
+	RENDERINFO.Apply();
+
+	const float textX = cx - float(extent.cx) * textScaleX * 0.5f;
+	const float textY = cy - float(font->GetHeight()) * 0.5f;
+	font->DrawTextWithShadow(textX, textY, 0xffffffff, wide, 0, 1.0f, textScaleX, 1.0f);
+}
+
+extern "C" void PortCeMultiBeMenuRows(CeMenuEvent event, CeMenuPage *page)
+{
+	if (event != CE_MENU_BUILD || !page || page->site != CE_MENU_PAUSE_LIST || !page->list)
+		return;
+	if (!CPauseMenu::mOptionsPage || !PortCeMenus() || NetworkOrLockstepActive())
+		return;
+
+	CMenuOptionsList *list = page->list;
+	// Insert Play side & Battle Engines cleanly right before Credits (the only mId==1 item on the Options root list).
+	CMenuItem *credits = NULL;
+	if (list->mItems.Size() > 0)
+	{
+		CMenuItem *tail = list->mItems.Last();
+		if (tail && tail->mText != 0 && tail->mId == 1)
+		{
+			list->mItems.Remove(tail);
+			credits = tail;
+		}
+	}
+	list->AddItem(new (kMultiBeMenuMem) CCePlaySideItem());
+	list->AddItem(new (kMultiBeMenuMem) CCeBattleEnginesItem());
+	if (credits)
+		list->AddItem(credits);
 }
 
 extern "C" void PortCeMultiBeUnitSpawn(CUnit *, CInitThing *)
@@ -676,7 +1165,14 @@ extern "C" void PortCeMultiBeUnitDestroyed(CUnit *unit)
 	gUnitDestroyedEvents++;
 	const int idx = IndexOfEngine(unit);
 	if (idx >= 0)
+	{
 		gEngines[idx] = NULL;
+		if (gIsAux[idx] && gAuxCameras[idx])
+		{
+			delete gAuxCameras[idx];
+			gAuxCameras[idx] = NULL;
+		}
+	}
 }
 
 extern "C" void PortCeMultiBeWeaponFire(CWeapon *, CUnit *owner, CRound *)
@@ -692,6 +1188,119 @@ extern "C" void PortCeMultiBeWeaponFire(CWeapon *, CUnit *owner, CRound *)
 	}
 }
 
+// ---- Phase 1 & Front-End patch callbacks (patches 0371..0374) ----
+
+extern "C" void PortCeMultiBeApplyStartSlot(int *playerNumber, int retailInvert)
+{
+	if (!playerNumber || !PortCeLayer() || PortRecording() || NetworkOrLockstepActive())
+		return;
+	const int level = GAME.GetCurrentLevel();
+	const bool isVersus = (level >= 850 && level <= 899);
+	const bool cli0359 = (PortCePlayUnitInvertSides && PortCePlayUnitInvertSides()) != 0;
+	const bool menuMuspell = (ReadPlaySideSetting() == CE_MULTIBE_SIDE_MUSPELL);
+	*playerNumber = CeMultiBeTransformStartSlot(*playerNumber, retailInvert != 0, cli0359, menuMuspell, isVersus);
+}
+
+extern "C" int PortCeMultiBeAllowTeamKills(void)
+{
+	return (PortCeLayer() && !PortRecording() && !NetworkOrLockstepActive()) ? 1 : 0;
+}
+
+extern "C" int PortCeMultiBeSelectStartConfig(int playerNumber, int p1Config, int p2Config)
+{
+	return CeMultiBeSelectConfigId(playerNumber, p1Config, p2Config);
+}
+
+extern "C" int PortCeMultiBeCareerPrefGet(int slot, int prefKind)
+{
+	return gExtraSlotPrefs.Get(slot, prefKind);
+}
+
+extern "C" void PortCeMultiBeCareerPrefSet(int slot, int prefKind, int value)
+{
+	gExtraSlotPrefs.Set(slot, prefKind, value);
+}
+
+extern "C" void PortCeMultiBeOnConfirmedKill(void *killerPtr, void *killedPtr)
+{
+	if (!gActive || !killerPtr || !killedPtr)
+		return;
+	CBattleEngine *killer = static_cast<CBattleEngine *>(killerPtr);
+	CUnit *killed = static_cast<CUnit *>(killedPtr);
+	// Track opposing unit kills by side (auxiliary BE deaths are additionally tracked in OnAuxDestroyed).
+	if (killed->IsA(THING_TYPE_BATTLE_ENGINE) && IndexOfEngine(killed) >= 0 && gIsAux[IndexOfEngine(killed)])
+		return;
+	if (killer->GetAllegiance() == kMuspellAllegiance)
+		gMatchState.muspellKills++;
+	else if (killer->GetAllegiance() == kForsetiAllegiance)
+		gMatchState.forsetiKills++;
+}
+
+extern "C" int PortCeMultiBeHandleDeath(void *battleEnginePtr)
+{
+	if (!gActive || !battleEnginePtr)
+		return 0;
+	CBattleEngine *be = static_cast<CBattleEngine *>(battleEnginePtr);
+	const int idx = IndexOfEngine(be);
+	if (idx >= 0 && gIsAux[idx])
+	{
+		gMatchState.OnAuxDestroyed(idx);
+		if (gAuxCameras[idx])
+		{
+			delete gAuxCameras[idx];
+			gAuxCameras[idx] = NULL;
+		}
+		return 1;	// Suppress retail GAME.DeclarePlayerDead() for auxiliary BEs; respawn cleanly after 5s.
+	}
+	return 0;
+}
+
+extern "C" int PortCeMultiBeActive(void)
+{
+	return gActive ? 1 : 0;
+}
+
+extern "C" int PortCeMultiBePlaySideIsMuspell(void)
+{
+	if (!PortCeLayer() || PortRecording() || NetworkOrLockstepActive())
+		return 0;
+	return (ReadPlaySideSetting() == CE_MULTIBE_SIDE_MUSPELL) ? 1 : 0;
+}
+
+extern "C" void PortCeMultiBeDrawMpStartStatus(float transition)
+{
+	if (!PortCeLayer() || !PortCeMenus() || PortRecording() || NetworkOrLockstepActive())
+		return;
+	const int side = ReadPlaySideSetting();
+	const int mode = ReadMultiBeChoiceSetting();
+	if (side == CE_MULTIBE_SIDE_FORSETI && mode == CE_MULTIBE_CHOICE_STANDARD)
+		return;
+
+	CDXBitmapFont *font = PLATFORM.Font(FONT_SMALL);
+	if (!font)
+		return;
+	const float vis = CeMultiBeClamp(transition, 0.0f, 1.0f);
+	if (vis < 0.1f)
+		return;
+
+	char ascii[96] = {0};
+	const char *modeLabel = (mode == CE_MULTIBE_CHOICE_FOUR) ? "4 BEs (2v2)"
+	                      : (mode == CE_MULTIBE_CHOICE_THREE) ? "3 BEs" : "Standard (2)";
+	snprintf(ascii, sizeof(ascii), "Play side: %s  -  Battle Engines: %s",
+	         side == CE_MULTIBE_SIDE_MUSPELL ? "Muspell" : "Forseti", modeLabel);
+
+	WCHAR wide[96] = {0};
+	CopyDrawableWide(wide, 96, ascii, font);
+	SIZE extent = {0, 0};
+	font->GetTextExtent(wide, &extent);
+	if (extent.cx <= 0)
+		return;
+
+	const DWORD alpha = static_cast<DWORD>(vis * 235.0f) & 0xffu;
+	const DWORD col = (alpha << 24) | 0x00d8e8ffu;
+	font->DrawTextWithShadow(320.0f - float(extent.cx) * 0.5f, 418.0f, col, wide, 0, 0, 1.0f, 1.0f);
+}
+
 #else	// private build: completely inert
 
 extern "C" void PortCeMultiBeLevelBegin(int) {}
@@ -699,8 +1308,20 @@ extern "C" void PortCeMultiBeLevelEnd(int, int) {}
 extern "C" void PortCeMultiBeTickPre() {}
 extern "C" CCamera *PortCeMultiBeRenderCamera(CCamera *camera, int, CPlayer *) { return camera; }
 extern "C" CBattleEngine *PortCeMultiBeHudFocus(CBattleEngine *be, CPlayer *) { return be; }
+extern "C" void PortCeMultiBeDrawHud(CPlayer *, int) {}
+extern "C" void PortCeMultiBeMenuRows(CeMenuEvent, CeMenuPage *) {}
 extern "C" void PortCeMultiBeUnitSpawn(CUnit *, CInitThing *) {}
 extern "C" void PortCeMultiBeUnitDestroyed(CUnit *) {}
 extern "C" void PortCeMultiBeWeaponFire(CWeapon *, CUnit *, CRound *) {}
+extern "C" void PortCeMultiBeApplyStartSlot(int *, int) {}
+extern "C" int PortCeMultiBeAllowTeamKills(void) { return 0; }
+extern "C" int PortCeMultiBeSelectStartConfig(int, int p1Config, int) { return p1Config; }
+extern "C" int PortCeMultiBeCareerPrefGet(int, int) { return 0; }
+extern "C" void PortCeMultiBeCareerPrefSet(int, int, int) {}
+extern "C" void PortCeMultiBeOnConfirmedKill(void *, void *) {}
+extern "C" int PortCeMultiBeHandleDeath(void *) { return 0; }
+extern "C" int PortCeMultiBeActive(void) { return 0; }
+extern "C" int PortCeMultiBePlaySideIsMuspell(void) { return 0; }
+extern "C" void PortCeMultiBeDrawMpStartStatus(float) {}
 
 #endif

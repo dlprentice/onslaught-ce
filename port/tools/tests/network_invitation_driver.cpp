@@ -139,6 +139,39 @@ int main(int argc,char** argv){
     Reset();Begin(host);Check(View().state==CE_INVITATION_PREVIEW_READY,"selection-failure-preview");selectAllowed=false;
     Check(!CE_InvitationInstall(1000)&&View().error==CE_INVITATION_ERROR_SELECTION&&selections==1&&requests==0,"selection-refusal-never-contacts-service");
     for(unsigned i=0;i<=CE_INVITATION_ERROR_SELECTION;++i){const char* text=CE_InvitationErrorText(i);Check(text&&std::strstr(text,token)==nullptr&&std::strstr(text,userRoot.c_str())==nullptr,"fixed-errors-contain-no-private-input");}
+    // Profile-local discovery checks (<userRoot>/online-invitation[/host|/guest]):
+    // strict private permissions, metadata-only probe/preview, zero token reads until install.
+    Reset();
+    Check(CE_InvitationProfileAvailable(CE_NET_HOST,1000)==0&&tokenOpens==0,"profile-absent-is-unavailable");
+    Check(!CE_InvitationBeginProfileImport(origin,CE_NET_HOST)&&View().state==CE_INVITATION_REFUSED&&View().error==CE_INVITATION_ERROR_FOLDER&&tokenOpens==0,"profile-absent-refuses-folder");
+    const fs::path profileRoot=fs::path(userRoot)/"online-invitation";
+    fs::create_directory(profileRoot);chmod(profileRoot.c_str(),0700);
+    const fs::path profileHost=Package(profileRoot,"host","host",1120);
+    const auto beforeProfMeta=Read(profileHost/"pair-admission.json"),beforeProfToken=Read(profileHost/"identity-token");
+    Check(CE_InvitationProfileAvailable(CE_NET_HOST,1000)==1&&tokenOpens==0,"profile-valid-host-discovered-without-token");
+    Check(CE_InvitationProfileAvailable(CE_NET_GUEST,1000)==0&&tokenOpens==0,"profile-wrong-role-ignored");
+    Check(CE_InvitationProfileAvailable(CE_NET_HOST,1120)==0&&tokenOpens==0,"profile-expired-ignored");
+    chmod(profileRoot.c_str(),0755);
+    Check(CE_InvitationProfileAvailable(CE_NET_HOST,1000)==0&&tokenOpens==0,"profile-nonprivate-root-refused");
+    chmod(profileRoot.c_str(),0700);
+    chmod((profileHost/"pair-admission.json").c_str(),0644);
+    Check(CE_InvitationProfileAvailable(CE_NET_HOST,1000)==0&&tokenOpens==0,"profile-nonprivate-metadata-file-refused");
+    chmod((profileHost/"pair-admission.json").c_str(),0600);
+    chmod((profileHost/"identity-token").c_str(),0644);
+    Check(!CE_InvitationBeginProfileImport("http://fixture.invalid",CE_NET_HOST)&&View().error==CE_INVITATION_ERROR_ORIGIN,"profile-origin-validated");
+    Check(CE_InvitationBeginProfileImport(origin,CE_NET_HOST)==1&&View().state==CE_INVITATION_PREVIEW_READY&&tokenOpens==0,"profile-preview-reads-metadata-only");
+    Check(!CE_InvitationInstall(1000)&&View().error==CE_INVITATION_ERROR_CAPABILITY&&selections==0,"profile-nonprivate-token-file-refused");
+    chmod((profileHost/"identity-token").c_str(),0600);
+    Reset();
+    Check(CE_InvitationBeginProfileImport(origin,CE_NET_HOST)==1,"profile-begin-succeeds");
+    Check(View().state==CE_INVITATION_PREVIEW_READY&&View().role==CE_NET_HOST&&View().expires_at==1120&&tokenOpens==0&&selections==0&&requests==0,"profile-preview-ready-offline");
+    Check(CE_InvitationInstall(1000)==1&&View().state==CE_INVITATION_SELECTED&&tokenOpens==1&&selections==1&&requests==0,"profile-install-selects-authority");
+    Check(selected&&std::string(selected->Directory()).find(userRoot+"/signal-session-")==0&&std::string(selected->Directory())!=profileHost.string(),"profile-install-uses-fresh-exchange-dir");
+    Check(Read(profileHost/"pair-admission.json")==beforeProfMeta&&Read(profileHost/"identity-token")==beforeProfToken,"profile-inputs-remain-read-only");
+    fs::remove_all(profileRoot);
+    fs::create_directory_symlink(host,profileRoot);
+    Check(CE_InvitationProfileAvailable(CE_NET_HOST,1000)==0,"profile-symlink-root-refused");
+    fs::remove(profileRoot);
     CE_InvitationCancel();provider.reset();selected.reset();
     std::printf("checks=%u failures=%u\n",checks,failures);return failures?1:0;
 }

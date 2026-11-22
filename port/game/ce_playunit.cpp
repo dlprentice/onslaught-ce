@@ -97,6 +97,7 @@
 #include "ce_playunit_look.h"
 #include "ce_playunit_camera.h"
 #include "ce_playunit_hud.h"
+#include "ce_playunit_textures.h"
 #include "ce_commander.h"
 #include "../platform/common/portlog.h"
 #include "../platform/common/feel.h"
@@ -2063,17 +2064,23 @@ bool TakeKeyFree()
 }
 void UnitViewHelp(char *out, int n)
 {
-    char closer[24], wider[24], back[24];
+    char closer[24], wider[24], back[24], zoom[52];
     UnitKeyName(closer, sizeof(closer), BUTTON_MECH_CHANGE_ZOOM_IN, "Zoom In");
     UnitKeyName(wider, sizeof(wider), BUTTON_MECH_CHANGE_ZOOM_OUT, "Zoom Out");
     MorphKeyName(back, sizeof(back));
+    const char *gap = strchr(closer, ' ');
+    const size_t word = gap ? (size_t)(gap - closer) : 0;
+    if (word && !strncmp(closer, wider, word) && wider[word] == ' ' && !strncmp(closer, "Wheel ", 6))
+        snprintf(zoom, sizeof(zoom), "%.*s", (int)word, closer);
+    else
+        snprintf(zoom, sizeof(zoom), "%s/%s", closer, wider);
     const bool first = (gUnitViewMade && gUnitViewRig.valid) ? gUnitViewRig.firstPerson : true;
     const char *views = first ? "Wide/Close/First" : "Wide/Close";
     if (TakeKeyFree())
-        snprintf(out, n, "%s/%s: %s   %s: Return   %s: Take", closer, wider,
+        snprintf(out, n, "%s: %s  %s: Return  %s: Take", zoom,
                  views, back, PortCeActionName(CeControlAction::TakeUnit));
     else
-        snprintf(out, n, "%s/%s: %s   %s: Return", closer, wider, views, back);
+        snprintf(out, n, "%s: %s  %s: Return", zoom, views, back);
 }
 
 // Whether a class-specific shortcut key (V view, U unload, C spotter) is unbound by the player's own controls and CE action bindings.
@@ -2305,7 +2312,7 @@ bool Take(CPlayer *player, CBattleEngine *engine, CCONTROLLER *controller, CUnit
 #endif
 	// what the player is told: the unit, and the way back and on (the Battle Engine's own Morph key, as the player has it bound)
 	char first[96], second[96], key[24];
-	snprintf(first, sizeof(first), gOnFoot ? "On foot: %s" : "You are driving: %s", name);
+	snprintf(first, sizeof(first), "%s: %s", CePlayUnitControlVerb(kind), name);
 	MorphKeyName(key, sizeof(key));
 	if (gViewMode == kViewLook)
         UnitViewHelp(second, sizeof(second));
@@ -3414,61 +3421,256 @@ struct CeWorldTriVert
 	DWORD color;
 };
 
-DWORD ShadeColor(DWORD base, float factor)
+struct CeWeaponVert
 {
-	if (factor < 0.15f) factor = 0.15f;
-	if (factor > 1.25f) factor = 1.25f;
+	float x, y, z;
+	DWORD color;
+	float u, v;
+};
+
+struct CeUvQuad
+{
+	float u0, v0, u1, v1;
+};
+
+DWORD ScaleRgb(DWORD base, float rScale, float gScale, float bScale)
+{
 	const DWORD a = (base >> 24) & 0xffu;
-	DWORD r = DWORD(float((base >> 16) & 0xffu) * factor + 0.5f);
-	DWORD g = DWORD(float((base >> 8) & 0xffu) * factor + 0.5f);
-	DWORD b = DWORD(float(base & 0xffu) * factor + 0.5f);
-	if (r > 255u) r = 255u;
-	if (g > 255u) g = 255u;
-	if (b > 255u) b = 255u;
-	return (a << 24) | (r << 16) | (g << 8) | b;
+	int r = int(float((base >> 16) & 0xffu) * rScale + 0.5f);
+	int g = int(float((base >> 8) & 0xffu) * gScale + 0.5f);
+	int b = int(float(base & 0xffu) * bScale + 0.5f);
+	if (r < 0) r = 0; else if (r > 255) r = 255;
+	if (g < 0) g = 0; else if (g > 255) g = 255;
+	if (b < 0) b = 0; else if (b > 255) b = 255;
+	return (a << 24) | (DWORD(r) << 16) | (DWORD(g) << 8) | DWORD(b);
 }
 
-// Appends one camera-space low-poly 3D box (12 triangles, 36 vertices) transformed into world space.
-// Local axes: lx right, ly forward, lz down (matching BEA camera frame).
-void EmitCamBox(CeWorldTriVert *buf, int *count, int cap,
-                const FVector &origin, const FVector &right, const FVector &fwd, const FVector &down,
-                float cx, float cy, float cz, float hx, float hy, float hz, DWORD color)
+// Directional sunlit + sky/ground hemisphere + subtle grazing rim lighting for 1P textured weapon geometry.
+// Normal n, view-from-surface vector vDir, and camera-relative sunlight keyDir are in world space (Z down).
+DWORD ShadeWeaponNormal(const FVector &n, const FVector &vDir, const FVector &keyDir, DWORD tint, float ao, bool emissive)
 {
-	if (!buf || !count || *count + 36 > cap) return;
-	const float sx[8] = {-1, 1, 1, -1, -1, 1, 1, -1};
-	const float sy[8] = {-1, -1, 1, 1, -1, -1, 1, 1};
-	const float sz[8] = {-1, -1, -1, -1, 1, 1, 1, 1};
-	FVector p[8];
+	if (emissive)
+		return ScaleRgb(tint, 1.15f, 1.15f, 1.15f);
+	const float ndl = n.X * keyDir.X + n.Y * keyDir.Y + n.Z * keyDir.Z;
+	const float key = ndl > 0.f ? ndl : 0.f;
+	// Bright outdoor hemisphere ambient so weapon blends naturally with sunlit BEA armor & terrain.
+	const float upFrac = 0.5f - 0.5f * n.Z;
+	const float hemiR = 0.56f + 0.24f * upFrac;
+	const float hemiG = 0.58f + 0.25f * upFrac;
+	const float hemiB = 0.62f + 0.26f * upFrac;
+	// Subtle grazing metallic rim highlight from view vector.
+	const float ndv = n.X * vDir.X + n.Y * vDir.Y + n.Z * vDir.Z;
+	const float fresnel = (1.f - (ndv > 0.f ? ndv : 0.f));
+	const float rim = fresnel * fresnel * 0.22f;
+	// Blinn-Phong metallic glint along half-vector.
+	FVector halfV(keyDir.X + vDir.X, keyDir.Y + vDir.Y, keyDir.Z + vDir.Z);
+	const float hLen = sqrtf(halfV.X * halfV.X + halfV.Y * halfV.Y + halfV.Z * halfV.Z);
+	float spec = 0.f;
+	if (hLen > 1e-4f)
+	{
+		const float ndh = (n.X * halfV.X + n.Y * halfV.Y + n.Z * halfV.Z) / hLen;
+		if (ndh > 0.f) { const float p2 = ndh * ndh; const float p4 = p2 * p2; spec = p4 * p4 * 0.34f; }
+	}
+	const float rL = (hemiR + key * 0.44f + rim + spec) * ao;
+	const float gL = (hemiG + key * 0.43f + rim + spec) * ao;
+	const float bL = (hemiB + key * 0.42f + rim * 1.12f + spec) * ao;
+	return ScaleRgb(tint, rL, gL, bL);
+}
+
+void PushWeaponTri(CeWeaponVert *buf, int *count, int cap,
+                   const FVector &a, const FVector &na, float ua, float va,
+                   const FVector &b, const FVector &nb, float ub, float vb,
+                   const FVector &c, const FVector &nc, float uc, float vc,
+                   const FVector &vDir, const FVector &keyDir, DWORD tint, float ao, bool emissive)
+{
+	if (!buf || !count || *count + 3 > cap) return;
+	const int idx = *count;
+	buf[idx + 0] = {a.X, a.Y, a.Z, ShadeWeaponNormal(na, vDir, keyDir, tint, ao, emissive), ua, va};
+	buf[idx + 1] = {b.X, b.Y, b.Z, ShadeWeaponNormal(nb, vDir, keyDir, tint, ao, emissive), ub, vb};
+	buf[idx + 2] = {c.X, c.Y, c.Z, ShadeWeaponNormal(nc, vDir, keyDir, tint, ao, emissive), uc, vc};
+	*count += 3;
+}
+
+// Emits a sleek tapered octagonal beveled hull (chamfered top & bottom shoulders, ZERO harsh cube corners)
+// stretching from y0 (rear) to y1 (front) in weapon-local coordinates (lx right, ly forward, lz down).
+void EmitSculptedHull(CeWeaponVert *buf, int *count, int cap,
+                      const FVector &origin, const FVector &wr, const FVector &wf, const FVector &wd,
+                      const FVector &vDir, const FVector &keyDir,
+                      float cx0, float cz0, float hx0, float hz0, float bev0, float y0,
+                      float cx1, float cz1, float hx1, float hz1, float bev1, float y1,
+                      const CeUvQuad &uv, DWORD tint, float ao, bool emissive = false)
+{
+	const float bx0 = hx0 * bev0, bz0 = hz0 * bev0;
+	const float bx1 = hx1 * bev1, bz1 = hz1 * bev1;
+	const float rx0[8] = {-hx0 + bx0,  hx0 - bx0,  hx0,        hx0,        hx0 - bx0, -hx0 + bx0, -hx0,       -hx0};
+	const float rz0[8] = {-hz0,       -hz0,       -hz0 + bz0,  hz0 - bz0,  hz0,        hz0,        hz0 - bz0, -hz0 + bz0};
+	const float rx1[8] = {-hx1 + bx1,  hx1 - bx1,  hx1,        hx1,        hx1 - bx1, -hx1 + bx1, -hx1,       -hx1};
+	const float rz1[8] = {-hz1,       -hz1,       -hz1 + bz1,  hz1 - bz1,  hz1,        hz1,        hz1 - bz1, -hz1 + bz1};
+	static const float nxL[8] = { 0.0f,  0.707f,  1.0f,  0.707f,  0.0f, -0.707f, -1.0f, -0.707f};
+	static const float nzL[8] = {-1.0f, -0.707f,  0.0f,  0.707f,  1.0f,  0.707f,  0.0f, -0.707f};
+
+	FVector p0[8], p1[8];
 	for (int i = 0; i < 8; ++i)
 	{
-		const float lx = cx + sx[i] * hx;
-		const float ly = cy + sy[i] * hy;
-		const float lz = cz + sz[i] * hz;
-		p[i] = origin + right * lx + fwd * ly + down * lz;
+		p0[i] = origin + wr * (cx0 + rx0[i]) + wf * y0 + wd * (cz0 + rz0[i]);
+		p1[i] = origin + wr * (cx1 + rx1[i]) + wf * y1 + wd * (cz1 + rz1[i]);
 	}
-	static const int faces[6][4] = {
-		{0, 1, 2, 3},	// top (-down)
-		{4, 7, 6, 5},	// bottom (+down)
-		{0, 3, 7, 4},	// left (-right)
-		{1, 5, 6, 2},	// right (+right)
-		{3, 2, 6, 7},	// front (+fwd)
-		{0, 4, 5, 1},	// back (-fwd)
-	};
-	// Directional key+fill lighting per local face for crisp faceted BEA low-poly look.
-	static const float shade[6] = {1.12f, 0.55f, 0.92f, 0.70f, 0.85f, 0.65f};
-	for (int f = 0; f < 6; ++f)
+	const float du = uv.u1 - uv.u0, dv = uv.v1 - uv.v0;
+	(void)du;
+	for (int i = 0; i < 8; ++i)
 	{
-		const DWORD col = ShadeColor(color, shade[f]);
-		const FVector &a = p[faces[f][0]], &b = p[faces[f][1]], &c = p[faces[f][2]], &d = p[faces[f][3]];
-		const int idx = *count;
-		buf[idx + 0] = {a.X, a.Y, a.Z, col};
-		buf[idx + 1] = {b.X, b.Y, b.Z, col};
-		buf[idx + 2] = {c.X, c.Y, c.Z, col};
-		buf[idx + 3] = {a.X, a.Y, a.Z, col};
-		buf[idx + 4] = {c.X, c.Y, c.Z, col};
-		buf[idx + 5] = {d.X, d.Y, d.Z, col};
-		*count += 6;
+		const int j = (i + 1) & 7;
+		const FVector fn = wr * nxL[i] + wd * nzL[i];
+		const float vA = uv.v0 + dv * (float(i) / 8.f);
+		const float vB = uv.v0 + dv * (float(i + 1) / 8.f);
+		PushWeaponTri(buf, count, cap, p0[i], fn, uv.u0, vA, p1[i], fn, uv.u1, vA, p1[j], fn, uv.u1, vB, vDir, keyDir, tint, ao, emissive);
+		PushWeaponTri(buf, count, cap, p0[i], fn, uv.u0, vA, p1[j], fn, uv.u1, vB, p0[j], fn, uv.u0, vB, vDir, keyDir, tint, ao, emissive);
 	}
+	// Front & rear beveled end caps
+	const FVector c0 = origin + wr * cx0 + wf * y0 + wd * cz0;
+	const FVector c1 = origin + wr * cx1 + wf * y1 + wd * cz1;
+	const FVector nBack = wf * -1.f;
+	const float uc = 0.5f * (uv.u0 + uv.u1), vc = 0.5f * (uv.v0 + uv.v1);
+	for (int i = 0; i < 8; ++i)
+	{
+		const int j = (i + 1) & 7;
+		PushWeaponTri(buf, count, cap, c1, wf, uc, vc, p1[i], wf, uv.u1, vc, p1[j], wf, uv.u1, uv.v1, vDir, keyDir, tint, ao * 0.92f, emissive);
+		PushWeaponTri(buf, count, cap, c0, nBack, uc, vc, p0[j], nBack, uv.u0, uv.v1, p0[i], nBack, uv.u0, vc, vDir, keyDir, tint, ao * 0.85f, emissive);
+	}
+}
+
+// Emits a smooth-shaded tapered cylindrical barrel/tube with continuous radial UV wrap.
+void EmitCylinderTube(CeWeaponVert *buf, int *count, int cap,
+                      const FVector &origin, const FVector &wr, const FVector &wf, const FVector &wd,
+                      const FVector &vDir, const FVector &keyDir,
+                      float cx, float cz, float y0, float y1, float r0, float r1, int segs,
+                      const CeUvQuad &uv, DWORD tint, float ao, bool darkBoreCap, bool emissive = false)
+{
+	if (segs < 6) segs = 6;
+	if (segs > 12) segs = 12;
+	FVector p0[12], p1[12], nr[12];
+	for (int i = 0; i < segs; ++i)
+	{
+		const float a = float(i) * (6.2831853f / float(segs));
+		const float ca = cosf(a), sa = sinf(a);
+		nr[i] = wr * ca + wd * sa;
+		p0[i] = origin + wr * (cx + ca * r0) + wf * y0 + wd * (cz + sa * r0);
+		p1[i] = origin + wr * (cx + ca * r1) + wf * y1 + wd * (cz + sa * r1);
+	}
+	const float dv = uv.v1 - uv.v0;
+	for (int i = 0; i < segs; ++i)
+	{
+		const int j = (i + 1) % segs;
+		const float vA = uv.v0 + dv * (float(i) / float(segs));
+		const float vB = uv.v0 + dv * (float(i + 1) / float(segs));
+		PushWeaponTri(buf, count, cap, p0[i], nr[i], uv.u0, vA, p1[i], nr[i], uv.u1, vA, p1[j], nr[j], uv.u1, vB, vDir, keyDir, tint, ao, emissive);
+		PushWeaponTri(buf, count, cap, p0[i], nr[i], uv.u0, vA, p1[j], nr[j], uv.u1, vB, p0[j], nr[j], uv.u0, vB, vDir, keyDir, tint, ao, emissive);
+	}
+	const FVector c1 = origin + wr * cx + wf * y1 + wd * cz;
+	const float capAo = darkBoreCap ? 0.25f : ao * 0.9f;
+	const float uc = 0.5f * (uv.u0 + uv.u1), vc = 0.5f * (uv.v0 + uv.v1);
+	for (int i = 0; i < segs; ++i)
+	{
+		const int j = (i + 1) % segs;
+		PushWeaponTri(buf, count, cap, c1, wf, uc, vc, p1[i], wf, uv.u1, vc, p1[j], wf, uv.u1, uv.v1, vDir, keyDir, tint, capAo, emissive);
+	}
+}
+
+// Emits a sleek diamond-section tapered bayonet blade for Muspell infantry.
+void EmitBayonetBlade(CeWeaponVert *buf, int *count, int cap,
+                      const FVector &origin, const FVector &wr, const FVector &wf, const FVector &wd,
+                      const FVector &vDir, const FVector &keyDir, float cx, float cz, float yBase, float yTip,
+                      float halfThick, float halfHeight, const CeUvQuad &uv, DWORD tint)
+{
+	const FVector topB = origin + wr * cx + wf * yBase + wd * (cz - halfHeight);
+	const FVector botB = origin + wr * cx + wf * yBase + wd * (cz + halfHeight);
+	const FVector lftB = origin + wr * (cx - halfThick) + wf * yBase + wd * cz;
+	const FVector rgtB = origin + wr * (cx + halfThick) + wf * yBase + wd * cz;
+	const FVector tip  = origin + wr * cx + wf * yTip  + wd * (cz - halfHeight * 0.25f);
+	const FVector nTL = (wr * -0.82f + wd * -0.57f);
+	const FVector nBL = (wr * -0.82f + wd *  0.57f);
+	const FVector nTR = (wr *  0.82f + wd * -0.57f);
+	const FVector nBR = (wr *  0.82f + wd *  0.57f);
+	const float vm = 0.5f * (uv.v0 + uv.v1);
+	PushWeaponTri(buf, count, cap, topB, nTL, uv.u0, uv.v0, lftB, nTL, uv.u0, vm, tip, nTL, uv.u1, vm, vDir, keyDir, tint, 1.08f, false);
+	PushWeaponTri(buf, count, cap, lftB, nBL, uv.u0, vm, botB, nBL, uv.u0, uv.v1, tip, nBL, uv.u1, vm, vDir, keyDir, tint, 0.92f, false);
+	PushWeaponTri(buf, count, cap, topB, nTR, uv.u0, uv.v0, tip, nTR, uv.u1, vm, rgtB, nTR, uv.u0, vm, vDir, keyDir, tint, 1.05f, false);
+	PushWeaponTri(buf, count, cap, rgtB, nBR, uv.u0, vm, tip, nBR, uv.u1, vm, botB, nBR, uv.u0, uv.v1, vDir, keyDir, tint, 0.88f, false);
+}
+
+void DrawWeaponMeshBuffer(LPDIRECT3DDEVICE9 dev, int viewpoint, IDirect3DTexture9 *tex,
+                          const CeWeaponVert *verts, int nVerts, bool weaponDepthRange)
+{
+	if (!dev || !verts || nVerts < 3) return;
+	IDirect3DStateBlock9 *saved = NULL;
+	if (FAILED(dev->CreateStateBlock(D3DSBT_ALL, &saved)) || !saved) return;
+	if (FAILED(saved->Capture())) { saved->Release(); return; }
+
+	D3DVIEWPORT9 savedVp;
+	dev->GetViewport(&savedVp);
+	if (weaponDepthRange)
+	{
+		D3DVIEWPORT9 weaponVp = savedVp;
+		weaponVp.MinZ = 0.0f;
+		weaponVp.MaxZ = 0.06f;
+		dev->SetViewport(&weaponVp);
+	}
+
+	D3DMATRIX worldId = {};
+	worldId._11 = worldId._22 = worldId._33 = worldId._44 = 1.f;
+	dev->SetVertexShader(NULL);
+	dev->SetPixelShader(NULL);
+	dev->SetTransform(D3DTS_WORLD, &worldId);
+	dev->SetTransform(D3DTS_VIEW, (const D3DMATRIX *)&ENGINE.mViewMatrices[viewpoint]);
+	dev->SetTransform(D3DTS_PROJECTION, (const D3DMATRIX *)&ENGINE.mProjectionMatrices[viewpoint]);
+	dev->SetTexture(0, tex);
+	dev->SetTexture(1, NULL);
+	dev->SetTexture(2, NULL);
+	dev->SetTexture(3, NULL);
+	dev->SetTextureStageState(0, D3DTSS_TEXCOORDINDEX, 0);
+	dev->SetTextureStageState(0, D3DTSS_TEXTURETRANSFORMFLAGS, D3DTTFF_DISABLE);
+	if (tex)
+	{
+		dev->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_MODULATE);
+		dev->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
+		dev->SetTextureStageState(0, D3DTSS_COLORARG2, D3DTA_DIFFUSE);
+		dev->SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
+		dev->SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_DIFFUSE);
+		dev->SetSamplerState(0, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
+		dev->SetSamplerState(0, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR);
+		dev->SetSamplerState(0, D3DSAMP_MIPFILTER, D3DTEXF_LINEAR);
+		dev->SetSamplerState(0, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
+		dev->SetSamplerState(0, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
+	}
+	else
+	{
+		dev->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
+		dev->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_DIFFUSE);
+		dev->SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
+		dev->SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_DIFFUSE);
+	}
+	dev->SetTextureStageState(1, D3DTSS_COLOROP, D3DTOP_DISABLE);
+	dev->SetTextureStageState(1, D3DTSS_ALPHAOP, D3DTOP_DISABLE);
+	dev->SetRenderState(D3DRS_LIGHTING, FALSE);
+	dev->SetRenderState(D3DRS_COLORVERTEX, TRUE);
+	dev->SetRenderState(D3DRS_SPECULARENABLE, FALSE);
+	dev->SetRenderState(D3DRS_FOGENABLE, FALSE);
+	dev->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
+	dev->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
+	dev->SetRenderState(D3DRS_ZENABLE, D3DZB_TRUE);
+	dev->SetRenderState(D3DRS_ZWRITEENABLE, TRUE);
+	dev->SetRenderState(D3DRS_ZFUNC, D3DCMP_LESSEQUAL);
+	dev->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
+	dev->SetRenderState(D3DRS_FILLMODE, D3DFILL_SOLID);
+	dev->SetRenderState(D3DRS_COLORWRITEENABLE, 15);
+	dev->SetFVF(D3DFVF_XYZ | D3DFVF_DIFFUSE | D3DFVF_TEX1);
+	dev->DrawPrimitiveUP(D3DPT_TRIANGLELIST, nVerts / 3, verts, sizeof(CeWeaponVert));
+
+	if (weaponDepthRange)
+		dev->SetViewport(&savedVp);
+	saved->Apply();
+	saved->Release();
+	LT.InvalidateAllStates();
 }
 
 void DrawFirstPersonInfantryWeapon(CUnit *u, LPDIRECT3DDEVICE9 dev, int viewpoint)
@@ -3492,99 +3694,199 @@ void DrawFirstPersonInfantryWeapon(CUnit *u, LPDIRECT3DDEVICE9 dev, int viewpoin
 	const FVector fwd = ori.GetColumnY();
 	const FVector down = ori.GetColumnZ();
 
-	// Anchor in lower-right foreground, clear of center aiming reticle and well past near clip.
-	const float bobX = cosf(gWeaponView.bobPhase) * 0.014f * gWeaponView.bobAmp + gWeaponView.swayX;
-	const float bobY = -gWeaponView.recoil * 0.095f;
-	const float bobZ = gWeaponView.swayY + gWeaponView.recoil * 0.018f;
-	const FVector base = eye + right * (0.31f + bobX) + fwd * (1.28f + bobY) + down * (0.24f + bobZ);
+	// Anchor cleanly off the bottom-right viewport corner (muscular futuristic pulse-carbine framing)
+	// so the shoulder stock exits smoothly past the bottom-right screen edge at every pitch angle.
+	const float bobX = cosf(gWeaponView.bobPhase) * 0.012f * gWeaponView.bobAmp + gWeaponView.swayX;
+	const float bobY = -gWeaponView.recoil * 0.085f;
+	const float bobZ = gWeaponView.swayY + gWeaponView.recoil * 0.014f;
+	const FVector base = eye + right * (0.31f + bobX) + fwd * (0.98f + bobY) + down * (0.26f + bobZ);
 
-	// Slight inward toe-in so barrel aims naturally toward the forward convergence point without blocking reticle.
-	const FVector wFwd = (fwd - right * 0.14f - down * 0.06f);
+	// Natural shoulder-held convergence angle pointing smoothly toward the center reticle without entering it.
+	const FVector wFwd = (fwd - right * 0.165f - down * 0.105f);
 	const float fLen = sqrtf(wFwd.X * wFwd.X + wFwd.Y * wFwd.Y + wFwd.Z * wFwd.Z);
 	const FVector wf = fLen > 1e-4f ? (wFwd * (1.f / fLen)) : fwd;
 	const FVector wrRaw(down.Y * wf.Z - down.Z * wf.Y, down.Z * wf.X - down.X * wf.Z, down.X * wf.Y - down.Y * wf.X);
 	const float rLen = sqrtf(wrRaw.X * wrRaw.X + wrRaw.Y * wrRaw.Y + wrRaw.Z * wrRaw.Z);
 	const FVector wr = rLen > 1e-4f ? (wrRaw * (-1.f / rLen)) : right;
 	const FVector wd(wr.Y * wf.Z - wr.Z * wf.Y, wr.Z * wf.X - wr.X * wf.Z, wr.X * wf.Y - wr.Y * wf.X);
+	const FVector vDir = fwd * -1.f;
+	// Camera-relative overhead/left-shoulder sunlight so receiver bevels and barrel always read crisply at every heading.
+	const FVector keyRaw = (right * -0.45f - fwd * 0.34f - down * 0.82f);
+	const float kLen = sqrtf(keyRaw.X * keyRaw.X + keyRaw.Y * keyRaw.Y + keyRaw.Z * keyRaw.Z);
+	const FVector keyDir = kLen > 1e-4f ? (keyRaw * (1.f / kLen)) : FVector(0.f, 0.f, -1.f);
 
 	const bool muspell = u->GetAllegiance() == 1;
-	const DWORD bodyDark  = muspell ? 0xff2d2421 : 0xff293848;
-	const DWORD bodyMid   = muspell ? 0xff4f3a34 : 0xff4a647e;
-	const DWORD shroudCol = muspell ? 0xff8a3420 : 0xff6284a2;
-	const DWORD metalCol  = muspell ? 0xff6e6560 : 0xff88a0b6;
-	const DWORD glowCol   = muspell ? 0xffff8c24 : 0xff44e8ff;
-	const DWORD glowHot   = muspell ? 0xffffd860 : 0xffb8faff;
+	IDirect3DTexture9 *tex = CePlayUnitTextures::Ensure(dev, muspell ? CE_PLAYUNIT_TEX_MUSPELL_RIFLE : CE_PLAYUNIT_TEX_FORSETI_RIFLE);
 
-	CeWorldTriVert verts[720];
+	// Atlas UV quadrants (inset 0.02 inside each quadrant to eliminate linear-filter border bleed)
+	const CeUvQuad uvShroud = {0.02f, 0.02f, 0.48f, 0.48f};
+	const CeUvQuad uvBody   = {0.52f, 0.02f, 0.98f, 0.48f};
+	const CeUvQuad uvBarrel = {0.02f, 0.52f, 0.48f, 0.98f};
+	const CeUvQuad uvGlow   = {0.52f, 0.52f, 0.98f, 0.98f};
+
+	// With texture bound, diffuse modulates lighting cleanly (near-white tint); without texture, faction palette fallback.
+	const DWORD tShroud = tex ? 0xfffafcff : (muspell ? 0xffa8422c : 0xff8eaad0);
+	const DWORD tBody   = tex ? 0xfff0f4f8 : (muspell ? 0xff4c3e3a : 0xff465a70);
+	const DWORD tBarrel = tex ? 0xfffcfdff : (muspell ? 0xff9a928a : 0xffa6bcd2);
+	const DWORD tGlow   = tex ? 0xffffffff : (muspell ? 0xffff9a28 : 0xff54f0ff);
+
+	CeWeaponVert verts[2600];
 	int nVerts = 0;
 
-	// Main receiver housing
-	EmitCamBox(verts, &nVerts, 720, base, wr, wf, wd,  0.00f,  0.00f,  0.00f, 0.048f, 0.28f, 0.058f, bodyDark);
-	// Upper armored rail & shroud
-	EmitCamBox(verts, &nVerts, 720, base, wr, wf, wd,  0.00f,  0.06f, -0.064f, 0.036f, 0.24f, 0.020f, shroudCol);
-	// Side cheek plates
-	EmitCamBox(verts, &nVerts, 720, base, wr, wf, wd, -0.052f,  0.04f, -0.006f, 0.012f, 0.20f, 0.036f, bodyMid);
-	EmitCamBox(verts, &nVerts, 720, base, wr, wf, wd,  0.052f,  0.04f, -0.006f, 0.012f, 0.20f, 0.036f, bodyMid);
-	// Primary barrel assembly & muzzle brake
-	EmitCamBox(verts, &nVerts, 720, base, wr, wf, wd,  0.00f,  0.44f, -0.018f, 0.022f, 0.22f, 0.022f, metalCol);
-	EmitCamBox(verts, &nVerts, 720, base, wr, wf, wd,  0.00f,  0.66f, -0.018f, 0.028f, 0.045f, 0.028f, bodyDark);
-	// Underbarrel heat-sink / bayonet lug (Muspell gets signature crimson-iron blade lug, Forseti gets pulse capacitor)
+	// 1a. Rear shoulder stock (extends smoothly off-screen behind near plane with zero visible cutoff)
+	EmitSculptedHull(verts, &nVerts, 2600, base, wr, wf, wd, vDir, keyDir,
+	                 0.00f,  0.026f, 0.058f, 0.072f, 0.38f, -0.96f,
+	                 0.00f,  0.014f, 0.052f, 0.062f, 0.38f, -0.26f,
+	                 uvBody, tBody, 0.92f);
+	// 1b. Main sculpted lower receiver (high UV density across the visible mid-section)
+	EmitSculptedHull(verts, &nVerts, 2600, base, wr, wf, wd, vDir, keyDir,
+	                 0.00f,  0.014f, 0.052f, 0.062f, 0.38f, -0.26f,
+	                 0.00f, -0.002f, 0.044f, 0.048f, 0.38f,  0.26f,
+	                 uvBody, tBody, 0.96f);
+
+	// 2a. Rear armored cheek-rest cowling (continuous with main shroud, runs cleanly off bottom-right corner)
+	EmitSculptedHull(verts, &nVerts, 2600, base, wr, wf, wd, vDir, keyDir,
+	                 0.00f, -0.038f, 0.066f, 0.040f, 0.46f, -0.96f,
+	                 0.00f, -0.036f, 0.058f, 0.036f, 0.46f, -0.26f,
+	                 uvShroud, tShroud, 1.02f);
+	// 2b. Main BEA-style swept armored upper cowling (crisp panel lines, rivets & cooling vents)
+	EmitSculptedHull(verts, &nVerts, 2600, base, wr, wf, wd, vDir, keyDir,
+	                 0.00f, -0.036f, 0.058f, 0.036f, 0.46f, -0.26f,
+	                 0.00f, -0.034f, 0.042f, 0.028f, 0.46f,  0.30f,
+	                 uvShroud, tShroud, 1.06f);
+
+	// 3. Fore-end tapered armored barrel jacket / heat shroud
+	EmitSculptedHull(verts, &nVerts, 2600, base, wr, wf, wd, vDir, keyDir,
+	                 0.00f, -0.012f, 0.044f, 0.036f, 0.44f,  0.22f,
+	                 0.00f, -0.014f, 0.030f, 0.024f, 0.46f,  0.42f,
+	                 uvShroud, tShroud, 1.04f);
+
+	// 4. Turned cylindrical primary barrel + stepped muzzle brake crown (10-sided smooth cylinder)
+	EmitCylinderTube(verts, &nVerts, 2600, base, wr, wf, wd, vDir, keyDir,
+	                 0.00f, -0.016f, 0.36f, 0.62f, 0.022f, 0.018f, 10,
+	                 uvBarrel, tBarrel, 1.08f, false);
+	EmitCylinderTube(verts, &nVerts, 2600, base, wr, wf, wd, vDir, keyDir,
+	                 0.00f, -0.016f, 0.60f, 0.67f, 0.027f, 0.024f, 10,
+	                 uvBody, tBody, 0.94f, true);
+
+	// 5. Faction-distinct underbarrel & optic hardware
 	if (muspell)
 	{
-		EmitCamBox(verts, &nVerts, 720, base, wr, wf, wd, 0.00f, 0.46f, 0.036f, 0.014f, 0.19f, 0.024f, shroudCol);
-		EmitCamBox(verts, &nVerts, 720, base, wr, wf, wd, 0.00f, 0.68f, 0.040f, 0.008f, 0.09f, 0.018f, metalCol);
+		// Heavy underbarrel gas/thermal tube + signature forged steel bayonet blade
+		EmitCylinderTube(verts, &nVerts, 2600, base, wr, wf, wd, vDir, keyDir,
+		                 0.00f, 0.024f, 0.22f, 0.54f, 0.016f, 0.014f, 8,
+		                 uvBody, tBody, 0.94f, true);
+		EmitBayonetBlade(verts, &nVerts, 2600, base, wr, wf, wd, vDir, keyDir,
+		                 0.00f, 0.036f, 0.48f, 0.78f, 0.007f, 0.020f,
+		                 uvBarrel, tBarrel);
+		// Rugged hooded iron-sight arch on upper shroud
+		EmitSculptedHull(verts, &nVerts, 2600, base, wr, wf, wd, vDir, keyDir,
+		                 0.00f, -0.076f, 0.030f, 0.018f, 0.38f, -0.20f,
+		                 0.00f, -0.072f, 0.024f, 0.014f, 0.40f,  0.02f,
+		                 uvBody, tBody, 0.96f);
+		// Glowing amber thermal vent recessed along left receiver flank (clearly visible to player)
+		EmitSculptedHull(verts, &nVerts, 2600, base, wr, wf, wd, vDir, keyDir,
+		                 -0.052f, -0.014f, 0.010f, 0.014f, 0.28f, -0.18f,
+		                 -0.044f, -0.014f, 0.010f, 0.012f, 0.28f,  0.22f,
+		                 uvGlow, tGlow, 1.0f, true);
 	}
 	else
 	{
-		EmitCamBox(verts, &nVerts, 720, base, wr, wf, wd, 0.00f, 0.36f, 0.032f, 0.028f, 0.14f, 0.022f, bodyMid);
-		EmitCamBox(verts, &nVerts, 720, base, wr, wf, wd, 0.00f, 0.52f, 0.032f, 0.018f, 0.06f, 0.016f, glowCol);
+		// Forseti underbarrel pulse-capacitor cylinder + glowing cyan accelerator emitter ring
+		EmitCylinderTube(verts, &nVerts, 2600, base, wr, wf, wd, vDir, keyDir,
+		                 0.00f, 0.026f, 0.20f, 0.48f, 0.020f, 0.017f, 10,
+		                 uvBarrel, tBarrel, 1.04f, false);
+		EmitCylinderTube(verts, &nVerts, 2600, base, wr, wf, wd, vDir, keyDir,
+		                 0.00f, 0.026f, 0.48f, 0.56f, 0.018f, 0.014f, 8,
+		                 uvGlow, tGlow, 1.0f, false, true);
+		// Sleek Forseti tubular reflex optic housing + armored mounting bridge + glowing rear sight ring
+		EmitCylinderTube(verts, &nVerts, 2600, base, wr, wf, wd, vDir, keyDir,
+		                 0.00f, -0.084f, -0.18f, 0.12f, 0.024f, 0.026f, 10,
+		                 uvBody, tBody, 1.02f, true);
+		EmitSculptedHull(verts, &nVerts, 2600, base, wr, wf, wd, vDir, keyDir,
+		                 0.00f, -0.068f, 0.016f, 0.014f, 0.30f, -0.14f,
+		                 0.00f, -0.068f, 0.015f, 0.013f, 0.30f,  0.08f,
+		                 uvShroud, tShroud, 0.98f);
+		// Glowing cyan pulse cell strip recessed along left shroud groove (facing player camera)
+		EmitSculptedHull(verts, &nVerts, 2600, base, wr, wf, wd, vDir, keyDir,
+		                 -0.054f, -0.020f, 0.010f, 0.013f, 0.28f, -0.18f,
+		                 -0.044f, -0.018f, 0.010f, 0.011f, 0.28f,  0.24f,
+		                 uvGlow, tGlow, 1.0f, true);
 	}
-	// Glowing faction power cell strip & holographic iron sight fins
-	EmitCamBox(verts, &nVerts, 720, base, wr, wf, wd, -0.050f,  0.14f, -0.032f, 0.014f, 0.11f, 0.011f, glowCol);
-	EmitCamBox(verts, &nVerts, 720, base, wr, wf, wd,  0.00f, -0.14f, -0.092f, 0.030f, 0.024f, 0.024f, bodyMid);
-	EmitCamBox(verts, &nVerts, 720, base, wr, wf, wd, -0.024f,  0.24f, -0.096f, 0.007f, 0.016f, 0.020f, metalCol);
-	EmitCamBox(verts, &nVerts, 720, base, wr, wf, wd,  0.024f,  0.24f, -0.096f, 0.007f, 0.016f, 0.020f, metalCol);
-	EmitCamBox(verts, &nVerts, 720, base, wr, wf, wd,  0.00f,  0.24f, -0.088f, 0.006f, 0.010f, 0.008f, glowHot);
-	// Angled grip / magazine silhouette
-	EmitCamBox(verts, &nVerts, 720, base, wr, wf, wd,  0.00f, -0.06f,  0.092f, 0.028f, 0.055f, 0.075f, bodyDark);
-	// Muzzle flash prism when firing
-	if (gWeaponView.flash > 0.1f)
+
+	// 6. Contoured lower handguard & angled forward grip silhouette
+	EmitSculptedHull(verts, &nVerts, 2600, base, wr, wf, wd, vDir, keyDir,
+	                 0.00f, 0.064f, 0.028f, 0.038f, 0.36f, -0.16f,
+	                 0.00f, 0.052f, 0.024f, 0.026f, 0.38f,  0.10f,
+	                 uvBody, tBody, 0.88f);
+
+	DrawWeaponMeshBuffer(dev, viewpoint, tex, verts, nVerts, true);
+
+	// 7. Additive star-burst muzzle flash cone when firing
+	if (gWeaponView.flash > 0.08f)
 	{
-		const float s = 0.035f + 0.045f * gWeaponView.flash;
-		EmitCamBox(verts, &nVerts, 720, base, wr, wf, wd, 0.00f, 0.74f, -0.018f, s, s * 1.6f, s, glowHot);
+		const float sc = 0.045f + 0.065f * gWeaponView.flash;
+		const FVector mPos = base + wf * 0.75f + wd * -0.018f;
+		const DWORD coreCol = muspell ? 0xfffff0a0 : 0xffd8ffff;
+		const DWORD tipCol  = muspell ? 0x00ff5810 : 0x0020b8ff;
+		CeWorldTriVert fv[24];
+		int nf = 0;
+		const FVector axes[2] = {wr, wd};
+		for (int a = 0; a < 2; ++a)
+		{
+			const FVector side = axes[a] * sc;
+			const FVector tip = mPos + wf * (sc * 2.8f);
+			const FVector tail = mPos - wf * (sc * 0.4f);
+			fv[nf++] = {tail.X, tail.Y, tail.Z, coreCol};
+			fv[nf++] = {mPos.X + side.X, mPos.Y + side.Y, mPos.Z + side.Z, coreCol};
+			fv[nf++] = {tip.X, tip.Y, tip.Z, tipCol};
+			fv[nf++] = {tail.X, tail.Y, tail.Z, coreCol};
+			fv[nf++] = {tip.X, tip.Y, tip.Z, tipCol};
+			fv[nf++] = {mPos.X - side.X, mPos.Y - side.Y, mPos.Z - side.Z, coreCol};
+		}
+		IDirect3DStateBlock9 *fs = NULL;
+		if (SUCCEEDED(dev->CreateStateBlock(D3DSBT_ALL, &fs)) && fs)
+		{
+			if (SUCCEEDED(fs->Capture()))
+			{
+				D3DVIEWPORT9 svp, wvp;
+				dev->GetViewport(&svp);
+				wvp = svp; wvp.MinZ = 0.0f; wvp.MaxZ = 0.06f;
+				dev->SetViewport(&wvp);
+				D3DMATRIX worldId = {};
+				worldId._11 = worldId._22 = worldId._33 = worldId._44 = 1.f;
+				dev->SetVertexShader(NULL);
+				dev->SetPixelShader(NULL);
+				dev->SetTransform(D3DTS_WORLD, &worldId);
+				dev->SetTransform(D3DTS_VIEW, (const D3DMATRIX *)&ENGINE.mViewMatrices[viewpoint]);
+				dev->SetTransform(D3DTS_PROJECTION, (const D3DMATRIX *)&ENGINE.mProjectionMatrices[viewpoint]);
+				dev->SetTexture(0, NULL);
+				dev->SetTexture(1, NULL);
+				dev->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
+				dev->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_DIFFUSE);
+				dev->SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
+				dev->SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_DIFFUSE);
+				dev->SetTextureStageState(1, D3DTSS_COLOROP, D3DTOP_DISABLE);
+				dev->SetTextureStageState(1, D3DTSS_ALPHAOP, D3DTOP_DISABLE);
+				dev->SetRenderState(D3DRS_LIGHTING, FALSE);
+				dev->SetRenderState(D3DRS_COLORVERTEX, TRUE);
+				dev->SetRenderState(D3DRS_FOGENABLE, FALSE);
+				dev->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
+				dev->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE);
+				dev->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_ONE);
+				dev->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_ONE);
+				dev->SetRenderState(D3DRS_ZENABLE, TRUE);
+				dev->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
+				dev->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
+				dev->SetFVF(D3DFVF_XYZ | D3DFVF_DIFFUSE);
+				dev->DrawPrimitiveUP(D3DPT_TRIANGLELIST, nf / 3, fv, sizeof(CeWorldTriVert));
+				dev->SetViewport(&svp);
+				fs->Apply();
+				LT.InvalidateAllStates();
+			}
+			fs->Release();
+		}
 	}
-
-	IDirect3DStateBlock9 *saved = NULL;
-	if (FAILED(dev->CreateStateBlock(D3DSBT_ALL, &saved))) return;
-	D3DVIEWPORT9 savedVp, weaponVp;
-	dev->GetViewport(&savedVp);
-	weaponVp = savedVp;
-	weaponVp.MinZ = 0.0f;
-	weaponVp.MaxZ = 0.06f;
-	dev->SetViewport(&weaponVp);
-
-	dev->SetTransform(D3DTS_WORLD, (const D3DMATRIX *)&ENGINE.mWorldMatrices[viewpoint]);
-	dev->SetTransform(D3DTS_VIEW, (const D3DMATRIX *)&ENGINE.mViewMatrices[viewpoint]);
-	dev->SetTransform(D3DTS_PROJECTION, (const D3DMATRIX *)&ENGINE.mProjectionMatrices[viewpoint]);
-	dev->SetTexture(0, NULL);
-	dev->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
-	dev->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_DIFFUSE);
-	dev->SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
-	dev->SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_DIFFUSE);
-	dev->SetTextureStageState(1, D3DTSS_COLOROP, D3DTOP_DISABLE);
-	dev->SetRenderState(D3DRS_LIGHTING, FALSE);
-	dev->SetRenderState(D3DRS_FOGENABLE, FALSE);
-	dev->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
-	dev->SetRenderState(D3DRS_ZENABLE, TRUE);
-	dev->SetRenderState(D3DRS_ZWRITEENABLE, TRUE);
-	dev->SetRenderState(D3DRS_ZFUNC, D3DCMP_LESSEQUAL);
-	dev->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
-	dev->SetFVF(D3DFVF_XYZ | D3DFVF_DIFFUSE);
-	dev->DrawPrimitiveUP(D3DPT_TRIANGLELIST, nVerts / 3, verts, sizeof(CeWorldTriVert));
-
-	dev->SetViewport(&savedVp);
-	saved->Apply();
-	saved->Release();
 }
 
 void DrawFirstPersonVehicleBarrel(CUnit *u, LPDIRECT3DDEVICE9 dev, int viewpoint)
@@ -3617,40 +3919,36 @@ void DrawFirstPersonVehicleBarrel(CUnit *u, LPDIRECT3DDEVICE9 dev, int viewpoint
 	}
 	if (gFirstPersonBarrelDrawn > 0) return;
 
-	// Clean low-poly barrel hood fallback only for vehicles whose mesh lacks separate named barrel parts.
+	// Textured beveled & cylindrical gun hood fallback only for vehicles whose mesh lacks separate named barrel parts.
 	CCamera *cam = ENGINE.GetCamera();
 	if (!cam) return;
 	const FVector eye = cam->GetPos();
 	const FMatrix ori = cam->GetOrientation();
 	const FVector right = ori.GetColumnX(), fwd = ori.GetColumnY(), down = ori.GetColumnZ();
+	const FVector vDir = fwd * -1.f;
+	const FVector keyRaw = (right * -0.42f - fwd * 0.36f - down * 0.83f);
+	const float kLen = sqrtf(keyRaw.X * keyRaw.X + keyRaw.Y * keyRaw.Y + keyRaw.Z * keyRaw.Z);
+	const FVector keyDir = kLen > 1e-4f ? (keyRaw * (1.f / kLen)) : FVector(0.f, 0.f, -1.f);
 	const bool muspell = u->GetAllegiance() == 1;
-	const DWORD barrelDark = muspell ? 0xff362824 : 0xff2f4256;
-	const DWORD barrelTrim = muspell ? 0xff8c3620 : 0xff547a9a;
-	const DWORD glowCol    = muspell ? 0xffff8824 : 0xff46e0ff;
-	const FVector base = eye + fwd * 1.85f + down * 0.42f;
-	CeWorldTriVert verts[240];
+	IDirect3DTexture9 *tex = CePlayUnitTextures::Ensure(dev, muspell ? CE_PLAYUNIT_TEX_MUSPELL_RIFLE : CE_PLAYUNIT_TEX_FORSETI_RIFLE);
+	const CeUvQuad uvShroud = {0.02f, 0.02f, 0.48f, 0.48f};
+	const CeUvQuad uvBarrel = {0.02f, 0.52f, 0.48f, 0.98f};
+	const CeUvQuad uvGlow   = {0.52f, 0.52f, 0.98f, 0.98f};
+	const DWORD tShroud = tex ? 0xfffafcff : (muspell ? 0xffa8422c : 0xff8eaad0);
+	const DWORD tBarrel = tex ? 0xfffcfdff : (muspell ? 0xff9a928a : 0xffa6bcd2);
+	const DWORD tGlow   = tex ? 0xffffffff : (muspell ? 0xffff9a28 : 0xff54f0ff);
+	const FVector base = eye + fwd * 1.80f + down * 0.44f;
+	CeWeaponVert verts[640];
 	int nVerts = 0;
-	EmitCamBox(verts, &nVerts, 240, base, right, fwd, down, 0.0f,  0.0f,  0.00f, 0.14f, 0.55f, 0.08f, barrelDark);
-	EmitCamBox(verts, &nVerts, 240, base, right, fwd, down, 0.0f,  0.75f, 0.01f, 0.075f, 0.55f, 0.065f, barrelTrim);
-	EmitCamBox(verts, &nVerts, 240, base, right, fwd, down, 0.0f,  1.32f, 0.01f, 0.095f, 0.08f, 0.08f, barrelDark);
-	EmitCamBox(verts, &nVerts, 240, base, right, fwd, down, 0.0f,  0.15f, -0.09f, 0.05f, 0.22f, 0.015f, glowCol);
-
-	IDirect3DStateBlock9 *saved = NULL;
-	if (FAILED(dev->CreateStateBlock(D3DSBT_ALL, &saved))) return;
-	dev->SetTransform(D3DTS_WORLD, (const D3DMATRIX *)&ENGINE.mWorldMatrices[viewpoint]);
-	dev->SetTransform(D3DTS_VIEW, (const D3DMATRIX *)&ENGINE.mViewMatrices[viewpoint]);
-	dev->SetTransform(D3DTS_PROJECTION, (const D3DMATRIX *)&ENGINE.mProjectionMatrices[viewpoint]);
-	dev->SetTexture(0, NULL);
-	dev->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
-	dev->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_DIFFUSE);
-	dev->SetRenderState(D3DRS_LIGHTING, FALSE);
-	dev->SetRenderState(D3DRS_FOGENABLE, FALSE);
-	dev->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
-	dev->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
-	dev->SetFVF(D3DFVF_XYZ | D3DFVF_DIFFUSE);
-	dev->DrawPrimitiveUP(D3DPT_TRIANGLELIST, nVerts / 3, verts, sizeof(CeWorldTriVert));
-	saved->Apply();
-	saved->Release();
+	EmitSculptedHull(verts, &nVerts, 640, base, right, fwd, down, vDir, keyDir,
+	                 0.0f, 0.00f, 0.16f, 0.09f, 0.40f, -0.50f,
+	                 0.0f, 0.01f, 0.12f, 0.07f, 0.42f,  0.48f, uvShroud, tShroud, 0.96f);
+	EmitCylinderTube(verts, &nVerts, 640, base, right, fwd, down, vDir, keyDir,
+	                 0.0f, 0.01f, 0.42f, 1.38f, 0.072f, 0.058f, 10, uvBarrel, tBarrel, 1.04f, true);
+	EmitSculptedHull(verts, &nVerts, 640, base, right, fwd, down, vDir, keyDir,
+	                 0.0f, -0.095f, 0.045f, 0.016f, 0.30f, -0.08f,
+	                 0.0f, -0.090f, 0.038f, 0.014f, 0.30f,  0.34f, uvGlow, tGlow, 1.0f, true);
+	DrawWeaponMeshBuffer(dev, viewpoint, tex, verts, nVerts, false);
 }
 
 void DrawBallisticArcWorld(CUnit *u, LPDIRECT3DDEVICE9 dev, int viewpoint)
@@ -4185,6 +4483,7 @@ void CePlayUnitLevelEnd()
 	CePlayUnitNoticeClear();
 	ReconcileController();
 	ReconcileCamera();
+	CePlayUnitTextures::ReleaseAll();
 	Reset();
 	gLevel = -1;
 #ifdef CE_PLAYUNIT_TEST

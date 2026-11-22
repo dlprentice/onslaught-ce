@@ -38,6 +38,14 @@ typedef struct CE_InvitationView {
 // Main menu thread only. Begin opens a chooser after strict origin validation.
 // expected_role is CE_NET_HOST or CE_NET_GUEST. No token is read by Begin/Poll.
 int CE_InvitationBeginImport(const char *origin, uint32_t expected_role);
+// Read-only profile-local discovery under <user dir>/online-invitation[/host|/guest].
+// Checks strict private permissions, metadata schema, role and expiry; never reads
+// identity-token or logs paths/contents.
+int CE_InvitationProfileAvailable(uint32_t expected_role, uint64_t utc_seconds);
+// Explicit profile-local import: validates origin and role, then stages the private
+// profile invitation folder for preview via CE_InvitationPoll. Never reads identity-token
+// until explicit CE_InvitationInstall.
+int CE_InvitationBeginProfileImport(const char *origin, uint32_t expected_role);
 void CE_InvitationPoll(uint64_t utc_seconds, CE_InvitationView *out);
 // Separate explicit confirmation: read the selected role capability, create a
 // fresh app-owned private exchange directory, then construct/select authority.

@@ -1,0 +1,149 @@
+--- a/Career.h
++++ b/Career.h
+@@ -26,6 +26,10 @@
+ #define OPTIONS_SIZE	0x56
+ 
+ extern	int num_nodes;
++#ifdef CE_VERSION
++extern "C" int PortCeMultiBeCareerPrefGet(int slot, int prefKind) __attribute__((weak));
++extern "C" void PortCeMultiBeCareerPrefSet(int slot, int prefKind, int value) __attribute__((weak));
++#endif
+ 
+ class CGrade
+ {
+@@ -161,8 +165,23 @@
+ 	BOOL GetSlot(int num);
+ 	void SetSlot(int num, BOOL val);
+ 
++#ifdef CE_VERSION
++	// CE Phase 1 4-slot safety: keep retail CCareer [2] binary .bes save layout unchanged;
++	// route slots 2..3 (P3/P4) to CE-side storage (port/game/ce_multibe.cpp).
++	static int CeSlotPrefGet(int player, int kind)
++	{
++		return PortCeMultiBeCareerPrefGet ? PortCeMultiBeCareerPrefGet(player, kind) : 0;
++	}
++	static void CeSlotPrefSet(int player, int kind, int val)
++	{
++		if (PortCeMultiBeCareerPrefSet) PortCeMultiBeCareerPrefSet(player, kind, val);
++	}
++	BOOL  GetIsGod(int player) { return (player >= 0 && player < 2) ? mIsGod[player] : (BOOL)CeSlotPrefGet(player, 0); }
++	void  SetIsGod(int player, BOOL val) { if (player >= 0 && player < 2) mIsGod[player] = val; else CeSlotPrefSet(player, 0, val ? 1 : 0); }
++#else
+ 	BOOL  GetIsGod(int player) { return mIsGod[player] ;}
+ 	void  SetIsGod(int player, BOOL val) { mIsGod[player] = val ; }
++#endif
+ 
+ 
+ 
+@@ -172,6 +191,18 @@
+ 	float GetMusicVolume() { return mMusicVolume ; }
+ 	void  SetMusicVolume(float val) { mMusicVolume = val ; }
+ 
++#ifdef CE_VERSION
++	int  GetControllerConfigurationNum(int player) { return (player >= 0 && player < 2) ? mControllerConfigurationNum[player] : CeSlotPrefGet(player, 4); }
++	void  SetControllerConfigurationNum(int player, int val) { if (player >= 0 && player < 2) mControllerConfigurationNum[player] = val; else CeSlotPrefSet(player, 4, val); }
++
++
++	BOOL  GetInvertYAxis(int player) { return (player >= 0 && player < 2) ? mInvertYAxis[player] : (BOOL)CeSlotPrefGet(player, 1); }
++	BOOL  GetInvertJetYAxis(int player) { return (player >= 0 && player < 2) ? mInvertJetYAxis[player] : (BOOL)CeSlotPrefGet(player, 2); }	// retail PC
++	void  SetInvertYAxis(int player, BOOL val) { if (player >= 0 && player < 2) mInvertYAxis[player] = val; else CeSlotPrefSet(player, 1, val ? 1 : 0); }
++	void  SetInvertJetYAxis(int player, BOOL val) { if (player >= 0 && player < 2) mInvertJetYAxis[player] = val; else CeSlotPrefSet(player, 2, val ? 1 : 0); }	// retail PC (the controls screen's toggle, 004560b7)
++	BOOL  GetVibration(int player) { return (player >= 0 && player < 2) ? mVibration[player] : (BOOL)CeSlotPrefGet(player, 3); }
++	void  SetVibration(int player, BOOL val) { if (player >= 0 && player < 2) mVibration[player] = val; else CeSlotPrefSet(player, 3, val ? 1 : 0); }
++#else
+ 	int  GetControllerConfigurationNum(int player) { return mControllerConfigurationNum[player] ;}
+ 	void  SetControllerConfigurationNum(int player, int val) { mControllerConfigurationNum[player] = val ; }
+ 
+@@ -182,6 +213,7 @@
+ 	void  SetInvertJetYAxis(int player, BOOL val) { mInvertJetYAxis[player] = val ; }	// retail PC (the controls screen's toggle, 004560b7)
+ 	BOOL  GetVibration(int player) { return mVibration[player] ; }
+ 	void  SetVibration(int player, BOOL val) { mVibration[player] = val ; }
++#endif
+ 	BOOL  IsEpisodeAvailable(SINT ep) ;
+ 
+ 	// The screen position (CFEPScreenPos) is kept in the top bytes of the first two kill counters, biased by 128.
+--- a/Player.cpp
++++ b/Player.cpp
+@@ -54,6 +54,9 @@
+ void CPlayer::GotoFPView()	// FUNCTION: 0x004d28c0
+ {
+ 	if (mBattleEngine.ToRead() == NULL) return ;
++#ifdef CE_VERSION
++	if (mNumber < 1 || mNumber > MAX_PLAYERS) return ;
++#endif
+ 	mCurrentViewMode = PLAYER_FP_VIEW;
+ 	GAME.SetCurrentCamera( mNumber-1, new( MEMTYPE_CAMERA ) CThingCamera( mBattleEngine.ToRead() ) );
+ }
+@@ -63,6 +66,9 @@
+ void CPlayer::Goto3rdPersonView()	// FUNCTION: 0x004d29c0
+ {
+ 	if (mBattleEngine.ToRead() == NULL) return ;
++#ifdef CE_VERSION
++	if (mNumber < 1 || mNumber > MAX_PLAYERS) return ;
++#endif
+ 	mCurrentViewMode = PLAYER_3RD_PERSON_VIEW;
+ 	GAME.SetCurrentCamera( mNumber-1, new( MEMTYPE_CAMERA ) CThing3rdPersonCamera( mBattleEngine.ToRead() ) );
+ }
+--- a/BattleEngine.cpp
++++ b/BattleEngine.cpp
+@@ -56,6 +56,11 @@
+ 
+ CParticleDescriptor		*CBattleEngine::sWaterEffect;
+ CParticleDescriptor		*CBattleEngine::sLandEffect;
++#ifdef CE_VERSION
++extern "C" int PortCeMultiBeAllowTeamKills(void) __attribute__((weak));
++extern "C" void PortCeMultiBeOnConfirmedKill(void *killer, void *killed) __attribute__((weak));
++extern "C" int PortCeMultiBeHandleDeath(void *battleEngine) __attribute__((weak));
++#endif
+ // Also defined in BattleEngineWalkerPart.cpp
+ #define	ENGINE_VOLUME			1.0f
+ //0.55f
+@@ -1096,7 +1101,13 @@
+ // and UpdateMouseLookAngles inline it; name open)
+ static inline BOOL MouseLookActive(CBattleEngine *be)
+ {
++#ifdef CE_VERSION
++	if (!be->GetPlayer()) return FALSE;
+ 	int	player = be->GetPlayer()->GetNumber() - 1;
++	if (player < 0 || player >= MAX_PLAYERS) return FALSE;
++#else
++	int	player = be->GetPlayer()->GetNumber() - 1;
++#endif
+ 
+ 	if ((GAME.IsPaused()) || (GAME.GetGameState() != GAME_STATE_PLAYING) || (be->IsDying()) || (!be->GetIsPoweredUp()) ||
+ 		(be->GetState() != BATTLE_ENGINE_STATE_WALKER))
+@@ -2130,7 +2141,21 @@
+ //******************************************************************************************
+ void	CBattleEngine::ConfirmedKill(CUnit		*inKilled)	// FUNCTION: 0x0040a560
+ {
++#ifdef CE_VERSION
++	if (PortCeMultiBeAllowTeamKills && PortCeMultiBeAllowTeamKills())
++	{
++		if (!inKilled) return ;
++		const EAllegiance killedSide = inKilled->GetAllegiance();
++		if (killedSide == mAllegiance || (killedSide != kForsetiAllegiance && killedSide != kMuspellAllegiance)) return ;
++		if (PortCeMultiBeOnConfirmedKill) PortCeMultiBeOnConfirmedKill(this, inKilled);
++	}
++	else
++	{
++		if (inKilled->GetAllegiance()!=kMuspellAllegiance) return ;
++	}
++#else
+ 	if (inKilled->GetAllegiance()!=kMuspellAllegiance) return ;
++#endif
+ 	if (mPlayer.ToRead()) mPlayer->KilledEnemyThing(inKilled) ;
+ 
+ }
+@@ -2756,7 +2781,12 @@
+ 
+ 	mFlags |= TF_DYING;
+ 
++#ifdef CE_VERSION
++	if (!(PortCeMultiBeHandleDeath && PortCeMultiBeHandleDeath(this)) && mPlayer.ToRead())
++		GAME.DeclarePlayerDead(mPlayer->GetNumber());
++#else
+ 	GAME.DeclarePlayerDead(mPlayer->GetNumber());
++#endif
+ 
+ 	if (mMissionScript)
+ 	{

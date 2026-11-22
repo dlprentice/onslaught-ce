@@ -42,8 +42,10 @@ std::string fixture_signal_origin = "https://signal.invalid";
 CeIceSignalStatus fixture_signal_status = CeIceSignalStatus::Unavailable;
 uint64_t fixture_signal_pair_expiry = 0, fixture_signal_setup_expiry = 0;
 CE_InvitationView fixture_invitation{};
-int fixture_invitation_begins = 0, fixture_invitation_installs = 0, fixture_invitation_cancels = 0;
+int fixture_invitation_begins = 0, fixture_invitation_profile_begins = 0, fixture_invitation_installs = 0, fixture_invitation_cancels = 0;
+int fixture_profile_probes = 0;
 bool fixture_invitation_install_ok = true;
+bool fixture_profile_host_available = false, fixture_profile_guest_available = false;
 std::string fixture_invitation_requested_origin;
 uint32_t fixture_invitation_expected_role = CE_NET_HOST;
 extern "C" int CE_NetSignalingDirectorySelected(void) { return fixture_signal_selected; }
@@ -77,6 +79,28 @@ bool CE_LobbySignalingRetry() noexcept
 { ++fixture_signal_retries; return fixture_signal_retry_ok; }
 void CE_LobbySignalingClear() noexcept
 { CE_LobbyLeave(); fixture_signal_selected = false; }
+extern "C" int CE_InvitationProfileAvailable(uint32_t role, uint64_t)
+{
+    ++fixture_profile_probes;
+    if (role == CE_NET_HOST) return fixture_profile_host_available ? 1 : 0;
+    if (role == CE_NET_GUEST) return fixture_profile_guest_available ? 1 : 0;
+    return 0;
+}
+extern "C" int CE_InvitationBeginProfileImport(const char* origin, uint32_t role)
+{
+    ++fixture_invitation_profile_begins; fixture_invitation_expected_role = role;
+    fixture_invitation_requested_origin = origin;
+    memset(&fixture_invitation, 0, sizeof fixture_invitation);
+    if (!CE_InvitationProfileAvailable(role, CE_HandoffNow())) {
+        fixture_invitation.state = CE_INVITATION_REFUSED;
+        fixture_invitation.error = CE_INVITATION_ERROR_FOLDER;
+        return 0;
+    }
+    fixture_invitation.state = CE_INVITATION_PREVIEW_READY;
+    fixture_invitation.role = role; fixture_invitation.expires_at = CE_HandoffNow() + 600;
+    snprintf(fixture_invitation.origin, sizeof fixture_invitation.origin, "%s", origin);
+    return 1;
+}
 extern "C" int CE_InvitationBeginImport(const char* origin, uint32_t role)
 {
     ++fixture_invitation_begins; fixture_invitation_expected_role = role;
@@ -105,6 +129,10 @@ extern "C" void CE_InvitationCancel(void)
 { ++fixture_invitation_cancels; fixture_invitation.state = CE_INVITATION_CANCELLED; }
 extern "C" const char* CE_InvitationErrorText(uint32_t)
 { return "Authored invitation selection refused."; }
+#if !defined(_WIN32)
+bool PortPrivateUiFieldWaiting(unsigned) noexcept { return false; }
+bool PortPrivateUiTakeField(unsigned, char*, unsigned) noexcept { return false; }
+#endif
 
 #endif
 extern "C" {
@@ -479,8 +507,10 @@ void InvitationEntry(bool paste = true)
     fixture_signal_begins = fixture_signal_pumps = fixture_signal_accepts = fixture_signal_retries = 0;
     fixture_signal_closes = 0; fixture_signal_status = CeIceSignalStatus::Unavailable;
     fixture_signal_pair_expiry = CE_HandoffNow() + 600; fixture_signal_setup_expiry = CE_HandoffNow() + 120;
-    fixture_invitation_begins = fixture_invitation_installs = fixture_invitation_cancels = 0;
-    fixture_invitation_install_ok = true; memset(&fixture_invitation, 0, sizeof fixture_invitation);
+    fixture_invitation_begins = fixture_invitation_profile_begins = fixture_invitation_installs = fixture_invitation_cancels = 0;
+    fixture_invitation_install_ok = true;
+    fixture_profile_host_available = fixture_profile_guest_available = false;
+    memset(&fixture_invitation, 0, sizeof fixture_invitation);
     ChooseAction(NA_IMPORT_OPEN); sMenu->Update();
     if (paste) { fixture_clipboard = "https://signal.invalid"; ChooseAction(NA_IMPORT_PASTE); }
 }
@@ -563,6 +593,35 @@ void InvitationMenuControls()
     Check(fixture_invitation_installs == 1 && fixture_signal_selected && !fixture_signal_begins,
           "replacement still waits for network disclosure");
     fixture_signal_selected = false;
+
+    // Profile-local invitation discovery stays hidden until a private profile folder is present,
+    // caches probes across frames (zero probes in DrawText, >=0.5s throttle in Update),
+    // previews offline without installing or contacting the service, and still requires Use + Disclosure.
+    InvitationEntry();
+    Check(sMenu->mImportProfileHost->mHidden && sMenu->mImportProfileJoin->mHidden,
+          "profile invitation rows hidden when no profile invitation exists");
+    const int probesAfterEntry = fixture_profile_probes;
+    sMenu->DrawText();
+    sMenu->Update();
+    Check(fixture_profile_probes == probesAfterEntry,
+          "profile availability probe is cached across rapid DrawText and Update calls");
+    fixture_profile_host_available = true;
+    fixture_time += 0.6f;
+    sMenu->Update();
+    Check(fixture_profile_probes > probesAfterEntry &&
+          !sMenu->mImportProfileHost->mHidden && sMenu->mImportProfileHost->IsEnabled() &&
+          sMenu->mImportProfileJoin->mHidden,
+          "profile host invitation row appears once throttle window expires");
+    ChooseAction(NA_IMPORT_PROFILE_HOST);
+    Check(fixture_invitation_profile_begins == 1 && sMenu->mPage == NP_INVITATION_PREVIEW &&
+          !fixture_invitation_installs && !fixture_signal_begins,
+          "profile import transitions to offline preview without installing or contacting service");
+    fixture_drawn.clear(); sMenu->DrawText();
+    Check(DrawnContains(L"Relay: Waiting for pair invitation") && DrawnContains(L"Role: Host") &&
+          DrawnContains(L"https://signal.invalid"),
+          "profile preview shows route stage, role, and origin");
+    fixture_profile_host_available = false;
+    fixture_signal_selected = false;
 }
 void SignalMenuControls()
 {
@@ -581,7 +640,14 @@ void SignalMenuControls()
     sMenu->Update();
     Check(fixture_signal_pumps == 1 && !fixture_signal_accepts, "only begun status page pumps preflight");
     fixture_drawn.clear(); sMenu->DrawText();
-    Check(DrawnContains(L"Pair approval:") && DrawnContains(L"Setup window:"), "approval and setup expiry visible before consent");
+    Check(DrawnContains(L"Pair approval:") && DrawnContains(L"Setup window:") &&
+          DrawnContains(L"Relay: Waiting for partner"), "approval, setup expiry, and route stage visible before consent");
+    fixture_signal_status = CeIceSignalStatus::RateLimited;
+    fixture_drawn.clear(); sMenu->DrawText();
+    Check(DrawnContains(L"Relay: Daily free-tier limit reached") && DrawnContains(L"00:00 UTC"),
+          "rate-limited status shows actionable free-tier limit notice");
+    fixture_signal_status = CeIceSignalStatus::NeedsConsent;
+    sMenu->Update();
     ChooseAction(NA_SIGNAL_ACCEPT); sMenu->Update();
     Check(fixture_signal_accepts == 1 && fixture_signal_status == CeIceSignalStatus::AwaitingPairConsent && !fixture_host_calls,
           "Accept is separate and waits for peer");

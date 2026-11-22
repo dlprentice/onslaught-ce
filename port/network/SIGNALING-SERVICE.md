@@ -1,8 +1,10 @@
 # Authenticated signaling and temporary credential delivery
 
-Status: closed-pair source; not deployed for public use; no menu-to-relay pilot is recorded in this tree
-Last updated: 2026-11-11
-Summary: fixed two-player routes, signed accountless pair admission, a private issuer binding and the HTTPS/client contract compose with durable permits and encrypted storage in authored offline checks; the checks for the encrypted storage itself are not in this tree.
+Status: closed-pair source verified locally against pinned loopback `workerd` HTTP/SQLite fixtures and standalone dashboard bundles; not deployed for public use; no two-machine internet gameplay acceptance recorded in this tree
+Last updated: 2026-11-22
+Summary: fixed two-player routes, signed accountless pair admission, private issuer binding, loopback `workerd` SQLite Durable Object HTTP verification, deterministic dashboard bundles, profile-local invitation discovery, and in-game Online Co-op route/stage status UI compose offline; live Cloudflare deployment and native Windows runtime acceptance remain separate.
+
+> Operator quick-start guide: see [docs/cloudflare-free-signaling-setup.md](../../docs/cloudflare-free-signaling-setup.md) for deploying the free Cloudflare Worker + SQLite Durable Object + TURN setup with fail-closed limits (`1` active pair, `<= 24` approvals/UTC day, `<= 96` issuance permits/UTC day).
 
 ## Decision and existing boundary
 

@@ -1,0 +1,38 @@
+--- a/FEPMultiplayerStart.cpp
++++ b/FEPMultiplayerStart.cpp
+@@ -17,6 +17,10 @@
+ #include	"mouse.h"
+ #include	"TransitionHelpers.h"
+ #include	"SpriteRenderer.h"
++#ifdef CE_VERSION
++extern "C" int PortCeMultiBePlaySideIsMuspell(void) __attribute__((weak));
++extern "C" void PortCeMultiBeDrawMpStartStatus(float transition) __attribute__((weak));
++#endif
+ 
+ // FUNCTION: 0x0051dab0 init:ZERO_FVECTOR
+ // FUNCTION: 0x0051dad0 init:ID_FMATRIX
+@@ -323,7 +327,13 @@
+ 		FED.mCamera.mPos = FVector(0.f, -7.f, -1.4f);
+ 		FRONTEND.UpdateCamera();
+ 
++#ifdef CE_VERSION
++		const bool ceSwapPreview = (PortCeMultiBePlaySideIsMuspell && PortCeMultiBePlaySideIsMuspell()) != 0;
++		const bool ceShowMuspell = (FRONTEND.mFEPMultiplayer.mCY > 0) && (ceSwapPreview ? (i == 0) : (i == 1));
++		if (ceShowMuspell)
++#else
+ 		if ((i == 1) && (FRONTEND.mFEPMultiplayer.mCY > 0))
++#endif
+ 		{
+ 			if (!mThing[1])
+ 				continue;
+@@ -430,6 +440,10 @@
+ 	if (mPort[1] != -1)
+ 		RECONNECT_INTERFACE[1].Render(NULL, FRONTEND.GetController(mPort[1]), TRUE);
+ 
++#ifdef CE_VERSION
++	if (PortCeMultiBeDrawMpStartStatus)
++		PortCeMultiBeDrawMpStartStatus(transition);
++#endif
+ 	FRONTEND.DrawTitleBar(FET.GetText(FEX_BE_CONFIG), transition, dest);
+ 	FRONTEND.GetCommonPage()->RenderHelpText(5, transition);
+ 	FRONTEND.GetCommonPage()->RenderHelpText(1, transition);

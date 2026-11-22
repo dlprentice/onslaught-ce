@@ -243,13 +243,45 @@ static void CheckBallisticArcAndSpotter()
 	CePlayUnitSpotterUpdate(&st, 0.05f, true, s1, sv, true, verifyArc.impact);
 	Require(st.mode == CE_SPOTTER_FOLLOW_SHELL && Near(st.shellPos[0], 120.f), "spotter: tracks moving shell");
 
-	// Verify spotter camera pose is valid & orthonormal while tracking shell
+	// Verify spotter camera pose is valid, orthonormal, and UPRIGHT (outDown[2] > 0) while tracking shell
 	float eye[3], r[3], f[3], d[3];
 	const float unitPos[3] = {0.f, 0.f, 0.f};
 	Require(CePlayUnitSpotterCameraPose(st, unitPos, yaw, 0.f, eye, r, f, d), "spotter: valid shell-follow pose");
 	Require(eye[2] < s1[2] - 5.f, "spotter: aerial vantage sits above shell");
 	Require(Near(r[0]*r[0]+r[1]*r[1]+r[2]*r[2], 1.f) && Near(f[0]*f[0]+f[1]*f[1]+f[2]*f[2], 1.f) && Near(r[0]*f[0]+r[1]*f[1]+r[2]*f[2], 0.f),
 	        "spotter: camera axes orthonormal");
+	Require(d[2] > 0.f, "spotter: camera down vector points toward +Z (upright, never inverted)");
+
+	// Explicit uprightness & framing check in overwatch across multiple firing azimuths:
+	// unit must project into the lower half of the screen (screenDown > 0) and impact point forward/ahead (screenDown < unit).
+	const float testYaws[4] = {0.f, -1.5707963f, 1.5707963f, 2.4f};
+	for (int yi = 0; yi < 4; ++yi)
+	{
+		const float ty = testYaws[yi];
+		const float dirX = -std::sin(ty), dirY = std::cos(ty);
+		const float imp[3] = {dirX * 65.f, dirY * 65.f, 0.f};
+		CePlayUnitSpotterState ov;
+		CePlayUnitSpotterReset(&ov);
+		CePlayUnitSpotterToggle(&ov, true, imp);
+		float oe[3], orv[3], ofv[3], odv[3];
+		Require(CePlayUnitSpotterCameraPose(ov, unitPos, ty, 0.f, oe, orv, ofv, odv),
+		        "spotter overwatch: valid pose across headings");
+		Require(odv[2] > 0.1f, "spotter overwatch: outDown.z > 0 (upright in BEA Z-down world)");
+		const float det = (orv[1]*ofv[2] - orv[2]*ofv[1])*odv[0]
+		                + (orv[2]*ofv[0] - orv[0]*ofv[2])*odv[1]
+		                + (orv[0]*ofv[1] - orv[1]*ofv[0])*odv[2];
+		Require(Near(det, 1.f, 1e-3f), "spotter overwatch: right-handed (right x forward = down) basis");
+		// Project artillery unit and impact point into camera coordinates
+		const float uRel[3] = {unitPos[0] - oe[0], unitPos[1] - oe[1], unitPos[2] - oe[2]};
+		const float iRel[3] = {imp[0] - oe[0], imp[1] - oe[1], imp[2] - oe[2]};
+		const float uDepth = uRel[0]*ofv[0] + uRel[1]*ofv[1] + uRel[2]*ofv[2];
+		const float iDepth = iRel[0]*ofv[0] + iRel[1]*ofv[1] + iRel[2]*ofv[2];
+		const float uDown = (uRel[0]*odv[0] + uRel[1]*odv[1] + uRel[2]*odv[2]) / uDepth;
+		const float iDown = (iRel[0]*odv[0] + iRel[1]*odv[1] + iRel[2]*odv[2]) / iDepth;
+		Require(uDepth > 1.f && iDepth > uDepth, "spotter overwatch: both battery and impact in front, impact farther ahead");
+		Require(uDown > 0.10f, "spotter overwatch: artillery battery projects to lower half of screen");
+		Require(iDown < 0.0f && iDown < uDown - 0.25f, "spotter overwatch: impact ring projects forward/above battery");
+	}
 
 	// Shell disappears -> latches impact hold for kCeSpotterHoldSeconds, then returns to overwatch
 	CePlayUnitSpotterUpdate(&st, 0.05f, false, NULL, NULL, true, verifyArc.impact);
@@ -371,6 +403,15 @@ static void CheckFactionPalettesAndClassReadouts()
 
 static void CheckMultiWeaponAndPromptCapacity()
 {
+	// Class-appropriate control verbs for take notice banner
+	Require(std::strcmp(CePlayUnitControlVerb(CE_PLAYUNIT_CLASS_INFANTRY), "On foot") == 0, "verb: infantry is On foot");
+	Require(std::strcmp(CePlayUnitControlVerb(CE_PLAYUNIT_CLASS_TANK), "Driving") == 0, "verb: tank is Driving");
+	Require(std::strcmp(CePlayUnitControlVerb(CE_PLAYUNIT_CLASS_ARTILLERY), "Driving") == 0, "verb: artillery is Driving");
+	Require(std::strcmp(CePlayUnitControlVerb(CE_PLAYUNIT_CLASS_TURRET), "Operating") == 0, "verb: turret is Operating");
+	Require(std::strcmp(CePlayUnitControlVerb(CE_PLAYUNIT_CLASS_AIRCRAFT), "Flying") == 0, "verb: aircraft is Flying");
+	Require(std::strcmp(CePlayUnitControlVerb(CE_PLAYUNIT_CLASS_NAVAL), "Piloting") == 0, "verb: naval is Piloting");
+	Require(std::strcmp(CePlayUnitControlVerb(99), "Controlling") == 0, "verb: unknown class falls back to Controlling");
+
 	// Standing prompt must hold at least 5 pieces (unit + Return + Zoom + View + C: Spot / U: Unload).
 	Require(kCePlayUnitPromptMaxPieces >= 6, "prompt: piece buffer holds >= 5 pieces without truncating class hints");
 
@@ -392,6 +433,55 @@ static void CheckMultiWeaponAndPromptCapacity()
 	        "multi-weapon: skips mount without active weapon mode");
 	Require(CePlayUnitSelectReadyWeapon(0, 0, false, modes2, readyPrimaryOnly) == -1,
 	        "multi-weapon: empty weapon list returns -1");
+
+	// Non-finite lookYaw must be refused cleanly by spotter camera pose solver.
+	{
+		float oe[3], orv[3], ofv[3], odv[3];
+		const float up[3] = {0.f, 0.f, 0.f};
+		CePlayUnitSpotterState ov;
+		CePlayUnitSpotterReset(&ov);
+		CePlayUnitSpotterToggle(&ov, false, NULL);
+		Require(!CePlayUnitSpotterCameraPose(ov, up, std::numeric_limits<float>::quiet_NaN(), 0.f, oe, orv, ofv, odv),
+		        "spotter: non-finite lookYaw refused");
+	}
+
+	// Telemetry card layout must stay strictly left of central circular compass ring (including right crescent overhang)
+	// at BOTH 1280x720 and 640x480 even for the longest weapon names (Pulse Torpedo Launcher, Plasma Grenade Thrown).
+	const struct { float w, h, s; } modes[2] = {{1280.f, 720.f, 1.5f}, {640.f, 480.f, 1.0f}};
+	const char *longWeapons[2] = {"Pulse Torpedo Launcher", "Plasma Grenade Thrown"};
+	for (int mi = 0; mi < 2; ++mi)
+	{
+		const float compassLeft = modes[mi].w * 0.5f - 108.f * modes[mi].s;
+		for (int wi = 0; wi < 2; ++wi)
+		{
+			const bool isAir = (wi == 0);
+			CePlayUnitHudTelemetry tel;
+			std::memset(&tel, 0, sizeof(tel));
+			tel.valid = true;
+			tel.classId = isAir ? CE_PLAYUNIT_CLASS_AIRCRAFT : CE_PLAYUNIT_CLASS_INFANTRY;
+			tel.isBomber = isAir;
+			tel.hullPct = 100;
+			tel.speedUps = 66.f;
+			tel.altitude = 23.f;
+			tel.pitchDeg = -7.f;
+			tel.headingDeg = 163.f;
+			std::snprintf(tel.weaponName, sizeof(tel.weaponName), "%s", longWeapons[wi]);
+			char hdr[48], l1[64], l2[64], act[48];
+			CePlayUnitFormatClassHud(tel, hdr, l1, l2, act);
+			// Generous worst-case character width (~8px * scale per glyph)
+			const float maxChars = float(std::strlen(l1) > std::strlen(l2) ? std::strlen(l1) : std::strlen(l2));
+			const float desiredTextW = maxChars * 8.0f * modes[mi].s;
+			CePlayUnitClassCardLayout card;
+			Require(CePlayUnitComputeClassCardLayout(modes[mi].w, modes[mi].h, modes[mi].s, desiredTextW, isAir, &card),
+			        "class card layout: succeeds at 1280x720 and 640x480");
+			Require(card.x0 + card.totalW < compassLeft - 8.f * modes[mi].s,
+			        "class card layout: right crescent edge strictly clear of central compass ring");
+			Require(card.bodyLeft + card.bodyW <= card.x0 + card.totalW + 0.5f,
+			        "class card layout: inner body contained within total card bounds");
+			Require(card.textMaxW >= 90.f * modes[mi].s,
+			        "class card layout: usable text area remains readable");
+		}
+	}
 }
 
 int main()
@@ -424,6 +514,12 @@ MUTANTS = (
     ("spotter fails to hold on impact", "tactics",
      "st->mode = CE_SPOTTER_HOLD_IMPACT;",
      "st->mode = CE_SPOTTER_OFF;"),
+    ("spotter camera inverted 180 deg", "tactics",
+     "float rx = outForward[1], ry = -outForward[0];",
+     "float rx = -outForward[1], ry = outForward[0];"),
+    ("turret control verb regressed to Driving", "tactics",
+     'case CE_PLAYUNIT_CLASS_TURRET: return "Operating";',
+     'case CE_PLAYUNIT_CLASS_TURRET: return "Driving";'),
     ("aircraft altitude floor disabled", "tactics",
      "if (clearance < p.minClearance + 4.f)",
      "if (false)"),
@@ -445,6 +541,9 @@ MUTANTS = (
     ("prompt piece cap drops 5th class hint", "tactics",
      "static const int kCePlayUnitPromptMaxPieces = 6;",
      "static const int kCePlayUnitPromptMaxPieces = 4;"),
+    ("class card compass clamp disabled", "tactics",
+     "float maxRight = compassLeft - compassGap;",
+     "float maxRight = w - 8.f;"),
 )
 
 
@@ -498,6 +597,13 @@ def check_source_invariants() -> list[str]:
     for token in ("ClassKeyFree(DIK_U)", "ClassKeyFree(DIK_C)"):
         if token not in render_fn:
             errors.append(f"CePlayUnitRenderState() missing {token!r}")
+
+    if "EmitCamBox(" in cpp:
+        errors.append("ce_playunit.cpp must not use untextured EmitCamBox() geometry for 1P weapons")
+    if '"You are driving: %s"' in cpp:
+        errors.append("ce_playunit.cpp Take() must use class-appropriate CePlayUnitControlVerb(), not hardcoded You are driving")
+    if "CePlayUnitComputeClassCardLayout(" not in hud:
+        errors.append("ce_playunit_hud.cpp ClassPanel() must compute compass-safe bounds via CePlayUnitComputeClassCardLayout()")
 
     cannon_hunk = p0358[p0358.index("void CCannon::Move()"):p0358.index("--- a/Component.cpp")]
     if "if (anim != AM_INVALID)" not in cannon_hunk:

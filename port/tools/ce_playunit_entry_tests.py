@@ -423,7 +423,7 @@ int main() {
     EXPECT(std::strstr(out,"B: Return")!=0);
     Fresh(); Bind(1,BUTTON_MECH_CHANGE_ZOOM_IN,MOUSE_BUTTON_ONCE,3);
     Bind(2,BUTTON_MECH_CHANGE_ZOOM_OUT,MOUSE_BUTTON_RELEASE,4); Prompt(out);
-    EXPECT(std::strstr(out,"Wheel up/Wheel down: Wide/Close/First")!=0);
+    EXPECT(std::strstr(out,"Wheel: Wide/Close/First")!=0);
     Bind(0,BUTTON_MECH_MORPH,MOUSE_BUTTON_ON,1); Prompt(out);
     EXPECT(std::strstr(out,"Right mouse: Return")!=0);
     Fresh(); Bind(0,BUTTON_MECH_MORPH,KEY_ON,DIK_RSHIFT);

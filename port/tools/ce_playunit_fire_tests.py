@@ -37,6 +37,7 @@ DRIVER = r'''
 #include <cstring>
 #include <cstddef>
 #include "ce_playunit_rules.h"
+#include "ce_playunit_tactics.h"
 typedef intptr_t SINT;
 typedef int BOOL;
 #define FALSE 0
@@ -173,7 +174,7 @@ int main() {
       for (int i = 0; i < 12; ++i) r.Tick(true);
       check(r.u.mCurrentWeapon == &r.gun && r.u.rounds >= 1, "a_cleared_weapon_is_replaced_by_a_usable_one"); }
     { Run r; r.u.mCurrentWeapon = nullptr; r.gun.ready = false; for (int i = 0; i < 5; ++i) r.Tick(true);
-      check(r.u.aimCalls == 0 && r.u.armCalls == 0 && r.u.fireCalls == 0 && !r.u.mCurrentWeapon && r.Saw(CE_PLAYUNIT_FIRE_NONE), "no_ready_weapon_is_none"); }
+      check(r.u.rounds == 0 && r.Saw(CE_PLAYUNIT_FIRE_RECOVERING), "no_ready_weapon_is_recovering"); }
     { Run r; r.u.mCurrentWeapon = nullptr; r.u.mWeapons.items.clear(); for (int i = 0; i < 5; ++i) r.Tick(true);
       check(r.u.aimCalls == 0 && r.u.armCalls == 0 && r.u.fireCalls == 0, "no_weapon_is_safe"); }
     // a weapon with no mode is not usable
@@ -246,8 +247,8 @@ class FreeFire(unittest.TestCase):
             "aim_at_the_unit_not_the_ground": ("*aim = FVector(shot[0], shot[1], shot[2]);", "*aim = FVector(pos.X, pos.Y + 20.f, pos.Z);", "aim_is_the_ground_under_the_view"),
             "view_direction_mirrored": ("l[3] = {look.X, look.Y, look.Z}", "l[3] = {look.X, -look.Y, look.Z}", "aim_is_the_ground_under_the_view"),
             "view_origin_is_the_unit": ("e[3] = {eye.X, eye.Y, eye.Z}", "e[3] = {u->GetPos().X, u->GetPos().Y, u->GetPos().Z}", "aim_is_the_ground_under_the_view"),
-            "cleared_weapon_not_replaced": ("if (assign) u->mCurrentWeapon = w;", "", "a_cleared_weapon_is_replaced_by_a_usable_one"),
-            "a_weapon_with_no_mode": ("if (w->mMode && w->ReadyToFire())", "if (w->ReadyToFire())", "a_cleared_weapon_is_replaced_by_a_usable_one"),
+            "cleared_weapon_not_replaced": ("if (assign && list[pick] != u->mCurrentWeapon) u->mCurrentWeapon = list[pick];", "", "a_cleared_weapon_is_replaced_by_a_usable_one"),
+            "a_weapon_with_no_mode": ("hasMode[count] = w->mMode != NULL;\n\t\tready[count] = w->mMode && w->ReadyToFire() != FALSE;", "hasMode[count] = true;\n\t\tready[count] = w->ReadyToFire() != FALSE;", "a_cleared_weapon_is_replaced_by_a_usable_one"),
             "state_ignores_arming": ("u->Unknown84() != FALSE, u->mUnknown168 != 0)", "false, false)", "state_goes_through_ready_arming_recovering"),
             "state_ignores_recovery": ("w->ReadyToFire() != FALSE, u->Unknown84()", "true, u->Unknown84()", "state_goes_through_ready_arming_recovering"),
         }

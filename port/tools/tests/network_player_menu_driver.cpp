@@ -271,6 +271,8 @@ int64_t CE_HandoffNow(void) { return handoffNow; }
 #if defined(CE_NETWORK_ICE)
 // Relay is requested by the selected signaling directory (ice_game.h); this fixture's selection stands in for it.
 int CE_NetSignalingDirectorySelected(void) { return signalingSelected ? 1 : 0; }
+int CE_InvitationProfileAvailable(uint32_t, uint64_t) { return 0; }
+int CE_InvitationBeginProfileImport(const char*, uint32_t) { return 0; }
 int CE_InvitationBeginImport(const char* origin, uint32_t role) {
   ++beginCalls; pollsSinceBegin = 0; beginOrigin = origin ? origin : ""; beginRole = role;
   invitation = CE_InvitationView{};

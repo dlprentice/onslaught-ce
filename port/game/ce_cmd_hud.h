@@ -384,9 +384,9 @@ inline CeCmdHudLayout CeCmdHudComputeLayout(float viewportW, float viewportH, fl
 	CeCmdHudLayout out = {};
 	if (!(viewportW >= 320.f && viewportH >= 240.f && uiScale > 0.f)) return out;
 	const float u = uiScale;
-	const float margin = std::floor(8.f * u);
+	const float margin = std::floor(14.f * u);
 	const float topReserved = std::floor(30.f * u);
-	const float bottomGap = std::floor(4.f * u);
+	const float bottomGap = std::floor(6.f * u);
 	// Bar height is capped to 84*u (17.5% of height) so top + bar + gap <= 24.6% (>= 75.4% battlefield open).
 	float barH = std::floor(84.f * u);
 	const float maxBarH = std::floor(viewportH * 0.18f);
@@ -404,12 +404,13 @@ inline CeCmdHudLayout CeCmdHudComputeLayout(float viewportW, float viewportH, fl
 	out.barRect = {margin, barY, barW, barH};
 
 	const float innerPad = std::floor(5.f * u);
+	const float sidePad = std::floor(18.f * u);
 	const float dividerGap = std::floor(8.f * u);
-	const float innerW = barW - 2.f * innerPad;
+	const float innerW = barW - 2.f * sidePad;
 	const float innerH = barH - 2.f * innerPad;
 	const float innerY = barY + innerPad;
 
-	// Right dock: RTS Command Card. Target ~250*u on 4:3, ~286*u on 16:9, clamped cleanly.
+	// Right dock: RTS Command Card. Target ~244*u on 4:3, ~286*u on 16:9, clamped cleanly.
 	const float desiredCardW = (viewportW / viewportH >= 1.55f) ? std::floor(286.f * u) : std::floor(244.f * u);
 	float cardW = desiredCardW;
 	const float maxCardW = std::floor(innerW * 0.45f);
@@ -417,7 +418,7 @@ inline CeCmdHudLayout CeCmdHudComputeLayout(float viewportW, float viewportH, fl
 	if (cardW < 180.f) cardW = 180.f;
 
 	const float trayW = innerW - cardW - dividerGap;
-	out.trayRect = {margin + innerPad, innerY, trayW, innerH};
+	out.trayRect = {margin + sidePad, innerY, trayW, innerH};
 	out.dividerRect = {out.trayRect.x + trayW + std::floor(dividerGap * 0.5f) - 1.f,
 	                   innerY + std::floor(2.f * u), std::floor(u) > 1.f ? std::floor(u) : 1.f,
 	                   innerH - std::floor(4.f * u)};
@@ -429,7 +430,7 @@ inline CeCmdHudLayout CeCmdHudComputeLayout(float viewportW, float viewportH, fl
 	const float rowY = out.trayRect.y + hdrH + std::floor(3.f * u);
 	const float rowH = out.trayRect.h - hdrH - std::floor(3.f * u);
 	const float cardGap = std::floor(5.f * u);
-	const float minPlacardW = std::floor(96.f * u);
+	const float minPlacardW = std::floor(92.f * u);
 	int slots = int((trayW + cardGap) / (minPlacardW + cardGap));
 	if (slots < 1) slots = 1;
 	if (slots > kCeHudMaxVisiblePlacards) slots = kCeHudMaxVisiblePlacards;
@@ -566,6 +567,11 @@ struct CeCmdHudDrawOps
 	void (*text)(float x, float y, std::uint32_t colour, const char *text, float maxWidth, bool centred, float scale);
 	float (*textWidth)(const char *text, float scale);
 	float (*lineHeight)(float scale);
+	// Optional BEA-native curved capsule drawer (uses HUD.mObjectiveInner* glass tiles, and when
+	// withOuterCaps is true, adds the glowing curved mObjectiveLeft/Right crescent end-caps).
+	// When null (e.g. host unit tests without HUD textures), ce_cmd_hud.cpp falls back cleanly to box/outline.
+	void (*curvedPanel)(float x, float y, float w, float h, float capMax, std::uint32_t fill,
+	                    std::uint32_t capTint, bool nativeCyan, float alpha, bool withOuterCaps);
 };
 
 void CeCmdHudDrawBar(const CeCmdHudDrawOps &draw, const CeCmdHudLayout &layout,

@@ -1,8 +1,8 @@
 # Separate-process offline ICE flow
 
-Status: verified on Linux i686 offline fixture and bounded Cloudflare TURN UDP relay probe; no full game-process or Windows runtime acceptance
-Last updated: 2026-11-21
-Summary: separate-process checks of the unchanged CE caller with the courier and sealed offline store across distinct private directories and processes, plus a bounded relay-only TURN allocation check.
+Status: verified on Linux i686 offline fixture, bounded Cloudflare TURN UDP relay probe, and Windows i686 libjuice relay-only build/link receipts; no full game-process or native Windows VM runtime acceptance
+Last updated: 2026-11-22
+Summary: separate-process checks of the unchanged CE caller with the courier and sealed offline store across distinct private directories and processes, bounded relay-only TURN allocation check, and verified Windows i686 relay-only libjuice/WinHTTP compile-link receipts.
 
 The separate-process i686 Linux fixture has been built and executed inside a
 loopback-only network namespace with a private hosts mapping. All 11 checks
@@ -50,7 +50,11 @@ reader.
 
 The native peer remains Linux-only. The normal Windows ICE refusal is
 unchanged, and compiling or running this harness supplies no Windows privacy
-or gameplay evidence.
+or gameplay evidence. The Windows i686 relay-only `libjuice` library
+(`port/tools/ice_deps.py build windows`) and Windows `--with-network --with-ice`
+/ `--with-native-signaling` binaries compile and link cleanly against pinned
+`llvm-mingw` and `libwinhttp.a`, while Windows runtime relay execution stays
+closed until native Windows VM private-exchange acceptance completes.
 
 ## Planned delivery seams
 

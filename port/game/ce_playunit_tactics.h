@@ -506,7 +506,7 @@ inline bool CePlayUnitSpotterCameraPose(const CePlayUnitSpotterState &st, const 
                                         float lookYaw, float terrainAtFocus,
                                         float outEye[3], float outRight[3], float outForward[3], float outDown[3])
 {
-	if (!st.enabled || st.mode == CE_SPOTTER_OFF || !unitPos || !CePlayUnitFinite3(unitPos)) return false;
+	if (!st.enabled || st.mode == CE_SPOTTER_OFF || !unitPos || !CePlayUnitFinite3(unitPos) || !isfinite(lookYaw)) return false;
 	if (!outEye || !outRight || !outForward || !outDown) return false;
 
 	float focus[3] = {unitPos[0], unitPos[1], unitPos[2]};
@@ -523,11 +523,28 @@ inline bool CePlayUnitSpotterCameraPose(const CePlayUnitSpotterState &st, const 
 	}
 	else if (st.hasImpact)
 	{
-		focus[0] = st.impactPos[0];
-		focus[1] = st.impactPos[1];
-		focus[2] = st.impactPos[2];
-		backDist = 34.f;
-		liftHeight = 40.f;
+		const float dx = st.impactPos[0] - unitPos[0];
+		const float dy = st.impactPos[1] - unitPos[1];
+		const float range = sqrtf(dx * dx + dy * dy);
+		if (st.mode == CE_SPOTTER_OVERWATCH && range >= 10.f && range <= 125.f)
+		{
+			// Frame both the artillery battery (lower-center foreground) and the predicted impact ring ahead.
+			focus[0] = unitPos[0] + dx * 0.60f;
+			focus[1] = unitPos[1] + dy * 0.60f;
+			focus[2] = isfinite(terrainAtFocus) ? terrainAtFocus : st.impactPos[2];
+			backDist = 0.74f * range + 14.f;
+			if (backDist < 36.f) backDist = 36.f;
+			liftHeight = 0.52f * range + 24.f;
+			if (liftHeight < 40.f) liftHeight = 40.f;
+		}
+		else
+		{
+			focus[0] = st.impactPos[0];
+			focus[1] = st.impactPos[1];
+			focus[2] = st.impactPos[2];
+			backDist = 34.f;
+			liftHeight = 40.f;
+		}
 	}
 	else
 	{
@@ -556,8 +573,9 @@ inline bool CePlayUnitSpotterCameraPose(const CePlayUnitSpotterState &st, const 
 	outForward[1] = fy / flen;
 	outForward[2] = fz / flen;
 
-	// Right = worldDown(0,0,1) x forward? Wait: BEA right x forward = down, so right = forward x up(0,0,-1) = (-fy, fx, 0)
-	float rx = -outForward[1], ry = outForward[0];
+	// BEA camera basis: right x forward = down (Z-down world, worldDown = (0, 0, +1)).
+	// Horizontal right = forward x worldDown = (+fy, -fx, 0), ensuring outDown.z = +(fx^2 + fy^2)/rlen > 0 (true down).
+	float rx = outForward[1], ry = -outForward[0];
 	const float rlen = sqrtf(rx * rx + ry * ry);
 	if (rlen > 1e-4f) { outRight[0] = rx / rlen; outRight[1] = ry / rlen; outRight[2] = 0.f; }
 	else { outRight[0] = cosf(lookYaw); outRight[1] = sinf(lookYaw); outRight[2] = 0.f; }
@@ -832,7 +850,7 @@ inline void CePlayUnitFormatClassHud(const CePlayUnitHudTelemetry &t,
 	headerOut[0] = line1Out[0] = line2Out[0] = actionOut[0] = 0;
 	char wpn[28];
 	CePlayUnitSanitizeHudText(t.weaponName[0] ? t.weaponName : "PRIMARY", wpn, sizeof(wpn));
-	if (strlen(wpn) > 16) wpn[16] = 0;
+	if (strlen(wpn) > 22) wpn[22] = 0;
 	const int hdg = ((t.headingDeg % 360) + 360) % 360;
 	const int az = ((int(t.azDeg + 0.5f) % 360) + 360) % 360;
 	const int el = int(t.elDeg >= 0.f ? (t.elDeg + 0.5f) : (t.elDeg - 0.5f));
@@ -935,6 +953,86 @@ inline int CePlayUnitSelectReadyWeapon(int count, int currentIdx, bool armingCur
 	return -1;
 }
 
+inline const char *CePlayUnitControlVerb(int classId)
+{
+	switch (classId)
+	{
+	case CE_PLAYUNIT_CLASS_INFANTRY: return "On foot";
+	case CE_PLAYUNIT_CLASS_TANK:
+	case CE_PLAYUNIT_CLASS_JEEP:
+	case CE_PLAYUNIT_CLASS_ARTILLERY: return "Driving";
+	case CE_PLAYUNIT_CLASS_TURRET: return "Operating";
+	case CE_PLAYUNIT_CLASS_AIRCRAFT: return "Flying";
+	case CE_PLAYUNIT_CLASS_NAVAL: return "Piloting";
+	default: return "Controlling";
+	}
+}
+
 static const int kCePlayUnitPromptMaxPieces = 6;
+
+// Pure horizontal layout for the upper-left PlayUnit curved telemetry card so its right curved
+// crescent and vertical aircraft gauges ALWAYS stay strictly clear of BEA's central circular
+// compass ring (centered at w*0.5 with outer halo radius ~108*s) at both 1280x720 and 640x480.
+struct CePlayUnitClassCardLayout
+{
+	float x0;
+	float bodyLeft;
+	float bodyW;
+	float capW;
+	float totalW;
+	float padX;
+	float gaugeRoom;
+	float textX;
+	float textMaxW;
+	float compassLeft;
+};
+
+inline bool CePlayUnitComputeClassCardLayout(float w, float h, float s, float desiredTextW, bool isAir,
+                                             CePlayUnitClassCardLayout *out)
+{
+	if (!out) return false;
+	memset(out, 0, sizeof(*out));
+	if (!isfinite(w) || !isfinite(h) || !isfinite(s) || w <= 0.f || h <= 0.f || s <= 0.f) return false;
+	if (!isfinite(desiredTextW) || desiredTextW < 0.f) desiredTextW = 0.f;
+
+	const float compassHalfSpan = 108.f * s;	// BEA compass outer ring (~101.3*s) + outer glow/chevron halo
+	const float compassLeft = w * 0.5f - compassHalfSpan;
+	const float compassGap = 14.f * s;
+	const float x0 = floorf(12.f * s);
+	const float capW = floorf(24.f * s);
+	const float padX = floorf(9.f * s);
+	const float gaugeRoom = isAir ? floorf(26.f * s) : 0.f;
+
+	float maxRight = compassLeft - compassGap;
+	if (maxRight > w - 8.f) maxRight = w - 8.f;
+	const float maxTotalW = floorf(maxRight - x0);
+	const float availTextW = maxTotalW - capW - 2.f * padX - gaugeRoom;
+	if (availTextW < 40.f) return false;
+
+	float minTextW = floorf((isAir ? 192.f : 180.f) * s);
+	if (minTextW > availTextW) minTextW = availTextW;
+	float maxTextW = floorf(280.f * s);
+	if (maxTextW > availTextW) maxTextW = availTextW;
+
+	float textW = desiredTextW;
+	if (textW < minTextW) textW = minTextW;
+	if (textW > maxTextW) textW = maxTextW;
+
+	const float bodyW = floorf(textW + gaugeRoom + 2.f * padX);
+	const float totalW = bodyW + capW;
+	if (x0 + totalW > maxRight + 0.5f) return false;
+
+	out->x0 = x0;
+	out->bodyLeft = x0 + capW * 0.5f;
+	out->bodyW = bodyW;
+	out->capW = capW;
+	out->totalW = totalW;
+	out->padX = padX;
+	out->gaugeRoom = gaugeRoom;
+	out->textX = out->bodyLeft + padX;
+	out->textMaxW = bodyW - 2.f * padX - gaugeRoom;
+	out->compassLeft = compassLeft;
+	return out->textMaxW > 0.f;
+}
 
 #endif

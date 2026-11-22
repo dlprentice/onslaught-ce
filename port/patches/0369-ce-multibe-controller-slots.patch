@@ -1,0 +1,202 @@
+--- a/Controller.h
++++ b/Controller.h
+@@ -157,7 +157,12 @@
+ 
+ 	bool			mConfigurable;		// +0x00: offered for remapping
+ 	int				mId;				// +0x04: the button id, -1 ends the table
++#ifdef CE_VERSION
++	SControlInput	mInput[4];			// +0x08: CE Phase 1 4-slot safety (MAX_PLAYERS); Career.cpp still serialises the retail 2-slot prefix
++#define CE_CONTROL_BINDING_SAVE_SIZE (sizeof(SControlBinding) - 2 * sizeof(SControlInput))
++#else
+ 	SControlInput	mInput[2];			// +0x08
++#endif
+ };
+ 
+ extern SControlBinding CONTROL_BINDINGS[];				// 008892d8
+@@ -289,7 +294,11 @@
+ HRESULT	ShutdownMouse();							// 0042d3b0
+ HRESULT	PollMouseMotion();							// 0042d420
+ HRESULT	PollMouseState();							// 0042d4d0
++#ifdef CE_VERSION
++extern BOOL	gMouseAxisLocked[4];				// 0066e8cc (Controller.cpp; CE 4-slot MAX_PLAYERS safety)
++#else
+ extern BOOL	gMouseAxisLocked[2];				// 0066e8cc (Controller.cpp; CGame::Update sets it per player)
++#endif
+ void	UpdateMouseCentre(bool reset);				// 0042da00: draws the cursor back towards the centre
+ SControlBinding	*FindControlBinding(int button);	// 0042db10
+ 
+--- a/Controller.cpp
++++ b/Controller.cpp
+@@ -30,7 +30,11 @@
+ float			gMouseSensitivity = 7.0f;		// 006254f4: the options' mouse sensitivity
+ int CController::mNumMappings= -1;			// 006254f8: retail defines it after the two options (the zero dword after it pads the next 8-aligned type descriptor)
+ static DIMOUSESTATE2	sMouseState;			// 0066e8f0
++#ifdef CE_VERSION
++BOOL			gMouseAxisLocked[MAX_PLAYERS];	// 0066e8cc: CE 4-slot MAX_PLAYERS safety
++#else
+ BOOL			gMouseAxisLocked[2];			// 0066e8cc: per player, the locked mouse axes (13, 14) are ignored
++#endif
+ static bool		sSendingMouseRest;				// 0066e8c8: a centred mouse axis is being sent (not activity)
+ static bool		sMouseAxisRead = false;			// 0066e94d: an axis was read since the cursor was last drawn back
+ bool			E3_BUILD = false;				// 0066e94e: set by -e3; quits on inactivity outside the playable demo too
+@@ -49,6 +53,15 @@
+ 	mInput[1].mType = 0;
+ 	mInput[1].mKey = 0;
+ 	mInput[1].mVKey = 0;
++#ifdef CE_VERSION
++	for (int ceSlot = 2; ceSlot < MAX_PLAYERS; ceSlot++)
++	{
++		mInput[ceSlot].mPad = -1;
++		mInput[ceSlot].mType = 0;
++		mInput[ceSlot].mKey = 0;
++		mInput[ceSlot].mVKey = 0;
++	}
++#endif
+ }
+ 
+ SControlBinding::SControlBinding(bool configurable, int button, int type, short key, int type2, short key2,	// FUNCTION: 0x0042d2b0
+@@ -64,12 +77,30 @@
+ 	mInput[1].mType = type2;
+ 	mInput[1].mKey = key2;
+ 	mInput[1].mVKey = vkey2;
++#ifdef CE_VERSION
++	for (int ceSlot = 2; ceSlot < MAX_PLAYERS; ceSlot++)
++	{
++		mInput[ceSlot].mPad = -1;
++		mInput[ceSlot].mType = 0;
++		mInput[ceSlot].mKey = 0;
++		mInput[ceSlot].mVKey = 0;
++	}
++#endif
+ }
+ 
+ SControlBinding::SControlBinding()	// FUNCTION: 0x0042d300 ??0SControlBinding@@QAE@XZ
+ {
+ 	mConfigurable = false;
+ 	mId = -1;
++#ifdef CE_VERSION
++	for (int ceSlot = 0; ceSlot < MAX_PLAYERS; ceSlot++)
++	{
++		mInput[ceSlot].mPad = -1;
++		mInput[ceSlot].mType = 0;
++		mInput[ceSlot].mKey = 0;
++		mInput[ceSlot].mVKey = 0;
++	}
++#endif
+ }
+ 
+ //******************************************************************************************
+@@ -614,7 +645,11 @@
+ 
+ 					case MOUSE_AXIS_PLUS:
+ 					case MOUSE_AXIS_MINUS:
++#ifdef CE_VERSION
++						if ((pad >= 0) && (pad < MAX_PLAYERS) && gMouseAxisLocked[pad])
++#else
+ 						if (gMouseAxisLocked[pad])
++#endif
+ 							break;
+ 					case MOUSE_AXIS_PLUS_ANY:
+ 					case MOUSE_AXIS_MINUS_ANY:
+@@ -767,6 +802,24 @@
+ 	}
+ 	else
+ 	{
++#ifdef CE_VERSION
++		bool ceAnyDisconnected = false;
++		bool ceToReconnect = false;
++		int ceSlots = GAME.GetNPlayers();
++		if (ceSlots < 2) ceSlots = 2;
++		if (ceSlots > MAX_PLAYERS) ceSlots = MAX_PLAYERS;
++		for (int ceIdx = 0; ceIdx < ceSlots; ceIdx++)
++		{
++			if (RECONNECT_INTERFACE[ceIdx].GetState() != CReconnectInterface::OK)
++				ceAnyDisconnected = true;
++			if (to_send == &RECONNECT_INTERFACE[ceIdx])
++				ceToReconnect = true;
++		}
++		if (ceAnyDisconnected && !ceToReconnect)
++		{
++			return;
++		}
++#else
+ 		if ((RECONNECT_INTERFACE[0].GetState() != CReconnectInterface::OK) ||
+ 			(RECONNECT_INTERFACE[1].GetState() != CReconnectInterface::OK))
+ 		{
+@@ -774,6 +827,7 @@
+ 				(to_send != &RECONNECT_INTERFACE[1]))
+ 				return;
+ 		}
++#endif
+ 
+ 		if ((mPausedBeforeMap == FALSE) || (to_send->CanBeControlledWhenInPause() == TRUE ))
+ 		{
+--- a/Career.cpp
++++ b/Career.cpp
+@@ -1408,8 +1408,13 @@
+ 		{
+ 			if (binding->mConfigurable)
+ 			{
++#ifdef CE_CONTROL_BINDING_SAVE_SIZE
++				memcpy(binding, source, CE_CONTROL_BINDING_SAVE_SIZE);
++				source += CE_CONTROL_BINDING_SAVE_SIZE;
++#else
+ 				memcpy(binding, source, sizeof(SControlBinding));
+ 				source += sizeof(SControlBinding);
++#endif
+ 			}
+ 		}
+ 		ReadOptions(source);
+@@ -1443,8 +1448,13 @@
+ 	{
+ 		if (binding->mConfigurable)
+ 		{
++#ifdef CE_CONTROL_BINDING_SAVE_SIZE
++			memcpy(dest, binding, CE_CONTROL_BINDING_SAVE_SIZE);
++			dest += CE_CONTROL_BINDING_SAVE_SIZE;
++#else
+ 			memcpy(dest, binding, sizeof(SControlBinding));
+ 			dest += sizeof(SControlBinding);
++#endif
+ 		}
+ 	}
+ 	WriteOptions(dest);
+@@ -1471,7 +1481,11 @@
+ 	for (SControlBinding *binding = CONTROL_BINDINGS; binding->mId != -1; binding++)
+ 	{
+ 		if (binding->mConfigurable)
++#ifdef CE_CONTROL_BINDING_SAVE_SIZE
++			retval += CE_CONTROL_BINDING_SAVE_SIZE;
++#else
+ 			retval += sizeof(SControlBinding);
++#endif
+ 	}
+ 
+ 	return retval + OPTIONS_SIZE;
+--- a/reconnectinterface.h
++++ b/reconnectinterface.h
+@@ -29,6 +29,10 @@
+ 	EState	mState;						// +0x08
+ };
+ 
++#ifdef CE_VERSION
++extern CReconnectInterface	RECONNECT_INTERFACE[MAX_PLAYERS];	// 0089be50 (CE 4-slot MAX_PLAYERS safety)
++#else
+ extern CReconnectInterface	RECONNECT_INTERFACE[2];		// 0089be50
++#endif
+ 
+ #endif
+--- a/reconnectinterface.cpp
++++ b/reconnectinterface.cpp
+@@ -17,7 +17,11 @@
+ 
+ // FUNCTION: 0x00527900 init:RECONNECT_INTERFACE
+ // FUNCTION: 0x00527930 exit:RECONNECT_INTERFACE
++#ifdef CE_VERSION
++CReconnectInterface	RECONNECT_INTERFACE[MAX_PLAYERS];	// 0089be50 (CE 4-slot MAX_PLAYERS safety)
++#else
+ CReconnectInterface	RECONNECT_INTERFACE[2];		// 0089be50
++#endif
+ 
+ //******************************************************************************************
+ void	CReconnectInterface::Reset(int state)	// FUNCTION: 0x00527960

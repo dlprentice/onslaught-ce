@@ -435,7 +435,7 @@ int main(int argc,char** argv) {
 """)
     binary = output / "native-metadata"
     with (output / "native-compile.private.log").open("wb") as log:
-        result = subprocess.run([compiler, "-std=c++17", "-DCE_NETWORK_ICE=1", "-I", str(stubs), "-I", str(common),
+        result = subprocess.run([compiler, "-std=c++17", "-DCE_NETWORK_ICE=1", "-DCE_NETWORK_SIGNALING=1", "-I", str(stubs), "-I", str(common),
                                  "-ffunction-sections", "-fdata-sections", "-Wl,--gc-sections",
                                  str(source), str(common / "private_ui_input.cpp"), "-o", str(binary)],
                                 stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, timeout=60,

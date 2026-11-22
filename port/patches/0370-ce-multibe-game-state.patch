@@ -1,0 +1,309 @@
+--- a/game.h
++++ b/game.h
+@@ -44,6 +44,10 @@
+ 	RESPAWN_PLAYER_2,
+ 	PAUSE_GAME,
+ 	CONTINUE_FADE_OUT_GAME_SOUNDS
++#ifdef CE_VERSION
++	,RESPAWN_PLAYER_3,
++	RESPAWN_PLAYER_4
++#endif
+ };
+ 
+ enum EGameState
+@@ -277,6 +281,9 @@
+ 	SFrontEndSettings	mSettings;
+ 
+ 	SINT			mPlayer1Lives,mPlayer2Lives;
++#ifdef CE_VERSION
++	SINT			mPlayerLives[MAX_PLAYERS];
++#endif
+ 	float			mHackCurrentGameMasterVolume;// used to fade out game sounds when you die
+ 
+ 	// Game objects:
+--- a/game.cpp
++++ b/game.cpp
+@@ -824,6 +824,10 @@
+ 
+ 	mPlayer1Lives=2;
+ 	mPlayer2Lives=2;
++#ifdef CE_VERSION
++	for (SINT ceLifeIdx = 0; ceLifeIdx < MAX_PLAYERS; ceLifeIdx++)
++		mPlayerLives[ceLifeIdx] = 2;
++#endif
+ 
+ 	// Record/playback only works for player 0 ATM - fixme!
+ 	if (CLIPARAMS.mPlaybackDemo)
+@@ -1782,6 +1786,14 @@
+ 		{
+ 			// 3/4 player quad split
+ 		
++#ifdef CE_VERSION
++			PollMouseMotion();
++			for (SINT ceLookIdx = 0; ceLookIdx < mPlayers && ceLookIdx < MAX_PLAYERS; ceLookIdx++)
++			{
++				if (mPlayer[ceLookIdx] && mPlayer[ceLookIdx]->GetBattleEngine())
++					mPlayer[ceLookIdx]->GetBattleEngine()->UpdateMouseLookAngles();
++			}
++#endif
+ 			viewport.Width=fullscreen.Width/2;
+ 			viewport.Height=fullscreen.Height/2;
+ 			viewport.X=0;
+@@ -1815,6 +1827,13 @@
+ 		// We have to draw the "help your controller's unplugged" messages on top of everything.
+ 		RECONNECT_INTERFACE[0].Render(ENGINE.GetViewportForViewpoint(0), mController[0], FALSE);
+ 		RECONNECT_INTERFACE[1].Render(ENGINE.GetViewportForViewpoint(1), mController[1], FALSE);
++#ifdef CE_VERSION
++		for (SINT ceRecIdx = 2; ceRecIdx < mPlayers && ceRecIdx < MAX_PLAYERS; ceRecIdx++)
++		{
++			if (mController[ceRecIdx])
++				RECONNECT_INTERFACE[ceRecIdx].Render(NULL, mController[ceRecIdx], FALSE);
++		}
++#endif
+ 
+ 		if (gMirrorPass)
+ 		{
+@@ -2585,12 +2604,21 @@
+ //******************************************************************************************
+ void CGame::DeclarePlayerDead(int number)	// FUNCTION: 0x0046f550
+ {
++#ifdef CE_VERSION
++	if (number < 1 || number > MAX_PLAYERS || !mPlayer[number-1] || !mPlayer[number-1]->GetBattleEngine())
++		return;
++#endif
+ 	CBattleEngine* engine = mPlayer[number-1]->GetBattleEngine() ;
+ 	FVector pos = engine->GetPos() ;
+ 
+ 	// get pos of player
++#ifdef CE_VERSION
++	if (mFreeCameraOn[number - 1])
++		ToggleFreeCameraOff(number - 1);
++#else
+ 	if (mFreeCameraOn[number])
+ 		ToggleFreeCameraOff(number);
++#endif
+ 
+ #line 2889
+ 	SetCurrentCamera(number-1,new( MEMTYPE_CAMERA ) CViewPointCamera(pos, 0.5f, 0.0f, 6.0f, 3.0f));
+@@ -2625,6 +2653,15 @@
+ 				case 2:
+ 					EVENT_MANAGER.AddEvent(5.0f,(int)RESPAWN_PLAYER_2,this,START_OF_FRAME,NULL);
+ 					break;
++#ifdef CE_VERSION
++				case 3:
++					EVENT_MANAGER.AddEvent(5.0f,(int)RESPAWN_PLAYER_3,this,START_OF_FRAME,NULL);
++					break;
++
++				case 4:
++					EVENT_MANAGER.AddEvent(5.0f,(int)RESPAWN_PLAYER_4,this,START_OF_FRAME,NULL);
++					break;
++#endif
+ 			}
+ 		}
+ 		break;
+@@ -2640,6 +2677,15 @@
+ 				case 2:
+ 					EVENT_MANAGER.AddEvent(5.0f,(int)RESPAWN_PLAYER_2,this,START_OF_FRAME,NULL);
+ 					break;
++#ifdef CE_VERSION
++				case 3:
++					EVENT_MANAGER.AddEvent(5.0f,(int)RESPAWN_PLAYER_3,this,START_OF_FRAME,NULL);
++					break;
++
++				case 4:
++					EVENT_MANAGER.AddEvent(5.0f,(int)RESPAWN_PLAYER_4,this,START_OF_FRAME,NULL);
++					break;
++#endif
+ 			}
+ 		}
+ 		break;
+@@ -3140,6 +3186,19 @@
+ 			RespawnPlayer(1);
+ 			break;
+ 		}
++#ifdef CE_VERSION
++		case RESPAWN_PLAYER_3:
++		{
++			RespawnPlayer(2);
++			break;
++		}
++
++		case RESPAWN_PLAYER_4:
++		{
++			RespawnPlayer(3);
++			break;
++		}
++#endif
+ 		case PAUSE_GAME:
+ 		{
+ 			Pause() ;
+@@ -3169,6 +3228,12 @@
+ void CGame::RespawnPlayer(
+ 	SINT	inNumber)	// FUNCTION: 0x00470120 ?RespawnPlayer@CGame@@QAEXH@Z
+ {
++#ifdef CE_VERSION
++	if (inNumber < 0 || inNumber >= MAX_PLAYERS || !mPlayer[inNumber])
++		return;
++	mPlayerLives[0] = mPlayer1Lives;
++	mPlayerLives[1] = mPlayer2Lives;
++#endif
+ #ifdef _DIRECTX
+ 	// Let's force the landscape to refresh to the right LOD right now.
+ 	ENGINE.GetLandscape()->MakeNextUpdateBeFast();
+@@ -3197,6 +3262,23 @@
+ 						spawn=FALSE;
+ 					}
+ 					break;
++#ifdef CE_VERSION
++				case 2:
++					if (mPlayerLives[2]==0)
++					{
++						DeclareLevelLost(P1_OUT_OF_LIVES,TRUE);
++						spawn=FALSE;
++					}
++					break;
++
++				case 3:
++					if (mPlayerLives[3]==0)
++					{
++						DeclareLevelLost(P2_OUT_OF_LIVES,TRUE);
++						spawn=FALSE;
++					}
++					break;
++#endif
+ 			}
+ 		}
+ 		break;
+@@ -3220,6 +3302,23 @@
+ 						spawn=FALSE;
+ 					}
+ 					break;
++#ifdef CE_VERSION
++				case 2:
++					if (mPlayerLives[2]==0)
++					{
++						MPDeclarePlayerWon(2);
++						spawn=FALSE;
++					}
++					break;
++
++				case 3:
++					if (mPlayerLives[3]==0)
++					{
++						MPDeclarePlayerWon(1);
++						spawn=FALSE;
++					}
++					break;
++#endif
+ 			}
+ 		}
+ 	}
+@@ -3236,6 +3335,16 @@
+ 			if (mPlayer2Lives>0)
+ 				mPlayer2Lives--;
+ 		}
++#ifdef CE_VERSION
++		else if (inNumber>=2 && inNumber<MAX_PLAYERS)
++		{
++			if (mPlayerLives[inNumber]>0)
++				mPlayerLives[inNumber]--;
++		}
++		mPlayerLives[0] = mPlayer1Lives;
++		mPlayerLives[1] = mPlayer2Lives;
++		const SINT ceSpawnTarget = (inNumber < 2) ? (inNumber + 1) : ((inNumber & 1) + 1);
++#endif
+ 
+ 		// Count the respawn points
+ 		SPtrSet<CSpawnPoint>		&spawnPointNB=WORLD.GetSpawnPointNB();
+@@ -3245,7 +3354,11 @@
+ 
+ 		for (spawnPoint=spawnIterator.First(); spawnPoint; spawnPoint=spawnIterator.Next())
+ 		{
++#ifdef CE_VERSION
++			if (((spawnPoint->GetPlayerNumber()==inNumber+1) || (inNumber>=2 && spawnPoint->GetPlayerNumber()==ceSpawnTarget)) &&
++#else
+ 			if ((spawnPoint->GetPlayerNumber()==inNumber+1) &&
++#endif
+ 				(spawnPoint->Available()))
+ 			{
+ 				spawnPoints++;
+@@ -3260,7 +3373,11 @@
+ 
+ 			for (spawnPoint=spawnIterator.First(); spawnPoint; spawnPoint=spawnIterator.Next())
+ 			{
++#ifdef CE_VERSION
++				if (((spawnPoint->GetPlayerNumber()==inNumber+1) || (inNumber>=2 && spawnPoint->GetPlayerNumber()==ceSpawnTarget)) &&
++#else
+ 				if ((spawnPoint->GetPlayerNumber()==inNumber+1) &&
++#endif
+ 					(spawnPoint->Available()))
+ 				{
+ 					if (index==chosen)
+@@ -3284,7 +3401,11 @@
+ 
+ 			for (CStart* start=iterator.First(); start; start=iterator.Next())
+ 			{
++#ifdef CE_VERSION
++				if (((start->GetPlayerNumber()==inNumber+1) || (inNumber>=2 && start->GetPlayerNumber()==ceSpawnTarget)) &&
++#else
+ 				if ((start->GetPlayerNumber()==inNumber+1) &&
++#endif
+ 					(start->Available()))
+ 				{
+ 					if (CBattleEngine *newEngine=start->SpawnBattleEngine(TRUE))
+@@ -3308,6 +3429,20 @@
+ 			mPlayer2Lives++;
+ 			EVENT_MANAGER.AddEvent(1.0f,(int)RESPAWN_PLAYER_2,this,START_OF_FRAME,NULL);
+ 		}
++#ifdef CE_VERSION
++		else if (inNumber==2)
++		{
++			mPlayerLives[2]++;
++			EVENT_MANAGER.AddEvent(1.0f,(int)RESPAWN_PLAYER_3,this,START_OF_FRAME,NULL);
++		}
++		else if (inNumber==3)
++		{
++			mPlayerLives[3]++;
++			EVENT_MANAGER.AddEvent(1.0f,(int)RESPAWN_PLAYER_4,this,START_OF_FRAME,NULL);
++		}
++		mPlayerLives[0] = mPlayer1Lives;
++		mPlayerLives[1] = mPlayer2Lives;
++#endif
+ 	}
+ }
+ 
+@@ -4209,6 +4344,10 @@
+ 		return mPlayer1Lives;
+ 	else if (inPlayer==2)
+ 		return mPlayer2Lives;
++#ifdef CE_VERSION
++	else if (inPlayer>=3 && inPlayer<=MAX_PLAYERS)
++		return mPlayerLives[inPlayer-1];
++#endif
+ 
+ 	return 0;
+ }
+@@ -4219,9 +4358,23 @@
+ 	SINT		inLives)
+ {
+ 	if (inPlayer==1)
++	{
+ 		mPlayer1Lives=inLives;
++#ifdef CE_VERSION
++		mPlayerLives[0]=inLives;
++#endif
++	}
+ 	else if (inPlayer==2)
++	{
+ 		mPlayer2Lives=inLives;
++#ifdef CE_VERSION
++		mPlayerLives[1]=inLives;
++#endif
++	}
++#ifdef CE_VERSION
++	else if (inPlayer>=3 && inPlayer<=MAX_PLAYERS)
++		mPlayerLives[inPlayer-1]=inLives;
++#endif
+ }
+ 
+ //*******************************************************************************

@@ -83,7 +83,7 @@ def main():
     (common/private_name).write_bytes((ROOT/"port/platform/common"/private_name).read_bytes())
    if label == "private-channel":
     (driver/"private_ui_input_driver.cpp").write_bytes((ROOT/"port/tools/tests/private_ui_input_driver.cpp").read_bytes())
-   command=['clang++','-std=c++17','-DCE_NETWORK_ICE=1','-O1','-g0','-Wall','-Wextra','-Werror','-Wno-deprecated-declarations','-Wno-unused-function','-m'+bits,'-pthread','-I'+str(view/'stubs'),'-I'+str(game),'-I'+str(mono),str(driver/'network_invitation_driver.cpp'),str(game/'ce_network_invitation.cpp'),str(game/'ce_network_boot_authority.cpp'),str(network/'signaling_provider.cpp'),str(network/'signaling_https.cpp'),str(crypto),str(sha_object),*curl,'-Wl,--wrap=openat','-o',str(exe)]
+   command=['clang++','-std=c++17','-DCE_NETWORK_ICE=1','-DCE_NETWORK_SIGNALING=1','-O1','-g0','-Wall','-Wextra','-Werror','-Wno-deprecated-declarations','-Wno-unused-function','-m'+bits,'-pthread','-I'+str(view/'stubs'),'-I'+str(game),'-I'+str(mono),str(driver/'network_invitation_driver.cpp'),str(game/'ce_network_invitation.cpp'),str(game/'ce_network_boot_authority.cpp'),str(network/'signaling_provider.cpp'),str(network/'signaling_https.cpp'),str(crypto),str(sha_object),*curl,'-Wl,--wrap=openat','-o',str(exe)]
    command += ["-I",str(view/"port/platform/common"),str(view/"port/platform/common/private_ui_input.cpp")]
    if label == "private-channel":
     command[command.index(str(driver/"network_invitation_driver.cpp"))] = str(driver/"private_ui_input_driver.cpp")

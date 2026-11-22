@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #include "ce_network_invitation.h"
 #ifndef CE_NETWORK_OFF
-#if defined(CE_NETWORK_ICE)
+#if defined(CE_NETWORK_ICE) && defined(CE_NETWORK_SIGNALING)
 #include "ce_network_stl.h"
 #include "ce_network_boot_authority.h"
 #include "../network/network.h"
@@ -92,8 +92,8 @@ struct InvitationDirectory {
         int file=openat(handle,name.c_str(),O_RDONLY|O_CLOEXEC|O_NOFOLLOW|O_NONBLOCK);
         if (file<0) return errno==ENOENT?0:-1;
         struct stat s{};
-        bool ok=fstat(file,&s)==0 && S_ISREG(s.st_mode) && s.st_size>=static_cast<off_t>(1) &&
-            s.st_size<=static_cast<off_t>(kImportFileLimit);
+        bool ok=fstat(file,&s)==0 && S_ISREG(s.st_mode) && s.st_uid==geteuid() && !(s.st_mode&0077) &&
+            s.st_size>=static_cast<off_t>(1) && s.st_size<=static_cast<off_t>(kImportFileLimit);
         if (ok) {
             bytes.resize(static_cast<size_t>(s.st_size)); size_t pos=0;
             while (pos<bytes.size()) {
@@ -226,6 +226,71 @@ void SDLCALL Picked(void* opaque,const char* const* files,int){
     if(files[1]||!Bounded(files[0],kPathLimit,&size)||!AbsoluteLocalFolder(files[0])){s.picked=3;return;}
     std::memcpy(s.chosen.data(),files[0],size+1);s.picked=1;
 }
+bool PrivateUserDirectory(std::string* out){
+    const char* base=PortUserDir();size_t length=0;
+    if(!out||!Bounded(base,kPathLimit-80,&length)||!AbsoluteLocalFolder(base))return false;
+#ifndef _WIN32
+    const int parent=open(base,O_RDONLY|O_DIRECTORY|O_CLOEXEC|O_NOFOLLOW);
+    if(parent<0)return false;
+    struct Parent {int value;~Parent(){close(value);}} owned{parent};
+    struct stat info{};
+    if(fstat(parent,&info)!=0||!S_ISDIR(info.st_mode)||info.st_uid!=geteuid()||(info.st_mode&0022))return false;
+#else
+    InvitationDirectory parent;if(!parent.Open(base))return false;
+#endif
+    *out=base;
+    return true;
+}
+std::string JoinPath(const std::string& parent,const char* child){
+    std::string result(parent);
+    if(!result.empty()&&result.back()!='/'&&result.back()!='\\')
+#ifdef _WIN32
+        result+='\\';
+#else
+        result+='/';
+#endif
+    result+=child;
+    return result;
+}
+bool FindProfileInvitation(uint32_t expected,uint64_t requireUtc,std::string* outPath){
+    if(expected!=CE_NET_HOST&&expected!=CE_NET_GUEST)return false;
+    std::string base;
+    if(!PrivateUserDirectory(&base))return false;
+    const std::string rootPath=JoinPath(base,"online-invitation");
+    if(rootPath.size()+16>kPathLimit)return false;
+    InvitationDirectory rootDir;
+    if(!rootDir.Open(rootPath.c_str()))return false;
+    const char* roleLeaf=(expected==CE_NET_HOST)?"host":"guest";
+    const std::string candidates[2]={JoinPath(rootPath,roleLeaf),rootPath};
+    for(const std::string& candidate:candidates){
+        if(candidate.size()>kPathLimit||!AbsoluteLocalFolder(candidate.c_str()))continue;
+        InvitationDirectory dir;
+        if(!dir.Open(candidate.c_str()))continue;
+        ImportBytes bytes;
+        if(dir.Read("pair-admission.json",bytes.value)!=1)continue;
+        CeIceSignalPairBinding pair{};
+        const bool valid=ParseMetadata(bytes.value.data(),bytes.value.size(),expected,&pair) &&
+            (!requireUtc||Current(requireUtc,pair.expiresAt));
+        Wipe(&pair,sizeof(pair));
+        if(valid){
+            if(outPath)*outPath=candidate;
+            return true;
+        }
+    }
+    return false;
+}
+bool PrepareBeginLocked(ImportState& s,const char* origin,uint32_t expected,size_t* originSize){
+    if(s.outstanding)return false;
+    if(s.generation==(std::numeric_limits<uint64_t>::max)()){Refuse(s,CE_INVITATION_ERROR_UNAVAILABLE);return false;}
+    ++s.generation;ClearPreview(s);s.chosen.fill(0);s.picked=0;s.view={};
+    if(expected!=CE_NET_HOST&&expected!=CE_NET_GUEST){Refuse(s,CE_INVITATION_ERROR_ROLE);return false;}
+    size_t size=0;
+    if(!Bounded(origin,CE_INVITATION_ORIGIN_BYTES,&size)||!CeSignalHttpsOriginValid(origin)){
+        Refuse(s,CE_INVITATION_ERROR_ORIGIN);return false;
+    }
+    *originSize=size;
+    return true;
+}
 bool NewExchangeDirectory(std::string* out){
     const char* base=PortUserDir();size_t length=0;
     if(!out||!Bounded(base,kPathLimit-80,&length)||!AbsoluteLocalFolder(base))return false;
@@ -247,7 +312,7 @@ bool NewExchangeDirectory(std::string* out){
             leaf[at++]=char(value<10?'0'+value:'a'+value-10);
         }
         leaf[at]=0;Wipe(nonce.data(),nonce.size());
-        std::string path(base);if(path.back()!='/'&&path.back()!='\\')path+='/';path+=leaf;
+        std::string path=JoinPath(base,leaf);
 #ifdef _WIN32
         if(!CreateDirectoryW(parent.Child(leaf).c_str(),nullptr)){
             if(GetLastError()==ERROR_ALREADY_EXISTS)continue;return false;
@@ -263,18 +328,31 @@ bool NewExchangeDirectory(std::string* out){
 }
 } // namespace
 
+extern "C" int CE_InvitationProfileAvailable(uint32_t expected,uint64_t utc){
+    if(!utc)return 0;
+    return FindProfileInvitation(expected,utc,nullptr)?1:0;
+}
+extern "C" int CE_InvitationBeginProfileImport(const char* origin,uint32_t expected){
+    auto& s=State();
+    std::lock_guard<std::mutex> lock(s.mutex);
+    size_t size=0;
+    if(!PrepareBeginLocked(s,origin,expected,&size))return 0;
+    std::string candidate;
+    if(!FindProfileInvitation(expected,0,&candidate)||candidate.size()>kPathLimit){
+        Refuse(s,CE_INVITATION_ERROR_FOLDER);return 0;
+    }
+    s.view.state=CE_INVITATION_CHOOSING;s.view.role=expected;
+    std::memcpy(s.view.origin,origin,size+1);
+    std::memcpy(s.chosen.data(),candidate.data(),candidate.size()+1);
+    s.picked=1;
+    return 1;
+}
 extern "C" int CE_InvitationBeginImport(const char* origin,uint32_t expected){
     auto& s=State();PickerTicket* ticket=nullptr;
     {
         std::lock_guard<std::mutex> lock(s.mutex);
-        if(s.outstanding)return 0;
-        if(s.generation==(std::numeric_limits<uint64_t>::max)()){Refuse(s,CE_INVITATION_ERROR_UNAVAILABLE);return 0;}
-        ++s.generation;ClearPreview(s);s.chosen.fill(0);s.picked=0;s.view={};
-        if(expected!=CE_NET_HOST&&expected!=CE_NET_GUEST){Refuse(s,CE_INVITATION_ERROR_ROLE);return 0;}
         size_t size=0;
-        if(!Bounded(origin,CE_INVITATION_ORIGIN_BYTES,&size)||!CeSignalHttpsOriginValid(origin)){
-            Refuse(s,CE_INVITATION_ERROR_ORIGIN);return 0;
-        }
+        if(!PrepareBeginLocked(s,origin,expected,&size))return 0;
         ticket=new(std::nothrow) PickerTicket{s.generation};
         if(!ticket){Refuse(s,CE_INVITATION_ERROR_UNAVAILABLE);return 0;}
         s.outstanding=ticket;s.view.state=CE_INVITATION_CHOOSING;s.view.role=expected;
@@ -339,6 +417,8 @@ extern "C" void CE_InvitationCancel(){
     ClearPreview(s);s.chosen.fill(0);s.picked=0;s.view={};s.view.state=CE_INVITATION_CANCELLED;
 }
 #else
+extern "C" int CE_InvitationProfileAvailable(uint32_t,uint64_t){return 0;}
+extern "C" int CE_InvitationBeginProfileImport(const char*,uint32_t){return 0;}
 extern "C" int CE_InvitationBeginImport(const char*,uint32_t){return 0;}
 extern "C" void CE_InvitationPoll(uint64_t,CE_InvitationView* out){if(out){*out={};out->state=CE_INVITATION_REFUSED;out->error=CE_INVITATION_ERROR_UNAVAILABLE;}}
 extern "C" int CE_InvitationInstall(uint64_t){return 0;}

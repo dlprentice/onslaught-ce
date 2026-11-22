@@ -538,12 +538,26 @@ extern "C" int CE_NetSignalingDirectorySelected(void)
     return selectedSignalingDirectory[0] != 0;
 }
 
+namespace {
+bool AbsoluteDirectoryPath(const char* value, size_t size) noexcept
+{
+#if defined(_WIN32)
+    if (size < 3 || !((value[0] >= 'A' && value[0] <= 'Z') || (value[0] >= 'a' && value[0] <= 'z')) ||
+        value[1] != ':' || (value[2] != '\\' && value[2] != '/')) return false;
+    for (size_t i = 2; i < size; ++i) if (value[i] == ':') return false;
+    return true;
+#else
+    return size && value[0] == '/';
+#endif
+}
+} // namespace
+
 bool CE_NetSelectSignalingDirectory(const char* directory) noexcept
 {
     const char* value = directory ? directory : "";
     size_t size = 0;
     while (size <= 4096 && value[size]) ++size;
-    if (size > 4096 || (size && value[0] != '/')) return false;
+    if (size > 4096 || (size && !AbsoluteDirectoryPath(value, size))) return false;
     if (!std::strcmp(value, selectedSignalingDirectory)) return true;
     if (exchangeOwners || gamePlanRestored) return false;
     // Native records have authenticated context-prefixed names in this fresh private dir;

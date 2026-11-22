@@ -569,17 +569,140 @@ void Outline(float x, float y, float w, float h, float t, DWORD colour)
 	Box(x + w - t, y, t, h, colour);
 }
 
-// The HUD's own capsule (the objective bar the radio messages and the museum's labels use): a dark translucent body between the cyan end caps,
-// drawn by the HUD's routine and filling the rectangle (the caps stand half a height beyond the body). Lit draws a second, brighter body over it: a
-// button that is pressed or an order that waits for its click. The text drawn on it needs the map's own render states again (BeginDraw). Without the
-// HUD's art, a drawn stand-in: the same body and two cyan ends.
+// The HUD's own capsule (the objective bar the radio messages and the museum's labels use): a dark translucent body between the curved end caps,
+// drawn using HUD.mObjectiveLeft/Right/Inner* for both Forseti (native cyan) and Muspell (fiery amber/crimson). Lit draws a brighter body over it.
+// Without the HUD's art (host unit-test drivers), falls back cleanly to shaded boxes.
 const DWORD kCapsuleBody = 0xb0040a14, kCapsuleCap = 0xff38c8e8, kCapsuleLit = 0x8038c8e8;
 void BeginDraw();
+
+bool HasHudCapsuleArt()
+{
+	return HUD.mObjectiveLeft && HUD.mObjectiveRight && HUD.mObjectiveInnerLeft && HUD.mObjectiveInnerCentre && HUD.mObjectiveInnerRight;
+}
+
+void DrawTintedHudCap(float x, float y, CDXTexture *tex, float turn, DWORD colour, float scaleX, float scaleY)
+{
+	if (!tex) return;
+	LT.STS(0, D3DTSS_COLORARG1, D3DTA_DIFFUSE);
+	LT.STS(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
+	LT.STS(0, D3DTSS_ALPHAARG1, D3DTA_TEXTURE);
+	LT.STS(0, D3DTSS_ALPHAARG2, D3DTA_DIFFUSE);
+	LT.STS(0, D3DTSS_ALPHAOP, D3DTOP_MODULATE);
+	CSPRITERENDERER::DrawSprite(x, y, 0.009f, tex, SA_CENTRE, SPT_NONE, 1.f, turn, colour, scaleX, scaleY, 0.f, 1.f, 0.f, 1.f);
+	LT.STS(0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
+	LT.STS(0, D3DTSS_COLOROP, D3DTOP_MODULATE);
+}
+
+void DrawBeaCurvedPanel(float x, float y, float w, float h, float capMax, DWORD fill, DWORD capTint, bool nativeCyan, float alpha, bool withOuterCaps = true)
+{
+	if (w <= 0.f || h <= 0.f || alpha <= 0.f) return;
+	const float aClamp = alpha > 1.f ? 1.f : alpha;
+	const auto fade = [aClamp](DWORD c) {
+		DWORD a = DWORD(float(c >> 24) * aClamp + 0.5f);
+		if (a > 255u) a = 255u;
+		return (a << 24) | (c & 0x00ffffffu);
+	};
+	if (!HasHudCapsuleArt())
+	{
+		const float bt = (std::max)(1.f, floorf(L.s));
+		Box(x, y, w, h, fade(fill));
+		Outline(x, y, w, h, bt, fade(capTint));
+		return;
+	}
+	const float drawH = h < 10.f ? 10.f : h;
+	const float capW = (capMax > 0.f && capMax < drawH) ? capMax : drawH;
+	const float scaleX = capW * (1.f / 64.f);
+	const float scaleY = drawH * (1.f / 64.f);
+	const float bodyW = w > capW ? (w - capW) : 0.f;
+	const float leftX = x + capW * 0.5f;
+	const float rightX = leftX + bodyW;
+	const float cy = y + h * 0.5f;
+
+	HUD.SetOverlayRenderStates();
+	LT.SRS(D3DRS_ZFUNC, D3DCMP_ALWAYS);
+	RENDERINFO.Apply();
+
+	if (aClamp >= 1.f || !withOuterCaps)
+	{
+		const DWORD bodyCol = fade(fill);
+		CSPRITERENDERER::DrawSprite(leftX, cy, 0.009f, HUD.mObjectiveInnerLeft, (ESpriteAlignment)7, SPT_NONE, 1.f, 0.f, bodyCol, scaleX, scaleY, 0.f, 1.f, 0.f, 1.f);
+		CSPRITERENDERER::DrawSprite(rightX, cy, 0.009f, HUD.mObjectiveInnerRight, SA_8, SPT_NONE, 1.f, 0.f, bodyCol, scaleX, scaleY, 0.f, 1.f, 0.f, 1.f);
+		const float seg = scaleX * 64.f;
+		if (seg > 0.5f && bodyW > 0.f)
+		{
+			float n = bodyW / seg;
+			float px = leftX;
+			while (n >= 1.f)
+			{
+				CSPRITERENDERER::DrawSprite(px, cy, 0.009f, HUD.mObjectiveInnerCentre, SA_8, SPT_NONE, 1.f, 0.f, bodyCol, scaleX, scaleY, 0.f, 1.f, 0.f, 1.f);
+				n -= 1.f;
+				px += seg;
+			}
+			if (n > 0.f)
+				CSPRITERENDERER::DrawSprite(px, cy, 0.009f, HUD.mObjectiveInnerCentre, SA_8, SPT_FILL_RIGHT, n, 0.f, bodyCol, scaleX, scaleY, 0.f, 1.f, 0.f, 1.f);
+		}
+		if (withOuterCaps)
+		{
+			if (nativeCyan)
+			{
+				CSPRITERENDERER::DrawSprite(leftX, cy, 0.009f, HUD.mObjectiveLeft, SA_CENTRE, SPT_NONE, 1.f, 0.f, 0xffffffff, scaleX, scaleY, 0.f, 1.f, 0.f, 1.f);
+				CSPRITERENDERER::DrawSprite(rightX, cy, 0.009f, HUD.mObjectiveRight, SA_CENTRE, SPT_NONE, 1.f, 0.f, 0xffffffff, scaleX, scaleY, 0.f, 1.f, 0.f, 1.f);
+			}
+			else
+			{
+				const DWORD tint = fade(capTint);
+				DrawTintedHudCap(leftX, cy, HUD.mObjectiveLeft, 0.f, tint, scaleX, scaleY);
+				DrawTintedHudCap(rightX, cy, HUD.mObjectiveRight, 0.f, tint, scaleX, scaleY);
+				// True SRCALPHA/ONE core glow (NOT HUD.SetAdditive ONE/ONE) so edges stay rich crimson-amber while core glows warm orange
+				LT.SRS(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
+				LT.SRS(D3DRS_DESTBLEND, D3DBLEND_ONE);
+				const DWORD coreGlow = fade(0x4eff9c28);
+				DrawTintedHudCap(leftX, cy, HUD.mObjectiveLeft, 0.f, coreGlow, scaleX, scaleY);
+				DrawTintedHudCap(rightX, cy, HUD.mObjectiveRight, 0.f, coreGlow, scaleX, scaleY);
+				LT.SRS(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
+			}
+		}
+	}
+	else
+	{
+		const float open = 0.5f + 0.5f * aClamp;
+		const float openSX = scaleX * open;
+		const float openSY = scaleY * open;
+		const float turn = 1.f - open;
+		const float cx = x + w * 0.5f;
+		if (nativeCyan)
+		{
+			const DWORD col = fade(0xffffffff);
+			CSPRITERENDERER::DrawSprite(cx, cy, 0.009f, HUD.mObjectiveLeft, SA_CENTRE, SPT_NONE, 1.f, turn, col, openSX, openSY, 0.f, 1.f, 0.f, 1.f);
+			CSPRITERENDERER::DrawSprite(cx, cy, 0.009f, HUD.mObjectiveRight, SA_CENTRE, SPT_NONE, 1.f, turn, col, openSX, openSY, 0.f, 1.f, 0.f, 1.f);
+		}
+		else
+		{
+			const DWORD col = fade(capTint);
+			DrawTintedHudCap(cx, cy, HUD.mObjectiveLeft, turn, col, openSX, openSY);
+			DrawTintedHudCap(cx, cy, HUD.mObjectiveRight, turn, col, openSX, openSY);
+		}
+	}
+	BeginDraw();
+}
+
 void CapsuleBar(float x, float y, float w, float h, float alpha = 1.f, bool lit = false, int allegiance = 0)
 {
 	if (w <= 0.f || h <= 0.f || alpha <= 0.f) return;
 	const auto fade = [alpha](DWORD c) { return (DWORD((float(c >> 24) * (alpha > 1.f ? 1.f : alpha)) + 0.5f) << 24) | (c & 0xffffff); };
-	if (allegiance == 1)
+	if (HasHudCapsuleArt())
+	{
+		if (allegiance == 1)
+		{
+			DrawBeaCurvedPanel(x, y, w, h, 0.f, 0xb41a0b08, 0xffe64416, false, alpha, true);
+		}
+		else
+		{
+			HUD.RenderObjectiveBar(x + w * 0.5f, y + h * 0.5f, w > h ? w - h : 0.f, h, alpha >= 1.f ? 1.f : 0.5f + 0.5f * alpha);
+			BeginDraw();
+		}
+	}
+	else if (allegiance == 1)
 	{
 		const CeCmdHudPalette pal = CeCmdHudMuspellPalette();
 		const float cap = (std::max)(2.f, 2.5f * L.s);
@@ -590,11 +713,6 @@ void CapsuleBar(float x, float y, float w, float h, float alpha = 1.f, bool lit 
 		Box(x, y + h * 0.12f, cap, h * 0.76f, fade(pal.cyanAccent));
 		Box(x + w - cap, y + h * 0.12f, cap, h * 0.76f, fade(pal.cyanAccent));
 	}
-	else if (HUD.mObjectiveLeft && HUD.mObjectiveRight && HUD.mObjectiveInnerLeft && HUD.mObjectiveInnerCentre && HUD.mObjectiveInnerRight)
-	{
-		HUD.RenderObjectiveBar(x + w * 0.5f, y + h * 0.5f, w > h ? w - h : 0.f, h, alpha >= 1.f ? 1.f : 0.5f + 0.5f * alpha);
-		BeginDraw();
-	}
 	else
 	{
 		const float cap = (std::max)(2.f, 2.f * L.s);
@@ -602,7 +720,7 @@ void CapsuleBar(float x, float y, float w, float h, float alpha = 1.f, bool lit 
 		Box(x, y + h * 0.15f, cap, h * 0.7f, fade(kCapsuleCap));
 		Box(x + w - cap, y + h * 0.15f, cap, h * 0.7f, fade(kCapsuleCap));
 	}
-	if (lit) Box(x + h * 0.5f, y + h * 0.18f, w - h, h * 0.64f, fade(kCapsuleLit));
+	if (lit) Box(x + h * 0.5f, y + h * 0.18f, w - h, h * 0.64f, fade(allegiance == 1 ? 0x80ff8828 : kCapsuleLit));
 }
 
 // A solid line t pixels wide from one window point to another: the sprite renderer's quad, turned along the line (the map editor's line).
@@ -1456,6 +1574,9 @@ void RtsHudText(float x, float y, uint32_t c, const char* s, float maxW, bool ce
 }
 float RtsHudTextWidth(const char* s, float sc) { return TextWidth(s, sc); }
 float RtsHudLineHeight(float sc) { return L.s > 0.f ? (LineHeight() / L.s) * sc : CeCmdViewTextHeight() * sc; }
+void RtsHudCurvedPanel(float x, float y, float w, float h, float capMax, uint32_t fill, uint32_t capTint, bool nativeCyan, float alpha, bool withOuterCaps) {
+    DrawBeaCurvedPanel(x, y, w, h, capMax, fill, capTint, nativeCyan, alpha, withOuterCaps);
+}
 bool UnitWholeSquad(int ordinal, const UnitControl::Request* request = NULL);
 
 int SquadGroupTag(int ordinal) {
@@ -1816,9 +1937,9 @@ bool StrategicPanelAt(float x, float y) {
     const float u = L.s;
     char text[160];
     StrategicTitle(text, sizeof text);
-    if (y < 30.f * u && x < 24.f * u + TextWidth(text, u)) return true;
+    if (y < 30.f * u && x < 48.f * u + TextWidth(text, u)) return true;
     StrategicPrompt(text, sizeof text);
-    if (y < 30.f * u && x >= L.w - (32.f * u + TextWidth(text, u))) return text[0] != 0;
+    if (y < 30.f * u && x >= L.w - (44.f * u + TextWidth(text, u))) return text[0] != 0;
     const CeCmdHudLayout lay = CeCmdHudComputeLayout(L.w, L.h, L.s, StrategicUiBottom(), gHudPlacardCount, gHudPage);
     if (CeCmdHudHitTest(lay, x, y).kind != CE_HUD_HIT_NONE) return true;
     return false;
@@ -3301,11 +3422,14 @@ DWORD Faded(DWORD colour, float alpha) {
     return (a << 24) | (colour & 0x00ffffff);
 }
 
-// A panel as the game's message box draws one: its dark glass and a grey edge (t units wide), faded by alpha.
+// A curved BEA panel using HUD's own crescent end-caps + translucent dark glass, with clean box fallback.
 void StrategicPanel(float x, float y, float w, float h, float t, float alpha) {
+    if (HasHudCapsuleArt()) {
+        DrawBeaCurvedPanel(x, y, w, h, (std::min)(h, 22.f * L.s), 0xb406101c, kCapsuleCap, true, alpha);
+        return;
+    }
     Box(x, y, w, h, Faded(kPanel, alpha));
     Outline(x, y, w, h, (std::max)(1.f, floorf(t * L.s)), Faded(kEdge, alpha));
-    // the HUD's cyan at both ends, as its capsules have: the card, the key list and the factory's card read as the same furniture as the capsules
     const float cap = (std::max)(2.f, 2.f * L.s), inset = h > 12.f * L.s ? 4.f * L.s : h * 0.2f;
     Box(x + cap, y + inset, cap, h - 2.f * inset, Faded(kCapsuleCap, alpha));
     Box(x + w - 2.f * cap, y + inset, cap, h - 2.f * inset, Faded(kCapsuleCap, alpha));
@@ -3444,20 +3568,20 @@ void DrawStrategicHints() {
     char text[160];
     StrategicTitle(text, sizeof text);
     // the title in the HUD's capsule, top left: "Commander" in white, the battle's state after it in grey
-    CapsuleBar(8.f * u, 6.f * u, TextWidth(text, u) + 32.f * u, 24.f * u, 1.f, false, hudAllegiance);
+    CapsuleBar(16.f * u, 6.f * u, TextWidth(text, u) + 32.f * u, 22.f * u, 1.f, false, hudAllegiance);
     {
         char head[24] = "Commander";
         const float headW = TextWidth(head, u);
-        Text(24.f * u, 10.f * u, kText, head);
-        if (strlen(text) > strlen(head)) Text(24.f * u + headW, 10.f * u, kQuiet, text + strlen(head));
+        Text(32.f * u, 10.f * u, kText, head);
+        if (strlen(text) > strlen(head)) Text(32.f * u + headW, 10.f * u, kQuiet, text + strlen(head));
     }
 
     // compact top-right utility hint (F1 Help / Esc Cockpit)
     StrategicPrompt(text, sizeof text);
     if (text[0]) {
         const float w = TextWidth(text, u);
-        CapsuleBar(L.w - w - 32.f * u, 6.f * u, w + 24.f * u, 24.f * u, 1.f, false, hudAllegiance);
-        float px = L.w - w - 20.f * u;
+        CapsuleBar(L.w - w - 42.f * u, 6.f * u, w + 26.f * u, 22.f * u, 1.f, false, hudAllegiance);
+        float px = L.w - w - 29.f * u;
         for (char* item = text; *item; ) {
             char* end = strstr(item, "   ");
             char one[64];
@@ -3511,7 +3635,7 @@ void DrawStrategicHints() {
     char forcesSummary[64] = "";
     BuildRtsHudModel(forcesSummary, sizeof forcesSummary);
     {
-        const CeCmdHudDrawOps ops = {RtsHudBox, RtsHudOutline, RtsHudText, RtsHudTextWidth, RtsHudLineHeight};
+        const CeCmdHudDrawOps ops = {RtsHudBox, RtsHudOutline, RtsHudText, RtsHudTextWidth, RtsHudLineHeight, RtsHudCurvedPanel};
         CeCmdHudDrawBar(ops, gHudLayout, gHudPlacards, gHudPlacardCount, gHudCard, forcesSummary,
                         float(MOUSE_X), float(MOUSE_Y), gHudBtnFlashNs, Ns(), hudAllegiance);
     }
@@ -3560,9 +3684,11 @@ void DrawStrategicHints() {
         const float y0 = floorf((std::max)(safeTop, safeTop + ((safeBot - safeTop) - h) * 0.5f));
         const CeCmdHudPalette helpPal = CeCmdHudPaletteForAllegiance(hudAllegiance);
         const float bt = floorf(u) > 1.f ? floorf(u) : 1.f;
-        Box(x0, y0, w, h, helpPal.barFill);
-        Outline(x0, y0, w, h, bt, helpPal.barBorder);
-        Box(x0 + bt, y0 + bt, w - 2.f * bt, bt, helpPal.barTopBevel);
+        const float helpCap = floorf(26.f * u);
+        DrawBeaCurvedPanel(x0, y0, w, h, helpCap, (helpPal.barFill & 0x00ffffffu) | 0xcc000000u,
+                           hudAllegiance == 1 ? 0xffe64416u : helpPal.cyanAccent, hudAllegiance != 1, 1.f, true);
+        if (w > helpCap + 4.f)
+            Box(x0 + helpCap * 0.55f, y0 + bt, w - helpCap * 1.1f, bt, (helpPal.barTopBevel & 0x00ffffffu) | 0x68000000u);
         const DWORD helpDesc = helpPal.textBright;
         const float rx0 = x0 + (padX + lKeyW + keyGap + lWhatW + colGap) * fit;
         for (int i = 0; i < rows; ++i) {
