@@ -231,16 +231,13 @@ struct CeMultiBeExtraSlotPrefs
 	}
 };
 
-// Pure angle wrapping to [-pi, pi].
+// Pure O(1) angle wrapping to [-pi, pi].
 inline float CeMultiBeWrapAngle(float a)
 {
-	const float kPi = 3.14159265f;
-	const float kTwoPi = 6.28318530f;
 	if (!isfinite(a))
 		return 0.0f;
-	while (a > kPi) a -= kTwoPi;
-	while (a < -kPi) a += kTwoPi;
-	return a;
+	const float r = remainderf(a, 6.283185307179586f);
+	return isfinite(r) ? r : 0.0f;
 }
 
 inline float CeMultiBeClamp(float v, float lo, float hi)

@@ -1,0 +1,26 @@
+--- a/DXCockpit.cpp
++++ b/DXCockpit.cpp
+@@ -10,6 +10,10 @@
+ #include "meshrenderer.h"
+ #include "ltshell.h"
+ #include "engine.h"
++#ifdef CE_VERSION
++extern "C" void PortCeMuspellCockpitBegin(CBattleEngine *be, CRenderThing *rt) __attribute__((weak));
++extern "C" void PortCeMuspellCockpitEnd(void) __attribute__((weak));
++#endif
+ 
+ //******************************************************************************************
+ void	CDXCockpit::Render()	// FUNCTION: 0x0053bb50
+@@ -35,6 +39,12 @@
+ 				flags = 0x40;
+ 			}
++#ifdef CE_VERSION
++			if (PortCeMuspellCockpitBegin) PortCeMuspellCockpitBegin(mBattleEngine, mRenderThing);
++#endif
+ 			mRenderThing->Render(flags);
++#ifdef CE_VERSION
++			if (PortCeMuspellCockpitEnd) PortCeMuspellCockpitEnd();
++#endif
+ 			MESH_ALPHA = 255;
+ 		}
+ 		LT.SRS(D3DRS_NORMALIZENORMALS, FALSE);

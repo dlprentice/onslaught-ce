@@ -235,6 +235,13 @@ int main() {
     Check(!CeMultiBeIsAboveWater(2.0f, -5.0f, 2.0f), "underwater rejected");
     Check(!CeMultiBeIsAboveWater(nanv, -5.0f, 2.0f), "NaN ground rejected");
 
+    // 7b. O(1) angle wrapping on extreme finite & non-finite floats (never hangs)
+    const float wHugePos = CeMultiBeWrapAngle(1e10f);
+    const float wHugeNeg = CeMultiBeWrapAngle(-1e30f);
+    Check(std::isfinite(wHugePos) && std::fabs(wHugePos) <= 3.1416f, "CeMultiBeWrapAngle O(1) on 1e10f");
+    Check(std::isfinite(wHugeNeg) && std::fabs(wHugeNeg) <= 3.1416f, "CeMultiBeWrapAngle O(1) on -1e30f");
+    Check(CeMultiBeWrapAngle(nanv) == 0.0f && CeMultiBeWrapAngle(infv) == 0.0f, "CeMultiBeWrapAngle non-finite -> 0");
+
     // 8. Formation separation & overview camera framing
     for (int total = 3; total <= 4; total++) {
         float pts[4][2];
@@ -472,7 +479,7 @@ class HostHelperTests(unittest.TestCase):
 class GateAuditTests(unittest.TestCase):
     def test_no_new_bea_env_vars_and_spdx_present(self):
         allowed_fence_envs = {"BEA_PORT_PILOT", "BEA_PORT_AUTOPILOT"}
-        for rel in ("game/ce_multibe.h", "game/ce_multibe_state.h", "game/ce_multibe.cpp"):
+        for rel in ("game/ce_multibe.h", "game/ce_multibe_state.h", "game/ce_multibe_ai.h", "game/ce_multibe.cpp"):
             text = (PORT / rel).read_text(encoding="utf-8")
             self.assertIn("SPDX-License-Identifier: GPL-3.0-only", text[:200], rel)
             found = set(re.findall(r"BEA_[A-Z0-9_]+", text))
@@ -513,7 +520,13 @@ class GateAuditTests(unittest.TestCase):
         self.assertIn("gCachedMultiBeChoice = choice;", src, "CCeBattleEnginesItem::SetValue must update cache synchronously")
         self.assertNotIn("GetUnitNB().First()", src, "must not call WORLD.GetUnitNB().First(); use ListIterator<CUnit>")
         self.assertNotIn("GetUnitNB().Next()", src, "must not call WORLD.GetUnitNB().Next(); use ListIterator<CUnit>")
-        self.assertGreaterEqual(src.count("ListIterator<CUnit>"), 3, "all three unit scans must use stack-local ListIterator<CUnit>")
+        self.assertNotIn("mNodes.First()", src, "must not call INFLUENCEMAP->mNodes.First(); use ListIterator<CInfluenceNode>")
+        self.assertGreaterEqual(src.count("ListIterator<CUnit>"), 4, "all unit scans must use stack-local ListIterator<CUnit>")
+        self.assertIn("ListIterator<CInfluenceNode>", src, "battle-line scan must use stack-local ListIterator<CInfluenceNode>")
+        for ai_fn in ("CeMultiBeComputeLeadPoint", "CeMultiBeEvaluateFireGate", "CeMultiBePickWeapon",
+                      "CeMultiBeComputeWalkerMove", "CeMultiBeStepWalkerDash", "CeMultiBeComputeJetFlight",
+                      "CeMultiBeScoreTarget", "CeMultiBeEvaluateSurvival", "CeMultiBeShouldMorphSmart"):
+            self.assertIn(ai_fn, src, f"ce_multibe.cpp must wire fair-rules AI helper {ai_fn}")
         self.assertIn("MAP.GetWaterLevel()", src, "must check MAP.GetWaterLevel() when spawning/patrolling aux BEs")
         self.assertIn("PortCeMultiBeHandleDeath", src, "must intercept aux BE StartDieProcess cleanly")
         self.assertIn("focused->GetPlayer()->GetNumber() == player->GetNumber()", src, "2P split-screen hud_focus must match player numbers")
@@ -523,7 +536,11 @@ class GateAuditTests(unittest.TestCase):
         self.assertIn('L"Skirmish mode: "', src, "clickable Skirmish mode menu row missing")
         self.assertIn('L"Battle Engines: "', src, "clickable Battle Engines menu row missing")
         self.assertIn("PortCeSoloSkirmishActive", src, "PortCeSoloSkirmishActive definition missing")
+        self.assertIn("SyncHumanPlayerEngines", src, "human player respawn synchronization missing")
         self.assertIn("SyncSoloP2Engine", src, "Solo Skirmish P2 respawn synchronization missing")
+        self.assertIn("tgtSurfaceZ = (tgtGroundZ < waterZ) ? tgtGroundZ : waterZ;", src, "target altitude must measure above min(ground, water)")
+        self.assertIn("CalcUnitOverCrossHair(NULL, TRUE, TRUE)", src, "aux BE weapon/lock calls must refresh CalcUnitOverCrossHair under bound camera")
+        self.assertIn("curMode != NULL", src, "CWeapon::CanLock must guard against null GetCurrentMode()")
         self.assertIn("CeCmdMatchUpdate()", src, "Solo Skirmish must invoke CeCmdMatchUpdate() even when commander=0")
         self.assertIn("CeCmdMatchLevelEnd()", src, "Solo Skirmish must restore mFullscreenMultiplayer on level_end")
         patch_0375 = (PORT / "patches/0375-ce-solo-skirmish.patch").read_text(encoding="latin-1")
@@ -592,6 +609,8 @@ class LiveEngineTests(unittest.TestCase):
             self.assertGreater(final.get("hud_focus", 0), 0, f"expected hud_focus hook invocations: {final}")
             self.assertGreaterEqual(final.get("moved", 0), 2, f"expected auxiliary BEs to move cleanly: {final}")
             self.assertGreater(final.get("morphs", 0), 0, f"expected Walker<->Jet morphing in 2v2 combat: {final}")
+            self.assertGreater(final.get("weapon_picks", 0), 0, f"expected smart weapon selection picks: {final}")
+            self.assertGreater(final.get("evades", 0), 0, f"expected reactive AI evasion maneuvers: {final}")
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
@@ -610,6 +629,8 @@ class LiveEngineTests(unittest.TestCase):
             self.assertGreaterEqual(final.get("ticks", 0), 200, final)
             self.assertEqual(final.get("nan"), 0, final)
             self.assertGreater(final.get("aux_shots", 0), 0, final)
+            self.assertGreater(final.get("weapon_picks", 0), 0, final)
+            self.assertGreater(final.get("evades", 0), 0, final)
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
@@ -648,6 +669,8 @@ class LiveEngineTests(unittest.TestCase):
             self.assertGreaterEqual(final.get("ticks", 0), 200, final)
             self.assertEqual(final.get("nan"), 0, final)
             self.assertGreater(final.get("aux_shots", 0), 0, final)
+            self.assertGreater(final.get("weapon_picks", 0), 0, final)
+            self.assertGreater(final.get("evades", 0), 0, final)
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
