@@ -21,13 +21,11 @@ bool Leaf(const char *name) {
     return n > 10 && n < sizeof(CeEditorFile::name) && !strcmp(name + n - 10, ".ceproject");
 }
 bool Directory(CeSettingsDir *dir, bool create, bool *absent) {
-    char folder[4200];
     const char *root = PortUserDir();
     int gone = 0;
     if (absent) *absent = false;
-    if (!root || !*root || size_t(snprintf(folder, sizeof(folder), "%s/projects", root)) >= sizeof(folder))
-        return false;
-    const bool result = ce_settings_dir_open_ex(folder, create ? 1 : 0, dir, &gone) != 0;
+    if (!root || !*root) return false;
+    const bool result = ce_settings_subdir_open_ex(root, "projects", create ? 1 : 0, dir, &gone) != 0;
     if (absent) *absent = gone != 0;
     return result;
 }

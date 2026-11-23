@@ -53,6 +53,7 @@ extern "C" int CE_SettingGetBool(const char *, int);
 bool			PortCeLayer();						// port/platform/common/ce.cpp
 bool			PortCeExperimental(const char *mode);	// ce.cpp: one of the unfinished features (the ce.ini lines under [Experimental]), read once; the pages below offer each only on yes
 void			PortCeExperimentalBlock();			// ce.cpp: adds the [Experimental] lines to ce.ini when it has none
+bool			PortModsPlatformOff();				// port/platform/common/mods.cpp: true on platforms without the mod loader (Windows)
 extern "C" int	CE_OpenReportPage(void);
 extern "C" int	CE_SettingIs(const char *key, const char *value);
 extern "C" int	CE_SettingLauncherIs(const char *key, const char *value);
@@ -352,6 +353,8 @@ static void	ShowMessage(const char *text, float y = 240.f, float top_least = 122
 	float placed = (top < top_least) ? top_least : top;
 	if (placed + FEMESSBOX.mHeight > 476.f)
 		placed = 476.f - FEMESSBOX.mHeight;
+	if (placed < 0.f)
+		placed = 0.f;
 	if (placed != top)
 		FEMESSBOX.mY = placed + FEMESSBOX.mHeight * 0.5f;
 	FEMESSBOX.SetOnDismiss(FEP_NONE, 0);
@@ -482,8 +485,14 @@ public:
 	}
 	char mValue[CE_CATALOGUE_QUERY_MAX + 1];
 };
-bool CatalogueKeyTrap(WORD key, KeyEventType event);
-pKeyTrapper CatalogueTrap() { return (pKeyTrapper)(void (*)(void))CatalogueKeyTrap; }
+template <class A, class B> struct CeSameType { static constexpr bool value = false; };
+template <class A> struct CeSameType<A, A> { static constexpr bool value = true; };
+void CatalogueKeyTrap(WORD key, KeyEventType event);
+pKeyTrapper CatalogueTrap()
+{
+	static_assert(CeSameType<decltype(&CatalogueKeyTrap), pKeyTrapper>::value, "CatalogueKeyTrap must match pKeyTrapper");
+	return &CatalogueKeyTrap;
+}
 void CatalogueTextEnd() { if (LT.GetKeytrap() == CatalogueTrap()) LT.SetKeytrap(NULL); }
 
 class CCeSwitch : public CBOOLMenuItem
@@ -838,6 +847,7 @@ enum ECeAction
 	CEA_PAGE_HELP,
 	CEA_PAGE_EDITOR,
 	CEA_PAGE_MUSEUM = 126,
+	CEA_PAGE_LABS = 127,
 	CEA_EDITOR_FIRST = 200,
 #ifdef CE_NETWORK_OFF
 	CEA_TIPS = 125
@@ -848,7 +858,7 @@ enum ECeAction
 };
 #define CE_NUM_RACES	5
 
-// The pages (lists of rows) and where Back goes from each: the hub, its four pages, and What's Coming under Help & Info.
+// The pages (lists of rows) and where Back goes from each: the hub, its pages, What's Coming under Help & Info, Catalogue and Experimental Features.
 enum ECePage
 {
 	CEP_HUB = 0,
@@ -862,14 +872,16 @@ enum ECePage
 	CEP_CATALOGUE,
 	CEP_CATALOGUE_ITEMS,
 	CEP_CATALOGUE_FIND,
+	CEP_LABS,
 	CEP_COUNT
 };
-static const int	kCeParent[CEP_COUNT] = {-1, CEP_HUB, CEP_HUB, CEP_HUB, CEP_HUB, CEP_HELP, CEP_HUB, CEP_HUB, CEP_HUB, CEP_CATALOGUE, CEP_CATALOGUE_ITEMS};
+static const int	kCeParent[CEP_COUNT] = {-1, CEP_HUB, CEP_HUB, CEP_HUB, CEP_HUB, CEP_HELP, CEP_HUB, CEP_HUB, CEP_HUB, CEP_CATALOGUE, CEP_CATALOGUE_ITEMS, CEP_HUB};
 // The title bar's text while one of Help & Info's boxes is up, in the order of CEBT_*.
 enum { CEBT_TIPS = 1, CEBT_UPDATES, CEBT_ABOUT, CEBT_THANKS };
 static WCHAR		kBoxTitles[4][24] = {L"Controls & Tips", L"Updates", L"About Onslaught CE", L"Special Thanks"};
 static WCHAR		kCeTitles[CEP_COUNT][24] = {L"ONSLAUGHT CE", L"Bonus Levels", L"CE Settings", L"Cheats", L"Help & Info",
-												L"What's Coming", L"Map Editor", L"Museum", L"Catalogue", L"Catalogue", L"Find by name"};
+												L"What's Coming", L"Map Editor", L"Museum", L"Catalogue", L"Catalogue", L"Find by name",
+												L"Experimental Features"};
 
 // A row: its label, what it does, and its hint (the font has no underscore, so a setting's
 // ce.ini name is left to the README).
@@ -885,11 +897,12 @@ static const SCeRow	kHubRows[] = {
 	{L"Network Game", CEA_NETWORK, {L"Play a mission together with a friend on another PC.", 0}},
 #endif
 	{L"Bonus Levels", CEA_PAGE_BONUS, {L"Extra levels, outside your career.", 0}},
-	{L"Extras", CEA_EXTRAS, {L"Your service record and the game's music.", 0}},
+	{L"Extras", CEA_EXTRAS, {L"Service record, goodies guide, music player, lore and career backups.", 0}},
 	{L"Mods", CEA_MODS, {L"Turn the mods in your mods folder on or off, and put them in order.", 0}},
 	{L"Catalogue", CEA_CATALOGUE, {L"Browse the models, textures and sounds installed with the game.", 0}},
 	{L"CE Settings", CEA_PAGE_SETTINGS, {L"The options Onslaught CE adds to the game.", 0}},
 	{L"Cheats", CEA_PAGE_CHEATS, {L"The original game's cheats as switches. They apply to every career.", 0}},
+	{L"Experimental Features", CEA_PAGE_LABS, {L"Turn unfinished CE features on or off. Changes apply on next start.", 0}},
 	{L"Help & Info", CEA_PAGE_HELP, {L"Controls and tips, what is coming, updates, about and thanks.", 0}},
 	{L"Report a Problem", CEA_REPORT, {L"Opens a problem report in your browser. Nothing is sent until you submit it.", 0}},
 	{L"Map Editor", CEA_PAGE_EDITOR, {L"Move a level's objects and play your changes.", 0}},
@@ -933,7 +946,7 @@ static bool	ExperimentalOffered(int action)
 		return PortCeExtrasOffered();
 	if (action >= CEA_CATALOGUE && action <= CEA_CAT_ERASE)
 	{
-		static const bool catalogue = CE_SettingGetBool("catalogue", 0) == 1;
+		static const bool catalogue = PortCeMenus() && (CE_SettingGetBool("catalogue", 1) == 1);
 		return catalogue;
 	}
 	if (action == CEA_MODS)
@@ -1038,12 +1051,37 @@ static const SCeSetting	kSettings[] = {
 };
 #define CE_NUM_SETTINGS	int(sizeof(kSettings) / sizeof(kSettings[0]))
 
+// Experimental Features (Labs): On/Off switches that write 1 or 0 directly to ce.ini via CE_SettingSet,
+// keeping the [Experimental] block in place without requiring hand edits. Changes take effect on next restart.
+struct SCeLab
+{
+	const WCHAR	*mLabel;
+	const char	*mKey;
+	SCeHint		mHint;
+	bool		mNeedsMods;
+};
+
+static const SCeLab	kLabs[] = {
+	{L"Commander Mode:", "commander",
+	 {L"Live squad view and orders in solo levels.", 0}, false},
+	{L"Play Any Unit:", "play_unit",
+	 {L"Pilot any friendly unit in solo levels.", 0}, false},
+	{L"Grand Museum:", "museum",
+	 {L"Adds the Museum for units, art and films.", 0}, false},
+	{L"Map Editor:", "map_editor",
+	 {L"Adds the Map Editor to edit and play maps.", 0}, false},
+	{L"Mods Menu:", "mods_menu",
+	 {L"Adds the Mods page to manage your mods.", 0}, true},
+};
+#define CE_NUM_LABS	int(sizeof(kLabs) / sizeof(kLabs[0]))
+static WCHAR		kLabsNote[] = L"Unfinished features - changes apply on next restart.";
+
 // Where the lists are centred: MenuOptionsList.cpp's Render centres its items of 20 pixels on y, so with n of them (Back among them)
 // the first is at y - 10n - 15 and Back, the last, at y + 10n - 35, and Back draws the hint from 28 pixels below its top. The title
 // bar ends near 104 and the help bar starts at 455 (the hints end by 449). The pages of up to ten items are centred on 300, as before;
-// CE Settings, with fourteen, on 260, which puts its first row at 105 and leaves room for a hint of three lines under Back (the
-// white lines and the grey one: three end at 441).
-static const float		kCeListY = 300.f, kCeSettingsY = 260.f;
+// the hub, which can hold up to thirteen items with every optional and experimental row on, on 275; CE Settings, with fourteen, on 260,
+// which puts its first row at 105 and leaves room for a hint of three lines under Back (the white lines and the grey one: three end at 441).
+static const float		kCeListY = 300.f, kCeSettingsY = 260.f, kCeHubY = 275.f;
 
 static const SCeRow	kHelpRows[] = {
 	{L"Controls & Tips", CEA_TIPS, {L"Dodge, zoom, Photo Mode, screenshots, the console, the free camera and the commander view.", 0}},
@@ -1156,6 +1194,26 @@ static const SCePlan kCePlans[] = {
 	 "taking the commander seat online is an idea, not available."}
 };
 #define CE_NUM_PLANS int(sizeof(kCePlans) / sizeof(kCePlans[0]))
+
+static_assert(CEA_PLAN_FIRST > CEA_PLANS, "plan actions must follow base actions");
+#ifndef CE_NETWORK_OFF
+static_assert(CEA_PLAN_FIRST + CE_NUM_PLANS <= CEA_NETWORK, "plan actions must not collide with CEA_NETWORK");
+static_assert(CEA_NETWORK < CEA_RACE_FIRST, "CEA_NETWORK must precede race actions");
+#endif
+static_assert(CEA_PLAN_FIRST + CE_NUM_PLANS <= CEA_RACE_FIRST, "plan actions must not collide with race actions");
+static_assert(CEA_RACE_FIRST + CE_NUM_RACES <= CEA_MUSEUM, "race actions must not collide with museum actions");
+static_assert(CEA_MUSEUM < CEA_MUSEUM_VISIT && CEA_MUSEUM_VISIT < CEA_EXTRAS && CEA_EXTRAS < CEA_MODS && CEA_MODS < CEA_PAGE_BONUS,
+              "feature actions must not collide with page actions");
+static_assert(CEA_PAGE_BONUS < CEA_PAGE_SETTINGS && CEA_PAGE_SETTINGS < CEA_PAGE_CHEATS && CEA_PAGE_CHEATS < CEA_PAGE_HELP &&
+              CEA_PAGE_HELP < CEA_PAGE_EDITOR && CEA_PAGE_EDITOR < CEA_TIPS && CEA_TIPS < CEA_PAGE_MUSEUM && CEA_PAGE_MUSEUM < CEA_PAGE_LABS,
+              "page and tips actions must not collide");
+static_assert(CEA_PAGE_LABS < CEA_EDITOR_FIRST, "page actions must not collide with editor map actions");
+static_assert(CEA_EDITOR_FIRST + kEditorMapCount <= CEA_CATALOGUE, "editor map actions must not collide with catalogue actions");
+static_assert(CEA_CATALOGUE < CEA_CAT_MODELS && CEA_CAT_MODELS + CE_CATALOGUE_GROUPS <= CEA_CAT_TURN &&
+              CEA_CAT_TURN < CEA_CAT_ENTRY && CEA_CAT_ENTRY + CE_CATALOGUE_SLOTS <= CEA_CAT_FIND &&
+              CEA_CAT_FIND < CEA_CAT_CLEAR && CEA_CAT_CLEAR < CEA_CAT_FIELD &&
+              CEA_CAT_FIELD < CEA_CAT_APPLY && CEA_CAT_APPLY < CEA_CAT_ERASE,
+              "catalogue actions must not collide");
 
 // The same topics as the list shows them: in Title Case like the original's pages (kCePlans' own labels are the topics'
 // names, kept as they were), each with its hint. A test checks the two tables name the same topics.
@@ -1419,6 +1477,57 @@ public:
 	bool				mRead;
 };
 
+// An Experimental Features (Labs) row: an On/Off switch backed directly by ce.ini via CE_SettingSet(key, 0/1).
+// Reads its current disk value once when the page opens (Refresh), writes in-place preserving [Experimental] layout,
+// and never writes while PortCeLayer() is false (replays/recordings/probes).
+class CCeLabSwitch : public CMenuMenuItem
+{
+public:
+	CCeLabSwitch(const SCeLab &lab) : CMenuMenuItem((EPCText)0, 3, false), mLab(&lab), mIndex(-1) {}
+
+	virtual WCHAR	*GetText() { return (WCHAR *)mLab->mLabel; }
+	virtual int		GetNumChoices() { return 2; }
+	virtual WCHAR	*GetChoiceText(int n)
+	{
+		static WCHAR off[] = L"Off", on[] = L"On";
+		return n ? on : off;
+	}
+	virtual int		GetValue()
+	{
+		if (mIndex < 0)
+			mIndex = Lookup();
+		return mIndex;
+	}
+	virtual void	Refresh()
+	{
+		mIndex = -1;
+		CMenuMenuItem::Refresh();
+	}
+	virtual void	SetValue(int value)
+	{
+		if (!PortCeLayer() || (value != 0 && value != 1))
+			return;
+		if (!CE_SettingSet(mLab->mKey, value))
+		{
+			ShowMessage("Your settings could not be saved, so this was not changed.");
+			return;
+		}
+		mIndex = value;
+	}
+
+	int		Lookup()
+	{
+		if (CE_SettingGetBool(mLab->mKey, 0) == 1)
+			return 1;
+		if (!strcmp(mLab->mKey, "play_unit") && CE_SettingIs(mLab->mKey, "tank"))
+			return 1;
+		return 0;
+	}
+
+	const SCeLab	*mLab;
+	int				mIndex;
+};
+
 CPauseMenu::CPauseMenu(EPortCeNoLists) : mActive(FALSE), mPage(0), mCloseTime(-1.f)
 {
 	mOptionsPage = true;
@@ -1455,7 +1564,7 @@ public:
 			if (ExperimentalOffered(kHubRows[i].mAction))
 				mHubRows[mHubCount++] = kHubRows[i];
 		}
-		AddPage(CEP_HUB, mHubRows, mHubCount);
+		AddPage(CEP_HUB, mHubRows, mHubCount, NULL, kCeHubY);
 		AddPage(CEP_BONUS, kBonusRows, CE_NUM_BONUS, kBonusNote);
 		// CE Settings is its table, a row each (kSettings; the Commander Map row only with commander on), centred higher than
 		// the other pages for its fourteen items.
@@ -1502,8 +1611,9 @@ public:
 		list->AddItem(new (MEMTYPE_MENUITEM) CCeBack(list, &kEditorRows[0].mHint, int(sizeof(SCeRow)), kEditorMapCount, NULL));
 		mLists.Append(list);
 		AddPage(CEP_MUSEUM, kMuseumRows, kMuseumRowCount);		// reached only from the Museum row, which the hub offers only with the museum on
-		if (ExperimentalOffered(CEA_CATALOGUE))
+		memset(mCategoryHints, 0, sizeof(mCategoryHints));
 		{
+			// The Catalogue lists stay lightweight and inert until ReadCatalogue() runs when the row is chosen (guarded by ExperimentalOffered).
 			CMenuOptionsList *groups = NewList(CEP_CATALOGUE);
 			for (int i = 0; i < CE_CATALOGUE_GROUPS; ++i)
 				groups->AddItem(mCategory[i] = new (MEMTYPE_MENUITEM) CCeCatalogueRow(CEA_CAT_MODELS + i));
@@ -1526,6 +1636,16 @@ public:
 				L"Type a name. Enter finds, Esc cancels.\nSpaces also match underscores."));
 			mLists.Append(find);
 		}
+		mLabCount = 0;
+		const bool modsAvailable = !PortModsPlatformOff();
+		for (const SCeLab &lab : kLabs)
+			if (!lab.mNeedsMods || modsAvailable)
+				mLabs[mLabCount++] = lab;
+		CMenuOptionsList *labs = NewList(CEP_LABS);
+		for (int i = 0; i < mLabCount; i++)
+			labs->AddItem(new (MEMTYPE_MENUITEM) CCeLabSwitch(mLabs[i]));
+		labs->AddItem(new (MEMTYPE_MENUITEM) CCeBack(labs, &mLabs[0].mHint, int(sizeof(SCeLab)), mLabCount, kLabsNote));
+		mLists.Append(labs);
 	}
 
 	// The pages' rows as this process offers them (the constructor fills them in).
@@ -1533,6 +1653,8 @@ public:
 	int			mHubCount;
 	SCeSetting	mSettings[CE_NUM_SETTINGS];
 	int			mSettingCount;
+	SCeLab		mLabs[CE_NUM_LABS];
+	int			mLabCount;
 	SCeRow		mHelpRows[sizeof(kHelpRows) / sizeof(kHelpRows[0])];
 	SCeHint		mPlanHints[CE_NUM_PLANS];
 
@@ -1646,9 +1768,9 @@ public:
 	}
 
 	// A page of plain rows: each its own row, then Back, and the page's standing note under the hint if it has one.
-	void	AddPage(int page, const SCeRow *rows, int count, const WCHAR *note = NULL)
+	void	AddPage(int page, const SCeRow *rows, int count, const WCHAR *note = NULL, float y = kCeListY)
 	{
-		CMenuOptionsList *list = NewList(page);
+		CMenuOptionsList *list = NewList(page, y);
 		for (int i = 0; i < count; i++)
 			list->AddItem(new (MEMTYPE_MENUITEM) CCeMenuItem(rows[i].mLabel, rows[i].mAction));
 		list->AddItem(new (MEMTYPE_MENUITEM) CCeBack(list, &rows[0].mHint, int(sizeof(SCeRow)), count, note));
@@ -1833,6 +1955,9 @@ public:
 			break;
 		case CEA_PAGE_MUSEUM:
 			OpenPage(CEP_MUSEUM);
+			break;
+		case CEA_PAGE_LABS:
+			OpenPage(CEP_LABS);
 			break;
 		case CEA_PAGE_BONUS:
 			OpenPage(CEP_BONUS);
@@ -2180,11 +2305,9 @@ void	PortCeCatalogueListFind()
 		sCePage.mMenu->CatalogueFindFromList();
 }
 
-bool CatalogueKeyTrap(WORD key, KeyEventType event)
+void CatalogueKeyTrap(WORD key, KeyEventType event)
 {
 	if (sCePage.mMenu && LT.GetKeytrap() == CatalogueTrap()) sCePage.mMenu->CatalogueKeys(key, event);
-	// Mouse buttons also consult the trap. The normal list keeps pointer ownership.
-	return false;
 }
 
 CFrontEndPage	*PortCePage()

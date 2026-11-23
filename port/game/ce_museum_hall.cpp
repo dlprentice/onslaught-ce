@@ -125,7 +125,26 @@ struct Gallery {
     int zone;
     bool valid, overflow;
     const char *overflowReason;
-} g;
+};
+static Gallery *gPtr = NULL;
+
+Gallery *EnsureGallery() {
+    if (!gPtr) {
+        gPtr = static_cast<Gallery *>(std::calloc(1, sizeof(Gallery)));
+        if (gPtr) {
+            gPtr->zone = -1;
+            gPtr->current = kMatAuto;
+        }
+    }
+    return gPtr;
+}
+
+void FreeGallery() {
+    if (gPtr) {
+        std::free(gPtr);
+        gPtr = NULL;
+    }
+}
 
 static CeMuseumExhibition::Plan gExhibition = {};
 static CeMuseumExhibition::Vec2 gExhibitionVisitor = {};
@@ -133,6 +152,7 @@ static CeMuseumExhibition::Grand::RoomGraph gGrandGraph = {};
 static bool gGrandMode = false;
 static float gGrandFloorZ = 0.0f;
 static CeMuseumTour::Wing gCurrentWing = CeMuseumTour::kWingCourtyard;
+static CeMuseumTour::Wing gAnticipatedWing = CeMuseumTour::kWingCourtyard;
 static bool gWingAnnounced = false;
 static double gLastStepClock = 0.0;
 static bool gHasStepClock = false;
@@ -145,8 +165,9 @@ static bool gPendingJump = false;
 static float gJumpX = 0.0f, gJumpY = 0.0f, gJumpYaw = 0.0f;
 
 void Overflow(const char *why) {
-    if (!g.overflow) g.overflowReason = why;
-    g.overflow = true;
+    if (!gPtr) return;
+    if (!gPtr->overflow) gPtr->overflowReason = why;
+    gPtr->overflow = true;
 }
 
 Material ColourMaterial(DWORD colour) {
@@ -164,16 +185,17 @@ Material ColourMaterial(DWORD colour) {
 }
 
 void Triangle(const Vertex &a, const Vertex &b, const Vertex &c) {
-    if (g.used + 3 > kLitCapacity) { Overflow("the vertex buffer is full"); return; }
-    const Material m = g.current == kMatAuto ? ColourMaterial(a.colour) : g.current;
+    if (!gPtr) return;
+    if (gPtr->used + 3 > kLitCapacity) { Overflow("the vertex buffer is full"); return; }
+    const Material m = gPtr->current == kMatAuto ? ColourMaterial(a.colour) : gPtr->current;
     const float ux=b.x-a.x, uy=b.y-a.y, uz=b.z-a.z, vx=c.x-a.x, vy=c.y-a.y, vz=c.z-a.z;
     float nx=uy*vz-uz*vy, ny=uz*vx-ux*vz, nz=ux*vy-uy*vx;
     const float length=std::sqrt(nx*nx+ny*ny+nz*nz);
     if (length < 1e-8f) return;
     nx/=length; ny/=length; nz/=length;
     bool flip;
-    if (g.hasCentre) {
-        const float cx=(a.x+b.x+c.x)/3-g.centre[0], cy=(a.y+b.y+c.y)/3-g.centre[1], cz=(a.z+b.z+c.z)/3-g.centre[2];
+    if (gPtr->hasCentre) {
+        const float cx=(a.x+b.x+c.x)/3-gPtr->centre[0], cy=(a.y+b.y+c.y)/3-gPtr->centre[1], cz=(a.z+b.z+c.z)/3-gPtr->centre[2];
         flip = nx*cx+ny*cy+nz*cz < 0;
     } else flip = nz > 0;
     if (flip) { nx=-nx; ny=-ny; nz=-nz; }
@@ -181,13 +203,13 @@ void Triangle(const Vertex &a, const Vertex &b, const Vertex &c) {
     const float scale = 1.0f / kMaterials[m].repeat;
     const DWORD tint = kMaterials[m].tint;
     auto colour = [&](DWORD source) -> DWORD {
-        if (!g.texture[m]) return CeMuseumExhibition::Shade(source, 68);
+        if (!gPtr->texture[m]) return CeMuseumExhibition::Shade(source, 68);
         if (tint) return tint;
         return source;
     };
     const Vertex *in[3] = {&a, &b, &c};
     for (const Vertex *p : in) {
-        LitVertex &v = g.vertices[g.used++];
+        LitVertex &v = gPtr->vertices[gPtr->used++];
         const float x=p->x-CeMuseumWorld::kEntranceX, y=p->y-CeMuseumWorld::kEntranceY;
         v.x=p->x; v.y=p->y; v.z=p->z; v.nx=nx; v.ny=ny; v.nz=nz;
         v.colour = colour(p->colour);
@@ -195,33 +217,35 @@ void Triangle(const Vertex &a, const Vertex &b, const Vertex &c) {
         else if (ax >= ay) { v.u=y*scale; v.v=p->z*scale; }
         else { v.u=x*scale; v.v=p->z*scale; }
     }
-    g.material[g.used/3 - 1] = static_cast<unsigned char>(m);
+    gPtr->material[gPtr->used/3 - 1] = static_cast<unsigned char>(m);
 }
 void Quad(Vertex a, Vertex b, Vertex c, Vertex d) {
     Triangle(a,b,c); Triangle(a,c,d);
 }
 CeHallPoint Offset(CeHallPoint p, float side, float depth) {
-    return {p.x + side * g.tour.right.x + depth * g.tour.forward.x,
-            p.y + side * g.tour.right.y + depth * g.tour.forward.y};
+    if (!gPtr) return p;
+    return {p.x + side * gPtr->tour.right.x + depth * gPtr->tour.forward.x,
+            p.y + side * gPtr->tour.right.y + depth * gPtr->tour.forward.y};
 }
 Vertex Point(CeHallPoint p, float z, DWORD colour) { return {p.x, p.y, z, colour}; }
 
 void Box(CeHallPoint p, float w, float d, float z, float h, DWORD face, DWORD edge) {
+    if (!gPtr) return;
     CeHallPoint a = Offset(p,-w,-d), b = Offset(p,w,-d), c = Offset(p,w,d), e = Offset(p,-w,d);
     const float top = z - h;
-    const Material was = g.current;
-    if (g.current == kMatAuto) g.current = ColourMaterial(face);
-    g.hasCentre = true; g.centre[0] = p.x; g.centre[1] = p.y; g.centre[2] = z - h*0.5f;
+    const Material was = gPtr->current;
+    if (gPtr->current == kMatAuto) gPtr->current = ColourMaterial(face);
+    gPtr->hasCentre = true; gPtr->centre[0] = p.x; gPtr->centre[1] = p.y; gPtr->centre[2] = z - h*0.5f;
     Quad(Point(a,top,edge),Point(b,top,edge),Point(c,top,edge),Point(e,top,edge));
     Quad(Point(a,z,face),Point(b,z,face),Point(b,top,face),Point(a,top,face));
     Quad(Point(b,z,face),Point(c,z,face),Point(c,top,face),Point(b,top,face));
     Quad(Point(c,z,face),Point(e,z,face),Point(e,top,face),Point(c,top,face));
     Quad(Point(e,z,face),Point(a,z,face),Point(a,top,face),Point(e,top,face));
-    g.hasCentre = false; g.current = was;
+    gPtr->hasCentre = false; gPtr->current = was;
 }
 bool FloorVertex(CeHallPoint p, float lift, DWORD colour, Vertex *v) {
     float z;
-    if (!g.ground(p.x, p.y, &z)) return false;
+    if (!gPtr || !gPtr->ground || !gPtr->ground(p.x, p.y, &z)) return false;
     *v = Point(p, z-lift, colour); return true;
 }
 void Strip(CeHallPoint a, CeHallPoint b, float side, float width, float lift, DWORD colour) {
@@ -260,7 +284,7 @@ void Panel(CeHallPoint p, float z, unsigned number) {
 void Stand(CeHallPoint stop, unsigned number) {
     const CeHallPoint p=Offset(stop,1.65f,0.62f);
     float z;
-    if (!g.ground(p.x,p.y,&z)) return;
+    if (!gPtr || !gPtr->ground || !gPtr->ground(p.x,p.y,&z)) return;
     Box(p,0.8f,0.47f,z+0.12f,0.35f,kIron,kSlate);
     Box(p,0.23f,0.20f,z-0.19f,0.9f,kSlate,kEdge);
     Box(p,0.58f,0.14f,z-0.49f,1.18f,kIron,kEdge);
@@ -272,7 +296,7 @@ const DWORD kIvory = 0xffe6e9df, kCeramic = 0xfff3f2df, kGlassFrame = 0xff9ebeb8
 void FittedBox(CeHallPoint p, float halfWidth, float halfDepth, float lift, float height,
                DWORD face = kIvory, DWORD cap = kCeramic) {
     float z;
-    if (g.ground(p.x,p.y,&z)) Box(p,halfWidth,halfDepth,z-lift,height,face,cap);
+    if (gPtr && gPtr->ground && gPtr->ground(p.x,p.y,&z)) Box(p,halfWidth,halfDepth,z-lift,height,face,cap);
 }
 
 void Tile(CeHallPoint p, float width, float depth, float lift, DWORD colour) {
@@ -313,14 +337,15 @@ void ExhibitionShell() {
 }
 
 void Ceiling(float floor, float x0, float y0, float x1, float y1, float height, Material material = kMatCeiling) {
+    if (!gPtr) return;
     const CeHallPoint a = CeMuseumExhibitionHost::World({x0, y0});
     const CeHallPoint c = CeMuseumExhibitionHost::World({x1, y1});
     const float z = floor - height;
-    g.current = material; g.hasCentre = true;
-    g.centre[0] = (a.x + c.x) * 0.5f; g.centre[1] = (a.y + c.y) * 0.5f; g.centre[2] = z - 1.0f;
+    gPtr->current = material; gPtr->hasCentre = true;
+    gPtr->centre[0] = (a.x + c.x) * 0.5f; gPtr->centre[1] = (a.y + c.y) * 0.5f; gPtr->centre[2] = z - 1.0f;
     const unsigned across = unsigned(std::ceil((x1 - x0) / 4.0f)), along = unsigned(std::ceil((y1 - y0) / 4.0f));
     if (!across || !along || across > 40 || along > 40) {
-        Overflow("a ceiling is empty or too large"); g.hasCentre = false; g.current = kMatAuto; return;
+        Overflow("a ceiling is empty or too large"); gPtr->hasCentre = false; gPtr->current = kMatAuto; return;
     }
     for (unsigned i = 0; i < across; ++i) for (unsigned j = 0; j < along; ++j) {
         const float u0 = x0 + (x1 - x0) * i / across, u1 = x0 + (x1 - x0) * (i + 1) / across;
@@ -330,13 +355,52 @@ void Ceiling(float floor, float x0, float y0, float x1, float y1, float height, 
              Point(CeMuseumExhibitionHost::World({u1, v1}), z, 0xffffffff),
              Point(CeMuseumExhibitionHost::World({u0, v1}), z, 0xffffffff));
     }
-    g.hasCentre = false; g.current = kMatAuto;
+    gPtr->hasCentre = false; gPtr->current = kMatAuto;
 }
+
+// Stateless zero-BSS view used by ce_museum_cinema.inc so all Gallery memory stays on the heap in *gPtr.
+struct GalleryCinemaRef {
+    struct CurrentRef {
+        void operator=(Material m) const { if (gPtr) gPtr->current = m; }
+    } current;
+    struct GroundRef {
+        bool operator!() const { return !gPtr || !gPtr->ground; }
+        bool operator()(float x, float y, float *z) const { return gPtr && gPtr->ground && gPtr->ground(x, y, z); }
+    } ground;
+    struct ValidRef {
+        operator bool() const { return gPtr && gPtr->valid; }
+        bool operator!() const { return !gPtr || !gPtr->valid; }
+    } valid;
+    struct TourRef {
+        struct ForwardRef {
+            struct XRef {
+                operator float() const { return gPtr ? gPtr->tour.forward.x : 0.0f; }
+                float operator-() const { return -(gPtr ? gPtr->tour.forward.x : 0.0f); }
+            } x;
+            struct YRef {
+                operator float() const { return gPtr ? gPtr->tour.forward.y : 0.0f; }
+                float operator-() const { return -(gPtr ? gPtr->tour.forward.y : 0.0f); }
+            } y;
+        } forward;
+        struct RightRef {
+            struct XRef {
+                operator float() const { return gPtr ? gPtr->tour.right.x : 0.0f; }
+                float operator-() const { return -(gPtr ? gPtr->tour.right.x : 0.0f); }
+            } x;
+            struct YRef {
+                operator float() const { return gPtr ? gPtr->tour.right.y : 0.0f; }
+                float operator-() const { return -(gPtr ? gPtr->tour.right.y : 0.0f); }
+            } y;
+        } right;
+    } tour;
+};
+static const GalleryCinemaRef g = {};
 
 #include "ce_museum_cinema.inc"
 
 void ExhibitRoom() {
-    const CeHallTour &t=g.tour;
+    if (!gPtr) return;
+    const CeHallTour &t=gPtr->tour;
     const CeHallPoint stop=t.stop[2], model={t.display[2].x,t.display[2].y};
     const float radius=t.display[2].radius;
     const float half=radius+1.25f, front=-radius-0.85f, back=radius+1.05f;
@@ -357,12 +421,13 @@ void ExhibitRoom() {
 }
 
 void Entry() {
-    const CeHallPoint c=CeHallEntranceArch(g.tour);
+    if (!gPtr || !gPtr->ground) return;
+    const CeHallPoint c=CeHallEntranceArch(gPtr->tour);
     float z;
-    if (!g.ground(c.x,c.y,&z)) return;
+    if (!gPtr->ground(c.x,c.y,&z)) return;
     for (int side=-1;side<=1;side+=2) {
         CeHallPoint p=Offset(c,side*kCeHallArchPostOffset,0); float foot;
-        if (!g.ground(p.x,p.y,&foot)) return;
+        if (!gPtr->ground(p.x,p.y,&foot)) return;
         Box(p,kCeHallArchFootHalfWidth,0.66f,foot+0.2f,0.48f,kIron,kEdge);
         Box(p,0.31f,0.46f,foot-0.26f,foot-z+4.55f,kSlate,kEdge);
     }
@@ -372,18 +437,18 @@ void Entry() {
 // ---- Grand Outdoor/Indoor Multi-Wing Architectural Builder ----
 void LocalBox(float x0, float y0, float z0, float x1, float y1, float z1,
               float floorZ, Material mat, DWORD col = 0xffffffff) {
-    if (!(x1 > x0 && y1 > y0 && z1 > z0)) return;
+    if (!gPtr || !(x1 > x0 && y1 > y0 && z1 > z0)) return;
     const CeMuseumExhibition::Box b = {
         {x0, y0, z0}, {x1, y1, z1}, col, CeMuseumExhibition::kSolidWall, 0
     };
     CeMuseumExhibition::Vertex authored[CeMuseumExhibition::kBoxVertices];
     const unsigned count = CeMuseumExhibition::EmitBox(b, authored);
     const CeHallPoint middle = CeMuseumExhibitionHost::World({0.5f * (x0 + x1), 0.5f * (y0 + y1)});
-    g.hasCentre = true;
-    g.current = mat;
-    g.centre[0] = middle.x;
-    g.centre[1] = middle.y;
-    g.centre[2] = floorZ - 0.5f * (z0 + z1);
+    gPtr->hasCentre = true;
+    gPtr->current = mat;
+    gPtr->centre[0] = middle.x;
+    gPtr->centre[1] = middle.y;
+    gPtr->centre[2] = floorZ - 0.5f * (z0 + z1);
     for (unsigned i = 0; i + 2 < count; i += 3) {
         Vertex native[3];
         for (unsigned j = 0; j < 3; ++j)
@@ -391,18 +456,19 @@ void LocalBox(float x0, float y0, float z0, float x1, float y1, float z1,
                               floorZ - authored[i + j].z, authored[i + j].colour);
         Triangle(native[0], native[1], native[2]);
     }
-    g.hasCentre = false;
-    g.current = kMatAuto;
+    gPtr->hasCentre = false;
+    gPtr->current = kMatAuto;
 }
 
 void LocalFloorGrid(float x0, float y0, float x1, float y1, float lift,
                     float floorZ, Material mat, float step = 4.0f, DWORD col = 0xffffffff) {
+    if (!gPtr) return;
     const unsigned nx = unsigned(std::ceil((x1 - x0) / step));
     const unsigned ny = unsigned(std::ceil((y1 - y0) / step));
     if (!nx || !ny || nx > 32 || ny > 32) return;
     const float z = floorZ - lift;
-    g.hasCentre = false;
-    g.current = mat;
+    gPtr->hasCentre = false;
+    gPtr->current = mat;
     for (unsigned ix = 0; ix < nx; ++ix) {
         const float ax = x0 + (x1 - x0) * ix / nx;
         const float bx = x0 + (x1 - x0) * (ix + 1) / nx;
@@ -415,7 +481,7 @@ void LocalFloorGrid(float x0, float y0, float x1, float y1, float lift,
                  Point(CeMuseumExhibitionHost::World({ax, by}), z, col));
         }
     }
-    g.current = kMatAuto;
+    gPtr->current = kMatAuto;
 }
 
 void DressedColumn(float cx, float cy, float half, float height, float floorZ) {
@@ -832,28 +898,32 @@ void DrawDirectoryButtons(IDirect3DDevice9 *dev, float floorZ) {
 } // namespace
 
 static void FindMaterials() {
+    if (!gPtr) return;
     CeMuseumTextures::LoadAll(LT.GetDevice());
     for (unsigned m = 0; m < kMatCount; ++m) {
         const CeMuseumTexId tid = kMaterials[m].tex;
-        g.texture[m] = tid < CE_MUSEUM_TEX_COUNT ? CeMuseumTextures::Get(tid) : NULL;
+        gPtr->texture[m] = tid < CE_MUSEUM_TEX_COUNT ? CeMuseumTextures::Get(tid) : NULL;
     }
 }
 
 static void ReleaseMaterials() {
-    for (unsigned m = 0; m < kMatCount; ++m) g.texture[m] = NULL;
+    if (gPtr) {
+        for (unsigned m = 0; m < kMatCount; ++m) gPtr->texture[m] = NULL;
+    }
     CeMuseumTextures::ReleaseAll();
 }
 
 static void SortMaterials() {
-    unsigned triangles = g.used / 3, at = 0;
-    for (unsigned m = 0; m < kMatCount; ++m) g.count[m] = 0;
-    for (unsigned t = 0; t < triangles; ++t) ++g.count[g.material[t]];
-    for (unsigned m = 0; m < kMatCount; ++m) { g.first[m] = at; at += g.count[m] * 3; }
+    if (!gPtr) return;
+    unsigned triangles = gPtr->used / 3, at = 0;
+    for (unsigned m = 0; m < kMatCount; ++m) gPtr->count[m] = 0;
+    for (unsigned t = 0; t < triangles; ++t) ++gPtr->count[gPtr->material[t]];
+    for (unsigned m = 0; m < kMatCount; ++m) { gPtr->first[m] = at; at += gPtr->count[m] * 3; }
     unsigned next[kMatCount];
-    for (unsigned m = 0; m < kMatCount; ++m) next[m] = g.first[m];
+    for (unsigned m = 0; m < kMatCount; ++m) next[m] = gPtr->first[m];
     for (unsigned t = 0; t < triangles; ++t) {
-        const unsigned m = g.material[t];
-        for (unsigned j = 0; j < 3; ++j) g.sorted[next[m]++] = g.vertices[t * 3 + j];
+        const unsigned m = gPtr->material[t];
+        for (unsigned j = 0; j < 3; ++j) gPtr->sorted[next[m]++] = gPtr->vertices[t * 3 + j];
     }
 }
 
@@ -872,6 +942,7 @@ void CeMuseumHallClear() {
     gExhibitionVisitor = CeMuseumExhibition::Vec2{};
     gGrandMode = false;
     gCurrentWing = CeMuseumTour::kWingCourtyard;
+    gAnticipatedWing = CeMuseumTour::kWingCourtyard;
     gWingAnnounced = false;
     gHasStepClock = false;
     gDirHit = {false, -1};
@@ -884,7 +955,7 @@ void CeMuseumHallClear() {
     ReleaseMaterials();
     HouseLightReset();
     CinemaReset();
-    g.valid=false; g.used=0; g.zone=-1; g.ground=0; g.current=kMatAuto; g.hasCentre=false; g.overflowReason=0;
+    FreeGallery();
 }
 
 static void HallFailed(const char *why) {
@@ -895,16 +966,17 @@ static void SetHall(const CeHallTour &tour, CeHallGround ground, const CeMuseumE
     CeMuseumHallClear();
     if (!ground) { HallFailed("no ground lookup"); return; }
     if (!tour.stops || tour.stops > 3) { HallFailed("the tour has no stops or too many"); return; }
-    g.tour=tour; g.ground=ground; g.overflow=false; g.zone=0;
+    if (!EnsureGallery()) { HallFailed("out of memory for gallery geometry"); return; }
+    gPtr->tour=tour; gPtr->ground=ground; gPtr->overflow=false; gPtr->zone=0;
     FindMaterials();
     if (exhibition) {
-        if (!exhibition->valid) { HallFailed("the exhibition plan is not valid"); ReleaseMaterials(); return; }
+        if (!exhibition->valid) { HallFailed("the exhibition plan is not valid"); ReleaseMaterials(); FreeGallery(); return; }
         float floor = 0.0f;
-        if (!g.ground(CeMuseumWorld::kEntranceX, CeMuseumWorld::kEntranceY, &floor)) {
-            HallFailed("no ground under the entrance"); ReleaseMaterials(); return;
+        if (!gPtr->ground(CeMuseumWorld::kEntranceX, CeMuseumWorld::kEntranceY, &floor)) {
+            HallFailed("no ground under the entrance"); ReleaseMaterials(); FreeGallery(); return;
         }
         gExhibition = *exhibition;
-        g.zone = -1;
+        gPtr->zone = -1;
         gGrandFloorZ = floor;
         if (PortCeMuseumAuthoredMap()) {
             gGrandMode = true;
@@ -925,15 +997,16 @@ static void SetHall(const CeHallTour &tour, CeHallGround ground, const CeMuseumE
         Entry();
         for (unsigned k=0;k<tour.stops;++k) Stand(tour.stop[k],k+1);
     }
-    g.valid=g.used && !g.overflow;
-    if (g.valid) {
+    gPtr->valid=gPtr->used && !gPtr->overflow;
+    if (gPtr->valid) {
         SortMaterials();
         PortSessionLog(PORT_SESSION_GAME, false, "museum: built Grand Complex (%u vertices, %u triangles)",
-                       g.used, g.used / 3u);
+                       gPtr->used, gPtr->used / 3u);
         return;
     }
-    HallFailed(g.overflow ? (g.overflowReason ? g.overflowReason : "too many pieces") : "no pieces were built");
+    HallFailed(gPtr->overflow ? (gPtr->overflowReason ? gPtr->overflowReason : "too many pieces") : "no pieces were built");
     ReleaseMaterials();
+    FreeGallery();
 }
 
 void CeMuseumHallSet(const CeHallTour& tour, CeHallGround ground) {
@@ -946,11 +1019,12 @@ void CeMuseumHallSetExhibition(const CeHallTour& tour, CeHallGround ground,
 }
 
 bool CeMuseumHallAllowsVisitor(float x,float y) {
-    if (g.valid && gGrandMode) {
+    if (!gPtr || !gPtr->valid) return true;
+    if (gGrandMode) {
         const CeMuseumExhibition::Vec2 local = CeMuseumExhibitionHost::Local(x, y);
         return CeMuseumExhibition::Grand::WalkAt(gGrandGraph, local) != CeMuseumExhibition::kWalkBlocked;
     }
-    if (g.valid && gExhibition.valid) {
+    if (gExhibition.valid) {
         const CeMuseumExhibition::Vec2 local = CeMuseumExhibitionHost::Local(x, y);
         const CeMuseumExhibition::Walk walk = CeMuseumExhibition::WalkAt(gExhibition, local);
         if (walk == CeMuseumExhibition::kWalkOutside)
@@ -958,7 +1032,7 @@ bool CeMuseumHallAllowsVisitor(float x,float y) {
                    !CeCinemaRoom::Seat(local.x, local.y);
         return walk != CeMuseumExhibition::kWalkBlocked;
     }
-    return !g.valid || ((!PortCeMuseumAuthoredMap() || CeMuseumWorld::Inside(x,y)) && CeHallBayAllows(g.tour,{x,y}));
+    return ((!PortCeMuseumAuthoredMap() || CeMuseumWorld::Inside(x,y)) && CeHallBayAllows(gPtr->tour,{x,y}));
 }
 
 static CeMuseumTour::Wing WingFromRoom(CeMuseumExhibition::Grand::RoomId r) {
@@ -978,7 +1052,7 @@ static CeMuseumTour::Wing WingFromRoom(CeMuseumExhibition::Grand::RoomId r) {
 
 void CeMuseumHallVisitor(float x, float y) {
     gExhibitionVisitor = CeMuseumExhibitionHost::Local(x, y);
-    if (!g.valid) return;
+    if (!gPtr || !gPtr->valid) return;
     CinemaVisitor(x,y);
 
     if (gGrandMode) {
@@ -997,14 +1071,23 @@ void CeMuseumHallVisitor(float x, float y) {
         float dt = GAME.GetRenderFrameLength();
         if (!(dt > 0.0f && dt <= 0.25f)) dt = wallDt;
 
-        // Anticipate the adjacent 3D wing when standing near an Atrium portal so open archways
-        // always showcase gleaming exhibits inside while still capping residency to a single wing.
+        // Anticipate the adjacent 3D wing when standing near an Atrium portal (with 2 m spatial
+        // hysteresis so hovering on the threshold never oscillates) while capping residency to one wing.
         CeMuseumTour::Wing turntableWing = wing;
         if (wing == CeMuseumTour::kWingAtrium) {
-            if (gExhibitionVisitor.y >= 45.0f) turntableWing = CeMuseumTour::kWingHangar;
-            else if (gExhibitionVisitor.x >= 9.5f && gExhibitionVisitor.y >= 32.0f) turntableWing = CeMuseumTour::kWingMuspell;
-            else if (gExhibitionVisitor.x <= -9.5f && gExhibitionVisitor.y >= 32.0f) turntableWing = CeMuseumTour::kWingForseti;
+            if (gExhibitionVisitor.y >= 45.0f ||
+                (gAnticipatedWing == CeMuseumTour::kWingHangar && gExhibitionVisitor.y >= 43.0f))
+                turntableWing = CeMuseumTour::kWingHangar;
+            else if ((gExhibitionVisitor.x >= 9.5f ||
+                      (gAnticipatedWing == CeMuseumTour::kWingMuspell && gExhibitionVisitor.x >= 7.5f)) &&
+                     gExhibitionVisitor.y >= 32.0f)
+                turntableWing = CeMuseumTour::kWingMuspell;
+            else if ((gExhibitionVisitor.x <= -9.5f ||
+                      (gAnticipatedWing == CeMuseumTour::kWingForseti && gExhibitionVisitor.x <= -7.5f)) &&
+                     gExhibitionVisitor.y >= 32.0f)
+                turntableWing = CeMuseumTour::kWingForseti;
         }
+        gAnticipatedWing = turntableWing;
 
         // Convert world view ray to visitor-local coordinates (Z positive upward) for ray-pick fixtures
         float eyeX = gExhibitionVisitor.x, eyeY = gExhibitionVisitor.y, eyeZ = 1.70f;
@@ -1036,9 +1119,9 @@ void CeMuseumHallVisitor(float x, float y) {
     }
 
     if (gExhibition.valid) {
-        const int zone = ExhibitionZone(x, y, g.zone);
-        if (zone == g.zone) return;
-        g.zone = zone;
+        const int zone = ExhibitionZone(x, y, gPtr->zone);
+        if (zone == gPtr->zone) return;
+        gPtr->zone = zone;
         if (zone < 0) return;
         const int bays = int(gExhibition.bayCount);
         char title[32], guide[96];
@@ -1055,15 +1138,15 @@ void CeMuseumHallVisitor(float x, float y) {
         PortSessionLog(PORT_SESSION_GAME, false, "museum: visitor reached %s", title);
         return;
     }
-    const int zone = CeHallZone(g.tour, {x, y}, g.zone);
-    if (zone==g.zone) return;
-    g.zone=zone;
+    const int zone = CeHallZone(gPtr->tour, {x, y}, gPtr->zone);
+    if (zone==gPtr->zone) return;
+    gPtr->zone=zone;
     if (zone<0) return;
     const char *title = zone==0 ? "Gallery Entrance" : zone==1 ? "Display 1" :
                         zone==2 ? "Display 2" : "Collection Annex";
     const char *guide = zone==0 ? "Follow the brass lines to the displays." :
-                        zone==1 && g.tour.stops>1 ? "Follow the cross aisle to Display 2." :
-                        zone==2 && g.tour.stops==3 ? "The white lane leads to the Collection Annex." :
+                        zone==1 && gPtr->tour.stops>1 ? "Follow the cross aisle to Display 2." :
+                        zone==2 && gPtr->tour.stops==3 ? "The white lane leads to the Collection Annex." :
                         zone==3 ? "Display 3. Follow the white lane back to the entrance." :
                         zone==2 ? "Follow the aisle back to the entrance." : "The entrance is behind you.";
     PortCeMuseumLabelsWayfinding(title,guide);
@@ -1071,7 +1154,11 @@ void CeMuseumHallVisitor(float x, float y) {
 }
 
 int CeMuseumHallSignLabel(float forwardX, float forwardY, int previousLabel, int *displayNumber) {
-    if (g.valid && gGrandMode) {
+    if (!gPtr || !gPtr->valid) {
+        if (displayNumber) *displayNumber = 0;
+        return -1;
+    }
+    if (gGrandMode) {
         // In the Forseti Forces Wing, resolve close-inspection cards for the 6 native bay exhibits.
         if (gCurrentWing == CeMuseumTour::kWingForseti && gExhibition.valid) {
             const float flen = std::sqrt(forwardX * forwardX + forwardY * forwardY);
@@ -1098,7 +1185,7 @@ int CeMuseumHallSignLabel(float forwardX, float forwardY, int previousLabel, int
         if (displayNumber) *displayNumber = 0;
         return -1;
     }
-    if (g.valid && gExhibition.valid) {
+    if (gExhibition.valid) {
         int previousBay = -1;
         for (unsigned i = 0; i < gExhibition.bayCount; ++i)
             if (gExhibition.bays[i].stableLabel == previousLabel)
@@ -1109,19 +1196,20 @@ int CeMuseumHallSignLabel(float forwardX, float forwardY, int previousLabel, int
         return CeMuseumExhibition::LabelForBay(gExhibition, number);
     }
 
-    const int label = g.valid ? CeHallSignLabel(g.tour, g.zone, {forwardX, forwardY}, previousLabel) : -1;
-    if (displayNumber) *displayNumber = label >= 0 ? g.zone : 0;
+    const int label = CeHallSignLabel(gPtr->tour, gPtr->zone, {forwardX, forwardY}, previousLabel);
+    if (displayNumber) *displayNumber = label >= 0 ? gPtr->zone : 0;
     return label;
 }
 
 bool CeMuseumHallFacesExit(float x, float y, float forwardX, float forwardY, bool held) {
-    if (g.valid && gGrandMode)
+    if (!gPtr || !gPtr->valid) return false;
+    if (gGrandMode)
         return CeMuseumExhibition::Grand::FacesExit(
             CeMuseumExhibitionHost::Local(x, y), {forwardX, forwardY}, held);
-    if (g.valid && gExhibition.valid)
+    if (gExhibition.valid)
         return CeMuseumExhibition::FacesExit(gExhibition,
             CeMuseumExhibitionHost::Local(x, y), {forwardX, forwardY}, held);
-    return g.valid && CeHallFacesExit(g.tour, {x, y}, {forwardX, forwardY}, held);
+    return CeHallFacesExit(gPtr->tour, {x, y}, {forwardX, forwardY}, held);
 }
 
 extern "C" void PortCeMuseumCinemaView(const float *view, unsigned present) {
@@ -1168,7 +1256,7 @@ extern "C" bool PortCeMuseumCinemaCue(char *title,unsigned titleCap,char *line,u
 }
 
 extern "C" bool PortCeMuseumInteractiveAim(void) {
-    if (!g.valid || !PortCeMuseumVisitActive()) return false;
+    if (!gPtr || !gPtr->valid || !PortCeMuseumVisitActive()) return false;
     if (Cinema::s.atConsole) return true;
     if (gGrandMode) {
         if (gDirHit.valid) return true;
@@ -1182,7 +1270,7 @@ extern "C" bool PortCeMuseumInteractiveCard(float x, float y, float fx, float fy
                                             char *title, unsigned titleCap,
                                             char *line, unsigned lineCap,
                                             char *note, unsigned noteCap) {
-    if (!g.valid || !gGrandMode || !PortCeMuseumVisitActive()) return false;
+    if (!gPtr || !gPtr->valid || !gGrandMode || !PortCeMuseumVisitActive()) return false;
     if (gDirHit.valid && gDirHit.index >= 0 && gDirHit.index < CeMuseumTour::kDirectoryStops) {
         const CeMuseumTour::DirectoryStop &ds = CeMuseumTour::kDirectory[gDirHit.index];
         const CeMuseumTour::WingMeta &meta = CeMuseumTour::Meta(ds.target);
@@ -1388,7 +1476,7 @@ static float HouseLight() {
 }
 
 extern "C" void PortCeMuseumHallDraw() {
-    if (!g.valid || gMirrorPass || !PortCeMuseumVisitActive()) return;
+    if (!gPtr || !gPtr->valid || gMirrorPass || !PortCeMuseumVisitActive()) return;
     IDirect3DDevice9 *dev=LT.GetDevice();
     if (!dev) return;
     IDirect3DStateBlock9 *saved=0;
@@ -1427,8 +1515,8 @@ extern "C" void PortCeMuseumHallDraw() {
     dev->SetFVF(D3DFVF_XYZ|D3DFVF_NORMAL|D3DFVF_DIFFUSE|D3DFVF_TEX1);
     const float house = HouseLight();
     for (unsigned m = 0; m < kMatCount; ++m) {
-        if (!g.count[m]) continue;
-        IDirect3DTexture9 *texture = g.texture[m];
+        if (!gPtr->count[m]) continue;
+        IDirect3DTexture9 *texture = gPtr->texture[m];
         dev->SetTexture(0,texture);
         dev->SetTextureStageState(0,D3DTSS_COLOROP,texture ? D3DTOP_MODULATE : D3DTOP_SELECTARG1);
         dev->SetTextureStageState(0,D3DTSS_COLORARG1,texture ? D3DTA_TEXTURE : D3DTA_DIFFUSE);
@@ -1462,7 +1550,7 @@ extern "C" void PortCeMuseumHallDraw() {
         const float bias = isInlay ? -0.00002f : 0.0f, slope = isInlay ? -1.0f : 0.0f;
         dev->SetRenderState(D3DRS_DEPTHBIAS,*reinterpret_cast<const DWORD *>(&bias));
         dev->SetRenderState(D3DRS_SLOPESCALEDEPTHBIAS,*reinterpret_cast<const DWORD *>(&slope));
-        dev->DrawPrimitiveUP(D3DPT_TRIANGLELIST,g.count[m],g.sorted + g.first[m],sizeof(LitVertex));
+        dev->DrawPrimitiveUP(D3DPT_TRIANGLELIST,gPtr->count[m],gPtr->sorted + gPtr->first[m],sizeof(LitVertex));
     }
     dev->SetTextureStageState(1,D3DTSS_COLOROP,D3DTOP_DISABLE);
     dev->SetTextureStageState(1,D3DTSS_ALPHAOP,D3DTOP_DISABLE);

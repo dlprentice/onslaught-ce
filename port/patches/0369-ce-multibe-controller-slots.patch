@@ -98,11 +98,22 @@
  							break;
  					case MOUSE_AXIS_PLUS_ANY:
  					case MOUSE_AXIS_MINUS_ANY:
-@@ -767,6 +802,24 @@
+@@ -731,6 +766,9 @@
+ //******************************************************************************************
+ 
++#ifdef CE_VERSION
++extern "C" int PortCeSoloSkirmishActive(void) __attribute__((weak));
++#endif
+ IController *CController::GetToControl()	// FUNCTION: 0x0042e4b0
+ {
+ 	return  mToControlStack.First()->ToRead();
+ }
+@@ -767,6 +805,27 @@
  	}
  	else
  	{
 +#ifdef CE_VERSION
++		const bool ceSoloSkirmish = GAME.IsMultiplayer() && PortCeSoloSkirmishActive && PortCeSoloSkirmishActive();
 +		bool ceAnyDisconnected = false;
 +		bool ceToReconnect = false;
 +		int ceSlots = GAME.GetNPlayers();
@@ -110,6 +121,8 @@
 +		if (ceSlots > MAX_PLAYERS) ceSlots = MAX_PLAYERS;
 +		for (int ceIdx = 0; ceIdx < ceSlots; ceIdx++)
 +		{
++			if (ceSoloSkirmish && ceIdx == 1)
++				continue;
 +			if (RECONNECT_INTERFACE[ceIdx].GetState() != CReconnectInterface::OK)
 +				ceAnyDisconnected = true;
 +			if (to_send == &RECONNECT_INTERFACE[ceIdx])
@@ -123,7 +136,7 @@
  		if ((RECONNECT_INTERFACE[0].GetState() != CReconnectInterface::OK) ||
  			(RECONNECT_INTERFACE[1].GetState() != CReconnectInterface::OK))
  		{
-@@ -774,6 +827,7 @@
+@@ -774,6 +833,7 @@
  				(to_send != &RECONNECT_INTERFACE[1]))
  				return;
  		}

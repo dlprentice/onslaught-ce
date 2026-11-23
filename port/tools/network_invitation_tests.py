@@ -51,6 +51,8 @@ def main():
   'actual-select-removed':('CE_LobbySignalingSelect(std::move(authority))','bool(authority)'),
   'import-folder-used-for-exchange':('NewExchangeDirectory(&exchange)','(exchange=s.chosen.data(),true)'),
   'selected-source-replaced':('    if(CE_LobbySignalingSelected()){Refuse(s,CE_INVITATION_ERROR_SELECTION);return 0;}\n',''),
+  'cancel-leaks-outstanding':('    s.outstanding=nullptr;\n',''),
+  'trailing-whitespace-untrimmed':("if(back!=' '&&back!='\\t'&&back!='\\r'&&back!='\\n')break;",'(void)back;break;'),
  }
  variants={'positive':original}
  variants["private-channel"] = original

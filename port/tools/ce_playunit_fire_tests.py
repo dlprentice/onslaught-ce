@@ -47,8 +47,12 @@ struct FVector {
     FVector(float x=0, float y=0, float z=0): X(x), Y(y), Z(z) {}
 };
 // the map: z down, so a higher ground has a lower z
-static int gTerrain = 0;		// 0 flat, 1 a ridge, two units high, across y in -8..-6
-struct Map { float Collide(FVector &p) { if (gTerrain == 1 && p.Y > -8.f && p.Y < -6.f) return -2.f; return 0.f; } } MAP;
+static int gTerrain = 0;		// 0 flat, 1 a ridge, two units high, across y in -8..-6, 2 deep ocean seabed (+20)
+static float gWaterZ = 1000.f;	// far below flat ground by default; set to 0.f for naval/over-water checks
+struct Map {
+    float Collide(FVector &p) { if (gTerrain == 1 && p.Y > -8.f && p.Y < -6.f) return -2.f; if (gTerrain == 2) return 20.f; return 0.f; }
+    float GetWaterLevel() const { return gWaterZ; }
+} MAP;
 struct CWeapon {
     void *mMode = nullptr;
     float lo = 0.f, hi = 80.f;
@@ -184,6 +188,10 @@ int main() {
     { Run r; r.look = FVector(NAN, 0.6f, 0.8f); for (int i = 0; i < 5; ++i) r.Tick(true); check(r.u.armCalls == 0 && r.u.fireCalls == 0 && r.u.aimCalls == 0, "a_view_that_is_not_a_number_is_safe"); }
     // turning the view moves the point
     { Run r; r.look = FVector(0.6f, 0.f, 0.8f); r.eye = FVector(-10.f, 0.f, -8.f); for (int i = 0; i < 6; ++i) r.Tick(true); check(near(r.u.aimed.X, -4.f) && near(r.u.aimed.Y, 0.f), "turning_the_view_moves_the_aim"); }
+    // naval / over-water aiming hits water surface (z=0), not deep seabed (z=+20)
+    { Run r; gTerrain = 2; gWaterZ = 0.f; for (int i = 0; i < 12; ++i) r.Tick(true);
+      gTerrain = 0; gWaterZ = 1000.f;
+      check(r.u.rounds >= 1 && near(r.u.aimed.Y, -4.f) && near(r.u.aimed.Z, 0.f), "over_water_aims_at_water_surface_not_seabed"); }
     std::printf("checks %d failed %d\n", checks, failed);
     return failed ? 1 : 0;
 }
@@ -237,12 +245,13 @@ class FreeFire(unittest.TestCase):
             "calls_without_a_point": ("if (!haveAim || !CePlayUnitFireAims(held, state)) return;", "if (!CePlayUnitFireAims(held, state)) return;", "a_view_that_is_not_a_number_is_safe"),
             "the_sky_has_no_point": ("	if (!ground)\n		for (int i = 0; i < 3; ++i) hit[i] = e[i] + l[i] * law.viewReach;\n", "	(void)ground;\n", "the_sky_is_fired_at_the_weapons_reach"),
             "the_sky_is_behind": ("hit[i] = e[i] + l[i] * law.viewReach;", "hit[i] = e[i] - l[i] * law.viewReach;", "the_sky_is_fired_along_the_look"),
-            "range_not_asked": ("range = CePlayUnitRange(at, hit, w->GetMinRange(target), w->GetMaxRange(target), shot);",
+            "range_not_asked": ("range = CePlayUnitRange(at, hit, w->GetMinRange(target), w->GetMaxRange(target), shot, waterZ);",
                                 "range = CE_PLAYUNIT_RANGE_OK; shot[0] = hit[0]; shot[1] = hit[1]; shot[2] = hit[2]; (void)at; (void)target;", "aim_is_clamped_to_the_weapons_range"),
-            "range_from_the_wrong_end": ("range = CePlayUnitRange(at, hit, w->GetMinRange(target), w->GetMaxRange(target), shot);",
-                                         "range = CePlayUnitRange(at, hit, w->GetMinRange(target), w->GetMaxRange(target) * 1000.f, shot);", "aim_is_clamped_to_the_weapons_range"),
+            "range_from_the_wrong_end": ("range = CePlayUnitRange(at, hit, w->GetMinRange(target), w->GetMaxRange(target), shot, waterZ);",
+                                         "range = CePlayUnitRange(at, hit, w->GetMinRange(target), w->GetMaxRange(target) * 1000.f, shot, waterZ);", "aim_is_clamped_to_the_weapons_range"),
             "far_is_out_of_range": ("CePlayUnitFireStateOf(true, *haveAim, range,", "CePlayUnitFireStateOf(true, *haveAim && range != CE_PLAYUNIT_RANGE_TOO_FAR, range,", "beyond_reach_is_fired_at_the_weapons_reach"),
-            "minimum_not_asked": ("w->GetMinRange(target), w->GetMaxRange(target), shot)", "0.f, w->GetMaxRange(target), shot)", "too_near_is_not_fired_at"),
+            "minimum_not_asked": ("w->GetMinRange(target), w->GetMaxRange(target), shot, waterZ)", "0.f, w->GetMaxRange(target), shot, waterZ)", "too_near_is_not_fired_at"),
+            "water_level_ignored": ("const float waterZ = MAP.GetWaterLevel();", "const float waterZ = NAN;", "over_water_aims_at_water_surface_not_seabed"),
             "line_not_asked": ("line = CePlayUnitLineClear(", "line = true || CePlayUnitLineClear(", "a_blocked_line_is_not_fired_through"),
             "aim_at_the_unit_not_the_ground": ("*aim = FVector(shot[0], shot[1], shot[2]);", "*aim = FVector(pos.X, pos.Y + 20.f, pos.Z);", "aim_is_the_ground_under_the_view"),
             "view_direction_mirrored": ("l[3] = {look.X, look.Y, look.Z}", "l[3] = {look.X, -look.Y, look.Z}", "aim_is_the_ground_under_the_view"),

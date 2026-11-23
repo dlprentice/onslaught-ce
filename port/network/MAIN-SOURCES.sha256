@@ -129,7 +129,7 @@ b620a76ab8c218b65542dbdff75ced2416c30fc126273eb941c81db3e2da11af  port/patches/0
 4f6ce13111db03ed245981ac3ab61c47e832a5128d8ae0828cdd7bace996410b  port/patches/0205-ce-runtime-display-mode.patch
 f76916756e9a52e00a161dd5fad20617fa0388c67ef301a41e28924f55302b89  port/patches/0206-native-editor-lifecycle.patch
 ae11488f0bab434fd2991200551e05fdcfad66c0494a86df7565d476469dd6bb  port/patches/0207-ce-museum-visit-lifecycle.patch
-8c5c12ec948065a5a75290df6487c4268bf87e427db40154389d3d0fe86864dc  port/patches/0208-ce-full-models.patch
+2a6bed86bf6f195086d1ba4a261be11f8e5bd3e68c9161a49ba56502f2a90312  port/patches/0208-ce-full-models.patch
 14558f2260d5bb1dcd8226b7fc655592c188eb33d4e2869b9e0de3f0d506911b  port/patches/0209-ce-world-view-snapshot.patch
 8b9420837604a2a88e7414c89f6778dfbe0cf3fcff13aecd8043b595a418d50b  port/patches/0210-ce-terrain-detail-distance.patch
 46c26a8568ca0600cb59e43049786388138eb249f33b806b9da86ec7e4f57cfc  port/patches/0211-ce-video-quality.patch
@@ -226,13 +226,13 @@ e3fb90f3d31a870155a3689d9ebe9ef1ef0e3d2fc724ab35ab4135fc56252f8c  port/patches/0
 e8f265cb3f3c4a1f87b128332cd5ab1be86fa9140bed165fd732d373fb10a2bc  port/patches/0364-ce-hook-weapon-fire.patch
 c592dc92bf3bccdc2425aa8c6c47294b3cce0ce215c024749fd493d9097f5ebb  port/patches/0365-ce-hook-render-pass.patch
 48a9d392ceb5f4eba2222e58170dc33cb172a50ca2f4329dc5627208a3c3867b  port/patches/0366-ce-museum-visitor-hud.patch
-947a43abfd8b4ebaaee067fa517a9890a42243c02dd6000b93cae2866d95dec0  port/patches/0367-ce-water-reflection-res.patch
-45b2f70436380727ff26d76ca28378232a2879921bab5e9e7571a11941f9e844  port/patches/0368-ce-dynamic-shadow-res.patch
-254f968ad354b3a0550a0c0f0d95ae8da0232d99b7a27d0416600a7cf2948889  port/patches/0369-ce-multibe-controller-slots.patch
+0b8756e65c7a4ce76022e3fa39d255675ae00125b5c0d019bbff1116eca9b265  port/patches/0367-ce-water-reflection-res.patch
+899391a628610d731bcc40008c769374165a40876fa60ec704d243e5ec634e24  port/patches/0368-ce-dynamic-shadow-res.patch
+25163ae295b0567f63a2ce4e6caf62770c255eb5c21e5a70413ef0f768b831f6  port/patches/0369-ce-multibe-controller-slots.patch
 a667a867c6fb6f582ac8815d57d7ca8d7c3211abcf0a36e99d288e9733149c39  port/patches/0370-ce-multibe-game-state.patch
 0bb8184bff453c83fbe23b1d0a296d22dcfa00592592e973acd93f3ef444bbb7  port/patches/0371-ce-multibe-start-spawn.patch
 f1ec623a3b9d2bbfa28e8318ac71a10b54186903a0b8c13f570d5e54c4f64c33  port/patches/0372-ce-multibe-player-career-safe.patch
-d5bbf324d3dfc22d2efbde29985d55766dafef201532b1e7dbde7bb0e8b2bb5b  port/patches/0373-ce-multibe-unit-sound-particles.patch
+72a9e0a32fddd926d787c48cb85076081b9c8e7be9538d3be5f7742c15137f50  port/patches/0373-ce-multibe-unit-sound-particles.patch
 749cc07e94a7aac6bd4ed356f698b813287d829956ff317fd284b9068f8b6ca3  port/patches/0374-ce-multibe-mp-preview.patch
 7a17c1b53c8a10bea1b4c53982388a39ed3d5d04aab8fac814ef839b4f4a8578  port/patches/0375-ce-solo-skirmish.patch
 dfc124b8be5f47542983807c85f28275460376acd8dfc7a5a15ce530a26c272b  port/patches/0376-ce-muspell-cockpit.patch

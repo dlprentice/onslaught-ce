@@ -18,7 +18,6 @@ port/tools/bink_pause_tests.py	script	-	deps	release	-	port/bink PortBinkPause a
 port/tools/build_tests.py	script	-	deps	release	-	
 port/tools/ce_backup_preview_page_tests.py	script	-	none	release	-	restore lane; host build with the system compiler
 port/tools/ce_backup_preview_tests.py	script	-	none	release	-	restore lane; host build with the system compiler
-port/tools/ce_backup_preview_windows_tests.py	script	-	deps+wine	release	-	restore lane; runs a Windows build under Wine (not run at the r8 integration)
 port/tools/ce_bonus_save_tests.py	script	-	none	release	-	
 port/tools/ce_bonus_tests.py	script	-	none	release	-	
 port/tools/ce_career_backup_tests.py	script	-	none	release	-	restore lane; host build with the system compiler
@@ -47,8 +46,6 @@ port/tools/ce_command_lifetime_tests.py	script	-	none	release	-	Commander lane; 
 port/tools/ce_command_panel_tests.py	script	-	none	release	-	Commander lane; host build with the system compiler
 port/tools/ce_command_selection_tests.py	script	-	none	release	-	Commander lane; host build with the system compiler
 port/tools/ce_commander_camera_tests.py	script	-	none	release	-	
-port/tools/ce_commander_isolation_run_tests.py	script	-	none	release	-	
-port/tools/ce_commander_match_run_tests.py	script	-	none	release	-	
 port/tools/ce_commander_mouse_state_tests.py	script	-	none	release	-	Commander lane; host build with the system compiler
 port/tools/ce_commander_pointer_tests.py	script	-	none	release	-	Commander lane; host build with the system compiler
 port/tools/ce_commander_rts_ui_tests.py	script	-	none	release	-	Commander RTS HUD layout, placards, glyph safety and retail voice gate; host build with the system compiler
@@ -148,7 +145,6 @@ port/tools/ce_world_view_tests.py	script	-	none	release	-
 port/tools/cli_windowed_tests.py	script	-	none	release	-	
 port/tools/close_caller_tests.py	script	-	deps	release	-	
 port/tools/compose_bundle_tests.py	script	-	none	release	-	
-port/tools/coop_pair_run_tests.py	script	-	none	optional	-	the pair runner's judge and key scripts; the pair itself is coop_pair_run.py (two offscreen games)
 port/tools/cursor_mode_failure_tests.py	script	-	none	release	-	
 port/tools/deps_root_tests.py	script	-	none	release	-	a build reads one dependency root and records it; a missing or outside receipt stops it (no fallback)
 port/tools/deps_tests.py	script	-	deps	release	-	

@@ -790,15 +790,18 @@ static int hex_to(const char *h, uint8_t *out, size_t n)
 	return 1;
 }
 
-/* ce.ini: key=value lines in the user folder (optional spaces or tabs before key or '='). */
+/* ce.ini: key=value lines in the user folder (optional UTF-8 BOM, optional spaces or tabs before key, around '=', and after value). */
 static int ini_get(const char *key, char *out, size_t n)
 {
 	if (!key || !*key) return 0;
 	char *t = read_all(sIni, NULL);
 	if (!t) return 0;
+	char *start = t;
+	if ((unsigned char)start[0] == 0xEF && (unsigned char)start[1] == 0xBB && (unsigned char)start[2] == 0xBF)
+		start += 3;
 	size_t k = strlen(key);
 	int found = 0;
-	for (char *l = t; l && *l; l = strchr(l, '\n') ? strchr(l, '\n') + 1 : NULL)
+	for (char *l = start; l && *l; l = strchr(l, '\n') ? strchr(l, '\n') + 1 : NULL)
 	{
 		char *p = l;
 		while (*p == ' ' || *p == '\t') p++;
@@ -810,6 +813,8 @@ static int ini_get(const char *key, char *out, size_t n)
 			{
 				char *e = eq + 1;
 				size_t m = strcspn(e, "\r\n");
+				while (m > 0 && (*e == ' ' || *e == '\t')) { e++; m--; }
+				while (m > 0 && (e[m - 1] == ' ' || e[m - 1] == '\t')) m--;
 				snprintf(out, n, "%.*s", (int)m, e);
 				found = 1;
 				break;
@@ -837,7 +842,7 @@ static int sIniQuiet;	/* the write was asked for by a command-line switch: no bo
 /* Says it once a start for each of the two choices, in a box; where the answer came from a switch or from a test's environment
  * variable, or no box can be shown, the same words go to the terminal and the log. Other keys (the game folder the launcher found by
  * itself) are no choice the player made at this start: they keep the one log line. */
-static void ini_tell_unsaved(const char *key)
+static void ini_tell_unsaved(const char *key, int refusal)
 {
 	static int told_skip, told_record;
 	int skip = !strcmp(key, "skip_version"), record = !strcmp(key, "record_sessions");
@@ -847,7 +852,7 @@ static void ini_tell_unsaved(const char *key)
 	*told = 1;
 	char text[1024];
 	snprintf(text, sizeof text, "%s\n\n%s", skip ? CE_BOX_UNSAVED_SKIP : CE_BOX_UNSAVED_RECORD,
-			 ce_ini_refusal == CE_INI_REFUSED_READONLY ? CE_BOX_INI_READONLY : CE_BOX_INI_UNWRITABLE);
+			 refusal == CE_INI_REFUSED_READONLY ? CE_BOX_INI_READONLY : CE_BOX_INI_UNWRITABLE);
 	/* BEA_RECORD_ANSWER answers the recording question in every build (ask_record); BEA_UPDATE_ANSWER is honoured only in the
 	 * updater tests' builds (ce_update_v2.h), so elsewhere it gives no answer and the player still gets the box. */
 	const char *record_answer = getenv("BEA_RECORD_ANSWER"), *update_answer = NULL;
@@ -858,13 +863,14 @@ static void ini_tell_unsaved(const char *key)
 	else tell_box(SDL_MESSAGEBOX_WARNING, text);
 }
 
-/* ce_ini_write (ce_report.h): written whole beside ce.ini and renamed over it, so a failed write leaves it as it was. */
+/* ce_ini_write_ex (ce_report.h): written whole beside ce.ini and renamed over it, so a failed write leaves it as it was. */
 static int ini_set(const char *key, const char *value)
 {
-	if (ce_ini_write(sIni, key, value)) return 1;
+	int refusal = CE_INI_REFUSED_NONE;
+	if (ce_ini_write_ex(sIni, key, value, &refusal)) return 1;
 	say("could not write %s to ce.ini; it is unchanged%s", key,
-		ce_ini_refusal == CE_INI_REFUSED_READONLY ? " (the file is read-only)" : "");
-	ini_tell_unsaved(key);
+		refusal == CE_INI_REFUSED_READONLY ? " (the file is read-only)" : "");
+	ini_tell_unsaved(key, refusal);
 	return 0;
 }
 

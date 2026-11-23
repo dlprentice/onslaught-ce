@@ -106,10 +106,216 @@ class Policy(unittest.TestCase):
         gamut = patch.split("--- a/gcgamut.cpp\n", 1)[1].split("--- a/DXTrees.cpp\n", 1)[0]
         dxtrees = patch.split("--- a/DXTrees.cpp\n", 1)[1].split("--- a/game.cpp\n", 1)[0]
         self.assertIn("CeUnitModelsQualityEnabled()", rtmesh)
+        self.assertIn("!gMirrorPass && CeUnitModelsQualityEnabled()", rtmesh)
         self.assertNotIn("CeTreeModelsQualityEnabled()", rtmesh)
         for sec_name, sec in (("RTTree.cpp", rttree), ("gcgamut.cpp", gamut), ("DXTrees.cpp", dxtrees)):
             self.assertIn("CeTreeModelsQualityEnabled()", sec, sec_name)
             self.assertNotIn("CeUnitModelsQualityEnabled()", sec, sec_name)
+
+    def test_rtmesh_mirror_pass_exempts_full_models_and_keeps_main_pass_zero_impostor(self):
+        sys.path.insert(0, str(ROOT / "port"))
+        import build
+        rtmesh_text = build.patched_text(["rtmesh.cpp"])["rtmesh.cpp"]
+
+        def extract(signature):
+            start = rtmesh_text.index(signature)
+            return rtmesh_text[start:rtmesh_text.index("\n}\n", start) + 3]
+
+        render_fn = extract("void CRTMesh::Render(DWORD flags)")
+        imp_fn = extract("void CRTMesh::RenderImposter()")
+        self.assertIn("const bool ce_full_models = !gMirrorPass && CeUnitModelsQualityEnabled();", render_fn)
+        self.assertIn("if (!gMirrorPass && CeUnitModelsQualityEnabled()) return;", imp_fn)
+
+        driver_code = r'''
+#include <cmath>
+#include <cstdio>
+#include "model_quality.h"
+
+using DWORD = unsigned;
+using SINT = int;
+using UINT = unsigned;
+using BOOL = int;
+const BOOL FALSE = 0;
+
+struct FVector {
+    float X = 0.0f, Y = 0.0f, Z = 0.0f;
+    FVector() = default;
+    FVector(float x, float y, float z) : X(x), Y(y), Z(z) {}
+    FVector operator-(const FVector &o) const { return {X - o.X, Y - o.Y, Z - o.Z}; }
+    float MagnitudeSq() const { return X * X + Y * Y + Z * Z; }
+};
+struct FMatrix {};
+const FVector ZERO_FVECTOR{};
+const FMatrix ID_FMATRIX{};
+
+bool gMirrorPass = false;
+bool FORCE_OBJECT_IMPOSTERS = false;
+float IMPOSTER_FADE_START = 39.0f;
+float IMPOSTER_FADE_END = 40.0f;
+float MESH_LOD_BIAS = 1.0f;
+float MESH_LOD_MED_THRESHOLD = 10.0f;
+float MESH_LOD_LOW_THRESHOLD = 20.0f;
+bool MESH_LOD_IGNORE_ZOOM = false;
+bool SNOW_LAYER_ENABLE = false;
+float MESH_SURFACE_LOD_BIAS = 400.0f;
+UINT MESH_SURFACE_DETAIL = 100;
+SINT MESH_ALPHA = 255;
+
+static bool gUnitQuality = true;
+bool CeUnitModelsQualityEnabled() { return gUnitQuality; }
+static unsigned gCounts[CE_MODEL_EVENTS] = {};
+void CeModelQualityCount(CeModelQualityEvent e) { if (e >= 0 && e < CE_MODEL_EVENTS) ++gCounts[e]; }
+
+struct Camera { FVector pos; float zoom = 1.0f; FVector GetPos() const { return pos; } float GetZoom() const { return zoom; } };
+struct Engine { Camera cam; Camera *GetCamera() { return &cam; } } ENGINE;
+struct RenderInfo { float mSnowDensity = 0.0f; } RENDERINFO;
+struct BBox { float mRadius = 1.0f; };
+struct CMESH { CMESH *mNextInChain = nullptr; };
+struct IRenderableThing {
+    FVector pos{200.0f, 0.0f, 0.0f};
+    FVector GetRenderPos() const { return pos; }
+    float GetRenderImposterBias() const { return 1.0f; }
+    float GetRenderScale() const { return 1.0f; }
+    float GetSnowDensity() const { return 0.0f; }
+    SINT GetRenderAnimation() const { return 0; }
+    float GetRenderFrame() const { return 0.0f; }
+};
+
+static int gMeshDraws = 0, gImposterDraws = 0;
+static CMESH *gLastDrawnMesh = nullptr;
+static UINT gLastDetail = 0;
+struct CDXImposter {
+    SINT mNumFrames = 1;
+    BOOL mAnimated = 0;
+    void Render(IRenderableThing *, SINT, SINT) { ++gImposterDraws; }
+};
+struct CMeshRenderer {
+    static SINT mRenderMode;
+    static void Render(FVector *, FMatrix *, CMESH *m, IRenderableThing *, void *, UINT, bool, DWORD) {
+        ++gMeshDraws;
+        gLastDrawnMesh = m;
+        gLastDetail = MESH_SURFACE_DETAIL;
+    }
+};
+SINT CMeshRenderer::mRenderMode = 0;
+
+struct CRTMesh {
+    static CRTMesh *sRenderedLastFrame;
+    static CRTMesh *sRenderedThisFrame;
+    CRTMesh *mNextRendered = nullptr;
+    CRTMesh *mPrevRendered = nullptr;
+    IRenderableThing *mThing = nullptr;
+    CMESH *mMesh = nullptr;
+    CDXImposter *mImposter = nullptr;
+    UINT mUnknown24 = 0;
+    BBox box;
+    BBox *GetBoundingBox() { return &box; }
+    void Render(DWORD flags);
+    void RenderImposter();
+};
+CRTMesh *CRTMesh::sRenderedLastFrame = nullptr;
+CRTMesh *CRTMesh::sRenderedThisFrame = nullptr;
+
+#include "rtmesh_actual.inc"
+
+static int gFail = 0;
+static void Need(bool cond, const char *msg) {
+    if (!cond) { std::fprintf(stderr, "rtmesh assertion: %s\n", msg); ++gFail; }
+}
+static void ResetCounters() {
+    gMeshDraws = gImposterDraws = 0;
+    gLastDrawnMesh = nullptr;
+    gLastDetail = 0;
+    for (unsigned &c : gCounts) c = 0;
+}
+
+int main() {
+    IRenderableThing thing;
+    CMESH lowLod{}, hiLod{&lowLod};
+    CDXImposter imp{};
+    CRTMesh rt{};
+    rt.mThing = &thing;
+    rt.mMesh = &hiLod;
+    rt.mImposter = &imp;
+
+    // 1. Main pass with Full Unit Models ON: full 3D mesh drawn, imposter skipped, impostor==0 & reduced_mesh==0.
+    ResetCounters();
+    gUnitQuality = true; gMirrorPass = false; FORCE_OBJECT_IMPOSTERS = false;
+    rt.Render(0);
+    rt.RenderImposter();
+    Need(gMeshDraws == 1 && gLastDrawnMesh == &hiLod && gLastDetail == 100, "main pass renders full-LOD mesh");
+    Need(gImposterDraws == 0, "main pass draws zero imposters");
+    Need(gCounts[CE_MODEL_IMPOSTOR] == 0 && gCounts[CE_MODEL_REDUCED_MESH] == 0, "main pass keeps impostor==0 and reduced_mesh==0");
+
+    // 2. Mirror pass with Full Unit Models ON (CGame::Render sets FORCE_OBJECT_IMPOSTERS=true):
+    //    exempt from full-3D override -> skips 3D mesh, renders fast imposter in reflection, keeps CE_MODEL_IMPOSTOR==0!
+    ResetCounters();
+    gUnitQuality = true; gMirrorPass = true; FORCE_OBJECT_IMPOSTERS = true;
+    rt.Render(0);
+    rt.RenderImposter();
+    Need(gMeshDraws == 0, "mirror pass skips full 3D mesh for impostorable distant unit");
+    Need(gImposterDraws == 1, "mirror pass still renders imposter billboard in water reflection");
+    Need(gCounts[CE_MODEL_IMPOSTOR] == 0 && gCounts[CE_MODEL_REDUCED_MESH] == 0, "mirror pass does not pollute main-pass impostor/reduced_mesh counters");
+
+    // 3. Mirror pass for non-impostorable mesh with LOD chain: uses reduced LOD and keeps CE_MODEL_REDUCED_MESH==0.
+    ResetCounters();
+    rt.mImposter = nullptr;
+    rt.Render(0);
+    Need(gMeshDraws == 1 && gLastDrawnMesh == &lowLod, "mirror pass uses reduced LOD for non-impostorable distant mesh");
+    Need(gCounts[CE_MODEL_REDUCED_MESH] == 0, "mirror pass reduced mesh does not pollute main-pass reduced_mesh counter");
+
+    // 4. Main pass with Full Unit Models OFF: retail behavior, imposter rendered & counted.
+    ResetCounters();
+    rt.mImposter = &imp;
+    gUnitQuality = false; gMirrorPass = false; FORCE_OBJECT_IMPOSTERS = false;
+    rt.Render(0);
+    rt.RenderImposter();
+    Need(gMeshDraws == 0 && gImposterDraws == 1 && gCounts[CE_MODEL_IMPOSTOR] == 1, "full_unit_models OFF uses retail imposter and counts it");
+
+    if (gFail) return 1;
+    std::puts("PASS");
+    return 0;
+}
+'''
+        combined = render_fn + "\n" + imp_fn + "\n"
+        drv_path = self.folder / "rtmesh_mirror_driver.cpp"
+        drv_path.write_text(driver_code)
+
+        def run_variant(label, body):
+            vdir = self.folder / ("rtmesh-" + label)
+            vdir.mkdir(exist_ok=True)
+            (vdir / "rtmesh_actual.inc").write_text(body)
+            exe = vdir / "driver"
+            comp = subprocess.run(
+                ["g++", "-std=c++14", "-O2", "-Wall", "-Wextra",
+                 "-I", str(vdir), "-I", str(INCLUDES), str(drv_path), "-o", str(exe)],
+                capture_output=True, text=True, timeout=60)
+            self.assertEqual(comp.returncode, 0, label + ": rtmesh driver compile failed")
+            return subprocess.run([str(exe)], capture_output=True, text=True, timeout=10)
+
+        ok = run_variant("clean", combined)
+        self.assertEqual(ok.returncode, 0, ok.stderr + ok.stdout)
+        self.assertEqual(ok.stdout, "PASS\n")
+
+        for label, old, new in (
+            ("render-ignores-mirror",
+             "const bool ce_full_models = !gMirrorPass && CeUnitModelsQualityEnabled();",
+             "const bool ce_full_models = CeUnitModelsQualityEnabled();"),
+            ("imposter-blocks-mirror",
+             "if (!gMirrorPass && CeUnitModelsQualityEnabled()) return;",
+             "if (CeUnitModelsQualityEnabled()) return;"),
+            ("mirror-pollutes-impostor-count",
+             "if (!gMirrorPass) CeModelQualityCount(CE_MODEL_IMPOSTOR);",
+             "CeModelQualityCount(CE_MODEL_IMPOSTOR);"),
+            ("mirror-pollutes-reduced-count",
+             "if (!gMirrorPass && mesh != mMesh) CeModelQualityCount(CE_MODEL_REDUCED_MESH);",
+             "if (mesh != mMesh) CeModelQualityCount(CE_MODEL_REDUCED_MESH);"),
+        ):
+            with self.subTest(mutant=label):
+                self.assertEqual(combined.count(old), 1, label)
+                ran = run_variant(label, combined.replace(old, new, 1))
+                self.assertEqual(ran.returncode, 1, f"mutant {label} was NOT caught")
+                self.assertIn("rtmesh assertion:", ran.stderr)
 
     def test_tree_guard_keeps_models_and_preserves_ordinary_policy(self):
         # Compile the actual overlay predicate against authored Boolean inputs.

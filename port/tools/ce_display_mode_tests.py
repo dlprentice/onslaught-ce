@@ -334,7 +334,7 @@ def negative_controls(base):
             assert p.returncode == 2, (label, p.returncode, p.stdout, p.stderr)
             result = 'actual cheat retry assertion fails'
         elif label in ('folder-refused-read-as-empty', 'folder-any-errno-is-absent'):
-            env['BEA_USER_DIR'] = str(user / 'file' / 'user')
+            env['BEA_USER_DIR'] = str(user / 'file') if label == 'folder-any-errno-is-absent' else str(user / 'file' / 'user')
             p = subprocess.run([str(out/'ce'), 'cheat-folder-refused'], env=env, text=True, capture_output=True, timeout=10)
             assert p.returncode == 2 and 'refused folder is unavailable' in p.stderr, (label, p.returncode, p.stderr)
             result = 'a refused folder reads as an empty, available setting'
@@ -426,8 +426,8 @@ def negative_controls(base):
     for label, old, new, scenario, reader, message, result in (
         ('windows-final-reparse', 'FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT',
          'FILE_ATTRIBUTE_DIRECTORY', 'reparse', 'boolean', 'reader result or default', 'reparse refusal assertion fails'),
-        ('windows-parent-reparse', '(info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT)',
-         'false', 'parent-link', 'boolean', 'reader result or default', 'reparse refusal assertion fails'),
+        ('windows-user-reparse', '(info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT)',
+         'false', 'user-reparse', 'boolean', 'reader result or default', 'reparse refusal assertion fails'),
         ('windows-denied-folder-is-absent', 'int gone = h == INVALID_HANDLE_VALUE && (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND);',
          'int gone = h == INVALID_HANDLE_VALUE;', 'parent-denied', 'checked', 'checked reader: success, empty file or failed read',
          'a refused folder reads as an empty file'),
@@ -601,7 +601,7 @@ class DisplayTests(unittest.TestCase):
         (base / 'dangling').symlink_to(base / 'nowhere', target_is_directory=True)
         locked = base / 'locked'; locked.mkdir()
         cases = {'file in the way': base / 'file' / 'user', 'folder is a file': base / 'file',
-                 'link in the way': base / 'link' / 'user', 'folder is a link': base / 'link',
+                 'folder is a link': base / 'link',
                  'dangling link': base / 'dangling', 'below a dangling link': base / 'dangling' / 'user'}
         if os.geteuid():    # root searches a closed folder, so there is no refusal to observe
             cases['no search access to the parent'] = locked / 'user'
@@ -616,6 +616,17 @@ class DisplayTests(unittest.TestCase):
         finally:
             locked.chmod(0o700)
         self.assertEqual(list(locked.iterdir()), [])
+        # A symlinked OS/user ancestor above the CE user directory (e.g. /home -> /var/home or relocated ~/.local/share)
+        # succeeds cleanly, while a symlinked ce.ini inside that directory is still strictly refused.
+        relocated = base / 'link' / 'user'
+        relocated_env = dict(self.env, BEA_USER_DIR=str(relocated))
+        self.assertEqual(self.call('ce', 'cheat-folder-absent', env=relocated_env), 'cheat-folder-absent pass')
+        self.assertEqual((real / 'user' / 'ce.ini').read_bytes(), b'cheat_malloy=1\n')
+        outside_ini = base / 'outside.ini'
+        outside_ini.write_bytes(b'windowed=1\n')
+        (real / 'user' / 'ce.ini').unlink()
+        (real / 'user' / 'ce.ini').symlink_to(outside_ini)
+        self.assertEqual(self.call('ce', 'get', '7', 'none', env=relocated_env), '7')
 
     def test_cheat_reads_are_fenced_from_faithful_runs(self):
         self.ini.write_bytes(b'cheat_malloy=1\n')
@@ -779,8 +790,8 @@ class DisplayTests(unittest.TestCase):
         self.assertEqual(self.call('ce', 'get', '7', 'none', env=dict(self.env, BEA_USER_DIR=str(nonregular))), '7')
 
     def test_windows_reader_actual_source_with_win32_boundary_seams(self):
-        for name in ('regular', 'missing', 'parent-missing', 'parent-path-missing', 'parent-denied', 'parent-link', 'reparse',
-                     'directory', 'pipe', 'info-fail', 'fd-fail', 'stream-fail'):
+        for name in ('regular', 'ancestor-junction', 'missing', 'parent-missing', 'parent-path-missing', 'parent-denied',
+                     'dangling-ancestor', 'user-reparse', 'reparse', 'directory', 'pipe', 'info-fail', 'fd-fail', 'stream-fail'):
             for reader in ('boolean', 'integer', 'checked'):
                 with self.subTest(name=name, reader=reader):
                     self.assertEqual(self.call('windows-read', name, reader), name + ' pass')

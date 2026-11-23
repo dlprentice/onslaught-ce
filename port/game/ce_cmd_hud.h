@@ -112,6 +112,7 @@ struct CeCmdHudPalette
 	std::uint32_t placardFill;
 	std::uint32_t placardHover;
 	std::uint32_t placardSelected;
+	std::uint32_t placardSelectedBorder;
 	std::uint32_t placardStructStripe;
 	std::uint32_t placardDimStripe;
 	std::uint32_t buttonFill;
@@ -144,8 +145,9 @@ inline CeCmdHudPalette CeCmdHudDefaultPalette()
 	p.wellBorder = 0xff1f445c;
 	p.placardFill = 0xd60e1e30;
 	p.placardHover = 0xe216324d;
-	p.placardSelected = 0xeb183856;
-	p.placardStructStripe = 0xffe8b048;
+	p.placardSelected = 0xf21e4a70;
+	p.placardSelectedBorder = 0xfff4fcff;
+	p.placardStructStripe = 0xffd48a2e;
 	p.placardDimStripe = 0xff5a6f80;
 	p.buttonFill = 0xde102438;
 	p.buttonHover = 0xeb1a3c5c;
@@ -178,8 +180,9 @@ inline CeCmdHudPalette CeCmdHudMuspellPalette()
 	p.wellBorder = 0xff5c281c;
 	p.placardFill = 0xd8281612;
 	p.placardHover = 0xe43c2018;
-	p.placardSelected = 0xec4c2418;
-	p.placardStructStripe = 0xffffc038;
+	p.placardSelected = 0xf2642c1c;
+	p.placardSelectedBorder = 0xfffff8f0;
+	p.placardStructStripe = 0xffe06824;
 	p.placardDimStripe = 0xff7c5e56;
 	p.buttonFill = 0xe02c1814;
 	p.buttonHover = 0xec48241a;
@@ -505,7 +508,7 @@ struct CeCmdHudHit
 	int index;						// placard global index (visibleStart + slot) or button slot 0..5
 };
 
-inline CeCmdHudHit CeCmdHudHitTest(const CeCmdHudLayout &layout, float px, float py)
+inline CeCmdHudHit CeCmdHudHitTest(const CeCmdHudLayout &layout, float px, float py, int placardCount = -1)
 {
 	CeCmdHudHit hit = {CE_HUD_HIT_NONE, -1};
 	if (!layout.valid || !CeCmdHudRectContains(layout.barRect, px, py)) return hit;
@@ -514,8 +517,11 @@ inline CeCmdHudHit CeCmdHudHitTest(const CeCmdHudLayout &layout, float px, float
 		if (CeCmdHudRectContains(layout.prevPageRect, px, py)) return {CE_HUD_HIT_PREV_PAGE, 0};
 		if (CeCmdHudRectContains(layout.nextPageRect, px, py)) return {CE_HUD_HIT_NEXT_PAGE, 0};
 	}
-	for (int i = 0; i < layout.visibleCount; ++i)
+	const int maxSlots = layout.visibleCount < kCeHudMaxVisiblePlacards ? layout.visibleCount : kCeHudMaxVisiblePlacards;
+	for (int i = 0; i < maxSlots; ++i)
 	{
+		const int idx = layout.visibleStart + i;
+		if (idx < 0 || (placardCount >= 0 && idx >= placardCount)) break;
 		if (CeCmdHudRectContains(layout.placardRects[i], px, py))
 			return {CE_HUD_HIT_PLACARD, layout.visibleStart + i};
 	}

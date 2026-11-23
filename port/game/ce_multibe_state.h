@@ -106,16 +106,35 @@ inline const char *CeMultiBeSoloSkirmishIniValue(int choice)
 }
 
 // Returns the active Battle Engine target count for ce_multibe:
-// - 3 or 4 when `multi_be` explicitly requests 3..4 BEs (any level);
+// - 3 or 4 when `multi_be` explicitly requests 3..4 BEs on skirmish/multiplayer levels (850..899),
+//   or on campaign levels ONLY when `allowCampaign` (`multi_be_campaign=1`) is explicitly opted in;
 // - 2 (1v1 Solo Skirmish) when `solo_skirmish=1` on a multiplayer/skirmish level (850..899);
-// - 0 (inactive) otherwise, keeping retail 1P/2P runs completely untouched.
-inline int CeMultiBeEffectiveTargetCount(int multiBeCount, bool soloSkirmish, int level)
+// - 0 (inactive) otherwise, keeping retail 1P/2P and Campaign runs completely untouched.
+inline int CeMultiBeEffectiveTargetCount(int multiBeCount, bool soloSkirmish, int level, bool allowCampaign = false)
 {
-	if (multiBeCount >= 3)
+	const bool isSkirmish = (level >= 850 && level <= 899);
+	if (multiBeCount >= 3 && (isSkirmish || allowCampaign))
 		return (multiBeCount > CE_MULTIBE_SLOTS) ? CE_MULTIBE_SLOTS : multiBeCount;
-	if (soloSkirmish && level >= 850 && level <= 899)
+	if (soloSkirmish && isSkirmish)
 		return 2;
 	return 0;
+}
+
+// Computes the (right, forward) spiral candidate offset for dry-ground spawn/respawn searches.
+// When the caller passes a zero or near-zero base offset (e.g. respawn near saved start), uses a
+// non-zero expanding radius so all 32 (4 rings x 8 angles) candidates test distinct dry ground!
+inline void CeMultiBeDrySearchOffset(int scaleIdx, int angleIdx, float offRight, float offFwd, float *outR, float *outF)
+{
+	static const float kScales[4] = { 0.70f, 0.50f, 0.35f, 0.20f };
+	static const float kZeroRadii[4] = { 6.0f, 12.0f, 18.0f, 24.0f };
+	static const float kAngles[8] = { 0.0f, 0.7854f, -0.7854f, 1.5708f, -1.5708f, 2.3562f, -2.3562f, 3.14159f };
+	const int si = (scaleIdx >= 0 && scaleIdx < 4) ? scaleIdx : 0;
+	const int ai = (angleIdx >= 0 && angleIdx < 8) ? angleIdx : 0;
+	const float ca = cosf(kAngles[ai]), sa = sinf(kAngles[ai]);
+	const float baseR = (offRight * offRight + offFwd * offFwd >= 1.0f) ? (offRight * kScales[si]) : kZeroRadii[si];
+	const float baseF = (offRight * offRight + offFwd * offFwd >= 1.0f) ? (offFwd * kScales[si]) : 0.0f;
+	if (outR) *outR = baseR * ca - baseF * sa;
+	if (outF) *outF = baseR * sa + baseF * ca;
 }
 
 // Formats the FEPMultiplayerStart status summary line using only BEA-drawable glyphs (no pipe/underscore/brackets).
@@ -454,7 +473,10 @@ struct CeMultiBeMatchState
 			return;
 		if (isVersus)
 		{
-			snprintf(out, cap, "2v2 VERSUS  FORSETI %d/%d (K:%d)  vs  MUSPELL %d/%d (K:%d)  -  %s",
+			const int total = forsetiTotal + muspellTotal;
+			const char *modeTag = (total == 3) ? "3-BE VERSUS" : (total == 2 ? "1v1 VERSUS" : "2v2 VERSUS");
+			snprintf(out, cap, "%s  FORSETI %d/%d (K:%d)  vs  MUSPELL %d/%d (K:%d)  -  %s",
+			         modeTag,
 			         forsetiAlive, forsetiTotal, forsetiKills,
 			         muspellAlive, muspellTotal, muspellKills,
 			         playerSide == CE_MULTIBE_SIDE_MUSPELL ? "MUSPELL" : "FORSETI");

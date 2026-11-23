@@ -130,7 +130,8 @@ MUTANTS = (
     ("the deflection is not limited", swap("CePlayUnitClamp(turn, -1.f, 1.f) * rate", "turn * rate"), "steer: deflection is limited to full"),
     ("a negative time step turns the other way", swap("	if (!isfinite(dt) || dt < 0.f) dt = 0.f;\n", ""), "steer: a negative or unknown time step turns nothing"),
     ("the heading is not wrapped", swap("	return CePlayUnitWrap(actual + lead);", "	return actual + lead;"), "steer: wraps past a half turn"),
-    ("an angle is not wrapped", swap("	while (a > pi) a -= 2.f * pi;\n", ""), "wrap: into one turn"),
+    ("an angle is not wrapped", swap("	float r = remainderf(a, 2.f * pi);\n", "	return a; float r = 0.f;\n"), "wrap: into one turn"),
+    ("huge angles are not reduced by remainderf", swap("	float r = remainderf(a, 2.f * pi);\n", "	float r = a;\n"), "wrap: huge angles finish in O(1) inside (-pi, pi]"),
     ("a clamp lets a number that is not one through", swap("	if (!(v == v)) return 0.f;		// not a number: no input\n", ""), "clamp: a number that is not one is no input"),
     ("the point uses the sine for x", swap("*tx = x + cosf(angle) * reach;", "*tx = x + sinf(angle) * reach;"), "point: along the x axis"),
     ("the point is the unit's own place", swap("*ty = y + sinf(angle) * reach;", "*ty = y;"), "point: along the y axis"),
@@ -158,9 +159,11 @@ MUTANTS = (
     # free fire: the aim point
     ("the ray's hit is not narrowed", swap("for (int i = 0; i < 12; ++i)", "for (int i = 0; i < 0; ++i)"), "view: a coarse search is narrowed to the same point"),
     ("the ray starts under the ground", swap("if (!isfinite(start) || start <= 0.f) return false;", "if (!isfinite(start)) return false;"), "view: an eye under the ground gives no point"),
-    ("the hit's height is the eye's", swap("hit[2] = height(context, hit[0], hit[1]);", "hit[2] = eye[2];"), "view: the ray reaches flat ground where the geometry says"),
-    ("the ground is judged from below", swap("const float above = height(context, eye[0] + look[0] * t, eye[1] + look[1] * t) - (eye[2] + look[2] * t);", "const float above = (eye[2] + look[2] * t) - height(context, eye[0] + look[0] * t, eye[1] + look[1] * t);"),
+    ("the hit's height is the eye's", swap("hit[2] = CePlayUnitSurfaceAt(height, context, hit[0], hit[1], waterZ);", "hit[2] = eye[2];"), "view: the ray reaches flat ground where the geometry says"),
+    ("the ground is judged from below", swap("const float above = CePlayUnitSurfaceAt(height, context, eye[0] + look[0] * t, eye[1] + look[1] * t, waterZ) - (eye[2] + look[2] * t);", "const float above = (eye[2] + look[2] * t) - CePlayUnitSurfaceAt(height, context, eye[0] + look[0] * t, eye[1] + look[1] * t, waterZ);"),
      "view: the ray reaches flat ground where the geometry says"),
+    ("water surface is ignored in aiming", swap("return (isfinite(waterZ) && waterZ < ground) ? waterZ : ground;", "return ground;"),
+     "view: over-water ray hits water surface rather than seabed"),
     ("the reach is not asked", swap("		if (t >= maxDist) return false;\n", "		if (t >= maxDist) { hit[0] = eye[0]; hit[1] = eye[1]; hit[2] = eye[2]; return true; }\n"), "view: ground beyond the reach gives no point"),
     ("the sky has a point", swap("		if (t >= maxDist) return false;\n", "		if (t >= maxDist) { hit[0] = eye[0] + look[0] * t; hit[1] = eye[1] + look[1] * t; hit[2] = eye[2] + look[2] * t; return true; }\n"), "view: looking at the sky gives no point"),
     # free fire: the range

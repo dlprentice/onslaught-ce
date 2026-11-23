@@ -3,6 +3,11 @@
 // without CE_VERSION each point is an empty function. With CE_VERSION each point runs the rows of its table by its
 // dispatch (ce_hooks_dispatch.h): a row's slot orders it, a row runs only while its gate is open and its mode active, and
 // the table is checked while compiling (CE_HOOK_CHECK) and by port/tools/ce_hooks_tests.py.
+#if defined(CE_VERSION) && defined(PORT_H)
+#include "common.h"
+#include "Career.h"
+#include "BattleEngine.h"
+#endif
 #include "ce_hooks.h"
 #include "ce_hooks_dispatch.h"
 
@@ -72,19 +77,56 @@ static bool CeHookPaletteOpen(unsigned char key, bool repeat) { return PortCePal
 static bool CeHookCmdKey(unsigned char key, bool repeat) { return PortCeCmdKey(key, repeat); }
 static void CeHookPlayUnitDrawWorld(CPlayer *, int viewpoint) { if (PortCePlayUnitDrawWorld) PortCePlayUnitDrawWorld(viewpoint); }
 static void CeHookEditorRender() { PortCeEditorRender(); }
-static void CeHookEditorSave(CeHookSaveTarget target, CCareer *career, char *dest, int)
+template <class T, decltype(sizeof(T)) = sizeof(T)>
+static constexpr int CeHookCompleteSize(int) { return (int)sizeof(T); }
+template <class T>
+static constexpr int CeHookCompleteSize(...) { return 0; }
+static constexpr int CeHookMinCareerSize() { return CeHookCompleteSize<CCareer>(0); }
+
+template <class T>
+static constexpr auto CeHookHasGetPlayer(int) -> decltype(static_cast<T *>(nullptr)->GetPlayer(), true) { return true; }
+template <class T>
+static constexpr bool CeHookHasGetPlayer(...) { return false; }
+
+template <class T>
+static auto CeHookHasPlayerImpl(T *be, int) -> decltype(be->GetPlayer(), bool())
 {
-	if (target == CE_SAVE_CAREER)
+	return be->GetPlayer() != nullptr;
+}
+template <class T>
+static bool CeHookHasPlayerImpl(T *, ...)
+{
+	return true;
+}
+static bool CeHookBattleEngineHasPlayer(CBattleEngine *be)
+{
+	return be && CeHookHasPlayerImpl<CBattleEngine>(be, 0);
+}
+
+#ifdef PORT_H
+static_assert(CeHookMinCareerSize() == (int)sizeof(CCareer), "save_gate bounds guard must see sizeof(CCareer) in game builds");
+static_assert(CeHookHasGetPlayer<CBattleEngine>(0), "hud_focus guard must see CBattleEngine::GetPlayer() in game builds");
+#endif
+
+static bool CeHookSaveCareerValid(CeHookSaveTarget target, CCareer *career, const char *dest, int size)
+{
+	const int minSize = CeHookMinCareerSize();
+	return target == CE_SAVE_CAREER && career != nullptr && dest != nullptr && size > 0 && size >= minSize;
+}
+
+static void CeHookEditorSave(CeHookSaveTarget target, CCareer *career, char *dest, int size)
+{
+	if (CeHookSaveCareerValid(target, career, dest, size))
 		PortCeEditorFilterSave(career, dest);
 }
-static void CeHookBonusSave(CeHookSaveTarget target, CCareer *career, char *dest, int)
+static void CeHookBonusSave(CeHookSaveTarget target, CCareer *career, char *dest, int size)
 {
-	if (target == CE_SAVE_CAREER)
+	if (CeHookSaveCareerValid(target, career, dest, size))
 		PortCeBonusFilterSave(career, dest);
 }
-static void CeHookMuseumVisitSave(CeHookSaveTarget target, CCareer *career, char *dest, int)
+static void CeHookMuseumVisitSave(CeHookSaveTarget target, CCareer *career, char *dest, int size)
 {
-	if (target == CE_SAVE_CAREER)
+	if (CeHookSaveCareerValid(target, career, dest, size))
 		PortCeMuseumVisitFilterSave(career, dest);
 }
 static CCamera *CeHookCmdRenderCamera(CCamera *camera, int, CPlayer *player) { return PortCeCmdRenderCamera(camera, player); }
@@ -196,6 +238,8 @@ static constexpr CeHookRow<CeHookMenuFn> kMenuRows[] = {
 };
 CE_HOOK_CHECK(kMenuRows, CE_HOOK_RENDER, CE_DISPATCH_POSITIONAL_INSERT, "menu_rows");
 // save_gate: editor, bonus level, museum visit, in the order their career filters ran in CCareer::Save.
+// Rows stay CE_MODE_NONE until the feature modules wire CeModeBegin/CeModeEnd (ce_modes.h); each handler still
+// enforces CeHookSaveCareerValid (career/dest non-NULL and size >= sizeof(CCareer)) plus its module's active flag.
 static constexpr CeHookRow<CeHookSaveFn> kSaveGate[] = {
 	{10, "editor_save", CE_HOOK_SIM, CE_GATE_VERSION, CE_MODE_NONE, CeHookEditorSave},
 	{20, "bonus_save", CE_HOOK_SIM, CE_GATE_VERSION, CE_MODE_NONE, CeHookBonusSave},
@@ -273,7 +317,13 @@ void ce_hook_audio_clock(CeHookAudioEvent event, unsigned bytes)
 		r->fn(event, bytes);
 }
 CCamera *ce_hook_render_camera(int viewpoint, CCamera *camera, CPlayer *player) { return CeHookOverride("render_camera", kRenderCamera, camera, viewpoint, player); }
-CBattleEngine *ce_hook_hud_focus(CPlayer *player, CBattleEngine *be) { return CeHookOverride("hud_focus", kHudFocus, be, player); }
+CBattleEngine *ce_hook_hud_focus(CPlayer *player, CBattleEngine *be)
+{
+	CBattleEngine *focused = CeHookOverride("hud_focus", kHudFocus, be, player);
+	if (focused && !CeHookBattleEngineHasPlayer(focused))
+		return (be && CeHookBattleEngineHasPlayer(be)) ? be : nullptr;
+	return focused;
+}
 void ce_hook_unit_spawn(CUnit *unit, CInitThing *init) { CeHookBroadcast("unit_spawn", kUnitSpawn, unit, init); }
 void ce_hook_unit_destroyed(CUnit *unit) { CeHookBroadcast("unit_destroyed", kUnitDestroyed, unit); }
 void ce_hook_spawner_trigger(CeSpawnerTrigger *trigger) { CeHookFilter("spawner_trigger", kSpawnerTrigger, trigger); }

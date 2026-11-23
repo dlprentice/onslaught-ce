@@ -4,9 +4,9 @@
 // are rows, and the list box for the pages that are long lists. What a page shows comes from the feature that owns it
 // (ce_service_record.cpp for the Service Record).
 //
-// Unfinished, so off unless ce.ini has the line extras=1 under [Experimental] (read once, here; a lone 1 and nothing else turns it
-// on). Off, the hub has no Extras row and nothing in this file is reached. The pages exist only where the CE menus do (PortCeMenus):
-// never in a replay, a recording, the test harness, -autoconfigtest or the demo.
+// On by default wherever the CE menus are shown (PortCeMenus), unless ce.ini sets extras=0 (read once, here).
+// Off (extras=0 or CE menus off), the hub has no Extras row and nothing in this file is reached. The pages exist
+// only where the CE menus do (PortCeMenus): never in a replay, a recording, the test harness, -autoconfigtest or the demo.
 //
 // How the pages are made, so that they read as the game's own:
 // - The Onslaught CE page (ce_frontend.cpp) keeps drawing the shell: the video background, the sliding borders, the title bar, the
@@ -689,7 +689,7 @@ void	CloseAll()
 bool	PortCeExtrasOffered()
 {
 	if (sOffered < 0)
-		sOffered = (PortCeMenus() && (CE_SettingGetBool("extras", 0) == 1)) ? 1 : 0;
+		sOffered = (PortCeMenus() && (CE_SettingGetBool("extras", 1) == 1)) ? 1 : 0;
 	return sOffered == 1;
 }
 

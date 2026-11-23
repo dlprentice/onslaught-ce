@@ -301,6 +301,417 @@ int main() {
 """
 
 
+LANDSCAPE_RESTORE_DRIVER = r"""
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include "reflection_quality.h"
+#include "portlog.h"
+
+bool PortCeLayer() { return true; }
+void PortSessionLog(PortSessionCategory, bool, const char *, ...) {}
+extern "C" uint64_t SDL_GetTicks() { return 1000; }
+extern "C" bool SDL_OpenURL(const char *) { return false; }
+extern "C" int CE_CompatibilityRuntimeMutation(char *, size_t) { return 1; }
+
+struct CTweakSLONG { int mValue; explicit CTweakSLONG(int v = 0) : mValue(v) {} };
+CTweakSLONG GEFORCE_FX_POWER(1), EXTRA_GEFORCE_FX_FEATURES(1), R32F_WORKS(1);
+CTweakSLONG MY_READABLE_Z_BUFFER(0), OTHER_ZBUFFER_AS_TEXTURE(0);
+
+using HRESULT = int;
+using DWORD = unsigned;
+const HRESULT S_OK = 0;
+const HRESULT E_FAIL = -1;
+#define SUCCEEDED(x) ((x) >= 0)
+#define FAILED(x) ((x) < 0)
+#define SAFE_RELEASE(p) do { if (p) { (p)->Release(); (p) = nullptr; } } while (0)
+using D3DFORMAT = unsigned;
+constexpr unsigned D3DFMT_A32B32G32R32F=1, D3DFMT_D16=2, D3DFMT_R32F=3, D3DFMT_R5G6B5=4;
+constexpr unsigned D3DMULTISAMPLE_NONE=0, D3DPOOL_DEFAULT=0, D3DUSAGE_DEPTHSTENCIL=1, D3DUSAGE_RENDERTARGET=2;
+constexpr bool TRUE = true;
+
+static int gLiveTextures = 0, gLiveSurfaces = 0;
+static unsigned gFailTexAbove = 99999u, gFailDepthAbove = 99999u;
+static unsigned gLastMirrorW = 0, gLastDepthW = 0;
+static int gPixelShaderReleases = 0, gInitDeviceCalls = 0;
+
+struct IUnknown {};
+struct IDirect3DSurface9 {
+    unsigned w;
+    explicit IDirect3DSurface9(unsigned dim) : w(dim) { ++gLiveSurfaces; }
+    void Release() { --gLiveSurfaces; delete this; }
+};
+struct IDirect3DTexture9 {
+    unsigned w;
+    explicit IDirect3DTexture9(unsigned dim) : w(dim) { ++gLiveTextures; }
+    void Release() { --gLiveTextures; delete this; }
+    HRESULT GetSurfaceLevel(unsigned, IDirect3DSurface9 **out) {
+        gLastDepthW = w;
+        *out = new IDirect3DSurface9(w);
+        return S_OK;
+    }
+};
+struct Pixel {} gPixel;
+struct DeviceObject { virtual ~DeviceObject() = default; };
+const char *DXGetErrorString9(HRESULT) { return "fault"; }
+struct TestGame { bool IsMultiplayer() const { return false; } } GAME;
+struct TestHistory { template<class... T> void AddMessage(T...) {} } SETUP_HISTORY;
+struct TestDevice {
+    struct { unsigned MaxTextureWidth = 2048u, MaxTextureHeight = 2048u; } m_d3dCaps;
+    TestDevice *GetDevice() { return this; }
+    void AddDeviceObject(DeviceObject *) {}
+    void RemoveDeviceObject(DeviceObject *) {}
+    void D3D_Release(IUnknown **p) {
+        if (p && *p) { ++gPixelShaderReleases; *p = nullptr; }
+    }
+    HRESULT D3D_CreateTextureNoCheck(unsigned w, unsigned h, unsigned, unsigned usage, D3DFORMAT fmt, unsigned, IDirect3DTexture9 **out) {
+        (void)h; (void)fmt;
+        if (usage == D3DUSAGE_DEPTHSTENCIL) {
+            if (w > gFailDepthAbove) { *out = nullptr; return E_FAIL; }
+            *out = new IDirect3DTexture9(w);
+            return S_OK;
+        }
+        if (usage == D3DUSAGE_RENDERTARGET && fmt == D3DFMT_R5G6B5) {
+            if (w > gFailTexAbove) { *out = nullptr; return E_FAIL; }
+            gLastMirrorW = w;
+            *out = new IDirect3DTexture9(w);
+            return S_OK;
+        }
+        *out = new IDirect3DTexture9(w);
+        return S_OK;
+    }
+    HRESULT CreateDepthStencilSurface(unsigned w, unsigned h, D3DFORMAT, unsigned, unsigned, bool, IDirect3DSurface9 **out, void *) {
+        (void)h;
+        if (w > gFailDepthAbove) { *out = nullptr; return E_FAIL; }
+        gLastDepthW = w;
+        *out = new IDirect3DSurface9(w);
+        return S_OK;
+    }
+} LT;
+
+struct CDXLandscape {
+    Pixel *mPixelShader = &gPixel;
+    IDirect3DTexture9 *mMirrorTexture = nullptr, *mUnknown08 = nullptr, *mDepthTexture = nullptr;
+    IDirect3DSurface9 *mDepthSurface = nullptr;
+    HRESULT InitDeviceObjects() { ++gInitDeviceCalls; return S_OK; }
+};
+
+#include "landscape_hook_actual.inc"
+
+static int gFailures = 0;
+static void Check(bool cond, const char *msg) {
+    if (!cond) { std::fprintf(stderr, "restore assertion: %s\n", msg); ++gFailures; }
+}
+
+int main() {
+    // 1. Invalidate + Restore at 1024 keeps pixel shader intact and never calls InitDeviceObjects().
+    {
+        CDXLandscape land;
+        sCeMirrorDeviceHook.Attach(&land);
+        gFailTexAbove = 99999u; gFailDepthAbove = 99999u;
+        sCeMirrorDeviceHook.InvalidateDeviceObjects();
+        Check(CE_WaterReflectionAllocatedRes() == 0 && gLiveTextures == 0 && gLiveSurfaces == 0, "invalidate clears allocated state");
+        sCeMirrorDeviceHook.RestoreDeviceObjects();
+        Check(gPixelShaderReleases == 0 && land.mPixelShader == &gPixel, "restore never releases mPixelShader");
+        Check(gInitDeviceCalls == 0, "restore never re-runs InitDeviceObjects()");
+        Check(land.mMirrorTexture != nullptr && land.mDepthSurface != nullptr, "restore recreates mirror and depth");
+        Check(gLastMirrorW == 1024u && gLastDepthW == 1024u && CE_WaterReflectionAllocatedRes() == 1024, "restore recreates at 1024");
+        Check(gLiveTextures == 1 && gLiveSurfaces == 1, "restore has zero leaks");
+        sCeMirrorDeviceHook.InvalidateDeviceObjects();
+        sCeMirrorDeviceHook.Detach(&land);
+        Check(gLiveTextures == 0 && gLiveSurfaces == 0, "invalidate cleanup zero leaks");
+    }
+    // 2. Restore with 1024 depth failure falls back cleanly to 512 with zero leaks.
+    {
+        CDXLandscape land;
+        sCeMirrorDeviceHook.Attach(&land);
+        gFailTexAbove = 99999u; gFailDepthAbove = 512u;
+        sCeMirrorDeviceHook.RestoreDeviceObjects();
+        Check(land.mMirrorTexture != nullptr && land.mDepthSurface != nullptr, "512 fallback succeeds");
+        Check(gLastMirrorW == 512u && gLastDepthW == 512u && CE_WaterReflectionAllocatedRes() == 512, "512 fallback active");
+        Check(gLiveTextures == 1 && gLiveSurfaces == 1 && gInitDeviceCalls == 0 && gPixelShaderReleases == 0, "512 fallback zero leaks");
+        sCeMirrorDeviceHook.InvalidateDeviceObjects();
+        sCeMirrorDeviceHook.Detach(&land);
+        Check(gLiveTextures == 0 && gLiveSurfaces == 0, "512 cleanup zero leaks");
+    }
+    // 3. Total failure on restore (even 256 fails) leaves targets NULL, allocated=0, zero leaks.
+    {
+        CDXLandscape land;
+        sCeMirrorDeviceHook.Attach(&land);
+        gFailTexAbove = 99999u; gFailDepthAbove = 128u;
+        sCeMirrorDeviceHook.RestoreDeviceObjects();
+        Check(land.mMirrorTexture == nullptr && land.mDepthSurface == nullptr, "total failure clears mirror and depth");
+        Check(CE_WaterReflectionAllocatedRes() == 0, "total failure reports allocated=0");
+        Check(gLiveTextures == 0 && gLiveSurfaces == 0, "total failure zero leaks");
+        sCeMirrorDeviceHook.Detach(&land);
+    }
+    // 4. MY_READABLE_Z_BUFFER=1 recreates mUnknown08 + mirror + depth on restore without leaking.
+    {
+        MY_READABLE_Z_BUFFER.mValue = 1;
+        OTHER_ZBUFFER_AS_TEXTURE.mValue = 1;
+        CDXLandscape land;
+        sCeMirrorDeviceHook.Attach(&land);
+        gFailTexAbove = 99999u; gFailDepthAbove = 99999u;
+        sCeMirrorDeviceHook.RestoreDeviceObjects();
+        Check(land.mUnknown08 != nullptr && land.mMirrorTexture != nullptr && land.mDepthTexture != nullptr && land.mDepthSurface != nullptr, "readableZ restore recreates all targets");
+        Check(gLiveTextures == 3 && gLiveSurfaces == 1 && gInitDeviceCalls == 0, "readableZ restore counts exact");
+        sCeMirrorDeviceHook.InvalidateDeviceObjects();
+        sCeMirrorDeviceHook.Detach(&land);
+        Check(gLiveTextures == 0 && gLiveSurfaces == 0, "readableZ invalidate frees all targets");
+    }
+    if (gFailures) return 1;
+    std::puts("PASS");
+    return 0;
+}
+"""
+
+SHADOW_LIFECYCLE_DRIVER = r"""
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include "reflection_quality.h"
+#include "portlog.h"
+
+bool PortCeLayer() { return true; }
+void PortSessionLog(PortSessionCategory, bool, const char *, ...) {}
+extern "C" uint64_t SDL_GetTicks() { return 1000; }
+extern "C" bool SDL_OpenURL(const char *) { return false; }
+extern "C" int CE_CompatibilityRuntimeMutation(char *, size_t) { return 1; }
+
+using SINT = int;
+using UBYTE = unsigned char;
+using BOOL = int;
+using HRESULT = int;
+const HRESULT S_OK = 0;
+const HRESULT E_FAIL = -1;
+const BOOL TRUE = 1;
+const BOOL FALSE = 0;
+#define SUCCEEDED(x) ((x) >= 0)
+#define FAILED(x) ((x) < 0)
+#define SAFE_DELETE(p) do { if (p) { delete (p); (p) = nullptr; } } while (0)
+#define SAFE_RELEASE(p) do { if (p) { (p)->Release(); (p) = nullptr; } } while (0)
+constexpr unsigned D3DFMT_D16 = 2, D3DMULTISAMPLE_NONE = 0;
+enum EMemType { MEMTYPE_TEXTURE = 2 };
+inline void *operator new(size_t sz, EMemType) { return ::operator new(sz); }
+inline void operator delete(void *p, EMemType) { ::operator delete(p); }
+
+struct CTweakSLONG { int mValue; explicit CTweakSLONG(int v = 0) : mValue(v) {} };
+CTweakSLONG DXSHADOWS_INVERSE(0), SRT_ENABLE(1);
+bool gMirrorPass = false;
+
+static int gLiveUMTextures = 0, gLiveDefaultTextures = 0, gLiveDepthSurfaces = 0;
+static int gDoubleRestoreWithoutInvalidate = 0;
+static unsigned gFailShadowTexAbove = 99999u, gFailShadowDepthAbove = 99999u;
+static int gFailShadowTexAtIndex = -1;
+static int gShadowCreateOrdinal = 0;
+
+struct IDirect3DSurface9 {
+    unsigned w;
+    explicit IDirect3DSurface9(unsigned dim) : w(dim) { ++gLiveDepthSurfaces; }
+    void Release() { --gLiveDepthSurfaces; delete this; }
+};
+struct IDirect3DTexture9 {
+    unsigned w;
+    explicit IDirect3DTexture9(unsigned dim) : w(dim) { ++gLiveDefaultTextures; }
+    void Release() { --gLiveDefaultTextures; delete this; }
+};
+struct CUMTexture {
+    IDirect3DTexture9 *mTexture = nullptr;
+    int mSize = 0;
+    CUMTexture() { ++gLiveUMTextures; }
+    ~CUMTexture() { InvalidateDeviceObjects(); --gLiveUMTextures; }
+    HRESULT Init(int size, int, int) {
+        mSize = size;
+        return RestoreDeviceObjects();
+    }
+    HRESULT RestoreDeviceObjects() {
+        if (mTexture) {
+            ++gDoubleRestoreWithoutInvalidate;
+            mTexture->Release();
+            mTexture = nullptr;
+        }
+        const int ord = gShadowCreateOrdinal++;
+        if (static_cast<unsigned>(mSize) > gFailShadowTexAbove ||
+            (gFailShadowTexAtIndex >= 0 && ord == gFailShadowTexAtIndex && static_cast<unsigned>(mSize) >= 256u)) {
+            return E_FAIL;
+        }
+        mTexture = new IDirect3DTexture9(static_cast<unsigned>(mSize));
+        return S_OK;
+    }
+    HRESULT InvalidateDeviceObjects() {
+        SAFE_RELEASE(mTexture);
+        return S_OK;
+    }
+};
+
+struct CUnit {};
+struct ActiveReader {
+    CUnit *p = nullptr;
+    void SetReader(CUnit *u) { p = u; }
+    CUnit *ToRead() const { return p; }
+};
+struct SShadowRequest { ActiveReader mUnit; float mDist = 0.0f; };
+struct SShadowTexInfo { ActiveReader mUnit; UBYTE mUnknown08 = 0; };
+struct TestCli { bool mHiDetailMode = false; } CLIPARAMS;
+struct TestConsole { template<class... T> void RegisterVariable(T...) {} } CONSOLE;
+struct TestHistory { template<class... T> void AddMessage(T...) {} } SETUP_HISTORY;
+enum { CVar_bool = 0, CVar_float = 1 };
+const char *DXGetErrorString9(HRESULT) { return "fault"; }
+struct TestDevice {
+    struct { unsigned MaxTextureWidth = 2048u, MaxTextureHeight = 2048u; } m_d3dCaps;
+    TestDevice *m_pd3dDevice = this;
+    void AddDeviceObject(void *) {}
+    void RemoveDeviceObject(void *) {}
+    HRESULT CreateDepthStencilSurface(unsigned w, unsigned h, unsigned, unsigned, unsigned, int, IDirect3DSurface9 **out, void *) {
+        (void)h;
+        if (w > gFailShadowDepthAbove) { *out = nullptr; return E_FAIL; }
+        *out = new IDirect3DSurface9(w);
+        return S_OK;
+    }
+} LT;
+
+struct CShadows {
+    float mBlobShadowFadeDist = 30.0f;
+    SShadowRequest mGuardBefore = {{nullptr}, 42.0f};
+    SShadowRequest mRequests[32] = {};
+    SShadowTexInfo mTexInfo[32] = {};
+    bool mShowShadowMap = false;
+    SINT mNumTextures = 0;
+    SINT mSizes[32] = {};
+    CUMTexture *mTextures[32] = {};
+    IDirect3DSurface9 *mDepthSurface = nullptr;
+    bool mShadows = true;
+    bool mShowShadowExtents = false;
+    bool mBlobShadows = true;
+
+    void Init();
+    HRESULT RestoreDeviceObjects();
+    void ResetShads();
+    void AddShadow(CUnit *unit, float dist);
+#include "shadows_request_actual.inc"
+    void Cleanup() {
+        for (SINT i = 0; i < 32; ++i) SAFE_DELETE(mTextures[i]);
+        SAFE_RELEASE(mDepthSurface);
+        mNumTextures = 0;
+        CeDynamicShadowResetAllocated();
+    }
+};
+
+#include "shadows_methods_actual.inc"
+
+static int gFailures = 0;
+static void Check(bool cond, const char *msg) {
+    if (!cond) { std::fprintf(stderr, "shadow assertion: %s\n", msg); ++gFailures; }
+}
+
+int main() {
+    // 1. Total allocation failure in Init sets mNumTextures=0 and mShadows=FALSE; ResetShads/RequestShadow stay safe!
+    {
+        CShadows s;
+        gFailShadowTexAbove = 0u; gFailShadowDepthAbove = 99999u; gFailShadowTexAtIndex = -1; gShadowCreateOrdinal = 0;
+        s.Init();
+        Check(s.mNumTextures == 0, "total init failure sets mNumTextures=0");
+        Check(!s.mShadows, "total init failure disables mShadows");
+        Check(CE_DynamicShadowAllocatedRes() == 0, "total init failure reports allocated=0");
+        Check(gLiveUMTextures == 0 && gLiveDefaultTextures == 0, "total init failure leaves zero textures");
+        s.mBlobShadowFadeDist = 30.0f;
+        volatile SINT zeroCount = s.mNumTextures;
+        s.mNumTextures = zeroCount;
+        volatile float *guardDist = &s.mGuardBefore.mDist;
+        *guardDist = 42.0f;
+        s.ResetShads();
+        CUnit dummy;
+        s.RequestShadow(&dummy, 5.0f);
+        s.AddShadow(&dummy, 5.0f);
+        Check(s.mBlobShadowFadeDist == 30.0f && *guardDist == 42.0f,
+              "ResetShads/RequestShadow/AddShadow never underflow mRequests[-1] when mNumTextures==0");
+        s.Cleanup();
+    }
+    // 2. RestoreDeviceObjects when CShadows restores BEFORE CUMTextures retries 256 first (NO unnecessary downgrade to 128!).
+    {
+        CShadows s;
+        gFailShadowTexAbove = 99999u; gFailShadowDepthAbove = 99999u; gFailShadowTexAtIndex = -1; gShadowCreateOrdinal = 0;
+        gDoubleRestoreWithoutInvalidate = 0;
+        s.Init();
+        Check(s.mNumTextures == 16 && s.mSizes[0] == 256 && CE_DynamicShadowAllocatedRes() == 256, "init succeeds at 256");
+        // Simulate Alt-Tab InvalidateDeviceObjects on all CUMTextures BEFORE CShadows::RestoreDeviceObjects runs.
+        for (SINT i = 0; i < s.mNumTextures; ++i) s.mTextures[i]->InvalidateDeviceObjects();
+        Check(gLiveDefaultTextures == 0, "all shadow textures invalidated");
+        s.RestoreDeviceObjects();
+        Check(s.mSizes[0] == 256 && CE_DynamicShadowAllocatedRes() == 256, "restore retries 256 first and does NOT downgrade to 128");
+        Check(gLiveDefaultTextures == 16 && gDoubleRestoreWithoutInvalidate == 0, "zero DEFAULT-pool leaks on ordered restore");
+        s.Cleanup();
+        Check(gLiveUMTextures == 0 && gLiveDefaultTextures == 0 && gLiveDepthSurfaces == 0, "cleanup zero leaks");
+    }
+    // 3. Partial failure at 256 during restore invalidates already-live textures cleanly and falls back to 128 with ZERO double-restore leaks!
+    {
+        CShadows s;
+        gFailShadowTexAbove = 99999u; gFailShadowDepthAbove = 99999u; gFailShadowTexAtIndex = -1; gShadowCreateOrdinal = 0;
+        gDoubleRestoreWithoutInvalidate = 0;
+        s.Init();
+        // Simulate textures 0..4 restored at 256 by CUMTexture, textures 5..15 still null, and texture 5 failing at 256.
+        for (SINT i = 5; i < s.mNumTextures; ++i) s.mTextures[i]->InvalidateDeviceObjects();
+        gShadowCreateOrdinal = 0;
+        gFailShadowTexAtIndex = 0; // first retry at 256 fails
+        gFailShadowTexAbove = 128u;
+        s.RestoreDeviceObjects();
+        Check(s.mSizes[0] == 128 && s.mSizes[15] == 128 && CE_DynamicShadowAllocatedRes() == 128, "partial 256 restore failure falls back to 128");
+        Check(gLiveDefaultTextures == 16, "all 16 textures live at 128");
+        Check(gDoubleRestoreWithoutInvalidate == 0, "InvalidateDeviceObjects called before RestoreDeviceObjects on every recreated texture");
+        s.Cleanup();
+        Check(gLiveUMTextures == 0 && gLiveDefaultTextures == 0, "partial failure cleanup zero leaks");
+    }
+    // 3b. Live texture with mismatched size must be invalidated before RestoreDeviceObjects (zero DEFAULT-pool leak!).
+    {
+        CShadows s;
+        gFailShadowTexAbove = 99999u; gFailShadowDepthAbove = 99999u; gFailShadowTexAtIndex = -1; gShadowCreateOrdinal = 0;
+        gDoubleRestoreWithoutInvalidate = 0;
+        s.Init();
+        s.mTextures[0]->mSize = 128; // stale size while mTexture != nullptr
+        s.mTextures[15]->InvalidateDeviceObjects(); // trigger anyMissing at ceRes=256
+        s.RestoreDeviceObjects();
+        Check(s.mSizes[0] == 256 && s.mTextures[0]->mSize == 256 && gLiveDefaultTextures == 16, "mismatched texture recreated cleanly at 256");
+        Check(gDoubleRestoreWithoutInvalidate == 0, "live mismatched texture invalidated before RestoreDeviceObjects");
+        s.Cleanup();
+        Check(gLiveUMTextures == 0 && gLiveDefaultTextures == 0, "mismatched cleanup zero leaks");
+    }
+    // 4. DXSHADOWS_INVERSE=1 depth failure at 256 invalidates all 256 textures and steps down to 128 with zero leaks.
+    {
+        DXSHADOWS_INVERSE.mValue = 1;
+        CShadows s;
+        gFailShadowTexAbove = 99999u; gFailShadowDepthAbove = 99999u; gFailShadowTexAtIndex = -1; gShadowCreateOrdinal = 0;
+        gDoubleRestoreWithoutInvalidate = 0;
+        s.Init();
+        Check(s.mSizes[0] == 256 && s.mDepthSurface != nullptr && gLiveDepthSurfaces == 1, "inverse init at 256");
+        gFailShadowDepthAbove = 128u;
+        s.RestoreDeviceObjects();
+        Check(s.mSizes[0] == 128 && s.mDepthSurface != nullptr && s.mDepthSurface->w == 128u, "inverse depth failure falls back to 128");
+        Check(gLiveDefaultTextures == 16 && gLiveDepthSurfaces == 1 && gDoubleRestoreWithoutInvalidate == 0, "inverse fallback zero leaks");
+        s.Cleanup();
+        DXSHADOWS_INVERSE.mValue = 0;
+        Check(gLiveUMTextures == 0 && gLiveDefaultTextures == 0 && gLiveDepthSurfaces == 0, "inverse cleanup zero leaks");
+    }
+    // 5. Total failure on restore (even 64 fails) invalidates all textures, disables mShadows, zero leaks.
+    {
+        CShadows s;
+        gFailShadowTexAbove = 99999u; gFailShadowDepthAbove = 99999u; gFailShadowTexAtIndex = -1; gShadowCreateOrdinal = 0;
+        gDoubleRestoreWithoutInvalidate = 0;
+        s.Init();
+        for (SINT i = 0; i < s.mNumTextures; ++i) s.mTextures[i]->InvalidateDeviceObjects();
+        gFailShadowTexAbove = 0u;
+        s.RestoreDeviceObjects();
+        Check(!s.mShadows && s.mBlobShadows && CE_DynamicShadowAllocatedRes() == 0, "total restore failure falls back to blob shadows");
+        Check(gLiveDefaultTextures == 0 && gDoubleRestoreWithoutInvalidate == 0, "total restore failure leaves zero DEFAULT-pool textures");
+        s.Cleanup();
+    }
+    if (gFailures) return 1;
+    std::puts("PASS");
+    return 0;
+}
+"""
+
+
 class GraphicsR2Tests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -397,6 +808,167 @@ class GraphicsR2Tests(unittest.TestCase):
         exe = self.compile_one("landscape-rollback", COMMON / "reflection_quality.cpp", public=True, driver=drv)
         self.assert_pass("", binary=exe)
 
+    def test_0367_mirror_restore_zero_res_guards_and_balanced_braces(self):
+        sys.path.insert(0, str(PORT))
+        import build
+        texts = build.patched_text(["DXLandscape.cpp", "DXWater.cpp", "game.cpp"])
+        dxl = texts["DXLandscape.cpp"]
+        # 1. Brace balance inside CDXLandscape::InitDeviceObjects for both CE and faithful views.
+        init_fn = public_d3dapp_tests.function(dxl, r"^HRESULT\s+CDXLandscape::InitDeviceObjects\s*\(")
+        self.assertEqual(init_fn.count("{"), init_fn.count("}"), "unbalanced braces in patched InitDeviceObjects")
+        self.assertEqual(faithful(init_fn).count("{"), faithful(init_fn).count("}"), "unbalanced braces in faithful InitDeviceObjects")
+        # No brace-straddling #ifdef CE_VERSION blocks in InitDeviceObjects.
+        depth = 0
+        for line in init_fn.splitlines():
+            s = line.strip()
+            if s.startswith("#ifdef CE_VERSION"):
+                mark = depth
+            elif s.startswith("#else"):
+                self.assertEqual(depth, mark, "brace-straddling #ifdef CE_VERSION block before #else")
+            elif s.startswith("#endif"):
+                self.assertEqual(depth, mark, "brace-straddling #ifdef CE_VERSION block before #endif")
+            elif not s.startswith(("#", "//")):
+                depth += line.count("{") - line.count("}")
+
+        # 2. Compile and run actual CeCreateMirrorTargetsAt + CeLandscapeMirrorDeviceHook restore lifecycle + causal mutants.
+        start = dxl.index("static bool CeCreateMirrorTargetsAt(")
+        end = dxl.index("static CeLandscapeMirrorDeviceHook sCeMirrorDeviceHook;") + len("static CeLandscapeMirrorDeviceHook sCeMirrorDeviceHook;")
+        hook_src = dxl[start:end]
+        (self.dir / "landscape_hook_actual.inc").write_text(hook_src + "\n")
+        drv = self.dir / "landscape_restore_driver.cpp"
+        drv.write_text(LANDSCAPE_RESTORE_DRIVER)
+        exe = self.compile_one("landscape-restore", COMMON / "reflection_quality.cpp", public=True, driver=drv)
+        self.assert_pass("", binary=exe)
+
+        for label, old, new in (
+            ("restore-calls-init",
+             "if (CeCreateMirrorTargetsAt(res, readableZ, zAsTex, &newMirror, &newDepthTex, &newDepthSurf))",
+             "mOwner->InitDeviceObjects(); if (CeCreateMirrorTargetsAt(res, readableZ, zAsTex, &newMirror, &newDepthTex, &newDepthSurf))"),
+            ("restore-releases-pixel-shader",
+             "CeWaterReflectionBeginFrame();",
+             "LT.D3D_Release((IUnknown **)&mOwner->mPixelShader); CeWaterReflectionBeginFrame();"),
+            ("restore-no-fallback",
+             "\t\t\t\tres = CeWaterReflectionNextFallback(res);\n\t\t\t}\n\t\t\tCeWaterReflectionSetAllocatedRes(0u, attempt);",
+             "\t\t\t\tbreak;\n\t\t\t}\n\t\t\tCeWaterReflectionSetAllocatedRes(0u, attempt);"),
+        ):
+            with self.subTest(mutant=label):
+                self.assertEqual(hook_src.count(old), 1, f"anchor mismatch for {label}")
+                mdir = self.dir / f"mut-restore-{label}"
+                mdir.mkdir(exist_ok=True)
+                (mdir / "landscape_hook_actual.inc").write_text(hook_src.replace(old, new) + "\n")
+                mdrv = mdir / "drv.cpp"
+                mdrv.write_text(LANDSCAPE_RESTORE_DRIVER)
+                cmd = [
+                    self.compiler, "-std=c++17", "-O2", "-Wall", "-Wextra",
+                    '-DCE_VERSION="graphics-r2-test"',
+                    "-I", str(mdir), "-I", str(self.dir), "-I", str(COMMON),
+                    str(COMMON / "reflection_quality.cpp"), str(self.dir / "ce-ce.o"), str(mdrv),
+                    "-o", str(mdir / "exe"),
+                ]
+                built = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+                self.assertEqual(built.returncode, 0, built.stderr)
+                ran = self.run_case("", binary=mdir / "exe")
+                self.assertEqual(ran.returncode, 1, f"mutant {label} was NOT caught")
+                self.assertIn("restore assertion:", ran.stderr)
+
+        # 3. Verify zero-res & missing-depth guards in game.cpp and DXWater.cpp.
+        game_txt = texts["game.cpp"]
+        water_txt = texts["DXWater.cpp"]
+        self.assertIn("ENGINE.GetLandscape()->mMirrorTexture && ENGINE.GetLandscape()->mDepthSurface", game_txt)
+        self.assertIn("CeWaterReflectionActiveRes() > 0u", game_txt)
+        self.assertIn("const unsigned ceMirrorDim = CeWaterReflectionActiveRes() > 0u ? CeWaterReflectionActiveRes() : 256u;", game_txt)
+        self.assertIn("ceWaterRes > 0u && ceWaterRes != 256u", water_txt)
+        self.assertIn("ENGINE.GetLandscape() && ENGINE.GetLandscape()->mMirrorTexture && ENGINE.GetLandscape()->mDepthSurface", water_txt)
+
+    def test_0368_shadow_zero_pool_restore_and_line_safety(self):
+        sys.path.insert(0, str(PORT))
+        import build
+        texts = build.patched_text(["shadows.h", "DXShadows.cpp"])
+        sh = texts["shadows.h"]
+        dxs = texts["DXShadows.cpp"]
+        # 1. Verify #line 105 is NOT inside #ifdef CE_VERSION and post-block __LINE__ matches retail.
+        patch_368 = (ROOT / "port/patches/0368-ce-dynamic-shadow-res.patch").read_text()
+        self.assertNotIn("+#line 105", patch_368)
+        self.assertIn('static_assert(sizeof(nextTex) / sizeof(nextTex[0]) >= 32', dxs)
+        a = dxs.index("#line 46")
+        b = dxs.index("ResetShads();") + len("ResetShads();")
+        probe_ce = subprocess.run(
+            [self.compiler, "-E", "-P", "-DCE_VERSION=1", "-x", "c++", "-"],
+            input=dxs[a:b] + "\nLINE_PROBE = __LINE__;\n", text=True, capture_output=True, timeout=15)
+        self.assertEqual(probe_ce.returncode, 0, probe_ce.stderr)
+        orig = (ROOT / "src/DXShadows.cpp").read_text()
+        oa = orig.index("#line 46")
+        ob = orig.index("ResetShads();") + len("ResetShads();")
+        probe_orig = subprocess.run(
+            [self.compiler, "-E", "-P", "-x", "c++", "-"],
+            input=orig[oa:ob] + "\nLINE_PROBE = __LINE__;\n", text=True, capture_output=True, timeout=15)
+        self.assertEqual(probe_orig.returncode, 0, probe_orig.stderr)
+        ce_line = [l.strip() for l in probe_ce.stdout.splitlines() if "LINE_PROBE" in l]
+        orig_line = [l.strip() for l in probe_orig.stdout.splitlines() if "LINE_PROBE" in l]
+        self.assertEqual(ce_line, orig_line, f"post-block __LINE__ drifted: CE={ce_line} vs retail={orig_line}")
+
+        # 2. Extract actual CShadows methods and RequestShadow and run lifecycle + causal mutants.
+        req_start = sh.index("#ifdef CE_VERSION\n\tvoid\t\tRequestShadow(")
+        req_end = sh.index("#endif\n", req_start) + len("#endif\n")
+        req_src = sh[req_start:req_end]
+        methods_src = "\n".join(
+            public_d3dapp_tests.function(dxs, pat) for pat in (
+                r"^void\s+CShadows::Init\s*\(",
+                r"^HRESULT\s+CShadows::RestoreDeviceObjects\s*\(",
+                r"^void\s+CShadows::ResetShads\s*\(",
+                r"^void\s+CShadows::AddShadow\s*\(",
+            )
+        )
+        (self.dir / "shadows_request_actual.inc").write_text(req_src)
+        (self.dir / "shadows_methods_actual.inc").write_text(methods_src + "\n")
+        drv = self.dir / "shadow_lifecycle_driver.cpp"
+        drv.write_text(SHADOW_LIFECYCLE_DRIVER)
+        exe = self.compile_one("shadow-lifecycle", COMMON / "reflection_quality.cpp", public=True, driver=drv)
+        self.assert_pass("", binary=exe)
+
+        for label, old, new in (
+            ("init-keeps-stale-num-textures",
+             "mNumTextures = 0;\n\t\t\tmShadows = FALSE;",
+             "/* mutant: leave mNumTextures stale */"),
+            ("restore-skips-ceRes-first",
+             "unsigned tryRes = anyMissing ? ceRes : CeDynamicShadowNextFallback(ceRes);",
+             "unsigned tryRes = CeDynamicShadowNextFallback(ceRes);"),
+            ("restore-omits-invalidate-before-recreate",
+             "mTextures[i]->InvalidateDeviceObjects();\n\t\t\t\t\tmSizes[i] = (SINT)tryRes;",
+             "mSizes[i] = (SINT)tryRes;"),
+            ("resetshads-omits-zero-guard",
+             "if (mNumTextures <= 0)\n\t\treturn;\n#endif\n\n\tif (mShadows == TRUE)",
+             "if (false)\n\t\treturn;\n#endif\n\n\tif (mShadows == TRUE)"),
+        ):
+            with self.subTest(mutant=label):
+                self.assertEqual(methods_src.count(old), 1, f"anchor mismatch for {label}")
+                mdir = self.dir / f"mut-sh-{label}"
+                mdir.mkdir(exist_ok=True)
+                (mdir / "shadows_request_actual.inc").write_text(req_src)
+                (mdir / "shadows_methods_actual.inc").write_text(methods_src.replace(old, new) + "\n")
+                mdrv = mdir / "drv.cpp"
+                mdrv.write_text(SHADOW_LIFECYCLE_DRIVER)
+                cmd = [
+                    self.compiler, "-std=c++17", "-O2", "-Wall", "-Wextra",
+                    '-DCE_VERSION="graphics-r2-test"',
+                    "-I", str(mdir), "-I", str(self.dir), "-I", str(COMMON),
+                    str(COMMON / "reflection_quality.cpp"), str(self.dir / "ce-ce.o"), str(mdrv),
+                    "-o", str(mdir / "exe"),
+                ]
+                built = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+                self.assertEqual(built.returncode, 0, built.stderr)
+                ran = self.run_case("", binary=mdir / "exe")
+                self.assertEqual(ran.returncode, 1, f"mutant {label} was NOT caught")
+                self.assertIn("shadow assertion:", ran.stderr)
+
+        # 3. Verify RenderTextures, RenderLandscapeShadows, and TestDraw guard mNumTextures<=0 and mTextures[i]->mTexture.
+        for pat in (r"^void\s+CShadows::RenderTextures\s*\(",
+                    r"^void\s+CShadows::RenderLandscapeShadows\s*\(",
+                    r"^void\s+CShadows::TestDraw\s*\("):
+            fn = public_d3dapp_tests.function(dxs, pat)
+            self.assertIn("if (mNumTextures <= 0 || mNumTextures > 32)", fn, pat)
+            self.assertIn("->mTexture", fn, pat)
+
     def test_patches_0367_and_0368_leave_faithful_build_unchanged(self):
         hook_sites = tuple(sorted(p.name for p in (ROOT / "port/patches").glob("03[01][0-9]-ce-hook-*.patch")))
         with tempfile.TemporaryDirectory(prefix="r2-patch-") as td:
@@ -408,7 +980,7 @@ class GraphicsR2Tests(unittest.TestCase):
                 with self.subTest(patch="0367", file=name):
                     self.assertNotEqual(with_367[name], without_367[name])
                     self.assertEqual(faithful(with_367[name]), faithful(without_367[name]))
-            files_368 = ("DXShadows.cpp", "game.cpp")
+            files_368 = ("shadows.h", "DXShadows.cpp", "game.cpp")
             with_368 = patched(base / "with368", files_368, skip=hook_sites)
             without_368 = patched(base / "without368", files_368, skip=("0368-ce-dynamic-shadow-res.patch", *hook_sites))
             for name in files_368:

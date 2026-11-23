@@ -192,7 +192,7 @@ static FILE *ce_ini_open_regular(CeSettingsDir *dir, int *missing = NULL)
 	char path[4500];
 	int path_len = snprintf(path, sizeof(path), "%s\\ce.ini", dir->path);
 	HANDLE in = path_len >= 0 && (size_t)path_len < sizeof(path) ?
-		CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, NULL) :
+		CreateFileA(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, NULL) :
 		INVALID_HANDLE_VALUE;
 	if (missing && in == INVALID_HANDLE_VALUE && path_len >= 0 && (size_t)path_len < sizeof(path) &&
 		GetLastError() == ERROR_FILE_NOT_FOUND) *missing = 1;
@@ -279,12 +279,18 @@ static char *ce_ini_read(int *ok = NULL, size_t *length = NULL)
 	if (fclose(f) != 0) bad = true;
 	ce_settings_dir_close(&dir);
 	if (bad) { free(t); return NULL; }
+	if (len >= 3 && (unsigned char)t[0] == 0xEF && (unsigned char)t[1] == 0xBB && (unsigned char)t[2] == 0xBF)
+	{
+		len -= 3;
+		memmove(t, t + 3, len + 1);
+	}
 	if (ok) *ok = 1;
 	if (length) *length = len;
 	return t;
 }
 
-// Preserve the existing first-key and integer parsing behavior for a complete read.
+// Preserve the existing first-key and integer parsing behavior for a complete read, bounded strictly within the matched
+// line span [eq + 1, n) so empty "key=\n1234" never bleeds across lines and huge digit runs never trigger signed overflow UB.
 static int ce_ini_value(const char *t, const char *key, int def)
 {
 	size_t k = strlen(key);
@@ -296,7 +302,19 @@ static int ce_ini_value(const char *t, const char *key, int def)
 		size_t eq = 0;
 		if (ce_ini_match_key(l, n, key, k, &eq))
 		{
-			v = atoi(l + eq + 1);
+			size_t pos = eq + 1;
+			while (pos < n && (l[pos] == ' ' || l[pos] == '\t')) ++pos;
+			bool neg = false;
+			if (pos < n && (l[pos] == '+' || l[pos] == '-')) neg = l[pos++] == '-';
+			unsigned long long acc = 0;
+			const unsigned long long lim = neg ? 2147483648ULL : 2147483647ULL;
+			while (pos < n && l[pos] >= '0' && l[pos] <= '9')
+			{
+				unsigned d = (unsigned)(l[pos++] - '0');
+				if (acc > (lim - d) / 10ULL) { acc = lim; break; }
+				acc = acc * 10ULL + d;
+			}
+			v = neg ? (acc == 2147483648ULL ? (-2147483647 - 1) : -(int)acc) : (int)acc;
 			break;
 		}
 		l = nl ? nl + 1 : NULL;
@@ -305,7 +323,7 @@ static int ce_ini_value(const char *t, const char *key, int def)
 }
 
 // Cheat settings use the same first-key rule, but unrelated lines may contain NULs that the writer preserves.
-// The entire read is NUL-terminated; the first matching value still uses the previous atoi behavior.
+// The entire read is NUL-terminated; integer parsing stays strictly bounded within the matched line span [eq + 1, n).
 static int ce_ini_value_span(const char *t, size_t len, const char *key, int def)
 {
 	size_t k = strlen(key);
@@ -315,7 +333,22 @@ static int ce_ini_value_span(const char *t, size_t len, const char *key, int def
 		const char *nl = (const char *)memchr(line, '\n', len - at);
 		size_t n = nl ? (size_t)(nl - line) : len - at;
 		size_t eq = 0;
-		if (ce_ini_match_key(line, n, key, k, &eq)) return atoi(line + eq + 1);
+		if (ce_ini_match_key(line, n, key, k, &eq))
+		{
+			size_t pos = eq + 1;
+			while (pos < n && (line[pos] == ' ' || line[pos] == '\t')) ++pos;
+			bool neg = false;
+			if (pos < n && (line[pos] == '+' || line[pos] == '-')) neg = line[pos++] == '-';
+			unsigned long long acc = 0;
+			const unsigned long long lim = neg ? 2147483648ULL : 2147483647ULL;
+			while (pos < n && line[pos] >= '0' && line[pos] <= '9')
+			{
+				unsigned d = (unsigned)(line[pos++] - '0');
+				if (acc > (lim - d) / 10ULL) { acc = lim; break; }
+				acc = acc * 10ULL + d;
+			}
+			return neg ? (acc == 2147483648ULL ? (-2147483647 - 1) : -(int)acc) : (int)acc;
+		}
 		at += n + (nl ? 1 : 0);
 	}
 	return def;
@@ -363,10 +396,11 @@ extern "C" int CE_SettingGetBool(const char *key, int def)
 	if (fclose(f) != 0) bad = true;
 	ce_settings_dir_close(&dir);
 	if (bad) { free(text); return def; }
+	size_t start = (len >= 3 && (unsigned char)text[0] == 0xEF && (unsigned char)text[1] == 0xBB && (unsigned char)text[2] == 0xBF) ? 3 : 0;
 	size_t size = strlen(key);
 	int value = def;
 	bool seen = false;
-	for (size_t at = 0; at < len;)
+	for (size_t at = start; at < len;)
 	{
 		const char *line = text + at;
 		const char *nl = (const char *)memchr(line, '\n', len - at);
@@ -453,9 +487,11 @@ extern "C" bool PortCeFactoryExercise() {
         while (at < end) {
             char* next=static_cast<char*>(memchr(at,'\n',size_t(end-at)));
             char* stop=next ? next : contents+n;
+            char* raw=at;
             while (at<stop && (*at==' ' || *at=='\t')) ++at;
             while (stop>at && (stop[-1]==' ' || stop[-1]=='\t' || stop[-1]=='\r')) --stop;
-            if (at<stop && *at=='[') inside=size_t(stop-at)==14 && memcmp(at,"[Experimental]",14)==0;
+            if (raw<stop && *raw=='[') inside=ce_ini_is_header(raw,size_t(stop-raw),CE_INI_EXPERIMENTAL_HEADER)!=0;
+            else if (at<stop && *at=='[') inside=false;
             else if (inside && size_t(stop-at)>=16 && memcmp(at,"factory_exercise",16)==0) {
                 char* value=at+16;
                 while (value<stop && (*value==' ' || *value=='\t')) ++value;
@@ -512,10 +548,11 @@ extern "C" int CE_SettingIs(const char *key, const char *value)
 	if (fclose(f) != 0) bad = true;
 	ce_settings_dir_close(&dir);
 	if (bad) { free(text); return 0; }
+	size_t start = (len >= 3 && (unsigned char)text[0] == 0xEF && (unsigned char)text[1] == 0xBB && (unsigned char)text[2] == 0xBF) ? 3 : 0;
 	size_t size = strlen(key), want = strlen(value);
 	int match = 0;
 	bool seen = false;
-	for (size_t at = 0; at < len;)
+	for (size_t at = start; at < len;)
 	{
 		const char *line = text + at;
 		const char *nl = (const char *)memchr(line, '\n', len - at);
@@ -562,11 +599,12 @@ extern "C" int CE_SettingGetText(const char *key, char *out, int n)
 	if (fclose(f) != 0) bad = true;
 	ce_settings_dir_close(&dir);
 	if (bad) { free(text); return 0; }
+	size_t start = (len >= 3 && (unsigned char)text[0] == 0xEF && (unsigned char)text[1] == 0xBB && (unsigned char)text[2] == 0xBF) ? 3 : 0;
 	size_t size = strlen(key);
 	const char *found = NULL;
 	size_t foundLen = 0;
 	bool seen = false, ambiguous = false;
-	for (size_t at = 0; at < len;)
+	for (size_t at = start; at < len;)
 	{
 		const char *line = text + at;
 		const char *nl = (const char *)memchr(line, '\n', len - at);
@@ -600,13 +638,13 @@ extern "C" int CE_SettingGetText(const char *key, char *out, int n)
 }
 
 // Whether ce.ini says value for a line the launcher owns (update_check and record_sessions: the launcher reads them before the
-// game starts). The launcher's own reader (ce_launch.c, ini_get) takes the first line that starts with key and an equals sign
-// and its text up to a carriage return or the end of the line, and tests that text exactly: no blanks are trimmed, no case is
-// folded, and a line that comes twice counts once. It reads the file as one C string, so a NUL byte ends what it sees. This is
-// that reading, on the file as the game's other readers open it (by length, refusing linked or odd files and files over 1 MiB).
-// 0 when the key is missing, says something else, or the file cannot be read whole. The CE Settings page shows these two lines
-// as the launcher takes them from a file the game can read; for a file the game refuses it shows the defaults, which the
-// launcher, reading the file its own way, need not follow (port/PARITY.md, CE Settings: known limit).
+// game starts). The launcher's own reader (ce_launch.c, ini_get) strips a leading UTF-8 BOM, takes the first line that sets
+// key=value (optional spaces or tabs before key, around '=', and after value up to CR or LF), and tests that trimmed text
+// exactly (no case folding, and a line that comes twice counts once). It reads the file as one C string, so a NUL byte ends
+// what it sees. This is that reading, on the file as the game's other readers open it (by length, refusing linked or odd files
+// and files over 1 MiB). 0 when the key is missing, says something else, or the file cannot be read whole. The CE Settings page
+// shows these two lines as the launcher takes them from a file the game can read; for a file the game refuses it shows the
+// defaults, which the launcher, reading the file its own way, need not follow (port/PARITY.md, CE Settings: known limit).
 extern "C" int CE_SettingLauncherIs(const char *key, const char *value)
 {
 	if (!key || !*key || !value) return 0;
@@ -624,9 +662,10 @@ extern "C" int CE_SettingLauncherIs(const char *key, const char *value)
 	if (bad) { free(text); return 0; }
 	text[len] = 0;
 	len = strlen(text);
+	size_t start = (len >= 3 && (unsigned char)text[0] == 0xEF && (unsigned char)text[1] == 0xBB && (unsigned char)text[2] == 0xBF) ? 3 : 0;
 	size_t size = strlen(key), want = strlen(value);
 	int match = 0;
-	for (size_t at = 0; at < len;)
+	for (size_t at = start; at < len;)
 	{
 		const char *line = text + at;
 		const char *nl = (const char *)memchr(line, '\n', len - at);
@@ -636,6 +675,8 @@ extern "C" int CE_SettingLauncherIs(const char *key, const char *value)
 		if (!ce_ini_match_key(line, n, key, size, &eq)) continue;
 		size_t pos = eq + 1, end = pos;
 		while (end < n && line[end] != '\r') ++end;
+		while (pos < end && (line[pos] == ' ' || line[pos] == '\t')) ++pos;
+		while (end > pos && (line[end - 1] == ' ' || line[end - 1] == '\t')) --end;
 		match = end - pos == want && !memcmp(line + pos, value, want);
 		break;
 	}
@@ -643,7 +684,15 @@ extern "C" int CE_SettingLauncherIs(const char *key, const char *value)
 	return match;
 }
 
-// Sets key=value in ce.ini (replacing its line, or adding one) through ce_ini_write's write-and-rename, so a failed write
+static int sLastIniRefusal = CE_INI_REFUSED_NONE;
+
+// Refusal reason from the most recent CE_SettingSet* call in ce.cpp (CE_INI_REFUSED_*), shared across TUs.
+extern "C" int CE_SettingLastRefusal(void)
+{
+	return sLastIniRefusal;
+}
+
+// Sets key=value in ce.ini (replacing its line, or adding one) through ce_ini_write_ex's write-and-rename, so a failed write
 // leaves the old file whole; 1 when the file was written, 0 (and a log line) when it was not.
 extern "C" int CE_SettingSet(const char *key, int value)
 {
@@ -651,7 +700,7 @@ extern "C" int CE_SettingSet(const char *key, int value)
 	ce_ini_path(path, sizeof(path));
 	char v[16];
 	snprintf(v, sizeof(v), "%d", value);
-	if (!ce_ini_write(path, key, v))
+	if (!ce_ini_write_ex(path, key, v, &sLastIniRefusal))
 	{
 		fprintf(stderr, PORT_LOG_PREFIX "could not write ce.ini (%s=%d); it is unchanged\n", key, value);
 		return 0;
@@ -674,12 +723,15 @@ extern "C" int CE_SettingSetText(const char *key, const char *value)
 			plain = false;
 	if (!plain)
 	{
+		sLastIniRefusal = CE_INI_REFUSED_OTHER;
 		fprintf(stderr, PORT_LOG_PREFIX "refused a ce.ini setting that is not one line of text; it is unchanged\n");
 		return 0;
 	}
 	char path[4200];
 	ce_ini_path(path, sizeof(path));
-	if (!ce_ini_write(path, key, value))
+	int wrote = ce_ini_write(path, key, value);
+	sLastIniRefusal = ce_ini_refusal;
+	if (!wrote)
 	{
 		fprintf(stderr, PORT_LOG_PREFIX "could not write ce.ini (%s=%s); it is unchanged\n", key, value);
 		return 0;
@@ -698,12 +750,13 @@ extern "C" int CE_SettingSetEmpty(const char *key)
 			plain = false;
 	if (!plain)
 	{
+		sLastIniRefusal = CE_INI_REFUSED_OTHER;
 		fprintf(stderr, PORT_LOG_PREFIX "refused a ce.ini setting that is not one line of text; it is unchanged\n");
 		return 0;
 	}
 	char path[4200];
 	ce_ini_path(path, sizeof(path));
-	if (!ce_ini_write(path, key, ""))
+	if (!ce_ini_write_ex(path, key, "", &sLastIniRefusal))
 	{
 		fprintf(stderr, PORT_LOG_PREFIX "could not write ce.ini (%s=); it is unchanged\n", key);
 		return 0;

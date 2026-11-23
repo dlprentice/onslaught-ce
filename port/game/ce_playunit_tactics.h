@@ -208,10 +208,12 @@ struct CePlayUnitBallisticArc
 inline float CePlayUnitHeadingDegFromYaw(float yaw)
 {
 	if (!isfinite(yaw)) return 0.f;
-	float deg = -yaw * (180.f / 3.14159265f);
-	while (deg < 0.f) deg += 360.f;
-	while (deg >= 360.f) deg -= 360.f;
-	return deg;
+	const float rad = remainderf(-yaw, 6.283185307179586f);
+	if (!isfinite(rad)) return 0.f;
+	float deg = rad * (180.f / 3.14159265f);
+	if (deg < 0.f) deg += 360.f;
+	if (deg >= 360.f) deg -= 360.f;
+	return (deg >= 0.f && deg < 360.f) ? deg : 0.f;
 }
 
 inline bool CePlayUnitBallisticSolve(const float muzzle[3], float yaw, float pitch,
@@ -326,7 +328,24 @@ inline bool CePlayUnitBallisticSolve(const float muzzle[3], float yaw, float pit
 	return true;
 }
 
-// Computes launch pitch (negative = up, BEA convention) to strike target from muzzle under retail ballistic gravity.
+// Exact vertical error (zReached - dz, +Z down) of the 20 Hz semi-implicit Euler integrator used by CePlayUnitBallisticSolve.
+// Positive means the shell arrives lower (short) than target; negative means higher (passes above target).
+inline float CePlayUnitBallisticDiscreteZErr(float pitch, float dist, float dz, float v, float g)
+{
+	const float cp = cosf(pitch);
+	if (!(cp > 1e-4f)) return 1e30f;
+	const float T = dist / (v * cp);
+	if (!isfinite(T) || !(T > 0.f) || T > 400.f) return 1e30f;
+	const float vz0 = sinf(pitch) * v;
+	const float n0f = floorf(T);
+	const float frac = T - n0f;
+	const float zReached = n0f * vz0 + g * n0f * (n0f + 1.f) * 0.5f + frac * (vz0 + (n0f + 1.f) * g);
+	return zReached - dz;
+}
+
+// Computes launch pitch (negative = up, BEA convention) to strike target from muzzle under retail 20 Hz ballistic gravity.
+// Refines the continuous analytic solution against the exact discrete tick recurrence and returns false when the target is
+// unreachable (out of range or outside [minPitch, maxPitch]) while still populating *outPitch with the best clamped pitch.
 inline bool CePlayUnitBallisticPitchForTarget(const float muzzle[3], const float target[3],
                                               float roundSpeedPerSec, float roundGravity,
                                               float minPitch, float maxPitch, bool highArc,
@@ -335,6 +354,7 @@ inline bool CePlayUnitBallisticPitchForTarget(const float muzzle[3], const float
 	if (!muzzle || !target || !outPitch || !CePlayUnitFinite3(muzzle) || !CePlayUnitFinite3(target)) return false;
 	if (!isfinite(roundSpeedPerSec) || !(roundSpeedPerSec > 0.1f)) return false;
 	if (!isfinite(roundGravity) || roundGravity < 0.f) return false;
+	if (!isfinite(minPitch) || !isfinite(maxPitch) || minPitch > maxPitch) return false;
 
 	const float dx = target[0] - muzzle[0], dy = target[1] - muzzle[1];
 	const float dist = sqrtf(dx * dx + dy * dy);
@@ -346,26 +366,137 @@ inline bool CePlayUnitBallisticPitchForTarget(const float muzzle[3], const float
 	}
 	if (roundGravity <= 1e-5f)
 	{
-		*outPitch = CePlayUnitClamp(atan2f(dz, dist), minPitch, maxPitch);
-		return true;
+		const float direct = atan2f(dz, dist);
+		*outPitch = CePlayUnitClamp(direct, minPitch, maxPitch);
+		return direct >= minPitch && direct <= maxPitch;
 	}
 
 	const float v = roundSpeedPerSec / 20.f;
 	const float g = roundGravity * 0.025f;
+	const float loLim = minPitch > -1.52f ? minPitch : -1.52f;
+	const float hiLim = maxPitch < 1.52f ? maxPitch : 1.52f;
+	if (loLim > hiLim) return false;
+
+	// Locate the discrete optimal-elevation pitch (minimum of the convex zReached - dz curve) inside [loLim, hiLim].
+	const float invPhi = 0.61803399f;
+	float ga = loLim, gb = hiLim;
+	float gc = gb - (gb - ga) * invPhi;
+	float gd = ga + (gb - ga) * invPhi;
+	float fc = CePlayUnitBallisticDiscreteZErr(gc, dist, dz, v, g);
+	float fd = CePlayUnitBallisticDiscreteZErr(gd, dist, dz, v, g);
+	for (int iter = 0; iter < 14; ++iter)
+	{
+		if (fc <= fd)
+		{
+			gb = gd; gd = gc; fd = fc;
+			gc = gb - (gb - ga) * invPhi;
+			fc = CePlayUnitBallisticDiscreteZErr(gc, dist, dz, v, g);
+		}
+		else
+		{
+			ga = gc; gc = gd; fc = fd;
+			gd = ga + (gb - ga) * invPhi;
+			fd = CePlayUnitBallisticDiscreteZErr(gd, dist, dz, v, g);
+		}
+	}
+	const float pPeak = (fc <= fd) ? gc : gd;
+	const float ePeak = (fc <= fd) ? fc : fd;
+	if (!isfinite(ePeak) || ePeak > 0.05f)
+	{
+		*outPitch = CePlayUnitClamp(pPeak, minPitch, maxPitch);
+		return false;
+	}
+	if (ePeak >= -0.05f)
+	{
+		*outPitch = CePlayUnitClamp(pPeak, minPitch, maxPitch);
+		return true;
+	}
+
+	// Set up guaranteed sign-changing bracket for the requested branch (lowArc: [pPeak, hiLim], highArc: [loLim, pPeak]).
+	float a = highArc ? loLim : pPeak;
+	float b = highArc ? pPeak : hiLim;
+	float fa = highArc ? CePlayUnitBallisticDiscreteZErr(a, dist, dz, v, g) : ePeak;
+	float fb = highArc ? ePeak : CePlayUnitBallisticDiscreteZErr(b, dist, dz, v, g);
+	if (highArc && fa < 0.f)
+	{
+		*outPitch = CePlayUnitClamp(loLim, minPitch, maxPitch);
+		return false;
+	}
+	if (!highArc && fb < 0.f)
+	{
+		*outPitch = CePlayUnitClamp(hiLim, minPitch, maxPitch);
+		return false;
+	}
+
+	// Seed with continuous analytic solution if inside the bracket, then refine via safeguarded secant + bisection.
 	const float v2 = v * v;
 	const float v4 = v2 * v2;
-	// In standard +y-up coords, target height h = -dz; tan(theta) = (v^2 +- sqrt(v^4 - g*(g*R^2 + 2*h*v^2))) / (g*R)
 	const float h = -dz;
 	const float disc = v4 - g * (g * dist * dist + 2.f * h * v2);
-	float pitch = -0.78539816f;		// 45 deg max range fallback
+	float p = 0.5f * (a + b);
 	if (disc >= 0.f)
 	{
 		const float root = sqrtf(disc);
 		const float tanTheta = highArc ? ((v2 + root) / (g * dist)) : ((v2 - root) / (g * dist));
-		pitch = -atanf(tanTheta);
+		const float guess = -atanf(tanTheta);
+		if (guess > a && guess < b) p = guess;
 	}
-	*outPitch = CePlayUnitClamp(pitch, minPitch, maxPitch);
+	float fp = CePlayUnitBallisticDiscreteZErr(p, dist, dz, v, g);
+	if ((fa <= 0.f && fp <= 0.f) || (fa > 0.f && fp > 0.f)) { a = p; fa = fp; }
+	else { b = p; fb = fp; }
+
+	// Seed a nearby second point so secant converges quadratically near the analytic guess, safeguarded by [a, b].
+	float step0 = (b - a) * 0.02f;
+	if (step0 > 0.01f) step0 = 0.01f;
+	float prevP = p + ((fp > 0.f) ? -step0 : step0);
+	if (!(prevP > a && prevP < b)) prevP = 0.5f * (a + b);
+	float prevF = CePlayUnitBallisticDiscreteZErr(prevP, dist, dz, v, g);
+	if ((fa <= 0.f && prevF <= 0.f) || (fa > 0.f && prevF > 0.f)) { a = prevP; fa = prevF; }
+	else { b = prevP; fb = prevF; }
+
+	for (int iter = 0; iter < 12; ++iter)
+	{
+		if (fabsf(fp) < 1e-4f || fabsf(b - a) < 1e-6f) break;
+		float next = 0.5f * (a + b);
+		if (isfinite(fp) && isfinite(prevF) && fabsf(fp - prevF) > 1e-7f)
+		{
+			const float cand = p - fp * (p - prevP) / (fp - prevF);
+			if (cand > a && cand < b) next = cand;
+		}
+		prevP = p; prevF = fp;
+		p = next;
+		fp = CePlayUnitBallisticDiscreteZErr(p, dist, dz, v, g);
+		if ((fa <= 0.f && fp <= 0.f) || (fa > 0.f && fp > 0.f)) { a = p; fa = fp; }
+		else { b = p; fb = fp; }
+	}
+	*outPitch = CePlayUnitClamp(p, minPitch, maxPitch);
 	return true;
+}
+
+// Verifies whether a ballistic indirect-fire arc from muzzle actually clears intervening terrain ridges and impacts near target.
+inline bool CePlayUnitBallisticArcClearsRidge(const float muzzle[3], const float target[3],
+                                             float roundSpeedPerSec, float roundGravity, float lifeSpanSec,
+                                             float waterLevel, CePlayUnitHeightFn height, void *ctx,
+                                             float minPitch, float maxPitch, bool highArc,
+                                             CePlayUnitBallisticArc *outArc = NULL)
+{
+	float pitch = 0.f;
+	if (!CePlayUnitBallisticPitchForTarget(muzzle, target, roundSpeedPerSec, roundGravity, minPitch, maxPitch, highArc, &pitch))
+		return false;
+	const float dx = target[0] - muzzle[0], dy = target[1] - muzzle[1];
+	const float dist = sqrtf(dx * dx + dy * dy);
+	const float yaw = atan2f(-dx, dy);
+	CePlayUnitBallisticArc localArc;
+	CePlayUnitBallisticArc *arc = outArc ? outArc : &localArc;
+	if (!CePlayUnitBallisticSolve(muzzle, yaw, pitch, roundSpeedPerSec, roundGravity, lifeSpanSec, waterLevel, height, ctx, arc))
+		return false;
+	if (!arc->valid || !arc->hitsGround)
+		return false;
+	const float ex = arc->impact[0] - target[0];
+	const float ey = arc->impact[1] - target[1];
+	const float horizErr = sqrtf(ex * ex + ey * ey);
+	const float tol = dist * 0.12f > 4.5f ? (dist * 0.12f) : 4.5f;
+	return horizErr <= tol;
 }
 
 // ---- artillery aerial spotting / shot-follow camera state machine ------------------------------------------
@@ -404,6 +535,7 @@ inline bool CePlayUnitSpotterToggle(CePlayUnitSpotterState *st, bool hasPredicte
 	st->enabled = !st->enabled;
 	st->holdTimer = 0.f;
 	st->hasShell = false;
+	st->hasImpact = false;
 	if (!st->enabled)
 	{
 		st->mode = CE_SPOTTER_OFF;
@@ -504,7 +636,8 @@ inline void CePlayUnitSpotterUpdate(CePlayUnitSpotterState *st, float dt,
 
 inline bool CePlayUnitSpotterCameraPose(const CePlayUnitSpotterState &st, const float unitPos[3],
                                         float lookYaw, float terrainAtFocus,
-                                        float outEye[3], float outRight[3], float outForward[3], float outDown[3])
+                                        float outEye[3], float outRight[3], float outForward[3], float outDown[3],
+                                        CePlayUnitHeightFn terrainFn = NULL, void *terrainCtx = NULL)
 {
 	if (!st.enabled || st.mode == CE_SPOTTER_OFF || !unitPos || !CePlayUnitFinite3(unitPos) || !isfinite(lookYaw)) return false;
 	if (!outEye || !outRight || !outForward || !outDown) return false;
@@ -526,25 +659,43 @@ inline bool CePlayUnitSpotterCameraPose(const CePlayUnitSpotterState &st, const 
 		const float dx = st.impactPos[0] - unitPos[0];
 		const float dy = st.impactPos[1] - unitPos[1];
 		const float range = sqrtf(dx * dx + dy * dy);
-		if (st.mode == CE_SPOTTER_OVERWATCH && range >= 10.f && range <= 125.f)
+		// Smoothly transition between battery+impact overwatch framing (near/mid range) and impact-centered framing (long range)
+		// with smoothstep ramps on [4..10] and [105..165] so crossing 125u never causes a jarring camera cut.
+		float overwatchWeight = 0.f;
+		if (st.mode == CE_SPOTTER_OVERWATCH)
 		{
-			// Frame both the artillery battery (lower-center foreground) and the predicted impact ring ahead.
-			focus[0] = unitPos[0] + dx * 0.60f;
-			focus[1] = unitPos[1] + dy * 0.60f;
-			focus[2] = isfinite(terrainAtFocus) ? terrainAtFocus : st.impactPos[2];
-			backDist = 0.74f * range + 14.f;
-			if (backDist < 36.f) backDist = 36.f;
-			liftHeight = 0.52f * range + 24.f;
-			if (liftHeight < 40.f) liftHeight = 40.f;
+			if (range <= 4.f || range >= 165.f) overwatchWeight = 0.f;
+			else if (range < 10.f)
+			{
+				const float u = (range - 4.f) / 6.f;
+				overwatchWeight = u * u * (3.f - 2.f * u);
+			}
+			else if (range <= 105.f) overwatchWeight = 1.f;
+			else
+			{
+				const float u = (165.f - range) / 60.f;
+				overwatchWeight = u * u * (3.f - 2.f * u);
+			}
 		}
-		else
-		{
-			focus[0] = st.impactPos[0];
-			focus[1] = st.impactPos[1];
-			focus[2] = st.impactPos[2];
-			backDist = 34.f;
-			liftHeight = 40.f;
-		}
+		const float ovFocusX = unitPos[0] + dx * 0.60f;
+		const float ovFocusY = unitPos[1] + dy * 0.60f;
+		const float ovFocusZ = isfinite(terrainAtFocus) ? terrainAtFocus : st.impactPos[2];
+		float ovBack = 0.74f * range + 14.f;
+		if (ovBack < 36.f) ovBack = 36.f;
+		float ovLift = 0.52f * range + 24.f;
+		if (ovLift < 40.f) ovLift = 40.f;
+
+		const float farFocusX = st.impactPos[0];
+		const float farFocusY = st.impactPos[1];
+		const float farFocusZ = st.impactPos[2];
+		const float farBack = 34.f;
+		const float farLift = 40.f;
+
+		focus[0] = farFocusX + (ovFocusX - farFocusX) * overwatchWeight;
+		focus[1] = farFocusY + (ovFocusY - farFocusY) * overwatchWeight;
+		focus[2] = farFocusZ + (ovFocusZ - farFocusZ) * overwatchWeight;
+		backDist = farBack + (ovBack - farBack) * overwatchWeight;
+		liftHeight = farLift + (ovLift - farLift) * overwatchWeight;
 	}
 	else
 	{
@@ -563,8 +714,15 @@ inline bool CePlayUnitSpotterCameraPose(const CePlayUnitSpotterState &st, const 
 	outEye[0] = focus[0] - bx * backDist;
 	outEye[1] = focus[1] - by * backDist;
 	outEye[2] = focus[2] - liftHeight;
-	if (isfinite(terrainAtFocus) && outEye[2] > terrainAtFocus - 12.f)
-		outEye[2] = terrainAtFocus - 12.f;
+	float eyeFloor = terrainAtFocus;
+	if (terrainFn)
+	{
+		const float terrainAtEye = terrainFn(terrainCtx, outEye[0], outEye[1]);
+		if (isfinite(terrainAtEye) && (!isfinite(eyeFloor) || terrainAtEye < eyeFloor))
+			eyeFloor = terrainAtEye;
+	}
+	if (isfinite(eyeFloor) && outEye[2] > eyeFloor - 12.f)
+		outEye[2] = eyeFloor - 12.f;
 
 	float fx = focus[0] - outEye[0], fy = focus[1] - outEye[1], fz = focus[2] - outEye[2];
 	const float flen = sqrtf(fx * fx + fy * fy + fz * fz);
@@ -672,9 +830,10 @@ inline void CePlayUnitFlightStep(CePlayUnitFlightState *st, const CePlayUnitFlig
 	const float yawStep = CePlayUnitClamp(yawDiff, -maxYawStep, maxYawStep);
 	st->yaw = CePlayUnitWrap(st->yaw + yawStep);
 
-	// Bank cleanly into turns (negative roll banks right in BEA's left-handed frame).
+	// Bank cleanly into turns: in BEA's left-handed +Z-down frame, negative roll dips the right wing
+	// (right turn -> yawStep < 0 -> turnRatio < 0, and trn > 0 -> -trn < 0; both terms agree).
 	const float turnRatio = maxYawStep > 1e-5f ? (yawStep / maxYawStep) : 0.f;
-	const float desiredRoll = CePlayUnitClamp(-turnRatio * p.maxBank - trn * p.maxBank * 0.35f, -p.maxBank, p.maxBank);
+	const float desiredRoll = CePlayUnitClamp(turnRatio * p.maxBank - trn * p.maxBank * 0.35f, -p.maxBank, p.maxBank);
 	const float kRoll = dt * 6.f > 1.f ? 1.f : dt * 6.f;
 	st->roll += (desiredRoll - st->roll) * kRoll;
 
@@ -684,7 +843,7 @@ inline void CePlayUnitFlightStep(CePlayUnitFlightState *st, const CePlayUnitFlig
 	if (clearance < p.minClearance + 4.f)
 	{
 		if (clearance < p.minClearance)
-			desiredPitch = p.maxPitchUp * 0.55f;	// gentle automatic pull-up
+			desiredPitch = p.maxPitchUp * 0.85f;	// strong smooth automatic pull-up
 		else if (desiredPitch > 0.f)
 			desiredPitch = 0.f;						// level off near terrain floor
 	}
@@ -704,12 +863,17 @@ inline void CePlayUnitFlightStep(CePlayUnitFlightState *st, const CePlayUnitFlig
 	outVelTick[1] =  cy * cp * perTick;
 	outVelTick[2] =  sp * perTick;
 
-	// Hard safety floor so non-hover aircraft never touch DeclareOnGround() accidentally.
+	// Safety floor with bounded vertical pull-up so cliffs never teleport the aircraft in one tick.
 	if (isfinite(surfaceZ) && isfinite(currentZ))
 	{
 		const float floorZ = surfaceZ - p.minClearance;
 		if (currentZ + outVelTick[2] > floorZ)
-			outVelTick[2] = floorZ - currentZ;
+		{
+			float needed = floorZ - currentZ;
+			const float maxClimbTick = (perTick * 1.5f > 2.0f) ? (perTick * 1.5f) : 2.0f;
+			if (needed < -maxClimbTick) needed = -maxClimbTick;
+			outVelTick[2] = needed;
+		}
 	}
 }
 
@@ -843,6 +1007,14 @@ struct CePlayUnitHudTelemetry
 	int stance;				// 0 idle/ready, 1 moving, 2 firing
 };
 
+inline int CePlayUnitSafeRoundInt(float v, int lo, int hi)
+{
+	if (!isfinite(v)) return 0;
+	if (v < float(lo)) return lo;
+	if (v > float(hi)) return hi;
+	return int(v >= 0.f ? (v + 0.5f) : (v - 0.5f));
+}
+
 inline void CePlayUnitFormatClassHud(const CePlayUnitHudTelemetry &t,
                                      char headerOut[48], char line1Out[64],
                                      char line2Out[64], char actionOut[48])
@@ -852,11 +1024,14 @@ inline void CePlayUnitFormatClassHud(const CePlayUnitHudTelemetry &t,
 	CePlayUnitSanitizeHudText(t.weaponName[0] ? t.weaponName : "PRIMARY", wpn, sizeof(wpn));
 	if (strlen(wpn) > 22) wpn[22] = 0;
 	const int hdg = ((t.headingDeg % 360) + 360) % 360;
-	const int az = ((int(t.azDeg + 0.5f) % 360) + 360) % 360;
-	const int el = int(t.elDeg >= 0.f ? (t.elDeg + 0.5f) : (t.elDeg - 0.5f));
-	const int spd = int(t.speedUps > 0.f ? (t.speedUps * 5.f + 0.5f) : 0.f);	// display knots/kph-like scale
-	const int alt = int(t.altitude > 0.f ? (t.altitude + 0.5f) : 0.f);
-	const int pitch = int(t.pitchDeg >= 0.f ? (t.pitchDeg + 0.5f) : (t.pitchDeg - 0.5f));
+	float azWrapped = isfinite(t.azDeg) ? remainderf(t.azDeg, 360.f) : 0.f;
+	if (!isfinite(azWrapped)) azWrapped = 0.f;
+	if (azWrapped < 0.f) azWrapped += 360.f;
+	const int az = (CePlayUnitSafeRoundInt(azWrapped, 0, 360) % 360 + 360) % 360;
+	const int el = CePlayUnitSafeRoundInt(t.elDeg, -90, 90);
+	const int spd = CePlayUnitSafeRoundInt(t.speedUps > 0.f ? t.speedUps * 5.f : 0.f, 0, 9999);	// display knots/kph-like scale
+	const int alt = CePlayUnitSafeRoundInt(t.altitude > 0.f ? t.altitude : 0.f, 0, 9999);
+	const int pitch = CePlayUnitSafeRoundInt(t.pitchDeg, -90, 90);
 	const int hull = t.hullPct < 0 ? 0 : (t.hullPct > 100 ? 100 : t.hullPct);
 
 	switch (t.classId)
@@ -917,7 +1092,7 @@ inline void CePlayUnitFormatClassHud(const CePlayUnitHudTelemetry &t,
 	}
 	case CE_PLAYUNIT_CLASS_ARTILLERY:
 	{
-		const int rng = int(t.rangeMeters > 0.f ? (t.rangeMeters + 0.5f) : 0.f);
+		const int rng = CePlayUnitSafeRoundInt(t.rangeMeters > 0.f ? t.rangeMeters : 0.f, 0, 99999);
 		const char *spot = t.spotterMode == CE_SPOTTER_FOLLOW_SHELL ? "TRACK"
 			: t.spotterMode == CE_SPOTTER_HOLD_IMPACT ? "IMPACT"
 			: t.spotterMode == CE_SPOTTER_OVERWATCH ? "ON" : "OFF";

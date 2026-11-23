@@ -230,8 +230,11 @@ static inline void ce_settings_dir_close(CeSettingsDir *dir)
 #endif
 }
 
-/* Opens the settings directory. With create == 0, a failed open also says in *absent (when given) whether the path simply does
- * not exist yet: some component is missing and nothing on the way is a file, a link, a reparse point or otherwise refused.
+/* Opens the settings directory. OS/user ancestor folders above the target directory are canonicalized once so relocated
+ * homes (/home -> /var/home, ~/.local/share, OneDrive Known Folder Move, junctioned C:\Users) work, while the target
+ * directory itself and any created/traversed components below that ancestor refuse symlinks and reparse points.
+ * With create == 0, a failed open also says in *absent (when given) whether the path simply does not exist yet: some
+ * component is missing and nothing on the way is a file, a dangling/target link, a reparse point or otherwise refused.
  * The settings reader takes that as an empty file (the first write, create == 1, makes the folders); any other refusal
  * stays a failed read. */
 static inline int ce_settings_dir_open_ex(const char *path, int create, CeSettingsDir *dir, int *absent)
@@ -239,6 +242,14 @@ static inline int ce_settings_dir_open_ex(const char *path, int create, CeSettin
 	if (absent) *absent = 0;
 #ifdef _WIN32
 	dir->count = 0;
+	if (!path || !*path) return 0;
+	for (const char *p = path; *p;)
+	{
+		while (*p == '/' || *p == '\\') p++;
+		const char *s = p;
+		while (*p && *p != '/' && *p != '\\') p++;
+		if (p - s == 2 && s[0] == '.' && s[1] == '.') return 0;
+	}
 	DWORD n = GetFullPathNameA(path, sizeof dir->path, dir->path, NULL);
 	if (!n || n >= sizeof dir->path) return 0;
 	for (char *p = dir->path; *p; p++) if (*p == '/') *p = '\\';
@@ -251,7 +262,96 @@ static inline int ce_settings_dir_open_ex(const char *path, int create, CeSettin
 		if (server && server[1]) root = share ? (size_t)(share - dir->path) : n;
 	}
 	if (!root) return 0; /* Device namespaces are not settings directories. */
-	for (size_t end = root;;)
+	while (n > root && dir->path[n - 1] == '\\') dir->path[--n] = 0;
+	size_t last_sep = n;
+	while (last_sep > root && dir->path[last_sep - 1] != '\\') last_sep--;
+	size_t anc_end = last_sep > root ? last_sep - 1 : root;
+	HANDLE anc = INVALID_HANDLE_VALUE;
+	DWORD anc_err = 0;
+	for (;;)
+	{
+		char saved = dir->path[anc_end];
+		dir->path[anc_end] = 0;
+		anc = CreateFileA(dir->path, FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
+			OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+		anc_err = anc == INVALID_HANDLE_VALUE ? GetLastError() : 0;
+		if (anc != INVALID_HANDLE_VALUE)
+		{
+			dir->path[anc_end] = saved;
+			break;
+		}
+		int anc_gone = anc_err == ERROR_FILE_NOT_FOUND || anc_err == ERROR_PATH_NOT_FOUND;
+		if (anc_gone)
+		{
+			HANDLE probe = CreateFileA(dir->path, FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
+				OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, NULL);
+			if (probe != INVALID_HANDLE_VALUE)
+			{
+				CloseHandle(probe);
+				dir->path[anc_end] = saved;
+				return 0;
+			}
+		}
+		dir->path[anc_end] = saved;
+		if (!anc_gone || anc_end <= root)
+		{
+			if (absent && !create && anc_gone) *absent = 1;
+			return 0;
+		}
+		while (anc_end > root && dir->path[anc_end - 1] != '\\') anc_end--;
+		if (anc_end > root) anc_end--;
+	}
+	BY_HANDLE_FILE_INFORMATION ainfo;
+	if (!GetFileInformationByHandle(anc, &ainfo) || !(ainfo.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY))
+	{
+		CloseHandle(anc);
+		return 0;
+	}
+	char canon[4200];
+	DWORD clen = GetFinalPathNameByHandleA(anc, canon, sizeof canon, FILE_NAME_NORMALIZED);
+	if (!clen || clen >= sizeof canon)
+	{
+		CloseHandle(anc);
+		return 0;
+	}
+	const char *csrc = canon;
+	char cbuf[4200];
+	if (!strncmp(csrc, "\\\\?\\UNC\\", 8))
+	{
+		if ((size_t)snprintf(cbuf, sizeof cbuf, "\\\\%s", csrc + 8) >= sizeof cbuf) { CloseHandle(anc); return 0; }
+		csrc = cbuf;
+	}
+	else if (!strncmp(csrc, "\\\\?\\", 4))
+		csrc += 4;
+	size_t csrc_len = strlen(csrc);
+	while (csrc_len > 3 && csrc[csrc_len - 1] == '\\') csrc_len--;
+	int need_sep = csrc_len > 0 && csrc[csrc_len - 1] != '\\';
+	char tail[4200];
+	const char *rest = dir->path + anc_end;
+	while (*rest == '\\') rest++;
+	if (*rest)
+	{
+		if ((size_t)snprintf(tail, sizeof tail, "%.*s%s%s", (int)csrc_len, csrc, need_sep ? "\\" : "", rest) >= sizeof tail)
+		{
+			CloseHandle(anc);
+			return 0;
+		}
+	}
+	else
+	{
+		if ((size_t)snprintf(tail, sizeof tail, "%.*s", (int)csrc_len, csrc) >= sizeof tail)
+		{
+			CloseHandle(anc);
+			return 0;
+		}
+	}
+	strcpy(dir->path, tail);
+	dir->handles[dir->count++] = anc;
+	if (!*rest) return 1;
+	size_t end = csrc_len;
+	while (dir->path[end] == '\\') end++;
+	while (dir->path[end] && dir->path[end] != '\\') end++;
+	for (;;)
 	{
 		char saved = dir->path[end];
 		dir->path[end] = 0;
@@ -285,28 +385,101 @@ static inline int ce_settings_dir_open_ex(const char *path, int create, CeSettin
 	dir->fd = -1;
 	char copy[4200];
 	if (!path || !*path || (size_t)snprintf(copy, sizeof copy, "%s", path) >= sizeof copy) return 0;
+	for (const char *p = copy; *p;)
+	{
+		while (*p == '/') p++;
+		const char *s = p;
+		while (*p && *p != '/') p++;
+		if (p - s == 2 && s[0] == '.' && s[1] == '.') return 0;
+	}
+	size_t len = strlen(copy);
+	while (len > 1 && copy[len - 1] == '/') copy[--len] = 0;
 	/* Traversal needs search permission, not directory-list permission. O_PATH is Linux's stable 010000000 flag;
 	 * some C feature profiles hide its spelling, while the kernel and the glibc-2.29-compatible *at calls support it. */
-	int flags = O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC;
+	int leaf_flags = O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC;
 #ifdef O_PATH
-	flags |= O_PATH;
+	leaf_flags |= O_PATH;
 #else
-	flags |= 010000000;
+	leaf_flags |= 010000000;
 #endif
-	int fd = open(path[0] == '/' ? "/" : ".", flags);
-	if (fd < 0) return 0;
-	for (char *part = copy; *part;)
+	int anc_flags = leaf_flags & ~O_NOFOLLOW;
+	if (len == 1 && copy[0] == '/')
+	{
+		dir->fd = open("/", anc_flags);
+		return dir->fd >= 0 ? 1 : 0;
+	}
+	size_t anc_end = len;
+	while (anc_end > 0 && copy[anc_end - 1] != '/') anc_end--;
+	int fd = -1;
+	const char *tail = NULL;
+	if (anc_end == 0)
+	{
+		fd = open(".", anc_flags);
+		if (fd < 0) return 0;
+		tail = copy;
+	}
+	else
+	{
+		size_t cur = anc_end > 1 ? anc_end - 1 : 1;
+		for (;;)
+		{
+			char saved = copy[cur];
+			copy[cur] = 0;
+			fd = open(copy, anc_flags);
+			int why = fd < 0 ? errno : 0;
+			if (fd >= 0)
+			{
+				copy[cur] = saved;
+				tail = copy + cur;
+				break;
+			}
+			if (why == ENOENT)
+			{
+				struct stat lst;
+				if (lstat(copy, &lst) == 0 || errno != ENOENT)
+				{
+					copy[cur] = saved;
+					return 0;
+				}
+			}
+			copy[cur] = saved;
+			if (why != ENOENT) return 0;
+			if (cur <= 1)
+			{
+				if (copy[0] == '/')
+				{
+					if (absent && !create) *absent = 1;
+					return 0;
+				}
+				fd = open(".", anc_flags);
+				if (fd < 0) return 0;
+				tail = copy;
+				break;
+			}
+			while (cur > 0 && copy[cur - 1] != '/') cur--;
+			if (cur == 0)
+			{
+				fd = open(".", anc_flags);
+				if (fd < 0) return 0;
+				tail = copy;
+				break;
+			}
+			if (cur > 1) cur--;
+		}
+	}
+	char tail_copy[4200];
+	if ((size_t)snprintf(tail_copy, sizeof tail_copy, "%s", tail) >= sizeof tail_copy) { close(fd); return 0; }
+	for (char *part = tail_copy; *part;)
 	{
 		while (*part == '/') part++;
 		if (!*part) break;
 		char *end = strchr(part, '/');
 		if (end) *end = 0;
-		if (!strcmp(part, "..")) { close(fd); return 0; }
 		if (strcmp(part, "."))
 		{
-			int next = openat(fd, part, flags), why = next < 0 ? errno : 0;
+			int next = openat(fd, part, leaf_flags), why = next < 0 ? errno : 0;
 			if (next < 0 && why == ENOENT && create && (mkdirat(fd, part, 0700) == 0 || errno == EEXIST))
-				next = openat(fd, part, flags);
+				next = openat(fd, part, leaf_flags);
 			close(fd);
 			if (next < 0)
 			{
@@ -326,6 +499,69 @@ static inline int ce_settings_dir_open_ex(const char *path, int create, CeSettin
 static inline int ce_settings_dir_open(const char *path, int create, CeSettingsDir *dir)
 {
 	return ce_settings_dir_open_ex(path, create, dir, NULL);
+}
+
+/* Opens a single child folder (sub) inside the CE-owned user directory (root). OS/user ancestors above root are
+ * canonicalized by ce_settings_dir_open_ex, while BOTH root itself and sub refuse symlinks and reparse points. */
+static inline int ce_settings_subdir_open_ex(const char *root, const char *sub, int create, CeSettingsDir *dir, int *absent)
+{
+	if (absent) *absent = 0;
+	if (!root || !*root || !sub || !*sub || !strcmp(sub, ".") || !strcmp(sub, "..")) return 0;
+	for (const char *p = sub; *p; p++)
+		if (*p == '/' || *p == '\\') return 0;
+	if (!ce_settings_dir_open_ex(root, create, dir, absent)) return 0;
+#ifdef _WIN32
+	size_t base = strlen(dir->path);
+	int need_sep = base > 0 && dir->path[base - 1] != '\\';
+	if (base + (size_t)need_sep + strlen(sub) >= sizeof dir->path)
+	{
+		ce_settings_dir_close(dir);
+		return 0;
+	}
+	if (need_sep) dir->path[base++] = '\\';
+	strcpy(dir->path + base, sub);
+	HANDLE h = CreateFileA(dir->path, FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING,
+		FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, NULL);
+	DWORD error = h == INVALID_HANDLE_VALUE ? GetLastError() : 0;
+	int gone = h == INVALID_HANDLE_VALUE && (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND);
+	if (gone && create)
+	{
+		if (CreateDirectoryA(dir->path, NULL) || GetLastError() == ERROR_ALREADY_EXISTS)
+			h = CreateFileA(dir->path, FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING,
+				FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, NULL);
+	}
+	BY_HANDLE_FILE_INFORMATION info;
+	if (h == INVALID_HANDLE_VALUE || !GetFileInformationByHandle(h, &info) ||
+		!(info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || (info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) ||
+		dir->count == (int)(sizeof dir->handles / sizeof dir->handles[0]))
+	{
+		if (h != INVALID_HANDLE_VALUE) CloseHandle(h);
+		ce_settings_dir_close(dir);
+		if (absent && !create && gone) *absent = 1;
+		return 0;
+	}
+	dir->handles[dir->count++] = h;
+	return 1;
+#else
+	int leaf_flags = O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC;
+#ifdef O_PATH
+	leaf_flags |= O_PATH;
+#else
+	leaf_flags |= 010000000;
+#endif
+	int next = openat(dir->fd, sub, leaf_flags), why = next < 0 ? errno : 0;
+	if (next < 0 && why == ENOENT && create && (mkdirat(dir->fd, sub, 0700) == 0 || errno == EEXIST))
+		next = openat(dir->fd, sub, leaf_flags);
+	close(dir->fd);
+	if (next < 0)
+	{
+		dir->fd = -1;
+		if (absent && !create && why == ENOENT) *absent = 1;
+		return 0;
+	}
+	dir->fd = next;
+	return 1;
+#endif
 }
 
 static inline int ce_make_settings_dirs(const char *path)
@@ -431,13 +667,21 @@ static int ce_ini_refusal;
 static inline int ce_ini_edit_file(const char *ini, const char *key, const char *value, const char *section_header,
 	const char *section_note, const char *const *section_keys, int section_count);
 
-static inline int ce_ini_edit(const char *ini, const char *key, const char *value, const char *section_header,
-	const char *section_note, const char *const *section_keys, int section_count)
+/* Explicit refusal reporting via optional *refusal_out so callers across translation units never read a stale TU-local static. */
+static inline int ce_ini_edit_ex(const char *ini, const char *key, const char *value, const char *section_header,
+	const char *section_note, const char *const *section_keys, int section_count, int *refusal_out)
 {
 	ce_ini_refusal = CE_INI_REFUSED_OTHER;	/* until the edit says otherwise: the read-only refusal names itself */
 	int ok = ce_ini_edit_file(ini, key, value, section_header, section_note, section_keys, section_count);
 	if (ok) ce_ini_refusal = CE_INI_REFUSED_NONE;
+	if (refusal_out) *refusal_out = ce_ini_refusal;
 	return ok;
+}
+
+static inline int ce_ini_edit(const char *ini, const char *key, const char *value, const char *section_header,
+	const char *section_note, const char *const *section_keys, int section_count)
+{
+	return ce_ini_edit_ex(ini, key, value, section_header, section_note, section_keys, section_count, NULL);
 }
 
 static inline int ce_ini_edit_file(const char *ini, const char *key, const char *value, const char *section_header,
@@ -473,7 +717,7 @@ static inline int ce_ini_edit_file(const char *ini, const char *key, const char 
 #ifdef _WIN32
 	char full[4500];
 	snprintf(full, sizeof full, "%s\\%s", dir.path, name);
-	HANDLE in = CreateFileA(full, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, NULL);
+	HANDLE in = CreateFileA(full, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, NULL);
 	if (in == INVALID_HANDLE_VALUE) absent = GetLastError() == ERROR_FILE_NOT_FOUND;
 	else
 	{
@@ -534,6 +778,12 @@ static inline int ce_ini_edit_file(const char *ini, const char *key, const char 
 		if (ferror(f)) bad = 1;
 		if (fclose(f) != 0) bad = 1;
 		if (bad) { free(t); ce_settings_dir_close(&dir); return 0; }
+		/* Strip a leading UTF-8 BOM (Notepad-saved ce.ini) so line 1 is never shadowed. */
+		if (t && len >= 3 && (unsigned char)t[0] == 0xEF && (unsigned char)t[1] == 0xBB && (unsigned char)t[2] == 0xBF)
+		{
+			len -= 3;
+			memmove(t, t + 3, len + 1);
+		}
 	}
 	/* The block is only ever added: a file that has its header needs no write, so it is left whole (and keeps its inode and mode). */
 	if (!key && t && ce_ini_find_header(t, len, section_header) < len) { free(t); ce_settings_dir_close(&dir); return 1; }
@@ -634,7 +884,15 @@ static inline int ce_ini_edit_file(const char *ini, const char *key, const char 
 			rename->RootDirectory = NULL;
 			rename->FileNameLength = (DWORD)((n - 1) * sizeof(WCHAR));
 			memcpy(rename->FileName, wide, (size_t)n * sizeof(WCHAR));
-			if (!SetFileInformationByHandle(output, FileRenameInfo, rename, (DWORD)size)) ok = 0;
+			int renamed = 0;
+			for (int attempt = 0; attempt < 5; ++attempt)
+			{
+				if (SetFileInformationByHandle(output, FileRenameInfo, rename, (DWORD)size)) { renamed = 1; break; }
+				DWORD rerr = GetLastError();
+				if (rerr != ERROR_SHARING_VIOLATION && rerr != ERROR_ACCESS_DENIED) break;
+				if (attempt + 1 < 5) Sleep(20);
+			}
+			if (!renamed) ok = 0;
 			free(rename);
 		}
 	}
@@ -656,16 +914,35 @@ static inline int ce_ini_edit_file(const char *ini, const char *key, const char 
 }
 
 
+/* Sets key=value in the settings file ini, as ce_ini_edit_ex describes, reporting any refusal reason in *refusal_out. */
+static inline int ce_ini_write_ex(const char *ini, const char *key, const char *value, int *refusal_out)
+{
+	if (!key)
+	{
+		ce_ini_refusal = CE_INI_REFUSED_OTHER;
+		if (refusal_out) *refusal_out = CE_INI_REFUSED_OTHER;
+		return 0;
+	}
+	return ce_ini_edit_ex(ini, key, value, NULL, NULL, NULL, 0, refusal_out);
+}
+
 /* Sets key=value in the settings file ini, as ce_ini_edit describes. */
 static inline int ce_ini_write(const char *ini, const char *key, const char *value)
 {
-	return key ? ce_ini_edit(ini, key, value, NULL, NULL, NULL, 0) : 0;
+	return ce_ini_write_ex(ini, key, value, NULL);
+}
+
+/* Adds the block that lists the unfinished features, reporting any refusal reason in *refusal_out. */
+static inline int ce_ini_add_section_ex(const char *ini, const char *header, const char *note,
+	const char *const *keys, int count, int *refusal_out)
+{
+	return ce_ini_edit_ex(ini, NULL, NULL, header, note, keys, count, refusal_out);
 }
 
 /* Adds the block that lists the unfinished features, if ini has no line equal to header (ce_ini_edit). 1 when the file now has it. */
 static inline int ce_ini_add_section(const char *ini, const char *header, const char *note, const char *const *keys, int count)
 {
-	return ce_ini_edit(ini, NULL, NULL, header, note, keys, count);
+	return ce_ini_add_section_ex(ini, header, note, keys, count, NULL);
 }
 
 #endif

@@ -151,16 +151,67 @@ class SettingsWriter(unittest.TestCase):
         self.assertTrue(linked.is_symlink())
 
     @unittest.skipIf(os.name == "nt", "Linux symlink check")
-    def test_root_and_ancestor_symlinks_refused_before_creation(self):
+    def test_target_dir_symlink_refused_while_symlinked_ancestor_succeeds(self):
         outside = self.root / "outside"
         outside.mkdir()
         (outside / "sentinel").write_bytes(b"keep sentinel")
         linked = self.root / "linked"
         linked.symlink_to(outside, target_is_directory=True)
-        for path in (linked / "ce.ini", linked / "new" / "nested" / "ce.ini"):
-            with self.subTest(path=path):
-                self.assertEqual(self.write(path).returncode, 1)
-                self.assertEqual(sorted(p.name for p in outside.iterdir()), ["sentinel"])
+        # The CE user directory itself being a symlink is still strictly refused.
+        self.assertEqual(self.write(linked / "ce.ini").returncode, 1)
+        self.assertEqual(sorted(p.name for p in outside.iterdir()), ["sentinel"])
+        # A symlinked OS/user ancestor above the CE user directory (e.g. /home -> /var/home or ~/.local/share) succeeds.
+        nested = linked / "new" / "nested" / "ce.ini"
+        self.assertEqual(self.write(nested).returncode, 0)
+        self.assertEqual((outside / "new" / "nested" / "ce.ini").read_bytes(), b"record_sessions=0\n")
+        # A symlinked ce.ini inside that directory is still strictly refused.
+        (outside / "new" / "nested" / "ce.ini").unlink()
+        (outside / "new" / "nested" / "ce.ini").symlink_to(outside / "sentinel")
+        self.assertEqual(self.write(nested).returncode, 1)
+        self.assertEqual((outside / "sentinel").read_bytes(), b"keep sentinel")
+
+    def test_utf8_bom_stripped_and_line1_replaced_in_place(self):
+        self.ini.write_bytes(b"\xef\xbb\xbfrecord_sessions=1\r\nunknown=retain\n")
+        self.assertEqual(self.write().returncode, 0)
+        self.assertEqual(self.ini.read_bytes(), b"record_sessions=0\nunknown=retain\n")
+        self.ini.write_bytes(b"\xef\xbb\xbf" + self.BLOCK)
+        self.assertEqual(self.add_block().returncode, 0)
+        self.assertEqual(self.ini.read_bytes().count(b"[Experimental]"), 1)
+
+    @unittest.skipIf(os.name == "nt", "Linux 2-TU explicit refusal check")
+    def test_explicit_refusal_out_works_across_translation_units(self):
+        data = os.environ.get("BEA_PORT_DATA")
+        include = Path(data) / "prefix-sniper/include" if data else None
+        if not include or not include.is_dir():
+            self.skipTest("set BEA_PORT_DATA for SDL headers")
+        tu_a = self.root / "writer_tu.c"
+        tu_b = self.root / "caller_tu.c"
+        exe = self.root / "cross-tu"
+        tu_a.write_text('#include "ce_report.h"\nint write_ini_in_tu_a(const char *p, int *refusal) { return ce_ini_write_ex(p, "record_sessions", "0", refusal); }\n')
+        tu_b.write_text(
+            '#include <stdio.h>\n#include "ce_report.h"\n'
+            'int write_ini_in_tu_a(const char *p, int *refusal);\n'
+            'int main(int argc, char **argv) {\n'
+            '    if (argc != 2) return 2;\n'
+            '    int refusal = -1;\n'
+            '    int ok = write_ini_in_tu_a(argv[1], &refusal);\n'
+            '    printf("ok=%d explicit=%d local_static=%d\\n", ok, refusal, ce_ini_refusal);\n'
+            '    return 0;\n'
+            '}\n'
+        )
+        built = subprocess.run(
+            ["gcc", "-std=gnu11", "-O0", "-I", str(include), "-I", str(Path(__file__).resolve().parents[1]),
+             str(tu_a), str(tu_b), "-o", str(exe)],
+            capture_output=True, text=True,
+        )
+        self.assertEqual(built.returncode, 0, built.stderr)
+        self.ini.chmod(0o444)
+        try:
+            ran = subprocess.run([str(exe), str(self.ini)], capture_output=True, text=True, timeout=10)
+        finally:
+            self.ini.chmod(0o600)
+        self.assertEqual(ran.returncode, 0, ran.stderr)
+        self.assertEqual(ran.stdout.strip(), "ok=0 explicit=1 local_static=0")
 
     @unittest.skipIf(os.name == "nt", "Linux retained-directory-fd check")
     def test_parent_replaced_during_write_does_not_redirect_replacement(self):

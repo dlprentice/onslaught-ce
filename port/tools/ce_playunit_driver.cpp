@@ -436,7 +436,12 @@ static void Angles()
 	Check(Near(CePlayUnitClamp(NAN, -1.f, 1.f), 0.f), "clamp: a number that is not one is no input");
 	Check(Near(CePlayUnitWrap(7.f), 7.f - 2.f * 3.14159265f) && Near(CePlayUnitWrap(-7.f), -7.f + 2.f * 3.14159265f), "wrap: into one turn");
 	Check(Near(CePlayUnitWrap(3.f), 3.f) && Near(CePlayUnitWrap(-3.f), -3.f), "wrap: leaves a small angle alone");
-	Check(Near(CePlayUnitWrap(INFINITY), 0.f), "wrap: an infinite angle is none");
+	Check(Near(CePlayUnitWrap(INFINITY), 0.f) && Near(CePlayUnitWrap(-INFINITY), 0.f) && Near(CePlayUnitWrap(NAN), 0.f), "wrap: an infinite or NaN angle is none");
+	{
+		const float hugePos = CePlayUnitWrap(1e10f), hugeNeg = CePlayUnitWrap(-1e30f);
+		Check(isfinite(hugePos) && hugePos > -3.1415927f && hugePos <= 3.1415927f &&
+		      isfinite(hugeNeg) && hugeNeg > -3.1415927f && hugeNeg <= 3.1415927f, "wrap: huge angles finish in O(1) inside (-pi, pi]");
+	}
 
 	// Right is clockwise from above, which lowers the angle; left raises it.
 	Check(Near(CePlayUnitSteer(0.f, 0.f, 1.f, 0.1f, 1.f, 1.f), -0.1f), "steer: right lowers the heading");
@@ -546,6 +551,7 @@ static void Table()
 
 // ---- free fire ----
 static float Flat(void *, float, float) { return 0.f; }
+static float Seabed(void *, float, float) { return 20.f; }
 static float Slope(void *, float x, float) { return -0.1f * x; }		// the ground rises (z falls) as x grows
 static float Ridge(void *, float x, float) { return (x > 4.f && x < 6.f) ? -20.f : 0.f; }
 static float Bump(void *, float x, float) { return (x > 4.f && x < 6.f) ? -0.8f : 0.f; }
@@ -575,11 +581,17 @@ static void FreeFire()
 	{ const float bad[3] = {NAN, 0.f, 1.f}; Check(!CePlayUnitViewGround(eye, bad, 400.f, 1.5f, Flat, NULL, hit), "view: a direction that is not a number gives no point"); }
 	Check(!CePlayUnitViewGround(eye, down, 400.f, 0.f, Flat, NULL, hit) && !CePlayUnitViewGround(eye, down, 0.f, 1.5f, Flat, NULL, hit) && !CePlayUnitViewGround(eye, down, 400.f, 1.5f, NULL, NULL, hit), "view: no step, no reach or no map gives no point");
 	Check(CePlayUnitViewGround(eye, down, 400.f, 40.f, Flat, NULL, hit) && Near(hit[0], 10.f, 0.01f), "view: a coarse search is narrowed to the same point");
+	// Over water (seabed at z=+20, water surface at z=0): view hits water surface, not seabed.
+	Check(CePlayUnitViewGround(eye, down, 400.f, 1.5f, Seabed, NULL, hit, 0.f) && Near(hit[0], 10.f, 0.01f) && Near(hit[2], 0.f, 0.01f), "view: over-water ray hits water surface rather than seabed");
 
 	const float from[3] = {0.f, 0.f, 0.f}, to[3] = {30.f, 40.f, 0.f};
 	float c[3];
 	Check(CePlayUnitRange(from, to, 5.f, 100.f, c) == CE_PLAYUNIT_RANGE_OK && Near(c[0], 30.f) && Near(c[1], 40.f), "range: a point within reach is kept");
 	Check(CePlayUnitRange(from, to, 5.f, 25.f, c) == CE_PLAYUNIT_RANGE_TOO_FAR && Near(c[0], 15.f) && Near(c[1], 20.f) && Near(c[2], 0.f), "range: a far point is clamped to the weapon's range on the same line");
+	{
+		const float deepTo[3] = {30.f, 40.f, 15.f};
+		Check(CePlayUnitRange(from, deepTo, 5.f, 25.f, c, 0.f) == CE_PLAYUNIT_RANGE_TOO_FAR && c[2] <= 0.f, "range: water-aware clamp never dips below water surface");
+	}
 	Check(CePlayUnitRange(from, to, 60.f, 100.f, c) == CE_PLAYUNIT_RANGE_TOO_NEAR && Near(c[0], 36.f) && Near(c[1], 48.f), "range: a near point is clamped to the weapon's minimum on the same line");
 	Check(CePlayUnitRange(from, to, 50.f, 50.f, c) == CE_PLAYUNIT_RANGE_OK, "range: the limits are in reach");
 	Check(CePlayUnitRange(from, to, 5.f, 0.f, c) == CE_PLAYUNIT_RANGE_NONE && CePlayUnitRange(from, to, 0.f, 0.f, c) == CE_PLAYUNIT_RANGE_NONE && CePlayUnitRange(from, to, 5.f, NAN, c) == CE_PLAYUNIT_RANGE_NONE, "range: no positive range is none");
@@ -588,6 +600,11 @@ static void FreeFire()
 
 	const float muzzle[3] = {0.f, 0.f, -1.f}, mark[3] = {10.f, 0.f, 0.f};
 	Check(CePlayUnitLineClear(muzzle, mark, 24, 0.6f, Flat, NULL), "line: flat ground is open");
+	Check(CePlayUnitLineClear(muzzle, mark, 24, 0.6f, Seabed, NULL, 0.f), "line: over-water surface shot stays clear");
+	{
+		const float subMuzzle[3] = {0.f, 0.f, 2.f}, subMark[3] = {10.f, 0.f, 2.f};
+		Check(!CePlayUnitLineClear(subMuzzle, subMark, 24, 0.6f, Seabed, NULL, 0.f), "line: underwater line is blocked by water surface");
+	}
 	Check(!CePlayUnitLineClear(muzzle, mark, 24, 0.6f, Ridge, NULL), "line: a ridge across the line blocks it");
 	Check(CePlayUnitLineClear(muzzle, mark, 24, 0.6f, Bump, NULL), "line: a rise within the tolerance does not");
 	Check(!CePlayUnitLineClear(muzzle, mark, 24, 0.1f, Bump, NULL), "line: a rise past a smaller tolerance does");

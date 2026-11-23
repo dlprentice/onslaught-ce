@@ -9,7 +9,7 @@
  // store (004dcce9). The LOD test reads mMesh, so the lower LOD is read again after the comparisons (004dcdb3).
  void CRTMesh::Render(DWORD flags)	// FUNCTION: 0x004dcba0
  {
-+	const bool ce_full_models = CeUnitModelsQualityEnabled();
++	const bool ce_full_models = !gMirrorPass && CeUnitModelsQualityEnabled();
  	// move to the head of this frame's list
  	if (mNextRendered)
  		mNextRendered->mPrevRendered = mPrevRendered;
@@ -40,7 +40,7 @@
  		else if (detail > 100)
  			detail = 100;
 +		if (ce_full_models) detail = 100;
-+		if (mesh != mMesh) CeModelQualityCount(CE_MODEL_REDUCED_MESH);
++		if (!gMirrorPass && mesh != mMesh) CeModelQualityCount(CE_MODEL_REDUCED_MESH);
  		MESH_SURFACE_DETAIL = detail;
 +		CeModelQualityCount(CE_MODEL_MESH);
  		CMeshRenderer::Render(&offset, &ori, mesh, mThing, this, mUnknown24, false, flags);
@@ -58,7 +58,7 @@
  //******************************************************************************************
  void CRTMesh::RenderImposter()	// FUNCTION: 0x004dcea0
  {
-+	if (CeUnitModelsQualityEnabled()) return;
++	if (!gMirrorPass && CeUnitModelsQualityEnabled()) return;
  	FVector	pos = ENGINE.GetCamera()->GetPos();
  	float	zoom = ENGINE.GetCamera()->GetZoom();
  	if (MESH_LOD_IGNORE_ZOOM)
@@ -66,7 +66,7 @@
  				SINT	frames = mImposter->mNumFrames;
  				frame = ((SINT)(mThing->GetRenderFrame() * frames)) % frames;
  			}
-+			CeModelQualityCount(CE_MODEL_IMPOSTOR);
++			if (!gMirrorPass) CeModelQualityCount(CE_MODEL_IMPOSTOR);
  			mImposter->Render(mThing, alpha, frame);
  		}
  	}

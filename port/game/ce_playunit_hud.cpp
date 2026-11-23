@@ -414,7 +414,7 @@ void ClassPanel(CDXBitmapFont *font, float w, float h)
 			HudFillRect(gx, gy, gw, gh, 0x9804080e);
 			HudFillRect(gx, gy, gw, t, (pal.accentDim & 0x00ffffffu) | 0x94000000u);
 			HudFillRect(gx, gy + gh - t, gw, t, (pal.accentDim & 0x00ffffffu) | 0x94000000u);
-			float altRatio = tel.altitude / 80.f;
+			float altRatio = isfinite(tel.altitude) ? (tel.altitude / 80.f) : 0.f;
 			if (altRatio < 0.f) altRatio = 0.f;
 			if (altRatio > 1.f) altRatio = 1.f;
 			const float fillH = (gh - 2.f * t) * altRatio;
@@ -426,7 +426,7 @@ void ClassPanel(CDXBitmapFont *font, float w, float h)
 			const float hw = floorf(9.f * s);
 			const float hmid = gy + gh * 0.5f;
 			HudFillRect(hx, hmid - t * 0.5f, hw, t, pal.accentDim);
-			float pNorm = tel.pitchDeg / 45.f;
+			float pNorm = isfinite(tel.pitchDeg) ? (tel.pitchDeg / 45.f) : 0.f;
 			if (pNorm < -1.f) pNorm = -1.f;
 			if (pNorm > 1.f) pNorm = 1.f;
 			const float py = hmid - pNorm * (gh * 0.42f);
@@ -698,8 +698,8 @@ void Prompt(CDXBitmapFont *font, float w, float h, bool atTop)
 	unsigned armourColour = kWeaponWait;
 	if (health)
 	{
-		float life = focus.life / focus.fullLife;
-		if (life < 0.f) life = 0.f;
+		float life = (isfinite(focus.life) && isfinite(focus.fullLife) && focus.fullLife > 0.f) ? (focus.life / focus.fullLife) : 0.f;
+		if (!isfinite(life) || life < 0.f) life = 0.f;
 		if (life > 1.f) life = 1.f;
 		char text[16];
 		snprintf(text, sizeof(text), "%d%%", int(life * 100.f + 0.5f));

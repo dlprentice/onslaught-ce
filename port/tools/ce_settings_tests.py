@@ -254,6 +254,8 @@ def ini_variants(key, values):
                      "[Experimental]\n; Unfinished features, off in this release. They may change or break. Set a line to 1 to try one.\n%s=%s\nmuseum=0\n",
                      "other=1\n%s=%s\n\n[Experimental]\n; Unfinished features, off in this release. They may change or break. Set a line to 1 to try one.\nmap_editor=0\nmuseum=0\ncommander=0\nplay_unit=0\n"):
             cases.append((form % (key, text)).encode())
+        cases.append(b"\xef\xbb\xbf" + ("%s=%s\n" % (key, text)).encode())
+        cases.append(b"\xef\xbb\xbf" + ("%s = %s \r\n" % (key, text)).encode())
         cases.append(("%s=%s\n" % (key, text.upper())).encode())
     for a in values:
         for b in values:
@@ -369,10 +371,21 @@ MUTANTS = (
      swap("\t\tmatch = end - pos == want && !memcmp(line + pos, value, want);\n\t\tbreak;\n",
           "\t\tmatch = end - pos == want && !memcmp(line + pos, value, want);\n"), {"update_check"},
      "update_check: the page shows"),
-    ("the launcher-style reader trims blanks", CE_CPP,
-     swap("\t\tsize_t pos = eq + 1, end = pos;\n\t\twhile (end < n && line[end] != '\\r') ++end;\n",
-          "\t\tsize_t pos = eq + 1, end;\n\t\twhile (pos < n && (line[pos] == ' ' || line[pos] == '\\t')) ++pos;\n\t\tend = pos;\n"
+    ("the launcher-style reader does not trim blanks", CE_CPP,
+     swap("\t\twhile (end < n && line[end] != '\\r') ++end;\n"
+          "\t\twhile (pos < end && (line[pos] == ' ' || line[pos] == '\\t')) ++pos;\n"
+          "\t\twhile (end > pos && (line[end - 1] == ' ' || line[end - 1] == '\\t')) --end;\n",
           "\t\twhile (end < n && line[end] != '\\r') ++end;\n"), {"update_check"}, "update_check: the page shows"),
+    ("the launcher does not trim blanks after =", "port/updater/ce_launch.c",
+     swap("\t\t\t\twhile (m > 0 && (*e == ' ' || *e == '\\t')) { e++; m--; }\n\t\t\t\twhile (m > 0 && (e[m - 1] == ' ' || e[m - 1] == '\\t')) m--;\n",
+          ""), {"update_check"}, "update_check: the page shows"),
+    ("the launcher ignores UTF-8 BOM", "port/updater/ce_launch.c",
+     swap("\tif ((unsigned char)start[0] == 0xEF && (unsigned char)start[1] == 0xBB && (unsigned char)start[2] == 0xBF)\n\t\tstart += 3;\n",
+          ""), {"update_check"}, "update_check: the page shows"),
+    ("the launcher-style reader ignores UTF-8 BOM", CE_CPP,
+     swap("\tsize_t start = (len >= 3 && (unsigned char)text[0] == 0xEF && (unsigned char)text[1] == 0xBB && (unsigned char)text[2] == 0xBF) ? 3 : 0;\n\tsize_t size = strlen(key), want = strlen(value);\n\tint match = 0;\n\tfor (size_t at = start; at < len;)\n\t{\n\t\tconst char *line = text + at;\n\t\tconst char *nl = (const char *)memchr(line, '\\n', len - at);\n\t\tsize_t n = nl ? (size_t)(nl - line) : len - at;\n\t\tat += n + (nl ? 1 : 0);\n\t\tsize_t eq = 0;\n\t\tif (!ce_ini_match_key(line, n, key, size, &eq)) continue;\n\t\tsize_t pos = eq + 1, end = pos;\n",
+          "\tsize_t start = 0;\n\tsize_t size = strlen(key), want = strlen(value);\n\tint match = 0;\n\tfor (size_t at = start; at < len;)\n\t{\n\t\tconst char *line = text + at;\n\t\tconst char *nl = (const char *)memchr(line, '\\n', len - at);\n\t\tsize_t n = nl ? (size_t)(nl - line) : len - at;\n\t\tat += n + (nl ? 1 : 0);\n\t\tsize_t eq = 0;\n\t\tif (!ce_ini_match_key(line, n, key, size, &eq)) continue;\n\t\tsize_t pos = eq + 1, end = pos;\n"),
+     {"update_check"}, "update_check: the page shows"),
     ("the launcher-style reader rejects blanks before =", CE_CPP,
      swap("\t\tsize_t eq = 0;\n\t\tif (!ce_ini_match_key(line, n, key, size, &eq)) continue;\n\t\tsize_t pos = eq + 1, end = pos;\n",
           "\t\tif (n <= size || memcmp(line, key, size) || line[size] != '=') continue;\n\t\tsize_t pos = size + 1, end = pos;\n"),
@@ -511,7 +524,7 @@ class SettingsAgree(unittest.TestCase):
         self.assertEqual(shown(dup, "console_theme"), "yellow")
         self.assertEqual(ask(binary, "is", str(dup), "console_theme", "green").strip(), "0")
 
-        # Launcher rows accept optional spaces/tabs before key and '=', while keeping exact value matching after '='.
+        # Launcher rows accept optional spaces/tabs before key, around '=', and after value (matching the game readers).
         l1 = scratch / "launcher-before-eq"
         l1.mkdir()
         (l1 / "ce.ini").write_bytes(b"  update_check \t=0\r\nrecord_sessions =1\n")
@@ -523,10 +536,18 @@ class SettingsAgree(unittest.TestCase):
         l2 = scratch / "launcher-after-eq"
         l2.mkdir()
         (l2 / "ce.ini").write_bytes(b"update_check = 0\nrecord_sessions = 1\n")
-        self.assertEqual(shown(l2, "update_check"), "1")
-        self.assertEqual(ask(launcher, str(l2 / "ce.ini"), "off0").strip(), "0")
-        self.assertEqual(shown(l2, "record_sessions"), "0")
-        self.assertEqual(ask(launcher, str(l2 / "ce.ini"), "on1").strip(), "0")
+        self.assertEqual(shown(l2, "update_check"), "0")
+        self.assertEqual(ask(launcher, str(l2 / "ce.ini"), "off0").strip(), "1")
+        self.assertEqual(shown(l2, "record_sessions"), "1")
+        self.assertEqual(ask(launcher, str(l2 / "ce.ini"), "on1").strip(), "1")
+
+        l3 = scratch / "launcher-trailing-and-bom"
+        l3.mkdir()
+        (l3 / "ce.ini").write_bytes(b"\xef\xbb\xbfupdate_check= 0 \r\nrecord_sessions\t=\t1 \t\r\n")
+        self.assertEqual(shown(l3, "update_check"), "0")
+        self.assertEqual(ask(launcher, str(l3 / "ce.ini"), "off0").strip(), "1")
+        self.assertEqual(shown(l3, "record_sessions"), "1")
+        self.assertEqual(ask(launcher, str(l3 / "ce.ini"), "on1").strip(), "1")
 
         # Writing replaces a spaced line in place and collapses mixed-spacing duplicates cleanly.
         edit = scratch / "edit-spaced"

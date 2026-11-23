@@ -105,7 +105,10 @@ int main() {
     Check(CeMultiBeEffectiveTargetCount(0, true, 899) == 2, "solo skirmish 1v1 on 899");
     Check(CeMultiBeEffectiveTargetCount(3, true, 851) == 3, "solo skirmish + 3 BEs");
     Check(CeMultiBeEffectiveTargetCount(4, true, 850) == 4, "solo skirmish + 4 BEs (2v2)");
-    Check(CeMultiBeEffectiveTargetCount(4, false, 110) == 4, "multi_be=4 works on campaign");
+    Check(CeMultiBeEffectiveTargetCount(4, false, 850) == 4, "multi_be=4 works on skirmish 850");
+    Check(CeMultiBeEffectiveTargetCount(4, false, 110) == 0, "multi_be=4 does NOT bleed into campaign without explicit opt-in");
+    Check(CeMultiBeEffectiveTargetCount(3, false, 110) == 0, "multi_be=3 does NOT bleed into campaign without explicit opt-in");
+    Check(CeMultiBeEffectiveTargetCount(4, false, 110, true) == 4, "multi_be=4 works on campaign when explicitly opted in");
 
     char mpStatus[128] = {};
     Check(!CeMultiBeFormatMpStartStatus(false, CE_MULTIBE_SIDE_FORSETI, CE_MULTIBE_CHOICE_STANDARD, mpStatus, sizeof(mpStatus)),
@@ -216,9 +219,35 @@ int main() {
     char banner[128] = {};
     ms.FormatHudBanner(true, CE_MULTIBE_SIDE_MUSPELL, banner, sizeof(banner));
     Check(std::strstr(banner, "2v2 VERSUS") != nullptr && std::strstr(banner, "MUSPELL") != nullptr, "2v2 banner text");
+    ms.forsetiTotal = 2; ms.muspellTotal = 1;
+    ms.FormatHudBanner(true, CE_MULTIBE_SIDE_FORSETI, banner, sizeof(banner));
+    Check(std::strstr(banner, "3-BE VERSUS") != nullptr && std::strstr(banner, "2v2 VERSUS") == nullptr, "3-BE versus banner text");
+    ms.forsetiTotal = 2; ms.muspellTotal = 2;
     ms.walkerCount = 2; ms.jetCount = 2;
     ms.FormatHudBanner(false, CE_MULTIBE_SIDE_FORSETI, banner, sizeof(banner));
     Check(std::strstr(banner, "4-BE SQUAD") != nullptr && std::strstr(banner, "JET 2") != nullptr, "4-BE squad banner text");
+
+    // 6b. Dry-ground spiral search produces 32 distinct non-zero candidates even when base offset is (0, 0)
+    {
+        float pts[32][2];
+        int k = 0;
+        for (int si = 0; si < 4; ++si)
+            for (int ai = 0; ai < 8; ++ai) {
+                CeMultiBeDrySearchOffset(si, ai, 0.0f, 0.0f, &pts[k][0], &pts[k][1]);
+                Check(pts[k][0] * pts[k][0] + pts[k][1] * pts[k][1] >= 25.0f, "zero-base spiral offset is non-zero");
+                ++k;
+            }
+        int distinct = 0;
+        for (int i = 0; i < 32; ++i) {
+            bool dup = false;
+            for (int j = 0; j < i; ++j) {
+                float dx = pts[i][0] - pts[j][0], dy = pts[i][1] - pts[j][1];
+                if (dx * dx + dy * dy < 1.0f) dup = true;
+            }
+            if (!dup) ++distinct;
+        }
+        Check(distinct == 32, "zero-base spiral search explores 32 distinct dry candidates");
+    }
 
     // 7. Finite position guard & dry-land water guard
     const float nanv = std::numeric_limits<float>::quiet_NaN();
@@ -453,12 +482,20 @@ class HostHelperTests(unittest.TestCase):
                 "\treturn CE_SOLO_SKIRMISH_SOLO_AI;\n}\n\ninline const char *CeMultiBeSoloSkirmishIniValue",
             ),
             "solo skirmish activates on campaign": (
-                "\tif (soloSkirmish && level >= 850 && level <= 899)\n\t\treturn 2;",
+                "\tif (soloSkirmish && isSkirmish)\n\t\treturn 2;",
                 "\tif (soloSkirmish)\n\t\treturn 2;",
             ),
             "solo skirmish fails to activate 1v1": (
-                "\tif (soloSkirmish && level >= 850 && level <= 899)\n\t\treturn 2;",
-                "\tif (soloSkirmish && level >= 850 && level <= 899)\n\t\treturn 0;",
+                "\tif (soloSkirmish && isSkirmish)\n\t\treturn 2;",
+                "\tif (soloSkirmish && isSkirmish)\n\t\treturn 0;",
+            ),
+            "multi_be bleeds into campaign without opt-in": (
+                "\tif (multiBeCount >= 3 && (isSkirmish || allowCampaign))",
+                "\tif (multiBeCount >= 3)",
+            ),
+            "3-be versus banner still prints 2v2": (
+                'const char *modeTag = (total == 3) ? "3-BE VERSUS" : (total == 2 ? "1v1 VERSUS" : "2v2 VERSUS");',
+                'const char *modeTag = "2v2 VERSUS";',
             ),
             "mp status draws on retail default": (
                 "\tif (!soloSkirmish && playSide == CE_MULTIBE_SIDE_FORSETI && modeChoice == CE_MULTIBE_CHOICE_STANDARD)",
@@ -557,6 +594,12 @@ class GateAuditTests(unittest.TestCase):
         )
         patch_0373 = (PORT / "patches/0373-ce-multibe-unit-sound-particles.patch").read_text(encoding="latin-1")
         self.assertIn("PortCeOneScreenMatch()", patch_0373, "patch 0373 must pin 3D audio listener to camera 0 in one-screen matches")
+        patch_0369 = (PORT / "patches/0369-ce-multibe-controller-slots.patch").read_text(encoding="latin-1")
+        self.assertIn("PortCeSoloSkirmishActive", patch_0369, "patch 0369 must exempt slot 1 from disconnect gate in Solo Skirmish")
+        self.assertIn("MEMTYPE_UNKNOWN", src, "ce_multibe.cpp must use MEMTYPE_UNKNOWN instead of raw 0x80")
+        self.assertNotIn("(EMemoryType)0x80", src, "ce_multibe.cpp must not hardcode (EMemoryType)0x80")
+        lvl_begin = src[src.index('extern "C" void PortCeMultiBeLevelBegin('):src.index('extern "C" void PortCeMultiBeLevelEnd(')]
+        self.assertIn("CeCmdMatchLevelEnd();", lvl_begin, "PortCeMultiBeLevelBegin must defensively call CeCmdMatchLevelEnd()")
 
 
 class LiveEngineTests(unittest.TestCase):
@@ -634,10 +677,21 @@ class LiveEngineTests(unittest.TestCase):
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
+    def test_multi_be_does_not_bleed_into_campaign_by_default(self):
+        tmp = Path(tempfile.mkdtemp(prefix="multibe-110-nobleed-", dir=SCRATCH))
+        try:
+            ini = "[Experimental]\nmulti_be=4\n"
+            proc = run_bea_offscreen(self.exe, self.game_dir, tmp, level=110, quit_frames=520, ce_ini_text=ini)
+            self.assertEqual(proc.returncode, 0, proc.stderr[-1500:])
+            rows = parse_telemetry(proc.stderr)
+            self.assertEqual(rows, [], f"multi_be=4 must not bleed into Campaign without multi_be_campaign=1, got {rows}")
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
     def test_four_battle_engines_campaign_live_for_200_plus_ticks(self):
         tmp = Path(tempfile.mkdtemp(prefix="multibe-110-", dir=SCRATCH))
         try:
-            ini = "[Experimental]\nmulti_be=4\nmulti_be_cam=1\nmulti_be_hud_slot=2\n"
+            ini = "[Experimental]\nmulti_be=4\nmulti_be_campaign=1\nmulti_be_cam=1\nmulti_be_hud_slot=2\n"
             proc = run_bea_offscreen(self.exe, self.game_dir, tmp, level=110, quit_frames=600, ce_ini_text=ini)
             self.assertEqual(proc.returncode, 0, proc.stderr[-2000:])
             rows = parse_telemetry(proc.stderr)
@@ -657,7 +711,7 @@ class LiveEngineTests(unittest.TestCase):
     def test_three_battle_engines_live_variant(self):
         tmp = Path(tempfile.mkdtemp(prefix="multibe-3be-", dir=SCRATCH))
         try:
-            ini = "[Experimental]\nmulti_be=3\nmulti_be_cam=1\n"
+            ini = "[Experimental]\nmulti_be=3\nmulti_be_campaign=1\nmulti_be_cam=1\n"
             proc = run_bea_offscreen(self.exe, self.game_dir, tmp, level=110, quit_frames=580, ce_ini_text=ini)
             self.assertEqual(proc.returncode, 0, proc.stderr[-2000:])
             rows = parse_telemetry(proc.stderr)

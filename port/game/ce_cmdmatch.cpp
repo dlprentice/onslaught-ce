@@ -38,6 +38,9 @@ struct GameAccess : CGame
 
 bool gScreenSet;		// this level's match set the switch
 BOOL gScreenWas;		// what it was before
+int gLastSide = -1;		// last known valid allegiance (0 or 1) for the current level
+int gLastSideLevel = -1;
+CeCmdCliLevelLatch gCliLatch = {false, false, -1};
 
 CBattleEngine *Engine()
 {
@@ -50,7 +53,9 @@ bool CeCmdMatch()
 {
 	// A versus/skirmish level with its two Battle Engines, played by one person (either via -level or Solo Skirmish vs AI; the rule: ce_cmdrules.h).
 	const bool solo = (PortCeSoloSkirmishActive && PortCeSoloSkirmishActive()) != 0;
-	return CeCmdMatchRule(CE_BootRequested && CE_BootRequested(), GAME.IsMultiplayer() != FALSE, GAME.GetNPlayers(), CLIPARAMS.mLevelNo, GAME.GetCurrentLevel(), solo);
+	const int curLevel = GAME.GetCurrentLevel();
+	const bool cliConsumed = CeCmdCliLevelCheck(gCliLatch, CLIPARAMS.mLevelNo, curLevel);
+	return CeCmdMatchRule(CE_BootRequested && CE_BootRequested(), GAME.IsMultiplayer() != FALSE, GAME.GetNPlayers(), CLIPARAMS.mLevelNo, curLevel, solo, cliConsumed);
 }
 
 void CeCmdMatchUpdate()
@@ -63,11 +68,23 @@ void CeCmdMatchUpdate()
 
 bool PortCeOneScreenMatch() { return gScreenSet; }
 
+bool PortCeAudioSingleListener()
+{
+	return gScreenSet || !GAME.IsMultiplayer() || (CE_BootRequested && CE_BootRequested());
+}
+
 void CeCmdMatchLevelEnd()
 {
-	if (!gScreenSet) return;
-	GAME.*GameAccess::Fullscreen() = gScreenWas;
-	gScreenSet = false;
+	const bool hadScreen = gScreenSet;
+	if (gScreenSet)
+	{
+		GAME.*GameAccess::Fullscreen() = gScreenWas;
+		gScreenSet = false;
+	}
+	gLastSide = -1;
+	gLastSideLevel = -1;
+	if (hadScreen)
+		CeCmdCliLevelConsume(gCliLatch);
 }
 
 void CeCmdMatchRead(CeCmdMatchState *out)
@@ -84,9 +101,10 @@ void CeCmdMatchRead(CeCmdMatchState *out)
 	case GAME_STATE_GAME_DRAWN: out->result = CE_MATCH_DRAWN; break;
 	default: out->result = CE_MATCH_OVER; break;
 	}
-	if (CBattleEngine *engine = Engine())
+	CBattleEngine *engine = Engine();
+	out->side = CeCmdResolveAllegiance(gLastSide, gLastSideLevel, GAME.GetCurrentLevel(), engine != NULL, engine ? (int)engine->GetAllegiance() : -1);
+	if (engine)
 	{
-		out->side = (int)engine->GetAllegiance();
 		out->life = engine->GetLife();
 		out->lifeFull = engine->GetInitialLife();
 		out->pilot = !engine->IsDying() && out->life > 0.f;

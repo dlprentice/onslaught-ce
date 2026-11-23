@@ -15,6 +15,10 @@ extern "C" int CE_SettingSetText(const char *key, const char *value);
 extern "C" int CE_SettingIs(const char *key, const char *value);
 extern "C" int CE_SettingGetText(const char *key, char *out, int n);
 extern "C" int CE_SettingGetBool(const char *key, int def);
+extern "C" int CE_SettingGet(const char *key, int def);
+extern "C" int CE_TrySettingGet(const char *key, int def, int *out);
+extern "C" int CE_SettingLastRefusal(void);
+extern "C" bool PortCeFactoryExercise(void);
 
 extern "C" Uint64 SDL_GetTicks(void) { return 0; }
 extern "C" bool SDL_OpenURL(const char *) { return false; }
@@ -22,11 +26,24 @@ extern "C" int CE_CompatibilityRuntimeMutation(char *, size_t) { return 1; }	// 
 
 int main(int argc, char **argv)
 {
-	if (argc < 3)
+	if (argc < 2)
 		return 2;
 	const char *what = argv[1];
+	if (!strcmp(what, "factory") && argc == 2)
+	{
+		printf("%d", PortCeFactoryExercise() ? 1 : 0);
+		return 0;
+	}
+	if (argc < 3)
+		return 2;
 	if (!strcmp(what, "set") && argc == 4)
 		return CE_SettingSetText(argv[2], argv[3]) ? 0 : 1;
+	if (!strcmp(what, "set-refusal") && argc == 4)
+	{
+		int ok = CE_SettingSetText(argv[2], argv[3]) ? 1 : 0;
+		printf("%d %d", ok, CE_SettingLastRefusal());
+		return ok ? 0 : 1;
+	}
 	if (!strcmp(what, "set-null-key") && argc == 3)
 		return CE_SettingSetText(NULL, argv[2]) ? 0 : 1;
 	if (!strcmp(what, "set-null-value") && argc == 3)
@@ -47,6 +64,18 @@ int main(int argc, char **argv)
 	{
 		printf("%d", CE_SettingGetBool(argv[2], atoi(argv[3])));
 		return 0;
+	}
+	if (!strcmp(what, "get") && argc == 4)
+	{
+		printf("%d", CE_SettingGet(argv[2], atoi(argv[3])));
+		return 0;
+	}
+	if (!strcmp(what, "tryget") && argc == 4)
+	{
+		int out = 0;
+		int ok = CE_TrySettingGet(argv[2], atoi(argv[3]), &out);
+		printf("%d %d", ok, out);
+		return ok ? 0 : 1;
 	}
 	return 2;
 }

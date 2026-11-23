@@ -118,15 +118,10 @@ extern "C" int CE_ScreenshotSave(const void *pixels, int pitch, int width, int h
 	if (!pixels || width <= 0 || height <= 0 || width > CE_SHOT_MAX_SIDE || height > CE_SHOT_MAX_SIDE ||
 		pitch < width * (int)SDL_BYTESPERPIXEL(format))
 		return CE_SHOT_SIZE;
-	char user[4096], folder[4200];
+	char user[4096];
 	ce_user_dir(user, sizeof user);
-#ifdef _WIN32
-	if ((size_t)snprintf(folder, sizeof folder, "%s\\screenshots", user) >= sizeof folder) return CE_SHOT_FOLDER;
-#else
-	if ((size_t)snprintf(folder, sizeof folder, "%s/screenshots", user) >= sizeof folder) return CE_SHOT_FOLDER;
-#endif
 	CeSettingsDir dir;
-	if (!ce_settings_dir_open(folder, 1, &dir)) return CE_SHOT_FOLDER;
+	if (!ce_settings_subdir_open_ex(user, "screenshots", 1, &dir, NULL)) return CE_SHOT_FOLDER;
 	if (Entries(&dir, CE_SHOT_MAX_FILES) >= CE_SHOT_MAX_FILES)
 	{
 		ce_settings_dir_close(&dir);

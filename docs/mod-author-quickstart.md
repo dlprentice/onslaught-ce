@@ -4,6 +4,10 @@
 This guide covers the complete mod-authoring workflow for **Onslaught CE**: packaging asset and world mods in the schema-1 folder format, discovering valid target paths with the Onslaught Modding & Content Toolkit, validating mods with `bea --check-mods`, enabling them in-game, and building native C++ engine extensions on `port/game/ce_hooks.h` v2.0.
 
 > **Read-only game folder rule:** Never modify your installed retail game files or commit retail assets into Git. Mods live strictly in your CE user folder (`<user-dir>/mods/<mod-id>/`) and overlay files at runtime without touching the original installation.
+>
+> **Security — only install mods from authors you trust:** `mod.json`'s `sha256` and `size` checks verify **file integrity** (that files match the manifest and were not corrupted or truncated), **not** asset-parser safety. Mod payloads (`.aya` archives, `.wrd` worlds, textures, meshes, and data tables) are parsed directly by legacy C++ engine loaders; treat untrusted mods with the same caution as native software.
+>
+> **Platform status:** On standard public builds, `mods_menu=1` and `mods=` are currently **Linux-only** while the Windows NTFS verification gate is being completed. Standard Windows builds keep the mod loader and Mods page disabled for now.
 
 ## 1. Schema-1 Mod Folder Format
 
@@ -108,6 +112,8 @@ result: 1 passed, 0 refused
 A corrupted file, missing entry, invalid path, or mismatched SHA-256 exits with code `1` and reports the exact refusal reason (`refused ce-example-starter: ...`).
 
 ## 4. Enabling Mods In-Game (`Mods` Menu & `ce.ini`)
+
+> **Linux-only on standard builds:** Enabling mods via `mods_menu=1` and `mods=` is currently **Linux-only** on standard public builds while the Windows NTFS verification gate is completed; standard Windows builds keep the mod loader and Mods page off.
 
 You can enable mods either in the in-game UI or directly in `<user-dir>/ce.ini`:
 

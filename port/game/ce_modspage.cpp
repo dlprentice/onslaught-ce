@@ -77,10 +77,99 @@ int		Width(const WCHAR *text)
 	return size.cx;
 }
 
+// Bounds-checked word wrap matching SWordWrapFill (40 lines of 99 chars + NUL). Replaces engine
+// CDXBitmapFont::WordWrap() (src/Font.cpp), which has no bounds check on col < 99 or its stack tmp[200]
+// and overflows on narrow-glyph runs such as "iiii..." or "....".
+static const int	kWrapMaxLines = 40;
+static const int	kWrapMaxChars = 99;
+
+template <typename Char, typename WidthFn>
+int		CeModWordWrap(Char (*lines)[100], int maxLines, const Char *text, float maxWidth, WidthFn width)
+{
+	if (maxLines > kWrapMaxLines)
+		maxLines = kWrapMaxLines;
+	for (int l = 0; l < maxLines; l++)
+		lines[l][0] = 0;
+	if (!text || !*text || maxLines <= 0)
+		return 0;
+
+	Char	cur[100], trial[100];
+	cur[0] = 0;
+	int		lineCount = 0;
+	int		len = 0;
+	const Char *p = text;
+
+	auto flushLine = [&]() {
+		for (int i = 0; i <= len; i++)
+			lines[lineCount][i] = cur[i];
+		lineCount++;
+		cur[0] = 0;
+		len = 0;
+	};
+
+	while (*p && lineCount < maxLines)
+	{
+		if (*p == Char(' '))
+		{
+			p++;
+			continue;
+		}
+		int w = 0;
+		while (p[w] && p[w] != Char(' '))
+			w++;
+
+		const int sep = len > 0 ? 1 : 0;
+		if (len + sep + w <= kWrapMaxChars)
+		{
+			for (int i = 0; i < len; i++)
+				trial[i] = cur[i];
+			if (sep)
+				trial[len] = Char(' ');
+			for (int i = 0; i < w; i++)
+				trial[len + sep + i] = p[i];
+			trial[len + sep + w] = 0;
+			if (float(width(trial)) < maxWidth)
+			{
+				for (int i = 0; i <= len + sep + w; i++)
+					cur[i] = trial[i];
+				len += sep + w;
+				p += w;
+				continue;
+			}
+		}
+
+		if (len > 0)
+		{
+			flushLine();
+			continue;
+		}
+
+		int fit = 0;
+		const int limit = w < kWrapMaxChars ? w : kWrapMaxChars;
+		for (int n = 1; n <= limit; n++)
+		{
+			for (int i = 0; i < n; i++)
+				trial[i] = p[i];
+			trial[n] = 0;
+			if (float(width(trial)) >= maxWidth)
+				break;
+			fit = n;
+		}
+		const int take = fit > 0 ? fit : 1;
+		for (int i = 0; i < take; i++)
+			lines[lineCount][i] = p[i];
+		lines[lineCount][take] = 0;
+		lineCount++;
+		p += take;
+	}
+	if (len > 0 && lineCount < maxLines)
+		flushLine();
+	return lineCount;
+}
+
 // text wrapped to the hint's width, each line centred on the page, from y down, at most `most` lines: a text that needs more ends its
 // last line with "..." (the whole of it is in the mod's Details). Returns the number of lines drawn. Only the first kHintChars characters
-// are wrapped (the lines under the list hold fewer): the game's word wrap has room for forty lines of a hundred characters and checks
-// neither, and the model has already broken every word that is wider than a line (kCeModWord).
+// are wrapped (the lines under the list hold fewer).
 const int	kHintChars = 300;
 
 int		Lines(const char *text, float y, DWORD colour, int most)
@@ -91,7 +180,7 @@ int		Lines(const char *text, float y, DWORD colour, int most)
 	static WCHAR buf[kHintChars + 1];
 	Widen(buf, kHintChars + 1, text);
 	CDXBitmapFont *font = PLATFORM.Font(FONT_SMALL);
-	int n = font->WordWrap(&fill, buf, kHintWidth);
+	int n = CeModWordWrap(fill.c, kWrapMaxLines, buf, kHintWidth, Width);
 	if (n > most)
 	{
 		n = most;
@@ -111,14 +200,14 @@ int		LineCount(const char *text)
 	static SWordWrapFill fill;
 	static WCHAR buf[kHintChars + 1];
 	Widen(buf, kHintChars + 1, text);
-	return PLATFORM.Font(FONT_SMALL)->WordWrap(&fill, buf, kHintWidth);
+	return CeModWordWrap(fill.c, kWrapMaxLines, buf, kHintWidth, Width);
 }
 
 // The number of lines a message box takes for the text: each paragraph (a line break starts one, a blank line is one line) wrapped to the box.
 int		BoxLines(const char *text)
 {
 	static SWordWrapFill fill;
-	static WCHAR buf[2400];
+	static WCHAR buf[1200];
 	int total = 0;
 	for (const char *p = text;;)
 	{
@@ -130,8 +219,9 @@ int		BoxLines(const char *text)
 		{
 			char paragraph[1200];
 			snprintf(paragraph, sizeof paragraph, "%.*s", length < 1199 ? length : 1199, p);
-			Widen(buf, 2400, paragraph);
-			total += PLATFORM.Font(FONT_SMALL)->WordWrap(&fill, buf, kHintWidth);
+			Widen(buf, 1200, paragraph);
+			const int wrapped = CeModWordWrap(fill.c, kWrapMaxLines, buf, kHintWidth, Width);
+			total += wrapped > 0 ? wrapped : 1;
 		}
 		if (!end)
 			return total;

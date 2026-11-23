@@ -398,7 +398,16 @@ extern "C" int CE_InvitationInstall(uint64_t utc){
     if(!ParseMetadata(metadata.value.data(),metadata.value.size(),s.view.role,&pair)||pair.expiresAt!=s.pair.expiresAt||std::strcmp(pair.approval,s.pair.approval)){
         Refuse(s,CE_INVITATION_ERROR_CHANGED);return 0;
     }
-    if(current.Read("identity-token",capability.value)!=1||capability.value.empty()){
+    if(current.Read("identity-token",capability.value)!=1){
+        Refuse(s,CE_INVITATION_ERROR_CAPABILITY);return 0;
+    }
+    while(!capability.value.empty()){
+        const uint8_t back=capability.value.back();
+        if(back!=' '&&back!='\t'&&back!='\r'&&back!='\n')break;
+        capability.value.back()=0;
+        capability.value.pop_back();
+    }
+    if(capability.value.empty()){
         Refuse(s,CE_INVITATION_ERROR_CAPABILITY);return 0;
     }
     for(const uint8_t c:capability.value)if(c<33||c>126){Refuse(s,CE_INVITATION_ERROR_CAPABILITY);return 0;}
@@ -414,6 +423,7 @@ extern "C" void CE_InvitationCancel(){
     PortPrivateUiCancelFolder();
     auto& s=State();std::lock_guard<std::mutex> lock(s.mutex);
     if(s.generation!=(std::numeric_limits<uint64_t>::max)())++s.generation;
+    s.outstanding=nullptr;
     ClearPreview(s);s.chosen.fill(0);s.picked=0;s.view={};s.view.state=CE_INVITATION_CANCELLED;
 }
 #else

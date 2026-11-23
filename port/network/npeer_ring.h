@@ -1,18 +1,21 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // port/network/npeer_ring.h: self-contained C++17 N-peer deterministic lockstep input & hash ring foundation.
 //
-// Supports 2..MAX_PLAYERS (default 4) peers in a host-relayed star topology:
+// Supports 2..kMaxPeers (default 4) peers in a host-relayed star topology:
 //   - Slot 0 is the Host; slots 1..(playerCount - 1) are Guests.
-//   - Each tick T advances only when every peer active at T has submitted input (`(readyMask & ActiveMaskAt(T)) == ActiveMaskAt(T)`).
+//   - Each tick T advances only when every peer active at T has submitted input (`(readyMask & reqMask) == reqMask`).
 //   - Host serializes a deterministic big-endian star-relay bundle (`BuildHostBundle`) containing all active peers'
-//     inputs for tick T; Guests atomically validate & apply it (`ApplyHostBundle`).
+//     inputs and the authoritative per-tick `activeMask`; Guests atomically validate & store `activeMask` inside
+//     `InputFrame` (`ApplyHostBundle`) so mid-stream peer disconnects never cause host/guest desync or `MALFORMED` stall.
 //   - Periodic per-peer state hashes enforce `mHashEvery` alignment and bounded tick-window validation so stale,
-//     unaligned, or out-of-window packets can never clobber in-progress hash slots; verified ticks are counted once
-//     and any desync reports the exact diverging slot and tick (`CeNPeerDesyncReport`).
-//   - Disconnect & rebind operations safely quarantine dropped slots, honor `resumeTick >= mCurrentTick` without
-//     deadlocking ticks `mCurrentTick .. resumeTick - 1`, scrub ring entries `>= resumeTick`, and prevent UB.
+//     unaligned, or out-of-window packets can never clobber in-progress hash slots; verified ticks are counted once,
+//     desync attribution uses majority/plurality voting reporting ALL mismatching slots (`divergingMask`), and
+//     `CheckHashOverdue` detects missing/timed-out peer hashes.
+//   - Disconnect & rebind operations are atomic, honor `mDisconnectTick` & `mResumeTick` in `ActiveMaskAt(tick)`,
+//     scrub ring entries `>= resumeTick`, and prevent UB.
 //
-// Pure header with zero game-header or platform dependencies so it compiles cleanly under C++17 + ASan/UBSan.
+// Pure header with zero game-header or platform dependencies so it compiles cleanly under C++17 + ASan/UBSan,
+// including when `src/game.h` (`#define MAX_PLAYERS 4`) is included beforehand.
 #ifndef PORT_NETWORK_NPEER_RING_H
 #define PORT_NETWORK_NPEER_RING_H
 
@@ -48,9 +51,18 @@ struct CeNPeerDesyncReport
 {
 	uint32_t	tick;
 	uint8_t		referenceSlot;
-	uint8_t		divergingSlot;
+	uint8_t		divergingSlot;	// lowest active slot disagreeing with consensus
+	uint8_t		divergingMask;	// bitmask of ALL active slots disagreeing with consensus
 	uint64_t	expectedHash;
 	uint64_t	actualHash;
+};
+
+struct CeNPeerHashOverdueReport
+{
+	uint32_t	tick;
+	uint8_t		expectedMask;
+	uint8_t		presentMask;
+	uint8_t		missingMask;
 };
 
 // Default compact input payload (fixed-width, endian-neutral serialization via explicit codec).
@@ -108,10 +120,10 @@ struct CeNPeerInputPayload
 	}
 };
 
-template <size_t MAX_PLAYERS = 4u, size_t RING_SIZE = 64u, typename InputT = CeNPeerInputPayload>
+template <size_t kMaxPeers = 4u, size_t RING_SIZE = 64u, typename InputT = CeNPeerInputPayload>
 class CeNPeerLockstepRing
 {
-	static_assert(MAX_PLAYERS >= 2u && MAX_PLAYERS <= 8u, "MAX_PLAYERS must be in 2..8");
+	static_assert(kMaxPeers >= 2u && kMaxPeers <= 8u, "kMaxPeers must be in 2..8");
 	static_assert(RING_SIZE >= 8u && ((RING_SIZE & (RING_SIZE - 1u)) == 0u), "RING_SIZE must be a power of 2 >= 8");
 
 public:
@@ -135,7 +147,7 @@ public:
 		mCurrentTick = 0;
 		mHashesVerified = 0;
 		mHostLost = false;
-		for (size_t i = 0; i < MAX_PLAYERS; i++)
+		for (size_t i = 0; i < kMaxPeers; i++)
 		{
 			mDisconnectTick[i] = 0;
 			mResumeTick[i] = 0;
@@ -143,16 +155,20 @@ public:
 		for (size_t r = 0; r < RING_SIZE; r++)
 		{
 			mInputSlots[r].valid = false;
+			mInputSlots[r].hasHostMask = false;
 			mInputSlots[r].tick = 0;
 			mInputSlots[r].readyMask = 0;
-			for (size_t p = 0; p < MAX_PLAYERS; p++)
+			mInputSlots[r].activeMask = 0;
+			for (size_t p = 0; p < kMaxPeers; p++)
 				mInputSlots[r].inputs[p] = InputT{};
 
 			mHashSlots[r].valid = false;
 			mHashSlots[r].verified = false;
+			mHashSlots[r].hasExpectedMask = false;
 			mHashSlots[r].tick = 0;
 			mHashSlots[r].presentMask = 0;
-			for (size_t p = 0; p < MAX_PLAYERS; p++)
+			mHashSlots[r].expectedMask = 0;
+			for (size_t p = 0; p < kMaxPeers; p++)
 				mHashSlots[r].hashes[p] = 0;
 		}
 	}
@@ -160,7 +176,7 @@ public:
 	CeNPeerStatus Init(uint8_t playerCount, uint8_t localSlot, uint32_t inputDelay = 3u, uint32_t hashEvery = 20u)
 	{
 		Reset();
-		if (playerCount < 2u || playerCount > MAX_PLAYERS)
+		if (playerCount < 2u || playerCount > kMaxPeers)
 			return CE_NPEER_ERR_INVALID_ARG;
 		if (localSlot >= playerCount)
 			return CE_NPEER_ERR_INVALID_ARG;
@@ -209,12 +225,21 @@ public:
 	uint32_t	HashEvery() const { return mHashEvery; }
 	uint32_t	HashesVerified() const { return mHashesVerified; }
 
-	// Returns the bitmask of slots that are active and required at `tick`.
-	// A peer rebound at `resumeTick > mCurrentTick` is excluded for `tick < resumeTick` (preventing deadlock)
-	// and included starting at `tick >= resumeTick`.
+	// Returns the bitmask of slots active and required at `tick`:
+	// - A peer disconnected at `mDisconnectTick[s]` stays included for `tick < mDisconnectTick[s]` and excluded for `tick >= mDisconnectTick[s]`.
+	// - A peer rebound at `mResumeTick[s] > mCurrentTick` is excluded for `tick < mResumeTick[s]` (preventing deadlock) and included for `tick >= mResumeTick[s]`.
 	uint8_t ActiveMaskAt(uint32_t tick) const
 	{
 		uint8_t mask = mActiveMask;
+		if (mDisconnectedMask != 0u)
+		{
+			for (uint8_t s = 0; s < mPlayerCount; s++)
+			{
+				const uint8_t bit = BitOf(s);
+				if ((mDisconnectedMask & bit) != 0u && (uint32_t)(tick - mDisconnectTick[s]) >= 0x80000000u)
+					mask |= bit;
+			}
+		}
 		if (mPendingRebindMask != 0u)
 		{
 			for (uint8_t s = 0; s < mPlayerCount; s++)
@@ -230,7 +255,7 @@ public:
 	static uint8_t ActivePeerCount(uint8_t mask)
 	{
 		uint8_t count = 0;
-		for (uint8_t s = 0; s < MAX_PLAYERS; s++)
+		for (uint8_t s = 0; s < kMaxPeers; s++)
 			if ((mask & BitOf(s)) != 0u)
 				count++;
 		return count;
@@ -255,15 +280,19 @@ public:
 			return CE_NPEER_ERR_FUTURE_TICK;
 
 		const uint8_t bit = BitOf(slot);
-		if ((ActiveMaskAt(tick) & bit) == 0u || (mDisconnectedMask & bit) != 0u)
+		InputFrame &frame = mInputSlots[tick & kRingMask];
+		const bool hasExisting = frame.valid && frame.tick == tick;
+		const uint8_t reqMask = (hasExisting && frame.hasHostMask) ? frame.activeMask : ActiveMaskAt(tick);
+		if ((reqMask & bit) == 0u)
 			return CE_NPEER_ERR_INACTIVE_SLOT;
 
-		InputFrame &frame = mInputSlots[tick & kRingMask];
-		if (!frame.valid || frame.tick != tick)
+		if (!hasExisting)
 		{
 			frame.valid = true;
+			frame.hasHostMask = false;
 			frame.tick = tick;
 			frame.readyMask = 0u;
+			frame.activeMask = reqMask;
 		}
 		if ((frame.readyMask & bit) != 0u)
 		{
@@ -281,16 +310,19 @@ public:
 		const InputFrame &frame = mInputSlots[tick & kRingMask];
 		if (!frame.valid || frame.tick != tick)
 			return 0u;
-		return (uint8_t)(frame.readyMask & ActiveMaskAt(tick));
+		const uint8_t reqMask = frame.hasHostMask ? frame.activeMask : ActiveMaskAt(tick);
+		return (uint8_t)(frame.readyMask & reqMask);
 	}
 
 	bool IsTickReady(uint32_t tick) const
 	{
-		const uint8_t reqMask = ActiveMaskAt(tick);
-		if (!mInitialised || mHostLost || reqMask == 0u)
+		if (!mInitialised || mHostLost)
 			return false;
 		const InputFrame &frame = mInputSlots[tick & kRingMask];
 		if (!frame.valid || frame.tick != tick)
+			return false;
+		const uint8_t reqMask = frame.hasHostMask ? frame.activeMask : ActiveMaskAt(tick);
+		if (reqMask == 0u)
 			return false;
 		return (frame.readyMask & reqMask) == reqMask;
 	}
@@ -312,7 +344,8 @@ public:
 		if (!IsTickReady(tick))
 			return CE_NPEER_ERR_NOT_READY;
 
-		const uint8_t reqMask = ActiveMaskAt(tick);
+		const InputFrame &frame = mInputSlots[tick & kRingMask];
+		const uint8_t reqMask = frame.hasHostMask ? frame.activeMask : ActiveMaskAt(tick);
 		const uint8_t peerCount = ActivePeerCount(reqMask);
 		const size_t needed = kBundleHeaderBytes + (size_t)peerCount * kBundleEntryBytes;
 		if (capacity < needed)
@@ -331,7 +364,6 @@ public:
 		outBuf[10] = (uint8_t)((tick >>  8) & 0xffu);
 		outBuf[11] = (uint8_t)( tick        & 0xffu);
 
-		const InputFrame &frame = mInputSlots[tick & kRingMask];
 		size_t pos = kBundleHeaderBytes;
 		for (uint8_t s = 0; s < mPlayerCount; s++)
 		{
@@ -345,8 +377,10 @@ public:
 		return CE_NPEER_OK;
 	}
 
-	// Guest (or loopback) atomic bundle decode: validates header, exact length, slot ordering/uniqueness, active mask,
-	// and tick window BEFORE mutating any ring state.
+	// Guest (or loopback) atomic bundle decode: validates header, exact length, slot ordering/uniqueness,
+	// authoritative per-tick activeMask validity, and tick window BEFORE mutating any ring state.
+	// Stores the host bundle's `activeMask` on the tick's InputFrame so mid-stream peer disconnects
+	// consume identically on Host and Guest without false MALFORMED_FRAME stalls.
 	CeNPeerStatus ApplyHostBundle(const uint8_t *buf, size_t len, uint32_t *outTick = nullptr)
 	{
 		if (!mInitialised)
@@ -371,8 +405,9 @@ public:
 
 		const uint8_t mask = buf[5];
 		const uint8_t count = buf[6];
-		const uint8_t reqMask = ActiveMaskAt(tick);
-		if (mask == 0u || mask != reqMask || count != ActivePeerCount(mask))
+		const uint8_t allSlotsMask = (uint8_t)((1u << mPlayerCount) - 1u);
+		if (mask == 0u || (mask & ~allSlotsMask) != 0u || (mask & 1u) == 0u ||
+		    count < 2u || count != ActivePeerCount(mask))
 			return CE_NPEER_ERR_MALFORMED_FRAME;
 
 		const size_t expectedLen = kBundleHeaderBytes + (size_t)count * kBundleEntryBytes;
@@ -380,7 +415,7 @@ public:
 			return CE_NPEER_ERR_MALFORMED_FRAME;
 
 		// Pass 1: validate every slot entry and check for duplicates or conflicts atomically.
-		InputT decoded[MAX_PLAYERS];
+		InputT decoded[kMaxPeers];
 		uint8_t seenMask = 0u;
 		int prevSlot = -1;
 		size_t pos = kBundleHeaderBytes;
@@ -400,9 +435,11 @@ public:
 		if (seenMask != mask)
 			return CE_NPEER_ERR_MALFORMED_FRAME;
 
-		const InputFrame &existing = mInputSlots[tick & kRingMask];
+		InputFrame &existing = mInputSlots[tick & kRingMask];
 		if (existing.valid && existing.tick == tick)
 		{
+			if (existing.hasHostMask && existing.activeMask != mask)
+				return CE_NPEER_ERR_CONFLICT;
 			for (uint8_t s = 0; s < mPlayerCount; s++)
 			{
 				const uint8_t bit = BitOf(s);
@@ -411,24 +448,29 @@ public:
 			}
 		}
 
-		// Pass 2: commit atomically.
-		for (uint8_t s = 0; s < mPlayerCount; s++)
+		// Pass 2: commit atomically with authoritative host activeMask.
+		existing.valid = true;
+		existing.hasHostMask = true;
+		existing.tick = tick;
+		existing.activeMask = mask;
+		existing.readyMask = mask;
+		for (size_t s = 0; s < kMaxPeers; s++)
 		{
-			if ((seenMask & BitOf(s)) != 0u)
-			{
-				const CeNPeerStatus st = SubmitInput(s, tick, decoded[s]);
-				if (st != CE_NPEER_OK)
-					return st;
-			}
+			if (s < mPlayerCount && (mask & BitOf((uint8_t)s)) != 0u)
+				existing.inputs[s] = decoded[s];
+			else
+				existing.inputs[s] = InputT{};
 		}
 		if (outTick)
 			*outTick = tick;
 		return CE_NPEER_OK;
 	}
 
-	// Consumes `mCurrentTick`, copies all peer inputs active at `mCurrentTick` into `outInputs`, clears the
-	// ring entry, advances tick, and retires any pending rebind flag whose resumeTick has been reached.
-	CeNPeerStatus ConsumeTick(InputT outInputs[MAX_PLAYERS], uint8_t *outMask = nullptr)
+	// Consumes `mCurrentTick`, copies all peer inputs active at `mCurrentTick` (honoring any authoritative
+	// host bundle mask stored on the frame) into `outInputs`, snapshots the consumed mask onto any aligned
+	// hash checkpoint for both Host and Guest, clears the ring entry, advances tick, and retires any pending
+	// rebind flag whose resumeTick has been reached.
+	CeNPeerStatus ConsumeTick(InputT outInputs[kMaxPeers], uint8_t *outMask = nullptr)
 	{
 		if (!mInitialised)
 			return CE_NPEER_ERR_NOT_INIT;
@@ -439,9 +481,9 @@ public:
 		if (!CanAdvance())
 			return CE_NPEER_ERR_NOT_READY;
 
-		const uint8_t reqMask = ActiveMaskAt(mCurrentTick);
 		InputFrame &frame = mInputSlots[mCurrentTick & kRingMask];
-		for (size_t s = 0; s < MAX_PLAYERS; s++)
+		const uint8_t reqMask = frame.hasHostMask ? frame.activeMask : ActiveMaskAt(mCurrentTick);
+		for (size_t s = 0; s < kMaxPeers; s++)
 		{
 			if (s < mPlayerCount && (reqMask & BitOf((uint8_t)s)) != 0u)
 				outInputs[s] = frame.inputs[s];
@@ -450,8 +492,31 @@ public:
 		}
 		if (outMask)
 			*outMask = reqMask;
+		if ((mCurrentTick % mHashEvery) == 0u)
+		{
+			HashFrame &hf = mHashSlots[(mCurrentTick / mHashEvery) & kRingMask];
+			if (!hf.valid || hf.tick != mCurrentTick)
+			{
+				if (!hf.valid || (uint32_t)(mCurrentTick - hf.tick) < 0x80000000u)
+				{
+					hf.valid = true;
+					hf.verified = false;
+					hf.tick = mCurrentTick;
+					hf.presentMask = 0u;
+					hf.expectedMask = reqMask;
+					hf.hasExpectedMask = true;
+				}
+			}
+			else
+			{
+				hf.expectedMask = reqMask;
+				hf.hasExpectedMask = true;
+			}
+		}
 		frame.valid = false;
+		frame.hasHostMask = false;
 		frame.readyMask = 0u;
+		frame.activeMask = 0u;
 		mCurrentTick++;
 
 		if (mPendingRebindMask != 0u)
@@ -495,22 +560,26 @@ public:
 			return CE_NPEER_ERR_FUTURE_TICK;
 		}
 
-		const uint8_t bit = BitOf(slot);
-		if ((ActiveMaskAt(tick) & bit) == 0u || (mDisconnectedMask & bit) != 0u)
-			return CE_NPEER_ERR_INACTIVE_SLOT;
-
 		const size_t idx = (tick / mHashEvery) & kRingMask;
 		HashFrame &hf = mHashSlots[idx];
+		const bool sameTick = hf.valid && hf.tick == tick;
+		const uint8_t bit = BitOf(slot);
+		const uint8_t reqMask = (sameTick && hf.hasExpectedMask) ? hf.expectedMask : ActiveMaskAt(tick);
+		if ((reqMask & bit) == 0u)
+			return CE_NPEER_ERR_INACTIVE_SLOT;
+
 		if (hf.valid && hf.tick != tick)
 		{
 			// Never allow an older reordered tick to clobber a newer tick occupying the same ring slot.
 			if ((uint32_t)(tick - hf.tick) >= 0x80000000u)
 				return CE_NPEER_ERR_STALE_TICK;
 		}
-		if (!hf.valid || hf.tick != tick)
+		if (!sameTick)
 		{
 			hf.valid = true;
 			hf.verified = false;
+			hf.hasExpectedMask = false;
+			hf.expectedMask = 0u;
 			hf.tick = tick;
 			hf.presentMask = 0u;
 		}
@@ -522,54 +591,75 @@ public:
 	}
 
 	// Checks whether all peers active at `tick` submitted matching hashes.
-	// On desync, populates `outReport` with the exact reference slot, diverging slot, tick, and both hashes.
+	// Uses majority/plurality voting (tie-breaking by lowest active slot) so a diverging host in a 3..4 peer
+	// match is attributed accurately, and populates `outReport->divergingMask` with ALL mismatching slots.
 	// Repeated calls on an already-verified tick do not double-count `mHashesVerified`.
 	CeNPeerHashResult CheckHashes(uint32_t tick, CeNPeerDesyncReport *outReport = nullptr)
 	{
 		if (!mInitialised || (tick % mHashEvery) != 0u)
 			return CE_NPEER_HASH_INVALID;
-		const uint8_t reqMask = ActiveMaskAt(tick);
-		if (reqMask == 0u)
-			return CE_NPEER_HASH_INVALID;
 		const size_t idx = (tick / mHashEvery) & kRingMask;
 		HashFrame &hf = mHashSlots[idx];
+		const uint8_t reqMask = (hf.valid && hf.tick == tick && hf.hasExpectedMask) ? hf.expectedMask : ActiveMaskAt(tick);
+		if (reqMask == 0u)
+			return CE_NPEER_HASH_INVALID;
 		if (!hf.valid || hf.tick != tick)
 			return CE_NPEER_HASH_PENDING;
 		if ((hf.presentMask & reqMask) != reqMask)
 			return CE_NPEER_HASH_PENDING;
 
-		// Pick the lowest active slot (host slot 0 under normal star topology) as reference.
+		// Majority / plurality voting across all active slots (ties break to the lowest active slot).
 		uint8_t refSlot = 0u;
-		bool foundRef = false;
+		uint8_t bestVotes = 0u;
 		for (uint8_t s = 0; s < mPlayerCount; s++)
 		{
-			if ((reqMask & BitOf(s)) != 0u)
+			if ((reqMask & BitOf(s)) == 0u)
+				continue;
+			uint8_t votes = 0u;
+			for (uint8_t k = 0; k < mPlayerCount; k++)
 			{
+				if ((reqMask & BitOf(k)) != 0u && hf.hashes[k] == hf.hashes[s])
+					votes++;
+			}
+			if (votes > bestVotes)
+			{
+				bestVotes = votes;
 				refSlot = s;
-				foundRef = true;
-				break;
 			}
 		}
-		if (!foundRef)
+		if (bestVotes == 0u)
 			return CE_NPEER_HASH_INVALID;
 
 		const uint64_t expected = hf.hashes[refSlot];
-		for (uint8_t s = (uint8_t)(refSlot + 1u); s < mPlayerCount; s++)
+		uint8_t divergingMask = 0u;
+		uint8_t firstDiverging = 0u;
+		bool anyDiverged = false;
+		for (uint8_t s = 0; s < mPlayerCount; s++)
 		{
 			if ((reqMask & BitOf(s)) == 0u)
 				continue;
 			if (hf.hashes[s] != expected)
 			{
-				if (outReport)
+				if (!anyDiverged)
 				{
-					outReport->tick = tick;
-					outReport->referenceSlot = refSlot;
-					outReport->divergingSlot = s;
-					outReport->expectedHash = expected;
-					outReport->actualHash = hf.hashes[s];
+					firstDiverging = s;
+					anyDiverged = true;
 				}
-				return CE_NPEER_HASH_DESYNC;
+				divergingMask |= BitOf(s);
 			}
+		}
+		if (anyDiverged)
+		{
+			if (outReport)
+			{
+				outReport->tick = tick;
+				outReport->referenceSlot = refSlot;
+				outReport->divergingSlot = firstDiverging;
+				outReport->divergingMask = divergingMask;
+				outReport->expectedHash = expected;
+				outReport->actualHash = hf.hashes[firstDiverging];
+			}
+			return CE_NPEER_HASH_DESYNC;
 		}
 		if (!hf.verified)
 		{
@@ -579,11 +669,56 @@ public:
 		return CE_NPEER_HASH_MATCH;
 	}
 
-	// Quarantines a disconnecting peer cleanly.
+	// Detects whether any unverified hash checkpoint at least `maxLagTicks` behind `mCurrentTick`
+	// is missing hashes from one or more active peers. Reports the earliest overdue checkpoint.
+	bool CheckHashOverdue(uint32_t maxLagTicks, CeNPeerHashOverdueReport *outReport = nullptr) const
+	{
+		if (!mInitialised || mHostLost || mHashEvery == 0u)
+			return false;
+		if (mCurrentTick < maxLagTicks)
+			return false;
+		const uint32_t cutoffTick = mCurrentTick - maxLagTicks;
+		const uint32_t maxIntervals = (uint32_t)(RING_SIZE / 2u);
+		const uint32_t cutoffInterval = cutoffTick / mHashEvery;
+		const uint32_t curInterval = mCurrentTick / mHashEvery;
+		const uint32_t minInterval = (curInterval >= maxIntervals) ? (curInterval - maxIntervals + 1u) : 0u;
+		if (cutoffInterval < minInterval)
+			return false;
+
+		for (uint32_t iv = minInterval; iv <= cutoffInterval; iv++)
+		{
+			const uint32_t tick = iv * mHashEvery;
+			const size_t idx = iv & kRingMask;
+			const HashFrame &hf = mHashSlots[idx];
+			const bool sameTick = hf.valid && hf.tick == tick;
+			if (sameTick && hf.verified)
+				continue;
+			const uint8_t reqMask = (sameTick && hf.hasExpectedMask) ? hf.expectedMask : ActiveMaskAt(tick);
+			if (reqMask == 0u)
+				continue;
+			const uint8_t present = sameTick ? (uint8_t)(hf.presentMask & reqMask) : 0u;
+			const uint8_t missing = (uint8_t)(reqMask & ~present);
+			if (missing != 0u)
+			{
+				if (outReport)
+				{
+					outReport->tick = tick;
+					outReport->expectedMask = reqMask;
+					outReport->presentMask = present;
+					outReport->missingMask = missing;
+				}
+				return true;
+			}
+		}
+		return false;
+	}
+
+	// Quarantines a disconnecting peer atomically.
 	// - If slot 0 (Host) disconnects, marks mHostLost = true and returns CE_NPEER_ERR_HOST_LOST.
-	// - If fewer than 2 active peers remain, returns CE_NPEER_ERR_TOO_FEW_PEERS.
+	// - If disconnecting `slot` would leave fewer than 2 active peers, returns CE_NPEER_ERR_TOO_FEW_PEERS
+	//   WITHOUT mutating masks or scrubbing ring entries.
 	// - Otherwise removes `slot` from `mActiveMask` & `mPendingRebindMask`, marks it in `mDisconnectedMask`,
-	//   and clears future input/hash bits >= atTick.
+	//   records `mDisconnectTick[slot] = atTick` (honored by ActiveMaskAt), and scrubs input/hash bits >= atTick.
 	CeNPeerStatus DisconnectPeer(uint8_t slot, uint32_t atTick)
 	{
 		if (!mInitialised)
@@ -603,7 +738,11 @@ public:
 		if ((mActiveMask & bit) == 0u)
 			return CE_NPEER_ERR_INACTIVE_SLOT;
 
-		mActiveMask &= (uint8_t)~bit;
+		const uint8_t nextActiveMask = (uint8_t)(mActiveMask & ~bit);
+		if (ActivePeerCount(nextActiveMask) < 2u)
+			return CE_NPEER_ERR_TOO_FEW_PEERS;
+
+		mActiveMask = nextActiveMask;
 		mPendingRebindMask &= (uint8_t)~bit;
 		mDisconnectedMask |= bit;
 		mDisconnectTick[slot] = atTick;
@@ -611,13 +750,12 @@ public:
 		// Scrub stale ready bits from disconnected slot for ticks >= atTick so rebind starts spotless.
 		for (size_t r = 0; r < RING_SIZE; r++)
 		{
-			if (mInputSlots[r].valid && (uint32_t)(mInputSlots[r].tick - atTick) < 0x80000000u)
+			if (mInputSlots[r].valid && !mInputSlots[r].hasHostMask &&
+			    (uint32_t)(mInputSlots[r].tick - atTick) < 0x80000000u)
 				mInputSlots[r].readyMask &= (uint8_t)~bit;
 			if (mHashSlots[r].valid && (uint32_t)(mHashSlots[r].tick - atTick) < 0x80000000u)
 				mHashSlots[r].presentMask &= (uint8_t)~bit;
 		}
-		if (ActivePeerCount(mActiveMask) < 2u)
-			return CE_NPEER_ERR_TOO_FEW_PEERS;
 		return CE_NPEER_OK;
 	}
 
@@ -672,17 +810,21 @@ private:
 	{
 		uint32_t	tick;
 		uint8_t		readyMask;
+		uint8_t		activeMask;
+		bool		hasHostMask;
 		bool		valid;
-		InputT		inputs[MAX_PLAYERS];
+		InputT		inputs[kMaxPeers];
 	};
 
 	struct HashFrame
 	{
 		uint32_t	tick;
 		uint8_t		presentMask;
+		uint8_t		expectedMask;
+		bool		hasExpectedMask;
 		bool		valid;
 		bool		verified;
-		uint64_t	hashes[MAX_PLAYERS];
+		uint64_t	hashes[kMaxPeers];
 	};
 
 	bool		mInitialised;
@@ -696,8 +838,8 @@ private:
 	uint32_t	mHashEvery;
 	uint32_t	mCurrentTick;
 	uint32_t	mHashesVerified;
-	uint32_t	mDisconnectTick[MAX_PLAYERS];
-	uint32_t	mResumeTick[MAX_PLAYERS];
+	uint32_t	mDisconnectTick[kMaxPeers];
+	uint32_t	mResumeTick[kMaxPeers];
 	InputFrame	mInputSlots[RING_SIZE];
 	HashFrame	mHashSlots[RING_SIZE];
 };

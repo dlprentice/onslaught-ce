@@ -632,6 +632,22 @@ class Entry(unittest.TestCase):
                             "if ((plain.mIndex == index) && !PortCeExperimental(plain.mMode))", "if (!commander)\n\t\t\tmHelpRows[0].mHint.mHelp = kControlsHintPlain;"))
         # The Cheats Help renderer exercises the actual menu action, on/off and with saved keys.
 
+    def test_labs_page_and_promoted_safe_features_keep_fences_and_opt_out(self):
+        text = FRONTEND.read_text()
+        extras = (PORT / "game/ce_extras.cpp").read_text()
+        # Safe read-only features default ON under PortCeMenus while honoring explicit =0 opt-out.
+        self.assertIn('PortCeMenus() && (CE_SettingGetBool("catalogue", 1) == 1)', text)
+        self.assertIn('PortCeMenus() && (CE_SettingGetBool("extras", 1) == 1)', extras)
+        # Labs page exposes all experimental switches, hides mods_menu where mods are platform-off,
+        # writes via CE_SettingSet behind PortCeLayer(), and states restart-on-next-start.
+        labs = text[text.index("static const SCeLab\tkLabs[]"):text.index("#define CE_NUM_LABS")]
+        for key in ("commander", "play_unit", "museum", "map_editor", "mods_menu"):
+            self.assertIn(f'"{key}"', labs)
+        self.assertIn("const bool modsAvailable = !PortModsPlatformOff();", text)
+        self.assertIn("if (!lab.mNeedsMods || modsAvailable)", text)
+        self.assertIn("CE_SettingSet(mLab->mKey, value)", text)
+        self.assertIn('kLabsNote[] = L"Unfinished features - changes apply on next restart.";', text)
+
     def test_mutants_of_the_entry_points_are_caught(self):
         def commander_ok(t):
             return 'proofMap || PortCeExperimental("commander")' in t

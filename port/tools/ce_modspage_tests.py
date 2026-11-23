@@ -733,6 +733,129 @@ class ModsPageTests(unittest.TestCase):
         self.assertTrue(got["clamp96"].endswith("..."), got["clamp96"])
         self.assertFalse(got["clamp96"].endswith("...."), got["clamp96"])
 
+    def _run_wordwrap_probe(self, source_text, tag="base"):
+        # Extract kWrapMaxLines, kWrapMaxChars and CeModWordWrap directly from ce_modspage.cpp and run under ASan/UBSan
+        # with canary guard arrays to prove narrow-glyph strings ("iiii...", "....", etc.) never overflow fill[40][100].
+        start = source_text.index("static const int\tkWrapMaxLines = 40;")
+        end = source_text.index("// text wrapped to the hint's width", start)
+        helper = source_text[start:end]
+        probe_dir = _run_build_dir() / f"wordwrap-probe-{tag}"
+        probe_dir.mkdir(parents=True, exist_ok=True)
+        probe_cpp = probe_dir / "probe.cpp"
+        probe_exe = probe_dir / "probe"
+        probe_cpp.write_text(
+            '#include "ce_modspage_model.h"\n'
+            '#include <stdint.h>\n'
+            '#include <stdio.h>\n'
+            '#include <string.h>\n'
+            '#include <unistd.h>\n'
+            + helper
+            + '\n'
+            'static int NarrowWidth(const char *s) {\n'
+            '    int total = 0;\n'
+            '    for (const char *p = s; *p; p++) total += (*p == \'i\' || *p == \'.\' || *p == \'l\' || *p == \'1\' || *p == \' \') ? 2 : 8;\n'
+            '    return total;\n'
+            '}\n'
+            'static int ZeroWidth(const char *) { return 0; }\n'
+            'struct GuardedFill {\n'
+            '    uint64_t pre[8];\n'
+            '    char c[40][100];\n'
+            '    uint64_t post[8];\n'
+            '};\n'
+            'static void CheckWrap(const char *label, const char *text, float maxW, int (*wfn)(const char *), int minLines, int maxLinesWant) {\n'
+            '    GuardedFill gf;\n'
+            '    memset(&gf, 0xA5, sizeof gf);\n'
+            '    int n = CeModWordWrap(gf.c, 40, text, maxW, wfn);\n'
+            '    for (int i = 0; i < 8; i++) {\n'
+            '        if (gf.pre[i] != 0xA5A5A5A5A5A5A5A5ULL || gf.post[i] != 0xA5A5A5A5A5A5A5A5ULL) {\n'
+            '            fprintf(stderr, "CANARY CORRUPT %s\\n", label);\n'
+            '            _exit(2);\n'
+            '        }\n'
+            '    }\n'
+            '    if (n < minLines || n > maxLinesWant || n > 40) {\n'
+            '        fprintf(stderr, "BAD LINE COUNT %s: %d (want %d..%d)\\n", label, n, minLines, maxLinesWant);\n'
+            '        _exit(3);\n'
+            '    }\n'
+            '    for (int l = 0; l < n; l++) {\n'
+            '        size_t len = strnlen(gf.c[l], 100);\n'
+            '        if (len >= 100) {\n'
+            '            fprintf(stderr, "UNTERMINATED LINE %s[%d]\\n", label, l);\n'
+            '            _exit(4);\n'
+            '        }\n'
+            '        if (len > 99) {\n'
+            '            fprintf(stderr, "LINE OVERFLOW %s[%d]=%zu\\n", label, l, len);\n'
+            '            _exit(5);\n'
+            '        }\n'
+            '        if (len > 1 && float(wfn(gf.c[l])) >= maxW) {\n'
+            '            fprintf(stderr, "LINE TOO WIDE %s[%d]=%d >= %.1f\\n", label, l, wfn(gf.c[l]), maxW);\n'
+            '            _exit(6);\n'
+            '        }\n'
+            '    }\n'
+            '    if (n > 2) {\n'
+            '        CeModEllipsizeLine(gf.c[1], maxW, wfn);\n'
+            '        if (strnlen(gf.c[1], 100) >= 100) { fprintf(stderr, "ELLIPSIZE OVERFLOW %s\\n", label); _exit(7); }\n'
+            '    }\n'
+            '    printf("%s|%d|%zu\\n", label, n, n > 0 ? strlen(gf.c[0]) : 0);\n'
+            '}\n'
+            'int main() {\n'
+            '    char iii[301], dots[301], spaced_i[301], spaced_dot[301], huge[5001];\n'
+            '    memset(iii, \'i\', 300); iii[300] = 0;\n'
+            '    memset(dots, \'.\', 300); dots[300] = 0;\n'
+            '    for (int i = 0; i < 300; i++) { spaced_i[i] = (i & 1) ? \' \' : \'i\'; spaced_dot[i] = (i & 1) ? \' \' : \'.\'; }\n'
+            '    spaced_i[300] = spaced_dot[300] = 0;\n'
+            '    for (int i = 0; i < 5000; i++) huge[i] = (i % 7 == 6) ? \' \' : \'i\';\n'
+            '    huge[5000] = 0;\n'
+            '    CheckWrap("empty", "", 420.f, NarrowWidth, 0, 0);\n'
+            '    CheckWrap("spaces", "     ", 420.f, NarrowWidth, 0, 0);\n'
+            '    CheckWrap("iii300", iii, 420.f, NarrowWidth, 4, 4);\n'
+            '    CheckWrap("dots300", dots, 420.f, NarrowWidth, 4, 4);\n'
+            '    CheckWrap("spaced_i", spaced_i, 420.f, NarrowWidth, 3, 3);\n'
+            '    CheckWrap("spaced_dot", spaced_dot, 420.f, NarrowWidth, 3, 3);\n'
+            '    CheckWrap("huge5000", huge, 420.f, NarrowWidth, 40, 40);\n'
+            '    CheckWrap("zerowidth", iii, 420.f, ZeroWidth, 4, 4);\n'
+            '    CheckWrap("narrow1px", "Alpha beta gamma", 1.f, NarrowWidth, 14, 40);\n'
+            '    CheckWrap("normal", "Paints the Battle Engine red for Forseti missions.", 120.f, NarrowWidth, 2, 10);\n'
+            '    return 0;\n'
+            '}\n'
+        )
+        cxx = os.environ.get("CXX", "g++")
+        built = subprocess.run(
+            [cxx, "-std=gnu++17", "-O1", "-g", "-fsanitize=address,undefined", "-fno-omit-frame-pointer",
+             "-Wall", "-Wextra", "-Werror", "-I", str(PORT / "game"), "-I", str(PORT / "platform/common"),
+             str(probe_cpp), "-o", str(probe_exe)],
+            capture_output=True, text=True, timeout=60, preexec_fn=mods_tests.no_core,
+        )
+        if built.returncode != 0:
+            raise AssertionError(f"wordwrap probe failed to build ({tag}): {built.stderr}")
+        env = dict(os.environ, ASAN_OPTIONS="detect_leaks=0:abort_on_error=0", UBSAN_OPTIONS="halt_on_error=1")
+        return subprocess.run([str(probe_exe)], env=env, capture_output=True, text=True, timeout=30, preexec_fn=mods_tests.no_core)
+
+    def test_ce_modspage_wordwrap_is_bounds_checked_against_narrow_glyph_overflow(self):
+        code = (PORT / "game/ce_modspage.cpp").read_text()
+        self.assertNotIn("->WordWrap(", code, "ce_modspage.cpp must never call unsafe engine CDXBitmapFont::WordWrap")
+        self.assertEqual(code.count("CeModWordWrap(fill.c, kWrapMaxLines,"), 3, "Lines, LineCount, and BoxLines all use CeModWordWrap")
+        ran = self._run_wordwrap_probe(code, "actual")
+        self.assertEqual(ran.returncode, 0, ran.stderr)
+        got = {line.split("|")[0]: (int(line.split("|")[1]), int(line.split("|")[2])) for line in ran.stdout.splitlines()}
+        self.assertEqual(got["iii300"], (4, 99))
+        self.assertEqual(got["dots300"], (4, 99))
+        self.assertEqual(got["spaced_i"], (3, 99))
+        self.assertEqual(got["spaced_dot"], (3, 99))
+        self.assertEqual(got["huge5000"][0], 40)
+        self.assertLessEqual(got["huge5000"][1], 99)
+        self.assertEqual(got["zerowidth"], (4, 99))
+        # Causal mutants: removing either the 99-char line cap or the 40-line cap must be caught.
+        mutants = (
+            ("no-char-cap-in-word-append", "if (len + sep + w <= kWrapMaxChars)", "if (true)"),
+            ("no-char-cap-in-word-split", "const int limit = w < kWrapMaxChars ? w : kWrapMaxChars;", "const int limit = w;"),
+            ("no-line-cap", "while (*p && lineCount < maxLines)", "while (*p)"),
+        )
+        for name, old, new in mutants:
+            with self.subTest(mutant=name):
+                self.assertEqual(code.count(old), 1, name)
+                mut_run = self._run_wordwrap_probe(code.replace(old, new, 1), name)
+                self.assertNotEqual(mut_run.returncode, 0, f"wordwrap mutant {name} survived: {mut_run.stdout}")
+
     # ---- two mods on one file ------------------------------------------------------------------------------------------------------
     def test_two_mods_on_one_file_say_which_wins(self):
         self.three()

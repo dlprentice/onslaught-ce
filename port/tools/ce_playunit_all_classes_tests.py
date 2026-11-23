@@ -214,7 +214,7 @@ static void CheckBallisticArcAndSpotter()
 	Require(waterArc.hitsGround && Near(waterArc.impact[2], 2.0f, 0.05f) && waterArc.impact[0] < arc.impact[0] + 15.f,
 	        "ballistic: trajectory impacts water surface");
 
-	// Pitch solver hits requested target accurately when re-integrated
+	// Pitch solver hits requested target accurately when re-integrated (discrete refinement!)
 	float solvedPitch = 0.f;
 	const float target[3] = {180.f, 0.f, 0.f};
 	Require(CePlayUnitBallisticPitchForTarget(muzzle, target, 60.f, 1.0f, -1.25f, 0.3f, false, &solvedPitch),
@@ -222,7 +222,30 @@ static void CheckBallisticArcAndSpotter()
 	CePlayUnitBallisticArc verifyArc;
 	Require(CePlayUnitBallisticSolve(muzzle, yaw, solvedPitch, 60.f, 1.0f, 12.f, 100.f, FlatGround, NULL, &verifyArc),
 	        "ballistic: solved pitch integrates cleanly");
-	Require(std::fabs(verifyArc.impact[0] - target[0]) < 8.f, "ballistic: solved pitch lands within shell radius of target");
+	Require(std::fabs(verifyArc.impact[0] - target[0]) < 0.5f, "ballistic: discrete-refined pitch lands tightly on target");
+
+	// Out-of-range target returns false cleanly instead of falsely claiming true at 45 deg
+	const float farTarget[3] = {520.f, 0.f, 0.f};
+	float farPitch = 0.f;
+	Require(!CePlayUnitBallisticPitchForTarget(muzzle, farTarget, 60.f, 1.0f, -1.25f, 0.3f, false, &farPitch),
+	        "ballistic: out-of-range target returns false");
+	Require(std::isfinite(farPitch), "ballistic: out-of-range fallback pitch stays finite");
+
+	// Heading wrap handles extreme finite and non-finite inputs in O(1)
+	const float hHugePos = CePlayUnitHeadingDegFromYaw(1e10f);
+	const float hHugeNeg = CePlayUnitHeadingDegFromYaw(-1e30f);
+	Require(std::isfinite(hHugePos) && hHugePos >= 0.f && hHugePos < 360.f, "heading: 1e10f finishes in O(1) in [0,360)");
+	Require(std::isfinite(hHugeNeg) && hHugeNeg >= 0.f && hHugeNeg < 360.f, "heading: -1e30f finishes in O(1) in [0,360)");
+	Require(CePlayUnitHeadingDegFromYaw(std::numeric_limits<float>::quiet_NaN()) == 0.f, "heading: NaN returns 0");
+
+	// Artillery ridge clearance: mid-range ridge (-10m blocks straight-line LOS at -1m, cleared by -13.6m low-arc apex);
+	// sheer cliff right in front of muzzle blocks the parabolic arc and is rejected.
+	auto LowMidRidge = [](void *, float x, float) -> float { return (x > 80.f && x < 100.f) ? -10.f : 0.f; };
+	auto SheerCliff  = [](void *, float x, float) -> float { return (x > 10.f && x < 30.f) ? -80.f : 0.f; };
+	Require(CePlayUnitBallisticArcClearsRidge(muzzle, target, 60.f, 1.0f, 12.f, 100.f, LowMidRidge, NULL, -1.25f, 0.3f, false),
+	        "ballistic: parabolic arc clears mid-range ridge");
+	Require(!CePlayUnitBallisticArcClearsRidge(muzzle, target, 60.f, 1.0f, 12.f, 100.f, SheerCliff, NULL, -1.25f, 0.3f, false),
+	        "ballistic: sheer cliff blocking trajectory is rejected");
 
 	// Invalid inputs fail safely
 	Require(!CePlayUnitBallisticSolve(muzzle, yaw, pitch, 0.f, 1.0f, 12.f, 100.f, FlatGround, NULL, &arc),
@@ -289,7 +312,37 @@ static void CheckBallisticArcAndSpotter()
 	for (int k = 0; k < 50; ++k)
 		CePlayUnitSpotterUpdate(&st, 0.05f, false, NULL, NULL, true, verifyArc.impact);
 	Require(st.mode == CE_SPOTTER_OVERWATCH, "spotter: returns cleanly to predicted overwatch after hold");
-	Require(!CePlayUnitSpotterToggle(&st, true, verifyArc.impact) && st.mode == CE_SPOTTER_OFF, "spotter: second toggle turns off");
+	Require(!CePlayUnitSpotterToggle(&st, true, verifyArc.impact) && st.mode == CE_SPOTTER_OFF && !st.hasImpact,
+	        "spotter: second toggle turns off and clears stale hasImpact");
+	Require(CePlayUnitSpotterToggle(&st, false, NULL) && st.mode == CE_SPOTTER_OVERWATCH && !st.hasImpact,
+	        "spotter: re-enabling without predicted impact does not reuse stale impact");
+
+	// Spotter terrain clearance at eye position: hill behind battery/focus lifts camera above hill
+	{
+		CePlayUnitSpotterState hillSt;
+		CePlayUnitSpotterReset(&hillSt);
+		const float imp[3] = {0.f, 65.f, 0.f};
+		CePlayUnitSpotterToggle(&hillSt, true, imp);
+		auto HillAtEye = [](void *, float, float y) -> float { return y < 10.f ? -90.f : 0.f; };
+		float he[3], hr[3], hf[3], hd[3];
+		Require(CePlayUnitSpotterCameraPose(hillSt, unitPos, 0.f, 0.f, he, hr, hf, hd, HillAtEye, NULL),
+		        "spotter: valid pose over intervening hill");
+		Require(he[2] <= -90.f - 11.9f, "spotter: camera eye clears intervening hill by at least 12m");
+	}
+
+	// Spotter transition around 125u threshold is continuous (no jarring hard cut)
+	{
+		CePlayUnitSpotterState sA, sB;
+		CePlayUnitSpotterReset(&sA); CePlayUnitSpotterReset(&sB);
+		const float impA[3] = {0.f, 124.5f, 0.f}, impB[3] = {0.f, 125.5f, 0.f};
+		CePlayUnitSpotterToggle(&sA, true, impA);
+		CePlayUnitSpotterToggle(&sB, true, impB);
+		float eA[3], eB[3], rT[3], fT[3], dT[3];
+		Require(CePlayUnitSpotterCameraPose(sA, unitPos, 0.f, 0.f, eA, rT, fT, dT), "spotter: pose at 124.5u");
+		Require(CePlayUnitSpotterCameraPose(sB, unitPos, 0.f, 0.f, eB, rT, fT, dT), "spotter: pose at 125.5u");
+		const float jump = std::sqrt((eB[0]-eA[0])*(eB[0]-eA[0]) + (eB[1]-eA[1])*(eB[1]-eA[1]) + (eB[2]-eA[2])*(eB[2]-eA[2]));
+		Require(jump < 4.f, "spotter: smooth transition across 125u threshold with no hard cut");
+	}
 }
 
 static void CheckAircraftFlightAndNavalUnload()
@@ -304,7 +357,31 @@ static void CheckAircraftFlightAndNavalUnload()
 	CePlayUnitFlightStep(&fl, fighter, 0.05f, 1.f, 0.f, 1.f, -0.6f, 0.f, true, -30.f, 0.f, vBoost);
 	Require(fl.speedUps > (fighter.minSpeedUps + (fighter.maxSpeedUps - fighter.minSpeedUps) * fighter.cruiseThrottle),
 	        "flight: throttle + boost increases airspeed");
-	Require(std::fabs(fl.roll) > 0.05f, "flight: turning banks wings");
+	Require(fl.roll < -0.15f, "flight: right turn banks right (negative roll in BEA left-handed frame)");
+
+	// Mouse-only right turn and A/D-only right turn MUST agree in roll sign (both negative = right wing down)
+	{
+		CePlayUnitFlightState fMouse = {}, fKey = {}, fLeft = {};
+		CePlayUnitFlightReset(&fMouse, 0.f, fighter);
+		CePlayUnitFlightReset(&fKey, 0.f, fighter);
+		CePlayUnitFlightReset(&fLeft, 0.f, fighter);
+		float vTmp[3];
+		CePlayUnitFlightStep(&fMouse, fighter, 0.05f, 0.f, 0.f, 0.f, -0.5f, 0.f, false, -30.f, 0.f, vTmp);
+		CePlayUnitFlightStep(&fKey,   fighter, 0.05f, 0.f, 0.f, 1.f,  0.0f, 0.f, false, -30.f, 0.f, vTmp);
+		CePlayUnitFlightStep(&fLeft,  fighter, 0.05f, 0.f, 0.f, -1.f, 0.5f, 0.f, false, -30.f, 0.f, vTmp);
+		Require(fMouse.roll < -0.15f, "flight: mouse right turn dips right wing (negative roll)");
+		Require(fKey.roll < -0.20f, "flight: D-key right turn reinforces negative roll (no sign fight)");
+		Require(fLeft.roll > 0.15f, "flight: left turn dips left wing (positive roll)");
+	}
+
+	// Sudden cliff terrain step does NOT teleport aircraft vertically in one tick
+	{
+		CePlayUnitFlightState fCliff = {};
+		CePlayUnitFlightReset(&fCliff, 0.f, fighter);
+		float vCliff[3];
+		CePlayUnitFlightStep(&fCliff, fighter, 0.05f, 0.f, 0.f, 0.f, 0.f, 0.f, false, -10.f, -40.f, vCliff);
+		Require(vCliff[2] < -0.5f && vCliff[2] >= -3.0f, "flight: cliff pull-up is strong yet bounded per tick (no teleport)");
+	}
 
 	// Diving into ground is stopped above minClearance
 	float z = -10.f;
@@ -398,6 +475,24 @@ static void CheckFactionPalettesAndClassReadouts()
 		if (classes[i] == CE_PLAYUNIT_CLASS_ARTILLERY)
 			Require(std::strstr(l2, "ARC ON") != NULL && std::strstr(act, "SPOT CAM") != NULL,
 			        "artillery hud: shows ARC ON and SPOT CAM prompt");
+	}
+	// NaN/Inf/extreme telemetry values format safely without float-to-int UB under UBSan
+	{
+		CePlayUnitHudTelemetry bad = {};
+		bad.valid = true;
+		bad.classId = CE_PLAYUNIT_CLASS_ARTILLERY;
+		bad.azDeg = std::numeric_limits<float>::quiet_NaN();
+		bad.elDeg = std::numeric_limits<float>::infinity();
+		bad.pitchDeg = -std::numeric_limits<float>::infinity();
+		bad.speedUps = 1e20f;
+		bad.altitude = -1e20f;
+		bad.rangeMeters = std::numeric_limits<float>::quiet_NaN();
+		char bh[48], bl1[64], bl2[64], bact[48];
+		CePlayUnitFormatClassHud(bad, bh, bl1, bl2, bact);
+		Require(std::strcmp(bh, "ARTILLERY") == 0 && bl1[0] != 0, "hud format: NaN/Inf artillery telemetry formats safely");
+		bad.classId = CE_PLAYUNIT_CLASS_AIRCRAFT;
+		CePlayUnitFormatClassHud(bad, bh, bl1, bl2, bact);
+		Require(std::strcmp(bh, "AIRCRAFT") == 0 && bl1[0] != 0, "hud format: NaN/Inf aircraft telemetry formats safely");
 	}
 }
 
@@ -544,6 +639,21 @@ MUTANTS = (
     ("class card compass clamp disabled", "tactics",
      "float maxRight = compassLeft - compassGap;",
      "float maxRight = w - 8.f;"),
+    ("aircraft bank sign inverted", "tactics",
+     "const float desiredRoll = CePlayUnitClamp(turnRatio * p.maxBank - trn * p.maxBank * 0.35f, -p.maxBank, p.maxBank);",
+     "const float desiredRoll = CePlayUnitClamp(-turnRatio * p.maxBank - trn * p.maxBank * 0.35f, -p.maxBank, p.maxBank);"),
+    ("aircraft cliff pull-up unbounded", "tactics",
+     "if (needed < -maxClimbTick) needed = -maxClimbTick;",
+     "if (false) needed = -maxClimbTick;"),
+    ("ballistic out-of-range falsely returns true", "tactics",
+     "if (!isfinite(ePeak) || ePeak > 0.05f)\n\t{\n\t\t*outPitch = CePlayUnitClamp(pPeak, minPitch, maxPitch);\n\t\treturn false;\n\t}",
+     "if (!isfinite(ePeak) || ePeak > 0.05f)\n\t{\n\t\t*outPitch = CePlayUnitClamp(pPeak, minPitch, maxPitch);\n\t\treturn true;\n\t}"),
+    ("spotter toggle leaks stale hasImpact", "tactics",
+     "\tst->hasShell = false;\n\tst->hasImpact = false;",
+     "\tst->hasShell = false;"),
+    ("spotter camera ignores eye terrain hill", "tactics",
+     "if (isfinite(terrainAtEye) && (!isfinite(eyeFloor) || terrainAtEye < eyeFloor))\n\t\t\teyeFloor = terrainAtEye;",
+     "(void)terrainAtEye;"),
 )
 
 

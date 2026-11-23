@@ -9,7 +9,7 @@ time and keeps the cursor in sight, the bar covers the rows in view in a track l
 must each be caught.
 
 Part two reads the sources: the pages open no file for writing, call no save writer, never use the two game calls that touch the live
-career (CCareer::Load, CCareerNodeLink::GetToNode), keep the whole feature behind its own line (extras=1) and the CE menus, and keep
+career (CCareer::Load, CCareerNodeLink::GetToNode), keep the whole feature default-on under the CE menus with extras=0 opt-out, and keep
 their text free of the words the interface guide forbids in player text. Each rule is also run on a deliberately broken copy to show
 the check can fail.
 
@@ -248,8 +248,8 @@ def violations(sources):
         if name.endswith(".cpp") and name != "ce_career_view.cpp":      # that file holds no player text, only the reasons its log gives
             found += [f"{name}: {issue}" for issue in lint(text)]
     host = sources["ce_extras.cpp"]
-    if not re.search(r'sOffered\s*=\s*\(PortCeMenus\(\)\s*&&\s*\(CE_SettingGetBool\("extras",\s*0\)\s*==\s*1\)\)', host):
-        found.append("ce_extras.cpp: the switch is not the lone line extras=1 under the CE menus")
+    if not re.search(r'sOffered\s*=\s*\(PortCeMenus\(\)\s*&&\s*\(CE_SettingGetBool\("extras",\s*1\)\s*==\s*1\)\)', host):
+        found.append("ce_extras.cpp: the switch is not default-on with extras=0 opt-out under the CE menus")
     return found
 
 
@@ -391,7 +391,8 @@ class SourceRuleTests(unittest.TestCase):
             ("ce_career_view.cpp", "memcpy((void *)sScratch", "MEMORYCARD.WriteSave(0, asked, bytes, 1);\n\tmemcpy((void *)sScratch", "writes"),
             ("ce_career_view.cpp", "memcpy((void *)sScratch", "CAREER.Load(0);\n\tmemcpy((void *)sScratch", "live career"),
             ("ce_career_view.cpp", "CCareerNode *node = career->GetNode(n);", "career->GetLink(0)->GetToNode();\n\tCCareerNode *node = career->GetNode(n);", "live career"),
-            ("ce_extras.cpp", "(CE_SettingGetBool(\"extras\", 0) == 1)", "(CE_SettingGetBool(\"extras\", 1) == 1)", "switch"),
+            ("ce_extras.cpp", "(CE_SettingGetBool(\"extras\", 1) == 1)", "(CE_SettingGetBool(\"extras\", 0) == 1)", "switch"),
+            ("ce_extras.cpp", "(CE_SettingGetBool(\"extras\", 1) == 1)", "true", "opt-out"),
             ("ce_extras.cpp", "(PortCeMenus() && (CE_SettingGetBool", "((CE_SettingGetBool", "switch"),
             ("ce_extras.cpp", "\"Every mission, with your rank.\"", "\"Set in ce.ini.\"", "player text"),
             ("ce_service_record.cpp", "#ifdef CE_VERSION", "", "CE_VERSION"),

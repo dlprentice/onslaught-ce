@@ -30,6 +30,79 @@ namespace {
 
 enum { kGoodieTypeMesh = 1 }; // GT_MESH in FEPgoodies.h
 
+// Hysteresis thresholds to prevent synchronous unload/reload thrashing when a visitor
+// stands near a wing doorway or Atrium portal boundary.
+constexpr float kWingSwitchDwellSeconds = 0.35f;
+constexpr unsigned kWingSwitchDwellFrames = 4u;
+constexpr float kWingSwitchCooldownSeconds = 0.60f;
+
+struct ResidencyHysteresis {
+    bool hasResident;
+    CeMuseumTour::Wing residentWing;
+    bool hasPending;
+    CeMuseumTour::Wing pendingWing;
+    float pendingSeconds;
+    unsigned pendingFrames;
+    float cooldownSeconds;
+};
+
+void ResetHysteresis(ResidencyHysteresis *h) {
+    if (!h) return;
+    h->hasResident = false;
+    h->residentWing = CeMuseumTour::kWingCourtyard;
+    h->hasPending = false;
+    h->pendingWing = CeMuseumTour::kWingCourtyard;
+    h->pendingSeconds = 0.0f;
+    h->pendingFrames = 0u;
+    h->cooldownSeconds = 0.0f;
+}
+
+bool StepWingResidencyPolicy(ResidencyHysteresis *h, CeMuseumTour::Wing requested,
+                             float dtSeconds, bool paused) {
+    if (!h) return false;
+    const float dt = (dtSeconds > 0.0f) ? (dtSeconds > 0.25f ? 0.25f : dtSeconds) : 0.0f;
+    if (!h->hasResident) {
+        h->hasResident = true;
+        h->residentWing = requested;
+        h->hasPending = false;
+        h->pendingWing = requested;
+        h->pendingSeconds = 0.0f;
+        h->pendingFrames = 0u;
+        h->cooldownSeconds = 0.0f;
+        return true;
+    }
+    if (paused) return false;
+    if (h->cooldownSeconds > 0.0f) {
+        h->cooldownSeconds -= dt;
+        if (h->cooldownSeconds < 0.0f) h->cooldownSeconds = 0.0f;
+    }
+    if (requested == h->residentWing) {
+        h->hasPending = false;
+        h->pendingWing = requested;
+        h->pendingSeconds = 0.0f;
+        h->pendingFrames = 0u;
+        return false;
+    }
+    if (!h->hasPending || h->pendingWing != requested) {
+        h->hasPending = true;
+        h->pendingWing = requested;
+        h->pendingSeconds = dt;
+        h->pendingFrames = 1u;
+        return false;
+    }
+    h->pendingSeconds += dt;
+    ++h->pendingFrames;
+    if (h->cooldownSeconds > 0.0f) return false;
+    if (h->pendingSeconds < kWingSwitchDwellSeconds || h->pendingFrames < kWingSwitchDwellFrames)
+        return false;
+    h->residentWing = requested;
+    h->hasPending = false;
+    h->pendingSeconds = 0.0f;
+    h->pendingFrames = 0u;
+    h->cooldownSeconds = kWingSwitchCooldownSeconds;
+    return true;
+}
+
 struct LoadedGoodie {
     CMesh *mesh;
     CTEXTURE **textures;
@@ -39,7 +112,7 @@ struct LoadedGoodie {
 
 BankState gBank = {};
 LoadedGoodie gLoaded[kManifestCount] = {};
-bool gHasResidentWing = false;
+ResidencyHysteresis gHysteresis = {};
 
 bool FileReadable(const char *path) {
     if (!path || !*path) return false;
@@ -93,7 +166,7 @@ void FreeSlot(unsigned index) {
 
 void FreeAllSlots() {
     for (unsigned i = 0; i < kManifestCount; ++i) FreeSlot(i);
-    gHasResidentWing = false;
+    ResetHysteresis(&gHysteresis);
 }
 
 bool LoadSlot(unsigned index) {
@@ -194,24 +267,24 @@ bool LoadSlot(unsigned index) {
     return true;
 }
 
-void SyncWingResidency(CeMuseumTour::Wing wing) {
-    if (gHasResidentWing && gBank.residentWing == wing) return;
+void SyncWingResidency(CeMuseumTour::Wing wing, float dtSeconds, bool paused) {
+    if (!StepWingResidencyPolicy(&gHysteresis, wing, dtSeconds, paused)) return;
+    const CeMuseumTour::Wing targetWing = gHysteresis.residentWing;
     // Release any slot no longer needed before loading new ones so peak 32-bit RAM stays bounded.
     for (unsigned i = 0; i < kManifestCount; ++i) {
-        if (!ShouldBeResident(i, wing) && (gLoaded[i].mesh || gLoaded[i].textures || gLoaded[i].attempted))
+        if (!ShouldBeResident(i, targetWing) && (gLoaded[i].mesh || gLoaded[i].textures || gLoaded[i].attempted))
             FreeSlot(i);
     }
-    gBank.residentWing = wing;
-    gHasResidentWing = true;
+    gBank.residentWing = targetWing;
     unsigned loadedCount = 0;
     for (unsigned i = 0; i < kManifestCount; ++i) {
-        if (!ShouldBeResident(i, wing)) continue;
+        if (!ShouldBeResident(i, targetWing)) continue;
         if (loadedCount >= static_cast<unsigned>(kMaxResidentGoodies)) break;
         if (LoadSlot(i)) ++loadedCount;
     }
     PortSessionLog(PORT_SESSION_GAME, false,
                    "museum turntables: %s resident count %u",
-                   CeMuseumTour::Meta(wing).title, loadedCount);
+                   CeMuseumTour::Meta(targetWing).title, loadedCount);
 }
 
 struct StudVertex { float x, y, z; DWORD colour; };
@@ -260,9 +333,11 @@ void RuntimeUpdate(CeMuseumTour::Wing wing, float dtSeconds, bool paused,
                    float eyeX, float eyeY, float eyeZ,
                    float aimX, float aimY, float aimZ) {
     if (!gBank.initialized) Reset(&gBank);
-    SyncWingResidency(wing);
+    SyncWingResidency(wing, dtSeconds, paused);
     StepRotation(&gBank, dtSeconds, paused);
-    gBank.hoveredIndex = PickStud(eyeX, eyeY, eyeZ, aimX, aimY, aimZ, wing);
+    gBank.hoveredIndex = gHysteresis.hasResident
+        ? PickStud(eyeX, eyeY, eyeZ, aimX, aimY, aimZ, gBank.residentWing)
+        : -1;
 }
 
 bool RuntimeHandleFire(bool release, float value) {
@@ -313,7 +388,7 @@ bool RuntimeCue(float visitorX, float visitorY, float fwdX, float fwdY,
 }
 
 void RuntimeDraw(float floorZ) {
-    if (!gBank.initialized || !gHasResidentWing) return;
+    if (!gBank.initialized || !gHysteresis.hasResident) return;
     IDirect3DDevice9 *dev = LT.GetDevice();
     if (!dev) return;
 

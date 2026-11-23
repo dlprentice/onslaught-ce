@@ -1,3 +1,17 @@
+--- a/shadows.h
++++ b/shadows.h
+@@ -63,7 +63,11 @@
+ 	BOOL		BlobShadowsEnabled() { return mBlobShadows; }
+ #ifdef GCGAMUT_CPP	// the gamut's view (its inline budget)
+ 	// A shadow for the unit when it is nearer than the furthest request kept (out of line in the gamut, 00477b70).
++#ifdef CE_VERSION
++	void		RequestShadow(CUnit *unit, float dist) { if ((!gMirrorPass) && (mNumTextures > 0) && (mRequests[mNumTextures - 1].mDist > dist)) AddShadow(unit, dist); }
++#else
+ 	void		RequestShadow(CUnit *unit, float dist) { if ((!gMirrorPass) && (mRequests[mNumTextures - 1].mDist > dist)) AddShadow(unit, dist); }
++#endif
+ #endif
+ 
+ 	float			mBlobShadowFadeDist;		// +0x008 (cg_BlobShadowFadeDist; 009c7558): CRTTree::Init sets it by detail, the career saves it
 --- a/DXShadows.cpp
 +++ b/DXShadows.cpp
 @@ -27,6 +27,9 @@
@@ -20,11 +34,13 @@
  }
  
  //******************************************************************************************
-@@ -101,6 +107,47 @@
+@@ -101,6 +107,51 @@
  	else
  		mNumTextures = 16;
  
 +#ifdef CE_VERSION
++	if (mNumTextures > 32)
++		mNumTextures = 32;
 +	CeRenderTargetQualitySetHardwareCaps(LT.m_d3dCaps.MaxTextureWidth, LT.m_d3dCaps.MaxTextureHeight);
 +	CeDynamicShadowBeginFrame();
 +	const unsigned ceShadowAttempt = CeDynamicShadowTargetRes();
@@ -38,7 +54,6 @@
 +		HRESULT lastHr = S_OK;
 +		for (i = 0; i < mNumTextures; i++)
 +		{
-+#line 105
 +			mTextures[i] = new(MEMTYPE_TEXTURE) CUMTexture;
 +			HRESULT	hr = mTextures[i]->Init(mSizes[i], 0, TRUE);
 +			if (FAILED(hr))
@@ -60,15 +75,18 @@
 +		{
 +			SETUP_HISTORY.AddMessage("Shadow texture creation failed for %s", DXGetErrorString9(lastHr));
 +			CeDynamicShadowSetAllocatedRes(0u, ceShadowAttempt);
++			mNumTextures = 0;
++			mShadows = FALSE;
 +			break;
 +		}
 +		ceShadowRes = nextRes;
 +	}
++#line 96
 +#else
  	SINT	i;
  	for (i = 0; i < mNumTextures; i++)
  		mSizes[i] = 64;
-@@ -118,6 +165,7 @@
+@@ -118,6 +169,7 @@
  			break;
  		}
  	}
@@ -76,64 +94,76 @@
  
  	ResetShads();
  
-@@ -158,8 +206,71 @@
+@@ -158,8 +210,83 @@
  
  	SAFE_RELEASE(mDepthSurface);
  
 +#ifdef CE_VERSION
 +	CeRenderTargetQualitySetHardwareCaps(LT.m_d3dCaps.MaxTextureWidth, LT.m_d3dCaps.MaxTextureHeight);
-+	if (mNumTextures > 0 && mTextures[0])
++	if (mNumTextures > 0 && mNumTextures <= 32 && mTextures[0])
 +	{
 +		unsigned ceRes = (unsigned)(mSizes[0] > 0 ? mSizes[0] : 64);
 +		bool anyMissing = false;
 +		for (SINT i = 0; i < mNumTextures; i++)
-+			if (mTextures[i] && !mTextures[i]->mTexture) anyMissing = true;
-+		if (anyMissing && ceRes > 64u)
-+		{
-+			unsigned nextRes = CeDynamicShadowNextFallback(ceRes);
-+			while (nextRes >= 64u)
-+			{
-+				bool allOk = true;
-+				for (SINT i = 0; i < mNumTextures; i++)
-+				{
-+					if (!mTextures[i]) { allOk = false; break; }
-+					mSizes[i] = (SINT)nextRes;
-+					mTextures[i]->mSize = (int)nextRes;
-+					if (FAILED(mTextures[i]->RestoreDeviceObjects()) || !mTextures[i]->mTexture)
-+						allOk = false;
-+				}
-+				if (allOk)
-+				{
-+					ceRes = nextRes;
-+					CeDynamicShadowSetAllocatedRes(ceRes, CeDynamicShadowTargetRes());
-+					break;
-+				}
-+				nextRes = CeDynamicShadowNextFallback(nextRes);
-+			}
-+		}
-+		if (DXSHADOWS_INVERSE.mValue)
++			if (!mTextures[i] || !mTextures[i]->mTexture) anyMissing = true;
++		bool depthOk = !DXSHADOWS_INVERSE.mValue;
++		if (!anyMissing && DXSHADOWS_INVERSE.mValue)
 +		{
 +			HRESULT dhr = LT.m_pd3dDevice->CreateDepthStencilSurface(ceRes, ceRes, D3DFMT_D16, D3DMULTISAMPLE_NONE, 0, TRUE, &mDepthSurface, NULL);
-+			while (FAILED(dhr) && ceRes > 64u)
++			depthOk = SUCCEEDED(dhr) && mDepthSurface != NULL;
++		}
++		if (anyMissing || !depthOk)
++		{
++			if (!anyMissing)
 +			{
-+				const unsigned nextRes = CeDynamicShadowNextFallback(ceRes);
-+				if (!nextRes) break;
-+				ceRes = nextRes;
++				for (SINT i = 0; i < mNumTextures; i++)
++					if (mTextures[i]) mTextures[i]->InvalidateDeviceObjects();
++			}
++			unsigned tryRes = anyMissing ? ceRes : CeDynamicShadowNextFallback(ceRes);
++			bool restored = false;
++			while (tryRes >= 64u)
++			{
 +				bool allOk = true;
 +				for (SINT i = 0; i < mNumTextures; i++)
 +				{
 +					if (!mTextures[i]) { allOk = false; break; }
-+					mSizes[i] = (SINT)ceRes;
-+					mTextures[i]->mSize = (int)ceRes;
++					if (mTextures[i]->mTexture && mTextures[i]->mSize == (int)tryRes && mSizes[i] == (SINT)tryRes)
++						continue;
++					mTextures[i]->InvalidateDeviceObjects();
++					mSizes[i] = (SINT)tryRes;
++					mTextures[i]->mSize = (int)tryRes;
 +					if (FAILED(mTextures[i]->RestoreDeviceObjects()) || !mTextures[i]->mTexture)
++					{
++						allOk = false;
++						break;
++					}
++				}
++				if (allOk && DXSHADOWS_INVERSE.mValue)
++				{
++					SAFE_RELEASE(mDepthSurface);
++					if (FAILED(LT.m_pd3dDevice->CreateDepthStencilSurface(tryRes, tryRes, D3DFMT_D16, D3DMULTISAMPLE_NONE, 0, TRUE, &mDepthSurface, NULL)) || !mDepthSurface)
 +						allOk = false;
 +				}
 +				if (allOk)
 +				{
-+					dhr = LT.m_pd3dDevice->CreateDepthStencilSurface(ceRes, ceRes, D3DFMT_D16, D3DMULTISAMPLE_NONE, 0, TRUE, &mDepthSurface, NULL);
-+					if (SUCCEEDED(dhr))
-+						CeDynamicShadowSetAllocatedRes(ceRes, CeDynamicShadowTargetRes());
++					ceRes = tryRes;
++					CeDynamicShadowSetAllocatedRes(ceRes, CeDynamicShadowTargetRes());
++					restored = true;
++					break;
 +				}
++				SAFE_RELEASE(mDepthSurface);
++				for (SINT i = 0; i < mNumTextures; i++)
++					if (mTextures[i]) mTextures[i]->InvalidateDeviceObjects();
++				tryRes = CeDynamicShadowNextFallback(tryRes);
++			}
++			if (!restored)
++			{
++				SAFE_RELEASE(mDepthSurface);
++				for (SINT i = 0; i < mNumTextures; i++)
++					if (mTextures[i]) mTextures[i]->InvalidateDeviceObjects();
++				CeDynamicShadowSetAllocatedRes(0u, CeDynamicShadowTargetRes());
++				mShadows = FALSE;
++				mBlobShadows = TRUE;
 +			}
 +		}
 +	}
@@ -148,12 +178,36 @@
  
  	return S_OK;
  }
-@@ -454,6 +565,58 @@
+@@ -209,6 +336,10 @@
+ {
+ 	if (gMirrorPass)
+ 		return;
++#ifdef CE_VERSION
++	if (mNumTextures <= 0)
++		return;
++#endif
+ 
+ 	if (mShadows == TRUE)
+ 	{
+@@ -228,6 +359,10 @@
+ {
+ 	if (gMirrorPass)
+ 		return;
++#ifdef CE_VERSION
++	if (mNumTextures <= 0)
++		return;
++#endif
+ 
+ 	SINT	i;
+ 	for (i = 0; i < mNumTextures; i++)
+@@ -454,6 +589,70 @@
  		return;
  	if (!mShadows)
  		return;
 +#ifdef CE_VERSION
-+	if (mNumTextures > 0 && mTextures[0] && CeDynamicShadowNeedsRebuild())
++	if (mNumTextures <= 0 || mNumTextures > 32)
++		return;
++	if (mTextures[0] && CeDynamicShadowNeedsRebuild())
 +	{
 +		const unsigned attempt = CeDynamicShadowTargetRes();
 +		unsigned res = attempt;
@@ -161,6 +215,8 @@
 +		while (res >= 64u)
 +		{
 +			CUMTexture *nextTex[32] = {};
++			static_assert(sizeof(nextTex) / sizeof(nextTex[0]) >= 32, "nextTex must hold max CShadows pool");
++			static_assert(sizeof(mTextures) / sizeof(mTextures[0]) <= sizeof(nextTex) / sizeof(nextTex[0]), "nextTex must cover mTextures");
 +			IDirect3DSurface9 *nextDepth = NULL;
 +			bool ok = true;
 +			for (SINT k = 0; k < mNumTextures; k++)
@@ -203,11 +259,19 @@
 +		if (!swapped)
 +			CeDynamicShadowSetAllocatedRes(CeDynamicShadowActiveRes(), attempt);
 +	}
++	for (SINT k = 0; k < mNumTextures; k++)
++	{
++		if (!mTextures[k] || !mTextures[k]->mTexture)
++		{
++			mShadows = FALSE;
++			return;
++		}
++	}
 +#endif
  
  	FASTVB.Create();
  	CMeshRenderer::SetRenderMode((ERenderMode)4);
-@@ -600,6 +763,20 @@
+@@ -600,6 +799,20 @@
  									v[k].mU = 0;
  									v[k].mV = 0;
  								}
@@ -228,7 +292,7 @@
  								v[0].mPos = D3DXVECTOR4(0.f, 0.f, 0.f, 1.f);
  								v[1].mPos = D3DXVECTOR4(2.f, 2.f, 0.f, 1.f);
  								v[2].mPos = D3DXVECTOR4(64.f, 0.f, 0.f, 1.f);
-@@ -610,6 +787,7 @@
+@@ -610,6 +823,7 @@
  								v[7].mPos = D3DXVECTOR4(2.f, 62.f, 0.f, 1.f);
  								v[8].mPos = D3DXVECTOR4(0.f, 0.f, 0.f, 1.f);
  								v[9].mPos = D3DXVECTOR4(2.f, 2.f, 0.f, 1.f);
@@ -236,7 +300,7 @@
  								LT.D3D_SetTexture(0, NULL);
  								FASTVB.RenderStrip();
  							}
-@@ -631,6 +809,20 @@
+@@ -631,6 +845,20 @@
  									v[k].mU = 0;
  									v[k].mV = 0;
  								}
@@ -257,7 +321,7 @@
  								v[0].mPos = D3DXVECTOR4(0.f, 0.f, 0.f, 1.f);
  								v[1].mPos = D3DXVECTOR4(2.f, 2.f, 0.f, 1.f);
  								v[2].mPos = D3DXVECTOR4(64.f, 0.f, 0.f, 1.f);
-@@ -641,6 +833,7 @@
+@@ -641,6 +869,7 @@
  								v[7].mPos = D3DXVECTOR4(2.f, 62.f, 0.f, 1.f);
  								v[8].mPos = D3DXVECTOR4(0.f, 0.f, 0.f, 1.f);
  								v[9].mPos = D3DXVECTOR4(2.f, 2.f, 0.f, 1.f);
@@ -265,7 +329,30 @@
  								LT.D3D_SetTexture(0, NULL);
  								FASTVB.RenderStrip();
  							}
-@@ -786,6 +979,24 @@
+@@ -681,6 +910,10 @@
+ 		return;
+ 	if (!mShadows)
+ 		return;
++#ifdef CE_VERSION
++	if (mNumTextures <= 0 || mNumTextures > 32)
++		return;
++#endif
+ 
+ 	if ((!SHADOW_METHOD.GetMethod()) || (!SRT_ENABLE.mValue))
+ 	{
+@@ -768,7 +1001,11 @@
+ 	SShadowTexInfo	*t = mTexInfo;
+ 	for (SINT i = 0; i < mNumTextures; t++, i++)
+ 	{
++#ifdef CE_VERSION
++		if (!mTextures[i] || !mTextures[i]->mTexture)
++#else
+ 		if (!mTextures[i])
++#endif
+ 		{
+ 			SetSetupMessage(0xe7);
+ 			mShadows = FALSE;
+@@ -786,6 +1023,24 @@
  		gTextureMatrix._22 = -scale;
  		float	u = (radius - pos.X) * scale;
  		float	v = (-radius - pos.Y) * -scale;
@@ -290,7 +377,7 @@
  		gTextureMatrix._31 = u + 1.0f / 192;
  		gTextureMatrix._32 = v - 1.0f / 64;
  		LT.GetDevice()->SetTransform(D3DTS_TEXTURE0, &gTextureMatrix);
-@@ -798,6 +1009,7 @@
+@@ -798,6 +1053,7 @@
  		gTextureMatrix._31 = u - 1.0f / 64;
  		gTextureMatrix._32 = v - 1.0f / 192;
  		LT.GetDevice()->SetTransform(D3DTS_TEXTURE3, &gTextureMatrix);
@@ -298,7 +385,18 @@
  		LT.D3D_SetTexture(0, SHADOWS.mTextures[i]->mTexture);
  		LT.D3D_SetTexture(1, SHADOWS.mTextures[i]->mTexture);
  		LT.D3D_SetTexture(2, SHADOWS.mTextures[i]->mTexture);
-@@ -882,6 +1094,24 @@
+@@ -865,6 +1121,10 @@
+ 		return;
+ 	if (!mShowShadowMap)
+ 		return;
++#ifdef CE_VERSION
++	if (mNumTextures <= 0 || mNumTextures > 32)
++		return;
++#endif
+ 
+ 	LT.STS(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
+ 	LT.STS(1, D3DTSS_COLOROP, D3DTOP_ADD);
+@@ -882,6 +1142,24 @@
  	gTextureMatrix._12 = 0;
  	gTextureMatrix._11 = 1.0f;
  	gTextureMatrix._22 = 1.0f;
@@ -323,7 +421,7 @@
  	gTextureMatrix._31 = 1.0f / 192;
  	gTextureMatrix._32 = -1.0f / 64;
  	LT.GetDevice()->SetTransform(D3DTS_TEXTURE0, &gTextureMatrix);
-@@ -894,6 +1124,7 @@
+@@ -894,6 +1172,7 @@
  	gTextureMatrix._31 = -1.0f / 64;
  	gTextureMatrix._32 = -1.0f / 192;
  	LT.GetDevice()->SetTransform(D3DTS_TEXTURE3, &gTextureMatrix);
@@ -331,9 +429,21 @@
  
  	RENDERINFO.SetFogEnabled(false);
  	RENDERINFO.EnableLighting(false);
+@@ -910,7 +1189,11 @@
+ 
+ 	for (SINT i = 0; i < mNumTextures; i++)
+ 	{
++#ifdef CE_VERSION
++		if (!mTextures[i] || !mTextures[i]->mTexture)
++#else
+ 		if (!mTextures[i])
++#endif
+ 		{
+ 			SetSetupMessage(0xe7);
+ 			mShadows = FALSE;
 --- a/game.cpp
 +++ b/game.cpp
-@@ -35,6 +35,9 @@
+@@ -39,6 +39,9 @@
  #include	"System.h"
  #include	"ParticleManager.h"
  #include	"ParticleSet.h"
@@ -343,13 +453,13 @@
  #include	"FearGrid.h"
  #include	"player.h"
  #include	"Cutscene.h"
-@@ -1846,6 +1849,9 @@
- 		}
- 	}
+@@ -1872,6 +1875,9 @@
+ 		mRenderFrameLength = 1.f;
  
+ 	mLastRenderFrameTime = new_time;
 +#ifdef CE_VERSION
 +	CeDynamicShadowBeginFrame();
 +#endif
- 	if (mLastRenderFrameTime != -1.f)
- 		mRenderFrameLength = new_time - mLastRenderFrameTime;
- 	else
+ 
+ 	BOOL	again;
+ 	do

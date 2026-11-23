@@ -116,7 +116,8 @@ void			ce_hook_draw_hud(CPlayer *player, int viewpoint);
 void			ce_hook_draw_overlay();
 void			ce_hook_menu_rows(CeMenuEvent event, CeMenuPage *page);
 // save_gate: `career` is the live career at CE_SAVE_CAREER (dest holds its copy, `size` bytes) and NULL at
-// CE_SAVE_OPTIONS_FILE (dest is the whole file about to be written). Handlers run in table order and each sees the
+// CE_SAVE_OPTIONS_FILE (dest is the whole file about to be written). Built-in career snapshot handlers guard against
+// NULL pointers and undersized buffers (`size < (int)sizeof(CCareer)`). Handlers run in table order and each sees the
 // previous handler's output in `dest`. Incremental in-place edits compose freely; whole-copy replacements require
 // mutual exclusion. Today's three career filters (editor, bonus level, museum visit) each replace the whole copy, so
 // ce_modes.cpp makes CE_MODE_EDITOR, CE_MODE_BONUS_LEVEL and CE_MODE_MUSEUM_VISIT pairwise incompatible; calling two
@@ -131,7 +132,9 @@ void			ce_hook_audio_clock(CeHookAudioEvent event, unsigned bytes);
 // skips them) is a later change of the simulation, not part of this point.
 CCamera			*ce_hook_render_camera(int viewpoint, CCamera *camera, CPlayer *player);
 // hud_focus: the Battle Engine whose state the HUD shows for this player (defaults to player->GetBattleEngine()).
-// Wired in Hud.cpp CHud::RenderOverlayForViewpoint; returning `be` preserves exact retail behavior.
+// Wired in Hud.cpp CHud::RenderOverlayForViewpoint; returning `be` preserves exact retail behavior. A non-NULL engine
+// returned without an attached player (`GetPlayer() == NULL`) is rejected and falls back cleanly to incoming `be`
+// (or NULL if `be` itself has no player).
 CBattleEngine	*ce_hook_hud_focus(CPlayer *player, CBattleEngine *be);
 
 // spawner_trigger: FILTER before CSpawner::DoSpawn (monitor/factory wave) or CSpawnerThing::Unknown4e3370 (map actor).

@@ -130,9 +130,23 @@ int main(int argc,char** argv){
     Check(View().state==CE_INVITATION_REFUSED&&tokenOpens==0,"symlink-import-folder-refused");
     Reset();const auto privateMode=Package(root,"private-mode");chmod(privateMode.c_str(),0777);Begin(privateMode);
     Check(View().state==CE_INVITATION_REFUSED&&tokenOpens==0,"writable-invitation-folder-refused");
-    Reset();Check(CE_InvitationBeginImport(origin,CE_NET_HOST),"cancel-starts-picker");CE_InvitationCancel();
-    Check(!CE_InvitationBeginImport(origin,CE_NET_HOST),"at-most-one-outstanding-chooser");Complete(host,true);
-    Check(View().state==CE_INVITATION_CANCELLED&&tokenOpens==0&&selections==0,"stale-cancelled-callback-has-no-effect");
+    Reset();Check(CE_InvitationBeginImport(origin,CE_NET_HOST),"cancel-starts-picker");
+    Check(!CE_InvitationBeginImport(origin,CE_NET_HOST),"at-most-one-outstanding-chooser");
+    auto staleCb=callback;void* staleData=callbackData;callback=nullptr;callbackData=nullptr;
+    CE_InvitationCancel();
+    Check(View().state==CE_INVITATION_CANCELLED&&tokenOpens==0&&selections==0,"cancel-clears-state");
+    Check(CE_InvitationBeginImport(origin,CE_NET_HOST),"begin-import-succeeds-after-cancel");
+    // Late callback from cancelled picker must neither crash nor clobber the active replacement picker!
+    {const std::string p=host.string();const char* files[]={p.c_str(),nullptr};staleCb(staleData,files,0);}
+    Check(View().state==CE_INVITATION_CHOOSING&&tokenOpens==0&&selections==0,"stale-cancelled-callback-has-no-effect");
+    Complete(host,true);
+    Check(View().state==CE_INVITATION_PREVIEW_READY&&tokenOpens==0,"replacement-import-reaches-preview-after-cancel");
+    // Trailing ASCII whitespace in identity-token (e.g. editor-saved newline/CRLF/spaces) trims cleanly;
+    // whitespace-only tokens remain refused.
+    Reset();const auto paddedToken=Package(root,"padded-token");Write(paddedToken/"identity-token",std::string(token)+"  \r\n");Begin(paddedToken);
+    Check(View().state==CE_INVITATION_PREVIEW_READY&&CE_InvitationInstall(1000)==1&&View().state==CE_INVITATION_SELECTED&&tokenOpens==1&&selections==1,"trailing-whitespace-token-accepted");
+    Reset();const auto blankToken=Package(root,"blank-token");Write(blankToken/"identity-token","   \r\n");Begin(blankToken);
+    Check(View().state==CE_INVITATION_PREVIEW_READY&&!CE_InvitationInstall(1000)&&View().error==CE_INVITATION_ERROR_CAPABILITY&&selections==0,"whitespace-only-token-refused");
     Reset();Check(CE_InvitationBeginImport(origin,CE_NET_HOST),"picker-cancel-start");
     auto cb=callback;void* data=callbackData;callback=nullptr;callbackData=nullptr;const char* empty[]={nullptr};cb(data,empty,0);
     Check(View().state==CE_INVITATION_CANCELLED&&tokenOpens==0,"picker-cancel-has-no-file-read");

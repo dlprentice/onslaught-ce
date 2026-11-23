@@ -952,9 +952,15 @@ void LookShown(CUnit *unit, CGenericCamera *view)
 		const float uArr[3] = {upos.X, upos.Y, upos.Z};
 		const float focusX = gSpotter.hasShell ? gSpotter.shellPos[0] : (gSpotter.hasImpact ? gSpotter.impactPos[0] : upos.X);
 		const float focusY = gSpotter.hasShell ? gSpotter.shellPos[1] : (gSpotter.hasImpact ? gSpotter.impactPos[1] : upos.Y);
-		const float terrainZ = TerrainHeight(NULL, focusX, focusY);
+		const float waterZ = MAP.GetWaterLevel();
+		auto surfaceAt = [](void *ctx, float x, float y) -> float
+		{
+			const float wz = *static_cast<const float *>(ctx);
+			return CePlayUnitSurfaceAt(TerrainHeight, NULL, x, y, wz);
+		};
+		const float terrainZ = CePlayUnitSurfaceAt(TerrainHeight, NULL, focusX, focusY, waterZ);
 		float e[3], r[3], f[3], d[3];
-		if (CePlayUnitSpotterCameraPose(gSpotter, uArr, gLookYaw, terrainZ, e, r, f, d))
+		if (CePlayUnitSpotterCameraPose(gSpotter, uArr, gLookYaw, terrainZ, e, r, f, d, surfaceAt, const_cast<float *>(&waterZ)))
 		{
 			view->mPos = FVector(e[0], e[1], e[2]);
 			view->mOrientation = FMatrix(FVector(r[0], f[0], d[0]), FVector(r[1], f[1], d[1]), FVector(r[2], f[2], d[2]));
@@ -2734,7 +2740,8 @@ int FireAim(CUnit *u, const FVector &eye, const FVector &look, const CePlayUnitL
 	float hit[3] = {0.f, 0.f, 0.f}, shot[3] = {0.f, 0.f, 0.f};
 	int range = CE_PLAYUNIT_RANGE_NONE;
 	bool line = false;
-	const bool ground = CePlayUnitViewGround(e, l, law.viewReach, law.viewStep, TerrainHeight, NULL, hit);
+	const float waterZ = MAP.GetWaterLevel();
+	const bool ground = CePlayUnitViewGround(e, l, law.viewReach, law.viewStep, TerrainHeight, NULL, hit, waterZ);
 #ifdef CE_PLAYUNIT_TEST
 	gProbeReticle = FVector(hit[0], hit[1], hit[2]);
 	gProbeReticleGround = ground;
@@ -2745,8 +2752,8 @@ int FireAim(CUnit *u, const FVector &eye, const FVector &look, const CePlayUnitL
 	if (CePlayUnitFinite3(hit))
 	{
 		const FVector target(hit[0], hit[1], hit[2]);
-		range = CePlayUnitRange(at, hit, w->GetMinRange(target), w->GetMaxRange(target), shot);
-		line = CePlayUnitLineClear(muzzle, range == CE_PLAYUNIT_RANGE_TOO_FAR ? shot : hit, law.lineSamples, law.lineTolerance, TerrainHeight, NULL);
+		range = CePlayUnitRange(at, hit, w->GetMinRange(target), w->GetMaxRange(target), shot, waterZ);
+		line = CePlayUnitLineClear(muzzle, range == CE_PLAYUNIT_RANGE_TOO_FAR ? shot : hit, law.lineSamples, law.lineTolerance, TerrainHeight, NULL, waterZ);
 		if (range != CE_PLAYUNIT_RANGE_NONE)
 		{
 			*aim = FVector(shot[0], shot[1], shot[2]);
@@ -2790,12 +2797,26 @@ void FireTick(CUnit *u, bool held)
 		FVector aim;
 		bool haveAim;
 		gFireState = FireAim(u, eye, look, *gLaw, &aim, &haveAim);
-		// For artillery or ballistic turrets, allow firing along ballistic arc even when direct line-of-sight is arched over a ridge.
-		if (gDrivenClass == CE_PLAYUNIT_CLASS_ARTILLERY && gFireState == CE_PLAYUNIT_FIRE_BLOCKED)
+		// For artillery parabolic shots, check actual ballistic arc clearance over ridges instead of blindly overriding straight-line blocks.
+		if (gDrivenClass == CE_PLAYUNIT_CLASS_ARTILLERY && gFireState == CE_PLAYUNIT_FIRE_BLOCKED && haveAim)
 		{
 			CWeapon *bw = FireWeapon(u, false);
-			if (bw && bw->mMode)
-				gFireState = CePlayUnitFireStateOf(true, haveAim, CE_PLAYUNIT_RANGE_OK, true, bw->ReadyToFire() != FALSE, u->Unknown84() != FALSE, u->mUnknown168 != 0);
+			if (bw && bw->mMode && bw->mMode->mRound)
+			{
+				CRoundData *rd = bw->mMode->mRound;
+				FVector muzzlePos = u->GetPos() + FVector(0.f, 0.f, -(gLaw ? gLaw->muzzleLift : 2.f));
+				FMatrix muzzleOri = u->GetOrientation();
+				u->GetLaunchPosition(bw, 0, muzzlePos, muzzleOri, FALSE);
+				if (muzzlePos.X == 0.f && muzzlePos.Y == 0.f && muzzlePos.Z == 0.f)
+					muzzlePos = u->GetPos() + FVector(0.f, 0.f, -2.f);
+				const float mArr[3] = {muzzlePos.X, muzzlePos.Y, muzzlePos.Z};
+				const float tArr[3] = {aim.X, aim.Y, aim.Z};
+				const float speed = rd->mSpeed > 1.f ? rd->mSpeed : 60.f;
+				const float grav = rd->mGravity > 0.f ? rd->mGravity : 1.0f;
+				const float life = rd->mLifeSpan > 0.5f ? rd->mLifeSpan : 12.f;
+				if (CePlayUnitBallisticArcClearsRidge(mArr, tArr, speed, grav, life, MAP.GetWaterLevel(), TerrainHeight, NULL, -1.22f, 0.35f, false))
+					gFireState = CePlayUnitFireStateOf(true, haveAim, CE_PLAYUNIT_RANGE_OK, true, bw->ReadyToFire() != FALSE, u->Unknown84() != FALSE, u->mUnknown168 != 0);
+			}
 		}
 		if (held && (gDrivenClass == CE_PLAYUNIT_CLASS_TURRET || gDrivenClass == CE_PLAYUNIT_CLASS_AIRCRAFT) && haveAim)
 		{

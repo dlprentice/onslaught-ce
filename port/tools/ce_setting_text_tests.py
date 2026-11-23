@@ -245,12 +245,50 @@ def odd_files_are_refused(s):
     expect(rc == 1 and after == big and not left, "a file over a mebibyte is not a ce.ini and is refused")
 
 
+def utf8_bom_and_bounded_int_and_header_consistency(s):
+    # UTF-8 BOM on line 1 is stripped cleanly across all readers and the writer.
+    bom_ini = b"\xef\xbb\xbfmusic_playtype=single\r\nhud_anchor=1\nwide_mode_w=1280\n"
+    expect(s.run("is", "music_playtype", "single", ini=bom_ini)[0] == 0, "CE_SettingIs reads line 1 after UTF-8 BOM")
+    rc, out, *_ = s.run("text", "music_playtype", "64", ini=bom_ini)
+    expect(rc == 0 and out == "single", "CE_SettingGetText reads line 1 after UTF-8 BOM: %r" % out)
+    expect(s.run("bool", "hud_anchor", "0", ini=bom_ini)[1] == "1", "CE_SettingGetBool reads BOM-prefixed ce.ini")
+    expect(s.run("get", "wide_mode_w", "640", ini=bom_ini)[1] == "1280", "CE_SettingGet reads BOM-prefixed ce.ini")
+    rc, _, _, after, left, _ = s.run("set", "music_playtype", "random", ini=bom_ini)
+    expect(rc == 0 and after == b"music_playtype=random\nhud_anchor=1\nwide_mode_w=1280\n" and not left,
+           "writing over BOM-prefixed line 1 replaces in place without BOM or duplicates: %r" % after)
+    # Bounded single-line integer parsing: empty key=\n1234 never bleeds across lines, and huge values clamp cleanly.
+    bleed = b"net_port=\n1234\nwide_mode_w=   \r\n9999\nhuge=99999999999999999999\nneg=-99999999999999999999\nneg2=-42\n"
+    expect(s.run("get", "net_port", "777", ini=bleed)[1] == "0", "CE_SettingGet must not bleed across newline")
+    expect(s.run("tryget", "net_port", "777", ini=bleed)[1] == "1 0", "CE_TrySettingGet must not bleed across newline")
+    expect(s.run("get", "wide_mode_w", "777", ini=bleed)[1] == "0", "CE_SettingGet must not bleed across CRLF")
+    expect(s.run("tryget", "wide_mode_w", "777", ini=bleed)[1] == "1 0", "CE_TrySettingGet must not bleed across CRLF")
+    expect(s.run("get", "huge", "0", ini=bleed)[1] == "2147483647", "CE_SettingGet clamps huge positive overflow")
+    expect(s.run("get", "neg", "0", ini=bleed)[1] == "-2147483648", "CE_SettingGet clamps huge negative overflow")
+    expect(s.run("get", "neg2", "0", ini=bleed)[1] == "-42", "CE_SettingGet reads negative integer")
+    # PortCeFactoryExercise aligns with ce_ini_is_header: column-0 [Experimental] matches, indented does not.
+    expect(s.run("factory", ini=b"\xef\xbb\xbf[Experimental]\nfactory_exercise=1\n")[1] == "1",
+           "column-0 [Experimental] (even after UTF-8 BOM) enables factory_exercise")
+    expect(s.run("factory", ini=b"  [Experimental]\nfactory_exercise=1\n")[1] == "0",
+           "indented [Experimental] does not enable factory_exercise")
+    # Explicit refusal reporting across TUs (CE_SettingLastRefusal): read-only file reports CE_INI_REFUSED_READONLY (1).
+    ro_user = s.user()
+    ro_user.mkdir()
+    (ro_user / "ce.ini").write_bytes(b"music_playtype=linear\n")
+    (ro_user / "ce.ini").chmod(0o444)
+    try:
+        rc, out, *_ = s.run("set-refusal", "music_playtype", "random", user=ro_user)
+    finally:
+        (ro_user / "ce.ini").chmod(0o600)
+    expect(rc == 1 and out == "0 1", "read-only refusal is reported via CE_SettingLastRefusal: rc=%d out=%r" % (rc, out))
+
+
 SCENARIOS = (adds_to_a_missing_file, replaces_the_line_and_keeps_every_other_byte, adds_a_new_line_at_the_end,
              duplicates_collapse_to_one_line, replaces_spaced_key_in_place_and_reads_spaced_lines,
              a_longer_key_is_not_the_line, the_same_value_again_changes_nothing,
              what_is_written_reads_back_through_the_readers, a_value_that_is_not_one_line_is_refused,
              a_key_that_is_not_one_word_is_refused, null_arguments_are_refused,
-             a_failed_write_says_so_and_leaves_the_file, odd_files_are_refused)
+             a_failed_write_says_so_and_leaves_the_file, odd_files_are_refused,
+             utf8_bom_and_bounded_int_and_header_consistency)
 
 
 def failures(binary, root):

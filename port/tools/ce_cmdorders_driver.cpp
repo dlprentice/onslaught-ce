@@ -151,6 +151,27 @@ static void rules()
 	expect(!CeCmdMatchRule(true, true, 2, -1, 851, true), "a network game is never a Solo Skirmish match");
 	expect(!CeCmdMatchRule(false, false, 2, -1, 851, true), "a non-multiplayer level is never a Solo Skirmish match");
 	expect(!CeCmdMatchRule(false, true, 1, -1, 851, true), "Solo Skirmish requires a 2-player multiplayer level");
+	expect(!CeCmdMatchRule(false, true, 2, 851, 851, false, true), "a consumed CLI -level no longer activates a Commander match");
+	expect(CeCmdMatchRule(false, true, 2, 851, 851, true, true), "Solo Skirmish still works after CLI -level is consumed");
+
+	// CLI -level latch: does not stick across non-matching levels or after match end
+	CeCmdCliLevelLatch latch;
+	CeCmdCliLevelReset(latch);
+	expect(!CeCmdCliLevelCheck(latch, 850, 850), "CLI -level 850 active on initial matching level 850");
+	expect(CeCmdCliLevelCheck(latch, 850, 851), "CLI -level 850 consumed once a different level loads");
+	expect(CeCmdCliLevelCheck(latch, 850, 850), "CLI -level 850 stays consumed if returning to 850 later");
+	CeCmdCliLevelReset(latch);
+	expect(!CeCmdCliLevelCheck(latch, 850, 850), "fresh latch admits initial -level 850");
+	CeCmdCliLevelConsume(latch);
+	expect(CeCmdCliLevelCheck(latch, 850, 850), "explicit level end consumes CLI -level 850");
+
+	// Allegiance fallback on P1 Battle Engine death: preserves last valid side for current level, resets on level change
+	int cachedSide = -1, cachedLevel = -1;
+	expect(CeCmdResolveAllegiance(cachedSide, cachedLevel, 851, true, 0) == 0, "live P1 caches allegiance 0");
+	expect(CeCmdResolveAllegiance(cachedSide, cachedLevel, 851, false, -1) == 0, "dead P1 keeps cached allegiance 0 instead of -1");
+	expect(CeCmdResolveAllegiance(cachedSide, cachedLevel, 852, false, -1) == -1, "new level resets cached allegiance");
+	expect(CeCmdResolveAllegiance(cachedSide, cachedLevel, 852, true, 1) == 1 &&
+	       CeCmdResolveAllegiance(cachedSide, cachedLevel, 852, false, -1) == 1, "Muspell allegiance cached across P1 death");
 }
 
 // The match's alerts: one at a time, the gravest first, each mark of the engine's life once, "under attack" at most once in the quiet time, which is
@@ -233,7 +254,7 @@ static void fallback()
 	CeCmdFallbackRally(100.f, 100.f, 100.f, 400.f, 24.f, &x, &y);
 	expect(x > 99.99f && x < 100.01f && y > 123.99f && y < 124.01f, "the rally stands 24 units out towards the battle");
 	CeCmdFallbackRally(100.f, 100.f, 110.f, 100.f, 24.f, &x, &y);
-	expect(x > 109.99f && x < 110.01f, "never past the point it faces");
+	expect(x > 104.99f && x < 105.01f, "standoff clamps to at most half the distance on small maps");
 	CeCmdFallbackRally(100.f, 100.f, 100.f, 100.f, 24.f, &x, &y);
 	expect(x == 100.f && y == 100.f, "with nothing to face, the place itself");
 }

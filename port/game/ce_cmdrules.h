@@ -29,12 +29,75 @@ inline bool CeCmdHoldsOnArrival(int verb, bool arrived) { return arrived && (ver
 // has no place.
 inline bool CeCmdSpreads(int verb, int squads) { return squads > 1 && CeCmdMarches(verb); }
 
-// A Commander / one-screen match (ce_cmdmatch.h): a versus/skirmish level (the game reports a multiplayer level with its two players) that one person
-// plays alone — either started straight from the command line's -level, or via Solo Skirmish vs AI (levels 850..899); never a network game.
-// A versus level chosen in the game's own Multiplayer menu without soloSkirmish has no -level (cliLevel is -1) and is two people's splitscreen game.
-inline bool CeCmdMatchRule(bool network, bool multiplayer, int players, int cliLevel, int level, bool soloSkirmish = false)
+// Tracks whether the command line's -level has been consumed so a CLI launch (e.g. -level 850)
+// never sticks across later non-matching levels or subsequent Multiplayer menu matches.
+struct CeCmdCliLevelLatch
 {
-	const bool cliMatch = cliLevel >= 0 && cliLevel == level;
+	bool seenAny;
+	bool consumed;
+	int activeLevel;
+};
+
+inline void CeCmdCliLevelReset(CeCmdCliLevelLatch &l)
+{
+	l.seenAny = false;
+	l.consumed = false;
+	l.activeLevel = -1;
+}
+
+inline void CeCmdCliLevelConsume(CeCmdCliLevelLatch &l)
+{
+	l.consumed = true;
+}
+
+inline bool CeCmdCliLevelCheck(CeCmdCliLevelLatch &l, int cliLevel, int currentLevel)
+{
+	if (cliLevel < 0)
+	{
+		l.consumed = true;
+		return true;
+	}
+	if (l.consumed) return true;
+	if (currentLevel >= 0)
+	{
+		if (!l.seenAny)
+		{
+			l.seenAny = true;
+			l.activeLevel = currentLevel;
+			if (currentLevel != cliLevel) l.consumed = true;
+		}
+		else if (currentLevel != l.activeLevel)
+		{
+			l.consumed = true;
+		}
+	}
+	return l.consumed;
+}
+
+// Resolves player 1's allegiance for the current level, caching the last known valid side (0 or 1)
+// so a dead/respawning Battle Engine (Engine() == NULL) does not drop side to -1 and trigger a false
+// CE_ALERT_BUILDING_LOST or collapse the friendly base rectangle.
+inline int CeCmdResolveAllegiance(int &cachedSide, int &cachedLevel, int currentLevel, bool hasEngine, int engineSide)
+{
+	if (currentLevel != cachedLevel)
+	{
+		cachedLevel = currentLevel;
+		cachedSide = -1;
+	}
+	if (hasEngine)
+	{
+		if (engineSide == 0 || engineSide == 1) cachedSide = engineSide;
+		return engineSide;
+	}
+	return (cachedSide == 0 || cachedSide == 1) ? cachedSide : -1;
+}
+
+// A Commander / one-screen match (ce_cmdmatch.h): a versus/skirmish level (the game reports a multiplayer level with its two players) that one person
+// plays alone — either started straight from the command line's -level (while not yet consumed), or via Solo Skirmish vs AI (levels 850..899); never a network game.
+// A versus level chosen in the game's own Multiplayer menu without soloSkirmish has no -level (cliLevel is -1) and is two people's splitscreen game.
+inline bool CeCmdMatchRule(bool network, bool multiplayer, int players, int cliLevel, int level, bool soloSkirmish = false, bool cliConsumed = false)
+{
+	const bool cliMatch = !cliConsumed && cliLevel >= 0 && cliLevel == level;
 	const bool soloMatch = soloSkirmish && level >= 850 && level <= 899;
 	return !network && multiplayer && players == 2 && (cliMatch || soloMatch);
 }
@@ -120,7 +183,9 @@ inline int CeCmdFallbackPick(const CeCmdPlace *places, int n, float sx, float sy
 inline void CeCmdFallbackRally(float px, float py, float towardX, float towardY, float standoff, float *rx, float *ry)
 {
 	const float dx = towardX - px, dy = towardY - py, d = sqrtf(dx * dx + dy * dy);
-	const float away = d > 1e-3f && standoff > 0.f ? (standoff < d ? standoff / d : 1.f) : 0.f;		// never past the point it faces
+	const float maxStandoff = d * 0.5f;
+	const float clamped = standoff < maxStandoff ? standoff : maxStandoff;
+	const float away = d > 1e-3f && clamped > 0.f ? (clamped / d) : 0.f;		// never past half the distance to the threat
 	*rx = px + dx * away;
 	*ry = py + dy * away;
 }

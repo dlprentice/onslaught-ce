@@ -98,7 +98,7 @@ void CeCmdHudDrawBar(const CeCmdHudDrawOps &draw, const CeCmdHudLayout &layout,
 	const bool isForseti = allegiance != 1;
 	const float u = layout.scale;
 	const float t = std::floor(u) > 1.f ? std::floor(u) : 1.f;
-	const CeCmdHudHit hover = CeCmdHudHitTest(layout, mouseX, mouseY);
+	const CeCmdHudHit hover = CeCmdHudHitTest(layout, mouseX, mouseY, placardCount);
 
 	// ---- Outer BEA-native curved crescent dock ----
 	const CeCmdHudRect &bar = layout.barRect;
@@ -175,15 +175,20 @@ void CeCmdHudDrawBar(const CeCmdHudDrawOps &draw, const CeCmdHudLayout &layout,
 			const CeCmdHudRect &r = layout.placardRects[s];
 			const bool hovered = hover.kind == CE_HUD_HIT_PLACARD && hover.index == idx;
 
-			const std::uint32_t fill = pl.selected ? WithAlpha(p.placardSelected, 0xe4) :
+			const std::uint32_t fill = pl.selected ? WithAlpha(p.placardSelected, 0xee) :
 			                           (hovered ? WithAlpha(p.placardHover, 0xd8) : WithAlpha(p.placardFill, 0xbc));
-			const std::uint32_t stripe = pl.selected ? p.goldAccent :
+			const std::uint32_t stripe = pl.selected ? p.placardSelectedBorder :
 			                             (hovered ? p.cyanAccent :
 			                              (pl.kind == CE_PLACARD_STRUCTURE ? p.placardStructStripe :
 			                               (pl.commandable ? p.cyanAccent : p.placardDimStripe)));
 
 			const float plCap = std::floor(10.f * u);
 			DrawInnerGlassPill(draw, r.x, r.y, r.w, r.h, plCap, t, fill, stripe, 1.f, pl.selected || hovered);
+			if (pl.selected)
+			{
+				const float selT = (2.f * u) > 2.f ? std::floor(2.f * u) : 2.f;
+				SafeOutline(draw, r.x, r.y, r.w, r.h, selT, p.placardSelectedBorder);
+			}
 
 			const float stripeH = (2.f * u) > 2.f ? std::floor(2.f * u) : 2.f;
 			const float padX = std::floor(8.f * u);
@@ -262,7 +267,8 @@ void CeCmdHudDrawBar(const CeCmdHudDrawOps &draw, const CeCmdHudLayout &layout,
 	if (card.hasSelection && card.hasArmour)
 	{
 		char hpBuf[16];
-		const int hpPct = int(card.armourRatio * 100.f + 0.5f);
+		const float safeRatio = std::isfinite(card.armourRatio) ? (card.armourRatio < 0.f ? 0.f : (card.armourRatio > 1.f ? 1.f : card.armourRatio)) : 0.f;
+		const int hpPct = int(safeRatio * 100.f + 0.5f);
 		std::snprintf(hpBuf, sizeof(hpBuf), "%d%%", hpPct);
 		const float hpW = draw.textWidth(hpBuf, u * 0.68f);
 		const float miniW = std::floor(40.f * u);

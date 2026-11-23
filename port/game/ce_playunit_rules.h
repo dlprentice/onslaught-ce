@@ -171,9 +171,11 @@ inline float CePlayUnitWrap(float a)
 {
 	if (!isfinite(a)) return 0.f;
 	const float pi = 3.14159265358979f;
-	while (a > pi) a -= 2.f * pi;
-	while (a <= -pi) a += 2.f * pi;
-	return a;
+	float r = remainderf(a, 2.f * pi);
+	if (!isfinite(r)) return 0.f;
+	if (r <= -pi) r += 2.f * pi;
+	if (r > pi) r -= 2.f * pi;
+	return r;
 }
 
 // The heading the player asks for: the one asked for so far, turned by the steering (turn -1 left to 1 right) for dt seconds at rate radians a second, and never more than maxLead
@@ -339,18 +341,27 @@ typedef float (*CePlayUnitHeightFn)(void *context, float x, float y);
 
 inline bool CePlayUnitFinite3(const float *v) { return isfinite(v[0]) && isfinite(v[1]) && isfinite(v[2]); }
 
-// Where the ray from eye along look (a unit vector) first reaches the ground: searched in steps of step up to maxDist, then narrowed by halving. False when the eye is under the
-// ground, the ray stays above it as far as it is followed (the sky, or ground beyond the reach), or a number is not finite. hit[2] is the ground's height at hit.
-inline bool CePlayUnitViewGround(const float *eye, const float *look, float maxDist, float step, CePlayUnitHeightFn height, void *context, float *hit)
+// Effective surface height (z, +Z down) at (x, y): the higher of ground and water when waterZ is finite.
+inline float CePlayUnitSurfaceAt(CePlayUnitHeightFn height, void *context, float x, float y, float waterZ)
+{
+	const float ground = height(context, x, y);
+	if (!isfinite(ground)) return ground;
+	return (isfinite(waterZ) && waterZ < ground) ? waterZ : ground;
+}
+
+// Where the ray from eye along look (a unit vector) first reaches the ground (or water surface when waterZ is finite): searched in steps of step up to maxDist, then narrowed by
+// halving. False when the eye is under the surface, the ray stays above it as far as it is followed (the sky, or ground beyond the reach), or a number is not finite. hit[2] is the
+// surface height at hit.
+inline bool CePlayUnitViewGround(const float *eye, const float *look, float maxDist, float step, CePlayUnitHeightFn height, void *context, float *hit, float waterZ = NAN)
 {
 	if (!height || !eye || !look || !hit || !CePlayUnitFinite3(eye) || !CePlayUnitFinite3(look) || !(maxDist > 0.f) || !(step > 0.f)) return false;
-	const float start = height(context, eye[0], eye[1]) - eye[2];
+	const float start = CePlayUnitSurfaceAt(height, context, eye[0], eye[1], waterZ) - eye[2];
 	if (!isfinite(start) || start <= 0.f) return false;
 	float before = 0.f;
 	for (float t = step;; t += step)
 	{
 		if (t > maxDist) t = maxDist;
-		const float above = height(context, eye[0] + look[0] * t, eye[1] + look[1] * t) - (eye[2] + look[2] * t);
+		const float above = CePlayUnitSurfaceAt(height, context, eye[0] + look[0] * t, eye[1] + look[1] * t, waterZ) - (eye[2] + look[2] * t);
 		if (!isfinite(above)) return false;
 		if (above <= 0.f)
 		{
@@ -358,11 +369,11 @@ inline bool CePlayUnitViewGround(const float *eye, const float *look, float maxD
 			for (int i = 0; i < 12; ++i)
 			{
 				const float mid = 0.5f * (lo + hi);
-				if (height(context, eye[0] + look[0] * mid, eye[1] + look[1] * mid) - (eye[2] + look[2] * mid) > 0.f) lo = mid; else hi = mid;
+				if (CePlayUnitSurfaceAt(height, context, eye[0] + look[0] * mid, eye[1] + look[1] * mid, waterZ) - (eye[2] + look[2] * mid) > 0.f) lo = mid; else hi = mid;
 			}
 			hit[0] = eye[0] + look[0] * hi;
 			hit[1] = eye[1] + look[1] * hi;
-			hit[2] = height(context, hit[0], hit[1]);
+			hit[2] = CePlayUnitSurfaceAt(height, context, hit[0], hit[1], waterZ);
 			return isfinite(hit[2]);
 		}
 		if (t >= maxDist) return false;
@@ -379,8 +390,8 @@ enum CePlayUnitRangeKind
 };
 
 // Whether the weapon reaches the point: from is where it shoots, minRange and maxRange the weapon's own. Beyond them, clamped is the point on the same line at the range that was
-// passed, which is where the gun is turned; in range it is the point itself.
-inline int CePlayUnitRange(const float *from, const float *to, float minRange, float maxRange, float *clamped)
+// passed, which is where the gun is turned; in range it is the point itself. When waterZ is finite, clamped never dips below the water surface (+Z down).
+inline int CePlayUnitRange(const float *from, const float *to, float minRange, float maxRange, float *clamped, float waterZ = NAN)
 {
 	if (!from || !to || !clamped || !CePlayUnitFinite3(from) || !CePlayUnitFinite3(to) || !isfinite(minRange) || !isfinite(maxRange) || !(maxRange > 0.f) || minRange > maxRange)
 		return CE_PLAYUNIT_RANGE_NONE;
@@ -392,27 +403,30 @@ inline int CePlayUnitRange(const float *from, const float *to, float minRange, f
 	{
 		const float k = maxRange / d;
 		clamped[0] = from[0] + dx * k; clamped[1] = from[1] + dy * k; clamped[2] = from[2] + dz * k;
+		if (isfinite(waterZ) && clamped[2] > waterZ) clamped[2] = waterZ;
 		return CE_PLAYUNIT_RANGE_TOO_FAR;
 	}
 	if (d < minRange)
 	{
 		const float k = minRange / d;
 		clamped[0] = from[0] + dx * k; clamped[1] = from[1] + dy * k; clamped[2] = from[2] + dz * k;
+		if (isfinite(waterZ) && clamped[2] > waterZ) clamped[2] = waterZ;
 		return CE_PLAYUNIT_RANGE_TOO_NEAR;
 	}
+	if (isfinite(waterZ) && clamped[2] > waterZ) clamped[2] = waterZ;
 	return CE_PLAYUNIT_RANGE_OK;
 }
 
-// Whether the ground leaves the line from to open: at samples points between them (neither end) the ground may not rise more than tolerance into the line. This is the terrain
-// alone; a unit or a building in the way is not tested here (the shell meets it).
-inline bool CePlayUnitLineClear(const float *from, const float *to, int samples, float tolerance, CePlayUnitHeightFn height, void *context)
+// Whether the ground (and water surface when waterZ is finite) leaves the line from to open: at samples points between them (neither end) the surface may not rise more than
+// tolerance into the line. This is the terrain/water alone; a unit or a building in the way is not tested here (the shell meets it).
+inline bool CePlayUnitLineClear(const float *from, const float *to, int samples, float tolerance, CePlayUnitHeightFn height, void *context, float waterZ = NAN)
 {
 	if (!height || !from || !to || !CePlayUnitFinite3(from) || !CePlayUnitFinite3(to) || samples < 0 || !(tolerance >= 0.f)) return false;
 	for (int i = 1; i <= samples; ++i)
 	{
 		const float t = float(i) / float(samples + 1);
 		const float x = from[0] + (to[0] - from[0]) * t, y = from[1] + (to[1] - from[1]) * t, z = from[2] + (to[2] - from[2]) * t;
-		const float ground = height(context, x, y);
+		const float ground = CePlayUnitSurfaceAt(height, context, x, y, waterZ);
 		if (!isfinite(ground) || ground + tolerance < z) return false;
 	}
 	return true;
@@ -520,17 +534,17 @@ inline const char *CePlayUnitRefusalSentence(int r, int family)
 	case CE_PLAYUNIT_REFUSE_ENEMY: return "That unit is not on your side.";
 	case CE_PLAYUNIT_REFUSE_DYING: return "That unit is going down.";
 	case CE_PLAYUNIT_REFUSE_MISSION: return "The mission needs that unit.";
-	case CE_PLAYUNIT_REFUSE_DEPLOYS: return "Artillery cannot be taken.";
+	case CE_PLAYUNIT_REFUSE_DEPLOYS: return "This artillery unit cannot be taken.";
 	case CE_PLAYUNIT_REFUSE_SQUAD: return "That unit cannot leave its squad.";
 	case CE_PLAYUNIT_REFUSE_UNARMED: return "That unit has no weapon.";
 	case CE_PLAYUNIT_REFUSE_KIND:
 		switch (family)
 		{
 		case CE_PLAYUNIT_FAMILY_INFANTRY: return "This soldier cannot be taken.";
-		case CE_PLAYUNIT_FAMILY_AIRCRAFT: return "Aircraft cannot be taken.";
-		case CE_PLAYUNIT_FAMILY_NAVAL: return "Boats cannot be taken.";
-		case CE_PLAYUNIT_FAMILY_WALKER: return "Walkers cannot be taken.";
-		case CE_PLAYUNIT_FAMILY_EMPLACEMENT: return "Gun turrets cannot be taken.";
+		case CE_PLAYUNIT_FAMILY_AIRCRAFT: return "This aircraft cannot be taken.";
+		case CE_PLAYUNIT_FAMILY_NAVAL: return "This vessel cannot be taken.";
+		case CE_PLAYUNIT_FAMILY_WALKER: return "This walker cannot be taken.";
+		case CE_PLAYUNIT_FAMILY_EMPLACEMENT: return "This turret cannot be taken.";
 		case CE_PLAYUNIT_FAMILY_GROUND_VEHICLE: return "That vehicle cannot be taken.";
 		default: return "That unit cannot be taken.";
 		}

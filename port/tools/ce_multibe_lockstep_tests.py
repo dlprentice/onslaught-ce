@@ -22,7 +22,7 @@ Verifies:
        advance cleanly WITHOUT deadlock, pre-resume submissions from `slot` are refused, stale entries >= resumeTick
        are scrubbed, and starting at `resumeTick` `slot` is required again;
      - host disconnect (slot 0) trips HostLost; dropping below 2 active peers returns CE_NPEER_ERR_TOO_FEW_PEERS.
-  6. ASan + UBSan clean execution (-fsanitize=address,undefined -Wall -Wextra -Werror) + 13 causal mutants.
+  6. ASan + UBSan clean execution (-fsanitize=address,undefined -Wall -Wextra -Werror) + 19 causal mutants.
 """
 import shutil
 import subprocess
@@ -36,6 +36,8 @@ RING_HEADER = PORT / "network/npeer_ring.h"
 SCRATCH = ROOT / "local-data/port/ce-multibe-lockstep-tests"
 
 DRIVER = r"""
+// Regression check: src/game.h defines MAX_PLAYERS as a macro before including network headers.
+#define MAX_PLAYERS 4
 #include "npeer_ring.h"
 #include <cstdio>
 #include <cstring>
@@ -208,8 +210,73 @@ static void TestPerPeerStateHashAndWindowValidation() {
         Check(rep.tick == tick, "desync report names exact tick");
         Check(rep.referenceSlot == 0, "reference slot is host 0");
         Check(rep.divergingSlot == badSlot, "desync report names exact diverging slot");
+        Check(rep.divergingMask == (uint8_t)(1u << badSlot), "divergingMask marks exact diverging slot");
         Check(rep.expectedHash == goodHash, "expected hash matches host");
         Check(rep.actualHash == badHash, "actual hash matches diverging peer");
+    }
+
+    // Majority voting: in a 3-peer session where HOST slot 0 diverges, slots 1 & 2 outvote slot 0!
+    {
+        CeNPeerLockstepRing<4, 64> maj;
+        Check(maj.Init(3, 0, 0, 20) == CE_NPEER_OK, "init 3p majority vote test");
+        Check(maj.SubmitHash(0, 20, 0xBAD00000ULL) == CE_NPEER_OK, "host diverging hash");
+        Check(maj.SubmitHash(1, 20, 0xAAAAAAAAULL) == CE_NPEER_OK, "guest 1 consensus hash");
+        Check(maj.SubmitHash(2, 20, 0xAAAAAAAAULL) == CE_NPEER_OK, "guest 2 consensus hash");
+        CeNPeerDesyncReport rep = {};
+        Check(maj.CheckHashes(20, &rep) == CE_NPEER_HASH_DESYNC, "majority vote detects host divergence");
+        Check(rep.referenceSlot == 1, "majority consensus reference is slot 1");
+        Check(rep.divergingSlot == 0, "majority attributes divergence to host slot 0");
+        Check(rep.divergingMask == 0x01u, "divergingMask identifies only host slot 0");
+        Check(rep.expectedHash == 0xAAAAAAAAULL && rep.actualHash == 0xBAD00000ULL, "majority hashes accurate");
+    }
+
+    // Plurality voting with multiple diverging slots: divergingMask reports ALL mismatching slots!
+    {
+        CeNPeerLockstepRing<4, 64> multi;
+        Check(multi.Init(4, 0, 0, 20) == CE_NPEER_OK, "init 4p multi-diverging test");
+        Check(multi.SubmitHash(0, 40, 0x11111111ULL) == CE_NPEER_OK, "slot 0 consensus");
+        Check(multi.SubmitHash(1, 40, 0x11111111ULL) == CE_NPEER_OK, "slot 1 consensus");
+        Check(multi.SubmitHash(2, 40, 0x22222222ULL) == CE_NPEER_OK, "slot 2 diverges");
+        Check(multi.SubmitHash(3, 40, 0x33333333ULL) == CE_NPEER_OK, "slot 3 diverges differently");
+        CeNPeerDesyncReport rep = {};
+        Check(multi.CheckHashes(40, &rep) == CE_NPEER_HASH_DESYNC, "plurality detects multi-slot divergence");
+        Check(rep.referenceSlot == 0 && rep.divergingSlot == 2, "plurality reference=0 first diverging=2");
+        Check(rep.divergingMask == 0x0Cu, "divergingMask reports BOTH slot 2 and slot 3");
+    }
+
+    // Hash-overdue timeout detector: detects missing peer hash once lag reaches maxLagTicks
+    {
+        CeNPeerLockstepRing<4, 64> ov;
+        Check(ov.Init(4, 0, 0, 20) == CE_NPEER_OK, "init hash-overdue test");
+        CeNPeerInputPayload out[4] = {};
+        auto AdvanceTo = [&](uint32_t targetTick) {
+            while (ov.CurrentTick() < targetTick) {
+                const uint32_t t = ov.CurrentTick();
+                for (uint8_t s = 0; s < 4; ++s)
+                    Check(ov.SubmitInput(s, t, MakeInput(t, s)) == CE_NPEER_OK, "ov submit");
+                Check(ov.ConsumeTick(out) == CE_NPEER_OK, "ov consume");
+            }
+        };
+        AdvanceTo(60);
+        for (uint8_t s = 0; s < 4; ++s) {
+            Check(ov.SubmitHash(s, 0, 0xAA00ULL) == CE_NPEER_OK, "ov hash tick 0");
+            Check(ov.SubmitHash(s, 20, 0xAA20ULL) == CE_NPEER_OK, "ov hash tick 20");
+        }
+        Check(ov.CheckHashes(0) == CE_NPEER_HASH_MATCH, "ov tick 0 verified");
+        Check(ov.CheckHashes(20) == CE_NPEER_HASH_MATCH, "ov tick 20 verified");
+        // Tick 40: slot 2 fails to submit its hash!
+        Check(ov.SubmitHash(0, 40, 0xAA40ULL) == CE_NPEER_OK, "ov hash 40 s0");
+        Check(ov.SubmitHash(1, 40, 0xAA40ULL) == CE_NPEER_OK, "ov hash 40 s1");
+        Check(ov.SubmitHash(3, 40, 0xAA40ULL) == CE_NPEER_OK, "ov hash 40 s3");
+        CeNPeerHashOverdueReport rep = {};
+        Check(!ov.CheckHashOverdue(40, &rep), "tick 40 not yet overdue at tick 60 (lag 20 < 40)");
+        AdvanceTo(80);
+        Check(ov.CheckHashOverdue(40, &rep), "tick 40 is overdue at tick 80 (lag 40 >= 40)");
+        Check(rep.tick == 40u && rep.expectedMask == 0x0Fu && rep.presentMask == 0x0Bu && rep.missingMask == 0x04u,
+              "overdue report names tick 40 and exact missing slot 2");
+        Check(ov.SubmitHash(2, 40, 0xAA40ULL) == CE_NPEER_OK, "late slot 2 submits tick 40");
+        Check(ov.CheckHashes(40) == CE_NPEER_HASH_MATCH, "tick 40 verifies");
+        Check(!ov.CheckHashOverdue(40, &rep), "no longer overdue once verified");
     }
 
     // Stale hash from 1 full ring behind (tick 20 arriving at mCurrentTick = 1300) MUST NOT clobber tick 1300!
@@ -246,17 +313,15 @@ static void TestPerPeerStateHashAndWindowValidation() {
 }
 
 static void TestDisconnectAndFutureResumeRebind() {
+    // 1. Immediate disconnect at mCurrentTick=0 unblocks tick 0 immediately; future RebindPeer(3, 4) advances ticks 1..3 without deadlock.
     CeNPeerLockstepRing<4, 64> r;
     Check(r.Init(4, 0, 3, 20) == CE_NPEER_OK, "init disconnect/rebind test (delay=3)");
     for (uint8_t s = 0; s < 3; ++s)
         Check(r.SubmitInput(s, 0, MakeInput(0, s)) == CE_NPEER_OK, "submit 0..2");
     Check(!r.CanAdvance(), "blocked while slot 3 missing");
 
-    // Pre-submit tick 4 for slot 3 before disconnecting at atTick=5 so RebindPeer(3, 4) uniquely scrubs tick 4!
-    Check(r.SubmitInput(3, 4, MakeInput(4, 3)) == CE_NPEER_OK, "slot 3 pre-submit tick 4");
-
-    // Disconnect guest slot 3 -> tick 0 unblocks immediately!
-    Check(r.DisconnectPeer(3, 5) == CE_NPEER_OK, "disconnect slot 3");
+    // Disconnect guest slot 3 at atTick=0 -> tick 0 unblocks immediately!
+    Check(r.DisconnectPeer(3, 0) == CE_NPEER_OK, "disconnect slot 3 at tick 0");
     Check(!r.HostLost(), "guest disconnect does not set HostLost");
     Check(r.ActiveMask() == 0x07u && r.DisconnectedMask() == 0x08u, "masks updated after slot 3 disconnect");
     Check(r.SubmitInput(3, 0, MakeInput(0, 3)) == CE_NPEER_ERR_INACTIVE_SLOT, "disconnected slot rejected");
@@ -290,29 +355,173 @@ static void TestDisconnectAndFutureResumeRebind() {
         Check(cmask == 0x07u, "pre-resume consumed mask is 0x07");
     }
 
-    // Now at tick 4 == resumeTick: pending flag cleared, slot 3 IS required, and pre-disconnect tick 4 input was scrubbed!
+    // Now at tick 4 == resumeTick: pending flag cleared, slot 3 IS required
     Check(r.CurrentTick() == 4u && r.PendingRebindMask() == 0u, "reached resumeTick=4, pending rebind retired");
     for (uint8_t s = 0; s < 3; ++s)
         Check(r.SubmitInput(s, 4, MakeInput(4, s)) == CE_NPEER_OK, "submit tick 4 for 0..2");
-    Check(!r.CanAdvance(), "tick 4 waits for fresh rebound slot 3 input (stale input was scrubbed)");
+    Check(!r.CanAdvance(), "tick 4 waits for fresh rebound slot 3 input");
     Check(r.SubmitInput(3, 4, MakeInput(4, 3)) == CE_NPEER_OK, "rebound slot 3 submits fresh tick 4");
     Check(r.CanAdvance(), "tick 4 ready after rebound slot 3 submits");
     uint8_t mask4 = 0;
     Check(r.ConsumeTick(out, &mask4) == CE_NPEER_OK, "consume tick 4");
     Check(mask4 == 0x0Fu, "tick 4 consumed mask includes all 4 peers");
 
-    // Dropping down to 1 active peer reports CE_NPEER_ERR_TOO_FEW_PEERS
+    // 2. Scheduled disconnect honors mDisconnectTick in ActiveMaskAt(tick), AND RebindPeer scrubs pre-existing stale tick 4 input!
+    {
+        CeNPeerLockstepRing<4, 64> sched;
+        Check(sched.Init(4, 0, 3, 20) == CE_NPEER_OK, "init scheduled disconnect test");
+        Check(sched.SubmitInput(3, 4, MakeInput(4, 3)) == CE_NPEER_OK, "slot 3 pre-submit tick 4");
+        Check(sched.DisconnectPeer(3, 5) == CE_NPEER_OK, "schedule slot 3 disconnect at tick 5");
+        Check(sched.ActiveMaskAt(0) == 0x0Fu && sched.ActiveMaskAt(4) == 0x0Fu, "ActiveMaskAt includes slot 3 for ticks < mDisconnectTick(5)");
+        Check(sched.ActiveMaskAt(5) == 0x07u && sched.ActiveMaskAt(6) == 0x07u, "ActiveMaskAt excludes slot 3 for ticks >= mDisconnectTick(5)");
+        Check(sched.SubmitInput(3, 5, MakeInput(5, 3)) == CE_NPEER_ERR_INACTIVE_SLOT, "slot 3 refused at >= mDisconnectTick(5)");
+        // Advance tick 0 (with all 4 peers since 0 < 5)
+        for (uint8_t s = 0; s < 4; ++s)
+            Check(sched.SubmitInput(s, 0, MakeInput(0, s)) == CE_NPEER_OK, "sched tick 0 all 4 peers");
+        uint8_t m0 = 0;
+        Check(sched.ConsumeTick(out, &m0) == CE_NPEER_OK && m0 == 0x0Fu, "sched tick 0 consumes all 4 peers");
+        // Rebind slot 3 at tick 4 MUST scrub pre-existing tick 4 input!
+        Check(sched.RebindPeer(3, 4) == CE_NPEER_OK, "sched rebind at tick 4");
+        for (uint32_t t = 1; t < 4; ++t) {
+            for (uint8_t s = 0; s < 3; ++s)
+                Check(sched.SubmitInput(s, t, MakeInput(t, s)) == CE_NPEER_OK, "sched pre-resume submit");
+            Check(sched.ConsumeTick(out) == CE_NPEER_OK, "sched pre-resume consume");
+        }
+        for (uint8_t s = 0; s < 3; ++s)
+            Check(sched.SubmitInput(s, 4, MakeInput(4, s)) == CE_NPEER_OK, "sched tick 4 0..2");
+        Check(!sched.CanAdvance(), "RebindPeer(3, 4) uniquely scrubbed pre-existing tick 4 input");
+    }
+
+    // 3. Authoritative host bundle activeMask: Host disconnects slot 3 mid-stream at tick 5 while Guest still has 0x0F locally!
+    {
+        CeNPeerLockstepRing<4, 64> host, guest;
+        Check(host.Init(4, 0, 0, 20) == CE_NPEER_OK && guest.Init(4, 1, 0, 20) == CE_NPEER_OK, "init mid-stream disconnect pair");
+        for (uint32_t t = 0; t < 5; ++t) {
+            for (uint8_t s = 0; s < 4; ++s)
+                Check(host.SubmitInput(s, t, MakeInput(t, s)) == CE_NPEER_OK, "pair host submit 0..4");
+            uint8_t wire[128] = {}; size_t wlen = 0;
+            Check(host.BuildHostBundle(t, wire, sizeof(wire), &wlen) == CE_NPEER_OK, "pair bundle 0..4");
+            Check(guest.ApplyHostBundle(wire, wlen) == CE_NPEER_OK, "pair guest apply 0..4");
+            uint8_t hm = 0, gm = 0;
+            CeNPeerInputPayload ho[4] = {}, go[4] = {};
+            Check(host.ConsumeTick(ho, &hm) == CE_NPEER_OK && guest.ConsumeTick(go, &gm) == CE_NPEER_OK, "pair consume 0..4");
+            Check(hm == 0x0Fu && gm == 0x0Fu, "ticks 0..4 consume 0x0F on both");
+        }
+        // Host disconnects slot 3 at tick 5; Guest has NOT locally disconnected slot 3 yet!
+        Check(host.DisconnectPeer(3, 5) == CE_NPEER_OK, "host disconnects slot 3 at tick 5");
+        for (uint8_t s = 0; s < 3; ++s)
+            Check(host.SubmitInput(s, 5, MakeInput(5, s)) == CE_NPEER_OK, "host tick 5 active 0..2");
+        uint8_t wire5[128] = {}; size_t wlen5 = 0;
+        Check(host.BuildHostBundle(5, wire5, sizeof(wire5), &wlen5) == CE_NPEER_OK, "host builds 3-peer bundle for tick 5");
+        Check(wire5[5] == 0x07u, "host bundle mask is 0x07");
+        Check(guest.ActiveMaskAt(5) == 0x0Fu, "guest local mask is still 0x0F before bundle");
+        Check(guest.ApplyHostBundle(wire5, wlen5) == CE_NPEER_OK, "guest accepts authoritative host mask 0x07 without MALFORMED stall");
+        Check(guest.IsTickReady(5), "guest tick 5 ready under authoritative host mask");
+        // Conflicting host bundle for same tick with different activeMask must be rejected with CONFLICT
+        CeNPeerLockstepRing<4, 64> altHost;
+        Check(altHost.Init(4, 0, 0, 20) == CE_NPEER_OK, "altHost init");
+        for (uint32_t t = 0; t < 5; ++t) {
+            for (uint8_t s = 0; s < 4; ++s) altHost.SubmitInput(s, t, MakeInput(t, s));
+            altHost.ConsumeTick(out);
+        }
+        for (uint8_t s = 0; s < 4; ++s) altHost.SubmitInput(s, 5, MakeInput(5, s));
+        uint8_t wire5All[128] = {}; size_t wlen5All = 0;
+        Check(altHost.BuildHostBundle(5, wire5All, sizeof(wire5All), &wlen5All) == CE_NPEER_OK, "altHost 4-peer bundle");
+        Check(guest.ApplyHostBundle(wire5All, wlen5All) == CE_NPEER_ERR_CONFLICT, "conflicting host bundle activeMask rejected");
+        uint8_t hm5 = 0, gm5 = 0;
+        CeNPeerInputPayload ho5[4] = {}, go5[4] = {};
+        Check(host.ConsumeTick(ho5, &hm5) == CE_NPEER_OK && guest.ConsumeTick(go5, &gm5) == CE_NPEER_OK, "tick 5 consumes cleanly on both");
+        Check(hm5 == 0x07u && gm5 == 0x07u, "host and guest consume identical mask 0x07 at tick 5");
+        for (uint8_t s = 0; s < 3; ++s)
+            Check(ho5[s] == go5[s], "tick 5 active peer inputs match identically");
+    }
+
+    // 4. Atomic DisconnectPeer: dropping below 2 active peers returns TOO_FEW_PEERS WITHOUT mutating masks or ring!
     Check(r.DisconnectPeer(3, 5) == CE_NPEER_OK, "disconnect 3 (3 left)");
     Check(r.DisconnectPeer(2, 5) == CE_NPEER_OK, "disconnect 2 (2 left)");
-    Check(r.DisconnectPeer(1, 5) == CE_NPEER_ERR_TOO_FEW_PEERS, "disconnect 1 (<2 left)");
+    Check(r.SubmitInput(1, 5, MakeInput(5, 1)) == CE_NPEER_OK, "slot 1 submits tick 5 before rejected disconnect");
+    Check(r.DisconnectPeer(1, 5) == CE_NPEER_ERR_TOO_FEW_PEERS, "disconnect 1 (<2 left) refused");
+    Check(r.ActiveMask() == 0x03u && (r.DisconnectedMask() & 0x02u) == 0u, "atomic TOO_FEW_PEERS leaves masks unchanged");
+    Check((r.ReadyMaskForTick(5) & 0x02u) != 0u, "atomic TOO_FEW_PEERS leaves ring inputs unscrubbed");
 
-    // Disconnecting host (slot 0) sets HostLost and refuses advance/submissions
+    // 5. Disconnecting host (slot 0) sets HostLost and refuses advance/submissions
     CeNPeerLockstepRing<4, 64> h;
     Check(h.Init(3, 1, 0, 20) == CE_NPEER_OK, "init host-loss test");
     Check(h.DisconnectPeer(0, 0) == CE_NPEER_ERR_HOST_LOST, "disconnect host returns HOST_LOST");
     Check(h.HostLost(), "HostLost flagged on slot 0 disconnect");
     Check(!h.CanAdvance(), "cannot advance after host disconnect");
     Check(h.SubmitInput(1, 0, MakeInput(0, 1)) == CE_NPEER_ERR_HOST_LOST, "submit returns HOST_LOST");
+
+    // 6. Host ConsumeTick snapshots expectedMask on aligned hash checkpoints across disconnect + rebind:
+    // 6a. Disconnect at 15, consume tick 20 (mask 0x03), rebind at 30, advance to 40 (retiring mPendingRebindMask):
+    //     late hashes from slots 0 & 1 verify cleanly without false PENDING or false CheckHashOverdue.
+    {
+        CeNPeerLockstepRing<4, 64> hostA;
+        Check(hostA.Init(3, 0, 0, 20) == CE_NPEER_OK, "init hostA hash snapshot test");
+        CeNPeerInputPayload aOut[4] = {};
+        auto StepHostA = [&](uint32_t targetTick) {
+            while (hostA.CurrentTick() < targetTick) {
+                const uint32_t t = hostA.CurrentTick();
+                const uint8_t m = hostA.ActiveMaskAt(t);
+                for (uint8_t s = 0; s < 3; ++s) {
+                    if ((m & (1u << s)) != 0u)
+                        Check(hostA.SubmitInput(s, t, MakeInput(t, s)) == CE_NPEER_OK, "hostA submit");
+                }
+                uint8_t cm = 0;
+                Check(hostA.ConsumeTick(aOut, &cm) == CE_NPEER_OK && cm == m, "hostA consume");
+            }
+        };
+        StepHostA(15);
+        for (uint8_t s = 0; s < 3; ++s)
+            Check(hostA.SubmitHash(s, 0, 0xAA00ULL) == CE_NPEER_OK, "hostA hash tick 0");
+        Check(hostA.CheckHashes(0) == CE_NPEER_HASH_MATCH, "hostA tick 0 verified");
+
+        Check(hostA.DisconnectPeer(2, 15) == CE_NPEER_OK, "hostA disconnect slot 2 at tick 15");
+        StepHostA(26);
+        Check(hostA.RebindPeer(2, 30) == CE_NPEER_OK, "hostA rebind slot 2 at tick 30");
+        StepHostA(40);
+        Check(hostA.PendingRebindMask() == 0u, "hostA pending rebind retired by tick 40");
+        Check(hostA.ActiveMaskAt(20) == 0x07u, "hostA ActiveMaskAt(20) reverted to 0x07 after rebind retired");
+
+        // Late hashes for tick 20 arrive from active slots 0 & 1 only (slot 2 was absent at tick 20)
+        Check(hostA.SubmitHash(0, 20, 0x2020ULL) == CE_NPEER_OK, "hostA late hash slot 0 tick 20");
+        Check(hostA.SubmitHash(1, 20, 0x2020ULL) == CE_NPEER_OK, "hostA late hash slot 1 tick 20");
+        Check(hostA.SubmitHash(2, 20, 0x2020ULL) == CE_NPEER_ERR_INACTIVE_SLOT, "hostA rejects absent slot 2 hash for tick 20");
+        Check(hostA.CheckHashes(20) == CE_NPEER_HASH_MATCH, "hostA tick 20 verifies with snapshotted mask 0x03");
+        CeNPeerHashOverdueReport ovRep = {};
+        Check(!hostA.CheckHashOverdue(20, &ovRep), "hostA tick 20 not falsely reported overdue");
+    }
+
+    // 6b. Consume tick 20 with all 3 peers (0x07), disconnect slot 2 at 25, rebind slot 2 at 30 (at tick 26):
+    //     slot 2's valid in-flight hash for tick 20 MUST be accepted (NOT rejected with INACTIVE_SLOT).
+    {
+        CeNPeerLockstepRing<4, 64> hostB;
+        Check(hostB.Init(3, 0, 0, 20) == CE_NPEER_OK, "init hostB in-flight hash snapshot test");
+        CeNPeerInputPayload bOut[4] = {};
+        auto StepHostB = [&](uint32_t targetTick) {
+            while (hostB.CurrentTick() < targetTick) {
+                const uint32_t t = hostB.CurrentTick();
+                const uint8_t m = hostB.ActiveMaskAt(t);
+                for (uint8_t s = 0; s < 3; ++s) {
+                    if ((m & (1u << s)) != 0u)
+                        Check(hostB.SubmitInput(s, t, MakeInput(t, s)) == CE_NPEER_OK, "hostB submit");
+                }
+                uint8_t cm = 0;
+                Check(hostB.ConsumeTick(bOut, &cm) == CE_NPEER_OK && cm == m, "hostB consume");
+            }
+        };
+        StepHostB(25);
+        Check(hostB.DisconnectPeer(2, 25) == CE_NPEER_OK, "hostB disconnect slot 2 at tick 25");
+        StepHostB(26);
+        Check(hostB.RebindPeer(2, 30) == CE_NPEER_OK, "hostB rebind slot 2 at tick 30");
+        Check(hostB.ActiveMaskAt(20) == 0x03u, "hostB ActiveMaskAt(20) stripped slot 2 due to pending rebind");
+
+        Check(hostB.SubmitHash(0, 20, 0xBB20ULL) == CE_NPEER_OK, "hostB hash slot 0 tick 20");
+        Check(hostB.SubmitHash(1, 20, 0xBB20ULL) == CE_NPEER_OK, "hostB hash slot 1 tick 20");
+        Check(hostB.CheckHashes(20) == CE_NPEER_HASH_PENDING, "hostB tick 20 still waits for slot 2");
+        Check(hostB.SubmitHash(2, 20, 0xBB20ULL) == CE_NPEER_OK, "hostB accepts valid in-flight slot 2 hash for tick 20");
+        Check(hostB.CheckHashes(20) == CE_NPEER_HASH_MATCH, "hostB tick 20 verifies with all 3 peers");
+    }
 }
 
 int main() {
@@ -378,8 +587,32 @@ class NPeerLockstepRingTests(unittest.TestCase):
                 "return (frame.readyMask & 0x3u) == 0x3u;",
             ),
             "hash check ignores peers 2..3": (
-                "for (uint8_t s = (uint8_t)(refSlot + 1u); s < mPlayerCount; s++)",
-                "for (uint8_t s = (uint8_t)(refSlot + 1u); s < 2u; s++)",
+                "if (hf.hashes[s] != expected)\n\t\t\t{\n\t\t\t\tif (!anyDiverged)",
+                "if (s < 2u && hf.hashes[s] != expected)\n\t\t\t{\n\t\t\t\tif (!anyDiverged)",
+            ),
+            "hash check blindly assumes slot 0 truth": (
+                "if (votes > bestVotes)\n\t\t\t{\n\t\t\t\tbestVotes = votes;\n\t\t\t\trefSlot = s;\n\t\t\t}",
+                "if (bestVotes == 0u)\n\t\t\t{\n\t\t\t\tbestVotes = votes;\n\t\t\t\trefSlot = s;\n\t\t\t}",
+            ),
+            "ActiveMaskAt ignores mDisconnectTick": (
+                "if ((mDisconnectedMask & bit) != 0u && (uint32_t)(tick - mDisconnectTick[s]) >= 0x80000000u)\n\t\t\t\t\tmask |= bit;",
+                "if (false)\n\t\t\t\t\tmask |= bit;",
+            ),
+            "ConsumeTick ignores authoritative host activeMask": (
+                "const uint8_t reqMask = frame.hasHostMask ? frame.activeMask : ActiveMaskAt(mCurrentTick);",
+                "const uint8_t reqMask = ActiveMaskAt(mCurrentTick);",
+            ),
+            "ConsumeTick only snapshots hash expectedMask for guest bundles": (
+                "if ((mCurrentTick % mHashEvery) == 0u)",
+                "if (frame.hasHostMask && (mCurrentTick % mHashEvery) == 0u)",
+            ),
+            "DisconnectPeer mutates before checking TOO_FEW_PEERS": (
+                "const uint8_t nextActiveMask = (uint8_t)(mActiveMask & ~bit);\n\t\tif (ActivePeerCount(nextActiveMask) < 2u)\n\t\t\treturn CE_NPEER_ERR_TOO_FEW_PEERS;",
+                "const uint8_t nextActiveMask = (uint8_t)(mActiveMask & ~bit);\n\t\tmActiveMask = nextActiveMask;\n\t\tif (ActivePeerCount(nextActiveMask) < 2u)\n\t\t\treturn CE_NPEER_ERR_TOO_FEW_PEERS;",
+            ),
+            "CheckHashOverdue never triggers": (
+                "if (missing != 0u)\n\t\t\t{",
+                "if (false)\n\t\t\t{",
             ),
             "hash alignment check bypassed": (
                 "if ((tick % mHashEvery) != 0u)\n\t\t\treturn CE_NPEER_ERR_INVALID_ARG;",

@@ -115,6 +115,20 @@ static void CheckResponsiveLayouts()
 	Require(hpLast.kind == CE_HUD_HIT_PLACARD && hpLast.index == p2.visibleStart,
 	        "paged placard hit returns global index");
 
+	// Stale layout bounds: passing placardCount prevents out-of-bounds placard hits
+	{
+		CeCmdHudLayout stale = CeCmdHudComputeLayout(1280.f, 720.f, 1.5f, 720.f, 4, 0);
+		const CeCmdHudRect &slot3 = stale.placardRects[3];
+		const CeCmdHudHit hStale = CeCmdHudHitTest(stale, slot3.x + 4.f, slot3.y + 4.f, 2);
+		Require(hStale.kind == CE_HUD_HIT_BAR_PADDING, "stale layout placard beyond placardCount never hits OOB");
+		const CeCmdHudRect &slot1 = stale.placardRects[1];
+		const CeCmdHudHit hValid = CeCmdHudHitTest(stale, slot1.x + 4.f, slot1.y + 4.f, 2);
+		Require(hValid.kind == CE_HUD_HIT_PLACARD && hValid.index == 1, "in-bounds placard still hits with placardCount");
+		stale.visibleCount = kCeHudMaxVisiblePlacards + 10;
+		const CeCmdHudHit hClamp = CeCmdHudHitTest(stale, slot1.x + 4.f, slot1.y + 4.f, 4);
+		Require(hClamp.kind == CE_HUD_HIT_PLACARD && hClamp.index == 1, "corrupted visibleCount safely clamped to kCeHudMaxVisiblePlacards");
+	}
+
 	// Invalid viewport gracefully returns invalid layout
 	const CeCmdHudLayout bad = CeCmdHudComputeLayout(0.f, 0.f, 1.f, 0.f, 3, 0);
 	Require(!bad.valid && CeCmdHudHitTest(bad, 10.f, 10.f).kind == CE_HUD_HIT_NONE, "zero viewport rejected");
@@ -156,6 +170,17 @@ static void CheckTextAndArmour()
 	        ((muspell.textDisabled >> 16) & 0xffu) >= 0x80u, "Muspell disabled button text keeps legible contrast");
 	Require((pal.textDisabled & 0xffu) >= 0x80u && ((pal.textDisabled >> 8) & 0xffu) >= 0x80u &&
 	        ((pal.textDisabled >> 16) & 0xffu) >= 0x80u, "disabled button text keeps legible contrast");
+	// Selected placard highlight must be unmistakably distinct from structure stripe on BOTH Forseti and Muspell
+	auto RgbL1 = [](std::uint32_t a, std::uint32_t b) -> int {
+		const int dr = int((a >> 16) & 0xffu) - int((b >> 16) & 0xffu);
+		const int dg = int((a >> 8) & 0xffu) - int((b >> 8) & 0xffu);
+		const int db = int(a & 0xffu) - int(b & 0xffu);
+		return (dr < 0 ? -dr : dr) + (dg < 0 ? -dg : dg) + (db < 0 ? -db : db);
+	};
+	Require(RgbL1(forseti.placardSelectedBorder, forseti.placardStructStripe) >= 180,
+	        "Forseti selected border has unmistakable contrast against structure stripe");
+	Require(RgbL1(muspell.placardSelectedBorder, muspell.placardStructStripe) >= 180,
+	        "Muspell selected border has unmistakable contrast against structure stripe");
 	Require(std::fabs(CeCmdHudArmourRatio(60.f, 100.f, 1, 1) - 0.60f) < 1e-4f, "exact 60 percent ratio");
 	Require(CeCmdHudArmourRatio(-5.f, 100.f, 1, 1) == 0.f, "negative life clamps to 0");
 	Require(CeCmdHudArmourRatio(250.f, 100.f, 1, 1) == 1.f, "excess life clamps to 1");

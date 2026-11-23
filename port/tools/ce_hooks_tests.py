@@ -287,7 +287,13 @@ int main() {
     ce_hook_boot(); ce_hook_exit(CE_EXIT_SHELL); ce_hook_exit(CE_EXIT_ATEXIT); ce_hook_level_begin(100); ce_hook_level_end(100, 0);
     ce_hook_tick_pre(); ce_hook_tick_post(); CeHookCommand command = {1, 2, 3, 0, 0, 0}; ce_hook_input_actions(nullptr, 0); ce_hook_draw_world(nullptr, 0); ce_hook_draw_hud(nullptr, 0);
     ce_hook_draw_overlay(); CeMenuPage page = {CE_MENU_PAUSE_LIST, -1, nullptr, nullptr, nullptr, -1}; ce_hook_menu_rows(CE_MENU_BUILD, &page);
-    char buffer[8] = {1, 2, 3, 4, 5, 6, 7, 8}; ce_hook_save_gate(CE_SAVE_CAREER, nullptr, buffer, 8);
+    char buffer[8] = {1, 2, 3, 4, 5, 6, 7, 8};
+    CCareer *fakeCareer = reinterpret_cast<CCareer *>(buffer);
+    ce_hook_save_gate(CE_SAVE_CAREER, fakeCareer, buffer, 8);
+    ce_hook_save_gate(CE_SAVE_CAREER, nullptr, buffer, 8);
+    ce_hook_save_gate(CE_SAVE_CAREER, fakeCareer, nullptr, 8);
+    ce_hook_save_gate(CE_SAVE_CAREER, fakeCareer, buffer, 0);
+    ce_hook_save_gate(CE_SAVE_CAREER, fakeCareer, buffer, -4);
     ce_hook_save_gate(CE_SAVE_OPTIONS_FILE, nullptr, buffer, 8);
     ce_hook_audio_clock(CE_AUDIO_REFILL, 4096);
     ce_hook_unit_spawn(nullptr, nullptr);
@@ -900,6 +906,144 @@ int main() {
             self.assertEqual((run.returncode, run.stdout.strip()), (0, "new-points-ok"))
         finally:
             shutil.rmtree(base, ignore_errors=True)
+
+
+class GuardHardeningTests(unittest.TestCase):
+    """Runtime + mutant proof for save_gate career bounds checks, hud_focus null-player fallback, and docs parity."""
+
+    DRIVER = r'''
+#include <cstdio>
+#include <cstring>
+#include <string>
+
+class CPlayer { public: int mNum; };
+class CCareer { public: unsigned char bytes[256]; };
+class CBattleEngine {
+public:
+    CPlayer *mOwner;
+    CPlayer *GetPlayer() { return mOwner; }
+};
+
+#include "ce_hooks.cpp"
+
+static bool gLayer = true;
+bool PortCeLayer() { return gLayer; }
+
+static std::string gSaveLog;
+static CBattleEngine *gFocusReturn = nullptr;
+
+void PortCeGamepadBeginCycle() {}
+void PortCePaletteClose() {}
+void PortCeConsoleLevelEnd() {}
+void PortCePhotoLevelEnd() {}
+void PortCeCmdLevelEnd() {}
+bool PortCePhotoKey(unsigned, bool) { return false; }
+bool PortCePaletteSuppressDown(unsigned) { return false; }
+bool PortCePaletteOpen(unsigned, bool) { return false; }
+bool PortCeCmdKey(unsigned, bool) { return false; }
+void PortCeEditorRender() {}
+extern "C" void PortCeEditorFilterSave(CCareer *, void *) { gSaveLog += "editor;"; }
+void PortCeBonusFilterSave(CCareer *, void *) { gSaveLog += "bonus;"; }
+extern "C" void PortCeMuseumVisitFilterSave(CCareer *, void *) { gSaveLog += "museum;"; }
+CCamera *PortCeCmdRenderCamera(CCamera *c, CPlayer *) { return c; }
+CCamera *PortCePlayUnitRenderCamera(CCamera *c, CPlayer *) { return c; }
+extern "C" CBattleEngine *PortCeMultiBeHudFocus(CBattleEngine *, CPlayer *) { return gFocusReturn; }
+
+int main() {
+    static_assert(CeHookMinCareerSize() == (int)sizeof(CCareer), "save_gate sees complete sizeof(CCareer)");
+    static_assert(CeHookHasGetPlayer<CBattleEngine>(0), "hud_focus sees CBattleEngine::GetPlayer()");
+
+    CCareer career{};
+    char dest[sizeof(CCareer) + 16]{};
+
+    // 1. save_gate rejects NULL career, NULL dest, non-career targets, and undersized buffers (< sizeof(CCareer)).
+    ce_hook_save_gate(CE_SAVE_CAREER, nullptr, dest, (int)sizeof(CCareer));
+    ce_hook_save_gate(CE_SAVE_CAREER, &career, nullptr, (int)sizeof(CCareer));
+    ce_hook_save_gate(CE_SAVE_CAREER, &career, dest, 0);
+    ce_hook_save_gate(CE_SAVE_CAREER, &career, dest, -1);
+    ce_hook_save_gate(CE_SAVE_CAREER, &career, dest, (int)sizeof(CCareer) - 1);
+    ce_hook_save_gate(CE_SAVE_OPTIONS_FILE, &career, dest, (int)sizeof(CCareer));
+    if (!gSaveLog.empty()) { std::printf("FAIL unexpected save calls: %s\n", gSaveLog.c_str()); return 1; }
+
+    // Exact sizeof(CCareer) and larger buffers invoke all three career filters in order.
+    ce_hook_save_gate(CE_SAVE_CAREER, &career, dest, (int)sizeof(CCareer));
+    if (gSaveLog != "editor;bonus;museum;") { std::printf("FAIL exact size: %s\n", gSaveLog.c_str()); return 2; }
+    gSaveLog.clear();
+    ce_hook_save_gate(CE_SAVE_CAREER, &career, dest, (int)sizeof(CCareer) + 16);
+    if (gSaveLog != "editor;bonus;museum;") { std::printf("FAIL larger size: %s\n", gSaveLog.c_str()); return 3; }
+
+    // 2. hud_focus: valid target accepted, NULL suppression preserved, headless target falls back to incoming be (or NULL).
+    CPlayer p1{1}, p2{2};
+    CBattleEngine owned{&p1}, alt{&p2}, headless{nullptr};
+
+    gFocusReturn = &alt;
+    if (ce_hook_hud_focus(&p1, &owned) != &alt) { std::puts("FAIL valid focus override"); return 4; }
+
+    gFocusReturn = nullptr;
+    if (ce_hook_hud_focus(&p1, &owned) != nullptr) { std::puts("FAIL null HUD suppression"); return 5; }
+
+    gFocusReturn = &headless;
+    if (ce_hook_hud_focus(&p1, &owned) != &owned) { std::puts("FAIL headless fallback to incoming be"); return 6; }
+
+    gFocusReturn = &headless;
+    if (ce_hook_hud_focus(&p1, nullptr) != nullptr) { std::puts("FAIL headless fallback with null incoming be"); return 7; }
+
+    gFocusReturn = &headless;
+    if (ce_hook_hud_focus(&p1, &headless) != nullptr) { std::puts("FAIL headless fallback when incoming be is also headless"); return 8; }
+
+    std::puts("hardening ok");
+    return 0;
+}
+'''
+
+    def run_hardening(self, hooks_text, name):
+        base = Path(tempfile.mkdtemp(prefix=f"harden-{name}-", dir=SCRATCH))
+        try:
+            (base / "ce_hooks.cpp").write_text(hooks_text)
+            (base / "driver.cpp").write_text(self.DRIVER)
+            cmd = [shutil.which("g++") or "c++", "-std=gnu++14", "-Wall", "-Werror", "-Wno-unused-function",
+                   '-DCE_VERSION="hooks-test"', "-I", str(base), "-I", str(PORT / "game"),
+                   str(base / "driver.cpp"), str(MODES), "-o", str(base / "driver")]
+            built = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+            if built.returncode != 0:
+                return built.returncode, built.stdout + built.stderr
+            ran = subprocess.run([str(base / "driver")], capture_output=True, text=True, timeout=30)
+            return ran.returncode, ran.stdout + ran.stderr
+        finally:
+            shutil.rmtree(base, ignore_errors=True)
+
+    def test_save_gate_bounds_and_hud_focus_null_player_guard(self):
+        rc, out = self.run_hardening(HOOKS.read_text(), "clean")
+        self.assertEqual((rc, out.strip()), (0, "hardening ok"))
+
+    def test_mutants_of_save_gate_and_hud_focus_guards_are_caught(self):
+        text = HOOKS.read_text()
+        mutants = {
+            "save-size-guard-removed": ("&& size >= minSize;", ";"),
+            "save-null-dest-allowed": ("&& dest != nullptr ", ""),
+            "save-null-career-allowed": ("&& career != nullptr ", ""),
+            "hud-focus-headless-allowed": (
+                "if (focused && !CeHookBattleEngineHasPlayer(focused))\n\t\treturn (be && CeHookBattleEngineHasPlayer(be)) ? be : nullptr;",
+                "(void)CeHookBattleEngineHasPlayer;"
+            ),
+            "hud-focus-headless-fallback-unchecked": (
+                "return (be && CeHookBattleEngineHasPlayer(be)) ? be : nullptr;",
+                "return be;"
+            ),
+        }
+        for name, (old, new) in mutants.items():
+            with self.subTest(mutant=name):
+                self.assertEqual(text.count(old), 1, name)
+                rc, out = self.run_hardening(text.replace(old, new, 1), name)
+                self.assertNotEqual(rc, 0, f"mutant {name} survived: {out}")
+
+    def test_docs_table_row_count_matches_compiled_table(self):
+        rows = table(HOOKS.read_text())
+        total_rows = sum(len(handlers) for _, _, handlers in rows.values())
+        active_points = sum(1 for _, _, handlers in rows.values() if handlers)
+        open_points = len(rows) - active_points
+        doc = (ROOT / "docs/ce-hooks-api.md").read_text()
+        self.assertIn(f"{total_rows} rows across {active_points} active hook points; {open_points} points are currently open", doc)
 
 
 class TestBuildGuardTests(unittest.TestCase):

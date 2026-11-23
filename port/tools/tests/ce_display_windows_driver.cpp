@@ -11,14 +11,15 @@
 using DWORD = unsigned long;
 using HANDLE = intptr_t;
 const HANDLE INVALID_HANDLE_VALUE = -1;
-const DWORD FILE_READ_ATTRIBUTES = 1, GENERIC_READ = 2, FILE_SHARE_READ = 4, FILE_SHARE_WRITE = 8;
+const DWORD FILE_READ_ATTRIBUTES = 1, GENERIC_READ = 2, FILE_SHARE_READ = 4, FILE_SHARE_WRITE = 8, FILE_SHARE_DELETE = 16;
 const DWORD OPEN_EXISTING = 3, FILE_FLAG_BACKUP_SEMANTICS = 0x100, FILE_FLAG_OPEN_REPARSE_POINT = 0x200;
 const DWORD FILE_ATTRIBUTE_DIRECTORY = 0x10, FILE_ATTRIBUTE_REPARSE_POINT = 0x400;
+const DWORD FILE_NAME_NORMALIZED = 0;
 const DWORD ERROR_FILE_NOT_FOUND = 2, ERROR_PATH_NOT_FOUND = 3, ERROR_ACCESS_DENIED = 5, ERROR_ALREADY_EXISTS = 183;
 const DWORD FILE_TYPE_DISK = 1, FILE_TYPE_PIPE = 3;
 const int _O_RDONLY = 0, _O_BINARY = 0;
 struct BY_HANDLE_FILE_INFORMATION { DWORD dwFileAttributes; };
-struct FakeHandle { bool live, final; DWORD attributes, type; };
+struct FakeHandle { bool live, final; DWORD attributes, type; char canonical[128]; };
 static FakeHandle handles[16];
 static int next_handle, final_opens, final_reads, directory_creates, memfile;
 static const char *scenario;
@@ -34,19 +35,22 @@ DWORD GetFullPathNameA(const char *path, DWORD n, char *out, char **)
 static bool folder_scenario(const char *name) { return !strncmp(scenario, name, strlen(name)) && !scenario[strlen(name)]; }
 DWORD GetLastError()
 {
-    if (folder_scenario("parent-path-missing")) return ERROR_PATH_NOT_FOUND;
+    if (folder_scenario("parent-path-missing") || folder_scenario("dangling-ancestor")) return ERROR_PATH_NOT_FOUND;
     if (folder_scenario("parent-denied")) return ERROR_ACCESS_DENIED;
     return ERROR_FILE_NOT_FOUND;
 }
 HANDLE CreateFileA(const char *path, DWORD access, DWORD share, void *, DWORD disposition, DWORD flags, void *)
 {
     bool final = strstr(path, "\\ce.ini") != nullptr;
-    check(disposition == OPEN_EXISTING && (flags & FILE_FLAG_OPEN_REPARSE_POINT), "open-existing no-follow");
+    check(disposition == OPEN_EXISTING, "open-existing disposition");
     if (final)
     {
         ++final_opens;
-        check(access == GENERIC_READ && share == FILE_SHARE_READ && !(flags & FILE_FLAG_BACKUP_SEMANTICS),
-              "final opened for read only");
+        check((flags & FILE_FLAG_OPEN_REPARSE_POINT) != 0, "final no-follow");
+        check(access == GENERIC_READ && share == (FILE_SHARE_READ | FILE_SHARE_DELETE) && !(flags & FILE_FLAG_BACKUP_SEMANTICS),
+              "final opened for read with delete sharing");
+        if (folder_scenario("ancestor-junction"))
+            check(!strcmp(path, "D:\\OneDrive\\fixture\\user\\ce.ini"), "canonicalized ancestor path used for final open");
         if (!strcmp(scenario, "missing")) return INVALID_HANDLE_VALUE;
     }
     else
@@ -54,15 +58,33 @@ HANDLE CreateFileA(const char *path, DWORD access, DWORD share, void *, DWORD di
         check(access == FILE_READ_ATTRIBUTES && (flags & FILE_FLAG_BACKUP_SEMANTICS), "directory attribute access");
         if ((folder_scenario("parent-missing") || folder_scenario("parent-path-missing") || folder_scenario("parent-denied")) &&
             !strcmp(path, "C:\\fixture")) return INVALID_HANDLE_VALUE;
+        if (folder_scenario("dangling-ancestor") && !strcmp(path, "C:\\fixture") && !(flags & FILE_FLAG_OPEN_REPARSE_POINT))
+            return INVALID_HANDLE_VALUE;
+        if (strstr(path, "\\user") != nullptr)
+            check((flags & FILE_FLAG_OPEN_REPARSE_POINT) != 0, "CE user directory opened no-follow");
     }
     int i = ++next_handle; check(i < 16, "bounded handles");
-    handles[i] = {true, final, final ? 0ul : FILE_ATTRIBUTE_DIRECTORY, FILE_TYPE_DISK};
-    if (!final && !strcmp(scenario, "parent-link") && !strcmp(path, "C:\\fixture"))
+    handles[i] = {true, final, final ? 0ul : FILE_ATTRIBUTE_DIRECTORY, FILE_TYPE_DISK, ""};
+    if (!final && folder_scenario("ancestor-junction") && !strcmp(path, "C:\\fixture"))
+        snprintf(handles[i].canonical, sizeof(handles[i].canonical), "\\\\?\\D:\\OneDrive\\fixture");
+    else
+        snprintf(handles[i].canonical, sizeof(handles[i].canonical), "\\\\?\\%s", path);
+    if (!final && folder_scenario("dangling-ancestor") && !strcmp(path, "C:\\fixture"))
+        handles[i].attributes |= FILE_ATTRIBUTE_REPARSE_POINT;
+    if (!final && folder_scenario("user-reparse") && strstr(path, "\\user") != nullptr)
         handles[i].attributes |= FILE_ATTRIBUTE_REPARSE_POINT;
     if (final && !strcmp(scenario, "reparse")) handles[i].attributes |= FILE_ATTRIBUTE_REPARSE_POINT;
     if (final && !strcmp(scenario, "directory")) handles[i].attributes |= FILE_ATTRIBUTE_DIRECTORY;
     if (final && !strcmp(scenario, "pipe")) handles[i].type = FILE_TYPE_PIPE;
     return i;
+}
+DWORD GetFinalPathNameByHandleA(HANDLE h, char *out, DWORD n, DWORD flags)
+{
+    check(h > 0 && handles[h].live && flags == FILE_NAME_NORMALIZED, "canonicalize live directory handle");
+    size_t len = strlen(handles[h].canonical);
+    if (len >= n) return DWORD(len + 1);
+    strcpy(out, handles[h].canonical);
+    return DWORD(len);
 }
 int CreateDirectoryA(const char *, void *) { ++directory_creates; return 0; }
 int GetFileInformationByHandle(HANDLE h, BY_HANDLE_FILE_INFORMATION *out)
@@ -98,7 +120,7 @@ int main(int argc, char **argv)
     check(write(memfile, bytes, sizeof(bytes) - 1) == sizeof(bytes) - 1, "fixture bytes");
     bool integer = !strcmp(argv[2], "integer"), checked = !strcmp(argv[2], "checked");
     check(integer || checked || !strcmp(argv[2], "boolean"), "reader selection");
-    bool success = !strcmp(scenario, "regular");
+    bool success = !strcmp(scenario, "regular") || !strcmp(scenario, "ancestor-junction");
     if (checked)
     {
         // The checked reader tells a settings file that is not there (or whose folder is not there yet) from a failed read.
@@ -114,8 +136,9 @@ int main(int argc, char **argv)
     }
     check(directory_creates == 0, "reader creates no parent");
     for (int i = 1; i <= next_handle; ++i) check(!handles[i].live, "all admitted handles released");
-    bool parent_rejected = !strcmp(scenario, "parent-link") || folder_scenario("parent-missing") ||
-                           folder_scenario("parent-path-missing") || folder_scenario("parent-denied");
+    bool parent_rejected = folder_scenario("user-reparse") || folder_scenario("dangling-ancestor") ||
+                           folder_scenario("parent-missing") || folder_scenario("parent-path-missing") ||
+                           folder_scenario("parent-denied");
     check(final_opens == (parent_rejected ? 0 : 1), "reject unsafe parent before final open");
     bool read_allowed = success || !strcmp(scenario, "stream-fail");
     check(final_reads == int(read_allowed), "read only an admitted regular disk file");

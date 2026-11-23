@@ -1,7 +1,9 @@
 <!-- SPDX-License-Identifier: GPL-3.0-only -->
 # CE Engine Hook API Reference
 
-This document is the contributor and mod-author reference for the Community Edition (CE) engine hook layer (`port/game/ce_hooks.h`, `port/game/ce_hooks.cpp`, `port/game/ce_hooks_dispatch.h`, `port/game/ce_hooks_check.cpp`).
+This document is the contributor reference for the Community Edition (CE) **compiled C++ engine hook layer** (`port/game/ce_hooks.h`, `port/game/ce_hooks.cpp`, `port/game/ce_hooks_dispatch.h`, `port/game/ce_hooks_check.cpp`).
+
+> **Scope — compiled contributors vs. runtime mods:** `ce_hooks` is a **compile-time C++ extension surface** for contributors building Onslaught CE from source. Runtime schema-1 mods loaded from the player's `mods/` folder are **data-only** (asset, level, and text overrides); they cannot load native code or register hook handlers.
 
 ## 1. Versioning & Compatibility Contract
 
@@ -54,7 +56,7 @@ Each table row declares:
 | `POSITIONAL_INSERT` | Runs open rows in order; each row supplies a target index resolved via `CeHookPlace(count, position)` (`-1` or past end appends). |
 | `FILTER` | Runs open rows in order over shared mutable state (`char *dest` or `CeSpawnerTrigger *`); each handler sees earlier handlers' modifications. |
 | `COMMAND_APPLY` | Drains `CeHookCommandQueue` (capacity 64, queued via `ce_hook_command_push`, `kind != 0`), oldest first, broadcasting each command to open rows and clearing the queue. |
-| `OVERRIDE_CHAIN` | Passes a value through each open row in order (`value = fn(value, ...)`). Returning the input argument is a clean passthrough. |
+| `OVERRIDE_CHAIN` | Runs every open row in **ascending slot order**, passing each returned value into the next handler (`value = fn(value, ...)`). Returning the input argument is a clean passthrough; when multiple handlers override the value, **last-writer-wins** applies (higher slot numbers override lower ones — e.g., on `render_camera`, slot `30` `multibe_camera` runs after slot `20` `playunit_camera` and slot `10` `commander_camera`). |
 
 ## 3. Complete Hook Point Reference (21 Points)
 
@@ -84,7 +86,7 @@ Each table row declares:
 
 ### 3.1 Registered Built-in Handlers (21 Hook Points)
 
-The compiled dispatch table in `port/game/ce_hooks.cpp` wires the following built-in CE handlers (25 rows across 14 active hook points; 7 points are currently open for extension):
+The compiled dispatch table in `port/game/ce_hooks.cpp` wires the following built-in CE handlers (26 rows across 14 active hook points; 7 points are currently open for extension):
 
 | Point | Slot | Handler Name | Tag | Gate | Mode | Owner Module |
 |---|---|---|---|---|---|---|
@@ -166,7 +168,7 @@ struct CeRenderPass
 - Returning `be` unchanged preserves exact retail HUD rendering. Returning a different non-dying `CBattleEngine *` redirects the entire HUD pass (`mBattleEngine`, weapons, gauges, radar, target markers) to display that Battle Engine's state without modifying `CPlayer::mBattleEngine`.
 - Returning `NULL` cleanly suppresses the HUD pass for that viewpoint (`if ((!be) || be->IsDying()) return;`).
 - **Preconditions & split-screen caveat:**
-  - Any non-`NULL` `CBattleEngine *` returned by a handler **must** have a non-`NULL` `be->GetPlayer()`, because retail HUD helpers dereference `mBattleEngine->GetPlayer()`.
+  - Any non-`NULL` `CBattleEngine *` returned by a handler **must** have a non-`NULL` `be->GetPlayer()`, because retail HUD helpers dereference `mBattleEngine->GetPlayer()`. As a defensive backstop, `ce_hook_hud_focus` checks `focused->GetPlayer()` in game builds and falls back cleanly to the incoming `be` (or `NULL` if `be` itself has no player) whenever a handler returns a headless engine.
   - In split-screen (`GAME.GetNPlayers() > 1`), retail `CHud` and `CCompass` anchor widgets and buffers off `mBattleEngine->GetPlayer()->GetNumber() == 1`. Redirecting a split-screen viewpoint to a Battle Engine whose player number differs from `player->GetNumber()` shifts compass/gauge coordinates into the opposite split half; split-screen handlers should only redirect to Battle Engines with a matching `GetPlayer()->GetNumber()`.
   - Because `hud_focus` is tagged `CE_HOOK_RENDER`, handlers must remain strictly read-only — in particular, never iterate `WORLD.GetUnitNB()` via `.First()/.Next()` (which mutates its shared intrusive cursor `mIterator`); always use stack-local `ListIterator<CUnit>`.
 
@@ -176,7 +178,7 @@ struct CeRenderPass
 
 - **Incremental mutations** (modifying individual fields in `dest`) compose freely across multiple active handlers.
 - **Whole-copy snapshot replacements** (`memcpy(dest, &snapshot, sizeof(CCareer))`) overwrite prior handlers' changes; only one whole-copy owner may be active during a save.
-- Today's three built-in career filters (`editor_save`, `bonus_save`, `museum_visit_save`) each perform a whole-copy snapshot restore. Their mutual exclusion is enforced by `port/game/ce_modes.cpp`: `CeModesCompatible` returns `false` for every pair among `CE_MODE_EDITOR`, `CE_MODE_BONUS_LEVEL`, and `CE_MODE_MUSEUM_VISIT` (verified by `SaveHazardTests.test_mode_registry_prevents_concurrent_save_hazard_modes` in `port/tools/ce_hooks_tests.py`).
+- Today's three built-in career filters (`editor_save`, `bonus_save`, `museum_visit_save`) each perform a whole-copy snapshot restore. Each wrapper in `port/game/ce_hooks.cpp` validates `target == CE_SAVE_CAREER`, `career != NULL`, `dest != NULL`, and `size >= (int)sizeof(CCareer)` before invoking its snapshot copy. Their mutual exclusion is enforced by `port/game/ce_modes.cpp`: `CeModesCompatible` returns `false` for every pair among `CE_MODE_EDITOR`, `CE_MODE_BONUS_LEVEL`, and `CE_MODE_MUSEUM_VISIT` (verified by `SaveHazardTests.test_mode_registry_prevents_concurrent_save_hazard_modes` in `port/tools/ce_hooks_tests.py`). The `kSaveGate` rows currently remain `CE_MODE_NONE` while each feature owns its own active flag until the feature modules wire `CeModeBegin`/`CeModeEnd` (`port/game/ce_modes.h`).
 - Until career snapshotting is unified under a single snapshot owner, `SaveHazardTests.test_two_active_filters_keep_both_snapshots` intentionally remains an expected failure documenting the raw-handler overwrite hazard if two whole-copy filters were ever invoked together. New `save_gate` handlers should prefer incremental field edits rather than whole-buffer copies.
 
 ## 5. Practical Examples

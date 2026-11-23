@@ -69,7 +69,7 @@ bool PortCeNetActive() __attribute__((weak));
 namespace
 {
 
-static constexpr EMemoryType kMultiBeMenuMem = (EMemoryType)0x80;
+static constexpr EMemoryType kMultiBeMenuMem = MEMTYPE_UNKNOWN;
 
 bool NetworkOrLockstepActive()
 {
@@ -578,15 +578,12 @@ bool FindDrySpawnPosition(const FVector &anchorPos, const FVector &right, const 
 		}
 	}
 
-	const float scales[4] = { 0.70f, 0.50f, 0.35f, 0.20f };
-	const float angles[8] = { 0.0f, 0.7854f, -0.7854f, 1.5708f, -1.5708f, 2.3562f, -2.3562f, 3.14159f };
 	for (int si = 0; si < 4; si++)
 	{
 		for (int ai = 0; ai < 8; ai++)
 		{
-			const float ca = cosf(angles[ai]), sa = sinf(angles[ai]);
-			const float r = (offRight * ca - offFwd * sa) * scales[si];
-			const float f = (offRight * sa + offFwd * ca) * scales[si];
+			float r = 0.0f, f = 0.0f;
+			CeMultiBeDrySearchOffset(si, ai, offRight, offFwd, &r, &f);
 			FVector cand = anchorPos + right * r + fwd * f;
 			const float candGround = MAP.Collide(cand);
 			if (CeMultiBeIsAboveWater(candGround, waterZ, dryMargin))
@@ -1189,9 +1186,16 @@ void RespawnAuxiliaryBattleEngine(int idx)
 		fwd.Normalise();
 	FVector right(fwd.Y, -fwd.X, 0.0f);
 	bool startAsJet = false;
-	if (!FindDrySpawnPosition(gStartPos[idx], right, fwd, 0.0f, 0.0f, &spawnPos))
+	const float waterZ = MAP.GetWaterLevel();
+	const float startGroundZ = MAP.Collide(spawnPos);
+	bool foundDry = false;
+	if (CeMultiBeIsAboveWater(startGroundZ, waterZ, 0.8f))
 	{
-		const float waterZ = MAP.GetWaterLevel();
+		spawnPos.Z = startGroundZ - 0.5f;
+		foundDry = CeMultiBeIsFinitePos(spawnPos.X, spawnPos.Y, spawnPos.Z);
+	}
+	if (!foundDry && !FindDrySpawnPosition(gStartPos[idx], right, fwd, 12.0f, 0.0f, &spawnPos))
+	{
 		spawnPos = gStartPos[idx];
 		const float groundZ = MAP.Collide(spawnPos);
 		const float surfaceZ = (groundZ < waterZ) ? groundZ : waterZ;
@@ -1778,6 +1782,8 @@ void DriveAiEngine(int idx)
 			gMatchState.totalMorphs++;
 			return;
 		}
+		// Reset cooldown on refused/failed morph (e.g. no-flight maps) so we do not spam Morph() every tick.
+		gTicksSinceMorph[idx] = 0;
 	}
 
 	// Matchup-aware smart weapon selection (replaces blind periodic weapon cycling).
@@ -2055,6 +2061,8 @@ void CopyDrawableWide(WCHAR *out, size_t cap, const char *ascii, CDXBitmapFont *
 
 extern "C" void PortCeMultiBeLevelBegin(int level)
 {
+	// Defensively restore any leaked one-screen fullscreen switch from an abnormal prior level exit.
+	CeCmdMatchLevelEnd();
 	ResetState();
 	gInLevel = true;
 	gLatchedSoloSkirmish = false;
@@ -2065,9 +2073,10 @@ extern "C" void PortCeMultiBeLevelBegin(int level)
 	char buf[32] = {0};
 	const int count = CE_SettingGetText("multi_be", buf, (int)sizeof(buf)) ? CeMultiBeParseCount(buf) : 0;
 	const bool solo = (ReadSoloSkirmishSetting() == CE_SOLO_SKIRMISH_SOLO_AI);
+	const bool allowCampaign = CE_SettingIs("multi_be_campaign", "1") != 0;
 	const bool soloThisLevel = solo && (level >= 850 && level <= 899);
 	gLatchedSoloSkirmish = soloThisLevel;
-	const int effectiveTarget = CeMultiBeEffectiveTargetCount(count, solo, level);
+	const int effectiveTarget = CeMultiBeEffectiveTargetCount(count, solo, level, allowCampaign);
 	if (effectiveTarget <= 0)
 		return;
 	gConfig.target_count = effectiveTarget;
@@ -2335,12 +2344,19 @@ extern "C" void PortCeMultiBeApplyStartSlot(int *playerNumber, int retailInvert)
 	const bool isVersus = (level >= 850 && level <= 899);
 	const bool cli0359 = (PortCePlayUnitInvertSides && PortCePlayUnitInvertSides()) != 0;
 	const bool menuMuspell = (ReadPlaySideSetting() == CE_MULTIBE_SIDE_MUSPELL);
+	const bool featureActive = gActive || menuMuspell || cli0359 || (*playerNumber >= 3);
+	if (!featureActive)
+		return;
 	*playerNumber = CeMultiBeTransformStartSlot(*playerNumber, retailInvert != 0, cli0359, menuMuspell, isVersus);
 }
 
 extern "C" int PortCeMultiBeAllowTeamKills(void)
 {
-	return MultiBeFenced() ? 0 : 1;
+	if (MultiBeFenced())
+		return 0;
+	const bool cli0359 = (PortCePlayUnitInvertSides && PortCePlayUnitInvertSides()) != 0;
+	const bool menuMuspell = (ReadPlaySideSetting() == CE_MULTIBE_SIDE_MUSPELL);
+	return (gActive || menuMuspell || cli0359) ? 1 : 0;
 }
 
 extern "C" int PortCeMultiBeSelectStartConfig(int playerNumber, int p1Config, int p2Config)

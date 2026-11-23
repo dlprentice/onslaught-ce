@@ -385,18 +385,36 @@ class Launcher(unittest.TestCase):
         self.assertIn("- Linux", body)
         self.assertNotIn(str(self.home), body)
 
-    def test_linked_user_folder_refused_before_launcher_writes(self):
+    def test_linked_user_folder_refused_while_symlinked_ancestor_succeeds(self):
         outside = self.home / "outside"
         outside.mkdir()
         (outside / "sentinel").write_bytes(b"keep sentinel")
         linked = self.home / "linked"
         linked.symlink_to(outside, target_is_directory=True)
-        for user in (linked, linked / "new" / "nested"):
-            with self.subTest(user=user):
-                r = self.run_launcher("--no-update-check", BEA_USER_DIR=str(user))
-                self.assertEqual(r.returncode, 1)
-                self.assertIn("could not prepare the settings folder", r.stderr)
-                self.assertEqual(sorted(p.name for p in outside.iterdir()), ["sentinel"])
+        # The CE user folder itself being a symlink is still strictly refused.
+        r = self.run_launcher("--no-update-check", BEA_USER_DIR=str(linked))
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("could not prepare the settings folder", r.stderr)
+        self.assertEqual(sorted(p.name for p in outside.iterdir()), ["sentinel"])
+        # A symlinked OS/user ancestor above the CE user folder succeeds (relocated home / ~/.local/share).
+        nested = linked / "new" / "nested"
+        r2 = self.run_launcher("--no-update-check", BEA_USER_DIR=str(nested))
+        self.assertEqual(r2.returncode, 0, r2.stderr)
+        self.assertTrue((outside / "new" / "nested").is_dir())
+
+    def test_ini_get_trims_spaces_around_value_and_handles_utf8_bom(self):
+        self.user.mkdir()
+        ini = self.user / "ce.ini"
+        for payload in (
+            b"record_sessions = 1\nupdate_check = 0\n",
+            b"record_sessions= 1 \r\nupdate_check= 0 \r\n",
+            b"\xef\xbb\xbfrecord_sessions = 1 \r\nupdate_check = 0 \n",
+        ):
+            with self.subTest(payload=payload):
+                ini.write_bytes(payload)
+                r = self.run_launcher("--no-update-check", BEA_RECORD_ANSWER="record")
+                self.assertEqual(r.returncode, 0, r.stderr)
+                self.assertIn("clock=shim", r.stderr, "spaced/BOM record_sessions=1 must trigger recording")
 
     def test_temp_symlink_does_not_overwrite_target(self):
         self.user.mkdir()
