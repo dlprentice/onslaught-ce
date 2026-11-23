@@ -10,7 +10,7 @@
 #include <string>
 #include <vector>
 #ifdef _WIN32
-#include <windows.h>
+#include "../windows_private_acl.h"
 #else
 #include <sys/stat.h>
 #endif
@@ -30,7 +30,8 @@ void Check(bool yes,const char* name) {
 std::string Dir(const std::string& root,const char* name) {
     std::string path=root+"/"+name;
 #ifdef _WIN32
-    Check(CreateDirectoryA(path.c_str(),nullptr)!=0,"fixture directory created");
+    std::wstring wide;
+    Check(CeWinAcl::NormalizeAbsolutePath(path.c_str(),wide) && CeWinAcl::CreatePrivateDirectory(wide),"fixture directory created");
 #else
     Check(mkdir(path.c_str(),0700)==0,"fixture directory created");
 #endif

@@ -176,6 +176,7 @@ port/tools/ice_flow_integration_tests.py	script	-	fixture	optional	-	needs a bui
 port/tools/ice_game_tests.py	script	-	fixture	optional	-	needs the pinned libjuice and ENet archives (--juice-archive, --enet-archive), which the dependency cache does not hold
 port/tools/ice_pilot_courier_tests.py	script	--output {fresh}	deps	optional	-	
 port/tools/ice_signaling_consumer_tests.py	script	-	deps	optional	-	
+port/tools/ice_windows_acl_wine_tests.py	script	-	deps+wine	optional	-	cross-compiles standalone Windows ICE/TURN owner-only ACL and sealed kernel-section handoff driver and verifies parent/child process checks and causal mutants under Wine
 port/tools/ice_windows_native_gate_tests.py	script	-	none	optional	-	
 port/tools/ice_windows_owned_backend_tests.py	script	-	none	optional	-	
 port/tools/inactive_close_tests.py	script	-	none	release	-	

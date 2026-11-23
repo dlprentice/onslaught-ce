@@ -468,7 +468,7 @@ bool PortCeExperimental(const char *mode)
 		if (strcmp(mode, kExperimentalKeys[i]))
 			continue;
 		if (on[i] < 0)
-			on[i] = ce_ini_well_formed_for_experimental() && (CE_SettingGetBool(mode, 0) == 1 || (i == 3 && CE_SettingIs(mode, "tank"))) ? 1 : 0;
+			on[i] = ce_ini_well_formed_for_experimental() && (CE_SettingGetBool(mode, 1) == 1 || (i == 3 && CE_SettingIs(mode, "tank"))) ? 1 : 0;
 		return on[i] == 1;
 	}
 	return false;
@@ -512,8 +512,8 @@ extern "C" bool PortCeFactoryExercise() {
 }
 
 
-// Adds the [Experimental] block to ce.ini when the file has none: the header, one warning line and a line "mode=0" for each mode that
-// has no line in the file yet (a value the player set, such as commander=1 from 0.1.13, stays where it is and is not repeated). It
+// Adds the [Experimental] block to ce.ini when the file has none: the header, one note line and a line "mode=1" for each mode that
+// has no line in the file yet (a value the player set, such as commander=0, stays where it is and is not repeated). It
 // changes no other line and is written once: a file that has the header is left as it is. Called once, as the first CE main menu is
 // built, so a replay, a recording and a probe run (no CE layer) never touch ce.ini for it.
 void PortCeExperimentalBlock()
@@ -524,9 +524,9 @@ void PortCeExperimentalBlock()
 	done = true;
 	char path[4200];
 	ce_ini_path(path, sizeof(path));
-	if (!ce_ini_add_section(path, CE_INI_EXPERIMENTAL_HEADER,
-							"; Unfinished features, off in this release. They may change or break. Set a line to 1 to try one.\n",
-							kExperimentalKeys, 4))
+	if (!ce_ini_add_section_default_ex(path, CE_INI_EXPERIMENTAL_HEADER,
+							"; CE features, enabled by default. Some are still in progress; set a line to 0 or toggle in Experimental Features to turn one off.\n",
+							kExperimentalKeys, 4, "1", NULL))
 		fprintf(stderr, PORT_LOG_PREFIX "could not add the [Experimental] lines to ce.ini; it is unchanged\n");
 }
 

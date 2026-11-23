@@ -132,7 +132,7 @@ int LoadSoloSkirmishFromIni()
 {
 	char buf[32] = {0};
 	if (!CE_SettingGetText("solo_skirmish", buf, (int)sizeof(buf)))
-		return CE_SOLO_SKIRMISH_SPLITSCREEN;
+		return CE_SOLO_SKIRMISH_SOLO_AI;
 	return CeMultiBeParseSoloSkirmish(buf);
 }
 

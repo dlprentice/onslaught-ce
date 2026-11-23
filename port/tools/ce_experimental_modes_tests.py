@@ -41,8 +41,8 @@ PLAYUNIT = PORT / "game/ce_playunit.cpp"
 DRIVER = PORT / "tools/ce_experimental_driver.cpp"
 
 MODES = ("map_editor", "museum", "commander", "play_unit")
-WARNING = "; Unfinished features, off in this release. They may change or break. Set a line to 1 to try one.\n"
-BLOCK = "[Experimental]\n" + WARNING + "".join(m + "=0\n" for m in MODES)
+WARNING = "; CE features, enabled by default. Some are still in progress; set a line to 0 or toggle in Experimental Features to turn one off.\n"
+BLOCK = "[Experimental]\n" + WARNING + "".join(m + "=1\n" for m in MODES)
 
 
 def build(out, ce_text, report_text=None):
@@ -85,51 +85,42 @@ def answers(binary, folder):
 
 # (name, ce.ini bytes, the four answers: map_editor museum commander play_unit)
 CASES = (
-    ("no-file", None, "0 0 0 0"),
-    ("empty", b"", "0 0 0 0"),
-    ("other-line", b"hud_scale=1\n", "0 0 0 0"),
+    ("no-file", None, "1 1 1 1"),
+    ("empty", b"", "1 1 1 1"),
+    ("other-line", b"hud_scale=1\n", "1 1 1 1"),
     ("zero", b"map_editor=0\nmuseum=0\ncommander=0\nplay_unit=0\n", "0 0 0 0"),
-    ("map-editor-alone", b"map_editor=1\n", "1 0 0 0"),
-    ("museum-alone", b"museum=1\n", "0 1 0 0"),
-    ("commander-alone", b"commander=1\n", "0 0 1 0"),
-    ("play-unit-alone", b"play_unit=1\n", "0 0 0 1"),
-    ("play-unit-tank", b"play_unit=tank\n", "0 0 0 1"),
-    ("play-unit-tank-case", b"play_unit= Tank \r\n", "0 0 0 1"),
-    ("play-unit-other-word", b"play_unit=jeep\n", "0 0 0 0"),
-    ("commander-tank", b"commander=tank\n", "0 0 0 0"),
+    ("map-editor-off-alone", b"map_editor=0\n", "0 1 1 1"),
+    ("museum-off-alone", b"museum=0\n", "1 0 1 1"),
+    ("commander-off-alone", b"commander=0\n", "1 1 0 1"),
+    ("play-unit-off-alone", b"play_unit=0\n", "1 1 1 0"),
+    ("play-unit-tank", b"play_unit=tank\n", "1 1 1 1"),
+    ("play-unit-tank-case", b"play_unit= Tank \r\n", "1 1 1 1"),
     ("all-on", b"map_editor=1\nmuseum=1\ncommander=1\nplay_unit=1\n", "1 1 1 1"),
-    ("one-crlf", b"museum=1\r\n", "0 1 0 0"),
-    ("one-blanks", b"museum= 1 \n", "0 1 0 0"),
-    ("museum-spaces-around-eq", b"museum = 1\n", "0 1 0 0"),
-    ("commander-leading-spaces-tabs", b"  commander\t=\t1 \r\n", "0 0 1 0"),
-    ("play-unit-spaces-tank", b"play_unit = tank\n", "0 0 0 1"),
-    ("all-on-spaced", b" map_editor = 1\n\tmuseum\t=\t1\n  commander = 1 \r\nplay_unit = Tank\n", "1 1 1 1"),
-    ("one-among-others", b"hud_scale=1\nmuseum=1\ncommander=0\n", "0 1 0 0"),
-    ("two", b"museum=2\n", "0 0 0 0"),
-    ("word", b"museum=yes\n", "0 0 0 0"),
-    ("on", b"museum=on\n", "0 0 0 0"),
-    ("one-and-more", b"museum=1x\n", "0 0 0 0"),
-    ("negative", b"museum=-1\n", "0 0 0 0"),
-    ("twice-same", b"museum=1\nmuseum=1\n", "0 0 0 0"),
-    ("twice-differ", b"museum=1\nmuseum=0\n", "0 0 0 0"),
-    ("twice-spaced-differ", b"museum = 1\nmuseum=0\n", "0 0 0 0"),
-    ("twice-spaced-same", b"museum = 1\n  museum\t=\t1\n", "0 0 0 0"),
-    ("twice-spaced-tank", b"play_unit = tank\nplay_unit=1\n", "0 0 0 0"),
-    ("other-key-prefix", b"museum_extra=1\nmap_editor_x=1\n", "0 0 0 0"),
-    ("prefix-suffix-spaced", b"museum_x = 1\nx_museum = 1\n", "0 0 0 0"),
-    ("wrong-case-spaced", b"MUSEUM = 1\nCommander = 1\n", "0 0 0 0"),
-    ("cr-before-eq", b"museum\r=1\n\rmuseum=1\n", "0 0 0 0"),
-    ("comment", b"# museum=1\n; commander=1\n", "0 0 0 0"),
-    ("comment-spaced", b"; museum = 1\n# commander = 1\n", "0 0 0 0"),
-    ("the-retired-switch", b"experimental_modes=1\n", "0 0 0 0"),
-    ("block-as-written", BLOCK.encode(), "0 0 0 0"),
-    ("block-with-one-on", BLOCK.replace("museum=0", "museum=1").encode(), "0 1 0 0"),
-    ("block-with-two-on", BLOCK.replace("map_editor=0", "map_editor=1").replace("play_unit=0", "play_unit=1").encode(), "1 0 0 1"),
-    ("block-crlf", BLOCK.replace("\n", "\r\n").replace("commander=0", "commander=1").encode(), "0 0 1 0"),
-    ("lines-above-and-block", b"update_check=0\ncommander=1\n\n" + BLOCK.replace("commander=0\n", "").encode(), "0 0 1 0"),
-    ("other-sections-ignored", b"[Other]\nmuseum=1\n[Experimental]\n", "0 1 0 0"),
-    ("header-indented-and-crlf", b"  [Experimental] \r\nmuseum=1\r\n", "0 1 0 0"),
-    # a damaged or binary ce.ini turns nothing on, whatever line it holds (the 0.2 play-unit review's file, then each fault alone)
+    ("one-crlf", b"museum=0\r\n", "1 0 1 1"),
+    ("one-blanks", b"museum= 0 \n", "1 0 1 1"),
+    ("museum-spaces-around-eq", b"museum = 0\n", "1 0 1 1"),
+    ("commander-leading-spaces-tabs", b"  commander\t=\t0 \r\n", "1 1 0 1"),
+    ("all-off-spaced", b" map_editor = 0\n\tmuseum\t=\t0\n  commander = 0 \r\nplay_unit = 0\n", "0 0 0 0"),
+    ("one-among-others", b"hud_scale=1\nmuseum=1\ncommander=0\n", "1 1 0 1"),
+    ("two-falls-back-to-default", b"museum=2\n", "1 1 1 1"),
+    ("word-falls-back-to-default", b"museum=yes\n", "1 1 1 1"),
+    ("twice-differ-falls-back-to-default", b"museum=1\nmuseum=0\n", "1 1 1 1"),
+    ("twice-spaced-differ-falls-back-to-default", b"museum = 1\nmuseum=0\n", "1 1 1 1"),
+    ("other-key-prefix", b"museum_extra=0\nmap_editor_x=0\n", "1 1 1 1"),
+    ("prefix-suffix-spaced", b"museum_x = 0\nx_museum = 0\n", "1 1 1 1"),
+    ("wrong-case-spaced", b"MUSEUM = 0\nCommander = 0\n", "1 1 1 1"),
+    ("cr-before-eq", b"museum\r=0\n\rmuseum=0\n", "1 1 1 1"),
+    ("comment", b"# museum=0\n; commander=0\n", "1 1 1 1"),
+    ("comment-spaced", b"; museum = 0\n# commander = 0\n", "1 1 1 1"),
+    ("the-retired-switch", b"experimental_modes=0\n", "1 1 1 1"),
+    ("block-as-written", BLOCK.encode(), "1 1 1 1"),
+    ("block-with-one-off", BLOCK.replace("museum=1", "museum=0").encode(), "1 0 1 1"),
+    ("block-with-two-off", BLOCK.replace("map_editor=1", "map_editor=0").replace("play_unit=1", "play_unit=0").encode(), "0 1 1 0"),
+    ("block-crlf", BLOCK.replace("\n", "\r\n").replace("commander=1", "commander=0").encode(), "1 1 0 1"),
+    ("lines-above-and-block", b"update_check=0\ncommander=0\n\n" + BLOCK.replace("commander=1\n", "").encode(), "1 1 0 1"),
+    ("other-sections-ignored", b"[Other]\nmuseum=0\n[Experimental]\n", "1 0 1 1"),
+    ("header-indented-and-crlf", b"  [Experimental] \r\nmuseum=0\r\n", "1 0 1 1"),
+    # a damaged or binary ce.ini turns nothing on, whatever line it holds (fail closed)
     ("damaged-binary-and-open-header", b"\x00\xff\xfe[Experimental\nplay_unit=1\n\x00", "0 0 0 0"),
     ("open-header", b"[Experimental\nplay_unit=1\n", "0 0 0 0"),
     ("indented-open-header", b"  [Experimental\nmuseum=1\n", "0 0 0 0"),
@@ -164,13 +155,13 @@ class Lines(unittest.TestCase):
 
     def test_each_line_is_read_for_its_own_feature_in_a_fresh_process(self):
         for i, mode in enumerate(MODES):
-            for value, want in (("1", "1"), ("0", "0"), ("2", "0")):
+            for value, want in (("1", "1"), ("0", "0"), ("2", "1")):
                 with self.subTest(mode=mode, value=value):
                     folder = ini(self.base, f"ask-{mode}-{value}", f"{mode}={value}\n".encode())
                     self.assertEqual(drive(self.binary, folder, "ask", mode), want)
                     for j, other in enumerate(MODES):
                         if j != i:
-                            self.assertEqual(drive(self.binary, folder, "ask", other), "0", f"{mode}={value} leaves {other} off")
+                            self.assertEqual(drive(self.binary, folder, "ask", other), "1", f"{mode}={value} leaves {other} at its default on")
 
     def test_a_name_that_is_no_feature_answers_no(self):
         folder = ini(self.base, "unknown", b"experimental=1\nmap=1\ntank=1\n")
@@ -178,14 +169,14 @@ class Lines(unittest.TestCase):
             self.assertEqual(drive(self.binary, folder, "ask", name), "0", name)
 
     def test_a_refused_folder_answers_no(self):
-        # a ce.ini that is a link, and a folder that does not exist: not read, so not on
+        # a ce.ini that is a link is refused (fail closed); a folder that does not exist yet uses defaults (new profile)
         link = self.base / "link"
         link.mkdir()
         target = self.base / "target.ini"
         target.write_bytes(b"museum=1\ncommander=1\n")
         (link / "ce.ini").symlink_to(target)
         self.assertEqual(answers(self.binary, link), "0 0 0 0")
-        self.assertEqual(answers(self.binary, self.base / "does-not-exist"), "0 0 0 0")
+        self.assertEqual(answers(self.binary, self.base / "does-not-exist"), "1 1 1 1")
 
     def test_the_answer_is_read_once(self):
         # the process asks, then ce.ini is rewritten to the other value, then it asks again: the second answer is the first
@@ -195,25 +186,22 @@ class Lines(unittest.TestCase):
 
     def test_the_legacy_integer_reader_is_not_confused_by_the_block(self):
         # CE_SettingGet (atoi on the first line that sets the key) sees a key under the header, and no key for the header or the warning
-        folder = ini(self.base, "legacy", b"hud_scale = 1\n\n" + BLOCK.replace("commander=0", "  commander\t=\t1").encode())
-        self.assertEqual(drive(self.binary, folder, "get", "commander"), "1")
-        self.assertEqual(drive(self.binary, folder, "get", "museum"), "0")
+        folder = ini(self.base, "legacy", b"hud_scale = 1\n\n" + BLOCK.replace("commander=1", "  commander\t=\t0").encode())
+        self.assertEqual(drive(self.binary, folder, "get", "commander"), "0")
+        self.assertEqual(drive(self.binary, folder, "get", "museum"), "1")
         self.assertEqual(drive(self.binary, folder, "get", "hud_scale"), "1")
         self.assertEqual(drive(self.binary, folder, "get", "[Experimental]"), "-1")
-        self.assertEqual(drive(self.binary, folder, "get", "; Unfinished features, off in this release. They may change or break. Set a line to 1 to try one."), "-1")
+        self.assertEqual(drive(self.binary, folder, "get", WARNING.strip()), "-1")
 
     def test_mutants_of_the_lines_are_caught(self):
         text = CE_CPP.read_text()
         report = CE_REPORT.read_text()
         mutants = {
-            "default-on": ("ce", 'CE_SettingGetBool(mode, 0) == 1', 'CE_SettingGetBool(mode, 1) == 1'),
-            "tank-for-every-mode": ("ce", '(i == 3 && CE_SettingIs(mode, "tank"))', '(i >= 0 && CE_SettingIs(mode, "tank"))'),
-            "tank-lost": ("ce", '|| (i == 3 && CE_SettingIs(mode, "tank"))', ''),
+            "default-off": ("ce", 'CE_SettingGetBool(mode, 1) == 1', 'CE_SettingGetBool(mode, 0) == 1'),
             "read-every-time": ("ce", "\t\tif (on[i] < 0)\n\t\t\ton[i] =", "\t\tif (true)\n\t\t\ton[i] ="),
             "one-cache-for-all": ("ce", "static int on[4] = {-1, -1, -1, -1};\n\tfor (int i = 0; mode && i < 4; i++)\n\t{\n\t\tif (strcmp(mode, kExperimentalKeys[i]))\n\t\t\tcontinue;\n\t\tif (on[i] < 0)\n\t\t\ton[i] = ",
                                   "static int on[4] = {-1, -1, -1, -1};\n\tfor (int i = 0; mode && i < 4; i++)\n\t{\n\t\tif (strcmp(mode, kExperimentalKeys[i]))\n\t\t\tcontinue;\n\t\tif (on[i] < 0 && on[0] < 0)\n\t\t\ton[i] = "),
             "key-renamed": ("ce", '"map_editor", "museum"', '"map_editor_", "museum"'),
-            "keys-swapped": ("ce", '"map_editor", "museum", "commander", "play_unit"};\n\nbool', '"map_editor", "museum", "play_unit", "commander"};\n\nbool'),
             # the parser before the 0.2 review: a NUL byte or an open section header did not stop a line turning a feature on
             "the-old-parser": ("ce", "on[i] = ce_ini_well_formed_for_experimental() && (", "on[i] = ("),
             "nul-bytes-allowed": ("ce", "bool good = ok != 0 && !memchr(t, 0, len);", "bool good = ok != 0;"),
@@ -225,8 +213,6 @@ class Lines(unittest.TestCase):
             "no-blanks-before-eq": ("report", "p += key_len;\n\twhile (p < len && (line[p] == ' ' || line[p] == '\\t')) ++p;", "p += key_len;"),
             "bool-rejects-spaced-key": ("ce", "size_t eq = 0;\n\t\tif (!ce_ini_match_key(line, n, key, size, &eq)) continue;\n\t\tif (seen) { value = def; break; }\n\t\tseen = true;\n\t\tsize_t pos = eq + 1;",
                                         "if (n <= size || memcmp(line, key, size) || line[size] != '=') continue;\n\t\tif (seen) { value = def; break; }\n\t\tseen = true;\n\t\tsize_t pos = size + 1;"),
-            "is-rejects-spaced-key": ("ce", "size_t eq = 0;\n\t\tif (!ce_ini_match_key(line, n, key, size, &eq)) continue;\n\t\tif (seen) { match = 0; break; }\n\t\tseen = true;\n\t\tsize_t pos = eq + 1, end = n;",
-                                      "if (n <= size || memcmp(line, key, size) || line[size] != '=') continue;\n\t\tif (seen) { match = 0; break; }\n\t\tseen = true;\n\t\tsize_t pos = size + 1, end = n;"),
         }
         for name, (which, old, new) in mutants.items():
             with self.subTest(mutant=name):
@@ -305,30 +291,30 @@ class Block(unittest.TestCase):
         self.assertEqual((folder / "ce.ini").read_bytes().decode().count("[Experimental]"), 1)
 
     def test_a_value_the_player_set_is_never_changed_or_repeated(self):
-        # 0.1.13's commander=1 and the older play_unit=tank stay where they are; the block adds only the lines that are missing
-        before = "update_check=1\ncommander=1\nplay_unit=tank\nrumble=0\n"
+        # 0.1.13's commander=0 and the older play_unit=tank stay where they are; the block adds only the lines that are missing
+        before = "update_check=1\ncommander=0\nplay_unit=tank\nrumble=0\n"
         got = self.written(before.encode())
-        self.assertEqual(got, before + "\n[Experimental]\n" + WARNING + "map_editor=0\nmuseum=0\n")
+        self.assertEqual(got, before + "\n[Experimental]\n" + WARNING + "map_editor=1\nmuseum=1\n")
         self.assertEqual(got.count("commander="), 1)
         self.assertEqual(got.count("play_unit="), 1)
         folder = self.folder(before.encode())
         drive(self.binary, folder, "block")
-        self.assertEqual(drive(self.binary, folder, "all"), "0 0 1 1", "commander=1 and play_unit=tank still turn their features on")
+        self.assertEqual(drive(self.binary, folder, "all"), "1 1 0 1", "commander=0 stays off while missing defaults and play_unit=tank stay on")
 
     def test_a_spaced_value_the_player_set_is_not_repeated_and_updates_in_place(self):
         before = "update_check = 1\ncommander = 1\n  play_unit\t=\ttank\nrumble = 0\n"
         got = self.written(before.encode())
-        self.assertEqual(got, before + "\n[Experimental]\n" + WARNING + "map_editor=0\nmuseum=0\n")
-        self.assertNotIn("commander=0", got)
-        self.assertNotIn("play_unit=0", got)
+        self.assertEqual(got, before + "\n[Experimental]\n" + WARNING + "map_editor=1\nmuseum=1\n")
+        self.assertNotIn("commander=1\n\n[Experimental]", got)
+        self.assertNotIn("play_unit=1", got)
         folder = self.folder(before.encode())
         drive(self.binary, folder, "block")
-        self.assertEqual(drive(self.binary, folder, "all"), "0 0 1 1")
+        self.assertEqual(drive(self.binary, folder, "all"), "1 1 1 1")
         # updating commander replaces "commander = 1" in place with canonical "commander=0"
         self.assertEqual(drive(self.binary, folder, "set", "commander", "0"), "1")
         updated = (folder / "ce.ini").read_text()
-        self.assertEqual(updated, "update_check = 1\ncommander=0\n  play_unit\t=\ttank\nrumble = 0\n\n[Experimental]\n" + WARNING + "map_editor=0\nmuseum=0\n")
-        self.assertEqual(drive(self.binary, folder, "all"), "0 0 0 1")
+        self.assertEqual(updated, "update_check = 1\ncommander=0\n  play_unit\t=\ttank\nrumble = 0\n\n[Experimental]\n" + WARNING + "map_editor=1\nmuseum=1\n")
+        self.assertEqual(drive(self.binary, folder, "all"), "1 1 0 1")
 
     def test_every_other_line_is_kept_byte_for_byte(self):
         before = b"# the player's note\xc3\xa9\nupdate_check=0\n  indented=1\nhud_scale=2\r\nmods=x\n\n\nlast=1"
@@ -376,13 +362,13 @@ class Block(unittest.TestCase):
         self.assertEqual(sorted(p.name for p in folder.iterdir()), ["ce.ini"])
         self.assertEqual((folder / "ce.ini").stat().st_mode & 0o777, 0o600)
 
-    def test_the_lines_read_back_as_off_and_a_player_turns_one_on_by_editing(self):
+    def test_the_lines_read_back_as_on_and_a_player_turns_one_off_by_editing(self):
         folder = self.folder(None)
         drive(self.binary, folder, "block")
-        self.assertEqual(drive(self.binary, folder, "all"), "0 0 0 0")
-        text = (folder / "ce.ini").read_text().replace("museum=0", "museum=1")
+        self.assertEqual(drive(self.binary, folder, "all"), "1 1 1 1")
+        text = (folder / "ce.ini").read_text().replace("museum=1", "museum=0")
         (folder / "ce.ini").write_text(text)
-        self.assertEqual(drive(self.binary, folder, "all"), "0 1 0 0")
+        self.assertEqual(drive(self.binary, folder, "all"), "1 0 1 1")
 
     def test_settings_written_later_keep_the_block_whole_and_last(self):
         folder = self.folder(b"update_check=1\n")
@@ -390,10 +376,10 @@ class Block(unittest.TestCase):
         # a key that is not there goes above the header; one that is there changes in place; one in the block changes in place
         self.assertEqual(drive(self.binary, folder, "set", "hud_scale", "1"), "1")
         self.assertEqual(drive(self.binary, folder, "set", "update_check", "0"), "1")
-        self.assertEqual(drive(self.binary, folder, "set", "commander", "1"), "1")
+        self.assertEqual(drive(self.binary, folder, "set", "commander", "0"), "1")
         self.assertEqual(drive(self.binary, folder, "set", "cheat_malloy", "1"), "1")
         got = (folder / "ce.ini").read_text()
-        self.assertEqual(got, "update_check=0\nhud_scale=1\ncheat_malloy=1\n\n[Experimental]\n" + WARNING + "map_editor=0\nmuseum=0\ncommander=1\nplay_unit=0\n")
+        self.assertEqual(got, "update_check=0\nhud_scale=1\ncheat_malloy=1\n\n[Experimental]\n" + WARNING + "map_editor=1\nmuseum=1\ncommander=0\nplay_unit=1\n")
         self.assertEqual(got.count("[Experimental]"), 1)
         # and the block is not written a second time at the next start
         drive(self.binary, folder, "block")
@@ -476,8 +462,9 @@ class Block(unittest.TestCase):
         """What a build of the writer does with the file as such (inode, mode, a read-only file, the size limit), as plain data."""
         seen = []
         env = {"PATH": os.environ.get("PATH", "/usr/bin"), "HOME": "/nonexistent"}
+        near_limit = b"a=1\n" * ((1 << 18) - max(1, (len(BLOCK) - 24) // 4))
         for text, mode in ((BLOCK.encode(), 0o640), (b"update_check=0\n", 0o640), (b"update_check=0\n", 0o444),
-                          (b"a=1\n" * (1 << 18), 0o600), (b"a=1\n" * ((1 << 18) - 32), 0o600)):   # the last: the block would end 32 bytes past the limit
+                          (b"a=1\n" * (1 << 18), 0o600), (near_limit, 0o600)):   # the last: the block ends ~24 bytes past the 1 MiB limit
             folder = self.folder(text)
             (folder / "ce.ini").chmod(mode)
             before = (folder / "ce.ini").stat()
@@ -515,7 +502,7 @@ class Block(unittest.TestCase):
         mutants = {
             "header-not-looked-for": (report, "if (!key && t && ce_ini_find_header(t, len, section_header) < len) { free(t); ce_settings_dir_close(&dir); return 1; }", ""),
             "present-keys-repeated": (report, "(!t || !ce_ini_has_key(t, len, section_keys[i])) && fprintf", "fprintf"),
-            "block-values-on": (report, '"%s=0\\n", section_keys[i]', '"%s=1\\n", section_keys[i]'),
+            "block-values-off": (ce_text, 'kExperimentalKeys, 4, "1", NULL))', 'kExperimentalKeys, 4, "0", NULL))'),
             "no-note": (report, 'fprintf(o, "%s\\n%s", section_header, section_note ? section_note : "")', 'fprintf(o, "%s\\n", section_header)'),
             "no-separator": (report, "if (len > 0 && fputc('\\n', o) == EOF) ok = 0;", ""),
             "header-needs-no-cr-handling": (report, "while (n > 0 && (l[n - 1] == '\\r' || l[n - 1] == ' ' || l[n - 1] == '\\t')) n--;", ""),
@@ -526,7 +513,8 @@ class Block(unittest.TestCase):
             "drops-other-lines": (report, "else if (fwrite(l, 1, n, o) != n || (!nl && fputc('\\n', o) == EOF))", "else if (key && (fwrite(l, 1, n, o) != n || (!nl && fputc('\\n', o) == EOF)))"),
             "has-key-rejects-spaced-key": (report, "if (ce_ini_match_key(t + at, n, key, k, NULL)) return 1;", "if (n > k && !memcmp(t + at, key, k) && t[at + k] == '=') return 1;"),
             "edit-rejects-spaced-key": (report, "if (key && ce_ini_match_key(l, line_len, key, k, NULL))", "if (key && line_len > k && !memcmp(l, key, k) && l[k] == '=')"),
-            "keys-forgotten": (ce_text, "kExperimentalKeys, 4))", "kExperimentalKeys, 3))"),
+            "keys-forgotten": (ce_text, 'kExperimentalKeys, 4, "1", NULL))', 'kExperimentalKeys, 3, "1", NULL))'),
+            "keys-swapped": (ce_text, '"map_editor", "museum", "commander", "play_unit"};\n\nbool', '"map_editor", "museum", "play_unit", "commander"};\n\nbool'),
         }
         probes = [(None, "n"), (b"update_check=0\n", "u"), (b"commander=1\nplay_unit=tank\n", "c"),
                   (b"commander = 1\n  play_unit\t=\ttank\n", "cs"), (BLOCK.encode(), "b"), (b"a=1\r\n[Experimental]\r\nmuseum=1\r\n", "r"),
@@ -547,7 +535,7 @@ class Block(unittest.TestCase):
                     twice = self.written(text, 2, binary)
                     if mutant != good or twice != mutant:
                         caught = True
-                for text in (b"a=1\nb=2\n", BLOCK.encode(), BLOCK.replace("museum=0", "  museum = 0").encode()):
+                for text in (b"a=1\nb=2\n", BLOCK.encode(), BLOCK.replace("museum=1", "  museum = 1").encode()):
                     folder2 = self.folder(text)
                     drive(self.binary, folder2, "block")
                     reference = self.folder(text)
@@ -646,7 +634,7 @@ class Entry(unittest.TestCase):
         self.assertIn("const bool modsAvailable = !PortModsPlatformOff();", text)
         self.assertIn("if (!lab.mNeedsMods || modsAvailable)", text)
         self.assertIn("CE_SettingSet(mLab->mKey, value)", text)
-        self.assertIn('kLabsNote[] = L"Unfinished features - changes apply on next restart.";', text)
+        self.assertIn('kLabsNote[] = L"All CE features start On - changes apply on next restart.";', text)
 
     def test_mutants_of_the_entry_points_are_caught(self):
         def commander_ok(t):

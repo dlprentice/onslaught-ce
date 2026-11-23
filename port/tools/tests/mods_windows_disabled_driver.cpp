@@ -47,7 +47,7 @@ int main() {
 
     configured = 1;
     TestLoad();
-#if (defined(TEST_AS_WINDOWS) && !defined(PORT_MODS_WINDOWS_ON)) || defined(PORT_MODS_PLATFORM_OFF)
+#if defined(PORT_MODS_PLATFORM_OFF)
     if (entered_loader || !notices) return 2;
 #else
     if (entered_loader != 1) return 3;

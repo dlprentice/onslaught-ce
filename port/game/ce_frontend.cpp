@@ -1040,7 +1040,7 @@ static const SCeSetting	kSettings[] = {
 	 {L"Rumbles a gamepad when your Battle Engine is hit or shaken. Not flight sticks.", kNextStart}, CEAF_NONE, 0},
 	{L"Dodge Button:", "dodge_button", CE_CHOICES(kNoYes), 1,
 	 {L"Ground: hold Dodge and move. Pick a key in Controller Options.", kNextLevel}, CEAF_NONE, 0},
-	{L"Commander Map:", "commander", CE_CHOICES(kNoYes), 0,
+	{L"Commander Map:", "commander", CE_CHOICES(kNoYes), 1,
 	 {L"Live squad view for solo play. Pick a key in Controller Options.", kNextStart}, CEAF_NONE, 0},
 	{L"Your Music:", "music_dir", NULL, 0, 0,
 	 {L"Your own music's folder. Select to see it.", kNextRead}, CEAF_NONE, 0},
@@ -1068,8 +1068,14 @@ struct SCeLab
 };
 
 static const SCeLab	kLabs[] = {
+#ifndef CE_NETWORK_OFF
+	{L"Network Game:", "network_game",
+	 {L"Online and LAN co-op lobby, direct IP and relay.", 0}, false},
+#endif
 	{L"Commander Mode:", "commander",
 	 {L"Live squad view and orders in solo levels.", 0}, false},
+	{L"Commander Map (V):", "commander_tactical_map",
+	 {L"Paused 2D tactical map inside Commander view.", 0}, false},
 	{L"Play Any Unit:", "play_unit",
 	 {L"Pilot any friendly unit in solo levels.", 0}, false},
 	{L"Grand Museum:", "museum",
@@ -1078,9 +1084,15 @@ static const SCeLab	kLabs[] = {
 	 {L"Adds the Map Editor to edit and play maps.", 0}, false},
 	{L"Mods Menu:", "mods_menu",
 	 {L"Adds the Mods page to manage your mods.", 0}, true},
+	{L"Solo Skirmish:", "solo_skirmish",
+	 {L"Default skirmish mode to 1P vs AI instead of split screen.", 0}, false},
+	{L"Extras:", "extras",
+	 {L"Service record, music player, lore and career backups.", 0}, false},
+	{L"Catalogue:", "catalogue",
+	 {L"Browse installed models, textures and sounds.", 0}, false},
 };
 #define CE_NUM_LABS	int(sizeof(kLabs) / sizeof(kLabs[0]))
-static WCHAR		kLabsNote[] = L"Unfinished features - changes apply on next restart.";
+static WCHAR		kLabsNote[] = L"All CE features start On - changes apply on next restart.";
 
 // Where the lists are centred: MenuOptionsList.cpp's Render centres its items of 20 pixels on y, so with n of them (Back among them)
 // the first is at y - 10n - 15 and Back, the last, at y + 10n - 35, and Back draws the hint from 28 pixels below its top. The title
@@ -1152,7 +1164,7 @@ static void	ControlsTips(char *out, int n, bool commander)
     char commanderLine[128] = {};
 	if (commander && !PortCeActionConflict(CeControlAction::Commander, PortCeActionKey(CeControlAction::Commander)))
 	{
-		const bool map = CE_SettingGetBool("commander_tactical_map", 0) == 1;
+		const bool map = CE_SettingGetBool("commander_tactical_map", 1) == 1;
 		snprintf(commanderLine, sizeof(commanderLine), map ? kControlsTipsCommanderMap : kControlsTipsCommander, PortCeActionName(CeControlAction::Commander));
 	}
 	const char *sections[]={dodge,gesture,kTipsRest,commanderLine};
@@ -1538,11 +1550,7 @@ public:
 
 	int		Lookup()
 	{
-		if (CE_SettingGetBool(mLab->mKey, 0) == 1)
-			return 1;
-		if (!strcmp(mLab->mKey, "play_unit") && CE_SettingIs(mLab->mKey, "tank"))
-			return 1;
-		return 0;
+		return CE_SettingGetBool(mLab->mKey, 1) == 1 ? 1 : 0;
 	}
 	virtual void	Render(float x, float y, BOOL selected)
 	{
@@ -1612,8 +1620,8 @@ public:
 		for (int i = 0; i < hubCount; i++)
 		{
 #ifndef CE_NETWORK_OFF
-			// The first row is only available when this process can offer a network game (not recordings, replays or tests).
-			if ((kHubRows[i].mAction == CEA_NETWORK) && !PortCeNetOffered())
+			// The first row is available when this process can offer a network game and the player has not toggled it off.
+			if ((kHubRows[i].mAction == CEA_NETWORK) && (!PortCeNetOffered() || CE_SettingGetBool("network_game", 1) != 1))
 				continue;
 #endif
 			if (ExperimentalOffered(kHubRows[i].mAction))
@@ -1696,7 +1704,7 @@ public:
 		for (const SCeLab &lab : kLabs)
 			if (!lab.mNeedsMods || modsAvailable)
 				mLabs[mLabCount++] = lab;
-		CMenuOptionsList *labs = NewList(CEP_LABS);
+		CMenuOptionsList *labs = NewList(CEP_LABS, kCeHubY);
 		for (int i = 0; i < mLabCount; i++)
 			labs->AddItem(new (MEMTYPE_MENUITEM) CCeLabSwitch(mLabs[i]));
 		labs->AddItem(new (MEMTYPE_MENUITEM) CCeBack(labs, &mLabs[0].mHint, int(sizeof(SCeLab)), mLabCount, kLabsNote));

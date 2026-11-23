@@ -211,7 +211,7 @@ bool TacticalMapAllowed()
 	static int allowed = -1;
 	if (allowed < 0)
 	{
-		allowed = CE_SettingGetBool("commander_tactical_map", 0) == 1 ? 1 : 0;
+		allowed = CE_SettingGetBool("commander_tactical_map", 1) == 1 ? 1 : 0;
 #ifdef CE_COMMANDER_TEST
 		if (const char *v = getenv("BEA_PORT_COMMANDER_TACTICAL")) if (!strcmp(v, "1")) allowed = 1;
 #endif

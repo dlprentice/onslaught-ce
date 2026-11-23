@@ -173,13 +173,62 @@ def extract_bea_tokens(data: bytes) -> set[str]:
     return {m.group(0).decode("ascii") for m in BEA_TOKEN.finditer(data)}
 
 
-def judge_tokens(tokens: set[str]) -> list[str]:
+# Additional reviewed BEA_* variables present ONLY when networking/ICE/signaling is explicitly compiled into a public
+# build (--public --with-network [--with-ice --with-native-signaling]). Non-network test switches (test-kit, stack marker,
+# commander-test, play-unit-test, BEA_NET_TEST_*, and any undocumented BEA_* name) remain strictly forbidden.
+ALLOWED_PUBLIC_NETWORK_BEA: dict[str, str] = {
+    "BEA_LOCKSTEP_DELAY": "lockstep co-op input delay setting",
+    "BEA_LOCKSTEP_DUMP": "lockstep co-op divergence trace output",
+    "BEA_LOCKSTEP_EXTRA_RENDERS": "lockstep co-op render cadence diagnostic",
+    "BEA_LOCKSTEP_FLIP_CW_AT": "lockstep co-op x87 CW fence diagnostic",
+    "BEA_LOCKSTEP_HASH_EVERY": "lockstep co-op state hash cadence",
+    "BEA_LOCKSTEP_NO_CW_FENCE": "lockstep co-op CW fence diagnostic",
+    "BEA_LOCKSTEP_NO_LOSS": "lockstep co-op loss diagnostic",
+    "BEA_LOCKSTEP_NO_PARTICLES": "lockstep co-op particle fence diagnostic",
+    "BEA_LOCKSTEP_POISON_STACK": "lockstep co-op stack determinism diagnostic (stripped/controlled by lobby)",
+    "BEA_LOCKSTEP_QUIT_AT": "lockstep co-op stop tick",
+    "BEA_LOCKSTEP_SECRET": "lockstep co-op session secret handoff",
+    "BEA_LOCKSTEP_SKEW_AT": "lockstep co-op skew detection diagnostic",
+    "BEA_LOCKSTEP_STALL_AT": "lockstep co-op stall diagnostic",
+    "BEA_LOCKSTEP_STALL_EVERY": "lockstep co-op periodic stall diagnostic",
+    "BEA_LOCKSTEP_STALL_FROM": "lockstep co-op stall window start",
+    "BEA_LOCKSTEP_STALL_MS": "lockstep co-op stall duration",
+    "BEA_LOCKSTEP_TEST_CLOCK_JITTER": "lockstep co-op clock jitter diagnostic",
+    "BEA_LOCKSTEP_TEST_CLOCK_READ": "lockstep co-op clock read diagnostic",
+    "BEA_LOCKSTEP_TEST_FRAME_READ": "lockstep co-op frame read diagnostic",
+    "BEA_LOCKSTEP_TEST_FRAME_SLEEP_MS": "lockstep co-op frame pacing diagnostic",
+    "BEA_LOCKSTEP_TEST_UNINIT_READ": "lockstep co-op uninit read diagnostic",
+    "BEA_LOCKSTEP_TEST_X87_STATUS": "lockstep co-op x87 status diagnostic",
+    "BEA_NET_COMPAT": "network build/content compatibility override",
+    "BEA_NET_HANDOFF_OWNER": "network restart handoff process owner identity",
+    "BEA_NET_ICE_DIRECTORY": "ICE lobby exchange directory",
+    "BEA_NET_ICE_FIXTURE": "ICE loopback fixture mode",
+    "BEA_NET_ICE_GAME_DIRECTORY": "ICE game exchange directory",
+    "BEA_NET_ICE_LIFETIME_SECONDS": "ICE grant lifetime bound",
+    "BEA_NET_LOBBY_BIND": "network lobby local UDP bind address",
+    "BEA_NET_LOBBY_CAMPAIGN": "network lobby experimental campaign row switch",
+    "BEA_NET_LOBBY_CODE_OUT": "network lobby host join-code output path",
+    "BEA_NET_SECRET": "network session secret handoff",
+    "BEA_NET_SIGNAL_AUTHORITY_FD": "sealed signaling authority handle/fd across game launch",
+    "BEA_PORT_FAKE_KEYS_GAME": "network boot fence strip list / headless game launch keys",
+    "BEA_PORT_FAKE_KEYS_RETURN": "network lobby return headless keys",
+    "BEA_PORT_FAKE_PAD_END": "network boot fence strip list",
+    "BEA_PORT_FAKE_PAD_GAME": "network boot fence strip list",
+    "BEA_PORT_INPUT_DUMP": "network boot fence strip list",
+    "BEA_PORT_UI_INPUT_FD": "network boot fence strip list",
+}
+
+
+def judge_tokens(tokens: set[str], *, network_enabled: bool = False) -> list[str]:
     """Return failure messages for any forbidden test switch or unallowlisted BEA_* token."""
+    allowed = ALLOWED_PUBLIC_BEA if not network_enabled else (ALLOWED_PUBLIC_BEA | ALLOWED_PUBLIC_NETWORK_BEA)
     problems: list[str] = []
     for name in sorted(tokens):
+        if name in allowed:
+            continue
         if name in FORBIDDEN_EXACT or name.startswith(FORBIDDEN_PREFIXES):
             problems.append(f"forbidden test-build switch in public binary: {name}")
-        elif name not in ALLOWED_PUBLIC_BEA:
+        else:
             problems.append(f"unallowlisted BEA_* environment variable in public binary: {name}")
     return problems
 
@@ -216,9 +265,13 @@ class BuiltBinaryEnvTests(unittest.TestCase):
             if REQUIRE_BINARY:
                 self.fail(f"required {label} binary missing at {exe}")
             self.skipTest(f"SKIPPED, NOT PASSED: no built {label} binary at {exe}")
-        tokens = extract_bea_tokens(exe.read_bytes())
+        data = exe.read_bytes()
+        tokens = extract_bea_tokens(data)
         self.assertGreater(len(tokens), 10, f"{exe}: unexpectedly few BEA_* strings ({len(tokens)})")
-        problems = judge_tokens(tokens)
+        flavour_file = exe.parent.parent / "flavour.txt"
+        flavour = flavour_file.read_text().splitlines()[0].strip() if flavour_file.is_file() else ""
+        network_enabled = flavour in ("public-network", "public-network-ice") or b"CE-NET-FEATURE:ICE-LIBJUICE:1" in data
+        problems = judge_tokens(tokens, network_enabled=network_enabled)
         self.assertEqual(problems, [], f"{exe} failed env allowlist:\n" + "\n".join(problems))
 
     def test_built_public_binaries(self):

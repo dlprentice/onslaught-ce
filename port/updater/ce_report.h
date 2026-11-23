@@ -713,7 +713,9 @@ static inline int ce_ini_edit_file(const char *ini, const char *key, const char 
 	size_t len = 0;
 	FILE *f = NULL;
 	int input = -1, absent = 0, readonly = 0;
+#ifndef _WIN32
 	unsigned keep_mode = 0600;	/* the permission bits the replacement gets: the old file's, else private */
+#endif
 #ifdef _WIN32
 	char full[4500];
 	snprintf(full, sizeof full, "%s\\%s", dir.path, name);
@@ -850,10 +852,11 @@ static inline int ce_ini_edit_file(const char *ini, const char *key, const char 
 	if (ok && !written && fprintf(o, "%s=%s\n", key, value) < 0) ok = 0;
 	if (ok && !key)
 	{
+		const char *section_default = (value && *value) ? value : "0";
 		if (len > 0 && fputc('\n', o) == EOF) ok = 0;
 		if (ok && fprintf(o, "%s\n%s", section_header, section_note ? section_note : "") < 0) ok = 0;
 		for (int i = 0; ok && i < section_count; i++)
-			if ((!t || !ce_ini_has_key(t, len, section_keys[i])) && fprintf(o, "%s=0\n", section_keys[i]) < 0) ok = 0;
+			if ((!t || !ce_ini_has_key(t, len, section_keys[i])) && fprintf(o, "%s=%s\n", section_keys[i], section_default) < 0) ok = 0;
 	}
 	if (o && (fflush(o) != 0 || ferror(o))) ok = 0;
 	if (ok && o)
@@ -930,6 +933,13 @@ static inline int ce_ini_write_ex(const char *ini, const char *key, const char *
 static inline int ce_ini_write(const char *ini, const char *key, const char *value)
 {
 	return ce_ini_write_ex(ini, key, value, NULL);
+}
+
+/* Adds a section block with an explicit default value ("0" or "1") for any missing keys, reporting any refusal reason. */
+static inline int ce_ini_add_section_default_ex(const char *ini, const char *header, const char *note,
+	const char *const *keys, int count, const char *default_value, int *refusal_out)
+{
+	return ce_ini_edit_ex(ini, NULL, default_value, header, note, keys, count, refusal_out);
 }
 
 /* Adds the block that lists the unfinished features, reporting any refusal reason in *refusal_out. */

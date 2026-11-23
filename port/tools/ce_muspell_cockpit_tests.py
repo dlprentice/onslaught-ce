@@ -287,6 +287,9 @@ def run_bea_offscreen(exe, game_dir, run_dir, level, quit_frames, ce_ini_text=""
     if fake_keys is not None:
         env["BEA_PORT_FAKE_KEYS"] = fake_keys
     libs = resolve_runtime_libs()
+    exe_lib = Path(exe).resolve().parent / "lib"
+    if exe_lib.is_dir():
+        libs = [str(exe_lib)] + libs
     if libs:
         env["LD_LIBRARY_PATH"] = ":".join(libs)
     cmd = [str(exe), "-level", str(level), "-skipfmv", "-forcewindowed", "-res", "1280", "720"]

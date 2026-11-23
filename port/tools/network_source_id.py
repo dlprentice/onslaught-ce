@@ -169,12 +169,14 @@ def _port_input(name: str) -> bool:
 
 
 def _source_input(name: str) -> bool:
-    return (name.startswith(("src/", "linklib/")) or _port_input(name)
+    return ((name.startswith(("src/", "linklib/")) and not name.startswith("src/data/")) or _port_input(name)
             or name.startswith(("port/patches/", "port/deps-patches/")) and name.endswith(".patch"))
 
 
 def _check_untracked(root: Path, tracked: frozenset[str]) -> None:
     # Include ignored candidates: an ignored *.cpp is still consumed by production globs. Never traverse links.
+    # Ignore src/data/ which holds ignored retail-data symlinks and matching-build generated NVShaderFragments.inc;
+    # build.py always stages mirror/src/data/ from config/game-data.sha256 and zero-fills NVShaderFragments.inc.
     for rel in ("src", "linklib", "port"):
         top = root / rel
         if top.is_symlink():
@@ -182,7 +184,9 @@ def _check_untracked(root: Path, tracked: frozenset[str]) -> None:
         if not top.exists():
             continue
         for here, dirs, files in os.walk(top, followlinks=False):
+            here_rel = Path(here).relative_to(root).as_posix()
             dirs[:] = [d for d in dirs if d not in ("tests", "__pycache__")
+                       and not (here_rel == "src" and d == "data")
                        and not ((Path(here) / d).relative_to(root).as_posix() + "/").startswith(NONPRODUCTION_PORT_ROOTS)
                        and not (Path(here) / d).is_symlink()]
             for name in files:
@@ -191,7 +195,7 @@ def _check_untracked(root: Path, tracked: frozenset[str]) -> None:
                     raise SourceIDError("untracked production input: " + candidate)
             # A symlink directory may introduce arbitrary headers/sources through include search or globs.
             for child in Path(here).iterdir():
-                if child.is_symlink() and child.name not in ("tests", "__pycache__"):
+                if child.is_symlink() and child.name not in ("tests", "__pycache__") and not (here_rel == "src" and child.name == "data"):
                     raise SourceIDError("symlink in production tree: " + child.relative_to(root).as_posix())
 
 

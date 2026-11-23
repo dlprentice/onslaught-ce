@@ -35,13 +35,14 @@ def main():
     else:
         cc=str(a.toolchain_data/"llvm-mingw/bin/i686-w64-mingw32-clang")
         cxx=str(a.toolchain_data/"llvm-mingw/bin/i686-w64-mingw32-clang++")
+    extra_libs=["-ladvapi32"] if a.target=="windows32" else []
     binary=out/("ice_exchange_tests.exe" if a.target=="windows32" else "ice_exchange_tests")
     commands=[
         [cxx,*flags,"-std=c++17","-c",str(ROOT/"port/network/ice_exchange.cpp"),"-o",str(out/"disabled.o")],
         [cc,*flags,"-std=gnu11","-O2","-c",str(mono/"monocypher.c"),"-o",str(out/"monocypher.o")],
         [cxx,*flags,"-std=c++17","-O2","-Wall","-Wextra","-Werror","-DCE_NETWORK_ICE=1","-I"+str(mono),
          str(ROOT/"port/network/ice_exchange.cpp"),str(ROOT/"port/network/tests/ice_exchange_tests.cpp"),
-         str(out/"monocypher.o"),"-o",str(binary)]]
+         str(out/"monocypher.o"),*extra_libs,"-o",str(binary)]]
     with (out/"build.log").open("w") as log:
         for command in commands:subprocess.run(command,check=True,stdout=log,stderr=subprocess.STDOUT,timeout=90)
     print("Built",a.target,"exchange fixture")

@@ -384,6 +384,9 @@ def run_bea_offscreen(exe, game_dir, run_dir, level, quit_frames, ce_ini_text=No
     if extra_env:
         env.update(extra_env)
     libs = resolve_runtime_libs()
+    exe_lib = Path(exe).resolve().parent / "lib"
+    if exe_lib.is_dir():
+        libs = [str(exe_lib)] + libs
     if libs:
         env["LD_LIBRARY_PATH"] = ":".join(libs)
     cmd = [str(exe)]

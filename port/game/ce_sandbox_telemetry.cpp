@@ -31,10 +31,10 @@ extern char** environ;
 bool PortCeLayer();
 bool PortRecording();
 extern "C" int CE_SettingGetBool(const char* key, int def);
-extern "C" bool CE_BootRequested() __attribute__((weak));
-extern "C" bool CE_LockstepRequested() __attribute__((weak));
+extern "C" int CE_BootRequested(void) __attribute__((weak));
+extern "C" int CE_LockstepRequested(void) __attribute__((weak));
 extern "C" int CE_LockstepSharing(void) __attribute__((weak));
-extern "C" bool CE_SessionActive() __attribute__((weak));
+extern "C" int CE_SessionActive(void) __attribute__((weak));
 extern "C" bool PortCeLivingSandboxActive(void) __attribute__((weak));
 bool PortCeNetActive() __attribute__((weak));
 

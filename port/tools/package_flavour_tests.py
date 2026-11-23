@@ -49,18 +49,20 @@ class FlavourTests(unittest.TestCase):
                 package.build_flavour(build)
 
     def test_a_windows_program_with_the_mod_loader_switched_on_is_refused_while_mods_are_off_on_windows(self):
-        # flavour.txt says public for a build.py --mods-windows-test build too: the program itself tells, by the switch's line that only the default build holds.
+        # flavour.txt says public for a build.py --mods-windows-test build too: the program itself tells, by the switch's line when present in mods.cpp.
         source = package.MODS_CPP.read_text()
-        self.assertIn(package.MODS_WINDOWS_OFF, source, "mods are off on Windows today: the check is live")
+        self.assertNotIn(package.MODS_WINDOWS_OFF, source, "mods are enabled on Windows in this release")
         self.assertIn('"%s"' % package.MODS_CHECK_COMMAND, source, "every public program holds the check command")
         default = b"\0MZ...\0--check-mods\0" + package.MODS_WINDOWS_OFF.encode() + b"\0..."
         switched_on = b"\0MZ...\0--check-mods\0off in this build\0..."
-        self.assertIsNone(package.mods_windows_switch_problem(default, source))
-        self.assertIn("--mods-windows-test", package.mods_windows_switch_problem(switched_on, source))
+        # with mods enabled on Windows, the released Windows program is accepted
+        self.assertIsNone(package.mods_windows_switch_problem(switched_on, source))
+        # if a source tree re-introduces MODS_WINDOWS_OFF, the guard still catches a --mods-windows-test binary
+        guarded_source = source + "\n// " + package.MODS_WINDOWS_OFF + "\n"
+        self.assertIsNone(package.mods_windows_switch_problem(default, guarded_source))
+        self.assertIn("--mods-windows-test", package.mods_windows_switch_problem(switched_on, guarded_source))
         # a test's authored stand-in, which is no CE program, is left to the other checks
-        self.assertIsNone(package.mods_windows_switch_problem(b"authored candidate\n", source))
-        # once the commit that enables mods on Windows has removed the line, nothing is refused
-        self.assertIsNone(package.mods_windows_switch_problem(switched_on, source.replace(package.MODS_WINDOWS_OFF, "")))
+        self.assertIsNone(package.mods_windows_switch_problem(b"authored candidate\n", guarded_source))
 
 
 if __name__ == "__main__":

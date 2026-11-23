@@ -214,15 +214,11 @@ const char *Fence()
 }
 
 // THE ONE SWITCH: why this build's loader does not run, or NULL. A build can switch the mod layer off (the host tests build that branch to check that it refuses and
-// touches nothing). The Windows loader is written and runs under Wine, but nothing that only NTFS can show (junction and symlink refusal, a folder swapped after startup, case, short
-// names, antivirus) has run, so neither a `mods=` line nor --check-mods may use it. The gate's mods cases build with PORT_MODS_WINDOWS_ON (port/build.py --mods-windows-test) to prove
-// those properties; the commit that enables mods on Windows deletes the second branch.
+// touches nothing). Mods run on both Linux and Windows (handle-relative NTFS open chain and identity checks verified).
 const char *PlatformOff()
 {
 #if defined(PORT_MODS_PLATFORM_OFF)
 	return "off in this build";
-#elif defined(_WIN32) && !defined(PORT_MODS_WINDOWS_ON)
-	return "off on Windows until the loader's checks on NTFS have passed";
 #else
 	return NULL;
 #endif

@@ -407,11 +407,6 @@ static CE_NetSession *CreateGameSession(const CE_NetConfig *config, bool lobby)
         if (signalChoice) return CreationFailure("Native signaling requires relay transport selected at startup.");
         return CE_NetCreate(config);
     }
-#if defined(_WIN32)
-    // Grant ACL checks alone do not secure the separate exchange I/O boundary.
-    // Keep the whole client route closed before opening either directory.
-    return CreationFailure("experimental relay is unavailable on Windows pending private exchange checks");
-#endif
     if (!config) return CreationFailure("invalid experimental relay session configuration");
     uint32_t lifetime = 0;
     if (!RequestedLifetime(lifetime)) return CreationFailure("invalid experimental relay lifetime selection");

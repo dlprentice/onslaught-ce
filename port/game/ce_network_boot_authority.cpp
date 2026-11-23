@@ -22,6 +22,9 @@
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <unistd.h>
+#elif defined(_WIN32)
+#include "../network/windows_private_acl.h"
+static_assert(sizeof(HANDLE) == sizeof(int), "Windows i686 signaling authority handle must fit int descriptor");
 #endif
 
 namespace {
@@ -77,6 +80,16 @@ bool DirectoryIdentity(const char* path, Identity* out) noexcept {
     close(fd);
     if (ok) *out = {uint64_t(info.st_dev), uint64_t(info.st_ino), uint64_t(info.st_uid)};
     return ok;
+#elif defined(_WIN32)
+    if (!path || !out) return false;
+    CeWinAcl::ScopedHandle dir;
+    BY_HANDLE_FILE_INFORMATION info{};
+    uint64_t userHash = 0;
+    if (!CeWinAcl::OpenPrivateDirectory(path, dir, nullptr, &info, &userHash)) return false;
+    *out = {uint64_t(info.dwVolumeSerialNumber),
+            (uint64_t(info.nFileIndexHigh) << 32) | uint64_t(info.nFileIndexLow),
+            userHash};
+    return true;
 #else
     (void)path; (void)out; return false;
 #endif
@@ -128,6 +141,34 @@ bool Sealed(int fd, struct stat* info) noexcept {
         info->st_uid == geteuid() && info->st_size > 0 && uint64_t(info->st_size) <= ImageMax &&
         seals >= 0 && (seals & RequiredSeals) == RequiredSeals;
 }
+#elif defined(_WIN32)
+bool WinSealedSection(HANDLE handle, size_t* outPayloadSize) noexcept {
+    if (outPayloadSize) *outPayloadSize = 0;
+    const uintptr_t raw = reinterpret_cast<uintptr_t>(handle);
+    if (!handle || handle == INVALID_HANDLE_VALUE || raw < 3) return false;
+    // Verify the handle holds no write permission (immutable read-only kernel section).
+    if (void* writable = MapViewOfFile(handle, FILE_MAP_WRITE, 0, 0, 0)) {
+        UnmapViewOfFile(writable);
+        return false;
+    }
+    void* view = MapViewOfFile(handle, FILE_MAP_READ, 0, 0, 0);
+    if (!view) return false;
+    MEMORY_BASIC_INFORMATION mbi{};
+    bool ok = VirtualQuery(view, &mbi, sizeof mbi) == sizeof mbi &&
+        mbi.State == MEM_COMMIT && mbi.Type == MEM_MAPPED &&
+        (mbi.Protect & 0xFFu) == PAGE_READONLY && mbi.RegionSize >= 4;
+    size_t payloadSize = 0;
+    if (ok) {
+        const auto* hdr = static_cast<const uint8_t*>(view);
+        const uint32_t len = uint32_t(hdr[0]) | (uint32_t(hdr[1]) << 8) |
+                             (uint32_t(hdr[2]) << 16) | (uint32_t(hdr[3]) << 24);
+        if (len == 0 || len > ImageMax || size_t(4) + size_t(len) > mbi.RegionSize) ok = false;
+        else payloadSize = size_t(len);
+    }
+    UnmapViewOfFile(view);
+    if (ok && outPayloadSize) *outPayloadSize = payloadSize;
+    return ok;
+}
 #endif
 } // namespace
 
@@ -157,6 +198,8 @@ CeSignalAuthorityFd::~CeSignalAuthorityFd() { Reset(); }
 void CeSignalAuthorityFd::Reset() noexcept {
 #ifdef __linux__
     if (fd_ >= 0) close(fd_);
+#elif defined(_WIN32)
+    if (fd_ >= 3) CloseHandle(reinterpret_cast<HANDLE>(intptr_t(fd_)));
 #endif
     fd_ = -1;
 }
@@ -166,6 +209,12 @@ int CeSignalAuthorityFd::PrepareExec() noexcept {
     if (!Sealed(fd_, &info)) return -1;
     int flags = fcntl(fd_, F_GETFD);
     if (flags < 0 || fcntl(fd_, F_SETFD, flags & ~FD_CLOEXEC) < 0) return -1;
+    return fd_;
+#elif defined(_WIN32)
+    HANDLE h = reinterpret_cast<HANDLE>(intptr_t(fd_));
+    size_t len = 0;
+    if (!WinSealedSection(h, &len)) return -1;
+    if (!SetHandleInformation(h, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT)) return -1;
     return fd_;
 #else
     return -1;
@@ -267,7 +316,7 @@ void CeBootSignalAuthority::Revoke() noexcept {
 }
 
 CeSignalAuthorityFd CeBootSignalAuthority::Seal(uint64_t utc, uint64_t mono) const noexcept {
-#if defined(__linux__) && defined(SYS_memfd_create)
+#if (defined(__linux__) && defined(SYS_memfd_create)) || defined(_WIN32)
     try {
         std::lock_guard<std::mutex> lock(state_->mutex);
         if (!state_->authenticated || state_->bound || state_->sealed || state_->terminal || !Times(state_->plan, state_->pair.expiresAt, utc, mono) ||
@@ -285,6 +334,7 @@ CeSignalAuthorityFd CeBootSignalAuthority::Seal(uint64_t utc, uint64_t mono) con
             image.Number(text->size()); image.Copy(text->data(), text->size());
         }
         if (image.data.size() > ImageMax) return {};
+#if defined(__linux__) && defined(SYS_memfd_create)
         CeSignalAuthorityFd fd(int(syscall(SYS_memfd_create, "ce-signaling-start", MFD_CLOEXEC | MFD_ALLOW_SEALING)));
         if (!fd) return {};
         ssize_t written;
@@ -293,6 +343,32 @@ CeSignalAuthorityFd CeBootSignalAuthority::Seal(uint64_t utc, uint64_t mono) con
         struct stat info{}; if (!Sealed(fd.fd_, &info)) return {};
         state_->sealed = true;
         return fd;
+#elif defined(_WIN32)
+        CeWinAcl::OwnerOnlySecurity sec;
+        if (!sec.Init(false)) return {};
+        const DWORD totalSize = static_cast<DWORD>(4 + image.data.size());
+        CeWinAcl::ScopedHandle rwMap(CreateFileMappingW(INVALID_HANDLE_VALUE, &sec.sa, PAGE_READWRITE, 0, totalSize, nullptr));
+        if (!rwMap.Good()) return {};
+        void* view = MapViewOfFile(rwMap.value, FILE_MAP_WRITE, 0, 0, totalSize);
+        if (!view) return {};
+        auto* dst = static_cast<uint8_t*>(view);
+        const uint32_t payloadLen = static_cast<uint32_t>(image.data.size());
+        dst[0] = uint8_t(payloadLen & 0xFFu);
+        dst[1] = uint8_t((payloadLen >> 8) & 0xFFu);
+        dst[2] = uint8_t((payloadLen >> 16) & 0xFFu);
+        dst[3] = uint8_t((payloadLen >> 24) & 0xFFu);
+        memcpy(dst + 4, image.data.data(), image.data.size());
+        UnmapViewOfFile(view);
+        HANDLE roRaw = nullptr;
+        if (!DuplicateHandle(GetCurrentProcess(), rwMap.value, GetCurrentProcess(), &roRaw, FILE_MAP_READ, FALSE, 0) || !roRaw)
+            return {};
+        rwMap.Reset();
+        CeSignalAuthorityFd fd(int(reinterpret_cast<intptr_t>(roRaw)));
+        size_t checkLen = 0;
+        if (!WinSealedSection(roRaw, &checkLen) || checkLen != image.data.size()) return {};
+        state_->sealed = true;
+        return fd;
+#endif
     } catch (...) { return {}; }
 #else
     (void)utc; (void)mono; return {};
@@ -300,16 +376,30 @@ CeSignalAuthorityFd CeBootSignalAuthority::Seal(uint64_t utc, uint64_t mono) con
 }
 std::shared_ptr<CeBootSignalAuthority> CeBootSignalAuthority::Consume(int descriptor, uint64_t utc, uint64_t mono) noexcept {
     CeSignalAuthorityFd owned(descriptor);
-#ifdef __linux__
+#if defined(__linux__) || defined(_WIN32)
     try {
+        Bytes image;
+#ifdef __linux__
         struct stat before{};
         if (!Sealed(descriptor, &before) || lseek(descriptor, 0, SEEK_CUR) != 0) return {};
-        Bytes image; image.data.resize(size_t(before.st_size));
+        image.data.resize(size_t(before.st_size));
         ssize_t count;
         do { count = read(descriptor, image.data.data(), image.data.size()); } while (count < 0 && errno == EINTR);
         struct stat after{};
         if (count != ssize_t(image.data.size()) || !Sealed(descriptor, &after) || before.st_dev != after.st_dev ||
             before.st_ino != after.st_ino || before.st_size != after.st_size) return {};
+#elif defined(_WIN32)
+        HANDLE h = reinterpret_cast<HANDLE>(intptr_t(descriptor));
+        if (descriptor < 3) return {};
+        SetHandleInformation(h, HANDLE_FLAG_INHERIT, 0);
+        size_t payloadLen = 0;
+        if (!WinSealedSection(h, &payloadLen)) return {};
+        void* view = MapViewOfFile(h, FILE_MAP_READ, 0, 0, 4 + payloadLen);
+        if (!view) return {};
+        image.data.resize(payloadLen);
+        memcpy(image.data.data(), static_cast<const uint8_t*>(view) + 4, payloadLen);
+        UnmapViewOfFile(view);
+#endif
         auto state = std::unique_ptr<State>(new State);
         Reader read{image.data}; char magic[8]; uint64_t version, role, level;
         if (!read.Copy(magic, sizeof magic) || memcmp(magic, "CESIGFD1", sizeof magic) || !read.Number(&version) || version != 2 ||

@@ -67,7 +67,7 @@ def main() -> None:
     data = args.toolchain_data.resolve() if args.toolchain_data else None
     if windows:
         cxx = str(data / "llvm-mingw/bin/i686-w64-mingw32-clang++")
-        flags, libraries = [], ["-lws2_32", "-lwinmm", "-lbcrypt"]
+        flags, libraries = [], ["-lws2_32", "-lwinmm", "-lbcrypt", "-ladvapi32"]
     else:
         cxx = str(data / "llvm/bin/clang++") if data else shutil.which("c++")
         flags = ["-m32", "--sysroot=" + str(data / "sysroot-sniper")] if args.target == "linux32" else []

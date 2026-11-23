@@ -203,6 +203,9 @@ def headless_env(user_dir: Path, game_dir: Path, run_dir: Path) -> dict[str, str
         "PYTHONDONTWRITEBYTECODE": "1",
     }
     libs = resolve_runtime_libs()
+    exe_lib = DEFAULT_EXE.resolve().parent / "lib"
+    if exe_lib.is_dir():
+        libs = [str(exe_lib)] + libs
     if libs:
         env["LD_LIBRARY_PATH"] = ":".join(libs)
     return env
@@ -339,7 +342,7 @@ class ModStarterLiveE2ETests(unittest.TestCase):
             user_dir.mkdir(parents=True)
             self._create_example_mod(user_dir)
             (user_dir / "ce.ini").write_text(
-                "mods_menu=1\nmods=ce-example-starter\n",
+                "network_game=0\nextras=0\ncatalogue=0\nmods_menu=1\nmods=ce-example-starter\n",
                 encoding="ascii",
             )
 

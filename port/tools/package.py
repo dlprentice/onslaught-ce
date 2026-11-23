@@ -541,13 +541,13 @@ IN_THE_GAME = [
            "Choose Normal for the original terrain detail. Anything you saved before is "
            "kept as it was: the new defaults apply once, to a profile with no options of its own, and every row can be changed "
            "afterwards."),
-    "- Unfinished features: the first start adds an [Experimental] block to ce.ini that lists them, each set to 0",
-    "  (off). They are unsupported and may change or break; a line set to 1 turns that feature on from the next",
-    "  start. None is needed to play. Leave the lines at 0 unless you want to try one. A line set in an earlier",
-    "  version is kept, but what it turns on has changed: with commander=1 from 0.1.13, Commander (M by default)",
-    "  opens a live view for squad orders. The battle keeps running while your Battle Engine stands without your",
-    "  control and the HUD is hidden. Press Commander again or Escape to close it.",
-    "  Press V for the paused tactical map (enable commander_tactical_map=1 in ce.ini).",
+    "- Unfinished features: the first start adds an [Experimental] block to ce.ini that lists them, each set to 1",
+    "  (enabled by default). Some are still in progress and may change or break; toggle any feature in",
+    "  Onslaught CE > Experimental Features or set its line to 0 in ce.ini to turn it off from the next start.",
+    "  A line set in an earlier version is kept, but what it turns on has changed: with commander=1 from 0.1.13,",
+    "  Commander (M by default) opens a live view for squad orders. The battle keeps running while your Battle",
+    "  Engine stands without your control and the HUD is hidden. Press Commander again or Escape to close it.",
+    "  Press V for the paused tactical map (enabled by default; commander_tactical_map=0 turns it off).",
     "  Commander and Take Unit (E by default) can be rebound in Controller Options.",
     "  Close Commander before taking a unit; use your bound Morph action to return before opening Commander again.",
     "  With museum=1, a Museum Prototype visit is kept out of your career: nothing is saved during it, so with",
@@ -598,22 +598,22 @@ IN_THE_GAME = [
     "  or a demo. Tested on Linux; Windows testing of it is limited (see the release notes).",
     "  In a single-player level the Pause Menu also has a Photo Mode row, so a gamepad can reach it: it closes the",
     "  menu and turns Photo Mode on, as F11 does, and writes nothing. The row then reads End Photo Mode.",
-    *_item("Extras (optional): set extras=1 in ce.ini to show Main Menu > Onslaught CE > Extras, which opens Service "
-           "Record, Goodies Catalogue, Music Player, Lore, Back Up All Careers and Backup Preview. Reading records and "
+    *_item("Extras: enabled by default (set extras=0 or toggle in Experimental Features to hide). Main Menu > Onslaught CE > Extras "
+           "opens Service Record, Goodies Catalogue, Music Player, Lore, Back Up All Careers and Backup Preview. Reading records and "
            "previews leaves your careers unchanged."),
-    *_item("Catalogue (optional): set catalogue=1 in ce.ini to show Onslaught CE > Catalogue, then browse installed "
-           "Models, Textures, Sound effects and Speech. Choose an item for its details; texture entries also have a "
+    *_item("Catalogue: enabled by default (set catalogue=0 or toggle in Experimental Features to hide). Main Menu > Onslaught CE > Catalogue "
+           "browses installed Models, Textures, Sound effects and Speech. Choose an item for its details; texture entries also have a "
            "preview and sound entries play on selection. Model entries show information, not a playable unit or a new "
            "3D model viewer. Browsing does not change or redistribute the game files. Find by name accepts part of a "
            "filename (up to 32 ASCII characters) and ignores letter case. Choose Find to apply it. Collections remember "
            "separate filters. Escape cancels the text edit; Clear filter or Show all shows every entry again. Native "
            "Linux menus have been exercised; Windows compilation does not demonstrate its UI or text entry."),
-    *_item("Mods (experimental): on Linux only, Onslaught CE can read replacement game files, such as textures, from "
-           "mods in the mods folder of your user folder. Set mods_menu=1 in ce.ini to show Onslaught CE > Mods, which "
-           "lets you enable, disable and order installed mods; changes apply the next time you start the game. You can "
-           "also edit the mods= line in ce.ini with the game closed. Every file is checked against the mod's mod.json at "
-           "start; a mod with a problem is not loaded. The log says why. On Windows mods are not active: mods_menu=1 "
-           "and mods= are ignored and the log says so. See Mods (experimental) in the project README."),
+    *_item("Mods (experimental): on Linux and Windows, Onslaught CE can read replacement game files, such as textures, from "
+           "mods in the mods folder of your user folder. Onslaught CE > Mods is enabled by default (set mods_menu=0 or toggle in "
+           "Experimental Features to hide) and lets you enable, disable and order installed mods; changes apply the next time you "
+           "start the game. You can also edit the mods= line in ce.ini with the game closed. Every file is checked against the "
+           "mod's mod.json at start; a mod with a problem is not loaded. The log says why. Windows mods have been exercised under "
+           "Wine; physical Windows NTFS acceptance remains open. See Mods (experimental) in the project README."),
     "- A save that fails now says so: after the Pause Menu's Continue, the game's own save error message (\"An error",
     "  occurred during saving.\" in English, and in the language you chose) appears for a few seconds at the bottom of",
     "  the screen, and after a language change in the front end it appears in the usual message box. The career you",
@@ -739,8 +739,8 @@ def limitations(windows: bool) -> list:
         "  Audio backend initialization alone does not demonstrate audible playback.",
             "- Widescreen play is not compared with the original (the original has no widescreen); ordinary replays and",
             "  recordings use 4:3.",
-            ("- Planned, not in this version yet: matchmaking, versus play, mods on Windows and additional HUD options." if NETWORK else
-             "- Planned, not in this version yet: Internet multiplayer, mods on Windows and additional HUD options."),
+            ("- Planned, not in this version yet: public matchmaking, versus play over network and additional HUD options." if NETWORK else
+             "- Planned, not in this version yet: Internet multiplayer and additional HUD options."),
             ""]
 
 

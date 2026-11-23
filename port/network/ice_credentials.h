@@ -10,7 +10,9 @@
 #include <string>
 #include <utility>
 #include <vector>
-#if !defined(_WIN32)
+#if defined(_WIN32)
+#include "windows_private_acl.h"
+#else
 #include <cerrno>
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -44,6 +46,20 @@ public:
             error_ = "relay directories must be private"; return false;
         }
         if (left.st_dev == right.st_dev && left.st_ino == right.st_ino) {
+            error_ = "relay lobby and game directories must be distinct"; return false;
+        }
+        error_ = ""; return true;
+#elif defined(_WIN32)
+        if (!first || !second) { error_ = "invalid relay directory pair"; return false; }
+        CeWinAcl::ScopedHandle a, b;
+        BY_HANDLE_FILE_INFORMATION left{}, right{};
+        if (!CeWinAcl::OpenPrivateDirectory(first, a, nullptr, &left) ||
+            !CeWinAcl::OpenPrivateDirectory(second, b, nullptr, &right)) {
+            error_ = "relay directories must be private"; return false;
+        }
+        if (left.dwVolumeSerialNumber == right.dwVolumeSerialNumber &&
+            left.nFileIndexHigh == right.nFileIndexHigh &&
+            left.nFileIndexLow == right.nFileIndexLow) {
             error_ = "relay lobby and game directories must be distinct"; return false;
         }
         error_ = ""; return true;
@@ -82,6 +98,18 @@ public:
         const char* name = role == 1 ? "relay-host.request.json" : "relay-guest.request.json";
         if (!PublishRequest(parent.value, name, data)) return Fail("relay preparation publication failed");
         error_ = ""; return true;
+#elif defined(_WIN32)
+        CeWinAcl::ScopedHandle parent;
+        std::wstring parentWide;
+        if (!CeWinAcl::OpenPrivateDirectory(directory, parent, &parentWide))
+            return Fail("relay grant directory is not private");
+        static std::atomic<uint64_t> sequence{0};
+        const std::string temporary = ".relay-request-" + std::to_string(static_cast<unsigned long>(GetCurrentProcessId())) +
+            "-" + std::to_string(sequence.fetch_add(1));
+        const char* name = role == 1 ? "relay-host.request.json" : "relay-guest.request.json";
+        if (!CeWinAcl::PublishPrivateFileNoReplace(parentWide, temporary, name, data.data(), data.size()))
+            return Fail("relay preparation publication failed");
+        error_ = ""; return true;
 #else
         (void)data;
         return Fail("private relay request publication unavailable");
@@ -91,11 +119,26 @@ public:
     bool Open(const char* directory, uint32_t role, const uint8_t* context,
               uint64_t now, Mode mode = Mode::Cloudflare) {
         Clear();
-#if defined(_WIN32)
-        (void)directory; (void)role; (void)context; (void)now; (void)mode;
-        return Fail("private relay file checks unavailable");
-#else
         if (!directory || !context || (role != 1 && role != 2)) return Fail("invalid relay grant request");
+#if defined(_WIN32)
+        CeWinAcl::ScopedHandle parent;
+        std::wstring parentWide;
+        if (!CeWinAcl::OpenPrivateDirectory(directory, parent, &parentWide))
+            return Fail("relay grant directory is not private");
+        struct SensitiveWinBytes {
+            std::vector<uint8_t> value;
+            ~SensitiveWinBytes() { volatile uint8_t* p = value.data(); for (size_t i = 0; i < value.size(); ++i) p[i] = 0; }
+        } bytes;
+        bool notFound = false;
+        const char* name = role == 1 ? "relay-host.json" : "relay-guest.json";
+        if (!CeWinAcl::ReadPrivateFile(parentWide, name, 1, MaxGrantBytes, bytes.value, &notFound)) {
+            if (notFound) {
+                pending_ = true; error_ = "waiting for protected relay grant"; return false;
+            }
+            return Fail("relay grant file is not private");
+        }
+        return Parse(reinterpret_cast<const char*>(bytes.value.data()), bytes.value.size(), role, context, now, mode);
+#else
         Fd parent(OpenDirectory(directory));
         if (parent.value < 0) return Fail("relay grant directory is not private");
         Fd file(openat(parent.value, role == 1 ? "relay-host.json" : "relay-guest.json",

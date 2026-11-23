@@ -155,7 +155,7 @@ class ExperimentalFenceTests(unittest.TestCase):
         self.assertTrue(files["ce.ini"].startswith(BEFORE))
         self.assertEqual(1, files["ce.ini"].count(HEADER))
         self.assertEqual(1, files["ce.ini"].count(b"commander="), "the player's own line is not repeated")
-        self.assertIn(b"map_editor=0\n", files["ce.ini"])
+        self.assertIn(b"map_editor=1\n", files["ce.ini"])
 
     def test_the_layer_switched_off_the_autoconfig_test_and_the_demo_write_nothing(self):
         for name, variables, switch in (("layer-0", {"BEA_PORT_CE_LAYER": "0"}, None), ("autoconfig", {}, "autoconfig"), ("demo", {}, "demo"),

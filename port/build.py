@@ -515,6 +515,22 @@ def native_signaling_dependency(target):
     return path
 
 
+def stage_native_signaling_libs():
+    """Stage the pinned non-system sniper SDK TLS/curl runtime libraries into BUILD/linux/lib
+    so direct runs of local-data/port/build/linux/bea resolve libcurl-gnutls.so.4 via $ORIGIN/lib."""
+    import package_signaling_inputs
+    pins = package_signaling_inputs.load_manifest()
+    lib_dir = BUILD / "linux/lib"
+    lib_dir.mkdir(parents=True, exist_ok=True)
+    for row in pins["libraries"]:
+        src = deps.SYSROOT / row["path"]
+        data = package_signaling_inputs.read_pinned(src, row)
+        dst = lib_dir / row["soname"]
+        if not dst.is_file() or dst.read_bytes() != data:
+            deps.write_cache_file(dst, data)
+            dst.chmod(0o755)
+
+
 def write_deps_record(target):
     """Record, privately (local-data only, never packaged), the dependency root this build read and the receipt of each
     library it linked from there. A build never falls back to another root: every receipt named here must lie inside
@@ -1117,6 +1133,8 @@ def main():
             if full_public and r.returncode == 0 and not switches:
                 write_flavour_marker(clear=[target])		# this target's program is no test build (any longer)
             if full_public and r.returncode == 0:
+                if target == "linux" and WITH_NATIVE_SIGNALING:
+                    stage_native_signaling_libs()
                 launcher_rc = build_launcher(target, a.ce_version)
                 rc = rc or launcher_rc
                 if launcher_rc == 0:

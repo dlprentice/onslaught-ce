@@ -106,11 +106,12 @@ several places, folders you are unsure of): follow the
   - If `ce.ini` cannot be written, a message says so and the row keeps its old choice. A `ce.ini` you have made read-only is
     never replaced (0.1.13 on Linux did replace it): the rows keep their choices, and the launcher's **Skip this version** and
     **Turn recording off** say that the choice could not be saved and ask again the next time you start.
-- **Unfinished features:** they are listed, switched off, under `[Experimental]` in `ce.ini`; they are unsupported and liable to change.
+- **Unfinished features:** they are listed, enabled by default, under `[Experimental]` in `ce.ini` and toggleable in
+  **Onslaught CE → Experimental Features**; some are still in progress and liable to change.
   A line you set in an earlier version is kept, but what it turns on has changed: with `commander=1` from 0.1.13,
   **Commander** (M by default) now opens a live view for ordering squads. The battle keeps running while your Battle
   Engine stands without your control and the HUD is hidden. Press Commander again or Escape to close it. Press V for the paused
-  tactical map (enable `commander_tactical_map=1` in `ce.ini`). See the
+  tactical map (enabled by default; `commander_tactical_map=0` turns it off). See the
   [adjustable controls](port/controller-input.md#adjustable-keyboard-actions-development-build). With
   `museum=1`, a Museum Prototype visit is kept out of your career: nothing is saved during it, so with a named career the
   game's save error message appears each time you leave its Pause Menu. Nothing is wrong: the career is as it was when the
@@ -626,13 +627,14 @@ its text entry. Catalogue browsing uses your installed resources; it does not do
 
 ## Mods (experimental)
 
-Onslaught CE can read replacement game files, such as textures, from mods on Linux. This is an early test of the
+Onslaught CE can read replacement game files, such as textures, from mods on Linux and Windows. This is an early test of the
 feature: a mod can replace files the game already has, supply a level's world file and add the archive of a multiplayer
-level the game has none for (both below). In this source branch, **Onslaught CE → Mods** lists installed mods and lets
-you enable, disable and order them. Changes apply when you next start the game. Mods are disabled on Windows until path handling
-is safe and tested there: on Windows a `mods=` line in `ce.ini` is ignored, and the log says so.
+level the game has none for (both below). **Onslaught CE → Mods** is enabled by default (toggleable in
+**Onslaught CE → Experimental Features** or via `mods_menu=0`) and lists installed mods so you can enable, disable and order them.
+Changes apply when you next start the game. Windows mods have been exercised under Wine; physical Windows NTFS acceptance remains open.
 
-- A mod is a folder in the `mods` folder of your user folder: `~/.local/share/onslaught-ce/mods/<id>` on Linux.
+- A mod is a folder in the `mods` folder of your user folder: `~/.local/share/onslaught-ce/mods/<id>` on Linux or
+  `%APPDATA%\Onslaught CE\mods\<id>` on Windows.
   It holds a `mod.json` and the replacement files at the paths the game
   uses, for example `data/resources/dxtntextures/meshtex%BE_texA.tga(0)A1R5G5B5.aya`.
 - You can also edit the list by hand: with the game closed, back up `ce.ini` and add one line naming the mods in order: `mods=first-mod,second-mod`.

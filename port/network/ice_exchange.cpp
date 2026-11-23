@@ -9,10 +9,7 @@
 #include <string>
 #include <vector>
 #ifdef _WIN32
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>
+#include "windows_private_acl.h"
 #else
 #include <cerrno>
 #include <fcntl.h>
@@ -44,52 +41,20 @@ std::string Hex(const uint8_t* bytes) {
 }
 struct Directory {
 #ifdef _WIN32
-    HANDLE handle=INVALID_HANDLE_VALUE;
+    CeWinAcl::ScopedHandle handle;
     std::wstring path;
-    ~Directory() { if (handle!=INVALID_HANDLE_VALUE) CloseHandle(handle); }
     bool Open(const char* name) {
-        int count=MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,name,-1,nullptr,0);
-        if (!count) return false;
-        std::vector<wchar_t> wide(static_cast<size_t>(count));
-        if (!MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,name,-1,wide.data(),count)) return false;
-        path=wide.data();
-        handle=CreateFileW(path.c_str(),FILE_READ_ATTRIBUTES,
-            FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,OPEN_EXISTING,
-            FILE_FLAG_BACKUP_SEMANTICS|FILE_FLAG_OPEN_REPARSE_POINT,nullptr);
-        BY_HANDLE_FILE_INFORMATION info{};
-        return handle!=INVALID_HANDLE_VALUE && GetFileInformationByHandle(handle,&info) &&
-            (info.dwFileAttributes&FILE_ATTRIBUTE_DIRECTORY) &&
-            !(info.dwFileAttributes&FILE_ATTRIBUTE_REPARSE_POINT);
-    }
-    std::wstring Child(const std::string& name) const {
-        return path+L"\\"+std::wstring(name.begin(),name.end());
+        return CeWinAcl::OpenPrivateDirectory(name, handle, &path);
     }
     int Read(const std::string& name, std::vector<uint8_t>& bytes) {
-        HANDLE file=CreateFileW(Child(name).c_str(),GENERIC_READ,FILE_SHARE_READ,nullptr,
-            OPEN_EXISTING,FILE_FLAG_OPEN_REPARSE_POINT,nullptr);
-        if (file==INVALID_HANDLE_VALUE) return GetLastError()==ERROR_FILE_NOT_FOUND?0:-1;
-        BY_HANDLE_FILE_INFORMATION info{}; DWORD got=0;
-        bool ok=GetFileInformationByHandle(file,&info) && !info.nFileSizeHigh &&
-            !(info.dwFileAttributes&(FILE_ATTRIBUTE_DIRECTORY|FILE_ATTRIBUTE_REPARSE_POINT)) &&
-            info.nFileSizeLow>=kHeader+kTag && info.nFileSizeLow<=kHeader+kTag+kMaxSdp;
-        if (ok) {
-            bytes.resize(info.nFileSizeLow);
-            ok=ReadFile(file,bytes.data(),static_cast<DWORD>(bytes.size()),&got,nullptr) && got==bytes.size();
-        }
-        CloseHandle(file); return ok?1:-1;
+        bool notFound = false;
+        if (!CeWinAcl::ReadPrivateFile(path, name, kHeader + kTag, kHeader + kTag + kMaxSdp, bytes, &notFound))
+            return notFound ? 0 : -1;
+        return 1;
     }
     bool Publish(const std::string& name, const std::vector<uint8_t>& bytes) {
-        auto temporary=Child("."+name+".pending");
-        HANDLE file=CreateFileW(temporary.c_str(),GENERIC_WRITE,0,nullptr,CREATE_NEW,
-            FILE_ATTRIBUTE_NORMAL|FILE_FLAG_OPEN_REPARSE_POINT,nullptr);
-        if (file==INVALID_HANDLE_VALUE) return false;
-        DWORD written=0;
-        bool ok=WriteFile(file,bytes.data(),static_cast<DWORD>(bytes.size()),&written,nullptr) &&
-            written==bytes.size() && FlushFileBuffers(file);
-        CloseHandle(file);
-        if (ok) ok=MoveFileExW(temporary.c_str(),Child(name).c_str(),MOVEFILE_WRITE_THROUGH)!=0;
-        if (!ok) DeleteFileW(temporary.c_str());
-        return ok;
+        const std::string temporary = "." + name + ".pending";
+        return CeWinAcl::PublishPrivateFileNoReplace(path, temporary, name, bytes.data(), bytes.size());
     }
 #else
     int handle=-1;

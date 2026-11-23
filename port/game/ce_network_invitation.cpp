@@ -19,7 +19,7 @@
 #include <string>
 #include <vector>
 #ifdef _WIN32
-#include <windows.h>
+#include "../network/windows_private_acl.h"
 #else
 #include <cerrno>
 #include <fcntl.h>
@@ -44,39 +44,19 @@ struct ImportBytes {
 // This import-only copy has no publication operation.
 struct InvitationDirectory {
 #ifdef _WIN32
-    HANDLE handle=INVALID_HANDLE_VALUE;
+    CeWinAcl::ScopedHandle handle;
     std::wstring path;
-    ~InvitationDirectory() { if (handle!=INVALID_HANDLE_VALUE) CloseHandle(handle); }
     bool Open(const char* name) {
-        int count=MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,name,-1,nullptr,0);
-        if (!count) return false;
-        std::vector<wchar_t> wide(static_cast<size_t>(count));
-        if (!MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,name,-1,wide.data(),count)) return false;
-        path=wide.data();
-        handle=CreateFileW(path.c_str(),FILE_READ_ATTRIBUTES,
-            FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,OPEN_EXISTING,
-            FILE_FLAG_BACKUP_SEMANTICS|FILE_FLAG_OPEN_REPARSE_POINT,nullptr);
-        BY_HANDLE_FILE_INFORMATION info{};
-        return handle!=INVALID_HANDLE_VALUE && GetFileInformationByHandle(handle,&info) &&
-            (info.dwFileAttributes&FILE_ATTRIBUTE_DIRECTORY) &&
-            !(info.dwFileAttributes&FILE_ATTRIBUTE_REPARSE_POINT);
+        return CeWinAcl::OpenPrivateDirectory(name, handle, &path);
     }
     std::wstring Child(const std::string& name) const {
         return path+L"\\"+std::wstring(name.begin(),name.end());
     }
     int Read(const std::string& name, std::vector<uint8_t>& bytes) {
-        HANDLE file=CreateFileW(Child(name).c_str(),GENERIC_READ,FILE_SHARE_READ,nullptr,
-            OPEN_EXISTING,FILE_FLAG_OPEN_REPARSE_POINT,nullptr);
-        if (file==INVALID_HANDLE_VALUE) return GetLastError()==ERROR_FILE_NOT_FOUND?0:-1;
-        BY_HANDLE_FILE_INFORMATION info{}; DWORD got=0;
-        bool ok=GetFileInformationByHandle(file,&info) && !info.nFileSizeHigh &&
-            !(info.dwFileAttributes&(FILE_ATTRIBUTE_DIRECTORY|FILE_ATTRIBUTE_REPARSE_POINT)) &&
-            info.nFileSizeLow>=1 && info.nFileSizeLow<=kImportFileLimit;
-        if (ok) {
-            bytes.resize(info.nFileSizeLow);
-            ok=ReadFile(file,bytes.data(),static_cast<DWORD>(bytes.size()),&got,nullptr) && got==bytes.size();
-        }
-        CloseHandle(file); return ok?1:-1;
+        bool notFound = false;
+        if (!CeWinAcl::ReadPrivateFile(path, name, 1, kImportFileLimit, bytes, &notFound))
+            return notFound ? 0 : -1;
+        return 1;
     }
 
 #else
@@ -113,7 +93,7 @@ public:
     bool SameAs(const InvitationDirectory& other) const {
 #ifdef _WIN32
         BY_HANDLE_FILE_INFORMATION a{},b{};
-        return GetFileInformationByHandle(handle,&a)&&GetFileInformationByHandle(other.handle,&b)&&
+        return GetFileInformationByHandle(handle.value,&a)&&GetFileInformationByHandle(other.handle.value,&b)&&
             a.dwVolumeSerialNumber==b.dwVolumeSerialNumber&&a.nFileIndexHigh==b.nFileIndexHigh&&a.nFileIndexLow==b.nFileIndexLow;
 #else
         struct stat a{},b{};
@@ -314,8 +294,9 @@ bool NewExchangeDirectory(std::string* out){
         leaf[at]=0;Wipe(nonce.data(),nonce.size());
         std::string path=JoinPath(base,leaf);
 #ifdef _WIN32
-        if(!CreateDirectoryW(parent.Child(leaf).c_str(),nullptr)){
-            if(GetLastError()==ERROR_ALREADY_EXISTS)continue;return false;
+        bool exists=false;
+        if(!CeWinAcl::CreatePrivateDirectory(parent.Child(leaf),&exists)){
+            if(exists)continue;return false;
         }
 #else
         if(mkdirat(parent,leaf,0700)!=0){if(errno==EEXIST)continue;return false;}

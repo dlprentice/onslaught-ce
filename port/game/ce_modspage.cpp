@@ -704,7 +704,7 @@ bool	PortCeModsPageOffered()
 {
 	static int on = -1;
 	if (on < 0)
-		on = (PortCeMenus() && !PortModsPlatformOff() && CE_SettingGetBool("mods_menu", 0) == 1) ? 1 : 0;
+		on = (PortCeMenus() && !PortModsPlatformOff() && CE_SettingGetBool("mods_menu", 1) == 1) ? 1 : 0;
 	return on == 1;
 }
 

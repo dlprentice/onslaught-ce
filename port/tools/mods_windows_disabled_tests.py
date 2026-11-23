@@ -14,14 +14,14 @@ SOURCE = ROOT / "port/platform/common/mods.cpp"
 DRIVER = ROOT / "port/tools/tests/mods_windows_disabled_driver.cpp"
 
 
-WINDOWS_GUARD = r"defined\s*\(\s*_WIN32\s*\)\s*&&\s*!\s*defined\s*\(\s*PORT_MODS_WINDOWS_ON\s*\)"
+PLATFORM_OFF_GUARD = r"defined\s*\(\s*PORT_MODS_PLATFORM_OFF\s*\)"
 
 
 def switch_function(source):
-    """PlatformOff, the one switch: the function whole."""
+    """PlatformOff, the one switch: the function whole (enabled on Windows and Linux unless PORT_MODS_PLATFORM_OFF)."""
     match = re.search(r"(?m)^const char \*PlatformOff\(\)\n\{\n.*?^\}\n", source, re.S)
-    if not match or not re.search(WINDOWS_GUARD, match.group()):
-        raise ValueError("Windows-disabled guard missing")
+    if not match or not re.search(PLATFORM_OFF_GUARD, match.group()):
+        raise ValueError("PlatformOff guard missing")
     return match.group()
 
 
@@ -77,19 +77,18 @@ def main():
                   "; private evidence:", output)
             return 1
 
-    mutant, replacements = re.subn(WINDOWS_GUARD, "0", switch, count=1)
+    mutant, replacements = re.subn(PLATFORM_OFF_GUARD, "0", switch, count=1)
     if replacements != 1:
         print("Windows mod-off control: FAIL; mutation anchor changed")
         return 1
-    if run_variant("mutant-windows", mutant, "TEST_AS_WINDOWS") != 2:
-        print("Windows mod-off control: FAIL; Windows-guard mutant not rejected")
+    if run_variant("mutant-explicit-off", mutant, "PORT_MODS_PLATFORM_OFF") != 2:
+        print("Windows mod-off control: FAIL; explicit-off guard mutant not rejected")
         return 1
-    if run_variant("mutant-explicit-off", mutant, "PORT_MODS_PLATFORM_OFF") != 0:
-        print("Windows mod-off control: FAIL; mutant did not retain simulated-off behavior")
+    if run_variant("mutant-windows", mutant, "TEST_AS_WINDOWS") != 0:
+        print("Windows mod-off control: FAIL; mutant broke enabled Windows behavior")
         return 1
 
-    print("Windows mod-off control: PASS; Windows-guard mutant rejected;")
-    print("simulated-off control alone accepted that mutant; private evidence:", output)
+    print("Windows mod-off control: PASS; Windows enabled by default, explicit-off mutant rejected; private evidence:", output)
     return 0
 
 

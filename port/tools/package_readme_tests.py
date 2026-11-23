@@ -31,9 +31,9 @@ class PackageReadmeTests(unittest.TestCase):
                 guide = " ".join(package.readme("source-doc-check", windows).decode().split())
                 for wording in ("Onslaught CE > Catalogue", "Find by name", "Clear filter",
                                 "Collections remember separate filters",
-                                "extras=1", "catalogue=1", "mods_menu=1", "Controller Options",
+                                "extras=0", "catalogue=0", "mods_menu=0", "Controller Options",
                                 "Onslaught CE > Mods", "enable, disable and order",
-                                "commander_tactical_map=1", "Commander and Take Unit",
+                                "commander_tactical_map=0", "Commander and Take Unit",
                                 "Native-model RTS", "Museum exhibits can disappear up close",
                                 "player-start workflow and reported interaction lag remain unresolved",
                                 "Windows compilation does not demonstrate its UI or text entry",
@@ -90,8 +90,8 @@ class PackageReadmeTests(unittest.TestCase):
             "Physical audio devices and listening quality have not been validated",
             "Only virtual devices have been tested; physical controllers and Windows drivers remain open",
             "Windows reparse-point behaviour is unmeasured",
-            "Mods (experimental): on Linux only, Onslaught CE can read replacement game files",
-            "On Windows mods are not active: mods_menu=1 and mods= are ignored and the log says so",
+            "Mods (experimental): on Linux and Windows, Onslaught CE can read replacement game files",
+            "Onslaught CE > Mods is enabled by default",
             "A save that fails now says so", "An error occurred during saving.",
             "after a language change in the front end it appears in the usual message box",
             "Sharper text is off by default: the menus' and HUD's text keeps the original's soft look",
@@ -237,7 +237,7 @@ class PackageReadmeTests(unittest.TestCase):
         self.assertIn("const int kFreshTreeModels = 0;", policy, "3D distant trees starts Off")
         self.assertIn("const int kFreshTerrainDetail = 1;", policy, "Terrain detail distance starts Extended")
         ce = (ROOT / "port/platform/common/ce.cpp").read_text()
-        self.assertIn('Unfinished features, off in this release. They may change or break. Set a line to 1 to try one.', ce)
+        self.assertIn('CE features, enabled by default. Some are still in progress; set a line to 0 or toggle in Experimental Features to turn one off.', ce)
         public = " ".join(PROJECT_README.read_text().split())
         self.assertIn("under `[Experimental]` in `ce.ini`", public)
         self.assertIn("**High-detail units** starts at **Yes**", public)
@@ -258,8 +258,8 @@ class PackageReadmeTests(unittest.TestCase):
             "Screen mode selects the resolution; Video adapter selects the graphics device.",
             "If the row says (restart the game), restart to recover the display or input.",
             "Anything you saved before is kept as it was",
-            "Unfinished features: the first start adds an [Experimental] block to ce.ini that lists them, each set to 0 (off).",
-            "They are unsupported and may change or break; a line set to 1 turns that feature on from the next start.",
+            "Unfinished features: the first start adds an [Experimental] block to ce.ini that lists them, each set to 1 (enabled by default).",
+            "Some are still in progress and may change or break; toggle any feature in Onslaught CE > Experimental Features or set its line to 0 in ce.ini to turn it off from the next start.",
             "A line set in an earlier version is kept, but what it turns on has changed:",
         )
         for windows in (False, True):
@@ -305,8 +305,8 @@ class PackageReadmeTests(unittest.TestCase):
                     unfinished = flat[flat.index("- Unfinished features:"):flat.index("- Console:")]
                     self.assertNotIn("ommander", flat.replace(unfinished, ""))
                     self.assertIn("Commander (M by default)", unfinished)
-                    self.assertIn("commander_tactical_map=1", unfinished)
-                    self.assertIn("unsupported", unfinished)
+                    self.assertIn("commander_tactical_map=0", unfinished)
+                    self.assertIn("still in progress", unfinished)
                     for key in ("hud_scale", "hud_anchor", "sharp_ui", "update_check", "record_sessions", "music_dir",
                                 "music_playtype"):
                         self.assertIn(key, [row[1] for row in rows])
@@ -350,9 +350,9 @@ class PackageReadmeTests(unittest.TestCase):
         "Not tested: play through routers over the real internet, more than two players, Windows on real hardware.",
         "contacts no server", "on Windows that asks the system to look up this PC's own name",
         "Your own music, the Dodge Button, Photo Mode and F12 screenshots are off in a network game.",
-        "Planned, not in this version yet: matchmaking, versus play, mods on Windows and additional HUD options.")
-    PLANNED_DEFAULT = "- Planned, not in this version yet: Internet multiplayer, mods on Windows and additional HUD options."
-    PLANNED_NETWORK = "- Planned, not in this version yet: matchmaking, versus play, mods on Windows and additional HUD options."
+        "Planned, not in this version yet: public matchmaking, versus play over network and additional HUD options.")
+    PLANNED_DEFAULT = "- Planned, not in this version yet: Internet multiplayer and additional HUD options."
+    PLANNED_NETWORK = "- Planned, not in this version yet: public matchmaking, versus play over network and additional HUD options."
 
     def test_network_flavour_readme_carries_the_network_game_labels_and_warnings(self):
         # The page's strings as the compiler joins them (adjacent literals), so the two texts are compared sentence by sentence.
@@ -513,7 +513,7 @@ class PackageReadmeTests(unittest.TestCase):
         self.assertRegex(gate, r"bool PortCeProjectCareerAllowed\(\) noexcept \{\n[^}]*!\(PortCeMuseumVisitActive && PortCeMuseumVisitActive\(\)\);")
         saves = "".join(path.read_text() for path in sorted((ROOT / "port/patches").glob("0139-*.patch")))
         self.assertGreaterEqual(saves.count("+    if (!PortCeProjectCareerAllowed()) return MCE_FAILURE;"), 3)
-        commander_says = ("Press V for the paused tactical map (enable commander_tactical_map=1 in ce.ini).")
+        commander_says = ("Press V for the paused tactical map (enabled by default; commander_tactical_map=0 turns it off).")
         museum_says = ("With museum=1, a Museum Prototype visit is kept out of your career: nothing is saved during it, so with a named "
                        "career the game's save error message appears each time you leave its Pause Menu. Nothing is wrong: the career is "
                        "as it was when the visit ends.")
