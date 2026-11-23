@@ -291,8 +291,12 @@ void PortUiMouseMenuPoint(int *x, int *y) {
 #include "CALLERS_INC"
 
 #if defined(CE_EDGE_TESTS)
+#ifndef MAX_PLAYERS
+#define MAX_PLAYERS 4
+#endif
 static bool testMultiplayer;
-struct InputTestGame { bool IsMultiplayer() { return testMultiplayer; } bool IsPaused() { return false; } } GAME;
+struct InputTestGame { bool IsMultiplayer() { return testMultiplayer; } bool IsPaused() { return false; } void *GetController(int) { return nullptr; } } GAME;
+extern "C" int PortCeSoloSkirmishActive(void) { return 0; }
 #if defined(CE_VERSION)
 GAMEPAD_EDGE_FUNCTIONS
 #endif

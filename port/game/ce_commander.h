@@ -81,6 +81,8 @@ int		CeCmdList(CeCmdSquad *out, int max);
 // Valid only for the single unshared, live squad of the exercise delivery.
 int CeCmdDeliveredSquad();
 int		CeCmdUntracked();
+// Count live units in the current world (wrap-safe via live pointers) without exposing WORLD to ce_cmdmap.cpp.
+void	CeCmdCountLiveUnits(int pilotAlleg, int *outFriendly, int *outTotal);
 
 // Resolve a drawn member without keeping a live pointer in the battlefield picture.
 class CSquad;

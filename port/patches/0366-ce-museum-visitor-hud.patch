@@ -1,15 +1,15 @@
 --- a/DXEngine.cpp
 +++ b/DXEngine.cpp
-@@ -43,6 +43,9 @@
- #include	"profile.h"
+@@ -44,6 +44,9 @@
  #include	"ParticleManager.h"
  #include	"ParticleSet.h"
+ #include	"Line.h"
 +#ifdef CE_VERSION
 +extern "C" bool PortCeMuseumVisitActive(void);
 +#endif
- #include	"Line.h"
  #include	"UMTexture.h"
  #include	"DXHud.h"
+ #include	"Lights.h"
 @@ -644,6 +647,11 @@
  	if(!CLIPARAMS.mKillHUD)
  #endif

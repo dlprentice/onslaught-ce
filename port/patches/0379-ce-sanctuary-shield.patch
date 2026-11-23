@@ -101,16 +101,16 @@
  	else if (!mData->mUnknown60)
 --- a/DXEngine.cpp
 +++ b/DXEngine.cpp
-@@ -74,6 +74,9 @@
- #include	"DebugText.h"
- #include	"DebugLog.h"
- #include	"rain.h"
+@@ -91,6 +91,9 @@
+ CTweakSLONG	OLD_WATER_TIMING("OLD_WATER_TIMING", 0);	// retail PC (0053d310)
+ // FUNCTION: 0x0053d310 init:OLD_WATER_TIMING
+ // FUNCTION: 0x0053d330 exit:OLD_WATER_TIMING
 +#ifdef CE_VERSION
 +extern "C" bool PortCeSanctuarySkipOutdoorWorld(void);
 +#endif
- #include	"cutsceneeditor.h"
- #include	"dxpatchmanager.h"
- #include	"debugmarker.h"
+ CDXEngine		ENGINE;
+ // FUNCTION: 0x0053d340 init:ENGINE
+ // FUNCTION: 0x0053d390 exit:ENGINE
 @@ -889,7 +892,18 @@
  		{
 +#ifdef CE_VERSION

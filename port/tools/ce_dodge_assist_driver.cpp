@@ -31,6 +31,7 @@ using LONG = long;
 #define FALSE 0
 #define GAME_STATE_PLAYING 3
 #define MAX_JOYPADS 4
+#define MAX_PLAYERS 4
 #define TRACE(...) ((void)0)
 
 static int checks;

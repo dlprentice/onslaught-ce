@@ -533,11 +533,11 @@ IN_THE_GAME = [
     "  (how updating works and how to turn the checks off), About Onslaught CE (version, licence and links) and",
     "  Special Thanks.",
     *_item("Video Options on a new profile: the first time you start with no saved options of your own (a new install, or a profile "
-           "that only has the old game folder's file), every quality row starts at its highest choice except Full models, "
+           "that only has the old game folder's file), every quality row starts at its highest choice except 3D distant trees, "
            "anti-aliasing starts at the highest level your graphics device lists, and extra graphical features start On where the "
-           "device passes the capability test. Full models starts at No. Yes keeps full-detail models instead of distant stand-ins "
-           "and removes their distance fade. This is the largest cost in frame rate. Terrain detail distance starts at "
-           "Extended: it keeps finer ground detail up to twice as far away. The visible range and fog stay the same. "
+           "device passes the capability test. High-detail units starts at Yes so unit models stay full-detail at range, while "
+           "3D distant trees starts at No because full 3D trees across forest maps are the largest cost in frame rate. Terrain detail "
+           "distance starts at Extended: it keeps finer ground detail up to twice as far away. The visible range and fog stay the same. "
            "Choose Normal for the original terrain detail. Anything you saved before is "
            "kept as it was: the new defaults apply once, to a profile with no options of its own, and every row can be changed "
            "afterwards."),

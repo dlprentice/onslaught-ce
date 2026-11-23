@@ -1474,4 +1474,16 @@ bool CeCmdUnitGroundPoint(float x, float y, float out[3]) {
     return true;
 }
 
+void CeCmdCountLiveUnits(int pilotAlleg, int *outFriendly, int *outTotal) {
+    int liveFriendly = 0, liveTotal = 0;
+    ListIterator<CUnit> units(&WORLD.GetUnitNB());
+    for (CUnit *u = units.First(); u; u = units.Next()) {
+        if (u->IsDying() || u->IsShuttingDown() || u->GetLife() <= 0.f) continue;
+        ++liveTotal;
+        if (int(u->GetAllegiance()) == pilotAlleg) ++liveFriendly;
+    }
+    if (outFriendly) *outFriendly = liveFriendly;
+    if (outTotal) *outTotal = liveTotal;
+}
+
 #endif

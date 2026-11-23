@@ -12,6 +12,8 @@ struct CUnit{CSquad squad;int GetThingNumber(){return 7;}CSquad* GetSquad(){retu
 static CPlayer player;static CBattleEngine engine;static CCONTROLLER controller;static CUnit actor;
 static bool gPathDrive=false,gDriveGuide=false,gOnFoot=false,gDeliveryAssigned=false,gFootFirstPerson=false;
 static void* gFootRenderedView=nullptr;static int gFireState=0,gLastNotedState=0,gThing=0,gPrevAI=0;
+static uint32_t gUnitHandle=0;
+static uint32_t CeEntityHandleFor(const CUnit* u){return u?1u:0u;}
 static CUnit* gUnit=nullptr;static CSquad* gPreviousSquad=nullptr;static const int* gLaw=nullptr;
 constexpr int CE_PLAYUNIT_CLASS_INFANTRY=0,CE_PLAYUNIT_FIRE_NONE=0;
 struct Law{int law=1;};static Law classes[2];static Law* CePlayUnitClasses(){return classes;}

@@ -228,26 +228,30 @@ class PackageReadmeTests(unittest.TestCase):
                     self.assertEqual(whole.count("when unset or empty"), 2)
 
     def test_readme_names_the_experimental_block_and_the_new_profile_video_defaults(self):
-        """What a player finds without asking: the [Experimental] block the first start writes into ce.ini, and Full models Off with
-        Terrain detail distance Extended on a new profile. public/README.md has both; the README.txt in the download must too, and the
-        facts it states are the ones the code holds (the block's header and warning are ce.cpp's, the fresh rows are ce_graphics_policy.cpp's)."""
+        """What a player finds without asking: the [Experimental] block the first start writes into ce.ini, and High-detail units On,
+        3D distant trees Off, and Terrain detail distance Extended on a new profile. public/README.md has both; the README.txt in the
+        download must too, and the facts it states are the ones the code holds (the block's header and warning are ce.cpp's, the fresh
+        rows are ce_graphics_policy.cpp's)."""
         policy = (ROOT / "port/game/ce_graphics_policy.cpp").read_text()
-        self.assertIn('FreshBeyondRetailRow("full_models", CE_FullModelsRequest, 0);', policy, "Full models starts Off")
+        self.assertIn("const int kFreshUnitModels = 1;", policy, "High-detail units starts On")
+        self.assertIn("const int kFreshTreeModels = 0;", policy, "3D distant trees starts Off")
         self.assertIn("const int kFreshTerrainDetail = 1;", policy, "Terrain detail distance starts Extended")
         ce = (ROOT / "port/platform/common/ce.cpp").read_text()
         self.assertIn('Unfinished features, off in this release. They may change or break. Set a line to 1 to try one.', ce)
         public = " ".join(PROJECT_README.read_text().split())
         self.assertIn("under `[Experimental]` in `ce.ini`", public)
-        self.assertIn("**Full models** starts at **No**", public)
+        self.assertIn("**High-detail units** starts at **Yes**", public)
+        self.assertIn("**3D distant trees** starts at **No**", public)
         self.assertIn("**Terrain detail distance** starts at **Extended**", public)
         self.assertIn("The visible range and fog stay the same.", public)
         self.assertIn("**Screen mode** selects the resolution; **Video adapter** selects the graphics device.", public)
         phrases = (
             "Video Options on a new profile: the first time you start with no saved options of your own",
-            "every quality row starts at its highest choice except Full models",
+            "every quality row starts at its highest choice except 3D distant trees",
             "anti-aliasing starts at the highest level your graphics device lists",
-            "Full models starts at No",
-            "is the largest cost in frame rate",
+            "High-detail units starts at Yes",
+            "3D distant trees starts at No",
+            "largest cost in frame rate",
             "Terrain detail distance starts at Extended",
             "keeps finer ground detail up to twice as far away. The visible range and fog stay the same.",
             "Choose Normal for the original terrain detail",

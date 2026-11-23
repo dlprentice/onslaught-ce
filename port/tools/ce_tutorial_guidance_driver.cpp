@@ -127,8 +127,11 @@ struct Platform {
 } PLATFORM;
 struct { int mAutoConfigTest = 0; bool mRecordDemo = false, mPlaybackDemo = false; } CLIPARAMS;
 int PLAYABLE_DEMO = 0;
+#ifndef MAX_PLAYERS
+#define MAX_PLAYERS 4
+#endif
 struct CThing { bool unit = false, dying = false; bool IsA(int) { return unit; } bool IsDying() { return dying; } };
-using CUnit = CThing;
+class CUnit : public CThing {};
 struct Text {
 	int language = 0; WCHAR speaker[8] = L"Speaker", message[15] = L"Authored radio";
 	int GetLanguage() { return language; } WCHAR *GetString(int id) { return id == 42 ? speaker : message; }

@@ -110,7 +110,7 @@ struct D3DXVECTOR2
     D3DXVECTOR2 operator*(float f) const { return D3DXVECTOR2(x * f, y * f); }
 };
 struct AuthoredCamera { FVector GetPos() { return FVector{10, 20, 30}; } FMatrix GetOrientation() { return FMatrix(); } };
-struct AuthoredLandscape { void *mMirrorTexture = nullptr; };
+struct AuthoredLandscape { void *mMirrorTexture = nullptr; void *mDepthSurface = nullptr; };
 struct { AuthoredCamera camera; AuthoredLandscape landscape; int mCurrentViewpoint = 0;
          AuthoredCamera *GetCamera() { return &camera; } AuthoredLandscape *GetLandscape() { return &landscape; } } ENGINE;
 struct { bool IsMultiplayer() { return false; } float GetRenderFrameLength() { return 1.f / 30; } } GAME;
@@ -166,6 +166,12 @@ void SetMipFilterByGlobalToggle(int) {}
 void AuthoredSleep(int) {}
 #define Sleep AuthoredSleep
 static void PortWaterRenderPath(int) {}
+static float CeGroundWaterDrop() { return 0.f; }
+static bool CeAnisoQualityActive() { return false; }
+static bool CeAnisoUseAnisotropicFilter(DWORD, DWORD, bool) { return false; }
+static DWORD CeAnisoEffectiveLevel(DWORD, DWORD, bool) { return 1; }
+static unsigned CeWaterReflectionActiveRes() { return 256; }
+static float CeWaterReflectionTapOffset() { return 0.5f / 256.f; }
 struct AuthoredWaterBuffer { template<class... A> void DrawIndexed(A...) {} template<class... A> void DWATS(A...) {} };
 struct AuthoredWaterShader { void SetConstants() {} };
 struct CDXWater

@@ -665,7 +665,7 @@ const void* pictured_camera=NULL;
 void StrategicEntered() { ++entered_calls; }
 void StrategicLeft() { ++left_calls; }
 int PilotAllegiance(const void** pilot) { if (pilot) *pilot = nullptr; return 0; }
-void CountLiveWorldUnits(int, int* outFriendly, int* outTotal) {
+void CeCmdCountLiveUnits(int, int* outFriendly, int* outTotal) {
     if (outFriendly) *outFriendly = 0;
     if (outTotal) *outTotal = 0;
 }

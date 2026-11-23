@@ -1576,7 +1576,6 @@ bool gActiveNoticeRectValid = false;
 StrategicHudRect gActiveHelpRect = {};
 bool gActiveHelpRectValid = false;
 int PilotAllegiance(const void** pilot);
-void CountLiveWorldUnits(int pilotAlleg, int* outFriendly, int* outTotal);
 
 bool CmdAsciiContainsNoCase(const char* haystack, const char* needle) {
     if (!haystack || !needle || !needle[0]) return false;
@@ -2308,13 +2307,13 @@ UnitPanel::TextSize UnitMeasure(void*, const char* text, float scale) {
 void RefreshUnitFrame() {
     bool collectedAll = false;
     const int rawCount = CeCmdUnitCollect(gUnitNative, UnitControl::kMaxUnits, &collectedAll);
-    // Count live friendly/total units directly from WORLD (wrap-safe via live pointers)
+    // Count live friendly/total units via the order layer (wrap-safe via live pointers)
     // so overflow beyond collector or panel limits reports accurate "+N hidden" without
     // freezing Commander picking or orders.
     int liveFriendly = 0, liveTotal = 0;
     const void* framePilot = NULL;
     const int pilotAlleg = PilotAllegiance(&framePilot);
-    CountLiveWorldUnits(pilotAlleg, &liveFriendly, &liveTotal);
+    CeCmdCountLiveUnits(pilotAlleg, &liveFriendly, &liveTotal);
     // Prioritize units (selected -> player faction -> nearest to camera focus) into bounded slice.
     gUnitHiddenCount = 0;
     if (rawCount > 0) {
@@ -4000,18 +3999,6 @@ int PilotAllegiance(const void** pilot) {
     CBattleEngine* engine = player ? player->GetBattleEngine() : NULL;
     if (pilot) *pilot = engine;
     return engine ? (int)engine->GetAllegiance() : -1;
-}
-
-void CountLiveWorldUnits(int pilotAlleg, int* outFriendly, int* outTotal) {
-    int liveFriendly = 0, liveTotal = 0;
-    ListIterator<CUnit> units(&WORLD.GetUnitNB());
-    for (CUnit* u = units.First(); u; u = units.Next()) {
-        if (u->IsDying() || u->IsShuttingDown() || u->GetLife() <= 0.f) continue;
-        ++liveTotal;
-        if (int(u->GetAllegiance()) == pilotAlleg) ++liveFriendly;
-    }
-    if (outFriendly) *outFriendly = liveFriendly;
-    if (outTotal) *outTotal = liveTotal;
 }
 
 // Prepare one frame's live overlay from the captured native world view: project friendly unit marks and set up 2D drawing state.

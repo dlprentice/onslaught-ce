@@ -588,10 +588,10 @@ between visual effects and play, so a wider view can change the details of a fig
 ### Video Options: new-profile defaults, Window mode and Extended terrain
 
 **A new profile starts at the best the game offers, except one costly row.** The first time you start with no saved options of your own (a new install,
-or a profile that only has the old game folder's file), Video Options (Main Menu > Options > Video Options) starts every quality row at its highest choice (except Full models, below),
+or a profile that only has the old game folder's file), Video Options (Main Menu > Options > Video Options) starts every quality row at its highest choice (except 3D distant trees, below),
 **anti-aliasing at the highest level your graphics device lists**, and **extra graphical features On** where your device passes the capability test.
-**Full models** starts at **No**. Choose **Yes** to keep full-detail models instead of distant stand-ins and remove their distance fade.
-This can be costly: on a laptop with an RTX 4060, level 200 fell from 383 to 67 frames a second with the same terrain setting.
+**High-detail units** starts at **Yes** so unit models keep full detail at range, while **3D distant trees** starts at **No** (opt-in to replace distant billboard trees with full 3D models).
+Full 3D trees can be costly on forest maps: on a laptop with an RTX 4060, level 200 fell from 383 to 67 frames a second with the same terrain setting.
 **Terrain detail distance** starts at **Extended**: it keeps finer ground detail up to twice as far away. The visible range and fog stay the same.
 Choose **Normal** for the original terrain detail. Anything you have saved before is kept as it was: the new defaults apply once, to a
 profile that has no options of its own, and every row can be changed afterwards. The adapter name and the long choices on the page now fit the screen.
