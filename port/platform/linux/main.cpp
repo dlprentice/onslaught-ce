@@ -8,6 +8,7 @@
 #include "../common/feel.h"
 #ifdef CE_VERSION
 #include "../../game/ce_project.h"
+#include "../../game/ce_archive_scanner.h"
 #endif
 #ifndef CE_NETWORK_OFF
 #include "../common/ce_netlobby.h"
@@ -39,6 +40,13 @@ int main(int argc, char **argv)
 	{
 		PortPathsNamesOnly();
 		int status = PortModsCheck(argc - 2, argv + 2);
+		fflush(NULL);
+		_exit(status);
+	}
+	if (argc > 1 && !strcmp(argv[1], "--archive-scan"))	// crash-isolated retail mesh scanner (ce_archive_scanner.h)
+	{
+		PortPathsNamesOnly();
+		int status = PortCeArchiveScanCli(argc - 2, argv + 2);
 		fflush(NULL);
 		_exit(status);
 	}

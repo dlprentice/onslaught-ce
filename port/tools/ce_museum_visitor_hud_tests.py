@@ -60,7 +60,17 @@ int main() {
     for (int step = 0; step < int(kWingCount); ++step) cur = NextTourWing(cur);
     Need(cur == kWingCourtyard, "tour wraps after visiting every wing");
 
-    // Atrium Directory Lectern ray-pick hits each of the 6 brass plates and refuses out-of-range/off-axis.
+    // Atrium Directory Console stands on the west entrance flank; central sightline is open; rotunda centerpiece stands at (0, 36).
+    Need(Grand::WalkAt(graph, CeMuseumExhibition::Vec2{kDirectoryX, kDirectoryY}) == CeMuseumExhibition::kWalkBlocked,
+         "relocated directory console blocks walking");
+    Need(Grand::WalkAt(graph, CeMuseumExhibition::Vec2{kDirectoryX, kDirectoryY - 2.0f}) == CeMuseumExhibition::kWalkOpen,
+         "standing point in front of directory console is open");
+    Need(Grand::WalkAt(graph, CeMuseumExhibition::Vec2{0.0f, 31.5f}) == CeMuseumExhibition::kWalkOpen,
+         "central atrium entrance sightline is unobstructed");
+    Need(Grand::WalkAt(graph, CeMuseumExhibition::Vec2{0.0f, 36.0f}) == CeMuseumExhibition::kWalkBlocked,
+         "atrium rotunda centerpiece pedestal is reserved at (0, 36)");
+
+    // Atrium Directory Console ray-pick hits each of the 6 brass plates and refuses out-of-range/off-axis.
     for (int i = 0; i < kDirectoryStops; ++i) {
         Need(AsciiOnly(kDirectory[i].label), "ASCII directory plate label");
         const float px = kDirectoryX + kDirectory[i].localOffsetX;
@@ -70,9 +80,9 @@ int main() {
         const DirectoryHit hit = PickDirectory(ex, ey, ez, px - ex, py - ey, pz - ez);
         Need(hit.valid && hit.index == i, "direct aim picks exact directory plate");
     }
-    Need(!PickDirectory(0.0f, kDirectoryY - 8.0f, 1.7f, 0.0f, 1.0f, -0.05f).valid,
+    Need(!PickDirectory(kDirectoryX, kDirectoryY - 8.0f, 1.7f, 0.0f, 1.0f, -0.05f).valid,
          "out-of-range aim misses directory");
-    Need(!PickDirectory(0.0f, kDirectoryY - 2.0f, 1.7f, 0.0f, -1.0f, 0.0f).valid,
+    Need(!PickDirectory(kDirectoryX, kDirectoryY - 2.0f, 1.7f, 0.0f, -1.0f, 0.0f).valid,
          "looking away misses directory");
 
     std::printf("ce_museum_visitor_hud_tests: all tour and directory checks passed\n");

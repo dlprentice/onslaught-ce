@@ -2068,11 +2068,16 @@ void TestGrandComplex() {
     CHECK(!G::FacesExit(Ex::Vec2{0.0f, 0.0f}, Ex::Vec2{0.0f, 1.0f}, true));
     CHECK(!G::FacesExit(Ex::Vec2{0.0f, 25.0f}, Ex::Vec2{0.0f, -1.0f}, false));
 
-    // 3. Hero Aquila plinth, reflecting pools, lectern, skylights, and audio kiosks block walking; apron around Hero is walkable.
+    // 3. Hero Aquila plinth, reflecting pools, side directory console, rotunda pedestal, skylights, and audio kiosks block walking.
     CHECK(G::WalkAt(g, Ex::Vec2{0.0f, 10.5f}) == Ex::kWalkBlocked);
     CHECK(G::WalkAt(g, Ex::Vec2{-10.0f, 10.0f}) == Ex::kWalkBlocked);
     CHECK(G::WalkAt(g, Ex::Vec2{10.0f, 10.0f}) == Ex::kWalkBlocked);
-    CHECK(G::WalkAt(g, Ex::Vec2{0.0f, 31.5f}) == Ex::kWalkBlocked);
+    // Central entrance sightline at (0, 31.5) is completely unobstructed; lectern sits on west flank (-5.4, 26.8); rotunda centerpiece stands at (0, 36).
+    CHECK(G::WalkAt(g, Ex::Vec2{0.0f, 31.5f}) == Ex::kWalkOpen);
+    CHECK(G::WalkAt(g, Ex::Vec2{-5.4f, 26.8f}) == Ex::kWalkBlocked);
+    CHECK(G::WalkAt(g, Ex::Vec2{-5.4f, 24.8f}) == Ex::kWalkOpen);
+    CHECK(G::WalkAt(g, Ex::Vec2{0.0f, 36.0f}) == Ex::kWalkBlocked);
+    CHECK(G::SightClear(g, Ex::Vec3{0.0f, 21.0f, 1.7f}, Ex::Vec3{0.0f, 36.0f, 1.7f}));
     CHECK(G::PathClear(g, Ex::Vec2{0.0f, 0.0f}, Ex::Vec2{4.5f, 4.0f}));
     CHECK(G::PathClear(g, Ex::Vec2{4.5f, 4.0f}, Ex::Vec2{4.5f, 16.5f}));
     CHECK(G::PathClear(g, Ex::Vec2{4.5f, 16.5f}, Ex::Vec2{0.0f, 25.0f}));
@@ -2098,11 +2103,14 @@ void TestGrandComplex() {
     }
 
     // 5. Continuous walkable route from Courtyard -> Atrium -> EVERY wing -> Screening Room.
-    // Atrium compass centre (0, 36) is open and reachable from Atrium south (0, 25) via west/east of lectern.
-    CHECK(G::PathClear(g, Ex::Vec2{0.0f, 25.0f}, Ex::Vec2{-3.5f, 31.5f}));
-    CHECK(G::PathClear(g, Ex::Vec2{-3.5f, 31.5f}, Ex::Vec2{0.0f, 36.0f}));
+    // Central approach (0, 25) -> (0, 32) is straight and unobstructed; rotunda promenade loops cleanly around the (0, 36) pedestal.
+    CHECK(G::PathClear(g, Ex::Vec2{0.0f, 25.0f}, Ex::Vec2{0.0f, 32.0f}));
+    CHECK(G::PathClear(g, Ex::Vec2{0.0f, 32.0f}, Ex::Vec2{-4.5f, 32.0f}));
+    CHECK(G::PathClear(g, Ex::Vec2{-4.5f, 32.0f}, Ex::Vec2{-4.5f, 36.0f}));
+    CHECK(G::PathClear(g, Ex::Vec2{0.0f, 32.0f}, Ex::Vec2{4.5f, 32.0f}));
+    CHECK(G::PathClear(g, Ex::Vec2{4.5f, 32.0f}, Ex::Vec2{4.5f, 36.0f}));
     // Atrium -> Forseti Wing (all 6 native bay pads reachable)
-    CHECK(G::PathClear(g, Ex::Vec2{0.0f, 36.0f}, Ex::Vec2{-12.0f, 41.0f}));
+    CHECK(G::PathClear(g, Ex::Vec2{-4.5f, 36.0f}, Ex::Vec2{-12.0f, 41.0f}));
     CHECK(G::PathClear(g, Ex::Vec2{-12.0f, 41.0f}, Ex::Vec2{-36.5f, 41.0f}));
     for (unsigned i = 0; i < G::kNativeBayCount; ++i) {
         const G::NativeBaySpot &nb = g.nativeBays[i];
@@ -2111,10 +2119,12 @@ void TestGrandComplex() {
         CHECK(G::PathClear(g, Ex::Vec2{nb.padX, 41.0f}, Ex::Vec2{nb.padX, nb.padY}));
     }
     // Atrium -> Muspell Wing
-    CHECK(G::PathClear(g, Ex::Vec2{0.0f, 36.0f}, Ex::Vec2{12.0f, 41.0f}));
+    CHECK(G::PathClear(g, Ex::Vec2{4.5f, 36.0f}, Ex::Vec2{12.0f, 41.0f}));
     CHECK(G::PathClear(g, Ex::Vec2{12.0f, 41.0f}, Ex::Vec2{38.0f, 41.0f}));
-    // Atrium -> Aviation & Naval Hangar
-    CHECK(G::PathClear(g, Ex::Vec2{0.0f, 36.0f}, Ex::Vec2{0.0f, 70.0f}));
+    // Atrium -> Aviation & Naval Hangar (around rotunda pedestal)
+    CHECK(G::PathClear(g, Ex::Vec2{-4.5f, 36.0f}, Ex::Vec2{-4.5f, 41.0f}));
+    CHECK(G::PathClear(g, Ex::Vec2{-4.5f, 41.0f}, Ex::Vec2{0.0f, 41.0f}));
+    CHECK(G::PathClear(g, Ex::Vec2{0.0f, 41.0f}, Ex::Vec2{0.0f, 70.0f}));
     // Naval basin blocks walking; west & centre hangar aisle stay clear.
     CHECK(G::WalkAt(g, Ex::Vec2{13.0f, 65.0f}) == Ex::kWalkBlocked);
     CHECK(G::WalkAt(g, Ex::Vec2{-8.0f, 65.0f}) == Ex::kWalkOpen);

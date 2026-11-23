@@ -596,6 +596,8 @@ static void CheckMultiWeaponAndPromptCapacity()
 			tel.altitude = 23.f;
 			tel.pitchDeg = -7.f;
 			tel.headingDeg = 163.f;
+			tel.weaponSlot = isAir ? 0 : 2;
+			tel.weaponCount = isAir ? 0 : 2;
 			std::snprintf(tel.weaponName, sizeof(tel.weaponName), "%s", longWeapons[wi]);
 			char hdr[48], l1[64], l2[64], act[48];
 			CePlayUnitFormatClassHud(tel, hdr, l1, l2, act);
@@ -617,6 +619,147 @@ static void CheckMultiWeaponAndPromptCapacity()
 	}
 }
 
+static void CheckInfantry1PWeaponsAndManualSwitching()
+{
+	// 1. All 6 retail infantry 1P viewmodel classifications (weapon name + unit name + fallback + NULL safety)
+	Require(CePlayUnitClassifyInfantryWeapon(false, "Beam Rifle", "Forseti Trooper") == CE_INF_VM_FORSETI_BEAM_RIFLE,
+	        "infantry vm: Forseti Trooper Beam Rifle");
+	Require(CePlayUnitClassifyInfantryWeapon(false, "Plasma Grenade Thrown", "Forseti Trooper") == CE_INF_VM_FORSETI_PLASMA_GRENADE,
+	        "infantry vm: Forseti Trooper Plasma Grenade Thrown");
+	Require(CePlayUnitClassifyInfantryWeapon(false, "Beam Rifle", "Forseti Dragoon") == CE_INF_VM_FORSETI_BEAM_RIFLE,
+	        "infantry vm: Forseti Dragoon Beam Rifle");
+	Require(CePlayUnitClassifyInfantryWeapon(false, "Plasma Grenade Thrown", "Forseti Dragoon") == CE_INF_VM_FORSETI_PLASMA_GRENADE,
+	        "infantry vm: Forseti Dragoon Plasma Grenade Thrown");
+	Require(CePlayUnitClassifyInfantryWeapon(true, "Assault Rifle", "Muspell Grunt") == CE_INF_VM_MUSPELL_ASSAULT_RIFLE,
+	        "infantry vm: Muspell Grunt Assault Rifle");
+	Require(CePlayUnitClassifyInfantryWeapon(true, "Wrist Blade", "Muspell Grunt") == CE_INF_VM_MUSPELL_WRIST_BLADE,
+	        "infantry vm: Muspell Grunt Wrist Blade");
+	Require(CePlayUnitClassifyInfantryWeapon(true, "Assault Rifle", "Muspell Warrior") == CE_INF_VM_MUSPELL_ASSAULT_RIFLE,
+	        "infantry vm: Muspell Warrior Assault Rifle");
+	Require(CePlayUnitClassifyInfantryWeapon(true, "Warrior Laser", "Muspell Warrior") == CE_INF_VM_MUSPELL_WARRIOR_LASER,
+	        "infantry vm: Muspell Warrior Warrior Laser");
+	Require(CePlayUnitClassifyInfantryWeapon(true, "Twin Assault Pistols", "Muspell Commando") == CE_INF_VM_MUSPELL_TWIN_PISTOLS,
+	        "infantry vm: Muspell Commando Twin Assault Pistols");
+	// Unit-name & faction fallbacks with NULL / empty weapon name
+	Require(CePlayUnitClassifyInfantryWeapon(true, NULL, "Muspell Commando") == CE_INF_VM_MUSPELL_TWIN_PISTOLS,
+	        "infantry vm: Commando fallback with NULL weapon");
+	Require(CePlayUnitClassifyInfantryWeapon(true, "", "Muspell Warrior") == CE_INF_VM_MUSPELL_WARRIOR_LASER,
+	        "infantry vm: Warrior fallback with empty weapon");
+	Require(CePlayUnitClassifyInfantryWeapon(true, NULL, NULL) == CE_INF_VM_MUSPELL_ASSAULT_RIFLE,
+	        "infantry vm: Muspell default fallback");
+	Require(CePlayUnitClassifyInfantryWeapon(false, NULL, NULL) == CE_INF_VM_FORSETI_BEAM_RIFLE,
+	        "infantry vm: Forseti default fallback");
+
+	// 2. Forseti Trooper ([0]=Plasma Grenade Thrown, [1]=Beam Rifle): defaults to primary Beam Rifle (1/2),
+	//    cycles cleanly to Grenade (2/2), stays locked while grenade recovers, wraps back to Beam Rifle (1/2).
+	{
+		CePlayUnitWeaponSlotState slot;
+		CePlayUnitWeaponSlotReset(&slot);
+		const bool hasMode[2] = {true, true};
+		const bool allReady[2] = {true, true};
+		const bool grenadeRecovering[2] = {false, true};
+		const char *names[2] = {"Plasma Grenade Thrown", "Beam Rifle"};
+		const int init = CePlayUnitResolveInfantryWeapon(&slot, 2, 0, false, hasMode, allReady, names);
+		Require(init == 1 && slot.usableCount == 2 && slot.usableRank == 1,
+		        "infantry switch: Forseti Trooper defaults to Beam Rifle as slot 1/2");
+		bool changed = false;
+		const int sw1 = CePlayUnitCycleInfantryWeapon(&slot, 2, 1, false, hasMode, allReady, names, 1, &changed);
+		Require(changed && sw1 == 0 && slot.usableRank == 2,
+		        "infantry switch: cycling Forseti Trooper switches to Plasma Grenade as slot 2/2");
+		// After throwing grenade (not ready while rifle IS ready), locked slot MUST stay on grenade!
+		const int held = CePlayUnitResolveInfantryWeapon(&slot, 2, 0, false, hasMode, grenadeRecovering, names);
+		Require(held == 0 && slot.usableRank == 2,
+		        "infantry switch: manual grenade choice stays locked while recovering");
+		Require(CePlayUnitSelectLockedOrReadyWeapon(2, 1, slot.selectedIdx, false, hasMode, grenadeRecovering) == 0,
+		        "infantry fire: FireWeapon honors player-selected grenade slot even when recovering");
+		// Cycle wraps back cleanly to Beam Rifle (1/2)
+		const int sw2 = CePlayUnitCycleInfantryWeapon(&slot, 2, 0, false, hasMode, grenadeRecovering, names, 1, &changed);
+		Require(changed && sw2 == 1 && slot.usableRank == 1,
+		        "infantry switch: cycling wraps cleanly back to Beam Rifle (1/2)");
+		// Safe fallback if locked slot loses its mode or goes out of range
+		const bool slot1Gone[2] = {true, false};
+		const int fb = CePlayUnitResolveInfantryWeapon(&slot, 2, 1, false, slot1Gone, allReady, names);
+		Require(fb == 0 && slot.selectedIdx == 0 && slot.usableCount == 1,
+		        "infantry switch: falls back safely when selected slot loses valid mode");
+		Require(CePlayUnitSelectLockedOrReadyWeapon(2, 1, 1, false, slot1Gone, allReady) == 0,
+		        "infantry fire: invalid locked slot falls back cleanly to ready valid mount");
+	}
+
+	// 3. Muspell Grunt ([0]=Assault Rifle, [1]=Wrist Blade) & Warrior ([0]=Assault Rifle, [1]=Warrior Laser)
+	{
+		CePlayUnitWeaponSlotState grunt;
+		CePlayUnitWeaponSlotReset(&grunt);
+		const bool hasMode[2] = {true, true};
+		const bool ready[2] = {true, true};
+		const char *gruntNames[2] = {"Assault Rifle", "Wrist Blade"};
+		Require(CePlayUnitResolveInfantryWeapon(&grunt, 2, 1, false, hasMode, ready, gruntNames) == 0 && grunt.usableRank == 1,
+		        "infantry switch: Muspell Grunt defaults to Assault Rifle over Wrist Blade");
+		bool changed = false;
+		Require(CePlayUnitCycleInfantryWeapon(&grunt, 2, 0, false, hasMode, ready, gruntNames, 1, &changed) == 1 && changed && grunt.usableRank == 2,
+		        "infantry switch: Muspell Grunt switches cleanly to Wrist Blade (2/2)");
+
+		// Muspell Commando (1 weapon only): cycle stays stable with changed=false
+		CePlayUnitWeaponSlotState cmdo;
+		CePlayUnitWeaponSlotReset(&cmdo);
+		const bool has1[1] = {true};
+		const bool rdy1[1] = {true};
+		const char *cmdoNames[1] = {"Twin Assault Pistols"};
+		Require(CePlayUnitResolveInfantryWeapon(&cmdo, 1, 0, false, has1, rdy1, cmdoNames) == 0 && cmdo.usableCount == 1,
+		        "infantry switch: Commando resolves single Twin Assault Pistols mount");
+		Require(CePlayUnitCycleInfantryWeapon(&cmdo, 1, 0, false, has1, rdy1, cmdoNames, 1, &changed) == 0 && !changed,
+		        "infantry switch: single-weapon Commando cycling is a clean no-op");
+	}
+
+	// 4. Alternating left/right recoil & muzzle flash for Twin Assault Pistols
+	{
+		CePlayUnitWeaponViewState ws;
+		CePlayUnitWeaponViewReset(&ws);
+		CePlayUnitWeaponViewStep(&ws, 0.016f, 0.f, 0.f, true);
+		Require(Near(ws.recoilRight, 1.f) && Near(ws.flashRight, 1.f) && Near(ws.recoilLeft, 0.f),
+		        "twin pistols: first shot kicks right pistol only");
+		CePlayUnitWeaponViewStep(&ws, 0.05f, 0.f, 0.f, false);
+		CePlayUnitWeaponViewStep(&ws, 0.016f, 0.f, 0.f, true);
+		Require(Near(ws.recoilLeft, 1.f) && Near(ws.flashLeft, 1.f) && ws.recoilRight < 0.9f,
+		        "twin pistols: second shot alternates to left pistol");
+		CePlayUnitWeaponViewTriggerSwitch(&ws);
+		Require(Near(ws.switchAnim, 1.f) && Near(ws.recoil, 0.f) && Near(ws.flash, 0.f),
+		        "weapon switch: triggers raise animation and clears stale shot recoil/flash");
+	}
+
+	// 5. Infantry HUD multi-weapon slot cue & FONT_SMALL glyph lint (zero [, ], |)
+	{
+		CePlayUnitHudTelemetry multi = {};
+		multi.valid = true;
+		multi.classId = CE_PLAYUNIT_CLASS_INFANTRY;
+		multi.allegiance = 0;
+		multi.hullPct = 95;
+		multi.weaponSlot = 2;
+		multi.weaponCount = 2;
+		std::snprintf(multi.weaponName, sizeof(multi.weaponName), "Plasma Grenade Thrown");
+		char h[48], l1[64], l2[64], act[48];
+		CePlayUnitFormatClassHud(multi, h, l1, l2, act);
+		Require(std::strstr(l1, "WPN 2/2 Plasma Grenade Thrown") != NULL,
+		        "infantry hud: displays WPN 2/2 Plasma Grenade Thrown when switched");
+		Require(std::strstr(act, "SWITCH WPN") != NULL && std::strstr(act, "Q") != NULL,
+		        "infantry hud: displays switch cue for multi-weapon infantry");
+		const char *rows[4] = {h, l1, l2, act};
+		for (int r = 0; r < 4; ++r)
+			for (const char *c = rows[r]; *c; ++c)
+				Require(!CePlayUnitCharForbidden(static_cast<unsigned char>(*c)),
+				        "infantry hud: zero forbidden glyphs in multi-weapon readout");
+
+		// Single-weapon Commando omits switch cue cleanly
+		CePlayUnitHudTelemetry single = multi;
+		single.allegiance = 1;
+		single.weaponSlot = 1;
+		single.weaponCount = 1;
+		std::snprintf(single.weaponName, sizeof(single.weaponName), "Twin Assault Pistols");
+		CePlayUnitFormatClassHud(single, h, l1, l2, act);
+		Require(std::strstr(l1, "WPN Twin Assault Pistols") != NULL && act[0] == 0,
+		        "infantry hud: single-weapon Commando omits switch cue");
+	}
+}
+
 int main()
 {
 	CheckAllClassEligibility();
@@ -625,6 +768,7 @@ int main()
 	CheckAircraftFlightAndNavalUnload();
 	CheckFactionPalettesAndClassReadouts();
 	CheckMultiWeaponAndPromptCapacity();
+	CheckInfantry1PWeaponsAndManualSwitching();
 	std::printf("checks=%d failures=0 skips=0\nPASS\n", gChecks);
 	return 0;
 }
@@ -701,6 +845,33 @@ MUTANTS = (
     ("class card safe margin dropped", "tactics",
      "const float safeLeft = floorf(w * 0.032f);",
      "const float safeLeft = 0.f;"),
+    ("infantry vm: plasma grenade misclassified as rifle", "rules",
+     "if (CePlayUnitIsSecondaryThrownWeapon(weaponName))\n\t\t\treturn CE_INF_VM_FORSETI_PLASMA_GRENADE;",
+     "if (false && CePlayUnitIsSecondaryThrownWeapon(weaponName))\n\t\t\treturn CE_INF_VM_FORSETI_PLASMA_GRENADE;"),
+    ("infantry vm: wrist blade misclassified as rifle", "rules",
+     "if (CePlayUnitIsSecondaryMeleeWeapon(weaponName))\n\t\t\treturn CE_INF_VM_MUSPELL_WRIST_BLADE;",
+     "if (false && CePlayUnitIsSecondaryMeleeWeapon(weaponName))\n\t\t\treturn CE_INF_VM_MUSPELL_WRIST_BLADE;"),
+    ("infantry vm: twin pistols misclassified as rifle", "rules",
+     "return CE_INF_VM_MUSPELL_TWIN_PISTOLS;\n\t\tif (CePlayUnitAsciiContainsNoCase(weaponName, \"warrior\")",
+     "return CE_INF_VM_MUSPELL_ASSAULT_RIFLE;\n\t\tif (CePlayUnitAsciiContainsNoCase(weaponName, \"warrior\")"),
+    ("infantry vm: warrior laser misclassified as rifle", "rules",
+     "return CE_INF_VM_MUSPELL_WARRIOR_LASER;\n\t\tif (CePlayUnitAsciiContainsNoCase(weaponName, \"assault\")",
+     "return CE_INF_VM_MUSPELL_ASSAULT_RIFLE;\n\t\tif (CePlayUnitAsciiContainsNoCase(weaponName, \"assault\")"),
+    ("infantry switch: manual lock ignored on recovery", "rules",
+     "if (s && s->manualLock && s->selectedIdx >= 0 && s->selectedIdx < count && hasMode[s->selectedIdx])",
+     "if (false && s && s->manualLock && s->selectedIdx >= 0 && s->selectedIdx < count && hasMode[s->selectedIdx])"),
+    ("infantry switch: cycling never advances slot", "rules",
+     "const int cand = ((cur + dir * tries) % count + count) % count;",
+     "const int cand = cur; (void)dir; (void)tries;"),
+    ("infantry fire: locked slot ignored when recovering", "tactics",
+     "if (count > 0 && hasMode && lockedSlot >= 0 && lockedSlot < count && hasMode[lockedSlot])\n\t\treturn lockedSlot;",
+     "if (false && count > 0 && hasMode && lockedSlot >= 0 && lockedSlot < count && hasMode[lockedSlot])\n\t\treturn lockedSlot;"),
+    ("twin pistols: alternating recoil stuck on right hand", "tactics",
+     "s->altSide = 1;",
+     "s->altSide = 0;"),
+    ("infantry hud: multi-weapon switch cue omitted", "tactics",
+     'snprintf(actionOut, 48, "Q / RMB: SWITCH WPN");',
+     'actionOut[0] = 0;'),
 )
 
 
@@ -751,9 +922,24 @@ def check_source_invariants() -> list[str]:
             errors.append(f"DrawFirstPersonVehicleBarrel() mesh pass missing {token!r}")
 
     render_fn = cpp[cpp.index("void CePlayUnitRenderState()"):cpp.index("void Refuse(")]
-    for token in ("ClassKeyFree(DIK_U)", "ClassKeyFree(DIK_C)"):
+    for token in ("ClassKeyFree(DIK_U)", "ClassKeyFree(DIK_C)", "ClassKeyFree(DIK_Q)"):
         if token not in render_fn:
             errors.append(f"CePlayUnitRenderState() missing {token!r}")
+
+    for token in (
+        "CePlayUnitClassifyInfantryWeapon(",
+        "CePlayUnitCycleInfantryWeapon(",
+        "CePlayUnitSelectLockedOrReadyWeapon(",
+        "case BUTTON_MECH_CHANGE_WEAPON:",
+        "CE_INF_VM_FORSETI_BEAM_RIFLE",
+        "CE_INF_VM_FORSETI_PLASMA_GRENADE",
+        "CE_INF_VM_MUSPELL_ASSAULT_RIFLE",
+        "CE_INF_VM_MUSPELL_WRIST_BLADE",
+        "CE_INF_VM_MUSPELL_WARRIOR_LASER",
+        "CE_INF_VM_MUSPELL_TWIN_PISTOLS",
+    ):
+        if token not in cpp:
+            errors.append(f"ce_playunit.cpp missing infantry 1P weapon token {token!r}")
 
     if "EmitCamBox(" in cpp:
         errors.append("ce_playunit.cpp must not use untextured EmitCamBox() geometry for 1P weapons")

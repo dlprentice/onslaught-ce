@@ -64,9 +64,9 @@ inline const WingMeta &Meta(Wing w) {
     return kWings[idx < static_cast<unsigned>(kWingCount) ? idx : 0u];
 }
 
-// Directory Lectern in the Grand Atrium (south of the compass rose, facing south toward arriving visitors).
-constexpr float kDirectoryX = 0.0f;
-constexpr float kDirectoryY = 31.5f;
+// Directory Console on the west entrance flank of the Grand Atrium, preserving the unobstructed central rotunda sightline.
+constexpr float kDirectoryX = -5.4f;
+constexpr float kDirectoryY = 26.8f;
 constexpr float kDirectoryZ = 1.25f;
 constexpr float kDirectoryMaxRange = 4.5f;
 

@@ -315,11 +315,11 @@ class SharedPilotInputTests(unittest.TestCase):
             src = d / "input.cpp"
             src.write_text('''#include "ce_playunit_rules.h"
 #include <cassert>
-enum { DIK_V = 47 };
-bool gDriving, gControllerPending, gConfigured, gWanted, gTakePressed, gViewTogglePressed;
+enum { DIK_V = 47, DIK_Q = 16 };
+bool gDriving, gControllerPending, gConfigured, gWanted, gTakePressed, gViewTogglePressed, gWeaponSwitchPressed;
 void *gCamera;
 unsigned gSwitchWait;
-CePlayUnitKey gTakeKey = {}, gViewToggleKey = {};
+CePlayUnitKey gTakeKey = {}, gViewToggleKey = {}, gWeaponSwitchKey = {};
 int TakeKey(){ return 1; }
 int held, polls;
 int PortKeyHeldNow(int) { ++polls; return held; }
@@ -327,11 +327,14 @@ int PortKeyHeldNow(int) { ++polls; return held; }
 int main() {
     held=1; CePlayUnitMapBoundary(); assert(polls==0);
     gConfigured=true; CePlayUnitMapBoundary(); assert(polls==0);
-    gWanted=true; gTakePressed=true; gViewTogglePressed=true; CePlayUnitMapBoundary();
-    assert(!gTakePressed && !gViewTogglePressed && !CePlayUnitPressed(&gTakeKey,true,false));
+    gWanted=true; gTakePressed=true; gViewTogglePressed=true; gWeaponSwitchPressed=true; CePlayUnitMapBoundary();
+    assert(!gTakePressed && !gViewTogglePressed && !gWeaponSwitchPressed && !CePlayUnitPressed(&gTakeKey,true,false));
     assert(!CePlayUnitPressed(&gViewToggleKey,true,true));
     assert(!CePlayUnitPressed(&gViewToggleKey,false,true));
     assert(CePlayUnitPressed(&gViewToggleKey,true,true));
+    assert(!CePlayUnitPressed(&gWeaponSwitchKey,true,true));
+    assert(!CePlayUnitPressed(&gWeaponSwitchKey,false,true));
+    assert(CePlayUnitPressed(&gWeaponSwitchKey,true,true));
     CePlayUnitMapBoundary();
     assert(!CePlayUnitPressed(&gTakeKey,true,true));
     assert(!CePlayUnitPressed(&gTakeKey,false,true));
@@ -339,6 +342,7 @@ int main() {
     held=0; CePlayUnitMapBoundary();
     assert(CePlayUnitPressed(&gTakeKey,true,true));
     assert(CePlayUnitPressed(&gViewToggleKey,true,true));
+    assert(CePlayUnitPressed(&gWeaponSwitchKey,true,true));
     assert(!CePlayUnitOwnsPilot());
     gDriving=true; assert(CePlayUnitOwnsPilot()); gDriving=false;
     gControllerPending=true; assert(CePlayUnitOwnsPilot()); gControllerPending=false;

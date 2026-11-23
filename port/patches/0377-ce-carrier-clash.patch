@@ -1,0 +1,200 @@
+--- a/ResourceAccumulator.cpp
++++ b/ResourceAccumulator.cpp
+@@ -27,6 +27,10 @@
+ #include "map.h"
+ #include <stdio.h>
+ #include "frontend.h"
++#ifdef CE_VERSION
++extern "C" bool PortCeCarrierClashActive(void);
++extern "C" void PortCeCarrierClashInstallArena(void);
++#endif
+ 
+ // an interesting constant.
+ #if TARGET != PS2
+@@ -961,9 +965,10 @@
+ 		else if (tag==MKID("ERES"))
+ 		{
+ #ifdef CE_VERSION
+ 			if (PortCeMuseumAuthoredSource()) { c.Skip(); PortCeMuseumAuthoredInstall(); }
++			else if (PortCeCarrierClashActive()) { ENGINE.Deserialize(&c); PortCeCarrierClashInstallArena(); }
+ 			else
+ #endif
+ 			ENGINE.Deserialize(&c);
+ 		}
+ 		else if (tag==MKID("WRES"))
+@@ -1006,13 +1011,17 @@
+ 		}
+ 		else if (tag==MKID("SURF"))
+ 		{
++#ifdef CE_VERSION
++			if (PortCeCarrierClashActive()) { c.Skip(); }
++			else
++#endif
+ 			SURF.Deserialize(&c);
+ 		}
+ 		else if (tag==MKID("SSHD"))
+ 		{
+ #ifdef CE_VERSION
+-			if (PortCeMuseumAuthoredSource()) { c.Skip(); }
++			if (PortCeMuseumAuthoredSource() || PortCeCarrierClashActive()) { c.Skip(); }
+ 			else
+ #endif
+ 			STATICSHADOWS.DeserializeAll(&c);
+ 		}
+@@ -1027,7 +1036,7 @@
+ 		else if(tag==MKID("DMKR"))
+ 		{
+ #ifdef CE_VERSION
+-			if (PortCeMuseumAuthoredSource()) { c.Skip(); }
++			if (PortCeMuseumAuthoredSource() || PortCeCarrierClashActive()) { c.Skip(); }
+ 			else
+ #endif
+ 			ENGINE.GetLandscape()->GetDamage()->DeserializeAll(&c);
+--- a/world.cpp
++++ b/world.cpp
+@@ -4,6 +4,10 @@
+ #ifdef CE_VERSION
+ #include "ce_project.h"
+ #endif
++#ifdef CE_VERSION
++extern "C" bool PortCeCarrierClashActive(void);
++extern "C" int PortCeCarrierClashReadWorld(const char *, const void **, unsigned *);
++#endif
+ // world.cpp: reconstructed from world.obj (0050a750..0050d86f); Stuart's release has no copy. The allocations'
+ // __LINE__ values are the retail ones; the #line directives place them, because the retail file's layout is unknown.
+ #include "common.h"
+@@ -374,6 +378,7 @@
+ 	BOOL modWorld =
+ #ifdef CE_VERSION
+         PortCeMuseumVisitActive() ||
++        PortCeCarrierClashActive() ||
+ #endif
+         PortModHas(name);
+ 
+@@ -425,8 +430,14 @@
+     // Active but unexpected/missing data must never fall back to the campaign.
+     if (ceMuseumBody < 0)
+         return FALSE;
++    const void *ceCcBytes = NULL;
++    unsigned ceCcLength = 0;
++    const int ceCcBody = (ceMuseumBody == 0) ? PortCeCarrierClashReadWorld(name, &ceCcBytes, &ceCcLength) : 0;
++    if (ceCcBody < 0)
++        return FALSE;
+     if (!(ceMuseumBody > 0 ? mem.InitOwnedRead(ceMuseumBytes, ceMuseumLength) :
++          ceCcBody > 0 ? mem.InitOwnedRead(ceCcBytes, ceCcLength) :
+           mem.InitFromFile(name, MEMTYPE_MEMBUFFER, TRUE, start)))
+ #else
+     if (!mem.InitFromFile(name, MEMTYPE_MEMBUFFER, TRUE, start))
+ #endif
+--- a/game.cpp
++++ b/game.cpp
+@@ -83,6 +83,11 @@
+ 
+ #include	"MemoryCard.h"
+ #include	"Trees.h"
++#ifdef CE_VERSION
++extern "C" bool PortCeCarrierClashActive(void);
++extern "C" bool PortCeCarrierClashPreloadMeshes(void);
++extern "C" bool PortCeCarrierClashLoadRefused(void);
++#endif
+ 
+ 
+ #if TARGET==PS2
+@@ -710,6 +715,10 @@
+ 	{
+ 		// Only load resource files if we're not compiling them!
+ 		CResourceAccumulator::ReadResources(aLevel);
++#ifdef CE_VERSION
++		if (PortCeCarrierClashActive())
++			PortCeCarrierClashPreloadMeshes();
++#endif
+ 	}
+  
+ 	if (inLoadedSounds)
+@@ -1171,6 +1180,9 @@
+ 
+ 	if (fmv != -1)
+ 	{
++#ifdef CE_VERSION
++		if (PortCeCarrierClashActive()) return;
++#endif
+ 		char foo[300];
+ 
+ 		MakeCutsceneName(foo, fmv);	// retail
+@@ -1212,6 +1224,9 @@
+ 	if ((performing_stress_test == 1) || (performing_stress_test == 2))
+ 		return;
+ 
++#ifdef CE_VERSION
++	if (PortCeCarrierClashActive()) return;
++#endif
+ 	// did I win?
+ 	if ((mQuit == QT_QUIT_TO_FRONTEND) && (END_LEVEL_DATA.mFinalState == GAME_STATE_LEVEL_WON))
+ 	{
+@@ -1345,6 +1360,10 @@
+ 	if( !LoadLevel( aLevel ) )
+ 	{
+ 		ShutdownRestartLoop();
++#ifdef CE_VERSION
++		if (PortCeCarrierClashLoadRefused())
++			return QT_QUIT_TO_FRONTEND;
++#endif
+ 		return QT_LOAD_ERROR;
+ 	}
+ 
+@@ -1356,6 +1375,10 @@
+ 	if( !PostLoadProcess() )
+ 	{
+ 		ShutdownRestartLoop();
++#ifdef CE_VERSION
++		if (PortCeCarrierClashLoadRefused())
++			return QT_QUIT_TO_FRONTEND;
++#endif
+ 		return QT_LOAD_ERROR;
+ 	}
+ 
+@@ -2330,6 +2353,10 @@
+ 			mEndLevelCount = CLOCK_TICK;
+ 
++#ifdef CE_VERSION
++		if (((mCurrentLevel == 741 || mCurrentLevel == 742) && !PortCeCarrierClashActive()) || mEndLevelCount < 0)
++#else
+ 		if (mCurrentLevel == 741 || mCurrentLevel == 742 || mEndLevelCount < 0)
++#endif
+ 		{
+ 			SetQuit( QT_QUIT_TO_FRONTEND );
+ 		}
+@@ -2803,5 +2830,9 @@
+ 
++#ifdef CE_VERSION
++	if ((mCurrentLevel != 741 && mCurrentLevel != 742) || PortCeCarrierClashActive())
++#else
+ 	if (mCurrentLevel != 741 && mCurrentLevel != 742 )
++#endif
+ 	{
+ 		mEndLevelCount = GAME_COUNT_WHEN_WON;
+ 	}
+--- a/FrontEnd.cpp
++++ b/FrontEnd.cpp
+@@ -27,6 +27,9 @@
+ #include	"MemoryCard.h"
+ #include	"reconnectinterface.h"
+ #include	"EndLevelData.h"
++#ifdef CE_VERSION
++extern "C" bool PortCeCarrierClashTakeReturn(void);
++#endif
+ #include	"console.h"
+ #include	"PCController.h"
+ #define CCONTROLLER CPCController
+@@ -242,4 +245,11 @@
+ 
+ 	GAME.mRenderFrameNumber=0;
++#ifdef CE_VERSION
++	if (PortCeCarrierClashTakeReturn())
++	{
++		mActivePage = FEP_LANGUAGE_TEST;
++	}
++	else
++#endif
+ 
+ 	// start point

@@ -109,7 +109,7 @@ using CPlayer=Player;
 struct Career {bool GetInvertYAxis(int){return false;}} CAREER;
 enum { @ACTIONS@, UNRELATED };
 struct {float forward=0,back=0,turn=0,look=0,pitch=0; bool fire=false,leave=false;} gIn;
-bool gOnFoot=false,gFootZoomIn=false,gFootZoomOut=false;
+bool gOnFoot=false,gFootZoomIn=false,gFootZoomOut=false,gFootWeaponSwitch=false;
 int gViewMode=1; const int kViewLook=1;
 class Pilot { public: bool mDriving=false;
 @RECEIVE@
@@ -137,10 +137,18 @@ int main(){
     if(!gFootZoomIn || gFootZoomOut || player.deliveries!=1) return 5;
     gFootZoomIn=false;controller.ReceiveButtonAction(&pad,BUTTON_MECH_CHANGE_ZOOM_OUT,1);
     if(gFootZoomIn || !gFootZoomOut || player.deliveries!=1) return 6;
+    // Change Weapon (Right-Click / Gamepad X) switches unit weapons without leaking to the parked pilot.
+    controller.ReceiveButtonAction(&pad,BUTTON_MECH_CHANGE_WEAPON,0);
+    if(gFootWeaponSwitch || player.deliveries!=1) return 9;
+    controller.ReceiveButtonAction(&pad,BUTTON_MECH_CHANGE_WEAPON,1);
+    if(!gFootWeaponSwitch || player.deliveries!=1) return 10;
+    gFootWeaponSwitch=false;
     controller.ReceiveButtonAction(&pad,UNRELATED,1);
     if(player.deliveries!=2 || player.action!=UNRELATED) return 7;
     controller.mDriving=false;controller.ReceiveButtonAction(&pad,BUTTON_MECH_CHANGE_ZOOM_OUT,1);
     if(player.deliveries!=3 || player.action!=BUTTON_MECH_CHANGE_ZOOM_OUT) return 8;
+    controller.ReceiveButtonAction(&pad,BUTTON_MECH_CHANGE_WEAPON,1);
+    if(player.deliveries!=4 || player.action!=BUTTON_MECH_CHANGE_WEAPON || gFootWeaponSwitch) return 11;
     return 0;
 }
 '''

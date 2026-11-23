@@ -26,13 +26,19 @@ constexpr unsigned kReveal = 0xff70848du, kGlazing = 0xffb8d0d6u;
 // Grand Museum open-sky coastal palette and Screening Room wing offset (visitor-local metres).
 constexpr float kGrandCinemaOffsetX = 29.0f;
 constexpr float kGrandCinemaOffsetY = 10.0f;
-constexpr unsigned kGrandSkyZenith = 0xff2b5f9eu;
-constexpr unsigned kGrandSkyMid = 0xff6da5d8u;
-constexpr unsigned kGrandSkyHorizon = 0xffdceaf5u;
-constexpr unsigned kGrandSeaDeep = 0xff1a4b6eu;
-constexpr unsigned kGrandSeaHorizon = 0xff7fb2d4u;
-constexpr unsigned kGrandSunCore = 0xfffff7d8u;
-constexpr unsigned kGrandSunGlow = 0xffe8d5a8u;
+constexpr unsigned kGrandSkyZenith = 0xff1d4f8eu;
+constexpr unsigned kGrandSkyMid = 0xff5a9bd4u;
+constexpr unsigned kGrandSkyHorizon = 0xffe9dfd0u;
+constexpr unsigned kGrandSeaDeep = 0xff113e5fu;
+constexpr unsigned kGrandSeaHorizon = 0xff6ca4c8u;
+constexpr unsigned kGrandSunCore = 0xfffffae2u;
+constexpr unsigned kGrandSunGlow = 0xfff5d494u;
+constexpr unsigned kGrandCloudLight = 0xfffef8ecu;
+constexpr unsigned kGrandCloudShade = 0xff9cb4ccu;
+constexpr unsigned kGrandHeadlandNear = 0xff466278u;
+constexpr unsigned kGrandHeadlandLit = 0xff889496u;
+constexpr unsigned kGrandHeadlandFar = 0xff8eaec8u;
+constexpr unsigned kGrandSeaShimmer = 0xfff6daa0u;
 
 // Visitor centres keep a shoulder's clearance inside the exact rendered walls.
 // The entrance is a real vestibule; the familiar return action works there too.

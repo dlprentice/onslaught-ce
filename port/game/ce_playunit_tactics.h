@@ -139,12 +139,30 @@ struct CePlayUnitWeaponViewState
 	float flash;
 	float swayX;
 	float swayY;
+	float recoilLeft;
+	float recoilRight;
+	float flashLeft;
+	float flashRight;
+	float switchAnim;
+	int altSide;		// 0 = next shot right hand, 1 = next shot left hand (Twin Assault Pistols)
 };
 
 inline void CePlayUnitWeaponViewReset(CePlayUnitWeaponViewState *s)
 {
 	if (!s) return;
 	memset(s, 0, sizeof(*s));
+}
+
+inline void CePlayUnitWeaponViewTriggerSwitch(CePlayUnitWeaponViewState *s)
+{
+	if (!s) return;
+	s->recoil = 0.f;
+	s->flash = 0.f;
+	s->recoilLeft = 0.f;
+	s->recoilRight = 0.f;
+	s->flashLeft = 0.f;
+	s->flashRight = 0.f;
+	s->switchAnim = 1.f;
 }
 
 inline void CePlayUnitWeaponViewStep(CePlayUnitWeaponViewState *s, float dt, float speedUps, float yawDelta, bool fired)
@@ -166,6 +184,18 @@ inline void CePlayUnitWeaponViewStep(CePlayUnitWeaponViewState *s, float dt, flo
 	{
 		s->recoil = 1.f;
 		s->flash = 1.f;
+		if (s->altSide == 0)
+		{
+			s->recoilRight = 1.f;
+			s->flashRight = 1.f;
+			s->altSide = 1;
+		}
+		else
+		{
+			s->recoilLeft = 1.f;
+			s->flashLeft = 1.f;
+			s->altSide = 0;
+		}
 	}
 	else
 	{
@@ -173,7 +203,17 @@ inline void CePlayUnitWeaponViewStep(CePlayUnitWeaponViewState *s, float dt, flo
 		if (s->recoil < 0.f) s->recoil = 0.f;
 		s->flash -= dt * 14.f;
 		if (s->flash < 0.f) s->flash = 0.f;
+		s->recoilLeft -= dt * 6.5f;
+		if (s->recoilLeft < 0.f) s->recoilLeft = 0.f;
+		s->recoilRight -= dt * 6.5f;
+		if (s->recoilRight < 0.f) s->recoilRight = 0.f;
+		s->flashLeft -= dt * 14.f;
+		if (s->flashLeft < 0.f) s->flashLeft = 0.f;
+		s->flashRight -= dt * 14.f;
+		if (s->flashRight < 0.f) s->flashRight = 0.f;
 	}
+	s->switchAnim -= dt * 5.8f;
+	if (s->switchAnim < 0.f) s->switchAnim = 0.f;
 
 	const float targetSwayX = CePlayUnitClamp(yawDelta * 0.45f, -0.055f, 0.055f);
 	const float kSway = dt * 10.f > 1.f ? 1.f : dt * 10.f;
@@ -1101,6 +1141,8 @@ struct CePlayUnitHudTelemetry
 	int fireState;
 	int stance;				// 0 idle/ready, 1 moving, 2 firing
 	float maxRangeMeters;	// weapon max range in meters (>0 when available)
+	int weaponSlot;			// 1-based active weapon slot (1..weaponCount for multi-weapon units)
+	int weaponCount;		// total usable weapons on unit (>1 enables manual switch cue)
 };
 
 inline int CePlayUnitSafeRoundInt(float v, int lo, int hi)
@@ -1136,7 +1178,16 @@ inline void CePlayUnitFormatClassHud(const CePlayUnitHudTelemetry &t,
 	{
 		const char *stanceWord = t.stance == 2 ? "FIRING" : (t.stance == 1 ? "MOVING" : "READY");
 		snprintf(headerOut, 48, "INFANTRY");
-		snprintf(line1Out, 64, "WPN %s  HDG %03d", wpn, hdg);
+		if (t.weaponCount > 1)
+		{
+			const int slot = (t.weaponSlot >= 1 && t.weaponSlot <= t.weaponCount) ? t.weaponSlot : 1;
+			snprintf(line1Out, 64, "WPN %d/%d %s", slot, t.weaponCount, wpn);
+			snprintf(actionOut, 48, "Q / RMB: SWITCH WPN");
+		}
+		else
+		{
+			snprintf(line1Out, 64, "WPN %s  HDG %03d", wpn, hdg);
+		}
 		snprintf(line2Out, 64, "STANCE %s  HEALTH %d%%", stanceWord, hull);
 		break;
 	}
@@ -1231,6 +1282,16 @@ inline int CePlayUnitSelectReadyWeapon(int count, int currentIdx, bool armingCur
 		if (hasMode[i])
 			return i;
 	return -1;
+}
+
+// Honors an explicit player-selected weapon slot (e.g., manual infantry weapon switching) whenever
+// that slot index is valid and has an active weapon mode, falling back safely otherwise.
+inline int CePlayUnitSelectLockedOrReadyWeapon(int count, int currentIdx, int lockedSlot, bool armingCurrent,
+                                               const bool *hasMode, const bool *ready)
+{
+	if (count > 0 && hasMode && lockedSlot >= 0 && lockedSlot < count && hasMode[lockedSlot])
+		return lockedSlot;
+	return CePlayUnitSelectReadyWeapon(count, currentIdx, armingCurrent, hasMode, ready);
 }
 
 inline const char *CePlayUnitControlVerb(int classId)

@@ -86,21 +86,24 @@ Each table row declares:
 
 ### 3.1 Registered Built-in Handlers (21 Hook Points)
 
-The compiled dispatch table in `port/game/ce_hooks.cpp` wires the following built-in CE handlers (29 rows across 14 active hook points; 7 points are currently open for extension):
+The compiled dispatch table in `port/game/ce_hooks.cpp` wires the following built-in CE handlers (36 rows across 14 active hook points; 7 points are currently open for extension):
 
 | Point | Slot | Handler Name | Tag | Gate | Mode | Owner Module |
 |---|---|---|---|---|---|---|
 | `boot` | — | *(open — no built-in rows)* | `SIM` | — | — | — |
 | `exit` | — | *(open — no built-in rows)* | `SIM` | — | — | — |
 | `level_begin` | `10` | `multibe_level_begin` | `SIM` | `CE_GATE_LAYER` | `CE_MODE_NONE` | `port/game/ce_multibe.cpp` |
+| `level_begin` | `20` | `carrier_clash_level_begin` | `SIM` | `CE_GATE_LAYER` | `CE_MODE_NONE` | `port/game/ce_carrier_clash.cpp` |
 | `level_end` | `10` | `palette_close` | `SIM` | `CE_GATE_VERSION` | `CE_MODE_NONE` | `port/game/ce_palette.cpp` |
 | `level_end` | `20` | `console_level_end` | `SIM` | `CE_GATE_VERSION` | `CE_MODE_NONE` | `port/game/ce_palette.cpp` |
 | `level_end` | `30` | `photo_level_end` | `SIM` | `CE_GATE_VERSION` | `CE_MODE_NONE` | `port/game/ce_photo.cpp` |
 | `level_end` | `40` | `commander_level_end` | `SIM` | `CE_GATE_VERSION` | `CE_MODE_NONE` | `port/game/ce_cmdmap.cpp` |
 | `level_end` | `50` | `multibe_level_end` | `SIM` | `CE_GATE_VERSION` | `CE_MODE_NONE` | `port/game/ce_multibe.cpp` |
 | `level_end` | `60` | `entity_handles_level_end` | `SIM` | `CE_GATE_VERSION` | `CE_MODE_NONE` | `port/game/ce_entity_handles.cpp` |
+| `level_end` | `70` | `carrier_clash_level_end` | `SIM` | `CE_GATE_VERSION` | `CE_MODE_NONE` | `port/game/ce_carrier_clash.cpp` |
 | `tick_pre` | `10` | `gamepad_cycle` | `SIM` | `CE_GATE_VERSION` | `CE_MODE_NONE` | `port/game/ce_gamepad.cpp` |
 | `tick_pre` | `20` | `multibe_tick_pre` | `SIM` | `CE_GATE_LAYER` | `CE_MODE_NONE` | `port/game/ce_multibe.cpp` |
+| `tick_pre` | `30` | `carrier_clash_tick_pre` | `SIM` | `CE_GATE_LAYER` | `CE_MODE_NONE` | `port/game/ce_carrier_clash.cpp` |
 | `tick_post` | — | *(open — drains `ce_hook_command_push` queue)* | `SIM` | — | — | — |
 | `input_actions` | — | *(open — no built-in rows)* | `SIM` | — | — | — |
 | `key_capture` | `10` | `photo_key` | `RENDER` | `CE_GATE_VERSION` | `CE_MODE_NONE` | `port/game/ce_photo.cpp` |
@@ -109,11 +112,13 @@ The compiled dispatch table in `port/game/ce_hooks.cpp` wires the following buil
 | `key_capture` | `40` | `commander_key` | `RENDER` | `CE_GATE_VERSION` | `CE_MODE_NONE` | `port/game/ce_cmdmap.cpp` |
 | `draw_world` | `10` | `playunit_draw_world` | `RENDER` | `CE_GATE_VERSION` | `CE_MODE_NONE` | `port/game/ce_playunit.cpp` |
 | `draw_hud` | `10` | `multibe_draw_hud` | `RENDER` | `CE_GATE_LAYER` | `CE_MODE_NONE` | `port/game/ce_multibe.cpp` |
+| `draw_hud` | `20` | `carrier_clash_draw_hud` | `RENDER` | `CE_GATE_LAYER` | `CE_MODE_NONE` | `port/game/ce_carrier_clash.cpp` |
 | `draw_overlay` | `10` | `editor_overlay` | `RENDER` | `CE_GATE_VERSION` | `CE_MODE_NONE` | `port/game/ce_editor.cpp` |
 | `menu_rows` | `10` | `multibe_menu_rows` | `RENDER` | `CE_GATE_LAYER` | `CE_MODE_NONE` | `port/game/ce_multibe.cpp` |
 | `save_gate` | `10` | `editor_save` | `SIM` | `CE_GATE_VERSION` | `CE_MODE_NONE` | `port/game/ce_editor.cpp` |
 | `save_gate` | `20` | `bonus_save` | `SIM` | `CE_GATE_VERSION` | `CE_MODE_NONE` | `port/game/ce_bonus.cpp` |
 | `save_gate` | `30` | `museum_visit_save` | `SIM` | `CE_GATE_VERSION` | `CE_MODE_NONE` | `port/game/ce_museum_visit_engine.cpp` |
+| `save_gate` | `40` | `carrier_clash_save` | `SIM` | `CE_GATE_VERSION` | `CE_MODE_NONE` | `port/game/ce_carrier_clash.cpp` |
 | `audio_clock` | — | *(open — worker-thread-safe rows only)* | `RENDER` | — | — | — |
 | `render_camera` | `10` | `commander_camera` | `SIM` | `CE_GATE_VERSION` | `CE_MODE_NONE` | `port/game/ce_cmdmap.cpp` |
 | `render_camera` | `20` | `playunit_camera` | `SIM` | `CE_GATE_VERSION` | `CE_MODE_NONE` | `port/game/ce_playunit.cpp` |
@@ -121,8 +126,10 @@ The compiled dispatch table in `port/game/ce_hooks.cpp` wires the following buil
 | `hud_focus` | `10` | `multibe_hud_focus` | `RENDER` | `CE_GATE_LAYER` | `CE_MODE_NONE` | `port/game/ce_multibe.cpp` |
 | `unit_spawn` | `10` | `multibe_unit_spawn` | `SIM` | `CE_GATE_LAYER` | `CE_MODE_NONE` | `port/game/ce_multibe.cpp` |
 | `unit_spawn` | `20` | `entity_handles_unit_spawn` | `SIM` | `CE_GATE_LAYER` | `CE_MODE_NONE` | `port/game/ce_entity_handles.cpp` |
+| `unit_spawn` | `30` | `carrier_clash_unit_spawn` | `SIM` | `CE_GATE_LAYER` | `CE_MODE_NONE` | `port/game/ce_carrier_clash.cpp` |
 | `unit_destroyed` | `10` | `multibe_unit_destroyed` | `SIM` | `CE_GATE_LAYER` | `CE_MODE_NONE` | `port/game/ce_multibe.cpp` |
 | `unit_destroyed` | `20` | `entity_handles_unit_destroyed` | `SIM` | `CE_GATE_LAYER` | `CE_MODE_NONE` | `port/game/ce_entity_handles.cpp` |
+| `unit_destroyed` | `30` | `carrier_clash_unit_destroyed` | `SIM` | `CE_GATE_LAYER` | `CE_MODE_NONE` | `port/game/ce_carrier_clash.cpp` |
 | `spawner_trigger` | — | *(open — no built-in rows)* | `SIM` | — | — | — |
 | `weapon_fire` | `10` | `multibe_weapon_fire` | `SIM` | `CE_GATE_LAYER` | `CE_MODE_NONE` | `port/game/ce_multibe.cpp` |
 | `render_pass` | — | *(open — no built-in rows)* | `RENDER` | — | — | — |

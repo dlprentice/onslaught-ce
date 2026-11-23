@@ -190,6 +190,10 @@ CePlayUnitKey gUnloadKey;				// U key: manual landing craft beach unload / drops
 bool gUnloadPressed;
 CePlayUnitKey gSpotKey;					// C key: artillery aerial spotting / shot-follow camera toggle
 bool gSpotPressed;
+CePlayUnitKey gWeaponSwitchKey;			// Q key: infantry primary/secondary weapon switch
+bool gWeaponSwitchPressed;
+CePlayUnitWeaponSlotState gInfantryWeaponSlot;
+int &LockedWeaponSlot();
 CePlayUnitKey gHelpHintKey;				// F1 key: re-open the upper-center Play Any Unit mode hint capsule
 CePlayUnitHintState gHintState;
 int gDrivenClass = -1;					// active CePlayUnitClassId while driving
@@ -228,7 +232,7 @@ bool gDeliveryAssigned;
 bool gOnFoot;
 bool gFootFirstPerson;
 const CCamera *gFootRenderedView;
-bool gFootZoomIn, gFootZoomOut;
+bool gFootZoomIn, gFootZoomOut, gFootWeaponSwitch;
 int gPossessedAllegiance;
 CBattleEngine *gParkedEngine;
 int gParkedEngineNumber = -1;
@@ -392,6 +396,9 @@ public:
                     if (val > 0.f) { if (button == BUTTON_MECH_CHANGE_ZOOM_IN) gFootZoomIn = true; else gFootZoomOut = true; }
                 }
                 // These are engine actions. Outside soldier look, the parked pilot still does not receive them.
+                break;
+            case BUTTON_MECH_CHANGE_WEAPON:
+                if (val > 0.5f) gFootWeaponSwitch = true;
                 break;
             case BUTTON_MECH_MORPH: if (val > 0.5f) gIn.leave = true; break;
 		default:
@@ -764,10 +771,11 @@ void NoteSight(const char *what, const float *eye, CUnit *chosen, CBattleEngine 
 void ClearInput()
 {
 	memset(&gIn, 0, sizeof(gIn));
-	gFootZoomIn = gFootZoomOut = false;
+	gFootZoomIn = gFootZoomOut = gFootWeaponSwitch = false;
 	gViewTogglePressed = false;
 	gUnloadPressed = false;
 	gSpotPressed = false;
+	gWeaponSwitchPressed = false;
 }
 
 // The game can delete a camera when another view replaces it. A virtual destructor notification records that ownership transfer without dereferencing a stale pointer.
@@ -810,6 +818,7 @@ FMatrix LookOrientation()
 CePlayUnitCameraRig gUnitViewRig = {};
 CePlayUnitCameraState gUnitViewState = {};
 bool gUnitViewMade = false, gUnitViewHideBody = false;
+bool gUnitViewModeChanged = false;
 int gUnitViewThird = kCePlayUnitCameraWide;
 unsigned long long gUnitViewFrame = 0, gUnitViewNs = 0;
 unsigned long long ViewNs();
@@ -818,6 +827,7 @@ void ResetUnitView() {
     gUnitViewRig = CePlayUnitCameraRig();
     CePlayUnitCameraReset(&gUnitViewState, 0, kCePlayUnitCameraWide);
     gUnitViewMade = gUnitViewHideBody = false;
+    gUnitViewModeChanged = false;
     gUnitViewThird = kCePlayUnitCameraWide;
     gUnitViewFrame = gUnitViewNs = 0;
 }
@@ -2005,6 +2015,8 @@ void Release(const char *why, const char *notice = NULL, const char *hint = NULL
 	memset(&gBallisticArc, 0, sizeof(gBallisticArc));
 	CePlayUnitSpotterReset(&gSpotter);
 	CePlayUnitWeaponViewReset(&gWeaponView);
+	CePlayUnitWeaponSlotReset(&gInfantryWeaponSlot);
+	LockedWeaponSlot() = -1;
 	CeUnitLookExtraPitch()[0] = 0.f;
 	CeUnitLookExtraPitch()[1] = 0.f;
 	gFootFirstPerson = false;
@@ -2228,6 +2240,16 @@ void UnitPromptLine(char *out, int n, const char *name)
         const size_t len = strlen(out);
         snprintf(out + len, n > (int)len ? n - (int)len : 0, " | U: Unload");
     }
+    else if (gOnFoot && gInfantryWeaponSlot.usableCount > 1)
+    {
+        const size_t len = strlen(out);
+        if (gUsedGamepad && GamepadDefaultActive())
+            snprintf(out + len, n > (int)len ? n - (int)len : 0, " | X: Weapon");
+        else if (ClassKeyFree(DIK_Q))
+            snprintf(out + len, n > (int)len ? n - (int)len : 0, " | Q: Weapon");
+        else
+            snprintf(out + len, n > (int)len ? n - (int)len : 0, " | RMB: Weapon");
+    }
 }
 
 void RefreshUnitPrompt(CUnit *u)
@@ -2239,8 +2261,8 @@ void RefreshUnitPrompt(CUnit *u)
     CePlayUnitPrompt(standing);
 }
 
-// Selects an infantry unit's primary firearm (preferring rifle/gun over thrown plasma grenade)
-// so both firing and the HUD weapon label stay synchronized with the carried rifle.
+// Selects an infantry unit's primary firearm (preferring rifle/gun over thrown plasma grenade or wrist blade)
+// so takeover defaults cleanly to the carried firearm.
 CWeapon *SelectInfantryPrimaryWeapon(CUnit *u, bool assign)
 {
     if (!u) return NULL;
@@ -2262,6 +2284,70 @@ CWeapon *SelectInfantryPrimaryWeapon(CUnit *u, bool assign)
     if (pick >= 0)
     {
         if (assign && list[pick] != u->mCurrentWeapon) u->mCurrentWeapon = list[pick];
+        return list[pick];
+    }
+    return u->mCurrentWeapon;
+}
+
+// Resolves the player's currently selected infantry weapon mount, honoring manual Q / Right-Click
+// switching even while the chosen weapon recovers between shots, and synchronizing firing, HUD, and 1P viewmodel.
+CWeapon *SelectInfantryWeapon(CUnit *u, bool assign)
+{
+    if (!u) { LockedWeaponSlot() = -1; return NULL; }
+    CWeapon *list[16];
+    bool hasMode[16], ready[16];
+    const char *names[16];
+    int count = 0, curIdx = -1;
+    ListIterator<CWeapon> weapons(&u->mWeapons);
+    for (CWeapon *w = weapons.First(); w && count < 16; w = weapons.Next())
+    {
+        if (w == u->mCurrentWeapon) curIdx = count;
+        list[count] = w;
+        hasMode[count] = w->mMode != NULL;
+        ready[count] = w->mMode && w->ReadyToFire() != FALSE;
+        names[count] = (w->mData && w->mData->mName) ? w->mData->mName : "";
+        ++count;
+    }
+    const int pick = CePlayUnitResolveInfantryWeapon(&gInfantryWeaponSlot, count, curIdx, u->mUnknown168 == 1, hasMode, ready, names);
+    LockedWeaponSlot() = pick;
+    if (pick >= 0)
+    {
+        if (assign && list[pick] != u->mCurrentWeapon) u->mCurrentWeapon = list[pick];
+        return list[pick];
+    }
+    return u->mCurrentWeapon;
+}
+
+CWeapon *CycleInfantryWeapon(CUnit *u, bool *changedOut)
+{
+    if (changedOut) *changedOut = false;
+    if (!u) return NULL;
+    CWeapon *list[16];
+    bool hasMode[16], ready[16];
+    const char *names[16];
+    int count = 0, curIdx = -1;
+    ListIterator<CWeapon> weapons(&u->mWeapons);
+    for (CWeapon *w = weapons.First(); w && count < 16; w = weapons.Next())
+    {
+        if (w == u->mCurrentWeapon) curIdx = count;
+        list[count] = w;
+        hasMode[count] = w->mMode != NULL;
+        ready[count] = w->mMode && w->ReadyToFire() != FALSE;
+        names[count] = (w->mData && w->mData->mName) ? w->mData->mName : "";
+        ++count;
+    }
+    bool changed = false;
+    const int pick = CePlayUnitCycleInfantryWeapon(&gInfantryWeaponSlot, count, curIdx, u->mUnknown168 == 1, hasMode, ready, names, 1, &changed);
+    LockedWeaponSlot() = pick;
+    if (changedOut) *changedOut = changed;
+    if (pick >= 0)
+    {
+        if (changed)
+        {
+            u->mCurrentWeapon = list[pick];
+            u->mUnknown168 = 0;
+            u->mUnknown1E8 = 0;
+        }
         return list[pick];
     }
     return u->mCurrentWeapon;
@@ -2303,7 +2389,13 @@ bool Take(CPlayer *player, CBattleEngine *engine, CCONTROLLER *controller, CUnit
 	gSpotShellThing = NULL;
 	gSpotShellNumber = -1;
 	gSpotShellHandle = kCeEntityHandleInvalid;
-	if (gOnFoot) SelectInfantryPrimaryWeapon(u, true);
+	CePlayUnitWeaponSlotReset(&gInfantryWeaponSlot);
+	LockedWeaponSlot() = -1;
+	if (gOnFoot)
+	{
+		SelectInfantryPrimaryWeapon(u, true);
+		SelectInfantryWeapon(u, true);
+	}
 	memset(&gBallisticArc, 0, sizeof(gBallisticArc));
 	CePlayUnitSpotterReset(&gSpotter);
 	CePlayUnitWeaponViewReset(&gWeaponView);
@@ -2369,6 +2461,8 @@ bool Take(CPlayer *player, CBattleEngine *engine, CCONTROLLER *controller, CUnit
 	gUnloadKey.wasDown = PortKeyHeldNow(DIK_U) > 0;
 	gSpotPressed = false;
 	gSpotKey.wasDown = PortKeyHeldNow(DIK_C) > 0;
+	gWeaponSwitchPressed = false;
+	gWeaponSwitchKey.wasDown = PortKeyHeldNow(DIK_Q) > 0;
 	gHelpHintKey.wasDown = PortKeyHeldNow(DIK_F1) > 0;
 	CePlayUnitHintOpen(&gHintState);
 	gLastWeaponViewYaw = gLookYaw;
@@ -2536,6 +2630,8 @@ void Reset()
 	memset(&gBallisticArc, 0, sizeof(gBallisticArc));
 	CePlayUnitSpotterReset(&gSpotter);
 	CePlayUnitWeaponViewReset(&gWeaponView);
+	CePlayUnitWeaponSlotReset(&gInfantryWeaponSlot);
+	LockedWeaponSlot() = -1;
 	CePlayUnitHintReset(&gHintState);
 	CeUnitLookExtraPitch()[0] = 0.f;
 	CeUnitLookExtraPitch()[1] = 0.f;
@@ -2778,7 +2874,14 @@ float TerrainHeight(void *, float x, float y)
 	return MAP.Collide(p);
 }
 
-// The weapon that fires: the unit's current one while ready or arming, otherwise the first ready mount with a range so a recovering secondary never locks out a ready primary.
+int &LockedWeaponSlot()
+{
+	static int slot = -1;
+	return slot;
+}
+
+// The weapon that fires: honors an explicit player-selected slot (e.g., infantry manual weapon switching) when valid,
+// otherwise the unit's current one while ready or arming, or the first ready mount with a range so a recovering secondary never locks out a ready primary.
 CWeapon *FireWeapon(CUnit *u, bool assign)
 {
 	CWeapon *list[16];
@@ -2793,7 +2896,7 @@ CWeapon *FireWeapon(CUnit *u, bool assign)
 		ready[count] = w->mMode && w->ReadyToFire() != FALSE;
 		++count;
 	}
-	const int pick = CePlayUnitSelectReadyWeapon(count, curIdx, u->mUnknown168 == 1, hasMode, ready);
+	const int pick = CePlayUnitSelectLockedOrReadyWeapon(count, curIdx, LockedWeaponSlot(), u->mUnknown168 == 1, hasMode, ready);
 	if (pick >= 0)
 	{
 		if (assign && list[pick] != u->mCurrentWeapon) u->mCurrentWeapon = list[pick];
@@ -2867,8 +2970,8 @@ void FireTick(CUnit *u, bool held)
 #endif
 	if (!stockOnly && gCamera && CePlayUnitFreeFireAllowed(FillGate(true), gLaw->freeFire, PortCeCmdMapOpen()))
 	{
-		if (gOnFoot && u->mUnknown168 == 0)
-			SelectInfantryPrimaryWeapon(u, true);
+		if (gOnFoot)
+			SelectInfantryWeapon(u, u->mUnknown168 == 0);
 		const FVector eye = (gOnFoot && gViewMode != kViewLook) ? FootAimEye(u->GetPos()) : gCamera->GetPos();
 		const FVector look = gCamera->GetOrientation().GetColumnY();
 		FVector aim;
@@ -2934,9 +3037,17 @@ void FireTick(CUnit *u, bool held)
 		}
 		else
 		{
+			CWeapon *preW = gOnFoot ? u->mCurrentWeapon : NULL;
+			const bool preReady = preW && preW->mMode && preW->ReadyToFire() != FALSE;
+			const bool preArmed = u->Unknown84() != FALSE;
 			DriveFire(u, aim, haveAim, gFireState, held);
+			const bool postReady = preW && preW->mMode && preW->ReadyToFire() != FALSE;
+			const bool postArmed = u->Unknown84() != FALSE;
+			const bool shotDischarged = (preReady && !postReady) || (preArmed && !postArmed);
+			if (held && (shotDischarged || (gFireState == CE_PLAYUNIT_FIRE_READY && gWeaponView.recoil < 0.25f)))
+				CePlayUnitWeaponViewStep(&gWeaponView, 0.f, 0.f, 0.f, true);
 		}
-		if (held && gFireState == CE_PLAYUNIT_FIRE_READY)
+		if (held && !gOnFoot && gFireState == CE_PLAYUNIT_FIRE_READY)
 			CePlayUnitWeaponViewStep(&gWeaponView, 0.f, 0.f, 0.f, true);
 		UpdateBallisticAndSpotter(u);
 #ifdef CE_PLAYUNIT_TEST
@@ -2989,6 +3100,7 @@ void Drive(CUnit *u, CPlayer *player, CBattleEngine *engine)
 	bool zoomIn = gFootZoomIn, zoomOut = gFootZoomOut;
 	const bool unloadPressed = gUnloadPressed;
 	const bool spotPressed = gSpotPressed;
+	const bool weaponSwitchReq = gOnFoot && (gWeaponSwitchPressed || gFootWeaponSwitch);
 	gBoostHeld = PortKeyHeldNow(DIK_LSHIFT) > 0 || PortKeyHeldNow(DIK_RSHIFT) > 0;
 	const bool padToggle = gViewMode == kViewLook && GamepadViewToggleEdge();
 	const bool keyToggle = gViewTogglePressed;
@@ -3045,7 +3157,7 @@ void Drive(CUnit *u, CPlayer *player, CBattleEngine *engine)
 			return;
 		}
 	}
-	bool viewModeChanged = false;
+	gUnitViewModeChanged = false;
     if (gViewMode == kViewLook && zoomIn != zoomOut) {
         const bool ready = MakeUnitView(u);
         const int previous = ready ? gUnitViewState.view :
@@ -3053,7 +3165,7 @@ void Drive(CUnit *u, CPlayer *player, CBattleEngine *engine)
         const int view = ready ? CePlayUnitCameraZoom(&gUnitViewState, gUnitViewRig, zoomIn, zoomOut) :
             (gOnFoot ? (zoomIn ? kCePlayUnitCameraFirst : kCePlayUnitCameraClose) : previous);
         if (view != previous) {
-            viewModeChanged = true;
+            gUnitViewModeChanged = true;
             if (view != kCePlayUnitCameraFirst) gUnitViewThird = view;
             gFootFirstPerson = view == kCePlayUnitCameraFirst;
             gFootRenderedView = NULL;
@@ -3069,7 +3181,7 @@ void Drive(CUnit *u, CPlayer *player, CBattleEngine *engine)
         const int view = ready ? CePlayUnitCameraToggleFirst(&gUnitViewState, gUnitViewRig, &gUnitViewThird) :
             (gOnFoot ? (gFootFirstPerson ? kCePlayUnitCameraClose : kCePlayUnitCameraFirst) : previous);
         if (view != previous) {
-            viewModeChanged = true;
+            gUnitViewModeChanged = true;
             gFootFirstPerson = view == kCePlayUnitCameraFirst;
             gFootRenderedView = NULL;
             if (gFootFirstPerson && gSpotter.enabled) CePlayUnitSpotterReset(&gSpotter);
@@ -3079,7 +3191,7 @@ void Drive(CUnit *u, CPlayer *player, CBattleEngine *engine)
         }
     }
     const bool helpPressed = CePlayUnitPressed(&gHelpHintKey, PortKeyHeldNow(DIK_F1) > 0, !GAME.IsPaused() && !PortCeCmdMapOpen());
-    if (CePlayUnitHintStep(&gHintState, viewModeChanged, helpPressed))
+    if (CePlayUnitHintStep(&gHintState, gUnitViewModeChanged, helpPressed))
     {
         if (gHintState.visible)
         {
@@ -3107,6 +3219,23 @@ void Drive(CUnit *u, CPlayer *player, CBattleEngine *engine)
         CFrontEnd::PlaySound(FES_SELECT);
     }
     HandleManualUnload(u, unloadPressed);
+    if (weaponSwitchReq)
+    {
+        bool switched = false;
+        CWeapon *picked = CycleInfantryWeapon(u, &switched);
+        if (switched && picked)
+        {
+            CePlayUnitWeaponViewTriggerSwitch(&gWeaponView);
+            const char *wname = (picked->mData && picked->mData->mName) ? picked->mData->mName : "Weapon";
+            char cleanWpn[36], wpnNotice[64];
+            CePlayUnitSanitizeHudText(wname, cleanWpn, sizeof(cleanWpn));
+            snprintf(wpnNotice, sizeof(wpnNotice), "Weapon %d/%d: %s",
+                     gInfantryWeaponSlot.usableRank, gInfantryWeaponSlot.usableCount, cleanWpn);
+            CePlayUnitNotice(wpnNotice, NULL);
+            RefreshUnitPrompt(u);
+            CFrontEnd::PlaySound(FES_SELECT);
+        }
+    }
 
 	const FVector pos = u->GetPos();
 	const FVector heading = u->GetOrientation().GetColumnY();
@@ -3376,10 +3505,15 @@ bool CePlayUnitHudTelemetryOf(CePlayUnitHudTelemetry *out)
 	out->isBomber = gIsBomber;
 	const char *uname = u->GetUnitData() && u->GetUnitData()->mName ? u->GetUnitData()->mName : "Unit";
 	CePlayUnitSanitizeHudText(uname, out->unitName, sizeof(out->unitName));
-	CWeapon *w = gOnFoot ? SelectInfantryPrimaryWeapon(u, false) : (u->mCurrentWeapon ? u->mCurrentWeapon : FireWeapon(u, false));
+	CWeapon *w = gOnFoot ? SelectInfantryWeapon(u, false) : (u->mCurrentWeapon ? u->mCurrentWeapon : FireWeapon(u, false));
 	if (!w) w = u->mCurrentWeapon ? u->mCurrentWeapon : FireWeapon(u, false);
 	const char *wname = (w && w->mData && w->mData->mName) ? w->mData->mName : "PRIMARY";
 	CePlayUnitSanitizeHudText(wname, out->weaponName, sizeof(out->weaponName));
+	if (gOnFoot)
+	{
+		out->weaponSlot = gInfantryWeaponSlot.usableRank;
+		out->weaponCount = gInfantryWeaponSlot.usableCount;
+	}
 
 	float ratio = u->GetLife() / u->GetMaxLife();
 	if (ratio < 0.f) ratio = 0.f;
@@ -3716,6 +3850,210 @@ void EmitBayonetBlade(CeWeaponVert *buf, int *count, int cap,
 	PushWeaponTri(buf, count, cap, rgtB, nBR, uv.u0, vm, tip, nBR, uv.u1, vm, botB, nBR, uv.u0, uv.v1, vDir, keyDir, tint, 0.88f, false);
 }
 
+// Emits a smooth UV-mapped spherical cap or orb band (phi in [phi0, phi1], 0 = top pole -wd, pi = bottom pole +wd).
+void EmitSegmentedSphere(CeWeaponVert *buf, int *count, int cap,
+                         const FVector &origin, const FVector &wr, const FVector &wf, const FVector &wd,
+                         const FVector &vDir, const FVector &keyDir,
+                         float cx, float cy, float cz, float rx, float ry, float rz,
+                         int rings, int segs, float phi0, float phi1,
+                         const CeUvQuad &uv, DWORD tint, float ao, bool emissive = false)
+{
+	if (rings < 2) rings = 2;
+	if (rings > 10) rings = 10;
+	if (segs < 6) segs = 6;
+	if (segs > 14) segs = 14;
+	const float du = uv.u1 - uv.u0, dv = uv.v1 - uv.v0;
+	const float invRx = rx > 1e-5f ? (1.f / rx) : 1.f;
+	const float invRy = ry > 1e-5f ? (1.f / ry) : 1.f;
+	const float invRz = rz > 1e-5f ? (1.f / rz) : 1.f;
+	auto samplePt = [&](float phi, float th, FVector &posOut, FVector &nOut) {
+		const float sp = sinf(phi), cp = cosf(phi);
+		const float ct = cosf(th), st = sinf(th);
+		const float lx = sp * ct, ly = sp * st, lz = -cp;
+		posOut = origin + wr * (cx + lx * rx) + wf * (cy + ly * ry) + wd * (cz + lz * rz);
+		FVector n = wr * (lx * invRx) + wf * (ly * invRy) + wd * (lz * invRz);
+		const float nl = sqrtf(n.X * n.X + n.Y * n.Y + n.Z * n.Z);
+		nOut = nl > 1e-5f ? (n * (1.f / nl)) : (wd * -1.f);
+	};
+	for (int r = 0; r < rings; ++r)
+	{
+		const float fr0 = float(r) / float(rings);
+		const float fr1 = float(r + 1) / float(rings);
+		const float pA = phi0 + (phi1 - phi0) * fr0;
+		const float pB = phi0 + (phi1 - phi0) * fr1;
+		const float vA = uv.v0 + dv * fr0;
+		const float vB = uv.v0 + dv * fr1;
+		for (int s = 0; s < segs; ++s)
+		{
+			const float fs0 = float(s) / float(segs);
+			const float fs1 = float(s + 1) / float(segs);
+			const float th0 = fs0 * 6.2831853f;
+			const float th1 = fs1 * 6.2831853f;
+			const float uA = uv.u0 + du * fs0;
+			const float uB = uv.u0 + du * fs1;
+			FVector q00, n00, q01, n01, q10, n10, q11, n11;
+			samplePt(pA, th0, q00, n00);
+			samplePt(pA, th1, q01, n01);
+			samplePt(pB, th0, q10, n10);
+			samplePt(pB, th1, q11, n11);
+			PushWeaponTri(buf, count, cap, q00, n00, uA, vA, q10, n10, uA, vB, q11, n11, uB, vB, vDir, keyDir, tint, ao, emissive);
+			PushWeaponTri(buf, count, cap, q00, n00, uA, vA, q11, n11, uB, vB, q01, n01, uB, vA, vDir, keyDir, tint, ao, emissive);
+		}
+	}
+}
+
+// Emits a forged-steel serrated melee blade with 3 crisp saw-tooth notches along the top edge and a swept tip.
+void EmitSerratedBlade(CeWeaponVert *buf, int *count, int cap,
+                       const FVector &origin, const FVector &wr, const FVector &wf, const FVector &wd,
+                       const FVector &vDir, const FVector &keyDir,
+                       float cx, float cz, float yBase, float yTip,
+                       float halfThick, float halfHeight, const CeUvQuad &uv, DWORD tint)
+{
+	const float len = yTip - yBase;
+	if (!(len > 1e-4f)) return;
+	const FVector nTL = (wr * -0.82f + wd * -0.57f);
+	const FVector nBL = (wr * -0.82f + wd *  0.57f);
+	const FVector nTR = (wr *  0.82f + wd * -0.57f);
+	const FVector nBR = (wr *  0.82f + wd *  0.57f);
+	const float vm = 0.5f * (uv.v0 + uv.v1);
+	const float du = uv.u1 - uv.u0;
+
+	// 7 axial profile stations along [0..1]: base -> 3 serrated teeth (crest + notch) -> swept tip
+	static const float tFrac[7] = {0.00f, 0.19f, 0.27f, 0.46f, 0.54f, 0.72f, 0.80f};
+	static const float topSc[7] = {1.00f, 1.08f, 0.52f, 1.00f, 0.46f, 0.88f, 0.42f};
+	static const float botSc[7] = {1.00f, 0.94f, 0.90f, 0.84f, 0.78f, 0.64f, 0.52f};
+	static const float thkSc[7] = {1.00f, 0.96f, 0.90f, 0.86f, 0.80f, 0.72f, 0.62f};
+
+	auto station = [&](int idx, FVector &top, FVector &bot, FVector &lft, FVector &rgt) {
+		const float y = yBase + len * tFrac[idx];
+		const float ht = halfThick * thkSc[idx];
+		top = origin + wr * cx + wf * y + wd * (cz - halfHeight * topSc[idx]);
+		bot = origin + wr * cx + wf * y + wd * (cz + halfHeight * botSc[idx]);
+		lft = origin + wr * (cx - ht) + wf * y + wd * cz;
+		rgt = origin + wr * (cx + ht) + wf * y + wd * cz;
+	};
+	for (int i = 0; i < 6; ++i)
+	{
+		FVector t0, b0, l0, r0, t1, b1, l1, r1;
+		station(i, t0, b0, l0, r0);
+		station(i + 1, t1, b1, l1, r1);
+		const float uA = uv.u0 + du * tFrac[i];
+		const float uB = uv.u0 + du * tFrac[i + 1];
+		// Upper-left & upper-right gleaming bevels
+		PushWeaponTri(buf, count, cap, t0, nTL, uA, uv.v0, l0, nTL, uA, vm, l1, nTL, uB, vm, vDir, keyDir, tint, 1.12f, false);
+		PushWeaponTri(buf, count, cap, t0, nTL, uA, uv.v0, l1, nTL, uB, vm, t1, nTL, uB, uv.v0, vDir, keyDir, tint, 1.12f, false);
+		PushWeaponTri(buf, count, cap, t0, nTR, uA, uv.v0, t1, nTR, uB, uv.v0, r1, nTR, uB, vm, vDir, keyDir, tint, 1.08f, false);
+		PushWeaponTri(buf, count, cap, t0, nTR, uA, uv.v0, r1, nTR, uB, vm, r0, nTR, uA, vm, vDir, keyDir, tint, 1.08f, false);
+		// Lower-left & lower-right fuller bevels
+		PushWeaponTri(buf, count, cap, l0, nBL, uA, vm, b0, nBL, uA, uv.v1, b1, nBL, uB, uv.v1, vDir, keyDir, tint, 0.92f, false);
+		PushWeaponTri(buf, count, cap, l0, nBL, uA, vm, b1, nBL, uB, uv.v1, l1, nBL, uB, vm, vDir, keyDir, tint, 0.92f, false);
+		PushWeaponTri(buf, count, cap, r0, nBR, uA, vm, r1, nBR, uB, vm, b1, nBR, uB, uv.v1, vDir, keyDir, tint, 0.88f, false);
+		PushWeaponTri(buf, count, cap, r0, nBR, uA, vm, b1, nBR, uB, uv.v1, b0, nBR, uA, uv.v1, vDir, keyDir, tint, 0.88f, false);
+	}
+	// Razor swept forward tip
+	FVector tE, bE, lE, rE;
+	station(6, tE, bE, lE, rE);
+	const FVector tip = origin + wr * cx + wf * yTip + wd * (cz - halfHeight * 0.22f);
+	const float uE = uv.u0 + du * tFrac[6];
+	PushWeaponTri(buf, count, cap, tE, nTL, uE, uv.v0, lE, nTL, uE, vm, tip, nTL, uv.u1, vm, vDir, keyDir, tint, 1.15f, false);
+	PushWeaponTri(buf, count, cap, lE, nBL, uE, vm, bE, nBL, uE, uv.v1, tip, nBL, uv.u1, vm, vDir, keyDir, tint, 0.95f, false);
+	PushWeaponTri(buf, count, cap, tE, nTR, uE, uv.v0, tip, nTR, uv.u1, vm, rE, nTR, uE, vm, vDir, keyDir, tint, 1.10f, false);
+	PushWeaponTri(buf, count, cap, rE, nBR, uE, vm, tip, nBR, uv.u1, vm, bE, nBR, uE, uv.v1, vDir, keyDir, tint, 0.90f, false);
+}
+
+void BuildWeaponFrame(const FVector &right, const FVector &fwd, const FVector &down,
+                      float convRight, float convDown, float rollRad,
+                      FVector &wr, FVector &wf, FVector &wd)
+{
+	const FVector wFwd = fwd + right * convRight + down * convDown;
+	const float fLen = sqrtf(wFwd.X * wFwd.X + wFwd.Y * wFwd.Y + wFwd.Z * wFwd.Z);
+	wf = fLen > 1e-4f ? (wFwd * (1.f / fLen)) : fwd;
+	const FVector wrRaw(down.Y * wf.Z - down.Z * wf.Y, down.Z * wf.X - down.X * wf.Z, down.X * wf.Y - down.Y * wf.X);
+	const float rLen = sqrtf(wrRaw.X * wrRaw.X + wrRaw.Y * wrRaw.Y + wrRaw.Z * wrRaw.Z);
+	const FVector wr0 = rLen > 1e-4f ? (wrRaw * (-1.f / rLen)) : right;
+	const FVector wd0(wr0.Y * wf.Z - wr0.Z * wf.Y, wr0.Z * wf.X - wr0.X * wf.Z, wr0.X * wf.Y - wr0.Y * wf.X);
+	if (fabsf(rollRad) > 1e-5f)
+	{
+		const float cr = cosf(rollRad), sr = sinf(rollRad);
+		wr = wr0 * cr + wd0 * sr;
+		wd = wd0 * cr - wr0 * sr;
+	}
+	else
+	{
+		wr = wr0;
+		wd = wd0;
+	}
+}
+
+void DrawWeaponAdditiveTris(LPDIRECT3DDEVICE9 dev, int viewpoint, const CeWorldTriVert *fv, int nf)
+{
+	if (!dev || !fv || nf < 3) return;
+	IDirect3DStateBlock9 *fs = NULL;
+	if (FAILED(dev->CreateStateBlock(D3DSBT_ALL, &fs)) || !fs) return;
+	if (SUCCEEDED(fs->Capture()))
+	{
+		D3DVIEWPORT9 svp, wvp;
+		dev->GetViewport(&svp);
+		wvp = svp; wvp.MinZ = 0.0f; wvp.MaxZ = 0.06f;
+		dev->SetViewport(&wvp);
+		D3DMATRIX worldId = {};
+		worldId._11 = worldId._22 = worldId._33 = worldId._44 = 1.f;
+		dev->SetVertexShader(NULL);
+		dev->SetPixelShader(NULL);
+		dev->SetTransform(D3DTS_WORLD, &worldId);
+		dev->SetTransform(D3DTS_VIEW, (const D3DMATRIX *)&ENGINE.mViewMatrices[viewpoint]);
+		dev->SetTransform(D3DTS_PROJECTION, (const D3DMATRIX *)&ENGINE.mProjectionMatrices[viewpoint]);
+		dev->SetTexture(0, NULL);
+		dev->SetTexture(1, NULL);
+		dev->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
+		dev->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_DIFFUSE);
+		dev->SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
+		dev->SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_DIFFUSE);
+		dev->SetTextureStageState(1, D3DTSS_COLOROP, D3DTOP_DISABLE);
+		dev->SetTextureStageState(1, D3DTSS_ALPHAOP, D3DTOP_DISABLE);
+		dev->SetRenderState(D3DRS_LIGHTING, FALSE);
+		dev->SetRenderState(D3DRS_COLORVERTEX, TRUE);
+		dev->SetRenderState(D3DRS_SPECULARENABLE, FALSE);
+		dev->SetRenderState(D3DRS_FOGENABLE, FALSE);
+		dev->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
+		dev->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE);
+		dev->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_ONE);
+		dev->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_ONE);
+		dev->SetRenderState(D3DRS_ZENABLE, TRUE);
+		dev->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
+		dev->SetRenderState(D3DRS_ZFUNC, D3DCMP_LESSEQUAL);
+		dev->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
+		dev->SetRenderState(D3DRS_FILLMODE, D3DFILL_SOLID);
+		dev->SetRenderState(D3DRS_COLORWRITEENABLE, 15);
+		dev->SetFVF(D3DFVF_XYZ | D3DFVF_DIFFUSE);
+		dev->DrawPrimitiveUP(D3DPT_TRIANGLELIST, nf / 3, fv, sizeof(CeWorldTriVert));
+		dev->SetViewport(&svp);
+		fs->Apply();
+		LT.InvalidateAllStates();
+	}
+	fs->Release();
+}
+
+void EmitMuzzleFlashCone(CeWorldTriVert *fv, int *nf, int cap,
+                         const FVector &mPos, const FVector &wr, const FVector &wf, const FVector &wd,
+                         float sc, float lenMult, DWORD coreCol, DWORD tipCol)
+{
+	if (!fv || !nf || *nf + 12 > cap) return;
+	const FVector axes[2] = {wr, wd};
+	for (int a = 0; a < 2; ++a)
+	{
+		const FVector side = axes[a] * sc;
+		const FVector tip = mPos + wf * (sc * lenMult);
+		const FVector tail = mPos - wf * (sc * 0.4f);
+		fv[(*nf)++] = {tail.X, tail.Y, tail.Z, coreCol};
+		fv[(*nf)++] = {mPos.X + side.X, mPos.Y + side.Y, mPos.Z + side.Z, coreCol};
+		fv[(*nf)++] = {tip.X, tip.Y, tip.Z, tipCol};
+		fv[(*nf)++] = {tail.X, tail.Y, tail.Z, coreCol};
+		fv[(*nf)++] = {tip.X, tip.Y, tip.Z, tipCol};
+		fv[(*nf)++] = {mPos.X - side.X, mPos.Y - side.Y, mPos.Z - side.Z, coreCol};
+	}
+}
+
 void DrawWeaponMeshBuffer(LPDIRECT3DDEVICE9 dev, int viewpoint, IDirect3DTexture9 *tex,
                           const CeWeaponVert *verts, int nVerts, bool weaponDepthRange)
 {
@@ -3791,10 +4129,354 @@ void DrawWeaponMeshBuffer(LPDIRECT3DDEVICE9 dev, int viewpoint, IDirect3DTexture
 	LT.InvalidateAllStates();
 }
 
+struct CeInfantryWeaponAtlas
+{
+	CeUvQuad uvShroud, uvBody, uvBarrel, uvGlow;
+	DWORD tShroud, tBody, tBarrel, tGlow;
+};
+
+// 1 & 3. Forseti Beam Rifle (pulse carbine + reflex optic) and Muspell Assault Rifle (hooded sights + steel bayonet).
+void EmitStandardInfantryRifle(CeWeaponVert *verts, int *nVerts, int cap,
+                               const FVector &base, const FVector &wr, const FVector &wf, const FVector &wd,
+                               const FVector &vDir, const FVector &keyDir, float s,
+                               bool muspell, const CeInfantryWeaponAtlas &at)
+{
+	// Rear shoulder stock + main lower receiver
+	EmitSculptedHull(verts, nVerts, cap, base, wr, wf, wd, vDir, keyDir,
+	                 0.00f * s,  0.026f * s, 0.058f * s, 0.072f * s, 0.38f, -1.18f * s,
+	                 0.00f * s,  0.014f * s, 0.052f * s, 0.062f * s, 0.38f, -0.26f * s,
+	                 at.uvBody, at.tBody, 0.92f);
+	EmitSculptedHull(verts, nVerts, cap, base, wr, wf, wd, vDir, keyDir,
+	                 0.00f * s,  0.014f * s, 0.052f * s, 0.062f * s, 0.38f, -0.26f * s,
+	                 0.00f * s, -0.002f * s, 0.044f * s, 0.048f * s, 0.38f,  0.26f * s,
+	                 at.uvBody, at.tBody, 0.96f);
+	// Rear cheek-rest cowling + main swept armored upper cowling + fore-end heat shroud
+	EmitSculptedHull(verts, nVerts, cap, base, wr, wf, wd, vDir, keyDir,
+	                 0.00f * s, -0.038f * s, 0.066f * s, 0.040f * s, 0.46f, -1.18f * s,
+	                 0.00f * s, -0.036f * s, 0.058f * s, 0.036f * s, 0.46f, -0.26f * s,
+	                 at.uvShroud, at.tShroud, 1.02f);
+	EmitSculptedHull(verts, nVerts, cap, base, wr, wf, wd, vDir, keyDir,
+	                 0.00f * s, -0.036f * s, 0.058f * s, 0.036f * s, 0.46f, -0.26f * s,
+	                 0.00f * s, -0.034f * s, 0.042f * s, 0.028f * s, 0.46f,  0.30f * s,
+	                 at.uvShroud, at.tShroud, 1.06f);
+	EmitSculptedHull(verts, nVerts, cap, base, wr, wf, wd, vDir, keyDir,
+	                 0.00f * s, -0.012f * s, 0.044f * s, 0.036f * s, 0.44f,  0.22f * s,
+	                 0.00f * s, -0.014f * s, 0.030f * s, 0.024f * s, 0.46f,  0.42f * s,
+	                 at.uvShroud, at.tShroud, 1.04f);
+	// Turned cylindrical primary barrel + stepped muzzle brake crown
+	EmitCylinderTube(verts, nVerts, cap, base, wr, wf, wd, vDir, keyDir,
+	                 0.00f * s, -0.016f * s, 0.36f * s, 0.62f * s, 0.022f * s, 0.018f * s, 10,
+	                 at.uvBarrel, at.tBarrel, 1.08f, false);
+	EmitCylinderTube(verts, nVerts, cap, base, wr, wf, wd, vDir, keyDir,
+	                 0.00f * s, -0.016f * s, 0.60f * s, 0.67f * s, 0.027f * s, 0.024f * s, 10,
+	                 at.uvBody, at.tBody, 0.94f, true);
+	if (muspell)
+	{
+		// Underbarrel gas/thermal tube + signature forged-steel bayonet blade
+		EmitCylinderTube(verts, nVerts, cap, base, wr, wf, wd, vDir, keyDir,
+		                 0.00f * s, 0.024f * s, 0.22f * s, 0.54f * s, 0.016f * s, 0.014f * s, 8,
+		                 at.uvBody, at.tBody, 0.94f, true);
+		EmitBayonetBlade(verts, nVerts, cap, base, wr, wf, wd, vDir, keyDir,
+		                 0.00f * s, 0.036f * s, 0.48f * s, 0.78f * s, 0.007f * s, 0.020f * s,
+		                 at.uvBarrel, at.tBarrel);
+		// Hooded iron-sight arch + glowing amber thermal vent
+		EmitSculptedHull(verts, nVerts, cap, base, wr, wf, wd, vDir, keyDir,
+		                 0.00f * s, -0.076f * s, 0.030f * s, 0.018f * s, 0.38f, -0.20f * s,
+		                 0.00f * s, -0.072f * s, 0.024f * s, 0.014f * s, 0.40f,  0.02f * s,
+		                 at.uvBody, at.tBody, 0.96f);
+		EmitSculptedHull(verts, nVerts, cap, base, wr, wf, wd, vDir, keyDir,
+		                 -0.052f * s, -0.014f * s, 0.010f * s, 0.014f * s, 0.28f, -0.18f * s,
+		                 -0.044f * s, -0.014f * s, 0.010f * s, 0.012f * s, 0.28f,  0.22f * s,
+		                 at.uvGlow, at.tGlow, 1.0f, true);
+	}
+	else
+	{
+		// Underbarrel pulse capacitor + glowing cyan accelerator emitter ring
+		EmitCylinderTube(verts, nVerts, cap, base, wr, wf, wd, vDir, keyDir,
+		                 0.00f * s, 0.026f * s, 0.20f * s, 0.48f * s, 0.020f * s, 0.017f * s, 10,
+		                 at.uvBarrel, at.tBarrel, 1.04f, false);
+		EmitCylinderTube(verts, nVerts, cap, base, wr, wf, wd, vDir, keyDir,
+		                 0.00f * s, 0.026f * s, 0.48f * s, 0.56f * s, 0.018f * s, 0.014f * s, 8,
+		                 at.uvGlow, at.tGlow, 1.0f, false, true);
+		// Tubular reflex optic + mounting bridge + glowing cyan pulse cell strip
+		EmitCylinderTube(verts, nVerts, cap, base, wr, wf, wd, vDir, keyDir,
+		                 0.00f * s, -0.084f * s, -0.18f * s, 0.12f * s, 0.024f * s, 0.026f * s, 10,
+		                 at.uvBody, at.tBody, 1.02f, true);
+		EmitSculptedHull(verts, nVerts, cap, base, wr, wf, wd, vDir, keyDir,
+		                 0.00f * s, -0.068f * s, 0.016f * s, 0.014f * s, 0.30f, -0.14f * s,
+		                 0.00f * s, -0.068f * s, 0.015f * s, 0.013f * s, 0.30f,  0.08f * s,
+		                 at.uvShroud, at.tShroud, 0.98f);
+		EmitSculptedHull(verts, nVerts, cap, base, wr, wf, wd, vDir, keyDir,
+		                 -0.054f * s, -0.020f * s, 0.010f * s, 0.013f * s, 0.28f, -0.18f * s,
+		                 -0.044f * s, -0.018f * s, 0.010f * s, 0.011f * s, 0.28f,  0.24f * s,
+		                 at.uvGlow, at.tGlow, 1.0f, true);
+	}
+	// Contoured lower handguard & grip
+	EmitSculptedHull(verts, nVerts, cap, base, wr, wf, wd, vDir, keyDir,
+	                 0.00f * s, 0.064f * s, 0.028f * s, 0.038f * s, 0.36f, -0.16f * s,
+	                 0.00f * s, 0.052f * s, 0.024f * s, 0.026f * s, 0.38f,  0.10f * s,
+	                 at.uvBody, at.tBody, 0.88f);
+}
+
+// 2. Forseti Plasma Grenade Thrown: sculpted Forseti armored forearm/gauntlet hand cradling a glowing
+//    cyan-cored segmented Plasma Grenade ready to throw, with wind-up/throw animation.
+void EmitForsetiPlasmaGrenade(CeWeaponVert *verts, int *nVerts, int cap,
+                              const FVector &base, const FVector &wr, const FVector &wf, const FVector &wd,
+                              const FVector &vDir, const FVector &keyDir, float s,
+                              const CeInfantryWeaponAtlas &at, FVector &orbCenterOut)
+{
+	// Armored Forseti forearm vambrace entering smoothly off bottom-right edge
+	EmitSculptedHull(verts, nVerts, cap, base, wr, wf, wd, vDir, keyDir,
+	                 0.06f * s,  0.22f * s, 0.088f * s, 0.072f * s, 0.44f, -1.16f * s,
+	                 0.02f * s,  0.13f * s, 0.072f * s, 0.058f * s, 0.44f, -0.24f * s,
+	                 at.uvShroud, at.tShroud, 1.02f);
+	// Glowing cyan wrist seal collar & dark armored wrist joint
+	EmitSculptedHull(verts, nVerts, cap, base, wr, wf, wd, vDir, keyDir,
+	                 0.02f * s,  0.125f * s, 0.076f * s, 0.061f * s, 0.45f, -0.26f * s,
+	                 0.015f * s, 0.118f * s, 0.074f * s, 0.058f * s, 0.45f, -0.20f * s,
+	                 at.uvGlow, at.tGlow, 1.0f, true);
+	EmitSculptedHull(verts, nVerts, cap, base, wr, wf, wd, vDir, keyDir,
+	                 0.015f * s, 0.118f * s, 0.064f * s, 0.052f * s, 0.42f, -0.20f * s,
+	                 0.00f * s,  0.095f * s, 0.066f * s, 0.048f * s, 0.40f, -0.02f * s,
+	                 at.uvBody, at.tBody, 0.94f);
+	// Armored gloved palm cupping beneath the grenade
+	EmitSculptedHull(verts, nVerts, cap, base, wr, wf, wd, vDir, keyDir,
+	                 0.00f * s,  0.095f * s, 0.076f * s, 0.040f * s, 0.42f, -0.04f * s,
+	                 0.00f * s,  0.082f * s, 0.086f * s, 0.032f * s, 0.42f,  0.18f * s,
+	                 at.uvBody, at.tBody, 0.96f);
+	// Opposing armored thumb curving up the left/camera-facing flank of the orb
+	EmitSculptedHull(verts, nVerts, cap, base, wr, wf, wd, vDir, keyDir,
+	                 -0.072f * s, 0.065f * s, 0.024f * s, 0.024f * s, 0.42f, -0.02f * s,
+	                 -0.118f * s, -0.015f * s, 0.020f * s, 0.020f * s, 0.42f,  0.14f * s,
+	                 at.uvShroud, at.tShroud, 1.04f);
+	EmitSculptedHull(verts, nVerts, cap, base, wr, wf, wd, vDir, keyDir,
+	                 -0.118f * s, -0.015f * s, 0.020f * s, 0.019f * s, 0.42f,  0.13f * s,
+	                 -0.096f * s, -0.065f * s, 0.017f * s, 0.016f * s, 0.42f,  0.24f * s,
+	                 at.uvBody, at.tBody, 0.98f);
+	// Three sculpted armored fingers wrapping under & up the right/front of the orb
+	for (int fi = 0; fi < 3; ++fi)
+	{
+		const float fy = (0.07f + float(fi) * 0.062f) * s;
+		const float fx = (0.088f - float(fi) * 0.018f) * s;
+		EmitSculptedHull(verts, nVerts, cap, base, wr, wf, wd, vDir, keyDir,
+		                 fx,          0.065f * s, 0.020f * s, 0.020f * s, 0.42f, fy,
+		                 fx * 1.18f, -0.025f * s, 0.018f * s, 0.018f * s, 0.42f, fy + 0.075f * s,
+		                 at.uvShroud, at.tShroud, 1.02f);
+		EmitSculptedHull(verts, nVerts, cap, base, wr, wf, wd, vDir, keyDir,
+		                 fx * 1.18f, -0.025f * s, 0.017f * s, 0.017f * s, 0.42f, fy + 0.070f * s,
+		                 fx * 0.88f, -0.078f * s, 0.014f * s, 0.014f * s, 0.42f, fy + 0.135f * s,
+		                 at.uvBody, at.tBody, 0.96f);
+	}
+
+	// Segmented Glowing Plasma Grenade Orb nestled prominently in the palm
+	const float gx = -0.008f * s, gy = 0.145f * s, gz = -0.048f * s;
+	const float gr = 0.118f * s;
+	orbCenterOut = base + wr * gx + wf * gy + wd * gz;
+	// Inner glowing cyan plasma core sphere (visible across the wide equatorial containment band)
+	EmitSegmentedSphere(verts, nVerts, cap, base, wr, wf, wd, vDir, keyDir,
+	                    gx, gy, gz, gr, gr, gr, 6, 12, 0.0f, 3.14159265f,
+	                    at.uvGlow, at.tGlow, 1.0f, true);
+	// Upper & lower armored Forseti ceramic polar shells framing the glowing cyan equatorial core
+	EmitSegmentedSphere(verts, nVerts, cap, base, wr, wf, wd, vDir, keyDir,
+	                    gx, gy, gz, gr * 1.08f, gr * 1.08f, gr * 1.08f, 3, 12, 0.0f, 1.08f,
+	                    at.uvShroud, at.tShroud, 1.08f, false);
+	EmitSegmentedSphere(verts, nVerts, cap, base, wr, wf, wd, vDir, keyDir,
+	                    gx, gy, gz, gr * 1.08f, gr * 1.08f, gr * 1.08f, 3, 12, 2.06f, 3.14159265f,
+	                    at.uvShroud, at.tShroud, 0.96f, false);
+	// Four vertical containment cage ribs arching across the glowing equator
+	for (int rib = 0; rib < 4; ++rib)
+	{
+		const float th = float(rib) * 1.5707963f + 0.42f;
+		const float ct = cosf(th), st = sinf(th);
+		const float rRib = gr * 1.11f;
+		EmitSculptedHull(verts, nVerts, cap, base, wr, wf, wd, vDir, keyDir,
+		                 gx + ct * rRib, gz - gr * 0.56f, 0.013f * s, 0.048f * s, 0.36f, gy + st * rRib - 0.013f * s,
+		                 gx + ct * rRib, gz + gr * 0.56f, 0.013f * s, 0.048f * s, 0.36f, gy + st * rRib + 0.013f * s,
+		                 at.uvBody, at.tBody, 0.98f);
+	}
+	// Top armed primer cap + glowing cyan trigger ring (oriented upright along -wd)
+	const FVector upAxis = wd * -1.f;
+	EmitCylinderTube(verts, nVerts, cap, orbCenterOut, wr, upAxis, wf, vDir, keyDir,
+	                 0.f, 0.f, gr * 0.92f, gr * 1.24f, 0.044f * s, 0.036f * s, 10,
+	                 at.uvBarrel, at.tBarrel, 1.08f, false);
+	EmitCylinderTube(verts, nVerts, cap, orbCenterOut, wr, upAxis, wf, vDir, keyDir,
+	                 0.f, 0.f, gr * 1.22f, gr * 1.36f, 0.028f * s, 0.022f * s, 8,
+	                 at.uvGlow, at.tGlow, 1.0f, false, true);
+}
+
+// 4. Muspell Wrist Blade: armored dark-iron Muspell gauntlet with twin serrated forged-steel wrist blades.
+void EmitMuspellWristBlade(CeWeaponVert *verts, int *nVerts, int cap,
+                           const FVector &base, const FVector &wr, const FVector &wf, const FVector &wd,
+                           const FVector &vDir, const FVector &keyDir, float s,
+                           const CeInfantryWeaponAtlas &at, FVector &bladeMidOut)
+{
+	// Heavy dark-iron armored forearm vambrace extending cleanly off bottom-right edge
+	EmitSculptedHull(verts, nVerts, cap, base, wr, wf, wd, vDir, keyDir,
+	                 0.04f * s,  0.08f * s, 0.086f * s, 0.072f * s, 0.42f, -1.18f * s,
+	                 0.01f * s,  0.04f * s, 0.074f * s, 0.062f * s, 0.42f, -0.16f * s,
+	                 at.uvBody, at.tBody, 0.94f);
+	// Burnished crimson-iron outer gauntlet armor plate + riveted dorsal guard
+	EmitSculptedHull(verts, nVerts, cap, base, wr, wf, wd, vDir, keyDir,
+	                 0.035f * s, 0.015f * s, 0.094f * s, 0.044f * s, 0.44f, -1.16f * s,
+	                 0.010f * s, -0.005f * s, 0.082f * s, 0.038f * s, 0.44f, -0.08f * s,
+	                 at.uvShroud, at.tShroud, 1.04f);
+	// Clenched dark-iron gauntlet fist + crimson knuckle-guard ridge
+	EmitSculptedHull(verts, nVerts, cap, base, wr, wf, wd, vDir, keyDir,
+	                 0.00f * s,  0.038f * s, 0.068f * s, 0.056f * s, 0.42f, -0.16f * s,
+	                 -0.01f * s, 0.032f * s, 0.060f * s, 0.048f * s, 0.42f,  0.14f * s,
+	                 at.uvBody, at.tBody, 0.96f);
+	EmitSculptedHull(verts, nVerts, cap, base, wr, wf, wd, vDir, keyDir,
+	                 -0.01f * s, -0.012f * s, 0.064f * s, 0.022f * s, 0.36f, -0.02f * s,
+	                 -0.01f * s, -0.016f * s, 0.056f * s, 0.018f * s, 0.38f,  0.18f * s,
+	                 at.uvShroud, at.tShroud, 1.06f);
+	// Twin-blade forged housing clamp + glowing molten-amber forge-vent slots
+	EmitSculptedHull(verts, nVerts, cap, base, wr, wf, wd, vDir, keyDir,
+	                 0.00f * s, -0.042f * s, 0.062f * s, 0.024f * s, 0.36f, -0.22f * s,
+	                 0.00f * s, -0.040f * s, 0.054f * s, 0.022f * s, 0.36f,  0.26f * s,
+	                 at.uvBody, at.tBody, 0.98f);
+	EmitSculptedHull(verts, nVerts, cap, base, wr, wf, wd, vDir, keyDir,
+	                 0.00f * s, -0.056f * s, 0.014f * s, 0.010f * s, 0.28f, -0.14f * s,
+	                 0.00f * s, -0.054f * s, 0.012f * s, 0.009f * s, 0.28f,  0.22f * s,
+	                 at.uvGlow, at.tGlow, 1.0f, true);
+	// Twin parallel serrated forged-steel wrist blades (staggered twin fang tips!)
+	const DWORD steelTint = ScaleRgb(at.tBarrel, 1.08f, 1.10f, 1.14f);
+	EmitSerratedBlade(verts, nVerts, cap, base, wr, wf, wd, vDir, keyDir,
+	                  -0.030f * s, -0.044f * s, 0.16f * s, 0.96f * s,
+	                  0.010f * s, 0.036f * s, at.uvBarrel, steelTint);
+	EmitSerratedBlade(verts, nVerts, cap, base, wr, wf, wd, vDir, keyDir,
+	                  0.034f * s, -0.034f * s, 0.16f * s, 0.86f * s,
+	                  0.010f * s, 0.032f * s, at.uvBarrel, steelTint);
+	bladeMidOut = base + wf * (0.68f * s) + wd * (-0.040f * s);
+}
+
+// 5. Muspell Warrior Laser: heavy industrial twin-coil thermal/laser projector with wide armored
+//    cowling, dual side-by-side cooling sleeves, and bright molten-amber emitter prongs.
+void EmitMuspellWarriorLaser(CeWeaponVert *verts, int *nVerts, int cap,
+                             const FVector &base, const FVector &wr, const FVector &wf, const FVector &wd,
+                             const FVector &vDir, const FVector &keyDir, float s,
+                             const CeInfantryWeaponAtlas &at, FVector &muzzleOut)
+{
+	// Heavy rear industrial power chassis extending off bottom-right edge
+	EmitSculptedHull(verts, nVerts, cap, base, wr, wf, wd, vDir, keyDir,
+	                 0.00f * s,  0.032f * s, 0.082f * s, 0.080f * s, 0.34f, -1.20f * s,
+	                 0.00f * s,  0.022f * s, 0.078f * s, 0.072f * s, 0.34f,  0.22f * s,
+	                 at.uvBody, at.tBody, 0.92f);
+	// Broad heavy armored crimson-iron twin-shoulder cowling (unmistakably wider than Assault Rifle)
+	EmitSculptedHull(verts, nVerts, cap, base, wr, wf, wd, vDir, keyDir,
+	                 0.00f * s, -0.036f * s, 0.098f * s, 0.046f * s, 0.42f, -1.18f * s,
+	                 0.00f * s, -0.036f * s, 0.092f * s, 0.042f * s, 0.42f, -0.18f * s,
+	                 at.uvShroud, at.tShroud, 1.02f);
+	EmitSculptedHull(verts, nVerts, cap, base, wr, wf, wd, vDir, keyDir,
+	                 0.00f * s, -0.036f * s, 0.092f * s, 0.042f * s, 0.42f, -0.18f * s,
+	                 0.00f * s, -0.032f * s, 0.082f * s, 0.036f * s, 0.42f,  0.26f * s,
+	                 at.uvShroud, at.tShroud, 1.06f);
+	// Stepped dorsal heatsink bridge & top molten-amber charge core
+	EmitSculptedHull(verts, nVerts, cap, base, wr, wf, wd, vDir, keyDir,
+	                 0.00f * s, -0.078f * s, 0.046f * s, 0.018f * s, 0.36f, -0.24f * s,
+	                 0.00f * s, -0.072f * s, 0.038f * s, 0.015f * s, 0.38f,  0.20f * s,
+	                 at.uvBody, at.tBody, 0.98f);
+	EmitSculptedHull(verts, nVerts, cap, base, wr, wf, wd, vDir, keyDir,
+	                 0.00f * s, -0.092f * s, 0.020f * s, 0.010f * s, 0.30f, -0.16f * s,
+	                 0.00f * s, -0.088f * s, 0.018f * s, 0.009f * s, 0.30f,  0.16f * s,
+	                 at.uvGlow, at.tGlow, 1.0f, true);
+	// Dual side-by-side ribbed cylindrical cooling sleeves + dark-iron cooling collars
+	const float sideOff[2] = {-0.048f * s, 0.048f * s};
+	for (int k = 0; k < 2; ++k)
+	{
+		EmitCylinderTube(verts, nVerts, cap, base, wr, wf, wd, vDir, keyDir,
+		                 sideOff[k], -0.014f * s, 0.16f * s, 0.62f * s, 0.029f * s, 0.026f * s, 10,
+		                 at.uvBarrel, at.tBarrel, 1.06f, true);
+		// Ribbed heat collars around each sleeve
+		EmitCylinderTube(verts, nVerts, cap, base, wr, wf, wd, vDir, keyDir,
+		                 sideOff[k], -0.014f * s, 0.30f * s, 0.36f * s, 0.036f * s, 0.036f * s, 10,
+		                 at.uvShroud, at.tShroud, 1.02f, false);
+		EmitCylinderTube(verts, nVerts, cap, base, wr, wf, wd, vDir, keyDir,
+		                 sideOff[k], -0.014f * s, 0.48f * s, 0.54f * s, 0.035f * s, 0.035f * s, 10,
+		                 at.uvBody, at.tBody, 0.96f, false);
+	}
+	// Glowing molten-amber central thermal core rail + left & right exposed accelerator coils
+	EmitCylinderTube(verts, nVerts, cap, base, wr, wf, wd, vDir, keyDir,
+	                 0.00f * s, -0.014f * s, 0.14f * s, 0.58f * s, 0.019f * s, 0.016f * s, 8,
+	                 at.uvGlow, at.tGlow, 1.0f, false, true);
+	EmitSculptedHull(verts, nVerts, cap, base, wr, wf, wd, vDir, keyDir,
+	                 -0.088f * s, -0.014f * s, 0.013f * s, 0.016f * s, 0.28f, -0.20f * s,
+	                 -0.080f * s, -0.014f * s, 0.012f * s, 0.014f * s, 0.28f,  0.24f * s,
+	                 at.uvGlow, at.tGlow, 1.0f, true);
+	// Tri-prong bright molten-amber emitter prongs extending past the twin sleeves
+	const float prongX[3] = {-0.048f * s, 0.048f * s, 0.00f * s};
+	const float prongZ[3] = {-0.034f * s, -0.034f * s, 0.032f * s};
+	for (int p = 0; p < 3; ++p)
+	{
+		EmitSculptedHull(verts, nVerts, cap, base, wr, wf, wd, vDir, keyDir,
+		                 prongX[p],          prongZ[p],          0.016f * s, 0.014f * s, 0.34f, 0.54f * s,
+		                 prongX[p] * 0.72f,  prongZ[p] * 0.72f,  0.011f * s, 0.010f * s, 0.34f, 0.74f * s,
+		                 at.uvBody, at.tBody, 0.96f);
+		EmitSculptedHull(verts, nVerts, cap, base, wr, wf, wd, vDir, keyDir,
+		                 prongX[p] * 0.74f,  prongZ[p] * 0.74f,  0.012f * s, 0.011f * s, 0.34f, 0.70f * s,
+		                 prongX[p] * 0.60f,  prongZ[p] * 0.60f,  0.009f * s, 0.008f * s, 0.34f, 0.80f * s,
+		                 at.uvGlow, at.tGlow, 1.0f, true);
+	}
+	// Heavy underbarrel drum battery cell
+	EmitCylinderTube(verts, nVerts, cap, base, wr, wf, wd, vDir, keyDir,
+	                 0.00f * s, 0.068f * s, -0.10f * s, 0.36f * s, 0.036f * s, 0.034f * s, 10,
+	                 at.uvBody, at.tBody, 0.90f, false);
+	muzzleOut = base + wf * (0.76f * s) + wd * (-0.012f * s);
+}
+
+// 6. Muspell Commando Twin Assault Pistols: compact blaster helper emitted symmetrically in BOTH hands!
+void EmitCompactMuspellPistol(CeWeaponVert *verts, int *nVerts, int cap,
+                              const FVector &base, const FVector &wr, const FVector &wf, const FVector &wd,
+                              const FVector &vDir, const FVector &keyDir, float s,
+                              bool isLeft, const CeInfantryWeaponAtlas &at, FVector &muzzleOut)
+{
+	const float sideSign = isLeft ? 1.f : -1.f;	// +1 = inner flank facing camera
+	// Armored Commando forearm gauntlet & gloved pistol grip entering cleanly off bottom corner
+	EmitSculptedHull(verts, nVerts, cap, base, wr, wf, wd, vDir, keyDir,
+	                 -sideSign * 0.045f * s, 0.25f * s, 0.062f * s, 0.056f * s, 0.42f, -0.96f * s,
+	                 -sideSign * 0.010f * s, 0.14f * s, 0.048f * s, 0.048f * s, 0.40f, -0.18f * s,
+	                 at.uvBody, at.tBody, 0.92f);
+	EmitSculptedHull(verts, nVerts, cap, base, wr, wf, wd, vDir, keyDir,
+	                 0.00f * s, 0.115f * s, 0.032f * s, 0.058f * s, 0.36f, -0.20f * s,
+	                 0.00f * s, 0.058f * s, 0.030f * s, 0.042f * s, 0.36f, -0.02f * s,
+	                 at.uvBody, at.tBody, 0.90f);
+	// Compact lower blaster frame & forward under-rail
+	EmitSculptedHull(verts, nVerts, cap, base, wr, wf, wd, vDir, keyDir,
+	                 0.00f * s, 0.018f * s, 0.034f * s, 0.036f * s, 0.38f, -0.22f * s,
+	                 0.00f * s, 0.012f * s, 0.028f * s, 0.030f * s, 0.38f,  0.28f * s,
+	                 at.uvBody, at.tBody, 0.96f);
+	// Burnished crimson-iron beveled pistol slide
+	EmitSculptedHull(verts, nVerts, cap, base, wr, wf, wd, vDir, keyDir,
+	                 0.00f * s, -0.026f * s, 0.038f * s, 0.028f * s, 0.44f, -0.26f * s,
+	                 0.00f * s, -0.024f * s, 0.032f * s, 0.024f * s, 0.44f,  0.34f * s,
+	                 at.uvShroud, at.tShroud, 1.06f);
+	// Rear & front iron sight blocks on top of slide
+	EmitSculptedHull(verts, nVerts, cap, base, wr, wf, wd, vDir, keyDir,
+	                 0.00f * s, -0.058f * s, 0.022f * s, 0.011f * s, 0.32f, -0.23f * s,
+	                 0.00f * s, -0.056f * s, 0.018f * s, 0.010f * s, 0.32f, -0.15f * s,
+	                 at.uvBody, at.tBody, 0.98f);
+	EmitSculptedHull(verts, nVerts, cap, base, wr, wf, wd, vDir, keyDir,
+	                 0.00f * s, -0.056f * s, 0.010f * s, 0.012f * s, 0.30f,  0.26f * s,
+	                 0.00f * s, -0.055f * s, 0.009f * s, 0.011f * s, 0.30f,  0.32f * s,
+	                 at.uvBody, at.tBody, 1.00f);
+	// Stubby turned steel barrel + ported compensator muzzle crown
+	EmitCylinderTube(verts, nVerts, cap, base, wr, wf, wd, vDir, keyDir,
+	                 0.00f * s, -0.018f * s, 0.28f * s, 0.48f * s, 0.019f * s, 0.017f * s, 10,
+	                 at.uvBarrel, at.tBarrel, 1.08f, false);
+	EmitCylinderTube(verts, nVerts, cap, base, wr, wf, wd, vDir, keyDir,
+	                 0.00f * s, -0.018f * s, 0.45f * s, 0.53f * s, 0.024f * s, 0.021f * s, 10,
+	                 at.uvBody, at.tBody, 0.94f, true);
+	// Glowing amber thermal slide-rail indicator on camera-facing inner flank
+	EmitSculptedHull(verts, nVerts, cap, base, wr, wf, wd, vDir, keyDir,
+	                 sideSign * 0.037f * s, -0.016f * s, 0.008f * s, 0.010f * s, 0.28f, -0.14f * s,
+	                 sideSign * 0.033f * s, -0.016f * s, 0.008f * s, 0.009f * s, 0.28f,  0.24f * s,
+	                 at.uvGlow, at.tGlow, 1.0f, true);
+	muzzleOut = base + wf * (0.58f * s) + wd * (-0.018f * s);
+}
+
 void DrawFirstPersonInfantryWeapon(CUnit *u, LPDIRECT3DDEVICE9 dev, int viewpoint)
 {
 	if (!u || !dev) return;
-	// Advance walk-bob & recoil animation smoothly in rendered time.
+	// Advance walk-bob, recoil, and weapon-switch raise animation smoothly in rendered time.
 	const unsigned long long now = ViewNs();
 	const float dt = gWeaponViewNs && now > gWeaponViewNs ? float(double(now - gWeaponViewNs) * 1.0e-9) : 0.016f;
 	gWeaponViewNs = now;
@@ -3811,201 +4493,170 @@ void DrawFirstPersonInfantryWeapon(CUnit *u, LPDIRECT3DDEVICE9 dev, int viewpoin
 	const FVector right = ori.GetColumnX();
 	const FVector fwd = ori.GetColumnY();
 	const FVector down = ori.GetColumnZ();
-
-	// Compact shoulder-held 1P pulse rifle (~48% of legacy scale) tucked cleanly into the
-	// lower-right corner well clear of the center crosshair, with shoulder stock exiting past the bottom-right edge.
-	const float s = 0.48f;
-	const float bobX = (cosf(gWeaponView.bobPhase) * 0.012f * gWeaponView.bobAmp + gWeaponView.swayX) * s;
-	const float bobY = (-gWeaponView.recoil * 0.085f) * s;
-	const float bobZ = (gWeaponView.swayY + gWeaponView.recoil * 0.014f) * s;
-	const FVector base = eye + right * (0.31f + bobX) + fwd * (0.86f + bobY) + down * (0.29f + bobZ);
-
-	// Subtle shoulder-held convergence angle tucked cleanly in the lower-right quadrant clear of the reticle.
-	const FVector wFwd = (fwd - right * 0.115f - down * 0.065f);
-	const float fLen = sqrtf(wFwd.X * wFwd.X + wFwd.Y * wFwd.Y + wFwd.Z * wFwd.Z);
-	const FVector wf = fLen > 1e-4f ? (wFwd * (1.f / fLen)) : fwd;
-	const FVector wrRaw(down.Y * wf.Z - down.Z * wf.Y, down.Z * wf.X - down.X * wf.Z, down.X * wf.Y - down.Y * wf.X);
-	const float rLen = sqrtf(wrRaw.X * wrRaw.X + wrRaw.Y * wrRaw.Y + wrRaw.Z * wrRaw.Z);
-	const FVector wr = rLen > 1e-4f ? (wrRaw * (-1.f / rLen)) : right;
-	const FVector wd(wr.Y * wf.Z - wr.Z * wf.Y, wr.Z * wf.X - wr.X * wf.Z, wr.X * wf.Y - wr.Y * wf.X);
 	const FVector vDir = fwd * -1.f;
-	// Camera-relative overhead/left-shoulder sunlight so receiver bevels and barrel always read crisply at every heading.
+	// Camera-relative overhead/left-shoulder sunlight so receiver bevels and barrels always read crisply at every heading.
 	const FVector keyRaw = (right * -0.45f - fwd * 0.34f - down * 0.82f);
 	const float kLen = sqrtf(keyRaw.X * keyRaw.X + keyRaw.Y * keyRaw.Y + keyRaw.Z * keyRaw.Z);
 	const FVector keyDir = kLen > 1e-4f ? (keyRaw * (1.f / kLen)) : FVector(0.f, 0.f, -1.f);
 
+	CWeapon *activeW = SelectInfantryWeapon(u, false);
+	const char *weaponName = (activeW && activeW->mData && activeW->mData->mName) ? activeW->mData->mName : "";
+	const char *unitName = (u->GetUnitData() && u->GetUnitData()->mName) ? u->GetUnitData()->mName : "";
 	const bool muspell = u->GetAllegiance() == 1;
-	IDirect3DTexture9 *tex = CePlayUnitTextures::Ensure(dev, muspell ? CE_PLAYUNIT_TEX_MUSPELL_RIFLE : CE_PLAYUNIT_TEX_FORSETI_RIFLE);
+	const CePlayUnitInfantryViewModel vm = CePlayUnitClassifyInfantryWeapon(muspell, weaponName, unitName);
+	const bool useMuspellAtlas = (vm == CE_INF_VM_MUSPELL_ASSAULT_RIFLE ||
+	                              vm == CE_INF_VM_MUSPELL_WRIST_BLADE ||
+	                              vm == CE_INF_VM_MUSPELL_WARRIOR_LASER ||
+	                              vm == CE_INF_VM_MUSPELL_TWIN_PISTOLS);
+	IDirect3DTexture9 *tex = CePlayUnitTextures::Ensure(dev, useMuspellAtlas ? CE_PLAYUNIT_TEX_MUSPELL_RIFLE : CE_PLAYUNIT_TEX_FORSETI_RIFLE);
 
 	// Atlas UV quadrants (inset 0.02 inside each quadrant to eliminate linear-filter border bleed)
-	const CeUvQuad uvShroud = {0.02f, 0.02f, 0.48f, 0.48f};
-	const CeUvQuad uvBody   = {0.52f, 0.02f, 0.98f, 0.48f};
-	const CeUvQuad uvBarrel = {0.02f, 0.52f, 0.48f, 0.98f};
-	const CeUvQuad uvGlow   = {0.52f, 0.52f, 0.98f, 0.98f};
+	CeInfantryWeaponAtlas at;
+	at.uvShroud = {0.02f, 0.02f, 0.48f, 0.48f};
+	at.uvBody   = {0.52f, 0.02f, 0.98f, 0.48f};
+	at.uvBarrel = {0.02f, 0.52f, 0.48f, 0.98f};
+	at.uvGlow   = {0.52f, 0.52f, 0.98f, 0.98f};
+	at.tShroud  = tex ? 0xfffafcff : (useMuspellAtlas ? 0xffa8422c : 0xff8eaad0);
+	at.tBody    = tex ? 0xfff0f4f8 : (useMuspellAtlas ? 0xff4c3e3a : 0xff465a70);
+	at.tBarrel  = tex ? 0xfffcfdff : (useMuspellAtlas ? 0xff9a928a : 0xffa6bcd2);
+	at.tGlow    = tex ? 0xffffffff : (useMuspellAtlas ? 0xffff9a28 : 0xff54f0ff);
 
-	// With texture bound, diffuse modulates lighting cleanly (near-white tint); without texture, faction palette fallback.
-	const DWORD tShroud = tex ? 0xfffafcff : (muspell ? 0xffa8422c : 0xff8eaad0);
-	const DWORD tBody   = tex ? 0xfff0f4f8 : (muspell ? 0xff4c3e3a : 0xff465a70);
-	const DWORD tBarrel = tex ? 0xfffcfdff : (muspell ? 0xff9a928a : 0xffa6bcd2);
-	const DWORD tGlow   = tex ? 0xffffffff : (muspell ? 0xffff9a28 : 0xff54f0ff);
+	// Compact ~48% scale tucked cleanly clear of center crosshair; smooth raise drop during weapon switch.
+	const float s = 0.48f;
+	const float switchDrop = gWeaponView.switchAnim * gWeaponView.switchAnim * 0.22f;
+	const float bobX = (cosf(gWeaponView.bobPhase) * 0.012f * gWeaponView.bobAmp + gWeaponView.swayX) * s;
+	const float bobZ = (gWeaponView.swayY) * s;
 
-	CeWeaponVert verts[2600];
+	static CeWeaponVert verts[4096];
 	int nVerts = 0;
+	CeWorldTriVert fv[48];
+	int nf = 0;
 
-	// 1a. Rear shoulder stock (extends smoothly off-screen behind bottom-right edge with zero visible cutoff)
-	EmitSculptedHull(verts, &nVerts, 2600, base, wr, wf, wd, vDir, keyDir,
-	                 0.00f * s,  0.026f * s, 0.058f * s, 0.072f * s, 0.38f, -1.18f * s,
-	                 0.00f * s,  0.014f * s, 0.052f * s, 0.062f * s, 0.38f, -0.26f * s,
-	                 uvBody, tBody, 0.92f);
-	// 1b. Main sculpted lower receiver (high UV density across the visible mid-section)
-	EmitSculptedHull(verts, &nVerts, 2600, base, wr, wf, wd, vDir, keyDir,
-	                 0.00f * s,  0.014f * s, 0.052f * s, 0.062f * s, 0.38f, -0.26f * s,
-	                 0.00f * s, -0.002f * s, 0.044f * s, 0.048f * s, 0.38f,  0.26f * s,
-	                 uvBody, tBody, 0.96f);
-
-	// 2a. Rear armored cheek-rest cowling (continuous with main shroud, runs cleanly off bottom-right corner)
-	EmitSculptedHull(verts, &nVerts, 2600, base, wr, wf, wd, vDir, keyDir,
-	                 0.00f * s, -0.038f * s, 0.066f * s, 0.040f * s, 0.46f, -1.18f * s,
-	                 0.00f * s, -0.036f * s, 0.058f * s, 0.036f * s, 0.46f, -0.26f * s,
-	                 uvShroud, tShroud, 1.02f);
-	// 2b. Main BEA-style swept armored upper cowling (crisp panel lines, rivets & cooling vents)
-	EmitSculptedHull(verts, &nVerts, 2600, base, wr, wf, wd, vDir, keyDir,
-	                 0.00f * s, -0.036f * s, 0.058f * s, 0.036f * s, 0.46f, -0.26f * s,
-	                 0.00f * s, -0.034f * s, 0.042f * s, 0.028f * s, 0.46f,  0.30f * s,
-	                 uvShroud, tShroud, 1.06f);
-
-	// 3. Fore-end tapered armored barrel jacket / heat shroud
-	EmitSculptedHull(verts, &nVerts, 2600, base, wr, wf, wd, vDir, keyDir,
-	                 0.00f * s, -0.012f * s, 0.044f * s, 0.036f * s, 0.44f,  0.22f * s,
-	                 0.00f * s, -0.014f * s, 0.030f * s, 0.024f * s, 0.46f,  0.42f * s,
-	                 uvShroud, tShroud, 1.04f);
-
-	// 4. Turned cylindrical primary barrel + stepped muzzle brake crown (10-sided smooth cylinder)
-	EmitCylinderTube(verts, &nVerts, 2600, base, wr, wf, wd, vDir, keyDir,
-	                 0.00f * s, -0.016f * s, 0.36f * s, 0.62f * s, 0.022f * s, 0.018f * s, 10,
-	                 uvBarrel, tBarrel, 1.08f, false);
-	EmitCylinderTube(verts, &nVerts, 2600, base, wr, wf, wd, vDir, keyDir,
-	                 0.00f * s, -0.016f * s, 0.60f * s, 0.67f * s, 0.027f * s, 0.024f * s, 10,
-	                 uvBody, tBody, 0.94f, true);
-
-	// 5. Faction-distinct underbarrel & optic hardware
-	if (muspell)
+	switch (vm)
 	{
-		// Heavy underbarrel gas/thermal tube + signature forged steel bayonet blade
-		EmitCylinderTube(verts, &nVerts, 2600, base, wr, wf, wd, vDir, keyDir,
-		                 0.00f * s, 0.024f * s, 0.22f * s, 0.54f * s, 0.016f * s, 0.014f * s, 8,
-		                 uvBody, tBody, 0.94f, true);
-		EmitBayonetBlade(verts, &nVerts, 2600, base, wr, wf, wd, vDir, keyDir,
-		                 0.00f * s, 0.036f * s, 0.48f * s, 0.78f * s, 0.007f * s, 0.020f * s,
-		                 uvBarrel, tBarrel);
-		// Rugged hooded iron-sight arch on upper shroud
-		EmitSculptedHull(verts, &nVerts, 2600, base, wr, wf, wd, vDir, keyDir,
-		                 0.00f * s, -0.076f * s, 0.030f * s, 0.018f * s, 0.38f, -0.20f * s,
-		                 0.00f * s, -0.072f * s, 0.024f * s, 0.014f * s, 0.40f,  0.02f * s,
-		                 uvBody, tBody, 0.96f);
-		// Glowing amber thermal vent recessed along left receiver flank (clearly visible to player)
-		EmitSculptedHull(verts, &nVerts, 2600, base, wr, wf, wd, vDir, keyDir,
-		                 -0.052f * s, -0.014f * s, 0.010f * s, 0.014f * s, 0.28f, -0.18f * s,
-		                 -0.044f * s, -0.014f * s, 0.010f * s, 0.012f * s, 0.28f,  0.22f * s,
-		                 uvGlow, tGlow, 1.0f, true);
-	}
-	else
+	case CE_INF_VM_FORSETI_PLASMA_GRENADE:
 	{
-		// Forseti underbarrel pulse-capacitor cylinder + glowing cyan accelerator emitter ring
-		EmitCylinderTube(verts, &nVerts, 2600, base, wr, wf, wd, vDir, keyDir,
-		                 0.00f * s, 0.026f * s, 0.20f * s, 0.48f * s, 0.020f * s, 0.017f * s, 10,
-		                 uvBarrel, tBarrel, 1.04f, false);
-		EmitCylinderTube(verts, &nVerts, 2600, base, wr, wf, wd, vDir, keyDir,
-		                 0.00f * s, 0.026f * s, 0.48f * s, 0.56f * s, 0.018f * s, 0.014f * s, 8,
-		                 uvGlow, tGlow, 1.0f, false, true);
-		// Sleek Forseti tubular reflex optic housing + armored mounting bridge + glowing rear sight ring
-		EmitCylinderTube(verts, &nVerts, 2600, base, wr, wf, wd, vDir, keyDir,
-		                 0.00f * s, -0.084f * s, -0.18f * s, 0.12f * s, 0.024f * s, 0.026f * s, 10,
-		                 uvBody, tBody, 1.02f, true);
-		EmitSculptedHull(verts, &nVerts, 2600, base, wr, wf, wd, vDir, keyDir,
-		                 0.00f * s, -0.068f * s, 0.016f * s, 0.014f * s, 0.30f, -0.14f * s,
-		                 0.00f * s, -0.068f * s, 0.015f * s, 0.013f * s, 0.30f,  0.08f * s,
-		                 uvShroud, tShroud, 0.98f);
-		// Glowing cyan pulse cell strip recessed along left shroud groove (facing player camera)
-		EmitSculptedHull(verts, &nVerts, 2600, base, wr, wf, wd, vDir, keyDir,
-		                 -0.054f * s, -0.020f * s, 0.010f * s, 0.013f * s, 0.28f, -0.18f * s,
-		                 -0.044f * s, -0.018f * s, 0.010f * s, 0.011f * s, 0.28f,  0.24f * s,
-		                 uvGlow, tGlow, 1.0f, true);
+		// Wind-up & forward throw recoil arc on fire
+		const float r = gWeaponView.recoil;
+		const float throwArc = sinf(r * 3.14159265f);
+		const float pullBack = r > 0.55f ? -0.16f * ((r - 0.55f) / 0.45f) : (0.28f * throwArc);
+		const float liftUp = -0.10f * throwArc;
+		const FVector base = eye + right * (0.29f + bobX - 0.05f * throwArc)
+		                         + fwd * (0.76f + pullBack * s)
+		                         + down * (0.29f + bobZ + liftUp * s + switchDrop);
+		FVector wr, wf, wd;
+		BuildWeaponFrame(right, fwd, down, -0.14f, -0.04f + 0.18f * throwArc, -0.12f, wr, wf, wd);
+		FVector orbCenter = base;
+		EmitForsetiPlasmaGrenade(verts, &nVerts, 4096, base, wr, wf, wd, vDir, keyDir, s, at, orbCenter);
+		// Soft pulsing cyan plasma aura around the grenade core (brighter when throwing)
+		const float pulse = 0.72f + 0.28f * sinf(gWeaponView.bobPhase * 2.2f) + 0.65f * gWeaponView.flash;
+		const float auraSc = (0.048f + 0.022f * pulse) * s;
+		const DWORD coreCol = gWeaponView.flash > 0.15f ? 0xffd0ffff : 0xff46c8e8;
+		const DWORD tipCol  = 0x001090ff;
+		EmitMuzzleFlashCone(fv, &nf, 48, orbCenter, wr, wf, wd, auraSc, 1.35f, coreCol, tipCol);
+		EmitMuzzleFlashCone(fv, &nf, 48, orbCenter, wr, wf * -1.f, wd, auraSc, 1.35f, coreCol, tipCol);
+		break;
 	}
-
-	// 6. Contoured lower handguard & angled forward grip silhouette
-	EmitSculptedHull(verts, &nVerts, 2600, base, wr, wf, wd, vDir, keyDir,
-	                 0.00f * s, 0.064f * s, 0.028f * s, 0.038f * s, 0.36f, -0.16f * s,
-	                 0.00f * s, 0.052f * s, 0.024f * s, 0.026f * s, 0.38f,  0.10f * s,
-	                 uvBody, tBody, 0.88f);
+	case CE_INF_VM_MUSPELL_WRIST_BLADE:
+	{
+		// Crisp diagonal melee lunge & slash animation when firing
+		const float slash = sinf(gWeaponView.recoil * 3.14159265f);
+		const FVector base = eye + right * (0.29f + bobX - 0.22f * s * slash)
+		                         + fwd * (0.77f + 0.34f * s * slash)
+		                         + down * (0.27f + bobZ - 0.08f * s * slash + switchDrop);
+		FVector wr, wf, wd;
+		BuildWeaponFrame(right, fwd, down, -0.26f - 0.22f * slash, -0.05f + 0.10f * slash, -0.28f - 0.35f * slash, wr, wf, wd);
+		FVector bladeMid = base;
+		EmitMuspellWristBlade(verts, &nVerts, 4096, base, wr, wf, wd, vDir, keyDir, s, at, bladeMid);
+		if (gWeaponView.flash > 0.08f)
+		{
+			const float sc = (0.042f + 0.055f * gWeaponView.flash) * s;
+			EmitMuzzleFlashCone(fv, &nf, 48, bladeMid, wr, wf, wd, sc, 3.2f, 0xffffe090, 0x00ff4408);
+		}
+		break;
+	}
+	case CE_INF_VM_MUSPELL_WARRIOR_LASER:
+	{
+		const float bobY = (-gWeaponView.recoil * 0.095f) * s;
+		const float recZ = (gWeaponView.recoil * 0.018f) * s;
+		const FVector base = eye + right * (0.32f + bobX)
+		                         + fwd * (0.84f + bobY)
+		                         + down * (0.30f + bobZ + recZ + switchDrop);
+		FVector wr, wf, wd;
+		BuildWeaponFrame(right, fwd, down, -0.12f, -0.065f - 0.04f * gWeaponView.recoil, 0.f, wr, wf, wd);
+		FVector muzzle = base;
+		EmitMuspellWarriorLaser(verts, &nVerts, 4096, base, wr, wf, wd, vDir, keyDir, s, at, muzzle);
+		if (gWeaponView.flash > 0.08f)
+		{
+			const float sc = (0.065f + 0.090f * gWeaponView.flash) * s;
+			EmitMuzzleFlashCone(fv, &nf, 48, muzzle, wr, wf, wd, sc, 3.6f, 0xfffff6b4, 0x00ff6208);
+		}
+		break;
+	}
+	case CE_INF_VM_MUSPELL_TWIN_PISTOLS:
+	{
+		// Right-hand compact blaster (lower-right corner converging toward center)
+		{
+			const float rR = gWeaponView.recoilRight;
+			const FVector baseR = eye + right * (0.31f + bobX)
+			                          + fwd * (0.80f - rR * 0.11f * s)
+			                          + down * (0.28f + bobZ - rR * 0.025f * s + switchDrop);
+			FVector wrR, wfR, wdR;
+			BuildWeaponFrame(right, fwd, down, -0.155f, -0.065f - rR * 0.14f, 0.06f, wrR, wfR, wdR);
+			FVector muzzleR = baseR;
+			EmitCompactMuspellPistol(verts, &nVerts, 4096, baseR, wrR, wfR, wdR, vDir, keyDir, s, false, at, muzzleR);
+			if (gWeaponView.flashRight > 0.08f)
+			{
+				const float sc = (0.040f + 0.055f * gWeaponView.flashRight) * s;
+				EmitMuzzleFlashCone(fv, &nf, 48, muzzleR, wrR, wfR, wdR, sc, 2.7f, 0xfffff0a0, 0x00ff5810);
+			}
+		}
+		// Left-hand compact blaster (lower-left corner converging toward center, alternating recoil!)
+		{
+			const float rL = gWeaponView.recoilLeft;
+			const FVector baseL = eye + right * (-0.31f + bobX)
+			                          + fwd * (0.80f - rL * 0.11f * s)
+			                          + down * (0.28f - bobZ * 0.6f - rL * 0.025f * s + switchDrop);
+			FVector wrL, wfL, wdL;
+			BuildWeaponFrame(right, fwd, down, 0.155f, -0.065f - rL * 0.14f, -0.06f, wrL, wfL, wdL);
+			FVector muzzleL = baseL;
+			EmitCompactMuspellPistol(verts, &nVerts, 4096, baseL, wrL, wfL, wdL, vDir, keyDir, s, true, at, muzzleL);
+			if (gWeaponView.flashLeft > 0.08f)
+			{
+				const float sc = (0.040f + 0.055f * gWeaponView.flashLeft) * s;
+				EmitMuzzleFlashCone(fv, &nf, 48, muzzleL, wrL, wfL, wdL, sc, 2.7f, 0xfffff0a0, 0x00ff5810);
+			}
+		}
+		break;
+	}
+	case CE_INF_VM_MUSPELL_ASSAULT_RIFLE:
+	case CE_INF_VM_FORSETI_BEAM_RIFLE:
+	default:
+	{
+		const bool isMuspellRifle = (vm == CE_INF_VM_MUSPELL_ASSAULT_RIFLE);
+		const float bobY = (-gWeaponView.recoil * 0.085f) * s;
+		const float recZ = (gWeaponView.recoil * 0.014f) * s;
+		const FVector base = eye + right * (0.31f + bobX)
+		                         + fwd * (0.86f + bobY)
+		                         + down * (0.29f + bobZ + recZ + switchDrop);
+		FVector wr, wf, wd;
+		BuildWeaponFrame(right, fwd, down, -0.115f, -0.065f, 0.f, wr, wf, wd);
+		EmitStandardInfantryRifle(verts, &nVerts, 4096, base, wr, wf, wd, vDir, keyDir, s, isMuspellRifle, at);
+		if (gWeaponView.flash > 0.08f)
+		{
+			const float sc = (0.045f + 0.065f * gWeaponView.flash) * s;
+			const FVector mPos = base + wf * (0.75f * s) + wd * (-0.018f * s);
+			const DWORD coreCol = isMuspellRifle ? 0xfffff0a0 : 0xffd8ffff;
+			const DWORD tipCol  = isMuspellRifle ? 0x00ff5810 : 0x0020b8ff;
+			EmitMuzzleFlashCone(fv, &nf, 48, mPos, wr, wf, wd, sc, 2.8f, coreCol, tipCol);
+		}
+		break;
+	}
+	}
 
 	DrawWeaponMeshBuffer(dev, viewpoint, tex, verts, nVerts, true);
-
-	// 7. Additive star-burst muzzle flash cone when firing
-	if (gWeaponView.flash > 0.08f)
-	{
-		const float sc = (0.045f + 0.065f * gWeaponView.flash) * s;
-		const FVector mPos = base + wf * (0.75f * s) + wd * (-0.018f * s);
-		const DWORD coreCol = muspell ? 0xfffff0a0 : 0xffd8ffff;
-		const DWORD tipCol  = muspell ? 0x00ff5810 : 0x0020b8ff;
-		CeWorldTriVert fv[24];
-		int nf = 0;
-		const FVector axes[2] = {wr, wd};
-		for (int a = 0; a < 2; ++a)
-		{
-			const FVector side = axes[a] * sc;
-			const FVector tip = mPos + wf * (sc * 2.8f);
-			const FVector tail = mPos - wf * (sc * 0.4f);
-			fv[nf++] = {tail.X, tail.Y, tail.Z, coreCol};
-			fv[nf++] = {mPos.X + side.X, mPos.Y + side.Y, mPos.Z + side.Z, coreCol};
-			fv[nf++] = {tip.X, tip.Y, tip.Z, tipCol};
-			fv[nf++] = {tail.X, tail.Y, tail.Z, coreCol};
-			fv[nf++] = {tip.X, tip.Y, tip.Z, tipCol};
-			fv[nf++] = {mPos.X - side.X, mPos.Y - side.Y, mPos.Z - side.Z, coreCol};
-		}
-		IDirect3DStateBlock9 *fs = NULL;
-		if (SUCCEEDED(dev->CreateStateBlock(D3DSBT_ALL, &fs)) && fs)
-		{
-			if (SUCCEEDED(fs->Capture()))
-			{
-				D3DVIEWPORT9 svp, wvp;
-				dev->GetViewport(&svp);
-				wvp = svp; wvp.MinZ = 0.0f; wvp.MaxZ = 0.06f;
-				dev->SetViewport(&wvp);
-				D3DMATRIX worldId = {};
-				worldId._11 = worldId._22 = worldId._33 = worldId._44 = 1.f;
-				dev->SetVertexShader(NULL);
-				dev->SetPixelShader(NULL);
-				dev->SetTransform(D3DTS_WORLD, &worldId);
-				dev->SetTransform(D3DTS_VIEW, (const D3DMATRIX *)&ENGINE.mViewMatrices[viewpoint]);
-				dev->SetTransform(D3DTS_PROJECTION, (const D3DMATRIX *)&ENGINE.mProjectionMatrices[viewpoint]);
-				dev->SetTexture(0, NULL);
-				dev->SetTexture(1, NULL);
-				dev->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
-				dev->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_DIFFUSE);
-				dev->SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
-				dev->SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_DIFFUSE);
-				dev->SetTextureStageState(1, D3DTSS_COLOROP, D3DTOP_DISABLE);
-				dev->SetTextureStageState(1, D3DTSS_ALPHAOP, D3DTOP_DISABLE);
-				dev->SetRenderState(D3DRS_LIGHTING, FALSE);
-				dev->SetRenderState(D3DRS_COLORVERTEX, TRUE);
-				dev->SetRenderState(D3DRS_FOGENABLE, FALSE);
-				dev->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
-				dev->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE);
-				dev->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_ONE);
-				dev->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_ONE);
-				dev->SetRenderState(D3DRS_ZENABLE, TRUE);
-				dev->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
-				dev->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
-				dev->SetFVF(D3DFVF_XYZ | D3DFVF_DIFFUSE);
-				dev->DrawPrimitiveUP(D3DPT_TRIANGLELIST, nf / 3, fv, sizeof(CeWorldTriVert));
-				dev->SetViewport(&svp);
-				fs->Apply();
-				LT.InvalidateAllStates();
-			}
-			fs->Release();
-		}
-	}
+	if (nf >= 3)
+		DrawWeaponAdditiveTris(dev, viewpoint, fv, nf);
 }
 
 void DrawFirstPersonVehicleBarrel(CUnit *u, LPDIRECT3DDEVICE9 dev, int viewpoint)
@@ -4324,6 +4975,8 @@ void CePlayUnitMapBoundary()
 	gTakeKey.wasDown = PortKeyHeldNow(TakeKey()) > 0;
 	gViewTogglePressed = false;
 	gViewToggleKey.wasDown = PortKeyHeldNow(DIK_V) > 0;
+	gWeaponSwitchPressed = false;
+	gWeaponSwitchKey.wasDown = PortKeyHeldNow(DIK_Q) > 0;
 }
 
 // Every frame (ce_notice.cpp's render hook, after the console; weakly, so a program without this module has none): the take key is read, and the reticle and the notice
@@ -4341,7 +4994,8 @@ void CePlayUnitRenderState()
 	const bool classKeyMayCount = !LT.GetKeytrap() && !mapOpen && gDriving && GAME.GetGameState() == GAME_STATE_PLAYING && !GAME.IsPaused() && !GAME.IsFreeCameraOn(0);
 	if (CePlayUnitPressed(&gUnloadKey, gDriving && PortKeyHeldNow(DIK_U) > 0, classKeyMayCount && ClassKeyFree(DIK_U))) gUnloadPressed = true;
 	if (CePlayUnitPressed(&gSpotKey, gDriving && PortKeyHeldNow(DIK_C) > 0, classKeyMayCount && ClassKeyFree(DIK_C))) gSpotPressed = true;
-	if (mapOpen) { gTakePressed = false; gViewTogglePressed = false; gUnloadPressed = false; gSpotPressed = false; return; }
+	if (CePlayUnitPressed(&gWeaponSwitchKey, gDriving && gOnFoot && PortKeyHeldNow(DIK_Q) > 0, classKeyMayCount && ClassKeyFree(DIK_Q))) gWeaponSwitchPressed = true;
+	if (mapOpen) { gTakePressed = false; gViewTogglePressed = false; gUnloadPressed = false; gSpotPressed = false; gWeaponSwitchPressed = false; return; }
 	if (PortCePhotoOn() || PortCePhotoSavedNext() || GAME.IsPaused() || GAME.GetGameState() != GAME_STATE_PLAYING) return;
 	CCamera *camera = GAME.GetCurrentCamera(0);
 	const bool reticle = gDriving && gCamera && camera == gCamera;

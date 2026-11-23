@@ -68,6 +68,13 @@ extern "C" void				PortCeMultiBeWeaponFire(CWeapon *weapon, CUnit *owner, CRound
 extern "C" void				PortCeEntityHandlesUnitSpawn(CUnit *unit, CInitThing *init) __attribute__((weak));
 extern "C" void				PortCeEntityHandlesUnitDestroyed(CUnit *unit) __attribute__((weak));
 extern "C" void				PortCeEntityHandlesLevelEnd(int level, int quit) __attribute__((weak));
+extern "C" void				PortCeCarrierClashLevelBegin(int level) __attribute__((weak));
+extern "C" void				PortCeCarrierClashLevelEnd(int level, int quit) __attribute__((weak));
+extern "C" void				PortCeCarrierClashTickPre() __attribute__((weak));
+extern "C" void				PortCeCarrierClashDrawHud(CPlayer *player, int viewpoint) __attribute__((weak));
+extern "C" void				PortCeCarrierClashUnitSpawn(CUnit *unit, CInitThing *init) __attribute__((weak));
+extern "C" void				PortCeCarrierClashUnitDestroyed(CUnit *unit) __attribute__((weak));
+extern "C" void				PortCeCarrierClashFilterSave(CCareer *career, void *dest) __attribute__((weak));
 
 static void CeHookGamepadBeginCycle() { PortCeGamepadBeginCycle(); }
 static void CeHookPaletteLevelEnd(int, int) { PortCePaletteClose(); }
@@ -185,6 +192,41 @@ static void CeHookEntityHandlesLevelEnd(int level, int quit)
 	if (PortCeEntityHandlesLevelEnd)
 		PortCeEntityHandlesLevelEnd(level, quit);
 }
+static void CeHookCarrierClashLevelBegin(int level)
+{
+	if (PortCeCarrierClashLevelBegin)
+		PortCeCarrierClashLevelBegin(level);
+}
+static void CeHookCarrierClashLevelEnd(int level, int quit)
+{
+	if (PortCeCarrierClashLevelEnd)
+		PortCeCarrierClashLevelEnd(level, quit);
+}
+static void CeHookCarrierClashTickPre()
+{
+	if (PortCeCarrierClashTickPre)
+		PortCeCarrierClashTickPre();
+}
+static void CeHookCarrierClashDrawHud(CPlayer *player, int viewpoint)
+{
+	if (PortCeCarrierClashDrawHud)
+		PortCeCarrierClashDrawHud(player, viewpoint);
+}
+static void CeHookCarrierClashUnitSpawn(CUnit *unit, CInitThing *init)
+{
+	if (PortCeCarrierClashUnitSpawn)
+		PortCeCarrierClashUnitSpawn(unit, init);
+}
+static void CeHookCarrierClashUnitDestroyed(CUnit *unit)
+{
+	if (PortCeCarrierClashUnitDestroyed)
+		PortCeCarrierClashUnitDestroyed(unit);
+}
+static void CeHookCarrierClashSave(CeHookSaveTarget target, CCareer *career, char *dest, int size)
+{
+	if (PortCeCarrierClashFilterSave && CeHookSaveCareerValid(target, career, dest, size))
+		PortCeCarrierClashFilterSave(career, dest);
+}
 
 // ---- the table: per point, its handlers in the order they run ----
 // A row: {slot, "name", CE_HOOK_SIM or CE_HOOK_RENDER, CE_GATE_VERSION or CE_GATE_LAYER, CE_MODE_..., function},
@@ -199,6 +241,7 @@ static constexpr CeHookRow<CeHookExitFn> kExit[] = {
 CE_HOOK_CHECK(kExit, CE_HOOK_SIM, CE_DISPATCH_ORDERED_BROADCAST, "exit");
 static constexpr CeHookRow<CeHookLevelBeginFn> kLevelBegin[] = {
 	{10, "multibe_level_begin", CE_HOOK_SIM, CE_GATE_LAYER, CE_MODE_NONE, CeHookMultiBeLevelBegin},
+	{20, "carrier_clash_level_begin", CE_HOOK_SIM, CE_GATE_LAYER, CE_MODE_NONE, CeHookCarrierClashLevelBegin},
 	CE_HOOK_END
 };
 CE_HOOK_CHECK(kLevelBegin, CE_HOOK_SIM, CE_DISPATCH_ORDERED_BROADCAST, "level_begin");
@@ -209,12 +252,14 @@ static constexpr CeHookRow<CeHookLevelEndFn> kLevelEnd[] = {
 	{40, "commander_level_end", CE_HOOK_SIM, CE_GATE_VERSION, CE_MODE_NONE, CeHookCmdLevelEnd},
 	{50, "multibe_level_end", CE_HOOK_SIM, CE_GATE_VERSION, CE_MODE_NONE, CeHookMultiBeLevelEnd},
 	{60, "entity_handles_level_end", CE_HOOK_SIM, CE_GATE_VERSION, CE_MODE_NONE, CeHookEntityHandlesLevelEnd},
+	{70, "carrier_clash_level_end", CE_HOOK_SIM, CE_GATE_VERSION, CE_MODE_NONE, CeHookCarrierClashLevelEnd},
 	CE_HOOK_END
 };
 CE_HOOK_CHECK(kLevelEnd, CE_HOOK_SIM, CE_DISPATCH_ORDERED_BROADCAST, "level_end");
 static constexpr CeHookRow<CeHookVoidFn> kTickPre[] = {
 	{10, "gamepad_cycle", CE_HOOK_SIM, CE_GATE_VERSION, CE_MODE_NONE, CeHookGamepadBeginCycle},
 	{20, "multibe_tick_pre", CE_HOOK_SIM, CE_GATE_LAYER, CE_MODE_NONE, CeHookMultiBeTickPre},
+	{30, "carrier_clash_tick_pre", CE_HOOK_SIM, CE_GATE_LAYER, CE_MODE_NONE, CeHookCarrierClashTickPre},
 	CE_HOOK_END
 };
 CE_HOOK_CHECK(kTickPre, CE_HOOK_SIM, CE_DISPATCH_ORDERED_BROADCAST, "tick_pre");
@@ -243,6 +288,7 @@ static constexpr CeHookRow<CeHookViewFn> kDrawWorld[] = {
 CE_HOOK_CHECK(kDrawWorld, CE_HOOK_RENDER, CE_DISPATCH_ORDERED_BROADCAST, "draw_world");
 static constexpr CeHookRow<CeHookViewFn> kDrawHud[] = {
 	{10, "multibe_draw_hud", CE_HOOK_RENDER, CE_GATE_LAYER, CE_MODE_NONE, CeHookMultiBeDrawHud},
+	{20, "carrier_clash_draw_hud", CE_HOOK_RENDER, CE_GATE_LAYER, CE_MODE_NONE, CeHookCarrierClashDrawHud},
 	CE_HOOK_END
 };
 CE_HOOK_CHECK(kDrawHud, CE_HOOK_RENDER, CE_DISPATCH_ORDERED_BROADCAST, "draw_hud");
@@ -263,6 +309,7 @@ static constexpr CeHookRow<CeHookSaveFn> kSaveGate[] = {
 	{10, "editor_save", CE_HOOK_SIM, CE_GATE_VERSION, CE_MODE_NONE, CeHookEditorSave},
 	{20, "bonus_save", CE_HOOK_SIM, CE_GATE_VERSION, CE_MODE_NONE, CeHookBonusSave},
 	{30, "museum_visit_save", CE_HOOK_SIM, CE_GATE_VERSION, CE_MODE_NONE, CeHookMuseumVisitSave},
+	{40, "carrier_clash_save", CE_HOOK_SIM, CE_GATE_VERSION, CE_MODE_NONE, CeHookCarrierClashSave},
 	CE_HOOK_END
 };
 CE_HOOK_CHECK(kSaveGate, CE_HOOK_SIM, CE_DISPATCH_FILTER, "save_gate");
@@ -290,12 +337,14 @@ CE_HOOK_CHECK(kHudFocus, CE_HOOK_RENDER, CE_DISPATCH_OVERRIDE_CHAIN, "hud_focus"
 static constexpr CeHookRow<CeHookUnitSpawnFn> kUnitSpawn[] = {
 	{10, "multibe_unit_spawn", CE_HOOK_SIM, CE_GATE_LAYER, CE_MODE_NONE, CeHookMultiBeUnitSpawn},
 	{20, "entity_handles_unit_spawn", CE_HOOK_SIM, CE_GATE_LAYER, CE_MODE_NONE, CeHookEntityHandlesUnitSpawn},
+	{30, "carrier_clash_unit_spawn", CE_HOOK_SIM, CE_GATE_LAYER, CE_MODE_NONE, CeHookCarrierClashUnitSpawn},
 	CE_HOOK_END
 };
 CE_HOOK_CHECK(kUnitSpawn, CE_HOOK_SIM, CE_DISPATCH_ORDERED_BROADCAST, "unit_spawn");
 static constexpr CeHookRow<CeHookUnitDestroyedFn> kUnitDestroyed[] = {
 	{10, "multibe_unit_destroyed", CE_HOOK_SIM, CE_GATE_LAYER, CE_MODE_NONE, CeHookMultiBeUnitDestroyed},
 	{20, "entity_handles_unit_destroyed", CE_HOOK_SIM, CE_GATE_LAYER, CE_MODE_NONE, CeHookEntityHandlesUnitDestroyed},
+	{30, "carrier_clash_unit_destroyed", CE_HOOK_SIM, CE_GATE_LAYER, CE_MODE_NONE, CeHookCarrierClashUnitDestroyed},
 	CE_HOOK_END
 };
 CE_HOOK_CHECK(kUnitDestroyed, CE_HOOK_SIM, CE_DISPATCH_ORDERED_BROADCAST, "unit_destroyed");

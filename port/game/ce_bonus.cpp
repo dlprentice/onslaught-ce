@@ -56,10 +56,12 @@
 
 bool	PortCeMenus();
 bool	PortModHas(const char *game_path);	// port/platform/common/mods.h: an active mod supplies this game path
+extern "C" void	PortCeCarrierClashCancel(void) __attribute__((weak));
 
 namespace
 {
 const int	kBonusLevel = 201;
+const int	kCarrierClashLevel = 742;
 const int	kRaceFirst = 901, kRaceLast = 905;
 CCareer		*sCareer;		// the career as it was before the bonus level (raw bytes, as CCareer::Save keeps them)
 int			sLevel;			// the level the copy was taken for
@@ -82,6 +84,13 @@ bool ModLevel(int level)
 }
 }
 
+static CCareer *EnsureSnapshot()
+{
+	if (!sCareer)
+		sCareer = (CCareer *)malloc(sizeof(CCareer));
+	return sCareer;
+}
+
 // Starts a bonus level from the front end: 201 or a race (901-905) at once; 856 or 858 through the Multiplayer start page.
 // False when it cannot start (the CE menus are off, or no memory).
 static bool Start(int level, bool mod)
@@ -89,9 +98,7 @@ static bool Start(int level, bool mod)
 	sModLevel = mod;
 	if (!PortCeMenus() || (level != kBonusLevel && !IsCoop(level) && !IsRace(level)))
 		return false;
-	if (!sCareer)
-		sCareer = (CCareer *)malloc(sizeof(CCareer));
-	if (!sCareer)
+	if (!EnsureSnapshot())
 		return false;
 	memcpy((void *)sCareer, (const void *)&CAREER, sizeof(CCareer));
 	sLevel = level;
@@ -111,6 +118,27 @@ static bool Start(int level, bool mod)
 bool PortCeBonusStart(int level)
 {
 	return Start(level, false);
+}
+
+// Starts the standalone clean-room Carrier Clash bonus level (carrier archive 742, outside every career).
+// The caller (ce_frontend.cpp) runs PortCeCarrierClashBegin() preflight before invoking this helper.
+bool PortCeBonusStartCarrierClash()
+{
+	if (!PortCeMenus())
+		return false;
+	if (!EnsureSnapshot())
+		return false;
+	memcpy((void *)sCareer, (const void *)&CAREER, sizeof(CCareer));
+	sModLevel = false;
+	sLevel = kCarrierClashLevel;
+	sActive = true;
+	sReturning = false;
+	sRaceReturning = false;
+	sCoopReturning = false;
+	sReturnLevel = 0;
+	FRONTEND.mSelectedLevel = kCarrierClashLevel;
+	FRONTEND.SetQuit(kCarrierClashLevel);
+	return true;
 }
 
 // Whether an active mod supplies the level's archive: the page asks before it closes the CE page.
@@ -229,6 +257,8 @@ void PortCeBonusBeforeConsoleLevel()
 {
 	if (!sActive || !sCareer || GAME.GetCurrentLevel() != sLevel || FRONTEND.mSelectedLevel != sLevel)
 		return;
+	if (sLevel == kCarrierClashLevel && PortCeCarrierClashCancel)
+		PortCeCarrierClashCancel();
 	PortCeBonusLevelEnd();
 	sReturning = false;
 	sRaceReturning = false;

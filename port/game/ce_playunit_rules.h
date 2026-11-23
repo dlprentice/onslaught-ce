@@ -726,27 +726,41 @@ inline bool CePlayUnitIsSecondaryThrownWeapon(const char *name)
 	       CePlayUnitAsciiContainsNoCase(name, "satchel");
 }
 
+inline bool CePlayUnitIsSecondaryMeleeWeapon(const char *name)
+{
+	if (!name || !name[0]) return false;
+	return CePlayUnitAsciiContainsNoCase(name, "wrist") ||
+	       CePlayUnitAsciiContainsNoCase(name, "blade") ||
+	       CePlayUnitAsciiContainsNoCase(name, "melee") ||
+	       CePlayUnitAsciiContainsNoCase(name, "slash");
+}
+
+inline bool CePlayUnitIsSecondaryInfantryWeapon(const char *name)
+{
+	return CePlayUnitIsSecondaryThrownWeapon(name) || CePlayUnitIsSecondaryMeleeWeapon(name);
+}
+
 // Selects an infantry soldier's primary weapon index so the HUD label and active mount
-// match the carried rifle instead of defaulting to a thrown plasma grenade when both exist.
-// Prefers a ready non-thrown primary weapon, then any non-thrown weapon with a valid mode,
-// and only falls back to thrown/secondary weapons when no primary firearm exists.
+// match the carried rifle instead of defaulting to a thrown plasma grenade or wrist blade when both exist.
+// Prefers a ready non-secondary primary weapon, then any non-secondary weapon with a valid mode,
+// and only falls back to thrown/melee secondary weapons when no primary firearm exists.
 inline int CePlayUnitSelectInfantryPrimaryWeapon(int count, int currentIdx, bool arming,
                                                  const bool *hasMode, const bool *ready,
                                                  const char *const *names)
 {
 	if (count <= 0 || !hasMode || !ready) return -1;
 	const bool curValid = currentIdx >= 0 && currentIdx < count && hasMode[currentIdx];
-	const bool curThrown = curValid && names && CePlayUnitIsSecondaryThrownWeapon(names[currentIdx]);
-	if (curValid && !curThrown && (ready[currentIdx] || arming)) return currentIdx;
+	const bool curSec = curValid && names && CePlayUnitIsSecondaryInfantryWeapon(names[currentIdx]);
+	if (curValid && !curSec && (ready[currentIdx] || arming)) return currentIdx;
 	for (int i = 0; i < count; ++i)
 	{
-		const bool thrown = names && CePlayUnitIsSecondaryThrownWeapon(names[i]);
-		if (!thrown && hasMode[i] && ready[i]) return i;
+		const bool sec = names && CePlayUnitIsSecondaryInfantryWeapon(names[i]);
+		if (!sec && hasMode[i] && ready[i]) return i;
 	}
 	for (int i = 0; i < count; ++i)
 	{
-		const bool thrown = names && CePlayUnitIsSecondaryThrownWeapon(names[i]);
-		if (!thrown && hasMode[i]) return i;
+		const bool sec = names && CePlayUnitIsSecondaryInfantryWeapon(names[i]);
+		if (!sec && hasMode[i]) return i;
 	}
 	if (curValid && (ready[currentIdx] || arming)) return currentIdx;
 	for (int i = 0; i < count; ++i)
@@ -754,6 +768,160 @@ inline int CePlayUnitSelectInfantryPrimaryWeapon(int count, int currentIdx, bool
 	for (int i = 0; i < count; ++i)
 		if (hasMode[i]) return i;
 	return -1;
+}
+
+// ---- Per-class 1P infantry weapon classification & manual weapon-slot cycling ----------------------------------------------------------
+enum CePlayUnitInfantryViewModel
+{
+	CE_INF_VM_FORSETI_BEAM_RIFLE = 0,
+	CE_INF_VM_FORSETI_PLASMA_GRENADE,
+	CE_INF_VM_MUSPELL_ASSAULT_RIFLE,
+	CE_INF_VM_MUSPELL_WRIST_BLADE,
+	CE_INF_VM_MUSPELL_WARRIOR_LASER,
+	CE_INF_VM_MUSPELL_TWIN_PISTOLS
+};
+
+// Pure classifier mapping faction, active weapon name, and infantry unit name onto one of the
+// six retail first-person infantry weapon viewmodels.
+inline CePlayUnitInfantryViewModel CePlayUnitClassifyInfantryWeapon(bool muspell, const char *weaponName, const char *unitName)
+{
+	if (weaponName && weaponName[0])
+	{
+		if (CePlayUnitIsSecondaryThrownWeapon(weaponName))
+			return CE_INF_VM_FORSETI_PLASMA_GRENADE;
+		if (CePlayUnitIsSecondaryMeleeWeapon(weaponName))
+			return CE_INF_VM_MUSPELL_WRIST_BLADE;
+		if (CePlayUnitAsciiContainsNoCase(weaponName, "pistol") ||
+		    CePlayUnitAsciiContainsNoCase(weaponName, "twin assault"))
+			return CE_INF_VM_MUSPELL_TWIN_PISTOLS;
+		if (CePlayUnitAsciiContainsNoCase(weaponName, "warrior") ||
+		    (muspell && (CePlayUnitAsciiContainsNoCase(weaponName, "laser") ||
+		                 CePlayUnitAsciiContainsNoCase(weaponName, "flame") ||
+		                 CePlayUnitAsciiContainsNoCase(weaponName, "thermal"))))
+			return CE_INF_VM_MUSPELL_WARRIOR_LASER;
+		if (CePlayUnitAsciiContainsNoCase(weaponName, "assault"))
+			return muspell ? CE_INF_VM_MUSPELL_ASSAULT_RIFLE : CE_INF_VM_FORSETI_BEAM_RIFLE;
+		if (CePlayUnitAsciiContainsNoCase(weaponName, "beam") ||
+		    CePlayUnitAsciiContainsNoCase(weaponName, "pulse"))
+			return muspell ? CE_INF_VM_MUSPELL_ASSAULT_RIFLE : CE_INF_VM_FORSETI_BEAM_RIFLE;
+	}
+	if (unitName && unitName[0])
+	{
+		if (CePlayUnitAsciiContainsNoCase(unitName, "commando"))
+			return CE_INF_VM_MUSPELL_TWIN_PISTOLS;
+		if (CePlayUnitAsciiContainsNoCase(unitName, "warrior") ||
+		    CePlayUnitAsciiContainsNoCase(unitName, "firedude"))
+			return CE_INF_VM_MUSPELL_WARRIOR_LASER;
+	}
+	return muspell ? CE_INF_VM_MUSPELL_ASSAULT_RIFLE : CE_INF_VM_FORSETI_BEAM_RIFLE;
+}
+
+struct CePlayUnitWeaponSlotState
+{
+	int selectedIdx;	// active index into u->mWeapons (-1 = uninitialized)
+	bool manualLock;	// true once initialized or cycled for the current possessed soldier
+	int usableCount;	// count of mounts with valid mMode
+	int usableRank;		// 1-based display rank relative to primary (1/N = primary)
+};
+
+inline void CePlayUnitWeaponSlotReset(CePlayUnitWeaponSlotState *s)
+{
+	if (!s) return;
+	s->selectedIdx = -1;
+	s->manualLock = false;
+	s->usableCount = 0;
+	s->usableRank = 0;
+}
+
+inline int CePlayUnitCountUsableWeapons(int count, const bool *hasMode)
+{
+	if (count <= 0 || !hasMode) return 0;
+	int usable = 0;
+	for (int i = 0; i < count; ++i)
+		if (hasMode[i]) ++usable;
+	return usable;
+}
+
+// 1-based display rank of selectedIdx among usable mounts, ordered starting from primaryIdx
+// so a soldier's default primary firearm always shows as 1/N regardless of its retail mount index.
+inline int CePlayUnitUsableWeaponRank(int count, const bool *hasMode, int primaryIdx, int selectedIdx)
+{
+	if (count <= 0 || !hasMode || selectedIdx < 0 || selectedIdx >= count || !hasMode[selectedIdx]) return 0;
+	const int start = (primaryIdx >= 0 && primaryIdx < count && hasMode[primaryIdx]) ? primaryIdx : 0;
+	int rank = 0;
+	for (int step = 0; step < count; ++step)
+	{
+		const int idx = (start + step) % count;
+		if (!hasMode[idx]) continue;
+		++rank;
+		if (idx == selectedIdx) return rank;
+	}
+	return 0;
+}
+
+// Resolves the soldier's active weapon index, honoring a player-selected valid mount even while
+// it recovers between shots, and falling back safely to CePlayUnitSelectInfantryPrimaryWeapon
+// on takeover or if the selected slot becomes invalid.
+inline int CePlayUnitResolveInfantryWeapon(CePlayUnitWeaponSlotState *s, int count, int currentIdx, bool arming,
+                                           const bool *hasMode, const bool *ready, const char *const *names)
+{
+	if (count <= 0 || !hasMode || !ready)
+	{
+		if (s) CePlayUnitWeaponSlotReset(s);
+		return -1;
+	}
+	const int usable = CePlayUnitCountUsableWeapons(count, hasMode);
+	const int primary = CePlayUnitSelectInfantryPrimaryWeapon(count, -1, false, hasMode, ready, names);
+	if (usable <= 0)
+	{
+		if (s) CePlayUnitWeaponSlotReset(s);
+		return -1;
+	}
+	int pick = -1;
+	if (s && s->manualLock && s->selectedIdx >= 0 && s->selectedIdx < count && hasMode[s->selectedIdx])
+	{
+		pick = s->selectedIdx;
+	}
+	else
+	{
+		pick = CePlayUnitSelectInfantryPrimaryWeapon(count, currentIdx, arming, hasMode, ready, names);
+	}
+	if (s)
+	{
+		s->selectedIdx = pick;
+		s->manualLock = pick >= 0;
+		s->usableCount = usable;
+		s->usableRank = CePlayUnitUsableWeaponRank(count, hasMode, primary, pick);
+	}
+	return pick;
+}
+
+// Cycles the soldier's selected weapon cleanly across all valid mounts (hasMode[i] == true),
+// wrapping around both ends. Sets *changedOut when the active mount index actually changes.
+inline int CePlayUnitCycleInfantryWeapon(CePlayUnitWeaponSlotState *s, int count, int currentIdx, bool arming,
+                                         const bool *hasMode, const bool *ready, const char *const *names,
+                                         int step = 1, bool *changedOut = 0)
+{
+	if (changedOut) *changedOut = false;
+	const int cur = CePlayUnitResolveInfantryWeapon(s, count, currentIdx, arming, hasMode, ready, names);
+	if (cur < 0 || !s || s->usableCount <= 1) return cur;
+	const int dir = step < 0 ? -1 : 1;
+	int next = cur;
+	for (int tries = 1; tries <= count; ++tries)
+	{
+		const int cand = ((cur + dir * tries) % count + count) % count;
+		if (hasMode[cand])
+		{
+			next = cand;
+			break;
+		}
+	}
+	const int primary = CePlayUnitSelectInfantryPrimaryWeapon(count, -1, false, hasMode, ready, names);
+	s->selectedIdx = next;
+	s->manualLock = true;
+	s->usableRank = CePlayUnitUsableWeaponRank(count, hasMode, primary, next);
+	if (changedOut) *changedOut = (next != cur);
+	return next;
 }
 
 #endif

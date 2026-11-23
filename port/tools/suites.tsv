@@ -16,10 +16,12 @@ port/tools/audio_refill_tests.py	script	-	deps	release	-
 port/tools/background_clear_tests.py	script	-	none	release	-	
 port/tools/bink_pause_tests.py	script	-	deps	release	-	port/bink PortBinkPause and video clock against ended-sound pause fault, with mutants
 port/tools/build_tests.py	script	-	deps	release	-	
+port/tools/ce_archive_pedestal_tests.py	script	-	none	release	-	Grand Museum Interactive Archive Pedestal 8 MiB swap arena, 2-pass .msh.aya parser, 1200-swap soak, quarantine cache, 232 goodies and mutants; host build with ASan/UBSan and zlib
 port/tools/ce_backup_preview_page_tests.py	script	-	none	release	-	restore lane; host build with the system compiler
 port/tools/ce_backup_preview_tests.py	script	-	none	release	-	restore lane; host build with the system compiler
 port/tools/ce_bonus_save_tests.py	script	-	none	release	-	
 port/tools/ce_bonus_tests.py	script	-	none	release	-	
+port/tools/ce_carrier_clash_tests.py	script	-	none	release	-	clean-room Carrier Clash ocean arena heightfield, version-50 world serializer, strict retail preflight, director state machine, 32-bit handles, HUD/glyph lint, long-session soak and causal mutants; host ASan/UBSan
 port/tools/ce_career_backup_tests.py	script	-	none	release	-	restore lane; host build with the system compiler
 port/tools/ce_career_custody_ntfs_tests.py	script	--out {scratch}	deps+wine	release	-	cross-compiles standalone Windows Career Custody NTFS fixture (ce-career-custody-ntfs.exe) and verifies core cases and honest UNSUPPORTED_OR_DENIED reporting under Wine
 port/tools/ce_career_edit_tests.py	script	-	none	release	-	pure-byte career editor header and causal mutants; host build with the system compiler

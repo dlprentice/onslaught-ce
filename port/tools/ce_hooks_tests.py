@@ -382,7 +382,7 @@ class SiteTests(unittest.TestCase):
         rows = table(HOOKS.read_text())
         self.order("Career.cpp", "PortCeCareerSaving(this)", "memcpy(dest, this, sizeof(CCareer));", "ce_hook_save_gate(CE_SAVE_CAREER",
                    "SetIsGod(0, portGod0);")
-        self.assertEqual([h[1] for h in rows["save_gate"][2]], ["editor_save", "bonus_save", "museum_visit_save"])
+        self.assertEqual([h[1] for h in rows["save_gate"][2]], ["editor_save", "bonus_save", "museum_visit_save", "carrier_clash_save"])
         self.order("ltshell.cpp", "PortCeEditorKey(key", "ce_hook_key_capture(", "mCurrentKeytrap(key,KEY_EVENT_DOWN)")
         self.assertEqual([h[1] for h in rows["key_capture"][2]], ["photo_key", "palette_suppress_down", "palette_open", "commander_key"])
         self.assertEqual([h[1] for h in rows["draw_world"][2]], ["playunit_draw_world"])
@@ -390,11 +390,11 @@ class SiteTests(unittest.TestCase):
         self.order("ltshell.cpp", "if (!sMemoryManagerReady)", "ce_hook_exit(CE_EXIT_ATEXIT)", "PATCHMANAGER.FreeData();")
         self.order("ltshell.cpp", "ce_hook_exit(CE_EXIT_SHELL)", "PortSessionSummary();\n#ifdef CE_NETWORK_OFF")
         self.order("game.cpp", "\tPortCeEditorLevelEnd();\n", "\tPortCeMuseumVisitLevelEnd();\n", "ce_hook_level_end(", "\t\tMUSIC.Stop();\n\n\t// we don")
-        self.assertEqual([h[1] for h in rows["level_end"][2]], ["palette_close", "console_level_end", "photo_level_end", "commander_level_end", "multibe_level_end", "entity_handles_level_end"])
+        self.assertEqual([h[1] for h in rows["level_end"][2]], ["palette_close", "console_level_end", "photo_level_end", "commander_level_end", "multibe_level_end", "entity_handles_level_end", "carrier_clash_level_end"])
         self.order("game.cpp", "{ PORT_UPDATE_HOOK();", "\tce_hook_tick_pre();", "\tce_hook_tick_post();", "void\tCGame::PreRun()")
-        self.assertEqual([h[1] for h in rows["tick_pre"][2]], ["gamepad_cycle", "multibe_tick_pre"])
+        self.assertEqual([h[1] for h in rows["tick_pre"][2]], ["gamepad_cycle", "multibe_tick_pre", "carrier_clash_tick_pre"])
         self.order("game.cpp", "PortCeGamepadBeginCycle();\n#endif\n\t\tmController[0]->Flush();", "ce_hook_level_begin(aLevel);", "CE_SessionPreparePlay()")
-        self.assertEqual([h[1] for h in rows["level_begin"][2]], ["multibe_level_begin"])
+        self.assertEqual([h[1] for h in rows["level_begin"][2]], ["multibe_level_begin", "carrier_clash_level_begin"])
         self.order("Controller.cpp", "PortCeDodgeAssistEnd(this", "ce_hook_input_actions(this, pad);", "RecordControllerState() ;\n\t}")
         # the hall draw runs earlier in Render than draw_fairly_late_stuff, which Render calls at its end
         self.order("DXEngine.cpp", "PortCeMuseumHallDraw();\t//", "draw_fairly_late_stuff(mPlayer[mCurrentViewpoint], viewpoint);")
@@ -409,9 +409,12 @@ class SiteTests(unittest.TestCase):
         self.assertEqual([h[1] for h in rows["draw_overlay"][2]], ["editor_overlay"])
         self.order("Hud.cpp", "if (PortCeCmdHideCockpit()) return;", "CBattleEngine *be = player->GetBattleEngine();",
                    "be = ce_hook_hud_focus(player, be);", "mBattleEngine = be;", "RenderRadar(96.f);", "ce_hook_draw_hud(")
+        self.assertEqual([h[1] for h in rows["draw_hud"][2]], ["multibe_draw_hud", "carrier_clash_draw_hud"])
         self.assertEqual([h[1] for h in rows["hud_focus"][2]], ["multibe_hud_focus"])
         self.order("Unit.cpp", "EVENT_MANAGER.AddEvent(UNIT_EVENT_4003, this, NEXT_FRAME);", "ce_hook_unit_spawn(this, init);")
+        self.assertEqual([h[1] for h in rows["unit_spawn"][2]], ["multibe_unit_spawn", "entity_handles_unit_spawn", "carrier_clash_unit_spawn"])
         self.order("Unit.cpp", "ClearSpawners();", "ce_hook_unit_destroyed(this);", "void CUnit::SpawnExplosion()")
+        self.assertEqual([h[1] for h in rows["unit_destroyed"][2]], ["multibe_unit_destroyed", "entity_handles_unit_destroyed", "carrier_clash_unit_destroyed"])
         self.order("BattleEngine.cpp", "mSmoke.SetPos(mPos);", "ce_hook_unit_destroyed(this);", "void CBattleEngine::HandleIncomingMissle()")
         self.order("SpawnerThng.cpp", "CE_SPAWNER_ACTOR", "ce_hook_spawner_trigger(&ceTrigger);",
                    "ceTrigger.allow ? SpawnThingByName(mSpawnUnit) : NULL;",
@@ -649,7 +652,7 @@ class SaveHazardTests(unittest.TestCase):
         self.assertLess(text.index("memcpy(dest, this, sizeof(CCareer));"), text.index("ce_hook_save_gate(CE_SAVE_CAREER, this, dest, sizeof(CCareer));"))
         self.assertLess(text.index("ce_hook_save_gate(CE_SAVE_CAREER, this, dest, sizeof(CCareer));"), text.index("SetIsGod(0, portGod0);"))
         rows = table(HOOKS.read_text())["save_gate"][2]
-        self.assertEqual([h[5] for h in rows], ["CeHookEditorSave", "CeHookBonusSave", "CeHookMuseumVisitSave"])
+        self.assertEqual([h[5] for h in rows], ["CeHookEditorSave", "CeHookBonusSave", "CeHookMuseumVisitSave", "CeHookCarrierClashSave"])
 
     @unittest.expectedFailure
     def test_two_active_filters_keep_both_snapshots(self):

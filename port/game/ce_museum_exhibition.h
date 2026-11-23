@@ -1037,8 +1037,10 @@ inline RoomGraph MakeRoomGraph() {
     PushObstacle(g,  2.65f, -5.85f,  3.55f, -4.95f, 0.0f, 4.8f, kRoomCourtyard);
 
     // ---- Grand Atrium obstacles ----
-    // Central Directory Lectern south of the brass compass rose
-    PushObstacle(g, -1.65f, 31.15f, 1.65f, 31.85f, 0.0f, 1.25f, kRoomAtrium);
+    // Sleek west entrance flank Directory Console at (-5.4, 26.8), keeping the central sightline open
+    PushObstacle(g, -7.05f, 26.45f, -3.75f, 27.15f, 0.0f, 1.25f, kRoomAtrium);
+    // Grand Atrium Rotunda Centerpiece Pedestal at (0.0, 36.0) beneath the open sunlit clerestory skylight
+    PushObstacle(g, -2.0f, 34.0f, 2.0f, 38.0f, 0.0f, 1.05f, kRoomAtrium);
     // Four corner skylight structural columns supporting the clerestory lantern
     const float colX[2] = {-8.2f, 8.2f}, colY[2] = {28.2f, 43.8f};
     for (unsigned ix = 0; ix < 2; ++ix)

@@ -117,7 +117,7 @@ def _encode_tga24(rgb: bytearray) -> bytes:
 
 
 def _gen_limestone_wall() -> bytearray:
-    """Dressed coastal limestone ashlar: 4 staggered courses with calm travertine grain."""
+    """Dressed coastal limestone ashlar: 4 staggered courses with crisp travertine grain & bevelled joints."""
     n_broad = _fbm([(4, 0.55), (8, 0.30), (16, 0.15)], seed=101)
     n_grain = _fbm([(16, 0.45), (32, 0.35), (64, 0.20)], seed=107)
     buf = bytearray(SIZE * SIZE * 3)
@@ -131,23 +131,22 @@ def _gen_limestone_wall() -> bytearray:
             bx_coord = (x + shift) % SIZE
             block = bx_coord // block_w
             cx = bx_coord % block_w
-            tone = (_hash2(block, course, 113) - 0.5) * 9.0
-            bed = math.sin((y / float(SIZE)) * 2.0 * math.pi * 6.0 + n_broad[y][x] * 1.4) * 2.5
-            grain = n_broad[y][x] * 7.0 + n_grain[y][x] * 4.0 + bed + tone
-            # Soft chamfered mortar seams
-            d_edge = min(cy, course_h - 1 - cy, cx, block_w - 1 - cx)
+            tone = (_hash2(block, course, 113) - 0.5) * 14.0
+            bed = math.sin((y / float(SIZE)) * 2.0 * math.pi * 8.0 + n_broad[y][x] * 1.8) * 4.0
+            grain = n_broad[y][x] * 10.0 + n_grain[y][x] * 5.5 + bed + tone
+            # Crisp chamfered ashlar mortar seams with sunlit lower bevel
             shade = 0.0
             if cy < 2 or cx < 2:
-                shade = -26.0
+                shade = -38.0
             elif cy == 2 or cx == 2:
-                shade = -8.0
+                shade = -14.0
             elif cy == course_h - 1 or cx == block_w - 1:
-                shade = 6.0
-            elif d_edge == 3:
-                shade = 2.0
-            r = _clamp8(220.0 + grain + shade)
-            g = _clamp8(214.0 + grain * 0.96 + shade)
-            b = _clamp8(201.0 + grain * 0.90 + shade * 0.95)
+                shade = 12.0
+            elif cy == course_h - 2 or cx == block_w - 2:
+                shade = 5.0
+            r = _clamp8(226.0 + grain + shade)
+            g = _clamp8(218.0 + grain * 0.96 + shade)
+            b = _clamp8(201.0 + grain * 0.89 + shade * 0.94)
             idx = (y * SIZE + x) * 3
             buf[idx] = r
             buf[idx + 1] = g
@@ -164,20 +163,23 @@ def _gen_slate_pier() -> bytearray:
     for y in range(SIZE):
         cy = y % course_h
         course = y // course_h
-        c_tone = (_hash2(0, course, 229) - 0.5) * 5.0
+        c_tone = (_hash2(0, course, 229) - 0.5) * 8.0
         for x in range(SIZE):
-            vein = math.sin(((x * 0.5 + y * 1.0) / float(SIZE)) * 2.0 * math.pi * 3.0 + n_broad[y][x] * 2.0) * 2.5
-            grain = n_broad[y][x] * 8.0 + n_fine[y][x] * 4.5 + vein + c_tone
+            vein = math.sin(((x * 0.5 + y * 1.0) / float(SIZE)) * 2.0 * math.pi * 4.0 + n_broad[y][x] * 2.4) * 4.5
+            flute = math.sin((x / float(SIZE)) * 2.0 * math.pi * 8.0) * 3.0
+            grain = n_broad[y][x] * 10.0 + n_fine[y][x] * 5.5 + vein + flute + c_tone
             shade = 0.0
             if cy < 2:
-                shade = -22.0
+                shade = -30.0
             elif cy == 2:
-                shade = -7.0
+                shade = -11.0
             elif cy == course_h - 1:
-                shade = 7.0
-            r = _clamp8(98.0 + grain * 0.92 + shade)
-            g = _clamp8(109.0 + grain * 0.96 + shade)
-            b = _clamp8(119.0 + grain + shade)
+                shade = 13.0
+            elif cy == course_h - 2:
+                shade = 5.0
+            r = _clamp8(84.0 + grain * 0.90 + shade)
+            g = _clamp8(97.0 + grain * 0.95 + shade)
+            b = _clamp8(110.0 + grain + shade)
             idx = (y * SIZE + x) * 3
             buf[idx] = r
             buf[idx + 1] = g
@@ -186,7 +188,7 @@ def _gen_slate_pier() -> bytearray:
 
 
 def _gen_gallery_floor() -> bytearray:
-    """Calm matte honed architectural floor slabs (2x2 large travertine-grey tiles)."""
+    """Honed architectural travertine-marble floor slabs with subtle veining and crisp seams."""
     n_broad = _fbm([(4, 0.55), (8, 0.30), (16, 0.15)], seed=307)
     n_speck = _fbm([(16, 0.40), (32, 0.35), (64, 0.25)], seed=313)
     buf = bytearray(SIZE * SIZE * 3)
@@ -197,18 +199,20 @@ def _gen_gallery_floor() -> bytearray:
         for x in range(SIZE):
             tx = x // tile
             px = x % tile
-            tile_shift = (_hash2(tx, ty, 317) - 0.5) * 6.0
-            grain = n_broad[y][x] * 6.0 + n_speck[y][x] * 3.0 + tile_shift
+            tile_shift = (_hash2(tx, ty, 317) - 0.5) * 9.0
+            vein = math.sin(((x * 0.65 + y * 0.45) / float(SIZE)) * 2.0 * math.pi * 3.0 + n_broad[y][x] * 2.6)
+            vein_term = (1.0 - abs(vein)) ** 5 * -14.0
+            grain = n_broad[y][x] * 8.0 + n_speck[y][x] * 4.0 + tile_shift + vein_term
             shade = 0.0
             if px < 2 or py < 2:
-                shade = -22.0
+                shade = -30.0
             elif px == 2 or py == 2:
-                shade = -5.0
+                shade = -9.0
             elif px == tile - 1 or py == tile - 1:
-                shade = 4.0
-            r = _clamp8(198.0 + grain + shade)
-            g = _clamp8(196.0 + grain * 0.98 + shade)
-            b = _clamp8(190.0 + grain * 0.94 + shade)
+                shade = 8.0
+            r = _clamp8(202.0 + grain + shade)
+            g = _clamp8(199.0 + grain * 0.98 + shade)
+            b = _clamp8(192.0 + grain * 0.94 + shade)
             idx = (y * SIZE + x) * 3
             buf[idx] = r
             buf[idx + 1] = g
@@ -217,7 +221,7 @@ def _gen_gallery_floor() -> bytearray:
 
 
 def _gen_courtyard_paver() -> bytearray:
-    """Sunlit outdoor coastal terrace sandstone pavers in staggered ashlar bond."""
+    """Sunlit outdoor coastal terrace sandstone pavers in warm staggered ashlar bond."""
     n_broad = _fbm([(4, 0.50), (8, 0.35), (16, 0.15)], seed=401)
     n_fine = _fbm([(16, 0.45), (32, 0.35), (64, 0.20)], seed=409)
     buf = bytearray(SIZE * SIZE * 3)
@@ -231,18 +235,18 @@ def _gen_courtyard_paver() -> bytearray:
             bx = (x + shift) % SIZE
             block = bx // block_w
             cx = bx % block_w
-            tone = (_hash2(block, course, 419) - 0.5) * 11.0
-            grain = n_broad[y][x] * 8.5 + n_fine[y][x] * 4.5 + tone
+            tone = (_hash2(block, course, 419) - 0.5) * 16.0
+            grain = n_broad[y][x] * 11.0 + n_fine[y][x] * 6.0 + tone
             shade = 0.0
             if cy < 3 or cx < 3:
-                shade = -28.0
+                shade = -38.0
             elif cy == 3 or cx == 3:
-                shade = -6.0
+                shade = -12.0
             elif cy == course_h - 1 or cx == block_w - 1:
-                shade = 6.0
-            r = _clamp8(212.0 + grain + shade)
-            g = _clamp8(204.0 + grain * 0.95 + shade)
-            b = _clamp8(187.0 + grain * 0.88 + shade * 0.92)
+                shade = 10.0
+            r = _clamp8(218.0 + grain + shade)
+            g = _clamp8(205.0 + grain * 0.95 + shade)
+            b = _clamp8(181.0 + grain * 0.87 + shade * 0.92)
             idx = (y * SIZE + x) * 3
             buf[idx] = r
             buf[idx + 1] = g
@@ -258,11 +262,16 @@ def _gen_runner_stone() -> bytearray:
     for y in range(SIZE):
         py = y % 128
         for x in range(SIZE):
-            grain = n_broad[y][x] * 6.5 + n_fine[y][x] * 3.5
-            shade = -14.0 if py < 2 else (4.0 if py == 127 else 0.0)
-            r = _clamp8(80.0 + grain + shade)
-            g = _clamp8(89.0 + grain + shade)
-            b = _clamp8(97.0 + grain * 1.02 + shade)
+            px = x % 128
+            grain = n_broad[y][x] * 8.0 + n_fine[y][x] * 4.5
+            shade = 0.0
+            if py < 2 or px < 2:
+                shade = -20.0
+            elif py == 127 or px == 127:
+                shade = 8.0
+            r = _clamp8(68.0 + grain + shade)
+            g = _clamp8(78.0 + grain + shade)
+            b = _clamp8(88.0 + grain * 1.03 + shade)
             idx = (y * SIZE + x) * 3
             buf[idx] = r
             buf[idx + 1] = g
@@ -271,7 +280,7 @@ def _gen_runner_stone() -> bytearray:
 
 
 def _gen_coffered_ceiling() -> bytearray:
-    """Recessed architectural coffered ceiling panels (2x2 stepped coffers)."""
+    """Recessed architectural coffered ceiling panels (2x2 deep stepped coffers)."""
     n_fine = _fbm([(8, 0.50), (16, 0.30), (32, 0.20)], seed=601)
     buf = bytearray(SIZE * SIZE * 3)
     cell = 128
@@ -280,24 +289,22 @@ def _gen_coffered_ceiling() -> bytearray:
         for x in range(SIZE):
             px = x % cell
             d = min(px, cell - 1 - px, py, cell - 1 - py)
-            grain = n_fine[y][x] * 3.5
+            grain = n_fine[y][x] * 4.5
             if d < 12:
-                # Structural coffer rib beam
-                base = 76.0 if d >= 2 else 66.0
+                base = 104.0 if d >= 2 else 88.0
                 if d == 11:
-                    base += 8.0
+                    base += 14.0
             elif d < 18:
-                # Stepped recessed chamfer
-                base = 52.0 + (18 - d) * 2.5
+                base = 44.0 + (18 - d) * 6.5
             elif d < 22:
-                # Inner reveal groove
-                base = 42.0
+                base = 34.0
+            elif d < 25:
+                base = 74.0
             else:
-                # Quiet acoustic recessed coffer centre
-                base = 50.0 + (0.0 if d > 26 else -4.0)
-            r = _clamp8(base * 0.94 + grain)
+                base = 54.0 + (0.0 if d > 28 else -6.0)
+            r = _clamp8(base * 0.96 + grain)
             g = _clamp8(base * 1.00 + grain)
-            b = _clamp8(base * 1.08 + grain)
+            b = _clamp8(base * 1.06 + grain)
             idx = (y * SIZE + x) * 3
             buf[idx] = r
             buf[idx + 1] = g
@@ -311,13 +318,12 @@ def _gen_brushed_brass() -> bytearray:
     n_streak = _fbm([(4, 0.30), (16, 0.40), (64, 0.30)], seed=709)
     buf = bytearray(SIZE * SIZE * 3)
     for y in range(SIZE):
-        band = math.sin((y / float(SIZE)) * 2.0 * math.pi * 4.0) * 5.0
+        band = math.sin((y / float(SIZE)) * 2.0 * math.pi * 4.0) * 9.0
         for x in range(SIZE):
-            # Horizontal brushed micro-grain (compress X frequency, stretch Y)
-            brush = n_streak[y][(x // 4) % SIZE] * 10.0 + n_broad[y][x] * 6.0 + band
-            r = _clamp8(204.0 + brush)
-            g = _clamp8(166.0 + brush * 0.88)
-            b = _clamp8(92.0 + brush * 0.65)
+            brush = n_streak[y][(x // 4) % SIZE] * 14.0 + n_broad[y][x] * 9.0 + band
+            r = _clamp8(218.0 + brush)
+            g = _clamp8(176.0 + brush * 0.86)
+            b = _clamp8(92.0 + brush * 0.60)
             idx = (y * SIZE + x) * 3
             buf[idx] = r
             buf[idx + 1] = g
@@ -326,7 +332,7 @@ def _gen_brushed_brass() -> bytearray:
 
 
 def _gen_water_basin() -> bytearray:
-    """Calm dark reflecting-pool water inlay with soft organic caustics."""
+    """Luminous coastal reflecting-pool water inlay with crisp organic caustics."""
     n1 = _fbm([(4, 0.50), (8, 0.35), (16, 0.15)], seed=809)
     n2 = _fbm([(6, 0.45), (12, 0.35), (24, 0.20)], seed=821)
     buf = bytearray(SIZE * SIZE * 3)
@@ -334,13 +340,13 @@ def _gen_water_basin() -> bytearray:
         fy = y / float(SIZE)
         for x in range(SIZE):
             fx = x / float(SIZE)
-            w1 = math.sin((fx * 3.0 + fy * 1.0) * 2.0 * math.pi + n1[y][x] * 2.2)
-            w2 = math.sin((fx * 1.0 - fy * 4.0) * 2.0 * math.pi + n2[y][x] * 2.2)
+            w1 = math.sin((fx * 3.0 + fy * 1.0) * 2.0 * math.pi + n1[y][x] * 2.3)
+            w2 = math.sin((fx * 1.0 - fy * 4.0) * 2.0 * math.pi + n2[y][x] * 2.3)
             ripple = 0.5 * (w1 + w2)
-            caustic = max(0.0, 1.0 - abs(w1 + w2) * 1.25) ** 2
-            r = _clamp8(24.0 + ripple * 6.0 + caustic * 22.0 + n1[y][x] * 5.0)
-            g = _clamp8(58.0 + ripple * 10.0 + caustic * 36.0 + n1[y][x] * 7.0)
-            b = _clamp8(79.0 + ripple * 12.0 + caustic * 42.0 + n2[y][x] * 8.0)
+            caustic = max(0.0, 1.0 - abs(w1 + w2) * 1.30) ** 2.2
+            r = _clamp8(18.0 + ripple * 7.0 + caustic * 36.0 + n1[y][x] * 6.0)
+            g = _clamp8(68.0 + ripple * 12.0 + caustic * 54.0 + n1[y][x] * 8.0)
+            b = _clamp8(96.0 + ripple * 14.0 + caustic * 62.0 + n2[y][x] * 9.0)
             idx = (y * SIZE + x) * 3
             buf[idx] = r
             buf[idx + 1] = g
@@ -349,24 +355,28 @@ def _gen_water_basin() -> bytearray:
 
 
 def _gen_forseti_trim() -> bytearray:
-    """Cool Forseti steel-blue architectural accent panelling."""
+    """Cool Forseti aerospace steel-blue fluted armor panelling with crisp silver seams."""
     n_broad = _fbm([(4, 0.55), (8, 0.30), (16, 0.15)], seed=907)
     n_fine = _fbm([(16, 0.50), (32, 0.50)], seed=919)
     buf = bytearray(SIZE * SIZE * 3)
     for y in range(SIZE):
         py = y % 64
         for x in range(SIZE):
-            grain = n_broad[y][x] * 7.0 + n_fine[y][(x // 2) % SIZE] * 3.5
+            px = x % 128
+            grain = n_broad[y][x] * 8.5 + n_fine[y][(x // 2) % SIZE] * 5.0
+            flute = math.sin((py / 64.0) * math.pi) * 9.0
             shade = 0.0
-            if py < 2:
-                shade = -20.0
-            elif py == 2:
-                shade = -6.0
-            elif py == 63:
+            if py < 3 or px < 2:
+                shade = -32.0
+            elif py == 3 or px == 2:
+                shade = -10.0
+            elif py == 63 or px == 127:
+                shade = 22.0
+            elif py == 62:
                 shade = 10.0
-            r = _clamp8(74.0 + grain * 0.85 + shade * 0.85)
-            g = _clamp8(110.0 + grain * 0.95 + shade * 0.95)
-            b = _clamp8(142.0 + grain + shade)
+            r = _clamp8(58.0 + grain * 0.85 + flute * 0.80 + shade * 0.85)
+            g = _clamp8(108.0 + grain * 0.95 + flute * 0.95 + shade * 0.95)
+            b = _clamp8(154.0 + grain + flute + shade)
             idx = (y * SIZE + x) * 3
             buf[idx] = r
             buf[idx + 1] = g
@@ -375,24 +385,34 @@ def _gen_forseti_trim() -> bytearray:
 
 
 def _gen_muspell_trim() -> bytearray:
-    """Warm Muspell iron-amber architectural accent panelling."""
+    """Warm Muspell riveted bronze-iron industrial panelling with dark forged seams."""
     n_broad = _fbm([(4, 0.55), (8, 0.30), (16, 0.15)], seed=1009)
     n_fine = _fbm([(16, 0.50), (32, 0.50)], seed=1021)
     buf = bytearray(SIZE * SIZE * 3)
     for y in range(SIZE):
         py = y % 64
         for x in range(SIZE):
-            grain = n_broad[y][x] * 7.5 + n_fine[y][(x // 2) % SIZE] * 4.0
+            px = x % 64
+            grain = n_broad[y][x] * 9.5 + n_fine[y][(x // 2) % SIZE] * 5.5
             shade = 0.0
-            if py < 2:
-                shade = -22.0
-            elif py == 2:
-                shade = -6.0
-            elif py == 63:
-                shade = 11.0
+            if py < 3 or px < 3:
+                shade = -44.0
+            elif py == 3 or px == 3:
+                shade = -14.0
+            elif py == 63 or px == 63:
+                shade = 18.0
+            # Industrial corner rivets inside each 64x64 plate
+            for rx, ry in ((11, 11), (53, 11), (11, 53), (53, 53)):
+                dx = px - rx
+                dy = py - ry
+                d2 = dx * dx + dy * dy
+                if d2 <= 10:
+                    shade = 24.0 if (dx + dy) < 0 else -16.0
+                elif d2 <= 18:
+                    shade = -22.0
             r = _clamp8(152.0 + grain + shade)
-            g = _clamp8(92.0 + grain * 0.80 + shade * 0.80)
-            b = _clamp8(52.0 + grain * 0.65 + shade * 0.65)
+            g = _clamp8(84.0 + grain * 0.78 + shade * 0.78)
+            b = _clamp8(42.0 + grain * 0.58 + shade * 0.58)
             idx = (y * SIZE + x) * 3
             buf[idx] = r
             buf[idx + 1] = g
@@ -407,18 +427,17 @@ def _gen_cinema_acoustic() -> bytearray:
     for y in range(SIZE):
         for x in range(SIZE):
             slat = x % 16
-            # Rounded vertical acoustic slat profile
             if slat < 2:
-                rib = -14.0
+                rib = -18.0
             elif slat == 2 or slat == 15:
-                rib = -5.0
+                rib = -7.0
             else:
                 t = (slat - 2) / 13.0
-                rib = math.sin(t * math.pi) * 8.0
-            grain = n_fine[y][x] * 3.0 + rib
-            r = _clamp8(50.0 + grain)
-            g = _clamp8(58.0 + grain * 1.02)
-            b = _clamp8(68.0 + grain * 1.06)
+                rib = math.sin(t * math.pi) * 12.0
+            grain = n_fine[y][x] * 3.5 + rib
+            r = _clamp8(48.0 + grain)
+            g = _clamp8(56.0 + grain * 1.02)
+            b = _clamp8(66.0 + grain * 1.06)
             idx = (y * SIZE + x) * 3
             buf[idx] = r
             buf[idx + 1] = g
@@ -427,20 +446,62 @@ def _gen_cinema_acoustic() -> bytearray:
 
 
 def _gen_plinth_marble() -> bytearray:
-    """Honed architectural pale-grey cast stone for exhibit plinths and turntables."""
+    """Polished coastal exhibition marble with distinct charcoal veining and bevel reveal."""
     n_broad = _fbm([(4, 0.55), (8, 0.30), (16, 0.15)], seed=1201)
     n_fine = _fbm([(16, 0.50), (32, 0.35), (64, 0.15)], seed=1213)
     buf = bytearray(SIZE * SIZE * 3)
     for y in range(SIZE):
         for x in range(SIZE):
-            vein = math.sin(((x * 0.7 + y * 0.4) / float(SIZE)) * 2.0 * math.pi * 2.0 + n_broad[y][x] * 2.4)
-            vein_term = (1.0 - abs(vein)) ** 4 * -7.0
-            grain = n_broad[y][x] * 6.0 + n_fine[y][x] * 3.0 + vein_term
-            # Subtle recessed architectural reveal band near top/bottom
-            shade = -12.0 if y < 2 else (5.0 if y == 2 else 0.0)
-            r = _clamp8(168.0 + grain + shade)
-            g = _clamp8(172.0 + grain * 0.99 + shade)
-            b = _clamp8(175.0 + grain * 0.98 + shade)
+            vein = math.sin(((x * 0.7 + y * 0.4) / float(SIZE)) * 2.0 * math.pi * 2.5 + n_broad[y][x] * 2.8)
+            vein_term = (1.0 - abs(vein)) ** 4.5 * -22.0
+            vein2 = math.sin(((x * 0.3 - y * 0.8) / float(SIZE)) * 2.0 * math.pi * 3.0 + n_fine[y][x] * 2.0)
+            vein_term += (1.0 - abs(vein2)) ** 6 * -11.0
+            grain = n_broad[y][x] * 7.5 + n_fine[y][x] * 3.5 + vein_term
+            shade = -18.0 if y < 2 else (9.0 if y == 2 else 0.0)
+            r = _clamp8(186.0 + grain + shade)
+            g = _clamp8(189.0 + grain * 0.99 + shade)
+            b = _clamp8(193.0 + grain * 0.98 + shade)
+            idx = (y * SIZE + x) * 3
+            buf[idx] = r
+            buf[idx + 1] = g
+            buf[idx + 2] = b
+    return buf
+
+
+def _gen_forged_iron() -> bytearray:
+    """Heavy dark forged volcanic iron armour plating with bolted seams for the Muspell Wing."""
+    n_broad = _fbm([(4, 0.50), (8, 0.30), (16, 0.20)], seed=1301)
+    n_fine = _fbm([(16, 0.45), (32, 0.35), (64, 0.20)], seed=1319)
+    buf = bytearray(SIZE * SIZE * 3)
+    for y in range(SIZE):
+        py = y % 64
+        course = y // 64
+        shift = 64 if (course & 1) else 0
+        for x in range(SIZE):
+            bx = (x + shift) % SIZE
+            px = bx % 128
+            block = bx // 128
+            tone = (_hash2(block, course, 1327) - 0.5) * 10.0
+            grain = n_broad[y][x] * 9.0 + n_fine[y][x] * 5.0 + tone
+            shade = 0.0
+            if py < 3 or px < 3:
+                shade = -28.0
+            elif py == 3 or px == 3:
+                shade = -10.0
+            elif py == 63 or px == 127:
+                shade = 14.0
+            # Heavy iron bolts along top & bottom flanges of each armour plate
+            for rx, ry in ((12, 10), (64, 10), (116, 10), (12, 54), (64, 54), (116, 54)):
+                dx = px - rx
+                dy = py - ry
+                d2 = dx * dx + dy * dy
+                if d2 <= 9:
+                    shade = 18.0 if (dx + dy) < 0 else -12.0
+                elif d2 <= 16:
+                    shade = -16.0
+            r = _clamp8(66.0 + grain + shade)
+            g = _clamp8(62.0 + grain * 0.94 + shade * 0.94)
+            b = _clamp8(64.0 + grain * 0.92 + shade * 0.92)
             idx = (y * SIZE + x) * 3
             buf[idx] = r
             buf[idx + 1] = g
@@ -461,14 +522,15 @@ TEXTURES = (
     ("MuspellTrim", "muspell_trim", _gen_muspell_trim),
     ("CinemaAcoustic", "cinema_acoustic", _gen_cinema_acoustic),
     ("PlinthMarble", "plinth_marble", _gen_plinth_marble),
+    ("ForgedIron", "forged_iron", _gen_forged_iron),
 )
 
 
-def _format_bytes(data: bytes, indent: str = "    ") -> str:
+def _format_bytes(data: bytes, indent: str = "") -> str:
     lines: list[str] = []
-    for off in range(0, len(data), 16):
-        chunk = data[off : off + 16]
-        lines.append(indent + ",".join(f"0x{b:02x}" for b in chunk) + ",")
+    for off in range(0, len(data), 24):
+        chunk = data[off : off + 24]
+        lines.append(indent + ",".join(str(b) for b in chunk) + ",")
     return "\n".join(lines)
 
 
@@ -502,7 +564,8 @@ def build_header(preview_dir: Path | None = None) -> tuple[str, dict[str, tuple[
             (preview_dir / f"{slug}.tga").write_bytes(_encode_tga24(rgb))
         try:
             from PIL import Image, ImageDraw
-            cols, rows = 4, 3
+            cols = 4
+            rows = (len(previews) + cols - 1) // cols
             pad = 12
             label_h = 22
             sheet = Image.new("RGB", (cols * (SIZE + pad) + pad, rows * (SIZE + label_h + pad) + pad), (24, 28, 34))
