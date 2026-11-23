@@ -39,6 +39,7 @@ extern "C" const char *CE_BootError(void);					// port/game/ce_network_boot.cpp
 extern "C" const char *CE_SessionError(void);				// port/game/ce_network_lockstep.cpp
 extern "C" int PortCeNetConfirmedMatch(void) __attribute__((weak));
 extern "C" int PortCeNetRingLeft(void) __attribute__((weak));	// port/game/ce_network_ring.cpp: the player chose Leave Game
+extern "C" int PortCeOnlineMatchSetTicket(const CE_OnlineMatchTicket *ticket) __attribute__((weak));
 #if defined(CE_NETWORK_ICE)
 extern "C" int PortCeMissionRelayLossRole(void) __attribute__((weak));
 #endif
@@ -1574,36 +1575,45 @@ struct Boot
         if (ok) ok = SignalAdmitLaunch(h);
 #endif
 #endif
+		if (ok && h.online_version == 1)
+		{
+			if (!PortCeOnlineMatchSetTicket || !PortCeOnlineMatchSetTicket(&h.online_ticket))
+			{
+				ok = false;
+				why = "the online match runtime is unavailable";
+			}
+		}
 		if (ok)
 		{
+			const char *ep = h.endpoint[0] ? h.endpoint : "127.0.0.1:27652";
 #ifndef CE_NETWORK_OFF
 #if defined(CE_NETWORK_ICE)
         if (!gSignalSelected) {
 			char secret[65];
 			Hex(h.secret, 32, secret);
-			SetEnv(h.role == 1 ? "BEA_NET_HOST" : "BEA_NET_JOIN", h.endpoint);
+			SetEnv(h.role == 1 ? "BEA_NET_HOST" : "BEA_NET_JOIN", ep);
 			SetEnv("BEA_NET_SECRET", secret);
 			CE_CodeWipe(secret, sizeof secret);
         } else {
-			SetEnv(h.role == 1 ? "BEA_NET_HOST" : "BEA_NET_JOIN", h.endpoint);
+			SetEnv(h.role == 1 ? "BEA_NET_HOST" : "BEA_NET_JOIN", ep);
         }
 #else
 			char secret[65];
 			Hex(h.secret, 32, secret);
-			SetEnv(h.role == 1 ? "BEA_NET_HOST" : "BEA_NET_JOIN", h.endpoint);
+			SetEnv(h.role == 1 ? "BEA_NET_HOST" : "BEA_NET_JOIN", ep);
 			SetEnv("BEA_NET_SECRET", secret);
 			CE_CodeWipe(secret, sizeof secret);
 #endif
 #else
 			char secret[65];
 			Hex(h.secret, 32, secret);
-			SetEnv(h.role == 1 ? "BEA_NET_HOST" : "BEA_NET_JOIN", h.endpoint);
+			SetEnv(h.role == 1 ? "BEA_NET_HOST" : "BEA_NET_JOIN", ep);
 			SetEnv("BEA_NET_SECRET", secret);
 			CE_CodeWipe(secret, sizeof secret);
 #endif
 			// Rotate the lobby invitation after each successfully agreed match. Neither the
 		// original invitation nor this key has to be shown again to the two players.
-		if (!h.campaign.version && !CE_NetGameIceRequested())
+		if (!h.campaign.version && !h.online_version && !CE_NetGameIceRequested())
 		{
 			char address[sizeof(h.endpoint)];
 			snprintf(address, sizeof(address), "%s", h.endpoint);
@@ -1924,4 +1934,41 @@ CE_LobbyCampaignStartResult CE_LobbyCampaignStart(uint32_t displayed_level) {
         return CE_LOBBY_CAMPAIGN_START_NOT_READY;
     return LobbyStart(true) ? CE_LOBBY_CAMPAIGN_START_QUEUED :
         CE_LOBBY_CAMPAIGN_START_FAILED;
+}
+
+extern "C" int CE_LobbyQueueOnlineLaunch(const CE_OnlineMatchTicket *ticket) {
+    if (!ticket || L.state == CE_LOBBY_STARTING || gRestart == RESTART_LAUNCH)
+        return 0;
+    if (ticket->proto != CE_ONLINE_PROTO_V1 || !CE_CompatibilityOnlineLevel(ticket->level) ||
+        ticket->slot_count < 2u || ticket->slot_count > CE_ONLINE_MAX_MATCH_SLOTS ||
+        ticket->human_count < 2u || ticket->human_count > ticket->slot_count ||
+        ticket->local_sim_slot >= ticket->slot_count)
+        return 0;
+    CE_Handoff h = {};
+    h.kind = CE_HANDOFF_LAUNCH;
+    h.role = (ticket->local_sim_slot == 0u) ? 1 : 2;
+    h.level = ticket->level;
+    snprintf(h.endpoint, sizeof h.endpoint, "127.0.0.1:%u", (unsigned)CE_LOBBY_DEFAULT_PORT);
+    memcpy(h.secret, ticket->match_secret, sizeof h.secret);
+    h.created = CE_HandoffNow();
+    h.online_version = 1;
+    h.online_ticket = *ticket;
+    if (!OwnArgs(h.args, sizeof h.args)) {
+        CE_CodeWipe(&h, sizeof h);
+        return 0;
+    }
+    const char *why = NULL;
+    const bool ok = WriteOwnedHandoff("launch", &h, &why);
+    CE_CodeWipe(&h, sizeof h);
+    if (!ok) {
+        fprintf(stderr, LOBBY_LOG "could not write online launch handoff: %s\n", why ? why : "unknown");
+        return 0;
+    }
+    gStartLevel = ticket->level;
+    gRestart = RESTART_LAUNCH;
+    L.level = ticket->level;
+    L.state = CE_LOBBY_STARTING;
+    fprintf(stderr, LOBBY_LOG "queued online match launch for level %u (slot %u/%u)\n",
+            (unsigned)ticket->level, (unsigned)ticket->local_sim_slot, (unsigned)ticket->slot_count);
+    return 1;
 }

@@ -14,6 +14,8 @@ extern "C" int CE_CheatOn(int);
 extern "C" int CE_CheatCachedStatus(unsigned *);
 extern "C" void CE_NetWindowAutomationPrepare(void);
 extern "C" void CE_NetUpdateAutomationPrepare(void);
+extern "C" int PortCeOnlineMatchActive(void) __attribute__((weak));
+extern "C" int PortCeOnlineServiceAttachMatchBridge(const uint8_t compat_digest[32]) __attribute__((weak));
 
 namespace {
 int requested;
@@ -32,7 +34,8 @@ int Refuse(const char *message) {
     return 0;
 }
 bool OrdinaryRoute() {
-    return CE_CompatibilityLockstepLevel((uint32_t)CLIPARAMS.mLevelNo) && CLIPARAMS.mConfigurationNo == 0 && !E3_BUILD && !PLAYABLE_DEMO &&
+    const bool online_ok = PortCeOnlineMatchActive && PortCeOnlineMatchActive() && CE_CompatibilityOnlineLevel((uint32_t)CLIPARAMS.mLevelNo);
+    return (CE_CompatibilityLockstepLevel((uint32_t)CLIPARAMS.mLevelNo) || online_ok) && CLIPARAMS.mConfigurationNo == 0 && !E3_BUILD && !PLAYABLE_DEMO &&
         !CLIPARAMS.mDeveloperMode && !CLIPARAMS.mArtistTest && !CLIPARAMS.mBuildResources &&
         !CLIPARAMS.mBuildPCResources && !CLIPARAMS.mBuildPS2Resources && !CLIPARAMS.mBuildXBOXResources &&
         !CLIPARAMS.mNoBaseResources && !CLIPARAMS.mBuildModelInfo && !CLIPARAMS.mBuildGoodies &&
@@ -95,8 +98,14 @@ extern "C" int CE_BootStart(void) {
     if (!CE_CheatCachedStatus(&cheats)) return Refuse("Onslaught CE could not read its settings to check that no cheat is on (a settings folder reached through a link is refused; under Wine keep the user folder on C:)");
     if (cheats) return Refuse("disable gameplay cheats before starting a network process");
     CE_CompatibilityResult result = {};
-    if (!CE_CompatibilityPrepare(CE_COMPAT_LOCKSTEP_PROTOCOL1, (uint32_t)CLIPARAMS.mLevelNo, &result, error, sizeof error))
+    const bool online_match = PortCeOnlineMatchActive && PortCeOnlineMatchActive();
+    const CE_CompatibilityContract contract = online_match ? CE_COMPAT_ONLINE_MULTIBE_V1 : CE_COMPAT_LOCKSTEP_PROTOCOL1;
+    if (!CE_CompatibilityPrepare(contract, (uint32_t)CLIPARAMS.mLevelNo, &result, error, sizeof error))
         return Refuse(error);
+    if (online_match) {
+        if (!PortCeOnlineServiceAttachMatchBridge || !PortCeOnlineServiceAttachMatchBridge(result.digest))
+            return Refuse("Online match transport bridge could not be initialized.");
+    }
 #ifndef CE_NETWORK_OFF
 #if defined(CE_NETWORK_ICE)
     if (!CE_LobbySignalingBootPrepared(result.digest, uint32_t(CLIPARAMS.mLevelNo)))

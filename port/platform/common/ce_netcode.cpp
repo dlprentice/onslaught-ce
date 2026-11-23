@@ -765,7 +765,312 @@ static bool RematchReturnValid(const CE_Handoff *h) {
     return ok;
 }
 
+static bool OnlineStringBounded(const char *s, size_t cap, bool requireNonEmpty) {
+    if (!s || cap == 0) return false;
+    const void *nul = memchr(s, 0, cap);
+    if (!nul) return false;
+    const size_t len = size_t(static_cast<const char *>(nul) - s);
+    if (requireNonEmpty && len == 0) return false;
+    return Printable(s);
+}
+
+static bool OnlineModeValid(const char *mode) {
+    return mode && (!strcmp(mode, "coop_defence") || !strcmp(mode, "coop_skirmish") ||
+                    !strcmp(mode, "versus_2v2") || !strcmp(mode, "tutorial"));
+}
+
+static bool OnlineTicketValid(const CE_Handoff *h) {
+    if (!h || h->online_version != 1 || h->kind != CE_HANDOFF_LAUNCH ||
+        (h->role != 1 && h->role != 2) ||
+        h->campaign.version || h->rematch_role || h->rematch_code[0] || h->rematch_level)
+        return false;
+    if (!OnlineStringBounded(h->args, sizeof(h->args), false))
+        return false;
+    const CE_OnlineMatchTicket &t = h->online_ticket;
+    if (t.proto != CE_ONLINE_PROTO_V1 || !CE_CompatibilityOnlineLevel(t.level) || h->level != t.level)
+        return false;
+    if (!OnlineStringBounded(t.match_id, sizeof(t.match_id), true) ||
+        !OnlineStringBounded(t.room_id, sizeof(t.room_id), true) ||
+        !OnlineStringBounded(t.lobby_origin, sizeof(t.lobby_origin), false) ||
+        !OnlineStringBounded(t.session_token, sizeof(t.session_token), false) ||
+        !OnlineStringBounded(t.mode, sizeof(t.mode), true) ||
+        !OnlineStringBounded(t.topology, sizeof(t.topology), true))
+        return false;
+    if (!OnlineModeValid(t.mode) || strcmp(t.topology, "star_lockstep") != 0)
+        return false;
+    if (t.require_relay > 1u || t.slot_count < 2u || t.slot_count > CE_ONLINE_MAX_MATCH_SLOTS ||
+        t.human_count < 2u || t.human_count > t.slot_count || t.local_sim_slot >= t.slot_count)
+        return false;
+    const int expectedRole = (t.local_sim_slot == 0u) ? 1 : 2;
+    if (h->role != expectedRole)
+        return false;
+    if (t.slots[0].kind != CE_ONLINE_SLOT_HUMAN ||
+        t.slots[t.local_sim_slot].kind != CE_ONLINE_SLOT_HUMAN ||
+        t.slots[t.local_sim_slot].seat != t.local_seat)
+        return false;
+    uint16_t humans = 0;
+    for (uint16_t i = 0; i < t.slot_count; ++i) {
+        const CE_OnlineMatchSlot &sl = t.slots[i];
+        if (sl.sim_slot != i || sl.seat >= CE_ONLINE_WIRE_MAX_SLOTS ||
+            (sl.kind != CE_ONLINE_SLOT_HUMAN && sl.kind != CE_ONLINE_SLOT_AI) ||
+            sl.team > CE_ONLINE_TEAM_MUSPELL)
+            return false;
+        if (!OnlineStringBounded(sl.be_cfg, sizeof(sl.be_cfg), false) ||
+            !OnlineStringBounded(sl.callsign, sizeof(sl.callsign), false) ||
+            !OnlineStringBounded(sl.tag, sizeof(sl.tag), false) ||
+            !OnlineStringBounded(sl.player_id, sizeof(sl.player_id), false))
+            return false;
+        for (uint16_t j = 0; j < i; ++j)
+            if (t.slots[j].seat == sl.seat)
+                return false;
+        if (sl.kind == CE_ONLINE_SLOT_HUMAN)
+            ++humans;
+    }
+    if (humans != t.human_count)
+        return false;
+    for (uint16_t i = t.slot_count; i < CE_ONLINE_MAX_MATCH_SLOTS; ++i) {
+        const CE_OnlineMatchSlot &sl = t.slots[i];
+        if (sl.kind != CE_ONLINE_SLOT_CLOSED || sl.seat != 0 || sl.sim_slot != 0 || sl.team != 0 ||
+            sl.be_cfg[0] || sl.callsign[0] || sl.tag[0] || sl.player_id[0])
+            return false;
+    }
+    return true;
+}
+
+static size_t OnlineHandoffFormat(const CE_Handoff *h, char *out, size_t capacity) {
+    if (!h || !out || !capacity || !OnlineTicketValid(h))
+        return 0;
+    const CE_OnlineMatchTicket &t = h->online_ticket;
+    char rosterHex[65] = {}, secretHex[65] = {};
+    Hex(t.roster_hash, 32, rosterHex);
+    Hex(t.match_secret, 32, secretHex);
+    int pos = snprintf(out, capacity,
+        "onslaught-ce handoff online 1\n"
+        "kind=launch\n"
+        "role=%s\n"
+        "created=%lld\n"
+        "args=%s\n"
+        "proto=%u\n"
+        "match_id=%s\n"
+        "room_id=%s\n"
+        "lobby_origin=%s\n"
+        "session_token=%s\n"
+        "seed=%u\n"
+        "level=%u\n"
+        "mode=%s\n"
+        "topology=%s\n"
+        "require_relay=%u\n"
+        "slot_count=%u\n"
+        "human_count=%u\n"
+        "local_seat=%u\n"
+        "local_sim_slot=%u\n"
+        "roster_hash=%s\n"
+        "match_secret=%s\n",
+        h->role == 1 ? "host" : "guest",
+        (long long)h->created,
+        h->args,
+        (unsigned)t.proto,
+        t.match_id,
+        t.room_id,
+        t.lobby_origin,
+        t.session_token,
+        (unsigned)t.seed,
+        (unsigned)t.level,
+        t.mode,
+        t.topology,
+        (unsigned)t.require_relay,
+        (unsigned)t.slot_count,
+        (unsigned)t.human_count,
+        (unsigned)t.local_seat,
+        (unsigned)t.local_sim_slot,
+        rosterHex,
+        secretHex);
+    CE_CodeWipe(secretHex, sizeof(secretHex));
+    if (pos <= 0 || size_t(pos) >= capacity) {
+        CE_CodeWipe(out, capacity);
+        return 0;
+    }
+    size_t written = size_t(pos);
+    for (uint16_t i = 0; i < t.slot_count; ++i) {
+        const CE_OnlineMatchSlot &sl = t.slots[i];
+        int added = snprintf(out + written, capacity - written,
+            "slot%u_seat=%u\n"
+            "slot%u_sim_slot=%u\n"
+            "slot%u_kind=%u\n"
+            "slot%u_team=%u\n"
+            "slot%u_be_cfg=%s\n"
+            "slot%u_callsign=%s\n"
+            "slot%u_tag=%s\n"
+            "slot%u_player_id=%s\n",
+            (unsigned)i, (unsigned)sl.seat,
+            (unsigned)i, (unsigned)sl.sim_slot,
+            (unsigned)i, (unsigned)sl.kind,
+            (unsigned)i, (unsigned)sl.team,
+            (unsigned)i, sl.be_cfg,
+            (unsigned)i, sl.callsign,
+            (unsigned)i, sl.tag,
+            (unsigned)i, sl.player_id);
+        if (added <= 0 || written + size_t(added) >= capacity || written + size_t(added) > CE_HANDOFF_MAX_BYTES) {
+            CE_CodeWipe(out, capacity);
+            return 0;
+        }
+        written += size_t(added);
+    }
+    if (written > CE_HANDOFF_MAX_BYTES) {
+        CE_CodeWipe(out, capacity);
+        return 0;
+    }
+    return written;
+}
+
+static bool OnlineReadLine(const char *&at, const char *end, const char *key, char *dst, size_t dstCap) {
+    const size_t keyLen = strlen(key);
+    if (size_t(end - at) < keyLen || memcmp(at, key, keyLen) != 0)
+        return false;
+    at += keyLen;
+    const char *nl = static_cast<const char *>(memchr(at, '\n', size_t(end - at)));
+    if (!nl)
+        return false;
+    const size_t valLen = size_t(nl - at);
+    if (valLen >= dstCap)
+        return false;
+    memcpy(dst, at, valLen);
+    dst[valLen] = 0;
+    if (!Printable(dst))
+        return false;
+    at = nl + 1;
+    return true;
+}
+
+static bool OnlineReadU64(const char *&at, const char *end, const char *key, uint64_t maximum, uint64_t *value) {
+    return ReturnNumber(at, end, key, maximum, value);
+}
+
+static bool OnlineReadI64(const char *&at, const char *end, const char *key, int64_t *value) {
+    char buf[32] = {};
+    if (!OnlineReadLine(at, end, key, buf, sizeof(buf)) || !buf[0])
+        return false;
+    char *e = NULL;
+    long long v = strtoll(buf, &e, 10);
+    if (!e || *e != 0)
+        return false;
+    *value = int64_t(v);
+    return true;
+}
+
+static int OnlineHandoffParse(const char *text, size_t size, int64_t now, CE_Handoff *h, const char **error) {
+    static const char kOnlineHeader[] = "onslaught-ce handoff online 1\n";
+    const char *why = "the online launch handoff is invalid";
+    CE_Handoff r = {};
+    if (!text || !h || size > CE_HANDOFF_MAX_BYTES || memchr(text, 0, size) ||
+        size < sizeof(kOnlineHeader) - 1 || memcmp(text, kOnlineHeader, sizeof(kOnlineHeader) - 1) != 0) {
+        if (h) memset(h, 0, sizeof(*h));
+        if (error) *error = why;
+        return 0;
+    }
+    const char *at = text + sizeof(kOnlineHeader) - 1;
+    const char *end = text + size;
+    char kindStr[16] = {}, roleStr[16] = {}, rosterHex[80] = {}, secretHex[80] = {};
+    uint64_t proto = 0, seed = 0, level = 0, requireRelay = 0, slotCount = 0, humanCount = 0, localSeat = 0, localSimSlot = 0;
+    int64_t created = 0;
+    bool ok = OnlineReadLine(at, end, "kind=", kindStr, sizeof(kindStr)) && !strcmp(kindStr, "launch") &&
+              OnlineReadLine(at, end, "role=", roleStr, sizeof(roleStr)) &&
+              (!strcmp(roleStr, "host") || !strcmp(roleStr, "guest")) &&
+              OnlineReadI64(at, end, "created=", &created) &&
+              OnlineReadLine(at, end, "args=", r.args, sizeof(r.args)) &&
+              OnlineReadU64(at, end, "proto=", UINT16_MAX, &proto) &&
+              OnlineReadLine(at, end, "match_id=", r.online_ticket.match_id, sizeof(r.online_ticket.match_id)) &&
+              OnlineReadLine(at, end, "room_id=", r.online_ticket.room_id, sizeof(r.online_ticket.room_id)) &&
+              OnlineReadLine(at, end, "lobby_origin=", r.online_ticket.lobby_origin, sizeof(r.online_ticket.lobby_origin)) &&
+              OnlineReadLine(at, end, "session_token=", r.online_ticket.session_token, sizeof(r.online_ticket.session_token)) &&
+              OnlineReadU64(at, end, "seed=", UINT32_MAX, &seed) &&
+              OnlineReadU64(at, end, "level=", UINT32_MAX, &level) &&
+              OnlineReadLine(at, end, "mode=", r.online_ticket.mode, sizeof(r.online_ticket.mode)) &&
+              OnlineReadLine(at, end, "topology=", r.online_ticket.topology, sizeof(r.online_ticket.topology)) &&
+              OnlineReadU64(at, end, "require_relay=", 1u, &requireRelay) &&
+              OnlineReadU64(at, end, "slot_count=", CE_ONLINE_MAX_MATCH_SLOTS, &slotCount) &&
+              OnlineReadU64(at, end, "human_count=", CE_ONLINE_MAX_MATCH_SLOTS, &humanCount) &&
+              OnlineReadU64(at, end, "local_seat=", UINT16_MAX, &localSeat) &&
+              OnlineReadU64(at, end, "local_sim_slot=", CE_ONLINE_MAX_MATCH_SLOTS - 1u, &localSimSlot) &&
+              OnlineReadLine(at, end, "roster_hash=", rosterHex, sizeof(rosterHex)) &&
+              OnlineReadLine(at, end, "match_secret=", secretHex, sizeof(secretHex));
+    if (ok) {
+        if (created > now + 5 || now - created > CE_HANDOFF_MAX_AGE) {
+            why = "the handoff file is too old (over 60 seconds)";
+            ok = false;
+        } else if (!Unhex(rosterHex, r.online_ticket.roster_hash, 32) ||
+                   !Unhex(secretHex, r.online_ticket.match_secret, 32)) {
+            why = "the online launch handoff has invalid cryptographic fields";
+            ok = false;
+        }
+    }
+    CE_CodeWipe(secretHex, sizeof(secretHex));
+    if (ok) {
+        r.kind = CE_HANDOFF_LAUNCH;
+        r.role = !strcmp(roleStr, "host") ? 1 : 2;
+        r.created = created;
+        r.level = uint32_t(level);
+        r.online_version = 1;
+        memcpy(r.secret, r.online_ticket.match_secret, sizeof(r.secret));
+        r.online_ticket.proto = uint16_t(proto);
+        r.online_ticket.seed = uint32_t(seed);
+        r.online_ticket.level = uint32_t(level);
+        r.online_ticket.require_relay = uint8_t(requireRelay);
+        r.online_ticket.slot_count = uint16_t(slotCount);
+        r.online_ticket.human_count = uint16_t(humanCount);
+        r.online_ticket.local_seat = uint16_t(localSeat);
+        r.online_ticket.local_sim_slot = uint8_t(localSimSlot);
+        for (uint16_t i = 0; ok && i < r.online_ticket.slot_count; ++i) {
+            char kSeat[24], kSim[24], kKind[24], kTeam[24], kCfg[24], kCall[24], kTag[24], kPid[24];
+            snprintf(kSeat, sizeof(kSeat), "slot%u_seat=", (unsigned)i);
+            snprintf(kSim, sizeof(kSim), "slot%u_sim_slot=", (unsigned)i);
+            snprintf(kKind, sizeof(kKind), "slot%u_kind=", (unsigned)i);
+            snprintf(kTeam, sizeof(kTeam), "slot%u_team=", (unsigned)i);
+            snprintf(kCfg, sizeof(kCfg), "slot%u_be_cfg=", (unsigned)i);
+            snprintf(kCall, sizeof(kCall), "slot%u_callsign=", (unsigned)i);
+            snprintf(kTag, sizeof(kTag), "slot%u_tag=", (unsigned)i);
+            snprintf(kPid, sizeof(kPid), "slot%u_player_id=", (unsigned)i);
+            uint64_t seat = 0, sim = 0, kind = 0, team = 0;
+            CE_OnlineMatchSlot &sl = r.online_ticket.slots[i];
+            ok = OnlineReadU64(at, end, kSeat, UINT16_MAX, &seat) &&
+                 OnlineReadU64(at, end, kSim, UINT8_MAX, &sim) &&
+                 OnlineReadU64(at, end, kKind, UINT8_MAX, &kind) &&
+                 OnlineReadU64(at, end, kTeam, UINT8_MAX, &team) &&
+                 OnlineReadLine(at, end, kCfg, sl.be_cfg, sizeof(sl.be_cfg)) &&
+                 OnlineReadLine(at, end, kCall, sl.callsign, sizeof(sl.callsign)) &&
+                 OnlineReadLine(at, end, kTag, sl.tag, sizeof(sl.tag)) &&
+                 OnlineReadLine(at, end, kPid, sl.player_id, sizeof(sl.player_id));
+            if (ok) {
+                sl.seat = uint16_t(seat);
+                sl.sim_slot = uint8_t(sim);
+                sl.kind = uint8_t(kind);
+                sl.team = uint8_t(team);
+            }
+        }
+        if (ok && (at != end || !OnlineTicketValid(&r)))
+            ok = false;
+    }
+    if (ok) {
+        char canonical[CE_HANDOFF_MAX_BYTES + 1] = {};
+        const size_t n = OnlineHandoffFormat(&r, canonical, sizeof(canonical));
+        ok = (n == size && memcmp(canonical, text, size) == 0);
+        CE_CodeWipe(canonical, sizeof(canonical));
+    }
+    if (!ok) {
+        CE_CodeWipe(&r, sizeof(r));
+        if (h) memset(h, 0, sizeof(*h));
+        if (error) *error = why;
+        return 0;
+    }
+    *h = r;
+    CE_CodeWipe(&r, sizeof(r));
+    if (error) *error = NULL;
+    return 1;
+}
+
 extern "C" size_t CE_HandoffFormat(const CE_Handoff *h, char *out, size_t capacity) {
+    if (h && h->online_version != 0)
+        return OnlineHandoffFormat(h, out, capacity);
     if (!h || (!h->rematch_role && !h->rematch_code[0] && !h->rematch_level))
         return FormatBeforeRematch(h, out, capacity);
     if (!RematchReturnValid(h)) return 0;
@@ -778,6 +1083,9 @@ extern "C" size_t CE_HandoffFormat(const CE_Handoff *h, char *out, size_t capaci
 
 extern "C" int CE_HandoffParse(const char *text, size_t size, int64_t now,
                                 CE_Handoff *h, const char **error) {
+    static const char kOnlineHeader[] = "onslaught-ce handoff online 1\n";
+    if (text && size >= sizeof(kOnlineHeader) - 1 && !memcmp(text, kOnlineHeader, sizeof(kOnlineHeader) - 1))
+        return OnlineHandoffParse(text, size, now, h, error);
     static const char mark[] = "\nrematch=";
     if (!text || !h || !size || size > CE_HANDOFF_MAX_BYTES) return CampaignParseRefuse(h, error);
     size_t split = size;

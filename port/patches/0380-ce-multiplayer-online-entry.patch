@@ -1,0 +1,45 @@
+--- a/FEPMultiplayer.cpp
++++ b/FEPMultiplayer.cpp
+@@ -18,6 +18,12 @@
+ // FUNCTION: 0x0051c980 init:ZERO_FVECTOR
+ // FUNCTION: 0x0051c9a0 init:ID_FMATRIX
+ 
++#ifndef CE_NETWORK_OFF
++#ifdef CE_VERSION
++extern "C" void PortCeOnlineUiMultiplayerProcess(int active) __attribute__((weak));
++extern "C" void PortCeOnlineUiMultiplayerRender(float transition) __attribute__((weak));
++#endif
++#endif
+ //*********************************************************************************
+ // The level in each grid cell, row by row (the switch at 0051ca89, table 0051cb68).
+ static SINT	get_mp_level(SINT n)
+@@ -161,6 +167,14 @@
+ //*********************************************************************************
+ void	CFEPMultiplayer::Process(EFEPState state)	// FUNCTION: 0x0051d020
+ {
++#ifndef CE_NETWORK_OFF
++#ifdef CE_VERSION
++	if ((state == FEPS_ACTIVE) && PortCeOnlineUiMultiplayerProcess)
++	{
++		PortCeOnlineUiMultiplayerProcess(1);
++	}
++#endif
++#endif
+ 	if (fabsf(mPos - mPosDest) > 1.f)
+ 	{
+ 		float delta = (mPosDest - mPos) / 4.f;
+@@ -382,6 +396,14 @@
+ 	float	off = d * d * 3000.f;
+ 
+ 	render_mp_description(*this, ta, off, size);
++#ifndef CE_NETWORK_OFF
++#ifdef CE_VERSION
++	if (PortCeOnlineUiMultiplayerRender)
++	{
++		PortCeOnlineUiMultiplayerRender(transition);
++	}
++#endif
++#endif
+ 	FRONTEND.GetCommonPage()->RenderHelpText(1, transition);
+ 	FRONTEND.DrawTitleBar(FET.GetText(FEX_MULTIPLAYER2), transition, dest);
+ 

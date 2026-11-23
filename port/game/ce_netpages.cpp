@@ -49,6 +49,21 @@ bool	MouseClickedInRect(float tlx, float tly, float brx, float bry);
 // The lobby's player slot: the original's level orb (port/game/ce_network_lobby_slots.cpp).
 void	PortCeNetDrawSlot(float x, float y, bool present);
 
+#ifndef CE_NETWORK_OFF
+// Online multiplayer lobby UI (port/game/ce_online_ui.cpp): weak hooks so standalone direct-LAN
+// menu fixtures compile and keep their exact row order when ce_online_ui.cpp is not linked.
+extern "C" {
+void PortCeOnlineUiOpen(void) __attribute__((weak));
+int  PortCeOnlineUiActive(void) __attribute__((weak));
+void PortCeOnlineUiUpdate(void) __attribute__((weak));
+void PortCeOnlineUiRender(void) __attribute__((weak));
+void PortCeOnlineUiButton(int button, float val) __attribute__((weak));
+void PortCeOnlineUiClose(void) __attribute__((weak));
+int  PortCeOnlineUiTakePendingEntry(void) __attribute__((weak));
+const char *PortCeOnlineUiTitleUtf8(void) __attribute__((weak));
+}
+#endif
+
 namespace {
 
 // The game font's characters only (no underscore, backquote, ~ \ $ @ [ ] ^ { | }): anything else becomes a space, once
@@ -237,7 +252,7 @@ void	Box(const char *text)
 }
 
 enum EPage { NP_MENU = 0, NP_HOST_ADDRESS, NP_HOST, NP_JOIN, NP_LOBBY, NP_HELP, NP_SIGNAL_DISCLOSURE, NP_SIGNAL_STATUS, NP_INVITATION_INPUT, NP_INVITATION_PREVIEW, NP_COUNT };
-enum EAction { NA_NONE = 0, NA_HOST, NA_JOIN, NA_BACK, NA_COPY, NA_CODE, NA_ADDRESS, NA_CONNECT, NA_MAP, NA_START, NA_LEAVE, NA_HELP, NA_HOST_ADDRESS, NA_CAMPAIGN_START, NA_PASTE_CODE, NA_PASTE_ADDRESS, NA_CLEAR_FIELDS, NA_SIGNAL_DISCLOSE, NA_SIGNAL_ACCEPT, NA_SIGNAL_PROCEED, NA_SIGNAL_RETRY, NA_SIGNAL_CLOSE, NA_IMPORT_OPEN, NA_IMPORT_ORIGIN, NA_IMPORT_PASTE, NA_IMPORT_HOST, NA_IMPORT_JOIN, NA_IMPORT_PROFILE_HOST, NA_IMPORT_PROFILE_JOIN, NA_IMPORT_USE, NA_IMPORT_CLEAR };
+enum EAction { NA_NONE = 0, NA_HOST, NA_JOIN, NA_BACK, NA_COPY, NA_CODE, NA_ADDRESS, NA_CONNECT, NA_MAP, NA_START, NA_LEAVE, NA_HELP, NA_HOST_ADDRESS, NA_CAMPAIGN_START, NA_PASTE_CODE, NA_PASTE_ADDRESS, NA_CLEAR_FIELDS, NA_SIGNAL_DISCLOSE, NA_SIGNAL_ACCEPT, NA_SIGNAL_PROCEED, NA_SIGNAL_RETRY, NA_SIGNAL_CLOSE, NA_IMPORT_OPEN, NA_IMPORT_ORIGIN, NA_IMPORT_PASTE, NA_IMPORT_HOST, NA_IMPORT_JOIN, NA_IMPORT_PROFILE_HOST, NA_IMPORT_PROFILE_JOIN, NA_IMPORT_USE, NA_IMPORT_CLEAR, NA_ONLINE_LOBBIES };
 
 const char* SignalRouteStage(CeIceSignalStatus status, int lobbyState, bool signalingSelected, bool relayRequested)
 {
@@ -376,6 +391,23 @@ public:
 	WCHAR	mWide[128];
 	int		mAction;
 	bool	mHidden = false;
+};
+
+// Prominent top row on the Network Game page opening the Online Lobby Browser (ce_online_ui.cpp).
+class COnlineEntryItem : public CNetItem
+{
+public:
+	COnlineEntryItem() : CNetItem("Play Online (Lobbies)", NA_ONLINE_LOBBIES) {}
+	virtual void	Render(float x, float y, BOOL selected)
+	{
+		if (mHidden)
+			return;
+		CDXBitmapFont *font = PLATFORM.Font(FONT_SMALL);
+		const DWORD col = !mEnabled ? 0x50505050 : (selected ? 0xffffcc00 : 0xff7fd0ff);
+		SIZE size;
+		font->GetTextExtent(mWide, &size);
+		font->DrawTextWithShadow(x - float(size.cx / 2), y, col, mWide, 0, 0, 1.f, 1.f);
+	}
 };
 
 // The colour of a row as CMenuItem::Render gives it: white, the game's focus yellow, or the dim grey of a row that cannot be
@@ -571,6 +603,7 @@ const char *RowHint(int action)
 {
 	switch (action)
 	{
+	case NA_ONLINE_LOBBIES:	return "Browse public lobbies, create a room, or join by code.";
 	case NA_HOST:			return "Start a game and get a code for your friend.";
 	case NA_JOIN:			return "Join a friend's game with their code.";
 	case NA_HELP:			return "What to set up to play over the internet.";
@@ -595,6 +628,7 @@ class CCeNetMenu;
 CCeNetMenu	*sMenu = NULL;
 bool		sActive = false;
 bool		sOpenOnEntry = false;		// the return from a network game: open these pages as the CE page arrives
+bool		sOpenOnlineOnEntry = false;	// Multiplayer -> Play Online entry: open Online UI directly
 bool		sCtrl = false;
 bool		sTrap = false;
 
@@ -615,6 +649,14 @@ public:
 		// The first page: Host Game, Join Game, Connection Help. The connection is the one this launch was prepared for
 		// (direct, or the relay pilot when the game was started with its setup); there is no page to choose it.
 		l = mList[NP_MENU] = new (MEMTYPE_MENUITEM) CMenuOptionsList(title, 320.f, 330.f, FALSE, 0xb0000000);
+#ifndef CE_NETWORK_OFF
+		if (PortCeOnlineUiOpen)
+			l->AddItem(mOnlineEntry = new (MEMTYPE_MENUITEM) COnlineEntryItem());
+		else
+			mOnlineEntry = NULL;
+#else
+		mOnlineEntry = NULL;
+#endif
 		l->AddItem(mHostItem = new (MEMTYPE_MENUITEM) CNetItem("Host Game", NA_HOST));
 		l->AddItem(mJoinItem = new (MEMTYPE_MENUITEM) CNetItem("Join Game", NA_JOIN));
 #if defined(CE_NETWORK_ICE)
@@ -1326,6 +1368,18 @@ public:
 		int action = ((CNetItem *)item)->mAction;
 		switch (action)
 		{
+		case NA_ONLINE_LOBBIES:
+			if (mPage != NP_MENU) break;
+#ifndef CE_NETWORK_OFF
+			if (PortCeOnlineUiOpen)
+			{
+				CFrontEnd::PlaySound(FES_SELECT);
+				PortCeOnlineUiOpen();
+				return;
+			}
+#endif
+			Notice("Online lobbies are unavailable in this build.");
+			break;
 		case NA_IMPORT_OPEN:
             if (mPage != NP_MENU) break;
 #if defined(CE_NETWORK_ICE)
@@ -2176,6 +2230,7 @@ public:
 
 
 	CMenuOptionsList *mList[NP_COUNT];
+	CNetItem	*mOnlineEntry;
 	CNetItem	*mHostItem, *mJoinItem, *mConnect, *mStart;
 	CNetItem *mPasteCode, *mPasteAddress, *mClearFields, *mJoinBack;
 	CNetItem *mRoomCopy, *mRoomBack;
@@ -2274,6 +2329,10 @@ bool	PortCeNetOffered()
 
 bool	PortCeNetActive()
 {
+#ifndef CE_NETWORK_OFF
+	if (PortCeOnlineUiActive && PortCeOnlineUiActive())
+		return true;
+#endif
 	return sActive && sMenu;
 }
 
@@ -2282,6 +2341,15 @@ bool	PortCeNetActive()
 WCHAR	*PortCeNetTitle()
 {
 	static WCHAR network[] = L"Network Game", host[] = L"Host Game", join[] = L"Join Game", help[] = L"" CE_LOBBY_HELP_LABEL;
+#ifndef CE_NETWORK_OFF
+	if (PortCeOnlineUiActive && PortCeOnlineUiActive() && PortCeOnlineUiTitleUtf8)
+	{
+		static WCHAR onlineTitle[64];
+		const char *utf8 = PortCeOnlineUiTitleUtf8();
+		Widen(onlineTitle, 64, (utf8 && *utf8) ? utf8 : "Play Online");
+		return onlineTitle;
+	}
+#endif
 	if (!sMenu)
 		return network;
 	switch (sMenu->mPage)
@@ -2298,6 +2366,17 @@ void	PortCeNetOpen()
 {
 	if (!PortCeNetOffered())
 		return;
+#ifndef CE_NETWORK_OFF
+	if (sOpenOnlineOnEntry)
+	{
+		sOpenOnlineOnEntry = false;
+		if (PortCeOnlineUiOpen)
+		{
+			PortCeOnlineUiOpen();
+			return;
+		}
+	}
+#endif
 	if (!sMenu)
 		sMenu = new (MEMTYPE_MENUITEM) CCeNetMenu();
 	CPauseMenu::mOptionsPage = true;
@@ -2320,20 +2399,49 @@ void	PortCeNetOpen()
 		Box(sMenu->mOutcome);
 }
 
+#ifndef CE_NETWORK_OFF
+extern "C" void	PortCeNetOpenDirectFromOnline(void)
+{
+	sOpenOnlineOnEntry = false;
+	PortCeNetOpen();
+}
+#endif
+
 void	PortCeNetButton(SINT button, float val)
 {
+#ifndef CE_NETWORK_OFF
+	if (PortCeOnlineUiActive && PortCeOnlineUiActive() && PortCeOnlineUiButton)
+	{
+		PortCeOnlineUiButton(button, val);
+		return;
+	}
+#endif
 	if (PortCeNetActive())
 		sMenu->ReceiveButtonAction(NULL, button, val);
 }
 
 void	PortCeNetProcess()
 {
+#ifndef CE_NETWORK_OFF
+	if (PortCeOnlineUiActive && PortCeOnlineUiActive() && PortCeOnlineUiUpdate)
+	{
+		PortCeOnlineUiUpdate();
+		return;
+	}
+#endif
 	if (PortCeNetActive())
 		sMenu->Update();
 }
 
 void	PortCeNetDraw()
 {
+#ifndef CE_NETWORK_OFF
+	if (PortCeOnlineUiActive && PortCeOnlineUiActive() && PortCeOnlineUiRender)
+	{
+		PortCeOnlineUiRender();
+		return;
+	}
+#endif
 	if (PortCeNetActive())
 		sMenu->Draw();
 }
@@ -2341,6 +2449,10 @@ void	PortCeNetDraw()
 // The CE page is going: nothing of the lobby outlives it.
 void	PortCeNetShutdown()
 {
+#ifndef CE_NETWORK_OFF
+	if (PortCeOnlineUiClose)
+		PortCeOnlineUiClose();
+#endif
 	if (sMenu)
 	{
 		sMenu->Trap(false);
@@ -2348,12 +2460,20 @@ void	PortCeNetShutdown()
 		SAFE_DELETE(sMenu);
 	}
 	sActive = false;
+	sOpenOnlineOnEntry = false;
 }
 
 bool	PortCeNetOpenOnEntry()
 {
 	bool open = sOpenOnEntry;
 	sOpenOnEntry = false;
+#ifndef CE_NETWORK_OFF
+	if (PortCeOnlineUiTakePendingEntry && PortCeOnlineUiTakePendingEntry())
+	{
+		sOpenOnlineOnEntry = true;
+		open = true;
+	}
+#endif
 	return open;
 }
 

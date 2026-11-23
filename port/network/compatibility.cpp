@@ -529,7 +529,12 @@ bool CaptureSnapshot(Snapshot &snapshot, CE_CompatibilityResult &result, char *e
         if (!ok) return Refuse(error, size, "effective startup script differs from the admitted empty script");
     }
     HASH_CTX hash; HashInit(&hash);
-    if (contract == CE_COMPAT_LOCKSTEP_PROTOCOL1) {
+    if (contract == CE_COMPAT_ONLINE_MULTIBE_V1) {
+        // Online 2-4 player multi-BE lockstep: distinct domain so it never collides with 2P lockstep or level-852.
+        const char domain[] = "Onslaught CE BLAKE2b-256 online multibe admission v1";
+        HashUpdate(&hash, domain, sizeof domain);
+        Word(hash, 1); Text(hash, simulation); Word(hash, level); Word(hash, 5);
+    } else if (contract == CE_COMPAT_LOCKSTEP_PROTOCOL1) {
         // The lockstep co-op: its own domain, so that no lockstep admission can equal a level-852 one; the level and protocol version are in the context.
         const char domain[] = "Onslaught CE BLAKE2b-256 lockstep admission v1";
         HashUpdate(&hash, domain, sizeof domain);
@@ -657,7 +662,8 @@ extern "C" int CE_CompatibilityPrepare(CE_CompatibilityContract contract, uint32
         return Sticky(state, error, size, "networking requires a fresh process before authored reads or console use");
     state.phase = PREPARING;
     if (!result || !((contract == CE_COMPAT_LEVEL852_WORLD11_INPUT5_CONTROL5 && level == 852) ||
-                     (contract == CE_COMPAT_LOCKSTEP_PROTOCOL1 && CE_CompatibilityLockstepLevel(level))))
+                     (contract == CE_COMPAT_LOCKSTEP_PROTOCOL1 && CE_CompatibilityLockstepLevel(level)) ||
+                     (contract == CE_COMPAT_ONLINE_MULTIBE_V1 && CE_CompatibilityOnlineLevel(level))))
         return Sticky(state, error, size, "unsupported fresh-process network contract or level");
     try {
         Snapshot snapshot; CE_CompatibilityResult found{}; char detail[160]{};

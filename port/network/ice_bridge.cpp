@@ -26,7 +26,7 @@ bool RelayCandidate(const std::string& line) {
 std::unique_ptr<CeIceBridge> CeIceBridge::Create(ENetHost* host,
                                                const juice_config_t& input,
                                                bool require_relay) {
-    if (!host || host->peerCount != 1) return nullptr;
+    if (!host || host->peerCount < 1) return nullptr;
     std::unique_ptr<CeIceBridge> bridge(new CeIceBridge);
     if (enet_socket_get_address(host->socket, &bridge->ce_address_) != 0 ||
         !bridge->ce_address_.port) return nullptr;

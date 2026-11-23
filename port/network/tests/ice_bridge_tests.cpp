@@ -246,7 +246,13 @@ void RelayRequiredControl() {
     Check(!pair.b->SetRemoteDescription(direct), "relay-required path refuses direct-only description");
     Check(!pair.b->LocalDescription(relay) && !pair.b->Ready(), "missing relay never becomes usable");
     ENetHost* multi = Host(2);
-    Check(multi && !CeIceBridge::Create(multi, config), "multi-peer host refused");
+    Check(multi != nullptr, "multi-peer host created");
+    std::unique_ptr<CeIceBridge> multi_a = CeIceBridge::Create(multi, config, false);
+    std::unique_ptr<CeIceBridge> multi_b = CeIceBridge::Create(multi, config, false);
+    Check(multi_a && multi_b && multi_a->LocalAddress().port != multi_b->LocalAddress().port,
+          "multi-peer host supports independent per-guest ICE bridges");
+    multi_a.reset();
+    multi_b.reset();
     enet_host_destroy(multi);
     Check(!CeIceBridge::Create(nullptr, config), "missing CE endpoint refused");
     ENetAddress other_address{};

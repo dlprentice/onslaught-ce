@@ -1,0 +1,29 @@
+# SPDX-License-Identifier: GPL-3.0-only
+name = "onslaught-ce-turn-issuer"
+main = "issuer.mjs"
+compatibility_date = "2026-11-02"
+workers_dev = false
+preview_urls = false
+
+[vars]
+CE_ENABLED = "false"
+CE_TURN_TTL_SECONDS = "3600"
+
+[observability]
+enabled = false
+
+[[services]]
+binding = "PERMIT_AUTHORITY"
+service = "onslaught-ce-lobby"
+entrypoint = "PermitAuthority"
+
+# Step 1 bootstrap: deploy this disabled Worker first without a binding to a missing public Worker.
+[env.bootstrap]
+name = "onslaught-ce-turn-issuer"
+workers_dev = false
+preview_urls = false
+services = []
+
+[env.bootstrap.vars]
+CE_ENABLED = "false"
+CE_TURN_TTL_SECONDS = "3600"

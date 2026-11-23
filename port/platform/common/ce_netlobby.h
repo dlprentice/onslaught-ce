@@ -106,6 +106,9 @@ typedef enum CE_LobbyCampaignStartResult {
  * The argument is the mission from the last displayed lobby status. */
 CE_LobbyCampaignStartResult CE_LobbyCampaignStart(uint32_t displayed_level);
 
+struct CE_OnlineMatchTicket;
+int CE_LobbyQueueOnlineLaunch(const struct CE_OnlineMatchTicket *ticket);
+
 #ifdef __cplusplus
 }
 #endif

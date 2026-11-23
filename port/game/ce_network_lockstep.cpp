@@ -98,6 +98,22 @@ extern "C" void CE_WorldLockstepPartnerStart(void *init);
 extern "C" void CE_WorldLockstepPlaceEmitters(void *const *weapons, const int *orientate, unsigned count);
 extern "C" int CE_WorldLockstepEndTick(void);
 extern "C" void CE_WorldLockstepBeginTick(void);
+// ce_online_match.cpp; weak, so 2-player session fixtures that compile this file standalone need no stand-in
+extern "C" int PortCeOnlineMatchActive(void) __attribute__((weak));
+extern "C" int PortCeOnlineMatchSlotCount(void) __attribute__((weak));
+extern "C" int PortCeOnlineMatchLocalSlot(void) __attribute__((weak));
+extern "C" int PortCeOnlineMatchSlotIsHuman(int slot) __attribute__((weak));
+extern "C" uint32_t PortCeOnlineMatchLevel(void) __attribute__((weak));
+extern "C" int PortCeOnlineMatchIsHost(void) __attribute__((weak));
+extern "C" int PortCeOnlineMatchBeginSession(uint32_t level, uint32_t input_delay, uint32_t hash_every) __attribute__((weak));
+extern "C" int PortCeOnlineMatchPoll(uint64_t now_ms) __attribute__((weak));
+extern "C" int PortCeOnlineMatchIsReady(void) __attribute__((weak));
+extern "C" int PortCeOnlineMatchCanAdvance(void) __attribute__((weak));
+extern "C" int PortCeOnlineMatchSubmitLocalInput(uint32_t target_tick, const CE_WorldInput *sample) __attribute__((weak));
+extern "C" int PortCeOnlineMatchConsumeTick(CE_WorldInput out_slots[4], uint8_t *out_human_mask) __attribute__((weak));
+extern "C" int PortCeOnlineMatchSubmitLocalHash(uint32_t tick, uint64_t state_hash) __attribute__((weak));
+extern "C" int PortCeOnlineMatchCheckFault(char *out_error, size_t cap) __attribute__((weak));
+extern "C" void PortCeOnlineMatchStop(int graceful) __attribute__((weak));
 
 // The label each side shows the other when their builds do not admit each other (as the session's world mode).
 #ifdef CE_VERSION
@@ -175,7 +191,15 @@ struct Lockstep {
 	char notice[96] = {};
 	FILE *dump = NULL;
 	CE_NetConfig config = {}; char ip[16] = {};
+	bool online_multi = false;
+	uint32_t online_slot_count = 0, online_local_slot = 0;
+	bool online_tick_consumed = false;
+	uint8_t online_human_mask = 0;
+	CE_WorldInput online_current[4] = {};
 } L;
+bool OnlineMultiActive() {
+	return CE_NETWORK_ENABLED && PortCeOnlineMatchActive && PortCeOnlineMatchActive() != 0;
+}
 #ifdef CE_NET_TEST_AUTOMATION
 namespace { unsigned frame_acc, upd_n, upd_sum, upd_max, upd_min = ~0u; unsigned frame_sleep_ms; thread_local bool tl_in_update; unsigned long jittered_reads; bool x87_monitor; unsigned x87_ticks[5], x87_first[5]; }	// test: frames this peer drew between two executed updates (CE_LockstepTestExtraRender's final call of each render loop adds that loop's frames; an update takes the sum)
 #endif
@@ -294,6 +318,7 @@ static void CampaignStop(CeCampaignStop reason);
 bool Fail(const char *message, bool desync_queued = false) {
 	KeeperStop();
     CampaignStop(CE_CAMPAIGN_STOP_FAILURE);
+	if (L.online_multi && PortCeOnlineMatchStop) PortCeOnlineMatchStop(0);
 	if (L.stage != FAILED) { fprintf(stderr, "onslaught-ce: co-op session stopped: %s\n", message); if (!last_error[0]) snprintf(last_error, sizeof last_error, "%s", message); }
 	L.stage = FAILED; L.outcome_error = true; L.notice[0] = 0;
 	{ volatile uint8_t *secret = L.config.secret; for (unsigned i = 0; i < sizeof L.config.secret; ++i) secret[i] = 0; }
@@ -849,6 +874,15 @@ bool TransportFail(const CE_NetStatus &status, const char *message)
 bool Poll() {
 	KeeperStop();
 	if (!AdmissionCurrent()) return false;
+	if (L.online_multi) {
+		if (L.stage == FINISHED) return true;
+		if (!PortCeOnlineMatchPoll) return Fail("online match session unavailable");
+		const int ok = PortCeOnlineMatchPoll(CE_NetNowMs());
+		char why[192] = {};
+		if (!ok || (PortCeOnlineMatchCheckFault && PortCeOnlineMatchCheckFault(why, sizeof why)))
+			return Fail(why[0] ? why : "the online match session stopped");
+		return true;
+	}
 	if (L.stage == FINISHED) {	// the level is over: the connection only reports that the other player has gone
 		if (!L.net) return true;
 		CE_NetPoll(L.net, CE_NetNowMs(), 64);
@@ -986,6 +1020,7 @@ extern "C" {
 // (patch 0156 zeroes every allocation of a co-op process from the first); the boot's flag is read at every call because the boot sets it, not this module.
 int CE_LockstepRequested(void) {
 	if (CE_BootLockstep()) return 1;
+	if (OnlineMultiActive()) return 1;
 #ifdef CE_NET_TEST_AUTOMATION
 	if (!requested_checked) {
 		requested_checked = true; requested = Env("BEA_LOCKSTEP_HOST") || Env("BEA_LOCKSTEP_JOIN");
@@ -1003,10 +1038,53 @@ int CE_LockstepRequested(void) {
 int CE_LockstepActive(void) { return L.shown; }
 int CE_LockstepTicking(void) { return L.stage == RUNNING; }
 int CE_LockstepSharing(void) { return L.stage == CONNECTING || L.stage == LOADED || L.stage == STARTING || L.stage == PRERUN || L.stage == RUNNING || L.stage == STOPPING; }
-uint32_t CE_LockstepLocalPlayer(void) { return L.host ? 0u : 1u; }
+uint32_t CE_LockstepLocalPlayer(void) { return L.online_multi ? L.online_local_slot : (L.host ? 0u : 1u); }
 uint32_t CE_LockstepLevel(void) { return L.stage != OFF ? L.level : 0u; }
 int CE_LockstepConfigureLevel(uint32_t level) {
 	if (L.stage != OFF) return Fail("a co-op session can run one level per process");
+	if (OnlineMultiActive()) {
+		if (!CE_CompatibilityOnlineLevel(level))
+			return Fail("online multi-BE lockstep admits levels 100 and 850..866");
+		const uint32_t ticket_level = PortCeOnlineMatchLevel ? PortCeOnlineMatchLevel() : 0u;
+		if (ticket_level != level)
+			return Fail("online match ticket level does not match the loaded level");
+		const int slots = PortCeOnlineMatchSlotCount ? PortCeOnlineMatchSlotCount() : 0;
+		const int local = PortCeOnlineMatchLocalSlot ? PortCeOnlineMatchLocalSlot() : -1;
+		if (slots < 2 || slots > 4 || local < 0 || local >= slots)
+			return Fail("online match ticket slot assignment is invalid");
+		const bool admitted = CE_BootLockstep() != 0;
+		const char *disabled[] = {"BEA_PORT_CLOCK", "BEA_PORT_TAPE", "BEA_PORT_RECORD", "BEA_PORT_PROBES", "BEA_RECORD"};
+		for (const char *name : disabled) {
+			if (Env(name)) return Fail("online match is unavailable during replay, recording or probes");
+		}
+		L = Lockstep();
+		L.stage = CONNECTING;
+		L.online_multi = true;
+		L.online_slot_count = (uint32_t)slots;
+		L.online_local_slot = (uint32_t)local;
+		L.host = PortCeOnlineMatchIsHost ? (PortCeOnlineMatchIsHost() != 0) : (local == 0);
+		L.level = level;
+		L.admission_required = admitted;
+		if (admitted) {
+			CE_CompatibilityResult admission = {}; char why[160] = {};
+			if (CE_BootPrepared(&admission, why, sizeof why) != 1) {
+				char text[200]; snprintf(text, sizeof text, "co-op content admission unavailable: %.140s", why); return Fail(text);
+			}
+			memcpy(L.config.compatibility, admission.digest, sizeof L.config.compatibility);
+			snprintf(L.config.version, sizeof L.config.version, "%s", kVersionLabel);
+		}
+		if (!PortCeOnlineMatchBeginSession || !PortCeOnlineMatchBeginSession(level, L.delay, L.hash_every)) {
+			char why[192] = {};
+			if (PortCeOnlineMatchCheckFault && PortCeOnlineMatchCheckFault(why, sizeof why) && why[0])
+				return Fail(why);
+			return Fail("the online multi-BE lockstep session could not start");
+		}
+		PortCrtRandSet(0, 1);
+		fprintf(stderr, "onslaught-ce: online multi-BE lockstep, level %u, slot %u/%u (%s), input delay %u ticks, hash every %u ticks\n",
+			level, L.online_local_slot, L.online_slot_count, L.host ? "host" : "guest", L.delay, L.hash_every);
+		if (admitted) CE_SessionGameWaitFrame(CE_WAIT_PREPARE);
+		return 1;
+	}
 	// A session started from the lobby (the shipped route) comes with the process's admission: the roles, endpoint and secret in the BEA_NET_* variables the lobby's handoff set,
 	// and the digest of the content the admission read. A test-automation build can instead be driven from BEA_LOCKSTEP_* variables with no admission.
 	const bool admitted = CE_BootLockstep() != 0;
@@ -1092,6 +1170,10 @@ int CE_LockstepAfterLoad(void) {
 	if (L.stage != CONNECTING) return 0;
 	if (!AdmissionCurrent() || !AutomationIdle()) return 0;
 	if (CE_SessionGameQuitCode()) return 0;
+	if (L.online_multi) {
+		if (GAME.GetNPlayers() < 1 || !GAME.GetPlayer(0)) return Fail("the online match level did not load player 1");
+		L.stage = LOADED; return 1;
+	}
 	if (GAME.GetNPlayers() != 2 || !GAME.GetPlayer(0) || !GAME.GetPlayer(1)) return Fail("the level did not load two players");
 	L.stage = LOADED; return 1;
 }
@@ -1109,6 +1191,36 @@ static int PreparePlay(void) {
 	if (!CapturePreRunSlots()) return Fail("co-op pre-run flags could not be captured");
 	unsigned pre_calls=0,pre_hold=0; int pre_value=0,pre_seed=0;
 	PortCrtRandState(&pre_calls,&pre_hold); CE_WorldLockstepRandom(1,&pre_value,&pre_seed);
+	if (L.online_multi) {
+		L.stage = Stage::STARTING;
+		if (!Block([] { return PortCeOnlineMatchIsReady && PortCeOnlineMatchIsReady() != 0; }, kStartMs,
+			"the other players did not connect in time")) return 0;
+		L.connection_established = true;
+		if (!PreRunSlotsUnchanged()) return Fail("local career flags changed while waiting for pre-run admission");
+		PortCrtRandSet(pre_calls, pre_hold); CE_WorldLockstepRandom(0, &pre_value, &pre_seed);
+		L.stage = Stage::PRERUN;
+		CE_SessionGameWaitFrame(CE_WAIT_PRERUN);
+		{ CE_SessionGamePreRun(); }
+		if (CE_SessionGameQuitCode()) return 0;
+		if (!AdmissionCurrent()) return 0;
+		L.prerun_finished = true; L.stage = Stage::STARTING;
+		if (!SaveRandom()) return 0;
+		const uint64_t start = StateHash(0);
+		if (L.stage == FAILED) return 0;
+		if (!PortCeOnlineMatchSubmitLocalHash || !PortCeOnlineMatchSubmitLocalHash(0, start)) {
+			char why[192] = {};
+			if (PortCeOnlineMatchCheckFault && PortCeOnlineMatchCheckFault(why, sizeof why) && why[0])
+				return Fail(why);
+			return Fail("the online match start hash could not be submitted");
+		}
+		CE_SessionGameWaitFrame(CE_WAIT_END);
+		if (!AdmissionCurrent()) return 0;
+		L.stage = Stage::RUNNING; L.tick = 0; L.waiting_since = 0; L.shown = true;
+		CE_SessionGameRebaseRenderClock();
+		fprintf(stderr, "onslaught-ce: online match started (slot %u/%u); start state %016llx\n",
+			L.online_local_slot, L.online_slot_count, (unsigned long long)start);
+		return 1;
+	}
 	// Block re-entrant updates while the message pump connects the peers and compares their initial state.
 	L.stage = STARTING;
 	// A relay or test-automation connection opens once this peer has loaded: nothing polls it while a level loads. The two
@@ -1205,6 +1317,38 @@ void CE_LockstepUpdateEntry(void) {
 	if (L.test_uninit_read && !L.test_uninit_tick && StackProbe() >= 0x80) (void)GAME.Random();
 }
 #endif
+static int OnlineBeforeUpdate(void) {
+	const uint32_t t = L.tick;
+	const bool ready = PortCeOnlineMatchCanAdvance && PortCeOnlineMatchCanAdvance() != 0;
+	if (!ready) {
+		const uint64_t now_ms = CE_NetNowMs();
+		if (L.waiting_since == 0) L.waiting_since = now_ms;
+		const uint64_t elapsed = now_ms - L.waiting_since;
+		if (elapsed >= kGiveUpMs) { Fail("another player stopped sending controls"); return 0; }
+		if (elapsed >= kWaitNoticeMs) {
+			uint32_t left = (uint32_t)((kGiveUpMs - elapsed + 999) / 1000);
+			bool first = !L.notice[0];
+			snprintf(L.notice, sizeof L.notice, "Waiting for players... %u", left);
+			if (first) fprintf(stderr, "onslaught-ce: online match waiting for players at tick %u\n", t);
+		}
+		return 0;
+	}
+	if (L.notice[0]) { fprintf(stderr, "onslaught-ce: online match caught up\n"); L.notice[0] = 0; }
+	L.applied[0] = L.applied[1] = false;
+	L.sampled = false;
+	L.online_tick_consumed = false;
+	L.online_human_mask = 0;
+	L.waiting_since = 0;
+	L.ran = true;
+	RestoreRandom();
+	tick_cw = ControlWord();
+	if (tick_cw != kControlWord) {
+		static unsigned reported;
+		if (reported++ < 8) fprintf(stderr, "onslaught-ce: co-op: the x87 control word was %04x at the start of tick %u (set to %04x)\n", tick_cw, L.tick, kControlWord);
+		SetControlWord(kControlWord);
+	}
+	return 1;
+}
 int CE_LockstepBeforeUpdate(void) {
 	if (!AdmissionCurrent()) return 0;
 	if (L.stage == STARTING || L.stage == LOADED) return 0; // no simulation update may re-enter a waiting stage
@@ -1219,6 +1363,7 @@ int CE_LockstepBeforeUpdate(void) {
 	if (L.stage != RUNNING) return 0;
 	if (CE_SessionGameQuitCode()) return 0;
 	if (!Poll()) return 0;
+	if (L.online_multi) return OnlineBeforeUpdate();
 	const uint32_t t = L.tick;
 	bool have = t < L.delay || (L.theirs[t % kRing].present && L.theirs[t % kRing].tick == t);
 	if (!have) {
@@ -1286,6 +1431,47 @@ void CE_LockstepAfterUpdate(void) {
 	if (L.stage != RUNNING || !L.ran) return;
 	L.ran = false; gPortCrtTrace = NULL;
 	if (!AdmissionLive()) return;
+	if (L.online_multi) {
+		const uint32_t t = L.tick;
+		if (!L.sampled) {
+			CE_WorldInput empty = {};
+			if (!PortCeOnlineMatchSubmitLocalInput || !PortCeOnlineMatchSubmitLocalInput(t + L.delay, &empty)) {
+				char why[192] = {};
+				if (PortCeOnlineMatchCheckFault && PortCeOnlineMatchCheckFault(why, sizeof why) && why[0]) { Fail(why); return; }
+				Fail("could not submit empty online control sample"); return;
+			}
+		}
+		if (!L.online_tick_consumed) {
+			if (!PortCeOnlineMatchConsumeTick || !PortCeOnlineMatchConsumeTick(L.online_current, &L.online_human_mask)) {
+				char why[192] = {};
+				if (PortCeOnlineMatchCheckFault && PortCeOnlineMatchCheckFault(why, sizeof why) && why[0]) { Fail(why); return; }
+				Fail("could not consume online match tick"); return;
+			}
+			L.online_tick_consumed = true;
+		}
+		if (!SaveRandom()) return;
+		L.tick = t + 1;
+		if (L.tick % L.hash_every == 0) {
+			const uint64_t online_hash = StateHash(L.tick);
+			if (L.stage == FAILED) return;
+			if (!PortCeOnlineMatchSubmitLocalHash || !PortCeOnlineMatchSubmitLocalHash(L.tick, online_hash)) {
+				char why[192] = {};
+				if (PortCeOnlineMatchCheckFault && PortCeOnlineMatchCheckFault(why, sizeof why) && why[0]) { Fail(why); return; }
+				Fail("could not submit online state hash"); return;
+			}
+		}
+		if (deferred_count) {
+			placing = true; CE_WorldLockstepPlaceEmitters(deferred_weapons, deferred_orientate, deferred_count); placing = false;
+			deferred_count = 0;
+		}
+		bool natural_end = GAME.GetGameState() > GAME_STATE_PLAYING && GAME.GetGameState() < GAME_STATE_QUIT;
+		if (natural_end) {
+			L.final_tick = L.tick; L.final_mission = true; L.final_confirmed = true;
+			L.stage = FINISHED; L.notice[0] = 0;
+			fprintf(stderr, "onslaught-ce: online match ended at tick %u\n", L.tick);
+		}
+		return;
+	}
 	if (L.flip_cw_at && L.tick + 1 == L.flip_cw_at) SetControlWord(0x027f);	// test: a wider precision left behind between two ticks, as a library call could
 	if (L.dump) { unsigned c, h; PortCrtRandState(&c, &h); fprintf(L.dump, "c %u %u %08x cw %04x %04x\n", L.tick, c, h, tick_cw, ControlWord()); }
 	const uint32_t t = L.tick;
@@ -1366,6 +1552,7 @@ int CE_LockstepBeginTeardown(int quit) {
 		fprintf(stderr, "onslaught-ce: co-op stopped before final confirmation\n"); L.outcome_error = true;
 	}
 	if (L.stage == RUNNING || L.stage == STOPPING || L.stage == PRERUN || L.stage == STARTING || L.stage == LOADED || L.stage == CONNECTING) {
+		if (L.online_multi && PortCeOnlineMatchStop) PortCeOnlineMatchStop(1);
 		if (L.final_confirmed)
 			fprintf(stderr, "onslaught-ce: co-op ended at tick %u, %u state hashes compared, all equal\n", L.tick, L.hashes_compared);
 		else if (!incomplete)
@@ -1380,6 +1567,8 @@ void CE_LockstepAfterWorldShutdown(void) {
 	KeeperStop();
     CampaignCaptureReturn();
 	L.shown = false;
+	if (L.online_multi && PortCeOnlineMatchStop) PortCeOnlineMatchStop(0);
+	L.online_multi = false;
 	ReportNetworkCounts(L.net);
 	(ChatRetire(), CE_NetDestroy(L.net)); L.net = NULL;
 	if (L.dump) { fclose(L.dump); L.dump = NULL; }
@@ -1403,8 +1592,43 @@ int CE_LockstepExitCode(int native_code, int native_quit_seen) {
 }
 int CE_LockstepControllerFlush(uint32_t controller) {
 	if (L.stage == FINISHED) return 0;	// the end screen's menu takes this peer's own controls natively
-	if (L.stage != RUNNING || controller > 1) return 1;
+	if (L.stage != RUNNING) return 1;
 	if (!AdmissionLive()) return 1;
+	if (L.online_multi) {
+		if (controller == 0) {
+			const uint32_t t = L.tick;
+			if (!L.sampled) {
+				L.sampled = true;
+				CE_WorldInput online_sample = {};
+				CE_WorldLockstepSample(L.online_local_slot, &online_sample);
+				if (PortCeNetRingCapturing && PortCeNetRingCapturing()) std::memset(&online_sample, 0, sizeof(online_sample));
+#if defined(CE_NETWORK_TEXT)
+				if (PortCeChatCapturingInput()) std::memset(&online_sample, 0, sizeof(online_sample));
+#endif
+				if (!CE_WorldLockstepValidInput(&online_sample)) { Fail("the local online control sample was invalid"); return 1; }
+				if (!PortCeOnlineMatchSubmitLocalInput || !PortCeOnlineMatchSubmitLocalInput(t + L.delay, &online_sample)) {
+					char why[192] = {};
+					if (PortCeOnlineMatchCheckFault && PortCeOnlineMatchCheckFault(why, sizeof why) && why[0]) { Fail(why); return 1; }
+					Fail("could not submit local online control sample"); return 1;
+				}
+			}
+			if (!L.online_tick_consumed) {
+				L.online_tick_consumed = true;
+				if (!PortCeOnlineMatchConsumeTick || !PortCeOnlineMatchConsumeTick(L.online_current, &L.online_human_mask)) {
+					char why[192] = {};
+					if (PortCeOnlineMatchCheckFault && PortCeOnlineMatchCheckFault(why, sizeof why) && why[0]) { Fail(why); return 1; }
+					Fail("could not consume online match tick"); return 1;
+				}
+				const uint32_t slots = L.online_slot_count <= 4u ? L.online_slot_count : 4u;
+				for (uint32_t p = 0; p < slots; ++p) {
+					if ((L.online_human_mask & (1u << p)) != 0u)
+						CE_WorldLockstepApply(p, &L.online_current[p]);
+				}
+			}
+		}
+		return 1;
+	}
+	if (controller > 1) return 1;
 	const uint32_t t = L.tick, local = L.host ? 0 : 1;
 	if (controller == 0 && !L.sampled) {
 		L.sampled = true;
@@ -1549,10 +1773,18 @@ void CE_LockstepTraceEvent(int event_num, void *listener, float time) {
 }
 #endif
 int CE_LockstepInvertPitch(uint32_t player, int grounded, int original) {
+	if (L.online_multi) {
+		if (player >= L.online_slot_count || player >= 4u) return original;
+		return grounded ? (int)L.online_current[player].invert_ground : (int)L.online_current[player].invert_jet;
+	}
 	if (player > 1) return original;
 	return grounded ? (int)L.current[player].invert_ground : (int)L.current[player].invert_jet;
 }
 int CE_LockstepWalkerAny(uint32_t player, int original) {
+	if (L.online_multi) {
+		if (player >= L.online_slot_count || player >= 4u) return original != 0;
+		return (int)L.online_current[player].walker_mouse_any;
+	}
 	if (player > 1) return original != 0;
 	return (int)L.current[player].walker_mouse_any;
 }

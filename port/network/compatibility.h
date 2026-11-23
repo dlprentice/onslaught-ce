@@ -18,11 +18,15 @@ typedef enum CE_CompatibilityContract {
     CE_COMPAT_LEVEL852_WORLD10_INPUT5_CONTROL5 = 2, // Previous fresh-process schema.
     CE_COMPAT_LEVEL852_WORLD11_INPUT5_CONTROL5 = 3,
     // The two-player lockstep co-op (levels 100, 856 and 858): both peers run the genuine simulation from the same content and compare state hashes.
-    CE_COMPAT_LOCKSTEP_PROTOCOL1 = 4
+    CE_COMPAT_LOCKSTEP_PROTOCOL1 = 4,
+    // Online 2-4 player multi-BE lockstep (levels 100 and 850..866): star host-relay lockstep with full multi-slot state hashes.
+    CE_COMPAT_ONLINE_MULTIBE_V1 = 5
 } CE_CompatibilityContract;
 
 // The levels the lockstep contract admits (the defence levels 856 and 858 and the tutorial, 100). One definition for the admission, the boot and the lobby.
 static inline int CE_CompatibilityLockstepLevel(uint32_t level) { return level == 100 || level == 856 || level == 858; }
+// The levels the online 2-4 player multi-BE lockstep contract admits: all 15 retail MP maps + Building Defence (850..866) + Tutorial (100).
+static inline int CE_CompatibilityOnlineLevel(uint32_t level) { return level == 100u || (level >= 850u && level <= 866u); }
 
 typedef struct CE_CompatibilityPreset {
     uint32_t index;

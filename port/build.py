@@ -467,14 +467,15 @@ def patched_text(names, skip=(), network=None):
 def network_module(source):
     """The files that exist only for the network (their callers' hooks are guarded by CE_NETWORK_OFF)."""
     path = Path(source)
-    return (path.parent == PORT / "network" or path.name in ("monocypher.c", "ce_netlobby.cpp", "ce_netcode.cpp",
+    return (path.parent == PORT / "network" or path.name in ("monocypher.c", "monocypher-ed25519.c", "ce_netlobby.cpp", "ce_netcode.cpp",
                                                            "ce_netpages.cpp", "typeinfo_bridge.cpp", "private_ui_input.cpp")
-            or (path.parent == PORT / "game" and path.name.startswith("ce_network_")))
+            or (path.parent == PORT / "game" and (path.name.startswith("ce_network_") or path.name.startswith("ce_online_"))))
 
 
 ICE_BINARY_TAG = "CE-NET-FEATURE:ICE-LIBJUICE:1"
 NATIVE_SIGNALING_TAG = "CE-NATIVE-SIGNALING-V1"
-NATIVE_SIGNALING_SOURCES = frozenset(("signaling_provider.cpp", "signaling_https.cpp"))
+NATIVE_SIGNALING_SOURCES = frozenset(("signaling_provider.cpp", "signaling_https.cpp", "online_lobby_client.cpp"))
+ONLINE_SIGNALING_GAME_MODULES = frozenset(("ce_online_service.cpp",))
 TEXT_CHAT_SOURCES = ("text_chat.cpp", "text_chat_owner.cpp", "media_profile.cpp")
 
 
@@ -626,6 +627,7 @@ def port_sources(target):
         out += [(PORT / "network/optional" / name, "pcxx", f"-I{mc} -I{PORT / 'network'}" + ice_include)
                 for name in TEXT_CHAT_SOURCES]
     out += [(mc / "monocypher.c", "pcc", "")]
+    out += [(mc / "optional/monocypher-ed25519.c", "pcc", f"-I{mc}")]
     for d in ("common", target):
         out += [(s, "pcxx", network_identity_flag(s).strip()) for s in sorted((PORT / "platform" / d).glob("*.cpp"))
                 if not (d == "common" and s.name in replaced)]
@@ -638,9 +640,18 @@ def port_sources(target):
     # The museum's room writer takes two class identifiers from the game's oids.h, a header that holds only an enumeration.
     # -iquote lets the mirror answer quoted includes and nothing else: as -I it would also stand before the system directories
     # for every <angle> include of the standard library.
-    host_extra = {"ce_museum_visit_generate.cpp": f"-iquote{MIRROR}"}
+    online_extra = f"-I{mc} -I{PORT / 'network'}" + ice_include
+    if ONLINE_LOBBY_URL:
+        online_extra += f" '-DCE_ONLINE_LOBBY_DEFAULT_URL=\"{ONLINE_LOBBY_URL}\"'"
+    host_extra = {
+        "ce_museum_visit_generate.cpp": f"-iquote{MIRROR}",
+        "ce_online_match.cpp": f"-I{PORT / 'network'}",
+        "ce_online_service.cpp": online_extra,
+        "ce_online_ui_bridge.cpp": f"-I{PORT / 'game'}",
+    }
     out += [(s, 'pcxx' if s.name in HOST_BUFFER_GAME_MODULES else 'qcxx', host_extra.get(s.name, game_extra.get(s.name, "")))
-            for s in sorted((PORT / "game").glob("*.cpp"))]
+            for s in sorted((PORT / "game").glob("*.cpp"))
+            if WITH_NATIVE_SIGNALING or s.name not in ONLINE_SIGNALING_GAME_MODULES]
     # The test kit's own files (any port file named *testkit*) are compiled only by --test-kit. Every other object is the same
     # compile as the candidate's: the kit reaches the game through testhooks.h and the features' plain accessors, so no
     # production file is compiled differently (the object receipt, write_object_receipt, shows it).
@@ -700,7 +711,7 @@ def link_flags(target):
         defsyms = " ".join(f"-Wl,-Xlink=-alternatename:_{a}=_{b}" for a, b in aliases)
     else:
         defsyms = " ".join(f"-Wl,--defsym={a}={b}" for a, b in aliases)
-    network = ("-lenet " if target == "linux" else "-lenet -lws2_32 ") if network_compiled_in() else ""
+    network = ("-lenet " if target == "linux" else "-lenet -lws2_32 -lbcrypt ") if network_compiled_in() else ""
     if WITH_ICE:
         # Name the verified static archive explicitly: a host library cannot satisfy a missing optional input.
         network += shlex.quote(str(ice_deps.require(target))) + " " + ("-lbcrypt " if target == "windows" else "")
@@ -741,7 +752,8 @@ GAME_ALLOCATOR = {"_Znwj": "bea_game_new", "_Znaj": "bea_game_new_array", "_ZdlP
 # room writer and cache provider are two of them; its engine adapter (ce_museum_visit_engine.cpp) reads game objects and keeps the game
 # rule. Only plain records and callbacks cross between them, and ce_museum_visit.h asserts their layout under both rules.
 HOST_BUFFER_GAME_MODULES = frozenset(("ce_network_boot_authority.cpp", "ce_network_invitation.cpp", "ce_project.cpp",
-                                      "ce_museum_visit.cpp", "ce_museum_visit_generate.cpp", "ce_asset_catalog.cpp", "ce_catalogue_menu.cpp", "ce_catalogue_sounds.cpp"))
+                                      "ce_museum_visit.cpp", "ce_museum_visit_generate.cpp", "ce_asset_catalog.cpp", "ce_catalogue_menu.cpp", "ce_catalogue_sounds.cpp",
+                                      "ce_online_match.cpp", "ce_online_service.cpp", "ce_online_ui_bridge.cpp"))
 
 
 def network_compiled_in():
@@ -762,6 +774,7 @@ WITH_NETWORK = False  # build.py --public --with-network: the public build with 
 WITH_ICE = False  # explicit --public --with-network --with-ice only; never an ordinary dependency or package
 WITH_NATIVE_SIGNALING = False  # explicit HTTPS profile layered on the optional public network ICE build
 WITH_TEXT_CHAT = False  # optional bounded network text transport and UI; never part of the default build
+ONLINE_LOBBY_URL = ""  # optional build-time default https:// origin for Online Multiplayer lobbies (overridable via ce.ini lobby_url)
 NETWORK_SOURCE_ID = None
 TEST_AUTOMATION = False  # build.py --test-automation (private network test builds; never with --public)
 TEST_KIT = False  # build.py --test-kit: the test kit's own files are compiled in (Linux; port/journeys/README.md)
@@ -866,7 +879,7 @@ def ninja_file(target, sources, syntax, link, sdl_marker=None):
              "  depfile = $out.d\n  deps = gcc\n  description = D3DX $in",
              f"rule pcxx\n  command = $cxx -std=gnu++17 {layout} {' '.join(CE_DEFINES)} $extra {portinc} -MD -MF $out.d -c -o $out $in\n"
              "  depfile = $out.d\n  deps = gcc\n  description = PORT $in",
-             f"rule pcc\n  command = $cc -std=gnu99 -O2 -w -MD -MF $out.d -c -o $out $in\n"
+             f"rule pcc\n  command = $cc -std=gnu99 -O2 -w $extra -MD -MF $out.d -c -o $out $in\n"
              "  depfile = $out.d\n  deps = gcc\n  description = PORT $in",
              f"rule link\n  command = $cxx -o $out @$out.rsp {link_flags(target)}\n  rspfile = $out.rsp\n"
              "  rspfile_content = $in\n  description = LINK $out"]
@@ -971,6 +984,8 @@ def main():
                          "does not select a provider or load credentials; packaging requires separate explicit opt-in")
     ap.add_argument("--with-text-chat", action="store_true",
                     help="with networking compiled in: compile the optional bounded in-game text chat")
+    ap.add_argument("--online-lobby-url", default="",
+                    help="with --with-native-signaling: default https:// origin for Online Multiplayer lobbies (overridable via ce.ini lobby_url)")
     ap.add_argument("--test-automation", action="store_true",
                     help="private network test build only: authored BEA_PORT_FAKE_KEYS/FAKE_CLICK input counts as idle at\n"
                          "network admission (CE_NET_TEST_AUTOMATION); refused with --public")
@@ -1047,6 +1062,14 @@ def main():
             global WITH_NATIVE_SIGNALING
             WITH_NATIVE_SIGNALING = True
             CE_DEFINES.append("-DCE_NETWORK_SIGNALING=1")
+    if a.online_lobby_url:
+        if not WITH_NATIVE_SIGNALING:
+            raise SystemExit("--online-lobby-url requires --with-native-signaling")
+        url = a.online_lobby_url.rstrip("/")
+        if not re.fullmatch(r"https://[A-Za-z0-9.-]+(?::[0-9]{1,5})?", url):
+            raise SystemExit("--online-lobby-url must be an https:// origin without path or query")
+        global ONLINE_LOBBY_URL
+        ONLINE_LOBBY_URL = url
         # No machine paths in the shipped binary (__FILE__ in assertions and logs, debug information): this checkout,
         # its mirror and build, and the shared dependency directory become relative names.
         maps = [f"-ffile-prefix-map={p}={n}" for p, n in ((MIRROR_ROOT, "mirror"), (BUILD, "build"), (deps.DATA, "deps"),

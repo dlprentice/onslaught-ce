@@ -43,3 +43,4 @@
 0231-network-mission-ring.patch
 0232-network-coop-ground-blend.patch
 0233-lockstep-hit-effect-fence.patch
+0380-ce-multiplayer-online-entry.patch

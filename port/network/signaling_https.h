@@ -32,3 +32,29 @@ bool CeSignalHttpsOriginValid(const char* explicitOrigin) noexcept;
 // are accepted. No path, query, userinfo, proxy, redirects or insecure TLS mode.
 // Requires successful explicit initialization on Linux.
 std::unique_ptr<CeSignalHttps> CeCreateSignalHttps(const char* explicitOrigin) noexcept;
+
+// Non-blocking HTTPS/JSON transport for the /ce-lobby/v1/ online lobby service.
+// Supports GET and POST on strict /ce-lobby/v1/... paths with optional Bearer auth.
+enum class CeOnlineHttpMethod { Get, Post };
+
+class CeOnlineHttps {
+public:
+    virtual ~CeOnlineHttps() = default;
+    // Copies bounded inputs before returning. One GET or POST at a time to one fixed
+    // origin on /ce-lobby/v1/... paths; bearer is optional (nullptr/0 when unauthenticated).
+    // Deadline is absolute monotonic time in milliseconds. No ambient identity or proxy inputs.
+    virtual bool Begin(CeOnlineHttpMethod method, const char* pathAndQuery,
+                       const char* bearer, size_t bearerSize,
+                       const std::string& body, uint64_t nowMs, uint64_t deadlineMs) noexcept = 0;
+    // Single caller thread, nonblocking pump. Ready consumes one reply.
+    virtual CeSignalHttpsState Poll(uint64_t nowMs, CeSignalHttpsReply* reply) noexcept = 0;
+    virtual void Cancel() noexcept = 0;
+};
+
+// Pure syntax/bounds checks shared with CeCreateOnlineHttps.
+// When allowLoopbackHttp is true, http://127.0.0.1:<port> is accepted strictly for
+// local loopback integration tests; never reads ambient environment variables.
+bool CeOnlineHttpsOriginValid(const char* explicitOrigin, bool allowLoopbackHttp = false) noexcept;
+bool CeOnlineHttpsPathValid(const char* pathAndQuery) noexcept;
+std::unique_ptr<CeOnlineHttps> CeCreateOnlineHttps(const char* explicitOrigin,
+                                                   bool allowLoopbackHttp = false) noexcept;

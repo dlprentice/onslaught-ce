@@ -335,3 +335,9 @@ port/tools/ce_multibe_tests.py	script	-	deps+game	release	-	playable 2v2 Versus 
 port/tools/ce_multibe_ai_tests.py	script	-	none	release	-	fair-rules Battle Engine combat AI brain (velocity lead, aim-gated fire, weapon selection, Walker dodge, Jet boom-and-zoom, base defense, repair/energy survival), ASan/UBSan and 20 causal mutants
 port/tools/ce_multibe_lockstep_tests.py	script	-	none	release	-	N-peer (2-4 player) lockstep ring buffer, star host-relay bundle wire framing, per-peer desync slot/tick reporting, disconnect/rebind, ASan/UBSan and causal mutants
 port/tools/ce_muspell_cockpit_tests.py	script	-	deps+game	release	-	authentic retail Muspell 1P cockpit swap (cockpit_M.tga + procedural warm gunlight), LIFO restore stack, 10-flag fence, ASan/UBSan + 12 causal mutants, and live offscreen Linux integration
+port/tools/online_lobby_worker_tests.py	script	-	none	optional	-	Cloudflare Online Lobby Worker + SQLite Durable Objects + private TURN issuer real workerd integration & security suite
+port/tools/online_profile_tests.py	script	-	deps	optional	-	zero-account RFC 8032 SHA-512 Ed25519 profile, Node WebCrypto cross-verify, Linux 0600 and Windows CeWinAcl permissions
+port/tools/online_lobby_client_tests.py	script	-	deps	optional	-	native non-blocking /ce-lobby/v1/ HTTPS JSON REST client, bounded parser, loopback libcurl-gnutls, and Windows cross-compile
+port/tools/star_transport_tests.py	script	-	deps	optional	-	4-peer (64-ready wire schema) authenticated ENet star transport + multi-slot CeIceBridge, Linux ASan/UBSan + Windows/Wine
+port/tools/ce_online_match_tests.py	script	-	none	optional	-	2-4 player online match star-relay lockstep controller, multi-BE slot binding, versioned start-ticket handoff, and causal mutants
+port/tools/ce_online_ui_tests.py	script	-	none	optional	-	in-game Online Multiplayer UI model (7 pages, 64-ready pagination, font safety, 640x480 safe-band geometry, Multiplayer patch 0380) and causal mutants

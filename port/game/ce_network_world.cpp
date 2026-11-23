@@ -35,6 +35,10 @@ extern "C" int CE_NetAutomationIdle(void);
 extern "C" int CE_NetWindowAutomationIdle(void);
 extern "C" int CE_NetUpdateAutomationIdle(void);
 extern "C" int CE_NetClockOrdinary(void);
+extern "C" int PortCeOnlineMatchActive(void) __attribute__((weak));
+extern "C" int PortCeOnlineMatchSlotCount(void) __attribute__((weak));
+extern "C" CPlayer *PortCeMultiBeGetSlotPlayer(int slot) __attribute__((weak));
+extern "C" CBattleEngine *PortCeMultiBeGetSlotEngine(int slot) __attribute__((weak));
 
 namespace {
 const uint32_t native_actions[]={25,27,26,28,29,30,31,32,59,33,19,18,20,16,17,21};
@@ -44,7 +48,7 @@ unsigned ActionRank(uint32_t button) {
 }
 bool ActionAllowed(uint32_t button) { return ActionRank(button)!=0; }
 bool ValidInput(const CE_WorldInput &in) {
-    if (!in.epoch || !in.sequence || !in.tick || in.player != 1 || in.count > CE_WORLD_MAX_ACTIONS ||
+    if (!in.epoch || !in.sequence || !in.tick || in.player > 3u || in.count > CE_WORLD_MAX_ACTIONS ||
         in.invert_ground>1 || in.invert_jet>1 || in.mouse_ground_aim>1 || in.walker_mouse_any>1 || (in.mouse_ground_aim&&in.walker_mouse_any) ||
         !(in.ground_yaw >= -3.142f && in.ground_yaw <= 3.142f) ||
         !(in.ground_pitch >= -3.142f && in.ground_pitch <= 3.142f)) return false;
@@ -61,6 +65,27 @@ bool ValidInput(const CE_WorldInput &in) {
 
 class CENetworkWorldAdapter {
 public:
+    static bool OnlineMultiActive() {
+        return PortCeOnlineMatchActive && PortCeOnlineMatchActive() != 0;
+    }
+    static unsigned OnlineSlotCount() {
+        if (!OnlineMultiActive() || !PortCeOnlineMatchSlotCount) return 2u;
+        int n = PortCeOnlineMatchSlotCount();
+        return (n >= 2 && n <= 4) ? (unsigned)n : 2u;
+    }
+    static CPlayer *SlotPlayer(uint32_t slot) {
+        if (OnlineMultiActive() && PortCeMultiBeGetSlotPlayer) {
+            if (CPlayer *p = PortCeMultiBeGetSlotPlayer((int)slot)) return p;
+        }
+        return (int)slot < GAME.GetNPlayers() ? GAME.GetPlayer((int)slot) : NULL;
+    }
+    static CBattleEngine *SlotEngine(uint32_t slot) {
+        if (OnlineMultiActive() && PortCeMultiBeGetSlotEngine) {
+            if (CBattleEngine *e = PortCeMultiBeGetSlotEngine((int)slot)) return e;
+        }
+        CPlayer *p = SlotPlayer(slot);
+        return p ? p->GetBattleEngine() : NULL;
+    }
     // Lockstep co-op: this peer's physical controls (controller 0, as in a solo level) become one semantic sample
     // for its own player; nothing is dispatched to gameplay here. Both peers apply every sample at the same tick.
     static void LockstepSample(uint32_t local_player,CE_WorldInput &out) {
@@ -71,7 +96,7 @@ public:
         out.invert_ground=!!CAREER.GetInvertYAxis(0); out.invert_jet=!!CAREER.GetInvertJetYAxis(0);
         SControlBinding *yaw=FindControlBinding(BUTTON_MECH_YAW_RIGHT);
         out.walker_mouse_any=yaw&&(yaw->mInput[pad].mType==MOUSE_AXIS_PLUS_ANY||yaw->mInput[pad].mType==MOUSE_AXIS_MINUS_ANY);
-        CPlayer *p=GAME.GetPlayer(local_player); CBattleEngine *e=p?p->GetBattleEngine():NULL;
+        CBattleEngine *e=SlotEngine(local_player);
         out.mouse_ground_aim=e&&!e->IsDying()&&e->GetIsPoweredUp()&&e->GetState()==BATTLE_ENGINE_STATE_WALKER&&e->IsWalkerOnGroundOrObject()&&yaw&&(yaw->mInput[pad].mType==MOUSE_AXIS_PLUS||yaw->mInput[pad].mType==MOUSE_AXIS_MINUS);
         if(out.mouse_ground_aim) {
             out.ground_yaw=-(MOUSE_X-PLATFORM.GetWindowWidth()/2)*(gMouseSensitivity*.002f);
@@ -90,15 +115,29 @@ public:
         if(!lock_sample||!ActionAllowed((uint32_t)button)||lock_sample->count==CE_WORLD_MAX_ACTIONS) return;
         lock_sample->actions[lock_sample->count++]={(uint32_t)button,lock_mouse_axis?CE_WORLD_ACTION_MOUSE_AXIS:CE_WORLD_ACTION_BINDING,value};
     }
-    // Apply one sampled tick of controls for either player using the same receiver, mouse-look and pitch-limit arithmetic.
+    // Apply one sampled tick of controls for either player (or any active 0..3 online slot) using the same receiver, mouse-look and pitch-limit arithmetic.
     static void LockstepApply(uint32_t player,const CE_WorldInput &in) {
-        CPlayer *p=GAME.GetPlayer(player); CBattleEngine *e=p?p->GetBattleEngine():NULL;
-        if(!e||GAME.IsPaused()||GAME.GetController(player)->GetToControl()!=p) return;
+        CPlayer *p=NULL; CBattleEngine *e=NULL; CController *ctrl=NULL;
+        if (OnlineMultiActive()) {
+            if (player >= OnlineSlotCount()) return;
+            p = SlotPlayer(player);
+            e = SlotEngine(player);
+            if (!p || !e || GAME.IsPaused()) return;
+            ctrl = ((int)player < GAME.GetNPlayers() && GAME.GetController((int)player))
+                ? GAME.GetController((int)player) : GAME.GetController(0);
+            if (!ctrl) return;
+            if ((int)player < GAME.GetNPlayers() && GAME.GetController((int)player) &&
+                GAME.GetController((int)player)->GetToControl() != p) return;
+        } else {
+            p=GAME.GetPlayer(player); e=p?p->GetBattleEngine():NULL;
+            if(!e||GAME.IsPaused()||GAME.GetController(player)->GetToControl()!=p) return;
+            ctrl=GAME.GetController(player);
+        }
         bool ground_mouse=in.mouse_ground_aim&&e->IsWalkerOnGroundOrObject();
         for(unsigned i=0;i<in.count;++i) {
             uint32_t button=in.actions[i].button;
             if(ground_mouse&&in.actions[i].source==CE_WORLD_ACTION_MOUSE_AXIS&&button>=25&&button<=28) continue;
-            p->ReceiveButtonAction(GAME.GetController(player),button,in.actions[i].value);
+            p->ReceiveButtonAction(ctrl,button,in.actions[i].value);
         }
         if (ground_mouse&&e->IsWalkerOnGroundOrObject()&&!GAME.IsPaused()&&GAME.GetGameState()==GAME_STATE_PLAYING&&!e->IsDying()&&e->GetIsPoweredUp()) {
             e->mCurrentOrientation.mYaw += in.ground_yaw; e->mCurrentOrientation.mPitch += in.invert_ground?-in.ground_pitch:in.ground_pitch;
@@ -147,6 +186,60 @@ public:
             word((uint32_t)e->mFlightModeActive); word((uint32_t)e->mPoweredUp); word((uint32_t)e->mActive);
             // GetCurrentWeapon chooses the part from mState, then the walker may choose augmentation at index zero.
             // Read the stored indices directly: calling GetCurrentWeapon can mutate an out-of-range walker index.
+            word((uint32_t)e->mState); word((uint32_t)e->mAugActive);
+            word(e->mWalkerPart?1u:0u);
+            if(e->mWalkerPart) {
+                word((uint32_t)e->mWalkerPart->mCurrentWeapon);
+                if(!weapon(e->mWalkerPart->mPrimaryWeapon)||!weapon(e->mWalkerPart->mAugWeapon)||!list(e->mWalkerPart->mWeapons)) return false;
+            }
+            word(e->mJetPart?1u:0u);
+            if(e->mJetPart) {
+                word((uint32_t)e->mJetPart->mCurrentWeapon);
+                if(!list(e->mJetPart->mWeapons)) return false;
+            }
+            if(!list(e->mWeapons)) return false;
+        }
+        out=hash; return true;
+    }
+    // Online 2-4 player multi-BE gates: hashes ALL active Battle Engine slots 0..slot_count-1 (human AND AI).
+    static bool LockstepOnlinePlayerGates(uint64_t &out, unsigned slot_count) {
+        if (slot_count < 2u || slot_count > 4u) return false;
+        uint64_t hash=1469598103934665603ull;
+        auto bytes=[&](const void *p,size_t n) { const uint8_t *b=(const uint8_t *)p; for(size_t i=0;i<n;++i) { hash^=b[i]; hash*=1099511628211ull; } };
+        auto word=[&](uint32_t value) { uint8_t b[4]={(uint8_t)value,(uint8_t)(value>>8),(uint8_t)(value>>16),(uint8_t)(value>>24)}; bytes(b,4); };
+        auto weapon=[&](CWeapon *w) -> bool {
+            word(w?1u:0u); if(!w) return true;
+            if(!w->mData||!w->mData->mName) return false;
+            const char *name=w->mData->mName; size_t n=0; while(n<256&&name[n]) ++n;
+            if(!n||n==256) return false;
+            word((uint32_t)n); bytes(name,n); word((uint32_t)w->mActive); return true;
+        };
+        auto list=[&](SPtrSet<CWeapon> &weapons) -> bool {
+            int size=weapons.Size(); if(size<0||size>64) return false;
+            word((uint32_t)size); int seen=0; ListIterator<CWeapon> it(&weapons);
+            for(CWeapon *w=it.First();w;w=it.Next()) { if(!weapon(w)||++seen>size) return false; }
+            return seen==size;
+        };
+        const unsigned core_players = (unsigned)(GAME.GetNPlayers() > 0 ? GAME.GetNPlayers() : 0);
+        if (core_players < 2u) return false;
+        word(slot_count);
+        CBattleEngine *seen_engines[4] = {};
+        for(unsigned i=0;i<slot_count;++i) {
+            CPlayer *p=SlotPlayer(i);
+            if(!p) {
+                if(i < core_players) return false;
+                word(i); word(0u); word(0u); continue;
+            }
+            if(p->GetNumber()!=(int)i+1) return false;
+            CBattleEngine *e=SlotEngine(i);
+            if(e) {
+                if(e->GetPlayer()!=p) return false;
+                for(unsigned prev=0;prev<i;++prev) if(seen_engines[prev]==e) return false;
+            }
+            seen_engines[i]=e;
+            word(i); word(1u); word(e?1u:0u); if(!e) continue;
+            word((uint32_t)e->mAllegiance);
+            word((uint32_t)e->mFlightModeActive); word((uint32_t)e->mPoweredUp); word((uint32_t)e->mActive);
             word((uint32_t)e->mState); word((uint32_t)e->mAugActive);
             word(e->mWalkerPart?1u:0u);
             if(e->mWalkerPart) {
@@ -292,8 +385,9 @@ public:
     }
     // Deferred muzzle-effect placements, for weapons still on a player's engine (a weapon can go with its engine mid-tick).
     static void PlaceEmitters(void *const *weapons,const int *orientate,unsigned count) {
-        for(int p=0;p<2;++p) {
-            CPlayer *player=GAME.GetPlayer(p); CBattleEngine *e=player?player->GetBattleEngine():NULL;
+        const unsigned slots = OnlineMultiActive() ? OnlineSlotCount() : 2u;
+        for(unsigned p=0;p<slots;++p) {
+            CBattleEngine *e=OnlineMultiActive() ? SlotEngine(p) : (GAME.GetPlayer((int)p)?GAME.GetPlayer((int)p)->GetBattleEngine():NULL);
             if(!e) continue;
             ListIterator<CWeapon> it(&e->mWeapons);
             for(CWeapon *w=it.First();w;w=it.Next())
@@ -362,13 +456,26 @@ void *CE_LockstepTutorialPartner(void *thing) {
 void CE_WorldLockstepPlaceEmitters(void *const *weapons, const int *orientate, unsigned count) { CENetworkWorldAdapter::PlaceEmitters(weapons,orientate,count); }
 void CE_WorldLockstepRandom(int save, int *value, int *seed) { CENetworkWorldAdapter::LockstepRandom(save!=0,*value,*seed); }
 uint64_t CE_WorldLockstepThings(FILE *dump, uint32_t *count) { return CENetworkWorldAdapter::LockstepThings(dump,*count); }
-int CE_WorldLockstepGates(uint64_t *out) { return out && CENetworkWorldAdapter::LockstepPlayerGates(*out); }
+int CE_WorldLockstepGates(uint64_t *out) {
+    if (!out) return 0;
+    if (CENetworkWorldAdapter::OnlineMultiActive())
+        return CENetworkWorldAdapter::LockstepOnlinePlayerGates(*out, CENetworkWorldAdapter::OnlineSlotCount());
+    return CENetworkWorldAdapter::LockstepPlayerGates(*out);
+}
 int CE_WorldLockstepEndTick(void) { return CENetworkWorldAdapter::LockstepEndTick(); }
 void CE_WorldLockstepBeginTick(void) { CENetworkWorldAdapter::LockstepBeginTick(); }
 // Lockstep co-op: a peer shows its own player, except while a mission script's pan camera holds camera 0 (scripts
 // set their cutscene cameras there): then both peers show it.
 int CE_WorldViewPlayer(int original) {
-    if(CE_LockstepActive()) return CE_LockstepLocalPlayer()==1&&dynamic_cast<CPanCamera *>(GAME.GetCamera(0)) ? 0 : (int)CE_LockstepLocalPlayer();
+    if(CE_LockstepActive()) {
+        const uint32_t local = CE_LockstepLocalPlayer();
+        if (CENetworkWorldAdapter::OnlineMultiActive()) {
+            if (local != 0 && dynamic_cast<CPanCamera *>(GAME.GetCamera(0))) return 0;
+            // Aux slots (>= GAME.GetNPlayers()) render through PortCeMultiBeRenderCamera / PortCeMultiBeHudFocus.
+            return (int)local < GAME.GetNPlayers() ? (int)local : 0;
+        }
+        return local==1&&dynamic_cast<CPanCamera *>(GAME.GetCamera(0)) ? 0 : (int)local;
+    }
     return original;
 }
 float CE_WorldViewAspect(float original) { return CE_WorldActive() ? .75f : original; }

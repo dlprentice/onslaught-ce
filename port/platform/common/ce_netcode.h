@@ -63,7 +63,7 @@ void CE_CodeWipe(void *p, size_t n);
 // is created new with mode 0600 (Linux), read once and deleted as it is read, and refused when older than 60 s.
 enum CE_HandoffKind { CE_HANDOFF_LAUNCH = 1, CE_HANDOFF_OUTCOME = 2 };
 #define CE_HANDOFF_MAX_AGE	60
-#define CE_HANDOFF_MAX_BYTES	4096
+#define CE_HANDOFF_MAX_BYTES	8192
 /* Campaign identity is bound to the authenticated launch nonce.
  * A zero version preserves the ordinary launch format. */
 typedef struct CE_CampaignLaunch {
@@ -72,6 +72,55 @@ typedef struct CE_CampaignLaunch {
     uint64_t attempt;
     uint32_t mission;
 } CE_CampaignLaunch;
+
+#ifndef CE_ONLINE_MATCH_TICKET_DEFINED
+#define CE_ONLINE_MATCH_TICKET_DEFINED
+#define CE_ONLINE_PROTO_V1          1u
+#define CE_ONLINE_MAX_MATCH_SLOTS   4u
+#define CE_ONLINE_WIRE_MAX_SLOTS    64u
+
+enum CE_OnlineSlotKind {
+    CE_ONLINE_SLOT_CLOSED = 0,
+    CE_ONLINE_SLOT_HUMAN  = 1,
+    CE_ONLINE_SLOT_AI     = 2
+};
+
+enum CE_OnlineTeam {
+    CE_ONLINE_TEAM_FORSETI = 0,
+    CE_ONLINE_TEAM_MUSPELL = 1
+};
+
+typedef struct CE_OnlineMatchSlot {
+    uint16_t seat;
+    uint8_t sim_slot;
+    uint8_t kind;               // 0=closed, 1=human, 2=ai
+    uint8_t team;               // 0=Forseti, 1=Muspell
+    char be_cfg[64];
+    char callsign[24];
+    char tag[8];
+    char player_id[32];
+} CE_OnlineMatchSlot;
+
+typedef struct CE_OnlineMatchTicket {
+    uint16_t proto;
+    char match_id[32];
+    char room_id[32];
+    char lobby_origin[160];
+    char session_token[256];
+    uint32_t seed;
+    uint32_t level;
+    char mode[24];
+    char topology[24];
+    uint8_t require_relay;
+    uint16_t slot_count;
+    uint16_t human_count;
+    uint16_t local_seat;
+    uint8_t local_sim_slot;
+    uint8_t roster_hash[32];
+    uint8_t match_secret[32];
+    CE_OnlineMatchSlot slots[CE_ONLINE_MAX_MATCH_SLOTS];
+} CE_OnlineMatchTicket;
+#endif
 
 typedef struct CE_Handoff {
 	int kind;
@@ -90,6 +139,10 @@ typedef struct CE_Handoff {
     char rematch_code[CE_CODE_TEXT];
     int rematch_role;
     uint32_t rematch_level;
+    /* Versioned online 2-4 player start-ticket handoff (0 = legacy 2P handoff byte-identical; 1 = online_ticket).
+     * Never carries raw sockets or TURN credentials. */
+    int online_version;
+    CE_OnlineMatchTicket online_ticket;
 } CE_Handoff;
 
 // Text form (no secret in error messages). Returns the byte count, or 0 when it does not fit.
