@@ -9,6 +9,7 @@
 #ifdef CE_VERSION
 #include "../../game/ce_project.h"
 #include "../../game/ce_archive_scanner.h"
+extern "C" void PortCeSandboxSetCliOptIn(bool enabled);
 #endif
 #ifndef CE_NETWORK_OFF
 #include "../common/ce_netlobby.h"
@@ -50,6 +51,14 @@ int main(int argc, char **argv)
 		fflush(NULL);
 		_exit(status);
 	}
+	for (int i = 1; i < argc; i++)
+	{
+		if (!strcmp(argv[i], "--sandbox-profile"))
+		{
+			PortCeSandboxSetCliOptIn(true);
+			break;
+		}
+	}
 #endif
     if (!PortPathsProjectPreflight()) return 1;
 #ifndef CE_NETWORK_OFF
@@ -72,11 +81,21 @@ int main(int argc, char **argv)
 	}
 	size_t len = 1;
 	for (int i = 1; i < argc; i++)
+	{
+#ifdef CE_VERSION
+		if (!strcmp(argv[i], "--sandbox-profile"))
+			continue;
+#endif
 		len += strlen(argv[i]) + 1;
+	}
 	char *cmdline = (char *)calloc(1, len);
 	for (int i = 1; i < argc; i++)
 	{
-		if (i > 1)
+#ifdef CE_VERSION
+		if (!strcmp(argv[i], "--sandbox-profile"))
+			continue;
+#endif
+		if (cmdline[0])
 			strcat(cmdline, " ");
 		strcat(cmdline, argv[i]);
 	}

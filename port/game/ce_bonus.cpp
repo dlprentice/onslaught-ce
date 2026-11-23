@@ -57,10 +57,12 @@
 bool	PortCeMenus();
 bool	PortModHas(const char *game_path);	// port/platform/common/mods.h: an active mod supplies this game path
 extern "C" void	PortCeCarrierClashCancel(void) __attribute__((weak));
+extern "C" void	PortCeLivingSandboxCancel(void) __attribute__((weak));
 
 namespace
 {
 const int	kBonusLevel = 201;
+const int	kLivingSandboxLevel = 700;
 const int	kCarrierClashLevel = 742;
 const int	kRaceFirst = 901, kRaceLast = 905;
 CCareer		*sCareer;		// the career as it was before the bonus level (raw bytes, as CCareer::Save keeps them)
@@ -138,6 +140,27 @@ bool PortCeBonusStartCarrierClash()
 	sReturnLevel = 0;
 	FRONTEND.mSelectedLevel = kCarrierClashLevel;
 	FRONTEND.SetQuit(kCarrierClashLevel);
+	return true;
+}
+
+// Starts the standalone clean-room Living Sandbox bonus level (archive 700, outside every career).
+// The caller (ce_frontend.cpp) runs PortCeLivingSandboxBegin() preflight before invoking this helper.
+bool PortCeBonusStartLivingSandbox()
+{
+	if (!PortCeMenus())
+		return false;
+	if (!EnsureSnapshot())
+		return false;
+	memcpy((void *)sCareer, (const void *)&CAREER, sizeof(CCareer));
+	sModLevel = false;
+	sLevel = kLivingSandboxLevel;
+	sActive = true;
+	sReturning = false;
+	sRaceReturning = false;
+	sCoopReturning = false;
+	sReturnLevel = 0;
+	FRONTEND.mSelectedLevel = kLivingSandboxLevel;
+	FRONTEND.SetQuit(kLivingSandboxLevel);
 	return true;
 }
 
@@ -259,6 +282,8 @@ void PortCeBonusBeforeConsoleLevel()
 		return;
 	if (sLevel == kCarrierClashLevel && PortCeCarrierClashCancel)
 		PortCeCarrierClashCancel();
+	if (sLevel == kLivingSandboxLevel && PortCeLivingSandboxCancel)
+		PortCeLivingSandboxCancel();
 	PortCeBonusLevelEnd();
 	sReturning = false;
 	sRaceReturning = false;

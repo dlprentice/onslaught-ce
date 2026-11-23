@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
-// Read-only long-session telemetry & inert Phase 0 Sandbox Launch Profile gate.
+// Read-only long-session telemetry & Sandbox Launch Profile gate.
 //
 // Zero new BEA_* env var names (passes env_allowlist_tests.py --require-binary).
 // Zero src/ edits, zero game-heap allocations, zero faithful-replay side effects.
@@ -35,6 +35,7 @@ extern "C" bool CE_BootRequested() __attribute__((weak));
 extern "C" bool CE_LockstepRequested() __attribute__((weak));
 extern "C" int CE_LockstepSharing(void) __attribute__((weak));
 extern "C" bool CE_SessionActive() __attribute__((weak));
+extern "C" bool PortCeLivingSandboxActive(void) __attribute__((weak));
 bool PortCeNetActive() __attribute__((weak));
 
 namespace {
@@ -44,6 +45,7 @@ bool gSandboxNonCampaignSession = false;
 bool gDiagLogConfigured = false;
 bool gDiagLogEnabled = false;
 unsigned gDiagIntervalTicks = 600u;
+int gActiveEventManagerCapacity = MAX_NUM_EVENTS;
 
 // Read-only protected-member accessors (zero src/ edits, zero mutation).
 struct ThingCounterAccess : public CThing {
@@ -118,15 +120,16 @@ bool NetworkOrLockstepFenceActive() {
     return false;
 }
 
-CeSandboxProfileGate ReadProfileGate() {
+CeSandboxProfileGate ReadProfileGate(bool forStartup) {
     CeSandboxProfileGate g = {};
-    g.sandboxOptIn = gSandboxOptIn;
+    const bool livingSandbox = (PortCeLivingSandboxActive && PortCeLivingSandboxActive());
+    g.sandboxOptIn = gSandboxOptIn || (!forStartup && livingSandbox);
     g.ceLayer = PortCeLayer();
     g.recording = PortRecording();
     g.fencedEnv = FaithfulEnvFenceActive();
     g.networkOrLockstep = NetworkOrLockstepFenceActive() ||
-                          (GAME.IsMultiplayer() != FALSE) ||
-                          (GAME.GetNPlayers() != 1);
+                          (!forStartup && ((GAME.IsMultiplayer() != FALSE) ||
+                                           (GAME.GetNPlayers() != 1)));
     g.demo = (PLAYABLE_DEMO != 0) ||
              (CLIPARAMS.mAutoConfigTest != FALSE) ||
              (CLIPARAMS.mRecordDemo != FALSE) ||
@@ -134,8 +137,7 @@ CeSandboxProfileGate ReadProfileGate() {
              (CLIPARAMS.mStressTest != FALSE) ||
              (CLIPARAMS.mAttractMode != FALSE);
     g.replayOrProbe = g.recording || g.fencedEnv || !g.ceLayer;
-    // Retail campaigns are strictly fenced out; Phase 0 has no live sandbox launcher yet.
-    g.retailCampaign = !gSandboxNonCampaignSession;
+    g.retailCampaign = !(gSandboxNonCampaignSession || livingSandbox);
     return g;
 }
 
@@ -147,10 +149,25 @@ void EnsureDiagConfig() {
     }
 }
 
+#if defined(_WIN32)
+// Pre-WinMain detection of --sandbox-profile on Windows so CDXMemoryManager::Init
+// and CSystem::Init can apply expanded sandbox heaps strictly when opted in.
+struct SandboxCliOptInInit {
+    SandboxCliOptInInit() {
+        for (int i = 1; i < __argc; ++i) {
+            if (__argv[i] && std::strcmp(__argv[i], "--sandbox-profile") == 0) {
+                gSandboxOptIn = true;
+                break;
+            }
+        }
+    }
+} gSandboxCliOptInInit;
+#endif
+
 }  // namespace
 
 bool CeSandboxProfileActive() {
-    return CeSandboxProfileAllowed(ReadProfileGate());
+    return CeSandboxProfileAllowed(ReadProfileGate(false));
 }
 
 void CeSandboxProfileSetOptIn(bool enabled) {
@@ -159,6 +176,38 @@ void CeSandboxProfileSetOptIn(bool enabled) {
 
 void CeSandboxProfileSetNonCampaignSession(bool sandboxSession) {
     gSandboxNonCampaignSession = sandboxSession;
+}
+
+extern "C" void PortCeSandboxSetCliOptIn(bool enabled) {
+    gSandboxOptIn = enabled;
+}
+
+extern "C" bool PortCeSandboxStartupHeapsActive(void) {
+    return CeSandboxStartupProfileAllowed(ReadProfileGate(true));
+}
+
+extern "C" int PortCeEventManagerPoolCapacity(void) {
+    if (CeSandboxProfileActive()) {
+        return kCeSandboxEventPoolCapacity;
+    }
+    if (PortCeLivingSandboxActive && PortCeLivingSandboxActive() &&
+        CeSandboxStartupProfileAllowed(ReadProfileGate(true))) {
+        return kCeSandboxEventPoolCapacity;
+    }
+    // Direct Bonus Levels launch of Living Sandbox (without --sandbox-profile)
+    // still expands the event pool cleanly when all faithful/network fences are clear.
+    if (PortCeLivingSandboxActive && PortCeLivingSandboxActive()) {
+        CeSandboxProfileGate g = ReadProfileGate(true);
+        g.sandboxOptIn = true;
+        if (CeSandboxStartupProfileAllowed(g)) {
+            return kCeSandboxEventPoolCapacity;
+        }
+    }
+    return MAX_NUM_EVENTS;
+}
+
+extern "C" void PortCeSandboxRecordEventPoolCapacity(int capacity) {
+    gActiveEventManagerCapacity = (capacity > 0) ? capacity : MAX_NUM_EVENTS;
 }
 
 bool CeSandboxTelemetrySample(CeSandboxTelemetrySnapshot* out) {
@@ -194,7 +243,7 @@ bool CeSandboxTelemetrySample(CeSandboxTelemetrySnapshot* out) {
     out->sptrSetOverflowNodes = out->sptrSetBlockCount > 1u ? (out->sptrSetBlockCount - 1u) : 0u;
 
     out->eventManagerPending = static_cast<int32_t>(EVENT_MANAGER.TotalEvents());
-    out->eventManagerCapacity = static_cast<int32_t>(MAX_NUM_EVENTS);
+    out->eventManagerCapacity = static_cast<int32_t>(gActiveEventManagerCapacity);
     out->sThingCount = static_cast<int32_t>(ThingCounterAccess::ReadThingCount());
 
     uint32_t liveUnits = 0u;
@@ -242,5 +291,10 @@ bool CeSandboxTelemetrySample(CeSandboxTelemetrySnapshot* out) {
 }
 void CeSandboxTelemetrySetDiagnosticLog(bool, unsigned) {}
 bool CeSandboxTelemetryMaybeLog(unsigned) { return false; }
+
+extern "C" bool PortCeSandboxStartupHeapsActive(void) { return false; }
+extern "C" int PortCeEventManagerPoolCapacity(void) { return kCeRetailEventPoolCapacity; }
+extern "C" void PortCeSandboxRecordEventPoolCapacity(int) {}
+extern "C" void PortCeSandboxSetCliOptIn(bool) {}
 
 #endif

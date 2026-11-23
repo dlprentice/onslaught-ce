@@ -1,0 +1,241 @@
+--- a/Round.cpp
++++ b/Round.cpp
+@@ -22,6 +22,14 @@
+ #include "explosion.h"
+ #include "engine.h"
+ #include "landscape.h"
++#ifdef CE_VERSION
++extern "C" bool PortCeSanctuaryActive(void);
++extern "C" bool PortCeSanctuaryInterceptRound(float prevX, float prevY, float prevZ,
++                                              float curX, float curY, float curZ,
++                                              float *outHitX, float *outHitY, float *outHitZ);
++extern "C" bool PortCeSanctuaryClampBeam(float startX, float startY, float startZ,
++                                         float *ioVelX, float *ioVelY, float *ioVelZ);
++#endif
+ 
+ // FUNCTION: 0x004d80f0 init:ZERO_FVECTOR
+ // FUNCTION: 0x004d8110 init:ID_FMATRIX
+@@ -394,7 +402,37 @@
+ 			mVelocity.Z = MAP.Collide(mPos) - mPos.Z;
+ 	}
+ 
++#ifdef CE_VERSION
++	FVector	ceSanctuaryPrev = mPos;
++	if (PortCeSanctuaryActive())
++	{
++		float	ceHx, ceHy, ceHz;
++		FVector	ceNext = mPos + mVelocity;
++		if (PortCeSanctuaryInterceptRound(mPos.X, mPos.Y, mPos.Z, ceNext.X, ceNext.Y, ceNext.Z, &ceHx, &ceHy, &ceHz))
++		{
++			mPos = FVector(ceHx, ceHy, ceHz);
++			StartDieProcess();
++			mUnknown120 = TRUE;
++			mVelocity = FVector(0, 0, 0);
++			return;
++		}
++	}
++#endif
+ 	SUPERTYPE::Move();
++#ifdef CE_VERSION
++	if (PortCeSanctuaryActive())
++	{
++		float	ceHx, ceHy, ceHz;
++		if (PortCeSanctuaryInterceptRound(ceSanctuaryPrev.X, ceSanctuaryPrev.Y, ceSanctuaryPrev.Z, mPos.X, mPos.Y, mPos.Z, &ceHx, &ceHy, &ceHz))
++		{
++			mPos = FVector(ceHx, ceHy, ceHz);
++			StartDieProcess();
++			mUnknown120 = TRUE;
++			mVelocity = FVector(0, 0, 0);
++			return;
++		}
++	}
++#endif
+ 
+ 	if (Data_mWiggle(this) > 0)
+ 		mVelocity = unwiggle * mVelocity;
+@@ -504,10 +542,24 @@
+ 		break;
+ 
+ 	case 4000:
++#ifdef CE_VERSION
++		if (((mData->mFlak) || (mData->mExplode)) && !(PortCeSanctuaryActive() && (mFlags & TF_DYING)))
++#else
+ 		if ((mData->mFlak) || (mData->mExplode))
++#endif
+ 			Unknown4d9f30(0, 0, 0);
+ 		else if (mData->mBeam)
+ 		{
++#ifdef CE_VERSION
++			if (PortCeSanctuaryActive())
++			{
++				PortCeSanctuaryClampBeam(mPos.X, mPos.Y, mPos.Z, &mVelocity.X, &mVelocity.Y, &mVelocity.Z);
++				if (mBeamStart.X != mPos.X || mBeamStart.Y != mPos.Y || mBeamStart.Z != mPos.Z)
++				{
++					PortCeSanctuaryClampBeam(mBeamStart.X, mBeamStart.Y, mBeamStart.Z, &mVelocity.X, &mVelocity.Y, &mVelocity.Z);
++				}
++			}
++#endif
+ 			CLine			line(mBeamStart, mPos + mVelocity);
+ 			CInitCSThing	init;
+ 
+@@ -554,6 +606,20 @@
+ //******************************************************************************************
+ void CRound::DeclareOnGround()	// FUNCTION: 0x004d9dd0
+ {
++#ifdef CE_VERSION
++	if (PortCeSanctuaryActive())
++	{
++		float	ceHx, ceHy, ceHz;
++		if (PortCeSanctuaryInterceptRound(mOldPos.X, mOldPos.Y, mOldPos.Z, mPos.X, mPos.Y, mPos.Z, &ceHx, &ceHy, &ceHz))
++		{
++			mPos = FVector(ceHx, ceHy, ceHz);
++			StartDieProcess();
++			mUnknown120 = TRUE;
++			mVelocity = FVector(0, 0, 0);
++			return;
++		}
++	}
++#endif
+ 	if (mData->mBounceFactor != 0)
+ 		SUPERTYPE::DeclareOnGround();
+ 	else if (!mData->mUnknown60)
+--- a/DXEngine.cpp
++++ b/DXEngine.cpp
+@@ -74,6 +74,9 @@
+ #include	"DebugText.h"
+ #include	"DebugLog.h"
+ #include	"rain.h"
++#ifdef CE_VERSION
++extern "C" bool PortCeSanctuarySkipOutdoorWorld(void);
++#endif
+ #include	"cutsceneeditor.h"
+ #include	"dxpatchmanager.h"
+ #include	"debugmarker.h"
+@@ -889,7 +892,18 @@
+ 		{
++#ifdef CE_VERSION
++			if (!PortCeSanctuarySkipOutdoorWorld())
++			{
++#endif
+ 			mLandscape->Render(mGamut, viewpoint);
+ 
+ 			SHADOWS.RenderLandscapeShadows();
+ 			ReallySetDefaultMaterial();
++#ifdef CE_VERSION
++			}
++			else
++			{
++				LT.D3D_Clear(0, NULL, D3DCLEAR_TARGET, 0x000a0c12, 1.0f, 0L);
++			}
++#endif
+ 		}
+ 		SHADOWS.TestDraw();
+@@ -899,7 +913,11 @@
+ 
+ 		// retail PC: the water draws here unless OLD_WATER_TIMING asks for after the world, and never in the
+ 		// reflection pass (0053e6b4, 0053e7cb)
++#ifdef CE_VERSION
++		if (!OLD_WATER_TIMING.mValue && !gMirrorPass && !PortCeSanctuarySkipOutdoorWorld())
++#else
+ 		if (!OLD_WATER_TIMING.mValue && !gMirrorPass)
++#endif
+ 		{
+ 			SetModulate2X(FALSE);
+ 			RENDERINFO.SetLightingEnabled(FALSE);
+@@ -939,7 +957,14 @@
+ 			float bias = -1.0f;
+ 			LT.SSS_NoCache(0, D3DSAMP_MIPMAPLODBIAS,	*((LPDWORD) (&bias)));
+ 
++#ifdef CE_VERSION
++			if (!PortCeSanctuarySkipOutdoorWorld())
++			{
++#endif
+ 			WORLD.Render(mGamut,FALSE,SHADOWS.BlobShadowsEnabled());		// render objects
++#ifdef CE_VERSION
++			}
++#endif
+ 
+ 			LT.SSS_NoCache(0, D3DSAMP_MIPMAPLODBIAS,	0);
+ 			SetMipFilterLinear(0);												// retail PC (0053e791)
+@@ -947,16 +972,27 @@
+ 			LT.SSS_NoCache(0, D3DSAMP_MAXANISOTROPY,	1);
+ 		}
+ 
++#ifdef CE_VERSION
++		if (!PortCeSanctuarySkipOutdoorWorld())
++		{
++#endif
+ 		CIMPOSTER::RenderAllImposters();	// Render cache of all imposter stuff
+ 
+ 		// Render fast trees
+ 		TREES.Render();
++#ifdef CE_VERSION
++		}
++#endif
+ 
+ 		// Update RTMesh render tracking stuff, kill redundant FoRs, etc
+ 
+ 		CRTMesh::UpdateRenderLists();
+ 
++#ifdef CE_VERSION
++		if (OLD_WATER_TIMING.mValue && !gMirrorPass && !PortCeSanctuarySkipOutdoorWorld())
++#else
+ 		if (OLD_WATER_TIMING.mValue && !gMirrorPass)
++#endif
+ 		{
+ 			SetModulate2X(FALSE);
+ 			RENDERINFO.SetLightingEnabled(FALSE);
+@@ -973,7 +1009,11 @@
+ 
+ 		DEBUGMARKERS.Render();				// Render debug markers
+ 
++#ifdef CE_VERSION
++		if (SHADOWS.BlobShadowsEnabled() && !PortCeSanctuarySkipOutdoorWorld())
++#else
+ 		if (SHADOWS.BlobShadowsEnabled())
++#endif
+ 		{
+ 			LT.SRS(D3DRS_ALPHABLENDENABLE, TRUE);
+ 			SHADOWS.DrawAllBlobShadows();		// Render VB contents out
+@@ -999,7 +1039,14 @@
+ 
+ 			{
+ 				RENDERINFO.SetFogEnabled(true);
++#ifdef CE_VERSION
++				if (!PortCeSanctuarySkipOutdoorWorld())
++				{
++#endif
+ 				PARTICLE_MANAGER.RenderMeshes();	// needs to be here to share the lighting model..
++#ifdef CE_VERSION
++				}
++#endif
+ 			}
+ 		}
+ 
+@@ -1007,7 +1054,14 @@
+ 
+ // Render effects
+ 
++#ifdef CE_VERSION
++	if (!PortCeSanctuarySkipOutdoorWorld())
++	{
++#endif
+ 	CAtmospherics::RenderAll();
++#ifdef CE_VERSION
++	}
++#endif
+ 
+ 	//********************************************************
+ 	//** MAPWHO DEBUG
+@@ -1060,7 +1114,11 @@
+ 
+ 		LT.D3D_SetMaterial(STATE.GetDefaultMaterial());
+ 
++#ifdef CE_VERSION
++		if (!DebugNoParticles() && !gMirrorPass && !PortCeSanctuarySkipOutdoorWorld())
++#else
+ 		if (!DebugNoParticles() && !gMirrorPass)
++#endif
+ 			PARTICLE_MANAGER.RenderOther();
+ 	}
+ 

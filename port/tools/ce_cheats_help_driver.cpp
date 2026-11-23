@@ -344,7 +344,7 @@ int main(int argc, char** argv) {
         {"hub with network unavailable", &noNetwork.rows[0].mHint, int(sizeof(SCeRow)), noNetwork.count, nullptr, kCeHubY, CCeBack::EXTRA_FOLLOW},
 #endif
     };
-    check(pages[1].count == 8 && pages[2].count == 13 && pages[4].count == 5 &&
+    check(pages[1].count == 9 && pages[2].count == 13 && pages[4].count == 5 &&
           pages[5].count == 9 && pages[8].count == 12 && pages[7].count == 9 &&
           pages[6].count == 5 && pages[10].count == 5, "every page's rows");
     for (const Page &page : pages) {

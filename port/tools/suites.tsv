@@ -80,6 +80,7 @@ port/tools/ce_handoff_recovery_tests.py	script	-	none	release	-
 port/tools/ce_handoff_writer_safety_tests.py	script	-	none	release	-	
 port/tools/ce_hooks_tests.py	script	-	none	release	-	CE hook points table, dispatch modes, mode registry and site patch independence
 port/tools/ce_hud_reservation_tests.py	script	-	none	release	-	Commander lane; host build with the system compiler
+port/tools/ce_living_sandbox_tests.py	script	-	none	release	-	clean-room 512m Living Sandbox combined-arms multi-biome heightfield, Sanctuary Citadel plateau & keep-out, version-50 world serializer, 2 Hz Battle Director, 4-hour headless soak, 9-slice HUD/glyph lint and causal mutants; host ASan/UBSan
 port/tools/ce_longsession_tests.py	script	-	none	release	-	Phase 0 32-bit entity handles, Commander 1024-entity prioritization, read-only telemetry/sandbox fence, and PlayUnit 1P/hint glue; host ASan/UBSan + causal mutants
 port/tools/ce_menu_fit_tests.py	script	--causal-controls	none	release	-	
 port/tools/ce_menu_mouse_tests.py	script	-	deps	release	-	
@@ -139,6 +140,7 @@ port/tools/ce_quality_options_tests.py	script	-	none	release	-
 port/tools/ce_race_branch_tests.py	script	-	deps	release	-	
 port/tools/ce_render_fence_tests.py	script	-	none	release	-	Commander render-fence shadow save/restore and causal mutants; host build with the system compiler
 port/tools/ce_rumble_tests.py	script	-	deps	release	-	
+port/tools/ce_sanctuary_citadel_tests.py	script	-	none	release	-	Sanctuary Museum Citadel, Archive Shield Dome ballistic & beam interception, impact ripples, sealed Cinema skip bounds, Archive Pedestal pose wiring, patch 0379 independence and causal mutants; host ASan/UBSan
 port/tools/ce_setting_text_tests.py	script	-	none	release	-	
 port/tools/ce_settings_tests.py	script	-	none	release	-	
 port/tools/ce_surf_coordinates_tests.py	script	--causal-controls	deps	release	-	

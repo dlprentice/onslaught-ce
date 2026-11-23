@@ -25,8 +25,8 @@ struct CeSandboxProfileGate {
 };
 
 // Pure admission law for the Sandbox Launch Profile.
-// Phase 0 plumbing: returns true ONLY when explicitly opted into a sandbox
-// launch profile AND zero faithful/replay/network/demo/campaign fences apply.
+// Returns true ONLY when explicitly opted into a sandbox launch profile AND
+// zero faithful/replay/network/demo/campaign fences apply.
 inline bool CeSandboxProfileAllowed(const CeSandboxProfileGate& g) {
     return g.sandboxOptIn &&
            g.ceLayer &&
@@ -37,6 +37,27 @@ inline bool CeSandboxProfileAllowed(const CeSandboxProfileGate& g) {
            !g.replayOrProbe &&
            !g.retailCampaign;
 }
+
+// Pure startup-time admission law for --sandbox-profile heap sizing (runs in
+// CDXMemoryManager::Init / CSystem::Init before any level is loaded). Strictly
+// FALSE unless --sandbox-profile was explicitly opted in AND zero faithful,
+// replay, recording, network/lockstep, demo, or probe fences apply.
+inline bool CeSandboxStartupProfileAllowed(const CeSandboxProfileGate& gate) {
+    return gate.sandboxOptIn &&
+           gate.ceLayer &&
+           !gate.recording &&
+           !gate.fencedEnv &&
+           !gate.networkOrLockstep &&
+           !gate.demo &&
+           !gate.replayOrProbe;
+}
+
+static constexpr uint32_t kCeSandboxDefaultHeapBytes = 96u * 1024u * 1024u;
+static constexpr uint32_t kCeSandboxThingHeapBytes = 16u * 1024u * 1024u;
+static constexpr uint32_t kCeSandboxThingTinyBytes = 512u * 1024u;
+static constexpr int kCeSandboxSPtrSetNodes = 120000;
+static constexpr int kCeSandboxEventPoolCapacity = 60000;
+static constexpr int kCeRetailEventPoolCapacity = 20000;
 
 struct CeSandboxTelemetrySnapshot {
     uint32_t thingHeapSize;
@@ -106,5 +127,12 @@ void CeSandboxProfileSetNonCampaignSession(bool sandboxSession);
 bool CeSandboxTelemetrySample(CeSandboxTelemetrySnapshot* out);
 void CeSandboxTelemetrySetDiagnosticLog(bool enabled, unsigned intervalTicks = 600u);
 bool CeSandboxTelemetryMaybeLog(unsigned tick);
+
+extern "C" {
+bool PortCeSandboxStartupHeapsActive(void);
+int PortCeEventManagerPoolCapacity(void);
+void PortCeSandboxRecordEventPoolCapacity(int capacity);
+void PortCeSandboxSetCliOptIn(bool enabled);
+}
 
 #endif

@@ -618,7 +618,7 @@ void	Close()
 }
 
 // eleven rows from the Service Record's own top, clear of the emblem at the top left
-SCeListPage	sPage = {sTitle, Count, Row, Hint, Select, Empty, NULL, Close, NULL, NULL, 1.f, 0, true, 20.f, 11, 130.f, 0.f, IsHeading, NULL};
+SCeListPage	sPage = {sTitle, Count, Row, Hint, Select, Empty, NULL, Close, NULL, NULL, 1.f, 0, true, 20.f, 11, 130.f, 0.f, IsHeading, NULL, NULL};
 }
 
 void	PortCeCatalogueListTitle(const char *label)

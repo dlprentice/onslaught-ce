@@ -842,6 +842,7 @@ enum ECeAction
 	CEA_EXTRAS,
 	CEA_MODS,
 	CEA_CARRIER_CLASH,
+	CEA_LIVING_SANDBOX,
 	CEA_CATALOGUE = 300, CEA_CAT_MODELS, CEA_CAT_TURN = CEA_CAT_MODELS + CE_CATALOGUE_GROUPS, CEA_CAT_ENTRY,
 	CEA_CAT_FIND = CEA_CAT_ENTRY + CE_CATALOGUE_SLOTS, CEA_CAT_CLEAR, CEA_CAT_FIELD, CEA_CAT_APPLY, CEA_CAT_ERASE,
 	CEA_PAGE_BONUS = 120,
@@ -958,12 +959,13 @@ static bool	ExperimentalOffered(int action)
 	return !mode || PortCeExperimental(mode);
 }
 
-// Levels 201, 856, Carrier Clash (archive 742) and 901-905 (ce_bonus.cpp), in the order of the list; a bonus level returns here, its row
+// Levels 201, 856, Carrier Clash (archive 742), Living Sandbox (archive 700) and 901-905 (ce_bonus.cpp), in the order of the list; a bonus level returns here, its row
 // highlighted. The original ships the building-defence scenario twice (levels 856 and 858 are the same map), so the list has it once.
 static const SCeRow	kBonusRows[] = {
 	{L"Aquila Prototype", CEA_BONUS, {L"1 player. Interception, from the original's demo.", 0}},
 	{L"Building Defence", CEA_COOP, {L"2 players on this PC, in split screen.", 0}},
 	{L"Carrier Clash", CEA_CARRIER_CLASH, {L"1 player. Venturer vs. Fenrir over open seas.", 0}},
+	{L"Living Sandbox", CEA_LIVING_SANDBOX, {L"1 player. Endless combined-arms war and Citadel.", 0}},
 	{L"Race Challenge 1", CEA_RACE_FIRST + 0, {L"1 player. Three laps against the clock.", 0}},
 	{L"Race Challenge 2", CEA_RACE_FIRST + 1, {L"1 player. Three laps against the clock.", 0}},
 	{L"Race Challenge 3", CEA_RACE_FIRST + 2, {L"1 player. Three laps against the clock.", 0}},
@@ -1207,7 +1209,7 @@ static_assert(CEA_NETWORK < CEA_RACE_FIRST, "CEA_NETWORK must precede race actio
 static_assert(CEA_PLAN_FIRST + CE_NUM_PLANS <= CEA_RACE_FIRST, "plan actions must not collide with race actions");
 static_assert(CEA_RACE_FIRST + CE_NUM_RACES <= CEA_MUSEUM, "race actions must not collide with museum actions");
 static_assert(CEA_MUSEUM < CEA_MUSEUM_VISIT && CEA_MUSEUM_VISIT < CEA_EXTRAS && CEA_EXTRAS < CEA_MODS &&
-              CEA_MODS < CEA_CARRIER_CLASH && CEA_CARRIER_CLASH < CEA_PAGE_BONUS,
+              CEA_MODS < CEA_CARRIER_CLASH && CEA_CARRIER_CLASH < CEA_LIVING_SANDBOX && CEA_LIVING_SANDBOX < CEA_PAGE_BONUS,
               "feature actions must not collide with page actions");
 static_assert(CEA_PAGE_BONUS < CEA_PAGE_SETTINGS && CEA_PAGE_SETTINGS < CEA_PAGE_CHEATS && CEA_PAGE_CHEATS < CEA_PAGE_HELP &&
               CEA_PAGE_HELP < CEA_PAGE_EDITOR && CEA_PAGE_EDITOR < CEA_TIPS && CEA_TIPS < CEA_PAGE_MUSEUM && CEA_PAGE_MUSEUM < CEA_PAGE_LABS,
@@ -1272,12 +1274,17 @@ static const char	*PlanText(int index)
 
 bool	PortCeBonusStart(int level);		// ce_bonus.cpp
 bool	PortCeBonusStartCarrierClash();		// ce_bonus.cpp: standalone Carrier Clash bonus session (archive 742)
+bool	PortCeBonusStartLivingSandbox();	// ce_bonus.cpp: standalone Living Sandbox bonus session (archive 700)
 int		PortCeBonusTakeReturn();			// ce_bonus.cpp: the bonus level the front end has just come back from, or 0
 int		PortCeBonusTakeModReturn();			// ce_bonus.cpp: the level a mod adds that the front end has just come back from, or 0
 extern "C" bool PortCeCarrierClashBegin(void);
 extern "C" void PortCeCarrierClashCancel(void);
 extern "C" const char *PortCeCarrierClashMessage(void);
 extern "C" bool PortCeCarrierClashTakeNotice(const char **sentence);
+extern "C" bool PortCeLivingSandboxBegin(void);
+extern "C" void PortCeLivingSandboxCancel(void);
+extern "C" const char *PortCeLivingSandboxMessage(void);
+extern "C" bool PortCeLivingSandboxTakeNotice(const char **sentence);
 
 // The level a Bonus Levels row starts (ce_bonus.cpp), or 0 for any other action.
 static int	BonusLevel(int action)
@@ -1288,6 +1295,8 @@ static int	BonusLevel(int action)
 		return 856;
 	if (action == CEA_CARRIER_CLASH)
 		return 742;
+	if (action == CEA_LIVING_SANDBOX)
+		return 700;
 	if ((action >= CEA_RACE_FIRST) && (action < CEA_RACE_FIRST + CE_NUM_RACES))
 		return 901 + action - CEA_RACE_FIRST;
 	return 0;
@@ -1997,6 +2006,27 @@ public:
 			}
 			return;
 		}
+		if (action == CEA_LIVING_SANDBOX)
+		{
+			if (!mActive)
+				return;
+			if (PortCeLivingSandboxBegin())
+			{
+				if (PortCeBonusStartLivingSandbox())
+					Leave();
+				else
+				{
+					PortCeLivingSandboxCancel();
+					ShowMessage("Living Sandbox could not be started.");
+				}
+			}
+			else if (const char *sbWhy = PortCeLivingSandboxMessage())
+			{
+				if (*sbWhy)
+					ShowMessage(sbWhy);
+			}
+			return;
+		}
 		if (const int level = BonusLevel(action))
 		{
 			// The playable demo's level, the two co-op maps the Multiplayer grid leaves out (two players on one PC) or one
@@ -2328,6 +2358,15 @@ public:
 				mMenu->ShowBonus(742);
 				if (ccNotice && *ccNotice)
 					ShowMessage(ccNotice);
+			}
+		}
+		{
+			const char *sbNotice = NULL;
+			if (PortCeLivingSandboxTakeNotice(&sbNotice))
+			{
+				mMenu->ShowBonus(700);
+				if (sbNotice && *sbNotice)
+					ShowMessage(sbNotice);
 			}
 		}
 		// A museum visit has just ended (the player left it, or its load was refused): the hub on the museum's row, and the reason if it was
