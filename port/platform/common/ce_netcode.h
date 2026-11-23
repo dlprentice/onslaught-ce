@@ -106,7 +106,7 @@ typedef struct CE_OnlineMatchTicket {
     char match_id[32];
     char room_id[32];
     char lobby_origin[160];
-    char session_token[256];
+    char session_token[1600];
     uint32_t seed;
     uint32_t level;
     char mode[24];

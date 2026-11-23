@@ -137,6 +137,14 @@ bool CeIceBridge::LocalDescription(std::string& description) const {
            FilterDescription(buffer.data(), require_relay_, description);
 }
 
+bool CeIceBridge::EarlyRelayDescription(std::string& description) const {
+    description.clear();
+    if (!agent_ || Failed()) return false;
+    std::array<char, JUICE_MAX_SDP_STRING_LEN> buffer{};
+    return juice_get_local_description(agent_, buffer.data(), buffer.size()) == JUICE_ERR_SUCCESS &&
+           FilterDescription(buffer.data(), true, description);
+}
+
 bool CeIceBridge::SetRemoteDescription(const std::string& description) {
     if (remote_set_ || Failed()) return false;
     std::string filtered;

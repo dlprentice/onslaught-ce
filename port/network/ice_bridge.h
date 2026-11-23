@@ -32,6 +32,7 @@ public:
     CeIceBridge& operator=(const CeIceBridge&) = delete;
 
     bool LocalDescription(std::string& description) const;
+    bool EarlyRelayDescription(std::string& description) const;
     bool SetRemoteDescription(const std::string& description);
     bool Ready() const;
     bool Failed() const;

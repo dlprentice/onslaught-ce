@@ -598,6 +598,8 @@ public:
     }
     virtual void OnOpenDirectLan() {}
     virtual void OnMatchTicketReady(const CeOnlineStartTicketView &ticket) { (void)ticket; }
+    virtual bool TakeOpError(std::string *out) { (void)out; return false; }
+    virtual void FlushLeave(uint64_t nowMs) { (void)nowMs; }
 };
 
 // ---------------------------------------------------------------------------
@@ -833,6 +835,7 @@ public:
     void Close() {
         if (mRoom.active && mBackend) {
             mBackend->RequestLeaveRoom();
+            mBackend->FlushLeave(0);
         }
         mRoom = CeOnlineRoomView();
         mActive = false;
@@ -873,6 +876,20 @@ public:
         mBackend->Poll(nowMs);
         RefreshProfileFromBackend();
 
+        std::string opErr;
+        if (mBackend->TakeOpError(&opErr) && !opErr.empty()) {
+            if (mPage == CE_ONLINE_PAGE_CONNECTING) {
+                mJoinPendingResolve = false;
+                mConnectingCancellable = true;
+                mLastTicketMatchId.clear();
+                mPage = (mReturnPage == CE_ONLINE_PAGE_CONNECTING) ? CE_ONLINE_PAGE_BROWSER : mReturnPage;
+                if (mPage == CE_ONLINE_PAGE_ROOM && !mRoom.active) {
+                    mPage = CE_ONLINE_PAGE_BROWSER;
+                }
+            }
+            SetStatusNotice(opErr, true);
+        }
+
         if (mPage == CE_ONLINE_PAGE_BROWSER) {
             std::string err;
             std::vector<CeOnlineUiRoomSummary> latest;
@@ -884,7 +901,7 @@ public:
             mBrowserLoading = loading;
             if (!err.empty()) {
                 SetStatusNotice(err, true);
-            } else if (mStatusIsError && !loading) {
+            } else if (mStatusIsError && !loading && opErr.empty()) {
                 mStatusNotice.clear();
                 mStatusIsError = false;
             }
@@ -903,7 +920,7 @@ public:
                     SetStatusNotice("This lobby requires a password. Enter password and choose Join.", false);
                 } else {
                     std::string err;
-                    if (mBackend->RequestJoinRoom(res.roomId, mJoinPassword, DefaultBeConfigForMap(850), &err)) {
+                    if (mBackend->RequestJoinRoom(res.roomId, mJoinPassword, "", &err)) {
                         BeginConnecting("Joining Lobby", "Connecting to room...", true);
                     } else {
                         mPage = CE_ONLINE_PAGE_JOIN_CODE;
@@ -951,14 +968,16 @@ public:
                 } else if (mPage == CE_ONLINE_PAGE_CONNECTING && mRoom.state == "lobby") {
                     mPage = CE_ONLINE_PAGE_ROOM;
                     mChatComposing = false;
-                    mStatusNotice.clear();
-                    mStatusIsError = false;
+                    if (opErr.empty()) {
+                        mStatusNotice.clear();
+                        mStatusIsError = false;
+                    }
                 }
             } else if (mPage == CE_ONLINE_PAGE_ROOM) {
                 mRoom = CeOnlineRoomView();
                 mChatComposing = false;
                 EnterBrowser(CE_ONLINE_PAGE_HOME);
-                SetStatusNotice("Disconnected from lobby room.", true);
+                SetStatusNotice(opErr.empty() ? "Disconnected from lobby room." : opErr, true);
             }
         }
     }

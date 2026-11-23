@@ -365,6 +365,12 @@ public:
     void OnMatchTicketReady(const CeOnlineStartTicketView &) override {
         PortCeOnlineServiceInstance()->NotifyMatchTicketReady();
     }
+    bool TakeOpError(std::string *out) override {
+        return PortCeOnlineServiceInstance()->TakeOpError(out);
+    }
+    void FlushLeave(uint64_t nowMs) override {
+        PortCeOnlineServiceInstance()->FlushLeave(nowMs);
+    }
 };
 #endif
 
@@ -423,6 +429,8 @@ public:
     }
     void OnOpenDirectLan() override { if (mInner) mInner->OnOpenDirectLan(); }
     void OnMatchTicketReady(const CeOnlineStartTicketView &t) override { if (mInner) mInner->OnMatchTicketReady(t); }
+    bool TakeOpError(std::string *out) override { return mInner ? mInner->TakeOpError(out) : false; }
+    void FlushLeave(uint64_t nowMs) override { if (mInner) mInner->FlushLeave(nowMs); }
 
 private:
     CeDefaultOnlineUiBackend mFallback;
@@ -989,9 +997,15 @@ void PortCeOnlineHostButton(int btn) {
         if (btn == CE_OUI_BTN_RIGHT) { gModel.CreateAdjustFocused(1);  PlaySnd(CE_OUI_SND_MOVE); }
         if (btn == CE_OUI_BTN_SELECT) {
             PlaySnd(CE_OUI_SND_SELECT);
-            if (gModel.CreateFocus() == CeOnlineUiModel::CREATE_SUBMIT) gModel.CreateSubmit();
-            else if (gModel.CreateFocus() == CeOnlineUiModel::CREATE_BACK) { gModel.NavigateBack(); HandleExitFlags(); }
-            else gModel.CreateAdjustFocused(1);
+            if (gModel.CreateFocus() == CeOnlineUiModel::CREATE_SUBMIT ||
+                gModel.CreateFocus() == CeOnlineUiModel::CREATE_NAME ||
+                gModel.CreateFocus() == CeOnlineUiModel::CREATE_PASSWORD) {
+                gModel.CreateSubmit();
+            } else if (gModel.CreateFocus() == CeOnlineUiModel::CREATE_BACK) {
+                gModel.NavigateBack(); HandleExitFlags();
+            } else {
+                gModel.CreateAdjustFocused(1);
+            }
         }
         break;
     case CE_ONLINE_PAGE_JOIN_CODE:
@@ -1089,6 +1103,15 @@ int PortCeOnlineHostKey(int kind, char ch) {
         }
         return 0;
     case CE_OUI_KEY_CHAR:
+        if (gModel.Page() == CE_ONLINE_PAGE_ROOM && !gModel.ChatComposing()) {
+            if (ch == 'r' || ch == 'R') { PlaySnd(CE_OUI_SND_SELECT); gModel.RoomToggleReady(); return 1; }
+            if (ch == 's' || ch == 'S') { PlaySnd(CE_OUI_SND_MOVE); gModel.RoomCycleSide(1); return 1; }
+            if (ch == 'b' || ch == 'B') { PlaySnd(CE_OUI_SND_MOVE); gModel.RoomCycleBeConfig(1); return 1; }
+            if (ch == 'c' || ch == 'C') { PlaySnd(CE_OUI_SND_SELECT); gModel.RoomCopyCode(); return 1; }
+            if (ch == 'm' || ch == 'M') { if (gModel.IsLocalHost()) { PlaySnd(CE_OUI_SND_MOVE); gModel.RoomHostCycleMap(1); } return 1; }
+            if (ch == 'g' || ch == 'G') { if (gModel.IsLocalHost()) { PlaySnd(CE_OUI_SND_MOVE); gModel.RoomHostCycleMode(1); } return 1; }
+            return 0;
+        }
         if (!gModel.WantsTextInput()) return 0;
         switch (gModel.Page()) {
         case CE_ONLINE_PAGE_BROWSER:   gModel.BrowserPasswordTypeChar(ch); break;

@@ -1246,7 +1246,18 @@ def package(a):
                 key = f"{top}/{name}"
                 files[key] = (files[key][0] + native_payload["notice"], files[key][1])
             key = f"{top}/README.txt"
-            files[key] = (files[key][0] + b"\nNative-signaling dependency source and license notices are included; see NATIVE-SIGNALING-SOURCE-NOTICE.txt.\n", files[key][1])
+            online_note = (
+                b"\nOnline Multiplayer (Play Online)\n"
+                b"- Main Menu > Multiplayer > Play Online (or press O) opens the 2 to 4 player online lobby browser,\n"
+                b"  room creation, 6-character join codes, lobby chat, ready/side/Battle Engine selection and profile.\n"
+                b"- Zero-account Ed25519 profiles are stored locally in your user folder (online-profile.key / .ini).\n"
+                b"- Entering Play Online contacts the configured lobby server (overridable via lobby_url= in ce.ini).\n"
+                b"- Matches use direct STUN peer-to-peer by default (which shares your IP with the host) and fall back\n"
+                b"  to Cloudflare Realtime TURN relay when needed, or strictly hide your IP with Relay Only enabled.\n"
+                b"- Direct LAN / IP two-player co-op remains available under Direct LAN / IP and Onslaught CE > Network Game.\n"
+                b"\nNative-signaling dependency source and license notices are included; see NATIVE-SIGNALING-SOURCE-NOTICE.txt.\n"
+            )
+            files[key] = (files[key][0] + online_note, files[key][1])
         shipped = list(WINDOWS_DLLS) if windows else [(d / so).resolve() for d, so in LINUX_LIBS]
         bad = [f"{f.name}: {l}" for f in shipped for l in machine_paths(f)]
         if bad:

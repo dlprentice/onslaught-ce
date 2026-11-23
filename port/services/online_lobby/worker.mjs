@@ -11,10 +11,11 @@ const MAX_BODY = 65536;
 const AUTH_WINDOW_SECONDS = 120;
 const DEFAULT_SESSION_SECONDS = 14400;
 const MAX_SESSION_SECONDS = 86400;
-const DEFAULT_TURN_TTL_SECONDS = 3600;
+const DEFAULT_TURN_TTL_SECONDS = 900;
 const MAX_TURN_TTL_SECONDS = 14400;
 const DEFAULT_DAILY_TURN_LIMIT = 200;
 const DEFAULT_MONTHLY_TURN_LIMIT = 2000;
+const DEFAULT_PER_IP_DAILY_TURN_LIMIT = 40;
 const DEFAULT_HEARTBEAT_TIMEOUT_MS = 30000;
 const DEFAULT_MAX_ACTIVE_ROOMS = 128;
 const DEFAULT_AUTH_IP_LIMIT = 20;
@@ -511,8 +512,10 @@ async function verifySessionToken(request, env) {
 }
 
 async function hashClientIp(request, env) {
-  const raw = request.headers.get("CF-Connecting-IP") ||
-    request.headers.get("X-Forwarded-For")?.split(",")[0].trim() || "127.0.0.1";
+  const cfIp = request.headers.get("CF-Connecting-IP");
+  const raw = cfIp ||
+    (env.CE_LOCAL_HTTP === "true" ? request.headers.get("X-Forwarded-For")?.split(",")[0].trim() : null) ||
+    "127.0.0.1";
   const key = await importHmacKey(secretKeyBytes(env.CE_SESSION_SECRET));
   const sig = new Uint8Array(await crypto.subtle.sign("HMAC", key, encoder.encode(`ce-lobby-ip-v1\0${raw}`)));
   return hex(sig).slice(0, 32);
@@ -872,7 +875,8 @@ export default {
           const contentId = body.content_id !== undefined ? sanitizeContentId(body.content_id) : session.content_id;
           const beCfg = sanitizeBeCfg(body.be_cfg);
 
-          const alloc = await directoryStub(env).allocateRoomSlot(session.player_id);
+          const ipHash = await hashClientIp(request, env);
+          const alloc = await directoryStub(env).allocateRoomSlot(session.player_id, ipHash);
           if (!alloc.ok) {
             throw new ApiError(alloc.httpStatus, alloc.errorCode, alloc.message);
           }
@@ -1065,7 +1069,8 @@ export default {
             400, "invalid_match_id", "Invalid match identifier.");
           requireCond(integer(body.guest_seat) && body.guest_seat < WIRE_MAX_SLOTS,
             400, "invalid_seat", "Invalid guest_seat.");
-          const res = await stub.requestTurn(session, body.match_id, body.guest_seat);
+          const ipHash = await hashClientIp(request, env);
+          const res = await stub.requestTurn(session, body.match_id, body.guest_seat, ipHash);
           if (!res.ok) throw new ApiError(res.httpStatus, res.errorCode, res.message);
           return jsonResponse({ iceServers: res.iceServers, ttl: res.ttl }, 200);
         }
@@ -1110,8 +1115,8 @@ export class PermitAuthority extends WorkerEntrypoint {
         return errorResponse(403, "permit_rejected", "Permit could not be consumed.");
       }
 
-      // Step 2: Atomically check & increment global daily and monthly TURN permit caps in SQLite.
-      const budgetRes = await directoryStub(this.env).consumeTurnBudget(now);
+      // Step 2: Atomically check & increment global daily/monthly and per-IP daily TURN caps in SQLite.
+      const budgetRes = await directoryStub(this.env).consumeTurnBudget(now, roomRes.ipHash || "");
       if (!budgetRes.ok) {
         return errorResponse(503, "turn_cap_exceeded", "Global TURN issuance cap reached.");
       }
@@ -1303,7 +1308,7 @@ export class LobbyDirectory extends DurableObject {
     });
   }
 
-  allocateRoomSlot(playerId) {
+  allocateRoomSlot(playerId, ipHash = "") {
     const now = nowSeconds();
     const nowMs = Date.now();
     const maxRooms = envPositiveInt(this.env.CE_MAX_ACTIVE_ROOMS, DEFAULT_MAX_ACTIVE_ROOMS, 1, 2048);
@@ -1311,6 +1316,9 @@ export class LobbyDirectory extends DurableObject {
     return this.ctx.storage.transactionSync(() => {
       this.pruneStaleRooms(nowMs);
       if (!this.checkAndBumpRate(`create:${playerId}`, now, 60, createLimit)) {
+        return { ok: false, httpStatus: 429, errorCode: "rate_limited", message: "Room creation rate limit exceeded." };
+      }
+      if (ipHash && !this.checkAndBumpRate(`create_ip:${ipHash}`, now, 60, createLimit)) {
         return { ok: false, httpStatus: 429, errorCode: "rate_limited", message: "Room creation rate limit exceeded." };
       }
       const cntRows = this.ctx.storage.sql.exec("SELECT COUNT(*) AS cnt FROM rooms WHERE state != 'closed'").toArray();
@@ -1451,18 +1459,25 @@ export class LobbyDirectory extends DurableObject {
     });
   }
 
-  consumeTurnBudget(unixSeconds) {
+  consumeTurnBudget(unixSeconds, ipHash = "") {
     const dailyLimit = envPositiveInt(this.env.CE_DAILY_TURN_LIMIT, DEFAULT_DAILY_TURN_LIMIT, 0, 1000000);
     const monthlyLimit = envPositiveInt(this.env.CE_MONTHLY_TURN_LIMIT, DEFAULT_MONTHLY_TURN_LIMIT, 0, 10000000);
+    const perIpDailyLimit = envPositiveInt(this.env.CE_PER_IP_DAILY_TURN_LIMIT, DEFAULT_PER_IP_DAILY_TURN_LIMIT, 0, 1000000);
     const { dayKey, monthKey } = utcPeriodKeys(unixSeconds);
+    const ipDayKey = ipHash ? `ip:${dayKey}:${ipHash}` : "";
     return this.ctx.storage.transactionSync(() => {
       const sql = this.ctx.storage.sql;
       const dayRows = sql.exec("SELECT used FROM turn_budgets WHERE period_key = ?", dayKey).toArray();
       const monthRows = sql.exec("SELECT used FROM turn_budgets WHERE period_key = ?", monthKey).toArray();
       const dayUsed = dayRows.length ? Number(dayRows[0].used) : 0;
       const monthUsed = monthRows.length ? Number(monthRows[0].used) : 0;
-      if (dayUsed >= dailyLimit || monthUsed >= monthlyLimit) {
-        return { ok: false, dayUsed, monthUsed };
+      let ipDayUsed = 0;
+      if (ipDayKey) {
+        const ipRows = sql.exec("SELECT used FROM turn_budgets WHERE period_key = ?", ipDayKey).toArray();
+        ipDayUsed = ipRows.length ? Number(ipRows[0].used) : 0;
+      }
+      if (dayUsed >= dailyLimit || monthUsed >= monthlyLimit || (ipDayKey && ipDayUsed >= perIpDailyLimit)) {
+        return { ok: false, dayUsed, monthUsed, ipDayUsed };
       }
       sql.exec(
         "INSERT INTO turn_budgets(period_key, used) VALUES(?, 1) ON CONFLICT(period_key) DO UPDATE SET used = used + 1",
@@ -1472,7 +1487,13 @@ export class LobbyDirectory extends DurableObject {
         "INSERT INTO turn_budgets(period_key, used) VALUES(?, 1) ON CONFLICT(period_key) DO UPDATE SET used = used + 1",
         monthKey
       );
-      return { ok: true, dayUsed: dayUsed + 1, monthUsed: monthUsed + 1 };
+      if (ipDayKey) {
+        sql.exec(
+          "INSERT INTO turn_budgets(period_key, used) VALUES(?, 1) ON CONFLICT(period_key) DO UPDATE SET used = used + 1",
+          ipDayKey
+        );
+      }
+      return { ok: true, dayUsed: dayUsed + 1, monthUsed: monthUsed + 1, ipDayUsed: ipDayUsed + 1 };
     });
   }
 }
@@ -2306,11 +2327,11 @@ export class GameRoom extends DurableObject {
       if (now >= permit.lease_until || now >= permit.expires_at) return { ok: false };
       entry.spent = true;
       this.writeRoom(room);
-      return { ok: true };
+      return { ok: true, ipHash: entry.ip_hash || "" };
     });
   }
 
-  async requestTurn(session, matchId, guestSeat) {
+  async requestTurn(session, matchId, guestSeat, ipHash = "") {
     if (this.env.CE_ENABLED !== "true" || !this.env.TURN_ISSUER) {
       return { ok: false, httpStatus: 503, errorCode: "turn_unavailable", message: "TURN relay service is unavailable." };
     }
@@ -2360,7 +2381,7 @@ export class GameRoom extends DurableObject {
         lease_until: now + 10,
         ttl,
       };
-      room.permits[permit.attempt] = { state: "reserved", spent: false, permit };
+      room.permits[permit.attempt] = { state: "reserved", spent: false, permit, ip_hash: ipHash || "" };
       this.writeRoom(room);
       return { ok: true, permit };
     });

@@ -1936,6 +1936,10 @@ CE_LobbyCampaignStartResult CE_LobbyCampaignStart(uint32_t displayed_level) {
         CE_LOBBY_CAMPAIGN_START_FAILED;
 }
 
+#ifdef CE_VERSION
+const char *PortUserDir();
+#endif
+
 extern "C" int CE_LobbyQueueOnlineLaunch(const CE_OnlineMatchTicket *ticket) {
     if (!ticket || L.state == CE_LOBBY_STARTING || gRestart == RESTART_LAUNCH)
         return 0;
@@ -1944,6 +1948,12 @@ extern "C" int CE_LobbyQueueOnlineLaunch(const CE_OnlineMatchTicket *ticket) {
         ticket->human_count < 2u || ticket->human_count > ticket->slot_count ||
         ticket->local_sim_slot >= ticket->slot_count)
         return 0;
+#ifdef CE_VERSION
+    if (!UserDir()) {
+        const char *fallback = PortUserDir();
+        if (fallback && *fallback) SetEnv("BEA_USER_DIR", fallback);
+    }
+#endif
     CE_Handoff h = {};
     h.kind = CE_HANDOFF_LAUNCH;
     h.role = (ticket->local_sim_slot == 0u) ? 1 : 2;

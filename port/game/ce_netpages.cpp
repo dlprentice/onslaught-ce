@@ -1824,8 +1824,10 @@ public:
                     : "Choose Host or Join for Direct LAN, or Import Online Invitation for private Cloudflare TURN relay.";
                 if (y + 4.f + Height(summary, FONT_SMALL, kPageWidth) <= limit)
                     y = Lines(summary, y + 4.f, hasProfile ? kGood : kGrey, FONT_SMALL, kPageWidth);
+#if !defined(CE_NETWORK_SIGNALING)
                 if (y + 4.f + Height("Public lobby browsing is unavailable.", FONT_SMALL, kPageWidth) <= limit)
                     Lines("Public lobby browsing is unavailable.", y + 4.f, kWarn, FONT_SMALL, kPageWidth);
+#endif
                 break;
             }
 

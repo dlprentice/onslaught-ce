@@ -376,7 +376,10 @@ public:
             ev.from_sim_slot = slot;
             ev.tick = tick;
             ev.hash = state_hash;
-            net->DeliverTo(0, ev);
+            if (simSlot == 0)
+                net->BroadcastFromHost(ev);
+            else
+                net->DeliverTo(0, ev);
             return true;
         }
         bool SendDesync(const CeNPeerDesyncReport &rep) override {
@@ -551,7 +554,9 @@ static void TestFourPeerStarLockstep200Ticks() {
     for (uint8_t s = 0; s < 4; ++s)
         Check(peers[s].SubmitLocalHash(0, worlds[s].Hash(0)), "submit tick 0 hash");
     for (uint8_t s = 0; s < 4; ++s) Check(peers[s].Poll(200), "poll tick 0 hash");
+    for (uint8_t s = 0; s < 4; ++s) Check(peers[s].Poll(205), "poll tick 0 confirmation");
     Check(peers[0].HashesVerified() == 1u, "tick 0 hash verified across all 4 peers");
+    for (uint8_t s = 0; s < 4; ++s) Check(peers[s].IsStartConfirmed(), "tick 0 start barrier confirmed on all 4 peers");
 
     // 200 full lockstep ticks
     for (uint32_t t = 0; t < 200; ++t) {

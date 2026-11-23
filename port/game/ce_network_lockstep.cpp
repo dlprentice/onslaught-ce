@@ -112,8 +112,15 @@ extern "C" int PortCeOnlineMatchCanAdvance(void) __attribute__((weak));
 extern "C" int PortCeOnlineMatchSubmitLocalInput(uint32_t target_tick, const CE_WorldInput *sample) __attribute__((weak));
 extern "C" int PortCeOnlineMatchConsumeTick(CE_WorldInput out_slots[4], uint8_t *out_human_mask) __attribute__((weak));
 extern "C" int PortCeOnlineMatchSubmitLocalHash(uint32_t tick, uint64_t state_hash) __attribute__((weak));
+extern "C" int PortCeOnlineMatchStartConfirmed(void) __attribute__((weak));
 extern "C" int PortCeOnlineMatchCheckFault(char *out_error, size_t cap) __attribute__((weak));
 extern "C" void PortCeOnlineMatchStop(int graceful) __attribute__((weak));
+extern "C" int PortCeOnlineMatchSendChat(const char *text) __attribute__((weak));
+extern "C" int PortCeOnlineMatchChatCount(void) __attribute__((weak));
+extern "C" int PortCeOnlineMatchGetChat(int index, uint8_t *out_slot, char *out_text, size_t cap) __attribute__((weak));
+extern "C" void PortCeOnlineMatchClearChat(void) __attribute__((weak));
+extern "C" int PortCeOnlineMatchSlotLabel(int sim_slot, char *out, size_t cap) __attribute__((weak));
+extern "C" void PortCeOnlineServiceDetachMatchBridge(void) __attribute__((weak));
 
 // The label each side shows the other when their builds do not admit each other (as the session's world mode).
 #ifdef CE_VERSION
@@ -319,6 +326,7 @@ bool Fail(const char *message, bool desync_queued = false) {
 	KeeperStop();
     CampaignStop(CE_CAMPAIGN_STOP_FAILURE);
 	if (L.online_multi && PortCeOnlineMatchStop) PortCeOnlineMatchStop(0);
+	if (L.online_multi && PortCeOnlineServiceDetachMatchBridge) PortCeOnlineServiceDetachMatchBridge();
 	if (L.stage != FAILED) { fprintf(stderr, "onslaught-ce: co-op session stopped: %s\n", message); if (!last_error[0]) snprintf(last_error, sizeof last_error, "%s", message); }
 	L.stage = FAILED; L.outcome_error = true; L.notice[0] = 0;
 	{ volatile uint8_t *secret = L.config.secret; for (unsigned i = 0; i < sizeof L.config.secret; ++i) secret[i] = 0; }
@@ -1213,6 +1221,10 @@ static int PreparePlay(void) {
 				return Fail(why);
 			return Fail("the online match start hash could not be submitted");
 		}
+		if (PortCeOnlineMatchStartConfirmed) {
+			if (!Block([] { return PortCeOnlineMatchStartConfirmed() != 0; }, kStartMs,
+				"the other players did not confirm the online match start in time")) return 0;
+		}
 		CE_SessionGameWaitFrame(CE_WAIT_END);
 		if (!AdmissionCurrent()) return 0;
 		L.stage = Stage::RUNNING; L.tick = 0; L.waiting_since = 0; L.shown = true;
@@ -1553,6 +1565,7 @@ int CE_LockstepBeginTeardown(int quit) {
 	}
 	if (L.stage == RUNNING || L.stage == STOPPING || L.stage == PRERUN || L.stage == STARTING || L.stage == LOADED || L.stage == CONNECTING) {
 		if (L.online_multi && PortCeOnlineMatchStop) PortCeOnlineMatchStop(1);
+		if (L.online_multi && PortCeOnlineServiceDetachMatchBridge) PortCeOnlineServiceDetachMatchBridge();
 		if (L.final_confirmed)
 			fprintf(stderr, "onslaught-ce: co-op ended at tick %u, %u state hashes compared, all equal\n", L.tick, L.hashes_compared);
 		else if (!incomplete)
@@ -1568,6 +1581,7 @@ void CE_LockstepAfterWorldShutdown(void) {
     CampaignCaptureReturn();
 	L.shown = false;
 	if (L.online_multi && PortCeOnlineMatchStop) PortCeOnlineMatchStop(0);
+	if (L.online_multi && PortCeOnlineServiceDetachMatchBridge) PortCeOnlineServiceDetachMatchBridge();
 	L.online_multi = false;
 	ReportNetworkCounts(L.net);
 	(ChatRetire(), CE_NetDestroy(L.net)); L.net = NULL;
@@ -1834,27 +1848,68 @@ int CE_LockstepCampaignAgreedWin(void) {
 
 #ifndef CE_NETWORK_OFF
 #if defined(CE_NETWORK_TEXT)
+namespace {
+struct OnlineChatState {
+    bool composing = false;
+    bool muted = false;
+    char draft[161] = {};
+    uint32_t draft_len = 0;
+    void Reset() { composing = false; draft_len = 0; draft[0] = 0; }
+} gOnlineChat;
+bool OnlineChatActive() {
+    return L.online_multi && L.stage == RUNNING && PortCeOnlineMatchSendChat && PortCeOnlineMatchChatCount;
+}
+}
 extern "C" int CE_LockstepChatAvailable(void) {
+    if (OnlineChatActive()) return 1;
     if (L.stage != RUNNING || !L.net || chat_session != L.net || !chat.State().open) return 0;
     CE_NetStatus status{}; CE_NetGetStatus(L.net, &status);
     return status.phase == CE_NET_ACTIVE && CE_NetTextMaxFrame(L.net) > CeTextChat::HeaderBytes;
 }
 extern "C" int CE_LockstepChatComposing(void) {
+    if (OnlineChatActive()) return gOnlineChat.composing ? 1 : 0;
     return CE_LockstepChatAvailable() && chat.State().composing;
 }
 extern "C" int CE_LockstepChatBegin(void) {
+    if (OnlineChatActive()) {
+        gOnlineChat.composing = true;
+        return CE_CHAT_OK;
+    }
     if(!CE_LockstepChatAvailable())return CE_CHAT_CLOSED;
     return ChatResult(chat.BeginCompose());
 }
 extern "C" uint32_t CE_LockstepChatAppend(const uint8_t *text, uint32_t size) {
+    if (OnlineChatActive()) {
+        if (!gOnlineChat.composing || !text) return CE_CHAT_INVALID;
+        for (uint32_t i = 0; i < size; ++i) {
+            const uint8_t c = text[i];
+            if (c < 0x20u || c > 0x7eu) continue;
+            if (gOnlineChat.draft_len >= 160u) return CE_CHAT_TOO_LARGE;
+            gOnlineChat.draft[gOnlineChat.draft_len++] = static_cast<char>(c);
+        }
+        gOnlineChat.draft[gOnlineChat.draft_len] = 0;
+        return CE_CHAT_OK;
+    }
     if (!CE_LockstepChatAvailable()) return CE_CHAT_CLOSED;
     return ChatResult(chat.Append(text, size));
 }
 extern "C" uint32_t CE_LockstepChatBackspace(void) {
+    if (OnlineChatActive()) {
+        if (gOnlineChat.draft_len > 0) {
+            gOnlineChat.draft[--gOnlineChat.draft_len] = 0;
+        }
+        return CE_CHAT_OK;
+    }
     if (!CE_LockstepChatAvailable()) return CE_CHAT_CLOSED;
     return ChatResult(chat.Backspace());
 }
 extern "C" uint32_t CE_LockstepChatSubmit(void) {
+    if (OnlineChatActive()) {
+        if (!gOnlineChat.composing) return CE_CHAT_INVALID;
+        const bool ok = gOnlineChat.draft_len > 0 && PortCeOnlineMatchSendChat(gOnlineChat.draft) != 0;
+        gOnlineChat.Reset();
+        return ok ? CE_CHAT_OK : CE_CHAT_INVALID;
+    }
     if (!CE_LockstepChatAvailable()) return CE_CHAT_CLOSED;
     CeTextChat::Decoded draft{};
     const auto copied = chat.CopyDraft(draft);
@@ -1866,12 +1921,54 @@ extern "C" uint32_t CE_LockstepChatSubmit(void) {
     if (too_large) return CE_CHAT_TOO_LARGE;
     return ChatResult(chat.SubmitDraft(CE_NetNowMs()));
 }
-extern "C" void CE_LockstepChatCancel(void) { chat.CancelCompose(); }
-extern "C" void CE_LockstepChatMute(int muted) { chat.SetMuted(muted != 0); }
-extern "C" void CE_LockstepChatClear(void) { chat.ClearHistory(); }
+extern "C" void CE_LockstepChatCancel(void) {
+    if (OnlineChatActive()) { gOnlineChat.Reset(); return; }
+    chat.CancelCompose();
+}
+extern "C" void CE_LockstepChatMute(int muted) {
+    if (OnlineChatActive()) { gOnlineChat.muted = (muted != 0); return; }
+    chat.SetMuted(muted != 0);
+}
+extern "C" void CE_LockstepChatClear(void) {
+    if (OnlineChatActive()) {
+        if (PortCeOnlineMatchClearChat) PortCeOnlineMatchClearChat();
+        return;
+    }
+    chat.ClearHistory();
+}
 extern "C" void CE_LockstepChatCopyView(CE_ChatView *out) {
     if (!out) return;
     std::memset(out, 0, sizeof(*out));
+    if (OnlineChatActive()) {
+        out->available = 1;
+        out->composing = gOnlineChat.composing ? 1 : 0;
+        out->muted = gOnlineChat.muted ? 1 : 0;
+        out->text_limit = 160u;
+        const uint32_t dlen = (std::min<uint32_t>)(gOnlineChat.draft_len, sizeof(out->draft));
+        out->draft_size = dlen;
+        if (dlen) std::memcpy(out->draft, gOnlineChat.draft, dlen);
+        if (!gOnlineChat.muted && PortCeOnlineMatchGetChat) {
+            const int total = PortCeOnlineMatchChatCount();
+            const int start = (total > (int)CE_CHAT_HISTORY) ? (total - (int)CE_CHAT_HISTORY) : 0;
+            for (int i = start; i < total && out->history_count < CE_CHAT_HISTORY; ++i) {
+                uint8_t slot = 0;
+                char msg[164] = {};
+                if (!PortCeOnlineMatchGetChat(i, &slot, msg, sizeof(msg))) continue;
+                char label[32] = {};
+                if (PortCeOnlineMatchSlotLabel) PortCeOnlineMatchSlotLabel(slot, label, sizeof(label));
+                char formatted[200] = {};
+                int flen = label[0]
+                    ? snprintf(formatted, sizeof(formatted), "%s: %s", label, msg)
+                    : snprintf(formatted, sizeof(formatted), "%s", msg);
+                if (flen <= 0) continue;
+                CE_ChatLine &line = out->history[out->history_count++];
+                line.local_transport_accepted = (slot == L.online_local_slot) ? 1u : 0u;
+                line.size = (std::min<uint32_t>)(static_cast<uint32_t>(flen), sizeof(line.utf8));
+                std::memcpy(line.utf8, formatted, line.size);
+            }
+        }
+        return;
+    }
     if (!CE_LockstepChatAvailable()) return;
     const auto state = chat.State();
     out->available = 1; out->composing = state.composing; out->muted = state.muted;

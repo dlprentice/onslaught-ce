@@ -230,7 +230,7 @@ class WorkerdHarness:
             "CE_SESSION_SECRET": SESSION_SECRET,
             "CE_ISSUER_PERMIT_KEY": PERMIT_KEY,
             "CE_SESSION_SECONDS": "14400",
-            "CE_TURN_TTL_SECONDS": "3600",
+            "CE_TURN_TTL_SECONDS": "900",
             "CE_DAILY_TURN_LIMIT": str(self.daily_turn_limit),
             "CE_MONTHLY_TURN_LIMIT": str(self.monthly_turn_limit),
             "CE_HEARTBEAT_TIMEOUT_MS": str(self.heartbeat_timeout_ms),
@@ -242,7 +242,7 @@ class WorkerdHarness:
         issuer_vars = {
             "CE_ENABLED": enabled_str,
             "CE_ISSUER_PERMIT_KEY": PERMIT_KEY,
-            "CE_TURN_TTL_SECONDS": "3600",
+            "CE_TURN_TTL_SECONDS": "900",
             "TURN_KEY_ID": TURN_KEY_ID,
             "TURN_API_TOKEN": TURN_API_TOKEN,
         }
@@ -1237,7 +1237,7 @@ class WorkerdIntegrationTests(unittest.TestCase):
             body={"match_id": mid, "guest_seat": 1},
         )
         self.assertEqual(200, code)
-        self.assertEqual(3600, host_turn["ttl"])
+        self.assertEqual(900, host_turn["ttl"])
         urls = [u for s in host_turn["iceServers"] for u in s["urls"]]
         self.assertIn("stun:stun.cloudflare.com:3478", urls)
         self.assertIn("turn:turn.cloudflare.com:3478?transport=udp", urls)

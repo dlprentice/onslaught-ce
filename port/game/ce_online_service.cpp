@@ -16,17 +16,20 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <deque>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 const char *PortUserDir();
 extern "C" int CE_SettingGetText(const char *key, char *out, int n) __attribute__((weak));
 extern "C" int CE_LobbyQueueOnlineLaunch(const CE_OnlineMatchTicket *ticket) __attribute__((weak));
+extern "C" int CE_CheatOn(int n) __attribute__((weak));
 
 #ifdef CE_VERSION
 static const char kOnlineBuildId[] = CE_VERSION;
@@ -74,7 +77,16 @@ int ParseRouteKind(const std::string &r) {
 }
 
 bool IsLoopbackHttpOrigin(const std::string &origin) {
-    return origin.compare(0, 17, "http://127.0.0.1:") == 0;
+    return origin.compare(0, 17, "http://127.0.0.1:") == 0 ||
+           origin.compare(0, 17, "http://localhost:") == 0;
+}
+
+bool AnyCheatEnabled() {
+    if (!CE_CheatOn) return false;
+    for (int i = 0; i < 6; ++i) {
+        if (CE_CheatOn(i)) return true;
+    }
+    return false;
 }
 
 std::string ResolveConfiguredLobbyOrigin(const CeOnlineProfile &profile) {
@@ -92,6 +104,7 @@ std::string ResolveConfiguredLobbyOrigin(const CeOnlineProfile &profile) {
 
 #if defined(CE_NETWORK_ICE)
 // Parse "stun:host:port" or "turn:host:port?transport=udp" into host + port for juice_config_t.
+// Rejects TCP/TLS TURN URLs since libjuice speaks UDP TURN only.
 bool ParseIceUrl(const std::string &url, bool *out_is_turn, std::string *out_host, uint16_t *out_port) {
     if (!out_is_turn || !out_host || !out_port) return false;
     size_t pos = 0;
@@ -105,6 +118,10 @@ bool ParseIceUrl(const std::string &url, bool *out_is_turn, std::string *out_hos
         return false;
     }
     size_t q = url.find('?', pos);
+    if (q != std::string::npos) {
+        const std::string query = url.substr(q + 1);
+        if (*out_is_turn && query != "transport=udp") return false;
+    }
     std::string hostport = (q == std::string::npos) ? url.substr(pos) : url.substr(pos, q - pos);
     size_t colon = hostport.rfind(':');
     if (colon == std::string::npos || colon == 0 || colon + 1 >= hostport.size()) return false;
@@ -129,11 +146,34 @@ struct ParsedJuiceConfig {
     std::vector<juice_turn_server_t> turn_structs;
     juice_config_t cfg{};
 
-    bool Build(const CeOnlineTurnBundle &bundle) {
-        stun_host = "stun.cloudflare.com";
-        stun_port = 3478;
+    ~ParsedJuiceConfig() {
+        WipeTurns();
+    }
+
+    void WipeTurns() {
+        for (auto &t : turns) {
+            if (!t.user.empty()) crypto_wipe(&t.user[0], t.user.size());
+            if (!t.pass.empty()) crypto_wipe(&t.pass[0], t.pass.size());
+        }
         turns.clear();
         turn_structs.clear();
+    }
+
+    bool BuildStunOnly() {
+        WipeTurns();
+        stun_host = "stun.cloudflare.com";
+        stun_port = 3478;
+        std::memset(&cfg, 0, sizeof(cfg));
+        cfg.concurrency_mode = JUICE_CONCURRENCY_MODE_THREAD;
+        cfg.stun_server_host = stun_host.c_str();
+        cfg.stun_server_port = stun_port;
+        return true;
+    }
+
+    bool Build(const CeOnlineTurnBundle &bundle, bool require_relay) {
+        WipeTurns();
+        stun_host = "stun.cloudflare.com";
+        stun_port = 3478;
         for (const auto &srv : bundle.ice_servers) {
             for (const auto &u : srv.urls) {
                 bool is_turn = false;
@@ -144,19 +184,41 @@ struct ParsedJuiceConfig {
                     stun_host = host;
                     stun_port = port;
                 } else if (!srv.username.empty() && !srv.credential.empty()) {
-                    TurnEntry e;
-                    e.host = host;
-                    e.port = port;
-                    e.user = srv.username;
-                    e.pass = srv.credential;
-                    turns.push_back(std::move(e));
+                    bool dup = false;
+                    for (const auto &ex : turns) {
+                        if (ex.host == host && ex.port == port) { dup = true; break; }
+                    }
+                    if (!dup) {
+                        TurnEntry e;
+                        e.host = host;
+                        e.port = port;
+                        e.user = srv.username;
+                        e.pass = srv.credential;
+                        turns.push_back(std::move(e));
+                    }
                 }
             }
         }
+        auto port_rank = [](uint16_t p) -> int {
+            if (p == 3478) return 0;
+            if (p == 53) return 1;
+            if (p == 443) return 2;
+            return 3;
+        };
+        std::stable_sort(turns.begin(), turns.end(), [&](const TurnEntry &a, const TurnEntry &b) {
+            return port_rank(a.port) < port_rank(b.port);
+        });
         std::memset(&cfg, 0, sizeof(cfg));
-        cfg.concurrency_mode = JUICE_CONCURRENCY_MODE_POLL;
-        cfg.stun_server_host = stun_host.c_str();
-        cfg.stun_server_port = stun_port;
+        cfg.concurrency_mode = JUICE_CONCURRENCY_MODE_THREAD;
+        if (require_relay) {
+            // Relay Only mode: never send STUN binding requests outside TURN.
+            if (turns.empty()) return false;
+            cfg.stun_server_host = nullptr;
+            cfg.stun_server_port = 0;
+        } else {
+            cfg.stun_server_host = stun_host.c_str();
+            cfg.stun_server_port = stun_port;
+        }
         turn_structs.reserve(turns.size());
         for (const auto &t : turns) {
             juice_turn_server_t jt{};
@@ -310,6 +372,11 @@ public:
 
     void RequestReconnect() override {
         EnsureInit();
+        const char *user_dir = PortUserDir();
+        if (user_dir && user_dir[0]) {
+            std::string err;
+            profile_.LoadOrCreate(user_dir, &err);
+        }
         origin_ = ResolveConfiguredLobbyOrigin(profile_);
         health_ok_ = false;
         ping_ms_ = -1;
@@ -348,6 +415,10 @@ public:
 
     bool RequestCreateRoom(const CeSvcCreateParams &params, std::string *err_out) override {
         EnsureInit();
+        if (AnyCheatEnabled()) {
+            if (err_out) *err_out = "Turn off cheats in Onslaught CE > Cheats to play online.";
+            return false;
+        }
         if (!client_ || !client_->Authenticated()) {
             if (err_out) *err_out = "Not connected to lobby server.";
             return false;
@@ -383,6 +454,10 @@ public:
     bool RequestJoinRoom(const std::string &room_id, const std::string &password,
                          const std::string &be_cfg, std::string *err_out) override {
         EnsureInit();
+        if (AnyCheatEnabled()) {
+            if (err_out) *err_out = "Turn off cheats in Onslaught CE > Cheats to play online.";
+            return false;
+        }
         if (!client_ || !client_->Authenticated()) {
             if (err_out) *err_out = "Not connected to lobby server.";
             return false;
@@ -468,6 +543,10 @@ public:
 
     bool RequestStartMatch(std::string *err_out) override {
         EnsureInit();
+        if (AnyCheatEnabled()) {
+            if (err_out) *err_out = "Turn off cheats in Onslaught CE > Cheats to play online.";
+            return false;
+        }
         if (!client_ || !client_->Authenticated() || active_room_id_.empty()) {
             if (err_out) *err_out = "Not in a room.";
             return false;
@@ -481,6 +560,27 @@ public:
 
     void NotifyMatchTicketReady() override {
         TryQueueMatchLaunch();
+    }
+
+    bool TakeOpError(std::string *out) override {
+        if (op_error_.empty()) return false;
+        if (out) *out = op_error_;
+        op_error_.clear();
+        return true;
+    }
+
+    void FlushLeave(uint64_t now_ms) override {
+        if (!client_ || !client_->Authenticated()) return;
+        // Pump any queued or in-flight LeaveRoom briefly so closing UI cleans up cleanly.
+        for (int step = 0; step < 35; ++step) {
+            bool has_leave = client_->Busy() && client_->ActiveOp() == CeOnlineOpKind::LeaveRoom;
+            for (const auto &a : pending_queue_) {
+                if (a.kind == ActionKind::LeaveRoom) { has_leave = true; break; }
+            }
+            if (!has_leave) break;
+            Poll(now_ms + static_cast<uint64_t>(step) * 10u);
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
     }
 
 private:
@@ -681,6 +781,13 @@ private:
         CopyBounded(mt.match_id, sizeof(mt.match_id), r.start_ticket.match_id);
         CopyBounded(mt.room_id, sizeof(mt.room_id), r.room_id);
         CopyBounded(mt.lobby_origin, sizeof(mt.lobby_origin), origin_);
+        if (client_->Session().session_token.size() >= sizeof(mt.session_token)) {
+            crypto_wipe(&mt, sizeof(mt));
+            op_error_ = "Session token exceeds match launch ticket limit.";
+            room_active_ = false;
+            active_room_id_.clear();
+            return;
+        }
         CopyBounded(mt.session_token, sizeof(mt.session_token), client_->Session().session_token);
         mt.seed = r.start_ticket.seed;
         mt.level = r.start_ticket.level;
@@ -718,10 +825,17 @@ private:
         mt.human_count = human_count;
         if (!found_local || !CeOnlineMatchTicketValid(&mt)) {
             crypto_wipe(&mt, sizeof(mt));
+            op_error_ = "Received an invalid match start ticket from the lobby.";
+            room_active_ = false;
+            active_room_id_.clear();
             return;
         }
         if (CE_LobbyQueueOnlineLaunch && CE_LobbyQueueOnlineLaunch(&mt)) {
             launch_queued_ = true;
+        } else {
+            op_error_ = "Could not launch online match. Start Onslaught CE via its launcher.";
+            room_active_ = false;
+            active_room_id_.clear();
         }
         crypto_wipe(&mt, sizeof(mt));
     }
@@ -749,9 +863,21 @@ private:
                 last_resolve_.found = false;
                 last_resolve_.error = msg;
                 resolve_ready_ = true;
-            } else if (op == CeOnlineOpKind::PollRoom && client_->LastHttpCode() == 404) {
-                room_active_ = false;
-                active_room_id_.clear();
+            } else if (op == CeOnlineOpKind::PollRoom) {
+                const unsigned code = client_->LastHttpCode();
+                if (code == 403) {
+                    room_active_ = false;
+                    active_room_id_.clear();
+                    op_error_ = "You were removed from the lobby.";
+                } else if (code == 404) {
+                    room_active_ = false;
+                    active_room_id_.clear();
+                    op_error_ = "The lobby room was closed.";
+                }
+            } else if (op == CeOnlineOpKind::CreateLobby || op == CeOnlineOpKind::JoinRoom ||
+                       op == CeOnlineOpKind::UpdateRoom || op == CeOnlineOpKind::SendChat ||
+                       op == CeOnlineOpKind::StartMatch) {
+                op_error_ = msg;
             }
             return;
         }
@@ -842,6 +968,7 @@ private:
     std::string content_id_;
     std::string status_detail_;
     std::string lobbies_err_;
+    std::string op_error_;
     std::string active_room_id_;
     CeOnlineProfile profile_;
     std::unique_ptr<CeOnlineLobbyClient> client_;
@@ -864,6 +991,8 @@ public:
     bool Init(const CE_OnlineMatchTicket &ticket, const uint8_t compat_digest[32]) {
         ticket_ = ticket;
         is_host_ = (ticket_.local_sim_slot == 0);
+        host_seat_ = ticket_.slots[0].seat;
+        guest_require_relay_ = (ticket_.require_relay != 0);
         expected_guests_.clear();
         for (uint16_t i = 0; i < ticket_.slot_count && i < CE_ONLINE_MAX_MATCH_SLOTS; ++i) {
             if (ticket_.slots[i].kind == CE_ONLINE_SLOT_HUMAN && ticket_.slots[i].sim_slot != 0) {
@@ -980,6 +1109,8 @@ public:
         return true;
     }
 
+    bool BridgeRelaysGuestChat() const override { return true; }
+
 private:
     struct GuestLink {
         uint16_t seat = 0;
@@ -990,84 +1121,197 @@ private:
         bool offer_sent = false;
         bool answer_applied = false;
         bool retried_relay = false;
+        uint64_t answer_seq = 0;
+        uint64_t bridge_attached_ms = 0;
     };
+
+    void RecordSignalFailure(uint64_t now_ms, const char *stage = "signal") {
+        ++consecutive_failures_;
+        const unsigned http_code = lobby_ ? lobby_->LastHttpCode() : 0u;
+        const char *err_code = (lobby_ && !lobby_->LastErrorCode().empty()) ? lobby_->LastErrorCode().c_str() : "none";
+        fprintf(stderr, "onslaught-ce: online match %s failure #%u (http=%u code=%s)\n",
+                stage ? stage : "signal", (unsigned)consecutive_failures_, http_code, err_code);
+        const uint32_t shift = (consecutive_failures_ > 1u)
+            ? std::min<uint32_t>(consecutive_failures_ - 1u, 2u) : 0u;
+        retry_after_ms_ = now_ms + (1000ULL << shift);
+        if (consecutive_failures_ >= 4u && !failed_) {
+            failed_ = true;
+            if (transport_) transport_->FailConnection(CeStarError::Io);
+        }
+    }
 
     void PumpSignalingAndIce(uint64_t now_ms) {
 #if defined(CE_NETWORK_ICE)
-        if (!lobby_ || !transport_) return;
+        if (!lobby_ || !transport_ || failed_) return;
         if (lobby_->Busy()) {
             CeOnlineOpStatus st = lobby_->Poll(now_ms);
             if (st == CeOnlineOpStatus::Pending) return;
-            HandleSignalOpDone(lobby_->ActiveOp(), st);
-            if (lobby_->Busy()) return;
+            HandleSignalOpDone(lobby_->ActiveOp(), st, now_ms);
+            if (lobby_->Busy() || failed_) return;
         }
+        if (retry_after_ms_ && now_ms < retry_after_ms_) return;
 
         if (is_host_) {
-            // 1. Fetch per-guest TURN leases & attach independent CeIceBridge per guest.
+            // 1. Attach per-guest ICE bridge (STUN-only first when !require_relay; TURN on Relay Only or STUN fallback).
+            bool any_unauthenticated = false;
             for (size_t i = 0; i < expected_guests_.size(); ++i) {
                 GuestLink &g = expected_guests_[i];
-                if (g.bridge_attached && !g.retried_relay && !g.require_relay &&
-                    transport_->IsGuestIceFailed(g.sim_slot)) {
-                    // Per-guest automatic TURN fallback if STUN direct fails.
-                    transport_->DetachGuestIceBridge(g.sim_slot);
-                    g.require_relay = true;
-                    g.retried_relay = true;
-                    g.turn_fetched = false;
-                    g.bridge_attached = false;
-                    g.offer_sent = false;
-                    g.answer_applied = false;
+                CeStarPeerInfo pinfo{};
+                const bool authed = transport_->GetPeerInfo(g.sim_slot, pinfo) && pinfo.authenticated;
+                if (!authed) any_unauthenticated = true;
+
+                if (g.bridge_attached && !authed && transport_->IsGuestIceFailed(g.sim_slot)) {
+                    if (!g.retried_relay && !g.require_relay) {
+                        // Per-guest automatic TURN fallback when STUN P2P fails.
+                        transport_->DetachGuestIceBridge(g.sim_slot);
+                        g.require_relay = true;
+                        g.retried_relay = true;
+                        g.turn_fetched = false;
+                        g.bridge_attached = false;
+                        g.offer_sent = false;
+                        g.answer_applied = false;
+                    } else {
+                        failed_ = true;
+                        transport_->FailConnection(CeStarError::Io);
+                        return;
+                    }
                 }
-                if (!g.turn_fetched) {
-                    active_guest_index_ = i;
-                    lobby_->BeginFetchTurn(ticket_.room_id, ticket_.match_id, g.seat, now_ms);
-                    return;
+                if (!g.bridge_attached) {
+                    if (!g.require_relay) {
+                        ParsedJuiceConfig stun_cfg;
+                        stun_cfg.BuildStunOnly();
+                        g.bridge_attached = transport_->AttachGuestIceBridge(g.sim_slot, stun_cfg.cfg, false);
+                        if (!g.bridge_attached) {
+                            g.require_relay = true;
+                            g.retried_relay = true;
+                            RecordSignalFailure(now_ms, "attach_stun_bridge");
+                            return;
+                        }
+                        g.bridge_attached_ms = now_ms;
+                    } else if (!g.turn_fetched) {
+                        active_guest_index_ = i;
+                        if (!lobby_->BeginFetchTurn(ticket_.room_id, ticket_.match_id, g.seat, now_ms)) {
+                            RecordSignalFailure(now_ms, "begin_fetch_turn");
+                        }
+                        return;
+                    }
                 }
                 if (g.bridge_attached && !g.offer_sent) {
                     std::string sdp;
-                    if (transport_->GetGuestLocalIceDescription(g.sim_slot, sdp)) {
+                    bool have_sdp = transport_->GetGuestLocalIceDescription(g.sim_slot, sdp);
+                    // When a secondary UDP TURN port (e.g. 443) is blackholed while primary (3478)
+                    // already allocated a relay candidate, publish early instead of waiting 23.5s.
+                    if (!have_sdp && g.require_relay && now_ms >= g.bridge_attached_ms + 300u) {
+                        have_sdp = transport_->GetGuestEarlyRelayIceDescription(g.sim_slot, sdp);
+                    }
+                    if (have_sdp) {
                         active_guest_index_ = i;
-                        lobby_->BeginSendSignal(ticket_.room_id, ticket_.match_id,
-                                                ticket_.local_seat, g.seat, "offer", sdp, now_ms);
+                        if (!lobby_->BeginSendSignal(ticket_.room_id, ticket_.match_id,
+                                                     ticket_.local_seat, g.seat, "offer", sdp, now_ms)) {
+                            RecordSignalFailure(now_ms, "begin_send_offer");
+                        }
+                        return;
+                    } else if (transport_->IsGuestIceGatheringDone(g.sim_slot)) {
+                        if (!g.retried_relay && !g.require_relay) {
+                            transport_->DetachGuestIceBridge(g.sim_slot);
+                            g.require_relay = true;
+                            g.retried_relay = true;
+                            g.turn_fetched = false;
+                            g.bridge_attached = false;
+                            g.offer_sent = false;
+                            g.answer_applied = false;
+                        } else {
+                            fprintf(stderr, "onslaught-ce: online match host: ICE gathering finished with no usable relay candidate\n");
+                            failed_ = true;
+                            transport_->FailConnection(CeStarError::Io);
+                            return;
+                        }
+                    }
+                }
+            }
+            // 2. Poll guest answers while any guest is not authenticated yet (catches relay re-answers too).
+            if (any_unauthenticated && now_ms >= last_sig_poll_ms_ + 500u) {
+                last_sig_poll_ms_ = now_ms;
+                if (!lobby_->BeginPollSignal(ticket_.room_id, ticket_.match_id, signal_seq_, now_ms)) {
+                    RecordSignalFailure(now_ms, "begin_poll_signal");
+                }
+            }
+        } else {
+            // Guest: STUN-first when !require_relay (zero TURN burn); Relay Only or STUN fallback fetches TURN.
+            if (guest_bridge_attached_ && !IsConnected() && transport_->IsIceFailed()) {
+                if (!guest_retried_relay_ && !guest_require_relay_) {
+                    transport_->DetachHostIceBridge();
+                    guest_require_relay_ = true;
+                    guest_retried_relay_ = true;
+                    guest_turn_fetched_ = false;
+                    guest_bridge_attached_ = false;
+                    guest_offer_applied_ = false;
+                    guest_answer_sent_ = false;
+                } else {
+                    failed_ = true;
+                    transport_->FailConnection(CeStarError::Io);
+                    return;
+                }
+            }
+            if (!guest_bridge_attached_) {
+                if (!guest_require_relay_) {
+                    ParsedJuiceConfig stun_cfg;
+                    stun_cfg.BuildStunOnly();
+                    guest_bridge_attached_ = transport_->AttachHostIceBridge(stun_cfg.cfg, false);
+                    if (!guest_bridge_attached_) {
+                        guest_require_relay_ = true;
+                        guest_retried_relay_ = true;
+                        RecordSignalFailure(now_ms, "attach_stun_bridge");
+                        return;
+                    }
+                    guest_bridge_attached_ms_ = now_ms;
+                } else if (!guest_turn_fetched_) {
+                    if (!lobby_->BeginFetchTurn(ticket_.room_id, ticket_.match_id, ticket_.local_seat, now_ms)) {
+                        RecordSignalFailure(now_ms, "begin_fetch_turn");
+                    }
+                    return;
+                }
+            }
+            if (guest_bridge_attached_ && !guest_offer_applied_ && !pending_remote_offer_.empty()) {
+                guest_offer_applied_ = transport_->SetRemoteIceDescription(pending_remote_offer_);
+                pending_remote_offer_.clear();
+            }
+            if (guest_bridge_attached_ && guest_offer_applied_ && !guest_answer_sent_) {
+                std::string sdp;
+                bool have_sdp = transport_->GetLocalIceDescription(sdp);
+                if (!have_sdp && guest_require_relay_ && now_ms >= guest_bridge_attached_ms_ + 300u) {
+                    have_sdp = transport_->GetEarlyRelayIceDescription(sdp);
+                }
+                if (have_sdp) {
+                    if (!lobby_->BeginSendSignal(ticket_.room_id, ticket_.match_id,
+                                                 ticket_.local_seat, host_seat_, "answer", sdp, now_ms)) {
+                        RecordSignalFailure(now_ms, "begin_send_answer");
+                    }
+                    return;
+                } else if (transport_->IsIceGatheringDone()) {
+                    if (!guest_retried_relay_ && !guest_require_relay_) {
+                        transport_->DetachHostIceBridge();
+                        guest_require_relay_ = true;
+                        guest_retried_relay_ = true;
+                        guest_turn_fetched_ = false;
+                        guest_bridge_attached_ = false;
+                        guest_offer_applied_ = false;
+                        guest_answer_sent_ = false;
+                    } else {
+                        fprintf(stderr, "onslaught-ce: online match guest: ICE gathering finished with no usable relay candidate\n");
+                        failed_ = true;
+                        transport_->FailConnection(CeStarError::Io);
                         return;
                     }
                 }
             }
-            // 2. Poll guest answers while any guest has not applied answer yet.
-            bool need_answers = false;
-            for (const auto &g : expected_guests_) {
-                if (g.offer_sent && !g.answer_applied) { need_answers = true; break; }
-            }
-            if (need_answers && now_ms >= last_sig_poll_ms_ + 500u) {
+            // Keep polling while not yet authenticated so Host's TURN relay re-offer is always received.
+            if (!IsConnected() && now_ms >= last_sig_poll_ms_ + 500u) {
                 last_sig_poll_ms_ = now_ms;
-                lobby_->BeginPollSignal(ticket_.room_id, ticket_.match_id, signal_seq_, now_ms);
-            }
-        } else {
-            // Guest: fetch own TURN -> attach bridge -> poll Host offer -> send answer.
-            if (guest_bridge_attached_ && !guest_retried_relay_ && !guest_require_relay_ &&
-                transport_->IsIceFailed()) {
-                guest_require_relay_ = true;
-                guest_retried_relay_ = true;
-                guest_turn_fetched_ = false;
-                guest_bridge_attached_ = false;
-                guest_offer_applied_ = false;
-                guest_answer_sent_ = false;
-            }
-            if (!guest_turn_fetched_) {
-                lobby_->BeginFetchTurn(ticket_.room_id, ticket_.match_id, ticket_.local_seat, now_ms);
-                return;
-            }
-            if (guest_bridge_attached_ && !guest_offer_applied_ && now_ms >= last_sig_poll_ms_ + 500u) {
-                last_sig_poll_ms_ = now_ms;
-                lobby_->BeginPollSignal(ticket_.room_id, ticket_.match_id, signal_seq_, now_ms);
-                return;
-            }
-            if (guest_offer_applied_ && !guest_answer_sent_) {
-                std::string sdp;
-                if (transport_->GetLocalIceDescription(sdp)) {
-                    lobby_->BeginSendSignal(ticket_.room_id, ticket_.match_id,
-                                            ticket_.local_seat, 0, "answer", sdp, now_ms);
-                    return;
+                if (!lobby_->BeginPollSignal(ticket_.room_id, ticket_.match_id, signal_seq_, now_ms)) {
+                    RecordSignalFailure(now_ms, "begin_poll_signal");
                 }
+                return;
             }
         }
 #else
@@ -1075,20 +1319,39 @@ private:
 #endif
     }
 
-    void HandleSignalOpDone(CeOnlineOpKind op, CeOnlineOpStatus st) {
+    void HandleSignalOpDone(CeOnlineOpKind op, CeOnlineOpStatus st, uint64_t now_ms) {
 #if defined(CE_NETWORK_ICE)
-        if (st != CeOnlineOpStatus::Completed) return;
+        if (st != CeOnlineOpStatus::Completed) {
+            RecordSignalFailure(now_ms, "op_failed");
+            return;
+        }
+        consecutive_failures_ = 0;
+        retry_after_ms_ = 0;
         if (op == CeOnlineOpKind::FetchTurn) {
-            ParsedJuiceConfig parsed;
-            parsed.Build(lobby_->LastTurnBundle());
             if (is_host_ && active_guest_index_ < expected_guests_.size()) {
                 GuestLink &g = expected_guests_[active_guest_index_];
+                ParsedJuiceConfig parsed;
+                const bool built = parsed.Build(lobby_->LastTurnBundle(), g.require_relay);
+                if (!built ||
+                    !transport_->AttachGuestIceBridge(g.sim_slot, parsed.cfg, g.require_relay)) {
+                    RecordSignalFailure(now_ms, "attach_turn_bridge");
+                    return;
+                }
                 g.turn_fetched = true;
-                g.bridge_attached = transport_->AttachGuestIceBridge(g.sim_slot, parsed.cfg, g.require_relay);
+                g.bridge_attached = true;
+                g.bridge_attached_ms = now_ms;
             } else if (!is_host_) {
-                guest_turn_fetched_ = true;
                 guest_require_relay_ = (ticket_.require_relay != 0) || guest_retried_relay_;
-                guest_bridge_attached_ = transport_->AttachHostIceBridge(parsed.cfg, guest_require_relay_);
+                ParsedJuiceConfig parsed;
+                const bool built = parsed.Build(lobby_->LastTurnBundle(), guest_require_relay_);
+                if (!built ||
+                    !transport_->AttachHostIceBridge(parsed.cfg, guest_require_relay_)) {
+                    RecordSignalFailure(now_ms, "attach_turn_bridge");
+                    return;
+                }
+                guest_turn_fetched_ = true;
+                guest_bridge_attached_ = true;
+                guest_bridge_attached_ms_ = now_ms;
             }
         } else if (op == CeOnlineOpKind::SendSignal) {
             if (is_host_ && active_guest_index_ < expected_guests_.size()) {
@@ -1102,17 +1365,34 @@ private:
             for (const auto &msg : res.messages) {
                 if (is_host_ && msg.kind == "answer") {
                     for (auto &g : expected_guests_) {
-                        if (g.seat == msg.from_seat && g.bridge_attached && !g.answer_applied) {
+                        if (g.seat == msg.from_seat && msg.seq > g.answer_seq && g.bridge_attached) {
+                            g.answer_seq = msg.seq;
                             g.answer_applied = transport_->SetGuestRemoteIceDescription(g.sim_slot, msg.sdp);
                         }
                     }
-                } else if (!is_host_ && msg.kind == "offer" && guest_bridge_attached_ && !guest_offer_applied_) {
-                    guest_offer_applied_ = transport_->SetRemoteIceDescription(msg.sdp);
+                } else if (!is_host_ && msg.kind == "offer" && msg.seq > guest_offer_seq_) {
+                    const bool had_offer = (guest_offer_seq_ != 0);
+                    guest_offer_seq_ = msg.seq;
+                    if (had_offer && !IsConnected()) {
+                        // Host initiated a fresh relay offer: detach STUN bridge and switch to TURN Relay.
+                        transport_->DetachHostIceBridge();
+                        guest_require_relay_ = true;
+                        guest_retried_relay_ = true;
+                        guest_turn_fetched_ = false;
+                        guest_bridge_attached_ = false;
+                        guest_offer_applied_ = false;
+                        guest_answer_sent_ = false;
+                        pending_remote_offer_ = msg.sdp;
+                    } else if (guest_bridge_attached_ && !guest_offer_applied_) {
+                        guest_offer_applied_ = transport_->SetRemoteIceDescription(msg.sdp);
+                    } else {
+                        pending_remote_offer_ = msg.sdp;
+                    }
                 }
             }
         }
 #else
-        (void)op; (void)st;
+        (void)op; (void)st; (void)now_ms;
 #endif
     }
 
@@ -1170,12 +1450,34 @@ private:
                     events_.push_back(pm);
                 }
                 break;
+            case CeStarEventKind::PeerAuthenticated: {
+                CeStarPeerInfo pi{};
+                const char *rname = "unknown";
+                if (transport_->GetPeerInfo(ev.sim_slot, pi)) {
+                    rname = (pi.route == CeStarRoute::Relay) ? "relay" :
+                            (pi.route == CeStarRoute::Direct ? "direct" : "unknown");
+                }
+                fprintf(stderr, "onslaught-ce: online match guest slot %u authenticated (route=%s)\n",
+                        (unsigned)ev.sim_slot, rname);
+                break;
+            }
+            case CeStarEventKind::HostAuthenticated: {
+                CeStarPeerInfo pi{};
+                const char *rname = "unknown";
+                if (transport_->GetPeerInfo(0, pi)) {
+                    rname = (pi.route == CeStarRoute::Relay) ? "relay" :
+                            (pi.route == CeStarRoute::Direct ? "direct" : "unknown");
+                }
+                fprintf(stderr, "onslaught-ce: online match host authenticated (route=%s)\n", rname);
+                break;
+            }
             case CeStarEventKind::PeerDisconnected:
                 out.kind = CE_STAR_EVT_PEER_DISCONNECT;
                 out.from_sim_slot = static_cast<uint8_t>(ev.sim_slot);
                 events_.push_back(out);
                 break;
             case CeStarEventKind::HostDisconnected:
+            case CeStarEventKind::Error:
                 out.kind = CE_STAR_EVT_HOST_LOST;
                 out.from_sim_slot = 0;
                 events_.push_back(out);
@@ -1189,6 +1491,8 @@ private:
     CE_OnlineMatchTicket ticket_{};
     bool is_host_ = false;
     bool direct_mode_ = false;
+    bool failed_ = false;
+    uint16_t host_seat_ = 0;
     std::vector<GuestLink> expected_guests_;
     size_t active_guest_index_ = 0;
     bool guest_turn_fetched_ = false;
@@ -1197,8 +1501,13 @@ private:
     bool guest_answer_sent_ = false;
     bool guest_require_relay_ = false;
     bool guest_retried_relay_ = false;
+    uint64_t guest_offer_seq_ = 0;
+    uint64_t guest_bridge_attached_ms_ = 0;
+    std::string pending_remote_offer_;
     uint64_t signal_seq_ = 0;
     uint64_t last_sig_poll_ms_ = 0;
+    uint64_t retry_after_ms_ = 0;
+    uint32_t consecutive_failures_ = 0;
     std::unique_ptr<CeOnlineLobbyClient> lobby_;
     std::unique_ptr<CeStarTransport> transport_;
     std::deque<CeOnlineStarEvent> events_;

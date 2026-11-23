@@ -43,6 +43,7 @@ bool  sNextOpenFromMultiplayer = false;
 bool  sExitingToMultiplayer = false;
 bool  sTrapActive = false;
 bool  sCtrlHeld = false;
+bool  sSuppressNextChar = false;
 float sOpenTime = -10.f;
 float sLastSelectTime = -10.f;
 float sLaunchStartedAt = -1.f;
@@ -230,6 +231,7 @@ void SetKeyTrap(bool on) {
         }
         sTrapActive = false;
         sCtrlHeld = false;
+        sSuppressNextChar = false;
     }
 }
 
@@ -402,10 +404,20 @@ int PortCeOnlineUiKey(uint16_t key, int eventType) {
         if (key == DIK_RIGHT)                         return PortCeOnlineHostKey(CE_OUI_KEY_RIGHT, 0);
         if (key == DIK_PRIOR)                         return PortCeOnlineHostKey(CE_OUI_KEY_PGUP, 0);
         if (key == DIK_NEXT)                          return PortCeOnlineHostKey(CE_OUI_KEY_PGDN, 0);
-        if (key == DIK_T)                             return PortCeOnlineHostKey(CE_OUI_KEY_CHAT, 0);
+        if (key == DIK_T) {
+            if (PortCeOnlineHostKey(CE_OUI_KEY_CHAT, 0)) {
+                sSuppressNextChar = true;
+                return 1;
+            }
+            return 0;
+        }
         return 0;
     }
     if (eventType == KEY_EVENT_CHAR && !ctrl && key >= 0x20 && key < 0x7f) {
+        if (sSuppressNextChar) {
+            sSuppressNextChar = false;
+            return 1;
+        }
         return PortCeOnlineHostKey(CE_OUI_KEY_CHAR, static_cast<char>(key));
     }
     return 0;

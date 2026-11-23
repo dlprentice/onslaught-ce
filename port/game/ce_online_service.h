@@ -167,6 +167,8 @@ public:
     virtual bool RequestSendChat(const std::string &text, std::string *err_out) = 0;
     virtual bool RequestStartMatch(std::string *err_out) = 0;
     virtual void NotifyMatchTicketReady() = 0;
+    virtual bool TakeOpError(std::string *out) = 0;
+    virtual void FlushLeave(uint64_t now_ms) = 0;
 };
 
 CeOnlineServiceFacade *PortCeOnlineServiceInstance();

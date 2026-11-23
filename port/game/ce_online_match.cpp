@@ -223,6 +223,11 @@ void CeOnlineMatchSession::Reset() {
     mHasBroadcast = false;
     mLastBroadcastTick = 0u;
     mLastConsumedPeerMask = 0u;
+    mStartConfirmed = false;
+    mLocalStartHashSubmitted = false;
+    mLocalStartHash = 0u;
+    mHostStartHashReceived = false;
+    mHostStartHash = 0u;
     memset(&mLastDesync, 0, sizeof(mLastDesync));
     mError[0] = 0;
     memset(mChat, 0, sizeof(mChat));
@@ -445,6 +450,23 @@ bool CeOnlineMatchSession::HandleHashEvent(const CeOnlineStarEvent &ev) {
         SetFault(CE_ONLINE_STATE_ERROR, "conflicting or malformed peer state hash arrived");
         return false;
     }
+    if (!IsHost() && ev.tick == 0u && ev.from_sim_slot == 0u) {
+        mHostStartHashReceived = true;
+        mHostStartHash = ev.hash;
+        if (mLocalStartHashSubmitted) {
+            if (mLocalStartHash != mHostStartHash) {
+                mLastDesync.tick = 0u;
+                mLastDesync.referenceSlot = 0u;
+                mLastDesync.divergingSlot = mTicket.local_sim_slot;
+                mLastDesync.divergingMask = (uint8_t)(1u << mTicket.local_sim_slot);
+                mLastDesync.expectedHash = mHostStartHash;
+                mLastDesync.actualHash = mLocalStartHash;
+                SetFault(CE_ONLINE_STATE_DESYNC, "online match start state disagreed with the host");
+                return false;
+            }
+            mStartConfirmed = true;
+        }
+    }
     CeNPeerDesyncReport rep = {};
     const CeNPeerHashResult hr = mRing.CheckHashes(ev.tick, &rep);
     if (hr == CE_NPEER_HASH_DESYNC) {
@@ -458,6 +480,11 @@ bool CeOnlineMatchSession::HandleHashEvent(const CeOnlineStarEvent &ev) {
                  (unsigned)mLastDesync.referenceSlot, (unsigned)mLastDesync.divergingMask);
         SetFault(CE_ONLINE_STATE_DESYNC, msg);
         return false;
+    }
+    if (IsHost() && ev.tick == 0u && hr == CE_NPEER_HASH_MATCH && !mStartConfirmed) {
+        mStartConfirmed = true;
+        if (mBridge && mLocalStartHashSubmitted)
+            mBridge->SendHash(0u, 0u, mLocalStartHash);
     }
     return true;
 }
@@ -528,7 +555,20 @@ bool CeOnlineMatchSession::Poll(uint64_t now_ms) {
         if (mState == CE_ONLINE_STATE_CONNECTING && mBridge->IsConnected())
             mState = CE_ONLINE_STATE_RUNNING;
         CeOnlineStarEvent ev = {};
-        while (mState == CE_ONLINE_STATE_RUNNING && mBridge->PopEvent(&ev)) {
+        while ((mState == CE_ONLINE_STATE_CONNECTING || mState == CE_ONLINE_STATE_RUNNING) && mBridge->PopEvent(&ev)) {
+            if (mState == CE_ONLINE_STATE_CONNECTING) {
+                if (ev.kind == CE_STAR_EVT_HOST_LOST) {
+                    HandleDisconnectEvent(0u);
+                    return false;
+                }
+                if (ev.kind == CE_STAR_EVT_PEER_DISCONNECT) {
+                    HandleDisconnectEvent(ev.from_sim_slot);
+                    if (mState != CE_ONLINE_STATE_CONNECTING)
+                        return false;
+                }
+                memset(&ev, 0, sizeof(ev));
+                continue;
+            }
             switch (ev.kind) {
             case CE_STAR_EVT_GUEST_INPUT:
                 if (!HandleGuestInputEvent(ev))
@@ -552,7 +592,7 @@ bool CeOnlineMatchSession::Poll(uint64_t now_ms) {
                     char clean[164] = {};
                     if (SanitizeChatText(ev.chat_text, clean, sizeof(clean))) {
                         AppendChat(ev.from_sim_slot, clean);
-                        if (IsHost() && ev.from_sim_slot != 0u && mBridge)
+                        if (IsHost() && ev.from_sim_slot != 0u && mBridge && !mBridge->BridgeRelaysGuestChat())
                             mBridge->SendChat(ev.from_sim_slot, clean);
                     }
                 }
@@ -683,11 +723,28 @@ bool CeOnlineMatchSession::SubmitLocalHash(uint32_t tick, uint64_t state_hash) {
         SetFault(CE_ONLINE_STATE_ERROR, "could not record local periodic state hash");
         return false;
     }
+    if (tick == 0u) {
+        mLocalStartHashSubmitted = true;
+        mLocalStartHash = state_hash;
+    }
     if (mBridge && !IsHost()) {
         if (!mBridge->SendHash(mTicket.local_sim_slot, tick, state_hash)) {
             SetFault(CE_ONLINE_STATE_ERROR, "could not send periodic state hash to host");
             return false;
         }
+    }
+    if (!IsHost() && tick == 0u && mHostStartHashReceived) {
+        if (mLocalStartHash != mHostStartHash) {
+            mLastDesync.tick = 0u;
+            mLastDesync.referenceSlot = 0u;
+            mLastDesync.divergingSlot = mTicket.local_sim_slot;
+            mLastDesync.divergingMask = (uint8_t)(1u << mTicket.local_sim_slot);
+            mLastDesync.expectedHash = mHostStartHash;
+            mLastDesync.actualHash = mLocalStartHash;
+            SetFault(CE_ONLINE_STATE_DESYNC, "online match start state disagreed with the host");
+            return false;
+        }
+        mStartConfirmed = true;
     }
     if (IsHost()) {
         CeNPeerDesyncReport rep = {};
@@ -703,6 +760,11 @@ bool CeOnlineMatchSession::SubmitLocalHash(uint32_t tick, uint64_t state_hash) {
                      (unsigned)mLastDesync.referenceSlot, (unsigned)mLastDesync.divergingMask);
             SetFault(CE_ONLINE_STATE_DESYNC, msg);
             return false;
+        }
+        if (tick == 0u && hr == CE_NPEER_HASH_MATCH && !mStartConfirmed) {
+            mStartConfirmed = true;
+            if (mBridge)
+                mBridge->SendHash(0u, 0u, state_hash);
         }
     }
     return true;
@@ -848,6 +910,10 @@ int PortCeOnlineMatchSubmitLocalHash(uint32_t tick, uint64_t state_hash) {
     return gSession.SubmitLocalHash(tick, state_hash) ? 1 : 0;
 }
 
+int PortCeOnlineMatchStartConfirmed(void) {
+    return gSession.IsStartConfirmed() ? 1 : 0;
+}
+
 int PortCeOnlineMatchCheckFault(char *out_error, size_t cap) {
     const CE_OnlineMatchState st = gSession.State();
     if (st == CE_ONLINE_STATE_DESYNC || st == CE_ONLINE_STATE_HOST_LOST ||
@@ -862,6 +928,38 @@ int PortCeOnlineMatchCheckFault(char *out_error, size_t cap) {
 
 void PortCeOnlineMatchStop(int graceful) {
     gSession.Stop(graceful != 0);
+}
+
+int PortCeOnlineMatchSendChat(const char *text) {
+    return gSession.SendChat(text) ? 1 : 0;
+}
+
+int PortCeOnlineMatchChatCount(void) {
+    return (int)gSession.ChatCount();
+}
+
+int PortCeOnlineMatchGetChat(int index, uint8_t *out_slot, char *out_text, size_t cap) {
+    if (index < 0) return 0;
+    CeOnlineChatEntry entry = {};
+    if (!gSession.GetChat((size_t)index, &entry)) return 0;
+    if (out_slot) *out_slot = entry.from_sim_slot;
+    if (out_text && cap > 0) snprintf(out_text, cap, "%s", entry.text);
+    return 1;
+}
+
+void PortCeOnlineMatchClearChat(void) {
+    gSession.ClearChat();
+}
+
+int PortCeOnlineMatchSlotLabel(int sim_slot, char *out, size_t cap) {
+    if (!out || cap == 0) return 0;
+    out[0] = 0;
+    if (!gHasTicket || sim_slot < 0 || sim_slot >= (int)gTicket.slot_count) return 0;
+    if (gTicket.slots[sim_slot].callsign[0])
+        snprintf(out, cap, "%s", gTicket.slots[sim_slot].callsign);
+    else
+        snprintf(out, cap, "P%d", sim_slot + 1);
+    return 1;
 }
 
 } // extern "C"

@@ -50,7 +50,7 @@ typedef struct CE_OnlineMatchTicket {
     char match_id[32];
     char room_id[32];
     char lobby_origin[160];
-    char session_token[256];
+    char session_token[1600];
     uint32_t seed;
     uint32_t level;
     char mode[24];
@@ -109,8 +109,14 @@ int PortCeOnlineMatchCanAdvance(void);
 int PortCeOnlineMatchSubmitLocalInput(uint32_t target_tick, const CE_WorldInput *sample);
 int PortCeOnlineMatchConsumeTick(CE_WorldInput out_slots[CE_ONLINE_MAX_MATCH_SLOTS], uint8_t *out_human_mask);
 int PortCeOnlineMatchSubmitLocalHash(uint32_t tick, uint64_t state_hash);
+int PortCeOnlineMatchStartConfirmed(void);
 int PortCeOnlineMatchCheckFault(char *out_error, size_t cap);
 void PortCeOnlineMatchStop(int graceful);
+int PortCeOnlineMatchSendChat(const char *text);
+int PortCeOnlineMatchChatCount(void);
+int PortCeOnlineMatchGetChat(int index, uint8_t *out_slot, char *out_text, size_t cap);
+void PortCeOnlineMatchClearChat(void);
+int PortCeOnlineMatchSlotLabel(int sim_slot, char *out, size_t cap);
 
 // Deterministic AI backfill seed (pure, platform-independent).
 uint32_t CeOnlineMatchAiSeed(uint32_t matchSeed, uint8_t simSlot, uint32_t tick);
@@ -465,6 +471,8 @@ public:
     virtual bool SendChat(uint8_t sim_slot, const char *text) = 0;
     virtual bool SendLeave(uint8_t sim_slot) = 0;
     virtual bool PopEvent(CeOnlineStarEvent *out_event) = 0;
+    // Returns true when the underlying transport (e.g. CeStarTransport) already relays guest chat.
+    virtual bool BridgeRelaysGuestChat() const { return false; }
 };
 
 struct CeOnlineChatEntry {
@@ -513,6 +521,7 @@ public:
     CE_OnlineMatchState State() const { return mState; }
     bool IsActive() const { return mState == CE_ONLINE_STATE_CONNECTING || mState == CE_ONLINE_STATE_RUNNING; }
     bool IsReady() const;
+    bool IsStartConfirmed() const { return mInitialised && mStartConfirmed; }
     bool IsHost() const { return mInitialised && mTicket.local_sim_slot == 0u; }
     uint32_t CurrentTick() const { return mRing.CurrentTick(); }
     uint32_t InputDelay() const { return mRing.InputDelay(); }
@@ -532,6 +541,7 @@ public:
     const char *LastError() const { return mError; }
     size_t ChatCount() const { return mChatCount; }
     bool GetChat(size_t index, CeOnlineChatEntry *out) const;
+    void ClearChat() { mChatHead = 0; mChatCount = 0; }
 
     // Maps between sim_slot (0..3) and compact ring peer index (0..human_count-1).
     uint8_t SimSlotToPeer(uint8_t sim_slot) const;
@@ -561,6 +571,11 @@ private:
     bool mHasBroadcast;
     uint32_t mLastBroadcastTick;
     uint8_t mLastConsumedPeerMask;
+    bool mStartConfirmed;
+    bool mLocalStartHashSubmitted;
+    uint64_t mLocalStartHash;
+    bool mHostStartHashReceived;
+    uint64_t mHostStartHash;
     CeNPeerDesyncReport mLastDesync;
     char mError[192];
     CeOnlineChatEntry mChat[kChatCap];

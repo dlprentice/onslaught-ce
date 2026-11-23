@@ -194,6 +194,7 @@ public:
     bool BroadcastPingReport();
     bool DisconnectGuest(uint16_t sim_slot, uint16_t reason = 0);
     void Leave(uint16_t reason = 0);
+    void FailConnection(CeStarError err);
 
     // Inspection & live telemetry.
     CeStarRole Role() const noexcept { return config_.role; }
@@ -214,6 +215,8 @@ public:
     // onto the Host's single ENetHost, each bound to its own ephemeral 127.0.0.1:<port_i>.
     bool AttachGuestIceBridge(uint16_t sim_slot, const juice_config_t& config, bool require_relay);
     bool GetGuestLocalIceDescription(uint16_t sim_slot, std::string& out_sdp) const;
+    bool GetGuestEarlyRelayIceDescription(uint16_t sim_slot, std::string& out_sdp) const;
+    bool IsGuestIceGatheringDone(uint16_t sim_slot) const;
     bool SetGuestRemoteIceDescription(uint16_t sim_slot, const std::string& remote_sdp);
     bool IsGuestIceReady(uint16_t sim_slot) const;
     bool IsGuestIceFailed(uint16_t sim_slot) const;
@@ -223,10 +226,13 @@ public:
     // Single-slot Guest ICE: attaches one CeIceBridge onto the Guest's ENetHost.
     bool AttachHostIceBridge(const juice_config_t& config, bool require_relay);
     bool GetLocalIceDescription(std::string& out_sdp) const;
+    bool GetEarlyRelayIceDescription(std::string& out_sdp) const;
+    bool IsIceGatheringDone() const;
     bool SetRemoteIceDescription(const std::string& remote_sdp);
     bool IsIceReady() const;
     bool IsIceFailed() const;
     CeStarRoute HostIceRoute() const;
+    void DetachHostIceBridge();
 #endif
 
 private:
@@ -261,6 +267,8 @@ private:
         uint64_t connected_at_ms = 0;
 #if defined(CE_NETWORK_ICE)
         std::unique_ptr<CeIceBridge> ice;
+        bool ice_failed = false;
+        bool ice_require_relay = false;
 #endif
         void WipeCrypto() noexcept;
         void ResetLink() noexcept;

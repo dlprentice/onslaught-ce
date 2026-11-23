@@ -1162,6 +1162,7 @@ void CeStarTransport::PumpIceBridges(uint64_t now_ms) {
             auto& slot = slots_[s];
             if (!slot.ice) continue;
             if (!slot.ice->Pump()) {
+                slot.ice_failed = true;
                 slot.ice.reset();
                 if (slot.peer) {
                     _ENetPeer* p = slot.peer;
@@ -1176,7 +1177,19 @@ void CeStarTransport::PumpIceBridges(uint64_t now_ms) {
         auto& slot = slots_[0];
         if (!slot.ice) return;
         if (!slot.ice->Pump()) {
+            const bool can_retry_relay = !slot.authenticated && !slot.ice_require_relay;
+            slot.ice_failed = true;
             slot.ice.reset();
+            if (can_retry_relay) {
+                if (slot.peer) {
+                    _ENetPeer* p = slot.peer;
+                    enet_peer_reset(p);
+                }
+                slot.ResetLink();
+                guest_connect_started_ = false;
+                guest_hello_sent_ = false;
+                return;
+            }
             last_error_ = CeStarError::Io;
             host_lost_ = true;
             if (slot.peer) {
@@ -1534,6 +1547,27 @@ void CeStarTransport::Leave(uint16_t reason) {
     }
 }
 
+void CeStarTransport::FailConnection(CeStarError err) {
+    last_error_ = (err == CeStarError::Ok) ? CeStarError::Io : err;
+    if (config_.role == CeStarRole::Guest) {
+        host_lost_ = true;
+        if (!slots_.empty() && slots_[0].peer) {
+            _ENetPeer* p = slots_[0].peer;
+            enet_peer_reset(p);
+            slots_[0].ResetLink();
+        }
+        CeStarEvent ev;
+        ev.kind = CeStarEventKind::HostDisconnected;
+        ev.error = last_error_;
+        PushEvent(std::move(ev));
+    } else {
+        CeStarEvent ev;
+        ev.kind = CeStarEventKind::Error;
+        ev.error = last_error_;
+        PushEvent(std::move(ev));
+    }
+}
+
 bool CeStarTransport::IsAuthenticated() const noexcept {
     if (config_.role == CeStarRole::Host) return host_ != nullptr;
     return !slots_.empty() && slots_[0].authenticated;
@@ -1598,6 +1632,8 @@ bool CeStarTransport::AttachGuestIceBridge(uint16_t sim_slot, const juice_config
     auto bridge = CeIceBridge::Create(host_, config, require_relay);
     if (!bridge) return false;
     slots_[sim_slot].ice = std::move(bridge);
+    slots_[sim_slot].ice_failed = false;
+    slots_[sim_slot].ice_require_relay = require_relay;
     return true;
 }
 
@@ -1607,6 +1643,21 @@ bool CeStarTransport::GetGuestLocalIceDescription(uint16_t sim_slot, std::string
         !slots_[sim_slot].ice)
         return false;
     return slots_[sim_slot].ice->LocalDescription(out_sdp);
+}
+
+bool CeStarTransport::GetGuestEarlyRelayIceDescription(uint16_t sim_slot, std::string& out_sdp) const {
+    out_sdp.clear();
+    if (config_.role != CeStarRole::Host || sim_slot < 1 || sim_slot > config_.max_guests ||
+        !slots_[sim_slot].ice)
+        return false;
+    return slots_[sim_slot].ice->EarlyRelayDescription(out_sdp);
+}
+
+bool CeStarTransport::IsGuestIceGatheringDone(uint16_t sim_slot) const {
+    if (config_.role != CeStarRole::Host || sim_slot < 1 || sim_slot > config_.max_guests ||
+        !slots_[sim_slot].ice)
+        return false;
+    return slots_[sim_slot].ice->GatheringDone();
 }
 
 bool CeStarTransport::SetGuestRemoteIceDescription(uint16_t sim_slot, const std::string& remote_sdp) {
@@ -1624,10 +1675,9 @@ bool CeStarTransport::IsGuestIceReady(uint16_t sim_slot) const {
 }
 
 bool CeStarTransport::IsGuestIceFailed(uint16_t sim_slot) const {
-    if (config_.role != CeStarRole::Host || sim_slot < 1 || sim_slot > config_.max_guests ||
-        !slots_[sim_slot].ice)
+    if (config_.role != CeStarRole::Host || sim_slot < 1 || sim_slot > config_.max_guests)
         return false;
-    return slots_[sim_slot].ice->Failed();
+    return slots_[sim_slot].ice_failed || (slots_[sim_slot].ice && slots_[sim_slot].ice->Failed());
 }
 
 CeStarRoute CeStarTransport::GuestIceRoute(uint16_t sim_slot) const {
@@ -1640,6 +1690,8 @@ CeStarRoute CeStarTransport::GuestIceRoute(uint16_t sim_slot) const {
 void CeStarTransport::DetachGuestIceBridge(uint16_t sim_slot) {
     if (config_.role != CeStarRole::Host || sim_slot < 1 || sim_slot > config_.max_guests) return;
     slots_[sim_slot].ice.reset();
+    slots_[sim_slot].ice_failed = false;
+    slots_[sim_slot].ice_require_relay = false;
 }
 
 bool CeStarTransport::AttachHostIceBridge(const juice_config_t& config, bool require_relay) {
@@ -1649,6 +1701,8 @@ bool CeStarTransport::AttachHostIceBridge(const juice_config_t& config, bool req
     auto bridge = CeIceBridge::Create(host_, config, require_relay);
     if (!bridge) return false;
     slots_[0].ice = std::move(bridge);
+    slots_[0].ice_failed = false;
+    slots_[0].ice_require_relay = require_relay;
     return true;
 }
 
@@ -1656,6 +1710,17 @@ bool CeStarTransport::GetLocalIceDescription(std::string& out_sdp) const {
     out_sdp.clear();
     if (config_.role != CeStarRole::Guest || slots_.empty() || !slots_[0].ice) return false;
     return slots_[0].ice->LocalDescription(out_sdp);
+}
+
+bool CeStarTransport::GetEarlyRelayIceDescription(std::string& out_sdp) const {
+    out_sdp.clear();
+    if (config_.role != CeStarRole::Guest || slots_.empty() || !slots_[0].ice) return false;
+    return slots_[0].ice->EarlyRelayDescription(out_sdp);
+}
+
+bool CeStarTransport::IsIceGatheringDone() const {
+    if (config_.role != CeStarRole::Guest || slots_.empty() || !slots_[0].ice) return false;
+    return slots_[0].ice->GatheringDone();
 }
 
 bool CeStarTransport::SetRemoteIceDescription(const std::string& remote_sdp) {
@@ -1669,13 +1734,30 @@ bool CeStarTransport::IsIceReady() const {
 }
 
 bool CeStarTransport::IsIceFailed() const {
-    if (config_.role != CeStarRole::Guest || slots_.empty() || !slots_[0].ice) return false;
-    return slots_[0].ice->Failed();
+    if (config_.role != CeStarRole::Guest || slots_.empty()) return false;
+    return slots_[0].ice_failed || (slots_[0].ice && slots_[0].ice->Failed());
 }
 
 CeStarRoute CeStarTransport::HostIceRoute() const {
     if (config_.role != CeStarRole::Guest || slots_.empty() || !slots_[0].ice || !slots_[0].ice->Ready())
         return CeStarRoute::Unknown;
     return slots_[0].ice->UsesRelay() ? CeStarRoute::Relay : CeStarRoute::Direct;
+}
+
+void CeStarTransport::DetachHostIceBridge() {
+    if (config_.role != CeStarRole::Guest || slots_.empty()) return;
+    slots_[0].ice.reset();
+    slots_[0].ice_failed = false;
+    slots_[0].ice_require_relay = false;
+    if (!slots_[0].authenticated) {
+        if (slots_[0].peer) {
+            enet_peer_reset(slots_[0].peer);
+        }
+        slots_[0].ResetLink();
+        guest_connect_started_ = false;
+        guest_hello_sent_ = false;
+        host_lost_ = false;
+        last_error_ = CeStarError::Ok;
+    }
 }
 #endif

@@ -1151,7 +1151,13 @@ void SpawnAuxiliaryBattleEngines()
 		}
 		else
 		{
-			const int fallbackTeam = (anchor->GetAllegiance() == kMuspellAllegiance) ? CE_MULTIBE_SIDE_FORSETI : CE_MULTIBE_SIDE_MUSPELL;
+#ifndef CE_NETWORK_OFF
+			const int fallbackTeam = OnlineMatchActive()
+				? ((anchor->GetAllegiance() == kMuspellAllegiance) ? CE_MULTIBE_SIDE_FORSETI : CE_MULTIBE_SIDE_MUSPELL)
+				: ((gPlayerSide == CE_MULTIBE_SIDE_MUSPELL) ? CE_MULTIBE_SIDE_FORSETI : CE_MULTIBE_SIDE_MUSPELL);
+#else
+			const int fallbackTeam = (gPlayerSide == CE_MULTIBE_SIDE_MUSPELL) ? CE_MULTIBE_SIDE_FORSETI : CE_MULTIBE_SIDE_MUSPELL;
+#endif
 			gMatchState.RegisterSlotTeam(slot, fallbackTeam);
 			if (fallbackTeam == CE_MULTIBE_SIDE_MUSPELL)
 				muspellCount++;
@@ -1226,7 +1232,13 @@ void SpawnAuxiliaryBattleEngines()
 		float spawnYaw = anchorYaw;
 		float offRight = 0.0f, offFwd = 0.0f;
 
-		const bool sameSideAsP0 = (side == anchor->GetAllegiance());
+#ifndef CE_NETWORK_OFF
+		const bool sameSideAsP0 = OnlineMatchActive()
+			? (side == anchor->GetAllegiance())
+			: ((side == kMuspellAllegiance) == (gPlayerSide == CE_MULTIBE_SIDE_MUSPELL));
+#else
+		const bool sameSideAsP0 = ((side == kMuspellAllegiance) == (gPlayerSide == CE_MULTIBE_SIDE_MUSPELL));
+#endif
 		if (mpLevel && !sameSideAsP0 && !gConfig.panoramic_cam && gEngineCount >= 2 && gEngines[1] && UnitExistsInWorld(gEngines[1]))
 		{
 			baseAnchor = gEngines[1]->GetPos();
