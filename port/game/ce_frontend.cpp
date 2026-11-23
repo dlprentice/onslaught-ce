@@ -747,17 +747,19 @@ public:
 		}
 		// the note ends a little above the page's help bar (CFEPCommon::RenderHelpText draws it at y 455)
 		if (mNote)
-			Lines(font, mNote, 449.f, kGrey, true);
+			Lines(font, mNote, 449.f, kNoteGrey, true, 0.f, 500.f);
 	}
 
 	// 0xa8 on the screen: text colours are authored for a doubling colour stage (StageColour in port/platform/public/DXFont.cpp), so
 	// the colour given is half of it. A channel of 0x80 or more doubles past 255, and 0xa8 here would draw the same white as the rows.
 	static const DWORD	kGrey = 0xff545454;
+	// 0xc4 on the screen: slightly brighter silver-grey for standing footer notes so caveats read cleanly while staying dimmer than white rows.
+	static const DWORD	kNoteGrey = 0xff626262;
 	// the original's description text (FEPMultiplayer.cpp), 0xfe, 0xde, 0xbe on the screen: cream
 	static const DWORD	kCream = 0xff7f6f5f;
 	// The text in lines wrapped to the space between the page's side borders, each centred on the page, from y down (or
 	// ending at y, when up, and not above floor); returns the number of lines.
-	static int	Lines(CDXBitmapFont *font, const WCHAR *text, float y, DWORD colour, bool up = false, float floor = 0.f)
+	static int	Lines(CDXBitmapFont *font, const WCHAR *text, float y, DWORD colour, bool up = false, float floor = 0.f, float width = 420.f)
 	{
 		static SWordWrapFill fill;
 		static WCHAR buf[400];
@@ -772,7 +774,7 @@ public:
 				len = 399;
 			memcpy(buf, p, len * sizeof(WCHAR));
 			buf[len] = 0;
-			int n = font->WordWrap(&fill, buf, 420.f);
+			int n = font->WordWrap(&fill, buf, width);
 			for (int l = 0; (l < n) && (total < 40); l++)
 			{
 				wcsncpy(wrapped[total], fill.c[l], 99);
@@ -879,7 +881,7 @@ static const int	kCeParent[CEP_COUNT] = {-1, CEP_HUB, CEP_HUB, CEP_HUB, CEP_HUB,
 // The title bar's text while one of Help & Info's boxes is up, in the order of CEBT_*.
 enum { CEBT_TIPS = 1, CEBT_UPDATES, CEBT_ABOUT, CEBT_THANKS };
 static WCHAR		kBoxTitles[4][24] = {L"Controls & Tips", L"Updates", L"About Onslaught CE", L"Special Thanks"};
-static WCHAR		kCeTitles[CEP_COUNT][24] = {L"ONSLAUGHT CE", L"Bonus Levels", L"CE Settings", L"Cheats", L"Help & Info",
+static WCHAR		kCeTitles[CEP_COUNT][24] = {L"Onslaught CE", L"Bonus Levels", L"CE Settings", L"Cheats", L"Help & Info",
 												L"What's Coming", L"Map Editor", L"Museum", L"Catalogue", L"Catalogue", L"Find by name",
 												L"Experimental Features"};
 
@@ -1522,6 +1524,40 @@ public:
 		if (!strcmp(mLab->mKey, "play_unit") && CE_SettingIs(mLab->mKey, "tank"))
 			return 1;
 		return 0;
+	}
+	virtual void	Render(float x, float y, BOOL selected)
+	{
+		if (mExpanded)
+		{
+			CMenuMenuItem::Render(x, y, selected);
+			return;
+		}
+		int value = GetValue();
+		if (value != mValue)
+		{
+			mValue = value;
+			mSelection = value;
+		}
+		CDXBitmapFont *font = PLATFORM.Font(FONT_SMALL);
+		if (!font)
+			return;
+		const bool on = (mSelection != 0);
+		DWORD labelCol = !IsEnabled() ? 0xff505050u : (selected ? 0xffffcc00u : 0xffffffffu);
+		// 2x colour stage (StageColour): crisp teal-green for On vs soft grey for Off; distinct when selected too.
+		DWORD valCol = !IsEnabled() ? 0xff505050u
+			: (selected ? (on ? 0xff487f38u : 0xff7f6e28u) : (on ? 0xff347f58u : 0xff545454u));
+		WCHAR *label = GetText();
+		SIZE size;
+		font->GetTextExtent(label, &size);
+		float scale = 1.f;
+		float tx = x - float(size.cx);
+		if (tx < 5.f)
+		{
+			scale = (x - 5.f) / float(size.cx);
+			tx = 5.f;
+		}
+		font->DrawTextWithShadow(tx, y, labelCol, label, 0, 0, scale, 1.f);
+		font->DrawTextWithShadow(x + 8.f, y, valCol, GetChoiceText(mSelection), 0, 0, 1.f, 1.f);
 	}
 
 	const SCeLab	*mLab;
@@ -2210,9 +2246,9 @@ public:
 		if (PortCeModsPageRender(transition, dest))
 			return;							// the Mods page is open: it drew itself in this page's frame
 #ifdef CE_NETWORK_OFF
-		static WCHAR title[] = L"ONSLAUGHT CE";
+		static WCHAR title[] = L"Onslaught CE";
 #else
-		static WCHAR title[] = L"ONSLAUGHT CE";
+		static WCHAR title[] = L"Onslaught CE";
 #endif
 		FRONTEND.DrawSlidingTextBordersAndMask(transition, dest);
 		// the message box is translucent: the list is not drawn behind it

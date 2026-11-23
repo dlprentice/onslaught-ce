@@ -63,6 +63,8 @@
 #include "mesh.h"
 #include "rtmesh.h"
 #include "meshrenderer.h"
+#include "ce_entity_handles.h"
+#include "ce_sandbox_telemetry.h"
 #include "renderqueue.h"
 #include "player.h"
 #include "BattleEngine.h"
@@ -188,6 +190,8 @@ CePlayUnitKey gUnloadKey;				// U key: manual landing craft beach unload / drops
 bool gUnloadPressed;
 CePlayUnitKey gSpotKey;					// C key: artillery aerial spotting / shot-follow camera toggle
 bool gSpotPressed;
+CePlayUnitKey gHelpHintKey;				// F1 key: re-open the upper-center Play Any Unit mode hint capsule
+CePlayUnitHintState gHintState;
 int gDrivenClass = -1;					// active CePlayUnitClassId while driving
 bool gIsDropship;
 bool gIsBomber;
@@ -202,19 +206,23 @@ float gLastWeaponViewYaw;
 unsigned long long gWeaponViewNs;
 CThing *gSpotShellThing;
 int gSpotShellNumber = -1;
+CeEntityHandle gSpotShellHandle = kCeEntityHandleInvalid;
 bool gFirstPersonBarrelPass;
 const void *gFirstPersonBarrelThing;
 int gFirstPersonBarrelDrawn;
 bool gUsedGamepad;						// true once a gamepad input drives the unit; selects gamepad hints in the prompt banner
 CUnit *gSwitchUnit;						// a unit the player switched to from the one driven: taken as soon as the Battle Engine's own view is back
 int gSwitchThing = -1;
+CeEntityHandle gSwitchHandle = kCeEntityHandleInvalid;
 unsigned gSwitchWait;					// ticks the switch may still wait
 
 CUnit *gUnit;							// the driven (or observed) unit: compared by address with the world's things, never followed until found there
 int gThing = -1;
+CeEntityHandle gUnitHandle = kCeEntityHandleInvalid;
 EAIState gPrevAI = AI_ON;
 CSquad *gPreviousSquad;
 int gPreviousSquadNumber = -1;
+CeEntityHandle gPreviousSquadHandle = kCeEntityHandleInvalid;
 // The sole delivered vehicle must keep its live order owner while the pilot drives.
 bool gDeliveryAssigned;
 bool gOnFoot;
@@ -224,6 +232,7 @@ bool gFootZoomIn, gFootZoomOut;
 int gPossessedAllegiance;
 CBattleEngine *gParkedEngine;
 int gParkedEngineNumber = -1;
+CeEntityHandle gParkedEngineHandle = kCeEntityHandleInvalid;
 bool gEngineDeactivated;
 class CeTankCamera;
 CeTankCamera *gCamera;			// the game's own third-person camera on the unit, while the game's camera is the unit's
@@ -469,7 +478,8 @@ bool FootKeepsAssignment(CUnit *unit)
 	if (!gPreviousSquad) return true;
 	ListIterator<CSquad> squads(&WORLD.GetSquadNB());
 	for (CSquad *s = squads.First(); s; s = squads.Next())
-		if (s == gPreviousSquad && s->GetThingNumber() == gPreviousSquadNumber)
+		if (s == gPreviousSquad && s->GetThingNumber() == gPreviousSquadNumber
+		    && (gPreviousSquadHandle == kCeEntityHandleInvalid || CeEntityHandleMatches(s, gPreviousSquadHandle)))
 			return !s->IsShuttingDown() && !s->IsDying();
 	return false;
 }
@@ -481,7 +491,7 @@ FVector Ground(float x, float y)
 	return p;
 }
 
-// The unit the option holds, found in the world's things by address and number; NULL when it is gone. The world is walked, never the held address followed, so a unit that was
+// The unit the option holds, found in the world's things by address and 32-bit generation handle; NULL when it is gone. The world is walked, never the held address followed, so a unit that was
 // deleted since the last look is never touched.
 CUnit *Held()
 {
@@ -489,7 +499,10 @@ CUnit *Held()
 	ListIterator<CThing> it(&WORLD.GetThingNB());
 	for (CThing *t = it.First(); t; t = it.Next())
 		if ((void *)t == (void *)gUnit)
-			return (t->GetThingNumber() == gThing && (t->GetThingType() & THING_TYPE_UNIT)) ? (CUnit *)t : NULL;
+		{
+			const bool handleOk = gUnitHandle != kCeEntityHandleInvalid ? CeEntityHandleMatches(t, gUnitHandle) : (t->GetThingNumber() == gThing);
+			return (handleOk && (t->GetThingType() & THING_TYPE_UNIT)) ? (CUnit *)t : NULL;
+		}
 	return NULL;
 }
 
@@ -1662,7 +1675,8 @@ void UpdateBallisticAndSpotter(CUnit *u)
 	{
 		if (!(th->GetThingType() & THING_TYPE_AMMUNITION)) continue;
 		CRound *r = (CRound *)th;
-		if (gSpotShellThing && th == gSpotShellThing && th->GetThingNumber() == gSpotShellNumber)
+		if (gSpotShellThing && th == gSpotShellThing
+		    && (gSpotShellHandle != kCeEntityHandleInvalid ? CeEntityHandleMatches(th, gSpotShellHandle) : (th->GetThingNumber() == gSpotShellNumber)))
 		{
 			const FVector p = th->GetPos(), v = ((CActor *)th)->GetVelocity();
 			shellPos[0] = p.X; shellPos[1] = p.Y; shellPos[2] = p.Z;
@@ -1674,6 +1688,7 @@ void UpdateBallisticAndSpotter(CUnit *u)
 		{
 			gSpotShellThing = th;
 			gSpotShellNumber = th->GetThingNumber();
+			gSpotShellHandle = CeEntityHandleFor(th);
 			const FVector p = th->GetPos(), v = ((CActor *)th)->GetVelocity();
 			shellPos[0] = p.X; shellPos[1] = p.Y; shellPos[2] = p.Z;
 			shellVel[0] = v.X; shellVel[1] = v.Y; shellVel[2] = v.Z;
@@ -1682,7 +1697,10 @@ void UpdateBallisticAndSpotter(CUnit *u)
 			break;
 		}
 	}
-	if (!shellAlive) { gSpotShellThing = NULL; gSpotShellNumber = -1; }
+	if (!shellAlive) {
+		if (gSpotShellHandle != kCeEntityHandleInvalid) CeEntityHandleUnregisterHandle(gSpotShellHandle);
+		gSpotShellThing = NULL; gSpotShellNumber = -1; gSpotShellHandle = kCeEntityHandleInvalid;
+	}
 	CePlayUnitSpotterUpdate(&gSpotter, 0.05f, shellAlive, shellPos, shellVel,
 	                        gBallisticArc.valid && gBallisticArc.hitsGround, gBallisticArc.impact);
 }
@@ -1720,7 +1738,8 @@ CNormalSquad *PreviousSquad()
 	if (!gPreviousSquad || gLevel != GAME.GetCurrentLevel()) return NULL;
 	ListIterator<CSquad> squads(&WORLD.GetSquadNB());
 	for (CSquad *candidate = squads.First(); candidate; candidate = squads.Next())
-		if (candidate == gPreviousSquad && candidate->GetThingNumber() == gPreviousSquadNumber)
+		if (candidate == gPreviousSquad && candidate->GetThingNumber() == gPreviousSquadNumber
+		    && (gPreviousSquadHandle == kCeEntityHandleInvalid || CeEntityHandleMatches(candidate, gPreviousSquadHandle)))
 			return IsNormal(candidate) && !candidate->IsShuttingDown() && !candidate->IsDying() ? (CNormalSquad *)candidate : NULL;
 	return NULL;
 }
@@ -1951,7 +1970,9 @@ void Release(const char *why, const char *notice = NULL, const char *hint = NULL
 	ReconcileController();
 	CPlayer *player = GAME.GetPlayer(0);
 	CBattleEngine *engine = player ? player->GetBattleEngine() : NULL;
-	if (engine && engine == gParkedEngine && engine->GetThingNumber() == gParkedEngineNumber && gLevel == GAME.GetCurrentLevel()
+	if (engine && engine == gParkedEngine
+	    && (gParkedEngineHandle != kCeEntityHandleInvalid ? CeEntityHandleMatches(engine, gParkedEngineHandle) : (engine->GetThingNumber() == gParkedEngineNumber))
+	    && gLevel == GAME.GetCurrentLevel()
 		&& gEngineDeactivated && !engine->IsDying() && !engine->GetIsPoweredUp()) engine->Activate();
 	gEngineDeactivated = false;
 #ifdef CE_PLAYUNIT_TEST
@@ -1972,8 +1993,14 @@ void Release(const char *why, const char *notice = NULL, const char *hint = NULL
 	gBoostHeld = false;
 	gUnloadPending = false;
 	gUnloadWaitTicks = 0;
+	if (gSpotShellHandle != kCeEntityHandleInvalid) CeEntityHandleUnregisterHandle(gSpotShellHandle);
 	gSpotShellThing = NULL;
 	gSpotShellNumber = -1;
+	gSpotShellHandle = kCeEntityHandleInvalid;
+	gUnitHandle = kCeEntityHandleInvalid;
+	gPreviousSquadHandle = kCeEntityHandleInvalid;
+	gParkedEngineHandle = kCeEntityHandleInvalid;
+	CePlayUnitHintReset(&gHintState);
 	memset(&gFlightState, 0, sizeof(gFlightState));
 	memset(&gBallisticArc, 0, sizeof(gBallisticArc));
 	CePlayUnitSpotterReset(&gSpotter);
@@ -2212,6 +2239,34 @@ void RefreshUnitPrompt(CUnit *u)
     CePlayUnitPrompt(standing);
 }
 
+// Selects an infantry unit's primary firearm (preferring rifle/gun over thrown plasma grenade)
+// so both firing and the HUD weapon label stay synchronized with the carried rifle.
+CWeapon *SelectInfantryPrimaryWeapon(CUnit *u, bool assign)
+{
+    if (!u) return NULL;
+    CWeapon *list[16];
+    bool hasMode[16], ready[16];
+    const char *names[16];
+    int count = 0, curIdx = -1;
+    ListIterator<CWeapon> weapons(&u->mWeapons);
+    for (CWeapon *w = weapons.First(); w && count < 16; w = weapons.Next())
+    {
+        if (w == u->mCurrentWeapon) curIdx = count;
+        list[count] = w;
+        hasMode[count] = w->mMode != NULL;
+        ready[count] = w->mMode && w->ReadyToFire() != FALSE;
+        names[count] = (w->mData && w->mData->mName) ? w->mData->mName : "";
+        ++count;
+    }
+    const int pick = CePlayUnitSelectInfantryPrimaryWeapon(count, curIdx, u->mUnknown168 == 1, hasMode, ready, names);
+    if (pick >= 0)
+    {
+        if (assign && list[pick] != u->mCurrentWeapon) u->mCurrentWeapon = list[pick];
+        return list[pick];
+    }
+    return u->mCurrentWeapon;
+}
+
 bool Take(CPlayer *player, CBattleEngine *engine, CCONTROLLER *controller, CUnit *u, int kind)
 {
 #ifdef CE_PLAYUNIT_TEST
@@ -2229,20 +2284,26 @@ bool Take(CPlayer *player, CBattleEngine *engine, CCONTROLLER *controller, CUnit
 	gLastNotedState = -1;
 	gUnit = u;
 	gThing = u->GetThingNumber();
+	gUnitHandle = CeEntityHandleFor(u);
 	gPrevAI = u->GetAIState();
 	gPreviousSquad = u->GetSquad();
 	gPreviousSquadNumber = gPreviousSquad ? gPreviousSquad->GetThingNumber() : -1;
+	gPreviousSquadHandle = gPreviousSquad ? CeEntityHandleFor(gPreviousSquad) : kCeEntityHandleInvalid;
 	gPossessedAllegiance = u->GetAllegiance();
 	gParkedEngine = engine;
 	gParkedEngineNumber = engine->GetThingNumber();
+	gParkedEngineHandle = CeEntityHandleFor(engine);
 	gDrivenClass = kind;
 	gIsDropship = kind == CE_PLAYUNIT_CLASS_AIRCRAFT && (!strcmp(u->_GetClassName(), "CDropship") || !strcmp(u->_GetClassName(), "CCarrier") || !strcmp(u->_GetClassName(), "CFenrir"));
 	gIsBomber = kind == CE_PLAYUNIT_CLASS_AIRCRAFT && (!strcmp(u->_GetClassName(), "CBomber") || !strcmp(u->_GetClassName(), "CDiveBomber") || !strcmp(u->_GetClassName(), "CGroundAttackAircraft"));
 	gBoostHeld = false;
 	gUnloadPending = false;
 	gUnloadWaitTicks = 0;
+	if (gSpotShellHandle != kCeEntityHandleInvalid) CeEntityHandleUnregisterHandle(gSpotShellHandle);
 	gSpotShellThing = NULL;
 	gSpotShellNumber = -1;
+	gSpotShellHandle = kCeEntityHandleInvalid;
+	if (gOnFoot) SelectInfantryPrimaryWeapon(u, true);
 	memset(&gBallisticArc, 0, sizeof(gBallisticArc));
 	CePlayUnitSpotterReset(&gSpotter);
 	CePlayUnitWeaponViewReset(&gWeaponView);
@@ -2308,6 +2369,8 @@ bool Take(CPlayer *player, CBattleEngine *engine, CCONTROLLER *controller, CUnit
 	gUnloadKey.wasDown = PortKeyHeldNow(DIK_U) > 0;
 	gSpotPressed = false;
 	gSpotKey.wasDown = PortKeyHeldNow(DIK_C) > 0;
+	gHelpHintKey.wasDown = PortKeyHeldNow(DIK_F1) > 0;
+	CePlayUnitHintOpen(&gHintState);
 	gLastWeaponViewYaw = gLookYaw;
 	gUsedGamepad = false;
 	const char *name = u->GetUnitData() && u->GetUnitData()->mName ? u->GetUnitData()->mName : (gOnFoot ? "soldier" : "tank");
@@ -2454,6 +2517,7 @@ void Reset()
 	gTakePressed = false;
 	gSwitchUnit = NULL;
 	gSwitchThing = -1;
+	gSwitchHandle = kCeEntityHandleInvalid;
 	gSwitchWait = 0;
 	gBackPending = false;
 	gUnit = NULL;
@@ -2464,22 +2528,28 @@ void Reset()
 	gBoostHeld = false;
 	gUnloadPending = false;
 	gUnloadWaitTicks = 0;
+	if (gSpotShellHandle != kCeEntityHandleInvalid) CeEntityHandleUnregisterHandle(gSpotShellHandle);
 	gSpotShellThing = NULL;
 	gSpotShellNumber = -1;
+	gSpotShellHandle = kCeEntityHandleInvalid;
 	memset(&gFlightState, 0, sizeof(gFlightState));
 	memset(&gBallisticArc, 0, sizeof(gBallisticArc));
 	CePlayUnitSpotterReset(&gSpotter);
 	CePlayUnitWeaponViewReset(&gWeaponView);
+	CePlayUnitHintReset(&gHintState);
 	CeUnitLookExtraPitch()[0] = 0.f;
 	CeUnitLookExtraPitch()[1] = 0.f;
 	gFootFirstPerson = false;
 	gFootRenderedView = NULL;
 	gUsedGamepad = false;
 	gThing = -1;
+	gUnitHandle = kCeEntityHandleInvalid;
 	gPreviousSquad = NULL;
 	gPreviousSquadNumber = -1;
+	gPreviousSquadHandle = kCeEntityHandleInvalid;
 	gParkedEngine = NULL;
 	gParkedEngineNumber = -1;
+	gParkedEngineHandle = kCeEntityHandleInvalid;
 	gMoving = false;
 	ClearInput();
 #ifdef CE_PLAYUNIT_TEST
@@ -2537,7 +2607,7 @@ void TestBorrow(CBattleEngine *engine)
 // the turret's own, CUnit::Move's mUnknownE0) beside the heading from the muzzle to the player's aim point. And the unit's rounds, by identity: a round
 // whose launcher is the driven unit is followed, "R tick number x y z" each tick, and "RI tick number x y z" gives the last place it
 // was seen when it is gone (where it hit). The identities are compared only, never read once gone.
-struct ProbeRound { CThing *thing; int number; FVector last; FVector aim; };
+struct ProbeRound { CThing *thing; int number; CeEntityHandle handle; FVector last; FVector aim; };
 FVector gProbeReticle; bool gProbeReticleGround;
 ProbeRound gProbeRounds[32];
 void ProbeAim(CUnit *u)
@@ -2556,7 +2626,9 @@ void ProbeAim(CUnit *u)
 		int slot = -1, empty = -1;
 		for (int i = 0; i < 32; ++i)
 		{
-			if (gProbeRounds[i].thing == th && gProbeRounds[i].number == th->GetThingNumber()) slot = i;
+			if (gProbeRounds[i].thing == th
+			    && (gProbeRounds[i].handle != kCeEntityHandleInvalid ? CeEntityHandleMatches(th, gProbeRounds[i].handle) : (gProbeRounds[i].number == th->GetThingNumber())))
+				slot = i;
 			else if (!gProbeRounds[i].thing && empty < 0) empty = i;
 		}
 		const FVector pos = th->GetPos();
@@ -2566,6 +2638,7 @@ void ProbeAim(CUnit *u)
 			slot = empty;
 			gProbeRounds[slot].thing = th;
 			gProbeRounds[slot].number = th->GetThingNumber();
+			gProbeRounds[slot].handle = CeEntityHandleFor(th);
 			gProbeRounds[slot].aim = gAimPoint;
 			++gKitRounds;
 		}
@@ -2581,7 +2654,9 @@ void ProbeAim(CUnit *u)
 			gKitImpact = l;
 			gKitLaunchAim = gProbeRounds[i].aim;
 			gKitImpactSeen = true;
+			if (gProbeRounds[i].handle != kCeEntityHandleInvalid) CeEntityHandleUnregisterHandle(gProbeRounds[i].handle);
 			gProbeRounds[i].thing = NULL;
+			gProbeRounds[i].handle = kCeEntityHandleInvalid;
 		}
 }
 #endif
@@ -2792,6 +2867,8 @@ void FireTick(CUnit *u, bool held)
 #endif
 	if (!stockOnly && gCamera && CePlayUnitFreeFireAllowed(FillGate(true), gLaw->freeFire, PortCeCmdMapOpen()))
 	{
+		if (gOnFoot && u->mUnknown168 == 0)
+			SelectInfantryPrimaryWeapon(u, true);
 		const FVector eye = (gOnFoot && gViewMode != kViewLook) ? FootAimEye(u->GetPos()) : gCamera->GetPos();
 		const FVector look = gCamera->GetOrientation().GetColumnY();
 		FVector aim;
@@ -2968,6 +3045,7 @@ void Drive(CUnit *u, CPlayer *player, CBattleEngine *engine)
 			return;
 		}
 	}
+	bool viewModeChanged = false;
     if (gViewMode == kViewLook && zoomIn != zoomOut) {
         const bool ready = MakeUnitView(u);
         const int previous = ready ? gUnitViewState.view :
@@ -2975,6 +3053,7 @@ void Drive(CUnit *u, CPlayer *player, CBattleEngine *engine)
         const int view = ready ? CePlayUnitCameraZoom(&gUnitViewState, gUnitViewRig, zoomIn, zoomOut) :
             (gOnFoot ? (zoomIn ? kCePlayUnitCameraFirst : kCePlayUnitCameraClose) : previous);
         if (view != previous) {
+            viewModeChanged = true;
             if (view != kCePlayUnitCameraFirst) gUnitViewThird = view;
             gFootFirstPerson = view == kCePlayUnitCameraFirst;
             gFootRenderedView = NULL;
@@ -2990,12 +3069,33 @@ void Drive(CUnit *u, CPlayer *player, CBattleEngine *engine)
         const int view = ready ? CePlayUnitCameraToggleFirst(&gUnitViewState, gUnitViewRig, &gUnitViewThird) :
             (gOnFoot ? (gFootFirstPerson ? kCePlayUnitCameraClose : kCePlayUnitCameraFirst) : previous);
         if (view != previous) {
+            viewModeChanged = true;
             gFootFirstPerson = view == kCePlayUnitCameraFirst;
             gFootRenderedView = NULL;
             if (gFootFirstPerson && gSpotter.enabled) CePlayUnitSpotterReset(&gSpotter);
             char tip[96];
             UnitViewHelp(tip, sizeof(tip));
             CePlayUnitNotice(UnitViewName(view), tip, true);
+        }
+    }
+    const bool helpPressed = CePlayUnitPressed(&gHelpHintKey, PortKeyHeldNow(DIK_F1) > 0, !GAME.IsPaused() && !PortCeCmdMapOpen());
+    if (CePlayUnitHintStep(&gHintState, viewModeChanged, helpPressed))
+    {
+        if (gHintState.visible)
+        {
+            RefreshUnitPrompt(u);
+            if (helpPressed)
+            {
+                const int curView = (gUnitViewMade && gUnitViewRig.valid) ? gUnitViewState.view
+                    : (gFootFirstPerson ? kCePlayUnitCameraFirst : kCePlayUnitCameraWide);
+                char tip[96];
+                UnitViewHelp(tip, sizeof(tip));
+                CePlayUnitNotice(UnitViewName(curView), tip, true);
+            }
+        }
+        else
+        {
+            CePlayUnitPrompt(NULL);
         }
     }
     if (spotPressed && (gDrivenClass == CE_PLAYUNIT_CLASS_ARTILLERY || UnitHasBallisticWeapon(u, NULL)))
@@ -3276,7 +3376,8 @@ bool CePlayUnitHudTelemetryOf(CePlayUnitHudTelemetry *out)
 	out->isBomber = gIsBomber;
 	const char *uname = u->GetUnitData() && u->GetUnitData()->mName ? u->GetUnitData()->mName : "Unit";
 	CePlayUnitSanitizeHudText(uname, out->unitName, sizeof(out->unitName));
-	CWeapon *w = u->mCurrentWeapon ? u->mCurrentWeapon : FireWeapon(u, false);
+	CWeapon *w = gOnFoot ? SelectInfantryPrimaryWeapon(u, false) : (u->mCurrentWeapon ? u->mCurrentWeapon : FireWeapon(u, false));
+	if (!w) w = u->mCurrentWeapon ? u->mCurrentWeapon : FireWeapon(u, false);
 	const char *wname = (w && w->mData && w->mData->mName) ? w->mData->mName : "PRIMARY";
 	CePlayUnitSanitizeHudText(wname, out->weaponName, sizeof(out->weaponName));
 
@@ -3297,6 +3398,9 @@ bool CePlayUnitHudTelemetryOf(CePlayUnitHudTelemetry *out)
 	out->azDeg = CePlayUnitHeadingDegFromYaw(CePlayUnitWrap(u->Unknown92() + u->mUnknownE0));
 	out->elDeg = gBallisticArc.valid ? gBallisticArc.elevationDeg : (-gLookPitch * (180.f / 3.14159265f));
 	out->rangeMeters = gBallisticArc.valid ? gBallisticArc.rangeMeters : 0.f;
+#ifdef CE_PLAYUNIT_HUD_HAS_MAX_RANGE
+	out->maxRangeMeters = (w && w->mMode) ? w->GetMaxRange(gAimValid ? gAimPoint : u->GetPos()) : 0.f;
+#endif
 	out->arcOn = gBallisticArc.valid;
 	out->spotterMode = gSpotter.mode;
 	out->deployState = (int)u->mDeployState;
@@ -3351,16 +3455,9 @@ bool CePlayUnitHudOverlay(CPlayer *player, int viewpoint)
 		CeHudScope scope(eligible, HUD.mViewportWidth, HUD.mViewportHeight, HUD.mViewportRight - HUD_OFFSET_X, HUD.mViewportY + HUD_OFFSET_Y);
 		HUD.Render00483530();				// the objective panel
 	}
+	// Retail Battle Engine mode keeps its centered 300px compass/armour ring via CHud::RenderOverlayForViewpoint.
+	// Driven non-BE units suppress the giant BE compass ring so Play Any Unit's compact per-class reticle owns center aim.
 	HUD.SetOverlayRenderStates();
-	{
-		CeHudScope scope(eligible, HUD.mViewportWidth, HUD.mViewportHeight, float(PLATFORM.GetWindowWidth()) * 0.5f, float(PLATFORM.GetWindowHeight()) * 0.5f);
-		// CDXCompass::Render (declared via DXCOMPASS_CPP) draws the inner armour arc ring, the outer rotating compass dial, bar ticks and objective dots.
-		RENDERINFO.SRS(D3DRS_CULLMODE, D3DCULL_NONE);
-		RENDERINFO.Apply();
-		HUD.mCompass->Render(be);
-		RENDERINFO.SRS(D3DRS_CULLMODE, D3DCULL_CCW);
-		RENDERINFO.Apply();
-	}
 	{
 		CeHudScope scope(eligible, HUD.mViewportWidth, HUD.mViewportHeight, HUD.mViewportX + HUD_OFFSET_X, HUD.mViewportBottom - HUD_OFFSET_Y);
 		// the radar's panel as CHud::RenderWeaponPanel draws it (its backing, outline and north pointer) without the Battle Engine's weapon charge, turned with the look
@@ -3715,15 +3812,16 @@ void DrawFirstPersonInfantryWeapon(CUnit *u, LPDIRECT3DDEVICE9 dev, int viewpoin
 	const FVector fwd = ori.GetColumnY();
 	const FVector down = ori.GetColumnZ();
 
-	// Anchor cleanly off the bottom-right viewport corner (muscular futuristic pulse-carbine framing)
-	// so the shoulder stock exits smoothly past the bottom-right screen edge at every pitch angle.
-	const float bobX = cosf(gWeaponView.bobPhase) * 0.012f * gWeaponView.bobAmp + gWeaponView.swayX;
-	const float bobY = -gWeaponView.recoil * 0.085f;
-	const float bobZ = gWeaponView.swayY + gWeaponView.recoil * 0.014f;
-	const FVector base = eye + right * (0.31f + bobX) + fwd * (0.98f + bobY) + down * (0.26f + bobZ);
+	// Compact shoulder-held 1P pulse rifle (~48% of legacy scale) tucked cleanly into the
+	// lower-right corner well clear of the center crosshair, with shoulder stock exiting past the bottom-right edge.
+	const float s = 0.48f;
+	const float bobX = (cosf(gWeaponView.bobPhase) * 0.012f * gWeaponView.bobAmp + gWeaponView.swayX) * s;
+	const float bobY = (-gWeaponView.recoil * 0.085f) * s;
+	const float bobZ = (gWeaponView.swayY + gWeaponView.recoil * 0.014f) * s;
+	const FVector base = eye + right * (0.31f + bobX) + fwd * (0.86f + bobY) + down * (0.29f + bobZ);
 
-	// Natural shoulder-held convergence angle pointing smoothly toward the center reticle without entering it.
-	const FVector wFwd = (fwd - right * 0.165f - down * 0.105f);
+	// Subtle shoulder-held convergence angle tucked cleanly in the lower-right quadrant clear of the reticle.
+	const FVector wFwd = (fwd - right * 0.115f - down * 0.065f);
 	const float fLen = sqrtf(wFwd.X * wFwd.X + wFwd.Y * wFwd.Y + wFwd.Z * wFwd.Z);
 	const FVector wf = fLen > 1e-4f ? (wFwd * (1.f / fLen)) : fwd;
 	const FVector wrRaw(down.Y * wf.Z - down.Z * wf.Y, down.Z * wf.X - down.X * wf.Z, down.X * wf.Y - down.Y * wf.X);
@@ -3754,40 +3852,40 @@ void DrawFirstPersonInfantryWeapon(CUnit *u, LPDIRECT3DDEVICE9 dev, int viewpoin
 	CeWeaponVert verts[2600];
 	int nVerts = 0;
 
-	// 1a. Rear shoulder stock (extends smoothly off-screen behind near plane with zero visible cutoff)
+	// 1a. Rear shoulder stock (extends smoothly off-screen behind bottom-right edge with zero visible cutoff)
 	EmitSculptedHull(verts, &nVerts, 2600, base, wr, wf, wd, vDir, keyDir,
-	                 0.00f,  0.026f, 0.058f, 0.072f, 0.38f, -0.96f,
-	                 0.00f,  0.014f, 0.052f, 0.062f, 0.38f, -0.26f,
+	                 0.00f * s,  0.026f * s, 0.058f * s, 0.072f * s, 0.38f, -1.18f * s,
+	                 0.00f * s,  0.014f * s, 0.052f * s, 0.062f * s, 0.38f, -0.26f * s,
 	                 uvBody, tBody, 0.92f);
 	// 1b. Main sculpted lower receiver (high UV density across the visible mid-section)
 	EmitSculptedHull(verts, &nVerts, 2600, base, wr, wf, wd, vDir, keyDir,
-	                 0.00f,  0.014f, 0.052f, 0.062f, 0.38f, -0.26f,
-	                 0.00f, -0.002f, 0.044f, 0.048f, 0.38f,  0.26f,
+	                 0.00f * s,  0.014f * s, 0.052f * s, 0.062f * s, 0.38f, -0.26f * s,
+	                 0.00f * s, -0.002f * s, 0.044f * s, 0.048f * s, 0.38f,  0.26f * s,
 	                 uvBody, tBody, 0.96f);
 
 	// 2a. Rear armored cheek-rest cowling (continuous with main shroud, runs cleanly off bottom-right corner)
 	EmitSculptedHull(verts, &nVerts, 2600, base, wr, wf, wd, vDir, keyDir,
-	                 0.00f, -0.038f, 0.066f, 0.040f, 0.46f, -0.96f,
-	                 0.00f, -0.036f, 0.058f, 0.036f, 0.46f, -0.26f,
+	                 0.00f * s, -0.038f * s, 0.066f * s, 0.040f * s, 0.46f, -1.18f * s,
+	                 0.00f * s, -0.036f * s, 0.058f * s, 0.036f * s, 0.46f, -0.26f * s,
 	                 uvShroud, tShroud, 1.02f);
 	// 2b. Main BEA-style swept armored upper cowling (crisp panel lines, rivets & cooling vents)
 	EmitSculptedHull(verts, &nVerts, 2600, base, wr, wf, wd, vDir, keyDir,
-	                 0.00f, -0.036f, 0.058f, 0.036f, 0.46f, -0.26f,
-	                 0.00f, -0.034f, 0.042f, 0.028f, 0.46f,  0.30f,
+	                 0.00f * s, -0.036f * s, 0.058f * s, 0.036f * s, 0.46f, -0.26f * s,
+	                 0.00f * s, -0.034f * s, 0.042f * s, 0.028f * s, 0.46f,  0.30f * s,
 	                 uvShroud, tShroud, 1.06f);
 
 	// 3. Fore-end tapered armored barrel jacket / heat shroud
 	EmitSculptedHull(verts, &nVerts, 2600, base, wr, wf, wd, vDir, keyDir,
-	                 0.00f, -0.012f, 0.044f, 0.036f, 0.44f,  0.22f,
-	                 0.00f, -0.014f, 0.030f, 0.024f, 0.46f,  0.42f,
+	                 0.00f * s, -0.012f * s, 0.044f * s, 0.036f * s, 0.44f,  0.22f * s,
+	                 0.00f * s, -0.014f * s, 0.030f * s, 0.024f * s, 0.46f,  0.42f * s,
 	                 uvShroud, tShroud, 1.04f);
 
 	// 4. Turned cylindrical primary barrel + stepped muzzle brake crown (10-sided smooth cylinder)
 	EmitCylinderTube(verts, &nVerts, 2600, base, wr, wf, wd, vDir, keyDir,
-	                 0.00f, -0.016f, 0.36f, 0.62f, 0.022f, 0.018f, 10,
+	                 0.00f * s, -0.016f * s, 0.36f * s, 0.62f * s, 0.022f * s, 0.018f * s, 10,
 	                 uvBarrel, tBarrel, 1.08f, false);
 	EmitCylinderTube(verts, &nVerts, 2600, base, wr, wf, wd, vDir, keyDir,
-	                 0.00f, -0.016f, 0.60f, 0.67f, 0.027f, 0.024f, 10,
+	                 0.00f * s, -0.016f * s, 0.60f * s, 0.67f * s, 0.027f * s, 0.024f * s, 10,
 	                 uvBody, tBody, 0.94f, true);
 
 	// 5. Faction-distinct underbarrel & optic hardware
@@ -3795,50 +3893,50 @@ void DrawFirstPersonInfantryWeapon(CUnit *u, LPDIRECT3DDEVICE9 dev, int viewpoin
 	{
 		// Heavy underbarrel gas/thermal tube + signature forged steel bayonet blade
 		EmitCylinderTube(verts, &nVerts, 2600, base, wr, wf, wd, vDir, keyDir,
-		                 0.00f, 0.024f, 0.22f, 0.54f, 0.016f, 0.014f, 8,
+		                 0.00f * s, 0.024f * s, 0.22f * s, 0.54f * s, 0.016f * s, 0.014f * s, 8,
 		                 uvBody, tBody, 0.94f, true);
 		EmitBayonetBlade(verts, &nVerts, 2600, base, wr, wf, wd, vDir, keyDir,
-		                 0.00f, 0.036f, 0.48f, 0.78f, 0.007f, 0.020f,
+		                 0.00f * s, 0.036f * s, 0.48f * s, 0.78f * s, 0.007f * s, 0.020f * s,
 		                 uvBarrel, tBarrel);
 		// Rugged hooded iron-sight arch on upper shroud
 		EmitSculptedHull(verts, &nVerts, 2600, base, wr, wf, wd, vDir, keyDir,
-		                 0.00f, -0.076f, 0.030f, 0.018f, 0.38f, -0.20f,
-		                 0.00f, -0.072f, 0.024f, 0.014f, 0.40f,  0.02f,
+		                 0.00f * s, -0.076f * s, 0.030f * s, 0.018f * s, 0.38f, -0.20f * s,
+		                 0.00f * s, -0.072f * s, 0.024f * s, 0.014f * s, 0.40f,  0.02f * s,
 		                 uvBody, tBody, 0.96f);
 		// Glowing amber thermal vent recessed along left receiver flank (clearly visible to player)
 		EmitSculptedHull(verts, &nVerts, 2600, base, wr, wf, wd, vDir, keyDir,
-		                 -0.052f, -0.014f, 0.010f, 0.014f, 0.28f, -0.18f,
-		                 -0.044f, -0.014f, 0.010f, 0.012f, 0.28f,  0.22f,
+		                 -0.052f * s, -0.014f * s, 0.010f * s, 0.014f * s, 0.28f, -0.18f * s,
+		                 -0.044f * s, -0.014f * s, 0.010f * s, 0.012f * s, 0.28f,  0.22f * s,
 		                 uvGlow, tGlow, 1.0f, true);
 	}
 	else
 	{
 		// Forseti underbarrel pulse-capacitor cylinder + glowing cyan accelerator emitter ring
 		EmitCylinderTube(verts, &nVerts, 2600, base, wr, wf, wd, vDir, keyDir,
-		                 0.00f, 0.026f, 0.20f, 0.48f, 0.020f, 0.017f, 10,
+		                 0.00f * s, 0.026f * s, 0.20f * s, 0.48f * s, 0.020f * s, 0.017f * s, 10,
 		                 uvBarrel, tBarrel, 1.04f, false);
 		EmitCylinderTube(verts, &nVerts, 2600, base, wr, wf, wd, vDir, keyDir,
-		                 0.00f, 0.026f, 0.48f, 0.56f, 0.018f, 0.014f, 8,
+		                 0.00f * s, 0.026f * s, 0.48f * s, 0.56f * s, 0.018f * s, 0.014f * s, 8,
 		                 uvGlow, tGlow, 1.0f, false, true);
 		// Sleek Forseti tubular reflex optic housing + armored mounting bridge + glowing rear sight ring
 		EmitCylinderTube(verts, &nVerts, 2600, base, wr, wf, wd, vDir, keyDir,
-		                 0.00f, -0.084f, -0.18f, 0.12f, 0.024f, 0.026f, 10,
+		                 0.00f * s, -0.084f * s, -0.18f * s, 0.12f * s, 0.024f * s, 0.026f * s, 10,
 		                 uvBody, tBody, 1.02f, true);
 		EmitSculptedHull(verts, &nVerts, 2600, base, wr, wf, wd, vDir, keyDir,
-		                 0.00f, -0.068f, 0.016f, 0.014f, 0.30f, -0.14f,
-		                 0.00f, -0.068f, 0.015f, 0.013f, 0.30f,  0.08f,
+		                 0.00f * s, -0.068f * s, 0.016f * s, 0.014f * s, 0.30f, -0.14f * s,
+		                 0.00f * s, -0.068f * s, 0.015f * s, 0.013f * s, 0.30f,  0.08f * s,
 		                 uvShroud, tShroud, 0.98f);
 		// Glowing cyan pulse cell strip recessed along left shroud groove (facing player camera)
 		EmitSculptedHull(verts, &nVerts, 2600, base, wr, wf, wd, vDir, keyDir,
-		                 -0.054f, -0.020f, 0.010f, 0.013f, 0.28f, -0.18f,
-		                 -0.044f, -0.018f, 0.010f, 0.011f, 0.28f,  0.24f,
+		                 -0.054f * s, -0.020f * s, 0.010f * s, 0.013f * s, 0.28f, -0.18f * s,
+		                 -0.044f * s, -0.018f * s, 0.010f * s, 0.011f * s, 0.28f,  0.24f * s,
 		                 uvGlow, tGlow, 1.0f, true);
 	}
 
 	// 6. Contoured lower handguard & angled forward grip silhouette
 	EmitSculptedHull(verts, &nVerts, 2600, base, wr, wf, wd, vDir, keyDir,
-	                 0.00f, 0.064f, 0.028f, 0.038f, 0.36f, -0.16f,
-	                 0.00f, 0.052f, 0.024f, 0.026f, 0.38f,  0.10f,
+	                 0.00f * s, 0.064f * s, 0.028f * s, 0.038f * s, 0.36f, -0.16f * s,
+	                 0.00f * s, 0.052f * s, 0.024f * s, 0.026f * s, 0.38f,  0.10f * s,
 	                 uvBody, tBody, 0.88f);
 
 	DrawWeaponMeshBuffer(dev, viewpoint, tex, verts, nVerts, true);
@@ -3846,8 +3944,8 @@ void DrawFirstPersonInfantryWeapon(CUnit *u, LPDIRECT3DDEVICE9 dev, int viewpoin
 	// 7. Additive star-burst muzzle flash cone when firing
 	if (gWeaponView.flash > 0.08f)
 	{
-		const float sc = 0.045f + 0.065f * gWeaponView.flash;
-		const FVector mPos = base + wf * 0.75f + wd * -0.018f;
+		const float sc = (0.045f + 0.065f * gWeaponView.flash) * s;
+		const FVector mPos = base + wf * (0.75f * s) + wd * (-0.018f * s);
 		const DWORD coreCol = muspell ? 0xfffff0a0 : 0xffd8ffff;
 		const DWORD tipCol  = muspell ? 0x00ff5810 : 0x0020b8ff;
 		CeWorldTriVert fv[24];
@@ -4322,6 +4420,7 @@ void AnswerSwitch(CUnit *held, CBattleEngine *engine)
 	Release("switching to another unit");
 	gSwitchUnit = u;
 	gSwitchThing = u->GetThingNumber();
+	gSwitchHandle = CeEntityHandleFor(u);
 	gSwitchWait = kCePlayUnitSwitchWait;
 }
 
@@ -4334,7 +4433,11 @@ void FinishSwitch()
 	CUnit *u = NULL;
 	ListIterator<CThing> it(&WORLD.GetThingNB());
 	for (CThing *t = it.First(); t; t = it.Next())
-		if ((void *)t == (void *)gSwitchUnit && t->GetThingNumber() == gSwitchThing && (t->GetThingType() & THING_TYPE_UNIT)) u = (CUnit *)t;
+		if ((void *)t == (void *)gSwitchUnit && t->GetThingNumber() == gSwitchThing
+#ifdef CE_VERSION
+		    && (gSwitchHandle == kCeEntityHandleInvalid || CeEntityHandleMatches(t, gSwitchHandle))
+#endif
+		    && (t->GetThingType() & THING_TYPE_UNIT)) u = (CUnit *)t;
 	CBattleEngine *engine = NULL;
 	CPlayer *player = NULL;
 	CCONTROLLER *controller = NULL;
@@ -4344,10 +4447,16 @@ void FinishSwitch()
 	{
 	case CE_PLAYUNIT_SWITCH_TAKE:
 		gSwitchUnit = NULL;
+#ifdef CE_VERSION
+		gSwitchHandle = kCeEntityHandleInvalid;
+#endif
 		Take(player, engine, controller, u, kind);
 		break;
 	case CE_PLAYUNIT_SWITCH_GIVE_UP:
 		gSwitchUnit = NULL;
+#ifdef CE_VERSION
+		gSwitchHandle = kCeEntityHandleInvalid;
+#endif
 		Refuse("That unit cannot be taken now.", "Back in your Battle Engine.");
 		break;
 	default:
@@ -4394,6 +4503,7 @@ void CePlayUnitUpdate()
 	}
 	if ((!gDriving && gWanted && PortCeCmdMapOpen()) || GAME.IsPaused()) { ClearInput(); gTakePressed = false; return; }
 	++gTick;
+	CeSandboxTelemetryMaybeLog(gTick);
 #ifdef CE_PLAYUNIT_TEST
 	ObserveSuccessorMotion();
 	FollowReturned();
@@ -4469,7 +4579,7 @@ void CePlayUnitUpdate()
 				CUnit *u = Census(engine, &friendlies);
 				++gLooks;
 				gNextLook = gTick + kLookEvery;
-				if (u) { gUnit = u; gThing = u->GetThingNumber(); Note("observing unit %d at tick %u (%d friendly units)", (int)gThing, gTick, friendlies); }
+				if (u) { gUnit = u; gThing = u->GetThingNumber(); gUnitHandle = CeEntityHandleFor(u); Note("observing unit %d at tick %u (%d friendly units)", (int)gThing, gTick, friendlies); }
 				else if (gLooks >= kMaxLooks) { gObserveDone = true; Note("no tank to observe"); }
 			}
 		}

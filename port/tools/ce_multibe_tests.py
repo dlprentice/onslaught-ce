@@ -218,10 +218,15 @@ int main() {
     ms.forsetiAlive = 2; ms.forsetiTotal = 2; ms.muspellAlive = 1; ms.muspellTotal = 2;
     char banner[128] = {};
     ms.FormatHudBanner(true, CE_MULTIBE_SIDE_MUSPELL, banner, sizeof(banner));
-    Check(std::strstr(banner, "2v2 VERSUS") != nullptr && std::strstr(banner, "MUSPELL") != nullptr, "2v2 banner text");
+    Check(std::strstr(banner, "2v2  FORSETI 2/2 (K:1)  vs  MUSPELL 1/2 (K:0)  (YOU: MUSPELL)") != nullptr &&
+          std::strstr(banner, "VERSUS") == nullptr && std::strchr(banner, '[') == nullptr, "2v2 banner text");
     ms.forsetiTotal = 2; ms.muspellTotal = 1;
     ms.FormatHudBanner(true, CE_MULTIBE_SIDE_FORSETI, banner, sizeof(banner));
-    Check(std::strstr(banner, "3-BE VERSUS") != nullptr && std::strstr(banner, "2v2 VERSUS") == nullptr, "3-BE versus banner text");
+    Check(std::strstr(banner, "3-BE  FORSETI") != nullptr && std::strstr(banner, "(YOU: FORSETI)") != nullptr &&
+          std::strstr(banner, "2v2") == nullptr, "3-BE versus banner text");
+    ms.forsetiTotal = 1; ms.muspellTotal = 1;
+    ms.FormatHudBanner(true, CE_MULTIBE_SIDE_FORSETI, banner, sizeof(banner));
+    Check(std::strstr(banner, "1v1  FORSETI") != nullptr && std::strstr(banner, "(YOU: FORSETI)") != nullptr, "1v1 versus banner text");
     ms.forsetiTotal = 2; ms.muspellTotal = 2;
     ms.walkerCount = 2; ms.jetCount = 2;
     ms.FormatHudBanner(false, CE_MULTIBE_SIDE_FORSETI, banner, sizeof(banner));
@@ -494,8 +499,8 @@ class HostHelperTests(unittest.TestCase):
                 "\tif (multiBeCount >= 3)",
             ),
             "3-be versus banner still prints 2v2": (
-                'const char *modeTag = (total == 3) ? "3-BE VERSUS" : (total == 2 ? "1v1 VERSUS" : "2v2 VERSUS");',
-                'const char *modeTag = "2v2 VERSUS";',
+                'const char *modeTag = (total == 3) ? "3-BE" : (total == 2 ? "1v1" : "2v2");',
+                'const char *modeTag = "2v2";',
             ),
             "mp status draws on retail default": (
                 "\tif (!soloSkirmish && playSide == CE_MULTIBE_SIDE_FORSETI && modeChoice == CE_MULTIBE_CHOICE_STANDARD)",

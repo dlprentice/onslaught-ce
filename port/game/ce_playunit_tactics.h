@@ -705,14 +705,33 @@ inline bool CePlayUnitSpotterCameraPose(const CePlayUnitSpotterState &st, const 
 		focus[2] = isfinite(terrainAtFocus) ? terrainAtFocus : unitPos[2];
 	}
 
-	// Place spotter camera behind focus along the firing bearing from the artillery battery.
+	// Place spotter camera behind focus along the firing bearing with a smooth 3/4 lateral
+	// flanking offset in overwatch mode so the 3D ballistic trajectory reads as a clear parabolic arc.
 	float bx = focus[0] - unitPos[0], by = focus[1] - unitPos[1];
 	float bLen = sqrtf(bx * bx + by * by);
 	if (bLen > 1.f) { bx /= bLen; by /= bLen; }
 	else { bx = -sinf(lookYaw); by = cosf(lookYaw); }
 
-	outEye[0] = focus[0] - bx * backDist;
-	outEye[1] = focus[1] - by * backDist;
+	float sideDist = 0.f;
+	if (st.mode == CE_SPOTTER_OVERWATCH && st.hasImpact)
+	{
+		const float dx = st.impactPos[0] - unitPos[0];
+		const float dy = st.impactPos[1] - unitPos[1];
+		const float range = sqrtf(dx * dx + dy * dy);
+		float sideWeight = 0.f;
+		if (range > 4.f && range < 165.f)
+		{
+			if (range < 10.f) { const float u = (range - 4.f) / 6.f; sideWeight = u * u * (3.f - 2.f * u); }
+			else if (range <= 105.f) sideWeight = 1.f;
+			else { const float u = (165.f - range) / 60.f; sideWeight = u * u * (3.f - 2.f * u); }
+		}
+		sideDist = backDist * 0.34f * sideWeight;
+	}
+	// Right-perpendicular of firing bearing in BEA (+Z down): (+by, -bx)
+	const float perpX = by, perpY = -bx;
+
+	outEye[0] = focus[0] - bx * backDist + perpX * sideDist;
+	outEye[1] = focus[1] - by * backDist + perpY * sideDist;
 	outEye[2] = focus[2] - liftHeight;
 	float eyeFloor = terrainAtFocus;
 	if (terrainFn)
@@ -943,14 +962,14 @@ inline CePlayUnitHudPalette CePlayUnitHudPaletteFor(int allegiance)
 	CePlayUnitHudPalette p;
 	if (allegiance == 1)
 	{
-		p.panelFill    = 0xe0160d0b;
-		p.panelBorder  = 0xff7a3422;
-		p.bevelAccent  = 0xd0ff8a30;
+		p.panelFill    = 0xe4180d0b;
+		p.panelBorder  = 0xff943c24;
+		p.bevelAccent  = 0xd8ff923c;
 		p.accentBright = 0xffff9632;
-		p.accentDim    = 0xff8a3a20;
-		p.highlight    = 0xffffd878;
-		p.textBright   = 0xfffef2e8;
-		p.textMuted    = 0xffcfa896;
+		p.accentDim    = 0xff8c361e;
+		p.highlight    = 0xffffe8b8;
+		p.textBright   = 0xfffff6ee;
+		p.textMuted    = 0xfff2dfc4;
 		p.warn         = 0xffffb830;
 		p.crit         = 0xffff3b28;
 		p.ok           = 0xff5ce070;
@@ -966,18 +985,94 @@ inline CePlayUnitHudPalette CePlayUnitHudPaletteFor(int allegiance)
 		p.bevelAccent  = 0xb858d8f8;
 		p.accentBright = 0xff46d4f4;
 		p.accentDim    = 0xff23647c;
-		p.highlight    = 0xfff6d365;
+		p.highlight    = 0xfff6dc78;
 		p.textBright   = 0xfff2f6fa;
-		p.textMuted    = 0xff9eb8cc;
+		p.textMuted    = 0xffb2cde0;
 		p.warn         = 0xfff0b429;
 		p.crit         = 0xffe84848;
 		p.ok           = 0xff46d96a;
 		p.radarOutline = 0xff5ca8d8;
 		p.radarNorth   = 0xff5fd4ff;
 		p.arcMain      = 0xff48e0ff;
-		p.arcImpact    = 0xfff6d365;
+		p.arcImpact    = 0xfff6dc78;
 	}
 	return p;
+}
+
+#define CE_PLAYUNIT_HUD_HAS_MAX_RANGE 1
+
+enum CePlayUnitReticleKind
+{
+	CE_PLAYUNIT_RETICLE_VEHICLE = 0,
+	CE_PLAYUNIT_RETICLE_INFANTRY = 1,
+	CE_PLAYUNIT_RETICLE_AIRCRAFT = 2,
+	CE_PLAYUNIT_RETICLE_ARTILLERY = 3
+};
+
+inline CePlayUnitReticleKind CePlayUnitCompactReticleKind(int classId)
+{
+	switch (classId)
+	{
+	case CE_PLAYUNIT_CLASS_INFANTRY: return CE_PLAYUNIT_RETICLE_INFANTRY;
+	case CE_PLAYUNIT_CLASS_AIRCRAFT: return CE_PLAYUNIT_RETICLE_AIRCRAFT;
+	case CE_PLAYUNIT_CLASS_ARTILLERY: return CE_PLAYUNIT_RETICLE_ARTILLERY;
+	default: return CE_PLAYUNIT_RETICLE_VEHICLE;
+	}
+}
+
+struct CePlayUnitNineSlice
+{
+	bool valid;
+	float x, y, w, h;
+	float radius;			// fixed circular corner radius (never vertically stretched)
+	float railHeight;		// straight vertical rail height = max(0, h - 2 * radius)
+	float bodySpanW;		// straight horizontal span = max(0, w - 2 * radius)
+	float glowPad;			// outer glow inset so halo stays strictly inside [x, x + w] x [y, y + h]
+	float strokeWidth;		// solid bracket core stroke thickness
+	float leftCenterX;		// x + radius
+	float rightCenterX;		// x + w - radius (exact mirror around cx)
+	float topCenterY;		// y + radius
+	float botCenterY;		// y + h - radius
+};
+
+inline CePlayUnitNineSlice CePlayUnitComputeNineSlice(float x, float y, float w, float h,
+                                                      float desiredRadius, float s)
+{
+	CePlayUnitNineSlice out;
+	memset(&out, 0, sizeof(out));
+	if (!isfinite(x) || !isfinite(y) || !isfinite(w) || !isfinite(h) || !(w > 2.f) || !(h > 2.f))
+		return out;
+	const float u = (isfinite(s) && s > 0.25f) ? s : 1.f;
+	float r = (isfinite(desiredRadius) && desiredRadius > 0.f) ? desiredRadius : (15.f * u);
+	const float maxRH = h * 0.48f;
+	const float maxRW = w * 0.32f;
+	if (r > maxRH) r = maxRH;
+	if (r > maxRW) r = maxRW;
+	if (r < 2.f) r = 2.f;
+
+	float glowPad = floorf(1.5f * u + 0.5f);
+	if (glowPad < 1.f) glowPad = 1.f;
+	if (glowPad > r * 0.30f) glowPad = r * 0.30f;
+
+	float stroke = floorf(2.2f * u + 0.5f);
+	if (stroke < 1.5f) stroke = 1.5f;
+	if (stroke > r * 0.35f) stroke = r * 0.35f;
+
+	out.valid = true;
+	out.x = x;
+	out.y = y;
+	out.w = w;
+	out.h = h;
+	out.radius = r;
+	out.railHeight = (h > 2.f * r) ? (h - 2.f * r) : 0.f;
+	out.bodySpanW = (w > 2.f * r) ? (w - 2.f * r) : 0.f;
+	out.glowPad = glowPad;
+	out.strokeWidth = stroke;
+	out.leftCenterX = x + r;
+	out.rightCenterX = x + w - r;
+	out.topCenterY = y + r;
+	out.botCenterY = y + h - r;
+	return out;
 }
 
 struct CePlayUnitHudTelemetry
@@ -1005,6 +1100,7 @@ struct CePlayUnitHudTelemetry
 	int unloadStatus;		// CePlayUnitNavalUnloadStatus
 	int fireState;
 	int stance;				// 0 idle/ready, 1 moving, 2 firing
+	float maxRangeMeters;	// weapon max range in meters (>0 when available)
 };
 
 inline int CePlayUnitSafeRoundInt(float v, int lo, int hi)
@@ -1041,7 +1137,7 @@ inline void CePlayUnitFormatClassHud(const CePlayUnitHudTelemetry &t,
 		const char *stanceWord = t.stance == 2 ? "FIRING" : (t.stance == 1 ? "MOVING" : "READY");
 		snprintf(headerOut, 48, "INFANTRY");
 		snprintf(line1Out, 64, "WPN %s  HDG %03d", wpn, hdg);
-		snprintf(line2Out, 64, "STANCE %s  HULL %d%%", stanceWord, hull);
+		snprintf(line2Out, 64, "STANCE %s  HEALTH %d%%", stanceWord, hull);
 		break;
 	}
 	case CE_PLAYUNIT_CLASS_TANK:
@@ -1055,7 +1151,11 @@ inline void CePlayUnitFormatClassHud(const CePlayUnitHudTelemetry &t,
 		snprintf(line2Out, 64, "MOUNT ONLINE  HULL %d%%", hull);
 		break;
 	case CE_PLAYUNIT_CLASS_AIRCRAFT:
-		snprintf(headerOut, 48, t.isDropship ? "DROPSHIP" : (t.isBomber ? "BOMBER" : "AIRCRAFT"));
+	{
+		const char *airHeader = t.isDropship ? "DROPSHIP"
+			: (CePlayUnitContainsCI(t.unitName, "Ground Attack") ? "GROUND ATTACK"
+				: (t.isBomber ? "BOMBER" : "AIRCRAFT"));
+		snprintf(headerOut, 48, "%s", airHeader);
 		snprintf(line1Out, 64, "SPD %d  ALT %dM  PIT %+d", spd, alt, pitch);
 		if (t.isDropship)
 		{
@@ -1071,6 +1171,7 @@ inline void CePlayUnitFormatClassHud(const CePlayUnitHudTelemetry &t,
 			snprintf(actionOut, 48, "SHIFT: BOOST");
 		}
 		break;
+	}
 	case CE_PLAYUNIT_CLASS_NAVAL:
 	{
 		const bool lander = t.cargoCount > 0 || t.unloadStatus != CE_NAVAL_NO_CARGO;
@@ -1093,11 +1194,15 @@ inline void CePlayUnitFormatClassHud(const CePlayUnitHudTelemetry &t,
 	case CE_PLAYUNIT_CLASS_ARTILLERY:
 	{
 		const int rng = CePlayUnitSafeRoundInt(t.rangeMeters > 0.f ? t.rangeMeters : 0.f, 0, 99999);
+		const int maxRng = CePlayUnitSafeRoundInt(t.maxRangeMeters > 0.f ? t.maxRangeMeters : 0.f, 0, 99999);
 		const char *spot = t.spotterMode == CE_SPOTTER_FOLLOW_SHELL ? "TRACK"
 			: t.spotterMode == CE_SPOTTER_HOLD_IMPACT ? "IMPACT"
 			: t.spotterMode == CE_SPOTTER_OVERWATCH ? "ON" : "OFF";
 		snprintf(headerOut, 48, "ARTILLERY");
-		snprintf(line1Out, 64, "AZ %03d  EL %+d  RNG %dM", az, el, rng);
+		if (maxRng > 0)
+			snprintf(line1Out, 64, "AZ %03d  EL %+d  RNG %dM / MAX %dM", az, el, rng, maxRng);
+		else
+			snprintf(line1Out, 64, "AZ %03d  EL %+d  RNG %dM", az, el, rng);
 		snprintf(line2Out, 64, "%s  SPOT %s  HULL %d%%", t.arcOn ? "ARC ON" : "ARC OFF", spot, hull);
 		snprintf(actionOut, 48, "C: SPOT CAM");
 		break;
@@ -1173,13 +1278,16 @@ inline bool CePlayUnitComputeClassCardLayout(float w, float h, float s, float de
 	const float compassHalfSpan = 108.f * s;	// BEA compass outer ring (~101.3*s) + outer glow/chevron halo
 	const float compassLeft = w * 0.5f - compassHalfSpan;
 	const float compassGap = 14.f * s;
-	const float x0 = floorf(12.f * s);
-	const float capW = floorf(24.f * s);
-	const float padX = floorf(9.f * s);
+	// Enforce strict 3%-4% screen safe-area left inset so 9-sliced left brackets never touch or clip x=0.
+	const float safeLeft = floorf(w * 0.032f);
+	const float minLeft = floorf(16.f * s);
+	const float x0 = safeLeft > minLeft ? safeLeft : minLeft;
+	const float capW = floorf(18.f * s);
+	const float padX = floorf(7.f * s);
 	const float gaugeRoom = isAir ? floorf(26.f * s) : 0.f;
 
 	float maxRight = compassLeft - compassGap;
-	if (maxRight > w - 8.f) maxRight = w - 8.f;
+	if (maxRight > w - x0) maxRight = w - x0;
 	const float maxTotalW = floorf(maxRight - x0);
 	const float availTextW = maxTotalW - capW - 2.f * padX - gaugeRoom;
 	if (availTextW < 40.f) return false;

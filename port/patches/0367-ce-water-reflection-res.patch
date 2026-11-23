@@ -313,7 +313,7 @@
  
  CRenderMethod	WATER_METHOD("water_method", 3);		// 009cc1c0
  // FUNCTION: 0x0055b080 init:WATER_METHOD
-@@ -610,7 +613,23 @@
+@@ -610,7 +613,26 @@
  			pc[0] = ((col >> 16) & 0xff) * (1.0f / 255);
  			pc[1] = ((col >> 8) & 0xff) * (1.0f / 255);
  			pc[2] = (col & 0xff) * (1.0f / 255);
@@ -324,9 +324,12 @@
 +			{
 +				float cePs[8][4];
 +				memcpy(cePs, WATER_PS_CONSTANTS, sizeof(cePs));
++				const float ceDistort = 0.08f * (256.0f / static_cast<float>(ceWaterRes));
++				cePs[2][0] = ceDistort; cePs[2][1] = ceDistort;
 +				const float ceTap = CeWaterReflectionTapOffset();
-+				cePs[5][0] = ceTap; cePs[5][1] = ceTap;
-+				cePs[6][0] = -ceTap; cePs[6][1] = ceTap;
++				const float ceBlur = ceTap < (1.0f / 256.0f) ? (1.0f / 256.0f) : ceTap;
++				cePs[5][0] = ceBlur; cePs[5][1] = ceBlur;
++				cePs[6][0] = -ceBlur; cePs[6][1] = ceBlur;
 +				LT.GetDevice()->SetPixelShaderConstantF(0, &cePs[0][0], 8);
 +			}
 +			else
@@ -337,6 +340,62 @@
  			LT.GetDevice()->SetPixelShaderConstantF(9, pc, 1);
  			LT.SetFVF(D3DFVF_XYZ | D3DFVF_DIFFUSE | D3DFVF_TEX2);
  			LT.SetVertexShader(sShader);
+--- a/State.cpp
++++ b/State.cpp
+@@ -10,6 +10,9 @@
+ #include "engine.h"
+ #include "map.h"
+ #include "state.h"
++#ifdef CE_VERSION
++#include "../platform/common/reflection_quality.h"
++#endif
+ 
+ // FUNCTION: 0x004eb1d0 init:STATE
+ CState	STATE;
+@@ -37,10 +40,17 @@
+ 	LT.ForceRS(D3DRS_COLORWRITEENABLE, 0xf);
+ 	LT.ForceRS(D3DRS_STENCILENABLE, FALSE);
+ 	LT.ForceRS(D3DRS_VERTEXBLEND, D3DVBF_DISABLE);
++#ifdef CE_VERSION
++	if (gMirrorPass && CeWaterReflectionActiveRes() <= 256u)
++		LT.ForceRS(D3DRS_FOGENABLE, FALSE);
++	else
++		LT.ForceRS(D3DRS_FOGENABLE, TRUE);
++#else
+ 	if (gMirrorPass)
+ 		LT.ForceRS(D3DRS_FOGENABLE, FALSE);
+ 	else
+ 		LT.ForceRS(D3DRS_FOGENABLE, TRUE);
++#endif
+ 	LT.ForceRS(D3DRS_SPECULARENABLE, FALSE);
+ 	LT.SetFogMode(true);
+ 	LT.ForceRS(D3DRS_LIGHTING, TRUE);
+--- a/renderinfo.cpp
++++ b/renderinfo.cpp
+@@ -9,6 +9,9 @@
+ #include "renderinfo.h"
+ #include "viewport.h"
+ #include <d3dx9.h>
++#ifdef CE_VERSION
++#include "../platform/common/reflection_quality.h"
++#endif
+ 
+ extern CTweakSLONG	RENDERSTATE_DISALLOW_MIPMAPPING;	// 0082b468
+ 
+@@ -138,8 +141,13 @@
+ {
+ 	if (mFogChanged)
+ 	{
++#ifdef CE_VERSION
++		if (gMirrorPass && CeWaterReflectionActiveRes() <= 256u)
++			mFogEnabled = false;
++#else
+ 		if (gMirrorPass)
+ 			mFogEnabled = false;
++#endif
+ 		LT.SRS(D3DRS_FOGENABLE, mFogEnabled);
+ 		mFogChanged = false;
+ 	}
 --- a/game.cpp
 +++ b/game.cpp
 @@ -24,6 +24,10 @@
@@ -365,7 +424,7 @@
 +			mirror.Begin(ENGINE.GetLandscape()->mMirrorTexture))
 +		{
 +			gMirrorPass = true;
-+			FORCE_OBJECT_IMPOSTERS = true;
++			FORCE_OBJECT_IMPOSTERS = (CeWaterReflectionActiveRes() <= 256u);
 +		}
 +	}
 +#else

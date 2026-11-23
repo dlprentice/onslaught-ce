@@ -218,7 +218,8 @@ void PortWideBackBuffer(unsigned w, unsigned h)
 		return;
 	gW = w;
 	gH = h;
-	gActive = PortWideModes() && w * 3 != h * 4;
+	const char *wideOff = getenv("BEA_PORT_WIDESCREEN");
+	gActive = (PortWideModes() || (PortCeLayer() && !(wideOff && *wideOff == '0'))) && w * 3 != h * 4;
 	if (!gActive)
 	{
 		gX = gY = gScale = 1.f;

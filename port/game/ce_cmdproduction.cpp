@@ -7,6 +7,7 @@
 #include "SpawnerThng.h"
 #include "WorldPhysicsManager.h"
 #include "ce_cmdproduction.h"
+#include "ce_entity_handles.h"
 #include <cstdio>
 #include <cstring>
 
@@ -21,8 +22,10 @@ constexpr float kReadyDisplaySeconds = 4.0f;
 
 struct Production {
     const CUnit *vehicle = nullptr;
-    bool active = false, selected = false, dispatch = false;
+    bool active = false, selected = false, dispatch = false, hasOwner = false;
     int owner = -1, product = -1, allegiance = -1;
+    CeEntityHandle ownerHandle = kCeEntityHandleInvalid;
+    CeEntityHandle productHandle = kCeEntityHandleInvalid;
     CSpawner* mount = nullptr;
     CeFactoryStage stage = CE_FACTORY_IDLE;
     float x = 0, y = 0, now = 0, queuedAt = 0, lastSearch = -1;
@@ -34,7 +37,8 @@ struct StructureSlot {
     bool seen = false;
     bool selected = false;
     bool dispatch = false;
-    int thingNumber = -1;
+    int thingNumber = 0;
+    CeEntityHandle handle = kCeEntityHandleInvalid;
     CUnit* owner = nullptr;
     float x = 0, y = 0;
     float life = 0, maxLife = 0;
@@ -46,7 +50,8 @@ struct StructureSlot {
     int queuedOption = -1;
     float queuedAt = 0;
     float readyAt = 0;
-    int lastProductNumber = -1;
+    int lastProductNumber = 0;
+    CeEntityHandle lastProductHandle = kCeEntityHandleInvalid;
     char lastProductName[32] = {};
 };
 
@@ -79,19 +84,28 @@ CSpawner* Compatible(CUnit* owner) {
 }
 
 CUnit* FindFactory() {
+    if (job.hasOwner && job.ownerHandle != kCeEntityHandleInvalid) {
+        CUnit* u = CeEntityHandleResolveUnit(job.ownerHandle);
+        if (u && (u->GetThingType() & (THING_TYPE_BUILDING | THING_TYPE_UNIT)) == (THING_TYPE_BUILDING | THING_TYPE_UNIT) &&
+            int(u->GetAllegiance()) == job.allegiance && u->GetLife() > 0 && Compatible(u))
+            return u;
+        return nullptr;
+    }
     ListIterator<CThing> all(&WORLD.GetThingNB());
     for (CThing* t = all.First(); t; t = all.Next()) {
         if ((t->GetThingType() & (THING_TYPE_BUILDING | THING_TYPE_UNIT)) != (THING_TYPE_BUILDING | THING_TYPE_UNIT)) continue;
-        if (job.owner >= 0 && t->GetThingNumber() != job.owner) continue;
         CUnit* u = static_cast<CUnit*>(t);
         if (int(u->GetAllegiance()) == job.allegiance && u->GetLife() > 0 && Compatible(u)) return u;
     }
     return nullptr;
 }
 
-StructureSlot* FindStructureSlot(int thingNumber) {
+StructureSlot* FindStructureSlot(int handleId) {
+    if (handleId <= 0) return nullptr;
+    const CeEntityHandle handle = static_cast<CeEntityHandle>(handleId);
     for (int i = 0; i < gStructures.count; ++i)
-        if (gStructures.slots[i].active && gStructures.slots[i].thingNumber == thingNumber)
+        if (gStructures.slots[i].active &&
+            (gStructures.slots[i].handle == handle || gStructures.slots[i].thingNumber == handleId))
             return &gStructures.slots[i];
     return nullptr;
 }
@@ -102,26 +116,25 @@ StructureSlot* FindStructureByMount(const CSpawner* source) {
     if (!owner || owner->IsDying() || owner->IsShuttingDown() || owner->GetLife() <= 0 ||
         int(owner->GetAllegiance()) != gStructures.allegiance)
         return nullptr;
-    const int ownerNumber = owner->GetThingNumber();
+    const CeEntityHandle ownerHandle = CeEntityHandleFor(owner);
+    if (ownerHandle == kCeEntityHandleInvalid) return nullptr;
     for (int i = 0; i < gStructures.count; ++i) {
         StructureSlot& s = gStructures.slots[i];
-        if (!s.active || s.thingNumber != ownerNumber) continue;
+        if (!s.active || s.handle != ownerHandle) continue;
         for (int k = 0; k < s.optionCount; ++k)
             if (s.mounts[k] == source) return &s;
     }
     return nullptr;
 }
 
-CUnit* FindLiveStructure(int thingNumber) {
-    if (!gStructures.active || thingNumber < 0) return nullptr;
-    ListIterator<CThing> all(&WORLD.GetThingNB());
-    for (CThing* t = all.First(); t; t = all.Next()) {
-        if ((t->GetThingType() & (THING_TYPE_BUILDING | THING_TYPE_UNIT)) != (THING_TYPE_BUILDING | THING_TYPE_UNIT)) continue;
-        if (t->GetThingNumber() != thingNumber) continue;
-        CUnit* u = static_cast<CUnit*>(t);
-        if (!u->IsDying() && !u->IsShuttingDown() && u->GetLife() > 0 && int(u->GetAllegiance()) == gStructures.allegiance)
-            return u;
-    }
+CUnit* FindLiveStructure(int handleId) {
+    if (!gStructures.active || handleId == 0) return nullptr;
+    CUnit* u = CeEntityHandleResolveUnit(static_cast<CeEntityHandle>(handleId));
+    if (!u) return nullptr;
+    if ((u->GetThingType() & (THING_TYPE_BUILDING | THING_TYPE_UNIT)) != (THING_TYPE_BUILDING | THING_TYPE_UNIT))
+        return nullptr;
+    if (!u->IsDying() && !u->IsShuttingDown() && u->GetLife() > 0 && int(u->GetAllegiance()) == gStructures.allegiance)
+        return u;
     return nullptr;
 }
 
@@ -188,14 +201,17 @@ void RefreshStructures(int level, int allegiance, float simulationTime) {
         const int mountCount = CollectMounts(u, foundMounts, foundOptions);
         if (mountCount <= 0) continue;
 
-        const int number = u->GetThingNumber();
-        StructureSlot* slot = FindStructureSlot(number);
+        const CeEntityHandle handle = CeEntityHandleFor(u);
+        if (handle == kCeEntityHandleInvalid) continue;
+        const int handleId = static_cast<int>(handle);
+        StructureSlot* slot = FindStructureSlot(handleId);
         if (!slot) {
             if (gStructures.count >= kCeMaxStructures) continue;
             slot = &gStructures.slots[gStructures.count++];
             *slot = StructureSlot();
             slot->active = true;
-            slot->thingNumber = number;
+            slot->handle = handle;
+            slot->thingNumber = handleId;
         }
         slot->seen = true;
         slot->owner = u;
@@ -221,7 +237,7 @@ void RefreshStructures(int level, int allegiance, float simulationTime) {
     for (int i = 0; i < gStructures.count; ++i) {
         StructureSlot& s = gStructures.slots[i];
         if (!s.seen) continue;
-        const bool isExerciseOwner = job.active && job.owner >= 0 && s.thingNumber == job.owner;
+        const bool isExerciseOwner = job.active && job.hasOwner && s.handle == job.ownerHandle;
         if (!isExerciseOwner) {
             if (s.stage == CE_FACTORY_READY && simulationTime - s.readyAt >= kReadyDisplaySeconds) {
                 s.stage = CE_FACTORY_IDLE;
@@ -277,14 +293,14 @@ void FillStructureView(const StructureSlot& s, CeCmdStructureView& out) {
     CopyLabel(out.name, sizeof(out.name), s.name, "Factory");
     out.optionCount = s.optionCount;
     for (int k = 0; k < s.optionCount; ++k) out.options[k] = s.options[k];
-    const bool isExerciseOwner = job.active && job.owner >= 0 && s.thingNumber == job.owner;
+    const bool isExerciseOwner = job.active && job.hasOwner && s.handle == job.ownerHandle;
     out.isExercise = isExerciseOwner;
     if (isExerciseOwner) {
         out.stage = job.stage;
         out.queuedOption = 0;
         out.percent = BuildPercentFor(job.stage, job.now, job.queuedAt);
         out.selected = job.selected || s.selected;
-        out.lastProductNumber = job.product;
+        out.lastProductNumber = job.productHandle != kCeEntityHandleInvalid ? static_cast<int>(job.productHandle) : job.product;
         CopyLabel(out.lastProductName, sizeof(out.lastProductName), kVehicleType, "Tank");
     } else {
         out.stage = s.stage;
@@ -311,9 +327,11 @@ void CeFactoryTick(int level, int allegiance, float simulationTime) {
             if (!owner) {
                 job.mount = nullptr;
                 job.canQueue = false;
-                if (job.owner >= 0) { job.stage = CE_FACTORY_BLOCKED; job.selected = false; }
+                if (job.hasOwner) { job.stage = CE_FACTORY_BLOCKED; job.selected = false; }
             } else {
-                job.owner = owner->GetThingNumber();
+                job.ownerHandle = CeEntityHandleFor(owner);
+                job.hasOwner = (job.ownerHandle != kCeEntityHandleInvalid);
+                job.owner = job.hasOwner ? static_cast<int>(job.ownerHandle) : owner->GetThingNumber();
                 job.mount = Compatible(owner);
                 job.x = owner->GetPos().X; job.y = owner->GetPos().Y;
                 job.canQueue = job.mount && job.mount->mEnabled && job.mount->Unknown4e43d0();
@@ -345,7 +363,14 @@ bool CeFactoryRead(CeFactoryView& out) {
 // A number or an old address alone is not authority to select a replacement.
 bool CeFactoryIsVehicle(CUnit *unit) {
     if (!unit || job.stage != CE_FACTORY_READY || !job.active || unit != job.vehicle) return false;
-    return unit->GetThingNumber() == job.product && (unit->GetThingType() & THING_TYPE_UNIT)
+#ifdef CE_VERSION
+    const bool idOk = job.productHandle != kCeEntityHandleInvalid
+        ? CeEntityHandleMatches(unit, job.productHandle)
+        : (unit->GetThingNumber() == job.product);
+#else
+    const bool idOk = unit->GetThingNumber() == job.product;
+#endif
+    return idOk && (unit->GetThingType() & THING_TYPE_UNIT)
         && !unit->IsDying() && unit->GetLife() > 0.f
         && int(unit->GetAllegiance()) == job.allegiance && unit->GetUnitData()
         && MatchType(unit->GetUnitData()->mName, kVehicleType);
@@ -374,7 +399,7 @@ void CeFactoryLeaveSelection() {
 }
 bool CeFactoryQueue() {
     if (!job.selected || !job.mount || !job.canQueue || job.stage == CE_FACTORY_QUEUED || job.stage == CE_FACTORY_LAUNCHING || job.stage == CE_FACTORY_READY) return false;
-    job.stage = CE_FACTORY_QUEUED; job.queuedAt = job.now; job.product = -1; return true;
+    job.stage = CE_FACTORY_QUEUED; job.queuedAt = job.now; job.product = -1; job.productHandle = kCeEntityHandleInvalid; return true;
 }
 bool CeFactoryCancel() {
     if (!job.selected || job.stage != CE_FACTORY_QUEUED) return false;
@@ -392,7 +417,7 @@ bool CeCmdStructureSelected(CeCmdStructureView* out) {
     if (!gStructures.active || !out) return false;
     for (int i = 0; i < gStructures.count; ++i) {
         const StructureSlot& s = gStructures.slots[i];
-        const bool isExerciseSel = job.active && job.selected && job.owner >= 0 && s.thingNumber == job.owner;
+        const bool isExerciseSel = job.active && job.selected && job.hasOwner && s.handle == job.ownerHandle;
         if (s.selected || isExerciseSel) {
             FillStructureView(s, *out);
             return true;
@@ -407,7 +432,7 @@ bool CeCmdStructureSelect(int thingNumber) {
     if (!target) return false;
     for (int i = 0; i < gStructures.count; ++i) gStructures.slots[i].selected = false;
     target->selected = true;
-    job.selected = (job.active && job.owner == thingNumber);
+    job.selected = (job.active && job.hasOwner && target->handle == job.ownerHandle);
     return true;
 }
 
@@ -420,14 +445,14 @@ bool CeCmdStructureQueue(int thingNumber, int optionIndex) {
     if (!gStructures.active) return false;
     StructureSlot* target = FindStructureSlot(thingNumber);
     if (!target) return false;
-    if (job.active && job.owner == thingNumber) {
+    if (job.active && job.hasOwner && target->handle == job.ownerHandle) {
         if (!job.selected) CeFactorySelect();
         return CeFactoryQueue();
     }
     if (optionIndex < 0 || optionIndex >= target->optionCount) return false;
     if (target->stage == CE_FACTORY_QUEUED || target->stage == CE_FACTORY_LAUNCHING) return false;
     // Resolve both the building and its spawner mount live from WORLD rather than trusting cached pointers.
-    CUnit* owner = FindLiveStructure(thingNumber);
+    CUnit* owner = FindLiveStructure(static_cast<int>(target->handle));
     CSpawner* mount = FindLiveMount(owner, optionIndex);
     if (!owner || !mount || !mount->mEnabled || mount->Unknown4e4430() || mount->Unknown4e4420()) return false;
     target->owner = owner;
@@ -435,7 +460,8 @@ bool CeCmdStructureQueue(int thingNumber, int optionIndex) {
     target->stage = CE_FACTORY_QUEUED;
     target->queuedOption = optionIndex;
     target->queuedAt = gStructures.now;
-    target->lastProductNumber = -1;
+    target->lastProductNumber = 0;
+    target->lastProductHandle = kCeEntityHandleInvalid;
     CopyLabel(target->lastProductName, sizeof(target->lastProductName), mount->mData->mThingName, "Unit");
     return true;
 }
@@ -444,7 +470,7 @@ bool CeCmdStructureCancel(int thingNumber) {
     if (!gStructures.active) return false;
     StructureSlot* target = FindStructureSlot(thingNumber);
     if (!target) return false;
-    if (job.active && job.owner == thingNumber) return CeFactoryCancel();
+    if (job.active && job.hasOwner && target->handle == job.ownerHandle) return CeFactoryCancel();
     if (target->stage != CE_FACTORY_QUEUED) return false;
     target->stage = CE_FACTORY_CANCELLED;
     target->queuedOption = -1;
@@ -480,7 +506,7 @@ void CeFactoryProduced(const CSpawner* source, CThing* child) {
     CUnit* unit = static_cast<CUnit*>(child);
     if (job.active && source == job.mount && job.stage == CE_FACTORY_LAUNCHING) {
         if (int(unit->GetAllegiance()) == job.allegiance && unit->GetUnitData() && MatchType(unit->GetUnitData()->mName, kVehicleType)) {
-            job.vehicle = unit; job.product = child->GetThingNumber(); job.stage = CE_FACTORY_READY;
+            job.vehicle = unit; job.product = child->GetThingNumber(); job.productHandle = CeEntityHandleFor(child); job.stage = CE_FACTORY_READY;
             gStructures.readyBell = true;
             return;
         }
@@ -490,7 +516,8 @@ void CeFactoryProduced(const CSpawner* source, CThing* child) {
             slot->queuedOption >= 0 && slot->queuedOption < slot->optionCount &&
             slot->mounts[slot->queuedOption] == source &&
             int(unit->GetAllegiance()) == gStructures.allegiance) {
-            slot->lastProductNumber = child->GetThingNumber();
+            slot->lastProductHandle = CeEntityHandleFor(child);
+            slot->lastProductNumber = slot->lastProductHandle != kCeEntityHandleInvalid ? static_cast<int>(slot->lastProductHandle) : child->GetThingNumber();
             CopyLabel(slot->lastProductName, sizeof(slot->lastProductName),
                       unit->GetUnitData() ? unit->GetUnitData()->mName : nullptr, slot->lastProductName);
             slot->stage = CE_FACTORY_READY;

@@ -140,10 +140,29 @@ void PortCeListHover(int entry)
     gWindow.hovered = entry;
 }
 
+// Left margin for a row's label in RenderList (patch 0212): original 5 units outside the front end's options pages,
+// kCeLabelLeft inside them so long labels (e.g. "Full-screen anti-aliasing level:") stay clear of the left metal arc.
+float PortCeLabelLeft(int page)
+{
+    return (PortCeQualityOptionsAvailable() && OptionsPage(page)) ? kCeLabelLeft : 5.f;
+}
+
+// Horizontal gap after a row's colon in RenderList (patch 0212): original 2 units in faithful runs, kCeValueGap in CE menus.
+float PortCeValueGap()
+{
+    return PortCeQualityOptionsAvailable() ? kCeValueGap : 2.f;
+}
+
 // CMenuOptionsList::Render (patch 0215): the row pitch of a list holding `item`, 0 for the list's own item heights.
 int PortCeCompactPitch(const void *item)
 {
     return (PortCeQualityRow(item) && PortCeQualityOptionsAvailable()) ? kCeCompactPitch : 0;
+}
+
+// Extra vertical separation before Apply/Back at the bottom of the compact Video Options list (patch 0215).
+int PortCeCompactActionGap(int pitch, int index, int count)
+{
+    return (pitch && count >= 2 && index == count - 2) ? kCeCompactActionGap : 0;
 }
 
 // How far that list's centre moves: down in the front end (so the first row stays below the emblem) and slightly up in a level's Pause Menu

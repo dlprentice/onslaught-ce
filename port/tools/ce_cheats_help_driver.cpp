@@ -185,12 +185,12 @@ static std::wstring drawn(int first, int count) {
     for (int i = first; i < first + count; ++i) text += draws[i].text;
     return compact(text);
 }
-static int lines(const WCHAR *text) {
+static int lines(const WCHAR *text, float width = 420.f) {
     SWordWrapFill fill{};
     WCHAR copy[400];
     std::wcsncpy(copy, text, 399);
     copy[399] = 0;
-    return PLATFORM.font.WordWrap(&fill, copy, 420.f);
+    return PLATFORM.font.WordWrap(&fill, copy, width);
 }
 
 static std::wstring displayedTips(bool commander)
@@ -311,7 +311,7 @@ int main(int argc, char** argv) {
           "the Cheats page's standing note");
     for (int page = 0; page < CEP_COUNT; ++page) check(std::wcslen(kCeTitles[page]) > 0 && std::wcslen(kCeTitles[page]) < 24, "page titles");
     for (int box = 0; box < 4; ++box) check(std::wcslen(kBoxTitles[box]) > 0 && std::wcslen(kBoxTitles[box]) < 24, "the titles Help & Info's boxes give the title bar");
-    check(std::wcscmp(kCeTitles[CEP_HUB], L"ONSLAUGHT CE") == 0, "the hub's title is in capitals, as every page reached from the Main Menu is");
+    check(std::wcscmp(kCeTitles[CEP_HUB], L"Onslaught CE") == 0, "the hub's title uses consistent mixed case matching sibling CE pages");
 
     // MenuOptionsList::Render centres N rows of 20 px (Back is the last) on the page's y (the page has no title row): the first row
     // is at y-10N-15 and Back at y+10N-35. Most pages are centred on 300; CE Settings, with thirteen rows, is centred on 260. Every
@@ -367,7 +367,7 @@ int main(int argc, char** argv) {
                 back.Render(320.f, back_y, 0);
                 const SCeHint *hint = i < page.count ? (const SCeHint *)((const char *)page.hints + i * page.stride) : nullptr;
                 int help = hint ? lines(hint->mHelp) : 0, code = hint && hint->mExtra ? lines(hint->mExtra) : 0;
-                int bottom = page.note ? lines(page.note) : 0;
+                int bottom = page.note ? lines(page.note, 500.f) : 0;
                 check(int(draws.size()) == help + code + bottom, "all help, code and note lines drawn, and none for Back");
                 if (hint) {
                     check(drawn(0, help) == compact(hint->mHelp), "help survives word wrapping");
@@ -389,7 +389,11 @@ int main(int argc, char** argv) {
                     }
                 }
                 if (page.note) check(drawn(help + code, bottom) == compact(page.note), "note survives word wrapping");
-                for (const Draw &line : draws) check(line.width < 420, "line fits help width");
+                for (size_t idx = 0; idx < draws.size(); ++idx) {
+                    const int limit = int(idx) >= help + code ? 500 : 420;
+                    check(draws[idx].width < limit, "line fits help or note width");
+                }
+                if (page.note == kLabsNote && width == 8) check(bottom == 1, "Labs restart caveat fits cleanly on one line");
                 if (help + code && bottom) check(draws[help + code - 1].y + 16.f <= draws[help + code].y, "help and code do not overlap note");
                 if (help + code) {
                     std::snprintf(where, sizeof where, "%s, row %d, glyph advance %d, %d help and %d code lines, last at y %.0f", page.name, i, width, help, code, double(draws[help + code - 1].y));

@@ -7,6 +7,10 @@
 
 // The virtual column where a value must end: the pages' right-hand ornament begins a little before the screen's edge.
 static const float kCeValueRight = 600.f;
+// The virtual column where a label must begin on front-end options pages so long labels clear the curved left metal arc.
+static const float kCeLabelLeft = 104.f;
+// Horizontal gap between a row's colon and its value in CE menus (original uses 2 units).
+static const float kCeValueGap = 6.f;
 // How far a value is squeezed before its end is cut off and marked: the narrowest text that still reads.
 static const float kCeValueMinScale = 0.75f;
 // Where a value that cannot fit even squeezed is cut (characters kept, then "...").
@@ -94,11 +98,12 @@ inline int PortCeListEdgeStep(int first, int shown, int count, int hovered)
 
 // Video Options with Onslaught CE's seven rows has twenty-one rows, seven more than the original's fourteen: its first row
 // would meet the emblem in the front end and Back would meet the spoken subtitle in a level at 20 units a row. That one list
-// (patch 0215, CMenuOptionsList::Render) uses 15 units a row for its height, its rows' mouse areas and its steps. In the front
-// end it is centred 8 units lower (on 308, not 300), so its first row stays cleanly below the top emblem (y 135.5 > 127) and
-// Back ends above the help line (451.5 <= 452); in a level's Pause Menu it shifts 8 units higher so Back clears the message bar
-// (405.5 <= 406).
-static const int kCeCompactPitch = 15;
+// (patch 0215, CMenuOptionsList::Render) uses 14 units a row plus an 8-unit breathing gap before Apply/Back. In the front
+// end it is centred 8 units lower (on 308, not 300), so its first row stays cleanly below the top emblem (y 142 > 127) and
+// Back ends above the help line (446 <= 452); in a level's Pause Menu it shifts 8 units higher so Back clears the message bar
+// (400 <= 406).
+static const int kCeCompactPitch = 14;
+static const int kCeCompactActionGap = 8;
 static const float kCeCompactFrontShift = 8.f;
 static const float kCeCompactPauseShift = -8.f;
 

@@ -5,9 +5,27 @@
  // FUNCTION: 0x004a3c30
  void	CMenuMenuItem::RenderList(float x, float y, BOOL on_top)
 -{
-+{ extern WCHAR *PortCeValueFit(WCHAR *, float, float *); extern WCHAR *PortCeListFit(WCHAR *, float); extern int PortCeListWindow(const void *, float, long, int, int, int, float *, int *, int *); extern void PortCeListHover(int);
++{ extern WCHAR *PortCeValueFit(WCHAR *, float, float *); extern WCHAR *PortCeListFit(WCHAR *, float); extern int PortCeListWindow(const void *, float, long, int, int, int, float *, int *, int *); extern void PortCeListHover(int); extern float PortCeLabelLeft(int); extern float PortCeValueGap();
  	WCHAR	text[100];
  	int		value = GetValue();
+ 
+@@ -302,12 +302,12 @@ void	CMenuMenuItem::RenderList(float x, float y, BOOL on_top)
+ 	SIZE	size;
+ 	PLATFORM.Font(FONT_SMALL)->GetTextExtent(text, &size);
+ 	float	scale = 1.f;
+-	float	tx = x - size.cx;
+-	float	lx = tx + size.cx + 2.f;
+-	if (tx < 5.f)
++	float	tx = x - size.cx; const float ceLeft = PortCeLabelLeft(FRONTEND.GetCurrentPage());
++	float	lx = tx + size.cx + PortCeValueGap();
++	if (tx < ceLeft)
+ 	{
+-		scale = (x - 5.f) / size.cx;
+-		tx = 5.f;
++		scale = (x - ceLeft) / size.cx;
++		tx = ceLeft;
+ 	}
+ 	PLATFORM.Font(FONT_SMALL)->DrawTextWithShadow(tx, y, col, text, 0, 0, scale, 1.f);
  
 @@ -318,7 +318,7 @@ void	CMenuMenuItem::RenderList(float x, float y, BOOL on_top)
  		for (i = 0; i < GetNumChoices(); i++)

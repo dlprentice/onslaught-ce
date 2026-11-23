@@ -32,7 +32,7 @@
 
 namespace ce_command_panel {
 
-constexpr int kMaxEntities = 256;      // entities kept from one snapshot
+constexpr int kMaxEntities = 1024;     // entities kept from one snapshot
 constexpr int kMaxSelection = 64;      // keys in the selection or a saved set
 constexpr int kMaxSavedSets = 8;       // saved selection slots
 constexpr int kMaxReservations = 4;    // host rectangles the panel must avoid

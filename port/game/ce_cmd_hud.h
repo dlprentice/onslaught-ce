@@ -147,22 +147,22 @@ inline CeCmdHudPalette CeCmdHudDefaultPalette()
 	p.placardHover = 0xe216324d;
 	p.placardSelected = 0xf21e4a70;
 	p.placardSelectedBorder = 0xfff4fcff;
-	p.placardStructStripe = 0xffd48a2e;
+	p.placardStructStripe = 0xffe8cc62;
 	p.placardDimStripe = 0xff5a6f80;
-	p.buttonFill = 0xde102438;
-	p.buttonHover = 0xeb1a3c5c;
-	p.buttonArmed = 0xeb2a4b68;
-	p.buttonDisabled = 0xb80a1420;
-	p.buttonBorder = 0xff347090;
+	p.buttonFill = 0xe4102438;
+	p.buttonHover = 0xef1a3c5c;
+	p.buttonArmed = 0xf22a4e6e;
+	p.buttonDisabled = 0xc00a1420;
+	p.buttonBorder = 0xff4694b8;
 	p.armourTrack = 0xd0040910;
 	p.armourGood = 0xff46d96a;
 	p.armourWarn = 0xfff0b429;
 	p.armourCrit = 0xffe84848;
 	p.textBright = 0xfff2f6fa;
-	p.textMuted = 0xff9eb8cc;
-	p.textDisabled = 0xff8098ab;
-	p.textCyan = 0xff6ae0ff;
-	p.textGold = 0xfff6d365;
+	p.textMuted = 0xffb2cde0;
+	p.textDisabled = 0xff88a2b6;
+	p.textCyan = 0xff76e6ff;
+	p.textGold = 0xfff6dc78;
 	p.textAlert = 0xffff7066;
 	return p;
 }
@@ -170,35 +170,35 @@ inline CeCmdHudPalette CeCmdHudDefaultPalette()
 inline CeCmdHudPalette CeCmdHudMuspellPalette()
 {
 	CeCmdHudPalette p = {};
-	p.barFill = 0xe0160d0b;
-	p.barBorder = 0xff7a3422;
-	p.barTopBevel = 0xc8ff8830;
-	p.cyanAccent = 0xffe86028;
-	p.cyanDim = 0xff7c321c;
-	p.goldAccent = 0xffffcc44;
-	p.wellFill = 0xd01e120f;
-	p.wellBorder = 0xff5c281c;
-	p.placardFill = 0xd8281612;
-	p.placardHover = 0xe43c2018;
-	p.placardSelected = 0xf2642c1c;
+	p.barFill = 0xe4180d0b;
+	p.barBorder = 0xff943c24;
+	p.barTopBevel = 0xd8ff923c;
+	p.cyanAccent = 0xfff05824;
+	p.cyanDim = 0xff8c361e;
+	p.goldAccent = 0xffffd860;
+	p.wellFill = 0xd6201310;
+	p.wellBorder = 0xff783422;
+	p.placardFill = 0xde2c1813;
+	p.placardHover = 0xea44231a;
+	p.placardSelected = 0xf46c2f1e;
 	p.placardSelectedBorder = 0xfffff8f0;
-	p.placardStructStripe = 0xffe06824;
-	p.placardDimStripe = 0xff7c5e56;
-	p.buttonFill = 0xe02c1814;
-	p.buttonHover = 0xec48241a;
-	p.buttonArmed = 0xec622c1c;
-	p.buttonDisabled = 0xbc1a100e;
-	p.buttonBorder = 0xff943e26;
+	p.placardStructStripe = 0xffe8742a;
+	p.placardDimStripe = 0xff8a6b62;
+	p.buttonFill = 0xe8321913;
+	p.buttonHover = 0xf252281c;
+	p.buttonArmed = 0xf5703420;
+	p.buttonDisabled = 0xc41d110e;
+	p.buttonBorder = 0xffd46a3c;
 	p.armourTrack = 0xd40c0605;
-	p.armourGood = 0xff5ad86a;
-	p.armourWarn = 0xfff4b429;
+	p.armourGood = 0xff5ce070;
+	p.armourWarn = 0xfff6bc34;
 	p.armourCrit = 0xffff4238;
-	p.textBright = 0xfffcf2ea;
-	p.textMuted = 0xffcfa694;
-	p.textDisabled = 0xffa68a82;
-	p.textCyan = 0xffffa644;
-	p.textGold = 0xffffd868;
-	p.textAlert = 0xffff6454;
+	p.textBright = 0xfffff6ee;
+	p.textMuted = 0xfff2dfc4;
+	p.textDisabled = 0xffcbb4a4;
+	p.textCyan = 0xffffe8b8;
+	p.textGold = 0xffffe484;
+	p.textAlert = 0xffff7460;
 	return p;
 }
 
@@ -353,11 +353,82 @@ inline bool CeCmdHudRectContains(const CeCmdHudRect &r, float px, float py)
 	return r.w > 0.f && r.h > 0.f && px >= r.x && px < r.x + r.w && py >= r.y && py < r.y + r.h;
 }
 
+#define CE_CMD_HUD_HAS_SUBTITLE_SAFE_RECT 1
+
+// Pure 9-slice mirrored capsule bracket metrics: fixed circular corner radius (never vertically stretched),
+// straight vertical rails connecting top & bottom corners on tall panels, exact left/right symmetry around
+// center X, and zero pixel overshoot outside [x, x + w] x [y, y + h].
+struct CeCmdHudNineSlice
+{
+	bool valid;
+	float x, y, w, h;
+	float radius;			// fixed circular corner radius (identical horizontally and vertically)
+	float railHeight;		// straight vertical rail span = max(0, h - 2 * radius)
+	float bodySpanW;		// straight horizontal span = max(0, w - 2 * radius)
+	float glowPad;			// outer glow inset so halo stays strictly inside [x, x + w] x [y, y + h]
+	float strokeWidth;		// solid bracket core stroke thickness
+	float leftCenterX;		// x + radius
+	float rightCenterX;		// x + w - radius (exact mirror of leftCenterX across cx)
+	float topCenterY;		// y + radius
+	float botCenterY;		// y + h - radius (exact mirror of topCenterY across cy)
+};
+
+inline CeCmdHudNineSlice CeCmdHudComputeNineSlice(float x, float y, float w, float h,
+                                                  float desiredRadius, float uiScale)
+{
+	CeCmdHudNineSlice out = {};
+	if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(w) || !std::isfinite(h) ||
+	    !(w > 2.f) || !(h > 2.f))
+		return out;
+	const float u = (std::isfinite(uiScale) && uiScale > 0.25f) ? uiScale : 1.f;
+	float r = (std::isfinite(desiredRadius) && desiredRadius > 0.f) ? desiredRadius : (16.f * u);
+	const float maxRH = h * 0.48f;
+	const float maxRW = w * 0.32f;
+	if (r > maxRH) r = maxRH;
+	if (r > maxRW) r = maxRW;
+	if (r < 2.f) r = 2.f;
+
+	float glowPad = std::floor(1.5f * u + 0.5f);
+	if (glowPad < 1.f) glowPad = 1.f;
+	if (glowPad > r * 0.30f) glowPad = r * 0.30f;
+
+	float stroke = std::floor(2.2f * u + 0.5f);
+	if (stroke < 1.5f) stroke = 1.5f;
+	if (stroke > r * 0.35f) stroke = r * 0.35f;
+
+	out.valid = true;
+	out.x = x;
+	out.y = y;
+	out.w = w;
+	out.h = h;
+	out.radius = r;
+	out.railHeight = (h > 2.f * r) ? (h - 2.f * r) : 0.f;
+	out.bodySpanW = (w > 2.f * r) ? (w - 2.f * r) : 0.f;
+	out.glowPad = glowPad;
+	out.strokeWidth = stroke;
+	out.leftCenterX = x + r;
+	out.rightCenterX = x + w - r;
+	out.topCenterY = y + r;
+	out.botCenterY = y + h - r;
+	return out;
+}
+
+// Sizes a subtitle/toast capsule tightly to its text width instead of drawing a huge empty box around tiny fragments.
+inline float CeCmdHudFitCapsuleWidth(float contentW, float minW, float maxW)
+{
+	if (!std::isfinite(contentW) || contentW <= 0.f) return 0.f;
+	float w = contentW;
+	if (std::isfinite(minW) && w < minW) w = minW;
+	if (std::isfinite(maxW) && maxW > 0.f && w > maxW) w = maxW;
+	return w;
+}
+
 struct CeCmdHudLayout
 {
 	bool valid;
 	float viewportW, viewportH, scale;
 	CeCmdHudRect barRect;
+	CeCmdHudRect subtitleSafeRect;	// clean radio-subtitle / toast lane sitting ABOVE bottom-docked barRect
 	CeCmdHudRect trayRect;
 	CeCmdHudRect trayHeaderRect;
 	CeCmdHudRect prevPageRect;
@@ -375,28 +446,34 @@ struct CeCmdHudLayout
 	CeCmdHudRect cardHeaderRect;
 	CeCmdHudRect cardProgressRect;
 	CeCmdHudRect buttonRects[kCeHudCardButtons];
-	float battlefieldFraction;		// unobstructed vertical share (bar + top strip excluded)
+	float battlefieldFraction;		// unobstructed vertical share (bar + top strip + bottom safe margin excluded)
 };
 
-// Pure responsive bottom RTS Command Bar layout for 640x480, 1280x720, 1920x1080 and beyond.
-// Keeps >= 75% of the vertical viewport unobstructed and cleanly shifts above uiBottom
-// whenever radio dialogue reserves the lower viewport.
+// Pure responsive bottom-docked RTS Command Bar layout for 640x480, 1280x720, 1920x1080 and beyond.
+// Enforces strict 3%-4% screen safe-area margins so 9-sliced brackets NEVER clip the left/right/bottom
+// edges, ALWAYS bottom-docks FORCES regardless of radio dialogue (never pushing the bar across the center
+// of the battlefield), and exposes subtitleSafeRect cleanly above FORCES for subtitles and toasts.
 inline CeCmdHudLayout CeCmdHudComputeLayout(float viewportW, float viewportH, float uiScale,
                                             float uiBottom, int totalPlacards, int requestedPage)
 {
+	(void)uiBottom;
 	CeCmdHudLayout out = {};
 	if (!(viewportW >= 320.f && viewportH >= 240.f && uiScale > 0.f)) return out;
 	const float u = uiScale;
-	const float margin = std::floor(14.f * u);
-	const float topReserved = std::floor(30.f * u);
-	const float bottomGap = std::floor(6.f * u);
-	// Bar height is capped to 84*u (17.5% of height) so top + bar + gap <= 24.6% (>= 75.4% battlefield open).
-	float barH = std::floor(84.f * u);
-	const float maxBarH = std::floor(viewportH * 0.18f);
+	const float safeSide = std::floor(viewportW * 0.032f);
+	const float minSide = std::floor(20.f * u);
+	const float margin = safeSide > minSide ? safeSide : minSide;
+	const float topReserved = std::floor(24.f * u);
+	const float safeBottom = std::floor(viewportH * 0.035f);
+	const float minBottom = std::floor(16.f * u);
+	const float bottomGap = safeBottom > minBottom ? safeBottom : minBottom;
+	// Bar height is capped to <= 16.5% of viewport height so top + bar + safe bottom margin <= 24.5% (>= 75.5% open).
+	float barH = std::floor(76.f * u);
+	const float maxBarH = std::floor(viewportH * 0.165f);
 	if (barH > maxBarH) barH = maxBarH;
 	if (barH < 64.f) barH = 64.f;
-	const float clampedBottom = (uiBottom > topReserved + barH + margin && uiBottom <= viewportH) ? uiBottom : viewportH;
-	const float barY = std::floor(clampedBottom - barH - bottomGap);
+	// Always bottom-dock FORCES cleanly with >= 24 px bottom margin at 720p (never pushed into mid-screen by subtitles).
+	const float barY = std::floor(viewportH - barH - bottomGap);
 	const float barW = std::floor(viewportW - 2.f * margin);
 	if (barW < 240.f || barY < topReserved) return out;
 
@@ -406,8 +483,18 @@ inline CeCmdHudLayout CeCmdHudComputeLayout(float viewportW, float viewportH, fl
 	out.scale = u;
 	out.barRect = {margin, barY, barW, barH};
 
-	const float innerPad = std::floor(5.f * u);
-	const float sidePad = std::floor(18.f * u);
+	// Clean subtitle / toast lane directly above the bottom-docked FORCES bar.
+	const float subGap = std::floor(10.f * u);
+	const float subH = std::floor(50.f * u);
+	const float subMaxW = std::floor(560.f * u);
+	const float subW = barW < subMaxW ? barW : subMaxW;
+	const float subX = std::floor((viewportW - subW) * 0.5f);
+	float subY = std::floor(barY - subGap - subH);
+	if (subY < topReserved + std::floor(4.f * u)) subY = topReserved + std::floor(4.f * u);
+	out.subtitleSafeRect = {subX, subY, subW, subH};
+
+	const float innerPad = std::floor(4.f * u);
+	const float sidePad = std::floor(16.f * u);
 	const float dividerGap = std::floor(8.f * u);
 	const float innerW = barW - 2.f * sidePad;
 	const float innerH = barH - 2.f * innerPad;
@@ -428,12 +515,12 @@ inline CeCmdHudLayout CeCmdHudComputeLayout(float viewportW, float viewportH, fl
 	out.cardRect = {out.trayRect.x + trayW + dividerGap, innerY, cardW, innerH};
 
 	// Placard tray header + card row
-	const float hdrH = std::floor(14.f * u);
+	const float hdrH = std::floor(13.f * u);
 	out.trayHeaderRect = {out.trayRect.x, out.trayRect.y, trayW, hdrH};
 	const float rowY = out.trayRect.y + hdrH + std::floor(3.f * u);
 	const float rowH = out.trayRect.h - hdrH - std::floor(3.f * u);
 	const float cardGap = std::floor(5.f * u);
-	const float minPlacardW = std::floor(92.f * u);
+	const float minPlacardW = std::floor(86.f * u);
 	int slots = int((trayW + cardGap) / (minPlacardW + cardGap));
 	if (slots < 1) slots = 1;
 	if (slots > kCeHudMaxVisiblePlacards) slots = kCeHudMaxVisiblePlacards;
@@ -465,8 +552,8 @@ inline CeCmdHudLayout CeCmdHudComputeLayout(float viewportW, float viewportH, fl
 	for (int i = 0; i < slots; ++i)
 		out.placardRects[i] = {out.trayRect.x + float(i) * (slotW + cardGap), rowY, slotW, rowH};
 
-	// Right dock: Command Card header + 2x3 metallic button grid
-	const float cardHdrH = std::floor(24.f * u);
+	// Right dock: Command Card header (sized generously for 2 non-overlapping lines) + 2x3 metallic button grid
+	const float cardHdrH = std::floor(26.f * u);
 	out.cardHeaderRect = {out.cardRect.x, out.cardRect.y, cardW, cardHdrH};
 	const float gridTop = out.cardRect.y + cardHdrH + std::floor(3.f * u);
 	const float gridH = out.cardRect.h - cardHdrH - std::floor(3.f * u);
@@ -475,7 +562,7 @@ inline CeCmdHudLayout CeCmdHudComputeLayout(float viewportW, float viewportH, fl
 	const float btnW = std::floor((cardW - 2.f * btnGapX) / 3.f);
 	const float btnH = std::floor((gridH - btnGapY) * 0.5f);
 	// Structure progress bar sits cleanly inside the bottom strip of cardHeaderRect.
-	out.cardProgressRect = {out.cardRect.x, out.cardRect.y + cardHdrH - std::floor(4.f * u), cardW, std::floor(3.f * u)};
+	out.cardProgressRect = {out.cardRect.x, out.cardRect.y + cardHdrH - std::floor(3.f * u), cardW, std::floor(2.f * u)};
 
 	for (int row = 0; row < 2; ++row)
 	{

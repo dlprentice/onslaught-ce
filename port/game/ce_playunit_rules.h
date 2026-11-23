@@ -650,4 +650,110 @@ const float kCePlayUnitSightLift = 1.5f;
 const int kCePlayUnitSightSamples = 32;
 const float kCePlayUnitSightTolerance = 0.5f;
 
+// ---- HUD mode hint auto-collapse (6 seconds at 20 Hz, re-openable on view change or F1) -----------------------------------------------
+const unsigned kCePlayUnitHintCollapseTicks = 120u;
+
+struct CePlayUnitHintState
+{
+	bool visible;
+	unsigned ticksLeft;
+};
+
+inline void CePlayUnitHintReset(CePlayUnitHintState *s)
+{
+	if (!s) return;
+	s->visible = false;
+	s->ticksLeft = 0u;
+}
+
+inline void CePlayUnitHintOpen(CePlayUnitHintState *s, unsigned durationTicks = kCePlayUnitHintCollapseTicks)
+{
+	if (!s) return;
+	s->visible = durationTicks > 0u;
+	s->ticksLeft = durationTicks;
+}
+
+// Advances one driving tick (20 Hz). Re-opens when viewChanged or helpPressed is true;
+// auto-collapses once ticksLeft reaches 0. Returns true when visibility transitions.
+inline bool CePlayUnitHintStep(CePlayUnitHintState *s, bool viewChanged, bool helpPressed, unsigned durationTicks = kCePlayUnitHintCollapseTicks)
+{
+	if (!s) return false;
+	const bool wasVisible = s->visible;
+	if (viewChanged || helpPressed)
+	{
+		CePlayUnitHintOpen(s, durationTicks);
+		return !wasVisible || helpPressed || viewChanged;
+	}
+	if (!s->visible) return false;
+	if (s->ticksLeft > 1u)
+	{
+		--s->ticksLeft;
+		return false;
+	}
+	s->ticksLeft = 0u;
+	s->visible = false;
+	return wasVisible;
+}
+
+// ---- Infantry primary weapon preference (rifle over thrown grenade) --------------------------------------------------------------------
+inline bool CePlayUnitAsciiContainsNoCase(const char *haystack, const char *needle)
+{
+	if (!haystack || !needle || !needle[0]) return false;
+	for (const char *h = haystack; *h; ++h)
+	{
+		const char *a = h;
+		const char *b = needle;
+		while (*a && *b)
+		{
+			char ca = *a;
+			char cb = *b;
+			if (ca >= 'A' && ca <= 'Z') ca = char(ca - 'A' + 'a');
+			if (cb >= 'A' && cb <= 'Z') cb = char(cb - 'A' + 'a');
+			if (ca != cb) break;
+			++a;
+			++b;
+		}
+		if (*b == '\0') return true;
+	}
+	return false;
+}
+
+inline bool CePlayUnitIsSecondaryThrownWeapon(const char *name)
+{
+	if (!name || !name[0]) return false;
+	return CePlayUnitAsciiContainsNoCase(name, "grenade") ||
+	       CePlayUnitAsciiContainsNoCase(name, "thrown") ||
+	       CePlayUnitAsciiContainsNoCase(name, "satchel");
+}
+
+// Selects an infantry soldier's primary weapon index so the HUD label and active mount
+// match the carried rifle instead of defaulting to a thrown plasma grenade when both exist.
+// Prefers a ready non-thrown primary weapon, then any non-thrown weapon with a valid mode,
+// and only falls back to thrown/secondary weapons when no primary firearm exists.
+inline int CePlayUnitSelectInfantryPrimaryWeapon(int count, int currentIdx, bool arming,
+                                                 const bool *hasMode, const bool *ready,
+                                                 const char *const *names)
+{
+	if (count <= 0 || !hasMode || !ready) return -1;
+	const bool curValid = currentIdx >= 0 && currentIdx < count && hasMode[currentIdx];
+	const bool curThrown = curValid && names && CePlayUnitIsSecondaryThrownWeapon(names[currentIdx]);
+	if (curValid && !curThrown && (ready[currentIdx] || arming)) return currentIdx;
+	for (int i = 0; i < count; ++i)
+	{
+		const bool thrown = names && CePlayUnitIsSecondaryThrownWeapon(names[i]);
+		if (!thrown && hasMode[i] && ready[i]) return i;
+	}
+	for (int i = 0; i < count; ++i)
+	{
+		const bool thrown = names && CePlayUnitIsSecondaryThrownWeapon(names[i]);
+		if (!thrown && hasMode[i]) return i;
+	}
+	if (curValid && (ready[currentIdx] || arming)) return currentIdx;
+	for (int i = 0; i < count; ++i)
+		if (hasMode[i] && ready[i]) return i;
+	for (int i = 0; i < count; ++i)
+		if (hasMode[i]) return i;
+	return -1;
+}
+
 #endif

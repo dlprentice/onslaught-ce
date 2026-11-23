@@ -1,11 +1,11 @@
 --- a/MenuOptionsList.cpp
 +++ b/MenuOptionsList.cpp
-@@ -126,19 +126,19 @@ static inline void GetMenuPanelSize(CMenuOptionsList *list, float &pw, float &fh
+@@ -126,20 +126,20 @@ static inline void GetMenuPanelSize(CMenuOptionsList *list, float &pw, float &fh
  
  // FUNCTION: 0x004a4810
  WCHAR	*CMenuOptionsList::Render(CPauseMenu *menu)
 -{
-+{ extern int PortCeCompactPitch(const void *); extern float PortCeCompactShift(int, bool); int cePitch = 0; { CMenuItem *ceItem; FOR_ALL_ITEMS_IN(mItems, ceItem) if (!cePitch) cePitch = PortCeCompactPitch(ceItem); }
++{ extern int PortCeCompactPitch(const void *); extern float PortCeCompactShift(int, bool); extern int PortCeCompactActionGap(int, int, int); int cePitch = 0; { CMenuItem *ceItem; FOR_ALL_ITEMS_IN(mItems, ceItem) if (!cePitch) cePitch = PortCeCompactPitch(ceItem); }
  	CMenuMenuItem::ClearDeferredRender();
  
  	bool	options_page = CPauseMenu::mOptionsPage;
@@ -19,11 +19,19 @@
  	int		height = 32;
  	FOR_ALL_ITEMS_IN(mItems, item)
 -		height += item->GetHeight();
+-	height -= 32;
 +		height += cePitch ? cePitch : item->GetHeight();
- 	height -= 32;
++	height = height - 32 + PortCeCompactActionGap(cePitch, mItems.Size() - 2, mItems.Size());
  
  	float	ty = y - height * 0.5f - 15.f;
-@@ -180,7 +180,7 @@ WCHAR	*CMenuOptionsList::Render(CPauseMenu *menu)
+ 
+@@ -175,12 +175,12 @@ WCHAR	*CMenuOptionsList::Render(CPauseMenu *menu)
+ 
+ 	bool	clicked = false;
+ 	FOR_ALL_ITEMS_IN(mItems, item)
+-	{
++	{ ty += PortCeCompactActionGap(cePitch, n, mItems.Size());
+ 		if ((!menu->IsConfirming()) || IsConfirmation())
  		{
  			if (!mItems.At(mSelected)->TakesInput())
  			{

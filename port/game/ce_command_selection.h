@@ -25,17 +25,21 @@
 //   BeginFrame -> UpdateLayout -> pointer events and host hotkeys ->
 //   Panel().Paint -> TakeRequest.
 //
-// A frame that is incomplete, oversized, null, or carries a key that cannot
-// be represented exactly makes picking and every action unavailable.  The
-// selection and saved sets are kept as they were, and the next complete valid
-// frame restores normal behaviour.
+// A frame that is corrupt, null, oversized, or carries a key that cannot be
+// represented exactly makes picking and every action unavailable; the selection
+// and saved sets are kept as they were until a valid frame arrives.  When the
+// live world holds more entities than kMaxUnits, the host calls PrioritizeUnits
+// (selected -> player faction -> nearest to focus) to supply a complete,
+// bounded high-priority slice and reports the remaining hidden count to the HUD
+// instead of locking out picking or orders.
 //
-// A SelectionController is roughly a hundred kilobytes; give it static or
+// A SelectionController is roughly half a megabyte; give it static or
 // long-lived storage rather than a small stack.
 
 #ifndef CE_COMMAND_SELECTION_H
 #define CE_COMMAND_SELECTION_H
 
+#include <cmath>
 #include <cstdint>
 
 #include "ce_command_lifetime.h"
@@ -381,6 +385,118 @@ private:
     float last_y_;
     float drag_threshold_;
 };
+
+// ---------------------------------------------------------------------------
+// High-entity-count prioritization (selected -> player faction -> nearest)
+// ---------------------------------------------------------------------------
+// When a long session exceeds kMaxUnits (or a smaller caller budget), pick the
+// highest-priority bounded slice and report the hidden remainder so Commander
+// picking and orders stay 100% functional instead of locking out.
+struct PrioritizeCandidate {
+    int source_index;
+    bool selected;
+    bool player_faction;
+    float dist_sq;  // squared world distance to camera focus; non-finite treated as farthest
+};
+
+namespace detail {
+
+inline bool CandidateBetter(const PrioritizeCandidate& a, const PrioritizeCandidate& b) {
+    if (a.selected != b.selected) return a.selected;
+    if (a.player_faction != b.player_faction) return a.player_faction;
+    const bool a_fin = std::isfinite(a.dist_sq);
+    const bool b_fin = std::isfinite(b.dist_sq);
+    if (a_fin != b_fin) return a_fin;
+    if (a_fin && a.dist_sq != b.dist_sq) return a.dist_sq < b.dist_sq;
+    return a.source_index < b.source_index;
+}
+
+}  // namespace detail
+
+// Writes up to `limit` source indices in strict priority order (best first)
+// into `out_indices`, sets `*out_hidden` to the number of dropped candidates,
+// and returns the number of kept indices. Allocation-free, O(N log K).
+inline int PrioritizeUnits(const PrioritizeCandidate* candidates, int count, int limit,
+                           int* out_indices, int* out_hidden) {
+    if (out_hidden) *out_hidden = 0;
+    if (!candidates || count <= 0 || !out_indices || limit <= 0) {
+        if (out_hidden && count > 0) *out_hidden = count;
+        return 0;
+    }
+    const int keep = count < limit ? count : limit;
+    // Maintain a binary max-heap of candidate indices (0..count-1) by "worse-first"
+    // so heap[0] is the worst element among the current top-K.
+    int heap_size = 0;
+    for (int i = 0; i < count; ++i) {
+        if (heap_size < keep) {
+            int pos = heap_size++;
+            out_indices[pos] = i;
+            while (pos > 0) {
+                const int parent = (pos - 1) / 2;
+                // Parent should be WORSE than child (so root is worst of top-K).
+                if (detail::CandidateBetter(candidates[out_indices[parent]], candidates[out_indices[pos]])) {
+                    const int tmp = out_indices[parent];
+                    out_indices[parent] = out_indices[pos];
+                    out_indices[pos] = tmp;
+                    pos = parent;
+                } else {
+                    break;
+                }
+            }
+        } else if (detail::CandidateBetter(candidates[i], candidates[out_indices[0]])) {
+            out_indices[0] = i;
+            int pos = 0;
+            while (true) {
+                const int left = pos * 2 + 1;
+                const int right = left + 1;
+                int worst = pos;
+                if (left < heap_size &&
+                    detail::CandidateBetter(candidates[out_indices[worst]], candidates[out_indices[left]])) {
+                    worst = left;
+                }
+                if (right < heap_size &&
+                    detail::CandidateBetter(candidates[out_indices[worst]], candidates[out_indices[right]])) {
+                    worst = right;
+                }
+                if (worst == pos) break;
+                const int tmp = out_indices[pos];
+                out_indices[pos] = out_indices[worst];
+                out_indices[worst] = tmp;
+                pos = worst;
+            }
+        }
+    }
+    // Extract from worst-first heap into sorted best-first order (in-place heapsort).
+    for (int end = heap_size - 1; end > 0; --end) {
+        const int tmp = out_indices[0];
+        out_indices[0] = out_indices[end];
+        out_indices[end] = tmp;
+        int pos = 0;
+        while (true) {
+            const int left = pos * 2 + 1;
+            const int right = left + 1;
+            int worst = pos;
+            if (left < end &&
+                detail::CandidateBetter(candidates[out_indices[worst]], candidates[out_indices[left]])) {
+                worst = left;
+            }
+            if (right < end &&
+                detail::CandidateBetter(candidates[out_indices[worst]], candidates[out_indices[right]])) {
+                worst = right;
+            }
+            if (worst == pos) break;
+            const int swap_v = out_indices[pos];
+            out_indices[pos] = out_indices[worst];
+            out_indices[worst] = swap_v;
+            pos = worst;
+        }
+    }
+    for (int i = 0; i < heap_size; ++i) {
+        out_indices[i] = candidates[out_indices[i]].source_index;
+    }
+    if (out_hidden) *out_hidden = count > heap_size ? (count - heap_size) : 0;
+    return heap_size;
+}
 
 }  // namespace ce_command_selection
 

@@ -41,7 +41,12 @@ enum EFrontEndPage { FEP_MAIN = 0, FEP_OPTIONS = 17, FEP_LANGUAGE_TEST = 21 };
 WINDOW_LINES = (
     ("{ extern WCHAR *PortCeValueFit(WCHAR *, float, float *); extern WCHAR *PortCeListFit(WCHAR *, float);",
      "{ extern WCHAR *PortCeValueFit(WCHAR *, float, float *); extern WCHAR *PortCeListFit(WCHAR *, float); "
-     "extern int PortCeListWindow(const void *, float, long, int, int, int, float *, int *, int *); extern void PortCeListHover(int);"),
+     "extern int PortCeListWindow(const void *, float, long, int, int, int, float *, int *, int *); extern void PortCeListHover(int); "
+     "extern float PortCeLabelLeft(int); extern float PortCeValueGap();"),
+    ("\tfloat\ttx = x - size.cx;\n\tfloat\tlx = tx + size.cx + 2.f;\n\tif (tx < 5.f)\n\t{\n\t\tscale = (x - 5.f) / size.cx;\n\t\ttx = 5.f;\n\t}",
+     "\tfloat\ttx = x - size.cx; const float ceLeft = PortCeLabelLeft(FRONTEND.GetCurrentPage());\n"
+     "\tfloat\tlx = tx + size.cx + PortCeValueGap();\n"
+     "\tif (tx < ceLeft)\n\t{\n\t\tscale = (x - ceLeft) / size.cx;\n\t\ttx = ceLeft;\n\t}"),
     ("\t\tint\t\tn = GetNumChoices();",
      "\t\tint\t\tn = GetNumChoices(); int ceFirst = 0; const int ceWindow = PortCeListWindow(this, y, size.cy, n, mSelection, "
      "FRONTEND.GetCurrentPage(), &ly, &ceFirst, &n);"),
@@ -55,9 +60,13 @@ WINDOW_LINES = (
 PITCH_LINES = (
     ("WCHAR\t*CMenuOptionsList::Render(CPauseMenu *menu)\n{\n",
      "WCHAR\t*CMenuOptionsList::Render(CPauseMenu *menu)\n{ extern int PortCeCompactPitch(const void *); extern float PortCeCompactShift(int, bool); "
+     "extern int PortCeCompactActionGap(int, int, int); "
      "int cePitch = 0; { CMenuItem *ceItem; FOR_ALL_ITEMS_IN(mItems, ceItem) if (!cePitch) cePitch = PortCeCompactPitch(ceItem); }\n"),
     ("\tfloat\ty = mY;\n", "\tfloat\ty = mY + PortCeCompactShift(cePitch, options_page);\n"),
     ("\t\theight += item->GetHeight();\n", "\t\theight += cePitch ? cePitch : item->GetHeight();\n"),
+    ("\theight -= 32;\n", "\theight = height - 32 + PortCeCompactActionGap(cePitch, mItems.Size() - 2, mItems.Size());\n"),
+    ("\tbool\tclicked = false;\n\tFOR_ALL_ITEMS_IN(mItems, item)\n\t{\n",
+     "\tbool\tclicked = false;\n\tFOR_ALL_ITEMS_IN(mItems, item)\n\t{ ty += PortCeCompactActionGap(cePitch, n, mItems.Size());\n"),
     ("if (CMenuItem::IsMouseInRect(0.f, ty, 640.f, ty + item->GetHeight()))",
      "if (CMenuItem::IsMouseInRect(0.f, ty, 640.f, ty + (cePitch ? cePitch : item->GetHeight())))"),
     ("if (CMenuItem::MouseClickedInRect(0.f, ty, 640.f, ty + item->GetHeight()))",
@@ -143,14 +152,14 @@ def check_pitch(patched, original):
         raise AssertionError("every row height Render uses must follow the list's pitch")
 
 
-def rows(pitch, shift, count, centre, title):
+def rows(pitch, shift, count, centre, title, action_gap=0):
     """The tops of a CMenuOptionsList's rows (src/MenuOptionsList.cpp Render): `count` rows `pitch` apart centred on centre + shift,
-    after the list's own title (30 units) when it draws one (a level's Pause Menu)."""
-    height = count * pitch
+    plus `action_gap` before Apply/Back (the final two rows), after the list's own title (30 units) when it draws one (a level's Pause Menu)."""
+    height = count * pitch + action_gap
     ty = (centre + shift) - height * 0.5 - 15.0
     if title:
         ty += 30.0
-    return [ty + pitch * i for i in range(count)]
+    return [ty + pitch * i + (action_gap if action_gap and i >= count - 2 else 0) for i in range(count)]
 
 
 def check_capacity(header):
@@ -167,15 +176,16 @@ def check_rows(header):
     """Video Options at CE's pitch: 21 rows stay below the front-end emblem (y > 127) and above the help line (<= 452);
     in a level, Back clears the message bar (<= 406) where 20 units drew it across the bar."""
     pitch = int(re.search(r"kCeCompactPitch = (\d+);", header).group(1))
+    gap = int(re.search(r"kCeCompactActionGap = (\d+);", header).group(1))
     shift = float(re.search(r"kCeCompactFrontShift = (-?[0-9.]+)f;", header).group(1))
     pause_shift = float(re.search(r"kCeCompactPauseShift = (-?[0-9.]+)f;", header).group(1))
-    front = rows(pitch, shift, 21, 300, False)
+    front = rows(pitch, shift, 21, 300, False, gap)
     before = rows(20, 0, 21, 300, False)
-    if not (130.0 <= front[0] <= 145.0):
+    if not (136.0 <= front[0] <= 145.0):
         raise AssertionError(f"the front end's first row must clear the top emblem: {front[0]}")
     if not (front[-1] + 16 <= 452 and front[-1] <= before[-1]):
         raise AssertionError(f"Back must end above the help line (y 452): {front[-1] + 16}")
-    pause, pause_before = rows(pitch, pause_shift, 21, 240, True), rows(20, 0, 21, 240, True)
+    pause, pause_before = rows(pitch, pause_shift, 21, 240, True, gap), rows(20, 0, 21, 240, True)
     if not (pause[-1] + 16 <= 406 < pause_before[-1] + 16):
         raise AssertionError(f"in a level Back must end above the message bar (y 406): {pause[-1] + 16}, was {pause_before[-1] + 16}")
     return {"front_first": front[0], "front_back_end": front[-1] + 16, "pause_first": pause[0], "pause_back_end": pause[-1] + 16,
@@ -283,6 +293,9 @@ def main():
             "pitch-ungated": (text, "return (PortCeQualityRow(item) && PortCeQualityOptionsAvailable()) ? kCeCompactPitch : 0;", "return PortCeQualityRow(item) ? kCeCompactPitch : 0;", "pitch"),
             "pitch-every-list": (text, "return (PortCeQualityRow(item) && PortCeQualityOptionsAvailable()) ? kCeCompactPitch : 0;", "return PortCeQualityOptionsAvailable() ? kCeCompactPitch : 0;", "pitch"),
             "shift-in-pause": (text, "return options_page ? kCeCompactFrontShift : kCeCompactPauseShift;", "return kCeCompactFrontShift;", "pitch"),
+            "label-left-ungated": (text, "return (PortCeQualityOptionsAvailable() && OptionsPage(page)) ? kCeLabelLeft : 5.f;", "return OptionsPage(page) ? kCeLabelLeft : 5.f;", "pitch"),
+            "value-gap-ungated": (text, "return PortCeQualityOptionsAvailable() ? kCeValueGap : 2.f;", "return kCeValueGap;", "pitch"),
+            "action-gap-every-row": (text, "return (pitch && count >= 2 && index == count - 2) ? kCeCompactActionGap : 0;", "return pitch ? kCeCompactActionGap : 0;", "pitch"),
         }
         header_mutants = {
             "no-smallest-scale": (head, "kCeValueMinScale = 0.75f;", "kCeValueMinScale = 0.01f;", "squeeze-limit"),
@@ -298,7 +311,7 @@ def main():
             "window-front-top": (head, "kCeListFrontTop = 104.f;", "kCeListFrontTop = 80.f;", "window-limits"),
             "window-sized-by-font": (head, "const float room = (float)rowh > kCeListEntryRoom ? (float)rowh : kCeListEntryRoom;", "const float room = (float)rowh;", "window-sizes"),
             "edge-step-unbounded": (head, "if (hovered == first && first > 0) return -1;", "if (hovered == first) return -1;", "window-edge"),
-            "pitch-twenty": (head, "kCeCompactPitch = 15;", "kCeCompactPitch = 20;", "pitch"),
+            "pitch-twenty": (head, "kCeCompactPitch = 14;", "kCeCompactPitch = 20;", "pitch"),
         }
         for label, (original_text, old, new, case) in {**helper_mutants, **header_mutants}.items():
             if original_text.count(old) != 1:
@@ -367,7 +380,7 @@ def main():
             raise AssertionError("the capacity check missed the float quotient")
         for label, (old, new) in {"rows-first-moved": ("kCeCompactFrontShift = 8.f;", "kCeCompactFrontShift = 0.f;"),
                                   "rows-pause-unshifted": ("kCeCompactPauseShift = -8.f;", "kCeCompactPauseShift = 0.f;"),
-                                  "rows-pitch-twenty": ("kCeCompactPitch = 15;", "kCeCompactPitch = 20;")}.items():
+                                  "rows-pitch-twenty": ("kCeCompactPitch = 14;", "kCeCompactPitch = 20;")}.items():
             try:
                 check_rows(head.replace(old, new))
             except AssertionError:

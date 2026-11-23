@@ -470,11 +470,47 @@ static void CheckFactionPalettesAndClassReadouts()
 			for (const char *c = all[k]; *c; ++c)
 				Require(!CePlayUnitCharForbidden(static_cast<unsigned char>(*c)),
 				        "class hud: zero forbidden bitmap-font glyphs in formatted output");
+		if (classes[i] == CE_PLAYUNIT_CLASS_INFANTRY)
+			Require(std::strstr(l2, "HEALTH ") != NULL && std::strstr(l2, "HULL") == NULL,
+			        "infantry hud: displays HEALTH rather than HULL");
 		if (classes[i] == CE_PLAYUNIT_CLASS_NAVAL)
 			Require(std::strstr(act, "UNLOAD") != NULL, "naval hud: ready landing craft shows UNLOAD prompt");
 		if (classes[i] == CE_PLAYUNIT_CLASS_ARTILLERY)
 			Require(std::strstr(l2, "ARC ON") != NULL && std::strstr(act, "SPOT CAM") != NULL,
 			        "artillery hud: shows ARC ON and SPOT CAM prompt");
+	}
+	// Aircraft title reconciliation: Ground Attack Aircraft vs Bomber vs Fighter
+	{
+		CePlayUnitHudTelemetry gaa = {};
+		gaa.valid = true; gaa.classId = CE_PLAYUNIT_CLASS_AIRCRAFT; gaa.isBomber = true; gaa.hullPct = 100;
+		std::snprintf(gaa.unitName, sizeof(gaa.unitName), "Ground Attack Aircraft");
+		char h[48], l1[64], l2[64], act[48];
+		CePlayUnitFormatClassHud(gaa, h, l1, l2, act);
+		Require(std::strcmp(h, "GROUND ATTACK") == 0, "aircraft hud: Ground Attack Aircraft header reconciles cleanly");
+		std::snprintf(gaa.unitName, sizeof(gaa.unitName), "Heavy Bomber");
+		CePlayUnitFormatClassHud(gaa, h, l1, l2, act);
+		Require(std::strcmp(h, "BOMBER") == 0, "aircraft hud: actual bomber still shows BOMBER");
+	}
+	// Artillery max range display (RNG 70M / MAX 60M) so OUT OF RANGE is immediately self-explanatory
+	{
+		CePlayUnitHudTelemetry art = {};
+		art.valid = true; art.classId = CE_PLAYUNIT_CLASS_ARTILLERY; art.hullPct = 100;
+		art.rangeMeters = 70.f; art.maxRangeMeters = 60.f; art.arcOn = true;
+		char h[48], l1[64], l2[64], act[48];
+		CePlayUnitFormatClassHud(art, h, l1, l2, act);
+		Require(std::strstr(l1, "RNG 70M / MAX 60M") != NULL, "artillery hud: shows RNG and MAX range together");
+	}
+	// Per-class compact reticle kind & 9-slice fixed corner radius + mirror symmetry
+	{
+		Require(CePlayUnitCompactReticleKind(CE_PLAYUNIT_CLASS_INFANTRY) == CE_PLAYUNIT_RETICLE_INFANTRY, "reticle: infantry compact crosshair");
+		Require(CePlayUnitCompactReticleKind(CE_PLAYUNIT_CLASS_AIRCRAFT) == CE_PLAYUNIT_RETICLE_AIRCRAFT, "reticle: aircraft forward-aim horizon cue");
+		Require(CePlayUnitCompactReticleKind(CE_PLAYUNIT_CLASS_ARTILLERY) == CE_PLAYUNIT_RETICLE_ARTILLERY, "reticle: artillery ballistic range reticle");
+		Require(CePlayUnitCompactReticleKind(CE_PLAYUNIT_CLASS_TANK) == CE_PLAYUNIT_RETICLE_VEHICLE, "reticle: tank uses vehicle reticle");
+		const CePlayUnitNineSlice nsA = CePlayUnitComputeNineSlice(40.f, 200.f, 320.f, 96.f, 21.f, 1.5f);
+		const CePlayUnitNineSlice nsB = CePlayUnitComputeNineSlice(40.f, 200.f, 320.f, 220.f, 21.f, 1.5f);
+		Require(nsA.valid && nsB.valid && Near(nsA.radius, 21.f) && Near(nsB.radius, 21.f), "9-slice: fixed radius never stretches vertically");
+		Require(Near(nsB.railHeight, 220.f - 42.f), "9-slice: straight vertical rail spans tall panels");
+		Require(Near(nsB.leftCenterX - nsB.x, (nsB.x + nsB.w) - nsB.rightCenterX), "9-slice: exact left/right symmetry");
 	}
 	// NaN/Inf/extreme telemetry values format safely without float-to-int UB under UBSan
 	{
@@ -569,6 +605,8 @@ static void CheckMultiWeaponAndPromptCapacity()
 			CePlayUnitClassCardLayout card;
 			Require(CePlayUnitComputeClassCardLayout(modes[mi].w, modes[mi].h, modes[mi].s, desiredTextW, isAir, &card),
 			        "class card layout: succeeds at 1280x720 and 640x480");
+			Require(card.x0 >= modes[mi].w * 0.03f,
+			        "class card layout: enforces 3-4 percent left safe-area margin (zero edge clipping)");
 			Require(card.x0 + card.totalW < compassLeft - 8.f * modes[mi].s,
 			        "class card layout: right crescent edge strictly clear of central compass ring");
 			Require(card.bodyLeft + card.bodyW <= card.x0 + card.totalW + 0.5f,
@@ -654,6 +692,15 @@ MUTANTS = (
     ("spotter camera ignores eye terrain hill", "tactics",
      "if (isfinite(terrainAtEye) && (!isfinite(eyeFloor) || terrainAtEye < eyeFloor))\n\t\t\teyeFloor = terrainAtEye;",
      "(void)terrainAtEye;"),
+    ("infantry hud regresses to HULL", "tactics",
+     'snprintf(line2Out, 64, "STANCE %s  HEALTH %d%%", stanceWord, hull);',
+     'snprintf(line2Out, 64, "STANCE %s  HULL %d%%", stanceWord, hull);'),
+    ("artillery max range omitted", "tactics",
+     'snprintf(line1Out, 64, "AZ %03d  EL %+d  RNG %dM / MAX %dM", az, el, rng, maxRng);',
+     'snprintf(line1Out, 64, "AZ %03d  EL %+d  RNG %dM", az, el, rng);'),
+    ("class card safe margin dropped", "tactics",
+     "const float safeLeft = floorf(w * 0.032f);",
+     "const float safeLeft = 0.f;"),
 )
 
 

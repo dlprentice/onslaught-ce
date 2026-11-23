@@ -80,10 +80,10 @@
  	// Setup Renderstates		(retail PC: no second UseDefault, 00540f82)
 +	if (PortWideActive())
 +	{
-+		// Port (patch 0042, widescreen): black bars beside the front end, then its own 4:3 viewport, so its 3D models
-+		// keep their shape (their projections are 4:3) and anything drawn across the window stops at the box.
++		// Port (patch 0042, widescreen): match the front end's rendered deep-navy backdrop (#171730) beside the
++		// centred 4:3 viewport, so 3D models keep their shape without black bars or edge seams on widescreen.
 +		PortWideViewport(0);
-+		PLATFORM.ClearScreen(0);
++		PLATFORM.ClearScreen(0x00171730);
 +		PortWideViewport(1);
 +		PLATFORM.ClearScreen(0x001f1f3f);
 +	}

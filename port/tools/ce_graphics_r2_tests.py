@@ -871,14 +871,22 @@ class GraphicsR2Tests(unittest.TestCase):
                 self.assertEqual(ran.returncode, 1, f"mutant {label} was NOT caught")
                 self.assertIn("restore assertion:", ran.stderr)
 
-        # 3. Verify zero-res & missing-depth guards in game.cpp and DXWater.cpp.
+        # 3. Verify zero-res, missing-depth, HD ripple/blur scaling, lit 3D reflection, and mirror fog guards.
+        extra_texts = build.patched_text(["State.cpp", "renderinfo.cpp"])
         game_txt = texts["game.cpp"]
         water_txt = texts["DXWater.cpp"]
+        state_txt = extra_texts["State.cpp"]
+        rinfo_txt = extra_texts["renderinfo.cpp"]
         self.assertIn("ENGINE.GetLandscape()->mMirrorTexture && ENGINE.GetLandscape()->mDepthSurface", game_txt)
         self.assertIn("CeWaterReflectionActiveRes() > 0u", game_txt)
+        self.assertIn("FORCE_OBJECT_IMPOSTERS = (CeWaterReflectionActiveRes() <= 256u);", game_txt)
         self.assertIn("const unsigned ceMirrorDim = CeWaterReflectionActiveRes() > 0u ? CeWaterReflectionActiveRes() : 256u;", game_txt)
         self.assertIn("ceWaterRes > 0u && ceWaterRes != 256u", water_txt)
+        self.assertIn("const float ceDistort = 0.08f * (256.0f / static_cast<float>(ceWaterRes));", water_txt)
+        self.assertIn("const float ceBlur = ceTap < (1.0f / 256.0f) ? (1.0f / 256.0f) : ceTap;", water_txt)
         self.assertIn("ENGINE.GetLandscape() && ENGINE.GetLandscape()->mMirrorTexture && ENGINE.GetLandscape()->mDepthSurface", water_txt)
+        self.assertIn("if (gMirrorPass && CeWaterReflectionActiveRes() <= 256u)", state_txt)
+        self.assertIn("if (gMirrorPass && CeWaterReflectionActiveRes() <= 256u)", rinfo_txt)
 
     def test_0368_shadow_zero_pool_restore_and_line_safety(self):
         sys.path.insert(0, str(PORT))
@@ -973,7 +981,7 @@ class GraphicsR2Tests(unittest.TestCase):
         hook_sites = tuple(sorted(p.name for p in (ROOT / "port/patches").glob("03[01][0-9]-ce-hook-*.patch")))
         with tempfile.TemporaryDirectory(prefix="r2-patch-") as td:
             base = Path(td)
-            files_367 = ("DXEngine.cpp", "DXLandscape.cpp", "DXWater.cpp", "game.cpp")
+            files_367 = ("DXEngine.cpp", "DXLandscape.cpp", "DXWater.cpp", "State.cpp", "game.cpp", "renderinfo.cpp")
             with_367 = patched(base / "with367", files_367, skip=hook_sites)
             without_367 = patched(base / "without367", files_367, skip=("0367-ce-water-reflection-res.patch", *hook_sites))
             for name in files_367:

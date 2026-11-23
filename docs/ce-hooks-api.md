@@ -86,7 +86,7 @@ Each table row declares:
 
 ### 3.1 Registered Built-in Handlers (21 Hook Points)
 
-The compiled dispatch table in `port/game/ce_hooks.cpp` wires the following built-in CE handlers (26 rows across 14 active hook points; 7 points are currently open for extension):
+The compiled dispatch table in `port/game/ce_hooks.cpp` wires the following built-in CE handlers (29 rows across 14 active hook points; 7 points are currently open for extension):
 
 | Point | Slot | Handler Name | Tag | Gate | Mode | Owner Module |
 |---|---|---|---|---|---|---|
@@ -98,6 +98,7 @@ The compiled dispatch table in `port/game/ce_hooks.cpp` wires the following buil
 | `level_end` | `30` | `photo_level_end` | `SIM` | `CE_GATE_VERSION` | `CE_MODE_NONE` | `port/game/ce_photo.cpp` |
 | `level_end` | `40` | `commander_level_end` | `SIM` | `CE_GATE_VERSION` | `CE_MODE_NONE` | `port/game/ce_cmdmap.cpp` |
 | `level_end` | `50` | `multibe_level_end` | `SIM` | `CE_GATE_VERSION` | `CE_MODE_NONE` | `port/game/ce_multibe.cpp` |
+| `level_end` | `60` | `entity_handles_level_end` | `SIM` | `CE_GATE_VERSION` | `CE_MODE_NONE` | `port/game/ce_entity_handles.cpp` |
 | `tick_pre` | `10` | `gamepad_cycle` | `SIM` | `CE_GATE_VERSION` | `CE_MODE_NONE` | `port/game/ce_gamepad.cpp` |
 | `tick_pre` | `20` | `multibe_tick_pre` | `SIM` | `CE_GATE_LAYER` | `CE_MODE_NONE` | `port/game/ce_multibe.cpp` |
 | `tick_post` | — | *(open — drains `ce_hook_command_push` queue)* | `SIM` | — | — | — |
@@ -119,7 +120,9 @@ The compiled dispatch table in `port/game/ce_hooks.cpp` wires the following buil
 | `render_camera` | `30` | `multibe_camera` | `SIM` | `CE_GATE_LAYER` | `CE_MODE_NONE` | `port/game/ce_multibe.cpp` |
 | `hud_focus` | `10` | `multibe_hud_focus` | `RENDER` | `CE_GATE_LAYER` | `CE_MODE_NONE` | `port/game/ce_multibe.cpp` |
 | `unit_spawn` | `10` | `multibe_unit_spawn` | `SIM` | `CE_GATE_LAYER` | `CE_MODE_NONE` | `port/game/ce_multibe.cpp` |
+| `unit_spawn` | `20` | `entity_handles_unit_spawn` | `SIM` | `CE_GATE_LAYER` | `CE_MODE_NONE` | `port/game/ce_entity_handles.cpp` |
 | `unit_destroyed` | `10` | `multibe_unit_destroyed` | `SIM` | `CE_GATE_LAYER` | `CE_MODE_NONE` | `port/game/ce_multibe.cpp` |
+| `unit_destroyed` | `20` | `entity_handles_unit_destroyed` | `SIM` | `CE_GATE_LAYER` | `CE_MODE_NONE` | `port/game/ce_entity_handles.cpp` |
 | `spawner_trigger` | — | *(open — no built-in rows)* | `SIM` | — | — | — |
 | `weapon_fire` | `10` | `multibe_weapon_fire` | `SIM` | `CE_GATE_LAYER` | `CE_MODE_NONE` | `port/game/ce_multibe.cpp` |
 | `render_pass` | — | *(open — no built-in rows)* | `RENDER` | — | — | — |

@@ -136,6 +136,13 @@ static void keys() {
     check(!PortCePhotoShotWanted(), "one F12, one screenshot");
     render();
     check(drew(L"Photo Mode: HUD hidden."), "the note is back in the next frame");
+    // Mid-frame F12 after the photo toast was already drawn must skip the dirty Present and capture the next clean frame.
+    press(DIK_F12);
+    check(!PortCePhotoShotWanted(), "F12 after a drawn toast defers past the dirty Present");
+    render();
+    check(draws.empty() && sprites.empty(), "the deferred capture frame draws no toast");
+    check(PortCePhotoShotWanted(), "the clean Present after deferral is captured");
+    check(!PortCePhotoShotWanted(), "deferred F12 still captures once");
     down(DIK_F12, true);
     check(!PortCePhotoShotWanted(), "a held F12 takes one screenshot");
     up(DIK_F12);

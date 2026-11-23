@@ -61,12 +61,12 @@ inline unsigned int CeMuspellCockpitGunlightPixel(int x, int y, int width, int h
 
 	const float u = (width > 1) ? ((float)x / (float)(width - 1)) : 0.0f;
 	const float v = (height > 1) ? ((float)y / (float)(height - 1)) : 0.5f;
-	const float centerBand = (v >= 0.25f && v <= 0.75f) ? 1.0f : 0.62f;
+	const float centerBand = (v >= 0.18f && v <= 0.82f) ? 1.0f : 0.78f;
 
-	const float rF = (210.0f + 45.0f * u) * (0.78f + 0.22f * centerBand);
-	const float gF = (24.0f + 130.0f * u * u + 46.0f * u) * centerBand;
-	const float bF = (14.0f + 120.0f * u * u * u) * centerBand;
-	const float aF = (160.0f + 95.0f * u) * (0.75f + 0.25f * centerBand);
+	const float rF = (232.0f + 23.0f * u) * (0.86f + 0.14f * centerBand);
+	const float gF = (36.0f + 132.0f * u * u + 44.0f * u) * centerBand;
+	const float bF = (10.0f + 78.0f * u * u * u) * centerBand;
+	const float aF = (210.0f + 45.0f * u) * (0.85f + 0.15f * centerBand);
 
 	auto clampByte = [](float val) -> unsigned int {
 		if (val <= 0.0f) return 0u;
@@ -79,6 +79,61 @@ inline unsigned int CeMuspellCockpitGunlightPixel(int x, int y, int width, int h
 	const unsigned int g = clampByte(gF);
 	const unsigned int b = clampByte(bF);
 	return (a << 24) | (r << 16) | (g << 8) | b;
+}
+
+// Pure, host-testable warm crimson-charcoal lighting & emissive balance for Muspell 1P cockpits.
+// Prevents cool night-sky ambient/directional lights (e.g. Level 851) from washing retail cockpit_M.tga
+// into dark navy-indigo, while preserving its metallic bevel contrast and restoring every light/material
+// strictly in LIFO order before any Forseti cockpit or world mesh renders.
+struct CeMuspellCockpitLightBoost
+{
+	unsigned int ambient;
+	float keyR, keyG, keyB;
+	float rimR, rimG, rimB;
+	float matDiffR, matDiffG, matDiffB;
+	float matEmisR, matEmisG, matEmisB;
+};
+
+inline CeMuspellCockpitLightBoost CeMuspellCockpitComputeLightBoost(unsigned int origAmbient,
+                                                                    float origKeyR, float origKeyG, float origKeyB)
+{
+	CeMuspellCockpitLightBoost out = {};
+	const unsigned int origR = (origAmbient >> 16) & 0xffu;
+	const unsigned int origG = (origAmbient >> 8) & 0xffu;
+	const unsigned int origB = origAmbient & 0xffu;
+
+	// Lift ambient into a rich warm crimson-obsidian floor and clamp cool blue down aggressively.
+	unsigned int aR = origR + 48u;
+	if (aR < 68u) aR = 68u;
+	if (aR > 96u) aR = 96u;
+	unsigned int aG = (origG / 4u) + 14u;
+	if (aG > 28u) aG = 28u;
+	unsigned int aB = origB / 7u + 6u;
+	if (aB > 16u) aB = 16u;
+	out.ambient = 0xff000000u | (aR << 16) | (aG << 8) | aB;
+
+	auto clampF = [](float v, float lo, float hi) -> float {
+		if (v < lo) return lo;
+		if (v > hi) return hi;
+		return v;
+	};
+	const float lum = clampF(0.35f * origKeyR + 0.45f * origKeyG + 0.20f * origKeyB, 0.25f, 1.0f);
+	// Warm deep crimson primary key light + dedicated front-angled crimson rim fill light.
+	out.keyR = clampF(0.76f + 0.22f * lum, 0.76f, 0.98f);
+	out.keyG = clampF(0.22f + 0.12f * lum, 0.22f, 0.34f);
+	out.keyB = clampF(0.11f + 0.06f * lum, 0.11f, 0.18f);
+
+	out.rimR = 0.62f;
+	out.rimG = 0.16f;
+	out.rimB = 0.08f;
+
+	out.matDiffR = 1.05f;
+	out.matDiffG = 0.62f;
+	out.matDiffB = 0.50f;
+	out.matEmisR = 0.09f;
+	out.matEmisG = 0.014f;
+	out.matEmisB = 0.008f;
+	return out;
 }
 
 struct CeMuspellCockpitFenceInput

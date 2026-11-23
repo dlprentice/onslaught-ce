@@ -47,6 +47,7 @@ BUILT_ON_PHOTO = ("0137-ce-save-failed-notice.patch", "0162-commander-map-hooks.
                   "0255-ce-museum-exhibit-marker.patch",  # the marker declaration anchors on the photo header
                   "0256-ce-museum-hall-world.patch",
                   "0265-ce-authored-exhibition-world.patch",  # its declaration needs the marker; the full render stack is checked below
+                  "0271-ce-commander-native-scene.patch",  # its Hud.cpp hunk anchors on 0235's CE_SPLIT_HUD() lines
                   "0285-ce-playunit-hud.patch")  # its Hud.cpp hunk anchors on 0133's CePhotoDrawScope block
 PHOTO = ROOT / "port/game/ce_photo.cpp"
 PHOTO_H = ROOT / "port/game/ce_photo.h"
@@ -443,6 +444,7 @@ class PhotoTests(unittest.TestCase):
             ("repeat-toggles", "\tif (repeat) return true;\n", "\tif (repeat && false) return true;\n", "ordinary", None),
             ("key-not-taken", "\telse shotPending = true;\n\treturn true;", "\telse shotPending = true;\n\treturn false;", "ordinary", None),
             ("note-in-shot", "if (SavedNext() || !note[0]", "if ((SavedNext() && false) || !note[0]", "ordinary", None),
+            ("midframe-f12-captures-note", "\tif (noteDrawnThisFrame)\n\t{\n\t\tnoteDrawnThisFrame = false;\n\t\treturn false;\n\t}\n", "", "ordinary", None),
             ("note-in-proof-shot", "if (SavedNext() || !note[0]", "if (shotPending || (SavedNext() && false) || !note[0]", "ordinary", None),
             ("proof-shot-off-by-one", "return every && (PortPresentCount() + 1) % every == 0;", "return every && PortPresentCount() % every == 0;", "ordinary", None),
             ("shot-repeats", "\tshotPending = false;\n\treturn wanted;", "\treturn wanted;", "ordinary", None),

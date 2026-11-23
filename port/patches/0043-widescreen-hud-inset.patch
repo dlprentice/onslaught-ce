@@ -23,15 +23,18 @@
  
  		// retail PC: no point filtering here (0053ed7e)
  		RENDERINFO.SetFogEnabled(false);
-@@ -1170,6 +1179,13 @@
+@@ -1170,6 +1179,16 @@
  	
  	// Render screen overlays/blur
  	
 +	if (PortWideActive())
 +	{
++		float	portScreenShape = LT.mScreenShapeScale;
++		LT.mScreenShapeScale = 1.f;	// Port (patch 0043, widescreen): keep reticle and compass circular on square-pixel wide buffers
 +		HUD_OFFSET_X = PortHudBegin(portHudOffset, float(GetViewportForViewpoint(0)->Width));	// Port (patch 0043)
 +		HUD.RenderOverlay();
 +		HUD_OFFSET_X = portHudOffset;
++		LT.mScreenShapeScale = portScreenShape;
 +	}
 +	else
  	HUD.RenderOverlay();

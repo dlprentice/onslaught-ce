@@ -99,6 +99,18 @@ int main() {
     unsigned edgePx = CeMuspellCockpitGunlightPixel(32, 2, 64, 64);
     Check(((centerPx >> 16) & 0xffu) > ((edgePx >> 16) & 0xffu), "center band brighter than outer edge");
 
+    // 2b. Warm crimson-charcoal lighting boost prevents dark night maps (L851) from washing cockpit navy-blue
+    {
+        CeMuspellCockpitLightBoost lb = CeMuspellCockpitComputeLightBoost(0xff142048u, 0.25f, 0.35f, 0.65f);
+        unsigned ar = (lb.ambient >> 16) & 0xffu;
+        unsigned ag = (lb.ambient >> 8) & 0xffu;
+        unsigned ab = lb.ambient & 0xffu;
+        Check(ar >= 68u && ar > ag + 35u && ab <= 16u, "boosted ambient is warm crimson-obsidian with blue clamped");
+        Check(lb.keyR >= 0.75f && lb.keyR > lb.keyG * 2.0f && lb.keyG > lb.keyB, "boosted key light is warm crimson-amber");
+        Check(lb.rimR >= 0.55f && lb.rimR > lb.rimG * 2.0f && lb.rimG > lb.rimB, "boosted rim light is warm crimson");
+        Check(lb.matEmisR >= 0.08f && lb.matEmisR > lb.matEmisB * 4.0f, "subtle crimson emissive material boost");
+    }
+
     // 3. Strict allegiance & fence gating
     CeMuspellCockpitFenceInput good = {};
     good.ceLayer = true;

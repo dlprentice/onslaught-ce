@@ -46,11 +46,23 @@ static void CheckResponsiveLayouts()
 		const CeCmdHudLayout lay = CeCmdHudComputeLayout(w, h, s, h, 8, 0);
 		Require(lay.valid, "layout valid at standard resolutions");
 		Require(lay.battlefieldFraction >= 0.75f, "battlefield leaves at least 75 percent unobstructed");
-		Require(lay.barRect.x >= 0.f && lay.barRect.y > 0.f, "bar inside viewport origin");
-		Require(lay.barRect.x + lay.barRect.w <= w + 0.5f && lay.barRect.y + lay.barRect.h <= h + 0.5f,
-		        "bar fits within viewport bounds");
+		Require(lay.barRect.x >= w * 0.03f && (w - (lay.barRect.x + lay.barRect.w)) >= w * 0.03f,
+		        "bar enforces 3-4 percent horizontal safe-area margin");
+		Require((h - (lay.barRect.y + lay.barRect.h)) >= h * 0.032f,
+		        "bar enforces 3-4 percent bottom safe-area margin");
+		if (h >= 720.f)
+			Require((h - (lay.barRect.y + lay.barRect.h)) >= 24.f,
+			        "bar keeps >= 24px bottom margin at 720p+");
+		Require(lay.subtitleSafeRect.w > 120.f && lay.subtitleSafeRect.h > 20.f &&
+		        lay.subtitleSafeRect.y + lay.subtitleSafeRect.h < lay.barRect.y,
+		        "subtitleSafeRect sits cleanly above bottom-docked bar");
 		Require(Inside(lay.trayRect, lay.barRect) && Inside(lay.cardRect, lay.barRect),
 		        "tray and command card fit inside bar");
+		// Command card header must fit two non-overlapping lines (title + subtitle) at FONT_SMALL height (~16px * scale)
+		Require(lay.cardHeaderRect.h >= std::floor(25.f * s),
+		        "cardHeaderRect tall enough for two non-overlapping text lines");
+		Require(lay.cardHeaderRect.h >= (16.f * s * 0.72f) + (16.f * s * 0.62f) + std::floor(3.f * s),
+		        "cardHeaderRect fits title + subtitle without vertical collision");
 		Require(!Overlaps(lay.trayRect, lay.cardRect), "tray and command card do not overlap");
 		Require(lay.slotsPerPage >= 3 && lay.slotsPerPage <= kCeHudMaxVisiblePlacards,
 		        "placard row holds 3 to 6 cards");
@@ -99,12 +111,38 @@ static void CheckResponsiveLayouts()
 		const CeCmdHudHit hGap = CeCmdHudHitTest(lay, gapX, lay.buttonRects[0].y + 4.f);
 		Require(hGap.kind == CE_HUD_HIT_BAR_PADDING, "gap between buttons is bar padding");
 
-		// Dialogue reservation shifts the entire RTS bar cleanly above uiBottom
-		const float dlgBottom = h * 0.75f;
-		const CeCmdHudLayout shifted = CeCmdHudComputeLayout(w, h, s, dlgBottom, 4, 0);
-		Require(shifted.valid && shifted.barRect.y + shifted.barRect.h <= dlgBottom,
-		        "dialogue reservation shifts bar above uiBottom");
-		Require(shifted.barRect.y < lay.barRect.y, "shifted bar sits higher than unshifted bar");
+		// Radio dialogue NEVER pushes FORCES into the middle of the screen: bar stays bottom-docked
+		// and subtitleSafeRect stays cleanly above barRect!
+		const float dlgBottom = h * 0.72f;
+		const CeCmdHudLayout withDlg = CeCmdHudComputeLayout(w, h, s, dlgBottom, 4, 0);
+		Require(withDlg.valid && std::fabs(withDlg.barRect.y - lay.barRect.y) < 0.5f,
+		        "radio dialogue keeps FORCES strictly bottom-docked");
+		Require(withDlg.subtitleSafeRect.y + withDlg.subtitleSafeRect.h < withDlg.barRect.y,
+		        "subtitle lane remains cleanly above bottom-docked bar");
+		Require(!Overlaps(withDlg.subtitleSafeRect, withDlg.barRect),
+		        "subtitle lane never overlaps FORCES bar");
+	}
+
+	// True 9-slice mirrored capsule metrics: fixed corner radius never stretches vertically on tall panels
+	{
+		const CeCmdHudNineSlice nsShort = CeCmdHudComputeNineSlice(40.f, 100.f, 320.f, 80.f, 24.f, 1.5f);
+		const CeCmdHudNineSlice nsTall  = CeCmdHudComputeNineSlice(40.f, 100.f, 320.f, 260.f, 24.f, 1.5f);
+		Require(nsShort.valid && nsTall.valid, "9-slice metrics valid");
+		Require(std::fabs(nsShort.radius - 24.f) < 0.1f && std::fabs(nsTall.radius - 24.f) < 0.1f,
+		        "9-slice corner radius stays fixed and never stretches vertically");
+		Require(std::fabs(nsTall.railHeight - (260.f - 48.f)) < 0.1f,
+		        "9-slice straight vertical rail absorbs extra panel height");
+		const float leftDist = nsTall.leftCenterX - nsTall.x;
+		const float rightDist = (nsTall.x + nsTall.w) - nsTall.rightCenterX;
+		Require(std::fabs(leftDist - rightDist) < 1e-3f && std::fabs(leftDist - nsTall.radius) < 1e-3f,
+		        "9-slice left and right caps are strictly mirror symmetric");
+		Require(nsTall.glowPad > 0.f && nsTall.glowPad < nsTall.radius,
+		        "9-slice outer glow stays strictly inside bounding box");
+		Require(!CeCmdHudComputeNineSlice(0.f, 0.f, 0.f, 100.f, 16.f, 1.f).valid,
+		        "9-slice rejects degenerate zero-width rect");
+		Require(std::fabs(CeCmdHudFitCapsuleWidth(18.f, 64.f, 540.f) - 64.f) < 0.1f &&
+		        std::fabs(CeCmdHudFitCapsuleWidth(120.f, 64.f, 540.f) - 120.f) < 0.1f,
+		        "capsule width fits content tightly without giant empty padding");
 	}
 
 	// Page clamping & page-2 placard indices
@@ -166,6 +204,12 @@ static void CheckTextAndArmour()
 	Require(forseti.barFill == pal.barFill && forseti.cyanAccent == pal.cyanAccent, "allegiance 0 selects Forseti palette");
 	Require(muspell.barFill != pal.barFill && muspell.cyanAccent != pal.cyanAccent && muspell.textCyan != pal.textCyan, "allegiance 1 selects distinct Muspell amber/crimson palette");
 	Require(((muspell.cyanAccent >> 16) & 0xffu) > ((muspell.cyanAccent) & 0xffu) + 0x80u, "Muspell accent is warm red/amber");
+	// Muspell secondary text (hotkeys & Order: None) must be crisp warm off-white/pale cream, not muddy dark orange
+	Require(((muspell.textMuted >> 16) & 0xffu) >= 0xecu && ((muspell.textMuted >> 8) & 0xffu) >= 0xd4u &&
+	        (muspell.textMuted & 0xffu) >= 0xb8u, "Muspell secondary muted text is crisp pale cream");
+	Require(((muspell.textCyan >> 16) & 0xffu) >= 0xf4u && ((muspell.textCyan >> 8) & 0xffu) >= 0xe0u &&
+	        (muspell.textCyan & 0xffu) >= 0xb0u, "Muspell hotkey/order text is crisp warm pale gold-cream");
+	Require(((muspell.buttonBorder >> 16) & 0xffu) >= 0xc8u, "Muspell button borders are clearly visible");
 	Require((muspell.textDisabled & 0xffu) >= 0x80u && ((muspell.textDisabled >> 8) & 0xffu) >= 0x80u &&
 	        ((muspell.textDisabled >> 16) & 0xffu) >= 0x80u, "Muspell disabled button text keeps legible contrast");
 	Require((pal.textDisabled & 0xffu) >= 0x80u && ((pal.textDisabled >> 8) & 0xffu) >= 0x80u &&

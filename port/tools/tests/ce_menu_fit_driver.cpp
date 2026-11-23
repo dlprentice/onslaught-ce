@@ -20,7 +20,10 @@ WCHAR *PortCeValueFit(WCHAR *text, float x, float *scale);
 WCHAR *PortCeListFit(WCHAR *text, float x);
 int PortCeListWindow(const void *owner, float y, long rowh, int count, int selection, int page, float *top, int *first, int *shown);
 void PortCeListHover(int entry);
+float PortCeLabelLeft(int page);
+float PortCeValueGap();
 int PortCeCompactPitch(const void *item);
+int PortCeCompactActionGap(int pitch, int index, int count);
 float PortCeCompactShift(int pitch, bool options_page);
 
 // One frame of an expanded list: what RenderList asks, with the outputs preset to marks a call must overwrite or leave alone.
@@ -329,14 +332,21 @@ int main(int argc, char **argv)
     else if (name == "pitch")
     {
         static int other;
-        Check(kCeCompactPitch == 15 && kCeCompactFrontShift == 8.f && kCeCompactPauseShift == -8.f,
-              "the reviewed pitch and front-end/pause shifts");
-        Check(PortCeCompactPitch(&qualityRow) == 15 && PortCeCompactPitch(&other) == 0 && PortCeCompactPitch(nullptr) == 0,
+        Check(kCeCompactPitch == 14 && kCeCompactActionGap == 8 && kCeCompactFrontShift == 8.f && kCeCompactPauseShift == -8.f,
+              "the reviewed pitch, action gap and front-end/pause shifts");
+        Check(kCeLabelLeft == 104.f && kCeValueGap == 6.f, "the reviewed options label margin and colon gap");
+        Check(PortCeCompactPitch(&qualityRow) == 14 && PortCeCompactPitch(&other) == 0 && PortCeCompactPitch(nullptr) == 0,
               "only a list holding CE's Video Options rows is drawn at CE's pitch");
-        Check(PortCeCompactShift(15, true) == 8.f && PortCeCompactShift(15, false) == -8.f && PortCeCompactShift(0, true) == 0.f && PortCeCompactShift(0, false) == 0.f,
+        Check(PortCeCompactActionGap(14, 19, 21) == 8 && PortCeCompactActionGap(14, 18, 21) == 0 && PortCeCompactActionGap(14, 20, 21) == 0 && PortCeCompactActionGap(0, 19, 21) == 0,
+              "only Apply at index count-2 in the compact list gets the extra vertical breathing room");
+        Check(PortCeCompactShift(14, true) == 8.f && PortCeCompactShift(14, false) == -8.f && PortCeCompactShift(0, true) == 0.f && PortCeCompactShift(0, false) == 0.f,
               "it shifts down in the front end and up in pause, and only at CE's pitch");
+        Check(PortCeLabelLeft(FEP_OPTIONS) == 104.f && PortCeLabelLeft(FEP_LANGUAGE_TEST) == 104.f && PortCeLabelLeft(FEP_MAIN) == 5.f,
+              "front-end options pages protect the left metal arc while pause/other pages keep 5");
+        Check(PortCeValueGap() == 6.f, "CE menus put a legible gap after the colon");
         layerOn = false;
-        Check(PortCeCompactPitch(&qualityRow) == 0, "outside the ordinary CE menus the list keeps its items' heights");
+        Check(PortCeCompactPitch(&qualityRow) == 0 && PortCeLabelLeft(FEP_OPTIONS) == 5.f && PortCeValueGap() == 2.f,
+              "outside the ordinary CE menus the list keeps its items' heights, label margin and colon gap");
     }
     else return 2;
     std::printf("menu-fit %s failures=%d\n", name.c_str(), failures);

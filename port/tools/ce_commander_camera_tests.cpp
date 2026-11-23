@@ -291,6 +291,7 @@ using SINT = int;
 enum { KEY_EVENT_UP = 41, KEY_EVENT_DOWN };
 #include "ce_dodge_binding.h"
 #include "ce_cmdproduction.h"
+#include "ce_entity_handles.h"
 #include "ce_cmd_hud.h"
 #include "ce_cmd_voice.h"
 void CeCmdVoicePlay(CeCmdVoiceCue, std::uint64_t) {}
@@ -664,6 +665,41 @@ const void* pictured_camera=NULL;
 void StrategicEntered() { ++entered_calls; }
 void StrategicLeft() { ++left_calls; }
 int PilotAllegiance(const void** pilot) { if (pilot) *pilot = nullptr; return 0; }
+void CountLiveWorldUnits(int, int* outFriendly, int* outTotal) {
+    if (outFriendly) *outFriendly = 0;
+    if (outTotal) *outTotal = 0;
+}
+static CeEntityHandleTable gTestEntityHandles;
+CeEntityHandle CeEntityHandleFor(const CThing* thing) {
+    return thing ? gTestEntityHandles.Register(reinterpret_cast<std::uintptr_t>(thing)) : kCeEntityHandleInvalid;
+}
+CeEntityHandle CeEntityHandleFor(const CBattleEngine* engine) {
+    if (!engine) return kCeEntityHandleInvalid;
+    const std::uint64_t stamp = 0x10000ull | static_cast<std::uint64_t>(static_cast<std::uint16_t>(engine->creation_number));
+    return gTestEntityHandles.Register(reinterpret_cast<std::uintptr_t>(engine), stamp);
+}
+CeEntityHandle CeEntityHandleLookup(const CThing* thing) {
+    return thing ? gTestEntityHandles.Lookup(reinterpret_cast<std::uintptr_t>(thing)) : kCeEntityHandleInvalid;
+}
+CThing* CeEntityHandleResolve(CeEntityHandle handle) {
+    return reinterpret_cast<CThing*>(gTestEntityHandles.Resolve(handle));
+}
+CUnit* CeEntityHandleResolveUnit(CeEntityHandle handle) {
+    return reinterpret_cast<CUnit*>(gTestEntityHandles.Resolve(handle));
+}
+bool CeEntityHandleMatches(const CThing* thing, CeEntityHandle handle) {
+    return thing && gTestEntityHandles.Matches(reinterpret_cast<std::uintptr_t>(thing), handle);
+}
+CeEntityHandle CeEntityHandleRegister(CThing* thing) {
+    return thing ? gTestEntityHandles.RegisterFresh(reinterpret_cast<std::uintptr_t>(thing)) : kCeEntityHandleInvalid;
+}
+void CeEntityHandleUnregister(const CThing* thing) {
+    if (thing) gTestEntityHandles.Unregister(reinterpret_cast<std::uintptr_t>(thing));
+}
+void CeEntityHandleUnregisterHandle(CeEntityHandle handle) {
+    gTestEntityHandles.UnregisterHandle(handle);
+}
+void CeEntityHandleResetWorld() { gTestEntityHandles.ResetWorld(); }
 bool StrategicPictureBegin(const CGenericCamera& camera, CeWorldViewSample* view) {
     pictured_camera=&camera;
     if(!picture_available)return false;
@@ -1525,12 +1561,16 @@ void DialogueLayoutAndInput() {
     }
     AuthoredWorldView();
     VERIFY(gStrategicUi.hasDialogue && StrategicUiBottom() < caption_top);
+    // FORCES stays cleanly bottom-docked (never pushed into the center of the battlefield),
+    // while subtitleSafeRect provides a clean non-overlapping lane above FORCES.
+    const CeCmdHudLayout dlgLay = CeCmdHudComputeLayout(L.w, L.h, L.s, StrategicUiBottom(), gHudPlacardCount, gHudPage);
+    VERIFY(dlgLay.valid);
+    VERIFY(dlgLay.subtitleSafeRect.y + dlgLay.subtitleSafeRect.h < dlgLay.barRect.y);
     int new_x = 0, new_y = 0;
-    VERIFY(hold_point(new_x, new_y) && new_y < old_y);
-    VERIFY(StrategicButtonAt(float(old_x), float(old_y)) == -1);
+    VERIFY(hold_point(new_x, new_y) && new_y == old_y);
+    VERIFY(StrategicButtonAt(float(old_x), float(old_y)) == 2);
     VERIFY(!StrategicWorldArea(float(old_x), float(old_y)));
     const int before = accepted_orders;
-    ClickWorld(0, old_x, old_y); VERIFY(accepted_orders == before);
     ClickWorld(0, new_x, new_y);
     VERIFY(accepted_orders == before + 1 && last_order_verb == CE_CMD_HOLD);
     StrategicViewInvalidate();

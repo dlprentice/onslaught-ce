@@ -30,6 +30,7 @@
 #include "Texture.h"
 #include "VBufTexture.h"
 #include "ltshell.h"
+#include "renderinfo.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -50,6 +51,94 @@ int gLastLoggedLevel = -1;
 const void *gLastLoggedEngine = nullptr;
 
 CeMuspellCockpitRestoreStack<CDXTexture *, CVBufTexture *, CE_MUSPELL_COCKPIT_MAX_SWAPS> gActiveSwaps;
+
+struct SavedCockpitLighting
+{
+	bool active;
+	DWORD ambient;
+	CLight light[2];
+	bool lightEnable[2];
+	bool hasMaterial;
+	D3DMATERIAL9 material;
+};
+
+SavedCockpitLighting gSavedLighting = {};
+
+void ApplyMuspellCockpitLighting()
+{
+	if (gSavedLighting.active)
+		return;
+	gSavedLighting.ambient = RENDERINFO.mAmbient;
+	for (int i = 0; i < 2; ++i)
+	{
+		gSavedLighting.light[i] = RENDERINFO.mLights[i];
+		gSavedLighting.lightEnable[i] = RENDERINFO.mLightEnable[i];
+	}
+	gSavedLighting.hasMaterial = false;
+	if (LT.GetDevice() && SUCCEEDED(LT.GetDevice()->GetMaterial(&gSavedLighting.material)))
+		gSavedLighting.hasMaterial = true;
+	gSavedLighting.active = true;
+
+	const CeMuspellCockpitLightBoost boost = CeMuspellCockpitComputeLightBoost(
+		(unsigned int)gSavedLighting.ambient,
+		gSavedLighting.light[0].mDiffuseR,
+		gSavedLighting.light[0].mDiffuseG,
+		gSavedLighting.light[0].mDiffuseB);
+
+	RENDERINFO.SetAmbient((DWORD)boost.ambient);
+
+	CLight key = gSavedLighting.light[0];
+	key.mType = LIGHT_DIRECTIONAL;
+	if (key.mDir.X == 0.f && key.mDir.Y == 0.f && key.mDir.Z == 0.f)
+		key.mDir.Set(-0.35f, 0.72f, 0.60f);
+	key.mDiffuseR = boost.keyR;
+	key.mDiffuseG = boost.keyG;
+	key.mDiffuseB = boost.keyB;
+	RENDERINFO.SetLight(0, &key);
+	RENDERINFO.SetLightEnable(0, true);
+
+	CLight rim = gSavedLighting.light[1];
+	rim.mType = LIGHT_DIRECTIONAL;
+	rim.mDir.Set(0.45f, -0.65f, 0.61f);
+	rim.mDiffuseR = boost.rimR;
+	rim.mDiffuseG = boost.rimG;
+	rim.mDiffuseB = boost.rimB;
+	RENDERINFO.SetLight(1, &rim);
+	RENDERINFO.SetLightEnable(1, true);
+
+	if (gSavedLighting.hasMaterial)
+	{
+		D3DMATERIAL9 mat = gSavedLighting.material;
+		mat.Diffuse.r = boost.matDiffR;
+		mat.Diffuse.g = boost.matDiffG;
+		mat.Diffuse.b = boost.matDiffB;
+		mat.Ambient.r = 1.0f;
+		mat.Ambient.g = 0.42f;
+		mat.Ambient.b = 0.32f;
+		mat.Emissive.r = boost.matEmisR;
+		mat.Emissive.g = boost.matEmisG;
+		mat.Emissive.b = boost.matEmisB;
+		mat.Emissive.a = 0.0f;
+		LT.D3D_SetMaterial(&mat);
+	}
+	RENDERINFO.Apply(false, false);
+}
+
+void RestoreMuspellCockpitLighting()
+{
+	if (!gSavedLighting.active)
+		return;
+	RENDERINFO.SetAmbient(gSavedLighting.ambient);
+	for (int i = 0; i < 2; ++i)
+	{
+		RENDERINFO.SetLight(i, &gSavedLighting.light[i]);
+		RENDERINFO.SetLightEnable(i, gSavedLighting.lightEnable[i]);
+	}
+	if (gSavedLighting.hasMaterial && LT.GetDevice())
+		LT.D3D_SetMaterial(&gSavedLighting.material);
+	RENDERINFO.Apply(false, false);
+	gSavedLighting.active = false;
+}
 
 class CMuspellGunlightTexture : public CDXTexture
 {
@@ -271,6 +360,8 @@ void SwapMeshRecord(CMesh *m, CDXTexture *muspellTex, CDXTexture *gunlightTex,
 
 extern "C" void PortCeMuspellCockpitBegin(CBattleEngine *be, CRenderThing *rt)
 {
+	if (gSavedLighting.active)
+		RestoreMuspellCockpitLighting();
 	if (gActiveSwaps.count != 0)
 		RestoreAllActiveSwaps();
 
@@ -298,6 +389,7 @@ extern "C" void PortCeMuspellCockpitBegin(CBattleEngine *be, CRenderThing *rt)
 
 	if (gActiveSwaps.count > 0)
 	{
+		ApplyMuspellCockpitLighting();
 		const int level = GAME.GetCurrentlyRunningLevelNum();
 		if (level != gLastLoggedLevel || (const void *)be != gLastLoggedEngine)
 		{
@@ -311,6 +403,7 @@ extern "C" void PortCeMuspellCockpitBegin(CBattleEngine *be, CRenderThing *rt)
 
 extern "C" void PortCeMuspellCockpitEnd(void)
 {
+	RestoreMuspellCockpitLighting();
 	RestoreAllActiveSwaps();
 }
 

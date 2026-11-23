@@ -65,6 +65,9 @@ extern "C" void				PortCeMultiBeMenuRows(CeMenuEvent event, CeMenuPage *page) __
 extern "C" void				PortCeMultiBeUnitSpawn(CUnit *unit, CInitThing *init) __attribute__((weak));
 extern "C" void				PortCeMultiBeUnitDestroyed(CUnit *unit) __attribute__((weak));
 extern "C" void				PortCeMultiBeWeaponFire(CWeapon *weapon, CUnit *owner, CRound *round) __attribute__((weak));
+extern "C" void				PortCeEntityHandlesUnitSpawn(CUnit *unit, CInitThing *init) __attribute__((weak));
+extern "C" void				PortCeEntityHandlesUnitDestroyed(CUnit *unit) __attribute__((weak));
+extern "C" void				PortCeEntityHandlesLevelEnd(int level, int quit) __attribute__((weak));
 
 static void CeHookGamepadBeginCycle() { PortCeGamepadBeginCycle(); }
 static void CeHookPaletteLevelEnd(int, int) { PortCePaletteClose(); }
@@ -167,6 +170,21 @@ static void CeHookMultiBeWeaponFire(CWeapon *weapon, CUnit *owner, CRound *round
 	if (PortCeMultiBeWeaponFire)
 		PortCeMultiBeWeaponFire(weapon, owner, round);
 }
+static void CeHookEntityHandlesUnitSpawn(CUnit *unit, CInitThing *init)
+{
+	if (PortCeEntityHandlesUnitSpawn)
+		PortCeEntityHandlesUnitSpawn(unit, init);
+}
+static void CeHookEntityHandlesUnitDestroyed(CUnit *unit)
+{
+	if (PortCeEntityHandlesUnitDestroyed)
+		PortCeEntityHandlesUnitDestroyed(unit);
+}
+static void CeHookEntityHandlesLevelEnd(int level, int quit)
+{
+	if (PortCeEntityHandlesLevelEnd)
+		PortCeEntityHandlesLevelEnd(level, quit);
+}
 
 // ---- the table: per point, its handlers in the order they run ----
 // A row: {slot, "name", CE_HOOK_SIM or CE_HOOK_RENDER, CE_GATE_VERSION or CE_GATE_LAYER, CE_MODE_..., function},
@@ -190,6 +208,7 @@ static constexpr CeHookRow<CeHookLevelEndFn> kLevelEnd[] = {
 	{30, "photo_level_end", CE_HOOK_SIM, CE_GATE_VERSION, CE_MODE_NONE, CeHookPhotoLevelEnd},
 	{40, "commander_level_end", CE_HOOK_SIM, CE_GATE_VERSION, CE_MODE_NONE, CeHookCmdLevelEnd},
 	{50, "multibe_level_end", CE_HOOK_SIM, CE_GATE_VERSION, CE_MODE_NONE, CeHookMultiBeLevelEnd},
+	{60, "entity_handles_level_end", CE_HOOK_SIM, CE_GATE_VERSION, CE_MODE_NONE, CeHookEntityHandlesLevelEnd},
 	CE_HOOK_END
 };
 CE_HOOK_CHECK(kLevelEnd, CE_HOOK_SIM, CE_DISPATCH_ORDERED_BROADCAST, "level_end");
@@ -270,11 +289,13 @@ static constexpr CeHookRow<CeHookFocusFn> kHudFocus[] = {
 CE_HOOK_CHECK(kHudFocus, CE_HOOK_RENDER, CE_DISPATCH_OVERRIDE_CHAIN, "hud_focus");
 static constexpr CeHookRow<CeHookUnitSpawnFn> kUnitSpawn[] = {
 	{10, "multibe_unit_spawn", CE_HOOK_SIM, CE_GATE_LAYER, CE_MODE_NONE, CeHookMultiBeUnitSpawn},
+	{20, "entity_handles_unit_spawn", CE_HOOK_SIM, CE_GATE_LAYER, CE_MODE_NONE, CeHookEntityHandlesUnitSpawn},
 	CE_HOOK_END
 };
 CE_HOOK_CHECK(kUnitSpawn, CE_HOOK_SIM, CE_DISPATCH_ORDERED_BROADCAST, "unit_spawn");
 static constexpr CeHookRow<CeHookUnitDestroyedFn> kUnitDestroyed[] = {
 	{10, "multibe_unit_destroyed", CE_HOOK_SIM, CE_GATE_LAYER, CE_MODE_NONE, CeHookMultiBeUnitDestroyed},
+	{20, "entity_handles_unit_destroyed", CE_HOOK_SIM, CE_GATE_LAYER, CE_MODE_NONE, CeHookEntityHandlesUnitDestroyed},
 	CE_HOOK_END
 };
 CE_HOOK_CHECK(kUnitDestroyed, CE_HOOK_SIM, CE_DISPATCH_ORDERED_BROADCAST, "unit_destroyed");

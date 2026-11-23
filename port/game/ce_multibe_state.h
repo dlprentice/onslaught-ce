@@ -474,8 +474,8 @@ struct CeMultiBeMatchState
 		if (isVersus)
 		{
 			const int total = forsetiTotal + muspellTotal;
-			const char *modeTag = (total == 3) ? "3-BE VERSUS" : (total == 2 ? "1v1 VERSUS" : "2v2 VERSUS");
-			snprintf(out, cap, "%s  FORSETI %d/%d (K:%d)  vs  MUSPELL %d/%d (K:%d)  -  %s",
+			const char *modeTag = (total == 3) ? "3-BE" : (total == 2 ? "1v1" : "2v2");
+			snprintf(out, cap, "%s  FORSETI %d/%d (K:%d)  vs  MUSPELL %d/%d (K:%d)  (YOU: %s)",
 			         modeTag,
 			         forsetiAlive, forsetiTotal, forsetiKills,
 			         muspellAlive, muspellTotal, muspellKills,

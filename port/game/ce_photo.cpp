@@ -51,6 +51,7 @@ const char *const kFenced[] = {"BEA_PORT_CLOCK", "BEA_PORT_TAPE", "BEA_PORT_PROB
 							   "BEA_PORT_PILOT", "BEA_PORT_AUTOPILOT", "BEA_NET_HOST", "BEA_NET_JOIN"};
 bool photo;						// photo mode on (the draw calls of the HUD, battle line and cockpit routines are dropped)
 bool shotPending;				// F12 asked: the next Present is saved; the note is not drawn in that frame
+bool noteDrawnThisFrame;		// a photo/screenshot toast was rendered into the current back buffer; defer F12 capture one frame
 char note[96];
 unsigned long long noteFrom, noteUntil;
 
@@ -163,6 +164,7 @@ bool PortCePhotoKey(unsigned key, bool repeat)
 // switch keeps it on.
 void PortCePhotoFrame()
 {
+	noteDrawnThisFrame = false;
 	if (!Allowed()) { Switch(false); shotPending = false; return; }
 	Switch(photo || ProofEvery());
 }
@@ -173,12 +175,18 @@ void PortCePhotoLevelEnd()
 	Switch(false);
 	shotPending = false;
 	noteUntil = 0;
+	noteDrawnThisFrame = false;
 }
 
 // At the Present (d3d9hooks.cpp, after it counted this one): whether this frame is to be saved, as F12 asked or every
 // N Presents under the proof switch. Asked once per Present.
 bool PortCePhotoShotWanted()
 {
+	if (noteDrawnThisFrame)
+	{
+		noteDrawnThisFrame = false;
+		return false;
+	}
 	const unsigned every = ProofEvery();
 	const bool wanted = (shotPending || (every && PortPresentCount() % every == 0)) && Allowed();
 	shotPending = false;
@@ -204,6 +212,7 @@ void PortCePhotoShotDone(int status, const char *name)
 // it keeps the low place.
 void PortCePhotoRender()
 {
+	noteDrawnThisFrame = false;
 	if (SavedNext() || !note[0] || !Allowed()) return;
 	CDXBitmapFont *font = PLATFORM.Font(FONT_SMALL);
 	if (!font) return;
@@ -212,6 +221,8 @@ void PortCePhotoRender()
 	for (const char *c = note; *c && n < 95; ++c)
 		text[n++] = font->CanDisplay(WCHAR((unsigned char)*c)) ? WCHAR((unsigned char)*c) : L'-';
 	text[n] = 0;
+	const unsigned long long now = CE_ScreenshotTicks();
+	if (now >= noteFrom && now < noteUntil) noteDrawnThisFrame = true;
 	PortCeNoteDraw(text, PortCeNoteFade(CE_ScreenshotTicks(), noteFrom, noteUntil), !photo);
 }
 
