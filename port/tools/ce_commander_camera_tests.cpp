@@ -430,7 +430,21 @@ const bool FALSE = false;
 unsigned gCloseKey = 0;
 const int kMouseUp=3, kMouseDown=4;
 int MOUSE_X=400, MOUSE_Y=300;
-struct AuthoredMap { int mGridWidth=1000,mGridHeight=1000; float height=0,slopeX=0,slopeY=0; float water=1000.f; /* Z grows downward: water far below the ground */ float GetWaterLevel(){return water;} float Collide(const FVector& p){return height+slopeX*p.X+slopeY*p.Y;} } MAP;
+struct AuthoredMap {
+    int mGridWidth=1000,mGridHeight=1000;
+    float height=0,slopeX=0,slopeY=0;
+    float water=1000.f; /* Z grows downward: water far below the ground */
+    bool island=false;
+    float islandX0=0,islandY0=0,islandX1=0,islandY1=0,islandZ=-20.f,seaBedZ=25.f;
+    float GetWaterLevel(){return water;}
+    float Collide(const FVector& p){
+        if (island) {
+            return (p.X >= islandX0 && p.X <= islandX1 && p.Y >= islandY0 && p.Y <= islandY1)
+                ? islandZ : seaBedZ;
+        }
+        return height+slopeX*p.X+slopeY*p.Y;
+    }
+} MAP;
 struct CCONTROLLER {
     KeyTrap trap = NULL;
     void* target = NULL;
@@ -787,7 +801,9 @@ void Fixture() {
     GAME.player = &player; GAME.camera = &original_camera; GAME.controller.target = &pilot;
     gObservedPlayer = NULL; gObservedPilot = NULL; gObservedCamera = NULL;
     AdvanceCameraLifetime(gMissionLifetime);
-    std::memset(gDown, 0, sizeof(gDown)); gKeptLevel = -1; fake_ms = 0;
+    std::memset(gDown, 0, sizeof(gDown)); gKeptLevel = -1; gKeptMapLevel = -1;
+    gKeptMission = gKeptMapMission = 0; gHasKeptYaw = gHasStrategicInitialYaw = false; gMapPulseStartNs = 0;
+    fake_ms = 0;
     for (int& key : fake_platform_keys) key = -1;
     gStrategicMessageKeys = false;
     std::memset(LT.KeyDown, 0, sizeof(LT.KeyDown));
@@ -1563,16 +1579,19 @@ void DialogueLayoutAndInput() {
     }
     AuthoredWorldView();
     VERIFY(gStrategicUi.hasDialogue && StrategicUiBottom() < caption_top);
-    // FORCES stays cleanly bottom-docked (never pushed into the center of the battlefield),
-    // while subtitleSafeRect provides a clean non-overlapping lane above FORCES.
+    // Active native radio dialogue shifts FORCES cleanly above StrategicUiBottom(),
+    // while subtitleSafeRect stays non-overlapping above FORCES.
     const CeCmdHudLayout dlgLay = CeCmdHudComputeLayout(L.w, L.h, L.s, StrategicUiBottom(), gHudPlacardCount, gHudPage);
     VERIFY(dlgLay.valid);
+    VERIFY(dlgLay.barRect.y + dlgLay.barRect.h <= StrategicUiBottom());
     VERIFY(dlgLay.subtitleSafeRect.y + dlgLay.subtitleSafeRect.h < dlgLay.barRect.y);
     int new_x = 0, new_y = 0;
-    VERIFY(hold_point(new_x, new_y) && new_y == old_y);
-    VERIFY(StrategicButtonAt(float(old_x), float(old_y)) == 2);
+    VERIFY(hold_point(new_x, new_y) && new_y < old_y);
+    VERIFY(StrategicButtonAt(float(old_x), float(old_y)) == -1);
     VERIFY(!StrategicWorldArea(float(old_x), float(old_y)));
     const int before = accepted_orders;
+    ClickWorld(0, old_x, old_y);
+    VERIFY(accepted_orders == before);
     ClickWorld(0, new_x, new_y);
     VERIFY(accepted_orders == before + 1 && last_order_verb == CE_CMD_HOLD);
     StrategicViewInvalidate();
@@ -1590,6 +1609,170 @@ void DialogueLayoutAndInput() {
     Close(); VERIFY(!StrategicUiReady());
 }
 
+
+static void DecoupledViewsAndLandFraming() {
+    // 1. M -> pan -> V invokes FitView() (gViewSpan >= 128 and gLooseBounds == false),
+    //    then V -> M restores the 30m 3D Live View without clobbering either view.
+    Fixture();
+    fake_ms = 500;
+    VERIFY(PortCeCmdKey(DIK_M, false) && gOpen && gStrategic && gLooseBounds);
+    VERIFY(Near(gViewSpan, kLiveOpenSpan) && Near(kLiveOpenSpan, 30.f));
+    VERIFY(MapPulseStartNs() == 0);
+    gDown[gCloseKey] = false;
+    Trap(DIK_W, KEY_EVENT_DOWN); fake_ms += 120; PortCeCmdFrame(); Trap(DIK_W, KEY_EVENT_UP);
+    const float live_cx = gViewX + gViewSpan * 0.5f, live_cy = gViewY + gViewSpan * 0.5f;
+    const float live_yaw = gStrategicYaw;
+    TapLiveKey(DIK_V); // SwitchView(false): M -> V
+    VERIFY(gOpen && !gStrategic && !gLooseBounds && GAME.paused);
+    VERIFY(gViewSpan >= 128.f);
+    VERIFY(MapPulseStartNs() != 0); // unselected commandable squads arm 1.5s highlight pulse
+    SetView(420.f, 440.f, 220.f);
+    TapLiveKey(DIK_V); // SwitchView(true): V -> M
+    VERIFY(gOpen && gStrategic && gLooseBounds && !GAME.paused);
+    VERIFY(Near(gViewSpan, 30.f));
+    VERIFY(Near(gViewX + gViewSpan * 0.5f, live_cx) && Near(gViewY + gViewSpan * 0.5f, live_cy));
+    VERIFY(Near(gStrategicYaw, live_yaw));
+    TapLiveKey(DIK_V); // second M -> V restores kept 220m 2D Tactical Map view
+    VERIFY(gOpen && !gStrategic && !gLooseBounds && Near(gViewSpan, 220.f));
+    SelectOnly(5);
+    Close(); Open(false);
+    VERIFY(MapPulseStartNs() == 0); // already-selected squad does not trigger unselected hint pulse
+    // Mission retry / save reload on the SAME level ID must reset BOTH 2D and 3D kept views.
+    PortCeCmdLevelEnd();
+    Open(false);
+    VERIFY(!gLooseBounds && Near(gViewSpan, 128.f));
+    Close();
+    Open(true);
+    VERIFY(gLooseBounds && Near(gViewSpan, 30.f));
+    Close();
+
+    // 2. Land-aware FitView() shifts ocean slack onto a mocked coastal island (verifying Z-down sign: h < water is dry).
+    Fixture();
+    MAP.water = 0.f;
+    MAP.island = true;
+    MAP.islandX0 = 300.f; MAP.islandX1 = 720.f;
+    MAP.islandY0 = 260.f; MAP.islandY1 = 680.f;
+    MAP.islandZ = -18.f; // dry land ABOVE sea level (Z grows downward)
+    MAP.seaBedZ = +24.f; // submerged seabed BELOW sea level
+    pilot.position = FVector(308.f, 470.f, -18.f);
+    live_squads[0].x = 310.f; live_squads[0].y = 460.f;
+    live_squads[1].x = 322.f; live_squads[1].y = 485.f;
+    Refresh();
+    Open(false);
+    VERIFY(!gLooseBounds && Near(gViewSpan, 128.f));
+    // Pure squad-centroid framing would centre at x = 316 (left edge 252, wasting 48m on empty west ocean).
+    // Land-aware FitView shifts the window east onto the [300..720] island while keeping friendly squads inside 12% margin.
+    VERIFY(gViewX + gViewSpan * 0.5f > 340.f);
+    VERIFY(gViewX >= 270.f);
+    for (int i = 0; i < 2; ++i) {
+        VERIFY(live_squads[i].x >= gViewX + 0.12f * gViewSpan - 0.05f);
+        VERIFY(live_squads[i].x <= gViewX + 0.88f * gViewSpan + 0.05f);
+    }
+    Close();
+
+    // Verify Z-down sign: if [300..720] is underwater (+24 > 0) and only [0..299] is dry (-18 < 0),
+    // FitView must NOT shift east into the submerged (+Z) basin.
+    PortCeCmdLevelEnd();
+    MAP.islandX0 = 0.f; MAP.islandX1 = 295.f;
+    MAP.islandY0 = 260.f; MAP.islandY1 = 680.f;
+    MAP.islandZ = -18.f; MAP.seaBedZ = +24.f;
+    Open(false);
+    VERIFY(gViewX + gViewSpan * 0.5f < 316.f);
+    Close();
+
+    // Visible enemy within 160m (beyond old 80m window) expands FitView() across the battle line.
+    PortCeCmdLevelEnd();
+    MAP.islandX0 = 300.f; MAP.islandX1 = 720.f;
+    CeCmdSquad enemy = {};
+    enemy.ordinal = 77; enemy.friendly = false; enemy.commandable = false; enemy.visible = true;
+    enemy.members = enemy.peak = 4; enemy.x = 455.f; enemy.y = 475.f;
+    live_squads.push_back(enemy);
+    Refresh();
+    Open(false);
+    VERIFY(gViewSpan > 200.f && gViewX + gViewSpan > 455.f);
+    Close();
+
+    // Small 70m island ([465..535] x [465..535]) is caught by the 24x24 grid and framed cleanly;
+    // all-water map (no dry sample) falls back cleanly to squad bounds.
+    Fixture();
+    MAP.water = 0.f; MAP.island = true;
+    MAP.islandX0 = 465.f; MAP.islandX1 = 535.f;
+    MAP.islandY0 = 465.f; MAP.islandY1 = 535.f;
+    MAP.islandZ = -12.f; MAP.seaBedZ = +30.f;
+    pilot.position = FVector(470.f, 500.f, -12.f);
+    live_squads[0].x = 468.f; live_squads[0].y = 495.f;
+    live_squads[1].x = 474.f; live_squads[1].y = 505.f;
+    Refresh();
+    Open(false);
+    VERIFY(Near(gViewX + gViewSpan * 0.5f, 500.f) && Near(gViewY + gViewSpan * 0.5f, 500.f));
+    Close();
+    PortCeCmdLevelEnd();
+    MAP.islandZ = +30.f; // completely submerged: 0 dry samples -> clean squad-bounds fallback
+    Open(false);
+    VERIFY(Near(gViewX + gViewSpan * 0.5f, 471.f) && Near(gViewY + gViewSpan * 0.5f, 500.f));
+    Close();
+
+    // 3. Battle-facing initial M yaw aims toward enemy centroid (or dry-land centroid) instead of ocean-facing cockpit yaw,
+    //    and snaps to dry friendly squad within 250m without teleporting > 250m across the map.
+    Fixture();
+    MAP.water = 0.f; MAP.island = true;
+    MAP.islandX0 = 300.f; MAP.islandX1 = 750.f;
+    MAP.islandY0 = 250.f; MAP.islandY1 = 700.f;
+    MAP.islandZ = -18.f; MAP.seaBedZ = +24.f;
+    // Cockpit faces due West (+PI/2 -> forward (-1, 0, 0), straight out to open ocean!).
+    original_camera.mOrientation.MakeRotationYawF(1.5707963f);
+    pilot.position = FVector(240.f, 470.f, -30.f); // 60m offshore over water
+    live_squads[0].x = 260.f; live_squads[0].y = 470.f; live_squads[0].crossesWater = true; // closer wet squad
+    live_squads[1].x = 325.f; live_squads[1].y = 470.f; // dry beach tank squad (85m <= 250m)
+    CeCmdSquad eastEnemy1 = {}, eastEnemy2 = {};
+    eastEnemy1.ordinal = 81; eastEnemy1.visible = true; eastEnemy1.members = 3; eastEnemy1.x = 540.f; eastEnemy1.y = 450.f;
+    eastEnemy2.ordinal = 82; eastEnemy2.visible = true; eastEnemy2.members = 3; eastEnemy2.x = 580.f; eastEnemy2.y = 490.f;
+    live_squads.push_back(eastEnemy1);
+    live_squads.push_back(eastEnemy2);
+    Refresh();
+    Open(true);
+    VERIFY(gOpen && gStrategic && Near(gViewSpan, 30.f));
+    // Focuses on the dry beach squad (325, 470) rather than the wet offshore squad (260, 470).
+    VERIFY(Near(gViewX + gViewSpan * 0.5f, 325.f) && Near(gViewY + gViewSpan * 0.5f, 470.f));
+    const FVector battleFwd = gStrategicCamera.mOrientation * FVector(0, 1, 0);
+    // Enemy centroid is (560, 470) = due East (+X) from (325, 470), opposite cockpit's West (-X) yaw!
+    VERIFY(battleFwd.X > 0.5f && std::fabs(battleFwd.Y) < 0.05f);
+    const float xBeforeW = gViewX;
+    Trap(DIK_W, KEY_EVENT_DOWN); fake_ms += 60; PortCeCmdFrame(); Trap(DIK_W, KEY_EVENT_UP);
+    VERIFY(gViewX > xBeforeW + 1.f); // W advances inland East toward battle!
+    Close();
+
+    // Without visible enemies, initial M yaw aims toward island dry-land centroid (~525, 475) rather than ocean!
+    PortCeCmdLevelEnd();
+    live_squads.resize(2);
+    Refresh();
+    Open(true);
+    const FVector landFwd = gStrategicCamera.mOrientation * FVector(0, 1, 0);
+    VERIFY(landFwd.X > 0.5f);
+    Close();
+
+    // All-water map with no visible enemies falls back cleanly to gStrategicOriginal->GetYaw().
+    PortCeCmdLevelEnd();
+    MAP.islandZ = +24.f;
+    original_camera.mOrientation.MakeRotationYawF(0.73f);
+    Open(true);
+    VERIFY(Near(gStrategicYaw, 0.73f));
+    Close();
+
+    // Dry-squad snap cap (<= 250m): when all squads are 450m away from the pilot, Open(true) stays near the pilot.
+    Fixture();
+    MAP.water = 0.f; MAP.island = true;
+    MAP.islandX0 = 500.f; MAP.islandX1 = 800.f;
+    MAP.islandY0 = 300.f; MAP.islandY1 = 700.f;
+    MAP.islandZ = -18.f; MAP.seaBedZ = +24.f;
+    pilot.position = FVector(100.f, 470.f, -30.f);
+    live_squads[0].x = 550.f; live_squads[0].y = 470.f;
+    live_squads[1].x = 580.f; live_squads[1].y = 490.f;
+    Refresh();
+    Open(true);
+    VERIFY(Near(gViewX + gViewSpan * 0.5f, 100.f) && Near(gViewY + gViewSpan * 0.5f, 470.f));
+    Close();
+}
 
 static void NativePresentationJourney() {
     Fixture();
@@ -1743,16 +1926,17 @@ int main() {
         CePhotoDrawScope cockpit_or_flight_overlay;
         VERIFY(draws_dropped == 0);
     }
-    VERIFY(Near(gViewX, fitted_x) && Near(gViewY, fitted_y) && Near(gViewSpan, fitted_span));
+    const float live_x = gViewX, live_y = gViewY, live_span = gViewSpan;
+    VERIFY(Near(live_span, kLiveOpenSpan));
     const FVector initial_view = gStrategicCamera.mPos;
     for (int i = 0; i < 120; ++i) { fake_ms += 16; PortCeCmdFrame(); }
     VERIFY(SamePosition(gStrategicCamera.mPos, initial_view));
-    VERIFY(Near(gViewX, fitted_x) && Near(gViewY, fitted_y));
+    VERIFY(Near(gViewX, live_x) && Near(gViewY, live_y) && Near(gViewSpan, live_span));
     const FVector forward = gStrategicCamera.mOrientation * FVector(0, 1, 0);
     VERIFY(Near(gStrategicCamera.mPos.X + forward.X * gViewSpan * 0.8f,
-                fitted_x + fitted_span * 0.5f));
+                live_x + live_span * 0.5f));
     VERIFY(Near(gStrategicCamera.mPos.Y + forward.Y * gViewSpan * 0.8f,
-                fitted_y + fitted_span * 0.5f));
+                live_y + live_span * 0.5f));
     VERIFY(StrategicFrameCamera() == &gStrategicCamera);
     // The engine is never given the strategic camera: with the view live, the presentation hook (patch 0200's lines, as the engine calls them)
     // hands back the camera it was given, in the CE build and in the faithful one alike.
@@ -1779,7 +1963,7 @@ int main() {
     const FVector strategic_before = gStrategicCamera.mPos;
     PortCeCmdFrame();
     VERIFY(!SamePosition(strategic_before, gStrategicCamera.mPos));
-    VERIFY(gViewY > fitted_y && Near(gViewX, fitted_x));
+    VERIFY(gViewY > live_y && gViewX > live_x);
     VERIFY(SamePosition(original_camera.mPos, before));
     VERIFY(GAME.controller.target == &gSink && !GAME.paused);
     StrategicViewInvalidate(); authored_view.viewport = {0, 0, 800, 600, 0, 1};
@@ -1822,19 +2006,19 @@ int main() {
     VERIFY(gViewSpan < span_before_zoom);
     VERIFY(Near(gViewX + gViewSpan * 0.5f, pan_centre_x));
     VERIFY(Near(gViewY + gViewSpan * 0.5f, pan_centre_y));
-    const float panned_x = gViewX, panned_y = gViewY;
+    const float panned_x = gViewX, panned_y = gViewY, zoomed_span = gViewSpan;
     const FVector panned_view = gStrategicCamera.mPos;
     for (int i = 0; i < 20; ++i) { fake_ms += 16; PortCeCmdFrame(); }
     VERIFY(SamePosition(gStrategicCamera.mPos, panned_view));
     Trap(DIK_V, KEY_EVENT_UP); Trap(DIK_V, KEY_EVENT_DOWN);
-    VERIFY(gOpen && !gStrategic && GAME.paused && GAME.pause_calls == 2);
+    VERIFY(gOpen && !gStrategic && !gLooseBounds && GAME.paused && GAME.pause_calls == 2);
     VERIFY(StrategicFrameCamera() == NULL && PortCeCmdRenderCamera(&original_camera, &player) == &original_camera);
     VERIFY(PresentationCamera(&original_camera, &player) == &original_camera);
     VERIFY(!PortCeCmdSuppressFlightHud() && !draw_filter && draws_dropped == 0 && left_calls == 1);
     VERIFY(PortCeCmdWorldViewToken() == 0);
-    VERIFY(Near(gViewX, panned_x) && Near(gViewY, panned_y));
+    VERIFY(Near(gViewX, fitted_x) && Near(gViewY, fitted_y) && Near(gViewSpan, fitted_span));
     Close(); Open(true); // The map's key-up handler is outside this extracted input fragment.
-    VERIFY(gStrategic && Near(gViewX, panned_x) && Near(gViewY, panned_y));
+    VERIFY(gStrategic && Near(gViewX, panned_x) && Near(gViewY, panned_y) && Near(gViewSpan, zoomed_span));
     Close();
     VERIFY(!gOpen && !GAME.paused && GAME.controller.target == &pilot);
     VERIFY(!PortCeCmdSuppressFlightHud() && !draw_filter);
@@ -1932,6 +2116,7 @@ int main() {
     TwoDaysOfUptime();
     KeysAsHeldNow();
     KeyDirections();
+    DecoupledViewsAndLandFraming();
     NativePresentationJourney();
     std::cout << "source-bound commander camera integration controls passed"
 #ifdef CE_X87_SINGLE_PRECISION

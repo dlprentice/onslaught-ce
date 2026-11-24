@@ -58,7 +58,11 @@ extern "C" int PortBinkPause(HBINK bink, int pause) __attribute__((weak));	// po
 double CinemaClock() {
     LARGE_INTEGER now, rate;
     QueryPerformanceCounter(&now); QueryPerformanceFrequency(&rate);
-    return rate.QuadPart ? double(now.QuadPart) / double(rate.QuadPart) : 0.0;
+    if (rate.QuadPart <= 0) return 0.0;
+    static LONGLONG firstQpc = 0;
+    static bool haveFirst = false;
+    if (!haveFirst) { firstQpc = now.QuadPart; haveFirst = true; }
+    return double(now.QuadPart - firstQpc) / double(rate.QuadPart);
 }
 extern "C" long PortCeMuseumMusicDuck(void) {
     if (!PortCeMuseumVisitActive()) { Cinema::duck = CeMuseumMusicDuck::Off(); return 0; }

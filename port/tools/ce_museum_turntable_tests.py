@@ -91,6 +91,8 @@ int main() {
             }
         }
         Need(AsciiOnly(sp.title) && AsciiOnly(sp.category) && AsciiOnly(sp.caption), "ASCII plaque copy");
+        Need(std::strlen(sp.title) <= 50u && std::strlen(sp.category) <= 44u && std::strlen(sp.caption) <= 95u,
+             "turntable plaque copy fits CeMuseumLabel kChars=96 buffers without truncation");
         Need(sp.plinthTopZ > 0.3f && sp.plinthHalf > 0.5f, "sensible plinth dimensions");
         Need(Grand::RoomAt(graph, CeMuseumExhibition::Vec2{sp.localX, sp.localY}) == static_cast<Grand::RoomId>(sp.wing),
              "turntable stands in its declared wing");
@@ -99,11 +101,56 @@ int main() {
              "turntable plinth blocks visitor");
         float sx, sy, sz;
         StudPosition(i, &sx, &sy, &sz);
+        if (sp.style == kStageScale) {
+            Need(sy <= 73.70f, "scale alcove studs sit cleanly outside obstacle box (y <= 73.70)");
+        }
         const float ax = sx + sp.studDirX * 1.15f;
         const float ay = sy + sp.studDirY * 1.15f;
         Need(Grand::WalkAt(graph, CeMuseumExhibition::Vec2{ax, ay}) == CeMuseumExhibition::kWalkOpen,
              "visitor can stand in front of every turntable stud");
     }
+
+    // 2b. Canonical retail Goodie ID -> plaque designation mapping (verified against FEPGoodies.cpp & english.dat).
+    auto byGoodie = [&](int gid) -> const Spec & {
+        for (unsigned i = 0; i < kManifestCount; ++i)
+            if (kManifest[i].goodieId == gid) return kManifest[i];
+        Need(false, "goodie ID present in manifest");
+        return kManifest[0];
+    };
+    Need(std::strstr(byGoodie(8).title,  "Unit-00") != NULL, "goodie 8 is Unit-00 Aquila");
+    Need(std::strstr(byGoodie(9).title,  "Unit-01 'Pulsar'") != NULL, "goodie 9 is Unit-01 Pulsar");
+    Need(std::strstr(byGoodie(10).title, "Unit-03 'Lancer'") != NULL, "goodie 10 is Unit-03 Lancer");
+    Need(std::strstr(byGoodie(11).title, "Unit-04S 'Sniper'") != NULL, "goodie 11 is Unit-04S Sniper");
+    Need(std::strstr(byGoodie(14).title, "AV-14 Sabre") != NULL, "goodie 14 is AV-14 Sabre");
+    Need(std::strstr(byGoodie(15).title, "M-1 Broadsword") != NULL, "goodie 15 is M-1 Broadsword");
+    Need(std::strstr(byGoodie(16).title, "AV-18 Bardiche") != NULL, "goodie 16 is AV-18 Bardiche");
+    Need(std::strstr(byGoodie(17).title, "M-112 Archer") != NULL, "goodie 17 is M-112 Archer Mobile Artillery");
+    Need(std::strstr(byGoodie(19).title, "F-24 Valkyrie") != NULL, "goodie 19 is F-24 Valkyrie");
+    Need(std::strstr(byGoodie(20).title, "XF-28 Venom") != NULL, "goodie 20 is XF-28 Venom");
+    Need(std::strstr(byGoodie(21).title, "B-7F Monitor") != NULL, "goodie 21 is B-7F Monitor Bomber");
+    Need(std::strstr(byGoodie(22).title, "A-15 Penetrator") != NULL, "goodie 22 is A-15 Penetrator");
+    Need(std::strstr(byGoodie(23).title, "U-17 Highside") != NULL, "goodie 23 is U-17 Highside Transporter");
+    Need(std::strstr(byGoodie(25).title, "NAV-3 Turtle") != NULL, "goodie 25 is NAV-3 Turtle");
+    Need(std::strstr(byGoodie(26).title, "FSV-6 Marshall") != NULL, "goodie 26 is FSV-6 Marshall");
+    Need(std::strstr(byGoodie(27).title, "FG-8 Packhorse") != NULL, "goodie 27 is FG-8 Packhorse");
+    Need(std::strstr(byGoodie(28).title, "SAT Turret") != NULL, "goodie 28 is Forseti SAT Turret");
+    Need(std::strstr(byGoodie(36).title, "ASF-7 Lightning") != NULL, "goodie 36 is ASF-7 Lightning");
+    Need(std::strstr(byGoodie(37).title, "ASX-9 Storm") != NULL, "goodie 37 is ASX-9 Storm");
+    Need(std::strstr(byGoodie(38).title, "B-4 Sky Tyrant") != NULL, "goodie 38 is B-4 Sky Tyrant");
+    Need(std::strstr(byGoodie(39).title, "A-19 Enforcer") != NULL, "goodie 39 is A-19 Enforcer");
+    Need(std::strstr(byGoodie(40).title, "UD-3 Thunder") != NULL, "goodie 40 is UD-3 Thunder");
+    Need(std::strstr(byGoodie(41).title, "UD-5H Quell") != NULL, "goodie 41 is UD-5H Quell");
+    Need(std::strstr(byGoodie(42).title, "T-85 Land Raider") != NULL, "goodie 42 is T-85 Land Raider");
+    Need(std::strstr(byGoodie(43).title, "T-92 Growler") != NULL, "goodie 43 is T-92 Growler");
+    Need(std::strstr(byGoodie(44).title, "ML-16 Vengeance") != NULL, "goodie 44 is ML-16 Vengeance");
+    Need(std::strstr(byGoodie(45).title, "A-3 Steel Rain") != NULL, "goodie 45 is A-3 Steel Rain");
+    Need(std::strstr(byGoodie(47).title, "W-8 Cerberus") != NULL, "goodie 47 is W-8 Cerberus");
+    Need(std::strstr(byGoodie(48).title, "W-11 Marauder") != NULL, "goodie 48 is W-11 Marauder");
+    Need(std::strstr(byGoodie(49).title, "WX-15 Dominator") != NULL, "goodie 49 is WX-15 Dominator");
+    Need(std::strstr(byGoodie(50).title, "G-1 Gnat") != NULL, "goodie 50 is G-1 Gnat");
+    Need(std::strstr(byGoodie(51).title, "D-9 Arachnodrone") != NULL, "goodie 51 is D-9 Arachnodrone");
+    Need(std::strstr(byGoodie(52).title, "BB-2 Manticore") != NULL, "goodie 52 is BB-2 Manticore");
+    Need(std::strstr(byGoodie(54).title, "Cannon Turret") != NULL, "goodie 54 is Muspell Cannon Turret");
 
     // 3. Rotation speed (~12 deg/s), dt clamp, pause hold, wrap-around, and Pause/Resume toggle.
     BankState bank = {};
@@ -444,7 +491,7 @@ int main() {
     check("museum hall loads official retail faction emblem textures via CeAssetCatalog",
           "goodies\\\\goodies_F_Bakgrnd.tga" in hall
           and "goodies\\\\goodies_M_Bakgrnd.tga" in hall
-          and "FrontEnd\\\\v3\\\\FE_BEA_Gamelogo_small.tga" in hall)
+          and "FrontEnd\\\\v3\\\\FE_BEA_Title2.tga" in hall)
     # Compile actual Gallery + EnsureGallery/FreeGallery + GalleryCinemaRef under ASan/UBSan.
     gal_start = hall.index("struct LitVertex {")
     gal_end = hall.index("static CeMuseumExhibition::Plan")
@@ -520,8 +567,22 @@ int main() {
     check("runtime checks texture mRefCount <= 0 and frees all meshes before textures in FreeAllSlots",
           "if (tex->mRefCount <= 0)" in cpp
           and "FreeSlotMesh(i)" in cpp)
+    header_txt = HEADER.read_text()
     check("player-facing strings stay free of forbidden words",
-          not re.search(r'"[^"]*(?:prototype|experimental|carrier|ce\.ini)[^"]*"', HEADER.read_text(), re.I))
+          not re.search(r'"[^"]*(?:prototype|experimental|carrier|ce\.ini)[^"]*"', header_txt, re.I))
+    banned_lore = (
+        "Aquila - Vulcan",
+        "Aquila - Flux",
+        "Aquila - Blazer",
+        "XF-24",
+        "Forseti Plasma Tank",
+        "Muspell SAM Launcher",
+        "Muspell Laser Turret",
+        "Commonwealth",
+        "Dominion",
+    )
+    check("canonical retail lore regression checks pass (no stale Vulcan/Flux/Blazer/XF-24/Plasma/SAM/Dominion labels)",
+          all(term not in header_txt for term in banned_lore))
     return 1 if failures else 0
 
 

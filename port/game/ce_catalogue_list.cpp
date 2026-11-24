@@ -89,6 +89,9 @@ int			sGroupCount, sGroupSpace;
 int			sBuiltCategory = -1;
 unsigned	sBuiltMatches = 0;
 char		sBuiltQuery[CE_CATALOGUE_QUERY_MAX + 1];
+int			sSizeRow = -1;
+unsigned	sSizeW = 0, sSizeH = 0;
+bool		sSizeAlpha = false, sSizeOk = false;
 
 bool	Grow(void **block, int *space, int need, size_t one)
 {
@@ -126,6 +129,8 @@ void	Build()
 	snprintf(sBuiltQuery, sizeof sBuiltQuery, "%s", query);
 	sGroupCount = 0;
 	sNameCount = 0;
+	sSizeRow = -1;
+	sSizeOk = false;
 	const bool cache = Grow((void **)&sNames, &sNameSpace, int(matches ? matches : 1), sizeof(SNames));
 	int *group_of = (int *)malloc(size_t(matches ? matches : 1) * sizeof(int));
 	char group[kGroupChars], name[kCacheName];
@@ -440,6 +445,25 @@ void	PaneClose()
 {
 	PortCeCataloguePreviewClose();
 	sPaneRow = sWaitRow = -1;
+	sSizeRow = -1;
+	sSizeOk = false;
+}
+
+bool	CachedTextureSize(int row, unsigned *w, unsigned *h, bool *alpha)
+{
+	if (!IsItem(row))
+		return false;
+	if (row != sSizeRow)
+	{
+		sSizeW = sSizeH = 0;
+		sSizeAlpha = false;
+		sSizeOk = PortCeCatalogueTextureSize(Slot(unsigned(At(row))), &sSizeW, &sSizeH, &sSizeAlpha);
+		sSizeRow = row;
+	}
+	if (w) *w = sSizeW;
+	if (h) *h = sSizeH;
+	if (alpha) *alpha = sSizeAlpha;
+	return sSizeOk;
 }
 
 // Reads the row's picture now (Select, or the cursor has rested on it).
@@ -465,21 +489,18 @@ void	TexturePane(int row, float left, float top, float right, float bottom)
 	const float text = bottom - 42.f;
 	unsigned pw = 0, ph = 0;
 	bool transparent = false;
-	if (IsItem(row)) PortCeCatalogueTextureSize(Slot(unsigned(At(row))), &pw, &ph, &transparent);
+	const bool hasSize = CachedTextureSize(row, &pw, &ph, &transparent);
 	// while the cursor moves the pane stays empty: no earlier picture beside a later row
 	const bool shown = PortCeCataloguePreviewDrawIn(left, top, right, text - 4.f, row == sPaneRow, transparent);
 	if (!IsItem(row) || row != sPaneRow)
 		return;
 	char group[kGroupChars], name[160], detail[160];
-	const unsigned slot = Slot(unsigned(At(row)));
 	Parts(unsigned(At(row)), group, sizeof group, name, sizeof name);
-	unsigned w = 0, h = 0;
-	bool alpha = false;
 	// under the picture: its whole name, then its group and size on one grey line (both wrap to the pane)
 	if (!shown)
 		snprintf(detail, sizeof detail, "%s. This picture could not be read.", group);
-	else if (PortCeCatalogueTextureSize(slot, &w, &h, &alpha))
-		snprintf(detail, sizeof detail, alpha ? "%s, %u x %u, transparent" : "%s, %u x %u pixels", group, w, h);
+	else if (hasSize)
+		snprintf(detail, sizeof detail, transparent ? "%s, %u x %u, transparent" : "%s, %u x %u pixels", group, pw, ph);
 	else
 		snprintf(detail, sizeof detail, "%s", group);
 	char cut[64], shown_name[160];

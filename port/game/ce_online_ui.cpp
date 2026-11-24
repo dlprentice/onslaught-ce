@@ -27,6 +27,7 @@
 #define FEP_CE FEP_LANGUAGE_TEST
 
 bool PortCeNetOffered();
+void PortCeNetShutdown() __attribute__((weak));
 extern "C" int CE_SettingGetBool(const char *key, int def);
 extern "C" void PortCeNetOpenDirectFromOnline(void) __attribute__((weak));
 
@@ -37,19 +38,21 @@ const DWORD kWarn      = 0xffffcc00u;
 const DWORD kCyan      = 0xff66ccffu;
 const DWORD kCursorCol = 0xff00c0ffu;
 
-bool  sOpsInited = false;
-bool  sPendingMultiplayerEntry = false;
-bool  sNextOpenFromMultiplayer = false;
-bool  sExitingToMultiplayer = false;
-bool  sTrapActive = false;
-bool  sCtrlHeld = false;
-bool  sSuppressNextChar = false;
-float sOpenTime = -10.f;
-float sLastSelectTime = -10.f;
-float sLaunchStartedAt = -1.f;
-bool  sLaunchQuitPosted = false;
-int   sLastMouseX = -1;
-int   sLastMouseY = -1;
+bool     sOpsInited = false;
+bool     sPendingMultiplayerEntry = false;
+bool     sNextOpenFromMultiplayer = false;
+bool     sOpenedFromMultiplayer = false;
+bool     sOpenedDirectLan = false;
+bool     sExitingToMultiplayer = false;
+bool     sTrapActive = false;
+bool     sCtrlHeld = false;
+uint16_t sSuppressCharCode = 0;
+float    sOpenTime = -10.f;
+float    sLastSelectTime = -10.f;
+float    sLaunchStartedAt = -1.f;
+bool     sLaunchQuitPosted = false;
+int      sLastMouseX = -1;
+int      sLastMouseY = -1;
 
 bool OnlineOffered() {
     return PortCeNetOffered() && (CE_SettingGetBool("network_game", 1) == 1);
@@ -115,6 +118,94 @@ float TextWidth(const WCHAR *w) {
     return float(sz.cx);
 }
 
+// Fits 2-byte WCHAR text strictly inside maxW at scale >= 0.65f, ellipsizing with "..."
+// whenever min-scale would overflow maxW (preventing text from bleeding across column borders).
+// Safe under -fshort-wchar: never calls glibc wcslen/wcscpy.
+void FitWideTextToWidth(WCHAR *wbuf, int cap, float maxW, float *outScale, float *outDrawW, bool keepTail) {
+    const float kMinScale = 0.65f;
+    if (!wbuf || cap <= 1 || maxW <= 0.f || wbuf[0] == 0) {
+        if (wbuf && cap > 0) wbuf[0] = 0;
+        if (outScale) *outScale = 1.f;
+        if (outDrawW) *outDrawW = 0.f;
+        return;
+    }
+
+    float w = TextWidth(wbuf);
+    if (w <= maxW) {
+        if (outScale) *outScale = 1.f;
+        if (outDrawW) *outDrawW = w;
+        return;
+    }
+    if (w * kMinScale <= maxW && w > 1.f) {
+        const float sc = maxW / w;
+        if (outScale) *outScale = sc;
+        if (outDrawW) *outDrawW = w * sc;
+        return;
+    }
+
+    int len = 0;
+    while (len < cap - 1 && wbuf[len] != 0) ++len;
+
+    WCHAR orig[200];
+    if (len >= 200) len = 199;
+    for (int i = 0; i < len; ++i) orig[i] = wbuf[i];
+    orig[len] = 0;
+
+    bool fitted = false;
+    for (int keep = len - 1; keep >= 0; --keep) {
+        int outLen = 0;
+        if (keepTail) {
+            if (outLen + 3 < cap) {
+                wbuf[outLen++] = '.';
+                wbuf[outLen++] = '.';
+                wbuf[outLen++] = '.';
+            }
+            const int start = len - keep;
+            for (int i = start; i < len && outLen < cap - 1; ++i) {
+                wbuf[outLen++] = orig[i];
+            }
+        } else {
+            for (int i = 0; i < keep && outLen < cap - 4; ++i) {
+                wbuf[outLen++] = orig[i];
+            }
+            if (outLen + 3 < cap) {
+                wbuf[outLen++] = '.';
+                wbuf[outLen++] = '.';
+                wbuf[outLen++] = '.';
+            }
+        }
+        wbuf[outLen] = 0;
+        const float cw = TextWidth(wbuf);
+        if (cw * kMinScale <= maxW) {
+            w = cw;
+            fitted = true;
+            break;
+        }
+    }
+
+    if (!fitted) {
+        // Extremely narrow slot: try "..", ".", or empty so nothing ever overflows maxW.
+        for (int dots = 2; dots >= 0; --dots) {
+            int i = 0;
+            for (; i < dots && i < cap - 1; ++i) wbuf[i] = '.';
+            wbuf[i] = 0;
+            const float cw = TextWidth(wbuf);
+            if (cw * kMinScale <= maxW || dots == 0) {
+                w = cw;
+                break;
+            }
+        }
+    }
+
+    float sc = 1.f;
+    if (w > maxW && w > 1.f) {
+        sc = maxW / w;
+        if (sc < kMinScale) sc = kMinScale;
+    }
+    if (outScale) *outScale = sc;
+    if (outDrawW) *outDrawW = w * sc;
+}
+
 void OpDrawPanel(float x0, float y0, float x1, float y1, uint32_t fill, uint32_t border) {
     FRONTEND.DrawPanel(x0, y0, x1, y1, 0.55f, static_cast<DWORD>(fill));
     FRONTEND.DrawBox(x0, y0, x1, y1, static_cast<DWORD>(border), 1.5f, 0.50f);
@@ -126,16 +217,16 @@ void OpDrawTextLeft(float x, float y, float maxW, uint32_t col, const char *text
     if (!font) return;
     WCHAR wbuf[200];
     WidenSafe(wbuf, 200, text);
-    float w = TextWidth(wbuf);
+    const float availW = (withCursor && maxW > 8.f) ? (maxW - 6.f) : maxW;
     float scale = 1.f;
-    if (w > maxW && w > 1.f) {
-        scale = maxW / w;
-        if (scale < 0.65f) scale = 0.65f;
+    float drawW = 0.f;
+    FitWideTextToWidth(wbuf, 200, availW, &scale, &drawW, withCursor != 0);
+    if (wbuf[0] != 0) {
+        font->DrawTextWithShadow(x, y, static_cast<DWORD>(col), wbuf, 0, 0, scale, 1.f);
     }
-    font->DrawTextWithShadow(x, y, static_cast<DWORD>(col), wbuf, 0, 0, scale, 1.f);
     if (withCursor && (fmod(PLATFORM.GetSysTimeFloat(), 1.0) < 0.5)) {
         static WCHAR kCursor[] = L"I";
-        float cx = x + w * scale + 1.f;
+        float cx = x + drawW + 1.f;
         if (cx < x + maxW + 2.f) {
             font->DrawTextWithShadow(cx, y, kCursorCol, kCursor, 0, 0, 1.f, 1.f);
         }
@@ -147,16 +238,14 @@ void OpDrawTextCenter(float x0, float y0, float x1, float y1, uint32_t col, cons
     if (!font) return;
     WCHAR wbuf[200];
     WidenSafe(wbuf, 200, text);
-    const float maxW = (x1 - x0) - 8.f;
-    const float w = TextWidth(wbuf);
+    const float boxW = x1 - x0;
+    const float maxW = (boxW > 8.f) ? (boxW - 8.f) : boxW;
     float scale = 1.f;
-    if (w > maxW && w > 1.f) {
-        scale = maxW / w;
-        if (scale < 0.65f) scale = 0.65f;
-    }
-    const float drawW = w * scale;
+    float drawW = 0.f;
+    FitWideTextToWidth(wbuf, 200, maxW, &scale, &drawW, false);
+    if (wbuf[0] == 0) return;
     const float fh = float(font->GetHeight());
-    const float tx = x0 + ((x1 - x0) - drawW) * 0.5f;
+    const float tx = x0 + (boxW - drawW) * 0.5f;
     const float ty = y0 + ((y1 - y0) - fh) * 0.5f;
     font->DrawTextWithShadow(tx, ty, static_cast<DWORD>(col), wbuf, 0, 0, scale, 1.f);
 }
@@ -166,13 +255,11 @@ void OpDrawTextRight(float rightX, float y, float maxW, uint32_t col, const char
     if (!font) return;
     WCHAR wbuf[200];
     WidenSafe(wbuf, 200, text);
-    const float w = TextWidth(wbuf);
     float scale = 1.f;
-    if (w > maxW && w > 1.f) {
-        scale = maxW / w;
-        if (scale < 0.65f) scale = 0.65f;
-    }
-    font->DrawTextWithShadow(rightX - w * scale, y, static_cast<DWORD>(col), wbuf, 0, 0, scale, 1.f);
+    float drawW = 0.f;
+    FitWideTextToWidth(wbuf, 200, maxW, &scale, &drawW, false);
+    if (wbuf[0] == 0) return;
+    font->DrawTextWithShadow(rightX - drawW, y, static_cast<DWORD>(col), wbuf, 0, 0, scale, 1.f);
 }
 
 int OpMouseClicked(float x0, float y0, float x1, float y1) {
@@ -231,7 +318,7 @@ void SetKeyTrap(bool on) {
         }
         sTrapActive = false;
         sCtrlHeld = false;
-        sSuppressNextChar = false;
+        sSuppressCharCode = 0;
     }
 }
 
@@ -239,12 +326,22 @@ void OpExitAction(int kind) {
     SetKeyTrap(false);
     if (kind == CE_OUI_EXIT_DIRECT_LAN) {
         sExitingToMultiplayer = false;
+        sOpenedDirectLan = true;
+        // Preserve sOpenedFromMultiplayer so re-entering Play Online keeps Multiplayer return context.
         if (PortCeNetOpenDirectFromOnline) {
             PortCeNetOpenDirectFromOnline();
         }
     } else if (kind == CE_OUI_EXIT_CLOSE_MP) {
+        if (sOpenedDirectLan && PortCeNetShutdown) {
+            sOpenedDirectLan = false;
+            PortCeNetShutdown();
+        }
         sExitingToMultiplayer = true;
+        sOpenedFromMultiplayer = false;
         FRONTEND.SetPage(FEP_MULTIPLAYER, 40);
+    } else if (kind == CE_OUI_EXIT_CLOSE_NET) {
+        sExitingToMultiplayer = false;
+        sOpenedFromMultiplayer = false;
     }
 }
 
@@ -279,8 +376,13 @@ extern "C" {
 void PortCeOnlineUiOpen(void) {
     if (!OnlineOffered()) return;
     EnsureHostOps();
-    const int fromMp = sNextOpenFromMultiplayer ? 1 : 0;
+    const bool enteredFromMpPage = (FRONTEND.GetTransitionFrom() == FEP_MULTIPLAYER);
+    if (!sNextOpenFromMultiplayer && !enteredFromMpPage) {
+        sOpenedFromMultiplayer = false;
+    }
+    const int fromMp = (sNextOpenFromMultiplayer || sOpenedFromMultiplayer || enteredFromMpPage) ? 1 : 0;
     sNextOpenFromMultiplayer = false;
+    sOpenedFromMultiplayer = (fromMp != 0);
     sExitingToMultiplayer = false;
     sOpenTime = PLATFORM.GetSysTimeFloat();
     sLastSelectTime = sOpenTime;
@@ -297,6 +399,8 @@ void PortCeOnlineUiOpenFromMultiplayer(void) {
     EnsureHostOps();
     sPendingMultiplayerEntry = true;
     sNextOpenFromMultiplayer = true;
+    sOpenedFromMultiplayer = true;
+    sOpenedDirectLan = false;
     sExitingToMultiplayer = false;
     CFrontEnd::PlaySound(FES_SELECT);
     FRONTEND.SetPage(FEP_CE, 50);
@@ -309,6 +413,15 @@ int PortCeOnlineUiTakePendingEntry(void) {
 }
 
 int PortCeOnlineUiActive(void) {
+    if (sExitingToMultiplayer) {
+        const bool stillExiting =
+            (FRONTEND.GetCurrentPage() == FEP_TRANSITION) &&
+            (FRONTEND.GetTransitionFrom() == FEP_CE) &&
+            (FRONTEND.GetTransitionTo() == FEP_MULTIPLAYER);
+        if (!stillExiting) {
+            sExitingToMultiplayer = false;
+        }
+    }
     return (PortCeOnlineHostActive() || sExitingToMultiplayer) ? 1 : 0;
 }
 
@@ -318,7 +431,11 @@ const char *PortCeOnlineUiTitleUtf8(void) {
 
 void PortCeOnlineUiUpdate(void) {
     if (sExitingToMultiplayer) {
-        if (FRONTEND.GetCurrentPage() != FEP_CE) {
+        const bool stillExiting =
+            (FRONTEND.GetCurrentPage() == FEP_TRANSITION) &&
+            (FRONTEND.GetTransitionFrom() == FEP_CE) &&
+            (FRONTEND.GetTransitionTo() == FEP_MULTIPLAYER);
+        if (!stillExiting) {
             sExitingToMultiplayer = false;
         }
         return;
@@ -394,10 +511,18 @@ int PortCeOnlineUiKey(uint16_t key, int eventType) {
     }
     const bool ctrl = sCtrlHeld || (CE_LobbyCtrlHeld() != 0);
     if (eventType == KEY_EVENT_DOWN) {
+        sSuppressCharCode = 0;
         if (key == DIK_ESCAPE)                        return PortCeOnlineHostKey(CE_OUI_KEY_ESC, 0);
         if (key == DIK_V && ctrl)                     return PortCeOnlineHostKey(CE_OUI_KEY_PASTE, 0);
         if (key == DIK_BACK)                          return PortCeOnlineHostKey(CE_OUI_KEY_BACKSPACE, 0);
         if (key == DIK_RETURN || key == DIK_NUMPADENTER) return PortCeOnlineHostKey(CE_OUI_KEY_ENTER, 0);
+        if (key == DIK_SPACE) {
+            if (PortCeOnlineHostKey(CE_OUI_KEY_CHAR, '\0')) {
+                sSuppressCharCode = ' ';
+                return 1;
+            }
+            return 0;
+        }
         if (key == DIK_UP)                            return PortCeOnlineHostKey(CE_OUI_KEY_UP, 0);
         if (key == DIK_DOWN || key == DIK_TAB)        return PortCeOnlineHostKey(CE_OUI_KEY_DOWN, 0);
         if (key == DIK_LEFT)                          return PortCeOnlineHostKey(CE_OUI_KEY_LEFT, 0);
@@ -406,7 +531,7 @@ int PortCeOnlineUiKey(uint16_t key, int eventType) {
         if (key == DIK_NEXT)                          return PortCeOnlineHostKey(CE_OUI_KEY_PGDN, 0);
         if (key == DIK_T) {
             if (PortCeOnlineHostKey(CE_OUI_KEY_CHAT, 0)) {
-                sSuppressNextChar = true;
+                sSuppressCharCode = 't';
                 return 1;
             }
             return 0;
@@ -414,9 +539,12 @@ int PortCeOnlineUiKey(uint16_t key, int eventType) {
         return 0;
     }
     if (eventType == KEY_EVENT_CHAR && !ctrl && key >= 0x20 && key < 0x7f) {
-        if (sSuppressNextChar) {
-            sSuppressNextChar = false;
-            return 1;
+        if (sSuppressCharCode != 0) {
+            const uint16_t suppressed = sSuppressCharCode;
+            sSuppressCharCode = 0;
+            if (key == suppressed || (suppressed == 't' && key == 'T')) {
+                return 1;
+            }
         }
         return PortCeOnlineHostKey(CE_OUI_KEY_CHAR, static_cast<char>(key));
     }
@@ -432,7 +560,10 @@ void PortCeOnlineUiClose(void) {
     }
     sPendingMultiplayerEntry = false;
     sNextOpenFromMultiplayer = false;
+    sOpenedFromMultiplayer = false;
+    sOpenedDirectLan = false;
     sExitingToMultiplayer = false;
+    sSuppressCharCode = 0;
     sLaunchStartedAt = -1.f;
     sLaunchQuitPosted = false;
 }
@@ -443,6 +574,8 @@ void PortCeOnlineUiClose(void) {
 // ---------------------------------------------------------------------------
 void PortCeOnlineUiMultiplayerProcess(int active) {
     if (!active || !OnlineOffered() || FEMESSBOX.BeingDisplayed()) return;
+    sExitingToMultiplayer = false;
+    sOpenedDirectLan = false;
     bool padOpen = false;
     for (int pad = 0; pad < 2; ++pad) {
         if (LT.JoyState(pad) && LT.OldJoyState(pad) && LT.JoyButtonOnce(pad, 3)) {

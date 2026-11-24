@@ -51,14 +51,26 @@ DRIVER_CPP = r"""
 #include "npeer_ring.h"
 
 #include <array>
+#include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
+
+#if defined(CE_NETWORK_ICE)
+#include <enet/enet.h>
+#include <juice/juice.h>
+#define private public
+#include "ice_bridge.h"
+#undef private
+#endif
 
 namespace {
 int gChecks = 0;
@@ -589,6 +601,36 @@ void TestMultiSlotIceLoopbackMultiplexing() {
           "relay-required host bridge attached");
     Check(!relay_host->SetGuestRemoteIceDescription(1, g_sdp[0]),
           "require_relay=true refuses direct-only SDP");
+
+    // Verify relay-only SDP accepts TURN relay candidate while redacting raddr/rport/c=/o= IPs!
+    const std::string mixed_relay_sdp =
+        "v=0\r\n"
+        "o=alice 98765 2 IN IP4 192.168.1.42\r\n"
+        "s=-\r\n"
+        "c=IN IP4 203.0.113.99\r\n"
+        "t=0 0\r\n"
+        "m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n"
+        "a=ice-ufrag:relayufrag1\r\n"
+        "a=ice-pwd:relaypassword0123456789abcdef\r\n"
+        "a=rtcp:9 IN IP4 192.168.1.42\r\n"
+        "a=candidate:1 1 UDP 2130706431 192.168.1.42 51234 typ host\r\n"
+        "a=candidate:2 1 UDP 1694498815 203.0.113.99 51234 typ srflx raddr 192.168.1.42 rport 51234\r\n"
+        "a=candidate:3 1 UDP 16777215 198.51.100.77 54321 typ relay raddr 203.0.113.99 rport 51234\r\n"
+        "a=end-of-candidates\r\n";
+    std::string scrubbed;
+    Check(CeIceBridge::FilterDescription(mixed_relay_sdp, true, scrubbed),
+          "FilterDescription(relay=true) succeeds on mixed SDP with relay candidate");
+    Check(scrubbed.find("raddr 0.0.0.0 rport 0") != std::string::npos &&
+          scrubbed.find("c=IN IP4 0.0.0.0\r\n") != std::string::npos &&
+          scrubbed.find("o=alice 98765 2 IN IP4 0.0.0.0\r\n") != std::string::npos &&
+          scrubbed.find("192.168.") == std::string::npos &&
+          scrubbed.find("203.0.113.") == std::string::npos &&
+          scrubbed.find("51234") == std::string::npos &&
+          scrubbed.find("typ host") == std::string::npos &&
+          scrubbed.find("typ srflx") == std::string::npos,
+          "FilterDescription(relay=true) scrubs raddr/rport and redacts c=/o=/a=rtcp IPs");
+    Check(relay_host->SetGuestRemoteIceDescription(1, mixed_relay_sdp),
+          "require_relay=true accepts scrubbed TURN relay SDP");
 }
 #endif
 

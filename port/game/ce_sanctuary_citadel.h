@@ -8,6 +8,7 @@
 
 #define CE_SANDBOX_HAS_CITADEL 1
 
+#include "ce_sandbox_world.h"
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -21,6 +22,13 @@ constexpr float kCenterY = 392.0f;
 constexpr float kFloorZ  = -34.0f;
 constexpr float kDomeRadius = 56.0f;
 constexpr float kDomeSkirtDepth = 2.0f; // dome seals down to floorZ + 2.0f (-32.0f)
+
+// Visual shield dome shell: clears the 4 outer retaining bastion / brass cornice corners
+// (hypot(39.7, 39.7) = 56.14 m) by ~21 cm and extends underground across all 360 deg
+// (floorZ + 24.5 m = -9.5 m, >= 6.6 m below the lowest valley trough around the cliff).
+constexpr float kDomeVisualRadius = 56.35f;
+constexpr float kDomeVisualSkirtMaxZ = 24.5f;
+constexpr float kDomeVisualSkirtNzMax = 0.46f;
 
 constexpr float kTerraceMinX = 72.0f;
 constexpr float kTerraceMaxX = 152.0f;
@@ -68,6 +76,45 @@ constexpr float kBeamPullback = 0.05f;
 
 inline bool IsFinite3(float x, float y, float z) {
     return std::isfinite(x) && std::isfinite(y) && std::isfinite(z);
+}
+
+// Queries terrain ground Z (native Z-down) along the visual shield dome perimeter at
+// radius kDomeVisualRadius around (kCenterX, kCenterY).
+inline float DomePerimeterGroundZ(float azimuthRad, float floorZ = kFloorZ) {
+    const float baseZ = std::isfinite(floorZ) ? floorZ : kFloorZ;
+    if (!std::isfinite(azimuthRad)) return baseZ;
+    const float wx = kCenterX + std::cos(azimuthRad) * kDomeVisualRadius;
+    const float wy = kCenterY + std::sin(azimuthRad) * kDomeVisualRadius;
+    const float gz = CeSandboxWorld::HeightAt(wx, wy) + (baseZ - kFloorZ);
+    const float minZ = baseZ - 8.0f;
+    const float maxZ = baseZ + kDomeVisualSkirtMaxZ - 2.0f;
+    if (gz < minZ) return minZ;
+    if (gz > maxZ) return maxZ;
+    return gz;
+}
+
+// Tangent-continuous (C^1 at nz = 0) mapping from unit sphere direction (nx, ny, nz) to
+// dome-local coordinates relative to (kCenterX, kCenterY, floorZ). Upper hemisphere
+// (nz <= 0, native Z-down) maps spherically at kDomeVisualRadius; lower skirt (nz > 0)
+// maps via arc-length-preserving cylindrical projection down to kDomeVisualSkirtMaxZ.
+inline void ProjectDomeVisualPoint(float nx, float ny, float nz,
+                                   float *outX, float *outY, float *outZ) {
+    float x = nx * kDomeVisualRadius;
+    float y = ny * kDomeVisualRadius;
+    float z = nz * kDomeVisualRadius;
+    if (nz > 0.0f) {
+        const float hr = std::hypot(nx, ny);
+        if (hr > 1e-4f) {
+            x = (nx / hr) * kDomeVisualRadius;
+            y = (ny / hr) * kDomeVisualRadius;
+        }
+        const float clampedNz = nz > 1.0f ? 1.0f : nz;
+        z = kDomeVisualRadius * std::asin(clampedNz);
+        if (z > kDomeVisualSkirtMaxZ) z = kDomeVisualSkirtMaxZ;
+    }
+    if (outX) *outX = x;
+    if (outY) *outY = y;
+    if (outZ) *outZ = z;
 }
 
 // Containment predicate for the Archive Shield Dome hemisphere + 2 m terrain-sealing skirt.

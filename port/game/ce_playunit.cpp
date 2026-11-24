@@ -3675,7 +3675,7 @@ extern "C" int PortCePlayUnitInvertSides(void)
 	if (!PortCeLayer() || PortRecording() || FencedEnv()) return 0;
 	if (Present("BEA_NET_HOST") || Present("BEA_NET_JOIN") || NetworkOrLockstepActive()) return 0;
 	const int level = GAME.GetCurrentLevel();
-	if (!WORLD.IsMultiplayer() || level < 850 || level > 899 || CLIPARAMS.mLevelNo != level) return 0;
+	if (!WORLD.IsMultiplayer() || WORLD.GetType() != CWorld::kVersusMultiplayer || level < 850 || level > 899 || CLIPARAMS.mLevelNo != level) return 0;
 	return CE_SettingIs("play_side", "muspell") ? 1 : 0;
 }
 

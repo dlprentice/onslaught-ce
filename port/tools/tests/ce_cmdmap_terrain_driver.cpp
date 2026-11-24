@@ -27,7 +27,7 @@ static int checks, failures;
 
 struct D3DLOCKED_RECT { int Pitch; void *pBits; };
 static bool gFailLock, gFailCreate;
-static int gLocks, gUnlocks, gCreates, gReleases, gSprites, gRenders;
+static int gLocks, gUnlocks, gCreates, gReleases, gForceDeletes, gSprites, gRenders;
 struct SpriteCall { float x, y, z; DWORD colour; float sx, sy; const void *texture; bool batch; DWORD magAtDraw, minAtDraw; float u0, u1, v0, v1; };
 enum ESpriteAlignment { SA_TOP_LEFT = 0 };
 enum ESpriteType { SPT_NONE = 0 };
@@ -71,7 +71,8 @@ struct CDXTexture
 	FakeSurface *GetTexture() { return ok ? &surface : NULL; }
 	int GetRealWidth() { return width; }
 	int GetRealHeight() { return height; }
-	void Release() { ++gReleases; delete this; }
+	void Release() { ++gReleases; }
+	void ForceDelete() { ++gForceDeletes; delete this; }
 };
 
 struct FakeDevice
@@ -170,15 +171,15 @@ int main(int argc, char **argv)
 
 	// release
 	FreeTerrainTexture();
-	CHECK(gReleases == 1 && !gTerrainTexture, "closing frees the texture once");
+	CHECK(gReleases == 1 && gForceDeletes == 1 && !gTerrainTexture, "closing frees the texture once");
 	FreeTerrainTexture();
-	CHECK(gReleases == 1, "and freeing again does nothing");
+	CHECK(gReleases == 1 && gForceDeletes == 1, "and freeing again does nothing");
 
 	// a texture that cannot be made: the caller draws the cells, and does not keep asking
 	gFailCreate = true;
 	const int createsBefore = gCreates;
 	CHECK(!DrawTerrainFromTexture() && gTerrainTextureFailed && !gTerrainTexture, "an unusable texture is refused");
-	CHECK(gReleases == 2, "and released");
+	CHECK(gReleases == 2 && gForceDeletes == 2, "and released");
 	CHECK(!DrawTerrainFromTexture() && gCreates == createsBefore + 1, "it is not made again every frame");
 	gFailCreate = false;
 	FreeTerrainTexture();

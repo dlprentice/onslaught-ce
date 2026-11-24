@@ -517,6 +517,7 @@ public:
 
     // Gracefully leaves / stops the session.
     void Stop(bool graceful);
+    void DetachBridge() { mBridge = nullptr; }
 
     // Introspection
     CE_OnlineMatchState State() const { return mState; }

@@ -17,6 +17,7 @@ const DEFAULT_DAILY_TURN_LIMIT = 200;
 const DEFAULT_MONTHLY_TURN_LIMIT = 2000;
 const DEFAULT_PER_IP_DAILY_TURN_LIMIT = 40;
 const DEFAULT_HEARTBEAT_TIMEOUT_MS = 30000;
+const DEFAULT_MATCH_TIMEOUT_MS = 2 * 60 * 60 * 1000;
 const DEFAULT_MAX_ACTIVE_ROOMS = 128;
 const DEFAULT_AUTH_IP_LIMIT = 20;
 const DEFAULT_AUTH_PUBKEY_LIMIT = 10;
@@ -30,11 +31,26 @@ const SIGNAL_MAX_SDP_BYTES = 4096;
 const SIGNAL_RING_LIMIT = 256;
 const MAX_TURN_PER_PAIR_PER_MATCH = 4;
 
-const VALID_MODES = new Set(["coop_defence", "coop_skirmish", "versus_2v2", "tutorial"]);
-const VALID_MAPS = new Set([
-  100, 850, 851, 852, 853, 854, 855, 856, 857, 858,
-  859, 860, 861, 862, 863, 864, 865, 866,
+const MAP_MODES = new Map([
+  [850, "coop_skirmish"],
+  [851, "versus_2v2"],
+  [852, "versus_2v2"],
+  [853, "coop_skirmish"],
+  [854, "versus_2v2"],
+  [855, "versus_2v2"],
+  [856, "coop_defence"],
+  [857, "versus_2v2"],
+  [859, "coop_skirmish"],
+  [860, "versus_2v2"],
+  [861, "versus_2v2"],
+  [862, "versus_2v2"],
+  [863, "versus_2v2"],
+  [864, "coop_skirmish"],
+  [865, "coop_skirmish"],
+  [866, "coop_skirmish"],
 ]);
+const VALID_MODES = new Set(["coop_defence", "coop_skirmish", "versus_2v2"]);
+const VALID_MAPS = new Set(MAP_MODES.keys());
 const VALID_VISIBILITIES = new Set(["public", "unlisted"]);
 const VALID_ROUTES = new Set(["unknown", "direct", "relay"]);
 const VALID_SEAT_SET_KINDS = new Set(["open", "ai", "closed"]);
@@ -622,6 +638,58 @@ function makeEmptySeat(seatIndex, mode, aiFill) {
   };
 }
 
+function rebalanceRoomTeams(room) {
+  if (room.mode !== "versus_2v2") {
+    for (const s of room.seats) {
+      s.team = 0;
+    }
+    return;
+  }
+  let active0 = 0;
+  let active1 = 0;
+  const cap = Math.max(1, Math.ceil(room.max_seats / 2));
+  for (const s of room.seats) {
+    if (s.kind === "human") {
+      if (s.team === 1 && active1 < cap) {
+        active1++;
+      } else if (active0 < cap) {
+        s.team = 0;
+        active0++;
+      } else {
+        s.team = 1;
+        active1++;
+      }
+    }
+  }
+  for (const s of room.seats) {
+    if (s.kind === "ai") {
+      if (active0 <= active1 && active0 < cap) {
+        s.team = 0;
+        active0++;
+      } else if (active1 < cap) {
+        s.team = 1;
+        active1++;
+      } else {
+        s.team = 0;
+        active0++;
+      }
+    }
+  }
+  let total0 = active0;
+  let total1 = active1;
+  for (const s of room.seats) {
+    if (s.kind === "open") {
+      if (total0 <= total1 && total0 < cap) {
+        s.team = 0;
+        total0++;
+      } else {
+        s.team = 1;
+        total1++;
+      }
+    }
+  }
+}
+
 function summarizeSeats(room) {
   let humanSeats = 0;
   let usedSeats = 0;
@@ -857,12 +925,20 @@ export default {
             400, "invalid_mode", "Unsupported game mode.");
           requireCond(integer(body.map) && VALID_MAPS.has(body.map),
             400, "invalid_map", "Unsupported map identifier.");
+          const expectedMode = MAP_MODES.get(body.map);
+          requireCond(expectedMode === mode,
+            400, "incompatible_map_mode",
+            `Map ${body.map} requires mode ${expectedMode}, not ${mode}.`);
           const topology = body.topology === undefined ? "star_lockstep" : body.topology;
           requireCond(topology === "star_lockstep",
             400, "invalid_topology", "Only star_lockstep topology is currently enabled.");
           const maxSeats = body.max_seats;
           requireCond(integer(maxSeats) && maxSeats >= 2 && maxSeats <= MAX_MATCH_SLOTS,
             400, "invalid_max_seats", "max_seats must be 2 to 4 for star_lockstep.");
+          if (mode === "versus_2v2") {
+            requireCond(maxSeats === 2 || maxSeats === 4,
+              400, "invalid_max_seats", "max_seats must be 2 (1v1) or 4 (2v2) for versus_2v2.");
+          }
           const visibility = body.visibility === undefined ? "public" : body.visibility;
           requireCond(typeof visibility === "string" && VALID_VISIBILITIES.has(visibility),
             400, "invalid_visibility", "visibility must be public or unlisted.");
@@ -1190,11 +1266,20 @@ export class LobbyDirectory extends DurableObject {
     return envPositiveInt(this.env.CE_HEARTBEAT_TIMEOUT_MS, DEFAULT_HEARTBEAT_TIMEOUT_MS, 500, 300000);
   }
 
+  matchTimeoutMs() {
+    return envPositiveInt(this.env.CE_MATCH_TIMEOUT_MS, DEFAULT_MATCH_TIMEOUT_MS, 1000, 86400000);
+  }
+
   pruneStaleRooms(nowMs) {
-    const cutoff = nowMs - this.heartbeatTimeoutMs();
+    const lobbyCutoff = nowMs - this.heartbeatTimeoutMs();
+    const matchCutoff = nowMs - this.matchTimeoutMs();
     this.ctx.storage.sql.exec(
-      "DELETE FROM rooms WHERE state = 'closed' OR last_heartbeat_ms < ?",
-      cutoff
+      `DELETE FROM rooms
+       WHERE state = 'closed'
+          OR (state NOT IN ('starting', 'in_match') AND last_heartbeat_ms < ?)
+          OR (state IN ('starting', 'in_match') AND last_heartbeat_ms < ?)`,
+      lobbyCutoff,
+      matchCutoff
     );
   }
 
@@ -1615,6 +1700,12 @@ export class GameRoom extends DurableObject {
     await directoryStub(this.env).upsertRoomSummary(this.buildSummary(room));
   }
 
+  resetGuestReady(room) {
+    for (const s of room.seats) {
+      if (s.seat !== room.host_seat) s.ready = false;
+    }
+  }
+
   createRoom(spec) {
     const now = nowSeconds();
     const nowMs = Date.now();
@@ -1847,6 +1938,7 @@ export class GameRoom extends DurableObject {
       "name", "map", "mode", "max_seats", "visibility",
       "require_relay", "ai_fill", "set_seat_kind", "kick_seat", "state",
     ];
+    const nowMs = Date.now();
     const res = this.ctx.storage.transactionSync(() => {
       const room = this.readRoom();
       if (!room) return { ok: false, httpStatus: 404, errorCode: "room_not_found", message: "Room does not exist." };
@@ -1863,8 +1955,77 @@ export class GameRoom extends DurableObject {
         return { ok: false, httpStatus: 403, errorCode: "host_only", message: "Only the host may change room settings." };
       }
 
-      let resetGuestReady = false;
+      let shouldResetGuestReady = false;
       let syncDir = false;
+
+      // Pre-validate lobby-only host fields & map<->mode/max_seats contract before mutating room state.
+      const lobbyOnlyHostKeys = [
+        "name", "map", "mode", "max_seats", "visibility",
+        "require_relay", "ai_fill", "set_seat_kind", "kick_seat",
+      ];
+      if (lobbyOnlyHostKeys.some(k => Object.hasOwn(body, k)) && room.state !== "lobby") {
+        return { ok: false, httpStatus: 409, errorCode: "match_in_progress", message: "Room settings are locked during match." };
+      }
+
+      const hasMap = Object.hasOwn(body, "map");
+      const hasMode = Object.hasOwn(body, "mode");
+      const hasMaxSeats = Object.hasOwn(body, "max_seats");
+      if (hasMap && (!integer(body.map) || !VALID_MAPS.has(body.map))) {
+        return { ok: false, httpStatus: 400, errorCode: "invalid_map", message: "Unsupported map identifier." };
+      }
+      if (hasMode && (typeof body.mode !== "string" || !VALID_MODES.has(body.mode))) {
+        return { ok: false, httpStatus: 400, errorCode: "invalid_mode", message: "Unsupported game mode." };
+      }
+      const targetMap = hasMap ? body.map : room.map;
+      const requiredMode = MAP_MODES.get(targetMap);
+      let targetMode = room.mode;
+      if (hasMode) {
+        if (body.mode !== requiredMode) {
+          return {
+            ok: false,
+            httpStatus: 400,
+            errorCode: "incompatible_map_mode",
+            message: `Map ${targetMap} requires mode ${requiredMode}, not ${body.mode}.`,
+          };
+        }
+        targetMode = body.mode;
+      } else if (hasMap && requiredMode) {
+        targetMode = requiredMode;
+      }
+
+      let targetMaxSeats = room.max_seats;
+      if (hasMaxSeats) {
+        const cap = room.topology === "star_lockstep" ? MAX_MATCH_SLOTS : WIRE_MAX_SLOTS;
+        if (!integer(body.max_seats) || body.max_seats < 2 || body.max_seats > cap) {
+          return { ok: false, httpStatus: 400, errorCode: "invalid_max_seats", message: "Invalid max_seats value." };
+        }
+        if (targetMode === "versus_2v2" && body.max_seats !== 2 && body.max_seats !== 4) {
+          return {
+            ok: false,
+            httpStatus: 400,
+            errorCode: "invalid_max_seats",
+            message: "max_seats must be 2 (1v1) or 4 (2v2) for versus_2v2.",
+          };
+        }
+        if (body.max_seats < room.max_seats) {
+          for (let i = body.max_seats; i < room.seats.length; i++) {
+            if (room.seats[i].kind === "human") {
+              return { ok: false, httpStatus: 409, errorCode: "seat_occupied", message: "Cannot remove an occupied human seat." };
+            }
+          }
+        }
+        targetMaxSeats = body.max_seats;
+      } else if (targetMode === "versus_2v2" && room.max_seats !== 2 && room.max_seats !== 4) {
+        if (hasMode && !hasMap) {
+          return {
+            ok: false,
+            httpStatus: 400,
+            errorCode: "invalid_max_seats",
+            message: "max_seats must be 2 (1v1) or 4 (2v2) for versus_2v2.",
+          };
+        }
+        targetMaxSeats = 4;
+      }
 
       // Self-seat fields.
       if (Object.hasOwn(body, "team")) {
@@ -1874,11 +2035,11 @@ export class GameRoom extends DurableObject {
         if (body.team !== 0 && body.team !== 1) {
           return { ok: false, httpStatus: 400, errorCode: "invalid_team", message: "Team must be 0 or 1." };
         }
-        if (room.mode !== "versus_2v2" && body.team !== 0) {
+        if (targetMode !== "versus_2v2" && body.team !== 0) {
           return { ok: false, httpStatus: 400, errorCode: "invalid_team", message: "Side selection is only available in 2v2 Versus." };
         }
-        if (room.mode === "versus_2v2") {
-          const teamCap = Math.max(1, Math.ceil(room.max_seats / 2));
+        if (targetMode === "versus_2v2") {
+          const teamCap = Math.max(1, Math.ceil(targetMaxSeats / 2));
           if (member.team !== body.team) {
             const humansOnTarget = room.seats.filter(
               s => s.kind === "human" && s.seat !== member.seat && s.team === body.team
@@ -1887,15 +2048,15 @@ export class GameRoom extends DurableObject {
               return { ok: false, httpStatus: 409, errorCode: "team_full", message: "That side is already full." };
             }
             member.team = body.team;
-            // Rebalance non-human seats (AI/open) so 2H+2AI stays 2v2 rather than drifting to 3v1.
-            let t0 = room.seats.filter(s => s.team === 0).length;
-            let t1 = room.seats.filter(s => s.team === 1).length;
-            if (body.team === 0 && t0 > teamCap) {
-              const swap = room.seats.find(s => s.kind !== "human" && s.team === 0);
-              if (swap) { swap.team = 1; t0--; t1++; }
-            } else if (body.team === 1 && t1 > teamCap) {
-              const swap = room.seats.find(s => s.kind !== "human" && s.team === 1);
-              if (swap) { swap.team = 0; t1--; t0++; }
+            // Rebalance AI seats only (never closed seats) so active teams stay balanced.
+            let active0 = room.seats.filter(s => (s.kind === "human" || s.kind === "ai") && s.team === 0).length;
+            let active1 = room.seats.filter(s => (s.kind === "human" || s.kind === "ai") && s.team === 1).length;
+            if (body.team === 0 && (active0 > teamCap || (active1 === 0 && active0 >= 2))) {
+              const swap = room.seats.find(s => s.kind === "ai" && s.team === 0);
+              if (swap) { swap.team = 1; active0--; active1++; }
+            } else if (body.team === 1 && (active1 > teamCap || (active0 === 0 && active1 >= 2))) {
+              const swap = room.seats.find(s => s.kind === "ai" && s.team === 1);
+              if (swap) { swap.team = 0; active1--; active0++; }
             }
           }
         } else {
@@ -1947,14 +2108,6 @@ export class GameRoom extends DurableObject {
         }
       }
 
-      const lobbyOnlyHostKeys = [
-        "name", "map", "mode", "max_seats", "visibility",
-        "require_relay", "ai_fill", "set_seat_kind", "kick_seat",
-      ];
-      if (lobbyOnlyHostKeys.some(k => Object.hasOwn(body, k)) && room.state !== "lobby") {
-        return { ok: false, httpStatus: 409, errorCode: "match_in_progress", message: "Room settings are locked during match." };
-      }
-
       if (Object.hasOwn(body, "name")) {
         try {
           room.name = sanitizeRoomName(body.name);
@@ -1966,58 +2119,17 @@ export class GameRoom extends DurableObject {
         }
         syncDir = true;
       }
-      if (Object.hasOwn(body, "map")) {
-        if (!integer(body.map) || !VALID_MAPS.has(body.map)) {
-          return { ok: false, httpStatus: 400, errorCode: "invalid_map", message: "Unsupported map identifier." };
-        }
-        if (room.map !== body.map) {
-          room.map = body.map;
-          resetGuestReady = true;
-          syncDir = true;
-        }
+      let needRebalance = false;
+      if (hasMap && room.map !== targetMap) {
+        room.map = targetMap;
+        shouldResetGuestReady = true;
+        syncDir = true;
       }
-      if (Object.hasOwn(body, "mode")) {
-        if (typeof body.mode !== "string" || !VALID_MODES.has(body.mode)) {
-          return { ok: false, httpStatus: 400, errorCode: "invalid_mode", message: "Unsupported game mode." };
-        }
-        if (room.mode !== body.mode) {
-          room.mode = body.mode;
-          if (room.mode === "versus_2v2") {
-            let team0 = 0;
-            let team1 = 0;
-            const cap = Math.max(1, Math.ceil(room.max_seats / 2));
-            for (const s of room.seats) {
-              if (s.kind === "human") {
-                if (s.team === 1 && team1 < cap) {
-                  team1++;
-                } else if (team0 < cap) {
-                  s.team = 0;
-                  team0++;
-                } else {
-                  s.team = 1;
-                  team1++;
-                }
-              }
-            }
-            for (const s of room.seats) {
-              if (s.kind !== "human") {
-                if (team0 <= team1 && team0 < cap) {
-                  s.team = 0;
-                  team0++;
-                } else {
-                  s.team = 1;
-                  team1++;
-                }
-              }
-            }
-          } else {
-            for (const s of room.seats) {
-              s.team = 0;
-            }
-          }
-          resetGuestReady = true;
-          syncDir = true;
-        }
+      if (room.mode !== targetMode) {
+        room.mode = targetMode;
+        needRebalance = true;
+        shouldResetGuestReady = true;
+        syncDir = true;
       }
       if (Object.hasOwn(body, "require_relay")) {
         if (typeof body.require_relay !== "boolean") {
@@ -2025,7 +2137,7 @@ export class GameRoom extends DurableObject {
         }
         if (room.require_relay !== body.require_relay) {
           room.require_relay = body.require_relay;
-          resetGuestReady = true;
+          shouldResetGuestReady = true;
           syncDir = true;
         }
       }
@@ -2051,55 +2163,26 @@ export class GameRoom extends DurableObject {
               s.callsign = "";
             }
           }
+          needRebalance = true;
+          shouldResetGuestReady = true;
           syncDir = true;
         }
       }
-      if (Object.hasOwn(body, "max_seats")) {
-        const cap = room.topology === "star_lockstep" ? MAX_MATCH_SLOTS : WIRE_MAX_SLOTS;
-        if (!integer(body.max_seats) || body.max_seats < 2 || body.max_seats > cap) {
-          return { ok: false, httpStatus: 400, errorCode: "invalid_max_seats", message: "Invalid max_seats value." };
-        }
-        if (body.max_seats < room.max_seats) {
-          for (let i = body.max_seats; i < room.seats.length; i++) {
-            if (room.seats[i].kind === "human") {
-              return { ok: false, httpStatus: 409, errorCode: "seat_occupied", message: "Cannot remove an occupied human seat." };
-            }
-          }
-          room.seats.length = body.max_seats;
-        } else if (body.max_seats > room.max_seats) {
-          for (let i = room.max_seats; i < body.max_seats; i++) {
+      if (hasMaxSeats || targetMaxSeats !== room.max_seats) {
+        const seatsChanged = targetMaxSeats !== room.max_seats;
+        if (targetMaxSeats < room.max_seats) {
+          room.seats.length = targetMaxSeats;
+        } else if (targetMaxSeats > room.max_seats) {
+          for (let i = room.max_seats; i < targetMaxSeats; i++) {
             room.seats.push(makeEmptySeat(i, room.mode, room.ai_fill));
           }
         }
-        room.max_seats = body.max_seats;
-        if (room.mode === "versus_2v2") {
-          let team0 = 0;
-          let team1 = 0;
-          const teamCap = Math.max(1, Math.ceil(room.max_seats / 2));
-          for (const s of room.seats) {
-            if (s.kind === "human") {
-              if (s.team === 1 && team1 < teamCap) {
-                team1++;
-              } else if (team0 < teamCap) {
-                s.team = 0;
-                team0++;
-              } else {
-                s.team = 1;
-                team1++;
-              }
-            }
-          }
-          for (const s of room.seats) {
-            if (s.kind !== "human") {
-              if (team0 <= team1 && team0 < teamCap) {
-                s.team = 0;
-                team0++;
-              } else {
-                s.team = 1;
-                team1++;
-              }
-            }
-          }
+        room.max_seats = targetMaxSeats;
+        if (seatsChanged) {
+          needRebalance = true;
+          shouldResetGuestReady = true;
+        } else if (room.mode === "versus_2v2") {
+          needRebalance = true;
         }
         syncDir = true;
       }
@@ -2117,6 +2200,7 @@ export class GameRoom extends DurableObject {
         if (target.kind === "human") {
           return { ok: false, httpStatus: 409, errorCode: "seat_occupied", message: "Kick the human player before changing this seat." };
         }
+        const kindChanged = target.kind !== spec.kind;
         target.kind = spec.kind;
         target.player_id = "";
         target.tag = "";
@@ -2125,6 +2209,10 @@ export class GameRoom extends DurableObject {
         target.ready = false;
         target.rtt_ms = 0;
         target.route = "unknown";
+        if (kindChanged) {
+          needRebalance = true;
+          shouldResetGuestReady = true;
+        }
         syncDir = true;
       }
       if (Object.hasOwn(body, "kick_seat")) {
@@ -2144,18 +2232,32 @@ export class GameRoom extends DurableObject {
         syncDir = true;
       }
 
-      if (resetGuestReady) {
-        for (const s of room.seats) {
-          if (s.seat !== room.host_seat) s.ready = false;
-        }
+      if (needRebalance) {
+        rebalanceRoomTeams(room);
+      }
+      if (shouldResetGuestReady) {
+        this.resetGuestReady(room);
       }
 
       room.rev++;
       room.updated_at = nowSeconds();
+      room.last_heartbeat_ms = nowMs;
+      room.last_dir_heartbeat_ms = nowMs;
       this.writeRoom(room);
-      return { ok: true, state: this.formatRoomState(room, true), syncRoom: syncDir ? room : null };
+      return {
+        ok: true,
+        roomId: room.room_id,
+        state: this.formatRoomState(room, true),
+        syncRoom: syncDir ? room : null,
+      };
     });
-    if (res.ok && res.syncRoom) await this.syncDirectory(res.syncRoom);
+    if (res.ok) {
+      if (res.syncRoom) {
+        await this.syncDirectory(res.syncRoom);
+      } else {
+        await directoryStub(this.env).touchHeartbeat(res.roomId);
+      }
+    }
     return res;
   }
 
@@ -2310,6 +2412,7 @@ export class GameRoom extends DurableObject {
 
   async finishMatch(session) {
     const now = nowSeconds();
+    const nowMs = Date.now();
     const res = this.ctx.storage.transactionSync(() => {
       const room = this.readRoom();
       if (!room) return { ok: false, httpStatus: 404, errorCode: "room_not_found", message: "Room does not exist." };
@@ -2329,6 +2432,8 @@ export class GameRoom extends DurableObject {
       for (const s of room.seats) s.ready = false;
       room.rev++;
       room.updated_at = now;
+      room.last_heartbeat_ms = nowMs;
+      room.last_dir_heartbeat_ms = nowMs;
       this.writeRoom(room);
       return { ok: true, state: this.formatRoomState(room, true), syncRoom: room };
     });
@@ -2336,9 +2441,10 @@ export class GameRoom extends DurableObject {
     return res;
   }
 
-  postSignal(session, payload) {
+  async postSignal(session, payload) {
     const now = nowSeconds();
-    return this.ctx.storage.transactionSync(() => {
+    const nowMs = Date.now();
+    const res = this.ctx.storage.transactionSync(() => {
       const room = this.readRoom();
       if (!room) return { ok: false, httpStatus: 404, errorCode: "room_not_found", message: "Room does not exist." };
       if ((room.state !== "starting" && room.state !== "in_match") || !room.start_ticket) {
@@ -2373,13 +2479,18 @@ export class GameRoom extends DurableObject {
       if (room.signals.length > SIGNAL_RING_LIMIT) {
         room.signals.splice(0, room.signals.length - SIGNAL_RING_LIMIT);
       }
+      room.last_heartbeat_ms = nowMs;
+      room.last_dir_heartbeat_ms = nowMs;
       this.writeRoom(room);
-      return { ok: true, seq: room.signal_seq };
+      return { ok: true, seq: room.signal_seq, roomId: room.room_id };
     });
+    if (res.ok) await directoryStub(this.env).touchHeartbeat(res.roomId);
+    return res;
   }
 
-  getSignals(session, matchId, since) {
-    return this.ctx.storage.transactionSync(() => {
+  async getSignals(session, matchId, since) {
+    const nowMs = Date.now();
+    const res = this.ctx.storage.transactionSync(() => {
       const room = this.readRoom();
       if (!room) return { ok: false, httpStatus: 404, errorCode: "room_not_found", message: "Room does not exist." };
       if ((room.state !== "starting" && room.state !== "in_match") || !room.start_ticket) {
@@ -2402,8 +2513,13 @@ export class GameRoom extends DurableObject {
           sdp: m.sdp,
         }));
       const seq = messages.length > 0 ? messages[messages.length - 1].seq : since;
-      return { ok: true, seq, messages };
+      room.last_heartbeat_ms = nowMs;
+      room.last_dir_heartbeat_ms = nowMs;
+      this.writeRoom(room);
+      return { ok: true, seq, messages, roomId: room.room_id };
     });
+    if (res.ok) await directoryStub(this.env).touchHeartbeat(res.roomId);
+    return res;
   }
 
   async consumePermit(permit, signature) {
@@ -2438,6 +2554,7 @@ export class GameRoom extends DurableObject {
     }
     const ttl = envPositiveInt(this.env.CE_TURN_TTL_SECONDS, DEFAULT_TURN_TTL_SECONDS, 60, MAX_TURN_TTL_SECONDS);
     const now = nowSeconds();
+    const nowMs = Date.now();
 
     const reservation = this.ctx.storage.transactionSync(() => {
       const room = this.readRoom();
@@ -2483,10 +2600,13 @@ export class GameRoom extends DurableObject {
         ttl,
       };
       room.permits[permit.attempt] = { state: "reserved", spent: false, permit, ip_hash: ipHash || "" };
+      room.last_heartbeat_ms = nowMs;
+      room.last_dir_heartbeat_ms = nowMs;
       this.writeRoom(room);
-      return { ok: true, permit };
+      return { ok: true, permit, roomId: room.room_id };
     });
     if (!reservation.ok) return reservation;
+    await directoryStub(this.env).touchHeartbeat(reservation.roomId);
 
     const { permit } = reservation;
     try {

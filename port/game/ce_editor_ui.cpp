@@ -670,8 +670,11 @@ void Capsule(const CeEditorUiRect &r, float open = 1.f) {
         Prepare();
         return;
     }
-    const float alpha = open;
-    const DWORD a = DWORD(alpha * 255.f + 0.5f);
+    const float alpha = open < 0.f ? 0.f : (open > 1.f ? 1.f : open);
+    int ia = int(alpha * 255.f + 0.5f);
+    if (ia < 0) ia = 0;
+    if (ia > 255) ia = 255;
+    const DWORD a = DWORD(ia);
     const DWORD body = ((((kCapsule >> 24) * a) / 255) << 24) | (kCapsule & 0xffffff), cap = (a << 24) | (kCap & 0xffffff);
     const float radius = r.h * 0.5f, t = 2.f * gScale;
     Box(r.x + radius, r.y, r.w - 2.f * radius, r.h, body);

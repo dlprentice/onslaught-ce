@@ -115,12 +115,14 @@ static int PortCeMissionRelayLossRole() { return missionRelayRole; }
 static int PortCeNetRingLeft() { return voluntaryMissionLeave; }
 static int PortCeNetConfirmedMatch() { return confirmedMissionEnd; }
 #include ACTUAL_RETURNTOFRONTEND
+static int PortCeOnlineMatchSetTicket(const CE_OnlineMatchTicket *) { return 1; }
 static void TestExit(int) { throw 1; }
 #define _exit TestExit
 #include ACTUAL_BOOT
 #undef _exit
 
-static bool sActive = false, menuTrapped = false;
+static bool sActive = false, sOpenOnlineOnEntry = false, menuTrapped = false;
+static void (*PortCeOnlineUiClose)() = nullptr;
 static unsigned menuDeleted = 0, menuDeactivated = 0;
 enum { NA_NONE = 0 };
 struct TestField {

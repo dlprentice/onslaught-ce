@@ -19,6 +19,8 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[2]
 MODEL_H = ROOT / "port/game/ce_online_ui_model.h"
+BRIDGE_CPP = ROOT / "port/game/ce_online_ui_bridge.cpp"
+UI_CPP = ROOT / "port/game/ce_online_ui.cpp"
 
 DRIVER_CPP = r'''// SPDX-License-Identifier: GPL-3.0-only
 #include "ce_online_ui_model.h"
@@ -78,6 +80,9 @@ public:
     std::string clipboard;
     bool clipboardWorks = true;
     std::vector<std::string> mapBeConfigs;
+    bool usePerMapDefaultBeConfigs = false;
+    bool deferHostUpdates = false;
+    int lastHostPatchMap = -1;
 
     FakeOnlineBackend() {
         profile.playerId = "0123456789abcdefghjkmnpqrs";
@@ -85,12 +90,13 @@ public:
         profile.tag = "4F9A";
         profile.matchesPlayed = 14;
         profile.matchesWon = 9;
-        profile.serverUrl = "https://lobby.onslaught-ce.example";
+        profile.serverUrl = "https://onslaught-ce-lobby.operator-demo.workers.dev";
         profile.connStatus = CE_ONLINE_CONN_ONLINE;
         profile.pingMs = 28;
-        mapBeConfigs.push_back("Aquila-Mk1");
-        mapBeConfigs.push_back("Aquila-Mk2");
-        mapBeConfigs.push_back("Valkyrie");
+        mapBeConfigs.push_back("Standard");
+        mapBeConfigs.push_back("Sniper");
+        mapBeConfigs.push_back("Laser");
+        mapBeConfigs.push_back("Blaster");
     }
 
     virtual void Poll(uint64_t) { ++pollCalls; }
@@ -224,8 +230,26 @@ public:
         (void)errOut;
         ++hostUpdateCalls;
         lastHostPatch = patch;
+        if (patch.hasMap) lastHostPatchMap = patch.map;
+        if (deferHostUpdates) {
+            return true;
+        }
         if (patch.hasMap) room.map = patch.map;
         if (patch.hasMode) room.mode = patch.mode;
+        if (patch.hasMaxSeats) {
+            if (patch.maxSeats < room.maxSeats) {
+                room.seats.resize(patch.maxSeats);
+            } else {
+                for (uint16_t i = static_cast<uint16_t>(room.seats.size()); i < patch.maxSeats; ++i) {
+                    CeOnlineSeatView s;
+                    s.seat = i;
+                    s.kind = room.aiFill ? CE_ONLINE_SEAT_AI : CE_ONLINE_SEAT_OPEN;
+                    s.team = (room.mode == "versus_2v2") ? (i % 2) : 0;
+                    room.seats.push_back(s);
+                }
+            }
+            room.maxSeats = patch.maxSeats;
+        }
         if (patch.hasSeatKind && patch.targetSeat < room.seats.size()) {
             room.seats[patch.targetSeat].kind = patch.seatKind;
         }
@@ -281,7 +305,10 @@ public:
     }
 
     virtual void GetBeConfigsForMap(int level, std::vector<std::string> *out) {
-        (void)level;
+        if (usePerMapDefaultBeConfigs) {
+            CeOnlineDefaultBeConfigsForMap(level, out);
+            return;
+        }
         *out = mapBeConfigs;
     }
 
@@ -415,6 +442,7 @@ static void TestGeometryBounds() {
         r.push_back(CeOnlineLayout::FooterBar());
         r.push_back(CeOnlineLayout::RoomInfoBar());
         r.push_back(CeOnlineLayout::RoomCopyCodeBtn());
+        r.push_back(CeOnlineLayout::RoomMapBar());
         r.push_back(CeOnlineLayout::RoomRosterHeader());
         r.push_back(CeOnlineLayout::RoomPagePrevBtn());
         r.push_back(CeOnlineLayout::RoomPageNextBtn());
@@ -625,7 +653,7 @@ static void TestCreateLobbyAndJoinCode() {
     ui.HomeActivate(CeOnlineUiModel::HOME_CREATE);
     CHECK(ui.Page() == CE_ONLINE_PAGE_CREATE, "entered Create Lobby");
 
-    // Verify all 18 maps (850..866 + 100) are cycled cleanly and sync to valid default modes
+    // Verify all 16 verified retail online maps (strict single-mode mapping; 100 and 858 excluded!)
     std::set<int> seenLevels;
     std::set<std::string> seenNames;
     std::set<std::string> seenModes;
@@ -638,35 +666,65 @@ static void TestCreateLobbyAndJoinCode() {
               "CreateCycleMap always keeps map+mode valid");
         ui.CreateCycleMap(1);
     }
-    CHECK(seenLevels.size() == 18 && seenNames.size() == 18, "all 18 maps present with unique names");
-    CHECK(seenLevels.count(100) == 1, "map 100 (Tutorial) included");
-    for (int lvl = 850; lvl <= 866; ++lvl) {
-        CHECK(seenLevels.count(lvl) == 1, "maps 850..866 all included");
-    }
-    CHECK(seenModes.size() == 4, "all 4 protocol modes covered across map catalog");
+    CHECK(seenLevels.size() == 16 && seenNames.size() == 16, "all 16 retail online maps present with unique names");
+    CHECK(seenLevels.count(100) == 0 && !CeOnlineMapIsKnown(100), "broken SP map 100 (Tutorial) excluded");
+    CHECK(seenLevels.count(858) == 0 && !CeOnlineMapIsKnown(858), "duplicate map 858 excluded");
+    CHECK(seenModes.size() == 3, "all 3 active online modes covered across map catalog");
 
-    // Verify CreateCycleMode skips incompatible modes (Skirmish 850 allows only coop_skirmish/versus_2v2)
-    std::set<std::string> skirmishModes;
-    for (int i = 0; i < CE_ONLINE_MODE_COUNT; ++i) {
-        skirmishModes.insert(ui.CreateModeWire());
-        ui.CreateCycleMode(1);
+    // Verify strict Map <-> Mode compatibility contract (exact match with fix15-online-core)
+    const int kCoopSkirmishMaps[] = { 850, 853, 859, 864, 865, 866 };
+    for (size_t i = 0; i < sizeof(kCoopSkirmishMaps) / sizeof(kCoopSkirmishMaps[0]); ++i) {
+        const int lvl = kCoopSkirmishMaps[i];
+        CHECK(CeOnlineMapSupportsMode(lvl, CE_ONLINE_MODE_COOP_SKIRMISH), "skirmish map allows coop_skirmish");
+        CHECK(!CeOnlineMapSupportsMode(lvl, CE_ONLINE_MODE_VERSUS_2V2), "skirmish map refuses versus_2v2");
+        CHECK(!CeOnlineMapSupportsMode(lvl, CE_ONLINE_MODE_COOP_DEFENCE), "skirmish map refuses coop_defence");
     }
-    CHECK(skirmishModes.size() == 2 &&
-          skirmishModes.count("coop_skirmish") == 1 &&
-          skirmishModes.count("versus_2v2") == 1,
-          "Skirmish map only cycles compatible skirmish/versus modes");
-    // Tutorial (100) only allows tutorial mode
-    while (ui.CreateMapLevel() != 100) ui.CreateCycleMap(1);
-    CHECK(std::string(ui.CreateModeWire()) == "tutorial", "Tutorial map auto-syncs to tutorial mode");
+    const int kVersusMaps[] = { 851, 855, 860, 861, 862, 863, 852, 854, 857 };
+    for (size_t i = 0; i < sizeof(kVersusMaps) / sizeof(kVersusMaps[0]); ++i) {
+        const int lvl = kVersusMaps[i];
+        CHECK(CeOnlineMapSupportsMode(lvl, CE_ONLINE_MODE_VERSUS_2V2), "versus map allows versus_2v2");
+        CHECK(!CeOnlineMapSupportsMode(lvl, CE_ONLINE_MODE_COOP_SKIRMISH), "versus map refuses coop_skirmish");
+        CHECK(!CeOnlineMapSupportsMode(lvl, CE_ONLINE_MODE_COOP_DEFENCE), "versus map refuses coop_defence");
+    }
+    CHECK(CeOnlineMapSupportsMode(856, CE_ONLINE_MODE_COOP_DEFENCE), "856 allows coop_defence");
+    CHECK(!CeOnlineMapSupportsMode(856, CE_ONLINE_MODE_COOP_SKIRMISH), "856 refuses coop_skirmish");
+    CHECK(!CeOnlineMapSupportsMode(856, CE_ONLINE_MODE_VERSUS_2V2), "856 refuses versus_2v2");
+    for (int m = 0; m < CE_ONLINE_MODE_COUNT; ++m) {
+        CHECK(!CeOnlineMapSupportsMode(100, static_cast<CeOnlineMode>(m)), "100 refuses all online modes");
+        CHECK(!CeOnlineMapSupportsMode(858, static_cast<CeOnlineMode>(m)), "858 refuses all online modes");
+    }
+
+    // Skirmish 850 stays locked on coop_skirmish
+    CHECK(ui.CreateMapLevel() == 850 && std::string(ui.CreateModeWire()) == "coop_skirmish", "default map 850 is coop_skirmish");
     ui.CreateCycleMode(1);
-    CHECK(std::string(ui.CreateModeWire()) == "tutorial", "Tutorial map refuses incompatible modes");
+    CHECK(std::string(ui.CreateModeWire()) == "coop_skirmish", "Skirmish map refuses invalid modes");
+
+    // 3-seat Co-op auto-clamps to 4 balanced seats when switching onto a Versus map, and toggles 2v2 <-> 1v1!
+    ui.CreateCycleMaxSeats(-1); // 4 -> 3 on Co-op Skirmish
+    CHECK(ui.CreateMaxSeats() == 3, "Co-op Skirmish allows 3 seats");
+    while (ui.CreateMapLevel() != 851) ui.CreateCycleMap(1);
+    CHECK(std::string(ui.CreateModeWire()) == "versus_2v2", "Versus map auto-syncs to versus_2v2");
+    CHECK(ui.CreateMaxSeats() == 4 && std::string(ui.CreateModeLabel()) == "2v2 Versus",
+          "switching from 3-seat Co-op to Versus clamps to 4 seats (2v2 Versus)");
+    ui.CreateCycleMode(1);
+    CHECK(ui.CreateMaxSeats() == 2 && std::string(ui.CreateModeLabel()) == "1v1 Versus",
+          "CreateCycleMode on Versus toggles 2v2 Versus -> 1v1 Versus (2 seats)");
+    ui.CreateCycleMaxSeats(1);
+    CHECK(ui.CreateMaxSeats() == 4 && std::string(ui.CreateModeLabel()) == "2v2 Versus",
+          "CreateCycleMaxSeats on Versus cycles 2 -> 4 (never odd 3)");
+    ui.CreateCycleMaxSeats(1);
+    CHECK(ui.CreateMaxSeats() == 2 && std::string(ui.CreateModeLabel()) == "1v1 Versus",
+          "CreateCycleMaxSeats on Versus cycles 4 -> 2 (never odd 3)");
     // Building Defence (856) only allows coop_defence mode
     while (ui.CreateMapLevel() != 856) ui.CreateCycleMap(1);
-    CHECK(std::string(ui.CreateModeWire()) == "coop_defence", "Building Defence auto-syncs to coop_defence");
+    CHECK(std::string(ui.CreateModeWire()) == "coop_defence" &&
+          std::string(ui.CreateModeLabel()) == "Co-op Defence",
+          "Building Defence auto-syncs to coop_defence");
     ui.CreateCycleMode(1);
     CHECK(std::string(ui.CreateModeWire()) == "coop_defence", "Building Defence refuses incompatible modes");
-    // Return to map 850 for subsequent checks
+    // Return to map 850 and 4 seats for subsequent checks
     while (ui.CreateMapLevel() != 850) ui.CreateCycleMap(1);
+    while (ui.CreateMaxSeats() != 4) ui.CreateCycleMaxSeats(1);
 
     // Verify max players cap (2..4 default, and 64-ready parameterized)
     CHECK(ui.CreateMaxSeats() == 4, "default max seats is 4");
@@ -746,32 +804,44 @@ static void TestRoom4SlotAnd64SlotAndGuardrails() {
     ui.SyncFromBackend(100);
     CHECK(ui.Page() == CE_ONLINE_PAGE_ROOM && ui.RosterPageCount() == 1, "4-slot room fits on 1 page");
 
+    // On host room entry, default roster selection is Slot #2 (index 1) so Cycle Slot works immediately!
+    CHECK(ui.RosterSelectedIndex() == 1, "host entry defaults roster selection to Slot #2 (index 1)");
+
     // Solo host cannot start match (even when Ready!)
     std::string reason;
     CHECK(!ui.RoomCanStartMatch(&reason), "cannot start with 1 human");
     CHECK(reason.find("2 human") != std::string::npos, "reason explains >= 2 humans required");
     CHECK(!ui.RoomHostStartMatch() && be.startCalls == 0, "Start Match blocked with 1 human");
 
-    // Toggle Ready, Side (refused in co-op, allowed in 2v2 Versus), Cycle BE config
+    // Toggle Ready, Side (refused in co-op, allowed on Versus map), Cycle BE config
     CHECK(ui.RoomToggleReady() && be.room.seats[0].ready, "host toggled Ready");
     CHECK(!ui.RoomCycleSide(1) && be.room.seats[0].team == 0, "side cycle refused in co-op mode");
-    CHECK(ui.RoomHostCycleMode(1) && be.room.mode == "versus_2v2", "host switched mode to versus_2v2");
-    ui.SyncFromBackend(125);
+    CHECK(!ui.RoomHostCanCycleMode() && !ui.RoomHostCycleMode(1), "Co-op map mode is locked and refuses cross-mode switch");
+    // Cycle map from Skirmish 1 (index 0) -> Versus 1 (index 6, map 851)
+    for (int k = 0; k < 6; ++k) {
+        CHECK(ui.RoomHostCycleMap(1), "host advances map");
+        ui.SyncFromBackend(105 + k * 2);
+    }
+    CHECK(be.room.map == 851 && be.room.mode == "versus_2v2", "switching to map 851 auto-switches to versus_2v2");
+    CHECK(ui.RoomHostCanCycleMode(), "Versus map enables 2v2 <-> 1v1 mode toggle");
     CHECK(ui.RoomCycleSide(1) && be.room.seats[0].team == 1, "side cycled Forseti -> Muspell in versus_2v2");
-    CHECK(ui.RoomCycleBeConfig(1) && be.room.seats[0].beCfg == "Aquila-Mk2", "BE config cycled to Aquila-Mk2");
-    CHECK(ui.RoomCycleBeConfig(1) && be.room.seats[0].beCfg == "Valkyrie", "BE config cycled to Valkyrie");
+    CHECK(ui.RoomCycleBeConfig(1) && be.room.seats[0].beCfg == "Sniper", "BE config cycled to Sniper");
+    CHECK(ui.RoomCycleBeConfig(1) && be.room.seats[0].beCfg == "Laser", "BE config cycled to Laser");
     ui.SyncFromBackend(150);
 
     // Still blocked with 1 human even when host is Ready
     CHECK(!ui.RoomCanStartMatch(&reason) && !ui.RoomHostStartMatch() && be.startCalls == 0, "still blocked with 1 ready human");
 
-    // Host toggles non-human seat 2: AI -> Closed -> Open -> AI
+    // Host toggles non-human seat 2: AI -> Closed -> Open -> AI (with crisp status notice!)
     ui.RosterSelectIndex(2);
     CHECK(ui.RoomHostCycleSelectedSeatKind() && be.room.seats[2].kind == CE_ONLINE_SEAT_CLOSED, "seat 2 AI -> Closed");
+    CHECK(ui.StatusNotice() == "Slot 3 set to Closed.", "Slot 3 Closed notice emitted");
     ui.SyncFromBackend(160);
     CHECK(ui.RoomHostCycleSelectedSeatKind() && be.room.seats[2].kind == CE_ONLINE_SEAT_OPEN, "seat 2 Closed -> Open");
+    CHECK(ui.StatusNotice() == "Slot 3 set to Open.", "Slot 3 Open notice emitted");
     ui.SyncFromBackend(170);
     CHECK(ui.RoomHostCycleSelectedSeatKind() && be.room.seats[2].kind == CE_ONLINE_SEAT_AI, "seat 2 Open -> AI");
+    CHECK(ui.StatusNotice() == "Slot 3 set to AI Bot.", "Slot 3 AI Bot notice emitted");
     ui.SyncFromBackend(180);
 
     // Host cannot overwrite human seat 0 or kick self
@@ -1036,8 +1106,12 @@ static void TestLaunchClosePreservationAndGamepadNav() {
         CHECK(ui.RoomPlayerFocus() == CeOnlineUiModel::ROOM_PL_SIDE, "Right moves to Side");
         ui.RoomNavActivate();
         CHECK(be.room.seats[0].team == 0, "Side stays Forseti in coop_skirmish");
-        CHECK(ui.RoomHostCycleMode(1) && be.room.mode == "versus_2v2", "switch to versus_2v2 for Side test");
-        ui.SyncFromBackend(310);
+        // Advance to Versus 1 (851) so Side switching is valid under strict map-mode contract
+        for (int k = 0; k < 6; ++k) {
+            CHECK(ui.RoomHostCycleMap(1), "advance to Versus map 851");
+            ui.SyncFromBackend(302 + k);
+        }
+        CHECK(be.room.map == 851 && be.room.mode == "versus_2v2", "reached Versus map 851");
         ui.RoomNavActivate();
         CHECK(be.room.seats[0].team == 1, "gamepad switches Side in versus_2v2");
         ui.RoomNavMove(1);
@@ -1146,6 +1220,191 @@ static void TestBackNavigationAndStartMatchSnapback() {
     }
 }
 
+static void TestV0115OnlineUxCraftAndPrivacy() {
+    // 1. Slot 2/3 click -> move focus down to Cycle Slot / Kick without Slot-4 hijack + rapid Slot cycle
+    {
+        FakeOnlineBackend be;
+        CeOnlineUiModel ui;
+        ui.SetBackend(&be);
+        ui.Open(false);
+        ui.HomeActivate(CeOnlineUiModel::HOME_CREATE);
+        ui.SetCreateRoomName("Slot Focus Test");
+        CHECK(ui.CreateSubmit(), "create room for slot focus test");
+        ui.SyncFromBackend(100);
+        CHECK(ui.Page() == CE_ONLINE_PAGE_ROOM, "entered room");
+        CHECK(ui.RosterSelectedIndex() == 1, "host entry defaults to Slot #2");
+
+        // Click Slot 2 (idx=1), move focus through Player strip down to Host Cycle Slot:
+        // selection MUST stay on Slot #2 (index 1), never hijacked to Slot #4 (index 3)!
+        ui.RosterSelectIndex(1);
+        ui.SetRoomPlayerFocus(CeOnlineUiModel::ROOM_PL_MUTE);
+        ui.SetRoomHostFocus(CeOnlineUiModel::ROOM_HS_SLOT);
+        CHECK(ui.RosterSelectedIndex() == 1, "moving focus down to Cycle Slot preserves Slot #2");
+        ui.RoomNavActivate(); // cycles Slot #2 AI -> Closed
+        CHECK(be.room.seats[1].kind == CE_ONLINE_SEAT_CLOSED, "Cycle Slot updated Slot #2 (not Slot #4)");
+        CHECK(be.room.seats[3].kind == CE_ONLINE_SEAT_AI, "Slot #4 untouched");
+        CHECK(ui.StatusNotice() == "Slot 2 set to Closed.", "crisp Slot #2 status notice");
+
+        // Click Slot 3 (idx=2), move focus down to Host Cycle Slot, rapid-click twice without server sync!
+        be.deferHostUpdates = true;
+        ui.RosterSelectIndex(2);
+        ui.SetRoomHostFocus(CeOnlineUiModel::ROOM_HS_SLOT);
+        CHECK(ui.RosterSelectedIndex() == 2, "moving focus down preserves Slot #3");
+        CHECK(ui.RoomHostCycleSelectedSeatKind(), "Slot 3 click 1 (AI -> Closed)");
+        CHECK(ui.StatusNotice() == "Slot 3 set to Closed.", "Slot 3 Closed notice");
+        CHECK(ui.RoomHostCycleSelectedSeatKind(), "Slot 3 click 2 (Closed -> Open)");
+        CHECK(ui.StatusNotice() == "Slot 3 set to Open.", "Slot 3 Open notice");
+        CHECK(be.lastHostPatch.targetSeat == 2 && be.lastHostPatch.seatKind == CE_ONLINE_SEAT_OPEN,
+              "rapid Cycle Slot clicks advance cleanly on Slot #3");
+    }
+
+    // 2. Next Map optimistic progression (1 -> 2 -> 3 before server sync) + rollback on opError + 1v1/2v2 toggle
+    {
+        FakeOnlineBackend be;
+        be.usePerMapDefaultBeConfigs = true;
+        CeOnlineUiModel ui;
+        ui.SetBackend(&be);
+        ui.Open(false);
+        ui.HomeActivate(CeOnlineUiModel::HOME_CREATE);
+        ui.SetCreateRoomName("Map Optimistic Test");
+        // Start with 3 seats on Skirmish 1 (850) to verify auto-clamp when hitting Versus!
+        ui.CreateCycleMaxSeats(-1);
+        CHECK(ui.CreateMaxSeats() == 3, "created 3-seat Co-op Skirmish");
+        CHECK(ui.CreateSubmit(), "create 3-seat room");
+        ui.SyncFromBackend(1000);
+        CHECK(ui.Page() == CE_ONLINE_PAGE_ROOM && ui.EffectiveRoomMap() == 850, "room starts on 850");
+
+        // Defer server updates (simulating async HTTP latency) and click Next Map 3 times rapidly!
+        be.deferHostUpdates = true;
+        CHECK(ui.RoomHostCycleMap(1), "rapid Next Map click 1");
+        CHECK(ui.EffectiveRoomMap() == 853, "click 1 advances optimistically to 853");
+        CHECK(ui.StatusNotice() == "Map: Skirmish 2 - Canyon Pass (Co-op Skirmish)", "click 1 full map notice");
+
+        CHECK(ui.RoomHostCycleMap(1), "rapid Next Map click 2");
+        CHECK(ui.EffectiveRoomMap() == 859, "click 2 advances optimistically to 859 (not collapsed onto 853)");
+        CHECK(ui.StatusNotice() == "Map: Skirmish 3 - Twin Islands (Co-op Skirmish)", "click 2 full map notice");
+
+        CHECK(ui.RoomHostCycleMap(1), "rapid Next Map click 3");
+        CHECK(ui.EffectiveRoomMap() == 864, "click 3 advances optimistically to 864");
+        CHECK(ui.StatusNotice() == "Map: Skirmish 4 - Ridge Assault (Co-op Skirmish)", "click 3 full map notice");
+        CHECK(be.lastHostPatchMap == 864, "third PATCH targeted 864");
+
+        // Stale intermediate poll (server still at 853) MUST NOT snap optimistic UI backwards!
+        be.room.map = 853;
+        be.room.rev = 2;
+        ui.SyncFromBackend(1100);
+        CHECK(ui.EffectiveRoomMap() == 864, "intermediate stale server poll preserves optimistic 864");
+
+        // opError MUST roll optimistic map cleanly back to server state!
+        be.pendingOpError = "Rate limited.";
+        ui.SyncFromBackend(1200);
+        CHECK(ui.EffectiveRoomMap() == 853, "opError rolls optimistic map back to server map 853");
+
+        // Now advance synchronously from 853 (index 1, 3 seats) to Versus 1 (851, index 6)
+        be.deferHostUpdates = false;
+        for (int k = 0; k < 5; ++k) {
+            CHECK(ui.RoomHostCycleMap(1), "advance toward Versus 1");
+            ui.SyncFromBackend(1300 + k * 20);
+        }
+        CHECK(be.room.map == 851 && be.room.mode == "versus_2v2" && be.room.maxSeats == 4,
+              "switching from 3-seat Co-op to Versus 851 auto-clamps maxSeats 3 -> 4");
+        CHECK(std::string(ui.EffectiveRoomModeLabel()) == "2v2 Versus", "4-seat Versus labeled 2v2 Versus");
+
+        // Toggle 2v2 Versus <-> 1v1 Versus in Room host controls
+        CHECK(ui.RoomHostCycleMode(1), "host toggles 2v2 -> 1v1 Versus");
+        CHECK(be.lastHostPatch.hasMaxSeats && be.lastHostPatch.maxSeats == 2, "1v1 patch sends maxSeats=2");
+        CHECK(std::string(ui.EffectiveRoomModeLabel()) == "1v1 Versus", "2-seat Versus labeled 1v1 Versus");
+        ui.SyncFromBackend(1500);
+        CHECK(ui.Room().maxSeats == 2 && ui.Room().seats.size() == 2, "room shrunk to 2 seats");
+        CHECK(ui.RoomHostCycleMode(1), "host toggles 1v1 -> 2v2 Versus");
+        ui.SyncFromBackend(1550);
+        CHECK(ui.Room().maxSeats == 4 && ui.Room().seats.size() == 4, "room expanded back to 4 seats");
+
+        // Verify shrinking 2v2 -> 1v1 is refused when a human occupies Seat 3 (index 2)
+        be.room.seats[2].kind = CE_ONLINE_SEAT_HUMAN;
+        be.room.seats[2].playerId = "human_seat3";
+        be.room.seats[2].callsign = "PilotThree";
+        ui.SyncFromBackend(1600);
+        CHECK(!ui.RoomHostCycleMode(1) && ui.StatusIsError(),
+              "1v1 shrink refused when seat 3 holds a human player");
+        be.room.seats[2].kind = CE_ONLINE_SEAT_AI;
+        ui.SyncFromBackend(1620);
+
+        // Real retail BE config revalidation: select Sniper on 851, then switch to 856 (Building Defence)
+        CHECK(ui.RoomCycleBeConfig(1) && be.room.seats[0].beCfg == "Sniper", "selected Sniper on 851");
+        ui.SyncFromBackend(1650);
+        const int prevUpdateSelf = be.updateSelfCalls;
+        while (be.room.map != 856) {
+            CHECK(ui.RoomHostCycleMap(1), "advance to 856 Building Defence");
+            ui.SyncFromBackend(1700 + be.hostUpdateCalls * 10);
+        }
+        CHECK(be.room.map == 856 && be.room.mode == "coop_defence", "reached 856 Building Defence");
+        CHECK(be.room.seats[0].beCfg == "Standard" && be.updateSelfCalls > prevUpdateSelf,
+              "Sniper auto-revalidated to Standard on 856 (no Sniper in Building Defence)");
+        for (size_t i = 0; i < ui.AvailableBeConfigs().size(); ++i) {
+            const std::string &cfg = ui.AvailableBeConfigs()[i];
+            CHECK(cfg != "Sniper" && cfg != "Vulcan" && cfg != "Pulse" && cfg != "Blazer",
+                  "856 BE configs exclude Sniper and all fake names");
+        }
+    }
+
+    // 3. Pixel-width truncation / ellipsizing (CeOnlineFitTextToWidth never overflows maxW at scale >= 0.65f)
+    {
+        auto measure75 = [](const std::string &s) -> float {
+            return static_cast<float>(s.size()) * 7.5f;
+        };
+        std::string fitted;
+        float sc = 1.f, dw = 0.f;
+
+        // Long player name in tight 90px column MUST ellipsize and NEVER overflow 90px
+        CeOnlineFitTextToWidth("Pilot4E6A#4E6A (Host)", 90.f, 0.65f, measure75, &fitted, &sc, &dw, false);
+        CHECK(sc >= 0.65f && dw <= 90.01f, "tight player column stays <= maxW at scale >= 0.65f");
+        CHECK(fitted.size() >= 3 && fitted.substr(fitted.size() - 3) == "...", "overflowing player name ellipsized");
+        CHECK(CeOnlineStringIsFontSafe(fitted), "ellipsized player name is font-safe");
+
+        // Same player name in widened 152px Player column fits WITHOUT ellipsizing!
+        CeOnlineFitTextToWidth("Pilot4E6A#4E6A (Host)", 152.f, 0.65f, measure75, &fitted, &sc, &dw, false);
+        CHECK(fitted == "Pilot4E6A#4E6A (Host)" && sc >= 0.65f && dw <= 152.01f,
+              "widened 152px Player column fits Pilot4E6A#4E6A (Host) cleanly");
+
+        // 160-char chat line fits inside 456px ChatLog without bleeding past right border
+        std::string longChat(160, 'W');
+        CeOnlineFitTextToWidth(longChat, 456.f, 0.65f, measure75, &fitted, &sc, &dw, false);
+        CHECK(sc >= 0.65f && dw <= 456.01f && fitted.substr(fitted.size() - 3) == "...",
+              "160-char chat line ellipsizes strictly within 456px");
+
+        // Active input field (keepTail=true) keeps the live typed suffix visible with leading "..."
+        CeOnlineFitTextToWidth("Say: hello world this is a very long chat draft ending in XYZ123",
+                               180.f, 0.65f, measure75, &fitted, &sc, &dw, true);
+        CHECK(sc >= 0.65f && dw <= 180.01f, "active cursor input fits within maxW");
+        CHECK(fitted.substr(0, 3) == "..." && fitted.find("XYZ123") != std::string::npos,
+              "active cursor input preserves typed tail");
+    }
+
+    // 4. Profile URL privacy redaction (NEVER expose raw workers.dev / personal subdomain!)
+    {
+        std::string dispDefault = CeOnlineFormatServerDisplay(
+            "https://onslaught-ce-lobby.operator-demo.workers.dev", false);
+        CHECK(dispDefault == "Official Online Service", "built-in default displays Official Online Service");
+        CHECK(dispDefault.find("operator-demo") == std::string::npos &&
+              dispDefault.find("workers.dev") == std::string::npos &&
+              dispDefault.find("https://") == std::string::npos,
+              "built-in default never exposes personal workers.dev URL");
+
+        std::string dispCustom = CeOnlineFormatServerDisplay(
+            "https://my-custom-lobby.example.com", true);
+        CHECK(dispCustom == "Custom Server (ce.ini)", "ce.ini override displays Custom Server (ce.ini)");
+        CHECK(dispCustom.find("https://") == std::string::npos, "custom display stays clean");
+
+        std::string dispEmpty = CeOnlineFormatServerDisplay("", false);
+        CHECK(dispEmpty == "Not configured", "empty url displays Not configured");
+        CHECK(CeOnlineStringIsFontSafe(dispDefault) &&
+              CeOnlineStringIsFontSafe(dispCustom) &&
+              CeOnlineStringIsFontSafe(dispEmpty),
+              "all server display strings are BEA font-safe");
+    }
+}
+
 int main() {
     TestFontSafety();
     TestGeometryBounds();
@@ -1155,6 +1414,7 @@ int main() {
     TestRoom4SlotAnd64SlotAndGuardrails();
     TestLaunchClosePreservationAndGamepadNav();
     TestBackNavigationAndStartMatchSnapback();
+    TestV0115OnlineUxCraftAndPrivacy();
     std::printf("ce_online_ui_model checks=%d failures=%d\n", gChecks, gFails);
     return gFails == 0 ? 0 : 1;
 }
@@ -1185,7 +1445,48 @@ MUTANTS = [
     ("layout-out-of-bounds",
      "static CeOnlineRect RoomChatCompose()    { return { 84.f,  400.f, 486.f, 420.f }; }",
      "static CeOnlineRect RoomChatCompose()    { return { 84.f,  400.f, 486.f, 460.f }; }"),
+    ("map-allows-cross-mode",
+     "return CeOnlineMapAt(i).defaultMode == mode;",
+     "return true;"),
+    ("host-default-slot0",
+     "if (IsLocalHost() && mRoom.seats.size() > 1) {",
+     "if (false && IsLocalHost() && mRoom.seats.size() > 1) {"),
+    ("optimistic-map-ignored",
+     "const int cur = mHasOptimisticMap ? mOptimisticMapIndex : CeOnlineFindMapIndex(mRoom.map);",
+     "const int cur = CeOnlineFindMapIndex(mRoom.map);"),
+    ("profile-leaks-raw-url",
+     'return "Official Online Service";',
+     "return serverUrl;"),
 ]
+
+
+def check_ui_source_guards(report):
+    model_txt = MODEL_H.read_text(encoding="utf-8")
+    bridge_txt = BRIDGE_CPP.read_text(encoding="utf-8")
+    ui_txt = UI_CPP.read_text(encoding="utf-8")
+
+    # 1. Zero fake BE config names across all 3 files
+    for fake in ('"Vulcan"', '"Pulse"', '"Blazer"'):
+        clean = (fake not in model_txt) and (fake not in bridge_txt) and (fake not in ui_txt)
+        report(clean, f"source guard: fake BE config {fake} removed from Online UI")
+
+    # 2. Hover never mutates roster or browser selection in ce_online_ui_bridge.cpp
+    no_roster_hover = "if (!composing && mouseMoved && sr.Contains(mx, my))" not in bridge_txt
+    no_browser_hover = "if (!modal && mouseMoved && rr.Contains(mx, my))" not in bridge_txt
+    report(no_roster_hover and no_browser_hover,
+           "source guard: RenderRoom/RenderBrowser hover never overwrites selection")
+
+    # 3. RenderProfile redacts raw serverUrl via CeOnlineFormatServerDisplay
+    profile_redacted = ("CeOnlineFormatServerDisplay(prof.serverUrl" in bridge_txt and
+                        "CeOnlineTruncateFontSafe(prof.serverUrl" not in bridge_txt)
+    report(profile_redacted, "source guard: RenderProfile uses CeOnlineFormatServerDisplay (no raw URL)")
+
+    # 4. ce_online_ui.cpp has pixel-width FitWideTextToWidth, DIK_SPACE handling, and transition guard
+    ui_guards = ("FitWideTextToWidth(" in ui_txt and
+                 "DIK_SPACE" in ui_txt and
+                 "GetTransitionTo() == FEP_MULTIPLAYER" in ui_txt and
+                 "GetTransitionFrom() == FEP_MULTIPLAYER" in ui_txt)
+    report(ui_guards, "source guard: ce_online_ui.cpp has pixel-width ellipsizer, DIK_SPACE, and MP transition guards")
 
 
 def compile_and_run(work_dir: Path, header_text: str, std_flag: str, sanitize: bool) -> tuple:
@@ -1239,6 +1540,9 @@ def main() -> int:
             mutated = header.replace(old, new, 1)
             mpass, mout = compile_and_run(root / ("mut-" + name), mutated, "-std=c++14", False)
             report(not mpass, f"mutant {name} is caught", mout if mpass else "")
+
+        # 4. Bridge/UI source-level regression guards
+        check_ui_source_guards(report)
 
     print("ce_online_ui_tests: " + ("OK" if ok else "FAILED"))
     return 0 if ok else 1

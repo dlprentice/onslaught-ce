@@ -94,6 +94,7 @@ port/tools/ce_museum_audio_kiosk_tests.py	script	-	none	release	-	Grand Museum A
 port/tools/ce_museum_cinema_catalogue_tests.py	script	-	none	release	-	museum lane; host build with the system compiler
 port/tools/ce_museum_cinema_console_tests.py	script	-	none	release	-	museum lane; host build with the system compiler
 port/tools/ce_museum_cinema_tests.py	script	-	none	release	-	museum lane; host build with the system compiler
+port/tools/ce_museum_diorama_tests.py	script	-	none	release	-	Grand Museum glass-domed living tabletop battle dioramas, 30s dome containment, tracer arcs and mutants; host build with ASan/UBSan
 port/tools/ce_museum_exhibition_host_tests.py	script	-	none	release	-	museum lane; host build with the system compiler
 port/tools/ce_museum_exhibition_tests.py	script	-	none	release	-	museum lane; host build with the system compiler
 port/tools/ce_museum_film_tests.py	script	-	none	release	-	museum cinema film playback level, crossfade, frame order and pause hold, with mutants
@@ -340,4 +341,5 @@ port/tools/online_profile_tests.py	script	-	deps	optional	-	zero-account RFC 803
 port/tools/online_lobby_client_tests.py	script	-	deps	optional	-	native non-blocking /ce-lobby/v1/ HTTPS JSON REST client, bounded parser, loopback libcurl-gnutls, and Windows cross-compile
 port/tools/star_transport_tests.py	script	-	deps	optional	-	4-peer (64-ready wire schema) authenticated ENet star transport + multi-slot CeIceBridge, Linux ASan/UBSan + Windows/Wine
 port/tools/ce_online_match_tests.py	script	-	none	optional	-	2-4 player online match star-relay lockstep controller, multi-BE slot binding, versioned start-ticket handoff, and causal mutants
+port/tools/ce_online_service_tests.py	script	-	none	optional	-	in-game Online Multiplayer service lifecycle, leave-room cancellation, finish-match teardown, and per-guest signaling fault isolation
 port/tools/ce_online_ui_tests.py	script	-	none	optional	-	in-game Online Multiplayer UI model (7 pages, 64-ready pagination, font safety, 640x480 safe-band geometry, Multiplayer patch 0380) and causal mutants

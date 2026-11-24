@@ -166,6 +166,7 @@ enum {
     kMaxAoBoxes = 64,
     kMaxHexCells = 256,
     kMaxHexEdges = 900,
+    kCollarSegs = 128,
     kDomeVertCap = 12000,
     kDomeIdxCap = 36000,
     kEmblemMaxTexEdge = 512
@@ -178,7 +179,8 @@ struct AoBox {
 
 struct HexCell {
     float cx, cy, cz; // unit normal on sphere
-    float vx[6], vy[6], vz[6]; // world-relative points (scaled by R)
+    float px, py, pz; // projected dome-local center (relative to kCenterX, kCenterY, floorZ)
+    float vx[6], vy[6], vz[6]; // projected dome-local points (scaled by kDomeVisualRadius)
     unsigned count; // 5 or 6
 };
 
@@ -231,6 +233,12 @@ struct CitadelState {
     HexEdge hexEdges[kMaxHexEdges];
     unsigned hexEdgeCount;
 
+    // Precomputed 360 deg terrain-conforming ground-contact ribbon samples (filled once at RuntimeInit).
+    float collarCos[kCollarSegs];
+    float collarSin[kCollarSegs];
+    float collarGroundZ[kCollarSegs];
+    float collarBury[kCollarSegs];
+
     OverlayVertex domeVerts[kDomeVertCap];
     uint16_t domeIndices[kDomeIdxCap];
 
@@ -263,20 +271,25 @@ static inline float SmoothStep(float e0, float e1, float x) {
     return t * t * (3.0f - 2.0f * t);
 }
 
+static inline DWORD FloatToByteClamp(float f) {
+    if (f <= 0.0f) return 0u;
+    if (f >= 255.0f) return 255u;
+    const int iv = static_cast<int>(f + 0.5f);
+    return iv <= 0 ? 0u : (iv >= 255 ? 255u : static_cast<DWORD>(iv));
+}
+
 static DWORD ModulateRgb(DWORD base, float rMul, float gMul, float bMul) {
     auto ch = [](DWORD v, unsigned sh, float mul) -> DWORD {
-        const float f = float((v >> sh) & 255u) * mul;
-        const int iv = f <= 0.0f ? 0 : (f >= 255.0f ? 255 : int(f + 0.5f));
-        return static_cast<DWORD>(iv) << sh;
+        return FloatToByteClamp(float((v >> sh) & 255u) * mul) << sh;
     };
     return (base & 0xff000000u) | ch(base, 16, rMul) | ch(base, 8, gMul) | ch(base, 0, bMul);
 }
 
 static DWORD MakeArgb(float a, float r, float g, float b) {
-    const DWORD ba = static_cast<DWORD>(Clamp01(a) * 255.0f + 0.5f);
-    const DWORD br = static_cast<DWORD>(Clamp01(r) * 255.0f + 0.5f);
-    const DWORD bg = static_cast<DWORD>(Clamp01(g) * 255.0f + 0.5f);
-    const DWORD bb = static_cast<DWORD>(Clamp01(b) * 255.0f + 0.5f);
+    const DWORD ba = FloatToByteClamp(Clamp01(a) * 255.0f);
+    const DWORD br = FloatToByteClamp(Clamp01(r) * 255.0f);
+    const DWORD bg = FloatToByteClamp(Clamp01(g) * 255.0f);
+    const DWORD bb = FloatToByteClamp(Clamp01(b) * 255.0f);
     return (ba << 24) | (br << 16) | (bg << 8) | bb;
 }
 
@@ -607,8 +620,8 @@ static void AddContactShadow(float cx, float cy, float hx, float hy, float sprea
     const uint16_t base = static_cast<uint16_t>(gCitadel->shadowVertCount);
     const float wz = gCitadel->floorZ - effLift;
 
-    const DWORD cInner = (static_cast<DWORD>(effAlpha * 255.0f + 0.5f) << 24) | 0x00070b12u;
-    const DWORD cMid   = (static_cast<DWORD>(effAlpha * 0.46f * 255.0f + 0.5f) << 24) | 0x000a1019u;
+    const DWORD cInner = (FloatToByteClamp(effAlpha * 255.0f) << 24) | 0x00070b12u;
+    const DWORD cMid   = (FloatToByteClamp(effAlpha * 0.46f * 255.0f) << 24) | 0x000a1019u;
     const DWORD cOuter = 0x000d131eu;
 
     // Directional shadow offset away from SE afternoon sun (toward WNW).
@@ -955,7 +968,9 @@ static void BuildCitadelArchitecture() {
             const float dirY = py - kCenterY;
             const float tx = kCenterX + dirX * 2.2f;
             const float ty = kCenterY + dirY * 2.2f;
-            const float th = std::sqrt(kDomeRadius * kDomeRadius - (tx - kCenterX) * (tx - kCenterX) - (ty - kCenterY) * (ty - kCenterY));
+            const float th = std::sqrt(kDomeVisualRadius * kDomeVisualRadius -
+                                       (tx - kCenterX) * (tx - kCenterX) -
+                                       (ty - kCenterY) * (ty - kCenterY));
             AddEmitterBeam(px, py, 8.55f, tx, ty, th, 0.24f, 0.72f, 0x6280ecffu, 0x0648c0ffu);
         }
     }
@@ -1207,25 +1222,20 @@ static void BuildGeodesicHexDome() {
         triCen[t] = VNorm(Vec3{p0.x + p1.x + p2.x, p0.y + p1.y + p2.y, p0.z + p1.z + p2.z});
     }
 
-    // Helper to clamp a sphere point smoothly to the dome skirt floorZ + 1.5 m (native Z-down).
-    auto clampSkirt = [](Vec3 n) -> Vec3 {
-        Vec3 p = {n.x * kDomeRadius, n.y * kDomeRadius, n.z * kDomeRadius};
-        if (p.z > 1.5f) {
-            const float hr = std::hypot(p.x, p.y);
-            if (hr > 1e-4f) {
-                p.x = (p.x / hr) * kDomeRadius;
-                p.y = (p.y / hr) * kDomeRadius;
-            }
-            p.z = 1.5f;
-        }
+    // Tangent-continuous (C^1) projection onto kDomeVisualRadius upper hemisphere + cylindrical skirt
+    // extending underground down to floorZ + kDomeVisualSkirtMaxZ (native Z-down).
+    auto projectDomePt = [](Vec3 n) -> Vec3 {
+        Vec3 p = {};
+        ProjectDomeVisualPoint(n.x, n.y, n.z, &p.x, &p.y, &p.z);
         return p;
     };
 
-    // Build dual hexagonal/pentagonal cells for every vertex on or above the horizon skirt.
+    // Build dual hexagonal/pentagonal cells across the upper hemisphere and deep sub-terrain skirt.
     for (unsigned vi = 0; vi < gVertCount && gCitadel->hexCellCount < kMaxHexCells; ++vi) {
         const Vec3 n = gVerts[vi];
-        // Native Z points DOWN -> upper hemisphere has n.z <= 0; keep horizon band down to n.z <= 0.16
-        if (n.z > 0.16f) continue;
+        // Native Z points DOWN -> upper hemisphere has n.z <= 0; extend skirt down to n.z <= 0.46
+        // so unbroken geodesic hex cells penetrate >= 6 m underground around all 360 deg.
+        if (n.z > kDomeVisualSkirtNzMax) continue;
 
         Vec3 ringPts[8];
         unsigned rCount = 0;
@@ -1260,12 +1270,16 @@ static void BuildGeodesicHexDome() {
         }
 
         HexCell &cell = gCitadel->hexCells[gCitadel->hexCellCount++];
+        const Vec3 centerWp = projectDomePt(n);
         cell.cx = n.x;
         cell.cy = n.y;
         cell.cz = n.z;
+        cell.px = centerWp.x;
+        cell.py = centerWp.y;
+        cell.pz = centerWp.z;
         cell.count = rCount;
         for (unsigned k = 0; k < rCount; ++k) {
-            const Vec3 wp = clampSkirt(ringPts[k]);
+            const Vec3 wp = projectDomePt(ringPts[k]);
             cell.vx[k] = wp.x;
             cell.vy[k] = wp.y;
             cell.vz[k] = wp.z;
@@ -1288,12 +1302,40 @@ static void BuildGeodesicHexDome() {
                 if (d1 < 0.05f || d2 < 0.05f) { dup = true; break; }
             }
             if (!dup) {
-                const Vec3 midN = VNorm(Vec3{ax + bx, ay + by, az + bz});
+                const float mx = 0.5f * (ax + bx);
+                const float my = 0.5f * (ay + by);
+                const float mz = 0.5f * (az + bz);
+                const Vec3 midN = (mz > 0.0f)
+                    ? VNorm(Vec3{mx, my, 0.0f})
+                    : VNorm(Vec3{mx, my, mz});
                 gCitadel->hexEdges[gCitadel->hexEdgeCount++] = HexEdge{
                     ax, ay, az, bx, by, bz, midN.x, midN.y, midN.z
                 };
             }
         }
+    }
+}
+
+// Precomputes 128-segment (~2.76 m chord) terrain-conforming ground elevation and slope-adaptive
+// bury depth along the visual dome perimeter once at RuntimeInit (zero per-frame HeightAt queries).
+static void BuildDomeGroundCollar() {
+    if (!gCitadel) return;
+    const float cz = gCitadel->floorZ;
+    const float step = 6.283185307f / static_cast<float>(kCollarSegs);
+    for (unsigned i = 0; i < kCollarSegs; ++i) {
+        const float a = static_cast<float>(i) * step;
+        gCitadel->collarCos[i] = std::cos(a);
+        gCitadel->collarSin[i] = std::sin(a);
+        gCitadel->collarGroundZ[i] = DomePerimeterGroundZ(a, cz);
+    }
+    for (unsigned i = 0; i < kCollarSegs; ++i) {
+        const float gz = gCitadel->collarGroundZ[i];
+        const float gzPrev = gCitadel->collarGroundZ[(i + kCollarSegs - 1u) % kCollarSegs];
+        const float gzNext = gCitadel->collarGroundZ[(i + 1u) % kCollarSegs];
+        const float dPrev = std::fabs(gz - gzPrev);
+        const float dNext = std::fabs(gz - gzNext);
+        const float slopeDelta = dPrev > dNext ? dPrev : dNext;
+        gCitadel->collarBury[i] = 1.50f + slopeDelta;
     }
 }
 
@@ -1680,6 +1722,7 @@ void RuntimeInit(float floorZ) {
 
     BuildCitadelArchitecture();
     BuildGeodesicHexDome();
+    BuildDomeGroundCollar();
     gCitadel->built = (gCitadel->usedVerts > 0u && gCitadel->usedIndices > 0u && !gCitadel->overflow);
 
     if (IDirect3DDevice9 *dev = LT.GetDevice()) {
@@ -2105,11 +2148,12 @@ void RuntimeDrawDomeFx() {
             if (vCount + c.count + 1u > kDomeVertCap || iCount + c.count * 3u > kDomeIdxCap) break;
 
             const float az = std::atan2(c.cy, c.cx);
-            const float elev = Clamp01(-c.cz); // 0 at horizon, 1 at zenith
+            const float elev = Clamp01(-c.cz); // 0 at horizon & skirt, 1 at zenith
             const float fresnel = 1.0f - elev;
-            const float shimmer = 0.5f + 0.5f * std::sin(t * 1.45f + az * 3.0f - elev * 6.5f);
+            const float vPhase = -c.cz; // continuous vertical shimmer across equator into skirt
+            const float shimmer = 0.5f + 0.5f * std::sin(t * 1.45f + az * 3.0f - vPhase * 6.5f);
 
-            // Subtle crystal-clear shell overhead (~0.045 alpha), richer cyan-gold rim near horizon (~0.18 alpha)
+            // Subtle crystal-clear shell overhead (~0.045 alpha), richer cyan-gold rim near horizon & skirt (~0.18 alpha)
             const float baseA = 0.042f + 0.135f * (fresnel * fresnel) + 0.030f * shimmer;
             const float goldMix = Clamp01((0.35f - elev) * 2.2f) * 0.45f;
             const float rCol = 0.30f + 0.58f * goldMix + 0.10f * shimmer;
@@ -2119,11 +2163,8 @@ void RuntimeDrawDomeFx() {
             const DWORD cCenter = MakeArgb(baseA * 0.72f, rCol, gCol, bCol);
             const DWORD cEdge   = MakeArgb(baseA * 1.25f, rCol, gCol, bCol);
 
-            // Center point clamped above skirt
-            float midZ = c.cz * kDomeRadius;
-            if (midZ > 1.5f) midZ = 1.5f;
             const uint16_t base = static_cast<uint16_t>(vCount);
-            gCitadel->domeVerts[vCount++] = {cx + c.cx * kDomeRadius, cy + c.cy * kDomeRadius, cz + midZ, cCenter};
+            gCitadel->domeVerts[vCount++] = {cx + c.px, cy + c.py, cz + c.pz, cCenter};
             for (unsigned k = 0; k < c.count; ++k) {
                 gCitadel->domeVerts[vCount++] = {cx + c.vx[k], cy + c.vy[k], cz + c.vz[k], cEdge};
             }
@@ -2145,7 +2186,7 @@ void RuntimeDrawDomeFx() {
     }
 
     // -------------------------------------------------------------------------
-    // Pass 2: Crisp Luminous Hexagonal Geodesic Lattice Ribs + Base Anchor Collar (Additive)
+    // Pass 2: Crisp Luminous Hexagonal Geodesic Lattice Ribs + Ground-Contact Ribbon (Additive)
     // -------------------------------------------------------------------------
     {
         unsigned vCount = 0, iCount = 0;
@@ -2159,7 +2200,8 @@ void RuntimeDrawDomeFx() {
 
             const float elev = Clamp01(-e.nz);
             const float az = std::atan2(e.ny, e.nx);
-            const float pulse = 0.5f + 0.5f * std::sin(t * 2.1f - elev * 7.0f + az * 2.0f);
+            const float vPhase = -0.5f * (e.az + e.bz) / kDomeVisualRadius;
+            const float pulse = 0.5f + 0.5f * std::sin(t * 2.1f - vPhase * 7.0f + az * 2.0f);
             const float alpha = 0.16f + 0.24f * (1.0f - elev) + 0.12f * pulse;
             const float gold = Clamp01((0.30f - elev) * 2.5f) * 0.55f;
             const DWORD col = MakeArgb(alpha, 0.36f + 0.58f * gold, 0.86f + 0.08f * pulse, 1.00f - 0.38f * gold);
@@ -2178,30 +2220,64 @@ void RuntimeDrawDomeFx() {
             gCitadel->domeIndices[iCount++] = base + 3u;
         }
 
-        // Luminous horizon anchor ring hugging the 56 m plateau perimeter
-        const unsigned ringSegs = 64u;
-        if (vCount + (ringSegs + 1u) * 2u <= kDomeVertCap && iCount + ringSegs * 6u <= kDomeIdxCap) {
+        // Terrain-conforming 3-row soft luminous ground-contact ribbon using 128 samples
+        // precomputed once at RuntimeInit (gz + bury [alpha=0] -> gz - 0.15 [peak] -> gz - 3.20 [alpha=0]).
+        auto domeSurfaceRadius = [](float relZ) -> float {
+            if (relZ >= 0.0f) return kDomeVisualRadius;
+            const float r2 = kDomeVisualRadius * kDomeVisualRadius - relZ * relZ;
+            return r2 > 0.0f ? std::sqrt(r2) : 0.0f;
+        };
+        if (vCount + (kCollarSegs + 1u) * 3u <= kDomeVertCap &&
+            iCount + kCollarSegs * 12u <= kDomeIdxCap) {
             const uint16_t base = static_cast<uint16_t>(vCount);
-            for (unsigned i = 0; i <= ringSegs; ++i) {
-                const float a = float(i) * (6.283185307f / float(ringSegs));
-                const float ca = std::cos(a), sa = std::sin(a);
-                const float wave = 0.5f + 0.5f * std::sin(t * 2.8f + a * 6.0f);
-                const DWORD cBot = MakeArgb(0.46f + 0.16f * wave, 0.96f, 0.82f, 0.44f);
-                const DWORD cTop = MakeArgb(0.04f, 0.34f, 0.88f, 1.00f);
-                gCitadel->domeVerts[vCount++] = {cx + ca * kDomeRadius, cy + sa * kDomeRadius, cz + 0.35f, cBot};
-                gCitadel->domeVerts[vCount++] = {cx + ca * kDomeRadius, cy + sa * kDomeRadius, cz - 2.60f, cTop};
+            const float step = 6.283185307f / static_cast<float>(kCollarSegs);
+            for (unsigned i = 0; i <= kCollarSegs; ++i) {
+                const unsigned idx = i % kCollarSegs;
+                const float a = static_cast<float>(idx) * step;
+                const float ca = gCitadel->collarCos[idx];
+                const float sa = gCitadel->collarSin[idx];
+                const float gz = gCitadel->collarGroundZ[idx];
+                const float bury = gCitadel->collarBury[idx];
+                const float zBot = gz + bury;
+                const float zMid = gz - 0.15f;
+                const float zTop = gz - 3.20f;
+                const float rBot = domeSurfaceRadius(zBot - cz);
+                const float rMid = domeSurfaceRadius(zMid - cz);
+                const float rTop = domeSurfaceRadius(zTop - cz);
+
+                const float shimmer = 0.5f + 0.5f * std::sin(t * 2.8f + a * 6.0f);
+                const DWORD cBot = MakeArgb(0.0f, 0.88f, 0.84f, 0.52f);
+                const DWORD cMid = MakeArgb(0.44f + 0.15f * shimmer,
+                                            0.78f + 0.18f * shimmer,
+                                            0.88f + 0.04f * shimmer,
+                                            0.62f + 0.18f * (1.0f - shimmer));
+                const DWORD cTop = MakeArgb(0.0f, 0.34f, 0.88f, 1.00f);
+
+                gCitadel->domeVerts[vCount++] = {cx + ca * rBot, cy + sa * rBot, zBot, cBot};
+                gCitadel->domeVerts[vCount++] = {cx + ca * rMid, cy + sa * rMid, zMid, cMid};
+                gCitadel->domeVerts[vCount++] = {cx + ca * rTop, cy + sa * rTop, zTop, cTop};
             }
-            for (unsigned i = 0; i < ringSegs; ++i) {
-                const uint16_t a0 = static_cast<uint16_t>(base + i * 2u + 0u);
-                const uint16_t a1 = static_cast<uint16_t>(base + i * 2u + 1u);
-                const uint16_t b0 = static_cast<uint16_t>(base + (i + 1u) * 2u + 0u);
-                const uint16_t b1 = static_cast<uint16_t>(base + (i + 1u) * 2u + 1u);
+            for (unsigned i = 0; i < kCollarSegs; ++i) {
+                const uint16_t a0 = static_cast<uint16_t>(base + i * 3u + 0u);
+                const uint16_t a1 = static_cast<uint16_t>(base + i * 3u + 1u);
+                const uint16_t a2 = static_cast<uint16_t>(base + i * 3u + 2u);
+                const uint16_t b0 = static_cast<uint16_t>(base + (i + 1u) * 3u + 0u);
+                const uint16_t b1 = static_cast<uint16_t>(base + (i + 1u) * 3u + 1u);
+                const uint16_t b2 = static_cast<uint16_t>(base + (i + 1u) * 3u + 2u);
+                // Lower buried fade strip (gz + bury -> gz - 0.15)
                 gCitadel->domeIndices[iCount++] = a0;
                 gCitadel->domeIndices[iCount++] = b0;
                 gCitadel->domeIndices[iCount++] = b1;
                 gCitadel->domeIndices[iCount++] = a0;
                 gCitadel->domeIndices[iCount++] = b1;
                 gCitadel->domeIndices[iCount++] = a1;
+                // Upper luminous ground-contact fade strip (gz - 0.15 -> gz - 3.20)
+                gCitadel->domeIndices[iCount++] = a1;
+                gCitadel->domeIndices[iCount++] = b1;
+                gCitadel->domeIndices[iCount++] = b2;
+                gCitadel->domeIndices[iCount++] = a1;
+                gCitadel->domeIndices[iCount++] = b2;
+                gCitadel->domeIndices[iCount++] = a2;
             }
         }
 
@@ -2215,10 +2291,35 @@ void RuntimeDrawDomeFx() {
             const float fade = rip.intensity * std::pow(1.0f - u, 1.55f);
             if (fade < 0.01f) continue;
 
-            const Vec3 nrm = VNorm(Vec3{rip.x - cx, rip.y - cy, rip.z - cz});
+            const float shellR = kDomeVisualRadius + 0.10f;
+            const bool onSkirt = (rip.z > cz);
+            Vec3 nrm;
+            Vec3 centerRel;
+            if (onSkirt) {
+                const float hr = std::hypot(rip.x - cx, rip.y - cy);
+                nrm = hr > 1e-4f ? Vec3{(rip.x - cx) / hr, (rip.y - cy) / hr, 0.0f} : Vec3{1.0f, 0.0f, 0.0f};
+                float relZ = rip.z - cz;
+                if (relZ > kDomeVisualSkirtMaxZ) relZ = kDomeVisualSkirtMaxZ;
+                centerRel = {nrm.x * shellR, nrm.y * shellR, relZ};
+            } else {
+                nrm = VNorm(Vec3{rip.x - cx, rip.y - cy, rip.z - cz});
+                centerRel = {nrm.x * shellR, nrm.y * shellR, nrm.z * shellR};
+            }
             const Vec3 upRef = std::fabs(nrm.z) < 0.9f ? Vec3{0.0f, 0.0f, -1.0f} : Vec3{1.0f, 0.0f, 0.0f};
             const Vec3 tU = VNorm(VCross(upRef, nrm));
             const Vec3 tV = VCross(nrm, tU);
+
+            auto projectRipplePt = [shellR](Vec3 q) -> Vec3 {
+                if (q.z > 0.0f) {
+                    const float qhr = std::hypot(q.x, q.y);
+                    const float px = qhr > 1e-4f ? (q.x / qhr) * shellR : shellR;
+                    const float py = qhr > 1e-4f ? (q.y / qhr) * shellR : 0.0f;
+                    const float pz = q.z > kDomeVisualSkirtMaxZ ? kDomeVisualSkirtMaxZ : q.z;
+                    return Vec3{px, py, pz};
+                }
+                const Vec3 pn = VNorm(q);
+                return Vec3{pn.x * shellR, pn.y * shellR, pn.z * shellR};
+            };
 
             const float rOuter = 0.9f + 11.5f * std::sqrt(u);
             const float bandW = 2.0f * (1.0f - 0.45f * u);
@@ -2235,16 +2336,14 @@ void RuntimeDrawDomeFx() {
                 const float a = float(k) * (6.283185307f / float(sides));
                 const float ca = std::cos(a), sa = std::sin(a);
                 const Vec3 d = {tU.x * ca + tV.x * sa, tU.y * ca + tV.y * sa, tU.z * ca + tV.z * sa};
-                // Project onto dome sphere of radius kDomeRadius + 0.10 m so shockwave hugs the dome!
-                const float shellR = kDomeRadius + 0.10f;
-                const Vec3 pIn = VNorm(Vec3{nrm.x * shellR + d.x * rInner,
-                                            nrm.y * shellR + d.y * rInner,
-                                            nrm.z * shellR + d.z * rInner});
-                const Vec3 pOut = VNorm(Vec3{nrm.x * shellR + d.x * rOuter,
-                                             nrm.y * shellR + d.y * rOuter,
-                                             nrm.z * shellR + d.z * rOuter});
-                gCitadel->domeVerts[vCount++] = {cx + pIn.x * shellR,  cy + pIn.y * shellR,  cz + pIn.z * shellR,  cInner};
-                gCitadel->domeVerts[vCount++] = {cx + pOut.x * shellR, cy + pOut.y * shellR, cz + pOut.z * shellR, cOuter};
+                const Vec3 pIn = projectRipplePt(Vec3{centerRel.x + d.x * rInner,
+                                                      centerRel.y + d.y * rInner,
+                                                      centerRel.z + d.z * rInner});
+                const Vec3 pOut = projectRipplePt(Vec3{centerRel.x + d.x * rOuter,
+                                                       centerRel.y + d.y * rOuter,
+                                                       centerRel.z + d.z * rOuter});
+                gCitadel->domeVerts[vCount++] = {cx + pIn.x,  cy + pIn.y,  cz + pIn.z,  cInner};
+                gCitadel->domeVerts[vCount++] = {cx + pOut.x, cy + pOut.y, cz + pOut.z, cOuter};
             }
             for (unsigned k = 0; k < sides; ++k) {
                 const unsigned kn = (k + 1u) % sides;

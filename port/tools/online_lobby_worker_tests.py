@@ -185,6 +185,7 @@ class WorkerdHarness:
         daily_turn_limit: int = 200,
         monthly_turn_limit: int = 2000,
         heartbeat_timeout_ms: int = 30000,
+        match_timeout_ms: int = 7200000,
         auth_ip_limit: int = 200,
         auth_pubkey_limit: int = 100,
         room_create_limit: int = 100,
@@ -207,6 +208,7 @@ class WorkerdHarness:
         self.daily_turn_limit = daily_turn_limit
         self.monthly_turn_limit = monthly_turn_limit
         self.heartbeat_timeout_ms = heartbeat_timeout_ms
+        self.match_timeout_ms = match_timeout_ms
         self.auth_ip_limit = auth_ip_limit
         self.auth_pubkey_limit = auth_pubkey_limit
         self.room_create_limit = room_create_limit
@@ -234,6 +236,7 @@ class WorkerdHarness:
             "CE_DAILY_TURN_LIMIT": str(self.daily_turn_limit),
             "CE_MONTHLY_TURN_LIMIT": str(self.monthly_turn_limit),
             "CE_HEARTBEAT_TIMEOUT_MS": str(self.heartbeat_timeout_ms),
+            "CE_MATCH_TIMEOUT_MS": str(self.match_timeout_ms),
             "CE_MAX_ACTIVE_ROOMS": "128",
             "CE_AUTH_IP_LIMIT": str(self.auth_ip_limit),
             "CE_AUTH_PUBKEY_LIMIT": str(self.auth_pubkey_limit),
@@ -552,6 +555,27 @@ class StaticAndOpsTests(unittest.TestCase):
             good_file = ops_common.write_private_secret_file(tmp_path / "priv", "CE_SESSION_SECRET", secret_val)
             self.assertEqual(secret_val, ops_common.read_private_secret_file(good_file))
 
+            # Verify custom-domain wrangler.toml readiness (workers_dev = false allowed with routes, rejected without).
+            base_lobby_toml = ops_common.LOBBY_TOML.read_text(encoding="utf-8")
+            custom_domain_toml = tmp_path / "custom.wrangler.toml"
+            custom_domain_toml.write_text(
+                base_lobby_toml.replace(
+                    "workers_dev = true",
+                    'workers_dev = false\nroutes = [{ pattern = "lobby.onslaught-ce.example", custom_domain = true }]',
+                ),
+                encoding="utf-8",
+            )
+            lobby_cd, _ = ops_common.validate_wrangler_templates(lobby_path=custom_domain_toml)
+            self.assertIs(False, lobby_cd["workers_dev"])
+
+            no_route_toml = tmp_path / "noroute.wrangler.toml"
+            no_route_toml.write_text(
+                base_lobby_toml.replace("workers_dev = true", "workers_dev = false"),
+                encoding="utf-8",
+            )
+            with self.assertRaises(ValueError):
+                ops_common.validate_wrangler_templates(lobby_path=no_route_toml)
+
             # Verify dry-run paths execute cleanly with exit code 0 and zero secret output.
             for cmd in (
                 [sys.executable, "-B", str(OPS_DIR / "deploy.py"), "--dry-run"],
@@ -782,21 +806,25 @@ class WorkerdIntegrationTests(unittest.TestCase):
         _, host = srv.auth_player("DirHost", build_id="0.1.14", content_id="")
         tok = host["session_token"]
 
-        # Reject invalid map, mode, and >4 max_seats for star_lockstep.
+        # Reject invalid map, mode, mismatched map<->mode, and >4 max_seats for star_lockstep.
         for bad_payload in (
             {"name": "BadMap", "mode": "versus_2v2", "map": 999, "max_seats": 4},
             {"name": "BadMode", "mode": "free_for_all", "map": 850, "max_seats": 4},
-            {"name": "TooBig", "mode": "versus_2v2", "map": 850, "max_seats": 5, "topology": "star_lockstep"},
-            {"name": "TooSmall", "mode": "versus_2v2", "map": 850, "max_seats": 1},
-            {"name": "BadTopo", "mode": "versus_2v2", "map": 850, "max_seats": 8, "topology": "authoritative"},
+            {"name": "TutorialDisallowed", "mode": "tutorial", "map": 100, "max_seats": 2},
+            {"name": "Dup858Disallowed", "mode": "coop_defence", "map": 858, "max_seats": 4},
+            {"name": "MismatchMode", "mode": "versus_2v2", "map": 850, "max_seats": 4},
+            {"name": "Versus3Seats", "mode": "versus_2v2", "map": 851, "max_seats": 3},
+            {"name": "TooBig", "mode": "versus_2v2", "map": 851, "max_seats": 5, "topology": "star_lockstep"},
+            {"name": "TooSmall", "mode": "versus_2v2", "map": 851, "max_seats": 1},
+            {"name": "BadTopo", "mode": "versus_2v2", "map": 851, "max_seats": 8, "topology": "authoritative"},
         ):
             code, _, _ = srv.api("POST", "/ce-lobby/v1/lobbies", token=tok, body=bad_payload)
             self.assertEqual(400, code, f"Expected 400 for {bad_payload}")
 
         # Create 5 compatible public rooms, 1 unlisted room, and 2 incompatible public rooms.
         pub_ids = []
-        valid_maps = [100, 850, 856, 860, 866]
-        valid_modes = ["tutorial", "versus_2v2", "coop_defence", "coop_skirmish", "versus_2v2"]
+        valid_maps = [850, 851, 856, 860, 866]
+        valid_modes = ["coop_skirmish", "versus_2v2", "coop_defence", "versus_2v2", "coop_skirmish"]
         for idx, (m, mode) in enumerate(zip(valid_maps, valid_modes)):
             code, _, r = srv.api(
                 "POST", "/ce-lobby/v1/lobbies", token=tok,
@@ -822,7 +850,7 @@ class WorkerdIntegrationTests(unittest.TestCase):
         _, mod_host = srv.auth_player("ModHost", build_id="0.1.14", content_id="f" * 64)
         code, _, mod_room = srv.api(
             "POST", "/ce-lobby/v1/lobbies", token=mod_host["session_token"],
-            body={"name": "Modded Room", "mode": "versus_2v2", "map": 853, "max_seats": 4, "visibility": "public"},
+            body={"name": "Modded Room", "mode": "coop_skirmish", "map": 853, "max_seats": 4, "visibility": "public"},
         )
         self.assertEqual(200, code)
 
@@ -880,7 +908,7 @@ class WorkerdIntegrationTests(unittest.TestCase):
         code, _, room = srv.api(
             "POST", "/ce-lobby/v1/lobbies", token=host["session_token"],
             body={
-                "name": "Forseti Skirmish", "mode": "versus_2v2", "map": 850,
+                "name": "Forseti Skirmish", "mode": "versus_2v2", "map": 851,
                 "max_seats": 2, "visibility": "public", "password": room_password,
                 "require_relay": False, "ai_fill": False, "be_cfg": "Aquila",
             },
@@ -983,14 +1011,24 @@ class WorkerdIntegrationTests(unittest.TestCase):
         )
         self.assertEqual(200, code)
         self.assertEqual(855, map_changed["map"])
+        self.assertEqual("versus_2v2", map_changed["mode"])
         self.assertIs(False, map_changed["seats"][1]["ready"])
 
-        # Mode switch normalizes teams cleanly and non-versus rejects team=1 while accepting team=0.
-        code, _, coop_room = srv.api(
+        # Mismatched mode without compatible map is rejected 400; map-only update auto-coerces mode & rebalances teams!
+        code, _, bad_mode_only = srv.api(
             "POST", f"/ce-lobby/v1/rooms/{rid}/update", token=host["session_token"],
             body={"mode": "coop_skirmish"},
         )
+        self.assertEqual(400, code)
+        self.assertEqual("incompatible_map_mode", bad_mode_only["error"])
+
+        code, _, coop_room = srv.api(
+            "POST", f"/ce-lobby/v1/rooms/{rid}/update", token=host["session_token"],
+            body={"map": 850},
+        )
         self.assertEqual(200, code)
+        self.assertEqual(850, coop_room["map"])
+        self.assertEqual("coop_skirmish", coop_room["mode"])
         self.assertTrue(all(s["team"] == 0 for s in coop_room["seats"]))
         code, _, err_team = srv.api(
             "POST", f"/ce-lobby/v1/rooms/{rid}/update", token=g1["session_token"],
@@ -1005,7 +1043,7 @@ class WorkerdIntegrationTests(unittest.TestCase):
         self.assertEqual(200, code)
         code, _, vs_room = srv.api(
             "POST", f"/ce-lobby/v1/rooms/{rid}/update", token=host["session_token"],
-            body={"mode": "versus_2v2"},
+            body={"map": 855, "mode": "versus_2v2"},
         )
         self.assertEqual(200, code)
         self.assertEqual([0, 0, 1, 1], [s["team"] for s in vs_room["seats"]])
@@ -1104,7 +1142,7 @@ class WorkerdIntegrationTests(unittest.TestCase):
 
         code, _, room = srv.api(
             "POST", "/ce-lobby/v1/lobbies", token=h["session_token"],
-            body={"name": "Four Player Brawl", "mode": "versus_2v2", "map": 850, "max_seats": 4, "ai_fill": False},
+            body={"name": "Four Player Brawl", "mode": "versus_2v2", "map": 851, "max_seats": 4, "ai_fill": False},
         )
         self.assertEqual(200, code)
         rid = room["room_id"]
@@ -1140,7 +1178,7 @@ class WorkerdIntegrationTests(unittest.TestCase):
         ticket = started["start_ticket"]
         self.assertTrue(ticket["match_id"].startswith("mt_"))
         self.assertGreater(ticket["seed"], 0)
-        self.assertEqual(850, ticket["level"])
+        self.assertEqual(851, ticket["level"])
         self.assertEqual(64, len(ticket["roster_hash"]))
         self.assertEqual(64, len(ticket["match_secret"]))
         self.assertEqual(4, len(ticket["slots"]))
@@ -1184,7 +1222,7 @@ class WorkerdIntegrationTests(unittest.TestCase):
 
         code, _, room = srv.api(
             "POST", "/ce-lobby/v1/lobbies", token=h["session_token"],
-            body={"name": "Star Relay", "mode": "versus_2v2", "map": 850, "max_seats": 4, "require_relay": False},
+            body={"name": "Star Relay", "mode": "versus_2v2", "map": 851, "max_seats": 4, "require_relay": False},
         )
         self.assertEqual(200, code)
         rid = room["room_id"]
@@ -1372,7 +1410,7 @@ class WorkerdIntegrationTests(unittest.TestCase):
         _, dh = srv_daily.auth_player("DailyHost")
         _, dg = srv_daily.auth_player("DailyGuest")
         drid = srv_daily.api("POST", "/ce-lobby/v1/lobbies", token=dh["session_token"],
-                             body={"name": "DailyCap", "mode": "versus_2v2", "map": 850, "max_seats": 2})[2]["room_id"]
+                             body={"name": "DailyCap", "mode": "versus_2v2", "map": 851, "max_seats": 2})[2]["room_id"]
         srv_daily.api("POST", f"/ce-lobby/v1/rooms/{drid}/join", token=dg["session_token"], body={})
         srv_daily.api("POST", f"/ce-lobby/v1/rooms/{drid}/update", token=dg["session_token"], body={"ready": True})
         dmid = srv_daily.api("POST", f"/ce-lobby/v1/rooms/{drid}/start", token=dh["session_token"], body={})[2]["start_ticket"]["match_id"]
@@ -1391,7 +1429,7 @@ class WorkerdIntegrationTests(unittest.TestCase):
         _, mh = srv_month.auth_player("MonthHost")
         _, mg = srv_month.auth_player("MonthGuest")
         mrid = srv_month.api("POST", "/ce-lobby/v1/lobbies", token=mh["session_token"],
-                             body={"name": "MonthCap", "mode": "versus_2v2", "map": 850, "max_seats": 2})[2]["room_id"]
+                             body={"name": "MonthCap", "mode": "versus_2v2", "map": 851, "max_seats": 2})[2]["room_id"]
         srv_month.api("POST", f"/ce-lobby/v1/rooms/{mrid}/join", token=mg["session_token"], body={})
         srv_month.api("POST", f"/ce-lobby/v1/rooms/{mrid}/update", token=mg["session_token"], body={"ready": True})
         mmid = srv_month.api("POST", f"/ce-lobby/v1/rooms/{mrid}/start", token=mh["session_token"], body={})[2]["start_ticket"]["match_id"]
@@ -1404,19 +1442,114 @@ class WorkerdIntegrationTests(unittest.TestCase):
                                             body={"match_id": mmid, "guest_seat": 1})[0])
         self.assertEqual(2, srv_month.provider_calls())
 
+    def test_strict_map_mode_ready_resets_and_closed_seat_rebalance(self):
+        srv = self.make_server()
+        _, host = srv.auth_player("ContractHost")
+        _, guest = srv.auth_player("ContractGuest")
+        htok = host["session_token"]
+        gtok = guest["session_token"]
+
+        expected_table = {
+            850: "coop_skirmish", 853: "coop_skirmish", 859: "coop_skirmish",
+            864: "coop_skirmish", 865: "coop_skirmish", 866: "coop_skirmish",
+            851: "versus_2v2", 852: "versus_2v2", 854: "versus_2v2",
+            855: "versus_2v2", 857: "versus_2v2", 860: "versus_2v2",
+            861: "versus_2v2", 862: "versus_2v2", 863: "versus_2v2",
+            856: "coop_defence",
+        }
+        # Start a 3-seat coop_skirmish room, join guest, then auto-coerce via map-only PATCH across all 16 maps.
+        code, _, room = srv.api(
+            "POST", "/ce-lobby/v1/lobbies", token=htok,
+            body={"name": "MatrixCheck", "mode": "coop_skirmish", "map": 850, "max_seats": 3, "ai_fill": True},
+        )
+        self.assertEqual(200, code)
+        rid = room["room_id"]
+        self.assertEqual(200, srv.api("POST", f"/ce-lobby/v1/rooms/{rid}/join", token=gtok, body={})[0])
+
+        # Map-only update to 851 (versus_2v2) auto-coerces mode AND auto-expands max_seats 3 -> 4!
+        code, _, coerced = srv.api("POST", f"/ce-lobby/v1/rooms/{rid}/update", token=htok, body={"map": 851})
+        self.assertEqual(200, code)
+        self.assertEqual("versus_2v2", coerced["mode"])
+        self.assertEqual(4, coerced["max_seats"])
+
+        for m, want_mode in expected_table.items():
+            for wrong_mode in ("coop_skirmish", "versus_2v2", "coop_defence"):
+                if wrong_mode == want_mode:
+                    continue
+                code, _, err = srv.api(
+                    "POST", f"/ce-lobby/v1/rooms/{rid}/update", token=htok,
+                    body={"map": m, "mode": wrong_mode},
+                )
+                self.assertEqual(400, code)
+                self.assertEqual("incompatible_map_mode", err["error"])
+            code, _, ok_state = srv.api("POST", f"/ce-lobby/v1/rooms/{rid}/update", token=htok, body={"map": m})
+            self.assertEqual(200, code)
+            self.assertEqual(want_mode, ok_state["mode"])
+
+        # Ready reset on max_seats, ai_fill, and set_seat_kind mutations.
+        self.assertEqual(200, srv.api("POST", f"/ce-lobby/v1/rooms/{rid}/update", token=htok,
+                                      body={"map": 851, "mode": "versus_2v2", "max_seats": 4, "ai_fill": False})[0])
+        self.assertEqual(200, srv.api("POST", f"/ce-lobby/v1/rooms/{rid}/update", token=gtok, body={"ready": True})[0])
+        code, _, after_ai = srv.api("POST", f"/ce-lobby/v1/rooms/{rid}/update", token=htok, body={"ai_fill": True})
+        self.assertEqual(200, code)
+        self.assertIs(False, after_ai["seats"][1]["ready"])
+
+        self.assertEqual(200, srv.api("POST", f"/ce-lobby/v1/rooms/{rid}/update", token=gtok, body={"ready": True})[0])
+        code, _, after_max = srv.api("POST", f"/ce-lobby/v1/rooms/{rid}/update", token=htok, body={"max_seats": 2})
+        self.assertEqual(200, code)
+        self.assertIs(False, after_max["seats"][1]["ready"])
+
+        self.assertEqual(200, srv.api("POST", f"/ce-lobby/v1/rooms/{rid}/update", token=htok, body={"max_seats": 4})[0])
+        self.assertEqual(200, srv.api("POST", f"/ce-lobby/v1/rooms/{rid}/update", token=gtok, body={"ready": True})[0])
+        code, _, after_kind = srv.api(
+            "POST", f"/ce-lobby/v1/rooms/{rid}/update", token=htok,
+            body={"set_seat_kind": {"seat": 2, "kind": "closed"}},
+        )
+        self.assertEqual(200, code)
+        self.assertIs(False, after_kind["seats"][1]["ready"])
+
+        # Closed seats must NEVER be rebalanced when host/guest switches team in versus_2v2!
+        # Leave guest so seats are: 0=Host(human), 1=closed, 2=closed, 3=ai.
+        self.assertEqual(200, srv.api("POST", f"/ce-lobby/v1/rooms/{rid}/leave", token=gtok, body={})[0])
+        self.assertEqual(200, srv.api(
+            "POST", f"/ce-lobby/v1/rooms/{rid}/update", token=htok,
+            body={"set_seat_kind": {"seat": 1, "kind": "closed"}},
+        )[0])
+        code, _, closed_setup = srv.api("GET", f"/ce-lobby/v1/rooms/{rid}", token=htok)
+        self.assertEqual(200, code)
+        closed_t1 = closed_setup["seats"][1]["team"]
+        closed_t2 = closed_setup["seats"][2]["team"]
+        self.assertNotEqual(closed_setup["seats"][0]["team"], closed_setup["seats"][3]["team"])
+
+        code, _, swapped = srv.api("POST", f"/ce-lobby/v1/rooms/{rid}/update", token=htok, body={"team": 1})
+        self.assertEqual(200, code)
+        self.assertEqual(1, swapped["seats"][0]["team"])
+        self.assertEqual(0, swapped["seats"][3]["team"])  # AI seat rebalanced, NOT closed seats!
+        self.assertEqual(closed_t1, swapped["seats"][1]["team"])
+        self.assertEqual(closed_t2, swapped["seats"][2]["team"])
+
     def test_heartbeat_pruning_and_ops_smoke_and_status(self):
-        srv = self.make_server(heartbeat_timeout_ms=1200)
+        srv = self.make_server(heartbeat_timeout_ms=1100, match_timeout_ms=2600)
         _, h_alive = srv.auth_player("AliveHost")
         _, h_stale = srv.auth_player("StaleHost")
+        _, h_match = srv.auth_player("MatchHost")
+        _, g_match = srv.auth_player("MatchGuest")
 
         r_alive = srv.api("POST", "/ce-lobby/v1/lobbies", token=h_alive["session_token"],
-                          body={"name": "Alive Room", "mode": "versus_2v2", "map": 850, "max_seats": 4})[2]
+                          body={"name": "Alive Room", "mode": "coop_skirmish", "map": 850, "max_seats": 4})[2]
         r_stale = srv.api("POST", "/ce-lobby/v1/lobbies", token=h_stale["session_token"],
                           body={"name": "Stale Room", "mode": "versus_2v2", "map": 851, "max_seats": 4})[2]
+        r_match = srv.api("POST", "/ce-lobby/v1/lobbies", token=h_match["session_token"],
+                          body={"name": "Active Match", "mode": "coop_defence", "map": 856, "max_seats": 2})[2]
+        m_rid = r_match["room_id"]
+        self.assertEqual(200, srv.api("POST", f"/ce-lobby/v1/rooms/{m_rid}/join", token=g_match["session_token"], body={})[0])
+        self.assertEqual(200, srv.api("POST", f"/ce-lobby/v1/rooms/{m_rid}/update", token=g_match["session_token"], body={"ready": True})[0])
+        m_started = srv.api("POST", f"/ce-lobby/v1/rooms/{m_rid}/start", token=h_match["session_token"], body={})[2]
+        m_mid = m_started["start_ticket"]["match_id"]
 
-        # Keep r_alive heartbeating while r_stale goes silent past 1.2s.
+        # Keep r_alive heartbeating while r_stale AND 'starting' r_match have zero /pollRoom calls past 1.1s!
         for _ in range(4):
-            time.sleep(0.4)
+            time.sleep(0.38)
             code, _, _ = srv.api("GET", f"/ce-lobby/v1/rooms/{r_alive['room_id']}?since=0", token=h_alive["session_token"])
             self.assertEqual(200, code)
 
@@ -1424,7 +1557,29 @@ class WorkerdIntegrationTests(unittest.TestCase):
         self.assertEqual(200, code)
         ids = [r["room_id"] for r in listing["rooms"]]
         self.assertIn(r_alive["room_id"], ids)
+        self.assertIn(m_rid, ids)  # 'starting' room MUST NOT be pruned at lobby heartbeat timeout!
         self.assertNotIn(r_stale["room_id"], ids)
+
+        # Touch r_match via /signal, /turn, and /update(in_match) so it survives well past initial 2.6s match TTL!
+        self.assertEqual(200, srv.api(
+            "POST", f"/ce-lobby/v1/rooms/{m_rid}/signal", token=h_match["session_token"],
+            body={"match_id": m_mid, "from_seat": 0, "to_seat": 1, "kind": "offer", "sdp": "v=0\r\na=ice-ufrag:hb"},
+        )[0])
+        time.sleep(1.3)
+        self.assertEqual(200, srv.api("GET", f"/ce-lobby/v1/rooms/{r_alive['room_id']}?since=0", token=h_alive["session_token"])[0])
+        self.assertEqual(200, srv.api("POST", f"/ce-lobby/v1/rooms/{m_rid}/turn", token=g_match["session_token"],
+                                      body={"match_id": m_mid, "guest_seat": 1})[0])
+        self.assertEqual(200, srv.api("POST", f"/ce-lobby/v1/rooms/{m_rid}/update", token=h_match["session_token"],
+                                      body={"state": "in_match"})[0])
+        time.sleep(1.5)
+        self.assertEqual(200, srv.api("GET", f"/ce-lobby/v1/rooms/{r_alive['room_id']}?since=0", token=h_alive["session_token"])[0])
+        code, _, listing2 = srv.api("GET", "/ce-lobby/v1/lobbies", token=h_alive["session_token"])
+        self.assertEqual(200, code)
+        self.assertIn(m_rid, [r["room_id"] for r in listing2["rooms"]])
+
+        # Finish match -> returns to lobby state, then close r_match so active_rooms == 1 for health check below.
+        self.assertEqual(200, srv.api("POST", f"/ce-lobby/v1/rooms/{m_rid}/finish", token=h_match["session_token"], body={})[0])
+        self.assertEqual(200, srv.api("POST", f"/ce-lobby/v1/rooms/{m_rid}/leave", token=h_match["session_token"], body={})[0])
 
         code, _, _ = srv.api("POST", "/ce-lobby/v1/lobbies/resolve", token=h_alive["session_token"],
                              body={"code": r_stale["code"]})

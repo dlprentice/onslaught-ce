@@ -313,12 +313,39 @@ class CareerViewTests(unittest.TestCase):
             self.assertEqual(self.plausible(data[:-1]), "refused", path.name)
 
     def test_rank_letters(self):
-        for value, letter in ((1.0, "S"), (0.999, "A"), (0.75, "A"), (0.7499, "B"), (0.5, "B"), (0.4999, "C"), (0.25, "C"), (0.2499, "D"),
-                              (1e-30, "D"), (0.0, "E"), (-0.0, "E"), (-5.0, "E"), (1.0001, "-"), (float("inf"), "-"), (float("-inf"), "E")):
+        for value, letter in ((1.0, "S"), (0.999, "A"), (0.95, "A"), (0.875, "A"), (0.75, "A"),
+                              (0.7499, "B"), (0.625, "B"), (0.5, "B"),
+                              (0.4999, "C"), (0.375, "C"), (0.25, "C"),
+                              (0.2499, "D"), (0.125, "D"), (1e-30, "D"),
+                              (0.0, "E"), (-0.0, "E"), (-5.0, "E"),
+                              (1.0001, "-"), (float("inf"), "-"), (float("-inf"), "E")):
             bits = struct.unpack("<I", struct.pack("<f", value))[0]
             done = subprocess.run([str(self.binary), "rank", f"{bits:x}"], capture_output=True, text=True, timeout=20)
             self.assertEqual(done.stdout.strip(), letter, value)
             self.assertEqual(rank_letter(bits), letter, value)
+
+    def test_rank_letters_never_wrap_under_round_to_nearest(self):
+        qifist_src = self.tmp / "rank_qifist.cpp"
+        qifist_bin = self.tmp / "rank_qifist"
+        qifist_src.write_text(
+            '#include <cfenv>\n#include <cmath>\n#include <cstdio>\n#include <cstring>\n'
+            '#pragma STDC FENV_ACCESS ON\n#include "ce_career_view.h"\n'
+            'int main() {\n'
+            '    std::fesetround(FE_TONEAREST);\n'
+            '    const float vals[] = {0.875f, 0.88f, 0.90f, 0.95f, 0.999999f, 0.625f, 0.375f, 0.125f};\n'
+            '    const char want[]  = {\'A\',   \'A\',  \'A\',  \'A\',  \'A\',      \'B\',   \'C\',   \'D\'};\n'
+            '    for (unsigned i = 0; i < sizeof(vals)/sizeof(vals[0]); ++i) {\n'
+            '        unsigned bits = 0; std::memcpy(&bits, &vals[i], 4);\n'
+            '        if (CeRankLetter(bits) != want[i]) return 1;\n'
+            '    }\n'
+            '    return 0;\n'
+            '}\n'
+        )
+        built = subprocess.run(["g++", "-std=c++14", "-O1", "-frounding-math", f"-I{GAME}", str(qifist_src), "-o", str(qifist_bin)],
+                               capture_output=True, text=True, timeout=60)
+        self.assertEqual(built.returncode, 0, built.stderr)
+        ran = subprocess.run([str(qifist_bin)], capture_output=True, text=True, timeout=20)
+        self.assertEqual(ran.returncode, 0, ran.stderr)
 
     def test_mutants_are_caught(self):
         source = (GAME / "ce_career_view.h").read_text()
@@ -334,7 +361,8 @@ class CareerViewTests(unittest.TestCase):
             ("((slot < 71) || (slot > 73))", "((slot < 71) || (slot > 72))", "the wall leaves out 71 to 73"),
             ("(slot < CE_CAREER_GOODIE_TABLE)", "(slot < CE_CAREER_GOODIE_SLOTS)", "the wall ends with the game's table"),
             ("if (value <= 0.f)\n\t\treturn 'E';", "if (value < 0.f)\n\t\treturn 'E';", "a rank of zero is E"),
-            ("const int quarters = int(value * 4.f);", "const int quarters = int(value * 5.f);", "the rank's quarters"),
+            ("const int quarters = static_cast<int>(std::floor(value * 4.f));", "const int quarters = static_cast<int>(std::floor(value * 5.f));", "the rank's quarters"),
+            ("const int quarters = static_cast<int>(std::floor(value * 4.f));", "const int quarters = static_cast<int>(std::nearbyint(value * 4.f));", "the rank's floor under round-to-nearest"),
             ("(size != CE_CAREER_SIZE) || ", "", "a file of another length is refused"),
             (" || (U16(bytes) != CE_CAREER_VERSION))", ")", "a file of another version is refused"),
             ("out.mRank = CeRankLetter(U32(mission + kMissionRank));\n", "", "a completed mission has its rank"),

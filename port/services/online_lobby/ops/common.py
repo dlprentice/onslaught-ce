@@ -130,10 +130,31 @@ def generate_hex_secret() -> str:
     return secrets.token_hex(32)
 
 
-def validate_wrangler_templates() -> tuple[dict, dict]:
+def _valid_route_entry(entry: object) -> bool:
+    if isinstance(entry, str):
+        return bool(entry.strip())
+    if isinstance(entry, dict):
+        pattern = entry.get("pattern")
+        return isinstance(pattern, str) and bool(pattern.strip())
+    return False
+
+
+def _has_custom_domain_routes(cfg: dict) -> bool:
+    if "route" in cfg:
+        return _valid_route_entry(cfg.get("route"))
+    routes = cfg.get("routes")
+    if isinstance(routes, list) and len(routes) > 0:
+        return all(_valid_route_entry(item) for item in routes)
+    return False
+
+
+def validate_wrangler_templates(
+    lobby_path: Path = LOBBY_TOML,
+    issuer_path: Path = ISSUER_TOML,
+) -> tuple[dict, dict]:
     """Ensure checked-in Wrangler templates contain no account IDs, emails, or secrets."""
-    lobby = tomllib.loads(LOBBY_TOML.read_text(encoding="utf-8"))
-    issuer = tomllib.loads(ISSUER_TOML.read_text(encoding="utf-8"))
+    lobby = tomllib.loads(lobby_path.read_text(encoding="utf-8"))
+    issuer = tomllib.loads(issuer_path.read_text(encoding="utf-8"))
     for label, cfg in (("wrangler.toml", lobby), ("issuer.wrangler.toml", issuer)):
         if "account_id" in cfg:
             raise ValueError(f"{label} must not contain account_id.")
@@ -147,8 +168,15 @@ def validate_wrangler_templates() -> tuple[dict, dict]:
         for secret_name in SECRET_PATTERNS:
             if secret_name in vars_map:
                 raise ValueError(f"{label} must not embed secret {secret_name} in [vars].")
-    if lobby.get("workers_dev") is not True:
-        raise ValueError("wrangler.toml must set workers_dev = true.")
+    lobby_workers_dev = lobby.get("workers_dev")
+    if lobby_workers_dev is True:
+        pass
+    elif lobby_workers_dev is False and _has_custom_domain_routes(lobby):
+        pass
+    else:
+        raise ValueError(
+            "wrangler.toml must set workers_dev = true, or set workers_dev = false with routes configured."
+        )
     if issuer.get("workers_dev") is not False:
         raise ValueError("issuer.wrangler.toml must set workers_dev = false.")
     if issuer.get("env", {}).get("bootstrap", {}).get("workers_dev") is not False:

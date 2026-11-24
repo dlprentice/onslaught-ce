@@ -312,6 +312,32 @@ static void TestDirectorMechanicsAndHud() {
     }
     Check(rebuilt && !dir.IsMuspellHqSuppressed(), "Muspell HQ regenerates after 60 s");
 
+    // 3b. Failed HQ rebuild spawn keeps HQ suppressed on a retry timer instead of permanently losing HQ;
+    //     Naval Escalation with both flagships already live (spawned == 0) does not increment stats or show banner.
+    dir.OnHqRebuildSpawnFailed(kAllegianceMuspell, 1.5f);
+    Check(dir.IsMuspellHqSuppressed(), "failed HQ rebuild spawn keeps Muspell HQ suppressed for retry");
+    bool retriedRebuild = false;
+    for (int s = 0; s < 5; ++s) {
+        dir.Tick(0.5f, press, pres, nullptr, 0u, &out);
+        for (int k = 0; k < out.spawnCount; ++k) {
+            if (out.spawns[k].isHqRebuild && out.spawns[k].allegiance == kAllegianceMuspell) {
+                retriedRebuild = true;
+            }
+        }
+    }
+    Check(retriedRebuild && !dir.IsMuspellHqSuppressed(), "Muspell HQ retries rebuild after SpawnSandboxUnit failure");
+    const CeEntityHandle fFlag = CeEntityHandlePack(91u, 1u);
+    const CeEntityHandle mFlag = CeEntityHandlePack(92u, 1u);
+    dir.OnUnitSpawn(fFlag, kUnitMarshall, kAllegianceForseti, 352.0f, 118.0f, 500.0f);
+    dir.OnUnitSpawn(mFlag, kUnitManticore, kAllegianceMuspell, 444.0f, 154.0f, 500.0f);
+    const uint64_t escBefore = dir.GetStats().totalNavalEscalations;
+    CeSandboxStepOutput noopEsc = {};
+    dir.TriggerNavalEscalationNow(noopEsc, false);
+    Check(noopEsc.spawnCount == 0 && dir.GetStats().totalNavalEscalations == escBefore,
+          "Naval Escalation with both flagships alive emits zero spawns and does not increment escalation count");
+    dir.OnUnitDestroyed(fFlag);
+    dir.OnUnitDestroyed(mFlag);
+
     // 4. Population cap hysteresis (15%) & event-50% / heap-768KiB / frame-time downshift.
     CeSandboxPressure highPop = press;
     highPop.liveWorldUnits = dir.EffectiveCap();

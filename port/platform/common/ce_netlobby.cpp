@@ -1834,9 +1834,11 @@ bool CE_LobbySignalingSelect(std::shared_ptr<CeBootSignalAuthority> authority) n
 void CE_LobbySignalingClear() noexcept
 {
     CE_LobbyLeave();
+    gSignalAuthority.reset(); gSignalDescriptor.Reset(); gSignalBootRequired = false;
+    if (!gSignalProviderSelected || CE_NetSelectSignaling({})) gSignalProviderSelected = false;
+    CE_NetSelectSignalingDirectory(nullptr);
     if (gSignalProviderSelected || CE_NetSignalingDirectorySelected()) return;
     gSignalSelected = false; gSignalPreflight = false; gSignalClosed = false;
-    gSignalAuthority.reset(); gSignalDescriptor.Reset(); gSignalBootRequired = false;
 }
 bool CE_LobbySignalingSelected() noexcept { return gSignalSelected; }
 const char* CE_LobbySignalingOrigin() noexcept

@@ -147,9 +147,9 @@ void Capsule(const Label &label, float cx, float cy, float open)
 	const DWORD white = TextFadeColour(kWhite, open);
 	const DWORD grey = TextFadeColour(kGrey, open);
 	const float top = cy - rows * pitch * 0.5f;
-	font->DrawTextWithShadow(cx - float(a.cx) * 0.5f, top, white, name, 0, 1.0f, 1.0f, 1.0f);
+	font->DrawTextWithShadow(cx - float(a.cx) * 0.5f, top, white, name, 0, 0.0f, 1.0f, 1.0f);
 	if (line[0])
-		font->DrawTextWithShadow(cx - float(b.cx) * 0.5f, top + pitch, grey, line, 0, 1.0f, 1.0f, 1.0f);
+		font->DrawTextWithShadow(cx - float(b.cx) * 0.5f, top + pitch, grey, line, 0, 0.0f, 1.0f, 1.0f);
 }
 
 // An exhibit's label: the radio messages' own bar, in the radio messages' own place and shape (CMessageBox::RenderOverlay), its text left-aligned from where the
@@ -216,11 +216,11 @@ void ExhibitCapsule(const Label &label, const WCHAR *caption, float open, int nu
 	if (scaleX < 0.72f)
 		scaleX = 0.72f;
 	const float left = centre - width * 0.5f + padX, top = y - gMessageTextY + (3.0f - rows) * 7.5f;
-	font->DrawTextWithShadow(left, top, white, name, 0, scaleX, 1.0f, 1.0f);
+	font->DrawTextWithShadow(left, top, white, name, 0, 0.0f, scaleX, 1.0f);
 	if (line[0])
-		font->DrawTextWithShadow(left, top + 15.0f, grey, line, 0, scaleX, 1.0f, 1.0f);
+		font->DrawTextWithShadow(left, top + 15.0f, grey, line, 0, 0.0f, scaleX, 1.0f);
 	if (note[0])
-		font->DrawTextWithShadow(left, top + (line[0] ? 30.0f : 15.0f), grey, note, 0, scaleX, 1.0f, 1.0f);
+		font->DrawTextWithShadow(left, top + (line[0] ? 30.0f : 15.0f), grey, note, 0, 0.0f, scaleX, 1.0f);
 }
 
 void ExhibitMarker(unsigned index)
@@ -243,7 +243,7 @@ void ExhibitMarker(unsigned index)
 	font->GetTextExtent(arrow, &extent);
 	const float x = HUD.mViewportX + u * HUD.mViewportWidth - 0.5f * float(extent.cx);
 	const float y = HUD.mViewportY + v * HUD.mViewportHeight - float(extent.cy) - 2.0f;
-	font->DrawTextWithShadow(x, y, 0xffffd477, arrow, 0, 1.0f, 1.0f, 1.0f);
+	font->DrawTextWithShadow(x, y, 0xffffd477, arrow, 0, 0.0f, 1.0f, 1.0f);
 }
 
 }

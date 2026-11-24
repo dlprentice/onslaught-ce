@@ -80,7 +80,7 @@ bool MakeDirs(const char *path)
 {
 	if (!path || !*path)
 		return false;
-	char tmp[MAX_PATH];
+	char tmp[MAX_PATH * 3];
 	int written = snprintf(tmp, sizeof(tmp), "%s", path);
 	if (written <= 0 || (size_t)written >= sizeof(tmp))
 		return false;

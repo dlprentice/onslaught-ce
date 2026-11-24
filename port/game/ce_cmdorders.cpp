@@ -45,6 +45,9 @@ unsigned gOrderCount = 0;
 bool SameKey(const CeCommandLifetimeKey& a, const CeCommandLifetimeKey& b) {
     return a.world == b.world && a.id == b.id && a.generation == b.generation;
 }
+uint64_t ThingIdentityId(int number) {
+    return static_cast<uint64_t>(static_cast<uint32_t>(number));
+}
 void Clear(UnitOrder& order) {
     if (!order.used) return;
     order.used = false;
@@ -64,7 +67,7 @@ CUnit* Resolve(const CeCommandLifetimeKey& key, CeCmdUnitAuthority* authority) {
     // This query finds the exact pointer in current native membership before
     // reading it. The destruction hook separately rejects reused lifetimes.
     if (!CeCmdUnitAuthorityNow(candidate, &current) || !current.found ||
-        static_cast<uint64_t>(current.number) != key.id ||
+        ThingIdentityId(current.number) != key.id ||
         current.kind != ref.kind || candidate->IsDying() ||
         candidate->GetLife() <= 0) return NULL;
     if (authority) *authority = current;
@@ -77,7 +80,7 @@ bool Current(const UnitOrder& order, CUnit* unit) {
         unit == order.unit && !unit->IsShuttingDown() && unit->mGuide == order.guide &&
         order.guide && order.guide->GetUnit() == unit &&
         !unit->IsDying() && unit->GetLife() > 0 &&
-        static_cast<uint64_t>(unit->GetThingNumber()) == order.key.id &&
+        ThingIdentityId(unit->GetThingNumber()) == order.key.id &&
         static_cast<unsigned>(unit->GetThingType()) == order.kind &&
         unit->GetSquad() == order.squad && unit->GetSquad() &&
         !unit->GetSquad()->IsShuttingDown() &&
@@ -150,11 +153,10 @@ bool CeCmdUnitWatch(CUnit* unit, CeCommandLifetimeKey* key,
                     CeCmdUnitAuthority* authority) {
     if (!key || !CeCmdUnitOrdersEligible()) return false;
     CeCmdUnitAuthority current = {};
-    if (!CeCmdUnitAuthorityNow(unit, &current) || !current.found ||
-        current.number < 0) return false;
+    if (!CeCmdUnitAuthorityNow(unit, &current) || !current.found) return false;
     CeCommandLifetimeKey candidate = {};
     if (!gIdentities.Observe(reinterpret_cast<uintptr_t>(unit),
-            static_cast<uint64_t>(current.number), current.kind, &candidate))
+            ThingIdentityId(current.number), current.kind, &candidate))
         return false;
     gWatching = true;
     *key = candidate;
@@ -166,9 +168,9 @@ uint64_t CeCmdUnitWorld() { return gIdentities.World(); }
 
 bool CeCmdUnitVisibleKey(CUnit* unit, CeCommandLifetimeKey* key) {
     if (!unit || !key || !CeCmdUnitOrdersEligible() || unit->IsShuttingDown() || unit->IsDying() ||
-        unit->GetLife() <= 0 || unit->GetThingNumber() < 0) return false;
+        unit->GetLife() <= 0) return false;
     if (!gIdentities.Observe(reinterpret_cast<uintptr_t>(unit),
-            static_cast<uint64_t>(unit->GetThingNumber()),
+            ThingIdentityId(unit->GetThingNumber()),
             static_cast<unsigned>(unit->GetThingType()), key)) return false;
     gWatching = true;
     return true;
@@ -187,16 +189,15 @@ int CeCmdUnitCollect(CeCmdUnitSnapshot* out, int capacity, bool* complete) {
     for (int i = 0; i < count; ++i) {
         const CeCmdUnitNativeRecord& item = native[i];
         const CeCmdUnitAuthority& authority = item.authority;
-        if (!item.unit || !authority.found || authority.number < 0 ||
-            !authority.squad || item.squadNumber < 0) { all = false; continue; }
+        if (!item.unit || !authority.found || !authority.squad) { all = false; continue; }
         CeCmdUnitSnapshot result = {};
         if (!gIdentities.Observe(reinterpret_cast<uintptr_t>(item.unit),
-                static_cast<uint64_t>(authority.number), authority.kind, &result.key)) {
+                ThingIdentityId(authority.number), authority.kind, &result.key)) {
             all = false; continue;
         }
         gWatching = true;
         if (!gIdentities.Observe(reinterpret_cast<uintptr_t>(authority.squad),
-                static_cast<uint64_t>(item.squadNumber), item.squadKind, &result.squadKey)) {
+                ThingIdentityId(item.squadNumber), item.squadKind, &result.squadKey)) {
             all = false; continue;
         }
         result.ordinal = authority.ordinal;

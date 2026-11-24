@@ -15,32 +15,67 @@
 #include <string>
 #include <vector>
 
+extern "C" int CE_SettingGetText(const char *key, char *out, int n) __attribute__((weak));
+
 namespace {
 
 // Palette matching ce_netpages.cpp (plain D3DTOP_MODULATE, full channel strength).
-const uint32_t kWhite      = 0xffffffffu;
-const uint32_t kCream      = 0xfffdddbdu;
-const uint32_t kGrey       = 0xffa8a8a8u;
-const uint32_t kDimGrey    = 0xff6e7682u;
-const uint32_t kGood       = 0xff2eb030u;
-const uint32_t kWarn       = 0xffffcc00u;
-const uint32_t kBad        = 0xffdc3c3cu;
-const uint32_t kCyan       = 0xff66ccffu;
-const uint32_t kMuspell    = 0xffff8866u;
-const uint32_t kPanelBg    = 0xc80a1220u;
-const uint32_t kHeaderBg   = 0xd80e1a2eu;
-const uint32_t kRowBg      = 0x90101a28u;
-const uint32_t kRowAltBg   = 0x90142032u;
-const uint32_t kRowSelBg   = 0xc8243b5cu;
-const uint32_t kBtnBg      = 0xb8162438u;
-const uint32_t kBtnHoverBg = 0xd8284060u;
-const uint32_t kBtnDisBg   = 0x8010141cu;
-const uint32_t kBorder     = 0x90809cb8u;
-const uint32_t kBorderSel  = 0xffffcc00u;
-const uint32_t kBorderDis  = 0x50505864u;
+const uint32_t kWhite       = 0xffffffffu;
+const uint32_t kCream       = 0xfffdddbdu;
+const uint32_t kGrey        = 0xffa8a8a8u;
+const uint32_t kDimGrey     = 0xff6e7682u;
+const uint32_t kGood        = 0xff2eb030u;
+const uint32_t kWarn        = 0xffffcc00u;
+const uint32_t kBad         = 0xffdc3c3cu;
+const uint32_t kCyan        = 0xff66ccffu;
+const uint32_t kMuspell     = 0xffff8866u;
+const uint32_t kPanelBg     = 0xc80a1220u;
+const uint32_t kHeaderBg    = 0xd80e1a2eu;
+const uint32_t kRowBg       = 0x90101a28u;
+const uint32_t kRowAltBg    = 0x90142032u;
+const uint32_t kRowHoverBg  = 0xb01b2c44u;
+const uint32_t kRowSelBg    = 0xc8243b5cu;
+const uint32_t kBtnBg       = 0xb8162438u;
+const uint32_t kBtnHoverBg  = 0xd8284060u;
+const uint32_t kBtnDisBg    = 0x8010141cu;
+const uint32_t kBorder      = 0x90809cb8u;
+const uint32_t kBorderHover = 0xc066ccffu;
+const uint32_t kBorderSel   = 0xffffcc00u;
+const uint32_t kBorderDis   = 0x50505864u;
 
 CeOnlineUiHostOps gOps = {};
 bool gHasOps = false;
+
+bool HasCustomLobbyUrlOverride() {
+    if (!CE_SettingGetText) return false;
+    char iniUrl[256] = {};
+    return CE_SettingGetText("lobby_url", iniUrl, static_cast<int>(sizeof(iniUrl))) && iniUrl[0] != '\0';
+}
+
+void QueryGameBeConfigs(int level, std::vector<std::string> *out) {
+    if (!out) return;
+    out->clear();
+    if (gHasOps && gOps.get_be_config) {
+        for (int i = 0; i < 32; ++i) {
+            char buf[96] = {};
+            if (!gOps.get_be_config(level, i, buf, static_cast<int>(sizeof(buf)))) break;
+            if (buf[0]) out->push_back(CeOnlineSanitizeForFont(buf));
+        }
+    }
+    if (out->empty()) {
+        CeOnlineDefaultBeConfigsForMap(level, out);
+    }
+}
+
+template <typename PatchT>
+auto ApplyHostPatchMaxSeats(PatchT &dst, bool hasMaxSeats, uint16_t maxSeats, int)
+    -> decltype((dst.has_max_seats = hasMaxSeats), (dst.max_seats = maxSeats), void()) {
+    dst.has_max_seats = hasMaxSeats;
+    dst.max_seats = maxSeats;
+}
+
+template <typename PatchT>
+void ApplyHostPatchMaxSeats(PatchT &, bool, uint16_t, ...) {}
 
 void DrawPanelBox(const CeOnlineRect &r, uint32_t fillCol, uint32_t borderCol) {
     if (gHasOps && gOps.draw_panel) gOps.draw_panel(r.x0, r.y0, r.x1, r.y1, fillCol, borderCol);
@@ -157,18 +192,7 @@ public:
         return true;
     }
     void GetBeConfigsForMap(int level, std::vector<std::string> *out) override {
-        if (!out) return;
-        out->clear();
-        if (gHasOps && gOps.get_be_config) {
-            for (int i = 0; i < 32; ++i) {
-                char buf[96] = {};
-                if (!gOps.get_be_config(level, i, buf, static_cast<int>(sizeof(buf)))) break;
-                if (buf[0]) out->push_back(CeOnlineSanitizeForFont(buf));
-            }
-        }
-        if (out->empty()) {
-            ICeOnlineUiBackend::GetBeConfigsForMap(level, out);
-        }
+        QueryGameBeConfigs(level, out);
     }
 
 private:
@@ -345,6 +369,7 @@ public:
         dst.map = patch.map;
         dst.has_mode = patch.hasMode;
         dst.mode = patch.mode;
+        ApplyHostPatchMaxSeats(dst, patch.hasMaxSeats, patch.maxSeats, 0);
         dst.has_require_relay = patch.hasRequireRelay;
         dst.require_relay = patch.requireRelay;
         dst.has_ai_fill = patch.hasAiFill;
@@ -361,6 +386,9 @@ public:
     }
     bool RequestStartMatch(std::string *errOut) override {
         return PortCeOnlineServiceInstance()->RequestStartMatch(errOut);
+    }
+    void GetBeConfigsForMap(int level, std::vector<std::string> *out) override {
+        QueryGameBeConfigs(level, out);
     }
     void OnMatchTicketReady(const CeOnlineStartTicketView &) override {
         PortCeOnlineServiceInstance()->NotifyMatchTicketReady();
@@ -422,9 +450,13 @@ public:
         return mFallback.PasteFromClipboard(out);
     }
     void GetBeConfigsForMap(int level, std::vector<std::string> *out) override {
-        mFallback.GetBeConfigsForMap(level, out);
-        if (mInner && (!out || out->empty())) {
+        if (!out) return;
+        out->clear();
+        if (mInner) {
             mInner->GetBeConfigsForMap(level, out);
+        }
+        if (out->empty()) {
+            mFallback.GetBeConfigsForMap(level, out);
         }
     }
     void OnOpenDirectLan() override { if (mInner) mInner->OnOpenDirectLan(); }
@@ -483,7 +515,7 @@ void DrawHeaderAndFooter(const std::string &hint) {
     else if (prof.connStatus == CE_ONLINE_CONN_ERROR) statusCol = kBad;
 
     const std::string right = std::string(CeOnlineConnStatusLabel(prof.connStatus)) + " (" + prof.PingLabel() + ")";
-    DrawTextRight(hdr.x1 - 8.f, hdr.y0 + 3.f, 180.f, statusCol, right);
+    DrawTextRight(hdr.x1 - 8.f, hdr.y0 + 3.f, 170.f, statusCol, right);
 
     const CeOnlineRect ftr = CeOnlineLayout::FooterBar();
     DrawPanelBox(ftr, kPanelBg, kBorder);
@@ -560,10 +592,10 @@ void RenderBrowser(float mx, float my, bool mouseMoved, int *wheel, bool canClic
 
     const CeOnlineRect th = CeOnlineLayout::BrowserTableHeader();
     DrawPanelBox(th, kHeaderBg, kBorder);
-    DrawTextLeft(th.x0 + 6.f,   th.y0 + 2.f, 150.f, kCream, "Lobby Name");
-    DrawTextLeft(th.x0 + 162.f, th.y0 + 2.f, 130.f, kCream, "Map / Mode");
-    DrawTextLeft(th.x0 + 300.f, th.y0 + 2.f, 68.f,  kCream, "Players");
-    DrawTextLeft(th.x0 + 374.f, th.y0 + 2.f, 92.f,  kCream, "Flags");
+    DrawTextLeft(th.x0 + 6.f,   th.y0 + 2.f, 136.f, kCream, "Lobby Name");
+    DrawTextLeft(th.x0 + 148.f, th.y0 + 2.f, 166.f, kCream, "Map / Mode");
+    DrawTextLeft(th.x0 + 324.f, th.y0 + 2.f, 56.f,  kCream, "Players");
+    DrawTextLeft(th.x0 + 392.f, th.y0 + 2.f, 74.f,  kCream, "Flags");
 
     std::vector<CeOnlineUiRoomSummary> rooms = gModel.FilteredRooms();
     if (wheel && *wheel != 0 && !modal) {
@@ -588,25 +620,25 @@ void RenderBrowser(float mx, float my, bool mouseMoved, int *wheel, bool canClic
             }
             const CeOnlineUiRoomSummary &rm = rooms[static_cast<size_t>(idx)];
             const bool selected = (idx == gModel.BrowserSelectedIndex());
-            if (!modal && mouseMoved && rr.Contains(mx, my)) {
-                gModel.SetBrowserZoneFocus(CeOnlineUiModel::BROWSER_ZONE_LIST);
-                gModel.BrowserSelectIndex(idx);
-            }
-            const uint32_t rowBorder = (selected && listZone) ? kBorderSel : kBorder;
-            DrawPanelBox(rr, selected ? kRowSelBg : ((vis & 1) ? kRowAltBg : kRowBg), rowBorder);
+            const bool hovered = !modal && rr.Contains(mx, my);
+            const uint32_t rowBg = selected ? kRowSelBg : (hovered ? kRowHoverBg : ((vis & 1) ? kRowAltBg : kRowBg));
+            const uint32_t rowBorder = selected ? kBorderSel : (hovered ? kBorderHover : kBorder);
+            DrawPanelBox(rr, rowBg, rowBorder);
 
             const uint32_t nameCol = !rm.compatible ? kDimGrey : (selected ? kWarn : kWhite);
-            DrawTextLeft(rr.x0 + 6.f, rr.y0 + 4.f, 150.f, nameCol, CeOnlineTruncateFontSafe(rm.name, 20));
-            const std::string mapMode = std::string(CeOnlineMapName(rm.map)) + " / " + CeOnlineModeLabel(rm.mode);
-            DrawTextLeft(rr.x0 + 162.f, rr.y0 + 4.f, 132.f, kCream, CeOnlineTruncateFontSafe(mapMode, 22));
+            const std::string displayName = (selected ? "> " : "  ") + CeOnlineSanitizeForFont(rm.name);
+            DrawTextLeft(rr.x0 + 6.f, rr.y0 + 4.f, 136.f, nameCol, displayName);
+            const std::string mapMode = std::string(CeOnlineMapName(rm.map)) + " / " +
+                                        CeOnlineModeDisplayLabel(rm.mode, rm.maxSeats);
+            DrawTextLeft(rr.x0 + 148.f, rr.y0 + 4.f, 166.f, kCream, mapMode);
             char seatBuf[24];
             std::snprintf(seatBuf, sizeof(seatBuf), "%u/%u", unsigned(rm.humanSeats), unsigned(rm.maxSeats));
-            DrawTextLeft(rr.x0 + 306.f, rr.y0 + 4.f, 52.f, (rm.humanSeats >= rm.maxSeats) ? kBad : kGood, seatBuf);
+            DrawTextLeft(rr.x0 + 324.f, rr.y0 + 4.f, 56.f, (rm.humanSeats >= rm.maxSeats) ? kBad : kGood, seatBuf);
             std::string flags;
             if (rm.hasPassword) flags += "PWD ";
             flags += rm.requireRelay ? "RELAY" : "P2P";
             if (!rm.compatible) flags += " OLD";
-            DrawTextLeft(rr.x0 + 374.f, rr.y0 + 4.f, 92.f, rm.requireRelay ? kCyan : kGrey, flags);
+            DrawTextLeft(rr.x0 + 392.f, rr.y0 + 4.f, 74.f, rm.requireRelay ? kCyan : kGrey, flags);
 
             if (!modal && ClickedRect(rr, canClick)) {
                 gModel.SetBrowserZoneFocus(CeOnlineUiModel::BROWSER_ZONE_LIST);
@@ -620,6 +652,7 @@ void RenderBrowser(float mx, float my, bool mouseMoved, int *wheel, bool canClic
             }
         }
     }
+    (void)listZone;
 
     const int curPage = gModel.BrowserCurrentPage();
     const int totPages = gModel.BrowserPageCount();
@@ -713,11 +746,11 @@ void RenderCreate(float mx, float my, bool mouseMoved, bool canClick) {
         const bool sel = (gModel.CreateFocus() == i);
         if (mouseMoved && r.Contains(mx, my)) gModel.SetCreateFocus(i);
         DrawPanelBox(r, sel ? kRowSelBg : kRowBg, sel ? kBorderSel : kBorder);
-        DrawTextLeft(r.x0 + 8.f, r.y0 + 3.f, 180.f, sel ? kWarn : kCream, labels[i]);
+        DrawTextLeft(r.x0 + 8.f, r.y0 + 3.f, 190.f, sel ? kWarn : kCream, labels[i]);
         const bool isText = (i == CeOnlineUiModel::CREATE_NAME || i == CeOnlineUiModel::CREATE_PASSWORD);
         const uint32_t valCol = (i == CeOnlineUiModel::CREATE_RELAY_ONLY && gModel.CreateRelayOnly())
             ? kCyan : (sel ? kWhite : kCream);
-        DrawTextLeft(r.x0 + 196.f, r.y0 + 3.f, 256.f, valCol, values[i], sel && isText);
+        DrawTextLeft(r.x0 + 210.f, r.y0 + 3.f, 246.f, valCol, values[i], sel && isText);
 
         if (ClickedRect(r, canClick)) {
             gModel.SetCreateFocus(i);
@@ -814,11 +847,9 @@ void RenderRoom(float mx, float my, bool mouseMoved, int *wheel, bool canClick) 
 
     const CeOnlineRect info = CeOnlineLayout::RoomInfoBar();
     DrawPanelBox(info, kPanelBg, kBorder);
-    std::string infoText = CeOnlineTruncateFontSafe(room.name, 18) + "  Code:" +
-                           CeOnlineSanitizeForFont(room.code) + "  " +
-                           CeOnlineTruncateFontSafe(CeOnlineMapName(room.map), 16) + "  " +
-                           (room.requireRelay ? "RELAY" : "P2P");
-    DrawTextLeft(info.x0 + 6.f, info.y0 + 2.f, 368.f, kCream, infoText);
+    DrawTextLeft(info.x0 + 6.f, info.y0 + 2.f, 248.f, kWhite, CeOnlineSanitizeForFont(room.name));
+    DrawTextRight(info.x1 - 6.f, info.y0 + 2.f, 112.f, kWarn,
+                  "Code: " + CeOnlineSanitizeForFont(room.code));
 
     if (DrawButton(CeOnlineLayout::RoomCopyCodeBtn(), "Copy Code",
                    hdZone && gModel.RoomHeaderFocus() == CeOnlineUiModel::ROOM_HD_COPY,
@@ -826,15 +857,30 @@ void RenderRoom(float mx, float my, bool mouseMoved, int *wheel, bool canClick) 
         gModel.RoomCopyCode();
     }
 
+    const CeOnlineRect mapBar = CeOnlineLayout::RoomMapBar();
+    DrawPanelBox(mapBar, kHeaderBg, kBorder);
+    const int effMap = gModel.EffectiveRoomMap();
+    const std::string effModeWire = gModel.EffectiveRoomMode();
+    const uint16_t effMaxSeats = gModel.EffectiveRoomMaxSeats();
+    const char *effModeLabel = gModel.EffectiveRoomModeLabel();
+    DrawTextLeft(mapBar.x0 + 6.f, mapBar.y0 + 2.f, 224.f, kWarn,
+                 std::string("Map: ") + CeOnlineMapName(effMap));
+    DrawTextLeft(mapBar.x0 + 240.f, mapBar.y0 + 2.f, 114.f, kCyan, effModeLabel);
+    char metaBuf[48];
+    std::snprintf(metaBuf, sizeof(metaBuf), "%uP  %s",
+                  unsigned(effMaxSeats), room.requireRelay ? "RELAY" : "P2P");
+    DrawTextRight(mapBar.x1 - 6.f, mapBar.y0 + 2.f, 96.f,
+                  room.requireRelay ? kCyan : kCream, metaBuf);
+
     const CeOnlineRect rh = CeOnlineLayout::RoomRosterHeader();
     DrawPanelBox(rh, kHeaderBg, kBorder);
-    DrawTextLeft(rh.x0 + 4.f,   rh.y0 + 1.f, 16.f,  kCream, "#");
-    DrawTextLeft(rh.x0 + 22.f,  rh.y0 + 1.f, 118.f, kCream, "Player");
-    DrawTextLeft(rh.x0 + 144.f, rh.y0 + 1.f, 46.f,  kCream, "Side");
-    DrawTextLeft(rh.x0 + 194.f, rh.y0 + 1.f, 66.f,  kCream, "BE");
-    DrawTextLeft(rh.x0 + 264.f, rh.y0 + 1.f, 38.f,  kCream, "Ping");
-    DrawTextLeft(rh.x0 + 304.f, rh.y0 + 1.f, 36.f,  kCream, "State");
-    DrawTextLeft(rh.x0 + 342.f, rh.y0 + 1.f, 36.f,  kCream, "Route");
+    DrawTextLeft(rh.x0 + 4.f,   rh.y0 + 1.f, 18.f,  kCream, "#");
+    DrawTextLeft(rh.x0 + 24.f,  rh.y0 + 1.f, 148.f, kCream, "Player");
+    DrawTextLeft(rh.x0 + 178.f, rh.y0 + 1.f, 52.f,  kCream, "Side");
+    DrawTextLeft(rh.x0 + 236.f, rh.y0 + 1.f, 64.f,  kCream, "BE");
+    DrawTextLeft(rh.x0 + 306.f, rh.y0 + 1.f, 38.f,  kCream, "Ping");
+    DrawTextLeft(rh.x0 + 350.f, rh.y0 + 1.f, 34.f,  kCream, "State");
+    DrawTextLeft(rh.x0 + 390.f, rh.y0 + 1.f, 32.f,  kCream, "Route");
 
     const int curPg = gModel.RosterCurrentPage();
     const int totPg = gModel.RosterPageCount();
@@ -861,38 +907,38 @@ void RenderRoom(float mx, float my, bool mouseMoved, int *wheel, bool canClick) 
         }
         const CeOnlineSeatView &s = room.seats[static_cast<size_t>(idx)];
         const bool sel = (idx == gModel.RosterSelectedIndex());
-        if (!composing && mouseMoved && sr.Contains(mx, my)) {
-            gModel.SetRoomZoneFocus(CeOnlineUiModel::ROOM_ZONE_ROSTER);
-            gModel.RosterSelectIndex(idx);
-        }
-        DrawPanelBox(sr, sel ? kRowSelBg : ((vis & 1) ? kRowAltBg : kRowBg), (sel && rsZone) ? kBorderSel : kBorder);
+        const bool hovered = !composing && sr.Contains(mx, my);
+        const uint32_t rowBg = sel ? kRowSelBg : (hovered ? kRowHoverBg : ((vis & 1) ? kRowAltBg : kRowBg));
+        const uint32_t rowBrd = sel ? kBorderSel : (hovered ? kBorderHover : kBorder);
+        DrawPanelBox(sr, rowBg, rowBrd);
 
         char numBuf[12];
-        std::snprintf(numBuf, sizeof(numBuf), "%u", unsigned(s.seat + 1));
-        DrawTextLeft(sr.x0 + 4.f, sr.y0 + 1.f, 16.f, kGrey, numBuf);
+        std::snprintf(numBuf, sizeof(numBuf), sel ? ">%u" : " %u", unsigned(s.seat + 1));
+        DrawTextLeft(sr.x0 + 4.f, sr.y0 + 1.f, 18.f, sel ? kWarn : kGrey, numBuf);
 
         const uint32_t nameCol = (s.kind == CE_ONLINE_SEAT_HUMAN)
             ? (s.seat == room.localSeat ? kWarn : kWhite)
             : (s.kind == CE_ONLINE_SEAT_AI ? kCyan : kDimGrey);
-        DrawTextLeft(sr.x0 + 22.f, sr.y0 + 1.f, 118.f, nameCol, gModel.FormatSeatName(s));
+        DrawTextLeft(sr.x0 + 24.f, sr.y0 + 1.f, 148.f, nameCol, gModel.FormatSeatName(s));
 
         const bool hasUnit = (s.kind == CE_ONLINE_SEAT_HUMAN || s.kind == CE_ONLINE_SEAT_AI);
-        DrawTextLeft(sr.x0 + 144.f, sr.y0 + 1.f, 46.f, hasUnit ? (s.team == 1 ? kMuspell : kCyan) : kDimGrey,
+        DrawTextLeft(sr.x0 + 178.f, sr.y0 + 1.f, 52.f, hasUnit ? (s.team == 1 ? kMuspell : kCyan) : kDimGrey,
                      hasUnit ? CeOnlineSideLabel(s.team) : "--");
-        DrawTextLeft(sr.x0 + 194.f, sr.y0 + 1.f, 66.f, kCream,
-                     hasUnit ? CeOnlineTruncateFontSafe(s.beCfg.empty() ? "Standard" : s.beCfg, 10) : "--");
-        DrawTextLeft(sr.x0 + 264.f, sr.y0 + 1.f, 38.f, kGrey, gModel.FormatSeatPing(s));
-        DrawTextLeft(sr.x0 + 304.f, sr.y0 + 1.f, 36.f, (s.kind == CE_ONLINE_SEAT_HUMAN && s.ready) ? kGood : kGrey,
+        DrawTextLeft(sr.x0 + 236.f, sr.y0 + 1.f, 64.f, kCream,
+                     hasUnit ? CeOnlineSanitizeForFont(s.beCfg.empty() ? "Standard" : s.beCfg) : "--");
+        DrawTextLeft(sr.x0 + 306.f, sr.y0 + 1.f, 38.f, kGrey, gModel.FormatSeatPing(s));
+        DrawTextLeft(sr.x0 + 350.f, sr.y0 + 1.f, 34.f, (s.kind == CE_ONLINE_SEAT_HUMAN && s.ready) ? kGood : kGrey,
                      gModel.FormatSeatReady(s));
-        DrawTextLeft(sr.x0 + 342.f, sr.y0 + 1.f, 120.f, s.route == CE_ONLINE_ROUTE_RELAY ? kCyan : kGrey,
+        DrawTextLeft(sr.x0 + 390.f, sr.y0 + 1.f, 76.f, s.route == CE_ONLINE_ROUTE_RELAY ? kCyan : kGrey,
                      s.kind == CE_ONLINE_SEAT_HUMAN ? CeOnlineRouteLabel(s.route) : "--");
 
-        if (ClickedRect(sr, canClick)) {
+        if (!composing && ClickedRect(sr, canClick)) {
             gModel.SetRoomZoneFocus(CeOnlineUiModel::ROOM_ZONE_ROSTER);
             gModel.RosterSelectIndex(idx);
             PlaySnd(CE_OUI_SND_MOVE);
         }
     }
+    (void)rsZone;
 
     const bool ready = (me && me->ready);
     if (DrawButton(CeOnlineLayout::RoomReadyBtn(), ready ? "Ready: ON" : "Ready: OFF",
@@ -901,9 +947,9 @@ void RenderRoom(float mx, float my, bool mouseMoved, int *wheel, bool canClick) 
     const std::string sideBtn = std::string("Side: ") + (me ? CeOnlineSideLabel(me->team) : "--");
     if (DrawButton(CeOnlineLayout::RoomSideBtn(), sideBtn,
                    plZone && gModel.RoomPlayerFocus() == CeOnlineUiModel::ROOM_PL_SIDE,
-                   me != nullptr && room.mode == "versus_2v2", mx, my, canClick)) gModel.RoomCycleSide(1);
+                   me != nullptr && effModeWire == "versus_2v2", mx, my, canClick)) gModel.RoomCycleSide(1);
     const std::string beBtn = std::string("BE: ") +
-        CeOnlineTruncateFontSafe((me && !me->beCfg.empty()) ? me->beCfg : "Standard", 10);
+        CeOnlineSanitizeForFont((me && !me->beCfg.empty()) ? me->beCfg : "Standard");
     if (DrawButton(CeOnlineLayout::RoomBeBtn(), beBtn,
                    plZone && gModel.RoomPlayerFocus() == CeOnlineUiModel::ROOM_PL_BE,
                    me != nullptr, mx, my, canClick)) gModel.RoomCycleBeConfig(1);
@@ -926,9 +972,10 @@ void RenderRoom(float mx, float my, bool mouseMoved, int *wheel, bool canClick) 
         if (DrawButton(CeOnlineLayout::RoomMapBtn(), "Next Map",
                        hsZone && gModel.RoomHostFocus() == CeOnlineUiModel::ROOM_HS_MAP,
                        true, mx, my, canClick)) gModel.RoomHostCycleMap(1);
-        if (DrawButton(CeOnlineLayout::RoomModeBtn(), CeOnlineModeLabel(room.mode),
+        const bool canCycleMode = gModel.RoomHostCanCycleMode();
+        if (DrawButton(CeOnlineLayout::RoomModeBtn(), effModeLabel,
                        hsZone && gModel.RoomHostFocus() == CeOnlineUiModel::ROOM_HS_MODE,
-                       true, mx, my, canClick)) gModel.RoomHostCycleMode(1);
+                       canCycleMode, mx, my, canClick)) gModel.RoomHostCycleMode(1);
         const bool canToggleSlot = (selSeat && selSeat->kind != CE_ONLINE_SEAT_HUMAN);
         if (DrawButton(CeOnlineLayout::RoomSlotBtn(), "Cycle Slot",
                        hsZone && gModel.RoomHostFocus() == CeOnlineUiModel::ROOM_HS_SLOT,
@@ -941,9 +988,9 @@ void RenderRoom(float mx, float my, bool mouseMoved, int *wheel, bool canClick) 
                        hsZone && gModel.RoomHostFocus() == CeOnlineUiModel::ROOM_HS_START,
                        true, mx, my, canClick, canStart ? kGood : kGrey)) gModel.RoomHostStartMatch();
     } else {
-        CeOnlineRect guestStatus = { 84.f, 276.f, 556.f, 296.f };
+        CeOnlineRect guestStatus = { 84.f, 288.f, 556.f, 308.f };
         DrawPanelBox(guestStatus, kPanelBg, kBorder);
-        DrawTextCenter(guestStatus, kCream, std::string("Mode: ") + CeOnlineModeLabel(room.mode) + "   " + startReason);
+        DrawTextCenter(guestStatus, kCream, std::string("Mode: ") + effModeLabel + "   " + startReason);
     }
 
     const CeOnlineRect chatLog = CeOnlineLayout::RoomChatLog();
@@ -953,7 +1000,7 @@ void RenderRoom(float mx, float my, bool mouseMoved, int *wheel, bool canClick) 
         DrawTextLeft(chatLog.x0 + 8.f, chatLog.y0 + 6.f, 450.f, kGrey, "No lobby messages yet.");
     } else {
         for (size_t i = 0; i < lines.size(); ++i) {
-            DrawTextLeft(chatLog.x0 + 8.f, chatLog.y0 + 3.f + float(i) * 15.f, 456.f, kWhite, lines[i]);
+            DrawTextLeft(chatLog.x0 + 8.f, chatLog.y0 + 3.f + float(i) * 13.5f, 456.f, kWhite, lines[i]);
         }
     }
 
@@ -990,7 +1037,8 @@ void RenderProfile(float mx, float my, bool mouseMoved, bool canClick) {
     DrawTextLeft(st.x0 + 12.f, st.y0 + 10.f, 396.f, kWhite, line);
     std::snprintf(line, sizeof(line), "Matches Played: %u    Wins: %u", prof.matchesPlayed, prof.matchesWon);
     DrawTextLeft(st.x0 + 12.f, st.y0 + 34.f, 396.f, kCream, line);
-    DrawTextLeft(st.x0 + 12.f, st.y0 + 58.f, 396.f, kGrey, "Lobby Server: " + CeOnlineTruncateFontSafe(prof.serverUrl, 40));
+    DrawTextLeft(st.x0 + 12.f, st.y0 + 58.f, 396.f, kGrey,
+                 "Lobby Server: " + CeOnlineFormatServerDisplay(prof.serverUrl, HasCustomLobbyUrlOverride()));
     std::snprintf(line, sizeof(line), "Server Status: %s    Ping: %s",
                   CeOnlineConnStatusLabel(prof.connStatus), prof.PingLabel().c_str());
     const uint32_t stCol = (prof.connStatus == CE_ONLINE_CONN_ONLINE) ? kGood
@@ -1254,6 +1302,14 @@ int PortCeOnlineHostKey(int kind, char ch) {
         }
         return 0;
     case CE_OUI_KEY_CHAR:
+        if (ch == '\0') {
+            // Spacebar activation query from ce_online_ui.cpp: activate focused button only when not typing.
+            if (!gModel.WantsTextInput()) {
+                PortCeOnlineHostButton(CE_OUI_BTN_SELECT);
+                return 1;
+            }
+            return 0;
+        }
         if (gModel.Page() == CE_ONLINE_PAGE_ROOM && !gModel.ChatComposing()) {
             if (ch == 'r' || ch == 'R') { PlaySnd(CE_OUI_SND_SELECT); gModel.RoomToggleReady(); return 1; }
             if (ch == 's' || ch == 'S') { PlaySnd(CE_OUI_SND_MOVE); gModel.RoomCycleSide(1); return 1; }

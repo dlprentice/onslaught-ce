@@ -291,7 +291,14 @@ def check_keys(map_text):
     assert "for (int k = 0; k < 256; ++k) gDown[k] = LT.KeyDown[k] != 0;" in opened and "memset(gDown" not in opened, \
         "a key that is already held when the map opens is held, not a new press when it repeats"
     assert opened.index("gDown[k] = LT.KeyDown[k]") < opened.index("gCloseKey = OpenKey();") < opened.index("gDown[gCloseKey] = true;"), "the open key stays held whatever the game's state says"
-    assert "\tLay();" in opened and opened.index("else FitView();") < opened.index("\tLay();"), "the layout exists once the view is set, before the first frame: a zoom in the same batch as the open key works on it"
+    assert "gLooseBounds = strategic;" in opened and "gKeptMapLevel != GAME.GetCurrentLevel()" in opened and "gKeptLevel != GAME.GetCurrentLevel()" in opened, \
+        "the 2D tactical map resets loose bounds and keeps its own fitted state apart from the 3D live view"
+    assert "else FitView();\n\tLay();" in opened, "the layout exists once the view is set, before the first frame: a zoom in the same batch as the open key works on it"
+    closed = function(map_text, "void Close()\n{")
+    assert "if (wasStrategic)" in closed and "gKeptLevel = GAME.GetCurrentLevel();" in closed and "gKeptMapLevel = GAME.GetCurrentLevel();" in closed, \
+        "closing saves the 3D live view and the 2D tactical map into separate kept records"
+    ended = function(map_text, "void PortCeCmdLevelEnd()\n{")
+    assert "\tgKeptLevel = -1;" in ended and "\tgKeptMapLevel = -1;" in ended, "level end resets both 3D and 2D kept views"
     assert "else { gEscClosed = true; Close(); }" in map_text, "the Esc that closes the map is remembered"
     hook = function(map_text, "bool PortCeCmdKey(unsigned key, bool repeat)")
     assert hook.index("if (key == DIK_ESCAPE && gEscClosed)") < hook.index("key != OpenKey()"), "the repeats of that Esc are looked at before the open key's test"
@@ -769,6 +776,16 @@ class Mutants(unittest.TestCase):
         self.assertEqual(text.count(old), 1)
         with self.assertRaises(AssertionError):
             check_keys(text.replace(old, "\t// the layout exists before the first frame draws it"))
+
+    def test_kept_map_view_decoupled_from_live_view(self):
+        text = MAP.read_text()
+        for old, new in (("gLooseBounds = strategic;", "gLooseBounds = true;"),
+                         ("gKeptMapLevel != GAME.GetCurrentLevel()", "gKeptLevel != GAME.GetCurrentLevel()"),
+                         ("gKeptMapLevel = GAME.GetCurrentLevel();", "gKeptLevel = GAME.GetCurrentLevel();"),
+                         ("\tgKeptMapLevel = -1;", "\t(void)gKeptMapLevel;")):
+            self.assertEqual(text.count(old), 1)
+            with self.assertRaises(AssertionError):
+                check_keys(text.replace(old, new, 1))
 
     def test_the_repeats_of_the_esc_that_closed_the_map_reach_the_game(self):
         text = MAP.read_text()

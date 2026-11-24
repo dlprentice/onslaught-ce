@@ -120,6 +120,8 @@ struct CeSvcHostPatch {
     int map = 850;
     bool has_mode = false;
     std::string mode;
+    bool has_max_seats = false;
+    uint16_t max_seats = 4;
     bool has_require_relay = false;
     bool require_relay = false;
     bool has_ai_fill = false;

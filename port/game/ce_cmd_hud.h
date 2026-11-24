@@ -451,12 +451,11 @@ struct CeCmdHudLayout
 
 // Pure responsive bottom-docked RTS Command Bar layout for 640x480, 1280x720, 1920x1080 and beyond.
 // Enforces strict 3%-4% screen safe-area margins so 9-sliced brackets NEVER clip the left/right/bottom
-// edges, ALWAYS bottom-docks FORCES regardless of radio dialogue (never pushing the bar across the center
-// of the battlefield), and exposes subtitleSafeRect cleanly above FORCES for subtitles and toasts.
+// edges, shifts cleanly above active native radio dialogue when uiBottom reserves bottom screen space,
+// and exposes subtitleSafeRect cleanly above FORCES for subtitles and toasts.
 inline CeCmdHudLayout CeCmdHudComputeLayout(float viewportW, float viewportH, float uiScale,
                                             float uiBottom, int totalPlacards, int requestedPage)
 {
-	(void)uiBottom;
 	CeCmdHudLayout out = {};
 	if (!(viewportW >= 320.f && viewportH >= 240.f && uiScale > 0.f)) return out;
 	const float u = uiScale;
@@ -472,8 +471,16 @@ inline CeCmdHudLayout CeCmdHudComputeLayout(float viewportW, float viewportH, fl
 	const float maxBarH = std::floor(viewportH * 0.165f);
 	if (barH > maxBarH) barH = maxBarH;
 	if (barH < 64.f) barH = 64.f;
-	// Always bottom-dock FORCES cleanly with >= 24 px bottom margin at 720p (never pushed into mid-screen by subtitles).
-	const float barY = std::floor(viewportH - barH - bottomGap);
+	// Bottom-dock FORCES by default, shifting cleanly above active native radio dialogue when uiBottom reserves bottom space.
+	const float defaultBarY = std::floor(viewportH - barH - bottomGap);
+	const float dlgGap = std::floor(4.f * u);
+	float barY = defaultBarY;
+	if (uiBottom > 0.f && uiBottom < viewportH)
+	{
+		float dlgBarY = std::floor(uiBottom - barH - dlgGap);
+		if (dlgBarY < topReserved) dlgBarY = topReserved;
+		if (dlgBarY < barY) barY = dlgBarY;
+	}
 	const float barW = std::floor(viewportW - 2.f * margin);
 	if (barW < 240.f || barY < topReserved) return out;
 

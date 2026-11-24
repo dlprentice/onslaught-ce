@@ -28,9 +28,30 @@ bool PrintableBounded(const char *s, size_t cap, bool requireNonEmpty) {
     return true;
 }
 
-bool ValidMode(const char *mode) {
-    return mode && (!strcmp(mode, "coop_defence") || !strcmp(mode, "coop_skirmish") ||
-                    !strcmp(mode, "versus_2v2") || !strcmp(mode, "tutorial"));
+const char *ExpectedModeForOnlineLevel(uint32_t level) {
+    switch (level) {
+    case 850u:
+    case 853u:
+    case 859u:
+    case 864u:
+    case 865u:
+    case 866u:
+        return "coop_skirmish";
+    case 851u:
+    case 852u:
+    case 854u:
+    case 855u:
+    case 857u:
+    case 860u:
+    case 861u:
+    case 862u:
+    case 863u:
+        return "versus_2v2";
+    case 856u:
+        return "coop_defence";
+    default:
+        return nullptr;
+    }
 }
 
 size_t SanitizeChatText(const char *in, char *out, size_t cap) {
@@ -120,7 +141,9 @@ extern "C" int CeOnlineMatchTicketValid(const CE_OnlineMatchTicket *ticket) {
         !PrintableBounded(ticket->mode, sizeof(ticket->mode), true) ||
         !PrintableBounded(ticket->topology, sizeof(ticket->topology), true))
         return 0;
-    if (!ValidMode(ticket->mode) || strcmp(ticket->topology, "star_lockstep") != 0)
+    const char *expectedMode = ExpectedModeForOnlineLevel(ticket->level);
+    if (!expectedMode || strcmp(ticket->mode, expectedMode) != 0 ||
+        strcmp(ticket->topology, "star_lockstep") != 0)
         return 0;
     if (ticket->require_relay > 1u) return 0;
     if (ticket->slot_count < 2u || ticket->slot_count > CE_ONLINE_MAX_MATCH_SLOTS) return 0;
@@ -836,6 +859,8 @@ void CeOnlineMatchSession::Stop(bool graceful) {
 
 void PortCeOnlineMatchSetBridge(ICeOnlineStarBridge *bridge) {
     gBridge = bridge;
+    if (!bridge)
+        gSession.DetachBridge();
 }
 
 CeOnlineMatchSession *PortCeOnlineMatchSession(void) {

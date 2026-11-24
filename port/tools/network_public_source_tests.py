@@ -27,7 +27,7 @@ MANIFEST = ROOT / "port/network/PATCHES.txt"
 # Reviewed public replacements that the network guards touch, through host 1863f816 (update after review). 0.1.14: the device recovery code of d3dapp.* is no longer
 # behind CE_NETWORK_OFF (patch 0085 applies in the default build), so these are the default build's text of the files.
 MAIN_REPLACEMENTS = {
-    "d3dapp.cpp": "2f2e89d3b4924f3e4beb27503a2d06c777db38c65c98870974f4242b839a4451",
+    "d3dapp.cpp": "a9be6777f79e5aa59ee008316a9527b56226a3a6e0e344891b01d9351ca798b4",
     "d3dapp.h": "cc0b7513d58804631fdc3ebce96864ba9d9087a48252ee28e4d1ec23a29c84f1",
 }
 CODE = (".c", ".cpp", ".h", ".hpp", ".inl", ".inc")
@@ -51,7 +51,8 @@ PUBLIC_CONTEXT_PATCHES = frozenset(("0065-network-world.patch", "0067-network-se
 PUBLIC_GUARDED_PATCHES = frozenset(("0190-ce-hud-4k.patch", "0085-public-device-recovery.patch", "0206-native-editor-lifecycle.patch",
                                     "0207-ce-museum-visit-lifecycle.patch", "0208-ce-full-models.patch", "0220-ce-dodge-assist.patch",
                                     "0235-ce-commander-one-screen.patch", "0262-ce-normal-quit-status.patch", "0278-ce-commander-unit-orders.patch",
-                                    "0285-ce-playunit-hud.patch", "0303-ce-hook-level-begin.patch", "0338-surface-point-order.patch"))
+                                    "0285-ce-playunit-hud.patch", "0303-ce-hook-level-begin.patch", "0338-surface-point-order.patch",
+                                    "0381-ce-perf-surf-museum-fixes.patch"))
 
 
 def strip(text):

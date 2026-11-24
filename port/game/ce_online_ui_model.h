@@ -102,6 +102,89 @@ inline std::string CeOnlineTruncateFontSafe(const std::string &in, size_t maxCha
     return safe.substr(0, maxChars - 3) + "...";
 }
 
+// Formats the lobby server display line without ever exposing raw default hostnames/URLs.
+inline std::string CeOnlineFormatServerDisplay(const std::string &serverUrl, bool hasCustomIniOverride = false) {
+    if (hasCustomIniOverride) {
+        return "Custom Server (ce.ini)";
+    }
+    if (serverUrl.empty() || serverUrl == "Not configured" || serverUrl == "Not connected") {
+        return "Not configured";
+    }
+    return "Official Online Service";
+}
+
+// Fits sanitized text into a maximum pixel width at scale >= minScale (0.65f) by scaling down
+// first and ellipsizing with "..." when even minScale would exceed maxW (preventing column bleed).
+// When keepTail is true (active text inputs with cursor), trims from the left so live typing stays visible.
+template <typename MeasureFn>
+inline void CeOnlineFitTextToWidth(const std::string &in, float maxW, float minScale,
+                                   MeasureFn measure, std::string *outText,
+                                   float *outScale, float *outDrawW, bool keepTail = false) {
+    std::string safe = CeOnlineSanitizeForFont(in);
+    if (maxW <= 0.f || safe.empty()) {
+        if (outText) outText->clear();
+        if (outScale) *outScale = 1.f;
+        if (outDrawW) *outDrawW = 0.f;
+        return;
+    }
+    if (minScale <= 0.1f) minScale = 0.65f;
+    if (minScale > 1.f) minScale = 1.f;
+
+    float w = measure(safe);
+    if (w <= maxW) {
+        if (outText) *outText = safe;
+        if (outScale) *outScale = 1.f;
+        if (outDrawW) *outDrawW = w;
+        return;
+    }
+    if (w * minScale <= maxW && w > 0.f) {
+        const float sc = maxW / w;
+        if (outText) *outText = safe;
+        if (outScale) *outScale = sc;
+        if (outDrawW) *outDrawW = w * sc;
+        return;
+    }
+
+    std::string best;
+    const size_t len = safe.size();
+    for (size_t keep = len; keep > 0; --keep) {
+        const size_t n = keep - 1;
+        std::string cand;
+        if (keepTail) {
+            cand = (n > 0) ? (std::string("...") + safe.substr(len - n)) : std::string("...");
+        } else {
+            cand = (n > 0) ? (safe.substr(0, n) + "...") : std::string("...");
+        }
+        const float cw = measure(cand);
+        if (cw * minScale <= maxW) {
+            best = cand;
+            w = cw;
+            break;
+        }
+    }
+    if (best.empty()) {
+        static const char *const kDots[] = { "..", "." };
+        for (int i = 0; i < 2; ++i) {
+            const float cw = measure(std::string(kDots[i]));
+            if (cw * minScale <= maxW) {
+                best = kDots[i];
+                w = cw;
+                break;
+            }
+        }
+        if (best.empty()) w = 0.f;
+    }
+
+    float sc = 1.f;
+    if (w > maxW && w > 0.f) {
+        sc = maxW / w;
+        if (sc < minScale) sc = minScale;
+    }
+    if (outText) *outText = best;
+    if (outScale) *outScale = sc;
+    if (outDrawW) *outDrawW = w * sc;
+}
+
 // ---------------------------------------------------------------------------
 // Input Validation Helpers (matching port/services/online_lobby/PROTOCOL.md)
 // ---------------------------------------------------------------------------
@@ -207,14 +290,13 @@ inline bool CeOnlineValidateRoomCode(const std::string &raw, std::string *outCod
 }
 
 // ---------------------------------------------------------------------------
-// Modes & 18 Online Maps Catalog (850..866 + 100)
+// Modes & 16 Verified Retail Online Maps Catalog (strict map <-> mode contract)
 // ---------------------------------------------------------------------------
 enum CeOnlineMode {
     CE_ONLINE_MODE_VERSUS_2V2 = 0,
     CE_ONLINE_MODE_COOP_SKIRMISH = 1,
     CE_ONLINE_MODE_COOP_DEFENCE = 2,
-    CE_ONLINE_MODE_TUTORIAL = 3,
-    CE_ONLINE_MODE_COUNT = 4
+    CE_ONLINE_MODE_COUNT = 3
 };
 
 struct CeOnlineModeInfo {
@@ -227,8 +309,7 @@ inline const CeOnlineModeInfo &CeOnlineModeAt(int index) {
     static const CeOnlineModeInfo kModes[CE_ONLINE_MODE_COUNT] = {
         { CE_ONLINE_MODE_VERSUS_2V2,    "versus_2v2",    "2v2 Versus" },
         { CE_ONLINE_MODE_COOP_SKIRMISH, "coop_skirmish", "Co-op Skirmish" },
-        { CE_ONLINE_MODE_COOP_DEFENCE,  "coop_defence",  "Building Defence" },
-        { CE_ONLINE_MODE_TUTORIAL,      "tutorial",      "Tutorial" },
+        { CE_ONLINE_MODE_COOP_DEFENCE,  "coop_defence",  "Co-op Defence" },
     };
     if (index < 0 || index >= CE_ONLINE_MODE_COUNT) return kModes[0];
     return kModes[index];
@@ -245,34 +326,69 @@ inline const char *CeOnlineModeLabel(const std::string &wire) {
     return CeOnlineModeAt(CeOnlineFindModeIndex(wire)).label;
 }
 
+inline const char *CeOnlineModeDisplayLabel(const std::string &wire, uint16_t maxSeats) {
+    if (wire == "versus_2v2") {
+        return (maxSeats == 2) ? "1v1 Versus" : "2v2 Versus";
+    }
+    return CeOnlineModeLabel(wire);
+}
+
+inline uint16_t CeOnlineClampMaxSeatsForMode(CeOnlineMode mode, uint16_t seats, uint16_t cap) {
+    if (cap < CE_ONLINE_UI_MIN_SLOTS) cap = CE_ONLINE_UI_MIN_SLOTS;
+    if (cap > CE_ONLINE_UI_WIRE_MAX_SLOTS) cap = CE_ONLINE_UI_WIRE_MAX_SLOTS;
+    if (seats < CE_ONLINE_UI_MIN_SLOTS) seats = CE_ONLINE_UI_MIN_SLOTS;
+    if (seats > cap) seats = cap;
+    if (mode == CE_ONLINE_MODE_VERSUS_2V2) {
+        // Versus maps require even balanced teams (2 = 1v1, 4 = 2v2, etc.).
+        if ((seats & 1u) != 0u) {
+            if (seats + 1u <= cap) seats = static_cast<uint16_t>(seats + 1u);
+            else if (seats > CE_ONLINE_UI_MIN_SLOTS) seats = static_cast<uint16_t>(seats - 1u);
+            else seats = CE_ONLINE_UI_MIN_SLOTS;
+        }
+    }
+    return seats;
+}
+
+inline void CeOnlineDefaultBeConfigsForMap(int level, std::vector<std::string> *out) {
+    if (!out) return;
+    out->clear();
+    out->push_back("Standard");
+    if (level != 856) {
+        out->push_back("Sniper");
+    }
+    out->push_back("Laser");
+    out->push_back("Blaster");
+}
+
 struct CeOnlineMapInfo {
     int level;
     const char *name;
     CeOnlineMode defaultMode;
 };
 
-static const int CE_ONLINE_MAP_COUNT = 18;
+static const int CE_ONLINE_MAP_COUNT = 16;
 
 inline const CeOnlineMapInfo &CeOnlineMapAt(int index) {
     static const CeOnlineMapInfo kMaps[CE_ONLINE_MAP_COUNT] = {
-        { 850, "Skirmish 1 - Highlands",     CE_ONLINE_MODE_COOP_SKIRMISH },
-        { 853, "Skirmish 2 - Coastal Flats", CE_ONLINE_MODE_COOP_SKIRMISH },
-        { 859, "Skirmish 3 - Canyon Pass",   CE_ONLINE_MODE_COOP_SKIRMISH },
-        { 864, "Skirmish 4 - Island Atoll",  CE_ONLINE_MODE_COOP_SKIRMISH },
-        { 865, "Skirmish 5 - Basin Outpost", CE_ONLINE_MODE_COOP_SKIRMISH },
-        { 866, "Skirmish 6 - Crater Rim",    CE_ONLINE_MODE_COOP_SKIRMISH },
-        { 851, "Versus 1 - Twin Ridges",     CE_ONLINE_MODE_VERSUS_2V2 },
-        { 855, "Versus 2 - Harbour Front",   CE_ONLINE_MODE_VERSUS_2V2 },
-        { 860, "Versus 3 - Open Sea",        CE_ONLINE_MODE_VERSUS_2V2 },
-        { 861, "Versus 4 - Split Valley",    CE_ONLINE_MODE_VERSUS_2V2 },
-        { 862, "Versus 5 - Red Desert",      CE_ONLINE_MODE_VERSUS_2V2 },
-        { 863, "Versus 6 - Frozen Reach",    CE_ONLINE_MODE_VERSUS_2V2 },
-        { 852, "Co-op 1 - Forward Base",     CE_ONLINE_MODE_COOP_SKIRMISH },
-        { 854, "Co-op 2 - Valley Assault",   CE_ONLINE_MODE_COOP_SKIRMISH },
-        { 857, "Co-op 3 - Citadel Strike",   CE_ONLINE_MODE_COOP_SKIRMISH },
-        { 856, "Building Defence",           CE_ONLINE_MODE_COOP_DEFENCE },
-        { 858, "Building Defence 2",         CE_ONLINE_MODE_COOP_DEFENCE },
-        { 100, "Tutorial",                   CE_ONLINE_MODE_TUTORIAL },
+        // Co-op Skirmish ONLY (retail wtype=1, 2-4 Forseti seats)
+        { 850, "Skirmish 1 - Highlands",         CE_ONLINE_MODE_COOP_SKIRMISH },
+        { 853, "Skirmish 2 - Canyon Pass",       CE_ONLINE_MODE_COOP_SKIRMISH },
+        { 859, "Skirmish 3 - Twin Islands",      CE_ONLINE_MODE_COOP_SKIRMISH },
+        { 864, "Skirmish 4 - Ridge Assault",     CE_ONLINE_MODE_COOP_SKIRMISH },
+        { 865, "Skirmish 5 - Basin Outpost",     CE_ONLINE_MODE_COOP_SKIRMISH },
+        { 866, "Skirmish 6 - Coastal Stronghold",CE_ONLINE_MODE_COOP_SKIRMISH },
+        // Versus ONLY (retail wtype=2, 2 or 4 balanced seats: 1v1 or 2v2)
+        { 851, "Versus 1 - Island Clash",        CE_ONLINE_MODE_VERSUS_2V2 },
+        { 855, "Versus 2 - Volcano Arena",       CE_ONLINE_MODE_VERSUS_2V2 },
+        { 860, "Versus 3 - Fortress Valley",     CE_ONLINE_MODE_VERSUS_2V2 },
+        { 861, "Versus 4 - Harbor Front",        CE_ONLINE_MODE_VERSUS_2V2 },
+        { 862, "Versus 5 - Desert Flats",        CE_ONLINE_MODE_VERSUS_2V2 },
+        { 863, "Versus 6 - Archipelago",         CE_ONLINE_MODE_VERSUS_2V2 },
+        { 852, "Versus 7 - Forward Base",        CE_ONLINE_MODE_VERSUS_2V2 },
+        { 854, "Versus 8 - Valley Assault",      CE_ONLINE_MODE_VERSUS_2V2 },
+        { 857, "Versus 9 - Citadel Strike",      CE_ONLINE_MODE_VERSUS_2V2 },
+        // Co-op Defence ONLY (retail wtype=1, 2-4 Forseti seats, [Standard, Laser, Blaster])
+        { 856, "Building Defence",               CE_ONLINE_MODE_COOP_DEFENCE },
     };
     if (index < 0 || index >= CE_ONLINE_MAP_COUNT) return kMaps[0];
     return kMaps[index];
@@ -285,6 +401,13 @@ inline int CeOnlineFindMapIndex(int level) {
     return 0;
 }
 
+inline bool CeOnlineMapIsKnown(int level) {
+    for (int i = 0; i < CE_ONLINE_MAP_COUNT; ++i) {
+        if (CeOnlineMapAt(i).level == level) return true;
+    }
+    return false;
+}
+
 inline const char *CeOnlineMapName(int level) {
     for (int i = 0; i < CE_ONLINE_MAP_COUNT; ++i) {
         if (CeOnlineMapAt(i).level == level) return CeOnlineMapAt(i).name;
@@ -293,9 +416,12 @@ inline const char *CeOnlineMapName(int level) {
 }
 
 inline bool CeOnlineMapSupportsMode(int level, CeOnlineMode mode) {
-    if (level == 100) return mode == CE_ONLINE_MODE_TUTORIAL;
-    if (level == 856 || level == 858) return mode == CE_ONLINE_MODE_COOP_DEFENCE;
-    return mode == CE_ONLINE_MODE_COOP_SKIRMISH || mode == CE_ONLINE_MODE_VERSUS_2V2;
+    for (int i = 0; i < CE_ONLINE_MAP_COUNT; ++i) {
+        if (CeOnlineMapAt(i).level == level) {
+            return CeOnlineMapAt(i).defaultMode == mode;
+        }
+    }
+    return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -390,7 +516,7 @@ struct CeOnlineUiRoomSummary {
     bool compatible;
 
     CeOnlineUiRoomSummary()
-        : topology("star_lockstep"), mode("versus_2v2"), state("lobby"),
+        : topology("star_lockstep"), mode("coop_skirmish"), state("lobby"),
           map(850), usedSeats(1), humanSeats(1), maxSeats(4),
           hasPassword(false), requireRelay(false), compatible(true) {}
 };
@@ -471,7 +597,7 @@ struct CeOnlineStartTicketView {
     std::string rosterHash;
 
     CeOnlineStartTicketView()
-        : valid(false), seed(0), level(850), mode("versus_2v2"),
+        : valid(false), seed(0), level(850), mode("coop_skirmish"),
           topology("star_lockstep"), requireRelay(false) {}
 };
 
@@ -499,7 +625,7 @@ struct CeOnlineRoomView {
 
     CeOnlineRoomView()
         : active(false), rev(0), state("lobby"), topology("star_lockstep"),
-          mode("versus_2v2"), map(850), maxSeats(4), hostSeat(0),
+          mode("coop_skirmish"), map(850), maxSeats(4), hostSeat(0),
           localSeat(0xFFFFu), visibility("public"), hasPassword(false),
           requireRelay(false), aiFill(true) {}
 };
@@ -517,7 +643,7 @@ struct CeOnlineCreateParams {
     std::string beCfg;
 
     CeOnlineCreateParams()
-        : mode("versus_2v2"), map(850), maxSeats(CE_ONLINE_UI_ACTIVE_MAX_SLOTS),
+        : mode("coop_skirmish"), map(850), maxSeats(CE_ONLINE_UI_ACTIVE_MAX_SLOTS),
           topology("star_lockstep"), visibility("public"),
           requireRelay(false), aiFill(true) {}
 };
@@ -527,6 +653,8 @@ struct CeOnlineHostPatch {
     int map;
     bool hasMode;
     std::string mode;
+    bool hasMaxSeats;
+    uint16_t maxSeats;
     bool hasRequireRelay;
     bool requireRelay;
     bool hasAiFill;
@@ -538,8 +666,8 @@ struct CeOnlineHostPatch {
     uint16_t kickSeat;
 
     CeOnlineHostPatch()
-        : hasMap(false), map(850), hasMode(false), hasRequireRelay(false),
-          requireRelay(false), hasAiFill(false), aiFill(true),
+        : hasMap(false), map(850), hasMode(false), hasMaxSeats(false), maxSeats(4),
+          hasRequireRelay(false), requireRelay(false), hasAiFill(false), aiFill(true),
           hasSeatKind(false), targetSeat(0), seatKind(CE_ONLINE_SEAT_OPEN),
           hasKickSeat(false), kickSeat(0) {}
 };
@@ -592,15 +720,7 @@ public:
     virtual bool CopyToClipboard(const std::string &text) { (void)text; return false; }
     virtual bool PasteFromClipboard(std::string *out) { (void)out; return false; }
     virtual void GetBeConfigsForMap(int level, std::vector<std::string> *out) {
-        (void)level;
-        if (out) {
-            out->clear();
-            out->push_back("Standard");
-            out->push_back("Vulcan");
-            out->push_back("Pulse");
-            out->push_back("Blazer");
-            out->push_back("Sniper");
-        }
+        CeOnlineDefaultBeConfigsForMap(level, out);
     }
     virtual void OnOpenDirectLan() {}
     virtual void OnMatchTicketReady(const CeOnlineStartTicketView &ticket) { (void)ticket; }
@@ -640,10 +760,10 @@ struct CeOnlineLayout {
     }
 
     // Browser page: toolbar (top) + room list panel (6 rows) + pager + bottom bar
-    static CeOnlineRect BrowserFilterBtn()   { return { 84.f,  132.f, 236.f, 152.f }; }
-    static CeOnlineRect BrowserRefreshBtn()  { return { 242.f, 132.f, 326.f, 152.f }; }
-    static CeOnlineRect BrowserCreateBtn()   { return { 332.f, 132.f, 444.f, 152.f }; }
-    static CeOnlineRect BrowserJoinCodeBtn() { return { 450.f, 132.f, 556.f, 152.f }; }
+    static CeOnlineRect BrowserFilterBtn()   { return { 84.f,  132.f, 230.f, 152.f }; }
+    static CeOnlineRect BrowserRefreshBtn()  { return { 236.f, 132.f, 320.f, 152.f }; }
+    static CeOnlineRect BrowserCreateBtn()   { return { 326.f, 132.f, 438.f, 152.f }; }
+    static CeOnlineRect BrowserJoinCodeBtn() { return { 444.f, 132.f, 556.f, 152.f }; }
     static CeOnlineRect BrowserTableHeader() { return { 84.f,  158.f, 556.f, 176.f }; }
     static CeOnlineRect BrowserRow(int visIdx) {
         const float y0 = 178.f + float(visIdx) * 28.f;
@@ -677,30 +797,31 @@ struct CeOnlineLayout {
     static CeOnlineRect JoinSubmitBtn()      { return { 330.f, 266.f, 520.f, 294.f }; }
     static CeOnlineRect JoinBackBtn()        { return { 220.f, 312.f, 420.f, 340.f }; }
 
-    // Room page: info bar + 4-row paginated roster + player/host controls + 6-line chat + compose
-    static CeOnlineRect RoomInfoBar()        { return { 84.f,  130.f, 464.f, 150.f }; }
-    static CeOnlineRect RoomCopyCodeBtn()    { return { 468.f, 130.f, 556.f, 150.f }; }
-    static CeOnlineRect RoomRosterHeader()   { return { 84.f,  154.f, 464.f, 170.f }; }
-    static CeOnlineRect RoomPagePrevBtn()    { return { 468.f, 154.f, 510.f, 170.f }; }
-    static CeOnlineRect RoomPageNextBtn()    { return { 514.f, 154.f, 556.f, 170.f }; }
+    // Room page: 2-line room+map header + 4-row paginated roster + player/host controls + 6-line chat + compose
+    static CeOnlineRect RoomInfoBar()        { return { 84.f,  128.f, 464.f, 146.f }; }
+    static CeOnlineRect RoomCopyCodeBtn()    { return { 468.f, 128.f, 556.f, 146.f }; }
+    static CeOnlineRect RoomMapBar()         { return { 84.f,  148.f, 556.f, 166.f }; }
+    static CeOnlineRect RoomRosterHeader()   { return { 84.f,  168.f, 508.f, 184.f }; }
+    static CeOnlineRect RoomPagePrevBtn()    { return { 512.f, 168.f, 532.f, 184.f }; }
+    static CeOnlineRect RoomPageNextBtn()    { return { 536.f, 168.f, 556.f, 184.f }; }
     static CeOnlineRect RoomSeatRow(int visIdx) {
-        const float y0 = 172.f + float(visIdx) * 19.f;
+        const float y0 = 186.f + float(visIdx) * 19.f;
         return { 84.f, y0, 556.f, y0 + 18.f };
     }
-    // Player action row (y = 252..272)
-    static CeOnlineRect RoomReadyBtn()       { return { 84.f,  252.f, 172.f, 272.f }; }
-    static CeOnlineRect RoomSideBtn()        { return { 176.f, 252.f, 274.f, 272.f }; }
-    static CeOnlineRect RoomBeBtn()          { return { 278.f, 252.f, 392.f, 272.f }; }
-    static CeOnlineRect RoomMuteBtn()        { return { 396.f, 252.f, 474.f, 272.f }; }
-    static CeOnlineRect RoomLeaveBtn()       { return { 478.f, 252.f, 556.f, 272.f }; }
-    // Host action row (y = 276..296)
-    static CeOnlineRect RoomMapBtn()         { return { 84.f,  276.f, 180.f, 296.f }; }
-    static CeOnlineRect RoomModeBtn()        { return { 184.f, 276.f, 274.f, 296.f }; }
-    static CeOnlineRect RoomSlotBtn()        { return { 278.f, 276.f, 368.f, 296.f }; }
-    static CeOnlineRect RoomKickBtn()        { return { 372.f, 276.f, 436.f, 296.f }; }
-    static CeOnlineRect RoomStartBtn()       { return { 440.f, 276.f, 556.f, 296.f }; }
-    // Chat box & compose bar (y = 300..418)
-    static CeOnlineRect RoomChatLog()        { return { 84.f,  300.f, 556.f, 398.f }; }
+    // Player action row (y = 264..284)
+    static CeOnlineRect RoomReadyBtn()       { return { 84.f,  264.f, 172.f, 284.f }; }
+    static CeOnlineRect RoomSideBtn()        { return { 176.f, 264.f, 274.f, 284.f }; }
+    static CeOnlineRect RoomBeBtn()          { return { 278.f, 264.f, 392.f, 284.f }; }
+    static CeOnlineRect RoomMuteBtn()        { return { 396.f, 264.f, 474.f, 284.f }; }
+    static CeOnlineRect RoomLeaveBtn()       { return { 478.f, 264.f, 556.f, 284.f }; }
+    // Host action row (y = 288..308)
+    static CeOnlineRect RoomMapBtn()         { return { 84.f,  288.f, 174.f, 308.f }; }
+    static CeOnlineRect RoomModeBtn()        { return { 178.f, 288.f, 282.f, 308.f }; }
+    static CeOnlineRect RoomSlotBtn()        { return { 286.f, 288.f, 374.f, 308.f }; }
+    static CeOnlineRect RoomKickBtn()        { return { 378.f, 288.f, 438.f, 308.f }; }
+    static CeOnlineRect RoomStartBtn()       { return { 442.f, 288.f, 556.f, 308.f }; }
+    // Chat box & compose bar (y = 312..420)
+    static CeOnlineRect RoomChatLog()        { return { 84.f,  312.f, 556.f, 398.f }; }
     static CeOnlineRect RoomChatCompose()    { return { 84.f,  400.f, 486.f, 420.f }; }
     static CeOnlineRect RoomChatSendBtn()    { return { 490.f, 400.f, 556.f, 420.f }; }
 
@@ -869,12 +990,14 @@ public:
           mConnectingCancellable(true),
           mPendingStartMatch(false),
           mLastRoomMap(-1),
-          mLastNowMs(0) {
-        mAvailableBeConfigs.push_back("Standard");
-        mAvailableBeConfigs.push_back("Vulcan");
-        mAvailableBeConfigs.push_back("Pulse");
-        mAvailableBeConfigs.push_back("Blazer");
-        mAvailableBeConfigs.push_back("Sniper");
+          mLastNowMs(0),
+          mHasOptimisticMap(false),
+          mOptimisticMapIndex(0),
+          mOptimisticMapLevel(850),
+          mOptimisticMaxSeats(CE_ONLINE_UI_ACTIVE_MAX_SLOTS),
+          mOptimisticBaseRev(0),
+          mOptimisticSetMs(0) {
+        CeOnlineDefaultBeConfigsForMap(CeOnlineMapAt(0).level, &mAvailableBeConfigs);
     }
 
     void SetBackend(ICeOnlineUiBackend *backend) {
@@ -888,8 +1011,8 @@ public:
         if (cap < CE_ONLINE_UI_MIN_SLOTS) cap = CE_ONLINE_UI_MIN_SLOTS;
         if (cap > CE_ONLINE_UI_WIRE_MAX_SLOTS) cap = CE_ONLINE_UI_WIRE_MAX_SLOTS;
         mMaxSeatsCap = cap;
-        if (mCreateMaxSeats > mMaxSeatsCap) mCreateMaxSeats = mMaxSeatsCap;
-        if (mCreateMaxSeats < CE_ONLINE_UI_MIN_SLOTS) mCreateMaxSeats = CE_ONLINE_UI_MIN_SLOTS;
+        mCreateMaxSeats = CeOnlineClampMaxSeatsForMode(
+            static_cast<CeOnlineMode>(mCreateModeIndex), mCreateMaxSeats, mMaxSeatsCap);
     }
     uint16_t MaxSeatsCap() const { return mMaxSeatsCap; }
 
@@ -928,6 +1051,8 @@ public:
         mChatComposing = false;
         mJoinPendingResolve = false;
         mPendingStartMatch = false;
+        mLastRoomMap = -1;
+        ClearOptimisticRoomState();
         mLastTicketMatchId.clear();
     }
 
@@ -965,6 +1090,7 @@ public:
 
         std::string opErr;
         if (mBackend->TakeOpError(&opErr) && !opErr.empty()) {
+            ClearOptimisticRoomState();
             if (mPage == CE_ONLINE_PAGE_CONNECTING) {
                 mJoinPendingResolve = false;
                 mPendingStartMatch = false;
@@ -1026,6 +1152,8 @@ public:
                 if (closed) {
                     mRoom = CeOnlineRoomView();
                     mChatComposing = false;
+                    mLastRoomMap = -1;
+                    ClearOptimisticRoomState();
                     mLastTicketMatchId.clear();
                     EnterBrowser(CE_ONLINE_PAGE_HOME);
                     SetStatusNotice("The lobby room was closed.", false);
@@ -1037,13 +1165,24 @@ public:
                         latestRoom.chat.begin() + static_cast<ptrdiff_t>(latestRoom.chat.size() - CE_ONLINE_UI_CHAT_RING));
                 }
                 mRoom = latestRoom;
+                if (mHasOptimisticMap) {
+                    if (!IsLocalHost() ||
+                        (mRoom.map == mOptimisticMapLevel &&
+                         mRoom.mode == mOptimisticMode &&
+                         mRoom.maxSeats == mOptimisticMaxSeats) ||
+                        (nowMs >= mOptimisticSetMs + 4000u)) {
+                        ClearOptimisticRoomState();
+                    }
+                }
                 if (mRoom.map != mLastRoomMap) {
                     RefreshBeConfigsForMap(mRoom.map);
+                    RevalidateLocalBeConfig();
                 }
                 ClampRosterSelection();
 
                 if ((mRoom.state == "starting" || mRoom.state == "in_match") && mRoom.startTicket.valid) {
                     mPendingStartMatch = false;
+                    ClearOptimisticRoomState();
                     if (mLastTicketMatchId != mRoom.startTicket.matchId) {
                         mLastTicketMatchId = mRoom.startTicket.matchId;
                         mBackend->OnMatchTicketReady(mRoom.startTicket);
@@ -1059,6 +1198,8 @@ public:
                     mRoomZone = ROOM_ZONE_PLAYER;
                     mRoomPlayerFocus = ROOM_PL_READY;
                     mChatComposing = false;
+                    ClearOptimisticRoomState();
+                    SelectDefaultRosterSlot();
                     if (opErr.empty()) {
                         mStatusNotice.clear();
                         mStatusIsError = false;
@@ -1071,6 +1212,8 @@ public:
                 mRoom = CeOnlineRoomView();
                 mChatComposing = false;
                 mPendingStartMatch = false;
+                mLastRoomMap = -1;
+                ClearOptimisticRoomState();
                 EnterBrowser(CE_ONLINE_PAGE_HOME);
                 SetStatusNotice(opErr.empty() ? "Disconnected from lobby room." : opErr, true);
             } else if (mPage == CE_ONLINE_PAGE_CONNECTING && !mConnectingCancellable &&
@@ -1078,6 +1221,8 @@ public:
                 mRoom = CeOnlineRoomView();
                 mPendingStartMatch = false;
                 mConnectingCancellable = true;
+                mLastRoomMap = -1;
+                ClearOptimisticRoomState();
                 EnterBrowser(CE_ONLINE_PAGE_HOME);
                 SetStatusNotice(opErr.empty() ? "Match launch could not complete." : opErr, true);
             }
@@ -1450,7 +1595,7 @@ public:
     const char *CreateMapName() const { return CeOnlineMapAt(mCreateMapIndex).name; }
     int CreateModeIndex() const { return mCreateModeIndex; }
     const char *CreateModeWire() const { return CeOnlineModeAt(mCreateModeIndex).wire; }
-    const char *CreateModeLabel() const { return CeOnlineModeAt(mCreateModeIndex).label; }
+    const char *CreateModeLabel() const { return CeOnlineModeDisplayLabel(CreateModeWire(), mCreateMaxSeats); }
     uint16_t CreateMaxSeats() const { return mCreateMaxSeats; }
     bool CreateIsPublic() const { return mCreatePublic; }
     const char *CreateVisibilityLabel() const { return mCreatePublic ? "Public" : "Unlisted Code"; }
@@ -1465,26 +1610,56 @@ public:
     const char *CreateAiFillLabel() const { return mCreateAiFill ? "On" : "Off"; }
 
     void CreateCycleMap(int delta) {
-        mCreateMapIndex = (mCreateMapIndex + delta + CE_ONLINE_MAP_COUNT) % CE_ONLINE_MAP_COUNT;
-        mCreateModeIndex = static_cast<int>(CeOnlineMapAt(mCreateMapIndex).defaultMode);
+        const int step = delta % CE_ONLINE_MAP_COUNT;
+        mCreateMapIndex = (mCreateMapIndex + step + CE_ONLINE_MAP_COUNT) % CE_ONLINE_MAP_COUNT;
+        const CeOnlineMapInfo &nextMap = CeOnlineMapAt(mCreateMapIndex);
+        const CeOnlineMode curMode = static_cast<CeOnlineMode>(mCreateModeIndex);
+        if (!CeOnlineMapSupportsMode(nextMap.level, curMode)) {
+            mCreateModeIndex = static_cast<int>(nextMap.defaultMode);
+        }
+        mCreateMaxSeats = CeOnlineClampMaxSeatsForMode(
+            static_cast<CeOnlineMode>(mCreateModeIndex), mCreateMaxSeats, mMaxSeatsCap);
     }
 
     void CreateCycleMode(int delta) {
         const int level = CreateMapLevel();
+        if (mCreateModeIndex == static_cast<int>(CE_ONLINE_MODE_VERSUS_2V2) &&
+            CeOnlineMapSupportsMode(level, CE_ONLINE_MODE_VERSUS_2V2)) {
+            // On Versus maps, cycling Mode toggles 2v2 Versus (4 seats) <-> 1v1 Versus (2 seats).
+            if (mMaxSeatsCap >= 4) {
+                mCreateMaxSeats = (mCreateMaxSeats == 2) ? 4 : 2;
+            }
+            return;
+        }
         const int step = (delta < 0) ? -1 : 1;
         for (int tries = 1; tries <= CE_ONLINE_MODE_COUNT; ++tries) {
             const int cand = (mCreateModeIndex + step * tries + CE_ONLINE_MODE_COUNT * 4) % CE_ONLINE_MODE_COUNT;
             if (CeOnlineMapSupportsMode(level, static_cast<CeOnlineMode>(cand))) {
                 mCreateModeIndex = cand;
+                mCreateMaxSeats = CeOnlineClampMaxSeatsForMode(
+                    static_cast<CeOnlineMode>(mCreateModeIndex), mCreateMaxSeats, mMaxSeatsCap);
                 return;
             }
         }
     }
 
     void CreateCycleMaxSeats(int delta) {
+        const CeOnlineMode mode = static_cast<CeOnlineMode>(mCreateModeIndex);
+        if (mode == CE_ONLINE_MODE_VERSUS_2V2) {
+            uint16_t evenCap = mMaxSeatsCap;
+            if ((evenCap & 1u) != 0u && evenCap > CE_ONLINE_UI_MIN_SLOTS) --evenCap;
+            if (evenCap < CE_ONLINE_UI_MIN_SLOTS) evenCap = CE_ONLINE_UI_MIN_SLOTS;
+            const int count = static_cast<int>((evenCap - CE_ONLINE_UI_MIN_SLOTS) / 2u) + 1;
+            int cur = static_cast<int>((CeOnlineClampMaxSeatsForMode(mode, mCreateMaxSeats, evenCap) - CE_ONLINE_UI_MIN_SLOTS) / 2u);
+            const int step = (delta % count + count) % count;
+            cur = (cur + step) % count;
+            mCreateMaxSeats = static_cast<uint16_t>(CE_ONLINE_UI_MIN_SLOTS + cur * 2);
+            return;
+        }
         const int range = static_cast<int>(mMaxSeatsCap - CE_ONLINE_UI_MIN_SLOTS) + 1;
         int cur = static_cast<int>(mCreateMaxSeats - CE_ONLINE_UI_MIN_SLOTS);
-        cur = (cur + delta + range) % range;
+        const int step = (delta % range + range) % range;
+        cur = (cur + step) % range;
         mCreateMaxSeats = static_cast<uint16_t>(CE_ONLINE_UI_MIN_SLOTS + cur);
     }
 
@@ -1899,8 +2074,8 @@ public:
         CeOnlineSeatView *me = LocalSeatMutable();
         if (!me || !mBackend) return false;
         (void)delta;
-        if (mRoom.mode != "versus_2v2") {
-            SetStatusNotice("Side selection is only available in 2v2 Versus.", false);
+        if (EffectiveRoomMode() != "versus_2v2") {
+            SetStatusNotice("Side selection is only available in Versus mode.", false);
             return false;
         }
         const int nextTeam = (me->team == 0) ? 1 : 0;
@@ -2009,28 +2184,75 @@ public:
         return filtered;
     }
 
+    // Optimistic-aware Room display accessors (keep UI responsive across rapid host clicks).
+    int EffectiveRoomMap() const { return mHasOptimisticMap ? mOptimisticMapLevel : mRoom.map; }
+    std::string EffectiveRoomMode() const { return mHasOptimisticMap ? mOptimisticMode : mRoom.mode; }
+    uint16_t EffectiveRoomMaxSeats() const { return mHasOptimisticMap ? mOptimisticMaxSeats : mRoom.maxSeats; }
+    const char *EffectiveRoomModeLabel() const {
+        return CeOnlineModeDisplayLabel(EffectiveRoomMode(), EffectiveRoomMaxSeats());
+    }
+    bool RoomHostCanCycleMode() const {
+        if (!IsLocalHost()) return false;
+        if (EffectiveRoomMode() == "versus_2v2") {
+            return mMaxSeatsCap >= 4;
+        }
+        const int mapLvl = EffectiveRoomMap();
+        int supported = 0;
+        for (int i = 0; i < CE_ONLINE_MODE_COUNT; ++i) {
+            if (CeOnlineMapSupportsMode(mapLvl, static_cast<CeOnlineMode>(i))) ++supported;
+        }
+        return supported > 1;
+    }
+
     // Host controls
     bool RoomHostCycleMap(int delta) {
         if (!IsLocalHost() || !mBackend) {
             SetStatusNotice("Only the host can change the map.", true);
             return false;
         }
-        const int cur = CeOnlineFindMapIndex(mRoom.map);
-        const int next = (cur + delta + CE_ONLINE_MAP_COUNT) % CE_ONLINE_MAP_COUNT;
+        const int cur = mHasOptimisticMap ? mOptimisticMapIndex : CeOnlineFindMapIndex(mRoom.map);
+        const int step = delta % CE_ONLINE_MAP_COUNT;
+        const int next = (cur + step + CE_ONLINE_MAP_COUNT) % CE_ONLINE_MAP_COUNT;
         const CeOnlineMapInfo &nextMap = CeOnlineMapAt(next);
+
+        const std::string curModeWire = EffectiveRoomMode();
+        const CeOnlineMode curMode = static_cast<CeOnlineMode>(CeOnlineFindModeIndex(curModeWire));
+        const CeOnlineMode nextMode = CeOnlineMapSupportsMode(nextMap.level, curMode)
+                                          ? curMode
+                                          : nextMap.defaultMode;
+        const std::string nextModeWire = CeOnlineModeAt(static_cast<int>(nextMode)).wire;
+
+        const uint16_t curSeats = EffectiveRoomMaxSeats();
+        const uint16_t cap = (mRoom.topology == "authoritative") ? CE_ONLINE_UI_WIRE_MAX_SLOTS : mMaxSeatsCap;
+        const uint16_t nextSeats = CeOnlineClampMaxSeatsForMode(nextMode, curSeats, cap);
+
         CeOnlineHostPatch patch;
         patch.hasMap = true;
         patch.map = nextMap.level;
-        const CeOnlineMode curMode = static_cast<CeOnlineMode>(CeOnlineFindModeIndex(mRoom.mode));
-        if (!CeOnlineMapSupportsMode(nextMap.level, curMode) || nextMap.defaultMode != curMode) {
+        if (nextMode != curMode || nextModeWire != mRoom.mode) {
             patch.hasMode = true;
-            patch.mode = CeOnlineModeAt(static_cast<int>(nextMap.defaultMode)).wire;
+            patch.mode = nextModeWire;
+        }
+        if (nextSeats != curSeats || nextSeats != mRoom.maxSeats) {
+            patch.hasMaxSeats = true;
+            patch.maxSeats = nextSeats;
         }
         std::string err;
         if (!mBackend->RequestHostUpdate(patch, &err)) {
             SetStatusNotice(err.empty() ? "Could not change map." : err, true);
             return false;
         }
+        mHasOptimisticMap = true;
+        mOptimisticMapIndex = next;
+        mOptimisticMapLevel = nextMap.level;
+        mOptimisticMode = nextModeWire;
+        mOptimisticMaxSeats = nextSeats;
+        mOptimisticBaseRev = mRoom.rev;
+        mOptimisticSetMs = mLastNowMs;
+
+        SetStatusNotice(std::string("Map: ") + nextMap.name + " (" +
+                            CeOnlineModeDisplayLabel(nextModeWire, nextSeats) + ")",
+                        false);
         return true;
     }
 
@@ -2039,12 +2261,61 @@ public:
             SetStatusNotice("Only the host can change the mode.", true);
             return false;
         }
-        const int cur = CeOnlineFindModeIndex(mRoom.mode);
+        const int curMap = EffectiveRoomMap();
+        const std::string curModeWire = EffectiveRoomMode();
+        const uint16_t curSeats = EffectiveRoomMaxSeats();
+
+        // On Versus maps, toggle cleanly between 2v2 Versus (4 slots) and 1v1 Versus (2 slots).
+        if (curModeWire == "versus_2v2") {
+            const uint16_t nextSeats = (curSeats == 2) ? 4 : 2;
+            if (nextSeats > mMaxSeatsCap) {
+                SetStatusNotice("Only 1v1 Versus is available with the current slot limit.", false);
+                return false;
+            }
+            if (nextSeats < curSeats) {
+                for (size_t i = 0; i < mRoom.seats.size(); ++i) {
+                    if (mRoom.seats[i].seat >= nextSeats && mRoom.seats[i].kind == CE_ONLINE_SEAT_HUMAN) {
+                        SetStatusNotice("Cannot switch to 1v1 Versus while seats 3-4 have human players.", true);
+                        return false;
+                    }
+                }
+            }
+            CeOnlineHostPatch patch;
+            if (curMap != mRoom.map) {
+                patch.hasMap = true;
+                patch.map = curMap;
+            }
+            if (mRoom.mode != "versus_2v2") {
+                patch.hasMode = true;
+                patch.mode = "versus_2v2";
+            }
+            patch.hasMaxSeats = true;
+            patch.maxSeats = nextSeats;
+            std::string err;
+            if (!mBackend->RequestHostUpdate(patch, &err)) {
+                SetStatusNotice(err.empty() ? "Could not change mode." : err, true);
+                return false;
+            }
+            mHasOptimisticMap = true;
+            mOptimisticMapIndex = CeOnlineFindMapIndex(curMap);
+            mOptimisticMapLevel = curMap;
+            mOptimisticMode = "versus_2v2";
+            mOptimisticMaxSeats = nextSeats;
+            mOptimisticBaseRev = mRoom.rev;
+            mOptimisticSetMs = mLastNowMs;
+
+            SetStatusNotice(std::string("Mode: ") + CeOnlineModeDisplayLabel("versus_2v2", nextSeats) +
+                                (nextSeats == 2 ? " (2 slots)." : " (4 slots)."),
+                            false);
+            return true;
+        }
+
+        const int cur = CeOnlineFindModeIndex(curModeWire);
         const int step = (delta < 0) ? -1 : 1;
         int next = cur;
         for (int tries = 1; tries <= CE_ONLINE_MODE_COUNT; ++tries) {
             const int cand = (cur + step * tries + CE_ONLINE_MODE_COUNT * 4) % CE_ONLINE_MODE_COUNT;
-            if (CeOnlineMapSupportsMode(mRoom.map, static_cast<CeOnlineMode>(cand))) {
+            if (CeOnlineMapSupportsMode(curMap, static_cast<CeOnlineMode>(cand))) {
                 next = cand;
                 break;
             }
@@ -2061,6 +2332,7 @@ public:
             SetStatusNotice(err.empty() ? "Could not change mode." : err, true);
             return false;
         }
+        SetStatusNotice(std::string("Mode: ") + CeOnlineModeAt(next).label + ".", false);
         return true;
     }
 
@@ -2089,6 +2361,15 @@ public:
             SetStatusNotice(err.empty() ? "Could not update seat." : err, true);
             return false;
         }
+        const uint16_t slotNum = static_cast<uint16_t>(sel->seat + 1);
+        if (mRosterSelected >= 0 && mRosterSelected < static_cast<int>(mRoom.seats.size())) {
+            mRoom.seats[static_cast<size_t>(mRosterSelected)].kind = nextKind;
+        }
+        const char *kindLabel = (nextKind == CE_ONLINE_SEAT_AI) ? "AI Bot"
+                              : (nextKind == CE_ONLINE_SEAT_CLOSED) ? "Closed" : "Open";
+        char msg[64];
+        snprintf(msg, sizeof(msg), "Slot %u set to %s.", unsigned(slotNum), kindLabel);
+        SetStatusNotice(msg, false);
         return true;
     }
 
@@ -2106,6 +2387,8 @@ public:
             SetStatusNotice("You cannot kick yourself.", true);
             return false;
         }
+        const uint16_t slotNum = static_cast<uint16_t>(sel->seat + 1);
+        const std::string kickedName = CeOnlineSanitizeForFont(sel->callsign.empty() ? std::string("player") : sel->callsign);
         CeOnlineHostPatch patch;
         patch.hasKickSeat = true;
         patch.kickSeat = sel->seat;
@@ -2114,7 +2397,9 @@ public:
             SetStatusNotice(err.empty() ? "Could not kick player." : err, true);
             return false;
         }
-        SetStatusNotice("Kicked " + CeOnlineSanitizeForFont(sel->callsign) + ".", false);
+        char msg[96];
+        snprintf(msg, sizeof(msg), "Kicked %s from Slot %u.", kickedName.c_str(), unsigned(slotNum));
+        SetStatusNotice(msg, false);
         return true;
     }
 
@@ -2182,7 +2467,10 @@ public:
                 }
             }
             if (active0 < 1 || active1 < 1) {
-                if (reasonOut) *reasonOut = "Both Forseti and Muspell need at least one pilot in 2v2 Versus.";
+                if (reasonOut) {
+                    *reasonOut = std::string("Both Forseti and Muspell need at least one pilot in ") +
+                                 CeOnlineModeDisplayLabel(mRoom.mode, mRoom.maxSeats) + ".";
+                }
                 return false;
             }
         }
@@ -2217,6 +2505,8 @@ public:
         mChatDraft.clear();
         mLastTicketMatchId.clear();
         mPendingStartMatch = false;
+        mLastRoomMap = -1;
+        ClearOptimisticRoomState();
         EnterBrowser(CE_ONLINE_PAGE_HOME);
     }
 
@@ -2415,18 +2705,59 @@ private:
         }
     }
 
+    void ClearOptimisticRoomState() {
+        mHasOptimisticMap = false;
+        mOptimisticMapIndex = 0;
+        mOptimisticMapLevel = 850;
+        mOptimisticMode.clear();
+        mOptimisticMaxSeats = CE_ONLINE_UI_ACTIVE_MAX_SLOTS;
+        mOptimisticBaseRev = 0;
+        mOptimisticSetMs = 0;
+    }
+
+    void SelectDefaultRosterSlot() {
+        if (IsLocalHost() && mRoom.seats.size() > 1) {
+            int chosen = 1;
+            for (size_t i = 0; i < mRoom.seats.size(); ++i) {
+                if (mRoom.seats[i].seat != mRoom.hostSeat) {
+                    chosen = static_cast<int>(i);
+                    break;
+                }
+            }
+            mRosterSelected = chosen;
+        } else {
+            mRosterSelected = 0;
+        }
+        ClampRosterSelection();
+    }
+
     void RefreshBeConfigsForMap(int level) {
         mLastRoomMap = level;
         std::vector<std::string> cfgs;
         if (mBackend) mBackend->GetBeConfigsForMap(level, &cfgs);
         if (cfgs.empty()) {
-            cfgs.push_back("Standard");
-            cfgs.push_back("Vulcan");
-            cfgs.push_back("Pulse");
-            cfgs.push_back("Blazer");
-            cfgs.push_back("Sniper");
+            CeOnlineDefaultBeConfigsForMap(level, &cfgs);
         }
         mAvailableBeConfigs.swap(cfgs);
+    }
+
+    void RevalidateLocalBeConfig() {
+        CeOnlineSeatView *me = LocalSeatMutable();
+        if (!me || mAvailableBeConfigs.empty() || me->beCfg.empty()) return;
+        for (size_t i = 0; i < mAvailableBeConfigs.size(); ++i) {
+            if (mAvailableBeConfigs[i] == me->beCfg) return;
+        }
+        const std::string oldBe = me->beCfg;
+        const std::string fallbackBe = mAvailableBeConfigs[0];
+        me->beCfg = fallbackBe;
+        if (mBackend && mRoom.state == "lobby") {
+            std::string err;
+            mBackend->RequestUpdateSelf(me->team, fallbackBe, me->ready, &err);
+        }
+        if (mStatusNotice.empty() || !mStatusIsError) {
+            SetStatusNotice("BE config " + CeOnlineSanitizeForFont(oldBe) +
+                            " unavailable on this map; switched to " + fallbackBe + ".", false);
+        }
     }
 
     std::string DefaultBeConfigForMap(int level) {
@@ -2555,6 +2886,15 @@ private:
     bool mPendingStartMatch;
     int mLastRoomMap;
     uint64_t mLastNowMs;
+
+    // Optimistic host map/mode/maxSeats state for rapid Next Map / Mode clicks
+    bool mHasOptimisticMap;
+    int mOptimisticMapIndex;
+    int mOptimisticMapLevel;
+    std::string mOptimisticMode;
+    uint16_t mOptimisticMaxSeats;
+    uint32_t mOptimisticBaseRev;
+    uint64_t mOptimisticSetMs;
 };
 
 #endif // CE_ONLINE_UI_MODEL_H

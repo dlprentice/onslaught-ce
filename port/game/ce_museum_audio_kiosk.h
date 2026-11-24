@@ -39,7 +39,7 @@ static const KioskSpec kKiosks[kKioskCount] = {
      }},
     {CeMuseumTour::kWingMuspell, "Frontline Combat Dispatches",
      18.5f, 34.5f, 0.0f, 1.0f, {
-         {"211_fighter_attack", "Dominion Air Raid Alert"},
+         {"211_fighter_attack", "Muspell Air Raid Alert"},
          {"300_briefing",       "Command Sector Briefing"},
          {"431_attack_warspite","Assault on Warspite"},
      }},

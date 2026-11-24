@@ -42,7 +42,11 @@ double KioskClock() {
     LARGE_INTEGER now, rate;
     QueryPerformanceCounter(&now);
     QueryPerformanceFrequency(&rate);
-    return rate.QuadPart ? double(now.QuadPart) / double(rate.QuadPart) : 0.0;
+    if (rate.QuadPart <= 0) return 0.0;
+    static LONGLONG firstQpc = 0;
+    static bool haveFirst = false;
+    if (!haveFirst) { firstQpc = now.QuadPart; haveFirst = true; }
+    return double(now.QuadPart - firstQpc) / double(rate.QuadPart);
 }
 
 void ReleaseSample() {

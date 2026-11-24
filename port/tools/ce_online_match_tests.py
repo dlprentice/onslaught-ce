@@ -61,6 +61,20 @@ extern "C" int CE_NetGenerateSecret(uint8_t out[32]) {
     return 1;
 }
 
+static const char *CanonicalModeForLevel(uint32_t level) {
+    switch (level) {
+    case 850u: case 853u: case 859u: case 864u: case 865u: case 866u:
+        return "coop_skirmish";
+    case 851u: case 852u: case 854u: case 855u: case 857u:
+    case 860u: case 861u: case 862u: case 863u:
+        return "versus_2v2";
+    case 856u:
+        return "coop_defence";
+    default:
+        return "coop_skirmish";
+    }
+}
+
 static CE_OnlineMatchTicket MakeTicket(uint16_t slotCount, uint16_t humanCount,
                                        uint8_t localSimSlot, uint32_t level,
                                        uint8_t requireRelay) {
@@ -72,7 +86,7 @@ static CE_OnlineMatchTicket MakeTicket(uint16_t slotCount, uint16_t humanCount,
     std::snprintf(t.session_token, sizeof(t.session_token), "tok_session_0123456789abcdef");
     t.seed = 0x51A7BEEFu;
     t.level = level;
-    std::snprintf(t.mode, sizeof(t.mode), "coop_skirmish");
+    std::snprintf(t.mode, sizeof(t.mode), "%s", CanonicalModeForLevel(level));
     std::snprintf(t.topology, sizeof(t.topology), "star_lockstep");
     t.require_relay = requireRelay;
     t.slot_count = slotCount;
@@ -619,7 +633,7 @@ static void TestFourPeerStarLockstep200Ticks() {
         CeOnlineMatchSession mixPeers[2];
         SimWorld mixWorlds[2];
         for (uint8_t s = 0; s < 2; ++s) {
-            CE_OnlineMatchTicket tk = MakeTicket(4, 2, s, 858, 1);
+            CE_OnlineMatchTicket tk = MakeTicket(4, 2, s, 856, 1);
             Check(mixPeers[s].Init(tk, &mixNet.bridges[s], 2u, 20u), "init mixed 2H+2AI session");
             mixWorlds[s].Init(tk);
         }
@@ -989,6 +1003,31 @@ static void TestCompatibilityAndCHooks() {
     bad.level = 110;
     Check(PortCeOnlineMatchSetTicket(&bad) == 0, "invalid ticket refused");
     Check(PortCeOnlineMatchActive() == 0, "failed SetTicket clears active state");
+
+    // Exact 16-map <-> mode ticket compatibility contract
+    const uint32_t allValidLevels[] = {
+        850u, 851u, 852u, 853u, 854u, 855u, 856u, 857u,
+        859u, 860u, 861u, 862u, 863u, 864u, 865u, 866u
+    };
+    const char *allModes[] = { "coop_skirmish", "versus_2v2", "coop_defence", "tutorial" };
+    for (uint32_t lvl : allValidLevels) {
+        const char *expected = CanonicalModeForLevel(lvl);
+        for (const char *m : allModes) {
+            CE_OnlineMatchTicket probe = MakeTicket(4, 2, 0, lvl, 0);
+            std::snprintf(probe.mode, sizeof(probe.mode), "%s", m);
+            const bool wantOk = (std::strcmp(m, expected) == 0);
+            Check((CeOnlineMatchTicketValid(&probe) != 0) == wantOk,
+                  "CeOnlineMatchTicketValid enforces exact map<->mode matrix");
+        }
+    }
+    for (uint32_t disallowed : { 100u, 858u }) {
+        for (const char *m : allModes) {
+            CE_OnlineMatchTicket probe = MakeTicket(2, 2, 0, disallowed, 0);
+            std::snprintf(probe.mode, sizeof(probe.mode), "%s", m);
+            Check(CeOnlineMatchTicketValid(&probe) == 0,
+                  "CeOnlineMatchTicketValid rejects Tutorial 100 and duplicate 858");
+        }
+    }
 
     PortCeOnlineMatchClear();
     Check(PortCeOnlineMatchActive() == 0, "clear resets active");

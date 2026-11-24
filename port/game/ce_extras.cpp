@@ -469,7 +469,8 @@ public:
 					}
 				}
 				moved = CeListPage(list, 1);	SkipHeadings(page, list, 1);	break;
-			case BUTTON_PAUSE_MENU_SELECT:		SelectRow(page, list);			break;
+			case BUTTON_PAUSE_MENU_SELECT:
+			case BUTTON_FRONTEND_MENU_SELECT:	SelectRow(page, list);			break;
 			case BUTTON_FRONTEND_MENU_BACK:
 				if (sPage == XP_BACKUP_PREVIEW || sPage == XP_IMPORT_CAREER || sPage == XP_EDIT_CAREER)
 				{
@@ -491,10 +492,11 @@ public:
 		}
 		if (const SCeReadPage *read = ReadPage(sPage))
 		{
+			const bool isSelect = (button == BUTTON_PAUSE_MENU_SELECT || button == BUTTON_FRONTEND_MENU_SELECT);
 			if (button == BUTTON_FRONTEND_MENU_BACK)
 				Back();
-			else if ((button != BUTTON_PAUSE_MENU_SELECT || SelectAllowed()) && read->mButton(button))
-				CFrontEnd::PlaySound(button == BUTTON_PAUSE_MENU_SELECT ? FES_SELECT : FES_MOVE);
+			else if ((!isSelect || SelectAllowed()) && read->mButton(button))
+				CFrontEnd::PlaySound(isSelect ? FES_SELECT : FES_MOVE);
 			return;
 		}
 		CMenuOptionsList *list = Rows(sPage);
@@ -504,6 +506,7 @@ public:
 			list->ReceiveButtonAction(from_controller, button, val);
 			break;
 		case BUTTON_PAUSE_MENU_SELECT:
+		case BUTTON_FRONTEND_MENU_SELECT:
 		{
 			if (!SelectAllowed())
 				break;

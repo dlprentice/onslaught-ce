@@ -17,6 +17,7 @@
 #ifndef CE_CAREER_VIEW_H
 #define CE_CAREER_VIEW_H
 
+#include <cmath>
 #include <string.h>
 
 enum
@@ -108,7 +109,7 @@ inline char	CeRankLetter(unsigned bits)
 		return 'E';
 	if ((exponent == 0xff) || (value > 1.f))
 		return 0;
-	const int quarters = int(value * 4.f);		// 0 to 3: the value is above 0 and below 1
+	const int quarters = static_cast<int>(std::floor(value * 4.f));		// 0 to 3: the value is above 0 and below 1
 	return char('D' - quarters);
 }
 

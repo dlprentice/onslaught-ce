@@ -431,14 +431,22 @@ bool MatchBase(float *x0, float *y0, float *x1, float *y1)
 	return true;
 }
 
-// The window on the action: the player's squads, the enemy squads within 80 units of them, the pilot when he is that
-// near and, in a match, the player's base, with a margin, never tighter than 128 units.
+// The window on the action: the player's squads, the enemy squads within 160 units of them, the pilot when he is that
+// near and, in a match, the player's base, biased onto the island's dry land when coastal squads hug one shore, never tighter than 128 units.
 void FitView()
 {
 	float x0 = 1e30f, y0 = 1e30f, x1 = -1e30f, y1 = -1e30f;
+	float fx0 = 1e30f, fy0 = 1e30f, fx1 = -1e30f, fy1 = -1e30f;
 	auto add = [&](float x, float y) { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; };
 	for (int i = 0; i < gCount; ++i)
-		if (gSquads[i].friendly) add(gSquads[i].x, gSquads[i].y);
+		if (gSquads[i].friendly)
+		{
+			add(gSquads[i].x, gSquads[i].y);
+			if (gSquads[i].x < fx0) fx0 = gSquads[i].x;
+			if (gSquads[i].x > fx1) fx1 = gSquads[i].x;
+			if (gSquads[i].y < fy0) fy0 = gSquads[i].y;
+			if (gSquads[i].y > fy1) fy1 = gSquads[i].y;
+		}
 	if (x1 < x0)
 	{
 		for (int i = 0; i < gCount; ++i)
@@ -446,7 +454,7 @@ void FitView()
 	}
 	else
 	{
-		const float ax0 = x0 - 80.f, ay0 = y0 - 80.f, ax1 = x1 + 80.f, ay1 = y1 + 80.f;
+		const float ax0 = x0 - 160.f, ay0 = y0 - 160.f, ax1 = x1 + 160.f, ay1 = y1 + 160.f;
 		for (int i = 0; i < gCount; ++i)
 			if (!gSquads[i].friendly && gSquads[i].visible && gSquads[i].x >= ax0 && gSquads[i].x <= ax1 && gSquads[i].y >= ay0 && gSquads[i].y <= ay1)
 				add(gSquads[i].x, gSquads[i].y);
@@ -461,7 +469,54 @@ void FitView()
 	if (x1 < x0) { SetView((gBoundsX0 + gBoundsX1) * 0.5f, (gBoundsY0 + gBoundsY1) * 0.5f, FullSpan()); return; }
 	float span = ((x1 - x0) > (y1 - y0) ? (x1 - x0) : (y1 - y0)) * 1.35f + 24.f;
 	if (span < 128.f) span = 128.f;
-	SetView((x0 + x1) * 0.5f, (y0 + y1) * 0.5f, span);
+	float cx = (x0 + x1) * 0.5f, cy = (y0 + y1) * 0.5f;
+	// Sample a 24 x 24 heightfield grid across world bounds (Z grows downward: h < water is dry land above sea level).
+	const int kLandSamples = 24;
+	float lx0 = 1e30f, ly0 = 1e30f, lx1 = -1e30f, ly1 = -1e30f;
+	if (gBoundsX1 > gBoundsX0 && gBoundsY1 > gBoundsY0)
+	{
+		const float water = MAP.GetWaterLevel();
+		const float cellX = (gBoundsX1 - gBoundsX0) / float(kLandSamples);
+		const float cellY = (gBoundsY1 - gBoundsY0) / float(kLandSamples);
+		for (int j = 0; j < kLandSamples; ++j)
+		{
+			const float wy = gBoundsY0 + (float(j) + 0.5f) * cellY;
+			if (wy < 0.f || (MAP.mGridHeight > 1 && wy >= float(MAP.mGridHeight - 1))) continue;
+			for (int i = 0; i < kLandSamples; ++i)
+			{
+				const float wx = gBoundsX0 + (float(i) + 0.5f) * cellX;
+				if (wx < 0.f || (MAP.mGridWidth > 1 && wx >= float(MAP.mGridWidth - 1))) continue;
+				const float h = MAP.Collide(FVector(wx, wy, 0.f));
+				if (std::isfinite(h) && h < water)
+				{
+					if (wx < lx0) lx0 = wx;
+					if (wx > lx1) lx1 = wx;
+					if (wy < ly0) ly0 = wy;
+					if (wy > ly1) ly1 = wy;
+				}
+			}
+		}
+	}
+	if (lx0 <= lx1)
+	{
+		const float padX = (std::max)(24.f, (gBoundsX1 - gBoundsX0) / float(kLandSamples) * 0.6f);
+		const float padY = (std::max)(24.f, (gBoundsY1 - gBoundsY0) / float(kLandSamples) * 0.6f);
+		const float px0 = lx0 - padX, px1 = lx1 + padX;
+		const float py0 = ly0 - padY, py1 = ly1 + padY;
+		if (px1 - px0 <= span) cx = (px0 + px1) * 0.5f;
+		else cx = (std::max)(px0 + span * 0.5f, (std::min)(px1 - span * 0.5f, cx));
+		if (py1 - py0 <= span) cy = (py0 + py1) * 0.5f;
+		else cy = (std::max)(py0 + span * 0.5f, (std::min)(py1 - span * 0.5f, cy));
+		if (fx0 <= fx1)
+		{
+			const float keep = 0.38f * span;
+			const float minCX = fx1 - keep, maxCX = fx0 + keep;
+			const float minCY = fy1 - keep, maxCY = fy0 + keep;
+			if (minCX <= maxCX) cx = (std::max)(minCX, (std::min)(maxCX, cx));
+			if (minCY <= maxCY) cy = (std::max)(minCY, (std::min)(maxCY, cy));
+		}
+	}
+	SetView(cx, cy, span);
 }
 
 // Brings the picked squad into view (Tab can pick one off the edge or off the map): the view recentres on it when it is near or past the edge.
@@ -496,7 +551,10 @@ DWORD Mix(DWORD a, DWORD b, float t)
 	for (int shift = 0; shift <= 16; shift += 8)
 	{
 		const float ca = float((a >> shift) & 255), cb = float((b >> shift) & 255);
-		out |= DWORD(ca + (cb - ca) * t + 0.5f) << shift;
+		int ch = int(ca + (cb - ca) * t + 0.5f);
+		if (ch < 0) ch = 0;
+		if (ch > 255) ch = 255;
+		out |= DWORD(ch) << shift;
 	}
 	return out;
 }
@@ -506,9 +564,10 @@ DWORD Shade(DWORD c, float f)
 	DWORD out = 0xff000000;
 	for (int shift = 0; shift <= 16; shift += 8)
 	{
-		float v = float((c >> shift) & 255) * f;
-		if (v > 255.f) v = 255.f;
-		out |= DWORD(v) << shift;
+		int ch = int(float((c >> shift) & 255) * f);
+		if (ch < 0) ch = 0;
+		if (ch > 255) ch = 255;
+		out |= DWORD(ch) << shift;
 	}
 	return out;
 }
@@ -698,7 +757,13 @@ void DrawBeaCurvedPanel(float x, float y, float w, float h, float capMax, DWORD 
 void CapsuleBar(float x, float y, float w, float h, float alpha = 1.f, bool lit = false, int allegiance = 0)
 {
 	if (w <= 0.f || h <= 0.f || alpha <= 0.f) return;
-	const auto fade = [alpha](DWORD c) { return (DWORD((float(c >> 24) * (alpha > 1.f ? 1.f : alpha)) + 0.5f) << 24) | (c & 0xffffff); };
+	const float aClamp = alpha > 1.f ? 1.f : alpha;
+	const auto fade = [aClamp](DWORD c) {
+		int a = int(float(c >> 24) * aClamp + 0.5f);
+		if (a < 0) a = 0;
+		if (a > 255) a = 255;
+		return (DWORD(a) << 24) | (c & 0xffffff);
+	};
 	if (HasHudCapsuleArt())
 	{
 		if (allegiance == 1)
@@ -970,9 +1035,23 @@ void DrawGrid()
 	Outline(L.mapX - t, L.mapY - t, L.mapSide + 2.f * t, L.mapSide + 2.f * t, t, 0xff7a8794);
 }
 
+std::uint64_t MapPulseStartNs();
+
 void DrawSquads()
 {
 	const float t = floorf(L.s) > 1.f ? floorf(L.s) : 1.f;
+	float pulse = 0.f;
+	const std::uint64_t pulseStart = MapPulseStartNs();
+	if (pulseStart != 0 && gSelected < 0)
+	{
+		const double elapsed = SecondsBetween(pulseStart, Ns());
+		if (elapsed < 1.5)
+		{
+			const float fade = 1.f - float(elapsed / 1.5);
+			const float wave = 0.5f - 0.5f * cosf(float(elapsed) * (4.f * 3.14159265f / 1.5f));
+			pulse = wave * fade;
+		}
+	}
 	// the enemy squads, below everything of ours
 	for (int i = 0; i < gCount; ++i)
 	{
@@ -1004,11 +1083,17 @@ void DrawSquads()
 		if (!s.friendly || !InsideMap(Px(s.x), Py(s.y), BoxHalf(s) + 3.f * t)) continue;
 		const float h = BoxHalf(s), x = floorf(Px(s.x)), y = floorf(Py(s.y));
 		const DWORD colour = s.commandable ? kFriend : kFriendDim;
-		if (s.commandable) Box(x - h, y - h, 2.f * h, 2.f * h, Shade(colour, 0.55f));
-		Outline(x - h, y - h, 2.f * h, 2.f * h, 2.f * t, colour);
+		const DWORD edge = (s.commandable && pulse > 0.f) ? Mix(colour, 0xffd8ffd8, 0.55f * pulse) : colour;
+		if (s.commandable) Box(x - h, y - h, 2.f * h, 2.f * h, Shade(colour, 0.55f + 0.25f * pulse));
+		Outline(x - h, y - h, 2.f * h, 2.f * h, 2.f * t, edge);
+		if (s.commandable && pulse > 0.01f)
+		{
+			const DWORD halo = (DWORD(pulse * 150.f + 0.5f) << 24) | (kFriend & 0x00ffffffu);
+			Outline(x - h - 2.f * t, y - h - 2.f * t, 2.f * (h + 2.f * t), 2.f * (h + 2.f * t), t, halo);
+		}
 		if (const char *letter = OrderLetter(s.verb)) Text(x, y - LineHeight() * 0.5f, OrderColour(s.verb), letter, 0.f, true);
-		else if (s.vehicles) Box(x - h * 0.45f, y - t, h * 0.9f, 2.f * t, colour);	// a bar across a vehicle squad, a dot for infantry
-		else Box(x - t, y - t, 2.f * t, 2.f * t, colour);
+		else if (s.vehicles) Box(x - h * 0.45f, y - t, h * 0.9f, 2.f * t, edge);	// a bar across a vehicle squad, a dot for infantry
+		else Box(x - t, y - t, 2.f * t, 2.f * t, edge);
 		if (s.selected) Outline(x - h - 3.f * t, y - h - 3.f * t, 2.f * (h + 3.f * t), 2.f * (h + 3.f * t), 2.f * t, kPick);		// every picked squad, not the lead alone
 		if (s.ordinal == gHover) Outline(x - h - 5.f * t, y - h - 5.f * t, 2.f * (h + 5.f * t), 2.f * (h + 5.f * t), t, kFocus);
 	}
@@ -1467,7 +1552,16 @@ CeCommanderCameraBinding gStrategicBinding;
 // horizon's haze at the top of the window instead of a plan from above; 30 world units of span puts the camera about 24 units from what it looks at,
 // where a tank is about thirty pixels long at 1280 x 720 and infantry can be told from vehicles (56 left tanks at fifteen, 96 at five). The live
 // view may come in to 16 (the paused map keeps its 48). The wheel and R/F still zoom out to the whole island.
-const float kLivePitch = 0.85f, kLiveOpenSpan = 30.f, kLiveWideSpan = 120.f;
+const float kLivePitch = 0.85f, kLiveOpenSpan = 30.f, kLiveWideSpan = 120.f, kMaxDrySnapDist = 250.f;
+int gKeptMapLevel = -1;
+float gKeptMapCentreX = 0.f, gKeptMapCentreY = 0.f, gKeptMapSpan = 0.f;
+std::uint64_t gKeptMission = 0, gKeptMapMission = 0;
+float gKeptYaw = 0.f;
+bool gHasKeptYaw = false;
+float gStrategicInitialYaw = 0.f;
+bool gHasStrategicInitialYaw = false;
+std::uint64_t gMapPulseStartNs = 0;
+std::uint64_t MapPulseStartNs() { return gMapPulseStartNs; }
 // Z: one step between the battlefield and the wide view, eased (the wheel and R/F still zoom freely). The close span Z goes back to is the one it left.
 struct StrategicZoomTrip { bool on = false; float from = 0, to = 0; std::uint64_t start = 0; } gZoomTrip;
 float gZoomBack = 30.f;
@@ -2141,6 +2235,51 @@ bool StrategicHeight(float x, float y, float* height) {
     const float h = MAP.Collide(FVector(x, y, 0));
     if (!std::isfinite(h)) return false;
     *height = h; return true;
+}
+
+bool IsDryGroundPoint(float x, float y) {
+    float h = 0.f;
+    return StrategicHeight(x, y, &h) && h < MAP.GetWaterLevel();
+}
+
+// Compute initial battle-facing yaw from (fx, fy) toward the visible enemy centroid (or dry-land
+// centroid when no enemy is visible yet). In FMatrix::MakeRotationYawF, forward (0, 1, 0) maps to
+// (-sinf(yaw), cosf(yaw), 0), so yaw = atan2f(-dx, dy) aims directly along (dx, dy).
+bool ComputeStrategicInitialYaw(float fx, float fy, float* outYaw) {
+    if (!outYaw) return false;
+    double exSum = 0.0, eySum = 0.0;
+    int enemyCount = 0;
+    for (int i = 0; i < gCount; ++i) {
+        if (gSquads[i].friendly || !gSquads[i].visible || gSquads[i].members <= 0) continue;
+        exSum += double(gSquads[i].x);
+        eySum += double(gSquads[i].y);
+        ++enemyCount;
+    }
+    if (enemyCount > 0) {
+        const float dx = float(exSum / double(enemyCount)) - fx;
+        const float dy = float(eySum / double(enemyCount)) - fy;
+        if (dx * dx + dy * dy > 1.f) { *outYaw = atan2f(-dx, dy); return true; }
+    }
+    if (gBoundsX1 > gBoundsX0 && gBoundsY1 > gBoundsY0) {
+        const int kSamples = 24;
+        const float cellX = (gBoundsX1 - gBoundsX0) / float(kSamples);
+        const float cellY = (gBoundsY1 - gBoundsY0) / float(kSamples);
+        double lxSum = 0.0, lySum = 0.0;
+        int dryCount = 0;
+        for (int j = 0; j < kSamples; ++j) {
+            const float wy = gBoundsY0 + (float(j) + 0.5f) * cellY;
+            for (int i = 0; i < kSamples; ++i) {
+                const float wx = gBoundsX0 + (float(i) + 0.5f) * cellX;
+                if (IsDryGroundPoint(wx, wy)) { lxSum += double(wx); lySum += double(wy); ++dryCount; }
+            }
+        }
+        if (dryCount > 0) {
+            const float dx = float(lxSum / double(dryCount)) - fx;
+            const float dy = float(lySum / double(dryCount)) - fy;
+            if (dx * dx + dy * dy > 1.f) { *outYaw = atan2f(-dx, dy); return true; }
+        }
+    }
+    return false;
 }
 
 void StartStrategicFocus(const CeCmdSquad &squad) {
@@ -3197,7 +3336,14 @@ public:
         gStrategicBinding = binding;
         gStrategicOriginal = GAME.GetCurrentCamera(0);
         gStrategicCamera.mZoom = gStrategicOriginal->GetZoom();
-        gStrategicYaw = gStrategicOriginal->GetYaw();
+        if (gHasStrategicInitialYaw) {
+            gStrategicYaw = gStrategicInitialYaw;
+            gHasStrategicInitialYaw = false;
+        } else if (gHasKeptYaw) {
+            gStrategicYaw = gKeptYaw;
+        } else {
+            gStrategicYaw = gStrategicOriginal->GetYaw();
+        }
         gStrategicPitch = kLivePitch;
         gStrategicFocusZ = GAME.GetPlayer(0)->GetBattleEngine()->GetPos().Z;
         float terrainHeight = 0.0f;
@@ -4096,10 +4242,24 @@ void Close()
 	CePlayUnitMapBoundary();
 	gOpen = false;
 	gNote[0] = 0;		// a note about the view goes with it: the cockpit shows only the notes given after the close (the Battle Engine down, the battle not started)
-	gKeptLevel = GAME.GetCurrentLevel();
-	gKeptCentreX = gViewX + gViewSpan * 0.5f;
-	gKeptCentreY = gViewY + gViewSpan * 0.5f;
-	gKeptSpan = gViewSpan;
+	if (wasStrategic)
+	{
+		gKeptLevel = GAME.GetCurrentLevel();
+		gKeptMission = gMissionLifetime;
+		gKeptCentreX = gViewX + gViewSpan * 0.5f;
+		gKeptCentreY = gViewY + gViewSpan * 0.5f;
+		gKeptSpan = gViewSpan;
+		gKeptYaw = gStrategicYaw;
+		gHasKeptYaw = true;
+	}
+	else
+	{
+		gKeptMapLevel = GAME.GetCurrentLevel();
+		gKeptMapMission = gMissionLifetime;
+		gKeptMapCentreX = gViewX + gViewSpan * 0.5f;
+		gKeptMapCentreY = gViewY + gViewSpan * 0.5f;
+		gKeptMapSpan = gViewSpan;
+	}
 	gArmed = false;
 #ifdef CE_COMMANDER_TEST
 	// The proof's mutant (BEA_PORT_COMMANDER_MUTANT_KEEP_TRAP): a view open for under forty frames leaves its key trap set when it closes;
@@ -4176,13 +4336,18 @@ void Open(bool strategic)
 	gMsTotal = gMsMax = 0.0;
 #endif
 	gNote[0] = 0;
-	gLooseBounds = strategic;		// the live view's own bounds (SetView)
+	gLooseBounds = strategic;		// the live view's own bounds (SetView); the 2D map resets to false
 	World();
-	const bool fitted = gKeptLevel != GAME.GetCurrentLevel();
-	if (!fitted) SetView(gKeptCentreX, gKeptCentreY, gKeptSpan);
+	const bool fitted = strategic
+		? (gKeptLevel != GAME.GetCurrentLevel() || gKeptMission != gMissionLifetime)
+		: (gKeptMapLevel != GAME.GetCurrentLevel() || gKeptMapMission != gMissionLifetime);
+	if (!fitted) SetView(strategic ? gKeptCentreX : gKeptMapCentreX,
+						 strategic ? gKeptCentreY : gKeptMapCentreY,
+						 strategic ? gKeptSpan : gKeptMapSpan);
 	else FitView();
 	Lay();		// the layout exists before the first frame draws it: a zoom or a pan in the same batch of messages as the open key works on it
 	gMapLastNs = Ns(); // Reopening or leaving the live view starts a fresh pan interval.
+	gMapPulseStartNs = (!strategic && gSelected < 0 && CommandableCount() > 0) ? Ns() : 0;
 #ifdef CE_COMMANDER_TEST
 	{
 		CeCmdHash h;
@@ -4193,27 +4358,58 @@ void Open(bool strategic)
 #endif
     gStrategic = strategic;
     if (strategic && fitted) {
-        // The first live view of a level opens on the battlefield the player commands, close enough to tell what things are (R7): the commandable
-        // squad nearest the pilot's Battle Engine, or the Battle Engine itself. Fitting the base and every squad into one view put the centre on empty
-        // ground between them and the units below a pixel. Tab and C go to the others; the wheel zooms out to all of it. A reopened view keeps its own.
+        // The first live view of a level opens on the battlefield the player commands, close enough to tell what things are (R7): the dry-land
+        // commandable squad nearest the pilot's Battle Engine (within kMaxDrySnapDist so the camera never teleports across the whole map), or the
+        // nearest dry friendly squad/structure when the pilot is over water, facing from that focus toward the enemy battle line.
+        const float maxSnapSq = kMaxDrySnapDist * kMaxDrySnapDist;
         float fx = gViewX + gViewSpan * 0.5f, fy = gViewY + gViewSpan * 0.5f;
         CBattleEngine *engine = GAME.GetPlayer(0) ? GAME.GetPlayer(0)->GetBattleEngine() : NULL;
         const float ex = engine ? engine->GetPos().X : fx, ey = engine ? engine->GetPos().Y : fy;
-        float best = 1e30f;
         if (engine) { fx = ex; fy = ey; }
+        float bestDry = maxSnapSq;
+        bool pickedSquad = false;
         for (int i = 0; i < gCount; ++i) {
             if (!gSquads[i].commandable || gSquads[i].members <= 0) continue;
+            if (!IsDryGroundPoint(gSquads[i].x, gSquads[i].y)) continue;
             const float d = (gSquads[i].x - ex) * (gSquads[i].x - ex) + (gSquads[i].y - ey) * (gSquads[i].y - ey);
-            if (d < best) { best = d; fx = gSquads[i].x; fy = gSquads[i].y; }
+            if (d <= bestDry) { bestDry = d; fx = gSquads[i].x; fy = gSquads[i].y; pickedSquad = true; }
+        }
+        if (!pickedSquad) {
+            float bestAny = maxSnapSq;
+            for (int i = 0; i < gCount; ++i) {
+                if (!gSquads[i].commandable || gSquads[i].members <= 0) continue;
+                const float d = (gSquads[i].x - ex) * (gSquads[i].x - ex) + (gSquads[i].y - ey) * (gSquads[i].y - ey);
+                if (d <= bestAny) { bestAny = d; fx = gSquads[i].x; fy = gSquads[i].y; pickedSquad = true; }
+            }
+            if (!IsDryGroundPoint(fx, fy)) {
+                float bestDryAlly = maxSnapSq;
+                for (int i = 0; i < gCount; ++i) {
+                    if (!gSquads[i].friendly || gSquads[i].members <= 0 || !IsDryGroundPoint(gSquads[i].x, gSquads[i].y)) continue;
+                    const float d = (gSquads[i].x - ex) * (gSquads[i].x - ex) + (gSquads[i].y - ey) * (gSquads[i].y - ey);
+                    if (d <= bestDryAlly) { bestDryAlly = d; fx = gSquads[i].x; fy = gSquads[i].y; pickedSquad = true; }
+                }
+                CeCmdStructureView structs[kCeMaxStructures];
+                const int nStructs = CeCmdStructureList(structs, kCeMaxStructures);
+                for (int i = 0; i < nStructs; ++i) {
+                    if (!IsDryGroundPoint(structs[i].x, structs[i].y)) continue;
+                    const float d = (structs[i].x - ex) * (structs[i].x - ex) + (structs[i].y - ey) * (structs[i].y - ey);
+                    if (d <= bestDryAlly) { bestDryAlly = d; fx = structs[i].x; fy = structs[i].y; }
+                }
+            }
         }
         SetView(fx, fy, kLiveOpenSpan);
+        const float focusX = gViewX + gViewSpan * 0.5f, focusY = gViewY + gViewSpan * 0.5f;
+        gHasStrategicInitialYaw = ComputeStrategicInitialYaw(focusX, focusY, &gStrategicInitialYaw);
+        gHasKeptYaw = false;
         gZoomTrip.on = false; gZoomBack = kLiveOpenSpan;
-        CeCmdNote("map live focus %s %.1f %.1f", best < 1e30f ? "squad" : engine ? "engine" : "view", fx, fy);
+        CeCmdNote("map live focus %s %.1f %.1f", pickedSquad ? "squad" : engine ? "engine" : "view", fx, fy);
     }
     if (strategic) {
         const CeCommanderCameraResult result = gStrategicOwner.Enter(StrategicContext());
         if (result != CeCommanderCameraResult::Entered) {
-            Close(); Note("The view could not open."); return;
+            Close();
+            if (fitted) { gKeptLevel = -1; gKeptMission = 0; gHasKeptYaw = false; gHasStrategicInitialYaw = false; }
+            Note("The view could not open."); return;
         }
         gStrategicLastNs = Ns();
     }
@@ -4701,6 +4897,12 @@ void PortCeCmdLevelEnd()
     gNativeEntering = false;
 	CeCmdMatchLevelEnd();	// a Commander match gives the screen back as it found it
 	gKeptLevel = -1;
+	gKeptMapLevel = -1;
+	gKeptMission = 0;
+	gKeptMapMission = 0;
+	gHasKeptYaw = false;
+	gHasStrategicInitialYaw = false;
+	gMapPulseStartNs = 0;
 	gSelected = -1;
 	CeSelClear(gSel);
 	CeGroupsClear(gGroups);

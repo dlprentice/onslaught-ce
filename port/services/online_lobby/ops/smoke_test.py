@@ -134,7 +134,7 @@ def authenticate(scheme: str, host: str, port: int, signer: EphemeralSigner, cal
     return sess["session_token"]
 
 
-def run_smoke(raw_url: str, *, allow_loopback_http: bool = False, check_turn: bool = False, build_id: str = "0.1.14") -> dict:
+def run_smoke(raw_url: str, *, allow_loopback_http: bool = False, check_turn: bool = False, build_id: str = "0.1.15") -> dict:
     scheme, host, port = common.parse_service_url(raw_url, allow_loopback_http=allow_loopback_http)
 
     # 1. Health check.
@@ -157,7 +157,7 @@ def run_smoke(raw_url: str, *, allow_loopback_http: bool = False, check_turn: bo
             bearer=host_tok,
             body={
                 "name": "Smoke Check",
-                "mode": "versus_2v2",
+                "mode": "coop_skirmish",
                 "map": 850,
                 "max_seats": 4,
                 "topology": "star_lockstep",
@@ -271,7 +271,7 @@ def main(argv: list[str] | None = None) -> int:
                         help="Allow http://127.0.0.1:<port> for local workerd testing.")
     parser.add_argument("--check-turn", action="store_true",
                         help="Also exercise /turn (consumes 1 permit from daily/monthly budget).")
-    parser.add_argument("--build-id", default="0.1.14", help="Build ID to use for smoke check.")
+    parser.add_argument("--build-id", default="0.1.15", help="Build ID to use for smoke check.")
     args = parser.parse_args(argv)
     result = run_smoke(
         args.url,

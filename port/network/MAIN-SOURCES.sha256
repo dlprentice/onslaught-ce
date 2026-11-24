@@ -144,7 +144,7 @@ a6c19117d79dac7000882dd876b04c6ef3cff5ac464ab344c3f4b7524eb2c1f7  port/patches/0
 b6da90bd927322ca9f895739e13ee5c8c200f873918c1b383ce357f3eced08b4  port/patches/0242-ce-playunit-tank-cadence.patch
 2445bd533a7f2d2de095e237bd1f9aaca704d67aa983908e95f47dfb777d79dd  port/patches/0245-ce-project-unit-side.patch
 13f515b871519f6d7587e35f8054e2f9d55beba68c9bcb7d29d1539ffda09c6c  port/patches/0250-ce-mod-levels-return.patch
-a188f0f778e9fee604ec8597dbe887066979cb5efaaa38e63b687c6aaf9f4f5e  port/patches/0251-ce-catalogue-goodie-names.patch
+f1f3968bafdb14d485b1e8ec3bc5eaa4455a2e05fcd85284453085a824e70775  port/patches/0251-ce-catalogue-goodie-names.patch
 db10054b069b065baa98ef797435bc89d47dbb65cc9d6ed4e47a6029135923b4  port/patches/0255-ce-museum-exhibit-marker.patch
 c2b7c8c401eeaa7cb5c1bbf487de3ef9878b0a109e4517110c7ed253f4ba5160  port/patches/0256-ce-museum-hall-world.patch
 6277f211b6872e0a324b6d491043b66911130091cdc77ee638d6c61fe0bc8759  port/patches/0257-ce-museum-exhibit-scale.patch

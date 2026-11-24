@@ -686,27 +686,27 @@
 +	const FVector	middle = mCurrentGoodyMesh->mBoundingBox->mOrigin;
 +	FVector	pos = (sCeCatalogueModelGoodie == 76) ? -middle : -(ori * middle);
 +
-+	// Three-point warm/cool/fill studio lighting with gentle ambient so dark hulls remain readable against the dark panel
++	// Three-point studio lighting calibrated for D3DTOP_MODULATE2X (Goodie 76 Team Photo uses flat 1x ambient so it never blows out)
 +	CLight	light;
-+	RENDERINFO.SetAmbient(0x00484e5a);
++	RENDERINFO.SetAmbient(sCeCatalogueModelGoodie == 76 ? 0x00787878 : 0x00181c22);
 +	FVector	sunlight = FVector(-5000.f, 5000.f, 1500.0f);
 +	sunlight.Normalise();
-+	FVector3	col1 = FVector3(0.85f, 0.55f, 0.35f), col2 = FVector3(0.35f, 0.55f, 0.90f), col3 = FVector3(0.55f, 0.55f, 0.55f);
-+	col1 *= 0.85f;
-+	col2 *= 0.85f;
-+	col3 *= 0.75f;
++	FVector3	col1 = FVector3(0.80f, 0.50f, 0.30f), col2 = FVector3(0.28f, 0.48f, 0.85f), col3 = FVector3(0.42f, 0.42f, 0.42f);
++	col1 *= 0.52f;
++	col2 *= 0.52f;
++	col3 *= 0.48f;
 +	light.Init(LIGHT_DIRECTIONAL, sunlight, col1.X, col1.Y, col1.Z);
 +	RENDERINFO.SetLight(0, &light);
-+	RENDERINFO.SetLightEnable(0, TRUE);
++	RENDERINFO.SetLightEnable(0, sCeCatalogueModelGoodie == 76 ? FALSE : TRUE);
 +	sunlight.X = -sunlight.X;
 +	light.Init(LIGHT_DIRECTIONAL, sunlight, col2.X, col2.Y, col2.Z);
 +	RENDERINFO.SetLight(1, &light);
-+	RENDERINFO.SetLightEnable(1, TRUE);
++	RENDERINFO.SetLightEnable(1, sCeCatalogueModelGoodie == 76 ? FALSE : TRUE);
 +	sunlight = FVector(0.f, 1000.f, 200.f);
 +	sunlight.Normalise();
 +	light.Init(LIGHT_DIRECTIONAL, sunlight, col3.X, col3.Y, col3.Z);
 +	RENDERINFO.SetLight(2, &light);
-+	RENDERINFO.SetLightEnable(2, TRUE);
++	RENDERINFO.SetLightEnable(2, sCeCatalogueModelGoodie == 76 ? FALSE : TRUE);
 +	for (SINT li = 3; li < 8; li++)
 +		RENDERINFO.SetLightEnable(li, FALSE);
 +	RENDERINFO.SetLightingEnabled(TRUE);

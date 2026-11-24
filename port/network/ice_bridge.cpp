@@ -21,6 +21,54 @@ bool RelayCandidate(const std::string& line) {
     }
     return false;
 }
+
+std::string ScrubRelayCandidateLine(const std::string& line) {
+    const size_t prefix_len = (line.compare(0, 12, "a=candidate:") == 0) ? 12u : 10u;
+    const std::string prefix = line.substr(0, prefix_len);
+    std::istringstream words(line.substr(prefix_len));
+    std::vector<std::string> tokens;
+    std::string word;
+    while (words >> word) tokens.push_back(std::move(word));
+
+    std::string out = prefix;
+    bool first = true;
+    auto append_tok = [&](const std::string& tok) {
+        if (!first) out += ' ';
+        out += tok;
+        first = false;
+    };
+    for (size_t i = 0; i < tokens.size(); ++i) {
+        if (tokens[i] == "raddr") {
+            if (i + 1 < tokens.size()) {
+                append_tok("raddr");
+                append_tok("0.0.0.0");
+                ++i;
+            }
+        } else if (tokens[i] == "rport") {
+            if (i + 1 < tokens.size()) {
+                append_tok("rport");
+                append_tok("0");
+                ++i;
+            }
+        } else {
+            append_tok(tokens[i]);
+        }
+    }
+    return out;
+}
+
+std::string ScrubOriginLine(const std::string& line) {
+    std::istringstream words(line.substr(2));
+    std::vector<std::string> tokens;
+    std::string word;
+    while (words >> word) tokens.push_back(std::move(word));
+    if (tokens.size() < 6 || tokens[3] != "IN") {
+        return "o=- 0 0 IN IP4 0.0.0.0";
+    }
+    const bool ipv6 = (tokens[4] == "IP6");
+    return "o=" + tokens[0] + " " + tokens[1] + " " + tokens[2] +
+           " IN " + (ipv6 ? "IP6 ::" : "IP4 0.0.0.0");
+}
 }
 
 std::unique_ptr<CeIceBridge> CeIceBridge::Create(ENetHost* host,
@@ -118,7 +166,14 @@ bool CeIceBridge::FilterDescription(const std::string& input, bool relay,
         if (line.compare(0, 12, "a=candidate:") == 0 ||
             line.compare(0, 10, "candidate:") == 0) {
             if (relay && !RelayCandidate(line)) continue;
+            if (relay) line = ScrubRelayCandidateLine(line);
             candidate = true;
+        } else if (relay && line.compare(0, 2, "c=") == 0) {
+            line = (line.compare(0, 9, "c=IN IP6 ") == 0) ? "c=IN IP6 ::" : "c=IN IP4 0.0.0.0";
+        } else if (relay && line.compare(0, 2, "o=") == 0) {
+            line = ScrubOriginLine(line);
+        } else if (relay && line.compare(0, 7, "a=rtcp:") == 0 && line.find(" IN IP") != std::string::npos) {
+            continue;
         }
         output += line + "\r\n";
     }

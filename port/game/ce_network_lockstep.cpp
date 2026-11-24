@@ -98,6 +98,7 @@ extern "C" void CE_WorldLockstepPartnerStart(void *init);
 extern "C" void CE_WorldLockstepPlaceEmitters(void *const *weapons, const int *orientate, unsigned count);
 extern "C" int CE_WorldLockstepEndTick(void);
 extern "C" void CE_WorldLockstepBeginTick(void);
+extern "C" int CE_WorldLocalWon(int game_state) __attribute__((weak));
 // ce_online_match.cpp; weak, so 2-player session fixtures that compile this file standalone need no stand-in
 extern "C" int PortCeOnlineMatchActive(void) __attribute__((weak));
 extern "C" int PortCeOnlineMatchSlotCount(void) __attribute__((weak));
@@ -330,6 +331,7 @@ bool Fail(const char *message, bool desync_queued = false) {
 	KeeperStop();
     CampaignStop(CE_CAMPAIGN_STOP_FAILURE);
 	if (L.online_multi && PortCeOnlineMatchStop) PortCeOnlineMatchStop(0);
+	if (L.online_multi && PortCeOnlineServiceFinishMatch) PortCeOnlineServiceFinishMatch(0);
 	if (L.online_multi && PortCeOnlineServiceDetachMatchBridge) PortCeOnlineServiceDetachMatchBridge();
 	if (L.stage != FAILED) { fprintf(stderr, "onslaught-ce: co-op session stopped: %s\n", message); if (!last_error[0]) snprintf(last_error, sizeof last_error, "%s", message); }
 	L.stage = FAILED; L.outcome_error = true; L.notice[0] = 0;
@@ -1492,11 +1494,11 @@ void CE_LockstepAfterUpdate(void) {
 			L.final_tick = L.tick; L.final_mission = true; L.final_confirmed = true;
 			L.stage = FINISHED; L.notice[0] = 0;
 			int won = 0;
-			const EGameState gs = GAME.GetGameState();
+			const int gs = (int)GAME.GetGameState();
 			if (gs == GAME_STATE_LEVEL_WON) {
 				won = 1;
 			} else if (gs == GAME_STATE_PLAYER_1_WON || gs == GAME_STATE_PLAYER_2_WON) {
-				won = CE_WorldLocalWon((int)gs) ? 1 : 0;
+				won = (CE_WorldLocalWon && CE_WorldLocalWon(gs)) ? 1 : 0;
 			}
 			if (PortCeOnlineServiceFinishMatch) PortCeOnlineServiceFinishMatch(won);
 			fprintf(stderr, "onslaught-ce: online match ended at tick %u (won=%d)\n", L.tick, won);
@@ -1576,6 +1578,7 @@ int CE_LockstepBeginTeardown(int quit) {
 	if (L.stage == FINISHED) {
 		if (!L.final_confirmed) { fprintf(stderr, "onslaught-ce: co-op mission ended without final confirmation\n"); L.outcome_error = true; }
 		if (L.online_multi && PortCeOnlineMatchStop) PortCeOnlineMatchStop(1);
+		if (L.online_multi && PortCeOnlineServiceFinishMatch) PortCeOnlineServiceFinishMatch(0);
 		if (L.online_multi && PortCeOnlineServiceDetachMatchBridge) PortCeOnlineServiceDetachMatchBridge();
 		ReportNetworkCounts(L.net);
 		if (L.net) (ChatRetire(), CE_NetClose(L.net)); L.stage = ENDED; return quit;
@@ -1586,6 +1589,7 @@ int CE_LockstepBeginTeardown(int quit) {
 	}
 	if (L.stage == RUNNING || L.stage == STOPPING || L.stage == PRERUN || L.stage == STARTING || L.stage == LOADED || L.stage == CONNECTING) {
 		if (L.online_multi && PortCeOnlineMatchStop) PortCeOnlineMatchStop(1);
+		if (L.online_multi && PortCeOnlineServiceFinishMatch) PortCeOnlineServiceFinishMatch(0);
 		if (L.online_multi && PortCeOnlineServiceDetachMatchBridge) PortCeOnlineServiceDetachMatchBridge();
 		if (L.final_confirmed)
 			fprintf(stderr, "onslaught-ce: co-op ended at tick %u, %u state hashes compared, all equal\n", L.tick, L.hashes_compared);
@@ -1602,6 +1606,7 @@ void CE_LockstepAfterWorldShutdown(void) {
     CampaignCaptureReturn();
 	L.shown = false;
 	if (L.online_multi && PortCeOnlineMatchStop) PortCeOnlineMatchStop(0);
+	if (L.online_multi && PortCeOnlineServiceFinishMatch) PortCeOnlineServiceFinishMatch(0);
 	if (L.online_multi && PortCeOnlineServiceDetachMatchBridge) PortCeOnlineServiceDetachMatchBridge();
 	if (L.online_multi && PortCeOnlineMatchClear) PortCeOnlineMatchClear();
 	L.online_multi = false;

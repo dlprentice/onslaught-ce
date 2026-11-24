@@ -116,6 +116,26 @@ const char *const kHelpFirewall = "If Windows asks about the firewall, choose Al
 
 bool RelayRequested() { return CE_NetGameIceRequested() != 0; }
 
+const char *DisplayServiceOrigin(const char *origin)
+{
+	if (!origin || !origin[0]) return "";
+#ifdef CE_ONLINE_LOBBY_DEFAULT_URL
+	if (CE_ONLINE_LOBBY_DEFAULT_URL[0] && !strcmp(origin, CE_ONLINE_LOBBY_DEFAULT_URL))
+		return "Official Online Service (HTTPS)";
+#endif
+	if (strstr(origin, ".workers.dev") != NULL)
+		return "Official Online Service (HTTPS)";
+	return origin;
+}
+
+void ClearTransientSignaling()
+{
+#if defined(CE_NETWORK_ICE)
+	if (CE_LobbySignalingSelected() && !RelayRequested())
+		CE_LobbySignalingClear();
+#endif
+}
+
 extern "C" int CE_CheatOn(int n);	// port/platform/common/ce.cpp: the Cheats page's switches
 
 bool MenuAvailable(char *why, size_t size)
@@ -629,6 +649,7 @@ CCeNetMenu	*sMenu = NULL;
 bool		sActive = false;
 bool		sOpenOnEntry = false;		// the return from a network game: open these pages as the CE page arrives
 bool		sOpenOnlineOnEntry = false;	// Multiplayer -> Play Online entry: open Online UI directly
+bool		sDirectFromOnline = false;	// Direct LAN / IP opened from Online UI: Back returns to Online UI
 bool		sCtrl = false;
 bool		sTrap = false;
 
@@ -783,6 +804,9 @@ public:
 	void	Show(int page)
 	{
         if (page == NP_MENU) mConnectionSelected = false;
+		ClearTransientSignaling();
+		mStartingAt = -1.f;
+		mQuitPosted = false;
 		mPage = page;
         mCampaignMissionKnown = false;
 		mList[page]->mSelected = 0;
@@ -1074,12 +1098,15 @@ public:
 		if (mPage == NP_JOIN && PlayerPages() && JoinPending())
 		{
 			CE_LobbyLeave();
+			ClearTransientSignaling();
 			Show(NP_JOIN);
 			return;
 		}
 		switch (mPage)
 		{
 		case NP_MENU:
+			mStartingAt = -1.f;
+			mQuitPosted = false;
 			Close();
 			break;
         case NP_INVITATION_PREVIEW:
@@ -1134,10 +1161,21 @@ public:
         ClearSignalUi();
 		Trap(false);
 		CE_LobbyLeave();
+#if defined(CE_NETWORK_ICE)
+        CE_LobbySignalingClear();
+#endif
 		mCode->Clear();
 		mAddress->Clear();
 		DeActivate(FALSE);
 		sActive = false;
+#ifndef CE_NETWORK_OFF
+		if (sDirectFromOnline)
+		{
+			sDirectFromOnline = false;
+			if (PortCeOnlineUiOpen)
+				PortCeOnlineUiOpen();
+		}
+#endif
 	}
 
 	bool ConnectionAvailable(char *why, size_t size)
@@ -1664,7 +1702,7 @@ public:
 				Show(NP_LOBBY);
 			else if (s.state == CE_LOBBY_OFF || s.state == CE_LOBBY_FAILED)
 			{
-				if (s.state == CE_LOBBY_FAILED) CE_LobbyLeave();
+				if (s.state == CE_LOBBY_FAILED) { CE_LobbyLeave(); ClearTransientSignaling(); }
 				ShowMenu(NA_HOST);
 				LobbyNotice(s.notice);
 			}
@@ -1692,12 +1730,14 @@ public:
 			{
 				LobbyNotice(s.notice);
 				CE_LobbyLeave();
+				ClearTransientSignaling();
 			}
 			break;
 		case NP_LOBBY:
 			if (s.host && s.state == CE_LOBBY_FAILED)
 			{
 			    CE_LobbyLeave();
+			    ClearTransientSignaling();
 			    ShowMenu(NA_HOST);
 			    LobbyNotice(s.notice);
 			}
@@ -1706,6 +1746,7 @@ public:
 			else if (!s.host && (s.state == CE_LOBBY_LEFT || s.state == CE_LOBBY_FAILED))
 			{
 				CE_LobbyLeave();
+				ClearTransientSignaling();
 				Show(NP_JOIN);
 				LobbyNotice(s.notice);
 			}
@@ -1892,7 +1933,7 @@ public:
             if (InvitationPreviewValid()) {
                 y = Lines("Relay: Waiting for pair invitation", y + 4.f, kCream, FONT_SMALL, kPageWidth);
                 y = Lines(mInvitation.role == CE_NET_HOST ? "Role: Host" : "Role: Join", y + 4.f, kWarn, FONT_SMALL, kPageWidth);
-                y = Lines(mInvitation.origin, y + 2.f, kWarn, FONT_SMALL, kPageWidth);
+                y = Lines(DisplayServiceOrigin(mInvitation.origin), y + 2.f, kWarn, FONT_SMALL, kPageWidth);
                 const uint64_t now = CE_HandoffNow();
                 const uint64_t left = mInvitation.expires_at > now ? mInvitation.expires_at - now : 0;
                 char expiry[128];
@@ -1906,7 +1947,7 @@ public:
         }
         case NP_SIGNAL_DISCLOSURE:
         {
-            const char* origin = SignalingOrigin();
+            const char* origin = DisplayServiceOrigin(SignalingOrigin());
             const char* destination = origin[0] ? origin : "Approved HTTPS origin is unavailable.";
             const char* head = "Review Online network access";
             const char* body = "Online contacts the approved HTTPS signaling service below to bind this private pair and exchange protected connection records. Accepted connections use Cloudflare TURN relay access.";
@@ -2368,6 +2409,7 @@ void	PortCeNetOpen()
 {
 	if (!PortCeNetOffered())
 		return;
+	sDirectFromOnline = false;
 #ifndef CE_NETWORK_OFF
 	if (sOpenOnlineOnEntry)
 	{
@@ -2385,6 +2427,8 @@ void	PortCeNetOpen()
 	sMenu->Activate(0);
 	sActive = true;
 	sMenu->mNotice[0] = 0;
+	sMenu->mStartingAt = -1.f;
+	sMenu->mQuitPosted = false;
 	char text[256];
 	int good = 1;
 	const int rematch = CE_LobbyResumeMatch();
@@ -2396,6 +2440,11 @@ void	PortCeNetOpen()
 	}
 	sMenu->mReturningRoom = outcome && rematch != 0;
 	sMenu->Show(rematch == 1 ? NP_HOST : rematch == 2 ? NP_JOIN : NP_MENU);
+	if (rematch == 1 || rematch == 2)
+	{
+		sMenu->mConnectionSelected = true;
+		sMenu->mConnectionRelay = RelayRequested();
+	}
 	// Back from a network game: what happened, in the message box over the first page (house style E1).
 	if (outcome && !rematch)
 		Box(sMenu->mOutcome);
@@ -2406,6 +2455,8 @@ extern "C" void	PortCeNetOpenDirectFromOnline(void)
 {
 	sOpenOnlineOnEntry = false;
 	PortCeNetOpen();
+	if (sActive)
+		sDirectFromOnline = true;
 }
 #endif
 
@@ -2463,6 +2514,7 @@ void	PortCeNetShutdown()
 	}
 	sActive = false;
 	sOpenOnlineOnEntry = false;
+	sDirectFromOnline = false;
 }
 
 bool	PortCeNetOpenOnEntry()

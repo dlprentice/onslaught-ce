@@ -492,8 +492,8 @@ private:
 		outZ = air ? -48.0f : HeightAt(outX, outY);
 	}
 
-	void EmitSpawn(CeSandboxStepOutput &out, const CeSandboxSpawnOrder &order) {
-		if (out.spawnCount >= CeSandboxStepOutput::kMaxSpawns) return;
+	bool EmitSpawn(CeSandboxStepOutput &out, const CeSandboxSpawnOrder &order) {
+		if (out.spawnCount >= CeSandboxStepOutput::kMaxSpawns) return false;
 		CeSandboxSpawnOrder safe = order;
 		CeSandboxWorld::ClampOutsideCitadelKeepOut(safe.x, safe.y, CeSandboxWorld::kDirectorSteerClearRadius);
 		CeSandboxWorld::ClampOutsideCitadelKeepOut(safe.targetX, safe.targetY, CeSandboxWorld::kDirectorSteerClearRadius);
@@ -502,6 +502,7 @@ private:
 		}
 		out.spawns[out.spawnCount++] = safe;
 		++stats_.totalSpawns;
+		return true;
 	}
 
 	void SuppressHq(int allegiance) {
@@ -530,33 +531,36 @@ private:
 		using namespace CeSandboxWorld;
 		const char *forsetiShip = venturerAvailable ? kUnitVenturer : kUnitMarshall;
 		const float forsetiZ = venturerAvailable ? -30.0f : kWaterLevel;
+		int spawned = 0;
 
 		if (FindTrackedIndex(navalForsetiFlagship_) < 0) {
-			EmitSpawn(out, {
+			if (EmitSpawn(out, {
 				forsetiShip, kAllegianceForseti, CE_SB_ROLE_NAVAL,
 				352.0f, 118.0f, forsetiZ, -1.35f,
 				418.0f, 136.0f, forsetiZ, false, true
-			});
-			EmitSpawn(out, {
+			})) ++spawned;
+			if (EmitSpawn(out, {
 				kUnitWildcatJason, kAllegianceForseti, CE_SB_ROLE_AIR,
 				346.0f, 134.0f, -48.0f, -1.20f,
 				432.0f, 148.0f, -48.0f, false, true
-			});
+			})) ++spawned;
 		}
 		if (FindTrackedIndex(navalMuspellFlagship_) < 0) {
-			EmitSpawn(out, {
+			if (EmitSpawn(out, {
 				kUnitManticore, kAllegianceMuspell, CE_SB_ROLE_NAVAL,
 				444.0f, 154.0f, kWaterLevel, 1.85f,
 				372.0f, 132.0f, kWaterLevel, false, true
-			});
-			EmitSpawn(out, {
+			})) ++spawned;
+			if (EmitSpawn(out, {
 				kUnitMuspellAdvFighter, kAllegianceMuspell, CE_SB_ROLE_AIR,
 				448.0f, 166.0f, -50.0f, 1.90f,
 				360.0f, 124.0f, -50.0f, false, true
-			});
+			})) ++spawned;
 		}
-		++stats_.totalNavalEscalations;
-		SetBanner("NAVAL ESCALATION - COASTAL STRAIT ENGAGED", 6.5f);
+		if (spawned > 0) {
+			++stats_.totalNavalEscalations;
+			SetBanner("NAVAL ESCALATION - COASTAL STRAIT ENGAGED", 6.5f);
+		}
 	}
 
 	void StepDirector2Hz(float stepDt, const CeSandboxPressure &pressure,
@@ -640,16 +644,19 @@ private:
 			if (!hq.suppressed) return;
 			hq.rebuildTimerSec -= stepDt;
 			if (hq.rebuildTimerSec <= 0.0f && !heapAlarm) {
-				hq.suppressed = false;
-				hq.rebuildTimerSec = 0.0f;
-				++hq.rebuildCount;
-				++stats_.totalHqRebuilds;
-				EmitSpawn(out, {
+				if (!EmitSpawn(out, {
 					allegiance == kAllegianceForseti ? kUnitForsetiHq : kUnitMuspellHq,
 					allegiance, CE_SB_ROLE_HQ,
 					hx, hy, HeightAt(hx, hy), hyaw,
 					hx, hy, HeightAt(hx, hy), true, false
-				});
+				})) {
+					hq.rebuildTimerSec = 2.0f;
+					return;
+				}
+				hq.suppressed = false;
+				hq.rebuildTimerSec = 0.0f;
+				++hq.rebuildCount;
+				++stats_.totalHqRebuilds;
 				SetBanner(allegiance == kAllegianceForseti ? "FORSETI HQ ONLINE" : "MUSPELL HQ ONLINE", 5.0f);
 			}
 		};
@@ -951,6 +958,16 @@ public:
 
 		const int idx = FindTrackedIndex(handle);
 		if (idx >= 0) RemoveTrackedAt(static_cast<unsigned>(idx));
+	}
+
+	void OnHqRebuildSpawnFailed(int allegiance, float retrySec = 5.0f) {
+		if (!IsRunning()) return;
+		HqCoreState &hq = (allegiance == CeSandboxWorld::kAllegianceForseti) ? forsetiHq_ : muspellHq_;
+		hq.alive = false;
+		hq.suppressed = true;
+		hq.rebuildTimerSec = retrySec > 0.5f ? retrySec : 0.5f;
+		if (hq.rebuildCount > 0u) --hq.rebuildCount;
+		if (stats_.totalHqRebuilds > 0u) --stats_.totalHqRebuilds;
 	}
 
 	// Advances host-driven 2 Hz cadence. Returns true when a 2 Hz step executed.

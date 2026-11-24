@@ -62,7 +62,7 @@ struct ButtonSpec {
 static const ButtonSpec kButtons[kBtnCount] = {
     {kBtnPrev,     "Previous Exhibit", "Step back to the previous item in this archive category.", -0.90f},
     {kBtnNext,     "Next Exhibit",     "Advance to the next item in this archive category.",      -0.30f},
-    {kBtnCategory, "Switch Category",  "Cycle between Retail Meshes, Goodie Models, Concept Art, Cinema, and Bonus Levels.", 0.30f},
+    {kBtnCategory, "Switch Category",  "Cycle Retail Meshes, Goodie Models, Concept Art, Cinema, and Bonus Levels.", 0.30f},
     {kBtnPause,    "Pause or Spin",    "Pause or resume turntable rotation on the display pedestal.", 0.90f},
 };
 

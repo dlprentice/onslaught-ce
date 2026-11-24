@@ -111,14 +111,18 @@ static void CheckResponsiveLayouts()
 		const CeCmdHudHit hGap = CeCmdHudHitTest(lay, gapX, lay.buttonRects[0].y + 4.f);
 		Require(hGap.kind == CE_HUD_HIT_BAR_PADDING, "gap between buttons is bar padding");
 
-		// Radio dialogue NEVER pushes FORCES into the middle of the screen: bar stays bottom-docked
-		// and subtitleSafeRect stays cleanly above barRect!
+		// Active native radio dialogue (0 < uiBottom < viewportH) shifts FORCES cleanly above uiBottom
+		// while non-dialogue (uiBottom <= 0 or >= viewportH) stays bottom-docked and subtitleSafeRect stays above barRect.
 		const float dlgBottom = h * 0.72f;
 		const CeCmdHudLayout withDlg = CeCmdHudComputeLayout(w, h, s, dlgBottom, 4, 0);
-		Require(withDlg.valid && std::fabs(withDlg.barRect.y - lay.barRect.y) < 0.5f,
-		        "radio dialogue keeps FORCES strictly bottom-docked");
+		Require(withDlg.valid && withDlg.barRect.y < lay.barRect.y &&
+		        withDlg.barRect.y + withDlg.barRect.h <= dlgBottom,
+		        "active radio dialogue shifts FORCES cleanly above uiBottom");
+		const CeCmdHudLayout zeroDlg = CeCmdHudComputeLayout(w, h, s, 0.f, 4, 0);
+		Require(zeroDlg.valid && std::fabs(zeroDlg.barRect.y - lay.barRect.y) < 0.5f,
+		        "zero uiBottom keeps FORCES bottom-docked");
 		Require(withDlg.subtitleSafeRect.y + withDlg.subtitleSafeRect.h < withDlg.barRect.y,
-		        "subtitle lane remains cleanly above bottom-docked bar");
+		        "subtitle lane remains cleanly above FORCES bar");
 		Require(!Overlaps(withDlg.subtitleSafeRect, withDlg.barRect),
 		        "subtitle lane never overlaps FORCES bar");
 	}

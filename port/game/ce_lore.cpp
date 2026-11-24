@@ -142,6 +142,7 @@ bool	Button(int button)
 	switch (button)
 	{
 		case BUTTON_PAUSE_MENU_SELECT:
+		case BUTTON_FRONTEND_MENU_SELECT:
 		{
 			const int row = CeReadSectionAt(&sRead, sSections, sSectionCount, sChosen);
 			if (row < 0)

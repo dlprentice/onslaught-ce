@@ -303,7 +303,80 @@ int main() {
              "valley player is outside Archive Pedestal keyboard range");
     }
 
-    std::printf("ce_sanctuary_citadel_tests: all geometry, shield, beam, ripple, cinema & pedestal checks passed\n");
+    // 10. 360-degree visual dome ground-seal property sweep (720 rays x 0.5 deg), bastion
+    //     cornice clearance, C^1 cylindrical projection, and DomePerimeterGroundZ bounds.
+    {
+        // Visual radius clears all 4 brass bastion cornice corners (hypot(39.7, 39.7) = 56.144 m)
+        // while physical kDomeRadius (56.0 m) and kDomeSkirtDepth (2.0 m) remain untouched.
+        const float bastionCornerR = std::hypot(39.7f, 39.7f);
+        Need(kDomeVisualRadius > 56.14f && (kDomeVisualRadius - bastionCornerR) >= 0.20f,
+             "visual dome radius clears all 4 retaining bastion/brass cornice corners by >= 20 cm");
+        Need(Near(kDomeRadius, 56.0f) && Near(kDomeSkirtDepth, 2.0f),
+             "physical dome radius and 2 m skirt depth remain untouched");
+        Need(kDomeVisualSkirtMaxZ >= 24.0f, "visual skirt reaches >= 24 m below floorZ");
+
+        // C^1 continuity and cylindrical arc-length preservation across equator nz = 0.
+        {
+            float hx0 = 0.0f, hy0 = 0.0f, hz0 = 0.0f;
+            float hx1 = 0.0f, hy1 = 0.0f, hz1 = 0.0f;
+            const float eps = 1e-3f;
+            const float cxEps = std::sqrt(1.0f - eps * eps);
+            ProjectDomeVisualPoint(cxEps, 0.0f, -eps, &hx0, &hy0, &hz0);
+            ProjectDomeVisualPoint(cxEps, 0.0f,  eps, &hx1, &hy1, &hz1);
+            Need(Near(hx0, kDomeVisualRadius, 1e-3f) && Near(hx1, kDomeVisualRadius, 1e-3f),
+                 "C^1 dome projection radius is continuous across equator");
+            Need(Near(hz1 - hz0, 2.0f * kDomeVisualRadius * eps, 2e-3f),
+                 "C^1 dome projection preserves vertical arc-length slope across equator");
+
+            // Deep skirt vertex stays strictly cylindrical at radius kDomeVisualRadius (never curves inward!).
+            float sx = 0.0f, sy = 0.0f, sz = 0.0f;
+            const float nzSkirt = 0.35f;
+            const float hrUnit = std::sqrt(1.0f - nzSkirt * nzSkirt);
+            ProjectDomeVisualPoint(hrUnit * 0.6f, hrUnit * 0.8f, nzSkirt, &sx, &sy, &sz);
+            Need(Near(std::hypot(sx, sy), kDomeVisualRadius, 1e-3f),
+                 "cylindrical skirt projection maintains full kDomeVisualRadius without curving inward");
+            Need(Near(sz, kDomeVisualRadius * std::asin(nzSkirt), 1e-3f),
+                 "cylindrical skirt Z matches arc-length-preserving R * asin(nz)");
+        }
+
+        // 360 deg x 0.5 deg (720-ray) terrain-seal sweep around (112, 392) at R = kDomeVisualRadius.
+        float maxGroundZ = -1e9f;
+        float minGroundZ =  1e9f;
+        for (unsigned i = 0; i < 720u; ++i) {
+            const float a = static_cast<float>(i) * (6.283185307f / 720.0f);
+            const float wx = kCenterX + std::cos(a) * kDomeVisualRadius;
+            const float wy = kCenterY + std::sin(a) * kDomeVisualRadius;
+            const float rawGz = CeSandboxWorld::HeightAt(wx, wy);
+            const float gz = DomePerimeterGroundZ(a, kFloorZ);
+
+            Need(std::isfinite(gz), "DomePerimeterGroundZ returns finite height");
+            Need(Near(gz, rawGz, 1e-3f), "DomePerimeterGroundZ matches CeSandboxWorld::HeightAt at kDomeVisualRadius");
+            Need(gz >= kFloorZ - 8.0f && gz <= kFloorZ + kDomeVisualSkirtMaxZ - 2.0f,
+                 "DomePerimeterGroundZ stays strictly inside documented bounds");
+            if (rawGz > maxGroundZ) maxGroundZ = rawGz;
+            if (rawGz < minGroundZ) minGroundZ = rawGz;
+
+            // Project full skirt depth (nz = kDomeVisualSkirtNzMax) and verify >= 4.0 m underground everywhere!
+            float px = 0.0f, py = 0.0f, pz = 0.0f;
+            const float hUnit = std::sqrt(1.0f - kDomeVisualSkirtNzMax * kDomeVisualSkirtNzMax);
+            ProjectDomeVisualPoint(std::cos(a) * hUnit, std::sin(a) * hUnit, kDomeVisualSkirtNzMax, &px, &py, &pz);
+            Need(Near(std::hypot(px, py), kDomeVisualRadius, 1e-3f),
+                 "720-ray skirt perimeter stays on kDomeVisualRadius cylinder");
+            const float skirtWorldZ = kFloorZ + pz;
+            Need((skirtWorldZ - rawGz) >= 4.0f,
+                 "visual dome skirt extends >= 4.0 m underground below HeightAt at every 0.5 deg azimuth");
+        }
+        // Verify we actually traversed both the raised parapet berm and deep hillside drop!
+        Need(minGroundZ <= -37.5f && maxGroundZ >= -19.5f,
+             "720-ray sweep exercises both raised parapet berm and deep cliff hillside");
+        // NaN azimuth guard & custom floorZ shift.
+        Need(Near(DomePerimeterGroundZ(std::nanf(""), kFloorZ), kFloorZ),
+             "DomePerimeterGroundZ rejects NaN azimuth safely");
+        Need(Near(DomePerimeterGroundZ(0.0f, kFloorZ - 2.0f), DomePerimeterGroundZ(0.0f, kFloorZ) - 2.0f, 1e-3f),
+             "DomePerimeterGroundZ shifts cleanly with custom floorZ");
+    }
+
+    std::printf("ce_sanctuary_citadel_tests: all geometry, shield, beam, ripple, cinema, pedestal & 360-deg dome seal checks passed\n");
     return 0;
 }
 """
@@ -345,6 +418,15 @@ MUTANTS = [
     ("pedestal-wrong-aim-z",
      "if (outLocalAimZ) *outLocalAimZ = -aimZ;",
      "if (outLocalAimZ) *outLocalAimZ = aimZ;"),
+    ("visual-radius-clips-bastion",
+     "constexpr float kDomeVisualRadius = 56.35f;",
+     "constexpr float kDomeVisualRadius = 55.90f;"),
+    ("visual-skirt-too-shallow",
+     "constexpr float kDomeVisualSkirtMaxZ = 24.5f;",
+     "constexpr float kDomeVisualSkirtMaxZ = 14.0f;"),
+    ("visual-skirt-curves-inward",
+     "if (nz > 0.0f) {",
+     "if (false && nz > 0.0f) {"),
 ]
 
 
@@ -493,6 +575,19 @@ def main():
           and "dev->SetTextureStageState(0, D3DTSS_TEXTURETRANSFORMFLAGS, D3DTTFF_DISABLE);" in cit_cpp[cit_cpp.index("DrawFactionEmblemMurals("):cit_cpp.index("void RuntimeInit(")]
           and "{kEmblemForseti,  84.48f," in cit_cpp
           and "{kEmblemMuspell, 139.52f," in cit_cpp)
+    draw_dome_fn = cit_cpp[cit_cpp.index("void RuntimeDrawDomeFx()"):cit_cpp.index("} // namespace CeSanctuaryCitadel")]
+    check("citadel shield dome uses C^1 geodesic skirt, precomputed 128-seg 3-row ground collar, and skirt-conforming ripples",
+          '#include "ce_sandbox_world.h"' in cit_h
+          and "ProjectDomeVisualPoint(" in cit_cpp
+          and "kDomeVisualSkirtNzMax" in cit_cpp
+          and "kCollarSegs = 128" in cit_cpp
+          and "BuildDomeGroundCollar();" in cit_cpp
+          and "DomePerimeterGroundZ(" not in draw_dome_fn
+          and "HeightAt(" not in draw_dome_fn
+          and "zBot = gz + bury;" in draw_dome_fn
+          and "zMid = gz - 0.15f;" in draw_dome_fn
+          and "zTop = gz - 3.20f;" in draw_dome_fn
+          and "const bool onSkirt = (rip.z > cz);" in draw_dome_fn)
 
     sys.path.insert(0, str(PORT))
     sys.path.insert(0, str(PORT / "tools"))

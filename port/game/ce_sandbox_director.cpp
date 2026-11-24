@@ -785,7 +785,10 @@ extern "C" void PortCeLivingSandboxTickPre(void) {
 
 	// Spawn capped reinforcement / HQ rebuild / Naval Escalation units.
 	for (int i = 0; i < stepOut.spawnCount; ++i) {
-		SpawnSandboxUnit(stepOut.spawns[i]);
+		const CeSandboxSpawnOrder &sp = stepOut.spawns[i];
+		if (!SpawnSandboxUnit(sp) && sp.isHqRebuild) {
+			gDirector.OnHqRebuildSpawnFailed(sp.allegiance);
+		}
 	}
 }
 

@@ -120,6 +120,8 @@ int main() {
              "manifest entry is a genuine retail GT_IMAGE goodie");
         Need(sp.retailPath && std::strncmp(sp.retailPath, "goodies\\", 8) == 0, "retail goodies key");
         Need(AsciiOnly(sp.title) && AsciiOnly(sp.category) && AsciiOnly(sp.caption), "ASCII curator text");
+        Need(std::strlen(sp.title) <= 56u && std::strlen(sp.category) <= 44u && std::strlen(sp.caption) <= 95u,
+             "art plaque copy fits CeMuseumLabel kChars=96 buffers without truncation");
         Need(sp.maxWidth > 1.0f && sp.maxHeight > 1.0f && sp.centreZ > 1.5f, "sensible frame bounds");
         Need(Grand::RoomAt(graph, CeMuseumExhibition::Vec2{sp.localX, sp.localY}) == static_cast<Grand::RoomId>(sp.wing),
              "canvas sits inside its declared wing");
@@ -183,6 +185,38 @@ int main() {
          "looking away toward open archway clears focus");
     Need(FocusCanvas(-17.5f, 19.0f, 1.0f, 0.0f, CeMuseumTour::kWingEarlyDesigns) == -1,
          "looking away toward open archway clears focus in early designs");
+
+    // 3b. Canonical retail lore assertions for characters, bosses, and signature units.
+    auto artByGoodie = [&](int gid) -> const CanvasSpec & {
+        for (unsigned i = 0; i < kManifestCount; ++i)
+            if (kManifest[i].goodieId == gid) return kManifest[i];
+        Need(false, "art goodie ID present in manifest");
+        return kManifest[0];
+    };
+    Need(std::strcmp(artByGoodie(0).title, "Hawk Winter") == 0 &&
+         std::strstr(artByGoodie(0).caption, "dockworker") != NULL, "goodie 0 is dockworker Hawk Winter");
+    Need(std::strcmp(artByGoodie(1).title, "Tatiana Kiralova") == 0 &&
+         std::strstr(artByGoodie(1).caption, "scientist") != NULL, "goodie 1 is scientist Tatiana Kiralova");
+    Need(std::strcmp(artByGoodie(2).title, "Col. Chuck Kramer") == 0, "goodie 2 is Col. Chuck Kramer");
+    Need(std::strcmp(artByGoodie(3).title, "Maj. Jason Lorenzo") == 0, "goodie 3 is Maj. Jason Lorenzo");
+    Need(std::strcmp(artByGoodie(4).title, "Lt. Tara Fox") == 0, "goodie 4 is Lt. Tara Fox");
+    Need(std::strcmp(artByGoodie(5).title, "Lt. Billy Casbah") == 0, "goodie 5 is Lt. Billy Casbah");
+    Need(std::strcmp(artByGoodie(6).title, "Lewis Carver") == 0, "goodie 6 is Lewis Carver");
+    Need(std::strcmp(artByGoodie(7).title, "Gen. Archanus Surt") == 0, "goodie 7 is Gen. Archanus Surt");
+    Need(std::strstr(artByGoodie(24).title, "ACX-1 Venturer") != NULL, "goodie 24 is ACX-1 Venturer");
+    Need(std::strstr(artByGoodie(34).title, "Warrior") != NULL, "goodie 34 identifies Muspell Warrior");
+    Need(std::strcmp(artByGoodie(58).title, "Thunderhead Artillery Walker") == 0, "goodie 58 is Thunderhead Artillery Walker");
+    Need(std::strstr(artByGoodie(60).title, "SSV-8 Thornback") != NULL, "goodie 60 is SSV-8 Thornback");
+    Need(std::strcmp(artByGoodie(61).title, "Hive Mobile Construction Facility") == 0, "goodie 61 is Hive Mobile Construction Facility");
+    Need(std::strcmp(artByGoodie(62).title, "Gill-M") == 0, "goodie 62 is Gill-M");
+    Need(std::strstr(artByGoodie(63).title, "ASX-9F Vilifier") != NULL, "goodie 63 is ASX-9F Vilifier");
+    Need(std::strcmp(artByGoodie(64).title, "Fenrir Airborne Flagship") == 0, "goodie 64 is Fenrir Airborne Flagship");
+    Need(std::strstr(artByGoodie(74).title, "Ashley Gartell") != NULL, "goodie 74 credits Ashley Gartell");
+    Need(std::strstr(artByGoodie(90).title, "Hive Mobile Factory") != NULL, "goodie 90 is Hive Mobile Factory");
+    Need(std::strstr(artByGoodie(91).title, "Gill-M") != NULL, "goodie 91 is Gill-M concept");
+    Need(std::strstr(artByGoodie(137).title, "M-112 Archer") != NULL, "goodie 137 is M-112 Archer");
+    Need(std::strstr(artByGoodie(141).title, "XF-28 Venom") != NULL, "goodie 141 is XF-28 Venom");
+    Need(std::strstr(artByGoodie(157).title, "ASX-9F Vilifier") != NULL, "goodie 157 is ASX-9F Vilifier archive");
 
     // 4. Truncated retail filename fallback matches goodie 95 & goodie 103 and rejects mismatches.
     Need(MatchesTruncatedCatalogPath(
@@ -285,8 +319,25 @@ def main():
           "gArt.slots[i].missing = true;" in cpp and "archival plate unavailable" in cpp)
     check("runtime releases textures and catalog on shutdown",
           "void RuntimeShutdown()" in cpp and "ReleaseAllTextures();" in cpp and "PortCeAssetCatalogClose" in cpp)
+    header_txt = HEADER.read_text()
     check("no forbidden words in curator text",
-          not re.search(r'"[^"]*(?:prototype|experimental|carrier|ce\.ini)[^"]*"', HEADER.read_text(), re.I))
+          not re.search(r'"[^"]*(?:prototype|experimental|carrier|ce\.ini)[^"]*"', header_txt, re.I))
+    banned_lore = (
+        "Tatianna",
+        "XF-24",
+        "Thunderhead Super-Bomber",
+        "Kraken Super-Weapon",
+        "orbital-ridge",
+        "naval war-machine",
+        "Command Fortress",
+        "Carver Strike Fighter",
+        "Carver Interceptor",
+        "Studio Portrait - Ashley",
+        "Commonwealth",
+        "Dominion",
+    )
+    check("canonical retail lore regression checks pass (no stale Tatianna/XF-24/Super-Bomber/Kraken/Dominion labels)",
+          all(term not in header_txt for term in banned_lore))
     return 1 if failures else 0
 
 

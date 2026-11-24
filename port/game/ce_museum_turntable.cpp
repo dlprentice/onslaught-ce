@@ -489,24 +489,24 @@ void RuntimeDraw(float floorZ) {
         savedLightEnable[li] = RENDERINFO.mLightEnable[li];
     }
 
-    // Balanced 3-point gallery lighting (warm key + cool sky fill + subtle rim)
+    // Balanced 3-point gallery lighting calibrated for D3DTOP_MODULATE2X (warm key + cool fill + rim)
     CLight light;
-    RENDERINFO.SetAmbient(0x005c616a);
+    RENDERINFO.SetAmbient(0x00262a32);
     FVector dir1(-0.55f, 0.55f, 0.62f);
     dir1.Normalise();
-    light.Init(LIGHT_DIRECTIONAL, dir1, 0.92f, 0.84f, 0.72f);
+    light.Init(LIGHT_DIRECTIONAL, dir1, 0.62f, 0.56f, 0.48f);
     RENDERINFO.SetLight(0, &light);
     RENDERINFO.SetLightEnable(0, TRUE);
 
     FVector dir2(0.65f, -0.45f, 0.55f);
     dir2.Normalise();
-    light.Init(LIGHT_DIRECTIONAL, dir2, 0.52f, 0.62f, 0.78f);
+    light.Init(LIGHT_DIRECTIONAL, dir2, 0.34f, 0.40f, 0.52f);
     RENDERINFO.SetLight(1, &light);
     RENDERINFO.SetLightEnable(1, TRUE);
 
     FVector dir3(0.0f, 0.2f, 0.95f);
     dir3.Normalise();
-    light.Init(LIGHT_DIRECTIONAL, dir3, 0.45f, 0.46f, 0.48f);
+    light.Init(LIGHT_DIRECTIONAL, dir3, 0.28f, 0.29f, 0.30f);
     RENDERINFO.SetLight(2, &light);
     RENDERINFO.SetLightEnable(2, TRUE);
     for (SINT li = 3; li < 8; ++li) RENDERINFO.SetLightEnable(li, FALSE);
@@ -573,7 +573,23 @@ void RuntimeDraw(float floorZ) {
         const float plinthZ = floorZ - sp.plinthTopZ;
         FVector pos(wx - offset.X, wy - offset.Y, plinthZ - halfH - offset.Z);
 
+        const bool flatPhoto = (sp.goodieId == 76);
+        if (flatPhoto) {
+            // Render the Dev Team Photo panorama at flat ~1x exposure under MODULATE2X (no white blowout).
+            RENDERINFO.SetAmbient(0x00787878);
+            RENDERINFO.SetLightEnable(0, FALSE);
+            RENDERINFO.SetLightEnable(1, FALSE);
+            RENDERINFO.SetLightEnable(2, FALSE);
+            RENDERINFO.Apply();
+        }
         CMESHRENDERER::Render(&pos, &scaledOri, mesh, NULL, NULL, 0, FALSE, 0);
+        if (flatPhoto) {
+            RENDERINFO.SetAmbient(0x00262a32);
+            RENDERINFO.SetLightEnable(0, TRUE);
+            RENDERINFO.SetLightEnable(1, TRUE);
+            RENDERINFO.SetLightEnable(2, TRUE);
+            RENDERINFO.Apply();
+        }
     }
 
     CMESHRENDERER::SetRenderAlpha(alphaWas);

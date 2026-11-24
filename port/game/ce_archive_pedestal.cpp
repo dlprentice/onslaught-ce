@@ -541,11 +541,16 @@ void DrawSteleFrame(IDirect3DDevice9 *dev, const RuntimeData *d, float floorZ,
 
     if (d->content == kContentArt && d->artTexture) {
         const LightboxExtent ext = FitLightbox(d->artSrcW, d->artSrcH, steleW - 0.16f, steleH - 0.16f);
+        auto clampByte = [](float v) -> unsigned {
+            const int iv = static_cast<int>(v + 0.5f);
+            return iv <= 0 ? 0u : (iv >= 255 ? 255u : static_cast<unsigned>(iv));
+        };
         const float fade = d->state.fadeAlpha < 0.0f ? 0.0f : (d->state.fadeAlpha > 1.0f ? 1.0f : d->state.fadeAlpha);
-        const unsigned topRgb = static_cast<unsigned>(255.0f * (0.18f + 0.82f * fade) + 0.5f);
-        const unsigned botR = static_cast<unsigned>(236.0f * (0.18f + 0.82f * fade) + 0.5f);
-        const unsigned botG = static_cast<unsigned>(234.0f * (0.18f + 0.82f * fade) + 0.5f);
-        const unsigned botB = static_cast<unsigned>(228.0f * (0.18f + 0.82f * fade) + 0.5f);
+        const float lum = 0.18f + 0.82f * fade;
+        const unsigned topRgb = clampByte(255.0f * lum);
+        const unsigned botR = clampByte(236.0f * lum);
+        const unsigned botG = clampByte(234.0f * lum);
+        const unsigned botB = clampByte(228.0f * lum);
         const DWORD topCol = 0xff000000u | (topRgb << 16) | (topRgb << 8) | topRgb;
         const DWORD botCol = 0xff000000u | (botR << 16) | (botG << 8) | botB;
 

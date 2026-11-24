@@ -191,8 +191,13 @@ bool ReadFileAll(const char *name, std::vector<unsigned char> &out)
 	if (h == INVALID_HANDLE_VALUE)
 		return false;
 	DWORD size = GetFileSize(h, NULL), got = 0;
+	if (size == INVALID_FILE_SIZE)
+	{
+		CloseHandle(h);
+		return false;
+	}
 	out.resize(size);
-	bool ok = size != INVALID_FILE_SIZE && ReadFile(h, out.data(), size, &got, NULL) && got == size;
+	bool ok = ReadFile(h, out.data(), size, &got, NULL) && got == size;
 	CloseHandle(h);
 	return ok;
 }
@@ -205,8 +210,9 @@ bool DecodeAudio(Video *v, int stream, std::vector<short> &pcm, int *rate, int *
 	if (!codec)
 		return false;
 	AVCodecContext *ctx = avcodec_alloc_context3(codec);
-	avcodec_parameters_to_context(ctx, st->codecpar);
-	if (avcodec_open2(ctx, codec, NULL) < 0)
+	if (!ctx)
+		return false;
+	if (avcodec_parameters_to_context(ctx, st->codecpar) < 0 || avcodec_open2(ctx, codec, NULL) < 0)
 	{
 		avcodec_free_context(&ctx);
 		return false;

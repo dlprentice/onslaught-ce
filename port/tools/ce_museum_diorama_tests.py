@@ -51,21 +51,28 @@ int main() {
         const DioramaSpec &d = kDioramas[i];
         Need(d.theme == static_cast<Theme>(i), "distinct diorama themes 0..3");
         Need(AsciiOnly(d.title) && AsciiOnly(d.subtitle) && AsciiOnly(d.caption), "ASCII diorama copy");
-        Need(d.unitCount >= 7u && d.unitCount <= unsigned(kMaxUnitsPerDiorama), "rich miniature unit roster");
-        Need(d.tracerCount >= 6u && d.tracerCount <= unsigned(kMaxTracersPerDiorama), "active combat tracers");
+        Need(std::strlen(d.title) <= 95u && std::strlen(d.subtitle) <= 95u && std::strlen(d.caption) <= 95u,
+             "diorama title, subtitle and caption fit CeMuseumLabel kChars=96 without truncation");
+        char noteCheck[128] = {};
+        std::snprintf(noteCheck, sizeof(noteCheck), "%s - aim at lectern to resume.", d.subtitle);
+        Need(std::strlen(noteCheck) <= 95u, "non-lectern diorama note fits kChars=96 without truncation");
+        Need(d.unitCount >= 12u && d.unitCount <= 16u && d.unitCount <= unsigned(kMaxUnitsPerDiorama),
+             "hero-scaled 12..16 miniature unit roster");
+        Need(d.tracerCount >= 12u && d.tracerCount <= unsigned(kMaxTracersPerDiorama),
+             "lively multi-salvo combat tracers");
         Need(Grand::RoomAt(graph, CeMuseumExhibition::Vec2{d.localX, d.localY}) == Grand::kRoomAtrium,
              "diorama sits cleanly inside Grand Atrium");
         // Table centre & rim are solid collision obstacles.
         Need(Grand::WalkAt(graph, CeMuseumExhibition::Vec2{d.localX, d.localY}) == CeMuseumExhibition::kWalkBlocked,
              "diorama table blocks visitor");
-        // Approach point 1.15 m in front of brass pause/resume stud is walkable.
+        // Approach point 1.15 m in front of brass lectern stud is walkable.
         float sx = 0.0f, sy = 0.0f, sz = 0.0f;
         StudPosition(i, &sx, &sy, &sz);
         Need(Near(sz, kTabletopZ), "stud sits at tabletop height");
         const float ax = sx + d.studDirX * 1.15f;
         const float ay = sy + d.studDirY * 1.15f;
         Need(Grand::WalkAt(graph, CeMuseumExhibition::Vec2{ax, ay}) == CeMuseumExhibition::kWalkOpen,
-             "visitor can stand comfortably in front of diorama control stud");
+             "visitor can stand comfortably in front of diorama lectern control");
         // Verify zero overlap with Atrium skylight columns (+/-8.2, 28.2/43.8), Archive Pedestal, Directory, and North plinths.
         const float colX[2] = {-8.2f, 8.2f}, colY[2] = {28.2f, 43.8f};
         for (unsigned cx = 0; cx < 2u; ++cx) {
@@ -85,19 +92,45 @@ int main() {
             const float sep = std::hypot(d.localX - kDioramas[j].localX, d.localY - kDioramas[j].localY);
             Need(sep > 2.0f * kTableRadius + 4.0f, "diorama tables stay widely separated");
         }
-        // Verify terrain height field across tabletop disk is finite and bounded in [0, 0.40].
-        for (float rx = -2.2f; rx <= 2.21f; rx += 0.22f) {
-            for (float ry = -2.2f; ry <= 2.21f; ry += 0.22f) {
+        // Verify terrain height field across tabletop disk is finite, bounded in [0, 0.54], and dramatically sculpted.
+        float maxH = 0.0f;
+        for (float rx = -2.2f; rx <= 2.21f; rx += 0.11f) {
+            for (float ry = -2.2f; ry <= 2.21f; ry += 0.11f) {
                 const float h = TerrainHeight(d.theme, rx, ry);
-                Need(std::isfinite(h) && h >= 0.0f && h <= 0.40f, "bounded finite terrain elevation");
+                Need(std::isfinite(h) && h >= 0.0f && h <= 0.54f, "bounded finite terrain elevation");
+                if (h > maxH) maxH = h;
                 if (std::hypot(rx, ry) >= kTerrainRadius)
                     Need(Near(h, 0.0f), "terrain flattens outside rim");
             }
         }
+        if (d.theme != kThemeSkycarrier) {
+            Need(maxH >= 0.42f, "land/reef dioramas have dramatic 0.42..0.52m sculpted relief");
+        }
+    }
+
+    // 1b. Canonical lore roster checks: Venturer vs Fenrir on Skycarrier, Gill-M + M_submarine on equatorial Nautilus.
+    {
+        bool sawVenturer = false, sawFenrir = false;
+        const DioramaSpec &sky = kDioramas[kThemeSkycarrier];
+        for (unsigned ui = 0; ui < sky.unitCount; ++ui) {
+            if (std::strcmp(sky.units[ui].meshStem, "f_ventura") == 0) sawVenturer = true;
+            if (std::strcmp(sky.units[ui].meshStem, "boss-fenrir") == 0) sawFenrir = true;
+        }
+        Need(sawVenturer && sawFenrir, "Skycarrier diorama stages ACX-1 Venturer vs Aircarrier Fenrir");
+
+        bool sawGillM = false, sawSub = false;
+        const DioramaSpec &naut = kDioramas[kThemeNautilus];
+        Need(std::strstr(naut.title, "Nautilus") != 0 && std::strstr(naut.title, "Gill-M") != 0,
+             "Diorama IV is titled Nautilus Gill-M Ambush");
+        for (unsigned ui = 0; ui < naut.unitCount; ++ui) {
+            if (std::strcmp(naut.units[ui].meshStem, "boss_gill-m") == 0) sawGillM = true;
+            if (std::strcmp(naut.units[ui].meshStem, "M_submarine") == 0) sawSub = true;
+        }
+        Need(sawGillM && sawSub, "Nautilus diorama stages Gill-M and verified M_submarine Thornback");
     }
 
     // 2. Sweep full 30s simulation across all 4 dioramas & every unit + tracer:
-    // verify dome containment, realistic motion per MotionKind, and active tracers + impact flashes!
+    // verify dome containment, realistic motion per MotionKind, pairwise ground clearance, and active tracers!
     for (unsigned di = 0; di < kDioramaCount; ++di) {
         const DioramaSpec &d = kDioramas[di];
         for (unsigned ui = 0; ui < d.unitCount; ++ui) {
@@ -134,6 +167,24 @@ int main() {
                 Need(maxYawDelta > 0.25f, "sweeping turret tracks across field");
             }
         }
+        // Pairwise clearance between surface/ground units across full 30s simulation so units never overlap.
+        for (int step = 0; step <= 120; ++step) {
+            const float t = float(step) * 0.25f;
+            UnitPose poses[kMaxUnitsPerDiorama] = {};
+            for (unsigned ui = 0; ui < d.unitCount; ++ui)
+                EvaluateUnitPose(d.theme, d.units[ui], t, &poses[ui]);
+            for (unsigned a = 0; a < d.unitCount; ++a) {
+                if (d.units[a].motion == kMotionOrbit) continue;
+                for (unsigned b = a + 1u; b < d.unitCount; ++b) {
+                    if (d.units[b].motion == kMotionOrbit) continue;
+                    // Ignore units on distinct altitude layers (e.g. hovering skycarriers vs sea escorts)
+                    if (std::fabs(poses[a].dz - poses[b].dz) > 0.32f) continue;
+                    const float dist = std::hypot(poses[a].dx - poses[b].dx, poses[a].dy - poses[b].dy);
+                    const float minSep = 0.42f * (d.units[a].targetSpan + d.units[b].targetSpan);
+                    Need(dist >= minSep, "surface miniature units stay clear of each other across 30s");
+                }
+            }
+        }
         // Extreme forced-overflow synthetic unit must be clamped inside the dome by EvaluateUnitPose!
         {
             UnitSpec wild = {"test", true, kShapeJet, kMotionOrbit, 5.0f, 5.0f, 1.40f, 3.0f, 1.0f, 0.0f, 0.3f, 0.30f};
@@ -146,7 +197,7 @@ int main() {
         for (unsigned ti = 0; ti < d.tracerCount; ++ti) {
             const TracerSpec &tr = d.tracers[ti];
             Need(tr.fromUnit < d.unitCount && tr.toUnit < d.unitCount && tr.fromUnit != tr.toUnit, "valid tracer endpoints");
-            bool sawBolt = false, sawImpact = false, sawArc = (tr.arcHeight <= 0.0f);
+            bool sawBolt = false, sawImpact = false, sawSmoke = false, sawArc = (tr.arcHeight <= 0.0f);
             for (int step = 0; step < 60; ++step) {
                 const float t = float(step) * (tr.periodSec / 60.0f);
                 TracerSegment seg = {};
@@ -167,8 +218,10 @@ int main() {
                     }
                 }
                 if (seg.impactAlpha > 0.05f) sawImpact = true;
+                if (seg.smokeAlpha > 0.05f && seg.smokeRise > 0.02f) sawSmoke = true;
             }
-            Need(sawBolt && sawImpact && sawArc, "every tracer fires bolts, arches when set, and flashes on impact");
+            Need(sawBolt && sawImpact && sawSmoke && sawArc,
+                 "every tracer fires bolts, arches when set, flashes on impact, and raises smoke");
         }
     }
 
@@ -196,7 +249,7 @@ int main() {
     TogglePause(&st, -1);
     TogglePause(&st, kDioramaCount);
 
-    // 4. Brass stud ray-pick and curator plaque focus (strictly Atrium-scoped).
+    // 4. Brass lectern stud ray-pick and curator plaque focus (strictly Atrium-scoped).
     for (unsigned i = 0; i < kDioramaCount; ++i) {
         const DioramaSpec &d = kDioramas[i];
         float sx = 0.0f, sy = 0.0f, sz = 0.0f;
@@ -205,7 +258,7 @@ int main() {
         const float ey = sy + d.studDirY * 1.8f;
         const float ez = 1.65f;
         Need(PickStud(ex, ey, ez, sx - ex, sy - ey, sz - ez, CeMuseumTour::kWingAtrium) == int(i),
-             "direct aim picks exact diorama stud");
+             "direct aim picks exact diorama lectern stud");
         Need(PickStud(ex, ey, ez, sx - ex, sy - ey, sz - ez, CeMuseumTour::kWingCourtyard) == -1,
              "stud pick rejects non-Atrium wing");
         Need(PickStud(ex, ey, ez, d.studDirX, d.studDirY, 0.0f, CeMuseumTour::kWingAtrium) == -1,
@@ -282,21 +335,47 @@ def main():
             caught, _ = run([str(m / "driver")], 2)
             check("mutant " + label + " caught", caught)
 
+    hdr = HEADER.read_text()
     cpp = CPP.read_text()
     check("diorama runtime caches tables, terrains and crystal domes in D3DPOOL_MANAGED VBs/IBs",
           "D3DPOOL_MANAGED" in cpp and "stageVb" in cpp and "domeVb" in cpp
           and "DrawIndexedPrimitive(D3DPT_TRIANGLELIST" in cpp)
+    check("diorama runtime raises GPU/VFX buffer capacities with strict bounds checks",
+          "kMaxStageVerts = 32000u" in cpp and "kMaxStageIdx = 128000u" in cpp
+          and "kMaxDomeVerts = 12288u" in cpp and "kMaxDomeIdx = 56000u" in cpp
+          and "kMaxVfxVerts = 8192u" in cpp and "HasSpace(" in cpp)
     check("diorama runtime uses CeArchiveScanner SwapArena and shuts it down right after GPU upload",
           "SwapArena arena" in cpp and "arena.Init(" in cpp and "arena.Shutdown();" in cpp)
     check("diorama runtime degrades gracefully to procedural miniature silhouettes when retail files are absent",
           "BuildFallbackUnitMesh(" in cpp and "loadedRetail" in cpp)
     check("diorama runtime releases all GPU VBs/IBs, textures, and heap state in RuntimeShutdown",
           "void RuntimeShutdown()" in cpp and "ReleaseStageBuffers(gDio);" in cpp
-          and "ReleaseUnitAssets(gDio);" in cpp and "std::free(gDio);" in cpp)
+          and "ReleaseUnitAssets(gDio);" in cpp and "std::free(gDio);" in cpp
+          and "terrainDetailTex->Release()" in cpp)
+    check("diorama runtime uploads 256px full-mipmapped textures and 256x256 MODULATE2X terrain micro-detail",
+          "kDioramaTexMaxEdge = 256u" in cpp and "D3DX_FILTER_BOX" in cpp
+          and "D3DSAMP_MIPFILTER, D3DTEXF_LINEAR" in cpp and "D3DTOP_MODULATE2X" in cpp
+          and "CreateTerrainDetailTexture(" in cpp)
+    check("diorama runtime builds 32x64 terrain, 32-seg drum pedestal, lit curator lectern, and 48x16 2-pass specular blown glass",
+          "kRings = 32u" in cpp and "kSegs = 64u" in cpp
+          and "kDomeSegs = 48u" in cpp and "kDomeRings = 16u" in cpp
+          and "DrumTier(" in cpp and "EmitCuratorLectern(" in cpp
+          and "D3DCULL_CW" in cpp and "D3DRS_SPECULARENABLE, TRUE" in cpp
+          and "D3DRS_LOCALVIEWER, TRUE" in cpp and "glassMat.Power = 64.0f" in cpp)
+    check("diorama runtime renders additive starbursts and smoke BEFORE glass dome with ZWRITEENABLE FALSE and zero cube impacts",
+          "DrawDioramaVfx(dev, d, floorZ);" in cpp
+          and cpp.index("DrawDioramaVfx(dev, d, floorZ);") < cpp.index("d->domeGlassRange.firstIndex")
+          and "D3DRS_ZWRITEENABLE, FALSE" in cpp and "pushStarburst" in cpp
+          and "pushBox" not in cpp)
+    check("diorama runtime clamps ARGB byte channels after float-to-int conversion (x87 FE_TONEAREST wrap guard)",
+          "FloatToByte(" in cpp and "ClampByteU(" in cpp
+          and "((r & 255u) << 16)" not in cpp)
     check("diorama runtime keeps zero retail C++ new/delete or fopen calls",
           "new " not in cpp and "delete " not in cpp and "fopen(" not in cpp)
     check("diorama player-facing strings stay free of forbidden technical jargon",
-          not re.search(r'"[^"]*(?:prototype|experimental|ce\.ini)[^"]*"', HEADER.read_text(), re.I))
+          not re.search(r'"[^"]*(?:prototype|experimental|ce\.ini)[^"]*"', hdr, re.I))
+    check("diorama header stays free of non-canon Arctic/Kraken/XF-24/missing-mesh references",
+          not re.search(r'"[^"]*(?:kraken|arctic|polar|iceberg|xf-24|dominion|boss_sub|thunderhead)[^"]*"', hdr, re.I))
     return 1 if failures else 0
 
 
