@@ -627,12 +627,10 @@ bool ShouldRenderCarrierClashHud(bool overlayPass, bool *outEndState) {
 	if (outEndState) *outEndState = endState;
 	const bool pauseMenuOpen = (GAME.GetPauseMenu() && GAME.GetPauseMenu()->mActive);
 	if (PortCePhotoOn() || GAMEINTERFACE.IsMenuUp() || pauseMenuOpen) return false;
+	if (PortCeCmdMapOpen && PortCeCmdMapOpen()) return false;
 	if (GAME.GetGameState() != GAME_STATE_PLAYING && !endState) return false;
 	if (!endState && GAME.IsPaused()) return false;
-	if (overlayPass) {
-		if (!endState) return false;
-		if (PortCeCmdMapOpen && PortCeCmdMapOpen()) return false;
-	}
+	if (overlayPass && !endState) return false;
 	return true;
 }
 

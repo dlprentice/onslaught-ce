@@ -206,7 +206,16 @@ void DesktopFullscreen(HWND focus, D3DPRESENT_PARAMETERS *pp)
 		SDL_GetWindowSizeInPixels(native, &width, &height);
 		if ((UINT)width != pp->BackBufferWidth || (UINT)height != pp->BackBufferHeight)
 		{
-			if (!SDL_SetWindowSize(native, (int)pp->BackBufferWidth, (int)pp->BackBufferHeight) || !SDL_SyncWindow(native))
+			float density = SDL_GetWindowPixelDensity(native);
+			if (!(density > 0.f) || !std::isfinite(density))
+				density = 1.f;
+			int logicalW = (int)((double)pp->BackBufferWidth / density + 0.5);
+			int logicalH = (int)((double)pp->BackBufferHeight / density + 0.5);
+			if (logicalW < 1)
+				logicalW = 1;
+			if (logicalH < 1)
+				logicalH = 1;
+			if (!SDL_SetWindowSize(native, logicalW, logicalH) || !SDL_SyncWindow(native))
 				fprintf(stderr, PORT_LOG_PREFIX "exclusive window resize to %ux%u failed: %s\n",
 						pp->BackBufferWidth, pp->BackBufferHeight, SDL_GetError());
 		}

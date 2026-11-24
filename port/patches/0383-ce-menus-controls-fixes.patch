@@ -1,0 +1,412 @@
+--- a/ControllerDefinition.h
++++ b/ControllerDefinition.h
+@@ -17,6 +17,9 @@
+ 	virtual int		GetHeight();
+ 	virtual CMenuItem	*Clone() { return NULL; }
+ 	virtual bool	IsExpanded();
++#ifdef CE_VERSION
++	virtual bool	TakesInput();
++#endif
+ 	virtual void	Refresh();
+ 	void			BeginRemapCapture();						// 00456080
+ 	void			RenderBindingsList(int column, float x, float y, BOOL selected);	// 00455010
+--- a/FEPControls.cpp
++++ b/FEPControls.cpp
+@@ -248,6 +248,9 @@
+ 	if (!gKeytrapReleased)
+ 	{
+ 		gKeytrapReleased = true;
++#ifdef CE_VERSION
++		sKeyDown = false;
++#endif
+ 		PLATFORM.SetKeytrap(NULL);
+ 	}
+ 	SAFE_RELEASE(mTexture);
+@@ -262,7 +265,12 @@
+ // FUNCTION: 0x00453ad0
+ void CControllerDefinition::Render(float x, float y, BOOL selected)
+ {
++#ifdef CE_VERSION
++	extern bool PortCeMenus();
++	float	top = y + (PortCeMenus() ? 2.0f : 5.0f);
++#else
+ 	float	top = y + 5.0f;
++#endif
+ 	for (int col = 0; col < 3; col++)
+ 		RenderBindingsList(col, (col - 1.0f) / 0.00625f + x, top, selected);	// spelling chosen to give retail's reciprocal-named 160 (placement evidence); Stuart's release has no such line
+ 
+@@ -273,7 +281,11 @@
+ 	{
+ 		if ((float)fmod(PLATFORM.GetSysTimeFloat(), 2.0) < 1.5f)
+ 			CSPRITERENDERER::DrawColouredSprite(x, y + 15.0f, 0, mTexture, 0xffffffff, 1.0f, 1.0f, SA_CENTRE, SPT_NONE, 1.0f, -PI / 2);
++#ifdef CE_VERSION
++		if ((selected) && (CFrontEnd::MouseClickedInRect(x - 16.0f, top - 6.0f, x + 16.0f, y + 31.0f)))
++#else
+ 		if ((selected) && (::MouseClickedInRect(x - 16.0f, top - 6.0f, x + 16.0f, y + 31.0f)))
++#endif
+ 		{
+ 			CFrontEnd::PlaySound(FES_MOVE);
+ 			mUnknown20--;
+@@ -283,7 +295,11 @@
+ 	{
+ 		if ((float)fmod(PLATFORM.GetSysTimeFloat(), 2.0) < 1.5f)
+ 			CSPRITERENDERER::DrawColouredSprite(x, y + 230.0f - 10.0f, 0, mTexture, 0xffffffff, 1.0f, 1.0f, SA_CENTRE, SPT_NONE, 1.0f, PI / 2);
++#ifdef CE_VERSION
++		if ((selected) && (CFrontEnd::MouseClickedInRect(x - 16.0f, y + 230.0f - 26.0f, x + 16.0f, y + 236.0f)))
++#else
+ 		if ((selected) && (::MouseClickedInRect(x - 16.0f, y + 230.0f - 26.0f, x + 16.0f, y + 236.0f)))
++#endif
+ 		{
+ 			CFrontEnd::PlaySound(FES_MOVE);
+ 			mUnknown20++;
+@@ -691,7 +707,14 @@
+ 	LT.SSS_NoCache(0, D3DSAMP_MINFILTER, D3DTEXF_POINT);
+ 	LT.SSS_NoCache(0, D3DSAMP_MAGFILTER, D3DTEXF_POINT);
+ 
++#ifdef CE_VERSION
++	extern bool PortCeMenus();
++	const float ceStep = PortCeMenus() ? 8.0f : 10.0f;
++	const float ceSpan = PortCeMenus() ? 178.0f : 225.0f;
++	for (int row = mUnknown20; (row < 22) && (ry < y + ceSpan); row++, ry += ceStep)
++#else
+ 	for (int row = mUnknown20; (row < 22) && (ry < y + 225.0f); row++, ry += 10.0f)
++#endif
+ 	{
+ 		WCHAR	text[300] = L"";
+ 		DWORD	col = 0xff7f7f7f;
+@@ -953,12 +976,20 @@
+ 			{
+ 				// STAND-IN (volatile view): retail tests the flag again before the click (00455b43..00455b4e); a plain read lets VC6
+ 				// jump past the second test when the first fails, so this volatile read stands in for whatever kept the two apart.
++#ifdef CE_VERSION
++				if ((*(volatile bool *)&gKeytrapReleased) && (CFrontEnd::GetCursorStateInRect(tx, ry, size.cx + tx, size.cy + ry)))
++#else
+ 				if ((*(volatile bool *)&gKeytrapReleased) && (MouseInRect(tx, ry, size.cx + tx, size.cy + ry)))
++#endif
+ 				{
+ 					mUnknown24 = column / 2;
+ 					mUnknown28 = row;
+ 				}
++#ifdef CE_VERSION
++				if ((gKeytrapReleased) && (CFrontEnd::MouseClickedInRect(tx, ry, size.cx + tx, size.cy + ry)))
++#else
+ 				if ((gKeytrapReleased) && (::MouseClickedInRect(tx, ry, size.cx + tx, size.cy + ry)))
++#endif
+ 				{
+ 					mUnknown24 = column / 2;
+ 					mUnknown28 = row;
+@@ -1174,17 +1205,41 @@
+ // FUNCTION: 0x00456620
+ int CControllerDefinition::GetHeight()
+ {
++#ifdef CE_VERSION
++	extern bool PortCeMenus();
++	return PortCeMenus() ? 180 : 230;
++#else
+ 	return 230;
++#endif
+ }
+ // FUNCTION: 0x00456630
+ bool CControllerDefinition::IsExpanded()
+ {
++#ifdef CE_VERSION
++	return mExpanded || !gKeytrapReleased;
++#else
+ 	return mExpanded;
++#endif
+ }
++#ifdef CE_VERSION
++bool CControllerDefinition::TakesInput()
++{
++	return mExpanded || !gKeytrapReleased;
++}
++#endif
+ // FUNCTION: 0x00456640
+ void CControllerDefinition::Refresh()
+ {
+ 	mExpanded = false;
++#ifdef CE_VERSION
++	if (!gKeytrapReleased)
++	{
++		gKeytrapReleased = true;
++		sKeyDown = false;
++		if (LT.GetKeytrap() == (pKeyTrapper)RemapKeyTrap)
++			PLATFORM.SetKeytrap(NULL);
++	}
++#endif
+ }
+ // TRUE when no remappable binding leaves this input unset.
+ // FUNCTION: 0x00456650
+--- a/PauseMenu.cpp
++++ b/PauseMenu.cpp
+@@ -452,7 +452,11 @@
+ 
+ 	virtual void	ReceiveButtonAction(CController *from_controller, int button, float val);
+ 	virtual WCHAR	*GetText();
++#ifdef CE_VERSION
++	virtual int		GetHeight() { extern bool PortCeMenus(); return PortCeMenus() ? 14 : 17; }
++#else
+ 	virtual int		GetHeight() { return 17; }
++#endif
+ 
+ 	int				mJoystick;						// +0x1c
+ };
+@@ -1633,10 +1637,27 @@
+ }
+ 
+ // back to the first page, unless a player has no free binding to leave the controls page with
++#ifdef CE_VERSION
++static inline void	CancelPageCapture(CPauseMenu *menu)
++{
++	if ((menu->mPage >= 0) && (menu->mPage < menu->mLists.Size()))
++	{
++		CMenuItem	*it;
++		FOR_ALL_ITEMS_IN(menu->mLists.At(menu->mPage)->mItems, it)
++		{
++			if (it->TakesInput() || it->IsExpanded())
++				it->Refresh();
++		}
++	}
++}
++#endif
+ static inline void	BackToFirstPage(CPauseMenu *menu)
+ {
+ 	if ((menu->mPage == 1) && CPauseMenu::GetBindingWarning())
+ 		return;
++#ifdef CE_VERSION
++	CancelPageCapture(menu);
++#endif
+ 	menu->mPage = 0;
+ 	menu->mLists.At(0)->Reset();
+ 	CFrontEnd::PlaySound(FES_BACK);
+@@ -1718,6 +1739,9 @@
+ 	case GI_BACK:
+ 		if (!CanReturnToPauseRoot(this))
+ 			return;
++#ifdef CE_VERSION
++		CancelPageCapture(this);
++#endif
+ 		mPage = 0;
+ 		mLists.At(0)->Reset();
+ 		back_sound = TRUE;
+@@ -1905,6 +1929,9 @@
+ // FUNCTION: 0x004d10b0
+ void	CPauseMenu::DeActivate(BOOL a)
+ {
++#ifdef CE_VERSION
++	CancelPageCapture(this);
++#endif
+ 	mActive = FALSE;
+ 	mCloseTime = PLATFORM.GetSysTimeFloat();
+ 	SAFE_DELETE(mConfirm);
+--- a/MenuOptionsList.cpp
++++ b/MenuOptionsList.cpp
+@@ -34,2 +34,12 @@
+ 		item->Refresh();
++#ifdef CE_VERSION
++	for (int i = 0; i < mItems.Size(); i++)
++	{
++		if (mItems.At(i)->IsEnabled() && (mItems.At(i)->GetHeight() > 0))
++		{
++			mSelected = i;
++			break;
++		}
++	}
++#endif
+ }
+@@ -72,2 +82,23 @@
+ 
++#ifdef CE_VERSION
++	int		count = mItems.Size();
++	if (count <= 0)
++		return;
++	for (int step = 1; step <= count; step++)
++	{
++		int	idx = (old + step) % count;
++		if (idx < 0)
++			idx += count;
++		if (mItems.At(idx)->IsEnabled() && (mItems.At(idx)->GetHeight() > 0))
++		{
++			if (idx != old)
++			{
++				mSelected = idx;
++				CFrontEnd::PlaySound(FES_MOVE);
++			}
++			return;
++		}
++	}
++	return;
++#else
+ 	if (mSelected >= mItems.Size() - 1)
+@@ -95,2 +126,3 @@
+ 	CFrontEnd::PlaySound(FES_MOVE);
++#endif
+ }
+@@ -180,3 +212,7 @@
+ 		{
++#ifdef CE_VERSION
++			if (!mItems.At(mSelected)->TakesInput() && (item->IsEnabled() || ((item->mText == 0) && (item->mPCText == (EPCText)0x32))))
++#else
+ 			if (!mItems.At(mSelected)->TakesInput())
++#endif
+ 			{
+@@ -195,3 +231,7 @@
+ 		{
++#ifdef CE_VERSION
++			if (!mItems.At(mSelected)->TakesInput() && item->IsEnabled())
++#else
+ 			if (!mItems.At(mSelected)->TakesInput())
++#endif
+ 			{
+@@ -250,2 +290,23 @@
+ 
++#ifdef CE_VERSION
++	int		count = mItems.Size();
++	if (count <= 0)
++		return;
++	for (int step = 1; step <= count; step++)
++	{
++		int	idx = (old - step) % count;
++		if (idx < 0)
++			idx += count;
++		if (mItems.At(idx)->IsEnabled() && (mItems.At(idx)->GetHeight() > 0))
++		{
++			if (idx != old)
++			{
++				mSelected = idx;
++				CFrontEnd::PlaySound(FES_MOVE);
++			}
++			return;
++		}
++	}
++	return;
++#else
+ 	if (mSelected <= 0)
+@@ -268,2 +329,3 @@
+ 	CFrontEnd::PlaySound(FES_MOVE);
++#endif
+ }
+--- a/FEMessBox.cpp
++++ b/FEMessBox.cpp
+@@ -8,6 +8,9 @@
+ #include	"mouse.h"
+ 
+ CFEMessBox	FEMESSBOX;						// 00675688
++#ifdef CE_VERSION
++bool	PortCeMenus();
++#endif
+ 
+ //*********************************************************************************
+ void	CFEMessBox::Init()	// FUNCTION: 0x0044d320
+@@ -124,7 +127,11 @@
+ 			break;
+ 
+ 		case 2:
++#ifdef CE_VERSION
++			mFadeCount += PortCeMenus() ? (gFrontEndFrameStep * 50.f) : 1.f;
++#else
+ 			mFadeCount += 1.f;
++#endif
+ 			if (mFadeCount >= mFadeTime)
+ 			{
+ 				mFadeState = 0;
+@@ -190,7 +197,11 @@
+ 
+ 		if ((mOption == FEMB_OPTION_OK) || (mOption == FEMB_OPTION_A_CONTINUE) || (mOption == 4))
+ 		{
++#ifdef CE_VERSION
++			if ((!PortCeMenus() || (mFadeState == 1)) && MouseClickedInRect(left, top, right, bottom))
++#else
+ 			if (MouseClickedInRect(left, top, right, bottom))
++#endif
+ 				ButtonPressed(BUTTON_FRONTEND_MENU_SELECT, 1.f);
+ 		}
+ 
+@@ -241,9 +252,18 @@
+ 				if (MouseOverRect(left, y, right, y + s.cy))
+ 				{
+ 					mCursor = c0;
++#ifdef CE_VERSION
++					if (!PortCeMenus())
++						break;
++#else
+ 					break;
++#endif
+ 				}
++#ifdef CE_VERSION
++				if ((!PortCeMenus() || (mFadeState == 1)) && MouseClickedInRect(left, y, right, y + s.cy))
++#else
+ 				if (MouseClickedInRect(left, y, right, y + s.cy))
++#endif
+ 				{
+ 					FRONTEND.PlaySound(FES_SELECT);
+ 					mCursor = c0;
+@@ -273,7 +293,11 @@
+ 		{
+ 		case FEMB_OPTION_A_CONTINUE:
+ 		case 4:
++#ifdef CE_VERSION
++			if ((button == BUTTON_FRONTEND_MENU_SELECT) || ((button == BUTTON_FRONTEND_MENU_BACK) && PortCeMenus()))
++#else
+ 			if (button == BUTTON_FRONTEND_MENU_SELECT)
++#endif
+ 			{
+ 				FRONTEND.PlaySound(FES_SELECT);
+ 				if (mOnDismissPage != FEP_NONE)
+@@ -287,7 +311,11 @@
+ 			break;
+ 
+ 		case FEMB_OPTION_OK:
++#ifdef CE_VERSION
++			if ((button == BUTTON_FRONTEND_MENU_SELECT) || ((button == BUTTON_FRONTEND_MENU_BACK) && PortCeMenus()))
++#else
+ 			if (button == BUTTON_FRONTEND_MENU_SELECT)
++#endif
+ 			{
+ 				FRONTEND.PlaySound(FES_SELECT);
+ 				if (mOnDismissPage != FEP_NONE)
+--- a/Music.cpp
++++ b/Music.cpp
+@@ -184,6 +184,9 @@
+ extern char	gAllCheatsEnabled;	// 00679ec1 (game.cpp)
+ void CMusic::Play(char *filename)
+ {
++#ifdef CE_VERSION
++	mQueuedSong=NULL;
++#endif
+ 	if (CLIPARAMS.mAutoConfigTest || gAllCheatsEnabled)	filename = "data\\music\\BEA 08(Master).wma";	// retail (004bb5c9..004bb5dc)
+ 	if (mPlaying)
+ 	{
+@@ -205,6 +208,9 @@
+ 
+ void CMusic::Stop()	// FUNCTION: 0x004bb490
+ {
++#ifdef CE_VERSION
++	mQueuedSong=NULL;
++#endif
+ 	if (!mPlaying)
+ 		return;
+ 
+--- a/FEPMain.cpp
++++ b/FEPMain.cpp
+@@ -559,12 +559,20 @@
+ 				if (CFrontEnd::GetCursorStateInRect(119.f, y - 20.f, 319.f, y + 20.f))
+ 					mSelected = -1;
+ 			}
++#ifdef CE_VERSION
++			if ((!PortCeMenus() || ((transition > 0.9f) && (IsActionAvailable(-1)))) && CFrontEnd::MouseClickedInRect(119.f, y - 20.f, 199.f, y + 20.f))
++#else
+ 			if (CFrontEnd::MouseClickedInRect(119.f, y - 20.f, 199.f, y + 20.f))
++#endif
+ 			{
+ 				mSelected = -1;
+ 				ButtonPressed(BUTTON_FRONTEND_MENU_LEFT, 1.f);
+ 			}
++#ifdef CE_VERSION
++			if ((!PortCeMenus() || ((transition > 0.9f) && (IsActionAvailable(-1)))) && CFrontEnd::MouseClickedInRect(239.f, y - 20.f, 319.f, y + 20.f))
++#else
+ 			if (CFrontEnd::MouseClickedInRect(239.f, y - 20.f, 319.f, y + 20.f))
++#endif
+ 			{
+ 				mSelected = -1;
+ 				ButtonPressed(BUTTON_FRONTEND_MENU_RIGHT, 1.f);

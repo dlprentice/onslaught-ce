@@ -10,6 +10,7 @@
 #include "frontend.h"
 #include "game.h"
 #include "GameInterface.h"
+#include "PauseMenu.h"
 #include "world.h"
 #include "unit.h"
 #include "squad.h"
@@ -749,7 +750,9 @@ extern "C" void PortCeLivingSandboxTickPre(void) {
 	CeSandboxTelemetrySample(&tel);
 	CeSandboxPressure pressure = {};
 	const float frameDt = GAME.GetRenderFrameLength();
-	pressure.frameTimeMs = (frameDt > 0.0f && frameDt < 0.5f) ? (frameDt * 1000.0f) : 16.67f;
+	pressure.frameTimeMs = (std::isfinite(frameDt) && frameDt > 0.0f)
+		? (((frameDt < 10.0f) ? frameDt : 10.0f) * (CLOCK_TICK * 1000.0f))
+		: 16.67f;
 	pressure.liveWorldUnits = liveUnits;
 	pressure.eventPending = tel.valid ? tel.eventManagerPending : 0;
 	pressure.eventCapacity = tel.valid ? tel.eventManagerCapacity : kCeRetailEventPoolCapacity;
@@ -800,7 +803,7 @@ extern "C" void PortCeLivingSandboxDrawWorld(CPlayer *player, int viewpoint) {
 #ifdef CE_SANDBOX_HAS_CITADEL
 	float eyeX, eyeY, eyeZ, aimX, aimY, aimZ;
 	ReadViewEyeAndAim(eyeX, eyeY, eyeZ, aimX, aimY, aimZ);
-	float dt = GAME.GetRenderFrameLength();
+	float dt = GAME.GetRenderFrameLength() * CLOCK_TICK;
 	if (!(dt > 0.0f && dt <= 0.25f)) dt = 1.0f / 60.0f;
 	CeSanctuaryCitadel::RuntimeUpdate(dt, GAME.IsPaused() != FALSE,
 	                                  eyeX, eyeY, eyeZ, aimX, aimY, aimZ);
@@ -829,7 +832,9 @@ extern "C" bool PortCeLivingSandboxKey(unsigned char key, bool repeat) {
 extern "C" float PortCeLivingSandboxHudTopBottom(float viewportW, float viewportH) {
 	if (!(viewportW > 0.0f && viewportH > 0.0f)) return 0.0f;
 	if (!PortCeLivingSandboxActive() || !gDirector.IsRunning()) return 0.0f;
-	if (PortCePhotoOn() || GAME.IsPaused() || GAMEINTERFACE.IsMenuUp() ||
+	const bool pauseMenuOpen = (GAME.GetPauseMenu() && GAME.GetPauseMenu()->mActive);
+	if (PortCePhotoOn() || GAME.IsPaused() || GAMEINTERFACE.IsMenuUp() || pauseMenuOpen ||
+	    (PortCeCmdMapOpen && PortCeCmdMapOpen()) ||
 	    GAME.GetGameState() != GAME_STATE_PLAYING) return 0.0f;
 	const float uiScale = ComputeSandboxUiScale(viewportH);
 	const CeSandboxHudState state = gDirector.BuildHudState();
@@ -843,7 +848,9 @@ extern "C" void PortCeLivingSandboxDrawHud(CPlayer *player, int viewpoint) {
 	(void)player;
 	if (viewpoint != 0) return;
 	if (!PortCeLivingSandboxActive() || !gDirector.IsRunning()) return;
-	if (PortCePhotoOn() || GAME.IsPaused() || GAMEINTERFACE.IsMenuUp() ||
+	const bool pauseMenuOpen = (GAME.GetPauseMenu() && GAME.GetPauseMenu()->mActive);
+	if (PortCePhotoOn() || GAME.IsPaused() || GAMEINTERFACE.IsMenuUp() || pauseMenuOpen ||
+	    (PortCeCmdMapOpen && PortCeCmdMapOpen()) ||
 	    GAME.GetGameState() != GAME_STATE_PLAYING) return;
 
 	LPDIRECT3DDEVICE9 dev = LT.GetDevice();

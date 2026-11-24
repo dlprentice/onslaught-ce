@@ -42,9 +42,9 @@ WINDOW_LINES = (
     ("{ extern WCHAR *PortCeValueFit(WCHAR *, float, float *); extern WCHAR *PortCeListFit(WCHAR *, float);",
      "{ extern WCHAR *PortCeValueFit(WCHAR *, float, float *); extern WCHAR *PortCeListFit(WCHAR *, float); "
      "extern int PortCeListWindow(const void *, float, long, int, int, int, float *, int *, int *); extern void PortCeListHover(int); "
-     "extern float PortCeLabelLeft(int); extern float PortCeValueGap();"),
+     "extern float PortCeLabelLeftAt(int, float); extern float PortCeValueGap();"),
     ("\tfloat\ttx = x - size.cx;\n\tfloat\tlx = tx + size.cx + 2.f;\n\tif (tx < 5.f)\n\t{\n\t\tscale = (x - 5.f) / size.cx;\n\t\ttx = 5.f;\n\t}",
-     "\tfloat\ttx = x - size.cx; const float ceLeft = PortCeLabelLeft(FRONTEND.GetCurrentPage());\n"
+     "\tfloat\ttx = x - size.cx; const float ceLeft = PortCeLabelLeftAt(FRONTEND.GetCurrentPage(), y);\n"
      "\tfloat\tlx = tx + size.cx + PortCeValueGap();\n"
      "\tif (tx < ceLeft)\n\t{\n\t\tscale = (x - ceLeft) / size.cx;\n\t\ttx = ceLeft;\n\t}"),
     ("\t\tint\t\tn = GetNumChoices();",
@@ -53,7 +53,10 @@ WINDOW_LINES = (
     ("\t\t\t\t\t\t\t\t\t(widest + 3) / 16.f, (GetNumChoices() * size.cy) * yscale / 16.f, 0.f, 1.f, 0.f, 1.f);",
      "\t\t\t\t\t\t\t\t\t(widest + 3) / 16.f, ((ceWindow ? n : GetNumChoices()) * size.cy) * yscale / 16.f, 0.f, 1.f, 0.f, 1.f);"),
     ("\t\tfor (i = 0; i < n; i++)", "\t\tfor (i = ceFirst; i < ceFirst + n; i++)"),
+    ("\t\t\tfloat\tx2 = size.cx + lx + 2.f;", "\t\t\tfloat\tx2 = lx + float(widest) + 3.f;"),
     ("\t\t\t\tmSelection = i;\n\n\t\t\tPLATFORM.Font", "\t\t\t\t{ mSelection = i; if (ceWindow) PortCeListHover(i); }\n\n\t\t\tPLATFORM.Font"),
+    ("\t\t\tfloat\tcy2 = ly + size.cy;\n\t\t\tfloat\tcx2 = size.cx + lx + 2.f;",
+     "\t\t\tfloat\tcy2 = ly + float(size.cy) * yscale;\n\t\t\tfloat\tcx2 = lx + float(widest) + 3.f;"),
 )
 # Every line patch 0215 changes in CMenuOptionsList::Render, beside the line it was: with cePitch 0 (any list without CE's Video
 # Options rows, and every list outside the ordinary CE menus) each is the original's own expression.
@@ -299,6 +302,10 @@ def main():
             "pitch-every-list": (text, "return (PortCeQualityRow(item) && PortCeQualityOptionsAvailable()) ? kCeCompactPitch : 0;", "return PortCeQualityOptionsAvailable() ? kCeCompactPitch : 0;", "pitch"),
             "shift-in-pause": (text, "return options_page ? kCeCompactFrontShift : kCeCompactPauseShift;", "return kCeCompactFrontShift;", "pitch"),
             "label-left-ungated": (text, "return (PortCeQualityOptionsAvailable() && OptionsPage(page)) ? kCeLabelLeft : 5.f;", "return OptionsPage(page) ? kCeLabelLeft : 5.f;", "pitch"),
+            "label-left-at-ungated": (text, "if (!PortCeQualityOptionsAvailable() || !OptionsPage(page)) return 5.f;", "if (!OptionsPage(page)) return 5.f;", "pitch"),
+            "label-left-at-every-page": (text, "if (!PortCeQualityOptionsAvailable() || !OptionsPage(page)) return 5.f;", "if (!PortCeQualityOptionsAvailable()) return 5.f;", "pitch"),
+            "label-left-at-flat": (text, "return 58.f + (kCeLabelLeft - 58.f) * t;", "return kCeLabelLeft + 0.f * t;", "pitch"),
+            "label-left-at-unclamped": (text, "if (t > 1.f) t = 1.f;", "(void)t;", "pitch"),
             "value-gap-ungated": (text, "return PortCeQualityOptionsAvailable() ? kCeValueGap : 2.f;", "return kCeValueGap;", "pitch"),
             "action-gap-every-row": (text, "return (pitch && count >= 2 && index == count - 2) ? kCeCompactActionGap : 0;", "return pitch ? kCeCompactActionGap : 0;", "pitch"),
         }
@@ -355,6 +362,10 @@ def main():
             "window-box-always-window": ("MenuItem", "((ceWindow ? n : GetNumChoices()) * size.cy)", "(n * size.cy)"),
             "window-hover-unrecorded": ("MenuItem", "{ mSelection = i; if (ceWindow) PortCeListHover(i); }", "{ mSelection = i; }"),
             "window-hover-always": ("MenuItem", "{ mSelection = i; if (ceWindow) PortCeListHover(i); }", "{ mSelection = i; PortCeListHover(i); }"),
+            "window-hover-label-width": ("MenuItem", "float\tx2 = lx + float(widest) + 3.f;", "float\tx2 = size.cx + lx + 2.f;"),
+            "window-click-label-width": ("MenuItem", "float\tcx2 = lx + float(widest) + 3.f;", "float\tcx2 = size.cx + lx + 2.f;"),
+            "window-click-unscaled-y": ("MenuItem", "float\tcy2 = ly + float(size.cy) * yscale;", "float\tcy2 = ly + size.cy;"),
+            "window-label-left-ignores-y": ("MenuItem", "PortCeLabelLeftAt(FRONTEND.GetCurrentPage(), y)", "PortCeLabelLeftAt(FRONTEND.GetCurrentPage(), 0.f)"),
             "window-no-call": ("MenuItem", " const int ceWindow = PortCeListWindow(this, y, size.cy, n, mSelection, FRONTEND.GetCurrentPage(), &ly, &ceFirst, &n);", " const int ceWindow = 0;"),
             "window-after-clamps": ("MenuItem", "\t\tif (ly < 0.f)\n", "\t\tif (ly < -1.f)\n"),
             "pitch-mouse-at-item-height": ("MenuOptionsList", "IsMouseInRect(0.f, ty, 640.f, ty + (cePitch ? cePitch : item->GetHeight()))", "IsMouseInRect(0.f, ty, 640.f, ty + item->GetHeight())"),

@@ -115,7 +115,7 @@ struct CeStarConfig {
     std::array<uint8_t, CE_STAR_SECRET_BYTES> match_secret{};
     std::array<uint8_t, CE_STAR_DIGEST_BYTES> compatibility{};
     std::array<uint8_t, CE_STAR_DIGEST_BYTES> roster_hash{};
-    std::string version = "0.1.15";
+    std::string version = "0.1.16";
     uint32_t handshake_timeout_ms = 10000;
     uint32_t silence_timeout_ms = 15000;
     uint32_t ping_report_interval_ms = 1000;

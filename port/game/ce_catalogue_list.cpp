@@ -486,7 +486,9 @@ void	TexturePane(int row, float left, float top, float right, float bottom)
 		if (row != sWaitRow) { sWaitRow = row; sWaitSince = PortCeCatalogueNow(); }
 		else if (PortCeCatalogueNow() - sWaitSince >= kSettle) PaneOpen(row);
 	}
-	const float text = bottom - 42.f;
+	// Reserve 72 px (up to 4 wrapped caption lines at 18 px pitch) so captions end cleanly above bottom (401)
+	// and never collide with DrawListBox's footer hints below the box.
+	const float text = bottom - 72.f;
 	unsigned pw = 0, ph = 0;
 	bool transparent = false;
 	const bool hasSize = CachedTextureSize(row, &pw, &ph, &transparent);
@@ -539,7 +541,9 @@ void	ModelPane(int row, float left, float top, float right, float bottom)
 			if (sModelGoodie < 0) PortCeCatalogueModelFree();
 		}
 	}
-	const float text = bottom - 44.f;
+	// Reserve 72 px (up to 4 wrapped caption lines at 18 px pitch) so captions end cleanly above bottom (401)
+	// and never collide with DrawListBox's footer hints below the box.
+	const float text = bottom - 72.f;
 	if (!IsItem(row))
 		return;
 	char group[kGroupChars], name[160], cut[64];

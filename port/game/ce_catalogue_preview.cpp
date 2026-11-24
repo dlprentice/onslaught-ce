@@ -234,33 +234,86 @@ bool PortCeCataloguePreviewDrawIn(float left, float top, float right, float bott
 }
 
 // One or two lines of the smaller face, centred between left and right, from y down.
+// Subtitle colour 0xff545454 is authored for the font's MODULATE2X doubling stage (renders mid-grey 0xa8).
 void PortCeCataloguePaneText(const char* first, const char* second, float left, float right, float y) {
     CDXBitmapFont* font = PLATFORM.Font(FONT_SMALL);
+    if (!font || right <= left) return;
+    const float maxW = right - left;
     const char* lines[2] = {first, second};
     for (int i = 0; i < 2; i++) {
         if (!lines[i] || !*lines[i]) continue;
         WCHAR wide[128]; int n = 0;
         for (; lines[i][n] && n < 127; n++) wide[n] = WCHAR((unsigned char)lines[i][n]);
         wide[n] = 0;
-        // a line wider than the pane wraps at its last space that fits, so the whole text shows (two lines at most)
-        WCHAR* start = wide;
+        // Wrap at the last space that fits (or hard-break a single overlong token), at most two lines per string,
+        // and ellipsize the second line if it still overflows maxW.
+        const WCHAR* start = wide;
         for (int part = 0; part < 2 && *start; part++) {
-            SIZE size; font->GetTextExtent(start, &size);
-            WCHAR* rest = NULL;
-            if (part == 0 && float(size.cx) > right - left) {
-                WCHAR* end = start; while (*end) end++;
-                for (WCHAR* at = end; at > start; at--) {
-                    if (*at != WCHAR(' ')) continue;
-                    *at = 0; font->GetTextExtent(start, &size);
-                    if (float(size.cx) <= right - left) { rest = at + 1; break; }
-                    *at = WCHAR(' ');
+            while (*start == WCHAR(' ')) start++;
+            if (!*start) break;
+            WCHAR row[128];
+            int len = 0;
+            for (; start[len] && len < 127; len++) row[len] = start[len];
+            row[len] = 0;
+            SIZE size;
+            font->GetTextExtent(row, &size);
+            const WCHAR* next = NULL;
+            if (float(size.cx) > maxW) {
+                if (part == 0) {
+                    int split = -1;
+                    for (int at = len - 1; at > 0; at--) {
+                        if (row[at] != WCHAR(' ')) continue;
+                        row[at] = 0;
+                        font->GetTextExtent(row, &size);
+                        if (float(size.cx) <= maxW) { split = at; break; }
+                        row[at] = WCHAR(' ');
+                    }
+                    if (split > 0) {
+                        next = start + split + 1;
+                    } else {
+                        // Single long token with no space: break at the widest prefix that fits.
+                        int fit = len;
+                        while (fit > 1) {
+                            fit--;
+                            row[fit] = 0;
+                            font->GetTextExtent(row, &size);
+                            if (float(size.cx) <= maxW) break;
+                        }
+                        next = start + fit;
+                    }
+                } else {
+                    // Second line: ellipsize cleanly so text never bleeds outside [left, right].
+                    int keep = len;
+                    bool fitted = false;
+                    while (keep > 0) {
+                        keep--;
+                        while (keep > 0 && row[keep - 1] == WCHAR(' ')) keep--;
+                        int outLen = keep < 124 ? keep : 124;
+                        row[outLen] = WCHAR('.');
+                        row[outLen + 1] = WCHAR('.');
+                        row[outLen + 2] = WCHAR('.');
+                        row[outLen + 3] = 0;
+                        font->GetTextExtent(row, &size);
+                        if (float(size.cx) <= maxW) { fitted = true; break; }
+                    }
+                    if (!fitted) {
+                        for (int dots = 2; dots >= 0; dots--) {
+                            for (int d = 0; d < dots; d++) row[d] = WCHAR('.');
+                            row[dots] = 0;
+                            font->GetTextExtent(row, &size);
+                            if (float(size.cx) <= maxW || dots == 0) break;
+                        }
+                    }
                 }
-                if (!rest) font->GetTextExtent(start, &size);
             }
-            font->DrawTextWithShadow((left + right - float(size.cx)) * 0.5f, y, i ? 0xff808080 : 0xffffffff, start, 0, 0, 1.f, 1.f);
+            if (row[0]) {
+                float drawX = (left + right - float(size.cx)) * 0.5f;
+                if (drawX < left) drawX = left;
+                font->DrawTextWithShadow(drawX, y, i ? 0xff545454 : 0xffffffff, row, 0, 0, 1.f, 1.f);
+            }
             y += float(font->GetHeight()) + 2.f;
-            if (!rest) break;
-            start = rest;
+            if (!next) break;
+            start = next;
         }
     }
 }

@@ -35,7 +35,7 @@ extern "C" int CE_CheatOn(int n) __attribute__((weak));
 #ifdef CE_VERSION
 static const char kOnlineBuildId[] = CE_VERSION;
 #else
-static const char kOnlineBuildId[] = "0.1.15";
+static const char kOnlineBuildId[] = "0.1.16";
 #endif
 
 namespace {
@@ -408,6 +408,46 @@ public:
         return true;
     }
 
+    void ResetRoomLifecycle(bool cancel_all_ops) {
+        ++room_generation_;
+        op_room_generation_ = 0;
+        has_active_action_ = false;
+        cancelled_inflight_entry_ = false;
+        resolve_ready_ = false;
+        launch_queued_ = false;
+        if (cancel_all_ops) {
+            lobbies_loading_ = false;
+            pending_queue_.clear();
+        } else {
+            for (auto it = pending_queue_.begin(); it != pending_queue_.end();) {
+                if (it->kind == ActionKind::CreateRoom || it->kind == ActionKind::ResolveCode ||
+                    it->kind == ActionKind::JoinRoom || it->kind == ActionKind::LeaveRoom ||
+                    it->kind == ActionKind::UpdateSelf || it->kind == ActionKind::HostUpdate ||
+                    it->kind == ActionKind::SendChat || it->kind == ActionKind::StartMatch) {
+                    it = pending_queue_.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+        }
+        if (client_ && client_->Busy()) {
+            const CeOnlineOpKind cur = client_->ActiveOp();
+            if (cancel_all_ops || cur == CeOnlineOpKind::ResolveCode ||
+                cur == CeOnlineOpKind::PollRoom || cur == CeOnlineOpKind::UpdateRoom ||
+                cur == CeOnlineOpKind::SendChat || cur == CeOnlineOpKind::StartMatch ||
+                cur == CeOnlineOpKind::CreateLobby || cur == CeOnlineOpKind::JoinRoom ||
+                cur == CeOnlineOpKind::LeaveRoom) {
+                client_->Cancel();
+            }
+        }
+        room_active_ = false;
+        active_room_id_.clear();
+        cached_room_ = CeSvcRoom{};
+        last_room_rev_ = 0;
+        last_room_poll_ms_ = 0;
+        RefreshLeavePending();
+    }
+
     bool SaveCallsign(const std::string &callsign, std::string *err_out) override {
         EnsureInit();
         if (!profile_.Loaded()) {
@@ -415,10 +455,13 @@ public:
             return false;
         }
         if (!profile_.SetCallsign(callsign, true, err_out)) return false;
-        // Re-authenticate on next poll so server sees updated callsign.
+        // Cancel active room/lobby ops, clear room state/generation, and re-authenticate on next poll.
+        ResetRoomLifecycle(true);
         if (client_) {
             client_->ClearSession();
             want_connect_ = true;
+            conn_status_ = 1;
+            status_detail_ = "Connecting to lobby server...";
         }
         return true;
     }
@@ -1155,12 +1198,10 @@ private:
             } else if (op == CeOnlineOpKind::PollRoom) {
                 const unsigned code = client_->LastHttpCode();
                 if (code == 403) {
-                    room_active_ = false;
-                    active_room_id_.clear();
+                    ResetRoomLifecycle(false);
                     op_error_ = "You were removed from the lobby.";
                 } else if (code == 404) {
-                    room_active_ = false;
-                    active_room_id_.clear();
+                    ResetRoomLifecycle(false);
                     op_error_ = "The lobby room was closed.";
                 }
             } else if (op == CeOnlineOpKind::CreateLobby || op == CeOnlineOpKind::JoinRoom ||

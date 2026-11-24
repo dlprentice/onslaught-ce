@@ -1123,10 +1123,17 @@ void Pump()
 			// A same-size restore need not produce a resize event. The game's WM_SIZE handler is what makes it
 			// active again after minimization; focus messages alone leave its message loop waiting forever.
 			int width = 0, height = 0;
+			const bool wide = PortWideModes();
 			if (SDL_Window *w = Sdl(h))
-				SDL_GetWindowSizeInPixels(w, &width, &height);
-			PortSessionLog(PORT_SESSION_WINDOW, false, "%s pixel size=%dx%d",
-				e.type == SDL_EVENT_WINDOW_MAXIMIZED ? "maximized" : "restored", width, height);
+			{
+				if (wide)
+					SDL_GetWindowSizeInPixels(w, &width, &height);
+				else
+					SDL_GetWindowSize(w, &width, &height);
+			}
+			PortSessionLog(PORT_SESSION_WINDOW, false, "%s %s size=%dx%d",
+				e.type == SDL_EVENT_WINDOW_MAXIMIZED ? "maximized" : "restored",
+				wide ? "pixel" : "logical", width, height);
 			Post(h, WM_SIZE, e.type == SDL_EVENT_WINDOW_MAXIMIZED ? SIZE_MAXIMIZED : SIZE_RESTORED,
 				 MAKELPARAM(width, height));
 			break;

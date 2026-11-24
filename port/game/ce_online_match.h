@@ -110,6 +110,9 @@ int PortCeOnlineMatchSubmitLocalInput(uint32_t target_tick, const CE_WorldInput 
 int PortCeOnlineMatchConsumeTick(CE_WorldInput out_slots[CE_ONLINE_MAX_MATCH_SLOTS], uint8_t *out_human_mask);
 int PortCeOnlineMatchSubmitLocalHash(uint32_t tick, uint64_t state_hash);
 int PortCeOnlineMatchStartConfirmed(void);
+int PortCeOnlineMatchSubmitFinalHash(uint32_t final_tick, uint64_t final_hash);
+int PortCeOnlineMatchFinalConfirmed(void);
+int PortCeOnlineMatchPeerEndedBy(uint32_t tick);
 int PortCeOnlineMatchCheckFault(char *out_error, size_t cap);
 void PortCeOnlineMatchStop(int graceful);
 int PortCeOnlineMatchSendChat(const char *text);
@@ -488,6 +491,7 @@ class CeOnlineMatchSession {
 public:
     static constexpr size_t kRingSize = 64u;
     static constexpr size_t kChatCap = 32u;
+    static constexpr uint32_t kOnlineFinalTickFlag = 0x80000000u;
     using RingT = CeNPeerLockstepRing<CE_ONLINE_MAX_MATCH_SLOTS, kRingSize, CeOnlineWireInput>;
 
     CeOnlineMatchSession();
@@ -512,6 +516,9 @@ public:
     // Submits this peer's periodic state hash for `tick` (must be aligned to HashEvery()).
     bool SubmitLocalHash(uint32_t tick, uint64_t state_hash);
 
+    // Submits this peer's terminal mission-end state hash for `final_tick` (any tick >= 1).
+    bool SubmitLocalFinalHash(uint32_t final_tick, uint64_t final_hash);
+
     // Sends a sanitized in-match chat message (1..160 printable ASCII chars).
     bool SendChat(const char *text);
 
@@ -524,6 +531,8 @@ public:
     bool IsActive() const { return mState == CE_ONLINE_STATE_CONNECTING || mState == CE_ONLINE_STATE_RUNNING; }
     bool IsReady() const;
     bool IsStartConfirmed() const { return mInitialised && mStartConfirmed; }
+    bool IsFinalConfirmed() const { return mInitialised && mFinalConfirmed; }
+    bool HasPeerEndedBy(uint32_t tick) const;
     bool IsHost() const { return mInitialised && mTicket.local_sim_slot == 0u; }
     uint32_t CurrentTick() const { return mRing.CurrentTick(); }
     uint32_t InputDelay() const { return mRing.InputDelay(); }
@@ -558,6 +567,7 @@ private:
     void HandleDesyncEvent(const CeOnlineStarEvent &ev);
     void HandleDisconnectEvent(uint8_t sim_slot);
     bool TryConfirmStartHash();
+    bool TryConfirmFinalHash();
     void AppendChat(uint8_t sim_slot, const char *text);
     CeNPeerDesyncReport RemapReportToSimSlots(const CeNPeerDesyncReport &ringReport) const;
 
@@ -580,6 +590,16 @@ private:
     uint64_t mLocalStartHash;
     bool mHostStartHashReceived;
     uint64_t mHostStartHash;
+    bool mFinalConfirmed;
+    bool mLocalFinalSubmitted;
+    uint32_t mLocalFinalTick;
+    uint64_t mLocalFinalHash;
+    bool mHostFinalReceived;
+    uint32_t mHostFinalTick;
+    uint64_t mHostFinalHash;
+    uint8_t mFinalPresentPeerMask;
+    uint32_t mFinalPeerTick[CE_ONLINE_MAX_MATCH_SLOTS];
+    uint64_t mFinalPeerHash[CE_ONLINE_MAX_MATCH_SLOTS];
     CeNPeerDesyncReport mLastDesync;
     char mError[192];
     CeOnlineChatEntry mChat[kChatCap];

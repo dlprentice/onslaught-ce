@@ -375,6 +375,207 @@ inline float PedestalPlinthHeight(float floorZ = kFloorZ) {
 }
 
 // -----------------------------------------------------------------------------
+// Interior Solid-Obstacle Walkability Collision (piers, Cinema walls, pedestal)
+// -----------------------------------------------------------------------------
+constexpr unsigned kMaxSolidBoxes = 64u;
+constexpr float kBattleEngineCollisionRadius = 1.35f;
+constexpr float kBattleEngineCollisionHeight = 3.20f;
+constexpr float kCollisionPushEps = 1e-3f;
+
+struct SolidBox {
+    float minX, minY;
+    float maxX, maxY;
+    float minH, maxH; // height above floorZ (positive UP, i.e. floorZ - worldZ)
+};
+
+struct SolidLayout {
+    SolidBox boxes[kMaxSolidBoxes];
+    unsigned count;
+};
+
+inline void AddSolidBox(SolidLayout *layout,
+                        float minX, float minY, float maxX, float maxY,
+                        float minH, float maxH) {
+    if (!layout || layout->count >= kMaxSolidBoxes) return;
+    SolidBox &b = layout->boxes[layout->count++];
+    b.minX = minX; b.minY = minY;
+    b.maxX = maxX; b.maxY = maxY;
+    b.minH = minH; b.maxH = maxH;
+}
+
+// Builds the fixed-size AABB keep-out set matching all walkable-height interior
+// structures in BuildCitadelArchitecture(): central Archive Pedestal dais, rotunda
+// emitter pylons, colonnade & portal piers, Forseti/Muspell memorial alcoves, twin
+// reflecting pools, sealed North Cinema pavilion walls/seating/stage, and overlook
+// balustrades (split cleanly around the 17 m SE access ramp and 5 m Cinema portal).
+inline SolidLayout MakeInteriorSolidLayout() {
+    SolidLayout out = {};
+
+    // 1. Central Archive Pedestal stepped dais & hologram assembly.
+    AddSolidBox(&out, kCenterX - 2.06f, kCenterY - 2.06f,
+                      kCenterX + 2.06f, kCenterY + 2.06f, 0.0f, 4.20f);
+
+    // 2. Four Rotunda Shield-Dome Emitter Pylons.
+    const float emX[2] = {103.5f, 120.5f};
+    const float emY[2] = {383.5f, 400.5f};
+    for (unsigned ix = 0; ix < 2u; ++ix) {
+        for (unsigned iy = 0; iy < 2u; ++iy) {
+            AddSolidBox(&out, emX[ix] - 0.68f, emY[iy] - 0.68f,
+                              emX[ix] + 0.68f, emY[iy] + 0.68f, 0.0f, 8.65f);
+        }
+    }
+
+    // 3. Twelve Flank Colonnade Piers (West X=82, East X=142) + 2 South Portal Pylons.
+    const float colY[6] = {374.0f, 382.0f, 390.0f, 398.0f, 406.0f, 414.0f};
+    for (unsigned i = 0; i < 6u; ++i) {
+        AddSolidBox(&out,  82.0f - 0.66f, colY[i] - 0.66f,  82.0f + 0.66f, colY[i] + 0.66f, 0.0f, 10.15f);
+        AddSolidBox(&out, 142.0f - 0.66f, colY[i] - 0.66f, 142.0f + 0.66f, colY[i] + 0.66f, 0.0f, 10.15f);
+    }
+    AddSolidBox(&out,  95.0f - 0.74f, 375.5f - 0.74f,  95.0f + 0.74f, 375.5f + 0.74f, 0.0f, 8.60f);
+    AddSolidBox(&out, 129.0f - 0.74f, 375.5f - 0.74f, 129.0f + 0.74f, 375.5f + 0.74f, 0.0f, 8.60f);
+
+    // 4. West Forseti Memorial Alcove walls, honor plinth, and banner standards.
+    AddSolidBox(&out, 82.2f, 383.6f, 84.42f, 400.4f, 0.0f, 9.15f);
+    AddSolidBox(&out, 83.8f, 383.6f, 87.2f,  384.8f, 0.0f, 9.15f);
+    AddSolidBox(&out, 83.8f, 399.2f, 87.2f,  400.4f, 0.0f, 9.15f);
+    AddSolidBox(&out, kForsetiAlcoveX - 1.40f, kForsetiAlcoveY - 1.40f,
+                      kForsetiAlcoveX + 1.40f, kForsetiAlcoveY + 1.40f, 0.0f, 1.80f);
+    AddSolidBox(&out, 88.0f - 0.45f, 378.0f - 0.45f, 88.0f + 0.45f, 378.0f + 0.45f, 0.0f, 6.68f);
+    AddSolidBox(&out, 88.0f - 0.45f, 405.5f - 0.45f, 88.0f + 0.45f, 405.5f + 0.45f, 0.0f, 6.68f);
+
+    // 5. East Muspell Memorial Alcove walls, honor plinth, and banner standards.
+    AddSolidBox(&out, 139.58f, 383.6f, 141.8f, 400.4f, 0.0f, 9.15f);
+    AddSolidBox(&out, 136.8f,  383.6f, 140.2f, 384.8f, 0.0f, 9.15f);
+    AddSolidBox(&out, 136.8f,  399.2f, 140.2f, 400.4f, 0.0f, 9.15f);
+    AddSolidBox(&out, kMuspellAlcoveX - 1.40f, kMuspellAlcoveY - 1.40f,
+                      kMuspellAlcoveX + 1.40f, kMuspellAlcoveY + 1.40f, 0.0f, 1.80f);
+    AddSolidBox(&out, 136.0f - 0.45f, 378.0f - 0.45f, 136.0f + 0.45f, 378.0f + 0.45f, 0.0f, 6.68f);
+    AddSolidBox(&out, 136.0f - 0.45f, 405.5f - 0.45f, 136.0f + 0.45f, 405.5f + 0.45f, 0.0f, 6.68f);
+
+    // 6. Twin Reflecting Pools framing the south axial approach.
+    AddSolidBox(&out,  95.95f, 364.95f, 102.05f, 377.05f, 0.0f, 1.00f);
+    AddSolidBox(&out, 121.95f, 364.95f, 128.05f, 377.05f, 0.0f, 1.00f);
+
+    // 7. North Sealed Cinema Pavilion enclosure (5 m clear South doorway [109.5..114.5],
+    //    5.2 m clear doorway height), interior seating tiers, and proscenium stage.
+    AddSolidBox(&out,  98.0f,  409.45f, 109.5f,  410.90f, 0.0f, 10.65f); // South-West wall & portal pier
+    AddSolidBox(&out, 114.5f,  409.45f, 126.0f,  410.90f, 0.0f, 10.65f); // South-East wall & portal pier
+    AddSolidBox(&out, 109.5f,  409.20f, 114.5f,  410.90f, 5.20f, 10.65f); // South doorway lintel
+    AddSolidBox(&out,  98.0f,  410.55f,  98.85f, 428.0f,  0.0f, 10.65f); // West enclosure wall
+    AddSolidBox(&out, 125.15f, 410.55f, 126.0f,  428.0f,  0.0f, 10.65f); // East enclosure wall
+    AddSolidBox(&out,  98.0f,  427.15f, 126.0f,  428.0f,  0.0f, 10.65f); // North screen wall
+    AddSolidBox(&out,  98.85f, 409.45f, 108.6f,  421.0f,  0.0f,  2.10f); // West seating tiers & rear alcove
+    AddSolidBox(&out, 115.4f,  409.45f, 125.15f, 421.0f,  0.0f,  2.10f); // East seating tiers & rear alcove
+    AddSolidBox(&out, 100.48f, 424.5f,  123.52f, 427.15f, 0.0f,  8.15f); // Proscenium stage & screen frame
+
+    // 8. Perimeter Overlook Balustrades (split cleanly around SE access ramp [119.5..136.5]).
+    AddSolidBox(&out,  74.6f, 354.1f, 119.5f, 354.9f, 0.0f, 1.66f);
+    AddSolidBox(&out, 136.5f, 354.1f, 149.4f, 354.9f, 0.0f, 1.66f);
+    AddSolidBox(&out,  74.6f, 354.5f,  75.4f, 428.0f, 0.0f, 1.66f);
+    AddSolidBox(&out, 148.6f, 354.5f, 149.4f, 428.0f, 0.0f, 1.66f);
+
+    return out;
+}
+
+inline bool IsInteriorPointClear(const SolidLayout &layout,
+                                 float x, float y, float worldZ, float floorZ,
+                                 float radius, float unitHeight = kBattleEngineCollisionHeight,
+                                 float cofgHeight = 0.0f) {
+    if (!IsFinite3(x, y, worldZ) || !std::isfinite(floorZ) ||
+        !(radius > 0.0f) || !(unitHeight > 0.0f))
+        return true;
+    const float feetH = (floorZ - worldZ) - cofgHeight;
+    const float headH = feetH + unitHeight;
+    const float r2 = radius * radius;
+    for (unsigned i = 0; i < layout.count; ++i) {
+        const SolidBox &b = layout.boxes[i];
+        if (!(headH > b.minH && feetH < b.maxH)) continue;
+        const float qx = x < b.minX ? b.minX : (x > b.maxX ? b.maxX : x);
+        const float qy = y < b.minY ? b.minY : (y > b.maxY ? b.maxY : y);
+        const float dx = x - qx;
+        const float dy = y - qy;
+        if (dx * dx + dy * dy < r2)
+            return false;
+    }
+    return true;
+}
+
+// Minimum-penetration circle-vs-AABB push-out against all vertically overlapping
+// interior structures. Returns true if (*ioX, *ioY) was adjusted; optionally cancels
+// the inward velocity component in (*ioVx, *ioVy) for smooth sliding along walls.
+inline bool ResolveInteriorCollision(const SolidLayout &layout,
+                                     float *ioX, float *ioY, float worldZ, float floorZ,
+                                     float radius, float unitHeight = kBattleEngineCollisionHeight,
+                                     float cofgHeight = 0.0f,
+                                     float *ioVx = NULL, float *ioVy = NULL) {
+    if (!ioX || !ioY || !IsFinite3(*ioX, *ioY, worldZ) || !std::isfinite(floorZ) ||
+        !(radius > 0.0f) || !(unitHeight > 0.0f))
+        return false;
+    const float feetH = (floorZ - worldZ) - cofgHeight;
+    const float headH = feetH + unitHeight;
+    const float r2 = radius * radius;
+    float x = *ioX;
+    float y = *ioY;
+    float vx = ioVx ? *ioVx : 0.0f;
+    float vy = ioVy ? *ioVy : 0.0f;
+    bool pushed = false;
+
+    for (unsigned iter = 0; iter < 3u; ++iter) {
+        bool any = false;
+        for (unsigned i = 0; i < layout.count; ++i) {
+            const SolidBox &b = layout.boxes[i];
+            if (!(headH > b.minH && feetH < b.maxH)) continue;
+            const float qx = x < b.minX ? b.minX : (x > b.maxX ? b.maxX : x);
+            const float qy = y < b.minY ? b.minY : (y > b.maxY ? b.maxY : y);
+            const float dx = x - qx;
+            const float dy = y - qy;
+            const float d2 = dx * dx + dy * dy;
+            if (d2 >= r2) continue;
+
+            float nx = 0.0f, ny = 0.0f, pen = 0.0f;
+            if (d2 > 1e-8f) {
+                const float d = std::sqrt(d2);
+                nx = dx / d;
+                ny = dy / d;
+                pen = radius - d;
+            } else {
+                const float dLeft  = x - b.minX;
+                const float dRight = b.maxX - x;
+                const float dSouth = y - b.minY;
+                const float dNorth = b.maxY - y;
+                float best = dLeft;
+                nx = -1.0f; ny = 0.0f;
+                if (dRight < best) { best = dRight; nx =  1.0f; ny =  0.0f; }
+                if (dSouth < best) { best = dSouth; nx =  0.0f; ny = -1.0f; }
+                if (dNorth < best) { best = dNorth; nx =  0.0f; ny =  1.0f; }
+                pen = best + radius;
+            }
+
+            x += nx * (pen + kCollisionPushEps);
+            y += ny * (pen + kCollisionPushEps);
+            if (ioVx && ioVy) {
+                const float vn = vx * nx + vy * ny;
+                if (vn < 0.0f) {
+                    vx -= vn * nx;
+                    vy -= vn * ny;
+                }
+            }
+            pushed = true;
+            any = true;
+        }
+        if (!any) break;
+    }
+
+    if (pushed) {
+        *ioX = x;
+        *ioY = y;
+        if (ioVx) *ioVx = vx;
+        if (ioVy) *ioVy = vy;
+    }
+    return pushed;
+}
+
+// -----------------------------------------------------------------------------
 // Exported Runtime Seam
 // -----------------------------------------------------------------------------
 void RuntimeInit(float floorZ);

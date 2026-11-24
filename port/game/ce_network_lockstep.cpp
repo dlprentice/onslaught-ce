@@ -114,6 +114,9 @@ extern "C" int PortCeOnlineMatchSubmitLocalInput(uint32_t target_tick, const CE_
 extern "C" int PortCeOnlineMatchConsumeTick(CE_WorldInput out_slots[4], uint8_t *out_human_mask) __attribute__((weak));
 extern "C" int PortCeOnlineMatchSubmitLocalHash(uint32_t tick, uint64_t state_hash) __attribute__((weak));
 extern "C" int PortCeOnlineMatchStartConfirmed(void) __attribute__((weak));
+extern "C" int PortCeOnlineMatchSubmitFinalHash(uint32_t final_tick, uint64_t final_hash) __attribute__((weak));
+extern "C" int PortCeOnlineMatchFinalConfirmed(void) __attribute__((weak));
+extern "C" int PortCeOnlineMatchPeerEndedBy(uint32_t tick) __attribute__((weak));
 extern "C" int PortCeOnlineMatchCheckFault(char *out_error, size_t cap) __attribute__((weak));
 extern "C" void PortCeOnlineMatchStop(int graceful) __attribute__((weak));
 extern "C" int PortCeOnlineMatchSendChat(const char *text) __attribute__((weak));
@@ -205,6 +208,7 @@ struct Lockstep {
 	CE_NetConfig config = {}; char ip[16] = {};
 	bool online_multi = false;
 	uint32_t online_slot_count = 0, online_local_slot = 0;
+	int online_won = 0;
 	bool online_tick_consumed = false;
 	uint8_t online_human_mask = 0;
 	CE_WorldInput online_current[4] = {};
@@ -885,23 +889,29 @@ bool TransportFail(const CE_NetStatus &status, const char *message)
     return Fail(message);
 }
 #endif
+void OnlineCheckFinalComplete() {
+	if (!L.online_multi || L.stage != STOPPING || !L.final_local) return;
+	if (!PortCeOnlineMatchFinalConfirmed || !PortCeOnlineMatchFinalConfirmed()) return;
+	L.final_confirmed = true;
+	L.stage = FINISHED;
+	L.notice[0] = 0;
+	if (PortCeOnlineServiceFinishMatch) PortCeOnlineServiceFinishMatch(L.online_won);
+	fprintf(stderr, "onslaught-ce: online match ended at tick %u (won=%d)\n", L.final_tick, L.online_won);
+}
 bool Poll() {
 	KeeperStop();
 	if (!AdmissionCurrent()) return false;
 	if (L.online_multi) {
-		if (L.stage == FINISHED) {
-			// Keep pumping the online transport and match-finish HTTP while on the end screen so
-			// peers 1-3 ticks behind receive final bundles/hashes and finish cleanly.
-			const uint64_t now = CE_NetNowMs();
-			if (PortCeOnlineMatchPoll) (void)PortCeOnlineMatchPoll(now);
-			if (PortCeOnlineServicePollFinished) PortCeOnlineServicePollFinished(now);
-			return true;
-		}
 		if (!PortCeOnlineMatchPoll) return Fail("online match session unavailable");
-		const int ok = PortCeOnlineMatchPoll(CE_NetNowMs());
+		const uint64_t now = CE_NetNowMs();
+		const int ok = PortCeOnlineMatchPoll(now);
 		char why[192] = {};
 		if (!ok || (PortCeOnlineMatchCheckFault && PortCeOnlineMatchCheckFault(why, sizeof why)))
 			return Fail(why[0] ? why : "the online match session stopped");
+		if (L.stage == STOPPING)
+			OnlineCheckFinalComplete();
+		if (L.stage == FINISHED && PortCeOnlineServicePollFinished)
+			PortCeOnlineServicePollFinished(now);
 		return true;
 	}
 	if (L.stage == FINISHED) {	// the level is over: the connection only reports that the other player has gone
@@ -1344,6 +1354,12 @@ void CE_LockstepUpdateEntry(void) {
 #endif
 static int OnlineBeforeUpdate(void) {
 	const uint32_t t = L.tick;
+	if (PortCeOnlineMatchPeerEndedBy && PortCeOnlineMatchPeerEndedBy(t)) {
+		char why[192] = {};
+		if (PortCeOnlineMatchCheckFault && PortCeOnlineMatchCheckFault(why, sizeof why) && why[0]) { Fail(why); return 0; }
+		Fail("another player ended the mission at a different simulation state");
+		return 0;
+	}
 	const bool ready = PortCeOnlineMatchCanAdvance && PortCeOnlineMatchCanAdvance() != 0;
 	if (!ready) {
 		const uint64_t now_ms = CE_NetNowMs();
@@ -1476,23 +1492,32 @@ void CE_LockstepAfterUpdate(void) {
 		}
 		if (!SaveRandom()) return;
 		L.tick = t + 1;
+		uint64_t online_final_hash = 0;
 		if (L.tick % L.hash_every == 0) {
 			const uint64_t online_hash = StateHash(L.tick);
 			if (L.stage == FAILED) return;
+			online_final_hash = online_hash;
 			if (!PortCeOnlineMatchSubmitLocalHash || !PortCeOnlineMatchSubmitLocalHash(L.tick, online_hash)) {
 				char why[192] = {};
 				if (PortCeOnlineMatchCheckFault && PortCeOnlineMatchCheckFault(why, sizeof why) && why[0]) { Fail(why); return; }
 				Fail("could not submit online state hash"); return;
 			}
 		}
+		bool online_natural_end = GAME.GetGameState() > GAME_STATE_PLAYING && GAME.GetGameState() < GAME_STATE_QUIT;
+		if (!online_natural_end && PortCeOnlineMatchPeerEndedBy && PortCeOnlineMatchPeerEndedBy(L.tick)) {
+			char why[192] = {};
+			if (PortCeOnlineMatchCheckFault && PortCeOnlineMatchCheckFault(why, sizeof why) && why[0]) { Fail(why); return; }
+			Fail("another player ended the mission at a different simulation state"); return;
+		}
+		if (online_natural_end && L.tick % L.hash_every != 0) {
+			online_final_hash = StateHash(L.tick);
+			if (L.stage == FAILED) return;
+		}
 		if (deferred_count) {
 			placing = true; CE_WorldLockstepPlaceEmitters(deferred_weapons, deferred_orientate, deferred_count); placing = false;
 			deferred_count = 0;
 		}
-		bool natural_end = GAME.GetGameState() > GAME_STATE_PLAYING && GAME.GetGameState() < GAME_STATE_QUIT;
-		if (natural_end) {
-			L.final_tick = L.tick; L.final_mission = true; L.final_confirmed = true;
-			L.stage = FINISHED; L.notice[0] = 0;
+		if (online_natural_end) {
 			int won = 0;
 			const int gs = (int)GAME.GetGameState();
 			if (gs == GAME_STATE_LEVEL_WON) {
@@ -1500,8 +1525,15 @@ void CE_LockstepAfterUpdate(void) {
 			} else if (gs == GAME_STATE_PLAYER_1_WON || gs == GAME_STATE_PLAYER_2_WON) {
 				won = (CE_WorldLocalWon && CE_WorldLocalWon(gs)) ? 1 : 0;
 			}
-			if (PortCeOnlineServiceFinishMatch) PortCeOnlineServiceFinishMatch(won);
-			fprintf(stderr, "onslaught-ce: online match ended at tick %u (won=%d)\n", L.tick, won);
+			L.online_won = won;
+			L.final_tick = L.tick; L.final_mission = true; L.final_hash = online_final_hash; L.final_local = true;
+			L.stage = STOPPING; L.final_started = CE_NetNowMs(); L.notice[0] = 0;
+			if (!PortCeOnlineMatchSubmitFinalHash || !PortCeOnlineMatchSubmitFinalHash(L.tick, online_final_hash)) {
+				char why[192] = {};
+				if (PortCeOnlineMatchCheckFault && PortCeOnlineMatchCheckFault(why, sizeof why) && why[0]) { Fail(why); return; }
+				Fail("could not submit online final state hash"); return;
+			}
+			OnlineCheckFinalComplete();
 		}
 		return;
 	}
@@ -1583,7 +1615,8 @@ int CE_LockstepBeginTeardown(int quit) {
 		ReportNetworkCounts(L.net);
 		if (L.net) (ChatRetire(), CE_NetClose(L.net)); L.stage = ENDED; return quit;
 	}
-	bool incomplete = !L.final_confirmed && (L.stage == STOPPING || (L.stage == RUNNING && (L.quit_at || L.final_peer)));
+	const bool online_peer_final = L.online_multi && PortCeOnlineMatchPeerEndedBy && PortCeOnlineMatchPeerEndedBy(~0u) != 0;
+	bool incomplete = !L.final_confirmed && (L.stage == STOPPING || (L.stage == RUNNING && (L.quit_at || L.final_peer)) || (L.stage == RUNNING && online_peer_final));
 	if (incomplete) {
 		fprintf(stderr, "onslaught-ce: co-op stopped before final confirmation\n"); L.outcome_error = true;
 	}

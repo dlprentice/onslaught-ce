@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #ifdef CE_VERSION
 #include "common.h"
+#include "Controller.h"
 #include "frontend.h"
 #include "MenuItem.h"
 #include "MenuOptionsList.h"
@@ -47,7 +48,7 @@ public:
         size_t i=0; for(;i+1<sizeof(label)/sizeof(*label) && line[i];++i) label[i]=(unsigned char)line[i]; label[i]=0;
         return label;
     }
-    int GetHeight() { return 18; }
+    int GetHeight() { return 14; }
     void Render(float x,float y,BOOL selected) {
         CMenuItem::Render(x,y,selected);
         if (!selected && owner != this && !(reverseConflict && reverseOwner == action)) return;
@@ -67,7 +68,15 @@ public:
 				action==CeControlAction::TakeUnit ? "Aim at a friendly unit and press %s." : "Press %s to open or leave Commander.", key);
         WCHAR text[96]{};
         for(size_t i=0;hint[i] && i+1<sizeof(text)/sizeof(*text);++i) text[i]=(unsigned char)hint[i];
-        CMenuItem::Render(x,454.f,FALSE,0xffd7dbb0,text);
+        CMenuItem::Render(x,456.f,FALSE,0xffd7dbb0,text);
+    }
+    void ReceiveButtonAction(CController *from_controller,int button,float val) {
+        (void)from_controller; (void)val;
+        if (owner == this && button == BUTTON_FRONTEND_MENU_BACK) {
+            end();
+            prompt=Ready;
+            CFrontEnd::PlaySound(FES_BACK);
+        }
     }
     bool TakesInput() { return owner==this; }
     bool IsExpanded() { return owner==this; }

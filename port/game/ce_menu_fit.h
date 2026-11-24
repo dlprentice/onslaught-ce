@@ -7,8 +7,11 @@
 
 // The virtual column where a value must end: the pages' right-hand ornament begins a little before the screen's edge.
 static const float kCeValueRight = 600.f;
-// The virtual column where a label must begin on front-end options pages so long labels clear the curved left metal arc.
+// The virtual column where a label must begin near the top/bottom of front-end options pages so long labels clear the curved
+// left metal arc; mid-screen rows relax toward 58 units via PortCeLabelLeftAt(page, y).
 static const float kCeLabelLeft = 104.f;
+float PortCeLabelLeft(int page);
+float PortCeLabelLeftAt(int page, float y);
 // Horizontal gap between a row's colon and its value in CE menus (original uses 2 units).
 static const float kCeValueGap = 6.f;
 // How far a value is squeezed before its end is cut off and marked: the narrowest text that still reads.

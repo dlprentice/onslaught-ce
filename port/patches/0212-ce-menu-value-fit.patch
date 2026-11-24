@@ -5,7 +5,7 @@
  // FUNCTION: 0x004a3c30
  void	CMenuMenuItem::RenderList(float x, float y, BOOL on_top)
 -{
-+{ extern WCHAR *PortCeValueFit(WCHAR *, float, float *); extern WCHAR *PortCeListFit(WCHAR *, float); extern int PortCeListWindow(const void *, float, long, int, int, int, float *, int *, int *); extern void PortCeListHover(int); extern float PortCeLabelLeft(int); extern float PortCeValueGap();
++{ extern WCHAR *PortCeValueFit(WCHAR *, float, float *); extern WCHAR *PortCeListFit(WCHAR *, float); extern int PortCeListWindow(const void *, float, long, int, int, int, float *, int *, int *); extern void PortCeListHover(int); extern float PortCeLabelLeftAt(int, float); extern float PortCeValueGap();
  	WCHAR	text[100];
  	int		value = GetValue();
  
@@ -16,7 +16,7 @@
 -	float	tx = x - size.cx;
 -	float	lx = tx + size.cx + 2.f;
 -	if (tx < 5.f)
-+	float	tx = x - size.cx; const float ceLeft = PortCeLabelLeft(FRONTEND.GetCurrentPage());
++	float	tx = x - size.cx; const float ceLeft = PortCeLabelLeftAt(FRONTEND.GetCurrentPage(), y);
 +	float	lx = tx + size.cx + PortCeValueGap();
 +	if (tx < ceLeft)
  	{
@@ -58,8 +58,9 @@
  		{
  			DWORD	c = 0xff404040;
  			if (i == mSelection)
-@@ -366,9 +366,9 @@ void	CMenuMenuItem::RenderList(float x, float y, BOOL on_top)
- 			float	x2 = size.cx + lx + 2.f;
+@@ -366,10 +366,10 @@ void	CMenuMenuItem::RenderList(float x, float y, BOOL on_top)
+-			float	x2 = size.cx + lx + 2.f;
++			float	x2 = lx + float(widest) + 3.f;
  			float	ny = ly + rowh;
  			if (CFrontEnd::GetCursorStateInRect(lx + 2.f, ly, x2, ny))
 -				mSelection = i;
@@ -68,8 +69,11 @@
 -			PLATFORM.Font(FONT_SMALL)->DrawTextWithShadow(lx + 2.f, ly, c, GetChoiceText(i), 0, 0, 1.f, yscale);
 +			PLATFORM.Font(FONT_SMALL)->DrawTextWithShadow(lx + 2.f, ly, c, PortCeListFit(GetChoiceText(i), lx + 2.f), 0, 0, 1.f, yscale);
  
- 			float	cy2 = ly + size.cy;
- 			float	cx2 = size.cx + lx + 2.f;
+-			float	cy2 = ly + size.cy;
+-			float	cx2 = size.cx + lx + 2.f;
++			float	cy2 = ly + float(size.cy) * yscale;
++			float	cx2 = lx + float(widest) + 3.f;
+ 			if (CFrontEnd::MouseClickedInRect(lx + 2.f, ly, cx2, cy2))
 @@ -395,7 +395,7 @@ void	CMenuMenuItem::RenderList(float x, float y, BOOL on_top)
  		}
  	}

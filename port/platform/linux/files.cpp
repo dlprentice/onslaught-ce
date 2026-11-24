@@ -160,10 +160,31 @@ static void FindAdd(PortFind *f, const char *name, bool dir, unsigned size)
 	for (int i = 0; i < f->count; i++)
 		if (strcasecmp(f->names[i], name) == 0)
 			return;
-	f->names = (char **)realloc(f->names, sizeof(char *) * (f->count + 1));
-	f->isdir = (unsigned char *)realloc(f->isdir, f->count + 1);
-	f->sizes = (unsigned *)realloc(f->sizes, sizeof(unsigned) * (f->count + 1));
-	f->names[f->count] = strdup(name);
+	char *dup = strdup(name);
+	if (!dup)
+		return;
+	char **names = (char **)realloc(f->names, sizeof(char *) * (f->count + 1));
+	if (!names)
+	{
+		free(dup);
+		return;
+	}
+	f->names = names;
+	unsigned char *isdir = (unsigned char *)realloc(f->isdir, f->count + 1);
+	if (!isdir)
+	{
+		free(dup);
+		return;
+	}
+	f->isdir = isdir;
+	unsigned *sizes = (unsigned *)realloc(f->sizes, sizeof(unsigned) * (f->count + 1));
+	if (!sizes)
+	{
+		free(dup);
+		return;
+	}
+	f->sizes = sizes;
+	f->names[f->count] = dup;
 	f->isdir[f->count] = dir;
 	f->sizes[f->count] = size;
 	f->count++;

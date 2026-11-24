@@ -1100,35 +1100,80 @@ static void TestLaunchClosePreservationAndGamepadNav() {
         CHECK(ui.RoomZoneFocus() == CeOnlineUiModel::ROOM_ZONE_PLAYER &&
               ui.RoomPlayerFocus() == CeOnlineUiModel::ROOM_PL_READY,
               "room defaults focus to Ready button");
-        ui.RoomNavActivate();
+        CHECK(ui.RoomNavActivate(), "gamepad toggles Ready");
         CHECK(be.room.seats[0].ready, "gamepad toggles Ready");
+        // In coop_skirmish (map 850) Side is disabled and Slot #2 is AI (Mute disabled):
+        // Right from Ready MUST skip disabled Side to BE, then skip disabled Mute to Leave!
         ui.RoomNavSide(1);
-        CHECK(ui.RoomPlayerFocus() == CeOnlineUiModel::ROOM_PL_SIDE, "Right moves to Side");
-        ui.RoomNavActivate();
-        CHECK(be.room.seats[0].team == 0, "Side stays Forseti in coop_skirmish");
+        CHECK(ui.RoomPlayerFocus() == CeOnlineUiModel::ROOM_PL_BE, "Right skips disabled Side in coop_skirmish");
+        ui.RoomNavSide(1);
+        CHECK(ui.RoomPlayerFocus() == CeOnlineUiModel::ROOM_PL_LEAVE, "Right skips disabled Mute for AI seat");
+        // Manually parking on disabled Side refuses activation cleanly (suppressing FES_SELECT)
+        ui.SetRoomPlayerFocus(CeOnlineUiModel::ROOM_PL_SIDE);
+        CHECK(!ui.RoomNavActivate() && be.room.seats[0].team == 0, "disabled Side does not activate in coop_skirmish");
         // Advance to Versus 1 (851) so Side switching is valid under strict map-mode contract
         for (int k = 0; k < 6; ++k) {
             CHECK(ui.RoomHostCycleMap(1), "advance to Versus map 851");
             ui.SyncFromBackend(302 + k);
         }
         CHECK(be.room.map == 851 && be.room.mode == "versus_2v2", "reached Versus map 851");
-        ui.RoomNavActivate();
+        ui.SetRoomPlayerFocus(CeOnlineUiModel::ROOM_PL_READY);
+        ui.RoomNavSide(1);
+        CHECK(ui.RoomPlayerFocus() == CeOnlineUiModel::ROOM_PL_SIDE, "Right lands on enabled Side in versus_2v2");
+        CHECK(ui.RoomNavActivate(), "gamepad activates enabled Side");
         CHECK(be.room.seats[0].team == 1, "gamepad switches Side in versus_2v2");
         ui.RoomNavMove(1);
         CHECK(ui.RoomZoneFocus() == CeOnlineUiModel::ROOM_ZONE_HOST, "Down moves to Host strip");
+        // Host strip on Versus 851 with AI seat selected: Kick is disabled, Mode & Cycle Slot are enabled
+        ui.SetRoomHostFocus(CeOnlineUiModel::ROOM_HS_SLOT);
+        ui.RoomNavSide(1);
+        CHECK(ui.RoomHostFocus() == CeOnlineUiModel::ROOM_HS_START, "Host Right skips disabled Kick for AI seat");
+        ui.SetRoomHostFocus(CeOnlineUiModel::ROOM_HS_KICK);
+        CHECK(!ui.RoomNavActivate(), "disabled Kick refuses activation");
         ui.SetRoomHostFocus(CeOnlineUiModel::ROOM_HS_MAP);
         const int oldMap = be.room.map;
-        ui.RoomNavActivate();
+        CHECK(ui.RoomNavActivate(), "gamepad changes Map from Host strip");
         CHECK(be.room.map != oldMap, "gamepad changes Map from Host strip");
         ui.RoomNavMove(1);
         CHECK(ui.RoomZoneFocus() == CeOnlineUiModel::ROOM_ZONE_CHAT, "Down from Host strip moves to Chat");
-        ui.RoomNavActivate();
+        CHECK(ui.RoomNavActivate(), "gamepad opens Chat compose");
         CHECK(ui.ChatComposing(), "gamepad opens Chat compose");
         ui.RoomCloseChat();
         ui.RoomNavMove(1);
         CHECK(ui.RoomZoneFocus() == CeOnlineUiModel::ROOM_ZONE_HEADER, "Down from Chat wraps to Header");
-        ui.RoomNavActivate();
+        // Single-page room: < and > are disabled so Header Side stays on Copy Code
+        ui.RoomNavSide(1);
+        CHECK(ui.RoomHeaderFocus() == CeOnlineUiModel::ROOM_HD_COPY, "Header skips disabled < and > on single page");
+        CHECK(ui.RoomNavActivate(), "gamepad activates Copy Code");
         CHECK(be.clipboard == "XY789Z", "gamepad activates Copy Code");
+    }
+
+    // 4. Browser Pager skips disabled < Prev / Next > on single page & refuses disabled activation
+    {
+        FakeOnlineBackend be;
+        CeOnlineUiRoomSummary sum;
+        sum.roomId = "rm_single";
+        sum.name = "Single Page Room";
+        sum.humanSeats = 1;
+        sum.maxSeats = 4;
+        sum.compatible = true;
+        sum.state = "lobby";
+        be.lobbies.push_back(sum);
+        CeOnlineUiModel ui;
+        ui.SetBackend(&be);
+        ui.Open(false);
+        ui.HomeActivate(CeOnlineUiModel::HOME_BROWSE);
+        CHECK(ui.BrowserZoneFocus() == CeOnlineUiModel::BROWSER_ZONE_LIST, "browser starts on list");
+        ui.BrowserNavMove(1);
+        CHECK(ui.BrowserZoneFocus() == CeOnlineUiModel::BROWSER_ZONE_PAGER &&
+              ui.BrowserPagerFocus() == CeOnlineUiModel::BROWSER_PG_JOIN,
+              "moving to single-page pager focuses enabled Join Selected");
+        ui.BrowserNavSide(1);
+        CHECK(ui.BrowserPagerFocus() == CeOnlineUiModel::BROWSER_PG_JOIN, "single-page pager skips disabled Next >");
+        ui.BrowserNavSide(-1);
+        CHECK(ui.BrowserPagerFocus() == CeOnlineUiModel::BROWSER_PG_JOIN, "single-page pager skips disabled < Prev");
+        ui.SetBrowserPagerFocus(CeOnlineUiModel::BROWSER_PG_PREV);
+        CHECK(!ui.BrowserNavActivate(), "disabled < Prev refuses activation");
     }
 }
 

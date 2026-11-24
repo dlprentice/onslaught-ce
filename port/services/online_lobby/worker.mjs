@@ -17,6 +17,7 @@ const DEFAULT_DAILY_TURN_LIMIT = 200;
 const DEFAULT_MONTHLY_TURN_LIMIT = 2000;
 const DEFAULT_PER_IP_DAILY_TURN_LIMIT = 40;
 const DEFAULT_HEARTBEAT_TIMEOUT_MS = 30000;
+const DEFAULT_STARTING_TIMEOUT_MS = 5 * 60 * 1000;
 const DEFAULT_MATCH_TIMEOUT_MS = 2 * 60 * 60 * 1000;
 const DEFAULT_MAX_ACTIVE_ROOMS = 128;
 const DEFAULT_AUTH_IP_LIMIT = 20;
@@ -638,16 +639,28 @@ function makeEmptySeat(seatIndex, mode, aiFill) {
   };
 }
 
+function activeTeamCap(seats) {
+  let nonClosed = 0;
+  for (const s of seats) {
+    if (s.kind !== "closed") {
+      nonClosed++;
+    }
+  }
+  return Math.max(1, Math.ceil(nonClosed / 2));
+}
+
 function rebalanceRoomTeams(room) {
   if (room.mode !== "versus_2v2") {
     for (const s of room.seats) {
-      s.team = 0;
+      if (s.kind !== "closed") {
+        s.team = 0;
+      }
     }
     return;
   }
   let active0 = 0;
   let active1 = 0;
-  const cap = Math.max(1, Math.ceil(room.max_seats / 2));
+  const cap = activeTeamCap(room.seats);
   for (const s of room.seats) {
     if (s.kind === "human") {
       if (s.team === 1 && active1 < cap) {
@@ -663,15 +676,20 @@ function rebalanceRoomTeams(room) {
   }
   for (const s of room.seats) {
     if (s.kind === "ai") {
-      if (active0 <= active1 && active0 < cap) {
+      if (active0 < active1 && active0 < cap) {
         s.team = 0;
         active0++;
-      } else if (active1 < cap) {
+      } else if (active1 < active0 && active1 < cap) {
         s.team = 1;
         active1++;
-      } else {
+      } else if (s.team === 1 && active1 < cap) {
+        active1++;
+      } else if (active0 < cap) {
         s.team = 0;
         active0++;
+      } else {
+        s.team = 1;
+        active1++;
       }
     }
   }
@@ -679,7 +697,15 @@ function rebalanceRoomTeams(room) {
   let total1 = active1;
   for (const s of room.seats) {
     if (s.kind === "open") {
-      if (total0 <= total1 && total0 < cap) {
+      if (total0 < total1 && total0 < cap) {
+        s.team = 0;
+        total0++;
+      } else if (total1 < total0 && total1 < cap) {
+        s.team = 1;
+        total1++;
+      } else if (s.team === 1 && total1 < cap) {
+        total1++;
+      } else if (total0 < cap) {
         s.team = 0;
         total0++;
       } else {
@@ -1266,19 +1292,26 @@ export class LobbyDirectory extends DurableObject {
     return envPositiveInt(this.env.CE_HEARTBEAT_TIMEOUT_MS, DEFAULT_HEARTBEAT_TIMEOUT_MS, 500, 300000);
   }
 
+  startingTimeoutMs() {
+    return envPositiveInt(this.env.CE_STARTING_TIMEOUT_MS, DEFAULT_STARTING_TIMEOUT_MS, 1000, 86400000);
+  }
+
   matchTimeoutMs() {
     return envPositiveInt(this.env.CE_MATCH_TIMEOUT_MS, DEFAULT_MATCH_TIMEOUT_MS, 1000, 86400000);
   }
 
   pruneStaleRooms(nowMs) {
     const lobbyCutoff = nowMs - this.heartbeatTimeoutMs();
+    const startingCutoff = nowMs - this.startingTimeoutMs();
     const matchCutoff = nowMs - this.matchTimeoutMs();
     this.ctx.storage.sql.exec(
       `DELETE FROM rooms
        WHERE state = 'closed'
           OR (state NOT IN ('starting', 'in_match') AND last_heartbeat_ms < ?)
-          OR (state IN ('starting', 'in_match') AND last_heartbeat_ms < ?)`,
+          OR (state = 'starting' AND last_heartbeat_ms < ?)
+          OR (state = 'in_match' AND last_heartbeat_ms < ?)`,
       lobbyCutoff,
+      startingCutoff,
       matchCutoff
     );
   }
@@ -1895,6 +1928,27 @@ export class GameRoom extends DurableObject {
       target.ready = false;
       target.rtt_ms = 0;
       target.route = "unknown";
+      if (room.mode === "versus_2v2") {
+        const cap = activeTeamCap(room.seats);
+        let humans0 = 0;
+        let humans1 = 0;
+        for (const s of room.seats) {
+          if (s.kind === "human" && s.seat !== target.seat) {
+            if (s.team === 1) humans1++;
+            else humans0++;
+          }
+        }
+        if (humans1 < humans0 && humans1 < cap) {
+          target.team = 1;
+        } else if (humans0 < cap) {
+          target.team = 0;
+        } else {
+          target.team = 1;
+        }
+      } else {
+        target.team = 0;
+      }
+      rebalanceRoomTeams(room);
       room.rev++;
       room.updated_at = nowSeconds();
       this.writeRoom(room);
@@ -1923,6 +1977,9 @@ export class GameRoom extends DurableObject {
         const replacement = makeEmptySeat(member.seat, room.mode, room.ai_fill);
         replacement.team = member.team;
         room.seats[member.seat] = replacement;
+        if (room.state === "lobby") {
+          rebalanceRoomTeams(room);
+        }
       }
       room.rev++;
       room.updated_at = nowSeconds();
@@ -2028,6 +2085,7 @@ export class GameRoom extends DurableObject {
       }
 
       // Self-seat fields.
+      let teamChanged = false;
       if (Object.hasOwn(body, "team")) {
         if (room.state !== "lobby") {
           return { ok: false, httpStatus: 409, errorCode: "match_in_progress", message: "Cannot change team during match." };
@@ -2039,25 +2097,27 @@ export class GameRoom extends DurableObject {
           return { ok: false, httpStatus: 400, errorCode: "invalid_team", message: "Side selection is only available in 2v2 Versus." };
         }
         if (targetMode === "versus_2v2") {
-          const teamCap = Math.max(1, Math.ceil(targetMaxSeats / 2));
+          let projectedNonClosed = 0;
+          for (let i = 0; i < targetMaxSeats; i++) {
+            let kind = i < room.seats.length ? room.seats[i].kind : (room.ai_fill ? "ai" : "open");
+            if (Object.hasOwn(body, "set_seat_kind") && body.set_seat_kind &&
+                typeof body.set_seat_kind === "object" && !Array.isArray(body.set_seat_kind) &&
+                body.set_seat_kind.seat === i && typeof body.set_seat_kind.kind === "string" &&
+                VALID_SEAT_SET_KINDS.has(body.set_seat_kind.kind) && kind !== "human") {
+              kind = body.set_seat_kind.kind;
+            }
+            if (kind !== "closed") projectedNonClosed++;
+          }
+          const teamCap = Math.max(1, Math.ceil(projectedNonClosed / 2));
           if (member.team !== body.team) {
             const humansOnTarget = room.seats.filter(
-              s => s.kind === "human" && s.seat !== member.seat && s.team === body.team
+              s => s.kind === "human" && s.seat !== member.seat && s.seat < targetMaxSeats && s.team === body.team
             ).length;
             if (humansOnTarget >= teamCap) {
               return { ok: false, httpStatus: 409, errorCode: "team_full", message: "That side is already full." };
             }
             member.team = body.team;
-            // Rebalance AI seats only (never closed seats) so active teams stay balanced.
-            let active0 = room.seats.filter(s => (s.kind === "human" || s.kind === "ai") && s.team === 0).length;
-            let active1 = room.seats.filter(s => (s.kind === "human" || s.kind === "ai") && s.team === 1).length;
-            if (body.team === 0 && (active0 > teamCap || (active1 === 0 && active0 >= 2))) {
-              const swap = room.seats.find(s => s.kind === "ai" && s.team === 0);
-              if (swap) { swap.team = 1; active0--; active1++; }
-            } else if (body.team === 1 && (active1 > teamCap || (active0 === 0 && active1 >= 2))) {
-              const swap = room.seats.find(s => s.kind === "ai" && s.team === 1);
-              if (swap) { swap.team = 0; active1--; active0++; }
-            }
+            teamChanged = true;
           }
         } else {
           member.team = 0;
@@ -2119,7 +2179,7 @@ export class GameRoom extends DurableObject {
         }
         syncDir = true;
       }
-      let needRebalance = false;
+      let needRebalance = teamChanged;
       if (hasMap && room.map !== targetMap) {
         room.map = targetMap;
         shouldResetGuestReady = true;
@@ -2229,6 +2289,7 @@ export class GameRoom extends DurableObject {
         const freed = makeEmptySeat(target.seat, room.mode, room.ai_fill);
         freed.team = target.team;
         room.seats[target.seat] = freed;
+        needRebalance = true;
         syncDir = true;
       }
 
@@ -2389,6 +2450,7 @@ export class GameRoom extends DurableObject {
       slots: pre.slots,
     };
 
+    const nowMs = Date.now();
     const started = this.ctx.storage.transactionSync(() => {
       const room = this.readRoom();
       if (!room || room.state !== "lobby" || room.rev !== pre.rev) {
@@ -2403,6 +2465,8 @@ export class GameRoom extends DurableObject {
       room.turn_counts = {};
       room.rev++;
       room.updated_at = now;
+      room.last_heartbeat_ms = nowMs;
+      room.last_dir_heartbeat_ms = nowMs;
       this.writeRoom(room);
       return { ok: true, state: this.formatRoomState(room, true), syncRoom: room };
     });

@@ -87,7 +87,14 @@ extern "C" LONG WINAPI PortRegSetValueExA(HKEY key, LPCSTR name, DWORD, DWORD ty
 			if (strncasecmp(line, prefix, strlen(prefix)) != 0)
 			{
 				size_t l = strlen(line);
-				kept = (char *)realloc(kept, kept_len + l + 1);
+				char *next = (char *)realloc(kept, kept_len + l + 1);
+				if (!next)
+				{
+					fclose(f);
+					free(kept);
+					return ERROR_ACCESS_DENIED;
+				}
+				kept = next;
 				memcpy(kept + kept_len, line, l + 1);
 				kept_len += l;
 			}

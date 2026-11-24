@@ -242,6 +242,8 @@ void CeOnlineMatchSession::Reset() {
         mSlotDisconnected[i] = false;
         mSlotRttMs[i] = 0u;
         mSlotRoute[i] = CE_ONLINE_ROUTE_UNKNOWN;
+        mFinalPeerTick[i] = 0u;
+        mFinalPeerHash[i] = 0u;
     }
     mHasBroadcast = false;
     mBroadcastLeadIn = false;
@@ -252,6 +254,14 @@ void CeOnlineMatchSession::Reset() {
     mLocalStartHash = 0u;
     mHostStartHashReceived = false;
     mHostStartHash = 0u;
+    mFinalConfirmed = false;
+    mLocalFinalSubmitted = false;
+    mLocalFinalTick = 0u;
+    mLocalFinalHash = 0u;
+    mHostFinalReceived = false;
+    mHostFinalTick = 0u;
+    mHostFinalHash = 0u;
+    mFinalPresentPeerMask = 0u;
     memset(&mLastDesync, 0, sizeof(mLastDesync));
     mError[0] = 0;
     memset(mChat, 0, sizeof(mChat));
@@ -438,6 +448,122 @@ bool CeOnlineMatchSession::TryConfirmStartHash() {
     return true;
 }
 
+bool CeOnlineMatchSession::HasPeerEndedBy(uint32_t tick) const {
+    if (!mInitialised)
+        return false;
+    if (IsHost()) {
+        const uint8_t mask = (uint8_t)(mFinalPresentPeerMask & mRing.ActiveMask());
+        for (uint8_t p = 1u; p < mRing.PlayerCount(); ++p) {
+            if ((mask & (uint8_t)(1u << p)) != 0u && mFinalPeerTick[p] <= tick)
+                return true;
+        }
+        return false;
+    }
+    return mHostFinalReceived && mHostFinalTick <= tick;
+}
+
+bool CeOnlineMatchSession::TryConfirmFinalHash() {
+    if (!mInitialised || !IsHost() || mState != CE_ONLINE_STATE_RUNNING)
+        return true;
+    const uint8_t reqMask = mRing.ActiveMask();
+    if (reqMask == 0u)
+        return true;
+    if (!mLocalFinalSubmitted) {
+        for (uint8_t p = 1u; p < mRing.PlayerCount(); ++p) {
+            if ((reqMask & (uint8_t)(1u << p)) != 0u &&
+                (mFinalPresentPeerMask & (uint8_t)(1u << p)) != 0u &&
+                mRing.CurrentTick() > mFinalPeerTick[p]) {
+                CeNPeerDesyncReport rep = {};
+                rep.tick = mFinalPeerTick[p];
+                rep.referenceSlot = 0u;
+                rep.divergingSlot = p;
+                rep.divergingMask = (uint8_t)(1u << p);
+                rep.expectedHash = 0u;
+                rep.actualHash = mFinalPeerHash[p];
+                mLastDesync = RemapReportToSimSlots(rep);
+                if (mBridge)
+                    mBridge->SendDesync(mLastDesync);
+                char msg[192];
+                snprintf(msg, sizeof(msg),
+                         "online match final state went out of step at tick %u (slot %u ended while host continued)",
+                         mLastDesync.tick, (unsigned)mLastDesync.divergingSlot);
+                SetFault(CE_ONLINE_STATE_DESYNC, msg);
+                return false;
+            }
+        }
+        return true;
+    }
+    if ((mFinalPresentPeerMask & reqMask) != reqMask)
+        return true;
+
+    uint8_t activePeers = 0u;
+    uint8_t bestCount = 0u;
+    uint8_t bestRef = 0u;
+    uint32_t bestTick = mLocalFinalTick;
+    uint64_t bestHash = mLocalFinalHash;
+    for (uint8_t p = 0u; p < mRing.PlayerCount(); ++p) {
+        if ((reqMask & (uint8_t)(1u << p)) == 0u)
+            continue;
+        ++activePeers;
+        uint8_t count = 0u;
+        for (uint8_t q = 0u; q < mRing.PlayerCount(); ++q) {
+            if ((reqMask & (uint8_t)(1u << q)) != 0u &&
+                mFinalPeerTick[q] == mFinalPeerTick[p] &&
+                mFinalPeerHash[q] == mFinalPeerHash[p]) {
+                ++count;
+            }
+        }
+        if (count > bestCount) {
+            bestCount = count;
+            bestRef = p;
+            bestTick = mFinalPeerTick[p];
+            bestHash = mFinalPeerHash[p];
+        }
+    }
+    if (bestCount == activePeers) {
+        if (!mFinalConfirmed) {
+            TryBroadcastReadyBundles();
+            mFinalConfirmed = true;
+            if (mBridge && !mBridge->SendHash(0u, mLocalFinalTick | kOnlineFinalTickFlag, mLocalFinalHash)) {
+                SetFault(CE_ONLINE_STATE_ERROR, "host failed to broadcast final state confirmation");
+                return false;
+            }
+        }
+        return true;
+    }
+
+    uint8_t divMask = 0u;
+    uint8_t firstDiv = 0xffu;
+    for (uint8_t p = 0u; p < mRing.PlayerCount(); ++p) {
+        if ((reqMask & (uint8_t)(1u << p)) == 0u)
+            continue;
+        if (mFinalPeerTick[p] != bestTick || mFinalPeerHash[p] != bestHash) {
+            divMask |= (uint8_t)(1u << p);
+            if (firstDiv == 0xffu)
+                firstDiv = p;
+        }
+    }
+    if (firstDiv == 0xffu)
+        firstDiv = bestRef;
+    CeNPeerDesyncReport rep = {};
+    rep.tick = bestTick;
+    rep.referenceSlot = bestRef;
+    rep.divergingSlot = firstDiv;
+    rep.divergingMask = divMask;
+    rep.expectedHash = bestHash;
+    rep.actualHash = mFinalPeerHash[firstDiv];
+    mLastDesync = RemapReportToSimSlots(rep);
+    if (mBridge)
+        mBridge->SendDesync(mLastDesync);
+    char msg[192];
+    snprintf(msg, sizeof(msg),
+             "online match final state went out of step at tick %u (slot %u diverged from slot %u, mask 0x%02x)",
+             mLastDesync.tick, (unsigned)mLastDesync.divergingSlot,
+             (unsigned)mLastDesync.referenceSlot, (unsigned)mLastDesync.divergingMask);
+    SetFault(CE_ONLINE_STATE_DESYNC, msg);
+    return false;
+}
+
 bool CeOnlineMatchSession::HandleGuestInputEvent(const CeOnlineStarEvent &ev) {
     if (!IsHost())
         return true; // Guests ignore stray guest-input packets; only host builds bundles.
@@ -458,6 +584,26 @@ bool CeOnlineMatchSession::HandleGuestInputEvent(const CeOnlineStarEvent &ev) {
             SetFault(CE_ONLINE_STATE_ERROR, "malformed compact guest control sample arrived");
             return false;
         }
+    }
+    if (mLocalFinalSubmitted && ev.tick >= mLocalFinalTick + mRing.InputDelay()) {
+        if (mSlotDisconnected[ev.from_sim_slot] || (mRing.DisconnectedMask() & (uint8_t)(1u << peerIdx)) != 0u)
+            return true;
+        CeNPeerDesyncReport rep = {};
+        rep.tick = mLocalFinalTick;
+        rep.referenceSlot = 0u;
+        rep.divergingSlot = peerIdx;
+        rep.divergingMask = (uint8_t)(1u << peerIdx);
+        rep.expectedHash = mLocalFinalHash;
+        rep.actualHash = 0u;
+        mLastDesync = RemapReportToSimSlots(rep);
+        if (mBridge)
+            mBridge->SendDesync(mLastDesync);
+        char msg[192];
+        snprintf(msg, sizeof(msg),
+                 "online match final state went out of step at tick %u (slot %u continued past host end)",
+                 mLastDesync.tick, (unsigned)mLastDesync.divergingSlot);
+        SetFault(CE_ONLINE_STATE_DESYNC, msg);
+        return false;
     }
     const CeNPeerStatus st = mRing.SubmitInput(peerIdx, ev.tick, wire);
     if (st == CE_NPEER_ERR_INACTIVE_SLOT || st == CE_NPEER_ERR_STALE_TICK) {
@@ -494,6 +640,66 @@ bool CeOnlineMatchSession::HandleHashEvent(const CeOnlineStarEvent &ev) {
     const uint8_t peerIdx = SimSlotToPeer(ev.from_sim_slot);
     if (peerIdx >= mRing.PlayerCount())
         return true;
+    if ((ev.tick & kOnlineFinalTickFlag) != 0u) {
+        const uint32_t finalTick = ev.tick & ~kOnlineFinalTickFlag;
+        if (finalTick == 0u) {
+            SetFault(CE_ONLINE_STATE_ERROR, "malformed final state hash tick arrived");
+            return false;
+        }
+        if ((mRing.ActiveMask() & (uint8_t)(1u << peerIdx)) == 0u &&
+            (mSlotDisconnected[ev.from_sim_slot] || (mRing.DisconnectedMask() & (uint8_t)(1u << peerIdx)) != 0u)) {
+            return true;
+        }
+        if ((mFinalPresentPeerMask & (uint8_t)(1u << peerIdx)) != 0u) {
+            if (mFinalPeerTick[peerIdx] != finalTick || mFinalPeerHash[peerIdx] != ev.hash) {
+                SetFault(CE_ONLINE_STATE_ERROR, "conflicting peer final state hash arrived");
+                return false;
+            }
+            return true;
+        }
+        mFinalPresentPeerMask |= (uint8_t)(1u << peerIdx);
+        mFinalPeerTick[peerIdx] = finalTick;
+        mFinalPeerHash[peerIdx] = ev.hash;
+        if (!IsHost()) {
+            if (ev.from_sim_slot != 0u) {
+                SetFault(CE_ONLINE_STATE_ERROR, "unexpected non-host final state hash arrived");
+                return false;
+            }
+            mHostFinalReceived = true;
+            mHostFinalTick = finalTick;
+            mHostFinalHash = ev.hash;
+            if (mLocalFinalSubmitted) {
+                if (mLocalFinalTick != mHostFinalTick || mLocalFinalHash != mHostFinalHash) {
+                    mLastDesync.tick = mHostFinalTick;
+                    mLastDesync.referenceSlot = 0u;
+                    mLastDesync.divergingSlot = mTicket.local_sim_slot;
+                    mLastDesync.divergingMask = (uint8_t)(1u << mTicket.local_sim_slot);
+                    mLastDesync.expectedHash = mHostFinalHash;
+                    mLastDesync.actualHash = mLocalFinalHash;
+                    SetFault(CE_ONLINE_STATE_DESYNC, "online match final state disagreed with the host");
+                    return false;
+                }
+                mFinalConfirmed = true;
+                return true;
+            }
+            if (mRing.CurrentTick() > mHostFinalTick) {
+                mLastDesync.tick = mHostFinalTick;
+                mLastDesync.referenceSlot = 0u;
+                mLastDesync.divergingSlot = mTicket.local_sim_slot;
+                mLastDesync.divergingMask = (uint8_t)(1u << mTicket.local_sim_slot);
+                mLastDesync.expectedHash = mHostFinalHash;
+                mLastDesync.actualHash = 0u;
+                SetFault(CE_ONLINE_STATE_DESYNC, "online match ended on the host at an earlier tick");
+                return false;
+            }
+            return true;
+        }
+        if (ev.from_sim_slot == 0u) {
+            SetFault(CE_ONLINE_STATE_ERROR, "unexpected host-originated final state hash arrived");
+            return false;
+        }
+        return TryConfirmFinalHash();
+    }
     const CeNPeerStatus st = mRing.SubmitHash(peerIdx, ev.tick, ev.hash);
     if (st == CE_NPEER_ERR_INACTIVE_SLOT &&
         (mSlotDisconnected[ev.from_sim_slot] || (mRing.DisconnectedMask() & (uint8_t)(1u << peerIdx)) != 0u))
@@ -558,6 +764,11 @@ void CeOnlineMatchSession::HandleDisconnectEvent(uint8_t sim_slot) {
     const uint8_t peerIdx = SimSlotToPeer(sim_slot);
     if (peerIdx >= mRing.PlayerCount())
         return;
+    if (mFinalConfirmed) {
+        if (sim_slot < CE_ONLINE_MAX_MATCH_SLOTS)
+            mSlotDisconnected[sim_slot] = true;
+        return;
+    }
     // Choose disconnect boundary cleanly: never contradict an already-broadcast tick or
     // locally-seeded lead-in ticks once the tick-0 start barrier has released.
     uint32_t atTick = mRing.CurrentTick();
@@ -587,6 +798,8 @@ void CeOnlineMatchSession::HandleDisconnectEvent(uint8_t sim_slot) {
             mBroadcastLeadIn = true;
         TryBroadcastReadyBundles();
         if (!TryConfirmStartHash())
+            return;
+        if (!TryConfirmFinalHash())
             return;
     }
 }
@@ -659,7 +872,9 @@ bool CeOnlineMatchSession::Poll(uint64_t now_ms) {
                 break;
             case CE_STAR_EVT_HOST_LOST:
                 HandleDisconnectEvent(0u);
-                return false;
+                if (mState != CE_ONLINE_STATE_CONNECTING && mState != CE_ONLINE_STATE_RUNNING)
+                    return false;
+                break;
             case CE_STAR_EVT_TRANSPORT_ERROR:
                 SetFault(CE_ONLINE_STATE_ERROR,
                          IsHost() ? "online match host transport failed to connect peers"
@@ -676,6 +891,8 @@ bool CeOnlineMatchSession::Poll(uint64_t now_ms) {
     if (IsHost() && mState == CE_ONLINE_STATE_RUNNING) {
         TryBroadcastReadyBundles();
         if (!TryConfirmStartHash())
+            return false;
+        if (!TryConfirmFinalHash())
             return false;
     }
     return mState == CE_ONLINE_STATE_CONNECTING || mState == CE_ONLINE_STATE_RUNNING;
@@ -768,6 +985,18 @@ bool CeOnlineMatchSession::ConsumeTick(CE_WorldInput out_slots[CE_ONLINE_MAX_MAT
             humanSimMask |= (uint8_t)(1u << sim);
         }
     }
+    if (!IsHost() && !mLocalFinalSubmitted && mHostFinalReceived && mRing.CurrentTick() > mHostFinalTick) {
+        mLastDesync.tick = mHostFinalTick;
+        mLastDesync.referenceSlot = 0u;
+        mLastDesync.divergingSlot = mTicket.local_sim_slot;
+        mLastDesync.divergingMask = (uint8_t)(1u << mTicket.local_sim_slot);
+        mLastDesync.expectedHash = mHostFinalHash;
+        mLastDesync.actualHash = 0u;
+        SetFault(CE_ONLINE_STATE_DESYNC, "online match ended on the host at an earlier tick");
+        return false;
+    }
+    if (IsHost() && !mLocalFinalSubmitted && !TryConfirmFinalHash())
+        return false;
     if (out_human_mask)
         *out_human_mask = humanSimMask;
     return true;
@@ -825,6 +1054,54 @@ bool CeOnlineMatchSession::SubmitLocalHash(uint32_t tick, uint64_t state_hash) {
         }
     }
     return true;
+}
+
+bool CeOnlineMatchSession::SubmitLocalFinalHash(uint32_t final_tick, uint64_t final_hash) {
+    if (!mInitialised || mState != CE_ONLINE_STATE_RUNNING)
+        return false;
+    if (final_tick == 0u || (final_tick & kOnlineFinalTickFlag) != 0u) {
+        SetFault(CE_ONLINE_STATE_ERROR, "invalid local final state hash tick");
+        return false;
+    }
+    if (mLocalFinalSubmitted) {
+        if (mLocalFinalTick != final_tick || mLocalFinalHash != final_hash) {
+            SetFault(CE_ONLINE_STATE_ERROR, "conflicting local final state hash submitted");
+            return false;
+        }
+        return true;
+    }
+    const uint8_t localPeer = SimSlotToPeer(mTicket.local_sim_slot);
+    if (localPeer >= mRing.PlayerCount()) {
+        SetFault(CE_ONLINE_STATE_ERROR, "invalid local peer slot for final state hash");
+        return false;
+    }
+    mLocalFinalSubmitted = true;
+    mLocalFinalTick = final_tick;
+    mLocalFinalHash = final_hash;
+    mFinalPresentPeerMask |= (uint8_t)(1u << localPeer);
+    mFinalPeerTick[localPeer] = final_tick;
+    mFinalPeerHash[localPeer] = final_hash;
+    if (!IsHost()) {
+        if (!mBridge || !mBridge->SendHash(mTicket.local_sim_slot, final_tick | kOnlineFinalTickFlag, final_hash)) {
+            SetFault(CE_ONLINE_STATE_ERROR, "could not send final state hash to host");
+            return false;
+        }
+        if (mHostFinalReceived) {
+            if (mLocalFinalTick != mHostFinalTick || mLocalFinalHash != mHostFinalHash) {
+                mLastDesync.tick = mHostFinalTick;
+                mLastDesync.referenceSlot = 0u;
+                mLastDesync.divergingSlot = mTicket.local_sim_slot;
+                mLastDesync.divergingMask = (uint8_t)(1u << mTicket.local_sim_slot);
+                mLastDesync.expectedHash = mHostFinalHash;
+                mLastDesync.actualHash = mLocalFinalHash;
+                SetFault(CE_ONLINE_STATE_DESYNC, "online match final state disagreed with the host");
+                return false;
+            }
+            mFinalConfirmed = true;
+        }
+        return true;
+    }
+    return TryConfirmFinalHash();
 }
 
 bool CeOnlineMatchSession::SendChat(const char *text) {
@@ -971,6 +1248,18 @@ int PortCeOnlineMatchSubmitLocalHash(uint32_t tick, uint64_t state_hash) {
 
 int PortCeOnlineMatchStartConfirmed(void) {
     return gSession.IsStartConfirmed() ? 1 : 0;
+}
+
+int PortCeOnlineMatchSubmitFinalHash(uint32_t final_tick, uint64_t final_hash) {
+    return gSession.SubmitLocalFinalHash(final_tick, final_hash) ? 1 : 0;
+}
+
+int PortCeOnlineMatchFinalConfirmed(void) {
+    return gSession.IsFinalConfirmed() ? 1 : 0;
+}
+
+int PortCeOnlineMatchPeerEndedBy(uint32_t tick) {
+    return gSession.HasPeerEndedBy(tick) ? 1 : 0;
 }
 
 int PortCeOnlineMatchCheckFault(char *out_error, size_t cap) {

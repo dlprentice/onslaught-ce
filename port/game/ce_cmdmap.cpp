@@ -872,6 +872,7 @@ void BeginDraw()
 
 void EndDraw()
 {
+	LT.SRS(D3DRS_CULLMODE, D3DCULL_CCW);
 	LT.SRS(D3DRS_ZFUNC, D3DCMP_LESSEQUAL);
 	LT.SRS(D3DRS_ZWRITEENABLE, TRUE);
 	LT.SRS(D3DRS_ZENABLE, TRUE);
@@ -2150,6 +2151,7 @@ float StrategicCardWidth() {
     return gHudLayout.valid ? gHudLayout.barRect.w : kCardW * L.s;
 }
 int FactoryCardAt(float x, float y) {
+    if (gDown[DIK_F1]) return -1;
     CeFactoryView f;
     if (!CeFactoryRead(f)) return -1;
     const float u=L.s, left=8*u, top=56*u, width=196*u;
@@ -2163,6 +2165,9 @@ int FactoryCardAt(float x, float y) {
     return 0;
 }
 bool StrategicPanelAt(float x, float y) {
+    if (gDown[DIK_F1] && gActiveHelpRectValid &&
+        x >= gActiveHelpRect.x0 && x < gActiveHelpRect.x1 &&
+        y >= gActiveHelpRect.y0 && y < gActiveHelpRect.y1) return true;
     if (FactoryCardAt(x,y) >= 0 || UnitPanelAt(x,y)) return true;
     const float u = L.s;
     char text[160];
@@ -2209,7 +2214,7 @@ bool StrategicRectClearsHud(float x0, float y0, float x1, float y1) {
             gActiveHelpRect.x1 + pad, gActiveHelpRect.y1 + pad))
         return false;
     CeFactoryView f;
-    if (CeFactoryRead(f)) {
+    if (!gDown[DIK_F1] && CeFactoryRead(f)) {
         const float fx = 8.f * u, fy = 56.f * u, fw = 196.f * u;
         const float fh = (f.selected ? (f.stage == CE_FACTORY_READY ? 122.f : 99.f) : 24.f) * u;
         if (StrategicRectsOverlap(x0, y0, x1, y1, fx - pad, fy - pad, fx + fw + pad, fy + fh + pad))
@@ -3202,7 +3207,7 @@ void StrategicPointer(WORD key, int event) {
     const bool leftUp = event == kMouseUp && key == 0;
     if (!leftUp && (event != kMouseDown || key > 2)) return;
     Refresh(); RefreshUnitFrame();
-    const int factoryButton=FactoryCardAt(px,py);
+    const int factoryButton = gDown[DIK_F1] ? -1 : FactoryCardAt(px, py);
     if (key == 0 && factoryButton >= 0 && event == kMouseDown) {
         if (event == kMouseDown) {
             gUnitUi.ClearSelection(); gUnitUi.Cancel();
@@ -4136,7 +4141,7 @@ void DrawStrategicHints() {
         if (words > 0.f) Text(noticeX, noticeY, Faded(kText, words), gNote, noticeW);
     }
     CeFactoryView factory;
-    if (CeFactoryRead(factory)) {
+    if (!gDown[DIK_F1] && CeFactoryRead(factory)) {
         // The generalized structure loop above already draws the 3D marker, armour bar,
         // and build progress strip for this building; keep the Level 231 exercise card only.
         const float x=8*u, y=56*u, width=196*u;

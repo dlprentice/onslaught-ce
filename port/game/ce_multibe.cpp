@@ -40,6 +40,7 @@
 #include "hud_scale.h"
 #include "ltshell.h"
 #include "renderinfo.h"
+#include "GameInterface.h"
 #include "PauseMenu.h"
 #include "MenuItem.h"
 #include "MenuOptionsList.h"
@@ -72,6 +73,7 @@ extern "C" bool PortCeMuseumVisitActive(void) __attribute__((weak));
 extern "C" bool PortCeLivingSandboxActive(void) __attribute__((weak));
 extern "C" bool PortCeCarrierClashActive(void) __attribute__((weak));
 extern "C" bool PortCeEditorActive(void) __attribute__((weak));
+bool PortCeCmdMapOpen() __attribute__((weak));
 bool PortCeNetActive() __attribute__((weak));
 #ifndef CE_NETWORK_OFF
 extern "C" int PortCeOnlineMatchActive(void) __attribute__((weak));
@@ -2557,7 +2559,10 @@ extern "C" void PortCeMultiBeDrawHud(CPlayer *, int viewpoint)
 {
 	if (!gActive || !gSpawned || viewpoint != 0 || gConfig.target_count < 3)
 		return;
-	if (PortCePhotoOn() || PortCePhotoSavedNext() || GAME.GetGameState() != GAME_STATE_PLAYING)
+	const bool pauseMenuOpen = (GAME.GetPauseMenu() && GAME.GetPauseMenu()->mActive);
+	if (PortCePhotoOn() || PortCePhotoSavedNext() || GAME.IsPaused() || GAMEINTERFACE.IsMenuUp() ||
+	    pauseMenuOpen || (PortCeCmdMapOpen && PortCeCmdMapOpen()) ||
+	    GAME.GetGameState() != GAME_STATE_PLAYING)
 		return;
 
 	CDXBitmapFont *font = PLATFORM.Font(FONT_SMALL);

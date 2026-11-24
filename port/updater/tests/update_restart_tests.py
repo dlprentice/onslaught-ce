@@ -64,6 +64,7 @@ static int ini_get(const char *key,char *out,size_t n)
   snprintf(out,n,"%s",v);return 1; }
 static int ini_set(const char *key,const char *value) { (void)key;(void)value;++forbidden;return 0; }
 static int find_game(char *out,size_t n) { ++finds;snprintf(out,n,"authored game folder");return 1; }
+static int user_inside_game(const char *user,const char *game) { (void)user;(void)game;return 0; }
 static int start_game(char **args,int n,const char *folder)
 { (void)folder;++games;game_args=args;game_argc=n;return 0; }
 static int finish_recording(int rc) { return rc; }

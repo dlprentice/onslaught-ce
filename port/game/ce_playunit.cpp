@@ -50,8 +50,8 @@
 #include "common.h"
 #include "game.h"
 #include "world.h"
-#ifdef CE_PLAYUNIT_TEST
 #include "Line.h"
+#ifdef CE_PLAYUNIT_TEST
 #include "UnitAI.h"
 #endif
 #include "round.h"
@@ -872,6 +872,111 @@ bool MakeUnitView(CUnit *unit) {
     return true;
 }
 
+bool QueryUnitViewLimits(CUnit *unit, const float *at, const CePlayUnitCameraPose &wanted, CePlayUnitCameraLimits *limits)
+{
+#ifdef CE_VERSION
+	if (!unit || !at || !limits || !MAP.mGeometryLoaded || WORLD.mWorldLevel < 0 ||
+	    MAP.mGridWidth <= 1 || MAP.mGridHeight <= 1)
+		return false;
+	limits->arm = -1.f;
+	limits->headroom = -1.f;
+	bool any = false;
+	const ULONG ignoreTypes = THING_TYPE_AMMUNITION | THING_TYPE_EXPLOSION |
+	                          THING_TYPE_TREE | THING_TYPE_INFANTRY | THING_TYPE_ANIMAL;
+	// 1. Overhead ceiling / bridge / roof check above the unit's root toward the camera anchor.
+	if (wanted.anchor[2] < at[2] - 0.25f)
+	{
+		const FVector headStart(at[0], at[1], at[2] - 0.25f);
+		const FVector headEnd(wanted.anchor[0], wanted.anchor[1], wanted.anchor[2] - 0.45f);
+		const float headLen = (headEnd - headStart).Magnitude();
+		if (headLen > 1e-3f)
+		{
+			CWorldLineColReport headHit;
+			if (WORLD.FindFirstThingToHitLine(CLine(headStart, headEnd), unit, &headHit,
+			        FALSE, TRUE, 2, ignoreTypes, FALSE) != kCollideNothing &&
+			    isfinite(headHit.mDistToImpact) && headHit.mDistToImpact >= 0.f && headHit.mDistToImpact < headLen)
+			{
+				float freeHead = (0.25f + headHit.mDistToImpact) - 0.45f;
+				if (freeHead < 0.f) freeHead = 0.f;
+				limits->headroom = freeHead;
+				any = true;
+			}
+		}
+	}
+	// 2. Third-person arm line-of-sight & terrain slope clearance from anchor toward eye.
+	if (!wanted.firstPerson && wanted.arm > 1e-3f)
+	{
+		float anchorZ = wanted.anchor[2];
+		if (limits->headroom >= 0.f && at[2] - anchorZ > limits->headroom)
+			anchorZ = at[2] - limits->headroom;
+		const FVector anchor(wanted.anchor[0], wanted.anchor[1], anchorZ);
+		const FVector armVec(wanted.eye[0] - wanted.anchor[0],
+		                     wanted.eye[1] - wanted.anchor[1],
+		                     wanted.eye[2] - wanted.anchor[2]);
+		const float armLen = armVec.Magnitude();
+		if (armLen > 1e-3f)
+		{
+			const FVector armDir = armVec * (1.f / armLen);
+			const float wallPad = 0.45f;
+			float maxArm = armLen;
+			CWorldLineColReport armHit;
+			if (WORLD.FindFirstThingToHitLine(CLine(anchor, anchor + armDir * (armLen + wallPad)), unit, &armHit,
+			        FALSE, TRUE, 2, ignoreTypes, FALSE) != kCollideNothing &&
+			    isfinite(armHit.mDistToImpact) && armHit.mDistToImpact >= 0.f)
+			{
+				float safeArm = armHit.mDistToImpact - wallPad;
+				if (safeArm < 0.f) safeArm = 0.f;
+				if (safeArm < maxArm)
+				{
+					maxArm = safeArm;
+					limits->arm = maxArm;
+					any = true;
+				}
+			}
+			const float minClear = gOnFoot ? (gUnitViewRig.span * 0.10f) : kLookClearance;
+			FVector aGround = anchor;
+			const float anchorFloor = MAP.Collide(aGround);
+			if (isfinite(anchorFloor) && anchor.Z <= anchorFloor - 0.05f && maxArm > 1e-3f)
+			{
+				const int kSteps = 12;
+				float prevS = 0.f;
+				for (int i = 1; i <= kSteps; ++i)
+				{
+					const float s = maxArm * (float(i) / float(kSteps));
+					FVector sample = anchor + armDir * s;
+					const float gZ = MAP.Collide(sample);
+					if (isfinite(gZ) && sample.Z > gZ - minClear)
+					{
+						float loS = prevS, hiS = s;
+						for (int b = 0; b < 6; ++b)
+						{
+							const float midS = 0.5f * (loS + hiS);
+							FVector midPt = anchor + armDir * midS;
+							const float midG = MAP.Collide(midPt);
+							if (isfinite(midG) && midPt.Z > midG - minClear)
+								hiS = midS;
+							else
+								loS = midS;
+						}
+						limits->arm = loS;
+						any = true;
+						break;
+					}
+					prevS = s;
+				}
+			}
+		}
+	}
+	return any;
+#else
+	(void)unit;
+	(void)at;
+	(void)wanted;
+	(void)limits;
+	return false;
+#endif
+}
+
 FVector ClampUnitViewGround(FVector eye) {
     FVector ground = eye;
 	const float floor = MAP.Collide(ground) - (gOnFoot ? (gUnitViewRig.span * 0.10f) : kLookClearance);
@@ -895,6 +1000,11 @@ bool UnitViewPose(const FVector &place, CePlayUnitCameraPose &pose) {
     const float at[3] = {place.X, place.Y, place.Z};
     if (!CePlayUnitCameraPoseFor(gUnitViewState, gUnitViewRig, at,
             gLookYaw, gLookPitch, NULL, NULL, &pose)) return false;
+    CePlayUnitCameraLimits limits;
+    if (QueryUnitViewLimits(unit, at, pose, &limits)) {
+        if (!CePlayUnitCameraPoseFor(gUnitViewState, gUnitViewRig, at,
+                gLookYaw, gLookPitch, NULL, &limits, &pose)) return false;
+    }
     const FVector eye = ClampUnitViewGround(FVector(pose.eye[0], pose.eye[1], pose.eye[2]));
     pose.eye[0] = eye.X; pose.eye[1] = eye.Y; pose.eye[2] = eye.Z;
     gUnitViewHideBody = pose.hideBody;
@@ -949,35 +1059,35 @@ FVector LookEye(const FVector &place)
 	return p;
 }
 
+FVector AdjustedFirstPersonEye(const FVector &eye)
+{
+	if (!gDriving || gOnFoot || !UnitViewHidesBody() || !gUnitViewMade || !gUnitViewRig.valid) return eye;
+	const float firstFrac = gUnitViewState.rail > 1.f ? (gUnitViewState.rail >= 2.f ? 1.f : (gUnitViewState.rail - 1.f)) : 0.f;
+	if (!(firstFrac > 0.f)) return eye;
+	float adj[3] = {0.f, 0.f, 0.f};
+	CePlayUnitFirstPersonEyeAdjust(gDrivenClass, gUnitViewRig.span, adj);
+	const float cy = cosf(gLookYaw), sy = sinf(gLookYaw);
+	FVector out = eye;
+	out.X += (cy * adj[0] - sy * adj[1]) * firstFrac;
+	out.Y += (sy * adj[0] + cy * adj[1]) * firstFrac;
+	out.Z += adj[2] * firstFrac;
+	FVector g = out;
+	const float floorZ = MAP.Collide(g) - 0.35f;
+	if (out.Z > floorZ) out.Z = floorZ;
+	return out;
+}
+
 // The driven unit's camera: the player's look while the view is the look (the default), the game's own third-person camera on the unit otherwise. The game's interpolation
 // between updates moves only the unit's place (GetOldPos), never the look, which is the player's at every frame.
 class CeLookCamera : public CeTankCamera
 {
 public:
 	explicit CeLookCamera(CUnit *unit) : CeTankCamera(unit) {}
-	virtual FVector GetPos() { CThing *t = GetThing(); return t && gViewMode == kViewLook ? LookEye(t->GetPos()) : CeTankCamera::GetPos(); }
+	virtual FVector GetPos() { CThing *t = GetThing(); return t && gViewMode == kViewLook ? AdjustedFirstPersonEye(LookEye(t->GetPos())) : CeTankCamera::GetPos(); }
 	virtual FMatrix GetOrientation() { return gViewMode == kViewLook ? LookOrientation() : CeTankCamera::GetOrientation(); }
-	virtual FVector GetOldPos() { CThing *t = GetThing(); return t && gViewMode == kViewLook ? LookEye(t->GetOldPos()) : CeTankCamera::GetOldPos(); }
+	virtual FVector GetOldPos() { CThing *t = GetThing(); return t && gViewMode == kViewLook ? AdjustedFirstPersonEye(LookEye(t->GetOldPos())) : CeTankCamera::GetOldPos(); }
 	virtual FMatrix GetOldOrientation() { return gViewMode == kViewLook ? LookOrientation() : CeTankCamera::GetOldOrientation(); }
 };
-
-// The frame's camera for the look: hung from the unit's displayed place, the look as it is now,
-// or elevated aerial overwatch/shot-follow while the artillery spotter camera is enabled.
-FVector AdjustedFirstPersonEye(const FVector &eye)
-{
-	if (!gDriving || gOnFoot || !UnitViewHidesBody() || !gUnitViewMade || !gUnitViewRig.valid) return eye;
-	float adj[3] = {0.f, 0.f, 0.f};
-	CePlayUnitFirstPersonEyeAdjust(gDrivenClass, gUnitViewRig.span, adj);
-	const float cy = cosf(gLookYaw), sy = sinf(gLookYaw);
-	FVector out = eye;
-	out.X += cy * adj[0] - sy * adj[1];
-	out.Y += sy * adj[0] + cy * adj[1];
-	out.Z += adj[2];
-	FVector g = out;
-	const float floorZ = MAP.Collide(g) - 0.35f;
-	if (out.Z > floorZ) out.Z = floorZ;
-	return out;
-}
 
 void LookShown(CUnit *unit, CGenericCamera *view)
 {
@@ -4863,6 +4973,106 @@ void DrawBallisticArcWorld(CUnit *u, LPDIRECT3DDEVICE9 dev, int viewpoint)
 
 	RestoreWorldDrawState(dev, viewpoint);
 }
+
+void DrawFirstPersonAircraftCockpit(CUnit *u, LPDIRECT3DDEVICE9 dev, int viewpoint)
+{
+	if (!u || !dev) return;
+	const unsigned long long now = ViewNs();
+	const float dt = gWeaponViewNs && now > gWeaponViewNs ? float(double(now - gWeaponViewNs) * 1.0e-9) : 0.016f;
+	gWeaponViewNs = now;
+	const float yawDelta = CePlayUnitWrap(gLookYaw - gLastWeaponViewYaw);
+	gLastWeaponViewYaw = gLookYaw;
+	CePlayUnitWeaponViewStep(&gWeaponView, GAME.IsPaused() ? 0.f : dt, 0.f, yawDelta, false);
+
+	CCamera *cam = ENGINE.GetCamera();
+	if (!cam) return;
+	const FVector eye = cam->GetPos();
+	const FMatrix ori = cam->GetOrientation();
+	const FVector right = ori.GetColumnX();
+	const FVector fwd = ori.GetColumnY();
+	const FVector down = ori.GetColumnZ();
+	const FVector vDir = fwd * -1.f;
+	const FVector keyRaw = (right * -0.38f - fwd * 0.36f - down * 0.85f);
+	const float kLen = sqrtf(keyRaw.X * keyRaw.X + keyRaw.Y * keyRaw.Y + keyRaw.Z * keyRaw.Z);
+	const FVector keyDir = kLen > 1e-4f ? (keyRaw * (1.f / kLen)) : FVector(0.f, 0.f, -1.f);
+
+	const bool muspell = u->GetAllegiance() == 1;
+	IDirect3DTexture9 *tex = CePlayUnitTextures::Ensure(dev, muspell ? CE_PLAYUNIT_TEX_MUSPELL_RIFLE : CE_PLAYUNIT_TEX_FORSETI_RIFLE);
+	const CeUvQuad uvShroud = {0.02f, 0.02f, 0.48f, 0.48f};
+	const CeUvQuad uvBody   = {0.52f, 0.02f, 0.98f, 0.48f};
+	const CeUvQuad uvBarrel = {0.02f, 0.52f, 0.48f, 0.98f};
+	const CeUvQuad uvGlow   = {0.52f, 0.52f, 0.98f, 0.98f};
+	const DWORD tShroud = tex ? 0xfffafcff : (muspell ? 0xffa8422c : 0xff8eaad0);
+	const DWORD tBody   = tex ? 0xfff0f4f8 : (muspell ? 0xff4c3e3a : 0xff465a70);
+	const DWORD tBarrel = tex ? 0xfffcfdff : (muspell ? 0xff9a928a : 0xffa6bcd2);
+	const DWORD tGlow   = tex ? 0xffffffff : (muspell ? 0xffff9a28 : 0xff54f0ff);
+
+	static CeWeaponVert verts[2048];
+	int nVerts = 0;
+	CeWorldTriVert fv[32];
+	int nf = 0;
+
+	const float swayX = gWeaponView.swayX * 0.45f;
+	const FVector noseBase = eye + right * swayX + fwd * 1.32f + down * 0.42f;
+	// Forward armored nose cowling & anti-glare instrument coaming below the open sightline.
+	EmitSculptedHull(verts, &nVerts, 2048, noseBase, right, fwd, down, vDir, keyDir,
+	                 0.0f,  0.05f, 0.46f, 0.11f, 0.42f, -0.46f,
+	                 0.0f,  0.08f, 0.24f, 0.08f, 0.44f,  0.96f, uvBody, tBody, 0.94f);
+	EmitSculptedHull(verts, &nVerts, 2048, noseBase, right, fwd, down, vDir, keyDir,
+	                 0.0f, -0.02f, 0.34f, 0.045f, 0.44f, -0.36f,
+	                 0.0f,  0.02f, 0.16f, 0.035f, 0.46f,  0.92f, uvShroud, tShroud, 1.04f);
+	// Illuminated HUD collimator sight lip along top of coaming (well clear of centre crosshair).
+	EmitSculptedHull(verts, &nVerts, 2048, noseBase, right, fwd, down, vDir, keyDir,
+	                 0.0f, -0.062f, 0.13f, 0.012f, 0.32f, -0.18f,
+	                 0.0f, -0.048f, 0.09f, 0.010f, 0.32f,  0.16f, uvGlow, tGlow, 1.0f, true);
+
+	// Left and right swept canopy frame struts framing the peripheral cockpit glass.
+	for (int side = 0; side < 2; ++side)
+	{
+		const float sgn = side == 0 ? -1.f : 1.f;
+		EmitSculptedHull(verts, &nVerts, 2048, eye + right * swayX, right, fwd, down, vDir, keyDir,
+		                 sgn * 0.72f, -0.46f, 0.026f, 0.032f, 0.36f, 0.78f,
+		                 sgn * 0.44f,  0.38f, 0.032f, 0.036f, 0.38f, 1.24f, uvBody, tBody, 0.92f);
+		EmitSculptedHull(verts, &nVerts, 2048, eye + right * swayX, right, fwd, down, vDir, keyDir,
+		                 sgn * 0.695f, -0.44f, 0.008f, 0.012f, 0.30f, 0.80f,
+		                 sgn * 0.425f,  0.36f, 0.009f, 0.014f, 0.30f, 1.22f, uvGlow, tGlow, 1.0f, true);
+	}
+
+	// Twin forward-converging nose/wing-root autocannons on armed aircraft (omitted on unarmed dropships).
+	if (FireWeapon(u, false) != NULL)
+	{
+		const float rec = gWeaponView.recoil * 0.11f;
+		for (int side = 0; side < 2; ++side)
+		{
+			const float sgn = side == 0 ? -1.f : 1.f;
+			const FVector gunBase = eye + right * (sgn * 0.44f + swayX)
+			                            + fwd * (1.24f - rec)
+			                            + down * 0.33f;
+			FVector wr, wf, wd;
+			BuildWeaponFrame(right, fwd, down, -sgn * 0.045f, -0.025f, 0.f, wr, wf, wd);
+			EmitSculptedHull(verts, &nVerts, 2048, gunBase, wr, wf, wd, vDir, keyDir,
+			                 0.0f, 0.00f, 0.068f, 0.052f, 0.40f, -0.34f,
+			                 0.0f, 0.00f, 0.054f, 0.044f, 0.42f,  0.32f, uvShroud, tShroud, 1.02f);
+			EmitCylinderTube(verts, &nVerts, 2048, gunBase, wr, wf, wd, vDir, keyDir,
+			                 0.0f, 0.00f, 0.26f, 0.94f, 0.032f, 0.026f, 10, uvBarrel, tBarrel, 1.08f, true);
+			EmitSculptedHull(verts, &nVerts, 2048, gunBase, wr, wf, wd, vDir, keyDir,
+			                 -sgn * 0.048f, -0.012f, 0.010f, 0.010f, 0.30f, -0.10f,
+			                 -sgn * 0.042f, -0.010f, 0.009f, 0.009f, 0.30f,  0.26f, uvGlow, tGlow, 1.0f, true);
+			if (gWeaponView.flash > 0.08f)
+			{
+				const float sc = 0.038f + 0.052f * gWeaponView.flash;
+				const FVector mPos = gunBase + wf * 0.98f;
+				const DWORD coreCol = muspell ? 0xfffff0a0 : 0xffd8ffff;
+				const DWORD tipCol  = muspell ? 0x00ff5810 : 0x0020b8ff;
+				EmitMuzzleFlashCone(fv, &nf, 32, mPos, wr, wf, wd, sc, 2.9f, coreCol, tipCol);
+			}
+		}
+	}
+
+	DrawWeaponMeshBuffer(dev, viewpoint, tex, verts, nVerts, true);
+	if (nf >= 3)
+		DrawWeaponAdditiveTris(dev, viewpoint, fv, nf);
+}
 }
 
 extern "C" void PortCePlayUnitDrawWorld(int viewpoint)
@@ -4879,11 +5089,14 @@ extern "C" void PortCePlayUnitDrawWorld(int viewpoint)
 	if (gBallisticArc.valid && gBallisticArc.count >= 2)
 		DrawBallisticArcWorld(u, dev, viewpoint);
 
-	if (UnitViewHidesBody() && !gSpotter.enabled)
+	const bool inFirstPerson = gFootFirstPerson || !gUnitViewMade || !gUnitViewRig.valid || gUnitViewState.rail > 1.f;
+	if (UnitViewHidesBody() && inFirstPerson && !gSpotter.enabled)
 	{
 		if (gOnFoot)
 			DrawFirstPersonInfantryWeapon(u, dev, viewpoint);
-		else if (gDrivenClass != CE_PLAYUNIT_CLASS_AIRCRAFT)
+		else if (gDrivenClass == CE_PLAYUNIT_CLASS_AIRCRAFT)
+			DrawFirstPersonAircraftCockpit(u, dev, viewpoint);
+		else
 			DrawFirstPersonVehicleBarrel(u, dev, viewpoint);
 	}
 }

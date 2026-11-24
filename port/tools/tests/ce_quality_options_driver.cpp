@@ -60,6 +60,7 @@ struct CMenuMenuItem : CMenuItem {
     virtual void ReceiveButtonAction(CController *,int,float);
     void Refresh();
     void Commit() override;
+    void SetSelection(int n) { mSelection = n; }
     bool HasPendingChange();
     void FixtureRenderSync();
     void FixtureMouseSelect(int);
@@ -75,6 +76,8 @@ void CMenuMenuItem::FixtureMouseSelect(int i)
     float lx=0,ly=0,cx2=1,cy2=1;
 #include "native_quality_mouse.inc"
 }
+struct CeDetailPreset;
+void PortCeGraphicsRegisterDetailPresetStager(void (*)(const CeDetailPreset &)) {}
 #include QUALITY_SOURCE
 static_assert(TerrainPending == CE_TERRAIN_DETAIL_PENDING && TerrainActive == CE_TERRAIN_DETAIL_ACTIVE &&
               TerrainResourceFallback == CE_TERRAIN_DETAIL_RESOURCE_FALLBACK, "menu and policy agree on terrain status");
@@ -253,10 +256,10 @@ int main(int argc,char **argv)
             const int expectUnit = isFresh ? 1 : 0;
             const int expectAnisoChoice = isFresh ? 3 : 1;
             const unsigned expectAnisoLevel = isFresh ? 16u : 4u;
-            const int expectWaterChoice = isFresh ? 2 : 0;
-            const unsigned expectWaterRes = isFresh ? 1024u : 256u;
-            const int expectShadowChoice = isFresh ? 2 : 0;
-            const unsigned expectShadowRes = isFresh ? 256u : 64u;
+            const int expectWaterChoice = isFresh ? 1 : 0;
+            const unsigned expectWaterRes = isFresh ? 512u : 256u;
+            const int expectShadowChoice = isFresh ? 1 : 0;
+            const unsigned expectShadowRes = isFresh ? 128u : 64u;
             check(item(list,0)->GetValue()==expectUnit&&item(list,1)->GetValue()==0&&item(list,2)->GetValue()==0&&
                   item(list,3)->GetValue()==expectAnisoChoice&&item(list,4)->GetValue()==expectWaterChoice&&
                   item(list,5)->GetValue()==expectShadowChoice,"defaults match fresh vs saved-off profile");

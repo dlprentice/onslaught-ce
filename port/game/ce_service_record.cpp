@@ -460,14 +460,14 @@ struct SRecordRow
 };
 
 const SRecordRow	kRecordRows[CE_RECORD_ROWS] = {
-	{L"Career:", L"As it was last saved."},
-	{L"Missions Complete:", L"Missions you have won, of all the missions in the campaign."},
-	{L"Goodies Found:", L"Goodies you have earned, of all the Goodies on the Goodies page."},
-	{L"Aircraft Destroyed:", L"Enemy aircraft you have destroyed."},
-	{L"Vehicles Destroyed:", L"Enemy vehicles you have destroyed."},
-	{L"Emplacements Destroyed:", L"Enemy gun emplacements you have destroyed."},
-	{L"Infantry Defeated:", L"Enemy infantry you have defeated."},
-	{L"Mechs Destroyed:", L"Enemy mechs you have destroyed."},
+	{L"Career: ", L"As it was last saved."},
+	{L"Missions Complete: ", L"Missions you have won, of all the missions in the campaign."},
+	{L"Goodies Found: ", L"Goodies you have earned, of all the Goodies on the Goodies page."},
+	{L"Aircraft Destroyed: ", L"Enemy aircraft you have destroyed."},
+	{L"Vehicles Destroyed: ", L"Enemy vehicles you have destroyed."},
+	{L"Emplacements Destroyed: ", L"Enemy gun emplacements you have destroyed."},
+	{L"Infantry Defeated: ", L"Enemy infantry you have defeated."},
+	{L"Mechs Destroyed: ", L"Enemy mechs you have destroyed."},
 };
 }
 

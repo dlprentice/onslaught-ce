@@ -1208,6 +1208,7 @@ public:
                 if (!IsLocalHost() && mRoomZone == ROOM_ZONE_HOST) {
                     mRoomZone = ROOM_ZONE_PLAYER;
                 }
+                NormalizeRoomFocus();
             } else if (mPage == CE_ONLINE_PAGE_ROOM) {
                 mRoom = CeOnlineRoomView();
                 mChatComposing = false;
@@ -1415,12 +1416,41 @@ public:
     int PasswordModalFocus() const { return mPasswordModalFocus; }
     void SetPasswordModalFocus(int idx) { mPasswordModalFocus = (idx != 0) ? 1 : 0; }
 
+    bool BrowserPagerButtonEnabled(int idx) const {
+        if (idx == BROWSER_PG_PREV) return BrowserCurrentPage() > 1;
+        if (idx == BROWSER_PG_NEXT) return BrowserCurrentPage() < BrowserPageCount();
+        if (idx == BROWSER_PG_JOIN) return !FilteredRooms().empty();
+        return false;
+    }
+
+    bool BrowserHasEnabledPagerButton() const {
+        for (int i = 0; i < BROWSER_PG_COUNT; ++i) {
+            if (BrowserPagerButtonEnabled(i)) return true;
+        }
+        return false;
+    }
+
+    void NormalizeBrowserPagerFocus() {
+        if (BrowserPagerButtonEnabled(mBrowserPagerFocus)) return;
+        if (BrowserPagerButtonEnabled(BROWSER_PG_JOIN)) {
+            mBrowserPagerFocus = BROWSER_PG_JOIN;
+            return;
+        }
+        for (int i = 0; i < BROWSER_PG_COUNT; ++i) {
+            if (BrowserPagerButtonEnabled(i)) {
+                mBrowserPagerFocus = i;
+                return;
+            }
+        }
+    }
+
     void BrowserNavMove(int delta) {
         if (mPasswordPromptOpen) {
             mPasswordModalFocus = (mPasswordModalFocus == 0) ? 1 : 0;
             return;
         }
         const int n = static_cast<int>(FilteredRooms().size());
+        const bool hasPager = BrowserHasEnabledPagerButton();
         if (delta < 0) {
             if (mBrowserZone == BROWSER_ZONE_LIST) {
                 if (n > 0 && mBrowserSelected > 0) BrowserMoveSelection(-1);
@@ -1428,7 +1458,7 @@ public:
             } else if (mBrowserZone == BROWSER_ZONE_TOOLBAR) {
                 mBrowserZone = BROWSER_ZONE_FOOTER;
             } else if (mBrowserZone == BROWSER_ZONE_FOOTER) {
-                mBrowserZone = (n > 0) ? BROWSER_ZONE_PAGER : BROWSER_ZONE_TOOLBAR;
+                mBrowserZone = hasPager ? BROWSER_ZONE_PAGER : (n > 0 ? BROWSER_ZONE_LIST : BROWSER_ZONE_TOOLBAR);
             } else {
                 mBrowserZone = (n > 0) ? BROWSER_ZONE_LIST : BROWSER_ZONE_TOOLBAR;
             }
@@ -1437,12 +1467,15 @@ public:
                 mBrowserZone = (n > 0) ? BROWSER_ZONE_LIST : BROWSER_ZONE_FOOTER;
             } else if (mBrowserZone == BROWSER_ZONE_LIST) {
                 if (n > 0 && mBrowserSelected + 1 < n) BrowserMoveSelection(1);
-                else mBrowserZone = (n > 0) ? BROWSER_ZONE_PAGER : BROWSER_ZONE_FOOTER;
+                else mBrowserZone = hasPager ? BROWSER_ZONE_PAGER : BROWSER_ZONE_FOOTER;
             } else if (mBrowserZone == BROWSER_ZONE_PAGER) {
                 mBrowserZone = BROWSER_ZONE_FOOTER;
             } else {
                 mBrowserZone = BROWSER_ZONE_TOOLBAR;
             }
+        }
+        if (mBrowserZone == BROWSER_ZONE_PAGER) {
+            NormalizeBrowserPagerFocus();
         }
     }
 
@@ -1458,43 +1491,56 @@ public:
             if (delta < 0) BrowserPrevPage();
             else BrowserNextPage();
         } else if (mBrowserZone == BROWSER_ZONE_PAGER) {
-            mBrowserPagerFocus = (mBrowserPagerFocus + step + BROWSER_PG_COUNT) % BROWSER_PG_COUNT;
+            for (int tries = 1; tries <= BROWSER_PG_COUNT; ++tries) {
+                const int cand = (mBrowserPagerFocus + step * tries + BROWSER_PG_COUNT * 4) % BROWSER_PG_COUNT;
+                if (BrowserPagerButtonEnabled(cand)) {
+                    mBrowserPagerFocus = cand;
+                    return;
+                }
+            }
+            NormalizeBrowserPagerFocus();
         } else if (mBrowserZone == BROWSER_ZONE_FOOTER) {
             mBrowserFooterFocus = (mBrowserFooterFocus + step + BROWSER_FT_COUNT) % BROWSER_FT_COUNT;
         }
     }
 
-    void BrowserNavActivate() {
+    bool BrowserNavActivate() {
         if (mPasswordPromptOpen) {
-            if (mPasswordModalFocus == 1) BrowserPasswordCancel();
-            else BrowserPasswordSubmit();
-            return;
+            if (mPasswordModalFocus == 1) {
+                BrowserPasswordCancel();
+                return true;
+            }
+            return BrowserPasswordSubmit();
         }
         if (mBrowserZone == BROWSER_ZONE_TOOLBAR) {
             switch (mBrowserToolbarFocus) {
-            case BROWSER_TB_FILTER:    BrowserToggleCompatibleFilter(); break;
-            case BROWSER_TB_REFRESH:   BrowserRefresh(); break;
-            case BROWSER_TB_CREATE:    EnterCreate(CE_ONLINE_PAGE_BROWSER); break;
-            case BROWSER_TB_JOIN_CODE: EnterJoinCode(CE_ONLINE_PAGE_BROWSER); break;
-            default: break;
+            case BROWSER_TB_FILTER:    BrowserToggleCompatibleFilter(); return true;
+            case BROWSER_TB_REFRESH:   BrowserRefresh(); return true;
+            case BROWSER_TB_CREATE:    EnterCreate(CE_ONLINE_PAGE_BROWSER); return true;
+            case BROWSER_TB_JOIN_CODE: EnterJoinCode(CE_ONLINE_PAGE_BROWSER); return true;
+            default: return false;
             }
         } else if (mBrowserZone == BROWSER_ZONE_LIST) {
+            if (FilteredRooms().empty()) return false;
             BrowserJoinSelected();
+            return true;
         } else if (mBrowserZone == BROWSER_ZONE_PAGER) {
+            if (!BrowserPagerButtonEnabled(mBrowserPagerFocus)) return false;
             switch (mBrowserPagerFocus) {
-            case BROWSER_PG_PREV: BrowserPrevPage(); break;
-            case BROWSER_PG_NEXT: BrowserNextPage(); break;
-            case BROWSER_PG_JOIN: BrowserJoinSelected(); break;
-            default: break;
+            case BROWSER_PG_PREV: BrowserPrevPage(); NormalizeBrowserPagerFocus(); return true;
+            case BROWSER_PG_NEXT: BrowserNextPage(); NormalizeBrowserPagerFocus(); return true;
+            case BROWSER_PG_JOIN: BrowserJoinSelected(); return true;
+            default: return false;
             }
         } else if (mBrowserZone == BROWSER_ZONE_FOOTER) {
             switch (mBrowserFooterFocus) {
-            case BROWSER_FT_PROFILE: EnterProfile(CE_ONLINE_PAGE_BROWSER); break;
-            case BROWSER_FT_LAN:     TriggerDirectLan(); break;
-            case BROWSER_FT_BACK:    NavigateBack(); break;
-            default: break;
+            case BROWSER_FT_PROFILE: EnterProfile(CE_ONLINE_PAGE_BROWSER); return true;
+            case BROWSER_FT_LAN:     TriggerDirectLan(); return true;
+            case BROWSER_FT_BACK:    NavigateBack(); return true;
+            default: return false;
             }
         }
+        return false;
     }
 
     bool BrowserJoinSelected() {
@@ -1923,19 +1969,88 @@ public:
         mRoomHostFocus = (idx % ROOM_HS_COUNT + ROOM_HS_COUNT) % ROOM_HS_COUNT;
     }
 
+    bool RoomHeaderButtonEnabled(int idx) const {
+        if (idx == ROOM_HD_COPY) return !mRoom.code.empty();
+        if (idx == ROOM_HD_PREV) return RosterCurrentPage() > 1;
+        if (idx == ROOM_HD_NEXT) return RosterCurrentPage() < RosterPageCount();
+        return false;
+    }
+
+    bool RoomHasEnabledHeaderButton() const {
+        for (int i = 0; i < ROOM_HD_COUNT; ++i) {
+            if (RoomHeaderButtonEnabled(i)) return true;
+        }
+        return false;
+    }
+
+    bool RoomPlayerButtonEnabled(int idx) const {
+        const CeOnlineSeatView *me = LocalSeat();
+        const CeOnlineSeatView *sel = SelectedSeat();
+        switch (idx) {
+        case ROOM_PL_READY: return me != NULL;
+        case ROOM_PL_SIDE:  return me != NULL && EffectiveRoomMode() == "versus_2v2";
+        case ROOM_PL_BE:    return me != NULL;
+        case ROOM_PL_MUTE:  return sel != NULL && sel->kind == CE_ONLINE_SEAT_HUMAN && sel->seat != mRoom.localSeat;
+        case ROOM_PL_LEAVE: return true;
+        default:            return false;
+        }
+    }
+
+    bool RoomHostButtonEnabled(int idx) const {
+        if (!IsLocalHost()) return false;
+        const CeOnlineSeatView *sel = SelectedSeat();
+        switch (idx) {
+        case ROOM_HS_MAP:   return true;
+        case ROOM_HS_MODE:  return RoomHostCanCycleMode();
+        case ROOM_HS_SLOT:  return sel != NULL && sel->kind != CE_ONLINE_SEAT_HUMAN;
+        case ROOM_HS_KICK:  return sel != NULL && sel->kind == CE_ONLINE_SEAT_HUMAN && sel->seat != mRoom.hostSeat;
+        case ROOM_HS_START: return true;
+        default:            return false;
+        }
+    }
+
+    void NormalizeRoomFocus() {
+        if (mRoomZone == ROOM_ZONE_HOST && !IsLocalHost()) {
+            mRoomZone = ROOM_ZONE_PLAYER;
+        }
+        if (mRoomZone == ROOM_ZONE_HEADER && !RoomHeaderButtonEnabled(mRoomHeaderFocus)) {
+            for (int i = 0; i < ROOM_HD_COUNT; ++i) {
+                if (RoomHeaderButtonEnabled(i)) {
+                    mRoomHeaderFocus = i;
+                    break;
+                }
+            }
+        } else if (mRoomZone == ROOM_ZONE_PLAYER && !RoomPlayerButtonEnabled(mRoomPlayerFocus)) {
+            for (int i = 0; i < ROOM_PL_COUNT; ++i) {
+                if (RoomPlayerButtonEnabled(i)) {
+                    mRoomPlayerFocus = i;
+                    break;
+                }
+            }
+        } else if (mRoomZone == ROOM_ZONE_HOST && !RoomHostButtonEnabled(mRoomHostFocus)) {
+            for (int i = 0; i < ROOM_HS_COUNT; ++i) {
+                if (RoomHostButtonEnabled(i)) {
+                    mRoomHostFocus = i;
+                    break;
+                }
+            }
+        }
+    }
+
     void RoomNavMove(int delta) {
         if (mChatComposing) return;
         const int seats = static_cast<int>(mRoom.seats.size());
+        const bool hasHeader = RoomHasEnabledHeaderButton();
         if (delta < 0) {
             if (mRoomZone == ROOM_ZONE_CHAT) {
                 mRoomZone = IsLocalHost() ? ROOM_ZONE_HOST : ROOM_ZONE_PLAYER;
             } else if (mRoomZone == ROOM_ZONE_HOST) {
                 mRoomZone = ROOM_ZONE_PLAYER;
             } else if (mRoomZone == ROOM_ZONE_PLAYER) {
-                mRoomZone = (seats > 0) ? ROOM_ZONE_ROSTER : ROOM_ZONE_HEADER;
+                mRoomZone = (seats > 0) ? ROOM_ZONE_ROSTER : (hasHeader ? ROOM_ZONE_HEADER : ROOM_ZONE_CHAT);
             } else if (mRoomZone == ROOM_ZONE_ROSTER) {
                 if (seats > 0 && mRosterSelected > 0) RosterMoveSelection(-1);
-                else mRoomZone = ROOM_ZONE_HEADER;
+                else mRoomZone = hasHeader ? ROOM_ZONE_HEADER : ROOM_ZONE_CHAT;
             } else {
                 mRoomZone = ROOM_ZONE_CHAT;
             }
@@ -1950,77 +2065,104 @@ public:
             } else if (mRoomZone == ROOM_ZONE_HOST) {
                 mRoomZone = ROOM_ZONE_CHAT;
             } else {
-                mRoomZone = ROOM_ZONE_HEADER;
+                mRoomZone = hasHeader ? ROOM_ZONE_HEADER : ((seats > 0) ? ROOM_ZONE_ROSTER : ROOM_ZONE_PLAYER);
             }
         }
+        NormalizeRoomFocus();
     }
 
     void RoomNavSide(int delta) {
         if (mChatComposing) return;
         const int step = (delta < 0) ? -1 : 1;
         if (mRoomZone == ROOM_ZONE_HEADER) {
-            if (RosterPageCount() > 1) {
-                mRoomHeaderFocus = (mRoomHeaderFocus + step + ROOM_HD_COUNT) % ROOM_HD_COUNT;
-            } else {
-                mRoomHeaderFocus = ROOM_HD_COPY;
+            for (int tries = 1; tries <= ROOM_HD_COUNT; ++tries) {
+                const int cand = (mRoomHeaderFocus + step * tries + ROOM_HD_COUNT * 4) % ROOM_HD_COUNT;
+                if (RoomHeaderButtonEnabled(cand)) {
+                    mRoomHeaderFocus = cand;
+                    return;
+                }
             }
+            NormalizeRoomFocus();
         } else if (mRoomZone == ROOM_ZONE_ROSTER) {
             if (delta < 0) RosterPrevPage();
             else RosterNextPage();
         } else if (mRoomZone == ROOM_ZONE_PLAYER) {
-            mRoomPlayerFocus = (mRoomPlayerFocus + step + ROOM_PL_COUNT) % ROOM_PL_COUNT;
+            for (int tries = 1; tries <= ROOM_PL_COUNT; ++tries) {
+                const int cand = (mRoomPlayerFocus + step * tries + ROOM_PL_COUNT * 4) % ROOM_PL_COUNT;
+                if (RoomPlayerButtonEnabled(cand)) {
+                    mRoomPlayerFocus = cand;
+                    return;
+                }
+            }
+            NormalizeRoomFocus();
         } else if (mRoomZone == ROOM_ZONE_HOST && IsLocalHost()) {
-            mRoomHostFocus = (mRoomHostFocus + step + ROOM_HS_COUNT) % ROOM_HS_COUNT;
+            for (int tries = 1; tries <= ROOM_HS_COUNT; ++tries) {
+                const int cand = (mRoomHostFocus + step * tries + ROOM_HS_COUNT * 4) % ROOM_HS_COUNT;
+                if (RoomHostButtonEnabled(cand)) {
+                    mRoomHostFocus = cand;
+                    return;
+                }
+            }
+            NormalizeRoomFocus();
         }
     }
 
-    void RoomNavActivate() {
+    bool RoomNavActivate() {
         if (mChatComposing) {
-            RoomChatSubmit();
-            return;
+            return RoomChatSubmit();
         }
         if (mRoomZone == ROOM_ZONE_HEADER) {
+            if (!RoomHeaderButtonEnabled(mRoomHeaderFocus)) return false;
             switch (mRoomHeaderFocus) {
-            case ROOM_HD_COPY: RoomCopyCode(); break;
-            case ROOM_HD_PREV: RosterPrevPage(); break;
-            case ROOM_HD_NEXT: RosterNextPage(); break;
-            default: break;
+            case ROOM_HD_COPY: RoomCopyCode(); return true;
+            case ROOM_HD_PREV: RosterPrevPage(); NormalizeRoomFocus(); return true;
+            case ROOM_HD_NEXT: RosterNextPage(); NormalizeRoomFocus(); return true;
+            default: return false;
             }
         } else if (mRoomZone == ROOM_ZONE_ROSTER) {
             const CeOnlineSeatView *sel = SelectedSeat();
-            if (!sel) return;
+            if (!sel) return false;
             if (sel->seat == mRoom.localSeat) {
                 RoomToggleReady();
+                return true;
             } else if (sel->kind != CE_ONLINE_SEAT_HUMAN && IsLocalHost()) {
                 RoomHostCycleSelectedSeatKind();
+                return true;
             } else if (sel->kind == CE_ONLINE_SEAT_HUMAN) {
                 RoomToggleMuteSelected();
+                return true;
             }
+            return false;
         } else if (mRoomZone == ROOM_ZONE_PLAYER) {
+            if (!RoomPlayerButtonEnabled(mRoomPlayerFocus)) return false;
             switch (mRoomPlayerFocus) {
-            case ROOM_PL_READY: RoomToggleReady(); break;
-            case ROOM_PL_SIDE:  RoomCycleSide(1); break;
-            case ROOM_PL_BE:    RoomCycleBeConfig(1); break;
-            case ROOM_PL_MUTE:  RoomToggleMuteSelected(); break;
-            case ROOM_PL_LEAVE: RoomLeave(); break;
-            default: break;
+            case ROOM_PL_READY: RoomToggleReady(); return true;
+            case ROOM_PL_SIDE:  RoomCycleSide(1); return true;
+            case ROOM_PL_BE:    RoomCycleBeConfig(1); return true;
+            case ROOM_PL_MUTE:  RoomToggleMuteSelected(); return true;
+            case ROOM_PL_LEAVE: RoomLeave(); return true;
+            default: return false;
             }
         } else if (mRoomZone == ROOM_ZONE_HOST) {
             if (!IsLocalHost()) {
                 mRoomZone = ROOM_ZONE_PLAYER;
-                return;
+                NormalizeRoomFocus();
+                return false;
             }
+            if (!RoomHostButtonEnabled(mRoomHostFocus)) return false;
             switch (mRoomHostFocus) {
-            case ROOM_HS_MAP:   RoomHostCycleMap(1); break;
-            case ROOM_HS_MODE:  RoomHostCycleMode(1); break;
-            case ROOM_HS_SLOT:  RoomHostCycleSelectedSeatKind(); break;
-            case ROOM_HS_KICK:  RoomHostKickSelected(); break;
-            case ROOM_HS_START: RoomHostStartMatch(); break;
-            default: break;
+            case ROOM_HS_MAP:   RoomHostCycleMap(1); NormalizeRoomFocus(); return true;
+            case ROOM_HS_MODE:  RoomHostCycleMode(1); NormalizeRoomFocus(); return true;
+            case ROOM_HS_SLOT:  RoomHostCycleSelectedSeatKind(); NormalizeRoomFocus(); return true;
+            case ROOM_HS_KICK:  RoomHostKickSelected(); NormalizeRoomFocus(); return true;
+            case ROOM_HS_START: RoomHostStartMatch(); return true;
+            default: return false;
             }
         } else if (mRoomZone == ROOM_ZONE_CHAT) {
             RoomOpenChat();
+            return true;
         }
+        return false;
     }
 
     const std::vector<std::string> &AvailableBeConfigs() const { return mAvailableBeConfigs; }

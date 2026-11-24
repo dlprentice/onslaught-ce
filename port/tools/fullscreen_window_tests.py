@@ -28,6 +28,7 @@ LAYER_SOURCE = Path("port/platform/common/ce.cpp")
 LAYER_ENV = ("BEA_PORT_CE_LAYER", "BEA_PORT_CLOCK", "BEA_PORT_TAPE", "BEA_PORT_PROBES", "BEA_PORT_RECORD")
 
 HARNESS = r"""
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -47,6 +48,8 @@ struct D3DPRESENT_PARAMETERS
 struct SDL_Window
 {
     int width = 640, height = 480, pending_width = 0, pending_height = 0;
+    int last_set_width = 0, last_set_height = 0;
+    float density = 1.f;
     unsigned resize_calls = 0, sync_calls = 0, mode_calls = 0, fullscreen_calls = 0;
     bool desktop_mode = false, fullscreen_enabled = false;
 };
@@ -63,13 +66,23 @@ SDL_Window *PortSdlWindow(HWND handle)
     for (unsigned i = 0; i < 2; ++i) if (handle == handles[i]) return &windows[i];
     return nullptr;
 }
+float SDL_GetWindowPixelDensity(SDL_Window *w)
+{
+    return w ? w->density : 1.f;
+}
 bool SDL_GetWindowSizeInPixels(SDL_Window *w, int *width, int *height)
 {
     *width = w->width; *height = w->height; return true;
 }
 bool SDL_SetWindowSize(SDL_Window *w, int width, int height)
 {
-    ++w->resize_calls; w->pending_width = width; w->pending_height = height; return true;
+    ++w->resize_calls;
+    w->last_set_width = width;
+    w->last_set_height = height;
+    float d = (w->density > 0.f && std::isfinite(w->density)) ? w->density : 1.f;
+    w->pending_width = (int)(width * (double)d + 0.5);
+    w->pending_height = (int)(height * (double)d + 0.5);
+    return true;
 }
 bool SDL_SyncWindow(SDL_Window *w)
 {
@@ -132,6 +145,7 @@ int main(int argc, char **argv)
     else if (!std::strcmp(test, "exclusive-opt-out")) exclusive = "1";
     else if (!std::strcmp(test, "no-ce-layer")) {}
     else if (!std::strcmp(test, "windowed-no-ce-layer")) pp.Windowed = TRUE;
+    else if (!std::strcmp(test, "hidpi")) { pp.BackBufferWidth = 1920; pp.BackBufferHeight = 1200; windows[1].density = 1.5f; }
     else return 2;
     if (!std::strncmp(test, "transition-", 11))
     {
@@ -166,9 +180,10 @@ int main(int argc, char **argv)
     for (unsigned i = 0; i < 2; ++i)
     {
         const SDL_Window &w = windows[i];
-        std::printf("%s{\"size\":[%d,%d],\"pending\":[%d,%d],\"resize_calls\":%u,\"sync_calls\":%u,"
+        std::printf("%s{\"size\":[%d,%d],\"last_set\":[%d,%d],\"pending\":[%d,%d],\"resize_calls\":%u,\"sync_calls\":%u,"
                     "\"mode_calls\":%u,\"fullscreen_calls\":%u,\"desktop_mode\":%s,\"fullscreen_enabled\":%s}",
-                    i ? "," : "", w.width, w.height, w.pending_width, w.pending_height, w.resize_calls,
+                    i ? "," : "", w.width, w.height, w.last_set_width, w.last_set_height,
+                    w.pending_width, w.pending_height, w.resize_calls,
                     w.sync_calls, w.mode_calls, w.fullscreen_calls, w.desktop_mode ? "true" : "false",
                     w.fullscreen_enabled ? "true" : "false");
     }
@@ -221,11 +236,11 @@ def check_result(platform, case, actual, private=False, layer_off=False):
     if case in ("height-only", "same-size"):
         sizes[1][0] = 1280
     target = 0 if case == "focus-fallback" else 1
-    resize = platform == "windows" and case in ("device-preferred", "focus-fallback", "width-only", "height-only")
+    resize = platform == "windows" and case in ("device-preferred", "focus-fallback", "width-only", "height-only", "hidpi")
     convert = platform == "linux" and case in ("device-preferred", "focus-fallback", "unowned-device")
     owned_convert = convert and case != "unowned-device"
     if resize:
-        sizes[target] = [1280, 800]
+        sizes[target] = [1920, 1200] if case == "hidpi" else [1280, 800]
     box = [0, 0, 0] if case == "windowed" else [31, 37, 0]
     if convert:
         box = [1280, 800, target if owned_convert else -1]
@@ -235,7 +250,7 @@ def check_result(platform, case, actual, private=False, layer_off=False):
         errors.append(f"desktop-fullscreen bookkeeping: expected {box}, got {actual.get('box')}")
     # Linux hides the cursor in its desktop-fullscreen conversion as before. Windows hides it in a fullscreen mode it prepared a native window for, in the CE layer only (retail's
     # WM_SETCURSOR answer), and both show it again when the mode is windowed (CE layer only).
-    native_window = platform == "windows" and case in ("device-preferred", "focus-fallback", "width-only", "height-only", "same-size", "zero-width", "zero-height")
+    native_window = platform == "windows" and case in ("device-preferred", "focus-fallback", "width-only", "height-only", "same-size", "zero-width", "zero-height", "hidpi")
     hide_expected = owned_convert if platform == "linux" else (native_window and not ce_off)
     show_expected = case == "windowed" and not ce_off and not unowned_windowed
     if (actual.get("hide_calls", 0) > 0) != hide_expected:
@@ -248,6 +263,8 @@ def check_result(platform, case, actual, private=False, layer_off=False):
     for index, window in enumerate(windows):
         if window.get("size") != sizes[index] or window.get("pending") != [0, 0]:
             errors.append(f"window {index}: expected completed size {sizes[index]}, got {window}")
+        if case == "hidpi" and resize and index == target and window.get("last_set") != [1280, 800]:
+            errors.append(f"window {index}: expected logical HiDPI set size [1280, 800], got {window.get('last_set')}")
         active_resize = resize and index == target
         active_convert = owned_convert and index == target
         if window.get("desktop_mode") != active_convert or window.get("fullscreen_enabled") != active_convert:
@@ -305,7 +322,7 @@ def main():
         driver.write_text(HARNESS.replace("@FUNCTION@", function).replace("@CE_LAYER@", layer))
         receipt["driver_sha256"] = digest(driver.read_bytes())
         cases = {
-            "windows": ("device-preferred", "focus-fallback", "width-only", "height-only", "same-size",
+            "windows": ("device-preferred", "focus-fallback", "width-only", "height-only", "same-size", "hidpi",
                         "null-parameters", "windowed", "zero-width", "zero-height", "unowned-device", "unowned-focus",
                         "no-ce-layer", "windowed-no-ce-layer", "windowed-unowned-device", "windowed-unowned-focus"),
             "linux": ("device-preferred", "focus-fallback", "null-parameters", "windowed", "offscreen",

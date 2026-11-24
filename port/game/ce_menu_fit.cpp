@@ -141,10 +141,19 @@ void PortCeListHover(int entry)
 }
 
 // Left margin for a row's label in RenderList (patch 0212): original 5 units outside the front end's options pages,
-// kCeLabelLeft inside them so long labels (e.g. "Full-screen anti-aliasing level:") stay clear of the left metal arc.
+// kCeLabelLeft at the top/bottom of options pages, relaxing along the curved left metal arc toward 58 units around y 290.
 float PortCeLabelLeft(int page)
 {
     return (PortCeQualityOptionsAvailable() && OptionsPage(page)) ? kCeLabelLeft : 5.f;
+}
+
+float PortCeLabelLeftAt(int page, float y)
+{
+    if (!PortCeQualityOptionsAvailable() || !OptionsPage(page)) return 5.f;
+    const float dy = y - 290.f;
+    float t = (dy * dy) / (150.f * 150.f);
+    if (t > 1.f) t = 1.f;
+    return 58.f + (kCeLabelLeft - 58.f) * t;
 }
 
 // Horizontal gap after a row's colon in RenderList (patch 0212): original 2 units in faithful runs, kCeValueGap in CE menus.

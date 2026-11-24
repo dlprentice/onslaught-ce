@@ -133,7 +133,7 @@ ae11488f0bab434fd2991200551e05fdcfad66c0494a86df7565d476469dd6bb  port/patches/0
 14558f2260d5bb1dcd8226b7fc655592c188eb33d4e2869b9e0de3f0d506911b  port/patches/0209-ce-world-view-snapshot.patch
 8b9420837604a2a88e7414c89f6778dfbe0cf3fcff13aecd8043b595a418d50b  port/patches/0210-ce-terrain-detail-distance.patch
 46c26a8568ca0600cb59e43049786388138eb249f33b806b9da86ec7e4f57cfc  port/patches/0211-ce-video-quality.patch
-e4c2742f82c7258227a749cb12e3b52cc0c43c77924bc2eac45e13f035cfb654  port/patches/0212-ce-menu-value-fit.patch
+f35db5ce0f9917ef7f05ff046c07476e7ca4e48d2ca4d0a28d23274a2975f689  port/patches/0212-ce-menu-value-fit.patch
 10971a6ee49978126cb4b8f9f9bcd3ab39daf09171d3cfaa9c9c688299e33122  port/patches/0213-ce-detail-level.patch
 0ad5af6c384e736879c0bc63278bb5773bcd9d96d00dfb34368774c360dc45a7  port/patches/0214-ce-graphics-defaults-antialiasing.patch
 447130f7301d5ba3633ba078047baa25480055b0bad31f5d6e7469efdf2a64a6  port/patches/0215-ce-video-options-row-pitch.patch
@@ -241,6 +241,7 @@ dfc124b8be5f47542983807c85f28275460376acd8dfc7a5a15ce530a26c272b  port/patches/0
 f48ae570227798372795b1d0a7ae88f1c9ef144ce1e8d2ff0f1e2dce0ba00481  port/patches/0379-ce-sanctuary-shield.patch
 734885a48c6292bdfb7d717077e648a15eb5d2a77cfbf301b375e50a86c8b664  port/patches/0381-ce-perf-surf-museum-fixes.patch
 e741fbe841893f616a604913deeec0e08476282e0ffb893e8d449b686219e48d  port/patches/0382-ce-modes-ux-fixes.patch
+4875a27d4bd960265949d22dc2ac7152394c21de16d983ffa09740cf018519a4  port/patches/0383-ce-menus-controls-fixes.patch
 4aa568fcc5e7a6c2860707343c149f1e212ee107bfb2deb20ba017a078df3a1b  src/AirGuide.cpp
 c8e30771104ab9272b261ab34398cd608758182b5ba505f40c718e7dbf3e3809  src/AirGuide.h
 366b345a764c7d9c42f6a4ce1b8758b99ab20923f5f1de534d8eb900d04e08c5  src/AirUnit.cpp

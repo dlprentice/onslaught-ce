@@ -185,6 +185,7 @@ class WorkerdHarness:
         daily_turn_limit: int = 200,
         monthly_turn_limit: int = 2000,
         heartbeat_timeout_ms: int = 30000,
+        starting_timeout_ms: int | None = None,
         match_timeout_ms: int = 7200000,
         auth_ip_limit: int = 200,
         auth_pubkey_limit: int = 100,
@@ -208,6 +209,7 @@ class WorkerdHarness:
         self.daily_turn_limit = daily_turn_limit
         self.monthly_turn_limit = monthly_turn_limit
         self.heartbeat_timeout_ms = heartbeat_timeout_ms
+        self.starting_timeout_ms = starting_timeout_ms
         self.match_timeout_ms = match_timeout_ms
         self.auth_ip_limit = auth_ip_limit
         self.auth_pubkey_limit = auth_pubkey_limit
@@ -242,6 +244,8 @@ class WorkerdHarness:
             "CE_AUTH_PUBKEY_LIMIT": str(self.auth_pubkey_limit),
             "CE_ROOM_CREATE_LIMIT": str(self.room_create_limit),
         }
+        if self.starting_timeout_ms is not None:
+            public_vars["CE_STARTING_TIMEOUT_MS"] = str(self.starting_timeout_ms)
         issuer_vars = {
             "CE_ENABLED": enabled_str,
             "CE_ISSUER_PERMIT_KEY": PERMIT_KEY,
@@ -1607,6 +1611,102 @@ class WorkerdIntegrationTests(unittest.TestCase):
         self.assertTrue(smoke_out["ok"])
         self.assertTrue(smoke_out["checked_turn"])
         self.assertGreaterEqual(smoke_out["turn_servers"], 2)
+
+    def test_starting_ttl_split_and_odd_seat_ai_team_balance(self):
+        # Verify 5-minute default constant for 'starting' vs 2-hour default for 'in_match' in worker.mjs.
+        worker_src = (SERVICE_DIR / "worker.mjs").read_text(encoding="utf-8")
+        self.assertIn("const DEFAULT_STARTING_TIMEOUT_MS = 5 * 60 * 1000;", worker_src)
+        self.assertIn("const DEFAULT_MATCH_TIMEOUT_MS = 2 * 60 * 60 * 1000;", worker_src)
+
+        # 1. Split TTL: stalled 'starting' room is pruned at starting_timeout_ms while 'in_match' room survives!
+        srv = self.make_server(heartbeat_timeout_ms=700, starting_timeout_ms=1400, match_timeout_ms=8000)
+        _, h_start = srv.auth_player("StartStallHost")
+        _, g_start = srv.auth_player("StartStallGuest")
+        _, h_live = srv.auth_player("LiveMatchHost")
+        _, g_live = srv.auth_player("LiveMatchGuest")
+
+        r_start = srv.api(
+            "POST", "/ce-lobby/v1/lobbies", token=h_start["session_token"],
+            body={"name": "Stalled Handshake", "mode": "coop_defence", "map": 856, "max_seats": 2},
+        )[2]
+        s_rid = r_start["room_id"]
+        self.assertEqual(200, srv.api("POST", f"/ce-lobby/v1/rooms/{s_rid}/join", token=g_start["session_token"], body={})[0])
+        self.assertEqual(200, srv.api("POST", f"/ce-lobby/v1/rooms/{s_rid}/update", token=g_start["session_token"], body={"ready": True})[0])
+        self.assertEqual(200, srv.api("POST", f"/ce-lobby/v1/rooms/{s_rid}/start", token=h_start["session_token"], body={})[0])
+
+        r_live = srv.api(
+            "POST", "/ce-lobby/v1/lobbies", token=h_live["session_token"],
+            body={"name": "Running Match", "mode": "coop_defence", "map": 856, "max_seats": 2},
+        )[2]
+        l_rid = r_live["room_id"]
+        self.assertEqual(200, srv.api("POST", f"/ce-lobby/v1/rooms/{l_rid}/join", token=g_live["session_token"], body={})[0])
+        self.assertEqual(200, srv.api("POST", f"/ce-lobby/v1/rooms/{l_rid}/update", token=g_live["session_token"], body={"ready": True})[0])
+        self.assertEqual(200, srv.api("POST", f"/ce-lobby/v1/rooms/{l_rid}/start", token=h_live["session_token"], body={})[0])
+        self.assertEqual(200, srv.api("POST", f"/ce-lobby/v1/rooms/{l_rid}/update", token=h_live["session_token"], body={"state": "in_match"})[0])
+
+        # Past lobby heartbeat (700ms) but before starting TTL (1400ms): both survive.
+        time.sleep(0.85)
+        ids_mid = [r["room_id"] for r in srv.api("GET", "/ce-lobby/v1/lobbies", token=h_live["session_token"])[2]["rooms"]]
+        self.assertIn(s_rid, ids_mid)
+        self.assertIn(l_rid, ids_mid)
+
+        # Past starting TTL (1400ms) but well below match TTL (8000ms): stalled 'starting' room is pruned, 'in_match' stays!
+        time.sleep(0.85)
+        ids_after = [r["room_id"] for r in srv.api("GET", "/ce-lobby/v1/lobbies", token=h_live["session_token"])[2]["rooms"]]
+        self.assertNotIn(s_rid, ids_after)
+        self.assertIn(l_rid, ids_after)
+
+        # 2. Balanced human + AI seat assignment across joinRoom / updateRoom / odd active seats (1 closed seat, 3 active).
+        _, p1 = srv.auth_player("BalHost")
+        _, p2 = srv.auth_player("BalGuest1")
+        _, p3 = srv.auth_player("BalGuest2")
+        code, _, vs4 = srv.api(
+            "POST", "/ce-lobby/v1/lobbies", token=p1["session_token"],
+            body={"name": "VersusBalance", "mode": "versus_2v2", "map": 851, "max_seats": 4, "ai_fill": True},
+        )
+        self.assertEqual(200, code)
+        brid = vs4["room_id"]
+
+        # Close seat 3 -> odd 3-pilot room (1 human + 2 AI + 1 closed); closed seat must stay closed and teams stay 2v1!
+        code, _, odd_setup = srv.api(
+            "POST", f"/ce-lobby/v1/rooms/{brid}/update", token=p1["session_token"],
+            body={"set_seat_kind": {"seat": 3, "kind": "closed"}},
+        )
+        self.assertEqual(200, code)
+        closed_seat3_team = odd_setup["seats"][3]["team"]
+        self.assertEqual("closed", odd_setup["seats"][3]["kind"])
+        active_teams = [s["team"] for s in odd_setup["seats"] if s["kind"] != "closed"]
+        self.assertIn((active_teams.count(0), active_teams.count(1)), {(2, 1), (1, 2)})
+
+        # Guest 1 joins odd 3-pilot room -> humans land on opposite sides (0 vs 1), AI fills remaining slot, closed untouched!
+        code, _, odd_joined = srv.api("POST", f"/ce-lobby/v1/rooms/{brid}/join", token=p2["session_token"], body={})
+        self.assertEqual(200, code)
+        self.assertEqual("closed", odd_joined["seats"][3]["kind"])
+        self.assertEqual(closed_seat3_team, odd_joined["seats"][3]["team"])
+        human_teams = [s["team"] for s in odd_joined["seats"] if s["kind"] == "human"]
+        self.assertEqual({0, 1}, set(human_teams))
+        active_teams2 = [s["team"] for s in odd_joined["seats"] if s["kind"] != "closed"]
+        self.assertIn((active_teams2.count(0), active_teams2.count(1)), {(2, 1), (1, 2)})
+
+        # Host switches onto Guest 1's side (both humans on team 1) -> AI automatically rebalances to team 0 (never 0v3)!
+        code, _, odd_swapped = srv.api("POST", f"/ce-lobby/v1/rooms/{brid}/update", token=p1["session_token"], body={"team": 1})
+        self.assertEqual(200, code)
+        self.assertEqual("closed", odd_swapped["seats"][3]["kind"])
+        self.assertEqual(closed_seat3_team, odd_swapped["seats"][3]["team"])
+        ai_seats = [s for s in odd_swapped["seats"] if s["kind"] == "ai"]
+        self.assertEqual(1, len(ai_seats))
+        self.assertEqual(0, ai_seats[0]["team"])
+
+        # Re-open seat 3 as AI (4 active seats) and have Guest 2 join -> 2v2 balanced across 3 humans + 1 AI!
+        self.assertEqual(200, srv.api(
+            "POST", f"/ce-lobby/v1/rooms/{brid}/update", token=p1["session_token"],
+            body={"set_seat_kind": {"seat": 3, "kind": "ai"}},
+        )[0])
+        code, _, full_bal = srv.api("POST", f"/ce-lobby/v1/rooms/{brid}/join", token=p3["session_token"], body={})
+        self.assertEqual(200, code)
+        all_teams = [s["team"] for s in full_bal["seats"]]
+        self.assertEqual(2, all_teams.count(0))
+        self.assertEqual(2, all_teams.count(1))
 
 
 def main() -> int:

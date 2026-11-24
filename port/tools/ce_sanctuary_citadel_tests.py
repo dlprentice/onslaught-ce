@@ -376,7 +376,86 @@ int main() {
              "DomePerimeterGroundZ shifts cleanly with custom floorZ");
     }
 
-    std::printf("ce_sanctuary_citadel_tests: all geometry, shield, beam, ripple, cinema, pedestal & 360-deg dome seal checks passed\n");
+    // 11. Interior SolidBox walkability collision (piers, Cinema walls, Archive Pedestal,
+    //     alcoves, pools, balustrades) with doorway/ramp/pad clearance & Jet flyover.
+    {
+        const SolidLayout solids = MakeInteriorSolidLayout();
+        Need(solids.count >= 40u && solids.count <= kMaxSolidBoxes,
+             "interior solid layout populates all citadel structures within fixed capacity");
+
+        const float walkZ = kFloorZ - 1.9f; // ground Walker with COfGHeight = 1.9 m
+        const float r = kBattleEngineCollisionRadius;
+
+        // Key walkable zones remain 100% clear for Battle Engine walking.
+        Need(IsInteriorPointClear(solids, kCenterX, 366.0f, walkZ, kFloorZ, r, kBattleEngineCollisionHeight, 1.9f),
+             "South Overlook Launch Pad is clear");
+        Need(IsInteriorPointClear(solids, 128.0f, 354.5f, walkZ, kFloorZ, r, kBattleEngineCollisionHeight, 1.9f),
+             "SE Grand Access Ramp opening is clear");
+        Need(IsInteriorPointClear(solids, kCenterX, 410.0f, walkZ, kFloorZ, r, kBattleEngineCollisionHeight, 1.9f),
+             "North Cinema 5 m South doorway is clear for Walker entry");
+        Need(IsInteriorPointClear(solids, kCenterX, 418.0f, walkZ, kFloorZ, r, kBattleEngineCollisionHeight, 1.9f),
+             "North Cinema center aisle is clear");
+        Need(IsInteriorPointClear(solids, kCenterX, 388.2f, walkZ, kFloorZ, r, kBattleEngineCollisionHeight, 1.9f),
+             "visitor stance in front of Archive Pedestal control rail is clear");
+
+        // Walking into Archive Pedestal dais pushes Battle Engine smoothly south & cancels inward vy.
+        {
+            float x = kCenterX, y = 389.4f, vx = 2.0f, vy = 5.0f;
+            Need(ResolveInteriorCollision(solids, &x, &y, walkZ, kFloorZ, r, kBattleEngineCollisionHeight, 1.9f, &vx, &vy),
+                 "pedestal dais blocks Battle Engine clipping");
+            Need(y <= 389.94f - r + 1e-3f && Near(vx, 2.0f) && Near(vy, 0.0f),
+                 "pedestal push-out stops cleanly outside dais while preserving lateral slide");
+            Need(IsInteriorPointClear(solids, x, y, walkZ, kFloorZ, r, kBattleEngineCollisionHeight, 1.9f),
+                 "resolved pedestal position is strictly clear");
+        }
+
+        // Walking into Cinema South-West & East enclosure walls pushes out cleanly.
+        {
+            float x = 104.0f, y = 410.2f, vx = 0.0f, vy = 4.0f;
+            Need(ResolveInteriorCollision(solids, &x, &y, walkZ, kFloorZ, r, kBattleEngineCollisionHeight, 1.9f, &vx, &vy),
+                 "Cinema South-West wall blocks exterior pass-through");
+            Need(IsInteriorPointClear(solids, x, y, walkZ, kFloorZ, r, kBattleEngineCollisionHeight, 1.9f),
+                 "resolved Cinema South-West wall position is strictly clear");
+
+            float ex = 125.5f, ey = 418.0f, evx = 4.0f, evy = 1.0f;
+            Need(ResolveInteriorCollision(solids, &ex, &ey, walkZ, kFloorZ, r, kBattleEngineCollisionHeight, 1.9f, &evx, &evy),
+                 "Cinema East enclosure wall blocks clipping");
+            Need(IsInteriorPointClear(solids, ex, ey, walkZ, kFloorZ, r, kBattleEngineCollisionHeight, 1.9f),
+                 "resolved Cinema East wall position is strictly clear");
+        }
+
+        // Walking into a Rotunda Emitter Pylon and a Flank Colonnade Pier pushes out cleanly.
+        {
+            float px = 103.5f, py = 383.5f;
+            Need(ResolveInteriorCollision(solids, &px, &py, walkZ, kFloorZ, r, kBattleEngineCollisionHeight, 1.9f),
+                 "Rotunda Emitter Pylon blocks clipping");
+            Need(IsInteriorPointClear(solids, px, py, walkZ, kFloorZ, r, kBattleEngineCollisionHeight, 1.9f),
+                 "resolved Rotunda Emitter Pylon position is clear");
+
+            float cx = 82.0f, cy = 398.0f;
+            Need(ResolveInteriorCollision(solids, &cx, &cy, walkZ, kFloorZ, r, kBattleEngineCollisionHeight, 1.9f),
+                 "Flank Colonnade Pier blocks clipping");
+            Need(IsInteriorPointClear(solids, cx, cy, walkZ, kFloorZ, r, kBattleEngineCollisionHeight, 1.9f),
+                 "resolved Flank Colonnade Pier position is clear");
+        }
+
+        // Jet mode flying 6 m above terrace clears low pedestal/pools/balustrades but still respects 9.6 m Cinema walls!
+        {
+            const float midJetZ = kFloorZ - 1.9f - 6.0f;
+            Need(IsInteriorPointClear(solids, kCenterX, kCenterY, midJetZ, kFloorZ, r, kBattleEngineCollisionHeight, 1.9f),
+                 "Jet mode flying 6 m up clears central Archive Pedestal");
+            Need(IsInteriorPointClear(solids, 99.0f, 371.0f, midJetZ, kFloorZ, r, kBattleEngineCollisionHeight, 1.9f),
+                 "Jet mode flying 6 m up clears reflecting pools");
+            Need(!IsInteriorPointClear(solids, 104.0f, 410.2f, midJetZ, kFloorZ, r, kBattleEngineCollisionHeight, 1.9f),
+                 "Jet mode flying 6 m up still collides with 10.65 m Cinema enclosure wall");
+
+            const float highJetZ = kFloorZ - 1.9f - 12.0f;
+            Need(IsInteriorPointClear(solids, 104.0f, 410.2f, highJetZ, kFloorZ, r, kBattleEngineCollisionHeight, 1.9f),
+                 "Jet mode flying 12 m up clears Cinema roof cleanly");
+        }
+    }
+
+    std::printf("ce_sanctuary_citadel_tests: all geometry, shield, beam, ripple, cinema, pedestal, 360-deg dome seal & interior collision checks passed\n");
     return 0;
 }
 """
@@ -427,6 +506,15 @@ MUTANTS = [
     ("visual-skirt-curves-inward",
      "if (nz > 0.0f) {",
      "if (false && nz > 0.0f) {"),
+    ("collision-skips-pedestal",
+     "AddSolidBox(&out, kCenterX - 2.06f, kCenterY - 2.06f,",
+     "if (false) AddSolidBox(&out, kCenterX - 2.06f, kCenterY - 2.06f,"),
+    ("collision-blocks-cinema-door",
+     "AddSolidBox(&out, 109.5f,  409.20f, 114.5f,  410.90f, 5.20f, 10.65f);",
+     "AddSolidBox(&out, 109.5f,  409.20f, 114.5f,  410.90f, 0.0f, 10.65f);"),
+    ("collision-no-push-out",
+     "x += nx * (pen + kCollisionPushEps);",
+     "(void)pen;"),
 ]
 
 
@@ -588,6 +676,12 @@ def main():
           and "zMid = gz - 0.15f;" in draw_dome_fn
           and "zTop = gz - 3.20f;" in draw_dome_fn
           and "const bool onSkirt = (rip.z > cz);" in draw_dome_fn)
+    check("citadel emits North kMatBrass cornice trim, enforces interior SolidBox walkability collision, and suppresses Cinema weapon fire",
+          "EmitBox(72.7f, 431.3f, -0.45f, 151.3f, 431.7f, -0.05f, kMatBrass, kBrassCol);" in cit_cpp
+          and "gCitadel->solids = MakeInteriorSolidLayout();" in cit_cpp
+          and "EnforceInteriorUnitCollisions();" in cit_cpp
+          and "ResolveInteriorCollision(gCitadel->solids," in cit_cpp
+          and "if (gCitadel->insideCinema)\n        return true;" in cit_cpp)
 
     sys.path.insert(0, str(PORT))
     sys.path.insert(0, str(PORT / "tools"))

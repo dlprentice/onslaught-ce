@@ -1170,6 +1170,12 @@ void FactoryCardInput() {
     CameraFactoryWorld(true, true);
     VERIFY(CeFactoryRead(view) && view.available && !view.selected && view.stage == CE_FACTORY_IDLE);
     VERIFY(FactoryCardAt(20, 62) == 1 && FactoryCardAt(20, 116) == -1);
+    Trap(DIK_F1, KEY_EVENT_DOWN);
+    VERIFY(FactoryCardAt(20, 62) == -1);
+    PressWorld(0, 20, 62); ReleaseWorld(0, 20, 62);
+    VERIFY(CeFactoryRead(view) && !view.selected);
+    Trap(DIK_F1, KEY_EVENT_UP);
+    VERIFY(FactoryCardAt(20, 62) == 1 && FactoryCardAt(20, 116) == -1);
     PressWorld(0, 20, 62); ReleaseWorld(0, 20, 62);
     VERIFY(CeFactoryRead(view) && view.selected && !gSel.n && gFocusTrip.squad == kFactoryFocus);
     VERIFY(FactoryCardAt(20, 116) == 2);

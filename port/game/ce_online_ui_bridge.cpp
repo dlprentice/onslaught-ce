@@ -663,9 +663,9 @@ void RenderBrowser(float mx, float my, bool mouseMoved, int *wheel, bool canClic
     const CeOnlineRect rLan = CeOnlineLayout::BrowserLanBtn();
     const CeOnlineRect rBack = CeOnlineLayout::BrowserBackBtn();
     if (!modal && mouseMoved) {
-        if (rPrev.Contains(mx, my)) gModel.SetBrowserPagerFocus(CeOnlineUiModel::BROWSER_PG_PREV);
-        else if (rNext.Contains(mx, my)) gModel.SetBrowserPagerFocus(CeOnlineUiModel::BROWSER_PG_NEXT);
-        else if (rJoin.Contains(mx, my)) gModel.SetBrowserPagerFocus(CeOnlineUiModel::BROWSER_PG_JOIN);
+        if (curPage > 1 && rPrev.Contains(mx, my)) gModel.SetBrowserPagerFocus(CeOnlineUiModel::BROWSER_PG_PREV);
+        else if (curPage < totPages && rNext.Contains(mx, my)) gModel.SetBrowserPagerFocus(CeOnlineUiModel::BROWSER_PG_NEXT);
+        else if (!rooms.empty() && rJoin.Contains(mx, my)) gModel.SetBrowserPagerFocus(CeOnlineUiModel::BROWSER_PG_JOIN);
         else if (rProf.Contains(mx, my)) gModel.SetBrowserFooterFocus(CeOnlineUiModel::BROWSER_FT_PROFILE);
         else if (rLan.Contains(mx, my)) gModel.SetBrowserFooterFocus(CeOnlineUiModel::BROWSER_FT_LAN);
         else if (rBack.Contains(mx, my)) gModel.SetBrowserFooterFocus(CeOnlineUiModel::BROWSER_FT_BACK);
@@ -766,6 +766,10 @@ void RenderCreate(float mx, float my, bool mouseMoved, bool canClick) {
     DrawTextLeft(priv.x0 + 8.f, priv.y0 + 19.f, 448.f, kCream,
                  "Relay Only hides your IP via TURN.");
 
+    if (mouseMoved) {
+        if (CeOnlineLayout::CreateSubmitBtn().Contains(mx, my)) gModel.SetCreateFocus(CeOnlineUiModel::CREATE_SUBMIT);
+        else if (CeOnlineLayout::CreateBackBtn().Contains(mx, my)) gModel.SetCreateFocus(CeOnlineUiModel::CREATE_BACK);
+    }
     if (DrawButton(CeOnlineLayout::CreateSubmitBtn(), "Create Lobby",
                    gModel.CreateFocus() == CeOnlineUiModel::CREATE_SUBMIT, true, mx, my, canClick, kGood)) {
         gModel.CreateSubmit();
@@ -802,6 +806,11 @@ void RenderJoinCode(float mx, float my, bool mouseMoved, bool canClick) {
     DrawTextLeft(pwdBox.x0 + 136.f, pwdBox.y0 + 6.f, 240.f, kWhite, masked.empty() ? "Optional" : masked, selPwd);
     if (ClickedRect(pwdBox, canClick)) { gModel.SetJoinCodeFocus(CeOnlineUiModel::JOIN_PASSWORD_INPUT); PlaySnd(CE_OUI_SND_SELECT); }
 
+    if (mouseMoved) {
+        if (CeOnlineLayout::JoinPasteBtn().Contains(mx, my)) gModel.SetJoinCodeFocus(CeOnlineUiModel::JOIN_PASTE_BTN);
+        else if (CeOnlineLayout::JoinSubmitBtn().Contains(mx, my)) gModel.SetJoinCodeFocus(CeOnlineUiModel::JOIN_SUBMIT_BTN);
+        else if (CeOnlineLayout::JoinBackBtn().Contains(mx, my)) gModel.SetJoinCodeFocus(CeOnlineUiModel::JOIN_BACK_BTN);
+    }
     if (DrawButton(CeOnlineLayout::JoinPasteBtn(), "Paste Code (Ctrl+V)",
                    gModel.JoinCodeFocus() == CeOnlineUiModel::JOIN_PASTE_BTN, true, mx, my, canClick)) gModel.JoinCodePaste();
     if (DrawButton(CeOnlineLayout::JoinSubmitBtn(), "Join Room",
@@ -828,19 +837,28 @@ void RenderRoom(float mx, float my, bool mouseMoved, int *wheel, bool canClick) 
     const bool hsZone = !composing && isHost && (gModel.RoomZoneFocus() == CeOnlineUiModel::ROOM_ZONE_HOST);
     const bool chZone = !composing && (gModel.RoomZoneFocus() == CeOnlineUiModel::ROOM_ZONE_CHAT);
 
+    const int curPgPre = gModel.RosterCurrentPage();
+    const int totPgPre = gModel.RosterPageCount();
+    const std::string effModePre = gModel.EffectiveRoomMode();
+    const CeOnlineSeatView *selSeatPre = gModel.SelectedSeat();
+    const bool canMutePre = (selSeatPre && selSeatPre->kind == CE_ONLINE_SEAT_HUMAN && selSeatPre->seat != room.localSeat);
+    const bool canCycleModePre = isHost && gModel.RoomHostCanCycleMode();
+    const bool canToggleSlotPre = isHost && (selSeatPre && selSeatPre->kind != CE_ONLINE_SEAT_HUMAN);
+    const bool canKickPre = isHost && (selSeatPre && selSeatPre->kind == CE_ONLINE_SEAT_HUMAN && selSeatPre->seat != room.hostSeat);
+
     if (!composing && mouseMoved) {
-        if (CeOnlineLayout::RoomCopyCodeBtn().Contains(mx, my)) gModel.SetRoomHeaderFocus(CeOnlineUiModel::ROOM_HD_COPY);
-        else if (CeOnlineLayout::RoomPagePrevBtn().Contains(mx, my)) gModel.SetRoomHeaderFocus(CeOnlineUiModel::ROOM_HD_PREV);
-        else if (CeOnlineLayout::RoomPageNextBtn().Contains(mx, my)) gModel.SetRoomHeaderFocus(CeOnlineUiModel::ROOM_HD_NEXT);
-        else if (CeOnlineLayout::RoomReadyBtn().Contains(mx, my)) gModel.SetRoomPlayerFocus(CeOnlineUiModel::ROOM_PL_READY);
-        else if (CeOnlineLayout::RoomSideBtn().Contains(mx, my)) gModel.SetRoomPlayerFocus(CeOnlineUiModel::ROOM_PL_SIDE);
-        else if (CeOnlineLayout::RoomBeBtn().Contains(mx, my)) gModel.SetRoomPlayerFocus(CeOnlineUiModel::ROOM_PL_BE);
-        else if (CeOnlineLayout::RoomMuteBtn().Contains(mx, my)) gModel.SetRoomPlayerFocus(CeOnlineUiModel::ROOM_PL_MUTE);
+        if (!room.code.empty() && CeOnlineLayout::RoomCopyCodeBtn().Contains(mx, my)) gModel.SetRoomHeaderFocus(CeOnlineUiModel::ROOM_HD_COPY);
+        else if (curPgPre > 1 && CeOnlineLayout::RoomPagePrevBtn().Contains(mx, my)) gModel.SetRoomHeaderFocus(CeOnlineUiModel::ROOM_HD_PREV);
+        else if (curPgPre < totPgPre && CeOnlineLayout::RoomPageNextBtn().Contains(mx, my)) gModel.SetRoomHeaderFocus(CeOnlineUiModel::ROOM_HD_NEXT);
+        else if (me != nullptr && CeOnlineLayout::RoomReadyBtn().Contains(mx, my)) gModel.SetRoomPlayerFocus(CeOnlineUiModel::ROOM_PL_READY);
+        else if (me != nullptr && effModePre == "versus_2v2" && CeOnlineLayout::RoomSideBtn().Contains(mx, my)) gModel.SetRoomPlayerFocus(CeOnlineUiModel::ROOM_PL_SIDE);
+        else if (me != nullptr && CeOnlineLayout::RoomBeBtn().Contains(mx, my)) gModel.SetRoomPlayerFocus(CeOnlineUiModel::ROOM_PL_BE);
+        else if (canMutePre && CeOnlineLayout::RoomMuteBtn().Contains(mx, my)) gModel.SetRoomPlayerFocus(CeOnlineUiModel::ROOM_PL_MUTE);
         else if (CeOnlineLayout::RoomLeaveBtn().Contains(mx, my)) gModel.SetRoomPlayerFocus(CeOnlineUiModel::ROOM_PL_LEAVE);
         else if (isHost && CeOnlineLayout::RoomMapBtn().Contains(mx, my)) gModel.SetRoomHostFocus(CeOnlineUiModel::ROOM_HS_MAP);
-        else if (isHost && CeOnlineLayout::RoomModeBtn().Contains(mx, my)) gModel.SetRoomHostFocus(CeOnlineUiModel::ROOM_HS_MODE);
-        else if (isHost && CeOnlineLayout::RoomSlotBtn().Contains(mx, my)) gModel.SetRoomHostFocus(CeOnlineUiModel::ROOM_HS_SLOT);
-        else if (isHost && CeOnlineLayout::RoomKickBtn().Contains(mx, my)) gModel.SetRoomHostFocus(CeOnlineUiModel::ROOM_HS_KICK);
+        else if (canCycleModePre && CeOnlineLayout::RoomModeBtn().Contains(mx, my)) gModel.SetRoomHostFocus(CeOnlineUiModel::ROOM_HS_MODE);
+        else if (canToggleSlotPre && CeOnlineLayout::RoomSlotBtn().Contains(mx, my)) gModel.SetRoomHostFocus(CeOnlineUiModel::ROOM_HS_SLOT);
+        else if (canKickPre && CeOnlineLayout::RoomKickBtn().Contains(mx, my)) gModel.SetRoomHostFocus(CeOnlineUiModel::ROOM_HS_KICK);
         else if (isHost && CeOnlineLayout::RoomStartBtn().Contains(mx, my)) gModel.SetRoomHostFocus(CeOnlineUiModel::ROOM_HS_START);
         else if (CeOnlineLayout::RoomChatCompose().Contains(mx, my)) gModel.SetRoomZoneFocus(CeOnlineUiModel::ROOM_ZONE_CHAT);
     }
@@ -1009,7 +1027,8 @@ void RenderRoom(float mx, float my, bool mouseMoved, int *wheel, bool canClick) 
     if (composing) DrawTextLeft(compose.x0 + 6.f, compose.y0 + 2.f, 386.f, kWhite, "Say: " + gModel.ChatDraft(), true);
     else DrawTextLeft(compose.x0 + 6.f, compose.y0 + 2.f, 386.f, chZone ? kWarn : kGrey, "Press T, Enter or click here to chat...");
     if (ClickedRect(compose, canClick)) { gModel.RoomOpenChat(); PlaySnd(CE_OUI_SND_SELECT); }
-    if (DrawButton(CeOnlineLayout::RoomChatSendBtn(), "Send", false, composing && !gModel.ChatDraft().empty(), mx, my, canClick, kGood)) {
+    const bool canSendChat = composing && !gModel.ChatDraft().empty();
+    if (DrawButton(CeOnlineLayout::RoomChatSendBtn(), "Send", canSendChat, canSendChat, mx, my, canClick, kGood)) {
         gModel.RoomChatSubmit();
     }
 
@@ -1045,6 +1064,11 @@ void RenderProfile(float mx, float my, bool mouseMoved, bool canClick) {
                          : (prof.connStatus == CE_ONLINE_CONN_ERROR ? kBad : kWarn);
     DrawTextLeft(st.x0 + 12.f, st.y0 + 82.f, 396.f, stCol, line);
 
+    if (mouseMoved) {
+        if (CeOnlineLayout::ProfileSaveBtn().Contains(mx, my)) gModel.SetProfileFocus(CeOnlineUiModel::PROFILE_SAVE_BTN);
+        else if (CeOnlineLayout::ProfileReconnectBtn().Contains(mx, my)) gModel.SetProfileFocus(CeOnlineUiModel::PROFILE_RECONNECT_BTN);
+        else if (CeOnlineLayout::ProfileBackBtn().Contains(mx, my)) gModel.SetProfileFocus(CeOnlineUiModel::PROFILE_BACK_BTN);
+    }
     if (DrawButton(CeOnlineLayout::ProfileSaveBtn(), "Save Callsign",
                    gModel.ProfileFocus() == CeOnlineUiModel::PROFILE_SAVE_BTN, true, mx, my, canClick, kGood)) gModel.ProfileSave();
     if (DrawButton(CeOnlineLayout::ProfileReconnectBtn(), "Reconnect",
@@ -1065,7 +1089,7 @@ void RenderConnecting(float mx, float my, bool canClick) {
     DrawTextCenter({ box.x0, box.y0 + 18.f, box.x1, box.y0 + 48.f }, kWarn, gModel.ConnectingHeading());
     DrawTextCenter({ box.x0 + 10.f, box.y0 + 56.f, box.x1 - 10.f, box.y0 + 96.f }, kCream, gModel.ConnectingDetail());
     if (gModel.ConnectingCancellable()) {
-        if (DrawButton(CeOnlineLayout::ConnectingCancelBtn(), "Cancel", false, true, mx, my, canClick)) {
+        if (DrawButton(CeOnlineLayout::ConnectingCancelBtn(), "Cancel", true, true, mx, my, canClick)) {
             gModel.ConnectingCancel();
         }
     }
@@ -1153,7 +1177,10 @@ void PortCeOnlineHostButton(int btn) {
         if (btn == CE_OUI_BTN_DOWN)   { gModel.BrowserNavMove(1);  PlaySnd(CE_OUI_SND_MOVE); }
         if (btn == CE_OUI_BTN_LEFT)   { gModel.BrowserNavSide(-1); PlaySnd(CE_OUI_SND_MOVE); }
         if (btn == CE_OUI_BTN_RIGHT)  { gModel.BrowserNavSide(1);  PlaySnd(CE_OUI_SND_MOVE); }
-        if (btn == CE_OUI_BTN_SELECT) { PlaySnd(CE_OUI_SND_SELECT); gModel.BrowserNavActivate(); HandleExitFlags(); }
+        if (btn == CE_OUI_BTN_SELECT) {
+            if (gModel.BrowserNavActivate()) PlaySnd(CE_OUI_SND_SELECT);
+            HandleExitFlags();
+        }
         break;
     case CE_ONLINE_PAGE_CREATE:
         if (btn == CE_OUI_BTN_UP)    { gModel.CreateMoveFocus(-1); PlaySnd(CE_OUI_SND_MOVE); }
@@ -1214,8 +1241,7 @@ void PortCeOnlineHostButton(int btn) {
         if (btn == CE_OUI_BTN_LEFT)  { gModel.RoomNavSide(-1); PlaySnd(CE_OUI_SND_MOVE); }
         if (btn == CE_OUI_BTN_RIGHT) { gModel.RoomNavSide(1);  PlaySnd(CE_OUI_SND_MOVE); }
         if (btn == CE_OUI_BTN_SELECT) {
-            PlaySnd(CE_OUI_SND_SELECT);
-            gModel.RoomNavActivate();
+            if (gModel.RoomNavActivate()) PlaySnd(CE_OUI_SND_SELECT);
             HandleExitFlags();
         }
         break;

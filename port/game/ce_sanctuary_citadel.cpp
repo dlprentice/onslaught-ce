@@ -203,6 +203,7 @@ struct CitadelState {
     bool hasAim;
 
     RippleBuffer ripples;
+    SolidLayout solids;
 
     AoBox aoBoxes[kMaxAoBoxes];
     unsigned aoBoxCount;
@@ -882,6 +883,7 @@ static void BuildCitadelArchitecture() {
     EmitBox(136.5f, 352.3f, -0.45f, 151.7f, 352.7f, -0.05f, kMatBrass, kBrassCol);
     EmitBox(151.3f, 352.7f, -0.45f, 151.7f, 431.7f, -0.05f, kMatBrass, kBrassCol);
     EmitBox(72.3f, 352.7f, -0.45f,  72.7f, 431.7f, -0.05f, kMatBrass, kBrassCol);
+    EmitBox(72.7f, 431.3f, -0.45f, 151.3f, 431.7f, -0.05f, kMatBrass, kBrassCol);
 
     // Ceremonial Basalt-and-Brass Wayfinding Runners (trimmed cleanly at Rotunda ring,
     // South overlook intersection, Cinema doorway runner, and SE ramp approach — zero overlap)
@@ -1699,6 +1701,46 @@ static void DrawFactionEmblemMurals(IDirect3DDevice9 *dev) {
     dev->SetFVF(D3DFVF_XYZ | D3DFVF_NORMAL | D3DFVF_DIFFUSE | D3DFVF_TEX1);
 }
 
+static void EnforceInteriorUnitCollisions() {
+    if (!gCitadel || !gCitadel->active || gCitadel->solids.count == 0u) return;
+    const float fz = gCitadel->floorZ;
+    const float minX = kTerraceMinX - 3.0f;
+    const float maxX = kTerraceMaxX + 3.0f;
+    const float minY = kTerraceMinY - 3.0f;
+    const float maxY = kTerraceMaxY + 3.0f;
+
+    auto resolveThing = [&](CThing *t, float radius, float height) {
+        if (!t || t->IsDying() || t->IsShuttingDown()) return;
+        const FVector pos = t->GetPos();
+        if (pos.X < minX || pos.X > maxX || pos.Y < minY || pos.Y > maxY) return;
+        float cofg = t->COfGHeight();
+        if (!std::isfinite(cofg) || cofg < 0.0f) cofg = 0.0f;
+        FVector vel = t->GetVelocity();
+        float x = pos.X, y = pos.Y;
+        float vx = vel.X, vy = vel.Y;
+        if (ResolveInteriorCollision(gCitadel->solids, &x, &y, pos.Z, fz,
+                                     radius, height, cofg, &vx, &vy)) {
+            t->MoveTo(FVector(x, y, pos.Z));
+            t->SetVelocity(FVector(vx, vy, vel.Z));
+        }
+    };
+
+    CBattleEngine *playerBe = NULL;
+    if (CPlayer *pl = GAME.GetPlayer(0)) {
+        playerBe = pl->GetBattleEngine();
+        if (playerBe) {
+            resolveThing(playerBe, kBattleEngineCollisionRadius, kBattleEngineCollisionHeight);
+        }
+    }
+    ListIterator<CUnit> it(&WORLD.GetUnitNB());
+    for (CUnit *u = it.First(); u; u = it.Next()) {
+        if (!u || u == static_cast<CUnit *>(playerBe)) continue;
+        float r = u->GetRadius();
+        if (!std::isfinite(r) || r < 0.75f || r > 1.80f) r = kBattleEngineCollisionRadius;
+        resolveThing(u, r, kBattleEngineCollisionHeight);
+    }
+}
+
 } // namespace
 
 // -----------------------------------------------------------------------------
@@ -1719,6 +1761,7 @@ void RuntimeInit(float floorZ) {
     gCitadel->aimZ = 0.0f;
     gCitadel->hasAim = false;
     ResetRipples(&gCitadel->ripples);
+    gCitadel->solids = MakeInteriorSolidLayout();
 
     BuildCitadelArchitecture();
     BuildGeodesicHexDome();
@@ -1766,6 +1809,9 @@ void RuntimeUpdate(float dtSeconds, bool paused,
         if (gCitadel->animTime > 6283.1853f) gCitadel->animTime -= 6283.1853f;
     }
     StepRipples(&gCitadel->ripples, dtSeconds, paused);
+    if (!paused) {
+        EnforceInteriorUnitCollisions();
+    }
 
     if (IsFinite3(eyeX, eyeY, eyeZ)) {
         gCitadel->eyeX = eyeX;
@@ -1836,7 +1882,11 @@ bool RuntimeHandleKey(unsigned dik, bool repeat) {
 
 bool RuntimeHandleFire(bool release, float value) {
     if (!gCitadel || !gCitadel->active) return false;
-    return CeArchivePedestal::RuntimeHandleFire(release, value);
+    if (CeArchivePedestal::RuntimeHandleFire(release, value))
+        return true;
+    if (gCitadel->insideCinema)
+        return true;
+    return false;
 }
 
 bool RuntimeIsInsideDome(float x, float y, float z) {

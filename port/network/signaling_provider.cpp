@@ -215,7 +215,7 @@ struct Core {
         if(r.hasSetup){if(r.setup>s->request.requestExpiresAt||r.setup<=utc||(s->view.setupExpiresAt&&r.setup>s->view.setupExpiresAt))return false;s->view.setupExpiresAt=r.setup;}
         if(r.hasExpiry){if(r.expiry<=utc||r.expiry>s->request.grantExpiresAt||r.expiry>pair.expiresAt||(s->view.grantExpiresAt&&r.expiry!=s->view.grantExpiresAt))return false;s->view.grantExpiresAt=r.expiry;}
         if(!r.grant.empty()){
-            if(r.grantRole!=(s->request.role==CE_NET_HOST?"host":"guest")||r.grantContext!=Hex(s->request.context,32)||r.grantIssued<s->request.requestedAt||r.grantIssued>utc||r.grantExpiry!=r.expiry||r.grantExpiry<=r.grantIssued||r.grantExpiry-r.grantIssued>14400)return false;
+            if(r.grantRole!=(s->request.role==CE_NET_HOST?"host":"guest")||r.grantContext!=Hex(s->request.context,32)||r.grantIssued<s->request.requestedAt||r.grantIssued>utc+60||r.grantExpiry!=r.expiry||r.grantExpiry<=r.grantIssued||r.grantExpiry-r.grantIssued>14400)return false;
             auto hash=Digest(r.grant.data(),r.grant.size());if(s->hasGrant&&hash!=s->grantHash)return false;if(!s->hasGrant){s->grant=r.grant;s->grantHash=hash;s->hasGrant=true;}
         }
         if(!r.record.empty()){if(s->hasPeer&&r.digest!=s->peerHash)return false;if(!s->hasPeer){s->peer=r.record;s->peerHash=r.digest;s->hasPeer=true;}}

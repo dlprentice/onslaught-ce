@@ -77,6 +77,9 @@ extern "C" const char *PortCeMuseumVisitMessage(void);
 extern "C" bool PortCeMuseumVisitTakeNotice(const char **sentence);
 extern "C" void PortCeDodgeAssistRefresh(void) __attribute__((weak));
 extern "C" void PortCeMultiBeRefreshSettings(void) __attribute__((weak));
+float PortCeLabelLeft(int page);					// ce_menu_fit.cpp
+float PortCeValueGap();								// ce_menu_fit.cpp
+WCHAR *PortCeValueFit(WCHAR *text, float x, float *scale);	// ce_menu_fit.cpp
 
 #define CE_LINKS	"github.com/dlprentice/onslaught-ce"
 
@@ -92,6 +95,7 @@ void	PortCeNetKeepStartFrame();			// ce_network_wait.cpp
 void	PortCeNetShutdown();
 bool	PortCeNetOpenOnEntry();
 WCHAR	*PortCeNetTitle();					// the network page's own title
+extern "C" int PortCeOnlineUiActive(void) __attribute__((weak));
 
 #endif
 //*********************************************************************************
@@ -371,6 +375,12 @@ SINT	PortCeMessageButton(SINT button, EFrontEndPage page)
 	if ((button == BUTTON_FRONTEND_MENU_BACK) && (page == FEP_CE) && sCeBox && PortCeMenus())
 		return BUTTON_FRONTEND_MENU_SELECT;
 	return button;
+}
+
+// Marks an active CE-owned message box (e.g. from ce_netpages.cpp Box()) so Esc and gamepad B close it via PortCeMessageButton.
+void	PortCeBoxOpened()
+{
+	sCeBox = true;
 }
 
 //*********************************************************************************
@@ -1587,15 +1597,19 @@ public:
 		WCHAR *label = GetText();
 		SIZE size;
 		font->GetTextExtent(label, &size);
+		const float ceLeft = PortCeLabelLeft(FEP_CE);
+		const float lx = x + PortCeValueGap();
 		float scale = 1.f;
 		float tx = x - float(size.cx);
-		if (tx < 5.f)
+		if (tx < ceLeft)
 		{
-			scale = (x - 5.f) / float(size.cx);
-			tx = 5.f;
+			scale = (x - ceLeft) / float(size.cx);
+			tx = ceLeft;
 		}
 		font->DrawTextWithShadow(tx, y, labelCol, label, 0, 0, scale, 1.f);
-		font->DrawTextWithShadow(x + 8.f, y, valCol, GetChoiceText(mSelection), 0, 0, 1.f, 1.f);
+		float valScale = 1.f;
+		WCHAR *valText = PortCeValueFit(GetChoiceText(mSelection), lx, &valScale);
+		font->DrawTextWithShadow(lx, y, valCol, valText, 0, 0, valScale, 1.f);
 	}
 
 	const SCeLab	*mLab;
@@ -2346,6 +2360,10 @@ public:
 		FRONTEND.DrawTitleBar(mMenu ? mMenu->PageTitle() : title, transition, dest);
 #else
 		FRONTEND.DrawTitleBar(net ? PortCeNetTitle() : (mMenu ? mMenu->PageTitle() : title), transition, dest);
+#endif
+#ifndef CE_NETWORK_OFF
+		int (*onlineActive)(void) = PortCeOnlineUiActive;
+		if (!(net && onlineActive && onlineActive()))
 #endif
 		FRONTEND.GetCommonPage()->RenderHelpText(1, transition);
 		FRONTEND.GetCommonPage()->RenderSmallBEALogo(RangeTransition(transition, 0.75f, 1.f));

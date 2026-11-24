@@ -312,8 +312,58 @@ int main(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) {
         CeEditorUiModel m; std::memset(&m, 0, sizeof(m)); m.width = 640; m.height = 480; m.notice = argv[i]; m.noticeAlpha = 1;
         CeEditorUiLayout l; CeEditorUiLay(m, StandIn, nullptr, &l);
-        Check(l.notice.w > 0 && Inside(l.notice, m) && l.notice.x >= l.margin - 0.01f && l.notice.x + l.notice.w <= 640 - l.margin + 0.01f,
+        Check(l.notice.w > 0 && Inside(l.notice, m) && l.notice.x >= l.margin - 0.01f && l.notice.x + l.notice.w <= 640 - l.margin + 0.01f &&
+              StandIn(nullptr, 0, argv[i]) + 2.f * l.capsuleText <= 640.f - 2.f * l.margin + 0.01f,
               std::string("the notice fits one capsule: ") + argv[i]);
+    }
+    // 640x480 stress checks: long custom project + long level + mode + objective, DialogFiles hiding tools,
+    // runtime overlong notice clamping, and stacked mode+objective card fallback.
+    {
+        CeEditorUiModel m; std::memset(&m, 0, sizeof(m));
+        m.width = 640; m.height = 480;
+        std::snprintf(m.level, sizeof(m.level), "%s", "The Longest Level Name of the Game");
+        std::snprintf(m.project, sizeof(m.project), "%s", "A Custom Named Project With A Very Long Title");
+        m.state = " / Draft";
+        std::snprintf(m.mode, sizeof(m.mode), "%s", "Select: An Object With a 24c");
+        std::snprintf(m.objective, sizeof(m.objective), "%s", "Reach Point then Hold Area");
+        m.toolCount = 10;
+        static const char* fullTools[10] = {"Save", "Open", "Undo", "Redo", "Play Draft", "Change Side",
+                                            "Reach Point", "Hold Area", "Player Start", "Exit"};
+        for (int i = 0; i < 10; ++i) { m.tools[i] = fullTools[i]; m.toolEnabled[i] = true; }
+        m.card = true;
+        std::snprintf(m.cardName, sizeof(m.cardName), "%s", "Marshall");
+        std::snprintf(m.cardKind, sizeof(m.cardKind), "%s", "FSV Marshall");
+        std::snprintf(m.cardSide, sizeof(m.cardSide), "%s", "Forseti");
+        std::snprintf(m.cardPosition, sizeof(m.cardPosition), "%s", "X 335.2  Y 145.1 m");
+        std::snprintf(m.cardHeight, sizeof(m.cardHeight), "%s", "-10.0 m");
+        std::snprintf(m.cardNote, sizeof(m.cardNote), "%s", "Moves with the deck it is on: moving a carrier takes it along.");
+        m.notice = "Saved as A Custom Named Project With A Very Long Title. Earlier saves are kept.";
+        m.noticeAlpha = 1.f;
+        CeEditorUiLayout base; CeEditorUiLay(m, StandIn, nullptr, &base);
+        Check(Inside(base.title, m) && Inside(base.project, m) && Inside(base.mode, m) && Inside(base.objective, m) &&
+              Apart(base.mode, base.title) && Apart(base.mode, base.project) && Apart(base.mode, base.tools) &&
+              Apart(base.objective, base.title) && Apart(base.objective, base.project) && Apart(base.objective, base.tools) &&
+              Apart(base.mode, base.objective),
+              "640x480 long title + long project + mode + objective never overlap");
+        Check(Inside(base.notice, m) && base.notice.x >= base.margin - 0.01f && base.notice.x + base.notice.w <= 640.f - base.margin + 0.01f,
+              "640x480 overlong runtime notice clamps cleanly inside margins");
+        // Marker under bottom-right card when both mode and objective stack: card still relocates cleanly.
+        CeEditorUiMarker lowMark = {Centre(base.card, false), Centre(base.card, true), true};
+        m.markers = &lowMark; m.markerCount = 1;
+        CeEditorUiLayout highDock; CeEditorUiLay(m, StandIn, nullptr, &highDock);
+        Check(!highDock.card.Contains(lowMark.x, lowMark.y) && Inside(highDock.card, m) &&
+              Apart(highDock.card, highDock.title) && Apart(highDock.card, highDock.project) &&
+              Apart(highDock.card, highDock.mode) && Apart(highDock.card, highDock.objective) &&
+              Apart(highDock.card, highDock.tools),
+              "640x480 card docks cleanly even when mode + objective + 2-line note stack");
+        // DialogFiles hides the left tool rail so wide project rows never collide visually with tools.
+        m.dialog = CeEditorUiList; m.dialogTitle = "Open Project"; m.dialogNote = "Enter Open      Esc Back";
+        static const char* longRow = "Project 99, The Longest Level Name..";
+        m.rowCount = 10; for (int i = 0; i < 10; ++i) m.rows[i] = longRow;
+        CeEditorUiLayout listLay; CeEditorUiLay(m, StandIn, nullptr, &listLay);
+        const CeEditorUiShown listShown = CeEditorUiWhatShows(m);
+        Check(!listShown.tools && Inside(listLay.dialog, m) && Apart(listLay.dialog, listLay.title) && Apart(listLay.dialog, listLay.project),
+              "640x480 DialogFiles hides tools and stays clear of title/project");
     }
     // Every help line fits its column at 640 x 480.
     int n = 0; while (kCeEditorUiHelp[n].key) ++n;

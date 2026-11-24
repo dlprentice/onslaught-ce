@@ -327,7 +327,17 @@ void Load(const char *path)
 			continue;
 		}
 		if (gCount == cap)
-			gEvents = (Event *)realloc(gEvents, (cap = cap ? cap * 2 : 4096) * sizeof(Event));
+		{
+			size_t next_cap = cap ? cap * 2 : 4096;
+			Event *next = (Event *)realloc(gEvents, next_cap * sizeof(Event));
+			if (!next)
+			{
+				fclose(f);
+				return;
+			}
+			gEvents = next;
+			cap = next_cap;
+		}
 		gEvents[gCount++] = e;
 	}
 	fclose(f);

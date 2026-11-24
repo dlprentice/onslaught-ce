@@ -17,9 +17,12 @@ void operator delete(void*p,EMemoryType)noexcept{::operator delete(p);}
 struct Loop {Trap trap=nullptr;Trap GetKeytrap(){return trap;}void SetKeytrap(Trap t){trap=t;}} LT;
 auto&PLATFORM=LT;
 enum { FES_BACK,FES_SELECT };
+enum { BUTTON_FRONTEND_MENU_BACK = 46 };
+class CController;
 struct CFrontEnd {static void PlaySound(int){}};
 std::wstring lastHint;
-struct CMenuItem {explicit CMenuItem(EPCText,int id):mId(id){}virtual ~CMenuItem()=default;virtual WCHAR*GetText(){return nullptr;}virtual void Render(float,float,BOOL){}void Render(float,float,BOOL,DWORD,WCHAR*text){lastHint=text?text:L"";}int mId;};
+float lastHintY = 0.f;
+struct CMenuItem {explicit CMenuItem(EPCText,int id):mId(id){}virtual ~CMenuItem()=default;virtual void ReceiveButtonAction(CController*,int,float){}virtual WCHAR*GetText(){return nullptr;}virtual void Render(float,float,BOOL){}virtual bool IsExpanded(){return false;}virtual bool TakesInput(){return false;}void Render(float,float y,BOOL,DWORD,WCHAR*text){lastHintY=y;lastHint=text?text:L"";}int mId;};
 struct CMenuOptionsList {
 	CMenuItem *item=nullptr,*rows[3]={}; int count=0;
 	~CMenuOptionsList(){for(int i=0;i<count;++i)delete rows[i];}
@@ -49,7 +52,10 @@ int main(){
     ordinary=false;CMenuOptionsList denied;PortCeDodgeControlsAdd(&denied);assert(!denied.item);
     ordinary=true;CMenuOptionsList list;PortCeDodgeControlsAdd(&list);auto item=list.item;assert(list.count==1&&item&&has(item,L"Dodge modifier: Left Ctrl"));
     assert(PortCeDodgeControlsSelect(item)&&LT.trap);send(30);assert(LT.trap&&has(item,L"is used by Strafe Left. Try another key or Esc.")&&!writes);
-    item->Render(0,0,1);assert(lastHint==L"Esc keeps Left Ctrl.");
+    item->Render(0,0,1);assert(lastHint==L"Esc keeps Left Ctrl." && lastHintY >= 450.f && lastHintY <= 462.f);
+    item->ReceiveButtonAction(nullptr, BUTTON_FRONTEND_MENU_BACK, 1.f);
+    assert(!LT.trap && !item->IsExpanded() && !item->TakesInput() && has(item,L"Left Ctrl") && !writes);
+    assert(PortCeDodgeControlsSelect(item)&&LT.trap&&item->IsExpanded()&&item->TakesInput());
     send(1);assert(!LT.trap&&has(item,L"Left Ctrl")&&!writes);
     PortCeDodgeControlsSelect(item);send(18);assert(!LT.trap&&stored=="18"&&has(item,L"Dodge modifier: E"));
     PortCeDodgeControlsSelect(item);send(1);assert(!LT.trap&&has(item,L"E")&&writes==1);

@@ -43,6 +43,7 @@
 #define FEP_CE				FEP_LANGUAGE_TEST		// the CE page's slot (ce_frontend.cpp)
 
 bool	PortCeMenus();							// ce_frontend.cpp
+void	PortCeBoxOpened() __attribute__((weak));	// ce_frontend.cpp: mark FEMESSBOX as CE-owned so Esc/B dismisses it
 // The pointer (src/mouse.h): its place in the front end's 640x480 screen, and a click inside a rectangle (consumed).
 extern int	MOUSE_X, MOUSE_Y;
 bool	MouseClickedInRect(float tlx, float tly, float brx, float bry);
@@ -268,6 +269,8 @@ void	Box(const char *text)
 	if (FEMESSBOX.mY - FEMESSBOX.mHeight * 0.5f < 122.f)
 		FEMESSBOX.mY = 122.f + FEMESSBOX.mHeight * 0.5f;
 	FEMESSBOX.SetOnDismiss(FEP_NONE, 0);
+	if (PortCeBoxOpened)
+		PortCeBoxOpened();
 	CFrontEnd::PlaySound(FES_SELECT);
 }
 
@@ -402,13 +405,13 @@ class CNetItem : public CMenuItem
 public:
 	enum { ID = 0x4346 };
 	CNetItem(const char *text, int action) : CMenuItem((EPCText)0, ID), mAction(action) { Set(text); }
-	void	Set(const char *text) { Widen(mWide, 128, text); }
+	void	Set(const char *text) { Widen(mWide, CE_INVITATION_ORIGIN_BYTES + 64, text); }
 	virtual WCHAR	*GetText() { return mWide; }
 	// An absent row takes no room, is not drawn and cannot take the focus (the list skips rows that are not enabled).
 	virtual int		GetHeight() { return mHidden ? 0 : CMenuItem::GetHeight(); }
 	virtual BOOL	IsEnabled() { return !mHidden && mEnabled; }
 	virtual void	Render(float x, float y, BOOL selected) { if (!mHidden) CMenuItem::Render(x, y, selected); }
-	WCHAR	mWide[128];
+	WCHAR	mWide[CE_INVITATION_ORIGIN_BYTES + 64];
 	int		mAction;
 	bool	mHidden = false;
 };
@@ -454,7 +457,7 @@ public:
 		snprintf(text, sizeof text, label[0] ? "%s:" : "%s", label);
 		mLabel8 = label; Widen(mLabelWide, 64, text); mValueWide[0] = 0;
 	}
-	void	SetValue(const char *value) { Widen(mValueWide, 128, value); char t[200]; snprintf(t, sizeof t, mLabel8[0] ? "%s: %s" : "%s%s", mLabel8, value); Set(t); }
+	void	SetValue(const char *value) { Widen(mValueWide, CE_INVITATION_ORIGIN_BYTES, value); char t[CE_INVITATION_ORIGIN_BYTES + 64]; snprintf(t, sizeof t, mLabel8[0] ? "%s: %s" : "%s%s", mLabel8, value); Set(t); }
 	virtual void	Render(float x, float y, BOOL selected)
 	{
 		if (mHidden)
@@ -498,7 +501,7 @@ public:
 		}
 	}
 	const char	*mLabel8;
-	WCHAR	mLabelWide[64], mValueWide[128];
+	WCHAR	mLabelWide[64], mValueWide[CE_INVITATION_ORIGIN_BYTES];
 	float	mValueEnd = 0.f;
 };
 
@@ -1248,6 +1251,29 @@ public:
         mProfileJoinAvailable = false;
 #endif
     }
+    void EnsureEnabledFocus(int page, int preferred = -1)
+    {
+        if (page < 0 || page >= NP_COUNT) return;
+        CMenuOptionsList *list = mList[page];
+        if (!list || list->mItems.Size() <= 0) return;
+        if (list->mSelected >= 0 && list->mSelected < list->mItems.Size() &&
+            list->mItems.At(list->mSelected)->IsEnabled())
+            return;
+        if (preferred >= 0 && preferred < list->mItems.Size() &&
+            list->mItems.At(preferred)->IsEnabled())
+        {
+            list->mSelected = preferred;
+            return;
+        }
+        for (int i = 0; i < list->mItems.Size(); i++)
+        {
+            if (list->mItems.At(i)->IsEnabled())
+            {
+                list->mSelected = i;
+                return;
+            }
+        }
+    }
     void RefreshInvitationControls(bool forceProfile = false)
     {
 #if defined(CE_NETWORK_ICE)
@@ -1270,6 +1296,10 @@ public:
         mImportProfileJoin->mEnabled = profJoin;
         mImportUse->mEnabled = available && InvitationPreviewValid() && !SignalingSelected();
         mImportClearInput->mEnabled = mImportClearPreview->mEnabled = available && !busy && SignalingSelected();
+        if (mPage == NP_INVITATION_INPUT)
+            EnsureEnabledFocus(NP_INVITATION_INPUT, mImportOriginRow);
+        else if (mPage == NP_INVITATION_PREVIEW)
+            EnsureEnabledFocus(NP_INVITATION_PREVIEW, 0);
     }
     void PollInvitationUi()
     {
@@ -1374,14 +1404,21 @@ public:
         mSignalProceed->mEnabled = selected && disclosed && status == CeIceSignalStatus::Admitted &&
             (mSignalAction == NA_HOST || mSignalAction == NA_CONNECT);
         mSignalRetry->mEnabled = selected && disclosed && SignalRetryable(status);
-        if (mPage == NP_SIGNAL_STATUS && mSignalAction == NA_CONNECT &&
-            mSignalProceed->IsEnabled() && !mProceedWasReady &&
-            mList[NP_SIGNAL_STATUS]->mItems.At(mList[NP_SIGNAL_STATUS]->mSelected) == mSignalAccept)
-            mList[NP_SIGNAL_STATUS]->mSelected = 1;
+        if (mPage == NP_SIGNAL_STATUS && (mSignalAction == NA_CONNECT || mSignalAction == NA_HOST) &&
+            mSignalProceed->IsEnabled() && !mProceedWasReady)
+        {
+            CMenuItem *cur = mList[NP_SIGNAL_STATUS]->mItems.At(mList[NP_SIGNAL_STATUS]->mSelected);
+            if (cur == mSignalAccept || cur == mSignalClose || !cur->IsEnabled())
+                mList[NP_SIGNAL_STATUS]->mSelected = 1;
+        }
         mProceedWasReady = mSignalProceed->IsEnabled();
         mSignalClose->mEnabled = selected && status != CeIceSignalStatus::Closed;
         mSignalProceed->Set(mSignalAction == NA_HOST ? "Prepare Host" :
             (mCode->mValue[0] ? "Join match" : "Enter host code"));
+        if (mPage == NP_SIGNAL_STATUS)
+            EnsureEnabledFocus(NP_SIGNAL_STATUS, mSignalProceed->IsEnabled() ? 1 : -1);
+        else if (mPage == NP_SIGNAL_DISCLOSURE)
+            EnsureEnabledFocus(NP_SIGNAL_DISCLOSURE, 0);
     }
     void PumpSignalUi()
     {
@@ -1574,10 +1611,10 @@ public:
 			break;
 		}
 		case NA_CODE:
-			((CMenuOptionsList *)mList[NP_JOIN])->mSelected = 1;
+			mList[NP_JOIN]->mSelected = mAddress->IsEnabled() ? 1 : (mConnect->IsEnabled() ? 2 : mList[NP_JOIN]->mItems.Size() - 1);
 			break;
 		case NA_ADDRESS:
-			((CMenuOptionsList *)mList[NP_JOIN])->mSelected = 2;
+			mList[NP_JOIN]->mSelected = mConnect->IsEnabled() ? 2 : mList[NP_JOIN]->mItems.Size() - 1;
 			break;
 		case NA_PASTE_CODE:
 			PasteField(mCode);
@@ -1792,6 +1829,8 @@ public:
 		mAddress->mEnabled = mPasteAddress->mEnabled = !connecting && !RelayRequested();
 		if (RelayRequested()) mAddress->SetValue("Not Used");
 		else mAddress->Refresh();
+		if (mPage == NP_JOIN)
+			EnsureEnabledFocus(NP_JOIN, connecting ? mList[NP_JOIN]->mItems.Size() - 1 : (mConnect->IsEnabled() ? 2 : 0));
 	}
 
 	// The line under the Join page's introduction: how much of the code is typed while it is short (grey), that it is
@@ -1929,36 +1968,68 @@ public:
         }
         case NP_INVITATION_PREVIEW:
         {
-            y = Lines("Review invitation metadata", y, kWhite, FONT_SMALL, kPageWidth);
+            const float limit = ListTop(mList[NP_INVITATION_PREVIEW]) - 6.f;
+            if (y + Height("Review invitation metadata", FONT_SMALL, kPageWidth) <= limit)
+                y = Lines("Review invitation metadata", y, kWhite, FONT_SMALL, kPageWidth);
             if (InvitationPreviewValid()) {
-                y = Lines("Relay: Waiting for pair invitation", y + 4.f, kCream, FONT_SMALL, kPageWidth);
-                y = Lines(mInvitation.role == CE_NET_HOST ? "Role: Host" : "Role: Join", y + 4.f, kWarn, FONT_SMALL, kPageWidth);
-                y = Lines(DisplayServiceOrigin(mInvitation.origin), y + 2.f, kWarn, FONT_SMALL, kPageWidth);
+                if (y + 4.f + Height("Relay: Waiting for pair invitation", FONT_SMALL, kPageWidth) <= limit)
+                    y = Lines("Relay: Waiting for pair invitation", y + 4.f, kCream, FONT_SMALL, kPageWidth);
+                const char *roleText = mInvitation.role == CE_NET_HOST ? "Role: Host" : "Role: Join";
+                if (y + 4.f + Height(roleText, FONT_SMALL, kPageWidth) <= limit)
+                    y = Lines(roleText, y + 4.f, kWarn, FONT_SMALL, kPageWidth);
+                const char *originText = DisplayServiceOrigin(mInvitation.origin);
+                if (originText[0] && y + 2.f + Height(originText, FONT_SMALL, kPageWidth) <= limit)
+                    y = Lines(originText, y + 2.f, kWarn, FONT_SMALL, kPageWidth);
                 const uint64_t now = CE_HandoffNow();
                 const uint64_t left = mInvitation.expires_at > now ? mInvitation.expires_at - now : 0;
                 char expiry[128];
                 snprintf(expiry, sizeof expiry, "Pair approval expires in %llu min.",
                     (unsigned long long)(left / 60 + (left % 60 != 0)));
-                y = Lines(expiry, y + 4.f, kGrey, FONT_SMALL, kPageWidth);
-                y = Lines("Use invitation imports this role's private admission. The next disclosure Continue is the first service contact.", y + 4.f, kGrey, FONT_SMALL, kPageWidth);
-            } else y = Lines("This preview is unavailable or expired. Export a fresh pair invitation and choose its folder again.", y + 4.f, kWarn, FONT_SMALL, kPageWidth);
-            if (mNotice[0]) Lines(mNotice, y + 4.f, kWarn, FONT_SMALL, kPageWidth);
+                if (y + 4.f + Height(expiry, FONT_SMALL, kPageWidth) <= limit)
+                    y = Lines(expiry, y + 4.f, kGrey, FONT_SMALL, kPageWidth);
+                const char *standing = "Use invitation imports this role's private admission. The next disclosure Continue is the first service contact.";
+                if (mNotice[0]) {
+                    if (y + 4.f + Height(mNotice, FONT_SMALL, kPageWidth) <= limit)
+                        y = Lines(mNotice, y + 4.f, kWarn, FONT_SMALL, kPageWidth);
+                    if (y + 4.f + Height(standing, FONT_SMALL, kPageWidth) <= limit)
+                        Lines(standing, y + 4.f, kGrey, FONT_SMALL, kPageWidth);
+                } else if (y + 4.f + Height(standing, FONT_SMALL, kPageWidth) <= limit) {
+                    Lines(standing, y + 4.f, kGrey, FONT_SMALL, kPageWidth);
+                }
+            } else {
+                const char *expired = "This preview is unavailable or expired. Export a fresh pair invitation and choose its folder again.";
+                if (y + 4.f + Height(expired, FONT_SMALL, kPageWidth) <= limit)
+                    y = Lines(expired, y + 4.f, kWarn, FONT_SMALL, kPageWidth);
+                if (mNotice[0] && y + 4.f + Height(mNotice, FONT_SMALL, kPageWidth) <= limit)
+                    Lines(mNotice, y + 4.f, kWarn, FONT_SMALL, kPageWidth);
+            }
             break;
         }
         case NP_SIGNAL_DISCLOSURE:
         {
+            const float limit = ListTop(mList[NP_SIGNAL_DISCLOSURE]) - 6.f;
             const char* origin = DisplayServiceOrigin(SignalingOrigin());
             const char* destination = origin[0] ? origin : "Approved HTTPS origin is unavailable.";
             const char* head = "Review Online network access";
             const char* body = "Online contacts the approved HTTPS signaling service below to bind this private pair and exchange protected connection records. Accepted connections use Cloudflare TURN relay access.";
             const char* steps = "Continue contacts this service. Accept on the next page permits relay setup. Cancel closes the selected pair.";
-            if (Height(head) + Height(body) + Height(destination) + Height(steps) > ListTop(mList[mPage]) - y)
+            const float noticeH = mNotice[0] ? Height(mNotice) : 0.f;
+            if (y + Height(head) + Height(body) + Height(destination) + Height(steps) + noticeH > limit)
                 body = "Continue contacts this HTTPS signaling service. Accept next permits this approved pair's Cloudflare TURN relay setup.";
-            y = Lines(head, y, kWhite);
-            y = Lines(body, y, kGrey);
-            y = Lines(destination, y, kWarn);
-            y = Lines(steps, y, kGrey);
-            if (mNotice[0]) Lines(mNotice, y, kWarn);
+            if (y + Height(head) <= limit)
+                y = Lines(head, y, kWhite);
+            if (y + Height(body) <= limit)
+                y = Lines(body, y, kGrey);
+            if (y + Height(destination) <= limit)
+                y = Lines(destination, y, kWarn);
+            if (mNotice[0]) {
+                if (y + Height(mNotice) <= limit)
+                    y = Lines(mNotice, y, kWarn);
+                if (y + Height(steps) <= limit)
+                    Lines(steps, y, kGrey);
+            } else if (y + Height(steps) <= limit) {
+                Lines(steps, y, kGrey);
+            }
             break;
         }
         case NP_SIGNAL_STATUS:
@@ -1998,19 +2069,20 @@ public:
 			}
 			if (RelayRequested())
 			{
+				const float limit = ListTop(mList[mPage]) - 6.f;
 				const char *head = SignalingSelected() ? SignalRouteStage(SignalingView().status, s.state, true, true) : ("Two-player relay pilot (experimental)");
 				const char *label = "Join code: share only with the intended player";
 				const char *waiting = SignalingSelected() ? SignalConnectionDetail() : (s.state == CE_LOBBY_HOST_CONNECTING ? "Private connection setup in progress..." : "Waiting for private setup or the invited player...");
 				const char *explain = SignalingSelected() ? "Share the private CE code only with the approved partner. Connection records exchange through the selected service." : ("Transfer the new lobby files between both PCs. The game does not send them. The game connection uses a separate prepared folder.");
 				const char *note = mNotice[0] ? mNotice : s.notice;
 				const float need = Height(head) + 8.f + Height(label) + 2.f + Height(s.code, FONT_NORMAL, kCodeWidth) + 8.f + Height(waiting) + (*note ? 4.f + Height(note, FONT_SMALL, kNoticeWidth) : 0.f);
-				const bool explained = y + need + 8.f + Height(explain) <= ListTop(mList[NP_HOST]) - 6.f;
-				y = Lines(head, y, kWarn);
-				y = Lines(label, y + 8.f, kWhite);
-				y = Lines(s.code, y + 2.f, kWarn, FONT_NORMAL, kCodeWidth);
-				y = Lines(waiting, y + 8.f, kWhite);
-				if (*note) y = Lines(note, y + 4.f, kWarn, FONT_SMALL, kNoticeWidth);
-				if (explained) Lines(explain, y + 8.f, kGrey);
+				const bool explained = y + need + 8.f + Height(explain) <= limit;
+				if (y + Height(head) <= limit) y = Lines(head, y, kWarn);
+				if (y + 8.f + Height(label) <= limit) y = Lines(label, y + 8.f, kWhite);
+				if (y + 2.f + Height(s.code, FONT_NORMAL, kCodeWidth) <= limit) y = Lines(s.code, y + 2.f, kWarn, FONT_NORMAL, kCodeWidth);
+				if (y + 8.f + Height(waiting) <= limit) y = Lines(waiting, y + 8.f, kWhite);
+				if (*note && y + 4.f + Height(note, FONT_SMALL, kNoticeWidth) <= limit) y = Lines(note, y + 4.f, kWarn, FONT_SMALL, kNoticeWidth);
+				if (explained && y + 8.f + Height(explain) <= limit) Lines(explain, y + 8.f, kGrey);
 				break;
 			}
 			const char *waiting = s.state == CE_LOBBY_HOST_CONNECTING ? "Your friend is connecting..." : "Waiting for your friend to join.";
@@ -2022,16 +2094,21 @@ public:
 			const float need = Height("Your Join Code", FONT_SMALL, 400.f) + 4.f + Height(s.code, FONT_NORMAL, kCodeWidth) + 6.f +
 							   Height("Read it out or send it to your friend.", FONT_SMALL, kPageWidth) + 14.f + Height(waiting, FONT_SMALL, kPageWidth) +
 							   (*lobby ? 8.f + Height(lobby, FONT_SMALL, kPageWidth) : 0.f) + (*note ? 8.f + Height(note, FONT_SMALL, kPageWidth) : 0.f);
-			const float room = ListTop(mList[mPage]) - 6.f - y;
+			const float limit = ListTop(mList[mPage]) - 6.f;
+			const float room = limit - y;
 			const float drop = need + 36.f <= room ? 36.f : (need < room ? room - need : 0.f);
-			y = Lines("Your Join Code", y + drop, kGrey) + 4.f;
-			y = Lines(s.code, y, kWhite, FONT_NORMAL, kCodeWidth) + 6.f;
-			y = Lines("Read it out or send it to your friend.", y, kGrey, FONT_SMALL, kPageWidth) + 14.f;
-			y = Lines(waiting, y, kCream, FONT_SMALL, kPageWidth);
+			y = Lines("Your Join Code", y + drop, kGrey) + (need > room ? 2.f : 4.f);
+			y = Lines(s.code, y, kWhite, FONT_NORMAL, kCodeWidth) + (need > room ? 2.f : 6.f);
+			if (y + Height("Read it out or send it to your friend.", FONT_SMALL, kPageWidth) <= limit)
+				y = Lines("Read it out or send it to your friend.", y, kGrey, FONT_SMALL, kPageWidth) + (need > room ? 6.f : 14.f);
+			if (y + Height(waiting, FONT_SMALL, kPageWidth) <= limit)
+				y = Lines(waiting, y, kCream, FONT_SMALL, kPageWidth);
 			mHostLineBottom = y;
+			if (*lobby && y + 8.f + Height(lobby, FONT_SMALL, kPageWidth) > limit)
+				lobby = "";
 			if (*lobby)
 				y = mHostLineBottom = Lines(lobby, y + 8.f, kWhite, FONT_SMALL, kPageWidth);
-			if (*note)
+			if (*note && y + 8.f + Height(note, FONT_SMALL, kPageWidth) <= limit)
 				mHostLineBottom = Lines(note, y + 8.f, kWhite, FONT_SMALL, kPageWidth);
 			break;
 		}
@@ -2062,14 +2139,18 @@ public:
 				else snprintf(connecting, sizeof connecting, "%s", "Connecting...");
 			}
 			// The words below the introduction (the code's problem, the connection, the notice) are what the player needs; the parenthesis of the introduction goes when they do not fit above the list.
+			const float limit = ListTop(mList[NP_JOIN]) - 6.f;
 			const float rest = (*problem ? 10.f + Height(problem, FONT_SMALL, kPageWidth) : 0.f) + (*connecting ? 10.f + Height(connecting, FONT_SMALL, kPageWidth) : 0.f) + (*note ? 10.f + Height(note, FONT_SMALL, kPageWidth) : 0.f);
-			y = Lines(!PlayerPages() && y + Height(intro, FONT_SMALL, kPageWidth) + rest <= ListTop(mList[NP_JOIN]) - 6.f ? intro : shorter, y, PlayerPages() ? kCream : kWhite, FONT_SMALL, kPageWidth);
-			if (*problem)
-				y = Lines(problem, y + 10.f, codeColour, FONT_SMALL, kPageWidth);
-			if (*connecting)
-				y = Lines(connecting, y + 10.f, kWhite, FONT_SMALL, kPageWidth);
-			if (*note)
-				Lines(note, y + 10.f, kWhite, FONT_SMALL, kPageWidth);
+			const char *introShown = !PlayerPages() && y + Height(intro, FONT_SMALL, kPageWidth) + rest <= limit ? intro : shorter;
+			if (y + Height(introShown, FONT_SMALL, kPageWidth) <= limit)
+				y = Lines(introShown, y, PlayerPages() ? kCream : kWhite, FONT_SMALL, kPageWidth);
+			const float gap = (y + rest <= limit) ? 10.f : 4.f;
+			if (*problem && y + gap + Height(problem, FONT_SMALL, kPageWidth) <= limit)
+				y = Lines(problem, y + gap, codeColour, FONT_SMALL, kPageWidth);
+			if (*connecting && y + gap + Height(connecting, FONT_SMALL, kPageWidth) <= limit)
+				y = Lines(connecting, y + gap, kWhite, FONT_SMALL, kPageWidth);
+			if (*note && y + gap + Height(note, FONT_SMALL, kPageWidth) <= limit)
+				Lines(note, y + gap, kWhite, FONT_SMALL, kPageWidth);
 			break;
 		}
 		case NP_LOBBY:
@@ -2094,6 +2175,7 @@ public:
 				Lines("Starting...", 220.f, kWhite, FONT_NORMAL);
 				break;
 			}
+			const float limit = ListTop(mList[NP_LOBBY]) - 6.f;
 			if (PlayerPages())
 			{
 				// Two player slots as the original's orbs (guide 3.6), each with its player under it and, for the friend,
@@ -2113,58 +2195,95 @@ public:
 				y = kSlotY + 62.f;
 				if (!s.host)
 				{
+					const char *waitHost = "Waiting for your friend to start.";
 					snprintf(t, sizeof t, "Mission: %s", MissionName(s.level));
-					y = Lines(t, y + 12.f, kCream);
-					if (ready && !mReturningRoom)
-						y = Lines("Waiting for your friend to start.", y + 4.f, kCream);
+					const float mGap = (y + 12.f + Height(t) + 4.f + Height(waitHost) <= limit) ? 12.f : 4.f;
+					if (y + mGap + Height(t) <= limit)
+						y = Lines(t, y + mGap, kCream);
+					if (ready && !mReturningRoom && y + 4.f + Height(waitHost) <= limit)
+						y = Lines(waitHost, y + 4.f, kCream);
 				}
+				const float tGap = 6.f;
 				if (mNotice[0] && !mNoticeBoxed)
-					Lines(mNotice, y + 10.f, kWhite, FONT_SMALL, kPageWidth);
+				{
+					if (y + tGap + Height(mNotice, FONT_SMALL, kPageWidth) <= limit)
+						Lines(mNotice, y + tGap, kWhite, FONT_SMALL, kPageWidth);
+				}
 				else if (mReturningRoom && ready)
 				{
 					// One line: the host's rows (Mission, Start, Leave) begin at y 275 and the guest's Leave at y 295, so a
 					// second line ran into them at 640x480. The host's rows say what to do; the guest, whose page already
 					// names the mission, is told who starts it (a longer guest line wrapped into Leave).
-					Lines(s.host ? "Back in the lobby together." : "Your friend starts the next mission.",
-					      y + 10.0f, kWhite, FONT_SMALL, kPageWidth);
+					const float retH = Height(s.host ? "Back in the lobby together." : "Your friend starts the next mission.", FONT_SMALL, kPageWidth);
+					if (y + tGap + retH <= limit)
+						Lines(s.host ? "Back in the lobby together." : "Your friend starts the next mission.",
+						      y + tGap, kWhite, FONT_SMALL, kPageWidth);
 				}
 				else if (mOutcome[0] && mOutcomeGood)
-					Lines(mOutcome, y + 10.f, kWhite, FONT_SMALL, kPageWidth);
+				{
+					if (y + tGap + Height(mOutcome, FONT_SMALL, kPageWidth) <= limit)
+						Lines(mOutcome, y + tGap, kWhite, FONT_SMALL, kPageWidth);
+				}
 				break;
 			}
 			const char *peer = s.peer_version[0] ? s.peer_version : "...";
 			bool ok = s.state == CE_LOBBY_READY;
-			y = Lines(ok ? "Connected via Relay" : SignalRouteStage(SignalingView().status, s.state, SignalingSelected(), RelayRequested()), y, ok ? kGood : kWarn) + 4.f;
+			const char *stage = ok ? "Connected via Relay" : SignalRouteStage(SignalingView().status, s.state, SignalingSelected(), RelayRequested());
+			if (y + Height(stage) <= limit)
+				y = Lines(stage, y, ok ? kGood : kWarn) + 4.f;
 			snprintf(t, sizeof t, "Player 1 (host%s): Onslaught CE %s", s.host ? ", you" : "", s.host ? s.local_version : peer);
-			y = Lines(t, y, kWhite);
+			if (y + Height(t) <= limit)
+				y = Lines(t, y, kWhite);
 			snprintf(t, sizeof t, "Player 2%s: Onslaught CE %s", s.host ? "" : " (you)", s.host ? peer : s.local_version);
-			y = Lines(t, y, kWhite);
-			y = Lines(s.compat[0] ? s.compat : "Checking...", y + 8.f, ok ? kGood : kBad);
-			if (ok && !s.host)
+			if (y + Height(t) <= limit)
+				y = Lines(t, y, kWhite);
+			const char *compat = s.compat[0] ? s.compat : "Checking...";
+			if (y + 8.f + Height(compat) <= limit)
+				y = Lines(compat, y + 8.f, ok ? kGood : kBad);
+			if (ok && !s.host && y + 8.f + Height("Waiting for the host to start.") <= limit)
 				y = Lines("Waiting for the host to start.", y + 8.f, kWhite);
-			if (s.state == CE_LOBBY_REFUSED)
+			if (s.state == CE_LOBBY_REFUSED && y + 8.f + Height("Both players need the same Onslaught CE download. Leave, update, and join again.") <= limit)
 				y = Lines("Both players need the same Onslaught CE download. Leave, update, and join again.", y + 8.f, kGrey);
 			const char *note = PlayerPages() ? (mNoticeBoxed ? "" : mNotice) : (mNotice[0] ? mNotice : s.notice);
 			// What happens when the games disagree, and how to leave, is in the README, not standing prose on the page.
-			Lines(note, y + 8.f, kWarn, FONT_SMALL, kNoticeWidth);
+			if (*note && y + 8.f + Height(note, FONT_SMALL, kNoticeWidth) <= limit)
+				Lines(note, y + 8.f, kWarn, FONT_SMALL, kNoticeWidth);
 			break;
 		}
 		case NP_HELP:
             if (SignalingSelected()) {
-                y = Lines("Online approved-pair help", y, kWhite);
-                y = Lines("Host or Join first shows the approved HTTPS service and Cloudflare TURN relay disclosure. Continue contacts that service; Accept permits this private pair's relay setup.", y, kGrey);
-                y = Lines("Share the private CE code only with the approved partner. Connection records are exchanged through the selected service.", y, kGrey);
-                y = Lines("Retry is deliberate and keeps the fixed deadline. Closed, expired or uncertain issuance needs a fresh reviewed setup. Public browsing is unavailable.", y, kWarn);
+                const float limit = ListTop(mList[NP_HELP]) - 6.f;
+                const char *h0 = "Online approved-pair help";
+                const char *h1 = "Host or Join first shows the approved HTTPS service and Cloudflare TURN relay disclosure. Continue contacts that service; Accept permits this private pair's relay setup.";
+                const char *h2 = "Share the private CE code only with the approved partner. Connection records are exchanged through the selected service.";
+                const char *h3 = "Retry is deliberate and keeps the fixed deadline. Closed, expired or uncertain issuance needs a fresh reviewed setup. Public browsing is unavailable.";
+                if (y + Height(h0, FONT_SMALL, kHelpWidth) <= limit)
+                    y = Lines(h0, y, kWhite, FONT_SMALL, kHelpWidth) + 6.f;
+                if (y + Height(h1, FONT_SMALL, kHelpWidth) <= limit)
+                    y = Lines(h1, y, kGrey, FONT_SMALL, kHelpWidth) + 6.f;
+                if (y + Height(h2, FONT_SMALL, kHelpWidth) <= limit)
+                    y = Lines(h2, y, kGrey, FONT_SMALL, kHelpWidth) + 6.f;
+                if (y + Height(h3, FONT_SMALL, kHelpWidth) <= limit)
+                    Lines(h3, y, kWarn, FONT_SMALL, kHelpWidth);
                 break;
             }
 
 		{
 			if (RelayRequested())
 			{
-				y = Lines("Two-player relay pilot (manual file exchange)", y, kWarn, FONT_SMALL, kHelpWidth) + 6.f;
-				y = Lines("Before launch, an operator needs two different, empty private folders per PC: lobby and game. Use the same build.", y, kWhite, FONT_SMALL, kHelpWidth) + 6.f;
-				y = Lines("Host privately shares the join code. Guest enters it and chooses Connect. The operator transfers request, offer and answer files; repeat in the matching game folders after Start.", y, kWhite, FONT_SMALL, kHelpWidth) + 6.f;
-				Lines("Offer parcels contain temporary credentials. Use a confidential authenticated channel: base64 is not encryption. A local export is not delivery. Copy each file completely before import. Keep filenames and files private. Another connection attempt or mission needs fresh folders and a relaunch. No files are sent automatically. Internet play has not been verified.", y, kGrey, FONT_SMALL, kHelpWidth);
+				const float limit = ListTop(mList[NP_HELP]) - 6.f;
+				const char *r0 = "Two-player relay pilot (manual file exchange)";
+				const char *r1 = "Before launch, an operator needs two different, empty private folders per PC: lobby and game. Use the same build.";
+				const char *r2 = "Host privately shares the join code. Guest enters it and chooses Connect. The operator transfers request, offer and answer files; repeat in the matching game folders after Start.";
+				const char *r3 = "Offer parcels contain temporary credentials. Use a confidential authenticated channel: base64 is not encryption. A local export is not delivery. Copy each file completely before import. Keep filenames and files private. Another connection attempt or mission needs fresh folders and a relaunch. No files are sent automatically. Internet play has not been verified.";
+				if (y + Height(r0, FONT_SMALL, kHelpWidth) <= limit)
+					y = Lines(r0, y, kWarn, FONT_SMALL, kHelpWidth) + 6.f;
+				if (y + Height(r1, FONT_SMALL, kHelpWidth) <= limit)
+					y = Lines(r1, y, kWhite, FONT_SMALL, kHelpWidth) + 6.f;
+				if (y + Height(r2, FONT_SMALL, kHelpWidth) <= limit)
+					y = Lines(r2, y, kWhite, FONT_SMALL, kHelpWidth) + 6.f;
+				if (y + Height(r3, FONT_SMALL, kHelpWidth) <= limit)
+					Lines(r3, y, kGrey, FONT_SMALL, kHelpWidth);
 				break;
 			}
 			// Four short paragraphs in cream, a blank line between them, ending well above Back (list centre 440).

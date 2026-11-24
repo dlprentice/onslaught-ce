@@ -4,7 +4,7 @@
 
 Verifies:
   1. Player-facing unavailable copy when lobby_url is empty ("Online lobby service is currently unavailable.")
-     and default fallback build_id == "0.1.15".
+     and default fallback build_id == "0.1.16".
   2. CeSvcHostPatch::max_seats serialization into POST /ce-lobby/v1/rooms/:id/update.
   3. RequestLeaveRoom() generation / leave_pending_ race safety:
      - Cancels in-flight PollRoom / UpdateRoom / StartMatch immediately on Leave;
@@ -153,7 +153,7 @@ std::string RoomJson(const std::string &room_id, uint64_t rev, const std::string
            std::to_string(rev) + ",\"state\":\"" + state + "\",\"name\":\"Test Room\","
            "\"topology\":\"star_lockstep\",\"mode\":\"versus_2v2\",\"map\":851,\"max_seats\":" +
            std::to_string(max_seats) + ",\"host_seat\":0,\"visibility\":\"public\",\"has_password\":false,"
-           "\"require_relay\":false,\"ai_fill\":true,\"build_id\":\"0.1.15\",\"content_id\":\"\","
+           "\"require_relay\":false,\"ai_fill\":true,\"build_id\":\"0.1.16\",\"content_id\":\"\","
            "\"server_time_ms\":1763900000000,\"teams\":[{\"team\":0,\"side\":\"forseti\",\"cap\":2},"
            "{\"team\":1,\"side\":\"muspell\",\"cap\":2}],\"seats\":["
            "{\"seat\":0,\"kind\":\"human\",\"player_id\":\"" + host_pid + "\",\"tag\":\"1234\","
@@ -246,7 +246,7 @@ int main(int argc, char **argv) {
           prof.status_detail.find("ce.ini") == std::string::npos,
           "empty origin reports clean player-facing unavailable message");
 
-    // 2. Connect & verify fallback build_id == "0.1.15" + CeSvcHostPatch::max_seats + RequestLeaveRoom race!
+    // 2. Connect & verify fallback build_id == "0.1.16" + CeSvcHostPatch::max_seats + RequestLeaveRoom race!
     gConfiguredLobbyUrl = "https://lobby.example.test";
     bool hold_poll_room = false;
     bool hold_create_room = false;
@@ -262,8 +262,8 @@ int main(int argc, char **argv) {
             return {"", 200, "{\"ok\":true,\"enabled\":true,\"proto\":1,\"max_match_slots\":4,\"wire_max_slots\":64,\"server_time_ms\":1763900000000,\"active_rooms\":0}", false, false};
         }
         if (req.path == "/ce-lobby/v1/auth/challenge") {
-            Check(req.body.find("\"build_id\":\"0.1.15\"") != std::string::npos,
-                  "auth/challenge sends default fallback build_id 0.1.15");
+            Check(req.body.find("\"build_id\":\"0.1.16\"") != std::string::npos,
+                  "auth/challenge sends default fallback build_id 0.1.16");
             return {"", 200, "{\"nonce\":\"0123456789abcdef0123456789abcdef\",\"issued_at\":1763900000,\"expires_at\":1763900120,\"server_time_ms\":1763900000000}", false, false};
         }
         if (req.path == "/ce-lobby/v1/auth/session") {
@@ -516,6 +516,160 @@ int main(int argc, char **argv) {
         PortCeOnlineMatchStop(0);
         PortCeOnlineServiceDetachMatchBridge();
         PortCeOnlineMatchClear();
+    }
+
+    // -----------------------------------------------------------------------
+    // 6. PollRoom 403/404 & SaveCallsign() room lifecycle / queue hygiene
+    // -----------------------------------------------------------------------
+    {
+        CeOnlineServiceFacade *svc = PortCeOnlineServiceInstance();
+        gConfiguredLobbyUrl = "https://lobby.example.test";
+        gHttp.history.clear();
+        gHttp.cancels = 0;
+        bool hold_poll_hyg = false;
+        bool hold_update_hyg = false;
+        unsigned next_poll_status = 200;
+        std::string authed_callsign;
+        CeSvcProfile cur_prof{};
+        svc->GetProfile(&cur_prof);
+
+        gHttp.should_hold = [&](const std::string &path) {
+            if (hold_poll_hyg && path.find("/ce-lobby/v1/rooms/rm_2222222222222222?since=") == 0) return true;
+            if (hold_update_hyg && path == "/ce-lobby/v1/rooms/rm_2222222222222222/update") return true;
+            return false;
+        };
+        gHttp.responder = [&](const RecordedReq &req) -> QueuedReply {
+            if (req.path == "/ce-lobby/v1/health") {
+                return {"", 200, "{\"ok\":true,\"enabled\":true,\"proto\":1,\"max_match_slots\":4,\"wire_max_slots\":64,\"server_time_ms\":1763900000000,\"active_rooms\":0}", false, false};
+            }
+            if (req.path == "/ce-lobby/v1/auth/challenge") {
+                return {"", 200, "{\"nonce\":\"0123456789abcdef0123456789abcdef\",\"issued_at\":1763900000,\"expires_at\":1763900120,\"server_time_ms\":1763900000000}", false, false};
+            }
+            if (req.path == "/ce-lobby/v1/auth/session") {
+                const size_t cs_pos = req.body.find("\"callsign\":\"");
+                if (cs_pos != std::string::npos) {
+                    const size_t start = cs_pos + 12;
+                    const size_t end = req.body.find('"', start);
+                    if (end != std::string::npos) authed_callsign = req.body.substr(start, end - start);
+                }
+                svc->GetProfile(&cur_prof);
+                return {"", 200, "{\"session_token\":\"CES1.hyg.tok\",\"player_id\":\"" + cur_prof.player_id +
+                                 "\",\"tag\":\"" + cur_prof.tag + "\",\"callsign\":\"" + cur_prof.callsign +
+                                 "\",\"expires_at\":1763914400,\"server_time_ms\":1763900000000}", false, false};
+            }
+            if (req.path == "/ce-lobby/v1/lobbies" && req.method == CeOnlineHttpMethod::Post) {
+                return {"", 200, RoomJson("rm_2222222222222222", 7, "lobby", cur_prof.player_id, 4), false, false};
+            }
+            if (req.path.find("/ce-lobby/v1/rooms/rm_2222222222222222?since=") == 0) {
+                if (next_poll_status == 403u) {
+                    return {"", 403, "{\"error\":\"kicked\",\"message\":\"Kicked\"}", false, false};
+                }
+                if (next_poll_status == 404u) {
+                    return {"", 404, "{\"error\":\"room_not_found\",\"message\":\"Closed\"}", false, false};
+                }
+                return {"", 200, "{\"unchanged\":true,\"rev\":7,\"server_time_ms\":1763900002000}", false, false};
+            }
+            if (req.path == "/ce-lobby/v1/rooms/rm_2222222222222222/update" ||
+                req.path == "/ce-lobby/v1/rooms/rm_2222222222222222/chat" ||
+                req.path == "/ce-lobby/v1/rooms/rm_2222222222222222/start") {
+                return {"", 200, RoomJson("rm_2222222222222222", 8, "lobby", cur_prof.player_id, 4), false, false};
+            }
+            return {"", 200, "{\"rooms\":[]}", false, false};
+        };
+
+        svc->RequestReconnect();
+        for (int step = 1; step <= 8; ++step) svc->Poll(static_cast<uint64_t>(10000 + step * 50));
+        Check(svc->GetProfile(&cur_prof) && cur_prof.conn_status == 2, "6 hygiene service connected");
+
+        // 6a. PollRoom 403 purges queued room mutations, clears cached_room_/rev, and preserves kick error.
+        CeSvcCreateParams cp;
+        cp.name = "Hygiene 403";
+        cp.mode = "versus_2v2";
+        cp.map = 851;
+        cp.max_seats = 4;
+        std::string err;
+        Check(svc->RequestCreateRoom(cp, &err), "6a RequestCreateRoom succeeds");
+        svc->Poll(11000);
+        svc->Poll(11050);
+        CeSvcRoom rm{};
+        Check(svc->GetRoom(&rm) && rm.active && rm.rev == 7u, "6a room active at rev 7");
+
+        // Hold PollRoom in-flight while user queues UpdateSelf, HostUpdate, SendChat, StartMatch!
+        next_poll_status = 403u;
+        hold_poll_hyg = true;
+        svc->Poll(12500);  // starts PollRoom(since=7), held Pending
+        Check(!gHttp.history.empty() &&
+              gHttp.history.back().path.find("/ce-lobby/v1/rooms/rm_2222222222222222?since=7") == 0,
+              "6a PollRoom(since=7) is in flight");
+        CeSvcHostPatch hp;
+        hp.has_ai_fill = true;
+        hp.ai_fill = false;
+        Check(svc->RequestUpdateSelf(1, "Aquila", true, &err), "6a queue UpdateSelf while PollRoom in flight");
+        Check(svc->RequestHostUpdate(hp, &err), "6a queue HostUpdate while PollRoom in flight");
+        Check(svc->RequestSendChat("hello", &err), "6a queue SendChat while PollRoom in flight");
+        Check(svc->RequestStartMatch(&err), "6a queue StartMatch while PollRoom in flight");
+
+        const size_t hist_before_403 = gHttp.history.size();
+        hold_poll_hyg = false;
+        svc->Poll(12600);  // PollRoom completes with 403 -> ResetRoomLifecycle(false)
+        std::string op_err;
+        Check(svc->TakeOpError(&op_err) && op_err == "You were removed from the lobby.", "6a PollRoom 403 sets kick op_error");
+        Check(!svc->GetRoom(&rm) && !rm.active && rm.room_id.empty() && rm.rev == 0u, "6a cached_room_ cleared after 403");
+        Check(!svc->RequestSendChat("after403", &err), "6a RequestSendChat refused after 403");
+        svc->Poll(12700);
+        svc->Poll(12800);
+        Check(gHttp.history.size() == hist_before_403, "6a zero queued room ops dispatched after PollRoom 403");
+
+        // 6b. PollRoom 404 purges queued room mutations and resets last_room_rev_ to 0.
+        next_poll_status = 200u;
+        Check(svc->RequestCreateRoom(cp, &err), "6b RequestCreateRoom succeeds");
+        svc->Poll(13000);
+        svc->Poll(13050);
+        Check(svc->GetRoom(&rm) && rm.rev == 7u, "6b room active again at rev 7");
+        next_poll_status = 404u;
+        hold_poll_hyg = true;
+        svc->Poll(14500);  // starts PollRoom(since=7), held Pending
+        Check(svc->RequestUpdateSelf(0, "Valkyrie", true, &err), "6b queue UpdateSelf before 404");
+        Check(svc->RequestSendChat("closing", &err), "6b queue SendChat before 404");
+        const size_t hist_before_404 = gHttp.history.size();
+        hold_poll_hyg = false;
+        svc->Poll(14600);  // PollRoom completes with 404 -> ResetRoomLifecycle(false)
+        Check(svc->TakeOpError(&op_err) && op_err == "The lobby room was closed.", "6b PollRoom 404 sets closed op_error");
+        Check(!svc->GetRoom(&rm) && rm.rev == 0u, "6b cached_room_ cleared after 404");
+        svc->Poll(14700);
+        Check(gHttp.history.size() == hist_before_404, "6b zero queued room ops dispatched after PollRoom 404");
+
+        // 6c. SaveCallsign() cancels in-flight room ops, purges queued room mutations, clears room state, and re-auths.
+        next_poll_status = 200u;
+        Check(svc->RequestCreateRoom(cp, &err), "6c RequestCreateRoom succeeds");
+        svc->Poll(15000);
+        svc->Poll(15050);
+        Check(svc->GetRoom(&rm) && rm.active, "6c room active before SaveCallsign");
+
+        hold_update_hyg = true;
+        Check(svc->RequestUpdateSelf(1, "Raptor", true, &err), "6c queue UpdateSelf");
+        svc->Poll(15200);  // dispatches UpdateRoom, held Pending
+        Check(!gHttp.history.empty() && gHttp.history.back().path == "/ce-lobby/v1/rooms/rm_2222222222222222/update",
+              "6c UpdateRoom in flight before SaveCallsign");
+        Check(svc->RequestSendChat("stale-chat", &err), "6c queue SendChat behind in-flight UpdateRoom");
+        const unsigned cancels_before_save = gHttp.cancels;
+
+        Check(svc->SaveCallsign("FalconNine", &err), "6c SaveCallsign succeeds");
+        Check(gHttp.cancels == cancels_before_save + 1u, "6c SaveCallsign cancelled in-flight UpdateRoom");
+        Check(!svc->GetRoom(&rm) && !rm.active && rm.room_id.empty(), "6c SaveCallsign cleared active room state");
+        Check(svc->GetProfile(&cur_prof) && cur_prof.callsign == "FalconNine" && cur_prof.conn_status == 1,
+              "6c SaveCallsign updated callsign and transitioned conn_status to connecting");
+
+        hold_update_hyg = false;
+        const size_t hist_before_reauth = gHttp.history.size();
+        for (int step = 1; step <= 6; ++step) svc->Poll(static_cast<uint64_t>(15500 + step * 50));
+        Check(authed_callsign == "FalconNine", "6c re-authenticated with updated callsign FalconNine");
+        Check(svc->GetProfile(&cur_prof) && cur_prof.conn_status == 2, "6c re-authenticated to conn_status 2");
+        bool saw_stale_room_op = false;
+        for (size_t i = hist_before_reauth; i < gHttp.history.size(); ++i) {
+            if (gHttp.history[i].path.find("/rooms/rm_2222222222222222") != std::string::npos) saw_stale_room_op = true;
+        }
+        Check(!saw_stale_room_op, "6c zero stale room requests fired after SaveCallsign session reset");
     }
 
     std::printf("CE_ONLINE_SERVICE_TESTS checks=%d failures=%d\n", gChecks, gFails);

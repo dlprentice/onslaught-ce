@@ -28,6 +28,8 @@
 
 bool PortCeNetOffered();
 void PortCeNetShutdown() __attribute__((weak));
+int  PortCeGamepadEdge(int pad, int button, bool release);
+bool PortCeGamepadIsStick(int pad);
 extern "C" int CE_SettingGetBool(const char *key, int def);
 extern "C" void PortCeNetOpenDirectFromOnline(void) __attribute__((weak));
 
@@ -377,10 +379,13 @@ void PortCeOnlineUiOpen(void) {
     if (!OnlineOffered()) return;
     EnsureHostOps();
     const bool enteredFromMpPage = (FRONTEND.GetTransitionFrom() == FEP_MULTIPLAYER);
-    if (!sNextOpenFromMultiplayer && !enteredFromMpPage) {
+    const bool returningFromDirectLan = sOpenedDirectLan && sOpenedFromMultiplayer;
+    sOpenedDirectLan = false;
+    if (!sNextOpenFromMultiplayer && !returningFromDirectLan) {
         sOpenedFromMultiplayer = false;
     }
-    const int fromMp = (sNextOpenFromMultiplayer || sOpenedFromMultiplayer || enteredFromMpPage) ? 1 : 0;
+    const int fromMp = (sNextOpenFromMultiplayer || returningFromDirectLan ||
+                        (sOpenedFromMultiplayer && enteredFromMpPage)) ? 1 : 0;
     sNextOpenFromMultiplayer = false;
     sOpenedFromMultiplayer = (fromMp != 0);
     sExitingToMultiplayer = false;
@@ -576,9 +581,17 @@ void PortCeOnlineUiMultiplayerProcess(int active) {
     if (!active || !OnlineOffered() || FEMESSBOX.BeingDisplayed()) return;
     sExitingToMultiplayer = false;
     sOpenedDirectLan = false;
+    const int kPadY = 2; // ce_gamepad.cpp: rotated 'joybox' face buttons (PAD_B=0, PAD_X=1, PAD_Y=2, PAD_A=3)
     bool padOpen = false;
-    for (int pad = 0; pad < 2; ++pad) {
-        if (LT.JoyState(pad) && LT.OldJoyState(pad) && LT.JoyButtonOnce(pad, 3)) {
+    const int maxPads = (LT.mJoypads < MAX_JOYPADS) ? LT.mJoypads : MAX_JOYPADS;
+    for (int pad = 0; pad < maxPads && pad < 2; ++pad) {
+        if (!LT.mUnknown33474[pad] || PortCeGamepadIsStick(pad)) continue;
+        const int edge = PortCeGamepadEdge(pad, kPadY, false);
+        if (edge > 0) {
+            padOpen = true;
+            break;
+        }
+        if (edge < 0 && LT.JoyState(pad) && LT.OldJoyState(pad) && LT.JoyButtonOnce(pad, kPadY)) {
             padOpen = true;
             break;
         }

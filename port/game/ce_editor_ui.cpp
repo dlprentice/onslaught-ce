@@ -298,30 +298,43 @@ void CeEditorUiLay(const CeEditorUiModel &m, CeEditorUiMeasure measure, void *co
             l.objective=Rect(l.margin,l.banner.y+capH+12.f*k,ow,capH);
         }
     } else {
+        const float rightEdge = m.width - l.margin - kCapOverhang * k;
+        const float maxTopW = rightEdge - l.margin;
         // Title capsule top left: "Map Editor", the level's own name; the project and its state in a capsule under it.
-        const float w = (Measure(measure, context, CeEditorUiSmall, "Map Editor") + kPairGap +
-                         Measure(measure, context, CeEditorUiSmall, m.level)) * k + 2.f * capEnd;
+        float w = (Measure(measure, context, CeEditorUiSmall, "Map Editor") + kPairGap +
+                   Measure(measure, context, CeEditorUiSmall, m.level)) * k + 2.f * capEnd;
+        if (w > maxTopW) w = maxTopW;
         l.title = Rect(l.margin, l.margin, w, capH);
         const float state = m.state && m.state[0] ? Measure(measure, context, CeEditorUiSmall, m.state) : 0.f;
-        const float pw = (Measure(measure, context, CeEditorUiSmall, m.project) + state) * k + 2.f * capEnd;
+        float pw = (Measure(measure, context, CeEditorUiSmall, m.project) + state) * k + 2.f * capEnd;
+        const float maxProjW = maxTopW < 300.f * k ? maxTopW : 300.f * k;
+        if (pw > maxProjW) pw = maxProjW;
         // The HUD's caps stand a little above and below the bar: the gaps keep two capsules' caps apart.
         l.project = Rect(l.margin, l.title.y + l.title.h + 12.f * k, pw, capH);
-        const float rightEdge = m.width - l.margin - kCapOverhang * k;
         if (m.mode[0]) {
-            const float ow=Measure(measure,context,CeEditorUiSmall,m.mode)*k+2.f*capEnd;
-            l.mode=Rect(rightEdge-ow,l.margin,ow,capH);
-            // A long name beside a long level name: the readout drops to the project's row rather than cross the title.
+            float ow = Measure(measure, context, CeEditorUiSmall, m.mode) * k + 2.f * capEnd;
+            if (ow > maxTopW) ow = maxTopW;
+            l.mode = Rect(rightEdge - ow, l.margin, ow, capH);
+            // A long name beside a long level name: the readout drops below the title (and below a wide project capsule if needed) rather than cross either.
             CeEditorUiRect reach = Rect(l.mode.x - kGap * k, l.mode.y, l.mode.w + kGap * k, l.mode.h);
             if (Cross(reach, l.title)) {
                 reach.y = l.project.y;
-                if (!Cross(reach, l.project)) l.mode.y = l.project.y;
+                l.mode.y = Cross(reach, l.project) ? (l.project.y + l.project.h + kCapsuleGap * k) : l.project.y;
             }
         }
-    if (m.objective[0]) {
-            const float ow=Measure(measure,context,CeEditorUiSmall,m.objective)*k+2.f*capEnd;
-            l.objective=Rect(rightEdge-ow,l.margin,ow,capH);
+        if (m.objective[0]) {
+            float ow = Measure(measure, context, CeEditorUiSmall, m.objective) * k + 2.f * capEnd;
+            if (ow > maxTopW) ow = maxTopW;
+            l.objective = Rect(rightEdge - ow, l.margin, ow, capH);
             if (l.mode.h > 0.f) l.objective.y = l.mode.y + l.mode.h + kCapsuleGap * k;
-    }
+            else {
+                CeEditorUiRect reach = Rect(l.objective.x - kGap * k, l.objective.y, l.objective.w + kGap * k, l.objective.h);
+                if (Cross(reach, l.title)) {
+                    reach.y = l.project.y;
+                    l.objective.y = Cross(reach, l.project) ? (l.project.y + l.project.h + kCapsuleGap * k) : l.project.y;
+                }
+            }
+        }
         // The tool list: a short column on a panel at the left edge. The command set stands in its groups, a little space
         // and a thin rule between two of them; a row's place is its command's index, whatever the spacing.
         if (m.toolCount > 0) {
@@ -376,7 +389,8 @@ void CeEditorUiLay(const CeEditorUiModel &m, CeEditorUiMeasure measure, void *co
             const float w = (inner + 2.f * kPanelPadX) * k;
             l.card = Rect(m.width - l.margin - w, cardBottom - cardH - noteH, w, cardH + noteH);
             // The card never hides what it describes: when the selected mark (and a start's name under it) would sit
-            // under the card at the bottom right, the card docks at the top right instead, under the readouts there.
+            // under the card at the bottom right, the card docks at the top right instead (or beside the tool rail when
+            // stacked top-right readouts and the mark block both right-side slots).
             float sx = -1.f, sy = -1.f;
             if (m.playerStartSelected && m.playerStartMarker) { sx = m.playerStartX; sy = m.playerStartY + (kMarkReach + 1.f) * k + l.lineHeight; }
             for (int i = 0; m.markers && i < m.markerCount && sx < 0.f; ++i)
@@ -387,9 +401,24 @@ void CeEditorUiLay(const CeEditorUiModel &m, CeEditorUiMeasure measure, void *co
                 float top = l.margin + capH + 12.f * k;
                 if (l.mode.h > 0.f) top = Max(top, l.mode.y + l.mode.h + 12.f * k);
                 if (l.objective.h > 0.f) top = Max(top, l.objective.y + l.objective.h + 12.f * k);
-                const CeEditorUiRect high = Rect(l.card.x, top, l.card.w, l.card.h);
-                const CeEditorUiRect highAround = Rect(high.x - reach, high.y - reach, high.w + 2.f * reach, high.h + 2.f * reach);
-                if (!highAround.Contains(sx, sy) && high.y + high.h <= l.card.y) l.card = high;
+                const float sideX = l.tools.w > 0.f ? l.tools.x + l.tools.w + kGap * k : l.margin;
+                const CeEditorUiRect candidates[3] = {
+                    Rect(l.card.x, top, l.card.w, l.card.h),
+                    Rect(sideX, l.card.y, l.card.w, l.card.h),
+                    Rect(sideX, Max(top, l.tools.y), l.card.w, l.card.h),
+                };
+                for (int c = 0; c < 3; ++c) {
+                    const CeEditorUiRect &cand = candidates[c];
+                    if (c == 0 && !(cand.y < l.card.y)) continue;
+                    if (cand.x < l.margin || cand.x + cand.w > m.width - l.margin || cand.y + cand.h > cardBottom) continue;
+                    if (Cross(cand, l.title) || Cross(cand, l.project) || Cross(cand, l.mode) ||
+                        Cross(cand, l.objective) || Cross(cand, l.tools)) continue;
+                    const CeEditorUiRect candAround = Rect(cand.x - reach, cand.y - reach, cand.w + 2.f * reach, cand.h + 2.f * reach);
+                    if (!candAround.Contains(sx, sy)) {
+                        l.card = cand;
+                        break;
+                    }
+                }
             }
             if (noteH > 0.f)
                 l.note = Rect(l.card.x + kPanelPadX * k, l.card.y + cardH, w - 2.f * kPanelPadX * k, noteH - 2.f * k);
@@ -399,7 +428,9 @@ void CeEditorUiLay(const CeEditorUiModel &m, CeEditorUiMeasure measure, void *co
     // of the screen belongs to the game's radio messages, so the notice sits under the play-test banner (and under any active
     // objective bar, separated by kCapsuleGap so their cyan end caps never touch).
     if (m.notice && m.notice[0]) {
-        const float w = Measure(measure, context, CeEditorUiSmall, m.notice) * k + 2.f * capEnd;
+        const float maxNoticeW = m.width - 2.f * l.margin;
+        float w = Measure(measure, context, CeEditorUiSmall, m.notice) * k + 2.f * capEnd;
+        if (maxNoticeW > 0.f && w > maxNoticeW) w = maxNoticeW;
         float x = (m.width - w) * 0.5f;
         if (x < l.margin) x = l.margin;
         const float playTop = l.objective.h > 0.f ? l.objective.y + l.objective.h : l.banner.y + l.banner.h;
@@ -481,9 +512,14 @@ void CeEditorUiLay(const CeEditorUiModel &m, CeEditorUiMeasure measure, void *co
             widest = Max(widest, Measure(measure, context, CeEditorUiSmall, m.rows[i]) + 2.f * kPanelPadX);
         widest = Max(widest, 280.f);
         const int rows = m.rowCount < CeEditorUiRowMax ? m.rowCount : CeEditorUiRowMax;
-        const float w = (widest + 4.f * kPanelPadX) * k;
+        float w = (widest + 4.f * kPanelPadX) * k;
+        const float maxDialogW = m.width - 2.f * l.margin;
+        if (maxDialogW > 0.f && w > maxDialogW) w = maxDialogW;
         const float h = (2.f * kPanelPadY + large + kScrollBand + rows * kRowPitch + kScrollBand + lh) * k;
-        l.dialog = Rect((m.width - w) * 0.5f, (m.height - h) * 0.5f, w, h);
+        float dialogY = (m.height - h) * 0.5f;
+        const float belowTop = l.project.y + l.project.h + kGap * k;
+        if (dialogY < belowTop && belowTop + h <= m.height - l.margin) dialogY = belowTop;
+        l.dialog = Rect((m.width - w) * 0.5f, dialogY, w, h);
         const float top = l.dialog.y + (kPanelPadY + large + kScrollBand) * k;
         for (int i = 0; i < rows; ++i) l.row[i] = Rect(l.dialog.x + kPanelPadX * k, top + i * l.rowPitch, w - 2.f * kPanelPadX * k, l.rowPitch);
         // The bands between the title and the first row and between the last row and the note hold the marks for more
@@ -547,7 +583,7 @@ CeEditorUiShown CeEditorUiWhatShows(const CeEditorUiModel &m) {
     s.title = true;
     s.dialog = dialog;
     s.help = m.help && !dialog;
-    s.tools = m.toolCount > 0 && !s.help;
+    s.tools = m.toolCount > 0 && !reading;
     s.markers = m.markerCount > 0 && !reading;
     s.card = m.card && !reading && !m.placingPlayerStart;
     s.prompt = m.promptCount > 0 && !reading;
@@ -696,6 +732,23 @@ float Text(float x, float y, const char *text, DWORD colour, int face = CeEditor
     font->DrawTextWithShadow(x, y, colour, wide, 0, 0.f, gScale, gScale);
     return x + FontMeasure(0, face, text) * gScale;
 }
+float TextFitted(float x, float y, const char *text, float maxPx, DWORD colour, int face = CeEditorUiSmall) {
+    if (!text || !text[0] || maxPx <= 0.f) return x;
+    if (FontMeasure(0, face, text) * gScale <= maxPx + 0.5f) return Text(x, y, text, colour, face);
+    char buf[256];
+    size_t len = strlen(text);
+    if (len >= sizeof(buf) - 4) len = sizeof(buf) - 4;
+    while (len > 0) {
+        memcpy(buf, text, len);
+        buf[len] = '.';
+        buf[len + 1] = '.';
+        buf[len + 2] = '.';
+        buf[len + 3] = 0;
+        if (FontMeasure(0, face, buf) * gScale <= maxPx + 0.5f) return Text(x, y, buf, colour, face);
+        --len;
+    }
+    return x;
+}
 void Centred(float cx, float y, const char *text, DWORD colour, int face = CeEditorUiSmall) {
     Text(cx - FontMeasure(0, face, text) * gScale * 0.5f, y, text, colour, face);
 }
@@ -833,13 +886,17 @@ bool CeEditorUiRender(const CeEditorUiModel &m, CeEditorUiLayout *out) {
         Capsule(l.title);
         float x = l.title.x + l.capsuleText;
         x = Text(x, l.title.y + ty, "Map Editor", kWhite);
-        Text(x + kPairGap * k, l.title.y + ty, m.level, kWhite);
+        const float titleRight = l.title.x + l.title.w - l.capsuleText;
+        TextFitted(x + kPairGap * k, l.title.y + ty, m.level, titleRight - (x + kPairGap * k), kWhite);
         Capsule(l.project);
         // The project's name is content (white); its state a note. Grey alone did not read at 3840x2160.
-        x = Text(l.project.x + l.capsuleText, l.project.y + ty, m.project, kWhite);
+        const float statePx = (m.state && m.state[0]) ? FontMeasure(0, CeEditorUiSmall, m.state) * gScale : 0.f;
+        const float projMaxPx = l.project.w - 2.f * l.capsuleText - statePx;
+        x = TextFitted(l.project.x + l.capsuleText, l.project.y + ty, m.project, projMaxPx, kWhite);
         Text(x, l.project.y + ty, m.state, kCapsuleGrey);
         if (m.mode[0]) {
-            Capsule(l.mode); Text(l.mode.x+l.capsuleText,l.mode.y+ty,m.mode,kWhite);
+            Capsule(l.mode);
+            TextFitted(l.mode.x + l.capsuleText, l.mode.y + ty, m.mode, l.mode.w - 2.f * l.capsuleText, kWhite);
         }
         if (shown.tools) {
             Panel(l.tools);
@@ -927,12 +984,13 @@ bool CeEditorUiRender(const CeEditorUiModel &m, CeEditorUiLayout *out) {
             if (l.stopLabel[stop].w > 0.f)
                 Badge(l.stopLabel[stop], StopBadgeLabel(m, stop), accent, kWhite, l.lineHeight);
         }
-        Capsule(l.objective); Text(l.objective.x+l.capsuleText,l.objective.y+ty,m.objective,kWhite);
+        Capsule(l.objective);
+        TextFitted(l.objective.x + l.capsuleText, l.objective.y + ty, m.objective, l.objective.w - 2.f * l.capsuleText, kWhite);
     }
     if (shown.notice) {
         const float a = m.noticeAlpha > 1.f ? 1.f : m.noticeAlpha;
         Capsule(l.notice, a);
-        if (a >= 1.f) Text(l.notice.x + l.capsuleText, l.notice.y + ty, m.notice, kWhite);   // the HUD shows text on an open bar only
+        if (a >= 1.f) TextFitted(l.notice.x + l.capsuleText, l.notice.y + ty, m.notice, l.notice.w - 2.f * l.capsuleText, kWhite);   // the HUD shows text on an open bar only
     }
     if (shown.help) {
         Panel(l.help);

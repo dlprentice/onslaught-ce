@@ -745,7 +745,25 @@ static char *read_all(const char *p, size_t *n)
 	size_t cap = 1 << 16, len = 0;
 	char *b = malloc(cap + 1);
 	for (size_t r; b && (r = fread(b + len, 1, cap - len, f)) > 0;)
-		if ((len += r) == cap) b = realloc(b, (cap *= 2) + 1);
+		if ((len += r) == cap)
+		{
+			if (cap > (size_t)-1 / 2 - 1)
+			{
+				free(b);
+				b = NULL;
+				break;
+			}
+			size_t next_cap = cap * 2;
+			char *nb = realloc(b, next_cap + 1);
+			if (!nb)
+			{
+				free(b);
+				b = NULL;
+				break;
+			}
+			b = nb;
+			cap = next_cap;
+		}
 	fclose(f);
 	if (!b) return NULL;
 	b[len] = 0;
@@ -1530,7 +1548,18 @@ static int start_game(char **args, int nargs, const char *game)
 	/* The game's stdout and stderr come through a pipe, to the log and (from a console) the terminal. */
 	SECURITY_ATTRIBUTES sa = {sizeof sa, NULL, TRUE};
 	HANDLE rd = NULL, wr = NULL;
-	int piped = CreatePipe(&rd, &wr, &sa, 0) && SetHandleInformation(rd, HANDLE_FLAG_INHERIT, 0);
+	int piped = 0;
+	if (CreatePipe(&rd, &wr, &sa, 0))
+	{
+		if (SetHandleInformation(rd, HANDLE_FLAG_INHERIT, 0))
+			piped = 1;
+		else
+		{
+			CloseHandle(rd);
+			CloseHandle(wr);
+			rd = wr = NULL;
+		}
+	}
 	STARTUPINFOA si = {sizeof si};
 	if (piped)
 	{
@@ -1541,7 +1570,13 @@ static int start_game(char **args, int nargs, const char *game)
 	PROCESS_INFORMATION pi;
 	if (!CreateProcessA(exe, cmd, NULL, NULL, piped, 0, NULL, sUser, &si, &pi))
 	{
-		say("could not start %s (error %lu)", exe, (unsigned long)GetLastError());
+		DWORD err = GetLastError();
+		if (piped)
+		{
+			CloseHandle(rd);
+			CloseHandle(wr);
+		}
+		say("could not start %s (error %lu)", exe, (unsigned long)err);
 		return 1;
 	}
 	say("game process pid=%lu launcher_pid=%lu output_capture=%s", (unsigned long)pi.dwProcessId,
@@ -1582,6 +1617,7 @@ static int start_game(char **args, int nargs, const char *game)
 #else
 	if (chdir(sUser) != 0) return 1;
 	char **argv = calloc((size_t)nargs + 2, sizeof *argv);
+	if (!argv) return 1;
 	argv[0] = exe;
 	for (int i = 0; i < nargs; i++) argv[i + 1] = args[i];
 	/* The game's stdout and stderr come through one pipe (their order kept), to the terminal and the log. */
@@ -1591,16 +1627,25 @@ static int start_game(char **args, int nargs, const char *game)
 		if (sRecordingRequested)
 		{
 			say("could not start the recorded game: output capture is unavailable");
+			free(argv);
 			return 3;
 		}
 		log_close();
 		execv(exe, argv);
+		free(argv);
 		return 1;
 	}
 	fcntl(fd[0], F_SETFD, FD_CLOEXEC);
 	fflush(NULL);
 	pid_t pid = fork();
-	if (pid < 0) { say("could not start %s", exe); return 1; }
+	if (pid < 0)
+	{
+		say("could not start %s", exe);
+		close(fd[0]);
+		close(fd[1]);
+		free(argv);
+		return 1;
+	}
 	if (pid == 0)
 	{
 		dup2(fd[1], 1);
@@ -1611,6 +1656,7 @@ static int start_game(char **args, int nargs, const char *game)
 		_exit(127);
 	}
 	close(fd[1]);
+	free(argv);
 	sChild = pid;
 	say("game process pid=%lu launcher_pid=%lu output_capture=pipe", (unsigned long)pid, (unsigned long)getpid());
 	/* Ctrl+C reaches the game as well (the terminal's whole process group): the launcher outlives it to finish the log.

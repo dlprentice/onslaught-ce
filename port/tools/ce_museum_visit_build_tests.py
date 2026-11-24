@@ -67,17 +67,23 @@ def graph_problems(rows, mirror):
     return problems
 
 
-def generated_rule_problems(text, network, allowed_host=None):
+def generated_rule_problems(text, network, allowed_host=None, native_signaling=False):
     edges = dict(re.findall(r"^build \S+/port/game/([^/ ]+\.cpp)\.o: (\w+) ", text, re.M))
     problems = []
     host_set = build.HOST_BUFFER_GAME_MODULES if allowed_host is None else allowed_host
-    required_host = {n for n in host_set if network or not is_network_host(n)}
+    required_host = {
+        n for n in host_set
+        if (network or not is_network_host(n))
+        and (native_signaling or n not in build.ONLINE_SIGNALING_GAME_MODULES)
+    }
     for name in sorted(required_host | set(HOST_UNITS) | set(GAME_UNITS)):
         if name not in edges:
             problems.append(f"{name}: missing generated edge")
     for name, rule in edges.items():
         if not network and is_network_host(name):
             problems.append(f"{name}: network helper in a network-disabled build")
+        if not native_signaling and name in build.ONLINE_SIGNALING_GAME_MODULES:
+            problems.append(f"{name}: native-signaling helper in a signaling-disabled build")
         wanted = "pcxx" if (name in required_host or name in HOST_UNITS) else "qcxx"
         if name in GAME_UNITS:
             wanted = "qcxx"
@@ -135,10 +141,11 @@ class BuildGraphTests(Fixture):
                              f"host-buffer unit {name} must not include MemoryManager.h")
 
     def test_helpers_are_host_modules_and_adapter_keeps_the_game_rule_in_every_flavour(self):
-        for network in (True, False):
+        for network, native_signaling in ((True, False), (True, True), (False, False)):
             build.WITH_NETWORK = network
+            build.WITH_NATIVE_SIGNALING = native_signaling
             for target in ("linux", "windows"):
-                with self.subTest(target=target, network=network):
+                with self.subTest(target=target, network=network, native_signaling=native_signaling):
                     self.assertEqual([], graph_problems(build.port_sources(target), self.mirror))
 
     def test_control_reports_a_helper_that_lost_the_host_rule(self):
@@ -177,10 +184,14 @@ class BuildGraphTests(Fixture):
     def test_generated_edges_and_rules(self):
         for target in ("linux", "windows"):
             with self.subTest(target=target, network=False), patch.object(build, "WITH_NETWORK", False):
-                self.assertEqual([], generated_rule_problems(self.ninja(target), False))
-            with self.subTest(target=target, network=True):
+                self.assertEqual([], generated_rule_problems(self.ninja(target), False, native_signaling=False))
+            with self.subTest(target=target, network=True, native_signaling=True), \
+                    patch.object(build, "WITH_NATIVE_SIGNALING", True), \
+                    patch.object(build, "native_signaling_dependency", return_value=self.root / "sig.lib"):
+                self.assertEqual([], generated_rule_problems(self.ninja(target), True, native_signaling=True))
+            with self.subTest(target=target, network=True, native_signaling=False):
                 text = self.ninja(target)
-                self.assertEqual([], generated_rule_problems(text, True))
+                self.assertEqual([], generated_rule_problems(text, True, native_signaling=False))
                 host, game = rule_command(text, "pcxx"), rule_command(text, "qcxx")
                 self.assertNotIn("--redefine-syms", host)
                 self.assertNotIn("-include ", host)

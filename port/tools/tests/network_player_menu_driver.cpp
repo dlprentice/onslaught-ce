@@ -691,7 +691,7 @@ static int RunIce(const std::string& name) {
   signalView.status = CeIceSignalStatus::Admitted;
   MenuFrame();
   CHECK(sMenu->mSignalProceed->IsEnabled() && !sMenu->mSignalAccept->IsEnabled());
-    CHECK(sMenu->mList[NP_SIGNAL_STATUS]->mSelected == ActionIndex(NA_SIGNAL_ACCEPT));
+  CHECK(sMenu->mList[NP_SIGNAL_STATUS]->mSelected == ActionIndex(NA_SIGNAL_PROCEED));
   CHECK(SelectAction(NA_SIGNAL_PROCEED));
   CHECK(sMenu->mPage == NP_HOST && hostAutomatic == 1 && hostSelected == 0 && preflightCalls == 1);
   return 0;

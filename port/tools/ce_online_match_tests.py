@@ -1033,6 +1033,151 @@ static void TestCompatibilityAndCHooks() {
     Check(PortCeOnlineMatchActive() == 0, "clear resets active");
 }
 
+static void TestFinalConfirmationAndPostFinishedFaults() {
+    auto pump4 = [](CeOnlineMatchSession peers[4], uint64_t now) {
+        for (int pass = 0; pass < 2; ++pass) {
+            for (uint8_t s = 0; s < 4; ++s)
+                peers[s].Poll(now);
+        }
+    };
+
+    // 1. 4-peer off-interval terminal confirmation (tick 37, hashEvery = 20) + graceful post-FINISHED peer/host exit.
+    {
+        SimStarNetwork net(4);
+        CeOnlineMatchSession peers[4];
+        for (uint8_t s = 0; s < 4; ++s) {
+            CE_OnlineMatchTicket tk = MakeTicket(4, 4, s, 851, 0);
+            Check(peers[s].Init(tk, &net.bridges[s], 3u, 20u), "final 4P init");
+        }
+        pump4(peers, 100);
+        for (uint8_t s = 0; s < 4; ++s)
+            Check(peers[s].SubmitLocalHash(0u, 0x1111222233334444ULL), "final 4P tick-0 hash");
+        pump4(peers, 120);
+        for (uint8_t s = 0; s < 4; ++s)
+            Check(peers[s].IsStartConfirmed(), "final 4P start confirmed");
+
+        CE_WorldInput sample = {};
+        CE_WorldInput slots[4] = {};
+        uint8_t mask = 0;
+        for (uint32_t t = 0; t < 37u; ++t) {
+            for (uint8_t s = 0; s < 4; ++s)
+                Check(peers[s].SubmitLocalInput(t + 3u, sample), "final 4P submit input");
+            pump4(peers, 200 + t * 10);
+            for (uint8_t s = 0; s < 4; ++s) {
+                Check(peers[s].ConsumeTick(slots, &mask), "final 4P consume tick");
+                const uint32_t nextTick = t + 1u;
+                if ((nextTick % 20u) == 0u)
+                    Check(peers[s].SubmitLocalHash(nextTick, 0xAAAABBBB00000000ULL ^ nextTick), "final 4P periodic hash");
+            }
+            pump4(peers, 205 + t * 10);
+        }
+
+        // Host & Guests 1..2 submit terminal hash at off-interval tick 37; barrier MUST wait for Guest 3!
+        const uint64_t finalDigest = 0xCAFEBABE12345678ULL;
+        for (uint8_t s = 0; s < 3; ++s)
+            Check(peers[s].SubmitLocalFinalHash(37u, finalDigest), "submit final hash 0..2");
+        pump4(peers, 700);
+        for (uint8_t s = 0; s < 4; ++s)
+            Check(!peers[s].IsFinalConfirmed(), "final barrier waits for all active peers");
+
+        Check(peers[3].SubmitLocalFinalHash(37u, finalDigest), "submit final hash 3");
+        pump4(peers, 720);
+        for (uint8_t s = 0; s < 4; ++s)
+            Check(peers[s].IsFinalConfirmed(), "all 4 peers confirm off-interval final hash");
+
+        // Graceful post-FINISHED exit: Guest 1 leaves, then Host leaves -> remaining peers stay non-faulted!
+        net.DisconnectGuest(1u);
+        Check(peers[0].Poll(760) && peers[0].State() == CE_ONLINE_STATE_RUNNING, "host stays non-faulted when guest leaves after final confirmation");
+        {
+            CeOnlineStarEvent hostLost = {};
+            hostLost.kind = CE_STAR_EVT_HOST_LOST;
+            net.DeliverTo(2u, hostLost);
+        }
+        Check(peers[2].Poll(770) && peers[2].State() == CE_ONLINE_STATE_RUNNING, "guest stays non-faulted when host leaves after final confirmation");
+
+        // Post-FINISHED late fault: a late desync arriving after confirmation MUST fault Poll()!
+        CeNPeerDesyncReport lateRep = {};
+        lateRep.tick = 37u;
+        lateRep.referenceSlot = 0u;
+        lateRep.divergingSlot = 3u;
+        lateRep.divergingMask = (1u << 3u);
+        lateRep.expectedHash = finalDigest;
+        lateRep.actualHash = finalDigest ^ 1u;
+        net.bridges[0].SendDesync(lateRep);
+        Check(!peers[3].Poll(790) && peers[3].State() == CE_ONLINE_STATE_DESYNC,
+              "late desync after final confirmation still faults guest");
+    }
+
+    // 2. Off-interval terminal hash mismatch detects & attributes diverging slot (Guest 2 diverges from 3-of-4 consensus).
+    {
+        SimStarNetwork net(4);
+        CeOnlineMatchSession peers[4];
+        for (uint8_t s = 0; s < 4; ++s) {
+            CE_OnlineMatchTicket tk = MakeTicket(4, 4, s, 852, 0);
+            Check(peers[s].Init(tk, &net.bridges[s], 2u, 20u), "mismatch 4P init");
+        }
+        pump4(peers, 100);
+        for (uint8_t s = 0; s < 4; ++s)
+            Check(peers[s].SubmitLocalHash(0u, 0x9999ULL), "mismatch tick-0");
+        pump4(peers, 110);
+
+        CE_WorldInput sample = {};
+        CE_WorldInput slots[4] = {};
+        for (uint32_t t = 0; t < 13u; ++t) {
+            for (uint8_t s = 0; s < 4; ++s) peers[s].SubmitLocalInput(t + 2u, sample);
+            pump4(peers, 200 + t * 5);
+            for (uint8_t s = 0; s < 4; ++s) peers[s].ConsumeTick(slots, nullptr);
+        }
+        Check(peers[0].SubmitLocalFinalHash(13u, 0x5555ULL), "host final 13");
+        Check(peers[1].SubmitLocalFinalHash(13u, 0x5555ULL), "guest 1 final 13");
+        Check(peers[2].SubmitLocalFinalHash(13u, 0xDEADULL), "guest 2 bad final 13");
+        Check(peers[3].SubmitLocalFinalHash(13u, 0x5555ULL), "guest 3 final 13");
+        pump4(peers, 400);
+        for (uint8_t s = 0; s < 4; ++s) {
+            Check(!peers[s].IsFinalConfirmed(), "final mismatch never confirms");
+            Check(peers[s].State() == CE_ONLINE_STATE_DESYNC, "all 4 peers transition to DESYNC on final mismatch");
+            Check(peers[s].LastDesync().divergingSlot == 2u && peers[s].LastDesync().tick == 13u,
+                  "final mismatch attributes diverging slot 2 at tick 13");
+        }
+    }
+
+    // 3. C hooks round-trip for PortCeOnlineMatchSubmitFinalHash / FinalConfirmed / PeerEndedBy.
+    {
+        SimStarNetwork net(2);
+        CE_OnlineMatchTicket hostTk = MakeTicket(2, 2, 0, 856, 0);
+        CE_OnlineMatchTicket guestTk = MakeTicket(2, 2, 1, 856, 0);
+        CeOnlineMatchSession guest;
+        Check(guest.Init(guestTk, &net.bridges[1], 2u, 20u), "c-hook guest init");
+        PortCeOnlineMatchSetBridge(&net.bridges[0]);
+        Check(PortCeOnlineMatchSetTicket(&hostTk) == 1, "c-hook set ticket");
+        Check(PortCeOnlineMatchBeginSession(856u, 2u, 20u) == 1, "c-hook begin session");
+        Check(PortCeOnlineMatchPoll(100) == 1 && guest.Poll(100), "c-hook poll connect");
+        Check(PortCeOnlineMatchSubmitLocalHash(0u, 0x7777ULL) == 1 && guest.SubmitLocalHash(0u, 0x7777ULL), "c-hook start hash");
+        PortCeOnlineMatchPoll(110);
+        guest.Poll(110);
+        CE_WorldInput sample = {}, slots[4] = {};
+        for (uint32_t t = 0; t < 5u; ++t) {
+            PortCeOnlineMatchSubmitLocalInput(t + 2u, &sample);
+            guest.SubmitLocalInput(t + 2u, sample);
+            PortCeOnlineMatchPoll(120 + t * 10);
+            guest.Poll(120 + t * 10);
+            PortCeOnlineMatchConsumeTick(slots, nullptr);
+            guest.ConsumeTick(slots, nullptr);
+        }
+        Check(PortCeOnlineMatchPeerEndedBy(5u) == 0, "c-hook PeerEndedBy initially 0");
+        Check(guest.SubmitLocalFinalHash(5u, 0xABCD1234ULL), "c-hook guest submits final 5");
+        PortCeOnlineMatchPoll(200);
+        Check(PortCeOnlineMatchPeerEndedBy(5u) == 1, "c-hook PeerEndedBy detects guest ended at tick 5");
+        Check(PortCeOnlineMatchFinalConfirmed() == 0, "c-hook FinalConfirmed still 0 before host submits");
+        Check(PortCeOnlineMatchSubmitFinalHash(5u, 0xABCD1234ULL) == 1, "c-hook host submits matching final 5");
+        PortCeOnlineMatchPoll(210);
+        guest.Poll(210);
+        Check(PortCeOnlineMatchFinalConfirmed() == 1 && guest.IsFinalConfirmed(), "c-hook FinalConfirmed == 1 on both");
+        PortCeOnlineMatchSetBridge(nullptr);
+        PortCeOnlineMatchClear();
+    }
+}
+
 int main(int argc, char **argv) {
     if (argc < 2) {
         std::puts("usage: driver <scratch-dir>");
@@ -1043,6 +1188,7 @@ int main(int argc, char **argv) {
     TestDesyncDetectionAndAttribution();
     TestDisconnectAndHostLoss();
     TestCompatibilityAndCHooks();
+    TestFinalConfirmationAndPostFinishedFaults();
     if (!gFail)
         std::puts("online-match-ok");
     return gFail != 0;

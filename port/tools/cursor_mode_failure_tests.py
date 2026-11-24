@@ -21,6 +21,7 @@ ROOT = Path(__file__).resolve().parents[2]
 SOURCE = ROOT / "port/platform/common/d3d9hooks.cpp"
 LAYER = ROOT / "port/platform/common/ce.cpp"
 HARNESS = r'''
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -42,7 +43,7 @@ using SDL_WindowID = std::uint32_t;
 #define D3DCREATE_FPU_PRESERVE 1
 #define HIWORD(x) ((unsigned)(x) >> 16)
 #define LOWORD(x) ((unsigned)(x) & 65535)
-struct SDL_Window { int width = 640, height = 480; SDL_WindowID id = 1; };
+struct SDL_Window { int width = 640, height = 480; float density = 1.f; SDL_WindowID id = 1; };
 struct D3DPRESENT_PARAMETERS {
     UINT BackBufferWidth, BackBufferHeight, BackBufferFormat;
     HWND hDeviceWindow;
@@ -76,8 +77,9 @@ SDL_WindowID SDL_GetWindowID(SDL_Window *w) {
     if (zero_id_initial || (zero_id_after && request_complete)) return 0;
     return w ? w->id : 0;
 }
+float SDL_GetWindowPixelDensity(SDL_Window *w) { return w ? w->density : 1.f; }
 bool SDL_GetWindowSizeInPixels(SDL_Window *w, int *x, int *y) { *x=w->width; *y=w->height; return true; }
-bool SDL_SetWindowSize(SDL_Window *w, int x, int y) { w->width=x; w->height=y; return true; }
+bool SDL_SetWindowSize(SDL_Window *w, int x, int y) { float d = (w && w->density > 0.f) ? w->density : 1.f; w->width=(int)(x * (double)d + 0.5); w->height=(int)(y * (double)d + 0.5); return true; }
 bool SDL_SyncWindow(SDL_Window *) { return true; }
 bool SDL_SetWindowFullscreenMode(SDL_Window *, void *) { return true; }
 bool SDL_SetWindowFullscreen(SDL_Window *, bool) { return true; }

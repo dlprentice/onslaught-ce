@@ -674,6 +674,7 @@ int main() {
     Check(PortCeEditorResolveQuit(GAME.quit)==QT_RESTART_LEVEL && Reload() && PortCeEditorPlaying() &&
           Near(GAME.pilot.engine.pos,FVector(22,30,-1)), "F6 resets to the same unsaved start");
     Check(PortCeEditorKey(DIK_F5,false), "F5 accepts return from player-start preview");
+    gEditorChoosingPlayerStart=true;
     PortCeEditorLevelEnd(); Check(Reload(), "player-start draft returns"); PortCeEditorFrame();
     Check(gEditorState.PlayerStartSelected() && !gEditorChoosingPlayerStart && !gEditorChoosingReach && gEditorState.Dirty() && savedRevision==startSaved &&
           SamePoint(gEditorFocus,startFocus) && gEditorState.CanUndo(),
@@ -736,13 +737,51 @@ int main() {
               "Delete on an edited Player Start restores original with cue and clear notice");
         Check(press(DIK_R) && gEditorChoosingReach && press(DIK_ESCAPE) && !gEditorChoosingReach,
               "Esc cancels Reach Point placement with a cue");
+        // Placement flags clear across Save, Browse, Undo, Change Side, and Exit; Moving() guards Exit, Change Side, F1, and mouse release.
+        gEditorChoosingReach = true; gEditorChoosingPlayerStart = true;
+        (void)EditorSave();
+        Check(!gEditorChoosingReach && !gEditorChoosingPlayerStart, "EditorSave clears placement flags");
+        gEditorChoosingReach = true; gEditorChoosingPlayerStart = true;
+        EditorBrowse();
+        Check(!gEditorChoosingReach && !gEditorChoosingPlayerStart, "EditorBrowse clears placement flags");
+        gEditorDialog = DialogNone;
+        gEditorChoosingReach = true; gEditorChoosingPlayerStart = true;
+        EditorUndo(false);
+        Check(!gEditorChoosingReach && !gEditorChoosingPlayerStart, "EditorUndo clears placement flags");
+        gEditorState.Select(0);
+        gEditorChoosingReach = true; gEditorChoosingPlayerStart = true;
+        EditorToolbar(5);
+        Check(!gEditorChoosingReach && !gEditorChoosingPlayerStart, "Change Side clears placement flags");
+        Check(EditorBeginMove() && gEditorState.Moving(), "EditorBeginMove starts object move");
         gEditorPadActive = true;
-        Check(PortCeEditorKey(DIK_F5,false) && gEditorPhase==LoadPlaytest && !gEditorPadActive,
-              "F5 enters LoadPlaytest transition and clears gamepad mode");
+        EditorTrap(0, 3);
+        Check(gEditorState.Moving() && gEditorPadActive, "spurious mouse-up during gamepad move keeps moving state");
+        gEditorPadActive = false;
+        gEditorHelp = true;
+        EditorTrap(0, 3);
+        Check(gEditorState.Moving(), "mouse-up while help is open does not commit move");
+        gEditorHelp = false;
+        PortCeEditorKey(DIK_F1, false); EditorTrap(WORD(DIK_F1), KEY_EVENT_UP);
+        Check(!gEditorHelp && !std::strcmp(gEditorNote, "Finish moving the object first."), "F1 refused while moving");
+        EditorToolbar(5);
+        Check(gEditorState.Moving() && !std::strcmp(gEditorNote, "Finish moving the object first."), "Change Side refused while moving");
+        EditorToolbar(9);
+        Check(gEditorState.Moving() && gEditorDialog == DialogNone && !gEditorClosing &&
+              !std::strcmp(gEditorNote, "Finish moving the object first."), "Exit refused while moving");
+        (void)gEditorState.FinishMove(false);
+        gEditorChoosingReach = true; gEditorChoosingPlayerStart = true;
+        EditorToolbar(9);
+        Check(!gEditorChoosingReach && !gEditorChoosingPlayerStart, "Exit clears placement flags");
+        gEditorDialog = DialogNone; gEditorClosing = false; GAME.quit = 0;
+        gEditorPadActive = true; gEditorLayoutValid = true;
+        Check(PortCeEditorKey(DIK_F5,false) && gEditorPhase==LoadPlaytest && !gEditorPadActive && !gEditorLayoutValid,
+              "F5 enters LoadPlaytest transition and clears gamepad mode and stale layout");
         Check(PortCeEditorKey(DIK_F5,false) && PortCeEditorKey(DIK_F6,false) && !PortCeEditorKey(DIK_W,false),
               "F5 and F6 are consumed during LoadPlaytest reload while ordinary keys are not");
-        gEditorPadActive = true;
-        PortCeEditorLevelEnd(); PortCeEditorTakeReturn();
+        gEditorPadActive = true; gEditorLayoutValid = true;
+        PortCeEditorLevelEnd();
+        Check(!gEditorLayoutValid, "PortCeEditorLevelEnd clears stale layout");
+        PortCeEditorTakeReturn();
         Check(!gEditorPadActive, "PortCeEditorCancel clears gamepad mode on session exit");
         fixturePrimaryStart=false; fixtureSupportMesh=false;
         ResetFixture(); StartEditor();

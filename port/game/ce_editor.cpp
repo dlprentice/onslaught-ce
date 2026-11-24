@@ -675,7 +675,7 @@ bool EditorPrepareReload(EditorPhase phase) {
     gEditorPhase = phase;
     gEditorWorldStarted = gEditorWorldComplete = false;
     gEditorDialog = DialogNone;
-    gEditorOrbit = gEditorViewValid = gEditorPadActive = false;
+    gEditorOrbit = gEditorViewValid = gEditorPadActive = gEditorLayoutValid = false;
     memset(gEditorKeys, 0, sizeof(gEditorKeys));
     CeWorldViewInvalidate(CeWorldViewOwner::Editor);
     ++gEditorSessionToken;
@@ -905,6 +905,9 @@ bool EditorBeginMove() {
     const int selected = gEditorState.Selected();
     const bool carry = selected >= 0 && EditorStartStandsOn() == selected;
     if (!gEditorState.BeginMove(carry)) return false;
+    const CeEditorPoint initial = NativePosition(selected);
+    gEditorPlaneZ = initial.z;
+    gEditorDragOffset = CeEditorPoint{0.f, 0.f, 0.f};
     if (carry) fprintf(stderr, "CE editor: the Player Start rides on %s\n", gEditorState.Object(selected)->source);
     return true;
 }
@@ -989,6 +992,8 @@ bool EditorSave() {
         EditorNote("Finish moving the object first.", NoticeUntilMoveEnds);
         return false;
     }
+    gEditorChoosingReach = false;
+    gEditorChoosingPlayerStart = false;
     if (gEditorFileCurrent && !gEditorState.Dirty()) {
         EditorNote("Nothing has changed since the last save.");
         return true;
@@ -1213,6 +1218,8 @@ void EditorBrowse() {
         EditorNote("Finish moving the object first.", NoticeUntilMoveEnds);
         return;
     }
+    gEditorChoosingReach = false;
+    gEditorChoosingPlayerStart = false;
     char error[192];
     gEditorFileCount = PortCeEditorFiles(gEditorFiles, 2048, error, sizeof(error));
     if (gEditorFileCount < 0) {
@@ -1310,6 +1317,10 @@ void EditorAnswer(bool yes) {
         gEditorDialog = DialogNone;
 }
 void EditorUndo(bool redo) {
+    if (!gEditorState.Moving()) {
+        gEditorChoosingReach = false;
+        gEditorChoosingPlayerStart = false;
+    }
     if (redo ? gEditorState.Redo() : gEditorState.Undo()) {
         EditorCue(CueSelect);
         if (gEditorState.Selected() >= 0 && !ApplyOne(gEditorState.Selected())) {
@@ -1414,9 +1425,16 @@ void EditorToolbar(int item) {
         EditorCue(gEditorPhase == LoadPlaytest ? CueSelect : CueBack);
     }
     else if (item == 5) {
+        if (gEditorState.Moving()) {
+            EditorCue(CueBack);
+            EditorNote("Finish moving the object first.", NoticeUntilMoveEnds);
+            return;
+        }
+        gEditorChoosingReach = false;
+        gEditorChoosingPlayerStart = false;
         const int i = gEditorState.Selected();
         const CeEditorObject *object = gEditorState.Object(i);
-        if (!object || gEditorSources[i].installedSide < 0 || gEditorSources[i].installedSide > 2 || gEditorState.Moving()) {
+        if (!object || gEditorSources[i].installedSide < 0 || gEditorSources[i].installedSide > 2) {
             EditorCue(CueBack);
             EditorNote("Select a unit to change its side.", NoticeRefusal);
             return;
@@ -1446,6 +1464,13 @@ void EditorToolbar(int item) {
         return;
     }
     if (item == 9) {
+        if (gEditorState.Moving()) {
+            EditorCue(CueBack);
+            EditorNote("Finish moving the object first.", NoticeUntilMoveEnds);
+            return;
+        }
+        gEditorChoosingReach = false;
+        gEditorChoosingPlayerStart = false;
         if (gEditorState.Dirty()) {
             gEditorDialog = DialogDiscardExit;
             gEditorButtonFocus = 0;
@@ -1488,12 +1513,15 @@ bool EditorTrap(WORD key, int event) {
         return true;
     }
     if (event == 3) {
-        gEditorPadActive = false;
+        const bool padWasActive = gEditorPadActive;
+        if (!(padWasActive && gEditorState.Moving() && key == 0))
+            gEditorPadActive = false;
         if ((key == 3 || key == 4) && gEditorDialog == DialogFiles) {
             EditorScrollFiles(key == 3 ? -1 : 1);
             return true;
         }
-        if (key == 0 && gEditorState.Moving()) (void)gEditorState.FinishMove(true);
+        if (key == 0 && gEditorState.Moving() && !padWasActive && gEditorDialog == DialogNone && !gEditorHelp)
+            (void)gEditorState.FinishMove(true);
         if (key == 2) gEditorOrbit = false;
         if ((key == 3 || key == 4) && gEditorDialog == DialogNone && !gEditorState.Moving())
             gEditorDistance *= key == 3 ? 0.8f : 1.25f;
@@ -1633,6 +1661,11 @@ bool EditorTrap(WORD key, int event) {
         return true;
     }
     if (key == DIK_F1 && gEditorDialog == DialogNone) {
+        if (gEditorState.Moving()) {
+            EditorCue(CueBack);
+            EditorNote("Finish moving the object first.", NoticeUntilMoveEnds);
+            return true;
+        }
         gEditorHelp = true;
         return true;
     }
@@ -1887,6 +1920,10 @@ void EditorGamepadUpdate(float elapsed) {
                 (void)gEditorState.FinishMove(true);
                 EditorCue(CueSelect);
             } else if (!gEditorChoosingPlayerStart && !gEditorChoosingReach && gEditorState.Selected() != -1 && EditorBeginMove()) {
+                const CeEditorPoint initial = NativePosition(gEditorState.Selected());
+                CeEditorPoint point;
+                if (EditorRay(float(MOUSE_X), float(MOUSE_Y), initial.z, &point))
+                    gEditorDragOffset = CeEditorPoint{initial.x - point.x, initial.y - point.y, 0.f};
                 EditorCue(CueSelect);
                 EditorNote("Left Stick moves object. A confirms, B cancels.", NoticeUntilMoveEnds);
             }
@@ -2673,7 +2710,7 @@ void PortCeEditorFrame() {
         }
     }
     EditorNoticeSettle();
-    if (gEditorState.Moving()) {
+    if (gEditorState.Moving() && !gEditorPadActive && gEditorDialog == DialogNone && !gEditorHelp) {
         CeEditorPoint point;
         if (EditorRay(float(MOUSE_X), float(MOUSE_Y), gEditorPlaneZ, &point)) {
             const int i = gEditorState.Selected();
@@ -2745,6 +2782,7 @@ void PortCeEditorLevelEnd() {
     gEditorReady = false;
     gEditorOpening = false;
     gEditorViewValid = false;
+    gEditorLayoutValid = false;
     gEditorOrbit = false;
     memset(gEditorKeys, 0, sizeof(gEditorKeys));
     PortCeDrawHooks(PortCePhotoOn() || PortCeCmdSuppressFlightHud());

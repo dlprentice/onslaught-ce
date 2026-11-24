@@ -2953,12 +2953,12 @@ void CeMuseumHallVisitor(float x, float y) {
         gWingAnnounced = true;
 
         const double now = CinemaClock();
-        float wallDt = 0.0f;
-        if (gHasStepClock && now > gLastStepClock) wallDt = float(now - gLastStepClock);
+        float dt = 0.0f;
+        if (gHasStepClock && now > gLastStepClock) dt = float(now - gLastStepClock);
         gLastStepClock = now;
         gHasStepClock = true;
-        float dt = GAME.GetRenderFrameLength();
-        if (!(dt > 0.0f && dt <= 0.25f)) dt = wallDt;
+        if (dt > 0.25f) dt = 0.25f;
+        if (!(dt > 0.0f)) dt = 0.0f;
 
         // Anticipate the adjacent 3D wing when standing near an Atrium portal (with 2 m spatial
         // hysteresis so hovering on the threshold never oscillates) while capping residency to one wing.
@@ -3127,7 +3127,8 @@ extern "C" bool PortCeMuseumCinemaFire(bool release,float value) {
     if (gGrandMode) {
         const bool cinemaPlaying = Cinema::s.inRoom && Cinema::s.phase == Cinema::Playing;
         // Route Fire cleanly to interactive museum fixtures (Projector, Directory, Archive Pedestal, Turntable, Kiosk).
-        if (Cinema::s.inRoom) return CinemaAction(release, value);
+        // Consume stray Fire clicks in the Cinema Room too so visitors never fire weapons inside the theater.
+        if (Cinema::s.inRoom) { CinemaAction(release, value); return true; }
         if (gDirHit.valid && gDirHit.index >= 0 && gDirHit.index < CeMuseumTour::kDirectoryStops) {
             const CeCinemaRoom::FireIntent intent = CeCinemaRoom::FireEdge(
                 release || value <= 0.0f, true, gDirFireHeld, gDirFireCaptured);

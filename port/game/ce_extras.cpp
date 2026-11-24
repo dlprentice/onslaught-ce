@@ -238,6 +238,68 @@ float	Lines(const WCHAR *text, float y, DWORD colour)
 	return y + line * count;
 }
 
+// Same wrapped, centred hint text, bounded to at most maxLines lines (ellipsizing the final line if more wrap)
+// so long dialogue or item hints never spill into the front end's bottom help bar (y = 455).
+float	LinesMax(const WCHAR *text, float y, DWORD colour, int maxLines)
+{
+	static SWordWrapFill fill;
+	static WCHAR buffer[400];
+	if (!text || !text[0] || maxLines <= 0)
+		return y;
+	CDXBitmapFont *font = PLATFORM.Font(FONT_SMALL);
+	int n = 0;
+	for (; text[n] && n < 399; n++)
+		buffer[n] = text[n];
+	buffer[n] = 0;
+	int count = font->WordWrap(&fill, buffer, kLinesWidth);
+	if (count == 2 && maxLines >= 2)
+	{
+		const SMeasure measure = {font};
+		float widest = 0.f;
+		const int at = CeBreakAt(buffer, measure, &widest);
+		if ((at > 0) && (widest <= kLinesWidth))
+		{
+			int i = 0;
+			for (; i < at && i < 99; i++) fill.c[0][i] = buffer[i];
+			fill.c[0][i] = 0;
+			int j = 0;
+			for (; buffer[at + 1 + j] && j < 99; j++) fill.c[1][j] = buffer[at + 1 + j];
+			fill.c[1][j] = 0;
+		}
+	}
+	if (count > maxLines)
+	{
+		count = maxLines;
+		WCHAR *last = fill.c[count - 1];
+		int len = 0;
+		while (len < 99 && last[len]) len++;
+		while (len > 0)
+		{
+			while (len > 0 && (last[len - 1] == WCHAR(' ') || last[len - 1] == WCHAR('.') || last[len - 1] == WCHAR(',')))
+				len--;
+			int cut = len < 96 ? len : 96;
+			last[cut] = WCHAR('.');
+			last[cut + 1] = WCHAR('.');
+			last[cut + 2] = WCHAR('.');
+			last[cut + 3] = 0;
+			SIZE sz;
+			font->GetTextExtent(last, &sz);
+			if (float(sz.cx) <= kLinesWidth)
+				break;
+			if (len > 0)
+				len--;
+		}
+	}
+	const float line = float(font->GetHeight());
+	for (int l = 0; l < count; l++)
+	{
+		SIZE size;
+		font->GetTextExtent(fill.c[l], &size);
+		font->DrawTextWithShadow(320.f - float(size.cx / 2), y + line * l, colour, fill.c[l], 0, 0, 1.f, 1.f);
+	}
+	return y + line * count;
+}
+
 }
 
 float	PortCeExtrasHint(const WCHAR *help, const WCHAR *extra, float y)
@@ -647,7 +709,27 @@ public:
 			static WCHAR help[200], extra[200];
 			help[0] = extra[0] = 0;
 			page->mHint(list->mCursor, help, extra, 200);
-			const float next = Lines(extra, Lines(help, bottom + 12.f, kCream), kGrey);
+			const float hintY = (bottom >= 395.f) ? (bottom + 8.f) : (bottom + 12.f);
+			const float lineH = float(PLATFORM.Font(FONT_SMALL)->GetHeight());
+			const float limitY = 452.f;
+			const int totalSlots = (lineH > 0.f && limitY > hintY) ? int((limitY - hintY) / lineH) : 1;
+			int extraNeed = 0;
+			if (extra[0])
+			{
+				static SWordWrapFill probe;
+				static WCHAR probeBuf[200];
+				int pLen = 0;
+				for (; extra[pLen] && pLen < 199; pLen++) probeBuf[pLen] = extra[pLen];
+				probeBuf[pLen] = 0;
+				extraNeed = PLATFORM.Font(FONT_SMALL)->WordWrap(&probe, probeBuf, kLinesWidth);
+				if (extraNeed < 1) extraNeed = 1;
+			}
+			const int extraReserve = (help[0] && extraNeed > 1 && totalSlots <= 2) ? 1 : extraNeed;
+			const int helpMax = help[0] ? ((totalSlots - extraReserve >= 1) ? (totalSlots - extraReserve) : 1) : 0;
+			float next = helpMax > 0 ? LinesMax(help, hintY, kCream, helpMax) : hintY;
+			const int extraMax = (lineH > 0.f && limitY > next) ? int((limitY - next) / lineH) : 0;
+			if (extra[0] && extraMax > 0)
+				next = LinesMax(extra, next, kGrey, extraMax);
 			if (page->mPane)
 				page->mPane(list->mCursor, edge + 10.f, boxTop, 556.f, bottom);
 			if (page->mDraw)

@@ -111,6 +111,20 @@ int		SoundtrackSeconds(const char *name)
 	return SecondsOf(fopen(name, "rb"));
 }
 
+// Whether a retail soundtrack file can be opened through the path layer and begins with valid Vorbis headers.
+bool	SoundtrackStarts(const char *name)
+{
+	if (!name || !*name)
+		return false;
+	FILE *file = fopen(name, "rb");
+	if (!file)
+		return false;
+	static unsigned char buf[CE_OGG_START];
+	const size_t n = fread(buf, 1, sizeof(buf), file);
+	fclose(file);
+	return n > 0 && CeOggStarts(buf, int(n), n < sizeof(buf));
+}
+
 // The player's own tracks are anywhere on the disk: the C library's fopen, not the game's (port.h sends game files' fopen through the path layer, which
 // refuses absolute paths). Opened for reading only.
 #undef fopen
@@ -152,8 +166,12 @@ bool	DevicePlay(int row)
 	const int retail = RetailCount();
 	if (row <= retail)
 	{
-		if (!MUSIC.GetSong(row - 1))
+		CSong *song = MUSIC.GetSong(row - 1);
+		if (!song || !SoundtrackStarts(song->mFilename))
+		{
+			fprintf(stderr, PORT_LOG_PREFIX "music player: retail row %d cannot be played\n", row);
 			return false;
+		}
 	}
 	else
 	{

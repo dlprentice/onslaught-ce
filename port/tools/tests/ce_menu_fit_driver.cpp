@@ -344,9 +344,20 @@ int main(int argc, char **argv)
               "it shifts down in the front end and up in pause, and only at CE's pitch");
         Check(PortCeLabelLeft(FEP_OPTIONS) == 104.f && PortCeLabelLeft(FEP_LANGUAGE_TEST) == 104.f && PortCeLabelLeft(FEP_MAIN) == 5.f,
               "front-end options pages protect the left metal arc while pause/other pages keep 5");
+        Check(PortCeLabelLeftAt(FEP_MAIN, 290.f) == 5.f && PortCeLabelLeftAt(FEP_MAIN, 140.f) == 5.f,
+              "outside front-end options pages the arc-aware helper keeps the original 5-unit margin");
+        Check(PortCeLabelLeftAt(FEP_OPTIONS, 290.f) == 58.f && PortCeLabelLeftAt(FEP_LANGUAGE_TEST, 290.f) == 58.f,
+              "mid-screen options rows relax to 58 units where the left arc bows outward");
+        Check(PortCeLabelLeftAt(FEP_OPTIONS, 140.f) == 104.f && PortCeLabelLeftAt(FEP_OPTIONS, 100.f) == 104.f &&
+              PortCeLabelLeftAt(FEP_OPTIONS, 440.f) == 104.f && PortCeLabelLeftAt(FEP_OPTIONS, 470.f) == 104.f,
+              "top and bottom options rows clamp at kCeLabelLeft (104) to clear the arc ends");
+        const float y220 = PortCeLabelLeftAt(FEP_OPTIONS, 220.f), y240 = PortCeLabelLeftAt(FEP_OPTIONS, 240.f), y340 = PortCeLabelLeftAt(FEP_OPTIONS, 340.f);
+        Check(y220 > 58.f && y220 < 69.f && y340 > 58.f && y340 < 64.f && y240 == y340 && y220 > y340,
+              "mid-screen y=220..340 rows relax smoothly and symmetrically to ~58..68 units");
         Check(PortCeValueGap() == 6.f, "CE menus put a legible gap after the colon");
         layerOn = false;
-        Check(PortCeCompactPitch(&qualityRow) == 0 && PortCeLabelLeft(FEP_OPTIONS) == 5.f && PortCeValueGap() == 2.f,
+        Check(PortCeCompactPitch(&qualityRow) == 0 && PortCeLabelLeft(FEP_OPTIONS) == 5.f &&
+              PortCeLabelLeftAt(FEP_OPTIONS, 290.f) == 5.f && PortCeLabelLeftAt(FEP_OPTIONS, 140.f) == 5.f && PortCeValueGap() == 2.f,
               "outside the ordinary CE menus the list keeps its items' heights, label margin and colon gap");
     }
     else return 2;
