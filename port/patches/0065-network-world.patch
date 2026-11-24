@@ -291,7 +291,7 @@
 +#ifdef CE_NETWORK_OFF
 +	CCamera *cam = GAME.GetCamera(0);
 +#else
-+	CCamera *cam = GAME.GetCamera(CE_WorldViewPlayer(0));
++	CCamera *cam = CE_WorldViewCamera(0);
 +#endif
  	
  	FVector campos1=ZERO_FVECTOR;
@@ -330,7 +330,7 @@
 +#ifdef CE_NETWORK_OFF
 +	CCamera *cam = GAME.GetCamera(0);
 +#else
-+	CCamera *cam = GAME.GetCamera(CE_WorldViewPlayer(0));
++	CCamera *cam = CE_WorldViewCamera(0);
 +#endif
  
  	if (cam)
@@ -393,7 +393,7 @@
 +#ifdef CE_NETWORK_OFF
 +			ENGINE.SetViewpoint(0,GetCamera(0),&viewport,GetPlayer(0));
 +#else
-+			ENGINE.SetViewpoint(0,GetCamera(CE_WorldViewPlayer(0)),&viewport,GetPlayer(CE_WorldViewPlayer(0)));
++			ENGINE.SetViewpoint(0,CE_WorldViewCamera(0),&viewport,CE_WorldViewPlayerPtr(0));
 +#endif
  			ENGINE.Render(0);
  		}
@@ -429,7 +429,7 @@
 +		if (CE_WorldActive() && (mGameState == GAME_STATE_PLAYER_1_WON || mGameState == GAME_STATE_PLAYER_2_WON || mGameState == GAME_STATE_GAME_DRAWN))
 +		{
 +			draw_end_level_darkener(alpha);
-+			BOOL localWon = mGameState == (CE_WorldLocalPlayer() == 0 ? GAME_STATE_PLAYER_1_WON : GAME_STATE_PLAYER_2_WON);
++			BOOL localWon = CE_WorldLocalWon((int)mGameState) != 0;
 +			DWORD text = mGameState == GAME_STATE_GAME_DRAWN ? JCL_DRAW : localWon ? FETX_VICTORY : FETX_DEFEAT;
 +			SIZE extent;
 +			PLATFORM.Font(FONT_NORMAL)->GetTextExtent(TEXT_DB.GetString(text), &extent);

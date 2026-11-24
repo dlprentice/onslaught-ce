@@ -20,7 +20,8 @@ SUPPORT = PORT / "tools/tests"
 CASES = ("row-refused", "row-recovered", "row-opt-out", "row-low-caps", "supported", "pixel-old", "vertex-old", "formats-missing", "float-fallback", "opt-out", "legacy-disabled", "upgraded", "new-profile",
          "pixel-create-failed", "vertex-create-failed", "vertex-native-failed", "landscape-failed", "particles-failed",
          "landscape-portable", "landscape-readable-surface", "landscape-readable-texture",
-         "landscape-pixel-failed", "landscape-texture-failed", "landscape-float-failed", "landscape-depth-failed", "device-failed", "save-refused", "save-off", "layer-off", "fence-CLOCK", "fence-TAPE", "fence-PROBES", "fence-RECORD")
+         "landscape-pixel-failed", "landscape-texture-failed", "landscape-float-failed", "landscape-depth-failed", "device-failed", "save-refused", "save-off", "layer-off", "fence-CLOCK", "fence-TAPE", "fence-PROBES", "fence-RECORD",
+         "detail-stage-clamped", "detail-apply-clamped", "detail-apply-uncapped", "detail-stage-faithful")
 
 
 def module(name, path):

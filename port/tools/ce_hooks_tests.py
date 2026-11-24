@@ -390,7 +390,7 @@ class SiteTests(unittest.TestCase):
         self.order("ltshell.cpp", "if (!sMemoryManagerReady)", "ce_hook_exit(CE_EXIT_ATEXIT)", "PATCHMANAGER.FreeData();")
         self.order("ltshell.cpp", "ce_hook_exit(CE_EXIT_SHELL)", "PortSessionSummary();\n#ifdef CE_NETWORK_OFF")
         self.order("game.cpp", "\tPortCeEditorLevelEnd();\n", "\tPortCeMuseumVisitLevelEnd();\n", "ce_hook_level_end(", "\t\tMUSIC.Stop();\n\n\t// we don")
-        self.assertEqual([h[1] for h in rows["level_end"][2]], ["palette_close", "console_level_end", "photo_level_end", "commander_level_end", "multibe_level_end", "entity_handles_level_end", "carrier_clash_level_end", "living_sandbox_level_end"])
+        self.assertEqual([h[1] for h in rows["level_end"][2]], ["palette_close", "console_level_end", "photo_level_end", "commander_level_end", "multibe_level_end", "entity_handles_level_end", "carrier_clash_level_end", "living_sandbox_level_end", "muspell_cockpit_level_end"])
         self.order("game.cpp", "{ PORT_UPDATE_HOOK();", "\tce_hook_tick_pre();", "\tce_hook_tick_post();", "void\tCGame::PreRun()")
         self.assertEqual([h[1] for h in rows["tick_pre"][2]], ["gamepad_cycle", "multibe_tick_pre", "carrier_clash_tick_pre", "living_sandbox_tick_pre"])
         self.order("game.cpp", "PortCeGamepadBeginCycle();\n#endif\n\t\tmController[0]->Flush();", "ce_hook_level_begin(aLevel);", "CE_SessionPreparePlay()")
@@ -406,7 +406,7 @@ class SiteTests(unittest.TestCase):
                    "CE_RENDER_PASS_POST_WORLD", "PLATFORM.EndScene();")
         self.order("DXEngine.cpp", "PortCePaletteRender();", "PortCeNoticeRender();", "PortCeCmdRender();\t//",
                    "ce_hook_draw_overlay();", "PLATFORM.EndScene();\n\n\tmFirstFrame")
-        self.assertEqual([h[1] for h in rows["draw_overlay"][2]], ["editor_overlay"])
+        self.assertEqual([h[1] for h in rows["draw_overlay"][2]], ["editor_overlay", "carrier_clash_draw_overlay"])
         self.order("Hud.cpp", "if (PortCeCmdHideCockpit()) return;", "CBattleEngine *be = player->GetBattleEngine();",
                    "be = ce_hook_hud_focus(player, be);", "mBattleEngine = be;", "RenderRadar(96.f);", "ce_hook_draw_hud(")
         self.assertEqual([h[1] for h in rows["draw_hud"][2]], ["multibe_draw_hud", "carrier_clash_draw_hud", "living_sandbox_draw_hud"])

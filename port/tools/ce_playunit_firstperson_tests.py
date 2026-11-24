@@ -106,7 +106,9 @@ struct Game {
     Player *GetPlayer(int){return &player;}
 } GAME;
 using CPlayer=Player;
-struct Career {bool GetInvertYAxis(int){return false;}} CAREER;
+struct Career {bool GetInvertYAxis(int){return false;} bool GetInvertJetYAxis(int){return false;}} CAREER;
+enum { FALSE = 0, TRUE = 1, CE_PLAYUNIT_CLASS_AIRCRAFT = 4 };
+int gDrivenClass = 0;
 enum { @ACTIONS@, UNRELATED };
 struct {float forward=0,back=0,turn=0,look=0,pitch=0; bool fire=false,leave=false;} gIn;
 bool gOnFoot=false,gFootZoomIn=false,gFootZoomOut=false,gFootWeaponSwitch=false;

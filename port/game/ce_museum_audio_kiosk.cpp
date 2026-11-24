@@ -12,6 +12,8 @@
 #include "text.h"
 #include "ce_museum_audio_kiosk.h"
 #include "ce_museum_cinema.h"
+#include "ce_cmd_voice.h"
+#include "ce_catalogue_sounds.h"
 #include "../platform/common/portlog.h"
 #include <cstdio>
 #include <cstring>
@@ -139,6 +141,12 @@ void RuntimeShutdown() {
     gInitialized = false;
 }
 
+void RuntimeBeforeSoundReinit() {
+    if (gInitialized)
+        Stop(&gState, MakeBackend(), KioskClock());
+    ReleaseSample();
+}
+
 void RuntimeUpdate(CeMuseumTour::Wing wing, bool paused, bool cinemaPlaying,
                    float eyeX, float eyeY, float eyeZ,
                    float aimX, float aimY, float aimZ) {
@@ -195,6 +203,12 @@ bool RuntimeCue(char *title, unsigned titleCap, char *line, unsigned lineCap,
 }
 
 } // namespace CeMuseumAudioKiosk
+
+extern "C" void PortCeSoundBeforeReinit(void) {
+    CeMuseumAudioKiosk::RuntimeBeforeSoundReinit();
+    CeCmdVoiceStop();
+    PortCeCatalogueSoundStop();
+}
 #else
 #include "ce_museum_audio_kiosk.h"
 namespace CeMuseumAudioKiosk {
@@ -206,4 +220,6 @@ bool RuntimeIsAimingControl() { return false; }
 long RuntimeMusicDuckHundredths() { return 0; }
 bool RuntimeCue(char *, unsigned, char *, unsigned, char *, unsigned) { return false; }
 } // namespace CeMuseumAudioKiosk
+
+extern "C" void PortCeSoundBeforeReinit(void) {}
 #endif

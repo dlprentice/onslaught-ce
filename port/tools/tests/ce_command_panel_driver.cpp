@@ -632,6 +632,23 @@ void TestSavedSets() {
     CHECK(!s.changed);
     CHECK_INT(panel.SelectionCount(), before);
 
+    // Recalling a saved set whose remaining units are dead/unselectable keeps the current selection intact.
+    w.Find(10)->availability = Availability::Dead;
+    w.Find(10)->selectable = false;
+    ++w.snapshot_generation;
+    w.Apply(panel);
+    SelectIds(panel, w, SelectOp::Replace, {50});
+    CHECK_INT(panel.SelectionSetCount(0), 1);
+    CHECK_INT(panel.SelectionSetLiveCount(0), 0);
+    s = panel.RecallSelectionSet(0, SelectOp::Replace);
+    CHECK(!s.changed);
+    CHECK_INT(panel.SelectionCount(), 1);
+    CHECK(panel.IsSelected(w.Key(50)));
+    w.Find(10)->availability = Availability::Available;
+    w.Find(10)->selectable = true;
+    ++w.snapshot_generation;
+    w.Apply(panel);
+
     panel.ClearSelectionSet(0);
     CHECK_INT(panel.SelectionSetCount(0), 0);
 

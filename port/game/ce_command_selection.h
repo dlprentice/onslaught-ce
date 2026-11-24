@@ -299,6 +299,7 @@ public:
     SelectionChange RecallSet(int slot, bool additive);
     void ClearSet(int slot);
     int SetCount(int slot) const;
+    int SetLiveCount(int slot) const;
 
     // Start an action for the present selection from a host-owned input route.
     // Uses the same intent and eligibility checks as a panel release, without

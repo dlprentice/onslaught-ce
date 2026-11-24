@@ -13,10 +13,16 @@ CTweakSLONG MY_READABLE_Z_BUFFER(0), OTHER_ZBUFFER_AS_TEXTURE(0);
 namespace
 {
 bool layer = true, writeSucceeds = true, pixelSucceeds = true, vertexSucceeds = true, vertexNativeSucceeds = true;
+bool allowDetailPreset = false;
+unsigned maxAnisoHw = 16u, maxRtDimHw = 1024u;
 int stored = -1, reads, writes, notices, displayChanges, logCount, failures;
+int detailUnit = -1, detailTree = -1, detailTerrain = -1, detailAniso = -1, detailWater = -1, detailShadow = -1;
+int detailCalls, detailStagedCalls;
+CeDetailPreset lastStaged = {-1, -1, -1, -1, -1, -1};
 bool textureSucceeds = true, textureOutputSucceeds = true, depthSucceeds = true;
 int textureCalls, textureFailAt;
 void Check(bool value, const char *label) { if (!value) { ++failures; std::cout << "FAIL " << label << '\n'; } }
+void RecordDetailStage(const CeDetailPreset &preset) { ++detailStagedCalls; lastStaged = preset; }
 }
 bool PortCeLayer() { return layer; }
 extern "C" int CE_SettingGetBool(const char *name, int fallback)
@@ -26,20 +32,24 @@ extern "C" int CE_SettingGetBool(const char *name, int fallback)
 }
 extern "C" int CE_SettingSet(const char *name, int value)
 {
-    Check(std::string(name) == "extra_graphics", "only the graphics preference is written");
-    ++writes; if (writeSucceeds) stored = value; return writeSucceeds;
+    if (!allowDetailPreset)
+        Check(std::string(name) == "extra_graphics", "only the graphics preference is written");
+    ++writes; if (writeSucceeds && std::string(name) == "extra_graphics") stored = value; return writeSucceeds;
 }
 void PortSessionLog(PortSessionCategory, bool, const char *, ...) { ++logCount; }
 void PortCeSaveFailedNotice() { ++notices; }
 int PortUserFileState(const char *) { return 1; }	// these cases never open the options file
-// The hook that takes the fresh defaults is a stub below, so nothing here may ask for the beyond-retail quality rows.
+// The hook that takes the fresh defaults is a stub below, so nothing here may ask for the beyond-retail quality rows
+// except the explicit detail-preset cases.
 extern "C" int CE_SettingGetText(const char *, char *, int) { return 0; }
-extern "C" int CE_FullUnitModelsRequest(int) { Check(false, "the beyond-retail rows are not requested by these cases"); return 0; }
-extern "C" int CE_FullTreeModelsRequest(int) { Check(false, "the beyond-retail rows are not requested by these cases"); return 0; }
-extern "C" int CE_TerrainDetailRequest(int) { Check(false, "the beyond-retail rows are not requested by these cases"); return 0; }
-extern "C" int CE_AnisoRequest(int) { Check(false, "the beyond-retail rows are not requested by these cases"); return 0; }
-extern "C" int CE_WaterReflectionRequest(int) { Check(false, "the beyond-retail rows are not requested by these cases"); return 0; }
-extern "C" int CE_DynamicShadowRequest(int) { Check(false, "the beyond-retail rows are not requested by these cases"); return 0; }
+extern "C" unsigned CE_AnisoHardwareMax() { return maxAnisoHw; }
+extern "C" unsigned CeRenderTargetQualityHardwareMaxDim() { return maxRtDimHw; }
+extern "C" int CE_FullUnitModelsRequest(int v) { if (!allowDetailPreset) Check(false, "the beyond-retail rows are not requested by these cases"); ++detailCalls; detailUnit = v; return allowDetailPreset ? 1 : 0; }
+extern "C" int CE_FullTreeModelsRequest(int v) { if (!allowDetailPreset) Check(false, "the beyond-retail rows are not requested by these cases"); ++detailCalls; detailTree = v; return allowDetailPreset ? 1 : 0; }
+extern "C" int CE_TerrainDetailRequest(int v) { if (!allowDetailPreset) Check(false, "the beyond-retail rows are not requested by these cases"); ++detailCalls; detailTerrain = v; return allowDetailPreset ? 1 : 0; }
+extern "C" int CE_AnisoRequest(int v) { if (!allowDetailPreset) Check(false, "the beyond-retail rows are not requested by these cases"); ++detailCalls; detailAniso = v; return allowDetailPreset ? 1 : 0; }
+extern "C" int CE_WaterReflectionRequest(int v) { if (!allowDetailPreset) Check(false, "the beyond-retail rows are not requested by these cases"); ++detailCalls; detailWater = v; return allowDetailPreset ? 1 : 0; }
+extern "C" int CE_DynamicShadowRequest(int v) { if (!allowDetailPreset) Check(false, "the beyond-retail rows are not requested by these cases"); ++detailCalls; detailShadow = v; return allowDetailPreset ? 1 : 0; }
 void CeWaterReflectionBeginFrame() {}
 unsigned CeWaterReflectionTargetRes() { return 256u; }
 unsigned CeWaterReflectionNextFallback(unsigned) { return 0u; }
@@ -70,7 +80,7 @@ struct TestGame { bool IsMultiplayer() const { return false; } } GAME;
 struct TestHistory { template<class... T> void AddMessage(T...) {} } SETUP_HISTORY;
 constexpr bool TRUE = true;
 #define D3DPS_VERSION(major, minor) (0xffff0000u | ((major) << 8) | (minor))
-struct Pixel {} pixel;
+struct Pixel { void Release() {} } pixel;
 struct CVertexShader
 {
     void *mShader;
@@ -134,6 +144,54 @@ int main(int argc, char **argv)
 {
     if (argc != 2) return 2;
     const std::string name = argv[1];
+    if (name.compare(0, 7, "detail-") == 0)
+    {
+        PortCeGraphicsRegisterDetailPresetStager(RecordDetailStage);
+        if (name == "detail-stage-clamped")
+        {
+            maxAnisoHw = 4u; maxRtDimHw = 256u;
+            PortCeGraphicsStageDetailPreset(3);
+            Check(writes == 0 && detailCalls == 0, "staging a Detail preset writes nothing to ce.ini and requests no live change");
+            Check(detailStagedCalls == 1 && lastStaged.unitModels == 1 && lastStaged.treeModels == 0 &&
+                  lastStaged.terrainDetail == 1 && lastStaged.aniso == 4 && lastStaged.waterRes == 256 && lastStaged.shadowRes == 128,
+                  "High preset stages hardware-clamped aniso and water resolution");
+            maxAnisoHw = 1u; maxRtDimHw = 64u;
+            PortCeGraphicsStageDetailPreset(2);
+            Check(writes == 0 && detailCalls == 0 && detailStagedCalls == 2 &&
+                  lastStaged.aniso == 0 && lastStaged.waterRes == 256 && lastStaged.shadowRes == 64,
+                  "Medium preset clamps aniso to 0 and shadow resolution to 64 when hardware caps are minimal");
+            PortCeGraphicsStageDetailPreset(0);
+            Check(detailStagedCalls == 2, "Custom detail level stages nothing");
+        }
+        else if (name == "detail-apply-clamped")
+        {
+            allowDetailPreset = true;
+            maxAnisoHw = 8u; maxRtDimHw = 256u;
+            PortCeGraphicsApplyDetailPreset(3);
+            Check(detailCalls == 6 && writes == 6 && detailUnit == 1 && detailTree == 0 && detailTerrain == 1 &&
+                  detailAniso == 8 && detailWater == 256 && detailShadow == 128,
+                  "applying High preset clamps aniso and water resolution to hardware caps before requesting and saving");
+        }
+        else if (name == "detail-apply-uncapped")
+        {
+            allowDetailPreset = true;
+            maxAnisoHw = 16u; maxRtDimHw = 1024u;
+            PortCeGraphicsApplyDetailPreset(3);
+            Check(detailCalls == 6 && writes == 6 && detailUnit == 1 && detailTree == 0 && detailTerrain == 1 &&
+                  detailAniso == 16 && detailWater == 512 && detailShadow == 128,
+                  "applying High preset keeps full preset values when hardware supports them");
+        }
+        else if (name == "detail-stage-faithful")
+        {
+            layer = false;
+            PortCeGraphicsStageDetailPreset(3);
+            PortCeGraphicsApplyDetailPreset(3);
+            Check(writes == 0 && detailCalls == 0 && detailStagedCalls == 0,
+                  "faithful mode neither stages nor applies CE detail presets");
+        }
+        std::cout << "graphics-policy " << name << " failures=" << failures << '\n';
+        return failures ? 1 : 0;
+    }
     const bool faithful = name == "private" || name == "layer-off" || name.compare(0, 6, "fence-") == 0;
     if (name == "layer-off") layer = false;
     if (name.compare(0, 6, "fence-") == 0)

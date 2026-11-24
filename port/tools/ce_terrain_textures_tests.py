@@ -147,7 +147,7 @@ struct CTweakSLONG { int mValue = 0; };
 extern CTweakSLONG LANDSCAPE_LOWRES;
 
 struct CMapTex { int mSize = 128; };
-struct CDamageTexture { UBYTE *mData = nullptr; };
+struct CDamageTexture { UBYTE *mData = nullptr; SINT mLevels = 0; };
 struct CDamageMark { UWORD mPrev = 0, mNext = 0; UBYTE mX = 0, mY = 0, mUnknown6 = 0, mSize = 0; };
 struct CDamage {
     CDamageTexture *mTexture = nullptr;

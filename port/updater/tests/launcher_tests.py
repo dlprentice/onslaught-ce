@@ -169,8 +169,11 @@ class Launcher(unittest.TestCase):
     def test_record_flag_and_ini(self):
         (self.user).mkdir()
         (self.user / "defaultoptions.bea").write_bytes(b"\x01\x02\x03")
+        (self.user / "online-profile.key").write_bytes(b"private-ed25519-key-material")
+        (self.user / "online-profile.ini").write_bytes(b"handle=TestPilot\n")
         (self.user / "savegames").mkdir()
         (self.user / "savegames/Career 1.bes").write_bytes(b"career")
+        (self.user / "savegames/notes.txt").write_bytes(b"non-bes-private-note")
         r = self.run_launcher("--record", "-level", "100")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         tapes = sorted((self.user / "tapes").glob("*.tape.json"))

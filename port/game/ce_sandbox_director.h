@@ -1047,6 +1047,8 @@ void PortCeLivingSandboxMarkRetryReset(void);
 void PortCeLivingSandboxSetMessage(const char *message);
 
 bool PortCeLivingSandboxRescuePlayer(int playerNumber);
+int PortCeLivingSandboxBeInStasis(const void *be);
+float PortCeLivingSandboxHudTopBottom(float viewportW, float viewportH);
 void PortCeLivingSandboxLevelBegin(int level);
 void PortCeLivingSandboxLevelEnd(int level, int quit);
 void PortCeLivingSandboxTickPre(void);

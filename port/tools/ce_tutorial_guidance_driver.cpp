@@ -804,7 +804,7 @@ int main(int argc, char **argv)
 		Is(mode, "pad-mouse-zoom") || Is(mode, "pad-mouse-player-two"))
 		Check(zoom == L"Zoom: see Zoom In and Out in Controller Options. Not every weapon zooms.", "unsupported zoom binding uses the generic text");
 	else if (Is(mode, "long-labels") || Is(mode, "long-names"))
-		Check(zoom == L"Zoom in: Middle mouse button. Zoom out: Right mouse button. Not every weapon zooms.", "mouse-button zoom named");
+		Check(zoom == L"Zoom in: Right mouse button. Zoom out: Middle mouse button. Not every weapon zooms.", "mouse-button zoom named");
 	else
 		Check(zoom == L"Zoom in: Mouse wheel down. Zoom out: Mouse wheel up. Not every weapon zooms.", "actual default wheel directions");
 	CallHelp(script, kZoomOut);

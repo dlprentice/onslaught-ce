@@ -32,12 +32,20 @@ bool stamp(const struct stat &a, const struct stat &b) {
          a.st_ctim.tv_sec == b.st_ctim.tv_sec &&
          a.st_ctim.tv_nsec == b.st_ctim.tv_nsec;
 }
-int directory(const std::string &p) {
+bool isOsSystemSymlink(int parentFd, const char *part) {
+  struct stat pst{}, lst{};
+  return fstat(parentFd, &pst) == 0 && pst.st_uid == 0 &&
+         !(pst.st_mode & (S_IWGRP | S_IWOTH)) &&
+         fstatat(parentFd, part, &lst, AT_SYMLINK_NOFOLLOW) == 0 &&
+         S_ISLNK(lst.st_mode) && lst.st_uid == 0;
+}
+int directory(const std::string &p, bool allowUserAncestors = false) {
   if (p.empty() || p[0] != '/' || p.size() >= 4096 || p.find('\0') != p.npos)
     return -1;
   int at = open("/", O_DIRECTORY | O_RDONLY | O_CLOEXEC);
   for (size_t pos = 1; at >= 0 && pos < p.size();) {
     size_t end = p.find('/', pos);
+    const bool isLeaf = (end == p.npos);
     std::string part = p.substr(pos, end - pos);
     if (part.empty() || part == "." || part == "..") {
       close(at);
@@ -45,16 +53,20 @@ int directory(const std::string &p) {
     }
     int child = openat(at, part.c_str(),
                        O_NOFOLLOW | O_DIRECTORY | O_RDONLY | O_CLOEXEC);
+    if (child < 0 && (errno == ELOOP || errno == ENOTDIR) && !isLeaf &&
+        (allowUserAncestors || isOsSystemSymlink(at, part.c_str()))) {
+      child = openat(at, part.c_str(), O_DIRECTORY | O_RDONLY | O_CLOEXEC);
+    }
     close(at);
     at = child;
-    if (end == p.npos)
+    if (isLeaf)
       break;
     pos = end + 1;
   }
   return at;
 }
-bool named(int f, const std::string &p) {
-  Fd now(directory(p));
+bool named(int f, const std::string &p, bool allowUserAncestors = false) {
+  Fd now(directory(p, allowUserAncestors));
   struct stat a{}, b{};
   return now.n >= 0 && !fstat(now.n, &a) && !fstat(f, &b) && same(a, b);
 }
@@ -151,8 +163,8 @@ bool CePreviewRead(const std::string &set, const std::string &user,
                    CePreviewSet &out, std::string &error) {
   out = {};
   error = "Choose a backup folder outside the game and careers.";
-  Fd folder(directory(set)), u(directory(user)), g(directory(game)),
-      pkg(directory(package));
+  Fd folder(directory(set, false)), u(directory(user, true)), g(directory(game, true)),
+      pkg(directory(package, true));
   if (folder.n < 0 || u.n < 0 || g.n < 0 || pkg.n < 0 ||
       !outside(folder.n, u.n) || !outside(folder.n, g.n) ||
       !outside(folder.n, pkg.n))
@@ -167,8 +179,8 @@ bool CePreviewRead(const std::string &set, const std::string &user,
     return known ? proposal(used) : std::string();
   };
   auto current = [&]() {
-    return named(folder.n, set) && named(u.n, user) && named(g.n, game) &&
-           named(pkg.n, package);
+    return named(folder.n, set) && named(u.n, user, true) && named(g.n, game, true) &&
+           named(pkg.n, package, true);
   };
   return ce_backup_verify::read<File>(folder.n, suggest, current, out, error);
 }
@@ -178,8 +190,8 @@ bool CePreviewList(const std::string &root, const std::string &user,
                    std::vector<std::string> &sets, std::string &error) {
   sets.clear();
   error = "The configured backup folder could not be checked.";
-  Fd dir(directory(root)), u(directory(user)), g(directory(game)),
-      pkg(directory(package));
+  Fd dir(directory(root, false)), u(directory(user, true)), g(directory(game, true)),
+      pkg(directory(package, true));
   if (dir.n < 0 || u.n < 0 || g.n < 0 || pkg.n < 0 || !outside(dir.n, u.n) ||
       !outside(dir.n, g.n) || !outside(dir.n, pkg.n))
     return false;

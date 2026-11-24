@@ -113,7 +113,11 @@ static bool Start(int level, bool mod)
 	if (level == kBonusLevel || IsRace(level))
 		FRONTEND.SetQuit(level);
 	else
+	{
+		if (level == 856 || level == 858)
+			FRONTEND.mFEPMultiplayer.mCY = 0;
 		FRONTEND.SetPage(FEP_MULTIPLAYER_START, 30);
+	}
 	return true;
 }
 
@@ -328,6 +332,20 @@ void PortCeBonusLeaveDebriefing()
 {
 	sReturning = false;
 	FRONTEND.SetPage(FEP_LANGUAGE_TEST, 30);	// the CE page's slot (patch 0050)
+}
+
+// Backing out of the Multiplayer start page after entering from Bonus Levels (856/858) or Mods (850-899):
+// clears the pending launch state and queues return highlight on the CE page instead of retail Multiplayer.
+extern "C" bool PortCeBonusCancelMpStart(void)
+{
+	if (!sActive || !IsCoop(sLevel))
+		return false;
+	sActive = false;
+	sReturning = false;
+	sRaceReturning = false;
+	sCoopReturning = false;
+	sReturnLevel = sLevel;
+	return true;
 }
 
 #endif

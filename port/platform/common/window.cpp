@@ -1282,9 +1282,21 @@ extern "C" HWND WINAPI PortCreateWindowExA(DWORD exstyle, LPCSTR cls, LPCSTR tit
 #endif
 	if (!(style & WS_VISIBLE))
 		flags |= SDL_WINDOW_HIDDEN;
+	int createW = w, createH = h;
 	if (PortWideModes())
+	{
 		flags |= SDL_WINDOW_HIGH_PIXEL_DENSITY;	// a HiDPI desktop's real pixels (never offscreen, in replays or recordings)
-	SDL_Window *sdl = SDL_CreateWindow(title ? title : "Battle Engine Aquila", w, h, flags);
+		const SDL_DisplayID primary = SDL_GetPrimaryDisplay();
+		const SDL_DisplayMode *dm = primary ? SDL_GetCurrentDisplayMode(primary) : NULL;
+		if (dm && dm->pixel_density > 1.0f)
+		{
+			createW = (int)((double)w / dm->pixel_density + 0.5);
+			createH = (int)((double)h / dm->pixel_density + 0.5);
+			if (createW < 1) createW = 1;
+			if (createH < 1) createH = 1;
+		}
+	}
+	SDL_Window *sdl = SDL_CreateWindow(title ? title : "Battle Engine Aquila", createW, createH, flags);
 	if (!sdl)
 	{
 		fprintf(stderr, PORT_LOG_PREFIX "SDL_CreateWindow: %s\n", SDL_GetError());

@@ -85,10 +85,10 @@ several places, folders you are unsure of): follow the
 
 ## In the game
 
-- **Main Menu > Onslaught CE (this source branch):** a page with **Bonus Levels**, **Mods**, **Catalogue**,
-  **CE Settings**, **Cheats**, **Help & Info** and **Report a Problem**. Each row has a hint under the list.
-  Experimental rows depend on the features enabled. The Options page is the original's.
-- **Bonus Levels:** Aquila Prototype, Building Defence, and Race Challenge 1 to 5 (each below). None of them
+- **Main Menu > Onslaught CE (this source branch):** a page with **Bonus Levels**, **Extras**, **Mods**, **Catalogue**,
+  **CE Settings**, **Cheats**, **Experimental Features**, **Help & Info**, **Report a Problem** and **Grand Museum**. Each row has a hint under the list.
+  Optional rows are enabled by default and can be toggled in **Experimental Features** or `ce.ini`. The Options page is the original's.
+- **Bonus Levels:** Aquila Prototype, Building Defence, Carrier Clash, Living Sandbox and Race Challenge 1 to 5 (each below). None of them
   advances career progress. A bonus level started here comes back to this list with its row highlighted.
 - **CE Settings:** a list of choices, each written to `ce.ini` in your user folder when you make it. The page is not on
   the menu while a session is recorded.
@@ -590,7 +590,7 @@ between visual effects and play, so a wider view can change the details of a fig
 
 **A new profile starts at the best the game offers, except one costly row.** The first time you start with no saved options of your own (a new install,
 or a profile that only has the old game folder's file), Video Options (Main Menu > Options > Video Options) starts every quality row at its highest choice (except 3D distant trees, below),
-**anti-aliasing at the highest level your graphics device lists**, and **extra graphical features On** where your device passes the capability test.
+**anti-aliasing at up to 4x MSAA (or the highest lower level your graphics device lists)**, and **extra graphical features On** where your device passes the capability test.
 **High-detail units** starts at **Yes** so unit models keep full detail at range, while **3D distant trees** starts at **No** (opt-in to replace distant billboard trees with full 3D models).
 Full 3D trees can be costly on forest maps: on a laptop with an RTX 4060, level 200 fell from 383 to 67 frames a second with the same terrain setting.
 **Terrain detail distance** starts at **Extended**: it keeps finer ground detail up to twice as far away. The visible range and fog stay the same.
@@ -844,9 +844,9 @@ its win and debrief. This covers one recorded route; it does not establish compl
 - Gamepad and flight-stick defaults cover menus, single-player levels and bonus Co-Op ([how](port/controller-input.md)); only
   virtual devices have been tested so far.
 - Widescreen play is not compared with the original (the original has no widescreen); ordinary replays and recordings use 4:3.
-- Release 0.1.13 does not offer Internet multiplayer. This source branch has opt-in two-player network test builds;
-  that does not establish a released Internet service. Mods on Windows and additional HUD options remain planned.
-  On Linux, mods are an early test ([Mods (experimental)](#mods-experimental)).
+- Release 0.1.13 does not offer Internet multiplayer. This source branch has opt-in 2 to 4 player network test builds;
+  that does not establish a released Internet service. Additional HUD options remain planned.
+  Mods work on Linux and Windows ([Mods (experimental)](#mods-experimental)); Windows mods have been exercised under Wine while physical Windows NTFS acceptance remains open.
 - The native prototypes remain incomplete. Commander has squad selection and orders, but the intended native-model
   RTS view, individual-unit and structure workflows are not complete. Taking a friendly unit is not a finished
   first-person infantry mode: camera and weapon presentation still need work. The Museum has a walkable room and

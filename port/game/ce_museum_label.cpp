@@ -89,15 +89,38 @@ void Drawable(WCHAR *out, const WCHAR *text, CDXBitmapFont *font)
 	out[n] = 0;
 }
 
+// C++14 SFINAE pause probe: calls real CGame::IsPaused() in game builds while staying compatible with minimal fake test boundaries.
+template <typename G>
+auto MuseumGamePaused(G &g, int) -> decltype(g.IsPaused(), bool()) { return g.IsPaused() != 0; }
+template <typename G>
+bool MuseumGamePaused(G &, long) { return false; }
+
+// Scale a 0xAARRGGBB colour's alpha channel smoothly once text becomes visible (open >= 0.45),
+// starting at 55% opacity so text is always readable on the very first frame any bar appears.
+// Clamps strictly to [0, 255] so /QIfist round-to-nearest-even can never wrap 255.5 -> 256 -> 0x00!
+DWORD TextFadeColour(DWORD base, float open)
+{
+	if (open >= 1.0f)
+		return base;
+	const float t = open <= 0.45f ? 0.0f : (open - 0.45f) / 0.55f;
+	const float alpha = 0.55f + 0.45f * t;
+	int ia = static_cast<int>(alpha * 255.0f);
+	if (ia < 0) ia = 0;
+	if (ia > 255) ia = 255;
+	return (static_cast<DWORD>(ia) << 24) | (base & 0x00ffffffu);
+}
+
 // One capsule: its text lines centred in the bar, the bar as wide as the longer line needs, grown from the middle by open (0 to 1). cy is the bar's middle.
 void Capsule(const Label &label, float cx, float cy, float open)
 {
 	CDXBitmapFont *font = PLATFORM.Font(FONT_SMALL);
-	if (!font || open <= 0.0f)
+	if (!font || open < 0.45f)
 		return;
 	WCHAR name[kChars], line[kChars];
 	Drawable(name, label.name, font);
 	Drawable(line, label.line, font);
+	if (!name[0] && !line[0])
+		return;
 	SIZE a = {0, 0}, b = {0, 0};
 	font->GetTextExtent(name, &a);
 	if (line[0])
@@ -105,23 +128,28 @@ void Capsule(const Label &label, float cx, float cy, float open)
 	const float widest = float(a.cx > b.cx ? a.cx : b.cx);
 	const float rows = line[0] ? 2.0f : 1.0f, pitch = float(font->GetHeight()) + 2.0f;
 	const float height = 18.0f + rows * pitch;
-	float width = widest + 20.0f;
+	float width = widest + 48.0f;
 	const float most = HUD.mViewportWidth - 2.0f * 64.0f;
 	if (width > most)
 		width = most;
+	const float t = open >= 1.0f ? 1.0f : (open - 0.45f) / 0.55f;
+	const float minBarW = widest + 24.0f;
+	float barW = minBarW + (width - minBarW) * t;
+	if (barW > width)
+		barW = width;
 	RENDERINFO.SetFogEnabled(false);
 	RENDERINFO.SetLightingEnabled(false);
 	RENDERINFO.Apply();
-	HUD.RenderObjectiveBar(cx, cy, width * open, height, 1.0f);
-	if (open < 0.9f)
-		return;										// the text appears once the bar is nearly open, as the radio's does
+	HUD.RenderObjectiveBar(cx, cy, barW, height, 1.0f);
 	RENDERINFO.EnableLighting(false);
 	RENDERINFO.SetFogEnabled(false);
 	RENDERINFO.Apply();
+	const DWORD white = TextFadeColour(kWhite, open);
+	const DWORD grey = TextFadeColour(kGrey, open);
 	const float top = cy - rows * pitch * 0.5f;
-	font->DrawTextWithShadow(cx - float(a.cx) * 0.5f, top, kWhite, name, 0, 1.0f, 1.0f, 1.0f);
+	font->DrawTextWithShadow(cx - float(a.cx) * 0.5f, top, white, name, 0, 1.0f, 1.0f, 1.0f);
 	if (line[0])
-		font->DrawTextWithShadow(cx - float(b.cx) * 0.5f, top + pitch, kGrey, line, 0, 1.0f, 1.0f, 1.0f);
+		font->DrawTextWithShadow(cx - float(b.cx) * 0.5f, top + pitch, grey, line, 0, 1.0f, 1.0f, 1.0f);
 }
 
 // An exhibit's label: the radio messages' own bar, in the radio messages' own place and shape (CMessageBox::RenderOverlay), its text left-aligned from where the
@@ -130,7 +158,7 @@ void Capsule(const Label &label, float cx, float cy, float open)
 void ExhibitCapsule(const Label &label, const WCHAR *caption, float open, int number = 0)
 {
 	CDXBitmapFont *font = PLATFORM.Font(FONT_SMALL);
-	if (!font || open <= 0.0f)
+	if (!font || open < 0.45f)
 		return;
 	WCHAR name[kChars], line[kChars], note[kChars];
 	Drawable(name, label.name, font);
@@ -145,6 +173,8 @@ void ExhibitCapsule(const Label &label, const WCHAR *caption, float open, int nu
 	}
 	Drawable(line, caption, font);
 	Drawable(note, label.note, font);
+	if (!name[0] && !line[0] && !note[0])
+		return;
 	SIZE a = {0, 0}, b = {0, 0}, c = {0, 0};
 	font->GetTextExtent(name, &a);
 	if (line[0])
@@ -153,28 +183,44 @@ void ExhibitCapsule(const Label &label, const WCHAR *caption, float open, int nu
 		font->GetTextExtent(note, &c);
 	if (c.cx > b.cx)
 		b.cx = c.cx;
-	const float centre = (HUD.mViewportWidth * 0.5f + HUD.mViewportX) + gMessageBoxX + 12.0f;
+	const float viewLeft = HUD.mViewportX;
+	const float viewW = HUD.mViewportWidth;
+	const float maxBarW = viewW > 80.0f ? (viewW - 36.0f) : viewW;
+	const float centre = viewLeft + viewW * 0.5f;
 	const float y = (HUD.mViewportBottom + 16.0f - HUD_OFFSET_Y - 128.0f + 48.0f) + gMessageBoxY;
 	float width = 230.0f - HUD.mViewportX * 2 - HUD_OFFSET_X * 2 + gMessageBoxWidth;
-	const float widest = float(a.cx > b.cx ? a.cx : b.cx), room = widest + 2.0f * 34.0f;
+	const float widest = float(a.cx > b.cx ? a.cx : b.cx), padX = 24.0f, room = widest + 2.0f * padX;
 	if (room > width)
 		width = room;
+	if (width > maxBarW)
+		width = maxBarW;
+	const float t = open >= 1.0f ? 1.0f : (open - 0.45f) / 0.55f;
+	float minBarW = widest + 16.0f;
+	if (minBarW > width)
+		minBarW = width;
+	float barW = minBarW + (width - minBarW) * t;
+	if (barW > width)
+		barW = width;
 	RENDERINFO.SetFogEnabled(false);
 	RENDERINFO.SetLightingEnabled(false);
 	RENDERINFO.Apply();
-	HUD.RenderObjectiveBar(centre, y, width * open, 60.0f, 1.0f);
-	if (open < 0.9f)
-		return;										// the text appears once the bar is nearly open, as the radio's does
+	HUD.RenderObjectiveBar(centre, y, barW, 60.0f, 1.0f);
 	RENDERINFO.EnableLighting(false);
 	RENDERINFO.SetFogEnabled(false);
 	RENDERINFO.Apply();
+	const DWORD white = TextFadeColour(kWhite, open);
+	const DWORD grey = TextFadeColour(kGrey, open);
 	const float rows = 1.0f + (line[0] ? 1.0f : 0.0f) + (note[0] ? 1.0f : 0.0f);
-	const float left = centre - width * 0.5f - 12.0f, top = y - gMessageTextY + (3.0f - rows) * 7.5f;
-	font->DrawTextWithShadow(left, top, kWhite, name, 0, 1.0f, 1.0f, 1.0f);
+	const float availW = width > 2.0f * padX + 40.0f ? (width - 2.0f * padX) : width;
+	float scaleX = (widest > availW && widest > 1.0f) ? (availW / widest) : 1.0f;
+	if (scaleX < 0.72f)
+		scaleX = 0.72f;
+	const float left = centre - width * 0.5f + padX, top = y - gMessageTextY + (3.0f - rows) * 7.5f;
+	font->DrawTextWithShadow(left, top, white, name, 0, scaleX, 1.0f, 1.0f);
 	if (line[0])
-		font->DrawTextWithShadow(left, top + 15.0f, kGrey, line, 0, 1.0f, 1.0f, 1.0f);
+		font->DrawTextWithShadow(left, top + 15.0f, grey, line, 0, scaleX, 1.0f, 1.0f);
 	if (note[0])
-		font->DrawTextWithShadow(left, top + (line[0] ? 30.0f : 15.0f), kGrey, note, 0, 1.0f, 1.0f, 1.0f);
+		font->DrawTextWithShadow(left, top + (line[0] ? 30.0f : 15.0f), grey, note, 0, scaleX, 1.0f, 1.0f);
 }
 
 void ExhibitMarker(unsigned index)
@@ -320,7 +366,7 @@ extern "C" int PortCeMuseumLabelsNearest(float x, float y, float forwardX, float
 
 extern "C" void PortCeMuseumLabelsRender(void)
 {
-	if (!PortCeMuseumVisitActive())
+	if (!PortCeMuseumVisitActive() || MuseumGamePaused(GAME, 0))
 		return;
 	PortCeMuseumVisitFrame();
     CinemaPanelDraw();

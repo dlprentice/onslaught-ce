@@ -30,6 +30,7 @@ bool CePlayUnitTakeSelection(uint64_t world, CUnit* candidate,
 bool CePlayUnitCanTakeDelivery();
 bool CePlayUnitTakeDelivery();
 bool CePlayUnitOwnsPilot();
+extern "C" int PortCePlayUnitOwnsPilot(int player);
 // A map transition consumes the current takeover press, including a key held across the boundary.
 void CePlayUnitMapBoundary();
 

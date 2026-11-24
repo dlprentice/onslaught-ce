@@ -48,7 +48,8 @@ BUILT_ON_PHOTO = ("0137-ce-save-failed-notice.patch", "0162-commander-map-hooks.
                   "0256-ce-museum-hall-world.patch",
                   "0265-ce-authored-exhibition-world.patch",  # its declaration needs the marker; the full render stack is checked below
                   "0271-ce-commander-native-scene.patch",  # its Hud.cpp hunk anchors on 0235's CE_SPLIT_HUD() lines
-                  "0285-ce-playunit-hud.patch")  # its Hud.cpp hunk anchors on 0133's CePhotoDrawScope block
+                  "0285-ce-playunit-hud.patch",  # its Hud.cpp hunk anchors on 0133's CePhotoDrawScope block
+                  "0381-ce-perf-surf-museum-fixes.patch")  # its DXEngine.cpp hunk anchors on 0265
 PHOTO = ROOT / "port/game/ce_photo.cpp"
 PHOTO_H = ROOT / "port/game/ce_photo.h"
 OVERLAY_H = ROOT / "port/game/ce_overlay_box.h"
@@ -172,8 +173,8 @@ def placed_in(files, hooks_text):
                                  cockpit.group(1)), "the cockpit and its queue run inside a draw scope, not behind a test"
     post = function(engine, "HRESULT\tCDXEngine::PostRender(")
     assert "CLIPARAMS" not in post, "PostRender no longer reads -killhud"
-    # the condition is main's (GetShowHUD()))) or, with the network layer (patch 0149), the viewed player's (ending in GetShowHUD())))
-    assert re.search(r"GetShowHUD\(\)\)\)?\n\t+render=TRUE;", post), "the battle line goes where it always did"
+    # the condition is main's (GetShowHUD()))) or, with the network layer (patch 0149), CE_WorldViewShowHUD(...)
+    assert re.search(r"(?:GetShowHUD\(\)\)\)?|CE_WorldViewShowHUD\([^\n]+\))\n\t+render=TRUE;", post), "the battle line goes where it always did"
     assert re.search(r"if \(render\)\n#ifdef CE_VERSION\n\t\t\{\n\t\t\tCePhotoDrawScope photoDraw;[^\n]*\n#endif\n\t\t\tHUD\.RenderBattleline\(viewport\);"
                      r"\n#ifdef CE_VERSION\n\t\t\}\n#endif", post), "the battle line runs inside a draw scope"
     for kept in ("HUD.Render();", "GAME.GetMessageLog()->Render(viewport)", "GAME.GetLevelBriefingLog()->Render(viewport)",
@@ -186,9 +187,9 @@ def placed_in(files, hooks_text):
                      mirror), "the note is drawn after the console, outside the mirror pass (only the chat overlay, patch 0201, and the save error notice, patch 0137, may follow it)"
     hud = function(files["Hud.cpp"], "void\tCHud::Render()")
     assert "CLIPARAMS" not in hud, "the HUD no longer reads -killhud"
-    # the condition is main's (GetShowHUD())) or, with the network layer (patch 0149), the viewed player's (a longer line ending in GetShowHUD()))
+    # the condition is main's (GetShowHUD())) or, with the network layer (patch 0149), CE_WorldViewShowHUD(...)
     playunit_hud = r"(?:\n\t\telse if \(player\)\n\t\t\{\n\t\t\tCePhotoDrawScope photoDraw;\n\t\t\tCePlayUnitHudOverlay\(player, i\);[^\n]*\n\t\t\})?"
-    assert re.search(r"GetShowHUD\(\)\)+\n#ifdef CE_VERSION\n\t\t\{\n\t\t\tCePhotoDrawScope photoDraw;[^\n]*\n#endif\n\t\t\tRenderOverlayForViewpoint\(player, i\);"
+    assert re.search(r"(?:GetShowHUD\(\)\)+|CE_WorldViewShowHUD\([^\n]+\))\n#ifdef CE_VERSION\n\t\t\{\n\t\t\tCePhotoDrawScope photoDraw;[^\n]*\n#endif\n\t\t\tRenderOverlayForViewpoint\(player, i\);"
                      r"\n#ifdef CE_VERSION\n\t\t\}" + playunit_hud + r"\n#endif", hud), "the HUD overlay runs inside a draw scope"
     assert hud.index("mFlash =") < hud.index("RenderOverlayForViewpoint"), "the HUD's own bookkeeping still runs"
     for name in ("Hud.cpp", "DXEngine.cpp"):
@@ -449,12 +450,12 @@ class PhotoTests(unittest.TestCase):
             ("proof-shot-off-by-one", "return every && (PortPresentCount() + 1) % every == 0;", "return every && PortPresentCount() % every == 0;", "ordinary", None),
             ("shot-repeats", "\tshotPending = false;\n\treturn wanted;", "\treturn wanted;", "ordinary", None),
             ("f11-never-leaves", "if (key == kPhotoKey) PortCePhotoSet(!photo);", "if (key == kPhotoKey) PortCePhotoSet(true);", "ordinary", None),
-            ("filter-never-on", "\tphoto = on;\n\tPortCeDrawHooks(on || PortCeCmdSuppressFlightHud());", "\tphoto = on;", "ordinary", None),
-            ("filter-never-off", "\tphoto = on;\n\tPortCeDrawHooks(on || PortCeCmdSuppressFlightHud());", "\tphoto = on;\n\tif (on) PortCeDrawHooks(on || PortCeCmdSuppressFlightHud());", "ordinary", None),
-            ("strategic-filter-cleared", "PortCeDrawHooks(on || PortCeCmdSuppressFlightHud());", "PortCeDrawHooks(on);", "ordinary", None),
+            ("filter-never-on", "\tphoto = on;\n\tPortCeDrawHooks(on || PortCeCmdSuppressFlightHud() || PortCeEditorSuppressFlightHud());", "\tphoto = on;", "ordinary", None),
+            ("filter-never-off", "\tphoto = on;\n\tPortCeDrawHooks(on || PortCeCmdSuppressFlightHud() || PortCeEditorSuppressFlightHud());", "\tphoto = on;\n\tif (on) PortCeDrawHooks(on || PortCeCmdSuppressFlightHud() || PortCeEditorSuppressFlightHud());", "ordinary", None),
+            ("strategic-filter-cleared", "PortCeDrawHooks(on || PortCeCmdSuppressFlightHud() || PortCeEditorSuppressFlightHud());", "PortCeDrawHooks(on);", "ordinary", None),
             ("proof-without-photo", "Switch(photo || ProofEvery());", "Switch(photo);", "ordinary", None),
             ("frame-no-reapply", "Switch(photo || ProofEvery());", "if (ProofEvery()) Switch(true);", "ordinary", None),
-            ("sets-killhud", "\tphoto = on;\n\tPortCeDrawHooks(on || PortCeCmdSuppressFlightHud());", "\tphoto = on;\n\tCLIPARAMS.mKillHUD = on;\n\tPortCeDrawHooks(on || PortCeCmdSuppressFlightHud());", "ordinary", None),
+            ("sets-killhud", "\tphoto = on;\n\tPortCeDrawHooks(on || PortCeCmdSuppressFlightHud() || PortCeEditorSuppressFlightHud());", "\tphoto = on;\n\tCLIPARAMS.mKillHUD = on;\n\tPortCeDrawHooks(on || PortCeCmdSuppressFlightHud() || PortCeEditorSuppressFlightHud());", "ordinary", None),
             ("level-end-keeps-photo", "void PortCePhotoLevelEnd()\n{\n\tSwitch(false);", "void PortCePhotoLevelEnd()\n{", "ordinary", None),
             ("level-end-keeps-shot", "\tshotPending = false;\n\tnoteUntil = 0;", "\tnoteUntil = 0;", "ordinary", None),
             ("fence-keeps-photo", "if (!Allowed()) { Switch(false); shotPending = false; return; }", "if (!Allowed()) { shotPending = false; return; }", "ordinary", None),
@@ -470,7 +471,7 @@ class PhotoTests(unittest.TestCase):
             ("old-saved-words", "\"Screenshot saved: %s\"", "\"Saved screenshot %s\"", "ordinary", None),
             ("error-number-in-note", "\"Screenshot not saved: the file could not be written.\"", "\"Screenshot not saved (error %d).\", -status", "ordinary", None),
             ("menu-item-never-on", "bool PortCePhotoMenuSet(bool on) { return SetPhoto(on, true); }", "bool PortCePhotoMenuSet(bool on) { return SetPhoto(on && false, true); }", "ordinary", None),
-            ("multiplayer", "return !GAME.IsMultiplayer() && GAME.GetNPlayers() == 1", "return GAME.GetNPlayers() >= 1", "ordinary", None),
+            ("multiplayer", "return ((!GAME.IsMultiplayer() && GAME.GetNPlayers() == 1) || (PortCeOneScreenMatch && PortCeOneScreenMatch()))", "return (GAME.GetNPlayers() >= 1 || (PortCeOneScreenMatch && PortCeOneScreenMatch()))", "ordinary", None),
             ("front-end", "return !FRONTEND.IsRunning() && AllowedInLevel();", "return AllowedInLevel();", "ordinary", None),
             ("menu-item-asks-the-front-end", "bool PortCePhotoAvailable() { return AllowedInLevel(); }", "bool PortCePhotoAvailable() { return Allowed(); }", "ordinary", None),
             ("menu-choice-asks-the-front-end", "if (!(fromMenu ? AllowedInLevel() : Allowed()))", "if (!Allowed())", "ordinary", None),

@@ -111,8 +111,8 @@ as migration workarounds, and do not use 0.1.6 as an intermediate release.
 **Experimental.** The public flavour made with `--public --with-network` offers the CE network menus.
 The default public build leaves the network out, as the section on `CE_NETWORK_OFF` above says, and offers no such page.
 The network-enabled public build offers
-**Onslaught CE > Network Game** (`game/ce_netpages.cpp`): Host Game or Join Game, for two-player Co-Op on the building defence (level 856) or the
-tutorial (100). The original ships the building defence twice, as levels 856 and 858, with the same map and script (their level files differ in one byte of the world data and some
+**Onslaught CE > Network Game** (`game/ce_netpages.cpp`) and **Multiplayer > Online Play**: Host Game, Join Game, and Online Play lobby rooms for 2 to 4 player Co-Op or Versus (with ICE/TURN relay as well as direct LAN/IP). For two-player direct Co-Op on the building defence (level 856) or the
+tutorial (100), the original ships the building defence twice, as levels 856 and 858, with the same map and script (their level files differ in one byte of the world data and some
 resource-table indices; frames of the two are identical), so the lobby offers it once; the gates admit 858 as well. Never in replays, recordings, probe or pilot runs (even with `BEA_PORT_CE_LAYER=1`), `-autoconfigtest` or the demo, where the CE page keeps
 its earlier rows.
 
@@ -139,7 +139,7 @@ sentences against the page's text); a release that offers the page repeats it in
   (`the window was closed: not returning to the front end`). A lost network game's end screen offers Quit only: Retry would restart one player alone
   (patch 0230). Other stops read "The two games went out of step, so the game stopped. You can host or join again." or "The network game stopped. You
   can host or join again."; the reason is in the log.
-- There is no matchmaking server: play on one network, or the host forwards its UDP port (`net_port` in ce.ini, default 27652) on its router and gives the
+- For direct-IP play without the Online Play lobby server: play on one network, or the host forwards its UDP port (`net_port` in ce.ini, default 27652) on its router and gives the
   other player its public address. Connection Help (a row of the Network Game page) walks the host through the steps in four short paragraphs: the
   port forward at the router, the public address and the Windows firewall prompt. A public address starting 10., 192.168., 172.16 to 172.31 or 100.64 to
   100.127 means another router is in front of yours, so forwarding is not enough. Use a VPN you both already use, or play on one network.
@@ -148,10 +148,10 @@ sentences against the page's text); a release that offers the page repeats it in
   waited 45 seconds with nobody reaching it reads "Nobody has joined yet. If your friend cannot connect, see Connection Help.", and one whose friend
   could not join reads "Your friend could not join. Check that they have this code." The game cannot tell a wrong code from a host that is not waiting
   or a blocked port, so the address, port, transport error and the number of failed attempts go to the log only.
-- Not tested: play through routers over the real internet, more than two players, Windows on real hardware (the Windows build has been run against Linux
+- Not tested: physical Windows hardware on every router/ISP (the Windows build has been run against Linux
   under Wine; under Wine or Proton keep the game folder and the user folder on drive C: the settings reader refuses a folder reached through a link, which Wine's Z:
   drive is, and admission refuses a content file that has no volume serial number, which Wine reports for Z: paths on some host-mounted folders, as observed during one test), so a game or user folder reached through Z: can be refused at admission).
-- What it contacts: only the other player's address (UDP). No server, no telemetry. To list this PC's addresses the Host page reads the network
+- What it contacts: direct-IP play contacts only the other player's address (UDP); Online Play contacts only the configured lobby server (and user-configured ICE/TURN relay when used). No telemetry. To list this PC's addresses the Host page reads the network
   interfaces (Linux: `getifaddrs`, local only; Windows: `getaddrinfo` on `gethostname()`, which asks the system resolver for this PC's own name and may be
   answered by the local network). The code and the secrets are never logged.
 
@@ -253,40 +253,40 @@ Other `BEA_PORT_*` names appear in individual checks and patches; the file that 
 
 ## New-profile video defaults (`ce.ini`)
 
-On a fresh profile CE writes `full_models=0`, `terrain_detail_distance=1` and `extra_graphics=1` to `ce.ini` once; a valid line already there is a saved choice and is kept. `extra_graphics=1` asks for the extra graphical features, which come on only where the device passes the capability test; `extra_graphics=0` keeps them off. The CE Settings row Dodge Button is the `dodge_button` key (on by default; `dodge_button=0` turns it off).
+On a fresh profile CE writes `full_unit_models=1`, `full_tree_models=0`, `terrain_detail_distance=1`, `anisotropic_filtering=16`, `water_reflection_res=512`, `dynamic_shadow_res=128` and `extra_graphics=1` to `ce.ini` once (and starts anti-aliasing at up to 4x MSAA, or the highest lower level the device lists); a valid line already there is a saved choice and is kept. `extra_graphics=1` asks for the extra graphical features, which come on only where the device passes the capability test; `extra_graphics=0` keeps them off. The CE Settings row Dodge Button is the `dodge_button` key (on by default; `dodge_button=0` turns it off).
 
 ## Unfinished features (`ce.ini` `[Experimental]`)
 
-`ce.ini` lists every unfinished feature, one line each, switched off, in a block that CE writes when the file lacks it (a new profile, or an existing `ce.ini` that has no such block yet):
+`ce.ini` lists every unfinished feature, one line each, enabled by default (`=1`), in a block that CE writes when the file lacks it (a new profile, or an existing `ce.ini` that has no such block yet); toggle any feature in **Onslaught CE > Experimental Features** or set a line to `0` to turn it off:
 
 ```
 [Experimental]
-; Unfinished features, off in this release. They may change or break. Set a line to 1 to try one.
-map_editor=0
-museum=0
-commander=0
-play_unit=0
+; CE features, enabled by default. Some are still in progress; set a line to 0 or toggle in Experimental Features to turn one off.
+map_editor=1
+museum=1
+commander=1
+play_unit=1
 ```
 
-They are for people who test those features, not a supported part of the game. Each line switches only its own feature (it is read once, the first time anything asks and at the
-latest as the first Main Menu is built; a later edit applies at the next start), and a line that is missing, has any value but a lone `1`, appears twice, or sits in a `ce.ini` that cannot be read whole is off:
+They are in-progress CE features and may change or break. Each line switches only its own feature (it is read once, the first time anything asks and at the
+latest as the first Main Menu is built; a later edit applies at the next start), and a line that is set to `0`, appears twice, or sits in a `ce.ini` that cannot be read whole turns the feature off (a missing line defaults to `1` in ordinary CE runs):
 
 | Line | Feature |
 | --- | --- |
 | `map_editor` | the native map and mission editor: the Map Editor row of the Onslaught CE page and its map pages |
-| `museum` | the native museum: the Museum row, its Units hall and its Art and Movies wall |
+| `museum` | the native museum: the Grand Museum row, its Units hall and its Art and Movies wall |
 | `commander` | Commander: its CE Settings row (Commander Map), the M key, the live view and the orders |
 | `play_unit` | take a friendly tank or an eligible friendly soldier moving independently; use Morph to return to the Battle Engine |
 
-Additional opt-in `ce.ini` keys outside the four `[Experimental]` rows:
+Additional `ce.ini` feature keys outside the four `[Experimental]` rows:
 
 | Key | What it enables | Platform status |
 |---|---|---|
-| `extras` | **Extras** page (Service Record, Goodies Catalogue, Music Player, Lore, Back Up All Careers, Restore as New) | Linux complete; Windows currently stubs Back Up All / Restore as New (`Unsupported`) while single-career backup and preview work |
-| `catalogue` | **Catalogue** page (unit/model list, live DDS texture preview, SFX and voice playback) | Linux and Windows |
-| `mods_menu` | **Mods** page in Onslaught CE | Linux active; compiled off on Windows unless built with `--mods-windows-test` |
-| `commander_tactical_map` | Legacy 2D paused tactical map mode inside Commander | Linux and Windows (requires `commander=1`) |
-| `factory_exercise` | Level-231 factory production prototype inside Commander | Experimental prototype (requires `commander=1`) |
+| `extras` | **Extras** page (Service Record, Goodies Catalogue, Music Player, Lore, Back Up All Careers, Restore as New; default `1`) | Linux complete; Windows implements single-career backup, preview, and `CeCareerRestoreAsNew` (`port/platform/windows/ce_career_restore.cpp`; Back Up All remains Linux-only and physical Windows NTFS acceptance remains open) |
+| `catalogue` | **Catalogue** page (unit/model list, live DDS texture preview, SFX and voice playback; default `1`) | Linux and Windows |
+| `mods_menu` | **Mods** page in Onslaught CE (default `1`) | Linux and Windows active (Windows exercised under Wine; physical Windows NTFS acceptance remains open) |
+| `commander_tactical_map` | Legacy 2D paused tactical map mode inside Commander (default `1`, requires `commander=1`) | Linux and Windows |
+| `factory_exercise` | Level-231 factory production prototype inside Commander (default `1`, requires `commander=1`) | Experimental prototype |
 
 The current prototypes have these limits:
 
@@ -354,8 +354,7 @@ Checks: `tools/ce_experimental_modes_tests.py` (the lines and the block over the
 `tools/ce_frontend_tests.py` (the pages with each line on alone, and with all off), `updater/tests/ce_ini_tests.py` (the writer), `tools/ce_settings_tests.py` (the launcher's and the game's readers over files with the header) and `tools/ce_commander_tests.py`.
 
 
-**Extras (`extras=1`, hand-added).** The Companion's player features inside the game, still being built. A line `extras=1` under `[Experimental]` adds an Extras row to the Onslaught CE page (the block
-CE writes does not carry it yet). Its pages, in the game's own menu style: the Service Record (every career listed without loading it, with each mission, its state and rank letter, the kills by class and
+**Extras (`extras=1` by default).** The Companion's player features inside the game, enabled by default (set `extras=0` in `ce.ini` or toggle in **Onslaught CE > Experimental Features** to hide). Its pages, in the game's own menu style: the Service Record (every career listed without loading it, with each mission, its state and rank letter, the kills by class and
 the Goodies found; Saved Settings shows the stored sound and music levels and whether each player has invincibility;
 viewing the record leaves the current settings and career file unchanged) the Goodies Catalogue (the same Goodies with how each is earned, in words made by `tools/gen_goodie_rules.py` from the Companion's published rules, each with how far the evidence for it goes), and the Music Player
 (the soundtrack and the tracks of Your Music in a list; Select plays one, Select on the playing one stops it, a track the game cannot start says so and is passed over, and a Play Order row sets what follows a

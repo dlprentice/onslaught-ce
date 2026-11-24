@@ -27,12 +27,16 @@
 #include "game.h"
 #include "player.h"
 #include "BattleEngine.h"
+#include "engine.h"
+#include "ltshell.h"
 #endif
 
 bool PortCeMenus();
 // Declared by the shared authoring-session change in ce_project.h as well.
 bool PortCeAuthoringSessionAllowed() noexcept;
 extern "C" bool PortCeEditorActive(void) __attribute__((weak));
+extern "C" bool PortCeLivingSandboxActive(void) __attribute__((weak));
+extern "C" bool PortCeCarrierClashActive(void) __attribute__((weak));
 
 namespace {
 unsigned char gMuseumCareer[sizeof(CCareer)];
@@ -51,7 +55,9 @@ bool Begin(bool preparedCache) {
     // the frontend. In particular an editor visit must never lose its snapshot.
     if (PortCeMuseumVisitActive() || gMuseumCareerSaved || !PortCeMenus() || !FRONTEND.IsRunning() ||
         !PortCeAuthoringSessionAllowed() || PortCeMuseumActive() ||
-        (PortCeEditorActive && PortCeEditorActive())) {
+        (PortCeEditorActive && PortCeEditorActive()) ||
+        (PortCeLivingSandboxActive && PortCeLivingSandboxActive()) ||
+        (PortCeCarrierClashActive && PortCeCarrierClashActive())) {
         CeMuseumVisit::Refuse("Close mods, online play and the Map Editor, then open the museum.");
         PortSessionLog(PORT_SESSION_GAME, false, "museum refused before loading: another mode is open");
         return false;
@@ -83,11 +89,17 @@ void DropExhibitDefinitions();
 
 bool gHaveStart;
 bool gAuthoredMap;
+unsigned gMuseumSprintTicks = 0;
 // The visitor's place in the hall of numbered displays (ce_museum_visit_places.h): it tells the labels when a place's name at the top is left.
 CeMuseumVisitPlaces gPlaces;
 FVector gStartPosition;
 FMatrix gStartOrientation;
 }
+extern "C" void PortCeMuseumSprintSignal(void) {
+    gMuseumSprintTicks = 6u;
+}
+#else
+extern "C" void PortCeMuseumSprintSignal(void) {}
 #endif
 
 #if defined(CE_VERSION) && !defined(CE_MUSEUM_VISIT_HOST_FIXTURE)
@@ -100,6 +112,15 @@ void CeMuseumVisit::ApplyAuthoredIdentity() {
         WORLD.mBaseWorldLevel=CeMuseumWorld::kBase;
     }
 }
+void CeMuseumVisit::ReleaseRuntimeResources() {
+    // Release all Museum GPU, mesh, texture, Bink, and audio resources before CGame::Shutdown()
+    // or Cleanup3DEnvironment(), while retaining gVisit.active for career/return routing.
+    PortCeMuseumLabelsClear();
+    CeMuseumHallClear();
+    if (gAuthoredMap) { MAP.mGeometryLoaded=FALSE; MAP.mPropertiesLoaded=FALSE; gAuthoredMap=false; }
+    gHaveStart = false;
+    gMuseumSprintTicks = 0u;
+}
 extern "C" void PortCeMuseumAuthoredInstall() {
     if (!PortCeMuseumAuthoredSource()) return;
     // The native collision sampler uses 8-cell tiles with a ninth seam sample.
@@ -111,11 +132,13 @@ extern "C" void PortCeMuseumAuthoredInstall() {
     std::memset(MAP.mHeightData,0,CeMuseumWorld::kHeightSamples*sizeof(SWORD));
     MAP.mGridShiftX=MAP.mGridShiftY=CeMuseumWorld::kGridShift;
     MAP.mHeightScale=1.0f; MAP.mWaterLevel=CeMuseumWorld::kWaterBelow;
+    const UBYTE archiveSkyCube = MAP.mHFP.mUnknown18[0];
     std::memset(&MAP.mHFP,0,sizeof(MAP.mHFP));
     // Crisp sunlit coastal daylight (warm sun key, sky-blue fill, balanced neutral ambient)
     MAP.mHFP.Sun=0xfff6ecda; MAP.mHFP.AntiSun=0xff9ab8d4;
     MAP.mHFP.Ambient=0xff88909a; MAP.mHFP.Fog=CeMuseumWorld::kGrandSkyHorizon;
     MAP.mHFP.SunPosX=56.0f; MAP.mHFP.SunPosY=48.0f; MAP.mHFP.SunPosZ=-95.0f;
+    MAP.mHFP.mUnknown18[0] = archiveSkyCube ? archiveSkyCube : 1;
     MAP.Unknown47e8e0();
     MAP.mMapNumber=CeMuseumWorld::kMap; MAP.mGeometryLoaded=TRUE; MAP.mPropertiesLoaded=TRUE;
     MAP.InitQuickCollisionMap(); gAuthoredMap=true;
@@ -142,6 +165,7 @@ extern "C" void PortCeMuseumVisitCancel(void) {
     if (gAuthoredMap) { MAP.mGeometryLoaded=FALSE; MAP.mPropertiesLoaded=FALSE; gAuthoredMap=false; }
     DropExhibitDefinitions();
     gHaveStart = false;
+    gMuseumSprintTicks = 0u;
     CeMuseumVisitPlacesDrop(&gPlaces);
 #endif
 }
@@ -542,13 +566,55 @@ extern "C" void PortCeMuseumVisitFrame(void) {
         gLastViewingPosition = dest;
     }
     FVector here = engine->GetPos();
+    const bool shiftDown = (LT.KeyDown[DIK_LSHIFT] != 0) || (LT.KeyDown[DIK_RSHIFT] != 0) || (gMuseumSprintTicks > 0u);
+    if (gMuseumSprintTicks > 0u) --gMuseumSprintTicks;
+
+    // Brisk on-foot gallery stride (1.65x base walk, 2.85x Shift sprint) applied cleanly to the
+    // resolved horizontal step without mutating BattleEngine configuration or triggering dashes.
+    if (!GAME.IsPaused()) {
+        const float dx = here.X - gLastViewingPosition.X;
+        const float dy = here.Y - gLastViewingPosition.Y;
+        const float stepLen = std::hypot(dx, dy);
+        if (stepLen > 1e-4f && stepLen < 0.75f) {
+            const float extra = shiftDown ? 1.85f : 0.65f;
+            float addX = dx * extra;
+            float addY = dy * extra;
+            const float addLen = std::hypot(addX, addY);
+            const float kMaxExtraStep = 0.42f;
+            if (addLen > kMaxExtraStep) {
+                const float scale = kMaxExtraStep / addLen;
+                addX *= scale;
+                addY *= scale;
+            }
+            FVector boosted = here;
+            if (CeMuseumHallAllowsVisitor(here.X + addX, here.Y + addY)) {
+                boosted.X = here.X + addX;
+                boosted.Y = here.Y + addY;
+            } else if (CeMuseumHallAllowsVisitor(here.X + addX, here.Y)) {
+                boosted.X = here.X + addX;
+            } else if (CeMuseumHallAllowsVisitor(here.X, here.Y + addY)) {
+                boosted.Y = here.Y + addY;
+            }
+            if (boosted.X != here.X || boosted.Y != here.Y) {
+                engine->MoveTo(boosted);
+                here = boosted;
+            }
+        }
+    }
+
     if (!CeMuseumHallAllowsVisitor(here.X,here.Y)) {
-        // A display window is for looking through; approach it normally, then walk away.
-        // Retain the current view orientation as a wall would. No change to ordinary missions.
-        engine->MoveTo(gLastViewingPosition);
+        // Slide smoothly along walls/plinths instead of snagging dead on diagonal approach.
+        FVector resolved = gLastViewingPosition;
+        if (CeMuseumHallAllowsVisitor(here.X, gLastViewingPosition.Y)) {
+            resolved.X = here.X;
+        } else if (CeMuseumHallAllowsVisitor(gLastViewingPosition.X, here.Y)) {
+            resolved.Y = here.Y;
+        }
+        engine->MoveTo(resolved);
         engine->SetVelocity(FVector(0.0f,0.0f,0.0f));
-        here=gLastViewingPosition;
-    } else gLastViewingPosition=here;
+        here = resolved;
+    }
+    gLastViewingPosition = here;
     CeMuseumHallVisitor(here.X, here.Y);
     CeMuseumVisitPlacesStep(&gPlaces, here.X, here.Y);
     const bool sea = CeMuseumInSeaReach(here.Z, MAP.GetWaterLevel(), kSea);

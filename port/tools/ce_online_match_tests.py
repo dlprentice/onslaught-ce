@@ -817,6 +817,129 @@ static void TestDisconnectAndHostLoss() {
         Check(!guest.CanAdvance(), "guest refuses advance after host loss");
         Check(!guest.SubmitLocalInput(3, MakeRichWorldInput(3, 1)), "guest refuses input after host loss");
     }
+
+    // 4d. 3P start-barrier deadlock regression (#13 & #15a):
+    //     Guest 1 connects early and sends tick=0 hash + chat while Host is still CONNECTING waiting
+    //     for Guest 2; then Guest 2 disconnects mid-barrier. Host must retain Guest 1's early tick=0
+    //     hash, transition CONNECTING -> RUNNING, confirm tick=0 immediately, and both Host & Guest 1
+    //     must transition slot 2 to AI backfill on the exact same tick (tick 0) with identical hashes!
+    {
+        SimStarNetwork net(3);
+        // Simulate Host waiting for Guest 2 during CONNECTING
+        net.bridges[0].connected = false;
+        net.bridges[2].connected = false;
+
+        CeOnlineMatchSession host, guest1;
+        SimWorld worldHost, worldGuest1;
+        CE_OnlineMatchTicket tkHost = MakeTicket(3, 3, 0, 850, 0);
+        CE_OnlineMatchTicket tkGuest1 = MakeTicket(3, 3, 1, 850, 0);
+        Check(host.Init(tkHost, &net.bridges[0], 3u, 20u), "3P barrier host init");
+        Check(guest1.Init(tkGuest1, &net.bridges[1], 3u, 20u), "3P barrier guest1 init");
+        worldHost.Init(tkHost);
+        worldGuest1.Init(tkGuest1);
+        Check(host.State() == CE_ONLINE_STATE_CONNECTING, "host starts in CONNECTING while Guest 2 pending");
+
+        // Guest 1 sends tick=0 start hash + early chat while Host is STILL CONNECTING!
+        const uint64_t h0 = worldGuest1.Hash(0);
+        CeOnlineStarEvent earlyHash = {};
+        earlyHash.kind = CE_STAR_EVT_HASH;
+        earlyHash.from_sim_slot = 1;
+        earlyHash.tick = 0;
+        earlyHash.hash = h0;
+        net.bridges[0].inbox.push_back(earlyHash);
+
+        CeOnlineStarEvent earlyChat = {};
+        earlyChat.kind = CE_STAR_EVT_CHAT;
+        earlyChat.from_sim_slot = 1;
+        std::snprintf(earlyChat.chat_text, sizeof(earlyChat.chat_text), "ready early!");
+        net.bridges[0].inbox.push_back(earlyChat);
+
+        // Also record Guest 1's local tick=0 hash on its own session
+        Check(guest1.SubmitLocalHash(0, h0), "guest1 submits tick=0 hash");
+        Check(host.Poll(100), "host polls early Guest 1 hash+chat during CONNECTING without discarding");
+        Check(host.State() == CE_ONLINE_STATE_CONNECTING, "host still CONNECTING until Guest 2 resolves");
+        Check(host.ChatCount() == 1u, "early Guest 1 chat preserved during CONNECTING");
+
+        // Guest 2 disconnects mid-barrier -> Host bridge now sees all remaining expected guests connected!
+        net.bridges[0].connected = true;
+        CeOnlineStarEvent g2Drop = {};
+        g2Drop.kind = CE_STAR_EVT_PEER_DISCONNECT;
+        g2Drop.from_sim_slot = 2;
+        net.bridges[0].inbox.push_back(g2Drop);
+
+        Check(host.Poll(200), "host processes Guest 2 disconnect and transitions to RUNNING");
+        Check(host.State() == CE_ONLINE_STATE_RUNNING, "host transitioned CONNECTING -> RUNNING");
+        // Verify #15a: Host has NOT flipped IsSlotDisconnected(2) before ConsumeTick()!
+        Check(!host.IsSlotDisconnected(2), "slot 2 not prematurely marked disconnected before ConsumeTick");
+
+        // Host submits tick=0 hash -> MUST confirm immediately using buffered Guest 1 hash!
+        Check(host.SubmitLocalHash(0, worldHost.Hash(0)), "host submits tick=0 hash");
+        Check(host.IsStartConfirmed(), "host confirms tick=0 start barrier immediately using early Guest 1 hash");
+
+        // Guest 1 polls and receives lead-in bundles (with mask 0x03) + Host's tick=0 start confirmation!
+        Check(guest1.Poll(210), "guest1 polls host lead-in bundles + start hash");
+        Check(guest1.IsStartConfirmed(), "guest1 start barrier confirmed cleanly");
+
+        // Advance 25 ticks and verify tick-0 AI backfill mask + tick-20 hash match identically!
+        for (uint32_t t = 0; t < 25u; ++t) {
+            const uint32_t target = t + 3u;
+            Check(host.SubmitLocalInput(target, MakeRichWorldInput(target, 0)), "3P barrier host input");
+            Check(guest1.SubmitLocalInput(target, MakeRichWorldInput(target, 1)), "3P barrier guest1 input");
+            Check(host.Poll(300 + t * 50), "3P barrier host poll");
+            Check(guest1.Poll(305 + t * 50), "3P barrier guest1 poll");
+
+            CE_WorldInput outH[4] = {}, outG[4] = {};
+            uint8_t maskH = 0, maskG = 0;
+            Check(host.ConsumeTick(outH, &maskH) && guest1.ConsumeTick(outG, &maskG), "3P barrier consume");
+            Check(maskH == 0x03u && maskG == 0x03u, "both peers see identical 0x03 human mask from tick 0");
+            Check(host.IsSlotDisconnected(2) && guest1.IsSlotDisconnected(2),
+                  "both peers flip slot 2 disconnected on exact same tick 0");
+            worldHost.Step(t, outH, maskH);
+            worldGuest1.Step(t, outG, maskG);
+            if (((t + 1u) % 20u) == 0u) {
+                Check(host.SubmitLocalHash(t + 1u, worldHost.Hash(t + 1u)), "3P barrier host hash20");
+                Check(guest1.SubmitLocalHash(t + 1u, worldGuest1.Hash(t + 1u)), "3P barrier guest1 hash20");
+                Check(host.Poll(310 + t * 50), "3P barrier host verifies hash20");
+            }
+        }
+        Check(worldHost.Hash(25) == worldGuest1.Hash(25), "3P barrier worlds stay bit-identical to tick 25");
+    }
+
+    // 4e. Mid-barrier Guest 2 disconnect AFTER Host & Guest 1 both submitted tick=0 hash (#13c)
+    {
+        SimStarNetwork net(3);
+        CeOnlineMatchSession host;
+        CE_OnlineMatchTicket tk = MakeTicket(3, 3, 0, 851, 0);
+        Check(host.Init(tk, &net.bridges[0], 3u, 20u), "4e init");
+        Check(host.SubmitLocalHash(0, 0xCAFEBABE12345678ULL), "4e host hash0");
+        CeOnlineStarEvent g1Hash = {};
+        g1Hash.kind = CE_STAR_EVT_HASH;
+        g1Hash.from_sim_slot = 1;
+        g1Hash.tick = 0;
+        g1Hash.hash = 0xCAFEBABE12345678ULL;
+        net.DeliverTo(0, g1Hash);
+        Check(host.Poll(100) && !host.IsStartConfirmed(), "4e waiting for guest 2 hash");
+        net.DisconnectGuest(2);
+        Check(host.Poll(150) && host.IsStartConfirmed(),
+              "4e HandleDisconnectEvent re-checks tick=0 hashes and confirms start barrier immediately");
+    }
+
+    // 4f. Distinct Host vs Guest transport error copy (#35)
+    {
+        SimStarNetwork net(2);
+        CeOnlineMatchSession host, guest;
+        Check(host.Init(MakeTicket(2, 2, 0, 850, 0), &net.bridges[0], 3u, 20u), "4f host init");
+        Check(guest.Init(MakeTicket(2, 2, 1, 850, 0), &net.bridges[1], 3u, 20u), "4f guest init");
+        CeOnlineStarEvent errEv = {};
+        errEv.kind = CE_STAR_EVT_TRANSPORT_ERROR;
+        net.DeliverTo(0, errEv);
+        net.DeliverTo(1, errEv);
+        Check(!host.Poll(100) && host.State() == CE_ONLINE_STATE_ERROR, "4f host enters ERROR on transport failure");
+        Check(std::strstr(host.LastError(), "host transport") != nullptr &&
+              std::strstr(host.LastError(), "connection to the match host was lost") == nullptr,
+              "4f host shows distinct host transport copy");
+        Check(!guest.Poll(100) && guest.State() == CE_ONLINE_STATE_ERROR, "4f guest enters ERROR on transport failure");
+    }
 }
 
 // ---- Test 5: Compatibility levels & C hooks ----

@@ -1108,10 +1108,8 @@ bool EditorApplyDocument(CeProjectDocument *document, const char *filename) {
         return false;
     }
     gEditorState = candidate;
-    if (filename) {
-        gEditorChoosingReach=false;
-        gEditorChoosingPlayerStart=false;
-    }
+    gEditorChoosingReach=false;
+    gEditorChoosingPlayerStart=false;
     for (int i = 0; i < gEditorState.Count(); ++i)
         if (gEditorState.Object(i)->available) (void)ApplyOne(i);
     gEditorDialog = DialogNone;
@@ -1191,6 +1189,8 @@ bool EditorStartPlaytest() {
     const CeEditorObject *selected = gEditorState.Object(gEditorState.Selected());
     snprintf(gEditorPlaySelection, sizeof(gEditorPlaySelection), "%s", selected ? selected->source : "");
     if (!EditorPrepareReload(LoadPlaytest)) return false;
+    gEditorChoosingReach = false;
+    gEditorChoosingPlayerStart = false;
     EditorNote("");
     GAME.SetQuit(QT_RESTART_LEVEL);
     return true;
@@ -1589,6 +1589,10 @@ bool EditorTrap(WORD key, int event) {
     gEditorKeys[key] = true;
     if (!gEditorPadTap) gEditorPadActive = false;
     if (repeat) return true;
+    if (gEditorHelp) {
+        if (key == DIK_ESCAPE || key == DIK_F1) gEditorHelp = false;
+        return true;
+    }
     if (gEditorDialog == DialogNone && !gEditorHelp) {
         if (gEditorChoosingPlayerStart && key == DIK_ESCAPE) {
             gEditorChoosingPlayerStart = false; EditorCue(CueBack); EditorNote(""); return true;
@@ -1628,7 +1632,7 @@ bool EditorTrap(WORD key, int event) {
         else if (key == DIK_RETURN) EditorChooseRoute(gEditorRouteRow);
         return true;
     }
-    if (key == DIK_F1) {
+    if (key == DIK_F1 && gEditorDialog == DialogNone) {
         gEditorHelp = true;
         return true;
     }
@@ -1694,8 +1698,11 @@ bool EditorTrap(WORD key, int event) {
         EditorCue(CueMove);
     } else if (key == DIK_RETURN)
         EditorToolbar(gEditorToolFocus);
-    else if (key == DIK_TAB)
+    else if (key == DIK_TAB) {
+        gEditorChoosingReach = false;
+        gEditorChoosingPlayerStart = false;
         EditorCue(gEditorState.Cycle(shift ? -1 : 1) ? CueMove : CueBack);
+    }
     else if (key == DIK_C) {
         if (gEditorState.Selected() != -1 && EditorFit(true))
             EditorCue(CueMove);
@@ -1792,11 +1799,28 @@ void EditorGamepadUpdate(float elapsed) {
 
     const unsigned bitB = 1u << (rotated ? 0 : 1), bitX = 1u << (rotated ? 1 : 2),
                    bitY = 1u << (rotated ? 2 : 3), bitA = 1u << (rotated ? 3 : 0),
-                   bitBack = 1u << 4, bitStart = 1u << 6, bitLb = 1u << 9, bitRb = 1u << 10,
+                   bitBack = 1u << 4, bitStart = 1u << 6, bitL3 = 1u << 7,
+                   bitLb = 1u << 9, bitRb = 1u << 10,
                    bitLt = 1u << 16, bitRt = 1u << 17;
-    if (gEditorDialog == DialogNone && !gEditorHelp && !gEditorState.Moving()) {
+    if (gEditorDialog == DialogNone && !gEditorHelp) {
         const float lx = deadAxis(joy->lX), ly = -deadAxis(joy->lY);
-        if (lx != 0.f || ly != 0.f) {
+        if (gEditorState.Moving()) {
+            if (lx != 0.f || ly != 0.f) {
+                FMatrix turn;
+                turn.MakeRotationYawF(gEditorYaw);
+                const FVector step = turn * FVector(lx, ly, 0);
+                const float speed = gEditorDistance * elapsed * 0.5f;
+                const int sel = gEditorState.Selected();
+                if (sel != -1) {
+                    CeEditorPoint pos = gEditorState.PlayerStartSelected()
+                        ? gEditorState.PlayerStart()
+                        : gEditorState.Object(sel)->position;
+                    pos.x += step.X * speed;
+                    pos.y += step.Y * speed;
+                    if (gEditorState.Move(pos)) (void)ApplyOne(sel);
+                }
+            }
+        } else if (lx != 0.f || ly != 0.f) {
             FMatrix turn;
             turn.MakeRotationYawF(gEditorYaw);
             const FVector step = turn * FVector(lx, ly, 0);
@@ -1858,8 +1882,21 @@ void EditorGamepadUpdate(float elapsed) {
     }
     if (pressed & bitB) tap(DIK_ESCAPE);
     if (gEditorDialog == DialogNone && !gEditorHelp) {
+        if (pressed & bitL3) {
+            if (gEditorState.Moving()) {
+                (void)gEditorState.FinishMove(true);
+                EditorCue(CueSelect);
+            } else if (!gEditorChoosingPlayerStart && !gEditorChoosingReach && gEditorState.Selected() != -1 && EditorBeginMove()) {
+                EditorCue(CueSelect);
+                EditorNote("Left Stick moves object. A confirms, B cancels.", NoticeUntilMoveEnds);
+            }
+        }
         if (pressed & bitRb) tap(DIK_TAB);
-        if (pressed & bitLb) EditorCue(gEditorState.Cycle(-1) ? CueMove : CueBack);
+        if (pressed & bitLb) {
+            gEditorChoosingReach = false;
+            gEditorChoosingPlayerStart = false;
+            EditorCue(gEditorState.Cycle(-1) ? CueMove : CueBack);
+        }
         if (pressed & bitX) tap(DIK_PRIOR);
         if (pressed & bitY) tap(DIK_NEXT);
         if (pressed & bitBack) tap(DIK_DELETE);
@@ -2727,6 +2764,7 @@ extern "C" void PortCeEditorCancel(void) {
     gEditorState.Reset();
     gEditorSourceCount = 0;
     gEditorRequested = gEditorWorldStarted = gEditorWorldComplete = gEditorPadActive = false;
+    gEditorChoosingReach = gEditorChoosingPlayerStart = gEditorHelp = false;
     gEditorLevel = -1;
 }
 extern "C" bool PortCeEditorTakeReturn(void) {

@@ -31,6 +31,10 @@
 #include "ce_network_ring.h"
 
 extern "C" void PortCeNetRingMousePoint(float x, float y, int *menuX, int *menuY);
+extern "C" int PortCeOnlineMatchActive(void) __attribute__((weak));
+extern "C" int PortCeOnlineMatchLocalSlot(void) __attribute__((weak));
+extern "C" int PortCeOnlineMatchSlotCount(void) __attribute__((weak));
+extern "C" int PortCeOnlineMatchSlotIsHuman(int slot) __attribute__((weak));
 
 #include <SDL3/SDL.h>
 #include <stdio.h>
@@ -245,7 +249,29 @@ public:
 		if (mActive && PLATFORM.GetSysTimeFloat() - mOpenTime > 0.4f)
 		{
 			// one line under the rows, in the description colour: what the ring does not do, or what Yes will do
-			const char *line = Asking() ? "Your friend's game ends too." : "The battle goes on.";
+			const char *line = "The battle goes on.";
+			if (Asking())
+			{
+				if (PortCeOnlineMatchActive && PortCeOnlineMatchActive())
+				{
+					const int localSlot = PortCeOnlineMatchLocalSlot ? PortCeOnlineMatchLocalSlot() : 0;
+					const int slots = PortCeOnlineMatchSlotCount ? PortCeOnlineMatchSlotCount() : 2;
+					int humans = 0;
+					for (int s = 0; s < slots && s < 4; ++s)
+						if (!PortCeOnlineMatchSlotIsHuman || PortCeOnlineMatchSlotIsHuman(s))
+							++humans;
+					if (localSlot == 0)
+						line = "Leaving ends the online match for all players.";
+					else if (humans > 2)
+						line = "An AI pilot will take over your slot.";
+					else
+						line = "Your friend's game ends too.";
+				}
+				else
+				{
+					line = "Your friend's game ends too.";
+				}
+			}
 			static WCHAR wide[64];
 			int i = 0;
 			for (; line[i] && i < 63; i++)

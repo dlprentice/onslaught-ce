@@ -1501,7 +1501,7 @@ static int upd_run_program(const char *exe, int argc, char **argv, int *status)
 {
 #ifdef _WIN32
 	char cmd[8192];
-	if (!ce_windows_command(cmd, sizeof cmd, exe, argv + 1, argc - 1, 0)) return -1;
+	if (!ce_windows_command(cmd, sizeof cmd, exe, argv + 1, argc - 1, 0)) return 0;
 	STARTUPINFOA si = {sizeof si};
 	HANDLE out = GetStdHandle(STD_OUTPUT_HANDLE), err = GetStdHandle(STD_ERROR_HANDLE), in = GetStdHandle(STD_INPUT_HANDLE);
 	int pass = out && out != INVALID_HANDLE_VALUE && GetFileType(out) != FILE_TYPE_UNKNOWN;

@@ -220,7 +220,7 @@ class TakeKey(unittest.TestCase):
         self.caught(Fences.key_read_only_where_it_counts, swap(m, " && !LT.GetKeytrap()", ""))
         self.caught(Fences.key_read_only_where_it_counts, swap(m, " && !GAME.IsPaused() && !LT.GetKeytrap()", " && !LT.GetKeytrap()"))
         self.caught(Fences.key_read_only_where_it_counts, swap(m, " && TakeKeyFree();", ";"))
-        self.caught(Fences.key_read_only_where_it_counts, swap(m, "	if (!gConfigured || !gWanted) return;\n	// the take key", "	// the take key"))
+        self.caught(Fences.key_read_only_where_it_counts, swap(m, "\tif (!gConfigured || !gWanted) return;\n\tif (PortCeMuseumVisitActive", "\tif (PortCeMuseumVisitActive"))
 
     def test_each_change_has_its_cue_and_its_words(self):
         Fences.cues(self.module)
@@ -315,11 +315,11 @@ class SharedPilotInputTests(unittest.TestCase):
             src = d / "input.cpp"
             src.write_text('''#include "ce_playunit_rules.h"
 #include <cassert>
-enum { DIK_V = 47, DIK_Q = 16 };
-bool gDriving, gControllerPending, gConfigured, gWanted, gTakePressed, gViewTogglePressed, gWeaponSwitchPressed;
+enum { DIK_V = 47, DIK_Q = 16, DIK_U = 22, DIK_C = 46, DIK_F1 = 59 };
+bool gDriving, gControllerPending, gConfigured, gWanted, gTakePressed, gViewTogglePressed, gUnloadPressed, gSpotPressed, gWeaponSwitchPressed;
 void *gCamera;
 unsigned gSwitchWait;
-CePlayUnitKey gTakeKey = {}, gViewToggleKey = {}, gWeaponSwitchKey = {};
+CePlayUnitKey gTakeKey = {}, gViewToggleKey = {}, gUnloadKey = {}, gSpotKey = {}, gWeaponSwitchKey = {}, gHelpHintKey = {};
 int TakeKey(){ return 1; }
 int held, polls;
 int PortKeyHeldNow(int) { ++polls; return held; }
@@ -429,6 +429,8 @@ int main() {
     Bind(2,BUTTON_MECH_CHANGE_ZOOM_OUT,MOUSE_BUTTON_RELEASE,4); Prompt(out);
     EXPECT(std::strstr(out,"Wheel: Wide/Close/First")!=0);
     Bind(0,BUTTON_MECH_MORPH,MOUSE_BUTTON_ON,1); Prompt(out);
+    EXPECT(std::strstr(out,"Middle mouse: Return")!=0);
+    Bind(0,BUTTON_MECH_MORPH,MOUSE_BUTTON_ON,2); Prompt(out);
     EXPECT(std::strstr(out,"Right mouse: Return")!=0);
     Fresh(); Bind(0,BUTTON_MECH_MORPH,KEY_ON,DIK_RSHIFT);
     Bind(1,BUTTON_MECH_CHANGE_ZOOM_IN,KEY_ON,DIK_LCONTROL);

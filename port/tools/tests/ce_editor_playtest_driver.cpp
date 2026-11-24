@@ -675,9 +675,9 @@ int main() {
           Near(GAME.pilot.engine.pos,FVector(22,30,-1)), "F6 resets to the same unsaved start");
     Check(PortCeEditorKey(DIK_F5,false), "F5 accepts return from player-start preview");
     PortCeEditorLevelEnd(); Check(Reload(), "player-start draft returns"); PortCeEditorFrame();
-    Check(gEditorState.PlayerStartSelected() && gEditorChoosingPlayerStart && gEditorState.Dirty() && savedRevision==startSaved &&
+    Check(gEditorState.PlayerStartSelected() && !gEditorChoosingPlayerStart && !gEditorChoosingReach && gEditorState.Dirty() && savedRevision==startSaved &&
           SamePoint(gEditorFocus,startFocus) && gEditorState.CanUndo(),
-          "return retains start selection, draft camera, unsaved state and history");
+          "return retains start selection, draft camera, unsaved state and history, and clears placement mode");
     EditorUndo(false);
     Check(!gEditorState.Dirty() && SamePoint(gEditorState.PlayerStart(),{20,30,-1}), "return undo restores explicitly saved start");
     EditorUndo(true);

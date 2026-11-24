@@ -26,6 +26,7 @@ uint32_t CE_WorldLocalPlayer(void);
 // Mirror hooks: all return their original/offline behaviour while no co-op session is active.
 int CE_WorldControllerFlush(uint32_t player); // returns 1 when the lockstep session handled/suppressed this controller
 int CE_WorldViewPlayer(int original_player);
+int CE_WorldLocalWon(int game_state);
 float CE_WorldViewAspect(float original_aspect);
 int CE_WorldInvertPitch(uint32_t player, int grounded, int original);
 int CE_WorldWalkerBindingType(uint32_t player, int original_type);
@@ -37,7 +38,12 @@ const char *CE_NetAutomationRefusal(void);
 #ifdef __cplusplus
 }
 class CBattleEngine;
+class CCamera;
 class CController;
+class CPlayer;
+CCamera *CE_WorldViewCamera(int original_player);
+CPlayer *CE_WorldViewPlayerPtr(int original_player);
+int CE_WorldViewShowHUD(int original_player, CPlayer *player);
 int CE_WorldBypassMouse(CBattleEngine *);
 int CE_WorldCaptureAction(CController *, int button, float value);
 void CE_WorldLifecycleDestroyed(const void *);

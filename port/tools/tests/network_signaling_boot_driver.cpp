@@ -43,6 +43,7 @@ extern "C" int CE_HandoffCampaignSet(CE_Handoff*) { return 0; }
 extern "C" int CE_BootCampaignAdmit(const CE_Handoff*) { return 1; }
 extern "C" void CE_NetClose(CE_NetSession*) {}
 extern "C" void CE_NetPoll(CE_NetSession* session, uint64_t, uint32_t) { CE_NetPoll(session); }
+extern "C" __attribute__((weak)) int PortCeOnlineMatchSetTicket(const CE_OnlineMatchTicket*);
 
 
 bool CeIceExchange::ContextForConfig(const CE_NetConfig* config, uint8_t context[32]) noexcept {

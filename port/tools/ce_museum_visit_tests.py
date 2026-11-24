@@ -379,7 +379,9 @@ def main() -> int:
         'level-end-guard': 'PortCeMuseumVisitLevelEnd();' in scopes['ShutdownRestartLoop'],
         'automatic-commands-suppressed': 'const bool ceEditorAuthoring = PortCeEditorActive() || PortCeMuseumVisitActive();' in scopes['RestartLoopRunLevel'],
         'continue-skips-career-write-in-a-visit': 'mSaveGameName[0] && !PortCeMuseumVisitActive())' in definition((build.MIRROR / 'PauseMenu.cpp').read_text(), 'Resume', 'CPauseMenu'),
-        'console-map-win-lose-refused-in-a-visit': all(('if (MuseumRefuses("%s")) return;' % what) in palette_text for what in ('other level', 'level to win', 'level to lose')),
+        'console-map-win-lose-refused-in-a-visit': all(
+            re.search(r'if \(MuseumRefuses\("%s"\)(?: \|\| EditorRefuses\("%s"\))?\) return;' % (re.escape(what), re.escape(what)), palette_text) is not None
+            for what in ('other level', 'level to win', 'level to lose')),
         'warmup-remains-enabled': 'PortCeMuseumVisit' not in scopes['PreRun'],
         'movement-remains-enabled': 'PortCeMuseumVisit' not in scopes['MainLoop'],
         'frontend-returns-before-progression': 'if (PortCeEditorTakeReturn() || PortCeMuseumVisitTakeReturn())' in frontend_source,

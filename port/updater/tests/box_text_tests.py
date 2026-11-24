@@ -100,8 +100,8 @@ class AllTheTexts(Driver):
     def test_every_text_is_built_and_fits_the_buffer_the_launcher_gives_it(self):
         names = set(self.texts())
         self.assertEqual({"game-missing", "record", "update-download-failed", "update-not-the-release", "update-install-failed", "update-offer",
-                          "update-offer-longest-versions", "bad-folder", "bad-folder-longest-reason", "bad-folder-one-long-word", "report-opened",
-                          "report-not-opened"}, names)
+                          "update-offer-longest-versions", "bad-folder", "bad-folder-longest-reason", "bad-folder-one-long-word",
+                          "picker-failed", "report-opened", "report-not-opened"}, names)
         for name, (original, wrapped) in self.texts().items():
             self.assertIsNotNone(wrapped, name)
             self.assertLess(len(original.encode()), 2048, f"{name}: ask_box wraps into a buffer of 2048 bytes")
@@ -149,7 +149,8 @@ class AllTheTexts(Driver):
 
     def test_a_builder_given_a_buffer_one_byte_short_says_so_and_given_exactly_enough_succeeds(self):
         lines = subprocess.run([str(self.driver), "short"], capture_output=True, text=True, check=True, timeout=10).stdout.splitlines()
-        self.assertEqual(["update-offer short 0", "update-offer exact 1", "bad-folder short 0", "bad-folder exact 1", "report short 0", "report exact 1"], lines)
+        self.assertEqual(["update-offer short 0", "update-offer exact 1", "bad-folder short 0", "bad-folder exact 1",
+                          "report short 0", "report exact 1", "picker-failed short 0", "picker-failed exact 1"], lines)
 
 
 class Sources(unittest.TestCase):

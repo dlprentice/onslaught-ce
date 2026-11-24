@@ -280,3 +280,29 @@
  	mEventFreeList = &mEventsPool[0] ;
  	last_debug_time = 0.0f;
  	mValid = TRUE;
+--- a/BattleEngine.cpp
++++ b/BattleEngine.cpp
+@@ -64,6 +64,10 @@
+ // Also defined in BattleEngineWalkerPart.cpp
+ #define	ENGINE_VOLUME			1.0f
+ //0.55f
++#ifdef CE_VERSION
++extern "C" bool PortCeLivingSandboxActive(void);
++extern "C" bool PortCeLivingSandboxRescuePlayer(int playerNumber);
++#endif
+ 
+ //******************************************************************************************
+ void	CBattleEngine::Init(CInitThing* init)	// FUNCTION: 0x00404dd0
+@@ -2803,8 +2807,12 @@
+ BOOL CBattleEngine::StartDieProcess()	// FUNCTION: 0x0040bfd0
+ {
+ 	if (IsDying())
+ 		return FALSE;
++#ifdef CE_VERSION
++	if (PortCeLivingSandboxActive() && mPlayer.ToRead() && PortCeLivingSandboxRescuePlayer(mPlayer->GetNumber()))
++		return FALSE;
++#endif
+ 	
+ 	if (mPlayer.ToRead())
+ 	{
+ 		CCONTROLLER		*controller=GAME.GetController(mPlayer->GetNumber()-1);

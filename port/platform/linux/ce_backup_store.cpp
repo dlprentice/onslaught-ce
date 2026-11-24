@@ -63,19 +63,40 @@ bool inside(const std::string &path, const std::string &parent) {
     return path == parent || (path.size() > parent.size() && path.compare(0,parent.size(),parent) == 0 &&
                                path[parent.size()] == '/');
 }
-int directory(const std::string &path) {
-    Fd current(open("/",dirs)); size_t pos = 1;
+bool isOsSystemSymlink(int parentFd, const char *part) {
+    struct stat pst{}, lst{};
+    return fstat(parentFd, &pst) == 0 && pst.st_uid == 0 &&
+           !(pst.st_mode & (S_IWGRP | S_IWOTH)) &&
+           fstatat(parentFd, part, &lst, AT_SYMLINK_NOFOLLOW) == 0 &&
+           S_ISLNK(lst.st_mode) && lst.st_uid == 0;
+}
+int directory(const std::string &path, bool allowUserAncestors = false) {
+    Fd current(open("/", O_RDONLY | O_DIRECTORY | O_CLOEXEC)); size_t pos = 1;
     while (current.fd >= 0 && pos < path.size()) {
         size_t end = path.find('/',pos);
-        current.reset(openat(current.fd,path.substr(pos,end-pos).c_str(),dirs));
-        if (end == path.npos) break;
+        const bool isLeaf = (end == path.npos);
+        const std::string part = path.substr(pos, end - pos);
+        int next = openat(current.fd, part.c_str(), dirs);
+        if (next < 0 && (errno == ELOOP || errno == ENOTDIR) && !isLeaf &&
+            (allowUserAncestors || isOsSystemSymlink(current.fd, part.c_str()))) {
+            next = openat(current.fd, part.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+        }
+        current.reset(next);
+        if (isLeaf) break;
         pos = end + 1;
     }
     int result = current.fd; current.fd = -1; return result;
 }
-bool namedDir(int fd, const std::string &path) {
-    Fd fresh(directory(path)); struct stat a{}, b{};
+bool namedDir(int fd, const std::string &path, bool allowUserAncestors = false) {
+    Fd fresh(directory(path, allowUserAncestors)); struct stat a{}, b{};
     return fresh.fd >= 0 && fstat(fd,&a) == 0 && fstat(fresh.fd,&b) == 0 && same(a,b);
+}
+bool namedChildDir(int fd, const std::string &parentPath, const char *child, bool allowUserAncestors) {
+    Fd freshParent(directory(parentPath, allowUserAncestors));
+    if (freshParent.fd < 0) return false;
+    Fd fresh(openat(freshParent.fd, child, dirs));
+    struct stat a{}, b{};
+    return fresh.fd >= 0 && fstat(fd, &a) == 0 && fstat(fresh.fd, &b) == 0 && same(a, b);
 }
 bool underIdentity(int child, int parent) {
     // Compare actual ancestry as well as path text. Fail closed on a traversal error.
@@ -142,7 +163,7 @@ bool CeBackupStore(const CeBackupInput &in, char *location, size_t room, const c
     if(!absolute(in.folder)||!absolute(in.user)||!absolute(in.game)||!absolute(in.package)) return false;
     const std::string root=in.folder,user=in.user,game=in.game,package=in.package;
     if(inside(root,user)||inside(root,game)||inside(root,package)) return false;
-    Fd rootFd(directory(root)), userFd(directory(user)), gameFd(directory(game)), packageFd(directory(package));
+    Fd rootFd(directory(root, false)), userFd(directory(user, true)), gameFd(directory(game, true)), packageFd(directory(package, true));
     if(rootFd.fd<0 || userFd.fd<0 || gameFd.fd<0 || packageFd.fd<0 || underIdentity(rootFd.fd,userFd.fd) ||
        underIdentity(rootFd.fd,gameFd.fd) || underIdentity(rootFd.fd,packageFd.fd)) return false;
     error="This career is not a separate, unchanged file in your CE saves.";
@@ -152,8 +173,7 @@ bool CeBackupStore(const CeBackupInput &in, char *location, size_t room, const c
     Fd source(openat(saves.fd,in.filename,input)); struct stat initial{};
     if(source.fd<0 || fstat(source.fd,&initial) || !S_ISREG(initial.st_mode) || initial.st_nlink!=1 ||
        initial.st_size!=static_cast<off_t>(in.length) || !readExact(source.fd,in.selected,in.length)) return false;
-    const std::string savesPath=user+"/savegames";
-    auto sourceValid=[&](){return namedDir(saves.fd,savesPath) && namedFile(saves.fd,in.filename,initial);};
+    auto sourceValid=[&](){return namedChildDir(saves.fd,user,"savegames",true) && namedFile(saves.fd,in.filename,initial);};
     if(!sourceValid()) return false;
     time_t now=time(nullptr); struct tm utc{}; char stem[64],date[40],leaf[96];
     error="A new backup folder could not be created. Choose another folder.";
@@ -184,6 +204,7 @@ bool CeBackupStore(const CeBackupInput &in, char *location, size_t room, const c
         at+=size_t(n);
     }
     if(inputHash!=hash(copied,sizeof(copied)) || !sourceValid()) return false;
+    const std::string savesPath=user+"/savegames";
     std::string manifest="{\"Folder\":"+quoted(folder)+",\"Created\":"+quoted(date)+",\"Game\":"+quoted(user)+
         ",\"Files\":[{\"Name\":"+quoted(in.filename)+",\"Original\":"+quoted(savesPath+"/"+in.filename)+
         ",\"Size\":10004,\"Sha256\":"+quoted(inputHash)+"}],\"Reason\":\"Manual: selected CE career\",\"Target\":1}\n";

@@ -30,6 +30,7 @@
 #error The CE music playlist requires weak symbol support for the network boot boundary
 #endif
 extern "C" int CE_BootRequested(void) __attribute__((weak));
+extern "C" int CE_SessionActive(void) __attribute__((weak));
 extern "C" int CE_SettingGetText(const char *key, char *out, int n);
 extern "C" int CE_SettingIs(const char *key, const char *value);
 extern "C" int CE_MusicScan(const char *dir, int (*add)(const char *path, void *ctx), void *ctx, int *skipped,
@@ -160,6 +161,7 @@ bool CeMusic::Allowed()
 	if (!PortCeLayer() || PortRecording()) return false;
 	for (const char *name : kFenced) if (Present(name)) return false;
 	if (CE_BootRequested && CE_BootRequested()) return false;
+	if (CE_SessionActive && CE_SessionActive()) return false;
 	return !(PLAYABLE_DEMO || CLIPARAMS.mAutoConfigTest || CLIPARAMS.mRecordDemo || CLIPARAMS.mPlaybackDemo ||
 			 CLIPARAMS.mStressTest || CLIPARAMS.mAttractMode);
 }

@@ -130,7 +130,8 @@ Block Classify(const EntitySnapshot& e, Action a) {
     }
     if ((e.capabilities & ActionBit(a)) == 0u) return Block::Unsupported;
     if (IsAiOrder(a) && e.control != ControlOwner::CommandAI) return Block::NoAuthority;
-    if (a == Action::ReturnToAI && e.control != ControlOwner::LocalHuman) {
+    if (a == Action::ReturnToAI && e.control != ControlOwner::LocalHuman &&
+        e.control != ControlOwner::CommandAI) {
         return Block::NoAuthority;
     }
     return Block::None;
@@ -542,6 +543,23 @@ bool CommandPanel::SaveSelectionSet(int slot) {
 SelectResult CommandPanel::RecallSelectionSet(int slot, SelectOp op) {
     SelectResult none{};
     if (slot < 0 || slot >= kMaxSavedSets || saved_count_[slot] == 0) return none;
+    if (op == SelectOp::Replace) {
+        int eligible = 0;
+        for (int i = 0; i < saved_count_[slot]; ++i) {
+            const int entity = FindEntityExact(saved_[slot][i]);
+            if (entity < 0) {
+                ++none.rejected_stale;
+                continue;
+            }
+            if (entities_[entity].availability == Availability::Dead ||
+                (!entities_[entity].selectable && FindSelected(saved_[slot][i]) < 0)) {
+                ++none.rejected_unselectable;
+                continue;
+            }
+            ++eligible;
+        }
+        if (eligible == 0) return none;
+    }
     return Select(op, saved_[slot], saved_count_[slot]);
 }
 
@@ -553,6 +571,26 @@ void CommandPanel::ClearSelectionSet(int slot) {
 int CommandPanel::SelectionSetCount(int slot) const {
     if (slot < 0 || slot >= kMaxSavedSets) return 0;
     return saved_count_[slot];
+}
+
+int CommandPanel::SelectionSetLiveCount(int slot) const {
+    if (slot < 0 || slot >= kMaxSavedSets) return 0;
+    int live = 0;
+    for (int i = 0; i < saved_count_[slot]; ++i) {
+        const int entity = FindEntityExact(saved_[slot][i]);
+        if (entity < 0) continue;
+        if (entities_[entity].availability == Availability::Dead) continue;
+        if (!entities_[entity].selectable && FindSelected(saved_[slot][i]) < 0) continue;
+        ++live;
+    }
+    return live;
+}
+
+bool CommandPanel::SelectionSetContains(int slot, const EntityKey& key) const {
+    if (slot < 0 || slot >= kMaxSavedSets) return false;
+    for (int i = 0; i < saved_count_[slot]; ++i)
+        if (saved_[slot][i] == key) return true;
+    return false;
 }
 
 // ---------------------------------------------------------------------------

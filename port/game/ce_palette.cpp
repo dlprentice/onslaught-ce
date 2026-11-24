@@ -35,11 +35,13 @@
 #error The CE palette requires weak symbol support for the network boot boundary
 #endif
 extern "C" int CE_BootRequested(void) __attribute__((weak));
+extern "C" int CE_SessionActive(void) __attribute__((weak));
 extern "C" int CE_SettingIs(const char *key, const char *value);
 extern "C" int CE_SettingGetBool(const char *key, int def);
 
 bool PortCeLayer();
 extern "C" bool PortCeMuseumVisitActive(void) __attribute__((weak));	// ce_museum_visit.cpp (absent from a test harness that does not link the museum)
+extern "C" bool PortCeEditorActive(void) __attribute__((weak));			// ce_editor.cpp (absent from standalone console tests)
 bool PortRecording();
 extern WORD gCharScanCode;
 
@@ -90,6 +92,7 @@ bool Allowed()
 	if (!PortCeLayer() || PortRecording()) return false;
 	for (const char *name : kFenced) if (Present(name)) return false;
 	if (CE_BootRequested && CE_BootRequested()) return false;
+	if (CE_SessionActive && CE_SessionActive()) return false;
 	if (PLAYABLE_DEMO || CLIPARAMS.mAutoConfigTest || CLIPARAMS.mRecordDemo || CLIPARAMS.mPlaybackDemo ||
 		CLIPARAMS.mStressTest || CLIPARAMS.mAttractMode || FRONTEND.IsRunning()) return false;
 	if (GAME.GetGameState() != GAME_STATE_PLAYING || GAME.IsMultiplayer() || GAME.GetNPlayers() != 1 ||
@@ -116,6 +119,7 @@ bool DevStatsAllowed()
 		for (const char *name : kFenced) if (Present(name)) return false;
 	}
 	if (CE_BootRequested && CE_BootRequested()) return false;
+	if (CE_SessionActive && CE_SessionActive()) return false;
 	if (PLAYABLE_DEMO || CLIPARAMS.mAutoConfigTest || CLIPARAMS.mRecordDemo || CLIPARAMS.mPlaybackDemo ||
 		CLIPARAMS.mStressTest || CLIPARAMS.mAttractMode || FRONTEND.IsRunning()) return false;
 	return !GAME.IsMultiplayer() && GAME.GetNPlayers() == 1 && GAME.GetPlayer(0);
@@ -402,9 +406,16 @@ bool MuseumRefuses(const char *what)
 	return true;
 }
 
+bool EditorRefuses(const char *what)
+{
+	if (!PortCeEditorActive || !PortCeEditorActive()) return false;
+	Out("The map editor has no %s. Press F5 to return to the editor.", what);
+	return true;
+}
+
 void CmdMap(int argc, Arg *argv)
 {
-	if (MuseumRefuses("other level")) return;
+	if (MuseumRefuses("other level") || EditorRefuses("other level")) return;
 	int level = 0;
 	if (argc != 2 || !ParseInt(argv[1], &level)) { Out("Usage: map <level>, for example map 200."); return; }
 	if (!CampaignLevel(level)) { Out("%s is not a campaign level.", argv[1]); return; }

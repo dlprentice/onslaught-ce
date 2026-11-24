@@ -21,8 +21,10 @@ extern "C" int CE_FullUnitModelsRequest(int) { ++errors; return 0; }	// the fres
 extern "C" int CE_FullTreeModelsRequest(int) { ++errors; return 0; }
 extern "C" int CE_TerrainDetailRequest(int) { ++errors; return 0; }
 extern "C" int CE_AnisoRequest(int) { ++errors; return 0; }
+extern "C" unsigned CE_AnisoHardwareMax() { return 16u; }
 extern "C" int CE_WaterReflectionRequest(int) { ++errors; return 0; }
 extern "C" int CE_DynamicShadowRequest(int) { ++errors; return 0; }
+extern "C" unsigned CeRenderTargetQualityHardwareMaxDim() { return 1024u; }
 extern "C" void CeAnisoSetHardwareCaps(unsigned, bool) { ++anisoCapsUpdates; }
 void PortSessionLog(PortSessionCategory, bool, const char *, ...) { ++policyLogs; }
 struct GraphicsApplication : Application

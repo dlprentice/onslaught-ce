@@ -658,6 +658,26 @@ int main(int argc, char **argv)
 		Check(dashes[0].count == 1 && Taps() == 2, "dodge_button=1 from the next level");
 		Check(gIniReads >= 2 && gIniReads <= 3, "ce.ini is read when a level is entered, not every update");
 	}
+	else if (Is(mode, "refresh-all-pads"))
+	{
+		// PortCeDodgeAssistRefresh() sets gSetting = -1 and must mark EVERY pad stale, not only the current gPad.
+		// Otherwise pad 0 keeps gStale[0]==false after pad 1 ran, evaluating (gSetting != 0) == (-1 != 0) == true even with dodge_button=0!
+		Reset(gC); GAME.n = 2; GAME.controllers[1] = &gC2; gC2 = CController(); gC2.mPadNumber = 1; gC2.player = 1; gC2.toControl = &players[1];
+		gIni = 0; gIniReads = 0;
+		RunStep(gC, Step(), 0);		// pad 0 caches gSetting=0, gStale[0]=false
+		RunStep(gC2, Step(), 1);	// pad 1 runs last -> gPad=1, gStale[1]=false
+		PortCeDodgeAssistRefresh();	// must invalidate pad 0 as well as pad 1
+		events.clear(); dashes[0] = Dash();
+		Play(gC, Press(false, 3, 40, 10, 10, 45));
+		Check(dashes[0].count == 0 && Taps() == 0 && !PortCeDodgeAssistOn(), "refresh invalidates pad 0 even when gPad was 1 (dodge_button=0 stays off)");
+		// Now flip setting to 1 while gPad=1 and refresh again: pad 0 must pick up the new setting immediately.
+		RunStep(gC2, Step(), 50);
+		gIni = 1;
+		PortCeDodgeAssistRefresh();
+		events.clear(); dashes[0] = Dash();
+		Play(gC, Press(false, 3, 40, 10, 10, 50));
+		Check(dashes[0].count == 1 && Taps() == 2 && PortCeDodgeAssistOn(), "refresh lets pad 0 observe dodge_button=1 even when gPad was 1");
+	}
 	else if (Is(mode, "air-refusal"))
 	{
 		// The walker loses its footing while the double tap runs, so it refuses the second push. The player then pushes the direction again and asks for the dodge

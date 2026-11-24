@@ -34,7 +34,7 @@ struct WingMeta {
 // Strictly factual player-facing titles and cues (no build jargon, no internal filenames).
 static const WingMeta kWings[kWingCount] = {
     {kWingCourtyard,     "Coastal Courtyard",
-     "Walk past the Battle Engine monument to enter the Grand Atrium.",
+     "Walk past the Battle Engine to enter the Grand Atrium - hold Shift to sprint.",
      0.0f, 0.0f, 0.0f},
     {kWingAtrium,        "Grand Atrium",
      "Five galleries branch from the compass floor. Use the directory lectern to jump directly.",

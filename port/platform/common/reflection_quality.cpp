@@ -91,14 +91,14 @@ void InitWaterChoice()
 {
     if (waterRequested >= 0) return;
     const int saved = ParseIntSetting("water_reflection_res");
-    waterRequested = ValidWaterRes(saved) ? saved : 1024;
+    waterRequested = ValidWaterRes(saved) ? saved : 512;
 }
 
 void InitShadowChoice()
 {
     if (shadowRequested >= 0) return;
     const int saved = ParseIntSetting("dynamic_shadow_res");
-    shadowRequested = ValidShadowRes(saved) ? saved : 256;
+    shadowRequested = ValidShadowRes(saved) ? saved : 128;
 }
 }
 

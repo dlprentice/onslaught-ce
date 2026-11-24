@@ -86,7 +86,7 @@ Each table row declares:
 
 ### 3.1 Registered Built-in Handlers (21 Hook Points)
 
-The compiled dispatch table in `port/game/ce_hooks.cpp` wires the following built-in CE handlers (45 rows across 14 active hook points; 7 points are currently open for extension):
+The compiled dispatch table in `port/game/ce_hooks.cpp` wires the following built-in CE handlers (47 rows across 14 active hook points; 7 points are currently open for extension):
 
 | Point | Slot | Handler Name | Tag | Gate | Mode | Owner Module |
 |---|---|---|---|---|---|---|
@@ -103,6 +103,7 @@ The compiled dispatch table in `port/game/ce_hooks.cpp` wires the following buil
 | `level_end` | `60` | `entity_handles_level_end` | `SIM` | `CE_GATE_VERSION` | `CE_MODE_NONE` | `port/game/ce_entity_handles.cpp` |
 | `level_end` | `70` | `carrier_clash_level_end` | `SIM` | `CE_GATE_VERSION` | `CE_MODE_NONE` | `port/game/ce_carrier_clash.cpp` |
 | `level_end` | `80` | `living_sandbox_level_end` | `SIM` | `CE_GATE_VERSION` | `CE_MODE_NONE` | `port/game/ce_sandbox_director.cpp` |
+| `level_end` | `90` | `muspell_cockpit_level_end` | `SIM` | `CE_GATE_VERSION` | `CE_MODE_NONE` | `port/game/ce_muspell_cockpit.cpp` |
 | `tick_pre` | `10` | `gamepad_cycle` | `SIM` | `CE_GATE_VERSION` | `CE_MODE_NONE` | `port/game/ce_gamepad.cpp` |
 | `tick_pre` | `20` | `multibe_tick_pre` | `SIM` | `CE_GATE_LAYER` | `CE_MODE_NONE` | `port/game/ce_multibe.cpp` |
 | `tick_pre` | `30` | `carrier_clash_tick_pre` | `SIM` | `CE_GATE_LAYER` | `CE_MODE_NONE` | `port/game/ce_carrier_clash.cpp` |
@@ -120,6 +121,7 @@ The compiled dispatch table in `port/game/ce_hooks.cpp` wires the following buil
 | `draw_hud` | `20` | `carrier_clash_draw_hud` | `RENDER` | `CE_GATE_LAYER` | `CE_MODE_NONE` | `port/game/ce_carrier_clash.cpp` |
 | `draw_hud` | `30` | `living_sandbox_draw_hud` | `RENDER` | `CE_GATE_LAYER` | `CE_MODE_NONE` | `port/game/ce_sandbox_director.cpp` |
 | `draw_overlay` | `10` | `editor_overlay` | `RENDER` | `CE_GATE_VERSION` | `CE_MODE_NONE` | `port/game/ce_editor.cpp` |
+| `draw_overlay` | `20` | `carrier_clash_draw_overlay` | `RENDER` | `CE_GATE_LAYER` | `CE_MODE_NONE` | `port/game/ce_carrier_clash.cpp` |
 | `menu_rows` | `10` | `multibe_menu_rows` | `RENDER` | `CE_GATE_LAYER` | `CE_MODE_NONE` | `port/game/ce_multibe.cpp` |
 | `save_gate` | `10` | `editor_save` | `SIM` | `CE_GATE_VERSION` | `CE_MODE_NONE` | `port/game/ce_editor.cpp` |
 | `save_gate` | `20` | `bonus_save` | `SIM` | `CE_GATE_VERSION` | `CE_MODE_NONE` | `port/game/ce_bonus.cpp` |

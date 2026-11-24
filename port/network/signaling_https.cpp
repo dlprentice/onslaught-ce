@@ -79,11 +79,11 @@ struct Headers {
     unsigned code=0;size_t bytes=0;bool complete=false,hasLength=false,allowLobbyCodes=false;
     size_t length=0;std::vector<std::pair<std::string,std::string>> fields;
     bool Line(const char* data,size_t size) {
-        if (!data || size<2 || size>1092 || data[size-2]!='\r' || data[size-1]!='\n' || complete || size>kHeadersMax-bytes) return false;
+        if (!data || size<2 || size>4096 || data[size-2]!='\r' || data[size-1]!='\n' || complete || size>kHeadersMax-bytes) return false;
         bytes+=size;size-=2;
         for (size_t i=0;i<size;++i) if (data[i]<32 || data[i]>126) return false;
         if (!code) {
-            if (size<12 || (std::memcmp(data,"HTTP/1.1 ",9) && std::memcmp(data,"HTTP/1.0 ",9))) return false;
+            if (size<12 || size>1090 || (std::memcmp(data,"HTTP/1.1 ",9) && std::memcmp(data,"HTTP/1.0 ",9))) return false;
             if (data[9]<'0'||data[9]>'9'||data[10]<'0'||data[10]>'9'||data[11]<'0'||data[11]>'9') return false;
             code=unsigned(data[9]-'0')*100+unsigned(data[10]-'0')*10+unsigned(data[11]-'0');
             if (allowLobbyCodes && (code==404||code==409)) return true;
@@ -91,7 +91,14 @@ struct Headers {
         }
         if (!size) {
             auto get=[&](const char* name)->std::string { for (const auto& f:fields) if (f.first==name) return f.second;return {}; };
-            if (get("content-type")!="application/json" || get("cache-control")!="no-store" ||
+            auto mediaType=[](const std::string& raw)->std::string {
+                const size_t semi=raw.find(';');
+                std::string base=(semi==std::string::npos)?raw:raw.substr(0,semi);
+                while (!base.empty() && base.back()==' ') base.pop_back();
+                for (char& c:base) if (c>='A'&&c<='Z') c=char(c+32);
+                return base;
+            };
+            if (mediaType(get("content-type"))!="application/json" || get("cache-control")!="no-store" ||
                 get("pragma")!="no-cache" || get("x-content-type-options")!="nosniff" || !get("location").empty()) return false;
             const auto encoding=get("content-encoding"),transfer=get("transfer-encoding");
             if ((!encoding.empty()&&encoding!="identity") || (!transfer.empty()&&transfer!="chunked")) return false;
@@ -112,8 +119,14 @@ struct Headers {
         for (char& c:name) { if (c>='A'&&c<='Z') c=char(c+32); if (!((c>='a'&&c<='z')||(c>='0'&&c<='9')||c=='-')) return false; }
         while (!value.empty() && value.front()==' ') value.erase(0,1);
         while (!value.empty() && value.back()==' ') value.pop_back();
-        if (value.size()>1024 || name=="location" || name=="set-cookie") return false;
-        for (const auto& field:fields) if (field.first==name) return false;
+        if (name=="set-cookie") return true;
+        if (value.size()>1024 || name=="location") return false;
+        const bool singleValue=(name=="content-type"||name=="content-length"||name=="transfer-encoding"||
+                                name=="content-encoding"||name=="cache-control"||name=="pragma"||
+                                name=="x-content-type-options");
+        if (singleValue) {
+            for (const auto& field:fields) if (field.first==name) return false;
+        }
         if ((name=="content-length"||name=="transfer-encoding")&&value.empty()) return false;
         fields.emplace_back(std::move(name),std::move(value));return true;
     }
@@ -249,7 +262,8 @@ public:
             p->session=WinHttpOpen(L"OnslaughtCE-Signaling/1",WINHTTP_ACCESS_TYPE_NO_PROXY,WINHTTP_NO_PROXY_NAME,WINHTTP_NO_PROXY_BYPASS,WINHTTP_FLAG_ASYNC);
             if (!p->session) return false;
             DWORD isolate=TRUE;
-            if (!WinHttpSetOption(p->session,WINHTTP_OPTION_DISABLE_GLOBAL_POOLING,&isolate,sizeof(isolate))) return false;
+            // Best-effort: WINHTTP_OPTION_DISABLE_GLOBAL_POOLING requires Windows 10 2004+/11 and is unimplemented on Wine/Proton.
+            (void)WinHttpSetOption(p->session,WINHTTP_OPTION_DISABLE_GLOBAL_POOLING,&isolate,sizeof(isolate));
             const int timeout=int(std::min<uint64_t>(10000,deadline-now));
             if (!WinHttpSetTimeouts(p->session,timeout,std::min(timeout,5000),timeout,timeout)) return false;
             DWORD tls=WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_2;
@@ -261,8 +275,9 @@ public:
             if (!p->request) return false;
             DWORD disabled=WINHTTP_DISABLE_AUTHENTICATION|WINHTTP_DISABLE_COOKIES|WINHTTP_DISABLE_REDIRECTS;
             DWORD cap=kHeadersMax;
-            if (!WinHttpSetOption(p->request,WINHTTP_OPTION_DISABLE_FEATURE,&disabled,sizeof(disabled)) ||
-                !WinHttpSetOption(p->request,WINHTTP_OPTION_MAX_RESPONSE_HEADER_SIZE,&cap,sizeof(cap))) { WinHttpCloseHandle(p->request);p->request=nullptr;return false; }
+            if (!WinHttpSetOption(p->request,WINHTTP_OPTION_DISABLE_FEATURE,&disabled,sizeof(disabled))) { WinHttpCloseHandle(p->request);p->request=nullptr;return false; }
+            // Best-effort: ReadHeaders also enforces kHeadersMax strictly on every response.
+            (void)WinHttpSetOption(p->request,WINHTTP_OPTION_MAX_RESPONSE_HEADER_SIZE,&cap,sizeof(cap));
             DWORD_PTR context=reinterpret_cast<DWORD_PTR>(p.get());
             if (!WinHttpSetOption(p->request,WINHTTP_OPTION_CONTEXT_VALUE,&context,sizeof(context)) ||
                 WinHttpSetStatusCallback(p->request,&WinCall::Callback,WINHTTP_CALLBACK_FLAG_ALL_COMPLETIONS|WINHTTP_CALLBACK_FLAG_HANDLES|WINHTTP_CALLBACK_FLAG_SECURE_FAILURE,0)==WINHTTP_INVALID_STATUS_CALLBACK) {

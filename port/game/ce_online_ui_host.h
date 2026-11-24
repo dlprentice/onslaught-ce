@@ -63,6 +63,7 @@ typedef struct CeOnlineUiHostOps {
 void PortCeOnlineHostInitOps(const CeOnlineUiHostOps *ops);
 void PortCeOnlineHostOpen(int from_multiplayer);
 void PortCeOnlineHostClose(void);
+void PortCeOnlineHostClosePreservingLaunch(void);
 int  PortCeOnlineHostActive(void);
 const char *PortCeOnlineHostTitleUtf8(void);
 void PortCeOnlineHostUpdate(uint64_t now_ms);

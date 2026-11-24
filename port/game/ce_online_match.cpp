@@ -221,6 +221,7 @@ void CeOnlineMatchSession::Reset() {
         mSlotRoute[i] = CE_ONLINE_ROUTE_UNKNOWN;
     }
     mHasBroadcast = false;
+    mBroadcastLeadIn = false;
     mLastBroadcastTick = 0u;
     mLastConsumedPeerMask = 0u;
     mStartConfirmed = false;
@@ -363,7 +364,8 @@ void CeOnlineMatchSession::TryBroadcastReadyBundles() {
     if (!mInitialised || !IsHost() || !mBridge || mState != CE_ONLINE_STATE_RUNNING)
         return;
     const uint32_t cur = mRing.CurrentTick();
-    uint32_t startTick = mHasBroadcast ? (mLastBroadcastTick + 1u) : mRing.InputDelay();
+    uint32_t startTick = mHasBroadcast ? (mLastBroadcastTick + 1u)
+                                       : (mBroadcastLeadIn ? cur : mRing.InputDelay());
     if (startTick < cur)
         startTick = cur;
     const uint32_t limit = cur + (uint32_t)kRingSize;
@@ -384,6 +386,33 @@ void CeOnlineMatchSession::TryBroadcastReadyBundles() {
         mHasBroadcast = true;
         mLastBroadcastTick = t;
     }
+}
+
+bool CeOnlineMatchSession::TryConfirmStartHash() {
+    if (!mInitialised || !IsHost() || mStartConfirmed || !mLocalStartHashSubmitted ||
+        mState != CE_ONLINE_STATE_RUNNING || mRing.CurrentTick() != 0u)
+        return true;
+    CeNPeerDesyncReport rep = {};
+    const CeNPeerHashResult hr = mRing.CheckHashes(0u, &rep);
+    if (hr == CE_NPEER_HASH_DESYNC) {
+        mLastDesync = RemapReportToSimSlots(rep);
+        if (mBridge)
+            mBridge->SendDesync(mLastDesync);
+        char msg[192];
+        snprintf(msg, sizeof(msg),
+                 "online match went out of step at tick %u (slot %u diverged from slot %u, mask 0x%02x)",
+                 mLastDesync.tick, (unsigned)mLastDesync.divergingSlot,
+                 (unsigned)mLastDesync.referenceSlot, (unsigned)mLastDesync.divergingMask);
+        SetFault(CE_ONLINE_STATE_DESYNC, msg);
+        return false;
+    }
+    if (hr == CE_NPEER_HASH_MATCH) {
+        TryBroadcastReadyBundles();
+        mStartConfirmed = true;
+        if (mBridge)
+            mBridge->SendHash(0u, 0u, mLocalStartHash);
+    }
+    return true;
 }
 
 bool CeOnlineMatchSession::HandleGuestInputEvent(const CeOnlineStarEvent &ev) {
@@ -418,7 +447,7 @@ bool CeOnlineMatchSession::HandleGuestInputEvent(const CeOnlineStarEvent &ev) {
         return false;
     }
     TryBroadcastReadyBundles();
-    return mState == CE_ONLINE_STATE_RUNNING;
+    return mState == CE_ONLINE_STATE_CONNECTING || mState == CE_ONLINE_STATE_RUNNING;
 }
 
 bool CeOnlineMatchSession::HandleHostBundleEvent(const CeOnlineStarEvent &ev) {
@@ -467,6 +496,9 @@ bool CeOnlineMatchSession::HandleHashEvent(const CeOnlineStarEvent &ev) {
             mStartConfirmed = true;
         }
     }
+    if (IsHost() && ev.tick == 0u) {
+        return TryConfirmStartHash();
+    }
     CeNPeerDesyncReport rep = {};
     const CeNPeerHashResult hr = mRing.CheckHashes(ev.tick, &rep);
     if (hr == CE_NPEER_HASH_DESYNC) {
@@ -480,11 +512,6 @@ bool CeOnlineMatchSession::HandleHashEvent(const CeOnlineStarEvent &ev) {
                  (unsigned)mLastDesync.referenceSlot, (unsigned)mLastDesync.divergingMask);
         SetFault(CE_ONLINE_STATE_DESYNC, msg);
         return false;
-    }
-    if (IsHost() && ev.tick == 0u && hr == CE_NPEER_HASH_MATCH && !mStartConfirmed) {
-        mStartConfirmed = true;
-        if (mBridge && mLocalStartHashSubmitted)
-            mBridge->SendHash(0u, 0u, mLocalStartHash);
     }
     return true;
 }
@@ -508,14 +535,21 @@ void CeOnlineMatchSession::HandleDisconnectEvent(uint8_t sim_slot) {
     const uint8_t peerIdx = SimSlotToPeer(sim_slot);
     if (peerIdx >= mRing.PlayerCount())
         return;
-    // Choose disconnect boundary cleanly: never contradict an already-broadcast tick on the host.
+    // Choose disconnect boundary cleanly: never contradict an already-broadcast tick or
+    // locally-seeded lead-in ticks once the tick-0 start barrier has released.
     uint32_t atTick = mRing.CurrentTick();
-    if (IsHost() && mHasBroadcast && mLastBroadcastTick >= atTick)
-        atTick = mLastBroadcastTick + 1u;
+    if (IsHost()) {
+        if (mHasBroadcast && mLastBroadcastTick >= atTick)
+            atTick = mLastBroadcastTick + 1u;
+        else if (mStartConfirmed && atTick < mRing.InputDelay())
+            atTick = mRing.InputDelay();
+    }
     const CeNPeerStatus st = mRing.DisconnectPeer(peerIdx, atTick);
     if (st == CE_NPEER_ERR_HOST_LOST) {
         mSlotDisconnected[0] = true;
-        SetFault(CE_ONLINE_STATE_HOST_LOST, "connection to the match host was lost");
+        SetFault(CE_ONLINE_STATE_HOST_LOST,
+                 IsHost() ? "online match host transport stopped"
+                          : "connection to the match host was lost");
         return;
     }
     if (st == CE_NPEER_ERR_TOO_FEW_PEERS) {
@@ -524,10 +558,13 @@ void CeOnlineMatchSession::HandleDisconnectEvent(uint8_t sim_slot) {
         return;
     }
     if (st == CE_NPEER_OK) {
-        // Host may have become ready to broadcast pending ticks now that this guest is dropped.
-        if (atTick == mRing.CurrentTick())
-            mSlotDisconnected[sim_slot] = true;
+        // Flip mSlotDisconnected exclusively inside ConsumeTick() so Host and Guests
+        // transition the dropped slot to AI backfill on the exact same simulation tick.
+        if (IsHost() && !mStartConfirmed && atTick == 0u)
+            mBroadcastLeadIn = true;
         TryBroadcastReadyBundles();
+        if (!TryConfirmStartHash())
+            return;
     }
 }
 
@@ -556,19 +593,6 @@ bool CeOnlineMatchSession::Poll(uint64_t now_ms) {
             mState = CE_ONLINE_STATE_RUNNING;
         CeOnlineStarEvent ev = {};
         while ((mState == CE_ONLINE_STATE_CONNECTING || mState == CE_ONLINE_STATE_RUNNING) && mBridge->PopEvent(&ev)) {
-            if (mState == CE_ONLINE_STATE_CONNECTING) {
-                if (ev.kind == CE_STAR_EVT_HOST_LOST) {
-                    HandleDisconnectEvent(0u);
-                    return false;
-                }
-                if (ev.kind == CE_STAR_EVT_PEER_DISCONNECT) {
-                    HandleDisconnectEvent(ev.from_sim_slot);
-                    if (mState != CE_ONLINE_STATE_CONNECTING)
-                        return false;
-                }
-                memset(&ev, 0, sizeof(ev));
-                continue;
-            }
             switch (ev.kind) {
             case CE_STAR_EVT_GUEST_INPUT:
                 if (!HandleGuestInputEvent(ev))
@@ -605,20 +629,32 @@ bool CeOnlineMatchSession::Poll(uint64_t now_ms) {
                 break;
             case CE_STAR_EVT_PEER_DISCONNECT:
                 HandleDisconnectEvent(ev.from_sim_slot);
-                if (mState != CE_ONLINE_STATE_RUNNING)
+                if (mState != CE_ONLINE_STATE_CONNECTING && mState != CE_ONLINE_STATE_RUNNING)
                     return false;
+                if (mState == CE_ONLINE_STATE_CONNECTING && mBridge->IsConnected())
+                    mState = CE_ONLINE_STATE_RUNNING;
                 break;
             case CE_STAR_EVT_HOST_LOST:
                 HandleDisconnectEvent(0u);
+                return false;
+            case CE_STAR_EVT_TRANSPORT_ERROR:
+                SetFault(CE_ONLINE_STATE_ERROR,
+                         IsHost() ? "online match host transport failed to connect peers"
+                                  : "online match transport connection failed");
                 return false;
             default:
                 break;
             }
             memset(&ev, 0, sizeof(ev));
         }
+        if (mState == CE_ONLINE_STATE_CONNECTING && mBridge->IsConnected())
+            mState = CE_ONLINE_STATE_RUNNING;
     }
-    if (IsHost() && mState == CE_ONLINE_STATE_RUNNING)
+    if (IsHost() && mState == CE_ONLINE_STATE_RUNNING) {
         TryBroadcastReadyBundles();
+        if (!TryConfirmStartHash())
+            return false;
+    }
     return mState == CE_ONLINE_STATE_CONNECTING || mState == CE_ONLINE_STATE_RUNNING;
 }
 
@@ -747,6 +783,9 @@ bool CeOnlineMatchSession::SubmitLocalHash(uint32_t tick, uint64_t state_hash) {
         mStartConfirmed = true;
     }
     if (IsHost()) {
+        if (tick == 0u) {
+            return TryConfirmStartHash();
+        }
         CeNPeerDesyncReport rep = {};
         const CeNPeerHashResult hr = mRing.CheckHashes(tick, &rep);
         if (hr == CE_NPEER_HASH_DESYNC) {
@@ -760,11 +799,6 @@ bool CeOnlineMatchSession::SubmitLocalHash(uint32_t tick, uint64_t state_hash) {
                      (unsigned)mLastDesync.referenceSlot, (unsigned)mLastDesync.divergingMask);
             SetFault(CE_ONLINE_STATE_DESYNC, msg);
             return false;
-        }
-        if (tick == 0u && hr == CE_NPEER_HASH_MATCH && !mStartConfirmed) {
-            mStartConfirmed = true;
-            if (mBridge)
-                mBridge->SendHash(0u, 0u, state_hash);
         }
     }
     return true;

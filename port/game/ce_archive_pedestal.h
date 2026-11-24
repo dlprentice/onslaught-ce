@@ -28,9 +28,10 @@ constexpr float kControlLocalZ = 1.08f;
 constexpr float kControlOffsetY = kControlLocalY - kPedestalLocalY; // -2.35 m south of center
 constexpr float kButtonRadius = 0.24f;
 constexpr float kButtonMaxRange = 5.5f;
+constexpr float kCustomWorldButtonMaxRange = 18.0f;
 constexpr float kKeyboardNearRange = 9.5f;
 constexpr float kFocusMaxRange = 11.0f;
-constexpr float kTargetSpan = 4.6f;
+constexpr float kTargetSpan = 3.75f;
 constexpr float kDefaultRateRadPerSec = 14.0f * 3.14159265f / 180.0f;
 constexpr float kSwapFadeSeconds = 0.22f;
 constexpr unsigned kLightboxMaxEdge = 1024u;
@@ -219,6 +220,7 @@ inline int PickButton(const BasePose &pose,
     const float alen = std::sqrt(aimX * aimX + aimY * aimY + aimZ * aimZ);
     if (!(alen > 1e-5f)) return -1;
     const float ux = aimX / alen, uy = aimY / alen, uz = aimZ / alen;
+    const float maxRange = pose.customWorldPose ? kCustomWorldButtonMaxRange : kButtonMaxRange;
     int best = -1;
     float bestT = 1e9f;
     for (unsigned i = 0; i < static_cast<unsigned>(kBtnCount); ++i) {
@@ -226,7 +228,7 @@ inline int PickButton(const BasePose &pose,
         ButtonPosition(pose, i, &bx, &by, &bz);
         const float vx = bx - eyeX, vy = by - eyeY, vz = bz - eyeZ;
         const float t = vx * ux + vy * uy + vz * uz;
-        if (t <= 0.15f || t > kButtonMaxRange) continue;
+        if (t <= 0.15f || t > maxRange) continue;
         const float cx = eyeX + t * ux - bx;
         const float cy = eyeY + t * uy - by;
         const float cz = eyeZ + t * uz - bz;
@@ -427,7 +429,7 @@ bool RuntimeCue(float visitorX, float visitorY, float fwdX, float fwdY,
                 char *title, unsigned titleCap,
                 char *line, unsigned lineCap,
                 char *note, unsigned noteCap);
-void RuntimeDraw(float floorZ);
+void RuntimeDraw(float floorZ, bool ownStateBlock = true);
 void RuntimeSetBasePose(float worldCenterX, float worldCenterY, float plinthTopZ);
 
 } // namespace CeArchivePedestal

@@ -339,14 +339,19 @@ int main(int argc, char** argv) {
         {"plans without the experimental modes", plainPlans, int(sizeof(SCeHint)), CE_NUM_PLANS, nullptr, kCeListY, CCeBack::EXTRA_FOLLOW},
         {"settings without the Commander Map row", &plainSettings[0].mHint, int(sizeof(SCeSetting)), plainCount, nullptr, kCeSettingsY, CCeBack::EXTRA_FOOT},
         {"hub without the experimental rows", &plain.rows[0].mHint, int(sizeof(SCeRow)), plain.count, nullptr, kCeHubY, CCeBack::EXTRA_FOLLOW},
-        {"experimental features", &kLabs[0].mHint, int(sizeof(SCeLab)), CE_NUM_LABS, kLabsNote, kCeListY, CCeBack::EXTRA_FOLLOW},
+        {"experimental features", &kLabs[0].mHint, int(sizeof(SCeLab)), CE_NUM_LABS, kLabsNote, kCeHubY, CCeBack::EXTRA_FOLLOW},
 #ifndef CE_NETWORK_OFF
         {"hub with network unavailable", &noNetwork.rows[0].mHint, int(sizeof(SCeRow)), noNetwork.count, nullptr, kCeHubY, CCeBack::EXTRA_FOLLOW},
 #endif
     };
-    check(pages[1].count == 9 && pages[2].count == 13 && pages[4].count == 5 &&
+#ifdef CE_NETWORK_OFF
+    const int expectedLabs = 9;
+#else
+    const int expectedLabs = 10;
+#endif
+    check(pages[1].count == 9 && pages[2].count == 12 && pages[4].count == 5 &&
           pages[5].count == 9 && pages[8].count == 12 && pages[7].count == 9 &&
-          pages[6].count == 5 && pages[10].count == 5, "every page's rows");
+          pages[6].count == 5 && pages[10].count == expectedLabs, "every page's rows");
     for (const Page &page : pages) {
         current_page = page.name;
         const float first_y = page.centre - 10.f * float(page.count + 1) - 15.f;

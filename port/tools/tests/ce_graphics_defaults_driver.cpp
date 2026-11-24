@@ -47,8 +47,10 @@ extern "C" int CE_FullUnitModelsRequest(int value) { ++unitCalls; Check(value ==
 extern "C" int CE_FullTreeModelsRequest(int value) { ++treeCalls; Check(value == 0 || value == 1, "3D distant trees is asked for 0 or 1"); if (!rowsAccepted) return 0; treeModels = value; return 1; }
 extern "C" int CE_TerrainDetailRequest(int value) { ++terrainCalls; Check(value == 0 || value == 1, "Terrain detail distance is asked for 0 or 1"); if (!rowsAccepted) return 0; terrainDetail = value; return 1; }
 extern "C" int CE_AnisoRequest(int value) { ++anisoCalls; Check(value == 0 || value == 4 || value == 8 || value == 16, "Anisotropic filtering is asked for 0, 4, 8 or 16"); if (!rowsAccepted) return 0; anisoLevel = value; return 1; }
+extern "C" unsigned CE_AnisoHardwareMax() { return 16u; }
 extern "C" int CE_WaterReflectionRequest(int value) { ++waterCalls; Check(value == 256 || value == 512 || value == 1024, "Water reflections is asked for 256, 512 or 1024"); if (!rowsAccepted) return 0; waterRes = value; return 1; }
 extern "C" int CE_DynamicShadowRequest(int value) { ++shadowCalls; Check(value == 64 || value == 128 || value == 256, "Dynamic shadows is asked for 64, 128 or 256"); if (!rowsAccepted) return 0; shadowRes = value; return 1; }
+extern "C" unsigned CeRenderTargetQualityHardwareMaxDim() { return 1024u; }
 void PortSessionLog(PortSessionCategory, bool, const char *, ...) { ++logs; }
 void DisplaySettingChanged() { ++displayChanges; }
 int PortUserFileState(const char *name) { ++userFileAsks; Check(std::string(name) == "defaultoptions.bea", "the profile's own options file is asked for by the game's name"); return userFile; }
@@ -93,13 +95,13 @@ DECLARE_VISUAL(CMultiSample);
 #include "ce_graphics_defaults_actual.inc"
 #undef fopen
 
-// The highest multisample type a device mask lists (bits 5 to 9 stand for 2, 3, 4, 6 and 8 samples), -1 for none: what the
-// fresh anti-aliasing default has to reach, worked out here from the mask and not by the native row.
+// The highest multisample type up to 4x a device mask lists (bits 5 to 7 stand for 2, 3 and 4 samples), -1 for none:
+// fresh anti-aliasing caps at 4x MSAA so fresh installs do not default to 8x MSAA.
 int HighestSamples(unsigned mask)
 {
-    static const int samples[] = {2, 3, 4, 6, 8};
+    static const int samples[] = {2, 3, 4};
     int best = -1;
-    for (int i = 0; i < 5; ++i) if (mask & (0x20u << i)) best = samples[i];
+    for (int i = 0; i < 3; ++i) if (mask & (0x20u << i)) best = samples[i];
     return best;
 }
 
@@ -133,7 +135,7 @@ int main(int argc, char **argv)
     }
     if (name == "rows-saved-on") {
         ini["full_unit_models"] = 1; ini["full_tree_models"] = 1; ini["terrain_detail_distance"] = 1;
-        ini["anisotropic_filtering"] = 8; ini["water_reflection_res"] = 512; ini["dynamic_shadow_res"] = 128;
+        ini["anisotropic_filtering"] = 8; ini["water_reflection_res"] = 1024; ini["dynamic_shadow_res"] = 256;
     }
     if (name == "rows-legacy-on") ini["full_models"] = 1;
     if (name == "rows-one-saved") ini["full_unit_models"] = 0;
@@ -169,11 +171,11 @@ int main(int argc, char **argv)
         CLandscapeRes landscape(AuthoredText, 0); CTrilinear filtering(AuthoredText, 0);
         CTextureRes textures(AuthoredText, 0); CEnable32Bit colour(AuthoredText, 0);
         CMultiSample antialiasing(AuthoredText, 0);
-        Check(antialiasing.GetNumChoices() > 1 ? (int)LT.device.MultiSampleType == HighestSamples(mode.mUnknown10) &&
-                                                     antialiasing.GetValue() == antialiasing.GetNumChoices() - 1
+        Check(HighestSamples(mode.mUnknown10) > 0 ? (int)LT.device.MultiSampleType == HighestSamples(mode.mUnknown10) &&
+                                                     antialiasing.GetValue() > 0
                                                : (int)LT.device.MultiSampleType == -1 && antialiasing.GetValue() == 0,
-              "fresh anti-aliasing takes the highest level the device lists, and nothing when it lists none");
-        Check(antialiasing.GetNumChoices() == (HighestSamples(mode.mUnknown10) < 0 ? 1 : 1 + __builtin_popcount(mode.mUnknown10 & 0x3e0u)),
+              "fresh anti-aliasing takes the highest level up to 4x the device lists, and nothing when it lists none");
+        Check(antialiasing.GetNumChoices() == ((mode.mUnknown10 & 0x3e0u) == 0u ? 1 : 1 + __builtin_popcount(mode.mUnknown10 & 0x3e0u)),
               "the row lists None and one level for every multisample type the device offers");
         Check(qualityCalls == 1 && geometry.GetValue() == geometry.GetNumChoices() - 1,
               "fresh geometry uses the actual native quality setter at its highest choice");
@@ -201,8 +203,8 @@ int main(int argc, char **argv)
         const int wantTree = name == "rows-refused" ? -1 : (legacyOn || name == "rows-saved-on") ? 1 : 0;
         const int wantTerrain = name == "rows-refused" ? -1 : name == "rows-saved-off" ? 0 : 1;
         const int wantAniso = name == "rows-refused" ? -1 : name == "rows-saved-off" ? 0 : name == "rows-saved-on" ? 8 : 16;
-        const int wantWater = name == "rows-refused" ? -1 : name == "rows-saved-off" ? 256 : name == "rows-saved-on" ? 512 : 1024;
-        const int wantShadow = name == "rows-refused" ? -1 : name == "rows-saved-off" ? 64 : name == "rows-saved-on" ? 128 : 256;
+        const int wantWater = name == "rows-refused" ? -1 : name == "rows-saved-off" ? 256 : name == "rows-saved-on" ? 1024 : 512;
+        const int wantShadow = name == "rows-refused" ? -1 : name == "rows-saved-off" ? 64 : name == "rows-saved-on" ? 256 : 128;
         std::vector<std::string> wantWrites;
         if (extrasSaved < 0) wantWrites.push_back("extra_graphics=1");
         if (name != "rows-refused") {
@@ -210,8 +212,8 @@ int main(int argc, char **argv)
             if (!treeSaved) wantWrites.push_back("full_tree_models=0");
             if (!terrainSaved) wantWrites.push_back("terrain_detail_distance=1");
             if (!anisoSaved) wantWrites.push_back("anisotropic_filtering=16");
-            if (!waterSaved) wantWrites.push_back("water_reflection_res=1024");
-            if (!shadowSaved) wantWrites.push_back("dynamic_shadow_res=256");
+            if (!waterSaved) wantWrites.push_back("water_reflection_res=512");
+            if (!shadowSaved) wantWrites.push_back("dynamic_shadow_res=128");
         }
         Check(unitModels == wantUnit && treeModels == wantTree && terrainDetail == wantTerrain &&
               anisoLevel == wantAniso && waterRes == wantWater && shadowRes == wantShadow &&

@@ -63,6 +63,51 @@ struct CeCmdHudVertex
 	DWORD color;
 };
 
+struct CeCmdHudTriBatch
+{
+	static constexpr int kMaxVerts = 3072;
+	CeCmdHudVertex verts[kMaxVerts];
+	int count = 0;
+
+	void Flush(LPDIRECT3DDEVICE9 dev)
+	{
+		if (count >= 3 && dev)
+			dev->DrawPrimitiveUP(D3DPT_TRIANGLELIST, count / 3, verts, sizeof(CeCmdHudVertex));
+		count = 0;
+	}
+
+	void AddTri(LPDIRECT3DDEVICE9 dev, const CeCmdHudVertex &a, const CeCmdHudVertex &b, const CeCmdHudVertex &c)
+	{
+		if (count + 3 > kMaxVerts) Flush(dev);
+		verts[count++] = a;
+		verts[count++] = b;
+		verts[count++] = c;
+	}
+
+	void AddFan(LPDIRECT3DDEVICE9 dev, const CeCmdHudVertex *fan, int n)
+	{
+		for (int i = 1; i + 1 < n; ++i)
+			AddTri(dev, fan[0], fan[i], fan[i + 1]);
+	}
+
+	void AddStrip(LPDIRECT3DDEVICE9 dev, const CeCmdHudVertex *strip, int n)
+	{
+		for (int i = 0; i + 2 < n; ++i)
+			AddTri(dev, strip[i], strip[i + 1], strip[i + 2]);
+	}
+
+	void AddRect(LPDIRECT3DDEVICE9 dev, float x, float y, float w, float h, float z, std::uint32_t col)
+	{
+		if (w <= 0.f || h <= 0.f) return;
+		const CeCmdHudVertex v0 = {x,     y,     z, 1.f, col};
+		const CeCmdHudVertex v1 = {x + w, y,     z, 1.f, col};
+		const CeCmdHudVertex v2 = {x,     y + h, z, 1.f, col};
+		const CeCmdHudVertex v3 = {x + w, y + h, z, 1.f, col};
+		AddTri(dev, v0, v1, v2);
+		AddTri(dev, v1, v3, v2);
+	}
+};
+
 void BeginUntextured2D()
 {
 	LT.STS(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
@@ -94,8 +139,8 @@ void EndUntextured2D()
 	LT.SRS(D3DRS_ALPHAREF, 8);
 }
 
-// Draws a smooth 4-way symmetric rounded-capsule glass fill strictly inside [x+inset, x+w-inset] x [y+inset, y+h-inset].
-void DrawRoundedGlassFillD3D(LPDIRECT3DDEVICE9 dev, const CeCmdHudNineSlice &ns, float inset,
+// Emits a smooth 4-way symmetric rounded-capsule glass fill into batch.
+void EmitRoundedGlassFillD3D(LPDIRECT3DDEVICE9 dev, CeCmdHudTriBatch &batch, const CeCmdHudNineSlice &ns, float inset,
                              std::uint32_t topCol, std::uint32_t botCol)
 {
 	static constexpr int kSegs = 8;
@@ -125,11 +170,11 @@ void DrawRoundedGlassFillD3D(LPDIRECT3DDEVICE9 dev, const CeCmdHudNineSlice &ns,
 	for (int k = kSegs; k >= 0; --k) emit(tlx[k], 2.f * cy - tly[k]);
 	fan[n++] = fan[1];
 
-	dev->DrawPrimitiveUP(D3DPT_TRIANGLEFAN, n - 2, fan, sizeof(CeCmdHudVertex));
+	batch.AddFan(dev, fan, n);
 }
 
-// Draws a closed 4-way symmetric rounded border strip (uniform thickness, crisp clickable pill edges).
-void DrawRoundedBorderLoopD3D(LPDIRECT3DDEVICE9 dev, const CeCmdHudNineSlice &ns, float inset,
+// Emits a closed 4-way symmetric rounded border strip into batch.
+void EmitRoundedBorderLoopD3D(LPDIRECT3DDEVICE9 dev, CeCmdHudTriBatch &batch, const CeCmdHudNineSlice &ns, float inset,
                               float thickness, std::uint32_t col)
 {
 	static constexpr int kSegs = 6;
@@ -162,13 +207,12 @@ void DrawRoundedBorderLoopD3D(LPDIRECT3DDEVICE9 dev, const CeCmdHudNineSlice &ns
 	strip[n++] = strip[0];
 	strip[n++] = strip[1];
 
-	dev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, n - 2, strip, sizeof(CeCmdHudVertex));
+	batch.AddStrip(dev, strip, n);
 }
 
-// Draws one side (mirror == false -> left, mirror == true -> exact right mirror across cx)
-// of a true 9-slice glowing curved capsule bracket: fixed-radius top arc + straight vertical rail
-// + fixed-radius bottom arc, strictly bounded inside [ns.x, ns.x + ns.w] x [ns.y, ns.y + ns.h].
-void DrawBracketSideD3D(LPDIRECT3DDEVICE9 dev, const CeCmdHudNineSlice &ns, bool mirrorRight,
+// Emits one side (mirror == false -> left, mirror == true -> exact right mirror across cx)
+// of a true 9-slice glowing curved capsule bracket into batch.
+void EmitBracketSideD3D(LPDIRECT3DDEVICE9 dev, CeCmdHudTriBatch &batch, const CeCmdHudNineSlice &ns, bool mirrorRight,
                         float halfW, std::uint32_t col)
 {
 	static constexpr int kSegs = 8;
@@ -178,8 +222,6 @@ void DrawBracketSideD3D(LPDIRECT3DDEVICE9 dev, const CeCmdHudNineSlice &ns, bool
 	const float rMid = ns.radius - ns.glowPad - coreHalf > 1.f ? (ns.radius - ns.glowPad - coreHalf) : 1.f;
 	const float lipLen = ns.bodySpanW * 0.14f < ns.radius * 0.60f ? (ns.bodySpanW * 0.14f) : (ns.radius * 0.60f);
 
-	// Spine samples for left side: [top lip tip] -> [top arc k=kSegs..0] -> [bottom arc k=0..kSegs] -> [bot lip tip]
-	// The straight vertical rail is formed naturally between top arc k=0 (y = topCenterY) and bottom arc k=0 (y = botCenterY)!
 	struct SpinePt { float x, y, nx, ny, scaleW; };
 	SpinePt pts[2 + (kSegs + 1) * 2];
 	int count = 0;
@@ -192,7 +234,6 @@ void DrawBracketSideD3D(LPDIRECT3DDEVICE9 dev, const CeCmdHudNineSlice &ns, bool
 		const float frac = float(k) / float(kSegs);
 		const float th = 3.14159265f + 1.57079633f * frac;
 		const float c = std::cos(th), s = std::sin(th);
-		// Slight BEA-signature shoulder swell on the fixed-radius arc, tapering smoothly into constant rail width.
 		const float sw = 1.0f + 0.22f * std::sin(frac * 3.14159265f);
 		pts[count++] = {ns.leftCenterX + rMid * c, ns.topCenterY + rMid * s, c, s, sw};
 	}
@@ -229,23 +270,25 @@ void DrawBracketSideD3D(LPDIRECT3DDEVICE9 dev, const CeCmdHudNineSlice &ns, bool
 		strip[i * 2 + 0] = {ox, oy, 0.008f, 1.f, col};
 		strip[i * 2 + 1] = {ix, iy, 0.008f, 1.f, col};
 	}
-	dev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, (count - 1) * 2, strip, sizeof(CeCmdHudVertex));
+	batch.AddStrip(dev, strip, count * 2);
 }
 
 bool DrawNineSlicePanelD3D(float x, float y, float w, float h, float desiredR, float u, float border,
                            std::uint32_t fill, std::uint32_t accent, bool isForseti,
-                           float alpha, bool withOuterCaps, bool emphasized)
+                           float alpha, bool withOuterCaps, bool emphasized,
+                           bool withTopHighlight = false, float highlightInset = 0.f)
 {
 	LPDIRECT3DDEVICE9 dev = LT.GetDevice();
 	if (!dev) return false;
 	const CeCmdHudNineSlice ns = CeCmdHudComputeNineSlice(x, y, w, h, desiredR, u);
 	if (!ns.valid) return false;
 
+	CeCmdHudTriBatch batch;
 	BeginUntextured2D();
 	const std::uint32_t topFill = ScaleAlpha(LerpColor(fill, accent, 0.08f), alpha);
 	const std::uint32_t botFill = ScaleAlpha(fill, alpha);
 	const float fillInset = withOuterCaps ? (ns.glowPad + ns.strokeWidth * 0.45f) : 0.5f;
-	DrawRoundedGlassFillD3D(dev, ns, fillInset, topFill, botFill);
+	EmitRoundedGlassFillD3D(dev, batch, ns, fillInset, topFill, botFill);
 
 	if (withOuterCaps)
 	{
@@ -253,19 +296,30 @@ bool DrawNineSlicePanelD3D(float x, float y, float w, float h, float desiredR, f
 		const std::uint32_t bodyCol = ScaleAlpha(WithAlpha(isForseti ? 0x003ce4ffu : 0x00f04e1au, 0xf2u), alpha);
 		const std::uint32_t coreCol = ScaleAlpha(WithAlpha(isForseti ? 0x00ccf8ffu : 0x00ffc464u, 0xffu), alpha);
 		const float coreHalf = ns.strokeWidth * 0.5f;
-		DrawBracketSideD3D(dev, ns, false, coreHalf + ns.glowPad, haloCol);
-		DrawBracketSideD3D(dev, ns, true,  coreHalf + ns.glowPad, haloCol);
-		DrawBracketSideD3D(dev, ns, false, coreHalf, bodyCol);
-		DrawBracketSideD3D(dev, ns, true,  coreHalf, bodyCol);
-		DrawBracketSideD3D(dev, ns, false, coreHalf * 0.44f, coreCol);
-		DrawBracketSideD3D(dev, ns, true,  coreHalf * 0.44f, coreCol);
+		EmitBracketSideD3D(dev, batch, ns, false, coreHalf + ns.glowPad, haloCol);
+		EmitBracketSideD3D(dev, batch, ns, true,  coreHalf + ns.glowPad, haloCol);
+		EmitBracketSideD3D(dev, batch, ns, false, coreHalf, bodyCol);
+		EmitBracketSideD3D(dev, batch, ns, true,  coreHalf, bodyCol);
+		EmitBracketSideD3D(dev, batch, ns, false, coreHalf * 0.44f, coreCol);
+		EmitBracketSideD3D(dev, batch, ns, true,  coreHalf * 0.44f, coreCol);
 	}
 	else
 	{
 		const std::uint32_t edgeAlpha = emphasized ? 0xe8u : 0xbcu;
 		const float stroke = emphasized ? (border > 1.f ? border * 1.35f : 1.75f) : border;
-		DrawRoundedBorderLoopD3D(dev, ns, 0.5f, stroke, ScaleAlpha(WithAlpha(accent, edgeAlpha), alpha));
+		EmitRoundedBorderLoopD3D(dev, batch, ns, 0.5f, stroke, ScaleAlpha(WithAlpha(accent, edgeAlpha), alpha));
 	}
+	if (withTopHighlight)
+	{
+		const float spanW = w - 2.f * highlightInset;
+		if (spanW > 4.f)
+		{
+			const float topH = emphasized ? (border > 1.f ? border * 1.4f : 2.f) : border;
+			batch.AddRect(dev, x + highlightInset, y + border * 0.5f, spanW, topH, 0.008f,
+			              WithAlpha(accent, emphasized ? 0xe8u : 0x8cu));
+		}
+	}
+	batch.Flush(dev);
 	EndUntextured2D();
 	return true;
 }
@@ -297,8 +351,12 @@ void DrawInnerGlassPill(const CeCmdHudDrawOps &draw, float x, float y, float w, 
 {
 	if (w <= 0.f || h <= 0.f) return;
 	const float pillR = capMax < std::floor(6.f * u) ? capMax : std::floor(6.f * u);
-	DrawPanel(draw, x, y, w, h, pillR, u, border, fill, accent, false, alpha, false, emphasized);
 	const float inset = pillR > 3.f ? (pillR * 0.55f) : 2.f;
+#ifdef CE_CMD_HUD_USE_D3D9
+	if (draw.curvedPanel && DrawNineSlicePanelD3D(x, y, w, h, pillR, u, border, fill, accent, false, alpha, false, emphasized, true, inset))
+		return;
+#endif
+	DrawPanel(draw, x, y, w, h, pillR, u, border, fill, accent, false, alpha, false, emphasized);
 	const float spanW = w - 2.f * inset;
 	if (spanW > 4.f)
 	{

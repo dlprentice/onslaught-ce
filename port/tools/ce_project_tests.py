@@ -140,7 +140,7 @@ def profile_checks(output, compiler, project, causal_controls):
         return text[first:end]
     # PortPathsInit delegates name selection; pin both halves of the ordinary path contract.
     ordinary_pins = {
-        "PortPathsNamesOnly": "a6fafc5c68e8f4503322a8e99f4ace85986e48e5351cbaa32e2deb51e452af40",
+        "PortPathsNamesOnly": "ed6283289d9e84c6e4daef24d996c91b03a0ab66c508cd33220f2646a88b94de",
         "PortPathsInit": "0393a807e18801f0b64a4020684e51b037a61f494501a89cb5cc7abc88bc5e55",
     }
     for name, expected in ordinary_pins.items():
@@ -161,7 +161,7 @@ def profile_checks(output, compiler, project, causal_controls):
             last+=1
         first=paths.rfind("\n",0,found.start())+1
         return paths[first:last]
-    names=("PortGameDir","PortUserDir","GameDirectory","WalkDirectories","OpenUserRoot","PortPathsProjectPreflight","PortPathsNamesOnly","PortPathsInit")
+    names=("PortGameDir","PortUserDir","GameDirectory","WalkDirectories","IsInsideGameDirectory","OpenRootPath","OpenUserRoot","PortPathsProjectPreflight","PortPathsNamesOnly","PortPathsInit")
     functions={name:exact_function(name) for name in names}
     declarations="".join(line for line in paths.splitlines(keepends=True) if re.match(r"\s*(?:static\s+)?char\s+s(?:Game|User)Dir\[",line))
     if "sGameDir[" not in declarations or "sUserDir[" not in declarations:raise ValueError("Path cache declaration shape changed.")

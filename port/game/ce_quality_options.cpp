@@ -2,6 +2,7 @@
 // Native Video Options rows. The renderer owns frame-boundary activation; this file owns menu and save feedback.
 #include "common.h"
 #include "MenuItem.h"
+#include "ce_graphics_policy.h"
 #include "ce_notice.h"
 #include <stdlib.h>
 
@@ -16,15 +17,18 @@ extern "C" int CE_TerrainDetailStatus();
 extern "C" int CE_AnisoChoice();
 extern "C" int CE_AnisoRequest(int);
 extern "C" int CE_AnisoChoiceToLevel(int);
+extern "C" int CE_AnisoLevelToChoice(int);
 extern "C" unsigned CE_AnisoHardwareMax();
 extern "C" unsigned CeRenderTargetQualityHardwareMaxDim();
 extern "C" int CE_WaterReflectionChoice();
 extern "C" int CE_WaterReflectionRequest(int);
 extern "C" int CE_WaterReflectionChoiceToRes(int);
+extern "C" int CE_WaterReflectionResToChoice(int);
 extern "C" int CE_WaterReflectionAllocatedRes();
 extern "C" int CE_DynamicShadowChoice();
 extern "C" int CE_DynamicShadowRequest(int);
 extern "C" int CE_DynamicShadowChoiceToRes(int);
+extern "C" int CE_DynamicShadowResToChoice(int);
 extern "C" int CE_DynamicShadowAllocatedRes();
 extern "C" int CE_SettingSet(const char *, int);
 
@@ -52,9 +56,11 @@ namespace
     enum QualityResult { QualitySaved, QualitySessionOnly, QualityRefused };
     // Keep a session-only notice truthful after leaving and reopening Video Options.
     QualityResult results[QualityCount] = { QualitySaved, QualitySaved, QualitySaved, QualitySaved, QualitySaved, QualitySaved };
-    // The rows alive now (the front end's Options and a level's Pause Menu may each hold a set): their list is drawn at CE's row pitch.
-    const void *liveRows[32];
-    void Track(const void *row, bool alive)
+    class QualityItem;
+    // The rows alive now (the front end's Options and a level's Pause Menu may each hold a set): their list is drawn at CE's row pitch,
+    // and Detail presets stage selections onto them without committing to ce.ini until Apply.
+    QualityItem *liveRows[32];
+    void Track(QualityItem *row, bool alive)
     {
         for (unsigned i = 0; i < sizeof(liveRows) / sizeof(liveRows[0]); ++i)
             if (liveRows[i] == (alive ? 0 : row))
@@ -63,6 +69,7 @@ namespace
                 return;
             }
     }
+    void StageDetailPreset(const CeDetailPreset &preset);
 
     int AnisoChoiceCount()
     {
@@ -98,11 +105,11 @@ namespace
         if (value == 1 && CE_AnisoHardwareMax() < 4u)
         {
             if (state == QualityRefused && isCurrent) return L"2x (not changed)";
-            if (state == QualitySessionOnly) return L"2x (not saved)";
+            if (state == QualitySessionOnly && isCurrent) return L"2x (not saved)";
             return L"2x";
         }
         if (state == QualityRefused && isCurrent) return kRefused[value];
-        if (state == QualitySessionOnly) return kUnsaved[value];
+        if (state == QualitySessionOnly && isCurrent) return kUnsaved[value];
         return kPlain[value];
     }
 
@@ -113,7 +120,7 @@ namespace
         static const WCHAR *const kRefused[3] = { L"Normal (not changed)", L"High (not changed)", L"Ultra (not changed)" };
         if (value < 0 || value > 2) value = 0;
         if (state == QualityRefused && isCurrent) return kRefused[value];
-        const bool unsaved = state == QualitySessionOnly;
+        const bool unsaved = state == QualitySessionOnly && isCurrent;
         if (isCurrent && allocated > 0 && requested > 0 && allocated < requested)
         {
             if (value == 2 && allocated >= midRes)
@@ -134,8 +141,23 @@ namespace
         {
             Refresh();
             Track(this, true);
+            PortCeGraphicsRegisterDetailPresetStager(StageDetailPreset);
         }
         ~QualityItem() override { Track(this, false); }
+        void StagePreset(const CeDetailPreset &preset)
+        {
+            int choice = 0;
+            if (kind == UnitModels) choice = preset.unitModels;
+            else if (kind == TreeModels) choice = preset.treeModels;
+            else if (kind == TerrainDistance) choice = preset.terrainDetail;
+            else if (kind == AnisoFiltering) choice = CE_AnisoLevelToChoice(preset.aniso);
+            else if (kind == WaterReflections) choice = CE_WaterReflectionResToChoice(preset.waterRes);
+            else choice = CE_DynamicShadowResToChoice(preset.shadowRes);
+            const int limit = GetNumChoices() - 1;
+            if (choice < 0) choice = 0;
+            if (choice > limit) choice = limit;
+            SetSelection(choice);
+        }
         // The label never changes, as the original's never do ("Label:value", no space): a state follows the value.
         WCHAR *GetText() override
         {
@@ -178,7 +200,7 @@ namespace
                     return const_cast<WCHAR *>(value == 1 ? L"Yes (not changed)" : L"No (not changed)");
                 return const_cast<WCHAR *>(value == 1 ? L"Extended (not changed)" : L"Normal (not changed)");
             }
-            const bool unsaved = results[kind] == QualitySessionOnly;
+            const bool unsaved = results[kind] == QualitySessionOnly && value == GetValue();
             if (kind == UnitModels || kind == TreeModels)
                 return const_cast<WCHAR *>(value == 1 ?
                     (unsaved ? L"Yes (not saved)" : L"Yes") : (unsaved ? L"No (not saved)" : L"No"));
@@ -250,6 +272,11 @@ namespace
             if (!saved) PortCeSaveFailedNotice();
         }
     };
+    void StageDetailPreset(const CeDetailPreset &preset)
+    {
+        for (unsigned i = 0; i < sizeof(liveRows) / sizeof(liveRows[0]); ++i)
+            if (liveRows[i]) liveRows[i]->StagePreset(preset);
+    }
 }
 
 bool PortCeQualityRow(const void *item)

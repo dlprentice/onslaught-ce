@@ -66,6 +66,7 @@ bool AcceptInstalled(unsigned baseId, const void *base, unsigned baseLength,
                      const void *real, unsigned realLength);
 bool GenerateInstalled();
 void ApplyAuthoredIdentity();
+void ReleaseRuntimeResources();
 
 // The engine resolves each definition against the installed carrier before
 // calling this writer. Display labels are never model identities. This boundary

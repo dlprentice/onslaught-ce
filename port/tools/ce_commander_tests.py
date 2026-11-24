@@ -45,6 +45,7 @@ BUILT_ON_COMMANDER = (
     "0207-ce-museum-visit-lifecycle.patch",
     # The exhibition render hunk also needs the editor lifecycle's context in DXEngine.cpp.
     "0265-ce-authored-exhibition-world.patch",
+    "0381-ce-perf-surf-museum-fixes.patch",
 )
 POSITIONAL = ()    # none since patch 0189 carries context (port/tools/patch_control_body_tests.py refuses a hunk without any)
 # The CE hook points (patches 0300-0319, port/game/ce_hooks.h): each adds one call into an empty, ordered table, and their

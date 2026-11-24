@@ -10,7 +10,7 @@
 #include <string>
 
 CTweakSLONG GEFORCE_FX_POWER(0), EXTRA_GEFORCE_FX_FEATURES(0), R32F_WORKS(0), MY_READABLE_Z_BUFFER(0);
-namespace { bool layer = true; int failures; }
+namespace { bool layer = true, allowPresetRequests = false; int failures; }
 bool PortCeLayer() { return layer; }
 extern "C" int CE_SettingGetBool(const char *, int fallback) { return fallback; }
 extern "C" int CE_SettingGetText(const char *, char *, int) { return 0; }
@@ -18,12 +18,14 @@ extern "C" int CE_SettingSet(const char *, int) { return 1; }
 void PortSessionLog(PortSessionCategory, bool, const char *, ...) {}
 int PortUserFileState(const char *) { return 1; }
 void PortCeGraphicsApplyFreshDefaults() {}
-extern "C" int CE_FullUnitModelsRequest(int) { ++failures; return 0; }	// the fresh defaults are never taken here
-extern "C" int CE_FullTreeModelsRequest(int) { ++failures; return 0; }
-extern "C" int CE_TerrainDetailRequest(int) { ++failures; return 0; }
-extern "C" int CE_AnisoRequest(int) { ++failures; return 0; }
-extern "C" int CE_WaterReflectionRequest(int) { ++failures; return 0; }
-extern "C" int CE_DynamicShadowRequest(int) { ++failures; return 0; }
+extern "C" int CE_FullUnitModelsRequest(int) { if (!allowPresetRequests) ++failures; return allowPresetRequests ? 1 : 0; }
+extern "C" int CE_FullTreeModelsRequest(int) { if (!allowPresetRequests) ++failures; return allowPresetRequests ? 1 : 0; }
+extern "C" int CE_TerrainDetailRequest(int) { if (!allowPresetRequests) ++failures; return allowPresetRequests ? 1 : 0; }
+extern "C" int CE_AnisoRequest(int) { if (!allowPresetRequests) ++failures; return allowPresetRequests ? 1 : 0; }
+extern "C" unsigned CE_AnisoHardwareMax() { return 16u; }
+extern "C" int CE_WaterReflectionRequest(int) { if (!allowPresetRequests) ++failures; return allowPresetRequests ? 1 : 0; }
+extern "C" int CE_DynamicShadowRequest(int) { if (!allowPresetRequests) ++failures; return allowPresetRequests ? 1 : 0; }
+extern "C" unsigned CeRenderTargetQualityHardwareMaxDim() { return 1024u; }
 
 typedef wchar_t WCHAR;
 typedef int EPCText;
@@ -154,6 +156,7 @@ int main(int argc, char **argv)
         if (mode == "choose")
         {
             // Choosing High on the Overall row, then the rows as the menu shows them after Apply: High again, with the top landscape choice.
+            allowPresetRequests = true;
             menu.landscape.mSelection = 0; menu.antialiasing.mSelection = 0; menu.shadow.mSelection = 0;
             menu.overall.SetValue(High);
             Check(menu.landscape.mSelection == menu.landscape.GetNumChoices() - 1, std::string(label) + "High selects the landscape row's last choice");
@@ -165,12 +168,14 @@ int main(int argc, char **argv)
             menu.overall.SetValue(Medium);
             menu.landscape.SetValue(menu.landscape.mSelection); menu.landscape.mSelection = menu.landscape.GetValue();
             Check(menu.overall.GetValue() == Medium, std::string(label) + "choosing Medium reads Medium");
+            allowPresetRequests = false;
         }
         if (mode == "landscape-presets")
         {
             // The device's landscape level decides how many choices the row has and which selections the game's presets name (the numbers are the
             // ones the game's own rows give for levels 1 to 6): High is the row's last choice on every card; Medium names selection 0 up to level 4
             // and one beyond the row's last choice from level 5, where the row's setter leaves its last choice.
+            allowPresetRequests = true;
             const int choices[] = {1, 1, 2, 3, 4, 4}, afterHigh[] = {0, 0, 1, 2, 3, 3}, afterMedium[] = {0, 0, 0, 0, 3, 3};
             const unsigned index = max - 1;
             Check(menu.landscape.GetNumChoices() == choices[index], std::string(label) + "the landscape row's choices follow the device's level");
@@ -180,6 +185,7 @@ int main(int argc, char **argv)
             menu.landscape.mSelection = -1;
             menu.overall.SetValue(Medium);
             Check(menu.landscape.mSelection == afterMedium[index], std::string(label) + "Medium selects its own landscape level, or the last choice where it names one beyond the row");
+            allowPresetRequests = false;
         }
         if (mode == "finer-anti-aliasing")
         {

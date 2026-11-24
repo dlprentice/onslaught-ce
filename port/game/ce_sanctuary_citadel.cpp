@@ -1,13 +1,23 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // port/game/ce_sanctuary_citadel.cpp: Open-Air Terrain-Backed Sanctuary Museum Citadel,
 // shimmering hexagonal geodesic Archive Shield Dome with animated impact ripples,
-// sealed north Cinema Pavilion, Forseti & Muspell Memorial Alcoves, and live In-World
-// Archive Pedestal runtime integration. Uses host-malloc indexed D3D9 geometry buffers
-// and reuses all 13 procedural GPL-3.0-only architectural textures from CeMuseumTextures.
+// sealed north Cinema Pavilion, Forseti & Muspell Memorial Alcoves with official retail
+// faction emblem murals, and live In-World Archive Pedestal runtime integration. Uses
+// D3DPOOL_MANAGED static GPU vertex/index buffers with CPU fallback and reuses all 13
+// procedural GPL-3.0-only architectural textures from CeMuseumTextures.
 #ifdef CE_VERSION
 #include "common.h"
 #include "ltshell.h"
 #include "renderinfo.h"
+#include "engine.h"
+#include "game.h"
+#include "player.h"
+#include "BattleEngine.h"
+#include "world.h"
+#include "unit.h"
+#include "d3dx9.h"
+#include "ce_asset_catalog.h"
+#include "ce_photo.h"
 #include "ce_sanctuary_citadel.h"
 #include "ce_archive_pedestal.h"
 #include "ce_museum_textures.h"
@@ -21,9 +31,17 @@
 #include <cstring>
 
 extern bool gMirrorPass;
+const char *PortGameDir();
+bool PortCeCmdMapOpen() __attribute__((weak));
+extern "C" int PortCePlayUnitIsDriven(const void *unit) __attribute__((weak));
+extern "C" uint64_t PortCeD3dDeviceGeneration(void) __attribute__((weak));
 
 namespace CeSanctuaryCitadel {
 namespace {
+
+static inline uint64_t CurrentCitadelDeviceGen() {
+    return PortCeD3dDeviceGeneration ? PortCeD3dDeviceGeneration() : 0u;
+}
 
 static_assert(kMuseumEntranceX == CeMuseumWorld::kEntranceX &&
               kMuseumEntranceY == CeMuseumWorld::kEntranceY,
@@ -120,6 +138,24 @@ struct OverlayVertex {
     DWORD colour;
 };
 
+struct EmblemTexVertex {
+    float x, y, z;
+    DWORD colour;
+    float u, v;
+};
+
+enum FactionEmblemId {
+    kEmblemForseti = 0,
+    kEmblemMuspell = 1,
+    kEmblemCount = 2
+};
+
+struct FactionEmblemSlot {
+    IDirect3DTexture9 *texture;
+    unsigned srcW, srcH;
+    bool loaded;
+};
+
 enum {
     kLitVertCap = 72000,
     kLitIdxCap = 240000,
@@ -131,7 +167,8 @@ enum {
     kMaxHexCells = 256,
     kMaxHexEdges = 900,
     kDomeVertCap = 12000,
-    kDomeIdxCap = 36000
+    kDomeIdxCap = 36000,
+    kEmblemMaxTexEdge = 512
 };
 
 struct AoBox {
@@ -196,6 +233,24 @@ struct CitadelState {
 
     OverlayVertex domeVerts[kDomeVertCap];
     uint16_t domeIndices[kDomeIdxCap];
+
+    // Lazily allocated D3DPOOL_MANAGED GPU buffers for static Citadel geometry
+    // (animated geodesic shield dome stays dynamic/UP).
+    IDirect3DDevice9 *gpuDevice;
+    uint64_t gpuDeviceGen;
+    bool gpuBuffersAttempted;
+    IDirect3DVertexBuffer9 *litVb;
+    IDirect3DIndexBuffer9 *litIb;
+    IDirect3DVertexBuffer9 *shadowVb;
+    IDirect3DIndexBuffer9 *shadowIb;
+    IDirect3DVertexBuffer9 *beamVb;
+    IDirect3DIndexBuffer9 *beamIb;
+
+    // Runtime-loaded official retail faction emblem murals (zero retail bytes in git).
+    IDirect3DDevice9 *emblemDevice;
+    uint64_t emblemDeviceGen;
+    bool emblemsAttempted;
+    FactionEmblemSlot emblems[kEmblemCount];
 };
 
 static CitadelState *gCitadel = NULL;
@@ -640,11 +695,11 @@ static void EmitDressedColumn(float cx, float cy, float half, float height,
     EmitBox(cx - half - 0.15f, cy - half - 0.15f, 0.68f, cx + half + 0.15f, cy + half + 0.15f, 0.78f, trimMat, kBrassCol);
     // Fluted shaft with corner pilasters for dramatic light-and-shadow relief
     EmitBox(cx - half, cy - half, 0.78f, cx + half, cy + half, height - 0.56f, shaftMat, kSlateCol);
-    EmitBox(cx - half - 0.05f, cy - half * 0.40f, 0.90f, cx + half + 0.05f, cy + half * 0.40f, height - 0.72f, kMatLimestone, 0xfff4efe6);
-    EmitBox(cx - half * 0.40f, cy - half - 0.05f, 0.90f, cx + half * 0.40f, cy + half + 0.05f, height - 0.72f, kMatLimestone, 0xfff4efe6);
-    // Warm golden uplight sconce reveal near capital
-    EmitBox(cx - half - 0.09f, cy - half - 0.09f, height - 0.86f, cx + half + 0.09f, cy + half + 0.09f, height - 0.72f, glowMat, kLightCol);
-    EmitBox(cx - half - 0.13f, cy - half - 0.13f, height - 0.72f, cx + half + 0.13f, cy + half + 0.13f, height - 0.52f, trimMat, kBrassCol);
+    EmitBox(cx - half - 0.05f, cy - half * 0.40f, 0.90f, cx + half + 0.05f, cy + half * 0.40f, height - 0.87f, kMatLimestone, 0xfff4efe6);
+    EmitBox(cx - half * 0.40f, cy - half - 0.05f, 0.90f, cx + half * 0.40f, cy + half + 0.05f, height - 0.875f, kMatLimestone, 0xfff4efe6);
+    // Warm golden uplight sconce reveal near capital (1 cm vertical clearances eliminate coplanar seams)
+    EmitBox(cx - half - 0.09f, cy - half - 0.09f, height - 0.86f, cx + half + 0.09f, cy + half + 0.09f, height - 0.73f, glowMat, kLightCol);
+    EmitBox(cx - half - 0.13f, cy - half - 0.13f, height - 0.72f, cx + half + 0.13f, cy + half + 0.13f, height - 0.53f, trimMat, kBrassCol);
     EmitBox(cx - half - 0.22f, cy - half - 0.22f, height - 0.52f, cx + half + 0.22f, cy + half + 0.22f, height, kMatPierCap, 0xfff8f4eb);
 }
 
@@ -676,14 +731,18 @@ static void EmitBalustradeX(float y, float x0, float x1, float pierStep) {
     }
 }
 
-static void EmitBalustradeY(float x, float y0, float y1, float pierStep) {
-    EmitBox(x - 0.30f, y0, 0.02f, x + 0.30f, y1, 0.42f, kMatLimestone, 0xffeae4d8);
-    EmitBox(x - 0.36f, y0, 0.42f, x + 0.36f, y1, 0.52f, kMatPierCap, 0xfff6f2e8);
-    EmitBox(x - 0.12f, y0, 0.98f, x + 0.12f, y1, 1.10f, kMatBrass, kBrassCol, true);
+static void EmitBalustradeY(float x, float y0, float y1, float pierStep, bool skipStartPier = false) {
+    const float yBase0 = skipStartPier ? (y0 + 0.30f) : y0;
+    const float yCap0  = skipStartPier ? (y0 + 0.36f) : y0;
+    const float yRail0 = skipStartPier ? (y0 + 0.12f) : y0;
+    EmitBox(x - 0.30f, yBase0, 0.02f, x + 0.30f, y1, 0.42f, kMatLimestone, 0xffeae4d8);
+    EmitBox(x - 0.36f, yCap0,  0.42f, x + 0.36f, y1, 0.52f, kMatPierCap, 0xfff6f2e8);
+    EmitBox(x - 0.12f, yRail0, 0.98f, x + 0.12f, y1, 1.10f, kMatBrass, kBrassCol, true);
     for (float y = y0 + 1.0f; y < y1 - 0.5f; y += 1.0f) {
         EmitBox(x - 0.08f, y - 0.08f, 0.52f, x + 0.08f, y + 0.08f, 0.98f, kMatPierCap, 0xfff2eee5);
     }
-    for (float y = y0; y <= y1 + 0.1f; y += pierStep) {
+    const float yPier0 = skipStartPier ? (y0 + pierStep) : y0;
+    for (float y = yPier0; y <= y1 + 0.1f; y += pierStep) {
         AddContactShadow(x, y, 0.40f, 0.36f, 0.65f, 0.042f, 0.54f);
         EmitBox(x - 0.38f, y - 0.32f, 0.02f, x + 0.38f, y + 0.32f, 1.24f, kMatSlatePier, kSlateCol);
         EmitBox(x - 0.42f, y - 0.36f, 1.24f, x + 0.42f, y + 0.36f, 1.36f, kMatPierCap, 0xfff5f1e7);
@@ -698,11 +757,11 @@ static void EmitFactionBanner(float cx, float cy, Material trimMat, Material glo
     EmitBox(cx - 0.45f, cy - 0.45f, 0.02f, cx + 0.45f, cy + 0.45f, 0.36f, kMatPierBase, kSlateCol);
     EmitBox(cx - 0.16f, cy - 0.16f, 0.36f, cx + 0.16f, cy + 0.16f, 6.40f, kMatSlatePier, kSlateCol);
     EmitBox(cx - 0.22f, cy - 0.22f, 6.40f, cx + 0.22f, cy + 0.22f, 6.68f, kMatBrass, kBrassCol);
-    // Cross-arm & hanging sculpted metallic faction pennant
+    // Cross-arm & hanging sculpted metallic faction pennant (1 cm below cross-arm soffit)
     EmitBox(cx - 0.14f, cy - 1.15f, 5.95f, cx + 0.14f, cy + 1.15f, 6.18f, kMatBrass, kBrassCol, true);
     const float bx0 = faceEast ? (cx + 0.10f) : (cx - 0.26f);
     const float bx1 = faceEast ? (cx + 0.26f) : (cx - 0.10f);
-    EmitBox(bx0, cy - 0.92f, 2.25f, bx1, cy + 0.92f, 5.95f, trimMat, 0xffffffff);
+    EmitBox(bx0, cy - 0.92f, 2.25f, bx1, cy + 0.92f, 5.94f, trimMat, 0xffffffff);
     EmitBox(bx0 + s * 0.02f, cy - 0.18f, 2.55f, bx1 + s * 0.02f, cy + 0.18f, 5.65f, glowMat, kLightCol);
     EmitBox(bx0 + s * 0.02f, cy - 0.96f, 2.15f, bx1 + s * 0.02f, cy + 0.96f, 2.32f, kMatBrass, kBrassCol);
 }
@@ -791,30 +850,40 @@ static void BuildCitadelArchitecture() {
     EmitFloorGrid(98.0f, 428.0f, 126.0f, 430.0f, 0.025f, kMatCourtyard, 2.2f);
 
     // Fortified Retaining Cliff Bastion Skirt anchoring terrace into plateau mountain
-    // (split cleanly around the 17 m SE Grand Access Ramp gateway X in [119.5..136.5]).
-    EmitBox(72.5f, 352.5f, -10.0f, 119.5f, 354.2f, 0.03f, kMatPierBase, kSlateCol);
-    EmitBox(136.5f, 352.5f, -10.0f, 151.5f, 354.2f, 0.03f, kMatPierBase, kSlateCol);
-    EmitBox(72.5f, 429.8f, -10.0f, 151.5f, 431.5f, 0.03f, kMatPierBase, kSlateCol);
-    EmitBox(72.5f, 354.2f, -10.0f,  74.2f, 429.8f, 0.03f, kMatPierBase, kSlateCol);
-    EmitBox(149.8f, 354.2f, -10.0f, 151.5f, 429.8f, 0.03f, kMatPierBase, kSlateCol);
-    // Brass bastion belt-course trim around the outer terrace cornice
+    // (top cleanly at 0.00f — 2.5 cm below 0.025f terrace pavers, zero Z-fighting — and
+    // split cleanly around the 17 m SE Grand Access Ramp gateway X in [119.5..136.5]).
+    EmitBox(72.5f, 352.5f, -10.0f, 119.5f, 354.2f, 0.00f, kMatPierBase, kSlateCol);
+    EmitBox(136.5f, 352.5f, -10.0f, 151.5f, 354.2f, 0.00f, kMatPierBase, kSlateCol);
+    EmitBox(72.5f, 429.8f, -10.0f, 151.5f, 431.5f, 0.00f, kMatPierBase, kSlateCol);
+    EmitBox(72.5f, 354.2f, -10.0f,  74.2f, 429.8f, 0.00f, kMatPierBase, kSlateCol);
+    EmitBox(149.8f, 354.2f, -10.0f, 151.5f, 429.8f, 0.00f, kMatPierBase, kSlateCol);
+    // Non-overlapping outer stone coping curb strictly outside [74..150]x[354..430]
+    // (flush with 0.025f terrace pavers and 2.5 cm cleanly above 0.00f plateau terrain).
+    EmitBox(72.5f, 352.5f, 0.00f, 119.5f, 354.0f, 0.025f, kMatPierBase, kSlateCol);
+    EmitBox(136.5f, 352.5f, 0.00f, 151.5f, 354.0f, 0.025f, kMatPierBase, kSlateCol);
+    EmitBox(72.5f, 430.0f, 0.00f, 151.5f, 431.5f, 0.025f, kMatPierBase, kSlateCol);
+    EmitBox(72.5f, 354.0f, 0.00f,  74.0f, 430.0f, 0.025f, kMatPierBase, kSlateCol);
+    EmitBox(150.0f, 354.0f, 0.00f, 151.5f, 430.0f, 0.025f, kMatPierBase, kSlateCol);
+    // Brass bastion belt-course trim around the outer terrace cornice (clean mitered corners)
     EmitBox(72.3f, 352.3f, -0.45f, 119.5f, 352.7f, -0.05f, kMatBrass, kBrassCol);
     EmitBox(136.5f, 352.3f, -0.45f, 151.7f, 352.7f, -0.05f, kMatBrass, kBrassCol);
-    EmitBox(151.3f, 352.3f, -0.45f, 151.7f, 431.7f, -0.05f, kMatBrass, kBrassCol);
-    EmitBox(72.3f, 352.3f, -0.45f,  72.7f, 431.7f, -0.05f, kMatBrass, kBrassCol);
+    EmitBox(151.3f, 352.7f, -0.45f, 151.7f, 431.7f, -0.05f, kMatBrass, kBrassCol);
+    EmitBox(72.3f, 352.7f, -0.45f,  72.7f, 431.7f, -0.05f, kMatBrass, kBrassCol);
 
-    // Ceremonial Basalt-and-Brass Wayfinding Runners
-    EmitRunnerY(kCenterX, 355.0f, 385.0f, 1.45f); // South Overlook -> Launch Pad -> Rotunda
-    EmitRunnerY(kCenterX, 399.0f, 410.0f, 1.45f); // Rotunda -> North Cinema Archway
-    EmitRunnerX(89.5f, 105.0f, kCenterY, 1.20f);  // Rotunda -> West Forseti Alcove
-    EmitRunnerX(119.0f, 134.5f, kCenterY, 1.20f); // Rotunda -> East Muspell Alcove
-    EmitRunnerX(76.5f, 147.5f, 360.0f, 1.05f);    // South Panoramic Overlook Promenade
-    EmitRunnerY(128.0f, 354.0f, 359.0f, 2.20f);   // SE Grand Access Ramp approach threshold
+    // Ceremonial Basalt-and-Brass Wayfinding Runners (trimmed cleanly at Rotunda ring,
+    // South overlook intersection, Cinema doorway runner, and SE ramp approach — zero overlap)
+    EmitRunnerY(kCenterX, 355.0f, 384.64f, 1.45f); // South Overlook -> Launch Pad -> Rotunda
+    EmitRunnerY(kCenterX, 399.36f, 409.90f, 1.45f); // Rotunda -> North Cinema Archway
+    EmitRunnerX(89.5f, 104.64f, kCenterY, 1.20f);  // Rotunda -> West Forseti Alcove
+    EmitRunnerX(119.36f, 134.5f, kCenterY, 1.20f); // Rotunda -> East Muspell Alcove
+    EmitRunnerX(76.5f, 110.43f, 360.0f, 1.05f);    // South Panoramic Overlook Promenade (West)
+    EmitRunnerX(113.57f, 147.5f, 360.0f, 1.05f);   // South Panoramic Overlook Promenade (East)
+    EmitRunnerY(128.0f, 354.0f, 358.83f, 2.20f);   // SE Grand Access Ramp approach threshold
 
-    // Ceremonial Flush Launch Pad Compass Ring at P0 Spawn (112, 366) — 100% open & unobstructed!
-    EmitOctagonRingInlay(kCenterX, 366.0f, 3.60f, 4.40f, 0.052f, kMatRunner, 0xffc8d0d8);
-    EmitOctagonRingInlay(kCenterX, 366.0f, 4.40f, 4.62f, 0.060f, kMatBrass, kBrassCol);
-    EmitOctagonRingInlay(kCenterX, 366.0f, 3.42f, 3.60f, 0.060f, kMatBrass, kBrassCol);
+    // Ceremonial Flush Launch Pad Compass Ring at P0 Spawn (112, 366) — cleanly proud of runners!
+    EmitOctagonRingInlay(kCenterX, 366.0f, 3.60f, 4.40f, 0.064f, kMatRunner, 0xffc8d0d8);
+    EmitOctagonRingInlay(kCenterX, 366.0f, 4.40f, 4.62f, 0.070f, kMatBrass, kBrassCol);
+    EmitOctagonRingInlay(kCenterX, 366.0f, 3.42f, 3.60f, 0.070f, kMatBrass, kBrassCol);
 
     // -------------------------------------------------------------------------
     // 2. South-East Panoramic Overlook Balustrades & Twin Reflecting Pools
@@ -822,8 +891,8 @@ static void BuildCitadelArchitecture() {
     // Split South balustrade cleanly around the 17 m SE Grand Access Ramp (X in [119.5..136.5]).
     EmitBalustradeX(354.5f,  75.0f, 119.5f, 44.5f / 6.0f); // West & Central South overlook parapet
     EmitBalustradeX(354.5f, 136.5f, 149.0f, 6.25f);        // East South overlook parapet
-    EmitBalustradeY(149.0f, 354.5f, 428.0f, 8.0f);         // Low East overlook parapet overlooking strait
-    EmitBalustradeY( 75.0f, 354.5f, 428.0f, 8.0f);         // Low West overlook parapet
+    EmitBalustradeY(149.0f, 354.5f, 428.0f, 8.0f, true);   // Low East overlook parapet (no duplicate SE pier)
+    EmitBalustradeY( 75.0f, 354.5f, 428.0f, 8.0f, true);   // Low West overlook parapet (no duplicate SW pier)
 
     // Twin calm sunlit reflecting basins framing the axial approach to the Rotunda
     for (int side = -1; side <= 1; side += 2) {
@@ -840,10 +909,10 @@ static void BuildCitadelArchitecture() {
         EmitBox(px0 - 0.05f, py1 - 0.48f, 0.42f, px1 + 0.05f, py1 + 0.05f, 0.48f, kMatPierCap);
         EmitBox(px0 - 0.05f, py0 + 0.48f, 0.42f, px0 + 0.48f, py1 - 0.48f, 0.48f, kMatPierCap);
         EmitBox(px1 - 0.48f, py0 + 0.48f, 0.42f, px1 + 0.05f, py1 - 0.48f, 0.48f, kMatPierCap);
-        // Luminous turquoise inner pool rim & sunlit water plane
-        EmitBox(px0 + 0.45f, py0 + 0.45f, 0.28f, px1 - 0.45f, py0 + 0.55f, 0.34f, kMatAquaGlow, kLightCol);
-        EmitBox(px0 + 0.45f, py1 - 0.55f, 0.28f, px1 - 0.45f, py1 - 0.45f, 0.34f, kMatAquaGlow, kLightCol);
-        EmitFloorGrid(px0 + 0.45f, py0 + 0.45f, px1 - 0.45f, py1 - 0.45f, 0.31f, kMatWater, 1.8f, 0xff4088a8);
+        // Luminous turquoise inner pool rim & sunlit water plane (1 cm inset from curb walls)
+        EmitBox(px0 + 0.46f, py0 + 0.46f, 0.28f, px1 - 0.46f, py0 + 0.56f, 0.34f, kMatAquaGlow, kLightCol);
+        EmitBox(px0 + 0.46f, py1 - 0.56f, 0.28f, px1 - 0.46f, py1 - 0.46f, 0.34f, kMatAquaGlow, kLightCol);
+        EmitFloorGrid(px0 + 0.46f, py0 + 0.46f, px1 - 0.46f, py1 - 0.46f, 0.31f, kMatWater, 1.8f, 0xff4088a8);
         // Sculpted stone-and-brass water obelisk in each pool
         EmitOctagonTier(pcx, pcy, 0.72f, 0.28f, 0.60f, kMatPierBase, kSlateCol, true);
         EmitOctagonTier(pcx, pcy, 0.44f, 0.60f, 1.00f, kMatBrass, kBrassCol, true);
@@ -856,9 +925,11 @@ static void BuildCitadelArchitecture() {
     EmitOctagonRingInlay(kCenterX, kCenterY, 7.10f, 7.36f, 0.058f, kMatBrass, kBrassCol);
     EmitOctagonRingInlay(kCenterX, kCenterY, 4.95f, 5.20f, 0.058f, kMatBrass, kBrassCol);
     EmitOctagonTier(kCenterX, kCenterY, 4.95f, 0.02f, 0.055f, kMatPlinthMarble, 0xffeef2f5, true);
-    // Cardinal brushed-brass compass rays inlaid in the honed marble medallion
-    EmitFloorGrid(kCenterX - 6.8f, kCenterY - 0.24f, kCenterX + 6.8f, kCenterY + 0.24f, 0.064f, kMatBrass, 2.4f, kBrassCol);
-    EmitFloorGrid(kCenterX - 0.24f, kCenterY - 6.8f, kCenterX + 0.24f, kCenterY + 6.8f, 0.064f, kMatBrass, 2.4f, kBrassCol);
+    // Cardinal brushed-brass compass rays inlaid around the dais (non-overlapping at center)
+    EmitFloorGrid(kCenterX - 6.8f, kCenterY - 0.24f, kCenterX - 2.06f, kCenterY + 0.24f, 0.064f, kMatBrass, 2.4f, kBrassCol);
+    EmitFloorGrid(kCenterX + 2.06f, kCenterY - 0.24f, kCenterX + 6.8f, kCenterY + 0.24f, 0.064f, kMatBrass, 2.4f, kBrassCol);
+    EmitFloorGrid(kCenterX - 0.24f, kCenterY - 6.8f, kCenterX + 0.24f, kCenterY - 2.06f, 0.064f, kMatBrass, 2.4f, kBrassCol);
+    EmitFloorGrid(kCenterX - 0.24f, kCenterY + 2.06f, kCenterX + 0.24f, kCenterY + 6.8f, 0.064f, kMatBrass, 2.4f, kBrassCol);
 
     // Grand Stepped Octagonal-Waisted Marble & Brushed-Brass Rotunda Centerpiece Dais
     // Cleanly encloses CeArchivePedestal's inner box while keeping its south control desk (y=389.65)
@@ -868,7 +939,7 @@ static void BuildCitadelArchitecture() {
     EmitOctagonTier(kCenterX, kCenterY, 2.04f, 0.23f, 0.60f, kMatPlinthMarble, 0xfff2f5f8, true);
     EmitOctagonTier(kCenterX, kCenterY, 2.07f, 0.52f, 0.60f, kMatBrass, kBrassCol, false);
     EmitBox(kCenterX - 1.86f, kCenterY - 1.86f, 0.60f, kCenterX + 1.86f, kCenterY + 1.86f, 0.98f, kMatPlinthMarble, 0xffeef2f6);
-    EmitBox(kCenterX - 1.90f, kCenterY - 1.90f, 0.92f, kCenterX + 1.90f, kCenterY + 1.90f, 0.98f, kMatWarmGlow, kLightCol);
+    EmitBox(kCenterX - 1.90f, kCenterY - 1.90f, 0.91f, kCenterX + 1.90f, kCenterY + 1.90f, 0.975f, kMatWarmGlow, kLightCol);
     EmitBox(kCenterX - 1.94f, kCenterY - 1.94f, 0.98f, kCenterX + 1.94f, kCenterY + 1.94f, 1.045f, kMatBrass, kBrassCol);
     EmitBox(kCenterX - 1.84f, kCenterY - 1.84f, 1.00f, kCenterX + 1.84f, kCenterY + 1.84f, kPedestalHeight, kMatPlinthTop, kSlateCol);
 
@@ -893,8 +964,8 @@ static void BuildCitadelArchitecture() {
     // 4. Open-Air Monumental Flank Colonnades (West & East framing piers + pergola)
     // -------------------------------------------------------------------------
     for (unsigned i = 0; i < 6u; ++i) {
-        EmitDressedColumn(82.0f,  colY[i], 0.48f, 9.20f, kMatSlatePier, kMatBrass, kMatForsetiGlow);
-        EmitDressedColumn(142.0f, colY[i], 0.48f, 9.20f, kMatForgedIron, kMatBrass, kMatMuspellGlow);
+        EmitDressedColumn(82.0f,  colY[i], 0.48f, 9.19f, kMatSlatePier, kMatBrass, kMatForsetiGlow);
+        EmitDressedColumn(142.0f, colY[i], 0.48f, 9.19f, kMatForgedIron, kMatBrass, kMatMuspellGlow);
     }
     // Open-air stone & brushed-brass entablature architraves crowning the West & East colonnades
     EmitBox(81.1f,  373.0f, 9.20f,  82.9f, 415.0f, 10.15f, kMatLimestone, 0xfff6f1e7, true);
@@ -909,17 +980,16 @@ static void BuildCitadelArchitecture() {
     // 5. West Forseti Memorial Alcove & East Muspell Memorial Alcove + Banners
     // -------------------------------------------------------------------------
     // West Forseti Commonwealth Memorial Alcove (X = 82.2..94.0, Y = 384..400, open facing East)
-    EmitBox(82.2f, 384.0f, 0.02f, 83.8f, 400.0f, 8.40f, kMatLimestone, 0xfff4f7fa);
-    EmitBox(82.2f, 383.6f, 0.02f, 87.2f, 384.8f, 8.40f, kMatLimestone, 0xfff4f7fa);
-    EmitBox(82.2f, 399.2f, 0.02f, 87.2f, 400.4f, 8.40f, kMatLimestone, 0xfff4f7fa);
+    EmitBox(82.2f, 383.6f, 0.02f, 83.8f, 400.4f, 8.39f, kMatLimestone, 0xfff4f7fa);
+    EmitBox(83.8f, 383.6f, 0.02f, 87.2f, 384.8f, 8.39f, kMatLimestone, 0xfff4f7fa);
+    EmitBox(83.8f, 399.2f, 0.02f, 87.2f, 400.4f, 8.39f, kMatLimestone, 0xfff4f7fa);
     EmitBox(82.0f, 383.4f, 8.40f, 87.5f, 400.6f, 9.15f, kMatCofferCeiling, 0xffeef4fa, true);
     EmitBox(83.8f, 385.0f, 1.20f, 84.15f, 399.0f, 7.60f, kMatForsetiTrim, 0xffe8f4ff);
     EmitBox(84.15f, 385.6f, 7.35f, 84.35f, 398.4f, 7.55f, kMatForsetiGlow, 0xff80ecff);
     EmitBox(84.15f, 385.6f, 1.25f, 84.35f, 398.4f, 1.45f, kMatForsetiGlow, 0xff80ecff);
-    // Sculpted 3D Forseti Wing Crest Medallion on the West apse wall
-    EmitBox(84.15f, 390.4f, 3.20f, 84.55f, 393.6f, 5.80f, kMatBrass, kBrassCol);
-    EmitBox(84.45f, 391.4f, 2.70f, 84.72f, 392.6f, 6.20f, kMatForsetiGlow, 0xff80ecff);
-    EmitBox(84.40f, 388.2f, 4.30f, 84.66f, 395.8f, 4.95f, kMatForsetiTrim, 0xffeef8ff);
+    // Sculpted brushed-brass & charcoal archival mural frame for the official Forseti emblem
+    EmitBox(84.15f, 389.90f, 2.00f, 84.38f, 394.10f, 6.80f, kMatBrass, kBrassCol);
+    EmitBox(84.38f, 390.06f, 2.16f, 84.42f, 393.94f, 6.64f, kMatPierLine, kIronCol);
     // Forseti Ceremonial Honor Plinth
     AddContactShadow(kForsetiAlcoveX, kForsetiAlcoveY, 1.45f, 1.45f, 1.05f, 0.044f, 0.64f);
     EmitBox(kForsetiAlcoveX - 1.40f, kForsetiAlcoveY - 1.40f, 0.02f, kForsetiAlcoveX + 1.40f, kForsetiAlcoveY + 1.40f, 0.24f, kMatPierBase, kSlateCol);
@@ -931,17 +1001,16 @@ static void BuildCitadelArchitecture() {
     EmitFactionBanner(88.0f, 405.5f, kMatForsetiTrim, kMatForsetiGlow, true);
 
     // East Muspell Dominion Memorial Alcove (X = 130.0..141.8, Y = 384..400, open facing West)
-    EmitBox(140.2f, 384.0f, 0.02f, 141.8f, 400.0f, 8.40f, kMatForgedIron, 0xffd0cac8);
-    EmitBox(136.8f, 383.6f, 0.02f, 141.8f, 384.8f, 8.40f, kMatForgedIron, 0xffd0cac8);
-    EmitBox(136.8f, 399.2f, 0.02f, 141.8f, 400.4f, 8.40f, kMatForgedIron, 0xffd0cac8);
+    EmitBox(140.2f, 383.6f, 0.02f, 141.8f, 400.4f, 8.39f, kMatForgedIron, 0xffd0cac8);
+    EmitBox(136.8f, 383.6f, 0.02f, 140.2f, 384.8f, 8.39f, kMatForgedIron, 0xffd0cac8);
+    EmitBox(136.8f, 399.2f, 0.02f, 140.2f, 400.4f, 8.39f, kMatForgedIron, 0xffd0cac8);
     EmitBox(136.5f, 383.4f, 8.40f, 142.0f, 400.6f, 9.15f, kMatCofferCeiling, 0xffd8d2d0, true);
     EmitBox(139.85f, 385.0f, 1.20f, 140.2f, 399.0f, 7.60f, kMatMuspellTrim, 0xffffe8d8);
     EmitBox(139.65f, 385.6f, 7.35f, 139.85f, 398.4f, 7.55f, kMatMuspellGlow, 0xffffa644);
     EmitBox(139.65f, 385.6f, 1.25f, 139.85f, 398.4f, 1.45f, kMatMuspellGlow, 0xffffa644);
-    // Sculpted 3D Muspell Dominion Forge Emblem on the East apse wall
-    EmitBox(139.45f, 390.4f, 3.20f, 139.85f, 393.6f, 5.80f, kMatBrass, kBrassCol);
-    EmitBox(139.28f, 391.4f, 2.70f, 139.55f, 392.6f, 6.20f, kMatMuspellGlow, 0xffffa644);
-    EmitBox(139.34f, 388.4f, 4.10f, 139.60f, 395.6f, 4.85f, kMatForgedIron, 0xffd0c6c4);
+    // Sculpted brushed-brass & forged-iron archival mural frame for the official Muspell emblem
+    EmitBox(139.62f, 389.90f, 2.00f, 139.85f, 394.10f, 6.80f, kMatBrass, kBrassCol);
+    EmitBox(139.58f, 390.06f, 2.16f, 139.62f, 393.94f, 6.64f, kMatPierLine, kIronCol);
     // Muspell Ceremonial Basalt-and-Bronze Honor Plinth
     AddContactShadow(kMuspellAlcoveX, kMuspellAlcoveY, 1.45f, 1.45f, 1.05f, 0.044f, 0.64f);
     EmitBox(kMuspellAlcoveX - 1.40f, kMuspellAlcoveY - 1.40f, 0.02f, kMuspellAlcoveX + 1.40f, kMuspellAlcoveY + 1.40f, 0.24f, kMatPierLine, kIronCol);
@@ -967,7 +1036,7 @@ static void BuildCitadelArchitecture() {
     // South wall split around grand central doorway [109.5..114.5]
     EmitBox(98.0f,  410.0f, 0.02f, 109.5f, 410.55f, 9.60f, kMatLimestone, 0xfff6f2e8);
     EmitBox(114.5f, 410.0f, 0.02f, 126.0f, 410.55f, 9.60f, kMatLimestone, 0xfff6f2e8);
-    EmitBox(109.5f, 410.0f, 5.20f, 114.5f, 410.85f, 9.60f, kMatLimestone, 0xfff6f2e8, true);
+    EmitBox(109.5f, 410.0f, 5.24f, 114.5f, 410.85f, 9.60f, kMatLimestone, 0xfff6f2e8, true);
     // South interior acoustic backing
     EmitBox(98.45f, 410.55f, 0.02f, 109.5f, 410.90f, 9.05f, kMatCinemaWall);
     EmitBox(114.5f, 410.55f, 0.02f, 125.55f, 410.90f, 9.05f, kMatCinemaWall);
@@ -987,20 +1056,20 @@ static void BuildCitadelArchitecture() {
     // Warm recessed ceiling cove lighting strips inside theater
     EmitBox(99.2f, 411.5f, 8.78f, 99.5f, 426.5f, 8.95f, kMatWarmGlow, kLightCol);
     EmitBox(124.5f, 411.5f, 8.78f, 124.8f, 426.5f, 8.95f, kMatWarmGlow, kLightCol);
-    // Transverse ceiling coffer beams
+    // Transverse ceiling coffer beams (1 cm clearance from ceiling & embedded brass underside trim)
     for (float by = 414.0f; by <= 424.5f; by += 3.5f) {
-        EmitBox(98.9f, by - 0.28f, 8.55f, 125.1f, by + 0.28f, 9.00f, kMatSlatePier, kSlateCol, true);
-        EmitBox(99.2f, by - 0.10f, 8.48f, 124.8f, by + 0.10f, 8.55f, kMatBrass, kBrassCol, true);
+        EmitBox(98.9f, by - 0.28f, 8.55f, 125.1f, by + 0.28f, 8.99f, kMatSlatePier, kSlateCol, true);
+        EmitBox(99.2f, by - 0.10f, 8.48f, 124.8f, by + 0.10f, 8.56f, kMatBrass, kBrassCol, true);
     }
 
-    // Monumental Cinema Portal Entry Framing (facing South toward Rotunda)
-    EmitDressedColumn(108.9f, 409.7f, 0.44f, 9.10f, kMatSlatePier, kMatBrass, kMatWarmGlow);
-    EmitDressedColumn(115.1f, 409.7f, 0.44f, 9.10f, kMatSlatePier, kMatBrass, kMatWarmGlow);
+    // Monumental Cinema Portal Entry Framing (facing South toward Rotunda; 1 cm below 9.10f roof soffit)
+    EmitDressedColumn(108.9f, 409.7f, 0.44f, 9.09f, kMatSlatePier, kMatBrass, kMatWarmGlow);
+    EmitDressedColumn(115.1f, 409.7f, 0.44f, 9.09f, kMatSlatePier, kMatBrass, kMatWarmGlow);
     EmitBox(108.3f, 409.2f, 5.20f, 115.7f, 410.4f, 5.78f, kMatBrass, kBrassCol, true);
     EmitBox(109.2f, 409.15f, 5.36f, 114.8f, 409.30f, 5.56f, kMatWarmGlow, kLightCol);
     // Exterior facade flanking pilasters
-    EmitDressedColumn(99.0f,  409.7f, 0.40f, 9.10f, kMatSlatePier, kMatBrass, kMatWarmGlow);
-    EmitDressedColumn(125.0f, 409.7f, 0.40f, 9.10f, kMatSlatePier, kMatBrass, kMatWarmGlow);
+    EmitDressedColumn(99.0f,  409.7f, 0.40f, 9.09f, kMatSlatePier, kMatBrass, kMatWarmGlow);
+    EmitDressedColumn(125.0f, 409.7f, 0.40f, 9.09f, kMatSlatePier, kMatBrass, kMatWarmGlow);
 
     // Interior Stepped Seating Tiers (West [100.2..108.6] & East [115.4..123.8], wide 6.8 m center aisle)
     for (unsigned row = 0; row < 3u; ++row) {
@@ -1023,9 +1092,9 @@ static void BuildCitadelArchitecture() {
     EmitBox(102.2f, 426.45f, 1.35f, 121.8f, 427.15f, 8.15f, kMatSlatePier, kSlateCol);
     EmitBox(102.5f, 426.35f, 1.55f, 121.5f, 426.55f, 7.95f, kMatBrass, kBrassCol);
     EmitBox(103.0f, 426.26f, 1.90f, 121.0f, 426.42f, 7.60f, kMatScreenGlass, 0xff283848);
-    // Warm proscenium stage deck beneath screen
+    // Warm proscenium stage deck beneath screen (nosing overhangs ends by 2 cm -> zero coplanar face)
     EmitBox(100.5f, 424.6f, 0.02f, 123.5f, 427.15f, 0.55f, kMatPierBase, kSlateCol);
-    EmitBox(100.5f, 424.5f, 0.48f, 123.5f, 424.75f, 0.58f, kMatBrass, kBrassCol);
+    EmitBox(100.48f, 424.5f, 0.48f, 123.52f, 424.75f, 0.58f, kMatBrass, kBrassCol);
     // Overhead Cinema Projector Housing above doorway (keeps aisle 100% unobstructed)
     EmitBox(110.8f, 411.1f, 6.20f, 113.2f, 412.6f, 7.10f, kMatSlatePier, kSlateCol, true);
     EmitBox(111.5f, 412.55f, 6.42f, 112.5f, 412.80f, 6.88f, kMatWarmGlow, kLightCol);
@@ -1279,6 +1348,315 @@ static void RestoreEngineRenderState(IDirect3DStateBlock9 *saved) {
     RENDERINFO.Apply();
 }
 
+static void ReleaseGpuBuffers() {
+    if (!gCitadel) return;
+    if (gCitadel->litVb) { gCitadel->litVb->Release(); gCitadel->litVb = NULL; }
+    if (gCitadel->litIb) { gCitadel->litIb->Release(); gCitadel->litIb = NULL; }
+    if (gCitadel->shadowVb) { gCitadel->shadowVb->Release(); gCitadel->shadowVb = NULL; }
+    if (gCitadel->shadowIb) { gCitadel->shadowIb->Release(); gCitadel->shadowIb = NULL; }
+    if (gCitadel->beamVb) { gCitadel->beamVb->Release(); gCitadel->beamVb = NULL; }
+    if (gCitadel->beamIb) { gCitadel->beamIb->Release(); gCitadel->beamIb = NULL; }
+    gCitadel->gpuDevice = NULL;
+    gCitadel->gpuDeviceGen = 0u;
+    gCitadel->gpuBuffersAttempted = false;
+}
+
+static bool CreateManagedStaticBuffers(IDirect3DDevice9 *dev,
+                                       const void *vertSrc, unsigned vertBytes, DWORD fvf,
+                                       const void *idxSrc, unsigned idxBytes, D3DFORMAT idxFmt,
+                                       IDirect3DVertexBuffer9 **outVb,
+                                       IDirect3DIndexBuffer9 **outIb) {
+    if (!dev || !vertSrc || !vertBytes || !idxSrc || !idxBytes || !outVb || !outIb)
+        return false;
+    IDirect3DVertexBuffer9 *vb = NULL;
+    IDirect3DIndexBuffer9 *ib = NULL;
+    if (FAILED(dev->CreateVertexBuffer(vertBytes, D3DUSAGE_WRITEONLY, fvf, D3DPOOL_MANAGED, &vb, NULL)) || !vb) {
+        if (vb) vb->Release();
+        return false;
+    }
+    void *vbDst = NULL;
+    if (FAILED(vb->Lock(0, vertBytes, &vbDst, 0)) || !vbDst) {
+        vb->Release();
+        return false;
+    }
+    std::memcpy(vbDst, vertSrc, vertBytes);
+    vb->Unlock();
+
+    if (FAILED(dev->CreateIndexBuffer(idxBytes, D3DUSAGE_WRITEONLY, idxFmt, D3DPOOL_MANAGED, &ib, NULL)) || !ib) {
+        if (ib) ib->Release();
+        vb->Release();
+        return false;
+    }
+    void *ibDst = NULL;
+    if (FAILED(ib->Lock(0, idxBytes, &ibDst, 0)) || !ibDst) {
+        ib->Release();
+        vb->Release();
+        return false;
+    }
+    std::memcpy(ibDst, idxSrc, idxBytes);
+    ib->Unlock();
+
+    *outVb = vb;
+    *outIb = ib;
+    return true;
+}
+
+static void EnsureGpuBuffers(IDirect3DDevice9 *dev) {
+    if (!gCitadel || !dev) return;
+    const uint64_t gen = CurrentCitadelDeviceGen();
+    if (gCitadel->gpuDevice && (gCitadel->gpuDevice != dev || gCitadel->gpuDeviceGen != gen)) {
+        ReleaseGpuBuffers();
+    }
+    if (gCitadel->gpuBuffersAttempted) return;
+    gCitadel->gpuDevice = dev;
+    gCitadel->gpuDeviceGen = gen;
+    gCitadel->gpuBuffersAttempted = true;
+
+    const bool litOk = (gCitadel->usedVerts > 0u && gCitadel->usedIndices >= 3u) &&
+        CreateManagedStaticBuffers(
+            dev,
+            gCitadel->verts, gCitadel->usedVerts * static_cast<unsigned>(sizeof(LitVertex)),
+            D3DFVF_XYZ | D3DFVF_NORMAL | D3DFVF_DIFFUSE | D3DFVF_TEX1,
+            gCitadel->sortedIndices, gCitadel->usedIndices * static_cast<unsigned>(sizeof(uint32_t)),
+            D3DFMT_INDEX32,
+            &gCitadel->litVb, &gCitadel->litIb);
+
+    const bool shadowOk = (gCitadel->shadowVertCount > 0u && gCitadel->shadowIdxCount >= 3u) &&
+        CreateManagedStaticBuffers(
+            dev,
+            gCitadel->shadowVerts, gCitadel->shadowVertCount * static_cast<unsigned>(sizeof(OverlayVertex)),
+            D3DFVF_XYZ | D3DFVF_DIFFUSE,
+            gCitadel->shadowIndices, gCitadel->shadowIdxCount * static_cast<unsigned>(sizeof(uint16_t)),
+            D3DFMT_INDEX16,
+            &gCitadel->shadowVb, &gCitadel->shadowIb);
+
+    const bool beamOk = (gCitadel->beamVertCount > 0u && gCitadel->beamIdxCount >= 3u) &&
+        CreateManagedStaticBuffers(
+            dev,
+            gCitadel->beamVerts, gCitadel->beamVertCount * static_cast<unsigned>(sizeof(OverlayVertex)),
+            D3DFVF_XYZ | D3DFVF_DIFFUSE,
+            gCitadel->beamIndices, gCitadel->beamIdxCount * static_cast<unsigned>(sizeof(uint16_t)),
+            D3DFMT_INDEX16,
+            &gCitadel->beamVb, &gCitadel->beamIb);
+
+    PortSessionLog(PORT_SESSION_GAME, false,
+                   "sanctuary citadel: managed GPU buffers lit=%d shadow=%d beam=%d",
+                   litOk ? 1 : 0, shadowOk ? 1 : 0, beamOk ? 1 : 0);
+}
+
+struct FactionEmblemUploadCtx {
+    IDirect3DDevice9 *device;
+    FactionEmblemSlot *slot;
+};
+
+static int UploadFactionEmblemCallback(const unsigned char *dds, size_t bytes,
+                                       const CeAssetTextureHeader *h, void *context) {
+    FactionEmblemUploadCtx *ctx = static_cast<FactionEmblemUploadCtx *>(context);
+    if (!ctx || !ctx->device || !ctx->slot || !dds || !bytes || !h || !h->width || !h->height)
+        return 0;
+    unsigned upW = h->width;
+    unsigned upH = h->height;
+    const unsigned longest = upW > upH ? upW : upH;
+    if (longest > kEmblemMaxTexEdge) {
+        upW = static_cast<unsigned>((static_cast<uint64_t>(upW) * kEmblemMaxTexEdge) / longest);
+        upH = static_cast<unsigned>((static_cast<uint64_t>(upH) * kEmblemMaxTexEdge) / longest);
+        if (!upW) upW = 1u;
+        if (!upH) upH = 1u;
+    }
+    IDirect3DTexture9 *tex = NULL;
+    const HRESULT hr = D3DXCreateTextureFromFileInMemoryEx(
+        ctx->device, dds, static_cast<UINT>(bytes),
+        static_cast<UINT>(upW), static_cast<UINT>(upH),
+        1, 0, D3DFMT_A8R8G8B8, D3DPOOL_MANAGED,
+        D3DX_FILTER_TRIANGLE, D3DX_FILTER_NONE, 0, NULL, NULL, &tex);
+    if (FAILED(hr) || !tex) {
+        if (tex) tex->Release();
+        return 0;
+    }
+    ctx->slot->texture = tex;
+    ctx->slot->srcW = h->width;
+    ctx->slot->srcH = h->height;
+    ctx->slot->loaded = true;
+    return 1;
+}
+
+static void ReleaseFactionEmblemTextures() {
+    if (!gCitadel) return;
+    for (unsigned i = 0; i < kEmblemCount; ++i) {
+        if (gCitadel->emblems[i].texture) {
+            gCitadel->emblems[i].texture->Release();
+            gCitadel->emblems[i].texture = NULL;
+        }
+        gCitadel->emblems[i].srcW = 0u;
+        gCitadel->emblems[i].srcH = 0u;
+        gCitadel->emblems[i].loaded = false;
+    }
+    gCitadel->emblemDevice = NULL;
+    gCitadel->emblemDeviceGen = 0u;
+    gCitadel->emblemsAttempted = false;
+}
+
+static void EnsureFactionEmblemTextures(IDirect3DDevice9 *dev) {
+    if (!gCitadel || !dev) return;
+    const uint64_t gen = CurrentCitadelDeviceGen();
+    if (gCitadel->emblemDevice && (gCitadel->emblemDevice != dev || gCitadel->emblemDeviceGen != gen)) {
+        ReleaseFactionEmblemTextures();
+    }
+    if (gCitadel->emblemsAttempted) return;
+    gCitadel->emblemDevice = dev;
+    gCitadel->emblemDeviceGen = gen;
+    gCitadel->emblemsAttempted = true;
+
+    const char *dir = PortGameDir();
+    if (!dir || !*dir) return;
+    char err[192] = {};
+    CeAssetCatalog *cat = PortCeAssetCatalogOpenKinds(dir, CE_ASSET_TEXTURE, err, sizeof(err));
+    if (!cat) {
+        PortSessionLog(PORT_SESSION_GAME, false,
+                       "sanctuary citadel: emblem catalog unavailable (%s); using matte plaques",
+                       err[0] ? err : "none");
+        return;
+    }
+
+    static const char *const kPrimaryPaths[kEmblemCount] = {
+        "goodies\\goodies_F_Bakgrnd.tga",
+        "goodies\\goodies_M_Bakgrnd.tga",
+    };
+    static const char *const kFallbackPaths[kEmblemCount] = {
+        "mustbe_goodies\\goodies_F_Bakgrnd.tga",
+        "mustbe_goodies\\goodies_M_Bakgrnd.tga",
+    };
+
+    unsigned loadedCount = 0u;
+    for (unsigned i = 0; i < kEmblemCount; ++i) {
+        size_t idx = PortCeAssetCatalogFindTexture(cat, kPrimaryPaths[i]);
+        if (idx == SIZE_MAX) {
+            idx = PortCeAssetCatalogFindTexture(cat, kFallbackPaths[i]);
+        }
+        if (idx == SIZE_MAX) continue;
+        FactionEmblemUploadCtx ctx = {dev, &gCitadel->emblems[i]};
+        if (PortCeAssetCatalogReadTexture(cat, idx, UploadFactionEmblemCallback, &ctx) &&
+            gCitadel->emblems[i].texture) {
+            ++loadedCount;
+        }
+    }
+    PortCeAssetCatalogClose(cat);
+
+    PortSessionLog(PORT_SESSION_GAME, false,
+                   "sanctuary citadel: loaded %u of %u retail faction emblem murals",
+                   loadedCount, static_cast<unsigned>(kEmblemCount));
+}
+
+static void DrawFactionEmblemMurals(IDirect3DDevice9 *dev) {
+    if (!gCitadel || !dev) return;
+
+    const float zeroBias = 0.0f;
+    dev->SetVertexShader(NULL);
+    dev->SetPixelShader(NULL);
+    dev->SetRenderState(D3DRS_DEPTHBIAS, *reinterpret_cast<const DWORD *>(&zeroBias));
+    dev->SetRenderState(D3DRS_SLOPESCALEDEPTHBIAS, *reinterpret_cast<const DWORD *>(&zeroBias));
+    dev->SetRenderState(D3DRS_LIGHTING, FALSE);
+    dev->SetRenderState(D3DRS_SPECULARENABLE, FALSE);
+    dev->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
+    dev->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
+    dev->SetRenderState(D3DRS_ZWRITEENABLE, TRUE);
+    dev->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
+    dev->SetTextureStageState(0, D3DTSS_TEXCOORDINDEX, 0);
+    dev->SetTextureStageState(0, D3DTSS_TEXTURETRANSFORMFLAGS, D3DTTFF_DISABLE);
+    dev->SetSamplerState(0, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
+    dev->SetSamplerState(0, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
+    dev->SetSamplerState(0, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
+    dev->SetSamplerState(0, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR);
+    dev->SetSamplerState(0, D3DSAMP_MIPFILTER, D3DTEXF_NONE);
+    dev->SetTextureStageState(1, D3DTSS_COLOROP, D3DTOP_DISABLE);
+    dev->SetTextureStageState(1, D3DTSS_ALPHAOP, D3DTOP_DISABLE);
+
+    // Official Lost Toys faction emblem crop inside 512x512 goodies_{F,M}_Bakgrnd.tga.
+    constexpr float kCropU0 = 0.00f;
+    constexpr float kCropU1 = 0.46f;
+    constexpr float kCropV0 = 0.00f;
+    constexpr float kCropV1 = 0.56f;
+    constexpr float kMaxW = 3.68f;
+    constexpr float kMaxH = 4.28f;
+    constexpr float kCenterH = 4.40f;
+    const float wz = gCitadel->floorZ - kCenterH;
+
+    struct MuralPlacement {
+        unsigned slotIdx;
+        float wallX;
+        float rightY; // +1 for West wall facing East (+X), -1 for East wall facing West (-X)
+        DWORD plaqueTop;
+        DWORD plaqueBot;
+    };
+    // 6 cm clean standoff in front of the dark iron recessed mat (84.42f West / 139.58f East).
+    static const MuralPlacement kMurals[kEmblemCount] = {
+        {kEmblemForseti,  84.48f,  1.0f, 0xff1c3e64u, 0xff0e223au}, // West Forseti Alcove
+        {kEmblemMuspell, 139.52f, -1.0f, 0xff622018u, 0xff34100cu}, // East Muspell Alcove
+    };
+
+    for (unsigned i = 0; i < kEmblemCount; ++i) {
+        const MuralPlacement &mp = kMurals[i];
+        const FactionEmblemSlot &slot = gCitadel->emblems[mp.slotIdx];
+
+        if (slot.texture && slot.srcW > 0u && slot.srcH > 0u) {
+            const float cropAspect = (static_cast<float>(slot.srcW) * (kCropU1 - kCropU0)) /
+                                     (static_cast<float>(slot.srcH) * (kCropV1 - kCropV0));
+            const float boxAspect = kMaxW / kMaxH;
+            float w = kMaxW;
+            float h = kMaxH;
+            if (cropAspect > boxAspect) h = kMaxW / cropAspect;
+            else w = kMaxH * cropAspect;
+            const float halfW = w * 0.5f;
+            const float halfH = h * 0.5f;
+            const float yLeft = kCenterY - mp.rightY * halfW;
+            const float yRight = kCenterY + mp.rightY * halfW;
+            const float zTop = wz - halfH;
+            const float zBot = wz + halfH;
+
+            const EmblemTexVertex quad[4] = {
+                {mp.wallX, yLeft,  zTop, 0xffffffffu, kCropU0, kCropV0},
+                {mp.wallX, yRight, zTop, 0xffffffffu, kCropU1, kCropV0},
+                {mp.wallX, yLeft,  zBot, 0xfff0ece4u, kCropU0, kCropV1},
+                {mp.wallX, yRight, zBot, 0xfff0ece4u, kCropU1, kCropV1},
+            };
+            dev->SetTexture(0, slot.texture);
+            dev->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_MODULATE);
+            dev->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
+            dev->SetTextureStageState(0, D3DTSS_COLORARG2, D3DTA_DIFFUSE);
+            dev->SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_DISABLE);
+            dev->SetFVF(D3DFVF_XYZ | D3DFVF_DIFFUSE | D3DFVF_TEX1);
+            dev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, quad, sizeof(EmblemTexVertex));
+        } else {
+            // Clean matte brass-bordered archival faction plaque fallback when retail files are absent.
+            const float halfW = kMaxW * 0.48f;
+            const float halfH = kMaxH * 0.48f;
+            const float yLeft = kCenterY - mp.rightY * halfW;
+            const float yRight = kCenterY + mp.rightY * halfW;
+            const float zTop = wz - halfH;
+            const float zBot = wz + halfH;
+            const OverlayVertex plaque[4] = {
+                {mp.wallX, yLeft,  zTop, mp.plaqueTop},
+                {mp.wallX, yRight, zTop, mp.plaqueTop},
+                {mp.wallX, yLeft,  zBot, mp.plaqueBot},
+                {mp.wallX, yRight, zBot, mp.plaqueBot},
+            };
+            dev->SetTexture(0, NULL);
+            dev->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
+            dev->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_DIFFUSE);
+            dev->SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_DISABLE);
+            dev->SetFVF(D3DFVF_XYZ | D3DFVF_DIFFUSE);
+            dev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, plaque, sizeof(OverlayVertex));
+        }
+    }
+
+    // Restore wrap/linear sampling for any subsequent textured passes inside the state guard.
+    dev->SetSamplerState(0, D3DSAMP_ADDRESSU, D3DTADDRESS_WRAP);
+    dev->SetSamplerState(0, D3DSAMP_ADDRESSV, D3DTADDRESS_WRAP);
+    dev->SetSamplerState(0, D3DSAMP_MIPFILTER, D3DTEXF_LINEAR);
+    dev->SetRenderState(D3DRS_LIGHTING, TRUE);
+    dev->SetFVF(D3DFVF_XYZ | D3DFVF_NORMAL | D3DFVF_DIFFUSE | D3DFVF_TEX1);
+}
+
 } // namespace
 
 // -----------------------------------------------------------------------------
@@ -1323,6 +1701,8 @@ void RuntimeInit(float floorZ) {
 
 void RuntimeShutdown() {
     if (!gCitadel) return;
+    ReleaseGpuBuffers();
+    ReleaseFactionEmblemTextures();
     CeArchivePedestal::RuntimeShutdown();
     if (gCitadel->texturesLoaded) {
         CeMuseumTextures::ReleaseAll();
@@ -1369,17 +1749,44 @@ void RuntimeUpdate(float dtSeconds, bool paused,
 
 bool RuntimeHandleKey(unsigned dik, bool repeat) {
     if (!gCitadel || !gCitadel->active) return false;
+    const bool aimingControl = CeArchivePedestal::RuntimeIsAimingControl();
+    // Never steal default Battle Engine Cloak (Tab) unless directly aiming at the pedestal rail.
+    if (dik == CeArchivePedestal::kDikTab && !CeArchivePedestal::RuntimeIsAimingControl())
+        return false;
+    // Require aiming at a control or close ground-level pedestal focus for [/]/PgUp/PgDn/P
+    // so flying overhead in Jet mode never steals keys from the Battle Engine.
+    if (dik == CeArchivePedestal::kDikLBracket || dik == CeArchivePedestal::kDikRBracket ||
+        dik == CeArchivePedestal::kDikPrior || dik == CeArchivePedestal::kDikNext ||
+        dik == CeArchivePedestal::kDikP) {
+        bool closeFocus = false;
+        if (!aimingControl && gCitadel->hasAim) {
+            const float heightAboveFloor = gCitadel->floorZ - gCitadel->eyeZ;
+            if (heightAboveFloor >= -2.0f && heightAboveFloor <= 7.5f) {
+                float lEyeX = 0.0f, lEyeY = 0.0f, lEyeZ = 0.0f;
+                float lAimX = 0.0f, lAimY = 1.0f, lAimZ = 0.0f;
+                WorldToPedestalLocal(gCitadel->eyeX, gCitadel->eyeY, gCitadel->eyeZ, gCitadel->floorZ,
+                                     &lEyeX, &lEyeY, &lEyeZ);
+                WorldAimToPedestalLocal(gCitadel->aimX, gCitadel->aimY, gCitadel->aimZ,
+                                        &lAimX, &lAimY, &lAimZ);
+                const CeArchivePedestal::BasePose pose{
+                    kPedestalX - kMuseumEntranceX,
+                    kPedestalY - kMuseumEntranceY,
+                    kPedestalHeight,
+                    CeArchivePedestal::kPedestalPlinthHalf,
+                    true
+                };
+                closeFocus = CeArchivePedestal::FocusPedestal(pose, lEyeX, lEyeY, lAimX, lAimY);
+            }
+        }
+        if (!aimingControl && !closeFocus)
+            return false;
+    }
     if (CeArchivePedestal::RuntimeHandleKey(dik, repeat))
         return true;
-    // Allow Space/R shortcuts strictly when aiming directly at the Archive Pedestal controls.
-    if (!repeat && CeArchivePedestal::RuntimeIsAimingControl()) {
-        if (dik == kDikSpace) {
-            (void)CeArchivePedestal::RuntimeHandleFire(false, 1.0f);
-            return CeArchivePedestal::RuntimeHandleFire(true, 0.0f);
-        }
-        if (dik == kDikR) {
-            return CeArchivePedestal::RuntimeHandleKey(CeArchivePedestal::kDikP, false);
-        }
+    // Allow R shortcut strictly when aiming directly at the Archive Pedestal controls
+    // (Space stays unbound so default Battle Engine Morph never collides).
+    if (!repeat && CeArchivePedestal::RuntimeIsAimingControl() && dik == kDikR) {
+        return CeArchivePedestal::RuntimeHandleKey(CeArchivePedestal::kDikP, false);
     }
     return false;
 }
@@ -1452,6 +1859,8 @@ void RuntimeDrawWorld() {
         CeMuseumTextures::LoadAll(dev);
         gCitadel->texturesLoaded = true;
     }
+    EnsureGpuBuffers(dev);
+    EnsureFactionEmblemTextures(dev);
 
     IDirect3DStateBlock9 *saved = NULL;
     if (FAILED(dev->CreateStateBlock(D3DSBT_ALL, &saved)) || !saved) return;
@@ -1507,6 +1916,12 @@ void RuntimeDrawWorld() {
     dev->SetTextureStageState(1, D3DTSS_ALPHAOP, D3DTOP_DISABLE);
     dev->SetFVF(D3DFVF_XYZ | D3DFVF_NORMAL | D3DFVF_DIFFUSE | D3DFVF_TEX1);
 
+    const bool useLitGpu = (gCitadel->litVb != NULL && gCitadel->litIb != NULL);
+    if (useLitGpu) {
+        dev->SetStreamSource(0, gCitadel->litVb, 0, sizeof(LitVertex));
+        dev->SetIndices(gCitadel->litIb);
+    }
+
     for (unsigned m = 0; m < kMatCount; ++m) {
         if (!gCitadel->triCount[m] || gCitadel->minVert[m] > gCitadel->maxVert[m]) continue;
         IDirect3DTexture9 *tex = (kMaterials[m].tex < CE_MUSEUM_TEX_COUNT)
@@ -1528,7 +1943,8 @@ void RuntimeDrawWorld() {
         dev->SetRenderState(D3DRS_SPECULARENABLE, hasSpec ? TRUE : FALSE);
         dev->SetMaterial(&mat);
 
-        const bool isInlay = (m == kMatRunner || m == kMatBrass || m == kMatWarmGlow ||
+        // Only flat floor inlays and flat glow strips receive depth bias; never 3D solid frames/trims like kMatBrass.
+        const bool isInlay = (m == kMatRunner || m == kMatWarmGlow ||
                               m == kMatForsetiGlow || m == kMatMuspellGlow || m == kMatAquaGlow);
         const float bias = isInlay ? -0.00002f : 0.0f;
         const float slope = isInlay ? -1.0f : 0.0f;
@@ -1536,61 +1952,31 @@ void RuntimeDrawWorld() {
         dev->SetRenderState(D3DRS_SLOPESCALEDEPTHBIAS, *reinterpret_cast<const DWORD *>(&slope));
 
         const unsigned numVerts = gCitadel->maxVert[m] - gCitadel->minVert[m] + 1u;
-        dev->DrawIndexedPrimitiveUP(
-            D3DPT_TRIANGLELIST,
-            gCitadel->minVert[m],
-            numVerts,
-            gCitadel->triCount[m],
-            gCitadel->sortedIndices + gCitadel->firstIdx[m],
-            D3DFMT_INDEX32,
-            gCitadel->verts,
-            sizeof(LitVertex));
+        if (useLitGpu) {
+            dev->DrawIndexedPrimitive(
+                D3DPT_TRIANGLELIST,
+                0,
+                gCitadel->minVert[m],
+                numVerts,
+                gCitadel->firstIdx[m],
+                gCitadel->triCount[m]);
+        } else {
+            dev->DrawIndexedPrimitiveUP(
+                D3DPT_TRIANGLELIST,
+                gCitadel->minVert[m],
+                numVerts,
+                gCitadel->triCount[m],
+                gCitadel->sortedIndices + gCitadel->firstIdx[m],
+                D3DFMT_INDEX32,
+                gCitadel->verts,
+                sizeof(LitVertex));
+        }
     }
 
-    // When the camera is inside the sealed Cinema Pavilion, close the South doorway visually
-    // with an opaque dark acoustic pocket-door curtain so looking South never sees skipped outdoor space.
-    if (gCitadel->insideCinema) {
-        const float zeroBias = 0.0f;
-        dev->SetRenderState(D3DRS_DEPTHBIAS, *reinterpret_cast<const DWORD *>(&zeroBias));
-        dev->SetRenderState(D3DRS_SLOPESCALEDEPTHBIAS, *reinterpret_cast<const DWORD *>(&zeroBias));
-        dev->SetRenderState(D3DRS_SPECULARENABLE, FALSE);
-        mat.Emissive.r = 0.0f; mat.Emissive.g = 0.0f; mat.Emissive.b = 0.0f;
-        mat.Specular.r = 0.0f; mat.Specular.g = 0.0f; mat.Specular.b = 0.0f;
-        dev->SetMaterial(&mat);
-
-        const float yDoor = 410.65f;
-        const float zBot = gCitadel->floorZ - 0.01f;
-        const float zTop = gCitadel->floorZ - 5.26f;
-        const DWORD cBot = 0xff4c545eu;
-        const DWORD cTop = 0xff707a86u;
-        IDirect3DTexture9 *acTex = CeMuseumTextures::Get(CE_MUSEUM_TEX_CINEMA_ACOUSTIC);
-        dev->SetTexture(0, acTex);
-        dev->SetTextureStageState(0, D3DTSS_COLOROP, acTex ? D3DTOP_MODULATE : D3DTOP_SELECTARG1);
-        dev->SetTextureStageState(0, D3DTSS_COLORARG1, acTex ? D3DTA_TEXTURE : D3DTA_DIFFUSE);
-        dev->SetTextureStageState(0, D3DTSS_COLORARG2, D3DTA_DIFFUSE);
-        const LitVertex doorQuad[4] = {
-            {109.40f, yDoor, zBot, 0.0f, 1.0f, 0.0f, cBot, 0.0f, 0.0f},
-            {114.60f, yDoor, zBot, 0.0f, 1.0f, 0.0f, cBot, 2.0f, 0.0f},
-            {114.60f, yDoor, zTop, 0.0f, 1.0f, 0.0f, cTop, 2.0f, 2.0f},
-            {109.40f, yDoor, zTop, 0.0f, 1.0f, 0.0f, cTop, 0.0f, 2.0f},
-        };
-        const uint16_t doorIdx[6] = {0, 1, 2, 0, 2, 3};
-        dev->DrawIndexedPrimitiveUP(D3DPT_TRIANGLELIST, 0u, 4u, 2u, doorIdx, D3DFMT_INDEX16, doorQuad, sizeof(LitVertex));
-
-        // Brushed-brass center pocket-door parting seam & header molding
-        IDirect3DTexture9 *brTex = CeMuseumTextures::Get(CE_MUSEUM_TEX_BRUSHED_BRASS);
-        dev->SetTexture(0, brTex);
-        dev->SetTextureStageState(0, D3DTSS_COLOROP, brTex ? D3DTOP_MODULATE : D3DTOP_SELECTARG1);
-        dev->SetTextureStageState(0, D3DTSS_COLORARG1, brTex ? D3DTA_TEXTURE : D3DTA_DIFFUSE);
-        const float yTrim = 410.72f;
-        const LitVertex trimQuad[4] = {
-            {111.90f, yTrim, zBot, 0.0f, 1.0f, 0.0f, kBrassCol, 0.0f, 0.0f},
-            {112.10f, yTrim, zBot, 0.0f, 1.0f, 0.0f, kBrassCol, 0.2f, 0.0f},
-            {112.10f, yTrim, zTop, 0.0f, 1.0f, 0.0f, kBrassCol, 0.2f, 3.0f},
-            {111.90f, yTrim, zTop, 0.0f, 1.0f, 0.0f, kBrassCol, 0.0f, 3.0f},
-        };
-        dev->DrawIndexedPrimitiveUP(D3DPT_TRIANGLELIST, 0u, 4u, 2u, doorIdx, D3DFMT_INDEX16, trimQuad, sizeof(LitVertex));
-    }
+    // Official Lost Toys Forseti & Muspell emblem murals inside West & East Memorial Alcoves.
+    // Kept visible even from inside the Cinema Pavilion so the open South colonnade portal
+    // frames the Rotunda cleanly instead of blocking the exit with an opaque curtain.
+    DrawFactionEmblemMurals(dev);
 
     // Soft directional contact shadows grounded beneath every column, dais, plinth, and pier
     dev->SetRenderState(D3DRS_SPECULARENABLE, FALSE);
@@ -1610,14 +1996,22 @@ void RuntimeDrawWorld() {
         dev->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
         dev->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
         dev->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
-        dev->DrawIndexedPrimitiveUP(
-            D3DPT_TRIANGLELIST, 0u, gCitadel->shadowVertCount,
-            gCitadel->shadowIdxCount / 3u, gCitadel->shadowIndices,
-            D3DFMT_INDEX16, gCitadel->shadowVerts, sizeof(OverlayVertex));
+        if (gCitadel->shadowVb && gCitadel->shadowIb) {
+            dev->SetStreamSource(0, gCitadel->shadowVb, 0, sizeof(OverlayVertex));
+            dev->SetIndices(gCitadel->shadowIb);
+            dev->DrawIndexedPrimitive(
+                D3DPT_TRIANGLELIST, 0, 0u, gCitadel->shadowVertCount,
+                0u, gCitadel->shadowIdxCount / 3u);
+        } else {
+            dev->DrawIndexedPrimitiveUP(
+                D3DPT_TRIANGLELIST, 0u, gCitadel->shadowVertCount,
+                gCitadel->shadowIdxCount / 3u, gCitadel->shadowIndices,
+                D3DFMT_INDEX16, gCitadel->shadowVerts, sizeof(OverlayVertex));
+        }
     }
 
     // Subtle additive Shield Emitter Beams rising from the 4 rotunda corner pylons
-    if (!gCitadel->insideCinema && gCitadel->beamVertCount > 0u && gCitadel->beamIdxCount >= 3u) {
+    if (gCitadel->beamVertCount > 0u && gCitadel->beamIdxCount >= 3u) {
         const float zeroBias = 0.0f;
         dev->SetRenderState(D3DRS_DEPTHBIAS, *reinterpret_cast<const DWORD *>(&zeroBias));
         dev->SetRenderState(D3DRS_SLOPESCALEDEPTHBIAS, *reinterpret_cast<const DWORD *>(&zeroBias));
@@ -1625,22 +2019,39 @@ void RuntimeDrawWorld() {
         dev->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
         dev->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_ONE);
         dev->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
-        dev->DrawIndexedPrimitiveUP(
-            D3DPT_TRIANGLELIST, 0u, gCitadel->beamVertCount,
-            gCitadel->beamIdxCount / 3u, gCitadel->beamIndices,
-            D3DFMT_INDEX16, gCitadel->beamVerts, sizeof(OverlayVertex));
+        if (gCitadel->beamVb && gCitadel->beamIb) {
+            dev->SetStreamSource(0, gCitadel->beamVb, 0, sizeof(OverlayVertex));
+            dev->SetIndices(gCitadel->beamIb);
+            dev->DrawIndexedPrimitive(
+                D3DPT_TRIANGLELIST, 0, 0u, gCitadel->beamVertCount,
+                0u, gCitadel->beamIdxCount / 3u);
+        } else {
+            dev->DrawIndexedPrimitiveUP(
+                D3DPT_TRIANGLELIST, 0u, gCitadel->beamVertCount,
+                gCitadel->beamIdxCount / 3u, gCitadel->beamIndices,
+                D3DFMT_INDEX16, gCitadel->beamVerts, sizeof(OverlayVertex));
+        }
+    }
+
+    // Draw the live All-232/213 Archive Pedestal INSIDE this D3DSBT_ALL state guard
+    // (eliminates an extra per-frame CreateStateBlock). Reset bias, blend, and streams first.
+    {
+        const float zeroBias = 0.0f;
+        dev->SetRenderState(D3DRS_DEPTHBIAS, *reinterpret_cast<const DWORD *>(&zeroBias));
+        dev->SetRenderState(D3DRS_SLOPESCALEDEPTHBIAS, *reinterpret_cast<const DWORD *>(&zeroBias));
+        dev->SetRenderState(D3DRS_SPECULARENABLE, FALSE);
+        dev->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
+        dev->SetRenderState(D3DRS_ZWRITEENABLE, TRUE);
+        dev->SetStreamSource(0, NULL, 0, 0);
+        dev->SetIndices(NULL);
+        CeArchivePedestal::RuntimeDraw(gCitadel->floorZ, false);
     }
 
     RestoreEngineRenderState(saved);
-
-    // Draw the live All-232/213 Archive Pedestal mounted atop the central rotunda dais.
-    if (!gCitadel->insideCinema) {
-        CeArchivePedestal::RuntimeDraw(gCitadel->floorZ);
-    }
 }
 
 void RuntimeDrawDomeFx() {
-    if (!gCitadel || !gCitadel->active || !gCitadel->built || gMirrorPass || gCitadel->insideCinema)
+    if (!gCitadel || !gCitadel->active || !gCitadel->built || gMirrorPass)
         return;
     IDirect3DDevice9 *dev = LT.GetDevice();
     if (!dev) return;
@@ -1883,8 +2294,13 @@ extern "C" bool PortCeSanctuaryActive(void) {
 }
 
 extern "C" bool PortCeSanctuarySkipOutdoorWorld(void) {
-    return SanctuarySessionOpen() &&
-           CeSanctuaryCitadel::gCitadel->insideCinema;
+    if (!SanctuarySessionOpen() || !CeSanctuaryCitadel::gCitadel->insideCinema)
+        return false;
+    if (PortCePhotoOn())
+        return false;
+    if (PortCeCmdMapOpen && PortCeCmdMapOpen())
+        return false;
+    return true;
 }
 
 extern "C" bool PortCeSanctuaryInterceptRound(float prevX, float prevY, float prevZ,
@@ -1924,6 +2340,41 @@ extern "C" void PortCeSanctuaryDrawWorld(void) {
     CeSanctuaryCitadel::RuntimeDrawDomeFx();
 }
 
+extern "C" bool PortCeSanctuaryFire(bool release, float value) {
+    return SanctuarySessionOpen() &&
+           CeSanctuaryCitadel::RuntimeHandleFire(release, value);
+}
+
+extern "C" void PortCeSanctuaryRenderCinemaPlayer(int viewpoint) {
+    if (!SanctuarySessionOpen() || gMirrorPass)
+        return;
+    CPlayer *pl = GAME.GetPlayer(viewpoint);
+    CBattleEngine *be = pl ? pl->GetBattleEngine() : NULL;
+    CUnit *driven = NULL;
+    if (PortCePlayUnitIsDriven) {
+        ListIterator<CUnit> it(&WORLD.GetUnitNB());
+        for (CUnit *u = it.First(); u; u = it.Next()) {
+            if (u && !u->IsDying() && !u->IsShuttingDown() && PortCePlayUnitIsDriven(u)) {
+                driven = u;
+                break;
+            }
+        }
+    }
+    const bool drawBe = (be && !be->IsDying() && !be->IsShuttingDown());
+    if (!drawBe && !driven)
+        return;
+    ENGINE.SetModulate2X(true);
+    if (ENGINE.GetDrawDebugStuff() & 4)
+        ENGINE.DisableLighting();
+    if (drawBe) {
+        be->Render();
+    }
+    if (driven && driven != static_cast<CUnit *>(be)) {
+        driven->Render();
+    }
+    ENGINE.SetModulate2X(true);
+}
+
 #else
 #include "ce_sanctuary_citadel.h"
 namespace CeSanctuaryCitadel {
@@ -1944,5 +2395,7 @@ bool PortCeSanctuarySkipOutdoorWorld(void) { return false; }
 bool PortCeSanctuaryInterceptRound(float, float, float, float, float, float, float *, float *, float *) { return false; }
 bool PortCeSanctuaryClampBeam(float, float, float, float *, float *, float *) { return false; }
 void PortCeSanctuaryDrawWorld(void) {}
+bool PortCeSanctuaryFire(bool, float) { return false; }
+void PortCeSanctuaryRenderCinemaPlayer(int) {}
 }
 #endif

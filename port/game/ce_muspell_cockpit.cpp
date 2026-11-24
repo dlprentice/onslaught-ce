@@ -31,6 +31,7 @@
 #include "VBufTexture.h"
 #include "ltshell.h"
 #include "renderinfo.h"
+#include "state.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -38,6 +39,8 @@
 
 extern bool PortCeLayer();
 extern bool PortRecording();
+extern "C" int CE_BootRequested(void) __attribute__((weak));
+extern "C" int CE_SessionActive(void) __attribute__((weak));
 
 static_assert((int)kMuspellAllegiance == CE_MUSPELL_ALLEGIANCE, "CE_MUSPELL_ALLEGIANCE matches kMuspellAllegiance");
 
@@ -49,6 +52,10 @@ constexpr int kMaxLodWalk = 8;
 
 int gLastLoggedLevel = -1;
 const void *gLastLoggedEngine = nullptr;
+int gCachedLevel = -1;
+CDXTexture *gCachedHead = nullptr;
+CDXTexture *gCachedTex = nullptr;
+bool gCachedChecked = false;
 
 CeMuspellCockpitRestoreStack<CDXTexture *, CVBufTexture *, CE_MUSPELL_COCKPIT_MAX_SWAPS> gActiveSwaps;
 
@@ -75,8 +82,14 @@ void ApplyMuspellCockpitLighting()
 		gSavedLighting.lightEnable[i] = RENDERINFO.mLightEnable[i];
 	}
 	gSavedLighting.hasMaterial = false;
-	if (LT.GetDevice() && SUCCEEDED(LT.GetDevice()->GetMaterial(&gSavedLighting.material)))
-		gSavedLighting.hasMaterial = true;
+	if (LT.GetDevice())
+	{
+		if (D3DMATERIAL9 *defMat = STATE.GetDefaultMaterial())
+		{
+			gSavedLighting.material = *defMat;
+			gSavedLighting.hasMaterial = true;
+		}
+	}
 	gSavedLighting.active = true;
 
 	const CeMuspellCockpitLightBoost boost = CeMuspellCockpitComputeLightBoost(
@@ -272,6 +285,8 @@ bool ShouldSwapForEngine(CBattleEngine *be)
 {
 	if (!be)
 		return false;
+	if ((CE_BootRequested && CE_BootRequested()) || (CE_SessionActive && CE_SessionActive()))
+		return false;
 	CeMuspellCockpitFenceInput in = {};
 	in.ceLayer = PortCeLayer();
 	in.recording = PortRecording();
@@ -286,16 +301,41 @@ bool ShouldSwapForEngine(CBattleEngine *be)
 	return CeMuspellCockpitShouldSwap(in);
 }
 
-// Scans the live in-memory CTexture::mFirst list (zero disk I/O, zero AddRef, zero FatalFileError, zero stale cache).
+// Scans the live in-memory CTexture::mFirst list (zero disk I/O, zero AddRef, zero FatalFileError),
+// cached per (level, CTexture::mFirst head) while always verifying pointer presence in CTexture::mFirst
+// before dereferencing so level reloads can never use a freed CDXTexture*.
 CDXTexture *FindLiveMuspellCockpitTexture()
 {
+	const int level = GAME.GetCurrentlyRunningLevelNum();
+	if (gCachedChecked && gCachedLevel == level && gCachedHead == CTexture::mFirst)
+	{
+		if (!gCachedTex)
+			return nullptr;
+		for (CDXTexture *t = CTexture::mFirst; t; t = t->CTexture::mNext)
+		{
+			if (t == gCachedTex)
+			{
+				const char *name = t->GetName();
+				if (name && CeMuspellCockpitIsMuspellTextureName(name) && t->GetTexture() != NULL)
+					return t;
+				break;
+			}
+		}
+	}
+	gCachedLevel = level;
+	gCachedHead = CTexture::mFirst;
+	gCachedTex = nullptr;
+	gCachedChecked = true;
 	for (CDXTexture *t = CTexture::mFirst; t; t = t->CTexture::mNext)
 	{
 		const char *name = t->GetName();
 		if (!name || (name[0] != 'm' && name[0] != 'M'))
 			continue;
 		if (CeMuspellCockpitIsMuspellTextureName(name) && t->GetTexture() != NULL)
+		{
+			gCachedTex = t;
 			return t;
+		}
 	}
 	return nullptr;
 }
@@ -407,9 +447,22 @@ extern "C" void PortCeMuspellCockpitEnd(void)
 	RestoreAllActiveSwaps();
 }
 
+extern "C" void PortCeMuspellCockpitLevelEnd(void)
+{
+	RestoreMuspellCockpitLighting();
+	RestoreAllActiveSwaps();
+	gCachedLevel = -1;
+	gCachedHead = nullptr;
+	gCachedTex = nullptr;
+	gCachedChecked = false;
+	gLastLoggedLevel = -1;
+	gLastLoggedEngine = nullptr;
+}
+
 #else
 
 extern "C" void PortCeMuspellCockpitBegin(class CBattleEngine *, class CRenderThing *) {}
 extern "C" void PortCeMuspellCockpitEnd(void) {}
+extern "C" void PortCeMuspellCockpitLevelEnd(void) {}
 
 #endif

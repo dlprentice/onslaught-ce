@@ -237,6 +237,24 @@ int main(int argc, char** argv) {
         Check(fd >= 0 && write(fd, "short", 5) == 5 && close(fd) == 0, "write short key");
         CeOnlineProfile p_trunc;
         Check(!p_trunc.LoadOrCreate(dir_trunc.c_str(), &err), "Linux refuses short online-profile.key");
+
+        // Nested recursive directory creation + symlinked ancestor (e.g. /home -> /var/home) MUST succeed (#27)
+        const std::string nested_dir = base + "/nested_a/nested_b/prof_nested";
+        CeOnlineProfile p_nested;
+        Check(p_nested.LoadOrCreate(nested_dir.c_str(), &err), "Linux recursively creates nested user_dir");
+        const std::string real_anc = base + "/real_home";
+        const std::string link_anc = base + "/link_home";
+        Check(mkdir(real_anc.c_str(), 0700) == 0 && symlink(real_anc.c_str(), link_anc.c_str()) == 0,
+              "create symlinked ancestor");
+        CeOnlineProfile p_anc;
+        Check(p_anc.LoadOrCreate((link_anc + "/onslaught-ce").c_str(), &err),
+              "Linux permits symlinked ancestor dir (/home -> /var/home)");
+        // Symlinked final profile directory itself MUST still be refused!
+        const std::string link_leaf = base + "/link_leaf_dir";
+        Check(symlink(dir1.c_str(), link_leaf.c_str()) == 0, "symlink final profile dir");
+        CeOnlineProfile p_leaf;
+        Check(!p_leaf.LoadOrCreate(link_leaf.c_str(), &err),
+              "Linux refuses symlinked final profile directory");
 #endif
     }
 

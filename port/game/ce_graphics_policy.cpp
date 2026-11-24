@@ -20,20 +20,48 @@ extern "C" int CE_FullUnitModelsRequest(int);	// platform/common/model_quality.c
 extern "C" int CE_FullTreeModelsRequest(int);	// platform/common/model_quality.cpp
 extern "C" int CE_TerrainDetailRequest(int);	// platform/common/terrain_quality.cpp
 extern "C" int CE_AnisoRequest(int);	// platform/common/aniso_quality.cpp
+extern "C" unsigned CE_AnisoHardwareMax();	// platform/common/aniso_quality.cpp
 extern "C" int CE_WaterReflectionRequest(int);	// platform/common/reflection_quality.cpp
 extern "C" int CE_DynamicShadowRequest(int);	// platform/common/reflection_quality.cpp
+extern "C" unsigned CeRenderTargetQualityHardwareMaxDim();	// platform/common/reflection_quality.cpp
 int PortUserFileState(const char *rel);	// port/platform/<target>: 1 the writable folder has its own copy of the file, 0 none, -1 not known
 
 namespace
 {
 bool initialized, requested, capable, freshOptionsPending;
 unsigned seenResources, failedResources;
+PortCeDetailPresetStager detailPresetStager;
+
+int ClampPresetAniso(int level)
+{
+    const unsigned maxHw = CE_AnisoHardwareMax();
+    if (maxHw < 2u) return 0;
+    if (level > 8 && maxHw < 16u) level = 8;
+    if (level > 4 && maxHw < 8u) level = 4;
+    return level;
+}
+
+int ClampPresetWaterRes(int res)
+{
+    const unsigned maxDim = CeRenderTargetQualityHardwareMaxDim();
+    if (res > 512 && maxDim < 1024u) res = 512;
+    if (res > 256 && maxDim < 512u) res = 256;
+    return res;
+}
+
+int ClampPresetShadowRes(int res)
+{
+    const unsigned maxDim = CeRenderTargetQualityHardwareMaxDim();
+    if (res > 128 && maxDim < 256u) res = 128;
+    if (res > 64 && maxDim < 128u) res = 64;
+    return res;
+}
 
 // Video Options holds six beyond-retail quality rows whose choices live in ce.ini, not in the options file:
 // High-detail units (full_unit_models=1), 3D distant trees (full_tree_models=0, opt-in because unbatched 3D
 // trees dominate frame cost on forest levels), Terrain detail distance (terrain_detail_distance=1),
-// Anisotropic filtering (anisotropic_filtering=16), Water reflections (water_reflection_res=1024), and
-// Dynamic shadows (dynamic_shadow_res=256). A valid value already in ce.ini is a saved choice and is requested
+// Anisotropic filtering (anisotropic_filtering=16), Water reflections (water_reflection_res=512), and
+// Dynamic shadows (dynamic_shadow_res=128). A valid value already in ce.ini is a saved choice and is requested
 // as it stands; legacy full_models=1 enables both unit and tree models when neither split key is saved. With
 // no saved line the fresh choice is requested and written once; an unwritable ce.ini leaves a session-only
 // request, and a refused request (faithful run) writes nothing.
@@ -41,8 +69,8 @@ const int kFreshUnitModels = 1;
 const int kFreshTreeModels = 0;
 const int kFreshTerrainDetail = 1;
 const int kFreshAnisotropicFiltering = 16;
-const int kFreshWaterReflectionRes = 1024;
-const int kFreshDynamicShadowRes = 256;
+const int kFreshWaterReflectionRes = 512;
+const int kFreshDynamicShadowRes = 128;
 
 void FreshBeyondRetailRow(const char *key, int (*request)(int), int fresh)
 {
@@ -141,6 +169,55 @@ int PortCeDetailLandscape(int preset, int choices, int high)
 bool PortCeDetailAntiAliasingHigh(int selection, int gameHigh)
 {
     return selection == gameHigh || (selection > gameHigh && PortCeGraphicsPolicyActive());
+}
+
+bool PortCeGraphicsResolveDetailPreset(int detailLevel, CeDetailPreset *out)
+{
+    if (!out || !PortCeGraphicsPolicyActive()) return false;
+    CeDetailPreset preset = { 1, 0, 1, 16, 512, 128 };
+    if (detailLevel == 1)
+    {
+        preset.unitModels = 0; preset.treeModels = 0; preset.terrainDetail = 0;
+        preset.aniso = 0; preset.waterRes = 256; preset.shadowRes = 64;
+    }
+    else if (detailLevel == 2)
+    {
+        preset.unitModels = 1; preset.treeModels = 0; preset.terrainDetail = 0;
+        preset.aniso = 4; preset.waterRes = 512; preset.shadowRes = 128;
+    }
+    else if (detailLevel != 3)
+    {
+        return false;
+    }
+    preset.aniso = ClampPresetAniso(preset.aniso);
+    preset.waterRes = ClampPresetWaterRes(preset.waterRes);
+    preset.shadowRes = ClampPresetShadowRes(preset.shadowRes);
+    *out = preset;
+    return true;
+}
+
+void PortCeGraphicsRegisterDetailPresetStager(PortCeDetailPresetStager stager)
+{
+    detailPresetStager = stager;
+}
+
+void PortCeGraphicsStageDetailPreset(int detailLevel)
+{
+    CeDetailPreset preset;
+    if (!PortCeGraphicsResolveDetailPreset(detailLevel, &preset)) return;
+    if (detailPresetStager) detailPresetStager(preset);
+}
+
+void PortCeGraphicsApplyDetailPreset(int detailLevel)
+{
+    CeDetailPreset preset;
+    if (!PortCeGraphicsResolveDetailPreset(detailLevel, &preset)) return;
+    if (CE_FullUnitModelsRequest(preset.unitModels)) CE_SettingSet("full_unit_models", preset.unitModels);
+    if (CE_FullTreeModelsRequest(preset.treeModels)) CE_SettingSet("full_tree_models", preset.treeModels);
+    if (CE_TerrainDetailRequest(preset.terrainDetail)) CE_SettingSet("terrain_detail_distance", preset.terrainDetail);
+    if (CE_AnisoRequest(preset.aniso)) CE_SettingSet("anisotropic_filtering", preset.aniso);
+    if (CE_WaterReflectionRequest(preset.waterRes)) CE_SettingSet("water_reflection_res", preset.waterRes);
+    if (CE_DynamicShadowRequest(preset.shadowRes)) CE_SettingSet("dynamic_shadow_res", preset.shadowRes);
 }
 
 bool PortCeGraphicsFloatTargetRequired()

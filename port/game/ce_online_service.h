@@ -178,6 +178,8 @@ extern "C" {
 // Attaches a live CeStarTransport + multi-slot ICE/TURN bridge to PortCeOnlineMatchSetBridge().
 int PortCeOnlineServiceAttachMatchBridge(const uint8_t compat_digest[32]);
 void PortCeOnlineServiceDetachMatchBridge(void);
+void PortCeOnlineServiceFinishMatch(int won);
+void PortCeOnlineServicePollFinished(uint64_t now_ms);
 }
 
 #endif // PORT_GAME_CE_ONLINE_SERVICE_H

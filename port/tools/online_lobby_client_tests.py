@@ -504,6 +504,26 @@ int main(int argc, char** argv) {
             }
             Check(st == CeOnlineOpStatus::Failed && client.LastHttpCode() == 0,
                   "missing security headers rejected by transport");
+
+            // Test edge headers (#33): Set-Cookie, Content-Type with charset, and duplicate non-security headers MUST succeed!
+            Check(client.BeginLeaveRoom("rm_edgeheaders00001", NowMs(), 5000), "real loopback edge headers");
+            st = CeOnlineOpStatus::Pending;
+            while (st == CeOnlineOpStatus::Pending) {
+                st = client.Poll(NowMs());
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            }
+            Check(st == CeOnlineOpStatus::Completed,
+                  "Set-Cookie + charset Content-Type + duplicate non-security headers accepted");
+
+            // Test duplicate Content-Type MUST still be rejected!
+            Check(client.BeginLeaveRoom("rm_dupct00000000001", NowMs(), 5000), "real loopback dup content-type");
+            st = CeOnlineOpStatus::Pending;
+            while (st == CeOnlineOpStatus::Pending) {
+                st = client.Poll(NowMs());
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            }
+            Check(st == CeOnlineOpStatus::Failed && client.LastHttpCode() == 0,
+                  "duplicate Content-Type rejected by transport");
         }
     }
     Check(CeShutdownSignalHttps(), "shutdown libcurl/WinHTTP");
@@ -547,6 +567,30 @@ class _LobbyHandler(http.server.BaseHTTPRequestHandler):
             self._send_strict(409, b'{"error":"room_full","message":"full"}')
         elif self.path == "/ce-lobby/v1/rooms/rm_badheaders000001/leave":
             self._send_strict(200, b'{"ok":true}', omit_security=True)
+        elif self.path == "/ce-lobby/v1/rooms/rm_edgeheaders00001/leave":
+            body = b'{"ok":true}'
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Pragma", "no-cache")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Set-Cookie", "__cf_bm=" + ("a" * 1200) + "; path=/; HttpOnly; Secure")
+            self.send_header("Vary", "Origin")
+            self.send_header("Vary", "Accept-Encoding")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        elif self.path == "/ce-lobby/v1/rooms/rm_dupct00000000001/leave":
+            body = b'{"ok":true}'
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Pragma", "no-cache")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
         else:
             self._send_strict(400, b'{"error":"bad_request","message":"unexpected"}')
 

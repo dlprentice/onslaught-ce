@@ -319,11 +319,12 @@ void FlushAtlas(LevelAtlas &a, int level)
             const UWORD first = CDXLandscape::mDamage.mCells[tile];
             CDamageMark *m = first ? &CDXLandscape::mDamage.mMarks[first] : NULL;
             if (m && CDXLandscape::mDamage.mTexture && CDXLandscape::mDamage.mTexture->mData) {
+                const SINT maxLevel = CDXLandscape::mDamage.mTexture->mLevels;
                 const SINT pitch = lr.Pitch / 2;
                 const SINT down = 4 - level;
                 do {
                     const SINT n = m->mSize - down;
-                    if (n > 0) {
+                    if (n > 0 && n <= maxLevel && n < 7) {
                         BlendDamageAlpha(static_cast<UWORD *>(lr.pBits), pitch,
                                          CDXLandscape::mDamage.mTexture->mData + MIP_OFFSETS[n],
                                          static_cast<signed char>(m->mX) >> down,

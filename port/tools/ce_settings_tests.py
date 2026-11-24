@@ -56,7 +56,6 @@ CONSUMERS = (
     ("debrief_stats", "port/game/ce_debrief.cpp", "bool"),
     ("rumble", "port/game/ce_rumble.cpp", "bool"),
     ("dodge_button", "port/game/ce_dodge_assist.cpp", "bool"),
-    ("commander", "port/platform/common/ce.cpp", "mode"),
     ("dev_stats", "port/game/ce_palette.cpp", "bool"),
     ("console_theme", "port/game/ce_palette.cpp", "is"),
     ("music_playtype", "port/game/ce_music.cpp", "is"),

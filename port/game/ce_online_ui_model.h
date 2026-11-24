@@ -292,6 +292,12 @@ inline const char *CeOnlineMapName(int level) {
     return "Custom Mission";
 }
 
+inline bool CeOnlineMapSupportsMode(int level, CeOnlineMode mode) {
+    if (level == 100) return mode == CE_ONLINE_MODE_TUTORIAL;
+    if (level == 856 || level == 858) return mode == CE_ONLINE_MODE_COOP_DEFENCE;
+    return mode == CE_ONLINE_MODE_COOP_SKIRMISH || mode == CE_ONLINE_MODE_VERSUS_2V2;
+}
+
 // ---------------------------------------------------------------------------
 // Pages & Data Views (Zero dependency on OnlineLobbyClient / OnlineProfile)
 // ---------------------------------------------------------------------------
@@ -758,6 +764,68 @@ public:
         PROFILE_FOCUS_COUNT = 4
     };
 
+    enum BrowserZone {
+        BROWSER_ZONE_TOOLBAR = 0,
+        BROWSER_ZONE_LIST = 1,
+        BROWSER_ZONE_PAGER = 2,
+        BROWSER_ZONE_FOOTER = 3
+    };
+
+    enum BrowserToolbarItem {
+        BROWSER_TB_FILTER = 0,
+        BROWSER_TB_REFRESH = 1,
+        BROWSER_TB_CREATE = 2,
+        BROWSER_TB_JOIN_CODE = 3,
+        BROWSER_TB_COUNT = 4
+    };
+
+    enum BrowserPagerItem {
+        BROWSER_PG_PREV = 0,
+        BROWSER_PG_NEXT = 1,
+        BROWSER_PG_JOIN = 2,
+        BROWSER_PG_COUNT = 3
+    };
+
+    enum BrowserFooterItem {
+        BROWSER_FT_PROFILE = 0,
+        BROWSER_FT_LAN = 1,
+        BROWSER_FT_BACK = 2,
+        BROWSER_FT_COUNT = 3
+    };
+
+    enum RoomZone {
+        ROOM_ZONE_HEADER = 0,
+        ROOM_ZONE_ROSTER = 1,
+        ROOM_ZONE_PLAYER = 2,
+        ROOM_ZONE_HOST = 3,
+        ROOM_ZONE_CHAT = 4
+    };
+
+    enum RoomHeaderItem {
+        ROOM_HD_COPY = 0,
+        ROOM_HD_PREV = 1,
+        ROOM_HD_NEXT = 2,
+        ROOM_HD_COUNT = 3
+    };
+
+    enum RoomPlayerItem {
+        ROOM_PL_READY = 0,
+        ROOM_PL_SIDE = 1,
+        ROOM_PL_BE = 2,
+        ROOM_PL_MUTE = 3,
+        ROOM_PL_LEAVE = 4,
+        ROOM_PL_COUNT = 5
+    };
+
+    enum RoomHostItem {
+        ROOM_HS_MAP = 0,
+        ROOM_HS_MODE = 1,
+        ROOM_HS_SLOT = 2,
+        ROOM_HS_KICK = 3,
+        ROOM_HS_START = 4,
+        ROOM_HS_COUNT = 5
+    };
+
     CeOnlineUiModel()
         : mBackend(NULL),
           mActive(false),
@@ -765,7 +833,8 @@ public:
           mRequestedClose(false),
           mRequestedDirectLan(false),
           mPage(CE_ONLINE_PAGE_HOME),
-          mReturnPage(CE_ONLINE_PAGE_HOME),
+          mFormReturnPage(CE_ONLINE_PAGE_HOME),
+          mConnectReturnPage(CE_ONLINE_PAGE_HOME),
           mHomeFocus(0),
           mMaxSeatsCap(CE_ONLINE_UI_ACTIVE_MAX_SLOTS),
           mStatusIsError(false),
@@ -773,10 +842,15 @@ public:
           mCompatibleOnly(true),
           mBrowserSelected(0),
           mBrowserPageOffset(0),
+          mBrowserZone(BROWSER_ZONE_LIST),
+          mBrowserToolbarFocus(BROWSER_TB_CREATE),
+          mBrowserPagerFocus(BROWSER_PG_JOIN),
+          mBrowserFooterFocus(BROWSER_FT_BACK),
           mPasswordPromptOpen(false),
           mPasswordPromptMap(850),
+          mPasswordModalFocus(0),
           mCreateMapIndex(0),
-          mCreateModeIndex(0),
+          mCreateModeIndex(static_cast<int>(CeOnlineMapAt(0).defaultMode)),
           mCreateMaxSeats(CE_ONLINE_UI_ACTIVE_MAX_SLOTS),
           mCreatePublic(true),
           mCreateRelayOnly(false),
@@ -786,10 +860,16 @@ public:
           mJoinPendingResolve(false),
           mRosterSelected(0),
           mRosterPageOffset(0),
+          mRoomZone(ROOM_ZONE_PLAYER),
+          mRoomHeaderFocus(ROOM_HD_COPY),
+          mRoomPlayerFocus(ROOM_PL_READY),
+          mRoomHostFocus(ROOM_HS_START),
           mChatComposing(false),
           mProfileFocus(0),
           mConnectingCancellable(true),
-          mLastRoomMap(-1) {
+          mPendingStartMatch(false),
+          mLastRoomMap(-1),
+          mLastNowMs(0) {
         mAvailableBeConfigs.push_back("Standard");
         mAvailableBeConfigs.push_back("Vulcan");
         mAvailableBeConfigs.push_back("Pulse");
@@ -823,6 +903,7 @@ public:
         mPasswordPromptOpen = false;
         mChatComposing = false;
         mJoinPendingResolve = false;
+        mPendingStartMatch = false;
         mHomeFocus = 0;
         RefreshProfileFromBackend();
         if (fromMultiplayer) {
@@ -832,16 +913,21 @@ public:
         }
     }
 
-    void Close() {
-        if (mRoom.active && mBackend) {
+    void Close(bool preserveLaunch = false) {
+        const bool launching = preserveLaunch ||
+                               mRoom.state == "starting" ||
+                               mRoom.state == "in_match" ||
+                               (mRoom.startTicket.valid && !mLastTicketMatchId.empty());
+        if (mRoom.active && mBackend && !launching) {
             mBackend->RequestLeaveRoom();
-            mBackend->FlushLeave(0);
+            mBackend->FlushLeave(mLastNowMs);
         }
         mRoom = CeOnlineRoomView();
         mActive = false;
         mPasswordPromptOpen = false;
         mChatComposing = false;
         mJoinPendingResolve = false;
+        mPendingStartMatch = false;
         mLastTicketMatchId.clear();
     }
 
@@ -873,6 +959,7 @@ public:
     // -----------------------------------------------------------------------
     void SyncFromBackend(uint64_t nowMs) {
         if (!mActive || !mBackend) return;
+        mLastNowMs = nowMs;
         mBackend->Poll(nowMs);
         RefreshProfileFromBackend();
 
@@ -880,9 +967,10 @@ public:
         if (mBackend->TakeOpError(&opErr) && !opErr.empty()) {
             if (mPage == CE_ONLINE_PAGE_CONNECTING) {
                 mJoinPendingResolve = false;
+                mPendingStartMatch = false;
                 mConnectingCancellable = true;
                 mLastTicketMatchId.clear();
-                mPage = (mReturnPage == CE_ONLINE_PAGE_CONNECTING) ? CE_ONLINE_PAGE_BROWSER : mReturnPage;
+                mPage = (mConnectReturnPage == CE_ONLINE_PAGE_CONNECTING) ? CE_ONLINE_PAGE_BROWSER : mConnectReturnPage;
                 if (mPage == CE_ONLINE_PAGE_ROOM && !mRoom.active) {
                     mPage = CE_ONLINE_PAGE_BROWSER;
                 }
@@ -955,6 +1043,7 @@ public:
                 ClampRosterSelection();
 
                 if ((mRoom.state == "starting" || mRoom.state == "in_match") && mRoom.startTicket.valid) {
+                    mPendingStartMatch = false;
                     if (mLastTicketMatchId != mRoom.startTicket.matchId) {
                         mLastTicketMatchId = mRoom.startTicket.matchId;
                         mBackend->OnMatchTicketReady(mRoom.startTicket);
@@ -965,19 +1054,32 @@ public:
                         ? "Connecting all players via TURN Relay..."
                         : "Establishing direct P2P / TURN match links...";
                     mConnectingCancellable = false;
-                } else if (mPage == CE_ONLINE_PAGE_CONNECTING && mRoom.state == "lobby") {
+                } else if (mPage == CE_ONLINE_PAGE_CONNECTING && mRoom.state == "lobby" && !mPendingStartMatch) {
                     mPage = CE_ONLINE_PAGE_ROOM;
+                    mRoomZone = ROOM_ZONE_PLAYER;
+                    mRoomPlayerFocus = ROOM_PL_READY;
                     mChatComposing = false;
                     if (opErr.empty()) {
                         mStatusNotice.clear();
                         mStatusIsError = false;
                     }
                 }
+                if (!IsLocalHost() && mRoomZone == ROOM_ZONE_HOST) {
+                    mRoomZone = ROOM_ZONE_PLAYER;
+                }
             } else if (mPage == CE_ONLINE_PAGE_ROOM) {
                 mRoom = CeOnlineRoomView();
                 mChatComposing = false;
+                mPendingStartMatch = false;
                 EnterBrowser(CE_ONLINE_PAGE_HOME);
                 SetStatusNotice(opErr.empty() ? "Disconnected from lobby room." : opErr, true);
+            } else if (mPage == CE_ONLINE_PAGE_CONNECTING && !mConnectingCancellable &&
+                       mLastTicketMatchId.empty()) {
+                mRoom = CeOnlineRoomView();
+                mPendingStartMatch = false;
+                mConnectingCancellable = true;
+                EnterBrowser(CE_ONLINE_PAGE_HOME);
+                SetStatusNotice(opErr.empty() ? "Match launch could not complete." : opErr, true);
             }
         }
     }
@@ -1034,13 +1136,19 @@ public:
     // Browser Page State & Pagination (supports 20..64+ rooms)
     // -----------------------------------------------------------------------
     void EnterBrowser(CeOnlinePage returnTo) {
-        mReturnPage = returnTo;
+        mFormReturnPage = returnTo;
+        mPendingStartMatch = false;
         mPage = CE_ONLINE_PAGE_BROWSER;
         mPasswordPromptOpen = false;
         mPasswordPromptInput.clear();
+        mPasswordModalFocus = 0;
         mStatusNotice.clear();
         mStatusIsError = false;
         BrowserRefresh();
+        mBrowserZone = FilteredRooms().empty() ? BROWSER_ZONE_TOOLBAR : BROWSER_ZONE_LIST;
+        mBrowserToolbarFocus = BROWSER_TB_CREATE;
+        mBrowserPagerFocus = BROWSER_PG_JOIN;
+        mBrowserFooterFocus = BROWSER_FT_BACK;
     }
 
     void BrowserRefresh() {
@@ -1138,6 +1246,112 @@ public:
     const std::string &PasswordPromptRoomName() const { return mPasswordPromptRoomName; }
     const std::string &PasswordPromptInput() const { return mPasswordPromptInput; }
 
+    int BrowserZoneFocus() const { return mBrowserZone; }
+    void SetBrowserZoneFocus(int zone) {
+        if (zone < BROWSER_ZONE_TOOLBAR) zone = BROWSER_ZONE_TOOLBAR;
+        if (zone > BROWSER_ZONE_FOOTER) zone = BROWSER_ZONE_FOOTER;
+        mBrowserZone = zone;
+    }
+    int BrowserToolbarFocus() const { return mBrowserToolbarFocus; }
+    void SetBrowserToolbarFocus(int idx) {
+        mBrowserZone = BROWSER_ZONE_TOOLBAR;
+        mBrowserToolbarFocus = (idx % BROWSER_TB_COUNT + BROWSER_TB_COUNT) % BROWSER_TB_COUNT;
+    }
+    int BrowserPagerFocus() const { return mBrowserPagerFocus; }
+    void SetBrowserPagerFocus(int idx) {
+        mBrowserZone = BROWSER_ZONE_PAGER;
+        mBrowserPagerFocus = (idx % BROWSER_PG_COUNT + BROWSER_PG_COUNT) % BROWSER_PG_COUNT;
+    }
+    int BrowserFooterFocus() const { return mBrowserFooterFocus; }
+    void SetBrowserFooterFocus(int idx) {
+        mBrowserZone = BROWSER_ZONE_FOOTER;
+        mBrowserFooterFocus = (idx % BROWSER_FT_COUNT + BROWSER_FT_COUNT) % BROWSER_FT_COUNT;
+    }
+    int PasswordModalFocus() const { return mPasswordModalFocus; }
+    void SetPasswordModalFocus(int idx) { mPasswordModalFocus = (idx != 0) ? 1 : 0; }
+
+    void BrowserNavMove(int delta) {
+        if (mPasswordPromptOpen) {
+            mPasswordModalFocus = (mPasswordModalFocus == 0) ? 1 : 0;
+            return;
+        }
+        const int n = static_cast<int>(FilteredRooms().size());
+        if (delta < 0) {
+            if (mBrowserZone == BROWSER_ZONE_LIST) {
+                if (n > 0 && mBrowserSelected > 0) BrowserMoveSelection(-1);
+                else mBrowserZone = BROWSER_ZONE_TOOLBAR;
+            } else if (mBrowserZone == BROWSER_ZONE_TOOLBAR) {
+                mBrowserZone = BROWSER_ZONE_FOOTER;
+            } else if (mBrowserZone == BROWSER_ZONE_FOOTER) {
+                mBrowserZone = (n > 0) ? BROWSER_ZONE_PAGER : BROWSER_ZONE_TOOLBAR;
+            } else {
+                mBrowserZone = (n > 0) ? BROWSER_ZONE_LIST : BROWSER_ZONE_TOOLBAR;
+            }
+        } else if (delta > 0) {
+            if (mBrowserZone == BROWSER_ZONE_TOOLBAR) {
+                mBrowserZone = (n > 0) ? BROWSER_ZONE_LIST : BROWSER_ZONE_FOOTER;
+            } else if (mBrowserZone == BROWSER_ZONE_LIST) {
+                if (n > 0 && mBrowserSelected + 1 < n) BrowserMoveSelection(1);
+                else mBrowserZone = (n > 0) ? BROWSER_ZONE_PAGER : BROWSER_ZONE_FOOTER;
+            } else if (mBrowserZone == BROWSER_ZONE_PAGER) {
+                mBrowserZone = BROWSER_ZONE_FOOTER;
+            } else {
+                mBrowserZone = BROWSER_ZONE_TOOLBAR;
+            }
+        }
+    }
+
+    void BrowserNavSide(int delta) {
+        if (mPasswordPromptOpen) {
+            mPasswordModalFocus = (mPasswordModalFocus == 0) ? 1 : 0;
+            return;
+        }
+        const int step = (delta < 0) ? -1 : 1;
+        if (mBrowserZone == BROWSER_ZONE_TOOLBAR) {
+            mBrowserToolbarFocus = (mBrowserToolbarFocus + step + BROWSER_TB_COUNT) % BROWSER_TB_COUNT;
+        } else if (mBrowserZone == BROWSER_ZONE_LIST) {
+            if (delta < 0) BrowserPrevPage();
+            else BrowserNextPage();
+        } else if (mBrowserZone == BROWSER_ZONE_PAGER) {
+            mBrowserPagerFocus = (mBrowserPagerFocus + step + BROWSER_PG_COUNT) % BROWSER_PG_COUNT;
+        } else if (mBrowserZone == BROWSER_ZONE_FOOTER) {
+            mBrowserFooterFocus = (mBrowserFooterFocus + step + BROWSER_FT_COUNT) % BROWSER_FT_COUNT;
+        }
+    }
+
+    void BrowserNavActivate() {
+        if (mPasswordPromptOpen) {
+            if (mPasswordModalFocus == 1) BrowserPasswordCancel();
+            else BrowserPasswordSubmit();
+            return;
+        }
+        if (mBrowserZone == BROWSER_ZONE_TOOLBAR) {
+            switch (mBrowserToolbarFocus) {
+            case BROWSER_TB_FILTER:    BrowserToggleCompatibleFilter(); break;
+            case BROWSER_TB_REFRESH:   BrowserRefresh(); break;
+            case BROWSER_TB_CREATE:    EnterCreate(CE_ONLINE_PAGE_BROWSER); break;
+            case BROWSER_TB_JOIN_CODE: EnterJoinCode(CE_ONLINE_PAGE_BROWSER); break;
+            default: break;
+            }
+        } else if (mBrowserZone == BROWSER_ZONE_LIST) {
+            BrowserJoinSelected();
+        } else if (mBrowserZone == BROWSER_ZONE_PAGER) {
+            switch (mBrowserPagerFocus) {
+            case BROWSER_PG_PREV: BrowserPrevPage(); break;
+            case BROWSER_PG_NEXT: BrowserNextPage(); break;
+            case BROWSER_PG_JOIN: BrowserJoinSelected(); break;
+            default: break;
+            }
+        } else if (mBrowserZone == BROWSER_ZONE_FOOTER) {
+            switch (mBrowserFooterFocus) {
+            case BROWSER_FT_PROFILE: EnterProfile(CE_ONLINE_PAGE_BROWSER); break;
+            case BROWSER_FT_LAN:     TriggerDirectLan(); break;
+            case BROWSER_FT_BACK:    NavigateBack(); break;
+            default: break;
+            }
+        }
+    }
+
     bool BrowserJoinSelected() {
         std::vector<CeOnlineUiRoomSummary> list = FilteredRooms();
         if (list.empty() || mBrowserSelected < 0 || mBrowserSelected >= static_cast<int>(list.size())) {
@@ -1159,6 +1373,7 @@ public:
         }
         if (room.hasPassword) {
             mPasswordPromptOpen = true;
+            mPasswordModalFocus = 0;
             mPasswordPromptRoomId = room.roomId;
             mPasswordPromptRoomName = CeOnlineSanitizeForFont(room.name);
             mPasswordPromptMap = room.map;
@@ -1208,7 +1423,7 @@ public:
     // Create Lobby Page
     // -----------------------------------------------------------------------
     void EnterCreate(CeOnlinePage returnTo) {
-        mReturnPage = returnTo;
+        mFormReturnPage = returnTo;
         mPage = CE_ONLINE_PAGE_CREATE;
         mCreateFocus = CREATE_NAME;
         if (mCreateRoomName.empty()) {
@@ -1251,10 +1466,19 @@ public:
 
     void CreateCycleMap(int delta) {
         mCreateMapIndex = (mCreateMapIndex + delta + CE_ONLINE_MAP_COUNT) % CE_ONLINE_MAP_COUNT;
+        mCreateModeIndex = static_cast<int>(CeOnlineMapAt(mCreateMapIndex).defaultMode);
     }
 
     void CreateCycleMode(int delta) {
-        mCreateModeIndex = (mCreateModeIndex + delta + CE_ONLINE_MODE_COUNT) % CE_ONLINE_MODE_COUNT;
+        const int level = CreateMapLevel();
+        const int step = (delta < 0) ? -1 : 1;
+        for (int tries = 1; tries <= CE_ONLINE_MODE_COUNT; ++tries) {
+            const int cand = (mCreateModeIndex + step * tries + CE_ONLINE_MODE_COUNT * 4) % CE_ONLINE_MODE_COUNT;
+            if (CeOnlineMapSupportsMode(level, static_cast<CeOnlineMode>(cand))) {
+                mCreateModeIndex = cand;
+                return;
+            }
+        }
     }
 
     void CreateCycleMaxSeats(int delta) {
@@ -1337,7 +1561,7 @@ public:
     // Join by Code Page
     // -----------------------------------------------------------------------
     void EnterJoinCode(CeOnlinePage returnTo) {
-        mReturnPage = returnTo;
+        mFormReturnPage = returnTo;
         mPage = CE_ONLINE_PAGE_JOIN_CODE;
         mJoinCodeFocus = JOIN_CODE_INPUT;
         mJoinPendingResolve = false;
@@ -1500,6 +1724,130 @@ public:
         }
     }
 
+    int RoomZoneFocus() const { return mRoomZone; }
+    void SetRoomZoneFocus(int zone) {
+        if (zone == ROOM_ZONE_HOST && !IsLocalHost()) zone = ROOM_ZONE_PLAYER;
+        if (zone < ROOM_ZONE_HEADER) zone = ROOM_ZONE_HEADER;
+        if (zone > ROOM_ZONE_CHAT) zone = ROOM_ZONE_CHAT;
+        mRoomZone = zone;
+    }
+    int RoomHeaderFocus() const { return mRoomHeaderFocus; }
+    void SetRoomHeaderFocus(int idx) {
+        mRoomZone = ROOM_ZONE_HEADER;
+        mRoomHeaderFocus = (idx % ROOM_HD_COUNT + ROOM_HD_COUNT) % ROOM_HD_COUNT;
+    }
+    int RoomPlayerFocus() const { return mRoomPlayerFocus; }
+    void SetRoomPlayerFocus(int idx) {
+        mRoomZone = ROOM_ZONE_PLAYER;
+        mRoomPlayerFocus = (idx % ROOM_PL_COUNT + ROOM_PL_COUNT) % ROOM_PL_COUNT;
+    }
+    int RoomHostFocus() const { return mRoomHostFocus; }
+    void SetRoomHostFocus(int idx) {
+        if (!IsLocalHost()) return;
+        mRoomZone = ROOM_ZONE_HOST;
+        mRoomHostFocus = (idx % ROOM_HS_COUNT + ROOM_HS_COUNT) % ROOM_HS_COUNT;
+    }
+
+    void RoomNavMove(int delta) {
+        if (mChatComposing) return;
+        const int seats = static_cast<int>(mRoom.seats.size());
+        if (delta < 0) {
+            if (mRoomZone == ROOM_ZONE_CHAT) {
+                mRoomZone = IsLocalHost() ? ROOM_ZONE_HOST : ROOM_ZONE_PLAYER;
+            } else if (mRoomZone == ROOM_ZONE_HOST) {
+                mRoomZone = ROOM_ZONE_PLAYER;
+            } else if (mRoomZone == ROOM_ZONE_PLAYER) {
+                mRoomZone = (seats > 0) ? ROOM_ZONE_ROSTER : ROOM_ZONE_HEADER;
+            } else if (mRoomZone == ROOM_ZONE_ROSTER) {
+                if (seats > 0 && mRosterSelected > 0) RosterMoveSelection(-1);
+                else mRoomZone = ROOM_ZONE_HEADER;
+            } else {
+                mRoomZone = ROOM_ZONE_CHAT;
+            }
+        } else if (delta > 0) {
+            if (mRoomZone == ROOM_ZONE_HEADER) {
+                mRoomZone = (seats > 0) ? ROOM_ZONE_ROSTER : ROOM_ZONE_PLAYER;
+            } else if (mRoomZone == ROOM_ZONE_ROSTER) {
+                if (seats > 0 && mRosterSelected + 1 < seats) RosterMoveSelection(1);
+                else mRoomZone = ROOM_ZONE_PLAYER;
+            } else if (mRoomZone == ROOM_ZONE_PLAYER) {
+                mRoomZone = IsLocalHost() ? ROOM_ZONE_HOST : ROOM_ZONE_CHAT;
+            } else if (mRoomZone == ROOM_ZONE_HOST) {
+                mRoomZone = ROOM_ZONE_CHAT;
+            } else {
+                mRoomZone = ROOM_ZONE_HEADER;
+            }
+        }
+    }
+
+    void RoomNavSide(int delta) {
+        if (mChatComposing) return;
+        const int step = (delta < 0) ? -1 : 1;
+        if (mRoomZone == ROOM_ZONE_HEADER) {
+            if (RosterPageCount() > 1) {
+                mRoomHeaderFocus = (mRoomHeaderFocus + step + ROOM_HD_COUNT) % ROOM_HD_COUNT;
+            } else {
+                mRoomHeaderFocus = ROOM_HD_COPY;
+            }
+        } else if (mRoomZone == ROOM_ZONE_ROSTER) {
+            if (delta < 0) RosterPrevPage();
+            else RosterNextPage();
+        } else if (mRoomZone == ROOM_ZONE_PLAYER) {
+            mRoomPlayerFocus = (mRoomPlayerFocus + step + ROOM_PL_COUNT) % ROOM_PL_COUNT;
+        } else if (mRoomZone == ROOM_ZONE_HOST && IsLocalHost()) {
+            mRoomHostFocus = (mRoomHostFocus + step + ROOM_HS_COUNT) % ROOM_HS_COUNT;
+        }
+    }
+
+    void RoomNavActivate() {
+        if (mChatComposing) {
+            RoomChatSubmit();
+            return;
+        }
+        if (mRoomZone == ROOM_ZONE_HEADER) {
+            switch (mRoomHeaderFocus) {
+            case ROOM_HD_COPY: RoomCopyCode(); break;
+            case ROOM_HD_PREV: RosterPrevPage(); break;
+            case ROOM_HD_NEXT: RosterNextPage(); break;
+            default: break;
+            }
+        } else if (mRoomZone == ROOM_ZONE_ROSTER) {
+            const CeOnlineSeatView *sel = SelectedSeat();
+            if (!sel) return;
+            if (sel->seat == mRoom.localSeat) {
+                RoomToggleReady();
+            } else if (sel->kind != CE_ONLINE_SEAT_HUMAN && IsLocalHost()) {
+                RoomHostCycleSelectedSeatKind();
+            } else if (sel->kind == CE_ONLINE_SEAT_HUMAN) {
+                RoomToggleMuteSelected();
+            }
+        } else if (mRoomZone == ROOM_ZONE_PLAYER) {
+            switch (mRoomPlayerFocus) {
+            case ROOM_PL_READY: RoomToggleReady(); break;
+            case ROOM_PL_SIDE:  RoomCycleSide(1); break;
+            case ROOM_PL_BE:    RoomCycleBeConfig(1); break;
+            case ROOM_PL_MUTE:  RoomToggleMuteSelected(); break;
+            case ROOM_PL_LEAVE: RoomLeave(); break;
+            default: break;
+            }
+        } else if (mRoomZone == ROOM_ZONE_HOST) {
+            if (!IsLocalHost()) {
+                mRoomZone = ROOM_ZONE_PLAYER;
+                return;
+            }
+            switch (mRoomHostFocus) {
+            case ROOM_HS_MAP:   RoomHostCycleMap(1); break;
+            case ROOM_HS_MODE:  RoomHostCycleMode(1); break;
+            case ROOM_HS_SLOT:  RoomHostCycleSelectedSeatKind(); break;
+            case ROOM_HS_KICK:  RoomHostKickSelected(); break;
+            case ROOM_HS_START: RoomHostStartMatch(); break;
+            default: break;
+            }
+        } else if (mRoomZone == ROOM_ZONE_CHAT) {
+            RoomOpenChat();
+        }
+    }
+
     const std::vector<std::string> &AvailableBeConfigs() const { return mAvailableBeConfigs; }
 
     bool IsPlayerMuted(const std::string &playerId) const {
@@ -1551,6 +1899,10 @@ public:
         CeOnlineSeatView *me = LocalSeatMutable();
         if (!me || !mBackend) return false;
         (void)delta;
+        if (mRoom.mode != "versus_2v2") {
+            SetStatusNotice("Side selection is only available in 2v2 Versus.", false);
+            return false;
+        }
         const int nextTeam = (me->team == 0) ? 1 : 0;
         std::string err;
         if (!mBackend->RequestUpdateSelf(nextTeam, me->beCfg, me->ready, &err)) {
@@ -1665,9 +2017,15 @@ public:
         }
         const int cur = CeOnlineFindMapIndex(mRoom.map);
         const int next = (cur + delta + CE_ONLINE_MAP_COUNT) % CE_ONLINE_MAP_COUNT;
+        const CeOnlineMapInfo &nextMap = CeOnlineMapAt(next);
         CeOnlineHostPatch patch;
         patch.hasMap = true;
-        patch.map = CeOnlineMapAt(next).level;
+        patch.map = nextMap.level;
+        const CeOnlineMode curMode = static_cast<CeOnlineMode>(CeOnlineFindModeIndex(mRoom.mode));
+        if (!CeOnlineMapSupportsMode(nextMap.level, curMode) || nextMap.defaultMode != curMode) {
+            patch.hasMode = true;
+            patch.mode = CeOnlineModeAt(static_cast<int>(nextMap.defaultMode)).wire;
+        }
         std::string err;
         if (!mBackend->RequestHostUpdate(patch, &err)) {
             SetStatusNotice(err.empty() ? "Could not change map." : err, true);
@@ -1682,7 +2040,19 @@ public:
             return false;
         }
         const int cur = CeOnlineFindModeIndex(mRoom.mode);
-        const int next = (cur + delta + CE_ONLINE_MODE_COUNT) % CE_ONLINE_MODE_COUNT;
+        const int step = (delta < 0) ? -1 : 1;
+        int next = cur;
+        for (int tries = 1; tries <= CE_ONLINE_MODE_COUNT; ++tries) {
+            const int cand = (cur + step * tries + CE_ONLINE_MODE_COUNT * 4) % CE_ONLINE_MODE_COUNT;
+            if (CeOnlineMapSupportsMode(mRoom.map, static_cast<CeOnlineMode>(cand))) {
+                next = cand;
+                break;
+            }
+        }
+        if (next == cur) {
+            SetStatusNotice(std::string("Only ") + CeOnlineModeAt(cur).label + " mode is supported on this map.", false);
+            return false;
+        }
         CeOnlineHostPatch patch;
         patch.hasMode = true;
         patch.mode = CeOnlineModeAt(next).wire;
@@ -1802,6 +2172,20 @@ public:
             }
             return false;
         }
+        if (mRoom.mode == "versus_2v2") {
+            int active0 = 0, active1 = 0;
+            for (size_t i = 0; i < mRoom.seats.size(); ++i) {
+                const CeOnlineSeatView &s = mRoom.seats[i];
+                if (s.kind == CE_ONLINE_SEAT_HUMAN || s.kind == CE_ONLINE_SEAT_AI) {
+                    if (s.team == 0) ++active0;
+                    else if (s.team == 1) ++active1;
+                }
+            }
+            if (active0 < 1 || active1 < 1) {
+                if (reasonOut) *reasonOut = "Both Forseti and Muspell need at least one pilot in 2v2 Versus.";
+                return false;
+            }
+        }
         if (reasonOut) *reasonOut = "All players ready. Choose Start Match.";
         return true;
     }
@@ -1821,6 +2205,7 @@ public:
             SetStatusNotice(err.empty() ? "Could not start match." : err, true);
             return false;
         }
+        mPendingStartMatch = true;
         BeginConnecting("Starting Match", "Preparing match ticket and peer links...", false);
         return true;
     }
@@ -1831,6 +2216,7 @@ public:
         mChatComposing = false;
         mChatDraft.clear();
         mLastTicketMatchId.clear();
+        mPendingStartMatch = false;
         EnterBrowser(CE_ONLINE_PAGE_HOME);
     }
 
@@ -1838,7 +2224,7 @@ public:
     // Profile Page
     // -----------------------------------------------------------------------
     void EnterProfile(CeOnlinePage returnTo) {
-        mReturnPage = returnTo;
+        mFormReturnPage = returnTo;
         mPage = CE_ONLINE_PAGE_PROFILE;
         mProfileFocus = PROFILE_CALLSIGN_INPUT;
         RefreshProfileFromBackend();
@@ -1923,9 +2309,10 @@ public:
     void ConnectingCancel() {
         if (!mConnectingCancellable) return;
         mJoinPendingResolve = false;
+        mPendingStartMatch = false;
         if (mBackend) mBackend->RequestLeaveRoom();
         mRoom = CeOnlineRoomView();
-        mPage = mReturnPage;
+        mPage = mConnectReturnPage;
         SetStatusNotice("Cancelled.", false);
     }
 
@@ -2007,7 +2394,7 @@ public:
         case CE_ONLINE_PAGE_CREATE:
         case CE_ONLINE_PAGE_JOIN_CODE:
         case CE_ONLINE_PAGE_PROFILE:
-            mPage = mReturnPage;
+            mPage = mFormReturnPage;
             mStatusNotice.clear();
             mStatusIsError = false;
             break;
@@ -2048,7 +2435,7 @@ private:
     }
 
     void BeginConnecting(const std::string &heading, const std::string &detail, bool cancellable) {
-        mReturnPage = (mPage == CE_ONLINE_PAGE_CONNECTING) ? mReturnPage : mPage;
+        mConnectReturnPage = (mPage == CE_ONLINE_PAGE_CONNECTING) ? mConnectReturnPage : mPage;
         mPage = CE_ONLINE_PAGE_CONNECTING;
         mConnectingHeading = CeOnlineSanitizeForFont(heading);
         mConnectingDetail = CeOnlineSanitizeForFont(detail);
@@ -2100,7 +2487,8 @@ private:
     bool mRequestedDirectLan;
 
     CeOnlinePage mPage;
-    CeOnlinePage mReturnPage;
+    CeOnlinePage mFormReturnPage;
+    CeOnlinePage mConnectReturnPage;
     int mHomeFocus;
     uint16_t mMaxSeatsCap;
 
@@ -2114,10 +2502,15 @@ private:
     bool mCompatibleOnly;
     int mBrowserSelected;
     int mBrowserPageOffset;
+    int mBrowserZone;
+    int mBrowserToolbarFocus;
+    int mBrowserPagerFocus;
+    int mBrowserFooterFocus;
     bool mPasswordPromptOpen;
     std::string mPasswordPromptRoomId;
     std::string mPasswordPromptRoomName;
     int mPasswordPromptMap;
+    int mPasswordModalFocus;
     std::string mPasswordPromptInput;
 
     // Create Lobby
@@ -2141,6 +2534,10 @@ private:
     CeOnlineRoomView mRoom;
     int mRosterSelected;
     int mRosterPageOffset;
+    int mRoomZone;
+    int mRoomHeaderFocus;
+    int mRoomPlayerFocus;
+    int mRoomHostFocus;
     bool mChatComposing;
     std::string mChatDraft;
     std::set<std::string> mMutedPlayers;
@@ -2155,7 +2552,9 @@ private:
     std::string mConnectingHeading;
     std::string mConnectingDetail;
     bool mConnectingCancellable;
+    bool mPendingStartMatch;
     int mLastRoomMap;
+    uint64_t mLastNowMs;
 };
 
 #endif // CE_ONLINE_UI_MODEL_H

@@ -977,8 +977,7 @@ def main():
                          "default public build has none of it; use a separate worktree, as its objects differ")
     ap.add_argument("--with-ice", action="store_true",
                     help="with --public --with-network: compile the optional ICE session bridge; requires ice_deps.py build;\n"
-                         "use a separate worktree; packaging requires package.py --with-ice and exact build receipts;\n"
-                         "Windows ICE requests remain refused")
+                         "use a separate worktree; packaging requires package.py --with-ice and exact build receipts")
     ap.add_argument("--with-native-signaling", action="store_true",
                     help="with --public --with-network --with-ice: compile the optional native HTTPS signaling client;\n"
                          "does not select a provider or load credentials; packaging requires separate explicit opt-in")
@@ -1062,6 +1061,13 @@ def main():
             global WITH_NATIVE_SIGNALING
             WITH_NATIVE_SIGNALING = True
             CE_DEFINES.append("-DCE_NETWORK_SIGNALING=1")
+        # No machine paths in the shipped binary (__FILE__ in assertions and logs, debug information): this checkout,
+        # its mirror and build, and the shared dependency directory become relative names.
+        maps = [f"-ffile-prefix-map={p}={n}" for p, n in ((MIRROR_ROOT, "mirror"), (BUILD, "build"), (deps.DATA, "deps"),
+                                                           (ROOT, "."), (RESOLVED, "."), *deps.real_prefix_maps())]
+        for t in TARGETS.values():
+            t["cxx"] += maps
+            t["cc"] += maps
     if a.online_lobby_url:
         if not WITH_NATIVE_SIGNALING:
             raise SystemExit("--online-lobby-url requires --with-native-signaling")
@@ -1070,13 +1076,6 @@ def main():
             raise SystemExit("--online-lobby-url must be an https:// origin without path or query")
         global ONLINE_LOBBY_URL
         ONLINE_LOBBY_URL = url
-        # No machine paths in the shipped binary (__FILE__ in assertions and logs, debug information): this checkout,
-        # its mirror and build, and the shared dependency directory become relative names.
-        maps = [f"-ffile-prefix-map={p}={n}" for p, n in ((MIRROR_ROOT, "mirror"), (BUILD, "build"), (deps.DATA, "deps"),
-                                                           (ROOT, "."), (RESOLVED, "."), *deps.real_prefix_maps())]
-        for t in TARGETS.values():
-            t["cxx"] += maps
-            t["cc"] += maps
     if a.commander_test:
         CE_DEFINES.append("-DCE_COMMANDER_TEST=1")
     if a.play_unit_test:

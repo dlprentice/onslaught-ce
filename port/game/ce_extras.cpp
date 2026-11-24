@@ -74,13 +74,11 @@ void	PortCeExtrasInFont(WCHAR *text)
 			*text = '-';
 }
 
+void	PortCeShowMessage(const char *text, float top_least = 104.f);
+
 void	PortCeExtrasMessage(const char *text)
 {
-	static WCHAR message[512];
-	PortCeExtrasWiden(message, 512, text);
-	FEMESSBOX.Kill();
-	FEMESSBOX.Create(320.f, 240.f, 400.f, FO(100), message, PLATFORM.Font(FONT_SMALL), 0, 10, FALSE, FEMB_OPTION_A_CONTINUE, 0);
-	FEMESSBOX.SetOnDismiss(FEP_NONE, 0);
+	PortCeShowMessage(text);
 }
 
 namespace

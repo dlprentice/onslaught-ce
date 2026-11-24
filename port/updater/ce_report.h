@@ -31,19 +31,37 @@
 #define CE_VERSION_NOTE ""
 #endif
 
+/* Length of a root path with trailing separators removed. With drop_root set, a bare "/" or "X:\" drops its trailing
+ * separator too so callers can append "/sub" or "\sub" without producing doubled separators. */
+static inline size_t ce_trim_sep_len(const char *s, int drop_root)
+{
+	size_t len = s ? strlen(s) : 0;
+#ifdef _WIN32
+	size_t min_len = drop_root ? 0 : (len >= 3 && s[1] == ':' ? 3 : 1);
+	while (len > min_len && (s[len - 1] == '\\' || s[len - 1] == '/')) --len;
+	if (drop_root && len == 3 && s[1] == ':' && (s[2] == '\\' || s[2] == '/')) --len;
+#else
+	size_t min_len = drop_root ? 0 : 1;
+	while (len > min_len && s[len - 1] == '/') --len;
+#endif
+	return len;
+}
+
 /* The per-user folder: BEA_USER_DIR, else Linux $XDG_DATA_HOME/onslaught-ce or ~/.local/share/onslaught-ce, Windows
  * %APPDATA%\Onslaught CE (the game's own default, port/platform/linux/paths.cpp and windows/files.cpp). */
 static inline void ce_user_dir(char *out, size_t n)
 {
 	const char *user = getenv("BEA_USER_DIR");
-	if (user && *user) { snprintf(out, n, "%s", user); return; }
+	if (user && *user) { snprintf(out, n, "%.*s", (int)ce_trim_sep_len(user, 0), user); return; }
 #ifdef _WIN32
 	const char *appdata = getenv("APPDATA");
-	snprintf(out, n, "%s\\Onslaught CE", appdata ? appdata : ".");
+	if (appdata && *appdata) snprintf(out, n, "%.*s\\Onslaught CE", (int)ce_trim_sep_len(appdata, 1), appdata);
+	else snprintf(out, n, "Onslaught CE");
 #else
 	const char *xdg = getenv("XDG_DATA_HOME"), *home = getenv("HOME");
-	if (xdg && *xdg) snprintf(out, n, "%s/onslaught-ce", xdg);
-	else snprintf(out, n, "%s/.local/share/onslaught-ce", home ? home : ".");
+	if (xdg && *xdg) snprintf(out, n, "%.*s/onslaught-ce", (int)ce_trim_sep_len(xdg, 1), xdg);
+	else if (home && *home) snprintf(out, n, "%.*s/.local/share/onslaught-ce", (int)ce_trim_sep_len(home, 1), home);
+	else snprintf(out, n, ".local/share/onslaught-ce");
 #endif
 }
 
@@ -138,7 +156,7 @@ static inline void ce_short_path(const char *path, char *out, size_t n)
 #else
 	const char *base = getenv("HOME"), *name = "~";
 #endif
-	size_t l = base ? strlen(base) : 0;
+	size_t l = ce_trim_sep_len(base, 0);
 	if (l && !strncmp(path, base, l) && (path[l] == '/' || path[l] == '\\'))
 		snprintf(out, n, "%s%s", name, path + l);
 	else
@@ -248,7 +266,7 @@ static inline int ce_settings_dir_open_ex(const char *path, int create, CeSettin
 		while (*p == '/' || *p == '\\') p++;
 		const char *s = p;
 		while (*p && *p != '/' && *p != '\\') p++;
-		if (p - s == 2 && s[0] == '.' && s[1] == '.') return 0;
+		if ((p - s == 1 && s[0] == '.') || (p - s == 2 && s[0] == '.' && s[1] == '.')) return 0;
 	}
 	DWORD n = GetFullPathNameA(path, sizeof dir->path, dir->path, NULL);
 	if (!n || n >= sizeof dir->path) return 0;
@@ -390,7 +408,7 @@ static inline int ce_settings_dir_open_ex(const char *path, int create, CeSettin
 		while (*p == '/') p++;
 		const char *s = p;
 		while (*p && *p != '/') p++;
-		if (p - s == 2 && s[0] == '.' && s[1] == '.') return 0;
+		if ((p - s == 1 && s[0] == '.') || (p - s == 2 && s[0] == '.' && s[1] == '.')) return 0;
 	}
 	size_t len = strlen(copy);
 	while (len > 1 && copy[len - 1] == '/') copy[--len] = 0;
@@ -475,19 +493,17 @@ static inline int ce_settings_dir_open_ex(const char *path, int create, CeSettin
 		if (!*part) break;
 		char *end = strchr(part, '/');
 		if (end) *end = 0;
-		if (strcmp(part, "."))
+		if (!strcmp(part, ".") || !strcmp(part, "..")) { close(fd); return 0; }
+		int next = openat(fd, part, leaf_flags), why = next < 0 ? errno : 0;
+		if (next < 0 && why == ENOENT && create && (mkdirat(fd, part, 0700) == 0 || errno == EEXIST))
+			next = openat(fd, part, leaf_flags);
+		close(fd);
+		if (next < 0)
 		{
-			int next = openat(fd, part, leaf_flags), why = next < 0 ? errno : 0;
-			if (next < 0 && why == ENOENT && create && (mkdirat(fd, part, 0700) == 0 || errno == EEXIST))
-				next = openat(fd, part, leaf_flags);
-			close(fd);
-			if (next < 0)
-			{
-				if (absent && !create && why == ENOENT) *absent = 1;
-				return 0;
-			}
-			fd = next;
+			if (absent && !create && why == ENOENT) *absent = 1;
+			return 0;
 		}
+		fd = next;
 		if (!end) break;
 		part = end + 1;
 	}
@@ -701,7 +717,15 @@ static inline int ce_ini_edit_file(const char *ini, const char *key, const char 
 #ifdef _WIN32
 	if (strchr(name, ':')) return 0;
 #endif
-	if (!slash) strcpy(parent, ".");
+	if (!slash)
+	{
+#ifdef _WIN32
+		DWORD cwd_len = GetCurrentDirectoryA(sizeof parent, parent);
+		if (!cwd_len || cwd_len >= sizeof parent) return 0;
+#else
+		if (!getcwd(parent, sizeof parent)) return 0;
+#endif
+	}
 	else if (slash == parent) slash[1] = 0;
 #ifdef _WIN32
 	else if (slash == parent + 2 && parent[1] == ':') slash[1] = 0;

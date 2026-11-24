@@ -11,7 +11,7 @@ const MAX_BODY = 65536;
 const AUTH_WINDOW_SECONDS = 120;
 const DEFAULT_SESSION_SECONDS = 14400;
 const MAX_SESSION_SECONDS = 86400;
-const DEFAULT_TURN_TTL_SECONDS = 900;
+const DEFAULT_TURN_TTL_SECONDS = 3600;
 const MAX_TURN_TTL_SECONDS = 14400;
 const DEFAULT_DAILY_TURN_LIMIT = 200;
 const DEFAULT_MONTHLY_TURN_LIMIT = 2000;
@@ -1874,7 +1874,33 @@ export class GameRoom extends DurableObject {
         if (body.team !== 0 && body.team !== 1) {
           return { ok: false, httpStatus: 400, errorCode: "invalid_team", message: "Team must be 0 or 1." };
         }
-        member.team = body.team;
+        if (room.mode !== "versus_2v2" && body.team !== 0) {
+          return { ok: false, httpStatus: 400, errorCode: "invalid_team", message: "Side selection is only available in 2v2 Versus." };
+        }
+        if (room.mode === "versus_2v2") {
+          const teamCap = Math.max(1, Math.ceil(room.max_seats / 2));
+          if (member.team !== body.team) {
+            const humansOnTarget = room.seats.filter(
+              s => s.kind === "human" && s.seat !== member.seat && s.team === body.team
+            ).length;
+            if (humansOnTarget >= teamCap) {
+              return { ok: false, httpStatus: 409, errorCode: "team_full", message: "That side is already full." };
+            }
+            member.team = body.team;
+            // Rebalance non-human seats (AI/open) so 2H+2AI stays 2v2 rather than drifting to 3v1.
+            let t0 = room.seats.filter(s => s.team === 0).length;
+            let t1 = room.seats.filter(s => s.team === 1).length;
+            if (body.team === 0 && t0 > teamCap) {
+              const swap = room.seats.find(s => s.kind !== "human" && s.team === 0);
+              if (swap) { swap.team = 1; t0--; t1++; }
+            } else if (body.team === 1 && t1 > teamCap) {
+              const swap = room.seats.find(s => s.kind !== "human" && s.team === 1);
+              if (swap) { swap.team = 0; t1--; t0++; }
+            }
+          }
+        } else {
+          member.team = 0;
+        }
       }
       if (Object.hasOwn(body, "be_cfg")) {
         if (room.state !== "lobby") {
@@ -1956,6 +1982,39 @@ export class GameRoom extends DurableObject {
         }
         if (room.mode !== body.mode) {
           room.mode = body.mode;
+          if (room.mode === "versus_2v2") {
+            let team0 = 0;
+            let team1 = 0;
+            const cap = Math.max(1, Math.ceil(room.max_seats / 2));
+            for (const s of room.seats) {
+              if (s.kind === "human") {
+                if (s.team === 1 && team1 < cap) {
+                  team1++;
+                } else if (team0 < cap) {
+                  s.team = 0;
+                  team0++;
+                } else {
+                  s.team = 1;
+                  team1++;
+                }
+              }
+            }
+            for (const s of room.seats) {
+              if (s.kind !== "human") {
+                if (team0 <= team1 && team0 < cap) {
+                  s.team = 0;
+                  team0++;
+                } else {
+                  s.team = 1;
+                  team1++;
+                }
+              }
+            }
+          } else {
+            for (const s of room.seats) {
+              s.team = 0;
+            }
+          }
           resetGuestReady = true;
           syncDir = true;
         }
@@ -2013,6 +2072,35 @@ export class GameRoom extends DurableObject {
           }
         }
         room.max_seats = body.max_seats;
+        if (room.mode === "versus_2v2") {
+          let team0 = 0;
+          let team1 = 0;
+          const teamCap = Math.max(1, Math.ceil(room.max_seats / 2));
+          for (const s of room.seats) {
+            if (s.kind === "human") {
+              if (s.team === 1 && team1 < teamCap) {
+                team1++;
+              } else if (team0 < teamCap) {
+                s.team = 0;
+                team0++;
+              } else {
+                s.team = 1;
+                team1++;
+              }
+            }
+          }
+          for (const s of room.seats) {
+            if (s.kind !== "human") {
+              if (team0 <= team1 && team0 < teamCap) {
+                s.team = 0;
+                team0++;
+              } else {
+                s.team = 1;
+                team1++;
+              }
+            }
+          }
+        }
         syncDir = true;
       }
       if (Object.hasOwn(body, "set_seat_kind")) {
@@ -2130,6 +2218,19 @@ export class GameRoom extends DurableObject {
       for (const h of humans) {
         if (h.seat !== room.host_seat && !h.ready) {
           return { ok: false, httpStatus: 409, errorCode: "players_not_ready", message: "All human players must be ready before starting." };
+        }
+      }
+      if (room.mode === "versus_2v2") {
+        let active0 = 0;
+        let active1 = 0;
+        for (const s of room.seats) {
+          if (s.kind === "human" || s.kind === "ai") {
+            if (s.team === 0) active0++;
+            else if (s.team === 1) active1++;
+          }
+        }
+        if (active0 < 1 || active1 < 1) {
+          return { ok: false, httpStatus: 409, errorCode: "teams_unbalanced", message: "Both Forseti and Muspell need at least one active pilot in 2v2 Versus." };
         }
       }
       // Build deterministic seat -> sim_slot mapping: host = sim_slot 0, other humans next, then AI bots.

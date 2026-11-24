@@ -208,6 +208,82 @@ def main():
         code, out = visit_frames("good", label_text, places_text)
         check("the label code and place tracking build against the fake boundary", code is not None, out)
         check("arrival, leaving a place, its edge and the cinema draw as they should", code == 0, out)
+
+        # Verify GAME.IsPaused() HUD suppression and zero empty opaque pill during open < 0.45f ramp.
+        pause_dir = folder / "pause_and_pill"
+        pause_dir.mkdir()
+        (pause_dir / LABEL.name).write_text(label_text)
+        (pause_dir / PLACES.name).write_text(places_text)
+        fake_h = (ROOT / "port/tools/tests/ce_museum_label_fake.h").read_text().replace(
+            "struct FakeGame { CPlayer player; bool IsMultiplayer() { return false; } CPlayer *GetPlayer(int) { return &player; } };",
+            "struct FakeGame { CPlayer player; bool paused = false; bool IsPaused() { return paused; } bool IsMultiplayer() { return false; } CPlayer *GetPlayer(int) { return &player; } };"
+        )
+        (pause_dir / "ce_museum_label_fake.h").write_text(fake_h)
+        for header in FAKE_HEADERS:
+            (pause_dir / header).write_text('#include "ce_museum_label_fake.h"\n')
+        (pause_dir / "ce_museum_cinema_panel.inc").write_text("namespace {\nvoid CinemaPanelDraw() {}\n}\n")
+        pause_driver = r"""
+#include "ce_museum_label_fake.h"
+#include "hud_scale.h"
+#include "ce_museum_label.h"
+#include <cstdio>
+#include <cstdlib>
+std::vector<FakeText> gFakeTexts;
+std::vector<FakeBar> gFakeBars;
+FakeShell LT; FakeGame GAME; FakeEngine ENGINE; FakeHud HUD; FakePlatform PLATFORM; FakeRenderInfo RENDERINFO;
+bool gMirrorPass = false;
+float gMessageBoxX = 0, gMessageBoxY = 0, gMessageBoxWidth = 0, gMessageTextY = 0;
+CeHudScope::CeHudScope(int, float, float, float, float) : mPreviousScale(1), mPreviousX(0), mPreviousY(0), mPreviousActive(false) {}
+CeHudScope::~CeHudScope() {}
+static unsigned long long gTicks = 50000;
+extern "C" unsigned PortPresentCount(void) { return 1; }
+extern "C" unsigned long long CE_ScreenshotTicks(void) { return gTicks; }
+extern "C" bool PortCeMuseumVisitActive(void) { return true; }
+extern "C" void PortCeMuseumVisitFrame(void) {}
+extern "C" bool PortCeMuseumCinemaCue(char *, unsigned, char *, unsigned) { return false; }
+extern "C" void PortCeMuseumCinemaView(const float *, unsigned) {}
+int CeMuseumHallSignLabel(float, float, int, int *n) { if (n) *n = 0; return -1; }
+bool CeMuseumHallFacesExit(float, float, float, float, bool) { return false; }
+static void Need(bool ok, const char *why) { if (!ok) { std::fprintf(stderr, "FAIL: %s\n", why); std::exit(2); } }
+int main() {
+    PortCeMuseumLabelsClear();
+    PortCeMuseumLabelsTitle("Grand Atrium", "Central rotunda and living battle dioramas.");
+    // Frame at t=0 (open=0.0 < 0.45): must NOT draw an empty opaque capsule!
+    gFakeBars.clear(); gFakeTexts.clear();
+    PortCeMuseumLabelsRender();
+    Need(gFakeBars.empty() && gFakeTexts.empty(), "open=0 draws zero empty capsule");
+    // Frame at t=100ms (open=0.285 < 0.45): still zero empty capsule!
+    gTicks += 100; gFakeBars.clear(); gFakeTexts.clear();
+    PortCeMuseumLabelsRender();
+    Need(gFakeBars.empty() && gFakeTexts.empty(), "open<0.45 draws zero empty capsule");
+    // Frame at t=200ms (open=0.571 >= 0.45): bar AND visible text draw together!
+    gTicks += 100; gFakeBars.clear(); gFakeTexts.clear();
+    PortCeMuseumLabelsRender();
+    Need(!gFakeBars.empty() && !gFakeTexts.empty(), "open>=0.45 draws both capsule and text together");
+    Need(((gFakeTexts[0].colour >> 24) & 0xffu) >= 140u, "text alpha is immediately readable when bar appears");
+    // Pause menu active: HUD must be completely suppressed (zero floating pill over pause menu)!
+    GAME.paused = true;
+    gTicks += 200; gFakeBars.clear(); gFakeTexts.clear();
+    PortCeMuseumLabelsRender();
+    Need(gFakeBars.empty() && gFakeTexts.empty(), "GAME.IsPaused() suppresses museum HUD completely");
+    // Unpause resumes cleanly.
+    GAME.paused = false;
+    gFakeBars.clear(); gFakeTexts.clear();
+    PortCeMuseumLabelsRender();
+    Need(!gFakeBars.empty() && !gFakeTexts.empty(), "unpausing restores active museum HUD capsule");
+    return 0;
+}
+"""
+        (pause_dir / "pause_driver.cpp").write_text(pause_driver)
+        pbuilt, pout = run(["g++", "-std=c++17", "-O1", "-g", "-Wall", "-Wextra", "-Werror", "-DCE_VERSION=1",
+                            "-I" + str(pause_dir), "-I" + str(GAME), "-I" + str(ROOT / "port/include"),
+                            str(pause_dir / "pause_driver.cpp"), str(pause_dir / LABEL.name),
+                            "-o", str(pause_dir / "pause_driver")])
+        check("museum label pause-suppression and no-empty-pill driver builds", pbuilt, pout)
+        if pbuilt:
+            pok, pdetail = run([str(pause_dir / "pause_driver")])
+            check("museum HUD suppresses on pause and never draws an empty capsule", pok, pdetail)
+
         for name, path, old, new, killer in BEHAVIOUR_MUTANTS:
             text = path.read_text()
             if text.count(old) != 1:

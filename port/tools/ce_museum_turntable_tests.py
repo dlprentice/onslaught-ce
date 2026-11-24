@@ -15,6 +15,7 @@ CPP = GAME / "ce_museum_turntable.cpp"
 DRIVER = r"""
 #include "ce_museum_turntable.h"
 #include "ce_museum_exhibition.h"
+#include "ce_archive_pedestal.h"
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -43,30 +44,57 @@ static bool AsciiOnly(const char *s) {
 
 int main() {
     const Grand::RoomGraph graph = Grand::MakeRoomGraph();
-    Need(kManifestCount == 18, "manifest has 18 curated 3D exhibits");
+    Need(kManifestCount == 45, "manifest has ALL 45/45 (100%) curated retail GT_MESH 3D exhibits");
+    Need(CeArchivePedestal::CountGoodies(CeArchivePedestal::kGoodieMesh) == 45u,
+         "retail catalog defines 45 GT_MESH goodies");
 
-    // 1. Wing-scoped residency budget holds for every wing.
+    // 0. Exact 100% (45/45) retail kGoodieMesh ID coverage: every single retail GT_MESH goodie is on display!
+    for (unsigned g = 0; g < 45u; ++g) {
+        const int wantId = CeArchivePedestal::GoodieIdAt(CeArchivePedestal::kGoodieMesh, g);
+        Need(wantId > 0, "valid retail mesh goodie ID");
+        bool found = false;
+        for (unsigned i = 0; i < kManifestCount; ++i) {
+            if (kManifest[i].goodieId == wantId) { found = true; break; }
+        }
+        Need(found, "every single retail GT_MESH goodie ID (45/45) appears in museum turntable manifest");
+    }
+
+    // 1. All 45 exhibits stay simultaneously resident across every wing (zero pop-in!), within cap.
     for (int w = 0; w < int(CeMuseumTour::kWingCount); ++w) {
         const CeMuseumTour::Wing wing = static_cast<CeMuseumTour::Wing>(w);
         const unsigned count = CountWantedResident(wing);
-        Need(count <= unsigned(kMaxResidentGoodies), "resident goodies stay within wing RAM cap");
+        Need(count == kManifestCount, "all 45 exhibits stay simultaneously resident across wings");
+        Need(count <= unsigned(kMaxResidentGoodies), "resident goodies stay within simultaneous cap");
     }
-    // Courtyard Hero Aquila is resident in both Courtyard and Atrium, unloaded in distant wings.
     Need(ShouldBeResident(0, CeMuseumTour::kWingCourtyard), "hero resident in courtyard");
     Need(ShouldBeResident(0, CeMuseumTour::kWingAtrium), "hero resident in atrium sightline");
-    Need(!ShouldBeResident(0, CeMuseumTour::kWingMuspell), "hero unloaded in Muspell wing");
-    Need(!ShouldBeResident(0, CeMuseumTour::kWingHangar), "hero unloaded in Hangar wing");
+    Need(ShouldBeResident(0, CeMuseumTour::kWingMuspell), "hero stays resident from Muspell wing");
+    Need(ShouldBeResident(44, CeMuseumTour::kWingCourtyard), "hangar exhibits stay resident with zero pop-in");
     Need(!ShouldBeResident(99, CeMuseumTour::kWingCourtyard), "out-of-range index never resident");
 
-    // 2. Every manifest entry is ASCII-clean, sits in its wing, and has a reachable stud.
+    // 2. Every manifest entry has unique valid goodieId, ASCII copy, stands in its wing, non-overlapping plinth, and reachable stud.
     for (unsigned i = 0; i < kManifestCount; ++i) {
         const Spec &sp = kManifest[i];
         Need(sp.goodieId > 0 && sp.goodieId < 256, "valid goodie id");
+        Need(CeArchivePedestal::ClassifyGoodie(sp.goodieId) == CeArchivePedestal::kGoodieMesh,
+             "manifest entry is a genuine retail GT_MESH goodie");
+        for (unsigned j = i + 1; j < kManifestCount; ++j) {
+            Need(sp.goodieId != kManifest[j].goodieId, "unique goodie id per exhibit");
+            // Non-overlapping 2D plinth footprints (naval ships share the 4.2m wide reflecting basin along Y).
+            const Spec &ot = kManifest[j];
+            if (sp.wing == ot.wing) {
+                const float dx = std::fabs(sp.localX - ot.localX);
+                const float dy = std::fabs(sp.localY - ot.localY);
+                const float minX = (sp.style == kStageNaval && ot.style == kStageNaval) ? 0.0f : (sp.plinthHalf + ot.plinthHalf);
+                const float minY = (sp.style == kStageNaval && ot.style == kStageNaval) ? 3.5f : (sp.plinthHalf + ot.plinthHalf);
+                Need(dx >= minX - 0.05f || dy >= minY - 0.05f, "no two 3D exhibit plinths overlap");
+            }
+        }
         Need(AsciiOnly(sp.title) && AsciiOnly(sp.category) && AsciiOnly(sp.caption), "ASCII plaque copy");
         Need(sp.plinthTopZ > 0.3f && sp.plinthHalf > 0.5f, "sensible plinth dimensions");
         Need(Grand::RoomAt(graph, CeMuseumExhibition::Vec2{sp.localX, sp.localY}) == static_cast<Grand::RoomId>(sp.wing),
              "turntable stands in its declared wing");
-        // Plinth centre is solid; approach point 1.2 m in front of stud is walkable.
+        // Plinth centre is solid; approach point 1.15 m in front of stud is walkable.
         Need(Grand::WalkAt(graph, CeMuseumExhibition::Vec2{sp.localX, sp.localY}) == CeMuseumExhibition::kWalkBlocked,
              "turntable plinth blocks visitor");
         float sx, sy, sz;
@@ -82,15 +110,15 @@ int main() {
     Reset(&bank);
     Need(bank.initialized, "bank initialized");
     Need(!bank.slots[0].paused, "hero rotates by default");
-    Need(bank.slots[15].paused && bank.slots[16].paused && bank.slots[17].paused,
+    Need(bank.slots[42].paused && bank.slots[43].paused && bank.slots[44].paused,
          "scale alcove units start stationary");
 
     const float y0 = bank.slots[0].yawRad;
     StepRotation(&bank, 0.1f, false);
     Need(Near(bank.slots[0].yawRad, y0 + kDefaultRateRadPerSec * 0.1f), "rotates at ~12 deg/s");
-    const float yScale = bank.slots[15].yawRad;
+    const float yScale = bank.slots[42].yawRad;
     StepRotation(&bank, 0.2f, false);
-    Need(Near(bank.slots[15].yawRad, yScale), "paused turntable holds angle");
+    Need(Near(bank.slots[42].yawRad, yScale), "paused turntable holds angle");
 
     // Game pause freezes all turntables.
     const float yBeforePause = bank.slots[0].yawRad;
@@ -117,7 +145,7 @@ int main() {
     TogglePause(&bank, -1);
     TogglePause(&bank, kManifestCount);
 
-    // 4. Ray-pick brass control stud.
+    // 4. Ray-pick brass control stud (wing-scoped so adjacent rooms never pick through walls).
     float sx, sy, sz;
     StudPosition(0, &sx, &sy, &sz);
     const float eyeX = sx, eyeY = sy - 2.0f, eyeZ = 1.7f;
@@ -135,8 +163,8 @@ int main() {
     // 5. FocusExhibit picks nearest faced exhibit in current wing.
     Need(FocusExhibit(0.0f, 5.0f, 0.0f, 1.0f, CeMuseumTour::kWingCourtyard) == 0, "facing hero focuses hero");
     Need(FocusExhibit(0.0f, 5.0f, 0.0f, -1.0f, CeMuseumTour::kWingCourtyard) == -1, "facing away clears focus");
-    Need(FocusExhibit(22.0f, 41.0f, 0.0f, 1.0f, CeMuseumTour::kWingMuspell) == 3, "facing Muspell walker focuses it");
-    Need(FocusExhibit(22.0f, 41.0f, 0.0f, 1.0f, CeMuseumTour::kWingCourtyard) == -1, "wrong wing clears focus");
+    Need(FocusExhibit(21.8f, 41.0f, 0.0f, 1.0f, CeMuseumTour::kWingMuspell) == 16, "facing Muspell walker focuses it");
+    Need(FocusExhibit(21.8f, 41.0f, 0.0f, 1.0f, CeMuseumTour::kWingCourtyard) == -1, "wrong wing clears focus");
 
     // 6. Scale computation & clamping.
     Need(Near(ComputeScale(10.0f, 4.0f), 0.4f), "normal scale ratio");
@@ -198,10 +226,13 @@ MUTANTS = [
     ("ignore-slot-pause", "if (s->slots[i].paused) continue;", "if (false) continue;"),
     ("no-dt-clamp", "const float clamped = dtSeconds > 0.25f ? 0.25f : dtSeconds;",
      "const float clamped = dtSeconds;"),
-    ("no-wing-filter-resident", "if (w == currentWing) return true;", "return true;"),
+    ("no-bounds-check-resident", "return index < kManifestCount;", "return true;"),
     ("no-wing-filter-pick",
-     "        if (!ShouldBeResident(i, currentWing)) continue;\n        float sx, sy, sz;",
+     "        if (kManifest[i].wing != currentWing) continue;\n        float sx, sy, sz;",
      "        float sx, sy, sz;"),
+    ("no-wing-filter-focus",
+     "        if (kManifest[i].wing != currentWing) continue;\n        const Spec &sp = kManifest[i];",
+     "        const Spec &sp = kManifest[i];"),
     ("no-scale-clamp", "return s < 0.02f ? 0.02f : s > 6.0f ? 6.0f : s;", "return s;"),
     ("stud-range-ignored", "if (t <= 0.15f || t > kStudMaxRange) continue;", "if (t <= 0.15f) continue;"),
 ]
@@ -384,6 +415,36 @@ int main() {
           )))
     check("museum hall adds spatial hysteresis for Atrium portal anticipation",
           "gAnticipatedWing" in hall and "gExhibitionVisitor.y >= 43.0f" in hall)
+    check("museum hall builds static D3DPOOL_MANAGED GPU VB/IB for Hall, shadows, glass, and ocean",
+          "CreateVertexBuffer(" in hall and "CreateIndexBuffer(" in hall
+          and "D3DPOOL_MANAGED" in hall and "ReleaseHallGpuBuffers();" in hall
+          and "DrawIndexedPrimitive(D3DPT_TRIANGLELIST" in hall)
+    backdrop_fn = hall[hall.index("void PortCeMuseumAuthoredBackdrop()"):hall.index("static const float kHouseStep")]
+    check("authored backdrop renders textured coastal ocean and sculpted headlands over KempyCube without dev->Clear",
+          "dev->Clear(" not in backdrop_fn and "CE_MUSEUM_TEX_WATER_BASIN" in backdrop_fn
+          and "gHallGpu.oceanVb" in backdrop_fn and "gHallGpu.headlandVb" in backdrop_fn
+          and "const float oceanZ = 5.5f;" in hall)
+    draw_fn = hall[hall.index("void PortCeMuseumHallDraw()"):]
+    saved_restore = draw_fn.index("saved->Apply();")
+    check("museum hall shares one D3DSBT_ALL state guard with Art, Dioramas, and Archive Pedestal",
+          "CeMuseumArt::RuntimeDraw(gGrandFloorZ, false);" in draw_fn[:saved_restore]
+          and "CeMuseumDiorama::RuntimeDraw(gGrandFloorZ, false);" in draw_fn[:saved_restore]
+          and "CeArchivePedestal::RuntimeDraw(gGrandFloorZ, false);" in draw_fn[:saved_restore]
+          and "DrawFactionBanners(dev, gGrandFloorZ);" in draw_fn[:saved_restore]
+          and "CeMuseumTurntable::RuntimeDraw(gGrandFloorZ);" in draw_fn[saved_restore:])
+    check("museum hall wires CeMuseumDiorama lifecycle, update, input, and cue hooks",
+          "CeMuseumDiorama::RuntimeInit();" in hall
+          and "CeMuseumDiorama::RuntimeShutdown();" in hall
+          and "CeMuseumDiorama::RuntimeUpdate(" in hall
+          and "CeMuseumDiorama::RuntimeHandleFire(" in hall
+          and "CeMuseumDiorama::RuntimeIsAimingControl()" in hall
+          and "CeMuseumDiorama::RuntimeCue(" in hall)
+    check("turntable runtime batches all 45 brass control stud stanchions into one draw call",
+          "AppendStudIndicator(" in cpp)
+    check("museum hall loads official retail faction emblem textures via CeAssetCatalog",
+          "goodies\\\\goodies_F_Bakgrnd.tga" in hall
+          and "goodies\\\\goodies_M_Bakgrnd.tga" in hall
+          and "FrontEnd\\\\v3\\\\FE_BEA_Gamelogo_small.tga" in hall)
     # Compile actual Gallery + EnsureGallery/FreeGallery + GalleryCinemaRef under ASan/UBSan.
     gal_start = hall.index("struct LitVertex {")
     gal_end = hall.index("static CeMuseumExhibition::Plan")
@@ -456,6 +517,9 @@ int main() {
           and "mesh->mNextInChain = NULL;" in cpp
           and free_idx >= 0 and chain_in_free > free_idx and chain_in_free < vbuf_idx
           and cpp.count("ForceDeleteMeshChain(") >= 3)
+    check("runtime checks texture mRefCount <= 0 and frees all meshes before textures in FreeAllSlots",
+          "if (tex->mRefCount <= 0)" in cpp
+          and "FreeSlotMesh(i)" in cpp)
     check("player-facing strings stay free of forbidden words",
           not re.search(r'"[^"]*(?:prototype|experimental|carrier|ce\.ini)[^"]*"', HEADER.read_text(), re.I))
     return 1 if failures else 0

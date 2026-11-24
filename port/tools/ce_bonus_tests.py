@@ -66,6 +66,7 @@ struct FakeFrontend
 {
 	int mSelectedLevel, quit, page, delay, quitCalls, pageCalls;
 	struct { char mSaveGameName[32]; int cheat; int IsCheatActive(int) { return cheat; } } mFEPSaveGame;
+	struct { int mCY; } mFEPMultiplayer;
 	int GetMemoryCardNumber() { return 1; }
 	void SetQuit(int level) { quit = level; ++quitCalls; }
 	void SetPage(int newPage, int newDelay) { page = newPage; delay = newDelay; ++pageCalls; }
@@ -452,7 +453,7 @@ class BonusSettingsTests(unittest.TestCase):
             ("race-return-outlives-its-entry", "bool PortCeBonusLevelEnd()\n{\n\tsReturning = false;\n\tsRaceReturning = false;\n",
              "bool PortCeBonusLevelEnd()\n{\n\tsReturning = false;\n", "race-stale-end", 0, 903),
             # every bonus level comes back to the list it was started from (the CE menus' return rule)
-            ("lost-list-return", "\tsReturnLevel = sLevel;", "\tsReturnLevel = 0;", "setting", 0, 856),
+            ("lost-list-return", "\tsReturnLevel = sLevel;\t\t\t\t// the CE page opens on the Bonus Levels list, this level highlighted", "\tsReturnLevel = 0;\t\t\t\t// the CE page opens on the Bonus Levels list, this level highlighted", "setting", 0, 856),
             ("list-return-sticks", "int PortCeBonusTakeReturn()\n{\n\tconst int level = sReturnLevel;\n\tsReturnLevel = 0;\n\treturn level;",
              "int PortCeBonusTakeReturn()\n{\n\tconst int level = sReturnLevel;\n\treturn level;", "setting", 0, 201),
             ("list-return-outlives-its-entry", "bool PortCeBonusLevelEnd()\n{\n\tsReturning = false;\n\tsRaceReturning = false;\n\tsCoopReturning = false;\n\tsReturnLevel = 0;\n",

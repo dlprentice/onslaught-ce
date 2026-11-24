@@ -148,7 +148,16 @@ struct stat	statFd(int fd)
 	return s;
 }
 
-int	openDirNoFollow(const std::string &path)
+bool	isOsSystemSymlink(int parentFd, const char *part)
+{
+	struct stat pst{}, lst{};
+	return fstat(parentFd, &pst) == 0 && pst.st_uid == 0 &&
+		   !(pst.st_mode & (S_IWGRP | S_IWOTH)) &&
+		   fstatat(parentFd, part, &lst, AT_SYMLINK_NOFOLLOW) == 0 &&
+		   S_ISLNK(lst.st_mode) && lst.st_uid == 0;
+}
+
+int	openDirNoFollow(const std::string &path, bool allowUserAncestors = false)
 {
 	if (path.empty() || path[0] != '/' || path.size() >= 4096)
 		return -1;
@@ -161,12 +170,18 @@ int	openDirNoFollow(const std::string &path)
 	while (begin < path.size())
 	{
 		size_t end = path.find('/', begin);
-		if (end == std::string::npos)
+		const bool isLeaf = (end == std::string::npos);
+		if (isLeaf)
 			end = path.size();
 		std::string part = path.substr(begin, end - begin);
 		if (part.empty() || part == "." || part == ".." || part.find('\0') != std::string::npos)
 			return -1;
 		int next = openat(at.n, part.c_str(), O_RDONLY | O_CLOEXEC | O_DIRECTORY | O_NOFOLLOW);
+		if (next < 0 && (errno == ELOOP || errno == ENOTDIR) && !isLeaf &&
+			(allowUserAncestors || isOsSystemSymlink(at.n, part.c_str())))
+		{
+			next = openat(at.n, part.c_str(), O_RDONLY | O_CLOEXEC | O_DIRECTORY);
+		}
 		if (next < 0)
 			return -1;
 		close(at.n);
@@ -178,16 +193,16 @@ int	openDirNoFollow(const std::string &path)
 	return out;
 }
 
-int	requireDir(const std::string &path, CeCareerPublishStatus status = CE_PUBLISH_REFUSED)
+int	requireDir(const std::string &path, CeCareerPublishStatus status = CE_PUBLISH_REFUSED, bool allowUserAncestors = false)
 {
-	int fd = openDirNoFollow(path);
+	int fd = openDirNoFollow(path, allowUserAncestors);
 	require(fd >= 0, status);
 	return fd;
 }
 
-bool	boundDir(int fd, const std::string &path)
+bool	boundDir(int fd, const std::string &path, bool allowUserAncestors = false)
 {
-	Fd again(openDirNoFollow(path));
+	Fd again(openDirNoFollow(path, allowUserAncestors));
 	struct stat a{}, b{};
 	return again.n >= 0 && fstat(fd, &a) == 0 && fstat(again.n, &b) == 0 && sameStat(a, b);
 }
@@ -195,10 +210,12 @@ bool	boundDir(int fd, const std::string &path)
 bool	localFs(int fd)
 {
 	struct statfs fs{};
-	return fstatfs(fd, &fs) == 0 &&
-		   (static_cast<unsigned long>(fs.f_type) == 0x9123683eUL ||
-			static_cast<unsigned long>(fs.f_type) == 0xef53UL ||
-			static_cast<unsigned long>(fs.f_type) == 0x58465342UL);
+	const unsigned long t = fstatfs(fd, &fs) == 0 ? static_cast<unsigned long>(fs.f_type) : 0UL;
+	return t == 0x9123683eUL || // btrfs
+		   t == 0xef53UL ||     // ext2/ext3/ext4
+		   t == 0x58465342UL || // xfs
+		   t == 0xF2F52010UL || // f2fs
+		   t == 0xca451a4eUL;   // bcachefs
 }
 
 // True if `a` is `b` or an ancestor of `b`, or on traversal error (fail closed).
@@ -577,10 +594,10 @@ CeImportReadStatus	CeCareerImportRead(const char *filePath, const char *userDir,
 	const std::string user = trimmedPath(userDir);
 	const std::string game = trimmedPath(gameDir);
 	const std::string pkg = (packageDir && *packageDir) ? trimmedPath(packageDir) : trimmedPath(SDL_GetBasePath());
-	Fd parentFd(openDirNoFollow(parentPath));
-	Fd userFd(openDirNoFollow(user));
-	Fd gameFd(openDirNoFollow(game));
-	Fd pkgFd(openDirNoFollow(pkg));
+	Fd parentFd(openDirNoFollow(parentPath, false));
+	Fd userFd(openDirNoFollow(user, true));
+	Fd gameFd(openDirNoFollow(game, true));
+	Fd pkgFd(openDirNoFollow(pkg, true));
 	if (parentFd.n < 0 || userFd.n < 0 || gameFd.n < 0 || pkgFd.n < 0)
 	{
 		copyText(errorOut, errorCap, "The selected location cannot be opened safely.");
@@ -676,15 +693,15 @@ CeCareerPublishStatus	CeCareerPublishSuggest(CeCareerPublishKind kind, const cha
 
 	const std::string user = trimmedPath(userDir);
 	const std::string game = trimmedPath(gameDir);
-	Fd userFd(openDirNoFollow(user));
-	Fd gameFd(openDirNoFollow(game));
+	Fd userFd(openDirNoFollow(user, true));
+	Fd gameFd(openDirNoFollow(game, true));
 	if (userFd.n < 0 || gameFd.n < 0)
 		return CE_PUBLISH_REFUSED;
 
 	std::set<std::string> taken;
 	if (!collectCareerNames(userFd.n, true, taken) || !collectCareerNames(gameFd.n, true, taken))
 		return CE_PUBLISH_REFUSED;
-	if (!boundDir(userFd.n, user) || !boundDir(gameFd.n, game))
+	if (!boundDir(userFd.n, user, true) || !boundDir(gameFd.n, game, true))
 		return CE_PUBLISH_CHANGED;
 
 	bool sawNameRefusal = false;
@@ -771,10 +788,10 @@ CeCareerPublishResult	CeCareerPublishNew(const CeCareerPublishRequest *request)
 		// Pre-flight validation before taking the full-set backup: reject invalid directories,
 		// non-local storage, protected backup roots, or already-occupied names without creating a backup.
 		{
-			Fd userFd(requireDir(user));
-			Fd gameFd(requireDir(game));
-			Fd pkgFd(requireDir(pkg));
-			Fd rootFd(requireDir(root));
+			Fd userFd(requireDir(user, CE_PUBLISH_REFUSED, true));
+			Fd gameFd(requireDir(game, CE_PUBLISH_REFUSED, true));
+			Fd pkgFd(requireDir(pkg, CE_PUBLISH_REFUSED, true));
+			Fd rootFd(requireDir(root, CE_PUBLISH_REFUSED, false));
 			Fd slotsFd(openat(userFd.n, "savegames", O_RDONLY | O_CLOEXEC | O_DIRECTORY | O_NOFOLLOW));
 			Fd origFd(openat(gameFd.n, "savegames", O_RDONLY | O_CLOEXEC | O_DIRECTORY | O_NOFOLLOW));
 			require(slotsFd.n >= 0 && origFd.n >= 0 && localFs(userFd.n) && localFs(rootFd.n) &&
@@ -810,10 +827,10 @@ CeCareerPublishResult	CeCareerPublishNew(const CeCareerPublishRequest *request)
 				CE_PUBLISH_UNCERTAIN);
 
 		// Re-open roots and take the exclusive custody lock for the atomic publish step.
-		Fd userFd(requireDir(user));
-		Fd gameFd(requireDir(game));
-		Fd pkgFd(requireDir(pkg));
-		Fd rootFd(requireDir(root));
+		Fd userFd(requireDir(user, CE_PUBLISH_REFUSED, true));
+		Fd gameFd(requireDir(game, CE_PUBLISH_REFUSED, true));
+		Fd pkgFd(requireDir(pkg, CE_PUBLISH_REFUSED, true));
+		Fd rootFd(requireDir(root, CE_PUBLISH_REFUSED, false));
 		Fd slotsFd(openat(userFd.n, "savegames", O_RDONLY | O_CLOEXEC | O_DIRECTORY | O_NOFOLLOW));
 		Fd origFd(openat(gameFd.n, "savegames", O_RDONLY | O_CLOEXEC | O_DIRECTORY | O_NOFOLLOW));
 		require(slotsFd.n >= 0 && origFd.n >= 0 && localFs(userFd.n) && localFs(rootFd.n) &&
@@ -833,8 +850,8 @@ CeCareerPublishResult	CeCareerPublishNew(const CeCareerPublishRequest *request)
 
 		auto verifyRoots = [&]()
 		{
-			require(boundDir(userFd.n, user) && boundDir(gameFd.n, game) &&
-						boundDir(pkgFd.n, pkg) && boundDir(rootFd.n, root),
+			require(boundDir(userFd.n, user, true) && boundDir(gameFd.n, game, true) &&
+						boundDir(pkgFd.n, pkg, true) && boundDir(rootFd.n, root, false),
 					CE_PUBLISH_CHANGED);
 			Fd a(openat(userFd.n, "savegames", O_RDONLY | O_CLOEXEC | O_DIRECTORY | O_NOFOLLOW));
 			Fd b(openat(gameFd.n, "savegames", O_RDONLY | O_CLOEXEC | O_DIRECTORY | O_NOFOLLOW));

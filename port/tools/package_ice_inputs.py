@@ -248,8 +248,10 @@ def check_snapshot(path, expected):
 
 def readme(base):
     text = base.decode("utf-8")
-    old = re.escape("The game sends data only to the other player's address and contacts no server.").replace(r"\ ", r"\s+")
+    old = re.escape("Direct-IP play sends data only to the other player's address and contacts no server; "
+                    "Online Play contacts only the configured lobby server when you open Online Play.").replace(r"\ ", r"\s+")
     replacement = ("\n  Direct-IP mode sends data only to the other player's address.\n"
+                   "  Online Play contacts only the configured lobby server when you open Online Play.\n"
                    "  ICE mode may also contact the STUN/TURN servers supplied by the user.\n")
     text, count = re.subn(old, replacement, text)
     if count != 1:

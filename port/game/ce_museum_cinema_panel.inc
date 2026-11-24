@@ -42,9 +42,6 @@ void CinemaFlatRects(const CeMuseumCinemaConsole::PanelRect *rects, unsigned cou
                      float scale, float offsetX, float offsetY) {
     IDirect3DDevice9 *dev = LT.GetDevice();
     if (!dev || !count) return;
-    IDirect3DStateBlock9 *saved = 0;
-    if (FAILED(dev->CreateStateBlock(D3DSBT_ALL, &saved)) || !saved) return;
-    if (FAILED(saved->Capture())) { saved->Release(); return; }
     struct PanelVertex { float x, y, z, rhw; DWORD colour; };
     PanelVertex vertices[(CeMuseumCinemaConsole::kMaxRects + 4u)*6];
     unsigned used = 0;
@@ -58,26 +55,36 @@ void CinemaFlatRects(const CeMuseumCinemaConsole::PanelRect *rects, unsigned cou
         vertices[used++] = a; vertices[used++] = b; vertices[used++] = c;
         vertices[used++] = a; vertices[used++] = c; vertices[used++] = d;
     }
-    dev->SetVertexShader(0); dev->SetPixelShader(0);
-    dev->SetFVF(D3DFVF_XYZRHW | D3DFVF_DIFFUSE);
-    dev->SetTexture(0, 0);
-    dev->SetRenderState(D3DRS_ZENABLE, FALSE);
-    dev->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
-    dev->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
-    dev->SetRenderState(D3DRS_LIGHTING, FALSE);
-    dev->SetRenderState(D3DRS_FOGENABLE, FALSE);
-    dev->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
-    dev->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE);
-    dev->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
-    dev->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
-    dev->SetRenderState(D3DRS_BLENDOP, D3DBLENDOP_ADD);
-    dev->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
-    dev->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_DIFFUSE);
-    dev->SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
-    dev->SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_DIFFUSE);
-    dev->SetTextureStageState(1, D3DTSS_COLOROP, D3DTOP_DISABLE);
-    if (used) dev->DrawPrimitiveUP(D3DPT_TRIANGLELIST, used/3, vertices, sizeof(PanelVertex));
-    saved->Apply(); saved->Release();
+    if (!used) return;
+    RENDERINFO.SetFogEnabled(false);
+    RENDERINFO.SetLightingEnabled(false);
+    RENDERINFO.SetShader(0);
+    RENDERINFO.SetFVF(D3DFVF_XYZRHW | D3DFVF_DIFFUSE);
+    RENDERINFO.Apply();
+    dev->SetPixelShader(0);
+    LT.D3D_SetTexture(0, 0);
+    LT.D3D_SetTexture(1, 0);
+    LT.SRS(D3DRS_ZENABLE, FALSE);
+    LT.SRS(D3DRS_ZWRITEENABLE, FALSE);
+    LT.SRS(D3DRS_CULLMODE, D3DCULL_NONE);
+    LT.SRS(D3DRS_ALPHATESTENABLE, FALSE);
+    LT.SRS(D3DRS_ALPHABLENDENABLE, TRUE);
+    LT.SRS(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
+    LT.SRS(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
+    LT.SRS(D3DRS_BLENDOP, D3DBLENDOP_ADD);
+    LT.STS(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
+    LT.STS(0, D3DTSS_COLORARG1, D3DTA_DIFFUSE);
+    LT.STS(0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
+    LT.STS(0, D3DTSS_ALPHAARG1, D3DTA_DIFFUSE);
+    LT.STS(1, D3DTSS_COLOROP, D3DTOP_DISABLE);
+    LT.STS(1, D3DTSS_ALPHAOP, D3DTOP_DISABLE);
+    dev->DrawPrimitiveUP(D3DPT_TRIANGLELIST, used/3, vertices, sizeof(PanelVertex));
+    LT.STS(0, D3DTSS_COLOROP, D3DTOP_MODULATE);
+    LT.STS(0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
+    LT.STS(0, D3DTSS_COLORARG2, D3DTA_DIFFUSE);
+    LT.STS(0, D3DTSS_ALPHAOP, D3DTOP_MODULATE);
+    LT.STS(0, D3DTSS_ALPHAARG1, D3DTA_TEXTURE);
+    LT.STS(0, D3DTSS_ALPHAARG2, D3DTA_DIFFUSE);
 }
 // Sprite and text state after the HUD's bar: no fog or lighting, alpha blended, and text at one times, so the
 // Presentation's colours show as written (the editor's capsule text does the same).
@@ -89,6 +96,11 @@ void CinemaPrepare() {
     LT.STS(0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
     LT.STS(0, D3DTSS_COLORARG2, D3DTA_DIFFUSE);
     LT.STS(0, D3DTSS_COLOROP, D3DTOP_MODULATE);
+    LT.STS(0, D3DTSS_ALPHAARG1, D3DTA_TEXTURE);
+    LT.STS(0, D3DTSS_ALPHAARG2, D3DTA_DIFFUSE);
+    LT.STS(0, D3DTSS_ALPHAOP, D3DTOP_MODULATE);
+    LT.STS(1, D3DTSS_COLOROP, D3DTOP_DISABLE);
+    LT.STS(1, D3DTSS_ALPHAOP, D3DTOP_DISABLE);
     LT.SRS(D3DRS_ALPHATESTENABLE, TRUE);
     LT.SRS(D3DRS_ALPHAREF, 8);
     LT.SRS(D3DRS_ALPHABLENDENABLE, TRUE);

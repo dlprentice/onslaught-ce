@@ -58,7 +58,7 @@ extern "C" int CE_BootStart(void) {
     if (started++) return Refuse("network startup cannot be repeated in this process");
     if (host == guest) return Refuse("select exactly one network role");
     role = host ? 1 : 2;
-    if (!OrdinaryRoute()) return Refuse("networking requires the ordinary route to a co-op level (100, 856, 858) and the default options file");
+    if (!OrdinaryRoute()) return Refuse("networking requires the ordinary route to an admitted multiplayer level and the default options file");
     lockstep = 1;
     if (Present("BEA_NET_COMPAT")) return Refuse("network compatibility is computed locally, not supplied by the caller");
     const char *automation[] = {"BEA_PORT_CLOCK", "BEA_PORT_TAPE", "BEA_PORT_RECORD", "BEA_PORT_PROBES", "BEA_PORT_PILOT"};

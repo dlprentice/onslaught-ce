@@ -20,6 +20,7 @@
 #error The CE rumble requires weak symbol support for the network boot boundary
 #endif
 extern "C" int CE_BootRequested(void) __attribute__((weak));
+extern "C" int CE_SessionActive(void) __attribute__((weak));
 extern "C" int CE_SettingGetBool(const char *key, int def);
 extern "C" int PortRumblePad(void *device, unsigned short low, unsigned short high, unsigned ms);	// dinput.cpp
 bool PortCeLayer();
@@ -42,6 +43,7 @@ bool PortCeRumbleOn()
 	if (!PortCeLayer() || PortRecording()) return false;
 	for (const char *name : kFenced) if (Present(name)) return false;
 	if (CE_BootRequested && CE_BootRequested()) return false;
+	if (CE_SessionActive && CE_SessionActive()) return false;
 	if (PLAYABLE_DEMO || CLIPARAMS.mAutoConfigTest || CLIPARAMS.mRecordDemo || CLIPARAMS.mPlaybackDemo ||
 		CLIPARAMS.mStressTest || CLIPARAMS.mAttractMode) return false;
 	if (ini < 0) ini = CE_SettingGetBool("rumble", 1) ? 1 : 0;

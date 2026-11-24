@@ -101,17 +101,18 @@
  	else if (!mData->mUnknown60)
 --- a/DXEngine.cpp
 +++ b/DXEngine.cpp
-@@ -91,6 +91,9 @@
+@@ -91,6 +91,10 @@
  CTweakSLONG	OLD_WATER_TIMING("OLD_WATER_TIMING", 0);	// retail PC (0053d310)
  // FUNCTION: 0x0053d310 init:OLD_WATER_TIMING
  // FUNCTION: 0x0053d330 exit:OLD_WATER_TIMING
 +#ifdef CE_VERSION
 +extern "C" bool PortCeSanctuarySkipOutdoorWorld(void);
++extern "C" void PortCeSanctuaryRenderCinemaPlayer(int viewpoint);
 +#endif
  CDXEngine		ENGINE;
  // FUNCTION: 0x0053d340 init:ENGINE
  // FUNCTION: 0x0053d390 exit:ENGINE
-@@ -889,7 +892,18 @@
+@@ -889,7 +893,18 @@
  		{
 +#ifdef CE_VERSION
 +			if (!PortCeSanctuarySkipOutdoorWorld())
@@ -130,7 +131,7 @@
 +#endif
  		}
  		SHADOWS.TestDraw();
-@@ -899,7 +913,11 @@
+@@ -899,7 +914,11 @@
  
  		// retail PC: the water draws here unless OLD_WATER_TIMING asks for after the world, and never in the
  		// reflection pass (0053e6b4, 0053e7cb)
@@ -142,7 +143,7 @@
  		{
  			SetModulate2X(FALSE);
  			RENDERINFO.SetLightingEnabled(FALSE);
-@@ -939,7 +957,14 @@
+@@ -939,7 +958,18 @@
  			float bias = -1.0f;
  			LT.SSS_NoCache(0, D3DSAMP_MIPMAPLODBIAS,	*((LPDWORD) (&bias)));
  
@@ -152,6 +153,10 @@
 +#endif
  			WORLD.Render(mGamut,FALSE,SHADOWS.BlobShadowsEnabled());		// render objects
 +#ifdef CE_VERSION
++			}
++			else
++			{
++				PortCeSanctuaryRenderCinemaPlayer(viewpoint);
 +			}
 +#endif
  

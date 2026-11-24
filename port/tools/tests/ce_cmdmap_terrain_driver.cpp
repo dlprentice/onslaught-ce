@@ -103,6 +103,7 @@ struct { float mapX, mapY, mapSide; } L;
 static DWORD gTerrain[kGrid * kGrid];
 static CDXTexture *gTerrainTexture;
 static bool gTerrainTextureFailed;
+static bool gTerrainTexDirty = true;
 
 #include "ce_cmdmap_terrain.inc"
 
@@ -149,15 +150,20 @@ int main(int argc, char **argv)
 	// the padding beyond the row is untouched
 	CHECK(gTerrainTexture->surface.bytes[(size_t)gTerrainTexture->surface.pitch - 1] == 0xcc, "the row padding is not written");
 
-	// the next frame fills it again with the new colours, and makes no second texture
+	// a clean redraw skips LockRect/UnlockRect and reuses the uploaded texture
+	CHECK(DrawTerrainFromTexture() && gLocks == 1 && gUnlocks == 1 && gSprites == 2, "a clean redraw does not re-lock the texture");
+
+	// a dirty frame fills it again with the new colours, and makes no second texture
 	gTerrain[5] = 0xff123456u;
-	CHECK(DrawTerrainFromTexture() && gCreates == 1 && gSprites == 2, "a later frame reuses the texture");
+	gTerrainTexDirty = true;
+	CHECK(DrawTerrainFromTexture() && gCreates == 1 && gSprites == 3 && gLocks == 2 && gUnlocks == 2, "a later frame reuses the texture");
 	DWORD v;
 	memcpy(&v, gTerrainTexture->surface.bytes.data() + 5 * 4, 4);
 	CHECK(v == 0xff123456u, "and shows the new colours");
 
 	// a failed lock: no sprite, the caller draws the cells, the texture stays
 	gFailLock = true;
+	gTerrainTexDirty = true;
 	const int spritesBefore = gSprites;
 	CHECK(!DrawTerrainFromTexture() && gSprites == spritesBefore && gTerrainTexture, "a failed lock draws nothing from the texture");
 	gFailLock = false;

@@ -23,6 +23,9 @@
 bool PortCeLayer();
 int PortCeGamepadInputs(int id, int pad, SControlInput *out);
 extern "C" int PortCeTutorialPrintableKey(int key, char *out, int size);
+extern "C" int CE_BootRequested(void) __attribute__((weak));
+extern "C" int CE_SessionActive(void) __attribute__((weak));
+bool PortRecording(void) __attribute__((weak));
 
 namespace {
 // Script IDs, not message text. The retail AddHelpMessage ignores both zoom help IDs; only the first creates a
@@ -42,13 +45,15 @@ int sKind[MAX_HELP_TEXT_MESSAGES];
 
 bool Enabled()
 {
-	if (!PortCeLayer() || PLAYABLE_DEMO || CLIPARAMS.mAutoConfigTest || CLIPARAMS.mRecordDemo ||
+	if (!PortCeLayer() || (PortRecording && PortRecording()) || PLAYABLE_DEMO || CLIPARAMS.mAutoConfigTest || CLIPARAMS.mRecordDemo ||
 		CLIPARAMS.mPlaybackDemo || GAME.IsMultiplayer() || GAME.GetCurrentlyRunningLevelNum() != 100 ||
 		TEXT.GetLanguage() != 0)
 		return false;
+	if ((CE_BootRequested && CE_BootRequested()) || (CE_SessionActive && CE_SessionActive()))
+		return false;
 	// Explicitly guard even if BEA_PORT_CE_LAYER forces the CE layer on during a tape or test.
 	const char *names[] = {"BEA_PORT_CLOCK", "BEA_PORT_TAPE", "BEA_PORT_PROBES", "BEA_PORT_RECORD",
-		"BEA_NET_HOST", "BEA_NET_JOIN"};
+		"BEA_PORT_PILOT", "BEA_PORT_AUTOPILOT", "BEA_NET_HOST", "BEA_NET_JOIN"};
 	for (const char *name : names)
 	{
 		const char *value = getenv(name);
@@ -133,7 +138,7 @@ bool BindingName(int id, bool strafe, CDXBitmapFont *font, char *out, int size)
 		else if (!strafe && (input.mType == MOUSE_BUTTON_ON || input.mType == MOUSE_BUTTON_ONCE ||
 			input.mType == MOUSE_BUTTON_RELEASE))
 		{
-			const char *mouse[] = {"Left mouse button", "Right mouse button", "Middle mouse button",
+			const char *mouse[] = {"Left mouse button", "Middle mouse button", "Right mouse button",
 				"Mouse wheel up", "Mouse wheel down"};
 			if (input.mKey >= 0 && input.mKey <= 4 && (input.mKey <= 2 || input.mType != MOUSE_BUTTON_ON))
 			{

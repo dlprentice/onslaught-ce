@@ -985,6 +985,32 @@ class WorkerdIntegrationTests(unittest.TestCase):
         self.assertEqual(855, map_changed["map"])
         self.assertIs(False, map_changed["seats"][1]["ready"])
 
+        # Mode switch normalizes teams cleanly and non-versus rejects team=1 while accepting team=0.
+        code, _, coop_room = srv.api(
+            "POST", f"/ce-lobby/v1/rooms/{rid}/update", token=host["session_token"],
+            body={"mode": "coop_skirmish"},
+        )
+        self.assertEqual(200, code)
+        self.assertTrue(all(s["team"] == 0 for s in coop_room["seats"]))
+        code, _, err_team = srv.api(
+            "POST", f"/ce-lobby/v1/rooms/{rid}/update", token=g1["session_token"],
+            body={"team": 1},
+        )
+        self.assertEqual(400, code)
+        self.assertEqual("invalid_team", err_team["error"])
+        code, _, ok_coop_self = srv.api(
+            "POST", f"/ce-lobby/v1/rooms/{rid}/update", token=g1["session_token"],
+            body={"team": 0, "ready": True},
+        )
+        self.assertEqual(200, code)
+        code, _, vs_room = srv.api(
+            "POST", f"/ce-lobby/v1/rooms/{rid}/update", token=host["session_token"],
+            body={"mode": "versus_2v2"},
+        )
+        self.assertEqual(200, code)
+        self.assertEqual([0, 0, 1, 1], [s["team"] for s in vs_room["seats"]])
+        self.assertIs(False, vs_room["seats"][1]["ready"])
+
         # Chat sanitization, length limit, rate limit (5 / 10s), and 32-message ring.
         code, _, c1 = srv.api(
             "POST", f"/ce-lobby/v1/rooms/{rid}/chat", token=host["session_token"],

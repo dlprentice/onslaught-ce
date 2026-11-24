@@ -37,8 +37,13 @@ extern "C" int CE_NetUpdateAutomationIdle(void);
 extern "C" int CE_NetClockOrdinary(void);
 extern "C" int PortCeOnlineMatchActive(void) __attribute__((weak));
 extern "C" int PortCeOnlineMatchSlotCount(void) __attribute__((weak));
+extern "C" int PortCeOnlineMatchSlotTeam(int slot) __attribute__((weak));
 extern "C" CPlayer *PortCeMultiBeGetSlotPlayer(int slot) __attribute__((weak));
 extern "C" CBattleEngine *PortCeMultiBeGetSlotEngine(int slot) __attribute__((weak));
+extern "C" CCamera *PortCeMultiBeAuxCamera(int slot) __attribute__((weak));
+extern "C" void PortCeMultiBeSetAuxCamera(int slot, CCamera *cam) __attribute__((weak));
+extern "C" int PortCeMultiBeIsAuxDeathCam(int slot) __attribute__((weak));
+extern "C" int PortCeMultiBeWinningTeam(void) __attribute__((weak));
 
 namespace {
 const uint32_t native_actions[]={25,27,26,28,29,30,31,32,59,33,19,18,20,16,17,21};
@@ -132,6 +137,34 @@ public:
             p=GAME.GetPlayer(player); e=p?p->GetBattleEngine():NULL;
             if(!e||GAME.IsPaused()||GAME.GetController(player)->GetToControl()!=p) return;
             ctrl=GAME.GetController(player);
+        }
+        struct AuxCameraGuard {
+            int slot;
+            CCamera *aux;
+            CCamera *saved;
+            AuxCameraGuard(int s, CCamera *c) : slot(-1), aux(NULL), saved(NULL) {
+                if (s >= 0 && s < MAX_PLAYERS && c) {
+                    slot = s;
+                    aux = c;
+                    saved = GAME.mCurrentCamera[s];
+                    GAME.mCurrentCamera[s] = c;
+                }
+            }
+            ~AuxCameraGuard() {
+                if (slot >= 0) {
+                    if (GAME.mCurrentCamera[slot] != aux && PortCeMultiBeSetAuxCamera) {
+                        PortCeMultiBeSetAuxCamera(slot, GAME.mCurrentCamera[slot]);
+                    }
+                    GAME.mCurrentCamera[slot] = saved;
+                }
+            }
+        };
+        CCamera *auxCam = (OnlineMultiActive() && (int)player >= GAME.GetNPlayers() && PortCeMultiBeAuxCamera)
+            ? PortCeMultiBeAuxCamera((int)player) : NULL;
+        AuxCameraGuard auxGuard((int)player, auxCam);
+        if (auxCam && !GAME.IsPaused() && GAME.GetGameState() == GAME_STATE_PLAYING &&
+            !e->IsDying() && e->GetIsPoweredUp()) {
+            e->mCurrentUnitOverCrosshair = e->CalcUnitOverCrossHair(NULL, TRUE, TRUE);
         }
         bool ground_mouse=in.mouse_ground_aim&&e->IsWalkerOnGroundOrObject();
         for(unsigned i=0;i<in.count;++i) {
@@ -259,15 +292,16 @@ public:
     static uint64_t LockstepThings(FILE *dump,uint32_t &count) {
         uint64_t all=1469598103934665603ull; count=0;
         auto mix=[](uint64_t h,const void *p,size_t n) { const uint8_t *b=(const uint8_t *)p; for(size_t i=0;i<n;++i) { h^=b[i]; h*=1099511628211ull; } return h; };
+        auto f32=[&](uint64_t h,float v) { if(v==0.f) v=0.f; return mix(h,&v,4); };
         ListIterator<CThing> it(&WORLD.GetThingNB());
         for(CThing *t=it.First();t;t=it.Next()) {
             ++count; const char *name=t->_GetClassName(); uint64_t one=1469598103934665603ull;
-            one=mix(one,name,strlen(name)+1); one=mix(one,&t->mPos.X,4); one=mix(one,&t->mPos.Y,4); one=mix(one,&t->mPos.Z,4);
+            one=mix(one,name,strlen(name)+1); one=f32(one,t->mPos.X); one=f32(one,t->mPos.Y); one=f32(one,t->mPos.Z);
             CUnit *unit=dynamic_cast<CUnit *>(t); float life=unit?unit->mLife:0.f;
-            if(unit) one=mix(one,&life,4);
+            if(unit) one=f32(one,life);
             // orientation and (actors) velocity: drift there precedes any position difference
             uint64_t motion=1469598103934665603ull;
-            auto xyz=[&](uint64_t h,const FVector &v) { h=mix(h,&v.X,4); h=mix(h,&v.Y,4); return mix(h,&v.Z,4); };	// never the unused pad
+            auto xyz=[&](uint64_t h,const FVector &v) { h=f32(h,v.X); h=f32(h,v.Y); return f32(h,v.Z); };	// never the unused pad
             if(CComplexThing *ct=dynamic_cast<CComplexThing *>(t)) for(int r=0;r<3;++r) motion=xyz(motion,ct->mOrientation.Row[r]);
             if(CActor *a=dynamic_cast<CActor *>(t)) motion=xyz(motion,a->mVelocity);
             one=mix(one,&motion,8);
@@ -283,7 +317,7 @@ public:
     // exactly 1 (its wall-clock rounding is not), and the frame number moves on by more than CMeshPose's 30-frame
     // reuse window, so every cache the tick reads is rebuilt from simulation state alone.
     struct ComponentState { CComponent *thing; FVector pos; FMatrix orientation; SINT stamp; };
-    static ComponentState lock_components[256]; static unsigned lock_component_count;
+    static ComponentState *lock_components; static unsigned lock_component_count, lock_component_cap;
     // Motion controllers keep pose state that drawing advances: a mech's bones and legs step when anything asked for
     // its transforms since the last tick (CMCMech::mUsed, and GetPartTransform's forced ProcessMovement), its body lean
     // smooths per evaluation (UpdateBone's mUnknown88), wheeled and tentacle controllers update on the render clock,
@@ -351,15 +385,19 @@ public:
         ListIterator<CThing> it(&WORLD.GetThingNB());
         for(CThing *t=it.First();t;t=it.Next()) {
             CComponent *c=dynamic_cast<CComponent *>(t); if(!c) continue;
-            if(lock_component_count==256) return 0;
+            if(lock_component_count==lock_component_cap) {
+                unsigned cap=lock_component_cap?lock_component_cap*2u:256u;
+                ComponentState *next=(ComponentState *)realloc(lock_components,cap*sizeof *next);
+                if(!next) return 0;
+                lock_components=next; lock_component_cap=cap;
+            }
             lock_components[lock_component_count++]={c,c->mPos,c->mOrientation,c->mUnknown278};
         }
-        // The fence's size as play goes on: a line each time the peak grows by 16 (and the first), so a level's busiest tick
-        // shows how close it comes to the 256 the fence can keep.
+        // The fence's size as play goes on: a line each time the peak grows by 16 (and the first).
         static unsigned peak, next_report;
         if(lock_component_count>peak) {
             peak=lock_component_count;
-            if(peak>=next_report) { fprintf(stderr,"onslaught-ce: co-op tick fence: %u components (peak; limit 256), %u bytes of controller state\n",peak,(unsigned)lock_byte_count); next_report=peak+16; }
+            if(peak>=next_report) { fprintf(stderr,"onslaught-ce: co-op tick fence: %u components (peak; cap %u), %u bytes of controller state\n",peak,lock_component_cap,(unsigned)lock_byte_count); next_report=peak+16; }
         }
         return 1;
     }
@@ -399,7 +437,7 @@ public:
 CENetworkWorldAdapter::Region *CENetworkWorldAdapter::lock_regions; uint8_t *CENetworkWorldAdapter::lock_bytes;
 size_t CENetworkWorldAdapter::lock_region_count, CENetworkWorldAdapter::lock_region_cap, CENetworkWorldAdapter::lock_byte_count, CENetworkWorldAdapter::lock_byte_cap;
 bool CENetworkWorldAdapter::lock_overflow;
-CENetworkWorldAdapter::ComponentState CENetworkWorldAdapter::lock_components[256]; unsigned CENetworkWorldAdapter::lock_component_count;
+CENetworkWorldAdapter::ComponentState *CENetworkWorldAdapter::lock_components; unsigned CENetworkWorldAdapter::lock_component_count, CENetworkWorldAdapter::lock_component_cap;
 CE_WorldInput *CENetworkWorldAdapter::lock_sample; bool CENetworkWorldAdapter::lock_mouse_axis;
 
 extern "C" {
@@ -471,17 +509,77 @@ int CE_WorldViewPlayer(int original) {
         const uint32_t local = CE_LockstepLocalPlayer();
         if (CENetworkWorldAdapter::OnlineMultiActive()) {
             if (local != 0 && dynamic_cast<CPanCamera *>(GAME.GetCamera(0))) return 0;
-            // Aux slots (>= GAME.GetNPlayers()) render through PortCeMultiBeRenderCamera / PortCeMultiBeHudFocus.
-            return (int)local < GAME.GetNPlayers() ? (int)local : 0;
+            return (int)local;
         }
         return local==1&&dynamic_cast<CPanCamera *>(GAME.GetCamera(0)) ? 0 : (int)local;
     }
     return original;
 }
+int CE_WorldLocalWon(int game_state) {
+    if (game_state == GAME_STATE_LEVEL_WON) return 1;
+    if (game_state != GAME_STATE_PLAYER_1_WON && game_state != GAME_STATE_PLAYER_2_WON) return 0;
+    if (CENetworkWorldAdapter::OnlineMultiActive() && PortCeOnlineMatchSlotTeam) {
+        const int local = (int)CE_LockstepLocalPlayer();
+        const int localTeam = PortCeOnlineMatchSlotTeam(local);
+        const int winTeam = PortCeMultiBeWinningTeam ? PortCeMultiBeWinningTeam() : -1;
+        if (winTeam >= 0) return (localTeam == winTeam) ? 1 : 0;
+        const int t0 = PortCeOnlineMatchSlotTeam(0);
+        const int t1 = PortCeOnlineMatchSlotTeam(1);
+        if (game_state == GAME_STATE_PLAYER_1_WON) return (localTeam == t0) ? 1 : 0;
+        return (t1 != t0) ? ((localTeam == t1) ? 1 : 0) : ((localTeam != t0) ? 1 : 0);
+    }
+    return game_state == (CE_WorldLocalPlayer() == 0 ? GAME_STATE_PLAYER_1_WON : GAME_STATE_PLAYER_2_WON) ? 1 : 0;
+}
 float CE_WorldViewAspect(float original) { return CE_WorldActive() ? .75f : original; }
 int CE_WorldInvertPitch(uint32_t player,int grounded,int original) { return CE_LockstepTicking() ? CE_LockstepInvertPitch(player,grounded,original) : original; }
 int CE_WorldWalkerBindingType(uint32_t player,int original) { return CE_LockstepTicking() ? (CE_LockstepWalkerAny(player,original) ? MOUSE_AXIS_PLUS_ANY : MOUSE_AXIS_PLUS) : original; }
 void CE_WorldMouseAxis(int on) { if(CENetworkWorldAdapter::lock_sample) CENetworkWorldAdapter::lock_mouse_axis=on!=0; }
+}
+CCamera *CE_WorldViewCamera(int original) {
+    if (!CE_LockstepActive()) return GAME.GetCamera(original);
+    const int view = CE_WorldViewPlayer(original);
+    if (CENetworkWorldAdapter::OnlineMultiActive() && view >= GAME.GetNPlayers()) {
+        if (CCamera *aux = PortCeMultiBeAuxCamera ? PortCeMultiBeAuxCamera(view) : NULL)
+            return aux;
+        return GAME.GetCamera(0);
+    }
+    if (view >= 0 && view < GAME.GetNPlayers()) {
+        if (CCamera *cam = GAME.GetCamera(view)) return cam;
+    }
+    return GAME.GetCamera(0);
+}
+CPlayer *CE_WorldViewPlayerPtr(int original) {
+    if (!CE_LockstepActive()) return GAME.GetPlayer(original);
+    const int view = CE_WorldViewPlayer(original);
+    if (CENetworkWorldAdapter::OnlineMultiActive() && view >= GAME.GetNPlayers()) {
+        if (CPlayer *aux = PortCeMultiBeGetSlotPlayer ? PortCeMultiBeGetSlotPlayer(view) : NULL)
+            return aux;
+        return GAME.GetPlayer(0);
+    }
+    if (view >= 0 && view < GAME.GetNPlayers()) {
+        if (CPlayer *p = GAME.GetPlayer(view)) return p;
+    }
+    return GAME.GetPlayer(0);
+}
+int CE_WorldViewShowHUD(int original, CPlayer *player) {
+    if (!player) return 0;
+    if (!CE_WorldActive()) {
+        CCamera *cam = GAME.GetCamera(original);
+        return (cam && cam->GetShowHUD()) ? 1 : 0;
+    }
+    const int hud_player = CE_WorldViewPlayer(original);
+    if (hud_player < 0 || hud_player >= 4) return 0;
+    if (CENetworkWorldAdapter::OnlineMultiActive() && hud_player >= GAME.GetNPlayers()) {
+        if (PortCeMultiBeIsAuxDeathCam && PortCeMultiBeIsAuxDeathCam(hud_player)) return 0;
+        CBattleEngine *e = CENetworkWorldAdapter::SlotEngine((uint32_t)hud_player);
+        if (!e || e->IsDying()) return 0;
+        CCamera *aux = PortCeMultiBeAuxCamera ? PortCeMultiBeAuxCamera(hud_player) : NULL;
+        if (!aux || !aux->GetShowHUD()) return 0;
+        return (player->GetNumber() == hud_player + 1) ? 1 : 0;
+    }
+    if (player->GetNumber() != hud_player + 1) return 0;
+    CCamera *cam = CE_WorldViewCamera(original);
+    return (cam && cam->GetShowHUD()) ? 1 : 0;
 }
 int CE_WorldBypassMouse(CBattleEngine *) {
     return CE_LockstepTicking() ? 1 : 0; // mouse look reaches either engine only through its player's tick sample

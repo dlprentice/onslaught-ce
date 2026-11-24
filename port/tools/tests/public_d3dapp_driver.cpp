@@ -3,6 +3,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <memory>
+extern "C" unsigned long long SDL_GetTicks(void) { return 0; }	// ce.cpp's settings cache clock, bypassed here
 TestCLI CLIPARAMS;
 CDisplayModeKey gDisplayModeKey;
 TestLog SETUP_HISTORY;
@@ -455,7 +456,11 @@ int main(int argc,char **argv)
         Application app;
         HRESULT result=app.DisplayErrorMsg(static_cast<HRESULT>(42),0);
         const std::string expected="Onslaught CE could not set up its graphics (error 0x0000002a).\n\n"
+#ifdef _WIN32
                                    "Update your graphics driver and try again. If it keeps happening, run onslaught-ce.exe --report.";
+#else
+                                   "Update your graphics driver and try again. If it keeps happening, run ./onslaught-ce --report.";
+#endif
         return result==42 && dialogBody==expected ? 0 : 1;
     }
     bool ownership=name=="owned-reset-ref"||name=="owned-query-reset-ref"||name=="owned-reset-ref-fail"||name=="owned-failed-create";

@@ -739,7 +739,7 @@ class LivingSandboxTests(unittest.TestCase):
         files = re.findall(r"^--- a/(.+)$", text, re.M)
         allowed = {
             "ResourceAccumulator.cpp", "world.cpp", "game.cpp", "FrontEnd.cpp",
-            "DXMemoryManager.cpp", "System.cpp", "eventmanager.cpp",
+            "DXMemoryManager.cpp", "System.cpp", "eventmanager.cpp", "BattleEngine.cpp",
         }
         self.assertEqual(set(files), allowed, f"unexpected patch targets: {files}")
         self.assertNotIn("Round.cpp", files)
@@ -812,6 +812,26 @@ class LivingSandboxTests(unittest.TestCase):
         self.assertIn("CeSanctuaryCitadel::RuntimeDrawDomeFx()", dir_cpp)
         self.assertIn("CeSanctuaryCitadel::RuntimeHandleKey(", dir_cpp)
         self.assertIn("CeSanctuaryCitadel::RuntimeCue(", dir_cpp)
+
+        # Verify transition, HUD batching, input/pause guards, rescue morph & Forseti HQ preload.
+        world_h = (GAME / "ce_sandbox_world.h").read_text(encoding="utf-8")
+        world_cpp = (GAME / "ce_sandbox_world.cpp").read_text(encoding="utf-8")
+        self.assertIn("RefreshProceduralMapExtents()", world_cpp)
+        self.assertIn("EngineMediaAccess::KempyCube()", world_cpp)
+        self.assertIn("EngineMediaAccess::Water()", world_cpp)
+        self.assertIn("gWorld.arenaInstalled", world_cpp)
+        self.assertIn("CMesh::GetMeshByResourceID(", world_cpp)
+        self.assertIn("InferMeshTextureFormat(", world_cpp)
+        self.assertIn('"Forseti Pulse Tank Factory"', world_h)
+        self.assertIn('"fb_tank_factory.msh"', world_h)
+        self.assertIn("if (viewpoint != 0 || gMirrorPass) return;", dir_cpp)
+        self.assertIn("GAMEINTERFACE.IsMenuUp()", dir_cpp)
+        self.assertIn("LT.GetKeytrap()", dir_cpp)
+        self.assertIn("PortCeCmdMapOpen()", dir_cpp)
+        self.assertIn("be->Morph();", dir_cpp)
+        self.assertIn("D3DPT_TRIANGLELIST", dir_cpp)
+        self.assertNotIn("D3DPT_TRIANGLEFAN", dir_cpp)
+        self.assertNotIn("D3DPT_TRIANGLESTRIP", dir_cpp)
 
 
 if __name__ == "__main__":

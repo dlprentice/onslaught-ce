@@ -60,6 +60,7 @@ enum class CeStarMsgType : uint16_t {
     Desync = 13,
     Chat = 20,
     PingReport = 21,
+    Keepalive = 22,
     Leave = 30
 };
 
@@ -318,6 +319,7 @@ private:
     uint32_t rejected_packets_ = 0;
     uint32_t chat_send_seq_ = 0;
     uint64_t last_ping_broadcast_ms_ = 0;
+    uint64_t last_keepalive_tx_ms_ = 0;
     uint64_t created_at_ms_ = 0;
 
     // Host uses slots_[1..max_guests] (slot 0 unused on Host). Guest uses slots_[0] for Host link.

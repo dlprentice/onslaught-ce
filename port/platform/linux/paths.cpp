@@ -68,8 +68,12 @@ static int WalkDirectories(int fd, const char *path, bool create)
 		}
 		if (!part)
 			return fd;
-		if (!strcmp(part, "."))
-			continue;
+		if (!strcmp(part, ".") || !strcmp(part, ".."))
+		{
+			close(fd);
+			errno = EINVAL;
+			return -1;
+		}
 		int child = openat(fd, part, O_PATH | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
 		if (child < 0 && errno == ENOENT && create)
 		{
@@ -87,18 +91,140 @@ static int WalkDirectories(int fd, const char *path, bool create)
 	}
 }
 
+static bool IsInsideGameDirectory(int fd)
+{
+	struct stat game{};
+	if (!sGameDir[0] || stat(sGameDir, &game) != 0)
+		return false;
+	int cur = dup(fd);
+	if (cur < 0)
+		return true;
+	for (int depth = 0; depth < 512; ++depth)
+	{
+		struct stat here{};
+		if (fstat(cur, &here) != 0)
+		{
+			close(cur);
+			return true;
+		}
+		if (here.st_dev == game.st_dev && here.st_ino == game.st_ino)
+		{
+			close(cur);
+			return true;
+		}
+		int up = openat(cur, "..", O_PATH | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+		if (up < 0)
+		{
+			close(cur);
+			return true;
+		}
+		struct stat parent{};
+		if (fstat(up, &parent) != 0)
+		{
+			close(cur);
+			close(up);
+			return true;
+		}
+		close(cur);
+		if (parent.st_dev == here.st_dev && parent.st_ino == here.st_ino)
+		{
+			close(up);
+			return false;
+		}
+		cur = up;
+	}
+	close(cur);
+	return true;
+}
+
+// Resolve existing OS/user ancestors above the final user-root component without O_NOFOLLOW (e.g. /home -> /var/home
+// on Silverblue/Kinoite/Bazzite or a relocated ~/.local/share), matching ce_report.h, then enforce O_NOFOLLOW from the
+// deepest missing or leaf component downward and refuse anything inside sGameDir.
+static int OpenRootPath(const char *rawPath, bool create)
+{
+	char copy[4096], cwd[4096];
+	if (!rawPath || !*rawPath)
+		return -1;
+	for (const char *p = rawPath; *p;)
+	{
+		while (*p == '/') p++;
+		const char *s = p;
+		while (*p && *p != '/') p++;
+		if ((p - s == 1 && s[0] == '.') || (p - s == 2 && s[0] == '.' && s[1] == '.'))
+		{
+			errno = EINVAL;
+			return -1;
+		}
+	}
+	int n = rawPath[0] == '/' ? snprintf(copy, sizeof(copy), "%s", rawPath)
+		: (getcwd(cwd, sizeof(cwd)) ? snprintf(copy, sizeof(copy), "%s/%s", cwd, rawPath) : -1);
+	if (n <= 0 || n >= (int)sizeof(copy))
+	{
+		errno = ENAMETOOLONG;
+		return -1;
+	}
+	size_t len = (size_t)n;
+	while (len > 1 && copy[len - 1] == '/')
+		copy[--len] = 0;
+	if (len == 1 && copy[0] == '/')
+	{
+		int root = open("/", O_PATH | O_DIRECTORY | O_CLOEXEC);
+		if (root >= 0 && IsInsideGameDirectory(root)) { close(root); errno = EACCES; return -1; }
+		return root;
+	}
+	size_t ancEnd = len;
+	while (ancEnd > 0 && copy[ancEnd - 1] != '/')
+		ancEnd--;
+	size_t cur = ancEnd > 1 ? ancEnd - 1 : 1;
+	int fd = -1;
+	const char *tail = NULL;
+	for (;;)
+	{
+		char saved = copy[cur];
+		copy[cur] = 0;
+		fd = open(copy, O_PATH | O_DIRECTORY | O_CLOEXEC);
+		int why = fd < 0 ? errno : 0;
+		if (fd >= 0)
+		{
+			copy[cur] = saved;
+			tail = copy + cur;
+			break;
+		}
+		if (why == ENOENT)
+		{
+			struct stat lst{};
+			if (lstat(copy, &lst) == 0 || errno != ENOENT)
+			{
+				copy[cur] = saved;
+				errno = ELOOP;
+				return -1;
+			}
+		}
+		copy[cur] = saved;
+		if (why != ENOENT || cur <= 1)
+		{
+			errno = why;
+			return -1;
+		}
+		while (cur > 0 && copy[cur - 1] != '/')
+			cur--;
+		if (cur > 1)
+			cur--;
+		else
+			cur = 1;
+	}
+	if (IsInsideGameDirectory(fd))
+	{
+		close(fd);
+		errno = EACCES;
+		return -1;
+	}
+	return WalkDirectories(fd, tail, create);
+}
+
 static int OpenUserRoot(bool create)
 {
-	char absolute[4096], cwd[4096];
-	const char *path = sUserDir;
-	if (sUserDir[0] != '/')
-	{
-		if (!getcwd(cwd, sizeof(cwd)) || snprintf(absolute, sizeof(absolute), "%s/%s", cwd, sUserDir) >= (int)sizeof(absolute))
-			return -1;
-		path = absolute;
-	}
-	int fd = open("/", O_PATH | O_DIRECTORY | O_CLOEXEC);
-	return fd < 0 ? -1 : WalkDirectories(fd, path, create);
+	return OpenRootPath(sUserDir, create);
 }
 
 bool PortPathsProjectPreflight()
@@ -109,8 +235,7 @@ bool PortPathsProjectPreflight()
         const char* game = getenv("BEA_GAME_DIR");
         const char* user = getenv("BEA_USER_DIR");
         if (!PortCeProjectProfilePreflight(game, user, sizeof(sGameDir), sizeof(sUserDir))) return false;
-        int fd = open("/", O_PATH | O_DIRECTORY | O_CLOEXEC);
-        if (fd >= 0) fd = WalkDirectories(fd, user, false);
+        int fd = OpenRootPath(user, false);
         if (fd < 0)
         {
             fprintf(stderr, "CE project: the explicit user root cannot be opened without following links; no profile was initialized.\n");
@@ -124,20 +249,29 @@ bool PortPathsProjectPreflight()
 
 void PortPathsNamesOnly()
 {
+	auto trim = [](const char *s, bool dropRoot) -> size_t {
+		if (!s) return 0;
+		size_t len = strlen(s);
+		size_t minLen = dropRoot ? 0 : 1;
+		while (len > minLen && s[len - 1] == '/')
+			--len;
+		return len;
+	};
 	const char *game = getenv("BEA_GAME_DIR");
 	const char *home = getenv("HOME");
 	if (game && *game)
-		snprintf(sGameDir, sizeof(sGameDir), "%s", game);
+		snprintf(sGameDir, sizeof(sGameDir), "%.*s", (int)trim(game, false), game);
 	else
-		snprintf(sGameDir, sizeof(sGameDir), "%s/.local/share/Steam/steamapps/common/Battle Engine Aquila", home ? home : "");
+		snprintf(sGameDir, sizeof(sGameDir), "%.*s/.local/share/Steam/steamapps/common/Battle Engine Aquila",
+				 (int)trim(home, true), home ? home : "");
 	const char *user = getenv("BEA_USER_DIR");
 	const char *xdg = getenv("XDG_DATA_HOME");
 	if (user && *user)
-		snprintf(sUserDir, sizeof(sUserDir), "%s", user);
+		snprintf(sUserDir, sizeof(sUserDir), "%.*s", (int)trim(user, false), user);
 	else if (xdg && *xdg)
-		snprintf(sUserDir, sizeof(sUserDir), "%s/onslaught-ce", xdg);
+		snprintf(sUserDir, sizeof(sUserDir), "%.*s/onslaught-ce", (int)trim(xdg, true), xdg);
 	else
-		snprintf(sUserDir, sizeof(sUserDir), "%s/.local/share/onslaught-ce", home ? home : "");
+		snprintf(sUserDir, sizeof(sUserDir), "%.*s/.local/share/onslaught-ce", (int)trim(home, true), home ? home : "");
 }
 
 void PortPathsInit()

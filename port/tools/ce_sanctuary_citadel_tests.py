@@ -401,7 +401,7 @@ def main():
 
     check("exported seam defines CE_SANDBOX_HAS_CITADEL 1",
           "#define CE_SANDBOX_HAS_CITADEL 1" in cit_h)
-    check("all 10 Runtime* and 5 extern C seam symbols declared and defined",
+    check("all 10 Runtime* and 7 extern C seam symbols declared and defined",
           all(sig in cit_h and sig in cit_cpp for sig in (
               "void RuntimeInit(",
               "void RuntimeShutdown()",
@@ -418,6 +418,8 @@ def main():
               "PortCeSanctuaryInterceptRound(",
               "PortCeSanctuaryClampBeam(",
               "PortCeSanctuaryDrawWorld(",
+              "PortCeSanctuaryFire(",
+              "PortCeSanctuaryRenderCinemaPlayer(",
           )))
     check("citadel reuses CeMuseumTextures (all 13 textures) and wires CeArchivePedestal pose",
           "CeMuseumTextures::LoadAll(" in cit_cpp
@@ -456,19 +458,50 @@ def main():
           and "PortCeSanctuaryClampBeam(mPos.X, mPos.Y, mPos.Z" in patch_txt
           and "PortCeSanctuaryClampBeam(mBeamStart.X, mBeamStart.Y, mBeamStart.Z" in patch_txt
           and "LT.D3D_Clear(0, NULL, D3DCLEAR_TARGET, 0x000a0c12, 1.0f, 0L);" in patch_txt)
-    check("citadel splits South balustrade & retaining skirt around SE ramp, seals Cinema doorway, and resets dome depth bias",
+    check("citadel splits South balustrade & retaining skirt around SE ramp, keeps South Cinema portal open, guards SkipOutdoorWorld & keys, and renders 3P player in Cinema",
           "EmitBalustradeX(354.5f,  75.0f, 119.5f" in cit_cpp
           and "EmitBalustradeX(354.5f, 136.5f, 149.0f" in cit_cpp
           and "kCinemaWallMinY - 0.20f" in cit_cpp
-          and "const float yDoor = 410.65f;" in cit_cpp
+          and "yDoor = 410.65f" not in cit_cpp
+          and "PortCePhotoOn()" in cit_cpp
+          and "PortCeCmdMapOpen()" in cit_cpp
+          and "kDikSpace" not in cit_cpp
+          and "CeArchivePedestal::kDikTab && !CeArchivePedestal::RuntimeIsAimingControl()" in cit_cpp
+          and "PortCeSanctuaryRenderCinemaPlayer(viewpoint);" in patch_txt
           and "D3DRS_COLORWRITEENABLE, 15" in cit_cpp)
+    check("citadel uses managed GPU VB/IB buffers for static geometry, shares StateBlock with ArchivePedestal, drops bastion skirt to 0.00f, and loads retail faction emblem murals",
+          "CreateVertexBuffer(" in cit_cpp
+          and "CreateIndexBuffer(" in cit_cpp
+          and "D3DPOOL_MANAGED" in cit_cpp
+          and "ReleaseGpuBuffers();" in cit_cpp
+          and "dev->DrawIndexedPrimitive(" in cit_cpp
+          and "CeArchivePedestal::RuntimeDraw(gCitadel->floorZ, false);" in cit_cpp
+          and "EmitBox(72.5f, 352.5f, -10.0f, 119.5f, 354.2f, 0.00f" in cit_cpp
+          and re.search(r"-10\.0f[^;\n]*0\.03f", cit_cpp) is None
+          and "goodies_F_Bakgrnd.tga" in cit_cpp
+          and "goodies_M_Bakgrnd.tga" in cit_cpp
+          and "PortCeAssetCatalogFindTexture(" in cit_cpp
+          and "ReleaseFactionEmblemTextures();" in cit_cpp)
+    inlay_match = re.search(r"const bool isInlay = \([^;]+\);", cit_cpp)
+    check("citadel excludes 3D kMatBrass frames from isInlay depth bias and resets shaders/texstage with 6cm mural standoff",
+          inlay_match is not None
+          and "kMatBrass" not in inlay_match.group(0)
+          and "kMatRunner" in inlay_match.group(0)
+          and "dev->SetVertexShader(NULL);" in cit_cpp[cit_cpp.index("DrawFactionEmblemMurals("):cit_cpp.index("void RuntimeInit(")]
+          and "dev->SetPixelShader(NULL);" in cit_cpp[cit_cpp.index("DrawFactionEmblemMurals("):cit_cpp.index("void RuntimeInit(")]
+          and "dev->SetTextureStageState(0, D3DTSS_TEXCOORDINDEX, 0);" in cit_cpp[cit_cpp.index("DrawFactionEmblemMurals("):cit_cpp.index("void RuntimeInit(")]
+          and "dev->SetTextureStageState(0, D3DTSS_TEXTURETRANSFORMFLAGS, D3DTTFF_DISABLE);" in cit_cpp[cit_cpp.index("DrawFactionEmblemMurals("):cit_cpp.index("void RuntimeInit(")]
+          and "{kEmblemForseti,  84.48f," in cit_cpp
+          and "{kEmblemMuspell, 139.52f," in cit_cpp)
 
     sys.path.insert(0, str(PORT))
     sys.path.insert(0, str(PORT / "tools"))
     import build  # noqa: E402
     import ce_photo_tests  # noqa: E402
 
-    # Check independence when skipping prior patches on DXEngine.cpp AND applying 0379 alone onto bare retail mirror.
+    # Check independence when skipping prior patches on DXEngine.cpp (testing queue up through 0379)
+    # AND applying 0379 alone onto bare retail mirror.
+    later_patches = tuple(p.name for p in sorted((PORT / "patches").glob("*.patch")) if p.name > PATCH.name)
     for skipped in (
         ("0256-ce-museum-hall-world.patch",),
         ("0265-ce-authored-exhibition-world.patch",),
@@ -476,7 +509,7 @@ def main():
         ("0366-ce-museum-visitor-hud.patch",),
     ):
         try:
-            build.patched_text(["Round.cpp", "DXEngine.cpp"], skip=skipped)
+            build.patched_text(["Round.cpp", "DXEngine.cpp"], skip=skipped + later_patches)
             check("patch 0379 applies cleanly without " + "+".join(skipped), True)
         except RuntimeError as err:
             check("patch 0379 applies cleanly without " + "+".join(skipped), False, str(err))
@@ -490,8 +523,8 @@ def main():
         check("patch 0379 applies at fuzz 0 directly to bare retail Round.cpp and DXEngine.cpp", False, str(err))
 
     # Faithful build neutrality: with CE_VERSION undefined, patch 0379 leaves Round.cpp and DXEngine.cpp identical!
-    with_0379 = build.patched_text(["Round.cpp", "DXEngine.cpp"])
-    without_0379 = build.patched_text(["Round.cpp", "DXEngine.cpp"], skip=("0379-ce-sanctuary-shield.patch",))
+    with_0379 = build.patched_text(["Round.cpp", "DXEngine.cpp"], skip=later_patches)
+    without_0379 = build.patched_text(["Round.cpp", "DXEngine.cpp"], skip=("0379-ce-sanctuary-shield.patch",) + later_patches)
     for fname in ("Round.cpp", "DXEngine.cpp"):
         f_with = ce_photo_tests.faithful(build.network_view(with_0379[fname], off=True))
         f_without = ce_photo_tests.faithful(build.network_view(without_0379[fname], off=True))

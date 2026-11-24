@@ -101,8 +101,11 @@
 #include "ce_playunit_hud.h"
 #include "ce_playunit_textures.h"
 #include "ce_commander.h"
+#include "ce_hooks.h"
 #include "../platform/common/portlog.h"
 #include "../platform/common/feel.h"
+
+extern "C" bool PortCeMuseumVisitActive(void) __attribute__((weak));
 
 #include <d3dx9.h>
 #include <math.h>
@@ -119,6 +122,7 @@
 #endif
 
 extern "C" int CE_SettingIs(const char *key, const char *value);		// ce.cpp: the ce.ini line
+extern float gMouseSensitivity;											// Controller.cpp: the options' mouse sensitivity
 bool PortCeExperimental(const char *mode);	// ce.cpp: the ce.ini [Experimental] lines, each read once
 #if !defined(_WIN32)
 extern "C" { extern char **environ; }
@@ -386,7 +390,15 @@ public:
 		case BUTTON_MECH_YAW_LEFT: case BUTTON_MECH_YAW_RIGHT: if (gViewMode == kViewLook) gIn.look += val; else gIn.turn += val; break;
 		// the pitch actions (a pad's right stick up and down, and the game's filtered mouse) tilt the look when it is the player's, with the player's Invert Y as the
 		// Battle Engine on the ground takes it (CPlayer::ReceiveButtonAction); dropped otherwise, as before
-		case BUTTON_MECH_PITCH_UP: case BUTTON_MECH_PITCH_DOWN: if (gViewMode == kViewLook) gIn.pitch += CAREER.GetInvertYAxis(0) ? -val : val; break;
+		case BUTTON_MECH_PITCH_UP: case BUTTON_MECH_PITCH_DOWN:
+			if (gViewMode == kViewLook)
+			{
+				const bool invY = (gDrivenClass == CE_PLAYUNIT_CLASS_AIRCRAFT)
+					? (CAREER.GetInvertJetYAxis(0) != FALSE)
+					: (CAREER.GetInvertYAxis(0) != FALSE);
+				gIn.pitch += invY ? val : -val;
+			}
+			break;
 		// The mouse button (and a pad's right trigger) is BUTTON_MECH_CHARGE_GUN_POD while it is held and BUTTON_MECH_FIRE_GUN_POD when it is let go: either one fires the tank's gun.
 		case BUTTON_MECH_CHARGE_GUN_POD: case BUTTON_MECH_FIRE_GUN_POD: if (val > 0.5f) gIn.fire = true; break;
 		case BUTTON_MECH_CHANGE_ZOOM_IN:
@@ -2037,16 +2049,17 @@ void UnitKeyName(char *out, int n, int action, const char *fallback)
 		for (int i = 0; i < 2; i++)
 		{
 			const SControlInput &in = b->mInput[i];
+			if (in.mPad == -1) continue;
 			if (in.mType == MOUSE_BUTTON_ON || in.mType == MOUSE_BUTTON_ONCE ||
             in.mType == MOUSE_BUTTON_RELEASE) {
-            const char *mouse[] = {"Left mouse", "Right mouse", "Middle mouse",
+            const char *mouse[] = {"Left mouse", "Middle mouse", "Right mouse",
                                    "Wheel up", "Wheel down"};
             if (in.mKey >= 0 && in.mKey < (int)(sizeof(mouse) / sizeof(mouse[0]))) {
                 snprintf(out, n, "%s", mouse[in.mKey]);
                 return;
             }
         }
-        if (in.mPad == -1 || (in.mType != KEY_ON && in.mType != KEY_ONCE && in.mType != KEY_RELEASE)) continue;
+        if (in.mType != KEY_ON && in.mType != KEY_ONCE && in.mType != KEY_RELEASE) continue;
 			const char *name = NULL;
 			switch (in.mKey)
 			{
@@ -2139,9 +2152,9 @@ bool ClassKeyFree(int dik)
                 if (in.mPad != -1 && (in.mType == KEY_ON || in.mType == KEY_ONCE || in.mType == KEY_RELEASE) && in.mKey == dik)
                     return false;
             }
-    return PortCeActionKey(CeControlAction::TakeUnit) != dik
-        && PortCeActionKey(CeControlAction::Dodge) != dik
-        && PortCeActionKey(CeControlAction::Commander) != dik;
+    return !(PortCeActionEnabled(CeControlAction::TakeUnit) && PortCeActionKey(CeControlAction::TakeUnit) == dik)
+        && !(PortCeActionEnabled(CeControlAction::Dodge) && PortCeActionKey(CeControlAction::Dodge) == dik)
+        && !(PortCeActionEnabled(CeControlAction::Commander) && PortCeActionKey(CeControlAction::Commander) == dik);
 }
 
 // Whether V is free to toggle between third-person and first-person while driving a unit.
@@ -2380,7 +2393,7 @@ bool Take(CPlayer *player, CBattleEngine *engine, CCONTROLLER *controller, CUnit
 	gParkedEngineNumber = engine->GetThingNumber();
 	gParkedEngineHandle = CeEntityHandleFor(engine);
 	gDrivenClass = kind;
-	gIsDropship = kind == CE_PLAYUNIT_CLASS_AIRCRAFT && (!strcmp(u->_GetClassName(), "CDropship") || !strcmp(u->_GetClassName(), "CCarrier") || !strcmp(u->_GetClassName(), "CFenrir"));
+	gIsDropship = kind == CE_PLAYUNIT_CLASS_AIRCRAFT && (!strcmp(u->_GetClassName(), "CDropship") || !strcmp(u->_GetClassName(), "CCarrier"));
 	gIsBomber = kind == CE_PLAYUNIT_CLASS_AIRCRAFT && (!strcmp(u->_GetClassName(), "CBomber") || !strcmp(u->_GetClassName(), "CDiveBomber") || !strcmp(u->_GetClassName(), "CGroundAttackAircraft"));
 	gBoostHeld = false;
 	gUnloadPending = false;
@@ -3101,7 +3114,10 @@ void Drive(CUnit *u, CPlayer *player, CBattleEngine *engine)
 	const bool unloadPressed = gUnloadPressed;
 	const bool spotPressed = gSpotPressed;
 	const bool weaponSwitchReq = gOnFoot && (gWeaponSwitchPressed || gFootWeaponSwitch);
-	gBoostHeld = PortKeyHeldNow(DIK_LSHIFT) > 0 || PortKeyHeldNow(DIK_RSHIFT) > 0;
+	gBoostHeld = !LT.GetKeytrap() && !PortCeCmdMapOpen() && !GAME.IsPaused()
+		&& (PortKeyHeldNow(DIK_LSHIFT) > 0 || PortKeyHeldNow(DIK_RSHIFT) > 0
+		    || GamepadActionActive(BUTTON_MECH_JET_AFTERBURNER)
+		    || GamepadActionActive(BUTTON_MECH_LANDING_JETS));
 	const bool padToggle = gViewMode == kViewLook && GamepadViewToggleEdge();
 	const bool keyToggle = gViewTogglePressed;
 	const bool toggleView = keyToggle || padToggle;
@@ -3190,7 +3206,7 @@ void Drive(CUnit *u, CPlayer *player, CBattleEngine *engine)
             CePlayUnitNotice(UnitViewName(view), tip, true);
         }
     }
-    const bool helpPressed = CePlayUnitPressed(&gHelpHintKey, PortKeyHeldNow(DIK_F1) > 0, !GAME.IsPaused() && !PortCeCmdMapOpen());
+    const bool helpPressed = CePlayUnitPressed(&gHelpHintKey, PortKeyHeldNow(DIK_F1) > 0, !LT.GetKeytrap() && !GAME.IsPaused() && !PortCeCmdMapOpen());
     if (CePlayUnitHintStep(&gHintState, gUnitViewModeChanged, helpPressed))
     {
         if (gHintState.visible)
@@ -3615,6 +3631,7 @@ bool CePlayUnitHudOverlay(CPlayer *player, int viewpoint)
 		HUD.RenderRadar(96.f);				// the radar, centred on the unit and turned with the look (the focus)
 	}
 	HUD.SetAlphaBlend();
+	ce_hook_draw_hud(player, viewpoint);
 	return true;
 }
 
@@ -3624,10 +3641,15 @@ bool CePlayUnitHudOverlay(CPlayer *player, int viewpoint)
 extern "C" void PortCePlayUnitMouse(long dx, long dy)
 {
 	if (!gDriving || !gCamera || gViewMode != kViewLook || GAME.IsPaused() || GAME.GetGameState() != GAME_STATE_PLAYING) return;
+	if (LT.GetKeytrap() || GAME.IsFreeCameraOn(0) || PortCeCmdMapOpen()) return;
 	if (!dx && !dy) return;
-	// the player's own Invert Y, as the Battle Engine on the ground takes it
-	if (CAREER.GetInvertYAxis(0)) dy = -dy;
-	CePlayUnitLookTurn(&gLookYaw, &gLookPitch, float(dx), float(dy), UnitLookLaw());
+	// Match the Battle Engine's own Invert Y (and Jet Invert Y for aircraft) and mouse sensitivity scale.
+	const bool invY = (gDrivenClass == CE_PLAYUNIT_CLASS_AIRCRAFT)
+		? (CAREER.GetInvertJetYAxis(0) != FALSE)
+		: (CAREER.GetInvertYAxis(0) != FALSE);
+	if (!invY) dy = -dy;
+	const float sens = (gMouseSensitivity > 0.f ? gMouseSensitivity : 7.0f) / 7.0f;
+	CePlayUnitLookTurn(&gLookYaw, &gLookPitch, float(dx) * sens, float(dy) * sens, UnitLookLaw());
 	gMouseQuiet = 0;
 }
 // ---- the look's mouse (end)
@@ -3985,53 +4007,87 @@ void BuildWeaponFrame(const FVector &right, const FVector &fwd, const FVector &d
 	}
 }
 
+void RestoreWorldDrawState(LPDIRECT3DDEVICE9 dev, int viewpoint)
+{
+	if (!dev) return;
+	dev->SetVertexShader(NULL);
+	dev->SetPixelShader(NULL);
+	dev->SetTransform(D3DTS_WORLD, (const D3DMATRIX *)&ENGINE.mWorldMatrices[viewpoint]);
+	dev->SetTransform(D3DTS_VIEW, (const D3DMATRIX *)&ENGINE.mViewMatrices[viewpoint]);
+	dev->SetTransform(D3DTS_PROJECTION, (const D3DMATRIX *)&ENGINE.mProjectionMatrices[viewpoint]);
+	dev->SetTexture(0, NULL);
+	dev->SetTexture(1, NULL);
+	dev->SetTexture(2, NULL);
+	dev->SetTexture(3, NULL);
+	dev->SetTextureStageState(0, D3DTSS_TEXCOORDINDEX, 0);
+	dev->SetTextureStageState(0, D3DTSS_TEXTURETRANSFORMFLAGS, D3DTTFF_DISABLE);
+	dev->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_MODULATE);
+	dev->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
+	dev->SetTextureStageState(0, D3DTSS_COLORARG2, D3DTA_DIFFUSE);
+	dev->SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_MODULATE);
+	dev->SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_TEXTURE);
+	dev->SetTextureStageState(0, D3DTSS_ALPHAARG2, D3DTA_DIFFUSE);
+	dev->SetTextureStageState(1, D3DTSS_COLOROP, D3DTOP_DISABLE);
+	dev->SetTextureStageState(1, D3DTSS_ALPHAOP, D3DTOP_DISABLE);
+	dev->SetSamplerState(0, D3DSAMP_ADDRESSU, D3DTADDRESS_WRAP);
+	dev->SetSamplerState(0, D3DSAMP_ADDRESSV, D3DTADDRESS_WRAP);
+	dev->SetRenderState(D3DRS_LIGHTING, FALSE);
+	dev->SetRenderState(D3DRS_COLORVERTEX, TRUE);
+	dev->SetRenderState(D3DRS_SPECULARENABLE, FALSE);
+	dev->SetRenderState(D3DRS_FOGENABLE, FALSE);
+	dev->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
+	dev->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
+	dev->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
+	dev->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
+	dev->SetRenderState(D3DRS_ZENABLE, D3DZB_TRUE);
+	dev->SetRenderState(D3DRS_ZWRITEENABLE, TRUE);
+	dev->SetRenderState(D3DRS_ZFUNC, D3DCMP_LESSEQUAL);
+	dev->SetRenderState(D3DRS_CULLMODE, D3DCULL_CCW);
+	dev->SetRenderState(D3DRS_FILLMODE, D3DFILL_SOLID);
+	dev->SetRenderState(D3DRS_COLORWRITEENABLE, 15);
+	LT.InvalidateAllStates();
+}
+
 void DrawWeaponAdditiveTris(LPDIRECT3DDEVICE9 dev, int viewpoint, const CeWorldTriVert *fv, int nf)
 {
 	if (!dev || !fv || nf < 3) return;
-	IDirect3DStateBlock9 *fs = NULL;
-	if (FAILED(dev->CreateStateBlock(D3DSBT_ALL, &fs)) || !fs) return;
-	if (SUCCEEDED(fs->Capture()))
-	{
-		D3DVIEWPORT9 svp, wvp;
-		dev->GetViewport(&svp);
-		wvp = svp; wvp.MinZ = 0.0f; wvp.MaxZ = 0.06f;
-		dev->SetViewport(&wvp);
-		D3DMATRIX worldId = {};
-		worldId._11 = worldId._22 = worldId._33 = worldId._44 = 1.f;
-		dev->SetVertexShader(NULL);
-		dev->SetPixelShader(NULL);
-		dev->SetTransform(D3DTS_WORLD, &worldId);
-		dev->SetTransform(D3DTS_VIEW, (const D3DMATRIX *)&ENGINE.mViewMatrices[viewpoint]);
-		dev->SetTransform(D3DTS_PROJECTION, (const D3DMATRIX *)&ENGINE.mProjectionMatrices[viewpoint]);
-		dev->SetTexture(0, NULL);
-		dev->SetTexture(1, NULL);
-		dev->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
-		dev->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_DIFFUSE);
-		dev->SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
-		dev->SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_DIFFUSE);
-		dev->SetTextureStageState(1, D3DTSS_COLOROP, D3DTOP_DISABLE);
-		dev->SetTextureStageState(1, D3DTSS_ALPHAOP, D3DTOP_DISABLE);
-		dev->SetRenderState(D3DRS_LIGHTING, FALSE);
-		dev->SetRenderState(D3DRS_COLORVERTEX, TRUE);
-		dev->SetRenderState(D3DRS_SPECULARENABLE, FALSE);
-		dev->SetRenderState(D3DRS_FOGENABLE, FALSE);
-		dev->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
-		dev->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE);
-		dev->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_ONE);
-		dev->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_ONE);
-		dev->SetRenderState(D3DRS_ZENABLE, TRUE);
-		dev->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
-		dev->SetRenderState(D3DRS_ZFUNC, D3DCMP_LESSEQUAL);
-		dev->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
-		dev->SetRenderState(D3DRS_FILLMODE, D3DFILL_SOLID);
-		dev->SetRenderState(D3DRS_COLORWRITEENABLE, 15);
-		dev->SetFVF(D3DFVF_XYZ | D3DFVF_DIFFUSE);
-		dev->DrawPrimitiveUP(D3DPT_TRIANGLELIST, nf / 3, fv, sizeof(CeWorldTriVert));
-		dev->SetViewport(&svp);
-		fs->Apply();
-		LT.InvalidateAllStates();
-	}
-	fs->Release();
+	D3DVIEWPORT9 svp, wvp;
+	dev->GetViewport(&svp);
+	wvp = svp; wvp.MinZ = 0.0f; wvp.MaxZ = 0.06f;
+	dev->SetViewport(&wvp);
+	D3DMATRIX worldId = {};
+	worldId._11 = worldId._22 = worldId._33 = worldId._44 = 1.f;
+	dev->SetVertexShader(NULL);
+	dev->SetPixelShader(NULL);
+	dev->SetTransform(D3DTS_WORLD, &worldId);
+	dev->SetTransform(D3DTS_VIEW, (const D3DMATRIX *)&ENGINE.mViewMatrices[viewpoint]);
+	dev->SetTransform(D3DTS_PROJECTION, (const D3DMATRIX *)&ENGINE.mProjectionMatrices[viewpoint]);
+	dev->SetTexture(0, NULL);
+	dev->SetTexture(1, NULL);
+	dev->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
+	dev->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_DIFFUSE);
+	dev->SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
+	dev->SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_DIFFUSE);
+	dev->SetTextureStageState(1, D3DTSS_COLOROP, D3DTOP_DISABLE);
+	dev->SetTextureStageState(1, D3DTSS_ALPHAOP, D3DTOP_DISABLE);
+	dev->SetRenderState(D3DRS_LIGHTING, FALSE);
+	dev->SetRenderState(D3DRS_COLORVERTEX, TRUE);
+	dev->SetRenderState(D3DRS_SPECULARENABLE, FALSE);
+	dev->SetRenderState(D3DRS_FOGENABLE, FALSE);
+	dev->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
+	dev->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE);
+	dev->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_ONE);
+	dev->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_ONE);
+	dev->SetRenderState(D3DRS_ZENABLE, TRUE);
+	dev->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
+	dev->SetRenderState(D3DRS_ZFUNC, D3DCMP_LESSEQUAL);
+	dev->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
+	dev->SetRenderState(D3DRS_FILLMODE, D3DFILL_SOLID);
+	dev->SetRenderState(D3DRS_COLORWRITEENABLE, 15);
+	dev->SetFVF(D3DFVF_XYZ | D3DFVF_DIFFUSE);
+	dev->DrawPrimitiveUP(D3DPT_TRIANGLELIST, nf / 3, fv, sizeof(CeWorldTriVert));
+	dev->SetViewport(&svp);
+	RestoreWorldDrawState(dev, viewpoint);
 }
 
 void EmitMuzzleFlashCone(CeWorldTriVert *fv, int *nf, int cap,
@@ -4058,14 +4114,11 @@ void DrawWeaponMeshBuffer(LPDIRECT3DDEVICE9 dev, int viewpoint, IDirect3DTexture
                           const CeWeaponVert *verts, int nVerts, bool weaponDepthRange)
 {
 	if (!dev || !verts || nVerts < 3) return;
-	IDirect3DStateBlock9 *saved = NULL;
-	if (FAILED(dev->CreateStateBlock(D3DSBT_ALL, &saved)) || !saved) return;
-	if (FAILED(saved->Capture())) { saved->Release(); return; }
 
 	D3DVIEWPORT9 savedVp;
-	dev->GetViewport(&savedVp);
 	if (weaponDepthRange)
 	{
+		dev->GetViewport(&savedVp);
 		D3DVIEWPORT9 weaponVp = savedVp;
 		weaponVp.MinZ = 0.0f;
 		weaponVp.MaxZ = 0.06f;
@@ -4124,9 +4177,7 @@ void DrawWeaponMeshBuffer(LPDIRECT3DDEVICE9 dev, int viewpoint, IDirect3DTexture
 
 	if (weaponDepthRange)
 		dev->SetViewport(&savedVp);
-	saved->Apply();
-	saved->Release();
-	LT.InvalidateAllStates();
+	RestoreWorldDrawState(dev, viewpoint);
 }
 
 struct CeInfantryWeaponAtlas
@@ -4667,25 +4718,20 @@ void DrawFirstPersonVehicleBarrel(CUnit *u, LPDIRECT3DDEVICE9 dev, int viewpoint
 	gFirstPersonBarrelDrawn = 0;
 	if (rtBase && rtBase->GetRTMesh())
 	{
-		IDirect3DStateBlock9 *saved = NULL;
-		if (SUCCEEDED(dev->CreateStateBlock(D3DSBT_ALL, &saved)))
-		{
-			CRTMesh *rtm = (CRTMesh *)rtBase;
-			FVector offset = ZERO_FVECTOR;
-			FMatrix ori = ID_FMATRIX;
-			gFirstPersonBarrelPass = true;
-			gFirstPersonBarrelThing = (const void *)(const IRenderableThing *)u;
-			RENDERINFO.SetLightingEnabled(TRUE);
-			RENDERINFO.Apply();
-			CMeshRenderer::Render(&offset, &ori, rtm->mMesh, u, rtm, rtm->mUnknown24, false, 0);
-			RENDERQUEUE.Render();
-			RENDERINFO.SetLightingEnabled(FALSE);
-			RENDERINFO.Apply();
-			gFirstPersonBarrelPass = false;
-			gFirstPersonBarrelThing = NULL;
-			saved->Apply();
-			saved->Release();
-		}
+		CRTMesh *rtm = (CRTMesh *)rtBase;
+		FVector offset = ZERO_FVECTOR;
+		FMatrix ori = ID_FMATRIX;
+		gFirstPersonBarrelPass = true;
+		gFirstPersonBarrelThing = (const void *)(const IRenderableThing *)u;
+		RENDERINFO.SetLightingEnabled(TRUE);
+		RENDERINFO.Apply();
+		CMeshRenderer::Render(&offset, &ori, rtm->mMesh, u, rtm, rtm->mUnknown24, false, 0);
+		RENDERQUEUE.Render();
+		RENDERINFO.SetLightingEnabled(FALSE);
+		RENDERINFO.Apply();
+		gFirstPersonBarrelPass = false;
+		gFirstPersonBarrelThing = NULL;
+		RestoreWorldDrawState(dev, viewpoint);
 	}
 	if (gFirstPersonBarrelDrawn > 0) return;
 
@@ -4729,25 +4775,33 @@ void DrawBallisticArcWorld(CUnit *u, LPDIRECT3DDEVICE9 dev, int viewpoint)
 	const FVector camPos = cam->GetPos();
 	const CePlayUnitHudPalette pal = CePlayUnitHudPaletteFor((int)u->GetAllegiance());
 
-	IDirect3DStateBlock9 *saved = NULL;
-	if (FAILED(dev->CreateStateBlock(D3DSBT_ALL, &saved))) return;
 	dev->SetTransform(D3DTS_WORLD, (const D3DMATRIX *)&ENGINE.mWorldMatrices[viewpoint]);
 	dev->SetTransform(D3DTS_VIEW, (const D3DMATRIX *)&ENGINE.mViewMatrices[viewpoint]);
 	dev->SetTransform(D3DTS_PROJECTION, (const D3DMATRIX *)&ENGINE.mProjectionMatrices[viewpoint]);
+	dev->SetVertexShader(NULL);
+	dev->SetPixelShader(NULL);
 	dev->SetTexture(0, NULL);
+	dev->SetTexture(1, NULL);
 	dev->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
 	dev->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_DIFFUSE);
 	dev->SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
 	dev->SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_DIFFUSE);
 	dev->SetTextureStageState(1, D3DTSS_COLOROP, D3DTOP_DISABLE);
+	dev->SetTextureStageState(1, D3DTSS_ALPHAOP, D3DTOP_DISABLE);
 	dev->SetRenderState(D3DRS_LIGHTING, FALSE);
+	dev->SetRenderState(D3DRS_COLORVERTEX, TRUE);
+	dev->SetRenderState(D3DRS_SPECULARENABLE, FALSE);
 	dev->SetRenderState(D3DRS_FOGENABLE, FALSE);
+	dev->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
 	dev->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE);
 	dev->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
 	dev->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
 	dev->SetRenderState(D3DRS_ZENABLE, TRUE);
 	dev->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
+	dev->SetRenderState(D3DRS_ZFUNC, D3DCMP_LESSEQUAL);
 	dev->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
+	dev->SetRenderState(D3DRS_FILLMODE, D3DFILL_SOLID);
+	dev->SetRenderState(D3DRS_COLORWRITEENABLE, 15);
 	dev->SetFVF(D3DFVF_XYZ | D3DFVF_DIFFUSE);
 
 	// 1. Glowing camera-facing 3D ballistic trajectory ribbon from muzzle to predicted impact.
@@ -4807,8 +4861,7 @@ void DrawBallisticArcWorld(CUnit *u, LPDIRECT3DDEVICE9 dev, int viewpoint)
 		}
 	}
 
-	saved->Apply();
-	saved->Release();
+	RestoreWorldDrawState(dev, viewpoint);
 }
 }
 
@@ -4816,7 +4869,7 @@ extern "C" void PortCePlayUnitDrawWorld(int viewpoint)
 {
 	if (viewpoint != 0 || gMirrorPass || !gDriving || !gCamera || GAME.GetCamera(0) != gCamera || GAME.GetCurrentLevel() != gLevel || !Allowed(true))
 		return;
-	if (PortCePhotoOn() || PortCePhotoSavedNext() || GAME.GetGameState() != GAME_STATE_PLAYING)
+	if (PortCePhotoOn() || GAME.GetGameState() != GAME_STATE_PLAYING)
 		return;
 	CUnit *u = Held();
 	if (!u || u != gUnit || u->IsDying()) return;
@@ -4968,6 +5021,11 @@ bool CePlayUnitOwnsPilot()
 	return gDriving || gCamera || gControllerPending || gSwitchWait;
 }
 
+extern "C" int PortCePlayUnitOwnsPilot(int player)
+{
+	return (player == 0 && CePlayUnitOwnsPilot()) ? 1 : 0;
+}
+
 void CePlayUnitMapBoundary()
 {
 	if (!gConfigured || !gWanted) return;
@@ -4975,8 +5033,13 @@ void CePlayUnitMapBoundary()
 	gTakeKey.wasDown = PortKeyHeldNow(TakeKey()) > 0;
 	gViewTogglePressed = false;
 	gViewToggleKey.wasDown = PortKeyHeldNow(DIK_V) > 0;
+	gUnloadPressed = false;
+	gUnloadKey.wasDown = PortKeyHeldNow(DIK_U) > 0;
+	gSpotPressed = false;
+	gSpotKey.wasDown = PortKeyHeldNow(DIK_C) > 0;
 	gWeaponSwitchPressed = false;
 	gWeaponSwitchKey.wasDown = PortKeyHeldNow(DIK_Q) > 0;
+	gHelpHintKey.wasDown = PortKeyHeldNow(DIK_F1) > 0;
 }
 
 // Every frame (ce_notice.cpp's render hook, after the console; weakly, so a program without this module has none): the take key is read, and the reticle and the notice
@@ -4984,6 +5047,15 @@ void CePlayUnitMapBoundary()
 void CePlayUnitRenderState()
 {
 	if (!gConfigured || !gWanted) return;
+	if (PortCeMuseumVisitActive && PortCeMuseumVisitActive())
+	{
+		gTakePressed = false;
+		gViewTogglePressed = false;
+		gUnloadPressed = false;
+		gSpotPressed = false;
+		gWeaponSwitchPressed = false;
+		return;
+	}
 	// the take key: a press counts only while the level plays, unpaused, with no menu, console or map holding the keys, and the key is the module's (TakeKeyFree)
 	const int held = PortKeyHeldNow(TakeKey());
 	const bool mapOpen = PortCeCmdMapOpen();
@@ -4996,7 +5068,7 @@ void CePlayUnitRenderState()
 	if (CePlayUnitPressed(&gSpotKey, gDriving && PortKeyHeldNow(DIK_C) > 0, classKeyMayCount && ClassKeyFree(DIK_C))) gSpotPressed = true;
 	if (CePlayUnitPressed(&gWeaponSwitchKey, gDriving && gOnFoot && PortKeyHeldNow(DIK_Q) > 0, classKeyMayCount && ClassKeyFree(DIK_Q))) gWeaponSwitchPressed = true;
 	if (mapOpen) { gTakePressed = false; gViewTogglePressed = false; gUnloadPressed = false; gSpotPressed = false; gWeaponSwitchPressed = false; return; }
-	if (PortCePhotoOn() || PortCePhotoSavedNext() || GAME.IsPaused() || GAME.GetGameState() != GAME_STATE_PLAYING) return;
+	if (PortCePhotoOn() || GAME.IsPaused() || GAME.GetGameState() != GAME_STATE_PLAYING) return;
 	CCamera *camera = GAME.GetCurrentCamera(0);
 	const bool reticle = gDriving && gCamera && camera == gCamera;
 	// with the Battle Engine's HUD up, or the radio over a driven unit's view (PortCePlayUnitShowsBattleline), the notice and the prompt sit at the top, clear of the radio
@@ -5029,6 +5101,7 @@ const char *SightHint(int why)
 // A press of the take key while the Battle Engine is the player's: the unit in the middle of the view is taken, or the player is told why not.
 void AnswerTake()
 {
+	if (PortCeMuseumVisitActive && PortCeMuseumVisitActive()) return;
 	CBattleEngine *engine = NULL;
 	CPlayer *player = NULL;
 	CCONTROLLER *controller = NULL;

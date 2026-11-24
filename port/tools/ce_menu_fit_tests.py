@@ -173,23 +173,28 @@ def check_capacity(header):
 
 
 def check_rows(header):
-    """Video Options at CE's pitch: 21 rows stay below the front-end emblem (y > 127) and above the help line (<= 452);
-    in a level, Back clears the message bar (<= 406) where 20 units drew it across the bar."""
+    """Video Options at CE's pitch: both 22 rows (with widescreen switch) and 21 rows stay below the front-end emblem
+    (y >= 136 > 127) and above the help line (<= 452); in a level, Back clears the message bar (<= 406) where 20 units
+    drew it across the bar."""
     pitch = int(re.search(r"kCeCompactPitch = (\d+);", header).group(1))
     gap = int(re.search(r"kCeCompactActionGap = (\d+);", header).group(1))
     shift = float(re.search(r"kCeCompactFrontShift = (-?[0-9.]+)f;", header).group(1))
     pause_shift = float(re.search(r"kCeCompactPauseShift = (-?[0-9.]+)f;", header).group(1))
-    front = rows(pitch, shift, 21, 300, False, gap)
-    before = rows(20, 0, 21, 300, False)
-    if not (136.0 <= front[0] <= 145.0):
-        raise AssertionError(f"the front end's first row must clear the top emblem: {front[0]}")
-    if not (front[-1] + 16 <= 452 and front[-1] <= before[-1]):
-        raise AssertionError(f"Back must end above the help line (y 452): {front[-1] + 16}")
-    pause, pause_before = rows(pitch, pause_shift, 21, 240, True, gap), rows(20, 0, 21, 240, True)
-    if not (pause[-1] + 16 <= 406 < pause_before[-1] + 16):
-        raise AssertionError(f"in a level Back must end above the message bar (y 406): {pause[-1] + 16}, was {pause_before[-1] + 16}")
-    return {"front_first": front[0], "front_back_end": front[-1] + 16, "pause_first": pause[0], "pause_back_end": pause[-1] + 16,
-            "pause_back_end_at_20": pause_before[-1] + 16}
+    summary = {}
+    for count in (22, 21):
+        front = rows(pitch, shift, count, 300, False, gap)
+        before = rows(20, 0, count, 300, False)
+        if not (136.0 <= front[0] <= 145.0):
+            raise AssertionError(f"the front end's first row ({count} rows) must clear the top emblem: {front[0]}")
+        if not (front[-1] + 16 <= 452 and front[-1] <= before[-1]):
+            raise AssertionError(f"Back ({count} rows) must end above the help line (y 452): {front[-1] + 16}")
+        pause, pause_before = rows(pitch, pause_shift, count, 240, True, gap), rows(20, 0, count, 240, True)
+        if not (pause[-1] + 16 <= 406 < pause_before[-1] + 16):
+            raise AssertionError(f"in a level Back ({count} rows) must end above the message bar (y 406): {pause[-1] + 16}, was {pause_before[-1] + 16}")
+        summary[f"rows_{count}"] = {"front_first": front[0], "front_back_end": front[-1] + 16,
+                                    "pause_first": pause[0], "pause_back_end": pause[-1] + 16,
+                                    "pause_back_end_at_20": pause_before[-1] + 16}
+    return summary
 
 
 def check_patched_draw(patched, original):
@@ -378,8 +383,8 @@ def main():
             controls["capacity-float-quotient"] = "detected"
         else:
             raise AssertionError("the capacity check missed the float quotient")
-        for label, (old, new) in {"rows-first-moved": ("kCeCompactFrontShift = 8.f;", "kCeCompactFrontShift = 0.f;"),
-                                  "rows-pause-unshifted": ("kCeCompactPauseShift = -8.f;", "kCeCompactPauseShift = 0.f;"),
+        for label, (old, new) in {"rows-first-moved": ("kCeCompactFrontShift = 7.f;", "kCeCompactFrontShift = 0.f;"),
+                                  "rows-pause-unshifted": ("kCeCompactPauseShift = -10.f;", "kCeCompactPauseShift = 0.f;"),
                                   "rows-pitch-twenty": ("kCeCompactPitch = 14;", "kCeCompactPitch = 20;")}.items():
             try:
                 check_rows(head.replace(old, new))

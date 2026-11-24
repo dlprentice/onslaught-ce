@@ -146,6 +146,20 @@ static inline int ce_box_text_bad_folder(char *out, size_t n, const char *why)
 	return k > 0 && (size_t)k < n;
 }
 
+static inline int ce_box_text_picker_failed(char *out, size_t n, const char *err)
+{
+	const char *why = (err && *err) ? err : "unknown error";
+#ifdef _WIN32
+	int k = snprintf(out, n, "Onslaught CE could not open a folder picker (%s).\n\n"
+		"Set BEA_GAME_DIR to your Battle Engine Aquila folder (the folder that contains BEA.exe) and start onslaught-ce.exe again.", why);
+#else
+	int k = snprintf(out, n, "Onslaught CE could not open a folder picker (%s).\n\n"
+		"Install zenity or xdg-desktop-portal, or start with:\n"
+		"BEA_GAME_DIR=\"/path/to/Battle Engine Aquila\" ./onslaught-ce", why);
+#endif
+	return k > 0 && (size_t)k < n;
+}
+
 static inline int ce_box_text_report(char *out, size_t n, int opened, const char *folder)
 {
 	int k = snprintf(out, n, "%s\n\nPlease describe what happened, and attach the file onslaught-ce.log from this folder:\n%s",

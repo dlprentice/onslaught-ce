@@ -952,7 +952,7 @@ enum RoomId {
     kRoomCount
 };
 
-enum { kPortalCount = 7, kMaxObstacles = 128, kNativeBayCount = 6 };
+enum { kPortalCount = 7, kMaxObstacles = 192, kNativeBayCount = 6 };
 constexpr float kCinemaOffsetX = 29.0f;
 constexpr float kCinemaOffsetY = 10.0f;
 constexpr float kReturnArchY = -5.4f;
@@ -1029,6 +1029,12 @@ inline RoomGraph MakeRoomGraph() {
     // ---- Courtyard obstacles ----
     // Hero Battle Engine Aquila tiered stone plinth at (0, 10.5)
     PushObstacle(g, -2.55f, 7.95f, 2.55f, 13.05f, 0.0f, 1.35f, kRoomCourtyard);
+    // Battle Engine Aquila Heritage configuration plinths flanking the south arrival terrace
+    PushObstacle(g, -6.95f, -2.75f, -4.65f, -0.45f, 0.0f, 0.90f, kRoomCourtyard);
+    PushObstacle(g,  4.65f, -2.75f,  6.95f, -0.45f, 0.0f, 0.90f, kRoomCourtyard);
+    // Flanking coastal flight-pylon showcase plinths south of the reflecting pools
+    PushObstacle(g, -11.60f, -0.90f, -8.80f, 1.90f, 0.0f, 0.85f, kRoomCourtyard);
+    PushObstacle(g,   8.80f, -0.90f, 11.60f, 1.90f, 0.0f, 0.85f, kRoomCourtyard);
     // Flanking coastal reflecting pool basins
     PushObstacle(g, -13.2f, 4.5f, -7.2f, 15.0f, 0.0f, 0.45f, kRoomCourtyard);
     PushObstacle(g,   7.2f, 4.5f, 13.2f, 15.0f, 0.0f, 0.45f, kRoomCourtyard);
@@ -1041,6 +1047,15 @@ inline RoomGraph MakeRoomGraph() {
     PushObstacle(g, -7.05f, 26.45f, -3.75f, 27.15f, 0.0f, 1.25f, kRoomAtrium);
     // Grand Atrium Rotunda Centerpiece Pedestal at (0.0, 36.0) beneath the open sunlit clerestory skylight
     PushObstacle(g, -2.0f, 34.0f, 2.0f, 38.0f, 0.0f, 1.05f, kRoomAtrium);
+    // North Atrium flanking heritage plinths (Aquila Blazer Siege Config & Lost Toys Panorama Monument)
+    PushObstacle(g, -6.65f, 46.75f, -4.15f, 49.25f, 0.0f, 0.95f, kRoomAtrium);
+    PushObstacle(g,  4.15f, 46.75f,  6.65f, 49.25f, 0.0f, 0.95f, kRoomAtrium);
+    // Four symmetrical glass-domed living tabletop battle dioramas in the 4 open Atrium quadrants
+    const float dioX[2] = {-11.4f, 11.4f}, dioY[2] = {32.2f, 47.6f};
+    for (unsigned ix = 0; ix < 2; ++ix)
+        for (unsigned iy = 0; iy < 2; ++iy)
+            PushObstacle(g, dioX[ix] - 2.05f, dioY[iy] - 2.05f, dioX[ix] + 2.05f, dioY[iy] + 2.05f,
+                         0.0f, 3.05f, kRoomAtrium);
     // Four corner skylight structural columns supporting the clerestory lantern
     const float colX[2] = {-8.2f, 8.2f}, colY[2] = {28.2f, 43.8f};
     for (unsigned ix = 0; ix < 2; ++ix)
@@ -1054,26 +1069,45 @@ inline RoomGraph MakeRoomGraph() {
         PushObstacle(g, nb.x - nb.halfSize, nb.y - nb.halfSize,
                      nb.x + nb.halfSize, nb.y + nb.halfSize, 0.0f, nb.topZ, kRoomForseti);
     }
-    // Two featured rotating Forseti Goodie turntables in West apse
-    PushObstacle(g, -42.25f, 36.35f, -39.35f, 39.25f, 0.0f, 0.90f, kRoomForseti);
-    PushObstacle(g, -42.25f, 42.75f, -39.35f, 45.65f, 0.0f, 0.90f, kRoomForseti);
+    // Two featured rotating Forseti Goodie turntables in West apse (Beam & Plasma Tanks)
+    PushObstacle(g, -42.10f, 36.70f, -39.50f, 39.30f, 0.0f, 0.90f, kRoomForseti);
+    PushObstacle(g, -42.10f, 42.70f, -39.50f, 45.30f, 0.0f, 0.90f, kRoomForseti);
+    // Four inter-bay rotating Forseti Goodie turntables (North & South alcoves between native bays)
+    const float fgx[2] = {-25.25f, -32.75f};
+    for (unsigned i = 0; i < 2; ++i) {
+        PushObstacle(g, fgx[i] - 1.10f, 48.4f - 1.10f, fgx[i] + 1.10f, 48.4f + 1.10f, 0.0f, 0.85f, kRoomForseti);
+        PushObstacle(g, fgx[i] - 1.10f, 33.6f - 1.10f, fgx[i] + 1.10f, 33.6f + 1.10f, 0.0f, 0.85f, kRoomForseti);
+    }
+    // Three corner Forseti Turret alcoves (SAM, Pulse, Blaster — completing all 5 Forseti turrets)
+    PushObstacle(g, -41.85f, 47.95f, -39.75f, 50.05f, 0.0f, 0.85f, kRoomForseti);
+    PushObstacle(g, -41.85f, 31.95f, -39.75f, 34.05f, 0.0f, 0.85f, kRoomForseti);
+    PushObstacle(g, -19.05f, 47.55f, -16.95f, 49.65f, 0.0f, 0.85f, kRoomForseti);
     // Forseti Audio Kiosk
     PushObstacle(g, -18.95f, 34.10f, -18.05f, 34.90f, 0.0f, 1.25f, kRoomForseti);
 
     // ---- Muspell Dominion Wing obstacles ----
-    const float mx[3] = {22.0f, 30.0f, 38.0f};
-    for (unsigned i = 0; i < 3; ++i) {
-        PushObstacle(g, mx[i] - 1.85f, 47.8f - 1.85f, mx[i] + 1.85f, 47.8f + 1.85f, 0.0f, 0.90f, kRoomMuspell);
-        PushObstacle(g, mx[i] - 1.85f, 34.2f - 1.85f, mx[i] + 1.85f, 34.2f + 1.85f, 0.0f, 0.90f, kRoomMuspell);
+    // Two neat rows of 4 rotating Dominion plinths + 2 East Apse + 3 corner turret plinths (13 total)
+    const float mx[4] = {21.8f, 27.0f, 32.2f, 37.4f};
+    for (unsigned i = 0; i < 4; ++i) {
+        PushObstacle(g, mx[i] - 1.50f, 48.0f - 1.50f, mx[i] + 1.50f, 48.0f + 1.50f, 0.0f, 0.90f, kRoomMuspell);
+        PushObstacle(g, mx[i] - 1.50f, 34.0f - 1.50f, mx[i] + 1.50f, 34.0f + 1.50f, 0.0f, 0.90f, kRoomMuspell);
     }
+    PushObstacle(g, 41.2f - 1.25f, 38.0f - 1.25f, 41.2f + 1.25f, 38.0f + 1.25f, 0.0f, 0.90f, kRoomMuspell);
+    PushObstacle(g, 41.2f - 1.25f, 44.0f - 1.25f, 41.2f + 1.25f, 44.0f + 1.25f, 0.0f, 0.90f, kRoomMuspell);
+    PushObstacle(g, 18.4f - 1.05f, 48.2f - 1.05f, 18.4f + 1.05f, 48.2f + 1.05f, 0.0f, 0.85f, kRoomMuspell);
+    PushObstacle(g, 41.2f - 1.05f, 48.8f - 1.05f, 41.2f + 1.05f, 48.8f + 1.05f, 0.0f, 0.85f, kRoomMuspell);
+    PushObstacle(g, 41.2f - 1.05f, 33.2f - 1.05f, 41.2f + 1.05f, 33.2f + 1.05f, 0.0f, 0.85f, kRoomMuspell);
     // Muspell Audio Kiosk
     PushObstacle(g, 18.05f, 34.10f, 18.95f, 34.90f, 0.0f, 1.25f, kRoomMuspell);
 
     // ---- Aviation & Naval Hangar obstacles ----
-    // West aviation flight-pylon plinths
-    const float ay[3] = {58.0f, 65.0f, 72.0f};
-    for (unsigned i = 0; i < 3; ++i)
-        PushObstacle(g, -16.25f, ay[i] - 1.75f, -12.75f, ay[i] + 1.75f, 0.0f, 0.80f, kRoomHangar);
+    // Staggered double-row West Aviation Gallery (5 outer pylons + 4 inner pylons framing open y=65 cross-aisle)
+    const float ayOuter[5] = {55.0f, 60.0f, 65.0f, 70.0f, 75.0f};
+    for (unsigned i = 0; i < 5; ++i)
+        PushObstacle(g, -16.95f, ayOuter[i] - 1.35f, -14.25f, ayOuter[i] + 1.35f, 0.0f, 0.80f, kRoomHangar);
+    const float ayInner[4] = {58.4f, 62.2f, 68.4f, 72.8f};
+    for (unsigned i = 0; i < 4; ++i)
+        PushObstacle(g, -11.00f, ayInner[i] - 1.20f, -8.60f, ayInner[i] + 1.20f, 0.0f, 0.80f, kRoomHangar);
     // East recessed dark-water naval basin (single continuous fenced basin with coping)
     PushObstacle(g, 8.8f, 55.6f, 17.4f, 74.4f, 0.0f, 0.45f, kRoomHangar);
     // North Relative Scale Alcove plinth
@@ -1082,13 +1116,16 @@ inline RoomGraph MakeRoomGraph() {
     PushObstacle(g, -7.95f, 55.10f, -7.05f, 55.90f, 0.0f, 1.25f, kRoomHangar);
 
     // ---- Concept Art Gallery obstacles ----
-    // Central low viewing bench + Audio Kiosk
-    PushObstacle(g, 24.0f, 18.4f, 32.0f, 19.6f, 0.0f, 0.55f, kRoomConceptArt);
+    // Three parallel double-sided gallery divider walls (4.5m aisles, 100% clear doorways) + Audio Kiosk
+    const float artDivX[3] = {23.0f, 28.0f, 33.0f};
+    for (unsigned i = 0; i < 3; ++i)
+        PushObstacle(g, artDivX[i] - 0.25f, 14.10f, artDivX[i] + 0.25f, 21.30f, 0.0f, 5.45f, kRoomConceptArt);
     PushObstacle(g, 18.55f, 14.60f, 19.45f, 15.40f, 0.0f, 1.25f, kRoomConceptArt);
 
     // ---- Early Designs Vault obstacles ----
-    // Central archival bench + Audio Kiosk
-    PushObstacle(g, -32.0f, 18.4f, -24.0f, 19.6f, 0.0f, 0.55f, kRoomEarlyDesigns);
+    // Three parallel double-sided archival divider walls (4.5m aisles, 100% clear doorways) + Audio Kiosk
+    for (unsigned i = 0; i < 3; ++i)
+        PushObstacle(g, -artDivX[i] - 0.25f, 14.10f, -artDivX[i] + 0.25f, 21.30f, 0.0f, 5.45f, kRoomEarlyDesigns);
     PushObstacle(g, -19.45f, 14.60f, -18.55f, 15.40f, 0.0f, 1.25f, kRoomEarlyDesigns);
 
     // ---- Screening Room obstacles (shifted CeCinemaRoom seats & projector post) ----

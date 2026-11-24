@@ -16,6 +16,7 @@
 #include "DXUtil.h"
 #include "../platform/common/portlog.h"
 #endif
+#include <stdint.h>
 
 extern CTweakSLONG SCREEN_SHAPE, TEXTURE_RES_LOSS_SHIFT, TEXTURE_ALLOW_32_BIT;
 void LoadCardId(char *filename);
@@ -54,6 +55,7 @@ bool recoveryAttempt;
 // present (the frame-end window request, a message pump) must find the change still open and stay out of it.
 bool deviceChanging;
 unsigned refusedEntries;
+uint64_t deviceGeneration;
 unsigned physicalAdapter[10], mappedAdapterCount;
 struct WindowModeState
 {
@@ -295,6 +297,9 @@ extern "C" int PortPublicDeviceBusy(void)
 
 // Refused nested entries so far (each also leaves a session log line): none is expected in play.
 extern "C" unsigned PortPublicRefusedDeviceChanges(void) { return refusedEntries; }
+
+// Monotonic device generation incremented across device teardown and creation so pointer reuse cannot alias managed caches.
+extern "C" uint64_t PortCeD3dDeviceGeneration(void) { return deviceGeneration; }
 
 D3DDeviceInfo::D3DDeviceInfo()
 {
@@ -590,10 +595,12 @@ HRESULT CD3DApplication::Initialize3DEnvironment(bool reset)
         if (deviceObjectsLive)
         {
             HRESULT released = ReleaseDeviceObjects(false);
+            ++deviceGeneration;
             if (FAILED(released)) return released;
             deviceObjectsLive = false;
         }
         Drop(resourceQuery);
+        if (m_pd3dDevice) ++deviceGeneration;
         Drop(m_pd3dDevice);
     }
     TEXTURE_RES_LOSS_SHIFT.Set(-1.f);
@@ -616,19 +623,30 @@ HRESULT CD3DApplication::Initialize3DEnvironment(bool reset)
         AdjustWindowForChange();
         memset(&m_d3dpp, 0, sizeof(m_d3dpp));
         m_d3dpp.Windowed = m_bWindowed;
+        m_d3dpp.SwapEffect = COPY_NOT_FLIP.mValue ? D3DSWAPEFFECT_COPY : D3DSWAPEFFECT_DISCARD;
+#ifdef CE_VERSION
+        m_d3dpp.BackBufferCount = (m_bWindowed && m_d3dpp.SwapEffect == D3DSWAPEFFECT_DISCARD && CLIPARAMS.mBackBuffers == 1)
+            ? 2 : CLIPARAMS.mBackBuffers;
+#else
         m_d3dpp.BackBufferCount = CLIPARAMS.mBackBuffers;
+#endif
         m_d3dpp.MultiSampleType = static_cast<int>(device.MultiSampleType) == -1
             ? static_cast<D3DMULTISAMPLE_TYPE>(SUGGEST_MULTISAMPLE_TYPE.mValue) : device.MultiSampleType;
         m_d3dpp.EnableAutoDepthStencil = m_bUseDepthBuffer;
         m_d3dpp.AutoDepthStencilFormat = mode.DepthStencilFormat;
-        m_d3dpp.SwapEffect = COPY_NOT_FLIP.mValue ? D3DSWAPEFFECT_COPY : D3DSWAPEFFECT_DISCARD;
         if (COPY_NOT_FLIP.mValue) m_d3dpp.MultiSampleType = D3DMULTISAMPLE_NONE;
         m_d3dpp.hDeviceWindow = m_hWnd;
         m_d3dpp.BackBufferWidth = m_bWindowed ? m_rcWindowClient.right - m_rcWindowClient.left : mode.Width;
         m_d3dpp.BackBufferHeight = m_bWindowed ? m_rcWindowClient.bottom - m_rcWindowClient.top : mode.Height;
         m_d3dpp.BackBufferFormat = m_bWindowed ? adapter.d3ddmDesktop.Format : mode.Format;
+#ifdef CE_VERSION
+        m_d3dpp.PresentationInterval = (CLIPARAMS.mVSync || FORCE_VSYNC.mValue)
+            ? (m_bWindowed ? D3DPRESENT_INTERVAL_DEFAULT : D3DPRESENT_INTERVAL_ONE)
+            : D3DPRESENT_INTERVAL_IMMEDIATE;
+#else
         m_d3dpp.PresentationInterval = m_bWindowed ? D3DPRESENT_INTERVAL_DEFAULT :
             (CLIPARAMS.mVSync || FORCE_VSYNC.mValue ? D3DPRESENT_INTERVAL_ONE : D3DPRESENT_INTERVAL_IMMEDIATE);
+#endif
         if (lockable && m_d3dpp.MultiSampleType == D3DMULTISAMPLE_NONE) m_d3dpp.Flags |= D3DPRESENTFLAG_LOCKABLE_BACKBUFFER;
         UpdateScreenShape();
         Drop(resourceQuery);
@@ -641,7 +659,7 @@ HRESULT CD3DApplication::Initialize3DEnvironment(bool reset)
             IDirect3DDevice9 *created = NULL;
             result = m_pD3D->CreateDevice(PortPublicAdapterOrdinal(m_dwAdapter), device.DeviceType, m_hWndFocus,
                 mode.dwBehavior | (CLIPARAMS.mUnknown185 ? D3DCREATE_DISABLE_DRIVER_MANAGEMENT : 0), &m_d3dpp, &created);
-            if (SUCCEEDED(result) && created) m_pd3dDevice = created;
+            if (SUCCEEDED(result) && created) { m_pd3dDevice = created; ++deviceGeneration; }
             else
             {
                 Drop(created);
@@ -660,8 +678,9 @@ HRESULT CD3DApplication::Initialize3DEnvironment(bool reset)
             PortCeGraphicsFinishDevice(SUCCEEDED(result));
 #endif
             if (SUCCEEDED(result)) { m_bActive = TRUE; change.committed = true; return S_OK; }
-            if (deviceObjectsLive) { InvalidateDeviceObjects(); DeleteDeviceObjects(); deviceObjectsLive = false; }
+            if (deviceObjectsLive) { InvalidateDeviceObjects(); DeleteDeviceObjects(); deviceObjectsLive = false; ++deviceGeneration; }
             Drop(resourceQuery);
+            if (m_pd3dDevice) ++deviceGeneration;
             Drop(m_pd3dDevice);
             break;
         }
@@ -713,8 +732,10 @@ HRESULT CD3DApplication::Resize3DEnvironment()
         m_d3dpp.AutoDepthStencilFormat = window->mode.DepthStencilFormat;
     }
     UpdateScreenShape();
+    Drop(resourceQuery);
     HRESULT result = InvalidateDeviceObjects();
     if (SUCCEEDED(result)) result = m_pd3dDevice->Reset(&m_d3dpp);
+    if (SUCCEEDED(result) && CLIPARAMS.mUnknown185) m_pd3dDevice->CreateQuery(D3DQUERYTYPE_RESOURCEMANAGER, &resourceQuery);
     if (SUCCEEDED(result)) result = FinishDeviceChange();
     if (SUCCEEDED(result)) result = RestoreDeviceObjects();
     if (SUCCEEDED(result) && !m_bFrameMoving) { m_bSingleStep = TRUE; DXUtil_Timer(TIMER_START); DXUtil_Timer(TIMER_STOP); }
@@ -734,6 +755,7 @@ HRESULT CD3DApplication::Reset3DEnvironment(BOOL skipPicker, bool showProgress)
     // An earlier failed change has already released the objects and may have dropped the device, which the
     // shell's release uses without a test. Release only what is live.
     HRESULT result = deviceObjectsLive ? ReleaseDeviceObjects(showProgress) : S_OK;
+    if (deviceObjectsLive) ++deviceGeneration;
     if (SUCCEEDED(result)) { deviceObjectsLive = false; result = Initialize3DEnvironment(true); }
     if (SUCCEEDED(result))
     {
@@ -775,6 +797,7 @@ HRESULT CD3DApplication::RecoverLostDevice()
         m_bReady = FALSE;
         recoveryOwner = this;
         result = deviceObjectsLive ? ReleaseDeviceObjects(false) : S_OK;
+        if (deviceObjectsLive) ++deviceGeneration;
         if (FAILED(result)) { recoveryOwner = NULL; return result; }
         deviceObjectsLive = false;
     }
@@ -958,9 +981,10 @@ VOID CD3DApplication::Cleanup3DEnvironment()
     m_bActive = m_bReady = FALSE;
     if (presentationFailureOwner == this) { presentationFailureOwner = NULL; presentationRecoveryReady = FALSE; }
     if (DeviceRecoveryPending()) { recoveryOwner = NULL; recoveryReady = FALSE; }
-    if (m_pd3dDevice && deviceObjectsLive) { ReleaseDeviceObjects(false); deviceObjectsLive = false; }
+    if (m_pd3dDevice && deviceObjectsLive) { ReleaseDeviceObjects(false); deviceObjectsLive = false; ++deviceGeneration; }
     DiscardWindowModes(*this);
     Drop(resourceQuery);
+    if (m_pd3dDevice) ++deviceGeneration;
     Drop(m_pd3dDevice);
     Drop(m_pD3D);
     FinalCleanup();
@@ -970,7 +994,11 @@ HRESULT CD3DApplication::DisplayErrorMsg(HRESULT error, DWORD kind)
 {
     char text[256];
     snprintf(text, sizeof(text), "Onslaught CE could not set up its graphics (error 0x%08lx).\n\n"
+#ifdef _WIN32
              "Update your graphics driver and try again. If it keeps happening, run onslaught-ce.exe --report.",
+#else
+             "Update your graphics driver and try again. If it keeps happening, run ./onslaught-ce --report.",
+#endif
              static_cast<unsigned long>(error));
     SETUP_HISTORY.AddMessage("%s", text);
     MessageBox(m_hWnd, text, TEXT("Onslaught CE"), MB_OK | MB_ICONERROR);

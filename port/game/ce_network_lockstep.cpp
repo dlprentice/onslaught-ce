@@ -120,7 +120,11 @@ extern "C" int PortCeOnlineMatchChatCount(void) __attribute__((weak));
 extern "C" int PortCeOnlineMatchGetChat(int index, uint8_t *out_slot, char *out_text, size_t cap) __attribute__((weak));
 extern "C" void PortCeOnlineMatchClearChat(void) __attribute__((weak));
 extern "C" int PortCeOnlineMatchSlotLabel(int sim_slot, char *out, size_t cap) __attribute__((weak));
+extern "C" int PortCeOnlineMatchSlotTeam(int slot) __attribute__((weak));
+extern "C" void PortCeOnlineMatchClear(void) __attribute__((weak));
 extern "C" void PortCeOnlineServiceDetachMatchBridge(void) __attribute__((weak));
+extern "C" void PortCeOnlineServiceFinishMatch(int won) __attribute__((weak));
+extern "C" void PortCeOnlineServicePollFinished(uint64_t now_ms) __attribute__((weak));
 
 // The label each side shows the other when their builds do not admit each other (as the session's world mode).
 #ifdef CE_VERSION
@@ -389,7 +393,7 @@ struct Hash {
 	uint64_t h = 1469598103934665603ull;
 	void Bytes(const void *p, size_t n) { const uint8_t *b = (const uint8_t *)p; for (size_t i = 0; i < n; ++i) { h ^= b[i]; h *= 1099511628211ull; } }
 	void U32(uint32_t v) { Bytes(&v, 4); }
-	void F32(float v) { Bytes(&v, 4); }
+	void F32(float v) { if (v == 0.0f) v = 0.0f; Bytes(&v, 4); }
 	void Text(const char *s) { Bytes(s, strlen(s) + 1); }
 };
 // Selected simulation state: random streams, event clock and queue counters, game state, player flight/power/active,
@@ -883,7 +887,14 @@ bool Poll() {
 	KeeperStop();
 	if (!AdmissionCurrent()) return false;
 	if (L.online_multi) {
-		if (L.stage == FINISHED) return true;
+		if (L.stage == FINISHED) {
+			// Keep pumping the online transport and match-finish HTTP while on the end screen so
+			// peers 1-3 ticks behind receive final bundles/hashes and finish cleanly.
+			const uint64_t now = CE_NetNowMs();
+			if (PortCeOnlineMatchPoll) (void)PortCeOnlineMatchPoll(now);
+			if (PortCeOnlineServicePollFinished) PortCeOnlineServicePollFinished(now);
+			return true;
+		}
 		if (!PortCeOnlineMatchPoll) return Fail("online match session unavailable");
 		const int ok = PortCeOnlineMatchPoll(CE_NetNowMs());
 		char why[192] = {};
@@ -1480,7 +1491,15 @@ void CE_LockstepAfterUpdate(void) {
 		if (natural_end) {
 			L.final_tick = L.tick; L.final_mission = true; L.final_confirmed = true;
 			L.stage = FINISHED; L.notice[0] = 0;
-			fprintf(stderr, "onslaught-ce: online match ended at tick %u\n", L.tick);
+			int won = 0;
+			const EGameState gs = GAME.GetGameState();
+			if (gs == GAME_STATE_LEVEL_WON) {
+				won = 1;
+			} else if (gs == GAME_STATE_PLAYER_1_WON || gs == GAME_STATE_PLAYER_2_WON) {
+				won = CE_WorldLocalWon((int)gs) ? 1 : 0;
+			}
+			if (PortCeOnlineServiceFinishMatch) PortCeOnlineServiceFinishMatch(won);
+			fprintf(stderr, "onslaught-ce: online match ended at tick %u (won=%d)\n", L.tick, won);
 		}
 		return;
 	}
@@ -1539,7 +1558,7 @@ void CE_LockstepAfterUpdate(void) {
 	}
 }
 void CE_LockstepBeforeRender(void) {
-	if (L.stage == RUNNING || L.stage == STOPPING) Poll();
+	if (L.stage == RUNNING || L.stage == STOPPING || (L.online_multi && L.stage == FINISHED)) Poll();
 #ifdef CE_NET_TEST_AUTOMATION
 	// Test (BEA_LOCKSTEP_TEST_FRAME_SLEEP_MS=M): every frame of this peer costs M ms more, as a slower graphics card makes it: fewer frames between two updates than the other peer draws.
 	if (frame_sleep_ms && CE_LockstepSharing()) std::this_thread::sleep_for(std::chrono::milliseconds(frame_sleep_ms));
@@ -1556,6 +1575,8 @@ int CE_LockstepBeginTeardown(int quit) {
 	}
 	if (L.stage == FINISHED) {
 		if (!L.final_confirmed) { fprintf(stderr, "onslaught-ce: co-op mission ended without final confirmation\n"); L.outcome_error = true; }
+		if (L.online_multi && PortCeOnlineMatchStop) PortCeOnlineMatchStop(1);
+		if (L.online_multi && PortCeOnlineServiceDetachMatchBridge) PortCeOnlineServiceDetachMatchBridge();
 		ReportNetworkCounts(L.net);
 		if (L.net) (ChatRetire(), CE_NetClose(L.net)); L.stage = ENDED; return quit;
 	}
@@ -1582,6 +1603,7 @@ void CE_LockstepAfterWorldShutdown(void) {
 	L.shown = false;
 	if (L.online_multi && PortCeOnlineMatchStop) PortCeOnlineMatchStop(0);
 	if (L.online_multi && PortCeOnlineServiceDetachMatchBridge) PortCeOnlineServiceDetachMatchBridge();
+	if (L.online_multi && PortCeOnlineMatchClear) PortCeOnlineMatchClear();
 	L.online_multi = false;
 	ReportNetworkCounts(L.net);
 	(ChatRetire(), CE_NetDestroy(L.net)); L.net = NULL;

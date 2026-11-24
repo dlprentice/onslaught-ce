@@ -165,7 +165,7 @@ static void wording(List &list, const std::string &scenario)
     check(CE_TerrainDetailChoice() == 1, "the request is preserved through the refusal");
     check(same(terrain->GetChoiceText(1), failing ? L"Extended (using Normal, not saved)" : L"Extended (using Normal)"),
           "requested Extended is not shown as active after a resource fallback");
-    check(same(terrain->GetChoiceText(0), failing ? L"Normal (not saved)" : L"Normal"), "the other choice is not annotated");
+    check(same(terrain->GetChoiceText(0), L"Normal"), "the other choice is not annotated");
     check(same(item(list, 0)->GetChoiceText(1), L"Yes"), "the unit-models row is untouched");
     terrainReady = true;
     frame();

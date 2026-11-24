@@ -1,0 +1,140 @@
+--- a/FEPMultiplayer.cpp
++++ b/FEPMultiplayer.cpp
+@@ -16,6 +16,7 @@
+ bool		AllControlBindingsSet(int index);	// 00456650 (FEPControls.cpp): FALSE while a configurable control has no input
+ #ifdef CE_VERSION
+ extern "C" int PortCeSoloSkirmishActive(void) __attribute__((weak));
++extern "C" bool PortCeMpOnlineOffered(void) __attribute__((weak));
+ #endif
+ 
+ // FUNCTION: 0x0051c980 init:ZERO_FVECTOR
+@@ -141,6 +142,23 @@
+ 		// the right half needs one of two levels completed
+ 		if ((mCX < 3) || (CAREER.GetNodeFromWorldNo(800)->mComplete) || (CAREER.GetNodeFromWorldNo(741)->mComplete))
+ 		{
++#ifdef CE_VERSION
++			if ((!AllControlBindingsSet(1)) && !(PortCeSoloSkirmishActive && PortCeSoloSkirmishActive()))
++			{
++				if (gControlPreset == 1)
++				{
++					ApplyControlPreset(2);
++				}
++				if (!AllControlBindingsSet(1))
++				{
++					FEMESSBOX.Kill();
++					FEMESSBOX.Create(320.f, 240.f, 400.f, FO(100), Localization_GetStringById(0xd5), PLATFORM.Font(FONT_SMALL), 60, 10, FALSE, FEMB_OPTION_A_CONTINUE, 0);
++					FRONTEND.SetPage(FEP_OPTIONS, 40);
++					FRONTEND.PlaySound(FES_SELECT);
++					break;
++				}
++			}
++#endif
+ 			FRONTEND.SetPage(FEP_MULTIPLAYER_START, 30);
+ 			FRONTEND.mSelectedLevel = get_mp_level(FRONTEND.mFEPMultiplayer.mCY * 6 + FRONTEND.mFEPMultiplayer.mCX);
+ 		}
+@@ -210,7 +228,7 @@
+ 
+ 	// the second player needs every control bound
+ #ifdef CE_VERSION
+-	if ((state == FEPS_ACTIVE) && (!AllControlBindingsSet(1)) && !(PortCeSoloSkirmishActive && PortCeSoloSkirmishActive()))
++	if ((state == FEPS_ACTIVE) && (!AllControlBindingsSet(1)) && !(PortCeSoloSkirmishActive && PortCeSoloSkirmishActive()) && !(PortCeMpOnlineOffered && PortCeMpOnlineOffered()))
+ #else
+ 	if ((state == FEPS_ACTIVE) && (!AllControlBindingsSet(1)))
+ #endif
+--- a/FEPMultiplayerStart.cpp
++++ b/FEPMultiplayerStart.cpp
+@@ -27,6 +27,7 @@
+ 
+ #ifdef CE_VERSION
+ extern "C" int PortCeSoloSkirmishActive(void) __attribute__((weak));
++extern "C" bool PortCeBonusCancelMpStart(void) __attribute__((weak));
+ #endif
+ //*********************************************************************************
+ // FUNCTION: 0x0051dba0
+@@ -142,6 +143,11 @@
+ 	{
+ 	case BUTTON_FRONTEND_MENU_BACK:
+ 		FRONTEND.PlaySound(FES_BACK);
++#ifdef CE_VERSION
++		if (PortCeBonusCancelMpStart && PortCeBonusCancelMpStart())
++			FRONTEND.SetPage(FEP_LANGUAGE_TEST, 30);
++		else
++#endif
+ 		FRONTEND.SetPage(FEP_MULTIPLAYER, 30);
+ 		break;
+ 
+--- a/BattleEngine.h
++++ b/BattleEngine.h
+@@ -191,6 +191,9 @@
+ 
+ 	const float&    GetLastDamageTime() { return mLastDamageTime ; } 
+ 	void			AddShockShake(float amount) ;
++#ifdef CE_VERSION
++	void			CeResetPoseForRecall(float yaw);
++#endif
+ 	virtual BOOL	StartDieProcess();
+ 	BOOL			IsWalking() ;
+ 	void			PlayHudSample(char* name);
+--- a/BattleEngine.cpp
++++ b/BattleEngine.cpp
+@@ -1366,6 +1366,45 @@
+ }
+ 
+ //******************************************************************************************
++#ifdef CE_VERSION
++extern "C" int PortCeCarrierClashBeInStasis(const void *be) __attribute__((weak));
++extern "C" int PortCeLivingSandboxBeInStasis(const void *be) __attribute__((weak));
++
++void CBattleEngine::CeResetPoseForRecall(float yaw)
++{
++	mCurrentOrientation.mYaw = yaw;
++	mCurrentOrientation.mPitch = 0.0f;
++	mCurrentOrientation.mRoll = 0.0f;
++	mOldEulerAngles = mCurrentOrientation;
++	mYawvel = 0.0f;
++	mPitchvel = 0.0f;
++	mRollvel = 0.0f;
++	mYawShake = 0.0f;
++	mPitchShake = 0.0f;
++	mRollShake = 0.0f;
++	mOrientation.MakeRotationYawF(yaw);
++	mOldOrientation = mOrientation;
++
++	if (mState == BATTLE_ENGINE_STATE_MORPHING_INTO_JET)
++	{
++		mState = BATTLE_ENGINE_STATE_WALKER;
++		MassiveHackPutUsInRightMesh();
++		SetCollisionShape();
++		SetAnimMode("walk", TRUE, TRUE);
++		if (mCockpit)
++			mCockpit->MorphIntoWalkerCockpit();
++		if (mInFlightSound)
++		{
++			CSoundEvent *s = SOUND.GetSoundEventForThing(mInFlightSound->mSample, this);
++			if (s)
++				SOUND.FadeTo(s->mSample, 0, 0.02f, this);
++		}
++		mStalling = FALSE;
++		mTakeOffHeight = 99999.0f;
++		mTransformStartTime = EVENT_MANAGER.GetTime();
++	}
++}
++#endif
+ void		CBattleEngine::DeclareInWater()	// FUNCTION: 0x00408150
+ {
+ 	MassiveHackPutUsInRightMesh();
+@@ -1377,6 +1416,14 @@
+ 	else
+ 	{
+ 		float	altitude=mPos.Z-MAP.GetWaterLevel();
++#ifdef CE_VERSION
++		if ((PortCeCarrierClashBeInStasis && PortCeCarrierClashBeInStasis(this)) ||
++		    (PortCeLivingSandboxBeInStasis && PortCeLivingSandboxBeInStasis(this)))
++		{
++			SUPERTYPE::DeclareInWater() ;
++			return;
++		}
++#endif
+ 
+ 		if ((altitude>-0.2f) && ((mVulnerable) || (!CLIPARAMS.mDeveloperMode)))
+ 			StartDieProcess();

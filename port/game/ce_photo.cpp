@@ -40,6 +40,8 @@
 #error CE photo mode requires weak symbol support for the network boot boundary
 #endif
 extern "C" int CE_BootRequested(void) __attribute__((weak));
+extern "C" int CE_SessionActive(void) __attribute__((weak));
+bool PortCeOneScreenMatch() __attribute__((weak));
 extern "C" unsigned PortPresentCount(void);				// d3d9hooks.cpp
 bool PortCeLayer();
 bool PortRecording();
@@ -82,9 +84,10 @@ bool AllowedInLevel()
 		for (const char *name : kFenced) if (Present(name)) return false;
 	}
 	if (CE_BootRequested && CE_BootRequested()) return false;
+	if (CE_SessionActive && CE_SessionActive()) return false;
 	if (PLAYABLE_DEMO || CLIPARAMS.mAutoConfigTest || CLIPARAMS.mRecordDemo || CLIPARAMS.mPlaybackDemo ||
 		CLIPARAMS.mStressTest || CLIPARAMS.mAttractMode) return false;
-	return !GAME.IsMultiplayer() && GAME.GetNPlayers() == 1 && GAME.GetPlayer(0);
+	return ((!GAME.IsMultiplayer() && GAME.GetNPlayers() == 1) || (PortCeOneScreenMatch && PortCeOneScreenMatch())) && GAME.GetPlayer(0);
 }
 
 // Whether photo mode can be switched now by F11 or the console: in a level (AllowedInLevel), with the front end not running.
@@ -114,7 +117,7 @@ void Note(const char *text)
 void Switch(bool on)
 {
 	photo = on;
-	PortCeDrawHooks(on || PortCeCmdSuppressFlightHud());
+	PortCeDrawHooks(on || PortCeCmdSuppressFlightHud() || PortCeEditorSuppressFlightHud());
 }
 
 }

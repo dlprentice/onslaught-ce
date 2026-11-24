@@ -13,6 +13,8 @@
 
 extern "C" bool PortCeFactoryExercise();
 bool PortCeExperimental(const char* mode);
+bool PortCeLayer() __attribute__((weak));
+bool PortCeOneScreenMatch() __attribute__((weak));
 namespace {
 constexpr int kExerciseLevel = 231;
 constexpr const char* kFactoryType = "Forseti Pulse Tank Factory";
@@ -175,7 +177,9 @@ int CollectMounts(CUnit* owner, CSpawner** outMounts, CeCmdStructureOptionView* 
 }
 
 void RefreshStructures(int level, int allegiance, float simulationTime) {
-    if (GAME.IsMultiplayer() || GAME.GetNPlayers() != 1 || allegiance < 0) {
+    const bool singleScreen = (!GAME.IsMultiplayer() && GAME.GetNPlayers() == 1) ||
+                              (PortCeOneScreenMatch && PortCeOneScreenMatch());
+    if (!singleScreen || allegiance < 0) {
         if (gStructures.active) gStructures = StructureRoster();
         return;
     }
@@ -494,7 +498,7 @@ bool CeFactoryMayStart(const CSpawner* source) {
     }
     // Scenario scripts may start a batch during world creation, before the first player tick.
     // Reserve only this authored mount; other factions and other factories keep their usual rules.
-    if (GAME.GetCurrentLevel() != kExerciseLevel || GAME.IsMultiplayer() || GAME.GetNPlayers() != 1 ||
+    if ((PortCeLayer && !PortCeLayer()) || GAME.GetCurrentLevel() != kExerciseLevel || GAME.IsMultiplayer() || GAME.GetNPlayers() != 1 ||
         !PortCeFactoryExercise() || !PortCeExperimental("commander")) return true;
     if (!source->mData || !source->mOwner || !MatchType(source->mData->mThingName,kVehicleType)) return true;
     CUnit* owner=source->mOwner;

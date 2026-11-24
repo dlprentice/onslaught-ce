@@ -94,6 +94,7 @@ struct Mixer
 	int num3D = 0;
 	Listener *listener = NULL;
 	FILE *wav = NULL;
+	bool wavStarted = false;
 	Uint32 wavBytes = 0;
 	Uint32 wavHeaderAt = 0;
 	float *scratch = NULL;
@@ -103,6 +104,7 @@ struct Mixer
 	Uint64 virtBase = 0;			// the virtual time the mix started at
 	Uint64 virtMixedBase = 0;		// cumulative frames already mixed when this device lifetime began
 	FILE *trace = NULL;				// BEA_AUDIO_TRACE: one line per Play, for diagnosing a mix
+	bool traceStarted = false;
 	SDL_AudioStream *monitor = NULL;	// BEA_AUDIO_MONITOR with the virtual clock: the mix, written only, to the device
 	bool monitorAudioInit = false;
 	bool monitorPlaying = false;
@@ -1326,16 +1328,33 @@ void Mixer::Start()
 		BuildKernel();
 	}
 	const char *rec = SDL_getenv("BEA_AUDIO_RECORD");
-	if (rec && rec[0] && (wav = fopen(rec, "wb")) != NULL)
+	if (rec && rec[0])
 	{
-		Uint32 hdr[11] = {0x46464952, 36, 0x45564157, 0x20746d66, 16, 0x00020001, kRate, kRate * 4, 0x00100004,
-						  0x61746164, 0};
-		fwrite(hdr, 4, 11, wav);
-		wavBytes = wavHeaderAt = 0;
+		if (wavStarted)
+		{
+			wav = fopen(rec, "r+b");
+			if (wav && fseek(wav, 0, SEEK_END) != 0)
+			{
+				fclose(wav);
+				wav = NULL;
+			}
+		}
+		if (!wav && (wav = fopen(rec, "wb")) != NULL)
+		{
+			Uint32 hdr[11] = {0x46464952, 36, 0x45564157, 0x20746d66, 16, 0x00020001, kRate, kRate * 4, 0x00100004,
+							  0x61746164, 0};
+			fwrite(hdr, 4, 11, wav);
+			wavBytes = wavHeaderAt = 0;
+			wavStarted = true;
+		}
 	}
 	const char *tr = SDL_getenv("BEA_AUDIO_TRACE");
 	if (tr && tr[0])
-		trace = fopen(tr, "w");
+	{
+		trace = fopen(tr, traceStarted ? "a" : "w");
+		if (trace)
+			traceStarted = true;
+	}
 	const char *clock = SDL_getenv("BEA_AUDIO_CLOCK");
 	virt = PortClockVirtual();
 	if (virt)

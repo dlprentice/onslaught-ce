@@ -917,9 +917,14 @@ def check_source_invariants() -> list[str]:
 
     barrel_fn = cpp[cpp.index("void DrawFirstPersonVehicleBarrel("):cpp.index("void DrawBallisticArcWorld(")]
     first_half = barrel_fn[:barrel_fn.index("if (gFirstPersonBarrelDrawn > 0) return;")]
-    for token in ("CreateStateBlock(D3DSBT_ALL, &saved)", "RENDERINFO.SetLightingEnabled(FALSE);\n\t\t\tRENDERINFO.Apply();", "saved->Apply();", "saved->Release();"):
+    for token in ("RENDERINFO.SetLightingEnabled(FALSE);\n\t\tRENDERINFO.Apply();", "RestoreWorldDrawState(dev, viewpoint);"):
         if token not in first_half:
             errors.append(f"DrawFirstPersonVehicleBarrel() mesh pass missing {token!r}")
+    if "CreateStateBlock(D3DSBT_ALL" in cpp:
+        errors.append("ce_playunit.cpp must not allocate per-frame CreateStateBlock(D3DSBT_ALL) stateblocks")
+    restore_fn = cpp[cpp.index("void RestoreWorldDrawState("):cpp.index("void DrawWeaponAdditiveTris(")]
+    if "LT.InvalidateAllStates();" not in restore_fn:
+        errors.append("RestoreWorldDrawState() must call LT.InvalidateAllStates()")
 
     render_fn = cpp[cpp.index("void CePlayUnitRenderState()"):cpp.index("void Refuse(")]
     for token in ("ClassKeyFree(DIK_U)", "ClassKeyFree(DIK_C)", "ClassKeyFree(DIK_Q)"):

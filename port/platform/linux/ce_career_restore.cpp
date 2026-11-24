@@ -90,20 +90,32 @@ bool portable(const std::string &s) {
            (head.substr(0, 3) == "com" || head.substr(0, 3) == "lpt") &&
            head[3] >= '1' && head[3] <= '9');
 }
-int directory(const std::string &path) {
+bool isOsSystemSymlink(int parentFd, const char *part) {
+  struct stat pst{}, lst{};
+  return fstat(parentFd, &pst) == 0 && pst.st_uid == 0 &&
+         !(pst.st_mode & (S_IWGRP | S_IWOTH)) &&
+         fstatat(parentFd, part, &lst, AT_SYMLINK_NOFOLLOW) == 0 &&
+         S_ISLNK(lst.st_mode) && lst.st_uid == 0;
+}
+int directory(const std::string &path, bool allowUserAncestors = false) {
   require(path.size() > 1 && path[0] == '/' && path.back() != '/');
   Fd at(open("/", O_RDONLY | O_CLOEXEC | O_DIRECTORY));
   require(at.n >= 0);
   size_t begin = 1;
   while (begin < path.size()) {
     size_t end = path.find('/', begin);
-    if (end == std::string::npos)
+    const bool isLeaf = (end == std::string::npos);
+    if (isLeaf)
       end = path.size();
     std::string part = path.substr(begin, end - begin);
     require(!part.empty() && part != "." && part != ".." &&
             part.find('\0') == std::string::npos);
     int next = openat(at.n, part.c_str(),
                       O_RDONLY | O_CLOEXEC | O_DIRECTORY | O_NOFOLLOW);
+    if (next < 0 && (errno == ELOOP || errno == ENOTDIR) && !isLeaf &&
+        (allowUserAncestors || isOsSystemSymlink(at.n, part.c_str()))) {
+      next = openat(at.n, part.c_str(), O_RDONLY | O_CLOEXEC | O_DIRECTORY);
+    }
     require(next >= 0);
     close(at.n);
     at.n = next;
@@ -115,10 +127,12 @@ int directory(const std::string &path) {
 }
 bool local(int fd) {
   struct statfs fs{};
-  return fstatfs(fd, &fs) == 0 &&
-         (static_cast<unsigned long>(fs.f_type) == 0x9123683eUL ||
-          static_cast<unsigned long>(fs.f_type) == 0xef53UL ||
-          static_cast<unsigned long>(fs.f_type) == 0x58465342UL);
+  const unsigned long t = fstatfs(fd, &fs) == 0 ? static_cast<unsigned long>(fs.f_type) : 0UL;
+  return t == 0x9123683eUL || // btrfs
+         t == 0xef53UL ||     // ext2/ext3/ext4
+         t == 0x58465342UL || // xfs
+         t == 0xF2F52010UL || // f2fs
+         t == 0xca451a4eUL;   // bcachefs
 }
 bool ancestor(int a, int b) {
   struct stat sought = status(a);
@@ -138,8 +152,8 @@ bool ancestor(int a, int b) {
   }
   throw Failure{Status::Refused};
 }
-void bound(int fd, const std::string &name) {
-  Fd again(directory(name));
+void bound(int fd, const std::string &name, bool allowUserAncestors = false) {
+  Fd again(directory(name, allowUserAncestors));
   require(same(status(fd), status(again.n)), Status::Changed);
 }
 std::string digest(const Bytes &bytes) {
@@ -249,8 +263,8 @@ struct Session {
   Fd user, game, package, root, slots, original, lock;
   Snapshot saved;
   explicit Session(const CeCareerStorageRequest &in)
-      : r(in), user(directory(r.user)), game(directory(r.game)),
-        package(directory(r.package)), root(directory(r.backupRoot)),
+      : r(in), user(directory(r.user, true)), game(directory(r.game, true)),
+        package(directory(r.package, true)), root(directory(r.backupRoot, false)),
         slots(openat(user.n, "savegames",
                      O_RDONLY | O_CLOEXEC | O_DIRECTORY | O_NOFOLLOW)),
         original(openat(game.n, "savegames",
@@ -279,10 +293,10 @@ struct Session {
             Status::Cancelled);
   }
   void roots() const {
-    bound(user.n, r.user);
-    bound(game.n, r.game);
-    bound(package.n, r.package);
-    bound(root.n, r.backupRoot);
+    bound(user.n, r.user, true);
+    bound(game.n, r.game, true);
+    bound(package.n, r.package, true);
+    bound(root.n, r.backupRoot, false);
     Fd a(openat(user.n, "savegames",
                 O_RDONLY | O_CLOEXEC | O_DIRECTORY | O_NOFOLLOW));
     Fd b(openat(game.n, "savegames",
@@ -413,7 +427,7 @@ std::string setStamp(const CeCareerStorageRequest &r, const std::string &path,
   return ce_backup_verify::digest(record + expected);
 }
 std::set<std::string> names(const CeCareerRestoreRequest &r) {
-  Fd user(directory(r.user)), game(directory(r.game));
+  Fd user(directory(r.user, true)), game(directory(r.game, true));
   Fd slots(openat(user.n, "savegames",
                   O_RDONLY | O_CLOEXEC | O_DIRECTORY | O_NOFOLLOW));
   Fd original(openat(game.n, "savegames",
@@ -454,8 +468,8 @@ std::set<std::string> names(const CeCareerRestoreRequest &r) {
   require(stamp(beforeUser, status(slots.n)) &&
               stamp(beforeGame, status(original.n)),
           Status::Changed);
-  bound(user.n, r.user);
-  bound(game.n, r.game);
+  bound(user.n, r.user, true);
+  bound(game.n, r.game, true);
   return found;
 }
 struct CopyStem {

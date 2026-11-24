@@ -25,9 +25,14 @@ const char *PortGameDir();
 const char *PortUserDir();
 extern "C" bool PortCeGoodieFiles(int goodie, const char **mesh, const char **picture, WCHAR *title);
 extern "C" bool PortCeMuseumCinemaFilmName(unsigned index, char *stem, unsigned cap);
+extern "C" uint64_t PortCeD3dDeviceGeneration(void) __attribute__((weak));
 
 namespace CeArchivePedestal {
 namespace {
+
+inline uint64_t CurrentPedestalDeviceGen() {
+    return PortCeD3dDeviceGeneration ? PortCeD3dDeviceGeneration() : 0u;
+}
 
 using CeArchiveScanner::ArchiveBatch;
 using CeArchiveScanner::ArchiveVertex;
@@ -71,6 +76,8 @@ struct RuntimeData {
     bool hasLoaded;
     ActiveContent content;
     ParsedMesh mesh;
+    IDirect3DDevice9 *device;
+    uint64_t deviceGen;
     IDirect3DTexture9 *meshTextures[kMaxMeshTextures];
     IDirect3DTexture9 *artTexture;
     unsigned artSrcW;
@@ -110,6 +117,8 @@ void ReleaseGpuTextures(RuntimeData *d) {
         d->artTexture->Release();
         d->artTexture = NULL;
     }
+    d->device = NULL;
+    d->deviceGen = 0u;
     d->artSrcW = 0;
     d->artSrcH = 0;
 }
@@ -307,6 +316,8 @@ void LoadMeshByRelPath(RuntimeData *d, const char *relPath, const char *displayT
     // Upload referenced DDS textures into D3DPOOL_MANAGED textures (released on next swap).
     IDirect3DDevice9 *dev = LT.GetDevice();
     if (dev && d->catalog) {
+        d->device = dev;
+        d->deviceGen = CurrentPedestalDeviceGen();
         for (uint32_t ti = 0; ti < d->mesh.textureCount && ti < kMaxMeshTextures; ++ti) {
             const size_t catIdx = PortCeAssetCatalogFindTexture(d->catalog, d->mesh.textureNames[ti]);
             if (catIdx == SIZE_MAX) continue;
@@ -389,6 +400,8 @@ void LoadCurrentExhibit(RuntimeData *d) {
             if (catIdx != SIZE_MAX) {
                 TexUploadCtx ctx = {dev, &d->artTexture, &d->artSrcW, &d->artSrcH, kLightboxMaxEdge};
                 if (PortCeAssetCatalogReadTexture(d->catalog, catIdx, UploadTextureCb, &ctx) && d->artTexture) {
+                    d->device = dev;
+                    d->deviceGen = CurrentPedestalDeviceGen();
                     d->content = kContentArt;
                     std::snprintf(d->activeNote, sizeof(d->activeNote),
                                   "%ux%u archival plate - aim at brass controls or use PgUp/PgDn and Tab.",
@@ -418,8 +431,10 @@ void LoadCurrentExhibit(RuntimeData *d) {
         d->content = kContentCinema;
         std::snprintf(d->activeTitle, sizeof(d->activeTitle), "%s", title);
         std::snprintf(d->activeLine, sizeof(d->activeLine), "Cinema Archive Film (%u of %u)", ord + 1u, count);
-        std::snprintf(d->activeNote, sizeof(d->activeNote),
-                      "Head east to the Screening Room via the Concept Art wing or Directory to watch films.");
+        std::snprintf(d->activeNote, sizeof(d->activeNote), "%s",
+                      d->state.pose.customWorldPose
+                          ? "Head north into the Citadel Cinema Pavilion to watch archive films."
+                          : "Head east to the Screening Room via the Concept Art wing or Directory to watch films.");
         return;
     }
 
@@ -526,19 +541,29 @@ void DrawSteleFrame(IDirect3DDevice9 *dev, const RuntimeData *d, float floorZ,
 
     if (d->content == kContentArt && d->artTexture) {
         const LightboxExtent ext = FitLightbox(d->artSrcW, d->artSrcH, steleW - 0.16f, steleH - 0.16f);
-        const unsigned alphaByte = static_cast<unsigned>(d->state.fadeAlpha * 255.0f + 0.5f);
-        const DWORD topCol = (alphaByte << 24) | 0x00ffffffu;
-        const DWORD botCol = (alphaByte << 24) | 0x00eceae4u;
+        const float fade = d->state.fadeAlpha < 0.0f ? 0.0f : (d->state.fadeAlpha > 1.0f ? 1.0f : d->state.fadeAlpha);
+        const unsigned topRgb = static_cast<unsigned>(255.0f * (0.18f + 0.82f * fade) + 0.5f);
+        const unsigned botR = static_cast<unsigned>(236.0f * (0.18f + 0.82f * fade) + 0.5f);
+        const unsigned botG = static_cast<unsigned>(234.0f * (0.18f + 0.82f * fade) + 0.5f);
+        const unsigned botB = static_cast<unsigned>(228.0f * (0.18f + 0.82f * fade) + 0.5f);
+        const DWORD topCol = 0xff000000u | (topRgb << 16) | (topRgb << 8) | topRgb;
+        const DWORD botCol = 0xff000000u | (botR << 16) | (botG << 8) | botB;
 
-        dev->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE);
-        dev->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
-        dev->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
+        // Render lightbox artwork opaque with full texture-stage reset (matching CeMuseumArt)
+        // so residual engine stage-1 alpha or texcoord transform state can never hide the plate.
+        dev->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
+        dev->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
+        dev->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
         dev->SetTexture(0, d->artTexture);
+        dev->SetTexture(1, NULL);
+        dev->SetTextureStageState(0, D3DTSS_TEXCOORDINDEX, 0);
+        dev->SetTextureStageState(0, D3DTSS_TEXTURETRANSFORMFLAGS, D3DTTFF_DISABLE);
         dev->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_MODULATE);
         dev->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
         dev->SetTextureStageState(0, D3DTSS_COLORARG2, D3DTA_DIFFUSE);
-        dev->SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
-        dev->SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_DIFFUSE);
+        dev->SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_DISABLE);
+        dev->SetTextureStageState(1, D3DTSS_COLOROP, D3DTOP_DISABLE);
+        dev->SetTextureStageState(1, D3DTSS_ALPHAOP, D3DTOP_DISABLE);
         dev->SetSamplerState(0, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
         dev->SetSamplerState(0, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
         dev->SetSamplerState(0, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
@@ -844,14 +869,21 @@ bool RuntimeCue(float visitorX, float visitorY, float fwdX, float fwdY,
     return true;
 }
 
-void RuntimeDraw(float floorZ) {
+void RuntimeDraw(float floorZ, bool ownStateBlock) {
     if (!gData || !gData->state.initialized || !ActiveInWing(gData->state, gData->lastWing)) return;
     IDirect3DDevice9 *dev = LT.GetDevice();
     if (!dev) return;
+    if (gData->device && (gData->device != dev || gData->deviceGen != CurrentPedestalDeviceGen())) {
+        ReleaseGpuTextures(gData);
+        gData->hasLoaded = false;
+        LoadCurrentExhibit(gData);
+    }
 
     IDirect3DStateBlock9 *saved = NULL;
-    if (FAILED(dev->CreateStateBlock(D3DSBT_ALL, &saved)) || !saved) return;
-    if (FAILED(saved->Capture())) { saved->Release(); return; }
+    if (ownStateBlock) {
+        if (FAILED(dev->CreateStateBlock(D3DSBT_ALL, &saved)) || !saved) return;
+        if (FAILED(saved->Capture())) { saved->Release(); return; }
+    }
 
     // 1. Draw brass pedestal collar, 4 interactive buttons, and lightbox/monolith stele when active.
     {
@@ -874,9 +906,13 @@ void RuntimeDraw(float floorZ) {
         dev->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
         dev->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
         dev->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
+        dev->SetTextureStageState(0, D3DTSS_TEXCOORDINDEX, 0);
+        dev->SetTextureStageState(0, D3DTSS_TEXTURETRANSFORMFLAGS, D3DTTFF_DISABLE);
         dev->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
         dev->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_DIFFUSE);
+        dev->SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_DISABLE);
         dev->SetTextureStageState(1, D3DTSS_COLOROP, D3DTOP_DISABLE);
+        dev->SetTextureStageState(1, D3DTSS_ALPHAOP, D3DTOP_DISABLE);
         dev->SetFVF(D3DFVF_XYZ | D3DFVF_DIFFUSE);
 
         DrawControlConsoleAndRing(dev, gData, floorZ);
@@ -897,17 +933,19 @@ void RuntimeDraw(float floorZ) {
     if (gData->content == kContentMesh)
         DrawArenaMesh(dev, gData, floorZ);
 
-    saved->Apply();
-    saved->Release();
-    LT.InvalidateAllStates();
-    RENDERINFO.mWorldChanged = true;
-    RENDERINFO.mViewChanged = true;
-    RENDERINFO.mProjectionChanged = true;
-    RENDERINFO.mFogStartChanged = true;
-    RENDERINFO.mFogEndChanged = true;
-    RENDERINFO.mFogDensityChanged = true;
-    RENDERINFO.mFVFChanged = true;
-    RENDERINFO.Apply();
+    if (saved) {
+        saved->Apply();
+        saved->Release();
+        LT.InvalidateAllStates();
+        RENDERINFO.mWorldChanged = true;
+        RENDERINFO.mViewChanged = true;
+        RENDERINFO.mProjectionChanged = true;
+        RENDERINFO.mFogStartChanged = true;
+        RENDERINFO.mFogEndChanged = true;
+        RENDERINFO.mFogDensityChanged = true;
+        RENDERINFO.mFVFChanged = true;
+        RENDERINFO.Apply();
+    }
 }
 
 } // namespace CeArchivePedestal
@@ -921,7 +959,7 @@ bool RuntimeHandleFire(bool, float) { return false; }
 bool RuntimeHandleKey(unsigned, bool) { return false; }
 bool RuntimeIsAimingControl() { return false; }
 bool RuntimeCue(float, float, float, float, CeMuseumTour::Wing, char *, unsigned, char *, unsigned, char *, unsigned) { return false; }
-void RuntimeDraw(float) {}
+void RuntimeDraw(float, bool) {}
 void RuntimeSetBasePose(float, float, float) {}
 } // namespace CeArchivePedestal
 #endif

@@ -489,6 +489,10 @@ void SelectionController::ClearSet(int slot) { panel_.ClearSelectionSet(slot); }
 
 int SelectionController::SetCount(int slot) const { return panel_.SelectionSetCount(slot); }
 
+int SelectionController::SetLiveCount(int slot) const {
+    return frame_valid_ ? panel_.SelectionSetLiveCount(slot) : 0;
+}
+
 // ---------------------------------------------------------------------------
 // Gestures
 // ---------------------------------------------------------------------------

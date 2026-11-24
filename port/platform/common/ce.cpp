@@ -379,23 +379,135 @@ extern "C" int CE_SettingGet(const char *key, int def)
 	return v;
 }
 
+// Bounded in-memory cache of raw ce.ini bytes for the frequent preference readers (CE_SettingGetBool, CE_SettingIs,
+// CE_SettingGetText, CE_SettingLauncherIs) so per-frame UI/gameplay queries do not malloc 1 MiB and reopen ce.ini
+// every frame. Invalidated immediately on any in-process write or user-dir change, and refreshed after 250 ms so
+// external edits still take effect promptly. When SDL_GetTicks() == 0 (pre-timer startup or unit drivers with a zero
+// stub clock), reads bypass the cache while still using dynamic growth instead of a 1 MiB allocation.
+#define CE_INI_HAS_CACHE 1
+struct CeIniRawCache
+{
+	bool	valid;
+	bool	present;
+	Uint64	readAt;
+	char	userDir[4096];
+	char	*data;
+	size_t	len;
+};
+static CeIniRawCache sIniRawCache;
+
+static void ce_ini_cache_invalidate(void)
+{
+	free(sIniRawCache.data);
+	sIniRawCache.data = NULL;
+	sIniRawCache.len = 0;
+	sIniRawCache.valid = false;
+	sIniRawCache.present = false;
+	sIniRawCache.readAt = 0;
+	sIniRawCache.userDir[0] = 0;
+}
+
+static char *ce_ini_read_raw_dynamic(size_t *outLen, int *outMissing)
+{
+	if (outLen) *outLen = 0;
+	if (outMissing) *outMissing = 0;
+	CeSettingsDir dir;
+	int missing = 0;
+	FILE *f = ce_ini_open_regular(&dir, &missing);
+	if (!f)
+	{
+		if (outMissing) *outMissing = missing;
+		return NULL;
+	}
+	const size_t limit = 1u << 20;
+	size_t cap = 4096, len = 0, got;
+	char *text = (char *)malloc(cap);
+	if (!text) { fclose(f); ce_settings_dir_close(&dir); return NULL; }
+	bool bad = false;
+	char buf[4096];
+	while (!bad && (got = fread(buf, 1, sizeof(buf), f)) > 0)
+	{
+		if (got > limit - len) { bad = true; break; }
+		if (len + got + 1 > cap)
+		{
+			size_t next = cap * 2;
+			if (next < len + got + 1) next = len + got + 1;
+			if (next > limit + 1) next = limit + 1;
+			char *m = (char *)realloc(text, next);
+			if (!m) { bad = true; break; }
+			text = m;
+			cap = next;
+		}
+		memcpy(text + len, buf, got);
+		len += got;
+	}
+	if (ferror(f) || !feof(f) || len > limit) bad = true;
+	if (fclose(f) != 0) bad = true;
+	ce_settings_dir_close(&dir);
+	if (bad) { free(text); return NULL; }
+	text[len] = 0;
+	if (outLen) *outLen = len;
+	return text;
+}
+
+static char *ce_ini_cached_raw(size_t *outLen, bool *outOwned)
+{
+	if (outLen) *outLen = 0;
+	if (outOwned) *outOwned = false;
+	const Uint64 now = SDL_GetTicks();
+	if (now == 0)
+	{
+		char *fresh = ce_ini_read_raw_dynamic(outLen, NULL);
+		if (fresh && outOwned) *outOwned = true;
+		return fresh;
+	}
+	char user[4096];
+	ce_user_dir(user, sizeof(user));
+	if (sIniRawCache.valid && strcmp(sIniRawCache.userDir, user) == 0 && (now - sIniRawCache.readAt) < 250)
+	{
+		if (!sIniRawCache.present) return NULL;
+		if (outLen) *outLen = sIniRawCache.len;
+		return sIniRawCache.data;
+	}
+	ce_ini_cache_invalidate();
+	size_t len = 0;
+	int missing = 0;
+	char *fresh = ce_ini_read_raw_dynamic(&len, &missing);
+	if (!fresh)
+	{
+		if (missing)
+		{
+			snprintf(sIniRawCache.userDir, sizeof(sIniRawCache.userDir), "%s", user);
+			sIniRawCache.valid = true;
+			sIniRawCache.present = false;
+			sIniRawCache.readAt = now;
+		}
+		return NULL;
+	}
+	snprintf(sIniRawCache.userDir, sizeof(sIniRawCache.userDir), "%s", user);
+	sIniRawCache.data = fresh;
+	sIniRawCache.len = len;
+	sIniRawCache.valid = true;
+	sIniRawCache.present = true;
+	sIniRawCache.readAt = now;
+	if (outLen) *outLen = len;
+	return sIniRawCache.data;
+}
+
 // A boolean preference must be the complete value 0 or 1. Scan by length, not as a C string: unrelated lines may
 // contain arbitrary bytes, including NUL. Ambiguous duplicates or an incomplete read keep the caller's default.
 extern "C" int CE_SettingGetBool(const char *key, int def)
 {
 	if (!key || !*key) return def;
-	CeSettingsDir dir;
-	FILE *f = ce_ini_open_regular(&dir);
-	if (!f) return def;
-	const size_t limit = 1u << 20;
-	char *text = (char *)malloc(limit + 1);
-	if (!text) { fclose(f); ce_settings_dir_close(&dir); return def; }
-	size_t len = 0, got;
-	while (len < limit + 1 && (got = fread(text + len, 1, limit + 1 - len, f)) > 0) len += got;
-	bool bad = ferror(f) || !feof(f) || len > limit;
-	if (fclose(f) != 0) bad = true;
-	ce_settings_dir_close(&dir);
-	if (bad) { free(text); return def; }
+	size_t len = 0;
+	bool owned = false;
+#ifdef CE_INI_HAS_CACHE
+	char *text = ce_ini_cached_raw(&len, &owned);
+#else
+	char *text = ce_ini_read(NULL, &len);
+	owned = true;
+#endif
+	if (!text) return def;
 	size_t start = (len >= 3 && (unsigned char)text[0] == 0xEF && (unsigned char)text[1] == 0xBB && (unsigned char)text[2] == 0xBF) ? 3 : 0;
 	size_t size = strlen(key);
 	int value = def;
@@ -418,7 +530,7 @@ extern "C" int CE_SettingGetBool(const char *key, int def)
 		if (pos < n && line[pos] == '\r') ++pos;
 		value = pos == n ? parsed : def;
 	}
-	free(text);
+	if (owned) free(text);
 	return value;
 }
 
@@ -528,6 +640,8 @@ void PortCeExperimentalBlock()
 							"; CE features, enabled by default. Some are still in progress; set a line to 0 or toggle in Experimental Features to turn one off.\n",
 							kExperimentalKeys, 4, "1", NULL))
 		fprintf(stderr, PORT_LOG_PREFIX "could not add the [Experimental] lines to ce.ini; it is unchanged\n");
+	else
+		ce_ini_cache_invalidate();
 }
 
 // Whether ce.ini sets key to exactly value (ASCII letters compared ignoring case, surrounding blanks and a final CR
@@ -536,18 +650,10 @@ void PortCeExperimentalBlock()
 extern "C" int CE_SettingIs(const char *key, const char *value)
 {
 	if (!key || !*key || !value) return 0;
-	CeSettingsDir dir;
-	FILE *f = ce_ini_open_regular(&dir);
-	if (!f) return 0;
-	const size_t limit = 1u << 20;
-	char *text = (char *)malloc(limit + 1);
-	if (!text) { fclose(f); ce_settings_dir_close(&dir); return 0; }
-	size_t len = 0, got;
-	while (len < limit + 1 && (got = fread(text + len, 1, limit + 1 - len, f)) > 0) len += got;
-	bool bad = ferror(f) || !feof(f) || len > limit;
-	if (fclose(f) != 0) bad = true;
-	ce_settings_dir_close(&dir);
-	if (bad) { free(text); return 0; }
+	size_t len = 0;
+	bool owned = false;
+	char *text = ce_ini_cached_raw(&len, &owned);
+	if (!text) return 0;
 	size_t start = (len >= 3 && (unsigned char)text[0] == 0xEF && (unsigned char)text[1] == 0xBB && (unsigned char)text[2] == 0xBF) ? 3 : 0;
 	size_t size = strlen(key), want = strlen(value);
 	int match = 0;
@@ -575,7 +681,7 @@ extern "C" int CE_SettingIs(const char *key, const char *value)
 			match = a == b;
 		}
 	}
-	free(text);
+	if (owned) free(text);
 	return match;
 }
 
@@ -587,18 +693,10 @@ extern "C" int CE_SettingGetText(const char *key, char *out, int n)
 	if (!out || n <= 0) return 0;
 	out[0] = 0;
 	if (!key || !*key) return 0;
-	CeSettingsDir dir;
-	FILE *f = ce_ini_open_regular(&dir);
-	if (!f) return 0;
-	const size_t limit = 1u << 20;
-	char *text = (char *)malloc(limit + 1);
-	if (!text) { fclose(f); ce_settings_dir_close(&dir); return 0; }
-	size_t len = 0, got;
-	while (len < limit + 1 && (got = fread(text + len, 1, limit + 1 - len, f)) > 0) len += got;
-	bool bad = ferror(f) || !feof(f) || len > limit;
-	if (fclose(f) != 0) bad = true;
-	ce_settings_dir_close(&dir);
-	if (bad) { free(text); return 0; }
+	size_t len = 0;
+	bool owned = false;
+	char *text = ce_ini_cached_raw(&len, &owned);
+	if (!text) return 0;
 	size_t start = (len >= 3 && (unsigned char)text[0] == 0xEF && (unsigned char)text[1] == 0xBB && (unsigned char)text[2] == 0xBF) ? 3 : 0;
 	size_t size = strlen(key);
 	const char *found = NULL;
@@ -633,7 +731,7 @@ extern "C" int CE_SettingGetText(const char *key, char *out, int n)
 			out[foundLen] = 0;
 		}
 	}
-	free(text);
+	if (owned) free(text);
 	return ok;
 }
 
@@ -648,18 +746,10 @@ extern "C" int CE_SettingGetText(const char *key, char *out, int n)
 extern "C" int CE_SettingLauncherIs(const char *key, const char *value)
 {
 	if (!key || !*key || !value) return 0;
-	CeSettingsDir dir;
-	FILE *f = ce_ini_open_regular(&dir);
-	if (!f) return 0;
-	const size_t limit = 1u << 20;
-	char *text = (char *)malloc(limit + 1);
-	if (!text) { fclose(f); ce_settings_dir_close(&dir); return 0; }
-	size_t len = 0, got;
-	while (len < limit + 1 && (got = fread(text + len, 1, limit + 1 - len, f)) > 0) len += got;
-	bool bad = ferror(f) || !feof(f) || len > limit;
-	if (fclose(f) != 0) bad = true;
-	ce_settings_dir_close(&dir);
-	if (bad) { free(text); return 0; }
+	size_t len = 0;
+	bool owned = false;
+	char *text = ce_ini_cached_raw(&len, &owned);
+	if (!text) return 0;
 	text[len] = 0;
 	len = strlen(text);
 	size_t start = (len >= 3 && (unsigned char)text[0] == 0xEF && (unsigned char)text[1] == 0xBB && (unsigned char)text[2] == 0xBF) ? 3 : 0;
@@ -680,7 +770,7 @@ extern "C" int CE_SettingLauncherIs(const char *key, const char *value)
 		match = end - pos == want && !memcmp(line + pos, value, want);
 		break;
 	}
-	free(text);
+	if (owned) free(text);
 	return match;
 }
 
@@ -705,6 +795,7 @@ extern "C" int CE_SettingSet(const char *key, int value)
 		fprintf(stderr, PORT_LOG_PREFIX "could not write ce.ini (%s=%d); it is unchanged\n", key, value);
 		return 0;
 	}
+	ce_ini_cache_invalidate();
 	return 1;
 }
 
@@ -736,6 +827,7 @@ extern "C" int CE_SettingSetText(const char *key, const char *value)
 		fprintf(stderr, PORT_LOG_PREFIX "could not write ce.ini (%s=%s); it is unchanged\n", key, value);
 		return 0;
 	}
+	ce_ini_cache_invalidate();
 	return 1;
 }
 
@@ -761,6 +853,7 @@ extern "C" int CE_SettingSetEmpty(const char *key)
 		fprintf(stderr, PORT_LOG_PREFIX "could not write ce.ini (%s=); it is unchanged\n", key);
 		return 0;
 	}
+	ce_ini_cache_invalidate();
 	return 1;
 }
 

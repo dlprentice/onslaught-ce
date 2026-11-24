@@ -146,10 +146,15 @@ void *gFootCadenceUnit; float gFootCadence; int gCadenceTakes, gCadenceReleases;
 void FootCadenceTake(CUnit *) { ++gCadenceTakes; } void FootCadenceRelease(CUnit *) { ++gCadenceReleases; }
 // the mouse's world
 bool gDriving = true; void *gCamera = &gDriving; enum { kViewSmooth, kViewRigid, kViewStock, kViewLook }; int gViewMode = kViewLook;
+int gDrivenClass = CE_PLAYUNIT_CLASS_TANK;
+float gMouseSensitivity = 7.0f;
 float gLookYaw, gLookPitch; unsigned gMouseQuiet = ~0u;
 enum { GAME_STATE_PLAYING = 2, GAME_STATE_PAUSED_MENU = 3 };
-struct Game { bool paused = false; int state = GAME_STATE_PLAYING; bool IsPaused() { return paused; } int GetGameState() { return state; } } GAME;
-struct Career { bool invert = false; BOOL GetInvertYAxis(int) { return invert ? TRUE : FALSE; } } CAREER;
+struct Game { bool paused = false; bool freeCam = false; int state = GAME_STATE_PLAYING; bool IsPaused() { return paused; } bool IsFreeCameraOn(int) { return freeCam; } int GetGameState() { return state; } } GAME;
+struct Career { bool invert = false; bool invertJet = false; BOOL GetInvertYAxis(int) { return invert ? TRUE : FALSE; } BOOL GetInvertJetYAxis(int) { return invertJet ? TRUE : FALSE; } } CAREER;
+struct LtStub { bool keytrap = false; void *GetKeytrap() { return keytrap ? (void *)1 : nullptr; } } LT;
+bool gCmdMapOpen = false;
+bool PortCeCmdMapOpen() { return gCmdMapOpen; }
 
 @MOUSE@
 @GUIDE@
@@ -166,17 +171,44 @@ static void LookAt(float y, float p) { gLookYaw = y; gLookPitch = p; gMouseQuiet
 static void Mouse()
 {
     const CePlayUnitLookLaw &law = CePlayUnitTankLook();
+    gDrivenClass = CE_PLAYUNIT_CLASS_TANK;
+    gMouseSensitivity = 7.0f;
     LookAt(0.f, 0.f);
     PortCePlayUnitMouse(40, 0);
     Check(Near(gLookYaw, -40.f * law.perCount) && gMouseQuiet == 0, "mouse: right turns the look right, and the stick waits");
     LookAt(0.f, 0.f);
     PortCePlayUnitMouse(0, 30);
-    Check(Near(gLookPitch, 30.f * law.perCount), "mouse: down tilts the look down");
+    Check(Near(gLookPitch, -30.f * law.perCount), "mouse: default Invert Y matches Battle Engine ground aim");
     LookAt(0.f, 0.f);
     CAREER.invert = true;
     PortCePlayUnitMouse(0, 30);
     CAREER.invert = false;
-    Check(Near(gLookPitch, -30.f * law.perCount), "mouse: the player's Invert Y turns the tilt around");
+    Check(Near(gLookPitch, 30.f * law.perCount), "mouse: the player's Invert Y turns the tilt around");
+    LookAt(0.f, 0.f);
+    gDrivenClass = CE_PLAYUNIT_CLASS_AIRCRAFT;
+    CAREER.invertJet = true;
+    PortCePlayUnitMouse(0, 30);
+    CAREER.invertJet = false;
+    gDrivenClass = CE_PLAYUNIT_CLASS_TANK;
+    Check(Near(gLookPitch, 30.f * law.perCount), "mouse: aircraft uses Invert Jet Y");
+    LookAt(0.f, 0.f);
+    gMouseSensitivity = 14.0f;
+    PortCePlayUnitMouse(20, 0);
+    gMouseSensitivity = 7.0f;
+    Check(Near(gLookYaw, -40.f * law.perCount), "mouse: scales with gMouseSensitivity");
+    LookAt(0.3f, 0.1f);
+    LT.keytrap = true;
+    PortCePlayUnitMouse(50, 50);
+    LT.keytrap = false;
+    Check(Near(gLookYaw, 0.3f) && Near(gLookPitch, 0.1f) && gMouseQuiet == 99, "mouse: nothing turns while a keytrap is active");
+    GAME.freeCam = true;
+    PortCePlayUnitMouse(50, 50);
+    GAME.freeCam = false;
+    Check(Near(gLookYaw, 0.3f) && Near(gLookPitch, 0.1f), "mouse: nothing turns while free camera is on");
+    gCmdMapOpen = true;
+    PortCePlayUnitMouse(50, 50);
+    gCmdMapOpen = false;
+    Check(Near(gLookYaw, 0.3f) && Near(gLookPitch, 0.1f), "mouse: nothing turns while Commander view is open");
     LookAt(0.3f, 0.1f);
     GAME.paused = true;
     PortCePlayUnitMouse(50, 50);
@@ -198,7 +230,7 @@ static void Mouse()
     Check(gMouseQuiet == 99, "mouse: a still mouse leaves the stick its turn");
     LookAt(0.f, 0.f);
     Poll(-20, 12);
-    Check(Near(gLookYaw, 20.f * law.perCount) && Near(gLookPitch, 12.f * law.perCount), "poll: the look gets the movement the game is given, with its signs");
+    Check(Near(gLookYaw, 20.f * law.perCount) && Near(gLookPitch, -12.f * law.perCount), "poll: the look gets the movement the game is given, with its signs");
 }
 
 // One move of the game's ground mover and hull turn, as CGroundUnit::Move and CUnit::Unknown77 do them on the ground, then the guide's next answer.
@@ -581,7 +613,11 @@ int main() {
             "the_poll_mirrors_the_turn": ("hook", "PortCePlayUnitMouse(m->lX, m->lY);", "PortCePlayUnitMouse(-m->lX, m->lY);", "poll: the look gets the movement the game is given, with its signs"),
             "the_level_state_is_not_asked": ("mouse", " || GAME.GetGameState() != GAME_STATE_PLAYING", "", "mouse: nothing turns while the level is not playing"),
             "the_view_is_not_asked": ("mouse", " || gViewMode != kViewLook", "", "mouse: nothing turns while the view is the game's own camera"),
-            "invert_is_ignored": ("mouse", "	if (CAREER.GetInvertYAxis(0)) dy = -dy;\n", "", "mouse: the player's Invert Y turns the tilt around"),
+            "invert_is_ignored": ("mouse", "\tif (!invY) dy = -dy;\n", "\t(void)invY; dy = -dy;\n", "mouse: the player's Invert Y turns the tilt around"),
+            "keytrap_is_ignored": ("mouse", "LT.GetKeytrap() || ", "", "mouse: nothing turns while a keytrap is active"),
+            "freecam_is_ignored": ("mouse", "GAME.IsFreeCameraOn(0) || ", "", "mouse: nothing turns while free camera is on"),
+            "cmdmap_is_ignored": ("mouse", " || PortCeCmdMapOpen()", "", "mouse: nothing turns while Commander view is open"),
+            "sensitivity_is_ignored": ("mouse", "const float sens = (gMouseSensitivity > 0.f ? gMouseSensitivity : 7.0f) / 7.0f;", "const float sens = 1.0f;", "mouse: scales with gMouseSensitivity"),
             "the_stick_never_waits": ("mouse", "	gMouseQuiet = 0;\n", "", "mouse: right turns the look right, and the stick waits"),
             "no_grid_guard": ("guide", "			if (grid)\n			{\n				const float guarded", "			if (false)\n			{\n				const float guarded", "guide: no driving into a closed cell ahead: the tank stops at its edge"),
             "the_guard_looks_the_wrong_way": ("guide", "GridOpen(grid, pos + ahead), GridOpen(grid, pos - ahead)", "GridOpen(grid, pos - ahead), GridOpen(grid, pos + ahead)", "guide: no driving into a closed cell ahead: the tank stops at its edge"),

@@ -10,7 +10,7 @@
  
  // ---- the mixer: one per process, shared by every IDirectSound8
  
-@@ -78,18 +77,6 @@
+@@ -78,23 +77,10 @@
  	int users = 0;
  	Buffer *voices[kMaxVoices];
  	int numVoices = 0;
@@ -29,7 +29,20 @@
  	Buffer3D *all3D[1024];			// every live 3D buffer, for CommitDeferredSettings
  	int num3D = 0;
  	Listener *listener = NULL;
-@@ -190,19 +177,7 @@
+ 	FILE *wav = NULL;
+-	bool wavStarted = false;
+ 	Uint32 wavBytes = 0;
+ 	Uint32 wavHeaderAt = 0;
+ 	float *scratch = NULL;
+@@ -104,7 +90,6 @@
+ 	Uint64 virtBase = 0;			// the virtual time the mix started at
+ 	Uint64 virtMixedBase = 0;		// cumulative frames already mixed when this device lifetime began
+ 	FILE *trace = NULL;				// BEA_AUDIO_TRACE: one line per Play, for diagnosing a mix
+-	bool traceStarted = false;
+ 	SDL_AudioStream *monitor = NULL;	// BEA_AUDIO_MONITOR with the virtual clock: the mix, written only, to the device
+ 	bool monitorAudioInit = false;
+ 	bool monitorPlaying = false;
+@@ -192,19 +177,7 @@
  	LONG pan = 0;
  	DWORD frequency;
  	bool playing = false, looping = false;
@@ -49,7 +62,7 @@
  	DSBPOSITIONNOTIFY notes[32];
  	DWORD numNotes = 0;
  	Buffer3D *b3d = NULL;
-@@ -241,15 +216,6 @@
+@@ -243,15 +216,6 @@
  						  : (d->dwBufferBytes + Align() - 1) / Align() * Align();
  			data->bytesPtr = data->bytes ? (unsigned char *)calloc(1, data->bytes) : NULL;
  		}
@@ -65,7 +78,7 @@
  	}
  	~Buffer();
  
-@@ -266,53 +232,10 @@
+@@ -268,53 +232,10 @@
  		return (Sint16)(p[2 * c] | p[2 * c + 1] << 8) * (1.0f / 32768.0f);
  	}
  
@@ -119,7 +132,7 @@
  		for (DWORD i = 0; i < numNotes; i++)
  		{
  			DWORD off = notes[i].dwOffset;
-@@ -321,19 +244,13 @@
+@@ -323,19 +244,13 @@
  			double o = off;
  			bool passed = wrapped ? (o >= from || o < to) : (o >= from && o < to);
  			if (passed)
@@ -139,7 +152,7 @@
  		for (int i = 0; i < gMixer.numVoices; i++)
  			if (gMixer.voices[i] == this)
  			{
-@@ -460,7 +377,6 @@
+@@ -462,7 +377,6 @@
  					(unsigned long)priority, (unsigned long)playFlags, h, peak, bytes ? 1 : 0, (unsigned long)bytes,
  					(unsigned long)cp, (unsigned long)cw);
  		}
@@ -147,7 +160,7 @@
  		SDL_LockMutex(gMixer.lock);
  		looping = (playFlags & DSBPLAY_LOOPING) != 0;
  		if (!playing && Bytes() && !(flags & DSBCAPS_PRIMARYBUFFER) && gMixer.numVoices < kMaxVoices)
-@@ -470,32 +386,8 @@
+@@ -472,32 +386,8 @@
  			playing = true;
  			lastGain[0] = lastGain[1] = -1;		// start at the target gain, without a ramp
  			gMixer.voices[gMixer.numVoices++] = this;
@@ -166,8 +179,8 @@
 -				PortSessionObserveMax(PORT_OBS_MUSIC_VOICES_MAX, music);
 -				secondMusicVoice = music > 1;
 -			}
- 		}
- 		SDL_UnlockMutex(gMixer.lock);
+-		}
+-		SDL_UnlockMutex(gMixer.lock);
 -		MediaSnapshot(this, "play");
 -		if (secondMusicVoice)
 -		{
@@ -177,26 +190,32 @@
 -				PortSessionLog(PORT_SESSION_MUSIC, true, "a second music-tagged buffer started while another plays "
 -					"(see music_voices_max; not audible-content proof)");
 -		}
++		}
++		SDL_UnlockMutex(gMixer.lock);
  		return DS_OK;
  	}
  	HRESULT STDMETHODCALLTYPE SetCurrentPosition(DWORD p) override
-@@ -558,14 +450,11 @@
+@@ -560,14 +450,11 @@
  		if (playing)
  			Halt();
  		SDL_UnlockMutex(gMixer.lock);
 -		MediaSnapshot(this, "stop");
- 		return DS_OK;
- 	}
+-		return DS_OK;
+-	}
 -	HRESULT STDMETHODCALLTYPE Unlock(LPVOID p1, DWORD n1, LPVOID p2, DWORD n2) override
-+	HRESULT STDMETHODCALLTYPE Unlock(LPVOID, DWORD n1, LPVOID, DWORD n2) override
- 	{
- 		gMixer.CatchUp();
+-	{
+-		gMixer.CatchUp();
 -		if (gSessionAudio && mediaKind == PORT_SESSION_MUSIC)
 -			ObserveWrite(p1, n1, p2, n2);
++		return DS_OK;
++	}
++	HRESULT STDMETHODCALLTYPE Unlock(LPVOID, DWORD n1, LPVOID, DWORD n2) override
++	{
++		gMixer.CatchUp();
  		// DirectSound rejects an unlock larger than the buffer (the game unlocks its samples with twice their size and
  		// gets this error in retail too; the data is written either way)
  		HRESULT hr = (n1 > Bytes() || n2 > Bytes()) ? DSERR_INVALIDPARAM : DS_OK;
-@@ -862,13 +751,6 @@
+@@ -864,13 +751,6 @@
  Buffer::~Buffer()
  {
  	SDL_LockMutex(gMixer.lock);
@@ -210,7 +229,7 @@
  	if (playing)
  		Halt();
  	SDL_UnlockMutex(gMixer.lock);
-@@ -1017,7 +899,6 @@
+@@ -1019,7 +899,6 @@
  		scratchFrames = frames;
  	}
  	memset(scratch, 0, sizeof(float) * 2 * frames);
@@ -218,7 +237,7 @@
  	for (int v = numVoices - 1; v >= 0; v--)
  	{
  		Buffer *b = voices[v];
-@@ -1087,14 +968,6 @@
+@@ -1089,14 +968,6 @@
  			scratch[2 * i + 1] += sr * gr;
  			pos += step;
  		}
@@ -233,7 +252,7 @@
  		if (pos >= total && b->looping)
  		{
  			pos = fmod(pos, (double)total);
-@@ -1117,13 +990,6 @@
+@@ -1119,13 +990,6 @@
  	}
  	Record(out, frames);
  	Monitor(out, frames);
@@ -247,7 +266,7 @@
  	mixed += frames;
  }
  
-@@ -1197,56 +1063,12 @@
+@@ -1199,55 +1063,11 @@
  	}
  	SDL_LockMutex(gMixer.lock);
  	gMixer.Mix(buf, frames);
@@ -276,7 +295,7 @@
  	{
  		PortSessionCount(PORT_COUNT_AUDIO_PUT_FAILED);
  		PortSessionAudioError(SDL_GetError());
- 	}
+-	}
 -	if (observe)
 -	{
 -		// Only this callback's live stream, outside the mixer lock; no SDL-stream/mixer lock inversion.
@@ -300,11 +319,51 @@
 -			if (queued > gMixer.queueMaxBytes) gMixer.queueMaxBytes = queued;
 -		}
 -		SDL_UnlockMutex(gMixer.lock);
--	}
+ 	}
  	SDL_free(buf);
  }
- 
-@@ -1352,32 +1174,9 @@
+@@ -1328,33 +1148,16 @@
+ 		BuildKernel();
+ 	}
+ 	const char *rec = SDL_getenv("BEA_AUDIO_RECORD");
+-	if (rec && rec[0])
+-	{
+-		if (wavStarted)
+-		{
+-			wav = fopen(rec, "r+b");
+-			if (wav && fseek(wav, 0, SEEK_END) != 0)
+-			{
+-				fclose(wav);
+-				wav = NULL;
+-			}
+-		}
+-		if (!wav && (wav = fopen(rec, "wb")) != NULL)
+-		{
+-			Uint32 hdr[11] = {0x46464952, 36, 0x45564157, 0x20746d66, 16, 0x00020001, kRate, kRate * 4, 0x00100004,
+-							  0x61746164, 0};
+-			fwrite(hdr, 4, 11, wav);
+-			wavBytes = wavHeaderAt = 0;
+-			wavStarted = true;
+-		}
++	if (rec && rec[0] && (wav = fopen(rec, "wb")) != NULL)
++	{
++		Uint32 hdr[11] = {0x46464952, 36, 0x45564157, 0x20746d66, 16, 0x00020001, kRate, kRate * 4, 0x00100004,
++						  0x61746164, 0};
++		fwrite(hdr, 4, 11, wav);
++		wavBytes = wavHeaderAt = 0;
+ 	}
+ 	const char *tr = SDL_getenv("BEA_AUDIO_TRACE");
+ 	if (tr && tr[0])
+-	{
+-		trace = fopen(tr, traceStarted ? "a" : "w");
+-		if (trace)
+-			traceStarted = true;
+-	}
++		trace = fopen(tr, "w");
+ 	const char *clock = SDL_getenv("BEA_AUDIO_CLOCK");
+ 	virt = PortClockVirtual();
+ 	if (virt)
+@@ -1371,32 +1174,9 @@
  			stream = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, Feed, NULL);
  			if (stream)
  			{
@@ -337,7 +396,7 @@
  					SDL_DestroyAudioStream(stream);
  					stream = NULL;
  					SDL_QuitSubSystem(SDL_INIT_AUDIO);
-@@ -1468,13 +1267,6 @@
+@@ -1487,13 +1267,6 @@
  		SDL_RemoveTimer(retiredTimer);
  	if (stream)
  	{
@@ -351,7 +410,7 @@
  		SDL_DestroyAudioStream(stream);
  		stream = NULL;
  		SDL_QuitSubSystem(SDL_INIT_AUDIO);
-@@ -1495,7 +1287,6 @@
+@@ -1514,7 +1287,6 @@
  		trace = NULL;
  	}
  	SDL_UnlockMutex(lock);
@@ -359,7 +418,7 @@
  	PortSessionSummary();
  }
  
-@@ -1575,68 +1366,6 @@
+@@ -1594,68 +1366,6 @@
  	HRESULT STDMETHODCALLTYPE Initialize(const GUID *) override { return DSERR_ALREADYINITIALIZED; }
  	HRESULT STDMETHODCALLTYPE VerifyCertification(LPDWORD c) override { *c = 0; return DS_OK; }
  };
@@ -428,10 +487,11 @@
  } // namespace
  
  #ifdef CE_VERSION
-@@ -1650,34 +1379,6 @@
+@@ -1668,34 +1378,6 @@
+ 	SDL_UnlockMutex(gMixer.lock);
  }
  #endif
- 
+-
 -// Opaque caller values are compared with registered replacement buffers, never blindly dereferenced.
 -bool PortAudioMediaRole(const void *target, PortSessionCategory category)
 -{
@@ -459,11 +519,10 @@
 -#endif
 -	return found;
 -}
--
+ 
  // Ordinary-session observation only. This never advances the mixer or calls a buffer method: the music worker
  // already owns its buffer lifetime, while the mixer mutex protects the cursor and voice list. No addresses or PCM.
- bool PortAudioStreamSnapshot(IDirectSoundBuffer *target, unsigned long long *ns, unsigned long long *mixed,
-@@ -1711,35 +1412,6 @@
+@@ -1730,35 +1412,6 @@
  	return found;
  }
  

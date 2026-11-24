@@ -34,6 +34,7 @@ HARNESS = r"""
 using UINT = unsigned;
 using HWND = void *;
 #define TRUE 1
+#define D3DSWAPEFFECT_DISCARD 1
 #define PORT_LOG_PREFIX "[fullscreen-test] "
 struct D3DPRESENT_PARAMETERS
 {

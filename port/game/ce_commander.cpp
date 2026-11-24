@@ -107,7 +107,10 @@ static_assert(CE_RULE_MOVE == CE_CMD_MOVE && CE_RULE_ADVANCE == CE_CMD_ADVANCE &
 extern "C" unsigned PortPresentCount(void);		// d3d9hooks.cpp
 #endif
 extern "C" int CE_SettingGetBool(const char *key, int def);	// ce.cpp: the ce.ini switch
+bool PortCeLayer();
 bool PortCeExperimental(const char *mode);	// ce.cpp: the ce.ini [Experimental] lines, each read once
+extern "C" int CE_BootRequested(void) __attribute__((weak));
+extern "C" int CE_SessionActive(void) __attribute__((weak));
 
 namespace
 {
@@ -157,6 +160,8 @@ Rec gRecs[kMaxSquads];
 int gNRecs;
 unsigned gTick;
 int gLevel = -1;
+int gCachedSide = -1;
+int gCachedSideLevel = -1;
 
 #ifdef CE_COMMANDER_TEST
 const int kMaxLines = 4096;
@@ -227,6 +232,8 @@ bool Present(const char *name)
 
 bool Fenced()
 {
+	if (!PortCeLayer()) return true;
+	if ((CE_BootRequested && CE_BootRequested()) || (CE_SessionActive && CE_SessionActive())) return true;
 	for (const char *name : kFenced)
 		if (Present(name)) return true;
 	return false;
@@ -545,6 +552,8 @@ void Reset()
 	gNRecs = 0;
 	gTick = 0;
 	gLevel = -1;
+	gCachedSide = -1;
+	gCachedSideLevel = -1;
 	gDropped = 0;
 #ifdef CE_COMMANDER_TEST
 	gNext = 0;
@@ -912,6 +921,7 @@ void CeCommanderUpdate()
 		gLastState = state;
 	}
 #endif
+	if (!PortCeLayer()) return;
 	// A Commander match has its one screen from the level's first update, before the opening pan is drawn (ce_cmdmatch.cpp).
 	if (state == GAME_STATE_PRE_RUNNING || state == GAME_STATE_PANNING || state == GAME_STATE_PLAYING) CeCmdMatchUpdate();
 	if (state == GAME_STATE_NOT_RUNNING || state == GAME_STATE_PRE_RUNNING) { Reset(); CeFactoryReset(); return; }
@@ -1001,7 +1011,7 @@ int PlayerAllegiance()
 {
 	CPlayer *player = GAME.GetPlayer(0);
 	CBattleEngine *engine = player ? player->GetBattleEngine() : NULL;
-	return engine ? (int)engine->GetAllegiance() : -1;
+	return CeCmdResolveAllegiance(gCachedSide, gCachedSideLevel, GAME.GetCurrentLevel(), engine != NULL, engine ? (int)engine->GetAllegiance() : -1);
 }
 
 int ToCmd(Verb v)
@@ -1373,7 +1383,7 @@ bool UnitAuthority(CUnit* unit, Rec& record, const CeCmdSquad& squad,
     out->commandable = out->friendly && !out->scripted && squad.commandable;
     const unsigned refused = THING_TYPE_AIR_UNIT | THING_TYPE_NAVAL |
         THING_TYPE_BUILDING | THING_TYPE_COMPONENT |
-        THING_TYPE_EMPLACEMENT | THING_TYPE_MECH;
+        THING_TYPE_EMPLACEMENT;
     out->groundPoint = (out->kind &
         (THING_TYPE_INFANTRY | THING_TYPE_GROUND_UNIT)) != 0 &&
         (out->kind & refused) == 0;

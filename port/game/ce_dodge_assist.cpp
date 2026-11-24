@@ -269,6 +269,12 @@ bool PortCeDodgeAssistOn()
 	return (gSetting >= 0 ? gSetting != 0 : SettingOn());
 }
 
+extern "C" void PortCeDodgeAssistRefresh(void)
+{
+	gSetting = -1;
+	for (int i = 0; i < kPads; ++i) gStale[i] = true;
+}
+
 int PortCeDodgeAssistKey(int pad)
 {
 	// Only controller 0 reads the keyboard bindings (CController::DoMappings), so only it has the key; and none while text is typed.

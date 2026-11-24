@@ -53,19 +53,19 @@ int main(int argc, char **argv) {
     if (mode == "layer-off") gLayer = false;
 
     if (mode == "default") {
-        Check(CE_WaterReflectionResChoice() == 1024 && CE_WaterReflectionChoice() == 2, "fresh water reflection default is 1024");
-        Check(CE_DynamicShadowResChoice() == 256 && CE_DynamicShadowChoice() == 2, "fresh dynamic shadow default is 256");
+        Check(CE_WaterReflectionResChoice() == 512 && CE_WaterReflectionChoice() == 1, "fresh water reflection default is 512");
+        Check(CE_DynamicShadowResChoice() == 128 && CE_DynamicShadowChoice() == 1, "fresh dynamic shadow default is 128");
         CeWaterReflectionBeginFrame();
         CeDynamicShadowBeginFrame();
-        Check(CeWaterReflectionQualityActive() && CeWaterReflectionTargetRes() == 1024u, "water target 1024 active");
-        Check(CeDynamicShadowQualityActive() && CeDynamicShadowTargetRes() == 256u, "shadow target 256 active");
+        Check(CeWaterReflectionQualityActive() && CeWaterReflectionTargetRes() == 512u, "water target 512 active");
+        Check(CeDynamicShadowQualityActive() && CeDynamicShadowTargetRes() == 128u, "shadow target 128 active");
         Check(CeWaterReflectionActiveRes() == 256u, "unallocated water defaults safely to 256");
         Check(CeDynamicShadowActiveRes() == 64u, "unallocated shadow defaults safely to 64");
-        CeWaterReflectionSetAllocatedRes(1024u, 1024u);
-        CeDynamicShadowSetAllocatedRes(256u, 256u);
-        Check(CeWaterReflectionActiveRes() == 1024u && CE_WaterReflectionAllocatedRes() == 1024, "water allocated 1024");
-        Check(CeDynamicShadowActiveRes() == 256u && CE_DynamicShadowAllocatedRes() == 256, "shadow allocated 256");
-        Check(Near(CeWaterReflectionTapOffset(), 1.0f / 512.0f), "1024px water tap offset is 2/1024");
+        CeWaterReflectionSetAllocatedRes(512u, 512u);
+        CeDynamicShadowSetAllocatedRes(128u, 128u);
+        Check(CeWaterReflectionActiveRes() == 512u && CE_WaterReflectionAllocatedRes() == 512, "water allocated 512");
+        Check(CeDynamicShadowActiveRes() == 128u && CE_DynamicShadowAllocatedRes() == 128, "shadow allocated 128");
+        Check(Near(CeWaterReflectionTapOffset(), 1.0f / 256.0f), "512px water tap offset is 2/512");
         Check(Near(CeDynamicShadowTapOffset1(256), 1.0f / 256.0f), "256px shadow tap1 is 1/256");
         Check(Near(CeDynamicShadowTapOffset3(256), 1.0f / 768.0f), "256px shadow tap3 is 1/768");
         Check(Near(CeDynamicShadowTapOffset1(64), 1.0f / 64.0f), "64px shadow tap1 matches retail 1/64");
@@ -81,9 +81,11 @@ int main(int argc, char **argv) {
         Check(Near(CeDynamicShadowTapOffset1(128), 1.0f / 128.0f), "128px shadow tap1 is 1/128");
         Check(Near(CeDynamicShadowTapOffset3(128), 1.0f / 384.0f), "128px shadow tap3 is 1/384");
     } else if (mode == "garbage") {
-        Check(CE_WaterReflectionResChoice() == 1024, "invalid water setting falls back to 1024");
-        Check(CE_DynamicShadowResChoice() == 256, "invalid shadow setting falls back to 256");
+        Check(CE_WaterReflectionResChoice() == 512, "invalid water setting falls back to 512");
+        Check(CE_DynamicShadowResChoice() == 128, "invalid shadow setting falls back to 128");
     } else if (mode == "switch") {
+        CE_WaterReflectionRequest(1024);
+        CE_DynamicShadowRequest(256);
         CeWaterReflectionBeginFrame();
         CeDynamicShadowBeginFrame();
         CeWaterReflectionSetAllocatedRes(1024u, 1024u);
@@ -109,6 +111,8 @@ int main(int argc, char **argv) {
         CeDynamicShadowResetAllocated();
         Check(CE_WaterReflectionAllocatedRes() == 0 && CE_DynamicShadowAllocatedRes() == 0, "reset clears allocated res");
     } else if (mode == "caps") {
+        CE_WaterReflectionRequest(1024);
+        CE_DynamicShadowRequest(256);
         CeRenderTargetQualitySetHardwareCaps(2048u, 512u);
         Check(CeRenderTargetQualityHardwareMaxDim() == 512u, "min(W, H) clamps asymmetric GPU caps");
         CeWaterReflectionBeginFrame();
@@ -806,7 +810,7 @@ class GraphicsR2Tests(unittest.TestCase):
         drv = self.dir / "landscape_rollback_driver.cpp"
         drv.write_text(LANDSCAPE_ROLLBACK_DRIVER)
         exe = self.compile_one("landscape-rollback", COMMON / "reflection_quality.cpp", public=True, driver=drv)
-        self.assert_pass("", binary=exe)
+        self.assert_pass("", binary=exe, ini="water_reflection_res=1024\n")
 
     def test_0367_mirror_restore_zero_res_guards_and_balanced_braces(self):
         sys.path.insert(0, str(PORT))
@@ -838,7 +842,7 @@ class GraphicsR2Tests(unittest.TestCase):
         drv = self.dir / "landscape_restore_driver.cpp"
         drv.write_text(LANDSCAPE_RESTORE_DRIVER)
         exe = self.compile_one("landscape-restore", COMMON / "reflection_quality.cpp", public=True, driver=drv)
-        self.assert_pass("", binary=exe)
+        self.assert_pass("", binary=exe, ini="water_reflection_res=1024\n")
 
         for label, old, new in (
             ("restore-calls-init",
@@ -867,7 +871,7 @@ class GraphicsR2Tests(unittest.TestCase):
                 ]
                 built = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
                 self.assertEqual(built.returncode, 0, built.stderr)
-                ran = self.run_case("", binary=mdir / "exe")
+                ran = self.run_case("", binary=mdir / "exe", ini="water_reflection_res=1024\n")
                 self.assertEqual(ran.returncode, 1, f"mutant {label} was NOT caught")
                 self.assertIn("restore assertion:", ran.stderr)
 
@@ -879,7 +883,7 @@ class GraphicsR2Tests(unittest.TestCase):
         rinfo_txt = extra_texts["renderinfo.cpp"]
         self.assertIn("ENGINE.GetLandscape()->mMirrorTexture && ENGINE.GetLandscape()->mDepthSurface", game_txt)
         self.assertIn("CeWaterReflectionActiveRes() > 0u", game_txt)
-        self.assertIn("FORCE_OBJECT_IMPOSTERS = (CeWaterReflectionActiveRes() <= 256u);", game_txt)
+        self.assertIn("FORCE_OBJECT_IMPOSTERS = (CeWaterReflectionActiveRes() <= 512u);", game_txt)
         self.assertIn("const unsigned ceMirrorDim = CeWaterReflectionActiveRes() > 0u ? CeWaterReflectionActiveRes() : 256u;", game_txt)
         self.assertIn("ceWaterRes > 0u && ceWaterRes != 256u", water_txt)
         self.assertIn("const float ceDistort = 0.08f * (256.0f / static_cast<float>(ceWaterRes));", water_txt)
@@ -932,7 +936,7 @@ class GraphicsR2Tests(unittest.TestCase):
         drv = self.dir / "shadow_lifecycle_driver.cpp"
         drv.write_text(SHADOW_LIFECYCLE_DRIVER)
         exe = self.compile_one("shadow-lifecycle", COMMON / "reflection_quality.cpp", public=True, driver=drv)
-        self.assert_pass("", binary=exe)
+        self.assert_pass("", binary=exe, ini="dynamic_shadow_res=256\n")
 
         for label, old, new in (
             ("init-keeps-stale-num-textures",
@@ -965,7 +969,7 @@ class GraphicsR2Tests(unittest.TestCase):
                 ]
                 built = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
                 self.assertEqual(built.returncode, 0, built.stderr)
-                ran = self.run_case("", binary=mdir / "exe")
+                ran = self.run_case("", binary=mdir / "exe", ini="dynamic_shadow_res=256\n")
                 self.assertEqual(ran.returncode, 1, f"mutant {label} was NOT caught")
                 self.assertIn("shadow assertion:", ran.stderr)
 
@@ -979,18 +983,19 @@ class GraphicsR2Tests(unittest.TestCase):
 
     def test_patches_0367_and_0368_leave_faithful_build_unchanged(self):
         hook_sites = tuple(sorted(p.name for p in (ROOT / "port/patches").glob("03[01][0-9]-ce-hook-*.patch")))
+        later = ("0381-ce-perf-surf-museum-fixes.patch", *hook_sites)
         with tempfile.TemporaryDirectory(prefix="r2-patch-") as td:
             base = Path(td)
             files_367 = ("DXEngine.cpp", "DXLandscape.cpp", "DXWater.cpp", "State.cpp", "game.cpp", "renderinfo.cpp")
-            with_367 = patched(base / "with367", files_367, skip=hook_sites)
-            without_367 = patched(base / "without367", files_367, skip=("0367-ce-water-reflection-res.patch", *hook_sites))
+            with_367 = patched(base / "with367", files_367, skip=later)
+            without_367 = patched(base / "without367", files_367, skip=("0367-ce-water-reflection-res.patch", *later))
             for name in files_367:
                 with self.subTest(patch="0367", file=name):
                     self.assertNotEqual(with_367[name], without_367[name])
                     self.assertEqual(faithful(with_367[name]), faithful(without_367[name]))
             files_368 = ("shadows.h", "DXShadows.cpp", "game.cpp")
-            with_368 = patched(base / "with368", files_368, skip=hook_sites)
-            without_368 = patched(base / "without368", files_368, skip=("0368-ce-dynamic-shadow-res.patch", *hook_sites))
+            with_368 = patched(base / "with368", files_368, skip=later)
+            without_368 = patched(base / "without368", files_368, skip=("0368-ce-dynamic-shadow-res.patch", *later))
             for name in files_368:
                 with self.subTest(patch="0368", file=name):
                     self.assertNotEqual(with_368[name], without_368[name])

@@ -42,6 +42,7 @@ Shape shapes[3];
 bool shaped = false;     // the original pools were usable and the reserve fits its budget
 bool attempted = false;  // a preparation attempt has run and not been renewed by a new request
 bool prepared = false;   // every reserved buffer was created
+bool poolUsableCached = false; // cached full-pool mVB verification; invalidated on Prepare/Shutdown or first-slot device loss
 unsigned prepareAttempts = 0;  // attempts of this initialisation, for the diagnostic fault
 
 void Destroy(ReservePool &pool)
@@ -162,6 +163,7 @@ void Prepare()
         objects += count;
     }
     prepared = valid;
+    poolUsableCached = false;
     if (!valid) DestroyPools();
     const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
         std::chrono::steady_clock::now() - started).count();
@@ -184,16 +186,22 @@ bool Usable()
     if (attempted && !prepared && CeTerrainQualityFreshRequest()) attempted = false;
     if (!attempted) Prepare();
     if (!prepared) return false;
+    if (poolUsableCached) {
+        for (const ReservePool &pool : pools)
+            if (pool.count && !pool.buffers[0].mVB) { poolUsableCached = false; break; }
+        if (poolUsableCached) return true;
+    }
     for (const ReservePool &pool : pools)
         for (std::size_t i = 0; i < pool.count; ++i)
             if (!pool.buffers[i].mVB) return false;
+    poolUsableCached = true;
     return true;
 }
 }
 
 void CeTerrainReserveShutdown()
 {
-    prepared = attempted = shaped = false;
+    prepared = attempted = shaped = poolUsableCached = false;
     prepareAttempts = 0;
     for (Shape &shape : shapes) shape = Shape{};
     CeTerrainQualityResourceCheck(nullptr);

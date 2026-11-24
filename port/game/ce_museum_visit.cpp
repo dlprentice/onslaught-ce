@@ -329,7 +329,15 @@ extern "C" bool PortCeMuseumVisitAfterLoad(void) {
 #endif
     gVisit.loaded = true; return true;
 }
-extern "C" void PortCeMuseumVisitLevelEnd(void) { if (gVisit.active) gVisit.ended = true; }
+extern "C" void PortCeMuseumVisitLevelEnd(void) {
+    const bool wasActive = gVisit.active;
+    if (gVisit.active) gVisit.ended = true;
+#if defined(CE_VERSION) && !defined(CE_MUSEUM_VISIT_HOST_FIXTURE)
+    if (wasActive) CeMuseumVisit::ReleaseRuntimeResources();
+#else
+    (void)wasActive;
+#endif
+}
 
 extern "C" bool PortCeMuseumVisitLoadRefused(void) {
     if (!gVisit.active) return false;

@@ -27,6 +27,8 @@
 #include <string.h>
 
 extern "C" unsigned long long CE_ScreenshotTicks(void);		// ce_screenshot.cpp: SDL's milliseconds
+extern "C" float PortCeLivingSandboxHudTopBottom(float viewportW, float viewportH) __attribute__((weak));
+extern "C" float PortCeCarrierClashHudTopBottom(float viewportW, float viewportH) __attribute__((weak));
 
 namespace
 {
@@ -92,6 +94,22 @@ float HudScale(float w, float h)
 	CeHudScope scope(1, w, h, 0.f, 0.f);
 	const float s = CeHudScaleActive() ? CeHudScaleFactor() : 1.f;
 	return s > 0.f ? s : 1.f;
+}
+
+float ModeTopHudBottom(float w, float h)
+{
+	float bottom = 0.f;
+	if (PortCeLivingSandboxHudTopBottom)
+	{
+		const float sb = PortCeLivingSandboxHudTopBottom(w, h);
+		if (sb > bottom) bottom = sb;
+	}
+	if (PortCeCarrierClashHudTopBottom)
+	{
+		const float cc = PortCeCarrierClashHudTopBottom(w, h);
+		if (cc > bottom) bottom = cc;
+	}
+	return bottom;
 }
 
 // The text as the face can draw it: a character it lacks is shown as a dash.
@@ -162,33 +180,78 @@ struct CeHudQuadVertex
 	DWORD color;
 };
 
+struct CeHudTriBatch
+{
+	static const int kMaxVerts = 3072;
+	CeHudQuadVertex verts[kMaxVerts];
+	int count;
+	bool active;
+
+	void Begin()
+	{
+		count = 0;
+		active = true;
+	}
+
+	void Flush(LPDIRECT3DDEVICE9 dev)
+	{
+		if (count >= 3 && dev)
+			dev->DrawPrimitiveUP(D3DPT_TRIANGLELIST, count / 3, verts, sizeof(CeHudQuadVertex));
+		count = 0;
+	}
+
+	void AddTri(LPDIRECT3DDEVICE9 dev, const CeHudQuadVertex &a, const CeHudQuadVertex &b, const CeHudQuadVertex &c)
+	{
+		if (count + 3 > kMaxVerts) Flush(dev);
+		verts[count++] = a;
+		verts[count++] = b;
+		verts[count++] = c;
+	}
+
+	void AddFan(LPDIRECT3DDEVICE9 dev, const CeHudQuadVertex *fan, int n)
+	{
+		for (int i = 1; i + 1 < n; ++i)
+			AddTri(dev, fan[0], fan[i], fan[i + 1]);
+	}
+
+	void AddStrip(LPDIRECT3DDEVICE9 dev, const CeHudQuadVertex *strip, int n)
+	{
+		for (int i = 0; i + 2 < n; ++i)
+			AddTri(dev, strip[i], strip[i + 1], strip[i + 2]);
+	}
+
+	void AddRect(LPDIRECT3DDEVICE9 dev, float x, float y, float w, float h, unsigned colour)
+	{
+		if (w <= 0.f || h <= 0.f) return;
+		const CeHudQuadVertex v0 = {x,     y,     0.005f, 1.f, colour};
+		const CeHudQuadVertex v1 = {x + w, y,     0.005f, 1.f, colour};
+		const CeHudQuadVertex v2 = {x,     y + h, 0.005f, 1.f, colour};
+		const CeHudQuadVertex v3 = {x + w, y + h, 0.005f, 1.f, colour};
+		AddTri(dev, v0, v1, v2);
+		AddTri(dev, v1, v3, v2);
+	}
+};
+
+CeHudTriBatch gHudBatch = {};
+
+void BeginHudUntextured();
+void EndHudUntextured();
+
 void HudFillRect(float x, float y, float w, float h, unsigned colour)
 {
 	if (w <= 0.f || h <= 0.f) return;
 	LPDIRECT3DDEVICE9 dev = LT.GetDevice();
 	if (!dev) return;
-	const CeHudQuadVertex v[4] = {
-		{x,     y,     0.005f, 1.f, colour},
-		{x + w, y,     0.005f, 1.f, colour},
-		{x,     y + h, 0.005f, 1.f, colour},
-		{x + w, y + h, 0.005f, 1.f, colour},
-	};
-	LT.STS(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
-	LT.STS(0, D3DTSS_COLORARG1, D3DTA_DIFFUSE);
-	LT.STS(0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
-	LT.STS(0, D3DTSS_ALPHAARG1, D3DTA_DIFFUSE);
-	LT.SRS(D3DRS_LIGHTING, FALSE);
-	LT.SRS(D3DRS_ALPHABLENDENABLE, TRUE);
-	LT.SRS(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
-	LT.SRS(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
-	LT.SRS(D3DRS_ZENABLE, FALSE);
-	LT.SRS(D3DRS_CULLMODE, D3DCULL_NONE);
-	LT.SetFVF(D3DFVF_XYZRHW | D3DFVF_DIFFUSE);
-	dev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(CeHudQuadVertex));
-	LT.STS(0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
-	LT.STS(0, D3DTSS_COLOROP, D3DTOP_MODULATE);
-	LT.STS(0, D3DTSS_ALPHAARG1, D3DTA_TEXTURE);
-	LT.STS(0, D3DTSS_ALPHAOP, D3DTOP_MODULATE);
+	if (gHudBatch.active)
+	{
+		gHudBatch.AddRect(dev, x, y, w, h, colour);
+		return;
+	}
+	BeginHudUntextured();
+	CeHudTriBatch single = {};
+	single.AddRect(dev, x, y, w, h, colour);
+	single.Flush(dev);
+	EndHudUntextured();
 }
 
 void DrawHudLineText(CDXBitmapFont *font, float x, float y, unsigned colour, const char *ascii, float s, float maxW)
@@ -244,7 +307,7 @@ void EndHudUntextured()
 	LT.STS(0, D3DTSS_ALPHAOP, D3DTOP_MODULATE);
 }
 
-void DrawNineSliceGlassFill(LPDIRECT3DDEVICE9 dev, const CePlayUnitNineSlice &ns,
+void DrawNineSliceGlassFill(LPDIRECT3DDEVICE9 dev, CeHudTriBatch &batch, const CePlayUnitNineSlice &ns,
                             unsigned topCol, unsigned botCol)
 {
 	const int kSegs = 8;
@@ -274,10 +337,10 @@ void DrawNineSliceGlassFill(LPDIRECT3DDEVICE9 dev, const CePlayUnitNineSlice &ns
 	for (int k = kSegs; k >= 0; --k) emit(tlx[k], 2.f * cy - tly[k]);
 	fan[n++] = fan[1];
 
-	dev->DrawPrimitiveUP(D3DPT_TRIANGLEFAN, n - 2, fan, sizeof(CeHudQuadVertex));
+	batch.AddFan(dev, fan, n);
 }
 
-void DrawNineSliceBracketSide(LPDIRECT3DDEVICE9 dev, const CePlayUnitNineSlice &ns,
+void DrawNineSliceBracketSide(LPDIRECT3DDEVICE9 dev, CeHudTriBatch &batch, const CePlayUnitNineSlice &ns,
                               bool mirrorRight, float halfW, unsigned col)
 {
 	const int kSegs = 8;
@@ -333,7 +396,7 @@ void DrawNineSliceBracketSide(LPDIRECT3DDEVICE9 dev, const CePlayUnitNineSlice &
 		strip[i * 2 + 0] = {ox, oy, 0.008f, 1.f, col};
 		strip[i * 2 + 1] = {ix, iy, 0.008f, 1.f, col};
 	}
-	dev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, (count - 1) * 2, strip, sizeof(CeHudQuadVertex));
+	batch.AddStrip(dev, strip, count * 2);
 }
 
 // True 9-slice mirrored holographic capsule bracket drawer: fixed-radius circular corner arcs
@@ -361,26 +424,36 @@ void DrawNineSliceCapsuleArt(float x0, float y0, float totalW, float height, flo
 		return (a << 24) | (col & 0x00ffffffu);
 	};
 
-	OverlayStates();
-	BeginHudUntextured();
+	const bool ownBatch = !gHudBatch.active;
+	if (ownBatch)
+	{
+		OverlayStates();
+		BeginHudUntextured();
+		gHudBatch.Begin();
+	}
 	if (open >= 0.99f)
 	{
 		const unsigned accent = isForseti ? 0x003ce4ffu : 0x00f04e1au;
 		const unsigned topCol = LerpArgb(glassFill, (glassFill & 0xff000000u) | accent, 0.08f);
-		DrawNineSliceGlassFill(dev, ns, topCol, glassFill);
+		DrawNineSliceGlassFill(dev, gHudBatch, ns, topCol, glassFill);
 	}
 	const unsigned haloCol = fadeA((isForseti ? 0x4c28d4ffu : 0x4cff4414u));
 	const unsigned bodyCol = fadeA((isForseti ? 0xf23ce4ffu : 0xf2f04e1au));
 	const unsigned coreCol = fadeA((isForseti ? 0xffccf8ffu : 0xffffc464u));
 	const float coreHalf = ns.strokeWidth * 0.5f;
-	DrawNineSliceBracketSide(dev, ns, false, coreHalf + ns.glowPad, haloCol);
-	DrawNineSliceBracketSide(dev, ns, true,  coreHalf + ns.glowPad, haloCol);
-	DrawNineSliceBracketSide(dev, ns, false, coreHalf, bodyCol);
-	DrawNineSliceBracketSide(dev, ns, true,  coreHalf, bodyCol);
-	DrawNineSliceBracketSide(dev, ns, false, coreHalf * 0.44f, coreCol);
-	DrawNineSliceBracketSide(dev, ns, true,  coreHalf * 0.44f, coreCol);
-	EndHudUntextured();
-	OverlayStates();
+	DrawNineSliceBracketSide(dev, gHudBatch, ns, false, coreHalf + ns.glowPad, haloCol);
+	DrawNineSliceBracketSide(dev, gHudBatch, ns, true,  coreHalf + ns.glowPad, haloCol);
+	DrawNineSliceBracketSide(dev, gHudBatch, ns, false, coreHalf, bodyCol);
+	DrawNineSliceBracketSide(dev, gHudBatch, ns, true,  coreHalf, bodyCol);
+	DrawNineSliceBracketSide(dev, gHudBatch, ns, false, coreHalf * 0.44f, coreCol);
+	DrawNineSliceBracketSide(dev, gHudBatch, ns, true,  coreHalf * 0.44f, coreCol);
+	if (ownBatch)
+	{
+		gHudBatch.Flush(dev);
+		gHudBatch.active = false;
+		EndHudUntextured();
+		OverlayStates();
+	}
 }
 
 float MeasureAsciiWidth(CDXBitmapFont *font, const char *ascii)
@@ -454,6 +527,8 @@ void ClassPanel(CDXBitmapFont *font, float w, float h)
 	const float cardR = floorf(14.f * s);
 
 	OverlayStates();
+	BeginHudUntextured();
+	gHudBatch.Begin();
 	// 1. Draw true 9-slice mirrored holographic capsule pod (fixed corner radius, straight rails, zero clipping).
 	{
 		const unsigned glassFill = muspell ? 0xd41a0b08u : 0xcc051220u;
@@ -571,6 +646,9 @@ void ClassPanel(CDXBitmapFont *font, float w, float h)
 		HudFillRect(textX - 2.f * s, row3Y - 1.f * s, textMaxW + 4.f * s, sh + 2.f * s, pillFill);
 		HudFillRect(textX - 2.f * s, row3Y - 1.f * s, textMaxW + 4.f * s, t, pillTrim);
 	}
+	gHudBatch.Flush(LT.GetDevice());
+	gHudBatch.active = false;
+	EndHudUntextured();
 
 	// 2. Draw ALL bitmap-font text after geometry so texture state stays pristine across every line.
 	WCHAR fwRaw[16], fwShown[16];
@@ -629,6 +707,11 @@ void Reticle(int fireState, CDXBitmapFont *font, float w, float h)
 	const unsigned crispTint = (colour & 0x00ffffffu) | 0xe8000000u;
 
 	OverlayStates();
+	if (kind == CE_PLAYUNIT_RETICLE_INFANTRY || kind == CE_PLAYUNIT_RETICLE_AIRCRAFT || kind == CE_PLAYUNIT_RETICLE_ARTILLERY)
+	{
+		BeginHudUntextured();
+		gHudBatch.Begin();
+	}
 	if (kind == CE_PLAYUNIT_RETICLE_INFANTRY)
 	{
 		// Compact 4-tick infantry crosshair well clear of the viewmodel and center target.
@@ -688,6 +771,12 @@ void Reticle(int fireState, CDXBitmapFont *font, float w, float h)
 	else if (HUD.mCrosshairPrimary)
 	{
 		CSPRITERENDERER::DrawSprite(cx, cy, 0.011f, HUD.mCrosshairPrimary, SA_CENTRE, SPT_NONE, 1.f, 0.f, tint, s * 0.78f, s * 0.78f, 0.f, 1.f, 0.f, 1.f);
+	}
+	if (gHudBatch.active)
+	{
+		gHudBatch.Flush(LT.GetDevice());
+		gHudBatch.active = false;
+		EndHudUntextured();
 	}
 	OverlayStates();
 	if (HUD.mCrosshairDot)
@@ -832,8 +921,18 @@ void Notice(CDXBitmapFont *font, float w, float h, bool hudShown)
 	const float s = HudScale(w, h);
 	const int lines = gLine[1][0] ? 2 : 1;
 	// the HUD keeps its corner groups at the screen's edges: the top capsule is placed from the top edge, the radio's from the bottom edge
-	const float cx = w * 0.5f, cy = hudShown ? kTopY * s : h - (480.f - kRadioY) * s;
+	const float cx = w * 0.5f;
+	float cy = hudShown ? kTopY * s : h - (480.f - kRadioY) * s;
 	const float height = hudShown ? (16.f + 15.f * float(lines)) * s : 60.f * s;
+	if (hudShown)
+	{
+		const float modeBottom = ModeTopHudBottom(w, h);
+		if (modeBottom > 0.f)
+		{
+			const float minCy = modeBottom + height * 0.5f + 6.f * s;
+			if (minCy > cy) cy = minCy;
+		}
+	}
 	Capsule(font, gLine[0], gLine[1][0] ? gLine[1] : NULL, kWhite, cx, cy, height, s, phase);
 }
 
@@ -916,6 +1015,15 @@ void Prompt(CDXBitmapFont *font, float w, float h, bool atTop)
 	const float sh = float(font->GetHeight());
 	const float height = (sh + 14.f > 30.f ? sh + 14.f : 30.f) * s;
 	float cy = atTop ? kTopY * s : h - (480.f - kPromptY) * s;
+	if (atTop)
+	{
+		const float modeBottom = ModeTopHudBottom(w, h);
+		if (modeBottom > 0.f)
+		{
+			const float minCy = modeBottom + height * 0.5f + 6.f * s;
+			if (minCy > cy) cy = minCy;
+		}
+	}
 	const float below = ObjectiveBottom(s);
 	const bool besideObjective = atTop && below > 0.f && (cy - height * 0.5f) < below;
 	const float screenWide = w / s - 64.f > 160.f ? w / s - 64.f : 160.f;
@@ -1001,8 +1109,9 @@ void CePlayUnitPrompt(const char *line)
 
 void CePlayUnitHudRender(bool reticle, int fireState, bool hudShown)
 {
-	const bool notice = gLine[0][0] && gAge < gShown;
-	const bool prompt = reticle && !notice && gPrompt[0];
+	const bool hideToasts = PortCePhotoSavedNext();
+	const bool notice = !hideToasts && gLine[0][0] && gAge < gShown;
+	const bool prompt = !hideToasts && reticle && !notice && gPrompt[0];
 	if (!reticle && !notice) return;
 	CDXBitmapFont *font = PLATFORM.Font(FONT_SMALL);
 	if (!font || font->GetHeight() <= 0) return;

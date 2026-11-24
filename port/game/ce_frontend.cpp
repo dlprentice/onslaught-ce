@@ -75,6 +75,8 @@ extern "C" bool PortCeMuseumVisitBegin(void);
 extern "C" int PortCeMuseumVisitLevel(void);
 extern "C" const char *PortCeMuseumVisitMessage(void);
 extern "C" bool PortCeMuseumVisitTakeNotice(const char **sentence);
+extern "C" void PortCeDodgeAssistRefresh(void) __attribute__((weak));
+extern "C" void PortCeMultiBeRefreshSettings(void) __attribute__((weak));
 
 #define CE_LINKS	"github.com/dlprentice/onslaught-ce"
 
@@ -910,13 +912,13 @@ static const SCeRow	kHubRows[] = {
 	{L"Help & Info", CEA_PAGE_HELP, {L"Controls and tips, what is coming, updates, about and thanks.", 0}},
 	{L"Report a Problem", CEA_REPORT, {L"Opens a problem report in your browser. Nothing is sent until you submit it.", 0}},
 	{L"Map Editor", CEA_PAGE_EDITOR, {L"Move a level's objects and play your changes.", 0}},
-	{L"Museum", CEA_PAGE_MUSEUM, {L"See machines, art and films.", L"Your career is not changed."}},
+	{L"Museum", CEA_PAGE_MUSEUM, {L"Walk-through exhibition: 45 3D models, 149 art plates, dioramas & cinema.", L"Your career is not changed."}},
 };
 
 // The Museum page (the hub's one museum row): a hall to walk in and the Goodies wall for a visitor. Each is a way into a visit that leaves the career as it
 // was; the page is reached only through its hub row, which is offered only with the museum switched on.
 static const SCeRow	kMuseumRows[] = {
-	{L"Units", CEA_MUSEUM_VISIT, {L"Walk among the game's machines.", L"Your career is not changed."}},
+	{L"Units", CEA_MUSEUM_VISIT, {L"Walk-through exhibition: all 45 3D models, 149 art plates, living tabletop dioramas & cinema.", L"Your career is not changed."}},
 	{L"Art and Movies", CEA_MUSEUM, {L"Pictures, models and movies from the game.", L"Your career is not changed."}},
 };
 static const int kMuseumRowCount = int(sizeof(kMuseumRows) / sizeof(kMuseumRows[0]));
@@ -965,7 +967,7 @@ static const SCeRow	kBonusRows[] = {
 	{L"Aquila Prototype", CEA_BONUS, {L"1 player. Interception, from the original's demo.", 0}},
 	{L"Building Defence", CEA_COOP, {L"2 players on this PC, in split screen.", 0}},
 	{L"Carrier Clash", CEA_CARRIER_CLASH, {L"1 player. Venturer vs. Fenrir over open seas.", 0}},
-	{L"Living Sandbox", CEA_LIVING_SANDBOX, {L"1 player. Endless combined-arms war and Citadel.", 0}},
+	{L"Living Sandbox", CEA_LIVING_SANDBOX, {L"1 player. Open 512m combined-arms war theater with Sanctuary Citadel, endless waves & Play Any Unit.", 0}},
 	{L"Race Challenge 1", CEA_RACE_FIRST + 0, {L"1 player. Three laps against the clock.", 0}},
 	{L"Race Challenge 2", CEA_RACE_FIRST + 1, {L"1 player. Three laps against the clock.", 0}},
 	{L"Race Challenge 3", CEA_RACE_FIRST + 2, {L"1 player. Three laps against the clock.", 0}},
@@ -1040,8 +1042,6 @@ static const SCeSetting	kSettings[] = {
 	 {L"Rumbles a gamepad when your Battle Engine is hit or shaken. Not flight sticks.", kNextStart}, CEAF_NONE, 0},
 	{L"Dodge Button:", "dodge_button", CE_CHOICES(kNoYes), 1,
 	 {L"Ground: hold Dodge and move. Pick a key in Controller Options.", kNextLevel}, CEAF_NONE, 0},
-	{L"Commander Map:", "commander", CE_CHOICES(kNoYes), 1,
-	 {L"Live squad view for solo play. Pick a key in Controller Options.", kNextStart}, CEAF_NONE, 0},
 	{L"Your Music:", "music_dir", NULL, 0, 0,
 	 {L"Your own music's folder. Select to see it.", kNextRead}, CEAF_NONE, 0},
 	{L"Music Order:", "music_playtype", CE_CHOICES(kMusicOrders), 0,
@@ -1065,41 +1065,43 @@ struct SCeLab
 	const char	*mKey;
 	SCeHint		mHint;
 	bool		mNeedsMods;
+	int			mDefault;
 };
 
 static const SCeLab	kLabs[] = {
 #ifndef CE_NETWORK_OFF
 	{L"Network Game:", "network_game",
-	 {L"Online and LAN co-op lobby, direct IP and relay.", 0}, false},
+	 {L"Online and LAN co-op lobby, direct IP and relay.", 0}, false, 1},
 #endif
 	{L"Commander Mode:", "commander",
-	 {L"Live squad view and orders in solo levels.", 0}, false},
+	 {L"Live squad view and orders in solo levels.", 0}, false, 1},
 	{L"Commander Map (V):", "commander_tactical_map",
-	 {L"Paused 2D tactical map inside Commander view.", 0}, false},
+	 {L"Paused 2D tactical map inside Commander view.", 0}, false, 1},
 	{L"Play Any Unit:", "play_unit",
-	 {L"Pilot any friendly unit in solo levels.", 0}, false},
+	 {L"Pilot any friendly unit in solo levels.", 0}, false, 1},
 	{L"Grand Museum:", "museum",
-	 {L"Adds the Museum for units, art and films.", 0}, false},
+	 {L"Walk-through exhibition: 45 3D models, 149 art plates, dioramas & cinema.", 0}, false, 1},
 	{L"Map Editor:", "map_editor",
-	 {L"Adds the Map Editor to edit and play maps.", 0}, false},
+	 {L"Adds the Map Editor to edit and play maps.", 0}, false, 1},
 	{L"Mods Menu:", "mods_menu",
-	 {L"Adds the Mods page to manage your mods.", 0}, true},
+	 {L"Adds the Mods page to manage your mods.", 0}, true, 1},
 	{L"Solo Skirmish:", "solo_skirmish",
-	 {L"Default skirmish mode to 1P vs AI instead of split screen.", 0}, false},
+	 {L"1P vs AI instead of 2P split screen.", 0}, false, 0},
 	{L"Extras:", "extras",
-	 {L"Service record, music player, lore and career backups.", 0}, false},
+	 {L"Service record, music, lore and backups.", 0}, false, 1},
 	{L"Catalogue:", "catalogue",
-	 {L"Browse installed models, textures and sounds.", 0}, false},
+	 {L"Browse installed models, textures and sounds.", 0}, false, 1},
 };
 #define CE_NUM_LABS	int(sizeof(kLabs) / sizeof(kLabs[0]))
-static WCHAR		kLabsNote[] = L"All CE features start On - changes apply on next restart.";
+static WCHAR		kLabsNote[] = L"Changes apply on next restart (Solo Skirmish starts Off).";
 
 // Where the lists are centred: MenuOptionsList.cpp's Render centres its items of 20 pixels on y, so with n of them (Back among them)
 // the first is at y - 10n - 15 and Back, the last, at y + 10n - 35, and Back draws the hint from 28 pixels below its top. The title
-// bar ends near 104 and the help bar starts at 455 (the hints end by 449). The pages of up to ten items are centred on 300, as before;
-// the hub, which can hold up to thirteen items with every optional and experimental row on, on 275; CE Settings, with fourteen, on 260,
-// which puts its first row at 105 and leaves room for a hint of three lines under Back (the white lines and the grey one: three end at 441).
-static const float		kCeListY = 300.f, kCeSettingsY = 260.f, kCeHubY = 275.f;
+// bar ends near 104 and the help bar starts at 455 (the hints end by 449). The pages of up to ten items are centred on 285 so even
+// three-line hints clear a standing footer note; the hub, which can hold up to thirteen items with every optional and experimental row
+// on, on 275; CE Settings, with fourteen, on 260, which puts its first row at 105 and leaves room for a hint of three lines under Back
+// (the white lines and the grey one: three end at 441).
+static const float		kCeListY = 285.f, kCeSettingsY = 260.f, kCeHubY = 275.f;
 
 static const SCeRow	kHelpRows[] = {
 	{L"Controls & Tips", CEA_TIPS, {L"Dodge, zoom, Photo Mode, screenshots, the console, the free camera and the commander view.", 0}},
@@ -1127,6 +1129,8 @@ static const char kTipsRest[] =
 // map, which is now V inside the view). (The Commander Map row of CE Settings is listed under the same condition.)
 static const char kControlsTipsCommander[] = "\n%s: commander view, the battle runs on.";
 static const char kControlsTipsCommanderMap[] = "\n%s: commander view, the battle runs on. V: map.";
+static const char kControlsTipsPlayUnit[] = "\n%s: Play Any Unit (aim at an ally).";
+static const char kControlsTipsMuseumSprint[] = "\nGrand Museum: hold Shift to sprint.";
 
 // Whether a connected gamepad can use the Dodge Button now: a gamepad, not a flight stick, with button B bound to no control
 // (PortCeDodgeAssistPadFree). An empty slot is no gamepad (PortCeTutorialPadInfo answers 0 for it).
@@ -1167,7 +1171,11 @@ static void	ControlsTips(char *out, int n, bool commander)
 		const bool map = CE_SettingGetBool("commander_tactical_map", 1) == 1;
 		snprintf(commanderLine, sizeof(commanderLine), map ? kControlsTipsCommanderMap : kControlsTipsCommander, PortCeActionName(CeControlAction::Commander));
 	}
-	const char *sections[]={dodge,gesture,kTipsRest,commanderLine};
+	char playUnitLine[128] = {};
+	if (PortCeExperimental("play_unit") && !PortCeActionConflict(CeControlAction::TakeUnit, PortCeActionKey(CeControlAction::TakeUnit)))
+		snprintf(playUnitLine, sizeof(playUnitLine), kControlsTipsPlayUnit, PortCeActionName(CeControlAction::TakeUnit));
+	const char *museumLine = PortCeExperimental("museum") ? kControlsTipsMuseumSprint : "";
+	const char *sections[]={dodge,gesture,kTipsRest,commanderLine,playUnitLine,museumLine};
     size_t used=0;
     for(const char *part:sections) {
         size_t len=strlen(part);
@@ -1186,16 +1194,15 @@ static const SCePlan kCePlans[] = {
 	{L"Campaign Co-Op", "Playing the campaign together online is planned and not available yet. For two players on one PC, Building "
 	 "Defence is in Onslaught CE > Bonus Levels, and the original's Co-Op Mode is in Multiplayer on the Main Menu."},
 #else
-	{L"Online Play", "Host and Join (Onslaught CE > Network Game) plays the building defence or the tutorial with one other player. It is "
-	 "experimental and has not been tested across the Internet. Versus, skirmish, matchmaking and larger matches are not available. For "
-	 "two players on one PC, use Multiplayer on the Main Menu."},
-	{L"Campaign Co-Op", "Playing the campaign together online is not available yet. Network game offers the building defence and the "
-	 "tutorial; local co-op bonus levels are on the Onslaught CE page."},
+	{L"Online Play", "Multiplayer > Online Play connects 2 to 4 players in Co-Op or Versus across Windows and Linux via rooms, relay or "
+	 "direct IP. For local play on one PC, use Multiplayer on the Main\xa0Menu."},
+	{L"Campaign Co-Op", "Full campaign co-op online is planned. Online Play supports Co-Op and Versus multiplayer maps for 2 to 4 players, "
+	 "and local bonus levels are on the Onslaught CE\xa0page."},
 #endif
 	{L"Mods", "The Mods page (Onslaught CE > Mods) lists the mods in your mods folder. Turn each on or off and put them in "
 	 "order there; a change applies the next time you start the game. A mod can replace game files such as textures or change a level, "
-	 "and each mod file is checked at start. Mods are off in recordings, replays and network games, and on Windows for "
-	 "now. Online Battle Engine customization is not available."},
+	 "and each mod file is checked at start. Mods are off in recordings, replays and network games. Online Battle Engine "
+	 "customization is not available."},
 	{L"Map and Mission Tools", "The experimental native Map Editor opens installed scenes inside CE. Select a supported map, "
      "move named placements, undo changes and save or open a CE project. Terrain shaping, new object creation and mission-script editing "
      "are still being developed. Saved projects refer to your installed game resources; no original map data is overwritten."},
@@ -1244,8 +1251,8 @@ static const SCeHint	kPlanHints[CE_NUM_PLANS] = {
 	{L"In development. Not available yet.", 0},
 	{L"Planned. Not available yet.", 0},
 #else
-	{L"Experimental Host and Join for two players.", 0},
-	{L"The tutorial is experimental. Campaign co-op is planned.", 0},
+	{L"Online Co-Op and Versus for 2 to 4 players in Multiplayer.", 0},
+	{L"Co-Op maps work online. Full campaign co-op is planned.", 0},
 #endif
 	{L"Mods are on the Mods page. Battle Engine customization is an idea.", 0},
 	{L"Experimental Map Editor inside CE; mission tools remain planned.", 0},
@@ -1262,9 +1269,9 @@ static const SCeHint	kPlanHints[CE_NUM_PLANS] = {
 static const WCHAR	kControlsHintPlain[] = L"Dodge, zoom, Photo Mode, screenshots, the console and the free camera.";
 enum { CEPL_MODS = 2, CEPL_TOOLS = 3, CEPL_GODOT = 8 };
 // The mods entry where the Mods page is not offered (its ce.ini line is off, or the build cannot load a mod): no page is described.
-static const char	kPlanModsPlain[] = "Mods are experimental and work on Linux only in this version. Turn on the Mods page in ce.ini, as described in "
-									   "the README under Mods. Windows support is planned.";
-static const WCHAR	kPlanModsPlainHint[] = L"Available on Linux (see the README). Windows support is planned.";
+static const char	kPlanModsPlain[] = "Mods are experimental and work on Linux and Windows in this version. Turn on the Mods page in Experimental "
+									   "Features or ce.ini, as described in the README under Mods.";
+static const WCHAR	kPlanModsPlainHint[] = L"Available on Linux and Windows (see the README under Mods).";
 struct SCePlanPlain { int mIndex; const char *mMode; const char *mText; const WCHAR *mHint; };
 static const SCePlanPlain kPlanPlain[] = {
 	{CEPL_TOOLS, "map_editor", "A map and mission editor is in development. This version does not offer it.",
@@ -1448,6 +1455,8 @@ public:
 			return;
 		}
 		mIndex = choice;
+		if (!strcmp(mSetting->mKey, "dodge_button") && PortCeDodgeAssistRefresh)
+			PortCeDodgeAssistRefresh();
 		if (mSetting->mAfter == CEAF_HUD)
 			CeHudSettingsReload();
 		else if (mSetting->mAfter == CEAF_RECORD)
@@ -1546,11 +1555,13 @@ public:
 			return;
 		}
 		mIndex = value;
+		if (!strcmp(mLab->mKey, "solo_skirmish") && PortCeMultiBeRefreshSettings)
+			PortCeMultiBeRefreshSettings();
 	}
 
 	int		Lookup()
 	{
-		return CE_SettingGetBool(mLab->mKey, 1) == 1 ? 1 : 0;
+		return CE_SettingGetBool(mLab->mKey, mLab->mDefault) == 1 ? 1 : 0;
 	}
 	virtual void	Render(float x, float y, BOOL selected)
 	{
@@ -1629,12 +1640,11 @@ public:
 		}
 		AddPage(CEP_HUB, mHubRows, mHubCount, NULL, kCeHubY);
 		AddPage(CEP_BONUS, kBonusRows, CE_NUM_BONUS, kBonusNote);
-		// CE Settings is its table, a row each (kSettings; the Commander Map row only with commander on), centred higher than
-		// the other pages for its fourteen items.
+		// CE Settings is its table, a row each (kSettings), centred higher than
+		// the other pages for its items.
 		mSettingCount = 0;
 		for (const SCeSetting &setting : kSettings)
-			if (commander || strcmp(setting.mKey, "commander"))
-				mSettings[mSettingCount++] = setting;
+			mSettings[mSettingCount++] = setting;
 		CMenuOptionsList *list = NewList(CEP_SETTINGS, kCeSettingsY);
 		for (int i = 0; i < mSettingCount; i++)
 		{
@@ -2086,7 +2096,7 @@ public:
 			break;
 		case CEA_TIPS:
 		{
-			char tips[512];
+			char tips[640];
 			ControlsTips(tips, sizeof(tips), PortCeExperimental("commander"));
 			ShowMessage(tips);
 			mBoxTitle = CEBT_TIPS;
@@ -2532,6 +2542,17 @@ CMenuOptionsList	*PortCeFrontendRows()
 {
 	CCeMenu *menu = sCePage.mMenu;
 	return menu && menu->mPage >= 0 && menu->mPage < menu->mLists.Size() ? menu->mLists.At(menu->mPage) : NULL;
+}
+
+// Whether Main Menu -> Multiplayer (FEP_MULTIPLAYER) offers the Play Online entry bar (patch 0382):
+// matches OnlineOffered() in ce_online_ui.cpp when network support is compiled in, and false otherwise.
+extern "C" bool PortCeMpOnlineOffered(void)
+{
+#ifndef CE_NETWORK_OFF
+	return PortCeNetOffered() && (CE_SettingGetBool("network_game", 1) == 1);
+#else
+	return false;
+#endif
 }
 
 #endif

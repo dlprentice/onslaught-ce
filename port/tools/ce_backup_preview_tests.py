@@ -45,4 +45,11 @@ for name,protectedRoot in [('user',user),('game',game),('package',package)]:veri
 catalog=job/'catalog';catalog.mkdir();newest='onslaught-backup-20261113-131212';older='onslaught-backup-20261113-131211';shutil.copytree(good,catalog/newest);shutil.copytree(good,catalog/older);shutil.copytree(good,catalog/'unrelated');(catalog/'onslaught-backup-linked').symlink_to(good,target_is_directory=True);(catalog/'onslaught-backup-pending').mkdir();(catalog/'onslaught-backup-incomplete').mkdir();(catalog/'onslaught-backup-incomplete/onslaught-backup.json').symlink_to(good/'onslaught-backup.json')
 for title,folder,n,first in [('newest first; links and incomplete sets excluded',catalog,2,newest),('missing configured folder',job/'missing',-1,''),('protected configured folder',user,-1,'')]:
  rc=subprocess.run([str(exe),str(folder),str(user),str(game),str(package),'list',str(n),first],capture_output=True).returncode;report.append((title,rc==0));assert rc==0,(title,rc)
+anc_real=job/'anc_real';anc_real.mkdir();anc_link=job/'anc_link';anc_link.symlink_to(anc_real,target_is_directory=True)
+for sub in ('user','game','package'):(anc_real/sub).mkdir()
+(anc_real/'user/savegames').mkdir();(anc_real/'game/savegames').mkdir()
+(anc_real/'user/savegames/Backup Copy.bes').write_bytes(b'installed untouched');(anc_real/'game/savegames/BACKUP COPY 2.BES').write_bytes(b'original untouched')
+lu,lg,lp=anc_link/'user',anc_link/'game',anc_link/'package'
+rc=subprocess.run([str(exe),str(good),str(lu),str(lg),str(lp),alpha,'Backup Copy 3.bes','1'],capture_output=True).returncode;report.append(('symlinked ancestors on read',rc==0));assert rc==0,('symlinked ancestors on read',rc)
+rc=subprocess.run([str(exe),str(catalog),str(lu),str(lg),str(lp),'list','2',newest],capture_output=True).returncode;report.append(('symlinked ancestors on list',rc==0));assert rc==0,('symlinked ancestors on list',rc)
 assert protected==[members(q) for q in (user,game,package)];(job/'result.json').write_text(json.dumps({'checks':report,'protected_files_unchanged':True,'source_sha256':hashit(source.read_bytes())},indent=2)+'\n');print(f'{len(report)} preview cases passed; protected careers and settings unchanged. {job.name}')

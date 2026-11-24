@@ -34,7 +34,7 @@ namespace ce_command_panel {
 
 constexpr int kMaxEntities = 1024;     // entities kept from one snapshot
 constexpr int kMaxSelection = 64;      // keys in the selection or a saved set
-constexpr int kMaxSavedSets = 8;       // saved selection slots
+constexpr int kMaxSavedSets = 10;      // saved selection slots (1..9, 0)
 constexpr int kMaxReservations = 4;    // host rectangles the panel must avoid
 constexpr int kNameCapacity = 32;      // bytes, including the terminator
 constexpr int kTextCapacity = 64;      // bytes, including the terminator
@@ -397,6 +397,8 @@ public:
     SelectResult RecallSelectionSet(int slot, SelectOp op);
     void ClearSelectionSet(int slot);
     int SelectionSetCount(int slot) const;
+    int SelectionSetLiveCount(int slot) const;
+    bool SelectionSetContains(int slot, const EntityKey& key) const;
 
     // Deterministic facts about the present selection.
     SelectionSummary DescribeSelection() const;

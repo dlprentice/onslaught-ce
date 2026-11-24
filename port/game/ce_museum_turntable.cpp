@@ -113,6 +113,7 @@ struct LoadedGoodie {
 BankState gBank = {};
 LoadedGoodie gLoaded[kManifestCount] = {};
 ResidencyHysteresis gHysteresis = {};
+bool gAllPreloaded = false;
 
 bool FileReadable(const char *path) {
     if (!path || !*path) return false;
@@ -136,6 +137,17 @@ void ForceDeleteMeshChain(CMesh *mesh) {
     }
 }
 
+void FreeSlotMesh(unsigned index) {
+    if (index >= kManifestCount) return;
+    LoadedGoodie &slot = gLoaded[index];
+    if (slot.mesh) {
+        CMesh *root = slot.mesh;
+        slot.mesh = NULL;
+        root->Release();
+        ForceDeleteMeshChain(root);
+    }
+}
+
 void FreeSlot(unsigned index) {
     if (index >= kManifestCount) return;
     LoadedGoodie &slot = gLoaded[index];
@@ -147,13 +159,16 @@ void FreeSlot(unsigned index) {
     }
     if (slot.textures) {
         for (int i = 0; i < slot.numTextures; ++i) {
-            if (!slot.textures[i]) continue;
-            slot.textures[i]->Release();
-            slot.textures[i]->ForceDeleteVBuffer();
-            CTEXTURE::mForceDeleting = TRUE;
-            slot.textures[i]->ForceDelete();
-            CTEXTURE::mForceDeleting = FALSE;
+            CTEXTURE *tex = slot.textures[i];
+            if (!tex) continue;
             slot.textures[i] = NULL;
+            tex->Release();
+            if (tex->mRefCount <= 0) {
+                tex->ForceDeleteVBuffer();
+                CTEXTURE::mForceDeleting = TRUE;
+                tex->ForceDelete();
+                CTEXTURE::mForceDeleting = FALSE;
+            }
         }
         delete[] slot.textures;
         slot.textures = NULL;
@@ -165,8 +180,13 @@ void FreeSlot(unsigned index) {
 }
 
 void FreeAllSlots() {
+    // Pass 1: tear down ALL meshes across all 45 resident slots while every texture is alive,
+    // so any texture shared across slots has its mesh refs released cleanly before Pass 2.
+    for (unsigned i = 0; i < kManifestCount; ++i) FreeSlotMesh(i);
+    // Pass 2: release slot texture arrays (only ForceDeleting textures once mRefCount <= 0).
     for (unsigned i = 0; i < kManifestCount; ++i) FreeSlot(i);
     ResetHysteresis(&gHysteresis);
+    gAllPreloaded = false;
 }
 
 bool LoadSlot(unsigned index) {
@@ -267,29 +287,30 @@ bool LoadSlot(unsigned index) {
     return true;
 }
 
-void SyncWingResidency(CeMuseumTour::Wing wing, float dtSeconds, bool paused) {
-    if (!StepWingResidencyPolicy(&gHysteresis, wing, dtSeconds, paused)) return;
-    const CeMuseumTour::Wing targetWing = gHysteresis.residentWing;
-    // Release any slot no longer needed before loading new ones so peak 32-bit RAM stays bounded.
-    for (unsigned i = 0; i < kManifestCount; ++i) {
-        if (!ShouldBeResident(i, targetWing) && (gLoaded[i].mesh || gLoaded[i].textures || gLoaded[i].attempted))
-            FreeSlot(i);
-    }
-    gBank.residentWing = targetWing;
+void EnsureAllSlotsLoaded() {
+    if (gAllPreloaded) return;
+    if (!LT.GetDevice()) return;
+    gAllPreloaded = true;
     unsigned loadedCount = 0;
     for (unsigned i = 0; i < kManifestCount; ++i) {
-        if (!ShouldBeResident(i, targetWing)) continue;
         if (loadedCount >= static_cast<unsigned>(kMaxResidentGoodies)) break;
         if (LoadSlot(i)) ++loadedCount;
     }
     PortSessionLog(PORT_SESSION_GAME, false,
-                   "museum turntables: %s resident count %u",
-                   CeMuseumTour::Meta(targetWing).title, loadedCount);
+                   "museum turntables: preloaded %u of %u 3D Goodie exhibits across all wings",
+                   loadedCount, static_cast<unsigned>(kManifestCount));
+}
+
+void SyncWingResidency(CeMuseumTour::Wing wing, float dtSeconds, bool paused) {
+    EnsureAllSlotsLoaded();
+    if (!StepWingResidencyPolicy(&gHysteresis, wing, dtSeconds, paused)) return;
+    gBank.residentWing = gHysteresis.residentWing;
 }
 
 struct StudVertex { float x, y, z; DWORD colour; };
 
-void DrawStudIndicator(IDirect3DDevice9 *dev, unsigned index, float floorZ, bool hovered, bool paused) {
+void AppendStudIndicator(StudVertex *batch, unsigned &used, unsigned cap,
+                         unsigned index, float floorZ, bool hovered, bool paused) {
     float sx, sy, sz;
     StudPosition(index, &sx, &sy, &sz);
     const float wx = CeMuseumWorld::kEntranceX + sx;
@@ -301,6 +322,7 @@ void DrawStudIndicator(IDirect3DDevice9 *dev, unsigned index, float floorZ, bool
     const DWORD brassBase = 0xffb8924c;
 
     auto emitBox = [&](float cx, float cy, float cz, float hx, float hy, float hz, DWORD c) {
+        if (used + 30u > cap) return;
         const float x0 = cx - hx, x1 = cx + hx, y0 = cy - hy, y1 = cy + hy, z0 = cz - hz, z1 = cz + hz;
         const StudVertex tris[30] = {
             {x0,y0,z0,c},{x1,y0,z0,c},{x1,y1,z0,c}, {x0,y0,z0,c},{x1,y1,z0,c},{x0,y1,z0,c},
@@ -309,7 +331,8 @@ void DrawStudIndicator(IDirect3DDevice9 *dev, unsigned index, float floorZ, bool
             {x1,y1,z1,c},{x0,y1,z1,c},{x0,y1,z0,c}, {x1,y1,z1,c},{x0,y1,z0,c},{x1,y1,z0,c},
             {x0,y1,z1,c},{x0,y0,z1,c},{x0,y0,z0,c}, {x0,y1,z1,c},{x0,y0,z0,c},{x0,y1,z0,c},
         };
-        dev->DrawPrimitiveUP(D3DPT_TRIANGLELIST, 10, tris, sizeof(StudVertex));
+        std::memcpy(&batch[used], tris, sizeof(tris));
+        used += 30u;
     };
     // Dressed slate stanchion with brass foot collar and interactive brass stud cap
     emitBox(wx, wy, floorZ - 0.06f, 0.12f, 0.12f, 0.06f, brassBase);
@@ -322,6 +345,7 @@ void DrawStudIndicator(IDirect3DDevice9 *dev, unsigned index, float floorZ, bool
 void RuntimeInit() {
     FreeAllSlots();
     Reset(&gBank);
+    EnsureAllSlotsLoaded();
 }
 
 void RuntimeShutdown() {
@@ -335,9 +359,7 @@ void RuntimeUpdate(CeMuseumTour::Wing wing, float dtSeconds, bool paused,
     if (!gBank.initialized) Reset(&gBank);
     SyncWingResidency(wing, dtSeconds, paused);
     StepRotation(&gBank, dtSeconds, paused);
-    gBank.hoveredIndex = gHysteresis.hasResident
-        ? PickStud(eyeX, eyeY, eyeZ, aimX, aimY, aimZ, gBank.residentWing)
-        : -1;
+    gBank.hoveredIndex = PickStud(eyeX, eyeY, eyeZ, aimX, aimY, aimZ, wing);
 }
 
 bool RuntimeHandleFire(bool release, float value) {
@@ -388,57 +410,71 @@ bool RuntimeCue(float visitorX, float visitorY, float fwdX, float fwdY,
 }
 
 void RuntimeDraw(float floorZ) {
-    if (!gBank.initialized || !gHysteresis.hasResident) return;
+    if (!gBank.initialized) return;
     IDirect3DDevice9 *dev = LT.GetDevice();
     if (!dev) return;
+    EnsureAllSlotsLoaded();
 
-    // 1. Draw interactive brass control studs (simple unlit geometry)
-    {
-        IDirect3DStateBlock9 *studState = NULL;
-        if (SUCCEEDED(dev->CreateStateBlock(D3DSBT_ALL, &studState)) && studState) {
-            if (SUCCEEDED(studState->Capture())) {
-                D3DMATRIX world = {}, view, proj;
-                world._11 = world._22 = world._33 = world._44 = 1.0f;
-                RENDERINFO.GetView(&view);
-                RENDERINFO.GetProjection(&proj);
-                dev->SetVertexShader(NULL);
-                dev->SetPixelShader(NULL);
-                dev->SetTransform(D3DTS_WORLD, &world);
-                dev->SetTransform(D3DTS_VIEW, &view);
-                dev->SetTransform(D3DTS_PROJECTION, &proj);
-                dev->SetTexture(0, NULL);
-                dev->SetRenderState(D3DRS_LIGHTING, FALSE);
-                dev->SetRenderState(D3DRS_FOGENABLE, FALSE);
-                dev->SetRenderState(D3DRS_ZENABLE, D3DZB_TRUE);
-                dev->SetRenderState(D3DRS_ZWRITEENABLE, TRUE);
-                dev->SetRenderState(D3DRS_ZFUNC, D3DCMP_LESSEQUAL);
-                dev->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
-                dev->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
-                dev->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
-                dev->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
-                dev->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_DIFFUSE);
-                dev->SetTextureStageState(1, D3DTSS_COLOROP, D3DTOP_DISABLE);
-                dev->SetFVF(D3DFVF_XYZ | D3DFVF_DIFFUSE);
-                for (unsigned i = 0; i < kManifestCount; ++i) {
-                    if (!ShouldBeResident(i, gBank.residentWing)) continue;
-                    DrawStudIndicator(dev, i, floorZ, gBank.hoveredIndex == static_cast<int>(i), gBank.slots[i].paused);
-                }
-                studState->Apply();
-            }
-            studState->Release();
-        }
-    }
-
-    // 2. Render each resident 3D Goodie mesh inside a local per-draw D3D9 state block + LT.InvalidateAllStates()
+    bool anyResident = false;
     bool anyMesh = false;
     for (unsigned i = 0; i < kManifestCount; ++i) {
-        if (ShouldBeResident(i, gBank.residentWing) && gLoaded[i].mesh) { anyMesh = true; break; }
+        if (!ShouldBeResident(i, gBank.residentWing)) continue;
+        anyResident = true;
+        if (gLoaded[i].mesh) anyMesh = true;
     }
-    if (!anyMesh) return;
+    if (!anyResident) return;
 
+    // Share one D3D9 state block for both brass control studs and resident 3D Goodie meshes.
     IDirect3DStateBlock9 *savedState = NULL;
     if (FAILED(dev->CreateStateBlock(D3DSBT_ALL, &savedState)) || !savedState) return;
     if (FAILED(savedState->Capture())) { savedState->Release(); return; }
+
+    // 1. Draw interactive brass control studs (simple unlit geometry)
+    {
+        D3DMATRIX world = {}, view, proj;
+        world._11 = world._22 = world._33 = world._44 = 1.0f;
+        RENDERINFO.GetView(&view);
+        RENDERINFO.GetProjection(&proj);
+        dev->SetVertexShader(NULL);
+        dev->SetPixelShader(NULL);
+        dev->SetTransform(D3DTS_WORLD, &world);
+        dev->SetTransform(D3DTS_VIEW, &view);
+        dev->SetTransform(D3DTS_PROJECTION, &proj);
+        dev->SetTexture(0, NULL);
+        dev->SetTexture(1, NULL);
+        dev->SetRenderState(D3DRS_LIGHTING, FALSE);
+        dev->SetRenderState(D3DRS_FOGENABLE, FALSE);
+        dev->SetRenderState(D3DRS_ZENABLE, D3DZB_TRUE);
+        dev->SetRenderState(D3DRS_ZWRITEENABLE, TRUE);
+        dev->SetRenderState(D3DRS_ZFUNC, D3DCMP_LESSEQUAL);
+        dev->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
+        dev->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
+        dev->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
+        dev->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
+        dev->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_DIFFUSE);
+        dev->SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_DISABLE);
+        dev->SetTextureStageState(1, D3DTSS_COLOROP, D3DTOP_DISABLE);
+        dev->SetTextureStageState(1, D3DTSS_ALPHAOP, D3DTOP_DISABLE);
+        dev->SetFVF(D3DFVF_XYZ | D3DFVF_DIFFUSE);
+        // Batch all 45 brass control stud stanchions into ONE single DrawPrimitiveUP call!
+        constexpr unsigned kStudBatchCap = kManifestCount * 90u;
+        static StudVertex studBatch[kStudBatchCap];
+        unsigned studUsed = 0u;
+        for (unsigned i = 0; i < kManifestCount; ++i) {
+            if (!ShouldBeResident(i, gBank.residentWing)) continue;
+            AppendStudIndicator(studBatch, studUsed, kStudBatchCap, i, floorZ,
+                                gBank.hoveredIndex == static_cast<int>(i), gBank.slots[i].paused);
+        }
+        if (studUsed >= 3u)
+            dev->DrawPrimitiveUP(D3DPT_TRIANGLELIST, studUsed / 3u, studBatch, sizeof(StudVertex));
+    }
+
+    // 2. Render each resident 3D Goodie mesh inside the same state guard
+    if (!anyMesh) {
+        savedState->Apply();
+        savedState->Release();
+        return;
+    }
 
     // Save RENDERINFO cached lighting/fog state alongside the D3D9 state block
     D3DMATRIX savedWorld;

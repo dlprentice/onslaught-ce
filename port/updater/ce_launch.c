@@ -100,17 +100,6 @@ static const char *const sLogNames[CE_LOG_SLOT_COUNT] = {
 	"onslaught-ce.log", "onslaught-ce.concurrent-1.log", "onslaught-ce.concurrent-2.log"
 };
 static int sLogSlot = -1;
-static int log_artifact_name(const char *name)
-{
-	if (!strcmp(name, "onslaught-ce.old.log")) return 1;
-	for (int slot = 0; slot < CE_LOG_SLOT_COUNT; ++slot)
-	{
-		char lease[128];
-		snprintf(lease, sizeof lease, "%s.lock", sLogNames[slot]);
-		if (!strcmp(name, sLogNames[slot]) || !strcmp(name, lease)) return 1;
-	}
-	return 0;
-}
 #ifdef _WIN32
 static HANDLE sLogLease = INVALID_HANDLE_VALUE;
 #else
@@ -974,21 +963,42 @@ static int find_steam_install(char *found, size_t n)
 {
 #ifdef _WIN32
 	char steam[PATHN];
-	DWORD len = sizeof steam;
-	if (RegGetValueA(HKEY_CURRENT_USER, "Software\\Valve\\Steam", "SteamPath", RRF_RT_REG_SZ, NULL, steam, &len) == ERROR_SUCCESS)
+	static const struct { HKEY root; const char *subkey; const char *val; } keys[] = {
+		{HKEY_CURRENT_USER, "Software\\Valve\\Steam", "SteamPath"},
+		{HKEY_LOCAL_MACHINE, "SOFTWARE\\WOW6432Node\\Valve\\Steam", "InstallPath"},
+		{HKEY_LOCAL_MACHINE, "SOFTWARE\\Valve\\Steam", "InstallPath"},
+	};
+	for (size_t i = 0; i < sizeof keys / sizeof *keys; i++)
 	{
-		for (char *c = steam; *c; c++) if (*c == '/') *c = '\\';
-		if (steam_libraries(steam, found, n)) return 1;
+		DWORD len = sizeof steam;
+		if (RegGetValueA(keys[i].root, keys[i].subkey, keys[i].val, RRF_RT_REG_SZ, NULL, steam, &len) == ERROR_SUCCESS)
+		{
+			for (char *c = steam; *c; c++) if (*c == '/') *c = '\\';
+			if (steam_libraries(steam, found, n)) return 1;
+		}
 	}
+	static const char *const gog[] = {
+		"C:\\GOG Games\\Battle Engine Aquila",
+		"C:\\Program Files (x86)\\GOG Galaxy\\Games\\Battle Engine Aquila",
+	};
+	for (size_t i = 0; i < sizeof gog / sizeof *gog; i++)
+		if (supported_install(gog[i])) { snprintf(found, n, "%s", gog[i]); return 1; }
 	return 0;
 #else
 	const char *home = getenv("HOME");
-	if (!home) return 0;
-	const char *roots[] = {"/.local/share/Steam", "/.steam/steam", "/.steam/root", "/.var/app/com.valvesoftware.Steam/.local/share/Steam"};
+	if (!home || !*home) return 0;
+	const size_t hlen = ce_trim_sep_len(home, 1);
+	const char *roots[] = {
+		"/.local/share/Steam",
+		"/.steam/steam",
+		"/.steam/root",
+		"/.var/app/com.valvesoftware.Steam/.local/share/Steam",
+		"/snap/steam/common/.local/share/Steam",
+	};
 	char steam[PATHN];
 	for (size_t i = 0; i < sizeof roots / sizeof *roots; i++)
 	{
-		snprintf(steam, sizeof steam, "%s%s", home, roots[i]);
+		snprintf(steam, sizeof steam, "%.*s%s", (int)hlen, home, roots[i]);
 		if (steam_libraries(steam, found, n)) return 1;
 	}
 	return 0;
@@ -1004,13 +1014,59 @@ static void forward_signal(int sig)
 #endif
 
 static char sPicked[PATHN];
-static volatile int sPickDone;
+static char sPickError[256];
+static SDL_AtomicInt sPickDone;
 
 static void SDLCALL picked(void *userdata, const char *const *files, int filter)
 {
 	(void)userdata; (void)filter;
-	if (files && files[0]) snprintf(sPicked, sizeof sPicked, "%s", files[0]);
-	sPickDone = 1;
+	if (!files)
+	{
+		const char *err = SDL_GetError();
+		if (err && *err) snprintf(sPickError, sizeof sPickError, "%s", err);
+	}
+	else if (files[0])
+	{
+		snprintf(sPicked, sizeof sPicked, "%s", files[0]);
+	}
+	SDL_SetAtomicInt(&sPickDone, 1);
+}
+
+/* True when user is game or lies beneath it. Fails closed when paths cannot be inspected. */
+static int user_inside_game(const char *user, const char *game)
+{
+	if (!user || !*user || !game || !*game) return 0;
+#ifdef _WIN32
+	WCHAR a[PATHN], b[PATHN], fa[PATHN], fb[PATHN];
+	if (!MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, user, -1, a, PATHN) ||
+		!MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, game, -1, b, PATHN))
+		return 1;
+	DWORD la = GetFullPathNameW(a, PATHN, fa, NULL), lb = GetFullPathNameW(b, PATHN, fb, NULL);
+	if (!la || la >= PATHN || !lb || lb >= PATHN) return 1;
+	while (lb > 3 && fb[lb - 1] == L'\\') fb[--lb] = 0;
+	if (la < lb || CompareStringOrdinal(fa, (int)lb, fb, (int)lb, TRUE) != CSTR_EQUAL) return 0;
+	return fa[lb] == 0 || fa[lb] == L'\\' || fb[lb - 1] == L'\\';
+#else
+	struct stat gst;
+	if (stat(game, &gst) != 0) return 0;
+	int cur = open(user, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+	if (cur < 0) return 1;
+	for (int depth = 0; depth < 512; ++depth)
+	{
+		struct stat here;
+		if (fstat(cur, &here) != 0) { close(cur); return 1; }
+		if (here.st_dev == gst.st_dev && here.st_ino == gst.st_ino) { close(cur); return 1; }
+		int up = openat(cur, "..", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+		if (up < 0) { close(cur); return 1; }
+		struct stat parent;
+		if (fstat(up, &parent) != 0) { close(cur); close(up); return 1; }
+		close(cur);
+		if (parent.st_dev == here.st_dev && parent.st_ino == here.st_ino) { close(up); return 0; }
+		cur = up;
+	}
+	close(cur);
+	return 1;
+#endif
 }
 
 /* 1: a supported folder was chosen; 0: none was; -1: no message box could be shown (no display). */
@@ -1029,15 +1085,31 @@ static int ask_for_install(char *found, size_t n)
 		int which = 0;
 		if (!ask_box(&box, &which, 0)) return -1;
 		if (which != 1) return 0;
-		sPickDone = 0;
+		SDL_SetAtomicInt(&sPickDone, 0);
 		sPicked[0] = 0;
+		sPickError[0] = 0;
+		SDL_ClearError();
 		SDL_ShowOpenFolderDialog(picked, NULL, NULL, NULL, false);
-		while (!sPickDone)
+		while (!SDL_GetAtomicInt(&sPickDone))
 		{
 			SDL_PumpEvents();
 			SDL_Delay(20);
 		}
-		if (!sPicked[0]) return 0;
+		if (!sPicked[0])
+		{
+			if (sPickError[0])
+			{
+				char text[640];
+#ifdef _WIN32
+				say("could not open the folder picker (%s); set BEA_GAME_DIR to your Battle Engine Aquila folder", sPickError);
+#else
+				say("could not open the folder picker (%s); install zenity or xdg-desktop-portal, or set BEA_GAME_DIR=/path/to/Battle Engine Aquila", sPickError);
+#endif
+				ce_box_text_picker_failed(text, sizeof text, sPickError);
+				tell_box(SDL_MESSAGEBOX_WARNING, text);
+			}
+			return 0;
+		}
 		char why[256], text[512];
 		if (!install_problem(sPicked, why, sizeof why)) { snprintf(found, n, "%s", sPicked); return 1; }
 		say("the chosen folder is not a supported Battle Engine Aquila install: %s", why);
@@ -1064,7 +1136,7 @@ static int find_game(char *dir, size_t n)
 		say("ce.ini's gamedir %s is not a supported Battle Engine Aquila install: %s", ini, why);
 	}
 	int found = find_steam_install(dir, n) ? 1 : ask_for_install(dir, n);
-	if (found > 0) ini_set("gamedir", dir);
+	if (found > 0 && !user_inside_game(sUser, dir)) ini_set("gamedir", dir);
 	return found;
 }
 
@@ -1095,14 +1167,16 @@ static int init_paths(void)
 	init_here();
 #ifdef _WIN32
 	const char *appdata = getenv("APPDATA");
-	snprintf(sUser, sizeof sUser, "%s\\Onslaught CE", appdata ? appdata : ".");
+	if (appdata && *appdata) snprintf(sUser, sizeof sUser, "%.*s\\Onslaught CE", (int)ce_trim_sep_len(appdata, 1), appdata);
+	else snprintf(sUser, sizeof sUser, "Onslaught CE");
 #else
 	const char *xdg = getenv("XDG_DATA_HOME"), *home = getenv("HOME");
-	if (xdg && *xdg) snprintf(sUser, sizeof sUser, "%s/onslaught-ce", xdg);
-	else snprintf(sUser, sizeof sUser, "%s/.local/share/onslaught-ce", home ? home : ".");
+	if (xdg && *xdg) snprintf(sUser, sizeof sUser, "%.*s/onslaught-ce", (int)ce_trim_sep_len(xdg, 1), xdg);
+	else if (home && *home) snprintf(sUser, sizeof sUser, "%.*s/.local/share/onslaught-ce", (int)ce_trim_sep_len(home, 1), home);
+	else snprintf(sUser, sizeof sUser, ".local/share/onslaught-ce");
 #endif
 	const char *user = getenv("BEA_USER_DIR"), *custom = getenv("BEA_CE_CUSTOM_USER_DIR");
-	if (user && *user) snprintf(sUser, sizeof sUser, "%s", user);
+	if (user && *user) snprintf(sUser, sizeof sUser, "%.*s", (int)ce_trim_sep_len(user, 0), user);
 	/* A launcher restarted by an update inherits BEA_USER_DIR from us: keep the first launcher's answer. */
 	sUserCustom = custom && (!strcmp(custom, "0") || !strcmp(custom, "1")) ? custom : user && *user ? "1" : "0";
 	snprintf(sIni, sizeof sIni, "%s" SEP "ce.ini", sUser);
@@ -1135,9 +1209,29 @@ static void json_base64(FILE *f, const unsigned char *p, size_t n)
 	fputc('"', f);
 }
 
-/* The user folder's game files as the session starts (options, careers, the game's own text files), so a replay can
- * start from the same state: "relative/path": base64, in the .json. The launcher's files (ce.ini, the logs, update/,
- * tapes/) stay out, and so does any file over 1 MB. */
+/* Explicit ASCII case-insensitive helpers for replay start_files allowlisting. */
+static int ascii_ieq(const char *a, const char *b)
+{
+	while (*a && *b)
+	{
+		unsigned char ca = (unsigned char)*a++, cb = (unsigned char)*b++;
+		if (ca >= 'A' && ca <= 'Z') ca = (unsigned char)(ca + ('a' - 'A'));
+		if (cb >= 'A' && cb <= 'Z') cb = (unsigned char)(cb + ('a' - 'A'));
+		if (ca != cb) return 0;
+	}
+	return *a == 0 && *b == 0;
+}
+
+static int ascii_iends(const char *s, const char *suffix)
+{
+	size_t sl = strlen(s), xl = strlen(suffix);
+	return sl > xl && ascii_ieq(s + sl - xl, suffix);
+}
+
+/* The user folder's retail state files as the session starts (defaultoptions.bea, registry.ini, savegames/<name>.bes),
+ * so a replay can start from the same state: "relative/path": base64, in the .json. Using a strict allowlist ensures
+ * private credentials (online-profile.key, online-profile.ini), ce.ini, logs, mods, backups, screenshots, and links
+ * can never be exported into shareable session recordings. */
 #define START_CAP (4u << 20)
 static void json_start_files(FILE *f, const char *dir, const char *rel, int *first, size_t *total)
 {
@@ -1166,23 +1260,37 @@ static void json_start_files(FILE *f, const char *dir, const char *rel, int *fir
 	{
 		const char *nm = names[i];
 		if (!strcmp(nm, ".") || !strcmp(nm, "..")) continue;
-		if (!*rel && (!strcmp(nm, "ce.ini") || log_artifact_name(nm) ||
-					  !strcmp(nm, "update") || !strcmp(nm, "update-v2") || !strcmp(nm, "tapes")))
-			continue;
 		char path[PATHN], sub[PATHN];
 		snprintf(path, sizeof path, "%s" SEP "%s", dir, nm);
 		snprintf(sub, sizeof sub, "%s%s%s", rel, *rel ? "/" : "", nm);
 #ifdef _WIN32
 		DWORD attr = GetFileAttributesA(path);
-		int isdir = attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY);
+		if (attr == INVALID_FILE_ATTRIBUTES || (attr & FILE_ATTRIBUTE_REPARSE_POINT)) continue;
+		int isdir = (attr & FILE_ATTRIBUTE_DIRECTORY) != 0;
 #else
 		struct stat st;
-		int isdir = !lstat(path, &st) && S_ISDIR(st.st_mode);
-		if (!isdir && (lstat(path, &st) || !S_ISREG(st.st_mode))) continue;
+		if (lstat(path, &st) != 0) continue;
+		int isdir = S_ISDIR(st.st_mode);
+		if (!isdir && !S_ISREG(st.st_mode)) continue;
 #endif
 		if (isdir)
 		{
-			if (strchr(rel, '/') == NULL) json_start_files(f, path, sub, first, total);	/* two levels at most */
+			if (!*rel && ascii_ieq(nm, "savegames"))
+				json_start_files(f, path, sub, first, total);
+			continue;
+		}
+		if (!*rel)
+		{
+			if (!ascii_ieq(nm, "defaultoptions.bea") && !ascii_ieq(nm, "registry.ini"))
+				continue;
+		}
+		else if (ascii_ieq(rel, "savegames"))
+		{
+			if (!ascii_iends(nm, ".bes"))
+				continue;
+		}
+		else
+		{
 			continue;
 		}
 		size_t n = 0;
@@ -1676,6 +1784,12 @@ int main(int argc, char **argv)
 	{
 		say(found < 0 ? "could not find Battle Engine Aquila in Steam's libraries; set BEA_GAME_DIR to its folder" :
 			"no supported Battle Engine Aquila install was chosen");
+		log_close();
+		return 1;
+	}
+	if (user_inside_game(sUser, game))
+	{
+		say("the user folder cannot be inside the game folder; set BEA_USER_DIR to a separate folder");
 		log_close();
 		return 1;
 	}

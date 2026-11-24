@@ -407,6 +407,87 @@ void TestFourPeerDirectStarSession() {
     }, 2500), "guest 1 sees host leave");
 }
 
+void TestStartBarrierSilenceKeepalive() {
+    // Regression test: connected guests waiting through long start barriers (> silence_timeout_ms)
+    // must stay alive via periodic encrypted keepalives while truly frozen peers still time out.
+    const auto secret = MakeSecret(0x5A);
+    const auto compat = MakeCompat(0xA5);
+
+    CeStarConfig hcfg;
+    hcfg.role = CeStarRole::Host;
+    hcfg.bind_ipv4 = "127.0.0.1";
+    hcfg.bind_port = 0;
+    hcfg.max_guests = 3;
+    hcfg.local_seat = 0;
+    hcfg.local_sim_slot = 0;
+    hcfg.match_secret = secret;
+    hcfg.compatibility = compat;
+    hcfg.silence_timeout_ms = 600;
+    hcfg.ping_report_interval_ms = 0; // Keepalive must work in BOTH directions even without PingReport.
+
+    auto host = CeStarTransport::Create(hcfg);
+    Check(bool(host), "keepalive test host created");
+    if (!host) return;
+
+    auto make_guest = [&](uint16_t slot) {
+        CeStarConfig gcfg;
+        gcfg.role = CeStarRole::Guest;
+        gcfg.remote_ipv4 = "127.0.0.1";
+        gcfg.remote_port = host->LocalPort();
+        gcfg.max_guests = 3;
+        gcfg.local_seat = slot;
+        gcfg.local_sim_slot = slot;
+        gcfg.match_secret = secret;
+        gcfg.compatibility = compat;
+        gcfg.silence_timeout_ms = 600;
+        return CeStarTransport::Create(gcfg);
+    };
+
+    auto g1 = make_guest(1); // Connected & polling while waiting for slow slot 3.
+    auto g2 = make_guest(2); // Connects, then freezes (stops polling) and MUST time out.
+    Check(bool(g1) && bool(g2), "keepalive test guests created");
+    if (!g1 || !g2) return;
+
+    Check(WaitUntil([&] {
+        const uint64_t now = NowMs();
+        host->Poll(now);
+        g1->Poll(now);
+        g2->Poll(now);
+        return host->ActiveGuestCount() == 2 && g1->IsAuthenticated() && g2->IsAuthenticated();
+    }, 3000), "keepalive test guests 1 and 2 authenticated");
+
+    // Drain initial auth events.
+    CeStarEvent ev;
+    while (host->PopEvent(ev)) {}
+    while (g1->PopEvent(ev)) {}
+
+    // Sit idle (zero inputs/chat, slot 3 never joins) for 1100ms (> 1.8x silence_timeout_ms).
+    // Poll Host + Guest 1 only; Guest 2 stops polling.
+    bool g1_disconnected = false;
+    bool g2_timed_out = false;
+    const uint64_t start = NowMs();
+    while (NowMs() - start < 1100) {
+        const uint64_t now = NowMs();
+        host->Poll(now);
+        g1->Poll(now);
+        while (host->PopEvent(ev)) {
+            if (ev.kind == CeStarEventKind::PeerDisconnected) {
+                if (ev.sim_slot == 1) g1_disconnected = true;
+                if (ev.sim_slot == 2 && ev.reason == static_cast<uint16_t>(CeStarError::Timeout))
+                    g2_timed_out = true;
+            }
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+
+    CeStarPeerInfo p1{};
+    Check(!g1_disconnected && host->GetPeerInfo(1, p1) && p1.authenticated &&
+          g1->IsAuthenticated() && !g1->IsHostLost(),
+          "polling guest survives idle start barrier beyond silence_timeout_ms via keepalives");
+    Check(g2_timed_out && host->ActiveGuestCount() == 1,
+          "frozen non-polling guest still cleanly triggers CeStarError::Timeout");
+}
+
 #if defined(CE_NETWORK_ICE)
 void TestMultiSlotIceLoopbackMultiplexing() {
     const auto secret = MakeSecret(0x77);
@@ -516,6 +597,7 @@ void TestMultiSlotIceLoopbackMultiplexing() {
 int main() {
     TestWireAnd64Bitmask();
     TestFourPeerDirectStarSession();
+    TestStartBarrierSilenceKeepalive();
 #if defined(CE_NETWORK_ICE)
     TestMultiSlotIceLoopbackMultiplexing();
 #endif

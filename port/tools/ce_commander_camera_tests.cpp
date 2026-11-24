@@ -560,6 +560,7 @@ unsigned unit_map_boundaries = 0;
 bool CePlayUnitOwnsPilot() { return unit_owns_pilot; }
 void CePlayUnitMapBoundary() { ++unit_map_boundaries; }
 void CePlayUnitLevelEnd() {}		// the play-as-a-unit module's call in PortCeCmdLevelEnd: no unit is driven here
+void FreeTerrainTexture() {}		// the terrain texture's release in PortCeCmdLevelEnd
 CCamera* PortCePlayUnitRenderCamera(CCamera* camera, CPlayer*) { return camera; } // no tank possession in this fixture
 unsigned long long PortClockRawNs() {
     return fake_base_ns + static_cast<unsigned long long>(fake_ms * 1000000.0);
@@ -709,6 +710,7 @@ void StrategicPictureEnd() { ++draw_ends; }
 void BeginDraw() { VERIFY(false); }		// the paused map's drawing state: the live view never asks for it
 void EndDraw() { VERIFY(false); }
 bool Trap(WORD key, int event);
+void ClearUnitGroupSlot(int);
 
 // The Linux Windows compatibility headers expose these function macros.
 // Exercise the actual consumer under that same preprocessor constraint.
@@ -1348,7 +1350,7 @@ void LivePointerInteractions(){
     VERIFY(StrategicInput().pan_horizontal > 0);
     VERIFY(Trap(DIK_D, KEY_EVENT_UP));
     VERIFY(StrategicInput().pan_horizontal == 0);
-    VERIFY(gOpen && gStrategic && GAME.controller.target == &pilot);
+    VERIFY(gOpen && gStrategic && GAME.controller.target == &gSink);
     VERIFY(accepted_orders == camera_orders_before && gArmed == camera_arm_before);
     VERIFY(gSelected == camera_selected_before && gSel.n == camera_selection_before);
     // A right click sends the picked squad to fight its way there; Ctrl and a right click is the quiet march.
@@ -1436,7 +1438,7 @@ void LiveSquadInteractions() {
     fake_ms += 180; StrategicFrameCamera();
     VERIFY(Near(gViewX + gViewSpan * 0.5f, live_squads[1].x));
     VERIFY(Near(gViewY + gViewSpan * 0.5f, live_squads[1].y));
-    VERIFY(!GAME.paused && GAME.controller.target == &pilot);
+    VERIFY(!GAME.paused && GAME.controller.target == &gSink);
     AuthoredWorldView(); // Refresh the displayed input surface after simulated camera frames.
     Trap(DIK_H, KEY_EVENT_DOWN);
     VERIFY(accepted_orders == 1 && last_ordered == 17 && live_squads[1].verb == CE_CMD_HOLD);
@@ -1732,7 +1734,7 @@ int main() {
     VERIFY(Trap(DIK_V, KEY_EVENT_DOWN));
     VERIFY(gOpen && gStrategic && gStrategicOwner.Active());
     VERIFY(!GAME.paused && GAME.pause_calls == 1);
-    VERIFY(GAME.controller.target == &pilot && pilot.life == 10);
+    VERIFY(GAME.controller.target == &gSink && pilot.life == 10);
     VERIFY(SamePosition(original_camera.mPos, before));
     // The live view leaves the game's frame alone: it asks for no draw filter and drops no draw (its own picture covers a frame the game drew whole).
     VERIFY(!PortCeCmdSuppressFlightHud() && !draw_filter && !PortCePhotoOn() && entered_calls == 1 && left_calls == 0);
@@ -1779,7 +1781,7 @@ int main() {
     VERIFY(!SamePosition(strategic_before, gStrategicCamera.mPos));
     VERIFY(gViewY > fitted_y && Near(gViewX, fitted_x));
     VERIFY(SamePosition(original_camera.mPos, before));
-    VERIFY(GAME.controller.target == &pilot && !GAME.paused);
+    VERIFY(GAME.controller.target == &gSink && !GAME.paused);
     StrategicViewInvalidate(); authored_view.viewport = {0, 0, 800, 600, 0, 1};
     StrategicRenderPrefix();
     // One frame of the picture: drawn from the strategic camera, its view kept for the pointer, the map's text and cursor over it.
@@ -1864,10 +1866,10 @@ int main() {
     VERIFY(!gOpen && !gStrategic);
 
     Fixture(); Open(true);
-    VERIFY(!GAME.paused && GAME.pause_calls == 0 && GAME.controller.target_changes == 0);
+    VERIFY(!GAME.paused && GAME.pause_calls == 0 && GAME.controller.target == &gSink && GAME.controller.target_changes == 1);
     Trap(DIK_ESCAPE, KEY_EVENT_DOWN);
     VERIFY(!gOpen && !gStrategicOwner.OwnsCapture() && gEscClosed);
-    VERIFY(GameAccess::pause_field_reads == 0 && GAME.controller.target_changes == 0);
+    VERIFY(GameAccess::pause_field_reads == 0 && GAME.controller.target == &pilot && GAME.controller.target_changes == 2);
     VERIFY(StrategicFrameCamera() == NULL && PortCeCmdRenderCamera(&original_camera, &player) == &original_camera);
     VERIFY(entered_calls == 1 && left_calls == 1);
 

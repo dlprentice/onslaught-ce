@@ -83,6 +83,9 @@
 #error The commander map requires weak symbol support for the network boot boundary
 #endif
 extern "C" int CE_BootRequested(void) __attribute__((weak));
+extern "C" int CE_SessionActive(void) __attribute__((weak));
+extern "C" bool PortCeMuseumVisitActive(void) __attribute__((weak));
+extern "C" bool PortCeEditorActive(void) __attribute__((weak));
 extern "C" unsigned PortPresentCount(void);		// d3d9hooks.cpp
 bool PortClockVirtual();						// clock.cpp: a virtual clock (a replay, a recording, probes, or a test build's proof run)
 extern "C" int PortMouseHeldNow(unsigned button);
@@ -190,6 +193,7 @@ DWORD gTerrain[kGrid * kGrid];
 // that empties it costs one frame. Where it cannot be made the map draws the cells as before.
 CDXTexture *gTerrainTexture;
 bool gTerrainTextureFailed;
+bool gTerrainTexDirty = true;
 
 struct Layout
 {
@@ -226,7 +230,8 @@ bool TacticalMapAllowed()
 bool Eligible()
 {
 	if (!CeCmdMapOn() || !PortCeLayer() || PortRecording()) return false;
-	if (CE_BootRequested && CE_BootRequested()) return false;
+	if ((CE_BootRequested && CE_BootRequested()) || (CE_SessionActive && CE_SessionActive())) return false;
+	if ((PortCeMuseumVisitActive && PortCeMuseumVisitActive()) || (PortCeEditorActive && PortCeEditorActive())) return false;
 	if (PLAYABLE_DEMO || CLIPARAMS.mAutoConfigTest || CLIPARAMS.mRecordDemo || CLIPARAMS.mPlaybackDemo || CLIPARAMS.mStressTest ||
 		CLIPARAMS.mAttractMode || FRONTEND.IsRunning()) return false;
 	return CeCmdAdmits(!GAME.IsMultiplayer() && GAME.GetNPlayers() == 1);
@@ -554,6 +559,7 @@ void BuildTerrain()
 			gTerrain[j * kGrid + i] = c;
 		}
 	gTerrainDirty = false;
+	gTerrainTexDirty = true;
 }
 
 // ---- drawing -----------------------------------------------------------------------------------------------------------------------
@@ -875,17 +881,25 @@ bool DrawTerrainFromTexture()
 		if (!texture->GetTexture() || texture->GetRealWidth() <= 0 || texture->GetRealHeight() <= 0)
 		{
 			texture->Release();
+			texture->ForceDelete();
 			gTerrainTextureFailed = true;
 			return false;
 		}
 		gTerrainTexture = texture;
+		gTerrainTexDirty = true;
 	}
-	D3DLOCKED_RECT lr;
-	if (FAILED(gTerrainTexture->GetTexture()->LockRect(0, &lr, NULL, D3DLOCK_NOSYSLOCK)))
-		return false;
-	for (int j = 0; j < kGrid; ++j)
-		memcpy((unsigned char *)lr.pBits + j * lr.Pitch, &gTerrain[j * kGrid], sizeof(DWORD) * kGrid);
-	gTerrainTexture->GetTexture()->UnlockRect(0);
+	if (gTerrainTexDirty)
+	{
+		D3DLOCKED_RECT lr;
+		if (FAILED(gTerrainTexture->GetTexture()->LockRect(0, &lr, NULL, D3DLOCK_NOSYSLOCK)))
+			return false;
+		for (int j = 0; j < kGrid; ++j)
+		{
+			memcpy((unsigned char *)lr.pBits + j * lr.Pitch, &gTerrain[j * kGrid], sizeof(DWORD) * kGrid);
+		}
+		gTerrainTexture->GetTexture()->UnlockRect(0);
+		gTerrainTexDirty = false;
+	}
 	// Nearest-neighbour: the map is a grid of flat cells, not a smoothed picture.
 	IDirect3DDevice9 *device = LT.GetDevice();
 	DWORD magnify = D3DTEXF_LINEAR, minify = D3DTEXF_LINEAR;
@@ -919,9 +933,11 @@ void FreeTerrainTexture()
 	if (gTerrainTexture)
 	{
 		gTerrainTexture->Release();
+		gTerrainTexture->ForceDelete();
 		gTerrainTexture = NULL;
 	}
 	gTerrainTextureFailed = false;
+	gTerrainTexDirty = true;
 }
 
 // One batch through the game's fast vertex buffer, as the compass draws its markers (the buffer flushes itself when it fills).
@@ -1211,9 +1227,9 @@ bool SpreadRound(int n, const float *sx, const float *sy, float wx, float wy, fl
 	return true;
 }
 
-void Order(int verb, float wx, float wy)
+bool Order(int verb, float wx, float wy)
 {
-	if (!ByOrdinal(gSelected)) { Note("Pick a squad first."); return; }
+	if (!ByOrdinal(gSelected)) { Note("Pick a squad first."); return false; }
 	int ids[kCeSelMax], n = 0;
 	float sx[kCeSelMax], sy[kCeSelMax], tx[kCeSelMax], ty[kCeSelMax];
 	bool landOnly[kCeSelMax], anyGround = false;
@@ -1272,7 +1288,7 @@ void Order(int verb, float wx, float wy)
 	{
 		Note(already && refused > 1 ? "Already on their own orders." : refusal ? refusal : "Refused.");
 		if (StrategicLive() && (verb == CE_CMD_MOVE || verb == CE_CMD_ADVANCE)) { gNoteAtX = float(MOUSE_X); gNoteAtY = float(MOUSE_Y); gNoteAtUntil = gNoteUntil; }
-		return;
+		return false;
 	}
 	gOrderNs = Ns();
 	if (StrategicLive())
@@ -1290,6 +1306,7 @@ void Order(int verb, float wx, float wy)
 	else snprintf(text, sizeof(text), "%d squads %s.", given, several[verb]);
 	if (refused && !already) snprintf(text + strlen(text), sizeof(text) - strlen(text), " %s", refusal);
 	Note(text);
+	return true;
 }
 
 // The selection as one squad, or with one squad more or less (a Shift click), or as every squad that takes orders (Ctrl and A).
@@ -1324,12 +1341,14 @@ void SelectAll()
 }
 
 // A digit: with Ctrl the selection is kept under it, alone it picks that group again, with Shift it adds the group to the selection.
+void ClearUnitGroupSlot(int number);
 void GroupKey(int number, bool keep, bool add)
 {
 	char text[64];
 	if (keep)
 	{
 		CeGroupStore(gGroups, number, gSel);
+		ClearUnitGroupSlot(number);
 		CeCmdNote("map group %d keep %d", number, gSel.n);
 		if (gSel.n) snprintf(text, sizeof(text), "Group %d: %d squad%s.", number, gSel.n, gSel.n == 1 ? "" : "s");
 		else snprintf(text, sizeof(text), "Group %d cleared.", number);
@@ -1470,6 +1489,12 @@ const float kBoxSlack = 6.f;
 namespace UnitPanel = ce_command_panel;
 namespace UnitControl = ce_command_selection;
 UnitControl::SelectionController gUnitUi;
+bool gUnitGroupSaved[UnitPanel::kMaxSavedSets] = {};
+void ClearUnitGroupSlot(int number) {
+	const int slot = number == 0 ? 9 : number - 1;
+	gUnitUi.ClearSet(slot);
+	if (slot >= 0 && slot < UnitPanel::kMaxSavedSets) gUnitGroupSaved[slot] = false;
+}
 CeCmdUnitSnapshot gUnitNative[UnitControl::kMaxUnits];
 UnitControl::UnitSnapshot gUnitRows[UnitControl::kMaxUnits];
 int gUnitNativeCount = 0;
@@ -1652,6 +1677,15 @@ int SquadGroupTag(int ordinal) {
     return -1;
 }
 
+int UnitGroupTag(const CeCommandLifetimeKey& nativeKey) {
+    UnitPanel::EntityKey key = {};
+    if (!UnitControl::ToPanelKey(nativeKey, &key)) return -1;
+    for (int s = 0; s < 9; ++s)
+        if (gUnitUi.Panel().SelectionSetContains(s, key)) return s + 1;
+    if (gUnitUi.Panel().SelectionSetContains(9, key)) return 0;
+    return -1;
+}
+
 bool CanTakeSelectedSquadUnit(CeCommandLifetimeKey* outKey) {
     if (gSel.n != 1 || gSelected < 0) return false;
     for (int i = 0; i < gUnitNativeCount; ++i) {
@@ -1695,7 +1729,7 @@ void BuildRtsHudModel(char* summaryOut, unsigned summaryRoom) {
             snprintf(pl.orderBadge, sizeof(pl.orderBadge), "AI");
             pl.orderTone = CE_TONE_NEUTRAL;
         }
-        pl.groupTag = -1;
+        pl.groupTag = UnitGroupTag(gUnitNative[i].key);
         pl.selected = true;
         pl.commandable = gUnitNative[i].commandable;
         pl.worldX = gUnitNative[i].position[0];
@@ -1899,7 +1933,7 @@ void BuildRtsHudModel(char* summaryOut, unsigned summaryRoom) {
             gHudCard.buttons[5].action = CE_CARD_TAKE_DELIVERED;
             snprintf(gHudCard.buttons[5].label, sizeof(gHudCard.buttons[5].label), "Take Ctrl");
             snprintf(gHudCard.buttons[5].hotkey, sizeof(gHudCard.buttons[5].hotkey), "Ent");
-            gHudCard.buttons[5].enabled = delOrd >= 0 && gSel.n == 1 && gSelected == delOrd && CePlayUnitCanTakeDelivery();
+            gHudCard.buttons[5].enabled = delOrd >= 0 && CePlayUnitCanTakeDelivery();
         } else {
             gHudCard.buttons[5].action = CE_CARD_CANCEL_BUILD;
             snprintf(gHudCard.buttons[5].label, sizeof(gHudCard.buttons[5].label), "Cancel");
@@ -2450,13 +2484,13 @@ void NoteHere(const char* text, float x, float y) {
     gNoteAtX = x; gNoteAtY = y; gNoteAtUntil = gNoteUntil;
 }
 
-void DispatchUnitRequest(const UnitControl::Request& request) {
+bool DispatchUnitRequest(const UnitControl::Request& request) {
     if (!StrategicCanAct() || !CeCmdUnitOrdersEligible() || request.world != CeCmdUnitWorld() ||
         request.context_generation != gUnitContextGeneration ||
         request.selection_revision != gUnitUi.Panel().SelectionRevision() || !request.key_count ||
-        request.key_count > UnitControl::kMaxRequestKeys) { Note("Unit command is no longer available."); return; }
+        request.key_count > UnitControl::kMaxRequestKeys) { Note("Unit command is no longer available."); return false; }
     if (request.has_point && (!std::isfinite(request.point.x) || !std::isfinite(request.point.y) || !std::isfinite(request.point.z))) {
-        Note("Point at the ground."); return;
+        Note("Point at the ground."); return false;
     }
     // Refresh both native cohort membership and each unit's lifetime before any
     // command. Every low-level dispatch below resolves its key again as well.
@@ -2464,30 +2498,30 @@ void DispatchUnitRequest(const UnitControl::Request& request) {
     RefreshUnitFrame();
     if (!gUnitSnapshotComplete || !gUnitUi.FrameUsable() || request.world != CeCmdUnitWorld() ||
         request.selection_revision != gUnitUi.Panel().SelectionRevision()) {
-        Note("Unit selection is unavailable. No order issued."); return;
+        Note("Unit selection is unavailable. No order issued."); return false;
     }
     if (request.action == UnitPanel::Action::TakeControl) {
-        if (request.key_count != 1 || request.selected_count != 1) return;
+        if (request.key_count != 1 || request.selected_count != 1) return false;
         UnitTakeContext take = {};
         if (!CeCmdUnitVisit(request.keys[0], UnitCanTake, &take)) {
-            Note(take.reason ? take.reason : "Unit is no longer available."); return;
+            Note(take.reason ? take.reason : "Unit is no longer available."); return false;
         }
         Close();
-        if (!PortCeCmdMapOpen() && CeCmdUnitVisit(request.keys[0], UnitTake, &take)) return;
+        if (!PortCeCmdMapOpen() && CeCmdUnitVisit(request.keys[0], UnitTake, &take)) return true;
         Note(take.reason ? take.reason : "Unit control is no longer available.");
-        return;
+        return false;
     }
     if (request.action == UnitPanel::Action::Focus) {
         gUnitFocusCount = request.key_count;
         for (unsigned i = 0; i < request.key_count; ++i) gUnitFocusKeys[i] = request.keys[i];
         float x, y;
-        if (!UnitFocusPosition(&x, &y)) { gUnitFocusCount = 0; return; }
+        if (!UnitFocusPosition(&x, &y)) { gUnitFocusCount = 0; return false; }
         gFocusTrip.squad = kUnitFocus;
         gFocusTrip.fromX = gViewX + gViewSpan * .5f;
         gFocusTrip.fromY = gViewY + gViewSpan * .5f;
         gFocusTrip.fromZ = gStrategicFocusZ;
         gFocusTrip.start = Ns();
-        return;
+        return true;
     }
     int applied = 0, refused = 0, units = 0;      // units: the selected units whose order (their own or their squad's) was taken
     int issued[UnitControl::kMaxRequestKeys], issuedCount = 0;
@@ -2545,34 +2579,37 @@ void DispatchUnitRequest(const UnitControl::Request& request) {
         request.action == UnitPanel::Action::Advance ? "advancing" : request.action == UnitPanel::Action::FallBack ? "falling back" :
         request.action == UnitPanel::Action::ReturnToAI ? "back on their own orders" : "ordered";
     char message[96];
-    if (!applied) { Note("No selected unit can take that order."); return; }
+    if (!applied) { Note("No selected unit can take that order."); return false; }
     if (units == 1) snprintf(message, sizeof(message), "1 unit %s.", doing);
     else snprintf(message, sizeof(message), "%d units %s.", units, doing);
     if (refused) snprintf(message + strlen(message), sizeof(message) - strlen(message), " %d could not.", refused);
     Note(message);
+    return true;
 }
 
-void DrainUnitRequest() {
+bool DrainUnitRequest() {
     UnitControl::Request request = {};
-    if (gUnitUi.TakeRequest(&request)) DispatchUnitRequest(request);
+    return gUnitUi.TakeRequest(&request) && DispatchUnitRequest(request);
 }
 
-void UnitTargetAt(float x, float y, uint64_t targetToken) {
+bool UnitTargetAt(float x, float y, uint64_t targetToken) {
     CeWorldViewSample view;
     CeViewPoint target;
     if (!StrategicWorldArea(x, y) || !StrategicViewRead(&view) || !StrategicGround(view, x, y, &target)) {
-        NoteHere("Point at the ground.", x, y); return;
+        NoteHere("Point at the ground.", x, y); return false;
     }
     UnitControl::Request request = {};
     if (gUnitUi.SubmitTarget(targetToken, {target.x, target.y, target.z}, &request) == UnitControl::TargetStatus::Submitted)
-        DispatchUnitRequest(request);
+        return DispatchUnitRequest(request);
+    return false;
 }
 
-void UnitAction(UnitPanel::Action action) {
+bool UnitAction(UnitPanel::Action action) {
     const UnitControl::ArmStatus status = gUnitUi.ArmAction(action);
-    if (status == UnitControl::ArmStatus::Queued) DrainUnitRequest();
+    if (status == UnitControl::ArmStatus::Queued) return DrainUnitRequest();
     else if (status == UnitControl::ArmStatus::Armed) Note("Choose a point on the ground.");
     else Note("That action is unavailable for this selection.");
+    return false;
 }
 
 // A ring on the ground round a world point (x, y at height z), r world units across its radius: what is selected and where an order goes stand on the
@@ -2744,8 +2781,7 @@ void RtsHudOrderFollowBe() {
             if (!StrategicHeight(rx, ry, &rz)) rz = 0.f;
             UnitControl::Request req = {};
             if (gUnitUi.SubmitTarget(gUnitUi.TargetToken(), {rx, ry, rz}, &req) == UnitControl::TargetStatus::Submitted) {
-                DispatchUnitRequest(req);
-                CeCmdVoicePlay(CE_VOICE_FOLLOW, Ns());
+                if (DispatchUnitRequest(req)) CeCmdVoicePlay(CE_VOICE_FOLLOW, Ns());
                 return;
             }
         }
@@ -2754,8 +2790,7 @@ void RtsHudOrderFollowBe() {
     }
     if (!ByOrdinal(gSelected)) { Note("Pick a squad first."); return; }
     gHudFollowSquad = gSelected;
-    Order(CE_CMD_ADVANCE, rx, ry);
-    CeCmdVoicePlay(CE_VOICE_FOLLOW, Ns());
+    if (Order(CE_CMD_ADVANCE, rx, ry)) CeCmdVoicePlay(CE_VOICE_FOLLOW, Ns());
 }
 
 void RtsHudTakeControl() {
@@ -2781,8 +2816,8 @@ void RtsHudTakeControl() {
 void RtsHudReturnAi() {
     gHudFollowSquad = -1;
     if (gUnitUi.SelectionCount()) {
-        UnitAction(UnitPanel::Action::ReturnToAI);
-        CeCmdVoicePlay(CE_VOICE_CANCEL, Ns());
+        if (UnitAction(UnitPanel::Action::ReturnToAI))
+            CeCmdVoicePlay(CE_VOICE_CANCEL, Ns());
         return;
     }
     if (!ByOrdinal(gSelected)) { Note("Pick a squad first."); return; }
@@ -2836,9 +2871,8 @@ void RtsHudExecuteCardAction(int btnIdx) {
     if (btn.action == CE_CARD_TAKE_DELIVERED) {
         const int ordinal = CeCmdDeliveredSquad();
         if (ordinal < 0) Note("Tank unavailable.");
-        else if (gSel.n != 1 || gSelected != ordinal) Note("Select the tank first.");
         else if (!CePlayUnitCanTakeDelivery()) Note("Unit control is unavailable.");
-        else { Close(); CePlayUnitTakeDelivery(); }
+        else { CeCmdStructureClearSelection(); SelectOnly(ordinal); Close(); CePlayUnitTakeDelivery(); }
         return;
     }
     if (btn.action == CE_CARD_MOVE) {
@@ -2855,8 +2889,8 @@ void RtsHudExecuteCardAction(int btnIdx) {
         gArmed = false;
         gHudFollowSquad = -1;
         if (gUnitUi.SelectionCount()) {
-            UnitAction(UnitPanel::Action::Hold);
-            CeCmdVoicePlay(CE_VOICE_HOLD, Ns());
+            if (UnitAction(UnitPanel::Action::Hold))
+                CeCmdVoicePlay(CE_VOICE_HOLD, Ns());
         } else Order(CE_CMD_HOLD, 0.f, 0.f);
         return;
     }
@@ -3100,8 +3134,8 @@ void StrategicPointer(WORD key, int event) {
     if (key == 0 && !gArmed) { gUnitUi.PointerDown(px, py); return; }
     if (key == 2 && gUnitUi.SelectionCount()) {
         if (gUnitUi.ArmAction(UnitPanel::Action::Move) == UnitControl::ArmStatus::Armed) {
-            UnitTargetAt(px, py, gUnitUi.TargetToken());
-            CeCmdVoicePlay(CE_VOICE_MOVE, Ns());
+            if (UnitTargetAt(px, py, gUnitUi.TargetToken()))
+                CeCmdVoicePlay(CE_VOICE_MOVE, Ns());
         }
         else Note("Move is unavailable for this selection.");
         return;
@@ -3342,12 +3376,21 @@ void StrategicSquadAction(WORD key) {
         Note(selected.result.rejected_capacity ? "Selection limit reached. Select a smaller group for more units." : "Units selected.");
         return;
     }
-    if (key >= DIK_1 && key <= DIK_8) {
-        const int slot = int(key - DIK_1);
+    if (key >= DIK_1 && key <= DIK_0) {
+        const int number = (key == DIK_0) ? 0 : int(key - DIK_1) + 1;
+        const int slot = (key == DIK_0) ? 9 : int(key - DIK_1);
         if (ctrl && gUnitUi.SelectionCount()) {
-            gUnitUi.SaveSet(slot); Note("Unit selection saved."); return;
+            if (gUnitUi.SaveSet(slot))
+                gUnitGroupSaved[slot] = true;
+            CeCmdSel empty = {};
+            CeGroupStore(gGroups, number, empty);
+            Note("Unit selection saved."); return;
         }
-        if (!ctrl && gUnitUi.SetCount(slot)) {
+        if (!ctrl && (gUnitUi.SetCount(slot) || gUnitGroupSaved[slot])) {
+            if (gUnitUi.SetLiveCount(slot) == 0) {
+                Note("Group has no units left.");
+                return;
+            }
             gUnitUi.RecallSet(slot, shift); SelectOnly(-1); CeFactoryLeaveSelection();
             RefreshUnitFrame(); return;
         }
@@ -3887,7 +3930,7 @@ void DrawStrategicHints() {
             {"Double Click Card", "Center camera on unit or factory"},
             {"Drag Box", "Select units in box"},
             {"Ctrl A", "Select all available units"},
-            {"Ctrl 1 to 8 / 1 to 8", "Save or recall control group"},
+            {"Ctrl 1 to 0 / 1 to 0", "Save or recall control group"},
             {"Right Click", "Move or Attack selected forces"},
             {"G / Shift A", "Attack-move to ground point"},
             {"H", "Hold current position"},
@@ -4067,7 +4110,7 @@ void Close()
 #endif
 	if (LT.GetKeytrap() == (pKeyTrapper)Trap) LT.SetKeytrap(NULL);
 	if (CCONTROLLER *controller = GAME.GetController(0))
-		if (!wasStrategic) { if (controller->GetToControl() == &gSink) controller->RelinquishControl(); }
+		if (controller->GetToControl() == &gSink) controller->RelinquishControl();
 	if (!wasStrategic) { GAME.*GameAccess::PauseField() = FALSE; }
 	if (!wasStrategic || ownedStrategicInput) { InitMouse(); }
 #ifdef CE_COMMANDER_TEST
@@ -4114,11 +4157,12 @@ void Open(bool strategic)
 	ShutdownMouse();		// the pointer it starts from stays in window pixels, which the map reads (PortCeCmdMapOpen)
 	if (strategic) LivePointerStart();	// the live view keeps its own pointer; the game's stays on the centre
 	gOpening = false;
-	if (!strategic) { GAME.GetController(0)->SetToControl(&gSink); }
+	if (CCONTROLLER *controller = GAME.GetController(0)) controller->SetToControl(&gSink);
 	LT.SetKeytrap((pKeyTrapper)Trap);
 	// A key that is already held when the map opens is not a new press when it repeats (the window layer posts every auto-repeat as a key-down): the game's own
 	// key state knows which ones those are, because it is not updated while a key trap is installed but cleared by every key-up.
 	for (int k = 0; k < 256; ++k) gDown[k] = LT.KeyDown[k] != 0;
+	for (int k = 0; k < 256; ++k) LT.KeyDown[k] = 0;
 	gCloseKey = OpenKey();
 	gDown[gCloseKey] = true;		// the press that opened the map may repeat; its release clears this
 	gShift = false;
@@ -4639,8 +4683,10 @@ void PortCeCmdFrame()
 void PortCeCmdLevelEnd()
 {
     CeCmdVoiceStop();
+    FreeTerrainTexture();
     CeFactoryReset();
     gUnitUi.Reset();
+    memset(gUnitGroupSaved, 0, sizeof(gUnitGroupSaved));
     gUnitHiddenCount = 0;
     gStructFocusHandle = kCeEntityHandleInvalid;
     gObservedPilotHandle = kCeEntityHandleInvalid;

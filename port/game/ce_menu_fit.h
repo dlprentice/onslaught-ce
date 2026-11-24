@@ -96,15 +96,16 @@ inline int PortCeListEdgeStep(int first, int shown, int count, int hovered)
     return 0;
 }
 
-// Video Options with Onslaught CE's seven rows has twenty-one rows, seven more than the original's fourteen: its first row
-// would meet the emblem in the front end and Back would meet the spoken subtitle in a level at 20 units a row. That one list
-// (patch 0215, CMenuOptionsList::Render) uses 14 units a row plus an 8-unit breathing gap before Apply/Back. In the front
-// end it is centred 8 units lower (on 308, not 300), so its first row stays cleanly below the top emblem (y 142 > 127) and
-// Back ends above the help line (446 <= 452); in a level's Pause Menu it shifts 8 units higher so Back clears the message bar
-// (400 <= 406).
+// Video Options with Onslaught CE's rows has twenty-two rows (twenty-one without the widescreen switch), up to eight more
+// than the original's fourteen: its first row would meet the emblem in the front end and Back would meet the spoken subtitle
+// in a level at 20 units a row. That one list (patch 0215, CMenuOptionsList::Render) uses 14 units a row plus a 4-unit
+// breathing gap before Apply/Back. In the front end it is centred 7 units lower (on 307, not 300), so its first row stays
+// cleanly below the top emblem (y 136..143 > 127) and Back ends above the help line (450 <= 452 for 22 rows, 443 <= 452 for
+// 21 rows); in a level's Pause Menu it shifts 10 units higher so Back clears the message bar (403 <= 406 for 22 rows,
+// 396 <= 406 for 21 rows).
 static const int kCeCompactPitch = 14;
-static const int kCeCompactActionGap = 8;
-static const float kCeCompactFrontShift = 8.f;
-static const float kCeCompactPauseShift = -8.f;
+static const int kCeCompactActionGap = 4;
+static const float kCeCompactFrontShift = 7.f;
+static const float kCeCompactPauseShift = -10.f;
 
 #endif

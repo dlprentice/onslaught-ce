@@ -644,6 +644,25 @@ class CarrierClashHostTests(unittest.TestCase):
             head = path.read_text(encoding="utf-8")[:200]
             self.assertIn("SPDX-License-Identifier: GPL-3.0-only", head, f"missing SPDX in {path.name}")
 
+        # Verify transition, mutual-exclusion, localized defeat reason, HUD batching, and leak guards.
+        cc_cpp = (GAME / "ce_carrier_clash.cpp").read_text(encoding="utf-8")
+        cc_world_cpp = (GAME / "ce_carrier_clash_world.cpp").read_text(encoding="utf-8")
+        self.assertIn("PortCeLivingSandboxActive", cc_cpp)
+        self.assertIn("PortCePlayUnitShowsBattleline", cc_cpp)
+        self.assertIn("UpdateP0PlayUnitStasis()", cc_cpp)
+        self.assertIn("534802956", cc_cpp)
+        self.assertNotIn("DeclareLevelLost(0,", cc_cpp)
+        self.assertIn("GAMEINTERFACE.IsMenuUp()", cc_cpp)
+        self.assertIn("GAME.GetGameState() != GAME_STATE_PLAYING", cc_cpp)
+        self.assertIn("D3DPT_TRIANGLELIST", cc_cpp)
+        self.assertNotIn("D3DPT_TRIANGLEFAN", cc_cpp)
+        self.assertNotIn("D3DPT_TRIANGLESTRIP", cc_cpp)
+        self.assertIn("RefreshProceduralMapExtents()", cc_world_cpp)
+        self.assertIn("EngineMediaAccess::KempyCube()", cc_world_cpp)
+        self.assertIn("EngineMediaAccess::Water()", cc_world_cpp)
+        self.assertIn("gWorld.arenaInstalled", cc_world_cpp)
+        self.assertIn("CMesh::GetMeshByResourceID(", cc_world_cpp)
+
 
 if __name__ == "__main__":
     unittest.main()

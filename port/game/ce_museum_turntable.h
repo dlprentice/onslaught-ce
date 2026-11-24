@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // port/game/ce_museum_turntable.h: Rotating 3D turntable pedestals for the Grand Museum.
-// Pure C++ state machine, curated Goodie manifest, wing-scoped residency budget, and
-// ray-pick Pause/Resume switch logic — compiled both in-game (ce_museum_turntable.cpp)
-// and in standalone host tests (port/tools/ce_museum_turntable_tests.py).
+// Pure C++ state machine, ALL 45/45 (100%) retail GT_MESH Goodie 3D exhibits resident
+// simultaneously across all wings (zero doorway pop-in), and wing-scoped ray-pick
+// Pause/Resume switch logic — compiled both in-game (ce_museum_turntable.cpp) and in host
+// tests (port/tools/ce_museum_turntable_tests.py).
 #ifndef CE_MUSEUM_TURNTABLE_H
 #define CE_MUSEUM_TURNTABLE_H
 
@@ -14,8 +15,8 @@ namespace CeMuseumTurntable {
 constexpr float kDefaultRateRadPerSec = 12.0f * 3.14159265f / 180.0f; // ~12 deg/s (~30 s / rev)
 constexpr float kStudRadius = 0.28f;
 constexpr float kStudMaxRange = 5.5f;
-// Cap simultaneously resident Goodie 3D meshes well inside 32-bit RAM budget.
-enum { kMaxResidentGoodies = 10, kMaxTurntables = 24 };
+// All 45/45 retail GT_MESH Goodie 3D exhibits stay resident simultaneously so sightlines across wings never pop in.
+enum { kMaxResidentGoodies = 48, kMaxTurntables = 48 };
 
 enum StageStyle {
     kStageGround = 0,  // upright on plinth top
@@ -26,7 +27,7 @@ enum StageStyle {
 };
 
 struct Spec {
-    int goodieId;             // retail goodie_NN_res_PC.aya index
+    int goodieId;             // retail goodie_NN_res_PC.aya index (verified GT_MESH in FEPGoodies.cpp)
     CeMuseumTour::Wing wing;
     StageStyle style;
     const char *title;
@@ -41,80 +42,192 @@ struct Spec {
     bool defaultPaused;
 };
 
-// Curated Grand Museum 3D exhibits loaded on demand from the player's installed retail Goodies.
-enum { kManifestCount = 18 };
+// Complete 45/45 (100%) retail GT_MESH Goodie 3D exhibits loaded once at Museum load from installed game files.
+enum { kManifestCount = 45 };
 static const Spec kManifest[kManifestCount] = {
-    // Courtyard Hero Monument (always resident while in Courtyard or Atrium sightline)
+    // ---- Coastal Courtyard (5 exhibits: Hero Aquila + 2 Aquila Heritage configs + 2 flanking coastal flight pylons) ----
     {8,  CeMuseumTour::kWingCourtyard, kStageHero,
      "Battle Engine Aquila", "Forseti Dual-Mode Walker / Jet",
      "Full-scale dual-mode combat machine uniting armoured ground fire with aerial strike capability.",
      0.0f, 10.5f, 1.35f, 2.50f, 4.8f, 0.0f, 0.0f, -1.0f, false},
+    {9,  CeMuseumTour::kWingCourtyard, kStageGround,
+     "Battle Engine Aquila - Vulcan", "Aquila Assault Configuration",
+     "Close-support Battle Engine loadout pairing rapid rotary vulcan fire with aerial burst rockets.",
+     -5.8f, -1.6f, 0.90f, 1.15f, 2.5f, 0.0f, 1.0f, 0.0f, false},
+    {10, CeMuseumTour::kWingCourtyard, kStageGround,
+     "Battle Engine Aquila - Flux", "Aquila Beam Configuration",
+     "Precision energy loadout uniting sustained beam projection with high-velocity flux bolts.",
+     5.8f, -1.6f, 0.90f, 1.15f, 2.5f, 0.0f, -1.0f, 0.0f, false},
+    {20, CeMuseumTour::kWingCourtyard, kStageFlight,
+     "XF-24 Venom Fighter", "Forseti Elite Interceptor",
+     "High-speed swept-wing Forseti interceptor banked on the western coastal showcase pylon.",
+     -10.2f, 0.5f, 2.35f, 1.40f, 3.2f, 0.34f, 1.0f, 0.0f, false},
+    {37, CeMuseumTour::kWingCourtyard, kStageFlight,
+     "Muspell Tactical Fighter", "Muspell Air Superiority",
+     "Advanced forward-deployed Dominion air superiority fighter banked on the eastern terrace pylon.",
+     10.2f, 0.5f, 2.35f, 1.40f, 3.2f, -0.34f, -1.0f, 0.0f, false},
 
-    // Forseti Forces Wing (West Apse featured rotating displays alongside the 6 native bay exhibits)
+    // ---- Grand Atrium North Heritage Alcoves (2 exhibits: Aquila Siege Config + Lost Toys Panorama Monument) ----
+    {11, CeMuseumTour::kWingAtrium, kStageGround,
+     "Battle Engine Aquila - Blazer", "Aquila Siege Configuration",
+     "Heavy bombardment Battle Engine configuration equipped with high-yield siege ordnance.",
+     -5.4f, 48.0f, 0.95f, 1.25f, 2.7f, 0.0f, 0.0f, -1.0f, false},
+    {76, CeMuseumTour::kWingAtrium, kStageGround,
+     "Lost Toys Panorama Monument", "Commemorative Studio Archive",
+     "Panoramic studio commemorative sculpture celebrating the creators of Battle Engine Aquila.",
+     5.4f, 48.0f, 0.95f, 1.25f, 2.8f, 0.0f, 0.0f, -1.0f, false},
+
+    // ---- Forseti Forces Wing (9 Goodie 3D exhibits alongside the 6 native bay displays — all 5 Forseti Turrets!) ----
     {16, CeMuseumTour::kWingForseti, kStageGround,
      "Forseti Beam Tank", "Forseti Heavy Armour",
      "Tracked assault chassis fitted with a sustained high-energy beam emitter.",
-     -40.8f, 37.8f, 0.90f, 1.45f, 2.8f, 0.0f, 1.0f, 0.0f, false},
+     -40.8f, 38.0f, 0.90f, 1.30f, 2.6f, 0.0f, 1.0f, 0.0f, false},
     {17, CeMuseumTour::kWingForseti, kStageGround,
      "Forseti Plasma Tank", "Forseti Assault Armour",
      "Frontline armoured hull mounting a heavy plasma mortar for anti-fortification fire.",
-     -40.8f, 44.2f, 0.90f, 1.45f, 2.8f, 0.0f, 1.0f, 0.0f, false},
+     -40.8f, 44.0f, 0.90f, 1.30f, 2.6f, 0.0f, 1.0f, 0.0f, false},
+    {14, CeMuseumTour::kWingForseti, kStageGround,
+     "Forseti Pulse Tank", "Forseti Medium Armour",
+     "Rapid-fire pulse cannon tank supporting Commonwealth combined-arms advances.",
+     -25.25f, 48.4f, 0.85f, 1.10f, 2.3f, 0.0f, 0.0f, -1.0f, false},
+    {18, CeMuseumTour::kWingForseti, kStageGround,
+     "Forseti Supply Truck", "Forseti Logistics Vehicle",
+     "Wheeled Commonwealth utility transport hauling munitions and field ordnance.",
+     -32.75f, 48.4f, 0.85f, 1.10f, 2.3f, 0.0f, 0.0f, -1.0f, false},
+    {28, CeMuseumTour::kWingForseti, kStageGround,
+     "Forseti SAM Turret", "Forseti Air Defence",
+     "Fixed surface-to-air missile battery protecting Commonwealth bases from Dominion aircraft.",
+     -40.8f, 49.0f, 0.85f, 1.05f, 2.0f, 0.0f, 0.0f, -1.0f, false},
+    {29, CeMuseumTour::kWingForseti, kStageGround,
+     "Forseti Beam Turret", "Forseti Base Defence",
+     "Fixed energy-beam emplacement defending Commonwealth coastal installations.",
+     -25.25f, 33.6f, 0.85f, 1.10f, 2.1f, 0.0f, 0.0f, 1.0f, false},
+    {30, CeMuseumTour::kWingForseti, kStageGround,
+     "Forseti Pulse Turret", "Forseti Base Defence",
+     "Automated twin-barrel pulse gun turret securing forward Commonwealth perimeters.",
+     -40.8f, 33.0f, 0.85f, 1.05f, 2.0f, 0.0f, 0.0f, 1.0f, false},
+    {31, CeMuseumTour::kWingForseti, kStageGround,
+     "Forseti Artillery Turret", "Forseti Coastal Defence",
+     "Long-range heavy cannon emplacement guarding island approaches.",
+     -32.75f, 33.6f, 0.85f, 1.10f, 2.1f, 0.0f, 0.0f, 1.0f, false},
+    {32, CeMuseumTour::kWingForseti, kStageGround,
+     "Forseti Blaster Turret", "Forseti Heavy Defence",
+     "High-impact energy blaster battery anchored along fortified Commonwealth ridge lines.",
+     -18.0f, 48.6f, 0.85f, 1.05f, 2.0f, 0.0f, 0.0f, -1.0f, false},
 
-    // Muspell Dominion Wing (6 symmetrical turntable pedestals)
+    // ---- Muspell Dominion Wing (13 exhibits: 2 rows of 4 + 2 East Apse + 3 corner turret alcoves — all 5 Muspell Turrets!) ----
     {47, CeMuseumTour::kWingMuspell, kStageGround,
      "Muspell Gun Walker", "Muspell Light Mech",
      "Bipedal recon and skirmish walker fielded across Dominion beachheads.",
-     22.0f, 47.8f, 0.90f, 1.85f, 3.0f, 0.0f, 0.0f, -1.0f, false},
+     21.8f, 48.0f, 0.90f, 1.50f, 2.9f, 0.0f, 0.0f, -1.0f, false},
     {48, CeMuseumTour::kWingMuspell, kStageGround,
      "Muspell Heavy Gun Walker", "Muspell Assault Mech",
      "Up-armoured walker variant carrying dual heavy autocannons.",
-     30.0f, 47.8f, 0.90f, 1.85f, 3.2f, 0.0f, 0.0f, -1.0f, false},
+     27.0f, 48.0f, 0.90f, 1.50f, 3.0f, 0.0f, 0.0f, -1.0f, false},
     {49, CeMuseumTour::kWingMuspell, kStageGround,
      "Muspell Gun Crab", "Muspell Heavy Walker",
      "Quadrupedal siege platform built to anchor entrenched defensive lines.",
-     38.0f, 47.8f, 0.90f, 1.85f, 3.3f, 0.0f, 0.0f, -1.0f, false},
+     32.2f, 48.0f, 0.90f, 1.50f, 3.1f, 0.0f, 0.0f, -1.0f, false},
     {51, CeMuseumTour::kWingMuspell, kStageGround,
      "Muspell Arachnid", "Muspell Heavy Mech",
      "Multi-legged heavy assault walker designed for rough coastal terrain.",
-     22.0f, 34.2f, 0.90f, 1.85f, 3.3f, 0.0f, 0.0f, 1.0f, false},
+     37.4f, 48.0f, 0.90f, 1.50f, 3.1f, 0.0f, 0.0f, -1.0f, false},
     {43, CeMuseumTour::kWingMuspell, kStageGround,
      "Muspell Battle Tank", "Muspell Main Battle Tank",
      "Angular heavy tracked tank forming the backbone of Dominion armoured columns.",
-     30.0f, 34.2f, 0.90f, 1.85f, 3.1f, 0.0f, 0.0f, 1.0f, false},
+     21.8f, 34.0f, 0.90f, 1.50f, 3.0f, 0.0f, 0.0f, 1.0f, false},
     {45, CeMuseumTour::kWingMuspell, kStageGround,
      "Muspell Artillery", "Muspell Siege Vehicle",
      "Long-range mobile bombardment platform supporting amphibious assaults.",
-     38.0f, 34.2f, 0.90f, 1.85f, 3.1f, 0.0f, 0.0f, 1.0f, false},
+     27.0f, 34.0f, 0.90f, 1.50f, 3.0f, 0.0f, 0.0f, 1.0f, false},
+    {44, CeMuseumTour::kWingMuspell, kStageGround,
+     "Muspell SAM Launcher", "Muspell Air Defence",
+     "Tracked surface-to-air missile battery protecting Dominion formations.",
+     32.2f, 34.0f, 0.90f, 1.50f, 2.9f, 0.0f, 0.0f, 1.0f, false},
+    {46, CeMuseumTour::kWingMuspell, kStageGround,
+     "Muspell Supply Truck", "Muspell Logistics Vehicle",
+     "Armoured Dominion transport supporting frontline mech battalions.",
+     37.4f, 34.0f, 0.90f, 1.50f, 2.8f, 0.0f, 0.0f, 1.0f, false},
+    {53, CeMuseumTour::kWingMuspell, kStageGround,
+     "Muspell SAM Turret", "Muspell Air Defence",
+     "Fixed anti-aircraft missile silo guarding Dominion foundries and radar arrays.",
+     18.4f, 48.2f, 0.85f, 1.05f, 2.0f, 0.0f, 0.0f, -1.0f, false},
+    {54, CeMuseumTour::kWingMuspell, kStageGround,
+     "Muspell Laser Turret", "Muspell Base Defence",
+     "Fortified high-output laser emplacement protecting Dominion strongholds.",
+     41.2f, 38.0f, 0.90f, 1.25f, 2.4f, 0.0f, -1.0f, 0.0f, false},
+    {55, CeMuseumTour::kWingMuspell, kStageGround,
+     "Muspell Machinegun Turret", "Muspell Perimeter Defence",
+     "Rapid-fire ballistic bunker turret covering Dominion landing zones and approaches.",
+     41.2f, 48.8f, 0.85f, 1.05f, 2.0f, 0.0f, 0.0f, -1.0f, false},
+    {56, CeMuseumTour::kWingMuspell, kStageGround,
+     "Muspell Artillery Turret", "Muspell Siege Defence",
+     "Heavy fixed Dominion artillery gun emplaced along coastal ridges.",
+     41.2f, 44.0f, 0.90f, 1.25f, 2.4f, 0.0f, -1.0f, 0.0f, false},
+    {57, CeMuseumTour::kWingMuspell, kStageGround,
+     "Muspell Flak Turret", "Muspell Anti-Air Defence",
+     "Heavy multi-barrel flak emplacement filling island skies with bursting shrapnel.",
+     41.2f, 33.2f, 0.85f, 1.05f, 2.0f, 0.0f, 0.0f, 1.0f, false},
 
-    // Aviation & Naval Hangar — West Aviation Pylons (banked in flight!)
+    // ---- Aviation & Naval Hangar: West Aviation Staggered Double-Row Flight Pylons (9 aircraft — 100% of all aircraft!) ----
+    // Outer West Row (x = -15.6, 5 aircraft)
     {19, CeMuseumTour::kWingHangar, kStageFlight,
      "F-24 Fighter", "Forseti Air Superiority",
      "Agile twin-engine interceptor assigned to fleet air defence.",
-     -14.5f, 58.0f, 2.75f, 1.75f, 3.4f, 0.44f, 1.0f, 0.0f, false},
+     -15.6f, 55.0f, 2.65f, 1.35f, 3.1f, 0.42f, 1.0f, 0.0f, false},
     {21, CeMuseumTour::kWingHangar, kStageFlight,
      "Forseti Heavy Bomber", "Forseti Strategic Aircraft",
      "Long-range strike airframe built for high-altitude anti-ship sorties.",
-     -14.5f, 65.0f, 3.05f, 1.75f, 3.8f, 0.36f, 1.0f, 0.0f, false},
+     -15.6f, 60.0f, 3.10f, 1.35f, 3.4f, 0.32f, 1.0f, 0.0f, false},
+    {22, CeMuseumTour::kWingHangar, kStageFlight,
+     "A-15B Ground Attack", "Forseti Close Air Support",
+     "Armoured low-altitude strike aircraft armed for anti-armour and bunker runs.",
+     -15.6f, 65.0f, 2.75f, 1.35f, 3.2f, 0.38f, 1.0f, 0.0f, false},
+    {38, CeMuseumTour::kWingHangar, kStageFlight,
+     "Muspell Strategic Bomber", "Muspell Heavy Aircraft",
+     "Heavy Dominion strike bomber engineered for sustained coastal ridge raids.",
+     -15.6f, 70.0f, 3.10f, 1.35f, 3.4f, 0.34f, 1.0f, 0.0f, false},
+    {41, CeMuseumTour::kWingHangar, kStageFlight,
+     "Muspell Heavy Dropship", "Muspell Assault Transport",
+     "Armoured vertical-lift Dominion dropship delivering walkers onto contested shores.",
+     -15.6f, 75.0f, 2.85f, 1.35f, 3.3f, 0.30f, 1.0f, 0.0f, false},
+    // Inner Staggered West Row (x = -9.8, 4 aircraft framing the open y = 65.0 cross-aisle)
+    {23, CeMuseumTour::kWingHangar, kStageFlight,
+     "Forseti Heavy Lifter", "Forseti VTOL Transport",
+     "Heavy vertical-lift Commonwealth cargo aircraft ferrying armour between islands.",
+     -9.8f, 58.4f, 2.95f, 1.20f, 3.0f, 0.28f, 1.0f, 0.0f, false},
     {36, CeMuseumTour::kWingHangar, kStageFlight,
-     "Muspell Fighter", "Muspell Interceptor",
-     "Fast delta-wing Dominion fighter deployed from forward airbases.",
-     -14.5f, 72.0f, 2.75f, 1.75f, 3.4f, 0.44f, 1.0f, 0.0f, false},
+     "Muspell Interceptor", "Muspell Light Fighter",
+     "Fast forward-swept Dominion dogfighter deployed in coastal interception wings.",
+     -9.8f, 62.2f, 2.55f, 1.20f, 2.8f, 0.44f, 1.0f, 0.0f, false},
+    {39, CeMuseumTour::kWingHangar, kStageFlight,
+     "Muspell Ground Attack", "Muspell Tactical Strike",
+     "Heavily armed Dominion attack craft supporting armoured columns on island fronts.",
+     -9.8f, 68.4f, 2.65f, 1.20f, 2.9f, 0.36f, 1.0f, 0.0f, false},
+    {40, CeMuseumTour::kWingHangar, kStageFlight,
+     "Muspell Assault Dropship", "Muspell Troop Transport",
+     "Compact Dominion rapid-insertion dropship built for contested beachhead landings.",
+     -9.8f, 72.8f, 3.05f, 1.20f, 3.0f, 0.30f, 1.0f, 0.0f, false},
 
-    // Aviation & Naval Hangar — East Naval Basin (staged over recessed dark water; brass studs sit on West basin rail!)
+    // ---- Aviation & Naval Hangar: East Naval Basin (4 vessels over recessed dark water) ----
     {26, CeMuseumTour::kWingHangar, kStageNaval,
      "F.S. Marshall", "Forseti Naval Vessel",
      "Scale maritime display of a Forseti command and fleet support warship.",
-     13.0f, 58.5f, 0.65f, 4.20f, 4.2f, 0.0f, -1.0f, 0.0f, false},
+     13.0f, 58.2f, 0.65f, 4.20f, 4.0f, 0.0f, -1.0f, 0.0f, false},
     {25, CeMuseumTour::kWingHangar, kStageNaval,
      "Forseti Amphibious Lander", "Forseti Transport Craft",
      "Armoured landing craft built to deliver ground forces onto contested beaches.",
-     13.0f, 65.0f, 0.65f, 4.20f, 3.6f, 0.0f, -1.0f, 0.0f, false},
+     13.0f, 62.7f, 0.65f, 4.20f, 3.4f, 0.0f, -1.0f, 0.0f, false},
+    {27, CeMuseumTour::kWingHangar, kStageNaval,
+     "Forseti Cargo Ship", "Forseti Fleet Logistics",
+     "Merchant-hull supply vessel maintaining Commonwealth island lifelines.",
+     13.0f, 67.2f, 0.65f, 4.20f, 3.8f, 0.0f, -1.0f, 0.0f, false},
     {52, CeMuseumTour::kWingHangar, kStageNaval,
      "Muspell Battleship", "Muspell Capital Ship",
      "Scale maritime display of a heavy Dominion bombardment warship.",
-     13.0f, 71.5f, 0.65f, 4.20f, 4.4f, 0.0f, -1.0f, 0.0f, false},
+     13.0f, 71.7f, 0.65f, 4.20f, 4.2f, 0.0f, -1.0f, 0.0f, false},
 
-    // Aviation & Naval Hangar — North Relative Scale Alcove
+    // ---- Aviation & Naval Hangar: North Relative Scale Alcove (3 calibrated units) ----
     {50, CeMuseumTour::kWingHangar, kStageScale,
      "Muspell Gnat", "Relative Scale Alcove",
      "Compact scout unit staged beside heavier armour for direct size comparison.",
@@ -160,17 +273,10 @@ inline void Reset(BankState *s) {
     s->hoveredIndex = -1;
 }
 
-// Which turntable indices should be resident for the visitor's current wing.
-// Always keeps the Courtyard Hero Monument resident when outdoors or in the Atrium,
-// plus only the active wing's exhibits — strictly <= kMaxResidentGoodies.
-inline bool ShouldBeResident(unsigned index, CeMuseumTour::Wing currentWing) {
-    if (index >= kManifestCount) return false;
-    const CeMuseumTour::Wing w = kManifest[index].wing;
-    if (w == currentWing) return true;
-    if (w == CeMuseumTour::kWingCourtyard &&
-        (currentWing == CeMuseumTour::kWingAtrium || currentWing == CeMuseumTour::kWingCourtyard))
-        return true;
-    return false;
+// Keep all 45/45 retail 3D Goodie exhibits resident simultaneously across every wing so
+// sightlines through Atrium doorways and galleries show exhibits with zero pop-in.
+inline bool ShouldBeResident(unsigned index, CeMuseumTour::Wing /*currentWing*/) {
+    return index < kManifestCount;
 }
 
 inline unsigned CountWantedResident(CeMuseumTour::Wing currentWing) {
@@ -207,7 +313,7 @@ inline void StudPosition(unsigned index, float *x, float *y, float *z) {
     if (z) *z = 1.05f;
 }
 
-// Ray-pick the closest turntable brass control stud (eye/aim in local coords, Z positive upward).
+// Ray-pick the closest turntable brass control stud in the visitor's current wing.
 inline int PickStud(float eyeX, float eyeY, float eyeZ,
                     float aimX, float aimY, float aimZ,
                     CeMuseumTour::Wing currentWing) {
@@ -217,7 +323,7 @@ inline int PickStud(float eyeX, float eyeY, float eyeZ,
     int best = -1;
     float bestT = 1e9f;
     for (unsigned i = 0; i < kManifestCount; ++i) {
-        if (!ShouldBeResident(i, currentWing)) continue;
+        if (kManifest[i].wing != currentWing) continue;
         float sx, sy, sz;
         StudPosition(i, &sx, &sy, &sz);
         const float vx = sx - eyeX, vy = sy - eyeY, vz = sz - eyeZ;
@@ -243,7 +349,7 @@ inline int FocusExhibit(float visitorX, float visitorY, float forwardX, float fo
     int best = -1;
     float bestScore = -1.0f;
     for (unsigned i = 0; i < kManifestCount; ++i) {
-        if (!ShouldBeResident(i, currentWing)) continue;
+        if (kManifest[i].wing != currentWing) continue;
         const Spec &sp = kManifest[i];
         const float dx = sp.localX - visitorX, dy = sp.localY - visitorY;
         const float d = std::sqrt(dx * dx + dy * dy);

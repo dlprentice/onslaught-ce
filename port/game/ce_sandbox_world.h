@@ -112,10 +112,10 @@ inline const CaptureNodeSpec &CaptureNode(unsigned idx) {
 	return kNodes[idx < kCaptureNodeCount ? idx : 0u];
 }
 
-// Verified retail PC unit definitions backed by 700_res_PC.aya meshes.
+// Verified retail PC unit definitions backed by 700_res_PC.aya and standalone preloads.
 constexpr const char *kPlayerConfig = "Standard";
 // Forseti units
-constexpr const char *kUnitForsetiHq = "Muspell Gun Tank Factory";
+constexpr const char *kUnitForsetiHq = "Forseti Pulse Tank Factory";
 constexpr const char *kUnitBroadsword = "M-1 Broadsword Main Battle Tank";
 constexpr const char *kUnitSabre = "AV-14A Sabre Pulse Tank";
 constexpr const char *kUnitBeamTank = "Beam Tank";
@@ -171,6 +171,24 @@ inline const char *RequiredUnitName(unsigned index) {
 		kUnitManticore,
 	};
 	return index < kRequiredUnitCount ? kNames[index] : nullptr;
+}
+
+// Standalone retail mesh/textures for Forseti Pulse Tank Factory HQ
+// (not packed inside 700_res_PC.aya; Chrome3.tga is already in 700_res_PC.aya).
+constexpr unsigned kForsetiHqMeshCount = 1u;
+inline const char *ForsetiHqMeshName(unsigned index) {
+	return index == 0u ? "fb_tank_factory.msh" : nullptr;
+}
+
+constexpr unsigned kForsetiHqTextureCount = 4u;
+inline const char *ForsetiHqTextureName(unsigned index) {
+	static const char *const kTextures[kForsetiHqTextureCount] = {
+		"meshtex\\A8_FB_hangermorebits_lit.tga",
+		"meshtex\\FB_hangerbits.tga",
+		"meshtex\\FB_hangertop01.tga",
+		"meshtex\\FB_hangertop02.tga",
+	};
+	return index < kForsetiHqTextureCount ? kTextures[index] : nullptr;
 }
 
 // Optional standalone meshes/textures for F.S. Venturer escalation flagship.

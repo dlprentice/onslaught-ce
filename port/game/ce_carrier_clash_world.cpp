@@ -11,6 +11,7 @@
 #include "mixermap.h"
 #include "Texture.h"
 #include "mesh.h"
+#include "ltshell.h"
 #include "engine.h"
 #include "WorldPhysicsManager.h"
 #include "oids.h"
@@ -47,9 +48,65 @@ struct WorldBodyStorage {
 	unsigned readMask;
 	bool ready;
 	bool failed;
+	bool arenaInstalled;
 };
 
 WorldBodyStorage gWorld = {};
+
+struct EngineMediaAccess : public CEngine {
+	static CDXKempyCube *KempyCube() {
+		return static_cast<EngineMediaAccess *>(static_cast<CEngine *>(&ENGINE))->mKempyCube;
+	}
+	static CDXWater *Water() {
+		return static_cast<EngineMediaAccess *>(static_cast<CEngine *>(&ENGINE))->mWater;
+	}
+};
+
+bool ContainsIgnoreCase(const char *haystack, const char *needle) {
+	if (!haystack || !needle || !needle[0]) return false;
+	const size_t nlen = std::strlen(needle);
+	for (const char *p = haystack; *p; ++p) {
+		size_t i = 0u;
+		while (i < nlen && p[i] &&
+		       CeCarrierClashWorld::AsciiLower(static_cast<unsigned char>(p[i])) ==
+		       CeCarrierClashWorld::AsciiLower(static_cast<unsigned char>(needle[i]))) {
+			++i;
+		}
+		if (i == nlen) return true;
+	}
+	return false;
+}
+
+void RefreshProceduralMapExtents() {
+	SINT minX = CeCarrierClashWorld::kCells;
+	SINT minY = CeCarrierClashWorld::kCells;
+	SINT maxX = -1;
+	SINT maxY = -1;
+	for (SINT y = 0; y < CeCarrierClashWorld::kCells; ++y) {
+		for (SINT x = 0; x < CeCarrierClashWorld::kCells; ++x) {
+			if (CeCarrierClashWorld::HeightAt(static_cast<float>(x), static_cast<float>(y)) < MAP.mWaterLevel) {
+				if (x < minX) minX = x;
+				if (x > maxX) maxX = x;
+				if (y < minY) minY = y;
+				if (y > maxY) maxY = y;
+			}
+		}
+	}
+	if (minX > maxX || minY > maxY) {
+		minX = 0;
+		minY = 0;
+		maxX = CeCarrierClashWorld::kCells - 1;
+		maxY = CeCarrierClashWorld::kCells - 1;
+	}
+	SExtents ext = {};
+	ext.mMinX = minX;
+	ext.mMinY = minY;
+	ext.mMaxX = maxX;
+	ext.mMaxY = maxY;
+	ext.mWaterLevel = MAP.mWaterLevel;
+	static_assert(sizeof(ext) == sizeof(MAP.mUnknown000), "SExtents size mismatch");
+	std::memcpy(MAP.mUnknown000, &ext, sizeof(ext));
+}
 
 // Validates that a packed retail .aya file exists and every zlib block unpacks
 // cleanly without ever calling CONSOLE.FatalFileError.
@@ -136,9 +193,10 @@ bool BuildTextureDiskPath(const char *texName, char *outPath, size_t outSize) {
 }
 
 bool PreloadRetailMeshTexture(const char *texName) {
-	if (!texName || !texName[0]) return false;
+	if (!texName || !texName[0] || !LT.GetDevice()) return false;
 	for (CDXTexture *o = CDXTexture::mFirst; o; o = o->CTexture::mNext) {
-		if (stricmp(o->GetName(), texName) == 0 && o->mFormat == TEXFMT_A1R5G5B5 && o->mLevels == -1) {
+		if (stricmp(o->GetName(), texName) == 0 && o->mFormat == TEXFMT_A1R5G5B5 &&
+		    o->mLevels == -1 && o->mTextures[0] != NULL) {
 			return true;
 		}
 	}
@@ -154,14 +212,19 @@ bool PreloadRetailMeshTexture(const char *texName) {
 	t->mRefCount = 0;
 	t->mFormat = TEXFMT_A1R5G5B5;
 	t->mTexFormat = TEXFMT_A1R5G5B5;
+	t->mWidth = 0;
+	t->mHeight = 0;
+	t->mLossShift = 0;
+	t->mMipFilter = 1;
 	t->mLevels = -1;
 	t->mResourceLevels = 0;
 	t->mNumFrames = 1;
 	t->mPool = D3DPOOL_MANAGED;
 	t->mCompressible = 1;
 	t->mDisplayFormat = 0;
+	t->mFlags155 = 0;
 	t->mUnknown155b = 1;
-	t->mLit = (std::strstr(texName, "_lit") != NULL) ? TRUE : FALSE;
+	t->mLit = ContainsIgnoreCase(texName, "_lit") ? TRUE : FALSE;
 	const HRESULT hr = t->LoadFrame(0);
 	if (FAILED(hr) || !t->mTextures[0]) {
 		t->ForceDelete();
@@ -180,9 +243,14 @@ bool LoadRetailMeshFromStandaloneAya(const char *meshName, int32_t runtimeId) {
 	if (!meshName || !meshName[0]) return false;
 	if (CMesh::FindLoadedUnique(meshName) != NULL) return true;
 
+	int32_t safeId = runtimeId;
+	while (CMesh::GetMeshByResourceID(safeId) != NULL && safeId < runtimeId + 4096) {
+		++safeId;
+	}
+
 	uint8_t stub[336] = {};
 	unsigned stubLen = 0u;
-	if (!CeCarrierClashWorld::BuildMeshStubChunk(meshName, runtimeId, true,
+	if (!CeCarrierClashWorld::BuildMeshStubChunk(meshName, safeId, true,
 	                                             stub, sizeof(stub), &stubLen)) {
 		return false;
 	}
@@ -194,7 +262,7 @@ bool LoadRetailMeshFromStandaloneAya(const char *meshName, int32_t runtimeId) {
 	CChunkReader reader;
 	reader.Open(&mem);
 	CMesh *loaded = CMesh::Deserialize(&reader);
-	mem.Close();
+	reader.Close();
 	return loaded != NULL || CMesh::FindLoadedUnique(meshName) != NULL;
 }
 
@@ -235,11 +303,14 @@ void FinalizeHeightFieldLighting() {
 	}
 }
 
-void BuildProceduralMixerMap(float sunX, float sunY, float sunZ) {
+bool BuildProceduralMixerMap(float sunX, float sunY, float sunZ) {
 	MIXERMAP.Destroy();
 	MIXERMAP.mSlots = new(MEMTYPE_MIXERMAP) SMixerSlot[MIXER_MAP_SLOTS];
 	MIXERMAP.mMap = new(MEMTYPE_MIXERMAP) UBYTE[MIXER_MAP_SIZE];
-	if (!MIXERMAP.mSlots || !MIXERMAP.mMap) return;
+	if (!MIXERMAP.mSlots || !MIXERMAP.mMap) {
+		MIXERMAP.Destroy();
+		return false;
+	}
 
 	// Lightmap: 512 x 512 directional sun illumination in [14..62].
 	for (int y = 0; y < CeCarrierClashWorld::kCells; ++y) {
@@ -318,11 +389,16 @@ void BuildProceduralMixerMap(float sunX, float sunY, float sunZ) {
 			}
 		}
 	}
+	return true;
 }
 
 } // namespace
 
 extern "C" void PortCeCarrierClashDropWorld(void) {
+	if (gWorld.arenaInstalled) {
+		MAP.mGeometryLoaded = FALSE;
+		MAP.mPropertiesLoaded = FALSE;
+	}
 	std::memset(&gWorld, 0, sizeof(gWorld));
 }
 
@@ -408,6 +484,9 @@ extern "C" bool PortCeCarrierClashPreflightAndBuildWorld(void) {
 extern "C" void PortCeCarrierClashInstallArena(void) {
 	if (!PortCeCarrierClashActive()) return;
 
+	const UBYTE archiveSkyCube = MAP.mHFP.mUnknown18[0];
+	const UBYTE archiveWaterSet = MAP.mHFP.mUnknown18[5];
+
 	MAP.CHeightField::Shutdown();
 	MAP.mHeightData = new(MEMTYPE_HEIGHTFIELD) SWORD[CeCarrierClashWorld::kHeightSamples];
 	if (!MAP.mHeightData) {
@@ -424,6 +503,8 @@ extern "C" void PortCeCarrierClashInstallArena(void) {
 
 	// Sunlit open-ocean maritime atmosphere: crisp azure horizon, warm sunlight,
 	// gentle haze so both flagships stay razor-sharp across the naval corridor.
+	const UBYTE targetSkyCube = static_cast<UBYTE>(CeCarrierClashWorld::kSkyCubeIndex);
+	const UBYTE targetWaterSet = static_cast<UBYTE>(CeCarrierClashWorld::kWaterSetIndex);
 	std::memset(&MAP.mHFP, 0, sizeof(MAP.mHFP));
 	MAP.mHFP.Fog = 0xffb8d8eeu;
 	MAP.mHFP.Sun = 0xffeef0dcu;
@@ -431,12 +512,12 @@ extern "C" void PortCeCarrierClashInstallArena(void) {
 	const DWORD sunReflect = 0xffeff6ffu;
 	std::memcpy(&MAP.mHFP.mUnknown0c[0], &sunReflect, sizeof(sunReflect));
 	MAP.mHFP.Ambient = 0xff304258u;
-	MAP.mHFP.mUnknown18[0] = CeCarrierClashWorld::kSkyCubeIndex;
+	MAP.mHFP.mUnknown18[0] = targetSkyCube;
 	MAP.mHFP.mUnknown18[1] = 1;
 	MAP.mHFP.mUnknown18[2] = 129;
 	MAP.mHFP.mUnknown18[3] = 255;
 	MAP.mHFP.mUnknown18[4] = 0;
-	MAP.mHFP.mUnknown18[5] = CeCarrierClashWorld::kWaterSetIndex;
+	MAP.mHFP.mUnknown18[5] = targetWaterSet;
 	MAP.mHFP.FogDensity = 0.0018f;
 	const DWORD waterCol = 0xff163b5eu;
 	std::memcpy(&MAP.mHFP.mUnknown24[0], &waterCol, sizeof(waterCol));
@@ -446,15 +527,45 @@ extern "C" void PortCeCarrierClashInstallArena(void) {
 	MAP.mHFP.SunPosZ = -0.41f;
 
 	FinalizeHeightFieldLighting();
-	BuildProceduralMixerMap(MAP.mHFP.SunPosX, MAP.mHFP.SunPosY, MAP.mHFP.SunPosZ);
+	RefreshProceduralMapExtents();
+	if (!BuildProceduralMixerMap(MAP.mHFP.SunPosX, MAP.mHFP.SunPosY, MAP.mHFP.SunPosZ)) {
+		gWorld.failed = true;
+		PortCeCarrierClashSetMessage("Carrier Clash could not allocate terrain blend memory. Your career is unchanged.");
+		return;
+	}
 
-	ENGINE.SetKempyCube(CeCarrierClashWorld::kSkyCubeIndex);
-	ENGINE.SetWater(CeCarrierClashWorld::kWaterSetIndex);
+	// ENGINE.Deserialize -> MAP.Deserialize already loaded archiveSkyCube & archiveWaterSet.
+	// Avoid redundant SetKempyCube/SetWater calls (and release existing face textures / shaders /
+	// VBufTexture before switching) so transitioning in/out of Carrier Clash leaks zero resources.
+	CDXKempyCube *kc = EngineMediaAccess::KempyCube();
+	if (archiveSkyCube != targetSkyCube || (kc && !kc->mTextures[0])) {
+		if (kc) {
+			for (int i = 0; i < 5; ++i) {
+				if (kc->mTextures[i]) {
+					kc->mTextures[i]->Release();
+					kc->mTextures[i] = NULL;
+				}
+			}
+		}
+		ENGINE.SetKempyCube(targetSkyCube);
+	}
+	CDXWater *water = EngineMediaAccess::Water();
+	if (archiveWaterSet != targetWaterSet || (water && !water->mReflection)) {
+		if (water) {
+			water->DeleteDeviceObjects();
+			if (water->mVB) {
+				water->mVB->Release();
+				water->mVB = NULL;
+			}
+		}
+		ENGINE.SetWater(targetWaterSet);
+	}
 
 	MAP.mMapNumber = CeCarrierClashWorld::kMapId;
 	MAP.mGeometryLoaded = TRUE;
 	MAP.mPropertiesLoaded = TRUE;
 	MAP.InitQuickCollisionMap();
+	gWorld.arenaInstalled = true;
 
 	PortSessionLog(PORT_SESSION_GAME, false,
 	               "carrier clash arena installed: 512x512 maritime corridor, water %.1f, sky %u",

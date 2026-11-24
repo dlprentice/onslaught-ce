@@ -229,6 +229,10 @@ void DesktopFullscreen(HWND focus, D3DPRESENT_PARAMETERS *pp)
 	SDL_Window *w = PortSdlWindow(pp->hDeviceWindow ? pp->hDeviceWindow : focus);
 	pp->Windowed = TRUE;
 	pp->FullScreen_RefreshRateInHz = 0;
+#ifdef CE_VERSION
+	if (pp->SwapEffect == D3DSWAPEFFECT_DISCARD && pp->BackBufferCount == 1)
+		pp->BackBufferCount = 2;
+#endif
 	gBoxW = pp->BackBufferWidth;
 	gBoxH = pp->BackBufferHeight;
 	gBoxWindow = w;
@@ -1573,13 +1577,19 @@ void PortWideViewport(int box)
 {
 	if (!gDevice)
 		return;
-	D3DSURFACE_DESC d;
-	IDirect3DSurface9 *back = NULL;
-	if (FAILED(gDevice->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &back)))
-		return;
-	back->GetDesc(&d);
-	back->Release();
-	D3DVIEWPORT9 vp = { 0, 0, d.Width, d.Height, 0.f, 1.f };
+	DWORD bw = gBackW, bh = gBackH;
+	if (!bw || !bh)
+	{
+		D3DSURFACE_DESC d;
+		IDirect3DSurface9 *back = NULL;
+		if (FAILED(gDevice->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &back)))
+			return;
+		back->GetDesc(&d);
+		back->Release();
+		bw = d.Width;
+		bh = d.Height;
+	}
+	D3DVIEWPORT9 vp = { 0, 0, bw, bh, 0.f, 1.f };
 	if (box && PortWideActive())
 	{
 		float s = PortUiScale();
@@ -1587,10 +1597,10 @@ void PortWideViewport(int box)
 		vp.Y = (DWORD)(PortUiTop() + 0.5f);
 		vp.Width = (DWORD)(640.f * s + 0.5f);
 		vp.Height = (DWORD)(480.f * s + 0.5f);
-		if (vp.X + vp.Width > d.Width)
-			vp.Width = d.Width - vp.X;
-		if (vp.Y + vp.Height > d.Height)
-			vp.Height = d.Height - vp.Y;
+		if (vp.X + vp.Width > bw)
+			vp.Width = bw - vp.X;
+		if (vp.Y + vp.Height > bh)
+			vp.Height = bh - vp.Y;
 	}
 	gDevice->SetViewport(&vp);
 }

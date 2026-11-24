@@ -78,7 +78,7 @@ class TerrainTexture(unittest.TestCase):
         self.mutant("\tgTerrainTexture->GetTexture()->UnlockRect(0);\n", "", "unlock missing")
         self.mutant("\t\tgTerrainTexture->Release();\n", "", "texture never released")
         self.mutant("\t\t\tgTerrainTextureFailed = true;\n", "", "failure not remembered")
-        self.mutant("if (FAILED(gTerrainTexture->GetTexture()->LockRect(0, &lr, NULL, D3DLOCK_NOSYSLOCK)))\n\t\treturn false;",
+        self.mutant("if (FAILED(gTerrainTexture->GetTexture()->LockRect(0, &lr, NULL, D3DLOCK_NOSYSLOCK)))\n\t\t\treturn false;",
                     "gTerrainTexture->GetTexture()->LockRect(0, &lr, NULL, D3DLOCK_NOSYSLOCK);", "failed lock ignored")
         self.mutant("CSPRITERENDERER::mBatch = FALSE;\n\tif (device)", "if (device)", "batching left on")
 

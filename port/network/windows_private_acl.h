@@ -67,6 +67,45 @@ inline bool CurrentUserSid(std::vector<BYTE>& out) {
     return CopySid(len, out.data(), sid) != 0;
 }
 
+inline bool CurrentOwnerSid(std::vector<BYTE>& out) {
+    out.clear();
+    HANDLE raw = nullptr;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &raw) || !raw) return false;
+    ScopedHandle token(raw);
+    DWORD needed = 0;
+    GetTokenInformation(token.value, TokenOwner, nullptr, 0, &needed);
+    if (needed == 0 || needed > 65536) return false;
+    std::vector<BYTE> data(needed);
+    if (!GetTokenInformation(token.value, TokenOwner, data.data(), needed, &needed)) return false;
+    PSID sid = reinterpret_cast<TOKEN_OWNER*>(data.data())->Owner;
+    if (!sid || !IsValidSid(sid)) return false;
+    const DWORD len = GetLengthSid(sid);
+    if (len == 0 || len > SECURITY_MAX_SID_SIZE) return false;
+    out.resize(len);
+    return CopySid(len, out.data(), sid) != 0;
+}
+
+inline bool HandleVolumeSupportsAcls(HANDLE handle) noexcept {
+    DWORD flags = 0;
+    if (!GetVolumeInformationByHandleW(handle, nullptr, 0, nullptr, nullptr, &flags, nullptr, 0))
+        return true; // fail closed if volume capabilities cannot be queried
+    return (flags & FILE_PERSISTENT_ACLS) != 0;
+}
+
+inline bool IsCloudPlaceholderReparseTag(DWORD tag) noexcept {
+    // Microsoft OneDrive / Cloud Filter placeholder tags (IO_REPARSE_TAG_CLOUD..CLOUD_F: 0x9000001A..0x9000F01A).
+    return (tag & 0xFFFF0FFFUL) == 0x9000001AUL;
+}
+
+inline bool IsAllowedReparseHandle(HANDLE handle, DWORD attrs) noexcept {
+    if ((attrs & FILE_ATTRIBUTE_DEVICE) != 0) return false;
+    if ((attrs & FILE_ATTRIBUTE_REPARSE_POINT) == 0) return true;
+    FILE_ATTRIBUTE_TAG_INFO tagInfo{};
+    if (!GetFileInformationByHandleEx(handle, FileAttributeTagInfo, &tagInfo, sizeof(tagInfo)))
+        return false;
+    return IsCloudPlaceholderReparseTag(tagInfo.ReparseTag);
+}
+
 inline uint64_t SidHash64(const std::vector<BYTE>& sid) noexcept {
     uint64_t h = 14695981039346656037ULL;
     for (BYTE b : sid) {
@@ -78,6 +117,7 @@ inline uint64_t SidHash64(const std::vector<BYTE>& sid) noexcept {
 
 inline bool HandleIsPrivate(HANDLE handle, PSID user) {
     if (handle == INVALID_HANDLE_VALUE || !handle || !user || !IsValidSid(user)) return false;
+    if (!HandleVolumeSupportsAcls(handle)) return true; // non-ACL volumes (FAT32 / exFAT) have no NTFS DACLs
     PSECURITY_DESCRIPTOR descriptor = nullptr;
     PSID owner = nullptr;
     PACL acl = nullptr;
@@ -85,8 +125,11 @@ inline bool HandleIsPrivate(HANDLE handle, PSID user) {
                         &owner, nullptr, &acl, nullptr, &descriptor) != ERROR_SUCCESS)
         return false;
     struct FreeDesc { PSECURITY_DESCRIPTOR p; ~FreeDesc() { if (p) LocalFree(p); } } guard{descriptor};
-    if (!descriptor || !IsValidSecurityDescriptor(descriptor) || !owner || !IsValidSid(owner) ||
-        !EqualSid(owner, user) || !acl || !IsValidAcl(acl))
+    std::vector<BYTE> tokenOwner;
+    const bool hasTokenOwner = CurrentOwnerSid(tokenOwner);
+    const bool ownerMatches = owner && IsValidSid(owner) &&
+        (EqualSid(owner, user) || (hasTokenOwner && EqualSid(owner, tokenOwner.data())));
+    if (!descriptor || !IsValidSecurityDescriptor(descriptor) || !ownerMatches || !acl || !IsValidAcl(acl))
         return false;
     std::array<BYTE, SECURITY_MAX_SID_SIZE> system{}, admins{}, creator{};
     DWORD sysSize = static_cast<DWORD>(system.size());
@@ -165,10 +208,16 @@ inline bool NormalizeAbsolutePath(const char* utf8Path, std::wstring& outWide) {
     size_t len = 0;
     while (len <= 4096 && utf8Path[len]) ++len;
     if (len < 3 || len > 4096) return false;
-    if (!((utf8Path[0] >= 'A' && utf8Path[0] <= 'Z') || (utf8Path[0] >= 'a' && utf8Path[0] <= 'z')) ||
-        utf8Path[1] != ':' || (utf8Path[2] != '\\' && utf8Path[2] != '/'))
-        return false;
-    for (size_t i = 2; i < len; ++i) {
+    const bool isDrive = ((utf8Path[0] >= 'A' && utf8Path[0] <= 'Z') ||
+                          (utf8Path[0] >= 'a' && utf8Path[0] <= 'z')) &&
+                         utf8Path[1] == ':' && (utf8Path[2] == '\\' || utf8Path[2] == '/');
+    const bool isUnc = len >= 5 &&
+                       (utf8Path[0] == '\\' || utf8Path[0] == '/') &&
+                       (utf8Path[1] == '\\' || utf8Path[1] == '/') &&
+                       utf8Path[2] != '\\' && utf8Path[2] != '/';
+    if (!isDrive && !isUnc) return false;
+    const size_t colonStart = isDrive ? 2 : 0;
+    for (size_t i = colonStart; i < len; ++i) {
         if (utf8Path[i] == ':') return false;
     }
     const int needed = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, utf8Path, int(len), nullptr, 0);
@@ -181,8 +230,10 @@ inline bool NormalizeAbsolutePath(const char* utf8Path, std::wstring& outWide) {
     for (wchar_t& ch : outWide) {
         if (ch == L'/') ch = L'\\';
     }
-    while (outWide.size() > 3 && outWide.back() == L'\\') outWide.pop_back();
-    size_t pos = 3;
+    const size_t minRoot = isDrive ? 3 : 2;
+    while (outWide.size() > minRoot && outWide.back() == L'\\') outWide.pop_back();
+    size_t pos = minRoot;
+    size_t uncParts = 0;
     while (pos < outWide.size()) {
         size_t next = outWide.find(L'\\', pos);
         if (next == std::wstring::npos) next = outWide.size();
@@ -191,8 +242,10 @@ inline bool NormalizeAbsolutePath(const char* utf8Path, std::wstring& outWide) {
         if ((partLen == 1 && outWide[pos] == L'.') ||
             (partLen == 2 && outWide[pos] == L'.' && outWide[pos + 1] == L'.'))
             return false;
+        ++uncParts;
         pos = (next < outWide.size()) ? next + 1 : next;
     }
+    if (isUnc && uncParts < 2) return false; // UNC requires at least \\server\share
     return true;
 }
 
@@ -206,9 +259,31 @@ inline bool ValidLeafName(const std::wstring& leaf) {
     return true;
 }
 
+inline bool CheckFinalDirectoryNoReparse(const std::wstring& path) {
+    if (path.size() < 3) return false;
+    ScopedHandle h(CreateFileW(path.c_str(), FILE_READ_ATTRIBUTES,
+                               FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                               nullptr, OPEN_EXISTING,
+                               FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
+    if (!h.Good()) return false;
+    BY_HANDLE_FILE_INFORMATION info{};
+    if (GetFileType(h.value) != FILE_TYPE_DISK || !GetFileInformationByHandle(h.value, &info))
+        return false;
+    if ((info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0)
+        return false;
+    return IsAllowedReparseHandle(h.value, info.dwFileAttributes);
+}
+
 inline bool CheckPathComponentsNoReparse(const std::wstring& path) {
     if (path.size() < 3) return false;
-    size_t pos = 3;
+    size_t pos = (path.size() >= 2 && path[0] == L'\\' && path[1] == L'\\') ? 2 : 3;
+    if (pos == 2) {
+        // Skip \\server\share prefix for UNC paths.
+        size_t s1 = path.find(L'\\', 2);
+        if (s1 == std::wstring::npos) return false;
+        size_t s2 = path.find(L'\\', s1 + 1);
+        pos = (s2 == std::wstring::npos) ? path.size() : (s2 + 1);
+    }
     while (pos <= path.size()) {
         size_t next = path.find(L'\\', pos);
         if (next == std::wstring::npos) next = path.size();
@@ -222,7 +297,7 @@ inline bool CheckPathComponentsNoReparse(const std::wstring& path) {
             BY_HANDLE_FILE_INFORMATION info{};
             if (GetFileType(h.value) != FILE_TYPE_DISK || !GetFileInformationByHandle(h.value, &info))
                 return false;
-            if ((info.dwFileAttributes & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DEVICE)) != 0)
+            if (!IsAllowedReparseHandle(h.value, info.dwFileAttributes))
                 return false;
             if ((info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0)
                 return false;
@@ -240,7 +315,7 @@ inline bool OpenPrivateDirectory(const char* utf8Path, ScopedHandle& outHandle,
     outHandle.Reset();
     std::wstring wide;
     if (!NormalizeAbsolutePath(utf8Path, wide)) return false;
-    if (!CheckPathComponentsNoReparse(wide)) return false;
+    if (!CheckFinalDirectoryNoReparse(wide)) return false;
     std::vector<BYTE> userSid;
     if (!CurrentUserSid(userSid)) return false;
     ScopedHandle h(CreateFileW(wide.c_str(),
@@ -253,7 +328,7 @@ inline bool OpenPrivateDirectory(const char* utf8Path, ScopedHandle& outHandle,
     if (GetFileType(h.value) != FILE_TYPE_DISK || !GetFileInformationByHandle(h.value, &info))
         return false;
     if ((info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0 ||
-        (info.dwFileAttributes & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DEVICE)) != 0)
+        !IsAllowedReparseHandle(h.value, info.dwFileAttributes))
         return false;
     if (!HandleIsPrivate(h.value, userSid.data())) return false;
     if (outWidePath) *outWidePath = wide;
@@ -272,6 +347,36 @@ inline bool CreatePrivateDirectory(const std::wstring& path, bool* outAlreadyExi
         return false;
     }
     return true;
+}
+
+inline bool EnsurePrivateDirectoryRecursive(const std::wstring& path) {
+    if (path.size() < 3) return false;
+    size_t pos = 3;
+    if (path[0] == L'\\' && path[1] == L'\\') {
+        size_t s1 = path.find(L'\\', 2);
+        if (s1 == std::wstring::npos) return false;
+        size_t s2 = path.find(L'\\', s1 + 1);
+        if (s2 == std::wstring::npos) return CheckFinalDirectoryNoReparse(path);
+        pos = s2 + 1;
+    }
+    while (pos < path.size()) {
+        size_t next = path.find(L'\\', pos);
+        const bool isLeaf = (next == std::wstring::npos);
+        if (isLeaf) next = path.size();
+        const std::wstring prefix = path.substr(0, next);
+        if (isLeaf) {
+            bool exists = false;
+            if (!CreatePrivateDirectory(prefix, &exists) && !exists) return false;
+        } else {
+            if (!CreateDirectoryW(prefix.c_str(), nullptr)) {
+                const DWORD err = GetLastError();
+                if (err != ERROR_ALREADY_EXISTS) return false;
+            }
+        }
+        if (isLeaf) break;
+        pos = next + 1;
+    }
+    return CheckFinalDirectoryNoReparse(path);
 }
 
 inline bool ReadPrivateFile(const std::wstring& dirWidePath, const std::string& leafAscii,
@@ -293,7 +398,8 @@ inline bool ReadPrivateFile(const std::wstring& dirWidePath, const std::string& 
     BY_HANDLE_FILE_INFORMATION before{}, after{};
     if (GetFileType(file.value) != FILE_TYPE_DISK || !GetFileInformationByHandle(file.value, &before))
         return false;
-    if ((before.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DEVICE)) != 0 ||
+    if ((before.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0 ||
+        !IsAllowedReparseHandle(file.value, before.dwFileAttributes) ||
         before.nNumberOfLinks != 1 || before.nFileSizeHigh != 0 ||
         before.nFileSizeLow < minBytes || before.nFileSizeLow > maxBytes)
         return false;

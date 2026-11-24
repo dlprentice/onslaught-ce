@@ -65,6 +65,7 @@ int main(int argc, char **argv)
 		memset(why, 'x', sizeof why - 1);
 		why[sizeof why - 1] = 0;
 		if (ce_box_text_bad_folder(text, sizeof text, why)) put("bad-folder-one-long-word", text);
+		if (ce_box_text_picker_failed(text, sizeof text, "portal unavailable")) put("picker-failed", text);
 		words(folder, sizeof folder, "C:\\Users\\A Long Name\\AppData\\Roaming\\Onslaught CE", 1);
 		if (ce_box_text_report(text, sizeof text, 1, folder)) put("report-opened", text);
 		if (ce_box_text_report(text, sizeof text, 0, folder)) put("report-not-opened", text);
@@ -73,7 +74,7 @@ int main(int argc, char **argv)
 	if (argc >= 2 && !strcmp(argv[1], "short"))
 	{
 		char tiny[4096];
-		struct { const char *name; size_t len; } sizes[3];
+		struct { const char *name; size_t len; } sizes[4];
 		/* the exact length of each text, found by building it big, then asked for in a buffer that is one byte short and exactly right */
 		ce_box_text_update_offer(tiny, sizeof tiny, "0.1.14", "0.1.13", 35.2);
 		sizes[0].name = "update-offer"; sizes[0].len = strlen(tiny);
@@ -81,13 +82,17 @@ int main(int argc, char **argv)
 		sizes[1].name = "bad-folder"; sizes[1].len = strlen(tiny);
 		ce_box_text_report(tiny, sizeof tiny, 1, "C:\\x");
 		sizes[2].name = "report"; sizes[2].len = strlen(tiny);
-		for (int i = 0; i < 3; ++i)
+		ce_box_text_picker_failed(tiny, sizeof tiny, "portal unavailable");
+		sizes[3].name = "picker-failed"; sizes[3].len = strlen(tiny);
+		for (int i = 0; i < 4; ++i)
 			for (int extra = 0; extra < 2; ++extra)
 			{
 				char buf[4096];
 				size_t cap = sizes[i].len + (size_t)extra;	/* extra 0: one byte short (no room for the terminator); extra 1: exactly right */
-				int r = i == 0 ? ce_box_text_update_offer(buf, cap, "0.1.14", "0.1.13", 35.2) : i == 1 ? ce_box_text_bad_folder(buf, cap, "it has no BEA.exe") :
-					ce_box_text_report(buf, cap, 1, "C:\\x");
+				int r = i == 0 ? ce_box_text_update_offer(buf, cap, "0.1.14", "0.1.13", 35.2) :
+					i == 1 ? ce_box_text_bad_folder(buf, cap, "it has no BEA.exe") :
+					i == 2 ? ce_box_text_report(buf, cap, 1, "C:\\x") :
+					ce_box_text_picker_failed(buf, cap, "portal unavailable");
 				printf("%s %s %d\n", sizes[i].name, extra ? "exact" : "short", r);
 			}
 		return 0;

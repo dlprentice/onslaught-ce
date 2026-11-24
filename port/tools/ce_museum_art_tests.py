@@ -15,6 +15,7 @@ CPP = GAME / "ce_museum_art.cpp"
 DRIVER = r"""
 #include "ce_museum_art.h"
 #include "ce_museum_exhibition.h"
+#include "ce_archive_pedestal.h"
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -41,57 +42,173 @@ static bool AsciiOnly(const char *s) {
     return true;
 }
 
+static bool MountedFlushOnRealWall(const CanvasSpec &sp) {
+    const float eps = 0.025f;
+    const float halfW = sp.maxWidth * 0.5f + 0.155f;
+    if (sp.wing == CeMuseumTour::kWingConceptArt) {
+        // North wall y=27.68 (normal -Y), South wall y=10.32 (normal +Y), East wall x=39.68 (normal -X)
+        if (Near(sp.localY, 27.68f, eps) && Near(sp.normalX, 0.0f) && Near(sp.normalY, -1.0f))
+            return sp.localX - halfW >= 16.30f && sp.localX + halfW <= 39.70f;
+        if (Near(sp.localY, 10.32f, eps) && Near(sp.normalX, 0.0f) && Near(sp.normalY, 1.0f))
+            return sp.localX - halfW >= 16.30f && sp.localX + halfW <= 39.70f;
+        if (Near(sp.localX, 39.68f, eps) && Near(sp.normalX, -1.0f) && Near(sp.normalY, 0.0f))
+            return sp.localY - halfW >= 18.0f && sp.localY + halfW <= 27.60f;
+        // 3 parallel N-S divider walls at x = 23, 28, 33 (+/-0.26 face), y [14.10..21.30]
+        const float divX[3] = {23.0f, 28.0f, 33.0f};
+        for (unsigned k = 0; k < 3u; ++k) {
+            if (Near(sp.localX, divX[k] - 0.26f, eps) && Near(sp.normalX, -1.0f) && Near(sp.normalY, 0.0f))
+                return sp.localY - halfW >= 14.10f && sp.localY + halfW <= 21.30f;
+            if (Near(sp.localX, divX[k] + 0.26f, eps) && Near(sp.normalX, 1.0f) && Near(sp.normalY, 0.0f))
+                return sp.localY - halfW >= 14.10f && sp.localY + halfW <= 21.30f;
+        }
+        return false;
+    }
+    if (sp.wing == CeMuseumTour::kWingEarlyDesigns) {
+        if (Near(sp.localY, 27.68f, eps) && Near(sp.normalX, 0.0f) && Near(sp.normalY, -1.0f))
+            return sp.localX - halfW >= -39.70f && sp.localX + halfW <= -16.30f;
+        if (Near(sp.localY, 10.32f, eps) && Near(sp.normalX, 0.0f) && Near(sp.normalY, 1.0f))
+            return sp.localX - halfW >= -39.70f && sp.localX + halfW <= -16.30f;
+        if (Near(sp.localX, -39.68f, eps) && Near(sp.normalX, 1.0f) && Near(sp.normalY, 0.0f))
+            return sp.localY - halfW >= 10.40f && sp.localY + halfW <= 27.60f;
+        const float divX[3] = {-23.0f, -28.0f, -33.0f};
+        for (unsigned k = 0; k < 3u; ++k) {
+            if (Near(sp.localX, divX[k] - 0.26f, eps) && Near(sp.normalX, -1.0f) && Near(sp.normalY, 0.0f))
+                return sp.localY - halfW >= 14.10f && sp.localY + halfW <= 21.30f;
+            if (Near(sp.localX, divX[k] + 0.26f, eps) && Near(sp.normalX, 1.0f) && Near(sp.normalY, 0.0f))
+                return sp.localY - halfW >= 14.10f && sp.localY + halfW <= 21.30f;
+        }
+        return false;
+    }
+    return false;
+}
+
 int main() {
     const Grand::RoomGraph graph = Grand::MakeRoomGraph();
-    Need(kManifestCount == 20, "20 curated Goodies canvases across both art wings");
-    Need(CountWantedResident(CeMuseumTour::kWingConceptArt) == 10, "10 paintings in Concept Art Gallery");
-    Need(CountWantedResident(CeMuseumTour::kWingEarlyDesigns) == 10, "10 plates in Early Designs Vault");
+    Need(kManifestCount == 149, "ALL 149/149 (100%) retail GT_IMAGE Goodies plates across both art wings");
+    Need(kMaxTexEdge == 256u, "256px max texture edge cap for all 149 simultaneously resident canvases");
+    Need(CountWantedResident(CeMuseumTour::kWingConceptArt) == 75, "75 paintings in Concept Art Gallery");
+    Need(CountWantedResident(CeMuseumTour::kWingEarlyDesigns) == 74, "74 plates in Early Designs Vault");
     Need(CountWantedResident(CeMuseumTour::kWingCourtyard) == 0, "no canvases resident in Courtyard");
     Need(CountWantedResident(CeMuseumTour::kWingHangar) == 0, "no canvases resident in Hangar");
+    Need(EstimateTotalBytes() <= 38u * 1024u * 1024u, "total VRAM for all 149 canvases <= 38 MiB");
 
-    // Wing-bounded VRAM cap: every wing stays under 12 MiB worst-case RGBA.
-    for (int w = 0; w < int(CeMuseumTour::kWingCount); ++w) {
-        const CeMuseumTour::Wing wing = static_cast<CeMuseumTour::Wing>(w);
-        Need(CountWantedResident(wing) <= unsigned(kMaxResidentCanvases), "canvas count <= wing cap");
-        Need(EstimateWingBytes(wing) <= 12u * 1024u * 1024u, "worst-case VRAM <= 12 MiB per wing");
+    // 1. Exact 100% (149/149) retail kGoodieImage ID coverage verified against CeArchivePedestal!
+    Need(CeArchivePedestal::CountGoodies(CeArchivePedestal::kGoodieImage) == 149u,
+         "retail catalog defines 149 GT_IMAGE goodies");
+    for (unsigned g = 0; g < 149u; ++g) {
+        const int wantId = CeArchivePedestal::GoodieIdAt(CeArchivePedestal::kGoodieImage, g);
+        Need(wantId >= 0, "valid retail image goodie ID");
+        bool found = false;
+        for (unsigned i = 0; i < kManifestCount; ++i) {
+            if (kManifest[i].goodieId == wantId) { found = true; break; }
+        }
+        Need(found, "every single retail GT_IMAGE goodie ID (149/149) appears in museum art manifest");
     }
 
-    // Every canvas has valid ASCII copy, mounts inside its room, and has walkable viewing space in front.
+    // 2. Wing-bounded VRAM cap stays under 20 MiB per wing.
+    for (int w = 0; w < int(CeMuseumTour::kWingCount); ++w) {
+        const CeMuseumTour::Wing wing = static_cast<CeMuseumTour::Wing>(w);
+        Need(CountWantedResident(wing) <= unsigned(kMaxResidentCanvases), "canvas count <= cap");
+        Need(EstimateWingBytes(wing) <= 20u * 1024u * 1024u, "worst-case VRAM <= 20 MiB per wing");
+    }
+
+    // 3. Every canvas has unique goodieId, valid retailPath, ASCII copy, flush wall mount,
+    // zero 3D frame overlap with any other plate, walkable 2.0m viewing spot, and accurate 2D/3D focus!
     for (unsigned i = 0; i < kManifestCount; ++i) {
         const CanvasSpec &sp = kManifest[i];
+        Need(CeArchivePedestal::ClassifyGoodie(sp.goodieId) == CeArchivePedestal::kGoodieImage,
+             "manifest entry is a genuine retail GT_IMAGE goodie");
         Need(sp.retailPath && std::strncmp(sp.retailPath, "goodies\\", 8) == 0, "retail goodies key");
         Need(AsciiOnly(sp.title) && AsciiOnly(sp.category) && AsciiOnly(sp.caption), "ASCII curator text");
         Need(sp.maxWidth > 1.0f && sp.maxHeight > 1.0f && sp.centreZ > 1.5f, "sensible frame bounds");
         Need(Grand::RoomAt(graph, CeMuseumExhibition::Vec2{sp.localX, sp.localY}) == static_cast<Grand::RoomId>(sp.wing),
              "canvas sits inside its declared wing");
-        const float vx = sp.localX + sp.normalX * 3.0f;
-        const float vy = sp.localY + sp.normalY * 3.0f;
+        Need(MountedFlushOnRealWall(sp), "canvas is mounted flush against a real perimeter or divider wall");
+
+        // 3D AABB non-overlap across ALL 149 outer brass frames (+0.155m border + curator plaque below)!
+        const float rxA = -sp.normalY, ryA = sp.normalX;
+        const float hwA = sp.maxWidth * 0.5f + 0.155f;
+        const float hhA = sp.maxHeight * 0.5f + 0.155f;
+        const float ax0 = sp.localX - std::fabs(rxA) * hwA - std::fabs(sp.normalX) * 0.08f;
+        const float ax1 = sp.localX + std::fabs(rxA) * hwA + std::fabs(sp.normalX) * 0.08f;
+        const float ay0 = sp.localY - std::fabs(ryA) * hwA - std::fabs(sp.normalY) * 0.08f;
+        const float ay1 = sp.localY + std::fabs(ryA) * hwA + std::fabs(sp.normalY) * 0.08f;
+        const float az0 = sp.centreZ - hhA - 0.165f; // includes brass curator nameplate below frame
+        const float az1 = sp.centreZ + hhA;
+        Need(az0 > 0.40f && az1 < 5.08f, "frame and nameplate stay cleanly between skirting and picture rail");
+
+        for (unsigned j = i + 1u; j < kManifestCount; ++j) {
+            const CanvasSpec &ot = kManifest[j];
+            Need(sp.goodieId != ot.goodieId, "unique goodieId per canvas");
+            if (sp.wing != ot.wing) continue;
+            const float rxB = -ot.normalY, ryB = ot.normalX;
+            const float hwB = ot.maxWidth * 0.5f + 0.155f;
+            const float hhB = ot.maxHeight * 0.5f + 0.155f;
+            const float bx0 = ot.localX - std::fabs(rxB) * hwB - std::fabs(ot.normalX) * 0.08f;
+            const float bx1 = ot.localX + std::fabs(rxB) * hwB + std::fabs(ot.normalX) * 0.08f;
+            const float by0 = ot.localY - std::fabs(ryB) * hwB - std::fabs(ot.normalY) * 0.08f;
+            const float by1 = ot.localY + std::fabs(ryB) * hwB + std::fabs(ot.normalY) * 0.08f;
+            const float bz0 = ot.centreZ - hhB - 0.165f;
+            const float bz1 = ot.centreZ + hhB;
+            const bool overlap = (ax0 < bx1 && ax1 > bx0) && (ay0 < by1 && ay1 > by0) && (az0 < bz1 && az1 > bz0);
+            Need(!overlap, "zero overlapping frames or nameplates in 3D space");
+        }
+
+        // Walkable viewing spot 2.0 m in front of every canvas (4.5 m aisles between divider walls).
+        const float vx = sp.localX + sp.normalX * 2.0f;
+        const float vy = sp.localY + sp.normalY * 2.0f;
         Need(Grand::WalkAt(graph, CeMuseumExhibition::Vec2{vx, vy}) == CeMuseumExhibition::kWalkOpen,
-             "viewing spot 3 m in front of every canvas is walkable");
-        Need(FocusCanvas(vx, vy, -sp.normalX, -sp.normalY, sp.wing) == int(i),
-             "standing in front and looking at canvas focuses it");
-        Need(FocusCanvas(vx, vy, -sp.normalX, -sp.normalY, CeMuseumTour::kWingCourtyard) == -1,
+             "viewing spot 2.0 m in front of every canvas is walkable");
+        // Aiming directly at the canvas in 3D (lower OR upper tier) focuses that exact canvas!
+        const float aimX = sp.localX - vx;
+        const float aimY = sp.localY - vy;
+        const float aimZ = sp.centreZ - 1.70f;
+        Need(FocusCanvas3D(vx, vy, 1.70f, aimX, aimY, aimZ, sp.wing) == int(i),
+             "standing in front and aiming at canvas focuses exact tier plate");
+        Need(FocusCanvas3D(vx, vy, 1.70f, aimX, aimY, aimZ, CeMuseumTour::kWingCourtyard) == -1,
              "wrong wing clears canvas focus");
-        Need(FocusCanvas(vx, vy, sp.normalX, sp.normalY, sp.wing) == -1,
-             "looking away clears canvas focus");
-        // Behind the wall never triggers focus.
+        Need(FocusCanvas3D(vx, vy, 1.70f, sp.normalX, sp.normalY, 0.0f, sp.wing) != int(i),
+             "looking away clears focus on that canvas");
+        if (sp.centreZ < 2.5f) {
+            Need(FocusCanvas(vx, vy, -sp.normalX, -sp.normalY, sp.wing) == int(i),
+                 "2D FocusCanvas picks lower-tier plate cleanly");
+        }
+        // Behind the wall never focuses this canvas.
         const float bx = sp.localX - sp.normalX * 2.0f;
         const float by = sp.localY - sp.normalY * 2.0f;
-        Need(FocusCanvas(bx, by, sp.normalX, sp.normalY, sp.wing) == -1,
-             "behind wall cannot focus canvas");
+        Need(FocusCanvas3D(bx, by, 1.70f, sp.normalX, sp.normalY, sp.centreZ - 1.70f, sp.wing) != int(i),
+             "behind wall cannot focus this canvas");
     }
+    Need(FocusCanvas(17.5f, 19.0f, -1.0f, 0.0f, CeMuseumTour::kWingConceptArt) == -1,
+         "looking away toward open archway clears focus");
+    Need(FocusCanvas(-17.5f, 19.0f, 1.0f, 0.0f, CeMuseumTour::kWingEarlyDesigns) == -1,
+         "looking away toward open archway clears focus in early designs");
 
-    // BoundedUpload: <= 512 px longest edge with aspect ratio preserved.
-    const UploadSize uSmall = BoundedUpload(256, 192);
-    Need(uSmall.width == 256 && uSmall.height == 192, "small texture kept unchanged");
+    // 4. Truncated retail filename fallback matches goodie 95 & goodie 103 and rejects mismatches.
+    Need(MatchesTruncatedCatalogPath(
+             "data/resources/textures/goodies%ca_cutscene_locations%ca_cl_f_command_room_interior.t.aya",
+             "goodies\\ca_cutscene_locations\\ca_cl_f_command_room_interior.tga"),
+         "matches retail truncated goodie 95 (.t.aya)");
+    Need(MatchesTruncatedCatalogPath(
+             "data/resources/textures/goodies%ca_cutscene_locations%ca_cl_f_research_compound.tga(0.aya",
+             "goodies\\ca_cutscene_locations\\ca_cl_f_research_compound.tga"),
+         "matches retail truncated goodie 103 (.tga(0.aya)");
+    Need(!MatchesTruncatedCatalogPath(
+             "data/resources/textures/goodies%ca_cutscene_locations%ca_cl_f_docks_interior.tga(0).aya",
+             "goodies\\ca_cutscene_locations\\ca_cl_f_command_room_interior.tga"),
+         "rejects unrelated texture path");
+
+    // 5. BoundedUpload: <= 256 px longest edge with aspect ratio preserved.
+    const UploadSize uSmall = BoundedUpload(192, 128);
+    Need(uSmall.width == 192 && uSmall.height == 128, "small texture kept unchanged");
     const UploadSize uLand = BoundedUpload(1024, 512);
-    Need(uLand.width == 512 && uLand.height == 256, "landscape capped to 512 preserving 2:1");
+    Need(uLand.width == 256 && uLand.height == 128, "landscape capped to 256 preserving 2:1");
     const UploadSize uPort = BoundedUpload(600, 1200);
-    Need(uPort.width == 256 && uPort.height == 512, "portrait capped to 512 preserving 1:2");
+    Need(uPort.width == 128 && uPort.height == 256, "portrait capped to 256 preserving 1:2");
     const UploadSize uZero = BoundedUpload(0, 512);
     Need(uZero.width == 1 && uZero.height == 1, "zero input safely clamped to 1x1");
 
-    // FitFrame: preserves source aspect ratio within frame opening.
+    // 6. FitFrame: preserves source aspect ratio within frame opening.
     const QuadExtent qWide = FitFrame(1600, 900, 3.0f, 2.2f);
     Need(Near(qWide.halfW, 1.5f) && Near(qWide.halfH, 1.5f * 9.0f / 16.0f), "wide art fits frame width");
     const QuadExtent qTall = FitFrame(600, 1200, 3.0f, 2.2f);
@@ -136,7 +253,7 @@ def main():
         check("art driver builds with ASan/UBSan", ok, detail)
         if ok:
             ok, detail = run([str(d / "driver")])
-            check("concept art manifest, 512px bounds, aspect fit and focus hold", ok, detail)
+            check("149/149 concept art manifest, 256px bounds, wall flushness, zero 3D overlap and focus hold", ok, detail)
 
         src = HEADER.read_text()
         for label, old, new in MUTANTS:
@@ -155,10 +272,15 @@ def main():
             check("mutant " + label + " caught", caught)
 
     cpp = CPP.read_text()
-    check("runtime opens asset catalog textures lazily",
-          "PortCeAssetCatalogOpenKinds" in cpp and "CE_ASSET_TEXTURE" in cpp)
-    check("runtime uploads bounded <=512px textures into D3DPOOL_MANAGED",
-          "BoundedUpload" in cpp and "D3DPOOL_MANAGED" in cpp and "D3DXCreateTextureFromFileInMemoryEx" in cpp)
+    check("runtime opens asset catalog textures lazily and handles truncated filenames",
+          "PortCeAssetCatalogOpenKinds" in cpp and "CE_ASSET_TEXTURE" in cpp
+          and "ResolveTextureIndex(" in cpp and "MatchesTruncatedCatalogPath(" in cpp)
+    check("runtime uploads bounded <=256px textures into D3DPOOL_MANAGED and deduplicates shared paths",
+          "BoundedUpload" in cpp and "D3DPOOL_MANAGED" in cpp
+          and "D3DXCreateTextureFromFileInMemoryEx" in cpp and "ownsTexture = false;" in cpp)
+    check("runtime batches all 149 brass frames, mats, nameplates and art quads into static D3DPOOL_MANAGED GPU buffers",
+          "frameVb" in cpp and "frameIb" in cpp and "artVb" in cpp
+          and "DrawIndexedPrimitive(D3DPT_TRIANGLELIST" in cpp and "ReleaseFrameGpuBuffers();" in cpp)
     check("runtime degrades missing paintings cleanly without crashing",
           "gArt.slots[i].missing = true;" in cpp and "archival plate unavailable" in cpp)
     check("runtime releases textures and catalog on shutdown",

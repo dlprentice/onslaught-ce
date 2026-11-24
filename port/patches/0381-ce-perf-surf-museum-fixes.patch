@@ -1,0 +1,848 @@
+--- a/DXSurf.cpp
++++ b/DXSurf.cpp
+@@ -195,6 +195,9 @@
+ void	CDXSurf::Destroy()	// FUNCTION: 0x005569e0
+ {
+ 	mLoaded = FALSE;
++#ifdef CE_VERSION
++	mNumStrips = 0;
++#endif
+ 	if (mStrips)
+ 	{
+ 		delete [] mStrips;
+--- a/ResourceAccumulator.cpp
++++ b/ResourceAccumulator.cpp
+@@ -1015,7 +1015,7 @@
+ 		else if (tag==MKID("SURF"))
+ 		{
+ #ifdef CE_VERSION
+-			if (PortCeCarrierClashActive() || PortCeLivingSandboxActive()) { c.Skip(); }
++			if (PortCeMuseumAuthoredSource() || PortCeCarrierClashActive() || PortCeLivingSandboxActive()) { c.Skip(); }
+ 			else
+ #endif
+ 			SURF.Deserialize(&c);
+@@ -1039,7 +1039,8 @@
+ 		else if(tag==MKID("DMKR"))
+ 		{
+ #ifdef CE_VERSION
+-			if (PortCeMuseumAuthoredSource() || PortCeCarrierClashActive() || PortCeLivingSandboxActive()) { c.Skip(); }
++			extern bool PortCeDamageIsLoaded(const class CDamage *);
++			if ((PortCeMuseumAuthoredSource() || PortCeCarrierClashActive() || PortCeLivingSandboxActive()) && PortCeDamageIsLoaded(ENGINE.GetLandscape()->GetDamage())) { c.Skip(); }
+ 			else
+ #endif
+ 			ENGINE.GetLandscape()->GetDamage()->DeserializeAll(&c);
+--- a/damage.cpp
++++ b/damage.cpp
+@@ -24,6 +24,9 @@
+ {
+ 	if (!mLoaded)
+ 	{
++#ifdef CE_VERSION
++		if (mTexture) { mTexture->Free(); SAFE_DELETE(mTexture); }
++#endif
+ #line 22
+ 		mTexture = new(MEMTYPE_LANDSCAPE) CDamageTexture;
+ 		mTexture->Load("data\\textures\\mixers\\damage0.tga");
+@@ -113,6 +116,9 @@
+ void CDamageTexture::Deserialize(CChunkReader *c)
+ {
+ 	c->Read(&mLevels, 4, 1);
++#ifdef CE_VERSION
++	if (mLevels < 0 || mLevels > 6) mLevels = 0;
++#endif
+ 	mSize = MIP_OFFSETS[mLevels + 1];
+ #line 117
+ 	mData = new(MEMTYPE_LANDSCAPE) UBYTE[mSize];
+@@ -171,8 +177,18 @@
+ }
+ 
+ //******************************************************************************************
++#ifdef CE_VERSION
++bool PortCeDamageIsLoaded(const CDamage *d)
++{
++	return d && d->mLoaded != FALSE;
++}
++#endif
++
+ void CDamage::DeserializeAll(CChunkReader *c)	// FUNCTION: 0x00441000
+ {
++#ifdef CE_VERSION
++	if (mTexture) { mTexture->Free(); SAFE_DELETE(mTexture); }
++#endif
+ #line 198
+ 	mTexture = new(MEMTYPE_LANDSCAPE) CDamageTexture;
+ 	mTexture->Deserialize(c);
+--- a/LandscapeTexture.cpp
++++ b/LandscapeTexture.cpp
+@@ -28,6 +28,9 @@
+ SLandscapeTile	CLandscapeTexture::sQueue[50];
+ UWORD		CLandscapeTexture::sColours[512 * 512];
+ SLandscapeTile	*CLandscapeTexture::sQueueEnd = CLandscapeTexture::sQueue;
++#ifdef CE_VERSION
++static bool	sCeDeferLandscapeUpload = false;
++#endif
+ 
+ //******************************************************************************************
+ // FUNCTION: 0x0048e430
+@@ -179,6 +182,45 @@
+ 	for (SINT pass = 0; pass < 2; pass++)
+ 	{
+ 		dst = sQueue;
++#ifdef CE_VERSION
++		SLandscapeTile	batch[50];
++		SINT	batchCount = 0;
++		for (SLandscapeTile *src = sQueue; src < sQueueEnd; src++)
++		{
++			if (src->mUrgent && ((pass == 0) || (updated + batchCount >= 1)))
++			{
++				*dst = *src;
++				dst++;
++			}
++			else
++			{
++				batch[batchCount++] = *src;
++				log[n++] = src->mUrgent ? 'x' : 'X';
++			}
++		}
++		if (batchCount > 0)
++		{
++			bool	done[50] = {};
++			for (SINT i = 0; i < batchCount; i++)
++			{
++				if (done[i]) continue;
++				CLandscapeTexture	*atlas = batch[i].mTexture;
++				sCeDeferLandscapeUpload = true;
++				for (SINT j = i; j < batchCount; j++)
++				{
++					if (!done[j] && batch[j].mTexture == atlas)
++					{
++						done[j] = true;
++						atlas->UpdateTile(batch[j].mTile);
++						updated++;
++					}
++				}
++				sCeDeferLandscapeUpload = false;
++				if (!LANDSCAPE_TEXTURES_MANAGED.mValue && sTexture && atlas->mTexture)
++					LT.GetDevice()->UpdateTexture(sTexture, atlas->mTexture);
++			}
++		}
++#else
+ 		for (SLandscapeTile *src = sQueue; src < sQueueEnd; src++)
+ 		{
+ 			if (src->mUrgent && ((pass == 0) || (updated >= 1)))
+@@ -193,6 +235,7 @@
+ 				log[n++] = src->mUrgent ? 'x' : 'X';
+ 			}
+ 		}
++#endif
+ 		if ((pass == 0) && (updated >= 1))
+ 			break;
+ 	}
+@@ -302,7 +345,11 @@
+ 			UWORD	*dst = (UWORD *)lr.pBits;
+ 			UWORD	first = CDXLandscape::mDamage.mCells[tile];
+ 			CDamageMark	*m = first ? &CDXLandscape::mDamage.mMarks[first] : NULL;
++#ifdef CE_VERSION
++			if (m && CDXLandscape::mDamage.mTexture && CDXLandscape::mDamage.mTexture->mData)
++#else
+ 			if (m)
++#endif
+ 			{
+ 				SINT	pitch = lr.Pitch / 2;
+ 				SINT	down = 4 - mLevel;
+@@ -310,7 +357,11 @@
+ 				do
+ 				{
+ 					SINT	n = m->mSize - down;
++#ifdef CE_VERSION
++					if (n > 0 && n <= CDXLandscape::mDamage.mTexture->mLevels && n < 7)
++#else
+ 					if (n > 0)
++#endif
+ 						BlendAlpha(dst, pitch, CDXLandscape::mDamage.mTexture->GetLevel(n),
+ 								   (char)m->mX >> down, (char)m->mY >> down, n, size);
+ 					m = m->mNext ? &CDXLandscape::mDamage.mMarks[m->mNext] : NULL;
+@@ -318,7 +369,11 @@
+ 			}
+ 		}
+ 		CopyTileToTexture(&r);
++#ifdef CE_VERSION
++		if (!LANDSCAPE_TEXTURES_MANAGED.mValue && !sCeDeferLandscapeUpload)
++#else
+ 		if (!LANDSCAPE_TEXTURES_MANAGED.mValue)
++#endif
+ 			LT.GetDevice()->UpdateTexture(sTexture, mTexture);
+ 	}
+ 	else
+@@ -338,7 +393,11 @@
+ 			UWORD	*dst;
+ 			dst = (UWORD *)lr.pBits;
+ 			m = first ? &CDXLandscape::mDamage.mMarks[first] : NULL;
++#ifdef CE_VERSION
++			if (m && CDXLandscape::mDamage.mTexture && CDXLandscape::mDamage.mTexture->mData)
++#else
+ 			if (m)
++#endif
+ 			{
+ 				SINT	pitch = lr.Pitch / 2;
+ 				SINT	down = 4 - mLevel;
+@@ -346,7 +405,11 @@
+ 				do
+ 				{
+ 					SINT	n = m->mSize - down;
++#ifdef CE_VERSION
++					if (n > 0 && n <= CDXLandscape::mDamage.mTexture->mLevels && n < 7)
++#else
+ 					if (n > 0)
++#endif
+ 						BlendAlpha(dst, pitch, CDXLandscape::mDamage.mTexture->GetLevel(n),
+ 								   (char)m->mX >> down, (char)m->mY >> down, n, size);
+ 					m = m->mNext ? &CDXLandscape::mDamage.mMarks[m->mNext] : NULL;
+@@ -357,7 +420,11 @@
+ 			else
+ 				sTexture->UnlockRect(0);
+ 		}
++#ifdef CE_VERSION
++		if (!LANDSCAPE_TEXTURES_MANAGED.mValue && !sCeDeferLandscapeUpload)
++#else
+ 		if (!LANDSCAPE_TEXTURES_MANAGED.mValue)
++#endif
+ 			LT.GetDevice()->UpdateTexture(sTexture, mTexture);
+ 	}
+ }
+@@ -478,7 +545,11 @@
+ 			MAP.Unknown47eff0(mLevel, &ENGINE.GetMapTex()[mUnknown30], bits + ofs, pitch / 2, tile, 5, 0, 0, 8, 8);
+ 			UWORD	first = CDXLandscape::mDamage.mCells[(UWORD)tile];
+ 			CDamageMark	*m = first ? &CDXLandscape::mDamage.mMarks[first] : NULL;
++#ifdef CE_VERSION
++			if (m && CDXLandscape::mDamage.mTexture && CDXLandscape::mDamage.mTexture->mData)
++#else
+ 			if (m)
++#endif
+ 			{
+ 				SINT	half = lr.Pitch / 2;
+ 				SINT	down = 4 - mLevel;
+@@ -486,7 +557,11 @@
+ 				do
+ 				{
+ 					SINT	n = m->mSize - down;
++#ifdef CE_VERSION
++					if (n > 0 && n <= CDXLandscape::mDamage.mTexture->mLevels && n < 7)
++#else
+ 					if (n > 0)
++#endif
+ 						BlendAlpha((UWORD *)(bits + ofs), half, CDXLandscape::mDamage.mTexture->GetLevel(n),
+ 								   (char)m->mX >> down, (char)m->mY >> down, n, size);
+ 					m = m->mNext ? &CDXLandscape::mDamage.mMarks[m->mNext] : NULL;
+--- a/landscapeib.cpp
++++ b/landscapeib.cpp
+@@ -21,7 +21,12 @@
+ 	{
+ 		SINT	i = mLevel * 16 + mEdges;
+ 		SINT	n = PATCHMANAGER.mOffsets[i + 1] - PATCHMANAGER.mOffsets[i];
++#ifdef CE_VERSION
++		SAFE_RELEASE(mIB);
++		LT.D3D_CreateIndexBuffer(n * 2, D3DUSAGE_WRITEONLY, D3DFMT_INDEX16, D3DPOOL_MANAGED, &mIB);
++#else
+ 		LT.D3D_CreateIndexBuffer(n * 2, D3DUSAGE_DYNAMIC | D3DUSAGE_WRITEONLY, D3DFMT_INDEX16, D3DPOOL_DEFAULT, &mIB);
++#endif
+ 		mCount = n - 2;
+ 		UWORD	*p;
+ 		if (mIB->Lock(0, 0, (void **)&p, D3DLOCK_NOSYSLOCK) >= 0)
+@@ -145,7 +150,12 @@
+ 	GenerateStrips((unsigned short *)tris, count * 3, &groups, &num_groups);
+ 
+ 	mCount = groups->numIndices;
++#ifdef CE_VERSION
++	SAFE_RELEASE(mIB);
++	LT.D3D_CreateIndexBuffer(mCount * 2, D3DUSAGE_WRITEONLY, D3DFMT_INDEX16, D3DPOOL_MANAGED, &mIB);
++#else
+ 	LT.D3D_CreateIndexBuffer(mCount * 2, D3DUSAGE_DYNAMIC | D3DUSAGE_WRITEONLY, D3DFMT_INDEX16, D3DPOOL_DEFAULT, &mIB);
++#endif
+ 	if (mIB)
+ 	{
+ 		p = NULL;
+--- a/vbuffer.cpp
++++ b/vbuffer.cpp
+@@ -129,6 +129,9 @@
+ {
+ 	if (mPool == D3DPOOL_DEFAULT)
+ 	{
++#ifdef CE_VERSION
++		if (mVB) { LT.D3D_ReleaseVertexBuffer(mVB); mVB = NULL; mLocked = false; }
++#endif
+ 		if (FAILED(LT.D3D_CreateVertexBuffer(mSize, mUsage, mFVF, D3DPOOL_DEFAULT, &mVB)))
+ 			return E_FAIL;
+ 	}
+--- a/ibuffer.cpp
++++ b/ibuffer.cpp
+@@ -95,6 +95,9 @@
+ {
+ 	if (mPool == D3DPOOL_DEFAULT)
+ 	{
++#ifdef CE_VERSION
++		SAFE_RELEASE(mIB);
++#endif
+ 		if (FAILED(LT.D3D_CreateIndexBuffer(mSize, mUsage, (D3DFORMAT)mFormat, D3DPOOL_DEFAULT, &mIB)))
+ 			return E_FAIL;
+ 	}
+--- a/DXKempyCube.cpp
++++ b/DXKempyCube.cpp
+@@ -105,7 +105,19 @@
+ //******************************************************************************************
+ void CDXKempyCube::Change(UBYTE number)	// FUNCTION: 0x005441a0
+ {
++#ifdef CE_VERSION
++	CDXTexture *old[5];
++	for (int i = 0; i < 5; i++)
++		old[i] = mTextures[i];
++#endif
+ 	Load(number);
++#ifdef CE_VERSION
++	for (int i = 0; i < 5; i++)
++	{
++		if (old[i])
++			old[i]->Release();
++	}
++#endif
+ }
+ 
+ //******************************************************************************************
+--- a/DXWater.cpp
++++ b/DXWater.cpp
+@@ -176,6 +176,15 @@
+ 		mVB->Release();
+ 		mVB = NULL;
+ 	}
++#ifdef CE_VERSION
++	if (sShader)
++	{
++		sShader->Release();
++		if (sShader->mRefCount <= 0)
++			delete sShader;
++		sShader = NULL;
++	}
++#endif
+ }
+ 
+ //******************************************************************************************
+@@ -221,6 +230,25 @@
+ 		mSunReflect->Release();
+ 		mSunReflect = NULL;
+ 	}
++#ifdef CE_VERSION
++	if (mVB)
++	{
++		mVB->Release();
++		mVB = NULL;
++	}
++	if (sPixelShader)
++	{
++		sPixelShader->Release();
++		sPixelShader = NULL;
++	}
++	if (sShader)
++	{
++		sShader->Release();
++		if (sShader->mRefCount <= 0)
++			delete sShader;
++		sShader = NULL;
++	}
++#endif
+ 	mGridColour = 0;
+ 	Load(number);
+ }
+@@ -229,6 +257,13 @@
+ HRESULT CDXWater::InitDeviceObjects()	// FUNCTION: 0x0055b3a0
+ {
+ 	mGridColour++;
++#ifdef CE_VERSION
++	if (sPixelShader)
++	{
++		sPixelShader->Release();
++		sPixelShader = NULL;
++	}
++#endif
+ 	if (LT.m_d3dCaps.PixelShaderVersion >= D3DPS_VERSION(2, 0))
+ 	{
+ 		if (SUCCEEDED(LT.D3D_CreatePixelShader(WATER_PS_TEXT, &sPixelShader)))
+--- a/VertexShader.cpp
++++ b/VertexShader.cpp
+@@ -284,6 +284,9 @@
+ {
+ 	if (LT.mD3DActive)
+ 	{
++#ifdef CE_VERSION
++		SAFE_RELEASE(mShader);
++#endif
+ 		D3DCAPS9 caps;
+ 		LT.GetDevice()->GetDeviceCaps(&caps);
+ 		if (caps.VertexShaderVersion < D3DVS_VERSION(1, 1))
+@@ -455,7 +458,11 @@
+ 				if (declsize == v->mDeclarationSize && memcmp(decl, v->mDeclaration, declsize) == 0)
+ 					found = v;
+ 			}
++#ifdef CE_VERSION
++			else if (_stricmp(v->mName, name) == 0 && (size == (UINT)-1 || function == v->mFunction))
++#else
+ 			else if (_stricmp(v->mName, name) == 0 && function == v->mFunction)
++#endif
+ 				found = v;
+ 		}
+ 	}
+@@ -1158,6 +1165,9 @@
+ 	v->DeviceObject::mNext = devnext;
+ 	v->mNext = next;
+ 	*(void **)v = vtable;
++#ifdef CE_VERSION
++	v->mShader = NULL;
++#endif
+ 	if (v->mDeclaration)
+ 	{
+ #line 2502
+--- a/DXParticleTexture.cpp
++++ b/DXParticleTexture.cpp
+@@ -149,6 +149,15 @@
+ 		}
+ 	}
+ 	LT.D3D_Release((IUnknown **)&sPixelShader);
++#ifdef CE_VERSION
++	if (sVertexShader)
++	{
++		sVertexShader->Release();
++		if (sVertexShader->mRefCount <= 0)
++			delete sVertexShader;
++		sVertexShader = NULL;
++	}
++#endif
+ }
+ 
+ //******************************************************************************************
+@@ -165,6 +174,9 @@
+ 
+ 	if (EXTRA_GEFORCE_FX_FEATURES.mValue && (LT.m_d3dCaps.PixelShaderVersion >= D3DPS_VERSION(2, 0)))
+ 	{
++#ifdef CE_VERSION
++		LT.D3D_Release((IUnknown **)&sPixelShader);
++#endif
+ 		sVertexShader = CVertexShader::Create("particleshader", (DWORD *)PARTICLE_VERTEX_SHADER_TEXT, 6, NULL, 0, -1);
+ 		LT.D3D_CreatePixelShader(PARTICLE_PIXEL_SHADER_TEXT, &sPixelShader);
+ 	}
+--- a/ltshell.cpp
++++ b/ltshell.cpp
+@@ -728,6 +728,11 @@
+ {
+ 	LT.ShowGFXCardInfo();
+ }
++#ifdef CE_VERSION
++extern "C" void PortCeMuseumVisitCancel(void) __attribute__((weak));
++extern "C" void PortCeLivingSandboxCancel(void) __attribute__((weak));
++extern "C" void PortCeCarrierClashCancel(void) __attribute__((weak));
++#endif
+ //-----------------------------------------------------------------------------
+ int PCLTShell::MainLoop()
+ {
+@@ -743,6 +748,12 @@
+ 		//if(mJoypads!=0) // We can't do this because it causes the modelviewer to exit!
+ 			SYSTEM.Run();
+ 
++#ifdef CE_VERSION
++		if (PortCeMuseumVisitCancel) PortCeMuseumVisitCancel();
++		PortCeEditorCancel();
++		if (PortCeLivingSandboxCancel) PortCeLivingSandboxCancel();
++		if (PortCeCarrierClashCancel) PortCeCarrierClashCancel();
++#endif
+ 		SYSTEM.Shutdown();
+ 		Cleanup3DEnvironment();
+ 	}
+--- a/Player.cpp
++++ b/Player.cpp
+@@ -3,6 +3,9 @@
+ //////////////////////////////////////////////////////////////////////
+ #ifdef CE_VERSION
+ extern "C" bool PortCeMuseumCinemaFire(bool release,float value);
++extern "C" bool PortCeMuseumVisitActive(void);
++extern "C" void PortCeMuseumSprintSignal(void);
++extern "C" bool PortCeSanctuaryFire(bool release,float value) __attribute__((weak));
+ #endif
+ 
+ #include "common.h"	// FUNCTION: 0x004d2690 init:ZERO_FVECTOR
+@@ -330,6 +333,8 @@
+ #ifdef CE_VERSION
+ 	if ((button==BUTTON_MECH_CHARGE_GUN_POD || button==BUTTON_MECH_FIRE_GUN_POD) &&
+ 	    PortCeMuseumCinemaFire(button==BUTTON_MECH_FIRE_GUN_POD,val)) return;
++	if ((button==BUTTON_MECH_CHARGE_GUN_POD || button==BUTTON_MECH_FIRE_GUN_POD) &&
++	    PortCeSanctuaryFire && PortCeSanctuaryFire(button==BUTTON_MECH_FIRE_GUN_POD,val)) return;
+ #endif
+ 	if (mBattleEngine.ToRead() == NULL ||
+ 	    mBattleEngine->IsDying() ||
+@@ -460,6 +465,13 @@
+ 			}
+ 			case BUTTON_MECH_LANDING_JETS:
+ 			{
++#ifdef CE_VERSION
++				if (PortCeMuseumVisitActive())
++				{
++					PortCeMuseumSprintSignal();
++					break;
++				}
++#endif
+ 				mBattleEngine->GetWalkerPart()->ActivateLandingJets() ;
+ 				break ;
+ 			}
+--- a/PauseMenu.cpp
++++ b/PauseMenu.cpp
+@@ -1385,7 +1385,11 @@
+ 		mResolution->SetSelection(LT.GetCurrentDevice()->dwLowDetailMode);
+ 		mShadowDetail->SetSelection(0);
+ 		mTreeDetail->SetSelection(0);
++#ifdef CE_VERSION
++		mVSync->SetSelection(PortCeGraphicsPolicyActive() ? 1 : mLowVSync);
++#else
+ 		mVSync->SetSelection(mLowVSync);
++#endif
+ 		mLandscapeRes->SetSelection(0);
+ 		mTrilinear->SetSelection(0);
+ 		mTextureRes->SetSelection(2);
+@@ -1393,13 +1397,20 @@
+ 		mMultiSample->SetSelection(0);
+ 		break;
+ 	}
++#ifdef CE_VERSION
++	PortCeGraphicsStageDetailPreset(value);
++#endif
+ }
+ 
+ // FUNCTION: 0x004cffd0
+ int		CVideoDetailLevel::GetValue()
+ {
+ 	if ((mResolution->GetSelection() == LT.GetCurrentDevice()->dwLowDetailMode) && (mShadowDetail->GetSelection() == 0) && (mTreeDetail->GetSelection() == 0) &&
++#ifdef CE_VERSION
++		(mVSync->GetSelection() == (PortCeGraphicsPolicyActive() ? 1 : mLowVSync)) && (mLandscapeRes->GetSelection() == 0) && (mTrilinear->GetSelection() == 0) &&
++#else
+ 		(mVSync->GetSelection() == mLowVSync) && (mLandscapeRes->GetSelection() == 0) && (mTrilinear->GetSelection() == 0) &&
++#endif
+ 		(mTextureRes->GetSelection() == 2) && (m32Bit->GetSelection() == 1) && (mMultiSample->GetSelection() == 0))
+ 		return 1;
+ 
+--- a/game.cpp
++++ b/game.cpp
+@@ -91,6 +91,8 @@
+ extern "C" bool PortCeLivingSandboxPreloadMeshes(void);
+ extern "C" bool PortCeLivingSandboxLoadRefused(void);
+ extern "C" bool PortCeLivingSandboxRescuePlayer(int playerNumber);
++extern "C" bool PortCeMuseumAuthoredMap(void);
++extern "C" bool PortCeSanctuarySkipOutdoorWorld(void);
+ #endif
+ 
+ 
+@@ -635,7 +637,16 @@
+ 	SAFE_DELETE(mMuspellFearGrid);
+ 
+ 	for( int i=0; i<MAX_PLAYERS; i++)
++	{
+ 		SAFE_DELETE(mController[i]);
++#ifdef CE_VERSION
++		SAFE_DELETE(mPlayer[i]);
++		SAFE_DELETE(mCurrentCamera[i]);
++#endif
++	}
++#ifdef CE_VERSION
++	CONSOLE.mPlayer = NULL;
++#endif
+ 
+ 	SAFE_DELETE(mMessageLog);
+ 	SAFE_DELETE(mMessageBox);
+@@ -1365,7 +1376,9 @@
+ 	// load world file
+ 	if( !LoadLevel( aLevel ) )
+ 	{
++#ifndef CE_VERSION
+ 		ShutdownRestartLoop();
++#endif
+ #ifdef CE_VERSION
+ 		if (PortCeCarrierClashLoadRefused() || PortCeLivingSandboxLoadRefused())
+ 			return QT_QUIT_TO_FRONTEND;
+@@ -1380,7 +1393,9 @@
+ 
+ 	if( !PostLoadProcess() )
+ 	{
++#ifndef CE_VERSION
+ 		ShutdownRestartLoop();
++#endif
+ #ifdef CE_VERSION
+ 		if (PortCeCarrierClashLoadRefused() || PortCeLivingSandboxLoadRefused())
+ 			return QT_QUIT_TO_FRONTEND;
+@@ -1768,6 +1783,12 @@
+ 	if (!InitRestartLoop())
+ 	{
+ 		ShutdownRestartLoop();
++#ifdef CE_VERSION
++		Shutdown();
++#ifndef CE_NETWORK_OFF
++		CE_SessionAfterWorldShutdown();
++#endif
++#endif
+ 		return QT_LOAD_ERROR;
+ 	}
+ 	
+@@ -1881,7 +1902,8 @@
+ 
+ #ifdef CE_VERSION
+ 	CeWaterReflectionBeginFrame();
+-	if (!IsMultiplayer() && EXTRA_GEFORCE_FX_FEATURES.mValue && ENGINE.GetLandscape() &&
++	if (!IsMultiplayer() && !PortCeMuseumAuthoredMap() && !PortCeSanctuarySkipOutdoorWorld() &&
++		EXTRA_GEFORCE_FX_FEATURES.mValue && ENGINE.GetLandscape() &&
+ 		ENGINE.GetLandscape()->mMirrorTexture && ENGINE.GetLandscape()->mDepthSurface && !gMirrorPass)
+ 	{
+ 		CeLandscapeSyncWaterReflection(ENGINE.GetLandscape());
+@@ -1890,7 +1912,7 @@
+ 			mirror.Begin(ENGINE.GetLandscape()->mMirrorTexture))
+ 		{
+ 			gMirrorPass = true;
+-			FORCE_OBJECT_IMPOSTERS = (CeWaterReflectionActiveRes() <= 256u);
++			FORCE_OBJECT_IMPOSTERS = (CeWaterReflectionActiveRes() <= 512u);
+ 		}
+ 	}
+ #else
+@@ -2066,6 +2088,13 @@
+ 		}
+ 		}
+ 
++#ifdef CE_VERSION
++		if (gMirrorPass && PortCeLayer())
++		{
++			CVBufTexture::ResetAll();
++		}
++		else
++#endif
+ 		ENGINE.PostRender(&fullscreen);
+ 
+ 		// We have to draw the "help your controller's unplugged" messages on top of everything.
+@@ -3891,6 +3920,10 @@
+ //******************************************************************************************
+ void CGame::DrawDebugStuff()	// FUNCTION: 0x00470650
+ {
++#ifdef CE_VERSION
++	if (PortCeLayer() && !mCurrentDebugUnit.ToRead() && !mCurrentDebugSquad.ToRead() && !CLIPARAMS.mDeveloperMode)
++		return;
++#endif
+ 
+ //#if TARGET == PC
+ #ifdef _DIRECTX
+--- a/DXEngine.cpp
++++ b/DXEngine.cpp
+@@ -436,6 +436,9 @@
+ 
+ 	// Do offscreen stuff
+ 
++#ifdef CE_VERSION
++	if (!PortCeLayer())
++#endif
+ 	STATE.UseDefault();
+ 	
+ 	SwitchAllLights(FALSE);					// don't want lights showing on imps
+@@ -817,6 +820,9 @@
+ 	// Render shadows
+ 	SwitchAllLights(FALSE);					// don't want lights showing on shadows
+ 
++#ifdef CE_VERSION
++	if (!PortCeMuseumAuthoredMap())
++#endif
+ 	SHADOWS.RenderTextures();			// render shadows picked last frame
+ 
+ 	{
+@@ -835,6 +841,9 @@
+ 
+ 	// Move debris into position around the camera
+ 
++#ifdef CE_VERSION
++	if (!PortCeMuseumAuthoredMap())
++#endif
+ 	CDebris::ShuffleDebris(mCamera[mCurrentViewpoint]->GetPos());
+ 
+ 	float wlevel;
+@@ -973,7 +982,7 @@
+ 		}
+ 
+ #ifdef CE_VERSION
+-		if (!PortCeSanctuarySkipOutdoorWorld())
++		if (!PortCeSanctuarySkipOutdoorWorld() && !PortCeMuseumAuthoredMap())
+ 		{
+ #endif
+ 		CIMPOSTER::RenderAllImposters();	// Render cache of all imposter stuff
+@@ -986,6 +995,9 @@
+ 
+ 		// Update RTMesh render tracking stuff, kill redundant FoRs, etc
+ 
++#ifdef CE_VERSION
++		if (!gMirrorPass || !PortCeLayer())
++#endif
+ 		CRTMesh::UpdateRenderLists();
+ 
+ #ifdef CE_VERSION
+@@ -1010,7 +1022,7 @@
+ 		DEBUGMARKERS.Render();				// Render debug markers
+ 
+ #ifdef CE_VERSION
+-		if (SHADOWS.BlobShadowsEnabled() && !PortCeSanctuarySkipOutdoorWorld())
++		if (SHADOWS.BlobShadowsEnabled() && !PortCeSanctuarySkipOutdoorWorld() && !PortCeMuseumAuthoredMap())
+ #else
+ 		if (SHADOWS.BlobShadowsEnabled())
+ #endif
+@@ -1122,6 +1134,9 @@
+ 			PARTICLE_MANAGER.RenderOther();
+ 	}
+ 
++#ifdef CE_VERSION
++	if (!gMirrorPass || !PortCeLayer())
++#endif
+ 	draw_fairly_late_stuff(mPlayer[mCurrentViewpoint], viewpoint);
+ 	{
+ 		CeRenderPass cePass = { CE_RENDER_PASS_POST_WORLD, viewpoint, mPlayer[mCurrentViewpoint], mCamera[mCurrentViewpoint], gMirrorPass != 0 };
+--- a/DXLandscape.cpp
++++ b/DXLandscape.cpp
+@@ -1729,6 +1729,12 @@
+ 	p.X += 4.0f;
+ 	p.Y += 4.0f;
+ 	SINT	patches = 0;
++#ifdef CE_VERSION
++	extern bool PortCeLayer();
++	const bool ceMirror = gMirrorPass && PortCeLayer();
++	if (!ceMirror)
++#endif
++	{
+ 	if ((view->mLastPos.X == 1234567.0f) || (GAME.IsFreeCameraOn(viewpoint)))
+ 	{
+ 		view->mLastPos = p;
+@@ -1738,6 +1744,7 @@
+ 	{
+ 		SmoothLandscapeView(view, p, dir);
+ 	}
++	}
+ 	FVector	cam = view->mLastPos;
+ 	FVector	look = view->mUnknown24;
+ #ifdef CE_VERSION
+@@ -1788,11 +1795,16 @@
+ 					(span[0] < tile->mMinHeight) || (span[1] > tile->mMaxHeight))
+ 				{
+ 					// out of view
+-					if (tile->mPatch)
++#ifdef CE_VERSION
++					if (!ceMirror)
++#endif
+ 					{
+-						RetireLandscapePatch(tile);
++						if (tile->mPatch)
++						{
++							RetireLandscapePatch(tile);
++						}
++						tile->mUnknown10 = (signed char)0x9d;
+ 					}
+-					tile->mUnknown10 = (signed char)0x9d;
+ 					if (!joined)
+ 					{
+ 						CloseLandscapeStrip(idx, joined, vert, 1);
+@@ -1800,6 +1812,13 @@
+ 					continue;
+ 				}
+ 
++#ifdef CE_VERSION
++				if (ceMirror)
++				{
++					AppendLandscapeFarCell(idx, joined, vert, below);
++					continue;
++				}
++#endif
+ 				float	dz = cam.Z + tile->mMidHeight;
+ 				float	dz2 = dz * dz;
+ 				SINT	minlod = LANDSCAPE_MINLOD_AT.mValue;
+--- a/DXShadows.cpp
++++ b/DXShadows.cpp
+@@ -571,6 +571,13 @@
+ // and the header's D3DMATRIX * overloads reach +80 ids but flip the products back.
+ void CShadows::RenderTextures()	// FUNCTION: 0x005528b0
+ {
++#ifdef CE_VERSION
++	extern bool PortCeLayer();
++	if (gMirrorPass && PortCeLayer())
++	{
++		return;
++	}
++#endif
+ 	float	now = PLATFORM.GetSysTimeFloat();
+ 	sFadeStep = 1;
+ 	if (now > sLastFadeTime)
+@@ -701,6 +708,9 @@
+ 	}
+ 	if (FAILED(LT.GetDevice()->GetDepthStencilSurface(&depth)))
+ 	{
++#ifdef CE_VERSION
++		SAFE_RELEASE(target);
++#endif
+ 		mShadows = FALSE;
+ 		mBlobShadows = TRUE;
+ 		SetSetupMessage(0xe7);
+@@ -720,6 +730,11 @@
+ 	{
+ 		if (!mTextures[i])
+ 		{
++#ifdef CE_VERSION
++			SetTargets(target, depth);
++			SAFE_RELEASE(target);
++			SAFE_RELEASE(depth);
++#endif
+ 			mShadows = FALSE;
+ 			SetSetupMessage(0xe7);
+ 			return;
+--- a/pcsoundmanager.cpp
++++ b/pcsoundmanager.cpp
+@@ -17,6 +17,10 @@
+ #include	"MessageBox.h"
+ #include	"DXMemBuffer.h"
+ #include	"FrontEndText.h"
++#ifdef CE_VERSION
++#include	"binkapi.h"
++extern "C" void PortCeSoundBeforeReinit(void) __attribute__((weak));
++#endif
+ 
+ // pcsoundmanager.cpp: Stuart's DirectSound device, as the retail PC build grew it (005167b0..005180a8). His release
+ // has an older version of this file; the functions keep his names and order where they survive, and the rest is
+@@ -384,6 +388,10 @@
+ 		SAFE_RELEASE(mDSBuffer[i]);
+ 	}
+ 
++#ifdef CE_VERSION
++	BinkSetSoundSystem(BinkOpenDirectSound, 0);
++	SAFE_RELEASE(mListener);
++#endif
+ 	SAFE_RELEASE(mDS);
+ 
+ 	SAFE_DELETE(mWaveSoundRead);
+@@ -917,16 +925,26 @@
+ {
+ 	TRACE("Killing all DSBuffers for the samples\n");
+ 
++#ifdef CE_VERSION
++	if (PortCeSoundBeforeReinit)
++	{
++		PortCeSoundBeforeReinit();
++	}
++	SOUND.Reset();
++#endif
+ 	DeleteAllSamples();
+ 	MUSIC.Shutdown();
+ 	if (GAME.GetMessageBox())
+ 		GAME.GetMessageBox()->StopCurrentPlayingSound();
+ 
+ 	DeviceShutdown();
+ 
+ 	if (DeviceInit())
+ 	{
++#ifdef CE_VERSION
++		BinkSetSoundSystem(BinkOpenDirectSound, (U32)mDS);
++#endif
+ 		if (CLIPARAMS.mMusic)
+ 			MUSIC.Initialise();
+ 
+ 		LoadSampleBank(TRUE);

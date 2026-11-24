@@ -50,7 +50,7 @@ class PackageReadmeTests(unittest.TestCase):
         self.assertNotIn("\r", text)
         self.assertLessEqual(max(map(len, text.splitlines())), package.README_WIDTH)
         for phrase in (
-            "Main Menu > Onslaught CE: Bonus Levels, CE Settings, Cheats, Help & Info and Report a Problem (plus optional Extras with extras=1, Catalogue with catalogue=1, and Mods on Linux with mods_menu=1 in ce.ini)",
+            "Main Menu > Onslaught CE: Bonus Levels, Extras, Mods, Catalogue, CE Settings, Cheats, Experimental Features, Help & Info, Report a Problem and Grand Museum (each optional feature is included by default and can be toggled in Experimental Features or ce.ini)",
             "Each row has a hint under the list", "The Options page is the original's",
             "What's Coming (planned features and their limits; it does not start those features)",
             "it does not start those features", "Aquila Prototype is the original playable-demo level (201)",
@@ -171,9 +171,10 @@ class PackageReadmeTests(unittest.TestCase):
                 text = package.readme("0.1.14", windows).decode()
                 first = " ".join(" ".join(text.splitlines()[:24]).split())
                 for phrase in ("Onslaught CE V0.1.14", "you need your own copy of the game",
-                               "1. Extract the download into a new, empty folder of its own, not inside the game's folder.",
+                               ("1. Extract the download into a new, empty user-writable folder of its own" if windows else
+                                "1. Extract the download into a new, empty folder of its own, not inside the game's folder."),
                                "3. It finds your Steam copy of Battle Engine Aquila by itself, or asks once where it is.",
-                               "In the game, Main Menu > Onslaught CE holds what this port adds: Bonus Levels, CE Settings, Cheats, Help & Info and Report a Problem (plus optional Extras, Catalogue and, on Linux, Mods).",
+                               "In the game, Main Menu > Onslaught CE holds what this port adds: Bonus Levels, Extras, Mods, Catalogue, CE Settings, Cheats, Experimental Features, Help & Info, Report a Problem and Grand Museum.",
                                "apart from the original game's folder.",
                                "Upgrading from Onslaught CE 0.1.0 to 0.1.6? Do not start the old launcher again. "
                                'Read "Upgrading from 0.1.0-0.1.6" below first.'):
@@ -248,7 +249,7 @@ class PackageReadmeTests(unittest.TestCase):
         phrases = (
             "Video Options on a new profile: the first time you start with no saved options of your own",
             "every quality row starts at its highest choice except 3D distant trees",
-            "anti-aliasing starts at the highest level your graphics device lists",
+            "anti-aliasing starts at up to 4x MSAA (or the highest lower level your graphics device lists)",
             "High-detail units starts at Yes",
             "3D distant trees starts at No",
             "largest cost in frame rate",
@@ -344,21 +345,22 @@ class PackageReadmeTests(unittest.TestCase):
     # the missing matchmaking server, what was not tested and what the game contacts.
     NETWORK_PHRASES = (
         "Network game (experimental)", "Main Menu > Onslaught CE > Network Game", "new and unfinished", "expect problems",
-        "the same Onslaught CE version and their own copy of the game", "If the two games ever disagree, the game ends with a message.",
-        "A network game does not change your careers.", "There is no matchmaking server",
+        "the same Onslaught CE version and their own copy of the game", "If games ever disagree, the game ends with a message.",
+        "A network game does not change your careers.", "2 to 4 player Co-Op or Versus game",
+        "Online Play lobby rooms with ICE/TURN relay",
         "the host forwards a UDP port on its router (net_port in ce.ini, default 27652)",
-        "Not tested: play through routers over the real internet, more than two players, Windows on real hardware.",
+        "Not tested: physical Windows hardware on every router/ISP.",
         "contacts no server", "on Windows that asks the system to look up this PC's own name",
         "Your own music, the Dodge Button, Photo Mode and F12 screenshots are off in a network game.",
-        "Planned, not in this version yet: public matchmaking, versus play over network and additional HUD options.")
+        "Planned, not in this version yet: additional HUD options and further online match polish.")
     PLANNED_DEFAULT = "- Planned, not in this version yet: Internet multiplayer and additional HUD options."
-    PLANNED_NETWORK = "- Planned, not in this version yet: public matchmaking, versus play over network and additional HUD options."
+    PLANNED_NETWORK = "- Planned, not in this version yet: additional HUD options and further online match polish."
 
     def test_network_flavour_readme_carries_the_network_game_labels_and_warnings(self):
         # The page's strings as the compiler joins them (adjacent literals), so the two texts are compared sentence by sentence.
         page = " ".join(re.sub(r'"\s*\n\s*"', "", (ROOT / "port/game/ce_netpages.cpp").read_text()).split())
         project = " ".join((ROOT / "port/README.md").read_text().split())
-        not_tested = "Not tested: play through routers over the real internet, more than two players, Windows on real hardware"
+        not_tested = "Not tested: physical Windows hardware on every router/ISP"
         mismatch = "If the two games ever disagree, the game ends with a message."
         careers = "does not change your careers."
         # The page says what a player needs and keeps test words off it (house style W3); the README of this build keeps
@@ -384,7 +386,7 @@ class PackageReadmeTests(unittest.TestCase):
         for windows in (False, True):
             with self.subTest(windows=windows):
                 flat = " ".join(package.readme("0.1.10", windows).decode().split())
-                for phrase in ("Network game (experimental)", "matchmaking", "Not tested: play through routers"):
+                for phrase in ("Network game (experimental)", "Online Play lobby", "Not tested: physical Windows"):
                     self.assertNotIn(phrase, flat)
                 self.assertIn(self.PLANNED_DEFAULT, flat)
 
@@ -428,7 +430,7 @@ class PackageReadmeTests(unittest.TestCase):
         # network source build (the Mods section names what such a build switches off)
         unplanned = " ".join(line for line in players.splitlines()
                              if not line.startswith("- Planned, not in this version yet:") and "experimental network source build" not in line)
-        source_notice = "- Release 0.1.13 does not offer Internet multiplayer. This source branch has opt-in two-player network test builds; that does not establish a released Internet service. Mods on Windows and additional HUD options remain planned."
+        source_notice = "- Release 0.1.13 does not offer Internet multiplayer. This source branch has opt-in 2 to 4 player network test builds; that does not establish a released Internet service. Additional HUD options remain planned."
         unplanned = " ".join(unplanned.split())
         self.assertIn(source_notice, unplanned)
         unplanned = unplanned.replace(source_notice, "")

@@ -49,7 +49,7 @@ typedef struct CE_OnlineMatchTicket {
     uint16_t proto;
     char match_id[32];
     char room_id[32];
-    char lobby_origin[160];
+    char lobby_origin[256];
     char session_token[1600];
     uint32_t seed;
     uint32_t level;
@@ -439,7 +439,8 @@ enum CeOnlineStarEventKind {
     CE_STAR_EVT_CHAT = 20,            // peer <-> host: bounded sanitized ASCII chat line
     CE_STAR_EVT_PEER_METRICS = 21,    // rtt_ms & route (CE_ONLINE_ROUTE_*) update
     CE_STAR_EVT_PEER_DISCONNECT = 30, // peer disconnected (sim_slot)
-    CE_STAR_EVT_HOST_LOST = 31        // guest lost star host (slot 0)
+    CE_STAR_EVT_HOST_LOST = 31,       // guest lost star host (slot 0)
+    CE_STAR_EVT_TRANSPORT_ERROR = 32  // transport / ICE / signaling fatal error (host or guest)
 };
 
 struct CeOnlineStarEvent {
@@ -555,6 +556,7 @@ private:
     bool HandleHashEvent(const CeOnlineStarEvent &ev);
     void HandleDesyncEvent(const CeOnlineStarEvent &ev);
     void HandleDisconnectEvent(uint8_t sim_slot);
+    bool TryConfirmStartHash();
     void AppendChat(uint8_t sim_slot, const char *text);
     CeNPeerDesyncReport RemapReportToSimSlots(const CeNPeerDesyncReport &ringReport) const;
 
@@ -569,6 +571,7 @@ private:
     uint16_t mSlotRttMs[CE_ONLINE_MAX_MATCH_SLOTS];
     uint8_t mSlotRoute[CE_ONLINE_MAX_MATCH_SLOTS];
     bool mHasBroadcast;
+    bool mBroadcastLeadIn;
     uint32_t mLastBroadcastTick;
     uint8_t mLastConsumedPeerMask;
     bool mStartConfirmed;

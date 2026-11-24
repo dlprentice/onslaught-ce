@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-only
-"""Exercise the playable room envelope with the same planner used by the native scene."""
+"""Exercise the playable room envelope with the same planner used by the native scene,
+and audit Grand Museum architectural alignment, runner continuity, Atrium cohesion, and Hangar symmetry."""
 import argparse
 from pathlib import Path
+import re
 import subprocess
 import tempfile
 
@@ -10,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[2]
 CPP = r"""
 #include "ce_museum_world.h"
 #include "ce_museum_hall.h"
+#include "ce_museum_exhibition.h"
 #include <cmath>
 #include <limits>
 #include <cstdio>
@@ -45,10 +48,117 @@ int main() {
             }
         }
     }
+
+    // Grand Museum 8-room portal centerline & boundary alignment checks
+    const auto g = CeMuseumExhibition::Grand::MakeRoomGraph();
+    for (unsigned pi = 0; pi < CeMuseumExhibition::Grand::kPortalCount; ++pi) {
+        const auto &p = g.portals[pi];
+        const auto &ra = g.rooms[p.a];
+        const auto &rb = g.rooms[p.b];
+        if (p.vertical) {
+            test(std::fabs(ra.maxX - p.line) < 1e-4f || std::fabs(ra.minX - p.line) < 1e-4f, "vertical portal lies on room A wall");
+            test(std::fabs(rb.maxX - p.line) < 1e-4f || std::fabs(rb.minX - p.line) < 1e-4f, "vertical portal lies on room B wall");
+            test(p.lo >= ra.minY && p.hi <= ra.maxY && p.lo >= rb.minY && p.hi <= rb.maxY, "vertical portal spans inside both rooms");
+        } else {
+            test(std::fabs(ra.maxY - p.line) < 1e-4f || std::fabs(ra.minY - p.line) < 1e-4f, "horizontal portal lies on room A wall");
+            test(std::fabs(rb.maxY - p.line) < 1e-4f || std::fabs(rb.minY - p.line) < 1e-4f, "horizontal portal lies on room B wall");
+            test(p.lo >= ra.minX && p.hi <= ra.maxX && p.lo >= rb.minX && p.hi <= rb.maxX, "horizontal portal spans inside both rooms");
+        }
+        const float mid = 0.5f * (p.lo + p.hi);
+        const CeMuseumExhibition::Vec2 pt = p.vertical ? CeMuseumExhibition::Vec2{p.line, mid} : CeMuseumExhibition::Vec2{mid, p.line};
+        test(CeMuseumExhibition::Grand::WalkAt(g, pt) != CeMuseumExhibition::kWalkBlocked, "every portal centerline is completely walkable");
+    }
     std::printf("%u/%u room geometry, passage and negative-control assertions passed\n",tests-failures,tests);
     return failures?1:0;
 }
 """
+
+
+def audit_grand_hall_alignment():
+    hall = (ROOT / "port/game/ce_museum_hall.cpp").read_text()
+    failures = []
+
+    def need(ok, label):
+        if not ok:
+            print("FAIL alignment:", label)
+            failures.append(label)
+
+    # 1. Flush N-S spine runners across Courtyard <-> Atrium (y=20) and Atrium <-> Hangar (y=52): all halfW = 1.45f!
+    need("RunnerStripY(0.0f, 15.91f, 20.00f, 1.45f, floorZ);" in hall,
+         "Courtyard north runner matches 1.45f spine width at y=20.0")
+    need("RunnerStripY(0.0f, 20.00f, 29.74f, 1.45f, floorZ);" in hall,
+         "Atrium south runner matches 1.45f spine width at y=20.0 and meets Rotunda at 29.74")
+    need("RunnerStripY(0.0f, 42.26f, 52.00f, 1.45f, floorZ);" in hall,
+         "Atrium north runner matches 1.45f spine width at y=52.0 and meets Rotunda at 42.26")
+    need("RunnerStripY(0.0f, 52.00f, 60.05f, 1.45f, floorZ);" in hall,
+         "Hangar south runner matches 1.45f spine width at y=52.0 and terminates cleanly at octagon 60.05")
+
+    # 2. Flush E-W runners across Atrium <-> Forseti/Muspell (1.15f) and Atrium <-> Art wings (1.00f)
+    need("RunnerStripX(-16.0f, -5.50f, 41.0f, 1.15f, floorZ);" in hall
+         and "RunnerStripX(-40.0f, -16.0f, 41.0f, 1.15f, floorZ);" in hall,
+         "Atrium <-> Forseti runner is flush 1.15f at x=-16.0")
+    need("RunnerStripX(  5.50f, 16.0f, 41.0f, 1.15f, floorZ);" in hall
+         and "RunnerStripX(16.0f, 39.2f, 41.0f, 1.15f, floorZ);" in hall,
+         "Atrium <-> Muspell runner is flush 1.15f at x=+16.0")
+    need("RunnerStripX(-16.0f, -1.56f, 24.0f, 1.00f, floorZ);" in hall
+         and "RunnerStripX(-36.0f, -16.0f, 24.0f, 1.00f, floorZ);" in hall,
+         "Atrium <-> Early Designs runner is flush 1.00f at x=-16.0 and spine -1.56")
+    need("RunnerStripX(  1.56f, 16.0f, 24.0f, 1.00f, floorZ);" in hall
+         and "RunnerStripX(16.00f, 35.19f, 24.0f, 1.00f, floorZ);" in hall
+         and "RunnerStripY(36.30f, 13.24f, 25.11f, 1.00f, floorZ);" in hall
+         and "RunnerStripX(37.41f, 40.00f, 14.5f, 1.15f, floorZ);" in hall,
+         "Atrium <-> Concept Art <-> Cinema runners meet flush without overlapping corners")
+
+    # 3. Zero coplanar portal soffits & 4 cm Atrium/Muspell cavity separation
+    need(hall.count("clearH + 0.46f") >= 3,
+         "PortalFrameX and PortalFrameY separate header wall above accent architrave (zero coplanar soffits)")
+    need("15.98f" in hall and "16.02f" in hall,
+         "Shared Atrium/Muspell wall keeps 4 cm cavity gap between limestone and iron faces")
+
+    # 4. Cohesive Atrium walls (gold frieze on all 4 sides, zero Forseti/Muspell dado strips on Atrium walls)
+    atrium_sec = hall[hall.index("// 2. SKYLIT GRAND ATRIUM"):hall.index("// 3. FORSETI FORCES WING")]
+    need("LocalBox(-15.70f, 27.2f, 6.0f, -15.56f, 37.3f, 6.45f, floorZ, kMatTrim, kBrass);" in atrium_sec
+         and "LocalBox(15.56f, 27.2f, 6.0f, 15.70f, 37.3f, 6.45f, floorZ, kMatTrim, kBrass);" in atrium_sec
+         and "LocalBox(-15.70f, 44.7f, 6.0f, -15.56f, 51.56f, 6.45f, floorZ, kMatTrim, kBrass);" in atrium_sec
+         and "LocalBox(15.56f, 44.7f, 6.0f, 15.70f, 51.56f, 6.45f, floorZ, kMatTrim, kBrass);" in atrium_sec
+         and "kMatForsetiTrim);" not in atrium_sec and "kMatMuspellTrim);" not in atrium_sec,
+         "Grand Atrium uses cohesive warm limestone & continuous gold frieze around all 4 sides")
+
+    # 5. Symmetrical Hangar upper roof ribs & wall friezes
+    hangar_sec = hall[hall.index("// 5. AVIATION & NAVAL HANGAR"):hall.index("// 6. CONCEPT ART GALLERY")]
+    need("EmitSweptRibY(y - 0.36f, y + 0.36f, wRibX, wRibZ, floorZ, kMatPier, kSlate);" in hangar_sec
+         and "EmitSweptRibY(y - 0.36f, y + 0.36f, eRibX, eRibZ, floorZ, kMatPier, kSlate);" in hangar_sec
+         and "LocalBox(-19.65f, 52.5f, 9.6f, -19.45f, 77.5f, 10.4f, floorZ, kMatTrim, kBrass);" in hangar_sec
+         and "LocalBox( 19.45f, 52.5f, 9.6f,  19.65f, 77.5f, 10.4f, floorZ, kMatTrim, kBrass);" in hangar_sec,
+         "Hangar vaulted roof ribs and upper friezes are symmetrical on West & East sides")
+
+    # 6. No depth-bias punch-through on 3D brass trim frames, and grounded coastal horizon
+    draw_sec = hall[hall.index("void PortCeMuseumHallDraw()"):]
+    is_inlay_match = re.search(r"const bool isInlay = \(([^;]+)\);", draw_sec)
+    need(bool(is_inlay_match) and "kMatTrim" not in is_inlay_match.group(1),
+         "kMatTrim is excluded from depth-biased isInlay pass")
+    need("const float oceanZ = 5.5f;" in hall and "gHallGpu.headlandVb" in hall,
+         "Grounded coastal horizon sits at oceanZ = 5.5f with static GPU headland islands")
+
+    # 7. Grand Entrance Facade retail assets, zero-clip pediment, stepped shadowboxes, mipmaps/aniso, and 14 portal signboards
+    need('"FrontEnd\\\\v3\\\\FE_BEA_Title2.tga"' in hall
+         and '"FrontEnd\\\\LostToys.tga"' in hall
+         and '"data/textures/splash.tga"' in hall
+         and '"goodies\\\\ca_be_aquila\\\\ca_bea_battle_pic.tga"' in hall
+         and '"goodies\\\\ca_be_aquila\\\\ca_be_final01.tga"' in hall,
+         "Grand Entrance Facade loads official title, Lost Toys founder seal (+splash fallback), and flanking cover art at runtime")
+    need("D3DXCreateTextureFromFileExA(" in hall and "D3DX_FILTER_BOX" in hall
+         and "D3DTEXF_ANISOTROPIC" in hall and "D3DSAMP_MIPFILTER, D3DTEXF_LINEAR" in hall,
+         "Entrance banners and baked signage use full box mipmaps, linear mipfilter, and anisotropic filtering")
+    need(hall.count("AddPortalSignboard(") >= 15,
+         "All 14 portal faces across the 7 Grand Museum portals mount proud 3D architectural lintel signboards")
+    need("CeMuseumTextures::GetPortalSignAtlas()" in hall and "CeMuseumTextures::GetDirectoryAtlas()" in hall,
+         "Hall binds baked Portal Signage Atlas and Atrium Directory Floor-Plan/Buttons Atlas")
+
+    if not failures:
+        print("ok   all Grand Museum architectural alignment, Atrium cohesion, Hangar symmetry, and horizon audits passed")
+    return 1 if failures else 0
+
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
@@ -60,5 +170,8 @@ def main():
         d=Path(tmp); (d/'check.cpp').write_text(CPP)
         subprocess.run(['c++','-std=c++17','-O1','-Wall','-Wextra','-Werror','-I',str(ROOT/'port/game'),
                         str(d/'check.cpp'),str(ROOT/'port/game/ce_museum_hall_layout.cpp'),'-o',str(d/'check')],check=True)
-        return subprocess.run([str(d/'check')]).returncode
+        rc = subprocess.run([str(d/'check')]).returncode
+    if rc != 0:
+        return rc
+    return audit_grand_hall_alignment()
 if __name__=='__main__':raise SystemExit(main())

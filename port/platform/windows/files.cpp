@@ -36,6 +36,8 @@ namespace
 {
 char gGameDir[MAX_PATH];
 char gUserDir[MAX_PATH];
+bool gRootsValid;
+bool gUserInsideGame;
 
 bool Absolute(const char *p)
 {
@@ -44,11 +46,53 @@ bool Absolute(const char *p)
 
 bool Exists(const char *p) { return GetFileAttributesA(p) != INVALID_FILE_ATTRIBUTES; }
 
-void MakeDirs(const char *path)
+size_t TrimSepLen(const char *s, bool dropRoot)
 {
+	size_t len = s ? strlen(s) : 0;
+	size_t minLen = dropRoot ? 0 : (len >= 3 && s[1] == ':' ? 3 : 1);
+	while (len > minLen && (s[len - 1] == '\\' || s[len - 1] == '/'))
+		--len;
+	if (dropRoot && len == 3 && s[1] == ':' && (s[2] == '\\' || s[2] == '/'))
+		--len;
+	return len;
+}
+
+// True when `inner` is `outer` or lies beneath it. Fails closed when a path cannot be canonicalized.
+bool Inside(const char *inner, const char *outer)
+{
+	const DWORD room = MAX_PATH * 2;
+	WCHAR a[room], b[room], fa[room], fb[room];
+	if (!inner || !*inner || !outer || !*outer ||
+		!MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, inner, -1, a, room) ||
+		!MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, outer, -1, b, room))
+		return true;
+	DWORD la = GetFullPathNameW(a, room, fa, NULL), lb = GetFullPathNameW(b, room, fb, NULL);
+	if (!la || la >= room || !lb || lb >= room)
+		return true;
+	while (lb > 3 && fb[lb - 1] == L'\\')
+		fb[--lb] = 0;
+	if (la < lb || CompareStringOrdinal(fa, (int)lb, fb, (int)lb, TRUE) != CSTR_EQUAL)
+		return false;
+	return fa[lb] == 0 || fa[lb] == L'\\' || fb[lb - 1] == L'\\';
+}
+
+bool MakeDirs(const char *path)
+{
+	if (!path || !*path)
+		return false;
 	char tmp[MAX_PATH];
-	snprintf(tmp, sizeof(tmp), "%s", path);
-	for (char *p = tmp + 3; *p; p++)
+	int written = snprintf(tmp, sizeof(tmp), "%s", path);
+	if (written <= 0 || (size_t)written >= sizeof(tmp))
+		return false;
+	size_t len = (size_t)written;
+	size_t start = 0;
+	if (len >= 3 && tmp[1] == ':' && (tmp[2] == '\\' || tmp[2] == '/'))
+		start = 3;
+	else if (len >= 2 && (tmp[0] == '\\' || tmp[0] == '/') && (tmp[1] == '\\' || tmp[1] == '/'))
+		start = 2;
+	else if (len >= 1 && (tmp[0] == '\\' || tmp[0] == '/'))
+		start = 1;
+	for (char *p = tmp + start; *p; p++)
 		if (*p == '\\' || *p == '/')
 		{
 			char c = *p;
@@ -56,36 +100,66 @@ void MakeDirs(const char *path)
 			CreateDirectoryA(tmp, NULL);
 			*p = c;
 		}
-	CreateDirectoryA(tmp, NULL);
+	if (CreateDirectoryA(tmp, NULL))
+		return true;
+	DWORD err = GetLastError();
+	if (err == ERROR_ALREADY_EXISTS)
+	{
+		DWORD attr = GetFileAttributesA(tmp);
+		return attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY) != 0;
+	}
+	return false;
 }
 
 void Names()
 {
-	if (gGameDir[0])
+	if (gGameDir[0] || gRootsValid)
 		return;
+	bool gameOk = false, userOk = false;
 	const char *game = getenv("BEA_GAME_DIR");
 	if (game && *game)
-		snprintf(gGameDir, sizeof(gGameDir), "%s", game);
+	{
+		int n = snprintf(gGameDir, sizeof(gGameDir), "%.*s", (int)TrimSepLen(game, false), game);
+		gameOk = n > 0 && (size_t)n < sizeof(gGameDir);
+	}
 	else
 	{
-		GetModuleFileNameA(NULL, gGameDir, sizeof(gGameDir));
-		if (char *slash = strrchr(gGameDir, '\\'))
-			*slash = 0;
+		DWORD n = GetModuleFileNameA(NULL, gGameDir, sizeof(gGameDir));
+		gameOk = n > 0 && n < sizeof(gGameDir);
+		if (gameOk)
+			if (char *slash = strrchr(gGameDir, '\\'))
+				*slash = 0;
 	}
 	const char *user = getenv("BEA_USER_DIR");
 	const char *appdata = getenv("APPDATA");
 	if (user && *user)
-		snprintf(gUserDir, sizeof(gUserDir), "%s", user);
+	{
+		int n = snprintf(gUserDir, sizeof(gUserDir), "%.*s", (int)TrimSepLen(user, false), user);
+		userOk = n > 0 && (size_t)n < sizeof(gUserDir);
+	}
+	else if (appdata && *appdata)
+	{
+		int n = snprintf(gUserDir, sizeof(gUserDir), "%.*s\\Onslaught CE", (int)TrimSepLen(appdata, true), appdata);
+		userOk = n > 0 && (size_t)n < sizeof(gUserDir);
+	}
 	else
-		snprintf(gUserDir, sizeof(gUserDir), "%s\\Onslaught CE", appdata && *appdata ? appdata : ".");
+	{
+		int n = snprintf(gUserDir, sizeof(gUserDir), "Onslaught CE");
+		userOk = n > 0 && (size_t)n < sizeof(gUserDir);
+	}
+	if (!gameOk) gGameDir[0] = 0;
+	if (!userOk) gUserDir[0] = 0;
+	gRootsValid = gameOk && userOk;
+	gUserInsideGame = !gRootsValid || Inside(gUserDir, gGameDir);
 }
 
 void Init()
 {
-	if (gGameDir[0])
+	if (gGameDir[0] || gRootsValid)
 		return;
 	Names();
-	MakeDirs(gUserDir);
+	if (gRootsValid && !gUserInsideGame)
+		MakeDirs(gUserDir);
 }
 
 // The game path as components joined by \: separators of either kind, "." and empty parts dropped, ".." taking the
@@ -142,39 +216,50 @@ enum Mode { READ, WRITE, SHADOW };
 int Resolve(const char *game_path, Mode mode, char *out, size_t n)
 {
 	Init();
-	if (!game_path || !*game_path)
+	if (!gRootsValid || !game_path || !*game_path || !out || !n)
+		return -1;
+	if (mode == WRITE && gUserInsideGame)
 		return -1;
 	if (Absolute(game_path))
 	{
 		if (mode != READ)
 			return -1;
-		snprintf(out, n, "%s", game_path);
-		return 0;
+		int w = snprintf(out, n, "%s", game_path);
+		return w > 0 && (size_t)w < n ? 0 : -1;
 	}
 	char rel[MAX_PATH], user[MAX_PATH * 2], game[MAX_PATH * 2];
 	if (!Relative(game_path, rel, sizeof(rel)))
 		return -1;
-	snprintf(user, sizeof(user), "%s\\%s", gUserDir, rel);
-	snprintf(game, sizeof(game), "%s\\%s", gGameDir, rel);
+	int uw = snprintf(user, sizeof(user), "%s\\%s", gUserDir, rel);
+	int gw = snprintf(game, sizeof(game), "%s\\%s", gGameDir, rel);
+	if (uw <= 0 || (size_t)uw >= sizeof(user) || gw <= 0 || (size_t)gw >= sizeof(game))
+		return -1;
 	if (mode == READ)
 	{
-		snprintf(out, n, "%s", Exists(user) ? user : game);
-		return 0;
+		const char *chosen = Exists(user) ? user : game;
+		int w = snprintf(out, n, "%s", chosen);
+		return w > 0 && (size_t)w < n ? 0 : -1;
 	}
-	snprintf(out, n, "%s", user);
+	int w = snprintf(out, n, "%s", user);
+	if (w <= 0 || (size_t)w >= n)
+		return -1;
 	if (mode == WRITE)
 	{
 		// Parent folders the game folder has are created in the writable folder (savegames\, ...).
 		char parent[MAX_PATH * 2];
-		snprintf(parent, sizeof(parent), "%s", rel);
+		int pw = snprintf(parent, sizeof(parent), "%s", rel);
+		if (pw <= 0 || (size_t)pw >= sizeof(parent))
+			return -1;
 		if (char *slash = strrchr(parent, '\\'))
 		{
 			*slash = 0;
 			char gparent[MAX_PATH * 3], uparent[MAX_PATH * 3];
-			snprintf(gparent, sizeof(gparent), "%s\\%s", gGameDir, parent);
-			snprintf(uparent, sizeof(uparent), "%s\\%s", gUserDir, parent);
-			if (!Exists(uparent) && Exists(gparent))
-				MakeDirs(uparent);
+			int gpw = snprintf(gparent, sizeof(gparent), "%s\\%s", gGameDir, parent);
+			int upw = snprintf(uparent, sizeof(uparent), "%s\\%s", gUserDir, parent);
+			if (gpw <= 0 || (size_t)gpw >= sizeof(gparent) || upw <= 0 || (size_t)upw >= sizeof(uparent))
+				return -1;
+			if (!Exists(uparent) && Exists(gparent) && !MakeDirs(uparent))
+				return -1;
 		}
 	}
 	return 0;
@@ -200,11 +285,12 @@ HANDLE ModRead(const char *game_path, const char *resolved)
 int CopyOnWrite(const char *game_path, char *out, size_t n)
 {
 	char read[MAX_PATH * 2];
-	Resolve(game_path, READ, read, sizeof(read));
+	if (Resolve(game_path, READ, read, sizeof(read)) != 0)
+		return -1;
 	if (Resolve(game_path, WRITE, out, n) != 0)
 		return -1;
-	if (strcmp(read, out) != 0 && !Exists(out) && Exists(read))
-		CopyFileA(read, out, TRUE);
+	if (strcmp(read, out) != 0 && !Exists(out) && Exists(read) && !CopyFileA(read, out, TRUE))
+		return -1;
 	return 0;
 }
 
@@ -680,6 +766,7 @@ FILE *PortOpenLocalFile(unsigned owner, const char *name, const char *mode)
 	// These owners use flat names only. Open without truncation, establish the opened object and
 	// named identity, then truncate/append that same handle. This is not an atomic filesystem lock.
 	Init();
+	if (!gRootsValid || gUserInsideGame) { errno = EACCES; SetLastError(ERROR_ACCESS_DENIED); return NULL; }
 	char path[MAX_PATH * 2];
 	if (snprintf(path, sizeof path, "%s\\%s", gUserDir, name) >= (int)sizeof path) return NULL;
 	DWORD root_attributes = GetFileAttributesA(gUserDir);
@@ -865,6 +952,12 @@ BOOL WINAPI PortFindClose(HANDLE h)
 BOOL WINAPI PortDeleteFileA(LPCSTR name)
 {
 	char path[MAX_PATH * 2];
+	Init();
+	if (!gRootsValid || gUserInsideGame)
+	{
+		SetLastError(ERROR_ACCESS_DENIED);
+		return FALSE;
+	}
 	return Resolve(name, SHADOW, path, sizeof(path)) == 0 && DeleteFileA(path);
 }
 

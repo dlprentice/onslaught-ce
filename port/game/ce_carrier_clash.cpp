@@ -7,6 +7,8 @@
 #include "Career.h"
 #include "frontend.h"
 #include "game.h"
+#include "GameInterface.h"
+#include "PauseMenu.h"
 #include "world.h"
 #include "unit.h"
 #include "squad.h"
@@ -29,9 +31,13 @@
 bool PortCeMenus();
 bool PortCeLayer();
 bool PortCeAuthoringSessionAllowed() noexcept;
+bool PortCeCmdMapOpen() __attribute__((weak));
 extern "C" bool PortCeMuseumActive(void) __attribute__((weak));
 extern "C" bool PortCeMuseumVisitActive(void) __attribute__((weak));
 extern "C" bool PortCeEditorActive(void) __attribute__((weak));
+extern "C" bool PortCeLivingSandboxActive(void) __attribute__((weak));
+extern "C" int PortCePlayUnitShowsBattleline(int viewpoint) __attribute__((weak));
+extern "C" int PortCePlayUnitOwnsPilot(int player) __attribute__((weak));
 
 namespace {
 
@@ -44,6 +50,18 @@ const char *gNotice = NULL;
 
 unsigned char gCareerSnapshot[sizeof(CCareer)];
 bool gCareerSnapshotHeld = false;
+bool gP0StasisApplied = false;
+bool gHudDrawnThisFrame = false;
+
+bool IsP0DrivingOtherUnit() {
+	return (PortCePlayUnitShowsBattleline && PortCePlayUnitShowsBattleline(0) != 0) ||
+	       (PortCePlayUnitOwnsPilot && PortCePlayUnitOwnsPilot(0) != 0);
+}
+
+float ComputeCarrierClashUiScale(float vh) {
+	const float hudScale = vh / 480.0f;
+	return (hudScale >= 0.85f && hudScale <= 4.5f) ? hudScale : (hudScale < 0.85f ? 0.85f : 4.5f);
+}
 
 struct CeCcQuadVertex {
 	float x, y, z, rhw;
@@ -71,7 +89,34 @@ bool CanBeginSession() {
 	if (PortCeMuseumActive && PortCeMuseumActive()) return false;
 	if (PortCeMuseumVisitActive && PortCeMuseumVisitActive()) return false;
 	if (PortCeEditorActive && PortCeEditorActive()) return false;
+	if (PortCeLivingSandboxActive && PortCeLivingSandboxActive()) return false;
 	return true;
+}
+
+void UpdateP0PlayUnitStasis() {
+	CPlayer *p0 = GAME.GetPlayer(0);
+	CBattleEngine *be = p0 ? p0->GetBattleEngine() : NULL;
+	if (!be) return;
+
+	const bool drivingOther = IsP0DrivingOtherUnit();
+	if (drivingOther) {
+		const float maxLife = be->GetMaxLife();
+		if (maxLife > 0.0f && be->mLife < maxLife) be->mLife = maxLife;
+		if (be->mMaxShields > 0.0f && be->mShields < be->mMaxShields) be->mShields = be->mMaxShields;
+		const float maxEnergy = be->GetMaxEnergy();
+		if (maxEnergy > 0.0f && be->mEnergy < maxEnergy) be->mEnergy = maxEnergy;
+		be->SetVelocity(FVector(0.0f, 0.0f, 0.0f));
+		if (!gP0StasisApplied) {
+			be->SetVulnerable(FALSE);
+			gP0StasisApplied = true;
+		}
+		return;
+	}
+
+	if (gP0StasisApplied) {
+		be->SetVulnerable(TRUE);
+		gP0StasisApplied = false;
+	}
 }
 
 bool SpawnDynamicEscort(const CeCarrierClashSpawnOrder &order) {
@@ -154,108 +199,160 @@ void EndHudUntextured() {
 	LT.SRS(D3DRS_ZFUNC, D3DCMP_LESSEQUAL);
 }
 
-void DrawRectD3D(LPDIRECT3DDEVICE9 dev, float x, float y, float w, float h, unsigned col) {
-	if (!dev || w <= 0.0f || h <= 0.0f) return;
-	const CeCcQuadVertex v[4] = {
-		{x,     y,     0.006f, 1.0f, col},
-		{x + w, y,     0.006f, 1.0f, col},
-		{x,     y + h, 0.006f, 1.0f, col},
-		{x + w, y + h, 0.006f, 1.0f, col},
-	};
-	dev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(CeCcQuadVertex));
-}
+struct CeCcHudBatch {
+	static constexpr int kMaxVerts = 2048;
+	CeCcQuadVertex verts[kMaxVerts];
+	int count;
 
-void DrawNineSliceGlass(LPDIRECT3DDEVICE9 dev, const CeCarrierClashHudRect &rect,
-                        float radius, float inset, unsigned topCol, unsigned botCol) {
-	const int kSegs = 8;
-	const float rFill = (radius - inset > 1.0f) ? (radius - inset) : 1.0f;
-	const float cx = rect.x + rect.w * 0.5f;
-	const float cy = rect.y + rect.h * 0.5f;
-	const float lx = rect.x + radius;
-	const float ty = rect.y + radius;
-	const float invH = rect.h > 1.0f ? (1.0f / rect.h) : 0.0f;
+	void Reset() { count = 0; }
 
-	float tlx[kSegs + 1], tly[kSegs + 1];
-	for (int k = 0; k <= kSegs; ++k) {
-		const float th = 3.14159265f + (1.57079633f * float(k) / float(kSegs));
-		tlx[k] = lx + rFill * cosf(th);
-		tly[k] = ty + rFill * sinf(th);
+	void Flush(LPDIRECT3DDEVICE9 dev) {
+		if (dev && count >= 3) {
+			dev->DrawPrimitiveUP(D3DPT_TRIANGLELIST, static_cast<UINT>(count / 3),
+			                     verts, sizeof(CeCcQuadVertex));
+		}
+		count = 0;
 	}
 
-	CeCcQuadVertex fan[1 + (kSegs + 1) * 4 + 1];
-	int n = 0;
-	fan[n++] = {cx, cy, 0.009f, 1.0f, LerpArgb(topCol, botCol, 0.5f)};
-	auto emit = [&](float px, float py) {
-		fan[n++] = {px, py, 0.009f, 1.0f, LerpArgb(topCol, botCol, (py - rect.y) * invH)};
-	};
-	for (int k = 0; k <= kSegs; ++k) emit(tlx[k], tly[k]);
-	for (int k = kSegs; k >= 0; --k) emit(2.0f * cx - tlx[k], tly[k]);
-	for (int k = 0; k <= kSegs; ++k) emit(2.0f * cx - tlx[k], 2.0f * cy - tly[k]);
-	for (int k = kSegs; k >= 0; --k) emit(tlx[k], 2.0f * cy - tly[k]);
-	fan[n++] = fan[1];
-
-	dev->DrawPrimitiveUP(D3DPT_TRIANGLEFAN, n - 2, fan, sizeof(CeCcQuadVertex));
-}
-
-void DrawNineSliceBracket(LPDIRECT3DDEVICE9 dev, const CeCarrierClashHudRect &rect,
-                          float radius, float glowPad, float strokeW,
-                          bool mirrorRight, float halfW, unsigned col) {
-	const int kSegs = 8;
-	const float cx = rect.x + rect.w * 0.5f;
-	const float cy = rect.y + rect.h * 0.5f;
-	const float lx = rect.x + radius;
-	const float ty = rect.y + radius;
-	const float coreHalf = strokeW * 0.5f;
-	const float rMid = (radius - glowPad - coreHalf > 1.0f) ? (radius - glowPad - coreHalf) : 1.0f;
-	const float bodySpan = (rect.w > 2.0f * radius) ? (rect.w - 2.0f * radius) : 0.0f;
-	const float lipLen = (bodySpan * 0.14f < radius * 0.65f) ? (bodySpan * 0.14f) : (radius * 0.65f);
-
-	struct SpinePt { float x, y, nx, ny, sw; };
-	SpinePt pts[2 + (kSegs + 1) * 2];
-	int count = 0;
-	if (lipLen > 1.0f) {
-		pts[count++] = {lx + lipLen, ty - rMid, 0.0f, -1.0f, 0.40f};
-	}
-	for (int k = kSegs; k >= 0; --k) {
-		const float frac = float(k) / float(kSegs);
-		const float th = 3.14159265f + 1.57079633f * frac;
-		const float c = cosf(th), s = sinf(th);
-		const float sw = 1.0f + 0.20f * sinf(frac * 3.14159265f);
-		pts[count++] = {lx + rMid * c, ty + rMid * s, c, s, sw};
-	}
-	for (int k = 0; k <= kSegs; ++k) {
-		const float frac = float(k) / float(kSegs);
-		const float th = 3.14159265f + 1.57079633f * frac;
-		const float c = cosf(th), s = sinf(th);
-		const float sw = 1.0f + 0.20f * sinf(frac * 3.14159265f);
-		pts[count++] = {lx + rMid * c, 2.0f * cy - (ty + rMid * s), c, -s, sw};
-	}
-	if (lipLen > 1.0f) {
-		pts[count++] = {lx + lipLen, 2.0f * cy - (ty - rMid), 0.0f, 1.0f, 0.40f};
+	void PushTri(LPDIRECT3DDEVICE9 dev, const CeCcQuadVertex &a,
+	             const CeCcQuadVertex &b, const CeCcQuadVertex &c) {
+		if (count + 3 > kMaxVerts) Flush(dev);
+		verts[count++] = a;
+		verts[count++] = b;
+		verts[count++] = c;
 	}
 
-	CeCcQuadVertex strip[(2 + (kSegs + 1) * 2) * 2];
-	const float minX = rect.x, maxX = rect.x + rect.w;
-	const float minY = rect.y, maxY = rect.y + rect.h;
-	auto clampPt = [&](float &px, float &py) {
-		if (px < minX) px = minX;
-		if (px > maxX) px = maxX;
-		if (py < minY) py = minY;
-		if (py > maxY) py = maxY;
-	};
-	for (int i = 0; i < count; ++i) {
-		float px = pts[i].x, py = pts[i].y;
-		float nx = pts[i].nx, ny = pts[i].ny;
-		if (mirrorRight) { px = 2.0f * cx - px; nx = -nx; }
-		const float hw = halfW * pts[i].sw;
-		float ox = px + nx * hw, oy = py + ny * hw;
-		float ix = px - nx * hw, iy = py - ny * hw;
-		clampPt(ox, oy);
-		clampPt(ix, iy);
-		strip[i * 2 + 0] = {ox, oy, 0.007f, 1.0f, col};
-		strip[i * 2 + 1] = {ix, iy, 0.007f, 1.0f, col};
+	void EmitRect(LPDIRECT3DDEVICE9 dev, float x, float y, float w, float h, unsigned col) {
+		if (w <= 0.0f || h <= 0.0f) return;
+		const CeCcQuadVertex v0 = {x,     y,     0.006f, 1.0f, col};
+		const CeCcQuadVertex v1 = {x + w, y,     0.006f, 1.0f, col};
+		const CeCcQuadVertex v2 = {x,     y + h, 0.006f, 1.0f, col};
+		const CeCcQuadVertex v3 = {x + w, y + h, 0.006f, 1.0f, col};
+		PushTri(dev, v0, v1, v2);
+		PushTri(dev, v1, v3, v2);
 	}
-	dev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, (count - 1) * 2, strip, sizeof(CeCcQuadVertex));
+
+	void EmitNineSliceGlass(LPDIRECT3DDEVICE9 dev, const CeCarrierClashHudRect &rect,
+	                        float radius, float inset, unsigned topCol, unsigned botCol) {
+		const int kSegs = 8;
+		const float rFill = (radius - inset > 1.0f) ? (radius - inset) : 1.0f;
+		const float cx = rect.x + rect.w * 0.5f;
+		const float cy = rect.y + rect.h * 0.5f;
+		const float lx = rect.x + radius;
+		const float ty = rect.y + radius;
+		const float invH = rect.h > 1.0f ? (1.0f / rect.h) : 0.0f;
+
+		float tlx[kSegs + 1], tly[kSegs + 1];
+		for (int k = 0; k <= kSegs; ++k) {
+			const float th = 3.14159265f + (1.57079633f * float(k) / float(kSegs));
+			tlx[k] = lx + rFill * cosf(th);
+			tly[k] = ty + rFill * sinf(th);
+		}
+
+		CeCcQuadVertex fan[1 + (kSegs + 1) * 4 + 1];
+		int n = 0;
+		fan[n++] = {cx, cy, 0.009f, 1.0f, LerpArgb(topCol, botCol, 0.5f)};
+		auto emit = [&](float px, float py) {
+			fan[n++] = {px, py, 0.009f, 1.0f, LerpArgb(topCol, botCol, (py - rect.y) * invH)};
+		};
+		for (int k = 0; k <= kSegs; ++k) emit(tlx[k], tly[k]);
+		for (int k = kSegs; k >= 0; --k) emit(2.0f * cx - tlx[k], tly[k]);
+		for (int k = 0; k <= kSegs; ++k) emit(2.0f * cx - tlx[k], 2.0f * cy - tly[k]);
+		for (int k = kSegs; k >= 0; --k) emit(tlx[k], 2.0f * cy - tly[k]);
+		fan[n++] = fan[1];
+
+		for (int i = 1; i + 1 < n; ++i) {
+			PushTri(dev, fan[0], fan[i], fan[i + 1]);
+		}
+	}
+
+	void EmitNineSliceBracket(LPDIRECT3DDEVICE9 dev, const CeCarrierClashHudRect &rect,
+	                          float radius, float glowPad, float strokeW,
+	                          bool mirrorRight, float halfW, unsigned col) {
+		const int kSegs = 8;
+		const float cx = rect.x + rect.w * 0.5f;
+		const float cy = rect.y + rect.h * 0.5f;
+		const float lx = rect.x + radius;
+		const float ty = rect.y + radius;
+		const float coreHalf = strokeW * 0.5f;
+		const float rMid = (radius - glowPad - coreHalf > 1.0f) ? (radius - glowPad - coreHalf) : 1.0f;
+		const float bodySpan = (rect.w > 2.0f * radius) ? (rect.w - 2.0f * radius) : 0.0f;
+		const float lipLen = (bodySpan * 0.14f < radius * 0.65f) ? (bodySpan * 0.14f) : (radius * 0.65f);
+
+		struct SpinePt { float x, y, nx, ny, sw; };
+		SpinePt pts[2 + (kSegs + 1) * 2];
+		int ptCount = 0;
+		if (lipLen > 1.0f) {
+			pts[ptCount++] = {lx + lipLen, ty - rMid, 0.0f, -1.0f, 0.40f};
+		}
+		for (int k = kSegs; k >= 0; --k) {
+			const float frac = float(k) / float(kSegs);
+			const float th = 3.14159265f + (1.57079633f * frac);
+			const float c = cosf(th), s = sinf(th);
+			const float sw = 1.0f + 0.20f * sinf(frac * 3.14159265f);
+			pts[ptCount++] = {lx + rMid * c, ty + rMid * s, c, s, sw};
+		}
+		for (int k = 0; k <= kSegs; ++k) {
+			const float frac = float(k) / float(kSegs);
+			const float th = 3.14159265f + (1.57079633f * frac);
+			const float c = cosf(th), s = sinf(th);
+			const float sw = 1.0f + 0.20f * sinf(frac * 3.14159265f);
+			pts[ptCount++] = {lx + rMid * c, 2.0f * cy - (ty + rMid * s), c, -s, sw};
+		}
+		if (lipLen > 1.0f) {
+			pts[ptCount++] = {lx + lipLen, 2.0f * cy - (ty - rMid), 0.0f, 1.0f, 0.40f};
+		}
+
+		CeCcQuadVertex strip[(2 + (kSegs + 1) * 2) * 2];
+		const float minX = rect.x, maxX = rect.x + rect.w;
+		const float minY = rect.y, maxY = rect.y + rect.h;
+		auto clampPt = [&](float &px, float &py) {
+			if (px < minX) px = minX;
+			if (px > maxX) px = maxX;
+			if (py < minY) py = minY;
+			if (py > maxY) py = maxY;
+		};
+		for (int i = 0; i < ptCount; ++i) {
+			float px = pts[i].x, py = pts[i].y;
+			float nx = pts[i].nx, ny = pts[i].ny;
+			if (mirrorRight) { px = 2.0f * cx - px; nx = -nx; }
+			const float hw = halfW * pts[i].sw;
+			float ox = px + nx * hw, oy = py + ny * hw;
+			float ix = px - nx * hw, iy = py - ny * hw;
+			clampPt(ox, oy);
+			clampPt(ix, iy);
+			strip[i * 2 + 0] = {ox, oy, 0.007f, 1.0f, col};
+			strip[i * 2 + 1] = {ix, iy, 0.007f, 1.0f, col};
+		}
+		for (int i = 0; i + 1 < ptCount; ++i) {
+			const CeCcQuadVertex &a0 = strip[i * 2 + 0];
+			const CeCcQuadVertex &a1 = strip[i * 2 + 1];
+			const CeCcQuadVertex &b0 = strip[(i + 1) * 2 + 0];
+			const CeCcQuadVertex &b1 = strip[(i + 1) * 2 + 1];
+			PushTri(dev, a0, a1, b0);
+			PushTri(dev, a1, b1, b0);
+		}
+	}
+};
+
+CeCcHudBatch gHudBatch;
+
+// Localized retail text.db IDs (english.dat):
+//   534802956 (_231_LOSE_VENTURER): "The Venturer had to withdraw"
+//   54406750  (GAME_OVER_DEATH):    "Battle Engine was destroyed."
+constexpr int kVenturerLostTextId = 534802956;
+constexpr int kBattleEngineLostTextId = 54406750;
+
+void DrawSafeHudTextScaled(CDXBitmapFont *font, float x, float y, unsigned colour,
+                           const WCHAR *wide, float sx, float sy) {
+	if (!font || !wide || !wide[0]) return;
+	LT.SRS(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
+	LT.SRS(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
+	LT.SRS(D3DRS_ALPHABLENDENABLE, TRUE);
+	LT.SRS(D3DRS_ALPHATESTENABLE, TRUE);
+	LT.SRS(D3DRS_ZENABLE, FALSE);
+	LT.SRS(D3DRS_ZWRITEENABLE, FALSE);
+	font->DrawTextWithShadow(x, y, colour, const_cast<WCHAR *>(wide), 0, 0.0f, sx, sy);
 }
 
 void DrawSafeHudText(CDXBitmapFont *font, float x, float y, unsigned colour,
@@ -275,13 +372,7 @@ void DrawSafeHudText(CDXBitmapFont *font, float x, float y, unsigned colour,
 		sx = maxW / float(ext.cx);
 		if (sx < scale * 0.55f) sx = scale * 0.55f;
 	}
-	LT.SRS(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
-	LT.SRS(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
-	LT.SRS(D3DRS_ALPHABLENDENABLE, TRUE);
-	LT.SRS(D3DRS_ALPHATESTENABLE, TRUE);
-	LT.SRS(D3DRS_ZENABLE, FALSE);
-	LT.SRS(D3DRS_ZWRITEENABLE, FALSE);
-	font->DrawTextWithShadow(x, y, colour, wide, 0, 0.0f, sx, scale);
+	DrawSafeHudTextScaled(font, x, y, colour, wide, sx, scale);
 }
 
 void DrawSafeHudTextCentered(CDXBitmapFont *font, float cx, float y, unsigned colour,
@@ -302,7 +393,28 @@ void DrawSafeHudTextCentered(CDXBitmapFont *font, float cx, float y, unsigned co
 		if (sx < scale * 0.55f) sx = scale * 0.55f;
 	}
 	const float drawW = float(ext.cx) * sx;
-	DrawSafeHudText(font, floorf(cx - drawW * 0.5f), y, colour, ascii, sx, maxW);
+	DrawSafeHudTextScaled(font, floorf(cx - drawW * 0.5f), y, colour, wide, sx, scale);
+}
+
+void DrawSafeHudTextRight(CDXBitmapFont *font, float rightX, float y, unsigned colour,
+                          const char *ascii, float scale, float maxW) {
+	if (!font || !ascii || !ascii[0]) return;
+	WCHAR wide[80] = {};
+	size_t n = 0u;
+	for (; ascii[n] && n + 1u < 80u; ++n) {
+		const char ch = CeCarrierClashIsFontSmallSafeChar(ascii[n]) ? ascii[n] : ' ';
+		wide[n] = static_cast<WCHAR>(static_cast<unsigned char>(ch));
+	}
+	wide[n] = 0;
+	SIZE ext = {0, 0};
+	font->GetTextExtent(wide, &ext);
+	float sx = scale;
+	if (maxW > 8.0f && ext.cx > 0 && float(ext.cx) * sx > maxW) {
+		sx = maxW / float(ext.cx);
+		if (sx < scale * 0.55f) sx = scale * 0.55f;
+	}
+	const float drawW = float(ext.cx) * sx;
+	DrawSafeHudTextScaled(font, floorf(rightX - drawW), y, colour, wide, sx, scale);
 }
 
 } // namespace
@@ -325,6 +437,8 @@ extern "C" bool PortCeCarrierClashBegin(void) {
 	}
 	CaptureCareerSnapshot();
 	gArmed = true;
+	gP0StasisApplied = false;
+	gHudDrawnThisFrame = false;
 	gDirector.Arm();
 	return true;
 }
@@ -336,6 +450,8 @@ extern "C" bool PortCeCarrierClashActive(void) {
 extern "C" void PortCeCarrierClashCancel(void) {
 	gArmed = false;
 	gLoadRefused = false;
+	gP0StasisApplied = false;
+	gHudDrawnThisFrame = false;
 	ClearCareerSnapshot();
 	gDirector.Reset();
 	PortCeCarrierClashDropWorld();
@@ -378,6 +494,8 @@ extern "C" bool PortCeCarrierClashTakeNotice(const char **sentence) {
 extern "C" void PortCeCarrierClashLevelBegin(int level) {
 	if (!PortCeCarrierClashActive() || level != CeCarrierClashWorld::kArchiveLevel)
 		return;
+	gP0StasisApplied = false;
+	gHudDrawnThisFrame = false;
 	gDirector.BeginLevel();
 
 	// Bind already-spawned units from the clean-room world body via 32-bit CeEntityHandles.
@@ -398,6 +516,8 @@ extern "C" void PortCeCarrierClashLevelBegin(int level) {
 extern "C" void PortCeCarrierClashLevelEnd(int level, int quit) {
 	(void)level;
 	if (!gArmed) return;
+	gP0StasisApplied = false;
+	gHudDrawnThisFrame = false;
 	const bool keepForRetry = (quit == QT_RESTART_LEVEL) && !gLoadRefused;
 	gDirector.EndLevel(keepForRetry);
 	if (keepForRetry) {
@@ -423,16 +543,31 @@ extern "C" void PortCeCarrierClashUnitDestroyed(CUnit *unit) {
 		gDirector.OnUnitDestroyed(h);
 	}
 	if (unit->IsA(THING_TYPE_BATTLE_ENGINE)) {
+		const bool drivingOther = gP0StasisApplied || IsP0DrivingOtherUnit();
 		CPlayer *p0 = GAME.GetPlayer(0);
-		if (p0 && p0->GetBattleEngine() == unit) {
+		if (!drivingOther && p0 && p0->GetBattleEngine() == unit) {
 			gDirector.OnPlayerLost();
 		}
 	}
 }
 
+extern "C" int PortCeCarrierClashBeInStasis(const void *be) {
+	if (!PortCeCarrierClashActive() || !gDirector.IsRunning() || !be) return 0;
+	CPlayer *p0 = GAME.GetPlayer(0);
+	if (!p0 || static_cast<const void *>(p0->GetBattleEngine()) != be) return 0;
+	return (gP0StasisApplied || IsP0DrivingOtherUnit()) ? 1 : 0;
+}
+
 extern "C" void PortCeCarrierClashTickPre(void) {
 	if (!PortCeCarrierClashActive() || !gDirector.IsRunning()) return;
+	// Direct P0 death runs GAME.DeclarePlayerDead() before ce_hook_unit_destroyed; keep director synced.
+	if (GAME.GetGameState() == GAME_STATE_LEVEL_LOST && gDirector.Phase() == CE_CC_ACTIVE) {
+		gDirector.OnPlayerLost();
+		gDirector.MarkOutcomeDeclared();
+	}
 	if (GAME.IsPaused() || GAME.GetGameState() == GAME_STATE_PRE_RUNNING) return;
+
+	UpdateP0PlayUnitStasis();
 
 	CUnit *venturer = CeEntityHandleResolveUnit(gDirector.VenturerHandle());
 	CUnit *fenrir = CeEntityHandleResolveUnit(gDirector.FenrirHandle());
@@ -476,16 +611,35 @@ extern "C" void PortCeCarrierClashTickPre(void) {
 			GAME.DeclareLevelWon();
 		} else if (gDirector.Phase() == CE_CC_DEFEAT) {
 			gDirector.MarkOutcomeDeclared();
-			GAME.DeclareLevelLost(0, FALSE);
+			const int reasonId = venturerAlive ? kBattleEngineLostTextId : kVenturerLostTextId;
+			GAME.DeclareLevelLost(reasonId, FALSE);
 		}
 	}
 }
 
-extern "C" void PortCeCarrierClashDrawHud(CPlayer *player, int viewpoint) {
-	(void)player;
-	if (viewpoint != 0) return;
-	if (!PortCeCarrierClashActive() || !gDirector.IsRunning()) return;
-	if (PortCePhotoOn()) return;
+namespace {
+
+bool ShouldRenderCarrierClashHud(bool overlayPass, bool *outEndState) {
+	if (outEndState) *outEndState = false;
+	if (!PortCeCarrierClashActive() || !gDirector.IsRunning()) return false;
+	const EGameState gs = GAME.GetGameState();
+	const bool endState = (gs == GAME_STATE_LEVEL_WON || gs == GAME_STATE_LEVEL_LOST);
+	if (outEndState) *outEndState = endState;
+	const bool pauseMenuOpen = (GAME.GetPauseMenu() && GAME.GetPauseMenu()->mActive);
+	if (PortCePhotoOn() || GAMEINTERFACE.IsMenuUp() || pauseMenuOpen) return false;
+	if (GAME.GetGameState() != GAME_STATE_PLAYING && !endState) return false;
+	if (!endState && GAME.IsPaused()) return false;
+	if (overlayPass) {
+		if (!endState) return false;
+		if (PortCeCmdMapOpen && PortCeCmdMapOpen()) return false;
+	}
+	return true;
+}
+
+void RenderCarrierClashHud(bool overlayPass) {
+	bool endState = false;
+	if (!ShouldRenderCarrierClashHud(overlayPass, &endState)) return;
+	(void)endState;
 
 	LPDIRECT3DDEVICE9 dev = LT.GetDevice();
 	CDXBitmapFont *font = PLATFORM.Font(FONT_SMALL);
@@ -493,8 +647,8 @@ extern "C" void PortCeCarrierClashDrawHud(CPlayer *player, int viewpoint) {
 
 	const float vw = static_cast<float>(PLATFORM.GetWindowWidth());
 	const float vh = static_cast<float>(PLATFORM.GetWindowHeight());
-	const float hudScale = vh / 480.0f;
-	const float uiScale = (hudScale >= 0.85f && hudScale <= 2.5f) ? hudScale : (hudScale < 0.85f ? 0.85f : 2.5f);
+	if (!(vw > 0.0f && vh > 0.0f)) return;
+	const float uiScale = ComputeCarrierClashUiScale(vh);
 
 	const CeCarrierClashHudState state = gDirector.BuildHudState();
 	const bool showBanner = (state.phase == CE_CC_VICTORY || state.phase == CE_CC_DEFEAT);
@@ -502,42 +656,43 @@ extern "C" void PortCeCarrierClashDrawHud(CPlayer *player, int viewpoint) {
 	if (!layout.valid) return;
 
 	BeginHudUntextured();
+	gHudBatch.Reset();
 
 	// 9-slice top-center tactical strip: dark maritime glass + Forseti cyan left
 	// bracket + Muspell crimson right bracket + dual flagship hull bars.
 	const float inset = layout.glowPad + layout.strokeWidth * 0.45f;
-	DrawNineSliceGlass(dev, layout.panel, layout.cornerRadius, inset, 0xd80b1c2eu, 0xe406101au);
+	gHudBatch.EmitNineSliceGlass(dev, layout.panel, layout.cornerRadius, inset, 0xd80b1c2eu, 0xe406101au);
 
 	const float coreHalf = layout.strokeWidth * 0.5f;
 	// Left bracket (Forseti cyan)
-	DrawNineSliceBracket(dev, layout.panel, layout.cornerRadius, layout.glowPad, layout.strokeWidth,
-	                     false, coreHalf + layout.glowPad, 0x4c28d4ffu);
-	DrawNineSliceBracket(dev, layout.panel, layout.cornerRadius, layout.glowPad, layout.strokeWidth,
-	                     false, coreHalf, 0xf23ce4ffu);
-	DrawNineSliceBracket(dev, layout.panel, layout.cornerRadius, layout.glowPad, layout.strokeWidth,
-	                     false, coreHalf * 0.42f, 0xffccf8ffu);
+	gHudBatch.EmitNineSliceBracket(dev, layout.panel, layout.cornerRadius, layout.glowPad, layout.strokeWidth,
+	                               false, coreHalf + layout.glowPad, 0x4c28d4ffu);
+	gHudBatch.EmitNineSliceBracket(dev, layout.panel, layout.cornerRadius, layout.glowPad, layout.strokeWidth,
+	                               false, coreHalf, 0xf23ce4ffu);
+	gHudBatch.EmitNineSliceBracket(dev, layout.panel, layout.cornerRadius, layout.glowPad, layout.strokeWidth,
+	                               false, coreHalf * 0.42f, 0xffccf8ffu);
 	// Right bracket (Muspell crimson)
-	DrawNineSliceBracket(dev, layout.panel, layout.cornerRadius, layout.glowPad, layout.strokeWidth,
-	                     true, coreHalf + layout.glowPad, 0x4cff4414u);
-	DrawNineSliceBracket(dev, layout.panel, layout.cornerRadius, layout.glowPad, layout.strokeWidth,
-	                     true, coreHalf, 0xf2f04e1au);
-	DrawNineSliceBracket(dev, layout.panel, layout.cornerRadius, layout.glowPad, layout.strokeWidth,
-	                     true, coreHalf * 0.42f, 0xffffc464u);
+	gHudBatch.EmitNineSliceBracket(dev, layout.panel, layout.cornerRadius, layout.glowPad, layout.strokeWidth,
+	                               true, coreHalf + layout.glowPad, 0x4cff4414u);
+	gHudBatch.EmitNineSliceBracket(dev, layout.panel, layout.cornerRadius, layout.glowPad, layout.strokeWidth,
+	                               true, coreHalf, 0xf2f04e1au);
+	gHudBatch.EmitNineSliceBracket(dev, layout.panel, layout.cornerRadius, layout.glowPad, layout.strokeWidth,
+	                               true, coreHalf * 0.42f, 0xffffc464u);
 
 	// Hull bar tracks and proportional fills
-	DrawRectD3D(dev, layout.venturerBar.x, layout.venturerBar.y, layout.venturerBar.w, layout.venturerBar.h, 0xc0081622u);
-	DrawRectD3D(dev, layout.fenrirBar.x, layout.fenrirBar.y, layout.fenrirBar.w, layout.fenrirBar.h, 0xc0220a08u);
+	gHudBatch.EmitRect(dev, layout.venturerBar.x, layout.venturerBar.y, layout.venturerBar.w, layout.venturerBar.h, 0xc0081622u);
+	gHudBatch.EmitRect(dev, layout.fenrirBar.x, layout.fenrirBar.y, layout.fenrirBar.w, layout.fenrirBar.h, 0xc0220a08u);
 
 	const float vFrac = static_cast<float>(state.venturerPct) * 0.01f;
 	const float fFrac = static_cast<float>(state.fenrirPct) * 0.01f;
 	const unsigned vFillCol = state.venturerPct > 35 ? 0xf032d8ffu : 0xf0ffaa30u;
 	const unsigned fFillCol = state.fenrirPct > 35 ? 0xf0ff4c28u : 0xf0ff9040u;
-	DrawRectD3D(dev, layout.venturerBar.x + 1.0f, layout.venturerBar.y + 1.0f,
-	            (layout.venturerBar.w - 2.0f) * vFrac, layout.venturerBar.h - 2.0f, vFillCol);
+	gHudBatch.EmitRect(dev, layout.venturerBar.x + 1.0f, layout.venturerBar.y + 1.0f,
+	                   (layout.venturerBar.w - 2.0f) * vFrac, layout.venturerBar.h - 2.0f, vFillCol);
 	// Fenrir bar drains inward toward centre for clean mirrored contrast
 	const float fFillW = (layout.fenrirBar.w - 2.0f) * fFrac;
-	DrawRectD3D(dev, layout.fenrirBar.x + layout.fenrirBar.w - 1.0f - fFillW,
-	            layout.fenrirBar.y + 1.0f, fFillW, layout.fenrirBar.h - 2.0f, fFillCol);
+	gHudBatch.EmitRect(dev, layout.fenrirBar.x + layout.fenrirBar.w - 1.0f - fFillW,
+	                   layout.fenrirBar.y + 1.0f, fFillW, layout.fenrirBar.h - 2.0f, fFillCol);
 
 	// Optional Victory / Defeat 9-slice outcome banner below the status strip
 	if (layout.showBanner) {
@@ -548,15 +703,16 @@ extern "C" void PortCeCarrierClashDrawHud(CPlayer *player, int viewpoint) {
 		const unsigned bodyCol = won ? 0xf43ce4ffu : 0xf4f04e1au;
 		const unsigned coreCol = won ? 0xffd8fbffu : 0xffffc870u;
 		const float br = floorf(10.0f * uiScale);
-		DrawNineSliceGlass(dev, layout.bannerBox, br, inset, topGlass, botGlass);
+		gHudBatch.EmitNineSliceGlass(dev, layout.bannerBox, br, inset, topGlass, botGlass);
 		for (int side = 0; side < 2; ++side) {
 			const bool right = (side == 1);
-			DrawNineSliceBracket(dev, layout.bannerBox, br, layout.glowPad, layout.strokeWidth, right, coreHalf + layout.glowPad, haloCol);
-			DrawNineSliceBracket(dev, layout.bannerBox, br, layout.glowPad, layout.strokeWidth, right, coreHalf, bodyCol);
-			DrawNineSliceBracket(dev, layout.bannerBox, br, layout.glowPad, layout.strokeWidth, right, coreHalf * 0.42f, coreCol);
+			gHudBatch.EmitNineSliceBracket(dev, layout.bannerBox, br, layout.glowPad, layout.strokeWidth, right, coreHalf + layout.glowPad, haloCol);
+			gHudBatch.EmitNineSliceBracket(dev, layout.bannerBox, br, layout.glowPad, layout.strokeWidth, right, coreHalf, bodyCol);
+			gHudBatch.EmitNineSliceBracket(dev, layout.bannerBox, br, layout.glowPad, layout.strokeWidth, right, coreHalf * 0.42f, coreCol);
 		}
 	}
 
+	gHudBatch.Flush(dev);
 	EndHudUntextured();
 
 	// Crisp FONT_SMALL labels (strictly safe glyphs)
@@ -566,21 +722,8 @@ extern "C" void PortCeCarrierClashDrawHud(CPlayer *player, int viewpoint) {
 	                state.venturerText, textScale, layout.venturerBar.w);
 	DrawSafeHudTextCentered(font, layout.panel.x + layout.panel.w * 0.5f, textY, 0xffe8eef4u,
 	                        "VS", textScale * 0.90f, floorf(28.0f * uiScale));
-	{
-		WCHAR wideF[64] = {};
-		size_t fn = 0u;
-		for (; state.fenrirText[fn] && fn + 1u < 64u; ++fn)
-			wideF[fn] = static_cast<WCHAR>(static_cast<unsigned char>(state.fenrirText[fn]));
-		wideF[fn] = 0;
-		SIZE ext = {0, 0};
-		font->GetTextExtent(wideF, &ext);
-		float fxScale = textScale;
-		if (ext.cx > 0 && float(ext.cx) * fxScale > layout.fenrirBar.w)
-			fxScale = layout.fenrirBar.w / float(ext.cx);
-		const float fx = layout.fenrirBar.x + layout.fenrirBar.w - float(ext.cx) * fxScale;
-		DrawSafeHudText(font, floorf(fx), textY, 0xffffd4c0u,
-		                state.fenrirText, fxScale, layout.fenrirBar.w);
-	}
+	DrawSafeHudTextRight(font, layout.fenrirBar.x + layout.fenrirBar.w, textY, 0xffffd4c0u,
+	                     state.fenrirText, textScale, layout.fenrirBar.w);
 
 	if (layout.showBanner) {
 		const unsigned bannerCol = (state.phase == CE_CC_VICTORY) ? 0xff7cf4ffu : 0xffff8860u;
@@ -594,6 +737,35 @@ extern "C" void PortCeCarrierClashDrawHud(CPlayer *player, int viewpoint) {
 	LT.SRS(D3DRS_ZENABLE, TRUE);
 	LT.SRS(D3DRS_ZWRITEENABLE, TRUE);
 	LT.SRS(D3DRS_ZFUNC, D3DCMP_LESSEQUAL);
+}
+
+} // namespace
+
+extern "C" float PortCeCarrierClashHudTopBottom(float viewportW, float viewportH) {
+	if (!(viewportW > 0.0f && viewportH > 0.0f)) return 0.0f;
+	if (!ShouldRenderCarrierClashHud(false, NULL)) return 0.0f;
+	const float uiScale = ComputeCarrierClashUiScale(viewportH);
+	const CeCarrierClashHudState state = gDirector.BuildHudState();
+	const bool showBanner = (state.phase == CE_CC_VICTORY || state.phase == CE_CC_DEFEAT);
+	const CeCarrierClashHudLayout layout = CeCarrierClashComputeHudLayout(viewportW, viewportH, uiScale, showBanner);
+	if (!layout.valid) return 0.0f;
+	return layout.showBanner ? (layout.bannerBox.y + layout.bannerBox.h)
+	                         : (layout.panel.y + layout.panel.h);
+}
+
+extern "C" void PortCeCarrierClashDrawHud(CPlayer *player, int viewpoint) {
+	(void)player;
+	if (viewpoint != 0) return;
+	if (!ShouldRenderCarrierClashHud(false, NULL)) return;
+	gHudDrawnThisFrame = true;
+	RenderCarrierClashHud(false);
+}
+
+extern "C" void PortCeCarrierClashDrawOverlay(void) {
+	const bool alreadyDrawn = gHudDrawnThisFrame;
+	gHudDrawnThisFrame = false;
+	if (alreadyDrawn) return;
+	RenderCarrierClashHud(true);
 }
 
 extern "C" void PortCeCarrierClashFilterSave(CCareer *career, void *dest) {

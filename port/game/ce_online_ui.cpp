@@ -425,7 +425,11 @@ int PortCeOnlineUiKey(uint16_t key, int eventType) {
 
 void PortCeOnlineUiClose(void) {
     SetKeyTrap(false);
-    PortCeOnlineHostClose();
+    if (CE_LobbyRestartDue()) {
+        PortCeOnlineHostClosePreservingLaunch();
+    } else {
+        PortCeOnlineHostClose();
+    }
     sPendingMultiplayerEntry = false;
     sNextOpenFromMultiplayer = false;
     sExitingToMultiplayer = false;
@@ -439,7 +443,14 @@ void PortCeOnlineUiClose(void) {
 // ---------------------------------------------------------------------------
 void PortCeOnlineUiMultiplayerProcess(int active) {
     if (!active || !OnlineOffered() || FEMESSBOX.BeingDisplayed()) return;
-    if (PLATFORM.KeyOnce(DIK_O)) {
+    bool padOpen = false;
+    for (int pad = 0; pad < 2; ++pad) {
+        if (LT.JoyState(pad) && LT.OldJoyState(pad) && LT.JoyButtonOnce(pad, 3)) {
+            padOpen = true;
+            break;
+        }
+    }
+    if (PLATFORM.KeyOnce(DIK_O) || padOpen) {
         PortCeOnlineUiOpenFromMultiplayer();
     }
 }
@@ -461,7 +472,7 @@ void PortCeOnlineUiMultiplayerRender(float transition) {
     FRONTEND.DrawPanel(x0, y0, x1, y1, 0.30f, bgCol);
     FRONTEND.DrawBox(x0, y0, x1, y1, brdCol, 1.5f, 0.29f);
     ApplyTextStates();
-    OpDrawTextCenter(x0, y0, x1, y1, txtCol, "PLAY ONLINE (2-4 PLAYERS) - PRESS O OR CLICK HERE");
+    OpDrawTextCenter(x0, y0, x1, y1, txtCol, "PLAY ONLINE (2-4 PLAYERS) - O / Y BUTTON OR CLICK");
     LT.SRS(D3DRS_ZWRITEENABLE, TRUE);
     LT.SRS(D3DRS_ZENABLE, TRUE);
 

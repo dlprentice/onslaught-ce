@@ -29,6 +29,7 @@
 const char *PortUserDir();
 extern "C" int CE_SettingGetText(const char *key, char *out, int n) __attribute__((weak));
 extern "C" int CE_LobbyQueueOnlineLaunch(const CE_OnlineMatchTicket *ticket) __attribute__((weak));
+extern "C" int CE_LobbyRestartDue(void) __attribute__((weak));
 extern "C" int CE_CheatOn(int n) __attribute__((weak));
 
 #ifdef CE_VERSION
@@ -77,8 +78,50 @@ int ParseRouteKind(const std::string &r) {
 }
 
 bool IsLoopbackHttpOrigin(const std::string &origin) {
-    return origin.compare(0, 17, "http://127.0.0.1:") == 0 ||
-           origin.compare(0, 17, "http://localhost:") == 0;
+    return origin.compare(0, 17, "http://127.0.0.1:") == 0;
+}
+
+std::string ComputeContentId() {
+    std::string canonical = "onslaught-ce-content-v1\n";
+    std::string raw_mods;
+    if (CE_SettingGetText) {
+        char mods_buf[1024] = {};
+        if (CE_SettingGetText("mods", mods_buf, static_cast<int>(sizeof(mods_buf))) && mods_buf[0]) {
+            raw_mods = mods_buf;
+        }
+    }
+    std::string cleaned_mods;
+    size_t pos = 0;
+    while (pos < raw_mods.size()) {
+        size_t comma = raw_mods.find(',', pos);
+        if (comma == std::string::npos) comma = raw_mods.size();
+        size_t a = pos, b = comma;
+        while (a < b && (raw_mods[a] == ' ' || raw_mods[a] == '\t' || raw_mods[a] == '\r' || raw_mods[a] == '\n')) ++a;
+        while (b > a && (raw_mods[b - 1] == ' ' || raw_mods[b - 1] == '\t' || raw_mods[b - 1] == '\r' || raw_mods[b - 1] == '\n')) --b;
+        if (b > a) {
+            if (!cleaned_mods.empty()) cleaned_mods.push_back(',');
+            cleaned_mods.append(raw_mods, a, b - a);
+        }
+        pos = (comma < raw_mods.size()) ? comma + 1 : comma;
+    }
+    if (cleaned_mods.empty()) {
+        canonical += "retail\n";
+    } else {
+        canonical += "mods:";
+        canonical += cleaned_mods;
+        canonical += "\n";
+    }
+    uint8_t digest[32] = {};
+    crypto_blake2b(digest, sizeof(digest),
+                   reinterpret_cast<const uint8_t *>(canonical.data()), canonical.size());
+    static constexpr char kHex[] = "0123456789abcdef";
+    std::string hex;
+    hex.reserve(64);
+    for (size_t i = 0; i < sizeof(digest); ++i) {
+        hex.push_back(kHex[digest[i] >> 4]);
+        hex.push_back(kHex[digest[i] & 0x0Fu]);
+    }
+    return hex;
 }
 
 bool AnyCheatEnabled() {
@@ -256,6 +299,7 @@ public:
                 status_detail_ = err.empty() ? "Could not load online profile." : err;
             }
         }
+        content_id_ = ComputeContentId();
         origin_ = ResolveConfiguredLobbyOrigin(profile_);
         RebuildClient();
     }
@@ -267,6 +311,8 @@ public:
         last_room_rev_ = 0;
         room_active_ = false;
         launch_queued_ = false;
+        cancelled_inflight_entry_ = false;
+        has_active_action_ = false;
         if (origin_.empty()) {
             conn_status_ = 0;
             status_detail_ = "Set lobby_url in ce.ini or deploy lobby service.";
@@ -287,6 +333,7 @@ public:
 
     void Poll(uint64_t now_ms) override {
         EnsureInit();
+        if (now_ms > last_now_ms_) last_now_ms_ = now_ms;
         if (!client_) return;
 
         if (client_->Busy()) {
@@ -377,6 +424,7 @@ public:
             std::string err;
             profile_.LoadOrCreate(user_dir, &err);
         }
+        content_id_ = ComputeContentId();
         origin_ = ResolveConfiguredLobbyOrigin(profile_);
         health_ok_ = false;
         ping_ms_ = -1;
@@ -471,8 +519,38 @@ public:
         return true;
     }
 
+    bool IsLaunchPreserved() const {
+        if (launch_queued_) return true;
+        if (CE_LobbyRestartDue && CE_LobbyRestartDue() != 0) return true;
+        if (room_active_ && (cached_room_.state == "starting" || cached_room_.state == "in_match")) return true;
+        return false;
+    }
+
     void RequestLeaveRoom() override {
         EnsureInit();
+        if (IsLaunchPreserved()) return;
+        resolve_ready_ = false;
+        // Purge queued room-entry and in-room mutations so a cancelled flow never fires later.
+        for (auto it = pending_queue_.begin(); it != pending_queue_.end();) {
+            if (it->kind == ActionKind::CreateRoom || it->kind == ActionKind::ResolveCode ||
+                it->kind == ActionKind::JoinRoom || it->kind == ActionKind::UpdateSelf ||
+                it->kind == ActionKind::HostUpdate || it->kind == ActionKind::SendChat ||
+                it->kind == ActionKind::StartMatch) {
+                it = pending_queue_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        if (client_ && client_->Busy()) {
+            const CeOnlineOpKind cur = client_->ActiveOp();
+            if (cur == CeOnlineOpKind::ResolveCode) {
+                client_->Cancel();
+                has_active_action_ = false;
+            } else if (cur == CeOnlineOpKind::CreateLobby || cur == CeOnlineOpKind::JoinRoom) {
+                // Keep HTTP completion tracked so if the server created/joined a room we cleanly /leave it.
+                cancelled_inflight_entry_ = true;
+            }
+        }
         if (client_ && client_->Authenticated() && !active_room_id_.empty()) {
             PendingAction act;
             act.kind = ActionKind::LeaveRoom;
@@ -570,15 +648,29 @@ public:
     }
 
     void FlushLeave(uint64_t now_ms) override {
+        if (IsLaunchPreserved()) return;
         if (!client_ || !client_->Authenticated()) return;
-        // Pump any queued or in-flight LeaveRoom briefly so closing UI cleans up cleanly.
+        // Pump any queued or in-flight LeaveRoom (or cancelled entry op) using a monotonic clock base.
+        const auto wall_start = std::chrono::steady_clock::now();
+        uint64_t base_ms = std::max(now_ms, last_now_ms_);
+        if (base_ms == 0u) {
+            base_ms = static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    wall_start.time_since_epoch()).count());
+            if (base_ms == 0u) base_ms = 1u;
+        }
         for (int step = 0; step < 35; ++step) {
-            bool has_leave = client_->Busy() && client_->ActiveOp() == CeOnlineOpKind::LeaveRoom;
+            bool has_leave = client_->Busy() &&
+                             (client_->ActiveOp() == CeOnlineOpKind::LeaveRoom || cancelled_inflight_entry_);
             for (const auto &a : pending_queue_) {
                 if (a.kind == ActionKind::LeaveRoom) { has_leave = true; break; }
             }
             if (!has_leave) break;
-            Poll(now_ms + static_cast<uint64_t>(step) * 10u);
+            const uint64_t elapsed = static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - wall_start).count());
+            const uint64_t tick_ms = base_ms + std::max<uint64_t>(elapsed, static_cast<uint64_t>(step) * 10u);
+            Poll(tick_ms);
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
     }
@@ -599,6 +691,7 @@ private:
     struct PendingAction {
         ActionKind kind = ActionKind::ListLobbies;
         bool include_incompatible = false;
+        bool retried_401 = false;
         CeSvcCreateParams create;
         std::string room_id;
         std::string password;
@@ -611,6 +704,7 @@ private:
 
     void DispatchAction(const PendingAction &act, uint64_t now_ms) {
         if (!client_) return;
+        bool started = false;
         switch (act.kind) {
         case ActionKind::ListLobbies: {
             CeOnlineListLobbiesReq req;
@@ -619,7 +713,13 @@ private:
             req.build_id = kOnlineBuildId;
             req.content_id = content_id_;
             req.include_incompatible = act.include_incompatible;
-            client_->BeginListLobbies(req, now_ms);
+            started = client_->BeginListLobbies(req, now_ms);
+            if (!started) {
+                lobbies_loading_ = false;
+                lobbies_err_ = client_->LastErrorMessage().empty()
+                    ? "Could not start lobby list request."
+                    : client_->LastErrorMessage();
+            }
             break;
         }
         case ActionKind::CreateRoom: {
@@ -636,11 +736,25 @@ private:
             req.build_id = kOnlineBuildId;
             req.content_id = content_id_;
             req.be_cfg = act.create.be_cfg;
-            client_->BeginCreateLobby(req, now_ms);
+            started = client_->BeginCreateLobby(req, now_ms);
+            if (!started) {
+                op_error_ = client_->LastErrorMessage().empty()
+                    ? "Could not start lobby creation request."
+                    : client_->LastErrorMessage();
+            }
             break;
         }
         case ActionKind::ResolveCode:
-            client_->BeginResolveCode(act.text, now_ms);
+            started = client_->BeginResolveCode(act.text, now_ms);
+            if (!started) {
+                last_resolve_ = CeSvcResolveResult{};
+                last_resolve_.resolved = true;
+                last_resolve_.found = false;
+                last_resolve_.error = client_->LastErrorMessage().empty()
+                    ? "Could not resolve room code."
+                    : client_->LastErrorMessage();
+                resolve_ready_ = true;
+            }
             break;
         case ActionKind::JoinRoom: {
             CeOnlineJoinRoomReq req;
@@ -648,11 +762,16 @@ private:
             req.build_id = kOnlineBuildId;
             req.content_id = content_id_;
             req.be_cfg = act.be_cfg;
-            client_->BeginJoinRoom(act.room_id, req, now_ms);
+            started = client_->BeginJoinRoom(act.room_id, req, now_ms);
+            if (!started) {
+                op_error_ = client_->LastErrorMessage().empty()
+                    ? "Could not start join room request."
+                    : client_->LastErrorMessage();
+            }
             break;
         }
         case ActionKind::LeaveRoom:
-            client_->BeginLeaveRoom(act.room_id, now_ms);
+            started = client_->BeginLeaveRoom(act.room_id, now_ms);
             break;
         case ActionKind::UpdateSelf: {
             CeOnlineUpdateRoomReq req;
@@ -666,7 +785,12 @@ private:
                 req.has_rtt_ms = true;
                 req.rtt_ms = static_cast<uint32_t>(ping_ms_);
             }
-            client_->BeginUpdateRoom(act.room_id, req, now_ms);
+            started = client_->BeginUpdateRoom(act.room_id, req, now_ms);
+            if (!started) {
+                op_error_ = client_->LastErrorMessage().empty()
+                    ? "Could not update player seat."
+                    : client_->LastErrorMessage();
+            }
             break;
         }
         case ActionKind::HostUpdate: {
@@ -685,15 +809,34 @@ private:
                 req.has_kick_seat = true;
                 req.kick_seat = act.patch.kick_seat;
             }
-            client_->BeginUpdateRoom(act.room_id, req, now_ms);
+            started = client_->BeginUpdateRoom(act.room_id, req, now_ms);
+            if (!started) {
+                op_error_ = client_->LastErrorMessage().empty()
+                    ? "Could not update lobby settings."
+                    : client_->LastErrorMessage();
+            }
             break;
         }
         case ActionKind::SendChat:
-            client_->BeginSendChat(act.room_id, act.text, now_ms);
+            started = client_->BeginSendChat(act.room_id, act.text, now_ms);
+            if (!started) {
+                op_error_ = client_->LastErrorMessage().empty()
+                    ? "Could not send lobby chat message."
+                    : client_->LastErrorMessage();
+            }
             break;
         case ActionKind::StartMatch:
-            client_->BeginStartMatch(act.room_id, now_ms);
+            started = client_->BeginStartMatch(act.room_id, now_ms);
+            if (!started) {
+                op_error_ = client_->LastErrorMessage().empty()
+                    ? "Could not start online match."
+                    : client_->LastErrorMessage();
+            }
             break;
+        }
+        if (started) {
+            active_action_ = act;
+            has_active_action_ = true;
         }
     }
 
@@ -777,15 +920,30 @@ private:
         if (!r.start_ticket.valid || r.start_ticket.slots.empty()) return;
 
         CE_OnlineMatchTicket mt = {};
+        auto abort_launch = [&](const char *err_msg) {
+            crypto_wipe(&mt, sizeof(mt));
+            op_error_ = err_msg;
+            const std::string room_id = !active_room_id_.empty() ? active_room_id_ : r.room_id;
+            if (!room_id.empty()) {
+                PendingAction leave_act;
+                leave_act.kind = ActionKind::LeaveRoom;
+                leave_act.room_id = room_id;
+                pending_queue_.push_front(std::move(leave_act));
+            }
+            room_active_ = false;
+            active_room_id_.clear();
+        };
+
         mt.proto = CE_ONLINE_PROTO_V1;
         CopyBounded(mt.match_id, sizeof(mt.match_id), r.start_ticket.match_id);
         CopyBounded(mt.room_id, sizeof(mt.room_id), r.room_id);
+        if (origin_.size() >= sizeof(mt.lobby_origin)) {
+            abort_launch("Lobby origin URL exceeds match launch ticket limit.");
+            return;
+        }
         CopyBounded(mt.lobby_origin, sizeof(mt.lobby_origin), origin_);
         if (client_->Session().session_token.size() >= sizeof(mt.session_token)) {
-            crypto_wipe(&mt, sizeof(mt));
-            op_error_ = "Session token exceeds match launch ticket limit.";
-            room_active_ = false;
-            active_room_id_.clear();
+            abort_launch("Session token exceeds match launch ticket limit.");
             return;
         }
         CopyBounded(mt.session_token, sizeof(mt.session_token), client_->Session().session_token);
@@ -794,8 +952,11 @@ private:
         CopyBounded(mt.mode, sizeof(mt.mode), r.start_ticket.mode);
         CopyBounded(mt.topology, sizeof(mt.topology), r.start_ticket.topology);
         mt.require_relay = r.start_ticket.require_relay ? 1u : 0u;
-        if (!DecodeHexBytes(r.start_ticket.roster_hash, mt.roster_hash, sizeof(mt.roster_hash))) return;
-        if (!DecodeHexBytes(r.start_ticket.match_secret, mt.match_secret, sizeof(mt.match_secret))) return;
+        if (!DecodeHexBytes(r.start_ticket.roster_hash, mt.roster_hash, sizeof(mt.roster_hash)) ||
+            !DecodeHexBytes(r.start_ticket.match_secret, mt.match_secret, sizeof(mt.match_secret))) {
+            abort_launch("Received a malformed match security ticket from the lobby.");
+            return;
+        }
 
         uint16_t slot_count = 0;
         uint16_t human_count = 0;
@@ -824,24 +985,50 @@ private:
         mt.slot_count = slot_count;
         mt.human_count = human_count;
         if (!found_local || !CeOnlineMatchTicketValid(&mt)) {
-            crypto_wipe(&mt, sizeof(mt));
-            op_error_ = "Received an invalid match start ticket from the lobby.";
-            room_active_ = false;
-            active_room_id_.clear();
+            abort_launch("Received an invalid match start ticket from the lobby.");
             return;
         }
         if (CE_LobbyQueueOnlineLaunch && CE_LobbyQueueOnlineLaunch(&mt)) {
             launch_queued_ = true;
+            crypto_wipe(&mt, sizeof(mt));
         } else {
-            op_error_ = "Could not launch online match. Start Onslaught CE via its launcher.";
-            room_active_ = false;
-            active_room_id_.clear();
+            abort_launch("Could not launch online match. Start Onslaught CE via its launcher.");
         }
-        crypto_wipe(&mt, sizeof(mt));
     }
 
     void HandleOpComplete(CeOnlineOpKind op, CeOnlineOpStatus st, uint64_t now_ms) {
+        PendingAction finished_action = active_action_;
+        const bool had_action = has_active_action_;
+        has_active_action_ = false;
+
+        if (cancelled_inflight_entry_ &&
+            (op == CeOnlineOpKind::CreateLobby || op == CeOnlineOpKind::JoinRoom)) {
+            cancelled_inflight_entry_ = false;
+            if (st == CeOnlineOpStatus::Completed && !client_->CurrentRoom().room_id.empty()) {
+                PendingAction leave_act;
+                leave_act.kind = ActionKind::LeaveRoom;
+                leave_act.room_id = client_->CurrentRoom().room_id;
+                pending_queue_.push_front(std::move(leave_act));
+            }
+            return;
+        }
+
         if (st == CeOnlineOpStatus::Failed) {
+            if (op != CeOnlineOpKind::Health && op != CeOnlineOpKind::Authenticate &&
+                client_->LastHttpCode() == 401u) {
+                client_->ClearSession();
+                want_connect_ = true;
+                conn_status_ = 1;
+                status_detail_ = "Session expired, re-authenticating...";
+                if (had_action && !finished_action.retried_401) {
+                    finished_action.retried_401 = true;
+                    pending_queue_.push_front(std::move(finished_action));
+                    return;
+                }
+                if (op == CeOnlineOpKind::PollRoom) {
+                    return;
+                }
+            }
             std::string msg = client_->LastErrorMessage().empty()
                                   ? "Lobby server request failed."
                                   : client_->LastErrorMessage();
@@ -852,6 +1039,22 @@ private:
                 if (lobbies_loading_) {
                     lobbies_loading_ = false;
                     lobbies_err_ = msg;
+                }
+                for (const auto &queued : pending_queue_) {
+                    if (queued.kind == ActionKind::ResolveCode) {
+                        last_resolve_ = CeSvcResolveResult{};
+                        last_resolve_.resolved = true;
+                        last_resolve_.found = false;
+                        last_resolve_.error = msg;
+                        resolve_ready_ = true;
+                    } else if (queued.kind == ActionKind::CreateRoom ||
+                               queued.kind == ActionKind::JoinRoom ||
+                               queued.kind == ActionKind::UpdateSelf ||
+                               queued.kind == ActionKind::HostUpdate ||
+                               queued.kind == ActionKind::SendChat ||
+                               queued.kind == ActionKind::StartMatch) {
+                        op_error_ = msg;
+                    }
                 }
                 pending_queue_.clear();
             } else if (op == CeOnlineOpKind::ListLobbies) {
@@ -960,10 +1163,13 @@ private:
     bool room_active_ = false;
     bool resolve_ready_ = false;
     bool launch_queued_ = false;
+    bool cancelled_inflight_entry_ = false;
+    bool has_active_action_ = false;
     int conn_status_ = 0;
     int ping_ms_ = -1;
     uint64_t last_room_rev_ = 0;
     uint64_t last_room_poll_ms_ = 0;
+    uint64_t last_now_ms_ = 0;
     std::string origin_;
     std::string content_id_;
     std::string status_detail_;
@@ -975,6 +1181,7 @@ private:
     std::vector<CeSvcRoomSummary> cached_lobbies_;
     CeSvcRoom cached_room_;
     CeSvcResolveResult last_resolve_;
+    PendingAction active_action_;
     std::deque<PendingAction> pending_queue_;
 };
 
@@ -1055,9 +1262,14 @@ public:
     }
 
     void Poll(uint64_t now_ms) override {
+        if (now_ms > last_poll_ms_) last_poll_ms_ = now_ms;
         if (!transport_) return;
         if (!direct_mode_) {
-            PumpSignalingAndIce(now_ms);
+            if (finish_requested_) {
+                PumpFinishMatch(now_ms);
+            } else {
+                PumpSignalingAndIce(now_ms);
+            }
         }
         transport_->Poll(now_ms, 64);
         DrainTransportEvents();
@@ -1066,9 +1278,60 @@ public:
     bool IsConnected() const override {
         if (!transport_) return false;
         if (is_host_) {
-            return transport_->ActiveGuestCount() >= static_cast<uint16_t>(expected_guests_.size());
+            size_t active_expected = 0;
+            for (const auto &g : expected_guests_) {
+                if (g.disconnected) continue;
+                ++active_expected;
+                CeStarPeerInfo pinfo{};
+                if (!transport_->GetPeerInfo(g.sim_slot, pinfo) || !pinfo.authenticated)
+                    return false;
+            }
+            return active_expected > 0;
         }
         return transport_->IsAuthenticated() && !transport_->IsHostLost();
+    }
+
+    void RequestFinishMatch() {
+        if (finish_requested_) return;
+        finish_requested_ = true;
+        if (is_host_ && !direct_mode_ && lobby_ && !finish_sent_) {
+            if (lobby_->Busy() && lobby_->ActiveOp() != CeOnlineOpKind::FinishMatch) {
+                lobby_->Cancel();
+            }
+            PumpFinishMatch(last_poll_ms_ ? last_poll_ms_ : 1u);
+        }
+    }
+
+    void PollFinished(uint64_t now_ms) {
+        if (now_ms > last_poll_ms_) last_poll_ms_ = now_ms;
+        if (!direct_mode_ && finish_requested_) {
+            PumpFinishMatch(now_ms);
+        }
+        if (transport_) {
+            transport_->Poll(now_ms, 64);
+            DrainTransportEvents();
+        }
+    }
+
+    void FlushFinishMatch() {
+        if (!is_host_ || direct_mode_ || !lobby_ || !finish_requested_ || finish_sent_) return;
+        const auto wall_start = std::chrono::steady_clock::now();
+        uint64_t base_ms = last_poll_ms_;
+        if (base_ms == 0u) {
+            base_ms = static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    wall_start.time_since_epoch()).count());
+            if (base_ms == 0u) base_ms = 1u;
+        }
+        for (int step = 0; step < 35 && !finish_sent_; ++step) {
+            const uint64_t elapsed = static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - wall_start).count());
+            const uint64_t tick_ms = base_ms + std::max<uint64_t>(elapsed, static_cast<uint64_t>(step) * 10u);
+            PumpFinishMatch(tick_ms);
+            if (finish_sent_ || (!lobby_->Busy() && finish_started_)) break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
     }
 
     bool SendGuestInput(uint8_t, uint32_t tick, const uint8_t *data, size_t len) override {
@@ -1121,9 +1384,57 @@ private:
         bool offer_sent = false;
         bool answer_applied = false;
         bool retried_relay = false;
+        bool disconnected = false;
+        uint64_t offer_seq = 0;
         uint64_t answer_seq = 0;
         uint64_t bridge_attached_ms = 0;
+        std::string pending_answer_sdp;
+        uint64_t pending_answer_seq = 0;
     };
+
+    void PumpFinishMatch(uint64_t now_ms) {
+        if (!is_host_ || direct_mode_ || !lobby_ || finish_sent_) return;
+        if (lobby_->Busy()) {
+            const CeOnlineOpStatus st = lobby_->Poll(now_ms);
+            if (st != CeOnlineOpStatus::Pending) {
+                finish_sent_ = true;
+            }
+            return;
+        }
+        if (!finish_started_) {
+            finish_started_ = true;
+            if (!lobby_->BeginFinishMatch(ticket_.room_id, now_ms)) {
+                finish_sent_ = true;
+            }
+        }
+    }
+
+#if defined(CE_NETWORK_ICE)
+    void HandleHostGuestFatalIce(GuestLink &g) {
+        if (g.disconnected) return;
+        transport_->DetachGuestIceBridge(g.sim_slot);
+        g.disconnected = true;
+        g.bridge_attached = false;
+        g.offer_sent = false;
+        g.answer_applied = false;
+        g.pending_answer_sdp.clear();
+        g.pending_answer_seq = 0;
+
+        CeOnlineStarEvent disc = {};
+        disc.kind = CE_STAR_EVT_PEER_DISCONNECT;
+        disc.from_sim_slot = g.sim_slot;
+        events_.push_back(disc);
+
+        size_t remaining = 0;
+        for (const auto &other : expected_guests_) {
+            if (!other.disconnected) ++remaining;
+        }
+        if (remaining == 0) {
+            failed_ = true;
+            transport_->FailConnection(CeStarError::Io);
+        }
+    }
+#endif
 
     void RecordSignalFailure(uint64_t now_ms, const char *stage = "signal") {
         ++consecutive_failures_;
@@ -1156,6 +1467,7 @@ private:
             bool any_unauthenticated = false;
             for (size_t i = 0; i < expected_guests_.size(); ++i) {
                 GuestLink &g = expected_guests_[i];
+                if (g.disconnected) continue;
                 CeStarPeerInfo pinfo{};
                 const bool authed = transport_->GetPeerInfo(g.sim_slot, pinfo) && pinfo.authenticated;
                 if (!authed) any_unauthenticated = true;
@@ -1170,10 +1482,12 @@ private:
                         g.bridge_attached = false;
                         g.offer_sent = false;
                         g.answer_applied = false;
+                        g.pending_answer_sdp.clear();
+                        g.pending_answer_seq = 0;
                     } else {
-                        failed_ = true;
-                        transport_->FailConnection(CeStarError::Io);
-                        return;
+                        HandleHostGuestFatalIce(g);
+                        if (failed_) return;
+                        continue;
                     }
                 }
                 if (!g.bridge_attached) {
@@ -1206,6 +1520,7 @@ private:
                     }
                     if (have_sdp) {
                         active_guest_index_ = i;
+                        g.offer_seq = std::max(g.offer_seq, std::max(signal_seq_, g.answer_seq));
                         if (!lobby_->BeginSendSignal(ticket_.room_id, ticket_.match_id,
                                                      ticket_.local_seat, g.seat, "offer", sdp, now_ms)) {
                             RecordSignalFailure(now_ms, "begin_send_offer");
@@ -1220,13 +1535,24 @@ private:
                             g.bridge_attached = false;
                             g.offer_sent = false;
                             g.answer_applied = false;
+                            g.pending_answer_sdp.clear();
+                            g.pending_answer_seq = 0;
                         } else {
-                            fprintf(stderr, "onslaught-ce: online match host: ICE gathering finished with no usable relay candidate\n");
-                            failed_ = true;
-                            transport_->FailConnection(CeStarError::Io);
-                            return;
+                            fprintf(stderr, "onslaught-ce: online match host: ICE gathering finished with no usable relay candidate for slot %u\n",
+                                    (unsigned)g.sim_slot);
+                            HandleHostGuestFatalIce(g);
+                            if (failed_) return;
+                            continue;
                         }
                     }
+                }
+                if (g.bridge_attached && g.offer_sent && !g.answer_applied && !g.pending_answer_sdp.empty()) {
+                    if (g.pending_answer_seq > g.offer_seq && g.pending_answer_seq > g.answer_seq) {
+                        g.answer_seq = g.pending_answer_seq;
+                        g.answer_applied = transport_->SetGuestRemoteIceDescription(g.sim_slot, g.pending_answer_sdp);
+                    }
+                    g.pending_answer_sdp.clear();
+                    g.pending_answer_seq = 0;
                 }
             }
             // 2. Poll guest answers while any guest is not authenticated yet (catches relay re-answers too).
@@ -1355,7 +1681,9 @@ private:
             }
         } else if (op == CeOnlineOpKind::SendSignal) {
             if (is_host_ && active_guest_index_ < expected_guests_.size()) {
-                expected_guests_[active_guest_index_].offer_sent = true;
+                GuestLink &g = expected_guests_[active_guest_index_];
+                g.offer_sent = true;
+                g.offer_seq = std::max(g.offer_seq, std::max(signal_seq_, g.answer_seq));
             } else if (!is_host_) {
                 guest_answer_sent_ = true;
             }
@@ -1365,24 +1693,37 @@ private:
             for (const auto &msg : res.messages) {
                 if (is_host_ && msg.kind == "answer") {
                     for (auto &g : expected_guests_) {
-                        if (g.seat == msg.from_seat && msg.seq > g.answer_seq && g.bridge_attached) {
+                        if (g.disconnected || g.seat != msg.from_seat) continue;
+                        if (msg.seq <= g.answer_seq || msg.seq <= g.offer_seq) continue;
+                        if (g.bridge_attached && g.offer_sent && !g.answer_applied) {
                             g.answer_seq = msg.seq;
                             g.answer_applied = transport_->SetGuestRemoteIceDescription(g.sim_slot, msg.sdp);
+                        } else if (!g.answer_applied && msg.seq > g.pending_answer_seq) {
+                            g.pending_answer_sdp = msg.sdp;
+                            g.pending_answer_seq = msg.seq;
                         }
                     }
                 } else if (!is_host_ && msg.kind == "offer" && msg.seq > guest_offer_seq_) {
                     const bool had_offer = (guest_offer_seq_ != 0);
                     guest_offer_seq_ = msg.seq;
                     if (had_offer && !IsConnected()) {
-                        // Host initiated a fresh relay offer: detach STUN bridge and switch to TURN Relay.
-                        transport_->DetachHostIceBridge();
-                        guest_require_relay_ = true;
-                        guest_retried_relay_ = true;
-                        guest_turn_fetched_ = false;
-                        guest_bridge_attached_ = false;
-                        guest_offer_applied_ = false;
-                        guest_answer_sent_ = false;
-                        pending_remote_offer_ = msg.sdp;
+                        if (guest_require_relay_ && guest_bridge_attached_ && !guest_offer_applied_) {
+                            // Reuse fresh unapplied TURN bridge instead of tearing it down twice.
+                            guest_offer_applied_ = transport_->SetRemoteIceDescription(msg.sdp);
+                            if (!guest_offer_applied_) pending_remote_offer_ = msg.sdp;
+                        } else if (guest_require_relay_ && !guest_bridge_attached_ && !guest_offer_applied_) {
+                            pending_remote_offer_ = msg.sdp;
+                        } else {
+                            // Host initiated a fresh relay offer: detach STUN/applied bridge and switch to TURN Relay.
+                            transport_->DetachHostIceBridge();
+                            guest_require_relay_ = true;
+                            guest_retried_relay_ = true;
+                            guest_turn_fetched_ = false;
+                            guest_bridge_attached_ = false;
+                            guest_offer_applied_ = false;
+                            guest_answer_sent_ = false;
+                            pending_remote_offer_ = msg.sdp;
+                        }
                     } else if (guest_bridge_attached_ && !guest_offer_applied_) {
                         guest_offer_applied_ = transport_->SetRemoteIceDescription(msg.sdp);
                     } else {
@@ -1472,13 +1813,30 @@ private:
                 break;
             }
             case CeStarEventKind::PeerDisconnected:
+                if (is_host_) {
+                    for (auto &g : expected_guests_) {
+                        if (g.sim_slot == static_cast<uint8_t>(ev.sim_slot)) {
+                            g.disconnected = true;
+#if defined(CE_NETWORK_ICE)
+                            if (g.bridge_attached && transport_) {
+                                transport_->DetachGuestIceBridge(g.sim_slot);
+                                g.bridge_attached = false;
+                            }
+#endif
+                        }
+                    }
+                }
                 out.kind = CE_STAR_EVT_PEER_DISCONNECT;
                 out.from_sim_slot = static_cast<uint8_t>(ev.sim_slot);
                 events_.push_back(out);
                 break;
             case CeStarEventKind::HostDisconnected:
-            case CeStarEventKind::Error:
                 out.kind = CE_STAR_EVT_HOST_LOST;
+                out.from_sim_slot = 0;
+                events_.push_back(out);
+                break;
+            case CeStarEventKind::Error:
+                out.kind = CE_STAR_EVT_TRANSPORT_ERROR;
                 out.from_sim_slot = 0;
                 events_.push_back(out);
                 break;
@@ -1492,6 +1850,9 @@ private:
     bool is_host_ = false;
     bool direct_mode_ = false;
     bool failed_ = false;
+    bool finish_requested_ = false;
+    bool finish_started_ = false;
+    bool finish_sent_ = false;
     uint16_t host_seat_ = 0;
     std::vector<GuestLink> expected_guests_;
     size_t active_guest_index_ = 0;
@@ -1506,6 +1867,7 @@ private:
     std::string pending_remote_offer_;
     uint64_t signal_seq_ = 0;
     uint64_t last_sig_poll_ms_ = 0;
+    uint64_t last_poll_ms_ = 0;
     uint64_t retry_after_ms_ = 0;
     uint32_t consecutive_failures_ = 0;
     std::unique_ptr<CeOnlineLobbyClient> lobby_;
@@ -1515,6 +1877,7 @@ private:
 
 CeLiveOnlineService *gOnlineService = nullptr;
 std::unique_ptr<CeLiveOnlineStarBridge> gLiveMatchBridge;
+bool gMatchResultRecorded = false;
 
 } // namespace
 
@@ -1534,14 +1897,42 @@ extern "C" int PortCeOnlineServiceAttachMatchBridge(const uint8_t compat_digest[
         return 0;
     }
     crypto_wipe(&ticket, sizeof(ticket));
+    gMatchResultRecorded = false;
     gLiveMatchBridge = std::move(bridge);
     PortCeOnlineMatchSetBridge(gLiveMatchBridge.get());
     return 1;
 }
 
+extern "C" void PortCeOnlineServiceFinishMatch(int won) {
+    if (!gMatchResultRecorded) {
+        gMatchResultRecorded = true;
+        const char *user_dir = PortUserDir();
+        if (user_dir && user_dir[0]) {
+            CeOnlineProfile prof;
+            std::string err;
+            if (prof.LoadOrCreate(user_dir, &err)) {
+                (void)prof.RecordMatchResult(won != 0, true, &err);
+            }
+        }
+    }
+    if (gLiveMatchBridge) {
+        gLiveMatchBridge->RequestFinishMatch();
+    }
+}
+
+extern "C" void PortCeOnlineServicePollFinished(uint64_t now_ms) {
+    if (gLiveMatchBridge) {
+        gLiveMatchBridge->PollFinished(now_ms);
+    }
+}
+
 extern "C" void PortCeOnlineServiceDetachMatchBridge(void) {
+    if (gLiveMatchBridge) {
+        gLiveMatchBridge->FlushFinishMatch();
+    }
     PortCeOnlineMatchSetBridge(nullptr);
     gLiveMatchBridge.reset();
+    gMatchResultRecorded = false;
 }
 
 #endif // !CE_NETWORK_OFF

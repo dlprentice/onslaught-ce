@@ -63,6 +63,8 @@ public:
     int joinCalls = 0;
     std::string lastJoinRoomId, lastJoinPassword, lastJoinBeCfg;
     int leaveCalls = 0;
+    int flushLeaveCalls = 0;
+    uint64_t lastFlushLeaveNowMs = 0;
     int updateSelfCalls = 0;
     int hostUpdateCalls = 0;
     CeOnlineHostPatch lastHostPatch;
@@ -287,6 +289,17 @@ public:
     virtual void OnMatchTicketReady(const CeOnlineStartTicketView &ticket) {
         ++ticketReadyCalls;
         lastTicketMatchId = ticket.matchId;
+    }
+    virtual void FlushLeave(uint64_t nowMs) {
+        ++flushLeaveCalls;
+        lastFlushLeaveNowMs = nowMs;
+    }
+    std::string pendingOpError;
+    virtual bool TakeOpError(std::string *out) {
+        if (pendingOpError.empty()) return false;
+        if (out) *out = pendingOpError;
+        pendingOpError.clear();
+        return true;
     }
 };
 
@@ -612,12 +625,17 @@ static void TestCreateLobbyAndJoinCode() {
     ui.HomeActivate(CeOnlineUiModel::HOME_CREATE);
     CHECK(ui.Page() == CE_ONLINE_PAGE_CREATE, "entered Create Lobby");
 
-    // Verify all 18 maps (850..866 + 100) are cycled cleanly
+    // Verify all 18 maps (850..866 + 100) are cycled cleanly and sync to valid default modes
     std::set<int> seenLevels;
     std::set<std::string> seenNames;
+    std::set<std::string> seenModes;
     for (int i = 0; i < CE_ONLINE_MAP_COUNT; ++i) {
         seenLevels.insert(ui.CreateMapLevel());
         seenNames.insert(ui.CreateMapName());
+        seenModes.insert(ui.CreateModeWire());
+        CHECK(CeOnlineMapSupportsMode(ui.CreateMapLevel(),
+                                      static_cast<CeOnlineMode>(ui.CreateModeIndex())),
+              "CreateCycleMap always keeps map+mode valid");
         ui.CreateCycleMap(1);
     }
     CHECK(seenLevels.size() == 18 && seenNames.size() == 18, "all 18 maps present with unique names");
@@ -625,14 +643,30 @@ static void TestCreateLobbyAndJoinCode() {
     for (int lvl = 850; lvl <= 866; ++lvl) {
         CHECK(seenLevels.count(lvl) == 1, "maps 850..866 all included");
     }
+    CHECK(seenModes.size() == 4, "all 4 protocol modes covered across map catalog");
 
-    // Verify all 4 modes
-    std::set<std::string> seenModes;
+    // Verify CreateCycleMode skips incompatible modes (Skirmish 850 allows only coop_skirmish/versus_2v2)
+    std::set<std::string> skirmishModes;
     for (int i = 0; i < CE_ONLINE_MODE_COUNT; ++i) {
-        seenModes.insert(ui.CreateModeWire());
+        skirmishModes.insert(ui.CreateModeWire());
         ui.CreateCycleMode(1);
     }
-    CHECK(seenModes.size() == 4, "all 4 protocol modes cycled");
+    CHECK(skirmishModes.size() == 2 &&
+          skirmishModes.count("coop_skirmish") == 1 &&
+          skirmishModes.count("versus_2v2") == 1,
+          "Skirmish map only cycles compatible skirmish/versus modes");
+    // Tutorial (100) only allows tutorial mode
+    while (ui.CreateMapLevel() != 100) ui.CreateCycleMap(1);
+    CHECK(std::string(ui.CreateModeWire()) == "tutorial", "Tutorial map auto-syncs to tutorial mode");
+    ui.CreateCycleMode(1);
+    CHECK(std::string(ui.CreateModeWire()) == "tutorial", "Tutorial map refuses incompatible modes");
+    // Building Defence (856) only allows coop_defence mode
+    while (ui.CreateMapLevel() != 856) ui.CreateCycleMap(1);
+    CHECK(std::string(ui.CreateModeWire()) == "coop_defence", "Building Defence auto-syncs to coop_defence");
+    ui.CreateCycleMode(1);
+    CHECK(std::string(ui.CreateModeWire()) == "coop_defence", "Building Defence refuses incompatible modes");
+    // Return to map 850 for subsequent checks
+    while (ui.CreateMapLevel() != 850) ui.CreateCycleMap(1);
 
     // Verify max players cap (2..4 default, and 64-ready parameterized)
     CHECK(ui.CreateMaxSeats() == 4, "default max seats is 4");
@@ -718,9 +752,12 @@ static void TestRoom4SlotAnd64SlotAndGuardrails() {
     CHECK(reason.find("2 human") != std::string::npos, "reason explains >= 2 humans required");
     CHECK(!ui.RoomHostStartMatch() && be.startCalls == 0, "Start Match blocked with 1 human");
 
-    // Toggle Ready, Cycle Side, Cycle BE config (using real map configs from backend)
+    // Toggle Ready, Side (refused in co-op, allowed in 2v2 Versus), Cycle BE config
     CHECK(ui.RoomToggleReady() && be.room.seats[0].ready, "host toggled Ready");
-    CHECK(ui.RoomCycleSide(1) && be.room.seats[0].team == 1, "side cycled Forseti -> Muspell");
+    CHECK(!ui.RoomCycleSide(1) && be.room.seats[0].team == 0, "side cycle refused in co-op mode");
+    CHECK(ui.RoomHostCycleMode(1) && be.room.mode == "versus_2v2", "host switched mode to versus_2v2");
+    ui.SyncFromBackend(125);
+    CHECK(ui.RoomCycleSide(1) && be.room.seats[0].team == 1, "side cycled Forseti -> Muspell in versus_2v2");
     CHECK(ui.RoomCycleBeConfig(1) && be.room.seats[0].beCfg == "Aquila-Mk2", "BE config cycled to Aquila-Mk2");
     CHECK(ui.RoomCycleBeConfig(1) && be.room.seats[0].beCfg == "Valkyrie", "BE config cycled to Valkyrie");
     ui.SyncFromBackend(150);
@@ -887,6 +924,228 @@ static void TestRoom4SlotAnd64SlotAndGuardrails() {
     CHECK(ui.RosterCurrentPage() == 15 && ui.RosterSelectedIndex() == 56, "prev page returns to page 15");
 }
 
+static void TestLaunchClosePreservationAndGamepadNav() {
+    // 1. Closing UI during match launch handoff MUST NOT enqueue POST /leave! (#12)
+    {
+        FakeOnlineBackend be;
+        CeOnlineUiModel ui;
+        ui.SetBackend(&be);
+        ui.Open(false);
+        ui.HomeActivate(CeOnlineUiModel::HOME_CREATE);
+        ui.SetCreateRoomName("Launch Protect");
+        CHECK(ui.CreateSubmit(), "create room for launch preservation test");
+        ui.SyncFromBackend(1000);
+        be.room.seats[1].kind = CE_ONLINE_SEAT_HUMAN;
+        be.room.seats[1].playerId = "guest_p2_11111111111111111";
+        be.room.seats[1].callsign = "GuestTwo";
+        be.room.seats[1].tag = "1234";
+        be.room.seats[1].ready = true;
+        ui.RoomToggleReady();
+        ui.SyncFromBackend(1100);
+        CHECK(ui.RoomHostStartMatch(), "host starts match");
+        ui.SyncFromBackend(1200);
+        CHECK(ui.Page() == CE_ONLINE_PAGE_CONNECTING && be.ticketReadyCalls == 1, "launch ticket active");
+
+        // Close(false) while room.state == "starting" must NOT leave!
+        ui.Close(false);
+        CHECK(be.leaveCalls == 0 && be.flushLeaveCalls == 0,
+              "Close() while room state is starting does NOT leave or flush-leave");
+
+        // Re-open in lobby state and test Close(true) (preserveLaunch) vs Close(false)
+        be.room.state = "lobby";
+        be.room.startTicket = CeOnlineStartTicketView();
+        ui.Open(false);
+        ui.HomeActivate(CeOnlineUiModel::HOME_CREATE);
+        ui.SetCreateRoomName("Lobby Leave Test");
+        CHECK(ui.CreateSubmit(), "create room for close-leave check");
+        ui.SyncFromBackend(2345);
+        CHECK(ui.Page() == CE_ONLINE_PAGE_ROOM, "entered room");
+        ui.Close(true);
+        CHECK(be.leaveCalls == 0 && be.flushLeaveCalls == 0,
+              "Close(preserveLaunch=true) never calls RequestLeaveRoom or FlushLeave");
+
+        // Normal Close(false) while still in lobby MUST leave and pass monotonic nowMs (2345) to FlushLeave
+        ui.Open(false);
+        ui.HomeActivate(CeOnlineUiModel::HOME_CREATE);
+        ui.SetCreateRoomName("Normal Close Test");
+        CHECK(ui.CreateSubmit(), "create room for normal close");
+        ui.SyncFromBackend(4567);
+        ui.Close(false);
+        CHECK(be.leaveCalls == 1 && be.flushLeaveCalls == 1 && be.lastFlushLeaveNowMs == 4567u,
+              "normal Close() in lobby leaves room and forwards monotonic timestamp to FlushLeave");
+    }
+
+    // 2. Non-cancellable Connecting recovers cleanly if room disappears without launch ticket (#16)
+    {
+        FakeOnlineBackend be;
+        CeOnlineUiModel ui;
+        ui.SetBackend(&be);
+        ui.Open(false);
+        ui.HomeActivate(CeOnlineUiModel::HOME_CREATE);
+        ui.SetCreateRoomName("Softlock Guard");
+        CHECK(ui.CreateSubmit(), "create room");
+        ui.SyncFromBackend(100);
+        be.room.seats[1].kind = CE_ONLINE_SEAT_HUMAN;
+        be.room.seats[1].playerId = "guest_p2_22222222222222222";
+        be.room.seats[1].callsign = "GuestTwo";
+        be.room.seats[1].ready = true;
+        ui.RoomToggleReady();
+        ui.SyncFromBackend(120);
+        CHECK(ui.RoomHostStartMatch(), "enter non-cancellable Connecting");
+        CHECK(ui.Page() == CE_ONLINE_PAGE_CONNECTING && !ui.ConnectingCancellable(), "in non-cancellable Connecting");
+        // Backend drops room before start ticket arrives (no launch queued)
+        be.room.active = false;
+        ui.SyncFromBackend(200);
+        CHECK(ui.Page() == CE_ONLINE_PAGE_BROWSER && ui.ConnectingCancellable(),
+              "recovers from non-cancellable Connecting if room disappears without launch ticket");
+    }
+
+    // 3. Full Browser & Room keyboard/gamepad zone navigation (#35)
+    {
+        FakeOnlineBackend be;
+        CeOnlineUiModel ui;
+        ui.SetBackend(&be);
+        ui.Open(false);
+        ui.HomeActivate(CeOnlineUiModel::HOME_BROWSE);
+        CHECK(ui.Page() == CE_ONLINE_PAGE_BROWSER, "browser opened");
+        // Empty browser focuses toolbar (Create Lobby) so gamepad can immediately create or refresh
+        CHECK(ui.BrowserZoneFocus() == CeOnlineUiModel::BROWSER_ZONE_TOOLBAR &&
+              ui.BrowserToolbarFocus() == CeOnlineUiModel::BROWSER_TB_CREATE,
+              "empty browser focuses toolbar Create Lobby");
+        ui.BrowserNavSide(-1);
+        CHECK(ui.BrowserToolbarFocus() == CeOnlineUiModel::BROWSER_TB_REFRESH, "Left moves to Refresh");
+        const int prevRefresh = be.refreshCalls;
+        ui.BrowserNavActivate();
+        CHECK(be.refreshCalls == prevRefresh + 1, "activating Refresh refreshes lobbies");
+        ui.BrowserNavSide(1);
+        CHECK(ui.BrowserToolbarFocus() == CeOnlineUiModel::BROWSER_TB_CREATE, "Right moves to Create Lobby");
+        ui.BrowserNavActivate();
+        CHECK(ui.Page() == CE_ONLINE_PAGE_CREATE, "gamepad activates Create Lobby from Browser toolbar");
+
+        // Create room and verify Room focus zones (Player -> Host -> Chat -> Header -> Roster)
+        ui.SetCreateRoomName("Pad Nav Room");
+        CHECK(ui.CreateSubmit(), "create room");
+        ui.SyncFromBackend(300);
+        CHECK(ui.Page() == CE_ONLINE_PAGE_ROOM, "entered room");
+        CHECK(ui.RoomZoneFocus() == CeOnlineUiModel::ROOM_ZONE_PLAYER &&
+              ui.RoomPlayerFocus() == CeOnlineUiModel::ROOM_PL_READY,
+              "room defaults focus to Ready button");
+        ui.RoomNavActivate();
+        CHECK(be.room.seats[0].ready, "gamepad toggles Ready");
+        ui.RoomNavSide(1);
+        CHECK(ui.RoomPlayerFocus() == CeOnlineUiModel::ROOM_PL_SIDE, "Right moves to Side");
+        ui.RoomNavActivate();
+        CHECK(be.room.seats[0].team == 0, "Side stays Forseti in coop_skirmish");
+        CHECK(ui.RoomHostCycleMode(1) && be.room.mode == "versus_2v2", "switch to versus_2v2 for Side test");
+        ui.SyncFromBackend(310);
+        ui.RoomNavActivate();
+        CHECK(be.room.seats[0].team == 1, "gamepad switches Side in versus_2v2");
+        ui.RoomNavMove(1);
+        CHECK(ui.RoomZoneFocus() == CeOnlineUiModel::ROOM_ZONE_HOST, "Down moves to Host strip");
+        ui.SetRoomHostFocus(CeOnlineUiModel::ROOM_HS_MAP);
+        const int oldMap = be.room.map;
+        ui.RoomNavActivate();
+        CHECK(be.room.map != oldMap, "gamepad changes Map from Host strip");
+        ui.RoomNavMove(1);
+        CHECK(ui.RoomZoneFocus() == CeOnlineUiModel::ROOM_ZONE_CHAT, "Down from Host strip moves to Chat");
+        ui.RoomNavActivate();
+        CHECK(ui.ChatComposing(), "gamepad opens Chat compose");
+        ui.RoomCloseChat();
+        ui.RoomNavMove(1);
+        CHECK(ui.RoomZoneFocus() == CeOnlineUiModel::ROOM_ZONE_HEADER, "Down from Chat wraps to Header");
+        ui.RoomNavActivate();
+        CHECK(be.clipboard == "XY789Z", "gamepad activates Copy Code");
+    }
+}
+
+static void TestBackNavigationAndStartMatchSnapback() {
+    // 1. Create Lobby -> Submit -> Cancel -> Back must pop to HOME / BROWSER (no self-loop!)
+    {
+        FakeOnlineBackend be;
+        CeOnlineUiModel ui;
+        ui.SetBackend(&be);
+        ui.Open(false);
+        ui.HomeActivate(CeOnlineUiModel::HOME_CREATE);
+        CHECK(ui.Page() == CE_ONLINE_PAGE_CREATE, "entered Create from Home");
+        ui.SetCreateRoomName("Back Loop Test");
+        CHECK(ui.CreateSubmit() && ui.Page() == CE_ONLINE_PAGE_CONNECTING, "submitting Create enters Connecting");
+        ui.ConnectingCancel();
+        CHECK(ui.Page() == CE_ONLINE_PAGE_CREATE, "cancel returns to Create form");
+        ui.NavigateBack();
+        CHECK(ui.Page() == CE_ONLINE_PAGE_HOME, "Back from Create after cancel returns to Home (no self-loop)");
+
+        // Same from Browser with opError failure instead of manual cancel
+        ui.HomeActivate(CeOnlineUiModel::HOME_BROWSE);
+        ui.EnterCreate(CE_ONLINE_PAGE_BROWSER);
+        CHECK(ui.CreateSubmit() && ui.Page() == CE_ONLINE_PAGE_CONNECTING, "Create from Browser enters Connecting");
+        be.room.active = false;
+        be.pendingOpError = "Lobby server busy.";
+        ui.SyncFromBackend(100);
+        CHECK(ui.Page() == CE_ONLINE_PAGE_CREATE, "opError returns to Create form");
+        ui.NavigateBack();
+        CHECK(ui.Page() == CE_ONLINE_PAGE_BROWSER, "Back from Create after opError returns to Browser");
+    }
+
+    // 2. Join by Code -> Submit -> Cancel / Resolve Failure / Password Needed -> Back pops cleanly
+    {
+        FakeOnlineBackend be;
+        CeOnlineUiModel ui;
+        ui.SetBackend(&be);
+        ui.Open(false);
+        ui.HomeActivate(CeOnlineUiModel::HOME_JOIN_CODE);
+        be.clipboard = "AB12CD";
+        CHECK(ui.PasteIntoActiveField(), "pasted join code");
+        CHECK(ui.JoinCodeSubmit() && ui.Page() == CE_ONLINE_PAGE_CONNECTING, "JoinCode enters Connecting");
+        ui.ConnectingCancel();
+        CHECK(ui.Page() == CE_ONLINE_PAGE_JOIN_CODE, "cancel returns to JoinCode");
+        ui.NavigateBack();
+        CHECK(ui.Page() == CE_ONLINE_PAGE_HOME, "Back from JoinCode after cancel returns to Home");
+
+        ui.HomeActivate(CeOnlineUiModel::HOME_BROWSE);
+        ui.EnterJoinCode(CE_ONLINE_PAGE_BROWSER);
+        be.clipboard = "EF34GH";
+        CHECK(ui.PasteIntoActiveField(), "pasted second join code");
+        CHECK(ui.JoinCodeSubmit() && ui.Page() == CE_ONLINE_PAGE_CONNECTING, "JoinCode from Browser enters Connecting");
+        be.pendingResolve = CeOnlineUiResolveResult();
+        be.pendingResolve.resolved = true;
+        be.pendingResolve.found = false;
+        be.pendingResolve.error = "No lobby found.";
+        be.hasPendingResolve = true;
+        ui.SyncFromBackend(200);
+        CHECK(ui.Page() == CE_ONLINE_PAGE_JOIN_CODE, "failed resolve returns to JoinCode");
+        ui.NavigateBack();
+        CHECK(ui.Page() == CE_ONLINE_PAGE_BROWSER, "Back from JoinCode after failed resolve returns to Browser");
+    }
+
+    // 3. StartMatch HTTP in-flight must NOT snap CONNECTING back to ROOM on stale "lobby" poll
+    {
+        FakeOnlineBackend be;
+        CeOnlineUiModel ui;
+        ui.SetBackend(&be);
+        ui.Open(false);
+        ui.HomeActivate(CeOnlineUiModel::HOME_CREATE);
+        ui.SetCreateRoomName("Start Snapback");
+        CHECK(ui.CreateSubmit(), "create room");
+        ui.SyncFromBackend(100);
+        be.room.seats[1].kind = CE_ONLINE_SEAT_HUMAN;
+        be.room.seats[1].playerId = "guest_p2_33333333333333333";
+        be.room.seats[1].callsign = "WingTwo";
+        be.room.seats[1].ready = true;
+        ui.RoomToggleReady();
+        ui.SyncFromBackend(120);
+        CHECK(ui.RoomHostStartMatch(), "host initiates StartMatch");
+        CHECK(ui.Page() == CE_ONLINE_PAGE_CONNECTING, "entered Connecting for StartMatch");
+        // Backend still reports stale room.state == "lobby" while POST /start is in flight!
+        be.room.state = "lobby";
+        ui.SyncFromBackend(140);
+        CHECK(ui.Page() == CE_ONLINE_PAGE_CONNECTING, "stale lobby state does NOT snap Connecting back to Room");
+        // If StartMatch later fails with an opError, it cleanly returns to Room
+        be.pendingOpError = "Guest unready.";
+        ui.SyncFromBackend(160);
+        CHECK(ui.Page() == CE_ONLINE_PAGE_ROOM, "StartMatch opError returns cleanly to Room");
+    }
+}
+
 int main() {
     TestFontSafety();
     TestGeometryBounds();
@@ -894,6 +1153,8 @@ int main() {
     TestBrowserPagingFilterPassword();
     TestCreateLobbyAndJoinCode();
     TestRoom4SlotAnd64SlotAndGuardrails();
+    TestLaunchClosePreservationAndGamepadNav();
+    TestBackNavigationAndStartMatchSnapback();
     std::printf("ce_online_ui_model checks=%d failures=%d\n", gChecks, gFails);
     return gFails == 0 ? 0 : 1;
 }

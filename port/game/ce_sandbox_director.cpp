@@ -9,6 +9,7 @@
 #include "Career.h"
 #include "frontend.h"
 #include "game.h"
+#include "GameInterface.h"
 #include "world.h"
 #include "unit.h"
 #include "squad.h"
@@ -36,14 +37,17 @@
 #include <cstdio>
 #include <cstring>
 
+extern bool gMirrorPass;
 bool PortCeMenus();
 bool PortCeLayer();
 bool PortCeAuthoringSessionAllowed() noexcept;
+bool PortCeCmdMapOpen() __attribute__((weak));
 extern "C" bool PortCeMuseumActive(void) __attribute__((weak));
 extern "C" bool PortCeMuseumVisitActive(void) __attribute__((weak));
 extern "C" bool PortCeEditorActive(void) __attribute__((weak));
 extern "C" bool PortCeCarrierClashActive(void) __attribute__((weak));
 extern "C" int PortCePlayUnitShowsBattleline(int viewpoint) __attribute__((weak));
+extern "C" int PortCePlayUnitOwnsPilot(int player) __attribute__((weak));
 
 namespace {
 
@@ -57,6 +61,16 @@ const char *gNotice = NULL;
 unsigned char gCareerSnapshot[sizeof(CCareer)];
 bool gCareerSnapshotHeld = false;
 bool gP0StasisApplied = false;
+
+bool IsP0DrivingOtherUnit() {
+	return (PortCePlayUnitShowsBattleline && PortCePlayUnitShowsBattleline(0) != 0) ||
+	       (PortCePlayUnitOwnsPilot && PortCePlayUnitOwnsPilot(0) != 0);
+}
+
+float ComputeSandboxUiScale(float vh) {
+	const float hudScale = vh / 480.0f;
+	return (hudScale >= 0.85f && hudScale <= 4.5f) ? hudScale : (hudScale < 0.85f ? 0.85f : 4.5f);
+}
 
 struct CeSbQuadVertex {
 	float x, y, z, rhw;
@@ -138,13 +152,21 @@ void RecallP0ToCitadelPad(CBattleEngine *be) {
 	if (maxEnergy > 0.0f) be->mEnergy = maxEnergy;
 	be->Rearm(1.0f);
 	be->SetVelocity(FVector(0.0f, 0.0f, 0.0f));
+	const EBattleEngineState st = be->GetState();
+	const bool inJet = (st == BATTLE_ENGINE_STATE_JET);
+	// Z points DOWN: give Jet mode 2.5 m pad clearance and morph back into Walker cleanly.
+	const float padZ = inJet ? (CeSandboxWorld::kPlayerSpawnZ - 2.5f) : CeSandboxWorld::kPlayerSpawnZ;
 	const FVector padPos(CeSandboxWorld::kPlayerSpawnX,
 	                     CeSandboxWorld::kPlayerSpawnY,
-	                     CeSandboxWorld::kPlayerSpawnZ);
+	                     padZ);
 	be->Teleport(padPos);
 	FMatrix padOri;
 	padOri.MakeRotationYawF(CeSandboxWorld::kPlayerSpawnYaw);
 	be->TeleportOrientation(padOri);
+	be->CeResetPoseForRecall(CeSandboxWorld::kPlayerSpawnYaw);
+	if (st == BATTLE_ENGINE_STATE_JET) {
+		be->Morph();
+	}
 	gDirector.RecordPlayerRecall();
 }
 
@@ -153,7 +175,7 @@ void UpdateP0SurvivalAndStasis() {
 	CBattleEngine *be = p0 ? p0->GetBattleEngine() : NULL;
 	if (!be) return;
 
-	const bool drivingOther = (PortCePlayUnitShowsBattleline && PortCePlayUnitShowsBattleline(0) != 0);
+	const bool drivingOther = IsP0DrivingOtherUnit();
 	CeSandboxPlayerStatus st = {};
 	st.alive = !be->IsDying() && !be->IsShuttingDown() && (be->GetLife() > 0.0f);
 	st.inWater = (be->IsInWater() != FALSE);
@@ -290,104 +312,150 @@ void EndHudUntextured() {
 	LT.SRS(D3DRS_ZFUNC, D3DCMP_LESSEQUAL);
 }
 
-void DrawRectD3D(LPDIRECT3DDEVICE9 dev, float x, float y, float w, float h, unsigned col) {
-	if (!dev || w <= 0.0f || h <= 0.0f) return;
-	const CeSbQuadVertex v[4] = {
-		{x,     y,     0.006f, 1.0f, col},
-		{x + w, y,     0.006f, 1.0f, col},
-		{x,     y + h, 0.006f, 1.0f, col},
-		{x + w, y + h, 0.006f, 1.0f, col},
-	};
-	dev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(CeSbQuadVertex));
-}
+struct CeSbHudBatch {
+	static constexpr int kMaxVerts = 3072;
+	CeSbQuadVertex verts[kMaxVerts];
+	int count;
 
-void DrawNineSliceGlass(LPDIRECT3DDEVICE9 dev, const CeSandboxHudRect &rect,
-                        float radius, float inset, unsigned topCol, unsigned botCol) {
-	const int kSegs = 8;
-	const float rFill = (radius - inset > 1.0f) ? (radius - inset) : 1.0f;
-	const float cx = rect.x + rect.w * 0.5f;
-	const float cy = rect.y + rect.h * 0.5f;
-	const float lx = rect.x + radius;
-	const float ty = rect.y + radius;
-	const float invH = rect.h > 1.0f ? (1.0f / rect.h) : 0.0f;
+	void Reset() { count = 0; }
 
-	float tlx[kSegs + 1], tly[kSegs + 1];
-	for (int k = 0; k <= kSegs; ++k) {
-		const float th = 3.14159265f + (1.57079633f * float(k) / float(kSegs));
-		tlx[k] = lx + rFill * cosf(th);
-		tly[k] = ty + rFill * sinf(th);
+	void Flush(LPDIRECT3DDEVICE9 dev) {
+		if (dev && count >= 3) {
+			dev->DrawPrimitiveUP(D3DPT_TRIANGLELIST, static_cast<UINT>(count / 3),
+			                     verts, sizeof(CeSbQuadVertex));
+		}
+		count = 0;
 	}
 
-	CeSbQuadVertex fan[1 + (kSegs + 1) * 4 + 1];
-	int n = 0;
-	fan[n++] = {cx, cy, 0.009f, 1.0f, LerpArgb(topCol, botCol, 0.5f)};
-	auto emit = [&](float px, float py) {
-		fan[n++] = {px, py, 0.009f, 1.0f, LerpArgb(topCol, botCol, (py - rect.y) * invH)};
-	};
-	for (int k = 0; k <= kSegs; ++k) emit(tlx[k], tly[k]);
-	for (int k = kSegs; k >= 0; --k) emit(2.0f * cx - tlx[k], tly[k]);
-	for (int k = 0; k <= kSegs; ++k) emit(2.0f * cx - tlx[k], 2.0f * cy - tly[k]);
-	for (int k = kSegs; k >= 0; --k) emit(tlx[k], 2.0f * cy - tly[k]);
-	fan[n++] = fan[1];
-
-	dev->DrawPrimitiveUP(D3DPT_TRIANGLEFAN, n - 2, fan, sizeof(CeSbQuadVertex));
-}
-
-void DrawNineSliceBracket(LPDIRECT3DDEVICE9 dev, const CeSandboxHudRect &rect,
-                          float radius, float glowPad, float strokeW,
-                          bool mirrorRight, float halfW, unsigned col) {
-	const int kSegs = 8;
-	const float cx = rect.x + rect.w * 0.5f;
-	const float cy = rect.y + rect.h * 0.5f;
-	const float lx = rect.x + radius;
-	const float ty = rect.y + radius;
-	const float coreHalf = strokeW * 0.5f;
-	const float rMid = (radius - glowPad - coreHalf > 1.0f) ? (radius - glowPad - coreHalf) : 1.0f;
-	const float bodySpan = (rect.w > 2.0f * radius) ? (rect.w - 2.0f * radius) : 0.0f;
-	const float lipLen = (bodySpan * 0.14f < radius * 0.65f) ? (bodySpan * 0.14f) : (radius * 0.65f);
-
-	struct SpinePt { float x, y, nx, ny, sw; };
-	SpinePt pts[2 + (kSegs + 1) * 2];
-	int count = 0;
-	if (lipLen > 1.0f) pts[count++] = {lx + lipLen, ty - rMid, 0.0f, -1.0f, 0.40f};
-	for (int k = kSegs; k >= 0; --k) {
-		const float frac = float(k) / float(kSegs);
-		const float th = 3.14159265f + 1.57079633f * frac;
-		const float c = cosf(th), s = sinf(th);
-		const float sw = 1.0f + 0.20f * sinf(frac * 3.14159265f);
-		pts[count++] = {lx + rMid * c, ty + rMid * s, c, s, sw};
+	void PushTri(LPDIRECT3DDEVICE9 dev, const CeSbQuadVertex &a,
+	             const CeSbQuadVertex &b, const CeSbQuadVertex &c) {
+		if (count + 3 > kMaxVerts) Flush(dev);
+		verts[count++] = a;
+		verts[count++] = b;
+		verts[count++] = c;
 	}
-	for (int k = 0; k <= kSegs; ++k) {
-		const float frac = float(k) / float(kSegs);
-		const float th = 3.14159265f + 1.57079633f * frac;
-		const float c = cosf(th), s = sinf(th);
-		const float sw = 1.0f + 0.20f * sinf(frac * 3.14159265f);
-		pts[count++] = {lx + rMid * c, 2.0f * cy - (ty + rMid * s), c, -s, sw};
-	}
-	if (lipLen > 1.0f) pts[count++] = {lx + lipLen, 2.0f * cy - (ty - rMid), 0.0f, 1.0f, 0.40f};
 
-	CeSbQuadVertex strip[(2 + (kSegs + 1) * 2) * 2];
-	const float minX = rect.x, maxX = rect.x + rect.w;
-	const float minY = rect.y, maxY = rect.y + rect.h;
-	auto clampPt = [&](float &px, float &py) {
-		if (px < minX) px = minX;
-		if (px > maxX) px = maxX;
-		if (py < minY) py = minY;
-		if (py > maxY) py = maxY;
-	};
-	for (int i = 0; i < count; ++i) {
-		float px = pts[i].x, py = pts[i].y;
-		float nx = pts[i].nx, ny = pts[i].ny;
-		if (mirrorRight) { px = 2.0f * cx - px; nx = -nx; }
-		const float hw = halfW * pts[i].sw;
-		float ox = px + nx * hw, oy = py + ny * hw;
-		float ix = px - nx * hw, iy = py - ny * hw;
-		clampPt(ox, oy);
-		clampPt(ix, iy);
-		strip[i * 2 + 0] = {ox, oy, 0.007f, 1.0f, col};
-		strip[i * 2 + 1] = {ix, iy, 0.007f, 1.0f, col};
+	void EmitRect(LPDIRECT3DDEVICE9 dev, float x, float y, float w, float h, unsigned col) {
+		if (w <= 0.0f || h <= 0.0f) return;
+		const CeSbQuadVertex v0 = {x,     y,     0.006f, 1.0f, col};
+		const CeSbQuadVertex v1 = {x + w, y,     0.006f, 1.0f, col};
+		const CeSbQuadVertex v2 = {x,     y + h, 0.006f, 1.0f, col};
+		const CeSbQuadVertex v3 = {x + w, y + h, 0.006f, 1.0f, col};
+		PushTri(dev, v0, v1, v2);
+		PushTri(dev, v1, v3, v2);
 	}
-	dev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, (count - 1) * 2, strip, sizeof(CeSbQuadVertex));
+
+	void EmitNineSliceGlass(LPDIRECT3DDEVICE9 dev, const CeSandboxHudRect &rect,
+	                        float radius, float inset, unsigned topCol, unsigned botCol) {
+		const int kSegs = 8;
+		const float rFill = (radius - inset > 1.0f) ? (radius - inset) : 1.0f;
+		const float cx = rect.x + rect.w * 0.5f;
+		const float cy = rect.y + rect.h * 0.5f;
+		const float lx = rect.x + radius;
+		const float ty = rect.y + radius;
+		const float invH = rect.h > 1.0f ? (1.0f / rect.h) : 0.0f;
+
+		float tlx[kSegs + 1], tly[kSegs + 1];
+		for (int k = 0; k <= kSegs; ++k) {
+			const float th = 3.14159265f + (1.57079633f * float(k) / float(kSegs));
+			tlx[k] = lx + rFill * cosf(th);
+			tly[k] = ty + rFill * sinf(th);
+		}
+
+		CeSbQuadVertex fan[1 + (kSegs + 1) * 4 + 1];
+		int n = 0;
+		fan[n++] = {cx, cy, 0.009f, 1.0f, LerpArgb(topCol, botCol, 0.5f)};
+		auto emit = [&](float px, float py) {
+			fan[n++] = {px, py, 0.009f, 1.0f, LerpArgb(topCol, botCol, (py - rect.y) * invH)};
+		};
+		for (int k = 0; k <= kSegs; ++k) emit(tlx[k], tly[k]);
+		for (int k = kSegs; k >= 0; --k) emit(2.0f * cx - tlx[k], tly[k]);
+		for (int k = 0; k <= kSegs; ++k) emit(2.0f * cx - tlx[k], 2.0f * cy - tly[k]);
+		for (int k = kSegs; k >= 0; --k) emit(tlx[k], 2.0f * cy - tly[k]);
+		fan[n++] = fan[1];
+
+		for (int i = 1; i + 1 < n; ++i) {
+			PushTri(dev, fan[0], fan[i], fan[i + 1]);
+		}
+	}
+
+	void EmitNineSliceBracket(LPDIRECT3DDEVICE9 dev, const CeSandboxHudRect &rect,
+	                          float radius, float glowPad, float strokeW,
+	                          bool mirrorRight, float halfW, unsigned col) {
+		const int kSegs = 8;
+		const float cx = rect.x + rect.w * 0.5f;
+		const float cy = rect.y + rect.h * 0.5f;
+		const float lx = rect.x + radius;
+		const float ty = rect.y + radius;
+		const float coreHalf = strokeW * 0.5f;
+		const float rMid = (radius - glowPad - coreHalf > 1.0f) ? (radius - glowPad - coreHalf) : 1.0f;
+		const float bodySpan = (rect.w > 2.0f * radius) ? (rect.w - 2.0f * radius) : 0.0f;
+		const float lipLen = (bodySpan * 0.14f < radius * 0.65f) ? (bodySpan * 0.14f) : (radius * 0.65f);
+
+		struct SpinePt { float x, y, nx, ny, sw; };
+		SpinePt pts[2 + (kSegs + 1) * 2];
+		int ptCount = 0;
+		if (lipLen > 1.0f) pts[ptCount++] = {lx + lipLen, ty - rMid, 0.0f, -1.0f, 0.40f};
+		for (int k = kSegs; k >= 0; --k) {
+			const float frac = float(k) / float(kSegs);
+			const float th = 3.14159265f + (1.57079633f * frac);
+			const float c = cosf(th), s = sinf(th);
+			const float sw = 1.0f + 0.20f * sinf(frac * 3.14159265f);
+			pts[ptCount++] = {lx + rMid * c, ty + rMid * s, c, s, sw};
+		}
+		for (int k = 0; k <= kSegs; ++k) {
+			const float frac = float(k) / float(kSegs);
+			const float th = 3.14159265f + (1.57079633f * frac);
+			const float c = cosf(th), s = sinf(th);
+			const float sw = 1.0f + 0.20f * sinf(frac * 3.14159265f);
+			pts[ptCount++] = {lx + rMid * c, 2.0f * cy - (ty + rMid * s), c, -s, sw};
+		}
+		if (lipLen > 1.0f) pts[ptCount++] = {lx + lipLen, 2.0f * cy - (ty - rMid), 0.0f, 1.0f, 0.40f};
+
+		CeSbQuadVertex strip[(2 + (kSegs + 1) * 2) * 2];
+		const float minX = rect.x, maxX = rect.x + rect.w;
+		const float minY = rect.y, maxY = rect.y + rect.h;
+		auto clampPt = [&](float &px, float &py) {
+			if (px < minX) px = minX;
+			if (px > maxX) px = maxX;
+			if (py < minY) py = minY;
+			if (py > maxY) py = maxY;
+		};
+		for (int i = 0; i < ptCount; ++i) {
+			float px = pts[i].x, py = pts[i].y;
+			float nx = pts[i].nx, ny = pts[i].ny;
+			if (mirrorRight) { px = 2.0f * cx - px; nx = -nx; }
+			const float hw = halfW * pts[i].sw;
+			float ox = px + nx * hw, oy = py + ny * hw;
+			float ix = px - nx * hw, iy = py - ny * hw;
+			clampPt(ox, oy);
+			clampPt(ix, iy);
+			strip[i * 2 + 0] = {ox, oy, 0.007f, 1.0f, col};
+			strip[i * 2 + 1] = {ix, iy, 0.007f, 1.0f, col};
+		}
+		for (int i = 0; i + 1 < ptCount; ++i) {
+			const CeSbQuadVertex &a0 = strip[i * 2 + 0];
+			const CeSbQuadVertex &a1 = strip[i * 2 + 1];
+			const CeSbQuadVertex &b0 = strip[(i + 1) * 2 + 0];
+			const CeSbQuadVertex &b1 = strip[(i + 1) * 2 + 1];
+			PushTri(dev, a0, a1, b0);
+			PushTri(dev, a1, b1, b0);
+		}
+	}
+};
+
+CeSbHudBatch gHudBatch;
+
+void DrawSafeHudTextScaled(CDXBitmapFont *font, float x, float y, unsigned colour,
+                           const WCHAR *wide, float sx, float sy) {
+	if (!font || !wide || !wide[0]) return;
+	LT.SRS(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
+	LT.SRS(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
+	LT.SRS(D3DRS_ALPHABLENDENABLE, TRUE);
+	LT.SRS(D3DRS_ALPHATESTENABLE, TRUE);
+	LT.SRS(D3DRS_ZENABLE, FALSE);
+	LT.SRS(D3DRS_ZWRITEENABLE, FALSE);
+	font->DrawTextWithShadow(x, y, colour, const_cast<WCHAR *>(wide), 0, 0.0f, sx, sy);
 }
 
 void DrawSafeHudText(CDXBitmapFont *font, float x, float y, unsigned colour,
@@ -407,13 +475,7 @@ void DrawSafeHudText(CDXBitmapFont *font, float x, float y, unsigned colour,
 		sx = maxW / float(ext.cx);
 		if (sx < scale * 0.55f) sx = scale * 0.55f;
 	}
-	LT.SRS(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
-	LT.SRS(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
-	LT.SRS(D3DRS_ALPHABLENDENABLE, TRUE);
-	LT.SRS(D3DRS_ALPHATESTENABLE, TRUE);
-	LT.SRS(D3DRS_ZENABLE, FALSE);
-	LT.SRS(D3DRS_ZWRITEENABLE, FALSE);
-	font->DrawTextWithShadow(x, y, colour, wide, 0, 0.0f, sx, scale);
+	DrawSafeHudTextScaled(font, x, y, colour, wide, sx, scale);
 }
 
 void DrawSafeHudTextCentered(CDXBitmapFont *font, float cx, float y, unsigned colour,
@@ -434,7 +496,28 @@ void DrawSafeHudTextCentered(CDXBitmapFont *font, float cx, float y, unsigned co
 		if (sx < scale * 0.55f) sx = scale * 0.55f;
 	}
 	const float drawW = float(ext.cx) * sx;
-	DrawSafeHudText(font, floorf(cx - drawW * 0.5f), y, colour, ascii, sx, maxW);
+	DrawSafeHudTextScaled(font, floorf(cx - drawW * 0.5f), y, colour, wide, sx, scale);
+}
+
+void DrawSafeHudTextRight(CDXBitmapFont *font, float rightX, float y, unsigned colour,
+                          const char *ascii, float scale, float maxW) {
+	if (!font || !ascii || !ascii[0]) return;
+	WCHAR wide[96] = {};
+	size_t n = 0u;
+	for (; ascii[n] && n + 1u < 96u; ++n) {
+		const char ch = CeSandboxIsFontSmallSafeChar(ascii[n]) ? ascii[n] : ' ';
+		wide[n] = static_cast<WCHAR>(static_cast<unsigned char>(ch));
+	}
+	wide[n] = 0;
+	SIZE ext = {0, 0};
+	font->GetTextExtent(wide, &ext);
+	float sx = scale;
+	if (maxW > 8.0f && ext.cx > 0 && float(ext.cx) * sx > maxW) {
+		sx = maxW / float(ext.cx);
+		if (sx < scale * 0.55f) sx = scale * 0.55f;
+	}
+	const float drawW = float(ext.cx) * sx;
+	DrawSafeHudTextScaled(font, floorf(rightX - drawW), y, colour, wide, sx, scale);
 }
 
 } // namespace
@@ -514,14 +597,34 @@ extern "C" bool PortCeLivingSandboxTakeNotice(const char **sentence) {
 	return true;
 }
 
+extern "C" int PortCeLivingSandboxBeInStasis(const void *be) {
+	if (!PortCeLivingSandboxActive() || !gDirector.IsRunning() || !be) return 0;
+	CPlayer *p0 = GAME.GetPlayer(0);
+	if (!p0 || static_cast<const void *>(p0->GetBattleEngine()) != be) return 0;
+	return (gP0StasisApplied || IsP0DrivingOtherUnit()) ? 1 : 0;
+}
+
 extern "C" bool PortCeLivingSandboxRescuePlayer(int playerNumber) {
 	if (!PortCeLivingSandboxActive() || playerNumber != 1) return false;
 	CPlayer *p0 = GAME.GetPlayer(0);
 	CBattleEngine *be = p0 ? p0->GetBattleEngine() : NULL;
 	if (!be) return false;
+	if (CCONTROLLER *controller = GAME.GetController(playerNumber - 1)) {
+		controller->SetVibration(0, playerNumber - 1);
+	}
 	be->SetFlags(static_cast<short>(be->GetFlags() & ~TF_DYING));
+	const bool drivingOther = IsP0DrivingOtherUnit();
+	if (!drivingOther) {
+		if (gP0StasisApplied) {
+			be->SetVulnerable(TRUE);
+			gP0StasisApplied = false;
+		}
+		gDirector.SetP0StasisActive(false);
+	}
 	RecallP0ToCitadelPad(be);
-	p0->GotoControlView();
+	if (!drivingOther) {
+		p0->GotoControlView();
+	}
 	return true;
 }
 
@@ -688,7 +791,7 @@ extern "C" void PortCeLivingSandboxTickPre(void) {
 
 extern "C" void PortCeLivingSandboxDrawWorld(CPlayer *player, int viewpoint) {
 	(void)player;
-	if (viewpoint != 0) return;
+	if (viewpoint != 0 || gMirrorPass) return;
 	if (!PortCeLivingSandboxActive() || !gDirector.IsRunning()) return;
 
 #ifdef CE_SANDBOX_HAS_CITADEL
@@ -705,6 +808,12 @@ extern "C" void PortCeLivingSandboxDrawWorld(CPlayer *player, int viewpoint) {
 
 extern "C" bool PortCeLivingSandboxKey(unsigned char key, bool repeat) {
 	if (!PortCeLivingSandboxActive() || !gDirector.IsRunning()) return false;
+	if (LT.GetKeytrap() || GAME.IsPaused() || GAMEINTERFACE.IsMenuUp() ||
+	    GAME.IsFreeCameraOn(0) ||
+	    PortCePhotoOn() || GAME.GetGameState() != GAME_STATE_PLAYING ||
+	    (PortCeCmdMapOpen && PortCeCmdMapOpen())) {
+		return false;
+	}
 #ifdef CE_SANDBOX_HAS_CITADEL
 	return CeSanctuaryCitadel::RuntimeHandleKey(static_cast<unsigned>(key), repeat);
 #else
@@ -714,11 +823,25 @@ extern "C" bool PortCeLivingSandboxKey(unsigned char key, bool repeat) {
 #endif
 }
 
+extern "C" float PortCeLivingSandboxHudTopBottom(float viewportW, float viewportH) {
+	if (!(viewportW > 0.0f && viewportH > 0.0f)) return 0.0f;
+	if (!PortCeLivingSandboxActive() || !gDirector.IsRunning()) return 0.0f;
+	if (PortCePhotoOn() || GAME.IsPaused() || GAMEINTERFACE.IsMenuUp() ||
+	    GAME.GetGameState() != GAME_STATE_PLAYING) return 0.0f;
+	const float uiScale = ComputeSandboxUiScale(viewportH);
+	const CeSandboxHudState state = gDirector.BuildHudState();
+	const CeSandboxHudLayout layout = CeSandboxComputeHudLayout(viewportW, viewportH, uiScale, state.showBanner, false);
+	if (!layout.valid) return 0.0f;
+	return layout.showBanner ? (layout.bannerBox.y + layout.bannerBox.h)
+	                         : (layout.panel.y + layout.panel.h);
+}
+
 extern "C" void PortCeLivingSandboxDrawHud(CPlayer *player, int viewpoint) {
 	(void)player;
 	if (viewpoint != 0) return;
 	if (!PortCeLivingSandboxActive() || !gDirector.IsRunning()) return;
-	if (PortCePhotoOn()) return;
+	if (PortCePhotoOn() || GAME.IsPaused() || GAMEINTERFACE.IsMenuUp() ||
+	    GAME.GetGameState() != GAME_STATE_PLAYING) return;
 
 	LPDIRECT3DDEVICE9 dev = LT.GetDevice();
 	CDXBitmapFont *font = PLATFORM.Font(FONT_SMALL);
@@ -726,8 +849,8 @@ extern "C" void PortCeLivingSandboxDrawHud(CPlayer *player, int viewpoint) {
 
 	const float vw = static_cast<float>(PLATFORM.GetWindowWidth());
 	const float vh = static_cast<float>(PLATFORM.GetWindowHeight());
-	const float hudScale = vh / 480.0f;
-	const float uiScale = (hudScale >= 0.85f && hudScale <= 2.5f) ? hudScale : (hudScale < 0.85f ? 0.85f : 2.5f);
+	if (!(vw > 0.0f && vh > 0.0f)) return;
+	const float uiScale = ComputeSandboxUiScale(vh);
 
 	char cueTitle[64] = {};
 	char cueLine[96] = {};
@@ -749,18 +872,19 @@ extern "C" void PortCeLivingSandboxDrawHud(CPlayer *player, int viewpoint) {
 	if (!layout.valid) return;
 
 	BeginHudUntextured();
+	gHudBatch.Reset();
 
 	const float inset = layout.glowPad + layout.strokeWidth * 0.45f;
 	const float coreHalf = layout.strokeWidth * 0.5f;
 
 	// Top-center 9-slice Tug-of-War strip: dark glass + Forseti cyan left bracket + Muspell crimson right bracket.
-	DrawNineSliceGlass(dev, layout.panel, layout.cornerRadius, inset, 0xd80b1c2eu, 0xe406101au);
-	DrawNineSliceBracket(dev, layout.panel, layout.cornerRadius, layout.glowPad, layout.strokeWidth, false, coreHalf + layout.glowPad, 0x4c28d4ffu);
-	DrawNineSliceBracket(dev, layout.panel, layout.cornerRadius, layout.glowPad, layout.strokeWidth, false, coreHalf, 0xf23ce4ffu);
-	DrawNineSliceBracket(dev, layout.panel, layout.cornerRadius, layout.glowPad, layout.strokeWidth, false, coreHalf * 0.42f, 0xffccf8ffu);
-	DrawNineSliceBracket(dev, layout.panel, layout.cornerRadius, layout.glowPad, layout.strokeWidth, true, coreHalf + layout.glowPad, 0x4cff4414u);
-	DrawNineSliceBracket(dev, layout.panel, layout.cornerRadius, layout.glowPad, layout.strokeWidth, true, coreHalf, 0xf2f04e1au);
-	DrawNineSliceBracket(dev, layout.panel, layout.cornerRadius, layout.glowPad, layout.strokeWidth, true, coreHalf * 0.42f, 0xffffc464u);
+	gHudBatch.EmitNineSliceGlass(dev, layout.panel, layout.cornerRadius, inset, 0xd80b1c2eu, 0xe406101au);
+	gHudBatch.EmitNineSliceBracket(dev, layout.panel, layout.cornerRadius, layout.glowPad, layout.strokeWidth, false, coreHalf + layout.glowPad, 0x4c28d4ffu);
+	gHudBatch.EmitNineSliceBracket(dev, layout.panel, layout.cornerRadius, layout.glowPad, layout.strokeWidth, false, coreHalf, 0xf23ce4ffu);
+	gHudBatch.EmitNineSliceBracket(dev, layout.panel, layout.cornerRadius, layout.glowPad, layout.strokeWidth, false, coreHalf * 0.42f, 0xffccf8ffu);
+	gHudBatch.EmitNineSliceBracket(dev, layout.panel, layout.cornerRadius, layout.glowPad, layout.strokeWidth, true, coreHalf + layout.glowPad, 0x4cff4414u);
+	gHudBatch.EmitNineSliceBracket(dev, layout.panel, layout.cornerRadius, layout.glowPad, layout.strokeWidth, true, coreHalf, 0xf2f04e1au);
+	gHudBatch.EmitNineSliceBracket(dev, layout.panel, layout.cornerRadius, layout.glowPad, layout.strokeWidth, true, coreHalf * 0.42f, 0xffffc464u);
 
 	// 5 Contested Capture Node pips with proportional control fill.
 	for (unsigned i = 0; i < CeSandboxWorld::kCaptureNodeCount; ++i) {
@@ -770,9 +894,8 @@ extern "C" void PortCeLivingSandboxDrawHud(CPlayer *player, int viewpoint) {
 		const unsigned bg = (owner == CE_SB_OWNER_FORSETI) ? 0xc80a2234u
 		                  : (owner == CE_SB_OWNER_MUSPELL) ? 0xc82c0e0cu
 		                                                   : 0xc81a1c24u;
-		DrawRectD3D(dev, pip.x, pip.y, pip.w, pip.h, bg);
+		gHudBatch.EmitRect(dev, pip.x, pip.y, pip.w, pip.h, bg);
 
-		const float frac = (ctrl + 100.0f) * 0.005f; // [0..1], 1 = Forseti, 0 = Muspell
 		const float innerW = pip.w - 2.0f;
 		const float innerH = pip.h - 2.0f;
 		const unsigned fillCol = (owner == CE_SB_OWNER_FORSETI) ? 0xf032d8ffu
@@ -780,12 +903,11 @@ extern "C" void PortCeLivingSandboxDrawHud(CPlayer *player, int viewpoint) {
 		                                                        : 0xf0f2c040u;
 		if (ctrl >= 0.0f) {
 			const float wFill = innerW * (0.5f + (ctrl * 0.005f));
-			DrawRectD3D(dev, pip.x + 1.0f, pip.y + 1.0f, wFill, innerH, fillCol);
+			gHudBatch.EmitRect(dev, pip.x + 1.0f, pip.y + 1.0f, wFill, innerH, fillCol);
 		} else {
 			const float wFill = innerW * (0.5f + ((-ctrl) * 0.005f));
-			DrawRectD3D(dev, pip.x + pip.w - 1.0f - wFill, pip.y + 1.0f, wFill, innerH, fillCol);
+			gHudBatch.EmitRect(dev, pip.x + pip.w - 1.0f - wFill, pip.y + 1.0f, wFill, innerH, fillCol);
 		}
-		(void)frac;
 	}
 
 	// Event / status banner below the 5-node strip
@@ -796,27 +918,28 @@ extern "C" void PortCeLivingSandboxDrawHud(CPlayer *player, int viewpoint) {
 		const unsigned bodyCol  = state.navalEscalationActive ? 0xf4ffc040u : 0xf43ce4ffu;
 		const unsigned coreCol  = 0xffe8fbffu;
 		const float br = floorf(9.0f * uiScale);
-		DrawNineSliceGlass(dev, layout.bannerBox, br, inset, topGlass, botGlass);
+		gHudBatch.EmitNineSliceGlass(dev, layout.bannerBox, br, inset, topGlass, botGlass);
 		for (int side = 0; side < 2; ++side) {
 			const bool right = (side == 1);
-			DrawNineSliceBracket(dev, layout.bannerBox, br, layout.glowPad, layout.strokeWidth, right, coreHalf + layout.glowPad, haloCol);
-			DrawNineSliceBracket(dev, layout.bannerBox, br, layout.glowPad, layout.strokeWidth, right, coreHalf, bodyCol);
-			DrawNineSliceBracket(dev, layout.bannerBox, br, layout.glowPad, layout.strokeWidth, right, coreHalf * 0.42f, coreCol);
+			gHudBatch.EmitNineSliceBracket(dev, layout.bannerBox, br, layout.glowPad, layout.strokeWidth, right, coreHalf + layout.glowPad, haloCol);
+			gHudBatch.EmitNineSliceBracket(dev, layout.bannerBox, br, layout.glowPad, layout.strokeWidth, right, coreHalf, bodyCol);
+			gHudBatch.EmitNineSliceBracket(dev, layout.bannerBox, br, layout.glowPad, layout.strokeWidth, right, coreHalf * 0.42f, coreCol);
 		}
 	}
 
 	// Optional Sanctuary Citadel exhibit / pedestal cue box at bottom-center
 	if (layout.showCue) {
 		const float cr = floorf(10.0f * uiScale);
-		DrawNineSliceGlass(dev, layout.cueBox, cr, inset, 0xdc0c1c2au, 0xe8061018u);
+		gHudBatch.EmitNineSliceGlass(dev, layout.cueBox, cr, inset, 0xdc0c1c2au, 0xe8061018u);
 		for (int side = 0; side < 2; ++side) {
 			const bool right = (side == 1);
-			DrawNineSliceBracket(dev, layout.cueBox, cr, layout.glowPad, layout.strokeWidth, right, coreHalf + layout.glowPad, 0x4838d8ffu);
-			DrawNineSliceBracket(dev, layout.cueBox, cr, layout.glowPad, layout.strokeWidth, right, coreHalf, 0xee60e8ffu);
-			DrawNineSliceBracket(dev, layout.cueBox, cr, layout.glowPad, layout.strokeWidth, right, coreHalf * 0.42f, 0xffd8fbffu);
+			gHudBatch.EmitNineSliceBracket(dev, layout.cueBox, cr, layout.glowPad, layout.strokeWidth, right, coreHalf + layout.glowPad, 0x4838d8ffu);
+			gHudBatch.EmitNineSliceBracket(dev, layout.cueBox, cr, layout.glowPad, layout.strokeWidth, right, coreHalf, 0xee60e8ffu);
+			gHudBatch.EmitNineSliceBracket(dev, layout.cueBox, cr, layout.glowPad, layout.strokeWidth, right, coreHalf * 0.42f, 0xffd8fbffu);
 		}
 	}
 
+	gHudBatch.Flush(dev);
 	EndHudUntextured();
 
 	// Crisp FONT_SMALL labels
@@ -827,20 +950,8 @@ extern "C" void PortCeLivingSandboxDrawHud(CPlayer *player, int viewpoint) {
 	                state.headerLeft, textScale, floorf(115.0f * uiScale));
 	DrawSafeHudTextCentered(font, layout.panel.x + layout.panel.w * 0.5f, textY, 0xfff4f8ffu,
 	                        state.headerMid, textScale, floorf(210.0f * uiScale));
-	{
-		WCHAR wideR[48] = {};
-		size_t rn = 0u;
-		for (; state.headerRight[rn] && rn + 1u < 48u; ++rn)
-			wideR[rn] = static_cast<WCHAR>(static_cast<unsigned char>(state.headerRight[rn]));
-		wideR[rn] = 0;
-		SIZE ext = {0, 0};
-		font->GetTextExtent(wideR, &ext);
-		float rxScale = textScale;
-		const float maxRW = floorf(115.0f * uiScale);
-		if (ext.cx > 0 && float(ext.cx) * rxScale > maxRW) rxScale = maxRW / float(ext.cx);
-		const float rx = layout.panel.x + layout.panel.w - sidePad - float(ext.cx) * rxScale;
-		DrawSafeHudText(font, floorf(rx), textY, 0xffffd4c0u, state.headerRight, rxScale, maxRW);
-	}
+	DrawSafeHudTextRight(font, layout.panel.x + layout.panel.w - sidePad, textY, 0xffffd4c0u,
+	                     state.headerRight, textScale, floorf(115.0f * uiScale));
 
 	if (layout.showBanner) {
 		const float bannerY = layout.bannerBox.y + floorf(6.0f * uiScale);

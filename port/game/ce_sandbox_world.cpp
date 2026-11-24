@@ -12,6 +12,7 @@
 #include "mixermap.h"
 #include "Texture.h"
 #include "mesh.h"
+#include "ltshell.h"
 #include "engine.h"
 #include "WorldPhysicsManager.h"
 #include "oids.h"
@@ -49,9 +50,65 @@ struct SandboxWorldStorage {
 	bool ready;
 	bool failed;
 	bool venturerReady;
+	bool arenaInstalled;
 };
 
 SandboxWorldStorage gWorld = {};
+
+struct EngineMediaAccess : public CEngine {
+	static CDXKempyCube *KempyCube() {
+		return static_cast<EngineMediaAccess *>(static_cast<CEngine *>(&ENGINE))->mKempyCube;
+	}
+	static CDXWater *Water() {
+		return static_cast<EngineMediaAccess *>(static_cast<CEngine *>(&ENGINE))->mWater;
+	}
+};
+
+bool ContainsIgnoreCase(const char *haystack, const char *needle) {
+	if (!haystack || !needle || !needle[0]) return false;
+	const size_t nlen = std::strlen(needle);
+	for (const char *p = haystack; *p; ++p) {
+		size_t i = 0u;
+		while (i < nlen && p[i] &&
+		       CeSandboxWorld::AsciiLower(static_cast<unsigned char>(p[i])) ==
+		       CeSandboxWorld::AsciiLower(static_cast<unsigned char>(needle[i]))) {
+			++i;
+		}
+		if (i == nlen) return true;
+	}
+	return false;
+}
+
+void RefreshProceduralMapExtents() {
+	SINT minX = CeSandboxWorld::kCells;
+	SINT minY = CeSandboxWorld::kCells;
+	SINT maxX = -1;
+	SINT maxY = -1;
+	for (SINT y = 0; y < CeSandboxWorld::kCells; ++y) {
+		for (SINT x = 0; x < CeSandboxWorld::kCells; ++x) {
+			if (CeSandboxWorld::HeightAt(static_cast<float>(x), static_cast<float>(y)) < MAP.mWaterLevel) {
+				if (x < minX) minX = x;
+				if (x > maxX) maxX = x;
+				if (y < minY) minY = y;
+				if (y > maxY) maxY = y;
+			}
+		}
+	}
+	if (minX > maxX || minY > maxY) {
+		minX = 0;
+		minY = 0;
+		maxX = CeSandboxWorld::kCells - 1;
+		maxY = CeSandboxWorld::kCells - 1;
+	}
+	SExtents ext = {};
+	ext.mMinX = minX;
+	ext.mMinY = minY;
+	ext.mMaxX = maxX;
+	ext.mMaxY = maxY;
+	ext.mWaterLevel = MAP.mWaterLevel;
+	static_assert(sizeof(ext) == sizeof(MAP.mUnknown000), "SExtents size mismatch");
+	std::memcpy(MAP.mUnknown000, &ext, sizeof(ext));
+}
 
 bool VerifyPackedAyaFile(const char *gameRelPath, bool *outExists) {
 	if (outExists) *outExists = false;
@@ -123,22 +180,49 @@ void CanonicalizePath(const char *src, char *dst, size_t dstSize) {
 	dst[i] = '\0';
 }
 
+void InferMeshTextureFormat(const char *texName, ETextureFormat *outFmt, const char **outSuffix) {
+	ETextureFormat fmt = TEXFMT_A1R5G5B5;
+	const char *suffix = "A1R5G5B5";
+	if (texName) {
+		// Mirrors retail CMesh::FindTexture (src/mesh.cpp:1367-1375):
+		// filename prefix "A8" -> TEXFMT_A8R8G8B8, "A4" -> TEXFMT_A4R4G4B4, else A1R5G5B5.
+		const char *base = texName;
+		for (const char *p = texName; *p; ++p) {
+			if (*p == '\\' || *p == '/') base = p + 1;
+		}
+		if (strnicmp(base, "A8", 2) == 0) {
+			fmt = TEXFMT_A8R8G8B8;
+			suffix = "A8R8G8B8";
+		} else if (strnicmp(base, "A4", 2) == 0) {
+			fmt = TEXFMT_A4R4G4B4;
+			suffix = "A4R4G4B4";
+		}
+	}
+	if (outFmt) *outFmt = fmt;
+	if (outSuffix) *outSuffix = suffix;
+}
+
 bool BuildTextureDiskPath(const char *texName, char *outPath, size_t outSize) {
 	if (!texName || !texName[0] || !outPath || outSize < 64u) return false;
+	const char *suffix = "A1R5G5B5";
+	InferMeshTextureFormat(texName, NULL, &suffix);
 	char mangled[160] = {};
 	size_t i = 0u;
 	for (; texName[i] && i + 1u < sizeof(mangled); ++i) {
 		mangled[i] = (texName[i] == '\\') ? '%' : texName[i];
 	}
 	mangled[i] = '\0';
-	std::snprintf(outPath, outSize, "data\\resources\\dxtntextures\\%s(0)A1R5G5B5.aya", mangled);
+	std::snprintf(outPath, outSize, "data\\resources\\dxtntextures\\%s(0)%s.aya", mangled, suffix);
 	return true;
 }
 
 bool PreloadRetailMeshTexture(const char *texName) {
-	if (!texName || !texName[0]) return false;
+	if (!texName || !texName[0] || !LT.GetDevice()) return false;
+	ETextureFormat fmt = TEXFMT_A1R5G5B5;
+	InferMeshTextureFormat(texName, &fmt, NULL);
 	for (CDXTexture *o = CDXTexture::mFirst; o; o = o->CTexture::mNext) {
-		if (stricmp(o->GetName(), texName) == 0 && o->mFormat == TEXFMT_A1R5G5B5 && o->mLevels == -1) {
+		if (stricmp(o->GetName(), texName) == 0 && o->mFormat == fmt &&
+		    o->mLevels == -1 && o->mTextures[0] != NULL) {
 			return true;
 		}
 	}
@@ -152,16 +236,21 @@ bool PreloadRetailMeshTexture(const char *texName) {
 	t->mScaleV = 1.0f;
 	t->mUnknown94 = -1;
 	t->mRefCount = 0;
-	t->mFormat = TEXFMT_A1R5G5B5;
-	t->mTexFormat = TEXFMT_A1R5G5B5;
+	t->mFormat = fmt;
+	t->mTexFormat = fmt;
+	t->mWidth = 0;
+	t->mHeight = 0;
+	t->mLossShift = 0;
+	t->mMipFilter = 1;
 	t->mLevels = -1;
 	t->mResourceLevels = 0;
 	t->mNumFrames = 1;
 	t->mPool = D3DPOOL_MANAGED;
 	t->mCompressible = 1;
 	t->mDisplayFormat = 0;
+	t->mFlags155 = 0;
 	t->mUnknown155b = 1;
-	t->mLit = (std::strstr(texName, "_lit") != NULL) ? TRUE : FALSE;
+	t->mLit = ContainsIgnoreCase(texName, "_lit") ? TRUE : FALSE;
 	const HRESULT hr = t->LoadFrame(0);
 	if (FAILED(hr) || !t->mTextures[0]) {
 		t->ForceDelete();
@@ -180,9 +269,14 @@ bool LoadRetailMeshFromStandaloneAya(const char *meshName, int32_t runtimeId) {
 	if (!meshName || !meshName[0]) return false;
 	if (CMesh::FindLoadedUnique(meshName) != NULL) return true;
 
+	int32_t safeId = runtimeId;
+	while (CMesh::GetMeshByResourceID(safeId) != NULL && safeId < runtimeId + 4096) {
+		++safeId;
+	}
+
 	uint8_t stub[336] = {};
 	unsigned stubLen = 0u;
-	if (!CeSandboxWorld::BuildMeshStubChunk(meshName, runtimeId, true,
+	if (!CeSandboxWorld::BuildMeshStubChunk(meshName, safeId, true,
 	                                        stub, sizeof(stub), &stubLen)) {
 		return false;
 	}
@@ -194,7 +288,7 @@ bool LoadRetailMeshFromStandaloneAya(const char *meshName, int32_t runtimeId) {
 	CChunkReader reader;
 	reader.Open(&mem);
 	CMesh *loaded = CMesh::Deserialize(&reader);
-	mem.Close();
+	reader.Close();
 	return loaded != NULL || CMesh::FindLoadedUnique(meshName) != NULL;
 }
 
@@ -236,11 +330,14 @@ void FinalizeHeightFieldLighting() {
 //   0 = grass (central valley), 1 = grey granite stone (cliffs, ridges & Citadel terrace),
 //   2 = pale coastal sand (shoreline & harbor seabed), 5 = dark basalt asphalt (roads,
 //   grand ramp, faction HQ aprons, and contested capture node pads).
-void BuildProceduralMixerMap(float sunX, float sunY, float sunZ) {
+bool BuildProceduralMixerMap(float sunX, float sunY, float sunZ) {
 	MIXERMAP.Destroy();
 	MIXERMAP.mSlots = new(MEMTYPE_MIXERMAP) SMixerSlot[MIXER_MAP_SLOTS];
 	MIXERMAP.mMap = new(MEMTYPE_MIXERMAP) UBYTE[MIXER_MAP_SIZE];
-	if (!MIXERMAP.mSlots || !MIXERMAP.mMap) return;
+	if (!MIXERMAP.mSlots || !MIXERMAP.mMap) {
+		MIXERMAP.Destroy();
+		return false;
+	}
 
 	for (int y = 0; y < CeSandboxWorld::kCells; ++y) {
 		UBYTE *row = MIXERMAP.mMap + y * CeSandboxWorld::kCells;
@@ -336,11 +433,16 @@ void BuildProceduralMixerMap(float sunX, float sunY, float sunZ) {
 			}
 		}
 	}
+	return true;
 }
 
 } // namespace
 
 extern "C" void PortCeLivingSandboxDropWorld(void) {
+	if (gWorld.arenaInstalled) {
+		MAP.mGeometryLoaded = FALSE;
+		MAP.mPropertiesLoaded = FALSE;
+	}
 	std::memset(&gWorld, 0, sizeof(gWorld));
 }
 
@@ -381,6 +483,34 @@ extern "C" bool PortCeLivingSandboxPreflightAndBuildWorld(void) {
 		return false;
 	}
 
+	// Verify standalone retail files for the Forseti Pulse Tank Factory HQ before level load.
+	for (unsigned i = 0; i < CeSandboxWorld::kForsetiHqTextureCount; ++i) {
+		char texPath[256] = {};
+		bool exists = false;
+		const char *texName = CeSandboxWorld::ForsetiHqTextureName(i);
+		if (!BuildTextureDiskPath(texName, texPath, sizeof(texPath)) ||
+		    !VerifyPackedAyaFile(texPath, &exists) || !exists) {
+			PortCeLivingSandboxSetMessage(
+				"Living Sandbox requires Forseti base resources from your retail install. Your career is unchanged.");
+			PortSessionLog(PORT_SESSION_GAME, true,
+			               "living sandbox preflight missing/corrupt Forseti HQ texture: %s", texPath);
+			return false;
+		}
+	}
+	for (unsigned i = 0; i < CeSandboxWorld::kForsetiHqMeshCount; ++i) {
+		char meshPath[128] = {};
+		bool exists = false;
+		const char *meshName = CeSandboxWorld::ForsetiHqMeshName(i);
+		std::snprintf(meshPath, sizeof(meshPath), "data\\resources\\meshes\\m_%s.aya", meshName);
+		if (!VerifyPackedAyaFile(meshPath, &exists) || !exists) {
+			PortCeLivingSandboxSetMessage(
+				"Living Sandbox requires Forseti base resources from your retail install. Your career is unchanged.");
+			PortSessionLog(PORT_SESSION_GAME, true,
+			               "living sandbox preflight missing/corrupt Forseti HQ mesh: %s", meshPath);
+			return false;
+		}
+	}
+
 	CeSandboxWorld::UnitSpawnSpec specs[CeSandboxWorld::kMaxActors] = {};
 	const unsigned specCount = CeSandboxWorld::BuildDefaultOrderOfBattle(specs, CeSandboxWorld::kMaxActors);
 	const CeSandboxWorld::WorldPlan plan = CeSandboxWorld::BuildDefaultWorldPlan(specs, specCount);
@@ -419,6 +549,9 @@ extern "C" bool PortCeLivingSandboxPreflightAndBuildWorld(void) {
 extern "C" void PortCeLivingSandboxInstallArena(void) {
 	if (!PortCeLivingSandboxActive()) return;
 
+	const UBYTE archiveSkyCube = MAP.mHFP.mUnknown18[0];
+	const UBYTE archiveWaterSet = MAP.mHFP.mUnknown18[5];
+
 	MAP.CHeightField::Shutdown();
 	MAP.mHeightData = new(MEMTYPE_HEIGHTFIELD) SWORD[CeSandboxWorld::kHeightSamples];
 	if (!MAP.mHeightData) {
@@ -435,8 +568,8 @@ extern "C" void PortCeLivingSandboxInstallArena(void) {
 
 	// Crisp coastal twilight-daylight atmosphere matching 700_res_PC.aya skybox
 	// with clear sightlines from the NW Sanctuary Citadel across the entire valley.
-	const UBYTE archiveSkyCube = MAP.mHFP.mUnknown18[0];
-	const UBYTE archiveWaterSet = MAP.mHFP.mUnknown18[5];
+	const UBYTE targetSkyCube = static_cast<UBYTE>(CeSandboxWorld::kSkyCubeIndex);
+	const UBYTE targetWaterSet = static_cast<UBYTE>(CeSandboxWorld::kWaterSetIndex);
 	std::memset(&MAP.mHFP, 0, sizeof(MAP.mHFP));
 	MAP.mHFP.Fog = 0xff6e84a2u;
 	MAP.mHFP.Sun = 0xfff0f2f8u;
@@ -444,12 +577,12 @@ extern "C" void PortCeLivingSandboxInstallArena(void) {
 	const DWORD sunReflect = 0xffe8f2ffu;
 	std::memcpy(&MAP.mHFP.mUnknown0c[0], &sunReflect, sizeof(sunReflect));
 	MAP.mHFP.Ambient = 0xff3c4c64u;
-	MAP.mHFP.mUnknown18[0] = archiveSkyCube ? archiveSkyCube : CeSandboxWorld::kSkyCubeIndex;
+	MAP.mHFP.mUnknown18[0] = targetSkyCube;
 	MAP.mHFP.mUnknown18[1] = 1;
 	MAP.mHFP.mUnknown18[2] = 129;
 	MAP.mHFP.mUnknown18[3] = 255;
 	MAP.mHFP.mUnknown18[4] = 0;
-	MAP.mHFP.mUnknown18[5] = archiveWaterSet;
+	MAP.mHFP.mUnknown18[5] = targetWaterSet;
 	MAP.mHFP.FogDensity = 0.0014f;
 	const DWORD waterCol = 0xff163e60u;
 	std::memcpy(&MAP.mHFP.mUnknown24[0], &waterCol, sizeof(waterCol));
@@ -459,15 +592,45 @@ extern "C" void PortCeLivingSandboxInstallArena(void) {
 	MAP.mHFP.SunPosZ = -0.51f;
 
 	FinalizeHeightFieldLighting();
-	BuildProceduralMixerMap(MAP.mHFP.SunPosX, MAP.mHFP.SunPosY, MAP.mHFP.SunPosZ);
+	RefreshProceduralMapExtents();
+	if (!BuildProceduralMixerMap(MAP.mHFP.SunPosX, MAP.mHFP.SunPosY, MAP.mHFP.SunPosZ)) {
+		gWorld.failed = true;
+		PortCeLivingSandboxSetMessage("Living Sandbox could not allocate terrain blend memory. Your career is unchanged.");
+		return;
+	}
 
-	ENGINE.SetKempyCube(CeSandboxWorld::kSkyCubeIndex);
-	ENGINE.SetWater(CeSandboxWorld::kWaterSetIndex);
+	// ENGINE.Deserialize -> MAP.Deserialize already loaded archiveSkyCube & archiveWaterSet.
+	// Avoid redundant SetKempyCube/SetWater calls (and release existing face textures / shaders /
+	// VBufTexture before switching) so transitioning in/out of Living Sandbox leaks zero resources.
+	CDXKempyCube *kc = EngineMediaAccess::KempyCube();
+	if (archiveSkyCube != targetSkyCube || (kc && !kc->mTextures[0])) {
+		if (kc) {
+			for (int i = 0; i < 5; ++i) {
+				if (kc->mTextures[i]) {
+					kc->mTextures[i]->Release();
+					kc->mTextures[i] = NULL;
+				}
+			}
+		}
+		ENGINE.SetKempyCube(targetSkyCube);
+	}
+	CDXWater *water = EngineMediaAccess::Water();
+	if (archiveWaterSet != targetWaterSet || (water && !water->mReflection)) {
+		if (water) {
+			water->DeleteDeviceObjects();
+			if (water->mVB) {
+				water->mVB->Release();
+				water->mVB = NULL;
+			}
+		}
+		ENGINE.SetWater(targetWaterSet);
+	}
 
 	MAP.mMapNumber = CeSandboxWorld::kMapId;
 	MAP.mGeometryLoaded = TRUE;
 	MAP.mPropertiesLoaded = TRUE;
 	MAP.InitQuickCollisionMap();
+	gWorld.arenaInstalled = true;
 
 	PortSessionLog(PORT_SESSION_GAME, false,
 	               "living sandbox theater installed: 512x512 multi-biome, water %.1f, citadel Z=%.1f",
@@ -477,6 +640,31 @@ extern "C" void PortCeLivingSandboxInstallArena(void) {
 extern "C" bool PortCeLivingSandboxPreloadMeshes(void) {
 	if (!PortCeLivingSandboxActive()) return true;
 	if (gWorld.failed) return false;
+
+	// Required standalone preload for Forseti Pulse Tank Factory HQ (fb_tank_factory.msh).
+	for (unsigned i = 0; i < CeSandboxWorld::kForsetiHqTextureCount; ++i) {
+		const char *texName = CeSandboxWorld::ForsetiHqTextureName(i);
+		if (!PreloadRetailMeshTexture(texName)) {
+			gWorld.failed = true;
+			PortCeLivingSandboxSetMessage(
+				"Living Sandbox could not load Forseti base textures. Your career is unchanged.");
+			PortSessionLog(PORT_SESSION_GAME, true,
+			               "living sandbox preload failed Forseti HQ texture: %s", texName ? texName : "");
+			return false;
+		}
+	}
+	for (unsigned i = 0; i < CeSandboxWorld::kForsetiHqMeshCount; ++i) {
+		const char *meshName = CeSandboxWorld::ForsetiHqMeshName(i);
+		const int32_t runtimeId = 916 + static_cast<int32_t>(i);
+		if (!LoadRetailMeshFromStandaloneAya(meshName, runtimeId)) {
+			gWorld.failed = true;
+			PortCeLivingSandboxSetMessage(
+				"Living Sandbox could not load Forseti base geometry. Your career is unchanged.");
+			PortSessionLog(PORT_SESSION_GAME, true,
+			               "living sandbox preload failed Forseti HQ mesh: %s", meshName ? meshName : "");
+			return false;
+		}
+	}
 
 	// Optional standalone preload of F.S. Venturer for Naval/Carrier Escalation.
 	// If any optional file is unavailable, degrade gracefully to FSV Marshall.

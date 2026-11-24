@@ -72,6 +72,7 @@ extern "C" void				PortCeCarrierClashLevelBegin(int level) __attribute__((weak))
 extern "C" void				PortCeCarrierClashLevelEnd(int level, int quit) __attribute__((weak));
 extern "C" void				PortCeCarrierClashTickPre() __attribute__((weak));
 extern "C" void				PortCeCarrierClashDrawHud(CPlayer *player, int viewpoint) __attribute__((weak));
+extern "C" void				PortCeCarrierClashDrawOverlay(void) __attribute__((weak));
 extern "C" void				PortCeCarrierClashUnitSpawn(CUnit *unit, CInitThing *init) __attribute__((weak));
 extern "C" void				PortCeCarrierClashUnitDestroyed(CUnit *unit) __attribute__((weak));
 extern "C" void				PortCeCarrierClashFilterSave(CCareer *career, void *dest) __attribute__((weak));
@@ -84,6 +85,7 @@ extern "C" bool				PortCeLivingSandboxKey(unsigned char key, bool repeat) __attr
 extern "C" void				PortCeLivingSandboxUnitSpawn(CUnit *unit, CInitThing *init) __attribute__((weak));
 extern "C" void				PortCeLivingSandboxUnitDestroyed(CUnit *unit) __attribute__((weak));
 extern "C" void				PortCeLivingSandboxFilterSave(CCareer *career, void *dest) __attribute__((weak));
+extern "C" void				PortCeMuspellCockpitLevelEnd(void) __attribute__((weak));
 
 static void CeHookGamepadBeginCycle() { PortCeGamepadBeginCycle(); }
 static void CeHookPaletteLevelEnd(int, int) { PortCePaletteClose(); }
@@ -221,6 +223,11 @@ static void CeHookCarrierClashDrawHud(CPlayer *player, int viewpoint)
 	if (PortCeCarrierClashDrawHud)
 		PortCeCarrierClashDrawHud(player, viewpoint);
 }
+static void CeHookCarrierClashDrawOverlay()
+{
+	if (PortCeCarrierClashDrawOverlay)
+		PortCeCarrierClashDrawOverlay();
+}
 static void CeHookCarrierClashUnitSpawn(CUnit *unit, CInitThing *init)
 {
 	if (PortCeCarrierClashUnitSpawn)
@@ -280,6 +287,11 @@ static void CeHookLivingSandboxSave(CeHookSaveTarget target, CCareer *career, ch
 	if (PortCeLivingSandboxFilterSave && CeHookSaveCareerValid(target, career, dest, size))
 		PortCeLivingSandboxFilterSave(career, dest);
 }
+static void CeHookMuspellCockpitLevelEnd(int, int)
+{
+	if (PortCeMuspellCockpitLevelEnd)
+		PortCeMuspellCockpitLevelEnd();
+}
 
 // ---- the table: per point, its handlers in the order they run ----
 // A row: {slot, "name", CE_HOOK_SIM or CE_HOOK_RENDER, CE_GATE_VERSION or CE_GATE_LAYER, CE_MODE_..., function},
@@ -308,6 +320,7 @@ static constexpr CeHookRow<CeHookLevelEndFn> kLevelEnd[] = {
 	{60, "entity_handles_level_end", CE_HOOK_SIM, CE_GATE_VERSION, CE_MODE_NONE, CeHookEntityHandlesLevelEnd},
 	{70, "carrier_clash_level_end", CE_HOOK_SIM, CE_GATE_VERSION, CE_MODE_NONE, CeHookCarrierClashLevelEnd},
 	{80, "living_sandbox_level_end", CE_HOOK_SIM, CE_GATE_VERSION, CE_MODE_NONE, CeHookLivingSandboxLevelEnd},
+	{90, "muspell_cockpit_level_end", CE_HOOK_SIM, CE_GATE_VERSION, CE_MODE_NONE, CeHookMuspellCockpitLevelEnd},
 	CE_HOOK_END
 };
 CE_HOOK_CHECK(kLevelEnd, CE_HOOK_SIM, CE_DISPATCH_ORDERED_BROADCAST, "level_end");
@@ -353,6 +366,7 @@ static constexpr CeHookRow<CeHookViewFn> kDrawHud[] = {
 CE_HOOK_CHECK(kDrawHud, CE_HOOK_RENDER, CE_DISPATCH_ORDERED_BROADCAST, "draw_hud");
 static constexpr CeHookRow<CeHookVoidFn> kDrawOverlay[] = {
 	{10, "editor_overlay", CE_HOOK_RENDER, CE_GATE_VERSION, CE_MODE_NONE, CeHookEditorRender},
+	{20, "carrier_clash_draw_overlay", CE_HOOK_RENDER, CE_GATE_LAYER, CE_MODE_NONE, CeHookCarrierClashDrawOverlay},
 	CE_HOOK_END
 };
 CE_HOOK_CHECK(kDrawOverlay, CE_HOOK_RENDER, CE_DISPATCH_ORDERED_BROADCAST, "draw_overlay");

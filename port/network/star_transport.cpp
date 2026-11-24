@@ -192,6 +192,7 @@ bool ValidMsgType(uint16_t raw) noexcept {
     case CeStarMsgType::Desync:
     case CeStarMsgType::Chat:
     case CeStarMsgType::PingReport:
+    case CeStarMsgType::Keepalive:
     case CeStarMsgType::Leave:
         return true;
     default:
@@ -972,6 +973,12 @@ void CeStarTransport::HandleAuthenticatedFrame(PeerSlot& slot, uint8_t channel,
         return;
     }
 
+    case CeStarMsgType::Keepalive: {
+        if (channel != kChannelAux) { RejectPacket(); return; }
+        if (!CeStarWire::SkipTrailingTlvs(body, body_len, pos)) { RejectPacket(); return; }
+        return;
+    }
+
     case CeStarMsgType::Leave: {
         if (channel != kChannelControl) { RejectPacket(); return; }
         uint16_t leaving_slot = 0, reason = 0;
@@ -1284,7 +1291,10 @@ void CeStarTransport::Poll(uint64_t now_ms, uint32_t event_budget) {
         }
     }
 
-    // Timeouts, live RTT updates, and periodic ping reports.
+    // Timeouts, live RTT updates, periodic keepalives, and ping reports.
+    const uint32_t keepalive_ms = (config_.silence_timeout_ms > 0)
+        ? std::max<uint32_t>(50u, std::min<uint32_t>(2000u, config_.silence_timeout_ms / 4u))
+        : 0u;
     if (config_.role == CeStarRole::Host) {
         // Expire unauthenticated pending peers (and promptly reap rejected closing peers).
         for (size_t i = 0; i < pending_peers_.size();) {
@@ -1322,6 +1332,18 @@ void CeStarTransport::Poll(uint64_t now_ms, uint32_t event_budget) {
                 last_ping_broadcast_ms_ = now_ms;
             }
         }
+        if (keepalive_ms > 0 &&
+            (last_keepalive_tx_ms_ == 0 ||
+             (now_ms >= last_keepalive_tx_ms_ &&
+              now_ms - last_keepalive_tx_ms_ >= keepalive_ms))) {
+            bool sent_any = false;
+            for (uint16_t s = 1; s <= config_.max_guests; ++s) {
+                if (!slots_[s].authenticated) continue;
+                if (SendFrameToSlot(slots_[s], kChannelAux, CeStarMsgType::Keepalive, nullptr, 0, false))
+                    sent_any = true;
+            }
+            if (sent_any) last_keepalive_tx_ms_ = now_ms;
+        }
     } else {
         auto& slot = slots_[0];
         if (slot.authenticated && slot.peer) {
@@ -1332,6 +1354,12 @@ void CeStarTransport::Poll(uint64_t now_ms, uint32_t event_budget) {
                 _ENetPeer* p = slot.peer;
                 HandleDisconnectPeer(p, static_cast<uint16_t>(CeStarError::Timeout));
                 enet_peer_reset(p);
+            } else if (keepalive_ms > 0 &&
+                       (last_keepalive_tx_ms_ == 0 ||
+                        (now_ms >= last_keepalive_tx_ms_ &&
+                         now_ms - last_keepalive_tx_ms_ >= keepalive_ms))) {
+                if (SendFrameToSlot(slot, kChannelAux, CeStarMsgType::Keepalive, nullptr, 0, false))
+                    last_keepalive_tx_ms_ = now_ms;
             }
         } else if (guest_connect_started_ && !host_lost_ && slot.peer) {
             const uint64_t ref = slot.connected_at_ms ? slot.connected_at_ms : created_at_ms_;
@@ -1375,17 +1403,21 @@ bool CeStarTransport::BroadcastInputBundle(uint32_t tick, const CeStarBitmask& a
     if (!active_mask.Encode(body)) return false;
     PutU16(body, static_cast<uint16_t>(size));
     PutBytes(body, data, size);
-    bool any = false;
-    bool all_ok = true;
+    bool any_ok = false;
     for (uint16_t s = 1; s <= config_.max_guests; ++s) {
         if (!slots_[s].authenticated) continue;
-        any = true;
-        if (!SendFrameToSlot(slots_[s], kChannelInput, CeStarMsgType::InputBundle,
-                             body.data(), body.size(), true))
-            all_ok = false;
+        if (SendFrameToSlot(slots_[s], kChannelInput, CeStarMsgType::InputBundle,
+                            body.data(), body.size(), true)) {
+            any_ok = true;
+        } else if (slots_[s].peer) {
+            // Drop only the failing/closing guest slot instead of aborting the whole 3P/4P match.
+            _ENetPeer* p = slots_[s].peer;
+            HandleDisconnectPeer(p, static_cast<uint16_t>(CeStarError::Io));
+            enet_peer_reset(p);
+        }
     }
-    if (any) enet_host_flush(host_);
-    return any && all_ok;
+    if (any_ok) enet_host_flush(host_);
+    return any_ok;
 }
 
 bool CeStarTransport::SendHash(uint32_t tick, uint64_t state_hash) {
@@ -1400,16 +1432,20 @@ bool CeStarTransport::SendHash(uint32_t tick, uint64_t state_hash) {
         if (ok) enet_host_flush(host_);
         return ok;
     }
-    bool any = false, all_ok = true;
+    bool any_ok = false;
     for (uint16_t s = 1; s <= config_.max_guests; ++s) {
         if (!slots_[s].authenticated) continue;
-        any = true;
-        if (!SendFrameToSlot(slots_[s], kChannelControl, CeStarMsgType::Hash,
-                             body.data(), body.size(), true))
-            all_ok = false;
+        if (SendFrameToSlot(slots_[s], kChannelControl, CeStarMsgType::Hash,
+                            body.data(), body.size(), true)) {
+            any_ok = true;
+        } else if (slots_[s].peer) {
+            _ENetPeer* p = slots_[s].peer;
+            HandleDisconnectPeer(p, static_cast<uint16_t>(CeStarError::Io));
+            enet_peer_reset(p);
+        }
     }
-    if (any) enet_host_flush(host_);
-    return any && all_ok;
+    if (any_ok) enet_host_flush(host_);
+    return any_ok;
 }
 
 bool CeStarTransport::BroadcastDesync(uint32_t tick, uint16_t ref_slot, uint16_t diverging_slot,

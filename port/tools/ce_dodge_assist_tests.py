@@ -132,7 +132,7 @@ def pieces(patched, with_patch):
 
 
 MODES = ['four-directions', 'chord-order', 'rebound-fore-aft', 'fore-aft-controls', 'binding-owners', 'key-right', 'key-left', 'pad-right', 'pad-left', 'tap-and-hold-alike', 'typed-equals-assisted', 'sweep', 'hazard', 'chain',
-         'old-history', 'hitch', 'slow', 'dash-time', 'pause-mid', 'pause-memory', 'two-players', 'ini-reload',
+         'old-history', 'hitch', 'slow', 'dash-time', 'pause-mid', 'pause-memory', 'two-players', 'ini-reload', 'refresh-all-pads',
          'air-refusal', 'idle-begin', 'air-retry', 'chaos', 'chaos-air', 'clock-restart', 'new-level', 'new-walker', 'typed-sweep', 'switch', 'buffer',
          'stick-threshold', 'window', 'rules', 'pause-want', 'other-actions', 'env-empty', 'dash-time-change', 'dash-time-range', 'dash-start', 'dash-start-retail', 'no-console-vars',
          'ini-quiet', 'two-players-shared-keyboard', 'key-unused-slot', 'power-start']
@@ -341,6 +341,7 @@ def main():
             ('setting-read-every-update', G, 'if (gSettingStale)\n\t{', 'gSettingStale = true;\n\tif (gSettingStale)\n\t{', 1, 'ini-reload'),
             ('cue-asks-ce-ini', G, 'return (gSetting >= 0 ? gSetting != 0 : SettingOn());', 'return SettingOn();', 1, 'ini-reload'),
             ('setting-never-read-again', G, 'if (!engine) gSettingStale = true;', '', 1, 'ini-reload'),
+            ('refresh-only-current-pad', G, 'for (int i = 0; i < kPads; ++i) gStale[i] = true;', 'gSettingStale = true;', 1, 'refresh-all-pads'),
             ('bound-key-used', G, 'return PortCeDodgeAssistKeyFree() ? PortCeDodgeBindingKey() : 0;', 'return PortCeDodgeBindingKey();', 1, 'gate-bound-key'),
             ('key-bound-once-used', G, 'b->mInput[i].mType == KEY_ON || b->mInput[i].mType == KEY_ONCE || b->mInput[i].mType == KEY_RELEASE',
              'b->mInput[i].mType == KEY_ON || b->mInput[i].mType == KEY_RELEASE', 1, 'gate-bound-key-once'),

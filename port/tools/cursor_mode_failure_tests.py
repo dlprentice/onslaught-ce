@@ -32,6 +32,7 @@ using HWND = void *;
 using D3DDEVTYPE = int;
 using SDL_WindowID = std::uint32_t;
 #define TRUE 1
+#define D3DSWAPEFFECT_DISCARD 1
 #define STDMETHODCALLTYPE
 #define PORT_LOG_PREFIX "[cursor-test] "
 #define PORT_SESSION_GAME 0
@@ -47,6 +48,7 @@ struct D3DPRESENT_PARAMETERS {
     HWND hDeviceWindow;
     int Windowed;
     UINT FullScreen_RefreshRateInHz, MultiSampleType, MultiSampleQuality, PresentationInterval;
+    UINT BackBufferCount, SwapEffect;
 };
 struct D3DDEVICE_CREATION_PARAMETERS { HWND hFocusWindow; };
 struct D3DADAPTER_IDENTIFIER9 {

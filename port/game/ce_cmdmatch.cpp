@@ -26,6 +26,7 @@
 #error The commander match requires weak symbol support for the network boot boundary
 #endif
 extern "C" int CE_BootRequested(void) __attribute__((weak));
+extern "C" int CE_SessionActive(void) __attribute__((weak));
 extern "C" int PortCeSoloSkirmishActive(void) __attribute__((weak));
 
 namespace
@@ -55,7 +56,8 @@ bool CeCmdMatch()
 	const bool solo = (PortCeSoloSkirmishActive && PortCeSoloSkirmishActive()) != 0;
 	const int curLevel = GAME.GetCurrentLevel();
 	const bool cliConsumed = CeCmdCliLevelCheck(gCliLatch, CLIPARAMS.mLevelNo, curLevel);
-	return CeCmdMatchRule(CE_BootRequested && CE_BootRequested(), GAME.IsMultiplayer() != FALSE, GAME.GetNPlayers(), CLIPARAMS.mLevelNo, curLevel, solo, cliConsumed);
+	const bool netActive = (CE_BootRequested && CE_BootRequested()) || (CE_SessionActive && CE_SessionActive());
+	return CeCmdMatchRule(netActive, GAME.IsMultiplayer() != FALSE, GAME.GetNPlayers(), CLIPARAMS.mLevelNo, curLevel, solo, cliConsumed);
 }
 
 void CeCmdMatchUpdate()
@@ -70,7 +72,7 @@ bool PortCeOneScreenMatch() { return gScreenSet; }
 
 bool PortCeAudioSingleListener()
 {
-	return gScreenSet || !GAME.IsMultiplayer() || (CE_BootRequested && CE_BootRequested());
+	return gScreenSet || !GAME.IsMultiplayer() || (CE_BootRequested && CE_BootRequested()) || (CE_SessionActive && CE_SessionActive());
 }
 
 void CeCmdMatchLevelEnd()

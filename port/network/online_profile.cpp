@@ -172,15 +172,8 @@ bool EnsureWindowsUserDir(const char* user_dir, std::wstring& out_wide, std::str
         SetError(error_out, "invalid user directory path");
         return false;
     }
-    bool already_exists = false;
-    if (!CeWinAcl::CreatePrivateDirectory(out_wide, &already_exists)) {
-        if (!already_exists) {
-            SetError(error_out, "failed to create private user directory");
-            return false;
-        }
-    }
-    if (!CeWinAcl::CheckPathComponentsNoReparse(out_wide)) {
-        SetError(error_out, "user directory path contains reparse point or is not a directory");
+    if (!CeWinAcl::EnsurePrivateDirectoryRecursive(out_wide)) {
+        SetError(error_out, "failed to create or validate private user directory");
         return false;
     }
     return true;
@@ -241,7 +234,8 @@ bool ReadTextFileWin(const std::wstring& dir_wide, const std::string& leaf_ascii
     BY_HANDLE_FILE_INFORMATION info{};
     if (GetFileType(file.value) != FILE_TYPE_DISK || !GetFileInformationByHandle(file.value, &info))
         return false;
-    if ((info.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DEVICE)) != 0 ||
+    if ((info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0 ||
+        !CeWinAcl::IsAllowedReparseHandle(file.value, info.dwFileAttributes) ||
         info.nFileSizeHigh != 0 || info.nFileSizeLow > kMaxIniBytes)
         return false;
     out_text.resize(info.nFileSizeLow);
@@ -275,11 +269,27 @@ bool OpenOrCreatePosixUserDir(const char* user_dir, ScopedFd& out_fd, std::strin
         SetError(error_out, "invalid user directory path");
         return false;
     }
-    if (mkdir(user_dir, 0700) != 0 && errno != EEXIST) {
-        SetError(error_out, "failed to create user directory");
-        return false;
+    std::string clean(user_dir);
+    while (clean.size() > 1 && clean.back() == '/') clean.pop_back();
+    // Create missing parent directories recursively (supports symlinked OS ancestors like /home -> /var/home).
+    size_t pos = (clean[0] == '/') ? 1 : 0;
+    while (pos < clean.size()) {
+        size_t slash = clean.find('/', pos);
+        const bool is_leaf = (slash == std::string::npos);
+        const std::string prefix = is_leaf ? clean : clean.substr(0, slash);
+        if (!prefix.empty()) {
+            const mode_t mode = is_leaf ? 0700 : 0755;
+            if (mkdir(prefix.c_str(), mode) != 0 && errno != EEXIST && errno != EISDIR) {
+                SetError(error_out, "failed to create user directory");
+                return false;
+            }
+        }
+        if (is_leaf) break;
+        pos = slash + 1;
+        while (pos < clean.size() && clean[pos] == '/') ++pos;
     }
-    out_fd.fd = open(user_dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+    // Still refuse a symlinked final profile directory via O_NOFOLLOW.
+    out_fd.fd = open(clean.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
     if (out_fd.fd < 0) {
         SetError(error_out, "failed to open user directory");
         return false;
@@ -348,8 +358,22 @@ bool PublishPrivateFilePosix(int dir_fd, const char* leaf, const void* data, siz
         if (replace) {
             ok = renameat(dir_fd, temp.c_str(), dir_fd, leaf) == 0;
         } else {
-            ok = linkat(dir_fd, temp.c_str(), dir_fd, leaf, 0) == 0;
-            unlinkat(dir_fd, temp.c_str(), 0);
+            if (linkat(dir_fd, temp.c_str(), dir_fd, leaf, 0) == 0) {
+                ok = true;
+                unlinkat(dir_fd, temp.c_str(), 0);
+            } else {
+                const int err = errno;
+                if (err == EPERM || err == ENOTSUP || err == EOPNOTSUPP || err == EXDEV) {
+                    // Filesystem without hardlink support: fail closed if target already exists, then rename.
+                    if (faccessat(dir_fd, leaf, F_OK, AT_SYMLINK_NOFOLLOW) != 0 && errno == ENOENT) {
+                        ok = renameat(dir_fd, temp.c_str(), dir_fd, leaf) == 0;
+                    } else {
+                        ok = false;
+                    }
+                } else {
+                    ok = false;
+                }
+            }
         }
         if (ok) (void)fsync(dir_fd);
     }
@@ -544,7 +568,7 @@ bool CeOnlineProfile::LoadSettingsFile(std::string* error_out) {
 #ifdef _WIN32
     std::wstring wide_dir;
     if (!CeWinAcl::NormalizeAbsolutePath(user_dir_.c_str(), wide_dir) ||
-        !CeWinAcl::CheckPathComponentsNoReparse(wide_dir)) {
+        !CeWinAcl::CheckFinalDirectoryNoReparse(wide_dir)) {
         SetError(error_out, "invalid user directory");
         return false;
     }
@@ -697,7 +721,7 @@ bool CeOnlineProfile::SaveSettings(std::string* error_out) const {
 #ifdef _WIN32
     std::wstring wide_dir;
     if (!CeWinAcl::NormalizeAbsolutePath(user_dir_.c_str(), wide_dir) ||
-        !CeWinAcl::CheckPathComponentsNoReparse(wide_dir)) {
+        !CeWinAcl::CheckFinalDirectoryNoReparse(wide_dir)) {
         SetError(error_out, "invalid user directory");
         return false;
     }

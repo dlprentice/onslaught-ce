@@ -107,7 +107,7 @@ export default {
 
       const now = nowSeconds();
       const permit = value.permit;
-      const maxTtl = Number(env.CE_TURN_TTL_SECONDS || 900);
+      const maxTtl = Number(env.CE_TURN_TTL_SECONDS || 3600);
       requireCond(integer(maxTtl) && maxTtl >= 60 && maxTtl <= MAX_TURN_TTL_SECONDS && permit.ttl <= maxTtl,
         503, "service_unavailable", "TURN TTL exceeds policy.");
       requireCond(permit.issued_at <= now && now < permit.lease_until && now < permit.expires_at,

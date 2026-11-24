@@ -230,6 +230,8 @@ private:
 	float	mWantAt, mFirstAt, mLastX, mLastNow;
 	float	mStart[2];			// when each side's full push began (0 left, 1 right), by the game's clock
 	float	mSeen[2];			// how far the player pushed toward each side during this update
+public:
+	void ClearWant() { mWant = 0; mWantAt = 0.f; }
 };
 // Each axis has its own real input history. Only one may synthesize a gesture
 // at a time; a diagonal held across frames does not turn into a second dodge.
@@ -277,9 +279,19 @@ public:
 		Update x = u, y = u;
 		x.mDodgeDown = u.mDodgeDown && axis == 1;
 		y.mDodgeDown = u.mDodgeDown && axis == 2;
+		if (Assist::Waiting() || Assist::Owning())
+			mFore.ClearWant();
+		else if (mFore.Waiting() || mFore.Owning())
+			Assist::ClearWant();
 		Tap depth[kMaxTaps];
 		const int lateralCount = Assist::Step(x, out);
+		if (lateralCount > 0 || Assist::Waiting() || Assist::Owning()) {
+			mFore.ClearWant();
+			y.mDodgeDown = false;
+		}
 		const int depthCount = mFore.Step(y, depth);
+		if (depthCount > 0 || mFore.Waiting() || mFore.Owning())
+			Assist::ClearWant();
 		if (depthCount) {
 			for (int i = 0; i < depthCount; ++i)
 				out[i] = Tap{2 * depth[i].mSide, depth[i].mHard};

@@ -211,7 +211,7 @@ def main() -> int:
             'unreadable-row-white': ('editor-lifecycle.private.inc', 'gEditorFileKinds[index] = !document ? FileUnreadable :', 'gEditorFileKinds[index] = !document ? FileOpens :'),
             'every-row-grey': ('editor-lifecycle.private.inc', 'return gEditorFileKinds[index] != FileOpens;', 'return true;'),
             'career-fence-released-in-test': ('editor-lifecycle.private.inc', 'return gEditorRequested;', 'return gEditorRequested && gEditorPhase != Playing;'),
-            'return-clears-player-start-tool': ('editor-lifecycle.private.inc', '    if (filename) {\n        gEditorChoosingReach=false;\n        gEditorChoosingPlayerStart=false;\n    }', '    gEditorChoosingReach=false;\n    gEditorChoosingPlayerStart=false;'),
+            'return-keeps-stale-player-start-tool': ('editor-lifecycle.private.inc', '    gEditorChoosingReach=false;\n    gEditorChoosingPlayerStart=false;', '    if (filename) {\n        gEditorChoosingReach=false;\n        gEditorChoosingPlayerStart=false;\n    }'),
             'play-ignores-missing-start-support': ('editor-lifecycle.private.inc', 'if (fit != StartFits) {', 'if (false) {'),
             'covered-start-counts-as-support': ('editor-lifecycle.private.inc', '        over.mDistToImpact < above - 0.5f) return StartCovered;', '        over.mDistToImpact < above - 0.5f) return StartFits;'),
             'reload-ignores-missing-start-support': ('editor-lifecycle.private.inc', 'checked ? EditorPlayerStartFit(used, authored.enabled) : StartFits', 'checked && used.x != used.x && authored.enabled ? StartNoFooting : StartFits'),

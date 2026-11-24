@@ -343,7 +343,7 @@ int PortCeProjectLaunchLevel() noexcept {
         Fail("The project launch prototype is currently available on Linux only."); return -1;
 #else
         state.project = Decode(ReadProject());
-        if (state.project.reach.enabled) { Fail("Open this reach-point project in the Map Editor and choose Test Project."); return -1; }
+        if (state.project.reach.enabled) { Fail("Open this reach-point project in the Map Editor and choose Play Draft."); return -1; }
         state.message = "Linked project selected; validating the installed map.";
         std::fprintf(stderr,"CE project: existing-object placement; career reads, writes and progression are disabled; authored source text is not executed.\n"); return state.project.level;
 #endif
@@ -712,7 +712,7 @@ bool PortCeProjectApplyPlayerStart(int playerNumber, bool inverted, float& x, fl
     if (!PortCeProjectRequested()) return false;
     const State& state = Current();
     const CeProjectPlayerStart& start = state.project.playerStart;
-    if (!state.complete || state.failed || !start.enabled) return false;
+    if (!state.began || state.complete || state.failed || !start.enabled) return false;
     x = start.x; y = start.y; z = start.z;
     return true;
 }

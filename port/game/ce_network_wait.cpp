@@ -25,6 +25,7 @@
 #include "renderinfo.h"
 #include "ce_network_session.h"
 #include "ce_network_stl.h"
+#include "ce_online_match.h"
 #include "../network/ice_game.h"
 #include "../platform/common/ce_netlobby.h"
 
@@ -37,6 +38,12 @@
 extern bool	gInFrontEnd;				// src/FrontEnd.cpp: the fonts' front-end scale
 extern "C" int PortWriteFrameTo(IDirect3DDevice9 *dev, const char *path);	// d3d9hooks.cpp
 extern "C" void PortCeNetRingMousePoint(float x, float y, int *menuX, int *menuY);	// window.cpp
+extern "C" int PortCeOnlineMatchActive(void) __attribute__((weak));
+extern "C" int PortCeOnlineMatchSlotCount(void) __attribute__((weak));
+extern "C" int PortCeOnlineMatchLocalSlot(void) __attribute__((weak));
+extern "C" int PortCeOnlineMatchSlotIsHuman(int slot) __attribute__((weak));
+extern "C" int PortCeOnlineMatchSlotLabel(int sim_slot, char *out, size_t cap) __attribute__((weak));
+extern "C" int PortCeOnlineMatchGetTicket(CE_OnlineMatchTicket *out_ticket) __attribute__((weak));
 void	PortCeNetDrawSlot(float x, float y, bool present);	// ce_network_lobby_slots.cpp
 
 namespace {
@@ -138,7 +145,48 @@ bool		sLeave = false;			// Leave was chosen
 bool		sPressed = false;		// a left button went down on the row
 float		sDrawn = -1.f;
 IDirect3DTexture9	*sFrame = NULL;	// the lobby's kept frame
+IDirect3DDevice9	*sFrameDevice = NULL;	// owning D3D9 device for sFrame
+unsigned char		*sFrameRgb = NULL;	// kept RGB bytes for recreating sFrame across device change
 unsigned	sFrameW = 0, sFrameH = 0;
+
+void	ReleaseFrameTexture()
+{
+	if (sFrame)
+	{
+		sFrame->Release();
+		sFrame = NULL;
+	}
+	sFrameDevice = NULL;
+}
+
+void	EnsureFrameTexture(IDirect3DDevice9 *dev)
+{
+	if (!dev || !sFrameRgb || !sFrameW || !sFrameH)
+		return;
+	if (sFrame && sFrameDevice == dev)
+		return;
+	ReleaseFrameTexture();
+	IDirect3DTexture9 *tex = NULL;
+	D3DLOCKED_RECT lr;
+	if (SUCCEEDED(dev->CreateTexture(sFrameW, sFrameH, 1, 0, D3DFMT_X8R8G8B8, D3DPOOL_MANAGED, &tex, NULL)) &&
+		SUCCEEDED(tex->LockRect(0, &lr, NULL, 0)))
+	{
+		for (unsigned y = 0; y < sFrameH; y++)
+		{
+			unsigned *row = (unsigned *)((unsigned char *)lr.pBits + y * lr.Pitch);
+			const unsigned char *in = sFrameRgb + size_t(y) * sFrameW * 3;
+			for (unsigned x = 0; x < sFrameW; x++, in += 3)
+				row[x] = 0xff000000u | (unsigned(in[0]) << 16) | (unsigned(in[1]) << 8) | in[2];
+		}
+		tex->UnlockRect(0);
+		sFrame = tex;
+		sFrameDevice = dev;
+	}
+	else if (tex)
+	{
+		tex->Release();
+	}
+}
 
 bool	OnRow(float x, float y)
 {
@@ -147,45 +195,40 @@ bool	OnRow(float x, float y)
 	return sMenu && mx >= 0 && mx < 640 && float(my) >= sMenu->RowTop() && float(my) < sMenu->RowBottom();
 }
 
-// The kept frame, from the lobby's file into a texture, before the level loads (its buffer is freed at once).
+// The kept frame, from the lobby's file into a texture, before the level loads (recreated if D3D9 device changes).
 void	Prepare()
 {
-	unsigned w = 0, h = 0;
-	unsigned char *rgb = NULL;
-	if (sFrame || !CE_LobbyWaitingFrameTake(&w, &h, &rgb))
+	if (sFrameRgb)
 	{
-		if (!sFrame)
-			fprintf(stderr, "onslaught-ce: co-op: no lobby frame was kept; the waiting screen draws on black\n");
+		EnsureFrameTexture(LT.GetDevice());
 		return;
 	}
-	IDirect3DDevice9 *dev = LT.GetDevice();
-	IDirect3DTexture9 *tex = NULL;
-	D3DLOCKED_RECT lr;
-	if (dev && SUCCEEDED(dev->CreateTexture(w, h, 1, 0, D3DFMT_X8R8G8B8, D3DPOOL_MANAGED, &tex, NULL)) &&
-		SUCCEEDED(tex->LockRect(0, &lr, NULL, 0)))
+	unsigned w = 0, h = 0;
+	unsigned char *rgb = NULL;
+	if (!CE_LobbyWaitingFrameTake(&w, &h, &rgb))
 	{
-		for (unsigned y = 0; y < h; y++)
-		{
-			unsigned *row = (unsigned *)((unsigned char *)lr.pBits + y * lr.Pitch);
-			const unsigned char *in = rgb + size_t(y) * w * 3;
-			for (unsigned x = 0; x < w; x++, in += 3)
-				row[x] = 0xff000000u | (unsigned(in[0]) << 16) | (unsigned(in[1]) << 8) | in[2];
-		}
-		tex->UnlockRect(0);
-		sFrame = tex; sFrameW = w; sFrameH = h;
+		fprintf(stderr, "onslaught-ce: co-op: no lobby frame was kept; the waiting screen draws on black\n");
+		return;
+	}
+	sFrameRgb = rgb;
+	sFrameW = w;
+	sFrameH = h;
+	EnsureFrameTexture(LT.GetDevice());
+	if (sFrame)
 		fprintf(stderr, "onslaught-ce: co-op: the lobby's last frame is kept for the waiting screen (%ux%u)\n", w, h);
-	}
 	else
-	{
-		if (tex)
-			tex->Release();
 		fprintf(stderr, "onslaught-ce: co-op: the lobby's last frame could not be made a texture; the waiting screen draws on black\n");
-	}
-	free(rgb);
 }
 
 void	DrawFrame()
 {
+	IDirect3DDevice9 *dev = LT.GetDevice();
+	if (!dev)
+		return;
+	if (sFrame && sFrameDevice != dev)
+		ReleaseFrameTexture();
+	if (!sFrame && sFrameRgb)
+		EnsureFrameTexture(dev);
 	if (!sFrame)
 		return;
 	struct SVertex { float x, y, z, rhw, u, v; };
@@ -229,6 +272,19 @@ void	PageStates()
 
 const char	*WaitRouteText(bool here, DWORD *colour)
 {
+	if (PortCeOnlineMatchActive && PortCeOnlineMatchActive())
+	{
+		CE_OnlineMatchTicket ticket = {};
+		const bool haveTicket = PortCeOnlineMatchGetTicket && PortCeOnlineMatchGetTicket(&ticket) != 0;
+		const bool relayOnly = haveTicket && ticket.require_relay != 0;
+		if (here)
+		{
+			*colour = kGood;
+			return relayOnly ? "Connected via Relay" : "Connected (Online)";
+		}
+		*colour = kWhite;
+		return relayOnly ? "Online Match: Connecting via TURN" : "Online Match: Connecting (P2P / TURN)";
+	}
 	if (!CE_NetGameIceRequested())
 	{
 		*colour = here ? kGood : kWhite;
@@ -277,32 +333,81 @@ void	Draw(int mode, float now)
 	gInFrontEnd = true;			// the fonts' front-end scale, as the lobby page has them
 	// The slots' states, where the lobby shows them (the kept frame holds the slots and their captions; without it the
 	// captions are drawn here): this player is ready; the friend's state is the pulse until the friend is connected.
-	const bool host = CE_LockstepLocalPlayer() == 0, here = mode != CE_WAIT_FRIEND;
-	for (int slot = 0; slot < 2; slot++)
+	const bool online = PortCeOnlineMatchActive && PortCeOnlineMatchActive() != 0;
+	const bool here = mode != CE_WAIT_FRIEND;
+	if (online)
 	{
-		const float sx = slot ? kSlotRightX : kSlotLeftX;
-		const bool you = (slot == 0) == host;
-		if (!sFrame)
+		int slotCount = PortCeOnlineMatchSlotCount ? PortCeOnlineMatchSlotCount() : 2;
+		if (slotCount < 2) slotCount = 2;
+		if (slotCount > 4) slotCount = 4;
+		const int localSlot = PortCeOnlineMatchLocalSlot ? PortCeOnlineMatchLocalSlot() : (int)CE_LockstepLocalPlayer();
+		static const float kX2[2] = {250.f, 390.f};
+		static const float kX3[3] = {180.f, 320.f, 460.f};
+		static const float kX4[4] = {135.f, 258.f, 382.f, 505.f};
+		const float *xs = (slotCount == 2) ? kX2 : (slotCount == 3 ? kX3 : kX4);
+		for (int slot = 0; slot < slotCount; slot++)
 		{
-			LinesAt(slot ? "Player 2" : "Player 1", sx, kSlotY - 38.f, 0xffa8a8a8);
-			LinesAt(you ? "You" : "Your Friend", sx, kSlotY + 26.f, kWhite);
+			const float sx = xs[slot];
+			const bool you = (slot == localSlot);
+			const bool human = !PortCeOnlineMatchSlotIsHuman || PortCeOnlineMatchSlotIsHuman(slot) != 0;
+			char hdr[16];
+			snprintf(hdr, sizeof hdr, "Player %d", slot + 1);
+			char label[32] = {};
+			if (!PortCeOnlineMatchSlotLabel || !PortCeOnlineMatchSlotLabel(slot, label, sizeof label) || !label[0])
+				snprintf(label, sizeof label, "%s", you ? "You" : (human ? "Player" : "AI Pilot"));
+			else if (strlen(label) > 14)
+				label[14] = 0;
+			LinesAt(hdr, sx, kSlotY - 38.f, 0xffa8a8a8);
+			LinesAt(label, sx, kSlotY + 26.f, kWhite);
+			if (you || !human || here)
+				LinesAt(human ? "Ready" : "AI", sx, kSlotY + 44.f, kGood);
+			else
+			{
+				const float width = LinesAt("Starting", sx - 9.f, kSlotY + 44.f, kWhite);
+				static WCHAR dots[4][4] = {L"", L".", L"..", L"..."};
+				PLATFORM.Font(FONT_SMALL)->DrawTextWithShadow(sx - 9.f + width * 0.5f, kSlotY + 44.f, kWhite,
+															  dots[1 + int(now * 3.f) % 3], 0, 0, 1.f, 1.f);
+			}
 		}
-		if (you || here)
-			LinesAt("Ready", sx, kSlotY + 44.f, kGood);
-		else
-		{
-			// "Starting" stays put and its three dots fill in turn, so a long wait never looks like a stopped game.
-			const float width = LinesAt("Starting", sx - 9.f, kSlotY + 44.f, kWhite);
-			static WCHAR dots[4][4] = {L"", L".", L"..", L"..."};
-			PLATFORM.Font(FONT_SMALL)->DrawTextWithShadow(sx - 9.f + width * 0.5f, kSlotY + 44.f, kWhite,
-														  dots[1 + int(now * 3.f) % 3], 0, 0, 1.f, 1.f);
-		}
+		const char *waitMsg = here
+			? "All players are here. Starting the match."
+			: (slotCount > 2
+				? "Waiting for the other players to start. On a slower PC this can take a minute."
+				: "Waiting for the other player to start. On a slower PC this can take a minute.");
+		const float afterWait = Lines(waitMsg, kSlotY + 72.f, kWhite);
+		DWORD routeColour = kWhite;
+		const char *route = WaitRouteText(here, &routeColour);
+		Lines(route, afterWait + 4.f, routeColour);
 	}
-	const float afterWait = Lines(here ? "Your friend is here. Starting the game." :
-		  "Waiting for your friend's game to start. On a slower PC this can take a minute.", kSlotY + 72.f, kWhite);
-	DWORD routeColour = kWhite;
-	const char *route = WaitRouteText(here, &routeColour);
-	Lines(route, afterWait + 4.f, routeColour);
+	else
+	{
+		const bool host = CE_LockstepLocalPlayer() == 0;
+		for (int slot = 0; slot < 2; slot++)
+		{
+			const float sx = slot ? kSlotRightX : kSlotLeftX;
+			const bool you = (slot == 0) == host;
+			if (!sFrame)
+			{
+				LinesAt(slot ? "Player 2" : "Player 1", sx, kSlotY - 38.f, 0xffa8a8a8);
+				LinesAt(you ? "You" : "Your Friend", sx, kSlotY + 26.f, kWhite);
+			}
+			if (you || here)
+				LinesAt("Ready", sx, kSlotY + 44.f, kGood);
+			else
+			{
+				// "Starting" stays put and its three dots fill in turn, so a long wait never looks like a stopped game.
+				const float width = LinesAt("Starting", sx - 9.f, kSlotY + 44.f, kWhite);
+				static WCHAR dots[4][4] = {L"", L".", L"..", L"..."};
+				PLATFORM.Font(FONT_SMALL)->DrawTextWithShadow(sx - 9.f + width * 0.5f, kSlotY + 44.f, kWhite,
+															  dots[1 + int(now * 3.f) % 3], 0, 0, 1.f, 1.f);
+			}
+		}
+		const float afterWait = Lines(here ? "Your friend is here. Starting the game." :
+			  "Waiting for your friend's game to start. On a slower PC this can take a minute.", kSlotY + 72.f, kWhite);
+		DWORD routeColour = kWhite;
+		const char *route = WaitRouteText(here, &routeColour);
+		Lines(route, afterWait + 4.f, routeColour);
+	}
 	if (mode != CE_WAIT_PRERUN)
 	{
 		const bool options = CPauseMenu::mOptionsPage;
@@ -392,11 +497,10 @@ extern "C" int CE_SessionGameWaitFrame(int mode)
 	{
 		sShown = sLeave = sPressed = false;
 		sDrawn = -1.f;
-		if (sFrame)
-		{
-			sFrame->Release();
-			sFrame = NULL;
-		}
+		ReleaseFrameTexture();
+		free(sFrameRgb);
+		sFrameRgb = NULL;
+		sFrameW = sFrameH = 0;
 		return 0;
 	}
 	if (!sMenu)

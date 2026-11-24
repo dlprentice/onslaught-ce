@@ -47,9 +47,10 @@ public:
         size_t i=0; for(;i+1<sizeof(label)/sizeof(*label) && line[i];++i) label[i]=(unsigned char)line[i]; label[i]=0;
         return label;
     }
-    int GetHeight() { return 36; }
+    int GetHeight() { return 18; }
     void Render(float x,float y,BOOL selected) {
         CMenuItem::Render(x,y,selected);
+        if (!selected && owner != this && !(reverseConflict && reverseOwner == action)) return;
         char key[32]{},hint[94]{};
         PortCeDodgeBindingName(PortCeActionKey(action),key,sizeof(key));
         if(owner == this)
@@ -58,7 +59,7 @@ public:
             snprintf(hint,sizeof(hint),"Press Esc to keep your previous key.");
         else if(!assist)
             snprintf(hint,sizeof(hint),"%s",action==CeControlAction::Dodge ? "Turn on Dodge Button in CE Settings to use it." :
-				"Enable this experimental feature in ce.ini to use it.");
+				"Turn on this feature in Experimental Features to use it.");
         else if(const char *used=PortCeActionConflict(action, PortCeActionKey(action)))
             snprintf(hint,sizeof(hint),"%s uses this key. Choose another for %s.", used, PortCeActionLabel(action));
         else
@@ -66,7 +67,7 @@ public:
 				action==CeControlAction::TakeUnit ? "Aim at a friendly unit and press %s." : "Press %s to open or leave Commander.", key);
         WCHAR text[96]{};
         for(size_t i=0;hint[i] && i+1<sizeof(text)/sizeof(*text);++i) text[i]=(unsigned char)hint[i];
-        CMenuItem::Render(x,y+16.f,FALSE,0xffd7dbb0,text);
+        CMenuItem::Render(x,454.f,FALSE,0xffd7dbb0,text);
     }
     bool TakesInput() { return owner==this; }
     bool IsExpanded() { return owner==this; }

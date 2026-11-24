@@ -8,6 +8,8 @@ enum Phase { Idle, Playing, Finished, Missing };
 struct State {
     HBINK film;
     IDirect3DTexture9 *texture;
+    IDirect3DDevice9 *textureDevice;
+    uint64_t textureDeviceGen;
     unsigned int bitmapW, bitmapH, frame;
     Phase phase;
     bool inRoom, atConsole, captured, inDoorway, exhausted, fireHeld;
@@ -23,7 +25,7 @@ struct State {
     bool padActive, mouseSeen, mouseSeqSeen;
     int lastMouseX, lastMouseY;
     unsigned lastMouseSeq;
-    State() : film(0), texture(0), bitmapW(0), bitmapH(0), frame(0),
+    State() : film(0), texture(0), textureDevice(0), textureDeviceGen(0), bitmapW(0), bitmapH(0), frame(0),
         phase(Idle), inRoom(false), atConsole(false), captured(false),
         inDoorway(false), exhausted(false), fireHeld(false),
         catalogueLoaded(false), firstPlayable(true), playing(-1), controls(), output(),
@@ -90,6 +92,8 @@ void CinemaClose(Cinema::Phase next) {
         CeMuseumFilm::Closed(&film, CinemaClock(), &duck);
     }
     if (s.texture) { s.texture->Release();s.texture=0; }
+    s.textureDevice=0;
+    s.textureDeviceGen=0;
     s.frame=0;s.bitmapW=s.bitmapH=0;s.exhausted=false;s.phase=next;
     s.playing = -1;
 }
@@ -125,21 +129,43 @@ void CinemaShell(bool planned, float floor, float height) {
         for(unsigned i=0;i<5;++i) box(kDoorX-.58f,kDoorY-2.15f+1.05f*i,.08f,.17f,5.31f,.24f,kLight,kLight);
     }
     const float roof = planned && height > 0 ? (height > 9.5f ? height : 9.5f) : 0;
-    g.current = kMatCinemaWall;
-    box(kRight,(kFront+kBack)*.5f,.33f,(kBack-kFront)*.5f,0,roof ? roof : 6.8f,kWall,kWallCap);
-    box((kLeft+kRight)*.5f,kFront,(kRight-kLeft)*.5f,.32f,0,roof ? roof : 7.1f,kWall,kWallCap);
-    // In Grand Mode the Concept Art Gallery covers y [10..28] while the Screening Room spans [7..29];
-    // close the short West wall extensions above and below the Concept Art Gallery footprint cleanly.
-    if (gGrandMode) {
-        box(kLeft, kFront + 1.5f, 0.32f, 1.55f, 0, roof, kWall, kWallCap);
-        box(kLeft, kBack - 0.5f,  0.32f, 0.55f, 0, roof, kWall, kWallCap);
+    if (gGrandMode && roof > 0.0f) {
+        // In Grand Mode clad the Screening Room's exposed exterior walls in sunlit coastal limestone
+        // matching the Concept Art Gallery (no black exterior slab visible from the Coastal Courtyard),
+        // keeping dark acoustic panelling strictly on the interior theater lining.
+        const float wall = CeMuseumExhibition::kWallHalf;
+        g.current = kMatCinemaWall;
+        // Inner dark acoustic theater lining (East, South, West returns inside x > kLeft + wall)
+        box(kRight - 0.16f, (kFront + kBack) * 0.5f, 0.16f, (kBack - kFront) * 0.5f - 0.16f, 0, roof, kWall, kWallCap);
+        box((kLeft + kRight) * 0.5f, kFront + 0.16f, (kRight - kLeft) * 0.5f - 0.16f, 0.16f, 0, roof, kWall, kWallCap);
+        // Outer coastal limestone facade cladding on the exposed South (y = 7.0) and East (x = 56.0) faces
+        g.current = kMatWall;
+        box((kLeft + kRight) * 0.5f, kFront - 0.18f, (kRight - kLeft) * 0.5f + 0.32f, 0.18f, 0, roof, 0xfff5f1e8, 0xfff8f4eb);
+        box(kRight + 0.18f, (kFront + kBack) * 0.5f, 0.18f, (kBack - kFront) * 0.5f + 0.32f, 0, roof, 0xfff5f1e8, 0xfff8f4eb);
+        // Matching classical exterior cornice & brushed-brass frieze on the South facade facing the sea
+        g.current = kMatPierCap;
+        box((kLeft + kRight) * 0.5f, kFront - 0.25f, (kRight - kLeft) * 0.5f + 0.45f, 0.32f, roof - 0.58f, 0.68f, 0xfff8f4eb, 0xfff8f4eb);
+        g.current = kMatTrim;
+        box((kLeft + kRight) * 0.5f, kFront - 0.38f, (kRight - kLeft) * 0.5f + 0.34f, 0.10f, 5.20f, 0.38f, kBrass, kBrass);
+        // Warm recessed theater wall sconces & ceiling cove light strips (dimmed smoothly when film plays)
+        g.current = kMatWarmGlow;
+        box(kRight - 0.36f, (kFront + kBack) * 0.5f, 0.08f, (kBack - kFront) * 0.42f, roof - 0.38f, 0.16f, kLight, kLight);
+        box(kLeft + wall + 0.10f, (kFront + kBack) * 0.5f, 0.08f, (kBack - kFront) * 0.42f, roof - 0.38f, 0.16f, kLight, kLight);
+        for (unsigned s = 0; s < 3u; ++s) {
+            const float sy = kFront + 4.0f + float(s) * 5.8f;
+            box(kRight - 0.36f, sy, 0.09f, 0.18f, 2.35f, 1.35f, kLight, kLight);
+        }
+    } else {
+        g.current = kMatCinemaWall;
+        box(kRight,(kFront+kBack)*.5f,.33f,(kBack-kFront)*.5f,0,roof ? roof : 6.8f,kWall,kWallCap);
+        box((kLeft+kRight)*.5f,kFront,(kRight-kLeft)*.5f,.32f,0,roof ? roof : 7.1f,kWall,kWallCap);
     }
     g.current = kMatStone;
     box((kLeft+kRight)*.5f,kBack,(kRight-kLeft)*.5f,.32f,0,roof ? roof : 8.9f,kProscenium,kBronze);
     if (roof) {
         const float wall = CeMuseumExhibition::kWallHalf;
         g.current = kMatCinemaWall;
-        if (roof > height) box(kLeft,(kFront+kBack)*.5f,wall,(kBack-kFront)*.5f+.32f,height,roof-height,kWall,kWallCap);
+        if (!gGrandMode && roof > height) box(kLeft,(kFront+kBack)*.5f,wall,(kBack-kFront)*.5f+.32f,height,roof-height,kWall,kWallCap);
         g.current = kMatAuto;
         Ceiling(floor,kLeft+wall+ox,kFront-.32f+oy,kRight+.33f+ox,kBack+.32f+oy,roof,kMatCinemaCeiling);
     }
@@ -190,6 +216,8 @@ bool CinemaProjectionTarget() {
     if (!s.film) return false;
     IDirect3DDevice9 *dev=LT.GetDevice();
     if (!dev || FAILED(dev->CreateTexture(s.film->Width,s.film->Height,1,0,D3DFMT_A8R8G8B8,D3DPOOL_MANAGED,&s.texture,0)) || !s.texture) return false;
+    s.textureDevice=dev;
+    s.textureDeviceGen=CurrentMuseumDeviceGen();
     s.bitmapW=s.film->Width;s.bitmapH=s.film->Height;return true;
 }
 void CinemaCaptureView(const float *view, unsigned present) {
@@ -489,7 +517,20 @@ bool CinemaCue(char *title, unsigned titleCap, char *line, unsigned lineCap) {
 }
 void CinemaScreen(IDirect3DDevice9 *dev) {
     using namespace Cinema;using namespace CeCinemaRoom;
-    if(!s.inRoom || s.phase!=Playing || !s.texture || !s.film)return;
+    if(!dev || !s.inRoom || s.phase!=Playing || !s.film)return;
+    if(s.texture && (s.textureDevice != dev || s.textureDeviceGen != CurrentMuseumDeviceGen())) {
+        s.texture->Release(); s.texture = 0; s.textureDevice = 0; s.textureDeviceGen = 0;
+        if(!CinemaProjectionTarget()) { CinemaClose(Missing); return; }
+        s.frame = 0;
+        D3DLOCKED_RECT image = {};
+        if(SUCCEEDED(s.texture->LockRect(0, &image, 0, 0)) && image.pBits) {
+            BinkCopyToBuffer(s.film, image.pBits, image.Pitch, s.bitmapH, 0, 0,
+                             BINKSURFACE32A | BINKCOPYNOSCALING | BINKCOPYALL);
+            s.texture->UnlockRect(0);
+            s.frame = film.shown ? film.shown : 1u;
+        }
+    }
+    if(!s.texture)return;
     const CeMuseumFilm::Calls calls=CinemaFilmCalls();
     const CeMuseumFilm::Step step=CeMuseumFilm::Tick(&film,calls,GAME.IsPaused(),CinemaClock());
     if(step==CeMuseumFilm::kEnded) { CinemaClose(Finished);return; }

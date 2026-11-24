@@ -1145,7 +1145,9 @@ static bool OwnerDigestEqual(const uint8_t *a, const uint8_t *b) {
 typedef HANDLE OwnedFile;
 static const OwnedFile InvalidOwnedFile = INVALID_HANDLE_VALUE;
 static OwnedFile OwnerOpen(const char *path, bool create) {
-    return CreateFileA(path, GENERIC_READ | GENERIC_WRITE, 0, 0,
+    WCHAR w[1024];
+    if (!path || !Wide(path, w, 1024)) return INVALID_HANDLE_VALUE;
+    return CreateFileW(w, GENERIC_READ | GENERIC_WRITE, 0, 0,
                        create ? CREATE_NEW : OPEN_EXISTING,
                        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, 0);
 }

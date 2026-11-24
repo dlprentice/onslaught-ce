@@ -57,9 +57,8 @@ constexpr float kAlcoveCueRadius = 7.5f;
 constexpr float kMuseumEntranceX = 256.0f;
 constexpr float kMuseumEntranceY = 240.0f;
 
-// DirectInput key codes handled in addition to CeArchivePedestal's built-in shortcuts.
+// DirectInput key code handled in addition to CeArchivePedestal's built-in shortcuts.
 constexpr unsigned kDikR = 0x13u;
-constexpr unsigned kDikSpace = 0x39u;
 
 // Shield Dome impact-ripple FX ring buffer parameters and beam clamp safety margin.
 constexpr unsigned kMaxRipples = 16u;
@@ -356,6 +355,8 @@ bool PortCeSanctuaryInterceptRound(float prevX, float prevY, float prevZ,
 bool PortCeSanctuaryClampBeam(float startX, float startY, float startZ,
                               float *ioVelX, float *ioVelY, float *ioVelZ);
 void PortCeSanctuaryDrawWorld(void);
+bool PortCeSanctuaryFire(bool release, float value);
+void PortCeSanctuaryRenderCinemaPlayer(int viewpoint);
 }
 
 #endif

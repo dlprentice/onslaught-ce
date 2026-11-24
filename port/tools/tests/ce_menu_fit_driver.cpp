@@ -332,14 +332,15 @@ int main(int argc, char **argv)
     else if (name == "pitch")
     {
         static int other;
-        Check(kCeCompactPitch == 14 && kCeCompactActionGap == 8 && kCeCompactFrontShift == 8.f && kCeCompactPauseShift == -8.f,
+        Check(kCeCompactPitch == 14 && kCeCompactActionGap == 4 && kCeCompactFrontShift == 7.f && kCeCompactPauseShift == -10.f,
               "the reviewed pitch, action gap and front-end/pause shifts");
         Check(kCeLabelLeft == 104.f && kCeValueGap == 6.f, "the reviewed options label margin and colon gap");
         Check(PortCeCompactPitch(&qualityRow) == 14 && PortCeCompactPitch(&other) == 0 && PortCeCompactPitch(nullptr) == 0,
               "only a list holding CE's Video Options rows is drawn at CE's pitch");
-        Check(PortCeCompactActionGap(14, 19, 21) == 8 && PortCeCompactActionGap(14, 18, 21) == 0 && PortCeCompactActionGap(14, 20, 21) == 0 && PortCeCompactActionGap(0, 19, 21) == 0,
+        Check(PortCeCompactActionGap(14, 20, 22) == 4 && PortCeCompactActionGap(14, 19, 21) == 4 && PortCeCompactActionGap(14, 18, 21) == 0 &&
+              PortCeCompactActionGap(14, 21, 22) == 0 && PortCeCompactActionGap(0, 20, 22) == 0,
               "only Apply at index count-2 in the compact list gets the extra vertical breathing room");
-        Check(PortCeCompactShift(14, true) == 8.f && PortCeCompactShift(14, false) == -8.f && PortCeCompactShift(0, true) == 0.f && PortCeCompactShift(0, false) == 0.f,
+        Check(PortCeCompactShift(14, true) == 7.f && PortCeCompactShift(14, false) == -10.f && PortCeCompactShift(0, true) == 0.f && PortCeCompactShift(0, false) == 0.f,
               "it shifts down in the front end and up in pause, and only at CE's pitch");
         Check(PortCeLabelLeft(FEP_OPTIONS) == 104.f && PortCeLabelLeft(FEP_LANGUAGE_TEST) == 104.f && PortCeLabelLeft(FEP_MAIN) == 5.f,
               "front-end options pages protect the left metal arc while pause/other pages keep 5");

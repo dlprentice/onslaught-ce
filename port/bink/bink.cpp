@@ -428,7 +428,14 @@ void __stdcall RADSetMemory(RADMEMALLOC, RADMEMFREE) {}
 
 void *__stdcall BinkOpenDirectSound(U32 param)
 {
-	gSound = (IDirectSound8 *)param;
+	IDirectSound8 *next = (IDirectSound8 *)(uintptr_t)param;
+	if (next == gSound)
+		return (void *)1;
+	if (next)
+		next->AddRef();
+	if (gSound)
+		gSound->Release();
+	gSound = next;
 	return (void *)1;
 }
 

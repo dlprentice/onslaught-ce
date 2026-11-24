@@ -20,7 +20,7 @@ def main():
       'subset_orders_squad':('if (!unit.commandable || !UnitRequestHas(request, unit.key))','if (!unit.commandable)','partial move keeps only intended key'),
       'cohort_refresh':('Refresh(); RefreshUnitFrame();\n            if','/* no refresh */\n            if','callback replacement cannot receive second cohort order'),
       'callback_camera':('if (!StrategicCanAct() || !CeCmdUnitOrdersEligible() || request.world != CeCmdUnitWorld() ||\n            request.context_generation','if (false || !CeCmdUnitOrdersEligible() || request.world != CeCmdUnitWorld() ||\n            request.context_generation','individual callback rechecks current camera authority'),
-      'take_before_close':('Close();\n        if (!PortCeCmdMapOpen() && CeCmdUnitVisit(request.keys[0], UnitTake, &take)) return;','if (CeCmdUnitVisit(request.keys[0], UnitTake, &take)) { Close(); return; }','failed close cannot take control'),
+      'take_before_close':('Close();\n        if (!PortCeCmdMapOpen() && CeCmdUnitVisit(request.keys[0], UnitTake, &take)) return true;','if (CeCmdUnitVisit(request.keys[0], UnitTake, &take)) { Close(); return true; }','failed close cannot take control'),
       'take_ignores_open':('!PortCeCmdMapOpen() && CeCmdUnitVisit','CeCmdUnitVisit','failed close cannot take control'),
       'take_multiple':('request.key_count != 1 || request.selected_count != 1','false','Take requires exactly one intended selected unit'),
       'take_blocked_selection':('request.key_count != 1 || request.selected_count != 1','request.key_count != 1','blocked second selection cannot silently become single Take'),

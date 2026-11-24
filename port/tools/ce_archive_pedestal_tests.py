@@ -312,6 +312,20 @@ int main() {
     }
     Need(PickButton(st.pose, 0.0f, 32.0f, 1.65f, 0.0f, 0.0f, 0.0f) == -1, "zero aim vector misses");
 
+    // Portable customWorldPose (Sanctuary Citadel 3rd-person camera) extends button pick range to 18m.
+    {
+        BasePose custom = st.pose;
+        custom.customWorldPose = true;
+        float bx, by, bz;
+        ButtonPosition(custom, kBtnNext, &bx, &by, &bz);
+        const float ex = bx, ey = by - 14.0f, ez = 2.5f;
+        Need(PickButton(custom, ex, ey, ez, bx - ex, by - ey, bz - ez) == int(kBtnNext),
+             "customWorldPose picks button at 3rd-person distance (14m)");
+        const float farY = by - 20.0f;
+        Need(PickButton(custom, ex, farY, ez, bx - ex, by - farY, bz - ez) == -1,
+             "customWorldPose rejects button past 18m");
+    }
+
     // Prev / Next wrap-around + swap fade reset.
     Need(st.selected[kCatRetailMeshes] == 0u, "starts at index 0");
     Need(ActivateButton(&st, kBtnPrev) && st.selected[kCatRetailMeshes] == 212u, "Prev wraps 0 -> 212");
@@ -356,7 +370,7 @@ int main() {
     Need(HandleKeyCode(&st, kDikP, false) && st.paused, "P toggles pause");
 
     // Scale normalization, lightbox aspect fit, and clean ASCII titles.
-    Need(Near(ComputeNormalizedScale(9.2f, kTargetSpan), 0.5f), "scale ratio fits targetSpan 4.6");
+    Need(Near(ComputeNormalizedScale(7.5f, kTargetSpan), 0.5f), "scale ratio fits targetSpan 3.75");
     Need(Near(ComputeNormalizedScale(1000.0f, kTargetSpan), 0.015f), "min scale clamped");
     Need(Near(ComputeNormalizedScale(0.01f, kTargetSpan), 8.0f), "max scale clamped");
     const LightboxExtent wide = FitLightbox(1600u, 800u, 3.0f, 3.0f);
@@ -532,7 +546,7 @@ PEDESTAL_MUTANTS = [
      "if (!s->paused) {",
      "if (true) {"),
     ("ignore-button-range",
-     "if (t <= 0.15f || t > kButtonMaxRange) continue;",
+     "if (t <= 0.15f || t > maxRange) continue;",
      "if (t <= 0.15f) continue;"),
     ("skip-swap-fade-reset",
      "s->selected[s->category] = (s->selected[s->category] + n - 1u) % n;\n    s->fadeAlpha = 0.0f;",

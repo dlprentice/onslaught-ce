@@ -284,12 +284,16 @@ def integration_controls(repo: Path, compiler: str, logs: Path, jobs: int) -> bo
             if not (f_base.result() and f_disabled.result()):
                 return False
     mutations = {}
-    for name, token in (("simulation_pause", "GAME.Pause("), ("pilot_control", "SetToControl(")):
+    for name, token in (("simulation_pause", "GAME.Pause("),):
         lines = [line for line in definition(source, "Open").splitlines()
                  if token in line and "!strategic" in line]
         if len(lines) != 1:
             raise ValueError("causal guard unavailable")
         mutations[name] = source.replace(lines[0], lines[0].replace("!strategic", "true"), 1)
+    sink_lines = [line for line in definition(source, "Open").splitlines() if "SetToControl(&gSink)" in line]
+    if len(sink_lines) != 1:
+        raise ValueError("pilot_control guard unavailable")
+    mutations["pilot_control"] = source.replace(sink_lines[0], "", 1)
     closed = "if (!gOpen || !gStrategic || !gStrategicRender || !gStrategicOwner.Active()) return NULL;"
     if source.count(closed) != 1:
         raise ValueError("closed-view guard unavailable")

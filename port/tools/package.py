@@ -397,8 +397,8 @@ def readme(version: str, windows: bool) -> bytes:
         "A native source port of Battle Engine Aquila (2003). It contains no game files: you need your own copy of the game",
         "(for example from Steam).", f"Project page, source and releases: {PUBLIC_REPO}", "",
         *quick_start(windows), "",
-        *textwrap.wrap("In the game, Main Menu > Onslaught CE holds what this port adds: Bonus Levels, CE Settings, Cheats, Help & Info and "
-                       "Report a Problem (plus optional Extras, Catalogue and, on Linux, Mods). Your careers and settings are kept in "
+        *textwrap.wrap("In the game, Main Menu > Onslaught CE holds what this port adds: Bonus Levels, Extras, Mods, Catalogue, "
+                       "CE Settings, Cheats, Experimental Features, Help & Info, Report a Problem and Grand Museum. Your careers and settings are kept in "
                        f"{user}, apart from the original game's folder.",
                        README_WIDTH, break_on_hyphens=False), "",
         *textwrap.wrap('Upgrading from Onslaught CE 0.1.0 to 0.1.6? Do not start the old launcher again. Read "Upgrading from '
@@ -451,22 +451,27 @@ def readme(version: str, windows: bool) -> bytes:
 
 # The build with the network compiled in (flavour public-network) offers the Network game page; its README.txt says what the page says (experimental, what a
 # mismatch does, no matchmaking server, what was not tested, what the game contacts). package_readme_tests.py checks the sentences against the page's own text.
-NETWORK_GAME_LINES = [
-    "- Network game (experimental): Main Menu > Onslaught CE > Network Game hosts or joins a two-player Co-Op game on",
-    "  the building defence or the tutorial. It is new and unfinished, so expect problems. Both players need the same",
-    "  Onslaught CE version and their own copy of the game. If the two games ever disagree, the game ends with a",
-    "  message. A network game does not change your careers. Its HUD scales and sits as in single-player levels",
-    "  (BEA_PORT_HUD_SCALE=0 turns the scaling off). There is no pause in a network game and Escape does nothing; to",
-    "  leave, close the window (the other player is told). There is no matchmaking server: play on one network, or the",
-    "  host forwards a UDP port on its router (net_port in ce.ini, default 27652) and gives the other player its",
-    "  public address; the Network Game page's row \"Connection Help\" walks the host through the",
-    "  router, the firewall prompt and the public address. Not tested: play through routers over the real internet,",
-    "  more than two players, Windows on real hardware. Running the Windows build under Wine or Proton, keep the game",
-    "  and user folders on a C: path (the user folder's default is): a folder reached through Wine's Z: drive can be",
-    "  refused at network admission. The game sends data only to the other player's address and contacts no server.",
-    "  The host's page lists this PC's addresses; on Windows that asks the system to look up this PC's own name.",
-    "  Your own music, the Dodge Button, Photo Mode and F12 screenshots are off in a network game.",
-]
+NETWORK_GAME_LINES = textwrap.wrap(
+    "- Network game (experimental): Main Menu > Onslaught CE > Network Game hosts or joins a 2 to 4 player Co-Op or "
+    "Versus game (including Online Play lobby rooms with ICE/TURN relay as well as direct LAN/IP). It is new and "
+    "unfinished, so expect problems. All players need the same Onslaught CE version and their own copy of the game. "
+    "If games ever disagree, the game ends with a message. A network game does not change your careers. Its HUD scales "
+    "and sits as in single-player levels (BEA_PORT_HUD_SCALE=0 turns the scaling off). There is no pause in a network "
+    "game; Escape (or Start) opens the pause ring with Continue and Leave Game while the battle goes on, and closing "
+    "the window also leaves (the other players are told). For direct-IP play without "
+    "the lobby, play on one network or the host forwards a UDP port on its router (net_port in ce.ini, "
+    "default 27652) and gives the other player its public address; the Network Game page's row \"Connection Help\" "
+    "walks the host through the router, the firewall prompt and the public address. Not tested: physical Windows "
+    "hardware on every router/ISP. Running the Windows build under Wine or Proton, keep the game and user folders on a "
+    "C: path (the user folder's default is): a folder reached through Wine's Z: drive can be refused at network "
+    "admission. Direct-IP play sends data only to the other player's address and contacts no server; Online Play "
+    "contacts only the configured lobby server when you open Online Play. The host's page lists this PC's addresses; "
+    "on Windows that asks the system to look up this PC's own name. Your own music, the Dodge Button, Photo Mode and "
+    "F12 screenshots are off in a network game.",
+    README_WIDTH,
+    subsequent_indent="  ",
+    break_on_hyphens=False,
+)
 
 
 def in_the_game() -> list[str]:
@@ -487,12 +492,12 @@ def _item(text: str) -> list:
 # NETWORK_GAME_LINES, which only the build that offers the page carries (package_readme_tests.py holds the default text to that).
 IN_THE_GAME = [
     "In the game",
-    "- Main Menu > Onslaught CE: Bonus Levels, CE Settings, Cheats, Help & Info and Report a Problem (plus optional",
-    "  Extras with extras=1, Catalogue with catalogue=1, and Mods on Linux with mods_menu=1 in ce.ini). Each row has",
-    "  a hint under the list. Experimental rows depend on the features enabled. The Options page is the original's.",
+    "- Main Menu > Onslaught CE: Bonus Levels, Extras, Mods, Catalogue, CE Settings, Cheats, Experimental Features,",
+    "  Help & Info, Report a Problem and Grand Museum (each optional feature is included by default and can be toggled",
+    "  in Experimental Features or ce.ini). Each row has a hint under the list. The Options page is the original's.",
     "  The game's Credits remain separate.",
-    "- Bonus Levels: Aquila Prototype, Building Defence and Race Challenge 1 to 5. None of them advances career",
-    "  progress, and each comes back to this list with its row highlighted.",
+    "- Bonus Levels: Aquila Prototype, Building Defence, Carrier Clash, Living Sandbox and Race Challenge 1 to 5. None",
+    "  of them advances career progress, and each comes back to this list with its row highlighted.",
     "  Aquila Prototype is the original playable-demo level (201).",
     "  Building Defence is a two-player local split-screen defence map (level 856) on this PC; the original ships it",
     "  twice, as levels 856 and 858, which are the same map, so the list has it once.",
@@ -534,7 +539,7 @@ IN_THE_GAME = [
     "  Special Thanks.",
     *_item("Video Options on a new profile: the first time you start with no saved options of your own (a new install, or a profile "
            "that only has the old game folder's file), every quality row starts at its highest choice except 3D distant trees, "
-           "anti-aliasing starts at the highest level your graphics device lists, and extra graphical features start On where the "
+           "anti-aliasing starts at up to 4x MSAA (or the highest lower level your graphics device lists), and extra graphical features start On where the "
            "device passes the capability test. High-detail units starts at Yes so unit models stay full-detail at range, while "
            "3D distant trees starts at No because full 3D trees across forest maps are the largest cost in frame rate. Terrain detail "
            "distance starts at Extended: it keeps finer ground detail up to twice as far away. The visible range and fog stay the same. "
@@ -739,7 +744,7 @@ def limitations(windows: bool) -> list:
         "  Audio backend initialization alone does not demonstrate audible playback.",
             "- Widescreen play is not compared with the original (the original has no widescreen); ordinary replays and",
             "  recordings use 4:3.",
-            ("- Planned, not in this version yet: public matchmaking, versus play over network and additional HUD options." if NETWORK else
+            ("- Planned, not in this version yet: additional HUD options and further online match polish." if NETWORK else
              "- Planned, not in this version yet: Internet multiplayer and additional HUD options."),
             ""]
 
@@ -747,8 +752,11 @@ def limitations(windows: bool) -> list:
 def quick_start(windows: bool) -> list:
     """The quick start for this platform's package (the repository README, public/README.md, gives both)."""
     exe = "onslaught-ce.exe" if windows else "./onslaught-ce"
+    step1 = ("1. Extract the download into a new, empty user-writable folder of its own (e.g. C:\\Games\\Onslaught CE), not\n"
+             "   inside Program Files or the game's folder." if windows else
+             "1. Extract the download into a new, empty folder of its own, not inside the game's folder.")
     return ["Quick start",
-            "1. Extract the download into a new, empty folder of its own, not inside the game's folder.",
+            step1,
             f"2. Run {exe}.",
             "3. It finds your Steam copy of Battle Engine Aquila by itself, or asks once where it is."]
 

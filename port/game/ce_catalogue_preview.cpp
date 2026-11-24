@@ -14,14 +14,69 @@
 #include "AudibleThing.h"
 #include "OggFileRead.h"
 #include "text.h"
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
+extern "C" uint64_t PortCeD3dDeviceGeneration(void) __attribute__((weak));
+
 namespace {
 IDirect3DTexture9* picture;
+IDirect3DDevice9* pictureDevice;
+uint64_t pictureGen;
+IDirect3DTexture9* checkerTex;
+IDirect3DDevice9* checkerDevice;
+uint64_t checkerGen;
 unsigned sourceW, sourceH;
 struct Vertex { float x, y, z, rhw; float u, v; };
+
+uint64_t CurrentDeviceGeneration() {
+    return PortCeD3dDeviceGeneration ? PortCeD3dDeviceGeneration() : 0u;
+}
+
+void SyncDeviceResources(IDirect3DDevice9* device) {
+    const uint64_t gen = CurrentDeviceGeneration();
+    if (picture && (pictureDevice != device || pictureGen != gen)) {
+        picture->Release();
+        picture = NULL;
+        pictureDevice = NULL;
+        pictureGen = 0;
+        sourceW = sourceH = 0;
+    }
+    if (checkerTex && (checkerDevice != device || checkerGen != gen)) {
+        checkerTex->Release();
+        checkerTex = NULL;
+        checkerDevice = NULL;
+        checkerGen = 0;
+    }
+}
+
+IDirect3DTexture9* EnsureCheckerTexture(IDirect3DDevice9* device) {
+    if (!device) return NULL;
+    SyncDeviceResources(device);
+    if (checkerTex) return checkerTex;
+    IDirect3DTexture9* tex = NULL;
+    if (FAILED(device->CreateTexture(2, 2, 1, 0, D3DFMT_A8R8G8B8, D3DPOOL_MANAGED, &tex, NULL)) || !tex) {
+        if (tex) tex->Release();
+        return NULL;
+    }
+    D3DLOCKED_RECT lr{};
+    if (SUCCEEDED(tex->LockRect(0, &lr, NULL, 0))) {
+        DWORD* row0 = reinterpret_cast<DWORD*>(static_cast<unsigned char*>(lr.pBits));
+        DWORD* row1 = reinterpret_cast<DWORD*>(static_cast<unsigned char*>(lr.pBits) + lr.Pitch);
+        row0[0] = 0xff404040u; row0[1] = 0xff626262u;
+        row1[0] = 0xff626262u; row1[1] = 0xff404040u;
+        tex->UnlockRect(0);
+    } else {
+        tex->Release();
+        return NULL;
+    }
+    checkerTex = tex;
+    checkerDevice = device;
+    checkerGen = CurrentDeviceGeneration();
+    return checkerTex;
+}
 
 int Upload(const unsigned char* dds, size_t bytes, const CeAssetTextureHeader* h, void* context) {
     IDirect3DDevice9* device = static_cast<IDirect3DDevice9*>(context);
@@ -36,6 +91,8 @@ int Upload(const unsigned char* dds, size_t bytes, const CeAssetTextureHeader* h
         return 0;
     }
     picture = candidate;
+    pictureDevice = device;
+    pictureGen = CurrentDeviceGeneration();
     sourceW = h->width; sourceH = h->height;
     return 1;
 }
@@ -48,6 +105,11 @@ void PortCeCataloguePreviewClose() {
 
 void PortCeCataloguePictureClose() {
     if (picture) { picture->Release(); picture = NULL; }
+    pictureDevice = NULL;
+    pictureGen = 0;
+    if (checkerTex) { checkerTex->Release(); checkerTex = NULL; }
+    checkerDevice = NULL;
+    checkerGen = 0;
     sourceW = sourceH = 0;
 }
 
@@ -60,45 +122,89 @@ bool PortCeCataloguePreviewOpen(unsigned slot) {
 }
 
 namespace {
-// The picture at x, y, w by h on the front end's virtual 640 by 480 plane (the wide-screen box included).
-void DrawPicture(float x, float y, float w, float h) {
+// Textured quad(s) on the front end's virtual 640 by 480 plane (wide-screen box included), using cached
+// LT/RENDERINFO state transitions instead of per-frame D3DSBT_ALL stateblocks or per-cell panel loops.
+void DrawPreviewQuads(float x, float y, float w, float h, bool checker) {
     IDirect3DDevice9* device = LT.GetDevice();
-    if (!device || !picture) return;
+    if (!device) return;
+    SyncDeviceResources(device);
+    if (!picture) return;
     D3DVIEWPORT9 vp;
     if (FAILED(device->GetViewport(&vp))) return;
     float sx = vp.Width / 640.f, sy = vp.Height / 480.f, left = float(vp.X), up = float(vp.Y);
     if (PortWideActive()) { sx = sy = PortUiScale(); left = PortUiLeft(); up = PortUiTop(); }
     const float x0 = left + x*sx - 0.5f, x1 = left + (x+w)*sx - 0.5f;
     const float y0 = up + y*sy - 0.5f, y1 = up + (y+h)*sy - 0.5f;
+
+    device->SetVertexShader(NULL);
+    device->SetPixelShader(NULL);
+    RENDERINFO.SetFogEnabled(false);
+    RENDERINFO.SetLightingEnabled(false);
+    RENDERINFO.SetFVF(D3DFVF_XYZRHW | D3DFVF_TEX1);
+    RENDERINFO.Apply();
+    LT.SRS(D3DRS_ZENABLE, FALSE);
+    LT.SRS(D3DRS_ZWRITEENABLE, FALSE);
+    LT.SRS(D3DRS_CULLMODE, D3DCULL_NONE);
+    LT.SRS(D3DRS_ALPHATESTENABLE, FALSE);
+    LT.SRS(D3DRS_STENCILENABLE, FALSE);
+    LT.SRS(D3DRS_SCISSORTESTENABLE, FALSE);
+    LT.SRS(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
+    LT.SRS(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
+    LT.SRS(D3DRS_BLENDOP, D3DBLENDOP_ADD);
+    LT.SRS(D3DRS_COLORWRITEENABLE, 0xf);
+    LT.STS(0, D3DTSS_TEXCOORDINDEX, 0);
+    LT.STS(0, D3DTSS_TEXTURETRANSFORMFLAGS, D3DTTFF_DISABLE);
+    LT.STS(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
+    LT.STS(0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
+    LT.STS(0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
+    LT.STS(0, D3DTSS_ALPHAARG1, D3DTA_TEXTURE);
+    LT.STS(1, D3DTSS_COLOROP, D3DTOP_DISABLE);
+    LT.STS(1, D3DTSS_ALPHAOP, D3DTOP_DISABLE);
+    LT.SSS_NoCache(0, D3DSAMP_MIPFILTER, D3DTEXF_NONE);
+
+    if (checker) {
+        IDirect3DTexture9* bg = EnsureCheckerTexture(device);
+        if (bg) {
+            const float u1 = w / 16.f;
+            const float v1 = h / 16.f;
+            const Vertex bgQuad[4] = {{x0,y0,0.f,1.f,0.f,0.f},{x1,y0,0.f,1.f,u1,0.f},
+                                      {x0,y1,0.f,1.f,0.f,v1},{x1,y1,0.f,1.f,u1,v1}};
+            LT.SRS(D3DRS_ALPHABLENDENABLE, FALSE);
+            LT.SSS_NoCache(0, D3DSAMP_MINFILTER, D3DTEXF_POINT);
+            LT.SSS_NoCache(0, D3DSAMP_MAGFILTER, D3DTEXF_POINT);
+            LT.SSS_NoCache(0, D3DSAMP_ADDRESSU, D3DTADDRESS_WRAP);
+            LT.SSS_NoCache(0, D3DSAMP_ADDRESSV, D3DTADDRESS_WRAP);
+            LT.D3D_SetTexture(0, bg);
+            device->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, bgQuad, sizeof(Vertex));
+        }
+    }
+
     const Vertex quad[4] = {{x0,y0,0.f,1.f,0.f,0.f},{x1,y0,0.f,1.f,1.f,0.f},
                             {x0,y1,0.f,1.f,0.f,1.f},{x1,y1,0.f,1.f,1.f,1.f}};
-    IDirect3DStateBlock9* state = NULL;
-    if (FAILED(device->CreateStateBlock(D3DSBT_ALL, &state)) || !state) return;
-    if (FAILED(state->Capture())) { state->Release(); return; }
-    device->SetVertexShader(NULL); device->SetPixelShader(NULL);
-    device->SetFVF(D3DFVF_XYZRHW | D3DFVF_TEX1);
-    device->SetRenderState(D3DRS_ZENABLE, FALSE); device->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
-    device->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE); device->SetRenderState(D3DRS_LIGHTING, FALSE);
-    device->SetRenderState(D3DRS_FOGENABLE, FALSE); device->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
-    device->SetRenderState(D3DRS_STENCILENABLE, FALSE); device->SetRenderState(D3DRS_SCISSORTESTENABLE, FALSE);
-    device->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE); device->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
-    device->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA); device->SetRenderState(D3DRS_BLENDOP, D3DBLENDOP_ADD);
-    device->SetRenderState(D3DRS_COLORWRITEENABLE, 0xf);
-    device->SetSamplerState(0,D3DSAMP_MINFILTER,D3DTEXF_LINEAR); device->SetSamplerState(0,D3DSAMP_MAGFILTER,D3DTEXF_LINEAR);
-    device->SetSamplerState(0,D3DSAMP_MIPFILTER,D3DTEXF_NONE);
-    device->SetSamplerState(0,D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP); device->SetSamplerState(0,D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP);
-    device->SetTextureStageState(0,D3DTSS_TEXCOORDINDEX,0); device->SetTextureStageState(0,D3DTSS_TEXTURETRANSFORMFLAGS,D3DTTFF_DISABLE);
-    device->SetTextureStageState(0,D3DTSS_COLOROP,D3DTOP_SELECTARG1); device->SetTextureStageState(0,D3DTSS_COLORARG1,D3DTA_TEXTURE);
-    device->SetTextureStageState(0,D3DTSS_ALPHAOP,D3DTOP_SELECTARG1); device->SetTextureStageState(0,D3DTSS_ALPHAARG1,D3DTA_TEXTURE);
-    device->SetTextureStageState(1,D3DTSS_COLOROP,D3DTOP_DISABLE); device->SetTextureStageState(1,D3DTSS_ALPHAOP,D3DTOP_DISABLE);
-    device->SetTexture(0, picture);
+    LT.SRS(D3DRS_ALPHABLENDENABLE, TRUE);
+    LT.SSS_NoCache(0, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
+    LT.SSS_NoCache(0, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR);
+    LT.SSS_NoCache(0, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
+    LT.SSS_NoCache(0, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
+    LT.D3D_SetTexture(0, picture);
     device->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, quad, sizeof(Vertex));
-    state->Apply();
-    state->Release();
+
+    // Restore standard frontend 2D texture/blend state through LT's cache.
+    LT.D3D_SetTexture(0, NULL);
+    LT.STS(0, D3DTSS_COLOROP, D3DTOP_MODULATE);
+    LT.STS(0, D3DTSS_ALPHAOP, D3DTOP_MODULATE);
+    LT.SSS_NoCache(0, D3DSAMP_ADDRESSU, D3DTADDRESS_WRAP);
+    LT.SSS_NoCache(0, D3DSAMP_ADDRESSV, D3DTADDRESS_WRAP);
+    LT.SSS_NoCache(0, D3DSAMP_MIPFILTER, D3DTEXF_LINEAR);
+    LT.SRS(D3DRS_ZENABLE, TRUE);
+    LT.SRS(D3DRS_ZWRITEENABLE, TRUE);
+    LT.SRS(D3DRS_CULLMODE, D3DCULL_CCW);
+    LT.SRS(D3DRS_ALPHATESTENABLE, TRUE);
 }
 }
 
 void PortCeCataloguePreviewDraw(float above) {
+    SyncDeviceResources(LT.GetDevice());
     if (!picture || !LT.GetDevice()) return;
     const float foot = above - 5.f, top = foot - 118.f > 106.f ? foot - 118.f : 106.f;
     if (foot - top < 12.f) return;
@@ -107,7 +213,7 @@ void PortCeCataloguePreviewDraw(float above) {
     float x = 320.f - w * 0.5f, y = (top + foot - h) * 0.5f;
     FRONTEND.DrawPanel(202.f, top, 438.f, foot, 0.55f, 0xe0000000);
     FRONTEND.DrawBox(202.f, top, 438.f, foot, 0xff807664, 1.f, 0.5f);
-    DrawPicture(x, y, w, h);
+    DrawPreviewQuads(x, y, w, h, false);
 }
 
 // The picture as large as the rectangle allows with its shape kept, on a subtle checkerboard when it has transparency;
@@ -115,30 +221,15 @@ void PortCeCataloguePreviewDraw(float above) {
 bool PortCeCataloguePreviewDrawIn(float left, float top, float right, float bottom, bool with_picture, bool checker) {
     FRONTEND.DrawPanel(left, top, right, bottom, 0.55f, 0xa0000000);
     FRONTEND.DrawBox(left, top, right, bottom, 0x80ffffff, 2.f, 0.5f);
+    SyncDeviceResources(LT.GetDevice());
     if (!with_picture || !picture || !LT.GetDevice() || !sourceW || !sourceH) return false;
     const float room_w = right - left - 12.f, room_h = bottom - top - 12.f;
     float w = room_w, h = w * sourceH / sourceW;
     if (h > room_h) { h = room_h; w = h * sourceW / sourceH; }
     const float x = (left + right - w) * 0.5f, y = (top + bottom - h) * 0.5f;
-    FRONTEND.DrawPanel(x, y, x + w, y + h, 0.55f, 0xff404040);
-    if (checker)
-    {
-        // a subtle checkerboard of two greys behind a picture with transparency, so both white and dark translucent textures read
-        const float cell = 8.f;
-        for (int row = 0; y + row * cell < y + h; ++row)
-        {
-            const float cy = y + row * cell;
-            const float cy1 = cy + cell < y + h ? cy + cell : y + h;
-            for (int col = 0; x + col * cell < x + w; ++col)
-            {
-                if (!((row + col) & 1)) continue;
-                const float cx = x + col * cell;
-                const float cx1 = cx + cell < x + w ? cx + cell : x + w;
-                FRONTEND.DrawPanel(cx, cy, cx1, cy1, 0.55f, 0xff626262);
-            }
-        }
-    }
-    DrawPicture(x, y, w, h);
+    if (!checker)
+        FRONTEND.DrawPanel(x, y, x + w, y + h, 0.55f, 0xff404040);
+    DrawPreviewQuads(x, y, w, h, checker);
     return true;
 }
 

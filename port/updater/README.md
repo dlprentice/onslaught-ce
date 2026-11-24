@@ -14,8 +14,10 @@ and C++) is what the launcher and the game share for "Report a problem".
 ## Finding the game
 
 In order: `BEA_GAME_DIR`; `gamedir=` in `ce.ini`; every Steam library (Linux `~/.local/share/Steam`, `~/.steam/steam`,
-`~/.steam/root` and the Flatpak's `~/.var/app/com.valvesoftware.Steam/.local/share/Steam`; Windows the `SteamPath` value
-of `HKCU\Software\Valve\Steam`), each library's `steamapps/common/Battle Engine Aquila`; then a message box and a folder
+`~/.steam/root`, the Flatpak's `~/.var/app/com.valvesoftware.Steam/.local/share/Steam`, and Snap's `/snap/steam/common/.local/share/Steam`;
+Windows `SteamPath` of `HKCU\Software\Valve\Steam`, plus `InstallPath` of `HKLM\SOFTWARE\WOW6432Node\Valve\Steam` and
+`HKLM\SOFTWARE\Valve\Steam`), each library's `steamapps/common/Battle Engine Aquila`; on Windows, GOG default installs
+(`C:\GOG Games\Battle Engine Aquila` and `C:\Program Files (x86)\GOG Galaxy\Games\Battle Engine Aquila`); then a message box and a folder
 picker. A folder counts as a supported install when the game data hashed in `config/game-data.sha256` matches. The
 answer is kept in `ce.ini`. The game folder is only read: the writable folder is per user (Linux
 `$XDG_DATA_HOME/onslaught-ce`, or `~/.local/share/onslaught-ce` when `XDG_DATA_HOME` is unset or empty; Windows `%APPDATA%\Onslaught CE`; `BEA_USER_DIR` overrides) and holds `ce.ini`.

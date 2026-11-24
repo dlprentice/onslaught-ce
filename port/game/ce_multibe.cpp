@@ -45,6 +45,7 @@
 #include "MenuOptionsList.h"
 #include "DXEngine.h"
 #include "CLIParams.h"
+#include "data/MissionScripts/text/text.stf"
 #include "ce_photo.h"
 #include "ce_cmdmatch.h"
 #ifndef CE_NETWORK_OFF
@@ -67,6 +68,10 @@ extern "C" int CE_SessionActive(void) __attribute__((weak));
 extern "C" int CE_LockstepRequested(void) __attribute__((weak));
 extern "C" int CE_LockstepSharing(void) __attribute__((weak));
 extern "C" int PortCePlayUnitInvertSides(void) __attribute__((weak));
+extern "C" bool PortCeMuseumVisitActive(void) __attribute__((weak));
+extern "C" bool PortCeLivingSandboxActive(void) __attribute__((weak));
+extern "C" bool PortCeCarrierClashActive(void) __attribute__((weak));
+extern "C" bool PortCeEditorActive(void) __attribute__((weak));
 bool PortCeNetActive() __attribute__((weak));
 #ifndef CE_NETWORK_OFF
 extern "C" int PortCeOnlineMatchActive(void) __attribute__((weak));
@@ -149,6 +154,11 @@ bool MultiBeFenced()
 	if (PLAYABLE_DEMO || CLIPARAMS.mAutoConfigTest || CLIPARAMS.mRecordDemo ||
 	    CLIPARAMS.mPlaybackDemo || CLIPARAMS.mStressTest || CLIPARAMS.mAttractMode)
 		return true;
+	if ((PortCeMuseumVisitActive && PortCeMuseumVisitActive()) ||
+	    (PortCeLivingSandboxActive && PortCeLivingSandboxActive()) ||
+	    (PortCeCarrierClashActive && PortCeCarrierClashActive()) ||
+	    (PortCeEditorActive && PortCeEditorActive()))
+		return true;
 	if (PilotEnvPresent())
 		return true;
 	return false;
@@ -182,7 +192,7 @@ int LoadSoloSkirmishFromIni()
 {
 	char buf[32] = {0};
 	if (!CE_SettingGetText("solo_skirmish", buf, (int)sizeof(buf)))
-		return CE_SOLO_SKIRMISH_SOLO_AI;
+		return CE_SOLO_SKIRMISH_SPLITSCREEN;
 	return CeMultiBeParseSoloSkirmish(buf);
 }
 
@@ -461,6 +471,7 @@ bool					gIsAux[CE_MULTIBE_MAX] = {false, false, false, false};
 bool					gIsAiControlled[CE_MULTIBE_MAX] = {false, false, false, false};
 CPlayer					*gAuxPlayers[CE_MULTIBE_MAX] = {NULL, NULL, NULL, NULL};
 CCamera					*gAuxCameras[CE_MULTIBE_MAX] = {NULL, NULL, NULL, NULL};
+bool					gAuxDeathCam[CE_MULTIBE_MAX] = {false, false, false, false};
 FVector					gStartPos[CE_MULTIBE_MAX];
 float					gStartYaw[CE_MULTIBE_MAX] = {0.0f, 0.0f, 0.0f, 0.0f};
 bool					gMoved[CE_MULTIBE_MAX] = {false, false, false, false};
@@ -468,6 +479,12 @@ int						gTicksSinceMorph[CE_MULTIBE_MAX] = {0, 0, 0, 0};
 int						gTicksSinceWeaponSwitch[CE_MULTIBE_MAX] = {0, 0, 0, 0};
 float					gAnchorFwdX = 0.0f;
 float					gAnchorFwdY = 1.0f;
+bool					gHasOpposingAnchor = false;
+FVector					gOpposingAnchorPos;
+FMatrix					gOpposingAnchorOri;
+float					gOpposingAnchorYaw = 0.0f;
+bool					gRelocatedOnlineP1 = false;
+int						gWinningTeam = -1;
 CeMultiBeOverviewCamera	gOverviewCam;
 
 int IndexOfEngine(const CUnit *unit)
@@ -576,6 +593,7 @@ void ResetState()
 		gEngines[i] = NULL;
 		gIsAux[i] = false;
 		gIsAiControlled[i] = false;
+		gAuxDeathCam[i] = false;
 		gMoved[i] = false;
 		gStartYaw[i] = 0.0f;
 		gTicksSinceMorph[i] = 0;
@@ -605,8 +623,44 @@ void ResetState()
 	gAiEvades = 0;
 	gAiRetreats = 0;
 	gAiDashes = 0;
+	gAnchorFwdX = 0.0f;
+	gAnchorFwdY = 1.0f;
+	gHasOpposingAnchor = false;
+	gRelocatedOnlineP1 = false;
+	gWinningTeam = -1;
 	gOverviewCam.Reset();
 }
+
+#ifndef CE_NETWORK_OFF
+void CheckOnlineVersusTeamElimination(int deadSlot)
+{
+	if (!OnlineMatchActive() || WORLD.GetType() != CWorld::kVersusMultiplayer)
+		return;
+	if (deadSlot < 0 || deadSlot >= gEngineCount)
+		return;
+	const int deadTeam = gMatchState.slotTeam[deadSlot];
+	bool teamHasLife = false;
+	for (int s = 0; s < gEngineCount; ++s)
+	{
+		if (s == deadSlot || gMatchState.slotTeam[s] != deadTeam)
+			continue;
+		const bool aliveNow = gEngines[s] && UnitExistsInWorld(gEngines[s]) && !gEngines[s]->IsDying();
+		if (aliveNow || GAME.GetPlayerLives(s + 1) > 0 || (gIsAux[s] && gMatchState.respawnTimer[s] > 0))
+		{
+			teamHasLife = true;
+			break;
+		}
+	}
+	if (!teamHasLife)
+	{
+		const int winTeam = (deadTeam == CE_MULTIBE_SIDE_MUSPELL)
+			? CE_MULTIBE_SIDE_FORSETI : CE_MULTIBE_SIDE_MUSPELL;
+		gWinningTeam = winTeam;
+		const int p0Team = gMatchState.slotTeam[0];
+		GAME.MPDeclarePlayerWon(winTeam == p0Team ? 1 : 2);
+	}
+}
+#endif
 
 bool FindDrySpawnPosition(const FVector &anchorPos, const FVector &right, const FVector &fwd,
                           float offRight, float offFwd, FVector *outPos)
@@ -1047,6 +1101,7 @@ bool SpawnAuxEngineInSlot(int idx, const FVector &spawnPos, float yaw, EAllegian
 		delete gAuxCameras[idx];
 		gAuxCameras[idx] = NULL;
 	}
+	gAuxDeathCam[idx] = false;
 	gAuxCameras[idx] = CreateAuxCameraForSlot(gAuxPlayers[idx], idx);
 
 	gEngines[idx] = be;
@@ -1188,14 +1243,57 @@ void SpawnAuxiliaryBattleEngines()
 	gAnchorFwdY = fwd.Y;
 	FVector right(fwd.Y, -fwd.X, 0.0f);
 	const float anchorYaw = anchor->GetCurrentEulerOrientation().mYaw;
-	const bool mpLevel = GAME.IsMultiplayer() != FALSE;
+	const bool versusLevel = (WORLD.GetType() == CWorld::kVersusMultiplayer);
+
+	// Preserve retail P1's opposing base anchor before relocating same-team online P1 in 2v2 Humans-vs-AI.
+	if (gEngineCount >= 2 && gEngines[1] && UnitExistsInWorld(gEngines[1]))
+	{
+		gHasOpposingAnchor = true;
+		gOpposingAnchorPos = gEngines[1]->GetPos();
+		gOpposingAnchorOri = gEngines[1]->GetOrientation();
+		gOpposingAnchorYaw = gEngines[1]->GetCurrentEulerOrientation().mYaw;
+#ifndef CE_NETWORK_OFF
+		if (OnlineMatchActive() && versusLevel && gEngines[0] &&
+		    gEngines[1]->GetAllegiance() == gEngines[0]->GetAllegiance())
+		{
+			FVector allyPos = anchorPos;
+			bool relocated = FindDrySpawnPosition(anchorPos, right, fwd, 12.0f, 0.0f, &allyPos) ||
+			                 FindDrySpawnPosition(anchorPos, right, fwd, -12.0f, 0.0f, &allyPos);
+			bool airborneFallback = false;
+			if (!relocated)
+			{
+				const float waterZ = MAP.GetWaterLevel();
+				allyPos = anchorPos + right * 12.0f;
+				const float groundZ = MAP.Collide(allyPos);
+				const float surfaceZ = (groundZ < waterZ) ? groundZ : waterZ;
+				allyPos.Z = (anchorPos.Z < surfaceZ - 18.0f) ? anchorPos.Z : (surfaceZ - 22.0f);
+				if (CeMultiBeIsFinitePos(allyPos.X, allyPos.Y, allyPos.Z))
+				{
+					relocated = true;
+					airborneFallback = true;
+				}
+			}
+			if (relocated)
+			{
+				gEngines[1]->Teleport(allyPos);
+				gEngines[1]->TeleportOrientation(anchorOri);
+				if (airborneFallback && gEngines[1]->GetState() == BATTLE_ENGINE_STATE_WALKER)
+					gEngines[1]->Morph();
+				gStartPos[1] = allyPos;
+				gStartYaw[1] = anchorYaw;
+				gRelocatedOnlineP1 = true;
+			}
+		}
+#endif
+	}
 
 	// Spawn auxiliary Battle Engines up to target_count (3 or 4), strictly on dry terrain above water level.
 	int formationSlot = 1;
+	int opposingAuxIdx = 0;
 	while (gEngineCount < gConfig.target_count && gEngineCount < CE_MULTIBE_MAX)
 	{
-		// On 2v2 Versus (levels 850..899), keep teams balanced (2 Forseti vs 2 Muspell) regardless of Play side.
-		// On Campaign/Co-op levels (100..799), spawn allied Forseti BEs (f_be* mesh is guaranteed loaded).
+		// On 2v2 Versus maps, keep teams balanced (2 Forseti vs 2 Muspell) regardless of Play side.
+		// On Campaign & Co-op MP levels, spawn allied Forseti BEs (f_be* mesh is guaranteed loaded).
 		EAllegiance side = kForsetiAllegiance;
 #ifndef CE_NETWORK_OFF
 		if (OnlineMatchActive() && PortCeOnlineMatchSlotTeam)
@@ -1209,7 +1307,7 @@ void SpawnAuxiliaryBattleEngines()
 		}
 		else
 #endif
-		if (mpLevel)
+		if (versusLevel)
 		{
 			side = (forsetiCount <= muspellCount) ? kForsetiAllegiance : kMuspellAllegiance;
 			if (side == kMuspellAllegiance)
@@ -1224,7 +1322,7 @@ void SpawnAuxiliaryBattleEngines()
 
 		// Pick team-appropriate anchor:
 		// - Allied wingmen deploy beside P1 (slot 0).
-		// - In normal Versus play, opposing AI BEs deploy beside their own team's anchor (slot 1) and fly in.
+		// - In normal Versus play, opposing AI BEs deploy beside their own team's base anchor and fly in.
 		// - In panoramic showcase mode, deploy opposing AI BEs on the skirmish perimeter ahead of P1 for clear combat framing.
 		FVector baseAnchor = anchorPos;
 		FVector baseRight = right;
@@ -1239,22 +1337,22 @@ void SpawnAuxiliaryBattleEngines()
 #else
 		const bool sameSideAsP0 = ((side == kMuspellAllegiance) == (gPlayerSide == CE_MULTIBE_SIDE_MUSPELL));
 #endif
-		if (mpLevel && !sameSideAsP0 && !gConfig.panoramic_cam && gEngineCount >= 2 && gEngines[1] && UnitExistsInWorld(gEngines[1]))
+		if (versusLevel && !sameSideAsP0 && !gConfig.panoramic_cam && gEngineCount >= 2 && gHasOpposingAnchor)
 		{
-			baseAnchor = gEngines[1]->GetPos();
-			const FMatrix p1Ori = gEngines[1]->GetOrientation();
-			baseFwd = p1Ori * FVector(0.0f, 1.0f, 0.0f);
+			baseAnchor = gOpposingAnchorPos;
+			baseFwd = gOpposingAnchorOri * FVector(0.0f, 1.0f, 0.0f);
 			baseFwd.Z = 0.0f;
 			if (baseFwd.MagnitudeSq() < 1e-4f)
 				baseFwd = fwd * -1.0f;
 			else
 				baseFwd.Normalise();
 			baseRight = FVector(baseFwd.Y, -baseFwd.X, 0.0f);
-			spawnYaw = gEngines[1]->GetCurrentEulerOrientation().mYaw;
-			offRight = 12.0f;
+			spawnYaw = gOpposingAnchorYaw;
+			offRight = (opposingAuxIdx == 0) ? 12.0f : -12.0f;
 			offFwd = 6.0f;
+			opposingAuxIdx++;
 		}
-		else if (mpLevel && !sameSideAsP0 && gConfig.panoramic_cam)
+		else if (versusLevel && !sameSideAsP0 && gConfig.panoramic_cam)
 		{
 			// Skirmish vanguard ahead of P1 facing P1's team so 2v2 firefights happen immediately in frame.
 			offRight = (formationSlot & 1) ? 10.0f : -10.0f;
@@ -1341,7 +1439,7 @@ void SyncHumanPlayerEngines()
 	const int nPlayers = GAME.GetNPlayers();
 	for (int slot = 0; slot < gEngineCount && slot < nPlayers && slot < MAX_PLAYERS; ++slot)
 	{
-		if (gIsAux[slot] || gIsAiControlled[slot])
+		if (gIsAux[slot] || (gSoloSkirmish && slot == 1))
 			continue;
 		CPlayer *pl = GAME.GetPlayer(slot);
 		CBattleEngine *live = pl ? pl->GetBattleEngine() : NULL;
@@ -1350,12 +1448,44 @@ void SyncHumanPlayerEngines()
 			if (gEngines[slot] != live)
 			{
 				gEngines[slot] = live;
-				gStartPos[slot] = live->GetPos();
-				gStartYaw[slot] = live->GetCurrentEulerOrientation().mYaw;
+#ifndef CE_NETWORK_OFF
+				if (OnlineMatchActive() && PortCeOnlineMatchSlotTeam)
+				{
+					const int ticketTeam = (PortCeOnlineMatchSlotTeam(slot) == CE_MULTIBE_SIDE_MUSPELL)
+						? CE_MULTIBE_SIDE_MUSPELL : CE_MULTIBE_SIDE_FORSETI;
+					live->mAllegiance = (ticketTeam == CE_MULTIBE_SIDE_MUSPELL) ? kMuspellAllegiance : kForsetiAllegiance;
+				}
+				if (slot == 1 && gRelocatedOnlineP1)
+				{
+					live->Teleport(gStartPos[1]);
+					FMatrix ori;
+					ori.MakeRotationYawF(gStartYaw[1]);
+					live->TeleportOrientation(ori);
+					const float waterZ = MAP.GetWaterLevel();
+					const float groundZ = MAP.Collide(gStartPos[1]);
+					if (!CeMultiBeIsAboveWater(groundZ, waterZ, 0.8f) &&
+					    live->GetState() == BATTLE_ENGINE_STATE_WALKER)
+						live->Morph();
+				}
+				else
+#endif
+				{
+					gStartPos[slot] = live->GetPos();
+					gStartYaw[slot] = live->GetCurrentEulerOrientation().mYaw;
+				}
 				const int team = (live->GetAllegiance() == kMuspellAllegiance)
 					? CE_MULTIBE_SIDE_MUSPELL : CE_MULTIBE_SIDE_FORSETI;
 				gMatchState.RegisterSlotTeam(slot, team);
+				if (gIsAiControlled[slot])
+				{
+					gTicksSinceMorph[slot] = 75;
+					gTicksSinceWeaponSwitch[slot] = 40;
+					gAiBrain[slot].Reset(slot);
+					gAiBrain[slot].damage.Reset(live->GetLife());
+				}
 			}
+			if (gIsAiControlled[slot] && (!pl->GetIsInFPV() || !GAME.GetCurrentCamera(slot)))
+				pl->GotoFPView();
 		}
 		else
 		{
@@ -2379,9 +2509,12 @@ extern "C" CCamera *PortCeMultiBeRenderCamera(CCamera *camera, int viewpoint, CP
 #ifndef CE_NETWORK_OFF
 	if (gActive && OnlineMatchActive() && viewpoint == 0)
 	{
+		if (dynamic_cast<CPanCamera *>(camera) || dynamic_cast<CPanCamera *>(GAME.GetCamera(0)))
+			return camera;
 		const int localSlot = PortCeOnlineMatchLocalSlot ? PortCeOnlineMatchLocalSlot() : 0;
 		if (localSlot >= 2 && localSlot < gEngineCount && gAuxCameras[localSlot])
 			return gAuxCameras[localSlot];
+		return camera;
 	}
 #endif
 	if (!gActive || !gConfig.panoramic_cam || viewpoint != 0 || !gOverviewCam.Ready())
@@ -2394,15 +2527,25 @@ extern "C" CBattleEngine *PortCeMultiBeHudFocus(CBattleEngine *be, CPlayer *play
 	if (!gActive)
 		return be;
 	gHudFocusCalls++;
+#ifndef CE_NETWORK_OFF
+	if (OnlineMatchActive())
+	{
+		const int slot = gConfig.hud_focus_slot;
+		if (slot < 0 || slot >= gEngineCount)
+			return (slot >= GAME.GetNPlayers()) ? NULL : be;
+		if (gIsAux[slot] && gAuxDeathCam[slot])
+			return NULL;
+		CBattleEngine *focused = gEngines[slot];
+		if (focused && UnitExistsInWorld(focused) && !focused->IsDying() && focused->GetPlayer())
+			return focused;
+		return NULL;
+	}
+#endif
 	if (gConfig.hud_focus_slot >= 0 && gConfig.hud_focus_slot < gEngineCount)
 	{
 		CBattleEngine *focused = gEngines[gConfig.hud_focus_slot];
 		if (focused && UnitExistsInWorld(focused) && !focused->IsDying() && focused->GetPlayer())
 		{
-#ifndef CE_NETWORK_OFF
-			if (OnlineMatchActive())
-				return focused;
-#endif
 			if (GAME.GetNPlayers() <= 1 || !player || focused->GetPlayer()->GetNumber() == player->GetNumber())
 				return focused;
 		}
@@ -2504,7 +2647,7 @@ extern "C" void PortCeMultiBeUnitDestroyed(CUnit *unit)
 	if (idx >= 0)
 	{
 		gEngines[idx] = NULL;
-		if (gIsAux[idx] && gAuxCameras[idx])
+		if (gIsAux[idx] && gAuxCameras[idx] && !gAuxDeathCam[idx])
 		{
 			delete gAuxCameras[idx];
 			gAuxCameras[idx] = NULL;
@@ -2534,11 +2677,9 @@ extern "C" void PortCeMultiBeApplyStartSlot(int *playerNumber, int retailInvert)
 #ifndef CE_NETWORK_OFF
 	if (OnlineMatchActive() && playerNumber)
 	{
-		const int level = GAME.GetCurrentLevel();
-		const bool isVersus = (level >= 850 && level <= 899);
+		const bool isVersus = (WORLD.GetType() == CWorld::kVersusMultiplayer);
 		const bool swapSides = isVersus && PortCeOnlineMatchSlotTeam &&
-			PortCeOnlineMatchSlotTeam(0) == CE_MULTIBE_SIDE_MUSPELL &&
-			PortCeOnlineMatchSlotTeam(1) == CE_MULTIBE_SIDE_FORSETI;
+			PortCeOnlineMatchSlotTeam(0) == CE_MULTIBE_SIDE_MUSPELL;
 		if (swapSides)
 			*playerNumber = CeMultiBeTransformStartSlot(*playerNumber, retailInvert != 0, false, true, true);
 		return;
@@ -2546,8 +2687,7 @@ extern "C" void PortCeMultiBeApplyStartSlot(int *playerNumber, int retailInvert)
 #endif
 	if (!playerNumber || MultiBeFenced())
 		return;
-	const int level = GAME.GetCurrentLevel();
-	const bool isVersus = (level >= 850 && level <= 899);
+	const bool isVersus = (WORLD.GetType() == CWorld::kVersusMultiplayer);
 	const bool cli0359 = (PortCePlayUnitInvertSides && PortCePlayUnitInvertSides()) != 0;
 	const bool menuMuspell = (ReadPlaySideSetting() == CE_MULTIBE_SIDE_MUSPELL);
 	const bool featureActive = gActive || menuMuspell || cli0359 || (*playerNumber >= 3);
@@ -2564,8 +2704,9 @@ extern "C" int PortCeMultiBeAllowTeamKills(void)
 #endif
 	if (MultiBeFenced())
 		return 0;
+	const bool isVersus = (WORLD.GetType() == CWorld::kVersusMultiplayer);
 	const bool cli0359 = (PortCePlayUnitInvertSides && PortCePlayUnitInvertSides()) != 0;
-	const bool menuMuspell = (ReadPlaySideSetting() == CE_MULTIBE_SIDE_MUSPELL);
+	const bool menuMuspell = isVersus && (ReadPlaySideSetting() == CE_MULTIBE_SIDE_MUSPELL);
 	return (gActive || menuMuspell || cli0359) ? 1 : 0;
 }
 
@@ -2601,6 +2742,26 @@ extern "C" CBattleEngine *PortCeMultiBeGetSlotEngine(int slot)
 }
 #endif
 
+extern "C" CCamera *PortCeMultiBeAuxCamera(int slot)
+{
+	if (!gActive || slot < 0 || slot >= gEngineCount || slot >= CE_MULTIBE_MAX || !gIsAux[slot])
+		return NULL;
+	return gAuxCameras[slot];
+}
+
+extern "C" void PortCeMultiBeSetAuxCamera(int slot, CCamera *cam)
+{
+	if (!gActive || slot < 0 || slot >= gEngineCount || slot >= CE_MULTIBE_MAX || !gIsAux[slot])
+		return;
+	gAuxCameras[slot] = cam;
+	gAuxDeathCam[slot] = false;
+}
+
+extern "C" void PortCeMultiBeRefreshSettings(void)
+{
+	RefreshCachedSettings();
+}
+
 extern "C" int PortCeMultiBeCareerPrefGet(int slot, int prefKind)
 {
 	return gExtraSlotPrefs.Get(slot, prefKind);
@@ -2634,12 +2795,58 @@ extern "C" int PortCeMultiBeHandleDeath(void *battleEnginePtr)
 	const int idx = IndexOfEngine(be);
 	if (idx >= 0 && gIsAux[idx])
 	{
-		gMatchState.OnAuxDestroyed(idx);
+		const FVector deathPos = be->GetPos();
+		bool shouldRespawn = true;
+#ifndef CE_NETWORK_OFF
+		if (OnlineMatchActive())
+		{
+			const SINT lives = GAME.GetPlayerLives(idx + 1);
+			if (lives > 0)
+			{
+				GAME.SetPlayerLives(idx + 1, lives - 1);
+			}
+			else
+			{
+				shouldRespawn = false;
+				if (WORLD.GetType() == CWorld::kCooperativeMultiplayer)
+				{
+					GAME.DeclareLevelLost(idx == 2 ? P1_OUT_OF_LIVES : P2_OUT_OF_LIVES, TRUE);
+				}
+				else if (WORLD.GetType() == CWorld::kVersusMultiplayer)
+				{
+					CheckOnlineVersusTeamElimination(idx);
+				}
+			}
+		}
+#endif
+		if (shouldRespawn)
+		{
+			gMatchState.OnAuxDestroyed(idx);
+		}
+		else
+		{
+			if (gMatchState.slotTeam[idx] == CE_MULTIBE_SIDE_MUSPELL)
+				gMatchState.forsetiKills++;
+			else
+				gMatchState.muspellKills++;
+		}
 		if (gAuxCameras[idx])
 		{
 			delete gAuxCameras[idx];
 			gAuxCameras[idx] = NULL;
 		}
+		gAuxDeathCam[idx] = false;
+#ifndef CE_NETWORK_OFF
+		if (OnlineMatchActive())
+		{
+			const int localSlot = PortCeOnlineMatchLocalSlot ? PortCeOnlineMatchLocalSlot() : 0;
+			if (localSlot == idx)
+			{
+				gAuxCameras[idx] = new (MEMTYPE_CAMERA) CViewPointCamera(deathPos, 0.5f, 0.0f, 6.0f, 3.0f);
+				gAuxDeathCam[idx] = (gAuxCameras[idx] != NULL);
+			}
+		}
+#endif
 		return 1;	// Suppress retail GAME.DeclarePlayerDead() for auxiliary BEs; respawn cleanly after 5s.
 	}
 	return 0;
@@ -2648,6 +2855,32 @@ extern "C" int PortCeMultiBeHandleDeath(void *battleEnginePtr)
 extern "C" int PortCeMultiBeActive(void)
 {
 	return gActive ? 1 : 0;
+}
+
+extern "C" int PortCeMultiBeIsAuxDeathCam(int slot)
+{
+	if (!gActive || slot < 0 || slot >= gEngineCount || slot >= CE_MULTIBE_MAX || !gIsAux[slot])
+		return 0;
+	return gAuxDeathCam[slot] ? 1 : 0;
+}
+
+extern "C" int PortCeMultiBeWinningTeam(void)
+{
+	return gActive ? gWinningTeam : -1;
+}
+
+extern "C" int PortCeMultiBeVersusCheckOutOfLives(int slot)
+{
+#ifndef CE_NETWORK_OFF
+	if (gActive && OnlineMatchActive())
+	{
+		CheckOnlineVersusTeamElimination(slot);
+		return 1;
+	}
+#else
+	(void)slot;
+#endif
+	return 0;
 }
 
 extern "C" int PortCeMultiBePlaySideIsMuspell(void)
@@ -2717,11 +2950,17 @@ extern "C" void PortCeMultiBeWeaponFire(CWeapon *, CUnit *, CRound *) {}
 extern "C" void PortCeMultiBeApplyStartSlot(int *, int) {}
 extern "C" int PortCeMultiBeAllowTeamKills(void) { return 0; }
 extern "C" int PortCeMultiBeSelectStartConfig(int, int p1Config, int) { return p1Config; }
+extern "C" CCamera *PortCeMultiBeAuxCamera(int) { return NULL; }
+extern "C" void PortCeMultiBeSetAuxCamera(int, CCamera *) {}
+extern "C" void PortCeMultiBeRefreshSettings(void) {}
 extern "C" int PortCeMultiBeCareerPrefGet(int, int) { return 0; }
 extern "C" void PortCeMultiBeCareerPrefSet(int, int, int) {}
 extern "C" void PortCeMultiBeOnConfirmedKill(void *, void *) {}
 extern "C" int PortCeMultiBeHandleDeath(void *) { return 0; }
 extern "C" int PortCeMultiBeActive(void) { return 0; }
+extern "C" int PortCeMultiBeIsAuxDeathCam(int) { return 0; }
+extern "C" int PortCeMultiBeWinningTeam(void) { return -1; }
+extern "C" int PortCeMultiBeVersusCheckOutOfLives(int) { return 0; }
 extern "C" int PortCeMultiBePlaySideIsMuspell(void) { return 0; }
 extern "C" int PortCeSoloSkirmishActive(void) { return 0; }
 extern "C" void PortCeMultiBeDrawMpStartStatus(float) {}

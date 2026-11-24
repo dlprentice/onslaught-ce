@@ -137,7 +137,11 @@
  		case PAUSE_GAME:
  		{
  			Pause() ;
-@@ -3169,6 +3228,12 @@
+@@ -3168,7 +3227,16 @@
+ //******************************************************************************************
++#ifdef CE_VERSION
++extern "C" int PortCeMultiBeVersusCheckOutOfLives(int slot) __attribute__((weak));
++#endif
  void CGame::RespawnPlayer(
  	SINT	inNumber)	// FUNCTION: 0x00470120 ?RespawnPlayer@CGame@@QAEXH@Z
  {
@@ -150,7 +154,7 @@
  #ifdef _DIRECTX
  	// Let's force the landscape to refresh to the right LOD right now.
  	ENGINE.GetLandscape()->MakeNextUpdateBeFast();
-@@ -3197,6 +3262,23 @@
+@@ -3197,6 +3265,23 @@
  						spawn=FALSE;
  					}
  					break;
@@ -174,7 +178,29 @@
  			}
  		}
  		break;
-@@ -3220,6 +3302,23 @@
+@@ -3208,18 +3293,47 @@
+ 				case 0:
+ 					if (mPlayer1Lives==0)
+ 					{
++#ifdef CE_VERSION
++						if (!PortCeMultiBeVersusCheckOutOfLives || !PortCeMultiBeVersusCheckOutOfLives(0))
++							MPDeclarePlayerWon(2);
++#else
+ 						MPDeclarePlayerWon(2);
++#endif
+ 						spawn=FALSE;
+ 					}
+ 					break;
+ 
+ 				case 1:
+ 					if (mPlayer2Lives==0)
+ 					{
++#ifdef CE_VERSION
++						if (!PortCeMultiBeVersusCheckOutOfLives || !PortCeMultiBeVersusCheckOutOfLives(1))
++							MPDeclarePlayerWon(1);
++#else
+ 						MPDeclarePlayerWon(1);
++#endif
  						spawn=FALSE;
  					}
  					break;
@@ -182,7 +208,8 @@
 +				case 2:
 +					if (mPlayerLives[2]==0)
 +					{
-+						MPDeclarePlayerWon(2);
++						if (!PortCeMultiBeVersusCheckOutOfLives || !PortCeMultiBeVersusCheckOutOfLives(2))
++							MPDeclarePlayerWon(2);
 +						spawn=FALSE;
 +					}
 +					break;
@@ -190,7 +217,8 @@
 +				case 3:
 +					if (mPlayerLives[3]==0)
 +					{
-+						MPDeclarePlayerWon(1);
++						if (!PortCeMultiBeVersusCheckOutOfLives || !PortCeMultiBeVersusCheckOutOfLives(3))
++							MPDeclarePlayerWon(1);
 +						spawn=FALSE;
 +					}
 +					break;
@@ -198,7 +226,7 @@
  			}
  		}
  	}
-@@ -3236,6 +3335,16 @@
+@@ -3236,6 +3350,16 @@
  			if (mPlayer2Lives>0)
  				mPlayer2Lives--;
  		}
@@ -215,7 +243,7 @@
  
  		// Count the respawn points
  		SPtrSet<CSpawnPoint>		&spawnPointNB=WORLD.GetSpawnPointNB();
-@@ -3245,7 +3354,11 @@
+@@ -3245,7 +3369,11 @@
  
  		for (spawnPoint=spawnIterator.First(); spawnPoint; spawnPoint=spawnIterator.Next())
  		{
@@ -227,7 +255,7 @@
  				(spawnPoint->Available()))
  			{
  				spawnPoints++;
-@@ -3260,7 +3373,11 @@
+@@ -3260,7 +3388,11 @@
  
  			for (spawnPoint=spawnIterator.First(); spawnPoint; spawnPoint=spawnIterator.Next())
  			{
@@ -239,7 +267,7 @@
  					(spawnPoint->Available()))
  				{
  					if (index==chosen)
-@@ -3284,7 +3401,11 @@
+@@ -3284,7 +3416,11 @@
  
  			for (CStart* start=iterator.First(); start; start=iterator.Next())
  			{
@@ -251,7 +279,7 @@
  					(start->Available()))
  				{
  					if (CBattleEngine *newEngine=start->SpawnBattleEngine(TRUE))
-@@ -3308,6 +3429,20 @@
+@@ -3308,6 +3444,20 @@
  			mPlayer2Lives++;
  			EVENT_MANAGER.AddEvent(1.0f,(int)RESPAWN_PLAYER_2,this,START_OF_FRAME,NULL);
  		}
@@ -272,7 +300,7 @@
  	}
  }
  
-@@ -4209,6 +4344,10 @@
+@@ -4209,6 +4359,10 @@
  		return mPlayer1Lives;
  	else if (inPlayer==2)
  		return mPlayer2Lives;
@@ -283,7 +311,7 @@
  
  	return 0;
  }
-@@ -4219,9 +4358,23 @@
+@@ -4219,9 +4373,23 @@
  	SINT		inLives)
  {
  	if (inPlayer==1)

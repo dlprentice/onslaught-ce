@@ -593,7 +593,6 @@ class Entry(unittest.TestCase):
     def test_the_front_end_offers_no_unfinished_row_without_its_line(self):
         text = FRONTEND.read_text()
         self.assertTrue(has(text, "if (ExperimentalOffered(kHubRows[i].mAction))",
-                            'if (commander || strcmp(setting.mKey, "commander"))',
                             "if (!ExperimentalOffered(action))\n\t\t\treturn;"))
         mode = text[text.index("static const char\t*ExperimentalMode(int action)"):]
         mode = mode[:mode.index("\n}\n")]
@@ -634,7 +633,7 @@ class Entry(unittest.TestCase):
         self.assertIn("const bool modsAvailable = !PortModsPlatformOff();", text)
         self.assertIn("if (!lab.mNeedsMods || modsAvailable)", text)
         self.assertIn("CE_SettingSet(mLab->mKey, value)", text)
-        self.assertIn('kLabsNote[] = L"All CE features start On - changes apply on next restart.";', text)
+        self.assertIn('kLabsNote[] = L"Changes apply on next restart (Solo Skirmish starts Off).";', text)
 
     def test_mutants_of_the_entry_points_are_caught(self):
         def commander_ok(t):

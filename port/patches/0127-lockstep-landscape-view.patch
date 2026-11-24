@@ -8,10 +8,10 @@
 +	// port (lockstep co-op): a peer draws one view (CE_WorldViewPlayer) as viewpoint 0; a solo level has one landscape view
 +	if (CE_LockstepActive())
 +	{
-+		if (GetCamera(CE_WorldViewPlayer(0)))
++		if (CCamera *ce_cam = CE_WorldViewCamera(0))
 +		{
 +			ENGINE.mCurrentViewpoint=0;
-+			ENGINE.UpdatePos(GetCamera(CE_WorldViewPlayer(0)));
++			ENGINE.UpdatePos(ce_cam);
 +		}
 +	}
 +	else
