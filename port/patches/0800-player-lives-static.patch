@@ -1,0 +1,10 @@
+--- a/game.cpp
++++ b/game.cpp
+@@ -5098,3 +5098,7 @@
+ extern "C" void CE_SessionGameRebaseRenderClock() { CENetworkSession::RebaseRenderClock(); }
+ extern "C" int CE_SessionGameAbortLoad() { return CENetworkSession::AbortLoad(); }
+ #endif
++
++#ifdef CE_VERSION
++SINT	CGame::mPlayerLives[MAX_PLAYERS];	// patch 0370, static so CGame keeps the retail layout
++#endif

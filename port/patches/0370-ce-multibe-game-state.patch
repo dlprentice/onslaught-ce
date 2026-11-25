@@ -16,7 +16,7 @@
  
  	SINT			mPlayer1Lives,mPlayer2Lives;
 +#ifdef CE_VERSION
-+	SINT			mPlayerLives[MAX_PLAYERS];
++	static SINT		mPlayerLives[MAX_PLAYERS];	// static: CGame keeps its retail layout (replay probes read it by offset)
 +#endif
  	float			mHackCurrentGameMasterVolume;// used to fade out game sounds when you die
  
