@@ -201,91 +201,120 @@
  	SAFE_DELETE(mConfirm);
 --- a/MenuOptionsList.cpp
 +++ b/MenuOptionsList.cpp
-@@ -34,2 +34,12 @@
+@@ -11,6 +11,9 @@
+ #include	"ltshell.h"
+ #include	"renderinfo.h"
+ #include	"Texture.h"
++#ifdef CE_VERSION
++bool	PortCeMenus();	// port/game/ce_frontend.cpp: off in replays and recordings, as the whole CE layer is
++#endif
+ 
+ // FUNCTION: 0x004a44d0 init:ZERO_FVECTOR
+ // FUNCTION: 0x004a44f0 init:ID_FMATRIX
+@@ -32,6 +35,17 @@
+ 	CMenuItem	*item;
+ 	FOR_ALL_ITEMS_IN(mItems, item)
  		item->Refresh();
 +#ifdef CE_VERSION
-+	for (int i = 0; i < mItems.Size(); i++)
-+	{
-+		if (mItems.At(i)->IsEnabled() && (mItems.At(i)->GetHeight() > 0))
++	if (PortCeMenus())
++		for (int i = 0; i < mItems.Size(); i++)
 +		{
-+			mSelected = i;
-+			break;
++			if (mItems.At(i)->IsEnabled() && (mItems.At(i)->GetHeight() > 0))
++			{
++				mSelected = i;
++				break;
++			}
 +		}
-+	}
 +#endif
  }
-@@ -72,2 +82,23 @@
+ 
+ // FUNCTION: 0x004a4670
+@@ -70,6 +84,30 @@
+ {
+ 	int		old = mSelected;
  
 +#ifdef CE_VERSION
-+	int		count = mItems.Size();
-+	if (count <= 0)
-+		return;
-+	for (int step = 1; step <= count; step++)
++	if (PortCeMenus())
 +	{
-+		int	idx = (old + step) % count;
-+		if (idx < 0)
-+			idx += count;
-+		if (mItems.At(idx)->IsEnabled() && (mItems.At(idx)->GetHeight() > 0))
-+		{
-+			if (idx != old)
-+			{
-+				mSelected = idx;
-+				CFrontEnd::PlaySound(FES_MOVE);
-+			}
++		int		count = mItems.Size();
++		if (count <= 0)
 +			return;
++		for (int step = 1; step <= count; step++)
++		{
++			int	idx = (old + step) % count;
++			if (idx < 0)
++				idx += count;
++			if (mItems.At(idx)->IsEnabled() && (mItems.At(idx)->GetHeight() > 0))
++			{
++				if (idx != old)
++				{
++					mSelected = idx;
++					CFrontEnd::PlaySound(FES_MOVE);
++				}
++				return;
++			}
 +		}
++		return;
 +	}
-+	return;
-+#else
++#endif
  	if (mSelected >= mItems.Size() - 1)
-@@ -95,2 +126,3 @@
- 	CFrontEnd::PlaySound(FES_MOVE);
-+#endif
- }
-@@ -180,3 +212,7 @@
+ 	{
+ 		if (mItems.Size() <= 2)
+@@ -178,7 +216,11 @@
+ 	{ ty += PortCeCompactActionGap(cePitch, n, mItems.Size());
+ 		if ((!menu->IsConfirming()) || IsConfirmation())
  		{
 +#ifdef CE_VERSION
-+			if (!mItems.At(mSelected)->TakesInput() && (item->IsEnabled() || ((item->mText == 0) && (item->mPCText == (EPCText)0x32))))
++			if (!mItems.At(mSelected)->TakesInput() && (!PortCeMenus() || item->IsEnabled() || ((item->mText == 0) && (item->mPCText == (EPCText)0x32))))
 +#else
  			if (!mItems.At(mSelected)->TakesInput())
 +#endif
  			{
-@@ -195,3 +231,7 @@
+ 				if (CMenuItem::IsMouseInRect(0.f, ty, 640.f, ty + (cePitch ? cePitch : item->GetHeight())))
+ 					mSelected = n;
+@@ -193,7 +235,11 @@
+ 
+ 		if ((!menu->IsConfirming()) || IsConfirmation())
  		{
 +#ifdef CE_VERSION
-+			if (!mItems.At(mSelected)->TakesInput() && item->IsEnabled())
++			if (!mItems.At(mSelected)->TakesInput() && (!PortCeMenus() || item->IsEnabled()))
 +#else
  			if (!mItems.At(mSelected)->TakesInput())
 +#endif
  			{
-@@ -250,2 +290,23 @@
+ 				if (CMenuItem::MouseClickedInRect(0.f, ty, 640.f, ty + (cePitch ? cePitch : item->GetHeight())))
+ 				{
+@@ -248,6 +294,30 @@
+ {
+ 	int		old = mSelected;
  
 +#ifdef CE_VERSION
-+	int		count = mItems.Size();
-+	if (count <= 0)
-+		return;
-+	for (int step = 1; step <= count; step++)
++	if (PortCeMenus())
 +	{
-+		int	idx = (old - step) % count;
-+		if (idx < 0)
-+			idx += count;
-+		if (mItems.At(idx)->IsEnabled() && (mItems.At(idx)->GetHeight() > 0))
-+		{
-+			if (idx != old)
-+			{
-+				mSelected = idx;
-+				CFrontEnd::PlaySound(FES_MOVE);
-+			}
++		int		count = mItems.Size();
++		if (count <= 0)
 +			return;
++		for (int step = 1; step <= count; step++)
++		{
++			int	idx = (old - step) % count;
++			if (idx < 0)
++				idx += count;
++			if (mItems.At(idx)->IsEnabled() && (mItems.At(idx)->GetHeight() > 0))
++			{
++				if (idx != old)
++				{
++					mSelected = idx;
++					CFrontEnd::PlaySound(FES_MOVE);
++				}
++				return;
++			}
 +		}
++		return;
 +	}
-+	return;
-+#else
- 	if (mSelected <= 0)
-@@ -268,2 +329,3 @@
- 	CFrontEnd::PlaySound(FES_MOVE);
 +#endif
- }
+ 	if (mSelected <= 0)
+ 	{
+ 		if (mItems.Size() <= 2)
 --- a/FEMessBox.cpp
 +++ b/FEMessBox.cpp
 @@ -8,6 +8,9 @@
